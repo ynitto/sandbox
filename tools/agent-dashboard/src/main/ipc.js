@@ -237,7 +237,9 @@ function registerIpcHandlers() {
     const res = flow.cancelRun(busDir, runId, { reason: reason || '' });
     // bus だけ canceled にしても project が offloaded / flow_run のままだと UI が割れる。
     // revise（feedback）コマンドで本体と同じ detach→ready 契約に乗せる。
-    if (dir) {
+    // 既に終端の run への「中止」は waits 掃除だけで、タスクを ready に積み直さない
+    // （done/failed/canceled の archival cancel で settled タスクが再キューされるのを防ぐ）。
+    if (dir && !(res && res.alreadyTerminal)) {
       const meta = flow.readRunMeta(busDir, runId) || {};
       const taskId = flow.taskIdOfRun(runId, meta);
       if (taskId && fs.existsSync(path.join(dir, 'backlog', `${taskId}.md`))) {

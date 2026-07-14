@@ -7,6 +7,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-flow / agent-project / agent-dashboard: Set3 individual バグ修正
+
+- **agent-dashboard: 既に終端した run の cancel が revise でタスクを再キューしていた** —
+  alreadyTerminal なら waits 掃除のみ（settled タスクを ready に戻さない）。
+- **agent-project: `_kf_base` が flow_config（--config）を落とす** —
+  sync run / submit / doctor も daemon と同じ yaml を渡す。
+- **agent-project: act タイムアウトの `reap_orphan_flow` が外部 daemon ごと殺していた** —
+  manage_flow_daemon=false では daemon 除外。submit タイムアウトは対象 run だけ cancel。
+- **agent-project: 同期 `_act_run` が mid-revise を無視していた** — Popen ポーリング＋ detach。
+- **agent-flow: 適用済み cancel マーカーが残り同一 ID 再開と毎 poll を汚染** —
+  daemon 適用後に clear。orch は meta=canceled でも停止。
+
 ### agent-flow / agent-project / agent-dashboard: Set2 integration 手つなぎ修正
 
 - **needs メモ付き環境復帰が env_resume を落として新 run になっていた** — メモは計画変更でない。

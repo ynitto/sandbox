@@ -363,6 +363,9 @@ def cmd_run(args) -> int:
                 except Exception as e:  # noqa: BLE001 — 監視失敗は run を止めない
                     print(f">>> service_waits でエラー（無視して継続）: {e}", flush=True)
                 next_wait_service = time.time() + watch_interval
+            if bus.get_status() in TERMINAL:
+                print(f"\n>>> run {bus.get_status()}。ワーカーを停止します。", flush=True)
+                break
             if bus.is_canceled_requested(run_id) and bus.get_status() not in TERMINAL:
                 # cancel 指示: この run を canceled に終端化し、park の再ポーリングを止め、
                 # 子（orchestrator/worker）を停止する。--close-issues は cmd_cancel 側で実施済み。
@@ -370,9 +373,6 @@ def cmd_run(args) -> int:
                 bus.clear_waits_for_run(run_id)
                 bus.sync_push(f"cancel run {run_id}")
                 print(f"\n>>> run {run_id} は cancel されました。停止します。", flush=True)
-                break
-            if bus.get_status() in TERMINAL:
-                print(f"\n>>> run {bus.get_status()}。ワーカーを停止します。", flush=True)
                 break
             if orch.poll() is not None and bus.get_status() not in TERMINAL:
                 print("\n>>> orchestrator が終了しました。停止します。", flush=True)

@@ -250,7 +250,9 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
     """agent-flow run で都度起動（同期実行）。daemon 不要。
 
     run-id は run_id_for が決める（直前の run が failed なら再開＝失敗ノードだけやり直す）。
-    使った run-id はタスクへ残し、次の試行の再開判断と viewer の突き合わせに使う。"""
+    使った run-id はタスクへ残し、次の試行の再開判断と viewer の突き合わせに使う。
+    結果待ち中に人が revise したら submit 経路と同じく cancel で切り離す（放置すると完走して
+    二重書き込みしうる）。"""
     rid = run_id_for(cfg, task)
     resuming = rid == str(task.get("last_run") or "").strip()
     # 新 run なら先行 last_run から done を引き継ぐ（submit 経路と同じ。retries-1 推定は rev ずれで外れる）
@@ -261,18 +263,70 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
         append_journal(cfg.journal,
                        f"run 再開: {task.id} は {rid} の失敗ノードだけをやり直します（done は温存）")
     try:
-        # act_timeout=0（以下）はタイムアウト無効＝完了まで待つ（gitlab 等の長時間委譲向け）。
-        proc = subprocess.run(cmd, cwd=str(cfg.workdir),
-                              timeout=(cfg.act_timeout if cfg.act_timeout > 0 else None),
-                              capture_output=True, text=True)
-    except subprocess.TimeoutExpired:
-        # subprocess が kill するのは agent-flow 本体だけで、その子（orchestrator / worker）は残る。
-        # 残すとリースを更新し続け、次の試行が「まだ実行中」と読んで新しい run を作り、同じタスクを
-        # 二重実行する。ここで刈っておく（同時に走る run は 1 つなので bus 単位で止めてよい）。
-        reap_orphan_flow(cfg)
-        return (False, f"agent-flow run タイムアウト（{cfg.act_timeout}s）")
+        # Popen＋ポーリング: subprocess.run だと timeout まで mid-revise を検知できない。
+        proc = subprocess.Popen(cmd, cwd=str(cfg.workdir),
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     except FileNotFoundError as e:
         return (False, f"agent-flow を起動できません: {e}")
+    # PIPE が満杯になると agent-flow が書き込みブロックするので、待機中に吐き出す。
+    out_chunks: "list[str]" = []
+
+    def _drain() -> None:
+        try:
+            if proc.stdout:
+                for chunk in iter(proc.stdout.readline, ""):
+                    out_chunks.append(chunk)
+        except (OSError, ValueError):
+            pass
+
+    drainer = threading.Thread(target=_drain, daemon=True)
+    drainer.start()
+    deadline = (time.time() + cfg.act_timeout) if cfg.act_timeout > 0 else None
+    try:
+        while True:
+            rc = proc.poll()
+            if rc is not None:
+                drainer.join(timeout=2.0)
+                break
+            if _task_file_revised(cfg, task):
+                task.set("flow_run", rid)
+                detach_flow_run(cfg, task, "revise により同期 run を中断")
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                except Exception:  # noqa: BLE001
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+                # 刈り残した orch/worker は daemon を残して止める（外部 daemon 全滅を避ける）
+                reap_orphan_flow(cfg, include_daemon=False)
+                return (False, f"daemon run {rid} の結果待ちを中断（人の revise を検知）")
+            if deadline is not None and time.time() >= deadline:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                except Exception:  # noqa: BLE001
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+                # 本体＋子の残骸を刈るが、健全な外部 daemon は残す。
+                reap_orphan_flow(cfg, include_daemon=False)
+                return (False, f"agent-flow run タイムアウト（{cfg.act_timeout}s）")
+            time.sleep(1.0)
+    finally:
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        if proc.stdout:
+            try:
+                proc.stdout.close()
+            except OSError:
+                pass
+    out = "".join(out_chunks)
     # 同期 run の canceled は exit≠0 でもメッセージが日本語のため、meta で確定して
     # 上位の canceled 特別扱い（リトライ非消費で ready）へ乗せる。
     try:
@@ -281,7 +335,7 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
             return (False, f"daemon run {rid} canceled")
     except (OSError, ValueError, json.JSONDecodeError):
         pass
-    return (proc.returncode == 0, (proc.stdout or "")[-300:].strip())
+    return (proc.returncode == 0, out[-300:].strip())
 
 
 def _load_task_file(cfg: "Config", tid: str) -> "Task | None":
@@ -467,9 +521,9 @@ def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
             detach_flow_run(cfg, task, "revise により結果待ちを中断")
             return (False, f"daemon run {run_id} の結果待ちを中断（人の revise を検知）")
         time.sleep(2.0)
-    # _act_run と同様、タイムアウト後に daemon 側 run を残すと次試行が二重実行になる。
-    # submit で掴んだ同一バスの迷子 orchestrator/worker をここで刈る。
-    reap_orphan_flow(cfg)
+    # daemon 自体は他 run / park 監視のオーナーなので殺さない。この run だけ cancel して止める。
+    task.set("flow_run", run_id)
+    detach_flow_run(cfg, task, f"daemon run タイムアウト（{cfg.act_timeout}s）")
     return (False, f"daemon run {run_id} タイムアウト")
 
 

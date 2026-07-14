@@ -540,6 +540,19 @@ class Bus:
         """run_id に cancel マーカーがあるか（＝人が停止を指示したか）。"""
         return os.path.exists(os.path.join(self.inbox_cancels_dir, f"{run_id}.json"))
 
+    def clear_cancel(self, run_id: str) -> bool:
+        """適用済み cancel マーカーを消す。消えたら True。
+
+        終端化＋waits 掃除が終わったあとに呼ぶ。残すと同一 run-id の意図的再開が即座に
+        再 cancel され、daemon も毎 poll 同じマーカーを拾い続ける。伝播は meta.status=
+        canceled の sync で足りる。"""
+        p = os.path.join(self.inbox_cancels_dir, f"{run_id}.json")
+        try:
+            os.remove(p)
+            return True
+        except OSError:
+            return False
+
     def cancel_info(self, run_id: str) -> dict:
         return read_json(os.path.join(self.inbox_cancels_dir, f"{run_id}.json")) or {}
 

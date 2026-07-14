@@ -5499,6 +5499,20 @@ class CancelTests(unittest.TestCase):
         self.assertEqual(self.bus.run_meta("run1").get("status"), "canceled")
         self.assertIsNone(self.bus.read_wait("n1"), "orch 終端時に waits も消す")
 
+    def test_orch_stops_when_meta_already_canceled_without_marker(self):
+        # daemon が適用後にマーカーを消しても、meta=canceled なら orch は止まる
+        args = argparse.Namespace(run_id="run1")
+        self.bus.mark_canceled("run1", "先に終端")
+        self.assertFalse(self.bus.is_canceled_requested("run1"))
+        self.assertTrue(kf._orch_check_canceled(self.bus, args, "orch"))
+
+    def test_clear_cancel_removes_applied_marker(self):
+        self.bus.cancel_request("run1", "host", "止める")
+        self.assertTrue(self.bus.is_canceled_requested("run1"))
+        self.assertTrue(self.bus.clear_cancel("run1"))
+        self.assertFalse(self.bus.is_canceled_requested("run1"))
+        self.assertFalse(self.bus.clear_cancel("run1"))  # 冪等
+
     def test_set_status_refuses_to_resurrect_terminal(self):
         self.bus.mark_canceled("run1", "止める")
         self.bus.set_status("running")

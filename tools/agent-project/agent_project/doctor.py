@@ -800,8 +800,8 @@ def cmd_run(cfg: Config) -> int:
     # 前世代の agent-flow（クラッシュ・電源断で stop を通らず居残ったもの）を刈る。ここを通らないと
     # 残った orchestrator がリースを更新し続け、この後の run_id_for が「まだ実行中」と読んで
     # **続きから再開せず新しい run を作り**、同じタスクを二重実行する（reap_orphan_flow 参照）。
-    # 重複起動は上で弾いているので、いま自分の bus を回している agent-flow は残骸だけである。
-    # 単発 run でも同じ（前回 crash の残骸が生きていると、この一発が新 run を作り二重実行する）。
+    # manage_flow_daemon=on なら daemon も含めて刈り（ensure_flow_daemon が立て直す）。
+    # 既定 off では外部 daemon を残し、orch/worker/都度 run だけ刈る。
     reaped = reap_orphan_flow(cfg)
     if reaped:
         append_journal(cfg.journal,

@@ -1602,12 +1602,72 @@ class TestActSubmitTerminal(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             cfg = cfg_for(Path(d), dry_run=False, act_timeout=10.0)
             fake = self._fake_run({"done": False, "status": "running"})
+            reaped = []
             with mock.patch.object(km.subprocess, "run", fake), \
                  mock.patch.object(km.time, "time", lambda: clock[0]), \
-                 mock.patch.object(km.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s)):
+                 mock.patch.object(km.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s)), \
+                 mock.patch.object(km, "reap_orphan_flow",
+                                   side_effect=lambda *a, **k: reaped.append(True) or 0):
                 ok, msg = km._act_submit(self._task(), cfg, use_git=False)
             self.assertFalse(ok)
             self.assertIn("タイムアウト", msg)
+            self.assertEqual(reaped, [], "submit タイムアウトは daemon 全滅 reap せず cancel する")
+            cancel = cfg.bus / "inbox" / "cancels"
+            self.assertTrue(any(cancel.glob("*.json")), "対象 run だけ cancel マーカー")
+
+
+class TestActRunMidRevise(unittest.TestCase):
+    """同期 _act_run も submit と同様、実行中 revise で切り離す。"""
+
+    def test_mid_revise_detaches_and_stops(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, dry_run=False, act_timeout=30.0)
+            (cfg.backlog).mkdir(parents=True, exist_ok=True)
+            t = km.Task(id="T1", title="x", verify="true", status="doing")
+            (cfg.backlog / "T1.md").write_text(km.serialize_task(t), encoding="utf-8")
+
+            class FakeProc:
+                def __init__(self):
+                    self._n = 0
+                    self.stdout = io.StringIO("")
+                    self.returncode = None
+
+                def poll(self):
+                    self._n += 1
+                    return None  # ずっと実行中
+
+                def terminate(self):
+                    self.returncode = -15
+
+                def kill(self):
+                    self.returncode = -9
+
+                def wait(self, timeout=None):
+                    return self.returncode
+
+            # revise: 初回 False、2 回目以降 True（1 秒 sleep のあとに検知）
+            checks = [False]
+
+            def revised(_cfg, _task):
+                if not checks[0]:
+                    checks[0] = True
+                    return False
+                # ディスクにもマーカーを書いて _task_file_revised の本番経路を通す
+                live = km.parse_task((cfg.backlog / "T1.md").read_text(encoding="utf-8"), "T1")
+                live.set("revised", "now")
+                (cfg.backlog / "T1.md").write_text(km.serialize_task(live), encoding="utf-8")
+                return True
+
+            with mock.patch.object(km.subprocess, "Popen", return_value=FakeProc()), \
+                 mock.patch.object(km, "_task_file_revised", side_effect=revised), \
+                 mock.patch.object(km.time, "sleep", lambda *_: None), \
+                 mock.patch.object(km, "reap_orphan_flow", return_value=0):
+                ok, msg = km._act_run(t, cfg, use_git=False)
+            self.assertFalse(ok)
+            self.assertIn("revise", msg)
+            self.assertTrue((cfg.bus / "inbox" / "cancels").exists())
+            self.assertTrue(any((cfg.bus / "inbox" / "cancels").glob("*.json")))
 
 
 class TestActTimeoutZeroAndInherit(unittest.TestCase):
@@ -2799,6 +2859,21 @@ class TestDaemonRouting(unittest.TestCase):
             self.assertNotIn("--git", km._kf_base(c, False))
             self.assertIn("--git", km._kf_base(c, True))
 
+    def test_kf_base_passes_flow_config(self):
+        """sync run / submit / doctor も daemon と同じ flow_config（--config）を渡す。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            yaml = d / "agent-flow.yaml"
+            yaml.write_text("executor: stub\n", encoding="utf-8")
+            c = cfg_for(d, flow_config=str(yaml))
+            base = km._kf_base(c, False)
+            self.assertIn("--config", base)
+            self.assertEqual(base[base.index("--config") + 1], str(yaml.resolve()))
+            # daemon 経路とも揃う（片方だけ付けると設定が割れる）
+            daemon = km.flow_daemon_cmd(c, 2)
+            self.assertIn("--config", daemon)
+            self.assertEqual(daemon[daemon.index("--config") + 1], str(yaml.resolve()))
+
     def test_daemon_detection(self):
         if km.fcntl is None:
             self.skipTest("fcntl 無し")
@@ -2973,6 +3048,47 @@ class TestInstances(unittest.TestCase):
             with mock.patch.object(km.subprocess, "run", return_value=fake):
                 pids = km._flow_pids_for_bus(cfg.bus)
             self.assertEqual(pids, [222], "自分の bus の agent-flow だけを対象にする")
+
+    def test_reap_spares_external_daemon_by_default(self):
+        """manage_flow_daemon=false では外部 daemon を殺さない（timeout/起動時の全滅防止）。"""
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))  # manage_flow_daemon 既定 False
+            bus = str(cfg.bus.resolve())
+            ps_out = (
+                f"111 python /x/agent-flow --bus {bus} daemon --max-workers 2\n"
+                f"222 python /x/agent-flow --bus {bus} run --run-id R1\n"
+                f"333 python /x/agent-flow --bus {bus} orchestrate --run-id R1\n"
+            )
+            fake = types.SimpleNamespace(returncode=0, stdout=ps_out)
+            with mock.patch.object(km.subprocess, "run", return_value=fake):
+                all_pids = km._flow_pids_for_bus(cfg.bus, include_daemon=True)
+                spare = km._flow_pids_for_bus(cfg.bus, include_daemon=False)
+            self.assertEqual(sorted(all_pids), [111, 222, 333])
+            self.assertEqual(sorted(spare), [222, 333], "daemon を除外")
+
+            killed = []
+            with mock.patch.object(km, "_flow_pids_for_bus",
+                                   side_effect=lambda bus, include_daemon=True: (
+                                       [111, 222, 333] if include_daemon else [222, 333])), \
+                 mock.patch.object(km.os, "kill", side_effect=lambda pid, sig: killed.append(pid)), \
+                 mock.patch.object(km, "_pid_alive", return_value=False):
+                n = km.reap_orphan_flow(cfg)
+            self.assertEqual(n, 2)
+            self.assertEqual(sorted(set(killed)), [222, 333])
+            self.assertNotIn(111, killed)
+
+    def test_reap_kills_daemon_when_managed(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), manage_flow_daemon=True)
+            killed = []
+            with mock.patch.object(km, "_flow_pids_for_bus",
+                                   side_effect=lambda bus, include_daemon=True: (
+                                       [10, 20] if include_daemon else [20])), \
+                 mock.patch.object(km.os, "kill", side_effect=lambda pid, sig: killed.append(pid)), \
+                 mock.patch.object(km, "_pid_alive", return_value=False):
+                n = km.reap_orphan_flow(cfg)
+            self.assertEqual(n, 2)
+            self.assertEqual(sorted(set(killed)), [10, 20])
 
     def test_stop_takes_the_agent_flow_children_with_it(self):
         """停止は agent-flow の子孫まで届くこと（本人だけ殺すと残骸が走り続ける）。

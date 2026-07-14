@@ -245,11 +245,19 @@ def decide_location(task: Task, policy: Policy, cfg: "Config") -> str:
 
 
 def _kf_base(cfg: "Config", use_git: bool) -> "list[str]":
+    """agent-flow 共通 argv（bus / git / --config）。
+
+    flow_config は daemon 起動（flow_daemon_cmd）だけでなく sync run / submit / result /
+    doctor にも渡す。付け忘れると manage_flow_daemon=false の主経路だけ executor・gitlab・
+    agent_cli 等の yaml 設定が消える。"""
     base = resolve_agent_flow(cfg.agent_flow) + ["--bus", str(cfg.bus)]
     if use_git and cfg.git_bus:
         base += ["--git", cfg.git_bus, "--git-branch", cfg.git_branch]
         if cfg.git_subdir:
             base += ["--git-subdir", cfg.git_subdir]
+    fc = getattr(cfg, "flow_config", None)
+    if fc:
+        base += ["--config", os.path.abspath(os.path.expanduser(str(fc)))]
     return base
 
 

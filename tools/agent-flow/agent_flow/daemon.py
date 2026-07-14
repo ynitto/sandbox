@@ -96,6 +96,7 @@ def cmd_daemon(args) -> int:
                 if info.get("close_issues"):
                     _apply_on_cancel(bus, args, rid)
                 cleared = bus.clear_waits_for_run(rid)
+                bus.clear_cancel(rid)  # 適用済みマーカーを残さない（再 cancel / 無限 poll 防止）
                 if cleared or info.get("close_issues"):
                     bus.sync_push(f"cancel cleanup waits {rid}")
                 continue
@@ -109,6 +110,7 @@ def cmd_daemon(args) -> int:
                 if wp.poll() is None:
                     wp.terminate()
             marked = bus.mark_canceled(rid, reason)
+            bus.clear_cancel(rid)
             bus.run_view(rid).event(daemon_id, "canceled", run=rid, reason=reason)
             bus.sync_push(f"cancel run {rid}: {reason}")
             if marked:
