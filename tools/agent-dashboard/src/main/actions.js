@@ -187,15 +187,25 @@ function quote(arg) {
   return process.platform === 'win32' ? `"${s.replace(/"/g, '""')}"` : `'${s.replace(/'/g, "'\\''")}'`;
 }
 
-function findProjectConfig(projectDir) {
-  // agent-project の _find_config と同じ名前を、状態ルート／ワークスペース候補から探す。
+function findProjectConfig(...dirs) {
+  // agent-project の _find_config と同じ名前を、本体／状態 worktree の候補から探す。
   // cwd 依存を避け、dashboard CLI 委譲が設定を拾えるようにする。
-  const bases = [
-    projectDir,
-    path.join(projectDir, '.agent'),
-    path.dirname(projectDir),
-    path.join(path.dirname(projectDir), '.agent'),
-  ];
+  // `dir`（状態ルート）と `fromStateWorktree(dir)`（本体）の両方を見る——yaml が
+  // 状態 worktree 側だけにある構成でも --config を落とさない。
+  const bases = [];
+  const add = (d) => {
+    if (!d) return;
+    const resolved = path.resolve(d);
+    for (const base of [
+      resolved,
+      path.join(resolved, '.agent'),
+      path.dirname(resolved),
+      path.join(path.dirname(resolved), '.agent'),
+    ]) {
+      if (!bases.includes(base)) bases.push(base);
+    }
+  };
+  for (const d of dirs) add(d);
   for (const base of bases) {
     for (const name of ['agent-project.yaml', 'agent-project.yml']) {
       const p = path.join(base, name);
@@ -235,7 +245,7 @@ async function runActionViaCli(cfg, { dir, action, id, reason, fields, feedback,
   // ファイル操作は状態ルート（dir）。CLI --root は本体側（二重リダイレクト防止）。
   const root = project.fromStateWorktree(path.resolve(dir));
   const base = ['--root', root];
-  const cfgPath = findProjectConfig(root);
+  const cfgPath = findProjectConfig(root, dir);
   if (cfgPath) base.push('--config', cfgPath);
   let args;
   if (action === 'approve') args = ['approve', id, '--reason', reason, ...base];
@@ -320,7 +330,7 @@ async function requestReplan(cfg, { dir, reason }) {
     const command = (cfg.projects && cfg.projects.command) || 'agent-project';
     const root = project.fromStateWorktree(path.resolve(dir));
     const args = ['replan', '--reason', why, '--root', root];
-    const cfgPath = findProjectConfig(root);
+    const cfgPath = findProjectConfig(root, dir);
     if (cfgPath) args.push('--config', cfgPath);
     const cwd = cfgPath ? path.dirname(cfgPath) : root;
     const res = await runProjectCli(command, args, 60000, cwd);
@@ -366,12 +376,16 @@ function requestLifecycle(cfg, { dir, action, reason }) {
 async function startProject(cfg, { dir }) {
   const command = (cfg.projects && cfg.projects.command) || 'agent-project';
   const root = project.fromStateWorktree(path.resolve(dir));
+  const cfgPath = findProjectConfig(root, dir);
+  const args = ['start', '--root', root];
+  if (cfgPath) args.push('--config', cfgPath);
+  const cwd = cfgPath ? path.dirname(cfgPath) : root;
   try {
-    const res = await runProjectCli(command, ['start', '--root', root], 120000);
+    const res = await runProjectCli(command, args, 120000, cwd);
     return { ...res, via: 'cli' };
   } catch (err) {
     // CLI が無い/失敗 → 人が本体マシンで打つべきコマンドをそのまま返す（コピーして実行できる）
-    err.manualCommand = `${command} start --root ${root}`;
+    err.manualCommand = `${command} ${args.map(quote).join(' ')}`;
     throw err;
   }
 }
@@ -385,5 +399,6 @@ module.exports = {
   requestReplan,
   requestLifecycle,
   startProject,
+  findProjectConfig,
   DECISION_MARKER,
 };

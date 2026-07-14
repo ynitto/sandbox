@@ -7,6 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard / agent-project: Bugbot PR コメント対応
+
+- **startProject が --config / cwd を付けていなかった** — findProjectConfig と揃える。
+- **findProjectConfig が状態 worktree 側 yaml を見落としていた** — dir と fromStateWorktree の両方を探索。
+- **cmd_revise が offloaded 以外の flow_run（sync doing）を detach しなかった** —
+  approve と同じく flow_run があれば切り離す（dashboard cancel→revise 向け）。
+
 ### agent-flow / agent-project / agent-dashboard: Set4 integration — CONVERGED
 
 individual → integration で Set4 まで実施。手つなぎの新規バグは見当たらず停止。残差のみ:

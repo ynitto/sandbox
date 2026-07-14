@@ -368,7 +368,12 @@ def cmd_revise(cfg: Config, tid: str, fields: dict, feedback: str, reason: str) 
 
     status = t.norm_status()
     doing = status == "doing" and _claim_fresh(cfg, tid)
-    offline = status == "offloaded"
+    # approve / feedback / _block と同じ: flow_run があれば status によらず切り離す。
+    # dashboard cancel→revise は sync 待ちの doing（flow_run ピン）でも来る。
+    detached = False
+    if status == "offloaded" or t.get("flow_run"):
+        detach_flow_run(cfg, t, reason or fb[:120] or "revise により委譲から切り離し")
+        detached = True
     # rev は act 試行の世代番号（req_id に載る）。実行中の古い run に次の試行が
     # 合流しないよう、revise のたびに上げて新しい run を強制する。
     t.set("rev", int(str(t.get("rev", "0") or "0")) + 1)
@@ -376,20 +381,15 @@ def cmd_revise(cfg: Config, tid: str, fields: dict, feedback: str, reason: str) 
     if doing:
         t.set("revised", _now_ts())     # 実行側が settle 時に検知して積み直す（結果は確定しない）
         disp = "実行中のため現在の試行は確定せず、修正内容で積み直されます"
-    elif offline:
-        # daemon へ委譲中: 旧 run を cancel して切り離し、ready へ。放置すると二重書き込み。
-        detach_flow_run(cfg, t, reason or fb[:120] or "revise により委譲から切り離し")
-        release_claim(cfg, t)
-        clear_needs_file(cfg, tid)
-        t.status = "ready"
-        disp = "委譲中の実行を中止し ready に積み直しました"
-    elif status in ("blocked", "review", "doing"):   # doing でも実行者不在（stale claim）はここ
+    elif detached or status in ("blocked", "review", "doing"):
+        # detached（offloaded / flow_run）か、doing でも実行者不在（stale claim）
         release_claim(cfg, t)            # 残骸クレームの掃除（無ければ no-op）
         clear_needs_file(cfg, tid)
         if status == "review":
             autonomy_record(cfg, t, clean=False)     # 検収からの修正＝差し戻し（手戻り）
         t.status = "ready"
-        disp = "ready に積み直しました"
+        disp = ("委譲中の実行を中止し ready に積み直しました" if detached
+                else "ready に積み直しました")
     persist_task(cfg, t)
     affects = "; ".join(changes)
     dr = append_decision(cfg, tid, cfg.actor, context=f"{tid}（{t.title}）を人が修正（revise）",
@@ -398,7 +398,7 @@ def cmd_revise(cfg: Config, tid: str, fields: dict, feedback: str, reason: str) 
                          learn=(t.title, fb) if fb else None)
     append_journal(cfg.journal, f"revise: {tid} — {affects}"
                    + ("（実行中→積み直し予約）" if doing
-                      else ("（offload 切り離し）" if offline else "")))
+                      else ("（委譲切り離し）" if detached else "")))
     print(f"{dr}: {tid} を修正しました（{affects}）。" + (disp and f"{disp}。"))
     _print_impact_note(tasks, tid)     # 依存先（after 逆辺・推移）を提示＝変更の影響範囲を人が辿れる
     return 0

@@ -2438,6 +2438,35 @@ class TestRevise(unittest.TestCase):
             self.assertEqual(meta["status"], "canceled")
             self.assertFalse((run_dir / "waits" / "n1.json").exists())
 
+    def test_revise_doing_with_flow_run_detaches(self):
+        """dashboard cancel→revise: sync 待ち doing＋flow_run でも detach（approve と同契約）。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "backlog").mkdir()
+            (d / "backlog" / "T1.md").write_text(
+                "## T1: x\n- status: doing\n- verify: true\n"
+                "- flow_run: run-sync\n- flow_loc: local\n- rev: 0\n- retries: 0\n",
+                encoding="utf-8")
+            c = cfg_for(d)
+            km.ensure_dirs(c)
+            # 新鮮クレーム＝実行中 doing。これで revised 経路に入りつつ flow_run detach も走る。
+            claim = d / "claims" / "T1.lock"
+            claim.parent.mkdir(parents=True, exist_ok=True)
+            claim.write_text(json.dumps({"pid": os.getpid(), "host": socket.gethostname(),
+                                         "ts": time.time(), "id": "T1"}), encoding="utf-8")
+            run_dir = c.bus / "runs" / "run-sync"
+            run_dir.mkdir(parents=True)
+            (run_dir / "meta.json").write_text(
+                json.dumps({"status": "running", "request": "x"}), encoding="utf-8")
+            rc = km.cmd_revise(c, "T1", {}, "cancel sync", "agent-dashboard が run をキャンセル")
+            self.assertEqual(rc, 0)
+            t = km.load_tasks(c.backlog)[0]
+            self.assertIsNone(t.get("flow_run"), "flow_run を外す")
+            meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+            self.assertEqual(meta["status"], "canceled")
+            # fresh doing → revised 予約も残る（settle で積み直し）
+            self.assertIsNotNone(t.get("revised"))
+
     def test_approve_offloaded_detaches_and_requeues(self):
         # 委譲中の approve（CLI/commands）: flow を止めてから ready（二重書き込み防止）
         with tempfile.TemporaryDirectory() as d:
