@@ -1,9 +1,9 @@
 # agent-* ツール改称（クローン方針）設計書
 
 > 作成日: 2026-07-14
-> 関連: `tools/agent-project/`, `tools/agent-flow/`, `tools/agent-dashboard/`,
-> `docs/designs/agent-project-design.md`, `docs/designs/agent-flow-design.md`,
-> `.github/skills/agent-project/`, `.github/skills/agent-flow/`
+> 関連: `tools/agent-project/`, `tools/agent-flow/`, `tools/agent-loop/`, `tools/agent-dashboard/`,
+> `docs/designs/agent-*-design.md`,
+> `.github/skills/agent-project/`, `.github/skills/agent-flow/`, `.github/skills/agent-loop-messaging/`
 
 ---
 
@@ -17,6 +17,7 @@
 | `kiro-project` | `agent-project` | 単一プロジェクトの自律バックログ制御層 |
 | `kiro-flow` | `agent-flow` | 分散 Dynamic Workflow 実行層 |
 | `kiro-projects-viewer` | `agent-dashboard` | 複数プロジェクトの可視化・操作 GUI |
+| `kiro-loop` | `agent-loop` | tmux 上のエージェント CLI 定期駆動ループ |
 
 旧系統は後方互換・参照用としてリポジトリ内に残す。新機能・設計更新は新系統へ寄せる。
 
@@ -25,13 +26,14 @@
 - 既存運用（設定パス・ロック・状態ブランチ・インストーラ）を壊さない。
 - 新旧を並べて比較・段階移行できる。
 - 設計書もクローンし、それぞれが自系統の正典を持つ。
+- **モジュール分解は改称後のみ行う**（旧 `kiro-*` は分解しない。新 `agent-*` 側で断片パッケージ化する）。
 
 ## 3. 名称対応表（プログラム内）
 
 | 種別 | 旧 | 新 |
 |------|----|----|
 | ツールディレクトリ | `tools/kiro-*` | `tools/agent-*` / `tools/agent-dashboard` |
-| Python パッケージ | `kiro_project` / `kiro_flow` | `agent_project` / `agent_flow` |
+| Python パッケージ | （旧は単一/既存のまま） | `agent_project` / `agent_flow` / `agent_loop` |
 | CLI / エントリ | `kiro-*.py` | `agent-*.py` |
 | 設定ファイル名 | `kiro-*.yaml` | `agent-*.yaml` |
 | 設定探索ホーム | `.kiro/` / `~/.kiro/` | `.agent/` / `~/.agent/`（skills/agents は `.kiro` も継続探索） |
@@ -47,7 +49,7 @@
 **維持するもの**（製品・共有インフラ）:
 
 - `kiro-cli`（エージェント CLI 実装の一種）
-- `kiro-loop` およびその他独立ツール
+- （旧系統として残置する）`kiro-loop` / `kiro-project` / `kiro-flow` / `kiro-projects-viewer`
 - `$KIRO_AGENTS_DIR` / `$KIRO_STATE_HOME`（複数ツール共有）
 - `~/.kiro/agents`・`~/.kiro/skills`（共有定義の探索先として併用）
 
@@ -59,6 +61,7 @@
 | `kiro-flow-design.md` | `agent-flow-design.md` |
 | `kiro-flow-retry-inheritance-design.md` | `agent-flow-retry-inheritance-design.md` |
 | `docs/plans/*kiro-projects-viewer*` | `docs/plans/*agent-dashboard*` |
+| `kiro-loop-*-design.md` / `DESIGN.md` | `agent-loop-*-design.md` 等 |
 
 旧設計書は削除しない。新設計書ヘッダに由来（クローン元）を明記する。
 
@@ -67,6 +70,7 @@
 ```bash
 bash tools/agent-flow/install.sh
 bash tools/agent-project/install.sh
+bash tools/agent-loop/install.sh
 # GUI
 cd tools/agent-dashboard && npm start
 ```
@@ -77,4 +81,4 @@ cd tools/agent-dashboard && npm start
 
 - 旧ツール・旧設計書の削除
 - 稼働中プロジェクト状態（`.kiro-project`）の自動移行
-- `kiro-cli` / `kiro-loop` の改称
+- `kiro-cli` の改称（エージェント CLI 製品名は維持）
