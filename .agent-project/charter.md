@@ -9,16 +9,16 @@
 - agentによる自律開発が出来ること
 
 ## constraints
-- kiro-project/kiro-flowをエンジンとして使用する
-- kiro-projects-viewerをフロントエンドとして使用する
+- agent-project/agent-flowをエンジンとして使用する
+- agent-dashboardをフロントエンドとして使用する
 
 ## assumptions
 - 人による操作や確認を最小限にする
 - 繰り返し・再実行によって試行錯誤できる
 
 ## deliverables
-- kiro-project/kiro-flow ソースコード
-- kiro-projects-viewer ソースコード
+- agent-project/agent-flow ソースコード
+- agent-dashboard ソースコード
 - 設計書・ドキュメント
 
 ## repos
