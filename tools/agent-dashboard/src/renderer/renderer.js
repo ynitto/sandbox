@@ -3560,7 +3560,10 @@ function renderFlowDetail() {
   const isStalled = run.alive === false && run.status !== 'done';
   const canRetry = run.status === 'failed' || run.status === 'canceled' || isStalled;
   const remainCount =
-    failedCount + ((run.counts && run.counts.pending) || 0) + ((run.counts && run.counts.waiting) || 0);
+    failedCount +
+    ((run.counts && run.counts.pending) || 0) +
+    ((run.counts && run.counts.waiting) || 0) +
+    ((run.counts && run.counts.parked) || 0);
   const partial = canRetry && doneCount > 0;
   const resubmitLabel = partial
     ? `↻ 失敗した工程だけやり直す（残り ${remainCount} 件）`
@@ -3994,12 +3997,16 @@ async function cancelFlowRun() {
 async function deleteFlowRun() {
   const run = state.flowRun && state.flowRun.run;
   if (!run) return;
+  // canceled は終端。done/failed 以外を一律「応答なし」と言うと誤り。
   const warn =
-    run.status !== 'done' && run.status !== 'failed'
+    !TERMINAL_RUN_STATES.has(run.status) && run.alive === false
       ? '\nこの実行はまだ終了していません（応答なし）。削除すると自動での再開もできなくなります。'
       : '';
+  const trashHint = run.archived
+    ? 'アーカイブのスナップショットを削除します。'
+    : '実行データをゴミ箱へ移動します。';
   const yes = await confirmDialog(
-    `この実行（${run.runId}）を削除します。\n実行データをゴミ箱へ移動します。${warn}\nよろしいですか？`
+    `この実行（${run.runId}）を削除します。\n${trashHint}${warn}\nよろしいですか？`
   );
   if (!yes) return;
   const ok = await guard('実行の削除', async () => {

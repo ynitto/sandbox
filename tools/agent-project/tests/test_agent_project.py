@@ -2307,6 +2307,24 @@ class TestRevise(unittest.TestCase):
             self.assertEqual(t.title, "即やり直し")
             self.assertFalse(lock.exists())
 
+    def test_revise_offloaded_detaches_and_requeues(self):
+        # 委譲中の revise: 古い flow_run の結果で settle されないよう切り離して ready へ
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "backlog").mkdir()
+            (d / "backlog" / "T1.md").write_text(
+                "## T1: x\n- status: offloaded\n- verify: true\n"
+                "- flow_run: run-old\n- flow_loc: daemon\n- rev: 0\n",
+                encoding="utf-8")
+            c = cfg_for(d)
+            km.ensure_dirs(c)
+            rc = km.cmd_revise(c, "T1", {"title": "方針変更"}, "委譲中に修正", "")
+            self.assertEqual(rc, 0)
+            t = km.load_tasks(c.backlog)[0]
+            self.assertEqual(t.status, "ready")
+            self.assertIsNone(t.get("flow_run"))
+            self.assertEqual(str(t.get("rev")), "1")
+
     def test_midpass_command_applies_before_next_task(self):
         # パス途中の commands/ ドロップが、後続タスクの実行前に取り込まれること
         with tempfile.TemporaryDirectory() as d:
@@ -7149,6 +7167,22 @@ class TestAsyncOffload(unittest.TestCase):
             self.assertEqual(t.norm_status(), "ready")
             self.assertEqual(t.retries, 0, "中止はリトライ消費なし")
             self.assertFalse(t.get("flow_run"))
+            self.assertEqual(t.get("last_run"), "run-T1", "回収時に last_run を残す")
+
+    def test_offload_pins_last_run(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1")
+            cfg = self._cfg(d)
+            t = km._load_task_file(cfg, "T1")
+            with mock.patch.object(km, "_flow_result_once", return_value=(False, False, "")):
+                with mock.patch.object(km.subprocess, "run",
+                                       return_value=subprocess.CompletedProcess(
+                                           ["x"], 0, stdout="", stderr="")):
+                    pend, msg = km._act_offload(t, cfg, use_git=False)
+            self.assertIsInstance(pend, km._Pending)
+            fresh = km._load_task_file(cfg, "T1")
+            self.assertEqual(fresh.get("last_run"), pend.run_id)
 
     def test_has_work_true_for_offloaded(self):
         with tempfile.TemporaryDirectory() as d:

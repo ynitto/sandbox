@@ -5440,10 +5440,17 @@ class CancelTests(unittest.TestCase):
     def test_orch_check_canceled(self):
         args = argparse.Namespace(run_id="run1")
         self.assertFalse(kf._orch_check_canceled(self.bus, args, "orch"))
+        self.bus.write_wait("n1", {"id": "n1", "wait_lease_until": time.time() + 1000,
+                                   "issue": {"iid": 1}})
         self.bus.cancel_request("run1", "host", "止める")
         self.assertTrue(kf._orch_check_canceled(self.bus, args, "orch"))
         self.assertEqual(self.bus.run_meta("run1").get("status"), "canceled")
+        self.assertIsNone(self.bus.read_wait("n1"), "orch 終端時に waits も消す")
 
+    def test_set_status_refuses_to_resurrect_terminal(self):
+        self.bus.mark_canceled("run1", "止める")
+        self.bus.set_status("running")
+        self.assertEqual(self.bus.run_meta("run1").get("status"), "canceled")
 
 class GitlabDeferPollTests(unittest.TestCase):
     """gitlab executor: deferral（park）・poll・on_cancel の追加契約。"""

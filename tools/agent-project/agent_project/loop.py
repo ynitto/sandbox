@@ -199,6 +199,8 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
             continue
         gb = git_change_baseline(cfg.workdir)   # 完了時点の基準（remote/daemon 委譲は local 差分なし）
         venv = {"KIRO_BASE_REV": gb[0]} if gb[0] else None
+        # settle 前に last_run を残す（delivery / protect / resume）。flow_run を落とす前に移す。
+        _pin_last_run(cfg, task, run_id)
         task.drop("flow_run", "flow_loc")
         task.status = "doing"
         persist_task(cfg, task)

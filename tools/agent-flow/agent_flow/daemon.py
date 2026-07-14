@@ -86,10 +86,15 @@ def cmd_daemon(args) -> int:
         # 後始末）。これで承認待ちで park 中の run も、暴走中の run も、run スコープで恒久停止できる。
         for rid in bus.list_cancels():
             meta = bus.run_meta(rid)
-            if meta and meta.get("status") in TERMINAL:
-                continue                              # 既に終端（処理済み）→ 何もしない
             info = bus.cancel_info(rid)
             reason = info.get("reason") or "cancel 指示"
+            # 既に終端でも waits 掃除は行う（orchestrator が先に mark_canceled した場合、
+            # ここをスキップすると park が残り service_waits が動き続ける）。
+            if meta and meta.get("status") in TERMINAL:
+                cleared = bus.clear_waits_for_run(rid)
+                if cleared:
+                    bus.sync_push(f"cancel cleanup waits {rid}")
+                continue
             if info.get("close_issues"):
                 _apply_on_cancel(bus, args, rid)      # waits を消す前にイシューを後始末
             bus.clear_waits_for_run(rid)

@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-flow / agent-project / agent-dashboard: 個別のキャンセル・再開まわりを修正
+
+- **agent-flow: cancel 後も worker が pending を claim し続けた** — 終端判定を「仕事が無いとき」だけにしていた。TERMINAL なら claim 前に退出。
+- **agent-flow: orchestrator の cancel が waits を残した** — daemon は既終端だと cancel 本体をスキップするため park が残った。orch 側で clear_waits、daemon も終端時に waits 掃除。
+- **agent-flow: `set_status` が終端→running へ復活できた** — canceled 後の plan/resume 上書きを拒否。
+- **agent-project: submit/offload が `last_run` を書かなかった** — settle/resume/delivery が run を見失う。全 act 経路と reap で pin。
+- **agent-project: `revise` が offloaded を無視した** — 委譲中の修正が古い結果で settle され得た。flow_run を切り離して ready へ。
+- **agent-dashboard: `readRun` がブランチ逆引きの taskId を載せていなかった** — 旧形式 run の助言・導線が外れる。
+- **agent-dashboard: canceled 削除確認が「応答なし」と誤表示** — 終端集合で判定。parked を残り件数に含める。
+
 ### agent-dashboard / agent-project / agent-flow: 連携まわりの回帰バグを修正
 
 - **agent-dashboard: `taskIdOfRun` が改名後の `ap/<task-id>` ブランチを見ていなかった** —

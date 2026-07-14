@@ -145,10 +145,12 @@ def _finalize_run(bus, args, iteration: int, failure: "str | None" = None) -> No
 
 def _orch_check_canceled(bus: Bus, args, who: str) -> bool:
     """cancel マーカーがあれば run を canceled に終端化して True を返す（orchestrator の停止用）。
-    orchestrator が set_status("running") で canceled を上書きし返すのを防ぐため、ループの要所で確認する。"""
+    waits も掃除して park の再ポーリングを止める（daemon は既に終端だと cancel 本体をスキップする
+    ため、ここで消さないと waits が残り service_waits が動き続ける）。"""
     if not bus.is_canceled_requested(args.run_id):
         return False
     reason = bus.cancel_info(args.run_id).get("reason") or "cancel 指示"
+    bus.clear_waits_for_run(args.run_id)
     bus.mark_canceled(args.run_id, reason)
     bus.event(who, "canceled", run=args.run_id, reason=reason)
     bus.sync_push(f"cancel run {args.run_id}: {reason}")

@@ -70,7 +70,14 @@ class Bus:
 
     # --- メタ / グラフ ---
     def set_status(self, status: str) -> None:
+        """run の進捗 status を書く。既に終端（done/failed/canceled）なら上書きしない。
+
+        cancel / 完了後に orchestrator が set_status("running") を呼んでも、人が止めた／確定済みの
+        終端を resurrect しない（_orch_check_canceled と resume/plan 経路の競合を防ぐ）。"""
         meta = read_json(self.meta_path) or {}
+        cur = meta.get("status")
+        if cur in TERMINAL and status != cur:
+            return
         meta["status"] = status
         meta["updated_at"] = now_iso()
         write_json_atomic(self.meta_path, meta)

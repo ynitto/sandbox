@@ -175,6 +175,18 @@ def daemon_running(cfg: "Config", use_git: bool = False) -> bool:
     return _pid_alive(_lock_pid(p))
 
 
+def _pin_last_run(cfg: "Config", task: Task, run_id: str) -> None:
+    """この試行で使った run-id をタスクへ残す（再開判断・viewer 突合・作業ブランチ解決用）。
+    同期 run 以外（submit/offload）でも必ず書く。書いていないと offload 回収後に last_run が無く、
+    delivery / protect / resume が状態 worktree のノイズ差分を見てしまう。"""
+    rid = str(run_id or "").strip()
+    if not rid:
+        return
+    task.drop("last_run")
+    task.extra.append(("last_run", rid))
+    persist_task(cfg, task)
+
+
 def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, str]":
     """agent-flow run で都度起動（同期実行）。daemon 不要。
 
@@ -183,9 +195,7 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
     rid = run_id_for(cfg, task)
     resuming = rid == str(task.get("last_run") or "").strip()
     cmd = build_agent_flow_cmd(task, cfg, use_git, run_id=rid)
-    task.drop("last_run")
-    task.extra.append(("last_run", rid))
-    persist_task(cfg, task)
+    _pin_last_run(cfg, task, rid)
     if resuming:
         append_journal(cfg.journal,
                        f"run 再開: {task.id} は {rid} の失敗ノードだけをやり直します（done は温存）")
@@ -304,6 +314,7 @@ def _act_offload(task: Task, cfg: "Config", use_git: bool) -> "tuple":
     gitlab の長期委譲でもループをブロックせず次のタスクへ進める（結果は次パスで回収する）。"""
     base = _kf_base(cfg, use_git) + _workspace_cmd_args(cfg, task) + _reference_cmd_args(cfg, task)
     run_id = _submit_req_id(task, cfg)
+    _pin_last_run(cfg, task, run_id)
     term, ok, msg = _flow_result_once(cfg, use_git, run_id)
     if not term:                                  # 未作成/実行中: 未作成なら submit（作成済みは冪等 no-op）
         prev = _prev_req_id(task, cfg)
@@ -326,11 +337,12 @@ def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
     """daemon があるとき: submit して、その run が終端に達するまで待つ（verify は待機後）。
     req_id は決定的（_submit_req_id）——リブート後の再実行は既存 run に合流する。"""
     base = _kf_base(cfg, use_git) + _workspace_cmd_args(cfg, task) + _reference_cmd_args(cfg, task)
+    run_id = _submit_req_id(task, cfg)
+    _pin_last_run(cfg, task, run_id)
     prev = _prev_req_id(task, cfg)   # リトライ: 先行 run から引き継ぎ＆掃除させる
     inherit = ["--inherit-from", prev] if prev else []
     try:
-        sub = subprocess.run(base + ["--run-id", _submit_req_id(task, cfg),
-                                     "submit", build_request(task, cfg)] + inherit,
+        sub = subprocess.run(base + ["--run-id", run_id, "submit", build_request(task, cfg)] + inherit,
                              cwd=str(cfg.workdir),
                              timeout=60, capture_output=True, text=True)
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
@@ -338,9 +350,12 @@ def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
     if sub.returncode != 0:
         return (False, f"submit rc={sub.returncode}: {sub.stderr.strip()[:200]}")
     out = (sub.stdout or "").strip().splitlines()
-    run_id = out[0].strip() if out else ""
-    if not run_id:
+    got = out[0].strip() if out else ""
+    if not got:
         return (False, "run-id を取得できません")
+    if got != run_id:
+        _pin_last_run(cfg, task, got)
+        run_id = got
     # act_timeout=0（以下）はタイムアウト無効＝終端に達するまで待つ。gitlab 等の長時間委譲
     # （人のレビュー往復で数日かかりうる）で、待ち切れずに retry を空増やしする事故を防ぐ。
     deadline = (time.time() + cfg.act_timeout) if cfg.act_timeout > 0 else None

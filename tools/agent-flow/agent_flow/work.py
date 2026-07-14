@@ -60,17 +60,25 @@ def cmd_work(args) -> int:
         bus.sync_pull()
         status = bus.get_status()
 
-        candidate = pick_claimable(bus)
-        if candidate is None:
-            if status in TERMINAL and not args.keep_alive:
+        # 終端後は claim しない。canceled で waits が消えて pending に戻ったノードを
+        # 拾い直し、人が止めた run を進めてしまう事故を防ぐ（終端判定を「仕事が無いとき」
+        # だけにすると、claim 可能な残骸があると永遠に動き続ける）。
+        if status in TERMINAL:
+            if not args.keep_alive:
                 log(who, f"run が {status}。終了します。")
                 return 0
-            # デーモン起動の短命ワーカー: 仕事が無くなったら少し待って終了（オンデマンド）
-            if idle_exit and status not in (None,) and not args.keep_alive:
-                idle_polls += 1
-                if idle_polls >= 2:
-                    log(who, "claim 可能タスクが無いため終了します（idle-exit）。")
-                    return 0
+            time.sleep(args.poll)
+            continue
+
+        candidate = pick_claimable(bus)
+        if candidate is None:
+            if not args.keep_alive:
+                # デーモン起動の短命ワーカー: 仕事が無くなったら少し待って終了（オンデマンド）
+                if idle_exit and status not in (None,):
+                    idle_polls += 1
+                    if idle_polls >= 2:
+                        log(who, "claim 可能タスクが無いため終了します（idle-exit）。")
+                        return 0
             time.sleep(args.poll)
             continue
 

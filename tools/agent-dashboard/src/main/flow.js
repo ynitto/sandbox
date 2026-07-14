@@ -359,10 +359,13 @@ function readRun(runDir) {
 
   const status = String(meta.status || (finalJson ? 'done' : 'unknown'));
   const idParts = parseRunId(runId);
+  // 旧形式 run-id は parse だけでは taskId が無い。作業ブランチ ap/<task-id> から補う
+  // （流れ画面の助言・やり直し導線が inbox 落ちしないように）。
+  const taskId = idParts.taskId || taskIdOfRun(runId, meta);
   return {
     runId,
     status,
-    taskId: idParts.taskId, // 紐づくバックログタスク（req- 形式のときのみ）
+    taskId,
     retries: idParts.retries, // この試行のリトライ世代（req- 形式のときのみ）
     rev: idParts.rev, // 人の revise 世代（あれば）
     lineageId: idParts.lineageId, // 同一タスクのリトライ/リバイズを束ねる系統キー
@@ -491,7 +494,7 @@ function prepareRunDeletion(busDir, runId) {
   const status = String(meta.status || 'unknown');
   if (!TERMINAL.has(status) && runAlive(meta, Date.now() / 1000) === true) {
     throw new Error(
-      `run は実行中です（status=${status}）。終端（done/failed）または応答なしの run だけ削除できます`
+      `run は実行中です（status=${status}）。終端（done/failed/canceled）または応答なしの run だけ削除できます`
     );
   }
   return { runDir, status };
