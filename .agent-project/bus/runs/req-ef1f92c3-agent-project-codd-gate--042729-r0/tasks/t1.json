@@ -1,0 +1,6 @@
+{
+  "id": "t1",
+  "goal": "tools/agent-project の既存モジュール構成、.agent/agent-project.yaml のスキーマ（regression/intake 関連キーの位置と記法）、codd-gate CLI の実体（PATH 上の実行ファイル／リポジトリ内スクリプト／未導入）を調査し、検出方式・結線先・ルーティング挿入点を確定した調査メモを出力する",
+  "deps": [],
+  "kind": "work"
+}

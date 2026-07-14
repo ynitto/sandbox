@@ -1,0 +1,13 @@
+{
+  "id": "t4",
+  "who": "worker-1",
+  "status": "done",
+  "output": "t4の成果物を `bus/runs/.../artifacts/t4/` に出力しました。\n\n**差別化の切り口**: 対象2ファイルは既に main ブランチに実装・pass 済み（t1調査結果）であることを実地検証し、ゼロから書き直す他候補とは異なり、既存30分岐中で唯一未検証だった `resolve_codd_gate` の同梱パス解決分岐だけをピンポイントで追加する最小差分アプローチを取った。\n\n- `test_codd_gate_detect.py`: `resolve_codd_gate`（explicit → PATH → 同梱パスの3段解決）のうち「PATHには無いが同梱パスで発見」分岐のテストを1件追加（既存29件 + 1件 = 30件）\n- `test_codd_gate_routing.py`: 精読の結果、全分岐（相対解決・絶対フォールバック・vcwd無し・NAME=DIR組み立て・command()との合成）が既に網羅されており無変更で採用\n- 検証: `pytest` で30件全パス確認済み\n- 共有チェックアウトには書き込まず、専用worktreeを提供・検証後に返却済み\n\n範囲外の発見（docstring行番号の陳腐化、mr.py/model.pyの未結線）はreport.mdに申し送り事項として記録しました。",
+  "finished_at": "2026-07-14T19:42:30Z",
+  "artifacts": [
+    "artifacts/t4/report.md",
+    "artifacts/t4/test_codd_gate_detect.diff",
+    "artifacts/t4/test_codd_gate_detect.py",
+    "artifacts/t4/test_codd_gate_routing.py"
+  ]
+}

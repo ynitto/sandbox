@@ -21,3 +21,8 @@
 - 2026-07-15 04:28:55 plan-review 承認: agent-project-design-md-042729 → ready
 - 2026-07-15 04:28:55 commands 取り込み: approve agent-project-design-md-042729（viewer-approve-agent-project-design-md-042729-1784057324759.json）
 - 2026-07-15 04:28:55 === project 開始 v1 acceptance=2 ===
+- 2026-07-15 04:28:55 === agent-project 開始 tasks=6 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-15 04:28:55 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
+- 2026-07-15 04:28:55 警告: origin へ未 push のコミットが 1 件ある（main）。worker と verify は origin から clone するため、これらの成果は彼らから 見えない（ローカルでは通るのに verify が落ち続ける）。`git -C /Users/nitto/Workspace/sandbox push origin main` を検討すること
+- 2026-07-15 04:58:55 flow detach: agent-project-codd-gate--042729 の run req-ef1f92c3-agent-project-codd-gate--042729-r0 を canceled（agent-flow run タイムアウト（1800.0s））
+- 2026-07-15 04:58:56 cycle 1: agent-project-codd-gate--042729 NG 積み直し (1/2) — agent-flow run タイムアウト（1800.0s）

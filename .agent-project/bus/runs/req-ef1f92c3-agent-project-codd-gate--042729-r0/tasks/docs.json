@@ -1,0 +1,8 @@
+{
+  "id": "docs",
+  "goal": "設計書・ドキュメントに codd-gate 連携の有効化手順（yaml の regression_cmd/intake_cmd 設定）と、検出フォールバック（未導入時 usable=False で連携をスキップする挙動）を反映する",
+  "deps": [
+    "loop"
+  ],
+  "kind": "work"
+}

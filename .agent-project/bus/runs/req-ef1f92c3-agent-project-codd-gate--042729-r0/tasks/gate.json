@@ -1,0 +1,10 @@
+{
+  "id": "gate",
+  "goal": "統合前の敵対的検証: (a) yaml の regression_cmd/intake_cmd が完了条件の正規表現 '^[[:space:]]*regression_cmd:.*codd-gate verify --base' / '^[[:space:]]*intake_cmd:.*codd-gate tasks' に厳密一致するか、(b) PYTHONPATH=tools/agent-project で codd_gate_status が import でき detect_status().usable と command('verify','--base','HEAD') が真になるか、(c) テスト2本が pytest から収集・実行可能か、を反証的に潰して不一致箇所を具体的に指摘する",
+  "deps": [
+    "t2",
+    "t3",
+    "t4"
+  ],
+  "kind": "verify"
+}

@@ -1,0 +1,8 @@
+{
+  "id": "loop",
+  "goal": "完了条件の4コマンド（grep×2 / PYTHONPATH=tools/agent-project python3 -c の detect_status アサーション / pytest 2ファイル）を実行し、すべて終了コード0になるまで原因を特定して修正・再実行を反復する",
+  "deps": [
+    "synth"
+  ],
+  "kind": "verify"
+}

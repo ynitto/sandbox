@@ -1,0 +1,8 @@
+{
+  "id": "t2",
+  "goal": "tools/agent-project/codd_gate_status.py を実装する。detect_status() が usable フラグと command(subcmd, *args) を持つオブジェクトを返し、codd-gate の実行形態（PATH上のCLI / リポジトリ内スクリプト / 未導入）を自動判別する。未導入時は usable=False で例外を投げずフォールバックする",
+  "deps": [
+    "t1"
+  ],
+  "kind": "generate"
+}

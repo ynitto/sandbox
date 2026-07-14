@@ -1,0 +1,71 @@
+{
+  "strategy": {
+    "patterns": [
+      "fan-out-and-synthesize",
+      "adversarial-verification",
+      "loop-until-done"
+    ],
+    "parallelism": 3,
+    "review": true,
+    "reason": "[flow-planner] 成果物が「検出モジュール（Python）／yaml 結線＋ルーティング／テスト2本」の3系統に分かれ、共通の調査結果を前提に並列着手できるため fan-out-and-synthesize を軸に据える（並列数は成果物軸の3、[3,6] の下限で依存の絡まりを抑える）。完了条件が grep×2・detect_status アサーション・pytest の終了コード0という機械判定であり、特に regression_cmd / intake_cmd の正規表現に一致する厳密な字面が要るため、統合前に検証gateを置いて字面と import パス（PYTHONPATH=tools/agent-project）を潰す adversarial-verification が必須。さらに yaml の冪等な結線や未導入時 usable=False のフォールバックは一発で通る見込みが低く、4コマンドが全て0になるまで反復する loop-until-done で収束させる。この3点の組み合わせは migration-pipeline テンプレートと一致する。（粒度 coarse）"
+  },
+  "nodes": {
+    "t1": {
+      "goal": "tools/agent-project の既存モジュール構成、.agent/agent-project.yaml のスキーマ（regression/intake 関連キーの位置と記法）、codd-gate CLI の実体（PATH 上の実行ファイル／リポジトリ内スクリプト／未導入）を調査し、検出方式・結線先・ルーティング挿入点を確定した調査メモを出力する",
+      "deps": [],
+      "kind": "work"
+    },
+    "t2": {
+      "goal": "tools/agent-project/codd_gate_status.py を実装する。detect_status() が usable フラグと command(subcmd, *args) を持つオブジェクトを返し、codd-gate の実行形態（PATH上のCLI / リポジトリ内スクリプト / 未導入）を自動判別する。未導入時は usable=False で例外を投げずフォールバックする",
+      "deps": [
+        "t1"
+      ],
+      "kind": "generate"
+    },
+    "t3": {
+      "goal": ".agent/agent-project.yaml に regression_cmd（codd-gate verify --base ... の字面を含む）と intake_cmd（codd-gate tasks ... の字面を含む）を冪等に追記・結線し、agent-project 側の regression/intake 実行経路が detect_status() の検出結果に応じてコマンドを組み立てるルーティングを実装する",
+      "deps": [
+        "t1"
+      ],
+      "kind": "generate"
+    },
+    "t4": {
+      "goal": "tools/agent-project/tests/test_codd_gate_detect.py（導入済み／未導入／パス差異の検出ユニットテスト）と tools/agent-project/tests/test_codd_gate_routing.py（yaml の結線からコマンド組み立てまでのルーティングテスト）を作成する",
+      "deps": [
+        "t1"
+      ],
+      "kind": "generate"
+    },
+    "gate": {
+      "goal": "統合前の敵対的検証: (a) yaml の regression_cmd/intake_cmd が完了条件の正規表現 '^[[:space:]]*regression_cmd:.*codd-gate verify --base' / '^[[:space:]]*intake_cmd:.*codd-gate tasks' に厳密一致するか、(b) PYTHONPATH=tools/agent-project で codd_gate_status が import でき detect_status().usable と command('verify','--base','HEAD') が真になるか、(c) テスト2本が pytest から収集・実行可能か、を反証的に潰して不一致箇所を具体的に指摘する",
+      "deps": [
+        "t2",
+        "t3",
+        "t4"
+      ],
+      "kind": "verify"
+    },
+    "synth": {
+      "goal": "検出モジュール・yaml結線/ルーティング・テストの3成果物と gate の指摘を統合し、import パス・コマンド字面・yaml インデントの不整合を解消した一貫する変更セットにまとめる",
+      "deps": [
+        "gate"
+      ],
+      "kind": "synthesize"
+    },
+    "loop": {
+      "goal": "完了条件の4コマンド（grep×2 / PYTHONPATH=tools/agent-project python3 -c の detect_status アサーション / pytest 2ファイル）を実行し、すべて終了コード0になるまで原因を特定して修正・再実行を反復する",
+      "deps": [
+        "synth"
+      ],
+      "kind": "verify"
+    },
+    "docs": {
+      "goal": "設計書・ドキュメントに codd-gate 連携の有効化手順（yaml の regression_cmd/intake_cmd 設定）と、検出フォールバック（未導入時 usable=False で連携をスキップする挙動）を反映する",
+      "deps": [
+        "loop"
+      ],
+      "kind": "work"
+    }
+  },
+  "iteration": 0
+}

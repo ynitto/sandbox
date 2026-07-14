@@ -1,0 +1,20 @@
+diff --git a/tools/agent-project/tests/test_codd_gate_detect.py b/tools/agent-project/tests/test_codd_gate_detect.py
+index a3706fbb..05571aa3 100644
+--- a/tools/agent-project/tests/test_codd_gate_detect.py
++++ b/tools/agent-project/tests/test_codd_gate_detect.py
+@@ -63,6 +63,15 @@ class TestCoddGateDetectResolution(unittest.TestCase):
+             result = detect.resolve_codd_gate(which=which)
+         self.assertIsNone(result)
+ 
++    def test_resolve_codd_gate_found_via_bundled_path_when_path_lookup_fails(self):
++        # PATH（which）では見つからないが、tools/codd-gate/codd-gate.py の同梱パスは実在するケース
++        # （3段解決連鎖の中間分岐——「found via PATH」「absent（両方無し）」の間の唯一の未検証経路）。
++        which = lambda _name: None
++        expected_local = detect.Path(detect.__file__).resolve().parent.parent / "codd-gate" / "codd-gate.py"
++        with mock.patch.object(detect.Path, "exists", return_value=True):
++            result = detect.resolve_codd_gate(which=which)
++        self.assertEqual(result, [sys.executable, str(expected_local)])
++
+ 
+ class TestCoddGateDetectVersion(unittest.TestCase):
+     """get_version — バージョン取得は失敗をすべて「不明」（None）に倒す。"""

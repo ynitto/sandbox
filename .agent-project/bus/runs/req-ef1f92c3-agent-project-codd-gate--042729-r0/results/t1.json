@@ -1,0 +1,10 @@
+{
+  "id": "t1",
+  "who": "worker-1",
+  "status": "done",
+  "output": "調査メモを `bus/runs/req-ef1f92c3-agent-project-codd-gate--042729-r0/artifacts/t1/investigation-memo.md` に出力しました。\n\n## 成果サマリー\n\n**(a) 成果そのもの**\n- `tools/agent-project` のモジュール構成（`agent_project/` パッケージ＋独立モジュール `codd_gate_detect.py`/`codd_gate_status.py`/`codd_gate_routing.py`/`codd_gate_base.py`/`codd_gate_debt.py`）を確認\n- `.agent/agent-project.yaml` のスキーマと現状（regression/intake 関連キーは未設定、記法は `agent-project.yaml.example` が正典）\n- codd-gate CLI の実体は **PATH 上の実行ファイル**（`/Users/nitto/.local/bin/codd-gate`、実体あり、`--help` 動作確認済み）\n- 検出方式（`detect_status()`）とルーティング補助モジュールは**既に実装・コミット済み**であることが判明。実行確認したところ、完了条件4コマンドのうち python アサーションと pytest 2本は**無変更で既に exit 0**\n- 結線先・ルーティング挿入点を特定: regression は `agent_project/mr.py:437-438`、intake は `agent_project/model.py:463-`（呼び出し元 `mr.py:529`/`loop.py:576`）\n\n**(b) 検証内容と結果**\n- `PYTHONPATH=tools/agent-project python3 -c '...detect_status()...'` → 例外なし、`usable=True`\n- `pytest tests/test_codd_gate_detect.py tests/test_codd_gate_routing.py -q` → 29 passed\n- 上記2つは読み取り専用実行（対象リポジトリへの書き込みなし）\n\n**(c) 採用した前提・範囲外の発見**\n- 自 worktree（`.agent-project` sparse checkout）には対象ファイルが無いため、実体のある `/Users/nitto/Workspace/sandbox`（main ブランチ）を読み取り専用で調査した\n- タスクグラフ（t1→t2/t3/t4→gate→synth→loop）を確認し、渡された完了条件は run 全体の DoD であり t1 単体の完了条件ではないと判断、実装はせず調査に徹した\n- 範囲外の発見: 調査対象の docstring 中の行番号参照が旧構成のまま陳腐化している点、および `/Users/nitto/Workspace/sandbox` が本件と無関係な大規模差分を抱えた共有チェックアウトである点（t2/t3/t4 への申し送り事項としてメモに記載）",
+  "finished_at": "2026-07-14T19:37:17Z",
+  "artifacts": [
+    "artifacts/t1/investigation-memo.md"
+  ]
+}
