@@ -352,13 +352,12 @@ def cmd_revise(cfg: Config, tid: str, fields: dict, feedback: str, reason: str) 
         t.set("revised", _now_ts())     # 実行側が settle 時に検知して積み直す（結果は確定しない）
         disp = "実行中のため現在の試行は確定せず、修正内容で積み直されます"
     elif offline:
-        # daemon へ委譲中: flow_run を切り、ready へ戻す。回収側が古い結果で settle しない。
-        # （rev 上げで次の submit は新しい req_id＝古い offload run に合流しない）
-        t.drop("flow_run", "flow_loc")
+        # daemon へ委譲中: 旧 run を cancel して切り離し、ready へ。放置すると二重書き込み。
+        detach_flow_run(cfg, t, reason or fb[:120] or "revise により委譲から切り離し")
         release_claim(cfg, t)
         clear_needs_file(cfg, tid)
         t.status = "ready"
-        disp = "委譲中の実行を切り離し ready に積み直しました"
+        disp = "委譲中の実行を中止し ready に積み直しました"
     elif status in ("blocked", "review", "doing"):   # doing でも実行者不在（stale claim）はここ
         release_claim(cfg, t)            # 残骸クレームの掃除（無ければ no-op）
         clear_needs_file(cfg, tid)

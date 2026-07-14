@@ -421,6 +421,10 @@ def cmd_reject(cfg: Config, tid: str, reason: str) -> int:
         print(f"エラー: {tid} は実行中（doing）です。先に revise で止めるか完了を待ってください。",
               file=sys.stderr)
         return 2
+    # 委譲中も live work：先に flow を止めてから廃止する（放置＝二重書き込み）
+    if t.norm_status() == "offloaded" or t.get("flow_run"):
+        detach_flow_run(cfg, t, reason[:120] or "reject により委譲から切り離し")
+        persist_task(cfg, t)
     release_claim(cfg, t)
     # 影響範囲（after 逆辺・推移）: 依存先は前提を失うため proposed に戻して人の再審査へ
     downs = dependents_of(tasks, tid)

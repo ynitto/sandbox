@@ -187,6 +187,58 @@ def _pin_last_run(cfg: "Config", task: Task, run_id: str) -> None:
     persist_task(cfg, task)
 
 
+def detach_flow_run(cfg: "Config", task: Task, reason: str = "") -> "str | None":
+    """委譲中（offloaded）の agent-flow run を切り離して止める（best-effort）。
+
+    revise / hold / reject でタスクを別方向へ進めるとき、旧 run を放置すると
+    ap/<task-id> へ二重書き込みし、reap も古結果を settle しうる。cancel マーカー＋
+    meta canceled＋waits 掃除は agent-flow cmd_cancel / dashboard cancelRun と同契約。
+    戻り値は止めた run-id（無ければ None）。"""
+    rid = str(task.get("flow_run") or "").strip()
+    task.drop("flow_run", "flow_loc")
+    if not rid:
+        return None
+    why = (reason or "agent-project: タスクを委譲から切り離し").strip()
+    bus = cfg.bus
+    cancels = bus / "inbox" / "cancels"
+    try:
+        cancels.mkdir(parents=True, exist_ok=True)
+        rec = {
+            "id": rid, "who": "agent-project", "reason": why,
+            "close_issues": False,
+            "requested_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        p = cancels / f"{rid}.json"
+        tmp = p.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(p)
+    except OSError:
+        pass
+    run_dir = bus / "runs" / rid
+    meta_path = run_dir / "meta.json"
+    try:
+        if meta_path.is_file():
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            st = str(meta.get("status") or "")
+            if st not in _FLOW_TERMINAL:
+                meta["status"] = "canceled"
+                meta["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                meta["cancel_reason"] = why
+                meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2),
+                                     encoding="utf-8")
+        waits = run_dir / "waits"
+        if waits.is_dir():
+            for f in list(waits.glob("*.json")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    append_journal(cfg.journal, f"flow detach: {task.id} の run {rid} を canceled（{why}）")
+    return rid
+
+
 def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, str]":
     """agent-flow run で都度起動（同期実行）。daemon 不要。
 

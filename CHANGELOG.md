@@ -7,6 +7,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-project: offloaded タスク切り離し時に flow run を cancel
+
+- **revise / hold / reject が委譲中 run を放置していた** — `flow_run` だけ落として agent-flow は走り続け、
+  `ap/<task-id>` へ二重書き込みし得た。`detach_flow_run` で cancel マーカー＋meta canceled＋waits 掃除
+  （dashboard / agent-flow cmd_cancel と同契約）。
+
 ### agent-project: 隣接 agent-flow の解決パスを修正
 
 - **パッケージ分割後の `resolve_agent_flow` が誤った相対パスを見ていた** —
