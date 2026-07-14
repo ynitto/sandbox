@@ -4447,6 +4447,19 @@ def cmd_orchestrate(args) -> int:
         bus.sync_push(f"heartbeat run {args.run_id}")
 
     heartbeat(force=True)      # 計画（LLM）は数十秒かかる。その前に張る。
+    # 計画が lease_window（下限 120s）を超えると run_is_orphaned が真になり、daemon 経由で
+    # ない直起動 orchestrate や心拍を引き継ぐ親が居ない経路で二重に adopt される。
+    # 計画中は短い間隔で heartbeat し続ける（終了後 stop）。
+    _plan_stop = threading.Event()
+
+    def _plan_hb() -> None:
+        while not _plan_stop.wait(max(lease_window / 3.0, 5.0)):
+            try:
+                heartbeat(force=True)
+            except Exception:  # noqa: BLE001 — 心拍失敗で計画自体を落とさない
+                pass
+
+    _plan_th = threading.Thread(target=_plan_hb, name="orch-plan-hb", daemon=True)
     graph = bus.read_graph()
 
     # 既存グラフがあれば計画をやり直さず再開（resume）
@@ -4458,7 +4471,12 @@ def cmd_orchestrate(args) -> int:
             bus.sync_push(f"resume run {args.run_id}")
     else:
         # 要求から 7 パターンの組み合わせと並列数を選び、初期グラフを形作る
-        strategy, tasks = _plan_strategy(args)
+        _plan_th.start()
+        try:
+            strategy, tasks = _plan_strategy(args)
+        finally:
+            _plan_stop.set()
+            _plan_th.join(timeout=2.0)
         graph = {"strategy": strategy,
                  "nodes": {t["id"]: _node_entry(t) for t in tasks},
                  "iteration": 0}
@@ -4735,6 +4753,19 @@ def _acquire_daemon_lock(args):
         except BlockingIOError:
             lock_file.close()
             return None
+    else:
+        # flock 非対応（Windows 等）: README の「PID 生存で singleton」契約を実装する。
+        # 既存ロックに生きた別 pid があれば取得を拒否（死んでいれば書き換えて引き継ぐ）。
+        try:
+            lock_file.seek(0)
+            raw = (lock_file.read() or "").strip()
+            if raw:
+                old = int(raw)
+                if old != os.getpid() and _pid_alive(old):
+                    lock_file.close()
+                    return None
+        except (ValueError, OSError):
+            pass
     lock_file.seek(0)
     lock_file.truncate()
     lock_file.write(str(os.getpid()))

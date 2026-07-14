@@ -2272,6 +2272,30 @@ class TestRevise(unittest.TestCase):
             self.assertIn("revise により積み直し", (d / "journal.md").read_text(encoding="utf-8"))
             self.assertEqual(list((d / "backlog").glob("*.md")), []) # 2回目で done
 
+    def test_revise_dead_owner_doing_requeues_immediately(self):
+        # 同一ホストの死んだ pid クレームは TTL を待たず「実行者不在」扱い → ready へ即積み直し。
+        # TTL 専用だと最大 ~41 分（act_timeout=0 なら永久）revised 予約だけして進まない。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="doing", verify="true")
+            c = cfg_for(d)
+            km.ensure_dirs(c)
+            dead = subprocess.Popen([sys.executable, "-c", "pass"])
+            dead.wait()
+            lock = d / "claims" / "T1.lock"
+            lock.parent.mkdir(parents=True, exist_ok=True)
+            lock.write_text(json.dumps({
+                "host": socket.gethostname(), "pid": dead.pid,
+                "ts": time.time(), "id": "T1",
+            }), encoding="utf-8")
+            rc = km.cmd_revise(c, "T1", {"title": "即やり直し"}, "owner 失踪", "")
+            self.assertEqual(rc, 0)
+            t = km.load_tasks(c.backlog)[0]
+            self.assertEqual(t.status, "ready")
+            self.assertIsNone(t.get("revised"))
+            self.assertEqual(t.title, "即やり直し")
+            self.assertFalse(lock.exists())
+
     def test_midpass_command_applies_before_next_task(self):
         # パス途中の commands/ ドロップが、後続タスクの実行前に取り込まれること
         with tempfile.TemporaryDirectory() as d:

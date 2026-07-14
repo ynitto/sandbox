@@ -1896,6 +1896,16 @@ class GitlabExecutorPluginTests(unittest.TestCase):
         self.assertIsNone(gl_plugin._task_token(""))
         self.assertIsNone(gl_plugin._task_token("/some/random/path"))
 
+    def test_task_token_stable_across_retry_and_revise_suffix(self):
+        # inherit_from / revise で run_id 末尾の -rN / -vM が変わっても同一トークン
+        # （未決着の open イシューへ再アタッチできる。無関係な run は別トークン）
+        a = gl_plugin._task_token("/bus/runs/req-ab12-T1-r0/artifacts/n1")
+        b = gl_plugin._task_token("/bus/runs/req-ab12-T1-r3/artifacts/n1")
+        c = gl_plugin._task_token("/bus/runs/req-ab12-T1-r3-v2/artifacts/n1")
+        self.assertEqual(a, b)
+        self.assertEqual(a, c)
+        self.assertNotEqual(a, gl_plugin._task_token("/bus/runs/req-cd34-T2-r0/artifacts/n1"))
+
     def test_new_issue_embeds_task_marker(self):
         # art_dir を渡すと本文に隠しマーカーが埋まり、検索（open イシュー）も走る。
         art_dir = "/bus/runs/r1/artifacts/n1"
@@ -3339,6 +3349,30 @@ class DaemonPrimitiveTests(unittest.TestCase):
         lockdir = os.path.join(self.tmp, "locks")
         a_cfg = argparse.Namespace(bus=real, git=None, git_branch="main", git_subdir=None, lock_dir=lockdir)
         self.assertEqual(os.path.dirname(kf._daemon_lock_path(a_cfg)), lockdir)
+
+    def test_daemon_lock_pid_fallback_without_fcntl(self):
+        # flock 非対応環境では既存 PID の生存で singleton を守る（README 契約）。
+        import argparse
+        args = argparse.Namespace(bus=self.tmp, git=None, git_branch="main",
+                                  git_subdir=None, lock_dir=None)
+        path = kf._daemon_lock_path(args)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        live = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        self.addCleanup(lambda: live.poll() is None and live.kill())
+        with open(path, "w") as f:
+            f.write(str(live.pid))
+        real_fcntl = kf.fcntl
+        try:
+            kf.fcntl = None
+            held = kf._acquire_daemon_lock(args)
+            self.assertIsNone(held)                      # 生きた PID → 取得拒否
+            live.kill()
+            live.wait(timeout=5)
+            got = kf._acquire_daemon_lock(args)
+            self.assertIsNotNone(got)                    # 死んだ PID → 引き継ぎ可
+            kf._release_daemon_lock(got)
+        finally:
+            kf.fcntl = real_fcntl
 
     def test_active_runs_and_claimable_count(self):
         v = kf.Bus(self.tmp, "runA")
