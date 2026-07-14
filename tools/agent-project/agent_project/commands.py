@@ -172,6 +172,9 @@ def cmd_resume_run(cfg: Config, tid: str, run_id: str, reason: str) -> int:
                   f"だけ再開できます。", file=sys.stderr)
             return 2
     release_claim(cfg, t)
+    # 委譲中に「続きから」を押しても、走っている flow を止めないと二重駆動になる。
+    if t.norm_status() == "offloaded" or t.get("flow_run"):
+        detach_flow_run(cfg, t, reason[:120] or "resume-run により委譲から切り離し")
     t.set("last_run", rid)
     # feedback / revised は「計画が変わった＝新しい run を作る」シグナルなので外す
     # （人が『この run の続きから』と明示した以上、続きからが正）。

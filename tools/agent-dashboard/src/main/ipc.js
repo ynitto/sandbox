@@ -233,9 +233,29 @@ function registerIpcHandlers() {
   // 再ポーリングを止める。承認待ちで park 中の run も暴走中の run も止められる。起票済みイシューは
   // 残す（追跡だけやめる＝agent-flow の既定）。イシュークローズは daemon の cancel --close-issues か
   // gitlab-review-viewer に任せる（この viewer の GitLab クライアントは読み取り専用）。
-  handle('flow:cancel', ({ busDir, runId, reason }) =>
-    flow.cancelRun(busDir, runId, { reason: reason || '' })
-  );
+  handle('flow:cancel', async ({ dir, busDir, runId, reason }) => {
+    const res = flow.cancelRun(busDir, runId, { reason: reason || '' });
+    // bus だけ canceled にしても project が offloaded / flow_run のままだと UI が割れる。
+    // revise（feedback）コマンドで本体と同じ detach→ready 契約に乗せる。
+    if (dir) {
+      const meta = flow.readRunMeta(busDir, runId) || {};
+      const taskId = flow.taskIdOfRun(runId, meta);
+      if (taskId && fs.existsSync(path.join(dir, 'backlog', `${taskId}.md`))) {
+        try {
+          await actions.runAction(loadConfig(), {
+            dir,
+            action: 'revise',
+            id: taskId,
+            feedback: `agent-dashboard が run ${runId} をキャンセル`,
+            reason: reason || `cancel ${runId}`,
+          });
+        } catch {
+          /* タスク同期失敗は cancel 自体の失敗にしない */
+        }
+      }
+    }
+    return res;
+  });
 
   // 不要なバックログタスクの削除（人の明示アクション）。backlog/<id>.md だけを
   // 対象にし、実行中（doing かつクレームあり）のタスクは拒否する。

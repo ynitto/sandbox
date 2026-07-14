@@ -6246,22 +6246,30 @@ class TestFailureTriage(unittest.TestCase):
             self.assertIn("続き", body)                         # 直せば続きから、と言い切る
             self.assertEqual(t.get("env_resume"), "1")
 
-    def test_env_resume_ignores_feedback_for_run_id(self):
-        # needs にメモを書いて feedback が付いても、env_resume なら同じ failed run を再開する
+    def test_env_resume_survives_memo_feedback(self):
+        # 環境ブロック後に needs へ「直した」と書いて [x] しても同 run 再開（計画変更ではない）
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             (d / "backlog").mkdir()
             (d / "backlog" / "T1.md").write_text(
-                "## T1: x\n- status: ready\n- verify: `true`\n"
-                "- last_run: run-env\n- env_resume: 1\n"
-                "- feedback: トークンを入れ直した\n",
+                "## T1: x\n- status: blocked\n- verify: `true`\n"
+                "- last_run: run-env\n- env_resume: 1\n- retries: 0\n",
                 encoding="utf-8")
             cfg = cfg_for(d)
+            km.ensure_dirs(cfg)
             (cfg.bus / "runs" / "run-env").mkdir(parents=True)
             (cfg.bus / "runs" / "run-env" / "meta.json").write_text(
                 json.dumps({"status": "failed", "updated_at": "2026-07-01T00:00:00Z"}),
                 encoding="utf-8")
+            t0 = km.load_tasks(cfg.backlog)[0]
+            km.write_needs_file(cfg, t0, "[agent-error:auth] 認証切れ")
+            nf = d / "needs" / "T1.md"
+            _submit_feedback(nf, "トークンを入れ直した")
+            tasks = km.load_tasks(cfg.backlog)
+            self.assertEqual(km.ingest_feedback(cfg, tasks), ["T1"])
             t = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(t.retries, 0)
+            self.assertEqual(t.get("env_resume"), "1")
             self.assertEqual(km.run_id_for(cfg, t), "run-env")
 
     def test_feedback_submitted_ignores_body_checkbox(self):

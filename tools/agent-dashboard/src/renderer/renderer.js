@@ -3986,7 +3986,12 @@ async function cancelFlowRun() {
   );
   if (!yes) return;
   const ok = await guard('実行の中止', async () => {
-    const res = await api.flowCancel(state.project.busDir, run.runId, 'agent-dashboard から手動キャンセル');
+    const res = await api.flowCancel(
+      state.project.dir,
+      state.project.busDir,
+      run.runId,
+      'agent-dashboard から手動キャンセル'
+    );
     uiLog('cancel', run.runId, res);
     if (res && res.alreadyTerminal) {
       toast(`この実行は既に終了していました（${statusLabel(res.status)}）。中止は不要です。`, true);

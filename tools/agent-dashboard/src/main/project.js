@@ -897,6 +897,21 @@ function resolveProjectRoot(workspaceDir) {
 
 const DEFAULT_STATE_BRANCH = 'agent-state';
 
+function fromStateWorktree(stateDir, branch = DEFAULT_STATE_BRANCH) {
+  // toStateWorktree の逆: 状態 worktree 側のパスを本体側（CLI --root が取る値）へ戻す。
+  // worktree を --root に渡すと agent-project が二重リダイレクトする。
+  const repo = gitToplevelOf(stateDir);
+  if (!repo) return stateDir;
+  const suffix = `-${branch}`;
+  if (!path.basename(repo).endsWith(suffix)) return stateDir;
+  const sourceRepo = path.join(
+    path.dirname(repo),
+    path.basename(repo).slice(0, -suffix.length)
+  );
+  const rel = path.relative(repo, path.resolve(stateDir));
+  return path.join(sourceRepo, rel);
+}
+
 // 状態の実体は「状態 worktree」にある。agent-project は root（例 <repo>/.agent-project）の読み書きを
 // <repo>-<state_branch>/.agent-project へ逃がすので、本体側に残る .agent-project は **main に載る
 // バックアップ**であって実体ではない（significant だけが載り、bus＝run の進捗は載らない）。
@@ -1243,5 +1258,6 @@ module.exports = {
   scanForProjects,
   readProject,
   resolveProjectRoot,
+  fromStateWorktree,
   resolveBusDir,
 };

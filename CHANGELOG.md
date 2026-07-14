@@ -7,6 +7,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-flow / agent-project / agent-dashboard: Set2 integration 手つなぎ修正
+
+- **needs メモ付き環境復帰が env_resume を落として新 run になっていた** — メモは計画変更でない。
+- **resume-run が offloaded / flow_run を放置し二重駆動し得た** — detach してから再開。
+- **dashboard CLI が状態 worktree を --root に渡し二重リダイレクトしていた** — fromStateWorktree。
+- **cancel が bus だけ止め project が offloaded のまま** — revise コマンドで本体契約どおり切り離し。
+- **終端 run で park 抑制しつつ Issue 座標まで消していた** — waits から issue だけ読む。
+
 ### agent-flow / agent-project / agent-dashboard: Set2 individual バグ修正
 
 - **agent-flow: 一晩再起動で park の wait_lease 失効だけを「進捗なし」扱いし max_resumes で failed** —

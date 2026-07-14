@@ -260,7 +260,6 @@ function readRun(runDir) {
       } else {
         // park 記録（承認待ち）。agent-flow と同じく wait_lease_until が生存なら waiting 相当。
         // 失効していれば pending へ縮退（full worker が再アタッチで拾い直す）＝ここでは park 扱いにしない。
-        // run が終端なら残 waits でも park 表示しない（cancel/orphan fail の残骸で誤表示しない）。
         const wrec = readJson(path.join(runDir, 'waits', `${id}.json`));
         if (wrec && Number(wrec.wait_lease_until || 0) >= now) {
           parked = true;
@@ -270,6 +269,12 @@ function readRun(runDir) {
           who = wrec.who || null;
           state = 'parked';
         }
+      }
+    } else {
+      // 終端 run: park 表示はしないが、残 waits のイシュー座標は Issue 導線用に拾う
+      const wrec = readJson(path.join(runDir, 'waits', `${id}.json`));
+      if (wrec && wrec.issue && typeof wrec.issue === 'object') {
+        parkIssue = wrec.issue;
       }
     }
     // 関連 GitLab イシュー: 承認済みは data、park 中は wait 記録から拾う（どちらも executor が

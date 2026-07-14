@@ -245,17 +245,20 @@ def ingest_feedback(cfg: "Config", tasks: "list[Task]") -> "list[str]":
         if t.norm_status() == "offloaded" or t.get("flow_run"):
             detached = detach_flow_run(cfg, t, (fb or "feedback")[:120] or "feedback により委譲から切り離し")
             if detached and not fb:
-                # 空 [x] でも id 衝突を避ける（メモ付きは下で retries+=1）
+                # 空 [x] でも id 衝突を避ける（メモ付きは下で retries+=1。env_resume は別扱）
                 t.retries += 1
         t.status = "ready"
         t.drop("feedback")
         if fb:
             t.extra.append(("feedback", fb.replace("\n", " ⏎ ")))
-            # 計画変更＝新しい run。retries を進めないと last_run と同じ id を再生成し、
-            # agent-flow は既存 meta.request で再開して差し戻しが planner に届かない。
-            # revise が rev を上げるのと対称（feedback 経路でも id を変える）。
-            t.retries += 1
-            t.drop("env_resume")          # メモ付き再開は env 続行ではなく計画変更
+            if t.get("env_resume"):
+                # 環境復帰のメモ（「トークン直した」等）は計画変更ではない。
+                # retries を上げず env_resume を残し、run_id_for が同 run を再開する契約を守る。
+                pass
+            else:
+                # 計画変更＝新しい run。retries を進めないと last_run と同じ id を再生成し、
+                # agent-flow は既存 meta.request で再開して差し戻しが planner に届かない。
+                t.retries += 1
         if was_review:                               # review→ feedback あり=差し戻し(手戻り) / 無し=承認(clean)
             autonomy_record(cfg, t, clean=not bool(fb))
         persist_task(cfg, t)

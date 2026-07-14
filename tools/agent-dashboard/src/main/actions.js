@@ -232,7 +232,8 @@ function runProjectCli(command, args, timeoutMs = 60000, cwd) {
 // CLI 実行（approve / hold / reprioritize / revise / resume-run）。本体が稼働していないときの経路
 async function runActionViaCli(cfg, { dir, action, id, reason, fields, feedback, run }) {
   const command = (cfg.projects && cfg.projects.command) || 'agent-project';
-  const { root } = cliScope(dir);
+  // ファイル操作は状態ルート（dir）。CLI --root は本体側（二重リダイレクト防止）。
+  const root = project.fromStateWorktree(path.resolve(dir));
   const base = ['--root', root];
   const cfgPath = findProjectConfig(root);
   if (cfgPath) base.push('--config', cfgPath);
@@ -317,7 +318,7 @@ async function requestReplan(cfg, { dir, reason }) {
   }
   try {
     const command = (cfg.projects && cfg.projects.command) || 'agent-project';
-    const { root } = cliScope(dir);
+    const root = project.fromStateWorktree(path.resolve(dir));
     const args = ['replan', '--reason', why, '--root', root];
     const cfgPath = findProjectConfig(root);
     if (cfgPath) args.push('--config', cfgPath);
@@ -364,7 +365,7 @@ function requestLifecycle(cfg, { dir, action, reason }) {
 // CLI の有無等は環境依存）。その判断は呼び出し側（renderer の確認ダイアログ）が人に委ねる。
 async function startProject(cfg, { dir }) {
   const command = (cfg.projects && cfg.projects.command) || 'agent-project';
-  const { root } = cliScope(dir);
+  const root = project.fromStateWorktree(path.resolve(dir));
   try {
     const res = await runProjectCli(command, ['start', '--root', root], 120000);
     return { ...res, via: 'cli' };
