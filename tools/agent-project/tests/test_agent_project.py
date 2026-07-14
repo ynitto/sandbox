@@ -1610,7 +1610,7 @@ class TestActSubmitTerminal(unittest.TestCase):
                  mock.patch.object(km, "reap_orphan_flow",
                                    side_effect=lambda *a, **k: reaped.append(True) or 0), \
                  mock.patch.object(km, "detach_flow_run",
-                                   side_effect=lambda cfg, task, reason="": (
+                                   side_effect=lambda cfg, task, reason="", **kw: (
                                        detached.append(reason) or "run-XYZ")):
                 ok, msg = km._act_submit(self._task(), cfg, use_git=False)
             self.assertFalse(ok)
@@ -1710,6 +1710,46 @@ class TestActRunMidRevise(unittest.TestCase):
             if prev is None and not str(t.get("last_run") or "").strip():
                 prev = km._prev_req_id(t, cfg)
             self.assertIsNone(prev)
+
+    def test_timeout_detach_marks_failed_and_inherits(self):
+        # タイムアウトは canceled ではなく failed。次 run は last_run を inherit できる。
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), dry_run=False)
+            km.ensure_dirs(cfg)
+            old = "req-to-T1-r0"
+            (cfg.bus / "runs" / old).mkdir(parents=True)
+            (cfg.bus / "runs" / old / "meta.json").write_text(
+                json.dumps({"status": "running", "request": "x"}), encoding="utf-8")
+            t = km.Task(id="T1", title="x", verify="true", status="doing", retries=0)
+            t.set("flow_run", old)
+            (cfg.backlog / "T1.md").write_text(km.serialize_task(t), encoding="utf-8")
+            rid = km.detach_flow_run(cfg, t, "agent-flow run タイムアウト（1800.0s）",
+                                     failed=True)
+            self.assertEqual(rid, old)
+            meta = json.loads((cfg.bus / "runs" / old / "meta.json").read_text(encoding="utf-8"))
+            self.assertEqual(meta["status"], "failed")
+            self.assertIn("タイムアウト", meta.get("failure_reason", ""))
+            self.assertNotIn("cancel_reason", meta)
+            t.retries = 1
+            t.extra.append(("last_run", old))
+            self.assertEqual(km._inherit_from_run(t, "req-to-T1-r1", cfg), old)
+
+    def test_human_detach_stays_canceled_no_inherit(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), dry_run=False)
+            km.ensure_dirs(cfg)
+            old = "req-hum-T1-r0"
+            (cfg.bus / "runs" / old).mkdir(parents=True)
+            (cfg.bus / "runs" / old / "meta.json").write_text(
+                json.dumps({"status": "running", "request": "x"}), encoding="utf-8")
+            t = km.Task(id="T1", title="x", verify="true", status="doing")
+            t.set("flow_run", old)
+            km.detach_flow_run(cfg, t, "revise により委譲から切り離し")
+            meta = json.loads((cfg.bus / "runs" / old / "meta.json").read_text(encoding="utf-8"))
+            self.assertEqual(meta["status"], "canceled")
+            t.retries = 1
+            t.extra.append(("last_run", old))
+            self.assertIsNone(km._inherit_from_run(t, "req-hum-T1-r1", cfg))
 
 
 class TestActTimeoutZeroAndInherit(unittest.TestCase):

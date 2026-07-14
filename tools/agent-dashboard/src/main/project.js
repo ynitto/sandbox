@@ -385,6 +385,13 @@ function _deliveryFromDetail(detail) {
     entry.files = legacy.artifacts;
     entry.files_total = legacy.artifacts.length + legacy.truncated;
   }
+  // 単発実行の旧形式では「所在」が状態ディレクトリ（例: repo/.agent-project）を指す一方、
+  // 変更ファイルはリポジトリルート相対（.agent-project/...）で記録されることがある。
+  // そのまま連結すると .agent-project/.agent-project/... となるため、重なる末尾を戻す。
+  const locationLeaf = path.basename(entry.path.replace(/[/\\]+$/, ''));
+  if (locationLeaf && entry.files.some((file) => String(file).replace(/\\/g, '/').startsWith(`${locationLeaf}/`))) {
+    entry.path = path.dirname(entry.path);
+  }
   if (entry.files.length || entry.mr_url || entry.branch || entry.diff_cmd) {
     entries.push(entry);
   }

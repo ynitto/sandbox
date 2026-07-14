@@ -2651,11 +2651,31 @@ function openDeliveryReview(needId) {
     entries.length > 0
       ? entries.map((e, i) => renderDeliveryRepo(e, i)).join('')
       : '<p class="muted">構造化された検収物情報がありません。判断材料の本文を確認してください。</p>';
+  const canShowAllDiffs = entries.some(
+    (entry) => entry.role !== 'reference' && entry.path && (entry.ref || !entry.branch)
+  );
+  const allDiffs = canShowAllDiffs
+    ? `<div class="delivery-review-toolbar">
+        <button class="primary-inline" data-delivery-all-diff>すべての差分を表示</button>
+        <span class="muted">変更ファイル一覧が省略されていても、リポジトリの差分全体を確認できます。</span>
+      </div>`
+    : '';
   $('delivery-review-body').innerHTML = `${mrBlock}
+    ${allDiffs}
     <div class="delivery-repos">${repos}</div>
-    <pre id="delivery-diff-view" class="mono delivery-diff-view hidden" tabindex="0"></pre>`;
+    <pre id="delivery-diff-view" class="mono delivery-diff-view hidden" tabindex="0" aria-live="polite"></pre>`;
   wireDeliveryReview($('dlg-delivery-review'), need);
   $('dlg-delivery-review').showModal();
+}
+
+function deliveryDiffRequest(entry, file = '') {
+  return {
+    repo: entry.path,
+    base: entry.base || 'main',
+    ref: entry.ref || undefined,
+    file: file || undefined,
+    workingTree: !entry.ref,
+  };
 }
 
 function wireDeliveryReview(root, need) {
@@ -2667,6 +2687,41 @@ function wireDeliveryReview(root, need) {
   }
   for (const btn of root.querySelectorAll('[data-open]')) {
     btn.addEventListener('click', () => guard('ファイルを開く', () => api.openPath(btn.dataset.open)));
+  }
+  const allDiffs = root.querySelector('[data-delivery-all-diff]');
+  if (allDiffs) {
+    allDiffs.addEventListener('click', async () => {
+      const entries = (need.delivery || []).filter(
+        (entry) => entry.role !== 'reference' && entry.path && (entry.ref || !entry.branch)
+      );
+      const view = $('delivery-diff-view');
+      view.classList.remove('hidden');
+      view.setAttribute('aria-busy', 'true');
+      view.textContent = 'すべての差分を取得しています…';
+      allDiffs.disabled = true;
+      try {
+        const sections = await Promise.all(
+          entries.map(async (entry) => {
+            const label = entry.ref
+              ? `${entry.base || 'main'}...${entry.ref}`
+              : '現在の作業ツリー（HEADとの差分）';
+            try {
+              const res = await api.gitDiff(deliveryDiffRequest(entry));
+              return `===== ${entry.name || 'repo'} · ${label} =====\n${res.text || '(差分なし)'}`;
+            } catch (err) {
+              const message = err && err.message ? err.message : String(err);
+              return `===== ${entry.name || 'repo'} · ${label} =====\n差分の取得に失敗しました: ${message}`;
+            }
+          })
+        );
+        view.textContent = sections.join('\n\n');
+        view.scrollTop = 0;
+        view.focus();
+      } finally {
+        view.removeAttribute('aria-busy');
+        allDiffs.disabled = false;
+      }
+    });
   }
   for (const btn of root.querySelectorAll('[data-delivery-diff]')) {
     btn.addEventListener('click', async () => {
@@ -2680,12 +2735,7 @@ function wireDeliveryReview(root, need) {
       view.classList.remove('hidden');
       view.textContent = '差分を取得しています…';
       try {
-        const res = await api.gitDiff({
-          repo: entry.path,
-          base: entry.base || 'main',
-          ref: tip,
-          file: file || undefined,
-        });
+        const res = await api.gitDiff(deliveryDiffRequest(entry, file));
         view.textContent = res.text || '(差分なし)';
         view.scrollTop = 0;
       } catch (err) {

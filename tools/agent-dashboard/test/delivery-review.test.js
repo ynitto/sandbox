@@ -78,6 +78,26 @@ kind: review
   assert.ok(n.delivery[0].diff_cmd.includes('git -C'));
 });
 
+test('所在の末尾と変更ファイルの先頭が重なる場合はリポジトリルートへ補正する', () => {
+  const n = project.parseNeeds(
+    `---
+kind: blocked
+---
+# 要対応: T2 — x
+
+## 判断材料
+- 成果物: git: 未コミットの変更あり
+- 所在: /work/project/.agent-project
+- 差分: 2 ファイル
+    - .agent-project/backlog/T2.md
+    - src/app.js
+`,
+    'T2'
+  );
+  assert.strictEqual(n.delivery[0].path, '/work/project');
+  assert.deepStrictEqual(n.delivery[0].files, ['.agent-project/backlog/T2.md', 'src/app.js']);
+});
+
 test('複数リポジトリ見出しから delivery を復元する', () => {
   const detail = [
     '### リポジトリ: payments（書込先）',

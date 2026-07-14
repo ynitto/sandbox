@@ -14,6 +14,7 @@ const actions = require('./actions');
 const authoring = require('./authoring');
 const agent = require('./agent');
 const reset = require('./reset');
+const shellActions = require('./shell-actions');
 
 // すべてのハンドラを {ok, data|error} 形式に揃える（gitlab-review-viewer と同じ）
 function handle(channel, fn) {
@@ -87,8 +88,8 @@ function registerIpcHandlers() {
   });
 
   // 検収サブ画面: 作業ブランチの git 差分（複数リポジトリ対応）
-  handle('git:diff', ({ repo, base, ref, file, maxBytes }) =>
-    git.diffRange(repo, { base, ref, file, maxBytes })
+  handle('git:diff', ({ repo, base, ref, file, maxBytes, workingTree }) =>
+    git.diffRange(repo, { base, ref, file, maxBytes, workingTree: !!workingTree })
   );
 
   // 発見: 設定 roots + instances 自動発見 → コンテナ→プロジェクトのツリー
@@ -511,7 +512,7 @@ function registerIpcHandlers() {
     return shell.openExternal(url);
   });
 
-  handle('shell:openPath', ({ target }) => shell.openPath(target));
+  handle('shell:openPath', ({ target }) => shellActions.openPath(shell, target));
 }
 
 module.exports = { registerIpcHandlers };

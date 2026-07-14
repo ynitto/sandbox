@@ -211,46 +211,60 @@ def detach_flow_run(cfg: "Config", task: Task, reason: str = "",
     why = (reason or "agent-project: タスクを委譲から切り離し").strip()
     bus = cfg.bus
     cancels = bus / "inbox" / "cancels"
-    try:
-        cancels.mkdir(parents=True, exist_ok=True)
-        rec = {
-            "id": rid, "who": "agent-project", "reason": why,
-            "close_issues": False,
-            "requested_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        }
-        p = cancels / f"{rid}.json"
-        tmp = p.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(p)
-    except OSError:
-        pass
     run_dir = bus / "runs" / rid
     meta_path = run_dir / "meta.json"
     applied = False
     end_status = "failed" if failed else "canceled"
-    try:
-        if meta_path.is_file():
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            st = str(meta.get("status") or "")
-            if st not in _FLOW_TERMINAL:
-                meta["status"] = end_status
-                meta["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                if failed:
-                    meta["failure_reason"] = why
-                else:
-                    meta["cancel_reason"] = why
-                meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2),
-                                     encoding="utf-8")
-            applied = True  # meta がある＝適用済み（既終端でもマーカーは消してよい）
-        waits = run_dir / "waits"
-        if waits.is_dir():
-            for f in list(waits.glob("*.json")):
-                try:
-                    f.unlink()
-                except OSError:
-                    pass
-    except (OSError, ValueError, json.JSONDecodeError):
-        pass
+
+    def _write_cancel_marker() -> None:
+        try:
+            cancels.mkdir(parents=True, exist_ok=True)
+            rec = {
+                "id": rid, "who": "agent-project", "reason": why,
+                "close_issues": False,
+                "requested_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+            p = cancels / f"{rid}.json"
+            tmp = p.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(p)
+        except OSError:
+            pass
+
+    def _apply_terminal() -> None:
+        nonlocal applied
+        try:
+            if meta_path.is_file():
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                st = str(meta.get("status") or "")
+                if st not in _FLOW_TERMINAL:
+                    meta["status"] = end_status
+                    meta["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    if failed:
+                        meta["failure_reason"] = why
+                    else:
+                        meta["cancel_reason"] = why
+                    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2),
+                                         encoding="utf-8")
+                applied = True  # meta がある＝適用済み（既終端でもマーカーは消してよい）
+            waits = run_dir / "waits"
+            if waits.is_dir():
+                for f in list(waits.glob("*.json")):
+                    try:
+                        f.unlink()
+                    except OSError:
+                        pass
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+
+    # failed: 先に終端化してから cancel マーカー（daemon の mark_canceled が no-op になる）。
+    # canceled: 先にマーカー（人の停止意図を同期）してから終端化。
+    if failed:
+        _apply_terminal()
+        _write_cancel_marker()
+    else:
+        _write_cancel_marker()
+        _apply_terminal()
     # meta を触れたときだけマーカーを消す。meta 無し（まだ submit 前）は残し、
     # daemon の run 化前 cancel（cancel_request_run）へ渡す。
     if applied:
@@ -447,7 +461,8 @@ def _inherit_from_run(task: Task, new_run_id: str, cfg: "Config | None" = None) 
 
     `_prev_req_id`（retries-1・現 rev）だと revise で rev が上がったあと、実在しない
     `…-r{N-1}-v{newRev}` を指して inherit が空振りする。last_run が実際の先行。
-    canceled の last_run は引き継がない（人の停止を尊重。done ノードを温存して消し込みもしない）。"""
+    canceled の last_run は引き継がない（人の停止・軌道修正を尊重。done を蘇らせない）。
+    タイムアウト等の failed は引き継ぐ（agent-flow inherit_from と同じ契約）。"""
     last = str(task.get("last_run") or "").strip()
     if not last or last == str(new_run_id or "").strip():
         return None
@@ -593,7 +608,7 @@ def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
         time.sleep(2.0)
     # daemon 自体は他 run / park 監視のオーナーなので殺さない。この run だけ cancel して止める。
     task.set("flow_run", run_id)
-    detach_flow_run(cfg, task, f"daemon run タイムアウト（{cfg.act_timeout}s）")
+    detach_flow_run(cfg, task, f"daemon run タイムアウト（{cfg.act_timeout}s）", failed=True)
     return (False, f"daemon run {run_id} タイムアウト")
 
 

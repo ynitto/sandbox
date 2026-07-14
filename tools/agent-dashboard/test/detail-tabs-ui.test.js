@@ -254,6 +254,8 @@ assert.match(html, /<label[^>]+for="doctor-prompt"[^>]*>[^<]*補足したいこ�
 assert.match(html, /<textarea[^>]+id="doctor-prompt"/);
 assert.match(html, /id="btn-doctor-submit"[^>]*>相談する</);
 assert.ok(!html.match(/id="btn-doctor"[^>]+disabled/), 'AI相談は未選択でも利用可能');
+assert.match(html, /id="btn-doctor"[^>]+aria-label="AIに相談"[^>]*>[\s\S]*?<svg[^>]+aria-hidden="true"/);
+assert.ok(!html.match(/id="btn-doctor"[^>]*>AI相談<\/button>/), 'AI相談は文字ボタンではなくアイコンにする');
 assert.ok(renderer.includes('function openDoctor()'));
 assert.ok(renderer.includes('userPrompt'));
 assert.ok(renderer.includes("$('doctor-prompt').disabled = true"));
@@ -266,6 +268,9 @@ for (const cli of ['kiro', 'claude', 'copilot', 'codex', 'cursor', 'ollama']) {
 assert.ok(renderer.includes('出力全体を見る'));
 assert.ok(renderer.includes('検収物を確認'));
 assert.ok(renderer.includes('openDeliveryReview'));
+assert.ok(renderer.includes('すべての差分を表示'));
+assert.ok(renderer.includes('data-delivery-all-diff'));
+assert.ok(renderer.includes('workingTree: !entry.ref'));
 assert.ok(renderer.includes('entry.path && entry.base && entry.ref'), '差分は解決済み ref 必須');
 assert.ok(!renderer.includes('entry.ref || entry.branch'), '未解決 ref で差分ボタンを出さない');
 assert.match(css, /\.nav-group/);

@@ -577,16 +577,16 @@ async function heal(dir) {
 }
 
 // 検収サブ画面用: 作業ブランチの差分（ファイル指定可）。サイズ上限付き。
-async function diffRange(repo, { base, ref, file, maxBytes = 200_000 } = {}) {
+async function diffRange(repo, { base, ref, file, maxBytes = 200_000, workingTree = false } = {}) {
   const root = path.resolve(String(repo || ''));
   if (!root || !fs.existsSync(root)) throw new Error(`リポジトリが見つかりません: ${repo}`);
   const baseRef = String(base || 'main').trim() || 'main';
   const tip = String(ref || '').trim();
-  if (!tip) throw new Error('比較先ブランチ／ref がありません');
-  if (/[\s;|&`$]/.test(baseRef) || /[\s;|&`$]/.test(tip)) {
+  if (!workingTree && !tip) throw new Error('比較先ブランチ／ref がありません');
+  if ((!workingTree && /[\s;|&`$]/.test(baseRef)) || /[\s;|&`$]/.test(tip)) {
     throw new Error('不正な git ref です');
   }
-  const args = ['-C', root, 'diff', '--no-color', `${baseRef}...${tip}`];
+  const args = ['-C', root, 'diff', '--no-color', workingTree ? 'HEAD' : `${baseRef}...${tip}`];
   const f = String(file || '').trim();
   if (f) {
     if (f.includes('..') || path.isAbsolute(f)) throw new Error('不正なファイルパスです');
@@ -603,7 +603,15 @@ async function diffRange(repo, { base, ref, file, maxBytes = 200_000 } = {}) {
     text = text.slice(0, limit) + `\n…（差分が長いため ${limit} 文字で打ち切り）`;
     truncated = true;
   }
-  return { text, truncated, repo: root, base: baseRef, ref: tip, file: f };
+  return {
+    text,
+    truncated,
+    repo: root,
+    base: workingTree ? '' : baseRef,
+    ref: tip,
+    file: f,
+    mode: workingTree ? 'working-tree' : 'range',
+  };
 }
 
 module.exports = { pull, commitPush, syncInto, syncPathsInto, health, heal, diffRange, RUNTIME_DIRS };

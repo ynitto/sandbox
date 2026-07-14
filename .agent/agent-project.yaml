@@ -37,3 +37,5 @@ agents:
   plan:     {agent_cli: cursor, model: cursor-grok-4.5-high}  # 分解・再計画・差し戻し修正
   assess:   {model: haiku}                                    # 大量に走る採点は安いモデルに
   verify:   {agent_cli: codex, model: gpt-5.6-sol}            # verify 合成
+
+act_timeout: 3600
