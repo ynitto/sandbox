@@ -1,8 +1,0 @@
-{
-  "id": "t8",
-  "goal": "coddgate 断片に codd_gate_verify_strict() を実装する。subprocess で `codd-gate verify --repos <repos.json> --repo-dir sandbox=. --base <base> --strict` を実行し、終了コード・標準出力・要約を構造化して返す",
-  "deps": [
-    "t7"
-  ],
-  "kind": "work"
-}

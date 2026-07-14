@@ -1,8 +1,0 @@
-{
-  "id": "t10",
-  "goal": "kiro_project/__init__.py の _FRAGMENTS タプルに \"coddgate\" を \"verify\" より前の位置に追加し、パッケージ import 時に coddgate 断片が実際に exec されることを Python 実行で確認する",
-  "deps": [
-    "t5"
-  ],
-  "kind": "work"
-}

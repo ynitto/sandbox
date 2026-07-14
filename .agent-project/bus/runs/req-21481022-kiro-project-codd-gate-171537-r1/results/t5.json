@@ -1,7 +1,0 @@
-{
-  "id": "t5",
-  "who": "worker-1",
-  "status": "failed",
-  "output": "実行エラー: claude タイムアウト（600s 超過）",
-  "finished_at": "2026-07-13T09:06:39Z"
-}
