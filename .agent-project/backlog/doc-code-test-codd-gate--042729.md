@@ -1,5 +1,5 @@
 ## doc-code-test-codd-gate--042729: doc/code/test一貫性を取りcodd-gate verify --strictが通る状態にする
-- status: proposed
+- status: ready
 - source: charter
 - priority: 0
 - verify: `python3 tools/codd-gate/codd-gate.py verify --base "$KIRO_BASE_REV" --strict`
