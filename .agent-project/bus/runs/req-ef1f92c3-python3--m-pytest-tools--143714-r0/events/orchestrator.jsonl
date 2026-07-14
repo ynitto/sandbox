@@ -1,2 +1,0 @@
-{"ts": "2026-07-14T19:02:41Z", "who": "orchestrator", "kind": "planned", "patterns": ["map-reduce", "adversarial-verification", "loop-until-done"], "parallelism": 6, "tasks": ["t1", "t2", "t3", "split", "gate", "reduce"]}
-{"ts": "2026-07-14T19:03:05Z", "who": "orchestrator", "kind": "canceled", "run": "req-ef1f92c3-python3--m-pytest-tools--143714-r0", "reason": "agent-dashboard から手動キャンセル"}

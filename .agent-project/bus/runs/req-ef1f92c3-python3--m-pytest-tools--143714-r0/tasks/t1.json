@@ -1,6 +1,0 @@
-{
-  "id": "t1",
-  "goal": "リポジトリ直下で `python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q --cov=tools/kiro-project --cov=tools/kiro-flow --cov-report=term-missing` を実行し、(a) 失敗テスト・収集エラー（import エラー、fixture 不足、conftest 不整合）の一覧、(b) ベースライン総合カバレッジ率、(c) モジュール別の Stmts/Miss/Cover と未カバー行番号レンジ、を構造化して記録する。この時点では一切コードを修正しない。",
-  "deps": [],
-  "kind": "work"
-}

@@ -1,8 +1,0 @@
-{
-  "id": "t9",
-  "goal": "tools/kiro-flow/tests/conftest.py を整備し、一時ファイルバス（bus/runs, claims, flow-archive）を持つ最小 flow 環境を作る共通 fixture を定義する。各テストに散在する同種のセットアップをこの fixture へ寄せる",
-  "deps": [
-    "t7"
-  ],
-  "kind": "work"
-}

@@ -1,9 +1,0 @@
-{
-  "id": "t14",
-  "goal": "mr.py の検収判定に codd_gate_debt_status() と codd_gate_summary_text() を組み込み、codd-gate の結果を done 判定条件に加える。不合格時は差し戻し理由の本文に codd-gate の要約（悪化した負債項目・違反ファイル）を含める",
-  "deps": [
-    "t12",
-    "t4"
-  ],
-  "kind": "generate"
-}

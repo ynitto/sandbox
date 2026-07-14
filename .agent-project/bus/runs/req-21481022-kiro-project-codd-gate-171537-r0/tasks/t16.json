@@ -1,8 +1,0 @@
-{
-  "id": "t16",
-  "goal": "tests/test_codd_gate_wiring_verify.py を追加する。coddgate の codd_gate_verify をスタブに差し替え、verify.py の回帰ゲート実行時にスタブが実際に呼ばれること、および終了コード非0が回帰失敗へ反映されることを検証する統合テストを書く（呼ばれなければ必ず失敗するアサーションにする）",
-  "deps": [
-    "t13"
-  ],
-  "kind": "generate"
-}

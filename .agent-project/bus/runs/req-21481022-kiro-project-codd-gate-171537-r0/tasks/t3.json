@@ -1,6 +1,0 @@
-{
-  "id": "t3",
-  "goal": "codd_gate_detect.py / codd_gate_routing.py / codd_gate_status.py / codd_gate_debt.py の4ファイルを読み、各公開関数の責務・入出力・関数名衝突を棚卸しし、単一断片 coddgate.py に統合したときの最終 API（関数名は codd_gate_ 接頭辞で統一）を定義する",
-  "deps": [],
-  "kind": "work"
-}

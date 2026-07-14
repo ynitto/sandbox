@@ -1,9 +1,0 @@
-{
-  "id": "t13",
-  "goal": "verify.py の回帰ゲートから codd_gate_verify() を呼び出し、--strict の終了コードが非0なら回帰失敗として合否へ反映する。codd-gate 未インストール時は skip 扱いとし既存の合否判定を一切変えない",
-  "deps": [
-    "t12",
-    "t4"
-  ],
-  "kind": "generate"
-}

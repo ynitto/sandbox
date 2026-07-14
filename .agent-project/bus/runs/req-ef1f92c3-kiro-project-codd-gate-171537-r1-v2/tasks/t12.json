@@ -1,9 +1,0 @@
-{
-  "id": "t12",
-  "goal": "kiro_project/verify.py の回帰ゲートから codd_gate_verify_strict() を呼び、終了コード非0 を回帰ゲートの不合格として反映する（失敗理由に codd-gate の出力要約を含める）",
-  "deps": [
-    "t8",
-    "t10"
-  ],
-  "kind": "work"
-}

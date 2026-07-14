@@ -1,9 +1,0 @@
-{
-  "id": "t14",
-  "goal": "kiro_project/model.py の enqueue へ codd_gate_drift_items() のドリフト項目を backlog タスクとして投入する。安定キーで既存タスクと突き合わせ、再実行時に重複タスクが積まれないようにする",
-  "deps": [
-    "t9",
-    "t10"
-  ],
-  "kind": "work"
-}
