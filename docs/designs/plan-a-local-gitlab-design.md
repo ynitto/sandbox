@@ -11,7 +11,7 @@
 ## 0. 採用の前提（比較資料で確定）
 
 - 上流 GitLab がマスター。目的は上流アクセス負荷の削減。**CI 不要**。
-- 既存資産（`kiro-flow/executors/gitlab.py` 等）が **GitLab API v4 前提** → ローカルも GitLab にすれば無改修。
+- 既存資産（`agent-flow/executors/gitlab.py` 等）が **GitLab API v4 前提** → ローカルも GitLab にすれば無改修。
 - ホストは個人 Windows PC（可用性は弱点。運用で緩和する。§6）。
 
 ## 1. 全体アーキテクチャ
@@ -51,7 +51,7 @@
 
 ## 4. 既存 GitLab 前提資産の適合（無改修）
 
-- `kiro-flow/executors/gitlab.py` ほか GitLab v4 を叩く資産は、**接続先ホスト/トークンをローカル GitLab に変更するだけ**。
+- `agent-flow/executors/gitlab.py` ほか GitLab v4 を叩く資産は、**接続先ホスト/トークンをローカル GitLab に変更するだけ**。
   - 例: 環境/設定の `host` を `gitlab.local`、`token` をローカル GitLab で発行した PAT に差し替える。
 - issues/MR/notes は**ローカル GitLab 上**で作成・更新される（＝ローカル管理）。API スキーマは上流と同一なので挙動は不変。
 - `git-file-sync` / `gitea-sync-bot` は git レベルなので元から無関係。

@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "schemas/repos.schema.json",
   "title": "repos registry",
-  "description": "リポジトリレジストリの共通スキーマ（kiro-projects / kiro-flow / codd-gate 共用）。トップレベルは「repo 名 → エントリ」のマッピング。リポジトリの identity は (url, path, base)＝モノレポは path 別・ブランチ別は base 別のエントリで区別し、name はエントリ一意。charter.md の `## repos` は互換入力（アダプタ）で、各ツールは内部的にこの形へ正規化して引き回す。ファイル形式は YAML（PyYAML 任意）または JSON。運用の正典は schemas/README.md。",
+  "description": "リポジトリレジストリの共通スキーマ（agent-project / agent-flow / codd-gate 共用）。トップレベルは「repo 名 → エントリ」のマッピング。リポジトリの identity は (url, path, base)＝モノレポは path 別・ブランチ別は base 別のエントリで区別し、name はエントリ一意。charter.md の `## repos` は互換入力（アダプタ）で、各ツールは内部的にこの形へ正規化して引き回す。ファイル形式は YAML（PyYAML 任意）または JSON。運用の正典は schemas/README.md。",
   "type": "object",
   "additionalProperties": {
     "$ref": "#/definitions/repo"
@@ -23,7 +23,7 @@
       "properties": {
         "url": {
           "type": "string",
-          "description": "git URL（例 git@host:team/app.git）。kiro-projects のワークスペース/参照・kiro-flow の clone/push 先・codd-gate --sync の実体化元・リポジトリ横断参照の識別に使う"
+          "description": "git URL（例 git@host:team/app.git）。agent-project のワークスペース/参照・agent-flow の clone/push 先・codd-gate --sync の実体化元・リポジトリ横断参照の識別に使う"
         },
         "desc": {
           "type": "string",
@@ -31,7 +31,7 @@
         },
         "base": {
           "type": "string",
-          "description": "作業のベースブランチ。kiro-flow は kf/<run-id> をここから切る。codd-gate --sync はこのブランチの最新を実体化する【書込先なら必須】"
+          "description": "作業のベースブランチ。agent-flow は af/<run-id> をここから切る。codd-gate --sync はこのブランチの最新を実体化する【書込先なら必須】"
         },
         "target": {
           "type": "string",

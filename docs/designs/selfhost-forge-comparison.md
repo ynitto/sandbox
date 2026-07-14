@@ -2,7 +2,7 @@
 
 > 最終更新: 2026-07-08 ／ 関連: [`gitea-gitlab-sync-design.md`](gitea-gitlab-sync-design.md)（Gitea 案の設計）,
 > [`tools/gitea-sync-bot/`](../../tools/gitea-sync-bot/)（同期ボット）,
-> [`tools/kiro-flow/executors/gitlab.py`](../../tools/kiro-flow/executors/gitlab.py)（GitLab 前提資産の中核）
+> [`tools/agent-flow/executors/gitlab.py`](../../tools/agent-flow/executors/gitlab.py)（GitLab 前提資産の中核）
 >
 > 本書は「上流 GitLab をマスターに保ちつつ、上流アクセス負荷を下げる」ための**ローカル構成の比較資料**。
 > **既存の GitLab 前提ツール／スキル資産をどう適合させるか**を軸に、複数案を評価して推奨を示す。
@@ -29,7 +29,7 @@
 
 | 資産 | 使っているもの | 結合度 | ローカルを Gitea にした場合の影響 |
 |---|---|---|---|
-| `kiro-flow/executors/gitlab.py` | `/api/v4` の projects/**issues**/**notes(コメント)**/related_merge_requests を GET/POST/PUT。イシュー駆動ワークフローの中核 | **高** | **動かない**（Gitea API は v4 非互換）。Gitea 用 executor の新規移植が必要 |
+| `agent-flow/executors/gitlab.py` | `/api/v4` の projects/**issues**/**notes(コメント)**/related_merge_requests を GET/POST/PUT。イシュー駆動ワークフローの中核 | **高** | **動かない**（Gitea API は v4 非互換）。Gitea 用 executor の新規移植が必要 |
 | `hermes-gitlab-gateway` | GitLab issues をチャネル化（ポーリング／NAT 裏で動作） | 中〜高 | 移植が必要 |
 | `gitlab-review-viewer` | GitLab の issues+MR を並べて表示（Electron） | 中（読み取り） | 移植が必要 |
 | `gitlab-obsidian-sync` | GitLab → Obsidian 同期 | 中 | 移植が必要 |

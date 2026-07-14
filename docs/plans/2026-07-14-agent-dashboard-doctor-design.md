@@ -1,7 +1,7 @@
 # Agent Dashboard Doctor・全出力表示 UI 設計
 
-> **由来**: 対応する `docs/plans/*kiro-projects-viewer*` を置換せずクローンし、
-> `agent-dashboard` / `agent-project` / `agent-flow` 名称へ改称した系統。
+> **由来**: 旧 `kiro-projects-viewer` 計画から `agent-dashboard` / `agent-project` /
+> `agent-flow` 名称へ移行した計画。旧計画は移行完了後に削除済み。
 > 改称方針: [`docs/designs/agent-tools-rename-design.md`](../designs/agent-tools-rename-design.md)。
 
 ## 背景

@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "schemas/task.schema.json",
   "title": "task spec",
-  "description": "制御層タスク（バックログ 1 件）の共通スキーマ。書式の正典は tools/kiro-projects/backlog.md.example（Markdown 形）で、本スキーマはその JSON 表現（enqueue --json / inbox の *.json / intake_cmd の stdout / codd-gate tasks の出力）。契約の所有者は kiro-projects。**未知キーは保持される**（前方互換）ため additionalProperties: true。kiro-flow のタスクグラフノード {id, goal, deps, kind} は実行層内部の分解ステップであり本スキーマの対象外（層が違う）。",
+  "description": "制御層タスク（バックログ 1 件）の共通スキーマ。書式の正典は tools/agent-project/backlog.md.example（Markdown 形）で、本スキーマはその JSON 表現（enqueue --json / inbox の *.json / intake_cmd の stdout / codd-gate tasks の出力）。契約の所有者は agent-project。**未知キーは保持される**（前方互換）ため additionalProperties: true。agent-flow のタスクグラフノード {id, goal, deps, kind} は実行層内部の分解ステップであり本スキーマの対象外（層が違う）。",
   "type": "object",
   "required": ["title"],
   "properties": {

@@ -1,6 +1,6 @@
 # agent-dashboard
 
-> **由来**: `tools/kiro-projects-viewer/` を置換せずクローンし改称した系統。
+> 旧 `kiro-projects-viewer` 系統から移行した後継実装。
 > 改称方針: [`docs/designs/agent-tools-rename-design.md`](../../docs/designs/agent-tools-rename-design.md)。
 
 **複数の agent-project プロセスを束ねて可視化し、入出力を git 経由で編集・検収する GUI。**

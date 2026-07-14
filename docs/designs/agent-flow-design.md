@@ -5,8 +5,8 @@
 > 関連ファイル: `tools/agent-flow/agent-flow.py`, `tools/agent-flow/install.sh`,
 > `tools/agent-flow/tests/test_agent_flow.py`, `tools/agent-flow/README.md`
 >
-> **由来**: `docs/designs/kiro-flow-design.md` / `tools/kiro-flow/` を**置換せずクローン**し、
-> 名称を `agent-flow` へ改称した系統。今後の発展はこのクローン側で行う。
+> **由来**: 旧 `kiro-flow` 系統から移行し、名称を `agent-flow` へ改称した設計。
+> 旧実装と旧設計書は移行完了後に削除済み。
 
 ---
 

@@ -7,8 +7,8 @@
 > `tools/agent-project/agent-project.py`,
 > `tools/agent-project/agent-project.yaml.example`
 >
-> **由来**: `docs/designs/kiro-flow-retry-inheritance-design.md` を**置換せずクローン**し、
-> `agent-flow` / `agent-project` 名称へ改称した系統。
+> **由来**: 旧 `kiro-flow` 系統から `agent-flow` / `agent-project` 名称へ移行した設計。
+> 旧設計書は移行完了後に削除済み。
 
 ---
 

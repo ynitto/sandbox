@@ -1,6 +1,6 @@
 # agents/ — エージェント CLI プラグイン定義
 
-agent-project / agent-flow（および旧系統 kiro-flow）の `agent_cli` に、組み込み（`kiro` / `claude` / `copilot` / `codex`）
+agent-project / agent-flow の `agent_cli` に、組み込み（`kiro` / `claude` / `copilot` / `codex`）
 以外の CLI を**コードを触らずに**追加する置き場。1 CLI = 1 ファイル（`<name>.json`）で、
 `agent_cli: <name>`（または `agents:` の役割毎上書き）と書けばそのまま使える。
 

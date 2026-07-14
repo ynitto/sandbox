@@ -6,13 +6,13 @@
 を翻案した CLI。依存は **python3 と git のみ**（pip 依存なし・LLM 不要・必ず有限時間で終わる）。
 
 > - 設計の正典: [`docs/designs/codd-gate-design.md`](../../docs/designs/codd-gate-design.md)
-> - **kiro-project から完全に独立**。charter.md は読まず、他ツールと共有するのは
+> - **agent-project から完全に独立**。charter.md は読まず、他ツールと共有するのは
 >   [`schemas/`](../../schemas/README.md) の共通データ契約（repos / task）だけ。
 >   CI・git hook・手元の点検にそのまま使う。
 > - **どのサブコマンドも単発・有界**（watch/daemon を持たない。git 呼び出しも個別タイムアウト）。
 >   「常に」の繰り返しは cron・git hook・CI が持つ。
-> - kiro-project と組み合わせると「ドリフトの自動修復ループ」に発展する — 追加情報として
->   巻末の[連携付録](#付録-kiro-project-との連携オプション)にまとめた（連携は一方向のオプション）。
+> - agent-project と組み合わせると「ドリフトの自動修復ループ」に発展する — 追加情報として
+>   巻末の[連携付録](#付録-agent-project-との連携オプション)にまとめた（連携は一方向のオプション）。
 
 ## 何を解決するか（ブラウンフィールド前提）
 
@@ -73,8 +73,8 @@ echo 'codd-gate verify --base "@{push}"' >> .git/hooks/pre-push && chmod +x .git
 
 リポジトリのレジストリは**設定ファイルの `repos:`**（codd-gate ネイティブ。外部フォーマット非依存）。
 同じ形を独立ファイルに切り出して `--repos <file>`（設定 `repos_file:`）で渡すこともでき、その形式は
-ツール横断の共通スキーマ [`schemas/repos.schema.json`](../../schemas/repos.schema.json) — kiro-project
-の `<root>/repos.{yaml,json}`（charter しか無い環境では kiro-project が charter から自動生成する）
+ツール横断の共通スキーマ [`schemas/repos.schema.json`](../../schemas/repos.schema.json) — agent-project
+の `<root>/repos.{yaml,json}`（charter しか無い環境では agent-project が charter から自動生成する）
 と**同じファイルを共有**できる。identity は **(url, path, base)** —
 モノレポは path 別、ブランチ別は base 別のエントリで区別する。
 設定ファイルは `.kiro/codd-gate.{yaml,yml,json}`（探索順: `--config` → `./.kiro/` → `~/.kiro/`。
@@ -207,15 +207,15 @@ intake_cmd: 'codd-gate tasks --debt --repos .agent-project/projects/default/repo
 charter は機能要件ではなく**機能追加・リファクタリング・リアーキテクチャの指針**として書き、
 一貫性の維持は codd-gate が機械的に担う。
 
-**タスク追加の責務境界**: kiro-project は**元よりタスクを入力とする設計**（enqueue/inbox は
+**タスク追加の責務境界**: agent-project は**元よりタスクを入力とする設計**（enqueue/inbox は
 「汎用の取り込み口」で、外部ソースは薄いアダプタで流し込む思想。タスク書式の正典は
 `backlog.md.example`）。その JSON 表現は**共通 task スキーマ**（`schemas/task.schema.json`）として
 独立管理されており、codd-gate の `tasks` は所見をこの**共通スキーマへ直接出力する**——
-「kiro-project 向けアダプタ」ではない（スキーマを読める消化先なら何でもよい）。
+「agent-project 向けアダプタ」ではない（スキーマを読める消化先なら何でもよい）。
 スキーマ外の消化先（issue tracker 等）が必要なら、所見 JSON から変換する。
 
 **レジストリ共用**: **共通スキーマの独立ファイル**（`schemas/repos.schema.json`）を両ツールで指す。
-kiro-project は `<root>/repos.{yaml,json}` を読み、**無ければ charter の `## repos` から
+agent-project は `<root>/repos.{yaml,json}` を読み、**無ければ charter の `## repos` から
 自動生成する**（`_meta` マーカー付き・正は charter のまま追従）——codd-gate はその生成物を
 `--repos` で読むだけで、charter を一切知らない。identity (url, path, base) も共通。
 
@@ -258,11 +258,11 @@ codd-gate tasks --base origin/main --inbox .agent-project/projects/default/inbox
 pilot-then-batch: 1 件を人の検収で固めてから残りを自動展開）にまとめ、分解と展開を agent-project に
 委ねられる。巨大な「全部直す」タスクは決して生成しない。
 
-生成されるタスクは kiro-project の鉄則に沿う:
+生成されるタスクは agent-project の鉄則に沿う:
 
 - 同一 repo のドリフト → 決定的 verify 付き（`codd-gate check --doc … --code … --fresh`）＋ `- expect: changes`
 - **別 repo への追随** → `- accept:`（自然言語）＋ `- workspace: <repo名>` ＋ `- paths:` を付けて
-  kiro-project のワークスペース・ルーティングに乗せる（verify 合成 or 人へ、既存機構のまま）
+  agent-project のワークスペース・ルーティングに乗せる（verify 合成 or 人へ、既存機構のまま）
 - 未文書化/未テスト → `codd-gate check --covered <path> --need doc|test` を verify に
 
 **④ タスク単位の verify** — 修復タスクの done 根拠は `codd-gate check`（状態アサーション）。

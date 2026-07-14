@@ -2,7 +2,7 @@
 
 > 作成日: 2026-06-29
 > 対象ブランチ: `claude/kiro-worktree-cost-reduction-8dlgf9`
-> 初出の適用先: `tools/kiro-flow/kiro-flow.py`, `tools/agent-project/agent-project.py`
+> 初出の適用先: `tools/agent-flow/agent-flow.py`, `tools/agent-project/agent-project.py`
 > 位置づけ: **特定ツールに依存しない汎用パターン**。git リモート（GitLab/GitHub 等）を
 > 「タスクのたびに clone して作業/検証する」あらゆるツール・スキルへ転用できる。
 
@@ -169,13 +169,13 @@ release_worktree(dest) -> None
 
 ---
 
-## 8. 適用先メモ（kiro-flow / kiro-project）
+## 8. 適用先メモ（agent-flow / agent-project）
 
 初出の適用は以下。詳細は各ツールの設計書を参照。
-- **kiro-flow**: `ensure_workspace_clone`/`_clone_repo`/`_prepare_run_branch`/`finalize_workspace`/
+- **agent-flow**: `ensure_workspace_clone`/`_clone_repo`/`_prepare_run_branch`/`finalize_workspace`/
   `cleanup_workspace` を本パターンへ置換。書込先 repo を detached worktree で作業し、
   `push HEAD:refs/heads/kf/<run_id>` で送る。`GitBus` の sparse バスクローンは別系統（既に再利用機構あり）。
-- **kiro-project**: `_clone_repo_shallow`（verify/acceptance）を共有 cache + worktree へ置換。
+- **agent-project**: `_clone_repo_shallow`（verify/acceptance）を共有 cache + worktree へ置換。
   検証は最新の target ブランチを毎回 fetch してから worktree を作る（INV-1）。
   さらに `DirectStateGit`（direct モードの状態同期）も、state コミットの組み立てを
   detached worktree（専用 index）で行い、ルートのブランチは update-ref の CAS で進める

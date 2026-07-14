@@ -1,6 +1,6 @@
 # flow-planner パターンカタログ
 #
-# kiro-flow の 7 パターン（map-reduce 含む） + 複合テンプレート + バリアントの詳細定義。
+# agent-flow の 7 パターン（map-reduce 含む） + 複合テンプレート + バリアントの詳細定義。
 # orchestrator の戦略選定で参照される。
 
 # =============================================================================
@@ -222,11 +222,11 @@ variants:
     node_kinds: [split, map, verify, reduce]
     # 2 つの実装（自動ゲート版 / 人ゲート版）。用途に応じて選ぶ
     implementations:
-      - tool: kiro-flow
+      - tool: agent-flow
         enable: "exemplar_first: true（設定ファイル）または --exemplar-first"
         gate: 自動（verify ノードの検証ゲート・人を介さない）
         note: map-reduce の split→map→reduce に対する見本先行モード
-      - tool: kiro-project
+      - tool: agent-project
         enable: "cohort_items を持つ spec（enqueue --cohort-items a,b,c / charter プランナーが自動生成）"
         gate: 人（pilot に review:human。verify→検収ゲートで approve+feedback）
         note: pilot 承認後に固めた定義（{item} 差し込み＋feedback）から残りを生成。act 非依存
@@ -246,11 +246,11 @@ variants:
       - "100 ファイルの命名規則統一: 1 ファイルで規則を確定 → 残りを一括"
     application_cases:
       - case: 大規模マイグレーション（同一変換の繰り返し・無人）
-        enable: "kiro-flow exemplar_first（自動ゲート）"
+        enable: "agent-flow exemplar_first（自動ゲート）"
         flow: "split → pilot map(1件) → verify ゲート → 残り map（pilot 依存）→ reduce"
         why: 1 件で変換手順を検証してから一気に流せる。全滅を避ける
       - case: 命名規則・規約の一括適用（人の承認が要る）
-        enable: "kiro-project cohort（enqueue --cohort-items …）"
+        enable: "agent-project cohort（enqueue --cohort-items …）"
         flow: "pilot を review:human → approve(+feedback) → 固めた指示で残りを生成・実行"
         why: 人が 1 件で規約を確定し、その指示を全メンバへ反映して無人量産
       - case: charter からの繰り返しタスク

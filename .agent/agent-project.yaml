@@ -14,7 +14,7 @@ root: .agent-project
 # executor: stub
 # route_planner: none    # 書込先の auto-route（曖昧時の LLM 推定）を無効化。
 
-# flow_planner: flow-planner   # 既定。スキル（scripts/plan.py）は kiro-flow の
+# flow_planner: flow-planner   # 既定。スキル（scripts/plan.py）は agent-flow の
                                # agents: planner: {agent_cli, model} に従って動く（--agent-cli 伝搬）。
                                # agent にすると スキルを使わず agent_cli で直接計画する。
 
@@ -22,7 +22,7 @@ root: .agent-project
 # distill_learn: false   # 人コメントの蒸留をせず生のまま learn 化
 
 # spec_track: true       # spec ルーティング（採点/policy で spec 前段を前置）。agent-project の設定
-                       # （kiro-flow.yaml に書いても効かない）
+                       # （agent-flow.yaml に書いても効かない）
 
 # グローバル既定
 agent_cli: claude
