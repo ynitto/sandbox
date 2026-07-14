@@ -3922,7 +3922,10 @@ async function resubmitFlowRun() {
   const nameList = (list) =>
     list.slice(0, 8).map((n) => n.id).join(', ') + (list.length > 8 ? ` …（計 ${list.length} 件）` : '');
   const failedNames = rerun.filter((n) => n.state === 'failed');
-  const plan = keep.length
+  const canceled = run.status === 'canceled';
+  const plan = canceled
+    ? `中止した実行の続きからは再開できません。\nタスクを積み直して新しい実行を始めます（完了済み ${keep.length} 件も温存されません）。`
+    : keep.length
     ? `やり直す工程（${rerun.length} 件）: ${nameList(rerun)}` +
       (failedNames.length ? `\n（うち失敗していた工程 ${nameList(failedNames)} は必ず再実行されます）` : '') +
       `\nそのまま使う完了済み（${keep.length} 件）: ${nameList(keep)}` +
@@ -3946,7 +3949,9 @@ async function resubmitFlowRun() {
         ? '本体がまもなく実行します'
         : '本体（agent-project）が次に動いたときに実行されます（今は停止中）';
       toast(
-        keep.length > 0
+        canceled
+          ? `タスク ${res.taskId} を新しい実行として積み直しました。${when}`
+          : keep.length > 0
           ? `この run の中で失敗・未実行の ${rerun.length} 工程だけをやり直します（完了済み ${keep.length} 件は温存・新しい run は増えません）。${when}`
           : `タスク ${res.taskId} を積み直しました。${when}`,
         true
