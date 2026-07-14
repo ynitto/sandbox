@@ -79,10 +79,11 @@ def run_id_for(cfg: "Config", task: "Task") -> str:
 
 
 def build_agent_flow_cmd(task: Task, cfg: "Config", use_git: bool = False,
-                        run_id: str = "") -> "list[str]":
+                        run_id: str = "", inherit_from: str = "") -> "list[str]":
     """agent-flow run（都度起動）のコマンド。planner/executor を制御できる（submit では不可）。
     書込先は _act_batch で確定・永続化済みの `- workspace:` を読む（再ルーティングしない）。
-    run_id を渡すと、その run を再開する（failed なら agent-flow が失敗ノードだけ戻して続行）。"""
+    run_id を渡すと、その run を再開する（failed なら agent-flow が失敗ノードだけ戻して続行）。
+    inherit_from は新 run 時に先行 run の done ノードを引き継ぐ（submit/offload と同じ契約）。"""
     executor = cfg.executor
     if task.get("spec_for") and executor_delegates(cfg):
         # spec 作成タスクは委譲しない（§5.10）: gitlab 等の委譲先では specs/<id>/ がローカルに
@@ -96,6 +97,8 @@ def build_agent_flow_cmd(task: Task, cfg: "Config", use_git: bool = False,
            + _reference_cmd_args(cfg, task) + [
         "run", build_request(task, cfg), "--planner", cfg.flow_planner,
         "--executor", executor, "--max-iterations", str(cfg.max_iterations)])
+    if inherit_from:
+        cmd += ["--inherit-from", inherit_from]
     # 委譲 executor（gitlab）の却下は agent-flow 内部で再委譲せず即失敗させ、agent-project の
     # 通常リトライ（人コメント注入つき）に委ねる。複数イシューの濫造を防ぐ。
     if executor not in ("agent", "stub"):
@@ -250,7 +253,9 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
     使った run-id はタスクへ残し、次の試行の再開判断と viewer の突き合わせに使う。"""
     rid = run_id_for(cfg, task)
     resuming = rid == str(task.get("last_run") or "").strip()
-    cmd = build_agent_flow_cmd(task, cfg, use_git, run_id=rid)
+    # 新 run なら先行 last_run から done を引き継ぐ（submit 経路と同じ。retries-1 推定は rev ずれで外れる）
+    inherit = "" if resuming else (_inherit_from_run(task, rid) or "")
+    cmd = build_agent_flow_cmd(task, cfg, use_git, run_id=rid, inherit_from=inherit)
     _pin_last_run(cfg, task, rid)
     if resuming:
         append_journal(cfg.journal,
@@ -333,10 +338,22 @@ def _req_id_for(task: Task, cfg: "Config", retries: int) -> str:
     return f"req-{h}-{tid}-r{retries}" + (f"-v{rev}" if rev else "")
 
 
+def _inherit_from_run(task: Task, new_run_id: str) -> "str | None":
+    """新 run へ引き継ぐ先行 run-id。`last_run` が新 id と違えばそれを使う。
+
+    `_prev_req_id`（retries-1・現 rev）だと revise で rev が上がったあと、実在しない
+    `…-r{N-1}-v{newRev}` を指して inherit が空振りする。last_run が実際の先行。"""
+    last = str(task.get("last_run") or "").strip()
+    if last and last != str(new_run_id or "").strip():
+        return last
+    return None
+
+
 def _prev_req_id(task: Task, cfg: "Config") -> "str | None":
-    """直前の試行（retries-1・同 rev）の run-id。retries==0（初回）なら None。
-    agent-flow の --inherit-from に渡し、タイムアウト/失敗した先行 run から確定済みノードを
-    引き継ぎつつ先行 run を掃除させる。"""
+    """直前の試行の run-id（互換フォールバック）。
+
+    呼び出し側は `_inherit_from_run` を優先すること。ここは last_run が空のときの
+    retries-1 推定（同 rev）に留める。"""
     return _req_id_for(task, cfg, task.retries - 1) if task.retries > 0 else None
 
 
@@ -378,10 +395,10 @@ def _act_offload(task: Task, cfg: "Config", use_git: bool) -> "tuple":
     gitlab の長期委譲でもループをブロックせず次のタスクへ進める（結果は次パスで回収する）。"""
     base = _kf_base(cfg, use_git) + _workspace_cmd_args(cfg, task) + _reference_cmd_args(cfg, task)
     run_id = _submit_req_id(task, cfg)
+    prev = _inherit_from_run(task, run_id) or _prev_req_id(task, cfg)
     _pin_last_run(cfg, task, run_id)
     term, ok, msg = _flow_result_once(cfg, use_git, run_id)
     if not term:                                  # 未作成/実行中: 未作成なら submit（作成済みは冪等 no-op）
-        prev = _prev_req_id(task, cfg)
         inherit = ["--inherit-from", prev] if prev else []
         try:
             sub = subprocess.run(base + ["--run-id", run_id, "submit", build_request(task, cfg)]
@@ -402,8 +419,9 @@ def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
     req_id は決定的（_submit_req_id）——リブート後の再実行は既存 run に合流する。"""
     base = _kf_base(cfg, use_git) + _workspace_cmd_args(cfg, task) + _reference_cmd_args(cfg, task)
     run_id = _submit_req_id(task, cfg)
+    # pin する前に先行 run を決める（pin 後は last_run が新 id になる）
+    prev = _inherit_from_run(task, run_id) or _prev_req_id(task, cfg)
     _pin_last_run(cfg, task, run_id)
-    prev = _prev_req_id(task, cfg)   # リトライ: 先行 run から引き継ぎ＆掃除させる
     inherit = ["--inherit-from", prev] if prev else []
     try:
         sub = subprocess.run(base + ["--run-id", run_id, "submit", build_request(task, cfg)] + inherit,

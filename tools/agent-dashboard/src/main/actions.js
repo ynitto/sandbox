@@ -187,10 +187,28 @@ function quote(arg) {
   return process.platform === 'win32' ? `"${s.replace(/"/g, '""')}"` : `'${s.replace(/'/g, "'\\''")}'`;
 }
 
-function runProjectCli(command, args, timeoutMs = 60000) {
+function findProjectConfig(projectDir) {
+  // agent-project の _find_config と同じ名前を、状態ルート／ワークスペース候補から探す。
+  // cwd 依存を避け、dashboard CLI 委譲が設定を拾えるようにする。
+  const bases = [
+    projectDir,
+    path.join(projectDir, '.agent'),
+    path.dirname(projectDir),
+    path.join(path.dirname(projectDir), '.agent'),
+  ];
+  for (const base of bases) {
+    for (const name of ['agent-project.yaml', 'agent-project.yml']) {
+      const p = path.join(base, name);
+      if (fs.existsSync(p)) return p;
+    }
+  }
+  return null;
+}
+
+function runProjectCli(command, args, timeoutMs = 60000, cwd) {
   const cmdline = `${command} ${args.map(quote).join(' ')}`;
   return new Promise((resolve, reject) => {
-    const child = spawn(cmdline, { shell: true });
+    const child = spawn(cmdline, { shell: true, cwd: cwd || undefined });
     let out = '';
     let err = '';
     const timer = setTimeout(() => {
@@ -216,6 +234,8 @@ async function runActionViaCli(cfg, { dir, action, id, reason, fields, feedback,
   const command = (cfg.projects && cfg.projects.command) || 'agent-project';
   const { root } = cliScope(dir);
   const base = ['--root', root];
+  const cfgPath = findProjectConfig(root);
+  if (cfgPath) base.push('--config', cfgPath);
   let args;
   if (action === 'approve') args = ['approve', id, '--reason', reason, ...base];
   else if (action === 'reject') args = ['reject', id, '--reason', reason, ...base];
@@ -228,7 +248,8 @@ async function runActionViaCli(cfg, { dir, action, id, reason, fields, feedback,
     for (const [key, value] of Object.entries(payload)) args.push(`--${key}`, value);
     args.push(...base);
   } else args = ['reprioritize', id, '--defer', '--reason', reason, ...base];
-  return runProjectCli(command, args);
+  const cwd = cfgPath ? path.dirname(cfgPath) : root;
+  return runProjectCli(command, args, 60000, cwd);
 }
 
 // action: approve | hold | pin | defer | revise
@@ -298,7 +319,10 @@ async function requestReplan(cfg, { dir, reason }) {
     const command = (cfg.projects && cfg.projects.command) || 'agent-project';
     const { root } = cliScope(dir);
     const args = ['replan', '--reason', why, '--root', root];
-    const res = await runProjectCli(command, args);
+    const cfgPath = findProjectConfig(root);
+    if (cfgPath) args.push('--config', cfgPath);
+    const cwd = cfgPath ? path.dirname(cfgPath) : root;
+    const res = await runProjectCli(command, args, 60000, cwd);
     return { ...res, via: 'cli' };
   } catch (err) {
     if (mode === 'cli') throw err;

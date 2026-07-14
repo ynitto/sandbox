@@ -156,6 +156,19 @@ const hoursAgo = (h) => new Date(Date.now() - h * 3600_000).toISOString().replac
     assert.strictEqual(res.taskId, 'TASK-9');
   });
 
+  await test('カスタム task_branch_prefix（例 agent/）からもタスクを逆引きする', async () => {
+    const { root, busDir, runId } = scaffold({
+      runId: 'run-20260712-213419-custom',
+      meta: {
+        status: 'failed', request: 'do it',
+        workspace: { branch: 'agent/TASK-9' },
+      },
+    });
+    const res = await resubmit({ dir: root, busDir, runId });
+    assert.strictEqual(res.viaTask, true);
+    assert.strictEqual(res.taskId, 'TASK-9');
+  });
+
   await test('状態ルートとワークスペースが異なるとき、状態ルート側の backlog で続きから再開する', async () => {
     // renderer は state.project.dir（状態 worktree）を flowResubmit に渡す。
     // selectedDir（ワークスペース）を渡すと backlog が無く inbox へ落ちる。

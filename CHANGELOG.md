@@ -7,6 +7,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-flow / agent-project / agent-dashboard: Set1 integration 手つなぎ修正
+
+- **feedback 差し戻しが同じ run-id を再生成し agent-flow が旧 request で再開した** —
+  ingest が retries を進め新 id にする（dashboard Decision Outcome → project → flow）。
+- **dashboard の bus 解決がローカル残渣 runs を優先し、設定バスと割れた** —
+  flowBus* / yaml `bus:` を先に採用。
+- **sync `run` に `--inherit-from` が無く、submit だけ done を引き継いだ** —
+  last_run 基準で sync/submit/offload を揃える（rev バンプ後の retries-1 空振りも解消）。
+- **`taskIdOfRun` が ap/kp 以外の prefix を無視し resubmit が inbox へ落ちた** —
+  単一段 `prefix/task` を受理。
+- **dashboard CLI 委譲が cwd 依存で設定を拾えなかった** — `--config` + cwd 固定。
+- **旧 `## フィードバック` 票が UI 上ずっと undecided** — project の FEEDBACK_MARKERS と揃える。
+
 ### agent-flow / agent-project / agent-dashboard: Set1 individual バグ修正
 
 - **agent-flow: 途中「差し戻し」がイシューをクローズしていた** — docstring は閉じないとあるのに

@@ -128,6 +128,18 @@ test('parseNeeds の decided は Decision Outcome 配下の [x] だけを見る'
   assert.strictEqual(project.parseNeeds(done, 'T1').decided, true);
 });
 
+test('parseNeeds の decided は旧 ## フィードバック欄の [x] も見る', () => {
+  const md = `# 要対応: T1
+
+- [x] 本文の手順
+
+## フィードバック
+- [x] 確定
+方針
+`;
+  assert.strictEqual(project.parseNeeds(md, 'T1').decided, true);
+});
+
 test('parseNeeds は要点の無い needs でも壊れない（後方互換）', () => {
   const n = project.parseNeeds('# 要対応: T1 — 何か\n\n本文だけ\n', 'T1');
   assert.strictEqual(n.why, '');

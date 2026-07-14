@@ -7712,6 +7712,26 @@ class RunResumeTests(unittest.TestCase):
             self._run(cfg, "req-deadbeef-T1-r0", "failed")
             self.assertNotEqual(km.run_id_for(cfg, t), "req-deadbeef-T1-r0")
 
+    def test_feedback_ingest_bumps_retries_so_id_diverges(self):
+        # retries=0 + last_run=…-r0 の差し戻しでも新 id になる（ingest が retries を進める）。
+        # 進めないと agent-flow が同じ id を再開し meta.request で差し戻しを捨てる。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="review", verify="true", retries=0)
+            cfg = cfg_for(d)
+            km.ensure_dirs(cfg)
+            t0 = km.load_tasks(cfg.backlog)[0]
+            t0.set("last_run", km._req_id_for(t0, cfg, 0))
+            km.persist_task(cfg, t0)
+            km.write_needs_file(cfg, t0, "検収", review=True)
+            nf = d / "needs" / "T1.md"
+            _submit_feedback(nf, "本番設定でやり直して")
+            tasks = km.load_tasks(cfg.backlog)
+            self.assertEqual(km.ingest_feedback(cfg, tasks), ["T1"])
+            t = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(t.retries, 1)
+            self.assertNotEqual(km.run_id_for(cfg, t), t.get("last_run"))
+
     def test_revise_forces_a_fresh_run(self):
         with tempfile.TemporaryDirectory() as d:
             cfg = self._cfg(d)

@@ -245,6 +245,11 @@ def ingest_feedback(cfg: "Config", tasks: "list[Task]") -> "list[str]":
         t.drop("feedback")
         if fb:
             t.extra.append(("feedback", fb.replace("\n", " ⏎ ")))
+            # 計画変更＝新しい run。retries を進めないと last_run と同じ id を再生成し、
+            # agent-flow は既存 meta.request で再開して差し戻しが planner に届かない。
+            # revise が rev を上げるのと対称（feedback 経路でも id を変える）。
+            t.retries += 1
+            t.drop("env_resume")          # メモ付き再開は env 続行ではなく計画変更
         if was_review:                               # review→ feedback あり=差し戻し(手戻り) / 無し=承認(clean)
             autonomy_record(cfg, t, clean=not bool(fb))
         persist_task(cfg, t)

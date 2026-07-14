@@ -191,11 +191,13 @@ function readRunMeta(busDir, runId) {
 // 旧形式の run は「どのタスクのものか」を viewer が言えず、再実行が inbox 投入（＝誰も
 // 拾わない無反応ボタン）へ落ちる。
 // 旧データ互換で kp/<task-id>（kiro 改名前）も受ける。
+// task_branch_prefix が設定で ap/ 以外のときも、単一段の prefix/<task-id> を受け取る
+// （取れないと flow:resubmit が inbox 投入＝daemon 無し既定では無反応ボタンになる）。
 function taskIdOfRun(runId, meta) {
   const fromId = parseRunId(runId).taskId;
   if (fromId) return fromId;
   const branch = String((meta && meta.workspace && meta.workspace.branch) || '');
-  const m = /^(?:ap|kp)\/(.+)$/.exec(branch);
+  const m = /^(?:ap|kp)\/(.+)$/.exec(branch) || /^[^/]+\/([^/]+)$/.exec(branch);
   return m ? m[1] : null;
 }
 

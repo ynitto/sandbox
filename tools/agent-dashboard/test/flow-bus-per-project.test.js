@@ -38,14 +38,14 @@ test('flowBusByProject[<name>] が pure-remote で採用される（ローカル
   assert.strictEqual(r.source, 'config-per-project');
 });
 
-test('ローカル <project>/bus に runs があればそちらが優先される', () => {
+test('明示バス設定があるときはローカル bus より設定側を優先する', () => {
   const busClone = mkbus(path.join(tmp, 'clone-alpha2', 'agent-flow'));
   mkbus(path.join(alphaDir, 'bus'));
   const cfg = { projects: { flowBusByProject: { alpha: busClone } } };
   const r = project.resolveBusDir(alphaDir, alphaDir, cfg);
   assert.strictEqual(r.hasBus, true);
-  assert.strictEqual(r.busDir, path.resolve(path.join(alphaDir, 'bus')));
-  assert.strictEqual(r.source, 'project');
+  assert.strictEqual(r.busDir, path.resolve(busClone));
+  assert.strictEqual(r.source, 'config-per-project');
 });
 
 test('写像に無いプロジェクトは従来どおり flowBus / 自動発見にフォールバック', () => {
