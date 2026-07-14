@@ -1,0 +1,8 @@
+{
+  "id": "t6",
+  "goal": "coddgate 断片に shutil.which(\"codd-gate\") による実行可否検出関数 codd_gate_available() を実装し、結果をプロセス内でキャッシュする",
+  "deps": [
+    "t5"
+  ],
+  "kind": "work"
+}

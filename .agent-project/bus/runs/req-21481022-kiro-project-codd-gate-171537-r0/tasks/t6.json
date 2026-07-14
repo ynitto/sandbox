@@ -1,0 +1,8 @@
+{
+  "id": "t6",
+  "goal": "coddgate.py に codd_gate_enabled() と、codd-gate 未インストール時に副作用ゼロの既定値を返す no-op 縮退ヘルパ（skipped=True, ok=True を返す結果オブジェクト）を実装し、全結線点が既存挙動を維持できるようにする",
+  "deps": [
+    "t5"
+  ],
+  "kind": "generate"
+}

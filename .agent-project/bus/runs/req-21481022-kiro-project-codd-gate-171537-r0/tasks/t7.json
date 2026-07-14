@@ -1,0 +1,9 @@
+{
+  "id": "t7",
+  "goal": "coddgate.py に codd_gate_verify(repos_path, repo_dir, base_rev, strict=True) を実装する。subprocess で codd-gate verify --repos ... --repo-dir sandbox=. --base ... --strict を実行し、終了コード・stdout・stderr を構造化して返す（未インストール時は t6 の縮退結果を返す）",
+  "deps": [
+    "t5",
+    "t6"
+  ],
+  "kind": "generate"
+}

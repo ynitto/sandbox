@@ -1,0 +1,10 @@
+{
+  "id": "t5",
+  "goal": "kiro_project/coddgate.py を新規作成し、t1/t2 で棚卸しした codd_gate_* 5ファイルの責務を1断片へ統合する。先頭に from __future__ import annotations を置き、モジュール import ではなく共有名前空間 exec 前提（他断片の名前を直接参照）で書く",
+  "deps": [
+    "t1",
+    "t2",
+    "t3"
+  ],
+  "kind": "synthesize"
+}

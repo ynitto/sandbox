@@ -1,0 +1,10 @@
+{
+  "id": "t9",
+  "goal": "coddgate.py に codd_gate_debt_status()（負債ラチェット：現在値と基準値の比較で悪化を検出）と codd_gate_summary_text()（mr の差し戻し理由本文へ埋め込める人間可読の要約文を生成）を実装する",
+  "deps": [
+    "t5",
+    "t6",
+    "t3"
+  ],
+  "kind": "generate"
+}

@@ -1,0 +1,6 @@
+{
+  "id": "t1",
+  "goal": "kiro_project/__init__.py を読み、_FRAGMENTS タプルの並び順と「共有名前空間へ順次 exec して合成する」仕組みを確認する。\"coddgate\" の挿入位置が \"verify\" の直前になることを確定し、断片の記述規約（先頭に from __future__ import annotations、断片間 import 禁止、トップレベル定義のみ）を明文化して報告する",
+  "deps": [],
+  "kind": "work"
+}

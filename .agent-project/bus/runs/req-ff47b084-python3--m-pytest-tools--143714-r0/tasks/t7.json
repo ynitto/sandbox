@@ -1,0 +1,11 @@
+{
+  "id": "t7",
+  "goal": "`python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q`（--cov なし）が終了コード 0 で全件 green になることを確認する。残存 failure があれば t3〜t6 の分類のどれに該当するかを添えて報告する",
+  "deps": [
+    "t3",
+    "t4",
+    "t5",
+    "t6"
+  ],
+  "kind": "verify"
+}

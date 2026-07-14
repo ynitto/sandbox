@@ -1,0 +1,10 @@
+{
+  "id": "t3",
+  "who": "worker-1",
+  "status": "done",
+  "output": "タスクt3の成果物を `artifacts/t3/report.md` に出力した。ワークツリーは調査のみで変更なし（`git status` 差分なし、`pytest -k codd` 63 passed をベースライン確認済み）。\n\n**要点**:\n- 4ファイル間で完全一致の関数名衝突は無いが、`resolve_codd_gate`/`resolve_codd_gate_bin` の名称近接や、`status.py`→`detect.py` の唯一の実import依存など、統合時に注意すべき点を整理した\n- 全21シンボル（関数15・クラス2・定数4・private helper含む）の新旧名対応表と、`codd_gate_`接頭辞統一後の最終API・推奨定義順を確定した\n- 範囲外で3点発見: (1) `codd_gate_hooks.py`/`codd_gate_invoke.py` の棚卸しがどのタスクにも未割当で、t5-t9予定の新規関数と機能重複の恐れ、(2) `status.py`/`debt.py`に専用単体テストが無い、(3) 3関数が現状デッドコード（テストのみで実運用未結線）\n- t1/t2既報告の前提崩れ（作業ブランチに`kiro_project/`パッケージが存在しない）は本タスクでは未解消のまま引き継ぎ",
+  "finished_at": "2026-07-13T08:01:39Z",
+  "artifacts": [
+    "artifacts/t3/report.md"
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "id": "t4",
+  "goal": "kiro_project/verify.py の回帰ゲート関数、mr.py の検収判定関数、model.py の enqueue 関数を特定し、それぞれの結線ポイント（関数名・シグネチャ・戻り値の合否表現）を書き出す",
+  "deps": [
+    "t3"
+  ],
+  "kind": "work"
+}

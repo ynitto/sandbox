@@ -1,0 +1,633 @@
+........................................................................ [ 18%]
+........................................................................ [ 37%]
+........................................................................ [ 55%]
+........................................................................ [ 74%]
+........................................................................ [ 92%]
+............................                                             [100%]
+==================================== PASSES ====================================
+_______ OrphanRecoveryTests.test_only_latest_generation_survives_restart _______
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:02Z] [d2] 孤児 run を終端化: r0 → superseded（新世代 r1 に引き継ぎ・再開しない）
+[2026-07-12T13:55:02Z] [d2] 孤児 run を終端化: r1 → superseded（新世代 r2 に引き継ぎ・再開しない）
+_____ OrphanRecoveryTests.test_superseded_orphan_is_terminated_not_resumed _____
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:02Z] [d2] 孤児 run を終端化: run1 → superseded（新世代 run2 に引き継ぎ・再開しない）
+________ PlannerRobustnessTests.test_inflight_amend_only_pending_nodes _________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:02Z] [orch] in-flight: 待機 1 ノードへ人の指摘を反映（実行中は不変）
+______ GitlabExecutorPluginTests.test_all_mrs_merged_approves_and_closes _______
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:02Z] [gitlab] イシュー #42 を起票し関連 MR の決着待ち（https://gitlab.com/group/repo）: https://gitlab.com/group/repo/-/issues/42
+[2026-07-12T13:55:02Z] [gitlab] イシュー #42: 関連 MR を全マージ＝承認。イシューをクローズ（https://gitlab.com/group/repo/-/issues/42）
+_______ GitlabExecutorPluginTests.test_deleted_issue_treated_as_rejected _______
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:02Z] [gitlab] イシュー #7 を起票し関連 MR の決着待ち（https://gitlab.com/group/repo）: https://gitlab.com/group/repo/-/issues/7
+[2026-07-12T13:55:02Z] [gitlab] イシュー #7 が見つかりません（削除された＝取り下げとみなす）: https://gitlab.com/group/repo/-/issues/7
+_ GitlabExecutorPluginTests.test_externally_closed_with_approve_comment_returns_done _
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:02Z] [gitlab] イシュー #5 を起票し関連 MR の決着待ち（https://gitlab.com/group/repo）: u5
+[2026-07-12T13:55:02Z] [gitlab] イシュー #5: クローズ済み＋イシューコメントが承認を示唆＝承認。イシューをクローズ（u5）
+_ GitlabExecutorPluginTests.test_externally_closed_with_reject_comment_raises __
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:02Z] [gitlab] イシュー #6 を起票し関連 MR の決着待ち（https://gitlab.com/group/repo）: u6
+[2026-07-12T13:55:02Z] [gitlab] イシュー #6: 却下（クローズ済み＋イシューコメントが却下を示唆）。人コメントをやり直しに活かす。
+_________ GitlabExecutorPluginTests.test_new_issue_embeds_task_marker __________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:02Z] [gitlab] イシュー #7 を起票し関連 MR の決着待ち（https://gitlab.com/group/repo）: u7
+[2026-07-12T13:55:02Z] [gitlab] イシュー #7: 関連 MR を全マージ＝承認。イシューをクローズ（u7）
+___ GitlabExecutorPluginTests.test_non_404_error_still_raises_plain_failure ____
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:02Z] [gitlab] イシュー #7 を起票し関連 MR の決着待ち（https://gitlab.com/group/repo）: u
+_ GitlabExecutorPluginTests.test_one_mr_closed_unmerged_rejects_with_comments __
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:02Z] [gitlab] イシュー #9 を起票し関連 MR の決着待ち（https://gitlab.com/group/repo）: https://gitlab.com/group/repo/-/issues/9
+[2026-07-12T13:55:02Z] [gitlab] イシュー #9: 却下（未マージクローズ）。人コメントをやり直しに活かす。
+______ GitlabExecutorPluginTests.test_open_mr_keeps_waiting_until_merged _______
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:02Z] [gitlab] イシュー #8 を起票し関連 MR の決着待ち（https://gitlab.com/group/repo）: u
+[2026-07-12T13:55:02Z] [gitlab] イシュー #8: 人の作業を検知（MR 1 件 / ラベル）。決着待ちの猶予を延長（1209600s, 0=無限）
+[2026-07-12T13:55:02Z] [gitlab] イシュー #8: 関連 MR を全マージ＝承認。イシューをクローズ（u）
+_ GitlabExecutorPluginTests.test_reattaches_to_existing_open_issue_no_duplicate _
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:02Z] [gitlab] 既存の open イシュー #42 に再アタッチ（二重起票を回避, token=kf-aa55aea3a2d9）: u42
+[2026-07-12T13:55:02Z] [gitlab] イシュー #42: 関連 MR を全マージ＝承認。イシューをクローズ（u42）
+_______ GitlabExecutorPluginTests.test_reject_without_comments_says_auto _______
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:02Z] [gitlab] イシュー #3 を起票し関連 MR の決着待ち（https://gitlab.com/group/repo）: u
+[2026-07-12T13:55:02Z] [gitlab] イシュー #3: 却下（未マージクローズ）。人コメント無し＝自動で判断してやり直す。
+_____ GitlabExecutorPluginTests.test_search_hit_without_marker_is_ignored ______
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:02Z] [gitlab] イシュー #99 を起票し関連 MR の決着待ち（https://gitlab.com/group/repo）: u99
+[2026-07-12T13:55:02Z] [gitlab] イシュー #99: 関連 MR を全マージ＝承認。イシューをクローズ（u99）
+_________ GitlabExecutorPluginTests.test_timeout_raises_before_any_mr __________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:02Z] [gitlab] イシュー #1 を起票し関連 MR の決着待ち（https://gitlab.com/group/repo）: https://gitlab.com/group/repo/-/issues/1
+____ GitlabAutoMergeTests.test_approved_clean_mr_is_merged_and_issue_closed ____
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:02Z] [gitlab] イシュー #42: status:approved＋クリーン → 自動承認（MR !1 をマージ）＝承認。イシューをクローズ（u42）
+____ GitlabAutoMergeTests.test_approved_mr_matching_target_branch_is_merged ____
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:02Z] [gitlab] イシュー #42: status:approved＋クリーン → 自動承認（MR !1 をマージ）＝承認。イシューをクローズ（u42）
+_ GitlabAutoMergeTests.test_approved_mr_target_not_validated_when_target_unknown _
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:02Z] [gitlab] イシュー #42: status:approved＋クリーン → 自動承認（MR !1 をマージ）＝承認。イシューをクローズ（u42）
+_____ GitlabAutoMergeTests.test_approved_mr_wrong_target_branch_sends_back _____
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:02Z] [gitlab] イシュー #42: status:approved だが未クリーンのため差し戻し（MR !1: ターゲットブランチが `main`（期待は `develop`）＝別ブランチ向けのため自動マージ対象外。target を修正して再度承認してください）: u42
+______ GitlabAutoMergeTests.test_approved_no_diff_mr_is_closed_not_merged ______
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:02Z] [gitlab] イシュー #42: status:approved＋クリーン → 自動承認（MR !1 は差分なし＝クローズ）＝承認。イシューをクローズ（u42）
+_________ GitlabAutoMergeTests.test_approved_with_conflicts_sends_back _________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:02Z] [gitlab] イシュー #42: status:approved だが未クリーンのため差し戻し（MR !1: コンフリクト（merge_status=cannot_be_merged））: u42
+___ GitlabAutoMergeTests.test_approved_with_unresolved_discussion_sends_back ___
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:02Z] [gitlab] イシュー #42: status:approved だが未クリーンのため差し戻し（MR !1: 未解決のレビューコメントが 1 件）: u42
+____ GitlabAutoMergeTests.test_approved_without_mr_closes_issue_as_approved ____
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:02Z] [gitlab] イシュー #42: status:approved＋関連 MR 無し（自動承認）＝承認。イシューをクローズ（u42）
+______ GitlabAutoMergeTests.test_manual_close_resolves_when_human_closes _______
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:02Z] [gitlab] イシュー #42: 関連 MR を全マージ＝承認。イシューをクローズ（u42）
+_ GitlabAutoMergeTests.test_manual_close_waits_after_all_merged_and_posts_note_once _
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:02Z] [gitlab] イシュー #42: 承認条件は成立（関連 MR がすべてマージ済み）。クローズは人に委ねて監視を継続: u42
+_____ GitlabAutoMergeTests.test_merge_api_failure_keeps_waiting_for_retry ______
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:02Z] [gitlab] イシュー #42: 自動マージを完遂できませんでした（次回再試行）: GitLab API PUT .../merge 失敗: HTTP 403 Forbidden
+_ GitlabRepoInstructionTests.test_execute_renders_workspace_section_without_clone_path _
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:02Z] [gitlab] イシュー #3 を起票し関連 MR の決着待ち（https://gitlab.com/group/repo.git）: https://gitlab.com/group/repo/-/issues/3
+[2026-07-12T13:55:02Z] [gitlab] イシュー #3: 関連 MR を全マージ＝承認。イシューをクローズ（https://gitlab.com/group/repo/-/issues/3）
+______________ ExecutorResolutionTests.test_explicit_path_plugin _______________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:03Z] [executor] プラグイン '/private/var/folders/8c/s6jh85ls4tq3fmzkl0jk5jcc0000gn/T/kiro-flow-ws-6932-qfn2yite/sandbox/tools/kiro-flow/executors/gitlab.py' をロードしました: /private/var/folders/8c/s6jh85ls4tq3fmzkl0jk5jcc0000gn/T/kiro-flow-ws-6932-qfn2yite/sandbox/tools/kiro-flow/executors/gitlab.py
+_________ ExecutorResolutionTests.test_resolves_bundled_gitlab_plugin __________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:03Z] [executor] プラグイン 'gitlab' をロードしました: /private/var/folders/8c/s6jh85ls4tq3fmzkl0jk5jcc0000gn/T/kiro-flow-ws-6932-qfn2yite/sandbox/tools/kiro-flow/executors/gitlab.py
+___________ GitDistributedTests.test_corrupt_index_clone_is_rebuilt ____________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:13Z] [corrupt-index] 再利用クローン /var/folders/8c/s6jh85ls4tq3fmzkl0jk5jcc0000gn/T/kf-git-8ov42fi9/clones/corrupt-index を回復できないため作り直します
+_______ GitDistributedTests.test_empty_objects_clone_is_rebuilt_on_reuse _______
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:14Z] [empty-obj] 再利用クローン /var/folders/8c/s6jh85ls4tq3fmzkl0jk5jcc0000gn/T/kf-git-oj48mx_0/clones/empty-obj を回復できないため作り直します
+______ GitDistributedTests.test_sync_push_self_heals_on_object_corruption ______
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:22Z] [push-heal] クローン /var/folders/8c/s6jh85ls4tq3fmzkl0jk5jcc0000gn/T/kf-git-2b6prsyf/clones/push-heal のオブジェクト破損を検知——リモートから作り直します
+________ ArtifactProtocolTests.test_worker_records_artifacts_in_result _________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:26Z] [w1] ワーカー起動 (executor=stub, keep_alive=False, idle_exit=True)
+[2026-07-12T13:55:26Z] [w1] claim 成功: t1 [work] — g
+[2026-07-12T13:55:26Z] [w1] 完了: t1 [done]
+[2026-07-12T13:55:27Z] [w1] claim 可能タスクが無いため終了します（idle-exit）。
+_____ ArtifactProtocolTests.test_worker_records_exception_data_on_failure ______
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:27Z] [w1] ワーカー起動 (executor=stub, keep_alive=False, idle_exit=True)
+[2026-07-12T13:55:27Z] [w1] claim 成功: t1 [work] — g
+[2026-07-12T13:55:27Z] [w1] 完了: t1 [failed]
+[2026-07-12T13:55:27Z] [w1] claim 可能タスクが無いため終了します（idle-exit）。
+______________ ArgvLimitTests.test_child_spawn_propagates_config _______________
+----------------------------- Captured stdout call -----------------------------
+>>> 既存 run run-x を再開します（status=<Mock name='mock.run_meta().get()' id='4443959520'>）
+
+>>> kiro-flow run: run_id=run-x bus=local:/var/folders/8c/s6jh85ls4tq3fmzkl0jk5jcc0000gn/T/kf-bus-lkxmkpne (resume)
+>>> state-git: 無効（未設定）。リモート viewer にバスを見せるには kiro-flow.yaml に state_git を設定し、この daemon がその設定を読めていること（--config か 起動 cwd の .kiro/kiro-flow.yaml）を確認
+>>> orchestrator x1 + worker x1 を起動しました。Ctrl-C で全停止。
+
+>>> service_waits でエラー（無視して継続）: 'Mock' object is not iterable
+
+>>> run run-x は cancel されました。停止します。
+__________ ArgvLimitTests.test_gitlab_block_resolved_from_config_file __________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:27Z] [executor] プラグイン 'gitlab' をロードしました: /private/var/folders/8c/s6jh85ls4tq3fmzkl0jk5jcc0000gn/T/kiro-flow-ws-6932-qfn2yite/sandbox/tools/kiro-flow/executors/gitlab.py
+________________ SelfUpdateTests.test_apply_update_records_sha _________________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:27Z] [update] 更新を適用しました（4c8b3892）。
+_________ SelfUpdateTests.test_apply_update_skips_when_tool_unchanged __________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:27Z] [update] 更新を適用しました（f898e594）。
+[2026-07-12T13:55:27Z] [update] 本体（tools/kiro-flow）に変更なし——適用をスキップし ベースラインを 10d4afa5 へ進めました。
+_________ StateGitSyncTests.test_concurrent_committer_is_not_clobbered _________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:28Z] [state-git] 同期: import=0 export=1
+[2026-07-12T13:55:30Z] [state-git] 同期: import=0 export=1
+__ StateGitSyncTests.test_conflict_inbox_prefers_remote_and_runs_prefer_local __
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:30Z] [state-git] 同期: import=0 export=2
+[2026-07-12T13:55:30Z] [state-git] 同期: import=1 export=1
+______________ StateGitSyncTests.test_deletion_propagates_like_gc ______________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:31Z] [state-git] 同期: import=0 export=1
+[2026-07-12T13:55:31Z] [state-git] 同期: import=0 export=1
+_______________ StateGitSyncTests.test_dot_prefixed_subdir_works _______________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:31Z] [state-git] 同期: import=0 export=1
+_ StateGitSyncTests.test_durable_write_config_on_state_clone_and_local_remote __
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:32Z] [state-git] 同期: import=0 export=1
+_____ StateGitSyncTests.test_empty_objects_state_clone_is_rebuilt_on_reuse _____
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:32Z] [state-git] 同期: import=0 export=2
+_________ StateGitSyncTests.test_export_pushes_run_state_under_subdir __________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:33Z] [state-git] 同期: import=0 export=2
+___________________ StateGitSyncTests.test_import_inbox_drop ___________________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:33Z] [state-git] 同期: import=0 export=1
+[2026-07-12T13:55:34Z] [state-git] 同期: import=1 export=0
+_______________ StateGitSyncTests.test_interval_rate_limits_sync _______________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:34Z] [state-git] 同期: import=0 export=1
+[2026-07-12T13:55:34Z] [state-git] 同期: import=1 export=0
+_ StateGitSyncTests.test_state_sync_self_heals_on_object_corruption_midflight __
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:34Z] [state-git] 同期: import=0 export=1
+[2026-07-12T13:55:35Z] [state_git] クローン /var/folders/8c/s6jh85ls4tq3fmzkl0jk5jcc0000gn/T/kf-sg-a7iziepj/bus/.state-git のオブジェクト破損を検知——次回同期で作り直します
+[2026-07-12T13:55:35Z] [state-git] 同期: import=1 export=0
+___________ StateGitSyncTests.test_sync_failure_does_not_kill_caller ___________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:35Z] [state-git] 同期失敗（続行）: state_git クローン失敗: fatal: repository '/var/folders/8c/s6jh85ls4tq3fmzkl0jk5jcc0000gn/T/kf-sg-1kyvor1c/no-such-remote.git' does not exist
+______________ StateGitSyncTests.test_tmp_and_dot_files_excluded _______________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:35Z] [state-git] 同期: import=0 export=1
+___ StateGitSyncTests.test_unpushed_consecutive_syncs_amend_into_one_commit ____
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:36Z] [state-git] 同期: import=0 export=1
+[2026-07-12T13:55:36Z] [state-git] 同期: import=0 export=1
+_ DaemonStatusStateGitSyncTests.test_idle_heartbeat_disabled_produces_no_extra_commit_beyond_status_write _
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:36Z] [state-git] 同期: import=0 export=1
+_ DaemonStatusStateGitSyncTests.test_status_json_mirrors_via_existing_state_sync _
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:37Z] [state-git] 同期: import=0 export=1
+______ ServiceWaitsTests.test_approved_writes_done_result_and_clears_wait ______
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:37Z] [t] park 決着（承認）: n1 → done
+________________ ServiceWaitsTests.test_deadline_exceeded_fails ________________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:37Z] [t] park タイムアウト: n1（#5）→ failed
+_____________ ServiceWaitsTests.test_rejected_writes_failed_result _____________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:37Z] [t] park 決着（却下）: n1 → failed
+__________ ServiceWaitsTests.test_throttled_released_when_slot_frees ___________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:37Z] [t] throttle 解除: n2（同時イシューの枠が空いた）
+_________ ServiceWaitsTests.test_undecided_keeps_wait_and_renews_lease _________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:37Z] [t] park: n1 人の作業を検知（猶予を approved_timeout へ延長）
+_________________ CancelTests.test_cmd_cancel_marks_and_clears _________________
+----------------------------- Captured stdout call -----------------------------
+>>> run run1 をキャンセルしました・status=canceled 確定。park 解除 1 件、理由: 緊急停止
+_____________________ CancelTests.test_orch_check_canceled _____________________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:37Z] [orch] cancel 指示を検知（止める）。orchestrator を終了します。
+__ GitlabDeferPollTests.test_execute_defer_returns_immediately_when_approved ___
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:37Z] [gitlab] イシュー #12 を起票し関連 MR の決着待ち（https://gitlab.com/group/repo）: u
+[2026-07-12T13:55:37Z] [gitlab] イシュー #12: 関連 MR を全マージ＝承認。イシューをクローズ（u）
+___________ GitlabDeferPollTests.test_execute_defers_when_undecided ____________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:37Z] [gitlab] イシュー #11 を起票し関連 MR の決着待ち（https://gitlab.com/group/repo）: https://gitlab.com/group/repo/-/issues/11
+[2026-07-12T13:55:37Z] [gitlab] イシュー #11: 未決着のため park（承認待ちを worker から切り離す）: https://gitlab.com/group/repo/-/issues/11
+______________ GitlabDeferPollTests.test_on_cancel_closes_issues _______________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:37Z] [gitlab] イシュー #9 を cancel 後始末でクローズ: u
+_____________ GitlabDeferPollTests.test_poll_deleted_issue_rejects _____________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:37Z] [gitlab] イシュー #5 が見つかりません（削除された＝取り下げとみなす）: u
+_______________ GitlabDeferPollTests.test_poll_returns_approved ________________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:37Z] [gitlab] イシュー #5: 関連 MR を全マージ＝承認。イシューをクローズ（u）
+_________ GitlabDeferPollTests.test_poll_transient_error_returns_none __________
+----------------------------- Captured stdout call -----------------------------
+[2026-07-12T13:55:37Z] [gitlab] poll: イシュー #5 の確認に失敗（未決着として次回再試行）: GitLab API GET ... 失敗: HTTP 500 Server Error
+=========================== short test summary info ============================
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ProtocolTests::test_all_terminal
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ProtocolTests::test_claim_lock_is_off_bus
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ProtocolTests::test_concurrent_claim_single_winner
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ProtocolTests::test_deterministic_winner_earliest_ts
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ProtocolTests::test_expired_lease_is_reclaimable
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ProtocolTests::test_pending_then_claimed_then_done
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::InheritTests::test_fully_done_predecessor_seeds_nothing_but_cleans_up
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::InheritTests::test_live_predecessor_is_untouched
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::InheritTests::test_missing_predecessor_is_noop
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::InheritTests::test_partial_inherit_copies_done_and_removes_old
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::InheritTests::test_workspace_branch_is_chained_from_old
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::RunFailureTests::test_fail_request_delegates_to_mark_run_failed_when_run_exists
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::RunFailureTests::test_fail_request_noop_when_already_terminal
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::RunFailureTests::test_fail_request_without_run_creates_failed_meta
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::RunFailureTests::test_mark_run_failed_missing_run
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::RunFailureTests::test_mark_run_failed_noop_when_already_done
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::RunFailureTests::test_mark_run_failed_noop_when_already_failed
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::RunFailureTests::test_mark_run_failed_terminalizes_running
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::RetryFailedRunTests::test_clears_terminal_and_orphan_bookkeeping
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::RetryFailedRunTests::test_reruns_incomplete_when_no_failed_results
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::RetryFailedRunTests::test_resets_failed_nodes_keeps_done
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::OrphanRecoveryTests::test_adopt_skips_live_run
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::OrphanRecoveryTests::test_adopt_skips_owned_run
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::OrphanRecoveryTests::test_adopt_waits_for_stale_claim_lease
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::OrphanRecoveryTests::test_expired_lease_is_orphan
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::OrphanRecoveryTests::test_latest_generation_still_resumed_when_predecessor_present
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::OrphanRecoveryTests::test_mark_run_superseded_noop_when_terminal
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::OrphanRecoveryTests::test_mark_run_superseded_records_and_is_terminal
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::OrphanRecoveryTests::test_no_lease_fresh_run_not_orphan
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::OrphanRecoveryTests::test_no_lease_old_run_is_orphan
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::OrphanRecoveryTests::test_only_latest_generation_survives_restart
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::OrphanRecoveryTests::test_orphan_failed_after_max_resumes_without_progress
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::OrphanRecoveryTests::test_orphan_failed_when_resume_disabled
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::OrphanRecoveryTests::test_orphan_inbox_run_is_resumed_not_failed
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::OrphanRecoveryTests::test_orphan_recovered_via_mark_failed
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::OrphanRecoveryTests::test_reclaim_after_owner_lease_expiry
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::OrphanRecoveryTests::test_resume_count_resets_on_progress
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::OrphanRecoveryTests::test_run_lease_window_bounds
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::OrphanRecoveryTests::test_superseded_map_built_from_inherit_from
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::OrphanRecoveryTests::test_superseded_orphan_is_terminated_not_resumed
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::OrphanRecoveryTests::test_superseded_run_drops_out_of_active_runs
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::OrphanRecoveryTests::test_terminal_run_never_orphan
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::OrphanRecoveryTests::test_touch_run_marks_alive
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::OrphanRecoveryTests::test_touch_run_noop_when_terminal
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::RunSlotTests::test_adopt_defers_orphans_beyond_slots_without_failing
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::RunSlotTests::test_adopt_parked_orphan_exempt_from_slots
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::RunSlotTests::test_adopt_unlimited_when_slots_none
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::RunSlotTests::test_busy_run_count_excludes_parked
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::RunSlotTests::test_fully_parked_detection
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::RunSlotTests::test_graphless_run_counts_as_busy
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::RunSlotTests::test_park_lease_expiry_returns_to_busy
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::SpawnArgvTests::test_spawn_orchestrator_argv_parses
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::SpawnArgvTests::test_spawn_orchestrator_with_inherit_from_argv_parses
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::SpawnArgvTests::test_spawn_worker_argv_parses
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::PlannerTests::test_first_line_helper
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::PlannerTests::test_parallel_split
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::PlannerTests::test_sequential_chain_deps
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::PlannerTests::test_simple_newline_list_still_splits
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::PlannerTests::test_structured_request_not_shredded_per_line
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::PlannerTests::test_structured_request_strategy_goals_have_no_repos
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::StructuredResultTests::test_collect_dep_results_no_passthrough_for_work
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::StructuredResultTests::test_collect_dep_results_sees_through_gate
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::StructuredResultTests::test_executor_returns_text_and_data
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::StructuredResultTests::test_reduce_aggregates_dependency_data
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::StructuredResultTests::test_result_data_roundtrip
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::StructuredResultTests::test_result_without_data_has_no_key
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::OutputSanitizeTests::test_reconcile_count_fixes_mismatch
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::OutputSanitizeTests::test_reconcile_count_skips_when_ambiguous
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::OutputSanitizeTests::test_strip_ansi
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::VerifyGateTests::test_is_gate_result
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::VerifyGateTests::test_normalize_verify_from_json
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::VerifyGateTests::test_normalize_verify_from_text
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DataDrivenFanoutTests::test_collapse_skipped_after_fanout
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DataDrivenFanoutTests::test_collapse_static_split_successors
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DataDrivenFanoutTests::test_default_fanout_unchanged_without_exemplar_first
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DataDrivenFanoutTests::test_exemplar_first_stages_pilot_then_rest
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DataDrivenFanoutTests::test_fanout_respects_max
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DataDrivenFanoutTests::test_map_goal_carries_request_intent
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DataDrivenFanoutTests::test_split_executor_returns_list
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DataDrivenFanoutTests::test_split_expands_to_map_and_reduce
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DataDrivenFanoutTests::test_split_not_reexpanded
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DataDrivenFanoutTests::test_strategy_map_reduce_starts_with_split
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CoerceTasksTests::test_deps_stringified
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CoerceTasksTests::test_duplicate_and_existing_ids_dropped
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CoerceTasksTests::test_unknown_kind_coerced_to_work
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CoerceTasksTests::test_valid_kinds_preserved
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::PlannerRobustnessTests::test_continue_kiro_handles_bare_list
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::PlannerRobustnessTests::test_continue_kiro_handles_scalar
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::PlannerRobustnessTests::test_continue_kiro_prompt_includes_human_feedback
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::PlannerRobustnessTests::test_human_feedback_from_results_is_executor_agnostic
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::PlannerRobustnessTests::test_inflight_amend_only_pending_nodes
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::PlannerRobustnessTests::test_plan_strategy_kiro_handles_bare_list
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::KiroTimeoutTests::test_configure_thresholds_pins_config_values
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::KiroTimeoutTests::test_kiro_timeout_config_beats_env
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::KiroTimeoutTests::test_kiro_timeout_env_override
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::KiroTimeoutTests::test_run_kiro_timeout_raises_runtimeerror
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::KiroTimeoutTests::test_stub_sleep_max_config_beats_env
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::AgentCliTests::test_child_base_forwards_agent_cli_and_parses
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::AgentCliTests::test_claude_large_prompt_skips_spill
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::AgentCliTests::test_claude_uses_headless_stdin
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::AgentCliTests::test_codex_falls_back_to_stdout_when_last_message_empty
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::AgentCliTests::test_codex_uses_exec_stdin_and_last_message_file
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::AgentCliTests::test_configure_thresholds_sets_agent_cli
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::AgentCliTests::test_copilot_large_prompt_spills_to_file
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::AgentCliTests::test_copilot_uses_prompt_flag
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::AgentCliTests::test_default_is_kiro_cli_with_argv_prompt
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::StructuredExtractionTests::test_generate_does_not_extract_incidental_json
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::StructuredExtractionTests::test_reduce_still_extracts_and_reconciles
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::StructuredExtractionTests::test_split_still_extracts_list
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::StructuredExtractionTests::test_work_does_not_extract_incidental_json
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::FlowWorkerSkillTests::test_continue_kiro_uses_skill_evaluator_prompt
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::FlowWorkerSkillTests::test_execute_kiro_falls_back_when_script_broken
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::FlowWorkerSkillTests::test_execute_kiro_falls_back_when_skill_disabled
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::FlowWorkerSkillTests::test_execute_kiro_uses_skill_discipline_prompt
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::FlowWorkerSkillTests::test_execute_kiro_verify_skill_prompt_keeps_contract
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::FlowWorkerSkillTests::test_find_skill_script_locates_flow_worker
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::FlowWorkerSkillTests::test_worker_skill_config_normalization
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabExecutorPluginTests::test_all_mrs_merged_approves_and_closes
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabExecutorPluginTests::test_closed_issue_approved_by_comment
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabExecutorPluginTests::test_closed_issue_approved_by_label
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabExecutorPluginTests::test_closed_issue_no_hint_is_withdrawn_reject
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabExecutorPluginTests::test_closed_issue_rejected_by_comment
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabExecutorPluginTests::test_config_zero_poll_interval_respected
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabExecutorPluginTests::test_deleted_issue_treated_as_rejected
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabExecutorPluginTests::test_env_override_beats_config_block
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabExecutorPluginTests::test_externally_closed_with_approve_comment_returns_done
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabExecutorPluginTests::test_externally_closed_with_reject_comment_raises
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabExecutorPluginTests::test_issue_body_has_acceptance_criteria_and_deps
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabExecutorPluginTests::test_missing_repo_url_raises
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabExecutorPluginTests::test_missing_token_raises
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabExecutorPluginTests::test_mr_decision_helper
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabExecutorPluginTests::test_new_issue_embeds_task_marker
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabExecutorPluginTests::test_non_404_error_still_raises_plain_failure
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabExecutorPluginTests::test_one_mr_closed_unmerged_rejects_with_comments
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabExecutorPluginTests::test_open_mr_keeps_waiting_until_merged
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabExecutorPluginTests::test_reattaches_to_existing_open_issue_no_duplicate
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabExecutorPluginTests::test_reject_without_comments_says_auto
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabExecutorPluginTests::test_repo_url_default_empty
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabExecutorPluginTests::test_search_hit_without_marker_is_ignored
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabExecutorPluginTests::test_task_token_is_deterministic_from_art_dir
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabExecutorPluginTests::test_timeout_raises_before_any_mr
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabAutoMergeTests::test_approved_clean_mr_is_merged_and_issue_closed
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabAutoMergeTests::test_approved_mr_matching_target_branch_is_merged
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabAutoMergeTests::test_approved_mr_target_not_validated_when_target_unknown
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabAutoMergeTests::test_approved_mr_wrong_target_branch_sends_back
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabAutoMergeTests::test_approved_no_diff_mr_is_closed_not_merged
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabAutoMergeTests::test_approved_with_conflicts_sends_back
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabAutoMergeTests::test_approved_with_unresolved_discussion_sends_back
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabAutoMergeTests::test_approved_without_mr_closes_issue_as_approved
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabAutoMergeTests::test_auto_merge_off_keeps_waiting
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabAutoMergeTests::test_manual_close_note_is_idempotent
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabAutoMergeTests::test_manual_close_resolves_when_human_closes
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabAutoMergeTests::test_manual_close_waits_after_all_merged_and_posts_note_once
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabAutoMergeTests::test_merge_api_failure_keeps_waiting_for_retry
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabAutoMergeTests::test_not_approved_keeps_waiting
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabNativeApiTests::test_gl_api_builds_v4_request
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabNativeApiTests::test_gl_api_http_error_raises_runtimeerror
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabNativeApiTests::test_parse_project_url_variants
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabNativeApiTests::test_resolve_project_parses_repo_url
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabNativeApiTests::test_resolve_project_parses_ssh_url
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabNativeApiTests::test_resolve_project_prefers_workspace_over_config
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabNativeApiTests::test_resolve_project_requires_repo_url
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabNativeApiTests::test_token_env_fallback
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabNativeApiTests::test_token_from_connections_no_scripts_dir
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabNativeApiTests::test_token_not_read_from_kiro_flow_yaml
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabNativeApiTests::test_token_prefers_connections_yaml
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabNativeApiTests::test_token_shell_fallback
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CallExecutorDispatchTests::test_accepts_detection
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CallExecutorDispatchTests::test_execute_kiro_puts_instruction_in_prompt_not_polluting_goal
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CallExecutorDispatchTests::test_legacy_executor_gets_prepended_goal
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CallExecutorDispatchTests::test_new_executor_gets_clean_goal_and_instruction
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CallExecutorDispatchTests::test_no_instruction_passes_goal_unchanged
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabRepoInstructionTests::test_execute_renders_workspace_section_without_clone_path
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabRepoInstructionTests::test_issue_body_omits_section_when_no_workspace
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabRepoInstructionTests::test_issue_body_renders_reference_section
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabRepoInstructionTests::test_issue_body_renders_workspace_as_markdown
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ConfigStateGitSubdirTests::test_cli_still_overrides_config
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ConfigStateGitSubdirTests::test_default_subdir_when_unset
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ConfigStateGitSubdirTests::test_subdir_comes_from_config_when_cli_absent
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ExecutorResolutionTests::test_builtin_agent_and_stub
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ExecutorResolutionTests::test_default_is_agent
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ExecutorResolutionTests::test_explicit_path_plugin
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ExecutorResolutionTests::test_module_cache_reloads_on_mtime_change
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ExecutorResolutionTests::test_plugin_missing_execute_exits
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ExecutorResolutionTests::test_resolve_executor_config_json
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ExecutorResolutionTests::test_resolves_bundled_gitlab_plugin
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ExecutorResolutionTests::test_spawn_worker_builtin_executor_no_config_env
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ExecutorResolutionTests::test_spawn_worker_passes_executor_config_env
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ExecutorResolutionTests::test_unresolvable_executor_exits
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GraphHealthTests::test_cycle_broken
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GraphHealthTests::test_self_loop_dropped
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GraphHealthTests::test_unknown_deps_dropped
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ReviewGateTests::test_fanout_inserts_gate_before_synthesize
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ReviewGateTests::test_map_reduce_gate_between_map_and_reduce
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ContinuationTests::test_classify_routes_to_specialist
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ContinuationTests::test_no_replan_when_all_done
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ContinuationTests::test_replan_retries_failed_once
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ContinuationTests::test_verify_fail_triggers_regen_and_recheck
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::PatternStrategyTests::test_aggregating_pattern_auto_enables_review
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::PatternStrategyTests::test_explicit_no_review_overrides_auto
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::PatternStrategyTests::test_fanout_graph_has_synthesize_over_parallel
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::PatternStrategyTests::test_non_aggregating_pattern_no_auto_review
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::PatternStrategyTests::test_parallelism_extraction
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::PatternStrategyTests::test_pattern_detection
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::PatternStrategyTests::test_tournament_graph_has_judge
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GranularityTests::test_directive_empty_for_coarse
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GranularityTests::test_explicit_parallelism_not_scaled
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GranularityTests::test_factor_levels
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GranularityTests::test_scale_parallelism_caps_at_16
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GranularityTests::test_stub_scales_node_count_by_granularity
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonPrimitiveTests::test_active_runs_and_claimable_count
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonPrimitiveTests::test_claim_request_false_if_run_exists
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonPrimitiveTests::test_claim_request_single_winner
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonPrimitiveTests::test_clone_repo_gives_up_after_retries
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonPrimitiveTests::test_clone_repo_retries_then_succeeds
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonPrimitiveTests::test_ensure_workspace_clone_checks_out_base_content
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonPrimitiveTests::test_ensure_workspace_clone_creates_run_branch
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonPrimitiveTests::test_finalize_workspace_commits_and_pushes_changes
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonPrimitiveTests::test_finalize_workspace_noop_when_no_changes
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonPrimitiveTests::test_lock_path_canonical_and_config_dir
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonPrimitiveTests::test_node_entry_drops_repos
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonPrimitiveTests::test_parse_workspace_explicit_branch
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonPrimitiveTests::test_parse_workspace_url_or_json
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonPrimitiveTests::test_provision_tree_falls_back_to_direct_clone
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonPrimitiveTests::test_provision_tree_reflects_latest_after_fetch
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonPrimitiveTests::test_provision_tree_reuses_shared_mirror
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonPrimitiveTests::test_references_roundtrip_via_meta
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonPrimitiveTests::test_remove_run_also_purges_inbox
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonPrimitiveTests::test_submit_and_inbox
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonPrimitiveTests::test_sweep_work_repo_dirs_keeps_recent_even_if_pid_unknown
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonPrimitiveTests::test_sweep_work_repo_dirs_reaps_dead_pid_only
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonPrimitiveTests::test_workspace_id_includes_path_and_base
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonPrimitiveTests::test_workspace_instruction_describes_single_writable
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonPrimitiveTests::test_workspace_roundtrip_via_meta
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::EndToEndTests::test_result_command_presents_final_output
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::EndToEndTests::test_up_completes_all_tasks_once
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::EndToEndTests::test_up_map_reduce_with_review
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::EndToEndTests::test_up_replan_recovers_failure
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonE2ETests::test_daemon_completes_multiple_submits
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonE2ETests::test_daemon_picks_up_submit_and_completes
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonE2ETests::test_daemon_writes_status_json_on_startup
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::FinalResultNodeTests::test_empty_when_nothing_done
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::FinalResultNodeTests::test_falls_back_to_sinks_without_agg_kind
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::FinalResultNodeTests::test_falls_back_when_agg_node_not_done
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::FinalResultNodeTests::test_prefers_aggregation_sink
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GcOrphanInboxTests::test_dry_run_previews_without_deleting
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GcOrphanInboxTests::test_protects_actively_claimed_orphan
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GcOrphanInboxTests::test_protects_fresh_pending_request
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GcOrphanInboxTests::test_reaps_old_unclaimed_orphan_inbox
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GcOrphanInboxTests::test_run_backed_inbox_removed_with_run
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GcOrphanInboxTests::test_status_filter_does_not_reap_orphans
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitDistributedTests::test_claim_across_separate_clones_single_winner
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitDistributedTests::test_cleanup_clone_removes_worktree
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitDistributedTests::test_clone_gives_up_after_retries
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitDistributedTests::test_clone_inside_parent_repo_does_not_touch_parent
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitDistributedTests::test_clone_into_foreign_nonempty_dir_is_refused
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitDistributedTests::test_clone_retries_on_transient_network_failure
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitDistributedTests::test_corrupt_index_clone_is_rebuilt
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitDistributedTests::test_corrupt_remote_gives_clear_diagnostic_not_reclone_loop
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitDistributedTests::test_durable_write_config_on_clone_and_local_remote
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitDistributedTests::test_empty_objects_clone_is_rebuilt_on_reuse
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitDistributedTests::test_git_retries_while_live_lock_is_held
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitDistributedTests::test_interrupted_rebase_recovered_on_reuse
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitDistributedTests::test_is_corrupt_error_classifies_power_loss_signatures
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitDistributedTests::test_lock_going_stale_during_retry_is_removed
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitDistributedTests::test_make_bus_cleanup_removes_active_clones
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitDistributedTests::test_managed_bus_clone_is_reused
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitDistributedTests::test_request_claim_elects_single_daemon
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitDistributedTests::test_reuse_full_checkout_of_same_remote_is_refused
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitDistributedTests::test_run_over_git_bus_completes
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitDistributedTests::test_sparse_checkout_limits_worktree
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitDistributedTests::test_stale_index_lock_recovered_on_reuse
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitDistributedTests::test_sync_push_self_heals_on_object_corruption
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::EnsureBusRootTests::test_creates_git_bus_root_with_gitkeep
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::EnsureBusRootTests::test_creates_local_bus_root_without_gitkeep
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::EnsureBusRootTests::test_idempotent_and_preserves_existing
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CleanupTests::test_run_cleanup_local_skips_clones
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CleanupTests::test_sweep_clone_dirs
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CleanupTests::test_sweep_lock_held_is_kept
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CleanupTests::test_sweep_lock_unused_old
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CleanupTests::test_sweep_tmp_dead_pid
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CleanupTests::test_sweep_tmp_old_alive_pid
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CleanupTests::test_sweep_tmp_skips_git_internals
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ArtifactProtocolTests::test_artifact_instruction_empty_when_nothing
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ArtifactProtocolTests::test_artifact_instruction_lists_self_and_deps
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ArtifactProtocolTests::test_ensure_and_list_artifacts
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ArtifactProtocolTests::test_execute_kiro_prompt_references_dep_artifacts_by_path
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ArtifactProtocolTests::test_node_artifact_dir_is_deterministic
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ArtifactProtocolTests::test_worker_records_artifacts_in_result
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ArtifactProtocolTests::test_worker_records_exception_data_on_failure
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ArtifactProtocolTests::test_write_result_records_artifacts
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ArgvLimitTests::test_argv_limit_from_config
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ArgvLimitTests::test_argv_limit_resolved_from_config_file
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ArgvLimitTests::test_child_spawn_propagates_config
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ArgvLimitTests::test_gitlab_block_resolved_from_config_file
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ArgvLimitTests::test_large_prompt_spilled_to_tempfile
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ArgvLimitTests::test_small_prompt_passed_inline
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CircuitBreakerTests::test_circuit_breaker_stops_failed_task_retries_at_cap
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CircuitBreakerTests::test_circuit_breaker_stops_verify_retries_at_cap
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CircuitBreakerTests::test_continue_kiro_circuit_breaker_short_circuits
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CircuitBreakerTests::test_failed_retry_below_cap_still_retries
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CircuitBreakerTests::test_node_entry_preserves_retries
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CircuitBreakerTests::test_retry_depth_from_id_chain
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CircuitBreakerTests::test_verify_fail_increments_retries
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DoctorTests::test_apply_fix_ensure_bus
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DoctorTests::test_cmd_doctor_files_via_gitlab_idd_when_present
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DoctorTests::test_cmd_doctor_json_and_program_routing
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DoctorTests::test_env_findings_check_binary_matching_agent_cli
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DoctorTests::test_env_findings_clean_when_ready
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DoctorTests::test_env_findings_kiro_cli_and_finite_stop
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DoctorTests::test_signals_flag_stuck_and_failed_runs
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::SelfUpdateTests::test_apply_update_records_sha
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::SelfUpdateTests::test_apply_update_skips_when_tool_unchanged
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::SelfUpdateTests::test_check_update_baseline_then_latest
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::SelfUpdateTests::test_check_update_detects_new_commit
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::SelfUpdateTests::test_disabled_when_no_repo
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::SelfUpdateTests::test_explicit_repo_overrides_registry
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::SelfUpdateTests::test_maybe_self_update_interval_gate
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::SelfUpdateTests::test_registry_auto_resolution
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::SelfUpdateTests::test_remote_branch_sha
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::SelfUpdateTests::test_run_installer
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::SelfUpdateTests::test_sparse_checkout_only_subdir
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::SelfUpdateTests::test_update_check_interval_survives_restart
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::SelfUpdateTests::test_update_enabled_false_disables
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::StateGitSyncTests::test_concurrent_committer_is_not_clobbered
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::StateGitSyncTests::test_conflict_inbox_prefers_remote_and_runs_prefer_local
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::StateGitSyncTests::test_deletion_propagates_like_gc
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::StateGitSyncTests::test_disabled_with_git_bus_or_without_state_git
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::StateGitSyncTests::test_dot_prefixed_subdir_works
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::StateGitSyncTests::test_durable_write_config_on_state_clone_and_local_remote
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::StateGitSyncTests::test_empty_objects_state_clone_is_rebuilt_on_reuse
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::StateGitSyncTests::test_export_pushes_run_state_under_subdir
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::StateGitSyncTests::test_import_inbox_drop
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::StateGitSyncTests::test_interval_rate_limits_sync
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::StateGitSyncTests::test_state_sync_self_heals_on_object_corruption_midflight
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::StateGitSyncTests::test_sync_failure_does_not_kill_caller
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::StateGitSyncTests::test_tmp_and_dot_files_excluded
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::StateGitSyncTests::test_unpushed_consecutive_syncs_amend_into_one_commit
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonStatusHeartbeatTests::test_fresh_after_sec_floor_and_larger_wins
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonStatusHeartbeatTests::test_maybe_heartbeat_disabled_by_default_touches_nothing
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonStatusHeartbeatTests::test_maybe_heartbeat_enabled_throttles_to_interval
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonStatusHeartbeatTests::test_maybe_heartbeat_noop_in_gitbus_mode
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonStatusHeartbeatTests::test_write_daemon_status_content
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonStatusHeartbeatTests::test_write_daemon_status_noop_in_gitbus_mode
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonStatusStateGitSyncTests::test_idle_heartbeat_disabled_produces_no_extra_commit_beyond_status_write
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::DaemonStatusStateGitSyncTests::test_status_json_mirrors_via_existing_state_sync
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::WaitingStateTests::test_expired_wait_falls_back_to_pending
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::WaitingStateTests::test_live_wait_is_waiting_state_and_not_claimable
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::WaitingStateTests::test_open_wait_count_excludes_throttled
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::WaitingStateTests::test_quiesced_treats_waiting_as_in_flight
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::WaitingStateTests::test_release_claim_frees_slot
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::WaitingStateTests::test_result_wins_over_wait
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ServiceWaitsTests::test_approved_writes_done_result_and_clears_wait
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ServiceWaitsTests::test_builtin_executor_noop
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ServiceWaitsTests::test_deadline_exceeded_fails
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ServiceWaitsTests::test_defer_disabled_makes_service_waits_noop
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ServiceWaitsTests::test_next_poll_at_backoff_skips_poll
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ServiceWaitsTests::test_only_runs_partitions_watching
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ServiceWaitsTests::test_rejected_writes_failed_result
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ServiceWaitsTests::test_throttled_released_when_slot_frees
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::ServiceWaitsTests::test_undecided_keeps_wait_and_renews_lease
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CancelTests::test_cancel_request_marker_and_clear_waits
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CancelTests::test_cancel_request_run_before_run_exists
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CancelTests::test_canceled_is_terminal
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CancelTests::test_cmd_cancel_marks_and_clears
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CancelTests::test_mark_canceled_noop_when_terminal
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CancelTests::test_mark_canceled_sets_status_and_excludes_from_active
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::CancelTests::test_orch_check_canceled
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabDeferPollTests::test_execute_defer_returns_immediately_when_approved
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabDeferPollTests::test_execute_defers_when_undecided
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabDeferPollTests::test_on_cancel_closes_issues
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabDeferPollTests::test_poll_deleted_issue_rejects
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabDeferPollTests::test_poll_returns_approved
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabDeferPollTests::test_poll_transient_error_returns_none
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabDeferPollTests::test_poll_undecided_returns_none
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabHumanAgentDiscriminationTests::test_agent_authors_config_excludes
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabHumanAgentDiscriminationTests::test_excludes_agent_author_unmarked_comment_via_per_issue_learning
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabHumanAgentDiscriminationTests::test_excludes_all_gitlab_idd_markers
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabHumanAgentDiscriminationTests::test_excludes_bot_and_kiroflow_and_system
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabHumanAgentDiscriminationTests::test_human_reviewers_allowlist_keeps_only_listed
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabHumanAgentDiscriminationTests::test_no_allowlist_keeps_plain_human_comments
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabHumanAgentDiscriminationTests::test_payload_carries_author_and_note_id
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabHumanAgentDiscriminationTests::test_rework_heading_detected
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabHumanAgentDiscriminationTests::test_rework_ignores_agent_heading
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::GitlabHumanAgentDiscriminationTests::test_rework_ignores_body_mention_and_disabled
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::AgentOverrideTests::test_agent_for_resolution_order
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::AgentOverrideTests::test_normalize_accepts_roles_and_kinds_only
+PASSED tools/kiro-flow/tests/test_kiro_flow.py::AgentOverrideTests::test_run_kiro_uses_purpose_override
+388 passed in 34.69s

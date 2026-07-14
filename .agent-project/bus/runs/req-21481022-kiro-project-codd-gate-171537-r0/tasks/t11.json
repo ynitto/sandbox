@@ -1,0 +1,8 @@
+{
+  "id": "t11",
+  "goal": "旧 tools/kiro-project/codd_gate_base.py・codd_gate_debt.py・codd_gate_detect.py・codd_gate_routing.py・codd_gate_status.py の5ファイルを削除し、パッケージ外に codd_gate 実装が残っていないことを確認する（.kiro-project/ 配下の状態ファイルには一切触れない）",
+  "deps": [
+    "t10"
+  ],
+  "kind": "work"
+}

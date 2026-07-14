@@ -1,0 +1,8 @@
+{
+  "id": "loop",
+  "goal": "完了条件の3コマンドをローカルで実行し、全て終了コード0になるまで修正と再実行を反復する: python3 -m pytest tools/kiro-project/tests -q -k codd / grep -rq \"codd_gate\" tools/kiro-project/kiro_project/ / codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base \"${KIRO_BASE_REV:-HEAD~1}\" --strict。失敗時は原因を特定して該当ノードの成果物を直し、通るまで打ち切らない",
+  "deps": [
+    "synth"
+  ],
+  "kind": "verify"
+}

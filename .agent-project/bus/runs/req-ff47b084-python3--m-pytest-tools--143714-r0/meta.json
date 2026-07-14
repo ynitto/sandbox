@@ -1,0 +1,17 @@
+{
+  "request": "受入条件を満たす: python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q --cov=tools/kiro-project --cov=tools/kiro-\n\nこのタスクは完了条件を満たすまで反復し、満たしたら終了すること（loop-until-done）。\n完了条件: 次のシェルコマンドが終了コード 0 で成功すること:\n  python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q --cov=tools/kiro-project --cov=tools/kiro-flow --cov-fail-under=70\n\nタスクID: python3--m-pytest-tools--143714\n\nプロジェクト定義（charter・常に踏まえること。成果物が目標/制約に反しないこと）:\n目標: - codd-gate がインストールされている場合に活用できること\n- ユニットテストを拡充すること\n対象リポジトリ（タスクは説明を見て関係するものを選び、その base/target ブランチで作業。path 指定があればそのフォルダ配下のみ変更）:\n- sandbox = https://github.com/ynitto/sandbox/（base=main, target=main, 書込先候補（owns: **））\n    説明: ソースコード・設計書\n制約:\n- kiro-project/kiro-flowをエンジンとして使用する\n- kiro-projects-viewerをフロントエンドとして使用する\n前提:\n- 人による操作や確認を最小限にする\n- 繰り返し・再実行によって試行錯誤できる\n成果物:\n- kiro-project ソースコード\n- kiro-flow ソースコード\n- kiro-projects-viewer ソースコード\n- 設計書・ドキュメント\n\nこのタスクに関する過去の判断記録（needs の判断結果・必ず踏まえること）:\n## DR-0001  2026-07-13  actor: nitto\n- context : python3--m-pytest-tools--143714（受入条件を満たす: python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q --cov=tools/kiro-project --cov=tools/kiro-）の実行を承認\n- action  : plan-approve\n- reason  : kiro-projects-viewer から操作\n- affects : python3--m-pytest-tools--143714 → ready",
+  "workspace": {
+    "url": "https://github.com/ynitto/sandbox/",
+    "path": "",
+    "base": "main",
+    "target": "main",
+    "desc": "ソースコード・設計書",
+    "branch": "kp/python3--m-pytest-tools--143714"
+  },
+  "references": [],
+  "status": "running",
+  "created_at": "2026-07-13T07:26:20Z",
+  "orch_lease_until": 0.0,
+  "heartbeat_at": "2026-07-13T07:41:14Z",
+  "updated_at": "2026-07-13T07:28:32Z"
+}

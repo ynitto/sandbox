@@ -1,0 +1,67 @@
+........................................................................ [  6%]
+........................................................................ [ 13%]
+........................................................................ [ 20%]
+........................................................................ [ 27%]
+........................................................................ [ 34%]
+...................................................................... [ 41%]
+........................................................................ [ 48%]
+........................................................................ [ 55%]
+........................................................................ [ 62%]
+........................................................................ [ 69%]
+........................................................................ [ 76%]
+........................................................................ [ 83%]
+........................................................................ [ 90%]
+........................................................................ [ 97%]
+........................
+ERROR: Coverage failure: total of 63 is less than fail-under=70
+                                                                         [100%]
+================================ tests coverage ================================
+_______________ coverage: platform darwin, python 3.14.2-final-0 _______________
+
+Name                                                 Stmts   Miss  Cover
+------------------------------------------------------------------------
+tools/kiro-flow/executors/gitlab.py                    712    121    83%
+tools/kiro-flow/kiro-flow.py                          3950   1035    74%
+tools/kiro-flow/tests/test_kiro_flow.py               3936     36    99%
+tools/kiro-project/codd_gate_base.py                    12     12     0%
+tools/kiro-project/codd_gate_debt.py                    45     45     0%
+tools/kiro-project/codd_gate_detect.py                  66      5    92%
+tools/kiro-project/codd_gate_routing.py                 16      0   100%
+tools/kiro-project/codd_gate_status.py                  42      2    95%
+tools/kiro-project/kiro-project.py                       6      6     0%
+tools/kiro-project/kiro_project/__init__.py              8      0   100%
+tools/kiro-project/kiro_project/__main__.py              3      3     0%
+tools/kiro-project/kiro_project/_head.py                42     42     0%
+tools/kiro-project/kiro_project/batch.py               198    198     0%
+tools/kiro-project/kiro_project/charter.py             540    540     0%
+tools/kiro-project/kiro_project/cli.py                 137    137     0%
+tools/kiro-project/kiro_project/commands.py            356    356     0%
+tools/kiro-project/kiro_project/config.py              281    281     0%
+tools/kiro-project/kiro_project/configfile.py          135    135     0%
+tools/kiro-project/kiro_project/decisions.py           101    101     0%
+tools/kiro-project/kiro_project/doctor.py              532    532     0%
+tools/kiro-project/kiro_project/flow.py                312    312     0%
+tools/kiro-project/kiro_project/gitcache.py            138    138     0%
+tools/kiro-project/kiro_project/instances.py           302    302     0%
+tools/kiro-project/kiro_project/loop.py                312    312     0%
+tools/kiro-project/kiro_project/model.py               379    379     0%
+tools/kiro-project/kiro_project/mr.py                  365    365     0%
+tools/kiro-project/kiro_project/needs.py               311    311     0%
+tools/kiro-project/kiro_project/plan.py                176    176     0%
+tools/kiro-project/kiro_project/policy.py              194    194     0%
+tools/kiro-project/kiro_project/prioritize.py          326    326     0%
+tools/kiro-project/kiro_project/project.py             361    361     0%
+tools/kiro-project/kiro_project/request.py             321    321     0%
+tools/kiro-project/kiro_project/rules.py                74     74     0%
+tools/kiro-project/kiro_project/state.py               279    279     0%
+tools/kiro-project/kiro_project/stategit.py            477    477     0%
+tools/kiro-project/kiro_project/update.py              223    223     0%
+tools/kiro-project/kiro_project/verify.py              263    263     0%
+tools/kiro-project/tests/test_codd_gate_detect.py      161      3    98%
+tools/kiro-project/tests/test_codd_gate_routing.py      48      1    98%
+tools/kiro-project/tests/test_kiro_project.py         6483     30    99%
+------------------------------------------------------------------------
+TOTAL                                                22623   8434    63%
+FAIL Required test coverage of 70% not reached. Total coverage: 62.72%
+1030 passed, 2 subtests passed in 129.88s (0:02:09)
+EXIT_CODE=1

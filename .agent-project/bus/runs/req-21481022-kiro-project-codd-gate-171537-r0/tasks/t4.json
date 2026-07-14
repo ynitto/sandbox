@@ -1,0 +1,6 @@
+{
+  "id": "t4",
+  "goal": "kiro_project/verify.py・mr.py・model.py を読み、結線点となる回帰ゲート関数・検収（done/差し戻し）判定関数・enqueue 関数の正確な名前とシグネチャ・戻り値契約、および既存テストが依存している現行挙動を特定する",
+  "deps": [],
+  "kind": "work"
+}

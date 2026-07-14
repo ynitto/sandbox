@@ -1,0 +1,9 @@
+{
+  "host": "Mac",
+  "pid": 50439,
+  "node_id": "Mac-50439",
+  "orchestrators": 2,
+  "workers": 4,
+  "updated_iso": "2026-07-13T08:15:03Z",
+  "fresh_after_sec": 600.0
+}

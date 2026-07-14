@@ -1,0 +1,8 @@
+{
+  "id": "t17",
+  "goal": "tests/test_codd_gate_wiring_mr.py を追加する。mr.py の検収判定を実際に走らせ、codd_gate の結果が done 判定へ反映されること、および不合格時に差し戻し理由の本文へ要約文字列が含まれることを検証する統合テストを書く",
+  "deps": [
+    "t14"
+  ],
+  "kind": "generate"
+}

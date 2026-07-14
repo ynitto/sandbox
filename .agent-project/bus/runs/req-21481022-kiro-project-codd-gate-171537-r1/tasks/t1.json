@@ -1,0 +1,6 @@
+{
+  "id": "t1",
+  "goal": "tools/kiro-project/codd_gate_base.py と codd_gate_detect.py を読み、公開関数・データ構造・codd-gate CLI の呼び出し形（引数・戻り値・終了コードの扱い）を一覧化する",
+  "deps": [],
+  "kind": "work"
+}
