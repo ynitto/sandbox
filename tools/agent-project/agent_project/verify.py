@@ -317,6 +317,19 @@ def _strip_leading_shell_prompt(line: str) -> str:
     return _LEADING_SHELL_PROMPT_RE.sub("", line, count=1)
 
 
+_VERIFY_COMMAND_LABEL_RE = re.compile(r"^検証コマンド\s*[:：]\s*")
+
+
+def _strip_leading_command_label(line: str) -> str:
+    """行頭の日本語ラベル『検証コマンド:』（全角コロン可）を1回だけ剥がす。
+    ラベルとコマンドが同一行にある形式（`検証コマンド: <command>`）を、ラベルが
+    別行にある形式と同じ土俵で判定できるようにするため、コマンド判定・sh -n チェック
+    の手前で適用する。行内の任意のコロンではなくこの固定ラベル語だけを行頭一致で
+    対象にするのは、`git commit -m "note: fix bug"` のようにコマンド自体に含まれる
+    コロンを誤って割らないため。"""
+    return _VERIFY_COMMAND_LABEL_RE.sub("", line, count=1)
+
+
 def _has_command_like_leading_token(line: str) -> bool:
     """フェンス外の行が既知コマンド語または実行可能らしいトークンで始まるか判定する。"""
     if not line:
@@ -372,7 +385,7 @@ def _first_executable_line(lines: list[str], *, require_shell_syntax: bool = Tru
     明確なため、素通しで信頼する（フェンス外の地の文はこの限りでなく従来どおり厳格に見る）。
     """
     for raw_line in lines:
-        line = _strip_leading_shell_prompt(_strip_code(raw_line.strip()))
+        line = _strip_leading_command_label(_strip_leading_shell_prompt(_strip_code(raw_line.strip())))
         if (
             line
             and not line.startswith("#")
@@ -389,8 +402,10 @@ def _first_command_line(out: str) -> Optional[str]:
     コードフェンスを最優先でスキャンする: フェンスが見つかれば、フェンス内の最初の
     非空・非コメント行を無条件でコマンドとして採用する。フェンスが一つも無ければ、
     フェンス外の行を対象にした従来ロジック（既知コマンド語などの先頭トークン判定 +
-    sh -n 構文チェック）へフォールバックする。行頭のシェルプロンプト記号 `$ ` は
-    判定前に剥がす（LLM がプロンプト付きでコマンド例を返す出力に対応するため）。
+    sh -n 構文チェック）へフォールバックする。行頭のシェルプロンプト記号 `$ ` および
+    日本語ラベル『検証コマンド:』（ラベル単独行・`検証コマンド: <command>` のように
+    コマンドと同一行の両形式）は判定前に剥がす（LLM がプロンプト付き・ラベル付きで
+    コマンド例を返す出力に対応するため）。
 
     ANSI エスケープは入口で落とす。kiro-cli はカラーコード付きで返すことがあり、
     残したままだとフェンス開始の ``` も先頭トークン（`\x1b[36mgrep` → 既知コマンド語に
@@ -402,7 +417,13 @@ def _first_command_line(out: str) -> Optional[str]:
         return fenced
     lines = (out or "").splitlines()
     return _first_executable_line(
-        [line for line in lines if _has_command_like_leading_token(_strip_leading_shell_prompt(line.strip()))]
+        [
+            line
+            for line in lines
+            if _has_command_like_leading_token(
+                _strip_leading_command_label(_strip_leading_shell_prompt(line.strip()))
+            )
+        ]
     )
 
 

@@ -5660,6 +5660,28 @@ echo this-later-command-must-not-be-selected
             "python3 -m pytest tools/agent-project/tests -q",
         )
 
+    def test_first_command_line_strips_japanese_label_on_command_line(self):
+        self.assertEqual(
+            km._first_command_line(
+                '検証コマンド: codd-gate verify --base "$KIRO_BASE_REV"'
+            ),
+            'codd-gate verify --base "$KIRO_BASE_REV"',
+        )
+
+    def test_first_command_line_strips_japanese_label_with_fullwidth_colon(self):
+        self.assertEqual(
+            km._first_command_line(
+                '検証コマンド：codd-gate verify --base "$KIRO_BASE_REV"'
+            ),
+            'codd-gate verify --base "$KIRO_BASE_REV"',
+        )
+
+    def test_first_command_line_japanese_label_does_not_split_quoted_colon(self):
+        self.assertEqual(
+            km._first_command_line('git commit -m "note: fix bug"'),
+            'git commit -m "note: fix bug"',
+        )
+
     def test_first_command_line_returns_none_without_candidate(self):
         self.assertIsNone(km._first_command_line("\n# comment only\n"))
 

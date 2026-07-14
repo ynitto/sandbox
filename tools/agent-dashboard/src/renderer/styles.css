@@ -634,6 +634,18 @@ table.list tr.clickable:hover { background: var(--bg2); }
 .need-detail-card section h3 { margin: 0 0 7px; color: var(--muted); font-size: 12px; letter-spacing: 0.06em; }
 .need-decision { padding: 12px 14px; border-radius: 7px; background: var(--bg3); }
 .need-decision p { margin: 0; font-size: 15px; line-height: 1.55; }
+.task-complete-banner,
+.need-complete-how {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--yellow);
+  background: #2a2208;
+  color: #ffd66b;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.task-complete-how { color: var(--text); }
 .need-facts { line-height: 1.6; }
 .need-files { gap: 6px; flex-wrap: wrap; margin-top: 6px; }
 .need-detail summary { min-height: 40px; display: flex; align-items: center; cursor: pointer; color: var(--accent); }

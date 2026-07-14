@@ -102,6 +102,105 @@ function statusLabel(status) {
   return STATUS_LABELS[s] || s;
 }
 
+// タスクを「完了（納品）」にするまでに人が何をすべきか。
+// run の done とタスクの archive は別物なので、一覧・詳細・要対応で同じ文言を出す。
+// runs は runsForTask 相当（新しい順）。archived=true は履歴タブ／archive 側。
+function taskCompletionHint(task, { runs = [], archived = false } = {}) {
+  const st = String((task && task.status) || '');
+  const extra = (task && task.extra) || {};
+  const lastRunId = String(extra.last_run || '').trim();
+  const lastRun =
+    (lastRunId && runs.find((r) => String(r.runId) === lastRunId)) || runs[0] || null;
+  const lastRunDone = !!(lastRun && String(lastRun.status) === 'done');
+
+  if (archived || st === 'done') {
+    return {
+      unsettledDone: false,
+      statusNote: null,
+      completeHow: '完了済みです。人の操作は不要です。',
+      needAsk: null,
+    };
+  }
+  if (st === 'rejected') {
+    return {
+      unsettledDone: false,
+      statusNote: null,
+      completeHow: '却下済みです。やり直すなら内容を編集して再追加してください。',
+      needAsk: null,
+    };
+  }
+  if (st === 'review') {
+    return {
+      unsettledDone: false,
+      statusNote: null,
+      completeHow: '完了にするには: 要対応で「承認して完了にする」を押す',
+      needAsk:
+        '成果物を確認し、「承認して完了にする」で納品確定してください。この承認でタスクが完了します。',
+    };
+  }
+  if (st === 'proposed') {
+    return {
+      unsettledDone: false,
+      statusNote: null,
+      completeHow:
+        '完了にするには: まず要対応で計画を承認し、実行完了を待つ（検収ゲートなら最後に承認）',
+      needAsk: 'この承認では完了になりません。実行が許可されるだけです。',
+    };
+  }
+  if (st === 'blocked') {
+    const env =
+      String(extra.env_resume || '') === '1' ||
+      /\[agent-error:/.test(String(extra.needs_reason || ''));
+    return {
+      unsettledDone: lastRunDone,
+      statusNote: lastRunDone ? '実行済み・未確定' : null,
+      completeHow: env
+        ? '完了にするには: 要対応で環境を直してから「そのまま再実行」または承認'
+        : '完了にするには: 要対応で指示を送るか「そのまま再実行」',
+      needAsk: lastRunDone
+        ? '実行自体は終わっていますが、タスクは未完了です。対応後に再確認・再実行が必要です。'
+        : null,
+    };
+  }
+  if (st === 'ready' && lastRunDone) {
+    return {
+      unsettledDone: true,
+      statusNote: '実行済み・未確定',
+      completeHow:
+        '完了にするには: 修正後の再実行完了を待つ（操作不要）。要対応が残っていれば先に対応',
+      needAsk: null,
+    };
+  }
+  if (['ready', 'inbox', 'draft'].includes(st)) {
+    return {
+      unsettledDone: false,
+      statusNote: null,
+      completeHow: '完了にするには: 本体の実行完了を待つ（通常は操作不要）',
+      needAsk: null,
+    };
+  }
+  if (['doing', 'offloaded'].includes(st)) {
+    return {
+      unsettledDone: false,
+      statusNote: null,
+      completeHow: '完了にするには: 実行完了を待つ（操作不要）',
+      needAsk: null,
+    };
+  }
+  return {
+    unsettledDone: false,
+    statusNote: null,
+    completeHow: '完了にするには: タスクの状態を確認してください',
+    needAsk: null,
+  };
+}
+
+// 関連 run の状態表示。タスク未納品のとき done を「完了」と出さない（タスク完了と誤認させない）。
+function runStatusCaption(runStatus, { taskArchived = false } = {}) {
+  if (String(runStatus) !== 'done') return statusLabel(runStatus);
+  return taskArchived ? '納品済み' : '実行完了（タスク未確定）';
+}
+
 // project.json の charter state から acceptance の PASS 履歴（数値列）を取り出す。
 function passHistory(st) {
   if (!st || !Array.isArray(st.history)) return [];
@@ -1132,18 +1231,20 @@ function relationshipStrip({ taskId, run } = {}) {
 }
 
 // タスクダイアログ用: 関連する run（リトライ系統）を一覧する。
-function relatedRunsBlock(taskId) {
+function relatedRunsBlock(taskId, { archived = false } = {}) {
   const rr = runsForTask(taskId);
   if (!rr.length) return '';
   const items = rr
-    .map(
-      (r) => `<div class="rel-run-row">
+    .map((r) => {
+      const cap = runStatusCaption(r.status, { taskArchived: archived });
+      const chipCls = String(r.status) === 'done' && !archived ? 'st-review' : '';
+      return `<div class="rel-run-row">
         <button class="linklike mono" data-goto-run="${esc(r.runId)}">${esc(r.runId)}</button>
-        ${statusChip(r.status)}
+        <span class="status-chip ${chipCls || `st-${esc(r.status)}`}" title="${esc(statusLabel(r.status))}">${esc(cap)}</span>
         <span class="muted">${r.total} 工程中 完了 ${r.counts.done}・失敗 ${r.counts.failed}</span>
         ${r.inheritedFrom ? `<span class="muted" title="引き継ぎ元の実行">↩ ${esc(r.inheritedFrom)}</span>` : ''}
-      </div>`
-    )
+      </div>`;
+    })
     .join('');
   return `<div class="section-title">関連する実行（やり直し履歴）</div>
     <div class="rel-runs">${items}</div>`;
@@ -1266,8 +1367,14 @@ function renderBacklog() {
         extras.push('委任先で実行中'); // act_async: agent-flow daemon で結果待ち（所在はタスク詳細で見る）
       }
       const rr = runsForTask(t.id); // 紐づく agent-flow run（リトライ系統）
+      const hint =
+        state.backlogFilter === 'archive'
+          ? taskCompletionHint(t, { runs: rr, archived: true })
+          : taskCompletionHint(t, { runs: rr });
+      if (hint.statusNote) extras.unshift(hint.statusNote);
+      extras.push(hint.completeHow);
       const runBadge = rr.length
-        ? ` <button class="badge run-link" data-goto-run="${esc(rr[0].runId)}" title="関連する実行 ${rr.length} 件（最新: ${esc(statusLabel(rr[0].status))}）を開く">⚙${rr.length}</button>`
+        ? ` <button class="badge run-link" data-goto-run="${esc(rr[0].runId)}" title="関連する実行 ${rr.length} 件（最新: ${esc(runStatusCaption(rr[0].status, { taskArchived: state.backlogFilter === 'archive' }))}）を開く">⚙${rr.length}</button>`
         : '';
       // 非ブロッキング委譲（offloaded）は flow_run（実行中の run-id）へ直接リンクする
       // （runsForTask が拾えない＝フローバス未登録でも辿れるように明示リンクを出す）。
@@ -1276,14 +1383,17 @@ function renderBacklog() {
         offloadRun && !(rr.length && rr[0].runId === offloadRun)
           ? ` <button class="badge run-link" data-goto-run="${esc(offloadRun)}" title="実行中の作業を開く">▶ 実行</button>`
           : '';
+      const unsettleBadge = hint.unsettledDone
+        ? ' <span class="badge warn" title="実行は終わっていますがタスクは未完了（納品前）">実行済み・未確定</span>'
+        : '';
       return `<tr class="clickable" data-task="${esc(t.id)}" data-scope="${state.backlogFilter === 'archive' ? 'archive' : 'backlog'}">
         <td class="mono">${esc(t.id)}</td>
         <td>${esc(t.title)}</td>
-        <td>${statusChip(t.status)}${p.claims.includes(t.id) ? ' <span class="badge info" title="実行中">▶</span>' : ''}${isReviseSent(t) ? ' <span class="badge" title="修正指示を送信済み（反映待ち）">✎</span>' : ''}${runBadge}${offloadBadge}</td>
+        <td>${statusChip(t.status)}${unsettleBadge}${p.claims.includes(t.id) ? ' <span class="badge info" title="実行中">▶</span>' : ''}${isReviseSent(t) ? ' <span class="badge" title="修正指示を送信済み（反映待ち）">✎</span>' : ''}${runBadge}${offloadBadge}</td>
         <td>${t.priority}</td>
         <td>${t.retries}</td>
         <td>${t.verify ? '✓' : t.extra.accept || t.extra.verify_template ? '△' : '—'}</td>
-        <td class="muted">${esc(extras.join(' ／ '))}</td>
+        <td class="muted task-complete-how">${esc(extras.join(' ／ '))}</td>
       </tr>`;
     })
     .join('');
@@ -1428,6 +1538,11 @@ function showTaskDialog(id, scope) {
   const depRow = `<tr><th>依存関係</th><td class="muted">先行タスク: ${deps ? esc(deps) : '（なし）'} ／ 後続タスク（このタスクの変更が影響）: ${
     downs.length ? downs.map((x) => `${esc(x.id)}[${esc(statusLabel(x.status))}]`).join(', ') : '（なし）'
   }</td></tr>`;
+  const rr = runsForTask(t.id);
+  const hint = taskCompletionHint(t, { runs: rr, archived: scope === 'archive' });
+  const statusCell = hint.statusNote
+    ? `${statusChip(t.status)} <span class="badge warn" title="${esc(hint.completeHow)}">${esc(hint.statusNote)}</span>`
+    : statusChip(t.status);
   // 削除を拒むのは「実行中」だけ。クレームロックは worker クラッシュや
   // review/blocked 滞留で残骸が残るため、doing 以外ではロックがあっても削除できる
   const claimed = p.claims.includes(t.id) && t.status === 'doing';
@@ -1441,6 +1556,7 @@ function showTaskDialog(id, scope) {
           </div>
         </div>`
       : `<div class="need-actions">
+          <div class="task-complete-banner">${esc(hint.completeHow)}</div>
           <textarea rows="2" id="task-reason" class="need-input" placeholder="操作の理由（決定記録に残ります）"></textarea>
           <div class="row need-buttons">
             ${canApprove ? `<button class="primary-inline" data-taskact="approve">✓ 承認</button>` : ''}
@@ -1457,7 +1573,8 @@ function showTaskDialog(id, scope) {
     <h2><span class="mono">${esc(t.id)}</span>: ${esc(t.title)}</h2>
     ${relationshipStrip({ taskId: t.id })}
     <table class="list">
-      <tr><th>状態</th><td>${statusChip(t.status)}</td></tr>
+      <tr><th>状態</th><td>${statusCell}</td></tr>
+      <tr><th>完了まで</th><td class="task-complete-how">${esc(hint.completeHow)}</td></tr>
       <tr><th>出自</th><td>${esc(t.source)}</td></tr>
       <tr><th>優先度</th><td>${t.priority}</td></tr>
       <tr><th>再試行</th><td>${t.retries}</td></tr>
@@ -1466,7 +1583,7 @@ function showTaskDialog(id, scope) {
       ${extraRows}
       <tr><th>ファイル</th><td><a href="#" id="task-open-file" class="mono">${esc(t.file)}</a></td></tr>
     </table>
-    ${relatedRunsBlock(t.id)}
+    ${relatedRunsBlock(t.id, { archived: scope === 'archive' })}
     ${actionArea}
     ${scope === 'archive' ? '' : reviseAreaHtml(t)}`;
   bindRelationship($('dlg-task-body')); // パンくず・関連 run のクリック配線
@@ -2377,11 +2494,37 @@ function needKindLabel(kind) {
 //   blocked   … 指示して再開 / そのまま再実行 / 保留
 //   review    … 成果物レビュー: 承認して完了 / 差し戻し（記入必須）/ 却下
 //   milestone … プロジェクト承認 — 完了確認待ち（converged）のときだけ
+function needCompleteHowHtml(n) {
+  const p = state.project;
+  const task = taskForNeed(p, n);
+  const runs = task ? runsForTask(task.id) : [];
+  const hint = task
+    ? taskCompletionHint(task, { runs })
+    : null;
+  // needs 種別ごとの「この操作で完了するか」を先頭に出す（task が無い milestone 等は種別文言）
+  let line = hint && hint.completeHow;
+  if (n.kind === 'review') {
+    line = '完了にするには: 下の「承認して完了にする」を押す（この承認で納品確定）';
+  } else if (n.kind === 'plan-review') {
+    line = 'この承認では完了になりません。実行が許可されるだけです。';
+  } else if (n.kind === 'milestone') {
+    const status = milestoneStatusFor(p, n.id);
+    line =
+      status === null || status === 'converged'
+        ? '完了にするには: 「プロジェクトを完了として承認」を押す'
+        : 'まだプロジェクト完了の段階ではありません。';
+  } else if (!line && n.kind === 'blocked') {
+    line = '完了にするには: 指示を送るか「そのまま再実行」（この操作だけでは納品確定しません）';
+  }
+  if (!line) return '';
+  return `<div class="task-complete-banner need-complete-how">${esc(line)}</div>`;
+}
+
 function needActionsHtml(n) {
   const kind = n.kind || 'blocked';
   const buttons = [];
   if (kind === 'plan-review') {
-    buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}">✓ 承認（実行を許可）</button>`);
+    buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}">✓ 承認（実行を許可・完了にはならない）</button>`);
     buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}" data-require="1" title="修正指示を記入して計画を練り直させます">↩ 差し戻す（修正指示を記入）</button>`);
     buttons.push(`<button class="danger" data-act="reject" data-id="${esc(n.id)}" data-require="1" title="このタスクを廃止し、計画を作り直させます">✕ 却下</button>`);
   } else if (kind === 'review') {
@@ -2423,7 +2566,7 @@ function needActionsHtml(n) {
       : kind === 'review'
         ? '差し戻しの修正方針・却下の理由（承認だけなら空欄のままで構いません）'
         : '修正方針・指示（空のまま再実行もできます）';
-  return `<div class="need-actions" data-need="${esc(n.id)}">
+  return `${needCompleteHowHtml(n)}<div class="need-actions" data-need="${esc(n.id)}">
     <textarea rows="2" class="need-input" placeholder="${esc(ph)}"></textarea>
     <div class="row need-buttons">${buttons.join('')}
       <span class="spacer"></span>
@@ -2434,10 +2577,10 @@ function needActionsHtml(n) {
 
 // 種別ごとの「何を確認するか」。カードの先頭で確認の目的を一文で示す
 const NEED_ASK = {
-  'plan-review': 'このタスクを実行してよいか確認してください。',
-  review: '成果物を確認し、完了にしてよいか判断してください。',
+  'plan-review': 'このタスクを実行してよいか確認してください（この承認では完了になりません）。',
+  review: '成果物を確認し、「承認して完了にする」で納品してよいか判断してください。',
   milestone: 'プロジェクトを完了にしてよいか確認してください。',
-  blocked: '作業が止まっています。対応方法を指示してください。',
+  blocked: '作業が止まっています。対応方法を指示してください（この操作だけでは納品確定しません）。',
 };
 
 // カード見出し用にタイトルの定型接頭辞（種別バッジと重複する）を落とす
@@ -2835,13 +2978,21 @@ function renderNeedDetail(p, n) {
         <div class="body">${mdToHtml(detail)}</div>
       </details>`
     : '';
+  const task = taskForNeed(p, n);
+  const hint = task ? taskCompletionHint(task, { runs: runsForTask(task.id) }) : null;
+  const ask =
+    (hint && hint.needAsk) || NEED_ASK[n.kind] || NEED_ASK.blocked;
+  const unsettle =
+    hint && hint.unsettledDone
+      ? ' <span class="badge warn">実行済み・未確定</span>'
+      : '';
   return `<article class="need-detail-card kind-${esc(n.kind || 'blocked')}">
     <button class="mobile-master-back" data-needs-back>一覧へ戻る</button>
     <header class="need-detail-head">
       <div>
         <div class="need-detail-badges">
           <span class="badge" title="${esc(n.kind || 'blocked')}">${esc(needKindLabel(n.kind))}</span>
-          ${riskBadgeHtml(n)} ${chip}
+          ${riskBadgeHtml(n)} ${chip}${unsettle}
         </div>
         <h2>${esc(needDisplayTitle(n))}</h2>
       </div>
@@ -2849,7 +3000,7 @@ function renderNeedDetail(p, n) {
     </header>
     <section class="need-decision">
       <h3>判断すること</h3>
-      <p>${esc(NEED_ASK[n.kind] || NEED_ASK.blocked)}</p>
+      <p>${esc(ask)}</p>
     </section>
     <section class="need-facts">
       <h3>状況</h3>
