@@ -193,6 +193,19 @@ class InheritTests(unittest.TestCase):
         self.assertNotIn("req-x-t-r0", new.list_runs())
         self.assertEqual(new.run_meta("req-x-t-r1").get("inherited_from"), "req-x-t-r0")
 
+    def test_canceled_predecessor_is_not_inherited(self):
+        old = self._mk_run("req-cxl-t-r0")
+        self._add_task(old, "t1")
+        old.write_result("t1", "w", "done", "out1")
+        old.mark_canceled("req-cxl-t-r0", "人の停止")
+        new = kf.Bus(self.tmp, "req-cxl-t-r1")
+        info = new.inherit_from("req-cxl-t-r0")
+        self.assertFalse(info["inherited"])
+        self.assertFalse(info["deleted"])
+        self.assertEqual(info["seeded_nodes"], 0)
+        self.assertIn("canceled", info["reason"])
+        self.assertIn("req-cxl-t-r0", new.list_runs())  # 触らない
+
     def test_fully_done_predecessor_seeds_nothing_but_cleans_up(self):
         old = self._mk_run("req-y-t-r0")
         self._add_task(old, "t1")
@@ -5486,8 +5499,21 @@ class CancelTests(unittest.TestCase):
             rc = kf.cmd_cancel(args)
         self.assertEqual(rc, 0)
         self.assertEqual(self.bus.run_meta("run1").get("status"), "canceled")
-        self.assertTrue(self.bus.is_canceled_requested("run1"))
+        self.assertFalse(self.bus.is_canceled_requested("run1"), "適用後マーカーは消す")
         self.assertIsNone(self.bus.read_wait("n1"))             # park 再ポーリングを止める
+
+    def test_cmd_cancel_terminal_clears_leftover_waits(self):
+        self.bus.set_status("done")
+        self.bus.write_wait("n1", {"id": "n1", "wait_lease_until": time.time() + 1000})
+        self.bus.cancel_request("run1", "host", "古い")
+        args = argparse.Namespace(bus=self.tmp, run_id="run1", reason="",
+                                  close_issues=False, git=None, executor="stub",
+                                  config=None, lease=30.0)
+        with mock.patch.object(kf, "make_bus", return_value=self.bus):
+            rc = kf.cmd_cancel(args)
+        self.assertEqual(rc, 0)
+        self.assertIsNone(self.bus.read_wait("n1"))
+        self.assertFalse(self.bus.is_canceled_requested("run1"))
 
     def test_orch_check_canceled(self):
         args = argparse.Namespace(run_id="run1")

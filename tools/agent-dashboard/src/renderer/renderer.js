@@ -3985,6 +3985,7 @@ async function cancelFlowRun() {
     `この実行（${run.runId}）を中止します。\n以後の作業・レビュー待ちの監視・自動再開をすべて止めます。${note}\nよろしいですか？`
   );
   if (!yes) return;
+  let cancelRes = null;
   const ok = await guard('実行の中止', async () => {
     const res = await api.flowCancel(
       state.project.dir,
@@ -3992,6 +3993,7 @@ async function cancelFlowRun() {
       run.runId,
       'agent-dashboard から手動キャンセル'
     );
+    cancelRes = res;
     uiLog('cancel', run.runId, res);
     if (res && res.alreadyTerminal) {
       toast(`この実行は既に終了していました（${statusLabel(res.status)}）。中止は不要です。`, true);
@@ -4005,6 +4007,11 @@ async function cancelFlowRun() {
     // リモート側で park 済みノードが復活して見える瞬間を防げる。
     await gitPushBusOp(`agent-dashboard: cancel run ${run.runId}`,
       ['inbox/cancels', `runs/${run.runId}/meta.json`, `runs/${run.runId}/waits`]);
+    // revise（detach）コマンドも state 側へ送る。bus だけ push すると remote project が
+    // cancel を刈って新 act を始めたあとに revise が遅れ、すぐまた切り離される。
+    if (state.project && state.project.dir && !(cancelRes && cancelRes.alreadyTerminal)) {
+      await gitPushAfterWrite(`agent-dashboard: cancel detach ${run.runId}`, state.project.dir);
+    }
     await reloadProject();
   }
 }

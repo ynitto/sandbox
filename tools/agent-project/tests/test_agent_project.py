@@ -1603,17 +1603,21 @@ class TestActSubmitTerminal(unittest.TestCase):
             cfg = cfg_for(Path(d), dry_run=False, act_timeout=10.0)
             fake = self._fake_run({"done": False, "status": "running"})
             reaped = []
+            detached = []
             with mock.patch.object(km.subprocess, "run", fake), \
                  mock.patch.object(km.time, "time", lambda: clock[0]), \
                  mock.patch.object(km.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s)), \
                  mock.patch.object(km, "reap_orphan_flow",
-                                   side_effect=lambda *a, **k: reaped.append(True) or 0):
+                                   side_effect=lambda *a, **k: reaped.append(True) or 0), \
+                 mock.patch.object(km, "detach_flow_run",
+                                   side_effect=lambda cfg, task, reason="": (
+                                       detached.append(reason) or "run-XYZ")):
                 ok, msg = km._act_submit(self._task(), cfg, use_git=False)
             self.assertFalse(ok)
             self.assertIn("タイムアウト", msg)
             self.assertEqual(reaped, [], "submit タイムアウトは daemon 全滅 reap せず cancel する")
-            cancel = cfg.bus / "inbox" / "cancels"
-            self.assertTrue(any(cancel.glob("*.json")), "対象 run だけ cancel マーカー")
+            self.assertEqual(len(detached), 1, "対象 run だけ detach（cancel）する")
+            self.assertIn("タイムアウト", detached[0])
 
 
 class TestActRunMidRevise(unittest.TestCase):
@@ -1666,9 +1670,26 @@ class TestActRunMidRevise(unittest.TestCase):
                 ok, msg = km._act_run(t, cfg, use_git=False)
             self.assertFalse(ok)
             self.assertIn("revise", msg)
-            self.assertTrue((cfg.bus / "inbox" / "cancels").exists())
-            self.assertTrue(any((cfg.bus / "inbox" / "cancels").glob("*.json")))
+            self.assertIsNone(t.get("flow_run"), "detach で flow_run を外す")
+            cancels = list((cfg.bus / "inbox" / "cancels").glob("*.json")) if (cfg.bus / "inbox" / "cancels").exists() else []
+            self.assertEqual(cancels, [], "適用済み（または meta 無し）cancel マーカーは残さない")
 
+
+    def test_inherit_skips_canceled_last_run(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), dry_run=False)
+            old = "req-ab-T1-r0"
+            (cfg.bus / "runs" / old).mkdir(parents=True)
+            (cfg.bus / "runs" / old / "meta.json").write_text(
+                json.dumps({"status": "canceled", "request": "x"}), encoding="utf-8")
+            t = km.Task(id="T1", title="x", verify="true", retries=1)
+            t.extra.append(("last_run", old))
+            self.assertIsNone(km._inherit_from_run(t, "req-ab-T1-r1", cfg))
+            # last_run があるときの _prev_req_id フォールバックも踏まない
+            prev = km._inherit_from_run(t, "req-ab-T1-r1", cfg)
+            if prev is None and not str(t.get("last_run") or "").strip():
+                prev = km._prev_req_id(t, cfg)
+            self.assertIsNone(prev)
 
 class TestActTimeoutZeroAndInherit(unittest.TestCase):
     """act_timeout=0（無制限待ち）と、リトライ時の先行 run 引き継ぎ（--inherit-from）の配線。
@@ -2391,7 +2412,7 @@ class TestRevise(unittest.TestCase):
             self.assertIsNone(t.get("flow_run"))
             self.assertEqual(str(t.get("rev")), "1")
             cancel = c.bus / "inbox" / "cancels" / "run-old.json"
-            self.assertTrue(cancel.is_file(), "cancel マーカーを置く")
+            self.assertFalse(cancel.is_file(), "適用後 sticky cancel は残さない")
             meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
             self.assertEqual(meta["status"], "canceled")
             self.assertFalse((run_dir / "waits" / "n1.json").exists())
@@ -2416,7 +2437,7 @@ class TestRevise(unittest.TestCase):
             self.assertEqual(t.status, "ready")
             self.assertIsNone(t.get("flow_run"))
             self.assertEqual(t.retries, 1)
-            self.assertTrue((c.bus / "inbox" / "cancels" / "run-old.json").is_file())
+            self.assertFalse((c.bus / "inbox" / "cancels" / "run-old.json").is_file())
             meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
             self.assertEqual(meta["status"], "canceled")
 

@@ -92,10 +92,8 @@ test('cancelRun: マーカー設置＋meta canceled＋waits 掃除', () => {
   assert.strictEqual(res.marked, true);
   assert.strictEqual(res.cleared, 1);
   assert.deepStrictEqual(res.issues, [{ host: 'h', project: 'p', iid: 9, url: 'u' }]);
-  // (1) cancel マーカー
-  const marker = JSON.parse(fs.readFileSync(path.join(bus, 'inbox', 'cancels', 'run-e.json'), 'utf8'));
-  assert.strictEqual(marker.id, 'run-e');
-  assert.strictEqual(marker.close_issues, false); // viewer は追跡だけやめる（イシューは残す）
+  // 適用後は sticky cancel マーカーを残さない（meta=canceled で十分）
+  assert.strictEqual(fs.existsSync(path.join(bus, 'inbox', 'cancels', 'run-e.json')), false);
   // (2) meta が canceled
   const meta = JSON.parse(fs.readFileSync(path.join(runDir, 'meta.json'), 'utf8'));
   assert.strictEqual(meta.status, 'canceled');

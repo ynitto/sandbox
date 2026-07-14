@@ -242,6 +242,12 @@ def detach_flow_run(cfg: "Config", task: Task, reason: str = "") -> "str | None"
                     pass
     except (OSError, ValueError, json.JSONDecodeError):
         pass
+    # meta を canceled にしたあとマーカーを消す（daemon 不在でも sticky cancel を残さない）。
+    # orch は meta=canceled でも停止する。
+    try:
+        (cancels / f"{rid}.json").unlink(missing_ok=True)
+    except OSError:
+        pass
     append_journal(cfg.journal, f"flow detach: {task.id} の run {rid} を canceled（{why}）")
     return rid
 
@@ -256,7 +262,7 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
     rid = run_id_for(cfg, task)
     resuming = rid == str(task.get("last_run") or "").strip()
     # 新 run なら先行 last_run から done を引き継ぐ（submit 経路と同じ。retries-1 推定は rev ずれで外れる）
-    inherit = "" if resuming else (_inherit_from_run(task, rid) or "")
+    inherit = "" if resuming else (_inherit_from_run(task, rid, cfg) or "")
     cmd = build_agent_flow_cmd(task, cfg, use_git, run_id=rid, inherit_from=inherit)
     _pin_last_run(cfg, task, rid)
     if resuming:
@@ -311,7 +317,9 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
                         proc.kill()
                     except OSError:
                         pass
-                # 本体＋子の残骸を刈るが、健全な外部 daemon は残す。
+                # submit タイムアウトと同じ: 対象 run を cancel して外部 daemon 採用を防ぐ。
+                task.set("flow_run", rid)
+                detach_flow_run(cfg, task, f"agent-flow run タイムアウト（{cfg.act_timeout}s）")
                 reap_orphan_flow(cfg, include_daemon=False)
                 return (False, f"agent-flow run タイムアウト（{cfg.act_timeout}s）")
             time.sleep(1.0)
@@ -392,15 +400,23 @@ def _req_id_for(task: Task, cfg: "Config", retries: int) -> str:
     return f"req-{h}-{tid}-r{retries}" + (f"-v{rev}" if rev else "")
 
 
-def _inherit_from_run(task: Task, new_run_id: str) -> "str | None":
+def _inherit_from_run(task: Task, new_run_id: str, cfg: "Config | None" = None) -> "str | None":
     """新 run へ引き継ぐ先行 run-id。`last_run` が新 id と違えばそれを使う。
 
     `_prev_req_id`（retries-1・現 rev）だと revise で rev が上がったあと、実在しない
-    `…-r{N-1}-v{newRev}` を指して inherit が空振りする。last_run が実際の先行。"""
+    `…-r{N-1}-v{newRev}` を指して inherit が空振りする。last_run が実際の先行。
+    canceled の last_run は引き継がない（人の停止を尊重。done ノードを温存して消し込みもしない）。"""
     last = str(task.get("last_run") or "").strip()
-    if last and last != str(new_run_id or "").strip():
-        return last
-    return None
+    if not last or last == str(new_run_id or "").strip():
+        return None
+    if cfg is not None:
+        try:
+            meta = json.loads((cfg.bus / "runs" / last / "meta.json").read_text(encoding="utf-8"))
+            if str(meta.get("status") or "") == "canceled":
+                return None
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+    return last
 
 
 def _prev_req_id(task: Task, cfg: "Config") -> "str | None":
@@ -449,7 +465,9 @@ def _act_offload(task: Task, cfg: "Config", use_git: bool) -> "tuple":
     gitlab の長期委譲でもループをブロックせず次のタスクへ進める（結果は次パスで回収する）。"""
     base = _kf_base(cfg, use_git) + _workspace_cmd_args(cfg, task) + _reference_cmd_args(cfg, task)
     run_id = _submit_req_id(task, cfg)
-    prev = _inherit_from_run(task, run_id) or _prev_req_id(task, cfg)
+    prev = _inherit_from_run(task, run_id, cfg)
+    if prev is None and not str(task.get("last_run") or "").strip():
+        prev = _prev_req_id(task, cfg)  # last_run 空のときだけ推定（canceled skip を踏み潰さない）
     _pin_last_run(cfg, task, run_id)
     term, ok, msg = _flow_result_once(cfg, use_git, run_id)
     if not term:                                  # 未作成/実行中: 未作成なら submit（作成済みは冪等 no-op）
@@ -474,7 +492,9 @@ def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
     base = _kf_base(cfg, use_git) + _workspace_cmd_args(cfg, task) + _reference_cmd_args(cfg, task)
     run_id = _submit_req_id(task, cfg)
     # pin する前に先行 run を決める（pin 後は last_run が新 id になる）
-    prev = _inherit_from_run(task, run_id) or _prev_req_id(task, cfg)
+    prev = _inherit_from_run(task, run_id, cfg)
+    if prev is None and not str(task.get("last_run") or "").strip():
+        prev = _prev_req_id(task, cfg)
     _pin_last_run(cfg, task, run_id)
     inherit = ["--inherit-from", prev] if prev else []
     try:

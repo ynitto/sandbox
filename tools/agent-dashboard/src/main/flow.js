@@ -581,6 +581,15 @@ function cancelRun(busDir, runId, { reason } = {}) {
       /* 消せなくても致命的でない */
     }
   }
+  // (4) 適用済み cancel マーカーを消す（daemon 不在でも sticky にしない）。
+  // orch は meta=canceled で止まる。remote daemon も meta を見て終端を知る。
+  if (marked) {
+    try {
+      fs.unlinkSync(path.join(busDir, 'inbox', 'cancels', `${id}.json`));
+    } catch {
+      /* 残っても致命ではない */
+    }
+  }
   return { status: marked ? 'canceled' : curStatus, marked, cleared, issues };
 }
 

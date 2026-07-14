@@ -7,6 +7,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-flow / agent-project / agent-dashboard: Set3 integration 手つなぎ修正
+
+- **canceled を `--inherit-from` すると停止した行が蘇る** — flow/project とも canceled は引き継がない。
+- **同期 act タイムアウトが run を非終端のまま放置** — detach（cancel）してから残骸刈り。
+- **daemon 不在時に cancel マーカーが sticky** — dashboard/project/CLI 適用後に clear。
+- **CLI cancel が終端 run の残 waits を残す** — dashboard と同じ掃除。
+- **dashboard cancel が bus だけ push し revise が遅延** — project state も push。
+
 ### agent-flow / agent-project / agent-dashboard: Set3 individual バグ修正
 
 - **agent-dashboard: 既に終端した run の cancel が revise でタスクを再キューしていた** —

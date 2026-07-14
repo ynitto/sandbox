@@ -451,6 +451,10 @@ class Bus:
             return {"inherited": False, "seeded_nodes": 0, "deleted": False,
                     "reason": "先行 run が見つからない"}
         terminal = old_meta.get("status") in TERMINAL
+        if old_meta.get("status") == "canceled":
+            # 人の停止を尊重。seed も削除もしない（cancel 後リトライが canceled 行を蘇らせない）。
+            return {"inherited": False, "seeded_nodes": 0, "deleted": False,
+                    "reason": "canceled は引き継がない"}
         if not terminal and not self.run_is_orphaned(old_run_id, orphan_grace):
             return {"inherited": False, "seeded_nodes": 0, "deleted": False,
                     "reason": f"先行 run は実行中（status={old_meta.get('status')}）＝触らない"}
