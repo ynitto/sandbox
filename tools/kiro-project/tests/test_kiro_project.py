@@ -4568,11 +4568,46 @@ class TestProjectLayer(unittest.TestCase):
                              f"- app = {remote}\n  - owns: **\n  - desc: 対象\n")
             task = km.Task(id="T1", title="x", verify="test -f WS.txt")
             task.set("workspace", "app")
-            vcwd, tmp = km._task_verify_cwd(cfg_for(d), task)
+            # 本ケースは「workspace を clone して検証する」こと自体の検証。task_branch は
+            # test_task_verify_cwd_uses_task_branch_not_target で別途確認する。
+            vcwd, tmp = km._task_verify_cwd(cfg_for(d, task_branch=False), task)
             try:
                 self.assertIsNotNone(tmp)                    # 一時 clone を作った
                 self.assertTrue((vcwd / "WS.txt").exists())  # クローン内に成果がある
                 self.assertNotEqual(vcwd, d)                 # workdir ではない
+            finally:
+                if tmp:
+                    shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_task_verify_cwd_uses_task_branch_not_target(self):
+        # task_branch 時の成果は kp/<task-id> にある。target/base（main）を clone すると
+        # 成果が無く永久 NG になる（journal の @main 誤検証バグ）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            remote = d / "remote"
+            self._make_git_repo(remote, marker="MAIN.txt")
+            g = ["git", "-C", str(remote)]
+            defb = subprocess.run(g + ["rev-parse", "--abbrev-ref", "HEAD"],
+                                  capture_output=True, text=True, check=True).stdout.strip()
+            subprocess.run(g + ["checkout", "-qb", "kp/T1"], check=True)
+            (remote / "TASK.txt").write_text("ok")
+            subprocess.run(g + ["add", "-A"], check=True)
+            subprocess.run(g + ["-c", "user.email=a@b", "-c", "user.name=x",
+                                "commit", "-qm", "task"], check=True)
+            subprocess.run(g + ["checkout", "-q", defb], check=True)
+            write_charter(d, "# Charter: c\n## goal\nx\n## repos\n"
+                             f"- app = {remote}\n  - owns: **\n  - base: {defb}\n"
+                             f"  - target: {defb}\n  - desc: 対象\n")
+            task = km.Task(id="T1", title="x", verify="test -f TASK.txt")
+            task.set("workspace", "app")
+            cfg = cfg_for(d, task_branch=True)
+            vcwd, tmp = km._task_verify_cwd(cfg, task)
+            try:
+                self.assertTrue((vcwd / "TASK.txt").exists(),
+                                "kp/T1 上の成果を検証すること（main には無い）")
+                journal = (d / "journal.md").read_text(encoding="utf-8")
+                self.assertIn("kp/T1", journal)
+                self.assertNotIn(f"@{defb} のクローン", journal)
             finally:
                 if tmp:
                     shutil.rmtree(tmp, ignore_errors=True)
@@ -4593,7 +4628,7 @@ class TestProjectLayer(unittest.TestCase):
                              f"- app = {remote}\n  - owns: **\n  - path: pkg\n  - desc: 対象\n")
             task = km.Task(id="T1", title="x", verify="test -f pkg/IN_SUB.txt")
             task.set("workspace", "app")
-            vcwd, tmp = km._task_verify_cwd(cfg_for(d), task)
+            vcwd, tmp = km._task_verify_cwd(cfg_for(d, task_branch=False), task)
             try:
                 self.assertNotEqual(vcwd.name, "pkg")        # path には潜らない（クローンのルート）
                 self.assertTrue((vcwd / ".git").exists())    # ルートなので $KIRO_BASE_REV を取り直せる
@@ -7066,6 +7101,32 @@ class TestAsyncOffload(unittest.TestCase):
             d = Path(d)
             self._offloaded(d, "T1", "run-T1")
             self.assertTrue(km.has_work(self._cfg(d)))
+
+    def test_has_work_false_when_ready_only_has_unmet_deps(self):
+        # blocked/doing の後ろに dep-gated ready が並ぶだけでは起こさない
+        # （起こすと project_watch が空パスを無限に回す）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "backlog").mkdir()
+            (d / "backlog" / "T1.md").write_text(
+                "## T1: blocked root\n- status: blocked\n- verify: true\n", encoding="utf-8")
+            (d / "backlog" / "T2.md").write_text(
+                "## T2: waiting on T1\n- status: ready\n- after: T1\n- verify: true\n",
+                encoding="utf-8")
+            self.assertFalse(km.has_work(cfg_for(d)))
+
+    def test_has_work_true_for_stale_doing(self):
+        # 実行者が失踪した doing は次パスで回復するため起こす
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1")
+            cfg = cfg_for(d)
+            km.ensure_dirs(cfg)
+            t = km.load_tasks(cfg.backlog)[0]
+            t.status = "doing"
+            km.persist_task(cfg, t)
+            # claim 無し＝実行者不明＝stale
+            self.assertTrue(km.has_work(cfg))
 
     def test_act_via_kiro_flow_offloads_when_async(self):
         with tempfile.TemporaryDirectory() as d:

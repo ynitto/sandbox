@@ -357,6 +357,9 @@ def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
             # 新しい req_id になるため、この古い run に合流することもない。
             return (False, f"daemon run {run_id} の結果待ちを中断（人の revise を検知）")
         time.sleep(2.0)
+    # _act_run と同様、タイムアウト後に daemon 側 run を残すと次試行が二重実行になる。
+    # submit で掴んだ同一バスの迷子 orchestrator/worker をここで刈る。
+    reap_orphan_flow(cfg)
     return (False, f"daemon run {run_id} タイムアウト")
 
 

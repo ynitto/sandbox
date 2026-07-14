@@ -486,6 +486,23 @@ class OrphanRecoveryTests(unittest.TestCase):
             self.bus.write_result(f"t{i}", "w1", "done", "ok")   # 再開後に進捗が出た
         self.assertEqual(failed, [])
 
+    def test_resume_count_resets_on_live_park(self):
+        # 生存 park（承認待ち）だけの run も「進捗なし」扱いしない＝一晩の再起動で orphaned にしない
+        self.bus.submit_request("run1", "req", "submitter")
+        self.bus.write_graph({"nodes": {"n1": {"id": "n1", "kind": "task", "deps": []}}})
+        for i in range(4):
+            self.bus.write_wait("n1", {
+                "id": "n1", "who": "w1",
+                "wait_lease_until": time.time() + 1000,
+                "next_poll_at": time.time() + 100,
+            })
+            self.bus.set_status("running")
+            self._set_meta(orch_lease_until=time.time() - 1.0)
+            adopted, failed, _ = self._adopt(max_resumes=2)
+            self.assertEqual(list(adopted), ["run1"], f"park resume #{i+1}")
+            self.assertEqual(failed, [])
+            self.assertEqual(self.bus.run_meta("run1")["resume_count"], 1)
+
     def test_orphan_failed_when_resume_disabled(self):
         # max_resumes<=0 は従来動作（孤児は即 failed）へのオプトアウト
         self.bus.submit_request("run1", "req", "submitter")
@@ -3650,6 +3667,23 @@ class GitDistributedTests(unittest.TestCase):
         # 先着の claim が両クローンから見て勝者
         b.sync_pull()
         self.assertEqual(b._winner("t1"), "nodeA")
+        # 敗者の claim ファイルは消えている（残すと勝者 release 後に zombie claimed になる）
+        a.sync_pull()
+        loser_claim = os.path.join(a.claims_dir, "t1", "nodeB.json")
+        self.assertFalse(os.path.exists(loser_claim),
+                         "敗者が自分の claim を残してはいけない")
+
+    def test_loser_claim_withdrawn_prevents_zombie_after_park(self):
+        # 敗者が claim を残すと、勝者の park/release 後に敗者の lease が _winner になり
+        # 誰も動かない claimed になる。withdraw でそれを防ぐ。
+        a = kf.GitBus(os.path.join(self.clones, "ZA"), "run1", remote=self.bare, branch="main")
+        b = kf.GitBus(os.path.join(self.clones, "ZB"), "run1", remote=self.bare, branch="main")
+        self.assertTrue(a.try_claim("t1", "nodeA", 60))
+        self.assertFalse(b.try_claim("t1", "nodeB", 60))
+        a.release_claim("t1", "nodeA")          # park 相当：勝者が slot を解放
+        a.sync_push("release")
+        b.sync_pull()
+        self.assertIsNone(b._winner("t1"))      # 敗者の残骸 claim で zombie にならない
 
     def test_request_claim_elects_single_daemon(self):
         # 別クローンの 2 デーモンが同じ要求を claim → orchestrate 担当は 1 台
@@ -5250,6 +5284,17 @@ class ServiceWaitsTests(unittest.TestCase):
         called = {"n": 0}
         self._run(lambda st: called.__setitem__("n", called["n"] + 1) or {"decision": None})
         self.assertEqual(called["n"], 0)                        # まだ再確認時刻でない
+
+    def test_next_poll_at_backoff_still_renews_lease(self):
+        # バックオフ中も監視主体が生きている証拠として lease を更新する
+        old_lease = time.time() + 5
+        self._park(next_poll_at=time.time() + 1000, wait_lease_until=old_lease)
+        called = {"n": 0}
+        self._run(lambda st: called.__setitem__("n", called["n"] + 1) or {"decision": None})
+        self.assertEqual(called["n"], 0)
+        rec = self.bus.read_wait("n1")
+        self.assertIsNotNone(rec)
+        self.assertGreater(rec["wait_lease_until"], old_lease + 100)
 
     def test_throttled_released_when_slot_frees(self):
         # 起票済み 0 件・cap 1 → throttled park を解除（node は pending へ）

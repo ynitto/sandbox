@@ -7,6 +7,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-project / kiro-flow: 検証ブランチ取り違え・空パス無限起床・park 再開打ち切り等を修正
+
+- **kiro-project: verify が `kp/<task-id>` ではなく `target`/`base`（main）を clone していた** —
+  `task_branch`（既定 on）では worker が成果を `kp/<task-id>` に積む。`_task_verify_cwd` は
+  これを無視して MR の target/base を clone しており、journal に `@main のクローン内で検証` と
+  出たあと永久 NG（retries 尽きたら blocked）になっていた。`branch` → `target` → `base` の順で
+  clone するようにした。
+- **kiro-project: `has_work` が依存未達の ready だけで起床し、空パスを無限に回していた** —
+  blocked/doing の後ろに `after:` 待ちの ready が並ぶだけで `project_watch` が毎 poll 起きる
+  （cycles が数千まで増え journal が秒単位で埋まる）。`ready_after_deps` が空なら起こさず、
+  生存 claim の無い stale doing と offloaded/inbox だけ起こす。
+- **kiro-project: daemon submit のタイムアウト後に孤児 run を刈らなかった** — `_act_run` と同様に
+  `reap_orphan_flow` して二重実行を防ぐ。
+- **kiro-flow: 生存 park だけの run が `max_resumes` で orphaned になっていた** — `record_resume` の
+  「進捗」が results 数だけだったため、承認待ち（結果が増えない）の健康な run が毎晩の PC 再起動で
+  failed に確定していた。生存 `wait_lease` を進捗として数え直す。
+- **kiro-flow: `service_waits` がバックオフ中に wait_lease を更新しなかった** — poll を飛ばす枝で
+  lease が切れ、監視主体が生きているのに node が pending へ縮退していた。skip 枝でも lease を更新。
+- **kiro-flow: claim 敗者がファイルを残し、勝者 release 後に zombie claimed になっていた** —
+  git 分散で両者が書けた場合、負けた自分の claim だけ消す（withdraw）。
+
 ### kiro-flow gitlab executor: self-host（http/別ポート）で「GitLab API へ接続できません」になるバグを修正
 
 - **症状**: タスクノードが「GitLab API … へ接続できません」で failed になる。エラーに出るパスの

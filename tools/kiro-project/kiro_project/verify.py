@@ -120,7 +120,10 @@ def _task_verify_cwd(cfg: "Config", task: "Task") -> "tuple[Path, str | None]":
     if spec and spec.get("url"):
         tmp = tempfile.mkdtemp(prefix="kiro-verify-")
         dest = str(Path(tmp) / "repo")
-        branch = spec.get("target") or spec.get("base") or ""   # worker の push 先＝target、無ければ base
+        # worker の push 先は task_branch 時の `branch`（kp/<task-id>）。無ければ MR の
+        # target、さらに無ければ base。ここを target/base だけにすると、成果は kp/ に
+        # あるのに main を検証して永久に NG になる（journal の @main 誤検証）。
+        branch = spec.get("branch") or spec.get("target") or spec.get("base") or ""
         try:
             _clone_repo_shallow(spec["url"], branch, dest)
         except (OSError, RuntimeError) as e:

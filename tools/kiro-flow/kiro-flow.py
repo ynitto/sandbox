@@ -526,7 +526,17 @@ class Bus:
             self._write_claim_in(claim_dir, who, lease_sec)
             self.sync_push(msg)
             self.sync_pull()  # 他ノードの claim を取り込んでから勝敗判定
-            return self._winner_in(claim_dir) == who
+            if self._winner_in(claim_dir) == who:
+                return True
+            # 敗者が自分の claim ファイルを残すと、勝者の park/release 後に敗者和己の
+            # lease が _winner になり、誰も動いていないのに node_state=claimed の
+            # zombie になる（git 分散で両者が書けた場合）。負けた自分の分だけ消す。
+            try:
+                os.remove(os.path.join(claim_dir, f"{who}.json"))
+                self.sync_push(f"claim withdraw {who}")
+            except OSError:
+                pass
+            return False
 
     # 後方互換のためのノード単位ラッパ
     def _winner(self, node_id: str):
@@ -1001,20 +1011,26 @@ class Bus:
         """自動再開の試行を meta に記録し、「進捗なしの連続再開回数」を返す。
         前回の再開以降に results/ が増えていれば 1 から数え直す＝進捗のある長期 run は
         （毎日の PC シャットダウンを跨いで）何度でも再開できる。進捗ゼロのまま数字だけ
-        増える壊れた run だけが max_resumes に達して failed に確定される。"""
+        増える壊れた run だけが max_resumes に達して failed に確定される。
+
+        生存中の park（承認待ち wait）も「健全な進捗」とみなす。gitlab の人レビューは
+        数日〜数週間かかる前提で、結果が増えないまま毎晩再起動しても orphaned にしない。"""
         v = self.run_view(run_id)
         meta = read_json(v.meta_path) or {}
         try:
             done_now = sum(1 for f in os.listdir(v.results_dir) if f.endswith(".json"))
         except OSError:
             done_now = 0
+        live_waits = sum(1 for rec in v.list_waits()
+                         if float(rec.get("wait_lease_until", 0) or 0) >= time.time())
         prev = meta.get("resume_progress")
-        if prev is None or done_now > int(prev):
-            n = 1                                     # 進捗あり（または初回）→ 数え直し
+        if prev is None or done_now > int(prev) or live_waits > 0:
+            n = 1                                     # 進捗あり / park 生存 / 初回 → 数え直し
         else:
             n = int(meta.get("resume_count", 0) or 0) + 1
         meta["resume_count"] = n
         meta["resume_progress"] = done_now
+        meta["resume_live_waits"] = live_waits
         meta["resumed_at"] = now_iso()
         meta["updated_at"] = now_iso()
         write_json_atomic(v.meta_path, meta)
@@ -3877,7 +3893,14 @@ def service_waits(bus: Bus, args, only_runs: "list | None" = None,
                 _service_throttled(v, rec, cap, wait_lease, daemon_id)
                 continue
             if float(rec.get("next_poll_at", 0) or 0) > now:
-                continue                             # まだ再確認時刻でない（per-issue バックオフ）
+                # まだ再確認時刻でない（per-issue バックオフ）。poll は飛ばすが、
+                # 監視主体が生きている証拠として lease だけ更新する。
+                # gitlab 既定は poll_interval≈lease 下限（300s）なので、更新しないと
+                # バックオフの合間に wait_lease が切れ、node_state が pending へ縮退して
+                # worker が再クレームする（コメントの「watch_interval 毎に更新」契約と矛盾）。
+                rec["wait_lease_until"] = now + wait_lease
+                v.write_wait(nid, rec)
+                continue
             _service_one_wait(v, rec, poll, watch_interval, wait_lease, daemon_id)
     return serviced
 
