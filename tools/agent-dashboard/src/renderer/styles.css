@@ -35,6 +35,7 @@ html, body {
 .sync-error { color: #dc322f; font-weight: 600; }
 .sync-status { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; }
 .sync-action { padding: 2px 7px; color: var(--fg); font-weight: 500; }
+.sync-checked { color: var(--muted); font-weight: 400; }
 
 /* フロー画面の advice（次に何が起きるか・あなたの出番はあるか）。
    ok=操作不要 / warn=環境側の対処が要る / act=あなたの操作・判断待ち / muted=記録 */

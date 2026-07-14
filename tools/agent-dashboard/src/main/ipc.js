@@ -74,14 +74,12 @@ function registerIpcHandlers() {
   });
 
   // 同期の健康状態（ローカル参照のみ）と、一発修復（🩺 ボタン）
-  handle('git:health', ({ dir }) => {
+  handle('git:health', ({ dir, refreshRemote }) => {
     if (!dir) throw new Error('対象ディレクトリが指定されていません');
-    const cfg = loadConfig();
-    const configured = cfg.projects && Number(cfg.projects.gitPullSec);
     // 状態確認の fetch は作業ツリーを変更しない。自動 pull が無効でも最低60秒間隔で
     // 追跡情報を更新し、「同期は正常」という古い判定を表示し続けない。
-    const intervalSec = configured > 0 ? configured : 60;
-    return git.health(dir, { refreshRemote: true, intervalSec });
+    // ただし明示的な「表示を更新」はローカル再読込だけ、というUI契約を守る。
+    return git.health(dir, { refreshRemote: !!refreshRemote, intervalSec: 60 });
   });
   handle('git:heal', ({ dir }) => {
     if (!dir) throw new Error('対象ディレクトリが指定されていません');

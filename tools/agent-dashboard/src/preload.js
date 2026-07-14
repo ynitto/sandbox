@@ -19,7 +19,7 @@ contextBridge.exposeInMainWorld('api', {
   readProject: (dir) => invoke('dashboard:project', { dir }),
   gitPull: (dir, force) => invoke('git:pull', { dir, force }),
   gitCommitPush: (dir, message, paths) => invoke('git:commitPush', { dir, message, paths }),
-  gitHealth: (dir) => invoke('git:health', { dir }),
+  gitHealth: (dir, refreshRemote = true) => invoke('git:health', { dir, refreshRemote }),
   gitHeal: (dir) => invoke('git:heal', { dir }),
   gitDiff: (args) => invoke('git:diff', args),
   deleteTask: (dir, id) => invoke('dashboard:deleteTask', { dir, id }),

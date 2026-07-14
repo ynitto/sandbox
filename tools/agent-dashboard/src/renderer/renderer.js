@@ -450,14 +450,14 @@ async function selectProject(dir) {
   await reloadProject();
 }
 
-async function reloadProject() {
+async function reloadProject({ refreshRemoteHealth = true } = {}) {
   if (!state.selectedDir) return;
   const project = await guard('プロジェクト読込', () => api.readProject(state.selectedDir));
   if (!project) return;
   project.needs = stabilizeMilestoneNeeds(state.project, project);
   state.project = project;
   // 同期の健康状態（ローカル参照のみ・リモートへは触らない）。失敗しても表示を欠くだけ。
-  state.gitHealth = await api.gitHealth(project.dir).catch(() => null);
+  state.gitHealth = await api.gitHealth(project.dir, refreshRemoteHealth).catch(() => null);
   // バスが未作成でも daemon の稼働はロックファイルから判定できるため常に読む。
   // project.dir は run アーカイブ（<dir>/flow-archive/）の置き場として渡す。
   const fr = (await guard('フロー読込', () => api.flowRuns(project.dir, project.busDir))) || {};
@@ -512,13 +512,25 @@ function renderHeader() {
   if (gh && !gh.notRepo) {
     const icon = gh.level === 'error' ? '🔴' : gh.level === 'warn' ? '🟡' : '🟢';
     const cls = gh.level === 'error' ? 'sync-error' : gh.level === 'warn' ? 'sync-warn' : 'sync-ok';
+    const checkedAgo = gh.remoteCheckedAt
+      ? fmtAgo(new Date(gh.remoteCheckedAt).toISOString())
+      : '';
+    const checkedLabel = gh.remoteCheckError
+      ? `共有先確認: ${checkedAgo ? `${checkedAgo}（再確認失敗）` : '失敗'}`
+      : checkedAgo
+        ? `共有先確認: ${checkedAgo}`
+        : '';
     let action = '';
     if (gh.level === 'error') {
       action = '<button id="btn-sync-now" class="sync-action">同期を修復</button>';
     } else if (gh.level === 'warn' && !(gh.behind > 0 && gh.dirty > 0)) {
       action = '<button id="btn-sync-now" class="sync-action">共有先と同期</button>';
     }
-    metaBits.push(`<span class="sync-status ${cls}" title="${esc(gh.summary)}">${icon} 同期: ${esc(gh.summary)} ${action}</span>`);
+    metaBits.push(
+      `<span class="sync-status ${cls}" title="${esc(gh.summary)}">` +
+        `${icon} 同期: ${esc(gh.summary)} ` +
+        `${checkedLabel ? `<small class="sync-checked">${esc(checkedLabel)}</small>` : ''} ${action}</span>`
+    );
   }
   $('project-meta').innerHTML = metaBits.join(' ｜ ');
   const syncButton = $('btn-sync-now');
@@ -4845,7 +4857,7 @@ async function refreshAll({ sync = true } = {}) {
   try {
     if (sync) await maybeAutoGitPull();
     await refreshDiscovery();
-    if (state.selectedDir) await reloadProject();
+    if (state.selectedDir) await reloadProject({ refreshRemoteHealth: sync });
   } finally {
     state.busy = false;
   }

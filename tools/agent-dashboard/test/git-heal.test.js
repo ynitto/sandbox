@@ -96,6 +96,15 @@ const git_health_of = (dir) => git.health(dir);
     assert.strictEqual(fresh.remoteCheckError, null);
   });
 
+  await test('health: 共有先の確認失敗を正常表示で隠さない', async () => {
+    const { root, work } = scaffold();
+    G(work, 'remote', 'set-url', 'origin', path.join(root, 'missing.git'));
+    const h = await git.health(work, { refreshRemote: true, force: true });
+    assert.strictEqual(h.level, 'warn', JSON.stringify(h));
+    assert.ok(h.remoteCheckError, JSON.stringify(h));
+    assert.match(h.summary, /共有先を確認できない/);
+  });
+
   await test('heal: 遅れは取り込み・未送信は送信し、正常へ戻す', async () => {
     const { work, other } = scaffold();
     fs.writeFileSync(path.join(other, 'remote.md'), 'r\n');

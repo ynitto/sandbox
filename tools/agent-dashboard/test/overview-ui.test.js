@@ -69,6 +69,8 @@ assert.match(renderer, /同期を修復/);
 assert.match(renderer, /共有先確認:/);
 assert.match(renderer, /remoteCheckedAt/);
 assert.match(renderer, /refreshAll\(\{ sync: false \}\)/);
+assert.match(renderer, /reloadProject\(\{ refreshRemoteHealth: sync \}\)/);
+assert.match(renderer, /api\.gitHealth\(project\.dir, refreshRemoteHealth\)/);
 
 for (const label of ['現在の状態', 'あなたの対応', '進捗', '成果', '対応する', 'タスクを見る', '実行を見る', '成果を見る']) {
   assert.ok(renderer.includes(label), `概要に「${label}」が必要です`);
