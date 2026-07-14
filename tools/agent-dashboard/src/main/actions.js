@@ -73,8 +73,21 @@ function submitFeedback(needsFile, feedback, stub) {
     // 除いたマーカー以降すべてを人の記入として読む）
     text = text.replace(DECISION_MARKER, `${DECISION_MARKER}\n\n${fb}\n`);
   }
-  if (/^\s*-\s*\[x\]/im.test(text)) {
-    // すでに確定済み
+  // 確定 [x] は Decision Outcome 配下だけを触る（本文チェックリストを潰さない）
+  const outcomeIdx = text.search(/^##\s+Decision Outcome\s*$/m);
+  if (outcomeIdx >= 0) {
+    const head = text.slice(0, outcomeIdx);
+    let tail = text.slice(outcomeIdx);
+    if (/^\s*-\s*\[x\]/im.test(tail)) {
+      // すでに確定済み
+    } else if (/-\s*\[ \]/.test(tail)) {
+      tail = tail.replace(/-\s*\[ \]/, '- [x]');
+    } else {
+      tail = `${tail.replace(/\n*$/, '\n')}\n- [x] 確定\n`;
+    }
+    text = head + tail;
+  } else if (/^\s*-\s*\[x\]/im.test(text)) {
+    // マーカー無しのレガシー票: 既存 [x] があれば触らない
   } else if (/-\s*\[ \]/.test(text)) {
     text = text.replace(/-\s*\[ \]/, '- [x]');
   } else {
@@ -174,10 +187,38 @@ function quote(arg) {
   return process.platform === 'win32' ? `"${s.replace(/"/g, '""')}"` : `'${s.replace(/'/g, "'\\''")}'`;
 }
 
-function runProjectCli(command, args, timeoutMs = 60000) {
+function findProjectConfig(...dirs) {
+  // agent-project の _find_config と同じ名前を、本体／状態 worktree の候補から探す。
+  // cwd 依存を避け、dashboard CLI 委譲が設定を拾えるようにする。
+  // `dir`（状態ルート）と `fromStateWorktree(dir)`（本体）の両方を見る——yaml が
+  // 状態 worktree 側だけにある構成でも --config を落とさない。
+  const bases = [];
+  const add = (d) => {
+    if (!d) return;
+    const resolved = path.resolve(d);
+    for (const base of [
+      resolved,
+      path.join(resolved, '.agent'),
+      path.dirname(resolved),
+      path.join(path.dirname(resolved), '.agent'),
+    ]) {
+      if (!bases.includes(base)) bases.push(base);
+    }
+  };
+  for (const d of dirs) add(d);
+  for (const base of bases) {
+    for (const name of ['agent-project.yaml', 'agent-project.yml']) {
+      const p = path.join(base, name);
+      if (fs.existsSync(p)) return p;
+    }
+  }
+  return null;
+}
+
+function runProjectCli(command, args, timeoutMs = 60000, cwd) {
   const cmdline = `${command} ${args.map(quote).join(' ')}`;
   return new Promise((resolve, reject) => {
-    const child = spawn(cmdline, { shell: true });
+    const child = spawn(cmdline, { shell: true, cwd: cwd || undefined });
     let out = '';
     let err = '';
     const timer = setTimeout(() => {
@@ -201,8 +242,11 @@ function runProjectCli(command, args, timeoutMs = 60000) {
 // CLI 実行（approve / hold / reprioritize / revise / resume-run）。本体が稼働していないときの経路
 async function runActionViaCli(cfg, { dir, action, id, reason, fields, feedback, run }) {
   const command = (cfg.projects && cfg.projects.command) || 'agent-project';
-  const { root } = cliScope(dir);
+  // ファイル操作は状態ルート（dir）。CLI --root は本体側（二重リダイレクト防止）。
+  const root = project.fromStateWorktree(path.resolve(dir));
   const base = ['--root', root];
+  const cfgPath = findProjectConfig(root, dir);
+  if (cfgPath) base.push('--config', cfgPath);
   let args;
   if (action === 'approve') args = ['approve', id, '--reason', reason, ...base];
   else if (action === 'reject') args = ['reject', id, '--reason', reason, ...base];
@@ -215,7 +259,8 @@ async function runActionViaCli(cfg, { dir, action, id, reason, fields, feedback,
     for (const [key, value] of Object.entries(payload)) args.push(`--${key}`, value);
     args.push(...base);
   } else args = ['reprioritize', id, '--defer', '--reason', reason, ...base];
-  return runProjectCli(command, args);
+  const cwd = cfgPath ? path.dirname(cfgPath) : root;
+  return runProjectCli(command, args, 60000, cwd);
 }
 
 // action: approve | hold | pin | defer | revise
@@ -283,9 +328,12 @@ async function requestReplan(cfg, { dir, reason }) {
   }
   try {
     const command = (cfg.projects && cfg.projects.command) || 'agent-project';
-    const { root } = cliScope(dir);
+    const root = project.fromStateWorktree(path.resolve(dir));
     const args = ['replan', '--reason', why, '--root', root];
-    const res = await runProjectCli(command, args);
+    const cfgPath = findProjectConfig(root, dir);
+    if (cfgPath) args.push('--config', cfgPath);
+    const cwd = cfgPath ? path.dirname(cfgPath) : root;
+    const res = await runProjectCli(command, args, 60000, cwd);
     return { ...res, via: 'cli' };
   } catch (err) {
     if (mode === 'cli') throw err;
@@ -327,13 +375,17 @@ function requestLifecycle(cfg, { dir, action, reason }) {
 // CLI の有無等は環境依存）。その判断は呼び出し側（renderer の確認ダイアログ）が人に委ねる。
 async function startProject(cfg, { dir }) {
   const command = (cfg.projects && cfg.projects.command) || 'agent-project';
-  const { root } = cliScope(dir);
+  const root = project.fromStateWorktree(path.resolve(dir));
+  const cfgPath = findProjectConfig(root, dir);
+  const args = ['start', '--root', root];
+  if (cfgPath) args.push('--config', cfgPath);
+  const cwd = cfgPath ? path.dirname(cfgPath) : root;
   try {
-    const res = await runProjectCli(command, ['start', '--root', root], 120000);
+    const res = await runProjectCli(command, args, 120000, cwd);
     return { ...res, via: 'cli' };
   } catch (err) {
     // CLI が無い/失敗 → 人が本体マシンで打つべきコマンドをそのまま返す（コピーして実行できる）
-    err.manualCommand = `${command} start --root ${root}`;
+    err.manualCommand = `${command} ${args.map(quote).join(' ')}`;
     throw err;
   }
 }
@@ -347,5 +399,6 @@ module.exports = {
   requestReplan,
   requestLifecycle,
   startProject,
+  findProjectConfig,
   DECISION_MARKER,
 };

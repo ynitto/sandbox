@@ -800,13 +800,13 @@ def cmd_run(cfg: Config) -> int:
     # 前世代の agent-flow（クラッシュ・電源断で stop を通らず居残ったもの）を刈る。ここを通らないと
     # 残った orchestrator がリースを更新し続け、この後の run_id_for が「まだ実行中」と読んで
     # **続きから再開せず新しい run を作り**、同じタスクを二重実行する（reap_orphan_flow 参照）。
-    # 重複起動は上で弾いているので、いま自分の bus を回している agent-flow は残骸だけである。
-    if cfg.watch:
-        reaped = reap_orphan_flow(cfg)
-        if reaped:
-            append_journal(cfg.journal,
-                           f"前世代の agent-flow を {reaped} プロセス停止（クラッシュの残骸）。"
-                           f"run のリースを失効させ、続きから再開できる状態に戻した")
+    # manage_flow_daemon=on なら daemon も含めて刈り（ensure_flow_daemon が立て直す）。
+    # 既定 off では外部 daemon を残し、orch/worker/都度 run だけ刈る。
+    reaped = reap_orphan_flow(cfg)
+    if reaped:
+        append_journal(cfg.journal,
+                       f"前世代の agent-flow を {reaped} プロセス停止（クラッシュの残骸）。"
+                       f"run のリースを失効させ、続きから再開できる状態に戻した")
     reg = register_instance(cfg, cfg.registry)   # ローカル＋共有レジストリへ登録（リモート発見）
     hb = lambda: refresh_instance(reg)
     # watch はタスク実行中（エージェント CLI・agent-flow run）に数分〜数十分ブロックする。

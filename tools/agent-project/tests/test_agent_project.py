@@ -1544,6 +1544,17 @@ class TestActSubmitTerminal(unittest.TestCase):
             self.assertFalse(ok)              # failed を success と取り違えない
             self.assertIn("failed", msg)
 
+    def test_canceled_run_reported_as_failure(self):
+        # dashboard からの手動キャンセルを done（成功）と取り違えない
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), dry_run=False, act_timeout=30.0)
+            with mock.patch.object(km.subprocess, "run",
+                                   self._fake_run({"done": True, "status": "canceled"})), \
+                 mock.patch.object(km.time, "sleep", lambda *_: None):
+                ok, msg = km._act_submit(self._task(), cfg, use_git=False)
+            self.assertFalse(ok)
+            self.assertIn("canceled", msg)
+
     def test_done_run_reported_as_success(self):
         with tempfile.TemporaryDirectory() as d:
             cfg = cfg_for(Path(d), dry_run=False, act_timeout=30.0)
@@ -1591,12 +1602,114 @@ class TestActSubmitTerminal(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             cfg = cfg_for(Path(d), dry_run=False, act_timeout=10.0)
             fake = self._fake_run({"done": False, "status": "running"})
+            reaped = []
+            detached = []
             with mock.patch.object(km.subprocess, "run", fake), \
                  mock.patch.object(km.time, "time", lambda: clock[0]), \
-                 mock.patch.object(km.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s)):
+                 mock.patch.object(km.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s)), \
+                 mock.patch.object(km, "reap_orphan_flow",
+                                   side_effect=lambda *a, **k: reaped.append(True) or 0), \
+                 mock.patch.object(km, "detach_flow_run",
+                                   side_effect=lambda cfg, task, reason="": (
+                                       detached.append(reason) or "run-XYZ")):
                 ok, msg = km._act_submit(self._task(), cfg, use_git=False)
             self.assertFalse(ok)
             self.assertIn("タイムアウト", msg)
+            self.assertEqual(reaped, [], "submit タイムアウトは daemon 全滅 reap せず cancel する")
+            self.assertEqual(len(detached), 1, "対象 run だけ detach（cancel）する")
+            self.assertIn("タイムアウト", detached[0])
+
+
+class TestActRunMidRevise(unittest.TestCase):
+    """同期 _act_run も submit と同様、実行中 revise で切り離す。"""
+
+    def test_mid_revise_detaches_and_stops(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, dry_run=False, act_timeout=30.0)
+            (cfg.backlog).mkdir(parents=True, exist_ok=True)
+            t = km.Task(id="T1", title="x", verify="true", status="doing")
+            (cfg.backlog / "T1.md").write_text(km.serialize_task(t), encoding="utf-8")
+
+            class FakeProc:
+                def __init__(self):
+                    self._n = 0
+                    self.stdout = io.StringIO("")
+                    self.returncode = None
+
+                def poll(self):
+                    self._n += 1
+                    return None  # ずっと実行中
+
+                def terminate(self):
+                    self.returncode = -15
+
+                def kill(self):
+                    self.returncode = -9
+
+                def wait(self, timeout=None):
+                    return self.returncode
+
+            # revise: 初回 None、2 回目以降 revise
+            checks = [False]
+
+            def abort_reason(_cfg, _task, _rid):
+                if not checks[0]:
+                    checks[0] = True
+                    return None
+                return "revise"
+
+            with mock.patch.object(km.subprocess, "Popen", return_value=FakeProc()), \
+                 mock.patch.object(km, "_wait_abort_reason", side_effect=abort_reason), \
+                 mock.patch.object(km.time, "sleep", lambda *_: None), \
+                 mock.patch.object(km, "reap_orphan_flow", return_value=0):
+                ok, msg = km._act_run(t, cfg, use_git=False)
+            self.assertFalse(ok)
+            self.assertIn("revise", msg)
+            self.assertIsNone(t.get("flow_run"), "detach で flow_run を外す")
+
+    def test_detach_keeps_cancel_marker_when_no_meta(self):
+        """submit 前 detach: マーカーを残し daemon の run 化前 cancel へ渡す。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            km.ensure_dirs(cfg)
+            t = km.Task(id="T1", title="x", verify="true", status="doing")
+            t.set("flow_run", "req-not-yet")
+            rid = km.detach_flow_run(cfg, t, "事前キャンセル")
+            self.assertEqual(rid, "req-not-yet")
+            self.assertTrue((cfg.bus / "inbox" / "cancels" / "req-not-yet.json").is_file())
+
+    def test_wait_abort_reason_sees_approve_detach(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            km.ensure_dirs(cfg)
+            t = km.Task(id="T1", title="x", verify="true", status="doing")
+            t.set("flow_run", "run-X")
+            (cfg.backlog / "T1.md").write_text(km.serialize_task(t), encoding="utf-8")
+            self.assertIsNone(km._wait_abort_reason(cfg, t, "run-X"))
+            # approve 相当: flow_run を外して ready
+            live = km.parse_task((cfg.backlog / "T1.md").read_text(encoding="utf-8"), "T1")
+            live.drop("flow_run")
+            live.status = "ready"
+            (cfg.backlog / "T1.md").write_text(km.serialize_task(live), encoding="utf-8")
+            self.assertEqual(km._wait_abort_reason(cfg, t, "run-X"), "detach")
+
+    def test_inherit_skips_canceled_last_run(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), dry_run=False)
+            old = "req-ab-T1-r0"
+            (cfg.bus / "runs" / old).mkdir(parents=True)
+            (cfg.bus / "runs" / old / "meta.json").write_text(
+                json.dumps({"status": "canceled", "request": "x"}), encoding="utf-8")
+            t = km.Task(id="T1", title="x", verify="true", retries=1)
+            t.extra.append(("last_run", old))
+            self.assertIsNone(km._inherit_from_run(t, "req-ab-T1-r1", cfg))
+            prev = km._inherit_from_run(t, "req-ab-T1-r1", cfg)
+            if prev is None and not str(t.get("last_run") or "").strip():
+                prev = km._prev_req_id(t, cfg)
+            self.assertIsNone(prev)
 
 
 class TestActTimeoutZeroAndInherit(unittest.TestCase):
@@ -2296,6 +2409,88 @@ class TestRevise(unittest.TestCase):
             self.assertEqual(t.title, "即やり直し")
             self.assertFalse(lock.exists())
 
+    def test_revise_offloaded_detaches_and_requeues(self):
+        # 委譲中の revise: 旧 run を cancel して切り離し、ready へ（二重書き込み防止）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "backlog").mkdir()
+            (d / "backlog" / "T1.md").write_text(
+                "## T1: x\n- status: offloaded\n- verify: true\n"
+                "- flow_run: run-old\n- flow_loc: daemon\n- rev: 0\n",
+                encoding="utf-8")
+            c = cfg_for(d)
+            km.ensure_dirs(c)
+            run_dir = c.bus / "runs" / "run-old"
+            run_dir.mkdir(parents=True)
+            (run_dir / "meta.json").write_text(
+                json.dumps({"status": "running", "request": "x"}), encoding="utf-8")
+            (run_dir / "waits").mkdir()
+            (run_dir / "waits" / "n1.json").write_text("{}", encoding="utf-8")
+            rc = km.cmd_revise(c, "T1", {"title": "方針変更"}, "委譲中に修正", "")
+            self.assertEqual(rc, 0)
+            t = km.load_tasks(c.backlog)[0]
+            self.assertEqual(t.status, "ready")
+            self.assertIsNone(t.get("flow_run"))
+            self.assertEqual(str(t.get("rev")), "1")
+            cancel = c.bus / "inbox" / "cancels" / "run-old.json"
+            self.assertFalse(cancel.is_file(), "適用後 sticky cancel は残さない")
+            meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+            self.assertEqual(meta["status"], "canceled")
+            self.assertFalse((run_dir / "waits" / "n1.json").exists())
+
+    def test_revise_doing_with_flow_run_detaches(self):
+        """dashboard cancel→revise: sync 待ち doing＋flow_run でも detach（approve と同契約）。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "backlog").mkdir()
+            (d / "backlog" / "T1.md").write_text(
+                "## T1: x\n- status: doing\n- verify: true\n"
+                "- flow_run: run-sync\n- flow_loc: local\n- rev: 0\n- retries: 0\n",
+                encoding="utf-8")
+            c = cfg_for(d)
+            km.ensure_dirs(c)
+            # 新鮮クレーム＝実行中 doing。これで revised 経路に入りつつ flow_run detach も走る。
+            claim = d / "claims" / "T1.lock"
+            claim.parent.mkdir(parents=True, exist_ok=True)
+            claim.write_text(json.dumps({"pid": os.getpid(), "host": socket.gethostname(),
+                                         "ts": time.time(), "id": "T1"}), encoding="utf-8")
+            run_dir = c.bus / "runs" / "run-sync"
+            run_dir.mkdir(parents=True)
+            (run_dir / "meta.json").write_text(
+                json.dumps({"status": "running", "request": "x"}), encoding="utf-8")
+            rc = km.cmd_revise(c, "T1", {}, "cancel sync", "agent-dashboard が run をキャンセル")
+            self.assertEqual(rc, 0)
+            t = km.load_tasks(c.backlog)[0]
+            self.assertIsNone(t.get("flow_run"), "flow_run を外す")
+            meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+            self.assertEqual(meta["status"], "canceled")
+            # fresh doing → revised 予約も残る（settle で積み直し）
+            self.assertIsNotNone(t.get("revised"))
+
+    def test_approve_offloaded_detaches_and_requeues(self):
+        # 委譲中の approve（CLI/commands）: flow を止めてから ready（二重書き込み防止）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "backlog").mkdir()
+            (d / "backlog" / "T1.md").write_text(
+                "## T1: x\n- status: offloaded\n- verify: true\n"
+                "- flow_run: run-old\n- flow_loc: daemon\n- retries: 0\n",
+                encoding="utf-8")
+            c = cfg_for(d, learn=False)
+            km.ensure_dirs(c)
+            run_dir = c.bus / "runs" / "run-old"
+            run_dir.mkdir(parents=True)
+            (run_dir / "meta.json").write_text(
+                json.dumps({"status": "running", "request": "x"}), encoding="utf-8")
+            self.assertEqual(km.cmd_approve(c, "T1", "委譲中だが進める"), 0)
+            t = km.load_tasks(c.backlog)[0]
+            self.assertEqual(t.status, "ready")
+            self.assertIsNone(t.get("flow_run"))
+            self.assertEqual(t.retries, 1)
+            self.assertFalse((c.bus / "inbox" / "cancels" / "run-old.json").is_file())
+            meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+            self.assertEqual(meta["status"], "canceled")
+
     def test_midpass_command_applies_before_next_task(self):
         # パス途中の commands/ ドロップが、後続タスクの実行前に取り込まれること
         with tempfile.TemporaryDirectory() as d:
@@ -2735,6 +2930,21 @@ class TestDaemonRouting(unittest.TestCase):
             self.assertNotIn("--git", km._kf_base(c, False))
             self.assertIn("--git", km._kf_base(c, True))
 
+    def test_kf_base_passes_flow_config(self):
+        """sync run / submit / doctor も daemon と同じ flow_config（--config）を渡す。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            yaml = d / "agent-flow.yaml"
+            yaml.write_text("executor: stub\n", encoding="utf-8")
+            c = cfg_for(d, flow_config=str(yaml))
+            base = km._kf_base(c, False)
+            self.assertIn("--config", base)
+            self.assertEqual(base[base.index("--config") + 1], str(yaml.resolve()))
+            # daemon 経路とも揃う（片方だけ付けると設定が割れる）
+            daemon = km.flow_daemon_cmd(c, 2)
+            self.assertIn("--config", daemon)
+            self.assertEqual(daemon[daemon.index("--config") + 1], str(yaml.resolve()))
+
     def test_daemon_detection(self):
         if km.fcntl is None:
             self.skipTest("fcntl 無し")
@@ -2909,6 +3119,47 @@ class TestInstances(unittest.TestCase):
             with mock.patch.object(km.subprocess, "run", return_value=fake):
                 pids = km._flow_pids_for_bus(cfg.bus)
             self.assertEqual(pids, [222], "自分の bus の agent-flow だけを対象にする")
+
+    def test_reap_spares_external_daemon_by_default(self):
+        """manage_flow_daemon=false では外部 daemon を殺さない（timeout/起動時の全滅防止）。"""
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))  # manage_flow_daemon 既定 False
+            bus = str(cfg.bus.resolve())
+            ps_out = (
+                f"111 python /x/agent-flow --bus {bus} daemon --max-workers 2\n"
+                f"222 python /x/agent-flow --bus {bus} run --run-id R1\n"
+                f"333 python /x/agent-flow --bus {bus} orchestrate --run-id R1\n"
+            )
+            fake = types.SimpleNamespace(returncode=0, stdout=ps_out)
+            with mock.patch.object(km.subprocess, "run", return_value=fake):
+                all_pids = km._flow_pids_for_bus(cfg.bus, include_daemon=True)
+                spare = km._flow_pids_for_bus(cfg.bus, include_daemon=False)
+            self.assertEqual(sorted(all_pids), [111, 222, 333])
+            self.assertEqual(sorted(spare), [222, 333], "daemon を除外")
+
+            killed = []
+            with mock.patch.object(km, "_flow_pids_for_bus",
+                                   side_effect=lambda bus, include_daemon=True: (
+                                       [111, 222, 333] if include_daemon else [222, 333])), \
+                 mock.patch.object(km.os, "kill", side_effect=lambda pid, sig: killed.append(pid)), \
+                 mock.patch.object(km, "_pid_alive", return_value=False):
+                n = km.reap_orphan_flow(cfg)
+            self.assertEqual(n, 2)
+            self.assertEqual(sorted(set(killed)), [222, 333])
+            self.assertNotIn(111, killed)
+
+    def test_reap_kills_daemon_when_managed(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), manage_flow_daemon=True)
+            killed = []
+            with mock.patch.object(km, "_flow_pids_for_bus",
+                                   side_effect=lambda bus, include_daemon=True: (
+                                       [10, 20] if include_daemon else [20])), \
+                 mock.patch.object(km.os, "kill", side_effect=lambda pid, sig: killed.append(pid)), \
+                 mock.patch.object(km, "_pid_alive", return_value=False):
+                n = km.reap_orphan_flow(cfg)
+            self.assertEqual(n, 2)
+            self.assertEqual(sorted(set(killed)), [10, 20])
 
     def test_stop_takes_the_agent_flow_children_with_it(self):
         """停止は agent-flow の子孫まで届くこと（本人だけ殺すと残骸が走り続ける）。
@@ -6180,6 +6431,47 @@ class TestFailureTriage(unittest.TestCase):
             body = needs[0].read_text(encoding="utf-8")
             self.assertIn("認証", body)                         # 何を直すかが書いてある
             self.assertIn("続き", body)                         # 直せば続きから、と言い切る
+            self.assertEqual(t.get("env_resume"), "1")
+
+    def test_env_resume_survives_memo_feedback(self):
+        # 環境ブロック後に needs へ「直した」と書いて [x] しても同 run 再開（計画変更ではない）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "backlog").mkdir()
+            (d / "backlog" / "T1.md").write_text(
+                "## T1: x\n- status: blocked\n- verify: `true`\n"
+                "- last_run: run-env\n- env_resume: 1\n- retries: 0\n",
+                encoding="utf-8")
+            cfg = cfg_for(d)
+            km.ensure_dirs(cfg)
+            (cfg.bus / "runs" / "run-env").mkdir(parents=True)
+            (cfg.bus / "runs" / "run-env" / "meta.json").write_text(
+                json.dumps({"status": "failed", "updated_at": "2026-07-01T00:00:00Z"}),
+                encoding="utf-8")
+            t0 = km.load_tasks(cfg.backlog)[0]
+            km.write_needs_file(cfg, t0, "[agent-error:auth] 認証切れ")
+            nf = d / "needs" / "T1.md"
+            _submit_feedback(nf, "トークンを入れ直した")
+            tasks = km.load_tasks(cfg.backlog)
+            self.assertEqual(km.ingest_feedback(cfg, tasks), ["T1"])
+            t = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(t.retries, 0)
+            self.assertEqual(t.get("env_resume"), "1")
+            self.assertEqual(km.run_id_for(cfg, t), "run-env")
+
+    def test_feedback_submitted_ignores_body_checkbox(self):
+        # 本文のチェックリスト [x] だけでは確定扱いにしない（Decision Outcome 配下だけ）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            nf = Path(d) / "n.md"
+            nf.write_text(
+                "# 要対応\n\n- [x] 手順1は済\n\n## Decision Outcome\n\n- [ ] 確定\n",
+                encoding="utf-8")
+            self.assertFalse(km.feedback_submitted(nf))
+            nf.write_text(
+                "# 要対応\n\n- [x] 手順1は済\n\n## Decision Outcome\n\n- [x] 確定\n",
+                encoding="utf-8")
+            self.assertTrue(km.feedback_submitted(nf))
 
     def test_settle_failure_content_class_retries_as_before(self):
         with tempfile.TemporaryDirectory() as d:
@@ -7112,13 +7404,53 @@ class TestAsyncOffload(unittest.TestCase):
     def test_reap_failed_run_does_not_mark_done(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            self._offloaded(d, "T1", "run-T1", verify="false")   # verify も失敗
+            # verify=true でも act/flow 失敗は偽 done にしない
+            self._offloaded(d, "T1", "run-T1", verify="true")
             cfg = self._cfg(d)
             km.ensure_dirs(cfg)
             tasks = km.load_tasks(cfg.backlog)
-            with mock.patch.object(km, "_flow_result_once", return_value=(True, False, "failed")):
+            with mock.patch.object(km, "_flow_result_once",
+                                   return_value=(True, False, "daemon run run-T1 failed")):
                 km._reap_offloaded(cfg, tasks, km.Policy(), {}, {}, 0, 20)
-            self.assertNotEqual(km._load_task_file(cfg, "T1").norm_status(), "done")
+            t = km._load_task_file(cfg, "T1")
+            self.assertIsNotNone(t)
+            self.assertNotEqual(t.norm_status(), "done")
+            self.assertNotEqual(t.norm_status(), "review")
+
+    def test_reap_canceled_run_does_not_mark_done(self):
+        # verify=true でも人が中止した run を done にしない（リトライも焼かない）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._offloaded(d, "T1", "run-T1", verify="true")
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            tasks = km.load_tasks(cfg.backlog)
+            with mock.patch.object(
+                    km, "_flow_result_once",
+                    return_value=(True, False, "daemon run run-T1 canceled")):
+                deltas = km._reap_offloaded(cfg, tasks, km.Policy(), {}, {}, 0, 20)
+            self.assertEqual(deltas["settled"], 1)
+            self.assertEqual(deltas["archived"], 0)
+            t = km._load_task_file(cfg, "T1")
+            self.assertEqual(t.norm_status(), "ready")
+            self.assertEqual(t.retries, 1, "canceled 後は新 run-id のため retries を進める")
+            self.assertFalse(t.get("flow_run"))
+            self.assertEqual(t.get("last_run"), "run-T1", "回収時に last_run を残す")
+
+    def test_offload_pins_last_run(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1")
+            cfg = self._cfg(d)
+            t = km._load_task_file(cfg, "T1")
+            with mock.patch.object(km, "_flow_result_once", return_value=(False, False, "")):
+                with mock.patch.object(km.subprocess, "run",
+                                       return_value=subprocess.CompletedProcess(
+                                           ["x"], 0, stdout="", stderr="")):
+                    pend, msg = km._act_offload(t, cfg, use_git=False)
+            self.assertIsInstance(pend, km._Pending)
+            fresh = km._load_task_file(cfg, "T1")
+            self.assertEqual(fresh.get("last_run"), pend.run_id)
 
     def test_has_work_true_for_offloaded(self):
         with tempfile.TemporaryDirectory() as d:
@@ -7599,6 +7931,26 @@ class RunResumeTests(unittest.TestCase):
             self._run(cfg, "req-deadbeef-T1-r0", "failed")
             self.assertNotEqual(km.run_id_for(cfg, t), "req-deadbeef-T1-r0")
 
+    def test_feedback_ingest_bumps_retries_so_id_diverges(self):
+        # retries=0 + last_run=…-r0 の差し戻しでも新 id になる（ingest が retries を進める）。
+        # 進めないと agent-flow が同じ id を再開し meta.request で差し戻しを捨てる。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="review", verify="true", retries=0)
+            cfg = cfg_for(d)
+            km.ensure_dirs(cfg)
+            t0 = km.load_tasks(cfg.backlog)[0]
+            t0.set("last_run", km._req_id_for(t0, cfg, 0))
+            km.persist_task(cfg, t0)
+            km.write_needs_file(cfg, t0, "検収", review=True)
+            nf = d / "needs" / "T1.md"
+            _submit_feedback(nf, "本番設定でやり直して")
+            tasks = km.load_tasks(cfg.backlog)
+            self.assertEqual(km.ingest_feedback(cfg, tasks), ["T1"])
+            t = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(t.retries, 1)
+            self.assertNotEqual(km.run_id_for(cfg, t), t.get("last_run"))
+
     def test_revise_forces_a_fresh_run(self):
         with tempfile.TemporaryDirectory() as d:
             cfg = self._cfg(d)
@@ -7617,11 +7969,15 @@ class RunResumeTests(unittest.TestCase):
 
     def test_new_run_id_carries_the_task_and_retry(self):
         # viewer が run ↔ タスクを突き合わせられる形（req-<hash>-<task-id>-r<n>）
-        t = km.Task(id="TASK-9", title="x", status="ready", verify="true", retries=2)
-        rid = km._new_run_id(t)
-        self.assertTrue(rid.startswith("req-"))
-        self.assertIn("TASK-9", rid)
-        self.assertTrue(rid.endswith("-r2"))
+        # 同期 run と daemon submit は同一導出（lineage が割れない）
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            t = km.Task(id="TASK-9", title="x", status="ready", verify="true", retries=2)
+            rid = km._new_run_id(t, cfg)
+            self.assertTrue(rid.startswith("req-"))
+            self.assertIn("TASK-9", rid)
+            self.assertTrue(rid.endswith("-r2"))
+            self.assertEqual(rid, km._req_id_for(t, cfg, 2), "同期 run と submit で同じ id")
 
     def test_cmd_passes_run_id_before_the_subcommand(self):
         # --run-id は agent-flow のグローバル引数（run サブコマンドより前）

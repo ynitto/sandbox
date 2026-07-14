@@ -70,7 +70,14 @@ class Bus:
 
     # --- メタ / グラフ ---
     def set_status(self, status: str) -> None:
+        """run の進捗 status を書く。既に終端（done/failed/canceled）なら上書きしない。
+
+        cancel / 完了後に orchestrator が set_status("running") を呼んでも、人が止めた／確定済みの
+        終端を resurrect しない（_orch_check_canceled と resume/plan 経路の競合を防ぐ）。"""
         meta = read_json(self.meta_path) or {}
+        cur = meta.get("status")
+        if cur in TERMINAL and status != cur:
+            return
         meta["status"] = status
         meta["updated_at"] = now_iso()
         write_json_atomic(self.meta_path, meta)
@@ -444,6 +451,10 @@ class Bus:
             return {"inherited": False, "seeded_nodes": 0, "deleted": False,
                     "reason": "先行 run が見つからない"}
         terminal = old_meta.get("status") in TERMINAL
+        if old_meta.get("status") == "canceled":
+            # 人の停止を尊重。seed も削除もしない（cancel 後リトライが canceled 行を蘇らせない）。
+            return {"inherited": False, "seeded_nodes": 0, "deleted": False,
+                    "reason": "canceled は引き継がない"}
         if not terminal and not self.run_is_orphaned(old_run_id, orphan_grace):
             return {"inherited": False, "seeded_nodes": 0, "deleted": False,
                     "reason": f"先行 run は実行中（status={old_meta.get('status')}）＝触らない"}
@@ -532,6 +543,19 @@ class Bus:
     def is_canceled_requested(self, run_id: str) -> bool:
         """run_id に cancel マーカーがあるか（＝人が停止を指示したか）。"""
         return os.path.exists(os.path.join(self.inbox_cancels_dir, f"{run_id}.json"))
+
+    def clear_cancel(self, run_id: str) -> bool:
+        """適用済み cancel マーカーを消す。消えたら True。
+
+        終端化＋waits 掃除が終わったあとに呼ぶ。残すと同一 run-id の意図的再開が即座に
+        再 cancel され、daemon も毎 poll 同じマーカーを拾い続ける。伝播は meta.status=
+        canceled の sync で足りる。"""
+        p = os.path.join(self.inbox_cancels_dir, f"{run_id}.json")
+        try:
+            os.remove(p)
+            return True
+        except OSError:
+            return False
 
     def cancel_info(self, run_id: str) -> dict:
         return read_json(os.path.join(self.inbox_cancels_dir, f"{run_id}.json")) or {}
@@ -644,23 +668,24 @@ class Bus:
         増える壊れた run だけが max_resumes に達して failed に確定される。
 
         生存中の park（承認待ち wait）も「健全な進捗」とみなす。gitlab の人レビューは
-        数日〜数週間かかる前提で、結果が増えないまま毎晩再起動しても orphaned にしない。"""
+        数日〜数週間かかる前提で、結果が増えないまま毎晩再起動しても orphaned にしない。
+        wait_lease 失効だけでは進捗無しにしない（一晩の電源断で lease だけ切れ、wait ファイル
+        と未決着イシューは残る）。throttled（イシュー未作成）は枠待ちなので除外。"""
         v = self.run_view(run_id)
         meta = read_json(v.meta_path) or {}
         try:
             done_now = sum(1 for f in os.listdir(v.results_dir) if f.endswith(".json"))
         except OSError:
             done_now = 0
-        live_waits = sum(1 for rec in v.list_waits()
-                         if float(rec.get("wait_lease_until", 0) or 0) >= time.time())
+        open_waits = sum(1 for rec in v.list_waits() if not rec.get("throttled"))
         prev = meta.get("resume_progress")
-        if prev is None or done_now > int(prev) or live_waits > 0:
-            n = 1                                     # 進捗あり / park 生存 / 初回 → 数え直し
+        if prev is None or done_now > int(prev) or open_waits > 0:
+            n = 1                                     # 進捗あり / park 残存 / 初回 → 数え直し
         else:
             n = int(meta.get("resume_count", 0) or 0) + 1
         meta["resume_count"] = n
         meta["resume_progress"] = done_now
-        meta["resume_live_waits"] = live_waits
+        meta["resume_live_waits"] = open_waits
         meta["resumed_at"] = now_iso()
         meta["updated_at"] = now_iso()
         write_json_atomic(v.meta_path, meta)

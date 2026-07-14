@@ -7,6 +7,168 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard / agent-project: Bugbot PR コメント対応
+
+- **startProject が --config / cwd を付けていなかった** — findProjectConfig と揃える。
+- **findProjectConfig が状態 worktree 側 yaml を見落としていた** — dir と fromStateWorktree の両方を探索。
+- **cmd_revise が offloaded 以外の flow_run（sync doing）を detach しなかった** —
+  approve と同じく flow_run があれば切り離す（dashboard cancel→revise 向け）。
+
+### agent-flow / agent-project / agent-dashboard: Set4 integration — CONVERGED
+
+individual → integration で Set4 まで実施。手つなぎの新規バグは見当たらず停止。残差のみ:
+- cancel 時 `close_issues=false` による GitLab イシュー再アタッチ
+- remote `--git` bus への detach 伝播
+- park lease UI（失効=pending）と flow 枠計算（wait 残=parked）の見え方差
+
+### agent-flow / agent-project / agent-dashboard: Set4 individual バグ修正
+
+- **run 化前 cancel マーカーを空 meta（{}）判定で消し、要求が起動していた** —
+  daemon/cmd_cancel は `run_exists`、detach は meta 適用時だけ clear。
+- **同期結果待ちが revise 以外の人操作（approve/hold）を無視** —
+  flow_run ピン＋ status/detach 検知で中断。
+- **sync `run` / alreadyTerminal が sticky cancel を残す** — 適用後に clear。
+
+### agent-flow / agent-project / agent-dashboard: Set3 integration 手つなぎ修正
+
+- **canceled を `--inherit-from` すると停止した行が蘇る** — flow/project とも canceled は引き継がない。
+- **同期 act タイムアウトが run を非終端のまま放置** — detach（cancel）してから残骸刈り。
+- **daemon 不在時に cancel マーカーが sticky** — dashboard/project/CLI 適用後に clear。
+- **CLI cancel が終端 run の残 waits を残す** — dashboard と同じ掃除。
+- **dashboard cancel が bus だけ push し revise が遅延** — project state も push。
+
+### agent-flow / agent-project / agent-dashboard: Set3 individual バグ修正
+
+- **agent-dashboard: 既に終端した run の cancel が revise でタスクを再キューしていた** —
+  alreadyTerminal なら waits 掃除のみ（settled タスクを ready に戻さない）。
+- **agent-project: `_kf_base` が flow_config（--config）を落とす** —
+  sync run / submit / doctor も daemon と同じ yaml を渡す。
+- **agent-project: act タイムアウトの `reap_orphan_flow` が外部 daemon ごと殺していた** —
+  manage_flow_daemon=false では daemon 除外。submit タイムアウトは対象 run だけ cancel。
+- **agent-project: 同期 `_act_run` が mid-revise を無視していた** — Popen ポーリング＋ detach。
+- **agent-flow: 適用済み cancel マーカーが残り同一 ID 再開と毎 poll を汚染** —
+  daemon 適用後に clear。orch は meta=canceled でも停止。
+
+### agent-flow / agent-project / agent-dashboard: Set2 integration 手つなぎ修正
+
+- **needs メモ付き環境復帰が env_resume を落として新 run になっていた** — メモは計画変更でない。
+- **resume-run が offloaded / flow_run を放置し二重駆動し得た** — detach してから再開。
+- **dashboard CLI が状態 worktree を --root に渡し二重リダイレクトしていた** — fromStateWorktree。
+- **cancel が bus だけ止め project が offloaded のまま** — revise コマンドで本体契約どおり切り離し。
+- **終端 run で park 抑制しつつ Issue 座標まで消していた** — waits から issue だけ読む。
+
+### agent-flow / agent-project / agent-dashboard: Set2 individual バグ修正
+
+- **agent-flow: 一晩再起動で park の wait_lease 失効だけを「進捗なし」扱いし max_resumes で failed** —
+  wait ファイル残存を進捗と数え、枠消費も park 継続扱い。orphan fail 時は waits 掃除。
+- **agent-flow: in-flight 差し戻しの冪等キーが文字数だけで同じ長さの別指摘を落とした** — 内容ハッシュへ。
+- **agent-project: offloaded の approve / feedback が flow を止めなかった** — detach＋retries。
+- **agent-project: reap が revise 後の ready を奪って settle し得た** — claim 後に offloaded 再確認。
+- **agent-dashboard: 終端 run の残 waits を park 表示し、cancel も掃除しなかった** — 表示抑制＋掃除。
+- **agent-dashboard: 長い run-id の resubmit が末尾スライスで接頭辞を落とした** — 中央切り詰め。
+
+### agent-flow / agent-project / agent-dashboard: Set1 integration 手つなぎ修正
+
+- **feedback 差し戻しが同じ run-id を再生成し agent-flow が旧 request で再開した** —
+  ingest が retries を進め新 id にする（dashboard Decision Outcome → project → flow）。
+- **dashboard の bus 解決がローカル残渣 runs を優先し、設定バスと割れた** —
+  flowBus* / yaml `bus:` を先に採用。
+- **sync `run` に `--inherit-from` が無く、submit だけ done を引き継いだ** —
+  last_run 基準で sync/submit/offload を揃える（rev バンプ後の retries-1 空振りも解消）。
+- **`taskIdOfRun` が ap/kp 以外の prefix を無視し resubmit が inbox へ落ちた** —
+  単一段 `prefix/task` を受理。
+- **dashboard CLI 委譲が cwd 依存で設定を拾えなかった** — `--config` + cwd 固定。
+- **旧 `## フィードバック` 票が UI 上ずっと undecided** — project の FEEDBACK_MARKERS と揃える。
+
+### agent-flow / agent-project / agent-dashboard: Set1 individual バグ修正
+
+- **agent-flow: 途中「差し戻し」がイシューをクローズしていた** — docstring は閉じないとあるのに
+  `_rejected_payload` 経由で閉じていた。`_rework_payload` で open のまま guidance を返し、
+  note 消費マーカーで再アタッチ即却下ループを防ぐ。
+- **agent-flow: 同期 run が非終端 orch 死で exit 0 になり得た** — failed 確定＋非 0。
+  orch cancel は `close_issues` 時 waits を残し、daemon 終端時に on_cancel してから掃除。
+- **agent-project: act 失敗/canceled が revise 予約を踏み潰した** — 先に `revised` を見て積み直し。
+- **agent-project: submit 結果待ち中の revise が daemon run を放置した** — `detach_flow_run` で止める。
+- **agent-project: doctor の orphan reap が watch 限定だった** — 単発 run でも刈る。
+- **agent-project: hold/block 切り離し後に同一 run-id を再生成し得た** — detach 時に retries を進める。
+- **agent-project: 環境ブロック復帰が feedback で新 run になっていた** — `env_resume` で同 run 再開。
+- **agent-project / dashboard: 本文チェックリストの [x] で確定扱い** — Decision Outcome 配下のみ。
+- **agent-dashboard: live 判定が listRuns(30) だけだった** — 31 件目以降が archived 誤表示。
+- **agent-dashboard: ディープリンクが状態ルート（`root`）を見逃した** — `x.root` も照合。
+
+### agent-dashboard: canceled やり直しの文言を本体契約に合わせる
+
+- 助言・確認ダイアログ・トーストが「部分やり直し／同一 run 再開」と書いていた。
+  canceled は新 run 固定なので文言を修正（ボタンラベルと一致）。
+
+### agent-project / agent-dashboard: canceled 後の同一 run-id 再突入を防ぐ
+
+- **cancel → ready のとき retries を進めなかった** — 次の `_new_run_id` が同じ id を生成し、
+  agent-flow は終端 canceled を再開できず固まる。retries を進め新 run にする。
+- **`resume-run` が canceled/done にも last_run を固定していた** — 同上の衝突。新実行へ振り分け。
+- **dashboard が canceled を「失敗工程だけやり直し」と表示** — 文言を新実行向けに修正。
+
+### agent-flow / agent-project: 同期 run の cancel を失敗として伝える
+
+- **`agent-flow run` が canceled でも exit 0 だった** — `_act_run` が成功扱いし、verify=true で偽 done。
+  canceled は exit 2。agent-project は meta.status=canceled を見て `… canceled` メッセージを返し、
+  既存のリトライ非消費 ready 経路に乗せる。
+
+### agent-project: offloaded タスク切り離し時に flow run を cancel
+
+- **revise / hold / reject が委譲中 run を放置していた** — `flow_run` だけ落として agent-flow は走り続け、
+  `ap/<task-id>` へ二重書き込みし得た。`detach_flow_run` で cancel マーカー＋meta canceled＋waits 掃除
+  （dashboard / agent-flow cmd_cancel と同契約）。
+
+### agent-project: 隣接 agent-flow の解決パスを修正
+
+- **パッケージ分割後の `resolve_agent_flow` が誤った相対パスを見ていた** —
+  `agent_project/request.py` から parent×2 だと `tools/agent-project/agent-flow`（存在しない）。
+  正しくは tools 配下の隣接 `tools/agent-flow/agent-flow.py`。act 起動失敗が verify 成功で
+  偽 done になっていた穴とセットで顕在化した。
+
+### agent-project: daemon 再開・act 失敗・result run-id 連携を修正
+
+- **resume-run / 失敗 run の続きが daemon 経路で効かなかった** — submit は `run_exists` で無視され
+  `retry_failed` は `run` だけ。再開可能な `last_run` があるときは `_act_run` へ寄せる。
+- **act 失敗 bool が捨てられ verify=true で偽 done になり得た** — `_act_batch` が ok を伝搬し、
+  失敗時は `_settle_failure`（reap も同様）。
+- **却下 guidance / approve notes が `--run-id` 無し** — 共有バスで別タスクの result を拾い得た。
+  `last_run` を渡す。
+
+### agent-flow / agent-project / agent-dashboard: 個別のキャンセル・再開まわりを修正
+
+- **agent-flow: cancel 後も worker が pending を claim し続けた** — 終端判定を「仕事が無いとき」だけにしていた。TERMINAL なら claim 前に退出。
+- **agent-flow: orchestrator の cancel が waits を残した** — daemon は既終端だと cancel 本体をスキップするため park が残った。orch 側で clear_waits、daemon も終端時に waits 掃除。
+- **agent-flow: `set_status` が終端→running へ復活できた** — canceled 後の plan/resume 上書きを拒否。
+- **agent-project: submit/offload が `last_run` を書かなかった** — settle/resume/delivery が run を見失う。全 act 経路と reap で pin。
+- **agent-project: `revise` が offloaded を無視した** — 委譲中の修正が古い結果で settle され得た。flow_run を切り離して ready へ。
+- **agent-dashboard: `readRun` がブランチ逆引きの taskId を載せていなかった** — 旧形式 run の助言・導線が外れる。
+- **agent-dashboard: canceled 削除確認が「応答なし」と誤表示** — 終端集合で判定。parked を残り件数に含める。
+
+### agent-dashboard / agent-project / agent-flow: 連携まわりの回帰バグを修正
+
+- **agent-dashboard: `taskIdOfRun` が改名後の `ap/<task-id>` ブランチを見ていなかった** —
+  コメントとテストは `ap/` なのに正規表現が旧 `kp/` のまま。旧形式 `run-<ts>-<rand>` の
+  「やり直し」がタスク逆引きに失敗し、`bus/inbox` 投入（daemon 無しでは誰も拾わない）へ
+  落ちていた。`ap/` を受け、旧データ互換で `kp/` も残す。
+- **agent-dashboard: やり直しがワークスペース（`selectedDir`）へ `resume-run` を書いていた** —
+  状態は `project.dir`（状態 worktree / `root:`）にある。`selectedDir` には backlog が無く
+  タスク経路に乗れない／乗っても本体が監視しないツリーへ命令が落ちる。`project.dir` に統一。
+- **agent-dashboard: `nodeTaskToken` が世代接尾辞を落としていなかった** —
+  agent-flow gitlab executor は `-rN`/`-vM` を落として安定化する。viewer が全文ハッシュすると
+  リトライ後のイシュー突合が外れ、クローズ済みが「実行中」のまま見える。executor と同契約に揃える。
+- **agent-dashboard: git pull / 同期修復が状態 worktree ではなくワークスペースを見ていた** —
+  リモートの backlog・commands・bus が画面に入らない。`project.dir` を pull/heal の対象にする。
+- **agent-dashboard: cancel の git 反映から `waits/` 削除が抜けていた** — リモートで park 表示が
+  一瞬復活しうる。`runs/<id>/waits` も pathspec に含める。
+- **agent-project: 同期 run と daemon submit の run-id ハッシュが割れていた** —
+  `_new_run_id`（hash(task.id)）と `_req_id_for`（hash(backlog)）が別系統。同一タスクが
+  UI 上で別 lineage に見える。`_new_run_id` を `_req_id_for` に統一。
+- **agent-project: canceled run を success 扱いにしていた** — `_flow_result_once` /
+  `_act_submit` が `canceled` を ok とし、offload 回収が `verify=true` で done 確定し得た。
+  canceled は失敗扱いし、reap / 同期 settle ではリトライを焼かず ready へ戻す。
+
 ### kiro-flow: モジュール分割（kiro-project と同じ断片合成）＋ zipapp 単一 CLI 配布
 
 - **背景**: 単一 `kiro-flow.py`（約 6,800 行）は LLM ワーカーが丸ごと読むと context を圧迫する。

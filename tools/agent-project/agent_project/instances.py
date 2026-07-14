@@ -349,11 +349,18 @@ def _signal_tree(pid: int, sig) -> None:
     os.kill(pid, sig)
 
 
-def _flow_pids_for_bus(bus: Path) -> "list[int]":
+def _flow_args_is_daemon(args: str) -> bool:
+    """cmdline が agent-flow daemon サブコマンドか（空白区切りの独立トークン）。"""
+    # `--bus X daemon ...` / `... daemon --max-workers` 等。単語境界で判定する。
+    return bool(re.search(r"(?:^|\s)daemon(?:\s|$)", args or ""))
+
+
+def _flow_pids_for_bus(bus: Path, *, include_daemon: bool = True) -> "list[int]":
     """自分の bus を回している agent-flow プロセスの pid（POSIX のみ。取れなければ空）。
 
     agent-project は agent-flow を `--bus <root>/bus` で起動するので、コマンドラインの bus パスで
-    「自分のもの」を特定できる。ps が無い環境（Windows 素の cmd 等）では空を返し、従来動作に倒す。"""
+    「自分のもの」を特定できる。ps が無い環境（Windows 素の cmd 等）では空を返し、従来動作に倒す。
+    include_daemon=False なら外部/長命の daemon は残し、orchestrator・worker・都度 run だけを対象にする。"""
     try:
         r = subprocess.run(["ps", "-eo", "pid=,args="], capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.SubprocessError):
@@ -364,6 +371,8 @@ def _flow_pids_for_bus(bus: Path) -> "list[int]":
     for line in r.stdout.splitlines():
         pid_s, _, args = line.strip().partition(" ")
         if "agent-flow" not in args or target not in args:
+            continue
+        if not include_daemon and _flow_args_is_daemon(args):
             continue
         try:
             pid = int(pid_s)
@@ -404,7 +413,7 @@ def _expire_run_leases(cfg: "Config") -> int:
     return n
 
 
-def reap_orphan_flow(cfg: "Config") -> int:
+def reap_orphan_flow(cfg: "Config", *, include_daemon: "bool | None" = None) -> int:
     """自分の bus に居残った agent-flow（前世代の残骸）を止める。止めたプロセス数を返す。
 
     agent-project がクラッシュ（kill -9 / 電源断 / OOM）すると、stop を通らないので agent-flow の
@@ -413,10 +422,15 @@ def reap_orphan_flow(cfg: "Config") -> int:
     直す**。結果、同じタスクを二重に実行し、同じ作業ブランチへ両方が push しあう（実際に起きた:
     17/23 まで進んだ run を捨てて 1/20 からやり直した）。
 
-    同じ bus を使う agent-project は 1 つだけ（cmd_run が重複起動を弾く）。したがって **自分の起動
-    時点でその bus を回している agent-flow は、例外なく前世代の残骸** である。止めたうえでリースを
-    失効させ、run を「停滞」として続きから再開できる状態に戻す。"""
-    pids = _flow_pids_for_bus(cfg.bus)
+    同じ bus を使う agent-project は 1 つだけ（cmd_run が重複起動を弾く）。manage_flow_daemon が
+    on なら起動時の daemon も前世代残骸とみなして止めてよい（ensure_flow_daemon が立ち上げ直す）。
+    既定 off（外部 daemon）では daemon を殺さず orch/worker/都度 run だけ刈る——タイムアウト経路や
+    起動時に健全な外部 daemon を落とすと、同一バスの他 run・park 監視まで全滅する。
+
+    include_daemon 明示時はその値。省略時は manage_flow_daemon に合わせる。"""
+    if include_daemon is None:
+        include_daemon = bool(getattr(cfg, "manage_flow_daemon", False))
+    pids = _flow_pids_for_bus(cfg.bus, include_daemon=include_daemon)
     if not pids:
         return 0
     for p in pids:

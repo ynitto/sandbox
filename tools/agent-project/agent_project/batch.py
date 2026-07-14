@@ -85,6 +85,12 @@ def append_runlog(path: "Path | None", record: dict) -> None:
 
 
 def _block(cfg, task, reason, reasons, evidence: str = ""):
+    # offloaded のまま blocked にすると、走っている flow が放置され reap も拾えない。
+    if task.norm_status() == "offloaded" or task.get("flow_run"):
+        detached = detach_flow_run(cfg, task, reason[:120] or "hold/block により委譲から切り離し")
+        if detached:
+            # canceled な同一 run-id を approve 後に作り直さない（cancel→ready と同じく retries を進める）
+            task.retries += 1
     task.status = "blocked"
     reasons[task.id] = reason
     _remember_needs_reason(task, reason)  # 票を失っても ensure_needs が同じ理由で作り直せるように
@@ -277,14 +283,17 @@ def _act_batch(batch: "list[Task]", cfg: "Config", act, policy) -> "dict[str, tu
         persist_task(cfg, t)
     locs = {t.id: decide_location(t, policy, cfg) for t in claimed}
     if cfg.dry_run:
-        return {t.id: (locs[t.id], None, "(dry-run)") for t in claimed}
+        return {t.id: (locs[t.id], None, "(dry-run)", True) for t in claimed}
     if not claimed:
         return {}
 
     def _one(t):
         # act は (bool|_Pending, msg)。_Pending は「非ブロッキング submit 済み・未終端」＝offload。
+        # bool は「act 自体の成否」。捨てると失敗 run でも verify=true で done になり得る。
         status, msg = act(t, cfg, locs[t.id])
-        return (locs[t.id], status if isinstance(status, _Pending) else None, msg)
+        if isinstance(status, _Pending):
+            return (locs[t.id], status, msg, None)
+        return (locs[t.id], None, msg, bool(status))
 
     if len(claimed) == 1:
         return {claimed[0].id: _one(claimed[0])}
@@ -295,7 +304,7 @@ def _act_batch(batch: "list[Task]", cfg: "Config", act, policy) -> "dict[str, tu
             try:
                 results[t.id] = fut.result()
             except Exception as e:     # noqa: BLE001 — act 失敗は verify=NG 相当として後段で扱う
-                results[t.id] = (locs[t.id], None, f"act 失敗: {e}")
+                results[t.id] = (locs[t.id], None, f"act 失敗: {e}", False)
     return results
 
 

@@ -79,11 +79,16 @@ function claimWinner(claimDir, now) {
 // gitlab executor が output に残すイシュー URL（却下時は data が無いため output から拾う）
 const ISSUE_URL_RE = /https?:\/\/[^\s)）」』]+\/-\/issues\/\d+/;
 
-// gitlab executor の決定的タスクトークン（_task_token と同一導出）。
+// gitlab executor の決定的タスクトークン（executors/gitlab.py `_task_token` と同一導出）。
 // 実行中（result 未確定）のノードでも、このトークンでイシュー本文の隠しマーカー
 // `<!-- agent-flow:task-token:kf-... -->` を検索すれば関連イシューへたどり着ける。
+// 世代接尾辞（-rN / -rN-vM）は落とす。リトライ／リバイズで run-id が変わっても同一
+// イシューへ再アタッチできる（executor と同じ安定化）。落とさないと viewer の突合が外れ、
+// クローズ済みイシューを「実行中」のまま表示し続ける。
 function nodeTaskToken(runId, nodeId) {
-  return 'kf-' + crypto.createHash('sha1').update(`${runId}/${nodeId}`).digest('hex').slice(0, 12);
+  const stableRun = String(runId || '').replace(/-r\d+(?:-v\d+)?$/, '');
+  const key = stableRun ? `${stableRun}/${nodeId}` : String(nodeId || '');
+  return 'kf-' + crypto.createHash('sha1').update(key).digest('hex').slice(0, 12);
 }
 
 // ---------------------------------------------------------------------------
@@ -185,11 +190,14 @@ function readRunMeta(busDir, runId) {
 // いないので、agent-project が付ける作業ブランチ ap/<task-id> から逆引きする。これが無いと
 // 旧形式の run は「どのタスクのものか」を viewer が言えず、再実行が inbox 投入（＝誰も
 // 拾わない無反応ボタン）へ落ちる。
+// 旧データ互換で kp/<task-id>（kiro 改名前）も受ける。
+// task_branch_prefix が設定で ap/ 以外のときも、単一段の prefix/<task-id> を受け取る
+// （取れないと flow:resubmit が inbox 投入＝daemon 無し既定では無反応ボタンになる）。
 function taskIdOfRun(runId, meta) {
   const fromId = parseRunId(runId).taskId;
   if (fromId) return fromId;
   const branch = String((meta && meta.workspace && meta.workspace.branch) || '');
-  const m = /^kp\/(.+)$/.exec(branch);
+  const m = /^(?:ap|kp)\/(.+)$/.exec(branch) || /^[^/]+\/([^/]+)$/.exec(branch);
   return m ? m[1] : null;
 }
 
@@ -216,6 +224,8 @@ function readRun(runDir) {
   const finalJson = readJson(path.join(runDir, 'final.json'));
   const nodesIn = (graph && typeof graph.nodes === 'object' && graph.nodes) || {};
   const now = Date.now() / 1000;
+  const runStatus = String(meta.status || 'unknown');
+  const runTerminal = TERMINAL.has(runStatus);
 
   const nodes = {};
   // output のテキストから拾ったイシュー URL の候補（nodeId → url）。executor の証跡が
@@ -240,7 +250,7 @@ function readRun(runDir) {
       finishedAt = result.finished_at || null;
       output = typeof result.output === 'string' ? result.output : null;
       data = result.data !== undefined ? result.data : null;
-    } else {
+    } else if (!runTerminal) {
       const winner = claimWinner(path.join(runDir, 'claims', id), now);
       if (winner) {
         state = 'claimed';
@@ -259,6 +269,12 @@ function readRun(runDir) {
           who = wrec.who || null;
           state = 'parked';
         }
+      }
+    } else {
+      // 終端 run: park 表示はしないが、残 waits のイシュー座標は Issue 導線用に拾う
+      const wrec = readJson(path.join(runDir, 'waits', `${id}.json`));
+      if (wrec && wrec.issue && typeof wrec.issue === 'object') {
+        parkIssue = wrec.issue;
       }
     }
     // 関連 GitLab イシュー: 承認済みは data、park 中は wait 記録から拾う（どちらも executor が
@@ -353,10 +369,13 @@ function readRun(runDir) {
 
   const status = String(meta.status || (finalJson ? 'done' : 'unknown'));
   const idParts = parseRunId(runId);
+  // 旧形式 run-id は parse だけでは taskId が無い。作業ブランチ ap/<task-id> から補う
+  // （流れ画面の助言・やり直し導線が inbox 落ちしないように）。
+  const taskId = idParts.taskId || taskIdOfRun(runId, meta);
   return {
     runId,
     status,
-    taskId: idParts.taskId, // 紐づくバックログタスク（req- 形式のときのみ）
+    taskId,
     retries: idParts.retries, // この試行のリトライ世代（req- 形式のときのみ）
     rev: idParts.rev, // 人の revise 世代（あれば）
     lineageId: idParts.lineageId, // 同一タスクのリトライ/リバイズを束ねる系統キー
@@ -454,7 +473,13 @@ function resubmitRun(busDir, runId) {
   }
   const request = String(meta.request || '').trim();
   if (!request) throw new Error('meta.json に request がありません（再投入できません）');
-  const newId = `${runId}-retry-${Date.now()}`.slice(-80);
+  // 末尾スライスだと長い req-… の接頭辞が落ちる。末尾に retry 接尾辞を足し、長すぎれば中央を落とす。
+  const stamp = `retry-${Date.now()}`;
+  let newId = `${runId}-${stamp}`;
+  if (newId.length > 80) {
+    const keep = 80 - stamp.length - 1;
+    newId = `${runId.slice(0, Math.max(8, keep))}-${stamp}`;
+  }
   const inbox = path.join(busDir, 'inbox');
   fs.mkdirSync(inbox, { recursive: true });
   const rec = {
@@ -485,7 +510,7 @@ function prepareRunDeletion(busDir, runId) {
   const status = String(meta.status || 'unknown');
   if (!TERMINAL.has(status) && runAlive(meta, Date.now() / 1000) === true) {
     throw new Error(
-      `run は実行中です（status=${status}）。終端（done/failed）または応答なしの run だけ削除できます`
+      `run は実行中です（status=${status}）。終端（done/failed/canceled）または応答なしの run だけ削除できます`
     );
   }
   return { runDir, status };
@@ -518,8 +543,23 @@ function cancelRun(busDir, runId, { reason } = {}) {
     if (iss && iss.iid != null) issues.push(iss);
   }
   if (meta && TERMINAL.has(curStatus)) {
-    // 既に終端（done/failed/canceled）＝ cancel は不要（不可逆）。
-    return { status: curStatus, alreadyTerminal: true, marked: false, cleared: 0, issues };
+    // 既に終端でも残 waits / sticky cancel を掃除（cmd_cancel の terminal 経路と同契約）。
+    let cleared = 0;
+    for (const f of safeList(waitsDir)) {
+      if (!f.endsWith('.json')) continue;
+      try {
+        fs.unlinkSync(path.join(waitsDir, f));
+        cleared += 1;
+      } catch {
+        /* 消せなくても致命的でない */
+      }
+    }
+    try {
+      fs.unlinkSync(path.join(busDir, 'inbox', 'cancels', `${id}.json`));
+    } catch {
+      /* 無ければ no-op */
+    }
+    return { status: curStatus, alreadyTerminal: true, marked: false, cleared, issues };
   }
   // (1) cancel マーカー（close_issues は viewer 側で閉じるため false で置く＝daemon の二重クローズを避ける）
   writeJsonAtomic(path.join(busDir, 'inbox', 'cancels', `${id}.json`), {
@@ -544,6 +584,15 @@ function cancelRun(busDir, runId, { reason } = {}) {
       cleared += 1;
     } catch {
       /* 消せなくても致命的でない */
+    }
+  }
+  // (4) 適用済み cancel マーカーを消す（daemon 不在でも sticky にしない）。
+  // orch は meta=canceled で止まる。remote daemon も meta を見て終端を知る。
+  if (marked) {
+    try {
+      fs.unlinkSync(path.join(busDir, 'inbox', 'cancels', `${id}.json`));
+    } catch {
+      /* 残っても致命ではない */
     }
   }
   return { status: marked ? 'canceled' : curStatus, marked, cleared, issues };
@@ -652,7 +701,8 @@ function listArchivedRuns(projectDir) {
   return out;
 }
 
-// バス配下の run を新しい順に一覧する（各 run はサマリのみ）
+// バス配下の run を新しい順に一覧する（各 run はサマリのみ）。
+// limit<=0 は件数制限なし（live 集合の判定用）。
 function listRuns(busDir, limit = 30) {
   const runsDir = path.join(busDir, 'runs');
   const entries = [];
@@ -667,6 +717,7 @@ function listRuns(busDir, limit = 30) {
     entries.push(run);
   }
   entries.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+  if (!limit || limit <= 0) return entries;
   return entries.slice(0, limit);
 }
 

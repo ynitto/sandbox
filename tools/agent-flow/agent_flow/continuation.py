@@ -213,7 +213,7 @@ def _inflight_amend_pending(bus, graph, who, args, consumed_fb: set) -> int:
         if not pieces:
             continue
         text = " / ".join(pieces)
-        k = f"{nid}:{len(text)}"                        # 発生源ノード＋長さで冪等キー
+        k = f"{nid}:{hashlib.sha1(text.encode()).hexdigest()[:16]}"  # 内容ハッシュで冪等（同じ長さの別指摘を落とさない）
         if k in consumed_fb:
             continue
         consumed_fb.add(k)

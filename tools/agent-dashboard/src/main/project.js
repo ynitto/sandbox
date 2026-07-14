@@ -503,7 +503,22 @@ function parseNeeds(text, id) {
   }
   const title = body.match(/^#\s+(.+)$/m);
   if (title) need.title = title[1].trim();
-  need.decided = /-\s*\[x\]/i.test(body);
+  need.decided = (() => {
+    // 確定 [x] は Decision Outcome / 旧フィードバック欄配下だけ（本文チェックリストは対象外）。
+    // agent-project の FEEDBACK_MARKERS と同じ契約（旧票が UI 上ずっと undecided に見えないように）。
+    const markers = ['## Decision Outcome', '## フィードバック'];
+    let best = -1;
+    let markerLen = 0;
+    for (const m of markers) {
+      const i = body.indexOf(m);
+      if (i >= 0 && (best < 0 || i < best)) {
+        best = i;
+        markerLen = m.length;
+      }
+    }
+    if (best < 0) return false;
+    return /-\s*\[x\]/i.test(body.slice(best + markerLen));
+  })();
   need.body = body.trim();
 
   // 記入用の足場より前（本文）だけを対象に要点を抽出する
@@ -882,6 +897,21 @@ function resolveProjectRoot(workspaceDir) {
 
 const DEFAULT_STATE_BRANCH = 'agent-state';
 
+function fromStateWorktree(stateDir, branch = DEFAULT_STATE_BRANCH) {
+  // toStateWorktree の逆: 状態 worktree 側のパスを本体側（CLI --root が取る値）へ戻す。
+  // worktree を --root に渡すと agent-project が二重リダイレクトする。
+  const repo = gitToplevelOf(stateDir);
+  if (!repo) return stateDir;
+  const suffix = `-${branch}`;
+  if (!path.basename(repo).endsWith(suffix)) return stateDir;
+  const sourceRepo = path.join(
+    path.dirname(repo),
+    path.basename(repo).slice(0, -suffix.length)
+  );
+  const rel = path.relative(repo, path.resolve(stateDir));
+  return path.join(sourceRepo, rel);
+}
+
 // 状態の実体は「状態 worktree」にある。agent-project は root（例 <repo>/.agent-project）の読み書きを
 // <repo>-<state_branch>/.agent-project へ逃がすので、本体側に残る .agent-project は **main に載る
 // バックアップ**であって実体ではない（significant だけが載り、bus＝run の進捗は載らない）。
@@ -1044,48 +1074,49 @@ function discover(cfg) {
 
 // agent-project の既定は <root>/bus だが、--bus / 設定 `bus:` の明示バス構成では別の場所になる。
 // CLI に聞かず、ファイルの存在だけで候補を順に当たる:
-//   1. <root>/bus（既定のバス）
-//   2. ⚙ 設定 projects.flowBusByProject[<name>]（プロジェクト単位のバス写像。pure-remote で
-//      agent-flow の鏡写し先 clone を割り当てる場合）
-//   3. ⚙ 設定 projects.flowBus（単一の明示指定）
-//   4. agent-project 設定ファイル（ワークスペースの .agent → ~/.agent）の bus:
-//      （相対パスはプロジェクトルート基準で解決する＝本体の `--bus` と同じ規則）
-// runs/ を持つ最初の候補を採用。どれにも無ければ既定の 1 を返す（hasBus=false）。
+//   優先: 明示設定（flowBusByProject / flowBus / agent-project.yaml の bus:）
+//   次点: <root>/bus（既定）
+// 明示設定があるのに「ローカル bus に runs がある」だけでそちらを採ると、本体が書く共有バスと
+// viewer の監視先が割れ、cancel/resubmit が空振りする。設定がある候補を先に採用する。
+// runs/ を持つ候補を採用。どれにも無ければ最優先候補を返す（hasBus=false）。
 function resolveBusDir(projectDir, workspaceDir, cfg) {
   const workspace = path.resolve(String(workspaceDir || projectDir || ''));
-  const candidates = [];
-  const push = (dir, source) => {
+  const preferred = [];
+  const fallback = [];
+  const push = (list, dir, source) => {
     if (!dir) return;
     const resolved = path.resolve(String(dir).replace(/^~(?=$|\/|\\)/, os.homedir()));
-    if (!candidates.some((c) => c.dir === resolved)) candidates.push({ dir: resolved, source });
+    if (![...preferred, ...fallback].some((c) => c.dir === resolved)) {
+      list.push({ dir: resolved, source });
+    }
   };
 
-  push(path.join(projectDir, 'bus'), 'project');
-  // pure-remote（clone だけ・ローカル daemon 無し）では <root>/bus に runs/ が無いため、
-  // ここで割り当てた <clone>/agent-flow が採用される。
-  // 写像のキーは従来どおりプロジェクトルート名。ワークスペース名でも引ける（登録が
-  // ワークスペースになったので、人はそちらの名前で書くほうが自然）。
+  push(fallback, path.join(projectDir, 'bus'), 'project');
+  // pure-remote（clone だけ・ローカル daemon 無し）では明示写像の <clone>/agent-flow を使う。
   const names = [path.basename(path.resolve(projectDir)), path.basename(workspace)];
   const byProject = cfg && cfg.projects && cfg.projects.flowBusByProject;
   if (byProject && typeof byProject === 'object') {
     const hit = names.find((n) => byProject[n]);
-    if (hit) push(byProject[hit], 'config-per-project');
+    if (hit) push(preferred, byProject[hit], 'config-per-project');
   }
-  if (cfg && cfg.projects && cfg.projects.flowBus) push(cfg.projects.flowBus, 'config');
+  if (cfg && cfg.projects && cfg.projects.flowBus) {
+    push(preferred, cfg.projects.flowBus, 'config');
+  }
 
-  // agent-project 設定ファイルの bus:（設定は本体と同じくワークスペースから探す）
   const toolCfg = readToolConfig('agent-project', [workspace, path.join(workspace, '.agent')]);
   if (toolCfg && toolCfg.values.bus) {
     const raw = String(toolCfg.values.bus);
-    push(path.isAbsolute(raw) ? raw : path.join(projectDir, raw), 'agent-project.yaml');
+    push(preferred, path.isAbsolute(raw) ? raw : path.join(projectDir, raw), 'agent-project.yaml');
   }
 
-  for (const c of candidates) {
+  const ordered = [...preferred, ...fallback];
+  for (const c of ordered) {
     if (fs.existsSync(path.join(c.dir, 'runs'))) {
-      return { busDir: c.dir, hasBus: true, source: c.source, candidates };
+      return { busDir: c.dir, hasBus: true, source: c.source, candidates: ordered };
     }
   }
-  return { busDir: candidates[0].dir, hasBus: false, source: 'project', candidates };
+  const first = ordered[0] || { dir: path.join(projectDir, 'bus'), source: 'project' };
+  return { busDir: first.dir, hasBus: false, source: first.source, candidates: ordered };
 }
 
 // 1 プロジェクトの完全なスナップショット。
@@ -1227,5 +1258,6 @@ module.exports = {
   scanForProjects,
   readProject,
   resolveProjectRoot,
+  fromStateWorktree,
   resolveBusDir,
 };

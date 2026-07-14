@@ -117,8 +117,11 @@ def _superseded_run_ids(bus: Bus) -> dict:
 
 def _run_fully_parked(bus: Bus, run_id: str) -> bool:
     """run の in-flight が全て park（承認待ち等）か。claim 中のノードも今すぐ claim 可能な
-    pending も無く、生存 park が 1 つ以上ある run は worker も計画エージェントも使わない＝
-    実行枠（max_runs）に数えない（gitlab 長期委譲が枠を占有して新規 run が詰まらないように）。"""
+    pending も無く、park が 1 つ以上ある run は worker も計画エージェントも使わない＝
+    実行枠（max_runs）に数えない（gitlab 長期委譲が枠を占有して新規 run が詰まらないように）。
+
+    wait_lease が失効して node_state が pending に見えても、wait ファイルが残っていれば
+    park 継続扱い（一晩の再起動で lease だけ切れ、未決着イシューが枠を食い潰さない）。"""
     v = bus.run_view(run_id)
     graph = v.read_graph()
     if not graph:
@@ -126,10 +129,13 @@ def _run_fully_parked(bus: Bus, run_id: str) -> bool:
     parked = False
     for nid, node in graph["nodes"].items():
         st = v.node_state(nid)
-        if st == "claimed" or (st == "pending" and deps_satisfied(v, node)):
+        if st == "claimed":
             return False
-        if st == "waiting":
+        if st == "waiting" or (st == "pending" and v.read_wait(nid)):
             parked = True
+            continue
+        if st == "pending" and deps_satisfied(v, node):
+            return False
     return parked
 
 
@@ -196,6 +202,7 @@ def _adopt_orphan_runs(bus: Bus, daemon_id: str, owned: set, lease_window: float
                 continue
             why = f"進捗なしの連続再開が上限超過（max_resumes={max_r}）"
         if bus.mark_run_failed(req_id, f"orphaned: owning daemon が消失（生存リース切れ・{why}）"):
+            bus.clear_waits_for_run(req_id)  # 残 park で viewer が canceled 相当を公園表示しない
             bus.run_view(req_id).event(daemon_id, "run-orphaned", run=req_id)
             bus.sync_push(f"run {req_id} failed: orphaned（生存リース切れ・{why}）")
             failed.append(req_id)
@@ -356,19 +363,24 @@ def cmd_run(args) -> int:
                 except Exception as e:  # noqa: BLE001 — 監視失敗は run を止めない
                     print(f">>> service_waits でエラー（無視して継続）: {e}", flush=True)
                 next_wait_service = time.time() + watch_interval
+            if bus.get_status() in TERMINAL:
+                print(f"\n>>> run {bus.get_status()}。ワーカーを停止します。", flush=True)
+                break
             if bus.is_canceled_requested(run_id) and bus.get_status() not in TERMINAL:
                 # cancel 指示: この run を canceled に終端化し、park の再ポーリングを止め、
                 # 子（orchestrator/worker）を停止する。--close-issues は cmd_cancel 側で実施済み。
                 bus.mark_canceled(run_id, bus.cancel_info(run_id).get("reason") or "cancel 指示")
                 bus.clear_waits_for_run(run_id)
+                bus.clear_cancel(run_id)
                 bus.sync_push(f"cancel run {run_id}")
                 print(f"\n>>> run {run_id} は cancel されました。停止します。", flush=True)
                 break
-            if bus.get_status() in TERMINAL:
-                print(f"\n>>> run {bus.get_status()}。ワーカーを停止します。", flush=True)
-                break
             if orch.poll() is not None and bus.get_status() not in TERMINAL:
                 print("\n>>> orchestrator が終了しました。停止します。", flush=True)
+                # 非終端のまま放置すると上位が exit 0 を success と誤読する。failed に確定する。
+                if bus.get_status() not in TERMINAL:
+                    bus.mark_run_failed(run_id, "orchestrator が非終端のまま終了")
+                    bus.sync_push(f"fail run {run_id}: orchestrator exited")
                 break
             time.sleep(max(args.poll, 1))
     finally:
@@ -380,6 +392,12 @@ def cmd_run(args) -> int:
     if final:
         print("\n=== 最終結果 ===")
         print(final.get("summary", ""))
-    # run が failed で終端したら非 0 を返す（委譲先の却下など、上位＝agent-project が
-    # act 失敗として検知しリトライできるようにする）。done は 0。
-    return 1 if bus.get_status() == "failed" else 0
+    # run が failed/canceled で終端したら非 0 を返す。failed は上位＝agent-project が
+    # act 失敗として検知しリトライできるようにする。canceled も 0 だと verify=true で偽 done
+    # になる（agent-project は戻り値で成否を見る）。done は 0。非終端のままなら failed 扱い。
+    st = bus.get_status()
+    if st == "done":
+        return 0
+    if st == "canceled":
+        return 2
+    return 1

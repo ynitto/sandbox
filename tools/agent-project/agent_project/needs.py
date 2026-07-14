@@ -188,8 +188,16 @@ def read_feedback(path: Path) -> str:
 
 
 def feedback_submitted(path: Path) -> bool:
-    """確定チェックボックスが [x] かどうか（= 人が編集を終えた明示シグナル）。"""
-    return any(CHECKED_RE.match(ln) for ln in path.read_text(encoding="utf-8").splitlines())
+    """確定チェックボックスが [x] かどうか（= 人が編集を終えた明示シグナル）。
+    Decision Outcome / フィードバック欄配下だけを見る（本文のチェックリスト誤発火を防ぐ）。"""
+    text = path.read_text(encoding="utf-8")
+    hits = [(text.find(m), m) for m in FEEDBACK_MARKERS]
+    hits = [(i, m) for i, m in hits if i >= 0]
+    if not hits:
+        return False
+    i, marker = min(hits)
+    body = text[i + len(marker):]
+    return any(CHECKED_RE.match(ln) for ln in body.splitlines())
 
 
 def settled(cfg: "Config", f: Path) -> bool:
@@ -233,10 +241,24 @@ def ingest_feedback(cfg: "Config", tasks: "list[Task]") -> "list[str]":
             ingested.append(t.id)
             continue
         was_review = t.norm_status() == "review"     # 検収待ちからの復帰か（自律度の clean/手戻り判定用）
+        # 委譲中の needs [x] も approve と同じく flow を止めてから ready（二重書き込み防止）
+        if t.norm_status() == "offloaded" or t.get("flow_run"):
+            detached = detach_flow_run(cfg, t, (fb or "feedback")[:120] or "feedback により委譲から切り離し")
+            if detached and not fb:
+                # 空 [x] でも id 衝突を避ける（メモ付きは下で retries+=1。env_resume は別扱）
+                t.retries += 1
         t.status = "ready"
         t.drop("feedback")
         if fb:
             t.extra.append(("feedback", fb.replace("\n", " ⏎ ")))
+            if t.get("env_resume"):
+                # 環境復帰のメモ（「トークン直した」等）は計画変更ではない。
+                # retries を上げず env_resume を残し、run_id_for が同 run を再開する契約を守る。
+                pass
+            else:
+                # 計画変更＝新しい run。retries を進めないと last_run と同じ id を再生成し、
+                # agent-flow は既存 meta.request で再開して差し戻しが planner に届かない。
+                t.retries += 1
         if was_review:                               # review→ feedback あり=差し戻し(手戻り) / 無し=承認(clean)
             autonomy_record(cfg, t, clean=not bool(fb))
         persist_task(cfg, t)
@@ -421,6 +443,10 @@ def cmd_reject(cfg: Config, tid: str, reason: str) -> int:
         print(f"エラー: {tid} は実行中（doing）です。先に revise で止めるか完了を待ってください。",
               file=sys.stderr)
         return 2
+    # 委譲中も live work：先に flow を止めてから廃止する（放置＝二重書き込み）
+    if t.norm_status() == "offloaded" or t.get("flow_run"):
+        detach_flow_run(cfg, t, reason[:120] or "reject により委譲から切り離し")
+        persist_task(cfg, t)
     release_claim(cfg, t)
     # 影響範囲（after 逆辺・推移）: 依存先は前提を失うため proposed に戻して人の再審査へ
     downs = dependents_of(tasks, tid)

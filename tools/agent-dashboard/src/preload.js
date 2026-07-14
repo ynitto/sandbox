@@ -30,7 +30,8 @@ contextBridge.exposeInMainWorld('api', {
   // dir（プロジェクトルート）も渡す: agent-project 配下の run は「タスクの積み直し」で再実行する
   flowResubmit: (dir, busDir, runId) => invoke('flow:resubmit', { dir, busDir, runId }),
   flowDeleteRun: (dir, busDir, runId) => invoke('flow:deleteRun', { dir, busDir, runId }),
-  flowCancel: (busDir, runId, reason) => invoke('flow:cancel', { busDir, runId, reason }),
+  flowCancel: (dir, busDir, runId, reason) =>
+    invoke('flow:cancel', { dir, busDir, runId, reason }),
   glFindIssueByToken: (args) => invoke('gitlab:findIssueByToken', args),
 
   submitFeedback: (file, feedback, stub) => invoke('dashboard:feedback', { file, feedback, stub }),

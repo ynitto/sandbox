@@ -193,6 +193,19 @@ class InheritTests(unittest.TestCase):
         self.assertNotIn("req-x-t-r0", new.list_runs())
         self.assertEqual(new.run_meta("req-x-t-r1").get("inherited_from"), "req-x-t-r0")
 
+    def test_canceled_predecessor_is_not_inherited(self):
+        old = self._mk_run("req-cxl-t-r0")
+        self._add_task(old, "t1")
+        old.write_result("t1", "w", "done", "out1")
+        old.mark_canceled("req-cxl-t-r0", "人の停止")
+        new = kf.Bus(self.tmp, "req-cxl-t-r1")
+        info = new.inherit_from("req-cxl-t-r0")
+        self.assertFalse(info["inherited"])
+        self.assertFalse(info["deleted"])
+        self.assertEqual(info["seeded_nodes"], 0)
+        self.assertIn("canceled", info["reason"])
+        self.assertIn("req-cxl-t-r0", new.list_runs())  # 触らない
+
     def test_fully_done_predecessor_seeds_nothing_but_cleans_up(self):
         old = self._mk_run("req-y-t-r0")
         self._add_task(old, "t1")
@@ -503,6 +516,23 @@ class OrphanRecoveryTests(unittest.TestCase):
             self.assertEqual(failed, [])
             self.assertEqual(self.bus.run_meta("run1")["resume_count"], 1)
 
+    def test_resume_count_resets_on_expired_park_lease(self):
+        # 一晩電源断で wait_lease だけ切れても、wait ファイルが残れば進捗あり＝数え直し
+        self.bus.submit_request("run1", "req", "submitter")
+        self.bus.write_graph({"nodes": {"n1": {"id": "n1", "kind": "task", "deps": []}}})
+        for i in range(4):
+            self.bus.write_wait("n1", {
+                "id": "n1", "who": "w1",
+                "wait_lease_until": time.time() - 10,
+                "next_poll_at": time.time() - 5,
+            })
+            self.bus.set_status("running")
+            self._set_meta(orch_lease_until=time.time() - 1.0)
+            adopted, failed, _ = self._adopt(max_resumes=2)
+            self.assertEqual(list(adopted), ["run1"], f"expired-park resume #{i+1}")
+            self.assertEqual(failed, [])
+            self.assertEqual(self.bus.run_meta("run1")["resume_count"], 1)
+
     def test_orphan_failed_when_resume_disabled(self):
         # max_resumes<=0 は従来動作（孤児は即 failed）へのオプトアウト
         self.bus.submit_request("run1", "req", "submitter")
@@ -665,12 +695,12 @@ class RunSlotTests(unittest.TestCase):
         self.assertTrue(v.try_claim("a", "w1", 300))
         self.assertFalse(kf._run_fully_parked(self.bus, "run1"))
 
-    def test_park_lease_expiry_returns_to_busy(self):
-        # wait_lease 失効は pending へ縮退（再アタッチ対象）＝また枠を使う実行中扱いに戻る
+    def test_park_lease_expiry_still_frees_slot(self):
+        # wait_lease 失効でも wait ファイルが残れば枠を使わない（一晩の再起動で枠を食い潰さない）
         v = self.bus.run_view("run1")
         self._graph(v, {"a": []})
         self._park(v, "a", live=False)
-        self.assertFalse(kf._run_fully_parked(self.bus, "run1"))
+        self.assertTrue(kf._run_fully_parked(self.bus, "run1"))
 
     def test_graphless_run_counts_as_busy(self):
         # グラフ未作成（計画中）の run は実行中扱い（計画エージェントが走っている）
@@ -2295,6 +2325,41 @@ class GitlabAutoMergeTests(unittest.TestCase):
             r = gl_plugin._check_decision("gitlab.com", "tok", "group/repo", 42, "u42",
                                           gl_plugin._config(), False)
         self.assertIsNone(r["decision"])                     # 未決着のまま（人の介入も可能）
+
+    def test_midflight_rework_rejects_without_closing_issue(self):
+        # 人の `# 差し戻し` 見出し → rejected だがイシューは open のまま（終端却下と違う）
+        issue = {"labels": ["status:open"], "state": "opened"}
+        notes = [{"id": 42, "body": "# 差し戻し\nlocalhost ではなく実サーバで",
+                  "system": False, "author": {"username": "alice", "id": 1}}]
+        calls = []
+
+        def api(host, token, method, path, data=None, params=None):
+            calls.append((method, path, data))
+            if method == "GET" and "/issues/42" in path:
+                return issue
+            return {"ok": True}
+
+        def list_side(host, token, path, params=None):
+            if path.endswith("/related_merge_requests"):
+                return []
+            return []
+
+        with mock.patch.object(gl_plugin, "gl_api", side_effect=api), \
+             mock.patch.object(gl_plugin, "gl_api_list", side_effect=list_side), \
+             mock.patch.object(gl_plugin, "_get_comments", return_value=notes):
+            r = gl_plugin._check_decision("gitlab.com", "tok", "group/repo", 42, "u42",
+                                          gl_plugin._config(), False)
+        self.assertEqual(r["decision"], "rejected")
+        self.assertFalse(r["data"]["closed"])
+        self.assertTrue(r["data"].get("rework"))
+        self.assertIn("実サーバ", r["data"]["guidance"])
+        # state_event=close していない
+        self.assertFalse(any(
+            c[0] == "PUT" and (c[2] or {}).get("state_event") == "close" for c in calls))
+        # needs-rework ラベル付け替えはある
+        relabel = next(c for c in calls if c[0] == "PUT" and "/issues/42" in c[1]
+                       and c[2] and "labels" in c[2])
+        self.assertIn("status:needs-rework", relabel[2]["labels"])
 
     # --- close_issues: manual（クローズは人。人のクローズを監視して決着） ---
 
@@ -5434,16 +5499,64 @@ class CancelTests(unittest.TestCase):
             rc = kf.cmd_cancel(args)
         self.assertEqual(rc, 0)
         self.assertEqual(self.bus.run_meta("run1").get("status"), "canceled")
-        self.assertTrue(self.bus.is_canceled_requested("run1"))
+        self.assertFalse(self.bus.is_canceled_requested("run1"), "適用後マーカーは消す")
         self.assertIsNone(self.bus.read_wait("n1"))             # park 再ポーリングを止める
+
+    def test_cmd_cancel_terminal_clears_leftover_waits(self):
+        self.bus.set_status("done")
+        self.bus.write_wait("n1", {"id": "n1", "wait_lease_until": time.time() + 1000})
+        self.bus.cancel_request("run1", "host", "古い")
+        args = argparse.Namespace(bus=self.tmp, run_id="run1", reason="",
+                                  close_issues=False, git=None, executor="stub",
+                                  config=None, lease=30.0)
+        with mock.patch.object(kf, "make_bus", return_value=self.bus):
+            rc = kf.cmd_cancel(args)
+        self.assertEqual(rc, 0)
+        self.assertIsNone(self.bus.read_wait("n1"))
+        self.assertFalse(self.bus.is_canceled_requested("run1"))
 
     def test_orch_check_canceled(self):
         args = argparse.Namespace(run_id="run1")
         self.assertFalse(kf._orch_check_canceled(self.bus, args, "orch"))
+        self.bus.write_wait("n1", {"id": "n1", "wait_lease_until": time.time() + 1000,
+                                   "issue": {"iid": 1}})
         self.bus.cancel_request("run1", "host", "止める")
         self.assertTrue(kf._orch_check_canceled(self.bus, args, "orch"))
         self.assertEqual(self.bus.run_meta("run1").get("status"), "canceled")
+        self.assertIsNone(self.bus.read_wait("n1"), "orch 終端時に waits も消す")
 
+    def test_orch_stops_when_meta_already_canceled_without_marker(self):
+        # daemon が適用後にマーカーを消しても、meta=canceled なら orch は止まる
+        args = argparse.Namespace(run_id="run1")
+        self.bus.mark_canceled("run1", "先に終端")
+        self.assertFalse(self.bus.is_canceled_requested("run1"))
+        self.assertTrue(kf._orch_check_canceled(self.bus, args, "orch"))
+
+    def test_clear_cancel_removes_applied_marker(self):
+        self.bus.cancel_request("run1", "host", "止める")
+        self.assertTrue(self.bus.is_canceled_requested("run1"))
+        self.assertTrue(self.bus.clear_cancel("run1"))
+        self.assertFalse(self.bus.is_canceled_requested("run1"))
+        self.assertFalse(self.bus.clear_cancel("run1"))  # 冪等
+
+    def test_cmd_cancel_keeps_marker_before_run_exists(self):
+        # run 化前 cancel: マーカーを残し daemon の cancel_request_run に渡す
+        # （run_meta() の {} を truthy と誤判定して消さない）
+        b = kf.Bus(self.tmp, "req-pre")
+        b.submit_request("req-pre", "やること", "submitter")
+        args = argparse.Namespace(bus=self.tmp, run_id="req-pre", reason="取り下げ",
+                                  close_issues=False, git=None, executor="stub",
+                                  config=None, lease=30.0)
+        with mock.patch.object(kf, "make_bus", return_value=b):
+            rc = kf.cmd_cancel(args)
+        self.assertEqual(rc, 0)
+        self.assertTrue(b.is_canceled_requested("req-pre"), "run 化前はマーカーを残す")
+        self.assertFalse(b.run_exists("req-pre"))
+
+    def test_set_status_refuses_to_resurrect_terminal(self):
+        self.bus.mark_canceled("run1", "止める")
+        self.bus.set_status("running")
+        self.assertEqual(self.bus.run_meta("run1").get("status"), "canceled")
 
 class GitlabDeferPollTests(unittest.TestCase):
     """gitlab executor: deferral（park）・poll・on_cancel の追加契約。"""
@@ -5679,6 +5792,46 @@ class GitlabHumanAgentDiscriminationTests(unittest.TestCase):
         # エージェント（gitlab-idd マーカー）の差し戻し見出しは人でないので拾わない
         notes = [{"body": "# 差し戻し\n<!-- gitlab-idd:non-requester-reviewed:z -->",
                   "system": False, "author": {"username": "rev-bot"}}]
+        with mock.patch.object(gl_plugin, "_get_comments", return_value=notes):
+            self.assertEqual(gl_plugin._rework_requested("h", "t", "p", 1,
+                             {"rework_heading": "差し戻し"}), "")
+
+    def test_rework_payload_keeps_issue_open_and_consumes_note(self):
+        # 途中差し戻しはイシューを閉じず、note を消費して再アタッチ即却下を防ぐ
+        notes = [{"id": 77, "body": "# 差し戻し\n実サーバで", "system": False,
+                  "author": {"username": "alice"}}]
+        calls = []
+
+        def api(host, token, method, path, data=None, params=None):
+            calls.append((method, path, data))
+            return {"ok": True}
+
+        with mock.patch.object(gl_plugin, "_get_comments", return_value=notes), \
+             mock.patch.object(gl_plugin, "gl_api", side_effect=api):
+            text, data = gl_plugin._rework_payload(
+                "h", "t", "p", 1, "u1", [], {"status:open"},
+                {"rework_heading": "差し戻し", "rework_label": "status:needs-rework",
+                 "approved_label": "status:approved"},
+                "差し戻し（人コメントの見出し）")
+        self.assertFalse(data["closed"])
+        self.assertTrue(data.get("rework"))
+        self.assertIn("実サーバで", data["guidance"])
+        self.assertIn("[gitlab-reject]", text)
+        # close していない
+        self.assertFalse(any(c[0] == "PUT" and "state_event" in str(c[2] or {})
+                             for c in calls))
+        # 消費マーカーを投稿
+        note_posts = [c for c in calls if c[0] == "POST" and "/notes" in c[1]]
+        self.assertEqual(len(note_posts), 1)
+        self.assertIn("rework-consumed:77", note_posts[0][2]["body"])
+
+    def test_rework_requested_skips_consumed_note(self):
+        notes = [
+            {"id": 77, "body": "# 差し戻し\n古い", "system": False,
+             "author": {"username": "alice"}},
+            {"id": 80, "body": "agent-flow: done <!-- gitlab-idd:rework-consumed:77 -->",
+             "system": False, "author": {"username": "bot"}},
+        ]
         with mock.patch.object(gl_plugin, "_get_comments", return_value=notes):
             self.assertEqual(gl_plugin._rework_requested("h", "t", "p", 1,
                              {"rework_heading": "差し戻し"}), "")

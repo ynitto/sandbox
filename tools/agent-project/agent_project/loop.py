@@ -197,14 +197,43 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
             continue                       # まだ実行中 → 次パスで再確認（ブロックしない）
         if not claim_task(cfg, task):      # 実行権を取ってから確定（他インスタンスと競合しない）
             continue
+        # claim 後にディスク上で既に offloaded でなければ、他経路（revise/hold）が先に進めた。
+        # ここで settle すると canceled を確定して revise 内容を踏み潰しうる。
+        if task.norm_status() != "offloaded":
+            release_claim(cfg, task)
+            continue
         gb = git_change_baseline(cfg.workdir)   # 完了時点の基準（remote/daemon 委譲は local 差分なし）
         venv = {"KIRO_BASE_REV": gb[0]} if gb[0] else None
+        # settle 前に last_run を残す（delivery / protect / resume）。flow_run を落とす前に移す。
+        _pin_last_run(cfg, task, run_id)
         task.drop("flow_run", "flow_loc")
         task.status = "doing"
         persist_task(cfg, task)
         dtok, dusd = parse_cost(msg)
         tokens += dtok
         cost += dusd
+        # 人が dashboard 等から run を中止したとき: verify=true でも done にしない。
+        # retries を上げて次の run-id を変える（同一 id の canceled run を再開しようとして固まるのを防ぐ）。
+        if not ok and msg.rstrip().endswith("canceled"):
+            task.retries += 1
+            task.status = "ready"
+            persist_task(cfg, task)
+            append_journal(cfg.journal,
+                           f"cycle {cycle0 + settled + 1}: {task.id} offload run が canceled → "
+                           f"ready（人が中止・retries={task.retries} で新 run）")
+            release_claim(cfg, task)
+            settled += 1
+            continue
+        # act/flow 失敗: verify=true で偽 done にしない（canceled 以外の not ok）
+        if not ok:
+            ev = delivery_evidence(cfg, msg, gb, loc,
+                                   verify=task.verify, vmsg=str(msg or ""),
+                                   ok=False, task=task)
+            _settle_failure(cfg, task, str(msg or "daemon run failed")[:500],
+                            cycle0 + settled + 1, ev, reasons, loc)
+            release_claim(cfg, task)
+            settled += 1
+            continue
         res = _settle_task(cfg, task, loc, msg, cycle0 + settled + 1, dtok, dusd, gb, venv,
                            policy, autonomy_cache, reasons)
         archived += res["archived"]
@@ -321,7 +350,9 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
             if task.id not in act_results:        # クレームできなかった分はこの run では飛ばす
                 unavailable.add(task.id)
                 continue
-            location, pend, act_msg = act_results[task.id]
+            packed = act_results[task.id]
+            location, pend, act_msg = packed[0], packed[1], packed[2]
+            act_ok = packed[3] if len(packed) > 3 else True
             if pend is not None:                  # 非ブロッキング委譲（offload）: 待たず offloaded に退避
                 _mark_offloaded(cfg, task, location, pend.run_id)
                 release_claim(cfg, task)          # 実行権は解放（次パスでポーリングして終端したら settle）
@@ -336,6 +367,34 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
             if dtok or dusd:
                 append_journal(cfg.journal, f"cycle {cycle}: {task.id} cost tokens={dtok} usd={dusd:.4f}"
                                             f"（累計 tokens={tokens_used} usd={cost_used:.4f}）")
+            # 人が run を中止したとき: verify=true でも done にしない（リトライ非消費で ready）。
+            # retries は上げる＝次の run-id を変える。上げないと canceled な同一 id を作り直し、
+            # agent-flow は終端 run を再開できず永久 no-op になる。
+            # act 中の revise（軌道修正）は失敗/canceled より優先——結果を確定せず積み直す。
+            if str(act_msg or "").rstrip().endswith("canceled") or act_ok is False:
+                fresh = _load_task_file(cfg, task.id)
+                if fresh is not None and fresh.get("revised"):
+                    _requeue_revised(cfg, task, fresh, cycle)
+                    release_claim(cfg, task)
+                    continue
+            if str(act_msg or "").rstrip().endswith("canceled"):
+                task.retries += 1
+                task.status = "ready"
+                persist_task(cfg, task)
+                append_journal(cfg.journal,
+                               f"cycle {cycle}: {task.id} run が canceled → ready"
+                               f"（人が中止・retries={task.retries} で新 run）")
+                release_claim(cfg, task)
+                continue
+            # act 失敗（daemon failed 等）: verify=true の偽 done/review を防ぐ。失敗経路へ。
+            if act_ok is False:
+                ev = delivery_evidence(cfg, act_msg, git_base, location,
+                                       verify=task.verify, vmsg=str(act_msg or ""),
+                                       ok=False, task=task)
+                _settle_failure(cfg, task, str(act_msg or "act failed")[:500], cycle, ev,
+                                reasons, location)
+                release_claim(cfg, task)
+                continue
             res = _settle_task(cfg, task, location, act_msg, cycle, dtok, dusd, git_base,
                                verify_env, policy, autonomy_cache, reasons)
             archived += res["archived"]

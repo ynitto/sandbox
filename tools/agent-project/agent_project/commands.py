@@ -87,6 +87,12 @@ def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
                 print(f"cohort {t.get('cohort')}: 残り {len(members)} 件を生成しました "
                       f"（{', '.join(m.id for m in members[:6])}{' …' if len(members) > 6 else ''}）。")
         return 0
+    # 委譲中の approve = 人は「このまま続行」ではなく「ブロックを解いてやり直す／進める」。
+    # flow を止めないと ap/<task-id> へ二重書き込みし、次の act と競合する。
+    if t.norm_status() == "offloaded" or t.get("flow_run"):
+        detached = detach_flow_run(cfg, t, reason[:120] or "approve により委譲から切り離し")
+        if detached:
+            t.retries += 1
     t.status = "ready"
     # hold が積んだ deny を解除する。これをしないと承認が一方通行で無効になる: status を ready に
     # 戻しても policy の deny が残り続け、次の triage が policy:deny を見て即 blocked へ引き戻す。
@@ -139,17 +145,36 @@ def cmd_resume_run(cfg: Config, tid: str, run_id: str, reason: str) -> int:
     # 実行中（orchestrator の生存リースが有効）の run への再開指示だけは拒否する。
     # run が bus に無い場合は拒否しない: bus 掃除後でも agent-flow は作業ブランチ
     # ap/<task-id> から続きを解決できる。
+    # canceled / done は続きから再開できないので last_run を固定せず retries を進め、新 run にする。
     meta_path = cfg.bus / "runs" / rid / "meta.json"
-    if meta_path.exists() and not _run_resumable(cfg, rid):
+    st = ""
+    if meta_path.exists():
         try:
-            st = str(json.loads(meta_path.read_text(encoding="utf-8")).get("status") or "?")
+            st = str(json.loads(meta_path.read_text(encoding="utf-8")).get("status") or "")
         except (OSError, ValueError):
             st = "?"
-        if st not in _FLOW_TERMINAL:
+        if st in ("canceled", "done"):
+            release_claim(cfg, t)
+            t.retries += 1
+            t.drop("feedback", "revised", "last_run")
+            t.status = "ready"
+            persist_task(cfg, t)
+            clear_needs_file(cfg, tid)
+            dr = append_decision(cfg, tid, cfg.actor,
+                                 context=f"{tid} を新 run でやり直し（{rid} は {st}）",
+                                 action="resume-run", reason=reason,
+                                 affects=f"{tid} → ready (retries={t.retries})")
+            print(f"{dr}: {tid} を ready に積み直しました"
+                  f"（{rid} は {st} のため続きからではなく新しい実行）。")
+            return 0
+        if not _run_resumable(cfg, rid) and st not in _FLOW_TERMINAL:
             print(f"エラー: run {rid} は実行中です（status={st}）。停止・失敗・応答なしの run "
                   f"だけ再開できます。", file=sys.stderr)
             return 2
     release_claim(cfg, t)
+    # 委譲中に「続きから」を押しても、走っている flow を止めないと二重駆動になる。
+    if t.norm_status() == "offloaded" or t.get("flow_run"):
+        detach_flow_run(cfg, t, reason[:120] or "resume-run により委譲から切り離し")
     t.set("last_run", rid)
     # feedback / revised は「計画が変わった＝新しい run を作る」シグナルなので外す
     # （人が『この run の続きから』と明示した以上、続きからが正）。
@@ -343,6 +368,12 @@ def cmd_revise(cfg: Config, tid: str, fields: dict, feedback: str, reason: str) 
 
     status = t.norm_status()
     doing = status == "doing" and _claim_fresh(cfg, tid)
+    # approve / feedback / _block と同じ: flow_run があれば status によらず切り離す。
+    # dashboard cancel→revise は sync 待ちの doing（flow_run ピン）でも来る。
+    detached = False
+    if status == "offloaded" or t.get("flow_run"):
+        detach_flow_run(cfg, t, reason or fb[:120] or "revise により委譲から切り離し")
+        detached = True
     # rev は act 試行の世代番号（req_id に載る）。実行中の古い run に次の試行が
     # 合流しないよう、revise のたびに上げて新しい run を強制する。
     t.set("rev", int(str(t.get("rev", "0") or "0")) + 1)
@@ -350,13 +381,15 @@ def cmd_revise(cfg: Config, tid: str, fields: dict, feedback: str, reason: str) 
     if doing:
         t.set("revised", _now_ts())     # 実行側が settle 時に検知して積み直す（結果は確定しない）
         disp = "実行中のため現在の試行は確定せず、修正内容で積み直されます"
-    elif status in ("blocked", "review", "doing"):   # doing でも実行者不在（stale claim）はここ
+    elif detached or status in ("blocked", "review", "doing"):
+        # detached（offloaded / flow_run）か、doing でも実行者不在（stale claim）
         release_claim(cfg, t)            # 残骸クレームの掃除（無ければ no-op）
         clear_needs_file(cfg, tid)
         if status == "review":
             autonomy_record(cfg, t, clean=False)     # 検収からの修正＝差し戻し（手戻り）
         t.status = "ready"
-        disp = "ready に積み直しました"
+        disp = ("委譲中の実行を中止し ready に積み直しました" if detached
+                else "ready に積み直しました")
     persist_task(cfg, t)
     affects = "; ".join(changes)
     dr = append_decision(cfg, tid, cfg.actor, context=f"{tid}（{t.title}）を人が修正（revise）",
@@ -364,7 +397,8 @@ def cmd_revise(cfg: Config, tid: str, fields: dict, feedback: str, reason: str) 
                          affects=(affects[:200] + (f"; {tid} → ready" if disp and not doing else "")),
                          learn=(t.title, fb) if fb else None)
     append_journal(cfg.journal, f"revise: {tid} — {affects}"
-                   + ("（実行中→積み直し予約）" if doing else ""))
+                   + ("（実行中→積み直し予約）" if doing
+                      else ("（委譲切り離し）" if detached else "")))
     print(f"{dr}: {tid} を修正しました（{affects}）。" + (disp and f"{disp}。"))
     _print_impact_note(tasks, tid)     # 依存先（after 逆辺・推移）を提示＝変更の影響範囲を人が辿れる
     return 0

@@ -7,8 +7,16 @@ def resolve_agent_flow(explicit: "str | None") -> "list[str]":
     found = shutil.which("agent-flow")
     if found:
         return [found]
-    local = Path(__file__).resolve().parent.parent / "agent-flow" / "agent-flow.py"
-    return [sys.executable, str(local)]
+    # パッケージ断片: .../tools/agent-project/agent_project/request.py
+    # → 隣接の .../tools/agent-flow/agent-flow.py。
+    # parent×2（agent-project/agent-flow）は存在せず、act が常に起動失敗する。
+    # 以前は act 失敗を捨てて verify で偽 done になっていた。
+    here = Path(__file__).resolve()
+    tools_sibling = here.parents[2] / "agent-flow" / "agent-flow.py"  # tools/
+    if tools_sibling.is_file():
+        return [sys.executable, str(tools_sibling)]
+    legacy = here.parents[1] / "agent-flow" / "agent-flow.py"  # agent-project/ 直下の旧配置
+    return [sys.executable, str(legacy)]
 
 
 def _charter_definition(ch: "Charter") -> str:
@@ -237,11 +245,19 @@ def decide_location(task: Task, policy: Policy, cfg: "Config") -> str:
 
 
 def _kf_base(cfg: "Config", use_git: bool) -> "list[str]":
+    """agent-flow 共通 argv（bus / git / --config）。
+
+    flow_config は daemon 起動（flow_daemon_cmd）だけでなく sync run / submit / result /
+    doctor にも渡す。付け忘れると manage_flow_daemon=false の主経路だけ executor・gitlab・
+    agent_cli 等の yaml 設定が消える。"""
     base = resolve_agent_flow(cfg.agent_flow) + ["--bus", str(cfg.bus)]
     if use_git and cfg.git_bus:
         base += ["--git", cfg.git_bus, "--git-branch", cfg.git_branch]
         if cfg.git_subdir:
             base += ["--git-subdir", cfg.git_subdir]
+    fc = getattr(cfg, "flow_config", None)
+    if fc:
+        base += ["--config", os.path.abspath(os.path.expanduser(str(fc)))]
     return base
 
 

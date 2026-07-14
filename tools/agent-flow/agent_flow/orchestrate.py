@@ -145,11 +145,20 @@ def _finalize_run(bus, args, iteration: int, failure: "str | None" = None) -> No
 
 def _orch_check_canceled(bus: Bus, args, who: str) -> bool:
     """cancel マーカーがあれば run を canceled に終端化して True を返す（orchestrator の停止用）。
-    orchestrator が set_status("running") で canceled を上書きし返すのを防ぐため、ループの要所で確認する。"""
-    if not bus.is_canceled_requested(args.run_id):
+    close_issues 要求があるときは waits を残す（daemon/cmd_cancel がイシュー後始末に座標を使う）。
+    それ以外は waits を掃除して park の再ポーリングを止める。
+    既に meta が canceled ならマーカー無しでも止まる（daemon が適用後にマーカーを消したあとでも
+    同じ ID の orch が走り続けない／再起動即 cancel と整合する）。"""
+    meta = bus.run_meta(args.run_id) or {}
+    already = meta.get("status") == "canceled"
+    if not already and not bus.is_canceled_requested(args.run_id):
         return False
-    reason = bus.cancel_info(args.run_id).get("reason") or "cancel 指示"
-    bus.mark_canceled(args.run_id, reason)
+    info = bus.cancel_info(args.run_id) if bus.is_canceled_requested(args.run_id) else {}
+    reason = info.get("reason") or meta.get("cancel_reason") or "cancel 指示"
+    if not info.get("close_issues"):
+        bus.clear_waits_for_run(args.run_id)
+    if not already:
+        bus.mark_canceled(args.run_id, reason)
     bus.event(who, "canceled", run=args.run_id, reason=reason)
     bus.sync_push(f"cancel run {args.run_id}: {reason}")
     log(who, f"cancel 指示を検知（{reason}）。orchestrator を終了します。")

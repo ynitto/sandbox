@@ -3204,7 +3204,8 @@ function runAdvice(run, group) {
     const lastRun = String((task.extra && task.extra.last_run) || '');
     const doneCount = (run.counts && run.counts.done) || 0;
     if (['ready', 'doing', 'offloaded', 'inbox'].includes(task.status)) {
-      const resume = !lastRun || lastRun === run.runId;
+      // canceled は続きから再開できない（新 run 固定）。failed/stalled だけ部分やり直し。
+      const resume = st !== 'canceled' && (!lastRun || lastRun === run.runId);
       const how = resume
         ? `失敗・未実行の工程だけをやり直します（完了済み ${doneCount} 件は温存）`
         : '新しい実行としてやり直します';
@@ -3560,12 +3561,20 @@ function renderFlowDetail() {
   const isStalled = run.alive === false && run.status !== 'done';
   const canRetry = run.status === 'failed' || run.status === 'canceled' || isStalled;
   const remainCount =
-    failedCount + ((run.counts && run.counts.pending) || 0) + ((run.counts && run.counts.waiting) || 0);
-  const partial = canRetry && doneCount > 0;
-  const resubmitLabel = partial
+    failedCount +
+    ((run.counts && run.counts.pending) || 0) +
+    ((run.counts && run.counts.waiting) || 0) +
+    ((run.counts && run.counts.parked) || 0);
+  // canceled は続きから再開できない（agent-project は新 run を作る）。部分やり直し表記を出さない。
+  const partial = canRetry && doneCount > 0 && run.status !== 'canceled';
+  const resubmitLabel = run.status === 'canceled'
+    ? '↻ 新しくやり直す'
+    : partial
     ? `↻ 失敗した工程だけやり直す（残り ${remainCount} 件）`
     : '↻ 同じ内容でやり直す';
-  const resubmitTitle = partial
+  const resubmitTitle = run.status === 'canceled'
+    ? '中止した実行の続きからは再開できません。タスクを積み直して新しい実行を始めます'
+    : partial
     ? `失敗・未実行の工程だけを実行し直します。成功した ${doneCount} 件はそのまま使います（作り直しません）`
       + (advice.kind === 'auto' ? '\n※ 放置しても本体が自動で同じことをします（このボタンは前倒し指示）' : '')
     : '同じ内容でやり直します（タスクを積み直して本体に実行させます）';
@@ -3913,7 +3922,10 @@ async function resubmitFlowRun() {
   const nameList = (list) =>
     list.slice(0, 8).map((n) => n.id).join(', ') + (list.length > 8 ? ` …（計 ${list.length} 件）` : '');
   const failedNames = rerun.filter((n) => n.state === 'failed');
-  const plan = keep.length
+  const canceled = run.status === 'canceled';
+  const plan = canceled
+    ? `中止した実行の続きからは再開できません。\nタスクを積み直して新しい実行を始めます（完了済み ${keep.length} 件も温存されません）。`
+    : keep.length
     ? `やり直す工程（${rerun.length} 件）: ${nameList(rerun)}` +
       (failedNames.length ? `\n（うち失敗していた工程 ${nameList(failedNames)} は必ず再実行されます）` : '') +
       `\nそのまま使う完了済み（${keep.length} 件）: ${nameList(keep)}` +
@@ -3921,8 +3933,12 @@ async function resubmitFlowRun() {
     : `全 ${nodes.length || '?'} 工程をやり直します（完了済みの工程はありません）。`;
   const yes = await confirmDialog(`この実行をやり直します。\n\n${plan}\nよろしいですか？`);
   if (!yes) return;
+  // 状態の置き場は project.dir（resolveProjectRoot / 状態 worktree）。selectedDir は
+  // 登録ワークスペースで、backlog/commands が無いことが多い。そこに書くと resume-run が
+  // 見つからず inbox 投入へ落ち、daemon 無し構成では誰も拾わない＝無反応ボタンになる。
+  const projectDir = state.project && state.project.dir;
   const res = await guard('やり直し', () =>
-    api.flowResubmit(state.selectedDir, state.project.busDir, run.runId)
+    api.flowResubmit(projectDir, state.project.busDir, run.runId)
   );
   if (res) {
     const d = state.flowDaemon;
@@ -3933,7 +3949,9 @@ async function resubmitFlowRun() {
         ? '本体がまもなく実行します'
         : '本体（agent-project）が次に動いたときに実行されます（今は停止中）';
       toast(
-        keep.length > 0
+        canceled
+          ? `タスク ${res.taskId} を新しい実行として積み直しました。${when}`
+          : keep.length > 0
           ? `この run の中で失敗・未実行の ${rerun.length} 工程だけをやり直します（完了済み ${keep.length} 件は温存・新しい run は増えません）。${when}`
           : `タスク ${res.taskId} を積み直しました。${when}`,
         true
@@ -3946,7 +3964,7 @@ async function resubmitFlowRun() {
     }
     if (res.viaTask) {
       // resume-run の指示ファイルはプロジェクト側（commands/）に落ちる。bus は触っていない
-      await gitPushAfterWrite(`agent-dashboard: resume run ${run.runId}`, state.selectedDir);
+      await gitPushAfterWrite(`agent-dashboard: resume run ${run.runId}`, projectDir);
     } else {
       // bus/inbox への再投入ファイルだけを反映（bus 全体のスナップショットは撮らない）
       await gitPushBusOp(`agent-dashboard: resubmit run ${run.runId}`, ['inbox']);
@@ -3967,8 +3985,15 @@ async function cancelFlowRun() {
     `この実行（${run.runId}）を中止します。\n以後の作業・レビュー待ちの監視・自動再開をすべて止めます。${note}\nよろしいですか？`
   );
   if (!yes) return;
+  let cancelRes = null;
   const ok = await guard('実行の中止', async () => {
-    const res = await api.flowCancel(state.project.busDir, run.runId, 'agent-dashboard から手動キャンセル');
+    const res = await api.flowCancel(
+      state.project.dir,
+      state.project.busDir,
+      run.runId,
+      'agent-dashboard から手動キャンセル'
+    );
+    cancelRes = res;
     uiLog('cancel', run.runId, res);
     if (res && res.alreadyTerminal) {
       toast(`この実行は既に終了していました（${statusLabel(res.status)}）。中止は不要です。`, true);
@@ -3978,9 +4003,15 @@ async function cancelFlowRun() {
     return true;
   });
   if (ok) {
-    // cancel マーカー（inbox/cancels/）と当該 run の meta だけを反映
+    // cancel マーカー・meta・waits/ 削除を反映。waits を落とすと、git 同期後に
+    // リモート側で park 済みノードが復活して見える瞬間を防げる。
     await gitPushBusOp(`agent-dashboard: cancel run ${run.runId}`,
-      ['inbox/cancels', `runs/${run.runId}/meta.json`]);
+      ['inbox/cancels', `runs/${run.runId}/meta.json`, `runs/${run.runId}/waits`]);
+    // revise（detach）コマンドも state 側へ送る。bus だけ push すると remote project が
+    // cancel を刈って新 act を始めたあとに revise が遅れ、すぐまた切り離される。
+    if (state.project && state.project.dir && !(cancelRes && cancelRes.alreadyTerminal)) {
+      await gitPushAfterWrite(`agent-dashboard: cancel detach ${run.runId}`, state.project.dir);
+    }
     await reloadProject();
   }
 }
@@ -3989,12 +4020,16 @@ async function cancelFlowRun() {
 async function deleteFlowRun() {
   const run = state.flowRun && state.flowRun.run;
   if (!run) return;
+  // canceled は終端。done/failed 以外を一律「応答なし」と言うと誤り。
   const warn =
-    run.status !== 'done' && run.status !== 'failed'
+    !TERMINAL_RUN_STATES.has(run.status) && run.alive === false
       ? '\nこの実行はまだ終了していません（応答なし）。削除すると自動での再開もできなくなります。'
       : '';
+  const trashHint = run.archived
+    ? 'アーカイブのスナップショットを削除します。'
+    : '実行データをゴミ箱へ移動します。';
   const yes = await confirmDialog(
-    `この実行（${run.runId}）を削除します。\n実行データをゴミ箱へ移動します。${warn}\nよろしいですか？`
+    `この実行（${run.runId}）を削除します。\n${trashHint}${warn}\nよろしいですか？`
   );
   if (!yes) return;
   const ok = await guard('実行の削除', async () => {
@@ -4597,11 +4632,19 @@ async function saveSettings() {
 // プロジェクトは黙ってスキップされる。エラーは同じ内容を繰り返しトーストしない。
 let lastGitPullError = null;
 
+// 状態同期の pull 先は project.dir（状態 worktree）。selectedDir＝登録ワークスペースだけ
+// 引くと、agent-state 側の backlog/commands/bus が更新されず、リモートの指示・進捗が
+// 画面に反映されない。
+function gitStateDir() {
+  return (state.project && state.project.dir) || state.selectedDir;
+}
+
 async function maybeAutoGitPull() {
   const sec = state.config && state.config.projects ? Number(state.config.projects.gitPullSec) : 0;
-  if (!sec || !state.selectedDir) return;
+  const dir = gitStateDir();
+  if (!sec || !dir) return;
   try {
-    const res = await api.gitPull(state.selectedDir, false);
+    const res = await api.gitPull(dir, false);
     if (res && !res.skipped) lastGitPullError = null;
   } catch (err) {
     const msg = err.message || String(err);
@@ -4678,8 +4721,9 @@ function gitPushBusOp(message, paths) {
 
 // 手動（⇣ ボタン）: スロットリングを無視して即 pull し、結果をトーストで知らせる
 async function manualGitPull() {
-  if (!state.selectedDir) return toast('プロジェクトを選択してください');
-  const res = await guard('git pull', () => api.gitPull(state.selectedDir, true));
+  const pullDir = gitStateDir();
+  if (!pullDir) return toast('プロジェクトを選択してください');
+  const res = await guard('git pull', () => api.gitPull(pullDir, true));
   if (!res) return;
   lastGitPullError = null;
   toast(`git pull: ${res.output || '完了'}`, true);
@@ -4689,8 +4733,9 @@ async function manualGitPull() {
 // 手動（🩺 ボタン）: 同期の詰まり（中断 rebase・ロック残骸・履歴の食い違い・未送信）を
 // まとめて自動修復し、やったことを平易な文で知らせる。force push はせず人の作業は壊さない
 async function manualGitHeal() {
-  if (!state.selectedDir) return toast('プロジェクトを選択してください');
-  const res = await guard('同期の修復', () => api.gitHeal(state.selectedDir));
+  const healDir = gitStateDir();
+  if (!healDir) return toast('プロジェクトを選択してください');
+  const res = await guard('同期の修復', () => api.gitHeal(healDir));
   if (!res) return;
   uiLog('gitHeal', res);
   const steps = (res.steps || []).join(' → ');
@@ -4848,7 +4893,10 @@ function handleOpenTarget({ url }) {
     const name = u.searchParams.get('project');
     await refreshDiscovery();
     const p =
-      (root && state.discovery.projects.find((x) => x.dir === root)) ||
+      (root &&
+        state.discovery.projects.find(
+          (x) => x.dir === root || x.root === root
+        )) ||
       (name && state.discovery.projects.find((x) => x.name === name)) ||
       null;
     if (p) {
