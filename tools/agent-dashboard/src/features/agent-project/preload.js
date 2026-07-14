@@ -1,6 +1,6 @@
 'use strict';
 
-// agent-stack が preload 経由で window.api に載せる表面。
+// agent-project 制御面が preload 経由で window.api に載せる表面。
 // base の preload が Object.assign で合成する。
 
 module.exports = {

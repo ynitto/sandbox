@@ -3,11 +3,11 @@
 // ダッシュボードに載せる制御面の一覧。
 //
 // - base … Electron シェル・git・GitLab・共通 IPC（src/base/）
-// - agent-stack … agent-project / agent-flow の可視化と操作（本リポジトリが維持）
+// - agent-project … agent-project / agent-flow の可視化と操作（本リポジトリが維持）
 // - kiro-loop … 将来 / 他グループ拡張の差し込み口（現状スタブ）
 //
 // 新しい制御面を足す手順:
-//   1. src/features/<id>/ を agent-stack や kiro-loop を雛形に作る
+//   1. src/features/<id>/ を agent-project や kiro-loop を雛形に作る
 //   2. この配列に require('./<id>') を追加する
 //   3. 必要なら renderer のタブ／サイドバーに UI を足す
 //
@@ -16,7 +16,7 @@
 
 function loadFeatures() {
   return [
-    require('./agent-stack'),
+    require('./agent-project'),
     require('./kiro-loop'),
   ];
 }

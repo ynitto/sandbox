@@ -1,6 +1,6 @@
 'use strict';
 
-// 制御面分離（base / agent-stack / kiro-loop）の配線テスト。
+// 制御面分離（base / agent-project / kiro-loop）の配線テスト。
 // Electron は起動せず、feature 列挙・preload 合成・互換シムだけを検証する。
 
 const assert = require('assert');
@@ -16,10 +16,10 @@ function test(name, fn) {
   console.log(`ok - ${name}`);
 }
 
-test('features に agent-stack と kiro-loop が並ぶ', () => {
+test('features に agent-project と kiro-loop が並ぶ', () => {
   const features = loadFeatures();
   const ids = features.map((f) => f.id);
-  assert.deepStrictEqual(ids, ['agent-stack', 'kiro-loop']);
+  assert.deepStrictEqual(ids, ['agent-project', 'kiro-loop']);
 });
 
 test('各 feature が registerIpc / preloadApi / configDefaults を持つ', () => {
@@ -30,15 +30,15 @@ test('各 feature が registerIpc / preloadApi / configDefaults を持つ', () =
   }
 });
 
-test('agent-stack の設定既定に projects / agent がある', () => {
-  const stack = loadFeatures().find((f) => f.id === 'agent-stack');
+test('agent-project の設定既定に projects / agent がある', () => {
+  const stack = loadFeatures().find((f) => f.id === 'agent-project');
   assert.ok(stack.configDefaults.projects);
   assert.ok(stack.configDefaults.agent);
   assert.strictEqual(stack.configDefaults.projects.command, 'agent-project');
 });
 
-test('agent-stack preload に discover / flowRuns がある', () => {
-  const stack = loadFeatures().find((f) => f.id === 'agent-stack');
+test('agent-project preload に discover / flowRuns がある', () => {
+  const stack = loadFeatures().find((f) => f.id === 'agent-project');
   const api = stack.preloadApi();
   assert.strictEqual(typeof api.discover, 'function');
   assert.strictEqual(typeof api.flowRuns, 'function');
@@ -65,7 +65,7 @@ test('kiro-loop は no-op でチャネルを登録しない', () => {
 
 test('互換シム src/main/project.js が実体へ届く', () => {
   const viaShim = require('../src/main/project');
-  const viaReal = require('../src/features/agent-stack/main/project');
+  const viaReal = require('../src/features/agent-project/main/project');
   assert.strictEqual(viaShim, viaReal);
   assert.strictEqual(typeof viaShim.discover, 'function');
 });
@@ -77,7 +77,7 @@ test('base / feature の入口ファイルが存在する', () => {
     'base/main/ipc.js',
     'base/main/config.js',
     'features/index.js',
-    'features/agent-stack/index.js',
+    'features/agent-project/index.js',
     'features/kiro-loop/index.js',
     'features/kiro-loop/README.md',
   ]) {
@@ -87,7 +87,7 @@ test('base / feature の入口ファイルが存在する', () => {
 
 test('HTML に data-feature マーカーがある', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'index.html'), 'utf8');
-  assert.ok(html.includes('data-feature="agent-stack"'));
+  assert.ok(html.includes('data-feature="agent-project"'));
   assert.ok(html.includes('data-feature="kiro-loop"'));
 });
 

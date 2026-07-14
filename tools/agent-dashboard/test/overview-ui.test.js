@@ -66,7 +66,7 @@ assert.deepStrictEqual(appSummary, { projects: 2, running: 1, needs: 3 });
 
 assert.ok(!html.includes('id="btn-mode"'), '表示モード切替を残さない');
 assert.match(html, /data-tab="overview"[^>]*>概要/);
-assert.match(html, /data-feature="agent-stack"/);
+assert.match(html, /data-feature="agent-project"/);
 assert.match(html, /data-tab="backlog"[^>]*>タスク/);
 assert.match(html, /data-tab="flow"[^>]*>実行/);
 assert.match(html, /id="btn-project-settings"/);

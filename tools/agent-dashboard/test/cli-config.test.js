@@ -39,7 +39,7 @@ test('findProjectConfig は本体側 .agent/ も従来どおり探す', () => {
 
 test('startProject ソースは findProjectConfig と cwd を使う', () => {
   const src = fs.readFileSync(
-    path.join(__dirname, '../src/features/agent-stack/main/actions.js'),
+    path.join(__dirname, '../src/features/agent-project/main/actions.js'),
     'utf8'
   );
   const block = src.match(/async function startProject[\s\S]*?\n\}/);

@@ -41,7 +41,7 @@
 
 | ファイル | 要旨 |
 |---|---|
-| [`agent-dashboard-feature-split-design.md`](./agent-dashboard-feature-split-design.md) | agent-dashboard を base / agent-stack / kiro-loop にソース分離し、フルプラグインなしで他グループが kiro-loop 制御面を差し込めるようにする設計。 |
+| [`agent-dashboard-feature-split-design.md`](./agent-dashboard-feature-split-design.md) | agent-dashboard を base / agent-project / kiro-loop にソース分離し、フルプラグインなしで他グループが kiro-loop 制御面を差し込めるようにする設計。 |
 | [`agent-cli-plugin-design.md`](./agent-cli-plugin-design.md) | agent-project/agent-flow の LLM 実行 CLI をプラグイン化しデータ契約のみで拡張可能にし、失敗を quota/auth/env/transient で決定的にトリアージする設計。 |
 | [`agent-flow-retry-inheritance-design.md`](./agent-flow-retry-inheritance-design.md) | agent-flow のリトライ時に先行 run の結果・成果物・作業ブランチを再利用し先行 run を安全削除する設計。 |
 | [`git-gitlab-circuit-breaker-pattern.md`](./git-gitlab-circuit-breaker-pattern.md) | git/GitLab へアクセスする任意ツール向けの汎用サーキットブレーカー＋監視パターン。 |

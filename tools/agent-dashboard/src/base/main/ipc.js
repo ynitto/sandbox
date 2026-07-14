@@ -1,7 +1,7 @@
 'use strict';
 
 // base IPC: 設定・git・シェルなど、制御スタックに依存しない共通チャネル。
-// 制御面（agent-stack / 将来の kiro-loop）は features/*/main/ipc.js で登録する。
+// 制御面（agent-project / 将来の kiro-loop）は features/*/main/ipc.js で登録する。
 
 const { shell } = require('electron');
 const { handle } = require('./handle');

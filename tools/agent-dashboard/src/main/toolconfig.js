@@ -1,4 +1,4 @@
 'use strict';
 
-// 互換シム → ../features/agent-stack/main/toolconfig
-module.exports = require('../features/agent-stack/main/toolconfig');
+// 互換シム → ../features/agent-project/main/toolconfig
+module.exports = require('../features/agent-project/main/toolconfig');

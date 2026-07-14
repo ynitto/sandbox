@@ -11,7 +11,7 @@
 ランタイム依存なし・main / preload / renderer の 3 層）で作られている。
 
 **ソース構成（制御面分離）**: Electron シェル等の共通部は `src/base/`、
-agent-project / agent-flow の制御は `src/features/agent-stack/` に置き、
+agent-project / agent-flow の制御は `src/features/agent-project/` に置き、
 将来の kiro-loop 制御は `src/features/kiro-loop/` へ差し込めるようにしている
 （動的プラグインではない。列挙合成のみ。詳細は
 [`docs/designs/agent-dashboard-feature-split-design.md`](../../docs/designs/agent-dashboard-feature-split-design.md)）。

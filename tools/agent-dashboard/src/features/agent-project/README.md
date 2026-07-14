@@ -1,6 +1,6 @@
-# agent-stack（agent-project / agent-flow 制御面）
+# agent-project 制御面（agent-flow 含む）
 
-agent-dashboard のうち、**agent-project** と **agent-flow** を可視化・操作する部分。
+agent-dashboard のうち、**agent-project**（および密結合の **agent-flow**）を可視化・操作する部分。
 
 ## 置き場
 
@@ -12,7 +12,7 @@ agent-dashboard のうち、**agent-project** と **agent-flow** を可視化・
 | `index.js` | feature 記述子（`features/index.js` から読まれる） |
 
 UI（タブ・概要／バックログ／要対応／実行／履歴）は当面 `src/renderer/` に同居する。
-タブ要素には `data-feature="agent-stack"` を付け、他制御面と区別できるようにしてある。
+タブ要素には `data-feature="agent-project"` を付け、他制御面と区別できるようにしてある。
 
 ## 境界
 

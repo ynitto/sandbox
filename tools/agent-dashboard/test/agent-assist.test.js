@@ -10,11 +10,11 @@ const os = require('os');
 const path = require('path');
 const agent = require('../src/main/agent');
 const ipcSource = fs.readFileSync(
-  path.join(__dirname, '..', 'src', 'features', 'agent-stack', 'main', 'ipc.js'),
+  path.join(__dirname, '..', 'src', 'features', 'agent-project', 'main', 'ipc.js'),
   'utf8'
 );
 const preloadSource = fs.readFileSync(
-  path.join(__dirname, '..', 'src', 'features', 'agent-stack', 'preload.js'),
+  path.join(__dirname, '..', 'src', 'features', 'agent-project', 'preload.js'),
   'utf8'
 );
 
@@ -222,7 +222,7 @@ test('Doctorはpreloadの限定APIから専用IPCだけを呼び出す', () => {
   assert.ok(ipcSource.includes("handle('agent:doctor'"));
   assert.ok(
     preloadSource.includes("agentDoctor: (invoke) => (args) => invoke('agent:doctor', args)"),
-    'agent-stack preload が agent:doctor だけを露出する'
+    'agent-project preload が agent:doctor だけを露出する'
   );
   const start = ipcSource.indexOf("handle('agent:doctor'");
   const end = ipcSource.indexOf("handle('agent:resolve'", start);
