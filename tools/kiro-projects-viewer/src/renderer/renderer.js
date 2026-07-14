@@ -171,23 +171,43 @@ function fmtAgoSec(sec) {
   return `${Math.floor(sec / 86400)}日前`;
 }
 
-// 最小限の Markdown 描画（見出し・箇条書き・コード・リンクをエスケープ済みで）
+// 説明文の正規化: 本体が1行に畳むときに使う "⏎" / 実改行 / 空白隣接の "\n" を本物の改行に戻す。
+// "\n" の無差別置換はしない（C:\newfolder や path\name を壊すため）。
+function normalizeProse(src) {
+  return String(src ?? '')
+    .replace(/\r\n/g, '\n')
+    // 畳み込みで残った "\n" トークン。直後/直前がパス断片に見えるときは触らない。
+    .replace(/(?<![A-Za-z0-9_.-])(?<![A-Za-z]:)\\n/g, '\n')
+    .replace(/\u21B5|\u23CE|⏎/g, '\n');
+}
+
+// インライン Markdown（コード・太字・リンク）。常にエスケープ済み HTML を返す。
+function inlineMd(s) {
+  return esc(s)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(https?:\/\/[^\s)&"<>]+)/g, '<a href="#" data-ext="$1">$1</a>');
+}
+
+// 最小限の Markdown 描画（見出し・箇条書き・番号付き・コード・リンクをエスケープ済みで）
 function mdToHtml(src) {
-  const lines = String(src || '').split('\n');
+  const lines = normalizeProse(src).split('\n');
   const out = [];
   let inCode = false;
-  let inList = false;
+  let inList = null; // 'ul' | 'ol' | null
   const closeList = () => {
     if (inList) {
-      out.push('</ul>');
-      inList = false;
+      out.push(`</${inList}>`);
+      inList = null;
     }
   };
-  const inline = (s) =>
-    esc(s)
-      .replace(/`([^`]+)`/g, '<code>$1</code>')
-      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-      .replace(/(https?:\/\/[^\s)&"<>]+)/g, '<a href="#" data-ext="$1">$1</a>');
+  const openList = (tag) => {
+    if (inList !== tag) {
+      closeList();
+      out.push(`<${tag}>`);
+      inList = tag;
+    }
+  };
   for (const line of lines) {
     if (line.trim().startsWith('```')) {
       closeList();
@@ -203,25 +223,58 @@ function mdToHtml(src) {
     if (h) {
       closeList();
       const lv = h[1].length;
-      out.push(`<h${lv}>${inline(h[2])}</h${lv}>`);
+      out.push(`<h${lv}>${inlineMd(h[2])}</h${lv}>`);
       continue;
     }
-    const li = line.match(/^\s*-\s+(.*)$/);
+    const oli = line.match(/^\s*\d+\.\s+(.*)$/);
+    if (oli) {
+      openList('ol');
+      out.push(`<li>${inlineMd(oli[1].trim())}</li>`);
+      continue;
+    }
+    const li = line.match(/^\s*[-*]\s+(.*)$/);
     if (li) {
-      if (!inList) {
-        out.push('<ul>');
-        inList = true;
-      }
-      out.push(`<li>${inline(li[1])}</li>`);
+      openList('ul');
+      out.push(`<li>${inlineMd(li[1].trim())}</li>`);
       continue;
     }
     closeList();
-    if (line.trim()) out.push(`<p>${inline(line)}</p>`);
+    if (line.trim()) out.push(`<p>${inlineMd(line)}</p>`);
   }
   closeList();
   if (inCode) out.push('</pre>');
   return `<div class="md">${out.join('\n')}</div>`;
 }
+
+// 一覧向けの短い説明（先頭の意味のある行だけ。インライン装飾付き）。
+function prosePreview(src, max = 100) {
+  const text = normalizeProse(src).trim();
+  if (!text) return '';
+  const first = text.split('\n').map((l) => l.trim()).find(Boolean) || '';
+  const clipped = first.length > max ? `${first.slice(0, Math.max(0, max - 1))}…` : first;
+  return `<span class="prose-inline">${inlineMd(clipped)}</span>`;
+}
+
+// 本文向け。正規化して Markdown として描画する。
+function proseHtml(src) {
+  const text = normalizeProse(src).trim();
+  return text ? mdToHtml(text) : '';
+}
+
+// フロー要求文: 先頭行＝題名、残り＝本文（loop-until-done 指示など）。
+function splitRequest(request) {
+  const lines = normalizeProse(request)
+    .split('\n')
+    .map((l) => l.trimEnd());
+  const nonempty = lines.map((l, i) => ({ l: l.trim(), i })).filter((x) => x.l);
+  if (!nonempty.length) return { title: '', body: '' };
+  const title = nonempty[0].l;
+  const body = lines.slice(nonempty[0].i + 1).join('\n').trim();
+  return { title, body };
+}
+
+// タスク extra のうち文章として読む項目（⏎ 畳み込み・Markdown が多い）
+const PROSE_EXTRA_KEYS = new Set(['feedback', 'needs_reason', 'note', 'accept']);
 
 function statusChip(status) {
   // 表示はプロジェクト管理の言葉、内部の状態名は title（ホバー）で確認できる
@@ -265,14 +318,19 @@ function confirmDialog(message) {
   });
 }
 
-// クリック委譲: data-ext 属性のリンクは既定ブラウザで開く
-document.addEventListener('click', (ev) => {
-  const a = ev.target.closest('a[data-ext]');
-  if (a) {
+// クリック委譲: data-ext 属性のリンクは既定ブラウザで開く。
+// capture で止めて、親の .run-item 選択クリック等へ伝播させない。
+document.addEventListener(
+  'click',
+  (ev) => {
+    const a = ev.target.closest('a[data-ext]');
+    if (!a) return;
     ev.preventDefault();
+    ev.stopPropagation();
     guard('外部リンク', () => api.openExternal(a.dataset.ext));
-  }
-});
+  },
+  true
+);
 
 // ---------------------------------------------------------------------------
 // 発見・プロジェクト選択
@@ -649,6 +707,7 @@ function renderOverview() {
   }
 
   const s = overviewSummary(p, state.flowRuns);
+  const goalText = overviewGoal(p);
   const deliveryRows = (p.delivery || [])
     .slice(-3)
     .reverse()
@@ -667,7 +726,7 @@ function renderOverview() {
         <div class="summary-hero-main">
           <div>
             <div class="summary-headline">${esc(s.headline)}</div>
-            <p class="summary-goal">${esc(overviewGoal(p))}</p>
+            <div class="summary-goal">${proseHtml(goalText)}</div>
           </div>
           <div class="summary-actions">${lifecycle}</div>
         </div>
@@ -1331,10 +1390,14 @@ function showTaskDialog(id, scope) {
   const extraRows = Object.entries(t.extra)
     .map(([k, v]) => {
       // flow_run（offloaded の委譲先 run-id）はフロータブの該当 run へのリンクにする
-      const cell =
-        k === 'flow_run' && String(v).trim()
-          ? `<button class="linklike mono" data-goto-run="${esc(String(v).trim())}" title="実行中の作業を開く">${esc(v)}</button>`
-          : `<pre class="mono">${esc(v)}</pre>`;
+      let cell;
+      if (k === 'flow_run' && String(v).trim()) {
+        cell = `<button class="linklike mono" data-goto-run="${esc(String(v).trim())}" title="実行中の作業を開く">${esc(v)}</button>`;
+      } else if (PROSE_EXTRA_KEYS.has(k)) {
+        cell = `<div class="task-prose">${proseHtml(v)}</div>`;
+      } else {
+        cell = `<pre class="mono">${esc(v)}</pre>`;
+      }
       return `<tr><th>${esc(k)}</th><td>${cell}</td></tr>`;
     })
     .join('');
@@ -2642,10 +2705,10 @@ function needsViewModel(needs, filter, selectedId, sentFn) {
 function renderNeedFacts(n) {
   const facts = [];
   if (n.failureSummary) {
-    facts.push(`<div class="need-diag"><span class="label-chip">失敗の要因</span> ${esc(n.failureSummary)}</div>`);
+    facts.push(`<div class="need-diag"><span class="label-chip">失敗の要因</span> ${inlineMd(n.failureSummary)}</div>`);
   }
-  if (n.why) facts.push(`<div><span class="label-chip">理由</span> ${esc(n.why)}</div>`);
-  if (n.summary) facts.push(`<div><span class="label-chip">概況</span> ${esc(n.summary)}</div>`);
+  if (n.why) facts.push(`<div><span class="label-chip">理由</span>${proseHtml(n.why)}</div>`);
+  if (n.summary) facts.push(`<div><span class="label-chip">概況</span>${proseHtml(n.summary)}</div>`);
   const d = n.diff;
   if (d && d.hasDiff && (d.artifacts.length || d.internal.length)) {
     const parts = [
@@ -3249,7 +3312,7 @@ function renderFlow() {
       return `<div class="run-item ${state.flowRunId === r.runId ? 'selected' : ''}" data-run="${esc(r.runId)}"
         role="button" tabindex="0" aria-pressed="${state.flowRunId === r.runId}">
         <div class="run-item-head"><span>${statusChip(r.status)}${archivedBadge}${adviceBit}</span><span class="mono muted">${esc(shortRunId(r.runId))}</span></div>
-        <div class="req">${esc((r.request || '').slice(0, 120))}</div>
+        <div class="req">${prosePreview(r.request, 110) || '<span class="muted">内容なし</span>'}</div>
         <div class="progress"><div style="width:${pct}%"></div></div>
         <div class="muted">完了 ${r.counts.done}/${r.total}・失敗 ${r.counts.failed}・実行中 ${r.counts.claimed} ｜ ${fmtAgo(r.updatedAt || r.createdAt)}${taskLink}</div>
         ${adviceLine}
@@ -3301,7 +3364,11 @@ function renderFlow() {
     });
   }
   for (const item of el.querySelectorAll('.run-item[data-run]')) {
-    item.addEventListener('click', () => selectFlowRun(item.dataset.run));
+    item.addEventListener('click', (ev) => {
+      // プレビュー内リンク等の操作は run 選択にしない
+      if (ev.target.closest('a, button')) return;
+      selectFlowRun(item.dataset.run);
+    });
     item.addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter' || ev.key === ' ') {
         ev.preventDefault();
@@ -3559,14 +3626,16 @@ const viewTabs = [
     )
     .join('');
 
+  const req = splitRequest(run.request);
   const overviewView = `<section class="flow-overview-view">
     <div class="flow-run-heading">
       <div>
         <span class="summary-kicker">選択中の実行</span>
-        <h2>${esc(run.request || '内容のない実行')}</h2>
+        <h2>${req.title ? `<span class="prose-inline">${inlineMd(req.title)}</span>` : '内容のない実行'}</h2>
       </div>
       <span>${statusChip(run.status)}${archivedBadge}</span>
     </div>
+    ${req.body ? `<div class="flow-request-body">${proseHtml(req.body)}</div>` : ''}
     ${adviceBanner}
     ${relationshipStrip({ run })}
     ${archived ? '<p class="muted">完了後に保存された記録です。この画面からの操作はできません。</p>' : ''}
@@ -3802,7 +3871,7 @@ function renderFlowNode(run, node) {
     (reconciled ? ' <span class="status-chip st-reconciled" title="GitLab 側の決着を先に表示しています（正式な反映待ち）">GitLab 反映</span>' : '');
   return `<div class="card full">
       <h3><span class="mono">${esc(node.id)}</span> [${esc(node.kind)}] — ${stateLabel}${node.who ? ` @${esc(node.who)}` : ''}</h3>
-      <div>${esc(node.goal)}</div>
+      <div class="node-goal">${proseHtml(node.goal) || '<span class="muted">（目標なし）</span>'}</div>
       ${node.deps.length ? `<div class="muted" style="margin-top:4px">依存: ${node.deps.map(esc).join(', ')}</div>` : ''}
       ${nodeFateLine(run, effState)}
       ${nodeParkLine(node)}
