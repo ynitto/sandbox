@@ -1,0 +1,17 @@
+{
+  "id": "item",
+  "pilot_id": "agent-project-design-md-042729",
+  "title_template": "設計書 {item} を正典ヘッダ付きで整理しインデックスから辿れるようにする",
+  "verify_template": "grep -q '{item}' docs/designs/README.md && test -f docs/designs/{item} && awk 'NR<=20 && /^> /{found=1} END{exit !found}' docs/designs/{item}",
+  "accept": "",
+  "items": [
+    "agent-flow-design.md",
+    "agent-flow-retry-inheritance-design.md",
+    "codd-gate-design.md",
+    "agent-tools-rename-design.md"
+  ],
+  "repos": "",
+  "source": "charter",
+  "status": "pending",
+  "feedback": ""
+}
