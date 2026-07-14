@@ -1,0 +1,8 @@
+{
+  "id": "t3",
+  "goal": ".agent/agent-project.yaml に codd-gate を結線する。regression_cmd に 'codd-gate verify --base' を含む値を、intake_cmd に 'codd-gate tasks' を含む値を、t1 で確認した既存スキーマのキー階層・インデントを壊さずに記述する。`grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' .agent/agent-project.yaml` と `grep -E '^[[:space:]]*intake_cmd:.*codd-gate tasks' .agent/agent-project.yaml` の両方が終了コード 0 で一致することを結線ゴールとし、yaml が既存パーサでロード可能なことも確認する。",
+  "deps": [
+    "t1"
+  ],
+  "kind": "work"
+}

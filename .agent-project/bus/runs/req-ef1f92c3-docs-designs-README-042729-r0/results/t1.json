@@ -1,0 +1,10 @@
+{
+  "id": "t1",
+  "who": "worker-1",
+  "status": "done",
+  "output": "## 成果（サマリー）\n\n`docs/designs/` 配下の「エンジン中核」4ファイルを実在確認のうえ棚卸しし、Markdown 表を artifacts/t1/inventory.md に出力した。\n\n| ファイル名 | 現行/歴史的 |\n|---|---|\n| agent-project-design.md | 現行 |\n| agent-flow-design.md | 現行 |\n| codd-gate-design.md | 現行 |\n| agent-tools-rename-design.md | 現行（agent-loop の移行のみ未了） |\n\n**検証**: 4ファイルすべて `ls -la /Users/nitto/Workspace/sandbox/docs/designs/` で実在確認済み。要旨・対象読者は各ファイル冒頭を実読して記述。\n\n**採用した前提・範囲外の発見**:\n- 本 worktree に `docs/designs` が無いため、charter が指す実装リポジトリ（`sandbox` の main worktree、同一 git リポジトリ）を参照読み専用で確認した（書き込みなし）。\n- 与えられた完了条件（`docs/designs/README.md` の存在チェック）は run 全体の条件であり、本タスクの担当は棚卸し表の作成のみと判断。README.md 自体の作成は後続の docs/synth タスクの責務とみなし、ここでは作成していない。\n- **agent-dashboard の主要設計書は `docs/designs/` に存在しない**（`docs/plans/*agent-dashboard*` に分散）。README 導線を作る後続タスクへの申し送り事項として明記した。\n- `agent-flow-retry-inheritance-design.md` は衛星ドキュメントと判断し表から除外（詳細は artifact 内に記載）。",
+  "finished_at": "2026-07-14T20:26:13Z",
+  "artifacts": [
+    "artifacts/t1/inventory.md"
+  ]
+}

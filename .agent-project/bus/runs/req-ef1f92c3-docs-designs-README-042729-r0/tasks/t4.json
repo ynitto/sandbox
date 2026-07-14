@@ -1,0 +1,6 @@
+{
+  "id": "t4",
+  "goal": "docs/designs 配下の「歴史的経緯」カテゴリ（agent-tools-rename-design.md を含む、現行運用ではなく経緯の記録として残っている設計書）を棚卸しし、各ファイルの要旨・対象読者・なぜ歴史的とみなすかの根拠を Markdown 表で出力する。あわせて docs/designs 配下の全 *.md を ls で列挙した完全なファイル名リスト（README.md 自身を除く）を、後続の網羅性検証の基準として出力すること。",
+  "deps": [],
+  "kind": "work"
+}

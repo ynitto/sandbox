@@ -26,3 +26,11 @@
 - 2026-07-15 04:28:55 警告: origin へ未 push のコミットが 1 件ある（main）。worker と verify は origin から clone するため、これらの成果は彼らから 見えない（ローカルでは通るのに verify が落ち続ける）。`git -C /Users/nitto/Workspace/sandbox push origin main` を検討すること
 - 2026-07-15 04:58:55 flow detach: agent-project-codd-gate--042729 の run req-ef1f92c3-agent-project-codd-gate--042729-r0 を canceled（agent-flow run タイムアウト（1800.0s））
 - 2026-07-15 04:58:56 cycle 1: agent-project-codd-gate--042729 NG 積み直し (1/2) — agent-flow run タイムアウト（1800.0s）
+- 2026-07-15 04:58:58 plan-review 承認: doc-code-test-codd-gate--042729 → ready
+- 2026-07-15 04:58:58 commands 取り込み: approve doc-code-test-codd-gate--042729（viewer-approve-doc-code-test-codd-gate--042729-1784057338359.json）
+- 2026-07-15 04:58:58 plan-review 承認: docs-designs-README-042729 → ready
+- 2026-07-15 04:58:58 commands 取り込み: approve docs-designs-README-042729（viewer-approve-docs-designs-readme-042729-1784057341359.json）
+- 2026-07-15 04:58:58 plan-review 承認: verify-codd-gate-042729 → ready
+- 2026-07-15 04:58:58 commands 取り込み: approve verify-codd-gate-042729（viewer-approve-verify-codd-gate-042729-1784057346276.json）
+- 2026-07-15 05:19:50 cycle 2: agent-project-codd-gate--042729 → 人の判断（環境の問題: 実行環境の問題。リトライ・裁定は消費しない）
+- 2026-07-15 05:43:32 cycle 3: docs-designs-README-042729 NG 積み直し (1/2) — exit=1 失敗した工程: `test -f docs/designs/README.md` 

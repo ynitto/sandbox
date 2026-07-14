@@ -1,0 +1,105 @@
+{
+  "request": "設計書の読み取り口（docs/designs/README）を作り主要設計への導線を通す\n\nこのタスクは完了条件を満たすまで反復し、満たしたら終了すること（loop-until-done）。\n完了条件: 次のシェルコマンドが終了コード 0 で成功すること:\n  test -f docs/designs/README.md && grep -q 'agent-project-design.md' docs/designs/README.md && grep -q 'agent-flow-design.md' docs/designs/README.md && grep -q 'codd-gate-design.md' docs/designs/README.md && grep -q 'agent-tools-rename-design.md' docs/designs/README.md\n\nタスクID: docs-designs-README-042729\n\nプロジェクト定義（charter・常に踏まえること。成果物が目標/制約に反しないこと）:\n目標: - codd-gateと連携できること\n- 設計書を整理して人間にとって読みやすくすること\n制約:\n- agent-project/agent-flowをエンジンとして使用する\n- agent-dashboardをフロントエンドとして使用する\n前提:\n- 人による操作や確認を最小限にする\n- 繰り返し・再実行によって試行錯誤できる\n成果物:\n- agent-project/agent-flow ソースコード\n- agent-dashboard ソースコード\n- 設計書・ドキュメント\n\nこのタスクに関する過去の判断記録（needs の判断結果・必ず踏まえること）:\n## DR-0001  2026-07-15  actor: nitto\n- context : docs-designs-README-042729（設計書の読み取り口（docs/designs/README）を作り主要設計への導線を通す）の実行を承認\n- action  : plan-approve\n- reason  : agent-dashboard から操作\n- affects : docs-designs-README-042729 → ready",
+  "finished_at": "2026-07-14T20:43:31Z",
+  "iterations": 0,
+  "strategy": {
+    "patterns": [
+      "fan-out-and-synthesize",
+      "adversarial-verification",
+      "loop-until-done"
+    ],
+    "parallelism": 4,
+    "review": true,
+    "reason": "[flow-planner] 23 本の設計書という固定リスト（data_flow=static）をカテゴリ単位に分けて並列で棚卸し・要旨抽出し、1 つの README へ統合するため fan-out-and-synthesize を基軸に置く。quality_focus=coverage であり、制約が『全設計書を漏れなく列挙』『相対リンクが実ファイルに解決（リンク切れゼロ）』『kiro-loop-* と agent-loop-* の重複を無言で片方だけ載せない』を要求するので、統合前に網羅性とリンク解決を突き合わせる検証 gate として adversarial-verification を挟む（review=true）。さらに制約が明示的に loop-until-done を指定し、完了条件が grep ベースの決定的 verify（終了コード 0）であるため、verify が 0 を返すまで生成と検証を反復し、返した時点で即終了する。並列数 4 は、カテゴリ体系（エンジン中核 / 一貫性ゲート・ループ拡張 / 外部連携・インフラ・記憶 / 歴史的経緯）に対応させつつ 1 ワーカーあたり 5〜6 本に収め、fan-out の目安 [3,6] の下側を取って反復コストと過剰な作り込みを抑えたもの。tournament / generate-and-filter は『最良案を選ぶ』探索型であり、成果物が README 1 本に確定している本件では候補生成のコストに見合わないため採らない。composite_template は、fanout-then-verify に loop-until-done を足した形が必要だが、パターン構成が一致する migration-gate は移行・リファクタリング用途で意味が合わないため null とし、基本パターンの組み合わせとして表現する。（粒度 coarse）"
+  },
+  "summary": "- t1 [done]: ## 成果（サマリー）\n\n`docs/designs/` 配下の「エンジン中核」4ファイルを実在確認のうえ棚卸しし、Markdown 表を artifacts/t1/inventory.md に出力した。\n\n| ファイル名 | 現行/歴史的 |\n|---|---|\n| agent-project-design.md | 現行 |\n| agent-flow-design.md | 現行 |\n| co\n- t2 [done]: タスク t2 は完了。成果物は `bus/runs/req-ef1f92c3-docs-designs-README-042729-r0/artifacts/t2/inventory.md` に出力済み。\n\n## 成果（サマリー）\n\n`docs/designs/` の「一貫性ゲート・ループ拡張」カテゴリ9ファイル（`codd-gate-design.md` + `kiro-loop-*`/`age\n- t3 [done]: ## 成果\n\n`docs/designs/` の「外部連携・インフラ・記憶」カテゴリ（t1・t2 対象外の残り11ファイル）を棚卸しし、Markdown 表を以下に出力（本文は `/Users/nitto/Workspace/sandbox-agent-state/.agent-project/bus/runs/req-ef1f92c3-docs-designs-README-042729-r0/\n- t4 [done]: ## 成果物\n\n### (a) 歴史的経緯カテゴリ — 棚卸し表\n\n| ファイル名 | 要旨 | 対象読者 | 歴史的とみなす根拠 |\n|---|---|---|---|\n| `agent-tools-rename-design.md` | 旧 `kiro-*` 系統を `agent-*` へクローン移行・改称する方針と新旧名称対応表を定めた設計書 | 移行を行った実装者／新旧名称の経緯を確認する\n- gate [done]: まず前提手順（スキル更新・記憶同期・リコール）を実行してから、依存成果物と実ファイルを突き合わせて検証します。\n\n依存成果物4件と実ディレクトリ実態を同時に読み、独立に集合差分を再計算します。\n\n突合せ結果を gate 成果物として保存し、是正指示まで確定します。\n\n**verify=fail** です。`/Users/nitto/Workspace/sandbox` で完了条件コマンドを再実行す\n- synth [done]: ## 成果\n\n`docs/designs/README.md` を実装リポジトリ（`/Users/nitto/Workspace/sandbox`、main worktree）に新規作成した。冒頭に主要4設計への導線セクション、続けて gate 確定のカテゴリ4区分（主要4設計／ループ拡張／実装・運用設計／歴史的・比較検討）で全23件を漏れなく列挙し、各項目に1〜2文の要旨を添えた。kiro-lo\n- docs [done]: ## 成果\n\n`docs/designs/README.md`（実装リポジトリ `/Users/nitto/Workspace/sandbox` 側）を charter 目標に照らして点検し、直接修正した。\n\n**検出した問題と対処**:\n- 主要4設計の要旨が「まず読むもの」（冒頭）と「カテゴリ別索引 1.」で二重に記述されていた → 後者を前掲参照＋リンドのみの1行に圧縮。\n- 「突合せで判明\n- loop [done]: まず指定の初期手順を実行し、その後に対象 README とリンク先ファイルを独立検算します。\n\n対象リポジトリの `docs/` を先に読み込み、優先ルールを確認した上で検証に入ります。\n\nverify=pass\n\n実施コマンドと終了コード:\n1. `cd /Users/nitto/Workspace/sandbox && python - <<'PY' ... (README内の相対リンク抽出・",
+  "results": {
+    "t1": {
+      "id": "t1",
+      "who": "worker-1",
+      "status": "done",
+      "output": "## 成果（サマリー）\n\n`docs/designs/` 配下の「エンジン中核」4ファイルを実在確認のうえ棚卸しし、Markdown 表を artifacts/t1/inventory.md に出力した。\n\n| ファイル名 | 現行/歴史的 |\n|---|---|\n| agent-project-design.md | 現行 |\n| agent-flow-design.md | 現行 |\n| codd-gate-design.md | 現行 |\n| agent-tools-rename-design.md | 現行（agent-loop の移行のみ未了） |\n\n**検証**: 4ファイルすべて `ls -la /Users/nitto/Workspace/sandbox/docs/designs/` で実在確認済み。要旨・対象読者は各ファイル冒頭を実読して記述。\n\n**採用した前提・範囲外の発見**:\n- 本 worktree に `docs/designs` が無いため、charter が指す実装リポジトリ（`sandbox` の main worktree、同一 git リポジトリ）を参照読み専用で確認した（書き込みなし）。\n- 与えられた完了条件（`docs/designs/README.md` の存在チェック）は run 全体の条件であり、本タスクの担当は棚卸し表の作成のみと判断。README.md 自体の作成は後続の docs/synth タスクの責務とみなし、ここでは作成していない。\n- **agent-dashboard の主要設計書は `docs/designs/` に存在しない**（`docs/plans/*agent-dashboard*` に分散）。README 導線を作る後続タスクへの申し送り事項として明記した。\n- `agent-flow-retry-inheritance-design.md` は衛星ドキュメントと判断し表から除外（詳細は artifact 内に記載）。",
+      "finished_at": "2026-07-14T20:26:13Z",
+      "artifacts": [
+        "artifacts/t1/inventory.md"
+      ]
+    },
+    "t2": {
+      "id": "t2",
+      "who": "worker-2",
+      "status": "done",
+      "output": "タスク t2 は完了。成果物は `bus/runs/req-ef1f92c3-docs-designs-README-042729-r0/artifacts/t2/inventory.md` に出力済み。\n\n## 成果（サマリー）\n\n`docs/designs/` の「一貫性ゲート・ループ拡張」カテゴリ9ファイル（`codd-gate-design.md` + `kiro-loop-*`/`agent-loop-*` 4組）を実在確認のうえ棚卸しし、要旨・対象読者・現行/歴史的をMarkdown表にまとめた。\n\n| ファイル | 現行/歴史的 |\n|---|---|\n| codd-gate-design.md | 現行 |\n| kiro-loop-adaptive-interval-design.md | 現行 |\n| agent-loop-adaptive-interval-design.md | 改名残骸 |\n| kiro-loop-agent-messaging-design.md | 現行 |\n| agent-loop-agent-messaging-design.md | 改名残骸 |\n| kiro-loop-event-hook-design.md | 現行 |\n| agent-loop-event-hook-design.md | 改名残骸 |\n| kiro-loop-gitlab-webhook-design.md | 現行 |\n| agent-loop-gitlab-webhook-design.md | 改名残骸 |\n\n4組の重複判定は「`agent-loop-*` は現行ではない」の一択：各 `agent-loop-*-design.md` 冒頭に「`kiro-loop-*` を置換せずクローンし改称した」という由来注記が自己申告されており、`agent-tools-rename-design.md` 自身が §3/§6 で「kiro-loop の移行・削除は非目標、旧系統として残置」と明記、さらに `tools/agent-loop/` 実装は2026-07-14の単一機械クローンコミットで生成（対して `tools/kiro-loop/kiro-loop.py` は5月〜7月にわたり有機的に開発された実運用コード）という3系統の証拠が一致した。README用の注記文案（両方を可視化し、agent-loop側を無言で省かない）も artifact 内に用意した。\n\n## 検証内容と結果\n\n- 9ファイルすべて `ls -la` で実在確認（`/Users/nitto/Workspace/sandbox/docs/designs/`）。\n- `diff` で `agent-loop-adaptive-interval-design.md` を kiro-loop表記へ逆置換し、由来注記1ブロックを除き本文が完全一致することを確認（機械的クローンの直接証拠）。\n- `agent-tools-rename-design.md` 全文精読、`tools/kiro-loop/` と `tools/agent-loop/` の実ファイル一覧・`git log` を突き合わせ済み。\n\n## 採用した前提・未解決事項・範囲外の発見\n\n- 本worktree（`agent-state`ブランチ）に`docs/designs`が無いため、同一リポジトリのmain worktree（`/Users/nitto/Workspace/sandbox`）を参照読み専用で確認した（書き込み・commitなし）。\n- `docs/designs/README.md`自体の作成はsynthタスクの責務と判断し、行っていない。\n- `codd-gate-design.md`はt1（エンジン中核カテゴリ）とも重複計上している可能性がある（t1のgoalにも同ファイルが挙がっている）。一本化はgateタスクの判断に委ねる。\n- 範囲外の発見: `agent-loop-*`側の「関連設計」相互参照リンクがkiro-loop側と独立したリンクグラフになっており、README統合時にリンク取り違えの注意が必要（修正はしていない）。",
+      "finished_at": "2026-07-14T20:28:19Z",
+      "artifacts": [
+        "artifacts/t2/inventory.md"
+      ]
+    },
+    "t3": {
+      "id": "t3",
+      "who": "worker-2",
+      "status": "done",
+      "output": "## 成果\n\n`docs/designs/` の「外部連携・インフラ・記憶」カテゴリ（t1・t2 対象外の残り11ファイル）を棚卸しし、Markdown 表を以下に出力（本文は `/Users/nitto/Workspace/sandbox-agent-state/.agent-project/bus/runs/req-ef1f92c3-docs-designs-README-042729-r0/artifacts/t3/inventory.md` にも保存済み）。\n\n| ファイル名 | 要旨 | 対象読者 | 現行/歴史的 |\n|---|---|---|---|\n| `agent-cli-plugin-design.md` | agent-project/agent-flow の LLM 実行 CLI をプラグイン化しデータ契約のみで拡張可能にし、失敗を quota/auth/env/transient で決定的にトリアージする設計。 | agent-project/agent-flow の実装者・新CLI追加担当 | 現行（最終コミット2026-07-14） |\n| `agent-flow-retry-inheritance-design.md` | agent-flow のリトライ時に先行 run の結果・成果物・作業ブランチを再利用し先行 run を安全削除する設計。 | agent-flow の実装者 | 現行（t1では衛星ドキュメントとして除外済み。判断枝あり） |\n| `git-gitlab-circuit-breaker-pattern.md` | git/GitLab へアクセスする任意ツール向けの汎用サーキットブレーカー＋監視パターン。 | git/GitLabアクセスツール・スキルの実装者 | 現行（最終コミット2026-07-15） |\n| `git-worktree-cache-pattern.md` | 同一remoteを繰り返しcloneするツール向けに共有bareミラー＋使い捨てworktreeへ置換する汎用パターン。 | 同上ツールの実装者 | 現行（最終コミット2026-07-15） |\n| `gitea-gitlab-sync-design.md` | LAN内GiteaでIssue/MR管理、コードはGitLabと双方向ff同期する設計正典（実装未着手）。 | 自前フォージ運用担当・同期ロボット実装者 | 現行（最終コミット2026-07-15） |\n| `gitlab-agent-sns-design.md` | GitLab Issue＋Moltbookリポジトリでエージェント向けSNSを構築するmoltbook-useの確定版設計。 | moltbook-use実装者 | 現行（最終コミット2026-06-06） |\n| `ltm-use-v4-design.md` | 類似記憶検知・ハイブリッドrecall・自動タグ付けの提案設計（Draftのまま）。 | ltm-use実装者 | 歴史的（実装済みだが現行仕様正典はSKILL.md側） |\n| `ltm-use-v5-brain-design.md` | 脳構造になぞらえた記憶固定化・context-aware recallの提案設計（Draftのまま）。 | ltm-use実装者 | 歴史的（同上） |\n| `node-federation-design.md` | ノードのローカル改善を中央へ集約するpull/push設計。自ら「実装済み・仕様リファレンス」と明記。 | git-skill-manager実装者 | 現行 |\n| `plan-a-local-gitlab-design.md` | ローカルGitLab CE作業インスタンス（案A）の設計・運用正典。 | ローカルGitLab運用担当者 | 現行（最終コミット2026-07-15） |\n| `selfhost-forge-comparison.md` | セルフホスト構成案A/B/Cの比較、案A推奨。 | 意思決定者・アーキテクト | 現行（最終コミット2026-07-15） |\n\n## 検証\n全ファイルを `ls -la` で実在確認、各ファイル冒頭を実読して要旨・対象読者を記述。現行/歴史的は自己申告・`git log`最終コミット日・`ltm-use`は`docs/plans/2026-03-10-skill-improvement-proposals.md`の参照実態で判定した。\n\n## 前提・未解決事項\n- worktree に `docs/designs` が無いため main worktree（`/Users/nitto/Workspace/sandbox`）を参照読み専用で確認（書き込みなし）。\n- カテゴリ範囲は「t1・t2 に計上されない残り全ファイル」と解釈（例示は非網羅と判断）。\n- `agent-flow-retry-inheritance-design.md` の帰属、`ltm-use-v4/v5` の歴史的判定はいずれも gate の確認が必要な判断枝として明記した。\n- 範囲外所見: `gitea-gitlab-sync-design.md`と`plan-a-local-gitlab-design.md`/`selfhost-forge-comparison.md`はテーマ重複あり。README では比較資料→案A詳細→Gitea元設計の順の導線を推奨（修正はしていない）。",
+      "finished_at": "2026-07-14T20:32:41Z",
+      "artifacts": [
+        "artifacts/t3/inventory.md"
+      ]
+    },
+    "t4": {
+      "id": "t4",
+      "who": "worker-1",
+      "status": "done",
+      "output": "## 成果物\n\n### (a) 歴史的経緯カテゴリ — 棚卸し表\n\n| ファイル名 | 要旨 | 対象読者 | 歴史的とみなす根拠 |\n|---|---|---|---|\n| `agent-tools-rename-design.md` | 旧 `kiro-*` 系統を `agent-*` へクローン移行・改称する方針と新旧名称対応表を定めた設計書 | 移行を行った実装者／新旧名称の経緯を確認する開発者 | 内容自体が「何を何から何へ改称したか」という完了済み移行の対応表。現行系統の設計（agent-project-design.md等）は移行後の状態を記述しており、本書はその経緯を追う記録として残る |\n| `ltm-use-v4-design.md` | ltm-use に記憶クラスタリング・類似記憶推薦を追加する設計（前提: v3.0.0） | ltm-use の設計変遷を追う実装者 | 後継 `ltm-use-v5-brain-design.md` が「前提: ltm-use v4.0.0」と明記し、v4設計は既に実装済みの前提として引き継がれ、設計の主戦場はv5に移行済み |\n| `selfhost-forge-comparison.md` | セルフホスト構成5案（A〜E）を比較し推奨（案C、条件次第で案A）を示した比較資料 | 選定根拠を確認する運用者・アーキテクト | 複数案の比較検討資料であり単一システムの現行仕様を記述しない。実採用は`plan-a-local-gitlab-design.md`（案A）で、本書はその意思決定に至った経緯記録 |\n| `gitea-gitlab-sync-design.md` | Gitea⇄GitLab双方向同期構成（比較資料の案Bに相当）の設計正典 | 代替案を再検討する運用者・アーキテクト | 比較の結果、推奨は案C・採用は案A（plan-a側）で本案は不採用。ヘッダにも「実装は未着手」と明記 |\n\n除外理由も含め詳細は成果物ファイル参照。`node-federation-design.md`（自己申告で現行仕様リファレンス兼務）、`plan-a-local-gitlab-design.md`（採用された現行構成）、`gitlab-agent-sns-design.md`（確定版）は現行カテゴリ側と判断し除外。`kiro-loop-*`/`agent-loop-*` の重複4組はt2の担当範囲と明示的に重複するため本表からは意図的に除外（gateでの突合せに委ねる）。\n\n### 全*.md完全一覧（README.md除く、23件・網羅性検証の基準）\n\n```\nagent-cli-plugin-design.md, agent-flow-design.md, agent-flow-retry-inheritance-design.md,\nagent-loop-adaptive-interval-design.md, agent-loop-agent-messaging-design.md,\nagent-loop-event-hook-design.md, agent-loop-gitlab-webhook-design.md, agent-project-design.md,\nagent-tools-rename-design.md, codd-gate-design.md, git-gitlab-circuit-breaker-pattern.md,\ngit-worktree-cache-pattern.md, gitea-gitlab-sync-design.md, gitlab-agent-sns-design.md,\nkiro-loop-adaptive-interval-design.md, kiro-loop-agent-messaging-design.md,\nkiro-loop-event-hook-design.md, kiro-loop-gitlab-webhook-design.md, ltm-use-v4-design.md,\nltm-use-v5-brain-design.md, node-federation-design.md, plan-a-local-gitlab-design.md,\nselfhost-forge-comparison.md\n```\n\n成果物ファイル: `bus/runs/req-ef1f92c3-docs-designs-README-042729-r0/artifacts/t4/inventory.md`\n\n### (b) 検証内容と結果\n\n- `ls -la /Users/nitto/Workspace/sandbox/docs/designs/` で全ファイル実在確認済み。完全一覧は`ls`実行結果そのもの。\n- 歴史的4件は各本文（ヘッダの前提・関連リンク・比較表・推奨節）を実読し、後継/採用ドキュメントの存在を相互参照で裏付けて判定（推測分類なし）。\n- 本タスクの完了条件相当コマンド（README.md存在確認）はrun全体（synthタスク）の検証対象と判断し、README.md自体は作成していない（t1の判断を踏襲）。\n\n### (c) 採用した前提・未解決事項・範囲外で見つけた問題\n\n- **前提**: 本worktreeに`docs/designs`が無いため、charterが指す実装リポジトリ`/Users/nitto/Workspace/sandbox`を参照読み専用で確認（書き込みなし）。「歴史的」判定はタイムスタンプではなくドキュメント自身の一次情報（ステータス・前提・採用/不採用の明記）のみで行った。\n- **未解決事項**: `agent-flow-retry-inheritance-design.md`は改称由来の記述を持つが現行の詳細設計と判断し歴史的カテゴリから除外— gateでの確認を推奨。`kiro-loop-*`/`agent-loop-*`重複組の歴史的該当性はt2の判定結果次第で本表への合流が必要になる可能性あり。\n- **範囲外の問題**: なし。",
+      "finished_at": "2026-07-14T20:30:46Z",
+      "artifacts": [
+        "artifacts/t4/inventory.md"
+      ]
+    },
+    "gate": {
+      "id": "gate",
+      "who": "worker-2",
+      "status": "done",
+      "output": "まず前提手順（スキル更新・記憶同期・リコール）を実行してから、依存成果物と実ファイルを突き合わせて検証します。\n\n依存成果物4件と実ディレクトリ実態を同時に読み、独立に集合差分を再計算します。\n\n突合せ結果を gate 成果物として保存し、是正指示まで確定します。\n\n**verify=fail** です。`/Users/nitto/Workspace/sandbox` で完了条件コマンドを再実行すると `EXIT:1`（`docs/designs/README.md` 未作成）で不達でした。検証結果は `.../artifacts/gate/inventory.md` に保存済みです。\n\n主要な指摘は次のとおりです。  \n1. **不足ファイル**: `docs/designs/README.md`（この作成が未了のためゲート未通過）。  \n2. **二重計上（要一本化）**: `codd-gate-design.md`（t1/t2）、`agent-tools-rename-design.md`（t1/t4）、`gitea-gitlab-sync-design.md`（t3/t4）、`ltm-use-v4-design.md`（t3/t4）、`selfhost-forge-comparison.md`（t3/t4）。  \n3. **差分検証**: 漏れ `actual-union=∅`、実在しない名前 `union-actual=∅`。  \n4. **kiro-loop/agent-loop 4組**: 4組すべて両方列挙済み（扱い漏れなし）。  \n5. **確定カテゴリ体系と読む順序**: 「主要4設計（冒頭固定）→ ループ拡張 → 実装・運用設計 → 歴史的・比較検討」で確定。  \n\n{\"ok\": false, \"issues\": [\"docs/designs/README.md が存在せず完了条件コマンドが EXIT:1（不足ファイル: docs/designs/README.md）\", \"二重計上を解消して README のカテゴリ割当を一意化する必要あり: codd-gate-design.md(t1/t2), agent-tools-rename-design.md(t1/t4), gitea-gitlab-sync-design.md(t3/t4), ltm-use-v4-design.md(t3/t4), selfhost-forge-comparison.md(t3/t4)\"]}",
+      "finished_at": "2026-07-14T20:34:29Z",
+      "data": {
+        "ok": false
+      },
+      "artifacts": [
+        "artifacts/gate/inventory.md"
+      ]
+    },
+    "synth": {
+      "id": "synth",
+      "who": "worker-2",
+      "status": "done",
+      "output": "## 成果\n\n`docs/designs/README.md` を実装リポジトリ（`/Users/nitto/Workspace/sandbox`、main worktree）に新規作成した。冒頭に主要4設計への導線セクション、続けて gate 確定のカテゴリ4区分（主要4設計／ループ拡張／実装・運用設計／歴史的・比較検討）で全23件を漏れなく列挙し、各項目に1〜2文の要旨を添えた。kiro-loop-*/agent-loop-*の4組は両方掲載し、現行は`kiro-loop-*`である旨を注記文で明示した。\n\n**検証**:\n- 完了条件コマンド（`test -f` + 4件の`grep -q`）: PASS\n- README内リンク → 実ファイル存在（リンク切れゼロ）: 確認済み\n- 実ファイル23件 → README内リンク存在（掲載漏れゼロ）: 確認済み\n\n**t1〜t4間の矛盾を検出し解消**（鵜呑みにせず実ファイルで裏取り）:\n- `codd-gate-design.md`（t1/t2で二重計上）→ gate裁定どおり主要4設計に一本化\n- `agent-tools-rename-design.md`（t1現行/t4歴史的）→ `kiro-loop`移行未了を理由に現行採用\n- `gitea-gitlab-sync-design.md`（t3現行/t4歴史的）→ 本文「実装未着手」の明記を確認し歴史的採用\n- `selfhost-forge-comparison.md`（t3現行/t4歴史的）→ **t3の要約自体が誤り**だったことを実ファイルで発見。実際は5案（A〜E）比較・主推奨は案C（t3は3案・案A推奨と誤記）。正しい内容に訂正した上でt4の歴史的分類を採用\n\n**採用した前提**:\n- worktree（agent-state）に`docs/designs`が存在しないため、t1〜t4同様に main worktree（`/Users/nitto/Workspace/sandbox`）へ書き込んだ（読み取り専用ではなく、本タスクの成果物そのものが対象ファイルのため）\n- 成果物はバスプロトコルに従い `artifacts/synth/README.md` にも複製保存した\n\n次は loop タスクによる完了条件の機械検証だが、上記ですでに満たしていることを確認済み。",
+      "finished_at": "2026-07-14T20:39:19Z",
+      "artifacts": [
+        "artifacts/synth/README.md"
+      ]
+    },
+    "docs": {
+      "id": "docs",
+      "who": "worker-2",
+      "status": "done",
+      "output": "## 成果\n\n`docs/designs/README.md`（実装リポジトリ `/Users/nitto/Workspace/sandbox` 側）を charter 目標に照らして点検し、直接修正した。\n\n**検出した問題と対処**:\n- 主要4設計の要旨が「まず読むもの」（冒頭）と「カテゴリ別索引 1.」で二重に記述されていた → 後者を前掲参照＋リンドのみの1行に圧縮。\n- 「突合せで判明した矛盾の解消（記録）」セクションが、各表の要旨に既に書かれている根拠（現行/歴史的の判定理由）を、ワークフロー内部のタスクID（t1〜t4）という読者に無関係な用語を使って再説明していた → 削除（同じ事実は各表内注記に残っており、列挙されている23件の設計書集合は一切減っていない）。\n- 冒頭要旨・kiro-loop/agent-loop 注記にも t1〜t4 や実装コミット数などの内部監査的詳細が混入していた → 結論とその根拠1文のみに削ぎ落とし。\n- agent-dashboard 未掲載の注記が「まず読むもの」直後の補足と末尾「前提・スコープ外」で重複していた → 末尾側を削除し1箇所に統一。\n\n**変更していない点**（既に妥当と判断）:\n- 見出し階層は H1→H2→H3 の最大3階層で、深すぎない。\n- 主要4設計への導線は既に冒頭（intro 直後）にあり、最初のスクロール内に収まっている。\n- 読む順序（概要→主要4→全カテゴリ索引→前提）は初見の読者にとって迷いにくい構成のため維持。\n\n**検証**: 完了条件コマンド（PASS）／実ファイル23件とREADMEリンクの突合せ（漏れ・リンク切れともにゼロ）を確認済み。\n\n依存案は synth の単一成果物のみで比較対象は存在しないため、修正後のものを最終版として採用する。\n\n```json\n{\"winner\": \"synth\"}\n```",
+      "finished_at": "2026-07-14T20:42:24Z",
+      "data": {
+        "winner": "synth"
+      }
+    },
+    "loop": {
+      "id": "loop",
+      "who": "worker-2",
+      "status": "done",
+      "output": "まず指定の初期手順を実行し、その後に対象 README とリンク先ファイルを独立検算します。\n\n対象リポジトリの `docs/` を先に読み込み、優先ルールを確認した上で検証に入ります。\n\nverify=pass\n\n実施コマンドと終了コード:\n1. `cd /Users/nitto/Workspace/sandbox && python - <<'PY' ... (README内の相対リンク抽出・実在確認) ... PY`  \n   **exit code: 0**（`REL_LINKS 28`, `BROKEN_COUNT 0`）\n2. `cd /Users/nitto/Workspace/sandbox && test -f docs/designs/README.md && grep -q 'agent-project-design.md' docs/designs/README.md && grep -q 'agent-flow-design.md' docs/designs/README.md && grep -q 'codd-gate-design.md' docs/designs/README.md && grep -q 'agent-tools-rename-design.md' docs/designs/README.md`  \n   **exit code: 0**\n\nREADME修正は不要でした。検証ログは `.../artifacts/loop/verify-command-log.txt` と `.../artifacts/loop/link-check.json` に保存済みです。\n\n{\"ok\": true, \"issues\": []}",
+      "finished_at": "2026-07-14T20:43:21Z",
+      "data": {
+        "ok": true
+      },
+      "artifacts": [
+        "artifacts/loop/link-check.json",
+        "artifacts/loop/verify-command-log.txt"
+      ]
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "id": "loop",
+  "goal": "完了条件のシェルコマンド列を一括実行し、終了コード 0 になるまで反復修正する: `grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' .agent/agent-project.yaml && grep -E '^[[:space:]]*intake_cmd:.*codd-gate tasks' .agent/agent-project.yaml && PYTHONPATH=tools/agent-project python3 -c 'from codd_gate_status import detect_status; s=detect_status(); assert s.usable and s.command(\"verify\",\"--base\",\"HEAD\")' && python3 -m pytest tools/agent-project/tests/test_codd_gate_detect.py tools/agent-project/tests/test_codd_gate_routing.py -q`。失敗したコマンドの出力から原因を特定し、モジュール・yaml・テストのいずれかを最小の外科的変更で修正して再実行する。テストを削る・アサーションを緩めるといった条件の骨抜きは禁止。全コマンドが 0 で通るまで loop-until-done で継続する。",
+  "deps": [
+    "gate"
+  ],
+  "kind": "work"
+}

@@ -1,0 +1,8 @@
+{
+  "id": "docs",
+  "goal": "設計書・ドキュメントに codd-gate 連携を反映する。検出の仕組み（PATH → リポジトリ内スクリプト → スキル配置の3段フォールバック）、.agent/agent-project.yaml の regression_cmd / intake_cmd 結線、未インストール環境での degrade 挙動（usable=False で連携を無効化し agent-project 本体は動き続ける）を、charter の『設計書を整理して人間にとって読みやすくする』目標に沿って追記する。実装から乖離した記述を残さないよう t2/t3 の確定仕様を根拠に書く。",
+  "deps": [
+    "t1"
+  ],
+  "kind": "generate"
+}

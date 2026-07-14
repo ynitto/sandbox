@@ -1,0 +1,28 @@
+1) cd /Users/nitto/Workspace/sandbox && python - <<'PY'
+import re, pathlib
+p = pathlib.Path('docs/designs/README.md')
+text = p.read_text(encoding='utf-8')
+links = re.findall(r'\[[^\]]+\]\(([^)]+)\)', text)
+rel=[]
+for l in links:
+    l=l.strip()
+    if not l or l.startswith(('http://','https://','#','mailto:')):
+        continue
+    if l.startswith('/'):
+        continue
+    rel.append(l)
+print('REL_LINKS', len(rel))
+broken=[]
+for l in rel:
+    target=(p.parent / l.split('#')[0]).resolve()
+    ok=target.exists()
+    print(('OK   ' if ok else 'BROKEN'), l, '->', target)
+    if not ok:
+        broken.append(l)
+print('BROKEN_COUNT', len(broken))
+PY
+exit code: 0
+result: REL_LINKS 28, BROKEN_COUNT 0
+
+2) cd /Users/nitto/Workspace/sandbox && test -f docs/designs/README.md && grep -q 'agent-project-design.md' docs/designs/README.md && grep -q 'agent-flow-design.md' docs/designs/README.md && grep -q 'codd-gate-design.md' docs/designs/README.md && grep -q 'agent-tools-rename-design.md' docs/designs/README.md
+exit code: 0

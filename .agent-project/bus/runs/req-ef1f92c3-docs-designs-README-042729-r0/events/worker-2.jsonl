@@ -1,0 +1,12 @@
+{"ts": "2026-07-14T20:23:58Z", "who": "worker-2", "kind": "claimed", "node": "t2"}
+{"ts": "2026-07-14T20:28:19Z", "who": "worker-2", "kind": "result", "node": "t2", "status": "done"}
+{"ts": "2026-07-14T20:28:19Z", "who": "worker-2", "kind": "claimed", "node": "t3"}
+{"ts": "2026-07-14T20:32:41Z", "who": "worker-2", "kind": "result", "node": "t3", "status": "done"}
+{"ts": "2026-07-14T20:32:41Z", "who": "worker-2", "kind": "claimed", "node": "gate"}
+{"ts": "2026-07-14T20:34:29Z", "who": "worker-2", "kind": "result", "node": "gate", "status": "done"}
+{"ts": "2026-07-14T20:34:29Z", "who": "worker-2", "kind": "claimed", "node": "synth"}
+{"ts": "2026-07-14T20:39:19Z", "who": "worker-2", "kind": "result", "node": "synth", "status": "done"}
+{"ts": "2026-07-14T20:39:19Z", "who": "worker-2", "kind": "claimed", "node": "docs"}
+{"ts": "2026-07-14T20:42:24Z", "who": "worker-2", "kind": "result", "node": "docs", "status": "done"}
+{"ts": "2026-07-14T20:42:25Z", "who": "worker-2", "kind": "claimed", "node": "loop"}
+{"ts": "2026-07-14T20:43:21Z", "who": "worker-2", "kind": "result", "node": "loop", "status": "done"}

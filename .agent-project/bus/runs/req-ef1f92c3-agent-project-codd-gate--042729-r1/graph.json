@@ -1,0 +1,72 @@
+{
+  "strategy": {
+    "patterns": [
+      "fan-out-and-synthesize",
+      "adversarial-verification",
+      "loop-until-done"
+    ],
+    "parallelism": 4,
+    "review": true,
+    "reason": "[flow-planner] 完了条件が『grep 2本 + python -c + pytest 2本がすべて終了コード0』という機械判定可能な形で明示されており、制約にも loop-until-done が名指しされている。1回で全コマンドを通せる可能性は低く、生成→検証→修正の反復が必須なので loop-until-done を軸に据える。一方で作業はレイヤ別（検出モジュール実装 / yaml 結線 / テスト作成 / 設計ドキュメント反映）に切れるため、fan-out-and-synthesize で並列化して統合する。quality_focus=accuracy かつ検出のフォールバック（PATH / リポジトリ内スクリプト / スキル配置）や yaml の正規表現一致など壊れやすい要件が多いため、統合前に adversarial-verification の検証gateを挟み、誤った実装のまま反復ループへ持ち込まないようにする。この三点の組み合わせは複合テンプレート migration-pipeline と一致する。並列数は 4：モジュール実装・yaml 結線・テスト作成・ドキュメントの4系統に対応させる（調査は各系統の前段に内包）。順序依存（モジュール→結線→テスト）があるため、[3,6] の下限寄りにして依存待ちによる空転を避ける。（粒度 coarse）"
+  },
+  "nodes": {
+    "t1": {
+      "goal": "tools/agent-project 配下の既存モジュール構成・命名規約・テスト配置（tools/agent-project/tests）と、.agent/agent-project.yaml の現行スキーマ（regression_cmd / intake_cmd の既存キー位置とインデント）を調査し、さらに codd-gate CLI の実サブコマンド仕様（verify --base <ref> / tasks）を `codd-gate --help` と codd-gate スキル本体から確認する。後続タスクが従うべき契約（detect_status() の戻り値型、command(sub,*args) の返却形式、yaml キーのインデント幅）を確定して文書化する。",
+      "deps": [],
+      "kind": "work"
+    },
+    "t2": {
+      "goal": "tools/agent-project/codd_gate_status.py を実装する。detect_status() は (1) PATH 上の codd-gate 実行可能ファイル (2) リポジトリ内スクリプト (3) スキル配置ディレクトリ の順にフォールバック検出し、usable フラグと command(sub, *args) を持つ状態オブジェクトを返す。codd-gate 未インストール環境でも例外を投げず usable=False を返し、command() は検出済みパスを先頭に持つ引数列（例: [<path>, 'verify', '--base', 'HEAD']）を組み立てる。`PYTHONPATH=tools/agent-project python3 -c 'from codd_gate_status import detect_status; s=detect_status(); assert s.usable and s.command(\"verify\",\"--base\",\"HEAD\")'` が終了コード 0 になることを実装ゴールとする。",
+      "deps": [
+        "t1"
+      ],
+      "kind": "generate"
+    },
+    "t3": {
+      "goal": ".agent/agent-project.yaml に codd-gate を結線する。regression_cmd に 'codd-gate verify --base' を含む値を、intake_cmd に 'codd-gate tasks' を含む値を、t1 で確認した既存スキーマのキー階層・インデントを壊さずに記述する。`grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' .agent/agent-project.yaml` と `grep -E '^[[:space:]]*intake_cmd:.*codd-gate tasks' .agent/agent-project.yaml` の両方が終了コード 0 で一致することを結線ゴールとし、yaml が既存パーサでロード可能なことも確認する。",
+      "deps": [
+        "t1"
+      ],
+      "kind": "work"
+    },
+    "t4": {
+      "goal": "tools/agent-project/tests/test_codd_gate_detect.py と tools/agent-project/tests/test_codd_gate_routing.py を作成する。detect 側は、codd-gate が PATH にある正常系・未インストール系（PATH を空にして usable=False かつ非例外）・フォールバック各経路・command('verify','--base','HEAD') の生成結果を検証する。routing 側は、.agent/agent-project.yaml を読み込んで regression_cmd が codd-gate verify --base へ、intake_cmd が codd-gate tasks へルーティングされることを検証する。`python3 -m pytest tools/agent-project/tests/test_codd_gate_detect.py tools/agent-project/tests/test_codd_gate_routing.py -q` が終了コード 0 で通ることをゴールとする。",
+      "deps": [
+        "t1"
+      ],
+      "kind": "generate"
+    },
+    "docs": {
+      "goal": "設計書・ドキュメントに codd-gate 連携を反映する。検出の仕組み（PATH → リポジトリ内スクリプト → スキル配置の3段フォールバック）、.agent/agent-project.yaml の regression_cmd / intake_cmd 結線、未インストール環境での degrade 挙動（usable=False で連携を無効化し agent-project 本体は動き続ける）を、charter の『設計書を整理して人間にとって読みやすくする』目標に沿って追記する。実装から乖離した記述を残さないよう t2/t3 の確定仕様を根拠に書く。",
+      "deps": [
+        "t1"
+      ],
+      "kind": "generate"
+    },
+    "gate": {
+      "goal": "t2/t3/t4 の成果物を敵対的に検証する。具体的には (a) codd_gate_status の検出ロジックが PATH 依存で誤検出・誤 usable=True を出さないか、未インストール時に例外が漏れないか (b) yaml の値が grep 正規表現 '^[[:space:]]*regression_cmd:.*codd-gate verify --base' / '^[[:space:]]*intake_cmd:.*codd-gate tasks' に本当に一致するか（コメント行・引用符・インデントの罠を含めて実際に grep を実行して確認）(c) テストが実装に追従しただけの空回りテスト（常に通るアサーション）になっていないか、を反証を試みる姿勢で点検する。欠陥を検出したら該当タスクへ差し戻すべき具体的な修正指示を出す。",
+      "deps": [
+        "t2",
+        "t3",
+        "t4"
+      ],
+      "kind": "verify"
+    },
+    "loop": {
+      "goal": "完了条件のシェルコマンド列を一括実行し、終了コード 0 になるまで反復修正する: `grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' .agent/agent-project.yaml && grep -E '^[[:space:]]*intake_cmd:.*codd-gate tasks' .agent/agent-project.yaml && PYTHONPATH=tools/agent-project python3 -c 'from codd_gate_status import detect_status; s=detect_status(); assert s.usable and s.command(\"verify\",\"--base\",\"HEAD\")' && python3 -m pytest tools/agent-project/tests/test_codd_gate_detect.py tools/agent-project/tests/test_codd_gate_routing.py -q`。失敗したコマンドの出力から原因を特定し、モジュール・yaml・テストのいずれかを最小の外科的変更で修正して再実行する。テストを削る・アサーションを緩めるといった条件の骨抜きは禁止。全コマンドが 0 で通るまで loop-until-done で継続する。",
+      "deps": [
+        "gate"
+      ],
+      "kind": "work"
+    },
+    "synth": {
+      "goal": "codd-gate 連携の完成を統合報告する。実装した codd_gate_status モジュール、.agent/agent-project.yaml の regression/intake 結線、追加した2本のテスト、設計書への反映を1つの成果としてまとめ、完了条件コマンド列の最終実行ログ（全て終了コード 0）を証跡として添える。未インストール環境でのフォールバック挙動と、charter の目標（codd-gate と連携できること／設計書が読みやすいこと）に対する充足状況を明記する。",
+      "deps": [
+        "loop",
+        "docs"
+      ],
+      "kind": "synthesize"
+    }
+  },
+  "iteration": 0
+}

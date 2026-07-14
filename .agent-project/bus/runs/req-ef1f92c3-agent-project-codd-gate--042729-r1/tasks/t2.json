@@ -1,0 +1,8 @@
+{
+  "id": "t2",
+  "goal": "tools/agent-project/codd_gate_status.py を実装する。detect_status() は (1) PATH 上の codd-gate 実行可能ファイル (2) リポジトリ内スクリプト (3) スキル配置ディレクトリ の順にフォールバック検出し、usable フラグと command(sub, *args) を持つ状態オブジェクトを返す。codd-gate 未インストール環境でも例外を投げず usable=False を返し、command() は検出済みパスを先頭に持つ引数列（例: [<path>, 'verify', '--base', 'HEAD']）を組み立てる。`PYTHONPATH=tools/agent-project python3 -c 'from codd_gate_status import detect_status; s=detect_status(); assert s.usable and s.command(\"verify\",\"--base\",\"HEAD\")'` が終了コード 0 になることを実装ゴールとする。",
+  "deps": [
+    "t1"
+  ],
+  "kind": "generate"
+}

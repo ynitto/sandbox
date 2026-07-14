@@ -1,0 +1,8 @@
+{
+  "id": "t4",
+  "goal": "tools/agent-project/tests/test_codd_gate_detect.py と tools/agent-project/tests/test_codd_gate_routing.py を作成する。detect 側は、codd-gate が PATH にある正常系・未インストール系（PATH を空にして usable=False かつ非例外）・フォールバック各経路・command('verify','--base','HEAD') の生成結果を検証する。routing 側は、.agent/agent-project.yaml を読み込んで regression_cmd が codd-gate verify --base へ、intake_cmd が codd-gate tasks へルーティングされることを検証する。`python3 -m pytest tools/agent-project/tests/test_codd_gate_detect.py tools/agent-project/tests/test_codd_gate_routing.py -q` が終了コード 0 で通ることをゴールとする。",
+  "deps": [
+    "t1"
+  ],
+  "kind": "generate"
+}

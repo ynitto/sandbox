@@ -1,0 +1,10 @@
+{
+  "id": "gate",
+  "goal": "t2/t3/t4 の成果物を敵対的に検証する。具体的には (a) codd_gate_status の検出ロジックが PATH 依存で誤検出・誤 usable=True を出さないか、未インストール時に例外が漏れないか (b) yaml の値が grep 正規表現 '^[[:space:]]*regression_cmd:.*codd-gate verify --base' / '^[[:space:]]*intake_cmd:.*codd-gate tasks' に本当に一致するか（コメント行・引用符・インデントの罠を含めて実際に grep を実行して確認）(c) テストが実装に追従しただけの空回りテスト（常に通るアサーション）になっていないか、を反証を試みる姿勢で点検する。欠陥を検出したら該当タスクへ差し戻すべき具体的な修正指示を出す。",
+  "deps": [
+    "t2",
+    "t3",
+    "t4"
+  ],
+  "kind": "verify"
+}

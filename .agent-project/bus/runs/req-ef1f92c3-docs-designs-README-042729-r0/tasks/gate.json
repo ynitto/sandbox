@@ -1,0 +1,11 @@
+{
+  "id": "gate",
+  "goal": "t1〜t4 の棚卸し結果を突き合わせ、README 執筆前の網羅性ゲートとして敵対的に検証する。(a) t4 が出した実ファイル一覧と t1〜t4 が挙げた設計書の集合差分を取り、どのカテゴリにも属さない漏れ・二重計上・実在しないファイル名を列挙する。(b) kiro-loop-* / agent-loop-* の重複 4 組が両方とも扱われているかを確認する。(c) カテゴリ体系と読む順序（主要 4 設計 = agent-project-design.md / agent-flow-design.md / codd-gate-design.md / agent-tools-rename-design.md を冒頭に据える）を確定する。漏れがあれば不足ファイル名を明示した是正指示を出力し、なければ確定したカテゴリ割当表と読む順序を出力する。",
+  "deps": [
+    "t1",
+    "t2",
+    "t3",
+    "t4"
+  ],
+  "kind": "verify"
+}

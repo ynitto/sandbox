@@ -1,0 +1,10 @@
+{
+  "id": "t4",
+  "who": "worker-2",
+  "status": "done",
+  "output": "## 成果サマリー\n\n対象は `/Users/nitto/Workspace/sandbox`（t1契約と同じ、backlogの`workspace: sandbox`に準拠）。既存の`test_codd_gate_detect.py`/`test_codd_gate_routing.py`（前ラウンド由来、29件PASS）はタスク文面の要求と2点ギャップがあったため最小追加で埋めた。\n\n- **detect側**: `command('verify', '--base', 'HEAD')`の生成結果を直接検証するテストと、実`shutil.which`＋`PATH=\"\"`で「未インストール系」を模すテストを追加。\n- **routing側**: `.agent/agent-project.yaml`相当のyamlフィクスチャを一時ディレクトリに構築し、`regression_cmd`が`codd-gate verify --base`へ、`intake_cmd`が`codd-gate tasks`へルーティングされることを検証するテストクラスを追加（`agent_project`パッケージの重量インポートは、cwd汚染で実リポジトリへ誤コミットした過去事故が記録されていたため意図的に回避）。\n\n`PYTHONPATH=tools/agent-project python3 -m pytest tools/agent-project/tests/test_codd_gate_detect.py tools/agent-project/tests/test_codd_gate_routing.py -q` → **32 passed**（ゴール達成、終了コード0）。詳細は `bus/runs/req-ef1f92c3-agent-project-codd-gate--042729-r1/artifacts/t4/report.md` に記録済み。\n\n.agent/agent-project.yamlへの実際のregression_cmd/intake_cmd追記自体は範囲外（他タスク担当）。",
+  "finished_at": "2026-07-14T20:10:51Z",
+  "artifacts": [
+    "artifacts/t4/report.md"
+  ]
+}

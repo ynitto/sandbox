@@ -1,0 +1,6 @@
+{
+  "id": "t1",
+  "goal": "docs/designs 配下の「エンジン中核」カテゴリ（agent-project-design.md / agent-flow-design.md / agent-dashboard 系など、charter が定めるエンジン＋フロントエンドの主要設計）を棚卸しし、各ファイルについて『ファイル名・1〜2文の要旨・対象読者・現行/歴史的の別』を Markdown 表で出力する。ファイルの実在は ls で確認し、推測でファイル名を書かないこと。",
+  "deps": [],
+  "kind": "work"
+}
