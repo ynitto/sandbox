@@ -380,6 +380,12 @@ def cmd_run(args) -> int:
     if final:
         print("\n=== 最終結果 ===")
         print(final.get("summary", ""))
-    # run が failed で終端したら非 0 を返す（委譲先の却下など、上位＝agent-project が
-    # act 失敗として検知しリトライできるようにする）。done は 0。
-    return 1 if bus.get_status() == "failed" else 0
+    # run が failed/canceled で終端したら非 0 を返す。failed は上位＝agent-project が
+    # act 失敗として検知しリトライできるようにする。canceled も 0 だと verify=true で偽 done
+    # になる（agent-project は戻り値で成否を見る）。done は 0。
+    st = bus.get_status()
+    if st == "failed":
+        return 1
+    if st == "canceled":
+        return 2
+    return 0

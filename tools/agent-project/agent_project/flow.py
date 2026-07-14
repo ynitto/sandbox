@@ -264,6 +264,14 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
         return (False, f"agent-flow run タイムアウト（{cfg.act_timeout}s）")
     except FileNotFoundError as e:
         return (False, f"agent-flow を起動できません: {e}")
+    # 同期 run の canceled は exit≠0 でもメッセージが日本語のため、meta で確定して
+    # 上位の canceled 特別扱い（リトライ非消費で ready）へ乗せる。
+    try:
+        meta = json.loads((cfg.bus / "runs" / rid / "meta.json").read_text(encoding="utf-8"))
+        if str(meta.get("status") or "") == "canceled":
+            return (False, f"daemon run {rid} canceled")
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
     return (proc.returncode == 0, (proc.stdout or "")[-300:].strip())
 
 

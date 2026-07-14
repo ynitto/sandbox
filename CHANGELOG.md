@@ -7,6 +7,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-flow / agent-project: 同期 run の cancel を失敗として伝える
+
+- **`agent-flow run` が canceled でも exit 0 だった** — `_act_run` が成功扱いし、verify=true で偽 done。
+  canceled は exit 2。agent-project は meta.status=canceled を見て `… canceled` メッセージを返し、
+  既存のリトライ非消費 ready 経路に乗せる。
+
 ### agent-project: offloaded タスク切り離し時に flow run を cancel
 
 - **revise / hold / reject が委譲中 run を放置していた** — `flow_run` だけ落として agent-flow は走り続け、
