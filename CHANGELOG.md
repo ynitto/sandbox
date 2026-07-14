@@ -7,6 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-project / agent-dashboard: canceled 後の同一 run-id 再突入を防ぐ
+
+- **cancel → ready のとき retries を進めなかった** — 次の `_new_run_id` が同じ id を生成し、
+  agent-flow は終端 canceled を再開できず固まる。retries を進め新 run にする。
+- **`resume-run` が canceled/done にも last_run を固定していた** — 同上の衝突。新実行へ振り分け。
+- **dashboard が canceled を「失敗工程だけやり直し」と表示** — 文言を新実行向けに修正。
+
 ### agent-flow / agent-project: 同期 run の cancel を失敗として伝える
 
 - **`agent-flow run` が canceled でも exit 0 だった** — `_act_run` が成功扱いし、verify=true で偽 done。

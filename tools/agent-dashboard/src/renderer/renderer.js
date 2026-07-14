@@ -3564,11 +3564,16 @@ function renderFlowDetail() {
     ((run.counts && run.counts.pending) || 0) +
     ((run.counts && run.counts.waiting) || 0) +
     ((run.counts && run.counts.parked) || 0);
-  const partial = canRetry && doneCount > 0;
-  const resubmitLabel = partial
+  // canceled は続きから再開できない（agent-project は新 run を作る）。部分やり直し表記を出さない。
+  const partial = canRetry && doneCount > 0 && run.status !== 'canceled';
+  const resubmitLabel = run.status === 'canceled'
+    ? '↻ 新しくやり直す'
+    : partial
     ? `↻ 失敗した工程だけやり直す（残り ${remainCount} 件）`
     : '↻ 同じ内容でやり直す';
-  const resubmitTitle = partial
+  const resubmitTitle = run.status === 'canceled'
+    ? '中止した実行の続きからは再開できません。タスクを積み直して新しい実行を始めます'
+    : partial
     ? `失敗・未実行の工程だけを実行し直します。成功した ${doneCount} 件はそのまま使います（作り直しません）`
       + (advice.kind === 'auto' ? '\n※ 放置しても本体が自動で同じことをします（このボタンは前倒し指示）' : '')
     : '同じ内容でやり直します（タスクを積み直して本体に実行させます）';

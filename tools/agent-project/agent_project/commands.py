@@ -139,13 +139,29 @@ def cmd_resume_run(cfg: Config, tid: str, run_id: str, reason: str) -> int:
     # 実行中（orchestrator の生存リースが有効）の run への再開指示だけは拒否する。
     # run が bus に無い場合は拒否しない: bus 掃除後でも agent-flow は作業ブランチ
     # ap/<task-id> から続きを解決できる。
+    # canceled / done は続きから再開できないので last_run を固定せず retries を進め、新 run にする。
     meta_path = cfg.bus / "runs" / rid / "meta.json"
-    if meta_path.exists() and not _run_resumable(cfg, rid):
+    st = ""
+    if meta_path.exists():
         try:
-            st = str(json.loads(meta_path.read_text(encoding="utf-8")).get("status") or "?")
+            st = str(json.loads(meta_path.read_text(encoding="utf-8")).get("status") or "")
         except (OSError, ValueError):
             st = "?"
-        if st not in _FLOW_TERMINAL:
+        if st in ("canceled", "done"):
+            release_claim(cfg, t)
+            t.retries += 1
+            t.drop("feedback", "revised", "last_run")
+            t.status = "ready"
+            persist_task(cfg, t)
+            clear_needs_file(cfg, tid)
+            dr = append_decision(cfg, tid, cfg.actor,
+                                 context=f"{tid} を新 run でやり直し（{rid} は {st}）",
+                                 action="resume-run", reason=reason,
+                                 affects=f"{tid} → ready (retries={t.retries})")
+            print(f"{dr}: {tid} を ready に積み直しました"
+                  f"（{rid} は {st} のため続きからではなく新しい実行）。")
+            return 0
+        if not _run_resumable(cfg, rid) and st not in _FLOW_TERMINAL:
             print(f"エラー: run {rid} は実行中です（status={st}）。停止・失敗・応答なしの run "
                   f"だけ再開できます。", file=sys.stderr)
             return 2

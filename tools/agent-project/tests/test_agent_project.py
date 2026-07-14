@@ -7181,7 +7181,7 @@ class TestAsyncOffload(unittest.TestCase):
             self.assertEqual(deltas["archived"], 0)
             t = km._load_task_file(cfg, "T1")
             self.assertEqual(t.norm_status(), "ready")
-            self.assertEqual(t.retries, 0, "中止はリトライ消費なし")
+            self.assertEqual(t.retries, 1, "canceled 後は新 run-id のため retries を進める")
             self.assertFalse(t.get("flow_run"))
             self.assertEqual(t.get("last_run"), "run-T1", "回収時に last_run を残す")
 
