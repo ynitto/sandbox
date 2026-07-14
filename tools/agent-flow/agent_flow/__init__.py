@@ -28,7 +28,7 @@ _FRAGMENTS = (
     "gitcache",      # 共有 git キャッシュ + worktree
     "workspace",     # workspace 指示 + Heartbeat
     "patterns",      # PATTERNS + granularity + plan_strategy_*
-    "agent",         # run_kiro / execute_* / triage / agent プラグイン
+    "agent",         # run_agent / execute_* / triage / agent プラグイン
     "plugins",       # executor プラグイン loader
     "waits",         # park & poll / service_waits
     "continuation",  # Continuation（再計画）

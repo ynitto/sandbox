@@ -10,7 +10,7 @@ def _plan_strategy(args):
     if args.planner == "flow-planner":
         return plan_strategy_flow_planner(args.request, args.model, review, gran)
     if args.planner == "agent":
-        return plan_strategy_kiro(args.request, args.model, review, gran)
+        return plan_strategy_agent(args.request, args.model, review, gran)
     return plan_strategy_stub(args.request, review, gran)
 
 
@@ -36,7 +36,7 @@ def _env_failure_reason(results: dict) -> "str | None":
 
 def _continue(args, request, nodes, results, iteration, strategy=None):
     # 失敗トリアージ: 環境要因（quota/auth/env）の失敗が 1 つでもあれば再計画せず打ち切る。
-    # planner（stub/kiro）に依らず先に判定する（LLM 評価も同じ環境で失敗するため）。
+    # planner（stub/エージェント）に依らず先に判定する（LLM 評価も同じ環境で失敗するため）。
     env_fail = _env_failure_reason(results)
     if env_fail:
         return "failed", [], env_fail
@@ -53,11 +53,11 @@ def _continue(args, request, nodes, results, iteration, strategy=None):
     ef = bool(getattr(args, "exemplar_first", False))
     mr = int(getattr(args, "max_retries", 3) or 3)
     # 再計画（evaluator-optimizer）はオーケストレータ側でローカルに判断する。stub のときだけ
-    # stub 継続、それ以外（kiro やプラグイン executor）はローカル kiro で判断する
+    # stub 継続、それ以外（agent やプラグイン executor）はローカルのエージェント CLI で判断する
     # （プラグインはワーカータスクの実行のみを委譲し、メタ評価はローカルに残す）。
     if args.executor == "stub":
         return continue_stub(request, nodes, results, iteration, mf, review, ef, mr)
-    return continue_kiro(request, nodes, results, iteration, mf, review, ef, mr)
+    return continue_agent(request, nodes, results, iteration, mf, review, ef, mr)
 
 
 def _node_entry(t):
@@ -92,7 +92,7 @@ def _collapse_split_successors(nodes: dict) -> dict:
 
 def _sanitize_graph(nodes: dict) -> dict:
     """グラフ健全性検査: 未知の依存 ID を除去し、循環依存を断ち切る。
-    planner（kiro）の誤出力や継続での追加に対する防御。"""
+    planner（エージェント）の誤出力や継続での追加に対する防御。"""
     _collapse_split_successors(nodes)
     ids = set(nodes)
     for n in nodes.values():

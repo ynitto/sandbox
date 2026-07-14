@@ -783,17 +783,17 @@ def _distill_prompt(title: str, guidance: str) -> str:
         "出力は `<一般化した条件> :: <再利用可能な指針>` の 1 行のみ（説明・コードフェンス不要）。")
 
 
-def distill_learn(cfg: "Config", title: str, guidance: str, kiro_run=None) -> "tuple[str, str]":
+def distill_learn(cfg: "Config", title: str, guidance: str, agent_run=None) -> "tuple[str, str]":
     """人コメント（guidance）を `(条件, 指針)` の一般化ルールへ蒸留する（ltm-use の consolidate 相当）。
-    kiro-cli 委譲。失敗・不能・一過性判定は **生 verbatim フォールバック**（劣化しても現状より前進）。
+    エージェント CLI 委譲。失敗・不能・一過性判定は **生 verbatim フォールバック**（劣化しても現状より前進）。
     返り値は append_decision(learn=) にそのまま渡せる (title, guide)。"""
     verbatim = (title, guidance.replace("\n", " ⏎ ").strip()[:400])
     if not cfg.distill_learn:                       # 蒸留 off＝従来どおり生の指摘を learn 化
         return verbatim
-    run = kiro_run or (lambda p, m: _run_kiro_cli(p, m, purpose="distill"))
+    run = agent_run or (lambda p, m: _run_agent_cli(p, m, purpose="distill"))
     try:
         out = run(_distill_prompt(title, guidance), cfg.model)
-    except Exception:  # noqa: BLE001  kiro-cli 不在・タイムアウト等
+    except Exception:  # noqa: BLE001  エージェント CLI 不在・タイムアウト等
         return verbatim
     for line in (out or "").splitlines():
         line = _strip_code(line.strip())

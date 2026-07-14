@@ -321,11 +321,11 @@ def _plan_rework_prompt(t: Task, feedback: str) -> str:
 
 
 def plan_rework(cfg: "Config", t: Task, feedback: str) -> None:
-    """実行前レビューの差し戻し: kiro-cli にタスク定義を修正させて**再び proposed** で提案し直す。
-    kiro-cli 不在/失敗時は指摘を note に追記してそのまま再提案（人が approve/revise で確定できる）。"""
+    """実行前レビューの差し戻し: エージェント CLI にタスク定義を修正させて**再び proposed** で提案し直す。
+    エージェント CLI 不在/失敗時は指摘を note に追記してそのまま再提案（人が approve/revise で確定できる）。"""
     reworked = False
     try:
-        out = _run_kiro_cli(_plan_rework_prompt(t, feedback), cfg.model, purpose="plan")
+        out = _run_agent_cli(_plan_rework_prompt(t, feedback), cfg.model, purpose="plan")
         obj = _extract_json_object_loose(out)
         if isinstance(obj, dict) and str(obj.get("title", "")).strip():
             t.title = str(obj["title"]).strip()

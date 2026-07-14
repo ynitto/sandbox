@@ -568,7 +568,7 @@ def run_watch(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.sle
                 return last
             append_journal(cfg.journal, "=== watch: 監視中（新規タスク/フィードバック待ち。"
                                         "エージェントは待機しない）===")
-        while is_paused(cfg) or not has_work(cfg):   # idle/pause: kiro-cli/flow は一切起動しない
+        while is_paused(cfg) or not has_work(cfg):   # idle/pause: エージェント CLI/flow は一切起動しない
             sleeper(cfg.poll)
             if heartbeat:
                 heartbeat()          # idle 中も heartbeat を保ち、リモートから生存が見えるようにする

@@ -79,7 +79,7 @@ def _expand_splits(nodes: dict, results: dict, max_fanout: int,
 def continue_stub(request: str, nodes: dict, results: dict, iteration: int,
                   max_fanout: int = 50, review: bool = False, exemplar_first: bool = False,
                   max_retries: int = 3):
-    """パターン継続（kiro 無し版）:
+    """パターン継続（LLM 無し版）:
        - データ駆動 fan-out: split 完了 → 要素ごとの map + reduce を生成
        - classify-and-act: 分類完了 → 振り分け先の専門タスクを追加
        - adversarial / loop-until-done: verify が fail → 作り直し + 再検証
@@ -240,7 +240,7 @@ def _inflight_amend_pending(bus, graph, who, args, consumed_fb: set) -> int:
     return amended
 
 
-def continue_kiro(request: str, nodes: dict, results: dict, iteration: int,
+def continue_agent(request: str, nodes: dict, results: dict, iteration: int,
                   max_fanout: int = 50, review: bool = False, exemplar_first: bool = False,
                   max_retries: int = 3):
     # データ駆動 fan-out は機械的に展開（LLM 判断不要）。先に処理する。
@@ -289,7 +289,7 @@ def continue_kiro(request: str, nodes: dict, results: dict, iteration: int,
         f"元の要求: {request}{hf_block}\n\n現在の結果:\n{summary}"
     )
     try:
-        data = extract_json(run_kiro(prompt, None, purpose="evaluator"))
+        data = extract_json(run_agent(prompt, None, purpose="evaluator"))
     except Exception:  # noqa: BLE001
         return "done", [], "評価出力を解釈できず done 扱い"
     # planner がオブジェクトでなくベア配列を返すことがある → new_tasks とみなす

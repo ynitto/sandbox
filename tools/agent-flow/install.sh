@@ -122,16 +122,18 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4. kiro-cli チェック（実行・計画に使用・無くても stub モードで動作）
+# 4. エージェント CLI チェック（実行・計画に使用・無くても stub モードで動作）
+#    既定は agent_cli: kiro（kiro-cli）。claude / copilot / codex でも実運用できる。
 # ---------------------------------------------------------------------------
-info "kiro-cli を確認しています..."
+info "エージェント CLI（既定 kiro-cli）を確認しています..."
 
 if command -v kiro-cli &>/dev/null; then
   KIRO_VER="$(kiro-cli --version 2>&1 | head -1 || echo '(バージョン取得失敗)')"
   ok "kiro-cli が見つかりました: $(command -v kiro-cli) ($KIRO_VER)"
 else
   warn "kiro-cli が見つかりません。stub モード（--planner stub --executor stub）でのみ動作します。
-  実運用には kiro-cli が必要です。参考: https://kiro.dev/docs/installation"
+  実運用には agent_cli に対応したエージェント CLI が必要です（既定 kiro-cli。
+  claude / copilot / codex でも可）。kiro-cli 参考: https://kiro.dev/docs/installation"
 fi
 
 # ---------------------------------------------------------------------------

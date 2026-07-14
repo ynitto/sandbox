@@ -135,10 +135,10 @@ def cmd_audit(cfg: Config, as_json: bool = False, strict: bool = False) -> int:
 
 
 # ---------------------------------------------------------------------------
-# doctor（稼働診断）— ログ/状態/環境から稼働状況を kiro-cli に診断させ、原因を
+# doctor（稼働診断）— ログ/状態/環境から稼働状況を エージェント CLI に診断させ、原因を
 #   env（ユーザー環境固有）/ config（設定）/ program（プログラム上の不具合）へ分類する。
 #   env・config は（--fix で）決定的に修正し、program は gitlab-idd スキルでイシュー起票する
-#   （スキルが無ければ起票文面を出力するだけ）。知能（診断・分類・起票文面）は kiro-cli へ委譲し、
+#   （スキルが無ければ起票文面を出力するだけ）。知能（診断・分類・起票文面）は エージェント CLI へ委譲し、
 #   収集・修正・起票の駆動は本体が決定的に行う（§1 不変条件: 知能は委譲・操作は決定的）。
 # ---------------------------------------------------------------------------
 _DOCTOR_CATEGORIES = ("env", "config", "program", "git")
@@ -285,7 +285,7 @@ def doctor_flow_bus_coverage_findings(cfg: "Config") -> "list[dict]":
 
 
 def collect_doctor_signals(cfg: "Config") -> dict:
-    """ログ/状態から診断材料を決定的に集める（kiro-cli へ渡す・有界）。"""
+    """ログ/状態から診断材料を決定的に集める（エージェント CLI へ渡す・有界）。"""
     tasks = load_tasks(cfg.backlog)
     blocked = [{"id": t.id, "title": t.title, "status": t.norm_status(),
                 "retries": t.retries}
@@ -366,13 +366,13 @@ def _parse_doctor_findings(text: str) -> "list[dict] | None":
 
 
 def diagnose_with_agent(cfg: "Config", signals: dict, deterministic: "list[dict]",
-                        kiro_run=None) -> "list[dict] | None":
-    """kiro-cli に稼働を診断させ、分類済み finding の配列を得る。
-    kiro-cli 不在・エラー・解析不能は None（＝決定的所見のみで続行）。"""
-    run = kiro_run or (lambda p, m: _run_kiro_cli(p, m, purpose="doctor"))
+                        agent_run=None) -> "list[dict] | None":
+    """エージェント CLI に稼働を診断させ、分類済み finding の配列を得る。
+    エージェント CLI 不在・エラー・解析不能は None（＝決定的所見のみで続行）。"""
+    run = agent_run or (lambda p, m: _run_agent_cli(p, m, purpose="doctor"))
     try:
         out = run(_doctor_prompt(signals, deterministic), cfg.model)
-    except Exception:  # noqa: BLE001  kiro-cli 不在・タイムアウト等
+    except Exception:  # noqa: BLE001  エージェント CLI 不在・タイムアウト等
         return None
     return _parse_doctor_findings(out)
 
@@ -435,10 +435,10 @@ def apply_doctor_fix(cfg: "Config", finding: dict) -> str:
 
 
 def file_issues_via_gitlab_idd(cfg: "Config", program: "list[dict]", skill_dir: Path,
-                               kiro_run=None) -> bool:
+                               agent_run=None) -> bool:
     """program カテゴリの不具合を gitlab-idd スキルのリクエスター役でイシュー起票させる
-    （kiro-cli へ委譲）。成功で True、kiro-cli 不在・失敗で False。"""
-    run = kiro_run or (lambda p, m: _run_kiro_cli(p, m, purpose="doctor"))
+    （エージェント CLI へ委譲）。成功で True、エージェント CLI 不在・失敗で False。"""
+    run = agent_run or (lambda p, m: _run_agent_cli(p, m, purpose="doctor"))
     items = "\n".join(
         f"{i}. {f['title']}\n   - 根拠: {f.get('evidence', '')}\n   - 詳細: {f.get('fix', '')}"
         for i, f in enumerate(program, 1))
@@ -451,7 +451,7 @@ def file_issues_via_gitlab_idd(cfg: "Config", program: "list[dict]", skill_dir: 
     try:
         run(prompt, cfg.model)
         return True
-    except Exception:  # noqa: BLE001  kiro-cli 不在・失敗 → 起票せず（呼び出し側で出力）
+    except Exception:  # noqa: BLE001  エージェント CLI 不在・失敗 → 起票せず（呼び出し側で出力）
         return False
 
 
@@ -483,7 +483,7 @@ def collect_flow_findings(cfg: "Config", fix: bool, runner=None) -> "list[dict]"
 
 
 def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
-               kiro_run=None, skill_finder=find_skill, flow_finder=collect_flow_findings) -> int:
+               agent_run=None, skill_finder=find_skill, flow_finder=collect_flow_findings) -> int:
     """稼働を診断し env/config を（--fix で）修正、program は gitlab-idd で起票する。
     実行層 agent-flow の doctor も連携実行し findings を統合する（cfg.with_flow 時）。
     終了コード: 0=健康 / 1=未解決の所見あり / 2=未解決の critical あり。"""
@@ -493,7 +493,7 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
     for f in deterministic:
         f["source"] = "check"
     signals = collect_doctor_signals(cfg)
-    agent = diagnose_with_agent(cfg, signals, deterministic, kiro_run=kiro_run)
+    agent = diagnose_with_agent(cfg, signals, deterministic, agent_run=agent_run)
     flow = flow_finder(cfg, fix) if cfg.with_flow else []   # 実行層 agent-flow の所見を連携取得
     findings = _dedupe_findings(deterministic + (agent or []) + flow)
 
@@ -523,7 +523,7 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
     filed = False
     if fix and program:
         if skill_dir:
-            filed = file_issues_via_gitlab_idd(cfg, program, skill_dir, kiro_run=kiro_run)
+            filed = file_issues_via_gitlab_idd(cfg, program, skill_dir, agent_run=agent_run)
             if filed:
                 for f in program:
                     f["resolved"] = f"gitlab-idd で起票（{skill_dir.name}）"
@@ -552,7 +552,7 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
 
     print("=== agent-project doctor（稼働診断）===")
     flow_note = f"  / agent-flow 連携 {len(flow)} 件" if cfg.with_flow else ""
-    print(f"診断: {'kiro-cli' if agent is not None else '決定的チェックのみ（kiro-cli 不在/解析不能）'}"
+    print(f"診断: {'エージェント CLI' if agent is not None else '決定的チェックのみ（エージェント CLI 不在/解析不能）'}"
           f"  / 所見 {len(findings)} 件{flow_note}")
     if not findings:
         print("問題は見つかりませんでした（healthy）。")
@@ -580,7 +580,7 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
             if skill_dir and filed:
                 print(f"起票: program {len(program)} 件を gitlab-idd で起票しました。")
             elif skill_dir and not filed:
-                print(f"起票: gitlab-idd への委譲に失敗（kiro-cli 不在等）。上記 program "
+                print(f"起票: gitlab-idd への委譲に失敗（エージェント CLI 不在等）。上記 program "
                       f"{len(program)} 件は未起票です。")
             else:
                 print(f"起票: gitlab-idd スキルが見つからないため、program {len(program)} 件は"

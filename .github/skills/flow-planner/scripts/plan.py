@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""flow-planner — kiro-flow 向け高精度タスク分解・戦略選択。
+"""flow-planner — agent-flow 向け高精度タスク分解・戦略選択。
 
 3段階パイプラインで要求を分析→戦略選定→グラフ生成する。
-kiro-flow の --planner flow-planner で呼び出される。
+agent-flow の --planner flow-planner で呼び出される。
 
 Usage:
     python3 plan.py "<要求>" [--model <model>] [--review auto|true|false]
                     [--granularity coarse|fine|finest]
     → JSON を stdout に出力: {"strategy": {...}, "tasks": [...]}
-    granularity は分解の細かさ（coarse=現状/fine=1段細/finest=2段細）。kiro-flow は finest を渡す。
+    granularity は分解の細かさ（coarse=現状/fine=1段細/finest=2段細）。agent-flow は finest を渡す。
 """
 from __future__ import annotations
 
@@ -199,13 +199,13 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 # 呼び出すエージェント CLI（kiro / claude / copilot / codex）。--agent-cli で切り替える。
-# 既定は kiro（従来動作）。呼び出し側（kiro-flow）は planner に設定された agent_cli を渡す。
+# 既定は kiro（従来動作）。呼び出し側（agent-flow）は planner に設定された agent_cli を渡す。
 AGENT_CLI = "kiro"
 
 
 def _agent_cmd(cli: str, model: str | None, prompt: str):
     """エージェント CLI 1 回分の (argv, stdin テキスト, 最終応答ファイル) を組み立てる。
-    kiro-flow / kiro-project の _agent_cmd と同じ規約に揃える（ヘッドレス・応答本文のみ）。
+    agent-flow / agent-project の _agent_cmd と同じ規約に揃える（ヘッドレス・応答本文のみ）。
     最終応答ファイルは codex のみ（stdout がイベントログのため）。"""
     if cli == "claude":
         # Claude Code ヘッドレス。プロンプトは stdin 渡し（ARG_MAX に当たらない）。
@@ -234,7 +234,7 @@ def _agent_cmd(cli: str, model: str | None, prompt: str):
     return cmd + [prompt], None, None
 
 
-def run_kiro(prompt: str, model: str | None) -> str:
+def run_agent(prompt: str, model: str | None) -> str:
     """設定されたエージェント CLI（AGENT_CLI）を 1 回呼び出して応答本文を返す。
 
     rc=0 でも本文が空で返る CLI がある（例: kiro-cli は AWS 認証が切れるとバナーだけ出して
@@ -336,7 +336,7 @@ def match_composite(catalog: dict, analysis: dict) -> str | None:
 def phase1_analyze(request: str, model: str | None) -> dict:
     """Phase 1: 要求分析。"""
     prompt = ANALYZE_PROMPT.format(request=request)
-    raw = run_kiro(prompt, model)
+    raw = run_agent(prompt, model)
     analysis = extract_json(raw)
     if not isinstance(analysis, dict):
         raise ValueError("Phase 1: analysis is not a dict")
@@ -390,7 +390,7 @@ def phase2_select(request: str, analysis: dict, catalog: dict,
         scored_candidates=scored_candidates,
         analysis=json.dumps(analysis, ensure_ascii=False, indent=2),
     )
-    raw = run_kiro(prompt, model)
+    raw = run_agent(prompt, model)
     strategy = extract_json(raw)
     if not isinstance(strategy, dict):
         raise ValueError("Phase 2: strategy is not a dict")
@@ -439,7 +439,7 @@ def phase3_build(request: str, analysis: dict, strategy: dict,
     note = granularity_directive(granularity)
     if note:
         prompt = note + "\n\n" + prompt
-    raw = run_kiro(prompt, model)
+    raw = run_agent(prompt, model)
     tasks = extract_json(raw)
     if not isinstance(tasks, list):
         if isinstance(tasks, dict) and "tasks" in tasks:
@@ -465,7 +465,7 @@ def plan(request: str, model: str | None = None, review="auto",
     # Phase 3（granularity で分解の細かさを指示）
     tasks = phase3_build(request, analysis, strategy, model, granularity)
 
-    # 正規化（kiro-flow 互換）
+    # 正規化（agent-flow 互換）
     valid_kinds = {"work", "generate", "classify", "synthesize", "verify",
                    "filter", "judge", "reduce", "split", "map"}
     seen_ids = set()
@@ -490,7 +490,7 @@ def plan(request: str, model: str | None = None, review="auto",
     if not normalized:
         raise ValueError("No valid tasks generated")
 
-    # strategy を kiro-flow 互換形式に整形
+    # strategy を agent-flow 互換形式に整形
     final_strategy = {
         "patterns": strategy.get("patterns", ["fan-out-and-synthesize"]),
         "parallelism": int(strategy.get("parallelism", 3)),
@@ -511,7 +511,7 @@ def main():
     parser.add_argument("--agent-cli", dest="agent_cli", default="kiro",
                         choices=["kiro", "claude", "copilot", "codex"],
                         help="計画に使うエージェント CLI（既定 kiro）。"
-                             "kiro-flow から呼ばれるときは planner に設定された CLI が渡る")
+                             "agent-flow から呼ばれるときは planner に設定された CLI が渡る")
     parser.add_argument("--model", default=None, help="エージェント CLI に渡すモデル")
     parser.add_argument("--review", default="auto",
                         help="検証gate: auto/true/false")

@@ -38,17 +38,17 @@ agent-flow の `executor: agent` は、各ノードの実行（worker/verify の
 
 ```
 agent-flow (executor=agent)
-  ├─ execute_kiro(kind, goal, deps, …)      … ノード実行
+  ├─ execute_agent(kind, goal, deps, …)      … ノード実行
   │     └─ flow-worker/scripts/prompt.py    … role=worker のプロンプト生成（決定的・LLM 無し）
-  │           └─ run_kiro(prompt, purpose=kind)   … LLM 呼び出しは agent-flow 側
-  └─ continue_kiro(request, results, …)     … 継続判断（evaluator-optimizer）
+  │           └─ run_agent(prompt, purpose=kind)   … LLM 呼び出しは agent-flow 側
+  └─ continue_agent(request, results, …)     … 継続判断（evaluator-optimizer）
         └─ flow-worker/scripts/prompt.py    … role=evaluator のプロンプト生成
-              └─ run_kiro(prompt, purpose="evaluator")
+              └─ run_agent(prompt, purpose="evaluator")
 ```
 
 - **prompt.py は LLM を呼ばない**。決定的なテンプレート合成のみ（高速・テスト可能）。
 - LLM 呼び出し・役割別エージェント解決（設定 `agents:`）・argv スピル・タイムアウトは
-  agent-flow 側の `run_kiro` に残る。
+  agent-flow 側の `run_agent` に残る。
 - スキルが見つからない／生成に失敗した場合、agent-flow は **組み込みプロンプトへ
   フォールバック** する（分散ワーカーに本スキルが未インストールでも run は止まらない）。
 

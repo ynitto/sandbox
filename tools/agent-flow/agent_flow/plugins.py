@@ -20,7 +20,7 @@ from __future__ import annotations
 # --------------------------------------------------------------------------
 # 組み込み executor の名前 → 実体は呼び出し時に globals() から解決する
 # （テストの monkeypatch やホットリロードが効くよう、import 時の参照を握らない）。
-BUILTIN_EXECUTORS = {"agent": "execute_kiro", "stub": "execute_stub"}
+BUILTIN_EXECUTORS = {"agent": "execute_agent", "stub": "execute_stub"}
 
 
 def _executor_accepts(execute, name: str) -> bool:
@@ -142,7 +142,7 @@ def _load_executor_module(path: str):
 def resolve_executor_config_json(args) -> "str | None":
     """executor プラグインの設定ブロック（executor 名と同名のトップレベル設定。例 `executor: gitlab`
     なら `args.gitlab`）を親（daemon/orchestrator）で解決し、JSON 文字列にして返す。組み込み executor
-    （kiro/stub）や、設定ブロックが無い/空のときは None。
+    （agent/stub）や、設定ブロックが無い/空のときは None。
     worker 起動時に環境変数 `AGENT_FLOW_EXECUTOR_CONFIG` として明示的に渡し、worker が `--config` を
     再解決できない/別の設定を拾う場合でも、親が解決した設定（例 gitlab の repo_url/conn_label）を
     確実に届けるために使う。"""
@@ -165,7 +165,7 @@ def make_executor(args):
     if not path:
         dirs = "、".join(_executor_search_dirs())
         raise SystemExit(
-            f"[agent-flow] executor '{spec}' を解決できません。組み込み（kiro/stub）か、"
+            f"[agent-flow] executor '{spec}' を解決できません。組み込み（agent/stub）か、"
             f"プラグイン .py（検索: {dirs}）か、明示パスを指定してください。")
     module = _load_executor_module(path)
     fn = getattr(module, "execute", None)

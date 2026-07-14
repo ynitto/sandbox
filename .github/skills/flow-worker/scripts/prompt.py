@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""flow-worker — kiro-flow executor=agent 向けの実行系プロンプトビルダー。
+"""flow-worker — agent-flow executor=agent 向けの実行系プロンプトビルダー。
 
-kiro-flow の execute_kiro（worker/verify の各 kind）と continue_kiro（evaluator）から
+agent-flow の execute_agent（worker/verify の各 kind）と continue_agent（evaluator）から
 呼び出され、flow-worker の実行規律を織り込んだプロンプトを生成する。規律の核は
 「三つの約束」— 前提を書く・範囲を守る・検証してから渡す — と、git 操作を
 worktree スクリプト経由に限定する git 利用規約。
 
 このスクリプトは LLM を呼ばない（決定的・高速）。LLM 呼び出し・役割別エージェント
-解決（agents:）・argv スピルは kiro-flow 側の run_kiro が担う。出力契約（verify の
-JSON、split の配列、evaluator の decision JSON 等）は kiro-flow の組み込みプロンプト
-と同一に保つこと（kiro-flow 側のパーサがそれを前提にしている）。
+解決（agents:）・argv スピルは agent-flow 側の run_agent が担う。出力契約（verify の
+JSON、split の配列、evaluator の decision JSON 等）は agent-flow の組み込みプロンプト
+と同一に保つこと（agent-flow 側のパーサがそれを前提にしている）。
 
 Usage:
     python3 prompt.py < payload.json    # stdout にプロンプトを出力
@@ -32,7 +32,7 @@ SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKTREE_SCRIPT = os.path.join(SKILL_DIR, "scripts", "git_worktree.py")
 
 # --------------------------------------------------------------------------
-# kind 別の役割行 — 出力契約を含む文言は kiro-flow 側パーサとの互換に必要
+# kind 別の役割行 — 出力契約を含む文言は agent-flow 側パーサとの互換に必要
 # --------------------------------------------------------------------------
 ROLE_LINES = {
     "work": "ワーカー。次のタスクだけを完了し成果物を出力する。",
@@ -118,7 +118,7 @@ GIT_RULES = """\
 【git 利用規約 — worktree 必須】
 - 渡された作業ディレクトリはこのタスク専用の worktree。ファイルの編集だけを行い、
   commit / push / checkout / branch / rebase / stash を実行しない
-  （コミットと push は kiro-flow が安全な手順で行う）。
+  （コミットと push は agent-flow が安全な手順で行う）。
 - 別リポジトリや別ブランチの内容が追加で必要なときは、git clone / checkout を
   自分で実行せず、必ず次のスクリプトで専用 worktree を取得する:
     python3 {script} provision <URL|パス> [--ref <ブランチ|SHA>]  # worktree パスを出力
@@ -156,7 +156,7 @@ def _trim(text, limit: int) -> str:
 
 
 def _format_deps(deps: dict) -> str:
-    """依存成果ブロック。kiro-flow 組み込みプロンプトと同じ形式（data は 400 字まで）。"""
+    """依存成果ブロック。agent-flow 組み込みプロンプトと同じ形式（data は 400 字まで）。"""
     lines = []
     for d, r in (deps or {}).items():
         r = r if isinstance(r, dict) else {"output": r}
@@ -176,9 +176,9 @@ def build_worker_prompt(p: dict) -> str:
     if p.get("request"):
         parts.append("【全体文脈】この run の元要求（担当は上記タスクのみ。全体を一人でやり直さない）: "
                      + _trim(p["request"], 400))
-    if p.get("repo_instruction"):   # ワークスペース＋参照リポジトリの作業指示（kiro-flow が生成）
+    if p.get("repo_instruction"):   # ワークスペース＋参照リポジトリの作業指示（agent-flow が生成）
         parts.append(str(p["repo_instruction"]))
-    if p.get("artifact_note"):      # 中間成果物のファイル受け渡しプロトコル（kiro-flow が生成）
+    if p.get("artifact_note"):      # 中間成果物のファイル受け渡しプロトコル（agent-flow が生成）
         parts.append(str(p["artifact_note"]))
     if kind == "verify":
         parts.append(VERIFY_DISCIPLINE)
@@ -201,7 +201,7 @@ def build_worker_prompt(p: dict) -> str:
 
 
 def build_evaluator_prompt(p: dict) -> str:
-    """continue（evaluator-optimizer）向けプロンプト。decision JSON 契約は kiro-flow と同一。"""
+    """continue（evaluator-optimizer）向けプロンプト。decision JSON 契約は agent-flow と同一。"""
     max_retries = int(p.get("max_retries") or 3)
     parts = [
         "あなたは分散 Dynamic Workflow の評価役です。ワークフローパターンを踏まえ、"
@@ -235,7 +235,7 @@ def main() -> int:
             raise ValueError("payload must be a JSON object")
         sys.stdout.write(build(payload))
         return 0
-    except Exception as e:  # noqa: BLE001 — 失敗は非ゼロ終了（kiro-flow が組み込みへフォールバック）
+    except Exception as e:  # noqa: BLE001 — 失敗は非ゼロ終了（agent-flow が組み込みへフォールバック）
         print(f"flow-worker prompt error: {e}", file=sys.stderr)
         return 1
 

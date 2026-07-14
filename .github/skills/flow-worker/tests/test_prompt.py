@@ -1,6 +1,6 @@
 """flow-worker prompt.py のテスト。
 
-出力契約（kiro-flow のパーサが前提とする文言）が壊れていないことを最優先で守る。
+出力契約（agent-flow のパーサが前提とする文言）が壊れていないことを最優先で守る。
 実行: python -m pytest .github/skills/flow-worker/tests/ -q
 """
 import importlib.util
@@ -45,7 +45,7 @@ def test_worker_prompt_includes_interface_info():
 
 def test_verify_prompt_keeps_output_contract():
     p = fw.build({"role": "worker", "kind": "verify", "goal": "検証する"})
-    # kiro-flow の _normalize_verify が前提とする文言
+    # agent-flow の _normalize_verify が前提とする文言
     assert "verify=pass" in p
     assert "verify=fail" in p
     assert '{"ok": true|false, "issues": ["..."]}' in p

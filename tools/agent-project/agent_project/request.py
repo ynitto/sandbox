@@ -352,11 +352,11 @@ def _route_agent_prompt(task: Task, workspaces: "list[dict]") -> str:
 
 
 def route_agent(cfg: "Config", task: Task, workspaces: "list[dict]",
-                kiro_run=None) -> str:
+                agent_run=None) -> str:
     """曖昧なタスクの書込先を LLM に1つ選ばせる（決定論で決まらなかったときのみ）。失敗時は ""。"""
-    kiro_run = kiro_run or (lambda p, m: _run_kiro_cli(p, m, purpose="route"))
+    agent_run = agent_run or (lambda p, m: _run_agent_cli(p, m, purpose="route"))
     try:
-        out = kiro_run(_route_agent_prompt(task, workspaces), cfg.model)
+        out = agent_run(_route_agent_prompt(task, workspaces), cfg.model)
         data = _extract_json_obj(out)
         return _strip_code(str((data or {}).get("workspace") or "").strip())
     except Exception:  # noqa: BLE001 — 推定失敗は「決まらない」に倒す
@@ -366,7 +366,7 @@ def route_agent(cfg: "Config", task: Task, workspaces: "list[dict]",
 def resolve_workspace(cfg: "Config", task: Task, policy: "Policy") -> "tuple[dict | None, str]":
     """タスク → ちょうど1つの書込先ワークスペース spec を決める。解決順（上が優先）:
       1. 明示 `- workspace:`  2. policy `route:`  3. charter owns: 推定
-      4. auto-route エージェント（route_planner=kiro）  5. 既定（default_workspace / 候補が1つ）
+      4. auto-route エージェント（route_planner=agent）  5. 既定（default_workspace / 候補が1つ）
     返り値 (spec or None, routed_by)。None は書込先なし＝読み取り専用 run（調査タスク等）。"""
     try:
         ch = charter_for_task(cfg, task)

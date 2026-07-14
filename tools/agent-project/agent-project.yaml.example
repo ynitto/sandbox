@@ -36,12 +36,12 @@ root: .                     # プロジェクトルート（cwd 相対、既定 
 # workdir: .                # act / verify の作業ディレクトリ（root 相対、既定 . = root）
 
 # ---------------------------------------------------------------------------
-# 実行バックエンド（環境に kiro-cli があるか等で切替）
+# 実行バックエンド（環境のエージェント CLI（kiro-cli 等）に合わせて切替）
 # ---------------------------------------------------------------------------
 executor: agent             # 実行・評価役: agent（エージェント CLI に委譲。agent_cli で kiro/claude/
                             # copilot/codex を切替）/ stub（オフライン検証・エージェント不使用。charter があるとき
                             # 自動で入る plan→execute→evaluate の plan/敵対的レビューも stub 版に切替わり、
-                            # _run_kiro_cli を一切呼ばない。「エージェント無しで動かす」なら本命はここ）。
+                            # _run_agent_cli を一切呼ばない。「エージェント無しで動かす」なら本命はここ）。
                             # または agent-flow の executor プラグイン名 / .py パスも指定可（そのまま
                             # `agent-flow run --executor <値>` に委譲される）。
 # executor: gitlab          #   例: 同梱の gitlab プラグイン（タスクを GitLab イシュー化し、レビュー承認
@@ -259,7 +259,7 @@ git_branch: main            # バスに使う git ブランチ
 # ---------------------------------------------------------------------------
 # 学習・通知・棚卸し
 # ---------------------------------------------------------------------------
-# auto_adjudicate: true      # needs に落とす前に kiro-cli が積み直し可否を裁定（既定 on。false で無効）
+# auto_adjudicate: true      # needs に落とす前に エージェント CLI が積み直し可否を裁定（既定 on。false で無効）
 # adjudicate_max: 1          # 1タスクあたりの自律裁定の上限回数（有限停止のため）
 learn_threshold: 0.5        # DR 学習のタイトル類似度（Jaccard）しきい値
 promote_threshold: 2        # learn ルールがこの回数以上効いたら ltm-use へ昇格（--ltm 時）

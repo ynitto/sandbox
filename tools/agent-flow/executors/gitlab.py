@@ -10,7 +10,7 @@ kiro-loop の event_hook と同じ流儀で、agent-flow 本体から importlib 
 `status:needs-rework` でワーカーの修正ループへ戻す）。GitLab は作業履歴（Merged MR ＋
 closed イシュー）を残す台帳として機能する。`auto_merge: false` で従来の
 「人が関連 MR を管理（マージ/クローズ）する」モードに戻せる。
-ローカルに kiro-cli が無くても、GitLab 越しに作業を委譲できる。
+ローカルにエージェント CLI が無くても、GitLab 越しに作業を委譲できる。
 
 プラグイン契約:
     execute(kind, goal, dep_results, model=None, art_dir=None, dep_arts=None,
@@ -862,7 +862,7 @@ def _issue_body(kind: str, goal: str, dep_results: dict,
     『## 受け入れ条件』を必ず含める（ワーカー/レビュアーが完了判定に使う）。
     対象リポジトリ（書込先）は構造化 workspace から、参照リポジトリは references から、
     それぞれ『## 目的』とは別の節として整形して載せる（goal が埋もれず Markdown も崩れない）。"""
-    # 集約・選別系では gate（verify 判定）を参考成果から除く（execute_kiro と同様）
+    # 集約・選別系では gate（verify 判定）を参考成果から除く（execute_agent と同様）
     deps = dep_results
     if kind in ("reduce", "synthesize", "filter", "judge"):
         deps = {d: r for d, r in dep_results.items() if not _is_gate_result(r)}

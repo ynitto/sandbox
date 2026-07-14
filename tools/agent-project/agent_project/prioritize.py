@@ -217,7 +217,7 @@ def _plugin_agent_cmd(plug: dict, model: "str | None",
     for part in plug["command"]:
         if "{output_file}" in part:
             if out_file is None:
-                fd, out_file = tempfile.mkstemp(prefix=f"kiro-agent-{plug['name']}-", suffix=".txt")
+                fd, out_file = tempfile.mkstemp(prefix=f"agent-project-agent-{plug['name']}-", suffix=".txt")
                 os.close(fd)
             part = part.replace("{output_file}", out_file)
         if "{model}" in part:
@@ -306,7 +306,7 @@ def _agent_failure(cli: str, rc: int, out: str, err: str) -> str:
     return f"{head}\n{tail[-500:]}" if tail else head
 
 
-def _run_kiro_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
+def _run_agent_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
     """エージェント CLI（設定 agent_cli: kiro/claude/copilot/codex）を 1 回呼び出してテキスト応答を返す。
     このツールの LLM 呼び出し（分解・優先順位・裁定・ルーティング等）はすべてここを通る。
     purpose（AGENT_PURPOSES のいずれか）を渡すと、設定 agents: の処理毎上書き
@@ -342,8 +342,8 @@ def _run_kiro_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
                 os.remove(out_file)
 
 
-def rank_agent(ready: "list[Task]", model: "str | None", kiro_run=None) -> "list[Task] | None":
-    kiro_run = kiro_run or (lambda p, m: _run_kiro_cli(p, m, purpose="prioritize"))
+def rank_agent(ready: "list[Task]", model: "str | None", agent_run=None) -> "list[Task] | None":
+    agent_run = agent_run or (lambda p, m: _run_agent_cli(p, m, purpose="prioritize"))
     if len(ready) <= 1:
         return list(ready)     # 0/1 件は並べ替えの余地が無い＝LLM を呼ばない（コスト・レイテンシ削減）
     listing = "\n".join(
@@ -352,7 +352,7 @@ def rank_agent(ready: "list[Task]", model: "str | None", kiro_run=None) -> "list
               "**外部で付与された priority（大きいほど高優先）も加味**して優先順位の高い順に並べ替え、"
               "**タスクID の JSON 配列だけ**を出力してください（説明文なし）。\n\nタスク:\n" + listing)
     try:
-        order_ids = _extract_id_array(kiro_run(prompt, model))
+        order_ids = _extract_id_array(agent_run(prompt, model))
     except Exception:  # noqa: BLE001
         return None
     if not order_ids:
@@ -403,12 +403,12 @@ def adjudication_context(cfg: "Config", task: Task,
 
 
 def adjudicate_escalation(cfg: "Config", task: Task, reason: str,
-                          kiro_run=None) -> "tuple[str, str]":
-    """needs（人の判断）に落とす直前の kiro-cli 裁定ゲート。
+                          agent_run=None) -> "tuple[str, str]":
+    """needs（人の判断）に落とす直前の エージェント CLI 裁定ゲート。
     『ループ内で自律的に積み直して解けるか／人の判断が要るか』を判断させる。
     返り値: ("requeue", guidance) なら自律的に積み直す、("escalate", "") なら従来どおり人へ。
     判断不能・エラー・曖昧は **必ず escalate にフォールバック**（安全側＝人を飛ばさない）。"""
-    run = kiro_run or (lambda p, m: _run_kiro_cli(p, m, purpose="adjudicate"))
+    run = agent_run or (lambda p, m: _run_agent_cli(p, m, purpose="adjudicate"))
     ctx = adjudication_context(cfg, task)        # journal/decisions/feedback の文脈を渡す
     prompt = (
         "あなたは自律バックログ・ループの『人の判断を呼ぶ前の門番』です。次のタスクが検証(verify)に"
@@ -425,7 +425,7 @@ def adjudicate_escalation(cfg: "Config", task: Task, reason: str,
         '{"decision": "requeue" | "escalate", "guidance": "requeue の場合のみ、次の試行への具体的な指示"}')
     try:
         obj = _extract_json_obj(run(prompt, cfg.model))
-    except Exception:  # noqa: BLE001  kiro-cli 不在・タイムアウト等は人へ
+    except Exception:  # noqa: BLE001  エージェント CLI 不在・タイムアウト等は人へ
         return ("escalate", "")
     if not obj or obj.get("decision") != "requeue":
         return ("escalate", "")
@@ -458,7 +458,7 @@ def _assess_prompt(task: Task) -> str:
         '出力は JSON オブジェクトのみ（説明文なし）: {"c": 1, "r": 1, "a": 1}')
 
 
-def assess_task(cfg: "Config", task: Task, kiro_run=None) -> "str | None":
+def assess_task(cfg: "Config", task: Task, agent_run=None) -> "str | None":
     """投入時アセスメント。採点は情報であり、それ自体は実行可否・done 条件を変えない
     （読むのは plan-review 票・リスクダイジェスト・spec ルーティング）。知能は委譲し、
     失敗・stub は決定的ヒューリスティックへフォールバック。1 タスク 1 回（既存はスキップ）。"""
@@ -466,7 +466,7 @@ def assess_task(cfg: "Config", task: Task, kiro_run=None) -> "str | None":
         return task.get("assess")
     scores = None
     if cfg.executor != "stub":
-        run = kiro_run or (lambda p, m: _run_kiro_cli(p, m, purpose="assess"))
+        run = agent_run or (lambda p, m: _run_agent_cli(p, m, purpose="assess"))
         try:
             obj = _extract_json_obj(run(_assess_prompt(task), cfg.model)) or {}
             got = {k: int(obj[k]) for k in ("c", "r", "a") if k in obj}

@@ -7,6 +7,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-flow / agent-project: kiro 依存の内部命名を汎化
+
+旧 `kiro-flow` / `kiro-project` 由来で残っていた kiro 接頭辞の内部命名を、agent CLI 横断の
+汎用名へ改称した。共有インフラ（`kiro-cli` 製品名・`agent_cli: kiro` 選択肢・複数ツール共有の
+`$KIRO_*` 環境変数・`~/.kiro` 探索先・`kiro-loop`）は方針どおり維持している。
+
+- **agent-flow の内部関数・変数**: `run_kiro`→`run_agent` / `execute_kiro`→`execute_agent` /
+  `continue_kiro`→`continue_agent` / `plan_strategy_kiro`→`plan_strategy_agent` /
+  `_kiro_timeout`→`_agent_timeout` / `_kiro_argv_limit`→`_agent_argv_limit` /
+  `_KIRO_TIMEOUT`→`_AGENT_TIMEOUT` / `kiro_run` 注入引数→`agent_run`。
+- **agent-flow の設定・環境変数**: 設定キー `kiro_timeout`→`agent_timeout`、環境変数
+  `AGENT_FLOW_KIRO_TIMEOUT`→`AGENT_FLOW_TIMEOUT`。**いずれも旧名を後方互換で受理**する
+  （既存設定・既存環境を壊さない）。
+- **agent-project の内部**: `_run_kiro_cli`→`_run_agent_cli` / `kiro_run` 注入引数→`agent_run` /
+  `_kiro_managed_rels`→`_agent_managed_rels`、一時ファイル接頭辞の kiro-* を汎用名へ。
+- **ドキュメント修正**: 改称後に食い違っていた記述を訂正（executor/planner の既定値は `kiro`
+  ではなく `agent`、`route_planner` 値は `agent/none`、`--executor kiro` 例→`--executor agent`、
+  設計書のリンク切れ `kiro-spec-flow-integration`→`agent-spec-flow-integration` 等）。
+  companion スキル（flow-worker / flow-planner）の関数参照・呼称も追随。
+
 ### agent-dashboard / agent-project: Bugbot PR コメント対応
 
 - **startProject が --config / cwd を付けていなかった** — findProjectConfig と揃える。

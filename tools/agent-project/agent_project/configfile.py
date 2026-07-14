@@ -448,9 +448,9 @@ def _add_common(sp):
                          "寄せる予防リコール。--no-intake-recall で無効化（既定 on）")
     sp.add_argument("--learn-threshold", type=float, default=None,
                     help="DR 学習・予防リコールのタイトル類似度しきい値（0〜1。既定 0.5）")
-    # 自律裁定: needs に落とす前に kiro-cli が積み直し可否を判断（三値: 未指定→設定ファイル/既定 on）
+    # 自律裁定: needs に落とす前に エージェント CLI が積み直し可否を判断（三値: 未指定→設定ファイル/既定 on）
     sp.add_argument("--auto-adjudicate", dest="auto_adjudicate", action="store_true", default=None,
-                    help="人の判断(needs)へ送る前に kiro-cli が『自律的に積み直すか人へ回すか』を裁定（既定 on）")
+                    help="人の判断(needs)へ送る前に エージェント CLI が『自律的に積み直すか人へ回すか』を裁定（既定 on）")
     sp.add_argument("--no-auto-adjudicate", dest="auto_adjudicate", action="store_false",
                     default=None, help="自律裁定を無効化して常に人へ回す（明示 off）")
     sp.add_argument("--adjudicate-max", type=int, default=None,
