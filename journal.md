@@ -1,3 +1,4 @@
 - 2026-07-14 22:25:11 === agent-project 開始 tasks=0 ingested=0 planner=agent executor=agent dry_run=False ===
 - 2026-07-14 22:25:11 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state 自体の git リポジトリへ直接コミット/push interval=300.0s
 - 2026-07-14 22:25:11 === agent-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
+- 2026-07-14 22:25:13 === watch: 監視中（新規タスク/フィードバック待ち。エージェントは待機しない）===
