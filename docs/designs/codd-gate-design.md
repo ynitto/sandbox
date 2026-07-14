@@ -1,7 +1,7 @@
 # codd-gate — 設計書
 
 > 最終更新: 2026-07-02 ／ 関連: `tools/codd-gate/`（`codd-gate.py` / `README.md` / `tests/`）,
-> `tools/kiro-project/`, `docs/designs/kiro-project-design.md`
+> `tools/agent-project/`, `docs/designs/agent-project-design.md`
 >
 > 本書は codd-gate の**唯一の設計正典**。実装と差が出たら本書を更新する。
 

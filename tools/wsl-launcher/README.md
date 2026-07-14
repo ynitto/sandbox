@@ -59,5 +59,5 @@ python setup.py --unregister :: 自動起動の解除
 ## 関連
 
 - `tools/terminal-launcher/` — 同様のログオン時自動起動（PowerShell 版）。
-- `tools/kiro-project/kiro-project.state-git.yaml.example` — 常駐手順（WSL・プロジェクトルートで
+- `tools/agent-project/agent-project.state-git.yaml.example` — 常駐手順（WSL・プロジェクトルートで
   `kiro-flow daemon &` / `kiro-project start`）と viewer 監視の組み方。

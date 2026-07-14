@@ -21,7 +21,7 @@ root: .agent-project
 # auto_adjudicate: false # 人へ回す前の裁定ゲートを呼ばない（常にそのまま人へ）
 # distill_learn: false   # 人コメントの蒸留をせず生のまま learn 化
 
-# spec_track: true       # spec ルーティング（採点/policy で spec 前段を前置）。kiro-project の設定
+# spec_track: true       # spec ルーティング（採点/policy で spec 前段を前置）。agent-project の設定
                        # （kiro-flow.yaml に書いても効かない）
 
 # グローバル既定

@@ -49,7 +49,8 @@
 **維持するもの**（製品・共有インフラ）:
 
 - `kiro-cli`（エージェント CLI 実装の一種）
-- （旧系統として残置する）`kiro-loop` / `kiro-project` / `kiro-flow` / `kiro-projects-viewer`
+- （旧系統として残置する）`kiro-loop` / `kiro-flow` / `kiro-projects-viewer`
+- `kiro-project` は `agent-project` への移行完了後に削除する
 - `$KIRO_AGENTS_DIR` / `$KIRO_STATE_HOME`（複数ツール共有）
 - `~/.kiro/agents`・`~/.kiro/skills`（共有定義の探索先として併用）
 

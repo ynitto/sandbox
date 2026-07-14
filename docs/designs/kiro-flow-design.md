@@ -495,7 +495,7 @@ planner を flow-planner スキルへ外出ししたのと同じ作戦で、`exe
 
 成果物（プログラム/ドキュメント）の実体は**バスではなく成果物リポジトリ**に置き、バスには
 「サマリー＋リンク（どのブランチ/MR/イシューに成果があるか）」だけを残す。リポジトリのルーティング
-（タスク→書込先）は制御層 kiro-project が担う（詳細は `tools/kiro-project/ROUTING.md`）。
+（タスク→書込先）は制御層 agent-project が担う（詳細は `tools/agent-project/ROUTING.md`）。
 kiro-flow は **1 run = 1 ワークスペース（唯一の書込先）** に固定する。
 
 - **ワークスペース（`--workspace`・ちょうど 1 つ）**: その run の唯一の書込先。素の URL か JSON

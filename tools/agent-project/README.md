@@ -1,6 +1,6 @@
 # agent-project
 
-> **由来**: `tools/kiro-project/` を置換せずクローンし改称した系統。設計正典は
+> 旧 `kiro-project` 系統から移行した後継実装。設計正典は
 > [`docs/designs/agent-project-design.md`](../../docs/designs/agent-project-design.md)。
 > 改称方針: [`docs/designs/agent-tools-rename-design.md`](../../docs/designs/agent-tools-rename-design.md)。
 

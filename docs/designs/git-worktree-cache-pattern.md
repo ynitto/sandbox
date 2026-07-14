@@ -2,7 +2,7 @@
 
 > 作成日: 2026-06-29
 > 対象ブランチ: `claude/kiro-worktree-cost-reduction-8dlgf9`
-> 初出の適用先: `tools/kiro-flow/kiro-flow.py`, `tools/kiro-project/kiro-project.py`
+> 初出の適用先: `tools/kiro-flow/kiro-flow.py`, `tools/agent-project/agent-project.py`
 > 位置づけ: **特定ツールに依存しない汎用パターン**。git リモート（GitLab/GitHub 等）を
 > 「タスクのたびに clone して作業/検証する」あらゆるツール・スキルへ転用できる。
 

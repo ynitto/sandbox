@@ -53,7 +53,7 @@ codd-gate は kiro-project から**完全独立**（結線は schemas/ の共通
 kiro-project が charter から `<root>/repos.json` を自動生成するので、それを `--repos` で渡す。
 この順で提案する:
 
-1. **差分ゲート**: `.kiro/kiro-project.yaml` に
+1. **差分ゲート**: `.agent/agent-project.yaml` に
    `regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV"'`
 2. **受入ラチェット**: charter `## acceptance` に
    `- codd-gate verify --debt --max-broken 0 --max-undocumented <現状値>`

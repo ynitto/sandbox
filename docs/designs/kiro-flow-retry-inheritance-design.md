@@ -4,8 +4,8 @@
 > 対象ブランチ: `claude/kiro-flow-req-run-difference-hxpe4a`
 > 関連ファイル: `tools/kiro-flow/kiro-flow.py`,
 > `tools/kiro-flow/tests/test_kiro_flow.py`,
-> `tools/kiro-project/kiro-project.py`,
-> `tools/kiro-project/kiro-project.yaml.example`
+> `tools/agent-project/agent-project.py`,
+> `tools/agent-project/agent-project.yaml.example`
 
 ---
 
