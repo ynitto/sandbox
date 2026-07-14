@@ -1,0 +1,87 @@
+<!--
+agent-project の backlog/<id>.md 規約（このファイルがタスク書式の正典）
+========================================================================
+agent-project は backlog/ ディレクトリ内の「1ファイル＝1タスク」を読む。
+このファイルを backlog/<id>.md としてコピーして使う（id はファイル名の stem が正）。
+  例: cp backlog.md.example backlog/T1.md
+運用・サブコマンドの詳細は tools/agent-project/README.md、
+設計は docs/designs/agent-project-design.md。
+JSON 表現（enqueue --json / inbox/*.json / intake_cmd の stdout）の共通スキーマは
+schemas/task.schema.json（本ファイルが Markdown 形の正典・未知キーは保持される）。
+
+書式（## 見出しが id とタイトル。以降の `- key: value` がフィールド）:
+
+  ## <id>: <タイトル>
+  - status : inbox | draft | ready | doing | done | blocked
+  - source : human | triage | followup        # 出自の系。省略時 human
+  - priority: 0                                 # 外部付与の優先度（整数・大ほど高。省略時 0）
+  - verify : `終了コード0をPASSとみなすシェルコマンド`     # 書ければこれが最良（最も確実）
+  - accept : <自然言語の完了条件>                # 任意。verify が書けないとき。実行時にエージェントが verify を合成
+  - verify_template: file-contains :: <path> :: <文字列>   # 任意。決定的テンプレで verify を生成（エージェント不要）
+  - retries: 0                                  # 失敗回数。agent-project が自動更新（初期 0）
+  - review : human                              # 任意。verify PASS でも done 前に人の承認を要する（検収ゲート）
+  - level  : report | assisted | unattended     # 任意。このタスクの自律度をグローバル --level より優先（上書き）
+  - track  : <名前>                             # 任意。同種タスクの群。--auto-level 時に手戻り率で level を自動調整
+  - after  : T1, T2                             # 任意。依存。これらが done になるまで消化対象に入らない（DAG）
+  - followup: 次の作業 :: `verify コマンド`      # 任意・複数可。done 時に派生タスクを生成（source=followup）
+  - route  : direct                             # 任意。spec ルーティング（spec_track）の対象から外す人の明示
+  - note   : 任意（保持される）
+
+フィールドの意味:
+- status :
+    ready  = 実行待ち（消化対象）。
+    inbox  = triage で verify があれば ready に昇格、無ければ据え置き（人へ）。
+    draft  = 書きかけ。消化対象外（書き終えたら ready に上げる。watch も起こさない）。
+    blocked= 人の判断待ち（needs/<id>.md にフィードバックを書くか approve で動かす）。
+    review = 検収待ち（system が設定）。verify=PASS だが承認ゲート対象で done 未確定。approve で確定。
+    doing/done = 実行中/完了（done は archive/<id>.md へ退避され backlog には残らない）。
+- priority: --planner none は priority 降順→同値は最古（mtime 昇順）。--planner agent は加味。
+- verify : **done 確定の唯一の根拠**。終了コード 0 のみが PASS。
+           ⚠ **「履歴」ではなく「望む最終状態」を見ること。** 例: `git log|grep refactor` は過去の
+           コミットにマッチして“やってないのに done”になる。**コードの結果**を assert する（例:
+           `grep -q "def new_helper" util.py`）か、**差分**を見る（`git diff` / 環境変数
+           `$KIRO_BASE_REV`＝act 前の HEAD を使い `git log $KIRO_BASE_REV..HEAD --grep ...`）。
+- accept / verify_template : **verify を人が書く負担を減らす入口**（最終的に concrete な verify に変換され、
+           done は verify のみが根拠の鉄則は不変）。`accept`=自然言語の完了条件をエージェントが決定的 verify に合成。
+           `verify_template`=決定的に展開（エージェント不要）。テンプレ名: file-contains :: path :: 文字列／
+           file-exists :: path／defines :: symbol :: path／diff-contains :: 文字列（$KIRO_BASE_REV 差分）／
+           cmd-succeeds :: コマンド。これらがあれば verify 空でも ready 扱い（rot/inbox 落ちにしない）。
+           合成/展開できなければ verify 空のまま＝従来どおり人へ。
+- expect : `changes`=verify=PASS でも act が変更を生まねば done せず人へ（履歴一致 verify の偽 done 対策。
+           リファクタ等「必ず差分が出る」作業に付ける）。`none`=無変更を許可（`--require-progress` 時の opt-out）。
+- review : `human` を指定すると verify PASS でも done 前に人の承認を要する（既定はゲート無し）。
+           一括指定は policy.md の `gate: <パターン>`。高リスク・不可逆・質的レビューが要る案件向け。
+- level  : このタスクの自律度。実効 = `- level:`（明示）＞ track の自動昇格 ＞ グローバル `--level`。
+           `report`=実行せず保留（塩漬け）／`assisted`=実行するが done は人が承認／`unattended`=自動 done。
+           例: 決済コードは `- level: assisted`、typo 修正は `- level: unattended` を同じ backlog に混在可。
+           `protect`/`gate`/`regression` は level に依らず常に上乗せ（緩めても安全網は残る）。
+- track  : 同種タスクの群名。`--auto-level` 有効時、その群の手戻り率が低ければ level を自動で1段上げ、
+           手戻り（差し戻し/回帰/偽done）で下げる。ceiling は既定 `assisted`（無人化は明示許可制）。
+
+system が書き込むフィールド（人は直接書かない。`revise` / needs 経由で入る）:
+- feedback: 次の act に必ず反映される人の指示（needs の記入、`revise --feedback`、却下コメントで注入）。
+- rev    : act 試行の世代番号。`revise` のたびに +1 され、実行中の古い run に次の試行が合流しないようにする。
+- revised: 実行中（doing）タスクへの revise 予約マーカー。実行側が検知すると現在の試行の結果を
+           確定せず（verify も done もせず）修正内容で ready に積み直し、マーカーを消す。
+- assess : 投入時アセスメント（c=複雑さ r=リスク a=曖昧さ・各1-3）。採点は情報のみで実行可否は不変。
+           人が書き直してもよい（spec ルーティングのしきい値判定が読む）。
+- route / spec_task / spec_expanded / spec / spec_for :
+           spec ルーティング（spec_track）の状態。route=spec は spec 前段が前置されたタスク、
+           spec_for は spec 作成タスク自身、spec は展開で生まれた実装タスク（specs/<id>/ を文脈注入）。
+           人が書くのは `- route: direct`（ルーティング除外の明示）だけでよい。
+
+鉄則（この箱に積めるのは「機械的に検証できる作業」だけ）:
+1. done は自己申告では確定しない。verify の終了コード 0 だけが done の根拠。
+2. verify を持たないタスクは done 不能 → 人の判断（blocked＋needs/<id>.md）へ回る。
+   タスクを追加するときは必ず実行可能な verify を付ける（書けないなら分解が粗い兆候）。
+3. **verify は履歴ではなく最終状態/差分を見る**（上記 ⚠）。変更を生むはずの作業は `- expect: changes` を付ける。
+4. 曖昧で人間判断が要るタスクは積まず確認する。必ず drained か budget で有限回停止する。
+-->
+
+## T1: README にプロジェクト概要の見出しを追加する
+- status: ready
+- source: human
+- priority: 0
+- verify: `grep -q "## 概要" README.md`
+- retries: 0
+- note: 既存の見出し階層に合わせる

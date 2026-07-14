@@ -1,17 +1,17 @@
 # agents/ — エージェント CLI プラグイン定義
 
-kiro-project / kiro-flow の `agent_cli` に、組み込み（`kiro` / `claude` / `copilot` / `codex`）
+agent-project / agent-flow（および旧系統 kiro-project / kiro-flow）の `agent_cli` に、組み込み（`kiro` / `claude` / `copilot` / `codex`）
 以外の CLI を**コードを触らずに**追加する置き場。1 CLI = 1 ファイル（`<name>.json`）で、
 `agent_cli: <name>`（または `agents:` の役割毎上書き）と書けばそのまま使える。
 
 契約の正典は [`schemas/agent-cli.schema.json`](../schemas/agent-cli.schema.json)。
-ツール間の結合はこのデータ契約のみ（kiro-project / kiro-flow がそれぞれ自前の小さな
+ツール間の結合はこのデータ契約のみ（agent-project / agent-flow がそれぞれ自前の小さな
 ローダで解釈する。互いにコードは共有しない）。
 
 ## 探索順
 
 1. `$KIRO_AGENTS_DIR`（環境変数）
-2. `<プロジェクトルート>/agents/`（= kiro-project 実行時の cwd。プロジェクト固有の定義）
+2. `<プロジェクトルート>/agents/`（= agent-project 実行時の cwd。プロジェクト固有の定義）
 3. `~/.kiro/agents/`（ユーザー共通）
 
 同名は先勝ち。組み込み名（kiro/claude/copilot/codex/stub）は上書きできない。
@@ -30,7 +30,7 @@ kiro-project / kiro-flow の `agent_cli` に、組み込み（`kiro` / `claude` 
   `default_model` を書く）。`{output_file}` は `output: "file"` のとき最終応答を書かせる
   一時ファイルに置換（stdout がイベントログで汚れる CLI 向け）。
 - `errors` に CLI 固有の失敗パターンを書くと、**失敗トリアージ**（quota=時間をおけば回復 /
-  auth・env=人が環境を直す / transient=自動リトライ）に反映され、kiro-project は
+  auth・env=人が環境を直す / transient=自動リトライ）に反映され、agent-project は
   リトライを無駄に焼かず・viewer は「誰が何を直せばよいか」を表示できる。
 
 ## 同梱の定義
