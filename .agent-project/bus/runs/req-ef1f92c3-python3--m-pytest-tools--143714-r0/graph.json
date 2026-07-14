@@ -1,0 +1,42 @@
+{
+  "strategy": {
+    "patterns": [
+      "map-reduce",
+      "adversarial-verification",
+      "loop-until-done"
+    ],
+    "parallelism": 6,
+    "review": true,
+    "reason": "[flow-planner] 未カバー箇所はカバレッジ実行後にしか判明せず、対象モジュール数を事前に固定できない（data_flow=dynamic）。そのため split ノードで pytest --cov-report=term-missing を実行し、低カバレッジモジュールを行数×未カバー率で優先度付けしたリストへ変換、その件数ぶんだけ map を動的展開してテストを追加する map-reduce を主軸に置く。モジュール単位で map を切ることで『同一ファイルへの並列書き込み競合』制約も自然に満たせる。reduce（合算カバレッジ再計測）の前に adversarial-verification を挟み、追加テストが既存テストをリグレッションさせていないか・プロダクションコードの振る舞いを変えていないか・カバレッジ稼ぎだけのアサーション不在テストになっていないかを検証gateで弾く（quality_focus=coverage だが、行を通すだけの空テストは受入価値がないため検証必須）。収束条件が --cov-fail-under=70 という数値ゲートで一発到達は見込めないため、70% 未達なら残存未カバー箇所を新たな split 入力として loop-until-done で反復する。並列数は kiro-project / kiro-flow 2 パッケージの低カバレッジモジュール想定数に合わせて 6（map-reduce 目安 [5,50] の下限帯。moderate 規模でモジュール数が過大でないため）。fan-out-and-synthesize は件数固定が前提で本要求の順序依存（計測→分割）に合わないため採らず、複合テンプレート migration-pipeline も同理由で不採用とし composite_template は null とする。（粒度 coarse）"
+  },
+  "nodes": {
+    "t1": {
+      "goal": "リポジトリ直下で `python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q --cov=tools/kiro-project --cov=tools/kiro-flow --cov-report=term-missing` を実行し、(a) 失敗テスト・収集エラー（import エラー、fixture 不足、conftest 不整合）の一覧、(b) ベースライン総合カバレッジ率、(c) モジュール別の Stmts/Miss/Cover と未カバー行番号レンジ、を構造化して記録する。この時点では一切コードを修正しない。",
+      "deps": [],
+      "kind": "work"
+    },
+    "t2": {
+      "goal": "t1 で検出した既存の失敗テスト・収集エラーを修正し、pytest が収集エラー 0・失敗 0 で完走する状態にする。原則テスト側（import パス、conftest、fixture、一時ディレクトリ）を直し、プロダクションコードの振る舞いは変更しない。プロダクションコードのバグが原因の場合のみ最小差分で修正し、その旨を根拠付きで記録する。",
+      "deps": [
+        "t1"
+      ],
+      "kind": "work"
+    },
+    "t3": {
+      "goal": "計測対象外にすべきコード（CLI entrypoint の `if __name__ == \"__main__\"` ブロック、`sys.exit` ラッパ、外部 I/O・サブプロセス・ネットワーク直叩き、`TYPE_CHECKING` ブロック、abstract メソッド等）を洗い出し、pyproject.toml の `[tool.coverage.run] omit` / `[tool.coverage.report] exclude_lines` に除外方針を集約する。除外は「テスト不能な境界」に限定し、ロジックを含む関数を除外してカバレッジを水増ししないこと。除外前後のカバレッジ率の差分を記録する。",
+      "deps": [
+        "t1"
+      ],
+      "kind": "work"
+    },
+    "split": {
+      "goal": "t2（緑化後）・t3（除外方針適用後）の状態で再計測したカバレッジを入力に、kiro-project / kiro-flow の各モジュールを「未カバー行数（Stmts × 未カバー率）」で降順にスコアリングし、70% 到達に必要な上位モジュール群を map タスクへ動的展開する。各 map タスクは 1 モジュール（＝1テストファイル）に対応させ、同一ファイルへの並列書き込みが起きないようにテスト出力先を `tools/<pkg>/tests/test_<module>.py` に一意固定する。各 map の goal には対象モジュールのパス・未カバー行番号レンジ・目標カバレッジ・依存する既存 fixture を明記する。",
+      "deps": [
+        "t2",
+        "t3"
+      ],
+      "kind": "split"
+    }
+  },
+  "iteration": 0
+}

@@ -1522,3 +1522,7 @@
 - 2026-07-15 03:55:18 === agent-project 開始 tasks=6 ingested=0 planner=agent executor=agent dry_run=False ===
 - 2026-07-15 03:55:18 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
 - 2026-07-15 04:01:11 === project 開始 v0.1 acceptance=2 ===
+- 2026-07-15 04:01:11 doing 回復: kiro-project-codd-gate-171537 を ready へ戻す（実行者が失踪＝結果は返らない）
+- 2026-07-15 04:01:11 === agent-project 開始 tasks=6 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-15 04:01:11 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
+- 2026-07-15 04:03:06 cycle 1: python3--m-pytest-tools--143714 run が canceled → ready（人が中止・retries=1 で新 run）

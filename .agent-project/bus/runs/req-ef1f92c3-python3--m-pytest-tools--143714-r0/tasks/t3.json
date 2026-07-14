@@ -1,0 +1,8 @@
+{
+  "id": "t3",
+  "goal": "計測対象外にすべきコード（CLI entrypoint の `if __name__ == \"__main__\"` ブロック、`sys.exit` ラッパ、外部 I/O・サブプロセス・ネットワーク直叩き、`TYPE_CHECKING` ブロック、abstract メソッド等）を洗い出し、pyproject.toml の `[tool.coverage.run] omit` / `[tool.coverage.report] exclude_lines` に除外方針を集約する。除外は「テスト不能な境界」に限定し、ロジックを含む関数を除外してカバレッジを水増ししないこと。除外前後のカバレッジ率の差分を記録する。",
+  "deps": [
+    "t1"
+  ],
+  "kind": "work"
+}

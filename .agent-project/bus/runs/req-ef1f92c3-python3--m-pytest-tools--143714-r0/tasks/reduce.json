@@ -1,0 +1,8 @@
+{
+  "id": "reduce",
+  "goal": "全モジュールのテスト追加結果を統合し、受入コマンド `python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q --cov=tools/kiro-project --cov=tools/kiro-flow --cov-fail-under=70` を実行して終了コード 0 を確認する。70% 未達の場合は残存する未カバーモジュール・行を新たな優先度リストとして再計測し、split へ差し戻して次イテレーションを回す（loop-until-done）。到達したら、ベースラインからの向上幅・追加テストファイル一覧・適用した除外方針を成果報告としてまとめる。",
+  "deps": [
+    "gate"
+  ],
+  "kind": "reduce"
+}
