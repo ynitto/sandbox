@@ -5577,6 +5577,54 @@ class TestVerifyAssist(unittest.TestCase):
         self.assertEqual(cmd, "grep -q '## 概要' README.md")
         self.assertNotIn("\x1b", cmd)
 
+    def test_is_windows_shell_command_flags_powershell_and_cmd(self):
+        for cmd in (
+            'powershell.exe -Command "Test-Path foo"',
+            "powershell -NoProfile -Command ls",
+            "pwsh -Command Get-Item x",
+            "cmd.exe /c dir",
+            r'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -Command x',
+            "/mnt/c/Windows/System32/cmd.exe /c echo x",
+        ):
+            self.assertTrue(km._is_windows_shell_command(cmd), cmd)
+        for cmd in ("pytest -q", "git diff --exit-code", "./powershell-helper.sh", ""):
+            self.assertFalse(km._is_windows_shell_command(cmd), cmd)
+
+    def test_synth_verify_rejects_unfenced_powershell_and_retries_to_posix(self):
+        # 地の文の powershell.exe は _first_command_line が候補にしない（先頭トークン判定で落ちる）。
+        # 合成は諦めず再試行し、POSIX コマンドを採る。⑤ の POSIX 明示が次の候補を誘導する。
+        cfg = cfg_for(Path("."))
+        outs = iter([
+            'powershell.exe -Command "Test-Path README.md"',
+            "pytest -q",
+        ])
+        cmd = km.synth_verify(cfg, "テストを通す", "pytest が通る",
+                              agent_run=lambda p, m: next(outs), attempts=2)
+        self.assertEqual(cmd, "pytest -q")
+
+    def test_synth_verify_prompt_states_posix_and_forbids_powershell(self):
+        p = km._synth_verify_prompt("t", "a")
+        self.assertIn("POSIX sh", p)
+        self.assertIn("powershell.exe", p)
+
+    def test_synth_verify_rejects_fenced_powershell_with_specific_note(self):
+        # フェンス付きは _first_command_line を素通りするが、_is_windows_shell_command が不採用にし、
+        # PowerShell 固有の retry_note で再合成 → POSIX コマンドを採る。
+        cfg = cfg_for(Path("."))
+        outs = iter([
+            '```powershell\npowershell.exe -Command "Test-Path x"\n```',
+            "git diff --exit-code",
+        ])
+        notes = []
+
+        def agent_run(prompt, model):
+            notes.append(prompt)
+            return next(outs)
+
+        cmd = km.synth_verify(cfg, "t", "a", agent_run=agent_run, attempts=2)
+        self.assertEqual(cmd, "git diff --exit-code")
+        self.assertIn("PowerShell", notes[1])
+
     def test_first_command_line_returns_direct_command(self):
         self.assertEqual(km._first_command_line("\n# comment\npytest -q\n"), "pytest -q")
 
