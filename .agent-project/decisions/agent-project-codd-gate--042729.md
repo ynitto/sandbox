@@ -10,3 +10,9 @@
 - reason  : 要対応画面で検証コマンドを変更
 - affects : verify: grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' .agent/agent-project.yaml; agent-project-codd-gate--042729 → ready
 
+## DR-0003  2026-07-16  actor: nitto
+- context : agent-project-codd-gate--042729（agent-projectにcodd-gate自動検出とregression/intake結線を完成させ連携を有効化する）に人のフィードバック
+- action  : feedback-resume
+- reason  : チェックで承認
+- affects : agent-project-codd-gate--042729 → ready
+
