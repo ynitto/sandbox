@@ -1,0 +1,10 @@
+{"ts": "2026-07-15T13:25:56Z", "who": "worker-2", "kind": "claimed", "node": "t1"}
+{"ts": "2026-07-15T13:28:13Z", "who": "worker-2", "kind": "result", "node": "t1", "status": "done"}
+{"ts": "2026-07-15T13:28:13Z", "who": "worker-2", "kind": "claimed", "node": "t5"}
+{"ts": "2026-07-15T13:29:34Z", "who": "worker-2", "kind": "result", "node": "t5", "status": "done"}
+{"ts": "2026-07-15T13:29:34Z", "who": "worker-2", "kind": "claimed", "node": "t3"}
+{"ts": "2026-07-15T13:31:43Z", "who": "worker-2", "kind": "result", "node": "t3", "status": "done"}
+{"ts": "2026-07-15T13:35:16Z", "who": "worker-2", "kind": "claimed", "node": "t7"}
+{"ts": "2026-07-15T13:39:05Z", "who": "worker-2", "kind": "result", "node": "t7", "status": "done"}
+{"ts": "2026-07-15T13:39:05Z", "who": "worker-2", "kind": "claimed", "node": "t8"}
+{"ts": "2026-07-15T13:40:28Z", "who": "worker-2", "kind": "result", "node": "t8", "status": "done"}

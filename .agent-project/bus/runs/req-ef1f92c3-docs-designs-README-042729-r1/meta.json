@@ -1,0 +1,11 @@
+{
+  "request": "設計書の読み取り口（docs/designs/README）を作り主要設計への導線を通す\n\nこのタスクは完了条件を満たすまで反復し、満たしたら終了すること（loop-until-done）。\n完了条件: 次のシェルコマンドが終了コード 0 で成功すること:\n  test -f docs/designs/README.md && grep -q 'agent-project-design.md' docs/designs/README.md && grep -q 'agent-flow-design.md' docs/designs/README.md && grep -q 'codd-gate-design.md' docs/designs/README.md && grep -q 'agent-tools-rename-design.md' docs/designs/README.md\n\nタスクID: docs-designs-README-042729\n\nプロジェクト定義（charter・常に踏まえること。成果物が目標/制約に反しないこと）:\n目標: - codd-gateと連携できること\n- 設計書を整理して人間にとって読みやすくすること\n制約:\n- agent-project/agent-flowをエンジンとして使用する\n- agent-dashboardをフロントエンドとして使用する\n前提:\n- 人による操作や確認を最小限にする\n- 繰り返し・再実行によって試行錯誤できる\n成果物:\n- agent-project/agent-flow ソースコード\n- agent-dashboard ソースコード\n- 設計書・ドキュメント\n\nこのタスクに関する過去の判断記録（needs の判断結果・必ず踏まえること）:\n## DR-0001  2026-07-15  actor: nitto\n- context : docs-designs-README-042729（設計書の読み取り口（docs/designs/README）を作り主要設計への導線を通す）の実行を承認\n- action  : plan-approve\n- reason  : agent-dashboard から操作\n- affects : docs-designs-README-042729 → ready",
+  "workspace": null,
+  "references": [],
+  "status": "done",
+  "created_at": "2026-07-15T13:20:11Z",
+  "executor": "agent",
+  "orch_lease_until": 1784122936.310234,
+  "heartbeat_at": "2026-07-15T13:40:16Z",
+  "updated_at": "2026-07-15T13:40:40Z"
+}

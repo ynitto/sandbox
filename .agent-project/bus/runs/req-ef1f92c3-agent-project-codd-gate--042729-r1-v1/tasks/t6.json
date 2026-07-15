@@ -1,0 +1,8 @@
+{
+  "id": "t6",
+  "goal": "検証を通った配線内容を統合し連携を有効化する。.agent/agent-project.yaml へ 'regression_cmd: codd-gate verify --base ...' を書き込み、検出→regression→intake の結線を実際に有効化する。",
+  "deps": [
+    "t5"
+  ],
+  "kind": "synthesize"
+}

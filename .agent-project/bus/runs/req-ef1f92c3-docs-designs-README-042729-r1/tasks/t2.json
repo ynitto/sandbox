@@ -1,0 +1,8 @@
+{
+  "id": "t2",
+  "goal": "agent-project-design.md の要旨・対象読者・主要見出し・関連設計を抽出し、README からの導線（相対リンクと一行要旨）に使える形にまとめる。",
+  "deps": [
+    "t1"
+  ],
+  "kind": "generate"
+}

@@ -1,0 +1,6 @@
+{
+  "id": "t2",
+  "goal": "regression 結線を実装する。検出結果に応じて regression_cmd として 'codd-gate verify --base <base>' を .agent/agent-project.yaml に生成・注入する仕組みを用意する（yaml のスキーマと注入位置・冪等性を担保）。",
+  "deps": [],
+  "kind": "work"
+}

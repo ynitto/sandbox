@@ -1,0 +1,10 @@
+{
+  "id": "t8-codd-gate-integration-repair",
+  "who": "worker-1",
+  "status": "done",
+  "output": "## 結論\n\nメイン worktree (`/Users/nitto/Workspace/sandbox`) を検証した結果、t1（検出ロジック）と別系統の配線修復作業がすでに機能面で完了条件を満たす状態を残していた。差分を1項目ずつ突き合わせて不足がないことを確認し、コード変更は追加しなかった。\n\n**確認内容**:\n- 完了条件ゲート `grep ... regression_cmd` → exit 0（`.agent/agent-project.yaml` は commit b1868483 で既に git 管理下）\n- `build_config()` → `_apply_codd_gate_auto_wiring` で regression_cmd/intake_cmd を冪等・非上書きで自動配線\n- `doctor.py`・`model.py`（intake のレコード単位検証）・`install.sh`（zipapp に7モジュール同梱）・設計書/README も全て結線済み\n- テスト: 750 passed / 1 failed（既知の無関係な macOS flake）、install.sh の zipapp に codd_gate_*.py 全7本の同梱を実地確認\n\n**重要な申し送り事項**: 同 run の `t11-codd-gate-end-to-end-verify` は「verify=fail」と判定しているが、これは独立に provision した別 worktree で検証したためで、メイン worktree に**未コミットのまま**残るこの実装差分が見えなかったことが原因。実装自体の不備ではなく、「main への commit は別の state-sync ループに委ねる」という本プロジェクトの既定運用と、独立 worktree 検証手法との可視性ギャップ。報告書にその旨を明記した。\n\n成果は `artifacts/t8-codd-gate-integration-repair/report.md` に出力済み。",
+  "finished_at": "2026-07-15T14:47:31Z",
+  "artifacts": [
+    "artifacts/t8-codd-gate-integration-repair/report.md"
+  ]
+}

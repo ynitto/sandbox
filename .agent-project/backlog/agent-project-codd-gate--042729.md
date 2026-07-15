@@ -1,13 +1,12 @@
 ## agent-project-codd-gate--042729: agent-projectにcodd-gate自動検出とregression/intake結線を完成させ連携を有効化する
-- status: ready
+- status: blocked
 - source: charter
 - priority: 0
 - verify: `grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' .agent/agent-project.yaml`
-- retries: 1
+- retries: 3
 - workspace: sandbox
 - charter: v1
 - assess: c=2 r=2 a=2
-- last_run: req-ef1f92c3-agent-project-codd-gate--042729-r1
-- env_resume: 1
-- needs_reason: [agent-error:env] 環境の問題（実行環境の問題）: 実行環境の問題です（モデル名・CLI の導入・PATH を確認してください） タスクの内容の問題ではないため、リトライ回数は消費していません。環境を直してから approve すると、同じ run の続き（失敗した工程だけ）から再開します。
 - rev: 1
+- last_run: req-ef1f92c3-agent-project-codd-gate--042729-r1-v1
+- needs_reason: 繰り返し NG（retries=3）: agent-flow run タイムアウト（3600s）

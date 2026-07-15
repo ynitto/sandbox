@@ -39,3 +39,13 @@
 - 2026-07-15 06:13:39 flow detach: verify-codd-gate-042729 の run req-ef1f92c3-verify-codd-gate-042729-r0 を canceled（agent-flow run タイムアウト（1800.0s））
 - 2026-07-15 06:13:39 cycle 4: verify-codd-gate-042729 NG 積み直し (1/2) — agent-flow run タイムアウト（1800.0s）
 - 2026-07-15 22:20:08 === project 開始 v1 acceptance=2 ===
+- 2026-07-15 22:20:08 intake NG (exit 2): codd-gate tasks --debt --repos .agent-project/repos.json
+- 2026-07-15 22:20:08 doing 回復: verify-codd-gate-042729 を ready へ戻す（実行者が失踪＝結果は返らない）
+- 2026-07-15 22:20:08 === agent-project 開始 tasks=6 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-15 22:20:08 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
+- 2026-07-15 22:40:41 cycle 1: docs-designs-README-042729 → 人の判断（回帰検知）
+- 2026-07-15 23:40:47 flow detach: agent-project-codd-gate--042729 の run req-ef1f92c3-agent-project-codd-gate--042729-r1-v1 を failed（agent-flow run タイムアウト（3600s））
+- 2026-07-15 23:40:47 cycle 2: agent-project-codd-gate--042729 NG 積み直し (2/2) — agent-flow run タイムアウト（3600s）
+- 2026-07-15 23:40:52 run 再開: agent-project-codd-gate--042729 は req-ef1f92c3-agent-project-codd-gate--042729-r1-v1 の失敗ノードだけをやり直します（done は温存）
+- 2026-07-16 00:40:53 flow detach: agent-project-codd-gate--042729 の run req-ef1f92c3-agent-project-codd-gate--042729-r1-v1 を failed（agent-flow run タイムアウト（3600s））
+- 2026-07-16 00:40:55 cycle 3: agent-project-codd-gate--042729 → 人の判断（繰り返し NG）

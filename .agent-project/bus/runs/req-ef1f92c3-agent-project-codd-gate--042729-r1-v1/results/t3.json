@@ -1,0 +1,10 @@
+{
+  "id": "t3",
+  "who": "worker-2",
+  "status": "done",
+  "output": "完了条件（`grep ... regression_cmd`）は exit 0。成果物は `/Users/nitto/Workspace/sandbox-agent-state/.agent-project/bus/runs/req-ef1f92c3-agent-project-codd-gate--042729-r1-v1/artifacts/t3/report.md` に出力済み。\n\n## 成果サマリー\n\n`.agent/agent-project.yaml` の `regression_cmd`/`intake_cmd` の静的配線は既に完了済みだったため、本タスクの実質スコープは **`codd-gate tasks --debt` の出力を実際に backlog へ enqueue する実行時経路** に絞った。`tools/agent-project/codd_gate_debt.py`（レコード単位パーサ、既存だが未結線）を `tools/agent-project/agent_project/model.py` の `run_intake` に統合し、1レコードの不備（title 欠落・非object）で他のレコードを巻き込まずに journal へ記録して処理を続けるようにした。sibling module が無い環境では従来の緩いパースへ no-op 縮退するため既存挙動は壊れない。\n\n- 変更: `model.py`（`run_intake`/`_codd_gate_debt_module` 追加）、`codd_gate_debt.py`（docstring更新のみ）\n- テスト追加: `test_codd_gate_debt.py`（新規10件）、`test_agent_project.py` に1件追加\n- 検証: 全706件中705 pass（唯一の失敗は無関係な既知の環境依存flake）\n\n範囲外で見つけた問題（未修正・報告のみ）: `install.sh` の zipapp 生成が `codd_gate_*.py`（sibling module）を同梱しておらず、配布バイナリでは codd-gate 連携が no-op 縮退する。t1/t2 側のモジュールにも影響する横断的な話のため、共有ファイルの同時編集衝突を避けて今回は手を付けず報告のみとした。",
+  "finished_at": "2026-07-15T13:59:12Z",
+  "artifacts": [
+    "artifacts/t3/report.md"
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "id": "t11-codd-gate-end-to-end-verify",
+  "goal": "t10の修復後、grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' .agent/agent-project.yaml を実行して終了コード0を確認する。加えてcodd-gate自動検出が設定生成・更新経路からregression_cmdとintake_cmdの双方へ結線され、連携が実際に有効であることをテストまたは再現可能な実行結果で批判的に検証し、pass/failと問題点を明示する。",
+  "deps": [
+    "t10-codd-gate-wiring-repair"
+  ],
+  "kind": "verify"
+}

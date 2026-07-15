@@ -1,0 +1,10 @@
+{
+  "id": "t10-codd-gate-wiring-repair",
+  "who": "worker-2",
+  "status": "done",
+  "output": "完了条件（`grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' .agent/agent-project.yaml` → exit 0）を満たしています。\n\n## 結果\n\nt8がタイムアウトで中断する直前にワーキングツリーへ残していた未コミット差分（`configfile.py`・`doctor.py`・`model.py`・`codd_gate_wiring.py`・`codd_gate_regression.py`など）を精査した結果、目的の結線はすでに機能面で完成していました。コードの欠落や未接続は見つからなかったため、コード変更は行わず検証のみで完了としました。\n\n確認した接続点:\n- `build_config()`（設定生成の唯一の経路）が codd-gate 自動検出（`codd_gate_wiring.detect_wiring`）を呼び、regression_cmd/intake_cmd をメモリ上で自動配線\n- `codd_gate_regression.py` が `.agent/agent-project.yaml` への実ファイル永続化を担当（人専有ファイルのため build_config からは書かない設計）\n- `run_intake`（intake_cmd側）が `codd_gate_debt.parse_debt_output` でレコード単位検証を実施\n- doctor / install.sh(zipapp) / 設計書（codd-gate-design.md §4.1）まで一貫して結線済み\n\n検証: 単体テスト750件通過、実プロセスでのend-to-end動作確認（自動検出・ファイル注入の冪等性・zipapp同梱）済み。詳細は成果物レポート（`t10-codd-gate-wiring-repair/report.md`）に記載しています。",
+  "finished_at": "2026-07-15T14:39:55Z",
+  "artifacts": [
+    "artifacts/t10-codd-gate-wiring-repair/report.md"
+  ]
+}

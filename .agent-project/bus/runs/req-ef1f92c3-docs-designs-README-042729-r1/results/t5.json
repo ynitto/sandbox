@@ -1,0 +1,10 @@
+{
+  "id": "t5",
+  "who": "worker-2",
+  "status": "done",
+  "output": "**切り口**: 要旨を「設計意図の説明」ではなく「移行状況（完了/未了）」中心に組み立て、README読者が「もう終わった話」と誤読しないようにした点で他候補と差別化。\n\n## 成果サマリー\n\n`agent-tools-rename-design.md`（85行）から抽出:\n- **一行要旨**（README掲載用・相対リンク付き）: `kiro-* → agent-*` クローン移行方針。agent-project/agent-flow/agent-dashboard は完了、`kiro-loop → agent-loop` のみ未了で現行の指針。\n- **対象読者**: `kiro-*`/`agent-*` 系ツールの実装者、旧新対応関係に迷う人。\n- **主要見出し**: 目的（新旧対応表）／クローン方針の理由／プログラム内名称対応表／設計書の扱い／インストール／非目標、の6節。\n- **関連設計**: `agent-loop-*` 系4件・`agent-dashboard-feature-split-design.md`・`agent-cli-plugin-design.md` から改称根拠として参照される側。主要4設計中唯一、他3設計を本文から参照しない。\n\n検証は `wc -l`・全文読了・`grep` 再実行で行い、本文にない情報は付加していない。前提・未解決事項・範囲外の所見（実装リポジトリ側に既に同旨のREADMEが存在すること等）は成果物内に明記。\n\n成果物: `bus/runs/req-ef1f92c3-docs-designs-README-042729-r1/artifacts/t5/readme-entry.md`",
+  "finished_at": "2026-07-15T13:29:34Z",
+  "artifacts": [
+    "artifacts/t5/readme-entry.md"
+  ]
+}

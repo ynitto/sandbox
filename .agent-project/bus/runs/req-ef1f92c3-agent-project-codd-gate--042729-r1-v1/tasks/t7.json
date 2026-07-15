@@ -1,0 +1,8 @@
+{
+  "id": "t7",
+  "goal": "完了条件ゲートを実行する。シェルで grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' .agent/agent-project.yaml を実行し、exit 0 なら完了、非0なら未達点を特定して生成→検証を反復（loop-until-done）する。",
+  "deps": [
+    "t6"
+  ],
+  "kind": "verify"
+}

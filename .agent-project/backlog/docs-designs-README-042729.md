@@ -1,5 +1,5 @@
 ## docs-designs-README-042729: 設計書の読み取り口（docs/designs/README）を作り主要設計への導線を通す
-- status: ready
+- status: blocked
 - source: charter
 - priority: 0
 - verify: `test -f docs/designs/README.md && grep -q 'agent-project-design.md' docs/designs/README.md && grep -q 'agent-flow-design.md' docs/designs/README.md && grep -q 'codd-gate-design.md' docs/designs/README.md && grep -q 'agent-tools-rename-design.md' docs/designs/README.md`
@@ -7,4 +7,5 @@
 - workspace: sandbox
 - charter: v1
 - assess: c=1 r=1 a=1
-- last_run: req-ef1f92c3-docs-designs-README-042729-r0
+- last_run: req-ef1f92c3-docs-designs-README-042729-r1
+- needs_reason: 回帰検知: グローバル検査 `codd-gate verify --base "$KIRO_BASE_REV" --repos .agent-project/repos.json` 失敗 — exit=2 失敗した工程: `codd-gate verify --base 567cbce7198f63117d75d459d3ee5d320b9123cf --repos .agent-project/repos.json` [codd-gate] エラー: repos レジストリが見つかりません: .agent-project/repos.json

@@ -1,0 +1,10 @@
+{
+  "id": "t6",
+  "who": "worker-2",
+  "status": "done",
+  "output": "## 成果サマリー\n\nt1〜t4の成果はいずれも `/Users/nitto/Workspace/sandbox`（main worktree）に個別適用済みで、責務が重ならないよう最初から分離設計されていたため、統合作業での矛盾解消は不要だった。本タスクでは「実際に有効化する」を実機検証で確認した。\n\n- **完了条件**: `cd /Users/nitto/Workspace/sandbox && grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' .agent/agent-project.yaml` → **exit 0**\n- t2の注入ツール `codd_gate_regression.py` を実機の `codd-gate`（`~/.local/bin/codd-gate`）に対して dry-run 実行 → `usable: true, changed: false`（既存の `.agent/agent-project.yaml` は既に正しい値で冪等）\n- `agent-project doctor --json` 実行 → codd-gate関連findingは0件（検出→regression→intake の結線が実機で健全）\n- t1/t4が報告した横断課題（`install.sh` が `codd_gate_*.py` をzipappに同梱しない）も作業ツリー上で既に修正済みと確認\n- テスト: 750 passed / 1 failed（無関係な既知のmacOS環境依存flake）\n- **t5のverify=fail（`.agent-project`側でgrepがexit 2）は評価ワークツリー取り違えによるfalse negativeと判定** — `.agent-project`はsparse制御面で`.agent/agent-project.yaml`が実体化されず、正しい評価ルートは main worktree 側\n\n報告書を `bus/runs/.../artifacts/t6/report.md` に出力済み。main worktreeへの手動commitは、同worktree独自のkiro-projectループのstate-syncに委ねて見送った。",
+  "finished_at": "2026-07-15T15:12:09Z",
+  "artifacts": [
+    "artifacts/t6/report.md"
+  ]
+}

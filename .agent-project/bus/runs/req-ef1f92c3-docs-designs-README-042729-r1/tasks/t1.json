@@ -1,0 +1,6 @@
+{
+  "id": "t1",
+  "goal": "既存の設計書群を棚卸しし、4つの主要設計（docs/designs/agent-project-design.md, agent-flow-design.md, codd-gate-design.md, agent-tools-rename-design.md）の実在・配置・役割・相互関係を確認する。docs/designs ディレクトリの有無も確認する。",
+  "deps": [],
+  "kind": "work"
+}

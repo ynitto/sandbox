@@ -1,0 +1,6 @@
+{
+  "id": "t4",
+  "goal": "設計書・ドキュメントを更新し、codd-gate 自動検出と regression/intake 結線の仕組み・データ契約・有効化手順を人間に読みやすく整理する（charter の可読性目標に対応）。",
+  "deps": [],
+  "kind": "work"
+}

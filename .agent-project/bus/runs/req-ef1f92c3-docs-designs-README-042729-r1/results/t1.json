@@ -1,0 +1,10 @@
+{
+  "id": "t1",
+  "who": "worker-2",
+  "status": "done",
+  "output": "棚卸しタスク（t1）を完了し、成果物を出力した。\n\n## 成果サマリー\n\n**docs/designs ディレクトリの有無**: 本 worktree（`.agent-project`）には `docs/` 自体が存在しない。charter が指す実装リポジトリ `/Users/nitto/Workspace/sandbox` には存在し、配下に25ファイル（`README.md` 含む）。\n\n**主要4設計の実在・配置**: 全て `/Users/nitto/Workspace/sandbox/docs/designs/` 配下に実在を確認。\n- `agent-project-design.md`（1016行）— agent-project（バックログ自律制御層）の唯一の設計正典\n- `agent-flow-design.md`（866行）— 分散 Dynamic Workflow 実行基盤の設計書\n- `codd-gate-design.md`（301行）— ドキュメント一貫性ゲート、agent-project に非依存の独立ツール\n- `agent-tools-rename-design.md`（85行）— kiro-* → agent-* 改称移行方針\n\n**相互関係**（grep実測）: agent-project ⇄ agent-flow は相互参照（実行委譲の関係）。codd-gate は agent-project を参照するが依存の向きは非対称（結合点は schemas/ の契約のみ）。agent-tools-rename は他5設計から改称根拠として広く参照される。\n\n**範囲外で見つけた重要事実**: 実装リポジトリ側には既に `docs/designs/README.md` が存在し、主要4設計すべてへのリンクを含んでいた。この run の完了条件は実装リポジトリを対象にすれば既に満たされている可能性が高い。ただしREADME作成は本タスク（t1: 棚卸しのみ）の範囲外と判断し、作成・変更はしていない — synth系タスクの判断に委ねる。\n\n成果物は `bus/runs/req-ef1f92c3-docs-designs-README-042729-r1/artifacts/t1/inventory.md` に出力済み。",
+  "finished_at": "2026-07-15T13:28:13Z",
+  "artifacts": [
+    "artifacts/t1/inventory.md"
+  ]
+}

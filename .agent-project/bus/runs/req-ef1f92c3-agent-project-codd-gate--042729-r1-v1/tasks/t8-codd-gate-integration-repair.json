@@ -1,0 +1,10 @@
+{
+  "id": "t8-codd-gate-integration-repair",
+  "goal": "t1〜t4 の成果をメイン worktree に統合して自動連携を完成させる。具体的には、failed になった t1 の実差分（codd_gate_wiring.py、doctor.py、テスト）を検査して不足なく適用し、成果物に留まっている t2 の codd_gate_regression.py とテストを本体へ適用する。そのうえで agent-project の既存の設定生成・初期化経路から codd-gate の存在・version・repos schema・verify/tasks capability を自動検出し、利用可能な場合だけ regression_cmd と intake_cmd を冪等に設定する実行経路を結線する。明示済みの利用者設定は上書きせず、未検出・非互換時は既存動作へ no-op 縮退させる。tools/agent-project/install.sh の zipapp に必要な codd_gate_*.py を同梱して配布環境でも検出・regression・intake が動くようにし、t4 の『自動配線は未接続』という記述を実装後の状態へ更新する。",
+  "deps": [
+    "t2",
+    "t3",
+    "t4"
+  ],
+  "kind": "work"
+}

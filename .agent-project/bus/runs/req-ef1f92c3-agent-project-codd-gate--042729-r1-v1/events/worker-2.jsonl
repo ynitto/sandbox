@@ -1,0 +1,18 @@
+{"ts": "2026-07-15T13:47:24Z", "who": "worker-2", "kind": "claimed", "node": "t3"}
+{"ts": "2026-07-15T13:59:12Z", "who": "worker-2", "kind": "result", "node": "t3", "status": "done"}
+{"ts": "2026-07-15T13:59:13Z", "who": "worker-2", "kind": "claimed", "node": "t1"}
+{"ts": "2026-07-15T14:14:13Z", "who": "worker-2", "kind": "result", "node": "t1", "status": "failed"}
+{"ts": "2026-07-15T14:15:17Z", "who": "worker-2", "kind": "claimed", "node": "t8-codd-gate-integration-repair"}
+{"ts": "2026-07-15T14:30:17Z", "who": "worker-2", "kind": "result", "node": "t8-codd-gate-integration-repair", "status": "failed"}
+{"ts": "2026-07-15T14:30:39Z", "who": "worker-2", "kind": "claimed", "node": "t10-codd-gate-wiring-repair"}
+{"ts": "2026-07-15T14:39:55Z", "who": "worker-2", "kind": "result", "node": "t10-codd-gate-wiring-repair", "status": "done"}
+{"ts": "2026-07-15T14:39:56Z", "who": "worker-2", "kind": "claimed", "node": "t11-codd-gate-end-to-end-verify"}
+{"ts": "2026-07-15T14:40:54Z", "who": "worker-2", "kind": "claimed", "node": "t1"}
+{"ts": "2026-07-15T14:45:54Z", "who": "worker-2", "kind": "result", "node": "t1", "status": "done"}
+{"ts": "2026-07-15T14:45:55Z", "who": "worker-2", "kind": "claimed", "node": "t5"}
+{"ts": "2026-07-15T14:50:36Z", "who": "worker-2", "kind": "result", "node": "t5", "status": "done"}
+{"ts": "2026-07-15T14:50:36Z", "who": "worker-2", "kind": "claimed", "node": "t6"}
+{"ts": "2026-07-15T15:12:09Z", "who": "worker-2", "kind": "result", "node": "t6", "status": "done"}
+{"ts": "2026-07-15T15:12:09Z", "who": "worker-2", "kind": "claimed", "node": "t7"}
+{"ts": "2026-07-15T15:29:04Z", "who": "worker-2", "kind": "result", "node": "t7", "status": "done"}
+{"ts": "2026-07-15T15:29:04Z", "who": "worker-2", "kind": "claimed", "node": "t9-codd-gate-end-to-end-verify"}

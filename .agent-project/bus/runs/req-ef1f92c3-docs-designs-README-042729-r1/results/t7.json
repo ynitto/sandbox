@@ -1,0 +1,10 @@
+{
+  "id": "t7",
+  "who": "worker-2",
+  "status": "done",
+  "output": "## 統合結果（synthesize / t7）\n\n**対象ファイルの特定**: t2〜t5 は README 配置先の確定を「範囲外」としていたが、`[[agent-project-verify-location]]` の記録どおり本 run の完了条件は `/Users/nitto/Workspace/sandbox`（main worktree）側 `docs/designs/README.md` に対して評価される（r0 の `verify-command-log.txt` で `cd sandbox && ...` を実行して確認済み）。同ファイルは既に主要4設計への相対リンク・一行要旨・読む順序案内を備えた完成形が存在しており、新規作成ではなく **t6（verify）指摘の minor issue 2件の是正**を実施した。\n\n### 適用した修正\n\n1. **codd-gate 一行要旨の是正**（t6 issue 1）: 「結合点は `schemas/` の共通データ契約のみ」→「`schemas/` の共通データ契約と agent-project 側の汎用フック契約（E1〜E3）の2点で連携」に修正。t4 抽出および codd-gate-design.md §4 の記述と整合させた。\n2. **読む順序の明示**（t6 issue 2）: 「まず読むもの」冒頭に、基本順序（1→2→3＝制御層→実行層→品質ゲート）と、`kiro-*`/`agent-*` 併存に迷う読者向けに4（改称設計）先読みの案内を追加。\n\n### 検証\n- 完了条件コマンドを sandbox 側で再実行 → exit 0\n- 相対リンク解決チェック（r0 と同一スクリプト）→ `REL_LINKS 30, BROKEN []`\n- 変更箇所は該当2点のみ、他ファイル・`.agent-project` 側スタブには非接触\n\n### 未解決事項（範囲外）\n- `.agent-project` 側に別内容のスタブ README が存在するが sparse worktree 用の無害な参照であり、本 run では不問とした。\n- sandbox 側の commit/push は sandbox 自身の state-sync ループに委ね、本タスクからは行っていない。\n\n成果物: `bus/runs/req-ef1f92c3-docs-designs-README-042729-r1/artifacts/t7/synthesis-report.md`",
+  "finished_at": "2026-07-15T13:39:05Z",
+  "artifacts": [
+    "artifacts/t7/synthesis-report.md"
+  ]
+}
