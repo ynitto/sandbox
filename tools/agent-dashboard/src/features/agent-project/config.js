@@ -54,6 +54,14 @@ module.exports = {
     // 設定ファイル lock_dir → 両ツール既定の $TMPDIR/agent-flow-locks を使う。
     flowLockDir: '',
   },
+  notifications: {
+    // 新しい「要対応（人の判断待ち）」が現れたら OS 通知・タスクバーバッジ・ウィンドウの
+    // フラッシュで知らせる（張り付き監視を不要にする＝人の省力化）。ウィンドウを見ている
+    // 間はポップアップとフラッシュを抑制し、バッジ（未対応の総数）だけを更新する。
+    // discover() が各プロジェクトに載せる needsCount（サイドバーの要対応バッジと同じ数）の
+    // 増分で検知する。起動直後の既存分では通知しない（初回はベースライン取得のみ）。
+    enabled: true,
+  },
   agent: {
     // charter の AI 下書き・補完と読み取り専用 Doctor に共通で使うエージェント CLI。
     //   kiro / claude / copilot / codex / cursor / ollama

@@ -33,6 +33,9 @@ const state = {
   enqueueExtra: null, // {level, track}（再投入で引き継ぐが UI に出さない値）
   timer: null,
   busy: false,
+  // 要対応（needs）の前回カウント。増分を検知して OS 通知する（張り付き監視の解消）。
+  // initialized=false の初回はベースライン取得のみで通知しない（起動時の殺到を避ける）。
+  notify: { counts: {}, initialized: false },
 };
 
 // ---------------------------------------------------------------------------
@@ -438,6 +441,83 @@ document.addEventListener(
 async function refreshDiscovery() {
   state.discovery = await api.discover();
   renderTree();
+  checkNeedsNotifications();
+}
+
+// 要対応カウントの増分を計算する純関数（副作用なし・テスト対象）。
+//   prevCounts: { dir -> count }（前回。初回は空）
+//   projects:   discover() が返す projects（各に needsCount・root・name を含む）
+// 返り値: { counts, total, notifications:[{name, root, added, total}] }
+// exists:false（登録が実在しない）プロジェクトは総数・通知の対象外。
+function computeNeedsDelta(prevCounts, projects) {
+  const counts = {};
+  let total = 0;
+  const notifications = [];
+  for (const p of projects || []) {
+    if (!p || p.exists === false) continue;
+    const c = Math.max(0, Math.floor(Number(p.needsCount) || 0));
+    counts[p.dir] = c;
+    total += c;
+    const before = prevCounts ? prevCounts[p.dir] : undefined;
+    // 前回観測済みのプロジェクトで数が増えたときだけ通知する（新規発見・減少では通知しない）。
+    if (before != null && c > before) {
+      notifications.push({
+        name: p.charterName || p.name || p.dir,
+        root: p.root || p.dir,
+        added: c - before,
+        total: c,
+      });
+    }
+  }
+  return { counts, total, notifications };
+}
+
+// 通知は base の app:notify に文言を渡すだけ（フォーカス中の抑制・バッジ・フラッシュは
+// main 側が判断する）。preload に notify が無い旧ビルドでも黙って何もしない。
+function safeNotify(payload) {
+  try {
+    if (api && typeof api.notify === 'function') return api.notify(payload);
+  } catch (err) {
+    uiLog('notify failed', String((err && err.message) || err));
+  }
+  return null;
+}
+
+// discover() の needsCount 増分を検知して OS 通知する（純関数 computeNeedsDelta の外殻）。
+function checkNeedsNotifications() {
+  const enabled = !(
+    state.config &&
+    state.config.notifications &&
+    state.config.notifications.enabled === false
+  );
+  const projects = (state.discovery && state.discovery.projects) || [];
+  const { counts, total, notifications } = computeNeedsDelta(state.notify.counts, projects);
+  const seeded = state.notify.initialized;
+  state.notify.counts = counts;
+  state.notify.initialized = true;
+
+  if (!enabled) {
+    // 通知オフ: バッジを消し、増分は無視する（カウントは追い続けるので再オンで殺到しない）。
+    safeNotify({ badgeCount: 0, silent: true });
+    return;
+  }
+  if (!seeded || !notifications.length) {
+    // 初回のベースライン取得、または増分なし: バッジ（総数）だけ合わせる。
+    safeNotify({ badgeCount: total, silent: true });
+    return;
+  }
+  for (const r of notifications) {
+    safeNotify({
+      title: `${r.name}: 要対応 ${r.added} 件`,
+      body:
+        r.total > r.added
+          ? `新しく人の判断待ちが増えました（このプロジェクト計 ${r.total} 件）。クリックで開きます。`
+          : '新しく人の判断待ちが発生しました。クリックで開きます。',
+      target: { root: r.root, name: r.name },
+      badgeCount: total,
+      flash: true,
+    });
+  }
 }
 
 // プロジェクトの登録を実体に即して直接消す（config.roots のエントリ削除、または
@@ -4788,6 +4868,7 @@ function openSettings() {
   $('cfg-refresh').value = cfg.projects ? cfg.projects.refreshSec : 5;
   $('cfg-git-pull').value = cfg.projects && cfg.projects.gitPullSec !== undefined ? cfg.projects.gitPullSec : 300;
   $('cfg-git-autopush').checked = !!(cfg.projects && cfg.projects.gitAutoPush);
+  $('cfg-notify').checked = !(cfg.notifications && cfg.notifications.enabled === false);
   $('cfg-project-command').value = (cfg.projects && cfg.projects.command) || 'agent-project';
   $('cfg-action-mode').value = (cfg.projects && cfg.projects.actionMode) || 'auto';
   $('cfg-flow-bus').value = (cfg.projects && cfg.projects.flowBus) || '';
@@ -4819,6 +4900,8 @@ async function saveSettings() {
   cfg.projects.refreshSec = Math.max(0, parseInt($('cfg-refresh').value, 10) || 0);
   cfg.projects.gitPullSec = Math.max(0, parseInt($('cfg-git-pull').value, 10) || 0);
   cfg.projects.gitAutoPush = $('cfg-git-autopush').checked;
+  cfg.notifications = cfg.notifications || {};
+  cfg.notifications.enabled = $('cfg-notify').checked;
   cfg.projects.command = $('cfg-project-command').value.trim() || 'agent-project';
   cfg.projects.actionMode = $('cfg-action-mode').value;
   cfg.projects.flowBus = $('cfg-flow-bus').value.trim();

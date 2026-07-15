@@ -61,13 +61,18 @@ M（新規モジュール 1〜2）/ L（横断・複数ツール協調）。
 
 ### A. 気づく前に届く — 通知と省力トリアージ（自律性）
 
-**A1. OS 通知・トレイ・タスクバーバッジ・ウィンドウフラッシュ**（G1｜軸1｜S）
-新規 needs（plan-review / review / blocked）出現、run failed、承認待ち parked を検知したら
-Electron の `Notification` / `app.setBadgeCount` / `win.flashFrame` / `Tray` で OS 側に出す。
-通知本文は「何が・なぜ・どのプロジェクト」を 1 行で（例:「payments: 検収待ち 1 件 — verify PASS
-済み、差分 3 ファイル」）。クリックで該当カードへディープリンク（`agent-dashboard://` は既にある）。
-状態差分はポーリング結果（renderer の `state`）の前後比較で取れるので、`base/main` に薄い
-通知層を足すだけ。**張り付き監視の解消がそのまま省力化になる**、最小コスト・最大効果の一手。
+**A1. OS 通知・タスクバーバッジ・ウィンドウフラッシュ**（G1｜軸1｜S）✅ 実装済み
+新規 needs 出現を検知したら Electron の `Notification` / `app.setBadgeCount` / `win.flashFrame`
+で OS 側に出す。クリックで該当プロジェクトへディープリンク（`agent-dashboard://` は既にある）。
+状態差分はポーリング結果（`discover()` の `needsCount`）の前後比較で取れるので、`base/main` に
+薄い通知層を足すだけ。**張り付き監視の解消がそのまま省力化になる**、最小コスト・最大効果の一手。
+
+> **実装（このリポジトリ）**: `src/base/main/notify.js`（汎用 OS 通知プリミティブ）＋
+> `app:notify` IPC ＋ renderer の増分検知（純関数 `computeNeedsDelta` ＋ `checkNeedsNotifications`）。
+> ⚙ 設定トグル `notifications.enabled`（既定 on）。観測済みプロジェクトで `needsCount` が増えた
+> ときだけ通知し、起動直後の既存分・減少・新規発見では通知しない。フォーカス中はポップアップと
+> フラッシュを抑制しバッジだけ更新。クリックは既存の `app:openTarget` ディープリンク経路を再利用。
+> テスト: `test/needs-notify.test.js`。トレイ常駐は今回は入れていない（通知＋バッジで十分なため）。
 
 **A2. 外部通知ルーティング（任意・Slack/汎用 webhook）**（G1｜軸1｜M）
 在席していない/複数人運用のとき、A1 の同じイベントを webhook にも流す（⚙ 設定でオプトイン、
@@ -175,5 +180,6 @@ C1 条件付き自動承認・C2 決定メモリ・D2 再発クラスタ。
 
 ## 次アクション（提案）
 
-この文書はたたき台。Phase 1 の中から **A1（OS 通知）** を最小 PR で実装するのが、費用対効果・
-リスクとも最良の入口だと考える。合意いただければ着手する。
+Phase 1 の入口として **A1（OS 通知）を実装済み**（上記 ✅）。次は同じ Phase 1 の
+**A4（経過時間・SLA バッジ）** か **D1（acceptance リンティング）** が、いずれも既存層に閉じて
+低コスト・高価値。合意いただければ続けて着手する。

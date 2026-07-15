@@ -7,6 +7,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: 要対応の OS 通知（気づく前に届く）
+
+ダッシュボードは既定 5 秒ポーリングの純プル型で、**人が画面を見ていないと新しい要対応
+（人の判断待ち）に気づけなかった**。張り付き監視を不要にする省力化として、新しい要対応が
+現れたら **OS 通知・タスクバーバッジ・ウィンドウのフラッシュ**で知らせる。
+
+- **増分検知**: `discover()` が各プロジェクトに載せる `needsCount`（サイドバーの要対応バッジと
+  同じ数）を前回と突き合わせ、**観測済みプロジェクトで数が増えたときだけ**通知する。起動直後の
+  既存分では通知しない（初回はベースライン取得のみ＝殺到しない）。減少・新規発見でも通知しない。
+- **騒音を出さない**: ウィンドウを見ている（フォーカス中）間はポップアップとフラッシュを抑制し、
+  バッジ（未対応の総数）だけを更新する。判断は main 側（`base/main/notify.js`）に集約。
+- **クリックで対象へ**: 通知をクリックすると窓を前面化し、**既存のディープリンク経路**
+  （`agent-dashboard://open?root=…` → `app:openTarget`）でそのプロジェクトを開く（新配線なし）。
+- **設定**: ⚙ 設定に「要対応が増えたら OS 通知で知らせる」トグル（既定 on・
+  `notifications.enabled`）。Windows は `setBadgeCount` 非対応のため通知とフラッシュで補う。
+- **層の分離**: base は汎用の OS 通知プリミティブ（`app:notify`）だけを提供し、「何を・なぜ
+  通知するか」は agent-project の意味を知る renderer が決める（feature 分離の方針どおり）。
+  中核の増分ロジックは純関数 `computeNeedsDelta` に切り出してテスト（`test/needs-notify.test.js`）。
+
+> 改善案の全体像は [`docs/designs/agent-dashboard-project-ux-improvements.md`](docs/designs/agent-dashboard-project-ux-improvements.md)（A1 として整理）。
+
 ### agent-flow / agent-project: kiro 依存の内部命名を汎化
 
 旧 `kiro-flow` / `kiro-project` 由来で残っていた kiro 接頭辞の内部命名を、agent CLI 横断の

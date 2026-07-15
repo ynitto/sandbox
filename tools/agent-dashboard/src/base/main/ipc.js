@@ -9,6 +9,7 @@ const { loadConfig, saveConfig } = require('./config');
 const git = require('./git');
 const { GitLabClient } = require('./gitlab');
 const shellActions = require('./shell-actions');
+const notify = require('./notify');
 const { loadFeatures } = require('../../features');
 
 function client() {
@@ -98,6 +99,10 @@ function registerBaseIpcHandlers() {
   });
 
   handle('shell:openPath', ({ target }) => shellActions.openPath(shell, target));
+
+  // OS 通知・タスクバーバッジ・ウィンドウフラッシュ（要対応の増分を renderer が検知して呼ぶ）。
+  // 「何を通知するか」は renderer（agent-project の意味を知る側）が決め、ここは出すだけ。
+  handle('app:notify', (payload) => notify.notify(payload || {}));
 }
 
 function registerIpcHandlers() {
