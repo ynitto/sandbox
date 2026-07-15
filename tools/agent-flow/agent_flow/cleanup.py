@@ -17,9 +17,18 @@ def _locks_root() -> str:
 
 
 def _pid_alive(pid: int) -> bool:
-    """pid のプロセスが存命か（POSIX）。判定不能なら安全側で True を返す。"""
+    """pid のプロセスが存命か。判定不能なら安全側で True を返す。
+    Windows の os.kill(pid, 0) は生死判定として信頼できない（不在 pid でも
+    PermissionError になる等）ため、tasklist で存在確認する。"""
     if pid <= 0:
         return False
+    if os.name == "nt":  # pragma: no cover — Windows のみ
+        try:
+            p = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
+                               capture_output=True, text=True, timeout=10)
+            return f'"{pid}"' in (p.stdout or "")
+        except (OSError, subprocess.SubprocessError):
+            return True
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -56,6 +65,13 @@ def sweep_lock_files(min_age_sec: float = 3600.0) -> int:
                     fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except OSError:
                     continue  # 保持中 → 残す（finally で close）
+            elif msvcrt is not None:  # pragma: no cover — Windows のみ
+                try:
+                    f.seek(0)
+                    msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+                    msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    continue  # 保持中 → 残す（年齢だけで消すと排他が壊れる）
             os.remove(path)
             removed += 1
         except OSError:

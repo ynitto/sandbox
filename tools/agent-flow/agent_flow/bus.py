@@ -182,6 +182,26 @@ class Bus:
     def _write_claim(self, node_id: str, who: str, lease_sec: float) -> None:
         self._write_claim_in(self._claim_dir(node_id), who, lease_sec)
 
+    def extend_claim(self, node_id: str, who: str, lease_sec: float) -> bool:
+        """実行中ワーカーの心拍用: 自分の claim の lease_until **だけ**を延長する。
+        ts / claimed_at は書き換えない（新しい ts を振り直すと勝者タイブレークの根拠が
+        動いてしまう）。claim ロックの中で行い、自分の claim が消えている（release /
+        withdraw 済み）か、lease 失効中に他者が勝者になっていれば延長せず False を返す
+        ——失った claim を心拍が無条件に書き戻すと二重実行になるため。"""
+        claim_dir = self._claim_dir(node_id)
+        path = os.path.join(claim_dir, f"{who}.json")
+        os.makedirs(claim_dir, exist_ok=True)
+        with _file_lock(_claim_lock_path(claim_dir)):
+            cur = read_json(path)
+            if not cur:
+                return False
+            w = self._winner_in(claim_dir)
+            if w is not None and w != who:
+                return False
+            cur["lease_until"] = time.time() + lease_sec
+            write_json_atomic(path, cur)
+        return True
+
     def try_claim(self, node_id: str, who: str, lease_sec: float) -> bool:
         self.sync_pull()
         if self.has_result(node_id):

@@ -266,12 +266,18 @@ class Heartbeat(threading.Thread):
         super().__init__(daemon=True)
         self.bus, self.node_id, self.who, self.lease = bus, node_id, who, lease
         self._stopped = threading.Event()
+        self.lost = threading.Event()   # claim を失った（他者が勝者）ことの検知
 
     def run(self) -> None:
         interval = max(2.0, self.lease / 3.0)
         while not self._stopped.wait(interval):
             try:
-                self.bus._write_claim(self.node_id, self.who, self.lease)
+                # lease_until だけを延長する（ts の振り直し・claim の書き戻しはしない）。
+                # 失効中に他者が claim していたら延長を止めて喪失を記録する——
+                # ここで無条件に claim を書き戻すと両者が走り続けて二重実行になる。
+                if not self.bus.extend_claim(self.node_id, self.who, self.lease):
+                    self.lost.set()
+                    return
                 self.bus.sync_push(f"heartbeat {self.node_id} by {self.who}")
             except Exception:  # noqa: BLE001 — 心拍失敗は実行を止めない
                 pass

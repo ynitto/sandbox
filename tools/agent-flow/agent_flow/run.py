@@ -33,7 +33,7 @@ def _acquire_daemon_lock(args):
     """daemon singleton ロックを取得して pid を記録し、lock_file を返す。既に保持中なら None。
     pid は flock の有無に関わらず記録する（flock 非対応環境でも pid 生存で発見できるように）。"""
     lock_path = _daemon_lock_path(args)
-    # 既存ホルダの pid を消さないよう truncate せず開く（flock 取得後にだけ書く）
+    # 既存ホルダの pid を消さないよう truncate せず開く（ロック取得後にだけ書く）
     lock_file = os.fdopen(os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644), "r+")
     if fcntl is not None:
         try:
@@ -41,9 +41,17 @@ def _acquire_daemon_lock(args):
         except BlockingIOError:
             lock_file.close()
             return None
-    else:
-        # flock 非対応（Windows 等）: README の「PID 生存で singleton」契約を実装する。
-        # 既存ロックに生きた別 pid があれば取得を拒否（死んでいれば書き換えて引き継ぐ）。
+    elif msvcrt is not None:
+        # Windows: msvcrt.locking の非ブロッキング領域ロックで排他する。
+        # 以前の「PID を読んで生死判定→書き込み」は TOCTOU（2 プロセスが同時に判定を通過し
+        # 両方 daemon になる）だったため、OS のロックに置き換える。
+        try:
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            lock_file.close()
+            return None
+    else:  # pragma: no cover — fcntl も msvcrt も無い環境のみ（従来の PID フォールバック）
         try:
             lock_file.seek(0)
             raw = (lock_file.read() or "").strip()
@@ -69,6 +77,9 @@ def _release_daemon_lock(lock_file) -> None:
     try:
         if fcntl is not None:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
+        elif msvcrt is not None:
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
     except OSError:
         pass
     try:

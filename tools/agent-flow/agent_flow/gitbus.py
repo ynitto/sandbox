@@ -156,11 +156,69 @@ class GitBus(Bus):
 
     def _rebuild_clone(self) -> None:
         """破損したノード専用クローンを丸ごと捨て、リモート（真実）から作り直す。
-        未 push の作業は孤児 reclaim が続きから再実行するため、捨てても情報は失われない。"""
+
+        丸ごと捨てると「commit 済みだが push 未達の書き込み」（result / claim / wait 等、
+        直前に書いたバスファイル）まで消え、sync_push が空 push で成功して**サイレントに
+        データが失われる**。作業ツリーのバスファイルを退避し、再クローン後に
+        「リモートに存在しないファイルだけ」を書き戻して再コミット対象に載せる
+        （既存ファイルへの変更は上書きしない＝他ノードの新しい状態を巻き戻さない）。"""
         log(os.path.basename(self.workdir),
             f"クローン {self.workdir} のオブジェクト破損を検知——リモートから作り直します")
+        salvage = self._salvage_bus_files()
         self._reset_clone_dir()
         self._ensure_clone()
+        self._restore_salvaged_files(salvage)
+
+    def _salvage_bus_files(self) -> "str | None":
+        """再クローン前に、作業ツリー上のバスファイル（sparse パス配下）を一時ディレクトリへ
+        退避する。オブジェクト DB が壊れていてもチェックアウト済みの実ファイルは大抵無事。"""
+        try:
+            dst_root = tempfile.mkdtemp(prefix="agent-flow-salvage-")
+        except OSError:
+            return None
+        copied = 0
+        for rel in self._sparse_paths():
+            src = os.path.join(self.workdir, rel) if rel else self.workdir
+            dst = os.path.join(dst_root, rel) if rel else dst_root
+            if not os.path.isdir(src):
+                continue
+            try:
+                shutil.copytree(src, dst, dirs_exist_ok=True,
+                                ignore=shutil.ignore_patterns(".git"))
+                copied += 1
+            except OSError:
+                pass
+        if not copied:
+            shutil.rmtree(dst_root, ignore_errors=True)
+            return None
+        return dst_root
+
+    def _restore_salvaged_files(self, salvage_root: "str | None") -> None:
+        """退避したバスファイルのうち、再クローン後の作業ツリーに**存在しない**ものだけを
+        書き戻す（未 push の新規ファイル＝自ノードの result/claim/wait 等の救出）。
+        既存ファイルは上書きしない: リモート側の方が新しい可能性があるため。"""
+        if not salvage_root:
+            return
+        restored = 0
+        try:
+            for dirpath, _dirs, files in os.walk(salvage_root):
+                for name in files:
+                    src = os.path.join(dirpath, name)
+                    rel = os.path.relpath(src, salvage_root)
+                    dst = os.path.join(self.workdir, rel)
+                    if os.path.exists(dst):
+                        continue
+                    try:
+                        os.makedirs(os.path.dirname(dst), exist_ok=True)
+                        shutil.copy2(src, dst)
+                        restored += 1
+                    except OSError:
+                        pass
+        finally:
+            shutil.rmtree(salvage_root, ignore_errors=True)
+        if restored:
+            log(os.path.basename(self.workdir),
+                f"再クローン後に未 push のバスファイル {restored} 件を復元しました")
 
     def _git(self, args, check=True):
         p = None
