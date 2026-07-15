@@ -27,8 +27,10 @@ const state = {
   needsDrafts: {}, // フィルターや選択を切り替えても回答の下書きを保持する
   needOutputCache: {}, // needs file+mtime → 関連runを含む全出力（明示操作時だけロード）
   doctorBusy: false,
-  doctorMode: 'consultation', // consultation / failure-diagnosis
-  doctorNeedId: null, // 失敗診断後の追加質問でも同じ要対応を参照する
+  doctorMode: 'consultation', // consultation / failure-diagnosis / plan-critique / delivery-rationale
+  doctorNeedId: null, // 診断・批評後の追加質問でも同じ要対応を参照する
+  doctorFeedbackDraft: '', // 差し戻し文面案（回答欄へ流し込み用）
+  assistBusy: false, // 構造化 Assist（フォローアップ / 依存優先度）の実行中
   flowFilter: 'active', // フロータブの run フィルタ（active＝非終端のみ／done＝完了・アーカイブ／all）
   gitlab: { enabled: false, byUrl: {}, repoIssues: [], loading: false, flowOnly: true },
   editFile: null, // {dir, name, file}（編集中のプロジェクトファイル）
@@ -1827,6 +1829,86 @@ async function requestReplan() {
   }
 }
 
+function backlogAssistRows(p) {
+  const active = (p && p.backlog) || [];
+  const archive = ((p && p.archive) || []).slice(0, 20);
+  return [...active, ...archive].map((t) => ({
+    id: t.id,
+    title: t.title,
+    status: t.status,
+    priority: t.priority,
+    after: Array.isArray(t.after) ? t.after : String(t.after || '')
+      .split(/[,，\s]+/)
+      .map((x) => x.trim())
+      .filter(Boolean),
+  }));
+}
+
+function charterAssistContext(p) {
+  if (!p) return { goal: '', acceptance: '' };
+  const ch = p.charter || (p.charters || []).find((c) => c.goal) || (p.charters || [])[0] || {};
+  const acceptance = Array.isArray(ch.acceptanceItems)
+    ? ch.acceptanceItems.join('\n')
+    : Array.isArray(ch.acceptance)
+      ? ch.acceptance.join('\n')
+      : String(ch.acceptance || '');
+  return {
+    name: ch.name || p.name || '',
+    goal: String(ch.goal || ''),
+    acceptance,
+  };
+}
+
+function fillEnqueueAfterOptions(p) {
+  const list = $('enq-after-options');
+  if (!list) return;
+  list.replaceChildren();
+  for (const t of backlogAssistRows(p)) {
+    if (!t.id) continue;
+    const opt = document.createElement('option');
+    opt.value = t.id;
+    opt.label = `${t.id} — ${t.title || ''} (p${t.priority ?? 0})`;
+    list.appendChild(opt);
+  }
+}
+
+function renderEnqueueBacklogSummary(p) {
+  const el = $('enq-backlog-summary');
+  if (!el) return;
+  const rows = backlogAssistRows(p).filter((t) => t.status !== 'rejected').slice(0, 40);
+  if (!rows.length) {
+    el.textContent = 'まだバックログがありません。';
+    return;
+  }
+  el.innerHTML = `<ul>${rows
+    .map((t) => {
+      const after = (t.after || []).length ? ` ← ${(t.after || []).join(', ')}` : '';
+      return `<li><code>${esc(t.id)}</code> p${esc(t.priority ?? 0)} [${esc(t.status || '?')}] ${esc(t.title || '')}${esc(after)}</li>`;
+    })
+    .join('')}</ul>`;
+}
+
+function renderEnqueueAdjustments(adjustments) {
+  const el = $('enq-ai-adjustments');
+  if (!el) return;
+  if (!adjustments || !adjustments.length) {
+    el.classList.add('hidden');
+    el.innerHTML = '';
+    return;
+  }
+  el.classList.remove('hidden');
+  el.innerHTML =
+    '<strong>既存タスクへの調整案</strong>（参考。反映はタスク詳細の「修正を指示」で行います）' +
+    `<ul>${adjustments
+      .map((a) => {
+        const bits = [];
+        if (a.priority != null) bits.push(`priority=${a.priority}`);
+        if (a.after && a.after.length) bits.push(`after=${a.after.join(',')}`);
+        return `<li><code>${esc(a.id)}</code> ${esc(bits.join(' '))}${a.reason ? ` — ${esc(a.reason)}` : ''}</li>`;
+      })
+      .join('')}</ul>`;
+}
+
 // タスク追加ダイアログを開く。prefill.reinject が真のときは archive タスクの
 // 「revise して再投入」モード（エラー復帰用途）— 元タスクの内容を編集して inbox へ入れる。
 function openEnqueueDialog(prefill = {}) {
@@ -1849,10 +1931,61 @@ function openEnqueueDialog(prefill = {}) {
   $('enq-priority').value = prefill.priority != null && prefill.priority !== '' ? String(prefill.priority) : '0';
   $('enq-note').value = prefill.note || '';
   $('enq-id').value = prefill.id || '';
-  $('enq-after').value = prefill.after || '';
+  $('enq-after').value = Array.isArray(prefill.after) ? prefill.after.join(', ') : (prefill.after || '');
   // level / track はフォームに出さないが、再投入では元タスクの値を引き継いで送る
   state.enqueueExtra = { level: prefill.level || '', track: prefill.track || '' };
+  fillEnqueueAfterOptions(state.project);
+  renderEnqueueBacklogSummary(state.project);
+  renderEnqueueAdjustments([]);
+  const status = $('enq-ai-status');
+  if (status) status.textContent = '';
   $('dlg-enqueue').showModal();
+}
+
+async function aiEnqueueAssist() {
+  const p = state.project;
+  if (!p) return toast('プロジェクトを選択してください');
+  const title = $('enq-title').value.trim();
+  if (!title) return toast('タイトルを書いてから依存・優先度を提案してください');
+  if (state.assistBusy) return;
+  state.assistBusy = true;
+  const btn = $('btn-enq-ai');
+  const status = $('enq-ai-status');
+  btn.disabled = true;
+  status.textContent = '依存・優先度を提案しています…';
+  try {
+    const res = await api.agentTaskAssist({
+      dir: p.dir,
+      mode: 'enqueue-assist',
+      context: {
+        charter: charterAssistContext(p),
+        backlog: backlogAssistRows(p),
+        draft: {
+          title,
+          verify: $('enq-verify').value.trim(),
+          accept: $('enq-accept').value.trim(),
+          priority: $('enq-priority').value,
+          after: $('enq-after').value.trim(),
+          note: $('enq-note').value.trim(),
+          id: $('enq-id').value.trim(),
+        },
+      },
+    });
+    const f = res.fields || {};
+    if (f.after && f.after.length) $('enq-after').value = f.after.join(', ');
+    if (f.priority != null) $('enq-priority').value = String(f.priority);
+    if (f.note) $('enq-note').value = f.note;
+    renderEnqueueAdjustments(f.adjustments || []);
+    status.textContent =
+      `提案を反映しました（${res.cli}${res.model ? ` / ${res.model}` : ''}）` +
+      (f.rationale ? ` — ${f.rationale}` : '。内容を確認してから追加してください');
+  } catch (err) {
+    status.textContent = '';
+    toast(`依存・優先度の提案に失敗しました: ${err.message || err}`);
+  } finally {
+    state.assistBusy = false;
+    btn.disabled = false;
+  }
 }
 
 async function submitEnqueue() {
@@ -2912,10 +3045,17 @@ async function openDeliveryReview(needId) {
     (entry) => entry.role !== 'reference' && entry.path && (entry.ref || !entry.branch)
   );
   const allDiffs = canShowAllDiffs
-    ? `<div class="delivery-review-toolbar">
-        <button class="primary-inline" data-delivery-all-diff>すべての差分を表示</button>
-      </div>`
+    ? `<button class="primary-inline" data-delivery-all-diff>すべての差分を表示</button>`
     : '';
+  const assistToolbar = !need.decided && !isNeedSent(need)
+    ? `<div class="delivery-review-toolbar delivery-assist-toolbar">
+        ${allDiffs}
+        <button type="button" data-delivery-rationale="${esc(need.id)}">変更理由を説明</button>
+        <button type="button" data-delivery-followup="${esc(need.id)}">フォローアップ案</button>
+      </div>`
+    : allDiffs
+      ? `<div class="delivery-review-toolbar">${allDiffs}</div>`
+      : '';
   const emptyNotice = reviewState.hasContent
     ? ''
     : `<section class="delivery-empty-state" role="status">
@@ -2925,13 +3065,14 @@ async function openDeliveryReview(needId) {
           : '現在の比較条件では、検収対象となる変更を検出しませんでした。'}</p>
       </section>`;
   $('delivery-review-body').innerHTML = `${mrBlock}${emptyNotice}
+    <div id="delivery-assist-panel" class="delivery-assist-panel hidden" aria-live="polite"></div>
     <div class="delivery-review-layout">
       <aside class="delivery-file-panel" aria-label="変更ファイル">
         <div class="delivery-file-panel-title">
           <strong>変更ファイル</strong>
           <span class="muted">${entries.reduce((n, entry) => n + Number(entry.files_total || (entry.files || []).length), 0)}件</span>
         </div>
-        ${allDiffs}
+        ${assistToolbar}
         <div class="delivery-repos">${repos}</div>
       </aside>
       <section class="delivery-diff-panel" aria-label="ファイル差分">
@@ -3017,6 +3158,147 @@ function renderDeliveryDiff(diffText) {
   ui.draw();
 }
 
+async function collectDeliveryDiffSections(need, { maxChars = 80000 } = {}) {
+  const entries = (need.delivery || []).filter(
+    (entry) => entry.role !== 'reference' && entry.path && (entry.ref || !entry.branch)
+  );
+  const sections = await Promise.all(
+    entries.map(async (entry) => {
+      const label = entry.ref
+        ? `${entry.base || 'main'}...${entry.ref}`
+        : '現在の作業ツリー（HEADとの差分）';
+      const files = (entry.files || []).slice(0, 40);
+      try {
+        const res = await api.gitDiff(deliveryDiffRequest(entry));
+        let text = res.text || '(差分なし)';
+        if (text.length > maxChars) {
+          text = `${text.slice(0, maxChars)}\n…（差分が長いため省略）`;
+        }
+        return {
+          name: entry.name || 'repo',
+          label,
+          files,
+          text,
+        };
+      } catch (err) {
+        const message = err && err.message ? err.message : String(err);
+        return {
+          name: entry.name || 'repo',
+          label,
+          files,
+          text: `差分の取得に失敗しました: ${message}`,
+        };
+      }
+    })
+  );
+  return sections;
+}
+
+function showDeliveryAssistPanel(html) {
+  const panel = $('delivery-assist-panel');
+  if (!panel) return;
+  panel.classList.remove('hidden');
+  panel.innerHTML = html;
+}
+
+function renderFollowupSuggestions(needId, fields, meta = {}) {
+  const suggestions = (fields && fields.suggestions) || [];
+  if (!suggestions.length) {
+    showDeliveryAssistPanel(
+      `<section class="delivery-assist-card">
+        <h3>フォローアップ案</h3>
+        <p class="muted">${esc((fields && fields.rationale) || '追加タスク案はありませんでした。')}</p>
+      </section>`
+    );
+    return;
+  }
+  const model = meta.model ? ` / ${meta.model}` : '';
+  showDeliveryAssistPanel(
+    `<section class="delivery-assist-card">
+      <header class="delivery-assist-head">
+        <h3>フォローアップ案</h3>
+        <span class="muted">${esc(meta.cli || '')}${esc(model)}</span>
+      </header>
+      ${fields.rationale ? `<p>${esc(fields.rationale)}</p>` : ''}
+      <ul class="followup-suggest-list">${suggestions
+        .map(
+          (s, i) => `<li>
+            <div><strong>${esc(s.title)}</strong>
+              ${s.after && s.after.length ? `<span class="muted">after: ${esc(s.after.join(', '))}</span>` : ''}
+              <span class="muted">p${esc(s.priority)}</span>
+            </div>
+            <div class="muted">${esc(s.verify || s.accept || '')}</div>
+            <button type="button" class="primary-inline" data-followup-enqueue="${i}">タスク追加フォームへ</button>
+          </li>`
+        )
+        .join('')}</ul>
+    </section>`
+  );
+  const panel = $('delivery-assist-panel');
+  for (const btn of panel.querySelectorAll('[data-followup-enqueue]')) {
+    btn.addEventListener('click', () => {
+      const s = suggestions[Number(btn.dataset.followupEnqueue)];
+      if (!s) return;
+      $('dlg-delivery-review').close();
+      openEnqueueDialog({
+        title: s.title,
+        verify: s.verify,
+        accept: s.accept,
+        priority: s.priority,
+        after: s.after,
+        note: s.note || `検収 ${needId} のフォローアップ`,
+      });
+    });
+  }
+}
+
+async function openDeliveryFollowup(needId) {
+  const p = state.project;
+  const need = p && p.needs.find((item) => item.id === needId);
+  if (!need) return toast('要対応項目が見つかりません');
+  if (state.assistBusy) return;
+  state.assistBusy = true;
+  showDeliveryAssistPanel('<p class="muted">フォローアップ案を作成しています…</p>');
+  try {
+    const task = taskForNeed(p, need);
+    const diffs = await collectDeliveryDiffSections(need, { maxChars: 40000 });
+    const res = await api.agentTaskAssist({
+      dir: p.dir,
+      mode: 'followup-suggest',
+      context: {
+        charter: charterAssistContext(p),
+        backlog: backlogAssistRows(p),
+        selected: {
+          needId: need.id,
+          title: needDisplayTitle(need),
+          risk: need.risk,
+          why: need.why,
+          summary: need.summary,
+          task: task
+            ? {
+                id: task.id,
+                title: task.title,
+                verify: task.verify,
+                accept: task.accept,
+                priority: task.priority,
+                after: task.after,
+              }
+            : null,
+          files: diffs.flatMap((d) => (d.files || []).map((f) => `${d.name}:${f}`)),
+          diffExcerpt: diffs.map((d) => `===== ${d.name} · ${d.label} =====\n${d.text}`).join('\n\n'),
+        },
+      },
+    });
+    renderFollowupSuggestions(need.id, res.fields || {}, { cli: res.cli, model: res.model });
+  } catch (err) {
+    showDeliveryAssistPanel(
+      `<div class="doctor-error" role="alert">フォローアップ案を作成できませんでした: ${esc(err.message || err)}</div>`
+    );
+  } finally {
+    state.assistBusy = false;
+  }
+}
+
 function wireDeliveryReview(root, need) {
   for (const btn of root.querySelectorAll('[data-delivery-mr]')) {
     btn.addEventListener('click', () => {
@@ -3033,12 +3315,15 @@ function wireDeliveryReview(root, need) {
       if (ok) $('dlg-delivery-review').close();
     });
   }
+  for (const btn of root.querySelectorAll('[data-delivery-rationale]')) {
+    btn.addEventListener('click', () => openDeliveryRationale(btn.dataset.deliveryRationale));
+  }
+  for (const btn of root.querySelectorAll('[data-delivery-followup]')) {
+    btn.addEventListener('click', () => openDeliveryFollowup(btn.dataset.deliveryFollowup));
+  }
   const allDiffs = root.querySelector('[data-delivery-all-diff]');
   if (allDiffs) {
     allDiffs.addEventListener('click', async () => {
-      const entries = (need.delivery || []).filter(
-        (entry) => entry.role !== 'reference' && entry.path && (entry.ref || !entry.branch)
-      );
       const view = $('delivery-diff-view');
       root.querySelectorAll('[data-delivery-file]').forEach((item) => {
         item.classList.remove('active');
@@ -3049,21 +3334,10 @@ function wireDeliveryReview(root, need) {
       view.textContent = 'すべての差分を取得しています…';
       allDiffs.disabled = true;
       try {
-        const sections = await Promise.all(
-          entries.map(async (entry) => {
-            const label = entry.ref
-              ? `${entry.base || 'main'}...${entry.ref}`
-              : '現在の作業ツリー（HEADとの差分）';
-            try {
-              const res = await api.gitDiff(deliveryDiffRequest(entry));
-              return `===== ${entry.name || 'repo'} · ${label} =====\n${res.text || '(差分なし)'}`;
-            } catch (err) {
-              const message = err && err.message ? err.message : String(err);
-              return `===== ${entry.name || 'repo'} · ${label} =====\n差分の取得に失敗しました: ${message}`;
-            }
-          })
+        const sections = await collectDeliveryDiffSections(need);
+        renderDeliveryDiff(
+          sections.map((s) => `===== ${s.name} · ${s.label} =====\n${s.text}`).join('\n\n')
         );
-        renderDeliveryDiff(sections.join('\n\n'));
         view.scrollTop = 0;
         view.focus();
       } finally {
@@ -3275,9 +3549,17 @@ function renderNeedDetail(p, n) {
     <section class="need-facts">
       <div class="need-facts-heading">
         <h3>状況</h3>
-        ${!settled && canDiagnoseNeed(n)
-          ? `<button class="primary-inline" data-failure-diagnose="${esc(n.id)}">AIで失敗を診断</button>`
-          : ''}
+        <div class="need-assist-actions">
+          ${!settled && n.kind === 'plan-review'
+            ? `<button class="primary-inline" data-plan-critique="${esc(n.id)}">AIで計画を批評</button>`
+            : ''}
+          ${!settled && n.kind === 'review'
+            ? `<button type="button" data-delivery-rationale="${esc(n.id)}">変更理由を説明</button>`
+            : ''}
+          ${!settled && canDiagnoseNeed(n)
+            ? `<button class="primary-inline" data-failure-diagnose="${esc(n.id)}">AIで失敗を診断</button>`
+            : ''}
+        </div>
       </div>
       ${renderNeedFacts(n) || '<p class="muted">追加の状況説明はありません。</p>'}
     </section>
@@ -3309,6 +3591,12 @@ function bindNeedDetail(root) {
   }
   for (const btn of root.querySelectorAll('button[data-failure-diagnose]')) {
     btn.addEventListener('click', () => openFailureDiagnosis(btn.dataset.failureDiagnose));
+  }
+  for (const btn of root.querySelectorAll('button[data-plan-critique]')) {
+    btn.addEventListener('click', () => openPlanCritique(btn.dataset.planCritique));
+  }
+  for (const btn of root.querySelectorAll('button[data-delivery-rationale]')) {
+    btn.addEventListener('click', () => openDeliveryRationale(btn.dataset.deliveryRationale));
   }
   for (const btn of root.querySelectorAll('button[data-verify-revise]')) {
     btn.addEventListener('click', async () => {
@@ -5286,12 +5574,14 @@ async function buildDoctorContext() {
       selected: null,
     };
   }
-  const diagnosisNeedId = state.doctorMode === 'failure-diagnosis' ? state.doctorNeedId : null;
-  const tab = diagnosisNeedId ? 'needs' : activeTabName();
+  const focusedModes = new Set(['failure-diagnosis', 'plan-critique', 'delivery-rationale']);
+  const focusedNeedId = focusedModes.has(state.doctorMode) ? state.doctorNeedId : null;
+  const tab = focusedNeedId ? 'needs' : activeTabName();
   const context = {
     capturedAt: new Date().toISOString(),
     tab,
-    scope: diagnosisNeedId ? 'failure-diagnosis' : 'project',
+    scope: focusedNeedId ? state.doctorMode : 'project',
+    charter: charterAssistContext(p),
     project: {
       name: p.name,
       status: p.projectState && p.projectState.status,
@@ -5302,7 +5592,7 @@ async function buildDoctorContext() {
     },
   };
   if (tab === 'needs') {
-    const needId = diagnosisNeedId || state.needsSelectedId;
+    const needId = focusedNeedId || state.needsSelectedId;
     const need = p.needs.find((item) => item.id === needId) || null;
     if (need) {
       const output = await loadNeedFullOutput(need);
@@ -5318,14 +5608,52 @@ async function buildDoctorContext() {
         failureResolution: need.failureResolution,
         failureContext: need.failureContext,
         state: need.stateNote,
+        risk: need.risk,
         task: task
-          ? { id: task.id, title: task.title, status: task.status, verify: task.verify, retries: task.retries }
+          ? {
+              id: task.id,
+              title: task.title,
+              status: task.status,
+              verify: task.verify,
+              accept: task.accept,
+              priority: task.priority,
+              after: task.after,
+              retries: task.retries,
+            }
           : null,
         diff: need.diff,
         delivery: need.delivery,
         mrUrls: need.mrUrls,
         fullOutput: output.text,
       };
+      if (state.doctorMode === 'plan-critique') {
+        context.proposedSiblings = (p.backlog || [])
+          .filter((t) => t.status === 'proposed')
+          .slice(0, 40)
+          .map((t) => ({
+            id: t.id,
+            title: t.title,
+            verify: t.verify,
+            accept: t.accept,
+            priority: t.priority,
+            after: t.after,
+          }));
+        context.backlog = backlogAssistRows(p);
+      }
+      if (state.doctorMode === 'delivery-rationale') {
+        context.backlog = backlogAssistRows(p);
+        const hydrated = need.delivery && need.delivery.length
+          ? need.delivery
+          : (await hydrateDeliveryEntries(need.delivery || []));
+        const withDelivery = { ...need, delivery: hydrated };
+        const diffs = await collectDeliveryDiffSections(withDelivery, { maxChars: 50000 });
+        context.selected.diffSections = diffs.map((d) => ({
+          name: d.name,
+          label: d.label,
+          files: d.files,
+          text: d.text,
+        }));
+      }
     }
   } else if (tab === 'flow') {
     const run = state.flowRun && state.flowRun.run;
@@ -5367,9 +5695,38 @@ async function buildDoctorContext() {
   return context;
 }
 
+function setDoctorApplyFeedbackVisible(visible) {
+  const btn = $('btn-doctor-apply-feedback');
+  if (!btn) return;
+  btn.classList.toggle('hidden', !visible);
+}
+
+function doctorStatusPending(mode) {
+  if (mode === 'failure-diagnosis') return '失敗ログを分析し、原因と対処方法を作成しています…';
+  if (mode === 'plan-critique') return '計画を charter と突き合わせて批評しています…';
+  if (mode === 'delivery-rationale') return '差分と完了条件から変更理由を整理しています…';
+  return '現在の画面を読み取り、助言を作成しています…';
+}
+
+function doctorStatusFailed(mode) {
+  if (mode === 'failure-diagnosis') return '失敗診断を実行できませんでした';
+  if (mode === 'plan-critique') return '計画批評を実行できませんでした';
+  if (mode === 'delivery-rationale') return '変更理由の説明を実行できませんでした';
+  return 'Doctorを実行できませんでした';
+}
+
+function doctorTargetLabel(mode, context) {
+  if (mode === 'failure-diagnosis') return `タスク ${state.doctorNeedId} の失敗`;
+  if (mode === 'plan-critique') return `計画レビュー ${state.doctorNeedId}`;
+  if (mode === 'delivery-rationale') return `検収 ${state.doctorNeedId}`;
+  return context.scope === 'app' ? 'アプリ全体' : `${context.tab} 画面`;
+}
+
 function openDoctor() {
   state.doctorMode = 'consultation';
   state.doctorNeedId = null;
+  state.doctorFeedbackDraft = '';
+  setDoctorApplyFeedbackVisible(false);
   $('doctor-title').textContent = '現在の画面を相談';
   $('btn-doctor-submit').textContent = '相談する';
   $('doctor-status').textContent = state.project
@@ -5386,6 +5743,8 @@ async function openFailureDiagnosis(needId) {
   if (!need || !canDiagnoseNeed(need)) return toast('診断できる失敗情報が見つかりません');
   state.doctorMode = 'failure-diagnosis';
   state.doctorNeedId = need.id;
+  state.doctorFeedbackDraft = '';
+  setDoctorApplyFeedbackVisible(false);
   $('doctor-title').textContent = `タスク失敗を診断 — ${needDisplayTitle(need)}`;
   $('btn-doctor-submit').textContent = '追加で質問する';
   $('doctor-prompt').value = '';
@@ -5396,15 +5755,73 @@ async function openFailureDiagnosis(needId) {
   $('doctor-prompt').focus();
 }
 
+async function openPlanCritique(needId) {
+  if (state.doctorBusy) return;
+  const need = state.project && state.project.needs.find((item) => item.id === needId);
+  if (!need || need.kind !== 'plan-review') return toast('計画レビュー対象が見つかりません');
+  state.doctorMode = 'plan-critique';
+  state.doctorNeedId = need.id;
+  state.needsSelectedId = need.id;
+  state.doctorFeedbackDraft = '';
+  setDoctorApplyFeedbackVisible(false);
+  $('doctor-title').textContent = `計画を批評 — ${needDisplayTitle(need)}`;
+  $('btn-doctor-submit').textContent = '追加で質問する';
+  $('doctor-prompt').value = '';
+  $('doctor-status').textContent = '計画と charter を読み込んでいます…';
+  $('doctor-response').innerHTML = '';
+  if (!$('dlg-doctor').open) $('dlg-doctor').showModal();
+  await askDoctor();
+  $('doctor-prompt').focus();
+}
+
+async function openDeliveryRationale(needId) {
+  if (state.doctorBusy) return;
+  const need = state.project && state.project.needs.find((item) => item.id === needId);
+  if (!need || need.kind !== 'review') return toast('検収対象が見つかりません');
+  state.doctorMode = 'delivery-rationale';
+  state.doctorNeedId = need.id;
+  state.needsSelectedId = need.id;
+  state.doctorFeedbackDraft = '';
+  setDoctorApplyFeedbackVisible(false);
+  $('doctor-title').textContent = `変更理由を説明 — ${needDisplayTitle(need)}`;
+  $('btn-doctor-submit').textContent = '追加で質問する';
+  $('doctor-prompt').value = '';
+  $('doctor-status').textContent = '差分と完了条件を読み込んでいます…';
+  $('doctor-response').innerHTML = '';
+  if (!$('dlg-doctor').open) $('dlg-doctor').showModal();
+  await askDoctor();
+  $('doctor-prompt').focus();
+}
+
+function applyDoctorFeedbackDraft() {
+  const draft = String(state.doctorFeedbackDraft || '').trim();
+  if (!draft) return toast('差し戻し文面案がありません');
+  const needId = state.doctorNeedId || state.needsSelectedId;
+  if (!needId) return toast('対象の要対応がありません');
+  state.needsDrafts[needId] = draft;
+  let filled = false;
+  for (const root of [$('tab-needs'), $('dlg-delivery-review')]) {
+    if (!root) continue;
+    for (const box of root.querySelectorAll('.need-actions')) {
+      if (box.dataset.need !== needId) continue;
+      const input = box.querySelector('.need-input');
+      if (input) {
+        input.value = draft;
+        filled = true;
+      }
+    }
+  }
+  toast(filled ? '差し戻し文面を回答欄へ入れました（送信は人が確定します）' : '下書きを保存しました（回答欄を開くと入ります）', true);
+}
+
 async function askDoctor() {
   if (state.doctorBusy) return;
   state.doctorBusy = true;
   $('btn-doctor').disabled = true;
   $('doctor-prompt').disabled = true;
   $('btn-doctor-submit').disabled = true;
-  $('doctor-status').textContent = state.doctorMode === 'failure-diagnosis'
-    ? '失敗ログを分析し、原因と対処方法を作成しています…'
-    : '現在の画面を読み取り、助言を作成しています…';
+  setDoctorApplyFeedbackVisible(false);
+  $('doctor-status').textContent = doctorStatusPending(state.doctorMode);
   $('doctor-response').innerHTML = '';
   try {
     const context = await buildDoctorContext();
@@ -5416,15 +5833,13 @@ async function askDoctor() {
       mode: state.doctorMode,
     });
     const model = res.model ? ` / ${res.model}` : '';
-    const target = state.doctorMode === 'failure-diagnosis'
-      ? `タスク ${state.doctorNeedId} の失敗`
-      : context.scope === 'app' ? 'アプリ全体' : `${context.tab} 画面`;
-    $('doctor-status').textContent = `${res.cli}${model} の助言 — ${target}を分析`;
+    $('doctor-status').textContent = `${res.cli}${model} の助言 — ${doctorTargetLabel(state.doctorMode, context)}を分析`;
     $('doctor-response').innerHTML = mdToHtml(res.content || '助言はありませんでした。');
+    state.doctorFeedbackDraft = String(res.feedbackDraft || '').trim();
+    setDoctorApplyFeedbackVisible(Boolean(state.doctorFeedbackDraft));
   } catch (err) {
-    $('doctor-status').textContent = state.doctorMode === 'failure-diagnosis'
-      ? '失敗診断を実行できませんでした'
-      : 'Doctorを実行できませんでした';
+    state.doctorFeedbackDraft = '';
+    $('doctor-status').textContent = doctorStatusFailed(state.doctorMode);
     $('doctor-response').innerHTML = `<div class="doctor-error" role="alert">${esc(err.message)}</div>`;
   } finally {
     state.doctorBusy = false;
@@ -5509,6 +5924,7 @@ async function init() {
   $('btn-refresh').addEventListener('click', () => refreshAll({ sync: false }));
   $('btn-doctor').addEventListener('click', openDoctor);
   $('btn-doctor-submit').addEventListener('click', askDoctor);
+  $('btn-doctor-apply-feedback').addEventListener('click', applyDoctorFeedbackDraft);
   $('btn-doctor-close').addEventListener('click', () => $('dlg-doctor').close());
   $('btn-need-output-close').addEventListener('click', () => $('dlg-need-output').close());
   $('btn-delivery-review-close').addEventListener('click', () => $('dlg-delivery-review').close());
@@ -5519,6 +5935,7 @@ async function init() {
   $('btn-task-close').addEventListener('click', () => $('dlg-task').close());
   $('btn-enq-cancel').addEventListener('click', () => $('dlg-enqueue').close());
   $('btn-enq-submit').addEventListener('click', submitEnqueue);
+  $('btn-enq-ai').addEventListener('click', aiEnqueueAssist);
   // 新規プロジェクト作成
   $('btn-new-project').addEventListener('click', openNewProject);
   $('btn-np-cancel').addEventListener('click', () => $('dlg-new-project').close());

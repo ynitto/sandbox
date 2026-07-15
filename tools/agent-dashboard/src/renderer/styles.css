@@ -1024,11 +1024,42 @@ dialog h3 { font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
 .doctor-form label { font-weight: 600; }
 .doctor-form textarea { width: 100%; min-height: 76px; resize: vertical; line-height: 1.5; }
 .doctor-form-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.doctor-form-buttons { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .doctor-form-actions button { min-height: 38px; flex: none; }
 .doctor-status { min-height: 24px; margin: 8px 0 12px; color: var(--muted); }
 .doctor-response { line-height: 1.65; max-width: 75ch; }
 .doctor-response h2 { margin: 18px 0 6px; color: var(--fg); font-size: 16px; }
 .doctor-error { padding: 12px; border: 1px solid var(--red); border-radius: 6px; color: #ffb4ad; }
+.need-assist-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.delivery-assist-toolbar { flex-wrap: wrap; }
+.delivery-assist-panel { margin: 0 0 12px; }
+.delivery-assist-card {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 88%, var(--accent) 12%);
+}
+.delivery-assist-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.delivery-assist-card h3 { margin: 0 0 8px; font-size: 15px; }
+.followup-suggest-list { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+.followup-suggest-list li {
+  display: grid;
+  gap: 4px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.followup-suggest-list li:first-child { border-top: 0; padding-top: 0; }
+.enq-backlog-panel { margin: 8px 0 10px; }
+.enq-backlog-summary ul { margin: 6px 0 0; padding-left: 1.2em; max-height: 160px; overflow: auto; }
+.enq-assist-row { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; flex-wrap: wrap; }
+.enq-ai-adjustments {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.enq-ai-adjustments ul { margin: 6px 0 0; padding-left: 1.2em; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 .primary-inline { background: var(--accent); border-color: var(--accent); color: #fff; }
 button.danger { border-color: var(--red); color: var(--red); }

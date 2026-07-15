@@ -245,7 +245,9 @@ agent-project の人間ループはこのアプリ内で完結できる。いず
 | 保留（hold） | 要対応カード・タスク詳細 | 同上（`{"command":"hold"}` ドロップ → policy.deny 追加） |
 | 最優先へ / 後回し | タスク詳細 | 同上（`{"command":"pin"/"defer"}` ドロップ → policy 追記） |
 | ✎ 修正して指示（revise） | タスク詳細（backlog）／要対応詳細（blocked の verify 変更） | 同上（`{"command":"revise"}` ドロップ）。タイトル・優先度・依存 after・verify・accept の**置換**とフィードバック注入。**実行中（doing）のタスクにも送れ**、本体は現在の試行の結果を確定せず（verify も done もせず）修正内容で積み直す＝気づいた時点の早い軌道修正。変更した項目だけが送られ、DR（`action: revise`）に記録される |
-| ＋ バックログに追加 | バックログタブ | `inbox/<name>.json` ドロップ（E4 push 型取り込み口）で**バックログにタスクを 1 件追加**（本体が次サイクルで `backlog/<id>.md` にする）。verify / accept / priority / note / id / after 付き |
+| ＋ バックログに追加 | バックログタブ | `inbox/<name>.json` ドロップ（E4 push 型取り込み口）で**バックログにタスクを 1 件追加**（本体が次サイクルで `backlog/<id>.md` にする）。verify / accept / priority / note / id / after 付き。ダイアログでは既存 backlog 一覧・先行タスク datalist に加え、「AIで依存・優先度を提案」で after/priority の下書きもできる（投入は人の「追加」） |
+| AIで計画を批評 | 要対応（plan-review） | 読み取り専用 Doctor（`plan-critique`）。charter / 兄弟タスクとの整合を批評し、推薦と差し戻し文面案を返す |
+| 変更理由を説明 / フォローアップ案 | 要対応（review）・検収ダイアログ | 読み取り専用（`delivery-rationale` / `followup-suggest`）。差分の意図説明と次タスク案。承認・inbox 投入は人が確定 |
 | ↻ charter から再分解 | バックログタブ | `commands/<name>.json`（`{"command":"replan"}`・**プロジェクト単位＝id 無し**）ドロップで**バックログの再分解を要求**（`ingest_commands` が CLI `replan` と同一ロジック・同一 DR で実行）。本体が次パスで `charter.md` を分解し直し、取りこぼした差分だけを backlog に入れる。**既に done / 既存と類似のタスクは投入しない**（既存＋`archive/`（done）タイトルで冪等に重複排除）。plan 失敗・タスクの誤削除・取りこぼしなどの**エラー回復用途**。稼働していなければ CLI にフォールバック。要求中は「再分解 取り込み待ち」バッジを出しボタンを二重送信防止で無効化する（本体が再分解まで進めると解除）。状態（done 等）は書き換えない |
 | ✎ タスクグラフを積み直す（after 含む revise） | タスク詳細（backlog のみ） | revise（`commands/`）で **依存 after** を含む項目（title / 優先度 / verify / accept / after / note / level / track）を置換。本体が取り込むと `rev` を上げ、agent-flow に**新しいタスクグラフ（run の DAG）**を作らせる（実行中タスクは現在の試行を破棄して積み直し）。after 編集は DAG 循環を本体側が拒否。状態（done 等）は書かない |
 | ＋ 新規プロジェクト | サイドバー ＋（プロジェクトが無い空状態にも導線） | `<親フォルダ>/<名前>/charter.md`（goal / constraints / assumptions / deliverables / acceptance / repos をフォームから）と、repos があれば `repos.json`（`_meta.generated_from` 付き＝正は charter）を作成。以後は agent-project の run が charter から backlog を生成する（専用の作成コマンドは無く、charter を置くだけが公式手順）。作成したルートは設定 roots に追加して発見対象にする |
@@ -297,6 +299,16 @@ agent-project の人間ループはこのアプリ内で完結できる。いず
   「現在起きていること」「次にすること」「判断の根拠」の順で助言を表示する。Doctor は
   読み取り専用モードで CLI を起動し、コマンド実行・ファイル編集・外部操作を許可しない。
   入力コンテキストは最大 120,000 文字。
+- **計画批評** … 計画レビュー（plan-review）カードの「AIで計画を批評」。提案タスクを
+  charter の goal/acceptance と兄弟 proposed タスクと突き合わせ、取りこぼし・重複・依存・
+  推薦・差し戻し文面案を返す。文面案は「差し戻し文面を回答欄へ」でコピーできる（送信は人）。
+- **検収の変更理由** … 検収カード／「検収物を確認」の「変更理由を説明」。差分と
+  verify/accept/charter から「なぜ変えたか」・acceptance 対応・リスク・承認推薦を返す。
+- **フォローアップ案** … 検収ダイアログの「フォローアップ案」。追加タスク案を JSON で提案し、
+  「タスク追加フォームへ」で人が確認してから inbox 投入できる（自動投入しない）。
+- **依存・優先度の提案** … タスク追加ダイアログの「AIで依存・優先度を提案」。既存 backlog を
+  見ながら after / priority / note を下書きし、既存タスクへの調整案も示す。手動では先行タスク
+  ID の datalist と既存 backlog 一覧も使える。
 - **失敗出力の深掘り** … 要対応カードは最初に短い理由だけを示し、詳細画面の
   「出力全体を見る」で needs の原文と関連 run の全ノード出力・エラーを遅延読込する。
   画面表示側では省略しないため、概要から必要な失敗だけを深掘りできる。
