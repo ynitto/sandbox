@@ -8,4 +8,4 @@
 - charter: v1
 - assess: c=1 r=1 a=1
 - last_run: req-ef1f92c3-docs-designs-README-042729-r1
-- needs_reason: 回帰検知: グローバル検査 `codd-gate verify --base "$KIRO_BASE_REV" --repos .agent-project/repos.json` 失敗 — exit=2 失敗した工程: `codd-gate verify --base 567cbce7198f63117d75d459d3ee5d320b9123cf --repos .agent-project/repos.json` [codd-gate] エラー: repos レジストリが見つかりません: .agent-project/repos.json
+- needs_reason: 回帰検知: グローバル検査 `codd-gate verify --base "$KIRO_BASE_REV" --repos .agent-project/repos.json` 失敗 — exit=2 失敗した工程: `codd-gate verify --base 63b0f67116c76c268f4dd275ba8c306c1d819f20 --repos .agent-project/repos.json` [codd-gate] エラー: repos レジストリが見つかりません: .agent-project/repos.json

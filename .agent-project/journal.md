@@ -69,3 +69,7 @@
 - 2026-07-16 04:34:25 state-git 同期: import=3 export=21
 - 2026-07-16 04:34:25 run 再開: verify-codd-gate-042729 は req-ef1f92c3-verify-codd-gate-042729-r1 の失敗ノードだけをやり直します（done は温存）
 - 2026-07-16 04:57:13 cycle 2: verify-codd-gate-042729 → 人の判断（繰り返し NG）
+- 2026-07-16 04:57:16 feedback 取り込み: agent-project-codd-gate--042729 を再開
+- 2026-07-16 04:57:16 feedback 取り込み: docs-designs-README-042729 を再開
+- 2026-07-16 04:57:19 run 再開: docs-designs-README-042729 は req-ef1f92c3-docs-designs-README-042729-r1 の失敗ノードだけをやり直します（done は温存）
+- 2026-07-16 04:57:20 cycle 3: docs-designs-README-042729 → 人の判断（回帰検知）
