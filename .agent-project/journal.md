@@ -58,3 +58,4 @@
 - 2026-07-16 02:43:32 === agent-project 停止 reason=drained cycles=5 done=0 blocked=3 notified=True promoted=0 ===
 - 2026-07-16 02:43:34 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
 - 2026-07-16 02:43:34 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-16 04:29:50 === project 開始 v1 acceptance=2 ===
