@@ -2982,6 +2982,35 @@ function needBucket(n, sentFn) {
   return sentFn(n) ? 'sent' : 'open';
 }
 
+// 待ち時間（ミリ秒）を人間可読ラベルにする純関数。
+function humanizeAge(ms) {
+  const m = Math.floor((Number(ms) || 0) / 60000);
+  if (m < 1) return 'たった今';
+  if (m < 60) return `${m}分待ち`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}時間待ち`;
+  const d = Math.floor(h / 24);
+  return `${d}日待ち`;
+}
+
+// 要対応の待ち時間と SLA レベルを求める純関数（テスト対象）。
+//   need.mtime（最終更新＝この判断待ちが最後に立った時刻の近似）、無ければ date を使う。
+//   slaHours 以上で 'danger'（赤）、その 1/3 以上で 'warn'（黄）、それ未満は ''（色なし）。
+// 停滞している判断待ちを一目で分かるようにする（人待ちで下流が止まっている時間の可視化）。
+function needAgeInfo(need, nowMs, slaHours) {
+  const sla = Math.max(1, Number(slaHours) || 24);
+  let since = Number(need && need.mtime) || 0;
+  if (!since && need && need.date) {
+    const t = Date.parse(need.date);
+    if (!Number.isNaN(t)) since = t;
+  }
+  if (!since) return { ms: 0, label: '', level: '' };
+  const ms = Math.max(0, (Number(nowMs) || 0) - since);
+  const hours = ms / 3600000;
+  const level = hours >= sla ? 'danger' : hours >= sla / 3 ? 'warn' : '';
+  return { ms, label: humanizeAge(ms), level };
+}
+
 function needsViewModel(needs, filter, selectedId, sentFn) {
   const sorted = [...(needs || [])].sort(
     (a, b) =>
@@ -2990,7 +3019,12 @@ function needsViewModel(needs, filter, selectedId, sentFn) {
   );
   const counts = { open: 0, sent: 0, done: 0 };
   for (const n of sorted) counts[needBucket(n, sentFn)] += 1;
-  const items = filter === 'gitlab' ? [] : sorted.filter((n) => needBucket(n, sentFn) === filter);
+  let items = filter === 'gitlab' ? [] : sorted.filter((n) => needBucket(n, sentFn) === filter);
+  // 未対応（open）は「待ち時間の長い順」＝停滞している判断待ちを上に出す（省力トリアージ）。
+  // 既定の選択（items[0]）も最も停滞したカードになり、最優先の判断へ自然に誘導する。
+  if (filter === 'open') {
+    items = [...items].sort((a, b) => (Number(a.mtime) || 0) - (Number(b.mtime) || 0));
+  }
   const selected = items.find((n) => n.id === selectedId) || items[0] || null;
   return { counts, items, selected, selectedId: selected ? selected.id : null };
 }
@@ -3178,12 +3212,22 @@ function renderNeeds() {
     ['done', '回答済み', model.counts.done],
     ['gitlab', 'GitLab', gitlabCount],
   ];
+  // 未対応カードに待ち時間・SLA バッジを出す（停滞の可視化）。id → {label, level} を一度だけ計算し
+  // 一覧と署名（sig）で共有する。sig にラベルを含めることで、時間経過でラベルが変わったときにだけ
+  // 再描画する（毎分の無駄な再描画を避ける）。
+  const now = Date.now();
+  const slaHours = (state.config && state.config.projects && Number(state.config.projects.needsSlaHours)) || 24;
+  const ages = {};
+  if (state.needsFilter === 'open') {
+    for (const n of model.items) ages[n.id] = needAgeInfo(n, now, slaHours);
+  }
   const sig = JSON.stringify([
     state.needsFilter,
     state.needsSelectedId,
     state.needsMobileDetail,
     filters.map((x) => x[2]),
     p.needs.map((n) => [n.id, n.kind, n.decided, isNeedSent(n), n.why, n.summary, n.risk, n.failureSummary || '', (n.detail || '').length]),
+    model.items.map((n) => (ages[n.id] ? `${ages[n.id].level}|${ages[n.id].label}` : '')),
   ]);
   if (el.dataset.sig === sig && el.childElementCount) return;
   el.dataset.sig = sig;
@@ -3198,11 +3242,16 @@ function renderNeeds() {
   const list = model.items
     .map((n) => {
       const selected = n.id === state.needsSelectedId;
+      const age = ages[n.id];
+      const ageBadge = age && age.label
+        ? `<span class="need-age ${age.level}" title="最終更新からの経過時間（SLA ${slaHours}h 超で赤）">${esc(age.label)}</span>`
+        : '';
       return `<button class="need-list-item ${selected ? 'selected' : ''}" data-need-select="${esc(n.id)}"
         aria-pressed="${selected}">
         <span class="need-list-meta">
           <span class="badge">${esc(needKindLabel(n.kind))}</span>
           ${riskBadgeHtml(n)}
+          ${ageBadge}
         </span>
         <strong>${esc(needDisplayTitle(n))}</strong>
         <span>${esc(NEED_ASK[n.kind] || NEED_ASK.blocked)}</span>
@@ -4869,6 +4918,7 @@ function openSettings() {
   $('cfg-git-pull').value = cfg.projects && cfg.projects.gitPullSec !== undefined ? cfg.projects.gitPullSec : 300;
   $('cfg-git-autopush').checked = !!(cfg.projects && cfg.projects.gitAutoPush);
   $('cfg-notify').checked = !(cfg.notifications && cfg.notifications.enabled === false);
+  $('cfg-needs-sla').value = cfg.projects && cfg.projects.needsSlaHours !== undefined ? cfg.projects.needsSlaHours : 24;
   $('cfg-project-command').value = (cfg.projects && cfg.projects.command) || 'agent-project';
   $('cfg-action-mode').value = (cfg.projects && cfg.projects.actionMode) || 'auto';
   $('cfg-flow-bus').value = (cfg.projects && cfg.projects.flowBus) || '';
@@ -4902,6 +4952,7 @@ async function saveSettings() {
   cfg.projects.gitAutoPush = $('cfg-git-autopush').checked;
   cfg.notifications = cfg.notifications || {};
   cfg.notifications.enabled = $('cfg-notify').checked;
+  cfg.projects.needsSlaHours = Math.max(1, parseInt($('cfg-needs-sla').value, 10) || 24);
   cfg.projects.command = $('cfg-project-command').value.trim() || 'agent-project';
   cfg.projects.actionMode = $('cfg-action-mode').value;
   cfg.projects.flowBus = $('cfg-flow-bus').value.trim();

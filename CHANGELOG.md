@@ -7,6 +7,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: 要対応の待ち時間・SLA バッジ（停滞の可視化）
+
+要対応（人の判断待ち）が**どれだけ待たされているか**が一覧から分からず、長時間放置＝下流が
+止まっている状態に気づきにくかった。各カードに**待ち時間バッジ**を付け、未対応は**滞留の
+長い順**に並べる（省力トリアージ＋停滞の可視化）。
+
+- **待ち時間**: needs の最終更新（`mtime`。無ければ `date`）からの経過を「N 分/時間/日待ち」で表示。
+- **SLA 色分け**: しきい値 `projects.needsSlaHours`（既定 24h・⚙ 設定）を超えると赤、1/3 を
+  超えると黄。手戻りではなく**停滞**（人待ちで止まっている時間）を色で警告する。
+- **並べ替え**: 未対応バケットは `mtime` 昇順（＝待ち時間の長い順）。既定選択も最も停滞した
+  カードにして、最優先の判断へ自然に誘導する。
+- 中核は純関数 `humanizeAge` / `needAgeInfo`（テスト: `test/needs-sla.test.js`）。
+  再描画署名にラベルを含め、時間経過でラベルが変わったときだけ再描画する。
+
+> 改善案の全体像は [`docs/designs/agent-dashboard-project-ux-improvements.md`](docs/designs/agent-dashboard-project-ux-improvements.md)（A4 として整理）。
+
 ### agent-dashboard: 要対応の OS 通知（気づく前に届く）
 
 ダッシュボードは既定 5 秒ポーリングの純プル型で、**人が画面を見ていないと新しい要対応
