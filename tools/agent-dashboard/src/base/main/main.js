@@ -52,6 +52,11 @@ function createWindow() {
       preload: path.join(SRC_ROOT, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      // preload.js が features（src/features/*）をローカル require するため、
+      // sandbox 化された preload（Electron 20+ の既定）では読み込めない。
+      // フル Node コンテキストで preload を走らせて require('./features') を許可する。
+      // 読み込むのはローカル index.html のみ（リモートコンテンツなし）なので安全。
+      sandbox: false,
     },
   });
   win.setMenuBarVisibility(false);

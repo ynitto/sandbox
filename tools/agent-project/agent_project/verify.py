@@ -226,7 +226,9 @@ def _synth_verify_prompt(title: str, accept: str, hint: str = "", repo_ctx: str 
         "（`git log|grep` で過去コミットに当てない）②差分を見るなら環境変数 `$KIRO_BASE_REV`"
         "（act 前の HEAD）を使い `git log \"$KIRO_BASE_REV\"..HEAD ...` の形にする"
         "③外部状態に依存せず再現可能にする。④単なる存在 grep や恒真式に退化させず、"
-        "可能ならテスト/ビルドコマンドで実挙動を確かめる。\n"
+        "可能ならテスト/ビルドコマンドで実挙動を確かめる。"
+        "⑤このコマンドは **POSIX sh** で実行される。`powershell.exe`/`pwsh`/`cmd.exe` など"
+        "Windows シェルは使わず、`git`・テストランナー等のクロスプラットフォーム CLI を使う。\n"
         f"タスク: {title}\n完了条件: {accept}\n{extra}\n"
         "出力はコマンド 1 行のみ（説明・コードフェンス不要）。検証コマンドを書けない場合は空行を返す。")
 
@@ -251,6 +253,23 @@ def _verify_is_degenerate(cmd: str) -> bool:
     if any(op in s for op in ("&&", "||", "|", ";", "\n")):
         return False                              # 複合は退化と断定しない（誤棄却を避ける）
     return bool(_TAUTOLOGY_RE.match(s))
+
+
+# verify は run_verify が `set -x` + `$KIRO_BASE_REV` 差分など **POSIX sh** 前提で実行する
+# （subprocess.run(f"set -x\\n{cmd}", shell=True)）。エージェント CLI が Windows 上で動くと
+# `powershell.exe -Command ...` / `pwsh` / `cmd.exe /c ...` を返すことがあり、これは sh 実行で
+# 必ず壊れる。フルパス（/ または \\ 区切り）・.exe 付きも同一視して不採用にする。
+_WINDOWS_SHELL_RE = re.compile(r"^(?:powershell|pwsh|cmd)(?:\.exe)?$", re.IGNORECASE)
+
+
+def _is_windows_shell_command(cmd: str) -> bool:
+    """先頭トークンが Windows シェル（powershell/pwsh/cmd、.exe 付き・フルパス可）か。"""
+    s = (cmd or "").strip()
+    if not s:
+        return False
+    token = s.split(maxsplit=1)[0]
+    bare = token.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    return bool(_WINDOWS_SHELL_RE.fullmatch(bare))
 
 
 def _looks_like_shell_command(line: str) -> bool:
@@ -444,6 +463,11 @@ def synth_verify(cfg: "Config", title: str, accept: str, agent_run=None,
         cand = _first_command_line(out)
         if not cand:
             retry_note = "応答に実行可能なコマンド行がなかった"; continue
+        # PowerShell/cmd は sh -n を通ってしまう（valid な sh 構文）が、verify は POSIX sh で
+        # 実行されるため必ず壊れる。フェンス付きで _first_command_line を素通りした場合もここで弾く。
+        if _is_windows_shell_command(cand):
+            retry_note = ("PowerShell/cmd は使えません（verify は POSIX sh で実行）。"
+                          "git・テストランナー等のクロスプラットフォーム CLI で書くこと"); continue
         # 自然言語（説明・拒否文）を shell=True に流すと ; | && ` > rm 等が誤実行されうるため弾く。
         if not _looks_like_shell_command(cand):
             retry_note = "シェルコマンドでなかった"; continue

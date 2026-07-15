@@ -904,19 +904,82 @@ function resolveProjectRoot(workspaceDir) {
 
 const DEFAULT_STATE_BRANCH = 'agent-state';
 
+// git 管理下か + repo トップから dir までの相対パス（区切りは常に "/"、非 git なら ok:false）。
+// あえて --show-toplevel（絶対パス）ではなく --show-prefix（相対パス）を使う: 絶対パスは
+// プラットフォーム／区切り規約に依存するため、WSL 内の本体（git が Linux パス /home/... を返す）と
+// Windows のビュアー（\\wsl.localhost\... で読む）が混在すると、それを win32 の path.* で
+// 加工した瞬間に壊れる（ドライブ相対の \home\... になる／パスが二重連結される）。相対パスの
+// 深さだけを git から取り、worktree の兄弟パスは root 自身の表記から組み立てて規約を保つ。
+function gitShowPrefix(dir) {
+  try {
+    const r = require('child_process').spawnSync(
+      'git', ['-C', dir, 'rev-parse', '--show-prefix'],
+      { encoding: 'utf8', timeout: 10000 }
+    );
+    if (r.status !== 0) return { ok: false, prefix: '' };
+    // repo トップ直下なら空文字（末尾 "/" 付きの相対パス or "" が返る）
+    return { ok: true, prefix: String(r.stdout || '').trim() };
+  } catch {
+    return { ok: false, prefix: '' };
+  }
+}
+
+function _prefixDepth(prefix) {
+  return String(prefix || '')
+    .split('/')
+    .filter(Boolean).length;
+}
+
+// p を「p 自身の区切り規約を保ったまま」分割し、末尾 depth 個（repo トップより下の相対分）を
+// 切り離して { sep, head, tail } を返す。git の絶対パス出力は使わないので UNC（\\wsl.localhost\...）・
+// ドライブ（C:\...）・POSIX（/home/...）のいずれでも p の表記を壊さない。UNC 先頭の \\ は
+// 先頭 2 つの空要素として保持され、join でそのまま復元される。
+function _splitTail(p, depth) {
+  const s = String(p || '');
+  const sep = s.includes('\\') ? '\\' : '/';
+  const trimmed = s.replace(/[\\/]+$/, '');
+  const segs = trimmed.split(/[\\/]/);
+  const n = Math.max(0, Math.min(depth, segs.length));
+  const tail = n > 0 ? segs.splice(segs.length - n, n) : [];
+  return { sep, head: segs, tail };
+}
+
+// 本体 root → 状態 worktree の実体パス（文字列のみ・fs 非依存の純関数＝テスト可能）。
+// 既に状態 worktree を指している（repo トップの basename が -<branch>）なら null を返し、
+// 呼び出し側は二重リダイレクトを避けて root をそのまま使う。
+function _stateWorktreePath(root, prefixRel, branch) {
+  const { sep, head, tail } = _splitTail(root, _prefixDepth(prefixRel));
+  if (head.length === 0) return null;
+  const base = head[head.length - 1];
+  if (base.endsWith(`-${branch}`)) return null;
+  return head
+    .slice(0, -1)
+    .concat(`${base}-${branch}`)
+    .concat(tail)
+    .join(sep);
+}
+
+// 状態 worktree → 本体 root（_stateWorktreePath の逆・純関数）。
+// 状態 worktree でない（basename が -<branch> でない）なら null。
+function _sourceRootPath(stateDir, prefixRel, branch) {
+  const { sep, head, tail } = _splitTail(stateDir, _prefixDepth(prefixRel));
+  if (head.length === 0) return null;
+  const base = head[head.length - 1];
+  const suffix = `-${branch}`;
+  if (!base.endsWith(suffix)) return null;
+  return head
+    .slice(0, -1)
+    .concat(base.slice(0, -suffix.length))
+    .concat(tail)
+    .join(sep);
+}
+
 function fromStateWorktree(stateDir, branch = DEFAULT_STATE_BRANCH) {
   // toStateWorktree の逆: 状態 worktree 側のパスを本体側（CLI --root が取る値）へ戻す。
   // worktree を --root に渡すと agent-project が二重リダイレクトする。
-  const repo = gitToplevelOf(stateDir);
-  if (!repo) return stateDir;
-  const suffix = `-${branch}`;
-  if (!path.basename(repo).endsWith(suffix)) return stateDir;
-  const sourceRepo = path.join(
-    path.dirname(repo),
-    path.basename(repo).slice(0, -suffix.length)
-  );
-  const rel = path.relative(repo, path.resolve(stateDir));
-  return path.join(sourceRepo, rel);
+  const gp = gitShowPrefix(stateDir);
+  if (!gp.ok) return stateDir;                       // git 管理外
+  return _sourceRootPath(stateDir, gp.prefix, branch) || stateDir;
 }
 
 // 状態の実体は「状態 worktree」にある。agent-project は root（例 <repo>/.agent-project）の読み書きを
@@ -929,27 +992,11 @@ function fromStateWorktree(stateDir, branch = DEFAULT_STATE_BRANCH) {
 //   ・git   … gitAutoPush が main へ commit/push してしまう（main はバックアップ専用にしたい）
 // 実体へ正規化してから開く。worktree が無ければ（agent-project 未起動・非 git）そのまま返す。
 function toStateWorktree(root, branch) {
-  const repo = gitToplevelOf(root);
-  if (!repo) return root;                                    // git 管理外 → 本体がそのまま実体
-  if (path.basename(repo).endsWith(`-${branch}`)) return root;  // 既に状態 worktree の中にいる
-  const wt = path.join(path.dirname(repo), `${path.basename(repo)}-${branch}`);
-  const candidate = path.join(wt, path.relative(repo, root));
-  return isProjectDir(candidate) ? candidate : root;         // 未作成なら本体のまま（従来動作）
-}
-
-// root を含む git 作業ツリーのトップ（git 管理外なら null）。worktree の .git は *ファイル* なので
-// ディレクトリ存在チェックでは判定できない。git に聞く。
-function gitToplevelOf(dir) {
-  try {
-    const r = require('child_process').spawnSync(
-      'git', ['-C', dir, 'rev-parse', '--show-toplevel'],
-      { encoding: 'utf8', timeout: 10000 }
-    );
-    const out = String(r.stdout || '').trim();
-    return r.status === 0 && out ? out : null;
-  } catch {
-    return null;
-  }
+  const gp = gitShowPrefix(root);
+  if (!gp.ok) return root;                            // git 管理外 → 本体がそのまま実体
+  const candidate = _stateWorktreePath(root, gp.prefix, branch);
+  if (!candidate) return root;                        // 既に状態 worktree の中にいる
+  return isProjectDir(candidate) ? candidate : root;  // 未作成なら本体のまま（従来動作）
 }
 
 function isProjectDir(dir) {
@@ -1267,4 +1314,6 @@ module.exports = {
   resolveProjectRoot,
   fromStateWorktree,
   resolveBusDir,
+  _stateWorktreePath,
+  _sourceRootPath,
 };

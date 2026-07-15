@@ -5577,6 +5577,54 @@ class TestVerifyAssist(unittest.TestCase):
         self.assertEqual(cmd, "grep -q '## 概要' README.md")
         self.assertNotIn("\x1b", cmd)
 
+    def test_is_windows_shell_command_flags_powershell_and_cmd(self):
+        for cmd in (
+            'powershell.exe -Command "Test-Path foo"',
+            "powershell -NoProfile -Command ls",
+            "pwsh -Command Get-Item x",
+            "cmd.exe /c dir",
+            r'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -Command x',
+            "/mnt/c/Windows/System32/cmd.exe /c echo x",
+        ):
+            self.assertTrue(km._is_windows_shell_command(cmd), cmd)
+        for cmd in ("pytest -q", "git diff --exit-code", "./powershell-helper.sh", ""):
+            self.assertFalse(km._is_windows_shell_command(cmd), cmd)
+
+    def test_synth_verify_rejects_unfenced_powershell_and_retries_to_posix(self):
+        # 地の文の powershell.exe は _first_command_line が候補にしない（先頭トークン判定で落ちる）。
+        # 合成は諦めず再試行し、POSIX コマンドを採る。⑤ の POSIX 明示が次の候補を誘導する。
+        cfg = cfg_for(Path("."))
+        outs = iter([
+            'powershell.exe -Command "Test-Path README.md"',
+            "pytest -q",
+        ])
+        cmd = km.synth_verify(cfg, "テストを通す", "pytest が通る",
+                              agent_run=lambda p, m: next(outs), attempts=2)
+        self.assertEqual(cmd, "pytest -q")
+
+    def test_synth_verify_prompt_states_posix_and_forbids_powershell(self):
+        p = km._synth_verify_prompt("t", "a")
+        self.assertIn("POSIX sh", p)
+        self.assertIn("powershell.exe", p)
+
+    def test_synth_verify_rejects_fenced_powershell_with_specific_note(self):
+        # フェンス付きは _first_command_line を素通りするが、_is_windows_shell_command が不採用にし、
+        # PowerShell 固有の retry_note で再合成 → POSIX コマンドを採る。
+        cfg = cfg_for(Path("."))
+        outs = iter([
+            '```powershell\npowershell.exe -Command "Test-Path x"\n```',
+            "git diff --exit-code",
+        ])
+        notes = []
+
+        def agent_run(prompt, model):
+            notes.append(prompt)
+            return next(outs)
+
+        cmd = km.synth_verify(cfg, "t", "a", agent_run=agent_run, attempts=2)
+        self.assertEqual(cmd, "git diff --exit-code")
+        self.assertIn("PowerShell", notes[1])
+
     def test_first_command_line_returns_direct_command(self):
         self.assertEqual(km._first_command_line("\n# comment\npytest -q\n"), "pytest -q")
 
@@ -6052,6 +6100,77 @@ class TestStateSyncBatching(unittest.TestCase):
             (d / "journal.md").write_text("a\nb\n", encoding="utf-8")
             sg.sync()                                          # push 済み HEAD は amend しない
             self.assertEqual(len(self._log(d)), 2)
+
+    @staticmethod
+    def _worktree_names(d: Path) -> "list[str]":
+        r = subprocess.run(["git", "-C", str(d), "worktree", "list", "--porcelain"],
+                           capture_output=True, text=True)
+        return [os.path.basename(ln[len("worktree "):])
+                for ln in r.stdout.splitlines() if ln.startswith("worktree ")]
+
+    def _repo_with_head(self, d: Path) -> None:
+        self._init_repo(d)
+        (d / "seed.md").write_text("x\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(d), "add", "-A"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(d), "commit", "-qm", "seed"], check=True,
+                       capture_output=True)
+
+    def test_prune_stale_state_worktrees_removes_leftover(self):
+        # 前プロセスの強制終了で残った専用 worktree（登録 + /tmp 実体）を掃除する
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            d = tmp / "root"; d.mkdir()
+            self._repo_with_head(d)
+            leftover = tmp / (km._STATE_WT_PREFIX + "dead")
+            subprocess.run(["git", "-C", str(d), "worktree", "add", "--detach", "--force",
+                            str(leftover), "HEAD"], check=True, capture_output=True)
+            self.assertIn(leftover.name, self._worktree_names(d))
+            km.DirectStateGit(d, interval=0.0)._prune_stale_state_worktrees()
+            self.assertNotIn(leftover.name, self._worktree_names(d))
+            self.assertFalse(leftover.exists())
+
+    def test_prune_removes_locked_leftover_worktree(self):
+        # ロック済み worktree は prune が飛ばす → unlock してから外すことを固定する
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            d = tmp / "root"; d.mkdir()
+            self._repo_with_head(d)
+            leftover = tmp / (km._STATE_WT_PREFIX + "locked")
+            subprocess.run(["git", "-C", str(d), "worktree", "add", "--detach", "--force",
+                            str(leftover), "HEAD"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(d), "worktree", "lock", str(leftover)],
+                           check=True, capture_output=True)
+            km.DirectStateGit(d, interval=0.0)._prune_stale_state_worktrees()
+            self.assertNotIn(leftover.name, self._worktree_names(d))
+            self.assertFalse(leftover.exists())
+
+    def test_prune_leaves_foreign_worktrees_untouched(self):
+        # prefix に一致しない worktree（人・他ツール）には一切触れない
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            d = tmp / "root"; d.mkdir()
+            self._repo_with_head(d)
+            keep = tmp / "human-feature"
+            subprocess.run(["git", "-C", str(d), "worktree", "add", "--detach",
+                            str(keep), "HEAD"], check=True, capture_output=True)
+            km.DirectStateGit(d, interval=0.0)._prune_stale_state_worktrees()
+            self.assertIn(keep.name, self._worktree_names(d))
+            self.assertTrue(keep.exists())
+
+    def test_worktree_commit_self_heals_leftover_before_creating(self):
+        # _worktree_commit の冒頭で残骸を掃除してから新規作成する（同期は正常完了する）
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            d = tmp / "root"; d.mkdir()
+            self._repo_with_head(d)
+            leftover = tmp / (km._STATE_WT_PREFIX + "stale")
+            subprocess.run(["git", "-C", str(d), "worktree", "add", "--detach", "--force",
+                            str(leftover), "HEAD"], check=True, capture_output=True)
+            sg = km.DirectStateGit(d, interval=0.0)
+            (d / "journal.md").write_text("a\n", encoding="utf-8")
+            sg.sync()                                          # 残骸があっても export は通る
+            self.assertNotIn(leftover.name, self._worktree_names(d))
+            self.assertTrue(any(m.startswith("agent-project: state sync") for m in self._log(d)))
 
     @staticmethod
     def _commit_all(d: Path) -> None:
