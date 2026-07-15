@@ -17,7 +17,11 @@ from __future__ import annotations
 #     「どちらが変えたか」を判定し、同時変更だけを「人の入力パスはリモート優先・機械状態は
 #     ローカル優先」の決定的規則で裁定する。
 STATE_GIT_MARKER = "agent-project.stateclone"   # 自前管理クローンの目印（git config）
-_STATE_LOCK_STALE_SEC = 30.0                    # これ以上古い .git ロックは残骸とみなし自己回復
+# これ以上古い .git ロックは残骸とみなし自己回復する閾値。30 秒では「遅いだけの生きた git」
+# （大きな bus/ の add・NFS・巨大リポジトリの checkout）のロックを削除して index を壊す
+# 事故が起きうるため、正常な git 操作がまず超えない 5 分に置く（クラッシュ残骸の回収が
+# 数分遅れる代償は許容できる。稼働中の git のロックを消す代償は index 破損）。
+_STATE_LOCK_STALE_SEC = 300.0
 _STATE_GIT_RETRIES = 4                          # ロック起因の git 失敗の再試行回数
 _STATE_PUSH_RETRIES = 5                         # push 競合の再試行回数（2,4,8,16s バックオフ）
 _STATE_WT_PREFIX = "agent-project-state-wt-"    # state コミット用 detached worktree の一時名 prefix
@@ -270,7 +274,13 @@ class StateGit:
                     path.startswith(self.subdir + "/") else path
                 side = "--ours" if self._remote_wins(rel) else "--theirs"
                 if self._git("checkout", side, "--", path).returncode != 0:
-                    self._git("rm", "-q", "--", path)   # add/delete 衝突: 消えた側に合わせる
+                    # checkout 失敗＝選んだ側にステージが無い add/delete 衝突とは限らない
+                    # （権限・sparse 等でも失敗する）。本当に無いときだけ削除に合わせる。
+                    # 無条件に rm すると backlog/needs がサイレントに消えて同期で伝播する。
+                    stage = "2" if side == "--ours" else "3"
+                    stages = self._git("ls-files", "-u", "--", path).stdout
+                    if not re.search(rf"\s{stage}\t", stages):
+                        self._git("rm", "-q", "--", path)   # add/delete 衝突: 消えた側に合わせる
                 self._git("add", "--", path)
             if self._git("rebase", "--continue").returncode != 0 and \
                     self._git("rebase", "--skip").returncode != 0:
@@ -313,9 +323,14 @@ class StateGit:
         with _file_lock(str(self.clone) + ".lock"):   # 同一ホストの多重プロセスを直列化
             due = self.interval <= 0 or (now - self._last_remote) >= self.interval
             if due:                           # 取り込み方向の fetch は間隔でのみ（負荷を一定に保つ）
-                self._git("pull", "--rebase", "origin", self.branch)
+                p = self._git("pull", "--rebase", "origin", self.branch)
                 self._resolve_rebase()
-                self._last_remote = now
+                # pull 失敗（ネットワーク断・認証等）で間隔クロックを進めると、次の interval まで
+                # リモートの指示（commands/needs）を取りこぼした上、古いリモート観のまま
+                # --amend して push と争う。失敗時は進めず、次パスで即再試行する。
+                # リモートにブランチがまだ無い初回（couldn't find remote ref）は正常系として進める。
+                if p.returncode == 0 or "couldn't find remote ref" in (p.stderr or "").lower():
+                    self._last_remote = now
             imported, exported = self._three_way()
             pathspec = self.subdir or "."
             self._git("add", "-A", "--", pathspec)               # 自分の名前空間だけをステージ
@@ -1012,8 +1027,12 @@ class DirectStateGit:
             due = self.interval <= 0 or (now - self._last_remote) >= self.interval
             imported = 0
             if remote and due:
-                self._git("fetch", "-q", "origin", branch)   # 取り込みは _integrate が行う
-                self._last_remote = now
+                f = self._git("fetch", "-q", "origin", branch)   # 取り込みは _integrate が行う
+                # fetch 失敗で間隔クロックを進めると、次の interval までリモートの指示
+                # （commands/needs）を取りこぼす。失敗時は進めず次パスで即再試行する。
+                # リモートにブランチがまだ無い初回は正常系として進める。
+                if f.returncode == 0 or "couldn't find remote ref" in (f.stderr or "").lower():
+                    self._last_remote = now
             targets = self._changed_targets()
             exported = 0
             if targets:

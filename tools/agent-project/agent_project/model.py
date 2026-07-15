@@ -120,8 +120,14 @@ def load_tasks(backlog_dir: Path) -> "list[Task]":
 
 
 def persist_task(cfg: "Config", task: Task) -> None:
+    """タスク md をアトミックに書く（temp → os.replace）。直接 write_text すると、
+    並行する state 同期・viewer・load_tasks が書きかけ（途中まで/空）のファイルを読んで
+    status を既定値（inbox）に誤認したり、書き込み途中のクラッシュでタスクが壊れる。"""
     cfg.backlog.mkdir(parents=True, exist_ok=True)
-    (cfg.backlog / f"{task.id}.md").write_text(serialize_task(task), encoding="utf-8")
+    dst = cfg.backlog / f"{task.id}.md"
+    tmp = cfg.backlog / f".{task.id}.md.tmp.{os.getpid()}"
+    tmp.write_text(serialize_task(task), encoding="utf-8")
+    os.replace(tmp, dst)
 
 
 def delete_task_file(cfg: "Config", task: Task) -> None:

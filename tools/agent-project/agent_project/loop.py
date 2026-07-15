@@ -181,6 +181,11 @@ def _mark_offloaded(cfg: "Config", task: "Task", location: str, run_id: str) -> 
     persist_task(cfg, task)
 
 
+# offloaded の結果取得（agent-flow result）が連続でエラーになったら人へ回す上限。
+# watch の 1 パスごとに 1 カウントなので、既定 5 秒間隔なら約 1 分相当の猶予。
+_OFFLOAD_POLL_ERR_LIMIT = 12
+
+
 def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
                     autonomy_cache: dict, reasons: dict, cycle0: int,
                     spawn_budget: int) -> dict:
@@ -196,7 +201,34 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
             continue
         term, ok, msg = _flow_result_once(cfg, loc == "remote", run_id)
         if not term:
+            if msg.startswith("error:"):
+                # 結果の取得自体が失敗（CLI 不在・バス破損・出力化け等）。これを「まだ実行中」と
+                # 読み続けると offloaded が永久にスタックする。連続エラーを数え、上限で人へ回す。
+                errs = int(task.get("flow_poll_err") or 0) + 1
+                task.drop("flow_poll_err")
+                if errs >= _OFFLOAD_POLL_ERR_LIMIT:
+                    if not claim_task(cfg, task):
+                        continue
+                    task.drop("flow_run", "flow_loc")
+                    task.status = "blocked"
+                    persist_task(cfg, task)
+                    write_needs_file(cfg, task,
+                                     f"委譲 run {run_id} の結果を {errs} 回連続で取得できません"
+                                     f"（{msg[:200]}）。agent-flow 環境（CLI・バス）を確認してください。")
+                    append_journal(cfg.journal,
+                                   f"cycle {cycle0 + settled + 1}: {task.id} offload 結果取得が"
+                                   f"連続失敗 → blocked（{msg[:120]}）")
+                    release_claim(cfg, task)
+                    settled += 1
+                else:
+                    task.extra.append(("flow_poll_err", str(errs)))
+                    persist_task(cfg, task)
+            elif task.get("flow_poll_err"):
+                task.drop("flow_poll_err")   # 取得が復調 → カウンタを戻す
+                persist_task(cfg, task)
             continue                       # まだ実行中 → 次パスで再確認（ブロックしない）
+        if task.get("flow_poll_err"):
+            task.drop("flow_poll_err")
         if not claim_task(cfg, task):      # 実行権を取ってから確定（他インスタンスと競合しない）
             continue
         # claim 後にディスク上で既に offloaded でなければ、他経路（revise/hold）が先に進めた。

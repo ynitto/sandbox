@@ -498,14 +498,19 @@ def _flow_result_once(cfg: "Config", use_git: bool, run_id: str) -> "tuple[bool,
     terminal=run が終端（done/failed/canceled）に達したか。
     ok=成功終端（done）か。failed / canceled は ok=False（canceled を success と取り違えない —
     dashboard から人が中止した run を verify=true で done 確定させないため）。
-    取得不能は (False,...) で継続待ち扱い。"""
+    取得不能は (False, False, "error: …") で継続待ち扱いにするが、msg でエラーを区別して
+    返す——CLI 不在・バス破損・出力化けを「まだ実行中」と読み続けると offloaded タスクが
+    永久にスタックする（呼び出し側が連続エラーを数えて打ち切れるように）。"""
     base = _kf_base(cfg, use_git)
     try:
         res = subprocess.run(base + ["result", "--run-id", run_id, "--json"],
                              cwd=str(cfg.workdir), timeout=60, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if res.returncode != 0:
+            return (False, False,
+                    f"error: agent-flow result rc={res.returncode}: {(res.stderr or '').strip()[:200]}")
         data = json.loads(res.stdout or "{}")
-    except (subprocess.SubprocessError, json.JSONDecodeError, FileNotFoundError, ValueError):
-        return (False, False, "")
+    except (subprocess.SubprocessError, json.JSONDecodeError, FileNotFoundError, ValueError) as e:
+        return (False, False, f"error: agent-flow result 取得失敗: {e}")
     if not data.get("done"):
         return (False, False, "")
     status = str(data.get("status") or "")

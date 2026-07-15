@@ -343,6 +343,22 @@ def backup_state(cfg: "Config") -> bool:
     return True
 
 
+def _commit_state_lock_path(root: Path) -> str:
+    """commit_state を DirectStateGit.sync と同じ物理ロックで直列化するためのパス。
+    ロックはリポジトリの共通 .git 内（全 worktree・全書き手で同一ファイル）。
+    git 情報が取れないときは tempdir のパスに落ちる（同一ホスト内のみの排他）。"""
+    gd = _git_line(root, "rev-parse", "--git-common-dir")
+    if gd:
+        p = Path(gd) if os.path.isabs(gd) else (root / gd)
+        try:
+            if p.is_dir():
+                return str(p / "agent-project-sync.lock")
+        except OSError:
+            pass
+    return os.path.join(tempfile.gettempdir(),
+                        f"agent-project-sync-{hashlib.sha1(str(root).encode()).hexdigest()[:12]}.lock")
+
+
 def commit_state(cfg: "Config", force: bool = False) -> bool:
     """状態 worktree の変更をコミットする（軽微な変化はまとめる）。コミットしたら True。
 
@@ -377,21 +393,32 @@ def commit_state(cfg: "Config", force: bool = False) -> bool:
     pathspec = [".", ":(exclude,glob)**/claims/**", ":(exclude,glob)claims/**",
                 ":(exclude,glob)**/.state-git*", ":(exclude,glob).state-git*"]
     try:
-        add = subprocess.run(["git", "-C", str(root), "add", "-A", "--", *pathspec],
-                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
-        if add.returncode != 0:
-            return False
-        if subprocess.run(["git", "-C", str(root), "diff", "--cached", "--quiet", "--",
-                           *pathspec], capture_output=True, timeout=60).returncode == 0:
-            return False                   # ステージに何も乗らなかった
-        c = subprocess.run(["git", "-C", str(root), "commit", "-q", "-m", msg, "--", *pathspec],
-                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
-        if c.returncode != 0:
-            return False
-        _last_state_commit = time.time()
-        if cfg.state_push:
-            subprocess.run(["git", "-C", str(root), "push", "-q", "origin",
-                            f"HEAD:{cfg.state_branch}"], capture_output=True, timeout=180)
+        # DirectStateGit.sync と同じリポジトリ隣接ロックで直列化する。ここは実 index を
+        # 操作する（add/commit）ため、無ロックだと sync 側の自己修復（stale index.lock 削除・
+        # 除外パスの untrack）や別プロセスの commit_state と重なって index が壊れうる。
+        with _file_lock(_commit_state_lock_path(root)):
+            add = subprocess.run(["git", "-C", str(root), "add", "-A", "--", *pathspec],
+                                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+            if add.returncode != 0:
+                return False
+            if subprocess.run(["git", "-C", str(root), "diff", "--cached", "--quiet", "--",
+                               *pathspec], capture_output=True, timeout=60).returncode == 0:
+                return False               # ステージに何も乗らなかった
+            c = subprocess.run(["git", "-C", str(root), "commit", "-q", "-m", msg, "--", *pathspec],
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+            if c.returncode != 0:
+                return False
+            _last_state_commit = time.time()
+            if cfg.state_push:
+                push = subprocess.run(["git", "-C", str(root), "push", "-q", "origin",
+                                       f"HEAD:{cfg.state_branch}"], capture_output=True, text=True,
+                                      encoding="utf-8", errors="replace", timeout=180)
+                if push.returncode != 0:
+                    # push 失敗を握り潰すと「共有済みの顔をした未共有状態」が続く。コミット自体は
+                    # 成功しているので True のままだが、原因を journal に残して人が気付けるようにする。
+                    append_journal(cfg.journal,
+                                   f"state push 失敗（コミットは保持・次回再試行）: "
+                                   f"{(push.stderr or '').strip()[:200]}")
     except (OSError, subprocess.SubprocessError):
         return False
     # 人の判断・計画が動いたときだけ正本ブランチへバックアップする。実行の副産物（journal /
