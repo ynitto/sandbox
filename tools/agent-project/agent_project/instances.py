@@ -98,7 +98,7 @@ def to_windows_path(p: "str | Path") -> "str | None":
         return None
     try:
         out = subprocess.run(["wslpath", "-w", str(p)], capture_output=True,
-                             text=True, timeout=5)
+                             text=True, encoding="utf-8", errors="replace", timeout=5)
         return out.stdout.strip() or None if out.returncode == 0 else None
     except (OSError, subprocess.SubprocessError):
         return None
@@ -368,7 +368,7 @@ def _flow_pids_for_bus(bus: Path, *, include_daemon: bool = True) -> "list[int]"
     「自分のもの」を特定できる。ps が無い環境（Windows 素の cmd 等）では空を返し、従来動作に倒す。
     include_daemon=False なら外部/長命の daemon は残し、orchestrator・worker・都度 run だけを対象にする。"""
     try:
-        r = subprocess.run(["ps", "-eo", "pid=,args="], capture_output=True, text=True, timeout=30)
+        r = subprocess.run(["ps", "-eo", "pid=,args="], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
     except (OSError, subprocess.SubprocessError):
         return []
     if r.returncode != 0:

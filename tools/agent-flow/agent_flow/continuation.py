@@ -240,6 +240,19 @@ def _inflight_amend_pending(bus, graph, who, args, consumed_fb: set) -> int:
     return amended
 
 
+def _evaluator_fallback(results: dict, why: str):
+    """評価役（LLM）が判定を返せなかったときのフェイルクローズ判定。
+    全ノードが done なら自明に done（評価は形式的なもの）。失敗・未達ノードが
+    残っているのに done へ倒すと偽成功として消費者へ渡るため failed で終端する
+    （resume / agent-project のリトライが done ノードを温存して続きから走る）。"""
+    statuses = [r.get("status") for r in (results or {}).values()]
+    if statuses and all(s == "done" for s in statuses):
+        return "done", [], f"{why}（全ノード done のため done 終端）"
+    bad = [nid for nid, r in (results or {}).items() if r.get("status") != "done"]
+    return "failed", [], (f"{why}。未達ノード {','.join(bad[:5])} が残るため "
+                          "done ではなく failed で終端します（再開で続きから実行）")
+
+
 def continue_agent(request: str, nodes: dict, results: dict, iteration: int,
                   max_fanout: int = 50, review: bool = False, exemplar_first: bool = False,
                   max_retries: int = 3):
@@ -290,13 +303,17 @@ def continue_agent(request: str, nodes: dict, results: dict, iteration: int,
     )
     try:
         data = extract_json(run_agent(prompt, None, purpose="evaluator"))
-    except Exception:  # noqa: BLE001
-        return "done", [], "評価出力を解釈できず done 扱い"
+    except Exception as e:  # noqa: BLE001
+        # フェイルクローズ: 評価役の失敗（LLM タイムアウト・認証切れ・JSON 崩れ）を
+        # done に倒すと、失敗ノードが残った run が「成功」として消費者へ渡る。
+        # 全ノードが done ならその判定は自明なので done（評価役は不要だった）、
+        # 未達・失敗ノードが残るなら failed で終端し、resume/リトライへ回す。
+        return _evaluator_fallback(results, f"評価出力を解釈できず: {e}")
     # planner がオブジェクトでなくベア配列を返すことがある → new_tasks とみなす
     if isinstance(data, list):
         data = {"decision": "replan", "new_tasks": data}
     if not isinstance(data, dict):
-        return "done", [], "評価出力が想定形でなく done 扱い"
+        return _evaluator_fallback(results, "評価出力が想定形でない")
     new = _coerce_tasks(data.get("new_tasks"), existing=nodes)  # 既存 id と衝突しないよう正規化
     if data.get("decision") == "replan" and new:
         return "replan", new, str(data.get("reason", ""))

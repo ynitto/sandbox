@@ -292,7 +292,7 @@ def _find_skill_script(skill: str, script: str):
     try:
         root = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True
+            capture_output=True, text=True, encoding="utf-8", errors="replace"
         ).stdout.strip()
         if root:
             candidates.append(os.path.join(root, ".github", "skills", skill, "scripts", script))
@@ -348,7 +348,7 @@ def plan_strategy_flow_planner(request: str, model: str | None, review="auto", g
     else:
         cmd += ["--review", str(review)]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
         if proc.returncode != 0:
             raise RuntimeError(proc.stderr[:500])
         data = json.loads(proc.stdout)

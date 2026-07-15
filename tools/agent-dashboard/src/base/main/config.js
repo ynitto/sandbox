@@ -91,8 +91,14 @@ function loadConfig() {
 
 function saveConfig(cfg) {
   const merged = deepMerge(DEFAULT_CONFIG(), cfg || {});
-  fs.mkdirSync(path.dirname(configPath()), { recursive: true });
-  fs.writeFileSync(configPath(), JSON.stringify(merged, null, 2), 'utf8');
+  const dst = configPath();
+  fs.mkdirSync(path.dirname(dst), { recursive: true });
+  // temp → rename のアトミック書き込み。直接 write すると、書き込み途中のクラッシュ・
+  // 電源断で config.json が途切れ、次回起動時に JSON.parse が失敗して設定
+  // （プロジェクト登録・CLI コマンド等）が丸ごと既定値へ戻る。
+  const tmp = `${dst}.tmp.${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify(merged, null, 2), 'utf8');
+  fs.renameSync(tmp, dst);
   return merged;
 }
 

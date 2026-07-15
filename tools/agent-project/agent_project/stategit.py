@@ -17,7 +17,11 @@ from __future__ import annotations
 #     「どちらが変えたか」を判定し、同時変更だけを「人の入力パスはリモート優先・機械状態は
 #     ローカル優先」の決定的規則で裁定する。
 STATE_GIT_MARKER = "agent-project.stateclone"   # 自前管理クローンの目印（git config）
-_STATE_LOCK_STALE_SEC = 30.0                    # これ以上古い .git ロックは残骸とみなし自己回復
+# これ以上古い .git ロックは残骸とみなし自己回復する閾値。30 秒では「遅いだけの生きた git」
+# （大きな bus/ の add・NFS・巨大リポジトリの checkout）のロックを削除して index を壊す
+# 事故が起きうるため、正常な git 操作がまず超えない 5 分に置く（クラッシュ残骸の回収が
+# 数分遅れる代償は許容できる。稼働中の git のロックを消す代償は index 破損）。
+_STATE_LOCK_STALE_SEC = 300.0
 _STATE_GIT_RETRIES = 4                          # ロック起因の git 失敗の再試行回数
 _STATE_PUSH_RETRIES = 5                         # push 競合の再試行回数（2,4,8,16s バックオフ）
 _STATE_WT_PREFIX = "agent-project-state-wt-"    # state コミット用 detached worktree の一時名 prefix
@@ -103,7 +107,7 @@ class StateGit:
         p = None
         for i in range(_STATE_GIT_RETRIES):
             p = subprocess.run(["git", "-C", str(self.clone), *args],
-                               capture_output=True, text=True, env=self._env())
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._env())
             if p.returncode == 0 or not self._is_lock_error(p):
                 break
             if self._remove_stale_locks() == 0 and i < _STATE_GIT_RETRIES - 1:
@@ -156,7 +160,7 @@ class StateGit:
         # blob:none で履歴の実体を引かない（非対応サーバはフィルタ無しへフォールバック）
         for extra in (["--filter=blob:none"], []):
             r = subprocess.run(["git", "clone", "--no-checkout", *extra, self.remote,
-                                str(self.clone)], capture_output=True, text=True)
+                                str(self.clone)], capture_output=True, text=True, encoding="utf-8", errors="replace")
             if r.returncode == 0:
                 break
             shutil.rmtree(self.clone, ignore_errors=True)
@@ -270,7 +274,13 @@ class StateGit:
                     path.startswith(self.subdir + "/") else path
                 side = "--ours" if self._remote_wins(rel) else "--theirs"
                 if self._git("checkout", side, "--", path).returncode != 0:
-                    self._git("rm", "-q", "--", path)   # add/delete 衝突: 消えた側に合わせる
+                    # checkout 失敗＝選んだ側にステージが無い add/delete 衝突とは限らない
+                    # （権限・sparse 等でも失敗する）。本当に無いときだけ削除に合わせる。
+                    # 無条件に rm すると backlog/needs がサイレントに消えて同期で伝播する。
+                    stage = "2" if side == "--ours" else "3"
+                    stages = self._git("ls-files", "-u", "--", path).stdout
+                    if not re.search(rf"\s{stage}\t", stages):
+                        self._git("rm", "-q", "--", path)   # add/delete 衝突: 消えた側に合わせる
                 self._git("add", "--", path)
             if self._git("rebase", "--continue").returncode != 0 and \
                     self._git("rebase", "--skip").returncode != 0:
@@ -313,9 +323,14 @@ class StateGit:
         with _file_lock(str(self.clone) + ".lock"):   # 同一ホストの多重プロセスを直列化
             due = self.interval <= 0 or (now - self._last_remote) >= self.interval
             if due:                           # 取り込み方向の fetch は間隔でのみ（負荷を一定に保つ）
-                self._git("pull", "--rebase", "origin", self.branch)
+                p = self._git("pull", "--rebase", "origin", self.branch)
                 self._resolve_rebase()
-                self._last_remote = now
+                # pull 失敗（ネットワーク断・認証等）で間隔クロックを進めると、次の interval まで
+                # リモートの指示（commands/needs）を取りこぼした上、古いリモート観のまま
+                # --amend して push と争う。失敗時は進めず、次パスで即再試行する。
+                # リモートにブランチがまだ無い初回（couldn't find remote ref）は正常系として進める。
+                if p.returncode == 0 or "couldn't find remote ref" in (p.stderr or "").lower():
+                    self._last_remote = now
             imported, exported = self._three_way()
             pathspec = self.subdir or "."
             self._git("add", "-A", "--", pathspec)               # 自分の名前空間だけをステージ
@@ -369,7 +384,7 @@ class DirectStateGit:
 
     def _git(self, *args: str):
         return subprocess.run(["git", "-C", str(self.root), *args],
-                              capture_output=True, text=True, env=self._env())
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._env())
 
     def _branch(self) -> str:
         # symbolic-ref は unborn ブランチ（空リポジトリの clone 直後）でも現在ブランチ名を返す
@@ -378,6 +393,23 @@ class DirectStateGit:
 
     def _has_remote(self) -> bool:
         return bool(self._git("remote", "get-url", "origin").stdout.strip())
+
+    def _sync_lock_path(self) -> str:
+        """sync 直列化ロックの置き場所。リポジトリの .git（共通ディレクトリ）内に置く——
+        以前はホスト局所の tempdir だったため、同じ共有ツリーを Windows と WSL（あるいは
+        複数ホストのマウント）から書く構成では互いに一切排他されず、コミット中の worktree
+        掃除・CAS 競合・push 詰まりの温床になっていた。gitdir 内なら物理的に同じファイルを
+        全書き手がロックする。gitdir が取れないときだけ従来の tempdir に落ちる。"""
+        gd = self._git("rev-parse", "--git-common-dir").stdout.strip()
+        if gd:
+            p = Path(gd) if os.path.isabs(gd) else (self.root / gd)
+            try:
+                if p.is_dir():
+                    return str(p / "agent-project-sync.lock")
+            except OSError:
+                pass
+        return os.path.join(tempfile.gettempdir(),
+                            f"agent-project-sync-{hashlib.sha1(str(self.root).encode()).hexdigest()[:12]}.lock")
 
     def _ensure_identity(self) -> None:
         if not self._git("config", "user.email").stdout.strip():
@@ -487,16 +519,16 @@ class DirectStateGit:
             if not existing:
                 return None
             r = subprocess.run(["git", "-C", str(self.root), "add", "--", *existing],
-                               capture_output=True, text=True, env=env)
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
             if r.returncode != 0:
                 return None
             tree = subprocess.run(["git", "-C", str(self.root), "write-tree"],
-                                  capture_output=True, text=True, env=env).stdout.strip()
+                                  capture_output=True, text=True, encoding="utf-8", errors="replace", env=env).stdout.strip()
             if not tree:
                 return None
             r = subprocess.run(["git", "-C", str(self.root), "commit-tree", tree,
                                 "-m", self._commit_msg()],
-                               capture_output=True, text=True, env=env)
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
             new = r.stdout.strip()
             if r.returncode != 0 or not new:
                 return None
@@ -571,7 +603,7 @@ class DirectStateGit:
 
             def _wgit(*args: str):           # pathspec が root 相対で解決されるよう base を cwd にする
                 return subprocess.run(["git", "-C", str(base), *args],
-                                      capture_output=True, text=True, env=self._env())
+                                      capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._env())
 
             for rel in targets:              # 現在のルートの内容を worktree へ写す（削除も反映）
                 src = self.root / rel
@@ -609,7 +641,7 @@ class DirectStateGit:
             return []
         rel = os.path.relpath(root, top)
         r = subprocess.run(["git", "-C", top, "status", "--porcelain", "--untracked-files=no"],
-                           capture_output=True, text=True, env=self._env())
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._env())
         out: list[str] = []
         for line in r.stdout.splitlines():
             path = line[3:].split(" -> ")[-1].strip().strip('"')
@@ -630,7 +662,7 @@ class DirectStateGit:
             return
         for args in (("reset", "-q", "HEAD", "--"), ("checkout", "-q", "--")):
             subprocess.run(["git", "-C", top, *args, *paths],
-                           capture_output=True, text=True, env=self._env())
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._env())
 
     def _rebasing(self) -> bool:
         """rebase が進行中か。worktree では .git が **ファイル** なので <root>/.git/rebase-merge を
@@ -651,7 +683,7 @@ class DirectStateGit:
 
     def _top_git(self, *args: str, env: "dict | None" = None):
         return subprocess.run(["git", "-C", self._top(), *args],
-                              capture_output=True, text=True, env=env or self._env())
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", env=env or self._env())
 
     def _merge_union(self, path: str,
                      stages: "dict[int, tuple[str, str]]") -> "str | None":
@@ -985,9 +1017,8 @@ class DirectStateGit:
         """双方向同期を 1 回行い (imported, exported) を返す。リモート操作は interval で律速し、
         force=True は「push すべきものがあれば間隔を待たず押し出す」（run 直後の結果共有用）。"""
         now = time.time()
-        lock = os.path.join(tempfile.gettempdir(),
-                            f"agent-project-sync-{hashlib.sha1(str(self.root).encode()).hexdigest()[:12]}.lock")
-        with _file_lock(lock):            # 同一ホストの多重プロセスを直列化
+        lock = self._sync_lock_path()
+        with _file_lock(lock):            # 同一リポジトリへの多重プロセス書き込みを直列化
             self._ensure_identity()
             self._ensure_merge_attrs()    # journal の追記同士を union で無衝突マージ
             remote = self._has_remote()
@@ -996,8 +1027,12 @@ class DirectStateGit:
             due = self.interval <= 0 or (now - self._last_remote) >= self.interval
             imported = 0
             if remote and due:
-                self._git("fetch", "-q", "origin", branch)   # 取り込みは _integrate が行う
-                self._last_remote = now
+                f = self._git("fetch", "-q", "origin", branch)   # 取り込みは _integrate が行う
+                # fetch 失敗で間隔クロックを進めると、次の interval までリモートの指示
+                # （commands/needs）を取りこぼす。失敗時は進めず次パスで即再試行する。
+                # リモートにブランチがまだ無い初回は正常系として進める。
+                if f.returncode == 0 or "couldn't find remote ref" in (f.stderr or "").lower():
+                    self._last_remote = now
             targets = self._changed_targets()
             exported = 0
             if targets:
@@ -1045,7 +1080,7 @@ def _git_toplevel(root: Path) -> bool:
     if not (root / ".git").exists():
         return False
     r = subprocess.run(["git", "-C", str(root), "rev-parse", "--show-toplevel"],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
     return r.returncode == 0 and os.path.realpath(r.stdout.strip()) == os.path.realpath(str(root))
 
 

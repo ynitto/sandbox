@@ -40,7 +40,7 @@ def _cache_lock(url: str):
 
 def _git_cache(cache: str, *args: str, timeout: float = 600):
     return subprocess.run(["git", "-C", cache, *args],
-                          capture_output=True, text=True, timeout=timeout)
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
 
 
 def _is_cache_valid(cache: str) -> bool:
@@ -60,7 +60,7 @@ def _mirror_clone(url: str, cache: str) -> bool:
                 ["git", "clone", "--mirror", url, cache]]   # INV-3: partial 非対応フォールバック
     for cmd in attempts:
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
         except (OSError, subprocess.SubprocessError):
             r = None
         if r is not None and r.returncode == 0:
@@ -153,7 +153,7 @@ def _local_remote_url(local: str) -> str:
     """ローカルクローンの origin URL（取れなければ ""）。"""
     try:
         r = subprocess.run(["git", "-C", local, "remote", "get-url", "origin"],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         return r.stdout.strip() if r.returncode == 0 else ""
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -189,7 +189,7 @@ def provision_from_local(local: str, url: str, refs: "list[str]", dest: str) -> 
         for cand in ([f"refs/heads/{ref}", f"refs/remotes/origin/{ref}"] if ref else ["HEAD"]):
             try:
                 r = subprocess.run(["git", "-C", local, "rev-parse", "--verify", "--quiet",
-                                    f"{cand}^{{commit}}"], capture_output=True, text=True, timeout=30)
+                                    f"{cand}^{{commit}}"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
             except (OSError, subprocess.SubprocessError):
                 continue
             if r.returncode == 0 and r.stdout.strip():
@@ -203,7 +203,7 @@ def provision_from_local(local: str, url: str, refs: "list[str]", dest: str) -> 
     os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
     try:
         r = subprocess.run(["git", "-C", local, "worktree", "add", "--detach", dest, sha],
-                           capture_output=True, text=True, timeout=180)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
     except (OSError, subprocess.SubprocessError):
         return None
     if r.returncode != 0:

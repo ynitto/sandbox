@@ -348,7 +348,7 @@ def run_agent(prompt: str, model: str | None, purpose: str = "") -> str:
     plug = _AGENT_PLUGIN_CACHE.get(cli)   # プラグインなら env/timeout の上書きが効く
     env = {**os.environ, **((plug or {}).get("env") or {})}
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, input=stdin_text,
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", input=stdin_text,
                               timeout=(plug or {}).get("timeout") or _agent_timeout(), env=env)
     except subprocess.TimeoutExpired:
         # 失敗として上位へ。タスクは failed 記録 → 再計画で retry に回り、run は前進する
@@ -483,7 +483,7 @@ def _flow_worker_prompt(payload: dict) -> "str | None":
     try:
         proc = subprocess.run([sys.executable, script],
                               input=json.dumps(payload, ensure_ascii=False, default=str),
-                              capture_output=True, text=True, timeout=60)
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
         if proc.returncode != 0:
             raise RuntimeError(proc.stderr[:300])
         return proc.stdout.strip() or None

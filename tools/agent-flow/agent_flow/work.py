@@ -159,6 +159,20 @@ def cmd_work(args) -> int:
         finally:
             hb.stop()
 
+        # 心拍が claim 喪失を検知した場合（lease 失効中に他ワーカーが正当に獲得）、
+        # 相手が既に結果を確定していたら自分の結果で上書きしない（後勝ち上書きの防止）。
+        if hb.lost.is_set():
+            bus.sync_pull()
+            if bus.has_result(nid):
+                log(who, f"警告: {nid} の claim を喪失し他ワーカーが結果を確定済み——"
+                         "この実行の結果は破棄します")
+                if getattr(args, "cleanup_per_node", False) and ws:
+                    cleanup_workspace()
+                time.sleep(random.uniform(0, 0.3))
+                continue
+            log(who, f"警告: {nid} の claim を喪失（他ワーカーが実行中の可能性）。"
+                     "結果は未確定のため自分の結果を書き込みます")
+
         # 生成された中間成果物を run_dir 相対パスで記録（後続・status から発見できる）
         artifacts = [os.path.relpath(p, bus.run_dir) for p in bus.list_artifacts(nid)]
         if delivery:  # ワークスペースへ push したブランチ/コミットを result に残す（消費側が追跡）

@@ -709,10 +709,27 @@ function lifecycleCardHtml(p) {
     </div>`;
 }
 
+// 実行中アクションの再入ガード。ボタン連打・IPC 応答待ち中の再クリックで同じ操作
+// （start の二重起動・resubmit の二重積み直し）が並走するのを防ぐ。
+const _inflightActions = new Set();
+async function withActionLock(key, fn) {
+  if (_inflightActions.has(key)) return null;
+  _inflightActions.add(key);
+  try {
+    return await fn();
+  } finally {
+    _inflightActions.delete(key);
+  }
+}
+
 // 本体（agent-project）の起動。確認 → CLI 実行 → 結果を平易に伝える。
 // 本体が別マシンの構成では「この PC が実行役になる」ことを事前に言い、
 // CLI が無ければ人が本体マシンで打つコマンドをそのまま見せる。
 async function startAgentProject() {
+  return withActionLock('start-project', _startAgentProject);
+}
+
+async function _startAgentProject() {
   const p = state.project;
   if (!p) return;
   const yes = await confirmDialog(
@@ -4138,6 +4155,10 @@ async function findNodeIssue(btn) {
 // 起こし、結果も回収する）。bus/inbox は daemon が拾う契約で、daemon を使わない構成では
 // 誰も拾わない＝押しても何も起きないため（res.viaTask がその判別）。
 async function resubmitFlowRun() {
+  return withActionLock('resubmit-flow-run', _resubmitFlowRun);
+}
+
+async function _resubmitFlowRun() {
   const run = state.flowRun && state.flowRun.run;
   if (!run) return;
   // 押す前に「正確に何が起きるか」を工程名で見せる。グラフの赤いノードが確実に

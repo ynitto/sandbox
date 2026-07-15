@@ -24,6 +24,10 @@ try:
     import fcntl  # POSIX のみ（macOS/Linux/WSL）。Windows では None。
 except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore
+try:
+    import msvcrt  # Windows のみ。POSIX では None（fcntl を使う）。
+except ImportError:
+    msvcrt = None  # type: ignore
 
 # 終端 status（これに達した run は active_runs から外れ、孤児 reclaim も resume しない）。
 # canceled は人の明示指示（cmd_cancel）による恒久停止。done/failed と同じく終端だが、
@@ -42,17 +46,35 @@ def _claim_lock_path(claim_dir: str) -> str:
 
 @contextlib.contextmanager
 def _file_lock(path: str):
-    """fcntl があれば排他ロック。無ければ no-op（ベストエフォート）。"""
-    if fcntl is None:
+    """プロセス間の排他ロック。POSIX は fcntl.flock、Windows は msvcrt.locking で実装する。
+    以前は fcntl 非対応環境（Windows）で no-op だったため、claim の直列化・二重勝者防止が
+    Windows で一切効かず二重実行の温床になっていた。どちらも無い環境のみ no-op に落ちる。"""
+    if fcntl is None and msvcrt is None:  # pragma: no cover — 想定外の環境のみ
         yield
         return
-    f = open(path, "w")
+    f = open(path, "a+")
     try:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        yield
-    finally:
+        if fcntl is not None:
+            fcntl.flock(f, fcntl.LOCK_EX)
+        else:  # Windows: 先頭 1 バイトの領域ロックで排他（獲得までブロッキング再試行）
+            while True:
+                try:
+                    f.seek(0)
+                    msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)  # 最大 ~10 秒待って例外
+                    break
+                except OSError:
+                    time.sleep(0.2)
         try:
-            fcntl.flock(f, fcntl.LOCK_UN)
+            yield
         finally:
-            f.close()
+            try:
+                if fcntl is not None:
+                    fcntl.flock(f, fcntl.LOCK_UN)
+                else:
+                    f.seek(0)
+                    msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+    finally:
+        f.close()
 

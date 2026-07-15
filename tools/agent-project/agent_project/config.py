@@ -235,7 +235,7 @@ def extract_delivery_ref(act_msg: str, cfg: Config,
         return "(変更なし)"                               # ← 既存コミットを成果物として報告しない
     try:
         r = subprocess.run(["git", "-C", str(cfg.workdir), "log", "-1", "--format=%h %s"],
-                           capture_output=True, text=True, timeout=10)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
         if r.returncode == 0 and r.stdout.strip():
             return f"git: {r.stdout.strip()}"
     except Exception:  # noqa: BLE001

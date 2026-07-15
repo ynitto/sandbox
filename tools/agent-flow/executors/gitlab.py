@@ -193,7 +193,7 @@ def _find_gitlab_idd_scripts_dir():
     candidates.append(os.path.join(cwd, ".github", "skills", "gitlab-idd", "scripts"))
     try:
         root = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True
+            ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, encoding="utf-8", errors="replace"
         ).stdout.strip()
         if root:
             candidates.append(os.path.join(root, ".github", "skills", "gitlab-idd", "scripts"))

@@ -270,11 +270,14 @@ def _collect_dep_results(bus, node: dict, kind: str) -> dict:
 
 def _normalize_verify(text: str, data):
     """verify 成果を {"ok": bool, ...} 形へ正規化する。
-    LLM が JSON を欠いても、本文の verify=pass/fail から ok を導いて gate を機能させる。"""
+    LLM が JSON を欠いても、本文の verify=pass/fail から ok を導いて gate を機能させる。
+    出力契約（『verify=pass』か『verify=fail』を必ず書く）に基づき、どちらも無い曖昧な
+    出力は fail に倒す——「LGTM」「問題なし」等の曖昧文を pass 扱いすると、壊れた検証が
+    ゲートを素通りして偽成功になる（フェイルクローズ）。"""
     if isinstance(data, dict) and "ok" in data:
         return data
     low = text.lower()
-    ok = ("verify=pass" in low) or ("verify=fail" not in low and "fail" not in low)
+    ok = ("verify=pass" in low) and ("verify=fail" not in low)
     out = {"ok": ok}
     if isinstance(data, dict):
         out.update(data)

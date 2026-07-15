@@ -13,7 +13,8 @@ const path = require('path');
 
 function readText(file) {
   try {
-    return fs.readFileSync(file, 'utf8');
+    // CRLF は読み時に正規化する（行末 \r で `key: value` の `$` アンカー照合が外れるのを防ぐ）
+    return fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
   } catch {
     return null;
   }

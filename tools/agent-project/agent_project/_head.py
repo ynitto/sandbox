@@ -26,6 +26,10 @@ try:
     import fcntl
 except ImportError:  # 非 POSIX では daemon 検知不可（常に run にフォールバック）
     fcntl = None
+try:
+    import msvcrt  # Windows のみ。POSIX では None（fcntl を使う）。
+except ImportError:
+    msvcrt = None
 
 VALID_STATUS = ("inbox", "draft", "proposed", "ready", "doing", "done", "blocked", "review",
                 "offloaded", "rejected")

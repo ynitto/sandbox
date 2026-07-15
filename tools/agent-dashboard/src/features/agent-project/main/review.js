@@ -27,13 +27,20 @@ function buildProtocolUrl(base, target) {
   return u.toString();
 }
 
+// テンプレート値はシェルコマンドラインへ埋め込まれる（mode: command は shell:true）。
+// URL 等の値からシェルメタ文字（; | & ` $ など）を除去し、外部データ（イシュー URL）由来の
+// コマンドインジェクションを物理的に防ぐ。URL・GitLab パス・iid に本来これらの文字は現れない。
+function sanitizeForShell(v) {
+  return String(v == null ? '' : v).replace(/[;&|`$<>(){}\r\n\\"']/g, '');
+}
+
 function substitute(template, target) {
   return template
-    .replaceAll('{url}', target.url || '')
-    .replaceAll('{projectPath}', target.projectPath || '')
-    .replaceAll('{type}', target.type || '')
-    .replaceAll('{iid}', target.iid != null ? String(target.iid) : '')
-    .replaceAll('{protocolUrl}', target.protocolUrl || '');
+    .replaceAll('{url}', sanitizeForShell(target.url))
+    .replaceAll('{projectPath}', sanitizeForShell(target.projectPath))
+    .replaceAll('{type}', sanitizeForShell(target.type))
+    .replaceAll('{iid}', target.iid != null ? sanitizeForShell(String(target.iid)) : '')
+    .replaceAll('{protocolUrl}', sanitizeForShell(target.protocolUrl));
 }
 
 // target: {url} 必須。type/projectPath/iid は url から補完する。
@@ -73,6 +80,7 @@ async function openInReviewViewer(cfg, target) {
   if (rv.mode === 'command' && rv.command) {
     const cmd = substitute(rv.command, full);
     const child = spawn(cmd, { shell: true, detached: true, stdio: 'ignore' });
+    child.on('error', () => {}); // 起動失敗（ENOENT 等）で main プロセスを落とさない
     child.unref();
     return { via: 'command', command: cmd };
   }

@@ -208,8 +208,14 @@ def claim_task(cfg: "Config", task: "Task") -> bool:
             fd = os.open(str(p), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         except (FileExistsError, OSError):
             return False                      # 競合で他者が先取り
-    except OSError:
-        return True                           # claim 不能な環境（FS 制約等）は従来どおり通す
+    except OSError as e:
+        # フェイルクローズ: claim ファイルを作れない（権限・ディスクフル・共有違反等）のに
+        # 「取得成功」と返すと、二重実行防止そのものが無効化される（複数インスタンスが同じ
+        # タスクを同時に実行し、ブランチ push・backlog 書き込みが衝突する）。実行を見送り、
+        # 原因を journal に残して次パスに委ねる（環境が直れば自然に再開する）。
+        with contextlib.suppress(OSError):
+            append_journal(cfg.journal, f"claim 不能のため {task.id} の実行を見送り: {e}")
+        return False
     try:
         os.write(fd, rec)
     finally:
