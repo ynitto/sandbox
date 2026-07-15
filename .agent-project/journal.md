@@ -56,3 +56,5 @@
 - 2026-07-16 02:43:27 flow detach: verify-codd-gate-042729 の run req-ef1f92c3-verify-codd-gate-042729-r1 を failed（agent-flow run タイムアウト（3600s））
 - 2026-07-16 02:43:30 cycle 5: verify-codd-gate-042729 → 人の判断（繰り返し NG）
 - 2026-07-16 02:43:32 === agent-project 停止 reason=drained cycles=5 done=0 blocked=3 notified=True promoted=0 ===
+- 2026-07-16 02:43:34 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-16 02:43:34 === project watch: 監視中（charter 更新/フィードバック待ち）===
