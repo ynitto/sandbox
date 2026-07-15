@@ -16,3 +16,7 @@
 {"ts": "2026-07-15T15:12:09Z", "who": "worker-2", "kind": "claimed", "node": "t7"}
 {"ts": "2026-07-15T15:29:04Z", "who": "worker-2", "kind": "result", "node": "t7", "status": "done"}
 {"ts": "2026-07-15T15:29:04Z", "who": "worker-2", "kind": "claimed", "node": "t9-codd-gate-end-to-end-verify"}
+{"ts": "2026-07-15T19:29:54Z", "who": "worker-2", "kind": "claimed", "node": "t9-codd-gate-end-to-end-verify"}
+{"ts": "2026-07-15T19:32:55Z", "who": "worker-2", "kind": "result", "node": "t9-codd-gate-end-to-end-verify", "status": "done"}
+{"ts": "2026-07-15T19:33:19Z", "who": "worker-2", "kind": "claimed", "node": "t12-codd-gate-final-gate-verify"}
+{"ts": "2026-07-15T19:34:19Z", "who": "worker-2", "kind": "result", "node": "t12-codd-gate-final-gate-verify", "status": "done"}

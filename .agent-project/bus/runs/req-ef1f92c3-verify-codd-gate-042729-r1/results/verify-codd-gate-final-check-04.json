@@ -1,0 +1,10 @@
+{
+  "id": "verify-codd-gate-final-check-04",
+  "who": "worker-1",
+  "status": "done",
+  "output": "## 結果: PASS\n\n**(a) 成果**: `verify-codd-gate-scope-fix-03` の成果を独立検証し、完了条件・範囲の両面で合格と判定した。\n\n**(b) 検証内容**\n- 完了条件コマンドを main worktree（`/Users/nitto/Workspace/sandbox`。`.agent-project` は sparse な制御面で実体パッケージが無いため）で実行し、**終了コード0**を確認。\n- `git diff` で `verify.py` / `test_agent_project.py` を確認: 同一行ラベル対応（`_VERIFY_COMMAND_LABEL_RE`、`_strip_leading_command_label`、対応する3件のテスト）のみが削除され、元の要求である改行形式ラベル対応は既存の `_has_command_like_leading_token` による自然な行フィルタで維持されていることを確認。ダングリング参照なし。\n- 関連テスト `pytest -k first_command_line` を実行し、15件全てパス。\n\n**(c) 前提・範囲外事項**\n- 前提: PYTHONPATH解決は main worktree 基準（メモリ記録済みの規約に整合）。\n- 範囲外で発見: 依存タスクの結果JSONの `output` フィールドが中間状態メッセージのまま（成果コード自体は正しい）。修正はせず報告のみ。\n- フルスイートの pytest は対象外のため未実行。\n\n詳細レポートは `bus/runs/req-ef1f92c3-verify-codd-gate-042729-r1/artifacts/verify-codd-gate-final-check-04/report.md` に出力済み。",
+  "finished_at": "2026-07-15T19:48:42Z",
+  "artifacts": [
+    "artifacts/verify-codd-gate-final-check-04/report.md"
+  ]
+}

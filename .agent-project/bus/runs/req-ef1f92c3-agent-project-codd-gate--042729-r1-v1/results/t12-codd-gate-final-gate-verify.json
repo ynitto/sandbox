@@ -1,0 +1,14 @@
+{
+  "id": "t12-codd-gate-final-gate-verify",
+  "who": "worker-2",
+  "status": "done",
+  "output": "まず前提手順（スキル更新・記憶同期・リコール）と、`docs/` の読み込み対象を同時に確認します。\n\n次に、依存成果物と実体ファイル配置を突き合わせて、検証対象の worktree を特定します。\n\n検証記録を成果物プロトコルの出力先に保存し、最終判定を返します。\n\nverify=pass\n\n対象 worktree は **`/Users/nitto/Workspace/sandbox`** と特定しました（実成果物 `tools/agent-project/...` が存在するのはこの worktree）。このルートで実行した  \n`grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' .agent/agent-project.yaml`  \nの結果は以下です。\n\n- 標準出力: `regression_cmd: 'codd-gate verify --base \"$KIRO_BASE_REV\" --repos .agent-project/repos.json'`\n- 対象ファイル絶対パス: `/Users/nitto/Workspace/sandbox/.agent/agent-project.yaml`\n- 終了コード: `0`\n\n{\"ok\": true, \"issues\": []}",
+  "finished_at": "2026-07-15T19:34:19Z",
+  "data": {
+    "ok": true,
+    "issues": []
+  },
+  "artifacts": [
+    "artifacts/t12-codd-gate-final-gate-verify/report.md"
+  ]
+}
