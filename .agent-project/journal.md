@@ -65,3 +65,6 @@
 - 2026-07-16 04:29:50 === agent-project 開始 tasks=6 ingested=2 planner=agent executor=agent dry_run=False ===
 - 2026-07-16 04:29:50 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
 - 2026-07-16 04:29:53 run 再開: agent-project-codd-gate--042729 は req-ef1f92c3-agent-project-codd-gate--042729-r1-v1 の失敗ノードだけをやり直します（done は温存）
+- 2026-07-16 04:34:22 cycle 1: agent-project-codd-gate--042729 → 人の判断（回帰検知）
+- 2026-07-16 04:34:25 state-git 同期: import=3 export=21
+- 2026-07-16 04:34:25 run 再開: verify-codd-gate-042729 は req-ef1f92c3-verify-codd-gate-042729-r1 の失敗ノードだけをやり直します（done は温存）
