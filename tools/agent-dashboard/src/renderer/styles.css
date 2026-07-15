@@ -616,6 +616,17 @@ table.list tr.clickable:hover { background: var(--bg2); }
 .need-list-item.selected { border-color: var(--accent); border-left-color: var(--accent); background: var(--bg3); }
 .need-list-item > span:last-child { color: var(--muted); line-height: 1.45; }
 .need-list-meta { display: flex; gap: 5px; flex-wrap: wrap; }
+/* 待ち時間（SLA）バッジ: 停滞しているほど強い色で注意を引く（既定は色なし） */
+.need-age {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11px;
+}
+.need-age.warn { color: #ffd66b; border-color: var(--yellow); }
+.need-age.danger { color: var(--red); border-color: var(--red); font-weight: 600; }
 .need-detail-card {
   min-height: 100%;
   padding: 18px 20px;

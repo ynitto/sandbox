@@ -241,6 +241,21 @@ def ingest_feedback(cfg: "Config", tasks: "list[Task]") -> "list[str]":
             ingested.append(t.id)
             continue
         was_review = t.norm_status() == "review"     # 検収待ちからの復帰か（自律度の clean/手戻り判定用）
+        if was_review and not fb:
+            # review の空 [x] ＝承認（票の hint どおり approve と同義）。CLI の approve と
+            # 同じ done 確定経路へ委譲する——従来はここで ready に戻していたため、承認した
+            # つもりの検証済み成果が丸ごと最初から再実行される手戻りになっていた
+            # （autonomy には clean 承認と記録しながら再実行する矛盾）。
+            release_claim(cfg, t)
+            ok, msg = approve_review_done(cfg, t, "needs チェックで承認")
+            if ok:
+                nf.unlink(missing_ok=True)   # approve 側で書き直された票が無ければ消す
+                append_journal(cfg.journal, f"feedback 取り込み: {t.id} を承認（done 確定）")
+                ingested.append(t.id)
+            else:
+                # MR 未クリーン等 → 票は approve_review_done が書き直し済み（review のまま）
+                append_journal(cfg.journal, f"feedback 取り込み: {t.id} の承認は保留（{msg[:120]}）")
+            continue
         # 委譲中の needs [x] も approve と同じく flow を止めてから ready（二重書き込み防止）
         if t.norm_status() == "offloaded" or t.get("flow_run"):
             detached = detach_flow_run(cfg, t, (fb or "feedback")[:120] or "feedback により委譲から切り離し")
@@ -539,7 +554,7 @@ def notify(cfg: "Config", tasks, reasons: dict, newly_blocked: set, budget_stop:
     print("\n--- 通知（要対応）---\n" + digest, flush=True)
     if cfg.notify_cmd:
         try:
-            subprocess.run(cfg.notify_cmd, shell=True, input=digest, text=True,
+            subprocess.run(cfg.notify_cmd, shell=True, input=digest, text=True, encoding="utf-8", errors="replace",
                            cwd=str(cfg.workdir), timeout=60)
         except Exception as e:  # noqa: BLE001
             print(f"[warn] notify-cmd 失敗: {e}", file=sys.stderr)

@@ -100,7 +100,7 @@ def _clone_repo(url: str, base: str, dest: str) -> str:
     for i in range(CLONE_RETRIES):
         for cmd in attempts:
             try:
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
                 if r.returncode == 0:
                     return dest
             except (OSError, subprocess.SubprocessError):
@@ -114,7 +114,7 @@ def _clone_repo(url: str, base: str, dest: str) -> str:
 
 def _ws_git(clone: str, *args: str):
     """clone 内で git を実行（capture, check しない）。"""
-    return subprocess.run(["git", "-C", clone, *args], capture_output=True, text=True)
+    return subprocess.run(["git", "-C", clone, *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
 def _prepare_run_branch(clone: str, branch: str, base: str) -> None:
@@ -174,7 +174,12 @@ def finalize_workspace(ws: "dict | None", run_id: str, node_id: str) -> "dict | 
     _ws_git(clone, "add", "-A")
     if _ws_git(clone, "diff", "--cached", "--quiet").returncode == 0:
         return None                               # 変更なし → commit/push しない
-    _ws_git(clone, "commit", "-m", f"[agent-flow] {node_id} ({run_id})")
+    c = _ws_git(clone, "commit", "-m", f"[agent-flow] {node_id} ({run_id})")
+    if c.returncode != 0:
+        # commit 失敗（hook・identity 未設定・index.lock 等）を無視して push すると、
+        # エージェントの編集を含まない古い HEAD が push され「変更が入ったつもりの
+        # delivery」で done になる（サイレントなデータ喪失）。ここで明示的に失敗させる。
+        raise RuntimeError(f"workspace commit が失敗しました: {(c.stderr or c.stdout).strip()[:300]}")
     for i in range(5):
         # detached HEAD のまま作業ブランチへ push（ローカルでブランチを checkout しない）。
         if _ws_git(clone, "push", "origin", f"HEAD:refs/heads/{branch}").returncode == 0:
@@ -184,7 +189,13 @@ def finalize_workspace(ws: "dict | None", run_id: str, node_id: str) -> "dict | 
         # reject → リモートの branch を FETCH_HEAD に取り込み（共有 cache の ref は書き換えない）、
         # detached のまま rebase して再 push。分散ワーカーの push を統合する。
         _ws_git(clone, "fetch", "--quiet", "origin", branch)
-        _ws_git(clone, "rebase", "FETCH_HEAD")
+        rb = _ws_git(clone, "rebase", "FETCH_HEAD")
+        if rb.returncode != 0:
+            # コンフリクトした rebase を放置したまま push を繰り返しても解消しない上、
+            # 部分適用状態のツリーが後続の finalize を汚す。中断して失敗を伝える。
+            _ws_git(clone, "rebase", "--abort")
+            raise RuntimeError(
+                f"workspace rebase が競合しました（{branch}）: {(rb.stderr or rb.stdout).strip()[:300]}")
         time.sleep(2 ** i if i < 4 else 16)
     raise RuntimeError(f"workspace push が {branch} へ反映できませんでした")
 
@@ -266,12 +277,18 @@ class Heartbeat(threading.Thread):
         super().__init__(daemon=True)
         self.bus, self.node_id, self.who, self.lease = bus, node_id, who, lease
         self._stopped = threading.Event()
+        self.lost = threading.Event()   # claim を失った（他者が勝者）ことの検知
 
     def run(self) -> None:
         interval = max(2.0, self.lease / 3.0)
         while not self._stopped.wait(interval):
             try:
-                self.bus._write_claim(self.node_id, self.who, self.lease)
+                # lease_until だけを延長する（ts の振り直し・claim の書き戻しはしない）。
+                # 失効中に他者が claim していたら延長を止めて喪失を記録する——
+                # ここで無条件に claim を書き戻すと両者が走り続けて二重実行になる。
+                if not self.bus.extend_claim(self.node_id, self.who, self.lease):
+                    self.lost.set()
+                    return
                 self.bus.sync_push(f"heartbeat {self.node_id} by {self.who}")
             except Exception:  # noqa: BLE001 — 心拍失敗は実行を止めない
                 pass

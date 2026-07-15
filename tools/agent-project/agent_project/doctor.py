@@ -170,12 +170,12 @@ def unpushed_commits(repo: "Path | None") -> "tuple[int, str]":
         return 0, ""
     try:
         br = subprocess.run(["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         if br.returncode != 0:
             return 0, ""
         branch = br.stdout.strip()
         r = subprocess.run(["git", "-C", str(repo), "rev-list", "--count", "@{u}..HEAD"],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         if r.returncode != 0:            # upstream 未設定（追跡ブランチが無い）
             return 0, branch
         return int(r.stdout.strip() or 0), branch
@@ -502,7 +502,7 @@ def collect_flow_findings(cfg: "Config", fix: bool, runner=None) -> "list[dict]"
     cmd = _kf_base(cfg, bool(cfg.git_bus)) + ["doctor", "--json"]
     if fix:
         cmd.append("--fix")
-    run = runner or (lambda c: subprocess.run(c, capture_output=True, text=True, timeout=600))
+    run = runner or (lambda c: subprocess.run(c, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600))
     try:
         proc = run(cmd)
         data = json.loads(getattr(proc, "stdout", "") or "")

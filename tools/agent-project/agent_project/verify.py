@@ -11,9 +11,14 @@ def run_verify(cmd: str, workdir: Path, timeout: float, env: "dict | None" = Non
     # なる（実際にこの読めなさで 9 回のリトライが焼かれ、人も原因に辿り着けなかった）。
     # set -x のトレース（stderr の "+ <cmd>" 行）から最後に実行されたコマンド＝失敗した工程を
     # 特定してメッセージ先頭に載せる。トレース行は出力 tail から除く（本文を汚さない）。
+    #
+    # Windows ネイティブ（shell=True → cmd.exe）では `set -x` は環境変数代入になり、
+    # verify コマンド全体が変質する（`$VAR` も展開されない）。トレースは POSIX shell の
+    # 機能なので付けず、コマンドをそのまま実行する（cmd.exe 前提の verify 向け）。
+    shell_cmd = cmd if os.name == "nt" else f"set -x\n{cmd}"
     try:
-        proc = subprocess.run(f"set -x\n{cmd}", shell=True, cwd=str(workdir), timeout=timeout,
-                              capture_output=True, text=True,
+        proc = subprocess.run(shell_cmd, shell=True, cwd=str(workdir), timeout=timeout,
+                              capture_output=True, text=True, encoding="utf-8", errors="replace",
                               env={**os.environ, **env} if env else None)
     except subprocess.TimeoutExpired:
         return (False, f"verify タイムアウト（{timeout}s）")
@@ -60,7 +65,7 @@ def run_verify_at_rev(cmd: str, workdir: Path, rev: str, timeout: float,
     wt = tempfile.mkdtemp(prefix="agent-redgreen-")
     try:
         add = subprocess.run(["git", "-C", str(workdir), "worktree", "add", "--detach", wt, rev],
-                             capture_output=True, text=True, timeout=timeout)
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
         if add.returncode != 0:
             return None
         base_env = {**(env or {}), "KIRO_BASE_REV": rev}

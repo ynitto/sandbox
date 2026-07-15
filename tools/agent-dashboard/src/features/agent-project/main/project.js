@@ -25,7 +25,10 @@ const TASK_STATUSES = ['inbox', 'draft', 'proposed', 'ready', 'doing', 'done', '
 
 function readText(file) {
   try {
-    return fs.readFileSync(file, 'utf8');
+    // CRLF は読み時に正規化する。行末 \r が残ると `$` アンカーの HEAD_RE / FIELD_RE /
+    // frontmatter 正規表現が全て外れ、status が既定の inbox に落ちる等、Windows/WSL 間で
+    // 同期・編集された md がサイレントに誤読される。
+    return fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
   } catch {
     return null;
   }
@@ -78,7 +81,7 @@ function parseTask(text, tid) {
     extra: {},
   };
   let seenHead = false;
-  for (const line of String(text || '').split('\n')) {
+  for (const line of String(text || '').replace(/\r\n/g, '\n').split('\n')) {
     const h = line.match(HEAD_RE);
     if (h && !seenHead) {
       seenHead = true;
@@ -161,7 +164,7 @@ function parseCharter(text) {
   if (!text) return null;
   const charter = { name: '', sections: {} };
   let current = null;
-  for (const line of text.split('\n')) {
+  for (const line of String(text).replace(/\r\n/g, '\n').split('\n')) {
     const title = line.match(/^#\s+Charter:\s*(.+)$/);
     if (title) {
       charter.name = title[1].trim();
@@ -211,7 +214,7 @@ function parsePolicy(text) {
 function parseDecisions(text, id) {
   const records = [];
   let cur = null;
-  for (const line of String(text || '').split('\n')) {
+  for (const line of String(text || '').replace(/\r\n/g, '\n').split('\n')) {
     const h = line.match(DR_HEAD_RE);
     if (h) {
       cur = { taskId: id, dr: h[1], date: h[2], actor: h[3].trim(), fields: {}, learn: '' };
@@ -573,7 +576,7 @@ function parseNeeds(text, id) {
     mrUrls: [], // 複数リポジトリ分の MR URL
     delivery: [], // 検収サブ画面用のリポジトリ単位エントリ
   };
-  const s = String(text || '');
+  const s = String(text || '').replace(/\r\n/g, '\n');
   const fm = s.match(/^---\n([\s\S]*?)\n---\n?/);
   let body = s;
   let deliveryRaw = '';
@@ -830,6 +833,24 @@ function _wslUncMatch(p) {
   return s.match(/^\\\\wsl(?:\$|\.localhost)\\[^\\]+(.*)$/i);
 }
 
+// POSIX 形のキーへ正規化: /mnt/<drive>/… は Windows ドライブ表記（c:/…）へ寄せる。
+// これが無いと、WSL 側インスタンスが記録した /mnt/c/Users/... と Windows 側の
+// C:\Users\... が別プロジェクト扱いになり「稼働していない」と誤判定される。
+function _posixKey(rest) {
+  const r = String(rest || '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, '') || '/';
+  const mnt = r.match(/^\/mnt\/([a-z])(\/.*)?$/i);
+  if (mnt) {
+    return `${mnt[1]}:${mnt[2] || '/'}`.toLowerCase();
+  }
+  return r.toLowerCase();
+}
+
+// UNC の WSL ディストロ名（\\wsl$\<distro>\… / \\wsl.localhost\<distro>\…）。UNC でなければ ''。
+function _wslDistroOf(p) {
+  const m = String(p || '').replace(/\//g, '\\').match(/^\\\\wsl(?:\$|\.localhost)\\([^\\]+)/i);
+  return m ? m[1].toLowerCase() : '';
+}
+
 // 比較用キー: WSL UNC → Linux パス、resolve 残骸の \home\... も Linux に戻す。
 function _pathKey(p) {
   let s = String(p || '').trim();
@@ -837,8 +858,7 @@ function _pathKey(p) {
   const unc = s.replace(/\//g, '\\');
   const m = unc.match(/^\\\\wsl(?:\$|\.localhost)\\[^\\]+(.*)$/i);
   if (m) {
-    const rest = (m[1] || '').replace(/\\/g, '/') || '/';
-    return (rest.replace(/\/+/g, '/').replace(/\/$/, '') || '/').toLowerCase();
+    return _posixKey((m[1] || '').replace(/\\/g, '/') || '/');
   }
   // path.win32.resolve('/home/...') → '\home\...' or 'C:\home\...'
   const asBack = s.replace(/\//g, '\\');
@@ -847,7 +867,7 @@ function _pathKey(p) {
     return (`/${drivePosix[1]}/${drivePosix[2]}`.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, '')).toLowerCase();
   }
   if (_isPosixAbs(s)) {
-    return (s.replace(/\/+/g, '/').replace(/\/$/, '') || '/').toLowerCase();
+    return _posixKey(s);
   }
   try {
     s = path.resolve(s);
@@ -860,7 +880,13 @@ function _pathKey(p) {
 function pathsEqual(a, b) {
   const ka = _pathKey(a);
   const kb = _pathKey(b);
-  return Boolean(ka && kb && ka === kb);
+  if (!(ka && kb && ka === kb)) return false;
+  // 両方が WSL UNC でディストロ名が異なるなら別実体（Ubuntu と Debian の /home/x は別物）。
+  // 片方が Linux パス（ディストロ情報なし）のときは従来どおり一致を許す。
+  const da = _wslDistroOf(a);
+  const db = _wslDistroOf(b);
+  if (da && db && da !== db) return false;
+  return true;
 }
 
 // ホスト名の緩い一致（大小・DNS サフィックス差を吸収）。空は不一致。
@@ -989,9 +1015,11 @@ function listInstances() {
 function removeProjectRegistration(cfg, dir) {
   const resolved = path.resolve(dir);
   const rootsList = (cfg.projects && cfg.projects.roots) || [];
-  const idx = rootsList.findIndex(
-    (r) => path.resolve(String(r).replace(/^~(?=$|\/|\\)/, os.homedir())) === resolved
-  );
+  // 登録が /home/... で UI からは UNC（またはその逆）で来ても同一視できるよう pathsEqual で照合
+  const idx = rootsList.findIndex((r) => {
+    const expanded = String(r).replace(/^~(?=$|\/|\\)/, os.homedir());
+    return path.resolve(expanded) === resolved || pathsEqual(expanded, dir) || pathsEqual(expanded, resolved);
+  });
   if (idx !== -1) {
     const nextRoots = rootsList.slice();
     nextRoots.splice(idx, 1);

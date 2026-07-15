@@ -33,6 +33,9 @@ const state = {
   enqueueExtra: null, // {level, track}（再投入で引き継ぐが UI に出さない値）
   timer: null,
   busy: false,
+  // 要対応（needs）の前回カウント。増分を検知して OS 通知する（張り付き監視の解消）。
+  // initialized=false の初回はベースライン取得のみで通知しない（起動時の殺到を避ける）。
+  notify: { counts: {}, initialized: false },
 };
 
 // ---------------------------------------------------------------------------
@@ -438,6 +441,83 @@ document.addEventListener(
 async function refreshDiscovery() {
   state.discovery = await api.discover();
   renderTree();
+  checkNeedsNotifications();
+}
+
+// 要対応カウントの増分を計算する純関数（副作用なし・テスト対象）。
+//   prevCounts: { dir -> count }（前回。初回は空）
+//   projects:   discover() が返す projects（各に needsCount・root・name を含む）
+// 返り値: { counts, total, notifications:[{name, root, added, total}] }
+// exists:false（登録が実在しない）プロジェクトは総数・通知の対象外。
+function computeNeedsDelta(prevCounts, projects) {
+  const counts = {};
+  let total = 0;
+  const notifications = [];
+  for (const p of projects || []) {
+    if (!p || p.exists === false) continue;
+    const c = Math.max(0, Math.floor(Number(p.needsCount) || 0));
+    counts[p.dir] = c;
+    total += c;
+    const before = prevCounts ? prevCounts[p.dir] : undefined;
+    // 前回観測済みのプロジェクトで数が増えたときだけ通知する（新規発見・減少では通知しない）。
+    if (before != null && c > before) {
+      notifications.push({
+        name: p.charterName || p.name || p.dir,
+        root: p.root || p.dir,
+        added: c - before,
+        total: c,
+      });
+    }
+  }
+  return { counts, total, notifications };
+}
+
+// 通知は base の app:notify に文言を渡すだけ（フォーカス中の抑制・バッジ・フラッシュは
+// main 側が判断する）。preload に notify が無い旧ビルドでも黙って何もしない。
+function safeNotify(payload) {
+  try {
+    if (api && typeof api.notify === 'function') return api.notify(payload);
+  } catch (err) {
+    uiLog('notify failed', String((err && err.message) || err));
+  }
+  return null;
+}
+
+// discover() の needsCount 増分を検知して OS 通知する（純関数 computeNeedsDelta の外殻）。
+function checkNeedsNotifications() {
+  const enabled = !(
+    state.config &&
+    state.config.notifications &&
+    state.config.notifications.enabled === false
+  );
+  const projects = (state.discovery && state.discovery.projects) || [];
+  const { counts, total, notifications } = computeNeedsDelta(state.notify.counts, projects);
+  const seeded = state.notify.initialized;
+  state.notify.counts = counts;
+  state.notify.initialized = true;
+
+  if (!enabled) {
+    // 通知オフ: バッジを消し、増分は無視する（カウントは追い続けるので再オンで殺到しない）。
+    safeNotify({ badgeCount: 0, silent: true });
+    return;
+  }
+  if (!seeded || !notifications.length) {
+    // 初回のベースライン取得、または増分なし: バッジ（総数）だけ合わせる。
+    safeNotify({ badgeCount: total, silent: true });
+    return;
+  }
+  for (const r of notifications) {
+    safeNotify({
+      title: `${r.name}: 要対応 ${r.added} 件`,
+      body:
+        r.total > r.added
+          ? `新しく人の判断待ちが増えました（このプロジェクト計 ${r.total} 件）。クリックで開きます。`
+          : '新しく人の判断待ちが発生しました。クリックで開きます。',
+      target: { root: r.root, name: r.name },
+      badgeCount: total,
+      flash: true,
+    });
+  }
 }
 
 // プロジェクトの登録を実体に即して直接消す（config.roots のエントリ削除、または
@@ -709,10 +789,27 @@ function lifecycleCardHtml(p) {
     </div>`;
 }
 
+// 実行中アクションの再入ガード。ボタン連打・IPC 応答待ち中の再クリックで同じ操作
+// （start の二重起動・resubmit の二重積み直し）が並走するのを防ぐ。
+const _inflightActions = new Set();
+async function withActionLock(key, fn) {
+  if (_inflightActions.has(key)) return null;
+  _inflightActions.add(key);
+  try {
+    return await fn();
+  } finally {
+    _inflightActions.delete(key);
+  }
+}
+
 // 本体（agent-project）の起動。確認 → CLI 実行 → 結果を平易に伝える。
 // 本体が別マシンの構成では「この PC が実行役になる」ことを事前に言い、
 // CLI が無ければ人が本体マシンで打つコマンドをそのまま見せる。
 async function startAgentProject() {
+  return withActionLock('start-project', _startAgentProject);
+}
+
+async function _startAgentProject() {
   const p = state.project;
   if (!p) return;
   const yes = await confirmDialog(
@@ -2721,6 +2818,16 @@ function deliveryRoleLabel(role) {
   return role === 'reference' ? '参照（読取）' : '書込先';
 }
 
+function deliveryReviewState(entries, mrs) {
+  const list = entries || [];
+  const fileCount = list.reduce((count, entry) => count + (entry.files || []).length, 0);
+  const hasMr = Boolean((mrs || []).length || list.some((entry) => entry.mr_url));
+  const canDiscover = list.some(
+    (entry) => entry.role !== 'reference' && entry.path && (entry.ref || !entry.branch)
+  );
+  return { fileCount, hasMr, canDiscover, hasContent: fileCount > 0 || hasMr };
+}
+
 function renderDeliveryRepo(entry, idx) {
   const role = deliveryRoleLabel(entry.role);
   const files = entry.files || [];
@@ -2780,6 +2887,8 @@ async function openDeliveryReview(needId) {
   if (!$('dlg-delivery-review').open) $('dlg-delivery-review').showModal();
   const entries = await hydrateDeliveryEntries(rawEntries);
   if (!$('dlg-delivery-review').open) return;
+  const reviewState = deliveryReviewState(entries, mrs);
+  const discoveryFailed = entries.some((entry) => entry.discovery === 'failed');
   const mrBlock = mrs.length
     ? `<section class="delivery-mr-banner">
         <p>GitLab 上で差分を確認できます（gitlab executor / タスク MR）。</p>
@@ -2797,7 +2906,7 @@ async function openDeliveryReview(needId) {
     entries.length > 0
       ? entries.map((e, i) => renderDeliveryRepo(e, i)).join('')
       : '<p class="muted">構造化された検収物情報がありません。判断材料の本文を確認してください。</p>';
-  const canShowAllDiffs = entries.some(
+  const canShowAllDiffs = reviewState.fileCount > 0 && entries.some(
     (entry) => entry.role !== 'reference' && entry.path && (entry.ref || !entry.branch)
   );
   const allDiffs = canShowAllDiffs
@@ -2805,7 +2914,15 @@ async function openDeliveryReview(needId) {
         <button class="primary-inline" data-delivery-all-diff>すべての差分を表示</button>
       </div>`
     : '';
-  $('delivery-review-body').innerHTML = `${mrBlock}
+  const emptyNotice = reviewState.hasContent
+    ? ''
+    : `<section class="delivery-empty-state" role="status">
+        <h3>${discoveryFailed ? '変更ファイル一覧を取得できませんでした' : '変更ファイルはありません'}</h3>
+        <p>${discoveryFailed
+          ? 'リポジトリの情報またはGitの状態を確認し、もう一度開いてください。'
+          : '現在の比較条件では、検収対象となる変更を検出しませんでした。'}</p>
+      </section>`;
+  $('delivery-review-body').innerHTML = `${mrBlock}${emptyNotice}
     <div class="delivery-review-layout">
       <aside class="delivery-file-panel" aria-label="変更ファイル">
         <div class="delivery-file-panel-title">
@@ -2817,7 +2934,7 @@ async function openDeliveryReview(needId) {
       </aside>
       <section class="delivery-diff-panel" aria-label="ファイル差分">
         <header class="delivery-diff-head">
-          <strong id="delivery-diff-title">差分を表示するファイルを選択してください</strong>
+          <strong id="delivery-diff-title">${reviewState.hasContent ? '差分を表示するファイルを選択してください' : '表示できる差分はありません'}</strong>
           <span class="muted">左右比較</span>
         </header>
         <div id="delivery-diff-view" class="delivery-diff-view" tabindex="0" aria-live="polite"></div>
@@ -2860,14 +2977,14 @@ async function hydrateDeliveryEntries(entries) {
     const fallbackFiles = (entry.files || []).filter(isDeliveryArtifactFile);
     const fallback = { ...entry, files: fallbackFiles, files_total: fallbackFiles.length };
     const canLoad = entry.role !== 'reference' && entry.path && (entry.ref || !entry.branch);
-    if (!canLoad) return fallback;
+    if (!canLoad) return { ...fallback, discovery: 'unavailable' };
     try {
       const result = await api.gitDiff(deliveryDiffRequest(entry));
       const files = (result.files || []).filter(isDeliveryArtifactFile);
-      return { ...entry, files, files_total: files.length };
+      return { ...entry, files, files_total: files.length, discovery: 'complete' };
     } catch (err) {
       uiLog('delivery file list fallback', entry.name || 'repo', err && err.message ? err.message : err);
-      return fallback;
+      return { ...fallback, discovery: 'failed' };
     }
   }));
 }
@@ -2996,6 +3113,35 @@ function needBucket(n, sentFn) {
   return sentFn(n) ? 'sent' : 'open';
 }
 
+// 待ち時間（ミリ秒）を人間可読ラベルにする純関数。
+function humanizeAge(ms) {
+  const m = Math.floor((Number(ms) || 0) / 60000);
+  if (m < 1) return 'たった今';
+  if (m < 60) return `${m}分待ち`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}時間待ち`;
+  const d = Math.floor(h / 24);
+  return `${d}日待ち`;
+}
+
+// 要対応の待ち時間と SLA レベルを求める純関数（テスト対象）。
+//   need.mtime（最終更新＝この判断待ちが最後に立った時刻の近似）、無ければ date を使う。
+//   slaHours 以上で 'danger'（赤）、その 1/3 以上で 'warn'（黄）、それ未満は ''（色なし）。
+// 停滞している判断待ちを一目で分かるようにする（人待ちで下流が止まっている時間の可視化）。
+function needAgeInfo(need, nowMs, slaHours) {
+  const sla = Math.max(1, Number(slaHours) || 24);
+  let since = Number(need && need.mtime) || 0;
+  if (!since && need && need.date) {
+    const t = Date.parse(need.date);
+    if (!Number.isNaN(t)) since = t;
+  }
+  if (!since) return { ms: 0, label: '', level: '' };
+  const ms = Math.max(0, (Number(nowMs) || 0) - since);
+  const hours = ms / 3600000;
+  const level = hours >= sla ? 'danger' : hours >= sla / 3 ? 'warn' : '';
+  return { ms, label: humanizeAge(ms), level };
+}
+
 function needsViewModel(needs, filter, selectedId, sentFn) {
   const sorted = [...(needs || [])].sort(
     (a, b) =>
@@ -3004,7 +3150,12 @@ function needsViewModel(needs, filter, selectedId, sentFn) {
   );
   const counts = { open: 0, sent: 0, done: 0 };
   for (const n of sorted) counts[needBucket(n, sentFn)] += 1;
-  const items = filter === 'gitlab' ? [] : sorted.filter((n) => needBucket(n, sentFn) === filter);
+  let items = filter === 'gitlab' ? [] : sorted.filter((n) => needBucket(n, sentFn) === filter);
+  // 未対応（open）は「待ち時間の長い順」＝停滞している判断待ちを上に出す（省力トリアージ）。
+  // 既定の選択（items[0]）も最も停滞したカードになり、最優先の判断へ自然に誘導する。
+  if (filter === 'open') {
+    items = [...items].sort((a, b) => (Number(a.mtime) || 0) - (Number(b.mtime) || 0));
+  }
   const selected = items.find((n) => n.id === selectedId) || items[0] || null;
   return { counts, items, selected, selectedId: selected ? selected.id : null };
 }
@@ -3050,13 +3201,14 @@ function renderNeedFacts(n) {
       facts.push(`<div class="row need-files">${files}</div>`);
     }
   }
-  if (n.mrUrl || (n.delivery && n.delivery.length)) {
-    const repos = (n.delivery || []).length;
-    const label = n.mrUrl
-      ? 'GitLab MR あり'
-      : repos > 1
-        ? `検収物 ${repos} リポジトリ`
-        : '検収物あり';
+  const deliveryMrs = n.mrUrls && n.mrUrls.length ? n.mrUrls : n.mrUrl ? [n.mrUrl] : [];
+  const deliveryState = deliveryReviewState(n.delivery || [], deliveryMrs);
+  if (deliveryState.hasContent || deliveryState.canDiscover) {
+    const label = deliveryState.fileCount
+      ? `変更ファイル ${deliveryState.fileCount} 件`
+      : deliveryState.hasMr
+        ? 'GitLab MR'
+        : '変更内容を取得して確認';
     facts.push(
       `<div class="row need-delivery-cta">` +
         `<span class="label-chip">検収物</span> ${esc(label)}` +
@@ -3210,12 +3362,22 @@ function renderNeeds() {
     ['done', '回答済み', model.counts.done],
     ['gitlab', 'GitLab', gitlabCount],
   ];
+  // 未対応カードに待ち時間・SLA バッジを出す（停滞の可視化）。id → {label, level} を一度だけ計算し
+  // 一覧と署名（sig）で共有する。sig にラベルを含めることで、時間経過でラベルが変わったときにだけ
+  // 再描画する（毎分の無駄な再描画を避ける）。
+  const now = Date.now();
+  const slaHours = (state.config && state.config.projects && Number(state.config.projects.needsSlaHours)) || 24;
+  const ages = {};
+  if (state.needsFilter === 'open') {
+    for (const n of model.items) ages[n.id] = needAgeInfo(n, now, slaHours);
+  }
   const sig = JSON.stringify([
     state.needsFilter,
     state.needsSelectedId,
     state.needsMobileDetail,
     filters.map((x) => x[2]),
     p.needs.map((n) => [n.id, n.kind, n.decided, isNeedSent(n), n.why, n.summary, n.risk, n.failureSummary || '', n.failureResolution || '', n.failureContext || null, (n.detail || '').length]),
+    model.items.map((n) => (ages[n.id] ? `${ages[n.id].level}|${ages[n.id].label}` : '')),
   ]);
   if (el.dataset.sig === sig && el.childElementCount) return;
   el.dataset.sig = sig;
@@ -3230,11 +3392,16 @@ function renderNeeds() {
   const list = model.items
     .map((n) => {
       const selected = n.id === state.needsSelectedId;
+      const age = ages[n.id];
+      const ageBadge = age && age.label
+        ? `<span class="need-age ${age.level}" title="最終更新からの経過時間（SLA ${slaHours}h 超で赤）">${esc(age.label)}</span>`
+        : '';
       return `<button class="need-list-item ${selected ? 'selected' : ''}" data-need-select="${esc(n.id)}"
         aria-pressed="${selected}">
         <span class="need-list-meta">
           <span class="badge">${esc(needKindLabel(n.kind))}</span>
           ${riskBadgeHtml(n)}
+          ${ageBadge}
         </span>
         <strong>${esc(needDisplayTitle(n))}</strong>
         <span>${esc(NEED_ASK[n.kind] || NEED_ASK.blocked)}</span>
@@ -4251,6 +4418,10 @@ async function findNodeIssue(btn) {
 // 起こし、結果も回収する）。bus/inbox は daemon が拾う契約で、daemon を使わない構成では
 // 誰も拾わない＝押しても何も起きないため（res.viaTask がその判別）。
 async function resubmitFlowRun() {
+  return withActionLock('resubmit-flow-run', _resubmitFlowRun);
+}
+
+async function _resubmitFlowRun() {
   const run = state.flowRun && state.flowRun.run;
   if (!run) return;
   // 押す前に「正確に何が起きるか」を工程名で見せる。グラフの赤いノードが確実に
@@ -4901,6 +5072,8 @@ function openSettings() {
   $('cfg-refresh').value = cfg.projects ? cfg.projects.refreshSec : 5;
   $('cfg-git-pull').value = cfg.projects && cfg.projects.gitPullSec !== undefined ? cfg.projects.gitPullSec : 300;
   $('cfg-git-autopush').checked = !!(cfg.projects && cfg.projects.gitAutoPush);
+  $('cfg-notify').checked = !(cfg.notifications && cfg.notifications.enabled === false);
+  $('cfg-needs-sla').value = cfg.projects && cfg.projects.needsSlaHours !== undefined ? cfg.projects.needsSlaHours : 24;
   $('cfg-project-command').value = (cfg.projects && cfg.projects.command) || 'agent-project';
   $('cfg-action-mode').value = (cfg.projects && cfg.projects.actionMode) || 'auto';
   $('cfg-flow-bus').value = (cfg.projects && cfg.projects.flowBus) || '';
@@ -4932,6 +5105,9 @@ async function saveSettings() {
   cfg.projects.refreshSec = Math.max(0, parseInt($('cfg-refresh').value, 10) || 0);
   cfg.projects.gitPullSec = Math.max(0, parseInt($('cfg-git-pull').value, 10) || 0);
   cfg.projects.gitAutoPush = $('cfg-git-autopush').checked;
+  cfg.notifications = cfg.notifications || {};
+  cfg.notifications.enabled = $('cfg-notify').checked;
+  cfg.projects.needsSlaHours = Math.max(1, parseInt($('cfg-needs-sla').value, 10) || 24);
   cfg.projects.command = $('cfg-project-command').value.trim() || 'agent-project';
   cfg.projects.actionMode = $('cfg-action-mode').value;
   cfg.projects.flowBus = $('cfg-flow-bus').value.trim();

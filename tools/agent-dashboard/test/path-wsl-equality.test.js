@@ -48,6 +48,28 @@ test('スラッシュ混在 UNC も正規化できる', () => {
   ));
 });
 
+test('/mnt/<drive> と Windows ドライブ表記が同じキーになる', () => {
+  assert.strictEqual(_pathKey('/mnt/c/Users/me/proj/.agent-project'), 'c:/users/me/proj/.agent-project');
+  assert.ok(pathsEqual('/mnt/c/Users/me/proj', '/mnt/C/users/ME/proj'));
+  // UNC 経由の /mnt/c/... も同じキーに寄る
+  assert.ok(pathsEqual(
+    '\\\\wsl.localhost\\Ubuntu\\mnt\\c\\Users\\me\\proj',
+    '/mnt/c/Users/me/proj'
+  ));
+});
+
+test('異なるディストロの同名パスは同一視しない', () => {
+  assert.ok(!pathsEqual(
+    '\\\\wsl.localhost\\Ubuntu\\home\\me\\webapp\\.agent-project',
+    '\\\\wsl.localhost\\Debian\\home\\me\\webapp\\.agent-project'
+  ));
+  // 片方が Linux パス（ディストロ情報なし）なら従来どおり一致を許す
+  assert.ok(pathsEqual(
+    '\\\\wsl.localhost\\Debian\\home\\me\\webapp\\.agent-project',
+    '/home/me/webapp/.agent-project'
+  ));
+});
+
 test('hostsMatch は大小・DNS サフィックス差を吸収', () => {
   assert.ok(hostsMatch('MyPC', 'mypc'));
   assert.ok(hostsMatch('mypc.localdomain', 'mypc'));

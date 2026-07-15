@@ -73,7 +73,7 @@ def _executor_search_dirs() -> "list[str]":
     # 2. git リポジトリの tools/agent-flow/executors（cwd がサブディレクトリでも届く）
     try:
         root = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True
+            ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, encoding="utf-8", errors="replace"
         ).stdout.strip()
         if root:
             dirs.append(os.path.join(root, "tools", "agent-flow", "executors"))
