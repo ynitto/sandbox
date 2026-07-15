@@ -257,7 +257,10 @@
       <textarea id="doctor-prompt" rows="3" placeholder="例: 同期エラーを中心に、次に何をすべきか教えてください"></textarea>
       <div class="doctor-form-actions">
         <span class="muted">空欄でも現在の画面について相談できます。</span>
-        <button id="btn-doctor-submit" class="primary-inline">相談する</button>
+        <div class="doctor-form-buttons">
+          <button id="btn-doctor-apply-feedback" class="hidden" type="button">差し戻し文面を回答欄へ</button>
+          <button id="btn-doctor-submit" class="primary-inline">相談する</button>
+        </div>
       </div>
     </div>
     <div id="doctor-status" class="doctor-status" aria-live="polite"></div>
@@ -296,10 +299,20 @@
         <input id="enq-id" class="mono" placeholder="例: T12" />
       </div>
       <div class="field">
-        <label>先行タスク（先に終えるべきタスクの ID。任意・カンマ区切り）</label>
-        <input id="enq-after" class="mono" placeholder="例: T1, T2" />
+        <label for="enq-after">先行タスク（先に終えるべきタスクの ID。任意・カンマ区切り）</label>
+        <input id="enq-after" class="mono" list="enq-after-options" placeholder="例: T1, T2" />
+        <datalist id="enq-after-options"></datalist>
       </div>
     </div>
+    <details id="enq-backlog-panel" class="enq-backlog-panel">
+      <summary>既存バックログ（依存・優先度の参考）</summary>
+      <div id="enq-backlog-summary" class="enq-backlog-summary muted"></div>
+    </details>
+    <div class="enq-assist-row">
+      <button type="button" id="btn-enq-ai">AIで依存・優先度を提案</button>
+      <span id="enq-ai-status" class="muted" aria-live="polite"></span>
+    </div>
+    <div id="enq-ai-adjustments" class="enq-ai-adjustments hidden"></div>
     <div class="muted">検証コマンド・完了条件のどちらも無い場合、取り込み後に内容の確認（人の判断）が必要になります。</div>
     <div class="dialog-actions">
       <button id="btn-enq-cancel">キャンセル</button>

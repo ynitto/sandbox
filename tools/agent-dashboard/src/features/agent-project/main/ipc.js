@@ -425,6 +425,22 @@ function registerIpc(ctx) {
     return agent.completeDoctor(loadConfig(), { dir: dir || null, context, userPrompt, mode });
   });
 
+  // フォローアップ案・依存/優先度提案。JSON を返すだけで inbox / backlog には書かない。
+  handle('agent:taskAssist', ({ dir, mode, context, userPrompt }) => {
+    if (!context || typeof context !== 'object') throw new Error('補助コンテキストが指定されていません');
+    return agent.completeTaskAssist(loadConfig(), {
+      dir: dir || null,
+      mode,
+      context,
+      userPrompt,
+    });
+  });
+
+  // 既存タスク調整案 → revise 差分の純関数（人確認前のプレビュー用。ファイルは書かない）。
+  handle('agent:planAdjustments', ({ backlog, adjustments }) =>
+    agent.planBacklogAdjustments(backlog || [], adjustments || [])
+  );
+
   // ⚙ 設定画面の表示用: 今どの CLI / モデルで補完するかの解決結果（実行はしない）
   handle('agent:resolve', ({ dir }) => agent.resolveAgent(loadConfig(), dir));
 

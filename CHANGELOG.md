@@ -7,6 +7,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: 計画レビュー・検収・バックログの AI 補助
+
+計画レビューと検収で「何を見るか」は揃っていたが、**charter との整合・変更の意図・次の
+バックログ案・依存/優先度の調整**は人が自力で補う必要があった。既存の読み取り専用 Doctor
+契約を拡張し、判断の下ごしらえだけを AI が行い、承認・差し戻し・inbox 投入は従来どおり
+人のボタンで確定する。
+
+- **計画批評（plan-critique）**: 計画レビューカードの「AIで計画を批評」。提案タスクを
+  charter / 兄弟 proposed と突き合わせ、取りこぼし・依存・acceptance・推薦・差し戻し文面案を返す。
+- **変更理由（delivery-rationale）**: 検収カード／検収ダイアログの「変更理由を説明」。
+  差分と verify/accept から「なぜ変えたか」と承認推薦を返す。
+- **フォローアップ案（followup-suggest）**: 検収ダイアログの「フォローアップ案」。
+  JSON でタスク案を返し、「タスク追加フォームへ」で人が確認してから inbox 投入できる。
+- **依存・優先度提案（enqueue-assist）**: タスク追加の「AIで依存・優先度を提案」。
+  after / priority / note を下書きし、既存タスクへの調整案も提示する。調整案は
+  チェックボックスで選び「選択した調整を反映」で公式の `revise` として送信する
+  （人確認必須・状態ファイル直書きなし）。手動側も先行タスクの datalist と
+  既存バックログ一覧を追加。
+- **差し戻し文面の流し込み**: Doctor 応答の「差し戻し文面案」を回答欄へコピーできる
+  （送信は人が確定）。CLI は従来どおり読み取り専用。
+
+> 設計: [`docs/plans/2026-07-15-agent-dashboard-plan-acceptance-assist-design.md`](docs/plans/2026-07-15-agent-dashboard-plan-acceptance-assist-design.md)。
+> 改善案の B1/B2/B3 に対応: [`docs/designs/agent-dashboard-project-ux-improvements.md`](docs/designs/agent-dashboard-project-ux-improvements.md)。
+
 ### agent-dashboard: 要対応の待ち時間・SLA バッジ（停滞の可視化）
 
 要対応（人の判断待ち）が**どれだけ待たされているか**が一覧から分からず、長時間放置＝下流が

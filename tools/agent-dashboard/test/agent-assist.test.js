@@ -264,6 +264,95 @@ test('doctorPrompt: 失敗診断モードは原因・対処・再実行に特化
   assert.ok(p.stdin.includes('verify failed'));
 });
 
+test('doctorPrompt: 計画批評モードは取りこぼし・依存・差し戻し文面案を要求する', () => {
+  const p = agent.doctorPrompt(
+    { selected: { id: 'T2', kind: 'plan-review' }, proposedSiblings: [{ id: 'T1' }] },
+    '',
+    { mode: 'plan-critique' }
+  );
+  for (const heading of ['総評', '取りこぼし・重複', '依存と優先度', 'acceptance対応', '推薦', '差し戻し文面案']) {
+    assert.ok(p.argv.includes(heading), `計画批評の回答契約に「${heading}」が必要`);
+  }
+  assert.ok(p.stdin.includes('plan-critique'));
+  assert.ok(p.argv.includes('読み取り専用'));
+});
+
+test('doctorPrompt: 検収理由モードは変更意図とacceptance対応を要求する', () => {
+  const p = agent.doctorPrompt(
+    { selected: { id: 'T3', kind: 'review', diffSections: [{ name: 'app' }] } },
+    '',
+    { mode: 'delivery-rationale' }
+  );
+  for (const heading of ['変更の意図', 'acceptance対応', 'リスクと注意点', '推薦', '差し戻し文面案']) {
+    assert.ok(p.argv.includes(heading), `検収理由の回答契約に「${heading}」が必要`);
+  }
+  assert.ok(p.stdin.includes('delivery-rationale'));
+});
+
+test('extractMarkdownSection: 差し戻し文面案を取り出す', () => {
+  const md = '## 推薦\n承認\n\n## 差し戻し文面案\nverify を具体化してください\n\n## 余談\nx';
+  assert.strictEqual(agent.extractMarkdownSection(md, '差し戻し文面案'), 'verify を具体化してください');
+  assert.strictEqual(agent.extractMarkdownSection(md, '無い見出し'), '');
+});
+
+test('taskAssistPrompt / normalize: フォローアップ案と依存優先度提案の JSON 契約', () => {
+  const follow = agent.taskAssistPrompt('followup-suggest', {
+    charter: { goal: 'G', acceptance: 'a' },
+    backlog: [{ id: 'T1', title: '既存', status: 'ready', priority: 2 }],
+    selected: { needId: 'n1', title: '検収' },
+  });
+  assert.ok(follow.includes('"suggestions"') && follow.includes('フォローアップ'));
+  assert.ok(follow.includes('T1: 既存'));
+  const enq = agent.taskAssistPrompt('enqueue-assist', {
+    backlog: [{ id: 'T1', title: '既存', status: 'ready', priority: 2, after: [] }],
+    draft: { title: '新タスク' },
+  });
+  assert.ok(enq.includes('"adjustments"') && enq.includes('新タスク'));
+  const sug = agent.normalizeFollowupSuggestions({
+    rationale: '続き',
+    suggestions: [{ title: ' docs ', verify: 'true', after: 'T1, T2', priority: '3' }],
+  });
+  assert.deepStrictEqual(sug.suggestions[0].after, ['T1', 'T2']);
+  assert.strictEqual(sug.suggestions[0].priority, 3);
+  const adj = agent.normalizeEnqueueAssist({
+    after: ['T1'],
+    priority: '8',
+    note: 'n',
+    adjustments: [
+      { id: 'T1', priority: 1, after: 'T0', reason: '先に' },
+      { id: 'T2', priority: 3, reason: '優先度だけ' },
+    ],
+  });
+  assert.strictEqual(adj.priority, 8);
+  assert.deepStrictEqual(adj.adjustments[0].after, ['T0']);
+  assert.strictEqual(adj.adjustments[1].after, null, 'after キー無しは触らない');
+});
+
+test('planBacklogAdjustments: 差分がある未実施タスクだけ revise 対象にする', () => {
+  const backlog = [
+    { id: 'T1', title: '準備', status: 'ready', priority: 2, extra: { after: '' } },
+    { id: 'T2', title: '実装', status: 'inbox', priority: 1, extra: { after: 'T1' } },
+    { id: 'T3', title: '却下', status: 'rejected', priority: 0, extra: {} },
+  ];
+  const planned = agent.planBacklogAdjustments(backlog, [
+    { id: 'T1', priority: 5, after: ['T2'], reason: '先に上げる' },
+    { id: 'T2', priority: 1, after: ['T1'], reason: '同じ' },
+    { id: 'T3', priority: 9, after: ['T1'], reason: '却下は触らない' },
+    { id: 'T9', priority: 1, after: [], reason: '存在しない' },
+  ]);
+  const clearDep = agent.planBacklogAdjustments(backlog, [
+    { id: 'T2', after: [], reason: '依存解除' },
+  ]);
+  assert.strictEqual(planned.apply.length, 1);
+  assert.strictEqual(planned.apply[0].id, 'T1');
+  assert.strictEqual(planned.apply[0].fields.priority, '5');
+  assert.strictEqual(planned.apply[0].fields.after, 'T2');
+  assert.strictEqual(clearDep.apply[0].fields.after, '');
+  assert.ok(planned.skipped.some((s) => s.id === 'T2' && /変更なし/.test(s.reason)));
+  assert.ok(planned.skipped.some((s) => s.id === 'T3' && /却下/.test(s.reason)));
+  assert.ok(planned.skipped.some((s) => s.id === 'T9'));
+});
+
 test('buildDoctorCommand: WSL UNC を cwd にしない（Windows ネイティブ CLI 対策）', () => {
   const unc = '\\\\wsl.localhost\\Ubuntu\\home\\me\\proj';
   const c = agent.buildDoctorCommand('kiro', '', 'x', unc);
@@ -278,13 +367,34 @@ test('Doctorはpreloadの限定APIから専用IPCだけを呼び出す', () => {
   assert.ok(ipcSource.includes("handle('agent:doctor'"));
   assert.ok(
     preloadSource.includes("agentDoctor: (invoke) => (args) => invoke('agent:doctor', args)"),
-    'agent-project preload が agent:doctor だけを露出する'
+    'agent-project preload が agent:doctor を露出する'
   );
   const start = ipcSource.indexOf("handle('agent:doctor'");
-  const end = ipcSource.indexOf("handle('agent:resolve'", start);
-  const handler = ipcSource.slice(start, end);
+  const end = ipcSource.indexOf("handle('agent:taskAssist'", start);
+  const handler = ipcSource.slice(start, end > start ? end : start + 400);
   assert.ok(handler.includes('{ dir, context, userPrompt, mode }'), '任意入力と診断モードをDoctorへ渡す');
   assert.ok(!handler.includes("if (!dir)"), 'プロジェクト未選択でも相談できる');
+});
+
+test('構造化 Assist は preload / IPC の読み取り専用経路で公開される', () => {
+  assert.ok(ipcSource.includes("handle('agent:taskAssist'"));
+  assert.ok(
+    preloadSource.includes("agentTaskAssist: (invoke) => (args) => invoke('agent:taskAssist', args)"),
+    'agent-project preload が agent:taskAssist を露出する'
+  );
+  assert.ok(agent.STRUCTURED_ASSIST_MODES.has('followup-suggest'));
+  assert.ok(agent.STRUCTURED_ASSIST_MODES.has('enqueue-assist'));
+});
+
+test('既存タスク調整の計画 IPC はファイルを書かず preload から呼べる', () => {
+  assert.ok(ipcSource.includes("handle('agent:planAdjustments'"));
+  assert.ok(
+    preloadSource.includes("agentPlanAdjustments: (invoke) => (args) => invoke('agent:planAdjustments', args)")
+  );
+  const start = ipcSource.indexOf("handle('agent:planAdjustments'");
+  const chunk = ipcSource.slice(start, start + 220);
+  assert.ok(chunk.includes('planBacklogAdjustments'));
+  assert.ok(!chunk.includes('dropCommand') && !chunk.includes('writeFile'));
 });
 
 console.log(`\n${passed} tests passed (agent-assist)`);
