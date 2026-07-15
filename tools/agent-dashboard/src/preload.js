@@ -28,6 +28,9 @@ function buildBaseApi() {
     openExternal: (url) => invoke('shell:openExternal', { url }),
     openPath: (target) => invoke('shell:openPath', { target }),
 
+    // OS 通知・タスクバーバッジ・ウィンドウフラッシュ（要対応の増分検知で renderer が呼ぶ）
+    notify: (payload) => invoke('app:notify', payload),
+
     // ディープリンク（agent-dashboard://open?...）からの遷移通知
     onOpenTarget: (cb) => ipcRenderer.on('app:openTarget', (_ev, payload) => cb(payload)),
   };
