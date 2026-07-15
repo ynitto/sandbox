@@ -716,22 +716,174 @@ function readDelivery(file, limit = 100) {
 // ---------------------------------------------------------------------------
 
 function globalDir() {
-  return path.join(os.homedir(), '.agent-project');
+  const home = process.env.AGENT_PROJECT_HOME
+    ? String(process.env.AGENT_PROJECT_HOME).replace(/^~(?=$|\/|\\)/, os.homedir())
+    : path.join(os.homedir(), '.agent-project');
+  return home;
+}
+
+// ---------------------------------------------------------------------------
+// Windows ビュアー × WSL 本体 — パス規約の橋渡し
+//
+// ビュアーは \\wsl.localhost\<distro>\home\... で開き、本体は /home/... を書く。
+// win32 の path.resolve('/home/...') は \home\...（または C:\home\...）に化けて
+// 一致しないため、比較・発見・設定解決はすべて規約非依存キーで行う。
+// ---------------------------------------------------------------------------
+
+// POSIX 絶対パス（/home/...）。UNC（// や \\）は除外。
+function _isPosixAbs(p) {
+  const s = String(p || '');
+  return s.startsWith('/') && !s.startsWith('//');
+}
+
+// \\wsl$\Distro\rest / \\wsl.localhost\Distro\rest（スラッシュ混在も可）
+function _wslUncMatch(p) {
+  const s = String(p || '').replace(/\//g, '\\');
+  return s.match(/^\\\\wsl(?:\$|\.localhost)\\[^\\]+(.*)$/i);
+}
+
+// 比較用キー: WSL UNC → Linux パス、resolve 残骸の \home\... も Linux に戻す。
+function _pathKey(p) {
+  let s = String(p || '').trim();
+  if (!s) return '';
+  const unc = s.replace(/\//g, '\\');
+  const m = unc.match(/^\\\\wsl(?:\$|\.localhost)\\[^\\]+(.*)$/i);
+  if (m) {
+    const rest = (m[1] || '').replace(/\\/g, '/') || '/';
+    return (rest.replace(/\/+/g, '/').replace(/\/$/, '') || '/').toLowerCase();
+  }
+  // path.win32.resolve('/home/...') → '\home\...' or 'C:\home\...'
+  const asBack = s.replace(/\//g, '\\');
+  const drivePosix = asBack.match(/^(?:[A-Za-z]:)?\\(home|tmp|var|usr|opt|etc)\\(.*)$/i);
+  if (drivePosix && !asBack.startsWith('\\\\')) {
+    return (`/${drivePosix[1]}/${drivePosix[2]}`.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, '')).toLowerCase();
+  }
+  if (_isPosixAbs(s)) {
+    return (s.replace(/\/+/g, '/').replace(/\/$/, '') || '/').toLowerCase();
+  }
+  try {
+    s = path.resolve(s);
+  } catch {
+    /* keep */
+  }
+  return s.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, '').toLowerCase();
+}
+
+function pathsEqual(a, b) {
+  const ka = _pathKey(a);
+  const kb = _pathKey(b);
+  return Boolean(ka && kb && ka === kb);
+}
+
+// ホスト名の緩い一致（大小・DNS サフィックス差を吸収）。空は不一致。
+function hostsMatch(a, b) {
+  const x = String(a || '').toLowerCase();
+  const y = String(b || '').toLowerCase();
+  if (!x || !y) return false;
+  if (x === y) return true;
+  return x.split('.')[0] === y.split('.')[0];
+}
+
+// 同一マシン判定: ホスト名一致、または Windows ビュアーが WSL 本体の status を読んでいる。
+function sameMachineStatus(status) {
+  if (!status) return false;
+  if (hostsMatch(status.host, os.hostname())) return true;
+  return process.platform === 'win32' && String(status.runtime || '') === 'wsl';
+}
+
+// POSIX 絶対パスを Windows から読める WSL UNC へ（distro が取れなければそのまま）。
+function toViewerPath(p) {
+  const s = String(p || '');
+  if (process.platform !== 'win32' || !_isPosixAbs(s)) return s;
+  const distro = _defaultWslDistro();
+  if (!distro) return s;
+  const rest = s.replace(/\//g, '\\');
+  return `\\\\wsl.localhost\\${distro}${rest}`;
+}
+
+let _wslDistroCache = { at: 0, name: '' };
+function _defaultWslDistro() {
+  if (process.env.WSL_DISTRO_NAME) return process.env.WSL_DISTRO_NAME;
+  const now = Date.now();
+  if (now - _wslDistroCache.at < 60000) return _wslDistroCache.name;
+  let name = '';
+  try {
+    const { spawnSync } = require('child_process');
+    // --list --quiet は UTF-16LE。先頭の既定ディストロ名だけ拾う。
+    const r = spawnSync('wsl.exe', ['--list', '--quiet'], {
+      encoding: 'buffer', timeout: 8000, windowsHide: true,
+    });
+    if (r.status === 0 && r.stdout && r.stdout.length) {
+      const text = r.stdout.toString('utf16le').replace(/\0/g, '');
+      name = text.split(/\r?\n/).map((l) => l.trim()).find(Boolean) || '';
+    }
+  } catch {
+    /* WSL 無し */
+  }
+  _wslDistroCache = { at: now, name };
+  return name;
+}
+
+let _wslHomeCache = { at: 0, dirs: [] };
+// WSL 既定ディストロの ~/.agent-project を Windows パスで返す（instances 共有用）。
+function wslAgentProjectDirs() {
+  if (process.platform !== 'win32') return [];
+  const now = Date.now();
+  if (now - _wslHomeCache.at < 60000) return _wslHomeCache.dirs;
+  const dirs = [];
+  try {
+    const { spawnSync } = require('child_process');
+    const r = spawnSync(
+      'wsl.exe',
+      ['-e', 'sh', '-lc', 'command -v wslpath >/dev/null && wslpath -w "$HOME/.agent-project"'],
+      { encoding: 'utf8', timeout: 8000, windowsHide: true }
+    );
+    const out = String(r.stdout || '').trim().split(/\r?\n/)[0] || '';
+    if (r.status === 0 && out && /^[A-Za-z]:\\|^\\\\/.test(out)) dirs.push(out);
+  } catch {
+    /* WSL 無し */
+  }
+  _wslHomeCache = { at: now, dirs };
+  return dirs;
+}
+
+// instances ディレクトリ群（ローカル home + AGENT_PROJECT_REGISTRY + WSL home）。
+function instanceDirs() {
+  const out = [];
+  const add = (d) => {
+    if (!d) return;
+    const resolved = String(d).replace(/^~(?=$|\/|\\)/, os.homedir());
+    if (!out.some((x) => pathsEqual(x, resolved))) out.push(resolved);
+  };
+  add(path.join(globalDir(), 'instances'));
+  const reg = process.env.AGENT_PROJECT_REGISTRY || '';
+  for (const part of reg.split(path.delimiter)) {
+    if (part.trim()) add(part.trim());
+  }
+  for (const home of wslAgentProjectDirs()) {
+    add(path.join(home, 'instances'));
+  }
+  return out;
 }
 
 // ~/.agent-project/instances/*.json — 稼働発見レコード（root = プロジェクトルート）
 function listInstances() {
-  const dir = path.join(globalDir(), 'instances');
   const out = [];
+  const seen = new Set(); // host|pid|rootKey
   const now = Date.now() / 1000;
-  for (const f of safeList(dir)) {
-    if (!f.endsWith('.json')) continue;
-    const rec = readJson(path.join(dir, f));
-    if (!rec || typeof rec !== 'object') continue;
-    const ttl = Number(rec.ttl || 0);
-    const hb = Number(rec.heartbeat || 0);
-    rec.fresh = !ttl || !hb ? true : now - hb <= ttl * 3;
-    out.push(rec);
+  for (const dir of instanceDirs()) {
+    for (const f of safeList(dir)) {
+      if (!f.endsWith('.json')) continue;
+      const rec = readJson(path.join(dir, f));
+      if (!rec || typeof rec !== 'object') continue;
+      const ttl = Number(rec.ttl || 0);
+      const hb = Number(rec.heartbeat || 0);
+      rec.fresh = !ttl || !hb ? true : now - hb <= ttl * 3;
+      const key = `${rec.host || ''}|${rec.pid || ''}|${_pathKey(rec.root || '')}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(rec);
+    }
   }
   return out;
 }
@@ -757,14 +909,17 @@ function removeProjectRegistration(cfg, dir) {
     nextRoots.splice(idx, 1);
     return { removedFrom: 'roots', roots: nextRoots };
   }
-  const idir = path.join(globalDir(), 'instances');
-  for (const f of safeList(idir)) {
-    if (!f.endsWith('.json')) continue;
-    const file = path.join(idir, f);
-    const rec = readJson(file);
-    if (rec && rec.root && path.resolve(String(rec.root)) === resolved) {
-      fs.unlinkSync(file);
-      return { removedFrom: 'instance', file };
+  for (const idir of instanceDirs()) {
+    for (const f of safeList(idir)) {
+      if (!f.endsWith('.json')) continue;
+      const file = path.join(idir, f);
+      const rec = readJson(file);
+      if (!rec) continue;
+      const candidates = [rec.root, rec.root_windows, rec.effective_root, rec.effective_root_windows];
+      if (candidates.some((r) => r && (pathsEqual(r, dir) || pathsEqual(r, resolved)))) {
+        fs.unlinkSync(file);
+        return { removedFrom: 'instance', file };
+      }
     }
   }
   return { removedFrom: null };
@@ -786,26 +941,17 @@ function readStatus(dir) {
   return { ...rec, ageSec, fresh: ageSec >= 0 && ageSec <= freshSec };
 }
 
-const _norm = (p) => {
-  try {
-    return path.resolve(String(p || '')).toLowerCase();
-  } catch {
-    return '';
-  }
-};
-
 // プロジェクトの agent-projects の稼働判定。判定根拠と経過時間も返す（UI 表示用）:
 //   'instances'   … 同一ホストの instances（heartbeat 鮮度）から確定判定（従来どおり。CLI 不要）
 //   'status-sync' … リモート本体（state_git 越し）は同期されてきた status.json の新しさで近似判定
 //                    （同期遅延ぶんの誤差を許容する。running:false でも「最終確認 N 分前」は分かる）
 //   'none'        … 判定材料が無い（instances も status.json も無い）
-// WSL 内の本体が登録する root_windows（\\wsl.localhost\...）にも一致させる
-// （Windows のビュアーから WSL 内の稼働を発見するため）。
+// WSL 内の本体が登録する root_windows / effective_root_windows（\\wsl.localhost\...）にも
+// 一致させる（Windows のビュアーから WSL 内の稼働を発見するため）。
 function projectLiveness(dir) {
-  const target = _norm(dir);
   const status = readStatus(dir);
   const paused = !!(status && status.paused);
-  if (target) {
+  if (dir) {
     for (const inst of listInstances()) {
       if (!inst.fresh) continue;
       // レコードの root は「リダイレクト前の素の root」（本体の設計）。状態を worktree へ
@@ -813,12 +959,16 @@ function projectLiveness(dir) {
       // 正規化されるため root とは一致しない。実効パス（backlog の親 = 実書き込み先）でも
       // 照合しないと、稼働中なのに instances を取りこぼして status.json の鮮度判定へ落ち、
       // 長い作業（LLM 実行）中に「本体が停止中」と誤表示する（実際に起きた）。
+      // Windows ビュアーは UNC、本体レコードは Linux パスなので pathsEqual で規約差を吸収する。
       const candidates = [
         inst.root,
         inst.root_windows,
-        inst.backlog ? path.dirname(String(inst.backlog)) : '',
+        inst.effective_root,
+        inst.effective_root_windows,
+        inst.backlog ? path.dirname(String(inst.backlog).replace(/\\/g, '/')) : '',
+        inst.backlog_windows ? path.dirname(String(inst.backlog_windows)) : '',
       ];
-      if (candidates.some((r) => r && _norm(r) === target)) {
+      if (candidates.some((r) => r && pathsEqual(r, dir))) {
         return { running: true, via: 'instances', ageSec: 0, paused };
       }
     }
@@ -829,7 +979,8 @@ function projectLiveness(dir) {
     // の窓（既定 600 秒）はまだ生きている、という時間帯がある。そこで status-sync に落とすと
     // ローカル稼働を「別マシンで稼働中」と誤表示していた（サイドバーの `~`、概要の「稼働中
     // （別マシン）」）。host が取れないときは判定材料が無いので従来どおり同期扱いにする。
-    const sameHost = String(status.host || '') === os.hostname();
+    // Windows×WSL はホスト名が食い違うことがあり、runtime==='wsl' も同一マシン信号にする。
+    const sameHost = sameMachineStatus(status);
     return {
       running: status.fresh,
       via: sameHost ? 'status-local' : 'status-sync',
@@ -898,7 +1049,16 @@ function resolveProjectRoot(workspaceDir) {
     (fromWorkspace && cfg.values && cfg.values.state_branch) || DEFAULT_STATE_BRANCH;
   if (!raw) return toStateWorktree(ws, branch);
   const r = String(raw).replace(/^~(?=$|\/|\\)/, os.homedir());
-  const root = path.isAbsolute(r) ? path.resolve(r) : path.resolve(ws, r);
+  // yaml に Linux 絶対パス（/home/...）が書いてあると、win32 の path.resolve は
+  // C:\home\... に化けて実在しない。Windows ビュアーでは WSL UNC へ翻訳する。
+  let root;
+  if (_isPosixAbs(r)) {
+    root = toViewerPath(r);
+  } else if (path.isAbsolute(r)) {
+    root = path.resolve(r);
+  } else {
+    root = path.resolve(ws, r);
+  }
   return toStateWorktree(root, branch);
 }
 
@@ -1070,9 +1230,17 @@ function discover(cfg) {
   }
   const instances = cfg.projects && cfg.projects.autoDiscover === false ? [] : listInstances();
   for (const inst of instances) {
-    if (!inst.root) continue;
-    const resolved = path.resolve(String(inst.root));
-    if (!roots.has(resolved)) roots.set(resolved, { root: resolved, source: 'instance' });
+    // Windows では root_windows（UNC）を優先。Linux パスを path.resolve すると
+    // C:\home\... の幽霊エントリになる。
+    const preferred =
+      (process.platform === 'win32' && (inst.root_windows || inst.effective_root_windows)) ||
+      inst.root_windows ||
+      inst.root;
+    if (!preferred) continue;
+    const resolved = _isPosixAbs(preferred) ? toViewerPath(preferred) : path.resolve(String(preferred));
+    if (![...roots.keys()].some((k) => pathsEqual(k, resolved))) {
+      roots.set(resolved, { root: resolved, source: 'instance' });
+    }
   }
 
   const projects = [];
@@ -1083,7 +1251,7 @@ function discover(cfg) {
     // 本体（<repo>/.agent-project）と状態 worktree（<repo>-agent-state/.agent-project）は
     // どちらも登録・スキャンで挙がるが、正規化すると同じ実体を指す。両方を並べると同じ run が
     // 二重に見え、どちらを操作したのか分からなくなる。実体で畳む。
-    const key = path.resolve(dir);
+    const key = _pathKey(dir);
     if (seenDirs.has(key)) continue;
     seenDirs.add(key);
     const tasks = listTasks(path.join(dir, 'backlog'));
@@ -1139,8 +1307,10 @@ function resolveBusDir(projectDir, workspaceDir, cfg) {
   const fallback = [];
   const push = (list, dir, source) => {
     if (!dir) return;
-    const resolved = path.resolve(String(dir).replace(/^~(?=$|\/|\\)/, os.homedir()));
-    if (![...preferred, ...fallback].some((c) => c.dir === resolved)) {
+    let resolved = String(dir).replace(/^~(?=$|\/|\\)/, os.homedir());
+    if (_isPosixAbs(resolved)) resolved = toViewerPath(resolved);
+    else resolved = path.resolve(resolved);
+    if (![...preferred, ...fallback].some((c) => pathsEqual(c.dir, resolved))) {
       list.push({ dir: resolved, source });
     }
   };
@@ -1316,4 +1486,10 @@ module.exports = {
   resolveBusDir,
   _stateWorktreePath,
   _sourceRootPath,
+  _pathKey,
+  pathsEqual,
+  hostsMatch,
+  sameMachineStatus,
+  toViewerPath,
+  _isPosixAbs,
 };

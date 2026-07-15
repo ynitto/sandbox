@@ -2230,6 +2230,8 @@ class TestStatusHeartbeat(unittest.TestCase):
             self.assertEqual(rec["level"], "assisted")
             self.assertIn("updated_iso", rec)
             self.assertEqual(rec["fresh_after_sec"], 600.0)          # 2 * state_git_interval
+            self.assertIn("runtime", rec)                            # Windows×WSL 同一マシン判定用
+            self.assertIn(rec["runtime"], ("linux", "wsl", "windows", "darwin"))
 
     def test_fresh_after_sec_floor_and_max(self):
         with tempfile.TemporaryDirectory() as d:
@@ -3268,6 +3270,35 @@ class TestInstances(unittest.TestCase):
             rec = km.instance_record(cfg)
             self.assertEqual(rec["root"], str(src), "素の root を登録する（--root に渡せる値）")
             self.assertTrue(rec["backlog"].startswith(str(wt)), "各パスは実体（worktree）のまま")
+            # WSL では Windows ビュアー照合用に実効パス（状態 worktree）も併記する
+            if rec.get("runtime") == "wsl":
+                self.assertEqual(rec.get("effective_root"), str(wt))
+                self.assertIn("effective_root_windows", rec)
+                self.assertIn("backlog_windows", rec)
+
+    def test_wsl_instance_record_emits_effective_windows_paths(self):
+        """runtime=wsl のとき effective_root_windows / backlog_windows を必ず載せる。"""
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d).resolve() / ".agent-project"
+            wt = Path(d).resolve() / "elsewhere-agent-state" / ".agent-project"
+            wt.mkdir(parents=True)
+            cfg = cfg_for(wt, watch=True)
+            cfg.source_root = src
+
+            def fake_win(p):
+                return r"\\wsl.localhost\Ubuntu" + str(p).replace("/", "\\")
+
+            with mock.patch.object(km, "detect_runtime",
+                                   return_value={"runtime": "wsl", "wsl_distro": "Ubuntu"}):
+                with mock.patch.object(km, "to_windows_path", side_effect=fake_win):
+                    rec = km.instance_record(cfg)
+            self.assertEqual(rec["runtime"], "wsl")
+            self.assertEqual(rec["effective_root"], str(wt.resolve()))
+            self.assertTrue(str(rec["effective_root_windows"]).endswith(
+                str(wt.resolve()).replace("/", "\\")))
+            self.assertTrue(str(rec["backlog_windows"]).endswith("\\backlog"))
+            self.assertTrue(str(rec["root_windows"]).endswith(
+                str(src.resolve()).replace("/", "\\")))
 
     def test_run_registers_and_cleans_up(self):
         with tempfile.TemporaryDirectory() as d:

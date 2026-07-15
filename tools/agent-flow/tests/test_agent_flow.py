@@ -5210,6 +5210,8 @@ class DaemonStatusHeartbeatTests(unittest.TestCase):
         self.assertEqual(rec["workers"], 2)
         self.assertIn("updated_iso", rec)
         self.assertEqual(rec["fresh_after_sec"], 600.0)   # 2 * state_git_interval
+        self.assertIn("runtime", rec)
+        self.assertIn(rec["runtime"], ("linux", "wsl", "windows", "darwin"))
 
     def test_fresh_after_sec_floor_and_larger_wins(self):
         self.assertEqual(kf._daemon_status_fresh_after_sec(

@@ -420,6 +420,25 @@ def _daemon_status_fresh_after_sec(args) -> float:
     return max([2.0 * v for v in intervals] + [120.0])
 
 
+def _status_runtime() -> dict:
+    """Windows ビュアーが同一マシンの WSL daemon を見分けるための最小ランタイム情報。"""
+    info = {"runtime": "linux", "wsl_distro": None}
+    distro = os.environ.get("WSL_DISTRO_NAME")
+    is_wsl = False
+    try:
+        with open("/proc/version", encoding="utf-8", errors="ignore") as f:
+            is_wsl = "microsoft" in f.read().lower()
+    except OSError:
+        pass
+    if distro or is_wsl:
+        info["runtime"], info["wsl_distro"] = "wsl", distro
+    elif sys.platform.startswith("win"):
+        info["runtime"] = "windows"
+    elif sys.platform == "darwin":
+        info["runtime"] = "darwin"
+    return info
+
+
 def write_daemon_status(args, bus: Bus, daemon_id: str, orchestrators: dict, workers: list) -> None:
     """status.json（生存信号）を書く。state_git（鏡）越しにリモートの agent-dashboard が
     『daemon が今も生きているか』を判定するための最小スナップショット（bus.root 直下）。
@@ -438,6 +457,7 @@ def write_daemon_status(args, bus: Bus, daemon_id: str, orchestrators: dict, wor
         "host": socket.gethostname(), "pid": os.getpid(), "node_id": daemon_id,
         "orchestrators": len(orchestrators), "workers": len(workers),
         "updated_iso": now_iso(), "fresh_after_sec": _daemon_status_fresh_after_sec(args),
+        **_status_runtime(),
     }
     try:
         p = daemon_status_path(bus)

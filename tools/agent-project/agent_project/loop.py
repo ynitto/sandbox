@@ -130,6 +130,8 @@ def write_status(cfg: "Config") -> None:
         "host": socket.gethostname(), "watch": cfg.watch, "level": cfg.level,
         "paused": is_paused(cfg),
         "updated_iso": _now_ts(), "fresh_after_sec": _status_fresh_after_sec(cfg),
+        # Windows ビュアーが同一マシンの WSL 本体を「別マシン」と誤認しないための信号
+        **detect_runtime(),
     }
     try:
         p = status_path(cfg)
