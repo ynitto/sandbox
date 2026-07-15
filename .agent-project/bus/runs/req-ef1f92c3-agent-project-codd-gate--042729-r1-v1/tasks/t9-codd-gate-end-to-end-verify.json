@@ -1,9 +1,0 @@
-{
-  "id": "t9-codd-gate-end-to-end-verify",
-  "goal": "統合後の codd-gate 連携を敵対的に検証する。メイン worktreeで指定の grep コマンドが exit 0 になることに加え、(1) codd-gate 利用可能時に設定生成・初期化経路が regression_cmd と intake_cmd を自動かつ冪等に結線する、(2)明示設定を保持する、(3)未検出・version/schema/capability 不適合時に安全に no-op 縮退する、(4)codd-gate tasks --debt の正常レコードが backlog に enqueue され不正レコードが個別隔離される、(5)install.sh で生成した zipapp 内でも必要モジュールを import でき同じ連携が有効、(6)関連テストが pass、(7)設計書が実装状態と一致する、を確認する。いずれかが fail した場合は、失敗コマンドと不足箇所を issues に具体的に記録する。",
-  "deps": [
-    "t6",
-    "t7"
-  ],
-  "kind": "verify"
-}

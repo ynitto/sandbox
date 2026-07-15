@@ -1,4 +1,0 @@
-{"ts": "2026-07-15T13:47:22Z", "who": "orchestrator", "kind": "planned", "patterns": ["fan-out-and-synthesize", "loop-until-done"], "parallelism": 4, "tasks": ["t1", "t2", "t3", "t4", "t5", "t6", "t7"]}
-{"ts": "2026-07-15T14:15:16Z", "who": "orchestrator", "kind": "replan", "iteration": 1, "added": ["t8-codd-gate-integration-repair", "t9-codd-gate-end-to-end-verify"]}
-{"ts": "2026-07-15T14:30:38Z", "who": "orchestrator", "kind": "replan", "iteration": 2, "added": ["t10-codd-gate-wiring-repair", "t11-codd-gate-end-to-end-verify"]}
-{"ts": "2026-07-15T19:33:18Z", "who": "orchestrator", "kind": "replan", "iteration": 3, "added": ["t12-codd-gate-final-gate-verify"]}

@@ -1,6 +1,0 @@
-{
-  "id": "t10-codd-gate-wiring-repair",
-  "goal": "t4で判明した不足を修正する。tools/agent-projectの既存codd-gate自動検出モジュールを実際の設定生成・更新処理へ接続し、検出時に.agent/agent-project.yamlのregression_cmdへ「codd-gate verify --base」を含むコマンドを設定するとともにintake_cmd側の連携も有効化する。既存のagent-project/agent-flowエンジンおよびagent-dashboardとの構成を維持し、t8のタイムアウトで未完了となった実装を完結させる。",
-  "deps": [],
-  "kind": "work"
-}

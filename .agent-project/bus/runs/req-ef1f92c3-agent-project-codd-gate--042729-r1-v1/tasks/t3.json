@@ -1,6 +1,0 @@
-{
-  "id": "t3",
-  "goal": "intake（enqueue/acceptance）結線を実装する。codd-gate の tasks（修復タスク生成）を agent-project の intake/backlog へ enqueue する経路を配線し、regression との整合をとる。",
-  "deps": [],
-  "kind": "work"
-}

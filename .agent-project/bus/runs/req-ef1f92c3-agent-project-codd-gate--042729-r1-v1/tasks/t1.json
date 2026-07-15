@@ -1,6 +1,0 @@
-{
-  "id": "t1",
-  "goal": "agent-project に codd-gate 自動検出ロジックを実装する（codd-gate の存在・schemas 共通データ契約を検出し、regression/intake 結線の有無を判定する）。既存の agent-project/agent-flow ソースを調べ、検出フックの実装方針と差分を用意する。",
-  "deps": [],
-  "kind": "work"
-}

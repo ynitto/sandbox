@@ -1,9 +1,0 @@
-{"ts": "2026-07-15T13:47:24Z", "who": "worker-1", "kind": "claimed", "node": "t4"}
-{"ts": "2026-07-15T13:55:34Z", "who": "worker-1", "kind": "result", "node": "t4", "status": "done"}
-{"ts": "2026-07-15T13:55:34Z", "who": "worker-1", "kind": "claimed", "node": "t2"}
-{"ts": "2026-07-15T14:09:06Z", "who": "worker-1", "kind": "result", "node": "t2", "status": "done"}
-{"ts": "2026-07-15T14:40:54Z", "who": "worker-1", "kind": "claimed", "node": "t8-codd-gate-integration-repair"}
-{"ts": "2026-07-15T14:47:31Z", "who": "worker-1", "kind": "result", "node": "t8-codd-gate-integration-repair", "status": "done"}
-{"ts": "2026-07-15T15:11:20Z", "who": "worker-1", "kind": "claimed", "node": "t11-codd-gate-end-to-end-verify"}
-{"ts": "2026-07-15T19:29:54Z", "who": "worker-1", "kind": "claimed", "node": "t11-codd-gate-end-to-end-verify"}
-{"ts": "2026-07-15T19:33:00Z", "who": "worker-1", "kind": "result", "node": "t11-codd-gate-end-to-end-verify", "status": "done"}

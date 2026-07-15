@@ -1,8 +1,0 @@
-{
-  "id": "t12-codd-gate-final-gate-verify",
-  "goal": "実成果物が存在する対象 worktree を特定し、そのルートで `grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' .agent/agent-project.yaml` を実行する。標準出力、対象ファイルの絶対パス、終了コードを記録し、終了コード 0 の場合のみ verify=pass、ファイル欠落・不一致・対象 worktree の曖昧さがあれば具体的な issues を付けて verify=fail とする。成果物の変更や条件外の追加実装は行わない。",
-  "deps": [
-    "t10-codd-gate-wiring-repair"
-  ],
-  "kind": "verify"
-}
