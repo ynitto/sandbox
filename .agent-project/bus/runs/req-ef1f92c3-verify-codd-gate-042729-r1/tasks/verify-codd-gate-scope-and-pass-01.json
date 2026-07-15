@@ -1,0 +1,9 @@
+{
+  "id": "verify-codd-gate-scope-and-pass-01",
+  "goal": "t3 により tools/agent-project/agent_project/verify.py または関連テストへ「検証コマンド: <command>」同一行対応など元要求外の変更が加わっているか確認し、加わっていればその変更だけを取り除く。そのうえで `PYTHONPATH=tools/agent-project python3 -c 'from agent_project import _first_command_line; assert _first_command_line(\"検証コマンド:\\ncodd-gate verify --base \\\"$KIRO_BASE_REV\\\"\") == \"codd-gate verify --base \\\"$KIRO_BASE_REV\\\"\"'` を実行し、終了コード 0 と対象差分が元要求の範囲内であることを明示して報告する。",
+  "deps": [
+    "t3",
+    "t4"
+  ],
+  "kind": "work"
+}

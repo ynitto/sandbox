@@ -5,3 +5,7 @@
 {"ts": "2026-07-14T21:33:53Z", "who": "worker-1", "kind": "claimed", "node": "t4"}
 {"ts": "2026-07-14T21:35:51Z", "who": "worker-1", "kind": "result", "node": "t4", "status": "done"}
 {"ts": "2026-07-14T21:35:51Z", "who": "worker-1", "kind": "claimed", "node": "t5"}
+{"ts": "2026-07-15T15:40:58Z", "who": "worker-1", "kind": "claimed", "node": "t5"}
+{"ts": "2026-07-15T15:46:07Z", "who": "worker-1", "kind": "result", "node": "t5", "status": "failed"}
+{"ts": "2026-07-15T15:46:39Z", "who": "worker-1", "kind": "claimed", "node": "verify-codd-gate-scope-and-pass-01"}
+{"ts": "2026-07-15T16:15:11Z", "who": "worker-1", "kind": "result", "node": "verify-codd-gate-scope-and-pass-01", "status": "failed"}
