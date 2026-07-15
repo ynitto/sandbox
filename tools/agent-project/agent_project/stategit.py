@@ -20,6 +20,7 @@ STATE_GIT_MARKER = "agent-project.stateclone"   # 自前管理クローンの目
 _STATE_LOCK_STALE_SEC = 30.0                    # これ以上古い .git ロックは残骸とみなし自己回復
 _STATE_GIT_RETRIES = 4                          # ロック起因の git 失敗の再試行回数
 _STATE_PUSH_RETRIES = 5                         # push 競合の再試行回数（2,4,8,16s バックオフ）
+_STATE_WT_PREFIX = "agent-project-state-wt-"    # state コミット用 detached worktree の一時名 prefix
 # コンテナ相対パスの同期除外。一時/ホスト局所の状態は共有しない:
 #   flow-archive/ … viewer が bus から写し取る run のスナップショット（bus の派生・肥大しうる）
 #   claims/       … 原子的クレーム（ホスト内の実行権。同期遅延越しでは排他の意味を持たない）
@@ -521,17 +522,46 @@ class DirectStateGit:
         rel = os.path.relpath(os.path.realpath(str(self.root)), os.path.realpath(top))
         return "" if rel == "." else rel
 
+    def _prune_stale_state_worktrees(self) -> None:
+        """前プロセスの強制終了が残した専用 worktree（/tmp/agent-project-state-wt-*）を
+        unlock → remove → prune で掃除する（冪等・失敗しても本業を止めない）。
+
+        _worktree_commit の finally が走らずに死ぬ（kill -9・タイムアウト・クラッシュ）と
+        .git/worktrees/ に登録だけが残る。/tmp の実体が消えていれば prune で片付くが、
+        **ロック済み worktree は prune が飛ばす**ため二度と消えず溜まり続け、.git/worktrees/
+        が膨れて worktree 操作を鈍らせる。そこで新規作成の前に、自分の prefix に一致する
+        登録だけを unlock してから remove/prune する。sync() が _file_lock で同一ホストの
+        プロセスを直列化しているので、この時点で生きている自分の worktree は無い＝prefix
+        一致は全て残骸と断定でき、人・他ツールの worktree には一切触れない。"""
+        r = self._git("worktree", "list", "--porcelain")
+        if r.returncode != 0:
+            self._git("worktree", "prune")   # list が引けなくても最低限の掃除は試みる
+            return
+        for block in r.stdout.split("\n\n"):
+            path = ""
+            for line in block.splitlines():
+                if line.startswith("worktree "):
+                    path = line[len("worktree "):].strip()
+                    break
+            if not path or not os.path.basename(path).startswith(_STATE_WT_PREFIX):
+                continue                     # メイン作業ツリー・人/他ツールの worktree は対象外
+            self._git("worktree", "unlock", path)            # prune/remove を阻むロックを外す
+            self._git("worktree", "remove", "--force", path)  # 実体が残っていても登録ごと外す
+            shutil.rmtree(path, ignore_errors=True)          # /tmp 側の実体も掃除
+        self._git("worktree", "prune")                       # 実体が既に消えた登録を最後に一掃
+
     def _worktree_commit(self, targets: "list[str]", branch: str,
                          amend: bool) -> "str | None":
         """state コミットを detached worktree（専用 index）で組み立てる。
         ルートの index・作業ツリーに触れず、ブランチ更新は CAS（_cas_branch）のみ。
         amend=True なら HEAD（未 push の state sync コミット）へ束ねる（--amend）。
         返り値は新コミット SHA（差分なし・競合検知・失敗は None）。"""
+        self._prune_stale_state_worktrees()  # 前プロセスの残骸 worktree を先に自己回復
         old = self._git("rev-parse", "HEAD").stdout.strip()
         if not old:
             return None
         sub = self._subdir()
-        wt = tempfile.mkdtemp(prefix="agent-project-state-wt-")
+        wt = tempfile.mkdtemp(prefix=_STATE_WT_PREFIX)
         os.rmdir(wt)                         # worktree add は空でも既存ディレクトリを嫌う
         try:
             if self._git("worktree", "add", "--detach", "--force", wt, old).returncode != 0:
