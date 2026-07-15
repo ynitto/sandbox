@@ -155,6 +155,30 @@ function safeCwd(dir) {
   return d;
 }
 
+function commandResultText(command, code, stdout, stderr) {
+  const out = stripAnsi(stdout).trim();
+  const err = stripAnsi(stderr).trim();
+  if (code !== 0) {
+    throw new Error(`${command} が失敗しました (exit ${code}): ${(err || out).slice(-400)}`);
+  }
+  if (out) return out;
+  // Kiro CLI は利用上限到達などを stderr に出しながら exit 0 を返すことがある。
+  // 空 stdout を成功として返すと renderer では「助言はありませんでした」に化け、
+  // ユーザーが認証・利用上限・起動警告のどれを直すべきか分からない。
+  if (/Monthly request limit reached/i.test(err)) {
+    const reset = (err.match(/limits reset on\s+([^\n.]+)/i) || [])[1];
+    throw new Error(
+      `${command} の月間リクエスト上限に達しています。` +
+      'Dashboardの設定で別のエージェントCLIへ切り替えるか、' +
+      (reset ? `上限がリセットされる ${reset.trim()} まで待ってから再実行してください。` :
+        '上限のリセット後に再実行してください。')
+    );
+  }
+  throw new Error(err
+    ? `${command} は応答本文を返しませんでした: ${err.slice(-800)}`
+    : `${command} は正常終了しましたが、応答本文が空でした`);
+}
+
 function runCommand({ command, args, stdin, cwd }, timeoutMs) {
   // argv 配列で渡し、cmd.exe 経由の再クオートを避ける（Windows で改行付きプロンプトが
   // 先頭行で切れる・8191 文字制限に当たるのを防ぐ）。PATHEXT で .exe/.cmd は解決される。
@@ -179,8 +203,11 @@ function runCommand({ command, args, stdin, cwd }, timeoutMs) {
     });
     child.on('close', (code) => {
       clearTimeout(timer);
-      if (code === 0) resolve(stripAnsi(out).trim());
-      else reject(new Error(`${command} が失敗しました (exit ${code}): ${stripAnsi(err || out).trim().slice(-400)}`));
+      try {
+        resolve(commandResultText(command, code, out, err));
+      } catch (e) {
+        reject(e);
+      }
     });
     if (stdin != null) {
       child.stdin.write(stdin);
@@ -374,6 +401,7 @@ module.exports = {
   runAgent,
   extractJson,
   stripFence,
+  commandResultText,
   charterDraftPrompt,
   charterRefinePrompt,
   doctorPrompt,

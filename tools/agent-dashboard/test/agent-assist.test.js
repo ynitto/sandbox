@@ -183,6 +183,17 @@ test('stripFence: コードフェンスに包まれた charter を剥がす', ()
   assert.strictEqual(agent.stripFence('# Charter: x'), '# Charter: x');
 });
 
+test('commandResultText: exit 0でも本文が空ならstderrの理由を成功扱いしない', () => {
+  assert.strictEqual(agent.commandResultText('kiro-cli', 0, '## 結論\n助言', ''), '## 結論\n助言');
+  assert.throws(
+    () => agent.commandResultText(
+      'kiro-cli', 0, '',
+      'Monthly request limit reached\nUpgrade your plan\nThe limits reset on 08/01.'
+    ),
+    /月間リクエスト上限.*別のエージェントCLI.*08\/01/
+  );
+});
+
 test('normalizeDraftFields: 配列/文字列/箇条書き前置きを改行区切りへ正規化', () => {
   const f = agent.normalizeDraftFields({
     goal: '  G  ',
