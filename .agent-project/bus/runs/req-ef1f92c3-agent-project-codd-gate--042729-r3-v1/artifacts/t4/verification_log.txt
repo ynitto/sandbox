@@ -1,0 +1,48 @@
+=== state 1: repos.json 未生成 ===
+cfg.workdir        = /private/tmp/ap_repro_t4-agent-state/.agent-project
+cfg.backlog.parent = /private/tmp/ap_repro_t4-agent-state/.agent-project
+repo_registry_path = None
+regression_cmd     = None
+intake_cmd         = None
+
+=== state 2: repos.json を cfg.backlog.parent 直下に生成後 ===
+cfg.workdir        = /private/tmp/ap_repro_t4-agent-state/.agent-project
+repo_registry_path = /private/tmp/ap_repro_t4-agent-state/.agent-project/repos.json
+regression_cmd     = codd-gate verify --base "$KIRO_BASE_REV" --repos ./repos.json
+intake_cmd         = codd-gate tasks --debt --repos ./repos.json
+
+実環境 .agent/agent-project.yaml の手書き値: --repos .agent-project/repos.json
+build_config 自動推奨値（同一 vcwd 前提）   : --repos repos.json
+一致するか: False
+
+=== 実環境ライブプローブ（cwd: /Users/nitto/Workspace/sandbox-agent-state/.agent-project） ===
+
+$ cat repos.json
+{
+  "src": {
+    "base": "main",
+    "url": "https://github.com/ynitto/sandbox"
+  }
+}
+
+$ codd-gate verify --base HEAD --repos .agent-project/repos.json   # 現行 regression_cmd の --repos 値そのまま
+[codd-gate] エラー: repos レジストリが見つかりません: .agent-project/repos.json
+exit=2
+
+$ codd-gate verify --base HEAD --repos repos.json --repo-dir src=.   # cfg.workdir 基準の正しい相対パス + --repo-dir
+差分: src HEAD..作業ツリー（80 ファイル）
+  [GREEN] bus/runs/req-ef1f92c3-agent-project-codd-gate--042729-r3-v1/artifacts/t4/verification_log.txt（参照は全て解決）
+  [AMBER] bus/runs/req-ef1f92c3-agent-project-codd-gate--042729-r3-v1/artifacts/t1/report.md 行10 の参照 tools/agent-project/codd_gate_detect.py が解決できない
+  [AMBER] bus/runs/req-ef1f92c3-agent-project-codd-gate--042729-r3-v1/artifacts/t1/report.md 行35 の参照 tools/agent-project/README.md が解決できない
+  [AMBER] bus/runs/req-ef1f92c3-agent-project-codd-gate--042729-r3-v1/artifacts/t1/report.md 行49 の参照 .agent/agent-project.yaml:30 が解決できない
+  [AMBER] bus/runs/req-ef1f92c3-agent-project-codd-gate--042729-r3-v1/artifacts/t1/report.md 行49 の参照 .agent/agent-project.yaml:31 が解決できない
+  [AMBER] bus/runs/req-ef1f92c3-agent-project-codd-gate--042729-r3-v1/artifacts/t1/report.md 行53 の参照 tools/agent-project/codd_gate_detect.py が解決できない
+  [AMBER] bus/runs/req-ef1f92c3-agent-project-codd-gate--042729-r3-v1/artifacts/t1/report.md 行55 の参照 tools/agent-project/README.md が解決できない
+  [AMBER] bus/runs/req-ef1f92c3-agent-project-codd-gate--042729-r3-v1/artifacts/t1/report.md 行60 の参照 tools/codd-gate/codd-gate.py が解決できない
+  [AMBER] bus/runs/req-ef1f92c3-agent-project-codd-gate--042729-r3-v1/artifacts/t1/report.md 行64 の参照 .agent-project/repos.json が解決できない
+  [AMBER] bus/runs/req-ef1f92c3-agent-project-codd-gate--042729-r3-v1/artifacts/t2/report.md 行13 の参照 .agent/agent-project.yaml:30 が解決できない
+  [AMBER] bus/runs/req-ef1f92c3-agent-project-codd-gate--042729-r3-v1/artifacts/t2/report.md 行39 の参照 .agent-project/repos.json が解決できない
+  [AMBER] bus/runs/req-ef1f92c3-agent-project-codd-gate--042729-r3-v1/artifacts/t3/report.md 行5 の参照 .agent/agent-project.yaml:31 が解決できない
+  [AMBER] bus/runs/req-ef1f92c3-agent-project-codd-gate--042729-r3-v1/artifacts/t3/report.md 行14 の参照 tools/agent-project/README.md が解決できない
+  [AMBER] bus/runs/req-ef1f92c3-agent-project-codd-gate--042729-r3-v1/artifacts/t3/report.md 行42 の参照 .agent-project/repos.json が解決できない
+exit=1（AMBER 所見あり＝非strictでもdrift検出時は非0。repos.json 解決自体は成功——「レジストリが見つかりません」エラーは出ていない）

@@ -1,0 +1,10 @@
+{
+  "id": "t2",
+  "who": "worker-2",
+  "status": "done",
+  "output": "## 完了\n\n**完了条件は既に成立していた**（`.agent/agent-project.yaml:30` に正しい `regression_cmd: 'codd-gate verify --base \"$KIRO_BASE_REV\" --repos .agent-project/repos.json'` が既存）。追加編集は行わず、ツール本体リポジトリの README 正典（`tools/agent-project/README.md:234`）と完全一致することを確認し、重複・綴り違いがないことも裏取りした。\n\n- 完了条件コマンドは終了コード0で成功\n- 未解決事項: `.agent-project/repos.json` が未生成のため、実行そのものの end-to-end 検証は引き続き範囲外（t1と同じ既知点）\n\n成果物: `bus/runs/req-ef1f92c3-agent-project-codd-gate--042729-r3-v1/artifacts/t2/report.md`",
+  "finished_at": "2026-07-15T20:03:22Z",
+  "artifacts": [
+    "artifacts/t2/report.md"
+  ]
+}

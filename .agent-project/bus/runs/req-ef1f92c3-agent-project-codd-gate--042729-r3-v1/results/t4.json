@@ -1,0 +1,12 @@
+{
+  "id": "t4",
+  "who": "worker-1",
+  "status": "done",
+  "output": "Completion condition holds (exit 0) in both worktrees, and the verification artifacts are in place. Task complete.\n\n## 完了\n\n**完了条件は成立**（`grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' .agent/agent-project.yaml` は exit 0）だが、本タスクの主題である「repos.json 解決が正しいか」を実機 codd-gate で裏取りした結果、**現行の `--repos .agent-project/repos.json` は誤り**であることが判明した。\n\n- regression_cmd/intake_cmd は cwd = `cfg.workdir`（= このタスクの作業ディレクトリそのもの、状態 worktree の `.agent-project`）で実行される。そこへさらに `.agent-project/` を重ねているため、実機で `codd-gate verify --base HEAD --repos .agent-project/repos.json` は `[codd-gate] エラー: repos レジストリが見つかりません` で即失敗（exit 2）。\n- 正しい相対パス `--repos repos.json --repo-dir src=.` では repos.json が実際に読み込まれ、80ファイルの差分スキャンが走った（exit は drift 所見ありで非0だが、レジストリ解決自体は成功）。\n- コード追跡（`mr.py`/`verify.py`/`configfile.py`/`state.py`）と隔離環境での再現、実プロセス（PID 1704）の cwd 確認の三系統で同じ結論に到達した。\n- `.agent/agent-project.yaml` 自体の書き換えは範囲外と判断し行っていない（t2/t3 の担当領域、裁定は t5 に委ねる）。\n\n成果物は `bus/runs/req-ef1f92c3-agent-project-codd-gate--042729-r3-v1/artifacts/t4/`（report.md, repro_repos_json_resolution.py, verification_log.txt）に保存済み。",
+  "finished_at": "2026-07-15T20:12:27Z",
+  "artifacts": [
+    "artifacts/t4/report.md",
+    "artifacts/t4/repro_repos_json_resolution.py",
+    "artifacts/t4/verification_log.txt"
+  ]
+}

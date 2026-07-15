@@ -1,0 +1,8 @@
+{
+  "id": "t3",
+  "goal": ".agent/agent-project.yaml に intake_cmd: 'codd-gate tasks --debt' を設定し、負債修復タスク投入（intake）を結線する",
+  "deps": [
+    "t1"
+  ],
+  "kind": "work"
+}

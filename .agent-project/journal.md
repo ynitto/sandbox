@@ -73,3 +73,6 @@
 - 2026-07-16 04:57:16 feedback 取り込み: docs-designs-README-042729 を再開
 - 2026-07-16 04:57:19 run 再開: docs-designs-README-042729 は req-ef1f92c3-docs-designs-README-042729-r1 の失敗ノードだけをやり直します（done は温存）
 - 2026-07-16 04:57:20 cycle 3: docs-designs-README-042729 → 人の判断（回帰検知）
+- 2026-07-16 05:16:38 cycle 4: agent-project-codd-gate--042729 → 人の判断（回帰検知）
+- 2026-07-16 05:16:42 state-git 同期: import=2 export=54
+- 2026-07-16 05:16:42 === agent-project 停止 reason=drained cycles=4 done=0 blocked=3 notified=True promoted=0 ===

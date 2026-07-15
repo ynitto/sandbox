@@ -1,0 +1,10 @@
+{
+  "id": "t6",
+  "who": "worker-1",
+  "status": "done",
+  "output": "## 完了\n\nt2/t3（README文面一致で「正しい」と判定）と t4/t5（実測でexit 2の失敗を再現）の結論が矛盾していたため、**実測に基づくt4/t5を採用**し、`.agent/agent-project.yaml:30-31` を修正した。\n\n```diff\n- regression_cmd: 'codd-gate verify --base \"$KIRO_BASE_REV\" --repos .agent-project/repos.json'\n- intake_cmd: 'codd-gate tasks --debt --repos .agent-project/repos.json'\n+ regression_cmd: 'codd-gate verify --base \"$KIRO_BASE_REV\" --repos repos.json --repo-dir src=.'\n+ intake_cmd: 'codd-gate tasks --debt --repos repos.json --repo-dir src=.'\n```\n\n根拠は `tools/agent-project/codd_gate_routing.py` の `resolve_repos_arg`/`build_routing_args`（未結線時の推奨コマンドを組み立てる設計正典）で、実行cwd（=root自身）相対の `repos.json` と `--repo-dir <エントリ名>=.` が必須であることを確認し、修正前後の文字列を実際にこのディレクトリで実行して対照検証した（旧文字列→exit 2 再現、新文字列→レジストリ解決成功）。\n\n完了条件コマンドは exit 0:\n```\ngrep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' .agent/agent-project.yaml\n```\n\n成果物: `bus/runs/req-ef1f92c3-agent-project-codd-gate--042729-r3-v1/artifacts/t6/report.md`",
+  "finished_at": "2026-07-15T20:16:21Z",
+  "artifacts": [
+    "artifacts/t6/report.md"
+  ]
+}

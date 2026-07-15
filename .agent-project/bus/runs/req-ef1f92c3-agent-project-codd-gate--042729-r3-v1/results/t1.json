@@ -1,0 +1,10 @@
+{
+  "id": "t1",
+  "who": "worker-1",
+  "status": "done",
+  "output": "## 完了\n\n**完了条件は既に成立していた**（`.agent/agent-project.yaml:30` に正しい綴りの `regression_cmd:` が既存）。今回は codd-gate の実行パス・サブコマンド・フラグ綴りを実バイナリへのプローブで裏取りし、確定内容をレポートに残した。\n\n- 実行パス: `/Users/nitto/.local/bin/codd-gate`（v1.0.0、PATH 解決）\n- サブコマンド: `scan / impact / verify / tasks / check`\n- 確定した呼び出し形: `codd-gate verify --base \"$KIRO_BASE_REV\" --repos <root>/repos.json` / `codd-gate tasks --debt --repos <root>/repos.json`（README 正典・実プローブ・既存 yaml の三者一致を確認）\n- 未解決点: `<root>/repos.json` がまだ実在しないため、実行そのものの end-to-end 検証は後続タスクの範囲\n\n成果物: `bus/runs/req-ef1f92c3-agent-project-codd-gate--042729-r3-v1/artifacts/t1/report.md`",
+  "finished_at": "2026-07-15T20:01:49Z",
+  "artifacts": [
+    "artifacts/t1/report.md"
+  ]
+}

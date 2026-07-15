@@ -1,0 +1,10 @@
+{
+  "id": "t5",
+  "goal": "設定した regression_cmd/intake_cmd と repos.json 解決を敵対的に検証し、コマンド名・--base/--debt フラグ・相対パス .agent/agent-project.yaml の誤りを検出したら該当タスクを作り直させる（統合前の検証gate）",
+  "deps": [
+    "t2",
+    "t3",
+    "t4"
+  ],
+  "kind": "verify"
+}

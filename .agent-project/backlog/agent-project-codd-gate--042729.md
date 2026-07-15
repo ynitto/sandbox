@@ -1,5 +1,5 @@
 ## agent-project-codd-gate--042729: agent-projectにcodd-gate自動検出とregression/intake結線を完成させ連携を有効化する
-- status: doing
+- status: blocked
 - source: charter
 - priority: 0
 - verify: `grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' .agent/agent-project.yaml`
@@ -8,6 +8,5 @@
 - charter: v1
 - assess: c=2 r=2 a=2
 - rev: 1
-- needs_reason: 回帰検知: グローバル検査 `codd-gate verify --base "$KIRO_BASE_REV" --repos .agent-project/repos.json` 失敗 — exit=2 失敗した工程: `codd-gate verify --base b88da80f2df2c9211c1713be8b7c2503de2d0db6 --repos .agent-project/repos.json` [codd-gate] エラー: repos レジストリが見つかりません: .agent-project/repos.json
 - last_run: req-ef1f92c3-agent-project-codd-gate--042729-r3-v1
-- flow_run: req-ef1f92c3-agent-project-codd-gate--042729-r3-v1
+- needs_reason: 回帰検知: グローバル検査 `codd-gate verify --base "$KIRO_BASE_REV" --repos .agent-project/repos.json` 失敗 — exit=2 失敗した工程: `codd-gate verify --base 4111d87a4729a5d0d6291f11a4f1de6b790bec5f --repos .agent-project/repos.json` [codd-gate] エラー: repos レジストリが見つかりません: .agent-project/repos.json
