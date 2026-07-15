@@ -24,7 +24,7 @@
 | 計画批評 | 要対応カード「AIで計画を批評」 | `plan-critique`（Doctor） | Markdown（推薦・差し戻し文面案） |
 | 変更理由 | 検収ダイアログ「変更理由を説明」 | `delivery-rationale`（Doctor） | Markdown（意図・acceptance・推薦） |
 | フォローアップ案 | 検収ダイアログ「フォローアップ案」 | `followup-suggest`（構造化 Assist） | JSON → タスク追加フォームへ流し込み可 |
-| 依存・優先度 | タスク追加「AIで依存・優先度を提案」 | `enqueue-assist`（構造化 Assist） | JSON → after/priority/note へ流し込み |
+| 依存・優先度 | タスク追加「AIで依存・優先度を提案」 | `enqueue-assist`（構造化 Assist） | JSON → after/priority/note へ流し込み。既存タスクの `adjustments` は人確認後に `revise` で反映 |
 
 共通制約:
 

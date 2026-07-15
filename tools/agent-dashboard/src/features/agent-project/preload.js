@@ -47,6 +47,7 @@ module.exports = {
   agentCharter: (invoke) => (args) => invoke('agent:charter', args),
   agentDoctor: (invoke) => (args) => invoke('agent:doctor', args),
   agentTaskAssist: (invoke) => (args) => invoke('agent:taskAssist', args),
+  agentPlanAdjustments: (invoke) => (args) => invoke('agent:planAdjustments', args),
   agentResolve: (invoke) => (dir) => invoke('agent:resolve', { dir }),
 
   glReconcileRun: (invoke) => (args) => invoke('gitlab:reconcileRun', args),

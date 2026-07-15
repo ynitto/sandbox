@@ -436,6 +436,11 @@ function registerIpc(ctx) {
     });
   });
 
+  // 既存タスク調整案 → revise 差分の純関数（人確認前のプレビュー用。ファイルは書かない）。
+  handle('agent:planAdjustments', ({ backlog, adjustments }) =>
+    agent.planBacklogAdjustments(backlog || [], adjustments || [])
+  );
+
   // ⚙ 設定画面の表示用: 今どの CLI / モデルで補完するかの解決結果（実行はしない）
   handle('agent:resolve', ({ dir }) => agent.resolveAgent(loadConfig(), dir));
 

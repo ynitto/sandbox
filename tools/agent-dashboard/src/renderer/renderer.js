@@ -31,6 +31,7 @@ const state = {
   doctorNeedId: null, // 診断・批評後の追加質問でも同じ要対応を参照する
   doctorFeedbackDraft: '', // 差し戻し文面案（回答欄へ流し込み用）
   assistBusy: false, // 構造化 Assist（フォローアップ / 依存優先度）の実行中
+  enqueueAdjustments: [], // AI が出した既存タスク調整案（人確認後に revise）
   flowFilter: 'active', // フロータブの run フィルタ（active＝非終端のみ／done＝完了・アーカイブ／all）
   gitlab: { enabled: false, byUrl: {}, repoIssues: [], loading: false, flowOnly: true },
   editFile: null, // {dir, name, file}（編集中のプロジェクトファイル）
@@ -1888,25 +1889,146 @@ function renderEnqueueBacklogSummary(p) {
     .join('')}</ul>`;
 }
 
-function renderEnqueueAdjustments(adjustments) {
+async function refreshEnqueueAdjustmentPlan() {
   const el = $('enq-ai-adjustments');
   if (!el) return;
-  if (!adjustments || !adjustments.length) {
+  const adjustments = state.enqueueAdjustments || [];
+  if (!adjustments.length) {
+    el.classList.add('hidden');
+    el.innerHTML = '';
+    return;
+  }
+  const p = state.project;
+  let planned = { apply: [], skipped: [] };
+  try {
+    planned = await api.agentPlanAdjustments({
+      backlog: (p && p.backlog) || [],
+      adjustments,
+    });
+  } catch (err) {
+    el.classList.remove('hidden');
+    el.innerHTML = `<div class="doctor-error" role="alert">調整案の整理に失敗しました: ${esc(err.message || err)}</div>`;
+    return;
+  }
+  const apply = planned.apply || [];
+  const skipped = planned.skipped || [];
+  if (!apply.length && !skipped.length) {
     el.classList.add('hidden');
     el.innerHTML = '';
     return;
   }
   el.classList.remove('hidden');
+  const applyRows = apply
+    .map(
+      (a) => `<li class="enq-adj-item">
+        <label>
+          <input type="checkbox" class="enq-adj-check" data-adj-id="${esc(a.id)}" checked />
+          <code>${esc(a.id)}</code> ${esc(a.title || '')}
+          <span class="muted">${esc(a.summary)}</span>
+          ${a.reason ? `<span class="muted">— ${esc(a.reason)}</span>` : ''}
+        </label>
+      </li>`
+    )
+    .join('');
+  const skipRows = skipped
+    .map((s) => `<li class="muted"><code>${esc(s.id)}</code> — ${esc(s.reason)}</li>`)
+    .join('');
   el.innerHTML =
-    '<strong>既存タスクへの調整案</strong>（参考。反映はタスク詳細の「修正を指示」で行います）' +
-    `<ul>${adjustments
-      .map((a) => {
-        const bits = [];
-        if (a.priority != null) bits.push(`priority=${a.priority}`);
-        if (a.after && a.after.length) bits.push(`after=${a.after.join(',')}`);
-        return `<li><code>${esc(a.id)}</code> ${esc(bits.join(' '))}${a.reason ? ` — ${esc(a.reason)}` : ''}</li>`;
-      })
-      .join('')}</ul>`;
+    '<strong>既存タスクへの調整案</strong>' +
+    (apply.length
+      ? `<p class="muted">選択した変更を「修正を指示」（revise）として送ります。タスク状態は書き換えず、次の実行で反映されます。</p>
+        <ul class="enq-adj-list">${applyRows}</ul>
+        <div class="enq-adj-actions">
+          <button type="button" id="btn-enq-adj-apply" class="primary-inline">選択した調整を反映</button>
+          <button type="button" id="btn-enq-adj-clear">提案を破棄</button>
+        </div>`
+      : '<p class="muted">反映できる差分はありません（現状と同じか対象外）。</p>') +
+    (skipRows ? `<details class="enq-adj-skipped"><summary>スキップ ${skipped.length} 件</summary><ul>${skipRows}</ul></details>` : '');
+  const applyBtn = $('btn-enq-adj-apply');
+  if (applyBtn) applyBtn.addEventListener('click', () => applySelectedEnqueueAdjustments(apply));
+  const clearBtn = $('btn-enq-adj-clear');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      state.enqueueAdjustments = [];
+      refreshEnqueueAdjustmentPlan();
+      const status = $('enq-ai-status');
+      if (status) status.textContent = '既存タスクの調整案を破棄しました';
+    });
+  }
+}
+
+function renderEnqueueAdjustments(adjustments) {
+  state.enqueueAdjustments = Array.isArray(adjustments) ? adjustments : [];
+  return refreshEnqueueAdjustmentPlan();
+}
+
+async function applySelectedEnqueueAdjustments(applyList) {
+  const p = state.project;
+  if (!p) return toast('プロジェクトを選択してください');
+  if (state.assistBusy) return;
+  const selectedIds = new Set(
+    [...document.querySelectorAll('#enq-ai-adjustments .enq-adj-check:checked')].map((el) => el.dataset.adjId)
+  );
+  const selected = (applyList || []).filter((a) => selectedIds.has(a.id));
+  if (!selected.length) return toast('反映する調整を選択してください');
+  const lines = selected.map((a) => `・${a.id}: ${a.summary}`).join('\n');
+  const yes = await confirmDialog(
+    `次の ${selected.length} 件の既存タスクを修正します（revise）。\n` +
+      'タスク状態ファイルは直接書き換えず、公式の修正指示として送ります。\n\n' +
+      `${lines}\n\nよろしいですか？`
+  );
+  if (!yes) return;
+  state.assistBusy = true;
+  const applyBtn = $('btn-enq-adj-apply');
+  const status = $('enq-ai-status');
+  if (applyBtn) applyBtn.disabled = true;
+  if (status) status.textContent = '既存タスクの調整を送信しています…';
+  const sent = [];
+  const failed = [];
+  try {
+    for (const item of selected) {
+      try {
+        const feedback = item.reason
+          ? `AI提案の依存・優先度調整: ${item.reason}`
+          : 'AI提案の依存・優先度調整（人確認済み）';
+        const res = await api.runAction({
+          dir: p.dir,
+          action: 'revise',
+          id: item.id,
+          reason: 'agent-dashboard: AI提案の依存・優先度調整（人確認済み）',
+          fields: item.fields,
+          feedback,
+        });
+        const task = (p.backlog || []).find((t) => t.id === item.id);
+        if (task) markReviseSent(task);
+        uiLog('enqueueAdjust', item.id, res);
+        sent.push(item.id);
+      } catch (err) {
+        failed.push(`${item.id}: ${err.message || err}`);
+      }
+    }
+    if (sent.length) {
+      gitPushAfterWrite(`agent-dashboard: revise deps/priority ${sent.join(',')}`, p.dir);
+      state.enqueueAdjustments = (state.enqueueAdjustments || []).filter((a) => !sent.includes(a.id));
+      await reloadProject();
+      fillEnqueueAfterOptions(state.project);
+      renderEnqueueBacklogSummary(state.project);
+      await refreshEnqueueAdjustmentPlan();
+    }
+    if (failed.length) {
+      toast(`一部失敗: ${failed.join(' / ')}`);
+    } else if (sent.length) {
+      toast(`${sent.length} 件の調整を送信しました（次の実行で反映）`, true);
+    }
+    if (status) {
+      status.textContent = sent.length
+        ? `既存タスク ${sent.length} 件の調整を送信しました`
+        : '調整の送信に失敗しました';
+    }
+  } finally {
+    state.assistBusy = false;
+    if (applyBtn) applyBtn.disabled = false;
+  }
 }
 
 // タスク追加ダイアログを開く。prefill.reinject が真のときは archive タスクの
@@ -1936,7 +2058,8 @@ function openEnqueueDialog(prefill = {}) {
   state.enqueueExtra = { level: prefill.level || '', track: prefill.track || '' };
   fillEnqueueAfterOptions(state.project);
   renderEnqueueBacklogSummary(state.project);
-  renderEnqueueAdjustments([]);
+  state.enqueueAdjustments = [];
+  void refreshEnqueueAdjustmentPlan();
   const status = $('enq-ai-status');
   if (status) status.textContent = '';
   $('dlg-enqueue').showModal();
@@ -1975,10 +2098,14 @@ async function aiEnqueueAssist() {
     if (f.after && f.after.length) $('enq-after').value = f.after.join(', ');
     if (f.priority != null) $('enq-priority').value = String(f.priority);
     if (f.note) $('enq-note').value = f.note;
-    renderEnqueueAdjustments(f.adjustments || []);
+    await renderEnqueueAdjustments(f.adjustments || []);
+    const adjCount = (state.enqueueAdjustments || []).length;
     status.textContent =
       `提案を反映しました（${res.cli}${res.model ? ` / ${res.model}` : ''}）` +
-      (f.rationale ? ` — ${f.rationale}` : '。内容を確認してから追加してください');
+      (f.rationale ? ` — ${f.rationale}` : '') +
+      (adjCount
+        ? `。既存タスクの調整案 ${adjCount} 件を確認し、よければ「選択した調整を反映」を押してください`
+        : '。内容を確認してから追加してください');
   } catch (err) {
     status.textContent = '';
     toast(`依存・優先度の提案に失敗しました: ${err.message || err}`);

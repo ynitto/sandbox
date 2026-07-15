@@ -21,8 +21,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - **フォローアップ案（followup-suggest）**: 検収ダイアログの「フォローアップ案」。
   JSON でタスク案を返し、「タスク追加フォームへ」で人が確認してから inbox 投入できる。
 - **依存・優先度提案（enqueue-assist）**: タスク追加の「AIで依存・優先度を提案」。
-  after / priority / note を下書きし、既存タスクへの調整案も提示する。手動側も
-  先行タスクの datalist と既存バックログ一覧を追加。
+  after / priority / note を下書きし、既存タスクへの調整案も提示する。調整案は
+  チェックボックスで選び「選択した調整を反映」で公式の `revise` として送信する
+  （人確認必須・状態ファイル直書きなし）。手動側も先行タスクの datalist と
+  既存バックログ一覧を追加。
 - **差し戻し文面の流し込み**: Doctor 応答の「差し戻し文面案」を回答欄へコピーできる
   （送信は人が確定）。CLI は従来どおり読み取り専用。
 

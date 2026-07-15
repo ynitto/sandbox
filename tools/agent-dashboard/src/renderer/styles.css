@@ -1060,6 +1060,10 @@ dialog h3 { font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
   background: var(--panel);
 }
 .enq-ai-adjustments ul { margin: 6px 0 0; padding-left: 1.2em; }
+.enq-adj-list { list-style: none; padding-left: 0; display: grid; gap: 6px; }
+.enq-adj-item label { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 8px; cursor: pointer; }
+.enq-adj-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.enq-adj-skipped { margin-top: 8px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 .primary-inline { background: var(--accent); border-color: var(--accent); color: #fff; }
 button.danger { border-color: var(--red); color: var(--red); }

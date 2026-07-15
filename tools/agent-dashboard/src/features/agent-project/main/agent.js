@@ -506,10 +506,14 @@ function normalizeEnqueueAssist(obj) {
     .map((a) => {
       const item = a && typeof a === 'object' ? a : {};
       const apr = parseInt(item.priority, 10);
+      // after / priority は「キーあり＝変更提案」「キーなし＝触らない」。
+      // after: [] は依存解除の明示。
+      const hasAfter = Object.prototype.hasOwnProperty.call(item, 'after');
+      const hasPriority = Object.prototype.hasOwnProperty.call(item, 'priority');
       return {
         id: String(item.id || '').trim(),
-        priority: Number.isFinite(apr) ? apr : null,
-        after: normalizeAfter(item.after),
+        priority: hasPriority && Number.isFinite(apr) ? apr : null,
+        after: hasAfter ? normalizeAfter(item.after) : null,
         reason: String(item.reason || '').trim(),
       };
     })
@@ -521,6 +525,72 @@ function normalizeEnqueueAssist(obj) {
     rationale: String((obj && obj.rationale) || '').trim(),
     adjustments,
   };
+}
+
+function taskAfterList(task) {
+  if (!task) return [];
+  if (Array.isArray(task.after)) return normalizeAfter(task.after);
+  if (task.extra && task.extra.after != null) return normalizeAfter(task.extra.after);
+  return normalizeAfter(task.after);
+}
+
+function afterKey(list) {
+  return normalizeAfter(list).slice().sort().join(',');
+}
+
+// 既存 backlog への調整案を、人確認後に revise できる差分だけへ落とす純関数。
+// 戻り値: { apply: [{id,title,fields,reason,summary}], skipped: [{id,reason}] }
+function planBacklogAdjustments(backlog, adjustments) {
+  const byId = new Map();
+  for (const t of Array.isArray(backlog) ? backlog : []) {
+    if (t && t.id) byId.set(String(t.id), t);
+  }
+  const apply = [];
+  const skipped = [];
+  for (const raw of Array.isArray(adjustments) ? adjustments : []) {
+    const adj = raw && typeof raw === 'object' ? raw : {};
+    const id = String(adj.id || '').trim();
+    if (!id) continue;
+    const task = byId.get(id);
+    if (!task) {
+      skipped.push({ id, reason: 'バックログに無い（完了済みか未取り込み）' });
+      continue;
+    }
+    if (String(task.status || '') === 'rejected') {
+      skipped.push({ id, reason: '却下済みのため変更しない' });
+      continue;
+    }
+    const fields = {};
+    const bits = [];
+    if (adj.priority != null) {
+      const cur = parseInt(task.priority, 10) || 0;
+      const next = parseInt(adj.priority, 10);
+      if (Number.isFinite(next) && next !== cur) {
+        fields.priority = String(next);
+        bits.push(`priority ${cur}→${next}`);
+      }
+    }
+    if (adj.after != null) {
+      const cur = taskAfterList(task);
+      const next = normalizeAfter(adj.after);
+      if (afterKey(cur) !== afterKey(next)) {
+        fields.after = next.join(', '); // '' は依存解除
+        bits.push(`after [${cur.join(', ') || 'なし'}]→[${next.join(', ') || 'なし'}]`);
+      }
+    }
+    if (!Object.keys(fields).length) {
+      skipped.push({ id, reason: '現在値と同じ（変更なし）' });
+      continue;
+    }
+    apply.push({
+      id,
+      title: String(task.title || ''),
+      fields,
+      reason: String(adj.reason || '').trim(),
+      summary: bits.join(' / '),
+    });
+  }
+  return { apply, skipped };
 }
 
 async function completeTaskAssist(cfg, { dir, mode, context, userPrompt }) {
@@ -618,6 +688,7 @@ module.exports = {
   taskAssistPrompt,
   normalizeFollowupSuggestions,
   normalizeEnqueueAssist,
+  planBacklogAdjustments,
   normalizeDraftFields,
   completeCharter,
   completeDoctor,
