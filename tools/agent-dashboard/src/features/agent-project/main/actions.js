@@ -215,18 +215,72 @@ function findProjectConfig(...dirs) {
   return null;
 }
 
+// ⚙ 設定の CLI コマンド（例 `python3 /path/to/agent-project.py`）を argv 配列へ分解する。
+// クォート（"…" / '…'）で空白入りパスも表せる。
+function splitCommand(command) {
+  const out = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m;
+  while ((m = re.exec(String(command || '').trim()))) {
+    out.push(m[1] != null ? m[1] : m[2] != null ? m[2] : m[3]);
+  }
+  return out;
+}
+
+// タイムアウト時にプロセスツリーごと止める。Windows の child.kill() はトップ（多くは
+// シェル）しか殺さず、agent-project 本体や WSL 側の子が生き残って再実行と多重化する。
+function killTree(child) {
+  if (!child || child.pid == null) return;
+  try {
+    if (process.platform === 'win32') {
+      spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
+    } else {
+      try {
+        process.kill(-child.pid, 'SIGTERM'); // detached 起動によるプロセスグループごと
+      } catch {
+        child.kill();
+      }
+    }
+  } catch {
+    try {
+      child.kill();
+    } catch {
+      /* 既に終了 */
+    }
+  }
+}
+
 function runProjectCli(command, args, timeoutMs = 60000, cwd) {
-  const cmdline = `${command} ${args.map(quote).join(' ')}`;
+  // shell:true + 文字列連結は、空白入りコマンドパスで壊れ、cmd.exe の %VAR% 展開で
+  // --reason / feedback の日本語文が変質し、メタ文字がインジェクションになる。
+  // argv 配列 + shell:false で渡す（PATHEXT で .exe/.cmd は解決される）。
+  const tokens = splitCommand(command);
+  const file = tokens[0] || 'agent-project';
+  const argv = [...tokens.slice(1), ...args.map(String)];
+  const cmdline = `${command} ${args.map(quote).join(' ')}`; // 表示・手動再実行用
   return new Promise((resolve, reject) => {
-    const child = spawn(cmdline, { shell: true, cwd: cwd || undefined });
+    let child;
+    try {
+      child = spawn(file, argv, {
+        shell: false,
+        windowsHide: true,
+        cwd: cwd || undefined,
+        detached: process.platform !== 'win32', // POSIX: グループ kill を可能にする
+      });
+    } catch (e) {
+      reject(new Error(`agent-project を起動できません（⚙ 設定の CLI コマンドを確認）: ${e.message}`));
+      return;
+    }
     let out = '';
     let err = '';
     const timer = setTimeout(() => {
-      child.kill();
+      killTree(child);
       reject(new Error(`agent-project がタイムアウトしました: ${cmdline}`));
     }, timeoutMs);
     child.stdout.on('data', (d) => (out += d));
     child.stderr.on('data', (d) => (err += d));
+    child.stdin.on('error', () => {});
+    child.stdin.end();
     child.on('error', (e) => {
       clearTimeout(timer);
       reject(new Error(`agent-project を起動できません（⚙ 設定の CLI コマンドを確認）: ${e.message}`));
@@ -380,6 +434,20 @@ function requestLifecycle(cfg, { dir, action, reason }) {
 async function startProject(cfg, { dir }) {
   const command = (cfg.projects && cfg.projects.command) || 'agent-project';
   const root = project.fromStateWorktree(path.resolve(dir));
+  // runAction / requestReplan と同じガード: Windows ビュアーが WSL UNC を開いているとき、
+  // Windows 側 CLI で start すると UNC/Linux パスの --root で失敗するか、最悪 WSL 内の
+  // 本体とは別に Windows 側で二重起動する。停止中の本体はファイルドロップでは起こせない
+  // ため、人が WSL 内で打つべきコマンドを返して手動起動に委ねる。
+  const unc = process.platform === 'win32' &&
+    String(root || '').replace(/\//g, '\\').match(/^\\\\wsl(?:\$|\.localhost)\\[^\\]+(.*)$/i);
+  if (unc) {
+    const linuxRoot = (unc[1] || '/').replace(/\\/g, '/') || '/';
+    const err = new Error(
+      'WSL 内のプロジェクトは Windows 側の CLI からは起動できません。WSL のターミナルで起動してください。'
+    );
+    err.manualCommand = `${command} start --root ${linuxRoot}`;
+    throw err;
+  }
   const cfgPath = findProjectConfig(root, dir);
   const args = ['start', '--root', root];
   if (cfgPath) args.push('--config', cfgPath);
