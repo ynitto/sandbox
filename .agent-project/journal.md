@@ -947,3 +947,11 @@
 - 2026-07-16 06:36:25 === project watch: 監視中（charter 更新/フィードバック待ち）===
 - 2026-07-16 06:36:30 === project watch: 監視中（charter 更新/フィードバック待ち）===
 - 2026-07-16 06:36:36 === project 開始 v1 acceptance=2 ===
+- 2026-07-16 06:36:55 state-git 同期: import=2 export=2
+- 2026-07-16 06:36:55 === project 開始 v1 acceptance=2 ===
+- 2026-07-16 06:36:55 intake NG (exit 2): codd-gate tasks --debt --repos .agent-project/repos.json
+- 2026-07-16 06:36:55 feedback 取り込み: docs-designs-README-042729 を再開
+- 2026-07-16 06:36:55 === agent-project 開始 tasks=6 ingested=1 planner=agent executor=agent dry_run=False ===
+- 2026-07-16 06:36:55 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
+- 2026-07-16 06:36:58 run 再開: docs-designs-README-042729 は req-ef1f92c3-docs-designs-README-042729-r1 の失敗ノードだけをやり直します（done は温存）
+- 2026-07-16 06:36:59 cycle 1: docs-designs-README-042729 → 人の判断（回帰検知）

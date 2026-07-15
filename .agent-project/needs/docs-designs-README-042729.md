@@ -10,7 +10,7 @@ kind: blocked
 
 ## Context and Problem Statement
 
-- なぜ: 回帰検知: グローバル検査 `codd-gate verify --base "$KIRO_BASE_REV" --repos .agent-project/repos.json` 失敗 — exit=2 失敗した工程: `codd-gate verify --base 63b0f67116c76c268f4dd275ba8c306c1d819f20 --repos .agent-project/repos.json` [codd-gate] エラー: repos レジストリが見つかりません: .agent-project/repos.json
+- なぜ: 回帰検知: グローバル検査 `codd-gate verify --base "$KIRO_BASE_REV" --repos .agent-project/repos.json` 失敗 — exit=2 失敗した工程: `codd-gate verify --base 45a480f10edd965081cc9a4b3afcfbb7a916c2e9 --repos .agent-project/repos.json` [codd-gate] エラー: repos レジストリが見つかりません: .agent-project/repos.json
 - 状態: blocked（agent-project の判断待ち）
 
 ## 判断材料（成果物の所在・差分・検証）
@@ -23,7 +23,7 @@ kind: blocked
 ## Decision Outcome
 
 <!-- 人の決定の記入欄（MADR の Decision Outcome）。方針・指示をここに書く。 -->
-- [x] 確定（このボックスを [x] にして保存すると取り込みます）
+- [ ] 確定（このボックスを [x] にして保存すると取り込みます）
 
 <!-- 上の [ ] を [x] にした時だけ反映されます（書きかけでの誤発火を防ぐため）。
      下に修正方針・指示を書いてください。空のままでも [x] なら『そのまま再実行』。
