@@ -1,3 +1,9 @@
 {"ts": "2026-07-14T21:15:55Z", "who": "worker-2", "kind": "claimed", "node": "t1"}
 {"ts": "2026-07-14T21:25:49Z", "who": "worker-2", "kind": "result", "node": "t1", "status": "done"}
 {"ts": "2026-07-15T16:15:31Z", "who": "worker-2", "kind": "claimed", "node": "verify-codd-gate-required-scope-02"}
+{"ts": "2026-07-15T16:42:40Z", "who": "worker-2", "kind": "claimed", "node": "t5"}
+{"ts": "2026-07-15T16:48:21Z", "who": "worker-2", "kind": "result", "node": "t5", "status": "failed"}
+{"ts": "2026-07-15T16:48:21Z", "who": "worker-2", "kind": "claimed", "node": "verify-codd-gate-required-scope-02"}
+{"ts": "2026-07-15T17:00:46Z", "who": "worker-2", "kind": "result", "node": "verify-codd-gate-required-scope-02", "status": "failed"}
+{"ts": "2026-07-15T17:06:55Z", "who": "worker-2", "kind": "claimed", "node": "verify-codd-gate-scope-fix-03"}
+{"ts": "2026-07-15T17:32:27Z", "who": "worker-2", "kind": "result", "node": "verify-codd-gate-scope-fix-03", "status": "done"}

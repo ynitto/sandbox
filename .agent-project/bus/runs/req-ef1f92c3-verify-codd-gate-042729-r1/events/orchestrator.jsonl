@@ -1,3 +1,4 @@
 {"ts": "2026-07-14T21:15:54Z", "who": "orchestrator", "kind": "planned", "patterns": ["fan-out-and-synthesize", "loop-until-done", "adversarial-verification"], "parallelism": 2, "tasks": ["t1", "t2", "t3", "t4", "t5", "t6", "t7"]}
 {"ts": "2026-07-15T15:46:39Z", "who": "orchestrator", "kind": "replan", "iteration": 1, "added": ["verify-codd-gate-scope-and-pass-01"]}
 {"ts": "2026-07-15T16:15:29Z", "who": "orchestrator", "kind": "replan", "iteration": 2, "added": ["verify-codd-gate-required-scope-02"]}
+{"ts": "2026-07-15T17:06:55Z", "who": "orchestrator", "kind": "replan", "iteration": 3, "added": ["verify-codd-gate-scope-fix-03", "verify-codd-gate-final-check-04"]}

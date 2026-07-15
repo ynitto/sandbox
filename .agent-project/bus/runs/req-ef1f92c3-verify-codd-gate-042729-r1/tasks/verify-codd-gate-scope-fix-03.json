@@ -1,0 +1,6 @@
+{
+  "id": "verify-codd-gate-scope-fix-03",
+  "goal": "t3 が tools/agent-project/agent_project/verify.py または関連テストへ追加した、日本語ラベルとコマンドが同一行の「検証コマンド: <command>」対応だけを特定して取り除く。元の要求である改行形式「検証コマンド:\\ncodd-gate verify --base \\\"$KIRO_BASE_REV\\\"」の抽出機能は維持し、要求と無関係な変更を残さない。最後に git diff で変更範囲を確認し、指定の完了条件コマンドを実行して終了コード0を記録する。",
+  "deps": [],
+  "kind": "work"
+}
