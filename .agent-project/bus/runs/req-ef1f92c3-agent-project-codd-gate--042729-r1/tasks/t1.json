@@ -1,6 +1,0 @@
-{
-  "id": "t1",
-  "goal": "tools/agent-project 配下の既存モジュール構成・命名規約・テスト配置（tools/agent-project/tests）と、.agent/agent-project.yaml の現行スキーマ（regression_cmd / intake_cmd の既存キー位置とインデント）を調査し、さらに codd-gate CLI の実サブコマンド仕様（verify --base <ref> / tasks）を `codd-gate --help` と codd-gate スキル本体から確認する。後続タスクが従うべき契約（detect_status() の戻り値型、command(sub,*args) の返却形式、yaml キーのインデント幅）を確定して文書化する。",
-  "deps": [],
-  "kind": "work"
-}

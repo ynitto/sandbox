@@ -1,9 +1,0 @@
-{
-  "id": "synth",
-  "goal": "codd-gate 連携の完成を統合報告する。実装した codd_gate_status モジュール、.agent/agent-project.yaml の regression/intake 結線、追加した2本のテスト、設計書への反映を1つの成果としてまとめ、完了条件コマンド列の最終実行ログ（全て終了コード 0）を証跡として添える。未インストール環境でのフォールバック挙動と、charter の目標（codd-gate と連携できること／設計書が読みやすいこと）に対する充足状況を明記する。",
-  "deps": [
-    "loop",
-    "docs"
-  ],
-  "kind": "synthesize"
-}
