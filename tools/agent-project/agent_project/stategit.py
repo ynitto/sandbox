@@ -379,6 +379,23 @@ class DirectStateGit:
     def _has_remote(self) -> bool:
         return bool(self._git("remote", "get-url", "origin").stdout.strip())
 
+    def _sync_lock_path(self) -> str:
+        """sync 直列化ロックの置き場所。リポジトリの .git（共通ディレクトリ）内に置く——
+        以前はホスト局所の tempdir だったため、同じ共有ツリーを Windows と WSL（あるいは
+        複数ホストのマウント）から書く構成では互いに一切排他されず、コミット中の worktree
+        掃除・CAS 競合・push 詰まりの温床になっていた。gitdir 内なら物理的に同じファイルを
+        全書き手がロックする。gitdir が取れないときだけ従来の tempdir に落ちる。"""
+        gd = self._git("rev-parse", "--git-common-dir").stdout.strip()
+        if gd:
+            p = Path(gd) if os.path.isabs(gd) else (self.root / gd)
+            try:
+                if p.is_dir():
+                    return str(p / "agent-project-sync.lock")
+            except OSError:
+                pass
+        return os.path.join(tempfile.gettempdir(),
+                            f"agent-project-sync-{hashlib.sha1(str(self.root).encode()).hexdigest()[:12]}.lock")
+
     def _ensure_identity(self) -> None:
         if not self._git("config", "user.email").stdout.strip():
             self._git("config", "user.email", "agent-project@local")
@@ -985,9 +1002,8 @@ class DirectStateGit:
         """双方向同期を 1 回行い (imported, exported) を返す。リモート操作は interval で律速し、
         force=True は「push すべきものがあれば間隔を待たず押し出す」（run 直後の結果共有用）。"""
         now = time.time()
-        lock = os.path.join(tempfile.gettempdir(),
-                            f"agent-project-sync-{hashlib.sha1(str(self.root).encode()).hexdigest()[:12]}.lock")
-        with _file_lock(lock):            # 同一ホストの多重プロセスを直列化
+        lock = self._sync_lock_path()
+        with _file_lock(lock):            # 同一リポジトリへの多重プロセス書き込みを直列化
             self._ensure_identity()
             self._ensure_merge_attrs()    # journal の追記同士を union で無衝突マージ
             remote = self._has_remote()

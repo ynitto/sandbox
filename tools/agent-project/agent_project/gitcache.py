@@ -16,19 +16,38 @@ _provisioned_urls: "set[str]" = set()
 
 @contextlib.contextmanager
 def _file_lock(path: str):
-    """fcntl があれば排他ロック。無ければ no-op（ベストエフォート）。"""
-    if fcntl is None:
+    """プロセス間の排他ロック。POSIX は fcntl.flock、Windows は msvcrt.locking で実装する。
+    以前は fcntl 非対応環境（Windows）で no-op だったため、state-git 同期・worktree 掃除の
+    「ロックを取ったから安全」という前提が全て崩れていた（コミット中の worktree を他プロセスが
+    remove --force する等）。どちらも無い環境のみ no-op に落ちる。"""
+    if fcntl is None and msvcrt is None:  # pragma: no cover — 想定外の環境のみ
         yield
         return
-    f = open(path, "w")
+    f = open(path, "a+")
     try:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        yield
-    finally:
+        if fcntl is not None:
+            fcntl.flock(f, fcntl.LOCK_EX)
+        else:  # Windows: 先頭 1 バイトの領域ロックで排他（獲得までブロッキング再試行）
+            while True:
+                try:
+                    f.seek(0)
+                    msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)  # 最大 ~10 秒待って例外
+                    break
+                except OSError:
+                    time.sleep(0.2)
         try:
-            fcntl.flock(f, fcntl.LOCK_UN)
+            yield
         finally:
-            f.close()
+            try:
+                if fcntl is not None:
+                    fcntl.flock(f, fcntl.LOCK_UN)
+                else:
+                    f.seek(0)
+                    msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+    finally:
+        f.close()
 
 
 def cache_root() -> str:

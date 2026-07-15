@@ -3,6 +3,55 @@ from __future__ import annotations
 # 単体 import しない。agent_project/__init__.py が共有名前空間へ順に exec 合成する。
 # 人の操作コマンド（いずれも案件毎の決定記録を残す）
 # ---------------------------------------------------------------------------
+def approve_review_done(cfg: Config, t: Task, reason: str) -> "tuple[bool, str]":
+    """review（検収待ち）タスクの承認を done 確定させる共通経路。
+    CLI の approve と needs の空 [x]（チェックのみ＝承認）の両方から呼ばれる——
+    経路によって「done 確定」と「最初から再実行」に解釈が割れると、承認したはずの
+    検証済み成果が丸ごと作り直される手戻りになる。(ok, message) を返す。
+    タスク MR があれば Stage 2 と同一規則で自動決着（クリーンならマージ・未クリーンなら
+    差し戻しコメントを付けて review のまま needs 票を書き直す）。"""
+    tid = t.id
+    mr_ok, mr_msg = finalize_task_mr(cfg, t)
+    if not mr_ok:
+        write_needs_file(cfg, t, f"承認されたが MR が未クリーン: {mr_msg}", review=True,
+                         evidence=f"- MR: {t.get('mr_url', '')}")
+        return (False, f"{tid}: MR が未クリーンのため done にできません（{mr_msg}）。"
+                       f"解消後に再度 approve してください。")
+    lines = [f"{tid}: {mr_msg}"] if mr_msg else []
+    # 検収ゲートの承認 = done 確定（verify は実行済み。保持した成果参照で納品書を書く）
+    ex = dict(t.extra)
+    ref = ex.get("gate_ref", "")
+    ts = ex.get("gate_ts") or _now_ts()
+    vmsg = ex.get("gate_vmsg", "")
+    gate_branch = ex.get("gate_branch", "")
+    t.status = "done"
+    autonomy_record(cfg, t, clean=True)          # 検収承認＝手戻りなし。track の信頼を上げる
+    t.drop("gate_ref", "gate_ts", "gate_vmsg", "gate_branch")
+    # review 時に保持した所在（ref/ブランチ）を受領書へ引き継ぐ（どこに成果物があるかを残す）
+    gate_ev = (f"- 成果物: {ref}\n- 所在: {cfg.workdir}"
+               + (f" / ブランチ {gate_branch}" if gate_branch else "")) if ref else ""
+    append_delivery(cfg, t, ref, ts, branch=gate_branch)
+    disp = "done（承認・納品書）"
+    if cfg.do_archive:
+        archive_task(cfg, t, vmsg or f"承認: {reason}", ref, ts, evidence=gate_ev)
+    else:
+        delete_task_file(cfg, t)
+        disp = "done（承認・削除）"
+    clear_needs_file(cfg, tid)
+    dr = append_decision(cfg, tid, cfg.actor, context=f"{tid}（{t.title}）を検収承認",
+                         action="approve-done", reason=reason, affects=f"{tid} → done",
+                         # 承認理由を learn 化して類似案件の判断材料に残す（approve-and-fix と対称）
+                         learn=(t.title, reason) if reason and cfg.learn_capture else None)
+    lines.append(f"{dr}: {tid} を承認し {disp} 確定しました。")
+    # cohort の pilot 承認なら、固めた定義から残りのタスクを生成して ready にする
+    if t.get("cohort_role") == "pilot":
+        members = materialize_cohort_rest(cfg, t, feedback=reason)
+        if members:
+            lines.append(f"cohort {t.get('cohort')}: 残り {len(members)} 件を生成しました "
+                         f"（{', '.join(m.id for m in members[:6])}{' …' if len(members) > 6 else ''}）。")
+    return (True, "\n".join(lines))
+
+
 def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
     tasks = load_tasks(cfg.backlog)
     t = next((x for x in tasks if x.id == tid), None)
@@ -44,48 +93,12 @@ def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
         print(f"plan-review: {tid} を承認しました（→ {t.status}）。")
         return 0
     if t.norm_status() == "review":
-        # 成果物レビューの承認: タスク MR があれば Stage 2 と同一規則で自動決着（クリーンなら
-        # マージ・未クリーンなら差し戻しコメントを付けて review のまま）。MR 無しは従来どおり
-        mr_ok, mr_msg = finalize_task_mr(cfg, t)
-        if not mr_ok:
-            write_needs_file(cfg, t, f"承認されたが MR が未クリーン: {mr_msg}", review=True,
-                             evidence=f"- MR: {t.get('mr_url', '')}")
-            print(f"{tid}: MR が未クリーンのため done にできません（{mr_msg}）。"
-                  f"解消後に再度 approve してください。", file=sys.stderr)
+        ok, msg = approve_review_done(cfg, t, reason)
+        if not ok:
+            print(msg, file=sys.stderr)
             return 1
-        if mr_msg:
-            print(f"{tid}: {mr_msg}")
-        # 検収ゲートの承認 = done 確定（verify は実行済み。保持した成果参照で納品書を書く）
-        ex = dict(t.extra)
-        ref = ex.get("gate_ref", "")
-        ts = ex.get("gate_ts") or _now_ts()
-        vmsg = ex.get("gate_vmsg", "")
-        gate_branch = ex.get("gate_branch", "")
-        t.status = "done"
-        autonomy_record(cfg, t, clean=True)          # 検収承認＝手戻りなし。track の信頼を上げる
-        t.drop("gate_ref", "gate_ts", "gate_vmsg", "gate_branch")
-        # review 時に保持した所在（ref/ブランチ）を受領書へ引き継ぐ（どこに成果物があるかを残す）
-        gate_ev = (f"- 成果物: {ref}\n- 所在: {cfg.workdir}"
-                   + (f" / ブランチ {gate_branch}" if gate_branch else "")) if ref else ""
-        append_delivery(cfg, t, ref, ts, branch=gate_branch)
-        disp = "done（承認・納品書）"
-        if cfg.do_archive:
-            archive_task(cfg, t, vmsg or f"承認: {reason}", ref, ts, evidence=gate_ev)
-        else:
-            delete_task_file(cfg, t)
-            disp = "done（承認・削除）"
-        clear_needs_file(cfg, tid)
-        dr = append_decision(cfg, tid, cfg.actor, context=f"{tid}（{t.title}）を検収承認",
-                             action="approve-done", reason=reason, affects=f"{tid} → done",
-                             # 承認理由を learn 化して類似案件の判断材料に残す（approve-and-fix と対称）
-                             learn=(t.title, reason) if reason and cfg.learn_capture else None)
-        print(f"{dr}: {tid} を承認し {disp} 確定しました。")
-        # cohort の pilot 承認なら、固めた定義から残りのタスクを生成して ready にする
-        if t.get("cohort_role") == "pilot":
-            members = materialize_cohort_rest(cfg, t, feedback=reason)
-            if members:
-                print(f"cohort {t.get('cohort')}: 残り {len(members)} 件を生成しました "
-                      f"（{', '.join(m.id for m in members[:6])}{' …' if len(members) > 6 else ''}）。")
+        if msg:
+            print(msg)
         return 0
     # 委譲中の approve = 人は「このまま続行」ではなく「ブロックを解いてやり直す／進める」。
     # flow を止めないと ap/<task-id> へ二重書き込みし、次の act と競合する。
