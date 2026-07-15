@@ -140,6 +140,12 @@ def instance_record(cfg: "Config") -> dict:
     }
     if rt["runtime"] == "wsl":
         rec["root_windows"] = to_windows_path(root)  # \\wsl.localhost\<distro>\... 等。無ければ None
+        # 状態 worktree へ逃がしているとき viewer の登録パスは実体（backlog の親）を指す。
+        # root_windows だけでは一致しないので、実効パスの Windows 表記も併記する。
+        effective = cfg.backlog.parent.resolve()
+        rec["effective_root"] = str(effective)
+        rec["effective_root_windows"] = to_windows_path(effective)
+        rec["backlog_windows"] = to_windows_path(cfg.backlog.resolve())
     return rec
 
 

@@ -16,6 +16,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const project = require('./project');
 
 // 終端 status（agent-flow 本体と一致させる）。canceled は人の明示指示による恒久停止。
 // これに含めないと canceled run が「応答なし/実行中」に誤分類され、再投入/削除の可否もずれる。
@@ -771,7 +772,7 @@ function readDaemonStatus(busDir) {
 //     フォールバック（GitBus 分散実行のバスは対象外＝write_daemon_status が書かないため
 //     status.json 自体が存在せず、自然に判定不能へ落ちる）
 // running: true=稼働中 / false=停止 / null=判定不能（ロックはあるが pid を読めない等）
-// via: 'lock'（確定）／'status-sync'（同期経由の推定）／'none'（判定材料なし）
+// via: 'lock'（確定）／'status-local'（同一マシン・WSL含む）／'status-sync'（別ホスト推定）／'none'
 function daemonStatus(busDir, lockDir) {
   const lockPath = daemonLockPath(busDir, lockDir);
   let raw;
@@ -780,8 +781,10 @@ function daemonStatus(busDir, lockDir) {
   } catch {
     const status = readDaemonStatus(busDir);
     if (status) {
+      const sameHost = project.sameMachineStatus(status);
       return {
-        running: status.fresh, pid: status.pid || 0, lockPath, via: 'status-sync',
+        running: status.fresh, pid: status.pid || 0, lockPath,
+        via: sameHost ? 'status-local' : 'status-sync',
         ageSec: Math.round(status.ageSec), nodeId: status.node_id,
         orchestrators: status.orchestrators, workers: status.workers,
       };

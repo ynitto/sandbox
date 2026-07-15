@@ -3260,9 +3260,10 @@ function recToIssue(rec) {
 }
 
 // agent-flow daemon の稼働バッジ。
-//   via='lock'        … 同一ホストのロックファイル（pid 生存）で確定判定
-//   via='status-sync' … state_git（鏡）越しに同期された status.json による推定（同期遅延を許容）
-//   via='none'         … 判定材料なし
+//   via='lock'          … 同一ホストのロックファイル（pid 生存）で確定判定
+//   via='status-local'  … 同一マシン（ホスト一致 or Windows×WSL）の status.json
+//   via='status-sync'   … state_git（鏡）越しに同期された status.json による推定（同期遅延を許容）
+//   via='none'          … 判定材料なし
 function daemonBadge() {
   const d = state.flowDaemon;
   if (!d) return '';
@@ -3277,7 +3278,11 @@ function daemonBadge() {
     if (Number.isFinite(d.orchestrators)) bits.push(`orchestrator ${d.orchestrators}`);
     if (Number.isFinite(d.workers)) bits.push(`worker ${d.workers}`);
     const suffix = bits.length ? `（${bits.join('・')}）` : '';
-    const title = synced ? `別マシンで稼働（最終確認 ${fmtAgoSec(d.ageSec)}）` : 'このマシンで稼働中';
+    const title = synced
+      ? `別マシンで稼働（最終確認 ${fmtAgoSec(d.ageSec)}）`
+      : d.via === 'status-local'
+        ? `このマシンで稼働（最終確認 ${fmtAgoSec(d.ageSec)}）`
+        : 'このマシンで稼働中';
     return `<span class="status-chip st-running" title="${title}">実行エンジン: 稼働中${suffix}</span>`;
   }
   if (d.running === false) {

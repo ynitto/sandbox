@@ -283,7 +283,10 @@ async function runAction(cfg, { dir, action, id, reason, fields, feedback, run }
     throw new Error('resume-run には再開する run-id の指定が必要です');
   }
 
-  if (mode === 'file' || (mode !== 'cli' && project.isProjectRunning(dir))) {
+  // Windows ビュアーが WSL UNC パスを開いているときは、Windows 側の agent-project CLI は
+  // WSL 内の本体と別世界なので、auto でもファイルドロップを優先する。
+  const wslUnc = process.platform === 'win32' && /^\\\\wsl(?:\$|\.localhost)\\/i.test(String(dir || ''));
+  if (mode === 'file' || wslUnc || (mode !== 'cli' && project.isProjectRunning(dir))) {
     const { file } = dropCommand(dir, { action, id, reason: why, fields, feedback, run });
     return {
       output: `${action} ${id}: 指示ファイルを投入しました（稼働中の agent-project が取り込みます）`,
@@ -318,7 +321,8 @@ async function requestReplan(cfg, { dir, reason }) {
   const why = String(reason || '').trim() || 'agent-dashboard から再分解を要求';
   const mode = (cfg.projects && cfg.projects.actionMode) || 'auto';
 
-  if (mode === 'file' || (mode !== 'cli' && project.isProjectRunning(dir))) {
+  const wslUnc = process.platform === 'win32' && /^\\\\wsl(?:\$|\.localhost)\\/i.test(String(dir || ''));
+  if (mode === 'file' || wslUnc || (mode !== 'cli' && project.isProjectRunning(dir))) {
     const { file } = dropCommand(dir, { action: 'replan', reason: why });
     return {
       output: 'charter からの再分解を要求しました（稼働中の agent-project が次パスで取り込みます）',
