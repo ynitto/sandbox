@@ -33,6 +33,12 @@
           </div>
           <div id="project-list"></div>
         </section>
+        <section class="nav-group" data-feature="cowork" aria-labelledby="cowork-group-title">
+          <div class="nav-group-header">
+            <h2 id="cowork-group-title">Cowork</h2>
+          </div>
+          <div id="cowork-list">定期実行・定型業務</div>
+        </section>
         <!-- kiro-loop 制御面の差し込み口（src/features/kiro-loop/）。実装まで非表示。 -->
         <section id="kiro-loop-nav" class="nav-group hidden" data-feature="kiro-loop" aria-labelledby="kiro-loop-group-title" hidden>
           <div class="nav-group-header">
@@ -63,6 +69,7 @@
         <button class="tab" data-tab="needs" data-feature="agent-project">要対応 <span id="needs-badge" class="badge hidden"></span></button>
         <button class="tab" data-tab="flow" data-feature="agent-project">実行</button>
         <button class="tab" data-tab="history" data-feature="agent-project">成果・履歴</button>
+        <button class="tab" data-tab="cowork" data-feature="cowork">Cowork</button>
       </nav>
 
       <section id="content">
@@ -71,9 +78,74 @@
         <div id="tab-needs" class="tabpane" data-feature="agent-project"></div>
         <div id="tab-flow" class="tabpane" data-feature="agent-project"></div>
         <div id="tab-history" class="tabpane" data-feature="agent-project"></div>
+        <div id="tab-cowork" class="tabpane" data-feature="cowork"></div>
       </section>
     </main>
   </div>
+
+
+  <!-- ======== Cowork 作業編集ダイアログ ======== -->
+  <dialog id="dlg-cowork-work" class="wide">
+    <form method="dialog">
+      <h2 id="cowork-work-title">Cowork 作業</h2>
+      <div class="row2">
+        <div class="field">
+          <label>リポジトリ（全体設定で登録済みのフォルダ）</label>
+          <select id="cw-repo"></select>
+        </div>
+        <div class="field">
+          <label>種類</label>
+          <select id="cw-type">
+            <option value="loop">kiro-loop / agent-loop 定期実行</option>
+            <option value="state-machine">statemachine-use 定型業務</option>
+          </select>
+        </div>
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label>名前</label>
+          <input id="cw-name" />
+        </div>
+        <div class="field">
+          <label>スケジュール（定期実行のみ）</label>
+          <input id="cw-schedule" class="mono" placeholder="例: 0 9 * * *" />
+        </div>
+      </div>
+      <div class="field">
+        <label>workflow（statemachine-use の定型業務のみ）</label>
+        <input id="cw-workflow" class="mono" placeholder="例: workflows/release.yaml" />
+      </div>
+      <div class="field">
+        <label>説明</label>
+        <textarea id="cw-description" rows="3"></textarea>
+      </div>
+      <div class="dialog-actions">
+        <button id="btn-cw-cancel" value="cancel">キャンセル</button>
+        <button id="btn-cw-ok" value="default">反映</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ======== Cowork 保存ダイアログ ======== -->
+  <dialog id="dlg-cowork-save">
+    <form method="dialog">
+      <h2>Cowork の変更を保存</h2>
+      <div class="field">
+        <label>ブランチ（空なら現在のブランチ）</label>
+        <input id="cw-save-branch" class="mono" placeholder="例: cowork/config" />
+      </div>
+      <div class="field">
+        <label class="check"><input type="checkbox" id="cw-save-create" /> ブランチを作成 / リセットして切り替える</label>
+      </div>
+      <div class="field">
+        <label class="check"><input type="checkbox" id="cw-save-push" /> リモートへ push する</label>
+      </div>
+      <div class="dialog-actions">
+        <button id="btn-cw-save-cancel" value="cancel">キャンセル</button>
+        <button id="btn-cw-save-ok" value="default">保存</button>
+      </div>
+    </form>
+  </dialog>
 
   <!-- ======== プロジェクト設定ダイアログ ======== -->
   <dialog id="dlg-project-settings" class="wide">
@@ -160,6 +232,28 @@
           placeholder="例:&#10;alpha = /home/me/clones/alpha/agent-flow&#10;beta = C:\clones\beta\agent-flow"
         ></textarea>
       </div>
+      <h3>Cowork（定期実行・定型業務）</h3>
+      <div class="row2">
+        <div class="field">
+          <label>定期実行 provider（将来 agent-loop に差し替え可）</label>
+          <input id="cfg-cowork-loop-provider" class="mono" placeholder="kiro-loop" />
+        </div>
+        <div class="field">
+          <label>定期実行コマンド</label>
+          <input id="cfg-cowork-loop-command" class="mono" placeholder="kiro-loop" />
+        </div>
+      </div>
+      <div class="muted" style="font-size:11px">
+        Cowork の作業一覧は Cowork タブで追加・編集・削除します。各作業はこの全体設定で登録したリポジトリを参照します。
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label>statemachine-use コマンド</label>
+          <input id="cfg-cowork-sm-command" class="mono" placeholder="statemachine-use" />
+        </div>
+        <div class="field"></div>
+      </div>
+
       <h3>Viewer アシスタント</h3>
       <div class="row2">
         <div class="field">

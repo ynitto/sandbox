@@ -1,6 +1,6 @@
 'use strict';
 
-// 制御面分離（base / agent-project / kiro-loop）の配線テスト。
+// 制御面分離（base / agent-project / kiro-loop / cowork）の配線テスト。
 // Electron は起動せず、feature 列挙・preload 合成・互換シムだけを検証する。
 
 const assert = require('assert');
@@ -16,10 +16,10 @@ function test(name, fn) {
   console.log(`ok - ${name}`);
 }
 
-test('features に agent-project と kiro-loop が並ぶ', () => {
+test('features に agent-project / kiro-loop / cowork が並ぶ', () => {
   const features = loadFeatures();
   const ids = features.map((f) => f.id);
-  assert.deepStrictEqual(ids, ['agent-project', 'kiro-loop']);
+  assert.deepStrictEqual(ids, ['agent-project', 'kiro-loop', 'cowork']);
 });
 
 test('各 feature が registerIpc / preloadApi / configDefaults を持つ', () => {
@@ -63,6 +63,25 @@ test('kiro-loop は no-op でチャネルを登録しない', () => {
   assert.deepStrictEqual(Object.keys(loop.preloadApi()), []);
 });
 
+
+test('cowork は定期実行と定型業務 API を登録する', () => {
+  const cowork = loadFeatures().find((f) => f.id === 'cowork');
+  assert.ok(cowork.configDefaults.cowork);
+  assert.strictEqual(cowork.configDefaults.cowork.loopProvider, 'kiro-loop');
+  assert.strictEqual(cowork.configDefaults.cowork.nextLoopProvider, 'agent-loop');
+  const api = cowork.preloadApi();
+  assert.strictEqual(typeof api.coworkOverview, 'function');
+  assert.strictEqual(typeof api.coworkSaveWork, 'function');
+  const calls = [];
+  const overview = api.coworkOverview((channel, args) => {
+    calls.push([channel, args]);
+    return 'ok';
+  });
+  assert.strictEqual(overview(), 'ok');
+  assert.deepStrictEqual(calls, [['cowork:overview', undefined]]);
+  assert.deepStrictEqual(cowork.configDefaults.cowork.items, []);
+});
+
 test('互換シム src/main/project.js が実体へ届く', () => {
   const viaShim = require('../src/main/project');
   const viaReal = require('../src/features/agent-project/main/project');
@@ -80,6 +99,8 @@ test('base / feature の入口ファイルが存在する', () => {
     'features/agent-project/index.js',
     'features/kiro-loop/index.js',
     'features/kiro-loop/README.md',
+    'features/cowork/index.js',
+    'features/cowork/README.md',
   ]) {
     assert.ok(fs.existsSync(path.join(root, rel)), rel);
   }
@@ -89,6 +110,8 @@ test('HTML に data-feature マーカーがある', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'index.html'), 'utf8');
   assert.ok(html.includes('data-feature="agent-project"'));
   assert.ok(html.includes('data-feature="kiro-loop"'));
+  assert.ok(html.includes('data-feature="cowork"'));
+  assert.ok(html.includes('tab-cowork'));
 });
 
 console.log(`\n${passed} tests passed`);
