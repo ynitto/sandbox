@@ -103,7 +103,7 @@ class StateGit:
         p = None
         for i in range(_STATE_GIT_RETRIES):
             p = subprocess.run(["git", "-C", str(self.clone), *args],
-                               capture_output=True, text=True, env=self._env())
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._env())
             if p.returncode == 0 or not self._is_lock_error(p):
                 break
             if self._remove_stale_locks() == 0 and i < _STATE_GIT_RETRIES - 1:
@@ -156,7 +156,7 @@ class StateGit:
         # blob:none で履歴の実体を引かない（非対応サーバはフィルタ無しへフォールバック）
         for extra in (["--filter=blob:none"], []):
             r = subprocess.run(["git", "clone", "--no-checkout", *extra, self.remote,
-                                str(self.clone)], capture_output=True, text=True)
+                                str(self.clone)], capture_output=True, text=True, encoding="utf-8", errors="replace")
             if r.returncode == 0:
                 break
             shutil.rmtree(self.clone, ignore_errors=True)
@@ -369,7 +369,7 @@ class DirectStateGit:
 
     def _git(self, *args: str):
         return subprocess.run(["git", "-C", str(self.root), *args],
-                              capture_output=True, text=True, env=self._env())
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._env())
 
     def _branch(self) -> str:
         # symbolic-ref は unborn ブランチ（空リポジトリの clone 直後）でも現在ブランチ名を返す
@@ -487,16 +487,16 @@ class DirectStateGit:
             if not existing:
                 return None
             r = subprocess.run(["git", "-C", str(self.root), "add", "--", *existing],
-                               capture_output=True, text=True, env=env)
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
             if r.returncode != 0:
                 return None
             tree = subprocess.run(["git", "-C", str(self.root), "write-tree"],
-                                  capture_output=True, text=True, env=env).stdout.strip()
+                                  capture_output=True, text=True, encoding="utf-8", errors="replace", env=env).stdout.strip()
             if not tree:
                 return None
             r = subprocess.run(["git", "-C", str(self.root), "commit-tree", tree,
                                 "-m", self._commit_msg()],
-                               capture_output=True, text=True, env=env)
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
             new = r.stdout.strip()
             if r.returncode != 0 or not new:
                 return None
@@ -571,7 +571,7 @@ class DirectStateGit:
 
             def _wgit(*args: str):           # pathspec が root 相対で解決されるよう base を cwd にする
                 return subprocess.run(["git", "-C", str(base), *args],
-                                      capture_output=True, text=True, env=self._env())
+                                      capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._env())
 
             for rel in targets:              # 現在のルートの内容を worktree へ写す（削除も反映）
                 src = self.root / rel
@@ -609,7 +609,7 @@ class DirectStateGit:
             return []
         rel = os.path.relpath(root, top)
         r = subprocess.run(["git", "-C", top, "status", "--porcelain", "--untracked-files=no"],
-                           capture_output=True, text=True, env=self._env())
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._env())
         out: list[str] = []
         for line in r.stdout.splitlines():
             path = line[3:].split(" -> ")[-1].strip().strip('"')
@@ -630,7 +630,7 @@ class DirectStateGit:
             return
         for args in (("reset", "-q", "HEAD", "--"), ("checkout", "-q", "--")):
             subprocess.run(["git", "-C", top, *args, *paths],
-                           capture_output=True, text=True, env=self._env())
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._env())
 
     def _rebasing(self) -> bool:
         """rebase が進行中か。worktree では .git が **ファイル** なので <root>/.git/rebase-merge を
@@ -651,7 +651,7 @@ class DirectStateGit:
 
     def _top_git(self, *args: str, env: "dict | None" = None):
         return subprocess.run(["git", "-C", self._top(), *args],
-                              capture_output=True, text=True, env=env or self._env())
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", env=env or self._env())
 
     def _merge_union(self, path: str,
                      stages: "dict[int, tuple[str, str]]") -> "str | None":
@@ -1045,7 +1045,7 @@ def _git_toplevel(root: Path) -> bool:
     if not (root / ".git").exists():
         return False
     r = subprocess.run(["git", "-C", str(root), "rev-parse", "--show-toplevel"],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
     return r.returncode == 0 and os.path.realpath(r.stdout.strip()) == os.path.realpath(str(root))
 
 

@@ -91,11 +91,11 @@ class StateGit:
         for key, val in _DURABLE_GIT_CONFIG:
             try:
                 cur = subprocess.run(["git", "-C", cwd, "config", "--local", "--get", key],
-                                     capture_output=True, text=True, env=self._env())
+                                     capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._env())
                 if cur.returncode == 0 and cur.stdout.strip() == val:
                     continue
                 subprocess.run(["git", "-C", cwd, "config", "--local", key, val],
-                               capture_output=True, text=True, env=self._env())
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._env())
             except OSError:
                 pass
 
@@ -105,7 +105,7 @@ class StateGit:
             if not self.remote or not os.path.isdir(self.remote):
                 return
             probe = subprocess.run(["git", "-C", self.remote, "rev-parse", "--git-dir"],
-                                   capture_output=True, text=True, env=self._env())
+                                   capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._env())
             if probe.returncode == 0:
                 self._apply_durable_writes(self.remote)
         except OSError:
@@ -116,7 +116,7 @@ class StateGit:
         try:
             p = subprocess.run(
                 ["git", "-C", self.clone, "fsck", "--connectivity-only", "--no-dangling",
-                 "--no-reflogs"], capture_output=True, text=True, env=self._env())
+                 "--no-reflogs"], capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._env())
         except OSError:
             return False
         return p.returncode == 0 and not self._is_corrupt_error(p)
@@ -125,7 +125,7 @@ class StateGit:
         p = None
         for i in range(_STATE_GIT_RETRIES):
             p = subprocess.run(["git", "-C", self.clone, *args],
-                               capture_output=True, text=True, env=self._env())
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._env())
             if p.returncode == 0 or not self._is_lock_error(p):
                 break
             if self._remove_stale_locks() == 0 and i < _STATE_GIT_RETRIES - 1:
@@ -185,7 +185,7 @@ class StateGit:
         # blob:none で履歴の実体を引かない（非対応サーバはフィルタ無しへフォールバック）
         for extra in (["--filter=blob:none"], []):
             r = subprocess.run(["git", "clone", "--no-checkout", *extra, self.remote, self.clone],
-                               capture_output=True, text=True)
+                               capture_output=True, text=True, encoding="utf-8", errors="replace")
             if r.returncode == 0:
                 break
             shutil.rmtree(self.clone, ignore_errors=True)

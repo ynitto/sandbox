@@ -480,7 +480,7 @@ def run_intake(cfg: "Config") -> "list[Task]":
     _INTAKE_LAST[key] = now
     try:
         p = subprocess.run(cfg.intake_cmd, shell=True, cwd=str(cfg.workdir),
-                           capture_output=True, text=True, timeout=cfg.verify_timeout)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=cfg.verify_timeout)
     except (OSError, subprocess.SubprocessError) as e:
         append_journal(cfg.journal, f"intake 実行失敗: {e}")
         return []

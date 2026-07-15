@@ -27,12 +27,12 @@ def project_flow_remote(cfg: "Config") -> "tuple[str, str, float] | None":
     root = cfg.backlog.parent
     if _direct_state_git_ok(cfg):
         r = subprocess.run(["git", "-C", str(root), "remote", "get-url", "origin"],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
         remote = r.stdout.strip() if r.returncode == 0 else ""
         if not remote:
             return None
         b = subprocess.run(["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
         branch = b.stdout.strip() or "main"
         return remote, branch, cfg.state_git_interval
     if getattr(cfg, "state_git", None):

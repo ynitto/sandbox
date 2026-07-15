@@ -18,7 +18,7 @@ def _git_toplevel_of(p: Path) -> "Path | None":
     """p を含む git 作業ツリーのトップ（git 管理外なら None）。"""
     try:
         r = subprocess.run(["git", "-C", str(p), "rev-parse", "--show-toplevel"],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
     except (OSError, subprocess.SubprocessError):
         return None
     return Path(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
@@ -37,11 +37,11 @@ def _sparse_state_worktree(wt: Path, rel: str) -> bool:
     ないので（全部チェックアウトされるだけ）、黙って False を返す。"""
     try:
         i = subprocess.run(["git", "-C", str(wt), "sparse-checkout", "init", "--cone"],
-                           capture_output=True, text=True, timeout=120)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
         if i.returncode != 0:
             return False                              # 古い git 等 → 従来どおり全チェックアウト
         s = subprocess.run(["git", "-C", str(wt), "sparse-checkout", "set", rel],
-                           capture_output=True, text=True, timeout=180)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
         return s.returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
@@ -61,7 +61,7 @@ def _ensure_state_worktree(top: Path, wt: Path, branch: str, rel: str = "") -> b
         # --no-checkout で骨だけ作り、sparse を効かせてから中身を出す（一度も全展開しない）
         add = ["git", "-C", str(top), "worktree", "add", "--no-checkout"]
         add += ([str(wt), branch] if has_branch else ["-b", branch, str(wt)])
-        r = subprocess.run(add, capture_output=True, text=True, timeout=180)
+        r = subprocess.run(add, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
     except (OSError, subprocess.SubprocessError):
         return False
     if r.returncode != 0:
@@ -136,7 +136,7 @@ def _state_changed(root: Path, names) -> bool:
     """worktree の未コミット変更に names 由来のものが含まれるか。"""
     try:
         r = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--", *names],
-                           capture_output=True, text=True, timeout=60)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
     except (OSError, subprocess.SubprocessError):
         return False
     return r.returncode == 0 and bool(r.stdout.strip())
@@ -145,7 +145,7 @@ def _state_changed(root: Path, names) -> bool:
 def _git_line(cwd: Path, *args: str, env=None) -> "str | None":
     """git を実行して stdout を返す（失敗は None）。バックアップ経路はここで失敗を吸収する。"""
     try:
-        r = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True,
+        r = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
                            timeout=120, env=env)
     except (OSError, subprocess.SubprocessError):
         return None
@@ -378,14 +378,14 @@ def commit_state(cfg: "Config", force: bool = False) -> bool:
                 ":(exclude,glob)**/.state-git*", ":(exclude,glob).state-git*"]
     try:
         add = subprocess.run(["git", "-C", str(root), "add", "-A", "--", *pathspec],
-                             capture_output=True, text=True, timeout=120)
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
         if add.returncode != 0:
             return False
         if subprocess.run(["git", "-C", str(root), "diff", "--cached", "--quiet", "--",
                            *pathspec], capture_output=True, timeout=60).returncode == 0:
             return False                   # ステージに何も乗らなかった
         c = subprocess.run(["git", "-C", str(root), "commit", "-q", "-m", msg, "--", *pathspec],
-                           capture_output=True, text=True, timeout=120)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
         if c.returncode != 0:
             return False
         _last_state_commit = time.time()

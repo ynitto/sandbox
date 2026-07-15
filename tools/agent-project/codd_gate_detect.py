@@ -66,7 +66,7 @@ def get_version(
     「わからない」を「大丈夫」に丸めない（d1 の一貫方針）。
     """
     try:
-        proc = run([*binary, "--version"], capture_output=True, text=True, timeout=timeout)
+        proc = run([*binary, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return None
     if proc.returncode != 0:
@@ -123,7 +123,7 @@ def detect_capabilities(
 
 def _list_subcommands(binary: "list[str]", run=subprocess.run, timeout: int = PROBE_TIMEOUT) -> "set[str]":
     try:
-        proc = run([*binary, "--help"], capture_output=True, text=True, timeout=timeout)
+        proc = run([*binary, "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return set()
     if proc.returncode != 0:
@@ -136,7 +136,7 @@ def _subcommand_supports_flag(
     binary: "list[str]", subcommand: str, flag: str, run=subprocess.run, timeout: int = PROBE_TIMEOUT
 ) -> bool:
     try:
-        proc = run([*binary, subcommand, "--help"], capture_output=True, text=True, timeout=timeout)
+        proc = run([*binary, subcommand, "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return False
     return proc.returncode == 0 and flag in proc.stdout

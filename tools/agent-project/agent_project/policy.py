@@ -196,7 +196,7 @@ def path_protected(path: str, patterns: "list[str]") -> "str | None":
 def _git_out(workdir: "Path", *args: str, timeout: float = 30) -> str:
     try:
         r = subprocess.run(["git", "-C", str(workdir), *args],
-                           capture_output=True, text=True, timeout=timeout)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
         return r.stdout if r.returncode == 0 else ""
     except (OSError, subprocess.SubprocessError):
         return ""

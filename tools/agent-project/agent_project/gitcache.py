@@ -54,7 +54,7 @@ def _cache_lock(url: str):
 
 def _git_cache(cache: str, *args: str, timeout: float = 600):
     return subprocess.run(["git", "-C", cache, *args],
-                          capture_output=True, text=True, timeout=timeout)
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
 
 
 def _is_cache_valid(cache: str) -> bool:
@@ -74,7 +74,7 @@ def _mirror_clone(url: str, cache: str) -> bool:
                 ["git", "clone", "--mirror", url, cache]]
     for cmd in attempts:
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
         except (OSError, subprocess.SubprocessError):
             r = None
         if r is not None and r.returncode == 0:
@@ -189,7 +189,7 @@ def _clone_repo_shallow(url: str, branch: str, dest: str, timeout: float = 300) 
         cmd += ["--branch", branch]
     cmd += [url, dest]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     except (OSError, subprocess.SubprocessError) as e:
         raise RuntimeError(str(e)) from e
     if r.returncode != 0:

@@ -41,7 +41,7 @@ def remote_branch_sha(repo: str, branch: str, runner=None) -> "str | None":
     """git ls-remote でリモート branch の先頭コミット SHA を得る（取得不能なら None）。"""
     if not repo:
         return None
-    run = runner or (lambda c: subprocess.run(c, capture_output=True, text=True, timeout=60))
+    run = runner or (lambda c: subprocess.run(c, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60))
     try:
         r = run(["git", "ls-remote", repo, f"refs/heads/{branch}"])
     except Exception:  # noqa: BLE001  git 不在・ネットワーク不通・タイムアウト
@@ -140,7 +140,7 @@ def check_update(cfg: "Config", runner=None) -> dict:
 def sparse_checkout_tool(repo: str, branch: str, subdir: str, dest: str, runner=None) -> str:
     """repo の branch から subdir 以下だけを dest へ sparse-checkout し dest/subdir のパスを返す。
     無関係ファイルを取得しないため --no-checkout + blob フィルタ + sparse-checkout を使う。"""
-    run = runner or (lambda c, **k: subprocess.run(c, capture_output=True, text=True,
+    run = runner or (lambda c, **k: subprocess.run(c, capture_output=True, text=True, encoding="utf-8", errors="replace",
                                                    timeout=600, **k))
     os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
     r = run(["git", "clone", "--no-checkout", "--depth", "1", "--filter=blob:none",
@@ -168,7 +168,7 @@ def run_installer(tool_dir: str, installer: str = "install.sh", runner=None) -> 
     path = os.path.join(tool_dir, installer)
     if not os.path.isfile(path):
         return False, f"インストーラが見つかりません: {path}"
-    run = runner or (lambda c, **k: subprocess.run(c, capture_output=True, text=True,
+    run = runner or (lambda c, **k: subprocess.run(c, capture_output=True, text=True, encoding="utf-8", errors="replace",
                                                    timeout=600, **k))
     try:
         r = run(["bash", path], cwd=tool_dir)

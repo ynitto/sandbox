@@ -298,7 +298,7 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
     try:
         # Popen＋ポーリング: subprocess.run だと timeout まで mid-revise を検知できない。
         proc = subprocess.Popen(cmd, cwd=str(cfg.workdir),
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
     except FileNotFoundError as e:
         task.drop("flow_run", "flow_loc")
         persist_task(cfg, task)
@@ -502,7 +502,7 @@ def _flow_result_once(cfg: "Config", use_git: bool, run_id: str) -> "tuple[bool,
     base = _kf_base(cfg, use_git)
     try:
         res = subprocess.run(base + ["result", "--run-id", run_id, "--json"],
-                             cwd=str(cfg.workdir), timeout=60, capture_output=True, text=True)
+                             cwd=str(cfg.workdir), timeout=60, capture_output=True, text=True, encoding="utf-8", errors="replace")
         data = json.loads(res.stdout or "{}")
     except (subprocess.SubprocessError, json.JSONDecodeError, FileNotFoundError, ValueError):
         return (False, False, "")
@@ -532,7 +532,7 @@ def _act_offload(task: Task, cfg: "Config", use_git: bool) -> "tuple":
         try:
             sub = subprocess.run(base + ["--run-id", run_id, "submit", build_request(task, cfg)]
                                  + inherit, cwd=str(cfg.workdir),
-                                 timeout=60, capture_output=True, text=True)
+                                 timeout=60, capture_output=True, text=True, encoding="utf-8", errors="replace")
         except (subprocess.SubprocessError, FileNotFoundError) as e:
             return (False, f"submit 失敗: {e}")
         if sub.returncode != 0:
@@ -557,7 +557,7 @@ def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
     try:
         sub = subprocess.run(base + ["--run-id", run_id, "submit", build_request(task, cfg)] + inherit,
                              cwd=str(cfg.workdir),
-                             timeout=60, capture_output=True, text=True)
+                             timeout=60, capture_output=True, text=True, encoding="utf-8", errors="replace")
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         return (False, f"submit 失敗: {e}")
     if sub.returncode != 0:
@@ -578,7 +578,7 @@ def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
     while deadline is None or time.time() < deadline:
         try:
             res = subprocess.run(base + ["result", "--run-id", run_id, "--json"],
-                                cwd=str(cfg.workdir), timeout=60, capture_output=True, text=True)
+                                cwd=str(cfg.workdir), timeout=60, capture_output=True, text=True, encoding="utf-8", errors="replace")
             data = json.loads(res.stdout)
             if data.get("done"):
                 # done=True は終端（done/failed/canceled）を意味する。failed / canceled は act
@@ -669,7 +669,7 @@ def read_reject_guidance(cfg: "Config", use_git: bool, run_id: str = "") -> str:
         cmd += ["--run-id", rid]
     try:
         proc = subprocess.run(cmd, cwd=str(cfg.workdir), timeout=60,
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, encoding="utf-8", errors="replace")
         data = json.loads(proc.stdout or "{}")
     except (subprocess.SubprocessError, json.JSONDecodeError, FileNotFoundError):
         return ""
@@ -699,7 +699,7 @@ def read_result_notes(cfg: "Config", use_git: bool, run_id: str = "") -> "list[d
         cmd += ["--run-id", rid]
     try:
         proc = subprocess.run(cmd, cwd=str(cfg.workdir), timeout=60,
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, encoding="utf-8", errors="replace")
         data = json.loads(proc.stdout or "{}")
     except (subprocess.SubprocessError, json.JSONDecodeError, FileNotFoundError):
         return []

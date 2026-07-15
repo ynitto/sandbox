@@ -119,11 +119,11 @@ class GitBus(Bus):
         for key, val in _DURABLE_GIT_CONFIG:
             try:
                 cur = subprocess.run(["git", "-C", cwd, "config", "--local", "--get", key],
-                                     capture_output=True, text=True, env=self._git_env())
+                                     capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._git_env())
                 if cur.returncode == 0 and cur.stdout.strip() == val:
                     continue  # 既に設定済み（冪等・書き込み lock を無駄に取らない）
                 subprocess.run(["git", "-C", cwd, "config", "--local", key, val],
-                               capture_output=True, text=True, env=self._git_env())
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._git_env())
             except OSError:
                 pass
 
@@ -135,7 +135,7 @@ class GitBus(Bus):
             if not self.remote or not os.path.isdir(self.remote):
                 return
             probe = subprocess.run(["git", "-C", self.remote, "rev-parse", "--git-dir"],
-                                   capture_output=True, text=True, env=self._git_env())
+                                   capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._git_env())
             if probe.returncode == 0:
                 self._apply_durable_writes(self.remote)
         except OSError:
@@ -148,7 +148,7 @@ class GitBus(Bus):
         try:
             p = subprocess.run(
                 ["git", "-C", self.workdir, "fsck", "--connectivity-only", "--no-dangling",
-                 "--no-reflogs"], capture_output=True, text=True, env=self._git_env())
+                 "--no-reflogs"], capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._git_env())
         except OSError:
             return False
         # fsck 自体が動かない（git dir 破損等）ケースも破損として扱い作り直させる。
@@ -223,7 +223,7 @@ class GitBus(Bus):
     def _git(self, args, check=True):
         p = None
         for i in range(GIT_LOCK_RETRIES):
-            p = subprocess.run(["git", "-C", self.workdir] + args, capture_output=True, text=True,
+            p = subprocess.run(["git", "-C", self.workdir] + args, capture_output=True, text=True, encoding="utf-8", errors="replace",
                                env=self._git_env())
             if p.returncode == 0 or not self._is_lock_error(p):
                 break
@@ -271,12 +271,12 @@ class GitBus(Bus):
         """blob フィルタ付き → 非対応サーバ向けフォールバックの順でクローンを 1 回試みる。"""
         r = subprocess.run(
             ["git", "clone", "--no-checkout", "--filter=blob:none", self.remote, self.workdir],
-            capture_output=True, text=True)
+            capture_output=True, text=True, encoding="utf-8", errors="replace")
         if r.returncode != 0:
             # blob filter 非対応サーバ向けフォールバック（フィルタ版が残した部分クローンを消してから）
             self._reset_clone_dir()
             r = subprocess.run(["git", "clone", "--no-checkout", self.remote, self.workdir],
-                               capture_output=True, text=True)
+                               capture_output=True, text=True, encoding="utf-8", errors="replace")
         return r
 
     def _clone_with_retry(self):

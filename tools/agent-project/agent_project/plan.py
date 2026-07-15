@@ -20,7 +20,7 @@ def _repo_head_sha(url: str, branch: str = "") -> "str | None":
         return remote_branch_sha(url, branch)
     try:
         r = subprocess.run(["git", "ls-remote", url, "HEAD"],
-                           capture_output=True, text=True, timeout=60)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
     except (OSError, subprocess.SubprocessError):
         return None
     out = (r.stdout or "").split()

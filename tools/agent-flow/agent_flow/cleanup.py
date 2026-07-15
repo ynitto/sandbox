@@ -25,7 +25,7 @@ def _pid_alive(pid: int) -> bool:
     if os.name == "nt":  # pragma: no cover — Windows のみ
         try:
             p = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
-                               capture_output=True, text=True, timeout=10)
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
             return f'"{pid}"' in (p.stdout or "")
         except (OSError, subprocess.SubprocessError):
             return True

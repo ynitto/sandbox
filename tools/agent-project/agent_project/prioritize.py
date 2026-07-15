@@ -318,7 +318,7 @@ def _run_agent_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
     env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", **((plug or {}).get("env") or {})}
     timeout = (plug or {}).get("timeout") or (_AGENT_TIMEOUT if _AGENT_TIMEOUT > 0 else None)
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, input=stdin_text,
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", input=stdin_text,
                               timeout=timeout, env=env)
         if proc.returncode != 0:
             raise RuntimeError(_agent_failure(cmd[0], proc.returncode, proc.stdout, proc.stderr))

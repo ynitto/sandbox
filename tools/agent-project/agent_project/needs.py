@@ -539,7 +539,7 @@ def notify(cfg: "Config", tasks, reasons: dict, newly_blocked: set, budget_stop:
     print("\n--- 通知（要対応）---\n" + digest, flush=True)
     if cfg.notify_cmd:
         try:
-            subprocess.run(cfg.notify_cmd, shell=True, input=digest, text=True,
+            subprocess.run(cfg.notify_cmd, shell=True, input=digest, text=True, encoding="utf-8", errors="replace",
                            cwd=str(cfg.workdir), timeout=60)
         except Exception as e:  # noqa: BLE001
             print(f"[warn] notify-cmd 失敗: {e}", file=sys.stderr)
