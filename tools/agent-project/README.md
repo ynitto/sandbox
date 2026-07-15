@@ -234,6 +234,14 @@ agent-project enqueue --title "概要見出しを追加"       --accept "README 
   `regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV" --repos <root>/repos.json'`（done 確定前の
   差分ゲート）＋ `intake_cmd: 'codd-gate tasks --debt --repos <root>/repos.json'`（負債を修復タスクとして
   自動返済）＋ charter acceptance に `codd-gate verify --debt --max-broken N …`（受入の負債ラチェット）。
+  上記2行は**手書きしなくてもよい**: `<root>/repos.json` が実在すれば、起動時の Config 生成
+  （`build_config`）が codd-gate の実在・バージョン・repos.json 互換性を自動検出し、`regression_cmd`/
+  `intake_cmd` が未設定のときだけメモリ上で自動的に埋める（既に手書き・CLI 指定済みの値は上書き
+  しない）。`.agent/agent-project.yaml` ファイル自体は書き換えない（人専有ファイルのため）ので、
+  ファイルへ恒久的に書き込みたい場合は `python3 codd_gate_regression.py --config
+  .agent/agent-project.yaml` を実行する。codd-gate 未検出・非互換の環境では両者とも no-op に縮退し、
+  上記2行は設定されないまま（詳細は
+  [`codd-gate-design.md`](../../docs/designs/codd-gate-design.md) §4.1「自動検出レイヤ」）。
 
 ### policy.md（人による上書き・per-project）
 

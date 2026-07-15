@@ -1,21 +1,21 @@
 # docs/designs 設計書 索引
 
-`docs/designs/` 配下の設計書 23 件をカテゴリ別に整理し、読む順序を示す索引。
+`docs/designs/` 配下の設計書 24 件をカテゴリ別に整理し、読む順序を示す索引。
 
 ## まず読むもの — 主要 4 設計
 
-エンジン（agent-project / agent-flow）、ドキュメント一貫性ゲート（codd-gate）、名称移行方針（agent-tools-rename）の4件が全体の骨格。ここから読み始めるとコードベース全体の見取り図が掴める。
+エンジン（agent-project / agent-flow）、ドキュメント一貫性ゲート（codd-gate）、名称移行方針（agent-tools-rename）の4件が全体の骨格。ここから読み始めるとコードベース全体の見取り図が掴める。基本の読む順序は 1 → 2 → 3（制御層 → 実行層 → 品質ゲートの順に責務が積み上がる）。`kiro-*` と `agent-*` の併存に迷ったら、先に 4 を読むと名称の由来と移行状況が先にわかる。
 
 1. [`agent-project-design.md`](./agent-project-design.md) — 単一プロジェクトのバックログを自律的に優先順位付け・実行・検証・収束させる制御層の設計正典。3層2ループ構成（project 上位ループ／run 正準ループ／agent-flow 実行層）を地図として示す。
 2. [`agent-flow-design.md`](./agent-flow-design.md) — git 共有バス上でタスクグラフを動的生成し複数ワーカーへ分散実行する Dynamic Workflow 基盤の設計書。
-3. [`codd-gate-design.md`](./codd-gate-design.md) — ドキュメント・コード・テストの一貫性を「受け入れ前ゲート」と「負債棚卸し→タスク化」で維持する決定的ツールの設計正典。agent-project に依存しない独立ツールで、結合点は `schemas/` の共通データ契約のみ。
+3. [`codd-gate-design.md`](./codd-gate-design.md) — ドキュメント・コード・テストの一貫性を「受け入れ前ゲート」と「負債棚卸し→タスク化」で維持する決定的ツールの設計正典。agent-project 本体は無改造のまま、`schemas/` の共通データ契約と agent-project 側の汎用フック契約（E1〜E3）の2点で連携する独立ツール。
 4. [`agent-tools-rename-design.md`](./agent-tools-rename-design.md) — 旧 `kiro-*` 系統を `agent-*` へクローン移行・改称する方針と新旧名称対応表。agent-project/agent-flow/agent-dashboard の移行は完了、`kiro-loop → agent-loop` の移行のみ未了で、現行の指針であり続けている（詳細は次節「ループ拡張」の注記）。
 
 > **補足**: agent-dashboard の画面設計は主に `docs/plans/2026-07-14-agent-dashboard-*-design.md` 等に分散。本ディレクトリには制御面分離の正典 [`agent-dashboard-feature-split-design.md`](./agent-dashboard-feature-split-design.md) を置く。
 
 ---
 
-## カテゴリ別索引（全 23 件）
+## カテゴリ別索引（全 24 件）
 
 ### 1. 主要 4 設計
 
@@ -63,4 +63,4 @@
 
 ## 前提・スコープ外の事項
 
-本 README は `docs/designs/` 配下の実ファイル一覧（23件、実在確認・漏れ/幽霊ファイルなしを確認済み）を基準に作成した。
+本 README は `docs/designs/` 配下の実ファイル一覧（24件、実在確認・漏れ/幽霊ファイルなしを確認済み）を基準に作成した。

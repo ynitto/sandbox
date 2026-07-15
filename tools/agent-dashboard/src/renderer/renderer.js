@@ -1,6 +1,6 @@
 'use strict';
 
-/* global api */
+/* global api, Diff2HtmlUI */
 
 const $ = (id) => document.getElementById(id);
 
@@ -2723,33 +2723,32 @@ function deliveryRoleLabel(role) {
 
 function renderDeliveryRepo(entry, idx) {
   const role = deliveryRoleLabel(entry.role);
-  const total = entry.files_total || (entry.files || []).length;
   const files = entry.files || [];
   const mr = entry.mr_url || '';
-  // ローカル差分は解決済み ref があるときだけ（branch 名だけでは fetch 失敗時に誤誘導する）
-  const canDiff = Boolean(entry.path && entry.base && entry.ref && entry.role !== 'reference');
+  // 解決済み ref、または branch 指定のない現在の作業ツリーだけをローカル表示する。
+  // branch 名だけでは fetch 失敗時に誤誘導するため表示しない。
+  const canDiff = Boolean(
+    entry.path && (entry.ref || !entry.branch) && entry.role !== 'reference'
+  );
   const unresolved = entry.role !== 'reference' && entry.branch && !entry.ref;
   const fileBtns = files
-    .slice(0, 40)
     .map((f) => {
       const abs = entry.path ? `${String(entry.path).replace(/[/\\]$/, '')}/${f}` : '';
       const openBtn = abs
-        ? `<button data-open="${esc(abs)}" title="${esc(abs)}">開く</button>`
+        ? `<button class="delivery-file-open" data-open="${esc(abs)}" title="エディタで開く: ${esc(abs)}">開く</button>`
         : '';
       const diffBtn = canDiff
-        ? `<button data-delivery-diff="${esc(idx)}" data-file="${esc(f)}">差分</button>`
+        ? `<button class="delivery-file-button" data-delivery-file data-delivery-diff="${esc(idx)}" data-file="${esc(f)}" aria-selected="false" title="${esc(f)} の差分を表示"><code>${esc(f)}</code></button>`
         : '';
-      return `<li><code>${esc(f)}</code> ${openBtn}${diffBtn}</li>`;
+      return `<li>${diffBtn || `<code class="delivery-file-label">${esc(f)}</code>`}${openBtn}</li>`;
     })
     .join('');
-  const more =
-    total > files.length ? `<li class="muted">…他 ${total - files.length} 件</li>` : '';
   return `<section class="delivery-repo" data-delivery-idx="${esc(idx)}">
     <header class="delivery-repo-head">
       <h3>${esc(entry.name || 'repo')} <span class="muted">（${esc(role)}）</span></h3>
       <div class="row">
         ${mr ? `<button class="primary-inline" data-delivery-mr="${esc(mr)}">GitLab MR を開く</button>` : ''}
-        ${canDiff ? `<button data-delivery-diff="${esc(idx)}" data-file="">ブランチ差分</button>` : ''}
+        ${canDiff ? `<button data-delivery-diff="${esc(idx)}" data-file="">リポジトリ全体</button>` : ''}
       </div>
     </header>
     <div class="muted delivery-repo-meta">
@@ -2763,20 +2762,24 @@ function renderDeliveryRepo(entry, idx) {
         ? '<p class="muted">参照リポジトリです。成果差分は書込先を確認してください。</p>'
         : unresolved
           ? '<p class="muted">作業ブランチの ref をローカルで解決できていません。MR があればそちらで差分を確認してください。</p>'
-        : files.length || total
-          ? `<ul class="delivery-files">${fileBtns}${more}</ul>`
+        : files.length
+          ? `<ul class="delivery-files">${fileBtns}</ul>`
           : '<p class="muted">変更ファイルはありません。</p>'
     }
     ${entry.diff_cmd ? `<pre class="mono delivery-cmd">${esc(entry.diff_cmd)}</pre>` : ''}
   </section>`;
 }
 
-function openDeliveryReview(needId) {
+async function openDeliveryReview(needId) {
   const need = state.project && state.project.needs.find((item) => item.id === needId);
   if (!need) return toast('要対応項目が見つかりません');
-  const entries = need.delivery && need.delivery.length ? need.delivery : [];
+  const rawEntries = need.delivery && need.delivery.length ? need.delivery : [];
   const mrs = need.mrUrls && need.mrUrls.length ? need.mrUrls : need.mrUrl ? [need.mrUrl] : [];
   $('delivery-review-title').textContent = `検収物を確認 — ${needDisplayTitle(need)}`;
+  $('delivery-review-body').innerHTML = '<p class="muted">変更ファイル一覧を取得しています…</p>';
+  if (!$('dlg-delivery-review').open) $('dlg-delivery-review').showModal();
+  const entries = await hydrateDeliveryEntries(rawEntries);
+  if (!$('dlg-delivery-review').open) return;
   const mrBlock = mrs.length
     ? `<section class="delivery-mr-banner">
         <p>GitLab 上で差分を確認できます（gitlab executor / タスク MR）。</p>
@@ -2800,15 +2803,42 @@ function openDeliveryReview(needId) {
   const allDiffs = canShowAllDiffs
     ? `<div class="delivery-review-toolbar">
         <button class="primary-inline" data-delivery-all-diff>すべての差分を表示</button>
-        <span class="muted">変更ファイル一覧が省略されていても、リポジトリの差分全体を確認できます。</span>
       </div>`
     : '';
   $('delivery-review-body').innerHTML = `${mrBlock}
-    ${allDiffs}
-    <div class="delivery-repos">${repos}</div>
-    <pre id="delivery-diff-view" class="mono delivery-diff-view hidden" tabindex="0" aria-live="polite"></pre>`;
-  wireDeliveryReview($('dlg-delivery-review'), need);
-  $('dlg-delivery-review').showModal();
+    <div class="delivery-review-layout">
+      <aside class="delivery-file-panel" aria-label="変更ファイル">
+        <div class="delivery-file-panel-title">
+          <strong>変更ファイル</strong>
+          <span class="muted">${entries.reduce((n, entry) => n + Number(entry.files_total || (entry.files || []).length), 0)}件</span>
+        </div>
+        ${allDiffs}
+        <div class="delivery-repos">${repos}</div>
+      </aside>
+      <section class="delivery-diff-panel" aria-label="ファイル差分">
+        <header class="delivery-diff-head">
+          <strong id="delivery-diff-title">差分を表示するファイルを選択してください</strong>
+          <span class="muted">左右比較</span>
+        </header>
+        <div id="delivery-diff-view" class="delivery-diff-view" tabindex="0" aria-live="polite"></div>
+        <footer class="delivery-review-actions">
+          <h3>要確認コメント・操作</h3>
+          ${need.decided || isNeedSent(need)
+            ? '<p class="muted">この要確認項目には回答済みです。</p>'
+            : needActionsHtml(need)}
+        </footer>
+      </section>
+    </div>`;
+  wireDeliveryReview($('dlg-delivery-review'), { ...need, delivery: entries });
+  const reviewInput = $('dlg-delivery-review').querySelector('.delivery-review-actions .need-input');
+  if (reviewInput) {
+    reviewInput.value = state.needsDrafts[need.id] || '';
+    reviewInput.addEventListener('input', () => {
+      state.needsDrafts[need.id] = reviewInput.value;
+    });
+  }
+  const firstFile = $('dlg-delivery-review').querySelector('[data-delivery-file]');
+  if (firstFile) firstFile.click();
 }
 
 function deliveryDiffRequest(entry, file = '') {
@@ -2821,6 +2851,53 @@ function deliveryDiffRequest(entry, file = '') {
   };
 }
 
+function isDeliveryArtifactFile(file) {
+  return !/(^|\/)\.agent-project\//.test(String(file || '').replace(/\\/g, '/'));
+}
+
+async function hydrateDeliveryEntries(entries) {
+  return Promise.all((entries || []).map(async (entry) => {
+    const fallbackFiles = (entry.files || []).filter(isDeliveryArtifactFile);
+    const fallback = { ...entry, files: fallbackFiles, files_total: fallbackFiles.length };
+    const canLoad = entry.role !== 'reference' && entry.path && (entry.ref || !entry.branch);
+    if (!canLoad) return fallback;
+    try {
+      const result = await api.gitDiff(deliveryDiffRequest(entry));
+      const files = (result.files || []).filter(isDeliveryArtifactFile);
+      return { ...entry, files, files_total: files.length };
+    } catch (err) {
+      uiLog('delivery file list fallback', entry.name || 'repo', err && err.message ? err.message : err);
+      return fallback;
+    }
+  }));
+}
+
+function renderDeliveryDiff(diffText) {
+  const view = $('delivery-diff-view');
+  view.replaceChildren();
+  if (!diffText) {
+    view.textContent = '(差分なし)';
+    return;
+  }
+  if (typeof Diff2HtmlUI !== 'function') {
+    const fallback = document.createElement('pre');
+    fallback.className = 'mono delivery-diff-fallback';
+    fallback.textContent = diffText;
+    view.appendChild(fallback);
+    return;
+  }
+  const ui = new Diff2HtmlUI(view, diffText, {
+    drawFileList: false,
+    fileContentToggle: false,
+    matching: 'lines',
+    outputFormat: 'side-by-side',
+    synchronisedScroll: true,
+    highlight: true,
+    colorScheme: 'dark',
+  });
+  ui.draw();
+}
+
 function wireDeliveryReview(root, need) {
   for (const btn of root.querySelectorAll('[data-delivery-mr]')) {
     btn.addEventListener('click', () => {
@@ -2831,6 +2908,12 @@ function wireDeliveryReview(root, need) {
   for (const btn of root.querySelectorAll('[data-open]')) {
     btn.addEventListener('click', () => guard('ファイルを開く', () => api.openPath(btn.dataset.open)));
   }
+  for (const btn of root.querySelectorAll('button[data-act]')) {
+    btn.addEventListener('click', async () => {
+      const ok = await handleNeedAction(btn);
+      if (ok) $('dlg-delivery-review').close();
+    });
+  }
   const allDiffs = root.querySelector('[data-delivery-all-diff]');
   if (allDiffs) {
     allDiffs.addEventListener('click', async () => {
@@ -2838,7 +2921,11 @@ function wireDeliveryReview(root, need) {
         (entry) => entry.role !== 'reference' && entry.path && (entry.ref || !entry.branch)
       );
       const view = $('delivery-diff-view');
-      view.classList.remove('hidden');
+      root.querySelectorAll('[data-delivery-file]').forEach((item) => {
+        item.classList.remove('active');
+        item.setAttribute('aria-selected', 'false');
+      });
+      $('delivery-diff-title').textContent = 'すべての変更';
       view.setAttribute('aria-busy', 'true');
       view.textContent = 'すべての差分を取得しています…';
       allDiffs.disabled = true;
@@ -2857,7 +2944,7 @@ function wireDeliveryReview(root, need) {
             }
           })
         );
-        view.textContent = sections.join('\n\n');
+        renderDeliveryDiff(sections.join('\n\n'));
         view.scrollTop = 0;
         view.focus();
       } finally {
@@ -2871,18 +2958,25 @@ function wireDeliveryReview(root, need) {
       const idx = Number(btn.getAttribute('data-delivery-diff'));
       const entry = (need.delivery || [])[idx];
       if (!entry || !entry.path) return toast('ローカル path が無いため差分を取得できません');
-      if (!entry.ref) return toast('作業ブランチの ref が未解決のため差分を取得できません');
+      if (!entry.ref && entry.branch) return toast('作業ブランチの ref が未解決のため差分を取得できません');
       const file = btn.getAttribute('data-file') || '';
-      const tip = entry.ref;
       const view = $('delivery-diff-view');
-      view.classList.remove('hidden');
+      root.querySelectorAll('[data-delivery-file]').forEach((item) => {
+        const selected = item === btn;
+        item.classList.toggle('active', selected);
+        item.setAttribute('aria-selected', String(selected));
+      });
+      $('delivery-diff-title').textContent = file || `${entry.name || 'repo'} のすべての変更`;
+      view.setAttribute('aria-busy', 'true');
       view.textContent = '差分を取得しています…';
       try {
         const res = await api.gitDiff(deliveryDiffRequest(entry, file));
-        view.textContent = res.text || '(差分なし)';
+        renderDeliveryDiff(res.text || '');
         view.scrollTop = 0;
       } catch (err) {
         view.textContent = `差分の取得に失敗しました: ${err && err.message ? err.message : err}`;
+      } finally {
+        view.removeAttribute('aria-busy');
       }
     });
   }
@@ -2919,6 +3013,24 @@ function renderNeedFacts(n) {
   const facts = [];
   if (n.failureSummary) {
     facts.push(`<div class="need-diag"><span class="label-chip">失敗の要因</span> ${inlineMd(n.failureSummary)}</div>`);
+  }
+  const fc = n.failureContext;
+  if (fc) {
+    const rows = [
+      ['分類', fc.category],
+      ['対処対象', fc.owner],
+      ['終了コード', fc.exitCode],
+      ['作業ディレクトリ', fc.workdir],
+      ['実行コマンド', fc.command],
+      ['探したパス', fc.resolvedTarget],
+    ].filter(([, value]) => value);
+    if (rows.length) {
+      facts.push(`<dl class="need-failure-context">${rows.map(([label, value]) =>
+        `<div><dt>${esc(label)}</dt><dd><code>${esc(value)}</code></dd></div>`).join('')}</dl>`);
+    }
+  }
+  if (n.failureResolution) {
+    facts.push(`<div class="need-resolution"><span class="label-chip">確認・対処</span> ${inlineMd(n.failureResolution)}</div>`);
   }
   if (n.why) facts.push(`<div><span class="label-chip">理由</span>${proseHtml(n.why)}</div>`);
   if (n.summary) facts.push(`<div><span class="label-chip">概況</span>${proseHtml(n.summary)}</div>`);
@@ -3103,7 +3215,7 @@ function renderNeeds() {
     state.needsSelectedId,
     state.needsMobileDetail,
     filters.map((x) => x[2]),
-    p.needs.map((n) => [n.id, n.kind, n.decided, isNeedSent(n), n.why, n.summary, n.risk, n.failureSummary || '', (n.detail || '').length]),
+    p.needs.map((n) => [n.id, n.kind, n.decided, isNeedSent(n), n.why, n.summary, n.risk, n.failureSummary || '', n.failureResolution || '', n.failureContext || null, (n.detail || '').length]),
   ]);
   if (el.dataset.sig === sig && el.childElementCount) return;
   el.dataset.sig = sig;
@@ -3212,6 +3324,7 @@ async function handleNeedAction(btn) {
     gitPushAfterWrite(`agent-dashboard: ${act} ${id}`, p.dir);
     await reloadProject();
   }
+  return ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -5008,6 +5121,8 @@ async function buildDoctorContext() {
         why: need.why,
         summary: need.summary,
         failureSummary: need.failureSummary,
+        failureResolution: need.failureResolution,
+        failureContext: need.failureContext,
         state: need.stateNote,
         fullOutput: output.text,
       };

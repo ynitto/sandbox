@@ -588,9 +588,15 @@ async function diffRange(repo, { base, ref, file, maxBytes = 200_000, workingTre
   }
   const args = ['-C', root, 'diff', '--no-color', workingTree ? 'HEAD' : `${baseRef}...${tip}`];
   const f = String(file || '').trim();
+  const internalPath = /(^|\/)\.agent-project\//;
+  const excludes = [':(glob,exclude)**/.agent-project/**'];
   if (f) {
     if (f.includes('..') || path.isAbsolute(f)) throw new Error('不正なファイルパスです');
+    if (internalPath.test(f.replace(/\\/g, '/'))) throw new Error('内部ファイルは検収対象にできません');
     args.push('--', f);
+  } else {
+    // 検収対象にはソース／ドキュメントだけを出し、実行状態ディレクトリは含めない。
+    args.push('--', '.', ...excludes);
   }
   const res = await gitOnce(args, 60000);
   if (res.code !== 0 && !res.out) {
@@ -603,8 +609,21 @@ async function diffRange(repo, { base, ref, file, maxBytes = 200_000, workingTre
     text = text.slice(0, limit) + `\n…（差分が長いため ${limit} 文字で打ち切り）`;
     truncated = true;
   }
+  let files = f ? [f] : [];
+  if (!f) {
+    const nameArgs = [
+      '-C', root, 'diff', '--name-only', '-z', workingTree ? 'HEAD' : `${baseRef}...${tip}`,
+      '--', '.', ...excludes,
+    ];
+    const names = await gitOnce(nameArgs, 60000);
+    if (names.code !== 0 && !names.out) {
+      throw new Error(names.err || `変更ファイル一覧の取得に失敗しました（exit ${names.code}）`);
+    }
+    files = String(names.out || '').split('\0').filter(Boolean);
+  }
   return {
     text,
+    files,
     truncated,
     repo: root,
     base: workingTree ? '' : baseRef,

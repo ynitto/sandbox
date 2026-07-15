@@ -336,17 +336,25 @@ def _strip_leading_shell_prompt(line: str) -> str:
     return _LEADING_SHELL_PROMPT_RE.sub("", line, count=1)
 
 
-_VERIFY_COMMAND_LABEL_RE = re.compile(r"^検証コマンド\s*[:：]\s*")
+_VERIFY_COMMAND_LABEL_RE = re.compile(r"^.*?検証コマンド\s*[:：]\s*")
 
 
 def _strip_leading_command_label(line: str) -> str:
-    """行頭の日本語ラベル『検証コマンド:』（全角コロン可）を1回だけ剥がす。
+    """行頭の日本語ラベル『検証コマンド:』（全角コロン可）を、変化がなくなるまで繰り返し剥がす。
     ラベルとコマンドが同一行にある形式（`検証コマンド: <command>`）を、ラベルが
     別行にある形式と同じ土俵で判定できるようにするため、コマンド判定・sh -n チェック
-    の手前で適用する。行内の任意のコロンではなくこの固定ラベル語だけを行頭一致で
-    対象にするのは、`git commit -m "note: fix bug"` のようにコマンド自体に含まれる
+    の手前で適用する。行頭一致ではなく `^.*?検証コマンド` の最短一致にしているのは、
+    「以下を実行してください。検証コマンド: <command>」のようにラベルの前に散文が
+    同居する出力にも対応するため（`.*?` は非貪欲なので最初のラベル出現までしか消費しない）。
+    繰り返し適用するのは、LLM がラベルを二重・多重に付けて返す出力（`検証コマンド: 検証
+    コマンド: <command>`）を収束させるため。行内の任意のコロンではなくこの固定ラベル語
+    だけを対象にするのは、`git commit -m "note: fix bug"` のようにコマンド自体に含まれる
     コロンを誤って割らないため。"""
-    return _VERIFY_COMMAND_LABEL_RE.sub("", line, count=1)
+    while True:
+        stripped = _VERIFY_COMMAND_LABEL_RE.sub("", line, count=1)
+        if stripped == line:
+            return stripped
+        line = stripped
 
 
 def _has_command_like_leading_token(line: str) -> bool:
@@ -423,8 +431,9 @@ def _first_command_line(out: str) -> Optional[str]:
     フェンス外の行を対象にした従来ロジック（既知コマンド語などの先頭トークン判定 +
     sh -n 構文チェック）へフォールバックする。行頭のシェルプロンプト記号 `$ ` および
     日本語ラベル『検証コマンド:』（ラベル単独行・`検証コマンド: <command>` のように
-    コマンドと同一行の両形式）は判定前に剥がす（LLM がプロンプト付き・ラベル付きで
-    コマンド例を返す出力に対応するため）。
+    コマンドと同一行の両形式・ラベルの前に散文が同居する形式・ラベルの二重/多重付与）は
+    判定前に剥がす（LLM がプロンプト付き・ラベル付き・前置き散文付きでコマンド例を
+    返す出力に対応するため）。
 
     ANSI エスケープは入口で落とす。エージェント CLI はカラーコード付きで返すことがあり、
     残したままだとフェンス開始の ``` も先頭トークン（`\x1b[36mgrep` → 既知コマンド語に

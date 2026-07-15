@@ -198,6 +198,37 @@ def resolve_config(args):
     return args
 
 
+def _apply_codd_gate_auto_wiring(cfg: "Config") -> None:
+    """`regression_cmd`/`intake_cmd` が（CLI にも設定ファイルにも）明示されていないときだけ、
+    codd-gate の自動検出結果（`codd_gate_wiring.detect_wiring`）から**メモリ上の** `cfg` を
+    冪等に補う。`.agent/agent-project.yaml` そのものは一切書き換えない——同ファイルは
+    `state.py` の `_HUMAN_OWNED_STATE_FILES`（「機械が絶対に書かない」設定ファイル。状態
+    worktree の鏡合わせがこの前提の上に立っている）に含まれるため、ここでファイルへ
+    書き込むとその不変条件を壊す。
+
+    repos.json（`repo_registry_path`）が存在するプロジェクトだけを対象にする（存在しない
+    場合はまだ charter からの自動生成前後の過渡期・or 本当に repos が無いプロジェクトで、
+    無条件に codd-gate バイナリへ問い合わせるコストを毎コマンド起動ごとに払わないため）。
+    sibling module `codd_gate_wiring` が無い・codd-gate 未検出・非互換・capability 不足の
+    いずれでも何もせず、`cfg.regression_cmd`/`cfg.intake_cmd` は元の None のまま
+    （呼び出し元から見て今までと動作が変わらない＝no-op 縮退）。"""
+    if cfg.regression_cmd and cfg.intake_cmd:
+        return                                  # 両方すでに明示設定済みなら検出すら走らせない
+    repos_path = repo_registry_path(cfg)
+    if repos_path is None:
+        return
+    wiring = _codd_gate_wiring_module()
+    if wiring is None:
+        return
+    judgment = wiring.detect_wiring(
+        regression_cmd=cfg.regression_cmd, intake_cmd=cfg.intake_cmd,
+        repos_path=repos_path, vcwd=cfg.workdir)
+    if not cfg.regression_cmd and judgment.recommended_regression_cmd:
+        cfg.regression_cmd = judgment.recommended_regression_cmd
+    if not cfg.intake_cmd and judgment.recommended_intake_cmd:
+        cfg.intake_cmd = judgment.recommended_intake_cmd
+
+
 def build_config(args) -> Config:
     # プロジェクトルート = --root（cwd 相対、既定 . = cwd）が唯一のアンカー。charter.md /
     # repos.json / backlog/ 等はすべてこの直下（1 プロジェクト = 1 ディレクトリ = 1 プロセス）で、
@@ -240,7 +271,7 @@ def build_config(args) -> Config:
     except (TypeError, ValueError):
         _JOURNAL_KEEP = 20
 
-    return Config(
+    cfg = Config(
         backlog=under("backlog", "backlog"),
         policy=under("policy", "policy.md"),
         decisions=under("decisions", "decisions"),
@@ -342,6 +373,8 @@ def build_config(args) -> Config:
         update_subdir=str(getattr(args, "update_subdir", TOOL_SUBDIR) or TOOL_SUBDIR),
         update_installer=str(getattr(args, "update_installer", "install.sh") or "install.sh"),
     )
+    _apply_codd_gate_auto_wiring(cfg)
+    return cfg
 
 
 def _add_common(sp):

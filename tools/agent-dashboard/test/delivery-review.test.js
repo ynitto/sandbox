@@ -52,6 +52,31 @@ delivery: ${JSON.stringify(delivery)}
   assert.deepStrictEqual(n.delivery[0].files, ['src/a.py']);
 });
 
+test('delivery は .agent-project 配下だけを成果物一覧から除外する', () => {
+  const delivery = [
+    {
+      name: 'app',
+      role: 'write',
+      path: '/tmp/app',
+      base: 'main',
+      ref: 'topic',
+      files: ['src/app.js', '.kiro-project/runs/result.json', '.agent-project/backlog/T1.md', 'docs/readme.md', 'xkiro-project/public.md'],
+      files_total: 5,
+    },
+  ];
+  const n = project.parseNeeds(
+    `---\nkind: review\ndelivery: ${JSON.stringify(delivery)}\n---\n# 要対応: T-internal — x\n`,
+    'T-internal'
+  );
+  assert.deepStrictEqual(n.delivery[0].files, [
+    'src/app.js',
+    '.kiro-project/runs/result.json',
+    'docs/readme.md',
+    'xkiro-project/public.md',
+  ]);
+  assert.strictEqual(n.delivery[0].files_total, 4);
+});
+
 test('現行形式「変更ファイル（N 件）」を差分として拾う', () => {
   const n = project.parseNeeds(
     `---
@@ -95,7 +120,18 @@ kind: blocked
     'T2'
   );
   assert.strictEqual(n.delivery[0].path, '/work/project');
-  assert.deepStrictEqual(n.delivery[0].files, ['.agent-project/backlog/T2.md', 'src/app.js']);
+  assert.deepStrictEqual(n.delivery[0].files, ['src/app.js']);
+  assert.strictEqual(n.delivery[0].files_total, 1);
+});
+
+test('既知分が内部ファイルだけでもGit一覧を取り直すためdeliveryを保持する', () => {
+  const n = project.parseNeeds(
+    `---\nkind: review\n---\n# 要対応: T-hidden — x\n\n## 判断材料\n- 成果物: git: 未コミットの変更あり\n- 所在: /work/project/.agent-project\n- 差分: 10 ファイル\n    - .agent-project/bus/run.json\n    - …他 9 件\n`,
+    'T-hidden'
+  );
+  assert.strictEqual(n.delivery[0].path, '/work/project');
+  assert.deepStrictEqual(n.delivery[0].files, []);
+  assert.strictEqual(n.delivery[0].files_total, 0);
 });
 
 test('複数リポジトリ見出しから delivery を復元する', () => {

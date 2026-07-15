@@ -46,6 +46,25 @@ test('検証コマンドが対象を見つけられない失敗を要約する',
   assert.match(n.failureSummary, /見つけられませんでした/);
 });
 
+test('見つからない相対パスはツールに依存せず実行条件と対処を提示する', () => {
+  const n = project.parseNeeds(
+    card(
+      '回帰検知: グローバル検査 `codd-gate verify --base "$KIRO_BASE_REV" --repos .agent-project/repos.json` 失敗 — exit=2 '
+        + '失敗した工程: `codd-gate verify --base abc123 --repos .agent-project/repos.json` '
+        + '[codd-gate] エラー: repos レジストリが見つかりません: .agent-project/repos.json',
+      '- 所在: /work/project-agent-state/.agent-project'
+    ),
+    'T-1'
+  );
+  assert.strictEqual(n.failureContext.category, 'パス・入力');
+  assert.strictEqual(n.failureContext.owner, '検査設定・実行環境');
+  assert.strictEqual(n.failureContext.workdir, '/work/project-agent-state/.agent-project');
+  assert.strictEqual(n.failureContext.resolvedTarget, '/work/project-agent-state/.agent-project/.agent-project/repos.json');
+  assert.match(n.failureSummary, /\.agent-project\/\.agent-project\/repos\.json/);
+  assert.match(n.failureResolution, /相対パス/);
+  assert.match(n.failureResolution, /絶対パス/);
+});
+
 test('連鎖の途中で沈黙した工程は「失敗した工程」として名指しされる', () => {
   // run_verify（agent-project）が set -x トレースで特定した工程を、そのまま人に見せる。
   // 「exit=1 なのにテストは全部通っている」という読めない失敗の答えがこれ。
@@ -102,7 +121,8 @@ test('差分を成果物と内部の実行記録に分ける', () => {
   const n = project.parseNeeds(
     card('繰り返し NG: exit=1', [
       '- 成果物: git: 未コミットの変更あり',
-      '- 差分: 4 ファイル',
+      '- 差分: 5 ファイル',
+      '    - .kiro-project/runs/run-1/result.json',
       '    - .agent-project/bus/runs/run-1/results/t1.json',
       '    - .agent-project/bus/runs/run-1/events/worker-1.jsonl',
       '    - .agent-project/journal.md',
@@ -111,8 +131,11 @@ test('差分を成果物と内部の実行記録に分ける', () => {
     ].join('\n')),
     'T-1'
   );
-  assert.deepStrictEqual(n.diff.artifacts, ['tools/agent-project/agent-project.py']);
-  assert.strictEqual(n.diff.internal.length, 3);   // bus/×2 と journal.md
+  assert.deepStrictEqual(n.diff.artifacts, [
+    '.kiro-project/runs/run-1/result.json',
+    'tools/agent-project/agent-project.py',
+  ]);
+  assert.strictEqual(n.diff.internal.length, 3);   // bus/×2、journal.md
   assert.strictEqual(n.evidenceThin, false);        // 成果物が 1 件ある＝痩せていない
 });
 

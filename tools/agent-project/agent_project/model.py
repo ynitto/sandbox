@@ -460,6 +460,30 @@ def ingest_inbox(cfg: "Config") -> "list[Task]":
 _INTAKE_LAST: "dict[str, float]" = {}
 
 
+def _codd_gate_debt_module():
+    """`codd_gate_debt`（tools/agent-project 直下の sibling module。`codd-gate tasks --debt` 等の
+    出力をレコード単位で検証・正規化する）を遅延 import する。
+
+    `__init__.py` の exec 合成により、このフラグメント内の `__file__` は常に
+    `agent_project/__init__.py` の実パスを指す（instances.py の `_self_script` と同じ前提）。
+    その1階層上（`tools/agent-project/`）が sibling module の置き場なので sys.path に足す。
+    見つからない・import 失敗のときは None を返し、呼び出し側は既存の緩いパースへ no-op 縮退する
+    （codd_gate_status の usable=False 縮退と同じ方針。外部連携の欠落で intake 自体は壊さない）。"""
+    try:
+        import codd_gate_debt
+        return codd_gate_debt
+    except ImportError:
+        pass
+    sib = Path(__file__).resolve().parent.parent
+    if str(sib) not in sys.path:
+        sys.path.insert(0, str(sib))
+    try:
+        import codd_gate_debt
+        return codd_gate_debt
+    except ImportError:
+        return None
+
+
 def run_intake(cfg: "Config") -> "list[Task]":
     """取り込みコマンド（intake_cmd）を実行し、stdout の JSON（spec オブジェクト/配列＝
     `enqueue --json` と同形式）を backlog へ**冪等に**取り込む。外部の決定的ゲート/検出器
@@ -469,6 +493,10 @@ def run_intake(cfg: "Config") -> "list[Task]":
       同じ発見が重複投入されない（done→archive 後に同じ発見が再発したら新タスクとして積み直せる）。
     - **有限・無害**: verify_timeout で打ち切り、exit≠0・非 JSON・例外は journal に残して無視
       （ループは殺さない）。intake_interval（秒）で律速し、0 以下なら毎回。
+    - **レコード単位の検証**: `codd_gate_debt`（同梱・sibling module）が使えれば
+      `parse_debt_output` で1レコードずつ検証し、不備（非 object・title 欠落）は該当レコードだけ
+      journal へ落として残りは取り込みを続ける（1件の不備で全体を捨てない）。使えない環境
+      （sibling module 欠落）では従来どおりの緩いパース（非 dict を黙って読み飛ばす）に縮退する。
     - 常駐（長期実行）は agent-project 側が持つ。intake_cmd 自体は単発・有界であること。"""
     if not cfg.intake_cmd:
         return []
@@ -490,16 +518,22 @@ def run_intake(cfg: "Config") -> "list[Task]":
     out = (p.stdout or "").strip()
     if not out:
         return []
-    try:
-        data = json.loads(out)
-    except ValueError:
-        append_journal(cfg.journal, "intake 出力が JSON でないため無視")
-        return []
+    debt = _codd_gate_debt_module()
+    if debt is not None:
+        result = debt.parse_debt_output(out)
+        for err in result.errors:
+            append_journal(cfg.journal, f"intake レコード無効: {err}")
+        specs = [item.to_spec() for item in result.items]
+    else:
+        try:
+            data = json.loads(out)
+        except ValueError:
+            append_journal(cfg.journal, "intake 出力が JSON でないため無視")
+            return []
+        specs = [sp for sp in (data if isinstance(data, list) else [data]) if isinstance(sp, dict)]
     created: "list[Task]" = []
     existing = {f.stem for f in cfg.backlog.glob("*.md")} if cfg.backlog.exists() else set()
-    for sp in (data if isinstance(data, list) else [data]):
-        if not isinstance(sp, dict):
-            continue
+    for sp in specs:
         sid = _slug_id(str(sp.get("id", "") or ""))
         if sid and sid in existing:
             continue                        # 冪等: 現役 backlog に居る発見は再投入しない

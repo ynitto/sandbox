@@ -43,6 +43,13 @@ mkdir -p "${BUILD_DIR}/agent_project"
     mkdir -p "${BUILD_DIR}/agent_project/$(dirname "$f")"
     cp "$f" "${BUILD_DIR}/agent_project/$f"
   done )
+# codd-gate 自動検出・regression/intake 結線が読む sibling module（agent_project/ の外、
+# このスクリプトと同じ階層にある codd_gate_*.py）もzipapp ルートへ同梱する。無ければ
+# doctor.py/model.py/configfile.py の遅延 import が失敗し no-op 縮退するだけ（安全）だが、
+# 同梱すれば配布バイナリでも検出・regression・intake が動く。
+for f in "${SCRIPT_DIR}"/codd_gate_*.py; do
+  [[ -f "$f" ]] && cp "$f" "${BUILD_DIR}/$(basename "$f")"
+done
 cat > "${BUILD_DIR}/__main__.py" <<'EOF'
 from agent_project import main
 

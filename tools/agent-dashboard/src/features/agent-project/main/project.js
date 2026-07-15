@@ -250,9 +250,14 @@ function _evidenceThin(detail) {
 // （bus/ の run ログ・claims・needs・journal・project.json 等）は人の判断材料にならない。
 // これらだけが並んだカードは「変更あり」に見えて中身が無く、実際に何が変わったのか読み取れない。
 const _INTERNAL_DIFF_RE = new RegExp(
-  '(^|/)(bus|claims|needs|decisions|commands|inbox|archive|flow-archive)/'
+  '(^|/)\\.agent-project/'
+    + '|(^|/)(bus|claims|needs|decisions|commands|inbox|archive|flow-archive)/'
     + '|(^|/)(journal\\.md|project\\.json|repos\\.json|run-log\\.jsonl|status\\.json|DELIVERY\\.md)$'
 );
+
+function _isInternalDiffFile(file) {
+  return _INTERNAL_DIFF_RE.test(String(file || '').replace(/\\/g, '/'));
+}
 
 // 判断材料の差分リスト（レガシー「差分: N ファイル」と現行「変更ファイル（N 件）:」）を
 // 成果物と内部記録に分ける。複数リポジトリ節があっても全リストを集める。
@@ -273,7 +278,7 @@ function _splitDiff(detail) {
         out.truncated += Number(more[1]);
         continue;
       }
-      (_INTERNAL_DIFF_RE.test(item) ? out.internal : out.artifacts).push(item);
+      (_isInternalDiffFile(item) ? out.internal : out.artifacts).push(item);
     }
   }
   return out;
@@ -389,10 +394,14 @@ function _deliveryFromDetail(detail) {
   // 変更ファイルはリポジトリルート相対（.agent-project/...）で記録されることがある。
   // そのまま連結すると .agent-project/.agent-project/... となるため、重なる末尾を戻す。
   const locationLeaf = path.basename(entry.path.replace(/[/\\]+$/, ''));
-  if (locationLeaf && entry.files.some((file) => String(file).replace(/\\/g, '/').startsWith(`${locationLeaf}/`))) {
+  if (
+    /^\.agent-project$/.test(locationLeaf)
+    || (locationLeaf && entry.files.some((file) => String(file).replace(/\\/g, '/').startsWith(`${locationLeaf}/`)))
+  ) {
     entry.path = path.dirname(entry.path);
   }
-  if (entry.files.length || entry.mr_url || entry.branch || entry.diff_cmd) {
+  const hasDiffList = /^-\s*(?:変更ファイル(?:（\d+\s*件）)?|差分)\s*[:：]/m.test(s);
+  if (entry.files.length || entry.mr_url || entry.branch || entry.diff_cmd || (entry.path && hasDiffList)) {
     entries.push(entry);
   }
   return entries;
@@ -401,53 +410,127 @@ function _deliveryFromDetail(detail) {
 function _normalizeDelivery(entries) {
   return (entries || [])
     .filter((e) => e && typeof e === 'object')
-    .map((e) => ({
-      name: String(e.name || 'repo'),
-      role: e.role === 'reference' ? 'reference' : 'write',
-      url: String(e.url || ''),
-      path: String(e.path || ''),
-      base: String(e.base || ''),
-      branch: String(e.branch || ''),
-      ref: String(e.ref || ''),
-      files: Array.isArray(e.files) ? e.files.map(String) : [],
-      files_total: Number(e.files_total || (Array.isArray(e.files) ? e.files.length : 0)) || 0,
-      diff_cmd: String(e.diff_cmd || ''),
-      mr_url: String(e.mr_url || ''),
-    }));
+    .map((e) => {
+      const sourceFiles = Array.isArray(e.files) ? e.files.map(String) : [];
+      const files = sourceFiles.filter((file) => !_isInternalDiffFile(file));
+      return {
+        name: String(e.name || 'repo'),
+        role: e.role === 'reference' ? 'reference' : 'write',
+        url: String(e.url || ''),
+        path: String(e.path || ''),
+        base: String(e.base || ''),
+        branch: String(e.branch || ''),
+        ref: String(e.ref || ''),
+        files,
+        // 元データの total は省略された内部ファイルを含み得る。完全一覧は検収画面で
+        // git から取り直すため、ここでは実際に名前が分かる成果物だけを数える。
+        files_total: files.length,
+        diff_cmd: String(e.diff_cmd || ''),
+        mr_url: String(e.mr_url || ''),
+      };
+    });
 }
 
-// 失敗理由（verify の生出力）を人が読める一文にする。よくある形だけを解釈し、当てはまらな
-// ければ空を返す（生のテキストは常に残すので、要約できないときも情報は失われない）。
-function _summarizeFailure(why, detail) {
+// verify の自由文を、画面で共通表示できる「原因・実行条件・確認手順」に正規化する。
+// 特定ツール名には依存しない。解釈できない値は空のままにし、生ログを根拠として必ず残す。
+function _diagnoseFailure(why, detail) {
   const verify = (String(detail || '').match(/^-\s*検証\s*[:：]\s*(.*)$/m) || [])[1] || '';
   const raw = `${why || ''} ${verify}`;
-  if (!raw.trim()) return '';
-  const notFound = (raw.match(/(?:file or directory not found|No such file or directory)[:\s]+([^\s)）]+)/) || [])[1];
+  const empty = { summary: '', resolution: '', context: null };
+  if (!raw.trim()) return empty;
+  const workdir = (String(detail || '').match(/^-\s*所在\s*[:：]\s*(\S+)/m) || [])[1];
+  const missingEnglish = (raw.match(/(?:file or directory not found|No such file or directory)[:\s]+([^\s)）]+)/i) || [])[1];
+  const missingJapanese = (raw.match(/(?:エラー\s*[:：]\s*)?[^\n]*?(?:見つかりません|存在しません)\s*[:：]\s*([^\s)）]+)/) || [])[1];
+  const notFound = missingEnglish || missingJapanese;
   const failed = (raw.match(/(\d+)\s+failed/) || [])[1];
   const cmdMissing = (raw.match(/([\w./-]+):\s*command not found/) || [])[1];
   const exit = (raw.match(/exit=(\d+)/) || [])[1];
   // run_verify が特定した「失敗した工程」（&& 連鎖の途中で沈黙して落ちた工程のトレース）
   const step = (raw.match(/失敗した工程:\s*`([^`]+)`/) || [])[1];
   const passed = (raw.match(/(\d+)\s+passed/) || [])[1];
+  const verifyCommand = (verify.match(/`([^`]+)`/) || [])[1] || '';
+  const command = step || verifyCommand;
+  const context = {
+    category: '',
+    owner: '',
+    command,
+    workdir,
+    exitCode: exit || '',
+    target: '',
+    resolvedTarget: '',
+  };
 
-  if (step) {
-    return `検証コマンドの工程「${step}」で失敗しました（それより前の工程は成功しています）。`;
+  if (cmdMissing) {
+    context.category = '実行環境';
+    context.owner = '検査設定・実行環境';
+    return {
+      summary: `検証に必要なコマンド「${cmdMissing}」が実行環境に見つかりません。`,
+      resolution: `「${cmdMissing}」がインストール済みか、検証プロセスの PATH から実行できるかを確認してから再実行してください。`,
+      context,
+    };
   }
-  if (cmdMissing) return `検証コマンド「${cmdMissing}」がこの環境に見つかりません。`;
   if (notFound) {
-    return `検証コマンドが「${notFound}」を見つけられませんでした。`
-      + '実行ディレクトリ（下の「所在」）から見て、そのパスが存在しない可能性があります。';
+    context.category = 'パス・入力';
+    context.owner = '検査設定・実行環境';
+    context.target = notFound;
+    context.resolvedTarget = workdir && !path.isAbsolute(notFound) ? path.resolve(workdir, notFound) : notFound;
+    return {
+      summary: context.resolvedTarget
+        ? `検証コマンドが必要なパス「${context.resolvedTarget}」を見つけられませんでした。`
+        : `検証コマンドが必要なパス「${notFound}」を見つけられませんでした。`,
+      resolution: '対象が実際に存在する場所を確認し、コマンドのパス指定を実行ディレクトリ基準の正しい相対パス、または絶対パスへ変更して再実行してください。',
+      context,
+    };
   }
-  if (failed) return `テストが ${failed} 件失敗しました。`;
-  if (/no tests ran/i.test(raw)) return 'テストが 1 件も実行されませんでした（対象が見つからないか、条件に一致しません）。';
+  if (failed) {
+    context.category = 'テスト失敗';
+    context.owner = '成果物';
+    return {
+      summary: `テストが ${failed} 件失敗しました。`,
+      resolution: '失敗したテスト名と最初のエラーを生ログで確認し、成果物を修正して同じ検証コマンドを再実行してください。',
+      context,
+    };
+  }
+  if (/no tests ran/i.test(raw)) {
+    context.category = '検証対象なし';
+    context.owner = '検査設定・実行環境';
+    return {
+      summary: 'テストが 1 件も実行されませんでした（対象が見つからないか、条件に一致しません）。',
+      resolution: 'テスト対象のパス、選択条件、実行ディレクトリを確認してから再実行してください。',
+      context,
+    };
+  }
+  if (step) {
+    context.category = '検証工程';
+    context.owner = '要確認';
+    return {
+      summary: `検証コマンドの工程「${step}」で失敗しました（それより前の工程は成功しています）。`,
+      resolution: '生ログの該当工程を確認し、表示された作業ディレクトリで同じコマンドを再現して原因を切り分けてください。',
+      context,
+    };
+  }
   if (exit && passed && Number(exit) !== 0) {
     // 「テストは通っているのに exit≠0」: && 連鎖の後段（grep・外部チェック等）が沈黙して
     // 失敗した古い形式の記録。どこが落ちたかは記録に無いが、少なくとも「テストの失敗では
     // ない」ことを言う（テスト成功の出力だけを見せられて混乱するのが一番まずい）。
-    return `テストは ${passed} 件成功していますが、検証コマンドの後段の工程（grep や外部チェックなど）が失敗しています（終了コード ${exit}）。`;
+    context.category = '検証工程';
+    context.owner = '検査設定・実行環境';
+    return {
+      summary: `テストは ${passed} 件成功していますが、検証コマンドの後段の工程（grep や外部チェックなど）が失敗しています（終了コード ${exit}）。`,
+      resolution: 'テスト後に実行される工程を生ログで確認し、その工程を単独で再実行してください。',
+      context,
+    };
   }
-  if (exit) return `検証コマンドが失敗しました（終了コード ${exit}）。`;
-  return '';
+  if (exit) {
+    context.category = '不明な検証失敗';
+    context.owner = '要確認';
+    return {
+      summary: `検証コマンドが失敗しました（終了コード ${exit}）。`,
+      resolution: '実行コマンド・作業ディレクトリ・生ログを確認し、同じ条件で再現して原因を切り分けてください。',
+      context,
+    };
+  }
+  return empty;
 }
 
 // 痩せた evidence から実質情報の無い行（成果物プレースホルダ・所在・実行先・差分なし）を落とす。
@@ -482,6 +565,8 @@ function parseNeeds(text, id) {
     detail: '',
     evidenceThin: false, // 判断材料が実質空（stub 実行・無変更）＝内部パスだけのとき true
     failureSummary: '', // 失敗理由の要約（生の verify 出力を解釈した一文。解釈できなければ空）
+    failureResolution: '', // 既知の失敗について、その場で実行できる修正方法
+    failureContext: null, // { category, owner, command, workdir, exitCode, target, resolvedTarget }
     diff: null, // { artifacts, internal, truncated, hasDiff } — 成果物と内部記録に分けた差分
     risk: '', // 検収票のリスクダイジェスト総合値（low/med/high）。バッジ表示用
     mrUrl: '', // 代表 MR URL（frontmatter mr-url / 判断材料）。GitLab ならこれを開く
@@ -553,6 +638,10 @@ function parseNeeds(text, id) {
     .trim();
   // stub 実行・無変更で痩せた判断材料は、内部パスだけの羅列に見えて分かりにくい。退化行を
   // 落として（実質情報を残しつつ）viewer 側で「成果情報なし」と一言添えられるよう印を付ける。
+  const failureDiagnosis = _diagnoseFailure(need.why, need.detail);
+  need.failureSummary = failureDiagnosis.summary;
+  need.failureResolution = failureDiagnosis.resolution;
+  need.failureContext = failureDiagnosis.context;
   need.evidenceThin = _evidenceThin(need.detail);
   if (need.evidenceThin) need.detail = _stripThinEvidence(need.detail);
   // 差分を「成果物」と「内部記録（bus/ の run ログ等）」に分ける。実行のたびに書かれる内部
@@ -561,7 +650,6 @@ function parseNeeds(text, id) {
   if (need.diff.hasDiff && need.diff.artifacts.length === 0 && need.diff.internal.length > 0) {
     need.evidenceThin = true;
   }
-  need.failureSummary = _summarizeFailure(need.why, need.detail);
   // 検収サブ画面: frontmatter delivery を優先し、無ければ判断材料から復元する
   need.delivery = _normalizeDelivery(_parseDeliveryJson(deliveryRaw));
   if (!need.delivery.length) need.delivery = _normalizeDelivery(_deliveryFromDetail(need.detail));

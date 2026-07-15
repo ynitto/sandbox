@@ -672,6 +672,26 @@ table.list tr.clickable:hover { background: var(--bg2); }
   padding: 6px 8px;
   margin-bottom: 6px;
 }
+.need-card .need-resolution {
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+}
+.need-failure-context {
+  display: grid;
+  gap: 3px;
+  margin: 0 0 6px;
+  padding: 7px 9px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.need-failure-context > div { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px; }
+.need-failure-context dt { color: var(--muted); }
+.need-failure-context dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.need-failure-context code { white-space: pre-wrap; }
 .need-card .ev-thin-note { margin-top: 4px; }
 
 .need-actions {
@@ -843,7 +863,8 @@ dialog h2 { margin-top: 0; font-size: 15px; }
 dialog h3 { font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
 .dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .dialog-heading h2 { margin: 2px 0 0; }
-.output-dialog, .doctor-dialog, .delivery-dialog { width: min(1000px, 80vw); }
+.output-dialog, .doctor-dialog { width: min(1000px, 80vw); }
+.delivery-dialog { width: min(1500px, 94vw); max-width: 94vw; overflow: hidden; }
 .full-output {
   height: min(68vh, 720px);
   overflow: auto;
@@ -853,15 +874,45 @@ dialog h3 { font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
   padding: 14px;
 }
 .need-output-button { margin-top: 12px; min-height: 40px; }
-.delivery-review-body { max-height: 72vh; overflow: auto; }
+.delivery-review-body { max-height: none; overflow: hidden; }
+.delivery-review-layout {
+  display: grid;
+  grid-template-columns: minmax(240px, 30%) minmax(0, 1fr);
+  height: min(72vh, 780px);
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  overflow: hidden;
+}
+.delivery-file-panel { min-width: 0; overflow: auto; background: var(--bg2); border-right: 1px solid var(--border); }
+.delivery-file-panel-title, .delivery-diff-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 42px;
+  padding: 8px 12px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+}
+.delivery-diff-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) clamp(150px, 22vh, 210px);
+  min-width: 0;
+  overflow: hidden;
+  background: #0d1117;
+}
+.delivery-diff-head { color: var(--fg); }
 .delivery-review-toolbar {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 10px 0;
-  padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
+  margin: 0;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
   background: var(--bg2);
 }
 .delivery-review-toolbar button { flex: none; min-height: 38px; }
@@ -874,8 +925,8 @@ dialog h3 { font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
 }
 .delivery-mr-banner p { margin: 0 0 8px; }
 .delivery-repo {
-  margin-bottom: 14px;
-  padding-bottom: 12px;
+  margin: 0;
+  padding: 10px;
   border-bottom: 1px solid var(--border);
 }
 .delivery-repo-head {
@@ -887,9 +938,22 @@ dialog h3 { font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
 }
 .delivery-repo-head h3 { margin: 0; font-size: 15px; }
 .delivery-repo-meta { margin: 6px 0 8px; font-size: 12px; }
-.delivery-files { margin: 0; padding-left: 18px; }
-.delivery-files li { margin: 4px 0; }
-.delivery-files button { margin-left: 6px; }
+.delivery-files { margin: 8px -10px -10px; padding: 0; list-style: none; }
+.delivery-files li { display: flex; min-width: 0; border-top: 1px solid var(--border); }
+.delivery-file-button {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+}
+.delivery-file-button code { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.delivery-file-button:hover { background: rgba(88, 166, 255, 0.10); }
+.delivery-file-button.active { background: rgba(88, 166, 255, 0.20); box-shadow: inset 3px 0 var(--accent); }
+.delivery-file-open { flex: none; margin: 5px 6px 5px 0; }
+.delivery-file-label { display: block; flex: 1; min-width: 0; padding: 9px 10px; overflow: hidden; text-overflow: ellipsis; }
 .delivery-cmd {
   margin-top: 8px;
   padding: 8px;
@@ -900,16 +964,32 @@ dialog h3 { font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
   white-space: pre-wrap;
 }
 .delivery-diff-view {
-  margin-top: 12px;
-  max-height: 36vh;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 0;
   overflow: auto;
-  padding: 10px;
-  background: var(--bg2);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  white-space: pre-wrap;
-  word-break: break-word;
+  padding: 12px;
+  background: #0d1117;
+  color: #e6edf3;
 }
+.delivery-diff-view[aria-busy="true"] { color: var(--muted); }
+.delivery-diff-fallback { margin: 0; white-space: pre; }
+.delivery-diff-view .d2h-wrapper { color: #e6edf3; }
+.delivery-diff-view .d2h-file-wrapper { border-color: #30363d; }
+.delivery-diff-view .d2h-file-header { background: #161b22; border-color: #30363d; }
+.delivery-review-actions {
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
+  padding: 10px 12px;
+  color: var(--fg);
+  background: var(--bg2);
+  border-top: 1px solid var(--border);
+}
+.delivery-review-actions h3 { margin: 0 0 8px; color: var(--fg); }
+.delivery-review-actions .need-complete-how { margin: 0 0 8px; }
+.delivery-review-actions .need-input { min-height: 54px; }
+.delivery-review-actions .need-buttons { flex-wrap: wrap; }
 .need-delivery-cta { gap: 8px; align-items: center; margin-top: 6px; }
 .doctor-form {
   display: grid;
@@ -1175,6 +1255,8 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   .doctor-form-actions button { min-height: 44px; }
   .delivery-review-toolbar { align-items: stretch; flex-direction: column; }
   .delivery-review-toolbar button { min-height: 44px; }
+  .delivery-review-layout { grid-template-columns: 1fr; grid-template-rows: minmax(150px, 34%) minmax(0, 1fr); height: 70vh; }
+  .delivery-file-panel { border-right: 0; border-bottom: 1px solid var(--border); }
   .row2 { flex-direction: column; gap: 0; }
   .settings-action-grid { grid-template-columns: 1fr; }
   .queue-summary,
