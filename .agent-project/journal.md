@@ -58,3 +58,10 @@
 - 2026-07-16 02:43:32 === agent-project 停止 reason=drained cycles=5 done=0 blocked=3 notified=True promoted=0 ===
 - 2026-07-16 02:43:34 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
 - 2026-07-16 02:43:34 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-16 04:29:50 === project 開始 v1 acceptance=2 ===
+- 2026-07-16 04:29:50 intake NG (exit 2): codd-gate tasks --debt --repos .agent-project/repos.json
+- 2026-07-16 04:29:50 feedback 取り込み: agent-project-codd-gate--042729 を再開
+- 2026-07-16 04:29:50 feedback 取り込み: verify-codd-gate-042729 を再開
+- 2026-07-16 04:29:50 === agent-project 開始 tasks=6 ingested=2 planner=agent executor=agent dry_run=False ===
+- 2026-07-16 04:29:50 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
+- 2026-07-16 04:29:53 run 再開: agent-project-codd-gate--042729 は req-ef1f92c3-agent-project-codd-gate--042729-r1-v1 の失敗ノードだけをやり直します（done は温存）

@@ -1,5 +1,5 @@
 ## agent-project-codd-gate--042729: agent-projectにcodd-gate自動検出とregression/intake結線を完成させ連携を有効化する
-- status: blocked
+- status: doing
 - source: charter
 - priority: 0
 - verify: `grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' .agent/agent-project.yaml`
@@ -8,5 +8,6 @@
 - charter: v1
 - assess: c=2 r=2 a=2
 - rev: 1
-- last_run: req-ef1f92c3-agent-project-codd-gate--042729-r1-v1
 - needs_reason: 繰り返し NG（retries=3）: agent-flow run タイムアウト（3600s）
+- last_run: req-ef1f92c3-agent-project-codd-gate--042729-r1-v1
+- flow_run: req-ef1f92c3-agent-project-codd-gate--042729-r1-v1
