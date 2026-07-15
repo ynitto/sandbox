@@ -4363,6 +4363,39 @@ class TestProjectLayer(unittest.TestCase):
             self.assertEqual(reloaded.get("workspace"), "app")   # 決定を md へ書き戻す
             self.assertEqual(reloaded.get("routed_by"), "sole")
 
+    def test_explicit_workspace_accepts_unique_repo_url_basename_and_canonicalizes_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "repos.json").write_text(json.dumps({
+                "src": {"url": "https://github.com/example/sandbox", "base": "main"},
+            }), encoding="utf-8")
+            cfg = cfg_for(d, route_planner="none")
+            cfg.backlog.mkdir(parents=True, exist_ok=True)
+            t = km.Task(id="T1", title="x", verify="true", extra=[("workspace", "sandbox")])
+            km.persist_task(cfg, t)
+
+            spec = km.resolve_and_persist_workspace(cfg, t, km.Policy())
+
+            self.assertEqual(spec["name"], "src")
+            reloaded = km.parse_task((cfg.backlog / "T1.md").read_text(), "T1")
+            self.assertEqual(reloaded.get("workspace"), "src")
+            self.assertEqual(reloaded.get("routed_by"), "explicit-alias")
+            cmd = km.build_agent_flow_cmd(reloaded, cfg)
+            self.assertIn("--workspace", cmd)
+
+    def test_explicit_workspace_repo_url_basename_must_be_unique(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "repos.json").write_text(json.dumps({
+                "one": {"url": "https://github.com/example/sandbox", "base": "main"},
+                "two": {"url": "https://gitlab.example.com/example/sandbox.git", "base": "main"},
+            }), encoding="utf-8")
+            cfg = cfg_for(d, route_planner="none")
+            t = km.Task(id="T1", title="x", verify="true", extra=[("workspace", "sandbox")])
+            spec, routed_by = km.resolve_workspace(cfg, t, km.Policy())
+            self.assertIsNone(spec)
+            self.assertEqual(routed_by, "none")
+
     def test_workspace_token_json(self):
         # url/path/base/target/desc を JSON で構造化（readonly/name は載せない）
         tok = km._workspace_token({"name": "api", "url": "https://git/shop.git", "desc": "API",
@@ -9653,6 +9686,28 @@ class DeliveryEvidenceTests(unittest.TestCase):
             self.assertIn(f"mr-url: {mr}", text)
             self.assertIn("delivery: [", text)
             self.assertIn('"role":"write"', text)
+
+    def test_blocked_needs_embeds_delivery_frontmatter(self):
+        with tempfile.TemporaryDirectory() as d:
+            top = self._repo()
+            cfg, t = self._cfg_with_run(top, Path(d))
+            delivery = km.delivery_entries(cfg, t)
+            km.write_needs_file(cfg, t, "回帰検知", evidence="- 検証: `false` → FAIL",
+                                delivery=delivery)
+            text = (cfg.needs / "T1.md").read_text(encoding="utf-8")
+            self.assertIn("kind: blocked", text)
+            self.assertIn("delivery: [", text)
+            self.assertIn('"path":"' + str(top), text)
+
+    def test_block_transition_attaches_run_delivery(self):
+        with tempfile.TemporaryDirectory() as d:
+            top = self._repo()
+            cfg, t = self._cfg_with_run(top, Path(d))
+            reasons = {}
+            km._block(cfg, t, "回帰検知", reasons, evidence="- 検証: `false` → FAIL")
+            text = (cfg.needs / "T1.md").read_text(encoding="utf-8")
+            self.assertIn("delivery: [", text)
+            self.assertIn('"path":"' + str(top), text)
 
 
 

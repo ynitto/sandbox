@@ -27,6 +27,8 @@ const state = {
   needsDrafts: {}, // フィルターや選択を切り替えても回答の下書きを保持する
   needOutputCache: {}, // needs file+mtime → 関連runを含む全出力（明示操作時だけロード）
   doctorBusy: false,
+  doctorMode: 'consultation', // consultation / failure-diagnosis
+  doctorNeedId: null, // 失敗診断後の追加質問でも同じ要対応を参照する
   flowFilter: 'active', // フロータブの run フィルタ（active＝非終端のみ／done＝完了・アーカイブ／all）
   gitlab: { enabled: false, byUrl: {}, repoIssues: [], loading: false, flowOnly: true },
   editFile: null, // {dir, name, file}（編集中のプロジェクトファイル）
@@ -3160,6 +3162,10 @@ function needsViewModel(needs, filter, selectedId, sentFn) {
   return { counts, items, selected, selectedId: selected ? selected.id : null };
 }
 
+function canDiagnoseNeed(need) {
+  return Boolean(need && (need.failureSummary || need.failureContext));
+}
+
 function renderNeedFacts(n) {
   const facts = [];
   if (n.failureSummary) {
@@ -3267,7 +3273,12 @@ function renderNeedDetail(p, n) {
       <p>${esc(ask)}</p>
     </section>
     <section class="need-facts">
-      <h3>状況</h3>
+      <div class="need-facts-heading">
+        <h3>状況</h3>
+        ${!settled && canDiagnoseNeed(n)
+          ? `<button class="primary-inline" data-failure-diagnose="${esc(n.id)}">AIで失敗を診断</button>`
+          : ''}
+      </div>
       ${renderNeedFacts(n) || '<p class="muted">追加の状況説明はありません。</p>'}
     </section>
     ${settled ? '' : `<section class="need-response"><h3>回答</h3>${needActionsHtml(n)}${needVerifyRevisionHtml(p, n)}</section>`}
@@ -3295,6 +3306,9 @@ function bindNeedDetail(root) {
   }
   for (const btn of root.querySelectorAll('button[data-delivery-review]')) {
     btn.addEventListener('click', () => openDeliveryReview(btn.dataset.deliveryReview));
+  }
+  for (const btn of root.querySelectorAll('button[data-failure-diagnose]')) {
+    btn.addEventListener('click', () => openFailureDiagnosis(btn.dataset.failureDiagnose));
   }
   for (const btn of root.querySelectorAll('button[data-verify-revise]')) {
     btn.addEventListener('click', async () => {
@@ -5272,10 +5286,12 @@ async function buildDoctorContext() {
       selected: null,
     };
   }
-  const tab = activeTabName();
+  const diagnosisNeedId = state.doctorMode === 'failure-diagnosis' ? state.doctorNeedId : null;
+  const tab = diagnosisNeedId ? 'needs' : activeTabName();
   const context = {
     capturedAt: new Date().toISOString(),
     tab,
+    scope: diagnosisNeedId ? 'failure-diagnosis' : 'project',
     project: {
       name: p.name,
       status: p.projectState && p.projectState.status,
@@ -5286,9 +5302,11 @@ async function buildDoctorContext() {
     },
   };
   if (tab === 'needs') {
-    const need = p.needs.find((item) => item.id === state.needsSelectedId) || null;
+    const needId = diagnosisNeedId || state.needsSelectedId;
+    const need = p.needs.find((item) => item.id === needId) || null;
     if (need) {
       const output = await loadNeedFullOutput(need);
+      const task = taskForNeed(p, need);
       context.selected = {
         type: 'need',
         id: need.id,
@@ -5300,6 +5318,12 @@ async function buildDoctorContext() {
         failureResolution: need.failureResolution,
         failureContext: need.failureContext,
         state: need.stateNote,
+        task: task
+          ? { id: task.id, title: task.title, status: task.status, verify: task.verify, retries: task.retries }
+          : null,
+        diff: need.diff,
+        delivery: need.delivery,
+        mrUrls: need.mrUrls,
         fullOutput: output.text,
       };
     }
@@ -5344,11 +5368,31 @@ async function buildDoctorContext() {
 }
 
 function openDoctor() {
+  state.doctorMode = 'consultation';
+  state.doctorNeedId = null;
+  $('doctor-title').textContent = '現在の画面を相談';
+  $('btn-doctor-submit').textContent = '相談する';
   $('doctor-status').textContent = state.project
     ? '現在の画面を読み取って相談できます。'
     : 'プロジェクト未選択のため、アプリ全体の状態について相談します。';
   $('doctor-response').innerHTML = '';
   if (!$('dlg-doctor').open) $('dlg-doctor').showModal();
+  $('doctor-prompt').focus();
+}
+
+async function openFailureDiagnosis(needId) {
+  if (state.doctorBusy) return;
+  const need = state.project && state.project.needs.find((item) => item.id === needId);
+  if (!need || !canDiagnoseNeed(need)) return toast('診断できる失敗情報が見つかりません');
+  state.doctorMode = 'failure-diagnosis';
+  state.doctorNeedId = need.id;
+  $('doctor-title').textContent = `タスク失敗を診断 — ${needDisplayTitle(need)}`;
+  $('btn-doctor-submit').textContent = '追加で質問する';
+  $('doctor-prompt').value = '';
+  $('doctor-status').textContent = '失敗ログと実行条件を読み込んでいます…';
+  $('doctor-response').innerHTML = '';
+  if (!$('dlg-doctor').open) $('dlg-doctor').showModal();
+  await askDoctor();
   $('doctor-prompt').focus();
 }
 
@@ -5358,7 +5402,9 @@ async function askDoctor() {
   $('btn-doctor').disabled = true;
   $('doctor-prompt').disabled = true;
   $('btn-doctor-submit').disabled = true;
-  $('doctor-status').textContent = '現在の画面を読み取り、助言を作成しています…';
+  $('doctor-status').textContent = state.doctorMode === 'failure-diagnosis'
+    ? '失敗ログを分析し、原因と対処方法を作成しています…'
+    : '現在の画面を読み取り、助言を作成しています…';
   $('doctor-response').innerHTML = '';
   try {
     const context = await buildDoctorContext();
@@ -5367,13 +5413,18 @@ async function askDoctor() {
       dir: state.project ? state.project.dir : null,
       context,
       userPrompt,
+      mode: state.doctorMode,
     });
     const model = res.model ? ` / ${res.model}` : '';
-    const target = context.scope === 'app' ? 'アプリ全体' : `${context.tab} 画面`;
+    const target = state.doctorMode === 'failure-diagnosis'
+      ? `タスク ${state.doctorNeedId} の失敗`
+      : context.scope === 'app' ? 'アプリ全体' : `${context.tab} 画面`;
     $('doctor-status').textContent = `${res.cli}${model} の助言 — ${target}を分析`;
     $('doctor-response').innerHTML = mdToHtml(res.content || '助言はありませんでした。');
   } catch (err) {
-    $('doctor-status').textContent = 'Doctorを実行できませんでした';
+    $('doctor-status').textContent = state.doctorMode === 'failure-diagnosis'
+      ? '失敗診断を実行できませんでした'
+      : 'Doctorを実行できませんでした';
     $('doctor-response').innerHTML = `<div class="doctor-error" role="alert">${esc(err.message)}</div>`;
   } finally {
     state.doctorBusy = false;

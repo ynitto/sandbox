@@ -95,7 +95,13 @@ def _block(cfg, task, reason, reasons, evidence: str = ""):
     reasons[task.id] = reason
     _remember_needs_reason(task, reason)  # 票を失っても ensure_needs が同じ理由で作り直せるように
     persist_task(cfg, task)
-    write_needs_file(cfg, task, reason, evidence=evidence)
+    # 失敗票でも検収画面が state worktree の内部差分へフォールバックしないよう、成功時と
+    # 同じ run metadata 由来の delivery を添える。
+    try:
+        delivery = delivery_entries(cfg, task)
+    except Exception:  # noqa: BLE001 — delivery 取得失敗で本来の blocked 遷移を壊さない
+        delivery = None
+    write_needs_file(cfg, task, reason, evidence=evidence, delivery=delivery)
     release_claim(cfg, task)              # blocked は doing でなくなる＝実行権（claim）を解放（人手 hold 含む）
 
 

@@ -79,7 +79,7 @@ def write_needs_file(cfg: "Config", task: Task, reason: str, review: bool = Fals
     fm_mr = str(mr_url or (task.get("mr_url") if review else "") or "").strip()
     fm_delivery = delivery if delivery is not None else None
     body = (
-        f"{_madr_frontmatter(task.id, kind, risk=risk[0] if risk else '', mr_url=fm_mr if review else '', delivery=fm_delivery if review else None)}"
+        f"{_madr_frontmatter(task.id, kind, risk=risk[0] if risk else '', mr_url=fm_mr if review else '', delivery=fm_delivery)}"
         f"# 要対応: {task.id} — {task.title}\n\n"
         f"## Context and Problem Statement\n\n"
         f"- なぜ: {reason}\n"
@@ -154,9 +154,13 @@ def ensure_needs(cfg: "Config", tasks: "list[Task]") -> "list[str]":
             write_needs_file(cfg, t, why or "成果物の検収待ち（承認すると完了になります）",
                              review=True, evidence=ev_review, mr_url=mr, delivery=delivery)
         else:  # blocked
+            try:
+                delivery = delivery_entries(cfg, t)
+            except Exception:  # noqa: BLE001 — 再生成は失敗しても票自体は起こす
+                delivery = None
             write_needs_file(cfg, t, why or f"実行が止まっています（retries={t.retries}）。"
                                             "指示を送るか、そのまま再実行してください。",
-                             evidence=ev)
+                             evidence=ev, delivery=delivery)
         append_journal(cfg.journal, f"needs 再生成: {t.id}（{st}）")
         made.append(t.id)
     return made

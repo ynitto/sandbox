@@ -278,6 +278,24 @@ def _raw_url_spec(tok: str) -> "dict | None":
     return None
 
 
+def _repo_spec_for_token(specs: "list[dict]", tok: str) -> "tuple[dict | None, bool]":
+    """repo の登録名/URLに加え、URL末尾のリポジトリ名も一意なら受け付ける。
+
+    人が普段使う workspace 名（例 ``sandbox``）と repos.json の論理名（例 ``src``）が
+    異なるだけで書込先なし run へ落ちるのを防ぐ。basename が複数候補に一致する場合は
+    曖昧なので推測しない。返り値の bool は別名一致か。"""
+    token = _strip_code(str(tok or "").strip())
+    exact = repo_spec_map(specs).get(token)
+    if exact:
+        return exact, False
+    matches = []
+    for spec in specs:
+        url = str(spec.get("url") or "").rstrip("/").removesuffix(".git")
+        if url and url.rsplit("/", 1)[-1] == token:
+            matches.append(spec)
+    return (matches[0], True) if len(matches) == 1 else (None, False)
+
+
 def route_target(task: Task, policy: "Policy") -> str:
     """policy の `route: <パターン> -> <repo名>` を順に評価し、最初に一致した repo 名を返す（無ければ ""）。"""
     for rule in policy.route:
@@ -378,9 +396,10 @@ def resolve_workspace(cfg: "Config", task: Task, policy: "Policy") -> "tuple[dic
 
     explicit = _strip_code(str(task.get("workspace") or "").strip())
     if explicit:                                  # 1. 人/過去ルーティングの明示指定（最優先）
-        sp = smap.get(explicit) or _raw_url_spec(explicit)
+        sp, alias = _repo_spec_for_token(specs, explicit)
+        sp = sp or _raw_url_spec(explicit)
         if sp:
-            return sp, "explicit"
+            return sp, "explicit-alias" if alias else "explicit"
     name = route_target(task, policy)             # 2. route: パターンルール（決定論）
     if name and smap.get(name) and not _is_reference_repo(smap[name]):
         return smap[name], "rule"
@@ -402,7 +421,7 @@ def resolve_and_persist_workspace(cfg: "Config", task: Task, policy: "Policy") -
     """タスクを書込先ワークスペースへルーティングし、決定を md（`- workspace:`/`- routed_by:`）へ
     書き戻して安定・監査可能にする（毎サイクル LLM を呼ばない）。返り値は解決した spec か None。"""
     spec, routed_by = resolve_workspace(cfg, task, policy)
-    if spec and routed_by != "explicit":          # 明示指定はそのまま（上書きしない）
+    if spec and routed_by != "explicit":          # 正規名と一致する明示指定だけはそのまま
         task.set("workspace", spec.get("name") or spec["url"])
         task.set("routed_by", routed_by)
         persist_task(cfg, task)
@@ -436,10 +455,11 @@ def _workspace_spec_for(cfg: "Config", task: Task) -> "dict | None":
     if not name:
         return None
     try:
-        smap = repo_spec_map(registry_specs(cfg, charter_for_task(cfg, task)))
+        specs = registry_specs(cfg, charter_for_task(cfg, task))
     except (OSError, ValueError):
-        smap = {}
-    spec = smap.get(name) or _raw_url_spec(name)
+        specs = []
+    spec, _alias = _repo_spec_for_token(specs, name)
+    spec = spec or _raw_url_spec(name)
     if spec and getattr(cfg, "task_branch", False):
         # タスク単位ターゲットブランチ: agent-flow は run 毎の af/<run-id> の代わりにこのブランチへ
         # push する（リトライも同一ブランチに積み増し、レビュー・MR の対象を 1 本に集約する）
@@ -494,5 +514,3 @@ def task_reference_specs(cfg: "Config", task: Task) -> "list[dict]":
             seen.add(url)
             out.append(s)
     return out
-
-

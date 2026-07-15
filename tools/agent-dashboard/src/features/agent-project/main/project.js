@@ -1250,6 +1250,25 @@ function _sourceRootPath(stateDir, prefixRel, branch) {
     .join(sep);
 }
 
+function _repoTopPath(dir, prefixRel) {
+  const { sep, head } = _splitTail(dir, _prefixDepth(prefixRel));
+  return head.join(sep);
+}
+
+// 旧 blocked 票は cfg.workdir（状態 worktree の repo top）を「所在」として記録していた。
+// その path のまま git diff すると変更は全て .agent-project/** で、成果物フィルタ後に空になる。
+// state/source の project dir と git prefix が分かる場合だけ、完全一致する誤った repo top を補正する。
+function _repairStateDeliveryPaths(entries, stateProjectDir, sourceProjectDir, prefixRel) {
+  if (!sourceProjectDir || pathsEqual(stateProjectDir, sourceProjectDir)) return entries || [];
+  const stateTop = _repoTopPath(stateProjectDir, prefixRel);
+  const sourceTop = _repoTopPath(sourceProjectDir, prefixRel);
+  return (entries || []).map((entry) =>
+    entry && entry.role !== 'reference' && entry.path && pathsEqual(entry.path, stateTop)
+      ? { ...entry, path: sourceTop }
+      : entry
+  );
+}
+
 function fromStateWorktree(stateDir, branch = DEFAULT_STATE_BRANCH) {
   // toStateWorktree の逆: 状態 worktree 側のパスを本体側（CLI --root が取る値）へ戻す。
   // worktree を --root に渡すと agent-project が二重リダイレクトする。
@@ -1473,6 +1492,15 @@ function readProject(workspaceDir, cfg) {
     synthesizeNeedsFromBacklog(listMdDir(needsDir, parseNeeds), backlog, needsDir),
     backlog
   );
+  const projectCfg = readToolConfig('agent-project', [workspace, path.join(workspace, '.agent')]);
+  const stateBranch = (projectCfg && projectCfg.values && projectCfg.values.state_branch) || DEFAULT_STATE_BRANCH;
+  const gp = gitShowPrefix(dir);
+  if (gp.ok) {
+    const sourceDir = fromStateWorktree(dir, stateBranch);
+    for (const need of needs) {
+      need.delivery = _repairStateDeliveryPaths(need.delivery, dir, sourceDir, gp.prefix);
+    }
+  }
   const decisionsAll = [];
   for (const f of safeList(path.join(dir, 'decisions'))) {
     if (!f.endsWith('.md')) continue;
@@ -1602,6 +1630,7 @@ module.exports = {
   resolveBusDir,
   _stateWorktreePath,
   _sourceRootPath,
+  _repairStateDeliveryPaths,
   _pathKey,
   pathsEqual,
   hostsMatch,

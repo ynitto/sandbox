@@ -51,6 +51,31 @@ const needVerifyRevisionHtml = new Function(
 const verifyRevisionConfirmMessage = new Function(
   `${grab('verifyRevisionConfirmMessage')}; return verifyRevisionConfirmMessage;`
 )();
+// eslint-disable-next-line no-new-func
+const deliveryReviewState = new Function(`${grab('deliveryReviewState')}; return deliveryReviewState;`)();
+// eslint-disable-next-line no-new-func
+const canDiagnoseNeed = new Function(`${grab('canDiagnoseNeed')}; return canDiagnoseNeed;`)();
+
+assert.deepStrictEqual(
+  deliveryReviewState([{ role: 'write', path: '/work/app', files: [] }], []),
+  { fileCount: 0, hasMr: false, canDiscover: true, hasContent: false },
+  '空のdeliveryエントリを検収物ありと数えず、Gitから確認可能な状態として区別する'
+);
+assert.strictEqual(
+  canDiagnoseNeed({ failureSummary: 'verify failed' }),
+  true,
+  '失敗情報のある要対応はAI診断できる'
+);
+assert.strictEqual(
+  canDiagnoseNeed({ kind: 'review', why: '検収待ち' }),
+  false,
+  '失敗情報のない通常検収には診断操作を出さない'
+);
+assert.deepStrictEqual(
+  deliveryReviewState([{ role: 'write', path: '/work/app', files: ['src/a.js'] }], []),
+  { fileCount: 1, hasMr: false, canDiscover: true, hasContent: true },
+  '変更ファイルがある場合だけ検収内容ありと判定する'
+);
 
 assert.strictEqual(
   taskForNeed(
@@ -132,7 +157,7 @@ assert.ok(
 const renderNeedDetailWithVerifyRevision = new Function(
   'isNeedSent', 'esc', 'needKindLabel', 'riskBadgeHtml', 'needDisplayTitle', 'NEED_ASK',
   'renderNeedFacts', 'needActionsHtml', 'specFilesHtml', 'mdToHtml', 'needVerifyRevisionHtml',
-  'taskForNeed', 'taskCompletionHint', 'runsForTask',
+  'taskForNeed', 'taskCompletionHint', 'runsForTask', 'canDiagnoseNeed',
   `${grab('renderNeedDetail')}; return renderNeedDetail;`
 )(
   () => false,
@@ -148,7 +173,8 @@ const renderNeedDetailWithVerifyRevision = new Function(
   needVerifyRevisionHtml,
   taskForNeed,
   () => null,
-  () => []
+  () => [],
+  canDiagnoseNeed
 );
 assert.ok(
   renderNeedDetailWithVerifyRevision(
@@ -157,6 +183,14 @@ assert.ok(
   ).includes('need-verify-revision'),
   '検証コマンド変更パネルをblocked要対応の詳細に組み込む'
 );
+const failureDiagnosisHtml = renderNeedDetailWithVerifyRevision(
+  { backlog: [{ id: 'T1', verify: 'npm test' }] },
+  { id: 'T1', title: '検証失敗', kind: 'blocked', decided: false, failureSummary: 'テスト失敗' }
+);
+assert.ok(failureDiagnosisHtml.includes('data-failure-diagnose="T1"'));
+assert.ok(failureDiagnosisHtml.includes('AIで失敗を診断'));
+assert.ok(renderer.includes('function openFailureDiagnosis('), '失敗診断を自動開始する入口が必要');
+assert.ok(renderer.includes('mode: state.doctorMode'), '追加質問でも診断モードを維持する');
 
 const needs = [
   { id: 'open-old', date: '2026-07-12' },

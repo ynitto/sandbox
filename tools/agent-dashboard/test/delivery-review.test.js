@@ -134,6 +134,20 @@ test('既知分が内部ファイルだけでもGit一覧を取り直すためde
   assert.strictEqual(n.delivery[0].files_total, 0);
 });
 
+test('旧票の state worktree 所在を本体リポジトリへ補正する', () => {
+  const entries = [{
+    name: 'write', role: 'write', path: '/work/project-agent-state',
+    base: '', branch: '', ref: '', files: [], files_total: 0,
+  }];
+  const repaired = project._repairStateDeliveryPaths(
+    entries,
+    '/work/project-agent-state/.agent-project',
+    '/work/project/.agent-project',
+    '.agent-project/'
+  );
+  assert.strictEqual(repaired[0].path, '/work/project');
+});
+
 test('複数リポジトリ見出しから delivery を復元する', () => {
   const detail = [
     '### リポジトリ: payments（書込先）',

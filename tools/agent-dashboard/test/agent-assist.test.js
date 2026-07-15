@@ -231,6 +231,28 @@ test('doctorPrompt: 任意の補足文を画面データと分離して渡す', 
   assert.ok(p.argv.includes('同期表示を中心に説明して'));
 });
 
+test('doctorPrompt: 失敗診断モードは原因・対処・再実行に特化した回答契約を使う', () => {
+  const p = agent.doctorPrompt(
+    { tab: 'needs', selected: { id: 'T1', failureSummary: 'verify failed', fullOutput: 'stderr' } },
+    '',
+    { mode: 'failure-diagnosis' }
+  );
+  for (const heading of [
+    '結論',
+    '根本原因候補と確度',
+    '対処対象',
+    '確認手順',
+    '修正候補',
+    '再実行方法',
+    '不足している情報',
+  ]) {
+    assert.ok(p.argv.includes(heading), `失敗診断の回答契約に「${heading}」が必要`);
+  }
+  assert.ok(p.argv.includes('読み取り専用'));
+  assert.ok(p.stdin.includes('failure-diagnosis'));
+  assert.ok(p.stdin.includes('verify failed'));
+});
+
 test('buildDoctorCommand: WSL UNC を cwd にしない（Windows ネイティブ CLI 対策）', () => {
   const unc = '\\\\wsl.localhost\\Ubuntu\\home\\me\\proj';
   const c = agent.buildDoctorCommand('kiro', '', 'x', unc);
@@ -250,7 +272,7 @@ test('Doctorはpreloadの限定APIから専用IPCだけを呼び出す', () => {
   const start = ipcSource.indexOf("handle('agent:doctor'");
   const end = ipcSource.indexOf("handle('agent:resolve'", start);
   const handler = ipcSource.slice(start, end);
-  assert.ok(handler.includes('{ dir, context, userPrompt }'), '任意入力をDoctorへ渡す');
+  assert.ok(handler.includes('{ dir, context, userPrompt, mode }'), '任意入力と診断モードをDoctorへ渡す');
   assert.ok(!handler.includes("if (!dir)"), 'プロジェクト未選択でも相談できる');
 });
 

@@ -420,9 +420,9 @@ function registerIpc(ctx) {
   );
 
   // 現在画面のスナップショットを読み取り専用CLIへ渡し、助言本文だけを返す。
-  handle('agent:doctor', ({ dir, context, userPrompt }) => {
+  handle('agent:doctor', ({ dir, context, userPrompt, mode }) => {
     if (!context || typeof context !== 'object') throw new Error('画面の状態が指定されていません');
-    return agent.completeDoctor(loadConfig(), { dir: dir || null, context, userPrompt });
+    return agent.completeDoctor(loadConfig(), { dir: dir || null, context, userPrompt, mode });
   });
 
   // ⚙ 設定画面の表示用: 今どの CLI / モデルで補完するかの解決結果（実行はしない）

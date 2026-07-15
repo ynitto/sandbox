@@ -658,6 +658,8 @@ table.list tr.clickable:hover { background: var(--bg2); }
 }
 .task-complete-how { color: var(--text); }
 .need-facts { line-height: 1.6; }
+.need-facts-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.need-facts-heading h3 { margin-right: auto; }
 .need-files { gap: 6px; flex-wrap: wrap; margin-top: 6px; }
 .need-detail summary { min-height: 40px; display: flex; align-items: center; cursor: pointer; color: var(--accent); }
 .mobile-master-back { display: none; }
@@ -886,6 +888,16 @@ dialog h3 { font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
 }
 .need-output-button { margin-top: 12px; min-height: 40px; }
 .delivery-review-body { max-height: none; overflow: hidden; }
+.delivery-empty-state {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--muted);
+  border-radius: 7px;
+  background: var(--bg2);
+}
+.delivery-empty-state h3 { margin: 0 0 4px; color: var(--fg); }
+.delivery-empty-state p { margin: 0; color: var(--muted); }
 .delivery-review-layout {
   display: grid;
   grid-template-columns: minmax(240px, 30%) minmax(0, 1fr);
