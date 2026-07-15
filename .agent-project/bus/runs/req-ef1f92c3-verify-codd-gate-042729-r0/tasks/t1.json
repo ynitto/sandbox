@@ -1,0 +1,6 @@
+{
+  "id": "t1",
+  "goal": "tools/agent-project/agent_project 内の _first_command_line の現行実装と全呼び出し元を読み、入力として渡ってくる verify 合成出力の実例と、現状どの行をコマンドとみなしているかの判定規則を正確に書き出す（推測ではなくソース行を根拠にする）。",
+  "deps": [],
+  "kind": "work"
+}

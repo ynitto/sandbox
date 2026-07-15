@@ -1,0 +1,8 @@
+{
+  "id": "t7",
+  "goal": "選定された案に沿って tools/agent-project/agent_project の _first_command_line を最小差分で修正し、日本語『検証コマンド:』ラベル付き出力から codd-gate コマンド行を抽出できるようにする。合わせて t3 のバリエーションを覆う回帰テストを追加する。",
+  "deps": [
+    "t6"
+  ],
+  "kind": "work"
+}
