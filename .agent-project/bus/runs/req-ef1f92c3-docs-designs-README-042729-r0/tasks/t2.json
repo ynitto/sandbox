@@ -1,6 +1,0 @@
-{
-  "id": "t2",
-  "goal": "docs/designs 配下の「一貫性ゲート・ループ拡張」カテゴリ（codd-gate-design.md、および kiro-loop-* / agent-loop-* 系）を棚卸しし、各ファイルの要旨・対象読者・現行/歴史的の別を Markdown 表で出力する。kiro-loop-* と agent-loop-* の同名重複 4 組については、どちらが現行でどちらが agent-tools-rename-design.md 由来の改名残骸かを内容と更新日から判定し、README で両方を可視化するための注記文案（片方だけを無言で載せない）を添えること。",
-  "deps": [],
-  "kind": "work"
-}

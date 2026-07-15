@@ -1,9 +1,0 @@
-{
-  "id": "loop",
-  "goal": "完了条件を機械的に検証し、満たすまで README を修正して反復する。(1) docs/designs/README.md 内の全相対リンクを抽出し、各リンク先が実ファイルとして解決することを確認（リンク切れゼロ）。(2) 完了条件コマンド `test -f docs/designs/README.md && grep -q 'agent-project-design.md' docs/designs/README.md && grep -q 'agent-flow-design.md' docs/designs/README.md && grep -q 'codd-gate-design.md' docs/designs/README.md && grep -q 'agent-tools-rename-design.md' docs/designs/README.md` を実行し終了コードを確認する。(3) 失敗した場合は原因（リンク切れ・記載漏れ）を特定して README を修正し、(1)(2) を再実行する。終了コード 0 かつリンク切れゼロになった時点で即座に終了し、実行したコマンドと終了コードを報告する。",
-  "deps": [
-    "synth",
-    "docs"
-  ],
-  "kind": "verify"
-}

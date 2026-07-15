@@ -1,8 +1,0 @@
-{
-  "id": "synth",
-  "goal": "gate が確定したカテゴリ割当表と読む順序に従い docs/designs/README.md を新規作成する。冒頭に主要 4 設計（agent-project-design.md, agent-flow-design.md, codd-gate-design.md, agent-tools-rename-design.md）への相対リンクを置いた導線セクションを設け、続けて全設計書をカテゴリ別に漏れなく列挙し、各項目に 1〜2 文の要旨を添える。リンクはすべて同ディレクトリ基準の相対パス（例 ./agent-project-design.md）で書き、kiro-loop-* と agent-loop-* の重複組は両方を載せたうえでどちらが現行かを注記する。",
-  "deps": [
-    "gate"
-  ],
-  "kind": "synthesize"
-}
