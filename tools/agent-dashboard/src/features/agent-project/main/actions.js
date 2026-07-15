@@ -472,5 +472,7 @@ module.exports = {
   requestLifecycle,
   startProject,
   findProjectConfig,
+  splitCommand,
+  runProjectCli,
   DECISION_MARKER,
 };

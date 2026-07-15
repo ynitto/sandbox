@@ -50,4 +50,46 @@ test('startProject ソースは findProjectConfig と cwd を使う', () => {
     'cwd を設定ディレクトリに合わせる');
 });
 
-console.log(`\n${passed} tests passed (cli-config)`);
+test('splitCommand はクォート付きの空白入りパスを 1 要素に保つ', () => {
+  assert.deepStrictEqual(actions.splitCommand('agent-project'), ['agent-project']);
+  assert.deepStrictEqual(
+    actions.splitCommand('python3 /opt/tools/agent-project.py'),
+    ['python3', '/opt/tools/agent-project.py']
+  );
+  assert.deepStrictEqual(
+    actions.splitCommand('"C:\\Program Files\\Python\\python.exe" agent-project.py'),
+    ['C:\\Program Files\\Python\\python.exe', 'agent-project.py']
+  );
+  assert.deepStrictEqual(actions.splitCommand("  'a b'  c "), ['a b', 'c']);
+});
+
+async function asyncTest(name, fn) {
+  await fn();
+  passed += 1;
+  console.log(`ok - ${name}`);
+}
+
+(async () => {
+  await asyncTest('runProjectCli は shell を介さず引数を安全に渡す', async () => {
+    // 特殊文字（% $ ; スペース）入りの引数が変質せず届く（旧 shell:true 経路の欠陥の固定）
+    const arg = 'reason with space %PATH% $HOME ;echo pwned';
+    const res = await actions.runProjectCli(
+      `${JSON.stringify(process.execPath)} -e console.log(process.argv[1])`,
+      [arg],
+      10000
+    );
+    assert.strictEqual(res.output, arg);
+  });
+
+  await asyncTest('runProjectCli は起動失敗を分かりやすいエラーで返す', async () => {
+    await assert.rejects(
+      () => actions.runProjectCli('no-such-cli-xyz', ['status'], 5000),
+      /agent-project を起動できません/
+    );
+  });
+
+  console.log(`\n${passed} tests passed (cli-config)`);
+})().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

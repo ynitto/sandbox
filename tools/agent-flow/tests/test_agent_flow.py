@@ -134,6 +134,32 @@ class ProtocolTests(unittest.TestCase):
         winners = [n for n, ok in results.items() if ok]
         self.assertEqual(len(winners), 1, f"勝者は 1 人のはず: {results}")
 
+    def test_extend_claim_keeps_ts_and_extends_lease(self):
+        # 心拍は lease_until だけを延ばす（ts を振り直すと勝者タイブレークの根拠が動く）
+        self._add_task("t1")
+        self.assertTrue(self.bus.try_claim("t1", "w1", lease_sec=60))
+        before = kf.read_json(os.path.join(self.bus._claim_dir("t1"), "w1.json"))
+        self.assertTrue(self.bus.extend_claim("t1", "w1", lease_sec=600))
+        after = kf.read_json(os.path.join(self.bus._claim_dir("t1"), "w1.json"))
+        self.assertEqual(after["ts"], before["ts"])
+        self.assertGreater(after["lease_until"], before["lease_until"])
+
+    def test_extend_claim_refuses_after_loss(self):
+        # lease 失効中に他ワーカーが正当に claim したら、旧ワーカーの心拍は延長できない
+        # （書き戻すと二重実行になる）
+        self._add_task("t1")
+        kf.write_json_atomic(os.path.join(self.bus._claim_dir("t1"), "old.json"),
+                             {"who": "old", "ts": 1.0, "lease_until": time.time() - 10})
+        self.assertTrue(self.bus.try_claim("t1", "w2", lease_sec=60))
+        self.assertFalse(self.bus.extend_claim("t1", "old", lease_sec=600))
+        self.assertEqual(self.bus._winner("t1"), "w2")
+
+    def test_extend_claim_refuses_when_released(self):
+        # release/withdraw 済みの claim を心拍が復活させない
+        self._add_task("t1")
+        self.assertFalse(self.bus.extend_claim("t1", "ghost", lease_sec=600))
+        self.assertIsNone(self.bus._winner("t1"))
+
     def test_claim_lock_is_off_bus(self):
         # 排他ロックはバス（git に乗る領域）の外＝一時領域に置く
         lp = kf._claim_lock_path(self.bus._claim_dir("t1"))
@@ -4596,6 +4622,33 @@ class CircuitBreakerTests(unittest.TestCase):
         self.assertEqual(kf._retry_depth("gen1-r1", {}), 1)
         self.assertEqual(kf._retry_depth("gen1-r1-r2", {}), 2)
         self.assertEqual(kf._retry_depth("x", {"retries": 4}), 4)  # 明示カウンタ優先
+
+    def test_continue_agent_evaluator_error_fails_closed(self):
+        # 評価役 LLM の失敗（例外）を done に倒さない: 未達ノードが残るなら failed で終端し、
+        # resume/リトライに回す（失敗 run を「成功」として消費者へ渡さない）。
+        nodes = {"t1": {"id": "t1", "goal": "g", "deps": [], "kind": "work"}}
+        results = {"t1": {"status": "failed", "output": "boom"}}
+        with mock.patch.object(kf, "run_agent", side_effect=RuntimeError("llm down")):
+            decision, new, reason = kf.continue_agent("req", nodes, results, 0)
+        self.assertEqual(decision, "failed")
+        self.assertEqual(new, [])
+        self.assertIn("t1", reason)
+
+    def test_continue_agent_evaluator_error_all_done_is_done(self):
+        # 全ノード done なら評価役が落ちても自明に done（偽 failed で手戻りさせない）
+        nodes = {"t1": {"id": "t1", "goal": "g", "deps": [], "kind": "work"}}
+        results = {"t1": {"status": "done", "output": "ok"}}
+        with mock.patch.object(kf, "run_agent", side_effect=RuntimeError("llm down")):
+            decision, new, _ = kf.continue_agent("req", nodes, results, 0)
+        self.assertEqual(decision, "done")
+        self.assertEqual(new, [])
+
+    def test_normalize_verify_ambiguous_fails_closed(self):
+        # verify=pass / verify=fail のどちらも無い曖昧出力は fail（偽成功でゲートを通さない）
+        self.assertFalse(kf._normalize_verify("LGTM 問題ありません", None)["ok"])
+        self.assertFalse(kf._normalize_verify("", None)["ok"])
+        # 両方書かれた矛盾出力も fail
+        self.assertFalse(kf._normalize_verify("verify=pass … いや verify=fail", None)["ok"])
 
     def test_continue_agent_circuit_breaker_short_circuits(self):
         # 評価役 LLM を呼ぶ前に、上限到達の系統を検知して done で打ち切る（LLM 不要）

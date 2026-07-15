@@ -3870,6 +3870,25 @@ class TestApprovalGate(unittest.TestCase):
             km.ingest_feedback(cfg, km.load_tasks(cfg.backlog))
             self.assertEqual(km.load_tasks(cfg.backlog)[0].status, "ready")
 
+    def test_review_empty_checkbox_approves_as_done(self):
+        # review 票の空 [x]（記入なしのチェックのみ）は承認＝ approve と同じ done 確定経路。
+        # 従来は ready に戻って検証済みの成果が最初から再実行されていた（手戻り）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "## T1: deploy\n- status: ready\n- verify: `true`\n- review: human\n- retries: 0\n")
+            cfg = cfg_for(d)
+            km.run_loop(cfg)                                       # verify PASS → review 待ち
+            nf = cfg.needs / "T1.md"
+            self.assertTrue(nf.exists())
+            nf.write_text(nf.read_text(encoding="utf-8").replace("- [ ] 確定", "- [x] 確定"),
+                          encoding="utf-8")
+            ingested = km.ingest_feedback(cfg, km.load_tasks(cfg.backlog))
+            self.assertEqual(ingested, ["T1"])
+            self.assertFalse((cfg.backlog / "T1.md").exists())     # ready に戻らない
+            self.assertTrue((cfg.archive_dir() / "T1.md").exists())  # done 確定（archive 済み）
+            self.assertFalse(nf.exists())                          # 票はクリアされる
+            self.assertIn("T1", (d / "DELIVERY.md").read_text(encoding="utf-8"))
+
 
 class TestCohort(unittest.TestCase):
     """pilot-then-batch: 同様手順の繰り返しは pilot を1件先行→人レビューで指示を固め→残りを生成。"""
