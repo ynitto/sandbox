@@ -968,3 +968,5 @@
 - 2026-07-17 05:33:05 cycle 2: verify-codd-gate-042729 → 人の判断（繰り返し NG）
 - 2026-07-17 05:58:42 cycle 3: docs-designs-README-042729 → 人の判断（繰り返し NG）
 - 2026-07-17 05:58:45 === agent-project 停止 reason=drained cycles=3 done=0 blocked=3 notified=True promoted=0 ===
+- 2026-07-17 05:58:47 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-17 05:58:47 === project watch: 監視中（charter 更新/フィードバック待ち）===
