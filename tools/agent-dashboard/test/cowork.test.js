@@ -81,4 +81,25 @@ test('wslPath は WSL UNC を Linux パスへ変換する', () => {
   assert.strictEqual(cowork.wslPath('/home/me/repo'), '/home/me/repo');
 });
 
+test('decodeCliOutput は不正 UTF-8 を Shift_JIS として読む', () => {
+  // CP932 の「あ」(0x82 0xA0)
+  const buf = Buffer.from([0x82, 0xa0]);
+  assert.strictEqual(cowork.decodeCliOutput(buf), 'あ');
+  assert.strictEqual(cowork.decodeCliOutput(Buffer.from('ok', 'utf8')), 'ok');
+});
+
+test('overview の既定はプロセス探査せず probed=false', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-light-'));
+  fs.mkdirSync(path.join(repo, '.kiro-loop', 'logs'), { recursive: true });
+  fs.writeFileSync(path.join(repo, '.kiro-loop', 'logs', 'run.log'), 'finished successfully\n');
+  const ov = cowork.overview({ cowork: { items: [{ id: 'daily', type: 'loop', repo }] } });
+  assert.strictEqual(ov.items[0].state.probed, false);
+  assert.strictEqual(ov.items[0].state.running, false);
+  const probed = cowork.overview(
+    { cowork: { items: [{ id: 'daily', type: 'loop', repo }] } },
+    { probeProcess: true }
+  );
+  assert.strictEqual(probed.items[0].state.probed, true);
+});
+
 console.log(`\n${passed} cowork tests passed`);

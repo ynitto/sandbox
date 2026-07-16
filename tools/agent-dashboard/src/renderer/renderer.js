@@ -39,6 +39,8 @@ const state = {
   cowork: null,
   coworkDraft: null,
   coworkEditIndex: -1,
+  coworkRun: null,       // { id, phase: 'running'|'ok'|'error', message, at }
+  coworkForceShow: false, // 設定から「開く」したとき、作業 0 件でもタブを出す
   timer: null,
   busy: false,
   // 要対応（needs）の前回カウント。増分を検知して OS 通知する（張り付き監視の解消）。
@@ -5996,8 +5998,10 @@ async function refreshAll({ sync = true } = {}) {
   try {
     if (sync) await maybeAutoGitPull();
     await refreshDiscovery();
+    // Cowork は軽量 overview（ログ推定のみ・発見キャッシュ利用）。重いプロセス探査は実行直後/手動更新のみ。
     await refreshCowork();
     if (state.selectedDir) await reloadProject({ refreshRemoteHealth: sync });
+    if (activeTab() === 'cowork') renderCowork();
   } finally {
     state.busy = false;
   }
@@ -6023,6 +6027,8 @@ function setupPolling() {
         || $('dlg-need-output').open
         || $('dlg-delivery-review').open
         || $('dlg-doctor').open
+        || ($('dlg-cowork-work') && $('dlg-cowork-work').open)
+        || ($('dlg-cowork-save') && $('dlg-cowork-save').open)
       )
         return;
       const ae = document.activeElement;
@@ -6079,76 +6085,195 @@ function coworkRepos() {
     .filter((p) => p.dir);
 }
 
-async function refreshCowork() {
+function coworkItemCount() {
+  const live = (state.cowork && Array.isArray(state.cowork.items)) ? state.cowork.items.length : 0;
+  const draft = state.coworkDraft ? state.coworkDraft.length : 0;
+  const cfg = configuredCoworkItems().length;
+  return Math.max(live, draft, cfg);
+}
+
+// 作業（発見 or 手動）が無いときは Cowork タブを隠す。設定から明示オープン中は例外。
+function updateCoworkTabVisibility() {
+  const btn = $('tab-btn-cowork');
+  const pane = $('tab-cowork');
+  if (!btn || !pane) return;
+  const show = state.coworkForceShow || coworkItemCount() > 0 || !!(state.cowork && state.cowork.error);
+  btn.classList.toggle('hidden', !show);
+  btn.hidden = !show;
+  if (!show && activeTab() === 'cowork') switchTab('overview');
+}
+
+async function refreshCowork({ probe = false, forceDiscover = false } = {}) {
   if (!api.coworkOverview) return;
   try {
-    state.cowork = await api.coworkOverview();
+    state.cowork = await api.coworkOverview({
+      probeProcess: !!probe,
+      forceDiscover: !!forceDiscover,
+    });
   } catch (err) {
     state.cowork = { error: err.message, items: [] };
   }
+  updateCoworkTabVisibility();
 }
 
 function workTypeLabel(type) {
   return type === 'state-machine' ? '定型業務' : '定期実行';
 }
 
+function coworkStatusClass(status) {
+  const s = String(status || 'unknown');
+  if (s === 'running') return 'st-running';
+  if (s === 'failed') return 'st-failed';
+  if (s === 'done') return 'st-done';
+  if (s === 'idle') return 'st-ready';
+  return 'st-draft';
+}
+
+function coworkRepoLabel(repo) {
+  const s = String(repo || '');
+  if (!s) return '';
+  const parts = s.replace(/\\/g, '/').split('/').filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : s;
+}
+
+function coworkRunBannerHtml() {
+  const r = state.coworkRun;
+  if (!r) return '';
+  if (r.phase === 'running') {
+    return `<div class="cowork-run-banner running" role="status">「${esc(r.name || r.id)}」を実行中…</div>`;
+  }
+  if (r.phase === 'ok') {
+    return `<div class="cowork-run-banner ok" role="status">「${esc(r.name || r.id)}」の実行が完了しました${r.message ? ` — ${esc(r.message)}` : ''}</div>`;
+  }
+  return `<div class="cowork-run-banner error" role="alert">「${esc(r.name || r.id)}」の実行に失敗しました${r.message ? `: ${esc(r.message)}` : ''}</div>`;
+}
+
 function renderCowork() {
   const el = $('tab-cowork');
   if (!el) return;
+  updateCoworkTabVisibility();
   const cw = state.cowork;
   const draft = coworkDraft();
-  const observed = new Map(((cw && cw.items) || []).map((x) => [x.id, x]));
+  const observed = new Map(((cw && cw.items) || []).map((x) => [String(x.id), x]));
+  const busyId = state.coworkRun && state.coworkRun.phase === 'running' ? String(state.coworkRun.id) : '';
   if (cw && cw.error) {
     el.innerHTML = `<div class="empty">Cowork の読み込みに失敗しました: ${esc(cw.error)}</div>`;
     return;
   }
   el.innerHTML = `
-    <div class="panel">
-      <div class="row between">
+    <div class="cowork-shell">
+      <header class="cowork-header">
         <div>
-          <h2>Cowork</h2>
-          <p class="muted">登録済みリポジトリを参照する定期実行と定型業務を、同じ一覧で管理します。状態は新規ファイルではなく、既存ログとプロセスから動的に推定します。</p>
+          <h2 class="summary-kicker">Cowork</h2>
+          <p class="muted">リポジトリ内の kiro-loop / statemachine 設定と、手動登録した定期実行・定型業務です。状態は既存ログから推定します。</p>
         </div>
         <div class="row">
           <button id="btn-cowork-add">追加</button>
           <button id="btn-cowork-save">保存…</button>
+          <button id="btn-cowork-refresh" title="設定を再走査し、実行中プロセスも確認">更新</button>
         </div>
-      </div>
-      <div class="muted">loop: ${esc((cw && cw.loopCommand) || 'kiro-loop')}（将来 ${esc((cw && cw.replacementHint) || 'agent-loop')}） / state machine: ${esc((cw && cw.stateMachineCommand) || 'statemachine-use')}</div>
-      ${draft.length ? draft.map((item, i) => {
-        const id = item.id || item.name || `${item.type || 'loop'}-${i + 1}`;
-        const live = observed.get(String(id)) || {};
-        const st = live.state || {};
+      </header>
+      ${coworkRunBannerHtml()}
+      <div class="cowork-meta muted">loop: ${esc((cw && cw.loopCommand) || 'kiro-loop')} ／ state machine: ${esc((cw && cw.stateMachineCommand) || 'statemachine-use')}</div>
+      ${draft.length ? `<div class="cowork-list" role="list">${draft.map((item, i) => {
+        const id = String(item.id || item.name || `${item.type || 'loop'}-${i + 1}`);
+        const live = observed.get(id) || {};
+        const st = live.state || item.state || {};
         const discovered = item.source === 'discovered';
         const disabledLoop = item.type === 'loop' && item.enabled === false;
-        return `<div class="card">
-          <div class="row between">
-            <div><strong>${esc(item.name || id)}</strong> <span class="chip">${esc(workTypeLabel(item.type))}</span> <span class="chip">${esc(statusLabel(st.status || 'unknown'))}</span>${discovered ? ' <span class="chip">発見</span>' : ''}${disabledLoop ? ' <span class="chip">無効</span>' : ''}</div>
-            <div class="row">
-              <button data-cowork-run="${esc(String(id))}" data-cowork-type="${esc(item.type || 'loop')}">実行</button>
-              <button data-cowork-edit="${i}">編集</button>
-              ${discovered ? '' : `<button data-cowork-delete="${i}">削除</button>`}
+        const running = !!st.running || busyId === id;
+        const status = running ? 'running' : (st.status || 'unknown');
+        const run = state.coworkRun && String(state.coworkRun.id) === id ? state.coworkRun : null;
+        const detail = item.type === 'state-machine'
+          ? (item.workflow ? `workflow ${item.workflow}` : 'workflow 未設定')
+          : (item.schedule ? `schedule ${item.schedule}` : 'schedule 未設定');
+        return `<article class="cowork-item ${running ? 'is-running' : ''} ${run && run.phase === 'error' ? 'is-error' : ''}" role="listitem">
+          <div class="cowork-item-main">
+            <div class="cowork-item-title">
+              <span class="dot ${running ? 'running' : ''}" title="${running ? '実行中' : '停止中'}"></span>
+              <strong>${esc(item.name || id)}</strong>
+              <span class="status-chip ${coworkStatusClass(status)}" title="${esc(status)}">${esc(statusLabel(status))}</span>
+              <span class="label-chip">${esc(workTypeLabel(item.type))}</span>
+              ${discovered ? '<span class="label-chip">設定ファイル</span>' : '<span class="label-chip">手動</span>'}
+              ${disabledLoop ? '<span class="label-chip">無効</span>' : ''}
             </div>
+            <div class="cowork-item-sub muted">
+              <span title="${esc(item.repo || '')}">${esc(coworkRepoLabel(item.repo))}</span>
+              <span>${esc(detail)}</span>
+              ${st.lastLogAt ? `<span>最終ログ ${esc(fmtTime(st.lastLogAt))}</span>` : ''}
+            </div>
+            ${discovered && item._src ? `<div class="cowork-item-source muted mono">${esc(item._src.file || '')}</div>` : ''}
+            ${st.running && st.process ? `<div class="cowork-item-process muted mono">${esc(st.process)}</div>` : ''}
+            ${run && run.phase === 'error' && run.detail ? `<pre class="cowork-item-error mono">${esc(run.detail)}</pre>` : ''}
+            ${!running && st.status === 'failed' && st.logTail ? `<pre class="cowork-item-log mono">${esc(st.logTail.slice(-600))}</pre>` : ''}
           </div>
-          <div class="muted mono">repo: ${esc(item.repo || '')}</div>
-          <div class="muted">${item.type === 'state-machine' ? `workflow: ${esc(item.workflow || '')}` : `schedule: ${esc(item.schedule || '未設定')}`}</div>
-          ${discovered && item._src ? `<div class="muted mono">source: ${esc(item._src.file || '')}</div>` : ''}
-          ${st.running ? `<div class="muted mono">process: ${esc(st.process || '')}</div>` : ''}
-          ${st.lastLog ? `<div class="muted mono">log: ${esc(st.lastLog)} ${esc(st.lastLogAt || '')}</div>` : ''}
-        </div>`;
-      }).join('') : '<div class="empty">Cowork 作業は未登録です。「追加」から登録済みリポジトリを選んで作成してください。</div>'}
+          <div class="cowork-item-actions">
+            <button data-cowork-run="${esc(id)}" data-cowork-type="${esc(item.type || 'loop')}" data-cowork-name="${esc(item.name || id)}" ${busyId ? 'disabled' : ''}>${busyId === id ? '実行中…' : '実行'}</button>
+            <button data-cowork-edit="${i}" ${busyId ? 'disabled' : ''}>編集</button>
+            ${discovered ? '' : `<button data-cowork-delete="${i}" ${busyId ? 'disabled' : ''}>削除</button>`}
+          </div>
+        </article>`;
+      }).join('')}</div>` : '<div class="empty">表示できる Cowork 作業はありません。<br>登録済みリポジトリに <span class="mono">.kiro/kiro-loop.*</span> か <span class="mono">.statemachine/*/workflow.yaml</span> があるか、「追加」で手動登録してください。</div>'}
     </div>`;
-  $('btn-cowork-add').addEventListener('click', () => openCoworkWorkDialog(-1));
-  $('btn-cowork-save').addEventListener('click', openCoworkSaveDialog);
+  const addBtn = $('btn-cowork-add');
+  if (addBtn) addBtn.addEventListener('click', () => openCoworkWorkDialog(-1));
+  const saveBtn = $('btn-cowork-save');
+  if (saveBtn) saveBtn.addEventListener('click', openCoworkSaveDialog);
+  const refreshBtn = $('btn-cowork-refresh');
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', async () => {
+      await refreshCowork({ probe: true, forceDiscover: true });
+      state.coworkDraft = null;
+      renderCowork();
+    });
+  }
   el.querySelectorAll('[data-cowork-edit]').forEach((btn) => btn.addEventListener('click', () => openCoworkWorkDialog(Number(btn.dataset.coworkEdit))));
-  el.querySelectorAll('[data-cowork-delete]').forEach((btn) => btn.addEventListener('click', () => { coworkDraft().splice(Number(btn.dataset.coworkDelete), 1); renderCowork(); }));
+  el.querySelectorAll('[data-cowork-delete]').forEach((btn) => btn.addEventListener('click', () => {
+    coworkDraft().splice(Number(btn.dataset.coworkDelete), 1);
+    updateCoworkTabVisibility();
+    renderCowork();
+  }));
   el.querySelectorAll('[data-cowork-run]').forEach((btn) => btn.addEventListener('click', async () => {
     const id = btn.dataset.coworkRun;
     const type = btn.dataset.coworkType;
-    const res = await guard('Cowork 実行', () => type === 'state-machine' ? api.coworkRunStateMachine(id, '') : api.coworkRunLoop(id));
-    toast(res && res.ok ? 'Cowork 作業を実行しました' : `Cowork 作業が失敗しました: ${(res && (res.stderr || res.error)) || ''}`, !!(res && res.ok));
-    await refreshCowork(); renderCowork();
+    const name = btn.dataset.coworkName || id;
+    state.coworkRun = { id, name, phase: 'running', message: '', detail: '', at: Date.now() };
+    renderCowork();
+    let res;
+    try {
+      res = type === 'state-machine'
+        ? await api.coworkRunStateMachine(id, '')
+        : await api.coworkRunLoop(id);
+    } catch (err) {
+      res = { ok: false, error: err.message || String(err) };
+    }
+    const detail = String((res && (res.stderr || res.stdout || res.error)) || '').trim();
+    const message = detail ? detail.slice(0, 240) : (res && res.ok ? '' : 'エラー詳細なし');
+    state.coworkRun = {
+      id,
+      name,
+      phase: res && res.ok ? 'ok' : 'error',
+      message,
+      detail: detail.slice(0, 1200),
+      at: Date.now(),
+    };
+    toast(
+      res && res.ok ? `Cowork「${name}」を実行しました` : `Cowork「${name}」が失敗しました: ${message}`,
+      !!(res && res.ok)
+    );
+    await refreshCowork({ probe: true });
+    renderCowork();
   }));
+}
+
+async function openCoworkFromSettings() {
+  state.coworkForceShow = true;
+  updateCoworkTabVisibility();
+  $('dlg-settings').close();
+  switchTab('cowork');
+  await refreshCowork({ forceDiscover: true });
+  renderCowork();
+  if (!coworkDraft().length) openCoworkWorkDialog(-1);
 }
 
 function openCoworkWorkDialog(index) {
@@ -6215,7 +6340,9 @@ function applyCoworkWorkDialog() {
   }
   if (idx >= 0) coworkDraft()[idx] = item;
   else coworkDraft().push(item);
+  state.coworkForceShow = true;
   $('dlg-cowork-work').close();
+  updateCoworkTabVisibility();
   renderCowork();
 }
 
@@ -6238,7 +6365,8 @@ async function saveCoworkDraft() {
   state.config = res.config;
   state.coworkDraft = null;
   $('dlg-cowork-save').close();
-  await refreshCowork();
+  await refreshCowork({ forceDiscover: true });
+  updateCoworkTabVisibility();
   renderCowork();
   const failed = (res.git || []).filter((x) => x.result && x.result.ok === false);
   const wbErrors = (res.writeback && res.writeback.errors) || [];
@@ -6271,6 +6399,8 @@ async function init() {
   $('btn-cw-ok').addEventListener('click', (ev) => { ev.preventDefault(); applyCoworkWorkDialog(); });
   $('btn-cw-save-cancel').addEventListener('click', () => $('dlg-cowork-save').close());
   $('btn-cw-save-ok').addEventListener('click', (ev) => { ev.preventDefault(); saveCoworkDraft(); });
+  const btnCoworkOpen = $('btn-settings-cowork-open');
+  if (btnCoworkOpen) btnCoworkOpen.addEventListener('click', (ev) => { ev.preventDefault(); openCoworkFromSettings(); });
   $('btn-task-close').addEventListener('click', () => $('dlg-task').close());
   $('btn-enq-cancel').addEventListener('click', () => $('dlg-enqueue').close());
   $('btn-enq-submit').addEventListener('click', submitEnqueue);

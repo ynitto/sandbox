@@ -3,27 +3,46 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { makeLoopProvider, isWslPath, wslPath, shellQuote, sh: providerSh } = require('./loopProvider');
-const { _pathKey } = require('../../agent-project/main/project');
+const {
+  makeLoopProvider, isWslPath, wslPath, shellQuote, sh: providerSh, decodeCliOutput,
+} = require('./loopProvider');
+const { _pathKey, _isPosixAbs, toViewerPath } = require('../../agent-project/main/project');
 const { parseFlatYaml } = require('../../agent-project/main/toolconfig');
 const {
   discoverCoworkItems, parseKiroLoopPrompts, scheduleOf,
 } = require('./discover');
 const { applyKiroLoopEdits, applyStatemachineEdits } = require('./writeback');
 
+// 発見結果キャッシュ。overview のポーリングごとに roots を再走査しない。
+const DISCOVER_TTL_MS = 30000;
+let _discoverCache = { key: '', at: 0, items: null };
+
+function discoverCacheKey(config) {
+  const roots = ((config && config.projects && config.projects.roots) || []).map(String).join('\0');
+  const cw = (config && config.cowork) || {};
+  const depth = cw.scanDepth || (config && config.projects && config.projects.scanDepth) || 2;
+  return `${roots}|${depth}|${cw.discover === false ? '0' : '1'}`;
+}
+
+function invalidateDiscoverCache() {
+  _discoverCache = { key: '', at: 0, items: null };
+}
+
 function sh(command, args, options = {}) {
-  const res = spawnSync(command, args, {
+  const argv = (args || []).map(String);
+  const res = spawnSync(String(command), argv, {
     cwd: options.cwd || process.cwd(),
-    encoding: options.encoding || 'utf8',
-    shell: process.platform === 'win32' && command !== 'git',
+    encoding: 'buffer',
+    // git / wsl.exe は argv 配列で直接起動（cmd.exe 経由の日本語化けを避ける）
+    shell: false,
     timeout: options.timeoutMs || 30000,
     windowsHide: true,
   });
   return {
     ok: res.status === 0,
     status: res.status,
-    stdout: (res.stdout || '').trim(),
-    stderr: (res.stderr || '').trim(),
+    stdout: decodeCliOutput(res.stdout).trim(),
+    stderr: decodeCliOutput(res.stderr).trim(),
     error: res.error ? res.error.message : '',
   };
 }
@@ -36,13 +55,23 @@ function itemId(item, i) {
   return String(item.id || item.name || `${item.type || 'work'}-${i + 1}`);
 }
 
+// Windows dashboard から POSIX リポジトリを読むときは UNC へ（discover と同じ橋渡し）。
+function viewerRepo(repo) {
+  const s = String(repo || '');
+  if (!s) return '';
+  if (process.platform === 'win32' && _isPosixAbs(s)) return toViewerPath(s);
+  return s;
+}
+
 function listLogCandidates(repo, type) {
+  const root = viewerRepo(repo);
+  if (!root) return [];
   const names = type === 'loop'
     ? ['.kiro-loop/logs', '.agent-loop/logs', 'logs']
     : ['.statemachine-use/logs', 'logs'];
   const out = [];
   for (const n of names) {
-    const dir = path.join(repo, n);
+    const dir = path.join(root, n);
     try {
       for (const f of fs.readdirSync(dir)) {
         if (/\.(log|jsonl|txt)$/i.test(f) || f.includes('kiro') || f.includes('agent-loop') || f.includes('statemachine')) {
@@ -68,19 +97,23 @@ function processStatus(item, cfg) {
   const needle = repo ? wslPath(repo) : itemId(item, 0);
   const command = item.type === 'state-machine' ? (cfg.stateMachineCommand || 'statemachine-use') : (cfg.loopCommand || cfg.loopProvider || 'kiro-loop');
   if (process.platform === 'win32' && isWslPath(repo)) {
-    const script = `pgrep -af ${shellQuote(command)} | grep -F -- ${shellQuote(needle)} | grep -v grep | head -1`;
+    const script = `export LANG=C.UTF-8 LC_ALL=C.UTF-8; pgrep -af ${shellQuote(command)} | grep -F -- ${shellQuote(needle)} | grep -v grep | head -1`;
     const r = sh('wsl.exe', ['-e', 'sh', '-lc', script], { timeoutMs: 8000 });
     return r.ok && r.stdout ? { running: true, detail: r.stdout } : { running: false, detail: '' };
   }
-  const r = sh(process.platform === 'win32' ? 'wmic' : 'sh', process.platform === 'win32'
-    ? ['process', 'where', `CommandLine like '%${command}%'`, 'get', 'ProcessId,CommandLine']
-    : ['-lc', `pgrep -af ${shellQuote(command)} | grep -F -- ${shellQuote(needle)} | grep -v grep | head -1`], { timeoutMs: 8000 });
+  if (process.platform === 'win32') {
+    // wmic は重い・文字化けしやすいので、ポーリング既定では呼ばない（probeProcess 時のみ）。
+    const r = sh('wmic', ['process', 'where', `CommandLine like '%${command}%'`, 'get', 'ProcessId,CommandLine'], { timeoutMs: 8000 });
+    return r.ok && r.stdout && r.stdout.includes(command) ? { running: true, detail: r.stdout } : { running: false, detail: '' };
+  }
+  const r = sh('sh', ['-lc', `pgrep -af ${shellQuote(command)} | grep -F -- ${shellQuote(needle)} | grep -v grep | head -1`], { timeoutMs: 8000 });
   return r.ok && r.stdout && r.stdout.includes(command) ? { running: true, detail: r.stdout } : { running: false, detail: '' };
 }
 
-function dynamicState(item, cfg) {
+// probeProcess=false（既定）: ログ mtime だけで状態推定。WSL への pgrep/wmic を毎ポーリングで撃たない。
+function dynamicState(item, cfg, { probeProcess = false } = {}) {
   const repo = item.repo || item.cwd || '';
-  const proc = processStatus(item, cfg);
+  const proc = probeProcess ? processStatus(item, cfg) : { running: false, detail: '' };
   const logs = repo ? listLogCandidates(repo, item.type) : [];
   const latest = logs[0] || null;
   const text = latest ? tail(latest.file) : '';
@@ -94,10 +127,11 @@ function dynamicState(item, cfg) {
     lastLog: latest ? latest.file : '',
     lastLogAt: latest ? new Date(latest.mtimeMs).toISOString() : '',
     logTail: text,
+    probed: !!probeProcess,
   };
 }
 
-function normalizeItem(item, i, cfg) {
+function normalizeItem(item, i, cfg, stateOpts) {
   const type = item.type === 'state-machine' ? 'state-machine' : 'loop';
   const id = itemId({ ...item, type }, i);
   return {
@@ -111,12 +145,12 @@ function normalizeItem(item, i, cfg) {
     description: item.description || '',
     command: type === 'state-machine' ? (cfg.stateMachineCommand || 'statemachine-use') : (cfg.loopCommand || cfg.loopProvider || 'kiro-loop'),
     source: 'config',
-    state: dynamicState({ ...item, id, type }, cfg),
+    state: dynamicState({ ...item, id, type }, cfg, stateOpts),
   };
 }
 
 // 発見項目（discover.js 由来）を Cowork 項目へ。source/_src/enabled を保持しつつ live state を付与。
-function normalizeDiscovered(d, cfg) {
+function normalizeDiscovered(d, cfg, stateOpts) {
   const type = d.type === 'state-machine' ? 'state-machine' : 'loop';
   return {
     id: d.id,
@@ -131,7 +165,7 @@ function normalizeDiscovered(d, cfg) {
     source: 'discovered',
     enabled: d.enabled !== false,
     _src: d._src,
-    state: dynamicState({ ...d, type }, cfg),
+    state: dynamicState({ ...d, type }, cfg, stateOpts),
   };
 }
 
@@ -153,19 +187,34 @@ function dedupeItems(items) {
   return out;
 }
 
-function discoverNormalized(config, cfg) {
+function rawDiscovered(config, { forceDiscover = false } = {}) {
+  const key = discoverCacheKey(config);
+  const now = Date.now();
+  if (!forceDiscover && _discoverCache.items && _discoverCache.key === key && (now - _discoverCache.at) < DISCOVER_TTL_MS) {
+    return _discoverCache.items;
+  }
   try {
-    return discoverCoworkItems(config).map((d) => normalizeDiscovered(d, cfg));
+    const items = discoverCoworkItems(config);
+    _discoverCache = { key, at: now, items };
+    return items;
   } catch {
     return [];   // 発見の失敗で overview 全体を壊さない
   }
 }
 
-function overview(config) {
+function discoverNormalized(config, cfg, opts) {
+  return rawDiscovered(config, opts).map((d) => normalizeDiscovered(d, cfg, opts));
+}
+
+// opts.probeProcess: true のときだけプロセス探査（実行直後・手動更新用）。ポーリングはログのみ。
+// opts.forceDiscover: true で発見キャッシュを無視して再走査。
+function overview(config, opts = {}) {
   const cfg = config.cowork || {};
+  const stateOpts = { probeProcess: opts.probeProcess === true };
+  const discoverOpts = { forceDiscover: opts.forceDiscover === true, ...stateOpts };
   const loop = makeLoopProvider(cfg);
-  const configItems = itemsOf(cfg).map((item, i) => normalizeItem(item, i, cfg));
-  const discovered = discoverNormalized(config, cfg);
+  const configItems = itemsOf(cfg).map((item, i) => normalizeItem(item, i, cfg, stateOpts));
+  const discovered = discoverNormalized(config, cfg, discoverOpts);
   const items = dedupeItems([...configItems, ...discovered]);
   return {
     loopProvider: loop.provider,
@@ -186,7 +235,7 @@ function resolveItem(config, id) {
   const inCfg = itemsOf(cfg).find((item, i) => itemId(item, i) === String(id));
   if (inCfg) return { ...inCfg, source: 'config' };
   try {
-    return discoverCoworkItems(config).find((d) => d.id === String(id)) || null;
+    return rawDiscovered(config).find((d) => d.id === String(id)) || null;
   } catch {
     return null;
   }
@@ -200,7 +249,8 @@ function runLoop(config, itemIdValue) {
   const runId = item.source === 'discovered'
     ? ((item._src && item._src.promptName) || item.name)
     : (item.id || item.name);
-  return makeLoopProvider(cfg).run({ ...item, cwd: item.repo || item.cwd, id: runId });
+  const cwd = viewerRepo(item.repo || item.cwd) || item.repo || item.cwd;
+  return makeLoopProvider(cfg).run({ ...item, cwd, id: runId });
 }
 
 function runStateMachine(config, itemIdValue, input) {
@@ -209,15 +259,16 @@ function runStateMachine(config, itemIdValue, input) {
   if (!item) throw new Error(`Cowork 定型業務が見つかりません: ${itemIdValue}`);
   const args = Array.isArray(item.args) ? [...item.args] : ['run', item.workflow || item.file].filter(Boolean);
   if (input) args.push(String(input));
-  return providerSh(cfg.stateMachineCommand || 'statemachine-use', args, { cwd: item.repo || item.cwd || process.cwd(), timeoutMs: item.timeoutMs || 60000 });
+  const cwd = viewerRepo(item.repo || item.cwd) || item.repo || item.cwd || process.cwd();
+  return providerSh(cfg.stateMachineCommand || 'statemachine-use', args, { cwd, timeoutMs: item.timeoutMs || 60000 });
 }
 
 function gitInRepo(repo, args, timeoutMs) {
   if (process.platform === 'win32' && isWslPath(repo)) {
-    const script = `cd ${shellQuote(wslPath(repo))} && git ${args.map(shellQuote).join(' ')}`;
+    const script = `export LANG=C.UTF-8 LC_ALL=C.UTF-8; cd ${shellQuote(wslPath(repo))} && git ${args.map(shellQuote).join(' ')}`;
     return sh('wsl.exe', ['-e', 'sh', '-lc', script], { timeoutMs });
   }
-  return sh('git', ['-C', repo, ...args], { timeoutMs });
+  return sh('git', ['-C', viewerRepo(repo) || repo, ...args], { timeoutMs });
 }
 
 // 指定ファイル（repo 相対 POSIX パス）に差分があればそれだけを commit する。無ければ skip。
@@ -253,7 +304,8 @@ function gitSave(repo, { branch, createBranch, push } = {}) {
 
 // repo からの相対 POSIX パス（WSL の git でも -C の git でも解決できる形）。
 function relPosix(repo, file) {
-  return path.relative(repo, file).split(path.sep).join('/');
+  const root = viewerRepo(repo) || repo;
+  return path.relative(root, file).split(path.sep).join('/');
 }
 
 // JSON 形式の kiro-loop 設定へ発見項目の編集を反映（parse → mutate → stringify）。
@@ -388,10 +440,12 @@ function saveWork(config, saveConfig, { items, branch, createBranch, push } = {}
     const save = gitSave(repo, { branch, createBranch, push });
     return { repo, result: { ...save, commit } };
   });
+  invalidateDiscoverCache();
   return { config: saved, git, writeback: { errors: wb.errors } };
 }
 
 module.exports = {
   overview, runLoop, runStateMachine, saveWork, itemsOf, wslPath, dynamicState,
   resolveItem, findItem, dedupeItems, applyDiscoveredEdits, gitCommitFiles,
+  invalidateDiscoverCache, decodeCliOutput, viewerRepo,
 };

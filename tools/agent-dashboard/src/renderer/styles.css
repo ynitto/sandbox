@@ -385,6 +385,78 @@ button:disabled { opacity: 0.4; cursor: default; }
 #tab-flow.active { display: flex; flex-direction: column; overflow: hidden; }
 #tab-needs.active { display: flex; flex-direction: column; overflow: hidden; }
 
+/* ---------- Cowork（プロジェクトタブと同じトーンの一覧） ---------- */
+.cowork-shell { display: flex; flex-direction: column; gap: 12px; min-height: 100%; }
+.cowork-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.cowork-header h2 { margin: 0 0 4px; }
+.cowork-header p { margin: 0; max-width: 52em; }
+.cowork-meta { font-size: 12px; }
+.cowork-run-banner {
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+}
+.cowork-run-banner.running { border-color: var(--accent2); color: var(--accent2); }
+.cowork-run-banner.ok { border-color: var(--green); color: var(--green); }
+.cowork-run-banner.error { border-color: var(--red); color: var(--red); }
+.cowork-list { display: flex; flex-direction: column; gap: 8px; }
+.cowork-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid transparent;
+  border-radius: 6px;
+  background: var(--bg2);
+}
+.cowork-item.is-running { border-left-color: var(--accent2); }
+.cowork-item.is-error { border-left-color: var(--red); }
+.cowork-item-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.cowork-item-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.cowork-item-title strong { font-size: 14px; }
+.cowork-item-sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 12px;
+}
+.cowork-item-source,
+.cowork-item-process { font-size: 11px; word-break: break-all; }
+.cowork-item-error,
+.cowork-item-log {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  max-height: 140px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 11px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.cowork-item-error { border-color: rgba(248, 81, 73, 0.45); color: #ffb4af; }
+.cowork-item-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: none;
+}
+.cowork-item-actions button { min-width: 72px; }
+
 /* ---------- カード・タイル ---------- */
 
 .cards { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 14px; }
