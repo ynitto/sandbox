@@ -1,9 +1,10 @@
 # agent-flow — 自己回復リトライ設計（transient 障害の自律回復）
 
-> 作成日: 2026-07-16 ／ ステータス: Draft（設計・未実装）
+> 作成日: 2026-07-16 ／ ステータス: **実装済み**（2026-07-16・レイヤ1〜4＋§15 の教訓環流）
 > 対象ブランチ: `claude/agent-flow-retry-recovery-gnhgf7`
 > 関連ファイル: `tools/agent-flow/agent_flow/agent.py`, `continuation.py`,
-> `orchestrate.py`, `work.py`, `run.py`, `daemon.py`, `bus.py`
+> `orchestrate.py`, `work.py`, `run.py`, `daemon.py`, `bus.py`,
+> `tools/agent-project/agent_project/brief.py`, `mr.py`, `config.py`
 > 関連設計書: [agent-flow-design.md](./agent-flow-design.md)（§8.2 継続判断・§12 障害対応・§17 ADR task timeout）,
 > [agent-flow-retry-inheritance-design.md](./agent-flow-retry-inheritance-design.md)（run 世代間の引き継ぎ）
 
@@ -386,3 +387,61 @@ M4 は独立で並行可。
   作り直しループ（評価役駆動）が正しい形であり、本設計では触らない。
 - **全 failed run の無差別 auto-heal**: 内容・env 失敗は再開しても同じ結果になり、LLM 呼び出しを
   無駄に焼く。トリアージタグで回収対象を限定する（quota は opt-in）。
+
+---
+
+## 15. 実装で確定した追加事項（2026-07-16）
+
+設計レビュー（learn とブリーフの棚卸し）で見つかった「教訓が届かない・死蔵される」穴を、
+本実装に同梱して塞いだ。**自動リトライ（レイヤ1〜4）が「同じ試行のやり直し」を担い、
+本節が「失敗の教訓を次の試行・将来のタスクに効かせる」を担う**——両輪で
+「タスクノードでも run 単位でも自動リトライし、同じエラーを繰り返しにくい」が成立する。
+
+### 15.1 inherit 時の meta.request 穴の修正（agent-flow）
+
+`--inherit-from` の部分 done 引き継ぎで、`_seed_from` が **meta.request を旧 run の request で
+コピー**していた（`ensure_run` は既存 meta を上書きしない）。worker は全体文脈 `run_request` を
+meta から読むため、**リトライの引き金になった差し戻し指摘（run ブリーフ・feedback 入りの
+新 request）が再実行ノードに届かなかった**。`inherit_from(..., request=)` で新世代の要求文を
+渡し、seed される meta.request を新 request で上書きする（未指定は旧 request＝後方互換）。
+`cmd_orchestrate` が `args.request` を伝搬する。
+
+### 15.2 auto-heal はブリーフを再注入しない（仕様の明記）
+
+レイヤ4 の heal は**同一 run の resume**（`retry_failed`）であり、submit を経由しないため
+`build_request` は再構築されない＝heal 時点までに追記された run ブリーフは注入済み request の
+まま変わらない。これは仕様: heal は transient 回復（知識の更新を伴わないやり直し）専用で、
+**知識の更新を伴うやり直し（差し戻し・verify=NG）は従来どおり新世代 run（`--inherit-from`）**が
+担い、そこでは §15.1 により最新ブリーフが届く。
+
+### 15.3 教訓捕捉の単一入口 capture_insight（agent-project）
+
+learn（タスク横断・類似時想起・恒久）とrun ブリーフ（タスク内・無条件注入・一時）は役割が
+直交するため**ストアは統一しない**が、**捕捉の入口を `capture_insight(cfg, task, text, source,
+learn=)` に統一**した。1 つの指摘が task スコープ（brief 追記）と project スコープ
+（decisions/ の learn 行 → auto-resolve → hits 閾値で rules.md 昇格）へ射影される。
+これにより従来 brief のみで learn へ届く道が無かった**ノード発見制約（source="node"）**が
+learn ラダーに乗り、タスク完了後も教訓が死蔵されない。cohort 波及は発生源で learn 捕捉済みの
+ため brief のみ（二重 learn を作らない）。feedback / revise / gitlab-reject は従来から
+両スコープへ書いており挙動不変。
+
+### 15.4 完了時のブリーフ退役 retire_brief（agent-project）
+
+タスク done（`archive_task`）時に run ブリーフを**納品書へ転記してから削除**する:
+蓄積された制約・教訓は `archive/<id>.md` の「## run ブリーフ」節に成果物として残り
+（一般化できる項目は §15.3 の learn 射影で既に正本ラダーに居る）、`<root>/brief/` の死蔵と
+**task-id 再利用時の前世代ブリーフ誤注入**を防ぐ。
+
+### 15.5 実装メモ
+
+- 失敗の構造化: worker は failed result の `data.error_class`（transient/quota/auth/env/content）
+  と `data.attempts`（レイヤ1 の試行数）を記録し、`_env_failure_reason` は output のタグより
+  こちらを優先して読む。
+- timeout の transient 編入により、既存テスト `AgentTimeoutTests` はレイヤ1 無効
+  （`_TRANSIENT_RETRIES=0`）で従来挙動を検証する形に更新。
+- heal 簿記（`heal_count`/`heal_progress`/`heal_next_at`/`heal_exhausted`）は meta に閉じ、
+  `retry_failed(clear_heal=True)`（人の明示 retry・既定）だけが白紙化する。auto-heal は
+  `clear_heal=False` で呼び、heal 横断で「進捗なし回数」を数える。
+- テスト: `TransientRetryTests` / `FormatRepairTests` / `TransientRunBreakTests` /
+  `AutoHealTests` / `InheritRequestTests`（agent-flow）、
+  `TestCaptureInsightAndRetireBrief`（agent-project）。

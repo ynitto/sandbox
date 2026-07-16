@@ -5923,6 +5923,87 @@ class TestRunBrief(unittest.TestCase):
             self.assertEqual(got, ["日付は ISO8601", "単位は SI"])   # dict/str 両対応・空は除外
 
 
+class TestCaptureInsightAndRetireBrief(unittest.TestCase):
+    """capture_insight（捕捉の単一入口: brief＋learn の 2 スコープ射影）と
+    retire_brief（完了時のブリーフ退役: 納品書へ転記して掃除）。"""
+
+    def _cfg(self, d, **kw):
+        cfg = cfg_for(d, **kw)
+        cfg.decisions.mkdir(parents=True, exist_ok=True)
+        cfg.journal.parent.mkdir(parents=True, exist_ok=True)
+        return cfg
+
+    def _task(self, tid="T1"):
+        return km.Task(id=tid, title="API を作る", verify="true")
+
+    def test_capture_projects_to_brief_and_learn(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg, t = self._cfg(Path(d)), self._task()
+            self.assertTrue(km.capture_insight(cfg, t, "API は snake_case で統一",
+                                               source="node", learn=True))
+            # task スコープ: run ブリーフに載る（同一タスクの次 run へ即時伝播）
+            self.assertIn("snake_case", km.brief_context(cfg, t))
+            # project スコープ: learn 行が decisions/ に残り、rules 昇格ラダーに乗る
+            learns = [(src, guide) for src, _t, guide in km.collect_learnings(cfg)]
+            self.assertTrue(any("snake_case" in g for _s, g in learns))
+
+    def test_capture_without_learn_is_brief_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg, t = self._cfg(Path(d)), self._task()
+            self.assertTrue(km.capture_insight(cfg, t, "cohort 波及の指摘", source="cohort"))
+            self.assertIn("cohort 波及の指摘", km.brief_context(cfg, t))
+            self.assertEqual(km.collect_learnings(cfg), [])   # learn 射影しない（発生源で捕捉済み）
+
+    def test_capture_dedup_does_not_duplicate_learn(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg, t = self._cfg(Path(d)), self._task()
+            self.assertTrue(km.capture_insight(cfg, t, "重複させない", source="node", learn=True))
+            self.assertFalse(km.capture_insight(cfg, t, "重複させない", source="node", learn=True))
+            self.assertEqual(len(km.collect_learnings(cfg)), 1)   # 冪等: learn も 1 件のまま
+
+    def test_capture_respects_learn_capture_off(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg, t = self._cfg(Path(d), learn_capture=False), self._task()
+            self.assertTrue(km.capture_insight(cfg, t, "ルール", source="node", learn=True))
+            self.assertEqual(km.collect_learnings(cfg), [])   # learn 捕捉は設定で無効化できる
+
+    def test_retire_brief_returns_items_and_deletes_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg, t = self._cfg(Path(d)), self._task()
+            km.append_brief_item(cfg, t, "制約A", source="feedback")
+            km.append_brief_item(cfg, t, "制約B", source="node")
+            body = km.retire_brief(cfg, t)
+            self.assertIn("制約A", body)
+            self.assertIn("制約B", body)
+            self.assertFalse(km.brief_path(cfg, t).exists())   # 退役＝ファイルは消える
+            self.assertEqual(km.retire_brief(cfg, t), "")      # 冪等（2 回目は空）
+
+    def test_archive_embeds_brief_and_prevents_stale_reinjection(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg, t = self._cfg(d), self._task()
+            cfg.backlog.mkdir(parents=True, exist_ok=True)
+            km.persist_task(cfg, t)
+            km.append_brief_item(cfg, t, "エラーメッセージは英語で統一", source="feedback")
+            km.archive_task(cfg, t, "PASS", "ref", "2026-07-16")
+            adoc = (cfg.archive_dir() / "T1.md").read_text(encoding="utf-8")
+            self.assertIn("run ブリーフ", adoc)                # 納品書に成果物として転記される
+            self.assertIn("エラーメッセージは英語で統一", adoc)
+            self.assertFalse(km.brief_path(cfg, t).exists())
+            # 同じ task-id を再利用しても前世代のブリーフが注入されない
+            self.assertEqual(km.brief_context(cfg, self._task("T1")), "")
+
+    def test_archive_without_brief_unchanged(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg, t = self._cfg(d), self._task()
+            cfg.backlog.mkdir(parents=True, exist_ok=True)
+            km.persist_task(cfg, t)
+            km.archive_task(cfg, t, "PASS", "ref", "2026-07-16")
+            adoc = (cfg.archive_dir() / "T1.md").read_text(encoding="utf-8")
+            self.assertNotIn("run ブリーフ", adoc)             # ブリーフ無しなら節も出ない（後方互換）
+
+
 def _drained():
     return {"reason": km.REASON_DRAINED, "cycles": 0,
             "counts": {s: 0 for s in km.VALID_STATUS}, "cost": 0.0, "tokens": 0}

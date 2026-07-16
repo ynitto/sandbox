@@ -374,8 +374,9 @@ def cohort_reflux(cfg: "Config", task: "Task", guidance: str) -> int:
         sib.drop("feedback")
         sib.extra.append(("feedback", guidance.replace("\n", " ⏎ ")))
         # 兄弟メンバ側の run ブリーフにも蓄積（追記のみ）。同じ轍を踏まないよう、その兄弟の
-        # 以後の run・全分散ノードへも却下指摘を伝播させる。
-        append_brief_item(cfg, sib, guidance, source="cohort")
+        # 以後の run・全分散ノードへも却下指摘を伝播させる。learn 射影は発生源タスク
+        # （gitlab-reject 側）で捕捉済みなので brief のみ（capture_insight の task スコープ）。
+        capture_insight(cfg, sib, guidance, source="cohort")
         persist_task(cfg, sib)
         n += 1
     state = _read_cohort(cfg, cid)

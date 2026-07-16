@@ -617,7 +617,12 @@ Claude Code スキル `.github/skills/agent-flow/` がこの CLI の呼び出し
 | 孤児タスク（ワーカー死） | lease 期限切れで `_winner` が無視 → 再 claim 可能 |
 | 孤児 run（daemon 消失＝PC シャットダウン/クラッシュ） | 生存リース（`orch_lease_until`）切れを検知 → reclaim して**同じ run-id で自動再開**（確定済み results/ を活かし続きから）。進捗なしの連続再開が `max_resumes`（既定 3・進捗で数え直し）を超えたときだけ failed に確定（消費者の永久待機を防ぐ） |
 | 長時間タスクの横取り | Heartbeat が lease を延長 |
-| タスクのハング（プロセス生・無進捗） | task timeout（`AGENT_FLOW_TIMEOUT`）で kiro-cli を kill → failed → retry（ADR §17） |
+| タスクのハング（プロセス生・無進捗） | task timeout（`AGENT_FLOW_TIMEOUT`）で kiro-cli を kill → transient 扱いで in-place 再試行 → 残れば failed（ADR §17＋自己回復設計） |
+| LLM 呼び出しの一時エラー（接続断・5xx・timeout） | レイヤ1: `run_agent` 内の指数バックオフ再試行（`transient_retries`）。再計画 retry の予算を焼かない |
+| LLM の出力契約違反（split の配列・decision JSON 崩れ） | レイヤ2: 契約違反を指摘した修復再呼び出し（`format_retries`）→ 残れば従来フォールバック |
+| transient が in-place 再試行でも残る | run をタグ付き failed で打ち切り（ノード単位で予算を焼かない）→ レイヤ4 へ |
+| transient 起因の failed run | レイヤ4: daemon / cmd_run の auto-heal が cooldown 後に `retry_failed`→再開（done 温存・進捗リセット付き `max_heals`・canceled/superseded は尊重） |
+| リトライ引き継ぎで差し戻し指摘が届かない | inherit の seed が新世代 request で meta.request を上書き（自己回復設計 §15.1） |
 | 失敗依存によるデッドロック | 静止判定 ＋ `replaces` による依存付け替え |
 | 無限再計画 | `--max-iterations` |
 | 達成不可能条件での無限作り直し | サーキットブレーカー（`--max-retries`、系統ごとの `retries` 計上で打ち切り） |

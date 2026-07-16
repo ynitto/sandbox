@@ -302,13 +302,26 @@ def continue_agent(request: str, nodes: dict, results: dict, iteration: int,
         f"元の要求: {request}{hf_block}\n\n現在の結果:\n{summary}"
     )
     try:
-        data = extract_json(run_agent(prompt, None, purpose="evaluator"))
+        text = run_agent(prompt, None, purpose="evaluator")
     except Exception as e:  # noqa: BLE001
-        # フェイルクローズ: 評価役の失敗（LLM タイムアウト・認証切れ・JSON 崩れ）を
-        # done に倒すと、失敗ノードが残った run が「成功」として消費者へ渡る。
-        # 全ノードが done ならその判定は自明なので done（評価役は不要だった）、
-        # 未達・失敗ノードが残るなら failed で終端し、resume/リトライへ回す。
-        return _evaluator_fallback(results, f"評価出力を解釈できず: {e}")
+        # 評価役の LLM 呼び出し自体の失敗。transient / quota はレイヤ1（run_agent 内の再試行）を
+        # 経てなお失敗している＝環境の一時不調であり、内容判定（fallback の done/failed 推定）に
+        # 進まずタグ付きで failed 終端する → レイヤ4（auto-heal）/ 人の環境復旧が拾う。
+        triage = classify_agent_failure(str(e))
+        if triage and triage[0] in ("transient", "quota"):
+            return "failed", [], (f"[agent-error:{triage[0]}] 評価役の呼び出しが失敗: {e}"
+                                  "（done ノードは温存・自動/手動の再開で続きから）")
+        return _evaluator_fallback(results, f"評価役を呼び出せず: {e}")
+    try:
+        data = extract_json(text)
+    except Exception as e:  # noqa: BLE001
+        # 出力契約違反（JSON 崩れ）→ レイヤ2: 契約違反を指摘して修復再呼び出し（有界）。
+        data = _repair_json_output(prompt, text, "evaluator", e)
+        if data is None:
+            # フェイルクローズ: 評価役の失敗を done に倒すと、失敗ノードが残った run が
+            # 「成功」として消費者へ渡る。全ノードが done ならその判定は自明なので done、
+            # 未達・失敗ノードが残るなら failed で終端し、resume/リトライへ回す。
+            return _evaluator_fallback(results, f"評価出力を解釈できず: {e}")
     # planner がオブジェクトでなくベア配列を返すことがある → new_tasks とみなす
     if isinstance(data, list):
         data = {"decision": "replan", "new_tasks": data}

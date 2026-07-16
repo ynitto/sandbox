@@ -15,20 +15,34 @@ def _plan_strategy(args):
 
 
 def _env_failure_reason(results: dict) -> "str | None":
-    """失敗結果に環境要因（quota/auth/env）のトリアージタグがあれば、その説明を返す。
+    """失敗結果に環境要因（quota/auth/env）または transient のトリアージタグがあれば、その説明を返す。
 
     環境が壊れているとき（認証切れ・利用上限・CLI 不在）は、どのノードをリトライしても
     同じ理由で落ちる。実際 codex の利用上限で全ノードが 1 つずつリトライを焼き尽くし、
     26 ノード × max_retries 回の無駄な LLM 起動と「理由不明の全滅」が起きた。
     タスクの内容の問題（タグ無し）とは区別し、run を即座に失敗で終端して人に環境を直させる
-    （直後の resume-run / agent-project の自動再開で done は温存されたまま続きから走る）。"""
+    （直後の resume-run / agent-project の自動再開で done は温存されたまま続きから走る）。
+
+    transient も同じ理屈で run 単位に打ち切る: ここへ届く transient はレイヤ1（run_agent の
+    in-place 再試行）を使い切ってなお失敗している＝環境がまだ不調で、他ノードも同じ理由で
+    落ちる公算が高い。ノード単位で再計画 retry の予算を焼かず run を failed 終端し、
+    レイヤ4（daemon の auto-heal）が cooldown 後に done 温存のまま自動再開する。"""
     for nid, r in results.items():
         if r.get("status") != "failed":
             continue
-        m = _AGENT_ERROR_TAG_RE.search(str(r.get("output", "")))
-        if m and m.group(1) in AGENT_ERROR_ENV_CLASSES:
-            hint = next((h for c, _, h in _AGENT_ERROR_PATTERNS if c == m.group(1)), "")
-            return (f"[agent-error:{m.group(1)}] 環境要因の失敗（{nid}）: {hint} "
+        # 構造化 error_class（worker が data に載せる）を優先し、無ければ output のタグを読む
+        d = r.get("data")
+        cls = d.get("error_class") if isinstance(d, dict) else None
+        if cls not in ("transient",) + AGENT_ERROR_ENV_CLASSES:
+            m = _AGENT_ERROR_TAG_RE.search(str(r.get("output", "")))
+            cls = m.group(1) if m else None
+        if cls == "transient":
+            return (f"[agent-error:transient] 一時的エラーの失敗（{nid}）: in-place 再試行でも"
+                    "回復せず、run を打ち切りました。自動再開（auto-heal）の対象です"
+                    "（完了済みの工程は温存されます）。")
+        if cls in AGENT_ERROR_ENV_CLASSES:
+            hint = next((h for c, _, h in _AGENT_ERROR_PATTERNS if c == cls), "")
+            return (f"[agent-error:{cls}] 環境要因の失敗（{nid}）: {hint} "
                     "リトライを打ち切りました。環境を直してから再開してください"
                     "（完了済みの工程は温存されます）。")
     return None
@@ -173,7 +187,10 @@ def cmd_orchestrate(args) -> int:
     # ensure_run より前に行う＝seed した meta を ensure_run が上書きしないようにする。
     inh = getattr(args, "inherit_from", None)
     if inh and read_json(bus.meta_path) is None:
-        info = bus.inherit_from(inh, getattr(args, "orphan_grace", 0.0) or 0.0)
+        # request（新世代の要求文＝差し戻しの意図・run ブリーフ入り）を渡し、seed される
+        # meta.request を新世代で上書きする（worker の全体文脈へ最新の指摘を届ける）。
+        info = bus.inherit_from(inh, getattr(args, "orphan_grace", 0.0) or 0.0,
+                                request=args.request or "")
         log(who, f"先行 run {inh} を処理: {info['reason']}"
                  f"（引き継ぎ {info['seeded_nodes']} ノード・削除={info['deleted']}）")
         bus.sync_push(f"inherit {inh} -> {args.run_id}: {info['reason']}")

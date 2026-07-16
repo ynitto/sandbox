@@ -156,6 +156,15 @@ def cmd_work(args) -> int:
             edata = getattr(e, "data", None)
             if isinstance(edata, dict):
                 rdata = edata
+            # 失敗トリアージの構造化: 評価役・viewer・agent-project が output 先頭の
+            # 文字列タグに依存せず読めるよう、分類と in-place 試行数を data に載せる。
+            # transient がここへ来た＝レイヤ1（run_agent 内の再試行）を使い切っている。
+            triage = classify_agent_failure(str(e))
+            rdata = {**(rdata if isinstance(rdata, dict) else {}),
+                     "error_class": triage[0] if triage else "content"}
+            attempts = getattr(e, "attempts", None)
+            if attempts:
+                rdata["attempts"] = int(attempts)
         finally:
             hb.stop()
 

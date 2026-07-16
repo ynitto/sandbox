@@ -22,6 +22,12 @@ def _agent_timeout() -> float | None:
 # 設定ファイル/CLI で解決した閾値を、args を持たない free 関数（run_agent 等）が参照できる
 # よう、main の resolve 後に _configure_thresholds がここへ反映する（既定は CONFIG_DEFAULTS）。
 _ARGV_LIMIT = CONFIG_DEFAULTS["argv_limit"]
+# レイヤ1（in-place リトライ）: transient 分類の失敗を run_agent 内で再試行する回数と
+# 初回バックオフ秒（設定 transient_retries / transient_backoff）。
+_TRANSIENT_RETRIES = int(CONFIG_DEFAULTS["transient_retries"])
+_TRANSIENT_BACKOFF = float(CONFIG_DEFAULTS["transient_backoff"])
+# レイヤ2（形式修復リトライ）: 出力契約違反の修復再呼び出し回数（設定 format_retries）。
+_FORMAT_RETRIES = int(CONFIG_DEFAULTS["format_retries"])
 # executor プラグインの追加検索ディレクトリ（設定 executor_dir）。
 _EXECUTOR_DIR: "str | None" = None
 # エージェント CLI タイムアウト秒 / stub スリープ上限秒（設定 agent_timeout / stub_sleep_max）。
@@ -78,7 +84,16 @@ def _configure_thresholds(args) -> None:
     """設定ファイル/CLI（resolve_config 済み）の閾値をモジュール変数へ確定させる。
     run_agent / executor 解決は args を受け取らないため、プロセス起動時に一度だけ値を固定する。"""
     global _ARGV_LIMIT, _EXECUTOR_DIR, _AGENT_TIMEOUT, _STUB_SLEEP_MAX, _AGENT_CLI, _AGENT_OVERRIDES
-    global _WORKER_SKILL
+    global _WORKER_SKILL, _TRANSIENT_RETRIES, _TRANSIENT_BACKOFF, _FORMAT_RETRIES
+    for name, attr, cast in (("_TRANSIENT_RETRIES", "transient_retries", int),
+                             ("_TRANSIENT_BACKOFF", "transient_backoff", float),
+                             ("_FORMAT_RETRIES", "format_retries", int)):
+        v = getattr(args, attr, None)
+        if v is not None:
+            try:
+                globals()[name] = cast(v)
+            except (TypeError, ValueError):
+                pass
     ac = getattr(args, "agent_cli", None)
     if ac:
         _AGENT_CLI = str(ac).lower()
@@ -282,8 +297,36 @@ def _agent_failure(cli: str, rc: int, out: str, err: str) -> str:
 
 
 def run_agent(prompt: str, model: str | None, purpose: str = "") -> str:
+    """エージェント CLI を呼び出してテキスト応答を返す（このツールの全 LLM 呼び出しの単一チョーク
+    ポイント: planner / evaluator / executor / verify / 裁定）。
+
+    レイヤ1（自己回復リトライ）: 失敗が transient 分類（接続断・5xx・overloaded・timeout）なら、
+    ここで指数バックオフ再試行して上位層（グラフ再計画の retries 予算）へ持ち上げない。
+    quota/auth/env・内容の問題（タグ無し）は再試行せず即座に上位へ（従来どおり）。
+    実行中は worker の Heartbeat が claim lease を延長し続けるため、再試行で実行が延びても
+    分散環境で横取りされない。試行し尽くした失敗は例外に attempts 属性を載せて raise する
+    （worker が data.attempts として failed result に構造化する）。"""
+    last: "RuntimeError | None" = None
+    for attempt in range(max(0, _TRANSIENT_RETRIES) + 1):
+        try:
+            return _run_agent_once(prompt, model, purpose)
+        except RuntimeError as e:
+            triage = classify_agent_failure(str(e))
+            if triage is None or triage[0] != "transient" or attempt >= _TRANSIENT_RETRIES:
+                if attempt > 0:  # レイヤ1 を経たことを上位・人が読めるようにする
+                    e = RuntimeError(f"{e}（{attempt + 1} 回試行後）")
+                e.attempts = attempt + 1  # type: ignore[attr-defined]
+                raise e
+            wait = _TRANSIENT_BACKOFF * (2 ** attempt) + random.uniform(0, 1.0)
+            log("agent", f"transient エラーを再試行 #{attempt + 1}/{_TRANSIENT_RETRIES}"
+                         f"（{wait:.0f}s 待機・purpose={purpose or 'worker'}）: {str(e)[:120]}")
+            time.sleep(wait)
+            last = e
+    raise last if last else RuntimeError("run_agent: unreachable")  # pragma: no cover
+
+
+def _run_agent_once(prompt: str, model: str | None, purpose: str = "") -> str:
     """エージェント CLI（設定 agent_cli: kiro/claude/copilot/codex）を 1 回呼び出してテキスト応答を返す。
-    このツールの LLM 呼び出しはすべてここを通る（planner / executor / verify / 裁定）。
     purpose（planner / evaluator / ノード kind）を渡すと設定 agents: の役割毎上書きが効く
     （kind は agents["worker"] へフォールバック）。model は 上書き ＞ 呼び出し値。"""
     cli, model_ov = _agent_for(purpose)
@@ -351,11 +394,14 @@ def run_agent(prompt: str, model: str | None, purpose: str = "") -> str:
         proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", input=stdin_text,
                               timeout=(plug or {}).get("timeout") or _agent_timeout(), env=env)
     except subprocess.TimeoutExpired:
-        # 失敗として上位へ。タスクは failed 記録 → 再計画で retry に回り、run は前進する
+        # 失敗として上位へ。ハングは一時的な公算が高いので transient タグを明示付与し、
+        # レイヤ1（in-place 再試行）の対象にする（従来は日本語文言が英語の transient パターンに
+        # 掛からず「内容の問題」扱い＝再計画 retry の予算を焼いていた）。恒久ハングでも
+        # 試行ごとに本タイムアウトで有界。
         if out_file:
             with contextlib.suppress(OSError):
                 os.remove(out_file)
-        raise RuntimeError(f"{cmd[0]} タイムアウト（{_agent_timeout():.0f}s 超過）")
+        raise RuntimeError(f"[agent-error:transient] {cmd[0]} タイムアウト（{_agent_timeout():.0f}s 超過）")
     finally:
         if spill:
             with contextlib.suppress(OSError):
@@ -381,6 +427,33 @@ def run_agent(prompt: str, model: str | None, purpose: str = "") -> str:
         if out_file:
             with contextlib.suppress(OSError):
                 os.remove(out_file)
+
+
+def _repair_json_output(prompt: str, bad_text: str, purpose: str, why,
+                        model: "str | None" = None, want_list: bool = False):
+    """レイヤ2（形式修復リトライ）: LLM 応答が出力契約（JSON）を満たさないとき、
+    「前回の出力はこう契約違反だった」と指摘して同じ役割で呼び直す（format_retries 回・有界）。
+    Claude Dynamic Workflows の structured output 検証リトライの移植。寛容パーサ
+    （extract_json / _normalize_verify 等）で救える崩れはそもそもここへ来ない。
+    修復できたら解釈済み JSON を、できなければ None を返す（呼び出し側が従来のフォールバックへ）。"""
+    contract = "JSON 配列" if want_list else "JSON"
+    for _ in range(max(0, _FORMAT_RETRIES)):
+        repair = (f"{prompt}\n\n[前回の出力は契約違反でした]\n"
+                  f"前回の出力（先頭 400 文字）: {str(bad_text)[:400]}\n"
+                  f"違反: {why}\n"
+                  f"説明・前置き・コードフェンスを付けず、指示された {contract} だけを再出力してください。")
+        try:
+            bad_text = run_agent(repair, model, purpose=purpose)
+            data = extract_json(bad_text)
+        except Exception as e:  # noqa: BLE001 — 修復呼び出し自体の失敗も「まだ壊れている」扱い
+            why = str(e)
+            continue
+        if want_list and not isinstance(data, list):
+            why = f"JSON としては解釈できたが配列でない（{type(data).__name__}）"
+            continue
+        log("agent", f"format repair 成功（purpose={purpose}）")
+        return data
+    return None
 
 
 # dep_results は {dep_id: result_dict}（result_dict は output テキストと任意の data を持つ）。
@@ -551,8 +624,18 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
     if kind in STRUCTURED_KINDS:
         try:
             data = extract_json(text)
-        except Exception:  # noqa: BLE001 — 構造化できなければテキストのみ
+        except Exception as e:  # noqa: BLE001 — 構造化できなければテキストのみ
             data = None
+            why = str(e)
+        else:
+            why = "JSON としては解釈できたが配列でない"
+        # split は data が JSON 配列でないと fan-out（_expand_splits）が展開されず run が
+        # 空振りする＝出力契約が固い。レイヤ2 の修復リトライで救う（verify/reduce は
+        # _normalize_verify / _reconcile_count の寛容パーサがあるため修復不要）。
+        if kind == "split" and not isinstance(data, list):
+            repaired = _repair_json_output(prompt, text, kind, why, model, want_list=True)
+            if isinstance(repaired, list):
+                data = repaired
     if kind == "reduce":
         data = _reconcile_count(data)
     elif kind == "verify":

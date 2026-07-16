@@ -261,8 +261,7 @@ def plan_strategy_agent(request: str, model: str | None, review="auto", granular
         '"tasks": [{"id": "t1", "goal": "...", "deps": [], "kind": "work"}]}\n\n'
         f"要求: {request}"
     )
-    try:
-        data = extract_json(run_agent(prompt, model, purpose="planner"))
+    def _interpret(data):
         # planner がオブジェクトでなくベア配列を返すことがある → tasks とみなす
         if isinstance(data, list):
             data = {"tasks": data}
@@ -277,7 +276,22 @@ def plan_strategy_agent(request: str, model: str | None, review="auto", granular
             "reason": str(data.get("reason", "")),
         }
         return strategy, tasks
-    except Exception:  # noqa: BLE001 — 解釈できなければ stub の戦略に倒す
+
+    text = None
+    try:
+        text = run_agent(prompt, model, purpose="planner")
+        return _interpret(extract_json(text))
+    except Exception as e:  # noqa: BLE001
+        # 出力契約違反（JSON 崩れ・tasks 空）→ レイヤ2: 契約違反を指摘して修復再呼び出し。
+        # 修復でも解釈できなければ従来どおり stub の戦略に倒す（一時エラーは run_agent 内の
+        # レイヤ1 が既に再試行済み＝ここへ来た時点で透明リトライは尽きている）。
+        if text is not None:
+            repaired = _repair_json_output(prompt, text, "planner", str(e), model)
+            if repaired is not None:
+                try:
+                    return _interpret(repaired)
+                except Exception:  # noqa: BLE001
+                    pass
         return plan_strategy_stub(request, review, granularity)
 
 
