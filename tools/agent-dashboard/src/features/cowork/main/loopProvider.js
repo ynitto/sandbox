@@ -18,6 +18,12 @@ function wslPath(p) {
   return s;
 }
 
+function wslDistro(p) {
+  const s = String(p || '');
+  const unc = s.replace(/\//g, '\\').match(/^\\\\wsl(?:\$|\.localhost)\\([^\\]+)/i);
+  return unc ? unc[1] : '';
+}
+
 // Windows ネイティブ CLI は CP932、WSL は UTF-8。encoding:'utf8' 固定だと日本語が文字化けする。
 // buffer で受け取り、UTF-8 → だめなら Shift_JIS（CP932 系）へフォールバックする。
 function decodeCliOutput(buf) {
@@ -48,9 +54,11 @@ function sh(command, args, options = {}) {
   const argv = (args || []).map(String);
   if (process.platform === 'win32' && isWslPath(options.cwd)) {
     const cwd = wslPath(options.cwd);
+    const distro = wslDistro(options.cwd);
     // LANG を明示しないと WSL 側のロケールで日本語 stderr が化けることがある。
     const script = `export LANG=C.UTF-8 LC_ALL=C.UTF-8; cd ${shellQuote(cwd)} && ${shellQuote(command)} ${argv.map(shellQuote).join(' ')}`;
-    const res = spawnSync('wsl.exe', ['-e', 'sh', '-lc', script], {
+    const wslArgs = distro ? ['-d', distro, '-e', 'sh', '-lc', script] : ['-e', 'sh', '-lc', script];
+    const res = spawnSync('wsl.exe', wslArgs, {
       encoding: 'buffer',
       timeout: options.timeoutMs || 30000,
       windowsHide: true,
@@ -82,4 +90,4 @@ function makeLoopProvider(cfg) {
   };
 }
 
-module.exports = { makeLoopProvider, isWslPath, wslPath, shellQuote, sh, decodeCliOutput };
+module.exports = { makeLoopProvider, isWslPath, wslPath, wslDistro, shellQuote, sh, decodeCliOutput };

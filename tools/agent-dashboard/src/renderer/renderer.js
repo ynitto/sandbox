@@ -6567,7 +6567,8 @@ function startKiroLoopCapturePoll() {
     if (activeTab() !== 'kiro-loop' || !state.kiroLoopTerm || !state.kiroLoopTerm.target) return;
     if (!api.kiroLoopCapture) return;
     const target = state.kiroLoopTerm.target;
-    const res = await api.kiroLoopCapture({ target, lines: 200 }).catch((err) => ({ ok: false, error: err.message, text: '' }));
+    const repo = state.kiroLoopTerm.repo;
+    const res = await api.kiroLoopCapture({ target, lines: 200, repo }).catch((err) => ({ ok: false, error: err.message, text: '' }));
     if (!state.kiroLoopTerm || state.kiroLoopTerm.target !== target) return;
     state.kiroLoopTerm.text = res && res.text != null ? res.text : '';
     state.kiroLoopTerm.error = res && res.ok === false ? (res.error || 'capture に失敗') : '';

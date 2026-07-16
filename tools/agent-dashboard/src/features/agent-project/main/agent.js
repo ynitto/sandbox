@@ -151,7 +151,6 @@ function stripAnsi(s) {
 function safeCwd(dir) {
   const d = String(dir || '');
   if (!d) return null;
-  if (process.platform === 'win32' && /^\\\\wsl(?:\$|\.localhost)\\/i.test(d)) return null;
   return d;
 }
 
@@ -183,10 +182,25 @@ function runCommand({ command, args, stdin, cwd }, timeoutMs) {
   // argv 配列で渡し、cmd.exe 経由の再クオートを避ける（Windows で改行付きプロンプトが
   // 先頭行で切れる・8191 文字制限に当たるのを防ぐ）。PATHEXT で .exe/.cmd は解決される。
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    let spawnCmd = command;
+    let spawnArgs = args;
+    let spawnCwd = cwd || undefined;
+
+    if (process.platform === 'win32' && cwd && /^\\\\wsl(?:\$|\.localhost)\\/i.test(cwd)) {
+      const unc = cwd.replace(/\//g, '\\').match(/^\\\\wsl(?:\$|\.localhost)\\([^\\]+)(.*)$/i);
+      const distro = unc ? unc[1] : '';
+      const linuxDir = unc ? (unc[2] || '').replace(/\\/g, '/') || '/' : '/';
+      const escape = (s) => `'${String(s).replace(/'/g, `'"'"'`)}'`;
+      const script = `export LANG=C.UTF-8 LC_ALL=C.UTF-8; cd ${escape(linuxDir)} && ${escape(command)} ${args.map(escape).join(' ')}`;
+      spawnCmd = 'wsl.exe';
+      spawnArgs = distro ? ['-d', distro, '-e', 'sh', '-lc', script] : ['-e', 'sh', '-lc', script];
+      spawnCwd = undefined;
+    }
+
+    const child = spawn(spawnCmd, spawnArgs, {
       shell: false,
       windowsHide: true,
-      cwd: cwd || undefined,
+      cwd: spawnCwd,
       env: { ...process.env, NO_COLOR: '1', TERM: 'dumb' },
     });
     let out = '';

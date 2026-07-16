@@ -16,6 +16,7 @@ function registerIpc(ctx) {
   handle('kiroLoop:capture', (args = {}) => tmux.capture({
     target: args.target || args.session || '',
     lines: args.lines,
+    repo: args.repo || '',
   }));
 }
 
