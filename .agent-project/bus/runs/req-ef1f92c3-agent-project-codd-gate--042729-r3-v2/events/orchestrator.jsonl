@@ -1,0 +1,1 @@
+{"ts": "2026-07-15T21:42:53Z", "who": "orchestrator", "kind": "planned", "patterns": ["fan-out-and-synthesize", "adversarial-verification", "loop-until-done"], "parallelism": 3, "tasks": ["t1", "t2", "t3", "t4", "t5", "t6", "t7"]}

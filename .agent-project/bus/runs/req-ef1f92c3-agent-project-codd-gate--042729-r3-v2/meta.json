@@ -1,0 +1,19 @@
+{
+  "request": "agent-projectにcodd-gate自動検出とregression/intake結線を完成させ連携を有効化する\n\nこのタスクは完了条件を満たすまで反復し、満たしたら終了すること（loop-until-done）。\n完了条件: 次のシェルコマンドが終了コード 0 で成功すること:\n  grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' agent-project.yaml\n\nタスクID: agent-project-codd-gate--042729\n\nプロジェクト定義（charter・常に踏まえること。成果物が目標/制約に反しないこと）:\n目標: - codd-gateと連携できること\n- 設計書を整理して人間にとって読みやすくすること\n対象リポジトリ（タスクは説明を見て関係するものを選び、その base/target ブランチで作業。path 指定があればそのフォルダ配下のみ変更）:\n- src = https://github.com/ynitto/sandbox（base=main, target=main, 参照のみ・push しない）\n    説明: ソースコード・設計書\n制約:\n- agent-project/agent-flowをエンジンとして使用する\n- agent-dashboardをフロントエンドとして使用する\n前提:\n- 人による操作や確認を最小限にする\n- 繰り返し・再実行によって試行錯誤できる\n成果物:\n- agent-project/agent-flow ソースコード\n- agent-dashboard ソースコード\n- 設計書・ドキュメント\n\nこのタスクに関する過去の判断記録（needs の判断結果・必ず踏まえること）:\n…\ncts : verify: grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' .agent/agent-project.yaml; agent-project-codd-gate--042729 → ready\n\n## DR-0003  2026-07-16  actor: nitto\n- context : agent-project-codd-gate--042729（agent-projectにcodd-gate自動検出とregression/intake結線を完成させ連携を有効化する）に人のフィードバック\n- action  : feedback-resume\n- reason  : チェックで承認\n- affects : agent-project-codd-gate--042729 → ready\n\n## DR-0004  2026-07-16  actor: nitto\n- context : agent-project-codd-gate--042729（agent-projectにcodd-gate自動検出とregression/intake結線を完成させ連携を有効化する）に人のフィードバック\n- action  : feedback-resume\n- reason  : チェックで承認\n- affects : agent-project-codd-gate--042729 → ready\n\n## DR-0005  2026-07-16  actor: nitto\n- context : agent-project-codd-gate--042729（agent-projectにcodd-gate自動検出とregression/intake結線を完成させ連携を有効化する）を人が修正（revise）\n- action  : revise\n- reason  : 要対応画面で検証コマンドを変更\n- affects : verify: grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' agent-project.yaml; agent-project-codd-gate--042729 → ready",
+  "workspace": null,
+  "references": [
+    {
+      "url": "https://github.com/ynitto/sandbox",
+      "path": "",
+      "base": "main",
+      "target": "",
+      "desc": "ソースコード・設計書"
+    }
+  ],
+  "status": "running",
+  "created_at": "2026-07-15T21:37:00Z",
+  "executor": "agent",
+  "orch_lease_until": 1784152182.394007,
+  "heartbeat_at": "2026-07-15T21:47:42Z",
+  "updated_at": "2026-07-15T21:42:53Z"
+}

@@ -1,0 +1,10 @@
+{
+  "id": "t5",
+  "goal": "敵対的検証: t2/t3/t4 の3結線を批判的にレビューし、agent-project.yaml への反映が整合しているか・regression_cmd の記述が完了条件grepに合致するか・intake/検出に副作用や循環がないかを統合前に事前チェックする。問題があれば該当generateノードへ差し戻す",
+  "deps": [
+    "t2",
+    "t3",
+    "t4"
+  ],
+  "kind": "verify"
+}

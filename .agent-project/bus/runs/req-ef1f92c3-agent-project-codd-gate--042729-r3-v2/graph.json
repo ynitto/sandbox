@@ -1,0 +1,64 @@
+{
+  "strategy": {
+    "patterns": [
+      "fan-out-and-synthesize",
+      "adversarial-verification",
+      "loop-until-done"
+    ],
+    "parallelism": 3,
+    "review": true,
+    "reason": "codd-gate連携の完成は『自動検出』『regression結線』『intake結線』という独立な3片に分割でき、fan-out-and-synthesizeで並列実装→agent-project.yamlへ統合するのが最も効率的。統合前にverifyノード(t5)を挟み、3結線の整合・正しさ・副作用をadversarial-verificationで事前チェックしてから集約する。完了条件(grepで regression_cmd に codd-gate verify --base が入る)は決定的なので、最終verify(t7)で終了コード0を確認し、満たすまでloop-until-doneでt1..t6を再試行して収束させる。map-reduce的な件数不定のfan-outではなく片数が3で固定のため静的fan-outを採用。"
+  },
+  "nodes": {
+    "t1": {
+      "goal": "現状調査と方針決定: agent-project.yaml の構造、codd-gate CLI の検出方法(存在・パス解決)、regression_cmd/intake の既存結線状態、charter制約(agent-project/agent-flowをエンジン、agent-dashboardをフロント)を把握し、3結線の実装方針を確定する",
+      "deps": [],
+      "kind": "work"
+    },
+    "t2": {
+      "goal": "codd-gate 自動検出の実装: codd-gate CLI の存在検出・パス解決ロジックを実装し、未検出時のフォールバック挙動を定義する(人の操作を最小化する前提を満たす)",
+      "deps": [
+        "t1"
+      ],
+      "kind": "generate"
+    },
+    "t3": {
+      "goal": "regression 結線の実装: agent-project.yaml の regression_cmd に 'codd-gate verify --base ...' を設定し、差分ゲート(verify)を regression として起動できるよう結線する",
+      "deps": [
+        "t1"
+      ],
+      "kind": "generate"
+    },
+    "t4": {
+      "goal": "intake 結線の実装: codd-gate tasks(修復タスク生成)の出力を agent-project の backlog/intake へ取り込む結線を実装し、ドリフト検出→タスク化を自動化する",
+      "deps": [
+        "t1"
+      ],
+      "kind": "generate"
+    },
+    "t5": {
+      "goal": "敵対的検証: t2/t3/t4 の3結線を批判的にレビューし、agent-project.yaml への反映が整合しているか・regression_cmd の記述が完了条件grepに合致するか・intake/検出に副作用や循環がないかを統合前に事前チェックする。問題があれば該当generateノードへ差し戻す",
+      "deps": [
+        "t2",
+        "t3",
+        "t4"
+      ],
+      "kind": "verify"
+    },
+    "t6": {
+      "goal": "統合: 検証済みの3結線を agent-project.yaml に一貫して反映し、codd-gate 連携を有効化する。regression_cmd 行が完了条件の正規表現に一致する形で確実に書き込む",
+      "deps": [
+        "t5"
+      ],
+      "kind": "synthesize"
+    },
+    "t7": {
+      "goal": "完了条件の検証: grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' agent-project.yaml が終了コード0で成功することを確認する。満たさなければ loop-until-done として t1..t6 を再試行し、収束させる",
+      "deps": [
+        "t6"
+      ],
+      "kind": "verify"
+    }
+  },
+  "iteration": 0
+}

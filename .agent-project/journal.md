@@ -955,3 +955,5 @@
 - 2026-07-16 06:36:55 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
 - 2026-07-16 06:36:58 run 再開: docs-designs-README-042729 は req-ef1f92c3-docs-designs-README-042729-r1 の失敗ノードだけをやり直します（done は温存）
 - 2026-07-16 06:36:59 cycle 1: docs-designs-README-042729 → 人の判断（回帰検知）
+- 2026-07-17 04:17:32 state-git 同期: import=4 export=31
+- 2026-07-17 04:17:32 === project 開始 v1 acceptance=2 ===
