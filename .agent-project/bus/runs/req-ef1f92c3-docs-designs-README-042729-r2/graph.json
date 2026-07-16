@@ -1,0 +1,63 @@
+{
+  "strategy": {
+    "patterns": [
+      "fan-out-and-synthesize",
+      "adversarial-verification"
+    ],
+    "parallelism": 4,
+    "review": true,
+    "reason": "[flow-planner] 対象は実在が確定した4本の設計書で data_flow=static。件数は実行時に4で固定なので map-reduce は不要で、data軸に沿って fan-out-and-synthesize を4並列（fan-out範囲[3,6]内）とし、各設計書の要約・相対リンク抽出を独立に走らせてから README へ統合する。ただし codd-gate verify の base=45a480f10edd965081cc9a4b3afcfbb7a916c2e9 と repos.json という人のフィードバック必須反映があり、完了条件（README の存在と4ファイル名の grep で終了コード0）を満たす必要があるため、統合前に検証gateを挟む。coverage 重視のドキュメント整備に精度要件が重なる構成なので、複合テンプレート fanout-then-verify（並列生成→検証gate→統合）が最適。tournament は最良案の選定ではなく網羅的な導線づくりが目的のため不採用。（粒度 coarse）"
+  },
+  "nodes": {
+    "t1": {
+      "goal": "docs/designs/agent-project-design.md の実在とパスを確認し、目的・扱う範囲を1〜2行で要約して README 用の導線文と相対リンク（./agent-project-design.md）を抽出する",
+      "deps": [],
+      "kind": "generate"
+    },
+    "t2": {
+      "goal": "docs/designs/agent-flow-design.md の実在とパスを確認し、目的・扱う範囲を1〜2行で要約して README 用の導線文と相対リンク（./agent-flow-design.md）を抽出する",
+      "deps": [],
+      "kind": "generate"
+    },
+    "t3": {
+      "goal": "docs/designs/codd-gate-design.md の実在とパスを確認し、目的・扱う範囲を1〜2行で要約して README 用の導線文と相対リンク（./codd-gate-design.md）を抽出する",
+      "deps": [],
+      "kind": "generate"
+    },
+    "t4": {
+      "goal": "docs/designs/agent-tools-rename-design.md の実在とパスを確認し、目的・扱う範囲を1〜2行で要約して README 用の導線文と相対リンク（./agent-tools-rename-design.md）を抽出する",
+      "deps": [],
+      "kind": "generate"
+    },
+    "gate": {
+      "goal": "4本の要約・相対リンクを敵対的に検証し、各リンク先ファイルの実在・リンク切れ・記述誤りがないことを確認したうえで codd-gate verify --base 45a480f10edd965081cc9a4b3afcfbb7a916c2e9 --repos repos.json を実行して整合ゲートを通す",
+      "deps": [
+        "t1",
+        "t2",
+        "t3",
+        "t4"
+      ],
+      "kind": "verify"
+    },
+    "synth": {
+      "goal": "docs/designs/README.md を執筆し、4本すべて（agent-project-design.md / agent-flow-design.md / codd-gate-design.md / agent-tools-rename-design.md）への相対リンクと概要を人が読みやすい順で配置して主要設計への導線を通す",
+      "deps": [
+        "gate"
+      ],
+      "kind": "synthesize"
+    },
+    "done": {
+      "goal": "完了条件のシェルコマンド（test -f docs/designs/README.md && grep -q で agent-project-design.md / agent-flow-design.md / codd-gate-design.md / agent-tools-rename-design.md の4ファイル名を確認）を実行し、終了コード0になるまで synth を反復させて確定する",
+      "deps": [
+        "synth"
+      ],
+      "kind": "verify"
+    },
+    "codd-gate-verify-corrected-0717": {
+      "goal": "対象リポジトリの適切な worktree で、人の指摘どおり `codd-gate verify --base 45a480f10edd965081cc9a4b3afcfbb7a916c2e9 --repos repos.json` をそのまま実行し、終了コード 0 を確認する。併せて元の完了条件コマンドも終了コード 0 であることを確認し、両コマンドの結果を明示する。失敗した場合のみ、issues に基づいて docs/designs/README.md または必要最小限の関連箇所を修正する。",
+      "deps": [],
+      "kind": "work"
+    }
+  },
+  "iteration": 1
+}

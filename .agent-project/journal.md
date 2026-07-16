@@ -963,3 +963,8 @@
 - 2026-07-17 04:17:33 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
 - 2026-07-17 04:17:33 run 再開: agent-project-codd-gate--042729 は req-ef1f92c3-agent-project-codd-gate--042729-r3-v2 の失敗ノードだけをやり直します（done は温存）
 - 2026-07-17 05:13:11 cycle 1: agent-project-codd-gate--042729 → 人の判断（繰り返し NG）
+- 2026-07-17 05:13:14 feedback 取り込み: docs-designs-README-042729 を再開
+- 2026-07-17 05:13:14 feedback 取り込み: verify-codd-gate-042729 を再開
+- 2026-07-17 05:33:05 cycle 2: verify-codd-gate-042729 → 人の判断（繰り返し NG）
+- 2026-07-17 05:58:42 cycle 3: docs-designs-README-042729 → 人の判断（繰り返し NG）
+- 2026-07-17 05:58:45 === agent-project 停止 reason=drained cycles=3 done=0 blocked=3 notified=True promoted=0 ===

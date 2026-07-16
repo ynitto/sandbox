@@ -1,0 +1,6 @@
+{
+  "id": "t1",
+  "goal": "docs/designs/agent-project-design.md の実在とパスを確認し、目的・扱う範囲を1〜2行で要約して README 用の導線文と相対リンク（./agent-project-design.md）を抽出する",
+  "deps": [],
+  "kind": "generate"
+}

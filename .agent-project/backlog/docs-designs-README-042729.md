@@ -3,9 +3,11 @@
 - source: charter
 - priority: 0
 - verify: `test -f docs/designs/README.md && grep -q 'agent-project-design.md' docs/designs/README.md && grep -q 'agent-flow-design.md' docs/designs/README.md && grep -q 'codd-gate-design.md' docs/designs/README.md && grep -q 'agent-tools-rename-design.md' docs/designs/README.md`
-- retries: 1
-- workspace: sandbox
+- retries: 3
 - charter: v1
 - assess: c=1 r=1 a=1
-- last_run: req-ef1f92c3-docs-designs-README-042729-r1
-- needs_reason: 回帰検知: グローバル検査 `codd-gate verify --base "$KIRO_BASE_REV" --repos .agent-project/repos.json` 失敗 — exit=2 失敗した工程: `codd-gate verify --base 45a480f10edd965081cc9a4b3afcfbb7a916c2e9 --repos .agent-project/repos.json` [codd-gate] エラー: repos レジストリが見つかりません: .agent-project/repos.json
+- feedback: codd-gate verify --base 45a480f10edd965081cc9a4b3afcfbb7a916c2e9 --repos repos.json に修正
+- workspace: src
+- routed_by: explicit-alias
+- last_run: req-ef1f92c3-docs-designs-README-042729-r2
+- needs_reason: 繰り返し NG（retries=3）: workspace repo の clone 失敗（https://github.com/ynitto/sandbox@ap/docs-designs-README-042729）: Cloning into '/var/folders/8c/s6jh85ls4tq3fmzkl0jk5jcc0000gn/T/agent-verify-qfv8pzur/repo'... ⏎ fatal: Remote branch ap/docs-designs-README-042729 not found in upstream origin

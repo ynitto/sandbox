@@ -1,0 +1,54 @@
+{
+  "strategy": {
+    "patterns": [
+      "fan-out-and-synthesize",
+      "adversarial-verification",
+      "loop-until-done"
+    ],
+    "parallelism": 2,
+    "review": true,
+    "reason": "完了条件は tools/agent-project の _first_command_line が「検証コマンド:」ラベル付き出力から codd-gate コマンド行を抽出できることを assert する単体チェックで、反復が前提のため loop-until-done を主軸に据える。実装前に (a) 現行 _first_command_line と verify 合成フローの仕様・入力バリアント(ラベルが同一行/次行、前後の散文、$KIRO_BASE_REV の引用符保持)と (b) 呼び出し元・既存テストの回帰入力を独立に洗い出せるので、この2点を fan-out で並列調査(t1,t2)する。集約前に verify ノード(t3)を挟んで調査結果の整合と完了条件ケースの網羅を事前チェックしてから spec に synthesize(t4)し、実装(t5)する。実装後は adversarial-verification の verify ノード(t6)が完了条件の assert・pytest・エッジケースを敵対的に検証し、失敗すれば t5 へ差し戻して条件充足まで反復する。単一関数の局所修正のため並列度は調査フェーズの2で十分。"
+  },
+  "nodes": {
+    "t1": {
+      "goal": "tools/agent-project の agent_project._first_command_line の現行実装と verify 合成フローを読み、「検証コマンド:」ラベル付き出力の入力バリアント（ラベルが同一行/次行、前後の散文・空行、コメント行、$KIRO_BASE_REV を含む引用符）を列挙する",
+      "deps": [],
+      "kind": "work"
+    },
+    "t2": {
+      "goal": "_first_command_line の全呼び出し元と既存テスト（test_agent_project 等）の回帰入力を洗い出し、変更で壊してはならない既存挙動を確定する",
+      "deps": [],
+      "kind": "work"
+    },
+    "t3": {
+      "goal": "集約前チェック: t1/t2 の調査結果が矛盾なく、完了条件のケース（1行目がラベル「検証コマンド:」、2行目が codd-gate コマンドで引用符を保持）と既存回帰を両立してカバーしているか検証する",
+      "deps": [
+        "t1",
+        "t2"
+      ],
+      "kind": "verify"
+    },
+    "t4": {
+      "goal": "抽出仕様に統合: ラベル行(例 検証コマンド:)・空行・コメント・散文をスキップし、最初の実コマンド行を verbatim（引用符・$変数を保持）で返す挙動を一意に定義する",
+      "deps": [
+        "t3"
+      ],
+      "kind": "synthesize"
+    },
+    "t5": {
+      "goal": "spec に従い tools/agent-project の _first_command_line を実装し、ラベル付き出力から codd-gate コマンド行を抽出できるようにする（既存呼び出し元の挙動は維持）",
+      "deps": [
+        "t4"
+      ],
+      "kind": "generate"
+    },
+    "t6": {
+      "goal": "敵対的検証: 完了条件の assert（PYTHONPATH=tools/agent-project の _first_command_line 抽出=codd-gate verify --base \"$KIRO_BASE_REV\"）と pytest、及びラベル同一行/散文混在などエッジケースを実行し、失敗なら t5 へ差し戻す",
+      "deps": [
+        "t5"
+      ],
+      "kind": "verify"
+    }
+  },
+  "iteration": 0
+}

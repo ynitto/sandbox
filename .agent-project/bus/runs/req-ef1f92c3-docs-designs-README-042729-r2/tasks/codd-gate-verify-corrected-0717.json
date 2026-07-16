@@ -1,0 +1,6 @@
+{
+  "id": "codd-gate-verify-corrected-0717",
+  "goal": "対象リポジトリの適切な worktree で、人の指摘どおり `codd-gate verify --base 45a480f10edd965081cc9a4b3afcfbb7a916c2e9 --repos repos.json` をそのまま実行し、終了コード 0 を確認する。併せて元の完了条件コマンドも終了コード 0 であることを確認し、両コマンドの結果を明示する。失敗した場合のみ、issues に基づいて docs/designs/README.md または必要最小限の関連箇所を修正する。",
+  "deps": [],
+  "kind": "work"
+}

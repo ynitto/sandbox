@@ -3,9 +3,10 @@
 - source: charter
 - priority: 0
 - verify: `PYTHONPATH=tools/agent-project python3 -c 'from agent_project import _first_command_line; assert _first_command_line("検証コマンド:\ncodd-gate verify --base \"$KIRO_BASE_REV\"") == "codd-gate verify --base \"$KIRO_BASE_REV\""'`
-- retries: 4
-- workspace: sandbox
+- retries: 5
 - charter: v1
 - assess: c=1 r=1 a=1
-- last_run: req-ef1f92c3-verify-codd-gate-042729-r1
-- needs_reason: 繰り返し NG（retries=4）: exit=1 失敗した工程: `python3 -c 'from agent_project import _first_command_line; assert _first_command_line("検証コマンド:\ncodd-gate verify --base \"$KIRO_BASE_REV\"") == "codd-gate verify --base \"$KIRO_BASE_REV\""'`（それより前の工程は成功） Traceback (most recent call last): ⏎   File "<string>", line
+- workspace: src
+- routed_by: explicit-alias
+- last_run: req-ef1f92c3-verify-codd-gate-042729-r4
+- needs_reason: 繰り返し NG（retries=5）: workspace repo の clone 失敗（https://github.com/ynitto/sandbox@ap/verify-codd-gate-042729）: Cloning into '/var/folders/8c/s6jh85ls4tq3fmzkl0jk5jcc0000gn/T/agent-verify-_dki0_0g/repo'... ⏎ fatal: Remote branch ap/verify-codd-gate-042729 not found in upstream origin

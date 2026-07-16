@@ -1,0 +1,6 @@
+{
+  "id": "t1",
+  "goal": "tools/agent-project の agent_project._first_command_line の現行実装と verify 合成フローを読み、「検証コマンド:」ラベル付き出力の入力バリアント（ラベルが同一行/次行、前後の散文・空行、コメント行、$KIRO_BASE_REV を含む引用符）を列挙する",
+  "deps": [],
+  "kind": "work"
+}

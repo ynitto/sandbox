@@ -1,0 +1,10 @@
+{
+  "id": "t5",
+  "who": "worker-2",
+  "status": "done",
+  "output": "完了条件を再確認し、worktree のコードは t4 の抽出仕様と1対1で対応済みであることをコードリーディングで検算した。完了条件コマンドは exit 0、関連回帰33件も通過。差分なし（コード変更不要）。レポートを `artifacts/t5/report.md` に出力した。",
+  "finished_at": "2026-07-16T20:31:30Z",
+  "artifacts": [
+    "artifacts/t5/report.md"
+  ]
+}

@@ -1,0 +1,2 @@
+{"ts": "2026-07-16T20:35:19Z", "who": "orchestrator", "kind": "planned", "patterns": ["fan-out-and-synthesize", "adversarial-verification"], "parallelism": 4, "tasks": ["t1", "t2", "t3", "t4", "gate", "synth", "done"]}
+{"ts": "2026-07-16T20:44:08Z", "who": "orchestrator", "kind": "replan", "iteration": 1, "added": ["codd-gate-verify-corrected-0717"]}

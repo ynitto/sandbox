@@ -1,0 +1,8 @@
+{
+  "id": "t6",
+  "goal": "敵対的検証: 完了条件の assert（PYTHONPATH=tools/agent-project の _first_command_line 抽出=codd-gate verify --base \"$KIRO_BASE_REV\"）と pytest、及びラベル同一行/散文混在などエッジケースを実行し、失敗なら t5 へ差し戻す",
+  "deps": [
+    "t5"
+  ],
+  "kind": "verify"
+}

@@ -10,3 +10,9 @@
 - reason  : チェックで承認
 - affects : verify-codd-gate-042729 → ready
 
+## DR-0003  2026-07-17  actor: nitto
+- context : verify-codd-gate-042729（verify合成が日本語「検証コマンド:」ラベル付き出力からcodd-gateコマンド行を抽出できる）に人のフィードバック
+- action  : feedback-resume
+- reason  : チェックで承認
+- affects : verify-codd-gate-042729 → ready
+

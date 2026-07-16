@@ -1,0 +1,6 @@
+{
+  "id": "t2",
+  "goal": "_first_command_line の全呼び出し元と既存テスト（test_agent_project 等）の回帰入力を洗い出し、変更で壊してはならない既存挙動を確定する",
+  "deps": [],
+  "kind": "work"
+}

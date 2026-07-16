@@ -1,0 +1,8 @@
+{
+  "id": "synth",
+  "goal": "docs/designs/README.md を執筆し、4本すべて（agent-project-design.md / agent-flow-design.md / codd-gate-design.md / agent-tools-rename-design.md）への相対リンクと概要を人が読みやすい順で配置して主要設計への導線を通す",
+  "deps": [
+    "gate"
+  ],
+  "kind": "synthesize"
+}

@@ -1,0 +1,11 @@
+{
+  "id": "gate",
+  "goal": "4本の要約・相対リンクを敵対的に検証し、各リンク先ファイルの実在・リンク切れ・記述誤りがないことを確認したうえで codd-gate verify --base 45a480f10edd965081cc9a4b3afcfbb7a916c2e9 --repos repos.json を実行して整合ゲートを通す",
+  "deps": [
+    "t1",
+    "t2",
+    "t3",
+    "t4"
+  ],
+  "kind": "verify"
+}
