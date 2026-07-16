@@ -1,8 +1,0 @@
-{
-  "id": "t2",
-  "goal": ".agent/agent-project.yaml に regression_cmd: 'codd-gate verify --base <対象>' を設定し、差分検証（regression）を結線する",
-  "deps": [
-    "t1"
-  ],
-  "kind": "work"
-}

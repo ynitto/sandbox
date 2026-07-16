@@ -1,8 +1,0 @@
-{
-  "id": "t6",
-  "goal": "3系統の設定注入を統合し、完了条件コマンド grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' .agent/agent-project.yaml が終了コード0で成功することを機械検証して結線を有効化する",
-  "deps": [
-    "t5"
-  ],
-  "kind": "synthesize"
-}
