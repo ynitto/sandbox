@@ -722,6 +722,41 @@ def read_result_notes(cfg: "Config", use_git: bool, run_id: str = "") -> "list[d
     return out
 
 
+def read_discovered_constraints(cfg: "Config", use_git: bool, run_id: str = "") -> "list[str]":
+    """指定 run（無ければ直近）のノード結果 `data.constraints`（各ノードが実行中に発見した恒常制約）を集める。
+    read_result_notes（gitlab 却下/承認の人コメント）と違い、**委譲/組み込み executor いずれでも**読む
+    （ローカルの agent executor でも一貫性制約は発生するため）。集約（sink）ノードが
+    `data.constraints` に配列で載せる契約（build_request がその提示を要求する）。
+    agent-flow result --json を読むだけ（決定的）。重複は本文で排除する。settle 側は last_run を渡す
+    （共有バスで別タスクの結果を拾わないため）。"""
+    cmd = _kf_base(cfg, use_git) + ["result", "--json"]
+    rid = str(run_id or "").strip()
+    if rid:
+        cmd += ["--run-id", rid]
+    try:
+        proc = subprocess.run(cmd, cwd=str(cfg.workdir), timeout=60,
+                              capture_output=True, text=True, encoding="utf-8", errors="replace")
+        data = json.loads(proc.stdout or "{}")
+    except (subprocess.SubprocessError, json.JSONDecodeError, FileNotFoundError):
+        return []
+    out: "list[str]" = []
+    seen: "set[str]" = set()
+    for n in data.get("final_nodes", []):
+        d = (n or {}).get("data")
+        items = d.get("constraints") if isinstance(d, dict) else None
+        if not isinstance(items, list):
+            continue
+        for c in items:
+            if isinstance(c, dict):
+                s = str(c.get("text") or c.get("constraint") or c.get("rule") or "").strip()
+            else:
+                s = str(c or "").strip()
+            if s and s not in seen:
+                seen.add(s)
+                out.append(s)
+    return out
+
+
 def verify_lib_path(cfg: "Config") -> Path:
     """検証済み verify（procedural memory）の格納先。DR を汚さない専用ファイル。"""
     return cfg.decisions / ".verifylib.md"
