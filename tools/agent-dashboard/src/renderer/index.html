@@ -39,7 +39,7 @@
           </div>
           <div id="cowork-list">定期実行・定型業務</div>
         </section>
-        <!-- kiro-loop 制御面の差し込み口（src/features/kiro-loop/）。実装まで非表示。 -->
+        <!-- kiro-loop 端末はメインタブ側。左ペインの一覧枠は将来の session 一覧用に残す（既定非表示）。 -->
         <section id="kiro-loop-nav" class="nav-group hidden" data-feature="kiro-loop" aria-labelledby="kiro-loop-group-title" hidden>
           <div class="nav-group-header">
             <h2 id="kiro-loop-group-title">kiro-loop</h2>
@@ -70,6 +70,7 @@
         <button class="tab" data-tab="flow" data-feature="agent-project">実行</button>
         <button class="tab" data-tab="history" data-feature="agent-project">成果・履歴</button>
         <button class="tab" data-tab="cowork" data-feature="cowork">Cowork</button>
+        <button class="tab hidden" data-tab="kiro-loop" data-feature="kiro-loop" id="tab-btn-kiro-loop" hidden>端末</button>
       </nav>
 
       <section id="content">
@@ -79,6 +80,7 @@
         <div id="tab-flow" class="tabpane" data-feature="agent-project"></div>
         <div id="tab-history" class="tabpane" data-feature="agent-project"></div>
         <div id="tab-cowork" class="tabpane" data-feature="cowork"></div>
+        <div id="tab-kiro-loop" class="tabpane" data-feature="kiro-loop"></div>
       </section>
     </main>
   </div>

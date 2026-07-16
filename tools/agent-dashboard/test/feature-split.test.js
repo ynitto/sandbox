@@ -51,7 +51,7 @@ test('agent-project preload に discover / flowRuns がある', () => {
   assert.deepStrictEqual(calls, [['dashboard:discover', undefined]]);
 });
 
-test('kiro-loop は no-op でチャネルを登録しない', () => {
+test('kiro-loop は tmux 視聴 API を登録する', () => {
   const loop = loadFeatures().find((f) => f.id === 'kiro-loop');
   const registered = [];
   loop.registerIpc({
@@ -59,8 +59,11 @@ test('kiro-loop は no-op でチャネルを登録しない', () => {
     loadConfig: () => ({}),
     saveConfig: () => ({}),
   });
-  assert.deepStrictEqual(registered, []);
-  assert.deepStrictEqual(Object.keys(loop.preloadApi()), []);
+  assert.deepStrictEqual(registered.sort(), ['kiroLoop:capture', 'kiroLoop:listSessions'].sort());
+  const api = loop.preloadApi();
+  assert.strictEqual(typeof api.kiroLoopListSessions, 'function');
+  assert.strictEqual(typeof api.kiroLoopCapture, 'function');
+  assert.ok(loop.configDefaults.kiroLoop);
 });
 
 
