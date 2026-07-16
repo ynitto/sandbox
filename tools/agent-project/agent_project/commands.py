@@ -394,6 +394,8 @@ def cmd_revise(cfg: Config, tid: str, fields: dict, feedback: str, reason: str) 
         t.drop("feedback")
         t.extra.append(("feedback", fb.replace("\n", " ⏎ ")))
         changes.append("feedback 注入")
+        # 差し戻し（revise）の意図を run ブリーフへ蓄積（追記のみ）。次 run 以降の全分散ノードへ伝播する。
+        append_brief_item(cfg, t, fb, source="revise")
     if not changes:
         print("エラー: 変更がありません（フィールドか --feedback を指定してください）", file=sys.stderr)
         return 2
