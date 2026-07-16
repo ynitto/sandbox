@@ -1,0 +1,6 @@
+{
+  "command": "revise",
+  "id": "agent-project-codd-gate--042729",
+  "verify": "grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify' .agent/agent-project.yaml",
+  "reason": "検証パスを正典 .agent/agent-project.yaml へ一本化（DR-0005 で .agent/ が脱落した不整合の是正。--base/--debt どちらの結線形式でも一致する）。ap/ ブランチ未 push 時は verify が base へフォールバックするエンジン修正（verify.py）とセットで有効"
+}
