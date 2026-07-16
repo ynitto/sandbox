@@ -1,8 +1,0 @@
-{
-  "id": "t7",
-  "goal": "docs/designs/README.md を作成し、4主要設計（agent-project-design.md / agent-flow-design.md / codd-gate-design.md / agent-tools-rename-design.md）への導線を通す。相対リンク・一行要旨・推奨する読む順序を含め、人間にとって読みやすく整理する。",
-  "deps": [
-    "t6"
-  ],
-  "kind": "synthesize"
-}
