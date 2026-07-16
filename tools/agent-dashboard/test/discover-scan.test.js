@@ -154,6 +154,29 @@ function mkdirp(...parts) {
     assert.strictEqual(result.removedFrom, null);
   });
 
+  await test('discover は Windows から登録した WSL の POSIX パスを UNC へ寄せる（幽霊 C:\\home\\... にしない）', async () => {
+    // kiro-loop は WSL 側なので、Windows のビュアーには /home/... の POSIX パスで登録されがち。
+    // これを path.resolve すると C:\home\... の幽霊になり exists:false→Cowork のリポジトリ選択
+    // （exists で絞る）に出てこない。POSIX 絶対パスは \\wsl.localhost\<distro>\... へ寄せる。
+    const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const origDistro = process.env.WSL_DISTRO_NAME;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    process.env.WSL_DISTRO_NAME = 'Ubuntu';
+    try {
+      const cfg = { projects: { roots: ['/home/dev/kiro-proj'], autoDiscover: false } };
+      const dirs = project.discover(cfg).projects.map((p) => p.dir);
+      assert.ok(
+        dirs.includes('\\\\wsl.localhost\\Ubuntu\\home\\dev\\kiro-proj'),
+        `WSL UNC へ寄せていない: ${JSON.stringify(dirs)}`
+      );
+      assert.ok(!dirs.some((d) => /^[A-Za-z]:\\home\\/.test(d)), `幽霊 C:\\home\\... が残っている: ${JSON.stringify(dirs)}`);
+    } finally {
+      if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
+      if (origDistro === undefined) delete process.env.WSL_DISTRO_NAME;
+      else process.env.WSL_DISTRO_NAME = origDistro;
+    }
+  });
+
   console.log(`\n${passed} tests passed`);
 })().catch((e) => {
   console.error(e);

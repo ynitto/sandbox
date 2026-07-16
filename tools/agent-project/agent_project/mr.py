@@ -435,7 +435,12 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
         ev = delivery_evidence(cfg, act_msg, git_base, location,
                                verify=task.verify, vmsg=vmsg, ok=ok, task=task)
         if ok and not flaky and cfg.regression_cmd:    # done 確定前のグローバル回帰ゲート（巻き込み事故）
-            rok, rmsg = run_verify(cfg.regression_cmd, vcwd, cfg.verify_timeout, venv)
+            # 回帰検査は **常に git-bus ルート（workdir）** で走らせる。task.verify と違い
+            # cfg.regression_cmd はグローバル検査で、パス（例 `--repos <root>/repos.json`）も
+            # 差分基準（`--base "$KIRO_BASE_REV"`）も workdir を前提に書かれる。workspace タスクの
+            # vcwd（該当 repo の一時 clone）で走らせると codd-gate が repos.json を解決できず、
+            # KIRO_BASE_REV も clone の HEAD（workdir に無い rev）になって回帰ゲートが壊れる。
+            rok, rmsg = run_verify(cfg.regression_cmd, cfg.workdir, cfg.verify_timeout, verify_env)
             if not rok:
                 regressed = True
                 if cfg.regression_revert:
