@@ -1,12 +1,12 @@
 :root {
-  --bg: #1e2126;
-  --bg2: #262a31;
-  --bg3: #2f343d;
-  --fg: #e6e8eb;
-  --muted: #9aa3ad;
-  --accent: #8b7cf6; /* kiro purple */
-  --accent2: #4cc2b0;
-  --border: #3a4048;
+  --bg: #171a1f;
+  --bg2: #20242b;
+  --bg3: #292e37;
+  --fg: #f2f4f7;
+  --muted: #b3bbc6;
+  --accent: #9b8cff;
+  --accent2: #62cdbb;
+  --border: #3b424d;
   --green: #3fb950;
   --red: #f85149;
   --yellow: #d29922;
@@ -22,7 +22,8 @@ html, body {
   background: var(--bg);
   color: var(--fg);
   font-family: "Segoe UI", "Yu Gothic UI", "Hiragino Sans", sans-serif;
-  font-size: 13px;
+  font-size: 14px;
+  line-height: 1.5;
 }
 
 #app { display: flex; height: 100vh; }
@@ -87,7 +88,8 @@ button:disabled { opacity: 0.4; cursor: default; }
 .row2 { display: flex; gap: 12px; }
 .row2 > div { flex: 1; }
 .field { margin-bottom: 10px; }
-.field label { display: block; color: var(--muted); margin-bottom: 3px; }
+.field label { display: block; color: var(--fg); margin-bottom: 5px; font-weight: 600; }
+.field-help { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
 .field input, .field textarea, .field select { width: 100%; }
 .field label.check {
   display: flex;
@@ -114,10 +116,11 @@ button:disabled { opacity: 0.4; cursor: default; }
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
 }
-.sidebar-header h1 { font-size: 14px; margin: 0; color: var(--accent); }
-.sidebar-actions button { width: 30px; height: 30px; padding: 0; }
+.sidebar-header h1 { font-size: 15px; margin: 0; color: var(--fg); }
+.sidebar-actions button { width: 36px; height: 36px; padding: 0; }
 .sidebar-actions .assistant-button { display: inline-grid; place-items: center; }
-.sidebar-actions .assistant-button svg {
+.sidebar-actions button svg,
+.nav-group-header button svg {
   width: 17px;
   height: 17px;
   fill: none;
@@ -142,7 +145,7 @@ button:disabled { opacity: 0.4; cursor: default; }
   font-weight: 600;
   letter-spacing: 0.04em;
 }
-.nav-group-header button { width: 30px; height: 30px; padding: 0; }
+.nav-group-header button { width: 36px; height: 36px; padding: 0; display: inline-grid; place-items: center; }
 
 .container-item { margin-bottom: 4px; }
 .container-label {
@@ -159,7 +162,8 @@ button:disabled { opacity: 0.4; cursor: default; }
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 7px 10px 7px 18px;
+  min-height: 42px;
+  padding: 8px 10px 8px 18px;
   cursor: pointer;
   border-left: 3px solid transparent;
 }
@@ -255,12 +259,12 @@ button:disabled { opacity: 0.4; cursor: default; }
 #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 
 #project-header {
-  padding: 10px 14px 6px;
+  padding: 14px 18px 10px;
   border-bottom: 1px solid var(--border);
 }
 .project-header-main { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 #project-title { display: flex; align-items: baseline; gap: 10px; }
-#project-name { font-size: 16px; font-weight: 600; }
+#project-name { font-size: 18px; font-weight: 650; }
 #project-meta { font-size: 11px; margin-top: 3px; }
 #btn-project-settings { flex: none; }
 
@@ -276,7 +280,8 @@ button:disabled { opacity: 0.4; cursor: default; }
   border: none;
   border-bottom: 2px solid transparent;
   border-radius: 0;
-  padding: 8px 14px;
+  min-height: 44px;
+  padding: 10px 16px;
   color: var(--muted);
 }
 .tab:hover { color: var(--fg); }
@@ -289,12 +294,12 @@ button:disabled { opacity: 0.4; cursor: default; }
 .summary-card {
   background: var(--bg2);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 8px;
 }
 .summary-hero {
-  padding: 22px 24px;
+  padding: 20px 22px;
   margin-bottom: 14px;
-  border-left: 4px solid var(--accent2);
+  border-left: 3px solid var(--accent2);
 }
 .summary-hero.tone-action { border-left-color: var(--yellow); }
 .summary-hero.tone-warn { border-left-color: var(--orange); }
@@ -313,7 +318,7 @@ button:disabled { opacity: 0.4; cursor: default; }
   justify-content: space-between;
   gap: 24px;
 }
-.summary-headline { font-size: 24px; font-weight: 700; line-height: 1.3; }
+.summary-headline { font-size: 22px; font-weight: 700; line-height: 1.35; }
 .summary-goal { max-width: 72ch; margin: 8px 0 18px; color: var(--muted); line-height: 1.55; }
 .summary-progress {
   height: 8px;
@@ -332,16 +337,16 @@ button:disabled { opacity: 0.4; cursor: default; }
 .summary-card.has-action { border-color: var(--yellow); }
 .deliveries-card { grid-column: 1 / -1; }
 .summary-card p { line-height: 1.55; }
-.summary-number { font-size: 36px; font-weight: 700; line-height: 1; color: var(--yellow); }
+.summary-number { font-size: 32px; font-weight: 700; line-height: 1; color: var(--yellow); }
 .summary-number span { margin-left: 3px; font-size: 13px; color: var(--muted); }
 .summary-status-ok { margin: 12px 0 6px; color: var(--green); font-size: 17px; font-weight: 600; }
 .summary-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 12px 0 18px; }
-.summary-stats > div { padding: 10px; border-radius: 7px; background: var(--bg3); text-align: center; }
+.summary-stats > div { padding: 10px; border-radius: 6px; background: var(--bg); border: 1px solid var(--border); text-align: center; }
 .summary-stats strong { display: block; font-size: 24px; }
 .summary-stats span { color: var(--muted); font-size: 11px; }
 .summary-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .summary-link {
-  min-height: 38px;
+  min-height: 42px;
   padding: 8px 14px;
   border-color: var(--accent);
   background: var(--accent);
@@ -369,6 +374,46 @@ button:disabled { opacity: 0.4; cursor: default; }
 }
 .settings-version-list li span { min-width: 0; overflow-wrap: anywhere; }
 .danger-zone { margin-top: 6px; border-color: var(--red); }
+.subtle-action { color: var(--muted); background: transparent; }
+
+.page-heading,
+.settings-section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.page-heading { margin-bottom: 18px; }
+.page-heading h2,
+.cowork-header h2 { margin: 0; font-size: 22px; }
+.content-section {
+  margin-bottom: 14px;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg2);
+}
+.content-section h3 { margin: 0 0 12px; font-size: 15px; }
+.history-shell { max-width: 1120px; margin: 0 auto; }
+.table-scroll { overflow-x: auto; }
+
+.developer-dialog { width: min(980px, calc(100vw - 40px)); }
+.developer-project-info { margin-bottom: 18px; }
+.developer-summary {
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.developer-summary h3 { margin: 0; }
+.developer-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; margin: 12px 0; background: var(--border); border: 1px solid var(--border); }
+.developer-facts > div { min-width: 0; padding: 10px 12px; background: var(--bg2); }
+.developer-facts dt { color: var(--muted); font-size: 11px; }
+.developer-facts dd { margin: 3px 0 0; overflow-wrap: anywhere; }
+.developer-summary details { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.developer-summary summary { cursor: pointer; font-weight: 600; }
+.developer-log { max-height: 280px; margin-top: 10px; }
+.developer-output { max-height: 320px; overflow: auto; white-space: pre-wrap; }
 
 /* スクロールは #content ではなく各タブ（.tabpane）が持つ。
    フロータブだけはタブ自体をスクロールさせず、左右ペインが独立スクロールする */
@@ -1156,10 +1201,16 @@ button.danger { border-color: var(--red); color: var(--red); }
 #toast.ok { border-color: var(--green); }
 
 .empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
   color: var(--muted);
   text-align: center;
   padding: 32px 0;
 }
+.empty strong { color: var(--fg); font-size: 15px; }
+.empty.compact { padding: 18px 10px; }
 
 .section-title {
   font-size: 13px;
@@ -1389,6 +1440,8 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   .delivery-file-panel { border-right: 0; border-bottom: 1px solid var(--border); }
   .row2 { flex-direction: column; gap: 0; }
   .settings-action-grid { grid-template-columns: 1fr; }
+  .developer-facts { grid-template-columns: 1fr; }
+  .page-heading, .settings-section-heading { flex-direction: column; }
   .queue-summary,
   .queue-summary.flow-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .queue-filter { min-width: 0; }

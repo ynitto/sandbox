@@ -1043,6 +1043,11 @@ function openProjectSettings() {
       ${versions ? `<ul class="settings-version-list">${versions}</ul>` : '<p class="muted">計画バージョンはまだありません。</p>'}
       ${promote}
     </section>
+    <section class="project-settings-section">
+      <h3>調査と高度な設定</h3>
+      <p class="muted">実行ID、内部ログ、同期方式などは通常の操作には必要ありません。</p>
+      <button id="btn-project-developer-tools">開発者ツールを開く</button>
+    </section>
     ${danger}`;
 
   for (const btn of $('project-settings-body').querySelectorAll('button[data-edit]')) {
@@ -1065,6 +1070,11 @@ function openProjectSettings() {
   if (reset) reset.addEventListener('click', () => {
     $('dlg-project-settings').close();
     resetProject();
+  });
+  const developer = $('btn-project-developer-tools');
+  if (developer) developer.addEventListener('click', () => {
+    $('dlg-project-settings').close();
+    openDeveloperTools();
   });
   $('dlg-project-settings').showModal();
 }
@@ -2870,17 +2880,17 @@ function needCompleteHowHtml(n) {
   // needs 種別ごとの「この操作で完了するか」を先頭に出す（task が無い milestone 等は種別文言）
   let line = hint && hint.completeHow;
   if (n.kind === 'review') {
-    line = '完了にするには: 下の「承認して完了にする」を押す（この承認で納品確定）';
+    line = '承認すると、このタスクは完了します。';
   } else if (n.kind === 'plan-review') {
-    line = 'この承認では完了になりません。実行が許可されるだけです。';
+    line = '承認すると、タスクの実行を開始します。';
   } else if (n.kind === 'milestone') {
     const status = milestoneStatusFor(p, n.id);
     line =
       status === null || status === 'converged'
-        ? '完了にするには: 「プロジェクトを完了として承認」を押す'
+        ? '承認すると、プロジェクトは完了します。'
         : 'まだプロジェクト完了の段階ではありません。';
   } else if (!line && n.kind === 'blocked') {
-    line = '完了にするには: 指示を送るか「そのまま再実行」（この操作だけでは納品確定しません）';
+    line = '指示を送ると、作業を再開します。';
   }
   if (!line) return '';
   return `<div class="task-complete-banner need-complete-how">${esc(line)}</div>`;
@@ -2890,13 +2900,13 @@ function needActionsHtml(n) {
   const kind = n.kind || 'blocked';
   const buttons = [];
   if (kind === 'plan-review') {
-    buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}">✓ 承認（実行を許可・完了にはならない）</button>`);
-    buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}" data-require="1" title="修正指示を記入して計画を練り直させます">↩ 差し戻す（修正指示を記入）</button>`);
-    buttons.push(`<button class="danger" data-act="reject" data-id="${esc(n.id)}" data-require="1" title="このタスクを廃止し、計画を作り直させます">✕ 却下</button>`);
+    buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}">承認して実行</button>`);
+    buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}" data-require="1" title="修正指示を記入して計画を練り直させます">差し戻す</button>`);
+    buttons.push(`<button class="danger" data-act="reject" data-id="${esc(n.id)}" data-require="1" title="このタスクを廃止し、計画を作り直させます">却下</button>`);
   } else if (kind === 'review') {
-    buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}">✓ 承認して完了にする</button>`);
-    buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}" data-require="1" title="修正方針を記入してやり直させます">↩ 差し戻す（修正方針を記入）</button>`);
-    buttons.push(`<button class="danger" data-act="reject" data-id="${esc(n.id)}" data-require="1" title="この成果を採用せず廃止し、計画を作り直させます">✕ 却下</button>`);
+    buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}">承認して完了にする</button>`);
+    buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}" data-require="1" title="修正方針を記入してやり直させます">差し戻す</button>`);
+    buttons.push(`<button class="danger" data-act="reject" data-id="${esc(n.id)}" data-require="1" title="この成果を採用せず廃止し、計画を作り直させます">却下</button>`);
   } else if (kind === 'milestone') {
     const status = milestoneStatusFor(state.project, n.id);
     if (status === null || status === 'converged') {
@@ -2922,9 +2932,9 @@ function needActionsHtml(n) {
       buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}">↩ 指示を送る</button>`);
     }
   } else {
-    buttons.push(`<button class="primary-inline" data-act="feedback" data-id="${esc(n.id)}">➤ 指示を送って再開</button>`);
-    buttons.push(`<button data-act="rerun" data-id="${esc(n.id)}">↻ そのまま再実行</button>`);
-    buttons.push(`<button data-act="hold" data-id="${esc(n.id)}" title="このタスクを止めて保留にします">⏸ 保留にする</button>`);
+    buttons.push(`<button class="primary-inline" data-act="feedback" data-id="${esc(n.id)}">指示を送って再開</button>`);
+    buttons.push(`<button data-act="rerun" data-id="${esc(n.id)}">そのまま再実行</button>`);
+    buttons.push(`<button data-act="hold" data-id="${esc(n.id)}" title="このタスクを止めて保留にします">保留にする</button>`);
   }
   const ph =
     kind === 'plan-review'
@@ -2943,10 +2953,10 @@ function needActionsHtml(n) {
 
 // 種別ごとの「何を確認するか」。カードの先頭で確認の目的を一文で示す
 const NEED_ASK = {
-  'plan-review': 'このタスクを実行してよいか確認してください（この承認では完了になりません）。',
-  review: '成果物を確認し、「承認して完了にする」で納品してよいか判断してください。',
+  'plan-review': 'このタスクの実行を始めてよいか確認してください。',
+  review: '成果物を確認し、完了にしてよいか判断してください。',
   milestone: 'プロジェクトを完了にしてよいか確認してください。',
-  blocked: '作業が止まっています。対応方法を指示してください（この操作だけでは納品確定しません）。',
+  blocked: '作業を再開するための対応を指示してください。',
 };
 
 // カード見出し用にタイトルの定型接頭辞（種別バッジと重複する）を落とす
@@ -3579,26 +3589,11 @@ function renderNeedFacts(n) {
   if (n.failureSummary) {
     facts.push(`<div class="need-diag"><span class="label-chip">失敗の要因</span> ${inlineMd(n.failureSummary)}</div>`);
   }
-  const fc = n.failureContext;
-  if (fc) {
-    const rows = [
-      ['分類', fc.category],
-      ['対処対象', fc.owner],
-      ['終了コード', fc.exitCode],
-      ['作業ディレクトリ', fc.workdir],
-      ['実行コマンド', fc.command],
-      ['探したパス', fc.resolvedTarget],
-    ].filter(([, value]) => value);
-    if (rows.length) {
-      facts.push(`<dl class="need-failure-context">${rows.map(([label, value]) =>
-        `<div><dt>${esc(label)}</dt><dd><code>${esc(value)}</code></dd></div>`).join('')}</dl>`);
-    }
-  }
   if (n.failureResolution) {
     facts.push(`<div class="need-resolution"><span class="label-chip">確認・対処</span> ${inlineMd(n.failureResolution)}</div>`);
   }
-  if (n.why) facts.push(`<div><span class="label-chip">理由</span>${proseHtml(n.why)}</div>`);
-  if (n.summary) facts.push(`<div><span class="label-chip">概況</span>${proseHtml(n.summary)}</div>`);
+  if (n.why) facts.push(`<div><span class="label-chip">理由</span>${prosePreview(n.why, 240)}</div>`);
+  if (n.summary) facts.push(`<div><span class="label-chip">概況</span>${prosePreview(n.summary, 280)}</div>`);
   const d = n.diff;
   if (d && d.hasDiff && (d.artifacts.length || d.internal.length)) {
     const parts = [
@@ -3702,7 +3697,7 @@ function renderNeedDetail(p, n) {
       <h3>成果物</h3>
       ${specFilesHtml(p, n) || '<p class="muted">関連するSpecはありません。</p>'}
       ${detailBlock}
-      <button class="need-output-button" data-need-output="${esc(n.id)}">出力全体を見る</button>
+      <button class="need-output-button subtle-action" data-need-output="${esc(n.id)}">技術情報を開く</button>
     </section>
   </article>`;
 }
@@ -4204,12 +4199,8 @@ function renderFlow() {
   }
   // 実行データの発見経緯（探索した候補パス）は内部情報なのでログへ
   uiLogOnChange(`flowBus:${p.dir}`, { busDir: p.busDir, source: p.busSource, candidates: p.busCandidates });
-  const busLine = `<details class="flow-source"><summary>実行環境</summary>
-    <div class="muted">実行データ: <code class="mono">${esc(p.busDir)}</code> ${daemonBadge()}</div>
-  </details>`;
   if (!state.flowRuns.length) {
-    el.innerHTML = `${busLine}<div class="empty">実行はまだありません。<br>
-      （完了した実行はこのビュアーに記録として残ります）</div>`;
+    el.innerHTML = '<div class="empty"><strong>実行中の作業はありません</strong><span>タスクが開始されると、ここに進捗が表示されます。</span></div>';
     return;
   }
   // 同一タスクのリトライ（req-…-r0/r1/…）は「意味的に同一」なので系統でまとめ、
@@ -4237,7 +4228,7 @@ function renderFlow() {
         ? `<div class="advice-line advice-${advice.cls}">${esc(advice.text)}</div>`
         : '';
       const taskLink = r.taskId
-        ? ` <button class="badge task-link" data-goto-task="${esc(r.taskId)}" title="元のタスクを開く">🗒 ${esc(r.taskId)}</button>`
+        ? ` <button class="badge task-link" data-goto-task="${esc(r.taskId)}" title="元のタスクを開く">タスク ${esc(r.taskId)}</button>`
         : '';
       const retryStrip =
         g.attempts.length > 1
@@ -4250,14 +4241,14 @@ function renderFlow() {
             ? `<div class="muted" title="引き継ぎ元の実行">↩ 引き継ぎ元 <span class="mono">${esc(r.inheritedFrom)}</span></div>`
             : '';
       const archivedBadge = r.archived
-        ? ' <span class="badge" title="完了後に保存された記録です（閲覧のみ）">📦</span>'
+        ? ' <span class="badge" title="完了後に保存された記録です">記録</span>'
         : '';
       return `<div class="run-item ${state.flowRunId === r.runId ? 'selected' : ''}" data-run="${esc(r.runId)}"
         role="button" tabindex="0" aria-pressed="${state.flowRunId === r.runId}">
-        <div class="run-item-head"><span>${statusChip(r.status)}${archivedBadge}${adviceBit}</span><span class="mono muted">${esc(shortRunId(r.runId))}</span></div>
+        <div class="run-item-head"><span>${statusChip(r.status)}${archivedBadge}${adviceBit}</span><span class="muted">${fmtAgo(r.updatedAt || r.createdAt)}</span></div>
         <div class="req">${prosePreview(r.request, 110) || '<span class="muted">内容なし</span>'}</div>
         <div class="progress"><div style="width:${pct}%"></div></div>
-        <div class="muted">完了 ${r.counts.done}/${r.total}・失敗 ${r.counts.failed}・実行中 ${r.counts.claimed} ｜ ${fmtAgo(r.updatedAt || r.createdAt)}${taskLink}</div>
+        <div class="muted">完了 ${r.counts.done}/${r.total}・失敗 ${r.counts.failed}・実行中 ${r.counts.claimed}${taskLink}</div>
         ${adviceLine}
         ${retryStrip}
       </div>`;
@@ -4274,9 +4265,9 @@ function renderFlow() {
     graphX: prevGraph ? prevGraph.scrollLeft : 0,
     graphY: prevGraph ? prevGraph.scrollTop : 0,
   };
-  el.innerHTML = `<div class="queue-summary flow-summary">${filterChips}</div>${busLine}
+  el.innerHTML = `<div class="queue-summary flow-summary">${filterChips}</div>
   <div id="flow-layout" class="${state.flowMobileDetail ? 'show-detail' : ''}">
-    <div id="flow-runs">${runList || `<div class="empty">該当する run がありません（フィルタ: ${esc((FLOW_FILTERS.find(([k]) => k === state.flowFilter) || ['', state.flowFilter])[1])}）</div>`}</div>
+    <div id="flow-runs">${runList || `<div class="empty"><strong>該当する作業はありません</strong><span>${esc((FLOW_FILTERS.find(([k]) => k === state.flowFilter) || ['', state.flowFilter])[1])}の作業がここに表示されます。</span></div>`}</div>
     <div id="flow-detail">${renderFlowDetail()}</div>
   </div>`;
   $('flow-runs').scrollTop = prevScroll.runs;
@@ -4328,7 +4319,7 @@ async function selectFlowRun(runId) {
   state.flowNodeId = null;
   state.flowDetailView = 'overview';
   state.flowMobileDetail = true;
-  state.flowRun = await guard('run 読込', () => api.flowRun(state.project.dir, state.project.busDir, runId));
+  state.flowRun = await guard('実行内容の読み込み', () => api.flowRun(state.project.dir, state.project.busDir, runId));
   renderFlow();
   // run を開いたら関連イシューの「今」を一度だけ自動で突き合わせる（律速あり・GitLab 設定時のみ）。
   // これで実行中/クローズ済みのイシュー状態がクリック無しでノードに出る（キャッシュに載る）。
@@ -4484,7 +4475,7 @@ function renderFlowDetail() {
   // （再投入・キャンセル・削除・GitLab 突き合わせ）は出さない。
   const archived = !!run.archived;
   const archivedBadge = archived
-    ? ' <span class="badge" title="完了後に保存された記録です（閲覧のみ）">📦 記録</span>'
+    ? ' <span class="badge" title="完了後に保存された記録です">記録</span>'
     : '';
   // 失敗した run と、中止した run（＝停滞していたので人が止めたもの）はやり直せる。
   // 停滞した run は「■ 中止」で終端させてから、このボタンでやり直す導線になる。
@@ -4581,7 +4572,7 @@ const viewTabs = [
   const overviewView = `<section class="flow-overview-view">
     <div class="flow-run-heading">
       <div>
-        <span class="summary-kicker">選択中の実行</span>
+        <span class="summary-kicker">選択中の作業</span>
         <h2>${req.title ? `<span class="prose-inline">${inlineMd(req.title)}</span>` : '内容のない実行'}</h2>
       </div>
       <span>${statusChip(run.status)}${archivedBadge}</span>
@@ -4589,7 +4580,7 @@ const viewTabs = [
     ${req.body ? `<div class="flow-request-body">${proseHtml(req.body)}</div>` : ''}
     ${adviceBanner}
     ${relationshipStrip({ run })}
-    ${archived ? '<p class="muted">完了後に保存された記録です。この画面からの操作はできません。</p>' : ''}
+    ${archived ? '<p class="muted">完了済みの記録です。</p>' : ''}
     ${run.failureReason ? `<div class="flow-failure">失敗理由: ${esc(String(run.failureReason).replace(/\[agent-error:[a-z]+\]\s*/g, ''))}</div>` : ''}
     <div class="flow-progress-block">
       <div class="progress"><div style="width:${pct}%"></div></div>
@@ -4607,34 +4598,24 @@ const viewTabs = [
   const graphView = `<div class="flow-graph-workspace">
     <section class="flow-graph-surface">
       <div class="flow-section-heading">
-        <div><span class="summary-kicker">工程</span><h2>タスクグラフ</h2></div>
-        <span class="muted">工程を選ぶと詳細を表示します</span>
+        <div><span class="summary-kicker">作業の流れ</span><h2>工程</h2></div>
+        <span class="muted">工程を選ぶと内容を表示します</span>
       </div>
       <div id="graph-box">${renderGraphSvg(run)}</div>
       <div class="legend">${legend}</div>
     </section>
     <aside id="flow-node" class="flow-node-detail">
-      <span class="summary-kicker">選択した工程</span>
+      <span class="summary-kicker">工程の内容</span>
       ${nodeDetail || '<div class="empty">グラフから工程を選択してください</div>'}
     </aside>
   </div>`;
 
   const historyView = `<section class="flow-history-view">
     <div class="flow-section-heading">
-      <div><span class="summary-kicker">履歴</span><h2>アクティビティ</h2></div>
-      <span>${daemonBadge()}</span>
+      <div><span class="summary-kicker">これまでの動き</span><h2>更新履歴</h2></div>
     </div>
     <div class="events flow-events">${events || '<span class="muted">イベントはありません</span>'}</div>
-    <details class="flow-technical" data-ui-key="flow-technical:${esc(run.runId)}">
-      <summary>技術情報を見る</summary>
-      <dl>
-        <div><dt>run ID</dt><dd class="mono">${esc(run.runId)}</dd></div>
-        <div><dt>戦略</dt><dd>${esc(strat || '未設定')}</dd></div>
-        <div><dt>状態</dt><dd>${statusChip(run.status)}</dd></div>
-        ${run.inheritedFrom ? `<div><dt>引き継ぎ元</dt><dd class="mono">${esc(run.inheritedFrom)}</dd></div>` : ''}
-      </dl>
-      ${heartbeat}
-    </details>
+    <button type="button" class="subtle-action" data-open-developer>技術情報を開く</button>
   </section>`;
 
   const body =
@@ -4828,8 +4809,7 @@ function renderFlowNode(run, node) {
       ${nodeParkLine(node)}
       ${nodeProgressLine(node)}
       ${nodeIssueBlock(run, node)}
-      ${node.output ? `<div class="section-title">output</div><pre class="mono">${esc(node.output.slice(0, 3000))}</pre>` : ''}
-      ${node.data ? `<div class="section-title">data</div><pre class="mono">${esc(JSON.stringify(node.data, null, 2).slice(0, 2000))}</pre>` : ''}
+      ${node.output || node.data ? '<button type="button" class="subtle-action" data-open-developer>出力の詳細を開く</button>' : ''}
       ${timeline}
     </div>`;
 }
@@ -5128,6 +5108,8 @@ function bindFlowDetail(root) {
       renderFlow();
     });
   }
+  const developer = root.querySelector('[data-open-developer]');
+  if (developer) developer.addEventListener('click', openDeveloperTools);
   for (const g of root.querySelectorAll('g.node[data-node]')) {
     g.addEventListener('click', () => {
       state.flowNodeId = g.dataset.node;
@@ -5421,23 +5403,24 @@ function renderHistory() {
     .map((cells) => `<tr>${cells.map((c) => `<td>${linkify(c)}</td>`).join('')}</tr>`)
     .join('');
 
-  el.innerHTML = `
-    <div class="section-title">自動実行の履歴</div>
-    ${
-      runRows
-        ? `<table class="list"><tr><th>時刻</th><th>結果</th><th>自動化レベル</th><th>サイクル</th><th>完了</th><th>要対応</th><th>検収待ち</th><th>エスカレーション</th><th>トークン</th><th>コスト</th><th>時間</th></tr>${runRows}</table>`
-        : '<div class="muted">なし</div>'
-    }
-    <div class="section-title">決定記録</div>
-    ${
-      drRows
-        ? `<table class="list"><tr><th>記録番号</th><th>日付</th><th>タスク</th><th>操作</th><th>理由</th><th>学習</th></tr>${drRows}</table>`
-        : '<div class="muted">なし</div>'
-    }
-    <div class="section-title">納品物</div>
-    ${deliveryRows ? `<table class="list">${deliveryRows}</table>` : '<div class="muted">なし</div>'}
-    <div class="section-title">動作ログ（直近 80 行）</div>
-    <div class="events">${journal || '<span class="muted">なし</span>'}</div>`;
+  el.innerHTML = `<div class="history-shell">
+    <header class="page-heading">
+      <div><span class="summary-kicker">完了したこと</span><h2>成果</h2></div>
+      <button type="button" class="subtle-action" data-open-developer>内部ログを開く</button>
+    </header>
+    <section class="content-section">
+      <h3>納品物</h3>
+      ${deliveryRows ? `<div class="table-scroll"><table class="list">${deliveryRows}</table></div>` : '<div class="empty compact">まだ成果はありません。</div>'}
+    </section>
+    <section class="content-section">
+      <h3>判断の記録</h3>
+      ${drRows
+        ? `<div class="table-scroll"><table class="list"><tr><th>日付</th><th>タスク</th><th>操作</th><th>理由</th></tr>${p.decisions.map((d) => `<tr><td>${esc(d.date)}</td><td class="mono">${esc(d.taskId)}</td><td>${esc(d.fields.action || '')}</td><td>${esc(d.fields.reason || d.fields.context || '')}</td></tr>`).join('')}</table></div>`
+        : '<div class="empty compact">判断の記録はありません。</div>'}
+    </section>
+  </div>`;
+  const developer = el.querySelector('[data-open-developer]');
+  if (developer) developer.addEventListener('click', openDeveloperTools);
 }
 
 // ---------------------------------------------------------------------------
@@ -5502,7 +5485,7 @@ function initTabs() {
   }
 }
 
-function openSettings() {
+function populateSettingsFields() {
   const cfg = state.config;
   $('cfg-roots').value = ((cfg.projects && cfg.projects.roots) || []).join('\n');
   $('cfg-autodiscover').checked = !cfg.projects || cfg.projects.autoDiscover !== false;
@@ -5532,7 +5515,67 @@ function openSettings() {
   $('cfg-cowork-loop-provider').value = cw.loopProvider || 'kiro-loop';
   $('cfg-cowork-loop-command').value = cw.loopCommand || 'kiro-loop';
   $('cfg-cowork-sm-command').value = cw.stateMachineCommand || 'statemachine-use';
+}
+
+function openSettings() {
+  populateSettingsFields();
   $('dlg-settings').showModal();
+}
+
+function developerProjectInfoHtml() {
+  const p = state.project;
+  if (!p) {
+    return '<div class="empty compact">プロジェクトを選ぶと、実行状態とログをここで確認できます。</div>';
+  }
+  const run = state.flowRun && state.flowRun.run;
+  const journal = (p.journal || []).slice(-80).reverse().map((line) => `<div>${linkify(line.replace(/^\-\s*/, ''))}</div>`).join('');
+  const runRows = [...(p.runLog || [])].reverse().slice(0, 40).map((entry) => `<tr>
+    <td>${fmtTime(entry.ts)}</td><td>${esc(statusLabel(entry.reason))}</td><td>${esc(entry.level || '')}</td>
+    <td>${entry.cycles ?? ''}</td><td>${entry.tokens ?? ''}</td><td>${entry.cost ?? ''}</td>
+  </tr>`).join('');
+  const selectedNode = run && state.flowNodeId ? (run.nodes || {})[state.flowNodeId] : null;
+  const nodeInfo = selectedNode
+    ? `<details data-ui-key="developer-node" open><summary>選択中の工程: ${esc(selectedNode.id)}</summary>
+        ${selectedNode.output ? `<h4>output</h4><pre class="mono developer-output">${esc(selectedNode.output)}</pre>` : '<p class="muted">出力はありません。</p>'}
+        ${selectedNode.data ? `<h4>data</h4><pre class="mono developer-output">${esc(JSON.stringify(selectedNode.data, null, 2))}</pre>` : ''}
+      </details>`
+    : '';
+  const runInfo = run
+    ? `<dl class="developer-facts">
+        <div><dt>run ID</dt><dd class="mono">${esc(run.runId)}</dd></div>
+        <div><dt>内部状態</dt><dd>${esc(run.status || 'unknown')}</dd></div>
+        <div><dt>戦略</dt><dd>${esc(run.strategy || run.meta?.strategy || '未設定')}</dd></div>
+        <div><dt>最終応答</dt><dd>${run.heartbeatAt ? esc(fmtAgo(run.heartbeatAt)) : '記録なし'}</dd></div>
+      </dl>${nodeInfo}`
+    : '<p class="muted">実行タブで作業を選ぶと、その内部情報を表示します。</p>';
+  return `<section class="developer-summary">
+      <div class="settings-section-heading"><div><span class="summary-kicker">選択中</span><h3>${esc(p.name)}</h3></div>
+        <div class="row"><button type="button" data-developer-tab="flow">実行を開く</button><button type="button" data-developer-tab="history">成果を開く</button></div>
+      </div>
+      <dl class="developer-facts">
+        <div><dt>状態ディレクトリ</dt><dd class="mono">${esc(p.dir || '')}</dd></div>
+        <div><dt>実行データ</dt><dd class="mono">${esc(p.busDir || '未検出')}</dd></div>
+        <div><dt>検出方法</dt><dd>${esc(p.busSource || '不明')}</dd></div>
+        <div><dt>実行エンジン</dt><dd>${daemonBadge()}</dd></div>
+      </dl>
+      ${runInfo}
+      <details data-ui-key="developer-run-log"><summary>自動実行の記録</summary>
+        ${runRows ? `<div class="table-scroll"><table class="list"><tr><th>時刻</th><th>結果</th><th>レベル</th><th>回数</th><th>トークン</th><th>コスト</th></tr>${runRows}</table></div>` : '<p class="muted">記録はありません。</p>'}
+      </details>
+      <details data-ui-key="developer-journal"><summary>内部ログ</summary><div class="events developer-log">${journal || '<span class="muted">ログはありません。</span>'}</div></details>
+    </section>`;
+}
+
+function openDeveloperTools() {
+  populateSettingsFields();
+  $('developer-project-info').innerHTML = developerProjectInfoHtml();
+  for (const btn of $('developer-project-info').querySelectorAll('[data-developer-tab]')) {
+    btn.addEventListener('click', () => {
+      $('dlg-developer-tools').close();
+      switchTab(btn.dataset.developerTab);
+    });
+  }
+  $('dlg-developer-tools').showModal();
 }
 
 async function saveSettings() {
@@ -5581,6 +5624,8 @@ async function saveSettings() {
   state.config = await api.saveConfig(cfg);
   setupPolling();
   await refreshAll();
+  if ($('dlg-settings').open) $('dlg-settings').close();
+  if ($('dlg-developer-tools').open) $('dlg-developer-tools').close();
   toast('設定を保存しました', true);
 }
 
@@ -6015,6 +6060,7 @@ function setupPolling() {
       // ダイアログを開いている間・入力中は更新しない（書きかけの入力を消さない）
       if (
         $('dlg-settings').open ||
+        $('dlg-developer-tools').open ||
         $('dlg-task').open ||
         $('dlg-enqueue').open ||
         $('dlg-confirm').open ||
@@ -6157,24 +6203,25 @@ function renderCowork() {
   const observed = new Map(((cw && cw.items) || []).map((x) => [String(x.id), x]));
   const busyId = state.coworkRun && state.coworkRun.phase === 'running' ? String(state.coworkRun.id) : '';
   if (cw && cw.error) {
-    el.innerHTML = `<div class="empty">Cowork の読み込みに失敗しました: ${esc(cw.error)}</div>`;
+    el.innerHTML = `<div class="empty"><strong>定期・定型作業を読み込めませんでした</strong><span>${esc(cw.error)}</span></div>`;
     return;
   }
   el.innerHTML = `
     <div class="cowork-shell">
       <header class="cowork-header">
         <div>
-          <h2 class="summary-kicker">Cowork</h2>
-          <p class="muted">リポジトリ内の kiro-loop / statemachine 設定と、手動登録した定期実行・定型業務です。状態は既存ログから推定します。</p>
+          <span class="summary-kicker">自動化</span>
+          <h2>定期・定型作業</h2>
+          <p class="muted">繰り返し実行する作業を確認・実行できます。</p>
         </div>
         <div class="row">
           <button id="btn-cowork-add">追加</button>
           <button id="btn-cowork-save">保存…</button>
-          <button id="btn-cowork-refresh" title="設定を再走査し、実行中プロセスも確認">更新</button>
+          <button id="btn-cowork-refresh" title="最新の状態を確認">更新</button>
+          <button type="button" class="subtle-action" data-open-developer>開発者ツール</button>
         </div>
       </header>
       ${coworkRunBannerHtml()}
-      <div class="cowork-meta muted">loop: ${esc((cw && cw.loopCommand) || 'kiro-loop')} ／ state machine: ${esc((cw && cw.stateMachineCommand) || 'statemachine-use')}</div>
       ${draft.length ? `<div class="cowork-list" role="list">${draft.map((item, i) => {
         const id = String(item.id || item.name || `${item.type || 'loop'}-${i + 1}`);
         const live = observed.get(id) || {};
@@ -6202,10 +6249,7 @@ function renderCowork() {
               <span>${esc(detail)}</span>
               ${st.lastLogAt ? `<span>最終ログ ${esc(fmtTime(st.lastLogAt))}</span>` : ''}
             </div>
-            ${discovered && item._src ? `<div class="cowork-item-source muted mono">${esc(item._src.file || '')}</div>` : ''}
-            ${st.running && st.process ? `<div class="cowork-item-process muted mono">${esc(st.process)}</div>` : ''}
-            ${run && run.phase === 'error' && run.detail ? `<pre class="cowork-item-error mono">${esc(run.detail)}</pre>` : ''}
-            ${!running && st.status === 'failed' && st.logTail ? `<pre class="cowork-item-log mono">${esc(st.logTail.slice(-600))}</pre>` : ''}
+            ${run && run.phase === 'error' ? '<p class="cowork-item-error">実行できませんでした。開発者ツールで詳細を確認してください。</p>' : ''}
           </div>
           <div class="cowork-item-actions">
             <button data-cowork-run="${esc(id)}" data-cowork-type="${esc(item.type || 'loop')}" data-cowork-name="${esc(item.name || id)}" ${busyId ? 'disabled' : ''}>${busyId === id ? '実行中…' : '実行'}</button>
@@ -6213,8 +6257,10 @@ function renderCowork() {
             ${discovered ? '' : `<button data-cowork-delete="${i}" ${busyId ? 'disabled' : ''}>削除</button>`}
           </div>
         </article>`;
-      }).join('')}</div>` : '<div class="empty">表示できる Cowork 作業はありません。<br>登録済みリポジトリに <span class="mono">.kiro/kiro-loop.*</span> か <span class="mono">.statemachine/*/workflow.yaml</span> があるか、「追加」で手動登録してください。</div>'}
+      }).join('')}</div>` : '<div class="empty"><strong>登録された作業はありません</strong><span>「追加」から定期実行や定型作業を登録できます。</span></div>'}
     </div>`;
+  const developer = el.querySelector('[data-open-developer]');
+  if (developer) developer.addEventListener('click', openDeveloperTools);
   const addBtn = $('btn-cowork-add');
   if (addBtn) addBtn.addEventListener('click', () => openCoworkWorkDialog(-1));
   const saveBtn = $('btn-cowork-save');
@@ -6258,7 +6304,7 @@ function renderCowork() {
       at: Date.now(),
     };
     toast(
-      res && res.ok ? `Cowork「${name}」を実行しました` : `Cowork「${name}」が失敗しました: ${message}`,
+      res && res.ok ? `「${name}」を実行しました` : `「${name}」を実行できませんでした: ${message}`,
       !!(res && res.ok)
     );
     await refreshCowork({ probe: true });
@@ -6269,7 +6315,8 @@ function renderCowork() {
 async function openCoworkFromSettings() {
   state.coworkForceShow = true;
   updateCoworkTabVisibility();
-  $('dlg-settings').close();
+  if ($('dlg-settings').open) $('dlg-settings').close();
+  if ($('dlg-developer-tools').open) $('dlg-developer-tools').close();
   switchTab('cowork');
   await refreshCowork({ forceDiscover: true });
   renderCowork();
@@ -6286,7 +6333,7 @@ function openCoworkWorkDialog(index) {
   }
   state.coworkEditIndex = index;
   const item = editing || { type: 'loop', repo: (repos[0] && repos[0].dir) || '' };
-  $('cowork-work-title').textContent = index >= 0 ? 'Cowork 作業を編集' : 'Cowork 作業を追加';
+  $('cowork-work-title').textContent = index >= 0 ? '作業を編集' : '作業を追加';
   // 発見項目は当該 repo を固定表示（登録済みリポジトリ一覧に無いこともある）
   let repoOpts = repos.slice();
   if (discovered && item.repo && !repoOpts.some((r) => r.dir === item.repo)) {
@@ -6360,7 +6407,7 @@ async function saveCoworkDraft() {
     createBranch: $('cw-save-create').checked,
     push: $('cw-save-push').checked,
   };
-  const res = await guard('Cowork 保存', () => api.coworkSaveWork(payload));
+  const res = await guard('作業の保存', () => api.coworkSaveWork(payload));
   if (!res) return;
   state.config = res.config;
   state.coworkDraft = null;
@@ -6371,7 +6418,7 @@ async function saveCoworkDraft() {
   const failed = (res.git || []).filter((x) => x.result && x.result.ok === false);
   const wbErrors = (res.writeback && res.writeback.errors) || [];
   const ok = failed.length === 0 && wbErrors.length === 0;
-  let msg = 'Cowork の変更を保存しました';
+  let msg = '作業の変更を保存しました';
   if (wbErrors.length) msg = `実体ファイルの書き戻しに一部失敗: ${wbErrors[0]}`;
   else if (failed.length) msg = `保存しましたが git 操作に失敗したリポジトリがあります: ${failed[0].repo}`;
   toast(msg, ok);
@@ -6395,6 +6442,12 @@ async function init() {
   $('btn-project-settings').addEventListener('click', openProjectSettings);
   $('btn-project-settings-close').addEventListener('click', () => $('dlg-project-settings').close());
   $('btn-save-settings').addEventListener('click', () => saveSettings());
+  $('btn-open-developer-tools').addEventListener('click', () => {
+    $('dlg-settings').close();
+    openDeveloperTools();
+  });
+  $('btn-developer-close').addEventListener('click', () => $('dlg-developer-tools').close());
+  $('btn-save-developer').addEventListener('click', () => saveSettings());
   $('btn-cw-cancel').addEventListener('click', () => $('dlg-cowork-work').close());
   $('btn-cw-ok').addEventListener('click', (ev) => { ev.preventDefault(); applyCoworkWorkDialog(); });
   $('btn-cw-save-cancel').addEventListener('click', () => $('dlg-cowork-save').close());
