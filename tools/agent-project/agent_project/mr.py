@@ -371,6 +371,8 @@ def _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location="local"):
             if guidance:
                 task.drop("feedback")
                 task.extra.append(("feedback", guidance.replace("\n", " ⏎ ")))
+                # 却下（差し戻し）の意図を run ブリーフへも蓄積（追記のみ）。次 run 以降の全分散ノードへ伝播する。
+                append_brief_item(cfg, task, guidance, source="gitlab-reject")
                 append_journal(cfg.journal,
                                f"cycle {cycle}: {task.id} 却下コメントを次 act に注入")
                 # cohort メンバ/pilot の却下なら、同 cohort の未完了メンバへ指摘を波及（兄弟に同じ轍を踏ませない）。
@@ -415,6 +417,19 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
     if location != "local":
         append_journal(cfg.journal, f"cycle {cycle}: {task.id} を {location} で実行"
                        + (f"（{cfg.git_bus}）" if location == "remote" else ""))
+
+    # ノードが実行中に発見した恒常制約を run/branch スコープの run ブリーフへ環流する（best-effort・決定的）。
+    # verify の前（done/retry いずれの結末でも通る位置）で回収し、次 run 以降の全分散ノードへ伝播させる。
+    # これにより事後の集約ノードに頼らず一貫性を保てる。回収失敗はタスク処理を止めない。
+    try:
+        discovered = read_brief_discoveries(cfg, location == "remote",
+                                            run_id=str(task.get("last_run") or ""))
+        added = add_brief_items(cfg, task, discovered, source="node") if discovered else 0
+        if added:
+            append_journal(cfg.journal,
+                           f"cycle {cycle}: {task.id} ノード発見制約 {added} 件を run ブリーフへ環流")
+    except Exception:  # noqa: BLE001 — ブリーフ回収の失敗は settle を止めない
+        pass
 
     # 人が「成果物の所在（リポジトリ/ブランチ/コミット）・差分・検証」を見て判断できる材料。
     # needs（判断待ち）と DELIVERY/archive（受領）双方に載せる。

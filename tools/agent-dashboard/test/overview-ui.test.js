@@ -27,6 +27,8 @@ function grab(name) {
 const overviewSummary = new Function(`${grab('overviewSummary')}; return overviewSummary;`)();
 // eslint-disable-next-line no-new-func
 const appDoctorSummary = new Function(`${grab('appDoctorSummary')}; return appDoctorSummary;`)();
+// eslint-disable-next-line no-new-func
+const workspaceFeatureModel = new Function(`${grab('workspaceFeatureModel')}; return workspaceFeatureModel;`)();
 
 const project = {
   liveness: { running: true, paused: false },
@@ -63,6 +65,24 @@ const appSummary = appDoctorSummary({
   ],
 });
 assert.deepStrictEqual(appSummary, { projects: 2, running: 1, needs: 3 });
+
+assert.deepStrictEqual(
+  workspaceFeatureModel(
+    { projects: [{ dir: '/loop-only', isProject: false }] },
+    '/loop-only',
+    2
+  ),
+  { agentProject: false, cowork: true, defaultTab: 'cowork' },
+  'kiro-loopだけのworkspaceでは定常業務だけを表示する'
+);
+assert.deepStrictEqual(
+  workspaceFeatureModel(
+    { projects: [{ dir: '/agent-project', isProject: true }] },
+    '/agent-project',
+    0
+  ),
+  { agentProject: true, cowork: false, defaultTab: 'overview' }
+);
 
 assert.ok(!html.includes('id="btn-mode"'), '表示モード切替を残さない');
 assert.match(html, /data-tab="overview"[^>]*>概要/);

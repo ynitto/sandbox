@@ -105,6 +105,20 @@ def resolve_verify_cwd(cfg: "Config") -> Path:
     return cfg.workdir
 
 
+def _remote_branch_exists(url: str, branch: str, timeout: float = 30) -> "bool | None":
+    """リモート url に branch が実在するか。判定不能（ネットワーク断・タイムアウト等）は None。
+    False は「照会に成功し、無いことを確認した」ことを意味する（None と区別する）。"""
+    try:
+        r = subprocess.run(["git", "ls-remote", "--heads", url, branch],
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    return bool(r.stdout.strip())
+
+
 def _task_verify_cwd(cfg: "Config", task: "Task") -> "tuple[Path, str | None]":
     """このタスクの verify/回帰を実行する作業ディレクトリと、片付けが要る一時 clone のパス（無ければ None）を返す。
     優先順位: 明示 verify_cwd > タスクの `- workspace:` 該当 repo の一時 clone（target/base ブランチ）> workdir。
@@ -129,6 +143,20 @@ def _task_verify_cwd(cfg: "Config", task: "Task") -> "tuple[Path, str | None]":
         # target、さらに無ければ base。ここを target/base だけにすると、成果は ap/ に
         # あるのに main を検証して永久に NG になる（journal の @main 誤検証）。
         branch = spec.get("branch") or spec.get("target") or spec.get("base") or ""
+        # ただし task_branch（ap/<task-id>）は worker が push して初めて生まれる。push の無い
+        # タスク（参照リポジトリへのルーティング・成果が別チャネルに出る作業）では origin に
+        # 存在せず、そのまま clone すると「clone 失敗」という完了条件と無関係な NG で
+        # リトライが焼き尽くされる。ls-remote で「無いことを確認できた」場合に限り
+        # target/base へ倒す——ap/ が実在すれば従来どおりそちらを clone するので
+        # @main 誤検証は再発しない。照会不能（None）は従来どおり ap/ を試し、
+        # clone のエラーをそのまま人に見せる（無言の既定フォールバックはしない）。
+        if branch and branch == task_branch_name(cfg, task) \
+                and _remote_branch_exists(spec["url"], branch) is False:
+            fallback = spec.get("target") or spec.get("base") or ""
+            append_journal(cfg.journal, f"verify: {task.id} の作業ブランチ {branch} は "
+                                        f"{spec['url']} に未作成（push なし）→ "
+                                        f"{fallback or '既定ブランチ'} で検証")
+            branch = fallback
         try:
             _clone_repo_shallow(spec["url"], branch, dest)
         except (OSError, RuntimeError) as e:

@@ -59,6 +59,30 @@ const runStatusCaption = new Function(
   'statusLabel',
   `${grab('runStatusCaption')}; return runStatusCaption;`
 )(statusLabel);
+// eslint-disable-next-line no-new-func
+const runTaskOutcome = new Function(
+  'sanitizeTaskId', 'statusLabel',
+  `${grab('runTaskOutcome')}; return runTaskOutcome;`
+)(
+  (id) => String(id == null ? '' : id).replace(/[^\w.-]+/g, '_').slice(0, 60),
+  statusLabel
+);
+// eslint-disable-next-line no-new-func
+const runTaskOutcomeHtml = new Function(
+  'esc', `${grab('runTaskOutcomeHtml')}; return runTaskOutcomeHtml;`
+)((value) => String(value == null ? '' : value));
+// eslint-disable-next-line no-new-func
+const runTaskOutcomeCompactHtml = new Function(
+  'esc', `${grab('runTaskOutcomeCompactHtml')}; return runTaskOutcomeCompactHtml;`
+)((value) => String(value == null ? '' : value));
+// eslint-disable-next-line no-new-func
+const runFinalVerificationFailure = new Function(
+  'sanitizeTaskId', `${grab('runFinalVerificationFailure')}; return runFinalVerificationFailure;`
+)((id) => String(id == null ? '' : id).replace(/[^\w.-]+/g, '_').slice(0, 60));
+// eslint-disable-next-line no-new-func
+const finalVerificationFailureHtml = new Function(
+  'esc', `${grab('finalVerificationFailureHtml')}; return finalVerificationFailureHtml;`
+)((value) => String(value == null ? '' : value));
 
 const doneRun = { runId: 'req-x-T1-r1', status: 'done' };
 
@@ -114,8 +138,93 @@ assert.strictEqual(runStatusCaption('done', { taskArchived: false }), '実行完
 assert.strictEqual(runStatusCaption('done', { taskArchived: true }), '納品済み');
 assert.strictEqual(runStatusCaption('failed', { taskArchived: false }), '失敗');
 
+assert.deepStrictEqual(
+  runTaskOutcome(
+    { backlog: [{ id: 'T1', status: 'review' }], archive: [] },
+    { taskId: 'T1', status: 'done' }
+  ),
+  {
+    runLabel: '実行完了',
+    runStatus: 'done',
+    taskLabel: '検収待ち',
+    taskStatus: 'review',
+    taskArchived: false,
+    taskId: 'T1',
+    note: '実行は完了しましたが、タスクはまだ完了していません。',
+  }
+);
+
+const pendingTaskOutcomeHtml = runTaskOutcomeHtml({
+  runLabel: '実行完了',
+  runStatus: 'done',
+  taskLabel: '検収待ち',
+  taskStatus: 'review',
+  taskArchived: false,
+  taskId: 'T1',
+  note: '実行は完了しましたが、タスクはまだ完了していません。',
+});
+assert.match(pendingTaskOutcomeHtml, />実行</);
+assert.match(pendingTaskOutcomeHtml, />実行完了</);
+assert.match(pendingTaskOutcomeHtml, />タスク</);
+assert.match(pendingTaskOutcomeHtml, />検収待ち</);
+assert.match(pendingTaskOutcomeHtml, /タスクはまだ完了していません/);
+assert.match(
+  runTaskOutcomeHtml({
+    runLabel: '失敗', runStatus: 'failed', taskLabel: '要対応', taskStatus: 'blocked',
+    taskArchived: false, taskId: 'T1', note: '',
+  }),
+  /status-chip st-failed[^>]*>失敗</,
+  'runの状態色をタスクや完了色と混同しない'
+);
+const compactOutcome = runTaskOutcomeCompactHtml({
+  runLabel: '実行完了', runStatus: 'done', taskLabel: '検収待ち', taskStatus: 'review',
+  taskArchived: false, taskId: 'T1', note: '実行は完了しましたが、タスクはまだ完了していません。',
+});
+assert.match(compactOutcome, />実行完了</);
+assert.match(compactOutcome, />タスク: 検収待ち</);
+
+const finalVerifyFailure = runFinalVerificationFailure(
+  {
+    backlog: [{ id: 'T1', status: 'blocked', extra: { last_run: 'run-final-verify' } }],
+    archive: [],
+    needs: [{ taskId: 'T1', kind: 'blocked', failureSummary: 'テストが 2 件失敗しました。' }],
+  },
+  {
+    runId: 'run-final-verify', taskId: 'T1', status: 'done', total: 3,
+    counts: { done: 3, failed: 0 },
+  }
+);
+assert.deepStrictEqual(finalVerifyFailure, {
+  title: '工程は全て成功・最終検証で失敗',
+  summary: 'テストが 2 件失敗しました。',
+  taskId: 'T1',
+});
+assert.match(finalVerificationFailureHtml(finalVerifyFailure), /工程は全て成功/);
+assert.match(finalVerificationFailureHtml(finalVerifyFailure), /最終検証で失敗/);
+assert.match(finalVerificationFailureHtml(finalVerifyFailure), /タスクは未完了/);
+assert.strictEqual(
+  runFinalVerificationFailure(
+    { backlog: [{ id: 'T1', status: 'blocked', extra: { last_run: 'new-run' } }], needs: [] },
+    { runId: 'old-run', taskId: 'T1', status: 'done', total: 1, counts: { done: 1, failed: 0 } }
+  ),
+  null,
+  '古いrunを現在の最終検証失敗として表示しない'
+);
+assert.strictEqual(
+  runFinalVerificationFailure(
+    { backlog: [{ id: 'T1', status: 'review', extra: { last_run: 'run-ok' } }], needs: [] },
+    { runId: 'run-ok', taskId: 'T1', status: 'done', total: 1, counts: { done: 1, failed: 0 } }
+  ),
+  null,
+  '検収待ちは検証失敗と誤認しない'
+);
+
 assert.match(renderer, /実行済み・未確定/);
 assert.match(renderer, /承認して実行/);
 assert.match(renderer, /need-complete-how/);
+assert.ok(
+  !grab('renderBacklog').includes('unsettleBadge'),
+  'タスク一覧の状態列には実行済み・未確定バッジを追加しない'
+);
 
 console.log('task-completion-hint.test.js: ok');

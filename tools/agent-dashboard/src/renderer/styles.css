@@ -411,9 +411,32 @@ button:disabled { opacity: 0.4; cursor: default; }
 .developer-facts > div { min-width: 0; padding: 10px 12px; background: var(--bg2); }
 .developer-facts dt { color: var(--muted); font-size: 11px; }
 .developer-facts dd { margin: 3px 0 0; overflow-wrap: anywhere; }
-.developer-summary details { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.developer-summary details {
+  min-width: 0;
+  max-width: 100%;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  overflow: hidden;
+}
 .developer-summary summary { cursor: pointer; font-weight: 600; }
-.developer-log { max-height: 280px; margin-top: 10px; }
+.developer-log {
+  width: 100%;
+  max-width: 100%;
+  max-height: 280px;
+  margin-top: 10px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.developer-log > div {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 .developer-output { max-height: 320px; overflow: auto; white-space: pre-wrap; }
 
 /* スクロールは #content ではなく各タブ（.tabpane）が持つ。
@@ -945,6 +968,52 @@ table.list tr.clickable:hover { background: var(--bg2); }
 .flow-section-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
 .flow-run-heading h2,
 .flow-section-heading h2 { margin: 4px 0 14px; font-size: 20px; }
+.flow-outcome-status {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 2px 0 12px;
+}
+.flow-outcome-status > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg3);
+}
+.flow-outcome-status > div > span:first-child { color: var(--muted); font-size: 12px; }
+.flow-outcome-status p {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--yellow);
+  background: #2a2208;
+  color: #ffd66b;
+}
+.flow-outcome-compact { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.final-verification-failure {
+  display: grid;
+  gap: 4px;
+  margin: 10px 0 14px;
+  padding: 11px 13px;
+  border: 1px solid rgba(220, 50, 47, 0.65);
+  border-left-width: 4px;
+  border-radius: 7px;
+  background: rgba(220, 50, 47, 0.11);
+  color: var(--fg);
+}
+.final-verification-failure strong { color: #ff8d88; }
+.final-verification-failure span { line-height: 1.5; }
+.final-verification-failure.compact {
+  gap: 2px;
+  margin: 8px 0 2px;
+  padding: 7px 9px;
+  font-size: 12px;
+}
 .flow-progress-block { display: flex; align-items: center; gap: 12px; margin: 18px 0 10px; }
 .flow-progress-block .progress { flex: 1; }
 .flow-counts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 18px; }
@@ -1125,7 +1194,15 @@ dialog h3 { font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
   gap: 8px;
 }
 .delivery-repo-head h3 { margin: 0; font-size: 15px; }
-.delivery-repo-meta { margin: 6px 0 8px; font-size: 12px; }
+.delivery-repo-meta {
+  display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+  margin: 6px 0 8px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.delivery-repo-meta code { overflow-wrap: anywhere; word-break: break-word; }
 .delivery-files { margin: 8px -10px -10px; padding: 0; list-style: none; }
 .delivery-files li { display: flex; min-width: 0; border-top: 1px solid var(--border); }
 .delivery-file-button {
@@ -1162,9 +1239,29 @@ dialog h3 { font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
 }
 .delivery-diff-view[aria-busy="true"] { color: var(--muted); }
 .delivery-diff-fallback { margin: 0; white-space: pre; }
+.delivery-diff-view .d2h-wrapper,
+.delivery-diff-view .d2h-file-wrapper,
+.delivery-diff-view .d2h-files-diff,
+.delivery-diff-view .d2h-file-side-diff,
+.delivery-diff-view .d2h-code-wrapper {
+  min-width: 0;
+  max-width: 100%;
+}
 .delivery-diff-view .d2h-wrapper { color: #e6edf3; }
+.delivery-diff-view .d2h-file-side-diff,
+.delivery-diff-view .d2h-code-wrapper { overflow-x: auto; }
 .delivery-diff-view .d2h-file-wrapper { border-color: #30363d; }
 .delivery-diff-view .d2h-file-header { background: #161b22; border-color: #30363d; }
+.delivery-artifact-summary {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent2);
+  border-radius: 7px;
+  background: var(--bg2);
+}
+.delivery-artifact-summary h3 { margin: 0 0 5px; color: var(--fg); }
+.delivery-artifact-summary p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .delivery-review-actions {
   min-height: 0;
   height: 100%;
@@ -1498,6 +1595,8 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   .flow-overview-view,
   .flow-history-view { padding: 15px; }
   .flow-counts { grid-template-columns: repeat(2, 1fr); }
+  .flow-outcome-status { grid-template-columns: 1fr; }
+  .flow-outcome-status p { grid-column: auto; }
   .flow-run-heading,
   .flow-section-heading { flex-direction: column; gap: 4px; }
 }

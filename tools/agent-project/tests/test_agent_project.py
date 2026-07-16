@@ -2378,6 +2378,63 @@ class TestRevise(unittest.TestCase):
             self.assertEqual(t1.verify, "test -f ok.txt")
             self.assertFalse((d / "needs" / "T1.md").exists())
 
+    def test_verify_only_revise_reuses_done_run_without_rebuilding_graph(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="blocked", verify="false")
+            c = cfg_for(d, dry_run=False, learn=False, auto_adjudicate=False)
+            km.ensure_dirs(c)
+            task_file = d / "backlog" / "T1.md"
+            task_file.write_text(
+                task_file.read_text(encoding="utf-8") + "- last_run: run-done\n- rev: 4\n",
+                encoding="utf-8",
+            )
+            run_dir = c.bus / "runs" / "run-done"
+            run_dir.mkdir(parents=True)
+            (run_dir / "meta.json").write_text(
+                json.dumps({"status": "done", "request": "original"}), encoding="utf-8"
+            )
+            t = km.load_tasks(d / "backlog")[0]
+            km.write_needs_file(c, t, "verify NG")
+
+            self.assertEqual(km.cmd_revise(c, "T1", {"verify": "true"}, "", ""), 0)
+            revised = km.load_tasks(d / "backlog")[0]
+            self.assertEqual(revised.get("rev"), "4")
+            self.assertEqual(revised.get("reuse_done_run"), "run-done")
+
+            calls = []
+            km.run_loop(c, act=lambda *_: calls.append("act") or (True, "unexpected"))
+
+            self.assertEqual(calls, [])
+            self.assertEqual(list((d / "backlog").glob("*.md")), [])
+            self.assertIn("run-done の成果を再利用", (d / "journal.md").read_text(encoding="utf-8"))
+
+    def test_verify_only_revise_does_not_reuse_unfinished_run(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="blocked", verify="false")
+            c = cfg_for(d, dry_run=False, learn=False, auto_adjudicate=False)
+            km.ensure_dirs(c)
+            task_file = d / "backlog" / "T1.md"
+            task_file.write_text(
+                task_file.read_text(encoding="utf-8") + "- last_run: run-active\n- rev: 4\n",
+                encoding="utf-8",
+            )
+            run_dir = c.bus / "runs" / "run-active"
+            run_dir.mkdir(parents=True)
+            (run_dir / "meta.json").write_text(
+                json.dumps({"status": "running", "request": "original"}), encoding="utf-8"
+            )
+
+            self.assertEqual(km.cmd_revise(c, "T1", {"verify": "true"}, "", ""), 0)
+            revised = km.load_tasks(d / "backlog")[0]
+            self.assertEqual(revised.get("rev"), "5")
+            self.assertIsNone(revised.get("reuse_done_run"))
+
+            calls = []
+            km.run_loop(c, act=lambda *_: calls.append("act") or (True, "new run"))
+            self.assertEqual(calls, ["act"])
+
     def test_ingest_commands_revise(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
@@ -5115,6 +5172,61 @@ class TestProjectLayer(unittest.TestCase):
                 if tmp:
                     shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_task_verify_cwd_falls_back_to_base_when_task_branch_unpushed(self):
+        # ap/<task-id> は worker が push して初めて生まれる。push の無いタスクで origin に
+        # 存在しない ap/ をそのまま clone すると「clone 失敗」という完了条件と無関係な NG で
+        # リトライが焼かれる（agent-project-codd-gate--042729 で retries=4 を消費した実障害）。
+        # 「無いことを確認できた」場合に限り target/base へ倒し、journal に残す。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            remote = d / "remote"
+            self._make_git_repo(remote, marker="MAIN.txt")   # ap/T1 は作らない（push なし相当）
+            defb = subprocess.run(["git", "-C", str(remote), "rev-parse", "--abbrev-ref", "HEAD"],
+                                  capture_output=True, text=True, check=True).stdout.strip()
+            write_charter(d, "# Charter: c\n## goal\nx\n## repos\n"
+                             f"- app = {remote}\n  - owns: **\n  - base: {defb}\n"
+                             f"  - target: {defb}\n  - desc: 対象\n")
+            task = km.Task(id="T1", title="x", verify="test -f MAIN.txt")
+            task.set("workspace", "app")
+            cfg = cfg_for(d, task_branch=True)
+            vcwd, tmp = km._task_verify_cwd(cfg, task)
+            try:
+                self.assertTrue((vcwd / "MAIN.txt").exists(),
+                                "ap/T1 が無ければ base へ倒して検証できること（clone 失敗 NG にしない）")
+                journal = (d / "journal.md").read_text(encoding="utf-8")
+                self.assertIn("未作成", journal)             # フォールバックの決定を journal に残す
+                self.assertIn("ap/T1", journal)
+            finally:
+                if tmp:
+                    shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_task_verify_cwd_no_fallback_when_branch_lookup_unreachable(self):
+        # フォールバックは「ls-remote で ap/ が無いことを確認できた（False）」場合だけ。
+        # 照会不能（None）は従来どおり ap/ の clone を試し、そのエラーを人に見せる
+        # （無言の既定フォールバック＝成果の無い場所での偽判定をしない厳密さを保つ）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            remote = d / "remote"
+            self._make_git_repo(remote, marker="MAIN.txt")   # ap/T1 は無い
+            write_charter(d, "# Charter: c\n## goal\nx\n## repos\n"
+                             f"- app = {remote}\n  - owns: **\n  - desc: 対象\n")
+            task = km.Task(id="T1", title="x", verify="test -f MAIN.txt")
+            task.set("workspace", "app")
+            with mock.patch.object(km, "_remote_branch_exists", return_value=None):
+                with self.assertRaises(RuntimeError):
+                    km._task_verify_cwd(cfg_for(d, task_branch=True), task)
+
+    def test_remote_branch_exists_distinguishes_absent_from_unreachable(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            remote = d / "remote"
+            self._make_git_repo(remote)
+            defb = subprocess.run(["git", "-C", str(remote), "rev-parse", "--abbrev-ref", "HEAD"],
+                                  capture_output=True, text=True, check=True).stdout.strip()
+            self.assertTrue(km._remote_branch_exists(str(remote), defb))       # 実在 → True
+            self.assertFalse(km._remote_branch_exists(str(remote), "ap/nope"))  # 照会成功・無い → False
+            self.assertIsNone(km._remote_branch_exists(str(d / "no-such-repo"), "x"))  # 照会不能 → None
+
     def test_task_verify_cwd_uses_clone_root_not_path(self):
         # path（モノレポのサブフォルダ）があっても cwd はクローンのルート。verify は
         # リポジトリ直下からの相対（例 `cd pkg && …`）で書かれる規約なので path には潜らない。
@@ -5696,6 +5808,119 @@ class TestProjectLayer(unittest.TestCase):
             created = km._enqueue_specs(
                 cfg, [{"title": "成果物を作る", "verify": "true"}], snapshot, 0.5)
             self.assertEqual(created, [])
+
+
+class TestRunBrief(unittest.TestCase):
+    """run ブリーフ（run/branch スコープ・差し戻し意図とノード発見制約の蓄積・伝播）。"""
+
+    def _cfg(self, d, **kw):
+        cfg = cfg_for(d, **kw)
+        cfg.decisions.mkdir(parents=True, exist_ok=True)
+        cfg.journal.parent.mkdir(parents=True, exist_ok=True)
+        return cfg
+
+    def _task(self, tid="T1"):
+        return km.Task(id=tid, title="やる", verify="true")
+
+    def test_append_normalizes_dedupes_and_is_append_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg, t = self._cfg(Path(d)), self._task()
+            self.assertTrue(km.append_brief_item(cfg, t, "  - API は snake_case で統一\n  する ",
+                                                 source="feedback"))
+            # 正規化（改行畳み・箇条書き記号除去）後は同一 → 重複は追記しない（冪等）
+            self.assertFalse(km.append_brief_item(cfg, t, "API は snake_case で統一 ⏎ する",
+                                                  source="revise"))
+            added = km.add_brief_items(cfg, t, ["配置は src/ 配下", "API は snake_case で統一 ⏎ する"],
+                                       source="node")
+            self.assertEqual(added, 1)     # 既出 1 件は弾かれ、新規 1 件だけ追記
+            self.assertEqual(km._brief_items(cfg, t),
+                             ["API は snake_case で統一 ⏎ する", "配置は src/ 配下"])
+
+    def test_brief_lives_at_root_beside_rules(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg, t = self._cfg(Path(d)), self._task()
+            km.append_brief_item(cfg, t, "x", source="feedback")
+            bp = km.brief_path(cfg, t)
+            # run ブリーフは rules.md と同じ <root> 直下（backlog の親）の brief/ に置かれる
+            self.assertEqual(bp.parent, km.rules_path(cfg).parent / "brief")
+            self.assertEqual(bp.name, "T1.md")
+
+    def test_empty_and_missing_are_safe(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg, t = self._cfg(Path(d)), self._task()
+            self.assertFalse(km.append_brief_item(cfg, t, "   ", source="feedback"))
+            self.assertFalse(km.brief_path(cfg, t).exists())     # 空はブリーフを作らない
+            self.assertEqual(km.brief_context(cfg, t), "")       # 無いブリーフは空注入
+
+    def test_build_request_injects_brief_and_discovery_instruction(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg, t = self._cfg(Path(d)), self._task()
+            # ブリーフが空なら制約ブロックは出ない（後方互換）
+            self.assertNotIn("この run のブリーフ", km.build_request(t, cfg))
+            km.append_brief_item(cfg, t, "エラーメッセージは英語で統一", source="feedback")
+            req = km.build_request(t, cfg)
+            self.assertIn("この run のブリーフ", req)
+            self.assertIn("エラーメッセージは英語で統一", req)
+            # task_branch 有効時はノード発見制約の提示契約も載る
+            self.assertIn('{"constraints"', req)
+
+    def test_discovery_instruction_gated_on_task_branch(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d), task_branch=False)
+            self.assertNotIn('{"constraints"', km.build_request(self._task(), cfg))
+
+    def test_feedback_ingest_accumulates_into_brief(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            cfg.backlog.mkdir(parents=True, exist_ok=True)
+            (cfg.backlog / "T1.md").write_text(
+                "## T1: y\n- status: ready\n- verify: `true`\n- review: human\n- retries: 0\n",
+                encoding="utf-8")
+            km.run_loop(cfg)                                  # verify PASS → review 待ち（needs 生成）
+            nf = cfg.needs / "T1.md"
+            # 1 回目の差し戻し
+            nf.write_text(nf.read_text(encoding="utf-8").replace("- [ ] 確定", "- [x] 確定")
+                          + "\n## フィードバック\n命名は snake_case で統一\n", encoding="utf-8")
+            km.ingest_feedback(cfg, km.load_tasks(cfg.backlog))
+            # 2 回目: 再度 review に載せ、別の差し戻し（feedback フィールドは上書きされる）
+            t = km.load_tasks(cfg.backlog)[0]
+            t.status = "review"
+            km.persist_task(cfg, t)
+            nf.write_text("## Decision Outcome\n- [x] 確定\n## フィードバック\nログは英語で統一\n",
+                          encoding="utf-8")
+            km.ingest_feedback(cfg, km.load_tasks(cfg.backlog))
+            # ブリーフは追記のみ＝最初の差し戻し（snake_case）が消えず、両方が残る
+            items = km._brief_items(cfg, km.Task(id="T1", title="y"))
+            self.assertTrue(any("snake_case" in x for x in items))
+            self.assertTrue(any("ログは英語" in x for x in items))
+
+    def test_revise_accumulates_into_brief(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            cfg.backlog.mkdir(parents=True, exist_ok=True)
+            km.persist_task(cfg, km.Task(id="T1", title="やる", verify="true", status="ready"))
+            km.cmd_revise(cfg, "T1", {}, feedback="配置は src/ 配下に統一", reason="revise")
+            items = km._brief_items(cfg, km.Task(id="T1", title="やる"))
+            self.assertTrue(any("src/ 配下" in x for x in items))
+
+    def test_read_brief_discoveries_parses_result_json(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d))
+            payload = {"final_nodes": [
+                {"id": "n1-reduce", "kind": "reduce",
+                 "data": {"count": 3, "constraints": ["日付は ISO8601", {"text": "単位は SI"}, ""]}},
+                {"id": "n2", "kind": "work", "data": None},
+            ]}
+
+            class _P:
+                returncode = 0
+                stdout = json.dumps(payload)
+
+            with mock.patch.object(km.subprocess, "run", return_value=_P()):
+                got = km.read_brief_discoveries(cfg, False, run_id="req-x")
+            self.assertEqual(got, ["日付は ISO8601", "単位は SI"])   # dict/str 両対応・空は除外
 
 
 def _drained():
