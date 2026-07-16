@@ -1,7 +1,7 @@
 'use strict';
 
 module.exports = {
-  coworkOverview: (invoke) => () => invoke('cowork:overview'),
+  coworkOverview: (invoke) => (opts) => invoke('cowork:overview', opts || {}),
   coworkRunLoop: (invoke) => (itemId) => invoke('cowork:runLoop', { itemId }),
   coworkRunStateMachine: (invoke) => (itemId, input) =>
     invoke('cowork:runStateMachine', { itemId, input }),

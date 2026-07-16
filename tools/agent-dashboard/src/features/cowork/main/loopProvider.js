@@ -18,37 +18,54 @@ function wslPath(p) {
   return s;
 }
 
-function sh(command, args, options = {}) {
-  if (process.platform === 'win32' && isWslPath(options.cwd)) {
-    const cwd = wslPath(options.cwd);
-    const script = `cd ${shellQuote(cwd)} && ${shellQuote(command)} ${args.map(shellQuote).join(' ')}`;
-    const res = spawnSync('wsl.exe', ['-e', 'sh', '-lc', script], {
-      encoding: 'utf8',
-      timeout: options.timeoutMs || 30000,
-      windowsHide: true,
-    });
-    return {
-      ok: res.status === 0,
-      status: res.status,
-      stdout: (res.stdout || '').trim(),
-      stderr: (res.stderr || '').trim(),
-      error: res.error ? res.error.message : '',
-    };
+// Windows ネイティブ CLI は CP932、WSL は UTF-8。encoding:'utf8' 固定だと日本語が文字化けする。
+// buffer で受け取り、UTF-8 → だめなら Shift_JIS（CP932 系）へフォールバックする。
+function decodeCliOutput(buf) {
+  if (buf == null) return '';
+  if (typeof buf === 'string') return buf;
+  const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
+  if (!b.length) return '';
+  const utf8 = b.toString('utf8');
+  if (!utf8.includes('\uFFFD')) return utf8;
+  try {
+    return new TextDecoder('shift_jis').decode(b);
+  } catch {
+    return utf8;
   }
-  const res = spawnSync(command, args, {
-    cwd: options.cwd || process.cwd(),
-    encoding: 'utf8',
-    shell: process.platform === 'win32',
-    timeout: options.timeoutMs || 30000,
-    windowsHide: true,
-  });
+}
+
+function resultOf(res) {
   return {
     ok: res.status === 0,
     status: res.status,
-    stdout: (res.stdout || '').trim(),
-    stderr: (res.stderr || '').trim(),
+    stdout: decodeCliOutput(res.stdout).trim(),
+    stderr: decodeCliOutput(res.stderr).trim(),
     error: res.error ? res.error.message : '',
   };
+}
+
+function sh(command, args, options = {}) {
+  const argv = (args || []).map(String);
+  if (process.platform === 'win32' && isWslPath(options.cwd)) {
+    const cwd = wslPath(options.cwd);
+    // LANG を明示しないと WSL 側のロケールで日本語 stderr が化けることがある。
+    const script = `export LANG=C.UTF-8 LC_ALL=C.UTF-8; cd ${shellQuote(cwd)} && ${shellQuote(command)} ${argv.map(shellQuote).join(' ')}`;
+    const res = spawnSync('wsl.exe', ['-e', 'sh', '-lc', script], {
+      encoding: 'buffer',
+      timeout: options.timeoutMs || 30000,
+      windowsHide: true,
+    });
+    return resultOf(res);
+  }
+  // shell:true は cmd.exe 経由で日本語引数・出力を壊す（agent-project/actions.js と同方針）。
+  const res = spawnSync(String(command), argv, {
+    cwd: options.cwd || process.cwd(),
+    encoding: 'buffer',
+    shell: false,
+    timeout: options.timeoutMs || 30000,
+    windowsHide: true,
+  });
+  return resultOf(res);
 }
 
 function makeLoopProvider(cfg) {
@@ -65,4 +82,4 @@ function makeLoopProvider(cfg) {
   };
 }
 
-module.exports = { makeLoopProvider, isWslPath, wslPath, shellQuote, sh };
+module.exports = { makeLoopProvider, isWslPath, wslPath, shellQuote, sh, decodeCliOutput };

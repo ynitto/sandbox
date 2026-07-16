@@ -86,7 +86,7 @@ repos:
   app:
     url: git@example.com:team/app.git   # 任意（表示・リポジトリ横断参照の識別用）
     base: main                           # 任意（記録用ブランチ。作業ブランチの一致は強制しない）
-    dir: .                               # ローカル checkout
+    dir: .                               # ローカル checkout（共通スキーマの local: も可）
     docs: [docs/**, README.md]           # 分類グロブの上書き（docs / tests / code。省略時は既定）
     tests: [tests/**]
   handbook:
@@ -100,7 +100,7 @@ repos:
 map: .codd-gate/map.json                 # scan の書き出し先（任意）
 ```
 
-ローカル checkout は CLI の `--repo-dir <name>=<dir>`（複数可）が設定の `dir:` より勝つ。
+ローカル checkout は CLI の `--repo-dir <name>=<dir>`（複数可）が設定の `dir:` / 共通スキーマの `local:` より勝つ。`--repos` で渡したファイル内の `dir:` / `local:` が相対パスなら、その repos ファイルからの相対パスとして解決する。
 **ディレクトリが解決できない repo で黙って PASS しない**（チェック対象に選べば exit 2）。
 レジストリ無しならカレントディレクトリを単一 repo `default` として扱い、`--repo-dir` だけでも
 アドホックに複数 repo を並べられる。

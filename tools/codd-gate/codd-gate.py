@@ -168,9 +168,34 @@ def _read_structured(path: Path):
     return json.loads(text)
 
 
-def _repos_from_data(data, repo_dirs: "dict[str, Path]") -> "list[Repo]":
+def _resolve_registry_path(p: Path, base_dir: "Path | None") -> Path:
+    """repos レジストリ内のローカルパスを解決する（相対ならレジストリファイル基準）。"""
+    p = p.expanduser()
+    if p.is_absolute() or base_dir is None:
+        return p
+    return (base_dir / p).resolve()
+
+
+_REPO_ENTRY_KEYS = {"url", "dir", "local", "base", "target", "path", "owns",
+                    "readonly", "docs", "tests", "code", "desc"}
+
+
+def _is_repo_entry(v) -> bool:
+    return isinstance(v, dict) and any(k in _REPO_ENTRY_KEYS for k in v)
+
+
+def _is_repo_registry_mapping(v) -> bool:
+    """name→repo entry のレジストリらしい dict かを見る（repo 名 `repos` との衝突回避用）。"""
+    return isinstance(v, dict) and not _is_repo_entry(v) and all(
+        str(k).startswith("_") or isinstance(e, dict) for k, e in v.items())
+
+
+def _repos_from_data(data, repo_dirs: "dict[str, Path]", base_dir: "Path | None" = None) -> "list[Repo]":
     """repos スキーマ（schemas/repos.schema.json。name→エントリのマッピング。
-    [{name: …}, …] のリスト形も許容）を Repo 列にする。dir は CLI --repo-dir が勝つ。"""
+    [{name: …}, …] のリスト形も許容）を Repo 列にする。dir は CLI --repo-dir が勝つ。
+    共通スキーマの local は dir と同じローカル checkout ヒントとして読む。"""
+    if isinstance(data, dict) and _is_repo_registry_mapping(data.get("repos")):
+        data = data["repos"]               # ラッパー形式も寛容に受ける（repo 名 repos は維持）
     if isinstance(data, dict):
         items = [(str(n), e) for n, e in data.items()]
     elif isinstance(data, list):
@@ -183,7 +208,9 @@ def _repos_from_data(data, repo_dirs: "dict[str, Path]") -> "list[Repo]":
             continue                    # "_" 接頭辞キーはメタデータ予約（例 _meta.generated_from）
         if not isinstance(s, dict):
             _die(f"repos.{name} はマッピングで書いてください（url/base/dir/docs/tests/code…）")
-        d = repo_dirs.get(name) or (Path(str(s["dir"])).expanduser() if s.get("dir") else None)
+        local_hint = s.get("dir") or s.get("local")
+        d = repo_dirs.get(name) or (_resolve_registry_path(Path(str(local_hint)), base_dir)
+                                   if local_hint else None)
         repos.append(Repo(
             name=name, url=str(s.get("url", "") or ""),
             base=str(s.get("base", "") or ""),
@@ -212,12 +239,12 @@ def load_repos(repos_path: "Path | None", conf: dict,
             data = _read_structured(repos_path)
         except (OSError, ValueError) as e:
             _die(f"repos レジストリを解釈できません: {repos_path}: {e}")
-        repos = _repos_from_data(data, repo_dirs)
+        repos = _repos_from_data(data, repo_dirs, repos_path.parent)
         if not repos:
             _die(f"repos レジストリが空です: {repos_path}")
         return repos
     if conf.get("repos"):
-        return _repos_from_data(conf["repos"], repo_dirs)
+        return _repos_from_data(conf["repos"], repo_dirs, None)
     if repo_dirs:                               # レジストリ無し = --repo-dir の名前をそのまま repo にする
         return [Repo(name=n, dir=d) for n, d in sorted(repo_dirs.items())]
     return [Repo(name="default", dir=Path.cwd())]
