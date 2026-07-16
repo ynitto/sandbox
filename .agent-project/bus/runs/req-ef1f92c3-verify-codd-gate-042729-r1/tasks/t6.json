@@ -1,8 +1,0 @@
-{
-  "id": "t6",
-  "goal": "統合前の最終ゲート。クリーンな状態から完了条件コマンド（PYTHONPATH=tools/agent-project python3 -c 'from agent_project import _first_command_line; assert _first_command_line(\"検証コマンド:\\ncodd-gate verify --base \\\"$KIRO_BASE_REV\\\"\") == \"codd-gate verify --base \\\"$KIRO_BASE_REV\\\"\"'）を実行して終了コード 0 を確認し、agent-project の既存テストを走らせて非退行を確認する。落ちた場合は合格ではなく不合格として、失敗出力そのままを添えて報告する。",
-  "deps": [
-    "t5"
-  ],
-  "kind": "verify"
-}

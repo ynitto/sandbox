@@ -1,8 +1,0 @@
-{
-  "id": "verify-codd-gate-final-check-04",
-  "goal": "verify-codd-gate-scope-fix-03 の成果を独立に検証する。PYTHONPATH=tools/agent-project python3 -c 'from agent_project import _first_command_line; assert _first_command_line(\"検証コマンド:\\ncodd-gate verify --base \\\"$KIRO_BASE_REV\\\"\") == \"codd-gate verify --base \\\"$KIRO_BASE_REV\\\"\"' をそのまま実行し、終了コード0であることを明記する。併せて差分を確認し、同一行ラベル対応など元の要求外の成果が混在していないことを判定する。失敗時はコマンド出力と具体的な原因箇所を報告する。",
-  "deps": [
-    "verify-codd-gate-scope-fix-03"
-  ],
-  "kind": "work"
-}

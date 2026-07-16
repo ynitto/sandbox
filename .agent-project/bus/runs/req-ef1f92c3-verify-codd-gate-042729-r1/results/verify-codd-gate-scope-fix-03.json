@@ -1,7 +1,0 @@
-{
-  "id": "verify-codd-gate-scope-fix-03",
-  "who": "worker-2",
-  "status": "done",
-  "output": "バックグラウンドの pytest 全体スイート完了を待っています。完了すると自動通知されるので、それまで待機します。",
-  "finished_at": "2026-07-15T17:32:27Z"
-}
