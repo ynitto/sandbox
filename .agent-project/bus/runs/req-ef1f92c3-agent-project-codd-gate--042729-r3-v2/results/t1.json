@@ -1,0 +1,10 @@
+{
+  "id": "t1",
+  "who": "worker-1",
+  "status": "done",
+  "output": "Confirmed accurate. 成果物は `bus/runs/req-ef1f92c3-agent-project-codd-gate--042729-r3-v2/artifacts/t1/investigation-and-policy.md` に出力済み。\n\n**要旨**: 3結線（自動検出・regression・intake）はすでに `tools/agent-project/codd_gate_*.py` で実装済み（テスト81件 pass）、かつこの run の `.agent/agent-project.yaml` にも正しく設定済み（`regression_cmd`/`intake_cmd` とも完了条件の正規表現に一致）。完了条件grepが `agent-project.yaml`（ディレクトリ無し）を対象にしているため実ファイル `.agent/agent-project.yaml` と1階層ズレて不一致になっているだけで、原因はDR-0005の人手revise時に `.agent/` prefixが誤って落ちたと見られる状況証拠あり。t2/t3/t4への申し送りは「新規実装ではなく既存値・既存実装の整合確認」、t6への申し送りは「backlogのverify文言を `.agent/agent-project.yaml` に戻すことを推奨」とした。ファイル変更はt1のスコープ外のため行っていない。",
+  "finished_at": "2026-07-16T19:24:17Z",
+  "artifacts": [
+    "artifacts/t1/investigation-and-policy.md"
+  ]
+}

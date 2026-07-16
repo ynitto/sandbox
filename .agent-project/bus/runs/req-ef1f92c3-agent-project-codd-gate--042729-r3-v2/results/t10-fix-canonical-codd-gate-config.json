@@ -1,0 +1,7 @@
+{
+  "id": "t10-fix-canonical-codd-gate-config",
+  "who": "worker-2",
+  "status": "failed",
+  "output": "実行エラー: claude タイムアウト（900s 超過）",
+  "finished_at": "2026-07-16T20:00:41Z"
+}

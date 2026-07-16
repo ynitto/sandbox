@@ -1,0 +1,8 @@
+{
+  "id": "t12-fix-and-verify-canonical-codd-gate",
+  "goal": "t9 の調査結果を根拠に、t8 が作成した検証専用のダミー agent-project.yaml に依存せず、agent-project が実際に読み込む正典設定へ codd-gate の自動検出および regression/intake 結線を反映する。t10 のタイムアウト後の変更有無を確認して未完成部分だけを補完し、要求された検証 cwd で `grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' agent-project.yaml` を実行して終了コード 0 を記録する。設定値が存在するだけでなく、既存の agent-project/agent-flow エンジンとの結線を壊していないことも確認する。",
+  "deps": [
+    "t9"
+  ],
+  "kind": "work"
+}

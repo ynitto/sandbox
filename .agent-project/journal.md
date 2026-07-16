@@ -957,3 +957,9 @@
 - 2026-07-16 06:36:59 cycle 1: docs-designs-README-042729 → 人の判断（回帰検知）
 - 2026-07-17 04:17:32 state-git 同期: import=4 export=31
 - 2026-07-17 04:17:32 === project 開始 v1 acceptance=2 ===
+- 2026-07-17 04:17:33 intake NG (exit 2): codd-gate tasks --debt --repos .agent-project/repos.json
+- 2026-07-17 04:17:33 doing 回復: agent-project-codd-gate--042729 を ready へ戻す（実行者が失踪＝結果は返らない）
+- 2026-07-17 04:17:33 === agent-project 開始 tasks=6 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-17 04:17:33 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
+- 2026-07-17 04:17:33 run 再開: agent-project-codd-gate--042729 は req-ef1f92c3-agent-project-codd-gate--042729-r3-v2 の失敗ノードだけをやり直します（done は温存）
+- 2026-07-17 05:13:11 cycle 1: agent-project-codd-gate--042729 → 人の判断（繰り返し NG）

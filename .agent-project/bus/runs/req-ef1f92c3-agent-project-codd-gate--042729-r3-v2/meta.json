@@ -10,10 +10,10 @@
       "desc": "ソースコード・設計書"
     }
   ],
-  "status": "running",
+  "status": "done",
   "created_at": "2026-07-15T21:37:00Z",
   "executor": "agent",
-  "orch_lease_until": 1784152182.394007,
-  "heartbeat_at": "2026-07-15T21:47:42Z",
-  "updated_at": "2026-07-15T21:42:53Z"
+  "orch_lease_until": 1784232866.882159,
+  "heartbeat_at": "2026-07-16T20:12:26Z",
+  "updated_at": "2026-07-16T20:13:04Z"
 }

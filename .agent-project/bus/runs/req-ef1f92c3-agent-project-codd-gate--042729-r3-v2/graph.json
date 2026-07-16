@@ -58,7 +58,44 @@
         "t6"
       ],
       "kind": "verify"
+    },
+    "t8": {
+      "goal": "失敗した t3 の再実行として regression 結線を完成させる。検証実行ディレクトリ直下の agent-project.yaml が存在しないため、そこに設定ファイルを配置または生成し、regression_cmd に `codd-gate verify --base ...` を同一行で設定する。対象リポジトリが参照のみという制約を守りつつ、`grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' agent-project.yaml` が終了コード0になる状態を作る。",
+      "deps": [
+        "t1"
+      ],
+      "kind": "work"
+    },
+    "t9": {
+      "goal": "t5 を差し替えて敵対的検証を行う。t2・t4・t8 の成果を突き合わせ、自動検出、regression、intake の3結線が有効で余計な変更を含まないことを確認する。特に実際の検証 cwd で bare `agent-project.yaml` が存在し、指定 grep が終了コード0で成功することを実測する。失敗時は欠落ファイル、配置先、regression_cmd の形式のどれが原因かを明記する。",
+      "deps": [
+        "t2",
+        "t4",
+        "t8"
+      ],
+      "kind": "work"
+    },
+    "t10-fix-canonical-codd-gate-config": {
+      "goal": "t9で判明した不足を修正する。実際に完了条件が実行されるcwdと正典の設定ファイルを特定し、見せかけの複製ではなく、そのcwdから参照されるagent-project.yamlへ regression_cmd: codd-gate verify --base を設定する。既存のcodd-gate自動検出およびregression/intake結線を維持し、不要な範囲外変更を加えない。",
+      "deps": [
+        "t9"
+      ],
+      "kind": "work"
+    },
+    "t11-verify-codd-gate-completion": {
+      "goal": "t10の修正後、実際の検証cwdで grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' agent-project.yaml をそのまま実行し、終了コード0と一致行を記録する。併せて対象のagent-project.yamlが正典または実運用で参照される設定であり、検証専用の囮ファイルでないことを確認する。失敗時はcwd・対象パス・grep出力・終了コードをissuesとして具体的に報告する。",
+      "deps": [
+        "t10-fix-canonical-codd-gate-config"
+      ],
+      "kind": "work"
+    },
+    "t12-fix-and-verify-canonical-codd-gate": {
+      "goal": "t9 の調査結果を根拠に、t8 が作成した検証専用のダミー agent-project.yaml に依存せず、agent-project が実際に読み込む正典設定へ codd-gate の自動検出および regression/intake 結線を反映する。t10 のタイムアウト後の変更有無を確認して未完成部分だけを補完し、要求された検証 cwd で `grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' agent-project.yaml` を実行して終了コード 0 を記録する。設定値が存在するだけでなく、既存の agent-project/agent-flow エンジンとの結線を壊していないことも確認する。",
+      "deps": [
+        "t9"
+      ],
+      "kind": "work"
     }
   },
-  "iteration": 0
+  "iteration": 3
 }

@@ -1,0 +1,8 @@
+{
+  "id": "t8",
+  "goal": "失敗した t3 の再実行として regression 結線を完成させる。検証実行ディレクトリ直下の agent-project.yaml が存在しないため、そこに設定ファイルを配置または生成し、regression_cmd に `codd-gate verify --base ...` を同一行で設定する。対象リポジトリが参照のみという制約を守りつつ、`grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' agent-project.yaml` が終了コード0になる状態を作る。",
+  "deps": [
+    "t1"
+  ],
+  "kind": "work"
+}

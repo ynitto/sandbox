@@ -1,0 +1,10 @@
+{
+  "id": "t2",
+  "who": "worker-1",
+  "status": "done",
+  "output": "**差別化の切り口**: 静的なコードレビューではなく、この run の実行環境で `resolve_codd_gate` / `detect_status` を実際に3通り発火させ、検出→フォールバックの各分岐が返す生の値（起動コマンド・usable・reason・finding）を実測値として提示し、それを契約表として明文化した。\n\n## (a) 成果サマリー\nt1 の調査（自動検出は `tools/agent-project/codd_gate_detect.py` に実装・テスト済み、新規実装不要）を前提に採用。t2 の作業は「この run 環境での実測確認」と「フォールバック挙動の契約表化」に限定した。\n\n| 検出分岐 | 起動コマンド | usable | 影響 |\n|---|---|---|---|\n| explicit指定 | `[explicit]`／`.py`なら`[python, explicit]` | version次第 | PATH探索スキップ |\n| PATH上にあり | `[which結果]` | version≥1.0.0で True | 実行可能 |\n| PATH無・同梱パスあり | `[python, 同梱パス]` | 同上 | PATH未整備環境向け縮退 |\n| どちらも無 | `None` | False | infoフィンディング＋no-op継続 |\n| version不足/不明 | 解決済でも | False | warn/infoフィンディング |\n\n## (b) 検証内容と結果\n- ユニットテスト再実行: `python3 -m unittest discover -s tests -k codd_gate`（sandbox/tools/agent-project）→ **81 passed**\n- 実PATHでのライブ検出: `/Users/nitto/.local/bin/codd-gate`（v1.0.0）を解決、`usable=True`\n- フォールバック段2（PATH無・同梱パスあり）をwhich差し替えのみで実測 → 同梱パスへ実際にフォールバック、`usable=True`\n- フォールバック段3（完全未検出）を実測 → `usable=False`, info finding, `command()=None`\n- この run の `.agent/agent-project.yaml` の regression_cmd/intake_cmd を `codd_gate_wiring.regression_wired`/`intake_wired` に通し、grepだけでなく判定関数そのもので `True` を確認\n\n## (c) 前提・未解決・範囲外\n- コード変更なし（t1方針どおり新規実装不要と判断）。完了条件grepのパス不一致是正はt6の責務のため対象外。\n- 範囲外の発見: 参照専用リポジトリ `/Users/nitto/Workspace/sandbox` の `.agent/agent-project.yaml` に未コミット差分（`--repos .agent-project/repos.json`→`--repos repos.json`）あり。read-only制約のため一切変更せず報告のみ。t3/t4/t6が同リポジトリへの書き込みを検討する際はこの差分の扱いを先に確認すべき。\n\n成果物は `bus/runs/req-ef1f92c3-agent-project-codd-gate--042729-r3-v2/artifacts/t2/detection-fallback-verification.md` に出力済み。",
+  "finished_at": "2026-07-16T19:28:43Z",
+  "artifacts": [
+    "artifacts/t2/detection-fallback-verification.md"
+  ]
+}
