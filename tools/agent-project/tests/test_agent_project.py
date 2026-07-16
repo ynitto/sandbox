@@ -4111,6 +4111,27 @@ class TestLoopEngineering(unittest.TestCase):
             res = km.run_loop(cfg_for(d, learn=False, auto_adjudicate=False, regression_cmd="true"))
             self.assertEqual(res["counts"]["done"], 1)
 
+    def test_regression_gate_runs_in_workdir_not_workspace_clone(self):
+        # workspace 指定タスクは verify を該当 repo の一時 clone（vcwd）で走らせるが、
+        # グローバル回帰ゲート（codd-gate 等）はパスも差分基準も git-bus ルート（workdir）前提。
+        # clone 内で走らせると `--repos <root>/repos.json` を解決できず壊れる。回帰 cmd の cwd が
+        # 常に workdir であることを固定する（vcwd=clone を返しても workdir で走る）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "T1", "## T1: x\n- status: ready\n- verify: `true`\n")
+            rec = d / "reg_cwd.txt"
+
+            def fake_verify_cwd(cfg, task):                 # workspace タスクの一時 clone を模す
+                parent = Path(tempfile.mkdtemp(prefix="fake-clone-"))
+                clone = parent / "repo"; clone.mkdir()
+                return clone, str(parent)
+
+            reg = f"python3 -c \"import os; open(r'{rec}','w').write(os.getcwd())\""
+            with mock.patch.object(km, "_task_verify_cwd", fake_verify_cwd):
+                km.run_loop(cfg_for(d, learn=False, auto_adjudicate=False, regression_cmd=reg))
+            self.assertTrue(rec.exists(), "回帰ゲートが走っていない")
+            self.assertEqual(Path(rec.read_text()).resolve(), d.resolve())  # clone でなく workdir
+
     # --- コスト予算 ---
     def test_parse_cost_sums_markers(self):
         self.assertEqual(km.parse_cost("ok\n@cost tokens=1_200 usd=0.03\n@cost tokens=300 cost=0.01"),
