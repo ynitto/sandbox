@@ -458,25 +458,68 @@ class ScanCliTests(unittest.TestCase):
 
     def test_shared_repos_file(self):
         """--repos: 共通スキーマ（schemas/repos.schema.json）のレジストリファイル。
-        kiro-project の <root>/repos.yaml と同じファイルを共有できる。"""
+        agent-project の <root>/repos.json と同じファイルを共有できる。"""
         with tempfile.TemporaryDirectory() as tmp:
-            d = Path(tmp) / "app"
+            root = Path(tmp) / "project"
+            d = root / "app"
             init_repo(d)
             write(d, "src/x.py", "X = 1\n")
             write(d, "manual/x.md", "`src/x.py`\n")
             commit(d, "init")
-            reg = Path(tmp) / "repos.json"
+            reg = root / "repos.json"
             reg.write_text(json.dumps(
-                {"_meta": {"generated_from": "charter.md ## repos"},   # kiro-project の生成物マーカー
-                 "app": {"url": "git@x:app.git", "base": "main", "dir": str(d),
+                {"_meta": {"generated_from": "charter.md ## repos"},   # agent-project の生成物マーカー
+                 "app": {"url": "git@x:app.git", "base": "main", "local": "app",
                          "owns": ["src/**"], "docs": ["manual/**"]}}), encoding="utf-8")
+            out = Path(tmp) / "map.json"
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(tmp)                                      # 相対 local は repos.json 基準で解決
+                rc, _ = run_cli(["scan", "--repos", str(reg), "--map", str(out)])
+            finally:
+                os.chdir(old_cwd)
+            self.assertEqual(rc, 0)
+            m = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(m["nodes"]["app:manual/x.md"]["kind"], "doc")
+            self.assertEqual(m["repos"]["app"]["dir"], str(d.resolve()))
+            edges = {(e["src"], e["dst"]) for e in m["edges"]}
+            self.assertIn(("app:manual/x.md", "app:src/x.py"), edges)
+
+    def test_shared_repos_wrapper_file(self):
+        """トップレベル repos キーで包まれた JSON も --repos で受け付ける。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / "app"
+            init_repo(d)
+            write(d, "src/x.py", "X = 1\n")
+            write(d, "README.md", "`src/x.py`\n")
+            commit(d, "init")
+            reg = Path(tmp) / "repo.json"
+            reg.write_text(json.dumps({"repos": {"app": {"url": "git@x:app.git",
+                                                            "base": "main", "dir": str(d)}}}),
+                           encoding="utf-8")
             out = Path(tmp) / "map.json"
             rc, _ = run_cli(["scan", "--repos", str(reg), "--map", str(out)])
             self.assertEqual(rc, 0)
             m = json.loads(out.read_text(encoding="utf-8"))
-            self.assertEqual(m["nodes"]["app:manual/x.md"]["kind"], "doc")
-            edges = {(e["src"], e["dst"]) for e in m["edges"]}
-            self.assertIn(("app:manual/x.md", "app:src/x.py"), edges)
+            self.assertIn("app:src/x.py", m["nodes"])
+
+    def test_repo_named_repos_is_not_treated_as_wrapper(self):
+        """共通スキーマでは repos も有効な repo 名なので、ラッパー判定で潰さない。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / "repos"
+            init_repo(d)
+            write(d, "src/x.py", "X = 1\n")
+            write(d, "README.md", "`src/x.py`\n")
+            commit(d, "init")
+            reg = Path(tmp) / "repos.json"
+            reg.write_text(json.dumps({"repos": {"url": "git@x:repos.git", "dir": str(d)}}),
+                           encoding="utf-8")
+            out = Path(tmp) / "map.json"
+            rc, _ = run_cli(["scan", "--repos", str(reg), "--map", str(out)])
+            self.assertEqual(rc, 0)
+            m = json.loads(out.read_text(encoding="utf-8"))
+            self.assertIn("repos:src/x.py", m["nodes"])
+
 
 
 class SyncTests(unittest.TestCase):
