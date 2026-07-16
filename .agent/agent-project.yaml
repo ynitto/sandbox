@@ -27,8 +27,8 @@ root: .agent-project
 # 一貫性ゲート（codd-gate 連携）: done 確定前の差分ゲート（regression）と
 # 負債の修復タスク自動投入（intake）。repos.json は agent-project が charter から
 # <root>/repos.json に自動生成する（tools/agent-project/README.md 参照）。
-regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV" --repos .agent-project/repos.json'
-intake_cmd: 'codd-gate tasks --debt --repos .agent-project/repos.json'
+regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV" --repos repos.json'
+intake_cmd: 'codd-gate tasks --debt --repos repos.json'
 
 # グローバル既定
 agent_cli: claude

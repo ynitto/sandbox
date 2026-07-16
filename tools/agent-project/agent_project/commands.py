@@ -322,6 +322,25 @@ def _apply_revise_fields(t: Task, tasks: "list[Task]", fields: dict) -> "list[st
     return changes
 
 
+def _completed_last_run(cfg: "Config", t: "Task") -> str:
+    """ローカル bus 上で完了が確定している直前 run の ID を返す。
+
+    verify だけの修正では成果生成をやり直す必要がないため、この機械状態を根拠に
+    agent-flow の再計画・再実行を省略できる。meta が無い、壊れている、または終端が
+    done でない場合は安全側に倒して通常の新規 run にする。
+    """
+    run_id = str(t.get("last_run") or "").strip()
+    if not run_id:
+        return ""
+    try:
+        meta = json.loads(
+            (cfg.bus / "runs" / run_id / "meta.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError, TypeError):
+        return ""
+    return run_id if str(meta.get("status") or "") == "done" else ""
+
+
 def recover_revised(cfg: "Config", tasks: "list[Task]") -> "list[str]":
     """実行側が settle できなかった `revised` マーカーの回収（クラッシュ後の自己回復）。
     doing かつ実行者不在（stale claim）は修正内容のまま ready に積み直す。
@@ -381,20 +400,37 @@ def cmd_revise(cfg: Config, tid: str, fields: dict, feedback: str, reason: str) 
 
     status = t.norm_status()
     doing = status == "doing" and _claim_fresh(cfg, tid)
+    # 前回の再利用予約が残っている状態で別の revise が来た場合は、古い予約を必ず破棄する。
+    t.drop("reuse_done_run")
+    verify_only = (not fb and len(changes) == 1 and changes[0].startswith("verify:"))
+    reuse_done_run = (_completed_last_run(cfg, t)
+                      if (verify_only and status in ("blocked", "review")
+                          and not t.get("flow_run")) else "")
     # approve / feedback / _block と同じ: flow_run があれば status によらず切り離す。
     # dashboard cancel→revise は sync 待ちの doing（flow_run ピン）でも来る。
     detached = False
     if status == "offloaded" or t.get("flow_run"):
         detach_flow_run(cfg, t, reason or fb[:120] or "revise により委譲から切り離し")
         detached = True
-    # rev は act 試行の世代番号（req_id に載る）。実行中の古い run に次の試行が
-    # 合流しないよう、revise のたびに上げて新しい run を強制する。
-    t.set("rev", int(str(t.get("rev", "0") or "0")) + 1)
     disp = ""
+    if reuse_done_run and not detached:
+        # 成果生成は完了済みなので世代を上げない。次の loop は既存成果に対して
+        # 新しい外側 verify だけを実行し、agent-flow（タスクグラフ）を呼ばない。
+        release_claim(cfg, t)
+        clear_needs_file(cfg, tid)
+        if status == "review":
+            autonomy_record(cfg, t, clean=False)
+        t.status = "ready"
+        t.set("reuse_done_run", reuse_done_run)
+        disp = f"完了済み run {reuse_done_run} を流用し、verify だけ再実行します"
+    else:
+        # rev は act 試行の世代番号（req_id に載る）。成果内容が変わる revise は
+        # 実行中の古い run に合流させず、新しい run を強制する。
+        t.set("rev", int(str(t.get("rev", "0") or "0")) + 1)
     if doing:
         t.set("revised", _now_ts())     # 実行側が settle 時に検知して積み直す（結果は確定しない）
         disp = "実行中のため現在の試行は確定せず、修正内容で積み直されます"
-    elif detached or status in ("blocked", "review", "doing"):
+    elif not reuse_done_run and (detached or status in ("blocked", "review", "doing")):
         # detached（offloaded / flow_run）か、doing でも実行者不在（stale claim）
         release_claim(cfg, t)            # 残骸クレームの掃除（無ければ no-op）
         clear_needs_file(cfg, tid)

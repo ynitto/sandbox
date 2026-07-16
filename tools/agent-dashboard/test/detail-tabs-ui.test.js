@@ -55,6 +55,101 @@ const verifyRevisionConfirmMessage = new Function(
 const deliveryReviewState = new Function(`${grab('deliveryReviewState')}; return deliveryReviewState;`)();
 // eslint-disable-next-line no-new-func
 const canDiagnoseNeed = new Function(`${grab('canDiagnoseNeed')}; return canDiagnoseNeed;`)();
+// eslint-disable-next-line no-new-func
+const runArtifactViewModel = new Function(
+  'sanitizeTaskId', `${grab('runArtifactViewModel')}; return runArtifactViewModel;`
+)((id) => String(id == null ? '' : id).replace(/[^\w.-]+/g, '_').slice(0, 60));
+// eslint-disable-next-line no-new-func
+const runArtifactsButtonHtml = new Function(
+  'esc', `${grab('runArtifactsButtonHtml')}; return runArtifactsButtonHtml;`
+)((value) => String(value == null ? '' : value));
+
+assert.match(
+  runArtifactsButtonHtml({ runId: 'run-done', status: 'done' }),
+  /data-run-artifacts="run-done"[^>]*>成果を見る</,
+  '完了runから成果ダイアログを開ける'
+);
+assert.strictEqual(runArtifactsButtonHtml({ runId: 'run-active', status: 'running' }), '');
+assert.ok(renderer.includes("querySelectorAll('button[data-run-artifacts]')"), '成果ボタンのクリック配線が必要');
+assert.ok(renderer.includes('function openRunArtifacts('), '完了runから成果ダイアログを開く入口が必要');
+// eslint-disable-next-line no-new-func
+const deliveryReviewFooterHtml = new Function(
+  'statusLabel', 'esc', 'isNeedSent', 'needActionsHtml',
+  `${grab('deliveryReviewFooterHtml')}; return deliveryReviewFooterHtml;`
+)(
+  (status) => ({ review: '検収待ち', done: '完了' }[status] || status),
+  (value) => String(value == null ? '' : value),
+  () => false,
+  () => '<button>承認して完了にする</button>'
+);
+const readOnlyFooter = deliveryReviewFooterHtml({ taskStatus: 'review', readOnly: true });
+assert.match(readOnlyFooter, /タスクの状態/);
+assert.match(readOnlyFooter, /検収待ち/);
+assert.ok(!readOnlyFooter.includes('承認して完了にする'), '成果閲覧からタスク操作を誤って出さない');
+// eslint-disable-next-line no-new-func
+const deliveryRepoMetaHtml = new Function(
+  'esc', `${grab('deliveryRepoMetaHtml')}; return deliveryRepoMetaHtml;`
+)((value) => String(value == null ? '' : value));
+const branchMeta = deliveryRepoMetaHtml({
+  branch: 'ap/T1', target: 'develop', base: 'main', path: '/work/app', url: 'https://git/app.git', role: 'write',
+});
+for (const expected of ['作業ブランチ', 'ap/T1', 'ターゲット', 'develop', 'ベース', 'main']) {
+  assert.ok(branchMeta.includes(expected), `成果の実装情報に「${expected}」が必要`);
+}
+// eslint-disable-next-line no-new-func
+const deliveryDiffOutputFormat = new Function(
+  `${grab('deliveryDiffOutputFormat')}; return deliveryDiffOutputFormat;`
+)();
+assert.strictEqual(deliveryDiffOutputFormat(900), 'side-by-side');
+assert.strictEqual(deliveryDiffOutputFormat(375), 'line-by-line', '狭い画面で左右比較を押し込まない');
+
+{
+  const delivery = [{ name: 'app', role: 'write', branch: 'ap/T1', target: 'develop', base: 'main' }];
+  const model = runArtifactViewModel(
+    {
+      backlog: [{ id: 'T1', status: 'review' }],
+      archive: [],
+      needs: [{ id: 'T1', taskId: 'T1', title: '成果を確認', delivery, mrUrls: ['https://git/mr/1'] }],
+    },
+    { runId: 'run-done', taskId: 'T1', status: 'done', final: { summary: '実装完了' } }
+  );
+  assert.strictEqual(model.readOnly, true);
+  assert.strictEqual(model.taskStatus, 'review');
+  assert.strictEqual(model.summary, '実装完了');
+  assert.deepStrictEqual(model.delivery, delivery, '関連する要確認の構造化成果を優先する');
+  assert.deepStrictEqual(model.mrUrls, ['https://git/mr/1']);
+}
+
+{
+  const model = runArtifactViewModel(
+    { workspace: '/work/app', backlog: [], archive: [{ id: 'T1', status: 'done', title: '完了タスク' }], needs: [] },
+    {
+      runId: 'run-archived',
+      taskId: 'T1',
+      status: 'done',
+      workspace: {
+        url: 'https://git.example/app.git',
+        desc: 'app',
+        base: 'main',
+        target: 'develop',
+        branch: 'ap/T1',
+      },
+      gitlabIssues: [{ mergedMrs: [{ web_url: 'https://git.example/app/-/merge_requests/7' }] }],
+    }
+  );
+  assert.deepStrictEqual(model.delivery, [{
+    name: 'app',
+    role: 'write',
+    url: 'https://git.example/app.git',
+    path: '/work/app',
+    base: 'main',
+    target: 'develop',
+    branch: 'ap/T1',
+    ref: 'ap/T1',
+    files: [],
+  }]);
+  assert.deepStrictEqual(model.mrUrls, ['https://git.example/app/-/merge_requests/7']);
+}
 
 assert.deepStrictEqual(
   deliveryReviewState([{ role: 'write', path: '/work/app', files: [] }], []),
@@ -189,6 +284,9 @@ const failureDiagnosisHtml = renderNeedDetailWithVerifyRevision(
 );
 assert.ok(failureDiagnosisHtml.includes('data-failure-diagnose="T1"'));
 assert.ok(failureDiagnosisHtml.includes('AIで失敗を診断'));
+assert.ok(failureDiagnosisHtml.includes('data-need-consult="T1"'));
+assert.ok(failureDiagnosisHtml.includes('AIに相談'));
+assert.ok(renderer.includes("querySelectorAll('button[data-need-consult]')"), '要確認からAI相談を開く配線が必要');
 assert.ok(renderer.includes('function openFailureDiagnosis('), '失敗診断を自動開始する入口が必要');
 assert.ok(renderer.includes('mode: state.doctorMode'), '追加質問でも診断モードを維持する');
 
@@ -278,6 +376,7 @@ for (const label of ['未対応', '送信済み', '回答済み', 'GitLab', '実
 for (const label of ['概要', '工程', '履歴']) {
   assert.ok(renderer.includes(`'${label}'`), `実行詳細に「${label}」ビューが必要です`);
 }
+assert.ok(renderer.includes('<span>工程完了</span>'), '工程数をタスク完了と区別する');
 assert.match(renderer, /class="master-detail/);
 assert.match(renderer, /class="flow-detail-shell/);
 assert.match(renderer, /data-needs-back/);
@@ -345,5 +444,11 @@ assert.match(css, /\.delivery-review-layout/);
 assert.match(css, /\.delivery-file-button/);
 assert.match(css, /\.delivery-review-actions/);
 assert.match(css, /grid-template-rows:\s*auto minmax\(0, 1fr\) clamp\(/);
+assert.match(css, /\.flow-outcome-status\s*\{/);
+assert.match(
+  css,
+  /\.delivery-diff-view\s+\.d2h-wrapper[\s\S]*?max-width:\s*100%/,
+  'Diff2Htmlの内側要素を成果ペイン幅へ収める'
+);
 
 console.log('detail-tabs-ui: all tests passed');

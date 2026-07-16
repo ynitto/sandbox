@@ -215,6 +215,57 @@ function runStatusCaption(runStatus, { taskArchived = false } = {}) {
   return taskArchived ? '納品済み' : '実行完了（タスク未確定）';
 }
 
+// run の機械状態と agent-project タスクの業務状態を混ぜずに表示するためのモデル。
+// agent-flow 単体 run は関連タスクを推測せず、タスクとの関連なしとして扱う。
+function runTaskOutcome(project, run) {
+  const key = sanitizeTaskId(run && run.taskId);
+  const backlogTask = key
+    ? ((project && project.backlog) || []).find((task) => sanitizeTaskId(task.id) === key)
+    : null;
+  const archivedTask = !backlogTask && key
+    ? ((project && project.archive) || []).find((task) => sanitizeTaskId(task.id) === key)
+    : null;
+  const task = backlogTask || archivedTask;
+  const taskArchived = Boolean(archivedTask);
+  return {
+    runLabel: String(run && run.status) === 'done' ? '実行完了' : statusLabel(run && run.status),
+    runStatus: String((run && run.status) || ''),
+    taskLabel: task ? (taskArchived ? 'タスク完了' : statusLabel(task.status)) : 'タスクとの関連なし',
+    taskStatus: task ? String(task.status || '') : '',
+    taskArchived,
+    taskId: task ? task.id : null,
+    note:
+      String(run && run.status) === 'done' && task && !taskArchived
+        ? '実行は完了しましたが、タスクはまだ完了していません。'
+        : '',
+  };
+}
+
+function runTaskOutcomeHtml(outcome) {
+  const taskClass = outcome.taskArchived
+    ? 'st-done'
+    : outcome.taskStatus
+      ? `st-${outcome.taskStatus}`
+      : '';
+  return `<section class="flow-outcome-status" aria-label="実行とタスクの状態">
+    <div><span>実行</span><strong class="status-chip st-${esc(outcome.runStatus || '')}">${esc(outcome.runLabel)}</strong></div>
+    <div><span>タスク</span><strong class="status-chip ${esc(taskClass)}">${esc(outcome.taskLabel)}</strong></div>
+    ${outcome.note ? `<p>${esc(outcome.note)}</p>` : ''}
+  </section>`;
+}
+
+function runTaskOutcomeCompactHtml(outcome) {
+  const taskClass = outcome.taskArchived
+    ? 'st-done'
+    : outcome.taskStatus
+      ? `st-${outcome.taskStatus}`
+      : '';
+  return `<span class="flow-outcome-compact">
+    <span class="status-chip st-${esc(outcome.runStatus || '')}">${esc(outcome.runLabel)}</span>
+    <span class="status-chip ${esc(taskClass)}">タスク: ${esc(outcome.taskLabel)}</span>
+  </span>`;
+}
+
 // project.json の charter state から acceptance の PASS 履歴（数値列）を取り出す。
 function passHistory(st) {
   if (!st || !Array.isArray(st.history)) return [];
@@ -1039,7 +1090,7 @@ function openProjectSettings() {
     <section class="project-settings-section">
       <h3>調査と高度な設定</h3>
       <p class="muted">実行ID、内部ログ、同期方式などは通常の操作には必要ありません。</p>
-      <button id="btn-project-developer-tools">開発者ツールを開く</button>
+      <button id="btn-project-technical-info">技術情報を開く</button>
     </section>
     ${danger}`;
 
@@ -1064,10 +1115,10 @@ function openProjectSettings() {
     $('dlg-project-settings').close();
     resetProject();
   });
-  const developer = $('btn-project-developer-tools');
-  if (developer) developer.addEventListener('click', () => {
+  const technicalInfo = $('btn-project-technical-info');
+  if (technicalInfo) technicalInfo.addEventListener('click', () => {
     $('dlg-project-settings').close();
-    openDeveloperTools();
+    openTechnicalInfo();
   });
   $('dlg-project-settings').showModal();
 }
@@ -3100,6 +3151,75 @@ function deliveryReviewState(entries, mrs) {
   return { fileCount, hasMr, canDiscover, hasContent: fileCount > 0 || hasMr };
 }
 
+// 完了 run から成果ダイアログへ渡す読み取り専用モデル。検収中なら needs に既にある
+// 複数リポジトリ・MR・差分情報を正として再利用する。
+function runArtifactViewModel(project, run) {
+  const key = sanitizeTaskId(run && run.taskId);
+  const tasks = [...((project && project.backlog) || []), ...((project && project.archive) || [])];
+  const task = key ? tasks.find((item) => sanitizeTaskId(item.id) === key) : null;
+  const need = key
+    ? ((project && project.needs) || []).find((item) =>
+        sanitizeTaskId(item.taskId || item.id) === key)
+    : null;
+  const needDelivery = (need && need.delivery) || [];
+  const workspace = (run && run.workspace) || null;
+  const workspaceDelivery = workspace && workspace.url
+    ? [{
+        name: workspace.desc || '成果リポジトリ',
+        role: 'write',
+        url: workspace.url,
+        path: (project && project.workspace) || '',
+        base: workspace.base || '',
+        target: workspace.target || workspace.base || '',
+        branch: workspace.branch || '',
+        ref: workspace.branch || '',
+        files: [],
+      }]
+    : [];
+  const needMrs = (need && need.mrUrls) || (need && need.mrUrl ? [need.mrUrl] : []);
+  const runMrs = [...new Set(((run && run.gitlabIssues) || []).flatMap((issue) =>
+    (issue.mergedMrs || []).map((mr) => String((mr && (mr.web_url || mr.url)) || '')).filter(Boolean)
+  ))];
+  return {
+    id: `run:${String((run && run.runId) || '')}`,
+    taskId: task ? task.id : (run && run.taskId) || null,
+    taskStatus: task ? String(task.status || '') : '',
+    title: (need && need.title) || (task && task.title) || String((run && run.runId) || '成果'),
+    summary: String((run && run.final && run.final.summary) || ''),
+    readOnly: true,
+    decided: true,
+    delivery: needDelivery.length ? needDelivery : workspaceDelivery,
+    mrUrls: needMrs.length ? needMrs : runMrs,
+  };
+}
+
+function runArtifactsButtonHtml(run) {
+  if (!run || String(run.status) !== 'done') return '';
+  return `<button type="button" class="primary-inline" data-run-artifacts="${esc(run.runId)}">成果を見る</button>`;
+}
+
+function deliveryReviewFooterHtml(need) {
+  if (need.readOnly) {
+    const label = need.taskStatus ? statusLabel(need.taskStatus) : '関連タスクなし';
+    return `<h3>タスクの状態</h3><p><span class="status-chip st-${esc(need.taskStatus || '')}">${esc(label)}</span></p>`;
+  }
+  return `<h3>要確認コメント・操作</h3>${
+    need.decided || isNeedSent(need)
+      ? '<p class="muted">この要確認項目には回答済みです。</p>'
+      : needActionsHtml(need)
+  }`;
+}
+
+function deliveryRepoMetaHtml(entry) {
+  const bits = [];
+  if (entry.branch) bits.push(`作業ブランチ <code>${esc(entry.branch)}</code>`);
+  if (entry.target || entry.base) bits.push(`ターゲット <code>${esc(entry.target || entry.base)}</code>`);
+  if (entry.base) bits.push(`ベース <code>${esc(entry.base)}</code>`);
+  if (entry.path) bits.push(`所在 <code>${esc(entry.path)}</code>`);
+  if (entry.url && entry.role === 'reference') bits.push(`URL ${esc(entry.url)}`);
+  return bits.join('<span aria-hidden="true"> · </span>');
+}
+
 function renderDeliveryRepo(entry, idx) {
   const role = deliveryRoleLabel(entry.role);
   const files = entry.files || [];
@@ -3131,10 +3251,7 @@ function renderDeliveryRepo(entry, idx) {
       </div>
     </header>
     <div class="muted delivery-repo-meta">
-      ${entry.branch ? `ブランチ <code>${esc(entry.branch)}</code>` : ''}
-      ${entry.base ? ` · base <code>${esc(entry.base)}</code>` : ''}
-      ${entry.path ? ` · <code>${esc(entry.path)}</code>` : ''}
-      ${entry.url && entry.role === 'reference' ? ` · ${esc(entry.url)}` : ''}
+      ${deliveryRepoMetaHtml(entry)}
     </div>
     ${
       entry.role === 'reference'
@@ -3152,9 +3269,23 @@ function renderDeliveryRepo(entry, idx) {
 async function openDeliveryReview(needId) {
   const need = state.project && state.project.needs.find((item) => item.id === needId);
   if (!need) return toast('要対応項目が見つかりません');
+  return openDeliveryArtifactsModel(need, `検収物を確認 — ${needDisplayTitle(need)}`);
+}
+
+async function openRunArtifacts(runId) {
+  const selected = state.flowRun && state.flowRun.run;
+  const run = selected && selected.runId === runId
+    ? selected
+    : state.flowRuns.find((item) => item.runId === runId);
+  if (!run || String(run.status) !== 'done') return toast('完了runの成果が見つかりません');
+  const model = runArtifactViewModel(state.project, run);
+  return openDeliveryArtifactsModel(model, `成果を見る — ${model.title}`);
+}
+
+async function openDeliveryArtifactsModel(need, title) {
   const rawEntries = need.delivery && need.delivery.length ? need.delivery : [];
   const mrs = need.mrUrls && need.mrUrls.length ? need.mrUrls : need.mrUrl ? [need.mrUrl] : [];
-  $('delivery-review-title').textContent = `検収物を確認 — ${needDisplayTitle(need)}`;
+  $('delivery-review-title').textContent = title;
   $('delivery-review-body').innerHTML = '<p class="muted">変更ファイル一覧を取得しています…</p>';
   if (!$('dlg-delivery-review').open) $('dlg-delivery-review').showModal();
   const entries = await hydrateDeliveryEntries(rawEntries);
@@ -3201,7 +3332,10 @@ async function openDeliveryReview(needId) {
           ? 'リポジトリの情報またはGitの状態を確認し、もう一度開いてください。'
           : '現在の比較条件では、検収対象となる変更を検出しませんでした。'}</p>
       </section>`;
-  $('delivery-review-body').innerHTML = `${mrBlock}${emptyNotice}
+  const summaryBlock = need.summary
+    ? `<section class="delivery-artifact-summary"><h3>成果の要約</h3><p>${esc(need.summary)}</p></section>`
+    : '';
+  $('delivery-review-body').innerHTML = `${summaryBlock}${mrBlock}${emptyNotice}
     <div id="delivery-assist-panel" class="delivery-assist-panel hidden" aria-live="polite"></div>
     <div class="delivery-review-layout">
       <aside class="delivery-file-panel" aria-label="変更ファイル">
@@ -3215,14 +3349,11 @@ async function openDeliveryReview(needId) {
       <section class="delivery-diff-panel" aria-label="ファイル差分">
         <header class="delivery-diff-head">
           <strong id="delivery-diff-title">${reviewState.hasContent ? '差分を表示するファイルを選択してください' : '表示できる差分はありません'}</strong>
-          <span class="muted">左右比較</span>
+          <span class="muted delivery-diff-mode">比較表示</span>
         </header>
         <div id="delivery-diff-view" class="delivery-diff-view" tabindex="0" aria-live="polite"></div>
         <footer class="delivery-review-actions">
-          <h3>要確認コメント・操作</h3>
-          ${need.decided || isNeedSent(need)
-            ? '<p class="muted">この要確認項目には回答済みです。</p>'
-            : needActionsHtml(need)}
+          ${deliveryReviewFooterHtml(need)}
         </footer>
       </section>
     </div>`;
@@ -3269,6 +3400,10 @@ async function hydrateDeliveryEntries(entries) {
   }));
 }
 
+function deliveryDiffOutputFormat(viewportWidth) {
+  return Number(viewportWidth) < 768 ? 'line-by-line' : 'side-by-side';
+}
+
 function renderDeliveryDiff(diffText) {
   const view = $('delivery-diff-view');
   view.replaceChildren();
@@ -3283,11 +3418,14 @@ function renderDeliveryDiff(diffText) {
     view.appendChild(fallback);
     return;
   }
+  const outputFormat = deliveryDiffOutputFormat(window.innerWidth);
+  const mode = $('dlg-delivery-review').querySelector('.delivery-diff-mode');
+  if (mode) mode.textContent = outputFormat === 'side-by-side' ? '左右比較' : '行単位';
   const ui = new Diff2HtmlUI(view, diffText, {
     drawFileList: false,
     fileContentToggle: false,
     matching: 'lines',
-    outputFormat: 'side-by-side',
+    outputFormat,
     synchronisedScroll: true,
     highlight: true,
     colorScheme: 'dark',
@@ -3672,6 +3810,7 @@ function renderNeedDetail(p, n) {
       <div class="need-facts-heading">
         <h3>状況</h3>
         <div class="need-assist-actions">
+          <button type="button" data-need-consult="${esc(n.id)}">AIに相談</button>
           ${!settled && n.kind === 'plan-review'
             ? `<button class="primary-inline" data-plan-critique="${esc(n.id)}">AIで計画を批評</button>`
             : ''}
@@ -3710,6 +3849,12 @@ function bindNeedDetail(root) {
   }
   for (const btn of root.querySelectorAll('button[data-delivery-review]')) {
     btn.addEventListener('click', () => openDeliveryReview(btn.dataset.deliveryReview));
+  }
+  for (const btn of root.querySelectorAll('button[data-need-consult]')) {
+    btn.addEventListener('click', () => {
+      state.needsSelectedId = btn.dataset.needConsult;
+      openDoctor();
+    });
   }
   for (const btn of root.querySelectorAll('button[data-failure-diagnose]')) {
     btn.addEventListener('click', () => openFailureDiagnosis(btn.dataset.failureDiagnose));
@@ -4232,12 +4377,13 @@ function renderFlow() {
       const archivedBadge = r.archived
         ? ' <span class="badge" title="完了後に保存された記録です">記録</span>'
         : '';
+      const outcome = runTaskOutcome(p, r);
       return `<div class="run-item ${state.flowRunId === r.runId ? 'selected' : ''}" data-run="${esc(r.runId)}"
         role="button" tabindex="0" aria-pressed="${state.flowRunId === r.runId}">
-        <div class="run-item-head"><span>${statusChip(r.status)}${archivedBadge}${adviceBit}</span><span class="muted">${fmtAgo(r.updatedAt || r.createdAt)}</span></div>
+        <div class="run-item-head"><span>${runTaskOutcomeCompactHtml(outcome)}${archivedBadge}${adviceBit}</span><span class="muted">${fmtAgo(r.updatedAt || r.createdAt)}</span></div>
         <div class="req">${prosePreview(r.request, 110) || '<span class="muted">内容なし</span>'}</div>
         <div class="progress"><div style="width:${pct}%"></div></div>
-        <div class="muted">完了 ${r.counts.done}/${r.total}・失敗 ${r.counts.failed}・実行中 ${r.counts.claimed}${taskLink}</div>
+        <div class="muted">工程完了 ${r.counts.done}/${r.total}・失敗 ${r.counts.failed}・実行中 ${r.counts.claimed}${taskLink}</div>
         ${adviceLine}
         ${retryStrip}
       </div>`;
@@ -4406,6 +4552,7 @@ function renderFlowDetail() {
   const fr = state.flowRun;
   if (!fr || !fr.run) return '<div class="empty">左の一覧から実行を選択するとタスクグラフを表示します</div>';
   const run = fr.run;
+  const outcome = runTaskOutcome(state.project, run);
   const pct = Math.round(run.progress * 100);
   const legend = Object.entries(FLOW_STATE_LABEL)
     .map(
@@ -4554,8 +4701,9 @@ const viewTabs = [
         <span class="summary-kicker">選択中の作業</span>
         <h2>${req.title ? `<span class="prose-inline">${inlineMd(req.title)}</span>` : '内容のない実行'}</h2>
       </div>
-      <span>${statusChip(run.status)}${archivedBadge}</span>
+      <span>${archivedBadge}</span>
     </div>
+    ${runTaskOutcomeHtml(outcome)}
     ${req.body ? `<div class="flow-request-body">${proseHtml(req.body)}</div>` : ''}
     ${adviceBanner}
     ${relationshipStrip({ run })}
@@ -4566,12 +4714,12 @@ const viewTabs = [
       <strong>${run.counts.done + run.counts.failed}/${run.total}（${pct}%）</strong>
     </div>
     <div class="flow-counts">
-      <div><strong>${run.counts.done || 0}</strong><span>完了</span></div>
+      <div><strong>${run.counts.done || 0}</strong><span>工程完了</span></div>
       <div><strong>${run.counts.claimed || 0}</strong><span>実行中</span></div>
       <div><strong>${run.counts.failed || 0}</strong><span>失敗</span></div>
       <div><strong>${(run.counts.pending || 0) + (run.counts.waiting || 0)}</strong><span>これから</span></div>
     </div>
-    <div class="flow-primary-actions">${resubmit} ${reconcileBtn} ${cancelBtn} ${deleteBtn}</div>
+    <div class="flow-primary-actions">${runArtifactsButtonHtml(run)} ${resubmit} ${reconcileBtn} ${cancelBtn} ${deleteBtn}</div>
   </section>`;
 
   const graphView = `<div class="flow-graph-workspace">
@@ -4594,7 +4742,7 @@ const viewTabs = [
       <div><span class="summary-kicker">これまでの動き</span><h2>更新履歴</h2></div>
     </div>
     <div class="events flow-events">${events || '<span class="muted">イベントはありません</span>'}</div>
-    <button type="button" class="subtle-action" data-open-developer>技術情報を開く</button>
+    <button type="button" class="subtle-action" data-open-technical-info>技術情報を開く</button>
   </section>`;
 
   const body =
@@ -4788,7 +4936,7 @@ function renderFlowNode(run, node) {
       ${nodeParkLine(node)}
       ${nodeProgressLine(node)}
       ${nodeIssueBlock(run, node)}
-      ${node.output || node.data ? '<button type="button" class="subtle-action" data-open-developer>出力の詳細を開く</button>' : ''}
+      ${node.output || node.data ? '<button type="button" class="subtle-action" data-open-technical-info>出力の詳細を開く</button>' : ''}
       ${timeline}
     </div>`;
 }
@@ -5087,8 +5235,11 @@ function bindFlowDetail(root) {
       renderFlow();
     });
   }
-  const developer = root.querySelector('[data-open-developer]');
-  if (developer) developer.addEventListener('click', openDeveloperTools);
+  const technicalInfo = root.querySelector('[data-open-technical-info]');
+  if (technicalInfo) technicalInfo.addEventListener('click', openTechnicalInfo);
+  for (const btn of root.querySelectorAll('button[data-run-artifacts]')) {
+    btn.addEventListener('click', () => openRunArtifacts(btn.dataset.runArtifacts));
+  }
   for (const g of root.querySelectorAll('g.node[data-node]')) {
     g.addEventListener('click', () => {
       state.flowNodeId = g.dataset.node;
@@ -5362,7 +5513,7 @@ function renderHistory() {
   el.innerHTML = `<div class="history-shell">
     <header class="page-heading">
       <div><span class="summary-kicker">完了したこと</span><h2>成果</h2></div>
-      <button type="button" class="subtle-action" data-open-developer>内部ログを開く</button>
+      <button type="button" class="subtle-action" data-open-technical-info>内部ログを開く</button>
     </header>
     <section class="content-section">
       <h3>納品物</h3>
@@ -5375,8 +5526,8 @@ function renderHistory() {
         : '<div class="empty compact">判断の記録はありません。</div>'}
     </section>
   </div>`;
-  const developer = el.querySelector('[data-open-developer]');
-  if (developer) developer.addEventListener('click', openDeveloperTools);
+  const technicalInfo = el.querySelector('[data-open-technical-info]');
+  if (technicalInfo) technicalInfo.addEventListener('click', openTechnicalInfo);
 }
 
 // ---------------------------------------------------------------------------
@@ -5478,7 +5629,7 @@ function openSettings() {
   $('dlg-settings').showModal();
 }
 
-function developerProjectInfoHtml() {
+function technicalProjectInfoHtml() {
   const p = state.project;
   if (!p) {
     return '<div class="empty compact">プロジェクトを選ぶと、実行状態とログをここで確認できます。</div>';
@@ -5506,7 +5657,7 @@ function developerProjectInfoHtml() {
     : '<p class="muted">実行タブで作業を選ぶと、その内部情報を表示します。</p>';
   return `<section class="developer-summary">
       <div class="settings-section-heading"><div><span class="summary-kicker">選択中</span><h3>${esc(p.name)}</h3></div>
-        <div class="row"><button type="button" data-developer-tab="flow">実行を開く</button><button type="button" data-developer-tab="history">成果を開く</button></div>
+        <div class="row"><button type="button" data-technical-tab="flow">実行を開く</button><button type="button" data-technical-tab="history">成果を開く</button></div>
       </div>
       <dl class="developer-facts">
         <div><dt>ワークスペース</dt><dd class="mono">${esc(p.workspace || p.dir || '')}</dd></div>
@@ -5523,16 +5674,20 @@ function developerProjectInfoHtml() {
     </section>`;
 }
 
-function openDeveloperTools() {
+function openAdvancedSettings() {
   populateSettingsFields();
-  $('developer-project-info').innerHTML = developerProjectInfoHtml();
-  for (const btn of $('developer-project-info').querySelectorAll('[data-developer-tab]')) {
+  $('dlg-advanced-settings').showModal();
+}
+
+function openTechnicalInfo() {
+  $('technical-project-info').innerHTML = technicalProjectInfoHtml();
+  for (const btn of $('technical-project-info').querySelectorAll('[data-technical-tab]')) {
     btn.addEventListener('click', () => {
-      $('dlg-developer-tools').close();
-      switchTab(btn.dataset.developerTab);
+      $('dlg-technical-info').close();
+      switchTab(btn.dataset.technicalTab);
     });
   }
-  $('dlg-developer-tools').showModal();
+  $('dlg-technical-info').showModal();
 }
 
 async function saveSettings() {
@@ -5582,7 +5737,8 @@ async function saveSettings() {
   setupPolling();
   await refreshAll();
   if ($('dlg-settings').open) $('dlg-settings').close();
-  if ($('dlg-developer-tools').open) $('dlg-developer-tools').close();
+  if ($('dlg-advanced-settings').open) $('dlg-advanced-settings').close();
+  if ($('dlg-technical-info').open) $('dlg-technical-info').close();
   toast('設定を保存しました', true);
 }
 
@@ -6017,7 +6173,8 @@ function setupPolling() {
       // ダイアログを開いている間・入力中は更新しない（書きかけの入力を消さない）
       if (
         $('dlg-settings').open ||
-        $('dlg-developer-tools').open ||
+        $('dlg-advanced-settings').open ||
+        $('dlg-technical-info').open ||
         $('dlg-task').open ||
         $('dlg-enqueue').open ||
         $('dlg-confirm').open ||
@@ -6160,7 +6317,7 @@ function renderCowork() {
   const observed = new Map(((cw && cw.items) || []).map((x) => [String(x.id), x]));
   const busyId = state.coworkRun && state.coworkRun.phase === 'running' ? String(state.coworkRun.id) : '';
   if (cw && cw.error) {
-    el.innerHTML = `<div class="empty"><strong>定期・定型作業を読み込めませんでした</strong><span>${esc(cw.error)}</span></div>`;
+    el.innerHTML = `<div class="empty"><strong>定常業務を読み込めませんでした</strong><span>${esc(cw.error)}</span></div>`;
     return;
   }
   el.innerHTML = `
@@ -6168,14 +6325,14 @@ function renderCowork() {
       <header class="cowork-header">
         <div>
           <span class="summary-kicker">自動化</span>
-          <h2>定期・定型作業</h2>
+          <h2>定常業務</h2>
           <p class="muted">繰り返し実行する作業を確認・実行できます。</p>
         </div>
         <div class="row">
           <button id="btn-cowork-add">追加</button>
           <button id="btn-cowork-save">保存…</button>
           <button id="btn-cowork-refresh" title="最新の状態を確認">更新</button>
-          <button type="button" class="subtle-action" data-open-developer>開発者ツール</button>
+          <button type="button" class="subtle-action" data-open-technical-info>技術情報</button>
         </div>
       </header>
       ${coworkRunBannerHtml()}
@@ -6206,7 +6363,7 @@ function renderCowork() {
               <span>${esc(detail)}</span>
               ${st.lastLogAt ? `<span>最終ログ ${esc(fmtTime(st.lastLogAt))}</span>` : ''}
             </div>
-            ${run && run.phase === 'error' ? '<p class="cowork-item-error">実行できませんでした。開発者ツールで詳細を確認してください。</p>' : ''}
+            ${run && run.phase === 'error' ? '<p class="cowork-item-error">実行できませんでした。技術情報で詳細を確認してください。</p>' : ''}
           </div>
           <div class="cowork-item-actions">
             <button data-cowork-run="${esc(id)}" data-cowork-type="${esc(item.type || 'loop')}" data-cowork-name="${esc(item.name || id)}" ${busyId ? 'disabled' : ''}>${busyId === id ? '実行中…' : '実行'}</button>
@@ -6216,8 +6373,8 @@ function renderCowork() {
         </article>`;
       }).join('')}</div>` : '<div class="empty"><strong>登録された作業はありません</strong><span>「追加」から定期実行や定型作業を登録できます。</span></div>'}
     </div>`;
-  const developer = el.querySelector('[data-open-developer]');
-  if (developer) developer.addEventListener('click', openDeveloperTools);
+  const technicalInfo = el.querySelector('[data-open-technical-info]');
+  if (technicalInfo) technicalInfo.addEventListener('click', openTechnicalInfo);
   const addBtn = $('btn-cowork-add');
   if (addBtn) addBtn.addEventListener('click', () => openCoworkWorkDialog(-1));
   const saveBtn = $('btn-cowork-save');
@@ -6273,7 +6430,8 @@ async function openCoworkFromSettings() {
   state.coworkForceShow = true;
   updateCoworkTabVisibility();
   if ($('dlg-settings').open) $('dlg-settings').close();
-  if ($('dlg-developer-tools').open) $('dlg-developer-tools').close();
+  if ($('dlg-advanced-settings').open) $('dlg-advanced-settings').close();
+  if ($('dlg-technical-info').open) $('dlg-technical-info').close();
   switchTab('cowork');
   await refreshCowork({ forceDiscover: true });
   renderCowork();
@@ -6399,12 +6557,13 @@ async function init() {
   $('btn-project-settings').addEventListener('click', openProjectSettings);
   $('btn-project-settings-close').addEventListener('click', () => $('dlg-project-settings').close());
   $('btn-save-settings').addEventListener('click', () => saveSettings());
-  $('btn-open-developer-tools').addEventListener('click', () => {
+  $('btn-open-advanced-settings').addEventListener('click', () => {
     $('dlg-settings').close();
-    openDeveloperTools();
+    openAdvancedSettings();
   });
-  $('btn-developer-close').addEventListener('click', () => $('dlg-developer-tools').close());
-  $('btn-save-developer').addEventListener('click', () => saveSettings());
+  $('btn-advanced-settings-close').addEventListener('click', () => $('dlg-advanced-settings').close());
+  $('btn-save-advanced-settings').addEventListener('click', () => saveSettings());
+  $('btn-technical-info-close').addEventListener('click', () => $('dlg-technical-info').close());
   $('btn-cw-cancel').addEventListener('click', () => $('dlg-cowork-work').close());
   $('btn-cw-ok').addEventListener('click', (ev) => { ev.preventDefault(); applyCoworkWorkDialog(); });
   $('btn-cw-save-cancel').addEventListener('click', () => $('dlg-cowork-save').close());

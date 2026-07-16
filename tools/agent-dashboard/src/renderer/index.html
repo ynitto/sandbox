@@ -71,7 +71,7 @@
         <button class="tab" data-tab="needs" data-feature="agent-project">要対応 <span id="needs-badge" class="badge hidden"></span></button>
         <button class="tab" data-tab="flow" data-feature="agent-project">実行</button>
         <button class="tab" data-tab="history" data-feature="agent-project">成果</button>
-        <button class="tab hidden" data-tab="cowork" data-feature="cowork" id="tab-btn-cowork" hidden>定期・定型作業</button>
+        <button class="tab hidden" data-tab="cowork" data-feature="cowork" id="tab-btn-cowork" hidden>定常業務</button>
       </nav>
 
       <section id="content">
@@ -86,7 +86,7 @@
   </div>
 
 
-  <!-- ======== 定期・定型作業の編集 ======== -->
+  <!-- ======== 定常業務の編集 ======== -->
   <dialog id="dlg-cowork-work" class="wide">
     <form method="dialog">
       <h2 id="cowork-work-title">作業を編集</h2>
@@ -131,7 +131,7 @@
     </form>
   </dialog>
 
-  <!-- ======== 定期・定型作業の保存 ======== -->
+  <!-- ======== 定常業務の保存 ======== -->
   <dialog id="dlg-cowork-save">
     <form method="dialog">
       <h2>作業の変更を保存</h2>
@@ -189,7 +189,7 @@
           <input id="cfg-needs-sla" type="number" min="1" step="1" />
         </div>
       </div>
-      <button type="button" id="btn-open-developer-tools" class="subtle-action">開発者ツールを開く</button>
+      <button type="button" id="btn-open-advanced-settings" class="subtle-action">詳細設定を開く</button>
       <div class="dialog-actions">
         <button value="cancel">キャンセル</button>
         <button id="btn-save-settings" value="default" class="primary-inline">保存</button>
@@ -197,14 +197,13 @@
     </form>
   </dialog>
 
-  <!-- ======== 内部情報・高度な設定 ======== -->
-  <dialog id="dlg-developer-tools" class="wide developer-dialog">
+  <!-- ======== グローバルな詳細設定 ======== -->
+  <dialog id="dlg-advanced-settings" class="wide developer-dialog">
     <form method="dialog">
       <div class="dialog-heading">
-        <div><span class="summary-kicker">開発者向け</span><h2>開発者ツール</h2></div>
-        <button type="button" id="btn-developer-close" aria-label="開発者ツールを閉じる">閉じる</button>
+        <div><span class="summary-kicker">アプリ</span><h2>詳細設定</h2></div>
+        <button type="button" id="btn-advanced-settings-close" aria-label="詳細設定を閉じる">閉じる</button>
       </div>
-      <div id="developer-project-info" class="developer-project-info"></div>
       <h3>同期と指示</h3>
       <div class="row2">
         <div class="field">
@@ -253,7 +252,7 @@
           placeholder="例:&#10;alpha = /home/me/clones/alpha/agent-flow&#10;beta = C:\clones\beta\agent-flow"
         ></textarea>
       </div>
-      <h3>定期・定型作業</h3>
+      <h3>定常業務</h3>
       <div class="row2">
         <div class="field">
           <label>定期実行 provider（将来 agent-loop に差し替え可）</label>
@@ -273,7 +272,7 @@
           <input id="cfg-cowork-sm-command" class="mono" placeholder="statemachine-use" />
         </div>
         <div class="field" style="display:flex;align-items:flex-end">
-          <button type="button" id="btn-settings-cowork-open">定期・定型作業を開く</button>
+          <button type="button" id="btn-settings-cowork-open">定常業務を開く</button>
         </div>
       </div>
 
@@ -343,9 +342,18 @@
       </div>
       <div class="dialog-actions">
         <button value="cancel">キャンセル</button>
-        <button id="btn-save-developer" value="default" class="primary-inline">保存</button>
+        <button id="btn-save-advanced-settings" value="default" class="primary-inline">保存</button>
       </div>
     </form>
+  </dialog>
+
+  <!-- ======== 選択中の画面・実行の技術情報 ======== -->
+  <dialog id="dlg-technical-info" class="wide developer-dialog">
+    <div class="dialog-heading">
+      <div><span class="summary-kicker">選択中</span><h2>技術情報</h2></div>
+      <button type="button" id="btn-technical-info-close" aria-label="技術情報を閉じる">閉じる</button>
+    </div>
+    <div id="technical-project-info" class="developer-project-info"></div>
   </dialog>
 
   <dialog id="dlg-need-output" class="wide output-dialog">

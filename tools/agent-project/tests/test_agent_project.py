@@ -2378,6 +2378,63 @@ class TestRevise(unittest.TestCase):
             self.assertEqual(t1.verify, "test -f ok.txt")
             self.assertFalse((d / "needs" / "T1.md").exists())
 
+    def test_verify_only_revise_reuses_done_run_without_rebuilding_graph(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="blocked", verify="false")
+            c = cfg_for(d, dry_run=False, learn=False, auto_adjudicate=False)
+            km.ensure_dirs(c)
+            task_file = d / "backlog" / "T1.md"
+            task_file.write_text(
+                task_file.read_text(encoding="utf-8") + "- last_run: run-done\n- rev: 4\n",
+                encoding="utf-8",
+            )
+            run_dir = c.bus / "runs" / "run-done"
+            run_dir.mkdir(parents=True)
+            (run_dir / "meta.json").write_text(
+                json.dumps({"status": "done", "request": "original"}), encoding="utf-8"
+            )
+            t = km.load_tasks(d / "backlog")[0]
+            km.write_needs_file(c, t, "verify NG")
+
+            self.assertEqual(km.cmd_revise(c, "T1", {"verify": "true"}, "", ""), 0)
+            revised = km.load_tasks(d / "backlog")[0]
+            self.assertEqual(revised.get("rev"), "4")
+            self.assertEqual(revised.get("reuse_done_run"), "run-done")
+
+            calls = []
+            km.run_loop(c, act=lambda *_: calls.append("act") or (True, "unexpected"))
+
+            self.assertEqual(calls, [])
+            self.assertEqual(list((d / "backlog").glob("*.md")), [])
+            self.assertIn("run-done の成果を再利用", (d / "journal.md").read_text(encoding="utf-8"))
+
+    def test_verify_only_revise_does_not_reuse_unfinished_run(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="blocked", verify="false")
+            c = cfg_for(d, dry_run=False, learn=False, auto_adjudicate=False)
+            km.ensure_dirs(c)
+            task_file = d / "backlog" / "T1.md"
+            task_file.write_text(
+                task_file.read_text(encoding="utf-8") + "- last_run: run-active\n- rev: 4\n",
+                encoding="utf-8",
+            )
+            run_dir = c.bus / "runs" / "run-active"
+            run_dir.mkdir(parents=True)
+            (run_dir / "meta.json").write_text(
+                json.dumps({"status": "running", "request": "original"}), encoding="utf-8"
+            )
+
+            self.assertEqual(km.cmd_revise(c, "T1", {"verify": "true"}, "", ""), 0)
+            revised = km.load_tasks(d / "backlog")[0]
+            self.assertEqual(revised.get("rev"), "5")
+            self.assertIsNone(revised.get("reuse_done_run"))
+
+            calls = []
+            km.run_loop(c, act=lambda *_: calls.append("act") or (True, "new run"))
+            self.assertEqual(calls, ["act"])
+
     def test_ingest_commands_revise(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)

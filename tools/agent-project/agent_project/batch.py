@@ -300,6 +300,15 @@ def _act_batch(batch: "list[Task]", cfg: "Config", act, policy) -> "dict[str, tu
         return {}
 
     def _one(t):
+        reuse_done_run = str(t.get("reuse_done_run") or "").strip()
+        if reuse_done_run:
+            # revise が確認した完了済み成果を一度だけ流用する。予約を先に永続化して
+            # クラッシュ後に同じ verify を無限再試行しないようにする。
+            t.drop("reuse_done_run")
+            persist_task(cfg, t)
+            msg = f"既存 done run {reuse_done_run} の成果を再利用（タスクグラフ実行を省略）"
+            append_journal(cfg.journal, f"{t.id}: {msg}")
+            return (locs[t.id], None, msg, True)
         # act は (bool|_Pending, msg)。_Pending は「非ブロッキング submit 済み・未終端」＝offload。
         # bool は「act 自体の成否」。捨てると失敗 run でも verify=true で done になり得る。
         status, msg = act(t, cfg, locs[t.id])
