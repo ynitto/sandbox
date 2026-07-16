@@ -453,6 +453,53 @@ button:disabled { opacity: 0.4; cursor: default; }
 .tabpane.active { display: block; flex: 1; min-height: 0; overflow-y: auto; }
 #tab-flow.active { display: flex; flex-direction: column; overflow: hidden; }
 #tab-needs.active { display: flex; flex-direction: column; overflow: hidden; }
+#tab-kiro-loop.active { display: flex; flex-direction: column; overflow: hidden; }
+
+/* ---------- kiro-loop 端末（Phase A: capture-pane） ---------- */
+.kiro-loop-term {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  min-height: 0;
+}
+.kiro-loop-term-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex: none;
+}
+.kiro-loop-term-header h2 { margin: 0 0 4px; }
+.kiro-loop-term-header p { margin: 0; }
+.kiro-loop-term-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  flex: none;
+}
+.kiro-loop-term-toolbar select {
+  margin-left: 6px;
+  min-width: 220px;
+  max-width: 100%;
+}
+.kiro-loop-capture {
+  flex: 1;
+  min-height: 200px;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #0d1117;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: #c9d1d9;
+  font-size: 12px;
+  line-height: 1.45;
+}
 
 /* ---------- Cowork（プロジェクトタブと同じトーンの一覧） ---------- */
 .cowork-shell { display: flex; flex-direction: column; gap: 12px; min-height: 100%; }

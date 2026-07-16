@@ -4,7 +4,7 @@
 //
 // - base … Electron シェル・git・GitLab・共通 IPC（src/base/）
 // - agent-project … agent-project / agent-flow の可視化と操作（本リポジトリが維持）
-// - kiro-loop … 将来 / 他グループ拡張の差し込み口（現状スタブ）
+// - kiro-loop … kiro-loop tmux の視聴（Phase A: capture-pane）
 // - cowork … 定期実行と定型業務の管理・監視
 //
 // 新しい制御面を足す手順:

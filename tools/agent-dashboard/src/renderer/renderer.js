@@ -39,6 +39,9 @@ const state = {
   cowork: null,
   coworkDraft: null,
   coworkEditIndex: -1,
+  // kiro-loop 端末（Phase A: capture-pane 視聴）
+  kiroLoopTerm: null, // { repo, name, target, session, items, text, error, at }
+  kiroLoopTimer: null,
   coworkRun: null,       // { id, phase: 'running'|'ok'|'error', message, at }
   coworkForceShow: false, // 設定から「開く」したとき、作業 0 件でもタブを出す
   timer: null,
@@ -1320,6 +1323,8 @@ function switchTab(name) {
   const pane = $(`tab-${name}`);
   if (pane) pane.classList.add('active');
   if (name === 'needs') refreshGitLab(false); // 要対応タブに GitLab レビュー待ちを併載しているため
+  if (name === 'kiro-loop') startKiroLoopCapturePoll();
+  else stopKiroLoopCapturePoll();
 }
 
 // run を選んでフロータブへ遷移。
@@ -5615,6 +5620,7 @@ function renderAllTabs() {
   renderGitLab();
   renderHistory();
   renderCowork();
+  renderKiroLoopTerminal();
   restoreUiState(ui);
 }
 
@@ -5631,6 +5637,8 @@ function initTabs() {
       tab.classList.add('active');
       $(`tab-${tab.dataset.tab}`).classList.add('active');
       if (tab.dataset.tab === 'needs') refreshGitLab(false);
+      if (tab.dataset.tab === 'kiro-loop') startKiroLoopCapturePoll();
+      else stopKiroLoopCapturePoll();
     });
   }
 }
@@ -6453,6 +6461,9 @@ function renderCowork() {
           </div>
           <div class="cowork-item-actions">
             <button data-cowork-run="${esc(id)}" data-cowork-type="${esc(item.type || 'loop')}" data-cowork-name="${esc(item.name || id)}" ${busyId ? 'disabled' : ''}>${busyId === id ? '実行中…' : '実行'}</button>
+            ${item.type !== 'state-machine' && item.repo && api.kiroLoopListSessions
+              ? `<button data-cowork-term-repo="${esc(item.repo)}" data-cowork-term-name="${esc(item.name || id)}" ${busyId ? 'disabled' : ''}>端末</button>`
+              : ''}
             <button data-cowork-edit="${i}" ${busyId ? 'disabled' : ''}>編集</button>
             ${discovered ? '' : `<button data-cowork-delete="${i}" ${busyId ? 'disabled' : ''}>削除</button>`}
           </div>
@@ -6510,6 +6521,166 @@ function renderCowork() {
     await refreshCowork({ probe: true });
     renderCowork();
   }));
+  el.querySelectorAll('[data-cowork-term-repo]').forEach((btn) => btn.addEventListener('click', () => {
+    openKiroLoopTerminal({ repo: btn.dataset.coworkTermRepo, name: btn.dataset.coworkTermName || '' });
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// kiro-loop 端末（Phase A: capture-pane 視聴）
+// ---------------------------------------------------------------------------
+
+function stripAnsi(s) {
+  return String(s || '')
+    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
+    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, '')
+    .replace(/\r/g, '');
+}
+
+function setKiroLoopTabVisible(show) {
+  const btn = $('tab-btn-kiro-loop');
+  if (!btn) return;
+  btn.classList.toggle('hidden', !show);
+  btn.hidden = !show;
+  if (!show && activeTab() === 'kiro-loop') {
+    stopKiroLoopCapturePoll();
+    switchTab('cowork');
+  }
+}
+
+function stopKiroLoopCapturePoll() {
+  if (state.kiroLoopTimer) {
+    clearInterval(state.kiroLoopTimer);
+    state.kiroLoopTimer = null;
+  }
+}
+
+function kiroLoopCaptureSec() {
+  const n = Number(state.config && state.config.kiroLoop && state.config.kiroLoop.captureSec);
+  return Number.isFinite(n) && n > 0 ? n : 2;
+}
+
+function startKiroLoopCapturePoll() {
+  stopKiroLoopCapturePoll();
+  if (!state.kiroLoopTerm || !state.kiroLoopTerm.target) return;
+  const tick = async () => {
+    if (activeTab() !== 'kiro-loop' || !state.kiroLoopTerm || !state.kiroLoopTerm.target) return;
+    if (!api.kiroLoopCapture) return;
+    const target = state.kiroLoopTerm.target;
+    const res = await api.kiroLoopCapture({ target, lines: 200 }).catch((err) => ({ ok: false, error: err.message, text: '' }));
+    if (!state.kiroLoopTerm || state.kiroLoopTerm.target !== target) return;
+    state.kiroLoopTerm.text = res && res.text != null ? res.text : '';
+    state.kiroLoopTerm.error = res && res.ok === false ? (res.error || 'capture に失敗') : '';
+    state.kiroLoopTerm.at = Date.now();
+    const pre = $('kiro-loop-capture');
+    const meta = $('kiro-loop-term-meta');
+    if (pre) {
+      const next = stripAnsi(state.kiroLoopTerm.text);
+      if (pre.textContent !== next) {
+        const stick = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 24;
+        pre.textContent = next;
+        if (stick) pre.scrollTop = pre.scrollHeight;
+      }
+    }
+    if (meta) {
+      meta.textContent = state.kiroLoopTerm.error
+        ? state.kiroLoopTerm.error
+        : `更新 ${new Date(state.kiroLoopTerm.at).toLocaleTimeString('ja-JP')} ／ 読み取り専用（capture-pane）`;
+      meta.classList.toggle('sync-error', !!state.kiroLoopTerm.error);
+    }
+  };
+  tick();
+  state.kiroLoopTimer = setInterval(tick, kiroLoopCaptureSec() * 1000);
+}
+
+async function openKiroLoopTerminal({ repo, name } = {}) {
+  if (!api.kiroLoopListSessions) {
+    toast('kiro-loop 端末 API がありません');
+    return;
+  }
+  setKiroLoopTabVisible(true);
+  state.kiroLoopTerm = {
+    repo: repo || '',
+    name: name || '',
+    target: '',
+    session: '',
+    items: [],
+    text: '',
+    error: 'セッションを検索しています…',
+    at: Date.now(),
+  };
+  switchTab('kiro-loop');
+  renderKiroLoopTerminal();
+  const listed = await guard('tmux セッション', () => api.kiroLoopListSessions({ repo: repo || '' }));
+  if (!listed) {
+    state.kiroLoopTerm.error = 'セッション一覧の取得に失敗しました';
+    renderKiroLoopTerminal();
+    return;
+  }
+  const items = listed.items || [];
+  const first = items[0] || null;
+  state.kiroLoopTerm.items = items;
+  state.kiroLoopTerm.session = first ? first.session : '';
+  state.kiroLoopTerm.target = first ? first.target : '';
+  state.kiroLoopTerm.error = first ? '' : (listed.error || 'このリポジトリに紐づく kiro-loop tmux セッションはありません');
+  renderKiroLoopTerminal();
+  if (first) startKiroLoopCapturePoll();
+}
+
+function renderKiroLoopTerminal() {
+  const el = $('tab-kiro-loop');
+  if (!el) return;
+  const term = state.kiroLoopTerm;
+  if (!term) {
+    el.innerHTML = '<div class="empty">Cowork の「端末」から kiro-loop の tmux を開いてください。<br>Windows dashboard → WSL の tmux を capture-pane で視聴します（入力はできません）。</div>';
+    return;
+  }
+  const opts = (term.items || []).map((it) =>
+    `<option value="${esc(it.target)}" ${it.target === term.target ? 'selected' : ''}>${esc(it.session)}${it.cwd ? ` — ${esc(it.cwd)}` : ''}</option>`
+  ).join('');
+  el.innerHTML = `
+    <div class="kiro-loop-term">
+      <header class="kiro-loop-term-header">
+        <div>
+          <h2 class="summary-kicker">kiro-loop 端末</h2>
+          <p class="muted">${esc(term.name || 'tmux')} ／ ${esc(term.repo || '（リポジトリ未指定）')}</p>
+        </div>
+        <div class="row">
+          <button id="btn-kiro-loop-refresh">再読込</button>
+          <button id="btn-kiro-loop-close">閉じる</button>
+        </div>
+      </header>
+      <div class="kiro-loop-term-toolbar">
+        <label class="muted">セッション
+          <select id="kiro-loop-target" ${opts ? '' : 'disabled'}>${opts || '<option value="">（なし）</option>'}</select>
+        </label>
+        <span id="kiro-loop-term-meta" class="muted">${esc(term.error || '読み取り専用（capture-pane）')}</span>
+      </div>
+      <pre id="kiro-loop-capture" class="kiro-loop-capture mono" aria-live="polite">${esc(stripAnsi(term.text || (term.error && !term.target ? '' : '…')))}</pre>
+    </div>`;
+  const sel = $('kiro-loop-target');
+  if (sel) {
+    sel.addEventListener('change', () => {
+      const item = (term.items || []).find((x) => x.target === sel.value);
+      state.kiroLoopTerm.target = sel.value;
+      state.kiroLoopTerm.session = item ? item.session : sel.value;
+      state.kiroLoopTerm.error = '';
+      startKiroLoopCapturePoll();
+    });
+  }
+  const refresh = $('btn-kiro-loop-refresh');
+  if (refresh) {
+    refresh.addEventListener('click', () => openKiroLoopTerminal({ repo: term.repo, name: term.name }));
+  }
+  const close = $('btn-kiro-loop-close');
+  if (close) {
+    close.addEventListener('click', () => {
+      stopKiroLoopCapturePoll();
+      state.kiroLoopTerm = null;
+      setKiroLoopTabVisible(false);
+      switchTab('cowork');
+    });
+  }
 }
 
 async function openCoworkFromSettings() {

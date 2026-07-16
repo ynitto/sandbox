@@ -1,16 +1,22 @@
 'use strict';
 
-// kiro-loop 制御面の IPC（スタブ）。
-// ctx.handle / ctx.loadConfig など base が渡す共通ユーティリティを使う。
-//
-// 例:
-//   function registerIpc(ctx) {
-//     const { handle, loadConfig } = ctx;
-//     handle('kiroLoop:discover', () => { ... });
-//   }
+const tmux = require('./tmux');
 
-function registerIpc(_ctx) {
-  // 未実装。チャネルを登録しない（no-op）。
+function registerIpc(ctx) {
+  const { handle, loadConfig } = ctx;
+
+  handle('kiroLoop:listSessions', (args = {}) => {
+    const cfg = (loadConfig() || {}).kiroLoop || {};
+    return tmux.listSessions({
+      repo: args.repo || '',
+      prefix: args.prefix || cfg.sessionPrefix || 'kiro-loop-',
+    });
+  });
+
+  handle('kiroLoop:capture', (args = {}) => tmux.capture({
+    target: args.target || args.session || '',
+    lines: args.lines,
+  }));
 }
 
 module.exports = { registerIpc };
