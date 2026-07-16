@@ -190,8 +190,8 @@ function runCommand({ command, args, stdin, cwd }, timeoutMs) {
       const unc = cwd.replace(/\//g, '\\').match(/^\\\\wsl(?:\$|\.localhost)\\([^\\]+)(.*)$/i);
       const distro = unc ? unc[1] : '';
       const linuxDir = unc ? (unc[2] || '').replace(/\\/g, '/') || '/' : '/';
-      const escape = (s) => `'${String(s).replace(/'/g, `'"'"'`)}'`;
-      const script = `export LANG=C.UTF-8 LC_ALL=C.UTF-8; cd ${escape(linuxDir)} && ${escape(command)} ${args.map(escape).join(' ')}`;
+      const shellEscape = (s) => `'${String(s).replace(/'/g, `'"'"'`)}'`;
+      const script = `export LANG=C.UTF-8 LC_ALL=C.UTF-8; cd ${shellEscape(linuxDir)} && ${shellEscape(command)} ${args.map(shellEscape).join(' ')}`;
       spawnCmd = 'wsl.exe';
       spawnArgs = distro ? ['-d', distro, '-e', 'sh', '-lc', script] : ['-e', 'sh', '-lc', script];
       spawnCwd = undefined;
