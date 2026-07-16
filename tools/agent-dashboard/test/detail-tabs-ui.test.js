@@ -252,7 +252,8 @@ assert.ok(
 const renderNeedDetailWithVerifyRevision = new Function(
   'isNeedSent', 'esc', 'needKindLabel', 'riskBadgeHtml', 'needDisplayTitle', 'NEED_ASK',
   'renderNeedFacts', 'needActionsHtml', 'specFilesHtml', 'mdToHtml', 'needVerifyRevisionHtml',
-  'taskForNeed', 'taskCompletionHint', 'runsForTask', 'canDiagnoseNeed',
+  'taskForNeed', 'taskCompletionHint', 'runsForTask', 'canDiagnoseNeed', 'relatedRunIdForNeed',
+  'state', 'runFinalVerificationFailure', 'finalVerificationFailureHtml',
   `${grab('renderNeedDetail')}; return renderNeedDetail;`
 )(
   () => false,
@@ -269,7 +270,11 @@ const renderNeedDetailWithVerifyRevision = new Function(
   taskForNeed,
   () => null,
   () => [],
-  canDiagnoseNeed
+  canDiagnoseNeed,
+  () => '',
+  { flowRuns: [] },
+  () => null,
+  () => ''
 );
 assert.ok(
   renderNeedDetailWithVerifyRevision(
@@ -421,7 +426,7 @@ assert.ok(renderer.includes('id="btn-sync-now"'), '同期状態の横に文脈�
 for (const cli of ['kiro', 'claude', 'copilot', 'codex', 'cursor', 'ollama']) {
   assert.ok(html.includes(`<option value="${cli}"`), `${cli} を設定で選択できる必要があります`);
 }
-assert.ok(renderer.includes('技術情報を開く'));
+assert.ok(renderer.includes('詳細情報を開く'));
 assert.ok(renderer.includes('検収物を確認'));
 assert.ok(renderer.includes('openDeliveryReview'));
 assert.ok(renderer.includes('すべての差分を表示'));

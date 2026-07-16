@@ -34,10 +34,11 @@ for (const id of ['cfg-roots', 'cfg-refresh', 'cfg-notify']) {
 for (const id of ['cfg-flow-bus', 'cfg-flow-lockdir', 'cfg-project-command', 'cfg-agent-cli']) {
   assert.ok(!normalSettings.includes(`id="${id}"`), `通常設定に ${id} を出しません`);
   assert.ok(advancedSettings.includes(`id="${id}"`), `詳細設定に ${id} を残します`);
-  assert.ok(!technicalInfo.includes(`id="${id}"`), `技術情報に ${id} を出しません`);
+  assert.ok(!technicalInfo.includes(`id="${id}"`), `詳細情報に ${id} を出しません`);
 }
 assert.match(advancedSettings, /<h2>詳細設定<\/h2>/);
-assert.match(technicalInfo, /<h2>技術情報<\/h2>/);
+assert.match(technicalInfo, /<h2>詳細情報<\/h2>/);
+assert.ok(!technicalInfo.includes('技術情報'));
 assert.ok(!advancedSettings.includes('technical-project-info'));
 assert.ok(!technicalInfo.includes('btn-save-advanced-settings'));
 
@@ -47,6 +48,8 @@ assert.ok(renderer.includes('function technicalProjectInfoHtml()'));
 assert.ok(!renderer.includes('function developerProjectInfoHtml()'));
 assert.ok(renderer.includes('data-open-technical-info'));
 assert.ok(renderer.includes('内部ログを開く'));
+assert.ok(renderer.includes('詳細情報を開く'));
+assert.ok(!renderer.includes('技術情報を開く'));
 assert.ok(!renderer.includes('data-open-developer'));
 assert.ok(!renderer.includes('<div class="section-title">動作ログ（直近 80 行）</div>'));
 assert.ok(!renderer.includes('<summary>実行環境</summary>'));
@@ -56,5 +59,20 @@ assert.match(css, /\.developer-log\s*\{[^}]*overflow-wrap:\s*anywhere/s);
 assert.match(css, /\.developer-log\s*>\s*div\s*\{[^}]*word-break:\s*break-word/s);
 assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
 assert.match(css, /button:focus-visible/);
+
+// eslint-disable-next-line no-new-func
+const strategyDisplayLabel = new Function(
+  `${renderer.slice(renderer.indexOf('function strategyDisplayLabel('), renderer.indexOf('\n}', renderer.indexOf('function strategyDisplayLabel(')) + 2)}; return strategyDisplayLabel;`
+)();
+assert.strictEqual(
+  strategyDisplayLabel({
+    patterns: ['fan-out-and-synthesize', 'adversarial-verification'],
+    parallelism: 3,
+    review: true,
+  }),
+  'fan-out-and-synthesize + adversarial-verification / 並列 3 / レビューあり'
+);
+assert.strictEqual(strategyDisplayLabel('sequential'), 'sequential');
+assert.ok(!strategyDisplayLabel({ patterns: ['map-reduce'] }).includes('[object Object]'));
 
 console.log('user-centered-ui: all tests passed');

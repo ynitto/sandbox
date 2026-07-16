@@ -5172,6 +5172,61 @@ class TestProjectLayer(unittest.TestCase):
                 if tmp:
                     shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_task_verify_cwd_falls_back_to_base_when_task_branch_unpushed(self):
+        # ap/<task-id> は worker が push して初めて生まれる。push の無いタスクで origin に
+        # 存在しない ap/ をそのまま clone すると「clone 失敗」という完了条件と無関係な NG で
+        # リトライが焼かれる（agent-project-codd-gate--042729 で retries=4 を消費した実障害）。
+        # 「無いことを確認できた」場合に限り target/base へ倒し、journal に残す。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            remote = d / "remote"
+            self._make_git_repo(remote, marker="MAIN.txt")   # ap/T1 は作らない（push なし相当）
+            defb = subprocess.run(["git", "-C", str(remote), "rev-parse", "--abbrev-ref", "HEAD"],
+                                  capture_output=True, text=True, check=True).stdout.strip()
+            write_charter(d, "# Charter: c\n## goal\nx\n## repos\n"
+                             f"- app = {remote}\n  - owns: **\n  - base: {defb}\n"
+                             f"  - target: {defb}\n  - desc: 対象\n")
+            task = km.Task(id="T1", title="x", verify="test -f MAIN.txt")
+            task.set("workspace", "app")
+            cfg = cfg_for(d, task_branch=True)
+            vcwd, tmp = km._task_verify_cwd(cfg, task)
+            try:
+                self.assertTrue((vcwd / "MAIN.txt").exists(),
+                                "ap/T1 が無ければ base へ倒して検証できること（clone 失敗 NG にしない）")
+                journal = (d / "journal.md").read_text(encoding="utf-8")
+                self.assertIn("未作成", journal)             # フォールバックの決定を journal に残す
+                self.assertIn("ap/T1", journal)
+            finally:
+                if tmp:
+                    shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_task_verify_cwd_no_fallback_when_branch_lookup_unreachable(self):
+        # フォールバックは「ls-remote で ap/ が無いことを確認できた（False）」場合だけ。
+        # 照会不能（None）は従来どおり ap/ の clone を試し、そのエラーを人に見せる
+        # （無言の既定フォールバック＝成果の無い場所での偽判定をしない厳密さを保つ）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            remote = d / "remote"
+            self._make_git_repo(remote, marker="MAIN.txt")   # ap/T1 は無い
+            write_charter(d, "# Charter: c\n## goal\nx\n## repos\n"
+                             f"- app = {remote}\n  - owns: **\n  - desc: 対象\n")
+            task = km.Task(id="T1", title="x", verify="test -f MAIN.txt")
+            task.set("workspace", "app")
+            with mock.patch.object(km, "_remote_branch_exists", return_value=None):
+                with self.assertRaises(RuntimeError):
+                    km._task_verify_cwd(cfg_for(d, task_branch=True), task)
+
+    def test_remote_branch_exists_distinguishes_absent_from_unreachable(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            remote = d / "remote"
+            self._make_git_repo(remote)
+            defb = subprocess.run(["git", "-C", str(remote), "rev-parse", "--abbrev-ref", "HEAD"],
+                                  capture_output=True, text=True, check=True).stdout.strip()
+            self.assertTrue(km._remote_branch_exists(str(remote), defb))       # 実在 → True
+            self.assertFalse(km._remote_branch_exists(str(remote), "ap/nope"))  # 照会成功・無い → False
+            self.assertIsNone(km._remote_branch_exists(str(d / "no-such-repo"), "x"))  # 照会不能 → None
+
     def test_task_verify_cwd_uses_clone_root_not_path(self):
         # path（モノレポのサブフォルダ）があっても cwd はクローンのルート。verify は
         # リポジトリ直下からの相対（例 `cd pkg && …`）で書かれる規約なので path には潜らない。

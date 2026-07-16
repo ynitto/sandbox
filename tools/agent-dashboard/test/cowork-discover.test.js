@@ -103,6 +103,16 @@ test('discoverCoworkItems は prompts を per-job の loop 項目にする', () 
   assert.ok(loops.every((l) => l.source === 'discovered' && l._src.promptIndex >= 0));
 });
 
+test('discoverCoworkItems はkiro-loop公式のルート直下設定ファイルも発見する', () => {
+  const root = mkRoot();
+  fs.writeFileSync(path.join(root, 'kiro-loop.yaml'), SAMPLE_YAML, 'utf8');
+  const loops = discover.discoverCoworkItems({ projects: { roots: [root] }, cowork: {} })
+    .filter((item) => item.type === 'loop');
+  assert.strictEqual(loops.length, 3);
+  assert.strictEqual(loops[0].repo, root);
+  assert.strictEqual(loops[0]._src.file, path.join(root, 'kiro-loop.yaml'));
+});
+
 test('discoverCoworkItems は .statemachine/<name>/workflow.yaml を per-folder で出す', () => {
   const root = mkRoot();
   const proj = path.join(root, 'projB');

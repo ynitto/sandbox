@@ -178,10 +178,14 @@ function detectMarkers(dir) {
   let kiroFile = null;
   let kiroFormat = null;
   for (const [name, fmt] of KIRO_CONFIG_NAMES) {
-    const f = path.join(dir, '.kiro', name);
-    try {
-      if (fs.statSync(f).isFile()) { kiroFile = f; kiroFormat = fmt; break; }
-    } catch { /* not present */ }
+    // workspace固有の .kiro/ を優先しつつ、kiro-loop 本体の公式探索順にある
+    // カレントディレクトリ直下の kiro-loop.yaml/.yml/.json も受け入れる。
+    for (const f of [path.join(dir, '.kiro', name), path.join(dir, name)]) {
+      try {
+        if (fs.statSync(f).isFile()) { kiroFile = f; kiroFormat = fmt; break; }
+      } catch { /* not present */ }
+    }
+    if (kiroFile) break;
   }
   const smRoot = path.join(dir, '.statemachine');
   const smNames = [];

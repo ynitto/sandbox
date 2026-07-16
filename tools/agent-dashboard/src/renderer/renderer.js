@@ -266,6 +266,44 @@ function runTaskOutcomeCompactHtml(outcome) {
   </span>`;
 }
 
+// agent-flow の全工程は成功した一方、その後に agent-project が実行するタスクの
+// 最終検証だけが失敗した状態を識別する。run.status=done だけでは成果確定と誤認するため、
+// 最新 run・全工程 done・blocked の検証証跡がそろった場合に限って表示する。
+function runFinalVerificationFailure(project, run) {
+  if (!project || !run || String(run.status) !== 'done') return null;
+  const total = Number(run.total) || Object.keys(run.nodes || {}).length;
+  const counts = run.counts || {};
+  if (!total || Number(counts.done || 0) !== total || Number(counts.failed || 0) !== 0) return null;
+  const key = sanitizeTaskId(run.taskId);
+  const task = ((project.backlog || [])).find((item) => sanitizeTaskId(item.id) === key);
+  if (!task || String(task.status) !== 'blocked') return null;
+  const lastRun = String((task.extra && task.extra.last_run) || '');
+  if (lastRun && lastRun !== String(run.runId || '')) return null;
+  const need = (project.needs || []).find((item) =>
+    sanitizeTaskId(item.taskId || item.id) === key && String(item.kind || 'blocked') === 'blocked'
+  );
+  if (!need) return null;
+  const prose = [need.failureSummary, need.why, need.detail].filter(Boolean).join('\n');
+  if (!need.failureSummary && !need.failureContext && !/(?:検証|verify|テスト|test|回帰|コマンド)/i.test(prose)) {
+    return null;
+  }
+  return {
+    title: '工程は全て成功・最終検証で失敗',
+    summary: String(need.failureSummary || need.why || 'タスクの最終検証が失敗しました。'),
+    taskId: task.id,
+  };
+}
+
+function finalVerificationFailureHtml(failure, compact = false) {
+  if (!failure) return '';
+  return `<div class="final-verification-failure ${compact ? 'compact' : ''}" role="status">
+    <strong>${esc(failure.title)}</strong>
+    <span>${compact
+      ? '工程の成果は残っていますが、タスクは未完了です。'
+      : `全工程の処理は成功しましたが、その後の最終検証で失敗しました。タスクは未完了です。 ${esc(failure.summary)}`}</span>
+  </div>`;
+}
+
 // project.json の charter state から acceptance の PASS 履歴（数値列）を取り出す。
 function passHistory(st) {
   if (!st || !Array.isArray(st.history)) return [];
@@ -1090,7 +1128,7 @@ function openProjectSettings() {
     <section class="project-settings-section">
       <h3>調査と高度な設定</h3>
       <p class="muted">実行ID、内部ログ、同期方式などは通常の操作には必要ありません。</p>
-      <button id="btn-project-technical-info">技術情報を開く</button>
+      <button id="btn-project-technical-info">詳細情報を開く</button>
     </section>
     ${danger}`;
 
@@ -1546,13 +1584,10 @@ function renderBacklog() {
         offloadRun && !(rr.length && rr[0].runId === offloadRun)
           ? ` <button class="badge run-link" data-goto-run="${esc(offloadRun)}" title="実行中の作業を開く">▶ 実行</button>`
           : '';
-      const unsettleBadge = hint.unsettledDone
-        ? ' <span class="badge warn" title="実行は終わっていますがタスクは未完了（納品前）">実行済み・未確定</span>'
-        : '';
       return `<tr class="clickable" data-task="${esc(t.id)}" data-scope="${state.backlogFilter === 'archive' ? 'archive' : 'backlog'}">
         <td class="mono">${esc(t.id)}</td>
         <td>${esc(t.title)}</td>
-        <td>${statusChip(t.status)}${unsettleBadge}${p.claims.includes(t.id) ? ' <span class="badge info" title="実行中">▶</span>' : ''}${isReviseSent(t) ? ' <span class="badge" title="修正指示を送信済み（反映待ち）">✎</span>' : ''}${runBadge}${offloadBadge}</td>
+        <td>${statusChip(t.status)}${p.claims.includes(t.id) ? ' <span class="badge info" title="実行中">▶</span>' : ''}${isReviseSent(t) ? ' <span class="badge" title="修正指示を送信済み（反映待ち）">✎</span>' : ''}${runBadge}${offloadBadge}</td>
         <td>${t.priority}</td>
         <td>${t.retries}</td>
         <td>${t.verify ? '✓' : t.extra.accept || t.extra.verify_template ? '△' : '—'}</td>
@@ -3784,6 +3819,9 @@ function renderNeedDetail(p, n) {
     : '';
   const task = taskForNeed(p, n);
   const hint = task ? taskCompletionHint(task, { runs: runsForTask(task.id) }) : null;
+  const relatedRunId = relatedRunIdForNeed(p, n, state.flowRuns);
+  const relatedRun = state.flowRuns.find((run) => String(run.runId) === relatedRunId);
+  const finalVerificationFailure = runFinalVerificationFailure(p, relatedRun);
   const ask =
     (hint && hint.needAsk) || NEED_ASK[n.kind] || NEED_ASK.blocked;
   const unsettle =
@@ -3802,6 +3840,7 @@ function renderNeedDetail(p, n) {
       </div>
       <span class="muted">${esc(n.date || '')}</span>
     </header>
+    ${finalVerificationFailureHtml(finalVerificationFailure)}
     <section class="need-decision">
       <h3>判断すること</h3>
       <p>${esc(ask)}</p>
@@ -3829,7 +3868,7 @@ function renderNeedDetail(p, n) {
       <h3>成果物</h3>
       ${specFilesHtml(p, n) || '<p class="muted">関連するSpecはありません。</p>'}
       ${detailBlock}
-      <button class="need-output-button subtle-action" data-need-output="${esc(n.id)}">技術情報を開く</button>
+      <button class="need-output-button subtle-action" data-need-output="${esc(n.id)}">詳細情報を開く</button>
     </section>
   </article>`;
 }
@@ -4378,12 +4417,14 @@ function renderFlow() {
         ? ' <span class="badge" title="完了後に保存された記録です">記録</span>'
         : '';
       const outcome = runTaskOutcome(p, r);
+      const finalVerificationFailure = runFinalVerificationFailure(p, r);
       return `<div class="run-item ${state.flowRunId === r.runId ? 'selected' : ''}" data-run="${esc(r.runId)}"
         role="button" tabindex="0" aria-pressed="${state.flowRunId === r.runId}">
         <div class="run-item-head"><span>${runTaskOutcomeCompactHtml(outcome)}${archivedBadge}${adviceBit}</span><span class="muted">${fmtAgo(r.updatedAt || r.createdAt)}</span></div>
         <div class="req">${prosePreview(r.request, 110) || '<span class="muted">内容なし</span>'}</div>
         <div class="progress"><div style="width:${pct}%"></div></div>
         <div class="muted">工程完了 ${r.counts.done}/${r.total}・失敗 ${r.counts.failed}・実行中 ${r.counts.claimed}${taskLink}</div>
+        ${finalVerificationFailureHtml(finalVerificationFailure, true)}
         ${adviceLine}
         ${retryStrip}
       </div>`;
@@ -4553,6 +4594,7 @@ function renderFlowDetail() {
   if (!fr || !fr.run) return '<div class="empty">左の一覧から実行を選択するとタスクグラフを表示します</div>';
   const run = fr.run;
   const outcome = runTaskOutcome(state.project, run);
+  const finalVerificationFailure = runFinalVerificationFailure(state.project, run);
   const pct = Math.round(run.progress * 100);
   const legend = Object.entries(FLOW_STATE_LABEL)
     .map(
@@ -4704,6 +4746,7 @@ const viewTabs = [
       <span>${archivedBadge}</span>
     </div>
     ${runTaskOutcomeHtml(outcome)}
+    ${finalVerificationFailureHtml(finalVerificationFailure)}
     ${req.body ? `<div class="flow-request-body">${proseHtml(req.body)}</div>` : ''}
     ${adviceBanner}
     ${relationshipStrip({ run })}
@@ -4742,7 +4785,7 @@ const viewTabs = [
       <div><span class="summary-kicker">これまでの動き</span><h2>更新履歴</h2></div>
     </div>
     <div class="events flow-events">${events || '<span class="muted">イベントはありません</span>'}</div>
-    <button type="button" class="subtle-action" data-open-technical-info>技術情報を開く</button>
+    <button type="button" class="subtle-action" data-open-technical-info>詳細情報を開く</button>
   </section>`;
 
   const body =
@@ -5629,6 +5672,24 @@ function openSettings() {
   $('dlg-settings').showModal();
 }
 
+function strategyDisplayLabel(strategy) {
+  if (strategy == null || strategy === '') return '未設定';
+  if (typeof strategy !== 'object') return String(strategy);
+  if (Array.isArray(strategy)) return strategy.map(String).join(' + ') || '未設定';
+  const parts = [];
+  const patterns = Array.isArray(strategy.patterns) ? strategy.patterns.filter(Boolean).map(String) : [];
+  if (patterns.length) parts.push(patterns.join(' + '));
+  if (strategy.parallelism != null && strategy.parallelism !== '') parts.push(`並列 ${strategy.parallelism}`);
+  if (strategy.review === true) parts.push('レビューあり');
+  if (strategy.review === false) parts.push('レビューなし');
+  if (parts.length) return parts.join(' / ');
+  try {
+    return JSON.stringify(strategy);
+  } catch {
+    return '形式不明';
+  }
+}
+
 function technicalProjectInfoHtml() {
   const p = state.project;
   if (!p) {
@@ -5651,7 +5712,7 @@ function technicalProjectInfoHtml() {
     ? `<dl class="developer-facts">
         <div><dt>run ID</dt><dd class="mono">${esc(run.runId)}</dd></div>
         <div><dt>内部状態</dt><dd>${esc(run.status || 'unknown')}</dd></div>
-        <div><dt>戦略</dt><dd>${esc(run.strategy || run.meta?.strategy || '未設定')}</dd></div>
+        <div><dt>戦略</dt><dd>${esc(strategyDisplayLabel(run.strategy || run.meta?.strategy))}</dd></div>
         <div><dt>最終応答</dt><dd>${run.heartbeatAt ? esc(fmtAgo(run.heartbeatAt)) : '記録なし'}</dd></div>
       </dl>${nodeInfo}`
     : '<p class="muted">実行タブで作業を選ぶと、その内部情報を表示します。</p>';
@@ -6252,15 +6313,40 @@ function coworkItemCount() {
   return Math.max(live, draft, cfg);
 }
 
+// 選択中workspaceが提供する画面を決める。設定rootsはagent-project以外の
+// kiro-loop専用フォルダも含むため、登録されているだけではagent-project扱いにしない。
+function workspaceFeatureModel(discovery, selectedDir, coworkCount) {
+  const projects = (discovery && discovery.projects) || [];
+  const selected = projects.find((project) => project && project.dir === selectedDir) || null;
+  // 初期ロードの選択前は従来画面を維持し、選択後に実体のマーカーで切り替える。
+  const agentProject = selected ? Boolean(selected.isProject) : true;
+  const cowork = Number(coworkCount || 0) > 0;
+  return {
+    agentProject,
+    cowork,
+    defaultTab: !agentProject && cowork ? 'cowork' : agentProject ? 'overview' : cowork ? 'cowork' : null,
+  };
+}
+
 // 作業（発見 or 手動）が無いときは Cowork タブを隠す。設定から明示オープン中は例外。
 function updateCoworkTabVisibility() {
   const btn = $('tab-btn-cowork');
   const pane = $('tab-cowork');
   if (!btn || !pane) return;
-  const show = state.coworkForceShow || coworkItemCount() > 0 || !!(state.cowork && state.cowork.error);
-  btn.classList.toggle('hidden', !show);
-  btn.hidden = !show;
-  if (!show && activeTab() === 'cowork') switchTab('overview');
+  const coworkAvailable = state.coworkForceShow || coworkItemCount() > 0 || !!(state.cowork && state.cowork.error);
+  const features = workspaceFeatureModel(state.discovery, state.selectedDir, coworkAvailable ? 1 : 0);
+  for (const el of document.querySelectorAll('.tab[data-feature="agent-project"], .tabpane[data-feature="agent-project"]')) {
+    el.classList.toggle('hidden', !features.agentProject);
+    el.hidden = !features.agentProject;
+  }
+  btn.classList.toggle('hidden', !features.cowork);
+  btn.hidden = !features.cowork;
+  pane.classList.toggle('hidden', !features.cowork);
+  pane.hidden = !features.cowork;
+  const current = document.querySelector('.tab.active');
+  if (!current || current.hidden || current.classList.contains('hidden')) {
+    if (features.defaultTab) switchTab(features.defaultTab);
+  }
 }
 
 async function refreshCowork({ probe = false, forceDiscover = false } = {}) {
@@ -6332,7 +6418,7 @@ function renderCowork() {
           <button id="btn-cowork-add">追加</button>
           <button id="btn-cowork-save">保存…</button>
           <button id="btn-cowork-refresh" title="最新の状態を確認">更新</button>
-          <button type="button" class="subtle-action" data-open-technical-info>技術情報</button>
+          <button type="button" class="subtle-action" data-open-technical-info>詳細情報</button>
         </div>
       </header>
       ${coworkRunBannerHtml()}
@@ -6363,7 +6449,7 @@ function renderCowork() {
               <span>${esc(detail)}</span>
               ${st.lastLogAt ? `<span>最終ログ ${esc(fmtTime(st.lastLogAt))}</span>` : ''}
             </div>
-            ${run && run.phase === 'error' ? '<p class="cowork-item-error">実行できませんでした。技術情報で詳細を確認してください。</p>' : ''}
+            ${run && run.phase === 'error' ? '<p class="cowork-item-error">実行できませんでした。詳細情報で原因を確認してください。</p>' : ''}
           </div>
           <div class="cowork-item-actions">
             <button data-cowork-run="${esc(id)}" data-cowork-type="${esc(item.type || 'loop')}" data-cowork-name="${esc(item.name || id)}" ${busyId ? 'disabled' : ''}>${busyId === id ? '実行中…' : '実行'}</button>

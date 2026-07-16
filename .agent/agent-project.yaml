@@ -24,11 +24,20 @@ root: .agent-project
 # spec_track: true       # spec ルーティング（採点/policy で spec 前段を前置）。agent-project の設定
                        # （agent-flow.yaml に書いても効かない）
 
-# 一貫性ゲート（codd-gate 連携）: done 確定前の差分ゲート（regression）と
-# 負債の修復タスク自動投入（intake）。repos.json は agent-project が charter から
-# <root>/repos.json に自動生成する（tools/agent-project/README.md 参照）。
-regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV" --repos repos.json'
-intake_cmd: 'codd-gate tasks --debt --repos repos.json'
+# 一貫性ゲート（codd-gate 連携）: done 確定前の回帰ゲート（regression）と
+# 負債の修復タスク自動投入（intake）。repos.json は <root>/repos.json（このプロジェクトは
+# 手書きが正・URL のみ）。実行時 cwd は常に root（mr.py の _settle_task が cfg.workdir で実行）。
+#
+# 差分モード（verify --base "$KIRO_BASE_REV"）はここでは成立しない:
+#   - repos.json の src は URL のみでローカル checkout が無く、--repo-dir 無しでは
+#     「スキャン可能な repo がありません」で必ず落ちる（回帰ゲートが全 done をブロックする）。
+#   - $KIRO_BASE_REV は root（状態 worktree = agent-state ブランチ）の rev で、src（main）の
+#     差分基準として意味を持たない。
+# そのため負債ラチェット（--debt）+ --sync（origin から取得。共有ミラーを再利用）にする。
+# しきい値は 2026-07-17 実測の現在負債（ratchet 基準。負債を返すたびに下げてよい）:
+#   broken=1563 / undocumented=354 / untested=444
+regression_cmd: 'codd-gate verify --debt --sync --repos repos.json --max-broken 1563 --max-undocumented 354 --max-untested 444'
+intake_cmd: 'codd-gate tasks --debt --sync --repos repos.json'
 
 # グローバル既定
 agent_cli: claude
