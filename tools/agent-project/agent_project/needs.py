@@ -278,6 +278,9 @@ def ingest_feedback(cfg: "Config", tasks: "list[Task]") -> "list[str]":
                 # 計画変更＝新しい run。retries を進めないと last_run と同じ id を再生成し、
                 # agent-flow は既存 meta.request で再開して差し戻しが planner に届かない。
                 t.retries += 1
+                # 差し戻しの意図を run ブリーフへ蓄積する。feedback フィールドは次の差し戻しで上書きされるが、
+                # ブリーフは追記のみ＝過去の制約が消えず、新 run（ap/<task-id> 同一ブランチ）の全ノードへ伝播する。
+                append_brief_item(cfg, t, fb, source="feedback")
         if was_review:                               # review→ feedback あり=差し戻し(手戻り) / 無し=承認(clean)
             autonomy_record(cfg, t, clean=not bool(fb))
         persist_task(cfg, t)
