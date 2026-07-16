@@ -78,7 +78,9 @@ test('cowork は定期実行と定型業務 API を登録する', () => {
     return 'ok';
   });
   assert.strictEqual(overview(), 'ok');
-  assert.deepStrictEqual(calls, [['cowork:overview', undefined]]);
+  assert.deepStrictEqual(calls, [['cowork:overview', {}]]);
+  assert.strictEqual(overview({ probeProcess: true }), 'ok');
+  assert.deepStrictEqual(calls[1], ['cowork:overview', { probeProcess: true }]);
   assert.deepStrictEqual(cowork.configDefaults.cowork.items, []);
 });
 

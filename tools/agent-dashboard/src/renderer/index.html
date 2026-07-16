@@ -33,12 +33,7 @@
           </div>
           <div id="project-list"></div>
         </section>
-        <section class="nav-group" data-feature="cowork" aria-labelledby="cowork-group-title">
-          <div class="nav-group-header">
-            <h2 id="cowork-group-title">Cowork</h2>
-          </div>
-          <div id="cowork-list">定期実行・定型業務</div>
-        </section>
+        <!-- Cowork は右ペインのタブに統一（左ペインには出さない）。作業が無いときはタブ自体を隠す。 -->
         <!-- kiro-loop 制御面の差し込み口（src/features/kiro-loop/）。実装まで非表示。 -->
         <section id="kiro-loop-nav" class="nav-group hidden" data-feature="kiro-loop" aria-labelledby="kiro-loop-group-title" hidden>
           <div class="nav-group-header">
@@ -69,7 +64,7 @@
         <button class="tab" data-tab="needs" data-feature="agent-project">要対応 <span id="needs-badge" class="badge hidden"></span></button>
         <button class="tab" data-tab="flow" data-feature="agent-project">実行</button>
         <button class="tab" data-tab="history" data-feature="agent-project">成果・履歴</button>
-        <button class="tab" data-tab="cowork" data-feature="cowork">Cowork</button>
+        <button class="tab hidden" data-tab="cowork" data-feature="cowork" id="tab-btn-cowork" hidden>Cowork</button>
       </nav>
 
       <section id="content">
@@ -247,14 +242,16 @@
         </div>
       </div>
       <div class="muted" style="font-size:11px">
-        Cowork の作業一覧は Cowork タブで追加・編集・削除します。各作業はこの全体設定で登録したリポジトリを参照します。
+        リポジトリ内の <span class="mono">.kiro/kiro-loop.*</span> / <span class="mono">.statemachine/*/workflow.yaml</span> が見つかると Cowork タブに自動表示します。手動追加もできます。作業が無いときはタブを隠し、左ペインには出しません。
       </div>
       <div class="row2">
         <div class="field">
           <label>statemachine-use コマンド</label>
           <input id="cfg-cowork-sm-command" class="mono" placeholder="statemachine-use" />
         </div>
-        <div class="field"></div>
+        <div class="field" style="display:flex;align-items:flex-end">
+          <button type="button" id="btn-settings-cowork-open">Cowork を開く / 作業を追加</button>
+        </div>
       </div>
 
       <h3>Viewer アシスタント</h3>

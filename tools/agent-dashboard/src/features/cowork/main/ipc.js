@@ -4,7 +4,7 @@ const cowork = require('./cowork');
 
 function registerIpc(ctx) {
   const { handle, loadConfig, saveConfig } = ctx;
-  handle('cowork:overview', () => cowork.overview(loadConfig()));
+  handle('cowork:overview', (opts) => cowork.overview(loadConfig(), opts || {}));
   handle('cowork:runLoop', ({ itemId, jobId }) => cowork.runLoop(loadConfig(), itemId || jobId));
   handle('cowork:runStateMachine', ({ itemId, machineId, input }) =>
     cowork.runStateMachine(loadConfig(), itemId || machineId, input)
