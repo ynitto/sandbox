@@ -18,6 +18,12 @@ function wslPath(p) {
   return s;
 }
 
+function wslDistro(p) {
+  const s = String(p || '');
+  const unc = s.replace(/\//g, '\\').match(/^\\\\wsl(?:\$|\.localhost)\\([^\\]+)/i);
+  return unc ? unc[1] : '';
+}
+
 function decodeCliOutput(buf) {
   if (buf == null) return '';
   if (typeof buf === 'string') return buf;
@@ -43,10 +49,11 @@ function resultOf(res) {
 }
 
 // Windows では常に WSL へ。Linux ネイティブではそのまま tmux を叩く。
-function shInWsl(script, timeoutMs = 8000) {
+function shInWsl(script, timeoutMs = 8000, distro = '') {
   const wrapped = `export LANG=C.UTF-8 LC_ALL=C.UTF-8; ${script}`;
   if (process.platform === 'win32') {
-    return resultOf(spawnSync('wsl.exe', ['-e', 'sh', '-lc', wrapped], {
+    const wslArgs = distro ? ['-d', distro, '-e', 'sh', '-lc', wrapped] : ['-e', 'sh', '-lc', wrapped];
+    return resultOf(spawnSync('wsl.exe', wslArgs, {
       encoding: 'buffer',
       timeout: timeoutMs,
       windowsHide: true,
@@ -59,4 +66,4 @@ function shInWsl(script, timeoutMs = 8000) {
   }));
 }
 
-module.exports = { shellQuote, isWslPath, wslPath, decodeCliOutput, shInWsl };
+module.exports = { shellQuote, isWslPath, wslPath, wslDistro, decodeCliOutput, shInWsl };

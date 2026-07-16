@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const {
-  makeLoopProvider, isWslPath, wslPath, shellQuote, sh: providerSh, decodeCliOutput,
+  makeLoopProvider, isWslPath, wslPath, wslDistro, shellQuote, sh: providerSh, decodeCliOutput,
 } = require('./loopProvider');
 const { _pathKey, _isPosixAbs, toViewerPath } = require('../../agent-project/main/project');
 const { parseFlatYaml } = require('../../agent-project/main/toolconfig');
@@ -97,8 +97,10 @@ function processStatus(item, cfg) {
   const needle = repo ? wslPath(repo) : itemId(item, 0);
   const command = item.type === 'state-machine' ? (cfg.stateMachineCommand || 'statemachine-use') : (cfg.loopCommand || cfg.loopProvider || 'kiro-loop');
   if (process.platform === 'win32' && isWslPath(repo)) {
+    const distro = wslDistro(repo);
     const script = `export LANG=C.UTF-8 LC_ALL=C.UTF-8; pgrep -af ${shellQuote(command)} | grep -F -- ${shellQuote(needle)} | grep -v grep | head -1`;
-    const r = sh('wsl.exe', ['-e', 'sh', '-lc', script], { timeoutMs: 8000 });
+    const wslArgs = distro ? ['-d', distro, '-e', 'sh', '-lc', script] : ['-e', 'sh', '-lc', script];
+    const r = sh('wsl.exe', wslArgs, { timeoutMs: 8000 });
     return r.ok && r.stdout ? { running: true, detail: r.stdout } : { running: false, detail: '' };
   }
   if (process.platform === 'win32') {
@@ -265,8 +267,10 @@ function runStateMachine(config, itemIdValue, input) {
 
 function gitInRepo(repo, args, timeoutMs) {
   if (process.platform === 'win32' && isWslPath(repo)) {
+    const distro = wslDistro(repo);
     const script = `export LANG=C.UTF-8 LC_ALL=C.UTF-8; cd ${shellQuote(wslPath(repo))} && git ${args.map(shellQuote).join(' ')}`;
-    return sh('wsl.exe', ['-e', 'sh', '-lc', script], { timeoutMs });
+    const wslArgs = distro ? ['-d', distro, '-e', 'sh', '-lc', script] : ['-e', 'sh', '-lc', script];
+    return sh('wsl.exe', wslArgs, { timeoutMs });
   }
   return sh('git', ['-C', viewerRepo(repo) || repo, ...args], { timeoutMs });
 }
