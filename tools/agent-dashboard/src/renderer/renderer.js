@@ -614,7 +614,7 @@ function renderTree() {
           : '';
         return `<div class="project-item ${state.selectedDir === p.dir ? 'selected' : ''}" data-dir="${esc(p.dir)}" title="${esc(p.dir)}">
           <span class="dot ${p.running ? 'running' : ''} ${remoteGuess ? 'synced' : ''} ${p.paused ? 'paused' : ''}" title="${esc(dotTitle)}"></span>
-          <span class="name">${esc(displayName)}${remoteGuess && p.running ? '~' : ''}${p.paused ? ' ⏸' : ''}</span>${badges.join('')}
+          <span class="name">${esc(displayName)}</span>${badges.join('')}
           ${removeBtn}
         </div>`;
       })
@@ -622,7 +622,7 @@ function renderTree() {
   }
   navigation.scrollTop = prevScroll;
   const live = instances.filter((i) => i.fresh).length;
-  $('sidebar-footer').textContent = `稼働インスタンス: ${live} ／ 最終更新 ${new Date().toLocaleTimeString('ja-JP')}`;
+  $('sidebar-footer').textContent = `稼働中 ${live} ／ 更新 ${new Date().toLocaleTimeString('ja-JP')}`;
 
   for (const el of tree.querySelectorAll('.project-item[data-dir]')) {
     el.addEventListener('click', () => selectProject(el.dataset.dir));
@@ -687,21 +687,15 @@ function renderHeader() {
   const ps = p.projectState;
   const badges = [];
   if (ps && ps.status) badges.push(statusChip(ps.status));
-  if (p.liveness && p.liveness.paused) badges.push('<span class="status-chip st-review">⏸ 一時停止中</span>');
+  if (p.liveness && p.liveness.paused) badges.push('<span class="status-chip st-review">一時停止中</span>');
   $('project-badges').innerHTML = badges.join(' ');
   const lastLog = p.runLog.length ? p.runLog[p.runLog.length - 1] : null;
-  // ワークスペース（登録したフォルダ）を主に出し、状態の置き場が別ならプロジェクトルートも添える。
-  // 同じなら 1 つだけ（状態フォルダを直接登録している従来構成では冗長になるため）。
-  const metaBits = [`${esc(p.workspace || p.dir)}`];
-  if (p.workspace && p.dir !== p.workspace) {
-    metaBits.push(`プロジェクトルート: ${esc(p.dir)}`);
-  }
-  if (lastLog) metaBits.push(`最終実行: ${esc(statusLabel(lastLog.reason))} (${fmtAgo(lastLog.ts)})`);
+  const metaBits = [];
+  if (lastLog) metaBits.push(`最終更新: ${esc(statusLabel(lastLog.reason))}・${fmtAgo(lastLog.ts)}`);
   // 同期の健康状態を平易な一文で常時表示する。異常（error）は要対応として目立たせ、
   // 「なぜ画面が最新でないのか」「次に何を押せばよいのか」を人が推測しなくて済むようにする。
   const gh = state.gitHealth;
   if (gh && !gh.notRepo) {
-    const icon = gh.level === 'error' ? '🔴' : gh.level === 'warn' ? '🟡' : '🟢';
     const cls = gh.level === 'error' ? 'sync-error' : gh.level === 'warn' ? 'sync-warn' : 'sync-ok';
     const checkedAgo = gh.remoteCheckedAt
       ? fmtAgo(new Date(gh.remoteCheckedAt).toISOString())
@@ -719,7 +713,7 @@ function renderHeader() {
     }
     metaBits.push(
       `<span class="sync-status ${cls}" title="${esc(gh.summary)}">` +
-        `${icon} 同期: ${esc(gh.summary)} ` +
+        `<span class="status-dot" aria-hidden="true"></span> 同期: ${esc(gh.summary)} ` +
         `${checkedLabel ? `<small class="sync-checked">${esc(checkedLabel)}</small>` : ''} ${action}</span>`
     );
   }
@@ -776,28 +770,27 @@ function lifecycleCardHtml(p) {
     // 本体が停止中: pause/stop を出しても届かない（誰も読まない）。起動だけを出す
     return `
     <div class="card full">
-      <h3>稼働操作</h3>
+      <h3>自動実行</h3>
       <div class="row">
         <button class="chip primary-inline" data-start-kiro
-          title="この PC で agent-project の常駐（watch）を起動します">▶ 本体を起動</button>
-        <span class="muted">⏻ 本体（agent-project）は停止中です — 起動するまでタスクは進みません</span>
+          title="このPCで自動実行を開始します">自動実行を開始</button>
+        <span class="muted">停止中です。開始するまでタスクは進みません。</span>
       </div>
     </div>`;
   }
   return `
     <div class="card full">
-      <h3>稼働操作</h3>
+      <h3>自動実行</h3>
       <div class="row">
         ${
           paused
-            ? '<button class="chip" data-lifecycle="resume" title="一時停止を解除して作業を再開します">▶ 再開</button>'
-            : '<button class="chip" data-lifecycle="pause" title="タスクの実行を一時停止します（指示や回答の受け付けは続きます）">⏸ 一時停止</button>'
+            ? '<button class="chip" data-lifecycle="resume" title="一時停止を解除して作業を再開します">再開</button>'
+            : '<button class="chip" data-lifecycle="pause" title="タスクの実行を一時停止します">一時停止</button>'
         }
         <button class="chip danger" data-lifecycle="stop"
-          title="自動実行を停止します。再開はこの画面の「▶ 本体を起動」か、プロジェクトのマシンでの起動操作">⏹ 停止</button>
-        <span class="muted">操作は自動で本体に届きます（反映まで少し時間がかかることがあります）</span>
+          title="自動実行を停止します">停止</button>
       </div>
-      ${paused ? '<div class="muted" style="margin-top:4px">⏸ 一時停止中です（再開まで作業は進みません。回答・指示の送信はできます）</div>' : ''}
+      ${paused ? '<div class="muted" style="margin-top:4px">一時停止中です。再開まで作業は進みません。</div>' : ''}
     </div>`;
 }
 
@@ -945,7 +938,7 @@ function renderOverview() {
     ? s.live.paused
       ? '<button class="summary-link" data-lifecycle="resume">再開</button>'
       : '<button class="summary-link secondary" data-lifecycle="pause">一時停止</button>'
-    : '<button class="summary-link" data-start-kiro>本体を起動</button>';
+    : '<button class="summary-link" data-start-kiro>自動実行を開始</button>';
 
   el.innerHTML = `
     <div class="overview-shell">
@@ -4147,14 +4140,12 @@ function runAdvice(run, group) {
         ? `失敗・未実行の工程だけをやり直します（完了済み ${doneCount} 件は温存）`
         : '新しい実行としてやり直します';
       if (live.paused) {
-        return { kind: 'restart', cls: 'warn', chip: '⏸ 一時停止中', stopped: false,
-          text: `プロジェクトが一時停止中のため、まだ再実行されません。「▶ 再開」を押すと本体が${how}。` };
+        return { kind: 'restart', cls: 'warn', chip: '一時停止中', stopped: false,
+          text: `一時停止中です。「再開」を押すと、${how}。` };
       }
       if (live.running) {
-        return { kind: 'auto', cls: 'ok', chip: '⏳ まもなく自動でやり直されます',
-          text: `操作は不要です。本体（agent-project）が${how}。` +
-            '本体が別の作業を実行中のときは、その完了後に順番に実行されます' +
-            '（急ぐ場合の ↻ も同じ予約として扱われます）。' };
+        return { kind: 'auto', cls: 'ok', chip: '自動で再試行します',
+          text: `操作は不要です。${how}。ほかの作業が実行中なら、その後に順番に進みます。` };
       }
       const ago = live.ageSec != null && live.ageSec > 0
         ? `最終確認は ${Math.max(1, Math.round(live.ageSec / 60))} 分前です。` : '';
@@ -4167,10 +4158,8 @@ function runAdvice(run, group) {
             `本体が動いていれば順番に${how}。動いていなければ本体のマシンで agent-project start を` +
             '実行してください（「▶ 本体を起動」はこの PC で起動します）。' };
       }
-      return { kind: 'restart', cls: 'warn', chip: '⏻ 本体が停止中', stopped: true,
-        text: `${ago}本体（agent-project）が動いていないため、このままでは再開されません。` +
-          `「▶ 本体を起動」を押すと自動で${how}` +
-          '（↻ は予約として残り、本体が動き出すと実行されます）。' };
+      return { kind: 'restart', cls: 'warn', chip: '自動実行は停止中', stopped: true,
+        text: `${ago}「自動実行を開始」を押すと、${how}。` };
     }
     if (task.status === 'rejected') {
       return { kind: 'none', cls: 'muted', chip: '✋ 却下済み',
@@ -4417,9 +4406,6 @@ function renderFlowDetail() {
   const fr = state.flowRun;
   if (!fr || !fr.run) return '<div class="empty">左の一覧から実行を選択するとタスクグラフを表示します</div>';
   const run = fr.run;
-  const strat = run.strategy
-    ? `${(run.strategy.patterns || []).join(' + ')} ／ 並列 ${run.strategy.parallelism ?? '-'} ／ iteration ${run.iteration}`
-    : '';
   const pct = Math.round(run.progress * 100);
   const legend = Object.entries(FLOW_STATE_LABEL)
     .map(
@@ -4455,22 +4441,15 @@ function renderFlowDetail() {
       : '',
     // 「本体が停止中/一時停止中」は、その場で解決する操作を出す（概要タブへ探しに行かせない）
     advice.kind === 'restart' && advice.stopped
-      ? '<button class="chip primary-inline" data-start-kiro>▶ 本体を起動</button>'
+      ? '<button class="chip primary-inline" data-start-kiro>自動実行を開始</button>'
       : '',
     advice.kind === 'restart' && advice.stopped === false
-      ? '<button class="chip primary-inline" data-resume-kiro>▶ 再開</button>'
+      ? '<button class="chip primary-inline" data-resume-kiro>再開</button>'
       : '',
   ].join(' ');
   const adviceBanner = `<div class="advice-banner advice-${advice.cls}">
     ${adviceChip(advice)} <span>${esc(advice.text)}</span> ${adviceActions}
   </div>`;
-  const resumed = run.resumeCount > 0 ? `（自動再開 ${run.resumeCount} 回）` : '';
-  // 「この後どうなるか」は adviceBanner が言い切る。ここは事実（最終応答時刻）だけを出す
-  //（以前ここにあった「再起動すると自動で再開されます」は、needs 待ち等では嘘になっていた）。
-  const heartbeat =
-    run.alive !== null && run.heartbeatAt
-      ? `<div class="muted">最終応答: ${esc(fmtAgo(run.heartbeatAt))}${resumed}</div>`
-      : '';
   // アーカイブ表示（bus からは掃除済み）: 読み取り専用の写しなので run への操作
   // （再投入・キャンセル・削除・GitLab 突き合わせ）は出さない。
   const archived = !!run.archived;
@@ -5374,30 +5353,7 @@ function renderHistory() {
     el.innerHTML = '';
     return;
   }
-  const runRows = [...p.runLog]
-    .reverse()
-    .map(
-      (r) => `<tr>
-      <td>${fmtTime(r.ts)}</td><td title="${esc(r.reason || '')}">${esc(statusLabel(r.reason))}</td><td>${esc(r.level || '')}</td>
-      <td>${r.cycles ?? ''}</td><td>${r.done ?? ''}</td><td>${r.blocked ?? ''}</td><td>${r.review ?? ''}</td>
-      <td>${r.escalations ?? ''}</td><td>${r.tokens ?? ''}</td><td>${r.cost ?? ''}</td><td>${Math.round(r.duration_s ?? 0)}s</td>
-    </tr>`
-    )
-    .join('');
-  const drRows = p.decisions
-    .map(
-      (d) => `<tr>
-      <td class="mono">${esc(d.dr)}</td><td>${esc(d.date)}</td><td class="mono">${esc(d.taskId)}</td>
-      <td>${esc(d.fields.action || '')}</td><td>${esc(d.fields.reason || d.fields.context || '')}</td>
-      <td>${d.learn ? `<code>${esc(d.learn)}</code>` : ''}</td>
-    </tr>`
-    )
-    .join('');
-  const journal = p.journal
-    .slice(-80)
-    .reverse()
-    .map((l) => `<div>${linkify(l.replace(/^-\s*/, ''))}</div>`)
-    .join('');
+  const hasDecisions = p.decisions.length > 0;
   const deliveryRows = [...p.delivery]
     .reverse()
     .map((cells) => `<tr>${cells.map((c) => `<td>${linkify(c)}</td>`).join('')}</tr>`)
@@ -5414,7 +5370,7 @@ function renderHistory() {
     </section>
     <section class="content-section">
       <h3>判断の記録</h3>
-      ${drRows
+      ${hasDecisions
         ? `<div class="table-scroll"><table class="list"><tr><th>日付</th><th>タスク</th><th>操作</th><th>理由</th></tr>${p.decisions.map((d) => `<tr><td>${esc(d.date)}</td><td class="mono">${esc(d.taskId)}</td><td>${esc(d.fields.action || '')}</td><td>${esc(d.fields.reason || d.fields.context || '')}</td></tr>`).join('')}</table></div>`
         : '<div class="empty compact">判断の記録はありません。</div>'}
     </section>
@@ -5553,6 +5509,7 @@ function developerProjectInfoHtml() {
         <div class="row"><button type="button" data-developer-tab="flow">実行を開く</button><button type="button" data-developer-tab="history">成果を開く</button></div>
       </div>
       <dl class="developer-facts">
+        <div><dt>ワークスペース</dt><dd class="mono">${esc(p.workspace || p.dir || '')}</dd></div>
         <div><dt>状態ディレクトリ</dt><dd class="mono">${esc(p.dir || '')}</dd></div>
         <div><dt>実行データ</dt><dd class="mono">${esc(p.busDir || '未検出')}</dd></div>
         <div><dt>検出方法</dt><dd>${esc(p.busSource || '不明')}</dd></div>

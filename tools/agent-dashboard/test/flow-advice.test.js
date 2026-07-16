@@ -100,8 +100,8 @@ test('応答なし + タスク ready + 本体停止中 → 起動ボタンでそ
   const r = baseRun({ alive: false });
   const a = advise(r, group(r));
   assert.strictEqual(a.kind, 'restart');
-  assert.strictEqual(a.stopped, true);           // バナーに「▶ 本体を起動」が出る
-  assert.match(a.text, /本体を起動/);
+  assert.strictEqual(a.stopped, true);           // バナーに「自動実行を開始」が出る
+  assert.match(a.text, /自動実行を開始/);
 });
 
 test('一時停止中 → 再開ボタンでその場で解決できる', () => {

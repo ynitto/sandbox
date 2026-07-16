@@ -115,7 +115,7 @@ assert.strictEqual(runStatusCaption('done', { taskArchived: true }), '納品済�
 assert.strictEqual(runStatusCaption('failed', { taskArchived: false }), '失敗');
 
 assert.match(renderer, /実行済み・未確定/);
-assert.match(renderer, /承認（実行を許可・完了にはならない）/);
+assert.match(renderer, /承認して実行/);
 assert.match(renderer, /need-complete-how/);
 
 console.log('task-completion-hint.test.js: ok');
