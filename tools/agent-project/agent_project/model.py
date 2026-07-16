@@ -373,9 +373,9 @@ def cohort_reflux(cfg: "Config", task: "Task", guidance: str) -> int:
             continue
         sib.drop("feedback")
         sib.extra.append(("feedback", guidance.replace("\n", " ⏎ ")))
-        # 兄弟メンバ側の制約台帳にも蓄積（追記のみ）。同じ轍を踏まないよう、その兄弟の
+        # 兄弟メンバ側の run ブリーフにも蓄積（追記のみ）。同じ轍を踏まないよう、その兄弟の
         # 以後の run・全分散ノードへも却下指摘を伝播させる。
-        append_constraint(cfg, sib, guidance, source="cohort")
+        append_brief_item(cfg, sib, guidance, source="cohort")
         persist_task(cfg, sib)
         n += 1
     state = _read_cohort(cfg, cid)

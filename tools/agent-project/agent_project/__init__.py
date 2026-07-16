@@ -26,7 +26,7 @@ _FRAGMENTS = (
     "instances",   # 稼働レジストリ / start・stop・restart
     "state",       # 状態 worktree
     "rules",       # rules.md（恒常ルール）
-    "constraints", # 制約台帳（run/branch スコープ・差し戻し意図とノード発見制約の蓄積・伝播）
+    "brief",       # run ブリーフ（run/branch スコープ・差し戻し意図とノード発見制約の蓄積・伝播）
     "needs",       # 通知・フィードバック / impact・reject
     "prioritize",  # 優先順位 / assess / spec ルーティング / triage
     "verify",      # verify ゲート / verify 合成
