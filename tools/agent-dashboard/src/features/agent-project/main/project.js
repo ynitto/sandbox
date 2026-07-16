@@ -1351,7 +1351,12 @@ function discover(cfg) {
   const scanDepth = Math.max(1, Number((cfg.projects && cfg.projects.scanDepth) || 2));
   for (const r of (cfg.projects && cfg.projects.roots) || []) {
     if (!r) continue;
-    const resolved = path.resolve(String(r).replace(/^~(?=$|\/|\\)/, os.homedir()));
+    // Windows のビュアーから WSL の POSIX パス（/home/...）を登録すると、path.resolve は
+    // C:\home\... の幽霊エントリに化け、exists:false になってプロジェクト一覧にも
+    // Cowork のリポジトリ選択（exists で絞る）にも出てこない。instances 経路（下）と同じく、
+    // POSIX 絶対パスは WSL UNC（\\wsl.localhost\<distro>\...）へ寄せてから解決する。
+    const raw = String(r).replace(/^~(?=$|\/|\\)/, os.homedir());
+    const resolved = _isPosixAbs(raw) ? toViewerPath(raw) : path.resolve(raw);
     if (fs.existsSync(resolved) && !isProjectDir(resolved)) {
       const children = scanForProjects(resolved, scanDepth);
       if (children.length) {
