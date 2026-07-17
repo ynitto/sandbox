@@ -524,7 +524,9 @@ def _spec_instructions(cfg: "Config", task: Task) -> str:
         f"- {rel}/tasks.md  … 実装タスク分解。次の形式の JSON 配列を含む Markdown:\n"
         f'  [{{"title": "…", "verify": "終了コード0で合否が決まるシェルコマンド",'
         f' "after": ["先行タスクの title"]}}]\n'
-        f"  verify は『履歴』でなく『望む最終状態/差分』を見ること。after は任意（配列内の先行タスク）。")
+        f"  verify は『履歴』でなく『望む最終状態/差分』を見ること。after は任意（配列内の先行タスク）。\n"
+        f'  各タスクには任意で "why"（必要な理由・1 文）・"out_of_scope"（やらないこと）・'
+        f'"hints"（実装の手がかり）を付けてよい（実装ワーカーへの指示と人のレビュー材料になる）。')
 
 
 def route_spec_tasks(cfg: "Config", tasks: "list[Task]", policy: "Policy") -> "list[Task]":
@@ -608,7 +610,8 @@ def expand_spec_tasks(cfg: "Config", tasks: "list[Task]") -> "list[Task]":
             sp = {"title": str(it["title"]).strip(),
                   "verify": _strip_code(str(it.get("verify", "") or "").strip()),
                   "source": "spec", "spec": t.id, "route": "direct"}
-            for k in ("accept", "verify_template", "note", "priority"):
+            # tasks.md は「enqueue --json 互換」の契約なので、誘導・レビュー記述（why 等）も落とさない
+            for k in ("accept", "verify_template", "note", "priority", *TASK_GUIDE_KEYS):
                 if it.get(k) not in (None, "", []):
                     sp[k] = it[k]
             for k in ("charter", "workspace"):         # 成果の行き先・スコープは元タスクを引き継ぐ

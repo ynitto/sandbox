@@ -138,7 +138,10 @@ const LIFECYCLE_ACTIONS = new Set(['pause', 'resume', 'stop']);
 
 // revise が受けるフィールド編集キー（agent-project の REVISE_FIELDS と同じ）。
 // 値は「置換」規約: '' / '-' / 'none' はフィールド削除、未指定（undefined/null）は触らない。
-const REVISE_KEYS = ['title', 'priority', 'verify', 'accept', 'after', 'note', 'level', 'track'];
+// why 以降は誘導・レビュー記述（backlog.md.example 参照）。編集 UI は未対応だが、
+// ペイロード契約は本体と揃えておく（AI 補助・将来の UI がそのまま通せる）。
+const REVISE_KEYS = ['title', 'priority', 'verify', 'accept', 'after', 'note', 'level', 'track',
+  'why', 'desc', 'scope', 'out_of_scope', 'constraints', 'hints', 'demo'];
 
 // revise ペイロード（フィールド編集 + feedback）を commands/CLI 両経路の形へ正規化する。
 // undefined/null は「触らない」の意味なので落とす（'' は削除の明示指定として残す）

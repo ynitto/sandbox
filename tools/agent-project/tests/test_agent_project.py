@@ -10876,6 +10876,29 @@ class TestTaskGuideFields(unittest.TestCase):
             self.assertEqual(t.get("why"), "背景を明示")
             self.assertEqual(t.get("out_of_scope"), "隣領域")
 
+    def test_expand_spec_tasks_carries_guide_fields(self):
+        # tasks.md（enqueue --json 互換）の誘導・レビュー記述が実装タスクへ落ちずに引き継がれる
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, spec_track=True)
+            (d / "backlog").mkdir(parents=True, exist_ok=True)
+            (d / "backlog" / "T1.md").write_text(
+                "## T1: 大きめの機能\n- status: ready\n- verify: `true`\n"
+                "- route: spec\n- spec_task: T1-spec\n- after: T1-spec\n", encoding="utf-8")
+            adir = cfg.archive_dir()
+            adir.mkdir(parents=True, exist_ok=True)
+            (adir / "T1-spec.md").write_text(
+                "## T1-spec: Spec 作成\n- status: done\n", encoding="utf-8")
+            sdir = km.specs_root(cfg) / "T1"
+            sdir.mkdir(parents=True, exist_ok=True)
+            (sdir / "tasks.md").write_text(
+                '[{"title": "モデルを作る", "verify": "test -f m.py",'
+                ' "why": "spec の中核", "out_of_scope": "API 層"}]', encoding="utf-8")
+            created = km.expand_spec_tasks(cfg, km.load_tasks(cfg.backlog))
+            self.assertEqual(len(created), 1)
+            self.assertEqual(created[0].get("why"), "spec の中核")
+            self.assertEqual(created[0].get("out_of_scope"), "API 層")
+
     def test_cohort_propagates_guide_fields(self):
         with tempfile.TemporaryDirectory() as d:
             cfg = cfg_for(Path(d))
