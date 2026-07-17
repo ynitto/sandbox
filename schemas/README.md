@@ -20,6 +20,8 @@ agent-project・agent-flow・codd-gate・agent-amigos が**データ契約だけ
   `execution_minutes`・期間 `period: day|month|total`・ワークロード別内訳上限。
   **0 = 無制限**）、ledger を読んで消費内訳を表示する。依頼側・請負側どちらの
   ノードでも同じ契約（CLI 例: `agent-amigos budget node --limit-minutes 240`）。
+  実装済み: agent-dashboard の **Amigos タブ**（`tools/agent-dashboard/src/features/amigos/`）
+  がこの契約でワークロード別消費の表示と上限編集を行う。
 - 超過チェックはロックなしの読み合計で、上振れは「進行中実行 × 同時実行数」に有界。
   台帳は日付ファイル分割なので日次/月次の集計と gc（古い日付の削除）が安い。
 

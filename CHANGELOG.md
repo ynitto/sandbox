@@ -7,6 +7,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: Amigos タブ（agent-amigos ミッション + ノード予算の管理面）を追加
+
+- **新 feature** `src/features/amigos/`（制御面分離の流儀どおり base / 他 feature 無改造で
+  差し込み。IPC は `amigos:overview` / `amigos:budgetSave` の 2 チャネルのみ）:
+  - **ミッション一覧（読み取り専用）**: バス上のファイル（真実）だけを読み、dashboard から
+    バスへは一切書かない。ローカルバス（`missions/<mid>/`）と GitBus クローン作業領域
+    （`mission__<mid>/`）の両形式に対応し、`amigos.busDirs` 未設定時は
+    `~/.agent/amigos/bus/*` を自動発見。phase（近似導出）・ラウンド・名簿（担当 ×
+    完了/一時停止）・ミッション予算消費・未回答質問数・partial 納品を表示する。
+  - **ノード予算の管理面**: node-budget 契約（`schemas/node-budget.schema.json`）の
+    config を書き ledger を読む。期間内の消費をワークロード別（定常業務 / プロジェクト /
+    フロー / Amigos）に表示し、合計上限・期間（day/month/total）・内訳上限を編集
+    （**0 = 無制限**）。超過中は「amigo は一時停止」を明示。依頼側・請負側どちらの
+    ノードでも同じ契約 = 同じ画面。
+  - タブはミッションか予算データが存在するときだけ表示（cowork と同じ流儀）。
+- テスト: 配線テスト（feature-split）に amigos を追加、`test/amigos.test.js` を新設
+  （予算集計・超過判定・保存 / 両バス形式の読み取り・phase 導出 / **Python 実装
+  （agent-amigos stub）が実際に生成したバスを読めるクロス検証**）。全 367 件通過。
+
 ### agent-amigos: ノード予算（請負側の上限）とツール横断の共有台帳を追加
 
 - **予算を二層に**: ミッション予算（依頼側がバスに宣言、§3.2）に加えて、

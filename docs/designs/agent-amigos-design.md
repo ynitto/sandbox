@@ -198,10 +198,12 @@ $AGENT_BUDGET_DIR（既定 ~/.agent/budget/）
 - **管理は依頼側・請負側どちらも**: 依頼側はミッション予算（バス上・budget add）、
   請負側はノード予算（ローカル・`agent-amigos budget node --limit-minutes N`）。
   **agent-dashboard は両方の管理面**になる — ノード予算は config.json を書き
-  ledger を読むだけなので、dashboard 側はこの契約を読むタブを足せばよい
-  （定常業務・プロジェクト・amigos の消費内訳と上限をノードごとに表示・編集）。
-- **フォローアップ**: kiro-loop / agent-project / agent-flow の記帳・抑制の組み込みと
-  dashboard の管理タブは本設計の契約に従う後続タスク（契約が先、実装は各ツール）。
+  ledger を読むだけなので、dashboard 側はこの契約を読むタブを足せばよい。
+  **実装済み**: dashboard の Amigos タブ（`tools/agent-dashboard/src/features/amigos/`、
+  制御面分離の feature として独立）が、ミッションの読み取りビュー（phase 近似・名簿・
+  ミッション予算・未回答質問）と、ノード予算のワークロード別消費表示・上限編集を持つ。
+- **フォローアップ**: kiro-loop / agent-project / agent-flow の記帳・抑制の組み込みは
+  本設計の契約に従う後続タスク（契約が先、実装は各ツール）。
 - チェックはロックなしの読み合計なので、上振れは「進行中ターン × 同時実行数」に
   有界（§3.2 と同じ性質）。
 

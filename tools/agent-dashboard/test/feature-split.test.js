@@ -1,6 +1,6 @@
 'use strict';
 
-// 制御面分離（base / agent-project / kiro-loop / cowork）の配線テスト。
+// 制御面分離（base / agent-project / kiro-loop / cowork / amigos）の配線テスト。
 // Electron は起動せず、feature 列挙・preload 合成・互換シムだけを検証する。
 
 const assert = require('assert');
@@ -16,10 +16,10 @@ function test(name, fn) {
   console.log(`ok - ${name}`);
 }
 
-test('features に agent-project / kiro-loop / cowork が並ぶ', () => {
+test('features に agent-project / kiro-loop / cowork / amigos が並ぶ', () => {
   const features = loadFeatures();
   const ids = features.map((f) => f.id);
-  assert.deepStrictEqual(ids, ['agent-project', 'kiro-loop', 'cowork']);
+  assert.deepStrictEqual(ids, ['agent-project', 'kiro-loop', 'cowork', 'amigos']);
 });
 
 test('各 feature が registerIpc / preloadApi / configDefaults を持つ', () => {
@@ -87,6 +87,29 @@ test('cowork は定期実行と定型業務 API を登録する', () => {
   assert.deepStrictEqual(cowork.configDefaults.cowork.items, []);
 });
 
+test('amigos はミッションビューとノード予算 API を登録する', () => {
+  const amigos = loadFeatures().find((f) => f.id === 'amigos');
+  assert.ok(amigos.configDefaults.amigos);
+  assert.deepStrictEqual(amigos.configDefaults.amigos.busDirs, []);
+  const registered = [];
+  amigos.registerIpc({
+    handle: (channel) => registered.push(channel),
+    loadConfig: () => ({}),
+    saveConfig: () => ({}),
+  });
+  assert.deepStrictEqual(registered.sort(), ['amigos:budgetSave', 'amigos:overview'].sort());
+  const api = amigos.preloadApi();
+  assert.strictEqual(typeof api.amigosOverview, 'function');
+  assert.strictEqual(typeof api.amigosBudgetSave, 'function');
+  const calls = [];
+  const overview = api.amigosOverview((channel, args) => {
+    calls.push([channel, args]);
+    return 'ok';
+  });
+  assert.strictEqual(overview(), 'ok');
+  assert.deepStrictEqual(calls, [['amigos:overview', {}]]);
+});
+
 test('互換シム src/main/project.js が実体へ届く', () => {
   const viaShim = require('../src/main/project');
   const viaReal = require('../src/features/agent-project/main/project');
@@ -106,6 +129,8 @@ test('base / feature の入口ファイルが存在する', () => {
     'features/kiro-loop/README.md',
     'features/cowork/index.js',
     'features/cowork/README.md',
+    'features/amigos/index.js',
+    'features/amigos/README.md',
   ]) {
     assert.ok(fs.existsSync(path.join(root, rel)), rel);
   }
@@ -117,6 +142,8 @@ test('HTML に data-feature マーカーがある', () => {
   assert.ok(html.includes('data-feature="kiro-loop"'));
   assert.ok(html.includes('data-feature="cowork"'));
   assert.ok(html.includes('tab-cowork'));
+  assert.ok(html.includes('data-feature="amigos"'));
+  assert.ok(html.includes('tab-amigos'));
 });
 
 console.log(`\n${passed} tests passed`);

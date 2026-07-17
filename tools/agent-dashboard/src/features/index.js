@@ -6,6 +6,7 @@
 // - agent-project … agent-project / agent-flow の可視化と操作（本リポジトリが維持）
 // - kiro-loop … kiro-loop tmux の視聴（Phase A: capture-pane）
 // - cowork … 定期実行と定型業務の管理・監視
+// - amigos … agent-amigos ミッションの読み取りビューとノード予算（node-budget 契約）の管理
 //
 // 新しい制御面を足す手順:
 //   1. src/features/<id>/ を agent-project や kiro-loop を雛形に作る
@@ -20,6 +21,7 @@ function loadFeatures() {
     require('./agent-project'),
     require('./kiro-loop'),
     require('./cowork'),
+    require('./amigos'),
   ];
 }
 
