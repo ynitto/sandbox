@@ -2,11 +2,11 @@
 - status: blocked
 - source: charter
 - priority: 0
-- verify: `test -f docs/designs/README.md && grep -q 'agent-project-design.md' docs/designs/README.md && grep -q 'agent-flow-design.md' docs/designs/README.md && grep -q 'codd-gate-design.md' docs/designs/README.md && grep -q 'agent-tools-rename-design.md' docs/designs/README.md`
+- verify: `echo "hello"`
 - retries: 3
 - charter: v1
 - assess: c=1 r=1 a=1
 - workspace: src
 - routed_by: explicit-alias
 - last_run: req-ef1f92c3-docs-designs-README-042729-r3
-- needs_reason: 回帰検知: グローバル検査 `codd-gate verify --debt --sync --repos repos.json --max-broken 1563 --max-undocumented 354 --max-untested 444` 失敗 — exit=1 失敗した工程: `codd-gate verify --debt --sync --repos repos.json --max-broken 1563 --max-undocumented 354 --max-untested 444` md が解決できない ⏎   - src:.github/skills/agent-
+- needs_reason: 回帰検知: グローバル検査 `codd-gate verify --debt --sync --repos repos.json --max-broken 1563 --max-undocumented 354 --max-untested 444` 失敗 — exit=1 失敗した工程: `codd-gate verify --debt --sync --repos repos.json --max-broken 1563 --max-undocumented 354 --max-untested 444` ub/skills/agent-cli-proxy/SKILL.md 行291: r

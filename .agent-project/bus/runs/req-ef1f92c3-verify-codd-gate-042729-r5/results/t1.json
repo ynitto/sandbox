@@ -1,0 +1,10 @@
+{
+  "id": "t1",
+  "who": "worker-2",
+  "status": "done",
+  "output": "調査完了。要点は以下の通り。\n\n**結論**: このタスクの worktree（`main` から分岐した `ap/verify-codd-gate-042729`）では、完了条件のシェルコマンドは既に **exit=0（成功）** で通る。日本語ラベル「検証コマンド:」を先頭に持つ複数行出力からのコマンド抽出は、`tools/agent-project/agent_project/verify.py` の `_strip_leading_command_label`（372–390行目）で既に対応済み（コミット `598ea1d8` で導入）。関連ユニットテスト20件も全件 pass。\n\nコードは変更していない（完了条件が既に満たされていたため、範囲外の修正は加えていない）。成果物は `bus/runs/req-ef1f92c3-verify-codd-gate-042729-r5/artifacts/t1/report.md` に出力済み。",
+  "finished_at": "2026-07-17T18:25:29Z",
+  "artifacts": [
+    "artifacts/t1/report.md"
+  ]
+}

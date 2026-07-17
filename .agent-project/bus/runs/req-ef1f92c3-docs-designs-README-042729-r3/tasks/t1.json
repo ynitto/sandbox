@@ -1,0 +1,6 @@
+{
+  "id": "t1",
+  "goal": "docs/designs/agent-project-design.md を読み、README 用のリンク項目（docs/designs からの相対リンク＋1行要約）を作る。ファイルの実在と正確なパスを確認する",
+  "deps": [],
+  "kind": "work"
+}

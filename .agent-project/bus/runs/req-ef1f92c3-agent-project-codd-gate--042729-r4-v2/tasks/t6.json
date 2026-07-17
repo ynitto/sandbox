@@ -1,0 +1,8 @@
+{
+  "id": "t6",
+  "goal": "統合: 検証済みの3結線を agent-project.yaml に一貫して反映し、codd-gate 連携を有効化する。regression_cmd 行が完了条件の正規表現に一致する形で確実に書き込む",
+  "deps": [
+    "t5"
+  ],
+  "kind": "synthesize"
+}

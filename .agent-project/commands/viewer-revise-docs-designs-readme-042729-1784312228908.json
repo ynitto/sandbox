@@ -1,8 +1,0 @@
-{
-  "command": "revise",
-  "id": "docs-designs-README-042729",
-  "reason": "要対応画面で検証コマンドを変更",
-  "actor": "agent-dashboard",
-  "ts": "2026-07-17T18:17:08.908Z",
-  "verify": "echo \"hello\""
-}

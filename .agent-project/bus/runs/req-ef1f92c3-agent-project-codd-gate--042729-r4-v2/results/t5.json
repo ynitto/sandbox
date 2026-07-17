@@ -1,0 +1,13 @@
+{
+  "id": "t5",
+  "who": "worker-2",
+  "status": "done",
+  "output": "まず前提セットアップ（スキル更新・記憶同期・リコール）を行い、その後に依存成果物と設定ファイルを独立検算します。\n\n依存成果物と実ファイルをまとめて読み、主張を独立に突き合わせます。\n\nここからは参照リポジトリを専用worktreeで取得し、結線ロジック（検出/回帰/intake）の副作用と循環有無を独立確認します。\n\n独立検算結果を t5 成果物として書き出します（fail判定と差し戻し指示を明記）。\n\n**verify=fail**（t3/t4 を差し戻し）\n\n完了条件grepは現 worktree で **exit 0** ですが、統合前チェックとしては重大不整合が2件あります。  \n1. **t3差し戻し**: `artifacts/t3/regression-wiring-verification.md` の「origin/main整合」主張が実測と不一致です。参照repo `main` の `.agent/agent-project.yaml` は `codd-gate verify --base` ではなく `codd-gate verify --debt --sync ...`（grep exit 1）。  \n2. **t4差し戻し**: `artifacts/t4/intake-pipeline-live-verification.md` の主因分析は `workspace: src` 前提ですが、現行 `backlog/agent-project-codd-gate--042729.md` に `workspace` フィールドはありません。履歴由来の `needs_reason` と現定義が混線しています。\n\n検証レポートは以下に出力済みです。  \n`/Users/nitto/Workspace/sandbox-agent-state/.agent-project/bus/runs/req-ef1f92c3-agent-project-codd-gate--042729-r4-v2/artifacts/t5/adversarial-precheck.md`\n\n```json\n{\"ok\": false, \"issues\": [\"t3: origin/main の regression_cmd 整合主張が実測と不一致（.agent/agent-project.yaml は --base ではなく --debt --sync）。\", \"t4: verify失敗原因の主因を workspace:src とする前提が現 backlog 実体（workspace 無し）と不整合。現状態での再導出が必要。\"]}\n```\n\n```json\n{\"constraints\": [\"verify判定では dependency artifact の前提を採用する前に、現行 backlog 実体（workspace/verify）と参照repo main の一次証拠（対象yamlの実値）を毎回再検算すること。\", \"needs_reason は過去失敗の履歴であり現行タスク定義そのものではない。原因分析には現定義と履歴を分離して扱うこと。\"]}\n```",
+  "finished_at": "2026-07-17T17:51:24Z",
+  "data": {
+    "ok": false
+  },
+  "artifacts": [
+    "artifacts/t5/adversarial-precheck.md"
+  ]
+}

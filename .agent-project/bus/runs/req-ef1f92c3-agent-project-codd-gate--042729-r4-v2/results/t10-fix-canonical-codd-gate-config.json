@@ -1,0 +1,10 @@
+{
+  "id": "t10-fix-canonical-codd-gate-config",
+  "who": "worker-1",
+  "status": "done",
+  "output": "## 完了\n\nt9が突き止めた「実検証cwdと正典ファイルの不一致」の根本原因は、backlogの `- workspace: src` がこのタスクの `task.verify` を外部リポジトリの一時シャロークローンへ迂回させていたことだった。`- workspace:` が空なら `_task_verify_cwd`（`tools/agent-project/agent_project/verify.py:122-174`）は `cfg.workdir`（この状態worktree自身）を返す設計であり、そこには既にt1系列の作業で正しい `regression_cmd: codd-gate verify --base ...` が設定済みだった。t8が置いた複製ファイルは「見せかけ」ではなく、workspaceルーティングさえ正せば実際に使われる正典として機能する。\n\n**変更**: `backlog/agent-project-codd-gate--042729.md` から `- workspace: src` / `- routed_by: explicit-alias` の2行を削除（1ファイルのみ）。DR-0005（人によるverifyパス確定）は変更していない。参照リポジトリ（sandbox）へは読み取りのみで書き込みなし。\n\n**検証**: 修正後に実際に使われるcwdで完了条件grepがexit=0、`codd_gate_wiring.regression_wired`/`intake_wired`が共にTrue、既存ユニットテスト81件パスを確認済み。\n\n成果物は `bus/runs/.../artifacts/t10-fix-canonical-codd-gate-config/report.md` に出力済み。同種の `- workspace: src` バグは `docs-designs-README-042729`・`verify-codd-gate-042729` にも存在するが、範囲外のため未修正（報告のみ）。",
+  "finished_at": "2026-07-17T17:48:10Z",
+  "artifacts": [
+    "artifacts/t10-fix-canonical-codd-gate-config/report.md"
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "id": "t5",
+  "who": "worker-1",
+  "status": "done",
+  "output": "まず独立検算の前提を整え、対象ワークツリー実物を直接検証します。\n\n次に、依存成果を参照しつつ、実物ファイルと完了条件コマンドを同時に独立検算します。\n\n検証結果を後続タスク連携用に成果物ファイルへ出力します。\n\nverify=fail\n\n完了条件コマンド自体は **exit 0** で通過し、`README.md` と指定4件（`agent-project-design.md` / `agent-flow-design.md` / `codd-gate-design.md` / `agent-tools-rename-design.md`）の参照・実在一致は確認できました。  \nただし、**「導線から漏れた設計書がないか」** の検証で未掲載ファイルがあり、集約前チェックとしては不合格です。\n\n1. **どこで**: `docs/designs/README.md`（カテゴリ索引・全体導線）  \n   **何が**: `docs/designs/` に実在する以下3件が README 未掲載。  \n   `agent-dashboard-kiro-loop-terminal-design.md` / `agent-dashboard-project-ux-improvements.md` / `agent-flow-self-healing-retry-design.md`  \n   **どう直すべきか**: README のカテゴリ別索引に3件を追加し、冒頭の件数表記（現在「全24件」）を実在件数に合わせて更新すること。\n\n{\"ok\": false, \"issues\": [\"docs/designs/README.md に docs/designs 配下の実在設計書3件（agent-dashboard-kiro-loop-terminal-design.md, agent-dashboard-project-ux-improvements.md, agent-flow-self-healing-retry-design.md）が未掲載。カテゴリ別索引へ追加し、件数表記（全24件）を実在件数に更新する必要がある。\"]}",
+  "finished_at": "2026-07-17T18:06:24Z",
+  "data": {
+    "ok": false
+  },
+  "artifacts": [
+    "artifacts/t5/report.md"
+  ]
+}

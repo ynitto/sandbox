@@ -1,0 +1,10 @@
+{
+  "id": "t3",
+  "who": "worker-1",
+  "status": "done",
+  "output": "## 完了報告\n\n**成果**: `docs/designs/README.md` を確認したところ、タスクが求める `codd-gate-design.md` のリンク項目（相対リンク `./codd-gate-design.md` ＋1行要約）は既に「まず読むもの — 主要4設計」節と「カテゴリ別索引」節の両方に存在していた。要約文は agent-project との連携方式（`schemas/` 共通データ契約、E1〜E3フック契約）を明記しており、charter の「codd-gate と連携できること」方針が導線に反映済みだったため、追加編集は行わなかった（worktree は clean）。\n\n**検証**: 完了条件コマンドを実行し終了コード0（PASS）を確認。`codd-gate-design.md` 本文と charter (`v1.md`) を読み、README の要約が両者と整合していることを確認した。\n\n成果物: `bus/runs/req-ef1f92c3-docs-designs-README-042729-r3/artifacts/t3/report.md`",
+  "finished_at": "2026-07-17T18:03:42Z",
+  "artifacts": [
+    "artifacts/t3/report.md"
+  ]
+}

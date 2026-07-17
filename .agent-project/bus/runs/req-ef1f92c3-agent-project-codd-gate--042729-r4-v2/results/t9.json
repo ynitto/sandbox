@@ -1,0 +1,10 @@
+{
+  "id": "t9",
+  "who": "worker-2",
+  "status": "done",
+  "output": "## 完了\n\nt2・t4・t8 の成果を突き合わせ、**実際の検証 cwd を再現・実測**した結果、**t8 の対応は無効（見せかけの成功）** と結論づけました。\n\n**核心の発見**: t8 は bare `agent-project.yaml` をこの worktree（`.agent-project/` 直下）に置き、そこで grep が exit=0 になることを確認していましたが、実際に `_task_verify_cwd`（`tools/agent-project/agent_project/verify.py:108`）が使う cwd はここではありません。このタスクは backlog に `- workspace: src` を持つため、verify は **`https://github.com/ynitto/sandbox` を都度シャロークローンした一時ディレクトリ**で実行されます。\n\n実測で二重の理由により、そこでは grep が成功し得ないことを確認しました。\n\n1. `task_branch=True`（既定、上書きなし）により解決ブランチは `ap/agent-project-codd-gate--042729` になるが、このブランチは origin に存在せず（`git ls-remote` で確認）、実際にそのブランチをクローンすると `exit=128` で失敗（`_clone_repo_shallow` は失敗時に既定へフォールバックしない設計）。verify は grep 以前にクローン失敗で `ok=False` になる。\n2. 仮に `main` にフォールバックしたと想定しても、実際に origin/main をクローンして確認した結果 bare `agent-project.yaml` は存在せず（`.agent/agent-project.yaml` のみ）、grep は `exit=2`。\n\nregression/intake の結線自体は `codd_gate_wiring.regression_wired`/`intake_wired` を独立に再実行し True を確認、ユニットテスト81件も再現。参照リポジトリへの新規書き込みや余計な変更混入はありません。\n\n成果物は `bus/runs/.../artifacts/t9/adversarial-verification.md` に出力済み。結論として、この完了条件はワーカーの反復では満たせない構造的問題（read-only 参照リポジトリ・人の DR-0005 決定の尊重という制約下では是正手段がない）であり、次の一手は人/評価役の設計判断に委ねています。",
+  "finished_at": "2026-07-16T19:45:17Z",
+  "artifacts": [
+    "artifacts/t9/adversarial-verification.md"
+  ]
+}

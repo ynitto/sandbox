@@ -1,0 +1,6 @@
+{"ts": "2026-07-17T18:23:34Z", "who": "worker-2", "kind": "claimed", "node": "t1"}
+{"ts": "2026-07-17T18:25:29Z", "who": "worker-2", "kind": "result", "node": "t1", "status": "done"}
+{"ts": "2026-07-17T18:25:29Z", "who": "worker-2", "kind": "claimed", "node": "t2"}
+{"ts": "2026-07-17T18:31:08Z", "who": "worker-2", "kind": "result", "node": "t2", "status": "failed"}
+{"ts": "2026-07-17T18:32:44Z", "who": "worker-2", "kind": "claimed", "node": "verify-codd-gate-ja-label-02"}
+{"ts": "2026-07-17T18:33:08Z", "who": "worker-2", "kind": "result", "node": "verify-codd-gate-ja-label-02", "status": "done"}

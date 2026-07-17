@@ -1,0 +1,2 @@
+{"ts": "2026-07-17T18:02:26Z", "who": "orchestrator", "kind": "planned", "patterns": ["fan-out-and-synthesize", "loop-until-done"], "parallelism": 4, "tasks": ["t1", "t2", "t3", "t4", "t5", "t6", "t7"]}
+{"ts": "2026-07-17T18:08:48Z", "who": "orchestrator", "kind": "replan", "iteration": 1, "added": ["t8-readme-final-verify"]}

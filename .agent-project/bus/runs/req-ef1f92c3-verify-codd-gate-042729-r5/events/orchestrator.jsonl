@@ -1,0 +1,3 @@
+{"ts": "2026-07-17T18:23:33Z", "who": "orchestrator", "kind": "planned", "patterns": ["loop-until-done", "adversarial-verification"], "parallelism": 2, "tasks": ["t1", "t2", "t3", "t4"]}
+{"ts": "2026-07-17T18:31:34Z", "who": "orchestrator", "kind": "replan", "iteration": 1, "added": ["verify-codd-gate-ja-label-01"]}
+{"ts": "2026-07-17T18:32:44Z", "who": "orchestrator", "kind": "replan", "iteration": 2, "added": ["verify-codd-gate-ja-label-02"]}

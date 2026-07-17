@@ -1,0 +1,8 @@
+{
+  "id": "t2",
+  "goal": "_first_command_line を修正し、'検証コマンド:' などのラベル行・空行・散文行をスキップして最初の実コマンド行(codd-gate verify --base \"$KIRO_BASE_REV\" のように引用符と環境変数参照を含む行)をそのまま返すようにする。ラベルは日本語/英語両対応、行内 'ラベル: コマンド' 形式も考慮。参照リポジトリ(src)は変更せず tools/agent-project 配下のみ編集。",
+  "deps": [
+    "t1"
+  ],
+  "kind": "generate"
+}

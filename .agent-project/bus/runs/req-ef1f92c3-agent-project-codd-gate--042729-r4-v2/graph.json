@@ -1,0 +1,101 @@
+{
+  "strategy": {
+    "patterns": [
+      "fan-out-and-synthesize",
+      "adversarial-verification",
+      "loop-until-done"
+    ],
+    "parallelism": 3,
+    "review": true,
+    "reason": "codd-gate連携の完成は『自動検出』『regression結線』『intake結線』という独立な3片に分割でき、fan-out-and-synthesizeで並列実装→agent-project.yamlへ統合するのが最も効率的。統合前にverifyノード(t5)を挟み、3結線の整合・正しさ・副作用をadversarial-verificationで事前チェックしてから集約する。完了条件(grepで regression_cmd に codd-gate verify --base が入る)は決定的なので、最終verify(t7)で終了コード0を確認し、満たすまでloop-until-doneでt1..t6を再試行して収束させる。map-reduce的な件数不定のfan-outではなく片数が3で固定のため静的fan-outを採用。"
+  },
+  "nodes": {
+    "t1": {
+      "goal": "現状調査と方針決定: agent-project.yaml の構造、codd-gate CLI の検出方法(存在・パス解決)、regression_cmd/intake の既存結線状態、charter制約(agent-project/agent-flowをエンジン、agent-dashboardをフロント)を把握し、3結線の実装方針を確定する",
+      "deps": [],
+      "kind": "work"
+    },
+    "t2": {
+      "goal": "codd-gate 自動検出の実装: codd-gate CLI の存在検出・パス解決ロジックを実装し、未検出時のフォールバック挙動を定義する(人の操作を最小化する前提を満たす)",
+      "deps": [
+        "t1"
+      ],
+      "kind": "generate"
+    },
+    "t3": {
+      "goal": "regression 結線の実装: agent-project.yaml の regression_cmd に 'codd-gate verify --base ...' を設定し、差分ゲート(verify)を regression として起動できるよう結線する",
+      "deps": [
+        "t1"
+      ],
+      "kind": "generate"
+    },
+    "t4": {
+      "goal": "intake 結線の実装: codd-gate tasks(修復タスク生成)の出力を agent-project の backlog/intake へ取り込む結線を実装し、ドリフト検出→タスク化を自動化する",
+      "deps": [
+        "t1"
+      ],
+      "kind": "generate"
+    },
+    "t5": {
+      "goal": "敵対的検証: t2/t3/t4 の3結線を批判的にレビューし、agent-project.yaml への反映が整合しているか・regression_cmd の記述が完了条件grepに合致するか・intake/検出に副作用や循環がないかを統合前に事前チェックする。問題があれば該当generateノードへ差し戻す",
+      "deps": [
+        "t2",
+        "t3",
+        "t4"
+      ],
+      "kind": "verify"
+    },
+    "t6": {
+      "goal": "統合: 検証済みの3結線を agent-project.yaml に一貫して反映し、codd-gate 連携を有効化する。regression_cmd 行が完了条件の正規表現に一致する形で確実に書き込む",
+      "deps": [
+        "t5"
+      ],
+      "kind": "synthesize"
+    },
+    "t7": {
+      "goal": "完了条件の検証: grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' agent-project.yaml が終了コード0で成功することを確認する。満たさなければ loop-until-done として t1..t6 を再試行し、収束させる",
+      "deps": [
+        "t6"
+      ],
+      "kind": "verify"
+    },
+    "t8": {
+      "goal": "失敗した t3 の再実行として regression 結線を完成させる。検証実行ディレクトリ直下の agent-project.yaml が存在しないため、そこに設定ファイルを配置または生成し、regression_cmd に `codd-gate verify --base ...` を同一行で設定する。対象リポジトリが参照のみという制約を守りつつ、`grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' agent-project.yaml` が終了コード0になる状態を作る。",
+      "deps": [
+        "t1"
+      ],
+      "kind": "work"
+    },
+    "t9": {
+      "goal": "t5 を差し替えて敵対的検証を行う。t2・t4・t8 の成果を突き合わせ、自動検出、regression、intake の3結線が有効で余計な変更を含まないことを確認する。特に実際の検証 cwd で bare `agent-project.yaml` が存在し、指定 grep が終了コード0で成功することを実測する。失敗時は欠落ファイル、配置先、regression_cmd の形式のどれが原因かを明記する。",
+      "deps": [
+        "t2",
+        "t4",
+        "t8"
+      ],
+      "kind": "work"
+    },
+    "t10-fix-canonical-codd-gate-config": {
+      "goal": "t9で判明した不足を修正する。実際に完了条件が実行されるcwdと正典の設定ファイルを特定し、見せかけの複製ではなく、そのcwdから参照されるagent-project.yamlへ regression_cmd: codd-gate verify --base を設定する。既存のcodd-gate自動検出およびregression/intake結線を維持し、不要な範囲外変更を加えない。",
+      "deps": [
+        "t9"
+      ],
+      "kind": "work"
+    },
+    "t11-verify-codd-gate-completion": {
+      "goal": "t10の修正後、実際の検証cwdで grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' agent-project.yaml をそのまま実行し、終了コード0と一致行を記録する。併せて対象のagent-project.yamlが正典または実運用で参照される設定であり、検証専用の囮ファイルでないことを確認する。失敗時はcwd・対象パス・grep出力・終了コードをissuesとして具体的に報告する。",
+      "deps": [
+        "t10-fix-canonical-codd-gate-config"
+      ],
+      "kind": "work"
+    },
+    "t12-fix-and-verify-canonical-codd-gate": {
+      "goal": "t9 の調査結果を根拠に、t8 が作成した検証専用のダミー agent-project.yaml に依存せず、agent-project が実際に読み込む正典設定へ codd-gate の自動検出および regression/intake 結線を反映する。t10 のタイムアウト後の変更有無を確認して未完成部分だけを補完し、要求された検証 cwd で `grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' agent-project.yaml` を実行して終了コード 0 を記録する。設定値が存在するだけでなく、既存の agent-project/agent-flow エンジンとの結線を壊していないことも確認する。",
+      "deps": [
+        "t9"
+      ],
+      "kind": "work"
+    }
+  },
+  "iteration": 3
+}

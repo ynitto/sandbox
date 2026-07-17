@@ -1,0 +1,8 @@
+{
+  "id": "t7",
+  "goal": "完了条件の検証: grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' agent-project.yaml が終了コード0で成功することを確認する。満たさなければ loop-until-done として t1..t6 を再試行し、収束させる",
+  "deps": [
+    "t6"
+  ],
+  "kind": "verify"
+}

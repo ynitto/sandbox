@@ -1,0 +1,10 @@
+{
+  "id": "t4",
+  "who": "worker-2",
+  "status": "done",
+  "output": "**t4: intake結線 — 実データによるエンドツーエンド稼働確認と、完了条件grepが構造的に通らない理由の確定**（成果物: `bus/runs/req-ef1f92c3-agent-project-codd-gate--042729-r3-v2/artifacts/t4/intake-pipeline-live-verification.md`）\n\n**(a) 成果サマリー**: intake結線（`codd-gate tasks --debt` → backlog取り込み）を実データでエンドツーエンド確認した。`intake_cmd` を実際の cwd 条件で実行 → exit=0・JSON 20件、`run_intake()` が使う本物の `codd_gate_debt.parse_debt_output` でレコード単位パース → 20件成功・エラー0、冪等スキップ判定もエミュレートし新規enqueue対象であることを確認。新規実装は不要。\n\n残る唯一のギャップ（完了条件grepの不一致）は、t1が状況証拠推測に留めていた点を `decisions/agent-project-codd-gate--042729.md` で確定させた：**DR-0005（2026-07-16, actor: nitto, revise）で人が明示的に verify を `.agent/agent-project.yaml` → bare `agent-project.yaml` に変更**したもの。かつ `_task_verify_cwd` の実装上、このverifyは origin/main から都度シャロークローンした一時ディレクトリで実行されるが、bare `agent-project.yaml` は origin/main のどこにも存在せず（README探索順も `.agent/` 配下のみ）、**現状の verify 文言では原理的に exit=0 になり得ない**ことを確定した。\n\n**(b) 検証**: 上記に加え `codd_gate_wiring.regression_wired`/`intake_wired` の再確認、pytest 81 passed の再現、origin/main の実体確認まで実施（詳細は artifact 参照）。\n\n**(c)**: grepを通す手段は「人の決定(DR-0005)を無断で覆す」か「read-only参照リポジトリへshadow file を書く」の2つしかなく、どちらも制約に反するため実行していない。次の一手は人の判断（DR-0005が意図的か誤りか）に委ねると結論。範囲外の発見（20件の未取り込みdebt、参照リポジトリ側の未コミット差分）は報告のみに留めた。",
+  "finished_at": "2026-07-16T19:35:18Z",
+  "artifacts": [
+    "artifacts/t4/intake-pipeline-live-verification.md"
+  ]
+}

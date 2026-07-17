@@ -1,0 +1,6 @@
+{
+  "id": "t1",
+  "goal": "現状調査と方針決定: agent-project.yaml の構造、codd-gate CLI の検出方法(存在・パス解決)、regression_cmd/intake の既存結線状態、charter制約(agent-project/agent-flowをエンジン、agent-dashboardをフロント)を把握し、3結線の実装方針を確定する",
+  "deps": [],
+  "kind": "work"
+}

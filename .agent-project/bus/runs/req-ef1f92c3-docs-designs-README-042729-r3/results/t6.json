@@ -1,0 +1,13 @@
+{
+  "id": "t6",
+  "who": "worker-1",
+  "status": "failed",
+  "output": "実行エラー: workspace rebase が競合しました（ap/docs-designs-README-042729）: fatal: invalid upstream 'FETCH_HEAD'",
+  "finished_at": "2026-07-17T18:08:15Z",
+  "data": {
+    "error_class": "content"
+  },
+  "artifacts": [
+    "artifacts/t6/report.md"
+  ]
+}

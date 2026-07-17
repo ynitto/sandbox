@@ -1,0 +1,6 @@
+{
+  "id": "t3",
+  "goal": "docs/designs/codd-gate-design.md を読み、README 用のリンク項目（相対リンク＋1行要約）を作る。charter の『codd-gate と連携』方針が導線に現れるよう配慮する",
+  "deps": [],
+  "kind": "work"
+}

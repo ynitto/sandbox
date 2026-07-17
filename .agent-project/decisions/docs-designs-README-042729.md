@@ -35,3 +35,9 @@
 - reason  : agent-dashboard から操作
 - affects : policy.pin += docs-designs-README-042729
 
+## DR-0007  2026-07-18  actor: nitto
+- context : docs-designs-README-042729（設計書の読み取り口（docs/designs/README）を作り主要設計への導線を通す）を人が修正（revise）
+- action  : revise
+- reason  : 要対応画面で検証コマンドを変更
+- affects : verify: echo "hello"; docs-designs-README-042729 → ready
+

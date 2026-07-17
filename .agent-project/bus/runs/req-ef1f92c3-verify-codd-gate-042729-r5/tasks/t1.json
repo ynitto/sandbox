@@ -1,0 +1,6 @@
+{
+  "id": "t1",
+  "goal": "tools/agent-project の agent_project._first_command_line の現在の実装と呼び出し元(verify合成)を調査し、「検証コマンド:」等の日本語ラベル行を先頭に持つ複数行出力からコマンド行が抽出できない原因を特定する。完了条件のシェルコマンドを実行して現状の失敗内容(戻り値)を記録する。",
+  "deps": [],
+  "kind": "work"
+}

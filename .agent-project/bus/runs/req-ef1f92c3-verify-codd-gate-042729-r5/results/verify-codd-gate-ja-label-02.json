@@ -1,0 +1,10 @@
+{
+  "id": "verify-codd-gate-ja-label-02",
+  "who": "worker-2",
+  "status": "done",
+  "output": "## 成果報告\n\n**結論: pass（終了コード0）**\n\n- 検証: 対象 worktree で完了条件コマンドをそのまま実行 → `EXIT_CODE=0`、標準エラーなし、アサーション成功\n- 変更: なし（コード変更不要、依存タスクの調査結果と一致）\n- 報告書: `bus/runs/req-ef1f92c3-verify-codd-gate-042729-r5/artifacts/verify-codd-gate-ja-label-02/report.md` に出力済み",
+  "finished_at": "2026-07-17T18:33:08Z",
+  "artifacts": [
+    "artifacts/verify-codd-gate-ja-label-02/report.md"
+  ]
+}

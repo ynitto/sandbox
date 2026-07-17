@@ -1,5 +1,5 @@
 ## agent-project-codd-gate--042729: agent-projectにcodd-gate自動検出とregression/intake結線を完成させ連携を有効化する
-- status: ready
+- status: blocked
 - source: charter
 - priority: 0
 - verify: `echo "ok"`
@@ -11,5 +11,4 @@
 - routed_by: explicit-alias
 - last_run: req-ef1f92c3-agent-project-codd-gate--042729-r4-v2
 - env_resume: 1
-- needs_reason: [agent-error:env] 環境の問題（実行環境の問題）: 実行環境の問題です（モデル名・CLI の導入・PATH を確認してください） タスクの内容の問題ではないため、リトライ回数は消費していません。環境を直してから approve すると、同じ run の続き（失敗した工程だけ）から再開します。
-- reuse_done_run: req-ef1f92c3-agent-project-codd-gate--042729-r4-v2
+- needs_reason: 回帰検知: グローバル検査 `codd-gate verify --debt --sync --repos repos.json --max-broken 1563 --max-undocumented 354 --max-untested 444` 失敗 — exit=1 失敗した工程: `codd-gate verify --debt --sync --repos repos.json --max-broken 1563 --max-undocumented 354 --max-untested 444` ub/skills/agent-cli-proxy/SKILL.md 行291: r

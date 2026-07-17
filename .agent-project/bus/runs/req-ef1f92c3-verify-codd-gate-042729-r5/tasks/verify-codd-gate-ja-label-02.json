@@ -1,0 +1,8 @@
+{
+  "id": "verify-codd-gate-ja-label-02",
+  "goal": "対象 worktree で `PYTHONPATH=tools/agent-project python3 -c 'from agent_project import _first_command_line; assert _first_command_line(\"検証コマンド:\\ncodd-gate verify --base \\\"$KIRO_BASE_REV\\\"\") == \"codd-gate verify --base \\\"$KIRO_BASE_REV\\\"\"'` をそのまま実行し、終了コード0なら pass、0以外なら stderr と抽出結果を示して fail と判定する。ソース変更や要求外の成果物追加は行わない。",
+  "deps": [
+    "verify-codd-gate-ja-label-01"
+  ],
+  "kind": "work"
+}

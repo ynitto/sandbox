@@ -2,12 +2,12 @@
 status: proposed
 date: 2026-07-18
 decision-makers: [human]
-task-id: docs-designs-README-042729
+task-id: verify-codd-gate-042729
 kind: blocked
-delivery: [{"name":"sandbox","role":"write","url":"https://github.com/ynitto/sandbox","path":"/Users/nitto/Workspace/sandbox","base":"main","branch":"ap/docs-designs-README-042729","ref":"","files":[],"files_total":0,"diff_cmd":"","mr_url":""}]
+delivery: [{"name":"sandbox","role":"write","url":"https://github.com/ynitto/sandbox","path":"/Users/nitto/Workspace/sandbox","base":"main","branch":"ap/verify-codd-gate-042729","ref":"","files":[],"files_total":0,"diff_cmd":"","mr_url":""}]
 ---
 
-# 要対応: docs-designs-README-042729 — 設計書の読み取り口（docs/designs/README）を作り主要設計への導線を通す
+# 要対応: verify-codd-gate-042729 — verify合成が日本語「検証コマンド:」ラベル付き出力からcodd-gateコマンド行を抽出できる
 
 ## Context and Problem Statement
 
@@ -21,11 +21,11 @@ NG: 未テスト 462 件 > 許容 444
 - 状態: blocked（agent-project の判断待ち）
 
 ## 判断材料（成果物の所在・差分・検証）
-- 成果物: ブランチ `ap/docs-designs-README-042729`（ローカルで ref 未解決・差分取得不可）
+- 成果物: ブランチ `ap/verify-codd-gate-042729`（ローカルで ref 未解決・差分取得不可）
 - 所在: /Users/nitto/Workspace/sandbox
 - 注: 作業ブランチの ref を解決できなかったためローカル差分は省略（MR があればそちらを確認）
 - 実行先: local
-- 検証: `echo "hello"` → PASS（exit=0 hello）
+- 検証: `PYTHONPATH=tools/agent-project python3 -c 'from agent_project import _first_command_line; assert _first_command_line("検証コマンド:\ncodd-gate verify --base \"$KIRO_BASE_REV\"") == "codd-gate verify --base \"$KIRO_BASE_REV\""'` → PASS（exit=0）
 
 ## Decision Outcome
 
@@ -34,4 +34,4 @@ NG: 未テスト 462 件 > 許容 444
 
 <!-- 上の [ ] を [x] にした時だけ反映されます（書きかけでの誤発火を防ぐため）。
      下に修正方針・指示を書いてください。空のままでも [x] なら『そのまま再実行』。
-     コマンドなら `agent-project approve docs-designs-README-042729`。 -->
+     コマンドなら `agent-project approve verify-codd-gate-042729`。 -->

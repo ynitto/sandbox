@@ -1,0 +1,8 @@
+{
+  "id": "t11-verify-codd-gate-completion",
+  "goal": "t10の修正後、実際の検証cwdで grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' agent-project.yaml をそのまま実行し、終了コード0と一致行を記録する。併せて対象のagent-project.yamlが正典または実運用で参照される設定であり、検証専用の囮ファイルでないことを確認する。失敗時はcwd・対象パス・grep出力・終了コードをissuesとして具体的に報告する。",
+  "deps": [
+    "t10-fix-canonical-codd-gate-config"
+  ],
+  "kind": "work"
+}

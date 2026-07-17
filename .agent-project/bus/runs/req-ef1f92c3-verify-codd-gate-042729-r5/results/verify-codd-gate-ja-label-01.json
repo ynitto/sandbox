@@ -1,0 +1,10 @@
+{
+  "id": "verify-codd-gate-ja-label-01",
+  "who": "worker-1",
+  "status": "done",
+  "output": "## 成果報告\n\n**結論: pass（終了コード0）**\n\n完了条件のシェルコマンドを対象 worktree でそのまま実行し、終了コード0を確認しました。依存タスク t1 の調査どおり、日本語ラベル「検証コマンド:」の除去は既に `_strip_leading_command_label`（`verify.py:375`）で実装済みで、コード変更は不要でした。\n\n- 検証: 完了条件コマンドを実行 → `EXIT_CODE=0`、標準エラーなし、アサーション成功\n- 変更: なし（既存実装で条件を満たすため）\n- 報告書: `bus/runs/req-ef1f92c3-verify-codd-gate-042729-r5/artifacts/verify-codd-gate-ja-label-01/report.md` に出力済み",
+  "finished_at": "2026-07-17T18:32:21Z",
+  "artifacts": [
+    "artifacts/verify-codd-gate-ja-label-01/report.md"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "id": "t2",
+  "who": "worker-2",
+  "status": "failed",
+  "output": "実行エラー: workspace rebase が競合しました（ap/verify-codd-gate-042729）: fatal: invalid upstream 'FETCH_HEAD'",
+  "finished_at": "2026-07-17T18:31:08Z",
+  "data": {
+    "error_class": "content"
+  }
+}

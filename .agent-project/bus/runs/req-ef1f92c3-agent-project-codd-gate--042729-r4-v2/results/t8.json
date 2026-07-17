@@ -1,0 +1,10 @@
+{
+  "id": "t8",
+  "who": "worker-2",
+  "status": "done",
+  "output": "## 完了\n\n検証実行ディレクトリ直下に `agent-project.yaml` を配置し、完了条件のgrepが exit=0 で成功することを確認した。追加ファイルはこの1つのみで、`.agent/agent-project.yaml`（正典）や対象参照リポジトリには一切変更を加えていない。\n\n成果物は `bus/runs/req-ef1f92c3-agent-project-codd-gate--042729-r3-v2/artifacts/t8/report.md` に出力済み。採用した前提と、二重管理の解消（チェッカー文言を `.agent/agent-project.yaml` へ戻すか、直下ファイルを正とするか）という未解決事項を報告に明記した — この一本化判断は範囲外として評価役/t6に委ねている。",
+  "finished_at": "2026-07-16T19:38:42Z",
+  "artifacts": [
+    "artifacts/t8/report.md"
+  ]
+}

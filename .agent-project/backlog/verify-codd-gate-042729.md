@@ -1,5 +1,5 @@
 ## verify-codd-gate-042729: verify合成が日本語「検証コマンド:」ラベル付き出力からcodd-gateコマンド行を抽出できる
-- status: doing
+- status: blocked
 - source: charter
 - priority: 0
 - verify: `PYTHONPATH=tools/agent-project python3 -c 'from agent_project import _first_command_line; assert _first_command_line("検証コマンド:\ncodd-gate verify --base \"$KIRO_BASE_REV\"") == "codd-gate verify --base \"$KIRO_BASE_REV\""'`
@@ -8,6 +8,5 @@
 - assess: c=1 r=1 a=1
 - workspace: src
 - routed_by: explicit-alias
-- needs_reason: 繰り返し NG（retries=5）: workspace repo の clone 失敗（https://github.com/ynitto/sandbox@ap/verify-codd-gate-042729）: Cloning into '/var/folders/8c/s6jh85ls4tq3fmzkl0jk5jcc0000gn/T/agent-verify-_dki0_0g/repo'... ⏎ fatal: Remote branch ap/verify-codd-gate-042729 not found in upstream origin
 - last_run: req-ef1f92c3-verify-codd-gate-042729-r5
-- flow_run: req-ef1f92c3-verify-codd-gate-042729-r5
+- needs_reason: 回帰検知: グローバル検査 `codd-gate verify --debt --sync --repos repos.json --max-broken 1563 --max-undocumented 354 --max-untested 444` 失敗 — exit=1 失敗した工程: `codd-gate verify --debt --sync --repos repos.json --max-broken 1563 --max-undocumented 354 --max-untested 444` ub/skills/agent-cli-proxy/SKILL.md 行291: r
