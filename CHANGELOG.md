@@ -25,6 +25,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   （`{item}` 差し込み可）。投入時アセスメント（c/r/a 採点）も記述があれば材料にする。
 - done の根拠は従来どおり **verify のみ**（これらは誘導であって完了条件ではない）。
   書式の正典 `backlog.md.example`・JSON スキーマ `schemas/task.schema.json` を更新。
+- **AI による補完**: dashboard のタスク詳細（修正フォーム）に「意図と境界」セクションと
+  **「✦ AI で補完」**を追加 — 新モード `task-guide` が charter・既存 backlog・タスク定義から
+  根拠のある項目だけを下書きし（憶測で境界を発明しない契約）、人が確認してから revise で送信。
+  フォローアップ提案（検収 AI 補助）も why を必ず・out_of_scope / hints を有益なら付けて提案し、
+  タスク追加フォームへ引き継がれる。本体側は plan-review 差し戻しの AI 修正（plan_rework）が
+  誘導記述の補完・更新に対応（応答にキーが無い項目は既存値を温存）。
+- **表示・引き継ぎの整合**: dashboard のタスク詳細で誘導記述を散文表示（⏎ は改行へ復元。
+  feedback/note も同様に）、バックログ一覧に「目的（why）」を表示。inbox 投入・完了タスクの
+  再投入・cohort・spec 展開の全経路で欠落しないよう許可リストを統一。
+- **agent-flow**: stub プランナーが構造化要求（空行を含む＝build_request の要求文）を本文中の
+  `;` / `->` で誤分割していたのを修正（区切りのミニ言語はフラットな 1 行/リスト要求専用に。
+  verify コマンドや誘導記述に混ざる記号で issue が細切れにならない）。
 
 ### agent-dashboard / agent-project: 検収・定常業務の 4 つの不具合を修正
 

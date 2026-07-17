@@ -899,6 +899,22 @@ class PlannerTests(unittest.TestCase):
         # 見出しは本来の目的（先頭行）から始まる
         self.assertTrue(all(t["goal"].startswith("ログイン画面のバグを修正する") for t in tasks))
 
+    def test_structured_request_semicolons_and_arrows_not_split(self):
+        # 構造化要求の本文には ';'（verify コマンド）や '->'（誘導・レビュー記述の文中）が
+        # 普通に混ざる。区切りのミニ言語はフラット要求専用で、構造化要求では解釈しない。
+        req = (
+            "リファクタする\n\n"
+            "完了条件: 次のシェルコマンドが終了コード 0 で成功すること:\n"
+            "  cd app; pytest -q\n\n"
+            "やらないこと（スコープ外）:\n  設定 -> 環境変数の整理\n"
+        )
+        tasks = kf.plan_stub(req)
+        for t in tasks:
+            self.assertNotIn("pytest", t["goal"])   # verify の断片が別タスクにならない
+            self.assertNotIn("環境変数", t["goal"])  # '->' を依存チェーンとして解釈しない
+            self.assertEqual(t["deps"], [])
+        self.assertTrue(all(t["goal"].startswith("リファクタする") for t in tasks))
+
     def test_structured_request_strategy_goals_have_no_repos(self):
         # plan_stub を使う既定パターン（fan-out-and-synthesize）でも repos が goal に出ない
         strat, tasks = kf.plan_strategy_stub(self._STRUCTURED_REQ)

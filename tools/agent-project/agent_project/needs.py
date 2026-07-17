@@ -328,7 +328,8 @@ def _plan_approve(cfg: "Config", t: Task, reason: str) -> None:
     append_journal(cfg.journal, f"plan-review 承認: {t.id} → {t.status}")
 
 
-_PLAN_REWORK_FIELDS = ("title", "verify", "accept", "after", "priority", "note")
+_PLAN_REWORK_FIELDS = ("title", "verify", "accept", "after", "priority", "note",
+                       *TASK_GUIDE_KEYS)
 
 
 def _plan_rework_prompt(t: Task, feedback: str) -> str:
@@ -339,7 +340,13 @@ def _plan_rework_prompt(t: Task, feedback: str) -> str:
         f"## 人のレビュー指摘（必ず反映する）\n{feedback}\n\n"
         "出力は JSON オブジェクトのみ: {\"title\": str, \"verify\": str（終了コード0=PASSのシェル。"
         "書けなければ空）, \"accept\": str（自然言語の完了条件・任意）, \"after\": str（依存タスクID・"
-        "カンマ区切り・任意）, \"priority\": int（任意）, \"note\": str（任意）}。"
+        "カンマ区切り・任意）, \"priority\": int（任意）, \"note\": str（任意）, "
+        "\"why\": str（背景・目的・任意）, \"desc\": str（作業内容の詳細・任意）, "
+        "\"scope\": str（変更してよい範囲・任意）, \"out_of_scope\": str（やらないこと・任意）, "
+        "\"constraints\": str（タスク固有の制約・任意）, \"hints\": str（実装の手がかり・任意）, "
+        "\"demo\": str（人の確認観点・任意）}。"
+        "指摘がスコープ・制約・意図に関わるなら該当フィールドへ反映し、"
+        "空欄で内容を補える項目（why/scope 等）は妥当な範囲で補完してよい（各 1 行・改行は ⏎）。"
         "変更不要のフィールドは現在の値をそのまま返すこと。")
 
 
@@ -353,8 +360,10 @@ def plan_rework(cfg: "Config", t: Task, feedback: str) -> None:
         if isinstance(obj, dict) and str(obj.get("title", "")).strip():
             t.title = str(obj["title"]).strip()
             t.verify = _strip_code(str(obj.get("verify", "") or "").strip())
-            for k in ("accept", "after", "note"):
-                v = str(obj.get(k, "") or "").strip()
+            for k in ("accept", "after", "note", *TASK_GUIDE_KEYS):
+                if k in TASK_GUIDE_KEYS and k not in obj:
+                    continue                   # 誘導記述は「キーあり」だけ置換（旧応答でも既存値を消さない）
+                v = str(obj.get(k, "") or "").strip().replace("\n", " ⏎ ")
                 t.drop(k)
                 if v:
                     t.extra.append((k, v))

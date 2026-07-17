@@ -114,7 +114,8 @@ function enqueueToInbox(projectDir, spec) {
   const title = String(spec.title || '').trim();
   if (!title) throw new Error('タイトルは必須です');
   const clean = { title };
-  for (const key of ['id', 'verify', 'accept', 'verify_template', 'note', 'after', 'level', 'track']) {
+  for (const key of ['id', 'verify', 'accept', 'verify_template', 'note', 'after', 'level', 'track',
+    'why', 'desc', 'scope', 'out_of_scope', 'constraints', 'hints', 'demo']) {
     const v = spec[key];
     if (v !== undefined && v !== null && String(v).trim() !== '') clean[key] = String(v).trim();
   }

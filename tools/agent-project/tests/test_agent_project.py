@@ -10899,6 +10899,26 @@ class TestTaskGuideFields(unittest.TestCase):
             self.assertEqual(created[0].get("why"), "spec の中核")
             self.assertEqual(created[0].get("out_of_scope"), "API 層")
 
+    def test_plan_rework_completes_and_preserves_guide_fields(self):
+        # 差し戻し修正（AI）が誘導記述を補完・更新でき、応答にキーが無い項目は消えない
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="proposed")
+            cfg = cfg_for(d)
+            cfg.decisions.mkdir(parents=True, exist_ok=True)
+            t = next(x for x in km.load_tasks(cfg.backlog) if x.id == "T1")
+            t.extra.append(("why", "既存の理由"))
+            km.persist_task(cfg, t)
+            out = ('{"title": "T1", "verify": "true", "scope": "src/ のみ",'
+                   ' "out_of_scope": "テスト整備\\nCI 変更"}')   # 生の改行は ⏎ に畳まれる
+            with mock.patch.object(km, "_run_agent_cli", return_value=out):
+                km.plan_rework(cfg, t, "スコープを src に限定して")
+            t2 = next(x for x in km.load_tasks(cfg.backlog) if x.id == "T1")
+            self.assertEqual(t2.get("scope"), "src/ のみ")
+            self.assertEqual(t2.get("out_of_scope"), "テスト整備 ⏎ CI 変更")
+            self.assertEqual(t2.get("why"), "既存の理由")   # キー無し＝既存値を温存
+            self.assertIn('"why"', km._plan_rework_prompt(t2, "x"))  # 契約にも載っている
+
     def test_cohort_propagates_guide_fields(self):
         with tempfile.TemporaryDirectory() as d:
             cfg = cfg_for(Path(d))
