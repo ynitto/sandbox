@@ -141,12 +141,141 @@ test('win32 の loop 実行は既定で別ウィンドウ（WSL tmux）起動に
     assert.strictEqual(launched.ok, true);
     assert.strictEqual(launched.launched, true, '新しいウィンドウでの起動として返る');
     assert.match(launched.message, /別ウィンドウ/);
+    // GUI プロセスからの直接 spawn ではコンソールが割り当てられずウィンドウが出ない。
+    // cmd の start で新しいコンソールを開かせる（スクリプト本文は一時ファイル経由）。
+    assert.match(launched.windowCommand, /^cmd \/s \/c start "/, 'cmd の start でウィンドウを開く');
+    assert.match(launched.windowCommand, /wsl\.exe .*-e sh -lc /, 'wsl.exe で sh を起動する');
+    assert.ok(launched.scriptFile, '実行スクリプトを一時ファイルへ書く');
+    assert.ok(fs.existsSync(launched.scriptFile), 'スクリプトファイルが実在する');
+    assert.ok(
+      fs.readFileSync(launched.scriptFile, 'utf8').includes("'kiro-loop' 'send' '毎朝レビュー'"),
+      'スクリプト本文に send コマンドが入る'
+    );
     const legacy = makeLoopProvider({ loopCommand: 'kiro-loop', runWindow: false })
       .run({ id: 'X', cwd: 'C:\\proj\\app' });
     assert.ok(/wsl\.exe/.test(legacy.error), `runWindow:false は従来の同期 wsl.exe 実行: ${legacy.error}`);
   } finally {
     if (orig) Object.defineProperty(process, 'platform', orig);
   }
+});
+
+test('chatWindowScript は tmux セッション確保 → 起動待ち → paste-buffer 送信 → attach を組み立てる', () => {
+  const script = cowork_loopProvider.chatWindowScript({
+    chatCommand: 'kiro-cli chat --trust-all-tools',
+    cwd: '/mnt/c/proj/app',
+    session: 'kiro-dash-abc12345',
+    prompt: 'レビューして {{target}}',
+  });
+  assert.ok(script.includes('tmux has-session -t "$__ses"'), '既存セッションを再利用する');
+  assert.ok(script.includes('tmux new-session -d -s "$__ses"'), '無ければ作成する');
+  assert.ok(script.includes('exec ') && script.includes('kiro-cli') && script.includes('--trust-all-tools'),
+    'chatCommand を argv 分解して起動する');
+  assert.ok(script.includes('grep -qE'), 'kiro-cli の入力プロンプトを待つ');
+  assert.ok(script.includes('tmux set-buffer') && script.includes('tmux paste-buffer'), '複数行プロンプトを paste-buffer で送る');
+  assert.ok(script.includes("'レビューして {{target}}'"), 'プロンプト本文を引用して埋め込む');
+  assert.ok(script.includes('tmux attach -t "$__ses"'), '送信後はアタッチして進行を見せる');
+  assert.ok(script.includes('read _'), '終了時にウィンドウを即閉じしない');
+});
+
+test('chatSessionName は kiro 接頭辞 + repo digest（端末タブの既定発見に載る）', () => {
+  const name = cowork_loopProvider.chatSessionName('/home/me/app');
+  assert.match(name, /^kiro-dash-[0-9a-f]{8}$/);
+  assert.strictEqual(name, cowork_loopProvider.chatSessionName('/home/me/app'), '同じ repo なら安定');
+});
+
+test('win32 で job.prompt があれば kiro-loop を介さず tmux + kiro-cli へ直接送るウィンドウを開く', () => {
+  const orig = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+  try {
+    const r = makeLoopProvider({ loopCommand: 'kiro-loop' })
+      .run({ id: '毎朝レビュー', cwd: 'C:\\proj\\app', prompt: 'レビューしてください' });
+    assert.strictEqual(r.ok, true);
+    assert.strictEqual(r.launched, true);
+    assert.match(r.session || '', /^kiro-dash-/, '接続先セッション名を返す');
+    const body = fs.readFileSync(r.scriptFile, 'utf8');
+    assert.ok(body.includes('kiro-cli') && body.includes('--trust-all-tools'), '既定の chatCommand で起動する');
+    assert.ok(body.includes('レビューしてください'), '解決済みプロンプト本文を送る');
+    assert.ok(!/kiro-loop(?!\.yml)/.test(body.replace(/kiro-dash-[0-9a-f]+/g, '')), 'kiro-loop は実行しない');
+  } finally {
+    if (orig) Object.defineProperty(process, 'platform', orig);
+  }
+});
+
+test('resolveLoopPromptText は .kiro/kiro-loop.yml のブロックスカラ本文を名前で解決する', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-prompt-'));
+  fs.mkdirSync(path.join(repo, '.kiro'), { recursive: true });
+  fs.writeFileSync(path.join(repo, '.kiro', 'kiro-loop.yml'), [
+    'prompts:',
+    '  - name: "毎朝レビュー"',
+    '    prompt: |',
+    '      直近の変更をレビューしてください。',
+    '      対象ブランチ: {{target_branch}}',
+    '    interval_minutes: 60',
+    '    enabled: true',
+    '  - name: "別ジョブ"',
+    '    prompt: 一行プロンプト',
+    '',
+  ].join('\n'), 'utf8');
+  const text = cowork.resolveLoopPromptText(repo, '毎朝レビュー');
+  assert.ok(text.includes('直近の変更をレビューしてください。'), `本文を解決する: ${text}`);
+  assert.ok(text.includes('{{target_branch}}'), 'プレースホルダーもそのまま残す');
+  assert.strictEqual(cowork.resolveLoopPromptText(repo, '別ジョブ'), '一行プロンプト');
+  assert.strictEqual(cowork.resolveLoopPromptText(repo, '存在しない'), '');
+});
+
+test('runLoop は win32 ウィンドウ実行で kiro-loop.yml の本文 + 入力補助を直接送る', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-runwin-'));
+  fs.mkdirSync(path.join(repo, '.kiro'), { recursive: true });
+  fs.writeFileSync(path.join(repo, '.kiro', 'kiro-loop.yml'), [
+    'prompts:',
+    '  - name: "毎朝レビュー"',
+    '    prompt: レビューしてください {{target}}',
+    '    interval_minutes: 60',
+    '',
+  ].join('\n'), 'utf8');
+  const config = { cowork: { items: [{ id: 'daily', name: '毎朝レビュー', type: 'loop', repo }] } };
+  const orig = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+  try {
+    const r = cowork.runLoop(config, 'daily');
+    assert.strictEqual(r.launched, true);
+    const body = fs.readFileSync(r.scriptFile, 'utf8');
+    assert.ok(body.includes('レビューしてください {{target}}'), 'yml のプロンプト本文を送る');
+    assert.ok(body.includes('プレースホルダー'), '入力補助（質問してから実行）を付け加える');
+  } finally {
+    if (orig) Object.defineProperty(process, 'platform', orig);
+  }
+});
+
+test('runStateMachine は win32 ウィンドウ実行で statemachine-use スキル発動文 + 入力補助を送る', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-smwin-'));
+  const config = { cowork: {
+    items: [{ id: 'sm1', type: 'state-machine', name: 'リリース', workflow: 'release', repo }],
+  } };
+  const orig = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+  try {
+    const r = cowork.runStateMachine(config, 'sm1', '');
+    assert.strictEqual(r.launched, true);
+    const body = fs.readFileSync(r.scriptFile, 'utf8');
+    assert.ok(body.includes('statemachine-use スキルでreleaseステートマシンを実行して'), 'スキル発動文を送る');
+    assert.ok(body.includes('入力'), '入力パラメータの補助を付け加える');
+    const withInput = cowork.runStateMachine(config, 'sm1', 'v1.2');
+    const body2 = fs.readFileSync(withInput.scriptFile, 'utf8');
+    assert.ok(body2.includes('入力: v1.2'), '指定された入力はプロンプトへ含める');
+  } finally {
+    if (orig) Object.defineProperty(process, 'platform', orig);
+  }
+});
+
+test('windowStartCommand は start のタイトル・distro・スクリプトパスを cmd 規則で組み立てる', () => {
+  const line = cowork_loopProvider.windowStartCommand('Ubuntu', '/mnt/c/Users/dev/Temp/agent-dashboard/run.sh');
+  assert.strictEqual(
+    line,
+    'start "定常業務 (agent-dashboard)" wsl.exe -d "Ubuntu" -e sh -lc ". \'/mnt/c/Users/dev/Temp/agent-dashboard/run.sh\'"'
+  );
+  const noDistro = cowork_loopProvider.windowStartCommand('', '/mnt/c/t/run.sh');
+  assert.ok(!noDistro.includes('-d '), 'distro 未指定なら -d を付けない');
 });
 
 test('windowScript は cd → send 実行 → 送信先ペインのセッションへ tmux attach を組み立てる', () => {

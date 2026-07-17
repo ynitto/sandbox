@@ -10,7 +10,7 @@ const {
 const { _pathKey, _isPosixAbs, toViewerPath } = require('../../agent-project/main/project');
 const { parseFlatYaml } = require('../../agent-project/main/toolconfig');
 const {
-  discoverCoworkItems, parseKiroLoopPrompts, scheduleOf,
+  discoverCoworkItems, parseKiroLoopPrompts, scheduleOf, detectMarkers, kiroLoopPromptTexts,
 } = require('./discover');
 const { applyKiroLoopEdits, applyStatemachineEdits } = require('./writeback');
 
@@ -338,6 +338,50 @@ function resolveItem(config, id) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 実行プロンプトの解決（ウィンドウ実行 = kiro-loop を介さず tmux + kiro-cli へ直接送る用）
+// ---------------------------------------------------------------------------
+
+// {{…}} プレースホルダーやステートマシンの入力パラメータなど、ユーザー入力が必須の
+// 項目が残っているケースの補助。勝手に仮の値で進めず、まず人へ質問させる。
+const INPUT_ASSIST =
+  '（補足）このプロンプトに {{…}} のようなプレースホルダーや、ステートマシンの入力'
+  + 'パラメータなど、実行に必要な入力がまだ埋まっていない場合は、勝手に仮の値で進めず、'
+  + '先に必要な入力を箇条書きで私に質問し、回答を得てから実行してください。'
+  + 'すべて埋まっている場合はそのまま実行してください。';
+
+function withInputAssist(prompt) {
+  const p = String(prompt || '').trim();
+  return p ? `${p}\n\n${INPUT_ASSIST}` : p;
+}
+
+// repo の .kiro/kiro-loop.{yaml,yml,json} から定期プロンプト本文を名前で解決する。
+// 見つからなければ ''（呼び出し側が代替の指示文へフォールバックする）。
+function resolveLoopPromptText(repo, promptName) {
+  const root = viewerRepo(repo) || String(repo || '');
+  const name = String(promptName || '').trim();
+  if (!root || !name) return '';
+  let marker = null;
+  try { marker = detectMarkers(root); } catch { return ''; }
+  if (!marker || !marker.kiroFile) return '';
+  let text;
+  try { text = fs.readFileSync(marker.kiroFile, 'utf8'); } catch { return ''; }
+  if (marker.kiroFormat === 'json') {
+    try {
+      const arr = JSON.parse(text);
+      const prompts = Array.isArray(arr && arr.prompts) ? arr.prompts : [];
+      const hit = prompts.find((p) => p && String(p.name || '') === name);
+      return hit ? String(hit.prompt == null ? '' : hit.prompt) : '';
+    } catch { return ''; }
+  }
+  const norm = text.replace(/\r\n/g, '\n');
+  const entries = parseKiroLoopPrompts(norm);
+  const texts = kiroLoopPromptTexts(norm);
+  // 発見項目の既定名（prompt-<n>）でも引けるようにインデックス名も突き合わせる
+  const idx = entries.findIndex((e, i) => (e.name || `prompt-${i + 1}`) === name);
+  return idx >= 0 ? String(texts[idx] || '') : '';
+}
+
 function runLoop(config, itemIdValue) {
   const cfg = config.cowork || {};
   const item = resolveItem(config, itemIdValue);
@@ -348,7 +392,16 @@ function runLoop(config, itemIdValue) {
     ? ((item._src && item._src.promptName) || item.name)
     : (item.name || item.id);
   const cwd = viewerRepo(item.repo || item.cwd) || item.repo || item.cwd;
-  const res = makeLoopProvider(cfg).run({ ...item, cwd, id: runId });
+  // ウィンドウ実行用: kiro-loop.yml のプロンプト本文を解決して直接送る（kiro-loop 非経由）。
+  // 本文を解決できなければ、エージェント自身に設定を読ませる指示文で代替する。
+  // 明示 args の項目は従来の <loopCommand> 実行のまま（prompt を渡さない）。
+  const prompt = Array.isArray(item.args)
+    ? undefined
+    : withInputAssist(
+      resolveLoopPromptText(item.repo || item.cwd, runId)
+        || `.kiro/kiro-loop.yml（または kiro-loop.yaml / .json）の定期プロンプト「${runId}」の本文を読んで、その指示を実行して`
+    );
+  const res = makeLoopProvider(cfg).run({ ...item, cwd, id: runId, prompt });
   recordRun(cfg, { ...item, type: 'loop' }, res);
   return res;
 }
@@ -358,21 +411,30 @@ function runStateMachine(config, itemIdValue, input) {
   const item = resolveItem(config, itemIdValue);
   if (!item) throw new Error(`Cowork 定型業務が見つかりません: ${itemIdValue}`);
   const cwd = viewerRepo(item.repo || item.cwd) || item.repo || item.cwd || process.cwd();
-  // statemachine-use は CLI ではなくスキル。kiro-loop send でエージェントセッションへ
-  // 「xxx ステートマシンを実行して」を送って発動する。kiro-loop.yml に対となる定期プロンプト
-  // がある統合項目はそのプロンプト名を送る（send が cwd の .kiro/kiro-loop.* から本文を解決）。
+  // statemachine-use は CLI ではなくスキル。エージェントセッションへ
+  // 「statemachine-use スキルで xxx ステートマシンを実行して」を送って発動する。
+  // kiro-loop.yml に対となる定期プロンプトがある統合項目はその本文を優先する。
   let args;
+  let prompt;
+  const pairedName = item._src && item._src.loop && item._src.loop.promptName;
   if (Array.isArray(item.args)) {
     args = [...item.args];
     if (input) args.push(String(input));
+    // 明示 args はレガシー実行（prompt を渡さない）
   } else {
-    const pairedName = item._src && item._src.loop && item._src.loop.promptName;
-    const prompt = (pairedName && !input)
+    const smName = item.workflow || item.file || item.name;
+    const pairedBody = pairedName ? resolveLoopPromptText(item.repo || item.cwd, pairedName) : '';
+    const smPrompt = (pairedBody && !input)
+      ? pairedBody
+      : `statemachine-use スキルで${smName}ステートマシンを実行して${input ? `。入力: ${String(input)}` : ''}`;
+    prompt = withInputAssist(smPrompt);
+    // 非ウィンドウ実行（非 win32 / runWindow:false）用の従来 send 引数も併せて用意する
+    const legacy = (pairedName && !input)
       ? pairedName
-      : `${item.workflow || item.file || item.name} ステートマシンを実行して${input ? `。入力: ${String(input)}` : ''}`;
-    args = ['send', prompt];
+      : `${smName} ステートマシンを実行して${input ? `。入力: ${String(input)}` : ''}`;
+    args = ['send', legacy];
   }
-  const res = makeLoopProvider(cfg).run({ ...item, cwd, args, timeoutMs: item.timeoutMs || 60000 });
+  const res = makeLoopProvider(cfg).run({ ...item, cwd, args, prompt, timeoutMs: item.timeoutMs || 60000 });
   recordRun(cfg, { ...item, type: 'state-machine' }, res);
   return res;
 }
@@ -584,4 +646,5 @@ module.exports = {
   resolveItem, findItem, dedupeItems, applyDiscoveredEdits, gitCommitFiles,
   invalidateDiscoverCache, decodeCliOutput, viewerRepo,
   itemLogs, readLog, appendHistory, readHistory, historyFile,
+  resolveLoopPromptText, withInputAssist,
 };
