@@ -1,6 +1,6 @@
 # docs/designs 設計書 索引
 
-`docs/designs/` 配下の設計書 24 件をカテゴリ別に整理し、読む順序を示す索引。
+`docs/designs/` 配下の設計書 25 件をカテゴリ別に整理し、読む順序を示す索引。
 
 ## まず読むもの — 主要 4 設計
 
@@ -15,7 +15,7 @@
 
 ---
 
-## カテゴリ別索引（全 24 件）
+## カテゴリ別索引（全 25 件）
 
 ### 1. 主要 4 設計
 
@@ -41,6 +41,7 @@
 
 | ファイル | 要旨 |
 |---|---|
+| [`agent-amigos-design.md`](./agent-amigos-design.md) | 役割ミッション表と design doc で公示したミッションに分散ノードがロールを claim して参加し、型付きメッセージで相互協働しながら 1 つの成果物をオーナーへ納品する協働基盤の設計（Draft、実装未着手）。1 ノードでも自己補充で完結し、中央は git remote または任意の hub（転送のみ）。 |
 | [`agent-dashboard-feature-split-design.md`](./agent-dashboard-feature-split-design.md) | agent-dashboard を base / agent-project / kiro-loop にソース分離し、フルプラグインなしで他グループが kiro-loop 制御面を差し込めるようにする設計。 |
 | [`agent-cli-plugin-design.md`](./agent-cli-plugin-design.md) | agent-project/agent-flow の LLM 実行 CLI をプラグイン化しデータ契約のみで拡張可能にし、失敗を quota/auth/env/transient で決定的にトリアージする設計。 |
 | [`agent-flow-retry-inheritance-design.md`](./agent-flow-retry-inheritance-design.md) | agent-flow のリトライ時に先行 run の結果・成果物・作業ブランチを再利用し先行 run を安全削除する設計。 |
@@ -63,4 +64,4 @@
 
 ## 前提・スコープ外の事項
 
-本 README は `docs/designs/` 配下の実ファイル一覧（24件、実在確認・漏れ/幽霊ファイルなしを確認済み）を基準に作成した。
+本 README は `docs/designs/` 配下の実ファイル一覧（25件、実在確認・漏れ/幽霊ファイルなしを確認済み）を基準に作成した。

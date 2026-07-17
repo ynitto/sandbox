@@ -7,6 +7,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-amigos: 役割駆動マルチエージェント協働ツールの設計書を追加
+
+- **新規設計書** [`docs/designs/agent-amigos-design.md`](docs/designs/agent-amigos-design.md)（Draft、実装未着手）:
+  オーナーノードが design doc ＋ 役割ミッション表でミッションを公示し、分散ノードが
+  ロールを claim して amigo（ロールを演じるエージェント）として参加、型付きメッセージ
+  （質問・回答・レビュー・決定）で相互協働しながら 1 つの成果物を組み上げてオーナーへ
+  納品する協働基盤の設計。kiro / claude / copilot / codex / cursor は既存の
+  agent-cli プラグイン契約（`agents/<name>.json`）をそのまま利用。バスは agent-flow と
+  同じファイルベース（LocalBus / GitBus / 任意の HubBus）で、中央サーバは「転送のみ」
+  （オンプレ git remote を中央に据えるのが第一候補）。1 ノードでも未充足ロールの
+  自己補充（self-staff）で完結する。`docs/designs/README.md` の索引にも追加（24 → 25 件）。
+
 ### agent-dashboard / agent-project: 検収・定常業務の 4 つの不具合を修正
 
 - **verify 未定義タスクを人の承認で完了できるように**: verify の無いタスクは工程完了後に
