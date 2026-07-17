@@ -84,6 +84,39 @@ assert.deepStrictEqual(
   { agentProject: true, cowork: false, defaultTab: 'overview' }
 );
 
+// --- Cowork の選択プロジェクト絞り込み ---
+// eslint-disable-next-line no-new-func
+const coworkPathKey = new Function(`${grab('coworkPathKey')}; return coworkPathKey;`)();
+// eslint-disable-next-line no-new-func
+const coworkVisibleEntries = new Function(
+  'coworkPathKey',
+  `${grab('coworkVisibleEntries')}; return coworkVisibleEntries;`
+)(coworkPathKey);
+
+assert.strictEqual(coworkPathKey('\\\\wsl.localhost\\Ubuntu\\home\\me\\proj\\'), '/home/me/proj');
+assert.strictEqual(coworkPathKey('/home/me/proj'), '/home/me/proj');
+assert.strictEqual(coworkPathKey('/mnt/c/Users/Me/proj'), 'c:/users/me/proj');
+assert.strictEqual(coworkPathKey('C:\\Users\\Me\\proj'), 'c:/users/me/proj');
+
+{
+  const draft = [
+    { id: 'a', repo: '/home/me/proj-a' },
+    { id: 'b', repo: '\\\\wsl.localhost\\Ubuntu\\home\\me\\proj-b' },
+    { id: 'c', repo: '/home/me/proj-b' },
+  ];
+  // 選択プロジェクトの作業だけ（UNC と POSIX は同一視・index は draft の位置を保つ）
+  const vis = coworkVisibleEntries(draft, '/home/me/proj-b', false);
+  assert.deepStrictEqual(vis.map((e) => e.item.id), ['b', 'c'], '選択プロジェクトの作業だけを表示する');
+  assert.deepStrictEqual(vis.map((e) => e.index), [1, 2], 'index は draft の位置（編集/削除用）');
+  // showAll / 未選択は全件
+  assert.strictEqual(coworkVisibleEntries(draft, '/home/me/proj-b', true).length, 3);
+  assert.strictEqual(coworkVisibleEntries(draft, null, false).length, 3);
+}
+
+assert.match(html, /id="dlg-cowork-history"/, '定常業務の実行履歴ダイアログがある');
+assert.ok(renderer.includes('data-cowork-history'), '定常業務に履歴ボタンがある');
+assert.ok(renderer.includes('すべてのプロジェクトを表示'), '全プロジェクト表示の切替がある');
+
 assert.ok(!html.includes('id="btn-mode"'), '表示モード切替を残さない');
 assert.match(html, /data-tab="overview"[^>]*>概要/);
 assert.match(html, /data-feature="agent-project"/);

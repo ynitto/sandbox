@@ -145,6 +145,64 @@ test('state-machine 実行は statemachine-use スキルを発動するプロン
   assert.strictEqual(withInput.stdout, 'send release ステートマシンを実行して。入力: v1.2');
 });
 
+test('runLoop / runStateMachine は実行履歴（historyFile）へ記録し readHistory で新しい順に読める', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-hist-'));
+  const historyFile = path.join(repo, 'history.jsonl');
+  const config = { cowork: {
+    loopCommand: 'echo',
+    historyFile,
+    items: [
+      { id: 'daily', type: 'loop', name: '毎朝レビュー', repo },
+      { id: 'sm1', type: 'state-machine', name: 'リリース', workflow: 'release', repo },
+    ],
+  } };
+  assert.ok(cowork.runLoop(config, 'daily').ok);
+  assert.ok(cowork.runStateMachine(config, 'sm1', '').ok);
+  assert.ok(cowork.runLoop(config, 'daily').ok);
+
+  const loopLogs = cowork.itemLogs(config, 'daily');
+  assert.strictEqual(loopLogs.history.length, 2);
+  assert.ok(loopLogs.history.every((h) => h.ok && h.name === '毎朝レビュー' && h.type === 'loop'));
+  assert.ok(loopLogs.history[0].at >= loopLogs.history[1].at, '新しい順');
+  const smLogs = cowork.itemLogs(config, 'sm1');
+  assert.strictEqual(smLogs.history.length, 1);
+  assert.strictEqual(smLogs.history[0].type, 'state-machine');
+  assert.match(smLogs.history[0].message, /send release-runner|send release/);
+});
+
+test('itemLogs はリポジトリのログ候補を返し readLog は末尾を読む（候補外パスは拒否）', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-logs-'));
+  fs.mkdirSync(path.join(repo, '.kiro-loop', 'logs'), { recursive: true });
+  const logFile = path.join(repo, '.kiro-loop', 'logs', 'run.log');
+  fs.writeFileSync(logFile, `${'x'.repeat(3000)}TAIL-MARKER\n`);
+  const secret = path.join(repo, 'secret.txt');
+  fs.writeFileSync(secret, 'top secret');
+  const config = { cowork: {
+    historyFile: path.join(repo, 'history.jsonl'),
+    items: [{ id: 'daily', type: 'loop', name: 'daily', repo }],
+  } };
+  const info = cowork.itemLogs(config, 'daily');
+  assert.strictEqual(info.logs.length, 1);
+  assert.strictEqual(info.logs[0].name, 'run.log');
+  assert.ok(info.logs[0].size > 3000);
+  const read = cowork.readLog(config, 'daily', info.logs[0].file, 2000);
+  assert.ok(read.text.includes('TAIL-MARKER'), '末尾を読む');
+  assert.ok(read.truncated, '上限超は truncated');
+  assert.throws(() => cowork.readLog(config, 'daily', secret), /この作業のログではありません/);
+});
+
+test('実行履歴は上限を超えると新しい方だけ残して切り詰める', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-trim-'));
+  const historyFile = path.join(dir, 'history.jsonl');
+  const cfg = { historyFile };
+  for (let i = 0; i < 1005; i += 1) {
+    cowork.appendHistory(cfg, { at: new Date(2026, 0, 1, 0, 0, i % 60).toISOString(), key: 'k', ok: true, message: `run-${i}` });
+  }
+  const lines = fs.readFileSync(historyFile, 'utf8').split('\n').filter(Boolean);
+  assert.ok(lines.length <= 600, `切り詰められている: ${lines.length}`);
+  assert.ok(lines[lines.length - 1].includes('run-1004'), '最新は残る');
+});
+
 test('overview の既定はプロセス探査せず probed=false', () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-light-'));
   fs.mkdirSync(path.join(repo, '.kiro-loop', 'logs'), { recursive: true });

@@ -10,6 +10,11 @@ function registerIpc(ctx) {
     cowork.runStateMachine(loadConfig(), itemId || machineId, input)
   );
   handle('cowork:saveWork', (payload) => cowork.saveWork(loadConfig(), saveConfig, payload || {}));
+  // 項目ごとの実行履歴（dashboard 発の実行記録）とリポジトリのログ候補
+  handle('cowork:itemLogs', ({ itemId }) => cowork.itemLogs(loadConfig(), itemId));
+  handle('cowork:readLog', ({ itemId, file, maxBytes }) =>
+    cowork.readLog(loadConfig(), itemId, file, maxBytes)
+  );
 }
 
 module.exports = { registerIpc };
