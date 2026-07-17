@@ -1060,3 +1060,5 @@
 - 2026-07-18 03:33:45 verify: agent-project-codd-gate--042729 を https://github.com/ynitto/sandbox@main のクローン内で検証
 - 2026-07-18 03:33:47 cycle 5: agent-project-codd-gate--042729 → 人の判断（回帰検知）
 - 2026-07-18 03:33:47 === agent-project 停止 reason=drained cycles=5 done=0 blocked=3 notified=True promoted=0 ===
+- 2026-07-18 03:33:49 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-18 03:33:49 === project watch: 監視中（charter 更新/フィードバック待ち）===
