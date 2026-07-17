@@ -9,29 +9,40 @@ import time
 
 from .assign import unfilled_required
 from .bus import make_bus
+from .configfile import load_settings, resolve_bus_spec
 from .daemon import NodeDaemon, default_node_id
 from .messages import build_message, message_path, unanswered_questions, valid_target
 from .mission import (convergence_state, derive_phase,
                       load_mission, load_roles, post_mission)
-from .util import now_iso, read_json, write_json_atomic
+from .util import log, now_iso, read_json, write_json_atomic
 
 
 def _bus_arg(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--bus", required=False,
-                   default=os.environ.get("AGENT_AMIGOS_BUS", ""),
-                   help="バス指定: ローカル dir または git+<url>（専用バスリポジトリ）。"
-                        "環境変数 AGENT_AMIGOS_BUS でも指定可")
+    p.add_argument("--bus", required=False, default="",
+                   help="バス指定: ローカル dir / git+<url> / hub+<url>。"
+                        "省略時は 環境変数 AGENT_AMIGOS_BUS → 設定 .kiro/kiro-amigos.yaml の bus"
+                        "（既定 . = ホーム自身）の順に解決")
     p.add_argument("--bus-workdir", default=None,
-                   help="GitBus のクローン作業領域（既定: ~/.agent/amigos/bus/<hash>）")
+                   help="GitBus / HubBus のミラー作業領域（既定: ~/.agent/amigos/…）")
+    p.add_argument("--config", default=None,
+                   help="設定ファイル（既定: ./.kiro/kiro-amigos.{yaml,yml,json} を自動探索）")
 
 
 def _node_arg(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--node-id", default=None, help="ノード ID（既定: 自動採番）")
+    p.add_argument("--node-id", default=None, help="ノード ID（既定: 設定 → 自動採番）")
 
 
 def _resolve(args) -> "tuple":
-    bus = make_bus(args.bus, workdir=getattr(args, "bus_workdir", None))
-    node = args.node_id or default_node_id()
+    """バスとノード ID を CLI > 環境変数 > 設定ファイル > 既定 の順で解決する。
+    設定ファイルが無く --bus/環境変数も無いときは従来どおり明示エラー
+    （意図しない cwd をバスとして汚さない）。"""
+    settings = load_settings(getattr(args, "config", None))
+    spec = getattr(args, "bus", "") or os.environ.get("AGENT_AMIGOS_BUS") or ""
+    if not spec and settings["_config_path"]:
+        spec = resolve_bus_spec(settings, None)
+    bus = make_bus(spec, workdir=getattr(args, "bus_workdir", None)
+                   or settings.get("bus_workdir"))
+    node = getattr(args, "node_id", None) or settings.get("node_id") or default_node_id()
     return bus, node
 
 
@@ -73,6 +84,60 @@ def cmd_join(args) -> int:
     NodeDaemon(bus, node, agent_cli=args.agent_cli, tags=tags,
                roles_filter=roles_filter, interval=args.interval,
                resume_hours=args.resume_hours).run(cycles=args.cycles)
+    return 0
+
+
+def cmd_serve(args) -> int:
+    """常駐起動（サブコマンド省略時の既定 — agent-project の run --watch と同じ位置づけ）。
+
+    cwd（またはその `.kiro/kiro-amigos.yaml`）をホームとして:
+    - ホームのバス（既定: cwd 自身のローカルバス）でノードデーモンを回す
+    - `hub.serve: true` なら同じバスを hub として公開（cwd-as-hub。他ノードは
+      hub+http://<host>:<port> で参加できる）
+    - `<home>/.kiro/kiro-amigos/commands/*.json` の指示（依頼 post・手動引き受け claim・
+      assign / accept / reject / cancel / say）を毎サイクル取り込む
+    """
+    settings = load_settings(args.config)
+    home = settings["_home"]
+    spec = args.bus or os.environ.get("AGENT_AMIGOS_BUS") or resolve_bus_spec(settings, None)
+    bus = make_bus(spec, workdir=args.bus_workdir or settings.get("bus_workdir"))
+    node = args.node_id or settings.get("node_id") or default_node_id()
+
+    hub_server = None
+    hub_serve = settings["hub_serve"] if args.hub is None else bool(args.hub)
+    if hub_serve:
+        if bus.kind != "local":
+            raise SystemExit("[agent-amigos] hub.serve はローカルバス（cwd-as-hub）のみ"
+                             f"対応です（現在のバス: {bus.kind}）")
+        from . import hub as hubmod
+        import threading
+        hub_server = hubmod.serve(bus.root, str(settings["hub_host"]),
+                                  int(settings["hub_port"]), settings["hub_token"])
+        threading.Thread(target=hub_server.serve_forever, daemon=True).start()
+        log(node, f"hub を公開しました: http://{settings['hub_host']}:"
+                  f"{hub_server.server_port}（data={bus.root}）")
+
+    manual = settings["manual_claim"] if args.manual_claim is None else bool(args.manual_claim)
+    log(node, f"常駐開始: home={home} bus={bus.root if bus.kind == 'local' else spec} "
+              f"agent_cli={args.agent_cli or settings.get('agent_cli') or 'stub'} "
+              f"manual_claim={manual}"
+              + (f" config={settings['_config_path']}" if settings["_config_path"] else "（設定なし）"))
+    daemon = NodeDaemon(
+        bus, node,
+        agent_cli=args.agent_cli or settings.get("agent_cli"),
+        tags=[t for t in (args.tags or "").split(",") if t] or settings["tags"],
+        roles_filter=[r for r in (args.roles or "").split(",") if r] or settings["roles"],
+        interval=args.interval if args.interval is not None else float(settings["interval"]),
+        resume_hours=(args.resume_hours if args.resume_hours is not None
+                      else float(settings["resume_hours"])),
+        manual_claim=manual,
+        commands_home=home,
+    )
+    try:
+        daemon.run(cycles=args.cycles)
+    finally:
+        if hub_server is not None:
+            hub_server.shutdown()
     return 0
 
 
@@ -304,8 +369,26 @@ def cmd_gc(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="agent-amigos",
-        description="役割駆動マルチエージェント協働ツール（設計書: docs/designs/agent-amigos-design.md）")
+        description="役割駆動マルチエージェント協働ツール（設計書: docs/designs/agent-amigos-design.md）。"
+                    "サブコマンドを省略すると常駐起動（serve）になり、cwd の "
+                    ".kiro/kiro-amigos.yaml を設定として cwd をホーム（バス・hub）に使う")
     sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("serve",
+                       help="常駐起動（省略時の既定）: ノードデーモン + commands/ 取り込み + "
+                            "hub 公開（設定 hub.serve）")
+    _bus_arg(p); _node_arg(p)
+    p.add_argument("--agent-cli", default=None)
+    p.add_argument("--tags", default="", help="ノードの能力タグ（カンマ区切り。設定 tags を上書き）")
+    p.add_argument("--roles", default="", help="応募ロールの絞り込み（カンマ区切り。設定 roles を上書き）")
+    p.add_argument("--interval", type=float, default=None)
+    p.add_argument("--cycles", type=int, default=0, help="巡回数（0=無限。テスト用）")
+    p.add_argument("--resume-hours", type=float, default=None)
+    p.add_argument("--hub", action=argparse.BooleanOptionalAction, default=None,
+                   help="バスを hub として公開する（設定 hub.serve を上書き）")
+    p.add_argument("--manual-claim", action=argparse.BooleanOptionalAction, default=None,
+                   help="自動応募しない（commands/ 経由の手動引き受けのみ。設定 manual_claim を上書き）")
+    p.set_defaults(fn=cmd_serve)
 
     p = sub.add_parser("init-bus", help="バスを初期化する")
     _bus_arg(p); _node_arg(p)
@@ -416,8 +499,23 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+# 既知のサブコマンド。省略して呼ばれたら「常駐起動（serve）」を既定にする
+# （agent-project の run --watch 既定と同じ流儀 — PC 起動時に立ち上げっぱなしにして
+# cwd のホームを面倒見る daemon 用途を一級にする）。
+_SUBCOMMANDS = {"serve", "init-bus", "post", "join", "run", "status", "collect",
+                "accept", "reject", "assign", "budget", "say", "cancel", "gc", "hub"}
+
+
+def resolve_argv(argv: "list[str] | None") -> "list[str]":
+    """サブコマンド省略時に serve を補う（-h/--help は素通し）。"""
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv or (argv[0] not in _SUBCOMMANDS and argv[0] not in ("-h", "--help")):
+        return ["serve", *argv]
+    return argv
+
+
 def main(argv: "list[str] | None" = None) -> int:
-    args = build_parser().parse_args(argv)
+    args = build_parser().parse_args(resolve_argv(argv))
     try:
         return args.fn(args)
     except BrokenPipeError:      # `| head` 等でパイプが閉じられた場合は正常終了

@@ -45,7 +45,8 @@ def default_node_id() -> str:
 class NodeDaemon:
     def __init__(self, bus: Bus, node_id: str, agent_cli: "str | None" = None,
                  tags: "list[str] | None" = None, roles_filter: "list[str] | None" = None,
-                 interval: float = 5.0, resume_hours: float = 12.0):
+                 interval: float = 5.0, resume_hours: float = 12.0,
+                 manual_claim: bool = False, commands_home: "str | None" = None):
         self.bus = bus
         self.node_id = node_id
         self.agent_cli = agent_cli
@@ -53,6 +54,12 @@ class NodeDaemon:
         self.roles_filter = list(roles_filter or [])
         self.interval = interval
         self.resume_hours = resume_hours
+        # manual_claim: 自動応募しない（commands/ 経由の手動引き受けのみ。
+        # 引き受け済みロールのターン実行・オーナー職務は従来どおり動く）
+        self.manual_claim = manual_claim
+        # commands_home: 指示のファイル取り込み（<home>/.kiro/kiro-amigos/commands/）を
+        # 有効にするホームディレクトリ。None = 取り込まない
+        self.commands_home = commands_home
         self._runners: "dict[tuple[str, str], AmigoRunner]" = {}
         self._active = False
         self._stopping = False
@@ -65,9 +72,13 @@ class NodeDaemon:
         return self._runners[key]
 
     def cycle(self) -> dict:
-        """1 巡: 全ミッションを見て応募・オーナー職務・自 amigo のターンを行う。
+        """1 巡: 指示の取り込み → 全ミッションを見て応募・オーナー職務・自 amigo のターン。
         返り値は観測サマリ {mission_id: phase}（テスト・status 表示用）。"""
         self.bus.sync_pull()
+        if self.commands_home:
+            from .commands import ingest_commands
+            if ingest_commands(self.bus, self.node_id, self.commands_home, self.agent_cli):
+                self._active = True
         seen = {}
         for mid in self.bus.list_missions():
             mp = self.bus.mission(mid)
@@ -86,7 +97,8 @@ class NodeDaemon:
 
             # 応募: 未充足ロールのうち能力が合うものへ。
             # first-come は claim（勝者＝確定）、owner-picks は応募のみ（確定はオーナー）。
-            for role in roles.values():
+            # manual_claim では自動応募しない（commands/ の手動引き受けのみ）。
+            for role in [] if self.manual_claim else list(roles.values()):
                 rid = role["id"]
                 if rid in roster:
                     continue
