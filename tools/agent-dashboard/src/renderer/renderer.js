@@ -511,7 +511,20 @@ function splitRequest(request) {
 }
 
 // タスク extra のうち文章として読む項目（⏎ 畳み込み・Markdown が多い）
-const PROSE_EXTRA_KEYS = new Set(['feedback', 'needs_reason', 'note', 'accept']);
+// 誘導・レビュー記述フィールド（agent-project の TASK_GUIDE_KEYS と同じ。
+// 意味論の正典は tools/agent-project/backlog.md.example。値は 1 行・改行は ⏎）
+const GUIDE_KEYS = ['why', 'desc', 'scope', 'out_of_scope', 'constraints', 'hints', 'demo'];
+const GUIDE_LABELS = {
+  why: '背景・目的（なぜやるか。実装判断とレビューの基準）',
+  desc: '作業内容の詳細（タイトルで足りない具体の指示）',
+  scope: '変更してよい範囲（この外は変更させない）',
+  out_of_scope: 'やらないこと（スコープ外・非目標）',
+  constraints: 'タスク固有の制約（守るべき規約・禁止事項）',
+  hints: '実装の手がかり（関連ファイル・参考実装）',
+  demo: '人の確認観点（検収で何をどう確かめるか）',
+};
+
+const PROSE_EXTRA_KEYS = new Set(['feedback', 'needs_reason', 'note', 'accept', ...GUIDE_KEYS]);
 
 function statusChip(status) {
   // 表示はプロジェクト管理の言葉、内部の状態名は title（ホバー）で確認できる
@@ -1596,6 +1609,7 @@ function renderBacklog() {
     .map((t) => {
       const extras = [];
       if (t.extra.charter) extras.push(`バージョン: ${t.extra.charter}`);
+      if (t.extra.why) extras.push(`目的: ${t.extra.why}`);
       else if (charterNames.length) extras.push('バージョン: 初版'); // 複数バージョン運用でのタグ無し＝charter.md 由来
       if (t.extra.after) extras.push(`依存: ${t.extra.after}`);
       if (t.extra.level) extras.push(`自動化レベル: ${t.extra.level}`);
@@ -1739,6 +1753,19 @@ function reviseAreaHtml(t) {
       <div class="field"><label>系列（同種タスクのグループ名。空にすると削除）</label><input id="rv-track" value="${esc(t.extra.track || '')}" /></div>
     </div>
     <div class="field"><label>メモ（空にすると削除）</label><input id="rv-note" value="${esc(t.extra.note || '')}" /></div>
+    <details class="revise-guide" ${GUIDE_KEYS.some((k) => t.extra[k]) ? 'open' : ''}>
+      <summary>意図と境界（レビュー材料 兼 実行ワーカーへの誘導。空にすると削除）</summary>
+      <div class="row need-buttons">
+        <span class="muted">改行は ⏎ で書きます。AI がタスクと憲章から下書きできます（送信前に人が確認）</span>
+        <span class="spacer"></span>
+        <button type="button" id="btn-guide-assist">✦ AI で補完</button>
+      </div>
+      <div class="muted" id="guide-assist-status"></div>
+      ${GUIDE_KEYS.map(
+        (k) =>
+          `<div class="field"><label>${esc(GUIDE_LABELS[k])}</label><input id="rv-${k}" value="${esc(t.extra[k] || '')}" /></div>`
+      ).join('')}
+    </details>
     <div class="row need-buttons">
       <span class="muted">変更した項目と指示だけが送られ、決定記録に残ります</span>
       <span class="spacer"></span>
@@ -1759,7 +1786,8 @@ function showTaskDialog(id, scope) {
       if (k === 'flow_run' && String(v).trim()) {
         cell = `<button class="linklike mono" data-goto-run="${esc(String(v).trim())}" title="実行中の作業を開く">${esc(v)}</button>`;
       } else if (PROSE_EXTRA_KEYS.has(k)) {
-        cell = `<div class="task-prose">${proseHtml(v)}</div>`;
+        // ⏎ は「1 行 = 1 フィールド」規約の改行マーカー（feedback/note/誘導記述で共通）→ 表示は改行に戻す
+        cell = `<div class="task-prose">${proseHtml(String(v).replace(/\s*⏎\s*/g, '\n'))}</div>`;
       } else {
         cell = `<pre class="mono">${esc(v)}</pre>`;
       }
@@ -1869,6 +1897,7 @@ function showTaskDialog(id, scope) {
         ['level', $('rv-level').value.trim(), String(t.extra.level || '')],
         ['track', $('rv-track').value.trim(), String(t.extra.track || '')],
         ['note', $('rv-note').value.trim(), String(t.extra.note || '')],
+        ...GUIDE_KEYS.map((k) => [k, $(`rv-${k}`).value.trim(), String(t.extra[k] || '')]),
       ];
       for (const [key, cur, orig] of cmp) {
         if (key === 'priority' && cur === '') continue; // 空欄は「変更なし」（priority に削除は無い）
@@ -1890,6 +1919,58 @@ function showTaskDialog(id, scope) {
         gitPushAfterWrite(`agent-dashboard: revise ${t.id}`, p.dir);
         $('dlg-task').close();
         await reloadProject();
+      }
+    });
+  }
+  // 意図と境界（誘導・レビュー記述）の AI 補完。読み取り専用の提案を入力欄へ流し込むだけで、
+  // 送信（revise）は従来どおり人が確認して行う（enqueue-assist と同じ人確認前提の契約）
+  const gaBtn = $('btn-guide-assist');
+  if (gaBtn) {
+    gaBtn.addEventListener('click', async () => {
+      if (state.assistBusy) return;
+      state.assistBusy = true;
+      gaBtn.disabled = true;
+      const status = $('guide-assist-status');
+      status.textContent = '意図と境界の記述を補完しています…';
+      try {
+        const current = {};
+        for (const k of GUIDE_KEYS) current[k] = $(`rv-${k}`).value.trim();
+        const res = await api.agentTaskAssist({
+          dir: p.dir,
+          mode: 'task-guide',
+          context: {
+            charter: charterAssistContext(p),
+            backlog: backlogAssistRows(p),
+            task: {
+              id: t.id,
+              title: $('rv-title').value.trim() || t.title,
+              verify: $('rv-verify').value.trim() || t.verify || '',
+              accept: $('rv-accept').value.trim(),
+              note: $('rv-note').value.trim(),
+              ...current,
+            },
+          },
+        });
+        const f = res.fields || {};
+        let filled = 0;
+        for (const k of GUIDE_KEYS) {
+          const v = String(f[k] || '').trim();
+          if (v && v !== current[k]) {
+            $(`rv-${k}`).value = v;
+            filled += 1;
+          }
+        }
+        status.textContent = filled
+          ? `${filled} 項目を補完しました（${res.cli}${res.model ? ` / ${res.model}` : ''}）` +
+            (f.rationale ? ` — ${f.rationale}` : '') +
+            '。内容を確認・修正してから「修正を送信」してください'
+          : '補完できる項目はありませんでした（根拠を読み取れた項目だけ提案されます）';
+      } catch (err) {
+        status.textContent = '';
+        toast(`意図と境界の補完に失敗しました: ${err.message || err}`);
+      } finally {
+        state.assistBusy = false;
+        gaBtn.disabled = false;
       }
     });
   }
@@ -1933,6 +2014,7 @@ function showTaskDialog(id, scope) {
         after: t.extra.after || '',
         level: t.extra.level || '',
         track: t.extra.track || '',
+        ...Object.fromEntries(GUIDE_KEYS.map((k) => [k, t.extra[k] || ''])),
       });
     });
   }
@@ -2187,8 +2269,13 @@ function openEnqueueDialog(prefill = {}) {
   $('enq-note').value = prefill.note || '';
   $('enq-id').value = prefill.id || '';
   $('enq-after').value = Array.isArray(prefill.after) ? prefill.after.join(', ') : (prefill.after || '');
-  // level / track はフォームに出さないが、再投入では元タスクの値を引き継いで送る
-  state.enqueueExtra = { level: prefill.level || '', track: prefill.track || '' };
+  // level / track と誘導・レビュー記述（why 等）はフォームに出さないが、
+  // 再投入・フォローアップ提案では元の値を引き継いで送る（inbox ドロップに載る）
+  state.enqueueExtra = {
+    level: prefill.level || '',
+    track: prefill.track || '',
+    ...Object.fromEntries(GUIDE_KEYS.map((k) => [k, prefill[k] || ''])),
+  };
   fillEnqueueAfterOptions(state.project);
   renderEnqueueBacklogSummary(state.project);
   state.enqueueAdjustments = [];
@@ -2262,6 +2349,7 @@ async function submitEnqueue() {
     after: $('enq-after').value,
     level: extra.level,
     track: extra.track,
+    ...Object.fromEntries(GUIDE_KEYS.map((k) => [k, extra[k] || ''])),
   };
   const ok = await guard('タスク追加', async () => {
     const res = await api.enqueueTask(p.dir, spec);
@@ -3614,6 +3702,7 @@ function renderFollowupSuggestions(needId, fields, meta = {}) {
               ${s.after && s.after.length ? `<span class="muted">after: ${esc(s.after.join(', '))}</span>` : ''}
               <span class="muted">p${esc(s.priority)}</span>
             </div>
+            ${s.why ? `<div class="muted">なぜ: ${esc(s.why)}</div>` : ''}
             <div class="muted">${esc(s.verify || s.accept || '')}</div>
             <button type="button" class="primary-inline" data-followup-enqueue="${i}">タスク追加フォームへ</button>
           </li>`
@@ -3634,6 +3723,7 @@ function renderFollowupSuggestions(needId, fields, meta = {}) {
         priority: s.priority,
         after: s.after,
         note: s.note || `検収 ${needId} のフォローアップ`,
+        ...Object.fromEntries(GUIDE_KEYS.map((k) => [k, s[k] || ''])),
       });
     });
   }
