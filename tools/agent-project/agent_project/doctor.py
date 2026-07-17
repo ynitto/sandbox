@@ -729,7 +729,8 @@ def cmd_enqueue(cfg: Config, args) -> int:
                   "after": args.after, "review": args.review, "note": args.note,
                   "accept": args.accept, "verify_template": args.verify_template,
                   "repos": _coerce_repos(getattr(args, "repos", None)),
-                  "cohort_items": _coerce_repos(getattr(args, "cohort_items", None))}]
+                  "cohort_items": _coerce_repos(getattr(args, "cohort_items", None)),
+                  **{k: getattr(args, k, None) for k in TASK_GUIDE_KEYS}}]
     created = []
     for sp in specs:
         if not isinstance(sp, dict):

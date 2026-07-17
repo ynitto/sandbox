@@ -10786,5 +10786,110 @@ class AgentOverrideTests(unittest.TestCase):
                              {"plan": {"agent_cli": "claude", "model": "opus"}})
 
 
+class TestTaskGuideFields(unittest.TestCase):
+    """誘導・レビュー記述フィールド（why/desc/scope/out_of_scope/constraints/hints/demo）。
+    人のレビュー材料（needs 票）とワーカー誘導（act 要求文）の両方へ届くことを検証する。"""
+
+    def test_task_from_spec_carries_guide_fields(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))
+            t = km.task_from_spec(cfg, {
+                "title": "x", "verify": "true",
+                "why": "初見の人が目的を掴めるように",
+                "scope": "README.md のみ",
+                "out_of_scope": ["目次の追加", "既存節の書き換え"],   # リストは ⏎ 連結で 1 行化
+                "constraints": "見出し階層は h2\nを維持",             # 生の改行も ⏎ に畳む
+            })
+            self.assertEqual(t.get("why"), "初見の人が目的を掴めるように")
+            self.assertEqual(t.get("out_of_scope"), "目次の追加 ⏎ 既存節の書き換え")
+            self.assertEqual(t.get("constraints"), "見出し階層は h2 ⏎ を維持")
+            # md へ書いて読み戻しても失われない（1 行 = 1 フィールドの規約を壊さない）
+            rt = km.parse_task(km.serialize_task(t), t.id)
+            self.assertEqual(rt.get("out_of_scope"), "目次の追加 ⏎ 既存節の書き換え")
+
+    def test_build_request_injects_guide_fields(self):
+        t = km.Task(id="T1", title="やる", verify="true",
+                    extra=[("why", "目的を掴めるように"),
+                           ("scope", "README.md のみ"),
+                           ("out_of_scope", "目次の追加 ⏎ 既存節の書き換え"),
+                           ("constraints", "見出しは h2"),
+                           ("hints", "docs/style.md 参照"),
+                           ("demo", "冒頭に ## 概要 がある"),
+                           ("desc", "冒頭へ概要見出しを足す")])
+        req = km.build_request(t)
+        self.assertIn("背景・目的", req)
+        self.assertIn("目的を掴めるように", req)
+        self.assertIn("スコープ", req)
+        self.assertIn("やらないこと", req)
+        self.assertIn("目次の追加\n  既存節の書き換え", req)   # ⏎ は改行へ戻して読ませる
+        self.assertIn("固有の制約", req)
+        self.assertIn("実装の手がかり", req)
+        self.assertIn("人の確認観点", req)
+        self.assertIn("作業内容の詳細", req)
+        # verify（完了条件）より前＝タスク本文の一部として提示される
+        self.assertLess(req.index("作業内容の詳細"), req.index("完了条件"))
+
+    def test_build_request_without_guide_is_unchanged(self):
+        t = km.Task(id="T1", title="やる", verify="true")
+        req = km.build_request(t)
+        for label in ("背景・目的", "スコープ", "やらないこと", "作業内容の詳細"):
+            self.assertNotIn(label, req)
+
+    def test_needs_definition_block_lists_guide_fields(self):
+        t = km.Task(id="T1", title="やる", verify="true",
+                    extra=[("why", "レビュー者向けの理由"), ("out_of_scope", "隣領域")])
+        block = km._task_definition_block(t)
+        self.assertIn("- why: レビュー者向けの理由", block)
+        self.assertIn("- out_of_scope: 隣領域", block)
+
+    def test_plan_via_agent_carries_why_and_boundaries(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, "# Charter: r\n## goal\nx\n## repos\n"
+                          "- app = https://git/app.git\n  - owns: apps/**\n  - base: main\n")
+            cfg = cfg_for(d)
+            ch = km.load_charter(cfg)
+            orig = km._run_agent_cli
+            km._run_agent_cli = lambda prompt, model, purpose="": (
+                '[{"title":"t","verify":"test -f apps/x","why":"目標に必須",'
+                '"out_of_scope":"別領域","hints":"apps/y を参考"}]')
+            try:
+                specs = km.plan_via_agent(cfg, ch)
+            finally:
+                km._run_agent_cli = orig
+            self.assertEqual(specs[0]["why"], "目標に必須")
+            self.assertEqual(specs[0]["out_of_scope"], "別領域")
+            self.assertEqual(specs[0]["hints"], "apps/y を参考")
+            # planner への指示にも why の要求が入っている
+            self.assertIn('"why"', km._plan_decompose_prompt(ch))
+
+    def test_revise_accepts_guide_fields(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1")
+            cfg = cfg_for(d)
+            cfg.decisions.mkdir(parents=True, exist_ok=True)
+            code = km.cmd_revise(cfg, "T1",
+                                 {"why": "背景を明示", "out_of_scope": "隣領域"}, "", "r")
+            self.assertEqual(code, 0)
+            t = next(x for x in km.load_tasks(cfg.backlog) if x.id == "T1")
+            self.assertEqual(t.get("why"), "背景を明示")
+            self.assertEqual(t.get("out_of_scope"), "隣領域")
+
+    def test_cohort_propagates_guide_fields(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))
+            pilot = km.enqueue_task(cfg, {
+                "title": "{item} を移行", "verify": "test -f {item}",
+                "cohort_items": ["a.md", "b.md"],
+                "why": "旧形式を廃止するため",
+                "constraints": "{item} 以外は変更しない"})
+            self.assertEqual(pilot.get("why"), "旧形式を廃止するため")
+            self.assertEqual(pilot.get("constraints"), "a.md 以外は変更しない")
+            members = km.materialize_cohort_rest(cfg, pilot, feedback="ok")
+            self.assertEqual(members[0].get("why"), "旧形式を廃止するため")
+            self.assertEqual(members[0].get("constraints"), "b.md 以外は変更しない")
+
+
 if __name__ == "__main__":
     unittest.main()

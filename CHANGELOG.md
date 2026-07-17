@@ -7,6 +7,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-project: バックログに誘導・レビュー記述フィールドを追加（why / desc / scope / out_of_scope / constraints / hints / demo）
+
+一般的なバックログ項目の慣行（背景・説明・スコープ境界・制約・確認手順）に合わせた任意
+フィールドをタスク書式に追加。**人のレビュー**と**エージェント誘導**の両方に効く:
+
+- **act 要求文へ整形注入**（`build_request`）: desc（作業内容の詳細）→ why（判断基準）→
+  scope / out_of_scope（境界。範囲外は `@followup` 提案へ誘導）→ constraints（タスク固有の
+  制約）→ hints（実装の手がかり）→ demo（人の検収観点）の順でワーカーに提示され、書けば
+  挙動が変わる。値は 1 行（改行・リストは ⏎ 規約で 1 行化）。
+- **レビュー票に判断材料として掲載**: 実行前レビュー（plan-review）・検収・blocked の
+  `needs/<id>.md` のタスク定義ブロックに載り、「なぜこのタスクか」「どこまでやるか」から
+  人が判断できる。plan（charter 分解）と敵対的レビューのプランナーは **why を必ず**、
+  out_of_scope / hints を有益なら付けて提案する。
+- **CLI・cohort・assess に対応**: `enqueue --why … --scope …` / `revise <id> --out-of-scope …`
+  （commands/ の JSON ドロップも同キーを受理）。cohort は pilot・生成メンバへ引き継ぎ
+  （`{item}` 差し込み可）。投入時アセスメント（c/r/a 採点）も記述があれば材料にする。
+- done の根拠は従来どおり **verify のみ**（これらは誘導であって完了条件ではない）。
+  書式の正典 `backlog.md.example`・JSON スキーマ `schemas/task.schema.json` を更新。
+
 ### agent-dashboard / agent-project: 検収・定常業務の 4 つの不具合を修正
 
 - **verify 未定義タスクを人の承認で完了できるように**: verify の無いタスクは工程完了後に

@@ -98,7 +98,8 @@ def _task_definition_block(task: Task) -> str:
     """実行前レビュー票に載せるタスク定義（人がレビューする対象そのもの）。"""
     lines = [f"- title  : {task.title}",
              f"- verify : `{task.verify}`" if task.verify else "- verify : （未定義）"]
-    for k in ("accept", "verify_template", "after", "note", "workspace", "charter",
+    for k in (*TASK_GUIDE_KEYS,   # 誘導・レビュー記述（why/desc/scope/…＝人がレビューする判断材料）
+              "accept", "verify_template", "after", "note", "workspace", "charter",
               "assess", "route"):   # assess=投入時採点（c/r/a）・route=spec ルーティングの決定
         v = task.get(k)
         if v:

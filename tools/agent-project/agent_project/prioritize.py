@@ -454,8 +454,10 @@ def _assess_prompt(task: Task) -> str:
         f"タイトル: {task.title}\n"
         f"verify: {task.verify or '（未定義）'}\n"
         f"accept: {task.get('accept') or '（なし）'}\n"
-        f"note: {task.get('note') or '（なし）'}\n\n"
-        '出力は JSON オブジェクトのみ（説明文なし）: {"c": 1, "r": 1, "a": 1}')
+        f"note: {task.get('note') or '（なし）'}\n"
+        + "".join(f"{k}: {task.get(k)}\n"       # 誘導・レビュー記述があれば採点材料に足す（有るものだけ）
+                  for k in ("why", "desc", "scope", "constraints") if task.get(k))
+        + '\n出力は JSON オブジェクトのみ（説明文なし）: {"c": 1, "r": 1, "a": 1}')
 
 
 def assess_task(cfg: "Config", task: Task, agent_run=None) -> "str | None":
