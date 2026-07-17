@@ -339,7 +339,11 @@ def _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location="local"):
         return
     task.retries += 1
     if not task.verify:
-        _escalate(cfg, task, "verify 未定義", reasons, cycle, evidence=ev)
+        # 失敗ではなく「完了条件が無いので人が確認して完了にする」状態。理由文もそう読める形にする
+        # （「verify 未定義」だけだと viewer で失敗理由のように見える）。
+        _escalate(cfg, task, "verify 未定義（工程は完了しています。完了条件が無いため自動では "
+                             "done にできません。成果を確認し、問題なければ approve してください）",
+                  reasons, cycle, evidence=ev)
         if task.norm_status() == "blocked":
             append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（verify 未定義）")
     elif task.retries > cfg.max_retries:

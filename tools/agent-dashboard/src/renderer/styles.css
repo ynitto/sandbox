@@ -1008,6 +1008,12 @@ table.list tr.clickable:hover { background: var(--bg2); }
 }
 .final-verification-failure strong { color: #ff8d88; }
 .final-verification-failure span { line-height: 1.5; }
+/* verify 未定義など「失敗ではなく確認待ち」の情報バナー（赤＝エラーと誤読させない） */
+.final-verification-failure.info {
+  border-color: rgba(38, 139, 210, 0.6);
+  background: rgba(38, 139, 210, 0.11);
+}
+.final-verification-failure.info strong { color: #7cb8e8; }
 .final-verification-failure.compact {
   gap: 2px;
   margin: 8px 0 2px;
@@ -1195,13 +1201,13 @@ dialog h3 { font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
 }
 .delivery-repo-head h3 { margin: 0; font-size: 15px; }
 .delivery-repo-meta {
-  display: flex;
-  flex-wrap: wrap;
+  display: block;
   min-width: 0;
   margin: 6px 0 8px;
   font-size: 12px;
   overflow-wrap: anywhere;
 }
+.delivery-repo-meta-line { display: block; min-width: 0; margin: 2px 0; }
 .delivery-repo-meta code { overflow-wrap: anywhere; word-break: break-word; }
 .delivery-files { margin: 8px -10px -10px; padding: 0; list-style: none; }
 .delivery-files li { display: flex; min-width: 0; border-top: 1px solid var(--border); }

@@ -202,6 +202,27 @@ assert.deepStrictEqual(finalVerifyFailure, {
 assert.match(finalVerificationFailureHtml(finalVerifyFailure), /工程は全て成功/);
 assert.match(finalVerificationFailureHtml(finalVerifyFailure), /最終検証で失敗/);
 assert.match(finalVerificationFailureHtml(finalVerifyFailure), /タスクは未完了/);
+
+// verify 未定義は失敗ではなく「完了の確認待ち」。エラー風バナーにしない。
+const verifyUndefined = runFinalVerificationFailure(
+  {
+    backlog: [{ id: 'T2', status: 'blocked', extra: { last_run: 'run-no-verify' } }],
+    archive: [],
+    needs: [{ taskId: 'T2', kind: 'blocked', why: 'verify 未定義（工程は完了しています…）' }],
+  },
+  {
+    runId: 'run-no-verify', taskId: 'T2', status: 'done', total: 2,
+    counts: { done: 2, failed: 0 },
+  }
+);
+assert.strictEqual(verifyUndefined.kind, 'info');
+assert.match(verifyUndefined.title, /完了の確認待ち/);
+const infoHtml = finalVerificationFailureHtml(verifyUndefined);
+assert.match(infoHtml, /final-verification-failure info/);
+assert.ok(!/失敗/.test(infoHtml), 'verify 未定義のバナーに「失敗」を出さない');
+assert.match(infoHtml, /承認/);
+const infoCompact = finalVerificationFailureHtml(verifyUndefined, true);
+assert.ok(!/失敗|未完了/.test(infoCompact), 'コンパクト表示もエラー風にしない');
 assert.strictEqual(
   runFinalVerificationFailure(
     { backlog: [{ id: 'T1', status: 'blocked', extra: { last_run: 'new-run' } }], needs: [] },

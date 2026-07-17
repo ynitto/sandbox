@@ -73,7 +73,7 @@ function scalarValue(rawVal) {
 // ---------------------------------------------------------------------------
 // kiro-loop prompts パーサ（行指向）
 // ---------------------------------------------------------------------------
-const FIELD_KEYS = new Set(['name', 'interval_minutes', 'cron', 'enabled']);
+const FIELD_KEYS = new Set(['name', 'interval_minutes', 'cron', 'enabled', 'prompt']);
 
 // prompts: リストのエントリを、各フィールドの行番号付きで返す。
 //   entry = { index, dashLine, fieldIndent, fields: { <key>: { line, rawVal } } }
@@ -128,6 +128,29 @@ function parseKiroLoopPromptsWithLines(text) {
   return entries;
 }
 
+// エントリごとの prompt 本文（インラインスカラ or ブロックスカラ `prompt: |`）を返す。
+// 書き戻しには使わない読み取り専用（ステートマシン対エントリの検出用）。
+function kiroLoopPromptTexts(text) {
+  const norm = String(text == null ? '' : text);
+  const lines = norm.split('\n');
+  return parseKiroLoopPromptsWithLines(norm).map((e) => {
+    const f = e.fields.prompt;
+    if (!f) return '';
+    const raw = String(f.rawVal == null ? '' : f.rawVal).trim();
+    if (!/^[|>][+-]?\d*\s*(#.*)?$/.test(raw)) return scalarValue(f.rawVal);
+    // ブロックスカラ: fieldIndent より深い行を本文として読む（浅い行で終了）
+    const out = [];
+    for (let i = f.line + 1; i < lines.length; i += 1) {
+      const l = lines[i];
+      if (/^\s*$/.test(l)) { out.push(''); continue; }
+      const indent = l.length - l.replace(/^\s+/, '').length;
+      if (indent <= e.fieldIndent) break;
+      out.push(l.trim());
+    }
+    return out.join('\n').trim();
+  });
+}
+
 // 書き戻し不要な読み取り用: {name, interval_minutes, cron, enabled} の素の値。
 function parseKiroLoopPrompts(text) {
   return parseKiroLoopPromptsWithLines(text).map((e) => {
@@ -147,20 +170,36 @@ function parseKiroLoopPrompts(text) {
   });
 }
 
-// .json / .yaml いずれかから prompts エントリ（素の値）と format を返す。
+// .json / .yaml いずれかから prompts エントリ（素の値）・prompt 本文・format を返す。
 function readKiroPrompts(file, format) {
   const text = readText(file);
-  if (text === null) return { format, entries: [] };
+  if (text === null) return { format, entries: [], texts: [] };
   if (format === 'json') {
     try {
       const obj = JSON.parse(text);
       const arr = Array.isArray(obj && obj.prompts) ? obj.prompts : [];
-      return { format, entries: arr.filter((p) => p && typeof p === 'object') };
+      const entries = arr.filter((p) => p && typeof p === 'object');
+      return { format, entries, texts: entries.map((p) => String(p.prompt == null ? '' : p.prompt)) };
     } catch {
-      return { format, entries: [] };
+      return { format, entries: [], texts: [] };
     }
   }
-  return { format, entries: parseKiroLoopPrompts(text) };
+  return { format, entries: parseKiroLoopPrompts(text), texts: kiroLoopPromptTexts(text) };
+}
+
+// kiro-loop の prompt 本文がステートマシン実行の対エントリ（「xxx ステートマシンを実行して」等）
+// かどうかを判定する。フォルダ名（.statemachine/<name>）か表示名（workflow.yaml の name）が
+// 本文に現れ、かつ「ステートマシン」への言及があれば対とみなす。
+function pairedStateMachineOf(promptText, smInfos) {
+  const t = String(promptText == null ? '' : promptText);
+  if (!t) return null;
+  for (const sm of smInfos || []) {
+    if (t.includes(`.statemachine/${sm.smName}`)) return sm;
+    if (!/ステートマシン|state\s*machine/i.test(t)) continue;
+    const names = [sm.smName, sm.meta && sm.meta.name].filter(Boolean);
+    if (names.some((n) => t.includes(n))) return sm;
+  }
+  return null;
 }
 
 function scheduleOf(entry) {
@@ -248,9 +287,28 @@ function discoverCoworkItems(config) {
     for (const mk of scanForCoworkConfigs(root, scanDepth)) {
       const folder = mk.folder;
       const fk = _pathKey(folder);
+      const smInfos = mk.smNames.map((smName) => {
+        const wf = path.join(folder, '.statemachine', smName, 'workflow.yaml');
+        return { smName, wf, meta: parseFlatYaml(readText(wf) || '') };
+      });
+      // ステートマシンを実行するだけの kiro-loop エントリは対のステートマシンへ統合する
+      // （同じ作業が loop と state-machine の 2 項目に割れて見えないように）。
+      const pairBySm = new Map();   // smName -> { entry, idx, format }
+      const pairedIdx = new Set();
+      let kiro = { format: mk.kiroFormat, entries: [], texts: [] };
       if (mk.kiroFile) {
-        const { format, entries } = readKiroPrompts(mk.kiroFile, mk.kiroFormat);
-        entries.forEach((e, idx) => {
+        kiro = readKiroPrompts(mk.kiroFile, mk.kiroFormat);
+        if (smInfos.length) {
+          kiro.entries.forEach((e, idx) => {
+            const sm = pairedStateMachineOf(kiro.texts[idx], smInfos);
+            if (sm && !pairBySm.has(sm.smName)) {
+              pairBySm.set(sm.smName, { entry: e, idx });
+              pairedIdx.add(idx);
+            }
+          });
+        }
+        kiro.entries.forEach((e, idx) => {
+          if (pairedIdx.has(idx)) return;
           const name = e.name || `prompt-${idx + 1}`;
           const { schedule, scheduleKey } = scheduleOf(e);
           items.push({
@@ -262,15 +320,15 @@ function discoverCoworkItems(config) {
             schedule,
             enabled: e.enabled !== false,
             _src: {
-              kind: 'kiro-loop', file: mk.kiroFile, format,
+              kind: 'kiro-loop', file: mk.kiroFile, format: kiro.format,
               repo: folder, promptIndex: idx, promptName: e.name || '', scheduleKey,
             },
           });
         });
       }
-      for (const smName of mk.smNames) {
-        const wf = path.join(folder, '.statemachine', smName, 'workflow.yaml');
-        const meta = parseFlatYaml(readText(wf) || '');
+      for (const { smName, wf, meta } of smInfos) {
+        const pair = pairBySm.get(smName) || null;
+        const { schedule, scheduleKey } = pair ? scheduleOf(pair.entry) : { schedule: '', scheduleKey: '' };
         items.push({
           id: `disc:sm:${fk}:${smName}`,
           source: 'discovered',
@@ -279,9 +337,17 @@ function discoverCoworkItems(config) {
           repo: folder,
           workflow: smName,
           description: meta.description || '',
+          schedule,
+          ...(pair ? { enabled: pair.entry.enabled !== false } : {}),
           _src: {
             kind: 'statemachine', file: wf, format: 'yaml',
             repo: folder, workflowName: smName,
+            ...(pair ? {
+              loop: {
+                file: mk.kiroFile, format: kiro.format,
+                promptIndex: pair.idx, promptName: pair.entry.name || '', scheduleKey,
+              },
+            } : {}),
           },
         });
       }
@@ -296,6 +362,8 @@ module.exports = {
   detectMarkers,
   parseKiroLoopPrompts,
   parseKiroLoopPromptsWithLines,
+  kiroLoopPromptTexts,
+  pairedStateMachineOf,
   resolveRoot,
   scalarValue,
   scheduleOf,

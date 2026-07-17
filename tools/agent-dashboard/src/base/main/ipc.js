@@ -98,7 +98,13 @@ function registerBaseIpcHandlers() {
     return shell.openExternal(url);
   });
 
-  handle('shell:openPath', ({ target }) => shellActions.openPath(shell, target));
+  handle('shell:openPath', ({ target }) => {
+    // WSL 側の POSIX パス（検収画面の「開く」等）は UNC へ橋渡ししてから開く
+    const { _isPosixAbs, toViewerPath } = require('../../features/agent-project/main/project');
+    const t = String(target || '');
+    const bridged = process.platform === 'win32' && _isPosixAbs(t) ? toViewerPath(t) : t;
+    return shellActions.openPath(shell, bridged);
+  });
 
   // OS 通知・タスクバーバッジ・ウィンドウフラッシュ（要対応の増分を renderer が検知して呼ぶ）。
   // 「何を通知するか」は renderer（agent-project の意味を知る側）が決め、ここは出すだけ。

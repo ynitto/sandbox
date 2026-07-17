@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const {
-  makeLoopProvider, isWslPath, wslPath, wslDistro, shellQuote, sh: providerSh, decodeCliOutput,
+  makeLoopProvider, isWslPath, wslPath, wslDistro, toWslCwd, shellQuote, decodeCliOutput,
 } = require('./loopProvider');
 const { _pathKey, _isPosixAbs, toViewerPath } = require('../../agent-project/main/project');
 const { parseFlatYaml } = require('../../agent-project/main/toolconfig');
@@ -94,20 +94,17 @@ function tail(file, max = 1200) {
 
 function processStatus(item, cfg) {
   const repo = item.repo || item.cwd || '';
-  const needle = repo ? wslPath(repo) : itemId(item, 0);
   const command = item.type === 'state-machine' ? (cfg.stateMachineCommand || 'statemachine-use') : (cfg.loopCommand || cfg.loopProvider || 'kiro-loop');
-  if (process.platform === 'win32' && isWslPath(repo)) {
+  if (process.platform === 'win32') {
+    // kiro-loop は WSL 側で動く想定なので、リポジトリが Windows ドライブ上でも WSL を探査する。
+    const needle = repo ? (toWslCwd(repo) || repo) : itemId(item, 0);
     const distro = wslDistro(repo);
     const script = `export LANG=C.UTF-8 LC_ALL=C.UTF-8; pgrep -af ${shellQuote(command)} | grep -F -- ${shellQuote(needle)} | grep -v grep | head -1`;
     const wslArgs = distro ? ['-d', distro, '-e', 'sh', '-lc', script] : ['-e', 'sh', '-lc', script];
     const r = sh('wsl.exe', wslArgs, { timeoutMs: 8000 });
     return r.ok && r.stdout ? { running: true, detail: r.stdout } : { running: false, detail: '' };
   }
-  if (process.platform === 'win32') {
-    // wmic は重い・文字化けしやすいので、ポーリング既定では呼ばない（probeProcess 時のみ）。
-    const r = sh('wmic', ['process', 'where', `CommandLine like '%${command}%'`, 'get', 'ProcessId,CommandLine'], { timeoutMs: 8000 });
-    return r.ok && r.stdout && r.stdout.includes(command) ? { running: true, detail: r.stdout } : { running: false, detail: '' };
-  }
+  const needle = repo ? wslPath(repo) : itemId(item, 0);
   const r = sh('sh', ['-lc', `pgrep -af ${shellQuote(command)} | grep -F -- ${shellQuote(needle)} | grep -v grep | head -1`], { timeoutMs: 8000 });
   return r.ok && r.stdout && r.stdout.includes(command) ? { running: true, detail: r.stdout } : { running: false, detail: '' };
 }
@@ -260,10 +257,22 @@ function runStateMachine(config, itemIdValue, input) {
   const cfg = config.cowork || {};
   const item = resolveItem(config, itemIdValue);
   if (!item) throw new Error(`Cowork 定型業務が見つかりません: ${itemIdValue}`);
-  const args = Array.isArray(item.args) ? [...item.args] : ['run', item.workflow || item.file].filter(Boolean);
-  if (input) args.push(String(input));
   const cwd = viewerRepo(item.repo || item.cwd) || item.repo || item.cwd || process.cwd();
-  return providerSh(cfg.stateMachineCommand || 'statemachine-use', args, { cwd, timeoutMs: item.timeoutMs || 60000 });
+  // statemachine-use は CLI ではなくスキル。kiro-loop send でエージェントセッションへ
+  // 「xxx ステートマシンを実行して」を送って発動する。kiro-loop.yml に対となる定期プロンプト
+  // がある統合項目はそのプロンプト名を送る（send が cwd の .kiro/kiro-loop.* から本文を解決）。
+  let args;
+  if (Array.isArray(item.args)) {
+    args = [...item.args];
+    if (input) args.push(String(input));
+  } else {
+    const pairedName = item._src && item._src.loop && item._src.loop.promptName;
+    const prompt = (pairedName && !input)
+      ? pairedName
+      : `${item.workflow || item.file || item.name} ステートマシンを実行して${input ? `。入力: ${String(input)}` : ''}`;
+    args = ['send', prompt];
+  }
+  return makeLoopProvider(cfg).run({ ...item, cwd, args, timeoutMs: item.timeoutMs || 60000 });
 }
 
 function gitInRepo(repo, args, timeoutMs) {
@@ -338,8 +347,27 @@ function applyKiroLoopJson(raw, items) {
 // 発見項目の編集を _src.file 単位に束ねて実体へ書き戻す。差分がある時だけ write。
 // 返り値 { touched: [{repo, relFiles:[...]}], errors:[...] }。
 function applyDiscoveredEdits(discovered) {
-  const byFile = new Map();
+  // 統合項目（ステートマシン＋対となる kiro-loop エントリ）は schedule/enabled の編集を
+  // kiro-loop 側の実体へ書き戻す合成項目に展開する。プロンプト名は変更しない
+  // （表示名の変更は workflow.yaml の name へ書き戻す）。
+  const expanded = [];
   for (const it of discovered) {
+    expanded.push(it);
+    const lp = it._src && it._src.kind === 'statemachine' ? it._src.loop : null;
+    if (lp && lp.file) {
+      expanded.push({
+        name: lp.promptName,
+        schedule: it.schedule,
+        enabled: it.enabled,
+        _src: {
+          kind: 'kiro-loop', file: lp.file, format: lp.format, repo: it._src.repo,
+          promptIndex: lp.promptIndex, promptName: lp.promptName, scheduleKey: lp.scheduleKey,
+        },
+      });
+    }
+  }
+  const byFile = new Map();
+  for (const it of expanded) {
     const f = it._src.file;
     if (!byFile.has(f)) byFile.set(f, []);
     byFile.get(f).push(it);

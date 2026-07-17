@@ -88,6 +88,25 @@ test('archiveRunSnapshot → bus 掃除後も listArchivedRuns / readArchivedRun
   }
 });
 
+test('スナップショットの長い工程出力は冒頭＋末尾の抜粋で保存される', () => {
+  const { root, busDir, runDir } = mkBus('run-long-output');
+  const long = `先頭-${'x'.repeat(9000)}-末尾`;
+  fs.writeFileSync(
+    path.join(runDir, 'results', 'a.json'),
+    JSON.stringify({ status: 'done', who: 'w1', finished_at: '2026-07-11T00:05:00Z', output: long }),
+    'utf8'
+  );
+  const run = flow.readRun(runDir);
+  assert.strictEqual(run.nodes.a.output, long, 'live 表示は全文のまま');
+  flow.archiveRunSnapshot(root, busDir, run);
+  const archived = flow.readArchivedRun(root, run.runId);
+  const saved = archived.run.nodes.a.output;
+  assert.ok(saved.length < long.length, 'アーカイブは抜粋');
+  assert.ok(saved.includes('先頭-') && saved.includes('-末尾'), '冒頭と末尾は残す');
+  assert.ok(saved.includes('中略'), '省略を明示する');
+  assert.strictEqual(run.nodes.a.output, long, '渡した run オブジェクトは変更しない');
+});
+
 test('アーカイブはプロジェクトフォルダ配下（<dir>/flow-archive/）に置かれる', () => {
   // 置き場がプロジェクトの中にあることが、リセットで一緒に消える根拠（reset は非ドットの
   // 直下エントリを対象にする）。バスのパスでハッシュ分けした外部ディレクトリには置かない。

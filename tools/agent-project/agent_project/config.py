@@ -423,9 +423,7 @@ def delivery_evidence(cfg: "Config", act_msg: str, git_base, location: str = "lo
                 lines.append(f"- 変更ファイル: なし（`{e['base']}` と差が無い＝成果物が空）")
         lines.append(f"- 実行先: {location}")
         if verify is not None:
-            res = "PASS" if ok else ("FAIL" if ok is not None else "?")
-            vm = (vmsg or "").replace("\n", " ").strip()[:200]
-            lines.append(f"- 検証: `{verify}` → {res}" + (f"（{vm}）" if vm else ""))
+            lines.append(_verify_evidence_line(verify, vmsg, ok))
         return "\n".join(lines)
 
     # 作業ブランチが特定できないとき（単発実行・git 以外）は従来どおり workdir を見る
@@ -449,10 +447,18 @@ def delivery_evidence(cfg: "Config", act_msg: str, git_base, location: str = "lo
     elif git_base is not None:
         lines.append("- 差分: baseline 以降の変更なし")
     if verify is not None:
-        res = "PASS" if ok else ("FAIL" if ok is not None else "?")
-        vm = (vmsg or "").replace("\n", " ").strip()[:200]
-        lines.append(f"- 検証: `{verify}` → {res}" + (f"（{vm}）" if vm else ""))
+        lines.append(_verify_evidence_line(verify, vmsg, ok))
     return "\n".join(lines)
+
+
+def _verify_evidence_line(verify, vmsg: str, ok: "bool | None") -> str:
+    """判断材料の検証行。verify 未定義は「FAIL（失敗）」ではなく確認待ちとして書く
+    （空 verify を FAIL と書くと、成功した成果が失敗と誤読される）。"""
+    if not str(verify or "").strip():
+        return "- 検証: 未定義（自動では完了にできないため、成果を確認して承認してください）"
+    res = "PASS" if ok else ("FAIL" if ok is not None else "?")
+    vm = (vmsg or "").replace("\n", " ").strip()[:200]
+    return f"- 検証: `{verify}` → {res}" + (f"（{vm}）" if vm else "")
 
 
 _COST_RE = re.compile(r"@cost\b(?P<rest>.*)")

@@ -287,6 +287,17 @@ function runFinalVerificationFailure(project, run) {
   );
   if (!need) return null;
   const prose = [need.failureSummary, need.why, need.detail].filter(Boolean).join('\n');
+  // verify 未定義は「失敗」ではない: 工程は完了し、完了条件が無いため人の確認を待っている
+  // だけ。赤いエラー風バナーで出すと失敗と誤読される（実際に分かりにくいという指摘を受けた）。
+  if (/verify\s*未定義/i.test(prose)) {
+    return {
+      kind: 'info',
+      title: '工程は全て成功・完了の確認待ち',
+      summary: '検証コマンド（verify）が未定義のため、自動では完了にできません。'
+        + '成果を確認し、問題なければ要対応から承認してください。',
+      taskId: task.id,
+    };
+  }
   if (!need.failureSummary && !need.failureContext && !/(?:検証|verify|テスト|test|回帰|コマンド)/i.test(prose)) {
     return null;
   }
@@ -299,11 +310,17 @@ function runFinalVerificationFailure(project, run) {
 
 function finalVerificationFailureHtml(failure, compact = false) {
   if (!failure) return '';
-  return `<div class="final-verification-failure ${compact ? 'compact' : ''}" role="status">
+  const info = failure.kind === 'info';
+  const body = compact
+    ? (info
+      ? '成果は揃っています。内容を確認して承認すると完了になります。'
+      : '工程の成果は残っていますが、タスクは未完了です。')
+    : (info
+      ? esc(failure.summary)
+      : `全工程の処理は成功しましたが、その後の最終検証で失敗しました。タスクは未完了です。 ${esc(failure.summary)}`);
+  return `<div class="final-verification-failure ${info ? 'info' : ''} ${compact ? 'compact' : ''}" role="status">
     <strong>${esc(failure.title)}</strong>
-    <span>${compact
-      ? '工程の成果は残っていますが、タスクは未完了です。'
-      : `全工程の処理は成功しましたが、その後の最終検証で失敗しました。タスクは未完了です。 ${esc(failure.summary)}`}</span>
+    <span>${body}</span>
   </div>`;
 }
 
@@ -3127,6 +3144,16 @@ function needVerifyRevisionHtml(project, need) {
 }
 
 function formatNeedFullOutput(need, flowResponse) {
+  // 工程出力は抜粋（冒頭＋末尾）で載せる。全文を連結すると完了 run の詳細情報が巨大に
+  // なって読めない（「出力全部が含まれサイズが大きすぎる」という指摘への対処）。
+  // 結論・エラーは末尾に出ることが多いため末尾を厚めに取る。
+  const HEAD = 1200;
+  const TAIL = 2400;
+  const excerpt = (text) => {
+    const s = String(text == null ? '' : text);
+    if (s.length <= HEAD + TAIL) return s;
+    return `${s.slice(0, HEAD)}\n…（中略 ${s.length - HEAD - TAIL} 文字）…\n${s.slice(-TAIL)}`;
+  };
   const sections = [`# 要対応の原文\n\n${String((need && need.body) || '原文はありません')}`];
   const run = flowResponse && flowResponse.run;
   if (!run) {
@@ -3136,12 +3163,18 @@ function formatNeedFullOutput(need, flowResponse) {
   const runFacts = [`run: ${run.runId || '-'}`, `状態: ${run.status || '-'}`];
   if (run.failureReason) runFacts.push(`失敗理由: ${run.failureReason}`);
   sections.push(`# 関連する実行\n\n${runFacts.join('\n')}`);
+  let truncated = false;
   for (const node of Object.values(run.nodes || {})) {
     const output = node.output == null ? '' : String(node.output);
     const error = node.error == null ? '' : String(node.error);
     if (!output && !error) continue;
-    const text = [output, error ? `stderr / error:\n${error}` : ''].filter(Boolean).join('\n\n');
+    if (output.length > HEAD + TAIL || error.length > HEAD + TAIL) truncated = true;
+    const text = [excerpt(output), error ? `stderr / error:\n${excerpt(error)}` : '']
+      .filter(Boolean).join('\n\n');
     sections.push(`# 工程 ${node.id || '-'} — ${node.goal || node.title || ''}\n\n${text}`);
+  }
+  if (truncated) {
+    sections.push(`# 注記\n\n長い工程出力は冒頭と末尾のみ表示しています。全文は bus/runs/${run.runId || '<run-id>'}/results/ を参照してください。`);
   }
   if (run.final && Object.keys(run.final).length) {
     sections.push(`# final\n\n${JSON.stringify(run.final, null, 2)}`);
@@ -3251,13 +3284,14 @@ function deliveryReviewFooterHtml(need) {
 }
 
 function deliveryRepoMetaHtml(entry) {
+  // ブランチ名・パスは長くなりがちなので 1 項目 1 行で出す（中黒区切りの 1 行連結は読めない）
   const bits = [];
   if (entry.branch) bits.push(`作業ブランチ <code>${esc(entry.branch)}</code>`);
   if (entry.target || entry.base) bits.push(`ターゲット <code>${esc(entry.target || entry.base)}</code>`);
   if (entry.base) bits.push(`ベース <code>${esc(entry.base)}</code>`);
   if (entry.path) bits.push(`所在 <code>${esc(entry.path)}</code>`);
   if (entry.url && entry.role === 'reference') bits.push(`URL ${esc(entry.url)}`);
-  return bits.join('<span aria-hidden="true"> · </span>');
+  return bits.map((b) => `<div class="delivery-repo-meta-line">${b}</div>`).join('');
 }
 
 function renderDeliveryRepo(entry, idx) {
@@ -6435,12 +6469,15 @@ function renderCowork() {
         const live = observed.get(id) || {};
         const st = live.state || item.state || {};
         const discovered = item.source === 'discovered';
-        const disabledLoop = item.type === 'loop' && item.enabled === false;
+        const pairedLoop = !!(item._src && item._src.loop);
+        const disabledWork = item.enabled === false;
         const running = !!st.running || busyId === id;
         const status = running ? 'running' : (st.status || 'unknown');
         const run = state.coworkRun && String(state.coworkRun.id) === id ? state.coworkRun : null;
+        // 統合項目（kiro-loop の対エントリを持つステートマシン）は schedule も併記する
         const detail = item.type === 'state-machine'
-          ? (item.workflow ? `workflow ${item.workflow}` : 'workflow 未設定')
+          ? [item.workflow ? `workflow ${item.workflow}` : 'workflow 未設定',
+             item.schedule ? `schedule ${item.schedule}` : ''].filter(Boolean).join(' ／ ')
           : (item.schedule ? `schedule ${item.schedule}` : 'schedule 未設定');
         return `<article class="cowork-item ${running ? 'is-running' : ''} ${run && run.phase === 'error' ? 'is-error' : ''}" role="listitem">
           <div class="cowork-item-main">
@@ -6450,7 +6487,8 @@ function renderCowork() {
               <span class="status-chip ${coworkStatusClass(status)}" title="${esc(status)}">${esc(statusLabel(status))}</span>
               <span class="label-chip">${esc(workTypeLabel(item.type))}</span>
               ${discovered ? '<span class="label-chip">設定ファイル</span>' : '<span class="label-chip">手動</span>'}
-              ${disabledLoop ? '<span class="label-chip">無効</span>' : ''}
+              ${pairedLoop ? '<span class="label-chip">定期実行つき</span>' : ''}
+              ${disabledWork ? '<span class="label-chip">無効</span>' : ''}
             </div>
             <div class="cowork-item-sub muted">
               <span title="${esc(item.repo || '')}">${esc(coworkRepoLabel(item.repo))}</span>
@@ -6461,7 +6499,7 @@ function renderCowork() {
           </div>
           <div class="cowork-item-actions">
             <button data-cowork-run="${esc(id)}" data-cowork-type="${esc(item.type || 'loop')}" data-cowork-name="${esc(item.name || id)}" ${busyId ? 'disabled' : ''}>${busyId === id ? '実行中…' : '実行'}</button>
-            ${item.type !== 'state-machine' && item.repo && api.kiroLoopListSessions
+            ${(item.type !== 'state-machine' || pairedLoop) && item.repo && api.kiroLoopListSessions
               ? `<button data-cowork-term-repo="${esc(item.repo)}" data-cowork-term-name="${esc(item.name || id)}" ${busyId ? 'disabled' : ''}>端末</button>`
               : ''}
             <button data-cowork-edit="${i}" ${busyId ? 'disabled' : ''}>編集</button>
@@ -6719,14 +6757,21 @@ function openCoworkWorkDialog(index) {
   $('cw-type').disabled = discovered;
   $('cw-name').value = item.name || item.id || '';
   $('cw-schedule').value = item.schedule || item.cron || '';
-  // scheduleKey==='' の発見 loop は物理スケジュールフィールドが無い → 書き戻せないので read-only
-  $('cw-schedule').disabled = !!(discovered && item.type === 'loop' && item._src && item._src.scheduleKey === '');
+  // 発見項目のスケジュールは、書き戻せる物理フィールドがあるときだけ編集可:
+  //   loop → 自身の scheduleKey / state-machine → 対となる kiro-loop エントリの scheduleKey
+  const pairedLoop = !!(item._src && item._src.loop);
+  $('cw-schedule').disabled = !!(discovered && (
+    item.type === 'loop'
+      ? (item._src && item._src.scheduleKey === '')
+      : (!pairedLoop || item._src.loop.scheduleKey === '')
+  ));
   $('cw-workflow').value = item.workflow || item.file || '';
   $('cw-workflow').disabled = discovered;
   $('cw-description').value = item.description || '';
   $('cw-enabled').checked = item.enabled !== false;
   const enField = $('cw-enabled-field');
-  if (enField) enField.style.display = (item.type || 'loop') === 'loop' ? '' : 'none';
+  // enabled は kiro-loop の物理フィールド → loop と、対エントリを持つ統合ステートマシンで編集可
+  if (enField) enField.style.display = ((item.type || 'loop') === 'loop' || pairedLoop) ? '' : 'none';
   $('dlg-cowork-work').showModal();
 }
 

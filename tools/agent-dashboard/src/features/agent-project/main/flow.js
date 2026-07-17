@@ -614,6 +614,33 @@ function cancelRun(busDir, runId, { reason } = {}) {
 
 const ARCHIVE_DIRNAME = 'flow-archive';
 const ARCHIVE_KEEP = 100; // プロジェクトごとに保持する最大スナップショット数（古い順に削除）
+// スナップショットに残す工程出力の上限（冒頭＋末尾）。run 完了時に全工程の全出力を
+// そのまま書くとプロジェクト配下のファイルが肥大し、state git の同期にも載って重くなる。
+const ARCHIVE_OUTPUT_HEAD = 1200;
+const ARCHIVE_OUTPUT_TAIL = 2400;
+
+function _excerptText(s) {
+  const text = String(s == null ? '' : s);
+  const max = ARCHIVE_OUTPUT_HEAD + ARCHIVE_OUTPUT_TAIL;
+  if (text.length <= max) return text;
+  return `${text.slice(0, ARCHIVE_OUTPUT_HEAD)}\n…（中略 ${text.length - max} 文字）…\n${text.slice(-ARCHIVE_OUTPUT_TAIL)}`;
+}
+
+// アーカイブは読み取り専用の写し。工程出力（output/error）は抜粋にして保存する
+// （全文は bus/runs/<id>/results/ が正で、bus の掃除とともに寿命を終える）。
+function truncateRunOutputs(run) {
+  if (!run || typeof run !== 'object' || !run.nodes) return run;
+  const nodes = {};
+  for (const [id, node] of Object.entries(run.nodes)) {
+    if (!node || typeof node !== 'object') { nodes[id] = node; continue; }
+    nodes[id] = {
+      ...node,
+      ...(typeof node.output === 'string' ? { output: _excerptText(node.output) } : {}),
+      ...(typeof node.error === 'string' ? { error: _excerptText(node.error) } : {}),
+    };
+  }
+  return { ...run, nodes };
+}
 
 function flowArchiveDir(projectDir) {
   return path.join(String(projectDir || ''), ARCHIVE_DIRNAME);
@@ -642,7 +669,7 @@ function archiveRunSnapshot(projectDir, busDir, run) {
   const runDir = path.join(busDir, 'runs', run.runId);
   const snapshot = {
     savedAt: new Date().toISOString(),
-    run,
+    run: truncateRunOutputs(run),
     events: readRunEvents(runDir, 50),
     nodeEvents: readNodeEvents(runDir),
   };

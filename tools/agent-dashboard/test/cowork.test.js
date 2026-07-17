@@ -7,7 +7,9 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const cowork = require('../src/features/cowork/main/cowork');
-const { makeLoopProvider } = require('../src/features/cowork/main/loopProvider');
+const {
+  makeLoopProvider, winDriveToWsl, toWslCwd, sh: providerSh,
+} = require('../src/features/cowork/main/loopProvider');
 
 let passed = 0;
 function test(name, fn) {
@@ -100,6 +102,47 @@ test('loop 実行は明示 args があればそれを優先する', () => {
   const r = makeLoopProvider({ loopCommand: 'echo' }).run({ id: 'X', args: ['send', '-s', 'sess', 'X'], cwd: os.tmpdir() });
   assert.ok(r.ok);
   assert.strictEqual(r.stdout, 'send -s sess X');
+});
+
+test('winDriveToWsl は Windows ドライブパスを /mnt/<drive> に変換する', () => {
+  assert.strictEqual(winDriveToWsl('C:\\proj\\アプリ'), '/mnt/c/proj/アプリ');
+  assert.strictEqual(winDriveToWsl('D:/work/repo/'), '/mnt/d/work/repo');
+  assert.strictEqual(winDriveToWsl('C:\\'), '/mnt/c');
+  assert.strictEqual(winDriveToWsl('/home/me/repo'), '');          // POSIX は対象外
+  assert.strictEqual(winDriveToWsl('\\\\wsl.localhost\\U\\home'), '');
+});
+
+test('toWslCwd は UNC/ドライブ/POSIX を WSL 側パスへ寄せる', () => {
+  assert.strictEqual(toWslCwd('\\\\wsl.localhost\\Ubuntu\\home\\me\\repo'), '/home/me/repo');
+  assert.strictEqual(toWslCwd('C:\\proj'), '/mnt/c/proj');
+  assert.strictEqual(toWslCwd('/home/me/repo'), '/home/me/repo');
+});
+
+test('win32 では Windows ドライブ上のリポジトリでも wsl.exe 経由で loop を実行する（直接 spawn しない）', () => {
+  const orig = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+  try {
+    const r = providerSh('kiro-loop', ['send', 'x'], { cwd: 'C:\\proj\\app' });
+    // Linux 上のテストでは wsl.exe が無く ENOENT になるが、その ENOENT が
+    // kiro-loop ではなく wsl.exe を指していること＝WSL 経由であることを検証する。
+    assert.ok(/wsl\.exe/.test(r.error), `wsl.exe を起動する: ${r.error}`);
+    assert.ok(!/spawnSync kiro-loop/.test(r.error), 'kiro-loop を Windows 側で直接 spawn しない');
+  } finally {
+    if (orig) Object.defineProperty(process, 'platform', orig);
+  }
+});
+
+test('state-machine 実行は statemachine-use スキルを発動するプロンプトを kiro-loop send で送る', () => {
+  const repo = os.tmpdir();
+  const config = { cowork: {
+    loopCommand: 'echo',
+    items: [{ id: 'sm1', type: 'state-machine', name: 'リリース', workflow: 'release', repo }],
+  } };
+  const r = cowork.runStateMachine(config, 'sm1', '');
+  assert.ok(r.ok, `echo が成功する: ${r.error || r.stderr}`);
+  assert.strictEqual(r.stdout, 'send release ステートマシンを実行して');
+  const withInput = cowork.runStateMachine(config, 'sm1', 'v1.2');
+  assert.strictEqual(withInput.stdout, 'send release ステートマシンを実行して。入力: v1.2');
 });
 
 test('overview の既定はプロセス探査せず probed=false', () => {
