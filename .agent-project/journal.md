@@ -1107,3 +1107,12 @@
 - 2026-07-18 06:58:01 verify: docs-designs-README-042729 の作業ブランチ ap/docs-designs-README-042729 は https://github.com/ynitto/sandbox に未作成（push なし）→ main で検証
 - 2026-07-18 06:58:01 verify: docs-designs-README-042729 を https://github.com/ynitto/sandbox@main のクローン内で検証
 - 2026-07-18 06:58:04 cycle 1: docs-designs-README-042729 → 人の判断（回帰検知）
+- 2026-07-18 06:58:07 run 再開: verify-codd-gate-042729 は req-ef1f92c3-verify-codd-gate-042729-r5 の失敗ノードだけをやり直します（done は温存）
+- 2026-07-18 06:58:08 verify: verify-codd-gate-042729 の作業ブランチ ap/verify-codd-gate-042729 は https://github.com/ynitto/sandbox に未作成（push なし）→ main で検証
+- 2026-07-18 06:58:09 verify: verify-codd-gate-042729 を https://github.com/ynitto/sandbox@main のクローン内で検証
+- 2026-07-18 06:58:12 cycle 2: verify-codd-gate-042729 → 人の判断（回帰検知）
+- 2026-07-18 06:58:12 run 再開: agent-project-codd-gate--042729 は req-ef1f92c3-agent-project-codd-gate--042729-r4-v2 の失敗ノードだけをやり直します（done は温存）
+- 2026-07-18 06:58:14 verify: agent-project-codd-gate--042729 の作業ブランチ ap/agent-project-codd-gate--042729 は https://github.com/ynitto/sandbox に未作成（push なし）→ main で検証
+- 2026-07-18 06:58:14 verify: agent-project-codd-gate--042729 を https://github.com/ynitto/sandbox@main のクローン内で検証
+- 2026-07-18 06:58:16 cycle 3: agent-project-codd-gate--042729 → 人の判断（回帰検知）
+- 2026-07-18 06:58:16 === agent-project 停止 reason=drained cycles=3 done=0 blocked=3 notified=True promoted=0 ===
