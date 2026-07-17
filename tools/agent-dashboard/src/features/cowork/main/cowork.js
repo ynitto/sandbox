@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const {
@@ -90,6 +91,102 @@ function tail(file, max = 1200) {
     const s = fs.readFileSync(file, 'utf8');
     return s.slice(-max);
   } catch { return ''; }
+}
+
+// ---------------------------------------------------------------------------
+// 実行履歴（dashboard から実行した記録）。ビュアー固有のデータなのでリポジトリには
+// 書かず、ホーム配下の JSONL に追記する。項目のキーは jobKey（type|repo|名前）＝
+// 発見/手動や id 形式の変更を跨いで安定。
+// ---------------------------------------------------------------------------
+const HISTORY_KEEP = 500;      // 溢れたら新しい方からこの件数まで切り詰める
+const HISTORY_TRIM_AT = 1000;
+
+function historyFile(cfg) {
+  return String((cfg && cfg.historyFile) || path.join(os.homedir(), '.agent-dashboard', 'cowork-history.jsonl'));
+}
+
+function readHistoryLines(file) {
+  try {
+    return fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean);
+  } catch { return []; }
+}
+
+function appendHistory(cfg, record) {
+  const file = historyFile(cfg);
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.appendFileSync(file, `${JSON.stringify(record)}\n`, 'utf8');
+    const lines = readHistoryLines(file);
+    if (lines.length > HISTORY_TRIM_AT) {
+      fs.writeFileSync(file, `${lines.slice(-HISTORY_KEEP).join('\n')}\n`, 'utf8');
+    }
+  } catch { /* 履歴の書き込み失敗で実行自体は壊さない */ }
+}
+
+function readHistory(cfg, key, limit = 50) {
+  const out = [];
+  for (const line of readHistoryLines(historyFile(cfg))) {
+    try {
+      const rec = JSON.parse(line);
+      if (rec && rec.key === key) out.push(rec);
+    } catch { /* 壊れた行はスキップ */ }
+  }
+  return out.slice(-Math.max(1, limit)).reverse();   // 新しい順
+}
+
+function recordRun(cfg, item, res) {
+  appendHistory(cfg, {
+    at: new Date().toISOString(),
+    key: jobKey(item),
+    id: String(item.id || ''),
+    name: String(item.name || item.id || ''),
+    type: item.type === 'state-machine' ? 'state-machine' : 'loop',
+    repo: String(item.repo || item.cwd || ''),
+    ok: !!(res && res.ok),
+    message: String((res && (res.stderr || res.stdout || res.error)) || '').trim().slice(0, 300),
+  });
+}
+
+// 項目の実行履歴＋リポジトリのログ候補一覧。ログ本文は readLog で個別に取る。
+function itemLogs(config, itemIdValue, { historyLimit = 50 } = {}) {
+  const cfg = config.cowork || {};
+  const item = resolveItem(config, itemIdValue);
+  if (!item) throw new Error(`Cowork 作業が見つかりません: ${itemIdValue}`);
+  const type = item.type === 'state-machine' ? 'state-machine' : 'loop';
+  const repo = item.repo || item.cwd || '';
+  const logs = listLogCandidates(repo, type).map((l) => {
+    let size = 0;
+    try { size = fs.statSync(l.file).size; } catch { /* 消えた候補 */ }
+    return { file: l.file, name: path.basename(l.file), mtimeMs: l.mtimeMs, size };
+  });
+  return {
+    id: String(item.id || itemIdValue),
+    name: String(item.name || item.id || ''),
+    type,
+    repo,
+    history: readHistory(cfg, jobKey({ ...item, type }), historyLimit),
+    logs,
+  };
+}
+
+// ログ本文（末尾）。パスの正当性は「その項目のログ候補に実在するか」で検証する
+// （renderer から任意パスを読ませない）。
+function readLog(config, itemIdValue, file, maxBytes = 16000) {
+  const item = resolveItem(config, itemIdValue);
+  if (!item) throw new Error(`Cowork 作業が見つかりません: ${itemIdValue}`);
+  const type = item.type === 'state-machine' ? 'state-machine' : 'loop';
+  const candidates = listLogCandidates(item.repo || item.cwd || '', type);
+  const hit = candidates.find((l) => l.file === String(file || ''));
+  if (!hit) throw new Error('この作業のログではありません');
+  const limit = Math.max(1000, Math.min(Number(maxBytes) || 16000, 200000));
+  let size = 0;
+  try { size = fs.statSync(hit.file).size; } catch { /* stat 失敗は 0 扱い */ }
+  return {
+    file: hit.file,
+    size,
+    truncated: size > limit,
+    text: tail(hit.file, limit),
+  };
 }
 
 function processStatus(item, cfg) {
@@ -250,7 +347,9 @@ function runLoop(config, itemIdValue) {
     ? ((item._src && item._src.promptName) || item.name)
     : (item.name || item.id);
   const cwd = viewerRepo(item.repo || item.cwd) || item.repo || item.cwd;
-  return makeLoopProvider(cfg).run({ ...item, cwd, id: runId });
+  const res = makeLoopProvider(cfg).run({ ...item, cwd, id: runId });
+  recordRun(cfg, { ...item, type: 'loop' }, res);
+  return res;
 }
 
 function runStateMachine(config, itemIdValue, input) {
@@ -272,7 +371,9 @@ function runStateMachine(config, itemIdValue, input) {
       : `${item.workflow || item.file || item.name} ステートマシンを実行して${input ? `。入力: ${String(input)}` : ''}`;
     args = ['send', prompt];
   }
-  return makeLoopProvider(cfg).run({ ...item, cwd, args, timeoutMs: item.timeoutMs || 60000 });
+  const res = makeLoopProvider(cfg).run({ ...item, cwd, args, timeoutMs: item.timeoutMs || 60000 });
+  recordRun(cfg, { ...item, type: 'state-machine' }, res);
+  return res;
 }
 
 function gitInRepo(repo, args, timeoutMs) {
@@ -481,4 +582,5 @@ module.exports = {
   overview, runLoop, runStateMachine, saveWork, itemsOf, wslPath, dynamicState,
   resolveItem, findItem, dedupeItems, applyDiscoveredEdits, gitCommitFiles,
   invalidateDiscoverCache, decodeCliOutput, viewerRepo,
+  itemLogs, readLog, appendHistory, readHistory, historyFile,
 };

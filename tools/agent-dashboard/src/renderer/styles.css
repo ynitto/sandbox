@@ -512,6 +512,63 @@ button:disabled { opacity: 0.4; cursor: default; }
 .cowork-header h2 { margin: 0 0 4px; }
 .cowork-header p { margin: 0; max-width: 52em; }
 .cowork-meta { font-size: 12px; }
+.cowork-scope {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+}
+.cowork-scope label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+/* 実行履歴とログ */
+.cowork-history-body { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+.cowork-history-body h3 { margin: 0 0 6px; font-size: 13px; }
+.cowork-history-table-wrap { max-height: 200px; overflow: auto; }
+.cowork-history-msg { overflow-wrap: anywhere; word-break: break-word; }
+.cowork-history-log-layout {
+  display: grid;
+  grid-template-columns: minmax(180px, 260px) 1fr;
+  gap: 10px;
+  min-height: 0;
+}
+.cowork-log-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 320px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cowork-log-list li { display: flex; flex-direction: column; gap: 1px; }
+.cowork-log-list .muted { font-size: 11px; padding-left: 8px; }
+.cowork-log-file {
+  text-align: left;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cowork-log-file:hover { background: var(--bg3); }
+.cowork-log-file.selected { border-color: var(--accent2); background: var(--bg3); }
+.cowork-log-view-wrap { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+#cowork-log-view {
+  max-height: 320px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg3);
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .cowork-run-banner {
   padding: 8px 12px;
   border-radius: 6px;
