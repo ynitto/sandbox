@@ -58,7 +58,11 @@ kiro-loop (引数なし)
 
 **主要メソッド**:
 - `acquire(pane_id, pid)` → スロット空き確認 + ファイル書き込み（`LOCK_EX` でアトミック）
-- `release(pane_id)` → スロットファイル削除 + クールダウンファイル書き込み
+- `release(pane_id)` → スロットファイル削除 + クールダウンファイル書き込み。解放時に
+  スロット保持時間（送信→完了検知）を**ノード予算の共有台帳**へ `workload: routine` で
+  記帳する（契約: `schemas/node-budget.schema.json`。タイムアウト強制解放は数えない）。
+  また `PeriodicScheduler._run_loop` はサイクル先頭でノード予算をチェックし、
+  超過中は定期送信・webhook キューの dispatch を停止する（上限 0 = 無制限が既定）
 - `slot_elapsed(pane_id)` → 取得からの経過秒（タイムアウト検知用）
 - `cooldown_remaining(pane_id)` → クールダウン残り秒
 - `is_busy(pane_id)` → スロットファイル参照でペインの処理中を判定（静的）

@@ -1,12 +1,41 @@
-# schemas/ — ツール横断の共通スキーマ（repos / task）
+# schemas/ — ツール横断の共通スキーマ（repos / task / node-budget / amigos-mission）
 
-agent-project・agent-flow・codd-gate が**データ契約だけで**結合するための独立スキーマ。
+agent-project・agent-flow・codd-gate・agent-amigos が**データ契約だけで**結合するための独立スキーマ。
 ツール同士は互いの実装を知らず、ここで定義する形式だけを読む/書く（結合は常に一方向×データ）。
 
 | スキーマ | 何の契約か | 所有者（変更の主導） |
 |----------|-----------|--------------------|
 | [`repos.schema.json`](repos.schema.json) | リポジトリレジストリ（identity = **(url, path, base)**＝パス＋ブランチで一意） | 共有（本ディレクトリが正典） |
 | [`task.schema.json`](task.schema.json) | 制御層タスク（バックログ 1 件）の JSON 表現 | kiro-projects（Markdown 形の正典は `tools/kiro-projects/backlog.md.example`） |
+| [`node-budget.schema.json`](node-budget.schema.json) | ノード単位の実質実行時間の予算（`$AGENT_BUDGET_DIR`＝既定 `~/.agent/budget/` の config.json ＋ ledger/<YYYYMMDD>.jsonl） | 共有（本ディレクトリが正典。初出は agent-amigos 設計書 §3.3） |
+| [`amigos-mission.schema.json`](amigos-mission.schema.json) | agent-amigos のミッション公示（`post --roles` に渡すミッション + 役割ミッション表） | agent-amigos（検証は stdlib パーサ `normalize_mission`。スキーマは文書化とテスト突き合わせ — enum/既定値の一致をテストで担保） |
+
+## node-budget — 誰がどう読む/書くか
+
+- **各ツール（記帳・抑制側）**: 1 回の agent CLI 実行ごとに ledger へ 1 行追記
+  （O_APPEND・追記専用）し、実行前に「合計消費 ≥ 上限」なら新規実行を控える。
+  workload は `routine`（kiro-loop / agent-loop 定常業務）/ `project`（agent-project）/
+  `flow`（agent-flow）/ `amigos`（agent-amigos）。**全ワークロード実装済み**:
+  - `amigos`: ターン前チェック → 超過中は amigo を paused にし owner へ通知。ターンの
+    CLI 実行秒を記帳。
+  - `flow` / `project`: LLM 単一チョークポイント（`run_agent` / `_run_agent_cli`）で
+    実行前チェック → 超過は `[agent-error:quota] [node-budget]` として既存の環境要因
+    フローに乗る（run 即終端・リトライを焼かない／裁定を呼ばず needs へ）。成功実行の
+    実測秒を記帳。
+  - `routine`（kiro-loop）: スケジューラがサイクル先頭でチェックし、超過中は定期送信・
+    webhook キューの dispatch を停止（10 分ごとに警告ログ・キューは保持）。実行秒は
+    **セマフォスロットの保持時間**（送信 → 完了検知）で近似して解放時に記帳する
+    （`max_concurrent <= 0` でセマフォ未使用のときは計測点が無く記帳されない、が既知の制約。
+    タイムアウト強制解放は実行時間として数えない）。`agent-loop`（未統合クローン）へは
+    次回のクローン同期で反映する。
+- **管理面（agent-dashboard / 各ツール CLI）**: config.json を書き（合計上限
+  `execution_minutes`・期間 `period: day|month|total`・ワークロード別内訳上限。
+  **0 = 無制限**）、ledger を読んで消費内訳を表示する。依頼側・請負側どちらの
+  ノードでも同じ契約（CLI 例: `agent-amigos budget node --limit-minutes 240`）。
+  実装済み: agent-dashboard の **Amigos タブ**（`tools/agent-dashboard/src/features/amigos/`）
+  がこの契約でワークロード別消費の表示と上限編集を行う。
+- 超過チェックはロックなしの読み合計で、上振れは「進行中実行 × 同時実行数」に有界。
+  台帳は日付ファイル分割なので日次/月次の集計と gc（古い日付の削除）が安い。
 
 ## repos — 誰がどう読むか
 

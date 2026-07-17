@@ -1,0 +1,43 @@
+# agent-amigos 役割ミッション表の例（post --roles で渡す。JSON でも可）
+# 設計書: docs/designs/agent-amigos-design.md §10 ／ 正典スキーマ: schemas/amigos-mission.schema.json
+mission:
+  title: 社内 FAQ ボットの MVP
+  goal: design-doc.md の受入基準をすべて満たす FAQ ボットを納品する
+  # deadline: 2026-07-24T09:00:00Z    # 任意（wall-clock。超過は owner へ通知のみ）
+  assignment_policy: first-come        # first-come（claim 勝者＝確定）| owner-picks（assign で確定）
+  staffing_policy: self-staff          # self-staff | wait | fail
+  staffing_timeout: 600                # 秒。経過後に未充足の必須ロールをオーナーが自己補充
+  acceptance: manual                   # manual | agent（オーナー CLI が自動判定・上限超で人へ）
+  convergence:
+    done_when: reviewer-approved       # all-required-done | reviewer-approved
+    quiescence_turns: 3                # 全ロール静穏がこのターン数続いたら統合へ（partial）
+    question_timeout: 2                # 未回答質問を owner へ昇格するまでの自ターン数
+  budget:
+    execution_minutes: 120             # 予算 = 全 amigo の agent CLI 実実行時間の合計（0=無制限）
+    per_role_turns: 30                 # ロールあたりターン上限（空転の保険）
+    soft_ratio: 0.9                    # これを超えたら wrap-up モード
+    on_exhausted: wrap-up              # wrap-up（現状統合の partial 納品）| fail
+
+roles:
+  - id: architect
+    title: アーキテクト
+    mission: |
+      design-doc.md を正として構成を確定し、他ロールからの設計質問に回答する。
+      判断に迷うものは owner へ decision-request でエスカレーションする。
+    deliverables: [architecture.md]
+    required: true
+    agent_cli: claude
+  - id: impl-api
+    title: API 実装
+    mission: architecture.md に従い API を実装し、単体テストを通す。
+    deliverables: [src/, tests/]
+    required: true
+    requires: { tags: [python] }       # ノード能力（join --tags）とのマッチング条件
+    collaborates_with: [architect]     # 会話相手のヒント（順序の強制ではない）
+    agent_cli: codex
+  - id: reviewer
+    title: レビュアー
+    mission: 全ロールの成果物を design-doc.md と突き合わせてレビューし、指摘を返す。
+    required: true
+    approver: true                     # done_when: reviewer-approved の承認者
+  # integrator は省略可（省略時はオーナーノードが自動で self-staff する組み込みロール）

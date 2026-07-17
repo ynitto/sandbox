@@ -12,9 +12,17 @@
 
 **ソース構成（制御面分離）**: Electron シェル等の共通部は `src/base/`、
 agent-project / agent-flow の制御は `src/features/agent-project/` に置き、
-将来の kiro-loop 制御は `src/features/kiro-loop/` へ差し込めるようにしている
+kiro-loop 制御（`src/features/kiro-loop/`）・定常業務（`src/features/cowork/`）・
+agent-amigos ミッションとノード予算（`src/features/amigos/`）を同じ形で差し込んでいる
 （動的プラグインではない。列挙合成のみ。詳細は
 [`docs/designs/agent-dashboard-feature-split-design.md`](../../docs/designs/agent-dashboard-feature-split-design.md)）。
+
+**Amigos タブ**（`src/features/amigos/`）: agent-amigos ミッションの進行
+（phase / 名簿 / ミッション予算 / 未回答質問）を**読み取り専用**で一覧し、
+**ノード予算**（[node-budget 契約](../../schemas/node-budget.schema.json) —
+定常業務・プロジェクト・フロー・Amigos の実行時間合計に上限。0 = 無制限、
+依頼側・請負側どちらのノードでも同じ）をワークロード別の消費内訳つきで表示・編集する。
+ミッションも予算データも無いときはタブ自体を隠す。
 
 **概要から詳細へ**: 最初の画面で「現在の状態／あなたの対応／進捗／成果」を把握し、
 必要な箇所だけ「タスクを見る」「実行を見る」「成果を見る」から深掘りできる。

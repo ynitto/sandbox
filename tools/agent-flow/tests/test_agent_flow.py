@@ -6440,5 +6440,87 @@ class InheritRequestTests(unittest.TestCase):
         self.assertEqual(kf.read_json(new.meta_path)["request"], "最初の要求")
 
 
+class NodeBudgetTests(unittest.TestCase):
+    """ノード予算（node-budget 契約: schemas/node-budget.schema.json）の記帳・抑制。
+    共有台帳（$AGENT_BUDGET_DIR）の合計が上限を超えたら run_agent が
+    [agent-error:quota] タグ付きで即失敗し、環境要因として run が終端する。"""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="kf-node-budget-")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        os.environ["AGENT_BUDGET_DIR"] = self.dir
+        self.addCleanup(os.environ.pop, "AGENT_BUDGET_DIR", None)
+
+    def _config(self, minutes, period="day", workloads=None):
+        with open(os.path.join(self.dir, "config.json"), "w", encoding="utf-8") as f:
+            json.dump({"execution_minutes": minutes, "period": period,
+                       "workloads": workloads or {}}, f)
+
+    def _ledger(self, records, day=None):
+        led = os.path.join(self.dir, "ledger")
+        os.makedirs(led, exist_ok=True)
+        day = day or time.strftime("%Y%m%d", time.gmtime())
+        with open(os.path.join(led, f"{day}.jsonl"), "a", encoding="utf-8") as f:
+            for rec in records:
+                f.write(json.dumps(rec) + "\n")
+
+    def test_no_config_is_unlimited(self):
+        self.assertIsNone(kf._node_budget_state())
+
+    def test_exceeded_raises_quota_before_cli(self):
+        self._config(1)                                  # 上限 1 分
+        self._ledger([{"workload": "amigos", "seconds": 40},
+                      {"workload": "routine", "seconds": 30}])   # 他ワークロードとの合計で超過
+        with self.assertRaises(RuntimeError) as ctx:
+            kf.run_agent("x", None, purpose="worker")
+        msg = str(ctx.exception)
+        self.assertIn("[agent-error:quota]", msg)         # 環境要因として全層に運ばれる
+        self.assertIn("[node-budget]", msg)               # quota（CLI 利用上限）と区別できる
+        self.assertIsNotNone(kf.classify_agent_failure(msg))
+        self.assertEqual(kf.classify_agent_failure(msg)[0], "quota")
+
+    def test_workload_cap_applies_even_if_total_unlimited(self):
+        self._config(0, workloads={"flow": 1})
+        self._ledger([{"workload": "flow", "seconds": 61}])
+        self.assertTrue(kf._node_budget_state()["exceeded"])
+        self._ledger([{"workload": "routine", "seconds": 9999}])  # 他 WL は flow 内訳に無関係
+        self.assertTrue(kf._node_budget_state()["exceeded"])
+
+    def test_period_day_counts_only_today(self):
+        self._config(1, period="day")
+        self._ledger([{"workload": "flow", "seconds": 999}], day="19990101")
+        self.assertFalse(kf._node_budget_state()["exceeded"])
+        self._config(1, period="total")
+        self.assertTrue(kf._node_budget_state()["exceeded"])
+
+    def test_record_appends_ledger_line(self):
+        kf._node_budget_record(1.5, ref="planner")
+        led = os.path.join(self.dir, "ledger")
+        files = [n for n in os.listdir(led) if n.endswith(".jsonl")]
+        self.assertEqual(len(files), 1)
+        with open(os.path.join(led, files[0]), encoding="utf-8") as f:
+            rec = json.loads(f.read().strip())
+        self.assertEqual(rec["workload"], "flow")
+        self.assertEqual(rec["tool"], "agent-flow")
+        self.assertEqual(rec["seconds"], 1.5)
+        self.assertEqual(rec["ref"], "planner")
+
+    def test_run_agent_records_successful_execution(self):
+        # CLI 実行を成功スタブ（実行時間あり）に差し替え、run_agent が台帳へ記帳することを確認する
+        def slow_ok(*_a, **_k):
+            time.sleep(0.01)
+            return "ok"
+        with mock.patch.object(kf, "_run_agent_once", side_effect=slow_ok):
+            self.assertEqual(kf.run_agent("x", None, purpose="verify"), "ok")
+        led = os.path.join(self.dir, "ledger")
+        files = [n for n in os.listdir(led) if n.endswith(".jsonl")]
+        self.assertEqual(len(files), 1)
+        with open(os.path.join(led, files[0]), encoding="utf-8") as f:
+            rec = json.loads(f.read().strip())
+        self.assertEqual(rec["workload"], "flow")
+        self.assertEqual(rec["ref"], "verify")
+        self.assertGreater(rec["seconds"], 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -7,6 +7,168 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-amigos: P2（hub サーバ・owner-picks・acceptance: agent・スキーマ正典化）を実装
+
+- **hub サーバ + HubBus**（`--bus hub+<url>`）: git が使えない環境・低レイテンシ向けの
+  任意コンポーネント。stdlib http.server の薄い API（所有者上書き PUT / リビジョン付き
+  差分 list（long-poll 可）/ tree 削除）で、**調整はしない**（中央が落ちても壊れない）。
+  データディレクトリはミッションレイアウトそのまま — hub ホストの dashboard は
+  busDirs に指すだけで読める。クライアントはローカルミラー + 差分同期（claim の
+  勝者確認は force pull）、Bearer 認証（`AGENT_AMIGOS_HUB_TOKEN`）、プロキシ迂回で
+  LAN 直結。起動: `agent-amigos hub --data <dir>`。
+- **owner-picks**: claim は「応募」になり、確定はオーナーの `agent-amigos assign
+  <mid> <role> <node>` だけが行う（応募者一覧は `assign <mid> <role>` / status に表示）。
+  自己補充（self-staff）は応募 + 即時確定で従来どおり 1 ノード完結。mirror_roster は
+  自動確定せず離脱の掃除のみ（away 保持・クラッシュ再募集は両ポリシー共通）。
+- **acceptance: agent**: reviewing になるとオーナーノードの agent CLI が design doc と
+  deliverable（有界抜粋）を突き合わせて accept / reject を自動判定。差し戻しは通常の
+  ラウンドとして働き、`convergence.review_rounds` 回で停止して owner へ
+  decision-request をエスカレーション（**無限ループを作らない**。final を書けるのは
+  オーナーノードだけ、の不変条件は維持）。stub 判定は決定的（partial → 差し戻し）。
+  codd-gate 受入は将来拡張のまま。
+- **スキーマ正典化**: [`schemas/amigos-mission.schema.json`](schemas/amigos-mission.schema.json)
+  を新設（post --roles 入力の契約）。enum・既定値が実装（normalize_mission）とズレて
+  いないことをテストで担保する。
+- テスト 44 件（+12: hub 2 ノード E2E・hub 越し claim 競合・Bearer 認証・hub gc /
+  owner-picks 応募と確定・E2E / 自動受入 done 到達・partial 差し戻し → 上限で人へ /
+  スキーマ突き合わせ ×3）。
+
+### kiro-loop / agent-project / agent-flow: ノード予算（node-budget 契約）の記帳・抑制を組み込み
+
+- ノード予算の共有台帳（[`schemas/node-budget.schema.json`](schemas/node-budget.schema.json)）
+  の消費側を**全ワークロードに展開**。これで「定常業務・プロジェクト・フロー・amigos の
+  合計で上限を超えない」が実効になる（0 = 無制限が既定。設定が無ければ挙動は従来どおり）。
+- **agent-flow（`flow`）/ agent-project（`project`）**: LLM 単一チョークポイント
+  （`run_agent` / `_run_agent_cli`）で実行前にチェックし、超過は
+  **`[agent-error:quota] [node-budget]`** として既存の決定的トリアージに乗せる —
+  agent-flow は run を環境要因で即終端（全ノードでリトライを焼かない）、agent-project は
+  リトライ・裁定を消費せず needs へ、viewer/dashboard は理由を言い切れる。成功実行の
+  実測秒（monotonic）を台帳へ記帳。
+- **kiro-loop（`routine`）**: `PeriodicScheduler._run_loop` がサイクル先頭でチェックし、
+  超過中は定期送信・webhook キューの dispatch を停止（10 分間隔の警告ログ・キューは保持、
+  上限引き上げ/期間更新で自動再開）。実行秒は**セマフォスロットの保持時間**（送信 →
+  完了検知）で近似し `GlobalSemaphore.release` で記帳（タイムアウト強制解放は数えない。
+  セマフォ未使用時は計測点が無く記帳されない既知の制約）。`agent-loop`（未統合クローン）
+  へは次回のクローン同期で反映。
+- 記帳は O_APPEND の best-effort（失敗しても実行は止めない — 上限は次の実行前チェックで
+  効く）。読み書きは各ツールが自前の小さな実装を持つ（agent-cli プラグインと同じ
+  「データ契約のみ・コード共有なし」の流儀）。
+- テスト: agent-flow +7（超過で quota タグ即失敗・CLI 不呼び出し / 内訳上限 / period /
+  記帳 / 成功実行の実測記帳）、agent-project +3（同系）。既存スイートは agent-flow 474 件・
+  agent-project 794 件・agent-amigos 32 件・agent-dashboard 367 件すべて通過。
+
+### agent-dashboard: Amigos タブ（agent-amigos ミッション + ノード予算の管理面）を追加
+
+- **新 feature** `src/features/amigos/`（制御面分離の流儀どおり base / 他 feature 無改造で
+  差し込み。IPC は `amigos:overview` / `amigos:budgetSave` の 2 チャネルのみ）:
+  - **ミッション一覧（読み取り専用）**: バス上のファイル（真実）だけを読み、dashboard から
+    バスへは一切書かない。ローカルバス（`missions/<mid>/`）と GitBus クローン作業領域
+    （`mission__<mid>/`）の両形式に対応し、`amigos.busDirs` 未設定時は
+    `~/.agent/amigos/bus/*` を自動発見。phase（近似導出）・ラウンド・名簿（担当 ×
+    完了/一時停止）・ミッション予算消費・未回答質問数・partial 納品を表示する。
+  - **ノード予算の管理面**: node-budget 契約（`schemas/node-budget.schema.json`）の
+    config を書き ledger を読む。期間内の消費をワークロード別（定常業務 / プロジェクト /
+    フロー / Amigos）に表示し、合計上限・期間（day/month/total）・内訳上限を編集
+    （**0 = 無制限**）。超過中は「amigo は一時停止」を明示。依頼側・請負側どちらの
+    ノードでも同じ契約 = 同じ画面。
+  - タブはミッションか予算データが存在するときだけ表示（cowork と同じ流儀）。
+- テスト: 配線テスト（feature-split）に amigos を追加、`test/amigos.test.js` を新設
+  （予算集計・超過判定・保存 / 両バス形式の読み取り・phase 導出 / **Python 実装
+  （agent-amigos stub）が実際に生成したバスを読めるクロス検証**）。全 367 件通過。
+
+### agent-amigos: ノード予算（請負側の上限）とツール横断の共有台帳を追加
+
+- **予算を二層に**: ミッション予算（依頼側がバスに宣言、§3.2）に加えて、
+  **請負ノード側でも上限を設定可能**に。ノード予算はツール横断の**共有台帳契約**
+  （新規 [`schemas/node-budget.schema.json`](schemas/node-budget.schema.json)、
+  置き場所 `$AGENT_BUDGET_DIR`＝既定 `~/.agent/budget/`）で管理され、
+  定常業務（routine）・agent-project（project）・agent-flow（flow）・amigos の
+  **全ワークロード合計**に上限を掛ける。**0 = 無制限**（既定）。期間は day / month /
+  total（日次リセットが既定）。ワークロード別の内訳上限も設定可。
+- **amigos 側の実装**: ターン開始前に台帳の合計をチェックし、超過中はそのノードの
+  amigo だけ **paused**（`[node-budget]` タグ・遷移時に一度だけ owner へ通知）。
+  **ミッションは殺さない** — 他ノードは進行継続、上限引き上げ・期間更新で自動復帰。
+  各ターンの CLI 実行秒は `workload: amigos`・`ref: <mission>/<role>` で台帳にも記帳
+  （バス events = ミッション予算、台帳 = ノード予算の二重帳簿）。
+  CLI: `agent-amigos budget node [--limit-minutes N] [--period day|month|total]
+  [--amigos-minutes N]`（表示・設定）。status にもノード予算行を表示。
+- **管理は依頼側・請負側どちらも**: agent-dashboard はこの契約（config.json を書き
+  ledger を読む）でどちらのノードの管理面にもなれる。dashboard の管理タブと
+  kiro-loop / agent-project / agent-flow の記帳・抑制の組み込みは、この契約に従う
+  フォローアップ（契約が先、実装は各ツール — repos / task / agent-cli と同じ流儀）。
+- テスト 32 件に拡充（+5: 0 = 無制限で完走・超過で paused ＋ owner 通知・上限引き上げで
+  復帰完走・内訳上限（他ワークロード消費は不干渉）・他ツール消費だけで合計上限に到達）。
+
+### agent-amigos: P1（GitBus 分散・away プロトコル）を実装
+
+- **GitBus**（`--bus git+<url>`）: オンプレ git remote の**専用バスリポジトリ**で
+  複数 PC 分散が動く。`main` は公示インデックスのみ、ミッション本体は
+  `mission/<mid>` ブランチに分離（参加したブランチだけ clone、gc はブランチ削除）。
+  同期は state_git の規律を流用 — pull 間隔律速（claim の勝者確認だけは force で
+  常に最新化）・push 競合は `pull --rebase` → 再 push の指数バックオフ・
+  force push なし・**1 ターン = origin 上の 1 コミット**（原子性、テストで検証）。
+  各ノードが自分専用クローンを持つため `add -A` ステージでも他者の書き込みを
+  巻き込まない（state_git「自 subdir のみステージ」の等価実装）。
+- **away プロトコル**: デーモンは SIGTERM / Ctrl-C で graceful offboard
+  （全 amigo を `state: away` + `resume_at` にして最後の push）。away 中は lease が
+  切れても resume_at + grace（既定 2h、`AGENT_AMIGOS_AWAY_GRACE`）まで**ロールを
+  保持**し、復帰した本人が続きから再開する。grace 超過・away 宣言なしのクラッシュは
+  従来どおり再募集。予算は実質実行時間ベースなので不在時間は予算を消費しない。
+- **git バスのコミットノイズ対策**: idle ターンの status 書き込みを quiescence 判定に
+  影響しない範囲でキャップ（ハートビートは 60s 間隔で維持）、lease 更新は残り半分を
+  切ってから（state_git「アイドル中の追加コミットはゼロ」の流儀）。
+- **partial → done 昇格**: 静穏化・予算枯渇で partial 統合した後に全ロール完了へ
+  到達したら、integrator が完全版で統合し直す。
+- **adaptive interval**: 無風時はデーモンの巡回間隔を伸ばす（上限 8 倍）。
+- テスト 27 件に拡充（+8: GitBus 2 ノード E2E・git 越し claim 競合の勝者一致・
+  1 ターン 1 コミット・gc ブランチ削除・away 保持/grace 超過/クラッシュ区別・
+  offboard → 復帰再開）。
+
+### agent-amigos: P0（MVP）を実装
+
+- **新ツール** [`tools/agent-amigos/`](tools/agent-amigos/): 設計書 P0 スコープの実装。
+  ローカルバス上で post（公示）→ claim 型アサイン（決定的タイブレーク）→ 自己補充
+  （self-staff で 1 ノード完結）→ 型付きメッセージ（質問/回答/レビュー/承認）→
+  integrator 統合 → collect / accept / reject（差し戻しラウンド）の全周が動く。
+  - **アクション封筒ランナー**: LLM はバスに直接書かず、ランナーが
+    `send / write_artifact / update_status / declare_done` を検証して代書
+    （パス逸脱・不正宛先・越権 approve は棄却して events に記録）。
+  - **収束条件と予算会計**: `events/<who>.jsonl` の `cli_seconds` 総和による決定的会計。
+    soft で wrap-up モード宣言、hard で partial 統合（`on_exhausted: fail` は終端）、
+    静穏化（quiescence）収束、`budget add` による予算追加。
+  - **agent CLI**: kiro / claude / copilot / codex 組み込み ＋ `agents/<name>.json`
+    プラグイン契約（探索順・エラートリアージ `[agent-error:*]` は agent-flow と同一）。
+    quota/auth/env は amigo を paused にして owner へ通知（他ロールは進行継続）。
+  - **テスト 19 件**（stdlib unittest・stub のみ・LLM 不要）: claim の二重アサインなし・
+    lease 失効 → 再募集・2 ノード分担・E2E・差し戻し・予算 wrap-up / fail・封筒検証・
+    owner エスカレーション。
+  - GitBus（専用バスリポジトリ＋ミッション別ブランチ）・away プロトコルは P1、
+    hub・dashboard 連携は P2（設計書 §16）。
+
+### agent-amigos: 役割駆動マルチエージェント協働ツールの設計書を追加
+
+- **新規設計書** [`docs/designs/agent-amigos-design.md`](docs/designs/agent-amigos-design.md)（Draft、実装未着手）:
+  オーナーノードが design doc ＋ 役割ミッション表でミッションを公示し、分散ノードが
+  ロールを claim して amigo（ロールを演じるエージェント）として参加、型付きメッセージ
+  （質問・回答・レビュー・決定）で相互協働しながら 1 つの成果物を組み上げてオーナーへ
+  納品する協働基盤の設計。kiro / claude / copilot / codex / cursor は既存の
+  agent-cli プラグイン契約（`agents/<name>.json`）をそのまま利用。バスは agent-flow と
+  同じファイルベース（LocalBus / GitBus / 任意の HubBus）で、中央サーバは「転送のみ」。
+  1 ノードでも未充足ロールの自己補充（self-staff）で完結する。
+  `docs/designs/README.md` の索引にも追加（24 → 25 件）。
+  - **収束条件と予算**: オーナーは post 時に収束条件（全必須ロール完了・レビュー承認・
+    静穏化）と予算（**実質実行時間** = 全 amigo の agent CLI 実行秒の総和）を宣言でき、
+    amigo はその範囲内で自律的にやり取りして収束する。会計はバス上の追記ログの総和で
+    決定的、枯渇時は wrap-up（現状統合の partial 納品）。予算追加はオーナーのみ。
+  - **中央は専用バスリポジトリ**: オンプレ git remote に `amigos-bus.git` を新規に切り、
+    `main`（公示インデックス）＋ `mission/<mid>` ブランチで**ミッション（タスク）単位に分離**。
+    同期の運用規律（間隔律速・rebase リトライ・force push 禁止・自パスのみステージ・
+    `fresh_after_sec` 生存表示）は agent-dashboard / agent-project の state_git を流用。
+  - **定期シャットダウン耐性**: 計画停止をクラッシュと区別する away プロトコル
+    （graceful offboard・毎ターン更新の引き継ぎメモ・away_grace までロール保持）と、
+    ターン成果を単一コミットにまとめる all-or-nothing 原子性で、夜間停止・電源断でも
+    バスに壊れた中間状態を残さない。実行時間ベースの予算なので不在時間は予算を消費しない。
+
 ### agent-project: バックログに誘導・レビュー記述フィールドを追加（why / desc / scope / out_of_scope / constraints / hints / demo）
 
 一般的なバックログ項目の慣行（背景・説明・スコープ境界・制約・確認手順）に合わせた任意

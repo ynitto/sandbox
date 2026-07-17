@@ -153,6 +153,93 @@ _DEFAULT_SLOT_TIMEOUT = 7200  # 猶予時間のデフォルト値（秒）
 _STATE_DIR = Path.home() / ".kiro" / "loop-state"  # デーモン状態ファイルディレクトリ
 
 
+# ---------------------------------------------------------------------------
+# ノード予算（node-budget 契約: schemas/node-budget.schema.json）
+#
+# ノード（マシン）単位の実質実行時間の共有台帳。定常業務（kiro-loop）・agent-project・
+# agent-flow・agent-amigos が同じ台帳（$AGENT_BUDGET_DIR、既定 ~/.agent/budget/）に記帳し、
+# 合計が上限（0 = 無制限）を超えたら新規のプロンプト送信を控える。
+# kiro-loop は subprocess で LLM を呼ばない（tmux の kiro-cli に送信する）ため、
+# 実行秒はセマフォスロットの保持時間（送信 → 完了検知）で近似して記帳する。
+# セマフォ未設定（max_concurrent <= 0）のときは計測点が無く、記帳されない（既知の制約）。
+# ---------------------------------------------------------------------------
+_NODE_BUDGET_WORKLOAD = "routine"
+_NODE_BUDGET_TOOL = "kiro-loop"
+
+
+def _node_budget_dir() -> str:
+    return os.path.abspath(os.path.expanduser(
+        os.environ.get("AGENT_BUDGET_DIR", os.path.join("~", ".agent", "budget"))))
+
+
+def _node_budget_state() -> dict | None:
+    """ノード予算の消費状況。設定が無い/上限 0 なら None（= 無制限・チェック不要）。"""
+    base = _node_budget_dir()
+    try:
+        with open(os.path.join(base, "config.json"), encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        return None
+    limit_min = float(cfg.get("execution_minutes") or 0)
+    wl_limit_min = float((cfg.get("workloads") or {}).get(_NODE_BUDGET_WORKLOAD) or 0)
+    if limit_min <= 0 and wl_limit_min <= 0:
+        return None
+    period = str(cfg.get("period") or "day")
+    prefix = (time.strftime("%Y%m%d", time.gmtime()) if period == "day"
+              else time.strftime("%Y%m", time.gmtime()) if period == "month" else "")
+    total = wl_total = 0.0
+    led = os.path.join(base, "ledger")
+    try:
+        names = sorted(n for n in os.listdir(led)
+                       if n.endswith(".jsonl") and n.startswith(prefix))
+    except OSError:
+        names = []
+    for name in names:
+        try:
+            with open(os.path.join(led, name), encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                        sec = float(rec.get("seconds") or 0)
+                    except (ValueError, TypeError):
+                        continue
+                    if sec <= 0:
+                        continue
+                    total += sec
+                    if rec.get("workload") == _NODE_BUDGET_WORKLOAD:
+                        wl_total += sec
+        except OSError:
+            continue
+    exceeded = ((limit_min > 0 and total >= limit_min * 60)
+                or (wl_limit_min > 0 and wl_total >= wl_limit_min * 60))
+    return {"exceeded": exceeded, "spent_min": total / 60, "limit_min": limit_min,
+            "period": period}
+
+
+def _node_budget_record(seconds: float, ref: str = "") -> None:
+    """台帳へ 1 記帳を追記する（O_APPEND — 複数プロセスの同時追記でも行は壊れない）。"""
+    if seconds <= 0:
+        return
+    d = os.path.join(_node_budget_dir(), "ledger")
+    try:
+        os.makedirs(d, exist_ok=True)
+        line = json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                           "workload": _NODE_BUDGET_WORKLOAD,
+                           "tool": _NODE_BUDGET_TOOL, "seconds": round(float(seconds), 3),
+                           "ref": ref}, ensure_ascii=False) + "\n"
+        fd = os.open(os.path.join(d, time.strftime("%Y%m%d", time.gmtime()) + ".jsonl"),
+                     os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        try:
+            os.write(fd, line.encode("utf-8"))
+        finally:
+            os.close(fd)
+    except OSError:
+        pass    # 記帳失敗で実行を止めない（台帳は best-effort、上限は次の送信前チェックで効く）
+
+
 class GlobalSemaphore:
     """ファイルベースの分散セマフォ。複数 kiro-loop プロセス間で kiro-cli の同時実行数を制御する。
 
@@ -201,9 +288,19 @@ class GlobalSemaphore:
             return True  # エラー時は実行を許可（安全側に倒す）
 
     def release(self, pane_id: str) -> None:
-        """スロットを解放する（冪等）。クールダウンが設定されている場合は記録する。"""
+        """スロットを解放する（冪等）。クールダウンが設定されている場合は記録する。
+        解放時、スロットの保持時間（送信 → 完了検知）をノード予算の台帳へ記帳する
+        （kiro-cli の実行時間の近似。node-budget 契約）。"""
+        slot_file = self._slot_path(pane_id)
         try:
-            self._slot_path(pane_id).unlink(missing_ok=True)
+            data = json.loads(slot_file.read_text(encoding="utf-8"))
+            elapsed = time.time() - float(data.get("acquired_at", 0))
+            if 0 < elapsed <= self._slot_timeout:   # タイムアウト強制解放は実行時間として数えない
+                _node_budget_record(elapsed, ref=pane_id)
+        except (OSError, json.JSONDecodeError, ValueError, TypeError):
+            pass
+        try:
+            slot_file.unlink(missing_ok=True)
         except OSError:
             pass
         if self.cooldown_seconds > 0:
@@ -1499,6 +1596,8 @@ class PeriodicScheduler:
         # 外部（webhook 等）から積まれた完成プロンプトの name 別キュー。
         # entries 全置換の影響を受けないよう scheduler 側で独立保有する。
         self._external_queues: dict[str, collections.deque[str]] = {}
+        # ノード予算超過ログのスロットリング（毎秒警告を出さない）
+        self._node_budget_warned_at = 0.0
         self._set_entries(entries, allow_immediate_once=True)
 
     def _release_slot(self, pane_id: str | None) -> None:
@@ -1914,6 +2013,21 @@ class PeriodicScheduler:
     def _run_loop(self) -> None:
         while not self._stop_event.wait(1):
             now = time.time()
+            # ノード予算（node-budget 契約）超過中は新規送信を控える。
+            # 定期発火・外部キューともこのサイクルでは dispatch しない（キューは保持され、
+            # 上限を上げるか期間が更新されると自動再開する）。
+            nb = _node_budget_state()
+            if nb and nb["exceeded"]:
+                if now - self._node_budget_warned_at > 600:
+                    self._node_budget_warned_at = now
+                    log.warning(
+                        "[node-budget] このノードの実行時間予算を超過しています"
+                        "（%.1f分/%.0f分・period=%s）。定期送信を停止中 — 上限を上げる"
+                        "（agent-amigos budget node / dashboard の Amigos タブ）か"
+                        "期間の更新を待ってください。",
+                        nb["spent_min"], nb["limit_min"], nb["period"],
+                    )
+                continue
             with self._lock:
                 entries = [e.copy() for e in self._entries]
 

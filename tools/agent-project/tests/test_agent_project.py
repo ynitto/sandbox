@@ -10934,5 +10934,55 @@ class TestTaskGuideFields(unittest.TestCase):
             self.assertEqual(members[0].get("constraints"), "b.md 以外は変更しない")
 
 
+class NodeBudgetTests(unittest.TestCase):
+    """ノード予算（node-budget 契約）の記帳・抑制。共有台帳の合計が上限を超えたら
+    _run_agent_cli が [agent-error:quota] タグ付きで即失敗し、既存の環境要因フロー
+    （リトライ・裁定を焼かず needs へ）に乗る。"""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="kp-node-budget-")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        os.environ["AGENT_BUDGET_DIR"] = self.dir
+        self.addCleanup(os.environ.pop, "AGENT_BUDGET_DIR", None)
+
+    def _config(self, minutes, period="day", workloads=None):
+        with open(os.path.join(self.dir, "config.json"), "w", encoding="utf-8") as f:
+            json.dump({"execution_minutes": minutes, "period": period,
+                       "workloads": workloads or {}}, f)
+
+    def _ledger(self, records):
+        led = os.path.join(self.dir, "ledger")
+        os.makedirs(led, exist_ok=True)
+        day = time.strftime("%Y%m%d", time.gmtime())
+        with open(os.path.join(led, f"{day}.jsonl"), "a", encoding="utf-8") as f:
+            for rec in records:
+                f.write(json.dumps(rec) + "\n")
+
+    def test_no_config_is_unlimited(self):
+        self.assertIsNone(km._node_budget_state())
+
+    def test_exceeded_raises_quota_before_cli(self):
+        self._config(1)
+        self._ledger([{"workload": "flow", "seconds": 40},
+                      {"workload": "project", "seconds": 30}])  # 他ワークロード合算で超過
+        with self.assertRaises(RuntimeError) as ctx:
+            km._run_agent_cli("x", None, purpose="prioritize")
+        msg = str(ctx.exception)
+        self.assertIn("[agent-error:quota]", msg)
+        self.assertIn("[node-budget]", msg)
+        self.assertEqual(km.classify_agent_failure(msg)[0], "quota")
+
+    def test_record_appends_project_workload(self):
+        km._node_budget_record(2.0, ref="adjudicate")
+        led = os.path.join(self.dir, "ledger")
+        files = [n for n in os.listdir(led) if n.endswith(".jsonl")]
+        self.assertEqual(len(files), 1)
+        with open(os.path.join(led, files[0]), encoding="utf-8") as f:
+            rec = json.loads(f.read().strip())
+        self.assertEqual(rec["workload"], "project")
+        self.assertEqual(rec["tool"], "agent-project")
+        self.assertEqual(rec["seconds"], 2.0)
+
+
 if __name__ == "__main__":
     unittest.main()

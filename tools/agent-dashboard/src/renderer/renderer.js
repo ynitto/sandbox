@@ -39,6 +39,8 @@ const state = {
   cowork: null,
   coworkDraft: null,
   coworkEditIndex: -1,
+  amigos: null, // amigos:overview のスナップショット { missions, budget, errors }
+  amigosBudgetSaving: false,
   // kiro-loop 端末（Phase A: capture-pane 視聴）
   kiroLoopTerm: null, // { repo, name, target, session, items, text, error, at }
   kiroLoopTimer: null,
@@ -5782,6 +5784,7 @@ function renderAllTabs() {
   renderGitLab();
   renderHistory();
   renderCowork();
+  renderAmigos();
   renderKiroLoopTerminal();
   restoreUiState(ui);
 }
@@ -6389,8 +6392,10 @@ async function refreshAll({ sync = true } = {}) {
     await refreshDiscovery();
     // Cowork は軽量 overview（ログ推定のみ・発見キャッシュ利用）。重いプロセス探査は実行直後/手動更新のみ。
     await refreshCowork();
+    await refreshAmigos();
     if (state.selectedDir) await reloadProject({ refreshRemoteHealth: sync });
     if (activeTab() === 'cowork') renderCowork();
+    if (activeTab() === 'amigos') renderAmigos();
   } finally {
     state.busy = false;
   }
@@ -6531,6 +6536,209 @@ async function refreshCowork({ probe = false, forceDiscover = false } = {}) {
     state.cowork = { error: err.message, items: [] };
   }
   updateCoworkTabVisibility();
+}
+
+// ---------------------------------------------------------------------------
+// Amigos タブ（agent-amigos ミッションの読み取りビュー + ノード予算の管理面）
+// ---------------------------------------------------------------------------
+
+async function refreshAmigos() {
+  if (!api.amigosOverview) return;
+  try {
+    state.amigos = await api.amigosOverview();
+  } catch (err) {
+    state.amigos = { error: err.message, missions: [], budget: null, errors: [] };
+  }
+  updateAmigosTabVisibility();
+}
+
+// ミッションも予算データも無いときはタブを隠す（cowork と同じ流儀）。
+function updateAmigosTabVisibility() {
+  const btn = $('tab-btn-amigos');
+  const pane = $('tab-amigos');
+  if (!btn || !pane) return;
+  const a = state.amigos;
+  const show = !!(
+    a &&
+    ((a.missions && a.missions.length) || (a.budget && a.budget.hasData) || a.error)
+  );
+  btn.classList.toggle('hidden', !show);
+  btn.hidden = !show;
+  pane.classList.toggle('hidden', !show);
+  pane.hidden = !show;
+}
+
+function amigosMin(sec) {
+  return (Number(sec || 0) / 60).toFixed(1);
+}
+
+function amigosPhaseLabel(phase) {
+  return (
+    {
+      open: '募集中',
+      working: '進行中',
+      integrating: '統合中',
+      reviewing: '受入待ち',
+      done: '完了',
+      failed: '失敗',
+      cancelled: '中止',
+    }[phase] || phase
+  );
+}
+
+function amigosWorkloadLabel(wl) {
+  return (
+    { routine: '定常業務', project: 'プロジェクト', flow: 'フロー', amigos: 'Amigos' }[wl] || wl
+  );
+}
+
+function amigosBudgetPanelHtml(budget) {
+  if (!budget) return '';
+  const cfg = budget.config || { execution_minutes: 0, period: 'day', workloads: {} };
+  const workloads = [...new Set([...(budget.knownWorkloads || []), ...Object.keys(budget.totals || {})])];
+  const periodLabel = { day: '今日', month: '今月', total: '累計' }[cfg.period] || cfg.period;
+  const limitTxt = cfg.execution_minutes > 0 ? `${amigosMin(budget.limitSeconds)}分` : '無制限';
+  const rows = workloads
+    .map((wl) => {
+      const spent = amigosMin((budget.totals || {})[wl]);
+      const lim = Number((cfg.workloads || {})[wl] || 0);
+      const over = (budget.exceededWorkloads || []).includes(wl);
+      return `<tr${over ? ' class="amigos-over"' : ''}>
+        <td>${esc(amigosWorkloadLabel(wl))}</td>
+        <td class="num mono">${esc(spent)} 分</td>
+        <td><input type="number" min="0" step="1" class="mono amigos-wl-limit" data-wl="${esc(wl)}"
+             value="${lim || 0}" title="0 = 無制限" /></td>
+        <td class="muted">${over ? '超過中' : lim > 0 ? '' : '無制限'}</td>
+      </tr>`;
+    })
+    .join('');
+  return `
+    <section class="amigos-budget">
+      <header class="row">
+        <div>
+          <span class="summary-kicker">ノード予算</span>
+          <h3>このノードの実行時間（${esc(periodLabel)}: 合計 ${esc(amigosMin(budget.totalSeconds))} 分 / 上限 ${esc(limitTxt)}
+            ${budget.exceeded ? '<span class="amigos-over-badge">超過中 — amigo は一時停止</span>' : ''}</h3>
+          <p class="muted">定常業務・プロジェクト・フロー・Amigos の合計に上限を掛けます（0 = 無制限）。
+            設定は依頼側・請負側どちらのノードでも同じ契約（${esc(budget.dir)}）です。</p>
+        </div>
+      </header>
+      <div class="row amigos-budget-controls">
+        <label>合計上限（分）
+          <input type="number" min="0" step="1" id="amigos-budget-total" class="mono"
+            value="${cfg.execution_minutes || 0}" title="0 = 無制限" />
+        </label>
+        <label>期間
+          <select id="amigos-budget-period">
+            <option value="day" ${cfg.period === 'day' ? 'selected' : ''}>日次（day）</option>
+            <option value="month" ${cfg.period === 'month' ? 'selected' : ''}>月次（month）</option>
+            <option value="total" ${cfg.period === 'total' ? 'selected' : ''}>累計（total）</option>
+          </select>
+        </label>
+        <button id="btn-amigos-budget-save" ${state.amigosBudgetSaving ? 'disabled' : ''}>上限を保存</button>
+      </div>
+      <table class="amigos-table">
+        <thead><tr><th>ワークロード</th><th>消費</th><th>内訳上限（分・0=無制限）</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </section>`;
+}
+
+function amigosMissionRowHtml(m) {
+  const roleChips = (m.roles || [])
+    .map((r) => {
+      const stateMark = r.state === 'paused' ? ' ⏸' : r.done ? ' ✓' : '';
+      const cls = r.state === 'paused' ? 'amigos-role paused' : r.done ? 'amigos-role done' : 'amigos-role';
+      const who = r.node ? esc(r.node) : '募集中';
+      return `<span class="${cls}" title="${esc(r.title)}">${esc(r.id)}@${who}${stateMark}</span>`;
+    })
+    .join(' ');
+  const b = m.budget || {};
+  const budgetTxt = b.limitSeconds
+    ? `${amigosMin(b.spentSeconds)}/${amigosMin(b.limitSeconds)}分${b.hard ? '（枯渇）' : b.soft ? '（wrap-up）' : ''}`
+    : `${amigosMin(b.spentSeconds)}分/∞`;
+  const partial = m.manifest && m.manifest.partial ? ' <span class="amigos-partial">partial</span>' : '';
+  return `<tr>
+    <td><div><strong>${esc(m.title)}</strong>${partial}</div>
+        <div class="muted mono">${esc(m.id)} · owner=${esc(m.owner || '?')}</div></td>
+    <td><span class="amigos-phase amigos-phase-${esc(m.phase)}">${esc(amigosPhaseLabel(m.phase))}</span>
+        <div class="muted">round ${m.round}</div></td>
+    <td>${roleChips || '<span class="muted">（ロールなし）</span>'}</td>
+    <td class="num mono">${esc(budgetTxt)}</td>
+    <td class="num">${m.unanswered ? `${m.unanswered} 件` : '<span class="muted">-</span>'}</td>
+  </tr>`;
+}
+
+function renderAmigos() {
+  const el = $('tab-amigos');
+  if (!el) return;
+  updateAmigosTabVisibility();
+  const a = state.amigos;
+  if (!a) return;
+  if (a.error) {
+    el.innerHTML = `<div class="empty"><strong>Amigos を読み込めませんでした</strong><span>${esc(a.error)}</span></div>`;
+    return;
+  }
+  const missions = a.missions || [];
+  const missionsHtml = missions.length
+    ? `<table class="amigos-table">
+        <thead><tr><th>ミッション</th><th>状態</th><th>ロール / 担当</th><th>ミッション予算</th><th>未回答</th></tr></thead>
+        <tbody>${missions.map(amigosMissionRowHtml).join('')}</tbody>
+      </table>`
+    : `<div class="empty"><strong>ミッションがありません</strong>
+        <span>agent-amigos post で公示するか、設定 amigos.busDirs にバスの場所を追加してください。</span></div>`;
+  const errorsHtml = (a.errors || []).length
+    ? `<p class="muted">読み取りエラー: ${a.errors.map((e) => esc(e)).join(' / ')}</p>`
+    : '';
+  el.innerHTML = `
+    <div class="amigos-shell">
+      <header class="cowork-header">
+        <div>
+          <span class="summary-kicker">協働</span>
+          <h2>Amigos</h2>
+          <p class="muted">agent-amigos ミッションの進行と、このノードの予算を管理します（一覧は読み取り専用）。</p>
+        </div>
+        <div class="row"><button id="btn-amigos-refresh">更新</button></div>
+      </header>
+      ${amigosBudgetPanelHtml(a.budget)}
+      <section>
+        <h3>ミッション（${missions.length} 件）</h3>
+        ${missionsHtml}
+        ${errorsHtml}
+      </section>
+    </div>`;
+
+  const refreshBtn = $('btn-amigos-refresh');
+  if (refreshBtn)
+    refreshBtn.addEventListener('click', () =>
+      guard('Amigos 更新', async () => {
+        await refreshAmigos();
+        renderAmigos();
+      })
+    );
+  const saveBtn = $('btn-amigos-budget-save');
+  if (saveBtn)
+    saveBtn.addEventListener('click', () =>
+      guard('ノード予算の保存', async () => {
+        const workloads = {};
+        for (const input of el.querySelectorAll('.amigos-wl-limit')) {
+          workloads[input.dataset.wl] = Number(input.value || 0);
+        }
+        state.amigosBudgetSaving = true;
+        try {
+          const budget = await api.amigosBudgetSave({
+            executionMinutes: Number(($('amigos-budget-total') || {}).value || 0),
+            period: (($('amigos-budget-period') || {}).value) || 'day',
+            workloads,
+          });
+          state.amigos = { ...state.amigos, budget };
+          toast('ノード予算を保存しました', true);
+        } finally {
+          state.amigosBudgetSaving = false;
+        }
+        renderAmigos();
+      })
+    );
 }
 
 function workTypeLabel(type) {

@@ -240,6 +240,87 @@ def _plugin_error_patterns() -> tuple:
     return tuple(out)
 
 
+# --- ノード予算（node-budget 契約: schemas/node-budget.schema.json） ----------------------
+# ノード（マシン）単位の実質実行時間の共有台帳。定常業務（kiro-loop）・agent-project・
+# agent-flow・agent-amigos が同じ台帳（$AGENT_BUDGET_DIR、既定 ~/.agent/budget/）に記帳し、
+# 合計が上限（0 = 無制限）を超えたら新規の LLM 実行を控える。読み書きは各ツールが自前で持つ
+# （agent-cli プラグインと同じ「データ契約のみ・コード共有なし」の流儀）。
+_NODE_BUDGET_WORKLOAD = "flow"
+_NODE_BUDGET_TOOL = "agent-flow"
+
+
+def _node_budget_dir() -> str:
+    return os.path.abspath(os.path.expanduser(
+        os.environ.get("AGENT_BUDGET_DIR", os.path.join("~", ".agent", "budget"))))
+
+
+def _node_budget_state() -> "dict | None":
+    """ノード予算の消費状況。設定が無い/上限 0 なら None（= 無制限・チェック不要）。"""
+    base = _node_budget_dir()
+    try:
+        with open(os.path.join(base, "config.json"), encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        return None
+    limit_min = float(cfg.get("execution_minutes") or 0)
+    wl_limit_min = float((cfg.get("workloads") or {}).get(_NODE_BUDGET_WORKLOAD) or 0)
+    if limit_min <= 0 and wl_limit_min <= 0:
+        return None
+    period = str(cfg.get("period") or "day")
+    prefix = (time.strftime("%Y%m%d", time.gmtime()) if period == "day"
+              else time.strftime("%Y%m", time.gmtime()) if period == "month" else "")
+    total = wl_total = 0.0
+    led = os.path.join(base, "ledger")
+    try:
+        names = sorted(n for n in os.listdir(led)
+                       if n.endswith(".jsonl") and n.startswith(prefix))
+    except OSError:
+        names = []
+    for name in names:
+        try:
+            with open(os.path.join(led, name), encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                        sec = float(rec.get("seconds") or 0)
+                    except (ValueError, TypeError):
+                        continue
+                    if sec <= 0:
+                        continue
+                    total += sec
+                    if rec.get("workload") == _NODE_BUDGET_WORKLOAD:
+                        wl_total += sec
+        except OSError:
+            continue
+    exceeded = ((limit_min > 0 and total >= limit_min * 60)
+                or (wl_limit_min > 0 and wl_total >= wl_limit_min * 60))
+    return {"exceeded": exceeded, "spent_min": total / 60, "limit_min": limit_min,
+            "period": period}
+
+
+def _node_budget_record(seconds: float, ref: str = "") -> None:
+    """台帳へ 1 記帳を追記する（O_APPEND — 複数プロセスの同時追記でも行は壊れない）。"""
+    if seconds <= 0:
+        return
+    d = os.path.join(_node_budget_dir(), "ledger")
+    try:
+        os.makedirs(d, exist_ok=True)
+        line = json.dumps({"ts": now_iso(), "workload": _NODE_BUDGET_WORKLOAD,
+                           "tool": _NODE_BUDGET_TOOL, "seconds": round(float(seconds), 3),
+                           "ref": ref}, ensure_ascii=False) + "\n"
+        fd = os.open(os.path.join(d, time.strftime("%Y%m%d", time.gmtime()) + ".jsonl"),
+                     os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        try:
+            os.write(fd, line.encode("utf-8"))
+        finally:
+            os.close(fd)
+    except OSError:
+        pass    # 記帳失敗で実行を止めない（台帳は best-effort、上限は次の実行前チェックで効く）
+
+
 # --- 失敗トリアージ（決定的） -------------------------------------------------------------
 # エラー本文から「誰が直すか」を分類し、メッセージ先頭の機械可読タグ [agent-error:<class>] で運ぶ。
 # agent-flow は run の打ち切り（環境要因なら全ノードでリトライを焼かない）、agent-project は
@@ -306,10 +387,22 @@ def run_agent(prompt: str, model: str | None, purpose: str = "") -> str:
     実行中は worker の Heartbeat が claim lease を延長し続けるため、再試行で実行が延びても
     分散環境で横取りされない。試行し尽くした失敗は例外に attempts 属性を載せて raise する
     （worker が data.attempts として failed result に構造化する）。"""
+    nb = _node_budget_state()
+    if nb and nb["exceeded"]:
+        # ノード予算超過は環境要因（時間経過か人の上限変更で回復）— quota 分類で全層に運ぶ。
+        # run は環境要因として即終端し、全ノードでリトライを焼かない（§失敗トリアージ）。
+        raise RuntimeError(
+            f"[agent-error:quota] [node-budget] このノードの実行時間予算を超過しています"
+            f"（{nb['spent_min']:.1f}分/{nb['limit_min']:.0f}分・period={nb['period']}）。"
+            "上限を上げる（agent-amigos budget node / dashboard の Amigos タブ）か"
+            "期間の更新を待ってください")
     last: "RuntimeError | None" = None
     for attempt in range(max(0, _TRANSIENT_RETRIES) + 1):
         try:
-            return _run_agent_once(prompt, model, purpose)
+            t0 = time.monotonic()
+            text = _run_agent_once(prompt, model, purpose)
+            _node_budget_record(time.monotonic() - t0, ref=purpose or "worker")
+            return text
         except RuntimeError as e:
             triage = classify_agent_failure(str(e))
             if triage is None or triage[0] != "transient" or attempt >= _TRANSIENT_RETRIES:
