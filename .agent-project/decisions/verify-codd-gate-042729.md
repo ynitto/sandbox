@@ -34,3 +34,10 @@
 - reason  : agent-dashboard から操作
 - affects : policy.pin += verify-codd-gate-042729
 
+## DR-0007  2026-07-18  actor: nitto
+- context : verify-codd-gate-042729（verify合成が日本語「検証コマンド:」ラベル付き出力からcodd-gateコマンド行を抽出できる）を人の判断から復帰
+- action  : approve-and-fix
+- reason  : 検証失敗を確認・受容して完了
+- affects : verify-codd-gate-042729 → ready
+- learn: verify合成が日本語「検証コマンド:」ラベル付き出力からcodd-gateコマンド行を抽出できる :: 検証失敗を確認・受容して完了
+

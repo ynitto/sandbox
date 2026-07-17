@@ -48,3 +48,10 @@
 - affects : docs-designs-README-042729 → ready
 - learn: 設計書の読み取り口（docs/designs/README）を作り主要設計への導線を通す :: 検証失敗を確認・受容して完了
 
+## DR-0009  2026-07-18  actor: nitto
+- context : docs-designs-README-042729（設計書の読み取り口（docs/designs/README）を作り主要設計への導線を通す）を人の判断から復帰
+- action  : approve-and-fix
+- reason  : 検証失敗を確認・受容して完了
+- affects : docs-designs-README-042729 → ready
+- learn: 設計書の読み取り口（docs/designs/README）を作り主要設計への導線を通す :: 検証失敗を確認・受容して完了
+

@@ -1,5 +1,5 @@
 ## agent-project-codd-gate--042729: agent-projectにcodd-gate自動検出とregression/intake結線を完成させ連携を有効化する
-- status: doing
+- status: ready
 - source: charter
 - priority: 0
 - verify: `echo "ok"`
