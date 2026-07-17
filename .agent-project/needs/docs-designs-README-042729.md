@@ -15,9 +15,9 @@ delivery: [{"name":"sandbox","role":"write","url":"https://github.com/ynitto/san
   - src:.github/skills/agent-flow/SKILL.md 行101: .agent/agent-flow.yaml が解決できない
   - src:.github/skills/agent-loop-messaging/SKILL.md 行259: ~/.kiro/agents が解決できない
   - src:.github/skills/agent-project/SKILL.md 行59: ~/.agent-project/instances が解決できない
-NG: 壊れた参照 1630 件 > 許容 1563
-NG: 未文書化 374 件 > 許容 354
-NG: 未テスト 462 件 > 許容 444
+NG: 壊れた参照 1646 件 > 許容 1563
+NG: 未文書化 377 件 > 許容 354
+NG: 未テスト 465 件 > 許容 444
 - 状態: blocked（agent-project の判断待ち）
 
 ## 判断材料（成果物の所在・差分・検証）
