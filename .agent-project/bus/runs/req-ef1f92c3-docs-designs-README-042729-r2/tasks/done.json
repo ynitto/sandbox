@@ -1,8 +1,0 @@
-{
-  "id": "done",
-  "goal": "完了条件のシェルコマンド（test -f docs/designs/README.md && grep -q で agent-project-design.md / agent-flow-design.md / codd-gate-design.md / agent-tools-rename-design.md の4ファイル名を確認）を実行し、終了コード0になるまで synth を反復させて確定する",
-  "deps": [
-    "synth"
-  ],
-  "kind": "verify"
-}
