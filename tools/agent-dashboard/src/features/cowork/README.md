@@ -14,6 +14,10 @@ Cowork は agent-dashboard の独立した制御面です。
 - 一覧は**選択中プロジェクトの作業だけ**を表示します（WSL UNC と POSIX パスは同一視）。「すべてのプロジェクトを表示」で全件に切り替えられます。
 - 各作業の「履歴」から、**この画面からの実行記録**（`~/.agent-dashboard/cowork-history.jsonl` に追記・上限超は新しい方だけ残す）と、リポジトリの**実行ログ**（`.kiro-loop/logs` / `.agent-loop/logs` / `.statemachine-use/logs` / `logs`）の一覧・末尾を確認できます。ログの読み出しはその作業のログ候補に実在するパスだけを許可します。
 - kiro-loop は WSL 側にしか無い想定のため、Windows 上の dashboard からの実行は**リポジトリが Windows ドライブ上でも常に `wsl.exe` 経由**でプロジェクトルート（`C:\...` は `/mnt/c/...` に変換）から行います。出力は UTF-8（失敗時は Shift_JIS）でデコードします。git 操作は WSL UNC のリポジトリのみ `wsl.exe` 経由です。
-- Windows では実行を**新しいコンソールウィンドウ（WSL）で開始**します（既定。`cowork.runWindow: false` で従来の非表示実行に戻せます）。ウィンドウ内で `send` の出力を表示し、送信先ペインを特定できたらそのまま **`tmux attach`** して実行の様子を見続けられます（`Ctrl+b d` で離脱）。従来の非表示 `spawnSync`（60 秒でタイムアウト kill）では、セッション未起動時の kiro-cli 立ち上げ待ちで失敗し、失敗理由も見えませんでした。
+- Windows では実行を**新しいコンソールウィンドウ（WSL）で開始**します（既定。`cowork.runWindow: false` で従来の非表示実行に戻せます）。ウィンドウ実行は **kiro-loop を介しません** — tmux セッションに **kiro-cli をインタラクティブ起動**（`cowork.chatCommand`、既定 `kiro-cli chat --trust-all-tools`）し、dashboard が解決したプロンプトを直接送信して、そのまま **`tmux attach`** で実行の様子を見続けられます（`Ctrl+b d` で離脱）。
+  - **送るプロンプト**: loop 項目（および kiro-loop 対エントリを持つ統合項目）は `.kiro/kiro-loop.{yaml,yml,json}` に設定された**プロンプト本文**。それ以外のステートマシン項目は「**statemachine-use スキルで〈ステートマシン名〉ステートマシンを実行して**」（入力があれば「。入力: …」を付加）。本文を解決できないときは、エージェント自身に設定ファイルを読ませる指示文で代替します。
+  - **入力の補助**: `{{…}}` プレースホルダーやステートマシンの入力パラメータなど、ユーザー入力が必要な項目が埋まっていない場合に備え、「仮の値で進めず、先に必要な入力を質問してから実行する」補助文を自動で付け加えます。不足があればウィンドウ内の kiro-cli が質問してくるので、そのまま対話で埋められます。
+  - セッション名は `kiro-dash-<repoダイジェスト>`（リポジトリごとに再利用。`kiro` 接頭辞なので「端末」タブの一覧にも載ります）。kiro-cli の入力プロンプト（`> ` / `!>`）を待ってから set-buffer + paste-buffer で送信します（複数行プロンプトも崩れません）。
   - ウィンドウは `cmd /s /c start … wsl.exe -e sh -lc ". '<一時スクリプト>'"` で開きます。GUI プロセス（Electron main）からコンソールアプリを直接 spawn しても対話可能なコンソールは割り当てられない（ウィンドウが出ない・`tmux attach` 不可）ため、`start` に新しいコンソールを作らせます。スクリプト本文は `%TEMP%\agent-dashboard\` の一時ファイルに書いて cmd の引用規則を回避します。
-- `loopCommand` は**複数語のコマンド**（例 `python3 ~/sandbox/tools/kiro-loop/kiro-loop.py`）も指定できます。空白入りパスは `"…"` / `'…'` で囲みます。先頭の `~` は WSL 側の `$HOME` で展開されます（全体を 1 トークンとして引用すると `not found` になっていた問題を修正）。
+  - 明示 `args` を持つ手動項目は従来どおり `<loopCommand>` をウィンドウ内で実行します（レガシー経路）。
+- `loopCommand` / `chatCommand` は**複数語のコマンド**（例 `python3 ~/sandbox/tools/kiro-loop/kiro-loop.py`）も指定できます。空白入りパスは `"…"` / `'…'` で囲みます。先頭の `~` は WSL 側の `$HOME` で展開されます（全体を 1 トークンとして引用すると `not found` になっていた問題を修正）。

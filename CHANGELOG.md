@@ -19,15 +19,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   の検収リポジトリを UNC（`\\wsl.localhost\...\mnt\c\...`）や `C:\mnt\c\...` に化けたまま
   解決していた。`toViewerPath` が `/mnt/<drive>/...` を **Windows ドライブ実体
   （`C:\...`）へ直接変換**し、diff・ファイルを開く操作が通るようになった。
-- **定常業務の実行を新しいウィンドウ（WSL tmux）で開始**: 従来の非表示 `spawnSync`
-  （60 秒 kill）はセッション未起動時の kiro-cli 立ち上げ待ちで失敗し、理由も見えなかった。
-  Windows では既定で**新しいコンソールウィンドウ**で `send` を実行し、送信先ペインを特定
-  できたらそのまま `tmux attach` して**動いている様子を見られる**（`cowork.runWindow:
-  false` で従来動作）。ウィンドウは `cmd /s /c start … wsl.exe` で開く（GUI プロセスから
-  の直接 spawn では対話可能なコンソールが割り当てられずウィンドウが出ない）。スクリプト
-  本文は `%TEMP%\agent-dashboard\` の一時ファイル経由で cmd の引用規則を回避。あわせて
-  `loopCommand` の**複数語コマンド**（`python3 ~/…/kiro-loop.py` 等）と先頭 `~` の展開に
-  対応（全体を 1 トークンとして引用して `not found` になっていた）。
+- **定常業務の実行を新しいウィンドウ（WSL tmux + kiro-cli）で開始**: 従来の非表示
+  `spawnSync`（60 秒 kill）はセッション未起動時の立ち上げ待ちで失敗し、理由も見えなかった。
+  Windows では既定で**新しいコンソールウィンドウ**を開き、**kiro-loop を介さず** tmux
+  セッションに kiro-cli をインタラクティブ起動（`cowork.chatCommand`）して、dashboard が
+  解決したプロンプトを直接送信・そのまま `tmux attach` して**動いている様子を見られる**
+  （`cowork.runWindow: false` で従来動作）。送るプロンプトは、kiro-loop に割り当てられた
+  項目は `.kiro/kiro-loop.*` の**プロンプト本文**、それ以外は「statemachine-use スキルで
+  〈名前〉ステートマシンを実行して」。`{{…}}` プレースホルダーや入力パラメータが未入力の
+  場合に備え、**先に必要な入力を質問してから実行する補助文**を自動付加する。
+  ウィンドウは `cmd /s /c start … wsl.exe` で開く（GUI プロセスからの直接 spawn では
+  対話可能なコンソールが割り当てられずウィンドウが出ない）。スクリプト本文は
+  `%TEMP%\agent-dashboard\` の一時ファイル経由で cmd の引用規則を回避。あわせて
+  `loopCommand` / `chatCommand` の**複数語コマンド**（`python3 ~/…/kiro-loop.py` 等）と
+  先頭 `~` の展開に対応（全体を 1 トークンとして引用して `not found` になっていた）。
 - **定型業務の「端末」が tmux 画面を表示できない問題**: 原因は 2 つ。
   (1) tmux `-F` フォーマットの区切りがソース上リテラル `\t`（バックスラッシュ + t）で、
   tmux はこれをタブに変換せずそのまま出力するため、ペイン解析が全滅していた —
