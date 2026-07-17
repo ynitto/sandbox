@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "amigos-mission.schema.json",
-  "title": "agent-amigos ミッション公示（design doc と併せて post するミッション + 役割ミッション表）",
+  "$id": "mission.schema.json",
+  "title": "協働ミッション公示（design doc と併せて post するミッション + 役割ミッション表）",
   "description": "オーナーが `agent-amigos post --roles <file>` へ渡す入力（YAML/JSON）の契約。post 時に正規化 JSON としてバスへ置かれる（mission.json / roles/<id>.json）。検証は agent-amigos の stdlib パーサ（normalize_mission）が行い、本スキーマは契約の文書化とテスト突き合わせに使う。正典設計: docs/designs/agent-amigos-design.md §10。",
   "type": "object",
   "required": ["roles"],

@@ -1,5 +1,5 @@
 # agent-amigos 役割ミッション表の例（post --roles で渡す。JSON でも可）
-# 設計書: docs/designs/agent-amigos-design.md §10 ／ 正典スキーマ: schemas/amigos-mission.schema.json
+# 設計書: docs/designs/agent-amigos-design.md §10 ／ 正典スキーマ: schemas/mission.schema.json
 mission:
   title: 社内 FAQ ボットの MVP
   goal: design-doc.md の受入基準をすべて満たす FAQ ボットを納品する

@@ -7,6 +7,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-amigos: ミッションスキーマを汎化名へ改称 + 単体実行インストーラを追加
+
+- **スキーマ改称**: `schemas/amigos-mission.schema.json` → **`schemas/mission.schema.json`**。
+  repos / task / node-budget と揃えた汎化名（協働ミッション公示の契約）にした。`$id`・
+  タイトルと、設計書・README・roles.yaml.example・schemas/README・テストの参照を更新
+  （実行時は stdlib パーサ検証でスキーマファイルを読まないため挙動不変。テストの
+  enum/既定値突き合わせパスのみ追従）。
+- **インストーラ** `tools/agent-amigos/install.sh`: agent-project / agent-flow と同じ
+  **zipapp 単一実行ファイル**方式（標準ライブラリのみ・pip 依存なし）で
+  `~/.local/bin/agent-amigos` へ配置（`--prefix` で変更可）。環境チェック（python 3.9+・
+  git（分散時）・agent CLI（無ければ stub）・PyYAML（YAML 使用時））と、ローカル /
+  git / hub / owner-picks / acceptance: agent / ノード予算の使用例を表示する。実体は
+  `agent_amigos/` パッケージのまま（LLM が編集できる断片）、配布のみ 1 ファイルに束ねる。
+  README にインストール手順を追記し、実行例をインストール後の `agent-amigos …` 形へ統一。
+
 ### agent-amigos: P2（hub サーバ・owner-picks・acceptance: agent・スキーマ正典化）を実装
 
 - **hub サーバ + HubBus**（`--bus hub+<url>`）: git が使えない環境・低レイテンシ向けの
@@ -26,7 +41,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   decision-request をエスカレーション（**無限ループを作らない**。final を書けるのは
   オーナーノードだけ、の不変条件は維持）。stub 判定は決定的（partial → 差し戻し）。
   codd-gate 受入は将来拡張のまま。
-- **スキーマ正典化**: [`schemas/amigos-mission.schema.json`](schemas/amigos-mission.schema.json)
+- **スキーマ正典化**: [`schemas/mission.schema.json`](schemas/mission.schema.json)
   を新設（post --roles 入力の契約）。enum・既定値が実装（normalize_mission）とズレて
   いないことをテストで担保する。
 - テスト 44 件（+12: hub 2 ノード E2E・hub 越し claim 競合・Bearer 認証・hub gc /
