@@ -796,13 +796,13 @@ class HubBusTests(AmigosTestCase):
 
 
 class MissionSchemaTests(AmigosTestCase):
-    """schemas/amigos-mission.schema.json（正典）と normalize_mission の突き合わせ。
+    """schemas/mission.schema.json（正典）と normalize_mission の突き合わせ。
     実行時は stdlib パーサが検証する（jsonschema 依存なし）— スキーマの enum/既定値が
     実装とズレていないことをテストで担保する。"""
 
     def _schema(self):
         path = os.path.join(os.path.dirname(__file__), "..", "..", "..",
-                            "schemas", "amigos-mission.schema.json")
+                            "schemas", "mission.schema.json")
         with open(path, encoding="utf-8") as f:
             return json.load(f)
 

@@ -1,4 +1,4 @@
-# schemas/ — ツール横断の共通スキーマ（repos / task / node-budget / amigos-mission）
+# schemas/ — ツール横断の共通スキーマ（repos / task / node-budget / mission）
 
 agent-project・agent-flow・codd-gate・agent-amigos が**データ契約だけで**結合するための独立スキーマ。
 ツール同士は互いの実装を知らず、ここで定義する形式だけを読む/書く（結合は常に一方向×データ）。
@@ -8,7 +8,7 @@ agent-project・agent-flow・codd-gate・agent-amigos が**データ契約だけ
 | [`repos.schema.json`](repos.schema.json) | リポジトリレジストリ（identity = **(url, path, base)**＝パス＋ブランチで一意） | 共有（本ディレクトリが正典） |
 | [`task.schema.json`](task.schema.json) | 制御層タスク（バックログ 1 件）の JSON 表現 | kiro-projects（Markdown 形の正典は `tools/kiro-projects/backlog.md.example`） |
 | [`node-budget.schema.json`](node-budget.schema.json) | ノード単位の実質実行時間の予算（`$AGENT_BUDGET_DIR`＝既定 `~/.agent/budget/` の config.json ＋ ledger/<YYYYMMDD>.jsonl） | 共有（本ディレクトリが正典。初出は agent-amigos 設計書 §3.3） |
-| [`amigos-mission.schema.json`](amigos-mission.schema.json) | agent-amigos のミッション公示（`post --roles` に渡すミッション + 役割ミッション表） | agent-amigos（検証は stdlib パーサ `normalize_mission`。スキーマは文書化とテスト突き合わせ — enum/既定値の一致をテストで担保） |
+| [`mission.schema.json`](mission.schema.json) | 協働ミッションの公示（agent-amigos の `post --roles` に渡すミッション + 役割ミッション表） | agent-amigos（検証は stdlib パーサ `normalize_mission`。スキーマは文書化とテスト突き合わせ — enum/既定値の一致をテストで担保） |
 
 ## node-budget — 誰がどう読む/書くか
 
