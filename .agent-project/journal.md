@@ -1,0 +1,2 @@
+- 2026-07-18 06:59:09 本体側 .agent-project への編集を状態へ取り込みました: .agent-project/agent-flow.yaml
+- 2026-07-18 06:59:09 === project watch: 監視中（charter 更新/フィードバック待ち）===
