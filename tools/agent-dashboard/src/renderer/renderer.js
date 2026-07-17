@@ -3915,17 +3915,62 @@ function needsViewModel(needs, filter, selectedId, sentFn) {
   return { counts, items, selected, selectedId: selected ? selected.id : null };
 }
 
+function needFailureViewModel(need) {
+  if (!need) return null;
+  const prose = [need.failureSummary, need.why, need.detail].filter(Boolean).join('\n');
+  if (/verify\s*未定義/i.test(prose)) return null;
+  const context = need.failureContext || null;
+  const hasFailureSignal = Boolean(
+    need.failureSummary ||
+    context ||
+    /(?:検証|verify|テスト|test|回帰|コマンド)[^\n]*(?:失敗|FAIL|NG|exit\s*=\s*[1-9]\d*)/i.test(prose)
+  );
+  if (!hasFailureSignal) return null;
+  const exitCode = context && String(context.exitCode || '').trim();
+  return {
+    summary: String(
+      need.failureSummary ||
+      (exitCode
+        ? `検証コマンドが失敗しました（終了コード ${exitCode}）。`
+        : '検証コマンドが失敗しました。')
+    ),
+    resolution: String(need.failureResolution || ''),
+    context,
+  };
+}
+
 function canDiagnoseNeed(need) {
-  return Boolean(need && (need.failureSummary || need.failureContext));
+  return Boolean(needFailureViewModel(need));
+}
+
+function needListSummary(need) {
+  const failure = needFailureViewModel(need);
+  return failure ? failure.summary : (NEED_ASK[need.kind] || NEED_ASK.blocked);
 }
 
 function renderNeedFacts(n) {
   const facts = [];
-  if (n.failureSummary) {
-    facts.push(`<div class="need-diag"><span class="label-chip">失敗の要因</span> ${inlineMd(n.failureSummary)}</div>`);
-  }
-  if (n.failureResolution) {
-    facts.push(`<div class="need-resolution"><span class="label-chip">確認・対処</span> ${inlineMd(n.failureResolution)}</div>`);
+  const failure = needFailureViewModel(n);
+  if (failure) {
+    facts.push(`<div class="need-diag"><span class="label-chip">検証失敗</span><strong>${inlineMd(failure.summary)}</strong></div>`);
+    if (failure.resolution) {
+      facts.push(`<div class="need-resolution"><span class="label-chip">確認・対処</span>${inlineMd(failure.resolution)}</div>`);
+    }
+    if (failure.context) {
+      const contextRows = [
+        ['分類', failure.context.category],
+        ['対処対象', failure.context.owner],
+        ['コマンド', failure.context.command],
+        ['作業場所', failure.context.workdir],
+        ['終了コード', failure.context.exitCode],
+        ['確認対象', failure.context.resolvedTarget || failure.context.target],
+      ].filter(([, value]) => String(value || '').trim());
+      if (contextRows.length) {
+        facts.push(`<dl class="need-failure-context">${contextRows.map(([label, value]) =>
+          `<div><dt>${esc(label)}</dt><dd>${label === 'コマンド' ? `<code>${esc(value)}</code>` : esc(value)}</dd></div>`
+        ).join('')}</dl>`);
+      }
+    }
   }
   if (n.why) facts.push(`<div><span class="label-chip">理由</span>${prosePreview(n.why, 240)}</div>`);
   if (n.summary) facts.push(`<div><span class="label-chip">概況</span>${prosePreview(n.summary, 280)}</div>`);
@@ -4115,13 +4160,37 @@ function bindNeedDetail(root) {
   }
 }
 
-function renderNeeds() {
+function captureNeedsScroll(root) {
+  const list = root && root.querySelector ? root.querySelector('.master-list') : null;
+  const detail = root && root.querySelector ? root.querySelector('.detail-panel') : null;
+  return {
+    list: list ? Number(list.scrollTop) || 0 : 0,
+    detail: detail ? Number(detail.scrollTop) || 0 : 0,
+  };
+}
+
+function restoreNeedsScroll(root, snapshot, options) {
+  const opts = options || {};
+  const list = root && root.querySelector ? root.querySelector('.master-list') : null;
+  const detail = root && root.querySelector ? root.querySelector('.detail-panel') : null;
+  const resetAll = Boolean(opts.resetAll);
+  if (list) list.scrollTop = resetAll ? 0 : Number(snapshot && snapshot.list) || 0;
+  if (detail) {
+    detail.scrollTop = resetAll || opts.resetDetail
+      ? 0
+      : Number(snapshot && snapshot.detail) || 0;
+  }
+}
+
+function renderNeeds(options) {
+  const renderOptions = options || {};
   const p = state.project;
   const el = $('tab-needs');
   if (!p) {
     el.innerHTML = '';
     return;
   }
+  const scrollSnapshot = captureNeedsScroll(el);
 
   const ae = document.activeElement;
   if (ae && el.contains(ae) && /^(TEXTAREA|INPUT)$/.test(ae.tagName)) return;
@@ -4174,14 +4243,14 @@ function renderNeeds() {
         ? `<span class="need-age ${age.level}" title="最終更新からの経過時間（SLA ${slaHours}h 超で赤）">${esc(age.label)}</span>`
         : '';
       return `<button class="need-list-item ${selected ? 'selected' : ''}" data-need-select="${esc(n.id)}"
-        aria-pressed="${selected}">
+        aria-pressed="${selected}"${selected ? ' aria-current="true"' : ''}>
         <span class="need-list-meta">
           <span class="badge">${esc(needKindLabel(n.kind))}</span>
           ${riskBadgeHtml(n)}
           ${ageBadge}
         </span>
         <strong>${esc(needDisplayTitle(n))}</strong>
-        <span>${esc(NEED_ASK[n.kind] || NEED_ASK.blocked)}</span>
+        <span class="need-list-summary ${needFailureViewModel(n) ? 'failure' : ''}">${esc(needListSummary(n))}</span>
       </button>`;
     })
     .join('');
@@ -4196,6 +4265,7 @@ function renderNeeds() {
       </div>`;
 
   el.innerHTML = `<div class="queue-summary" aria-label="要対応の状態">${filterButtons}</div>${gitlab}`;
+  restoreNeedsScroll(el, scrollSnapshot, renderOptions);
 
   for (const btn of el.querySelectorAll('[data-needs-filter]')) {
     btn.addEventListener('click', () => {
@@ -4203,7 +4273,7 @@ function renderNeeds() {
       state.needsSelectedId = null;
       state.needsMobileDetail = false;
       el.dataset.sig = '';
-      renderNeeds();
+      renderNeeds({ resetAll: true });
       if (state.needsFilter === 'gitlab') renderGitLab();
     });
   }
@@ -4212,7 +4282,7 @@ function renderNeeds() {
       state.needsSelectedId = btn.dataset.needSelect;
       state.needsMobileDetail = true;
       el.dataset.sig = '';
-      renderNeeds();
+      renderNeeds({ resetDetail: true });
     });
   }
   const input = el.querySelector('.need-actions .need-input');

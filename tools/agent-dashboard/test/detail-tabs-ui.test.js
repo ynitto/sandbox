@@ -54,7 +54,19 @@ const verifyRevisionConfirmMessage = new Function(
 // eslint-disable-next-line no-new-func
 const deliveryReviewState = new Function(`${grab('deliveryReviewState')}; return deliveryReviewState;`)();
 // eslint-disable-next-line no-new-func
-const canDiagnoseNeed = new Function(`${grab('canDiagnoseNeed')}; return canDiagnoseNeed;`)();
+const needFailureViewModel = new Function(`${grab('needFailureViewModel')}; return needFailureViewModel;`)();
+// eslint-disable-next-line no-new-func
+const canDiagnoseNeed = new Function(
+  'needFailureViewModel', `${grab('canDiagnoseNeed')}; return canDiagnoseNeed;`
+)(needFailureViewModel);
+// eslint-disable-next-line no-new-func
+const needListSummary = new Function(
+  'needFailureViewModel', 'NEED_ASK', `${grab('needListSummary')}; return needListSummary;`
+)(needFailureViewModel, { blocked: '対応方法を指示してください。' });
+// eslint-disable-next-line no-new-func
+const captureNeedsScroll = new Function(`${grab('captureNeedsScroll')}; return captureNeedsScroll;`)();
+// eslint-disable-next-line no-new-func
+const restoreNeedsScroll = new Function(`${grab('restoreNeedsScroll')}; return restoreNeedsScroll;`)();
 // eslint-disable-next-line no-new-func
 const runArtifactViewModel = new Function(
   'sanitizeTaskId', `${grab('runArtifactViewModel')}; return runArtifactViewModel;`
@@ -166,6 +178,52 @@ assert.strictEqual(
   false,
   '失敗情報のない通常検収には診断操作を出さない'
 );
+assert.deepStrictEqual(
+  needFailureViewModel({
+    kind: 'blocked',
+    why: '検証コマンド工程で失敗',
+    failureContext: { category: '検証工程', command: 'npm test', exitCode: '2' },
+  }),
+  {
+    summary: '検証コマンドが失敗しました（終了コード 2）。',
+    resolution: '',
+    context: { category: '検証工程', command: 'npm test', exitCode: '2' },
+  },
+  'failureSummary が無くても検証失敗コンテキストを表示モデルへ投影する'
+);
+assert.strictEqual(
+  needFailureViewModel({ kind: 'blocked', why: 'verify 未定義（工程は完了しています）' }),
+  null,
+  'verify 未定義の人手確認待ちは検証失敗にしない'
+);
+assert.strictEqual(
+  needListSummary({
+    kind: 'blocked',
+    failureSummary: 'テストが 2 件失敗しました。',
+  }),
+  'テストが 2 件失敗しました。',
+  '一覧カードは通常の判断文より検証失敗要約を優先する'
+);
+
+{
+  const nodes = {
+    '.master-list': { scrollTop: 420 },
+    '.detail-panel': { scrollTop: 180 },
+  };
+  const root = { querySelector: (selector) => nodes[selector] || null };
+  const snapshot = captureNeedsScroll(root);
+  assert.deepStrictEqual(snapshot, { list: 420, detail: 180 });
+  nodes['.master-list'].scrollTop = 0;
+  nodes['.detail-panel'].scrollTop = 0;
+  restoreNeedsScroll(root, snapshot, { resetDetail: true });
+  assert.strictEqual(nodes['.master-list'].scrollTop, 420, '項目選択後も一覧位置を維持する');
+  assert.strictEqual(nodes['.detail-panel'].scrollTop, 0, '新しく選んだ詳細は先頭から表示する');
+  restoreNeedsScroll(root, snapshot);
+  assert.strictEqual(nodes['.detail-panel'].scrollTop, 180, 'データ更新による再描画では詳細位置も維持する');
+  restoreNeedsScroll(root, snapshot, { resetAll: true });
+  assert.strictEqual(nodes['.master-list'].scrollTop, 0, 'フィルター切替では一覧を先頭へ戻す');
+  assert.strictEqual(nodes['.detail-panel'].scrollTop, 0, 'フィルター切替では詳細も先頭へ戻す');
+}
 assert.deepStrictEqual(
   deliveryReviewState([{ role: 'write', path: '/work/app', files: ['src/a.js'] }], []),
   { fileCount: 1, hasMr: false, canDiscover: true, hasContent: true },

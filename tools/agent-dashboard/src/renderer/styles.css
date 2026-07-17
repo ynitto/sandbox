@@ -845,13 +845,13 @@ table.list tr.clickable:hover { background: var(--bg2); }
 .master-list { padding-right: 2px; }
 .need-list-item {
   width: 100%;
-  min-height: 86px;
+  min-height: 82px;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 6px;
+  gap: 7px;
   margin-bottom: 8px;
-  padding: 11px 12px;
+  padding: 12px 13px;
   white-space: normal;
   text-align: left;
   background: var(--bg2);
@@ -859,7 +859,17 @@ table.list tr.clickable:hover { background: var(--bg2); }
 }
 .need-list-item:hover { background: var(--bg3); }
 .need-list-item.selected { border-color: var(--accent); border-left-color: var(--accent); background: var(--bg3); }
-.need-list-item > span:last-child { color: var(--muted); line-height: 1.45; }
+.need-list-item > strong { font-size: 16px; line-height: 1.35; }
+.need-list-summary {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.need-list-summary.failure { color: #ffb4ad; }
 .need-list-meta { display: flex; gap: 5px; flex-wrap: wrap; }
 /* 待ち時間（SLA）バッジ: 停滞しているほど強い色で注意を引く（既定は色なし） */
 .need-age {
@@ -884,10 +894,10 @@ table.list tr.clickable:hover { background: var(--bg2); }
 .need-detail-card.kind-blocked,
 .need-detail-card.kind-plan-review { border-top: 3px solid var(--yellow); }
 .need-detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-.need-detail-head h2 { margin: 8px 0 14px; font-size: 21px; }
+.need-detail-head h2 { margin: 8px 0 14px; font-size: 20px; line-height: 1.4; }
 .need-detail-badges { display: flex; flex-wrap: wrap; gap: 5px; }
 .need-detail-card section { margin-top: 18px; }
-.need-detail-card section h3 { margin: 0 0 7px; color: var(--muted); font-size: 12px; letter-spacing: 0.06em; }
+.need-detail-card section h3 { margin: 0 0 7px; color: var(--muted); font-size: 13px; letter-spacing: 0.04em; }
 .need-decision { padding: 12px 14px; border-radius: 7px; background: var(--bg3); }
 .need-decision p { margin: 0; font-size: 15px; line-height: 1.55; }
 .task-complete-banner,
@@ -902,7 +912,7 @@ table.list tr.clickable:hover { background: var(--bg2); }
   line-height: 1.45;
 }
 .task-complete-how { color: var(--text); }
-.need-facts { line-height: 1.6; }
+.need-facts { font-size: 14px; line-height: 1.65; }
 .need-facts-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .need-facts-heading h3 { margin-right: auto; }
 .need-files { gap: 6px; flex-wrap: wrap; margin-top: 6px; }
@@ -922,20 +932,26 @@ table.list tr.clickable:hover { background: var(--bg2); }
 .need-card .need-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .need-card .need-head .title { font-weight: 600; flex: 1; }
 .need-card .body { max-height: 260px; overflow-y: auto; }
-/* 失敗の要因（生の verify 出力を解釈した一文）。生ログより先に目に入るようにする */
-.need-card .need-diag {
-  background: var(--bg);
-  border-left: 3px solid var(--yellow);
-  border-radius: 4px;
-  padding: 6px 8px;
-  margin-bottom: 6px;
+/* 検証失敗は要約・対処・実行条件を一つのまとまりとして状況欄の先頭へ出す */
+.need-diag {
+  display: grid;
+  gap: 7px;
+  background: color-mix(in srgb, var(--red) 8%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--red) 55%, var(--border));
+  border-left: 3px solid var(--red);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
 }
-.need-card .need-resolution {
+.need-diag strong { font-size: 15px; line-height: 1.55; }
+.need-resolution {
+  display: grid;
+  gap: 7px;
   background: color-mix(in srgb, var(--accent) 10%, var(--bg));
   border-left: 3px solid var(--accent);
-  border-radius: 4px;
-  padding: 6px 8px;
-  margin-bottom: 6px;
+  border-radius: 6px;
+  padding: 9px 11px;
+  margin-bottom: 8px;
 }
 .need-failure-context {
   display: grid;
@@ -950,7 +966,7 @@ table.list tr.clickable:hover { background: var(--bg2); }
 .need-failure-context dt { color: var(--muted); }
 .need-failure-context dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
 .need-failure-context code { white-space: pre-wrap; }
-.need-card .ev-thin-note { margin-top: 4px; }
+.ev-thin-note { margin-top: 4px; }
 
 .need-actions {
   margin-top: 10px;
