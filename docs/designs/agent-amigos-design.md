@@ -1,9 +1,15 @@
 # agent-amigos — 役割駆動マルチエージェント協働ツール 設計書
 
-> 作成日: 2026-07-17 ／ ステータス: **Draft（実装未着手）**
+> 作成日: 2026-07-17 ／ ステータス: **P0（MVP）実装済み**（P1: GitBus 分散・away、P2: hub・dashboard は未着手）
 > 対象ブランチ: `claude/agent-amigos-design-u1gy34`
-> 予定ファイル: `tools/agent-amigos/agent-amigos.py`, `tools/agent-amigos/README.md`,
-> `schemas/amigos-mission.schema.json`
+> 実装: `tools/agent-amigos/`（`agent-amigos.py` ＋ `agent_amigos/` パッケージ・
+> `tests/test_agent_amigos.py`）。`schemas/amigos-mission.schema.json` の正典化は P2。
+>
+> **実装メモ（設計との差分）**: バス上の公示は正規化 **JSON**（`mission.json` /
+> `roles/<id>.json`）で置く — 読み手に PyYAML を要求しないため。YAML はオーナーの
+> 入力形式（post 時に変換）。amigo のカーソル・引き継ぎメモは自分名義の
+> `status/<who>.json` に載せる（所有権規律の範囲内で、後任の引き継ぎ・復帰再開が
+> ファイルだけで完結する）。
 >
 > **依存する既存設計**: [`agent-flow-design.md`](./agent-flow-design.md)（バス抽象・claim プロトコル）,
 > [`agent-cli-plugin-design.md`](./agent-cli-plugin-design.md)（LLM 実行 CLI の共通契約）,

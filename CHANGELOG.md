@@ -7,6 +7,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-amigos: P0（MVP）を実装
+
+- **新ツール** [`tools/agent-amigos/`](tools/agent-amigos/): 設計書 P0 スコープの実装。
+  ローカルバス上で post（公示）→ claim 型アサイン（決定的タイブレーク）→ 自己補充
+  （self-staff で 1 ノード完結）→ 型付きメッセージ（質問/回答/レビュー/承認）→
+  integrator 統合 → collect / accept / reject（差し戻しラウンド）の全周が動く。
+  - **アクション封筒ランナー**: LLM はバスに直接書かず、ランナーが
+    `send / write_artifact / update_status / declare_done` を検証して代書
+    （パス逸脱・不正宛先・越権 approve は棄却して events に記録）。
+  - **収束条件と予算会計**: `events/<who>.jsonl` の `cli_seconds` 総和による決定的会計。
+    soft で wrap-up モード宣言、hard で partial 統合（`on_exhausted: fail` は終端）、
+    静穏化（quiescence）収束、`budget add` による予算追加。
+  - **agent CLI**: kiro / claude / copilot / codex 組み込み ＋ `agents/<name>.json`
+    プラグイン契約（探索順・エラートリアージ `[agent-error:*]` は agent-flow と同一）。
+    quota/auth/env は amigo を paused にして owner へ通知（他ロールは進行継続）。
+  - **テスト 19 件**（stdlib unittest・stub のみ・LLM 不要）: claim の二重アサインなし・
+    lease 失効 → 再募集・2 ノード分担・E2E・差し戻し・予算 wrap-up / fail・封筒検証・
+    owner エスカレーション。
+  - GitBus（専用バスリポジトリ＋ミッション別ブランチ）・away プロトコルは P1、
+    hub・dashboard 連携は P2（設計書 §16）。
+
 ### agent-amigos: 役割駆動マルチエージェント協働ツールの設計書を追加
 
 - **新規設計書** [`docs/designs/agent-amigos-design.md`](docs/designs/agent-amigos-design.md)（Draft、実装未着手）:
