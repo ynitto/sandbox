@@ -1,0 +1,29 @@
+# .kiro/kiro-amigos.yaml — agent-amigos ノードの設定（cwd = ホーム）
+#
+# このファイルを置いたディレクトリが amigos ノードの「ホーム」になる:
+#   - `agent-amigos`（サブコマンド省略 = serve）でこのホームを面倒見る常駐デーモンが起動
+#   - 既定ではホーム自身がローカルバス（missions/ がここに生える）
+#   - agent-dashboard の自動発見マーカーを兼ねる（projects.roots 配下を走査）
+#   - 依頼・手動引き受けは .kiro/kiro-amigos/commands/*.json で投函される
+# 優先順位は CLI > このファイル > 組み込み既定。PyYAML 無しなら同じキーの
+# .kiro/kiro-amigos.json でもよい。
+
+# バス: ローカル dir（ホームからの相対可）/ git+<url> / hub+<url>。既定 "."（ホーム自身）
+bus: .
+# bus_workdir: ~/.agent/amigos/bus-mirror   # GitBus/HubBus のミラー作業領域
+
+node_id: my-node          # 既定: ~/.agent/amigos/node.json に自動採番
+agent_cli: claude         # このノードの既定 agent CLI（stub = LLM なしのプロトコル検証）
+tags: []                  # 能力タグ（ロール requires.tags とのマッチング）
+roles: []                 # 応募するロールの絞り込み（空 = 全ロール）
+interval: 5               # デーモン巡回間隔（秒。無風時は自動で最大 8 倍まで伸びる）
+resume_hours: 12          # graceful offboard 時の resume_at（away 保持の期待復帰時刻）
+manual_claim: false       # true: 自動応募しない（dashboard / commands の手動引き受けのみ）
+
+# cwd を hub として公開する（他ノードは hub+http://<host>:<port> で参加できる）。
+# hub は「所有者上書きのファイル置き場」で調整はしない。オンプレ限定。
+hub:
+  serve: false
+  host: 0.0.0.0
+  port: 8765
+  # token: secret         # 既定: 環境変数 AGENT_AMIGOS_HUB_TOKEN

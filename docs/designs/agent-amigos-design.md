@@ -603,6 +603,8 @@ roles:
 ## 11. CLI コマンド体系
 
 ```
+agent-amigos           # サブコマンド省略 = serve（常駐起動）。cwd がホーム
+agent-amigos serve     [--hub/--no-hub] [--manual-claim] [--cycles N]
 agent-amigos init-bus  (--dir <path> | --git <url> [--subdir amigos] | --hub <url>)
 agent-amigos post      --design design-doc.md --roles roles.yaml     # オーナー: 公示
 agent-amigos join      [--roles r1,r2] [--agent-cli codex] [--tags python,frontend]
@@ -619,6 +621,35 @@ agent-amigos gc        [--keep-days 14]
 
 `say` は「人もチームの一員として口を挟める」ための穴。owner 名義（または `--as` 指定ロール名義の
 `human:` プレフィクス付き）でメッセージを書く。
+
+### 11.1 常駐運用（ホーム）— agent-project と同じ実施方法
+
+**サブコマンド省略 = 常駐起動（serve）**を既定にする（agent-project の `run --watch` 既定と
+同じ流儀 — PC 起動時に立ち上げっぱなしにして cwd を面倒見る daemon 用途が一級市民）。
+
+- **ホーム**: cwd。設定は `<cwd>/.kiro/kiro-amigos.{yaml,yml,json}`（kiro-loop の
+  `.kiro/kiro-loop.yaml` と同じ規約。優先順位 CLI > 設定 > 既定・雛形は
+  `tools/agent-amigos/kiro-amigos.yaml.example`）。設定ファイルは agent-dashboard の
+  **自動発見マーカー**を兼ねる。
+- **cwd = バス = hub**: 既定でホーム自身がローカルバス（`missions/` がホームに生える）。
+  設定 `hub.serve: true` で同じバスを hub として公開し、他ノードは
+  `--bus hub+http://<host>:<port>` で参加できる。ローカル直接書き込みと hub 公開の
+  共存は hub 側の**再走査**（PUT を経ないファイル変更・削除を索引へ反映。/list 時と
+  long-poll 中に間隔律速で走る）が担保する。
+- **指示のファイル取り込み**: `<home>/.kiro/kiro-amigos/commands/*.json` を毎サイクル
+  取り込む（agent-project の `commands/` と同じ「プロセス間 API を持たない・結合は
+  データ×一方向」方式）。コマンドは `post`（タスク依頼 — design 本文と役割ミッション表を
+  受けて公示。design はホームの `designs/` へ永続化）/ `claim`（**手動引き受け** —
+  ポリシーに従い claim / 応募。owner-picks でオーナー自身なら応募＋即時確定）/
+  `assign` / `accept` / `reject` / `cancel` / `say`。処理済みは削除・失敗は
+  `.rejected` へ改名（壊れた指示を無限に噛み続けない）。
+- **manual_claim**: 自動応募を止め、手動引き受け（commands / dashboard）だけで回すモード。
+  引き受け済みロールのターン実行・オーナー職務（self-staff はミッション側のポリシー）は
+  従来どおり動く。
+- **agent-dashboard**: Amigos タブがホームを自動発見し、**タスク依頼**（post フォーム）と
+  **手動引き受け**（募集中ロールの「引き受け」ボタン）を commands 投函で行う。
+  dashboard がバスへ直接書くことは引き続き無い（書くのはホームの commands ドロップのみ —
+  バスの書き込み所有権 §4.2 は破らない）。
 
 ---
 

@@ -844,5 +844,176 @@ class MissionSchemaTests(AmigosTestCase):
                             f"スキーマに無いキー: {set(role) - role_props}")
 
 
+class ConfigFileTests(unittest.TestCase):
+    """`.kiro/kiro-amigos.yaml` 設定（agent-project と同じ CLI > config > 既定の流儀）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="amigos-cfg-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _write(self, name, data):
+        path = os.path.join(self.tmp, ".kiro", name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(data if isinstance(data, str) else json.dumps(data))
+        return path
+
+    def test_defaults_without_config(self):
+        from agent_amigos.configfile import load_settings, resolve_bus_spec
+        s = load_settings(cwd=self.tmp)
+        self.assertIsNone(s["_config_path"])
+        self.assertEqual(s["_home"], os.path.abspath(self.tmp))
+        self.assertFalse(s["hub_serve"])
+        # bus 既定 "." はホーム自身に解決される
+        self.assertEqual(resolve_bus_spec(s, None), os.path.abspath(self.tmp))
+
+    def test_json_config_with_hub_block(self):
+        from agent_amigos.configfile import commands_dir, load_settings
+        self._write("kiro-amigos.json",
+                    {"node_id": "n1", "bus": "shared-bus", "manual_claim": True,
+                     "hub": {"serve": True, "port": 9999}})
+        s = load_settings(cwd=self.tmp)
+        self.assertEqual(s["node_id"], "n1")
+        self.assertTrue(s["manual_claim"])
+        self.assertTrue(s["hub_serve"])
+        self.assertEqual(s["hub_port"], 9999)
+        from agent_amigos.configfile import resolve_bus_spec
+        self.assertEqual(resolve_bus_spec(s, None),
+                         os.path.join(os.path.abspath(self.tmp), "shared-bus"))
+        # CLI --bus は設定より優先
+        self.assertEqual(resolve_bus_spec(s, "git+ssh://x/y.git"), "git+ssh://x/y.git")
+        self.assertEqual(commands_dir(self.tmp),
+                         os.path.join(self.tmp, ".kiro", "kiro-amigos", "commands"))
+
+    def test_yaml_config(self):
+        try:
+            import yaml  # noqa: F401
+        except ImportError:
+            self.skipTest("PyYAML なし")
+        from agent_amigos.configfile import load_settings
+        self._write("kiro-amigos.yaml",
+                    "node_id: yaml-node\ntags: [python, web]\nhub:\n  serve: true\n")
+        s = load_settings(cwd=self.tmp)
+        self.assertEqual(s["node_id"], "yaml-node")
+        self.assertEqual(s["tags"], ["python", "web"])
+        self.assertTrue(s["hub_serve"])
+
+    def test_argv_rewrite_defaults_to_serve(self):
+        self.assertEqual(cli.resolve_argv([]), ["serve"])
+        self.assertEqual(cli.resolve_argv(["--cycles", "1"]), ["serve", "--cycles", "1"])
+        self.assertEqual(cli.resolve_argv(["status"]), ["status"])
+        self.assertEqual(cli.resolve_argv(["-h"]), ["-h"])
+
+
+class CommandsIngestTests(AmigosTestCase):
+    """commands/ ドロップの取り込み（agent-project の commands/ と同じ結合方式）。"""
+
+    def setUp(self):
+        super().setUp()
+        self.home = os.path.join(self.tmp, "home")
+        from agent_amigos.configfile import commands_dir
+        self.cdir = commands_dir(self.home)
+        os.makedirs(self.cdir, exist_ok=True)
+
+    def drop(self, name, rec):
+        with open(os.path.join(self.cdir, name), "w", encoding="utf-8") as f:
+            json.dump(rec, f, ensure_ascii=False)
+
+    def daemon_home(self, **kw):
+        return NodeDaemon(self.bus, "owner-node", agent_cli="stub", interval=0,
+                          commands_home=self.home, **kw)
+
+    def test_post_command_publishes_mission(self):
+        self.drop("01-post.json", {
+            "command": "post", "title": "依頼", "goal": "g", "mission_id": "am-cmd",
+            "design": "# design\n受入基準あり",
+            "mission": {"staffing_timeout": 0},
+            "roles": [{"id": "impl", "mission": "実装", "deliverables": ["main.py"]}]})
+        d = self.daemon_home()
+        for _ in range(10):
+            d.cycle()
+            if self.phase("am-cmd") == "reviewing":
+                break
+        self.assertEqual(self.phase("am-cmd"), "reviewing")
+        # 取り込んだ design doc はホームの状態領域へ永続化される
+        self.assertTrue(os.path.isfile(os.path.join(
+            self.home, ".kiro", "kiro-amigos", "designs", "am-cmd.md")))
+        # 処理済みドロップは消える
+        self.assertEqual([n for n in os.listdir(self.cdir) if n.endswith(".json")], [])
+
+    def test_claim_command_manual_accept(self):
+        # staffing_timeout を伸ばして self-staff（ミッションポリシー）も発動させない
+        mid = self.post(base_spec(staffing_timeout=9999))
+        d = self.daemon_home(manual_claim=True)
+        d.cycle()
+        roster = read_json(self.bus.mission(mid).roster()) or {}
+        self.assertNotIn("impl", roster)          # 自動では引き受けない
+        self.drop("02-claim.json", {"command": "claim", "mission": mid, "role": "impl"})
+        d.cycle()
+        d.cycle()
+        roster = read_json(self.bus.mission(mid).roster()) or {}
+        self.assertEqual(roster.get("impl", {}).get("node"), "owner-node")
+
+    def test_bad_command_renamed_rejected(self):
+        self.drop("03-bad.json", {"command": "nope"})
+        self.drop("04-broken.json", {"command": "claim"})   # mission なし
+        d = self.daemon_home()
+        d.cycle()
+        names = sorted(os.listdir(self.cdir))
+        self.assertIn("03-bad.json.rejected", names)
+        self.assertIn("04-broken.json.rejected", names)
+        d.cycle()                                  # .rejected は再処理されない
+        self.assertEqual(sorted(os.listdir(self.cdir)), names)
+
+    def test_manual_claim_keeps_self_staff_off_for_auto_apply_only(self):
+        # manual_claim でもオーナー職務（self-staff）は mission ポリシーとして動く
+        spec = base_spec()   # staffing_timeout=0 + self-staff
+        mid = self.post(spec)
+        d = self.daemon_home(manual_claim=True)
+        for _ in range(12):
+            d.cycle()
+            if self.phase(mid) == "reviewing":
+                break
+        self.assertEqual(self.phase(mid), "reviewing")
+
+
+class HubRescanTests(AmigosTestCase):
+    """cwd-as-hub: ローカル直接書き込み（PUT を経ない）が hub の索引へ反映される。"""
+
+    def test_direct_writes_visible_to_hub_clients(self):
+        from agent_amigos import hub
+        data = os.path.join(self.tmp, "hub-data")
+        server = hub.serve(data, "127.0.0.1", 0)
+        import threading
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        os.environ["AGENT_AMIGOS_PULL_INTERVAL"] = "0"
+        self.addCleanup(os.environ.pop, "AGENT_AMIGOS_PULL_INTERVAL", None)
+
+        # 常駐デーモン相当: hub のデータディレクトリを **ローカルバスとして直接** 使う
+        local = Bus(data)
+        roles_path = os.path.join(self.tmp, "roles.json")
+        with open(roles_path, "w", encoding="utf-8") as f:
+            json.dump(base_spec(staffing_timeout=9999), f)
+        post_mission(local, self.design, roles_path, "home-node", "am-direct")
+
+        # リモートは HubBus 経由 — 直接書き込みが rescan で見える
+        from agent_amigos.bus import make_bus
+        remote = make_bus(f"hub+http://127.0.0.1:{server.server_port}",
+                          workdir=os.path.join(self.tmp, "hub-wd"))
+        server.hub_state._last_rescan = 0.0        # 律速を외して即時再走査
+        self.assertEqual(remote.list_missions(), ["am-direct"])
+        mp = remote.mission("am-direct")
+        self.assertTrue(read_json(mp.mission_json()))
+        # 直接書き込みの更新（オーナーの budget add 相当）も伝わる
+        mission = load_mission(local.mission("am-direct"))
+        mission["budget"]["execution_minutes"] = 77
+        write_json_atomic(local.mission("am-direct").mission_json(), mission)
+        server.hub_state._last_rescan = 0.0
+        remote.sync_pull(force=True)
+        self.assertEqual(
+            load_mission(remote.mission("am-direct"))["budget"]["execution_minutes"], 77)
+
+
 if __name__ == "__main__":
     unittest.main()

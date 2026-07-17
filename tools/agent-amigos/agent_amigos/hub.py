@@ -41,6 +41,11 @@ class HubState:
         self.lock = threading.Lock()
         self.cond = threading.Condition(self.lock)
         self.index_path = os.path.join(self.data_dir, ".hub-index.json")
+        # ローカル直接書き込みの検知用: rel → (mtime_ns, size)。
+        # 常駐デーモンが「cwd をローカルバスとして直接読み書きしつつ、同じ cwd を hub として
+        # 公開する」構成（cwd-as-hub）では、PUT を経ない変更が起きる。rescan が索引へ反映する。
+        self._stat: "dict[str, tuple]" = {}
+        self._last_rescan = 0.0
         try:
             with open(self.index_path, encoding="utf-8") as f:
                 saved = json.load(f)
@@ -67,9 +72,56 @@ class HubState:
         with self.cond:
             self.rev += 1
             self.files[rel] = self.rev
+            try:
+                st = os.stat(path)
+                self._stat[rel] = (st.st_mtime_ns, st.st_size)
+            except OSError:
+                pass
             self._persist_locked()
             self.cond.notify_all()
             return self.rev
+
+    def _rescan_locked(self, min_interval: float = 1.0) -> None:
+        """ローカル直接書き込み（PUT を経ないファイル変更・削除）を索引へ反映する。
+        cond（lock）保持前提。min_interval で律速し、list のたびの全走査を安く保つ。"""
+        now = time.time()
+        if now - self._last_rescan < min_interval:
+            return
+        self._last_rescan = now
+        base = os.path.join(self.data_dir, "missions")
+        seen = set()
+        changed = False
+        for dirpath, _dirs, names in os.walk(base):
+            for name in names:
+                if name.startswith(".") or ".tmp." in name:
+                    continue
+                full = os.path.join(dirpath, name)
+                rel = os.path.relpath(full, self.data_dir).replace(os.sep, "/")
+                try:
+                    st = os.stat(full)
+                except OSError:
+                    continue
+                sig = (st.st_mtime_ns, st.st_size)
+                seen.add(rel)
+                if self._stat.get(rel) != sig:
+                    self.rev += 1
+                    self.files[rel] = self.rev
+                    self._stat[rel] = sig
+                    changed = True
+        # 消えたファイル（ローカル直接の gc 等）は索引から外す。既存ミラーの掃除までは
+        # 伝播しない（hub 経由の remove_mission = DELETE /tree が伝播する正規経路）
+        for rel in [r for r in self.files
+                    if r.startswith("missions/") and r not in seen]:
+            del self.files[rel]
+            self._stat.pop(rel, None)
+            changed = True
+        if changed:
+            self._persist_locked()
+            self.cond.notify_all()
+
+    def rescan(self) -> None:
+        with self.cond:
+            self._rescan_locked()
 
     def delete_tree(self, prefix: str) -> int:
         removed = 0
@@ -100,10 +152,13 @@ class HubState:
         deadline = time.time() + timeout
         with self.cond:
             while self.rev <= since:
+                self._rescan_locked()      # long-poll 中もローカル直接書き込みを拾う
+                if self.rev > since:
+                    return
                 remain = deadline - time.time()
                 if remain <= 0:
                     return
-                self.cond.wait(min(remain, 5.0))
+                self.cond.wait(min(remain, 2.0))
 
 
 def make_handler(state: HubState, token: str):
@@ -152,6 +207,7 @@ def make_handler(state: HubState, token: str):
                 prefix = q.get("prefix", [""])[0]
                 since = int(q.get("since", ["0"])[0] or 0)
                 wait = min(float(q.get("wait", ["0"])[0] or 0), 55.0)
+                state.rescan()             # ローカル直接書き込み（cwd-as-hub）を索引へ反映
                 if wait > 0:
                     state.wait_change(since, wait)
                 rev, files = state.list_since(prefix, since)

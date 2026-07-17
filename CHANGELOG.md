@@ -7,6 +7,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-amigos: 常駐運用を agent-project に合わせる（無引数 serve・`.kiro/kiro-amigos.yaml`・cwd-as-hub・dashboard 依頼/引き受け）
+
+- **サブコマンド省略 = 常駐起動（serve）**: agent-project の `run --watch` 既定と同じ流儀で、
+  `agent-amigos` だけで cwd をホームとして面倒見るデーモンが立つ（ノードデーモン +
+  指示取り込み + hub 公開）。
+- **設定 `.kiro/kiro-amigos.yaml`**（`.yml`/`.json` 可・雛形 `kiro-amigos.yaml.example`）:
+  bus / node_id / agent_cli / tags / roles / interval / resume_hours / manual_claim /
+  hub（serve/host/port/token）。優先順位 CLI > 設定 > 既定。バス解決は
+  CLI > `AGENT_AMIGOS_BUS` > 設定 bus（既定 `.` = ホーム自身）。設定ファイルは
+  dashboard の自動発見マーカーを兼ねる。
+- **cwd を hub として利用可能**: `hub.serve: true` でホームのローカルバスをそのまま hub 公開。
+  ローカル直接書き込みとの共存のため hub に**再走査**を追加（PUT を経ないファイル変更・
+  削除を /list・long-poll 時に間隔律速で索引へ反映）。
+- **指示のファイル取り込み** `<home>/.kiro/kiro-amigos/commands/*.json`（agent-project の
+  commands/ と同じ結合方式）: `post`（タスク依頼 — design 本文はホームの designs/ へ永続化）/
+  `claim`（手動引き受け — ポリシー準拠。owner-picks でオーナー自身なら応募＋即時確定）/
+  `assign` / `accept` / `reject` / `cancel` / `say`。処理済みは削除・失敗は `.rejected`。
+  `manual_claim: true` で自動応募を止めて手動引き受けだけで回せる。
+- **agent-dashboard**: Amigos タブがホームを自動発見（`projects.roots` 走査 +
+  `amigos.homeDirs`）し、**タスク依頼フォーム**と募集中ロールの**「引き受け」ボタン**を追加
+  （どちらも commands 投函 — バスへは直接書かない。IPC は amigos:request / amigos:claim）。
+- テスト: agent-amigos 53 件（+9: 設定ローダ・serve 読み替え・commands 取り込み
+  post/claim/不正拒否・manual_claim・hub 再走査）、dashboard 371 件（+4: ホーム発見・
+  投函検証・home 対応付け・**dashboard 投函 → Python 常駐デーモン取り込みのクロス検証**）。
+
 ### agent-amigos: ミッションスキーマを汎化名へ改称 + 単体実行インストーラを追加
 
 - **スキーマ改称**: `schemas/amigos-mission.schema.json` → **`schemas/mission.schema.json`**。
