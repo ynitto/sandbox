@@ -418,16 +418,21 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
         append_journal(cfg.journal, f"cycle {cycle}: {task.id} を {location} で実行"
                        + (f"（{cfg.git_bus}）" if location == "remote" else ""))
 
-    # ノードが実行中に発見した恒常制約を run/branch スコープの run ブリーフへ環流する（best-effort・決定的）。
-    # verify の前（done/retry いずれの結末でも通る位置）で回収し、次 run 以降の全分散ノードへ伝播させる。
-    # これにより事後の集約ノードに頼らず一貫性を保てる。回収失敗はタスク処理を止めない。
+    # ノードが実行中に発見した恒常制約を捕捉する（best-effort・決定的）。capture_insight が
+    # 2 スコープへ射影: run ブリーフ（同一タスクの次 run・全分散ノードへ即時伝播）＋ learn
+    # （タスク横断。auto-resolve → hits 閾値で rules.md 昇格のラダーに乗り、タスク完了後も
+    # 教訓が死蔵されない）。verify の前（done/retry いずれの結末でも通る位置）で回収する。
+    # 回収失敗はタスク処理を止めない。
     try:
         discovered = read_brief_discoveries(cfg, location == "remote",
                                             run_id=str(task.get("last_run") or ""))
-        added = add_brief_items(cfg, task, discovered, source="node") if discovered else 0
+        added = sum(1 for c in (discovered or [])
+                    if capture_insight(cfg, task, c, source="node",
+                                       learn=True, learn_action="node-constraint"))
         if added:
             append_journal(cfg.journal,
-                           f"cycle {cycle}: {task.id} ノード発見制約 {added} 件を run ブリーフへ環流")
+                           f"cycle {cycle}: {task.id} ノード発見制約 {added} 件を"
+                           "run ブリーフ＋learn へ環流")
     except Exception:  # noqa: BLE001 — ブリーフ回収の失敗は settle を止めない
         pass
 

@@ -1481,10 +1481,13 @@ class AgentTimeoutTests(unittest.TestCase):
         import subprocess
         def boom(*a, **k):
             raise subprocess.TimeoutExpired(cmd="kiro-cli", timeout=k.get("timeout"))
-        with mock.patch.object(kf.subprocess, "run", side_effect=boom):
+        with mock.patch.object(kf.subprocess, "run", side_effect=boom), \
+                mock.patch.object(kf, "_TRANSIENT_RETRIES", 0):   # レイヤ1 は別テストで検証
             with self.assertRaises(RuntimeError) as ctx:
                 kf.run_agent("素数を列挙", None)
         self.assertIn("タイムアウト", str(ctx.exception))
+        # ハングは transient タグ付き＝レイヤ1（in-place 再試行）の対象になる
+        self.assertEqual(kf.classify_agent_failure(str(ctx.exception))[0], "transient")
 
     def test_agent_timeout_env_override(self):
         with mock.patch.dict(os.environ, {"AGENT_FLOW_TIMEOUT": "0"}, clear=False):
@@ -6068,6 +6071,357 @@ class TestAgentPluginAndTriage(unittest.TestCase):
         decision, new_tasks, _ = kf._continue(args, "req", nodes, results, 0)
         self.assertEqual(decision, "replan")
         self.assertEqual(len(new_tasks), 1)
+
+
+class TransientRetryTests(unittest.TestCase):
+    """レイヤ1（in-place リトライ）: transient 分類の失敗は run_agent 内で再試行され、
+    上位（グラフ再計画の retries 予算）へ持ち上げない。非 transient は従来どおり即座に上位へ。"""
+
+    def _patch(self, side_effect, retries=2):
+        return (mock.patch.object(kf, "_run_agent_once", side_effect=side_effect),
+                mock.patch.object(kf, "_TRANSIENT_RETRIES", retries),
+                mock.patch.object(kf, "_TRANSIENT_BACKOFF", 0.0),
+                mock.patch.object(kf.random, "uniform", return_value=0.0))
+
+    def test_transient_error_retried_in_place(self):
+        calls = []
+        def flaky(prompt, model, purpose=""):
+            calls.append(purpose)
+            if len(calls) < 3:
+                raise RuntimeError("connection reset by peer")
+            return "ok"
+        p1, p2, p3, p4 = self._patch(flaky)
+        with p1, p2, p3, p4:
+            self.assertEqual(kf.run_agent("p", None, purpose="work"), "ok")
+        self.assertEqual(len(calls), 3)                  # 2 回失敗 → 3 回目で成功
+
+    def test_non_transient_not_retried(self):
+        calls = []
+        def denied(prompt, model, purpose=""):
+            calls.append(1)
+            raise RuntimeError("AccessDenied: please login")
+        p1, p2, p3, p4 = self._patch(denied)
+        with p1, p2, p3, p4:
+            with self.assertRaises(RuntimeError) as ctx:
+                kf.run_agent("p", None)
+        self.assertEqual(len(calls), 1)                  # auth は再試行しない（人が直す）
+        self.assertEqual(getattr(ctx.exception, "attempts", None), 1)
+
+    def test_quota_not_retried_in_place(self):
+        calls = []
+        def quota(prompt, model, purpose=""):
+            calls.append(1)
+            raise RuntimeError("usage limit reached")
+        p1, p2, p3, p4 = self._patch(quota)
+        with p1, p2, p3, p4:
+            with self.assertRaises(RuntimeError):
+                kf.run_agent("p", None)
+        self.assertEqual(len(calls), 1)                  # quota は回復が長い → レイヤ4/人へ
+
+    def test_transient_exhausted_raises_with_attempts(self):
+        def always(prompt, model, purpose=""):
+            raise RuntimeError("service unavailable")
+        p1, p2, p3, p4 = self._patch(always, retries=2)
+        with p1, p2, p3, p4:
+            with self.assertRaises(RuntimeError) as ctx:
+                kf.run_agent("p", None)
+        self.assertEqual(getattr(ctx.exception, "attempts", None), 3)
+        self.assertIn("3 回試行後", str(ctx.exception))   # レイヤ1 を経たことが読める
+
+    def test_retries_zero_disables_layer1(self):
+        calls = []
+        def always(prompt, model, purpose=""):
+            calls.append(1)
+            raise RuntimeError("connection refused")
+        p1, p2, p3, p4 = self._patch(always, retries=0)
+        with p1, p2, p3, p4:
+            with self.assertRaises(RuntimeError):
+                kf.run_agent("p", None)
+        self.assertEqual(len(calls), 1)
+
+
+class FormatRepairTests(unittest.TestCase):
+    """レイヤ2（形式修復リトライ）: 出力契約違反（JSON 崩れ・配列でない）を
+    「前回の出力はこう契約違反だった」の指摘付き再呼び出しで 1 回修復する。"""
+
+    def test_split_repaired_to_list(self):
+        outs = ["リストにできませんでした。ごめんなさい。", '["a-m", "n-z"]']
+        with mock.patch.object(kf, "run_agent", side_effect=outs), \
+                mock.patch.object(kf, "_FORMAT_RETRIES", 1):
+            text, data = kf.execute_agent("split", "五十音を2分割", {}, None)
+        self.assertEqual(data, ["a-m", "n-z"])           # 修復で fan-out 可能になる
+
+    def test_split_repair_prompt_carries_violation(self):
+        prompts = []
+        def capture(prompt, model, purpose=""):
+            prompts.append(prompt)
+            return "だめでした" if len(prompts) == 1 else '["x"]'
+        with mock.patch.object(kf, "run_agent", side_effect=capture), \
+                mock.patch.object(kf, "_FORMAT_RETRIES", 1):
+            kf.execute_agent("split", "分割", {}, None)
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("契約違反", prompts[1])            # 違反の指摘が修復プロンプトに載る
+        self.assertIn("だめでした", prompts[1])          # 前回出力も見せる
+
+    def test_split_unrepairable_falls_back_to_none(self):
+        with mock.patch.object(kf, "run_agent", return_value="常に散文"), \
+                mock.patch.object(kf, "_FORMAT_RETRIES", 1):
+            text, data = kf.execute_agent("split", "分割", {}, None)
+        self.assertIsNone(data)                          # 従来のフォールバック（評価役が判断）
+
+    def test_format_retries_zero_disables_repair(self):
+        calls = []
+        def count(prompt, model, purpose=""):
+            calls.append(1)
+            return "散文"
+        with mock.patch.object(kf, "run_agent", side_effect=count), \
+                mock.patch.object(kf, "_FORMAT_RETRIES", 0):
+            kf.execute_agent("split", "分割", {}, None)
+        self.assertEqual(len(calls), 1)
+
+    def test_evaluator_json_repaired(self):
+        outs = ["判定: 完了です", '{"decision":"done","reason":"ok","new_tasks":[]}']
+        nodes = {"t1": {"goal": "g", "deps": [], "kind": "work"}}
+        results = {"t1": {"status": "done", "output": "ok"}}
+        with mock.patch.object(kf, "run_agent", side_effect=outs), \
+                mock.patch.object(kf, "_FORMAT_RETRIES", 1):
+            decision, new, reason = kf.continue_agent("req", nodes, results, 0)
+        self.assertEqual(decision, "done")
+        self.assertEqual(reason, "ok")                   # 修復後の JSON が採用される
+
+    def test_evaluator_transient_fails_run_with_tag(self):
+        # 評価役の呼び出し自体が transient 失敗 → fallback（内容推定）でなくタグ付き failed 終端
+        # ＝ auto-heal / 環境復旧が拾う。
+        def boom(prompt, model, purpose=""):
+            raise RuntimeError("[agent-error:transient] ETIMEDOUT（3 回試行後）")
+        nodes = {"t1": {"goal": "g", "deps": [], "kind": "work"}}
+        results = {"t1": {"status": "done", "output": "ok"}}   # 全 done でも failed に倒す
+        with mock.patch.object(kf, "run_agent", side_effect=boom):
+            decision, new, reason = kf.continue_agent("req", nodes, results, 0)
+        self.assertEqual(decision, "failed")
+        self.assertIn("[agent-error:transient]", reason)
+
+    def test_planner_json_repaired(self):
+        outs = ["こんなグラフはどうでしょう",
+                '{"patterns":["fan-out-and-synthesize"],"parallelism":2,'
+                '"tasks":[{"id":"t1","goal":"g","deps":[],"kind":"work"}]}']
+        with mock.patch.object(kf, "run_agent", side_effect=outs), \
+                mock.patch.object(kf, "_FORMAT_RETRIES", 1):
+            strategy, tasks = kf.plan_strategy_agent("req", None)
+        self.assertEqual(strategy["patterns"], ["fan-out-and-synthesize"])
+        self.assertEqual([t["id"] for t in tasks], ["t1"])
+
+    def test_planner_unrepairable_falls_back_to_stub(self):
+        with mock.patch.object(kf, "run_agent", return_value="散文"), \
+                mock.patch.object(kf, "_FORMAT_RETRIES", 1):
+            strategy, tasks = kf.plan_strategy_agent("req", None)
+        self.assertTrue(strategy["patterns"])            # stub 戦略に倒れて run は続行
+        self.assertTrue(tasks)
+
+
+class TransientRunBreakTests(unittest.TestCase):
+    """レイヤ3純化: レイヤ1 を使い切った transient 失敗ノードは retry タスクを生成せず、
+    run をタグ付き failed で打ち切る（レイヤ4 の auto-heal が拾う）。"""
+
+    def _continue(self, results):
+        nodes = {nid: {"goal": "g", "deps": [], "kind": "work"} for nid in results}
+        args = types.SimpleNamespace(executor="stub", max_fanout=50, review=False,
+                                     exemplar_first=False, max_retries=3)
+        return kf._continue(args, "req", nodes, results, 0)
+
+    def test_transient_failure_breaks_run_not_retries(self):
+        decision, new_tasks, reason = self._continue(
+            {"t1": {"status": "failed",
+                    "output": "実行エラー: [agent-error:transient] ETIMEDOUT（3 回試行後）"}})
+        self.assertEqual(decision, "failed")
+        self.assertEqual(new_tasks, [])                  # retry タスクを積まない
+        self.assertIn("[agent-error:transient]", reason)
+        self.assertIn("auto-heal", reason)               # 自動再開候補であることが読める
+
+    def test_structured_error_class_preferred(self):
+        # worker が data.error_class を構造化していれば output のタグが無くても判定できる
+        decision, _, reason = self._continue(
+            {"t1": {"status": "failed", "output": "実行エラー: 落ちた",
+                    "data": {"error_class": "transient", "attempts": 3}}})
+        self.assertEqual(decision, "failed")
+        self.assertIn("[agent-error:transient]", reason)
+
+
+class AutoHealTests(unittest.TestCase):
+    """レイヤ4（auto-heal）: transient 起因で failed 終端した run を cooldown 後に自動再開する。
+    done は温存・進捗リセット付き max_heals・canceled/superseded は尊重。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-heal-")
+        self.bus = kf.Bus(self.tmp, "run1")
+        self.bus.ensure_run("req")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _fail_transient(self, rid="run1"):
+        self.bus.mark_run_failed(rid, "[agent-error:transient] 一時的エラーの失敗（t1）")
+
+    def _args(self, **kw):
+        base = dict(auto_heal=True, max_heals=2, heal_backoff=0.0, heal_quota=False,
+                    quota_cooldown=0.0, lease=1800.0, max_resumes=3)
+        base.update(kw)
+        return types.SimpleNamespace(**base)
+
+    def _heal(self, owned=None, **kw):
+        spawned = []
+
+        def fake_spawn(base, args, req_id, req):
+            spawned.append(req_id)
+            return types.SimpleNamespace(poll=lambda: None)
+
+        healed = kf._heal_failed_runs(self.bus, "d1", owned or set(), 120.0,
+                                      self._args(**kw), [], spawn=fake_spawn)
+        return healed, spawned
+
+    def test_heal_class_detection(self):
+        self._fail_transient()
+        self.assertEqual(self.bus.heal_class("run1"), "transient")
+        self.bus.mark_run_failed("run2", "普通の失敗")   # run 不在 → mark は False だが安全確認
+        self.assertIsNone(self.bus.heal_class("run2"))
+
+    def test_content_and_env_failures_not_heal_candidates(self):
+        for reason in ("検証 NG", "[agent-error:auth] 認証切れ", "[agent-error:env] CLI 不在"):
+            b = kf.Bus(self.tmp, f"r-{hash(reason) % 1000}")
+            b.ensure_run("req")
+            b.mark_run_failed(os.path.basename(b.run_dir), reason)
+            self.assertIsNone(self.bus.heal_class(os.path.basename(b.run_dir)), reason)
+
+    def test_transient_failed_run_healed(self):
+        self.bus.submit_request("run1", "req", "s")
+        self.bus.write_graph({"strategy": {}, "iteration": 0,
+                              "nodes": {"t1": {"goal": "g", "deps": []},
+                                        "t2": {"goal": "g", "deps": []}}})
+        self.bus.write_task({"id": "t1", "goal": "g", "deps": []})
+        self.bus.write_result("t1", "w", "done", "ok")
+        self.bus.write_task({"id": "t2", "goal": "g", "deps": []})
+        self.bus.write_result("t2", "w", "failed", "[agent-error:transient] ETIMEDOUT")
+        self._fail_transient()
+        healed, spawned = self._heal()
+        self.assertEqual(list(healed), ["run1"])
+        self.assertEqual(spawned, ["run1"])
+        meta = self.bus.run_meta("run1")
+        self.assertEqual(meta["status"], "running")
+        self.assertEqual(meta["heal_count"], 1)
+        # failed ノードは pending へ戻り、done は温存される
+        self.assertIsNone(self.bus.read_result("t2"))
+        self.assertEqual((self.bus.read_result("t1") or {}).get("status"), "done")
+
+    def test_heal_respects_cooldown(self):
+        self.bus.submit_request("run1", "req", "s")
+        self._fail_transient()
+        healed, _ = self._heal(heal_backoff=3600.0)      # 初見は武装のみ（cooldown 中）
+        self.assertEqual(healed, {})
+        self.assertGreater(self.bus.run_meta("run1").get("heal_next_at", 0), time.time())
+        healed, _ = self._heal(heal_backoff=3600.0)      # まだ cooldown 中
+        self.assertEqual(healed, {})
+
+    def test_heal_exhausted_after_max_heals_without_progress(self):
+        self.bus.submit_request("run1", "req", "s")
+        for i in range(2):
+            self._fail_transient()
+            healed, _ = self._heal(max_heals=2)
+            self.assertEqual(list(healed), ["run1"], f"heal #{i+1}")
+        self._fail_transient()
+        healed, _ = self._heal(max_heals=2)              # 3 回目（進捗なし）→ 打ち切り
+        self.assertEqual(healed, {})
+        meta = self.bus.run_meta("run1")
+        self.assertTrue(meta.get("heal_exhausted"))
+        self.assertEqual(meta["status"], "failed")       # failed のまま人/消費者へ
+        self.assertIsNone(self.bus.heal_class("run1"))   # 以後は候補から即座に外れる
+
+    def test_heal_count_resets_on_progress(self):
+        self.bus.submit_request("run1", "req", "s")
+        for i in range(4):                               # max_heals=2 を超える回数
+            self._fail_transient()
+            healed, _ = self._heal(max_heals=2)
+            self.assertEqual(list(healed), ["run1"], f"heal #{i+1}")
+            self.assertEqual(self.bus.run_meta("run1")["heal_count"], 1)  # 進捗ありでリセット
+            self.bus.write_result(f"t{i}", "w", "done", "ok")             # heal 後に前進した
+
+    def test_quota_healed_only_when_opted_in(self):
+        self.bus.submit_request("run1", "req", "s")
+        self.bus.mark_run_failed("run1", "[agent-error:quota] 利用上限")
+        healed, _ = self._heal()                         # 既定 heal_quota=False
+        self.assertEqual(healed, {})
+        healed, _ = self._heal(heal_quota=True)
+        self.assertEqual(list(healed), ["run1"])
+
+    def test_canceled_and_superseded_not_healed(self):
+        self.bus.submit_request("run1", "req", "s")
+        self._fail_transient()
+        # superseded: 新世代（inherit_from 付き）が inbox に居る → 新世代に委ねる
+        self.bus.submit_request("run1-r1", "req", "s", inherit_from="run1")
+        healed, _ = self._heal()
+        self.assertEqual(healed, {})
+        # canceled は heal_class の段階で対象外
+        b2 = kf.Bus(self.tmp, "run2")
+        b2.ensure_run("req")
+        b2.mark_canceled("run2", "人の停止")
+        self.assertIsNone(self.bus.heal_class("run2"))
+
+    def test_auto_heal_disabled(self):
+        self.bus.submit_request("run1", "req", "s")
+        self._fail_transient()
+        healed, _ = self._heal(auto_heal=False)
+        self.assertEqual(healed, {})
+
+    def test_human_retry_clears_heal_bookkeeping(self):
+        self.bus.submit_request("run1", "req", "s")
+        self._fail_transient()
+        self._heal()
+        self.assertEqual(self.bus.run_meta("run1").get("heal_count"), 1)
+        self._fail_transient()
+        self.bus.retry_failed()                          # 人の明示 retry は簿記を白紙に戻す
+        meta = self.bus.run_meta("run1")
+        self.assertNotIn("heal_count", meta)
+        self.assertNotIn("heal_exhausted", meta)
+
+
+class InheritRequestTests(unittest.TestCase):
+    """リトライ引き継ぎ時の meta.request: 新世代の要求文（差し戻しの意図・run ブリーフ入り）を
+    正とする。旧 request のコピーでは、リトライの引き金になった指摘が worker の全体文脈
+    （run_request）と再実行ノードに届かない。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-inh-req-")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _old_run(self):
+        old = kf.Bus(self.tmp, "req-x-t-r0")
+        old.ensure_run("最初の要求")
+        old.write_graph({"strategy": {}, "iteration": 0,
+                         "nodes": {"t1": {"goal": "g", "deps": []},
+                                   "t2": {"goal": "g", "deps": []}}})
+        old.write_task({"id": "t1", "goal": "g", "deps": []})
+        old.write_result("t1", "w", "done", "ok")
+        old.write_task({"id": "t2", "goal": "g", "deps": []})
+        old.write_result("t2", "w", "failed", "boom")
+        old.mark_run_failed("req-x-t-r0", "act failed")
+        return old
+
+    def test_seed_uses_new_request(self):
+        self._old_run()
+        new = kf.Bus(self.tmp, "req-x-t-r1")
+        info = new.inherit_from("req-x-t-r0",
+                                request="最初の要求\n\n人からのフィードバック: 命名規約に従うこと")
+        self.assertTrue(info["inherited"])
+        meta = kf.read_json(new.meta_path)
+        self.assertIn("命名規約", meta["request"])       # 新世代の指摘が worker へ届く
+        self.assertEqual(meta["inherited_from"], "req-x-t-r0")
+
+    def test_seed_falls_back_to_old_request_when_empty(self):
+        self._old_run()
+        new = kf.Bus(self.tmp, "req-x-t-r1")
+        new.inherit_from("req-x-t-r0")                   # request 未指定（後方互換）
+        self.assertEqual(kf.read_json(new.meta_path)["request"], "最初の要求")
 
 
 if __name__ == "__main__":

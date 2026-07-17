@@ -220,6 +220,62 @@ def _adopt_orphan_runs(bus: Bus, daemon_id: str, owned: set, lease_window: float
     return adopted, failed
 
 
+def _heal_failed_runs(bus: Bus, daemon_id: str, owned: set, lease_window: float,
+                      args, base: list, spawn=None,
+                      slots: "int | None" = None) -> dict:
+    """auto-heal（レイヤ4）: transient 起因で failed 終端した run を cooldown 後に自動再開する。
+    ここへ来る transient はレイヤ1（run_agent の in-place 再試行）を使い切っている＝環境の
+    一時不調なので、待ってから run 単位でやり直すのが正しい回復（done ノードは温存）。
+    quota は heal_quota=true のときだけ・長い cooldown（quota_cooldown）で回収する。
+
+    触らないもの: canceled（人の意思）・superseded / inherit_from 予約済み（新世代が拾う）・
+    heal_exhausted（進捗なし heal が max_heals 超過）・タグ無しの内容失敗・auth/env（人が直す）。
+    分散時は reclaim_request の claim プロトコルで 1 daemon だけが heal する。
+    戻り値: {run_id: orchestrator プロセス}。"""
+    if not getattr(args, "auto_heal", True):
+        return {}
+    max_h = int(getattr(args, "max_heals", 2) or 0)
+    if max_h <= 0:
+        return {}
+    healed: dict = {}
+    superseded = _superseded_run_ids(bus)
+    for rid in bus.list_runs():
+        if rid in owned or rid in superseded or bus.is_canceled_requested(rid):
+            continue
+        cls = bus.heal_class(rid)
+        if cls is None:
+            continue
+        if cls == "quota" and not getattr(args, "heal_quota", False):
+            continue
+        req = bus.read_inbox(rid)
+        if not req:
+            continue   # inbox 要求が無い（cmd_run 由来・gc 済み）→ daemon では再構成できない
+        cooldown = float(getattr(args, "quota_cooldown", 3600.0) if cls == "quota"
+                         else getattr(args, "heal_backoff", 300.0))
+        due = bus.arm_heal(rid, cooldown)   # 初見はここで cooldown を武装（冪等）
+        if time.time() < due:
+            continue   # cooldown 中 → 次の poll で再判定
+        if slots is not None and slots - len(healed) <= 0:
+            continue   # 実行枠なし → 次の poll へ持ち越し（failed のままなので取りこぼさない）
+        if not bus.reclaim_request(rid, daemon_id, args.lease):
+            continue   # 他 daemon が heal 中
+        n = bus.record_heal(rid)
+        if n > max_h:
+            bus.mark_heal_exhausted(rid)
+            bus.run_view(rid).event(daemon_id, "run-heal-exhausted", run=rid, heals=n - 1)
+            bus.sync_push(f"run {rid} heal 打ち切り（進捗なし {n - 1} 回・max_heals={max_h}）")
+            log(daemon_id, f"auto-heal 打ち切り: {rid}（進捗なし {n - 1} 回）→ failed のまま人/消費者へ")
+            continue
+        reset = bus.run_view(rid).retry_failed(clear_heal=False)
+        p = (spawn or _spawn_orchestrator)(base, args, rid, req)
+        bus.touch_run(rid, lease_window)
+        bus.run_view(rid).event(daemon_id, "run-healed", run=rid, heal=n,
+                                cls=cls, reset=len(reset))
+        bus.sync_push(f"run {rid} auto-heal #{n}（{cls}・failed {len(reset)} ノードを pending へ）")
+        healed[rid] = p
+    return healed
+
+
 def _spawn_orchestrator(base: list, args, req_id: str, req: dict):
     """要求 req を担当する orchestrator を base argv から起動する（daemon のオンデマンド起動）。"""
     ws = req.get("workspace")   # 要求に紐づく唯一の書込先ワークスペースを run meta へ載せる
@@ -374,7 +430,54 @@ def cmd_run(args) -> int:
                 except Exception as e:  # noqa: BLE001 — 監視失敗は run を止めない
                     print(f">>> service_waits でエラー（無視して継続）: {e}", flush=True)
                 next_wait_service = time.time() + watch_interval
-            if bus.get_status() in TERMINAL:
+            st = bus.get_status()
+            if st in TERMINAL:
+                # auto-heal（レイヤ4・daemon 無し経路）: transient 起因の failed なら cooldown 後に
+                # 同一プロセス内で再開する（done 温存・進捗リセット付き max_heals・canceled は対象外）。
+                healed = False
+                max_h = int(getattr(args, "max_heals", 2) or 0)
+                if (st == "failed" and getattr(args, "auto_heal", True) and max_h > 0
+                        and not bus.is_canceled_requested(run_id)):   # cooldown 中の cancel を尊重
+                    cls = bus.heal_class(run_id)
+                    if cls == "transient" or (cls == "quota" and getattr(args, "heal_quota", False)):
+                        cooldown = float(getattr(args, "quota_cooldown", 3600.0) if cls == "quota"
+                                         else getattr(args, "heal_backoff", 300.0))
+                        due = bus.arm_heal(run_id, cooldown)   # 初見は cooldown を武装（冪等）
+                        if time.time() < due:
+                            time.sleep(max(args.poll, 1))
+                            continue          # cooldown 中は失敗のまま待つ（cancel は毎周確認）
+                        n = bus.record_heal(run_id)
+                        if n > max_h:
+                            bus.mark_heal_exhausted(run_id)
+                            bus.sync_push(f"run {run_id} heal 打ち切り（max_heals={max_h}）")
+                            print(f"\n>>> auto-heal 打ち切り（進捗なし {n - 1} 回）。failed のまま終了します。",
+                                  flush=True)
+                        else:
+                            reset = bus.retry_failed(clear_heal=False)
+                            bus.sync_push(f"run {run_id} auto-heal #{n}"
+                                          f"（{cls}・failed {len(reset)} ノードを pending へ）")
+                            print(f"\n>>> auto-heal #{n}: failed {len(reset)} ノードを pending へ戻し"
+                                  "再開します（done は温存）。", flush=True)
+                            orch = subprocess.Popen(base + [
+                                "orchestrate", "--request", args.request,
+                                "--planner", args.planner, "--executor", args.executor,
+                                "--max-iterations", str(args.max_iterations),
+                                "--max-fanout", str(args.max_fanout),
+                                "--max-retries", str(args.max_retries),
+                                "--model_opt", args.model or "",
+                                "--poll", str(args.poll), "--node-id", "orchestrator",
+                            ])
+                            procs.append((f"orchestrator-heal{n}", orch))
+                            for i in range(args.workers):
+                                w = subprocess.Popen(base + [
+                                    "work", "--node-id", f"worker-heal{n}-{i+1}",
+                                    "--executor", args.executor,
+                                    "--model_opt", args.model or "", "--poll", str(args.poll),
+                                ], env=worker_env)
+                                procs.append((f"worker-heal{n}-{i+1}", w))
+                            healed = True
+                if healed:
+                    continue
                 print(f"\n>>> run {bus.get_status()}。ワーカーを停止します。", flush=True)
                 break
             if bus.is_canceled_requested(run_id) and bus.get_status() not in TERMINAL:

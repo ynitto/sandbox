@@ -492,7 +492,9 @@ def append_delivery(cfg: Config, task: Task, ref: str, ts: str, branch: str = ""
 
 def archive_task(cfg: Config, task: Task, vmsg: str, ref: str, ts: str, evidence: str = "") -> None:
     """done タスクを archive/<id>.md へ退避し、検収用の『納品書』を付す（backlog と1:1）。
-    evidence（成果物の所在・差分・検証）を載せ、後から「どこに何が入ったか」を辿れるようにする。"""
+    evidence（成果物の所在・差分・検証）を載せ、後から「どこに何が入ったか」を辿れるようにする。
+    run ブリーフ（差し戻しの意図・ノード発見制約の蓄積）は納品書へ転記して退役させる
+    （成果物として残しつつ、task-id 再利用時の古ブリーフ注入と brief/ の死蔵を防ぐ）。"""
     cfg.archive_dir().mkdir(parents=True, exist_ok=True)
     task.extra.append(("archived", ts))
     body = serialize_task(task) + (
@@ -503,6 +505,10 @@ def archive_task(cfg: Config, task: Task, vmsg: str, ref: str, ts: str, evidence
     )
     if evidence:
         body += f"\n## 判断材料（成果物の所在・差分・検証）\n{evidence}\n"
+    brief = retire_brief(cfg, task)
+    if brief:
+        body += ("\n## run ブリーフ（この試行群で確定した制約・教訓。learn 射影済み）\n"
+                 f"{brief}\n")
     _archive_write(cfg, task.id, body)
     delete_task_file(cfg, task)
 

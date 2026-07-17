@@ -110,6 +110,20 @@ max_retries: 3             # サーキットブレーカー: 同一系統（veri
 max_resumes: 3             # 孤児 run（owning daemon 消失 = PC シャットダウン/クラッシュ）の自動再開の
                            #   上限。「進捗なしの連続回数」で数え、進捗（新しい results/）があれば数え直す
                            #   ＝毎日シャットダウンされる PC でも長期 run を継続できる。0 以下で無効
+
+# --- 自己回復リトライ（docs/designs/agent-flow-self-healing-retry-design.md）---
+transient_retries: 2       # レイヤ1: transient 分類（接続断・5xx・timeout）の in-place 再試行回数。
+                           #   run_agent 内で指数バックオフ再試行し、再計画 retry の予算を焼かない。0 で無効
+transient_backoff: 5       # レイヤ1 の初回バックオフ秒（試行ごとに ×2 ＋ジッタ）
+format_retries: 1          # レイヤ2: 出力契約違反（split の JSON 配列・evaluator/planner の JSON 崩れ）の
+                           #   修復再呼び出し回数（契約違反を指摘して呼び直す）。0 で無効
+auto_heal: true            # レイヤ4: transient 起因で failed 終端した run を cooldown 後に自動再開
+                           #   （done 温存）。canceled・superseded・内容/auth/env 失敗は触らない
+heal_backoff: 300          # レイヤ4 の cooldown 初期値（秒・heal 回数に応じ指数）
+max_heals: 2               # 進捗なし heal の上限（done ノードが増えれば数え直し）。超過で failed のまま
+                           #   人 / 消費者（agent-project の新世代リトライ）へ委ねる
+heal_quota: false          # quota（利用上限）失敗も auto-heal で回収するか（opt-in）
+quota_cooldown: 3600       # quota 回収時の cooldown（秒）
 argv_limit: 100000         # エージェント CLI へ argv で渡すプロンプトの最大バイト数。超過分は一時ファイルへ
                            #   退避し参照渡しにする（依存成果物が大きいときの ARG_MAX 起動失敗を防ぐ）
 # agent_timeout: 600       # エージェント CLI 1 呼び出しのタイムアウト秒（0/負で無効化）。ハングした

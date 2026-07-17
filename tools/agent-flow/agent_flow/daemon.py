@@ -214,6 +214,15 @@ def cmd_daemon(args) -> int:
                                f"（resume #{bus.run_meta(rid).get('resume_count', '?')}）")
             for rid in orphan_failed:
                 log(daemon_id, f"孤児 run を回収: {rid} → failed（owning daemon 消失・再開不可）")
+            # auto-heal（レイヤ4）: transient 起因の failed run を cooldown 後に自動再開
+            # （done 温存・進捗リセット付き max_heals・superseded/canceled は尊重）。
+            if slots is not None:
+                slots = max(0, max_runs - _busy_run_count(bus, set(orchestrators)))
+            for rid, p in _heal_failed_runs(bus, daemon_id, set(orchestrators),
+                                            lease_window, args, base, slots=slots).items():
+                orchestrators[rid] = p
+                log(daemon_id, f"auto-heal: {rid} → 再開"
+                               f"（heal #{bus.run_meta(rid).get('heal_count', '?')}）")
 
         # 1) 新しい要求を受理 → orchestrator をオンデマンド起動（分散時は 1 台だけ担当）。
         #    max_runs>0 なら「実行中（全 park を除く）の run 数」で受理を律速する。超過した要求は

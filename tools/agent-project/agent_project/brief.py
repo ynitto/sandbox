@@ -107,4 +107,51 @@ def brief_context(cfg: "Config", task: "Task", limit: int = 1200) -> str:
     return "\n".join(f"- {it}" for it in items)[:limit]
 
 
+def retire_brief(cfg: "Config", task: "Task") -> str:
+    """タスク完了（archive）時に run ブリーフを**退役**させる: 蓄積項目の本文を返してファイルを
+    削除する。呼び出し側（archive_task）が納品書へ転記するので、蓄積された制約・教訓は
+    archive/<id>.md に成果物として残る（一般化できる項目は capture_insight の learn 射影で
+    既に decisions/ に居り、learn→rules 昇格ラダーで正本へ格上げされる）。
+
+    削除する理由: ブリーフは task/branch スコープの一時層で、成果が done/マージしたら役目を
+    終える。残すと (1) <root>/brief/ に死蔵ファイルが溜まる (2) 同じ task-id を再利用したとき
+    **前世代の古いブリーフが新タスクへ注入される**（brief_path は task.id キーのため）。
+    ブリーフが無ければ空文字（後方互換・冪等）。"""
+    p = brief_path(cfg, task)
+    if not p.exists():
+        return ""
+    items = _brief_items(cfg, task)
+    try:
+        p.unlink()
+    except OSError:
+        return ""
+    append_journal(cfg.journal, f"run ブリーフ退役: {task.id}（{len(items)} 件を納品書へ転記）")
+    return "\n".join(f"- {it}" for it in items)
+
+
+def capture_insight(cfg: "Config", task: "Task", text, source: str,
+                    learn: bool = False, learn_action: str = "") -> bool:
+    """指摘・制約の**捕捉の単一入口**。1 つの指摘を 2 つのスコープへ射影する:
+
+      - **task スコープ（run ブリーフ）**: 常に追記。同一タスクの以後の全 run・全分散ノードへ
+        無条件・全文で注入される（空間方向＝今のタスクの一貫性）。
+      - **project スコープ（learn）**: learn=True かつ learn_capture 有効なら decisions/ に
+        learn 行を残す。タイトル類似の別タスクへの auto-resolve → hits 閾値で rules.md 昇格 →
+        （opt-in）ltm、という既存の昇格ラダーに乗る（時間方向＝将来のタスクの再発防止）。
+
+    従来 feedback / revise / gitlab-reject は両スコープへ別々のコードで書き、ノード発見制約と
+    cohort 波及は brief のみ＝learn へ届く道が無かった（タスク完了とともに教訓が死蔵される）。
+    新しい捕捉元はこの入口を使うこと。追記できたら True（重複は冪等に False）。"""
+    added = append_brief_item(cfg, task, text, source=source)
+    if added and learn and getattr(cfg, "learn_capture", True):
+        body = _norm_brief_item(text)
+        append_decision(cfg, task.id, "system",
+                        context=f"{task.id}（{task.title}）の {source} 由来の教訓を捕捉",
+                        action=learn_action or f"capture:{source}",
+                        reason=body[:200],
+                        affects=f"{task.id} の run ブリーフ＋横断 learn",
+                        learn=(task.title, body))
+    return added
+
+
 # ---------------------------------------------------------------------------

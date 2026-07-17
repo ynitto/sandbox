@@ -83,6 +83,21 @@ CONFIG_DEFAULTS = {
     # judge/評価役のサーキットブレーカー: 同一系統（verify/失敗）の作り直しをこの回数で打ち切る。
     # 達成不可能な完了条件で無限に再タスクを生み続けるのを防ぐ（max_iterations と二重ガード）。
     "max_retries": 3,
+    # --- 自己回復リトライ（設計: docs/designs/agent-flow-self-healing-retry-design.md）---
+    # レイヤ1: transient 分類（接続断・5xx・timeout 等）の in-place 再試行。run_agent 内で
+    # 指数バックオフ再試行し、上位（再計画の retries 予算）を消費しない。0 で無効。
+    "transient_retries": 2,
+    "transient_backoff": 5.0,    # レイヤ1 の初回バックオフ秒（指数×2＋ジッタ）
+    # レイヤ2: 出力契約違反（split の JSON 配列・evaluator/planner の JSON 崩れ）の修復再呼び出し
+    # 回数。「前回の出力はこう契約違反だった」と指摘して同じ役割で呼び直す。0 で無効。
+    "format_retries": 1,
+    # レイヤ4: transient 起因で failed 終端した run を、cooldown 後に自動再開する（done 温存）。
+    # daemon の poll と cmd_run の監視ループで働く。人の cancel・superseded は触らない。
+    "auto_heal": True,
+    "heal_backoff": 300.0,       # heal cooldown 初期値（秒・heal_count に応じ指数）
+    "max_heals": 2,              # 進捗なし heal の上限（done ノードが増えれば数え直し）
+    "heal_quota": False,         # quota（利用上限）失敗も回収するか（opt-in）
+    "quota_cooldown": 3600.0,    # quota 回収時の cooldown（秒）
     # 孤児 run（owning daemon の消失＝PC シャットダウン・クラッシュ等）の自動再開の上限。
     # 「前回の再開から進捗（新しい results/）ゼロのままの連続再開」をこの回数で打ち切り
     # failed に確定する（起動のたびに即死する壊れた run を無限に蘇生しない）。進捗があれば

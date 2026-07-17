@@ -336,14 +336,16 @@ class Bus:
         ids = self.task_ids()
         return bool(ids) and all(self.node_state(i) in TERMINAL for i in ids)
 
-    def retry_failed(self) -> "list[str]":
+    def retry_failed(self, clear_heal: bool = True) -> "list[str]":
         """failed 状態の run を「再実行できる状態」へ戻す。失敗ノード（results が failed）の結果と
         claim を消して pending へ戻し（＝再 claim・再実行の対象にする）、確定済み done ノードは温存する。
         併せて meta の終端・孤児簿記（failure_reason/superseded/orphaned/resume_count 等）を掃除し、
         status を running に戻す。戻したノード id 一覧を返す（commit/push は呼び出し側）。
 
         failed run はそのままでは再開しても全ノードが終端（node_state=failed）のまま静止し、
-        何も再実行されない。人/消費者の明示 retry でだけこの reset を行い、失敗した所だけをやり直す。"""
+        何も再実行されない。人/消費者の明示 retry か auto-heal（レイヤ4）でこの reset を行い、
+        失敗した所だけをやり直す。clear_heal: 人の明示 retry（既定）は heal 簿記も白紙に戻す。
+        auto-heal は False で呼び、heal_count / heal_progress を heal 横断で数え続ける。"""
         reset: "list[str]" = []
         for nid in self.task_ids():
             res = self.read_result(nid)
@@ -355,13 +357,77 @@ class Bus:
                 shutil.rmtree(self._claim_dir(nid), ignore_errors=True)   # 失効前の claim も掃除
                 reset.append(nid)
         meta = read_json(self.meta_path) or {}
-        for k in ("failure_reason", "superseded", "superseded_by",
-                  "resume_count", "resume_progress"):
+        keys = ["failure_reason", "superseded", "superseded_by",
+                "resume_count", "resume_progress"]
+        if clear_heal:
+            keys += ["heal_count", "heal_progress", "heal_next_at", "heal_exhausted"]
+        else:
+            meta.pop("heal_next_at", None)   # 再武装は次の失敗時（arm_heal）に行う
+        for k in keys:
             meta.pop(k, None)
         meta["status"] = "running"
         meta["updated_at"] = now_iso()
         write_json_atomic(self.meta_path, meta)
         return reset
+
+    # --- auto-heal（レイヤ4）簿記: transient 起因で failed 終端した run の自動再開 ---
+
+    def heal_class(self, run_id: str) -> "str | None":
+        """failed run が auto-heal 候補なら、そのトリアージ class（transient / quota）を返す。
+        人の cancel（status=canceled）・世代交代（superseded）・heal 上限超過（heal_exhausted）・
+        タグ無し（内容の失敗）・auth/env（人が直す）は対象外＝None。"""
+        meta = self.run_meta(run_id) or {}
+        if meta.get("status") != "failed" or meta.get("superseded") or meta.get("heal_exhausted"):
+            return None
+        m = _AGENT_ERROR_TAG_RE.search(str(meta.get("failure_reason") or ""))
+        cls = m.group(1) if m else None
+        return cls if cls in ("transient", "quota") else None
+
+    def arm_heal(self, run_id: str, cooldown: float) -> float:
+        """heal の cooldown を武装する（初見の failed run にだけ heal_next_at を書く・冪等）。
+        期限（epoch 秒）を返す。cooldown は heal_count に応じて指数で伸びる
+        （恒久障害の run が heal と失敗を高频度で往復しない）。"""
+        v = self.run_view(run_id)
+        meta = read_json(v.meta_path) or {}
+        due = meta.get("heal_next_at")
+        if isinstance(due, (int, float)):
+            return float(due)
+        n = int(meta.get("heal_count", 0) or 0)
+        due = time.time() + float(cooldown) * (2 ** n)
+        meta["heal_next_at"] = due
+        write_json_atomic(v.meta_path, meta)
+        return due
+
+    def record_heal(self, run_id: str) -> int:
+        """heal の実施を meta に記録し、「進捗なしの連続 heal 回数」を返す（record_resume と同じ
+        思想: 前回 heal 以降に done ノードが増えていれば 1 から数え直す＝前進している run は
+        何度でも回収し、進捗ゼロのまま失敗し続ける run だけが max_heals に達する）。"""
+        v = self.run_view(run_id)
+        meta = read_json(v.meta_path) or {}
+        try:
+            done_now = sum(1 for f in os.listdir(v.results_dir) if f.endswith(".json"))
+        except OSError:
+            done_now = 0
+        prev = meta.get("heal_progress")
+        if prev is None or done_now > int(prev):
+            n = 1
+        else:
+            n = int(meta.get("heal_count", 0) or 0) + 1
+        meta["heal_count"] = n
+        meta["heal_progress"] = done_now
+        meta["healed_at"] = now_iso()
+        meta["updated_at"] = now_iso()
+        write_json_atomic(v.meta_path, meta)
+        return n
+
+    def mark_heal_exhausted(self, run_id: str) -> None:
+        """heal 上限超過を記録し、以後の poll で heal 候補から即座に外す（heal_class が None を
+        返す）。failed run のまま人 / 消費者（agent-project の新世代リトライ）の回収に委ねる。"""
+        v = self.run_view(run_id)
+        meta = read_json(v.meta_path) or {}
+        meta["heal_exhausted"] = True
+        meta["updated_at"] = now_iso()
+        write_json_atomic(v.meta_path, meta)
 
     def event(self, who: str, kind: str, **extra) -> None:
         rec = {"ts": now_iso(), "who": who, "kind": kind, **extra}
@@ -411,7 +477,7 @@ class Bus:
         return Bus(self.root, run_id)
 
     # --- リトライ時の引き継ぎ（先行 run のデータ破棄設計） ---
-    def _seed_from(self, old: "Bus") -> int:
+    def _seed_from(self, old: "Bus", request: str = "") -> int:
         """先行 run `old` の再利用可能な状態をこの（新しい）run dir へコピーする。
         戻り値＝引き継いだ done ノード数。graph.json（計画）・tasks/（ノード仕様）・
         artifacts/（node-id で決定的にアドレスされる中間成果物）を丸ごと、results/ は
@@ -419,7 +485,12 @@ class Bus:
         確定済みノードの commit を失わないよう、新 run の作業ブランチを旧ブランチ af/<old> から
         派生させる（spec.base を旧ブランチに差す。旧ブランチが無ければ clone 側が既定へ
         フォールバックするので安全）。meta の lease/resume 簿記・claims/・events/ は引き継がない
-        （wall-clock リースや孤児判定を汚染しないため）。"""
+        （wall-clock リースや孤児判定を汚染しないため）。
+
+        request: 新世代（この run）の要求文。リトライの要求文には差し戻しの意図（run ブリーフ・
+        feedback）が積み増されており、worker はこれを meta.request（全体文脈）として読む。
+        旧 request をコピーすると「リトライの引き金になった指摘が再実行ノードに届かない」
+        ため、指定があれば新 request を正とする（空なら従来どおり旧 request を保つ）。"""
         old_id = os.path.basename(old.run_dir)
         self.ensure_dirs()
         g = read_json(old.graph_path)
@@ -443,7 +514,7 @@ class Bus:
             ws = dict(ws)
             ws["base"] = run_branch_name(old_id)       # 旧ブランチから派生＝done の commit を保つ
         write_json_atomic(self.meta_path, {
-            "request": old_meta.get("request", ""),
+            "request": (request or "").strip() or old_meta.get("request", ""),
             "workspace": ws or None,
             "references": list(old_meta.get("references") or []),
             "status": "planning",
@@ -452,7 +523,8 @@ class Bus:
         })
         return seeded
 
-    def inherit_from(self, old_run_id: str, orphan_grace: float = 0.0) -> dict:
+    def inherit_from(self, old_run_id: str, orphan_grace: float = 0.0,
+                     request: str = "") -> dict:
         """タイムアウト/失敗した先行 run から再利用可能な状態をこの run へ引き継ぎ、先行 run を
         削除する。リトライで毎回ゼロからやり直して確定済みノードの作業（トークン/時間）を捨てるのを
         防ぐための「引き継いでから掃除する」操作。
@@ -483,7 +555,7 @@ class Bus:
         seeded = 0
         # この run が既に実体を持つ（別経路で再開中）なら seed しない＝上書き事故を防ぐ
         if read_json(self.meta_path) is None and not fully_done:
-            seeded = self._seed_from(old)
+            seeded = self._seed_from(old, request=request)
         self.remove_run(old_run_id)                    # 終端/孤児のみ到達＝安全に掃除
         return {"inherited": seeded > 0, "seeded_nodes": seeded, "deleted": True,
                 "reason": ("完全 done のため状態は引き継がず掃除のみ" if fully_done
