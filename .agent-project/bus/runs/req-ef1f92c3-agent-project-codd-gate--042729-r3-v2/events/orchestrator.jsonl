@@ -1,4 +1,0 @@
-{"ts": "2026-07-15T21:42:53Z", "who": "orchestrator", "kind": "planned", "patterns": ["fan-out-and-synthesize", "adversarial-verification", "loop-until-done"], "parallelism": 3, "tasks": ["t1", "t2", "t3", "t4", "t5", "t6", "t7"]}
-{"ts": "2026-07-16T19:36:08Z", "who": "orchestrator", "kind": "replan", "iteration": 1, "added": ["t8", "t9"]}
-{"ts": "2026-07-16T19:45:38Z", "who": "orchestrator", "kind": "replan", "iteration": 2, "added": ["t10-fix-canonical-codd-gate-config", "t11-verify-codd-gate-completion"]}
-{"ts": "2026-07-16T20:00:58Z", "who": "orchestrator", "kind": "replan", "iteration": 3, "added": ["t12-fix-and-verify-canonical-codd-gate"]}

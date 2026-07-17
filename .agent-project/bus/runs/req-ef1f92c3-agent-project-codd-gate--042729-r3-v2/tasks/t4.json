@@ -1,8 +1,0 @@
-{
-  "id": "t4",
-  "goal": "intake 結線の実装: codd-gate tasks(修復タスク生成)の出力を agent-project の backlog/intake へ取り込む結線を実装し、ドリフト検出→タスク化を自動化する",
-  "deps": [
-    "t1"
-  ],
-  "kind": "generate"
-}

@@ -1,7 +1,0 @@
-{
-  "id": "t3",
-  "who": "worker-2",
-  "status": "failed",
-  "output": "実行エラー: [agent-error:transient] claude 失敗 (rc=1): 一時的なエラーです（自動でやり直します）\nAPI Error: 529 Overloaded. This is a server-side issue, usually temporary — try again in a moment. If it persists, check https://status.claude.com.",
-  "finished_at": "2026-07-16T19:27:42Z"
-}
