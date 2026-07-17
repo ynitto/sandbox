@@ -1,8 +1,0 @@
-{
-  "id": "t4",
-  "goal": "完了条件のシェルコマンド `PYTHONPATH=tools/agent-project python3 -c 'from agent_project import _first_command_line; assert _first_command_line(\"検証コマンド:\\ncodd-gate verify --base \\\"$KIRO_BASE_REV\\\"\") == \"codd-gate verify --base \\\"$KIRO_BASE_REV\\\"\"'` を実行し EXIT=0 を確認する。0 でなければ t2 へ戻り修正と再検証を反復（loop-until-done）。関連テストも green であることを確認して完了とする。",
-  "deps": [
-    "t3"
-  ],
-  "kind": "verify"
-}

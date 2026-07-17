@@ -1,6 +1,0 @@
-{
-  "id": "t2",
-  "goal": "完了条件のシェルコマンド PYTHONPATH=tools/agent-project python3 -c 'from agent_project import _first_command_line; assert _first_command_line(\"検証コマンド:\\ncodd-gate verify --base \\\"$KIRO_BASE_REV\\\"\") == \"codd-gate verify --base \\\"$KIRO_BASE_REV\\\"\"' を実行して現在の失敗を再現し、実際の戻り値・例外を記録して期待挙動との差分を仕様として言語化する。",
-  "deps": [],
-  "kind": "work"
-}

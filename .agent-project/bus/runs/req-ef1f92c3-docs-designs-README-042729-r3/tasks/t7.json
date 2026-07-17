@@ -1,8 +1,0 @@
-{
-  "id": "t7",
-  "goal": "完了条件のシェルコマンド（test -f docs/designs/README.md && 各設計ファイル名を grep -q）を実行して終了コード0を確認する。未達なら不足点を明示して t6 の再生成へ戻す（loop-until-done）",
-  "deps": [
-    "t6"
-  ],
-  "kind": "verify"
-}

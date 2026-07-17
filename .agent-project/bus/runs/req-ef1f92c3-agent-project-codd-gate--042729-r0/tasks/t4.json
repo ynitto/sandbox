@@ -1,8 +1,0 @@
-{
-  "id": "t4",
-  "goal": "tools/agent-project/tests/test_codd_gate_detect.py（導入済み／未導入／パス差異の検出ユニットテスト）と tools/agent-project/tests/test_codd_gate_routing.py（yaml の結線からコマンド組み立てまでのルーティングテスト）を作成する",
-  "deps": [
-    "t1"
-  ],
-  "kind": "generate"
-}

@@ -1,8 +1,0 @@
-{
-  "id": "t3",
-  "goal": ".agent/agent-project.yaml に regression_cmd（codd-gate verify --base ... の字面を含む）と intake_cmd（codd-gate tasks ... の字面を含む）を冪等に追記・結線し、agent-project 側の regression/intake 実行経路が detect_status() の検出結果に応じてコマンドを組み立てるルーティングを実装する",
-  "deps": [
-    "t1"
-  ],
-  "kind": "generate"
-}

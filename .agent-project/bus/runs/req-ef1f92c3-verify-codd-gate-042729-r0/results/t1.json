@@ -1,7 +1,0 @@
-{
-  "id": "t1",
-  "who": "worker-2",
-  "status": "failed",
-  "output": "実行エラー: [agent-error:transient] claude 失敗 (rc=1): 一時的なエラーです（自動でやり直します）\nAPI Error: Connection closed mid-response. The response above may be incomplete.",
-  "finished_at": "2026-07-14T21:12:07Z"
-}

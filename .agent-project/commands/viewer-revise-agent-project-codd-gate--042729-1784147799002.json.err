@@ -1,8 +1,0 @@
-{
-  "command": "revise",
-  "id": "agent-project-codd-gate--042729",
-  "reason": "要対応画面で検証コマンドを変更",
-  "actor": "agent-dashboard",
-  "ts": "2026-07-15T20:36:39.001Z",
-  "verify": "grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' agent-project.yaml"
-}

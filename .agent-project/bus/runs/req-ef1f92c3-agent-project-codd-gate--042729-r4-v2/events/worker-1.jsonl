@@ -1,4 +1,0 @@
-{"ts": "2026-07-17T17:41:48Z", "who": "worker-1", "kind": "claimed", "node": "t10-fix-canonical-codd-gate-config"}
-{"ts": "2026-07-17T17:48:10Z", "who": "worker-1", "kind": "result", "node": "t10-fix-canonical-codd-gate-config", "status": "done"}
-{"ts": "2026-07-17T17:48:10Z", "who": "worker-1", "kind": "claimed", "node": "t11-verify-codd-gate-completion"}
-{"ts": "2026-07-17T17:50:02Z", "who": "worker-1", "kind": "result", "node": "t11-verify-codd-gate-completion", "status": "done"}

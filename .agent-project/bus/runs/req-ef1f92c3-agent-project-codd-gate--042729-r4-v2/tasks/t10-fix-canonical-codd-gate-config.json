@@ -1,8 +1,0 @@
-{
-  "id": "t10-fix-canonical-codd-gate-config",
-  "goal": "t9で判明した不足を修正する。実際に完了条件が実行されるcwdと正典の設定ファイルを特定し、見せかけの複製ではなく、そのcwdから参照されるagent-project.yamlへ regression_cmd: codd-gate verify --base を設定する。既存のcodd-gate自動検出およびregression/intake結線を維持し、不要な範囲外変更を加えない。",
-  "deps": [
-    "t9"
-  ],
-  "kind": "work"
-}

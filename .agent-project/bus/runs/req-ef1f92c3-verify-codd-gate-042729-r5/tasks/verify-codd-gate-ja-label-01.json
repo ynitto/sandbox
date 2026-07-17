@@ -1,8 +1,0 @@
-{
-  "id": "verify-codd-gate-ja-label-01",
-  "goal": "対象リポジトリのタスク用 worktree で、PYTHONPATH=tools/agent-project python3 -c 'from agent_project import _first_command_line; assert _first_command_line(\"検証コマンド:\\ncodd-gate verify --base \\\"$KIRO_BASE_REV\\\"\") == \"codd-gate verify --base \\\"$KIRO_BASE_REV\\\"\"' をそのまま実行し、終了コード 0 を確認して pass と報告する。失敗時は実際の終了コード・標準エラー・抽出結果を記録し、日本語「検証コマンド:」ラベルの除去または後続 codd-gate コマンド行の選択のどこが不足しているか特定する。",
-  "deps": [
-    "t1"
-  ],
-  "kind": "work"
-}
