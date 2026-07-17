@@ -135,6 +135,7 @@ def post_mission(bus: Bus, design_doc_path: str, roles_path: str, owner_node: st
     if not os.path.isfile(design_doc_path):
         raise SystemExit(f"[agent-amigos] design doc が見つかりません: {design_doc_path}")
     mid = mission_id or new_mission_id()
+    bus.prepare_mission(mid)
     mp = bus.mission(mid)
     if mp.exists():
         raise SystemExit(f"[agent-amigos] ミッション {mid} は既に存在します")
@@ -144,6 +145,7 @@ def post_mission(bus: Bus, design_doc_path: str, roles_path: str, owner_node: st
         write_json_atomic(mp.role_json(role["id"]), role)
     shutil.copyfile(design_doc_path, mp.design_doc())
     write_json_atomic(mp.mission_json(), mission_doc)   # mission.json は最後（公示の宣言）
+    bus.register_mission(mid, mission_doc)              # GitBus: main の公示インデックス
     bus.sync_push(f"post {mid}")
     return mid
 

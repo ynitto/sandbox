@@ -19,7 +19,10 @@ from .util import now_iso, read_json, write_json_atomic
 def _bus_arg(p: argparse.ArgumentParser) -> None:
     p.add_argument("--bus", required=False,
                    default=os.environ.get("AGENT_AMIGOS_BUS", ""),
-                   help="バスのパス（ローカル dir。環境変数 AGENT_AMIGOS_BUS でも指定可）")
+                   help="バス指定: ローカル dir または git+<url>（専用バスリポジトリ）。"
+                        "環境変数 AGENT_AMIGOS_BUS でも指定可")
+    p.add_argument("--bus-workdir", default=None,
+                   help="GitBus のクローン作業領域（既定: ~/.agent/amigos/bus/<hash>）")
 
 
 def _node_arg(p: argparse.ArgumentParser) -> None:
@@ -27,7 +30,7 @@ def _node_arg(p: argparse.ArgumentParser) -> None:
 
 
 def _resolve(args) -> "tuple":
-    bus = make_bus(args.bus)
+    bus = make_bus(args.bus, workdir=getattr(args, "bus_workdir", None))
     node = args.node_id or default_node_id()
     return bus, node
 
@@ -46,8 +49,10 @@ def _mission(bus, mid: str):
 
 def cmd_init_bus(args) -> int:
     bus, _node = _resolve(args)
-    os.makedirs(os.path.join(bus.root, "missions"), exist_ok=True)
-    print(f"バスを初期化しました: {bus.root}")
+    if bus.kind == "local":
+        os.makedirs(os.path.join(bus.root, "missions"), exist_ok=True)
+    print(f"バスを初期化しました: {bus.root}"
+          + (f"（git: {bus.url}）" if bus.kind == "git" else ""))
     return 0
 
 
@@ -56,8 +61,8 @@ def cmd_post(args) -> int:
     mid = post_mission(bus, args.design, args.roles, node, args.mission_id)
     print(f"ミッションを公示しました: {mid}（owner={node}）")
     if args.serve:
-        NodeDaemon(bus, node, agent_cli=args.agent_cli,
-                   interval=args.interval).run(cycles=args.cycles)
+        NodeDaemon(bus, node, agent_cli=args.agent_cli, interval=args.interval,
+                   resume_hours=args.resume_hours).run(cycles=args.cycles)
     return 0
 
 
@@ -66,7 +71,8 @@ def cmd_join(args) -> int:
     roles_filter = [r for r in (args.roles or "").split(",") if r]
     tags = [t for t in (args.tags or "").split(",") if t]
     NodeDaemon(bus, node, agent_cli=args.agent_cli, tags=tags,
-               roles_filter=roles_filter, interval=args.interval).run(cycles=args.cycles)
+               roles_filter=roles_filter, interval=args.interval,
+               resume_hours=args.resume_hours).run(cycles=args.cycles)
     return 0
 
 
@@ -229,7 +235,7 @@ def cmd_gc(args) -> int:
             continue
         if time.time() - os.path.getmtime(end_file) < keep_s:
             continue
-        shutil.rmtree(mp.root, ignore_errors=True)
+        bus.remove_mission(mid)     # GitBus はブランチ削除 + index 除去（§5.1）
         removed += 1
         print(f"削除: {mid}")
     print(f"gc 完了（{removed} 件削除）")
@@ -256,6 +262,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--agent-cli", default=None)
     p.add_argument("--interval", type=float, default=5.0)
     p.add_argument("--cycles", type=int, default=0, help="デーモン巡回数（0=無限。テスト用）")
+    p.add_argument("--resume-hours", type=float, default=12.0,
+                   help="graceful offboard 時の resume_at（時間後。away 保持の期待復帰時刻）")
     p.set_defaults(fn=cmd_post)
 
     p = sub.add_parser("join", help="参加ノードのデーモンを起動する")
@@ -266,6 +274,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="このノードの既定 agent CLI（kiro/claude/copilot/codex/stub/プラグイン名）")
     p.add_argument("--interval", type=float, default=5.0)
     p.add_argument("--cycles", type=int, default=0)
+    p.add_argument("--resume-hours", type=float, default=12.0,
+                   help="graceful offboard 時の resume_at（時間後。away 保持の期待復帰時刻）")
     p.set_defaults(fn=cmd_join)
 
     p = sub.add_parser("run", help="単発 amigo（デバッグ用）")

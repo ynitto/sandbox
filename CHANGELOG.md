@@ -7,6 +7,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-amigos: P1（GitBus 分散・away プロトコル）を実装
+
+- **GitBus**（`--bus git+<url>`）: オンプレ git remote の**専用バスリポジトリ**で
+  複数 PC 分散が動く。`main` は公示インデックスのみ、ミッション本体は
+  `mission/<mid>` ブランチに分離（参加したブランチだけ clone、gc はブランチ削除）。
+  同期は state_git の規律を流用 — pull 間隔律速（claim の勝者確認だけは force で
+  常に最新化）・push 競合は `pull --rebase` → 再 push の指数バックオフ・
+  force push なし・**1 ターン = origin 上の 1 コミット**（原子性、テストで検証）。
+  各ノードが自分専用クローンを持つため `add -A` ステージでも他者の書き込みを
+  巻き込まない（state_git「自 subdir のみステージ」の等価実装）。
+- **away プロトコル**: デーモンは SIGTERM / Ctrl-C で graceful offboard
+  （全 amigo を `state: away` + `resume_at` にして最後の push）。away 中は lease が
+  切れても resume_at + grace（既定 2h、`AGENT_AMIGOS_AWAY_GRACE`）まで**ロールを
+  保持**し、復帰した本人が続きから再開する。grace 超過・away 宣言なしのクラッシュは
+  従来どおり再募集。予算は実質実行時間ベースなので不在時間は予算を消費しない。
+- **git バスのコミットノイズ対策**: idle ターンの status 書き込みを quiescence 判定に
+  影響しない範囲でキャップ（ハートビートは 60s 間隔で維持）、lease 更新は残り半分を
+  切ってから（state_git「アイドル中の追加コミットはゼロ」の流儀）。
+- **partial → done 昇格**: 静穏化・予算枯渇で partial 統合した後に全ロール完了へ
+  到達したら、integrator が完全版で統合し直す。
+- **adaptive interval**: 無風時はデーモンの巡回間隔を伸ばす（上限 8 倍）。
+- テスト 27 件に拡充（+8: GitBus 2 ノード E2E・git 越し claim 競合の勝者一致・
+  1 ターン 1 コミット・gc ブランチ削除・away 保持/grace 超過/クラッシュ区別・
+  offboard → 復帰再開）。
+
 ### agent-amigos: P0（MVP）を実装
 
 - **新ツール** [`tools/agent-amigos/`](tools/agent-amigos/): 設計書 P0 スコープの実装。

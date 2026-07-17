@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -356,6 +357,181 @@ class CliTests(AmigosTestCase):
         self.assertEqual(self.phase(mid), "cancelled")
         runner = AmigoRunner(self.bus, mid, "impl", "n1", "stub")
         self.assertEqual(runner.turn_once(), "exit")
+
+
+class AwayProtocolTests(AmigosTestCase):
+    """away プロトコル（P1、設計書 §6.6）: 計画停止ではロールを奪わない。"""
+
+    def _stage_away(self, mid, resume_at_epoch):
+        mp = self.bus.mission(mid)
+        # node-a の claim は失効済み・status は away
+        write_json_atomic(mp.assignment("impl", "node-a"),
+                          {"node": "node-a", "ts": 1.0, "lease_until": time.time() - 1})
+        write_json_atomic(mp.roster(), {"impl": {"node": "node-a"}})
+        write_json_atomic(mp.status("node-a--impl"),
+                          {"node": "node-a", "role": "impl", "state": "away",
+                           "resume_at": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                                      time.gmtime(resume_at_epoch))})
+        return mp
+
+    def test_away_within_grace_keeps_role(self):
+        mid = self.post()
+        mp = self._stage_away(mid, time.time() + 3600)     # 復帰予定は 1 時間後
+        # 他ノードが claim してきても、away 中の担当からロールを奪わない
+        claim_role(self.bus, mp, "impl", "node-b")
+        roster = mirror_roster(self.bus, mp, load_roles(mp), "owner-node")
+        self.assertEqual(roster["impl"]["node"], "node-a")
+
+    def test_away_grace_exceeded_reopens_role(self):
+        os.environ["AGENT_AMIGOS_AWAY_GRACE"] = "0"
+        self.addCleanup(os.environ.pop, "AGENT_AMIGOS_AWAY_GRACE", None)
+        mid = self.post()
+        mp = self._stage_away(mid, time.time() - 10)       # 復帰予定を過ぎている
+        claim_role(self.bus, mp, "impl", "node-b")
+        roster = mirror_roster(self.bus, mp, load_roles(mp), "owner-node")
+        self.assertEqual(roster["impl"]["node"], "node-b")  # 再募集 → 後任へ
+
+    def test_crash_without_away_reopens_immediately(self):
+        mid = self.post()
+        mp = self.bus.mission(mid)
+        write_json_atomic(mp.assignment("impl", "node-a"),
+                          {"node": "node-a", "ts": 1.0, "lease_until": time.time() - 1})
+        write_json_atomic(mp.roster(), {"impl": {"node": "node-a"}})
+        # away 宣言なし（クラッシュ）→ 即座に再募集
+        roster = mirror_roster(self.bus, mp, load_roles(mp), "owner-node")
+        self.assertNotIn("impl", roster)
+
+    def test_offboard_marks_away_and_resume_recovers(self):
+        mid = self.post()
+        d = self.daemon()
+        d.cycle()                                          # claim + 初回ターン
+        d.offboard(resume_hours=1.0)
+        mp = self.bus.mission(mid)
+        st = read_json(mp.status("owner-node--impl"))
+        self.assertEqual(st["state"], "away")
+        self.assertIn("resume_at", st)
+        # away でも roster は保持される（lease を強制失効させて確認）
+        write_json_atomic(mp.assignment("impl", "owner-node"),
+                          {"node": "owner-node", "ts": 1.0,
+                           "lease_until": time.time() - 1})
+        roster = mirror_roster(self.bus, mp, load_roles(mp), "owner-node")
+        self.assertEqual(roster["impl"]["node"], "owner-node")
+        # 復帰: 次のターンで working に戻り、続きから進む
+        d.cycle()
+        st = read_json(mp.status("owner-node--impl"))
+        self.assertEqual(st["state"], "working")
+
+
+@unittest.skipUnless(shutil.which("git"), "git が必要")
+class GitBusTests(unittest.TestCase):
+    """GitBus（P1、設計書 §5.1）: 専用バスリポジトリ + ミッション別ブランチ。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="amigos-git-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.origin = os.path.join(self.tmp, "amigos-bus.git")
+        subprocess.run(["git", "init", "--bare", "--quiet", self.origin], check=True)
+        self.url = f"git+file://{self.origin}"
+        os.environ["AGENT_AMIGOS_PULL_INTERVAL"] = "0"
+        self.addCleanup(os.environ.pop, "AGENT_AMIGOS_PULL_INTERVAL", None)
+        os.environ["AGENT_AMIGOS_STUB_COST"] = "0.01"
+        self.addCleanup(os.environ.pop, "AGENT_AMIGOS_STUB_COST", None)
+        self.design = os.path.join(self.tmp, "design.md")
+        with open(self.design, "w", encoding="utf-8") as f:
+            f.write("# design\n")
+        self.roles_path = os.path.join(self.tmp, "roles.json")
+        with open(self.roles_path, "w", encoding="utf-8") as f:
+            json.dump({"mission": {"title": "git", "goal": "g",
+                                   "staffing_timeout": 9999,
+                                   "convergence": {"done_when": "all-required-done"}},
+                       "roles": [
+                           {"id": "architect", "mission": "a",
+                            "deliverables": ["arch.md"]},
+                           {"id": "impl", "mission": "b", "deliverables": ["main.py"],
+                            "collaborates_with": ["architect"]}]}, f)
+
+    def make(self, node):
+        from agent_amigos.bus import make_bus
+        return make_bus(self.url, workdir=os.path.join(self.tmp, f"wd-{node}"))
+
+    def _origin_branches(self):
+        out = subprocess.run(["git", "--git-dir", self.origin, "branch",
+                              "--format=%(refname:short)"],
+                             capture_output=True, text=True).stdout.split()
+        return sorted(out)
+
+    def test_distributed_two_nodes_e2e(self):
+        bus_a, bus_b = self.make("a"), self.make("b")
+        mid = post_mission(bus_a, self.design, self.roles_path, "node-a", "am-git")
+        self.assertIn("mission/am-git", self._origin_branches())
+        a = NodeDaemon(bus_a, "node-a", agent_cli="stub", interval=0,
+                       roles_filter=["architect"])
+        b = NodeDaemon(bus_b, "node-b", agent_cli="stub", interval=0,
+                       roles_filter=["impl"])
+        b.cycle()                                   # worker が先に impl を claim
+        phase = None
+        for _ in range(12):
+            a.cycle()
+            b.cycle()
+            mp = bus_a.mission(mid)
+            phase = derive_phase(load_mission(mp), load_roles(mp), mp)
+            if phase == "reviewing":
+                break
+        self.assertEqual(phase, "reviewing")
+        mp = bus_a.mission(mid)
+        roster = read_json(mp.roster())
+        self.assertEqual(roster["impl"]["node"], "node-b")
+        self.assertEqual(roster["architect"]["node"], "node-a")
+        manifest = read_json(mp.manifest())
+        self.assertFalse(manifest["partial"])
+        # 第三のノード（viewer）が clone だけで全状態を読める
+        bus_c = self.make("c")
+        self.assertEqual(bus_c.list_missions(), ["am-git"])
+        mp_c = bus_c.mission(mid)
+        self.assertTrue(read_json(mp_c.manifest()))
+        # メッセージ往復も伝播している（impl の質問が architect の inbox に）
+        self.assertTrue(any(m["type"] == "question"
+                            for m in read_inbox(mp_c, "architect")))
+
+    def test_claim_race_across_git(self):
+        bus_a, bus_b = self.make("a"), self.make("b")
+        mid = post_mission(bus_a, self.design, self.roles_path, "node-a", "am-race")
+        mp_a, mp_b = bus_a.mission(mid), bus_b.mission(mid)
+        self.assertTrue(claim_role(bus_a, mp_a, "impl", "node-a"))
+        self.assertFalse(claim_role(bus_b, mp_b, "impl", "node-b"))
+        self.assertEqual(winner(mp_a, "impl"), "node-a")
+        self.assertEqual(winner(mp_b, "impl"), "node-a")   # 全ノードが同じ勝者を導く
+
+    def test_turn_is_single_commit(self):
+        bus_a = self.make("a")
+        mid = post_mission(bus_a, self.design, self.roles_path, "node-a", "am-atomic")
+        mp = bus_a.mission(mid)
+        claim_role(bus_a, mp, "architect", "node-a")
+        write_json_atomic(mp.roster(), {"architect": {"node": "node-a"}})
+        bus_a.sync_push("roster")
+
+        def count():
+            out = subprocess.run(["git", "--git-dir", self.origin, "rev-list",
+                                  "--count", "mission/am-atomic"],
+                                 capture_output=True, text=True).stdout.strip()
+            return int(out or 0)
+
+        before = count()
+        runner = AmigoRunner(bus_a, mid, "architect", "node-a", "stub")
+        self.assertEqual(runner.turn_once(), "acted")
+        # 1 ターン（成果物 + status + events）= origin 上の 1 コミット（原子性 §6.6）
+        self.assertEqual(count(), before + 1)
+
+    def test_gc_removes_branch_and_index(self):
+        bus_a = self.make("a")
+        mid = post_mission(bus_a, self.design, self.roles_path, "node-a", "am-gc")
+        mp = bus_a.mission(mid)
+        write_json_atomic(mp.cancelled(), {"ts": "2026-01-01T00:00:00Z"})
+        bus_a.sync_push("cancel")
+        bus_a.remove_mission(mid)
+        self.assertNotIn("mission/am-gc", self._origin_branches())
+        bus_c = self.make("c")
+        self.assertEqual(bus_c.list_missions(), [])
 
 
 if __name__ == "__main__":

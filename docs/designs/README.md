@@ -41,7 +41,7 @@
 
 | ファイル | 要旨 |
 |---|---|
-| [`agent-amigos-design.md`](./agent-amigos-design.md) | 役割ミッション表と design doc で公示したミッションに分散ノードがロールを claim して参加し、オーナーが指示した収束条件・予算（実質実行時間）の範囲で型付きメッセージで相互協働しながら 1 つの成果物をオーナーへ納品する協働基盤の設計。P0（MVP: `tools/agent-amigos/`、ローカルバス・自己補充・予算会計・stub テスト）実装済み。1 ノードでも自己補充で完結し、中央は専用バスリポジトリ（ミッション別ブランチ、state_git の同期規律を流用）または任意の hub（転送のみ、P1/P2）。定時シャットダウンには away プロトコルとターン原子性で耐える。 |
+| [`agent-amigos-design.md`](./agent-amigos-design.md) | 役割ミッション表と design doc で公示したミッションに分散ノードがロールを claim して参加し、オーナーが指示した収束条件・予算（実質実行時間）の範囲で型付きメッセージで相互協働しながら 1 つの成果物をオーナーへ納品する協働基盤の設計。P0（MVP）・P1（GitBus 分散・away プロトコル）を `tools/agent-amigos/` に実装済み。1 ノードでも自己補充で完結し、中央は専用バスリポジトリ（ミッション別ブランチ、state_git の同期規律を流用）または任意の hub（転送のみ、P1/P2）。定時シャットダウンには away プロトコルとターン原子性で耐える。 |
 | [`agent-dashboard-feature-split-design.md`](./agent-dashboard-feature-split-design.md) | agent-dashboard を base / agent-project / kiro-loop にソース分離し、フルプラグインなしで他グループが kiro-loop 制御面を差し込めるようにする設計。 |
 | [`agent-cli-plugin-design.md`](./agent-cli-plugin-design.md) | agent-project/agent-flow の LLM 実行 CLI をプラグイン化しデータ契約のみで拡張可能にし、失敗を quota/auth/env/transient で決定的にトリアージする設計。 |
 | [`agent-flow-retry-inheritance-design.md`](./agent-flow-retry-inheritance-design.md) | agent-flow のリトライ時に先行 run の結果・成果物・作業ブランチを再利用し先行 run を安全削除する設計。 |

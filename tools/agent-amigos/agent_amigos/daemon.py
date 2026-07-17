@@ -12,17 +12,17 @@ owner_node で決まる）。1 ノード運用は「オーナーが join し、s
 """
 from __future__ import annotations
 
-import json
 import os
+import signal
 import socket
 import time
 
 from .assign import (claim_role, matches_role, mirror_roster, staffing_expired,
-                     unfilled_required)
+                     unfilled_required, winner)
 from .bus import Bus
 from .mission import derive_phase, load_mission, load_roles
 from .runner import AmigoRunner
-from .util import log, read_json, write_json_atomic
+from .util import log, now_iso, read_json, write_json_atomic
 
 
 def default_node_id() -> str:
@@ -45,14 +45,17 @@ def default_node_id() -> str:
 class NodeDaemon:
     def __init__(self, bus: Bus, node_id: str, agent_cli: "str | None" = None,
                  tags: "list[str] | None" = None, roles_filter: "list[str] | None" = None,
-                 interval: float = 5.0):
+                 interval: float = 5.0, resume_hours: float = 12.0):
         self.bus = bus
         self.node_id = node_id
         self.agent_cli = agent_cli
         self.tags = list(tags or [])
         self.roles_filter = list(roles_filter or [])
         self.interval = interval
+        self.resume_hours = resume_hours
         self._runners: "dict[tuple[str, str], AmigoRunner]" = {}
+        self._active = False
+        self._stopping = False
 
     def _runner(self, mission_id: str, role_id: str) -> AmigoRunner:
         key = (mission_id, role_id)
@@ -92,6 +95,8 @@ class NodeDaemon:
                     continue    # integrator はオーナーノードの組み込み職務（§8.1）
                 if not matches_role(role, self.tags, [self.agent_cli] if self.agent_cli else []):
                     continue
+                if winner(mp, rid) == self.node_id:
+                    continue    # claim 済み（roster への鏡写しはオーナー待ち）
                 if claim_role(self.bus, mp, rid, self.node_id, self.agent_cli):
                     log(self.node_id, f"{mid}: ロール {rid} を獲得しました")
 
@@ -112,13 +117,45 @@ class NodeDaemon:
                     continue
                 result = self._runner(mid, rid).turn_once()
                 if result in ("acted", "integrated"):
+                    self._active = True
                     log(self.node_id, f"{mid}/{rid}: {result}")
         return seen
 
+    # --- graceful offboard（away プロトコル、設計書 §6.6） ------------------
+    def offboard(self, resume_hours: "float | None" = None) -> None:
+        """計画停止: 自分の全 amigo を `state: away`（resume_at 付き）にして
+        最後の push をする。引き継ぎメモは毎ターン更新済みなので、ここでは
+        状態遷移だけを宣言する。ロールは resume_at + grace まで保持される。"""
+        hours = resume_hours if resume_hours is not None else self.resume_hours
+        resume_at = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                  time.gmtime(time.time() + hours * 3600))
+        for (mid, rid), runner in sorted(self._runners.items()):
+            st = runner._load_status()
+            st["state"] = "away"
+            st["resume_at"] = resume_at
+            st["heartbeat"] = now_iso()
+            write_json_atomic(runner.mp.status(runner.who), st)
+            log(self.node_id, f"{mid}/{rid}: away（resume_at={resume_at}）")
+        self.bus.sync_push(f"offboard {self.node_id}")
+
+    def _install_signal_handlers(self) -> None:
+        def _on_signal(_signum, _frame):
+            self._stopping = True
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                signal.signal(sig, _on_signal)
+            except (ValueError, OSError):
+                pass    # メインスレッド以外（テスト等）では設定できない
+
     def run(self, cycles: int = 0) -> None:
-        """常駐ループ。cycles>0 ならその回数で終了（テスト・デバッグ用）。"""
+        """常駐ループ。cycles>0 ならその回数で終了（テスト・デバッグ用）。
+        SIGTERM / SIGINT で graceful offboard（away 宣言）してから終了する。
+        無風時はインターバルを伸ばす（adaptive interval の簡略採用、上限 8 倍）。"""
+        self._install_signal_handlers()
         n = 0
-        while True:
+        sleep = self.interval
+        while not self._stopping:
+            self._active = False
             try:
                 self.cycle()
             except Exception as e:  # noqa: BLE001 — デーモンは 1 巡の失敗で死なない
@@ -126,4 +163,8 @@ class NodeDaemon:
             n += 1
             if cycles and n >= cycles:
                 return
-            time.sleep(self.interval)
+            sleep = self.interval if self._active else min(sleep * 2, self.interval * 8)
+            deadline = time.time() + sleep
+            while time.time() < deadline and not self._stopping:
+                time.sleep(min(0.2, self.interval or 0.2))
+        self.offboard()

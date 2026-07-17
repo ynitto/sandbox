@@ -18,10 +18,14 @@ from .util import read_json, write_json_atomic
 
 
 class MissionPaths:
-    """missions/<mid>/ 配下のレイアウト（設計書 §4.1）。"""
+    """ミッションディレクトリ配下のレイアウト（設計書 §4.1）。
+
+    root はミッション内容の実体ディレクトリ:
+    LocalBus では `<bus>/missions/<mid>/`、GitBus では `mission/<mid>` ブランチの
+    クローン作業ツリー（リポジトリ直下が内容ルート）。"""
 
     def __init__(self, root: str, mission_id: str):
-        self.root = os.path.join(root, "missions", mission_id)
+        self.root = root
         self.mission_id = mission_id
 
     def mission_json(self) -> str:
@@ -99,15 +103,32 @@ class Bus:
         self.root = os.path.abspath(os.path.expanduser(root))
 
     # --- 転送層フック -------------------------------------------------------
-    def sync_pull(self) -> None:
+    def sync_pull(self, force: bool = False) -> None:
+        """最新化する。force=True は間隔律速を無視する（claim の勝者確認など、
+        鮮度がプロトコルの正しさに効く箇所で使う）。LocalBus は no-op。"""
         pass
 
     def sync_push(self, msg: str = "") -> None:
         pass
 
+    # --- ミッションのライフサイクルフック -----------------------------------
+    def prepare_mission(self, mission_id: str) -> None:
+        """公示前の準備（GitBus: mission/<mid> ブランチのローカル作成）。"""
+        pass
+
+    def register_mission(self, mission_id: str, meta: dict) -> None:
+        """公示の登録（GitBus: main の index/<mid>.json 追記）。LocalBus は
+        ディレクトリ走査で発見できるため no-op。"""
+        pass
+
+    def remove_mission(self, mission_id: str) -> None:
+        """gc: ミッションを掃除する（GitBus: ブランチ削除 + index 除去）。"""
+        import shutil
+        shutil.rmtree(self.mission(mission_id).root, ignore_errors=True)
+
     # --- レイアウト ---------------------------------------------------------
     def mission(self, mission_id: str) -> MissionPaths:
-        return MissionPaths(self.root, mission_id)
+        return MissionPaths(os.path.join(self.root, "missions", mission_id), mission_id)
 
     def list_missions(self) -> list:
         pat = os.path.join(self.root, "missions", "*", "mission.json")
@@ -117,13 +138,18 @@ class Bus:
         return out
 
 
-def make_bus(spec: str) -> Bus:
-    """バス指定からバス実装を作る。P0 はローカルディレクトリのみ。
-    `git+<url>` / `hub+<url>` は P1/P2 で追加する（設計書 §16）。"""
+def make_bus(spec: str, workdir: "str | None" = None) -> Bus:
+    """バス指定からバス実装を作る。
+    - ローカルディレクトリ: そのままパス
+    - `git+<url>`: 専用バスリポジトリ（ミッション別ブランチ、設計書 §5.1）
+    - `hub+<url>`: P2（未実装）
+    """
     s = str(spec or "").strip()
-    if s.startswith("git+") or s.startswith("hub+"):
-        raise SystemExit(f"[agent-amigos] バス種別 {s.split('+', 1)[0]!r} は未実装です"
-                         "（P0 はローカルディレクトリのみ。設計書 §16 の実装フェーズを参照）")
+    if s.startswith("git+"):
+        from .gitbus import GitBus
+        return GitBus(s[4:], workdir=workdir)
+    if s.startswith("hub+"):
+        raise SystemExit("[agent-amigos] バス種別 'hub' は未実装です（P2。設計書 §5.2）")
     if not s:
         raise SystemExit("[agent-amigos] バスのパスを指定してください（--bus <dir>）")
     return Bus(s)

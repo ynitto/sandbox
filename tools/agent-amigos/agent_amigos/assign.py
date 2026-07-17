@@ -29,8 +29,9 @@ def default_lease() -> float:
 def claim_role(bus: Bus, mp: MissionPaths, role_id: str, node_id: str,
                agent_cli: "str | None" = None, lease: "float | None" = None) -> bool:
     """ロールに応募し、勝者になったかを返す（agent-flow §5.1 と同じ 3 手順:
-    書く → push → pull → 決定的タイブレークで勝者確認）。"""
-    bus.sync_pull()
+    書く → push → pull → 決定的タイブレークで勝者確認）。
+    claim の pull は force（間隔律速なし）: 勝者確認の鮮度はプロトコルの正しさに効く。"""
+    bus.sync_pull(force=True)
     if winner(mp, role_id) not in (None, node_id):
         return False
     write_json_atomic(mp.assignment(role_id, node_id),
@@ -39,7 +40,7 @@ def claim_role(bus: Bus, mp: MissionPaths, role_id: str, node_id: str,
                                                      else default_lease()),
                        "claimed_at": now_iso()})
     bus.sync_push(f"claim {role_id} by {node_id}")
-    bus.sync_pull()
+    bus.sync_pull(force=True)
     return winner(mp, role_id) == node_id
 
 
@@ -64,11 +65,16 @@ def winner(mp: MissionPaths, role_id: str) -> "str | None":
 
 def renew_lease(mp: MissionPaths, role_id: str, node_id: str,
                 lease: "float | None" = None) -> None:
-    """ハートビート: 自分の claim の lease を延長する（自分名義ファイルの上書きのみ）。"""
+    """ハートビート: 自分の claim の lease を延長する（自分名義ファイルの上書きのみ）。
+    残りが半分以上あるうちは書かない — git バスでの無駄なコミットを作らない
+    （state_git の「アイドル中の追加コミットはゼロ」の流儀）。"""
+    eff = lease if lease is not None else default_lease()
     path = mp.assignment(role_id, node_id)
     data = read_json(path)
     if isinstance(data, dict) and data.get("node") == node_id:
-        data["lease_until"] = time.time() + (lease if lease is not None else default_lease())
+        if float(data.get("lease_until") or 0) - time.time() > eff / 2:
+            return
+        data["lease_until"] = time.time() + eff
         write_json_atomic(path, data)
 
 
@@ -84,22 +90,59 @@ def matches_role(role: dict, node_tags: "list[str]", node_clis: "list[str]") -> 
     return True
 
 
+DEFAULT_AWAY_GRACE = 7200.0
+
+
+def away_grace() -> float:
+    """away の resume_at からの猶予秒（設計書 §6.6。既定 2 時間）。"""
+    try:
+        return float(os.environ.get("AGENT_AMIGOS_AWAY_GRACE", DEFAULT_AWAY_GRACE))
+    except ValueError:
+        return DEFAULT_AWAY_GRACE
+
+
+def _iso_to_epoch(iso: str) -> float:
+    import calendar
+    try:
+        return calendar.timegm(time.strptime(str(iso or ""), "%Y-%m-%dT%H:%M:%SZ"))
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def is_away_within_grace(mp: MissionPaths, role_id: str, node_id: str) -> bool:
+    """担当が計画停止（away）中で、まだ待つべきか（設計書 §6.6:
+    計画停止ではロールを奪わない。resume_at + grace までは本人の復帰を待つ）。"""
+    st = read_json(mp.status(f"{node_id}--{role_id}")) or {}
+    if st.get("state") != "away":
+        return False
+    resume = _iso_to_epoch(st.get("resume_at"))
+    return time.time() < resume + away_grace()
+
+
 def mirror_roster(bus: Bus, mp: MissionPaths, roles: "dict[str, dict]",
                   owner_node: str) -> dict:
     """first-come: claim 勝者＝確定。オーナーが導出結果を roster.json に鏡写しする
-    （表示・監査用。設計書 §6.3）。roster はオーナーのみ書く。"""
+    （表示・監査用。設計書 §6.3）。roster はオーナーのみ書く。
+
+    away 保持（§6.6）: 担当の lease が切れていても `state: away` かつ
+    resume_at + grace 内なら roster から外さない（再募集しない）。
+    grace 超過またはクラッシュ（away 宣言なし）は通常の再募集に戻る。"""
     roster = read_json(mp.roster()) or {}
     changed = False
     for role_id in roles:
         w = winner(mp, role_id)
         cur = (roster.get(role_id) or {}).get("node")
         if w and cur != w:
+            if cur and is_away_within_grace(mp, role_id, cur):
+                continue     # away 中の担当を横取り claim から守る
             claim = read_json(mp.assignment(role_id, w)) or {}
             roster[role_id] = {"node": w, "agent_cli": claim.get("agent_cli"),
                                "confirmed_at": now_iso()}
             changed = True
         elif cur and not w:
-            # 担当消滅（lease 失効・away 宣言なし）→ 再募集へ（P0 では roster から外すのみ）
+            if is_away_within_grace(mp, role_id, cur):
+                continue     # 計画停止 → ロール保持のまま復帰を待つ
+            # 担当消滅（lease 失効・away 宣言なし = クラッシュ）→ 再募集へ
             del roster[role_id]
             changed = True
     if changed:

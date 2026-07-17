@@ -1,15 +1,22 @@
 # agent-amigos — 役割駆動マルチエージェント協働ツール 設計書
 
-> 作成日: 2026-07-17 ／ ステータス: **P0（MVP）実装済み**（P1: GitBus 分散・away、P2: hub・dashboard は未着手）
+> 作成日: 2026-07-17 ／ ステータス: **P0（MVP）・P1（GitBus 分散・away）実装済み**（P2: hub・dashboard は未着手）
 > 対象ブランチ: `claude/agent-amigos-design-u1gy34`
 > 実装: `tools/agent-amigos/`（`agent-amigos.py` ＋ `agent_amigos/` パッケージ・
 > `tests/test_agent_amigos.py`）。`schemas/amigos-mission.schema.json` の正典化は P2。
 >
-> **実装メモ（設計との差分）**: バス上の公示は正規化 **JSON**（`mission.json` /
-> `roles/<id>.json`）で置く — 読み手に PyYAML を要求しないため。YAML はオーナーの
-> 入力形式（post 時に変換）。amigo のカーソル・引き継ぎメモは自分名義の
-> `status/<who>.json` に載せる（所有権規律の範囲内で、後任の引き継ぎ・復帰再開が
-> ファイルだけで完結する）。
+> **実装メモ（設計との差分）**:
+> - バス上の公示は正規化 **JSON**（`mission.json` / `roles/<id>.json`）で置く —
+>   読み手に PyYAML を要求しないため。YAML はオーナーの入力形式（post 時に変換）。
+> - amigo のカーソル・引き継ぎメモは自分名義の `status/<who>.json` に載せる
+>   （所有権規律の範囲内で、後任の引き継ぎ・復帰再開がファイルだけで完結する）。
+> - GitBus のステージは `add -A` — 各ノードが**自分専用クローン**を持つため、
+>   ローカルの変更はすべて自プロセス由来であり、state_git の「自 subdir のみ
+>   ステージ」と同じ安全性がクローン分離によって成立する（§5.1 の規律の等価実装）。
+> - claim の勝者確認に使う pull は間隔律速の対象外（`sync_pull(force=True)`）。
+>   鮮度がプロトコルの正しさに効くのは claim だけで、それ以外は律速してよい。
+> - 静穏化（quiescence）で partial 統合した後に done へ到達した場合、integrator は
+>   完全版で統合し直す（partial → done への昇格）。
 >
 > **依存する既存設計**: [`agent-flow-design.md`](./agent-flow-design.md)（バス抽象・claim プロトコル）,
 > [`agent-cli-plugin-design.md`](./agent-cli-plugin-design.md)（LLM 実行 CLI の共通契約）,

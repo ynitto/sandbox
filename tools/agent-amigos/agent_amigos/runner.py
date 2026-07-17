@@ -72,6 +72,10 @@ class AmigoRunner:
 
         renew_lease(self.mp, self.role_id, self.node_id)
         st = self._load_status()
+        if st.get("state") == "away":        # 計画停止からの復帰（§6.6）— 続きから再開
+            st["state"] = "working"
+            st.pop("resume_at", None)
+            log(self.who, "away から復帰しました（続きから再開）")
         rnd = current_round(self.mp)
         cs = convergence_state(mission, roles, self.mp)
         budget = cs["budget"]
@@ -149,11 +153,31 @@ class AmigoRunner:
         return "acted" if applied else "idle"
 
     # --- idle（LLM を呼ばないターン） ----------------------------------------
+    # idle_turns が十分大きくなった後（quiescence 判定に影響しない領域）は、
+    # ハートビートの鮮度維持（HEARTBEAT_REFRESH 間隔）以外で status を書かない。
+    # git バスでの「アイドル中のコミット」を作らない（state_git の流儀）。
+    IDLE_WRITE_CAP = 10
+    HEARTBEAT_REFRESH = 60.0
+
+    def _heartbeat_age(self, st: dict) -> float:
+        import calendar
+        try:
+            hb = calendar.timegm(time.strptime(str(st.get("heartbeat") or ""),
+                                               "%Y-%m-%dT%H:%M:%SZ"))
+        except (ValueError, TypeError):
+            return 1e9
+        return max(0.0, time.time() - hb)
+
     def _idle_turn(self, st: dict, cursor: str, fresh: list) -> str:
-        txn = TurnTxn()
+        prev = (st.get("cursor") or "", int(st.get("idle_turns") or 0), st.get("state"))
         st["cursor"] = cursor
         st["idle_turns"] = 0 if fresh else int(st.get("idle_turns") or 0) + 1
+        changed = prev[0] != cursor or prev[2] != st.get("state") \
+            or (prev[1] != st["idle_turns"] and st["idle_turns"] <= self.IDLE_WRITE_CAP)
+        if not changed and self._heartbeat_age(st) < self.HEARTBEAT_REFRESH:
+            return "idle"
         st["heartbeat"] = now_iso()
+        txn = TurnTxn()
         txn.write_json(self.mp.status(self.who), st)
         txn.apply(self.bus, f"{self.who} idle")
         return "idle"
@@ -161,7 +185,11 @@ class AmigoRunner:
     # --- integrator（LLM 不使用・決定的、§8.1） ------------------------------
     def _integrator_turn(self, mission: dict, roles: dict, st: dict, cs: dict) -> str:
         manifest = read_json(self.mp.manifest())
-        if not cs["converged"] or (manifest and int(manifest.get("round", -1)) == cs["round"]):
+        current = bool(manifest and int(manifest.get("round", -1)) == cs["round"])
+        # partial（静穏化・予算 wrap-up）で統合済みでも、その後 done に到達したら
+        # 完全版で統合し直す（partial → done への昇格）
+        upgrade = current and manifest.get("partial") and cs["reason"] == "done"
+        if not cs["converged"] or (current and not upgrade):
             return self._idle_turn(st, st.get("cursor") or "", [])
         files = {}
         deliv = self.mp.deliverable_dir()
