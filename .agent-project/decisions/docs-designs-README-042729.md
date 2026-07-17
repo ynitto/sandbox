@@ -29,3 +29,9 @@
 - reason  : チェックで承認
 - affects : docs-designs-README-042729 → ready
 
+## DR-0006  2026-07-18  actor: nitto
+- context : docs-designs-README-042729 の優先度を変更
+- action  : reprioritize(pin)
+- reason  : agent-dashboard から操作
+- affects : policy.pin += docs-designs-README-042729
+

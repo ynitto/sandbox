@@ -22,3 +22,15 @@
 - reason  : チェックで承認
 - affects : verify-codd-gate-042729 → ready
 
+## DR-0005  2026-07-18  actor: nitto
+- context : verify-codd-gate-042729 の優先度を変更
+- action  : reprioritize(pin)
+- reason  : agent-dashboard から操作
+- affects : policy.pin += verify-codd-gate-042729
+
+## DR-0006  2026-07-18  actor: nitto
+- context : verify-codd-gate-042729 の優先度を変更
+- action  : reprioritize(pin)
+- reason  : agent-dashboard から操作
+- affects : policy.pin += verify-codd-gate-042729
+
