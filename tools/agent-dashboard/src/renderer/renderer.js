@@ -170,6 +170,19 @@ function taskCompletionHint(task, { runs = [], archived = false } = {}) {
     const env =
       String(extra.env_resume || '') === '1' ||
       /\[agent-error:/.test(String(extra.needs_reason || ''));
+    // verify 未定義の確認待ち: 工程は完了済み。人の承認（approve）が完了の根拠になる
+    const verifyPending =
+      !env &&
+      !String((task && task.verify) || '').trim() &&
+      /verify\s*未定義/i.test(String(extra.needs_reason || ''));
+    if (verifyPending) {
+      return {
+        unsettledDone: lastRunDone,
+        statusNote: lastRunDone ? '実行済み・未確定' : null,
+        completeHow: '完了にするには: 成果を確認して要対応で「承認して完了にする」を押す',
+        needAsk: '成果物を確認し、問題なければ「承認して完了にする」で納品確定してください。この承認でタスクが完了します。',
+      };
+    }
     return {
       unsettledDone: lastRunDone,
       statusNote: lastRunDone ? '実行済み・未確定' : null,
@@ -296,7 +309,7 @@ function runFinalVerificationFailure(project, run) {
       kind: 'info',
       title: '工程は全て成功・完了の確認待ち',
       summary: '検証コマンド（verify）が未定義のため、自動では完了にできません。'
-        + '成果を確認し、問題なければ要対応から承認してください。',
+        + '成果を確認し、問題なければ要対応の「承認して完了にする」で完了できます。',
       taskId: task.id,
     };
   }
@@ -2992,6 +3005,8 @@ function needCompleteHowHtml(n) {
       status === null || status === 'converged'
         ? '承認すると、プロジェクトは完了します。'
         : 'まだプロジェクト完了の段階ではありません。';
+  } else if (n.kind === 'blocked' && isVerifyPendingNeed(p, n)) {
+    line = '承認すると、このタスクは完了します（検証コマンド未定義のため、人の確認が完了の根拠になります）。';
   } else if (!line && n.kind === 'blocked') {
     line = '指示を送ると、作業を再開します。';
   }
@@ -3035,7 +3050,13 @@ function needActionsHtml(n) {
       buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}">↩ 指示を送る</button>`);
     }
   } else {
-    buttons.push(`<button class="primary-inline" data-act="feedback" data-id="${esc(n.id)}">指示を送って再開</button>`);
+    // verify 未定義の確認待ち: 承認 = done 確定（本体 cmd_approve が完了させる）。
+    // 従来はこのボタンが無く、成果が揃った run を人の承認で完了にできなかった。
+    const verifyPending = isVerifyPendingNeed(state.project, n);
+    if (verifyPending) {
+      buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}" title="成果を確認済みならこのタスクを完了（納品確定）にします">承認して完了にする</button>`);
+    }
+    buttons.push(`<button class="${verifyPending ? '' : 'primary-inline'}" data-act="feedback" data-id="${esc(n.id)}">指示を送って再開</button>`);
     buttons.push(`<button data-act="rerun" data-id="${esc(n.id)}">そのまま再実行</button>`);
     buttons.push(`<button data-act="hold" data-id="${esc(n.id)}" title="このタスクを止めて保留にします">保留にする</button>`);
   }
@@ -3099,6 +3120,21 @@ function relatedRunIdForNeed(project, need, flowRuns) {
 function taskForNeed(project, need) {
   const taskId = String((need && (need.taskId || need.id)) || '');
   return ((project && project.backlog) || []).find((task) => String(task.id) === taskId) || null;
+}
+
+// verify 未定義のまま工程が完了し、人の確認待ちで blocked になっている票。
+// この票の承認（approve）は本体側で done 確定になるため「承認して完了にする」を出す。
+// 環境要因（env_resume）の blocked は「環境を直して続きから再開」の契約なので対象外。
+function isVerifyPendingNeed(project, n) {
+  if (!n || String(n.kind || 'blocked') !== 'blocked') return false;
+  const task = taskForNeed(project, n);
+  if (task && String(task.verify || '').trim()) return false;
+  if (task && String(((task.extra || {}).env_resume) || '') === '1') return false;
+  const prose = [
+    n.failureSummary, n.why, n.detail,
+    task && task.extra ? task.extra.needs_reason : '',
+  ].filter(Boolean).join('\n');
+  return /verify\s*未定義/i.test(prose);
 }
 
 function buildNeedVerifyRevision(project, need, nextVerify, feedback) {
@@ -6455,6 +6491,9 @@ function coworkRunBannerHtml() {
     return `<div class="cowork-run-banner running" role="status">「${esc(r.name || r.id)}」を実行中…</div>`;
   }
   if (r.phase === 'ok') {
+    if (r.launched) {
+      return `<div class="cowork-run-banner ok" role="status">「${esc(r.name || r.id)}」を別ウィンドウ（WSL tmux）で開始しました — 開いたウィンドウで進行を確認できます</div>`;
+    }
     return `<div class="cowork-run-banner ok" role="status">「${esc(r.name || r.id)}」の実行が完了しました${r.message ? ` — ${esc(r.message)}` : ''}</div>`;
   }
   return `<div class="cowork-run-banner error" role="alert">「${esc(r.name || r.id)}」の実行に失敗しました${r.message ? `: ${esc(r.message)}` : ''}</div>`;
@@ -6596,12 +6635,17 @@ function renderCowork() {
       id,
       name,
       phase: res && res.ok ? 'ok' : 'error',
+      launched: !!(res && res.launched),
       message,
       detail: detail.slice(0, 1200),
       at: Date.now(),
     };
     toast(
-      res && res.ok ? `「${name}」を実行しました` : `「${name}」を実行できませんでした: ${message}`,
+      res && res.ok
+        ? (res.launched
+          ? `「${name}」を別ウィンドウ（WSL tmux）で開始しました`
+          : `「${name}」を実行しました`)
+        : `「${name}」を実行できませんでした: ${message}`,
       !!(res && res.ok)
     );
     await refreshCowork({ probe: true });
@@ -6805,7 +6849,7 @@ function renderKiroLoopTerminal() {
     return;
   }
   const opts = (term.items || []).map((it) =>
-    `<option value="${esc(it.target)}" ${it.target === term.target ? 'selected' : ''}>${esc(it.session)}${it.cwd ? ` — ${esc(it.cwd)}` : ''}</option>`
+    `<option value="${esc(it.target)}" ${it.target === term.target ? 'selected' : ''}>${esc(it.session)}${it.name ? `（${esc(it.name)}）` : ''}${it.cwd ? ` — ${esc(it.cwd)}` : ''}</option>`
   ).join('');
   el.innerHTML = `
     <div class="kiro-loop-term">

@@ -466,4 +466,62 @@ assert.match(
   'Diff2Htmlの内側要素を成果ペイン幅へ収める'
 );
 
+// verify 未定義の確認待ち（blocked）は「承認して完了にする」を出す（承認で done 確定）
+{
+  // eslint-disable-next-line no-new-func
+  const isVerifyPendingNeed = new Function(
+    `${grab('taskForNeed')}; ${grab('isVerifyPendingNeed')}; return isVerifyPendingNeed;`
+  )();
+  const project = {
+    backlog: [
+      { id: 'T1', status: 'blocked', verify: '', extra: { needs_reason: 'verify 未定義（工程は完了しています…）' } },
+      { id: 'T2', status: 'blocked', verify: 'npm test', extra: { needs_reason: '繰り返し NG' } },
+      { id: 'T3', status: 'blocked', verify: '', extra: { env_resume: '1', needs_reason: '[agent-error:env] verify 未定義' } },
+    ],
+  };
+  assert.strictEqual(
+    isVerifyPendingNeed(project, { id: 'T1', taskId: 'T1', kind: 'blocked', why: 'verify 未定義（工程は完了しています…）' }),
+    true
+  );
+  assert.strictEqual(
+    isVerifyPendingNeed(project, { id: 'T2', taskId: 'T2', kind: 'blocked', why: '検証が失敗' }),
+    false,
+    'verify があるタスクは対象外'
+  );
+  assert.strictEqual(
+    isVerifyPendingNeed(project, { id: 'T3', taskId: 'T3', kind: 'blocked', why: '[agent-error:env] verify 未定義' }),
+    false,
+    '環境要因（env_resume）は続きから再開の契約なので対象外'
+  );
+  assert.strictEqual(
+    isVerifyPendingNeed(project, { id: 'T1', taskId: 'T1', kind: 'review', why: 'verify 未定義' }),
+    false,
+    'blocked 以外の票には出さない'
+  );
+
+  // eslint-disable-next-line no-new-func
+  const needActionsHtml = new Function(
+    'esc', 'state', 'isVerifyPendingNeed', 'milestoneStatusFor', 'milestoneVersionName',
+    'statusLabel', 'needCompleteHowHtml',
+    `${grab('needActionsHtml')}; return needActionsHtml;`
+  )(
+    (value) => String(value == null ? '' : value),
+    { project },
+    isVerifyPendingNeed,
+    () => null,
+    () => null,
+    (status) => String(status || ''),
+    () => ''
+  );
+  const pendingHtml = needActionsHtml({
+    id: 'T1', taskId: 'T1', kind: 'blocked', why: 'verify 未定義（工程は完了しています…）', file: '/p/needs/T1.md',
+  });
+  assert.match(pendingHtml, /data-act="approve"[^>]*>承認して完了にする</, 'verify 未定義の確認待ちに承認完了ボタンを出す');
+  assert.match(pendingHtml, /data-act="rerun"/, 'そのまま再実行も残す');
+  const plainHtml = needActionsHtml({
+    id: 'T2', taskId: 'T2', kind: 'blocked', why: '検証が失敗', file: '/p/needs/T2.md',
+  });
+  assert.ok(!plainHtml.includes('data-act="approve"'), '通常の blocked に承認完了ボタンを出さない');
+}
+
 console.log('detail-tabs-ui: all tests passed');

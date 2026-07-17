@@ -53,6 +53,9 @@ const git = require('../src/main/git');
           '\\\\wsl.localhost\\Ubuntu\\home\\dev\\proj'
         );
         assert.strictEqual(git.bridgeRepoPath('C:\\proj'), 'C:\\proj');   // Windows パスはそのまま
+        // /mnt/<drive>/… は UNC でなく Windows ドライブ実体へ（検収 diff が読めなかった原因）
+        assert.strictEqual(git.bridgeRepoPath('/mnt/c/Users/dev/proj'), 'C:\\Users\\dev\\proj');
+        assert.strictEqual(git.bridgeRepoPath('/mnt/d'), 'D:\\');
       } finally {
         if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
         if (origDistro === undefined) delete process.env.WSL_DISTRO_NAME;

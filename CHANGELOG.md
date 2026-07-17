@@ -7,6 +7,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard / agent-project: 検収・定常業務の 4 つの不具合を修正
+
+- **verify 未定義タスクを人の承認で完了できるように**: verify の無いタスクは工程完了後に
+  blocked（確認待ち）になるが、要対応に「承認して完了にする」ボタンが無く、approve も
+  ready 積み直し（再実行 → また blocked）の無限往復で完了できなかった。agent-project の
+  `approve` が verify 未定義の確認待ち blocked を **done 確定**（納品書・決定記録つき）に
+  し、dashboard の要対応／検収画面にも「承認して完了にする」を出す（環境要因
+  `env_resume` の blocked は従来どおり「続きから再開」）。
+- **検収画面で `/mnt/c/...` の diff が読めない問題**: WSL 側が記録した `/mnt/<drive>/...`
+  の検収リポジトリを UNC（`\\wsl.localhost\...\mnt\c\...`）や `C:\mnt\c\...` に化けたまま
+  解決していた。`toViewerPath` が `/mnt/<drive>/...` を **Windows ドライブ実体
+  （`C:\...`）へ直接変換**し、diff・ファイルを開く操作が通るようになった。
+- **定常業務の実行を新しいウィンドウ（WSL tmux）で開始**: 従来の非表示 `spawnSync`
+  （60 秒 kill）はセッション未起動時の kiro-cli 立ち上げ待ちで失敗し、理由も見えなかった。
+  Windows では既定で**新しいコンソールウィンドウ**で `send` を実行し、送信先ペインを特定
+  できたらそのまま `tmux attach` して**動いている様子を見られる**（`cowork.runWindow:
+  false` で従来動作）。
+- **定型業務の「端末」が tmux 画面を表示できない問題**: kiro-loop を tmux セッション内で
+  起動するとワーカーペインは人のセッション（任意名）内に作られ、`tmux ls` の
+  セッション名（`kiro-loop-…`）では見つけられなかった。**`~/.kiro/loop-state/*.json`
+  （デーモンの状態ファイル）から pane_id を直接発見**して視聴する。既定接頭辞も `kiro`
+  に広げ（`send` の既定セッション `kiro` を拾う）、Windows ドライブ上の repo と
+  `/mnt/c/...` の cwd の突き合わせにも対応。
+
 ### agent-dashboard: 計画レビュー・検収・バックログの AI 補助
 
 計画レビューと検収で「何を見るか」は揃っていたが、**charter との整合・変更の意図・次の

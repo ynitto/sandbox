@@ -7,6 +7,9 @@ module.exports = {
     loopCommand: 'kiro-loop',
     nextLoopProvider: 'agent-loop',
     stateMachineCommand: 'statemachine-use',
+    // Windows では実行を新しいウィンドウ（WSL tmux）で開始し、進行を見られるようにする。
+    // false で従来の非表示実行（spawnSync）に戻す。
+    runWindow: true,
     // Flat work list. Each item references a repository already registered in
     // global settings: { id, type: 'loop'|'state-machine', name, repo, schedule, workflow }.
     items: [],

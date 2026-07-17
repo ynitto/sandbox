@@ -100,6 +100,20 @@ def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
         if msg:
             print(msg)
         return 0
+    # verify 未定義で人へ回った blocked タスクの承認 = done 確定。
+    # 工程は完了済みで、needs 票も「成果を確認し、問題なければ approve してください」と
+    # 案内している——ここで ready へ積み直すと同じ工程が再実行され、また verify 未定義で
+    # blocked に戻る無限往復になる（承認で完了できないと報告された不具合）。
+    # 環境要因（env_resume）の approve は従来どおり続きから再開させるため対象外。
+    if (t.norm_status() == "blocked" and not t.verify and not t.get("env_resume")
+            and "verify 未定義" in str(t.get("needs_reason") or "")):
+        ok, msg = approve_review_done(cfg, t, reason)
+        if not ok:
+            print(msg, file=sys.stderr)
+            return 1
+        if msg:
+            print(msg)
+        return 0
     # 委譲中の approve = 人は「このまま続行」ではなく「ブロックを解いてやり直す／進める」。
     # flow を止めないと ap/<task-id> へ二重書き込みし、次の act と競合する。
     if t.norm_status() == "offloaded" or t.get("flow_run"):
