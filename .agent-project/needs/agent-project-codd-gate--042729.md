@@ -15,17 +15,16 @@ delivery: [{"name":"sandbox","role":"reference","url":"https://github.com/ynitto
   - src:.github/skills/agent-flow/SKILL.md 行101: .agent/agent-flow.yaml が解決できない
   - src:.github/skills/agent-loop-messaging/SKILL.md 行259: ~/.kiro/agents が解決できない
   - src:.github/skills/agent-project/SKILL.md 行59: ~/.agent-project/instances が解決できない
-NG: 壊れた参照 1630 件 > 許容 1563
-NG: 未文書化 374 件 > 許容 354
-NG: 未テスト 462 件 > 許容 444
+NG: 壊れた参照 1646 件 > 許容 1563
+NG: 未文書化 377 件 > 許容 354
+NG: 未テスト 465 件 > 許容 444
 - 状態: blocked（agent-project の判断待ち）
 
 ## 判断材料（成果物の所在・差分・検証）
-- 成果物: commit ef1f92c3
+- 成果物: (変更なし)
 - 所在: /Users/nitto/Workspace/sandbox-agent-state/.agent-project
 - 実行先: local
-- 差分: 1 ファイル
-    - .agent-project/backlog/agent-project-codd-gate--042729.md
+- 差分: baseline 以降の変更なし
 - 検証: `echo "ok"` → PASS（exit=0 ok）
 
 ## Decision Outcome
