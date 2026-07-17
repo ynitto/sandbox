@@ -288,12 +288,10 @@ function runTaskOutcomeCompactHtml(outcome) {
 
 // agent-flow の全工程は成功した一方、その後に agent-project が実行するタスクの
 // 最終検証だけが失敗した状態を識別する。run.status=done だけでは成果確定と誤認するため、
-// 最新 run・全工程 done・blocked の検証証跡がそろった場合に限って表示する。
+// 最新の完了 run・blocked の検証証跡がそろった場合に限って表示する。
+// 工程集計の有無や要対応／実行タブの違いで表示が割れないよう、共通判定へ委譲する。
 function runFinalVerificationFailure(project, run) {
   if (!project || !run || String(run.status) !== 'done') return null;
-  const total = Number(run.total) || Object.keys(run.nodes || {}).length;
-  const counts = run.counts || {};
-  if (!total || Number(counts.done || 0) !== total || Number(counts.failed || 0) !== 0) return null;
   const key = sanitizeTaskId(run.taskId);
   const task = ((project.backlog || [])).find((item) => sanitizeTaskId(item.id) === key);
   if (!task || String(task.status) !== 'blocked') return null;
@@ -315,14 +313,7 @@ function runFinalVerificationFailure(project, run) {
       taskId: task.id,
     };
   }
-  if (!need.failureSummary && !need.failureContext && !/(?:検証|verify|テスト|test|回帰|コマンド)/i.test(prose)) {
-    return null;
-  }
-  return {
-    title: '工程は全て成功・最終検証で失敗',
-    summary: String(need.failureSummary || need.why || 'タスクの最終検証が失敗しました。'),
-    taskId: task.id,
-  };
+  return needFinalVerificationFailure(project, need, [run]);
 }
 
 function finalVerificationFailureHtml(failure, compact = false) {
@@ -3210,7 +3201,11 @@ function relatedRunIdForNeed(project, need, flowRuns) {
   const task = tasks.find((item) => String(item.id) === taskId);
   const lastRun = task && task.extra ? String(task.extra.last_run || '') : '';
   if (lastRun) return lastRun;
-  const match = [...(flowRuns || [])].find((run) => String(run.taskId || '') === taskId);
+  const match = [...(flowRuns || [])]
+    .filter((run) => String(run.taskId || '') === taskId)
+    .sort((a, b) => String(b.updatedAt || b.createdAt || '').localeCompare(
+      String(a.updatedAt || a.createdAt || '')
+    ))[0];
   return match ? String(match.runId || '') : '';
 }
 
@@ -3234,13 +3229,31 @@ function completedRunForNeed(project, need, flowRuns) {
   return run && String(run.status || '') === 'done' ? run : null;
 }
 
-function canManuallyCompleteNeed(project, need, flowRuns) {
-  if (!need || String(need.kind || 'blocked') !== 'blocked') return false;
+// 要対応詳細のバナー、完了承認ボタン、検収ダイアログを同じ判定へ揃える。
+// status=done は orchestrator が工程を完了した一次情報。新形式で工程集計もある場合は、
+// failed や未完了が混じらないことを追加確認する。旧runの集計欠落だけで表示を変えない。
+function needFinalVerificationFailure(project, need, flowRuns) {
+  if (!need || String(need.kind || 'blocked') !== 'blocked') return null;
   const task = taskForNeed(project, need);
-  if (!task || String(task.status || '') !== 'blocked') return false;
-  if (String(((task.extra || {}).env_resume) || '') === '1') return false;
-  if (!needFailureViewModel(need)) return false;
-  return Boolean(completedRunForNeed(project, need, flowRuns));
+  if (!task || String(task.status || '') !== 'blocked') return null;
+  if (String(((task.extra || {}).env_resume) || '') === '1') return null;
+  const failure = needFailureViewModel(need);
+  if (!failure) return null;
+  const run = completedRunForNeed(project, need, flowRuns);
+  if (!run) return null;
+  const total = Number(run.total || 0);
+  const counts = run.counts || {};
+  if (Number(counts.failed || 0) > 0) return null;
+  if (total > 0 && Number(counts.done || 0) < total) return null;
+  return {
+    title: '工程は全て成功・最終検証で失敗',
+    summary: failure.summary,
+    taskId: task.id,
+  };
+}
+
+function canManuallyCompleteNeed(project, need, flowRuns) {
+  return Boolean(needFinalVerificationFailure(project, need, flowRuns));
 }
 
 function needApprovalReason(project, need, flowRuns, input) {
@@ -3406,11 +3419,11 @@ function runArtifactViewModel(project, run) {
     : null;
   const needDelivery = (need && need.delivery) || [];
   const workspace = (run && run.workspace) || null;
-  const workspaceDelivery = workspace && workspace.url
+  const workspaceDelivery = workspace && ((project && project.workspace) || workspace.url)
     ? [{
         name: workspace.desc || '成果リポジトリ',
         role: 'write',
-        url: workspace.url,
+        url: workspace.url || '',
         path: (project && project.workspace) || '',
         base: workspace.base || '',
         target: workspace.target || workspace.base || '',
@@ -3433,6 +3446,28 @@ function runArtifactViewModel(project, run) {
     decided: true,
     delivery: needDelivery.length ? needDelivery : workspaceDelivery,
     mrUrls: needMrs.length ? needMrs : runMrs,
+  };
+}
+
+// 要対応から成果を開く場合は、完了runの差分情報と要対応の判断状態を合成する。
+// 未承認の検証失敗は readOnly にせず、ファイル差分を見ながら同じダイアログ内で
+// 「承認して完了」「差し戻し」を実行できるようにする。
+function needArtifactReviewViewModel(project, need, run) {
+  const artifacts = runArtifactViewModel(project, run);
+  const completed = Boolean(completedTaskForNeed(project, need));
+  const needDelivery = (need && need.delivery) || [];
+  const needMrs = (need && need.mrUrls) || (need && need.mrUrl ? [need.mrUrl] : []);
+  return {
+    ...need,
+    ...artifacts,
+    id: need.id,
+    taskId: need.taskId || need.id,
+    kind: need.kind || 'blocked',
+    file: need.file || '',
+    decided: Boolean(need.decided),
+    readOnly: completed || Boolean(need.decided),
+    delivery: artifacts.delivery && artifacts.delivery.length ? artifacts.delivery : needDelivery,
+    mrUrls: artifacts.mrUrls && artifacts.mrUrls.length ? artifacts.mrUrls : needMrs,
   };
 }
 
@@ -3542,12 +3577,12 @@ async function openNeedArtifacts(needId) {
     if (loaded && loaded.run) artifactRun = loaded.run;
   }
   const model = artifactRun
-    ? runArtifactViewModel(project, artifactRun)
+    ? needArtifactReviewViewModel(project, need, artifactRun)
     : {
         ...need,
         taskStatus: task ? String(task.status || 'done') : 'done',
-        readOnly: true,
-        decided: true,
+        readOnly: Boolean(completedTaskForNeed(project, need) || need.decided),
+        decided: Boolean(need.decided),
       };
   return openDeliveryArtifactsModel(model, `成果を確認 — ${needDisplayTitle(need)}`);
 }
@@ -4116,9 +4151,7 @@ function renderNeedDetail(p, n) {
     : '';
   const task = taskForNeed(p, n);
   const hint = task ? taskCompletionHint(task, { runs: runsForTask(task.id) }) : null;
-  const relatedRunId = relatedRunIdForNeed(p, n, state.flowRuns);
-  const relatedRun = state.flowRuns.find((run) => String(run.runId) === relatedRunId);
-  const finalVerificationFailure = runFinalVerificationFailure(p, relatedRun);
+  const finalVerificationFailure = needFinalVerificationFailure(p, n, state.flowRuns);
   const ask =
     (hint && hint.needAsk) || NEED_ASK[n.kind] || NEED_ASK.blocked;
   const unsettle =

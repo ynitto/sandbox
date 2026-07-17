@@ -1,13 +1,14 @@
-"""設定ファイル — `.kiro/kiro-amigos.yaml`（agent-project と同じ流儀）。
+"""設定ファイル — `.agent/agent-amigos.yaml`（agent-project と同じ流儀）。
 
 優先順位は CLI > 設定ファイル > 組み込み既定。環境ごとに決まる値（バス・ノード名・
 使う CLI・hub 公開）をファイルに書き、その場限りの上書きだけ CLI で渡す。
-PyYAML 無し環境は JSON（同じキー・`.kiro/kiro-amigos.json`）で書ける。
+PyYAML 無し環境は JSON（同じキー・`agent-amigos.json`）で書ける。
 
-探索順: 1) --config 明示 2) `<cwd>/.kiro/kiro-amigos.{yaml,yml,json}`。
-kiro-loop の `.kiro/kiro-loop.yaml` と同じ「cwd がそのノードのホーム」規約 —
-このファイルがあるディレクトリが amigos ノードのホーム（＝既定のバス・hub データ）になり、
-agent-dashboard の自動発見マーカーも兼ねる。
+探索順: 1) --config 明示 2) `<cwd>/agent-amigos.*` 3) `<cwd>/.agent/agent-amigos.*`
+4) `~/.agent/agent-amigos.*`。
+プロジェクトローカルの設定があるディレクトリが amigos ノードのホーム（＝既定のバス・
+hub データ）になり、agent-dashboard の自動発見マーカーも兼ねる。グローバル設定
+（`~/.agent/`）のときのホームは cwd。
 """
 from __future__ import annotations
 
@@ -16,10 +17,15 @@ import os
 import sys
 
 DEFAULT_CONFIG_NAMES = [
-    os.path.join(".kiro", "kiro-amigos.yaml"),
-    os.path.join(".kiro", "kiro-amigos.yml"),
-    os.path.join(".kiro", "kiro-amigos.json"),
+    "agent-amigos.yaml",
+    "agent-amigos.yml",
+    "agent-amigos.json",
 ]
+
+
+def _global_agent_dir() -> str:
+    return os.path.join(os.path.expanduser("~"), ".agent")
+
 
 # 設定ファイルで上書きできるキーと組み込み既定。
 # ネストの hub: ブロック（serve/host/port/token）は hub_* キーへ平坦化して扱う。
@@ -48,25 +54,44 @@ def _load_config_file(path: str) -> dict:
     except ImportError:
         if path.lower().endswith((".yaml", ".yml")):
             print("[agent-amigos] ERROR: YAML 設定には PyYAML が必要です（pip install pyyaml）。"
-                  "JSON 設定（.kiro/kiro-amigos.json・同じキー）なら不要です。", file=sys.stderr)
+                  "JSON 設定（agent-amigos.json・同じキー）なら不要です。", file=sys.stderr)
             raise SystemExit(1)
         with open(path, encoding="utf-8") as f:
             return json.load(f)
 
 
 def find_config(explicit: "str | None" = None, cwd: "str | None" = None) -> "str | None":
-    """設定ファイルの探索: 1) --config 明示 2) <cwd>/.kiro/kiro-amigos.*。無ければ None。"""
+    """設定ファイルの探索: 1) --config 明示 2) ./ 3) ./.agent/ 4) ~/.agent/。無ければ None。"""
     if explicit:
         p = os.path.expanduser(explicit)
         if not os.path.isfile(p):
             raise SystemExit(f"[agent-amigos] 設定ファイルが見つかりません: {explicit}")
         return p
-    base = cwd or os.getcwd()
-    for name in DEFAULT_CONFIG_NAMES:
-        cand = os.path.join(base, name)
-        if os.path.isfile(cand):
-            return cand
+    base = os.path.abspath(cwd or os.getcwd())
+    for search in (base, os.path.join(base, ".agent"), _global_agent_dir()):
+        for name in DEFAULT_CONFIG_NAMES:
+            cand = os.path.join(search, name)
+            if os.path.isfile(cand):
+                return cand
     return None
+
+
+def _resolve_home(path: "str | None", cwd: "str | None") -> str:
+    """設定パスからノードホームを決める。
+    - 無し / `~/.agent/agent-amigos.*` → cwd
+    - `<home>/.agent/agent-amigos.*` → `<home>`
+    - それ以外（ルート直下・`--config` 任意パス）→ 設定ファイルの親ディレクトリ
+    """
+    cwd_abs = os.path.abspath(cwd or os.getcwd())
+    if not path:
+        return cwd_abs
+    abspath = os.path.abspath(path)
+    parent = os.path.dirname(abspath)
+    if os.path.basename(parent) == ".agent":
+        if os.path.abspath(parent) == os.path.abspath(_global_agent_dir()):
+            return cwd_abs
+        return os.path.dirname(parent)
+    return parent
 
 
 def load_settings(explicit: "str | None" = None, cwd: "str | None" = None) -> dict:
@@ -89,15 +114,13 @@ def load_settings(explicit: "str | None" = None, cwd: "str | None" = None) -> di
     out["tags"] = [str(t) for t in (out["tags"] or [])]
     out["roles"] = [str(r) for r in (out["roles"] or [])]
     out["_config_path"] = path
-    # 設定の基準ディレクトリ: 設定ファイルのホーム（.kiro/ の親）。無ければ cwd
-    out["_home"] = (os.path.dirname(os.path.dirname(os.path.abspath(path)))
-                    if path else os.path.abspath(cwd or os.getcwd()))
+    out["_home"] = _resolve_home(path, cwd)
     return out
 
 
 def resolve_bus_spec(settings: dict, cli_bus: "str | None") -> str:
-    """バス指定の解決: CLI --bus > 環境変数 > 設定ファイル。相対ローカルパスは
-    ホーム基準の絶対パスへ（`bus: .` = ホーム自身がバス）。"""
+    """バス指定の解決: CLI --bus > 環境変数 > 設定ファイル > 既定 `.`（ホーム自身）。
+    相対ローカルパスはホーム基準の絶対パスへ。"""
     spec = cli_bus or os.environ.get("AGENT_AMIGOS_BUS") or str(settings.get("bus") or ".")
     if spec.startswith(("git+", "hub+")):
         return spec
@@ -106,7 +129,12 @@ def resolve_bus_spec(settings: dict, cli_bus: "str | None") -> str:
     return os.path.expanduser(spec)
 
 
+def state_dir(home: str) -> str:
+    """ホーム内の状態領域（commands / designs の親）。"""
+    return os.path.join(home, ".agent", "agent-amigos")
+
+
 def commands_dir(home: str) -> str:
     """指示のファイル取り込み先（agent-project の commands/ と同じ結合方式）。
     dashboard 等の外部操作者は JSON を 1 ファイル置くだけ — 常駐デーモンが取り込む。"""
-    return os.path.join(home, ".kiro", "kiro-amigos", "commands")
+    return os.path.join(state_dir(home), "commands")

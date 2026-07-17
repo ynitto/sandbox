@@ -2,11 +2,12 @@
 
 // amigos ホーム（常駐デーモンの稼働ディレクトリ）の発見と、指示の投函。
 //
-// - ホーム = `.kiro/kiro-amigos.{yaml,yml,json}` を持つディレクトリ（設定ファイルが
-//   dashboard の自動発見マーカーを兼ねる — kiro-loop の `.kiro/kiro-loop.*` と同じ流儀）。
-//   `amigos.homeDirs` の明示指定 + 全体設定 `projects.roots` 配下の走査で見つける。
+// - ホーム = `agent-amigos.{yaml,yml,json}` または `.agent/agent-amigos.*` を持つ
+//   ディレクトリ（設定ファイルが dashboard の自動発見マーカーを兼ねる —
+//   agent-project と同じ流儀）。`amigos.homeDirs` の明示指定 + 全体設定
+//   `projects.roots` 配下の走査で見つける。
 // - タスク依頼（post）・手動引き受け（claim）は、ホームの
-//   `.kiro/kiro-amigos/commands/*.json` へ JSON を 1 ファイル置くだけ（agent-project の
+//   `.agent/agent-amigos/commands/*.json` へ JSON を 1 ファイル置くだけ（agent-project の
 //   commands/ と同じ結合方式）。常駐デーモンが次のサイクルで取り込む。
 //   dashboard はバスへ直接書かない — 書くのは常にホームの commands ドロップだけ。
 
@@ -15,7 +16,7 @@ const os = require('os');
 const path = require('path');
 const { parseFlatYaml } = require('../../agent-project/main/toolconfig');
 
-const CONFIG_NAMES = ['kiro-amigos.yaml', 'kiro-amigos.yml', 'kiro-amigos.json'];
+const CONFIG_NAMES = ['agent-amigos.yaml', 'agent-amigos.yml', 'agent-amigos.json'];
 
 // 走査を軽く保つためのスキップ（cowork の discover と同じ発想）
 const SCAN_SKIP = new Set([
@@ -29,26 +30,42 @@ function expandHome(p) {
   return p === '~' || p.startsWith('~/') ? path.join(os.homedir(), p.slice(1)) : p;
 }
 
-function readConfig(dir) {
-  for (const name of CONFIG_NAMES) {
-    const file = path.join(dir, '.kiro', name);
-    let text;
+function isTruthy(v) {
+  if (v === true || v === 1) return true;
+  const s = String(v == null ? '' : v).trim().toLowerCase();
+  return s === 'true' || s === 'yes' || s === 'on' || s === '1';
+}
+
+function readConfigFile(file) {
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch {
+    return null;
+  }
+  if (file.endsWith('.json')) {
     try {
-      text = fs.readFileSync(file, 'utf8');
+      const obj = JSON.parse(text);
+      if (obj && typeof obj === 'object') return { file, values: obj };
     } catch {
-      continue;
+      return null;
     }
-    if (name.endsWith('.json')) {
-      try {
-        const obj = JSON.parse(text);
-        if (obj && typeof obj === 'object') return { file, values: obj };
-      } catch {
-        continue;
-      }
-    }
-    // YAML はトップレベルのスカラだけ読む（bus / node_id / manual_claim で足りる。
-    // hub: 等のネストは daemon 側の関心で dashboard は読まない）
-    return { file, values: parseFlatYaml(text) };
+    return null;
+  }
+  // YAML はトップレベルのスカラだけ読む（bus / node_id / manual_claim で足りる。
+  // hub: 等のネストは daemon 側の関心で dashboard は読まない）
+  return { file, values: parseFlatYaml(text) };
+}
+
+function readConfig(dir) {
+  // ルート直下を .agent/ より先に見る（agent-project / agent-amigos の探索順に合わせる）
+  for (const name of CONFIG_NAMES) {
+    const found = readConfigFile(path.join(dir, name));
+    if (found) return found;
+  }
+  for (const name of CONFIG_NAMES) {
+    const found = readConfigFile(path.join(dir, '.agent', name));
+    if (found) return found;
   }
   return null;
 }
@@ -113,8 +130,8 @@ function discoverHomes(cfg) {
       busSpec,
       busDir,
       nodeId: values.node_id ? String(values.node_id) : null,
-      manualClaim: String(values.manual_claim) === 'true',
-      commandsDir: path.join(dir, '.kiro', 'kiro-amigos', 'commands'),
+      manualClaim: isTruthy(values.manual_claim),
+      commandsDir: path.join(dir, '.agent', 'agent-amigos', 'commands'),
     });
   }
   return homes;

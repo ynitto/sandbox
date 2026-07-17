@@ -1,4 +1,4 @@
-"""指示のファイル取り込み — `<home>/.kiro/kiro-amigos/commands/*.json`。
+"""指示のファイル取り込み — `<home>/.agent/agent-amigos/commands/*.json`。
 
 agent-project の `commands/` と同じ結合方式: 外部操作者（agent-dashboard・人・スキル）は
 JSON を 1 ファイル置くだけで、常駐デーモンが次のサイクルで取り込む。プロセス間 API を
@@ -24,14 +24,14 @@ import os
 
 from .assign import apply_role, claim_role, confirm_assignment
 from .bus import Bus
-from .configfile import commands_dir
+from .configfile import commands_dir, state_dir
 from .messages import build_message, message_path, valid_target
 from .mission import load_mission, new_mission_id, post_mission
 from .util import log, now_iso, read_json, write_json_atomic
 
 
 def _designs_dir(home: str) -> str:
-    return os.path.join(home, ".kiro", "kiro-amigos", "designs")
+    return os.path.join(state_dir(home), "designs")
 
 
 def _do_post(bus: Bus, node_id: str, home: str, rec: dict) -> str:

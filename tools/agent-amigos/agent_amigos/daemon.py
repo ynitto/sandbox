@@ -57,7 +57,7 @@ class NodeDaemon:
         # manual_claim: 自動応募しない（commands/ 経由の手動引き受けのみ。
         # 引き受け済みロールのターン実行・オーナー職務は従来どおり動く）
         self.manual_claim = manual_claim
-        # commands_home: 指示のファイル取り込み（<home>/.kiro/kiro-amigos/commands/）を
+        # commands_home: 指示のファイル取り込み（<home>/.agent/agent-amigos/commands/）を
         # 有効にするホームディレクトリ。None = 取り込まない
         self.commands_home = commands_home
         self._runners: "dict[tuple[str, str], AmigoRunner]" = {}

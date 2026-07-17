@@ -627,16 +627,17 @@ agent-amigos gc        [--keep-days 14]
 **サブコマンド省略 = 常駐起動（serve）**を既定にする（agent-project の `run --watch` 既定と
 同じ流儀 — PC 起動時に立ち上げっぱなしにして cwd を面倒見る daemon 用途が一級市民）。
 
-- **ホーム**: cwd。設定は `<cwd>/.kiro/kiro-amigos.{yaml,yml,json}`（kiro-loop の
-  `.kiro/kiro-loop.yaml` と同じ規約。優先順位 CLI > 設定 > 既定・雛形は
-  `tools/agent-amigos/kiro-amigos.yaml.example`）。設定ファイルは agent-dashboard の
-  **自動発見マーカー**を兼ねる。
+- **ホーム**: cwd。設定探索は agent-project と同じ
+  `<cwd>/agent-amigos.*` → `<cwd>/.agent/agent-amigos.*` → `~/.agent/agent-amigos.*`
+  （優先順位 CLI > 設定 > 既定・雛形は `tools/agent-amigos/agent-amigos.yaml.example`）。
+  プロジェクトローカルの設定があるディレクトリがホーム。グローバル設定時のホームは cwd。
+  設定ファイルは agent-dashboard の **自動発見マーカー**を兼ねる。
 - **cwd = バス = hub**: 既定でホーム自身がローカルバス（`missions/` がホームに生える）。
   設定 `hub.serve: true` で同じバスを hub として公開し、他ノードは
   `--bus hub+http://<host>:<port>` で参加できる。ローカル直接書き込みと hub 公開の
   共存は hub 側の**再走査**（PUT を経ないファイル変更・削除を索引へ反映。/list 時と
   long-poll 中に間隔律速で走る）が担保する。
-- **指示のファイル取り込み**: `<home>/.kiro/kiro-amigos/commands/*.json` を毎サイクル
+- **指示のファイル取り込み**: `<home>/.agent/agent-amigos/commands/*.json` を毎サイクル
   取り込む（agent-project の `commands/` と同じ「プロセス間 API を持たない・結合は
   データ×一方向」方式）。コマンドは `post`（タスク依頼 — design 本文と役割ミッション表を
   受けて公示。design はホームの `designs/` へ永続化）/ `claim`（**手動引き受け** —

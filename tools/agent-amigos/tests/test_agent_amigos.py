@@ -845,14 +845,14 @@ class MissionSchemaTests(AmigosTestCase):
 
 
 class ConfigFileTests(unittest.TestCase):
-    """`.kiro/kiro-amigos.yaml` 設定（agent-project と同じ CLI > config > 既定の流儀）。"""
+    """`.agent/agent-amigos.yaml` 設定（agent-project と同じ CLI > config > 既定の流儀）。"""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="amigos-cfg-")
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
     def _write(self, name, data):
-        path = os.path.join(self.tmp, ".kiro", name)
+        path = os.path.join(self.tmp, ".agent", name)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             f.write(data if isinstance(data, str) else json.dumps(data))
@@ -869,7 +869,7 @@ class ConfigFileTests(unittest.TestCase):
 
     def test_json_config_with_hub_block(self):
         from agent_amigos.configfile import commands_dir, load_settings
-        self._write("kiro-amigos.json",
+        self._write("agent-amigos.json",
                     {"node_id": "n1", "bus": "shared-bus", "manual_claim": True,
                      "hub": {"serve": True, "port": 9999}})
         s = load_settings(cwd=self.tmp)
@@ -883,7 +883,7 @@ class ConfigFileTests(unittest.TestCase):
         # CLI --bus は設定より優先
         self.assertEqual(resolve_bus_spec(s, "git+ssh://x/y.git"), "git+ssh://x/y.git")
         self.assertEqual(commands_dir(self.tmp),
-                         os.path.join(self.tmp, ".kiro", "kiro-amigos", "commands"))
+                         os.path.join(self.tmp, ".agent", "agent-amigos", "commands"))
 
     def test_yaml_config(self):
         try:
@@ -891,12 +891,55 @@ class ConfigFileTests(unittest.TestCase):
         except ImportError:
             self.skipTest("PyYAML なし")
         from agent_amigos.configfile import load_settings
-        self._write("kiro-amigos.yaml",
+        self._write("agent-amigos.yaml",
                     "node_id: yaml-node\ntags: [python, web]\nhub:\n  serve: true\n")
         s = load_settings(cwd=self.tmp)
         self.assertEqual(s["node_id"], "yaml-node")
         self.assertEqual(s["tags"], ["python", "web"])
         self.assertTrue(s["hub_serve"])
+
+    def test_home_for_explicit_config_is_parent_dir(self):
+        from agent_amigos.configfile import load_settings
+        path = os.path.join(self.tmp, "custom.yaml")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("node_id: explicit\n")
+        s = load_settings(explicit=path, cwd=os.path.join(self.tmp, "other"))
+        self.assertEqual(s["_config_path"], path)
+        self.assertEqual(s["_home"], os.path.abspath(self.tmp))
+        self.assertEqual(s["node_id"], "explicit")
+
+    def test_root_level_config_preferred_over_dot_agent(self):
+        from agent_amigos.configfile import load_settings
+        root = os.path.join(self.tmp, "agent-amigos.json")
+        with open(root, "w", encoding="utf-8") as f:
+            json.dump({"node_id": "root"}, f)
+        self._write("agent-amigos.json", {"node_id": "nested"})
+        s = load_settings(cwd=self.tmp)
+        self.assertEqual(s["_config_path"], root)
+        self.assertEqual(s["_home"], os.path.abspath(self.tmp))
+        self.assertEqual(s["node_id"], "root")
+
+    def test_global_config_home_is_cwd(self):
+        from agent_amigos.configfile import load_settings
+        fake_home = tempfile.mkdtemp(prefix="amigos-home-")
+        self.addCleanup(shutil.rmtree, fake_home, ignore_errors=True)
+        gdir = os.path.join(fake_home, ".agent")
+        os.makedirs(gdir)
+        gpath = os.path.join(gdir, "agent-amigos.json")
+        with open(gpath, "w", encoding="utf-8") as f:
+            json.dump({"node_id": "global", "bus": "from-global"}, f)
+        old = os.environ.get("HOME")
+        os.environ["HOME"] = fake_home
+        try:
+            s = load_settings(cwd=self.tmp)
+            self.assertEqual(s["_config_path"], gpath)
+            self.assertEqual(s["_home"], os.path.abspath(self.tmp))
+            self.assertEqual(s["node_id"], "global")
+        finally:
+            if old is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = old
 
     def test_argv_rewrite_defaults_to_serve(self):
         self.assertEqual(cli.resolve_argv([]), ["serve"])
@@ -937,7 +980,7 @@ class CommandsIngestTests(AmigosTestCase):
         self.assertEqual(self.phase("am-cmd"), "reviewing")
         # 取り込んだ design doc はホームの状態領域へ永続化される
         self.assertTrue(os.path.isfile(os.path.join(
-            self.home, ".kiro", "kiro-amigos", "designs", "am-cmd.md")))
+            self.home, ".agent", "agent-amigos", "designs", "am-cmd.md")))
         # 処理済みドロップは消える
         self.assertEqual([n for n in os.listdir(self.cdir) if n.endswith(".json")], [])
 

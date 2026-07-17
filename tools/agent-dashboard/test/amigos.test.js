@@ -227,12 +227,12 @@ const homes = require('../src/features/amigos/main/homes');
 
 function makeHome(root, name, configText, ext) {
   const home = path.join(root, name);
-  fs.mkdirSync(path.join(home, '.kiro'), { recursive: true });
-  fs.writeFileSync(path.join(home, '.kiro', `kiro-amigos.${ext || 'yaml'}`), configText);
+  fs.mkdirSync(path.join(home, '.agent'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.agent', `agent-amigos.${ext || 'yaml'}`), configText);
   return home;
 }
 
-test('ホーム発見: projects.roots 配下の .kiro/kiro-amigos.* をマーカーに拾う', () => {
+test('ホーム発見: projects.roots 配下の .agent/agent-amigos.* をマーカーに拾う', () => {
   const root = tmpdir('amigos-homes-');
   const h1 = makeHome(root, 'node-a', 'node_id: pc-a\nbus: .\n');
   const h2 = makeHome(root, 'sub/node-b',
@@ -245,7 +245,25 @@ test('ホーム発見: projects.roots 配下の .kiro/kiro-amigos.* をマーカ
   assert.strictEqual(path.resolve(byNode['pc-b'].busDir), path.resolve(h2, 'shared'));
   assert.strictEqual(byNode['pc-b'].manualClaim, true);
   assert.strictEqual(byNode['pc-a'].commandsDir,
-    path.join(h1, '.kiro', 'kiro-amigos', 'commands'));
+    path.join(h1, '.agent', 'agent-amigos', 'commands'));
+});
+
+test('ホーム発見: ルート直下の agent-amigos.* と manual_claim の yes/on/boolean', () => {
+  const root = tmpdir('amigos-homes-');
+  const hRoot = path.join(root, 'root-cfg');
+  fs.mkdirSync(hRoot, { recursive: true });
+  fs.writeFileSync(path.join(hRoot, 'agent-amigos.yaml'), 'node_id: root-n\nmanual_claim: yes\n');
+  const hYes = makeHome(root, 'yes-n', 'node_id: yes-n\nmanual_claim: on\n');
+  const hBool = makeHome(root, 'bool-n',
+    JSON.stringify({ node_id: 'bool-n', manual_claim: true }), 'json');
+  const found = homes.discoverHomes({ projects: { roots: [root], scanDepth: 2 }, amigos: {} });
+  const byNode = Object.fromEntries(found.map((h) => [h.nodeId, h]));
+  assert.ok(byNode['root-n'] && byNode['yes-n'] && byNode['bool-n']);
+  assert.strictEqual(path.resolve(byNode['root-n'].dir), path.resolve(hRoot));
+  assert.strictEqual(byNode['root-n'].manualClaim, true);
+  assert.strictEqual(byNode['yes-n'].manualClaim, true);
+  assert.strictEqual(byNode['bool-n'].manualClaim, true);
+  assert.strictEqual(byNode['yes-n'].dir, hYes);
 });
 
 test('投函: 発見済みホームの commands/ にだけ書ける（外は拒否）', () => {

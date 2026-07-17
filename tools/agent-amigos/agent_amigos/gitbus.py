@@ -82,7 +82,8 @@ class GitBus(Bus):
                       self.url, d)
         elif create:
             os.makedirs(d, exist_ok=True)
-            self._git(d, "init", "--quiet")
+            # --template= で空テンプレート: サンドボックス等で hooks コピーが拒否されても進む
+            self._git(d, "init", "--quiet", "--template=")
             self._git(d, "checkout", "--quiet", "-b", branch)
             self._git(d, "remote", "add", "origin", self.url)
         else:

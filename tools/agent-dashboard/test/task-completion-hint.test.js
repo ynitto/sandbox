@@ -77,7 +77,10 @@ const runTaskOutcomeCompactHtml = new Function(
 )((value) => String(value == null ? '' : value));
 // eslint-disable-next-line no-new-func
 const runFinalVerificationFailure = new Function(
-  'sanitizeTaskId', `${grab('runFinalVerificationFailure')}; return runFinalVerificationFailure;`
+  'sanitizeTaskId',
+  `${grab('taskForNeed')}; ${grab('relatedRunIdForNeed')}; ${grab('completedRunForNeed')}; ` +
+    `${grab('needFailureViewModel')}; ${grab('needFinalVerificationFailure')}; ` +
+    `${grab('runFinalVerificationFailure')}; return runFinalVerificationFailure;`
 )((id) => String(id == null ? '' : id).replace(/[^\w.-]+/g, '_').slice(0, 60));
 // eslint-disable-next-line no-new-func
 const finalVerificationFailureHtml = new Function(
@@ -230,6 +233,18 @@ assert.deepStrictEqual(finalVerifyFailure, {
 assert.match(finalVerificationFailureHtml(finalVerifyFailure), /工程は全て成功/);
 assert.match(finalVerificationFailureHtml(finalVerifyFailure), /最終検証で失敗/);
 assert.match(finalVerificationFailureHtml(finalVerifyFailure), /タスクは未完了/);
+
+// 旧runなど工程集計が保存されていない場合も、run.status=done と最新runの対応が
+// 取れていれば「工程完了後の最終検証失敗」として同じ表示にする。
+const finalVerifyFailureWithoutCounts = runFinalVerificationFailure(
+  {
+    backlog: [{ id: 'T1', status: 'blocked', extra: { last_run: 'run-final-verify-legacy' } }],
+    archive: [],
+    needs: [{ taskId: 'T1', kind: 'blocked', failureSummary: 'npm test が失敗しました。' }],
+  },
+  { runId: 'run-final-verify-legacy', taskId: 'T1', status: 'done' }
+);
+assert.match(finalVerifyFailureWithoutCounts.title, /工程は全て成功・最終検証で失敗/);
 
 // verify 未定義は失敗ではなく「完了の確認待ち」。エラー風バナーにしない。
 const verifyUndefined = runFinalVerificationFailure(

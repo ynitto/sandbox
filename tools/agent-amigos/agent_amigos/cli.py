@@ -20,12 +20,13 @@ from .util import log, now_iso, read_json, write_json_atomic
 def _bus_arg(p: argparse.ArgumentParser) -> None:
     p.add_argument("--bus", required=False, default="",
                    help="バス指定: ローカル dir / git+<url> / hub+<url>。"
-                        "省略時は 環境変数 AGENT_AMIGOS_BUS → 設定 .kiro/kiro-amigos.yaml の bus"
+                        "省略時は 環境変数 AGENT_AMIGOS_BUS → 設定 .agent/agent-amigos.yaml の bus"
                         "（既定 . = ホーム自身）の順に解決")
     p.add_argument("--bus-workdir", default=None,
                    help="GitBus / HubBus のミラー作業領域（既定: ~/.agent/amigos/…）")
     p.add_argument("--config", default=None,
-                   help="設定ファイル（既定: ./.kiro/kiro-amigos.{yaml,yml,json} を自動探索）")
+                   help="設定ファイル（既定: ./ → ./.agent/ → ~/.agent/ の "
+                        "agent-amigos.{yaml,yml,json} を自動探索）")
 
 
 def _node_arg(p: argparse.ArgumentParser) -> None:
@@ -33,13 +34,10 @@ def _node_arg(p: argparse.ArgumentParser) -> None:
 
 
 def _resolve(args) -> "tuple":
-    """バスとノード ID を CLI > 環境変数 > 設定ファイル > 既定 の順で解決する。
-    設定ファイルが無く --bus/環境変数も無いときは従来どおり明示エラー
-    （意図しない cwd をバスとして汚さない）。"""
+    """バスとノード ID を CLI > 環境変数 > 設定ファイル > 既定（ホーム自身）の順で解決する。
+    serve と同じ resolve_bus_spec を使い、サブコマンド間でバス解決を揃える。"""
     settings = load_settings(getattr(args, "config", None))
-    spec = getattr(args, "bus", "") or os.environ.get("AGENT_AMIGOS_BUS") or ""
-    if not spec and settings["_config_path"]:
-        spec = resolve_bus_spec(settings, None)
+    spec = resolve_bus_spec(settings, getattr(args, "bus", None) or None)
     bus = make_bus(spec, workdir=getattr(args, "bus_workdir", None)
                    or settings.get("bus_workdir"))
     node = getattr(args, "node_id", None) or settings.get("node_id") or default_node_id()
@@ -90,16 +88,16 @@ def cmd_join(args) -> int:
 def cmd_serve(args) -> int:
     """常駐起動（サブコマンド省略時の既定 — agent-project の run --watch と同じ位置づけ）。
 
-    cwd（またはその `.kiro/kiro-amigos.yaml`）をホームとして:
+    cwd（またはその `.agent/agent-amigos.yaml`）をホームとして:
     - ホームのバス（既定: cwd 自身のローカルバス）でノードデーモンを回す
     - `hub.serve: true` なら同じバスを hub として公開（cwd-as-hub。他ノードは
       hub+http://<host>:<port> で参加できる）
-    - `<home>/.kiro/kiro-amigos/commands/*.json` の指示（依頼 post・手動引き受け claim・
+    - `<home>/.agent/agent-amigos/commands/*.json` の指示（依頼 post・手動引き受け claim・
       assign / accept / reject / cancel / say）を毎サイクル取り込む
     """
     settings = load_settings(args.config)
     home = settings["_home"]
-    spec = args.bus or os.environ.get("AGENT_AMIGOS_BUS") or resolve_bus_spec(settings, None)
+    spec = resolve_bus_spec(settings, args.bus or None)
     bus = make_bus(spec, workdir=args.bus_workdir or settings.get("bus_workdir"))
     node = args.node_id or settings.get("node_id") or default_node_id()
 
@@ -371,7 +369,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="agent-amigos",
         description="役割駆動マルチエージェント協働ツール（設計書: docs/designs/agent-amigos-design.md）。"
                     "サブコマンドを省略すると常駐起動（serve）になり、cwd の "
-                    ".kiro/kiro-amigos.yaml を設定として cwd をホーム（バス・hub）に使う")
+                    ".agent/agent-amigos.yaml を設定として cwd をホーム（バス・hub）に使う")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("serve",

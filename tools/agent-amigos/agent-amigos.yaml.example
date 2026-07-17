@@ -1,12 +1,12 @@
-# .kiro/kiro-amigos.yaml — agent-amigos ノードの設定（cwd = ホーム）
+# .agent/agent-amigos.yaml — agent-amigos ノードの設定（cwd = ホーム）
 #
 # このファイルを置いたディレクトリが amigos ノードの「ホーム」になる:
 #   - `agent-amigos`（サブコマンド省略 = serve）でこのホームを面倒見る常駐デーモンが起動
 #   - 既定ではホーム自身がローカルバス（missions/ がここに生える）
 #   - agent-dashboard の自動発見マーカーを兼ねる（projects.roots 配下を走査）
-#   - 依頼・手動引き受けは .kiro/kiro-amigos/commands/*.json で投函される
+#   - 依頼・手動引き受けは .agent/agent-amigos/commands/*.json で投函される
 # 優先順位は CLI > このファイル > 組み込み既定。PyYAML 無しなら同じキーの
-# .kiro/kiro-amigos.json でもよい。
+# .agent/agent-amigos.json でもよい。
 
 # バス: ローカル dir（ホームからの相対可）/ git+<url> / hub+<url>。既定 "."（ホーム自身）
 bus: .

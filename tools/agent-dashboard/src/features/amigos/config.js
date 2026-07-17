@@ -10,9 +10,9 @@ module.exports = {
     // GitBus のクローン作業領域（<dir>/mission__<mid>/）のどちらの形も受ける。
     // 空のときは ~/.agent/amigos/bus/* （GitBus 既定 workdir）を自動発見する。
     busDirs: [],
-    // 常駐デーモンのホーム（.kiro/kiro-amigos.yaml を持つディレクトリ）の明示指定。
+    // 常駐デーモンのホーム（.agent/agent-amigos.yaml を持つディレクトリ）の明示指定。
     // 通常は projects.roots 配下の自動発見で足りる。ホームにはタスク依頼（post）と
-    // 手動引き受け（claim）を .kiro/kiro-amigos/commands/ 経由で投函できる。
+    // 手動引き受け（claim）を .agent/agent-amigos/commands/ 経由で投函できる。
     homeDirs: [],
   },
 };

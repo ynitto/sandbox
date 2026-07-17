@@ -7,12 +7,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
-### agent-amigos: 常駐運用を agent-project に合わせる（無引数 serve・`.kiro/kiro-amigos.yaml`・cwd-as-hub・dashboard 依頼/引き受け）
+### agent-amigos: 設定パスを `.agent/agent-amigos.yaml` へ移行
+
+- 設定・状態領域を agent-project と同じ `.agent/` 配下へ揃えた。
+  - 設定: `.kiro/kiro-amigos.*` → **`.agent/agent-amigos.{yaml,yml,json}`**
+  - 指示取り込み / designs: `.kiro/kiro-amigos/{commands,designs}` →
+    **`.agent/agent-amigos/{commands,designs}`**
+  - 雛形: `kiro-amigos.yaml.example` → **`agent-amigos.yaml.example`**
+- agent-dashboard のホーム自動発見マーカーも同パスへ追従。旧 `.kiro/` パスは読まない。
+- 設定探索を agent-project と同じ `./` → `./.agent/` → `~/.agent/` に拡張。
+  `--config` 任意パス時の `_home` は設定ファイルの親（`~/.agent/` は cwd）に修正。
+- バス解決を全サブコマンドで `resolve_bus_spec`（CLI > 環境変数 > 設定 > ホーム）に統一。
+- dashboard の `manual_claim` が JSON boolean / YAML `yes`/`on` でも効くようにした。
+- GitBus の `git init` に `--template=` を付け、hooks コピー不可環境でも初期化できるようにした。
+
+### agent-amigos: 常駐運用を agent-project に合わせる（無引数 serve・`.agent/agent-amigos.yaml`・cwd-as-hub・dashboard 依頼/引き受け）
 
 - **サブコマンド省略 = 常駐起動（serve）**: agent-project の `run --watch` 既定と同じ流儀で、
   `agent-amigos` だけで cwd をホームとして面倒見るデーモンが立つ（ノードデーモン +
   指示取り込み + hub 公開）。
-- **設定 `.kiro/kiro-amigos.yaml`**（`.yml`/`.json` 可・雛形 `kiro-amigos.yaml.example`）:
+- **設定 `.agent/agent-amigos.yaml`**（`.yml`/`.json` 可・雛形 `agent-amigos.yaml.example`）:
   bus / node_id / agent_cli / tags / roles / interval / resume_hours / manual_claim /
   hub（serve/host/port/token）。優先順位 CLI > 設定 > 既定。バス解決は
   CLI > `AGENT_AMIGOS_BUS` > 設定 bus（既定 `.` = ホーム自身）。設定ファイルは
@@ -20,7 +34,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - **cwd を hub として利用可能**: `hub.serve: true` でホームのローカルバスをそのまま hub 公開。
   ローカル直接書き込みとの共存のため hub に**再走査**を追加（PUT を経ないファイル変更・
   削除を /list・long-poll 時に間隔律速で索引へ反映）。
-- **指示のファイル取り込み** `<home>/.kiro/kiro-amigos/commands/*.json`（agent-project の
+- **指示のファイル取り込み** `<home>/.agent/agent-amigos/commands/*.json`（agent-project の
   commands/ と同じ結合方式）: `post`（タスク依頼 — design 本文はホームの designs/ へ永続化）/
   `claim`（手動引き受け — ポリシー準拠。owner-picks でオーナー自身なら応募＋即時確定）/
   `assign` / `accept` / `reject` / `cancel` / `say`。処理済みは削除・失敗は `.rejected`。
