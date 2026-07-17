@@ -1,12 +1,11 @@
 ## docs-designs-README-042729: 設計書の読み取り口（docs/designs/README）を作り主要設計への導線を通す
-- status: blocked
+- status: ready
 - source: charter
 - priority: 0
 - verify: `test -f docs/designs/README.md && grep -q 'agent-project-design.md' docs/designs/README.md && grep -q 'agent-flow-design.md' docs/designs/README.md && grep -q 'codd-gate-design.md' docs/designs/README.md && grep -q 'agent-tools-rename-design.md' docs/designs/README.md`
 - retries: 3
 - charter: v1
 - assess: c=1 r=1 a=1
-- feedback: codd-gate verify --base 45a480f10edd965081cc9a4b3afcfbb7a916c2e9 --repos repos.json に修正
 - workspace: src
 - routed_by: explicit-alias
 - last_run: req-ef1f92c3-docs-designs-README-042729-r2
