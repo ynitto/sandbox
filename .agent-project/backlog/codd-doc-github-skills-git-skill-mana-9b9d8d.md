@@ -6,3 +6,4 @@
 - retries: 0
 - note: 接続マップ上でどのドキュメントからも参照されていない
 - paths: .github/skills/git-skill-manager/scripts/generate_skill_catalog.py
+- assess: c=2 r=1 a=2
