@@ -1,5 +1,5 @@
 ## agent-project-codd-gate--042729: agent-projectにcodd-gate自動検出とregression/intake結線を完成させ連携を有効化する
-- status: blocked
+- status: doing
 - source: charter
 - priority: 0
 - verify: `grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' agent-project.yaml`
@@ -9,5 +9,6 @@
 - rev: 2
 - workspace: src
 - routed_by: explicit-alias
-- last_run: req-ef1f92c3-agent-project-codd-gate--042729-r3-v2
 - needs_reason: 繰り返し NG（retries=4）: workspace repo の clone 失敗（https://github.com/ynitto/sandbox@ap/agent-project-codd-gate--042729）: Cloning into '/var/folders/8c/s6jh85ls4tq3fmzkl0jk5jcc0000gn/T/agent-verify-5kvvec5e/repo'... ⏎ fatal: Remote branch ap/agent-project-codd-gate--042729 not found in upstream origin
+- last_run: req-ef1f92c3-agent-project-codd-gate--042729-r4-v2
+- flow_run: req-ef1f92c3-agent-project-codd-gate--042729-r4-v2
