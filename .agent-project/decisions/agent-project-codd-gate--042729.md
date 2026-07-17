@@ -54,3 +54,10 @@
 - affects : agent-project-codd-gate--042729 → ready
 - learn: agent-projectにcodd-gate自動検出とregression/intake結線を完成させ連携を有効化する :: 検証失敗を確認・受容して完了
 
+## DR-0010  2026-07-18  actor: nitto
+- context : agent-project-codd-gate--042729（agent-projectにcodd-gate自動検出とregression/intake結線を完成させ連携を有効化する）を人の判断から復帰
+- action  : approve-and-fix
+- reason  : 検証失敗を確認・受容して完了
+- affects : agent-project-codd-gate--042729 → ready
+- learn: agent-projectにcodd-gate自動検出とregression/intake結線を完成させ連携を有効化する :: 検証失敗を確認・受容して完了
+

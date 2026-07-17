@@ -1080,3 +1080,10 @@
 - 2026-07-18 06:36:47 === agent-project 停止 reason=drained cycles=2 done=0 blocked=3 notified=True promoted=0 ===
 - 2026-07-18 06:36:49 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
 - 2026-07-18 06:36:49 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-18 06:57:36 commands 取り込み: approve agent-project-codd-gate--042729（viewer-approve-agent-project-codd-gate--042729-1784325453086.json）
+- 2026-07-18 06:57:36 === project 開始 v1 acceptance=2 ===
+- 2026-07-18 06:57:38 === agent-project 開始 tasks=60 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-18 06:57:38 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
+- 2026-07-18 06:57:38 run 再開: agent-project-codd-gate--042729 は req-ef1f92c3-agent-project-codd-gate--042729-r4-v2 の失敗ノードだけをやり直します（done は温存）
+- 2026-07-18 06:57:40 verify: agent-project-codd-gate--042729 の作業ブランチ ap/agent-project-codd-gate--042729 は https://github.com/ynitto/sandbox に未作成（push なし）→ main で検証
+- 2026-07-18 06:57:40 verify: agent-project-codd-gate--042729 を https://github.com/ynitto/sandbox@main のクローン内で検証
