@@ -202,8 +202,11 @@ $AGENT_BUDGET_DIR（既定 ~/.agent/budget/）
   **実装済み**: dashboard の Amigos タブ（`tools/agent-dashboard/src/features/amigos/`、
   制御面分離の feature として独立）が、ミッションの読み取りビュー（phase 近似・名簿・
   ミッション予算・未回答質問）と、ノード予算のワークロード別消費表示・上限編集を持つ。
-- **フォローアップ**: kiro-loop / agent-project / agent-flow の記帳・抑制の組み込みは
-  本設計の契約に従う後続タスク（契約が先、実装は各ツール）。
+- **全ワークロード実装済み**: agent-flow / agent-project は LLM 単一チョークポイントで
+  実行前チェック（超過は `[agent-error:quota] [node-budget]` として既存の環境要因フローに
+  乗る）＋成功実行の実測秒を記帳。kiro-loop（定常業務）はスケジューラのサイクル先頭で
+  抑制し、セマフォスロットの保持時間で実行秒を近似記帳する（詳細は
+  [`schemas/README.md`](../../schemas/README.md) の node-budget 節）。
 - チェックはロックなしの読み合計なので、上振れは「進行中ターン × 同時実行数」に
   有界（§3.2 と同じ性質）。
 

@@ -7,6 +7,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-loop / agent-project / agent-flow: ノード予算（node-budget 契約）の記帳・抑制を組み込み
+
+- ノード予算の共有台帳（[`schemas/node-budget.schema.json`](schemas/node-budget.schema.json)）
+  の消費側を**全ワークロードに展開**。これで「定常業務・プロジェクト・フロー・amigos の
+  合計で上限を超えない」が実効になる（0 = 無制限が既定。設定が無ければ挙動は従来どおり）。
+- **agent-flow（`flow`）/ agent-project（`project`）**: LLM 単一チョークポイント
+  （`run_agent` / `_run_agent_cli`）で実行前にチェックし、超過は
+  **`[agent-error:quota] [node-budget]`** として既存の決定的トリアージに乗せる —
+  agent-flow は run を環境要因で即終端（全ノードでリトライを焼かない）、agent-project は
+  リトライ・裁定を消費せず needs へ、viewer/dashboard は理由を言い切れる。成功実行の
+  実測秒（monotonic）を台帳へ記帳。
+- **kiro-loop（`routine`）**: `PeriodicScheduler._run_loop` がサイクル先頭でチェックし、
+  超過中は定期送信・webhook キューの dispatch を停止（10 分間隔の警告ログ・キューは保持、
+  上限引き上げ/期間更新で自動再開）。実行秒は**セマフォスロットの保持時間**（送信 →
+  完了検知）で近似し `GlobalSemaphore.release` で記帳（タイムアウト強制解放は数えない。
+  セマフォ未使用時は計測点が無く記帳されない既知の制約）。`agent-loop`（未統合クローン）
+  へは次回のクローン同期で反映。
+- 記帳は O_APPEND の best-effort（失敗しても実行は止めない — 上限は次の実行前チェックで
+  効く）。読み書きは各ツールが自前の小さな実装を持つ（agent-cli プラグインと同じ
+  「データ契約のみ・コード共有なし」の流儀）。
+- テスト: agent-flow +7（超過で quota タグ即失敗・CLI 不呼び出し / 内訳上限 / period /
+  記帳 / 成功実行の実測記帳）、agent-project +3（同系）。既存スイートは agent-flow 474 件・
+  agent-project 794 件・agent-amigos 32 件・agent-dashboard 367 件すべて通過。
+
 ### agent-dashboard: Amigos タブ（agent-amigos ミッション + ノード予算の管理面）を追加
 
 - **新 feature** `src/features/amigos/`（制御面分離の流儀どおり base / 他 feature 無改造で

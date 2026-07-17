@@ -14,8 +14,19 @@ agent-project・agent-flow・codd-gate・agent-amigos が**データ契約だけ
 - **各ツール（記帳・抑制側）**: 1 回の agent CLI 実行ごとに ledger へ 1 行追記
   （O_APPEND・追記専用）し、実行前に「合計消費 ≥ 上限」なら新規実行を控える。
   workload は `routine`（kiro-loop / agent-loop 定常業務）/ `project`（agent-project）/
-  `flow`（agent-flow）/ `amigos`（agent-amigos）。実装済み: agent-amigos
-  （超過時は amigo を paused にし owner へ通知）。routine / project / flow は後続。
+  `flow`（agent-flow）/ `amigos`（agent-amigos）。**全ワークロード実装済み**:
+  - `amigos`: ターン前チェック → 超過中は amigo を paused にし owner へ通知。ターンの
+    CLI 実行秒を記帳。
+  - `flow` / `project`: LLM 単一チョークポイント（`run_agent` / `_run_agent_cli`）で
+    実行前チェック → 超過は `[agent-error:quota] [node-budget]` として既存の環境要因
+    フローに乗る（run 即終端・リトライを焼かない／裁定を呼ばず needs へ）。成功実行の
+    実測秒を記帳。
+  - `routine`（kiro-loop）: スケジューラがサイクル先頭でチェックし、超過中は定期送信・
+    webhook キューの dispatch を停止（10 分ごとに警告ログ・キューは保持）。実行秒は
+    **セマフォスロットの保持時間**（送信 → 完了検知）で近似して解放時に記帳する
+    （`max_concurrent <= 0` でセマフォ未使用のときは計測点が無く記帳されない、が既知の制約。
+    タイムアウト強制解放は実行時間として数えない）。`agent-loop`（未統合クローン）へは
+    次回のクローン同期で反映する。
 - **管理面（agent-dashboard / 各ツール CLI）**: config.json を書き（合計上限
   `execution_minutes`・期間 `period: day|month|total`・ワークロード別内訳上限。
   **0 = 無制限**）、ledger を読んで消費内訳を表示する。依頼側・請負側どちらの
