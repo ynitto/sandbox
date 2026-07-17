@@ -118,6 +118,10 @@ def _plan_decompose_prompt(charter: "Charter", granularity: "str | None" = None,
         " 同じ手順を多数の対象に繰り返すタスクは 1 件ずつ列挙せず、"
         " {\"title\": \"…{item}…\", \"verify\": \"…{item}…\", \"cohort_items\": [\"対象1\", \"対象2\", …]} の"
         " 1 件にまとめること（{item} に各対象が差し込まれ、先頭を pilot として人が指示を固めてから残りが生成される）。"
+        " 各タスクには **\"why\": str（このタスクが目標達成に必要な理由・人のレビュー向けに 1 文）** を付け、"
+        " 有益なら任意で \"out_of_scope\": str（このタスクでやらないこと・隣のタスクとの境界）と"
+        " \"hints\": str（実装の手がかり・関連ファイルや参考箇所）も付けること"
+        "（これらは実行ワーカーへの指示と人の実行前レビューの判断材料になる）。"
         " 検証コマンドを書けない曖昧なタスクは含めないでください。")
 
 
@@ -179,6 +183,9 @@ def plan_via_agent(cfg: "Config", charter: "Charter") -> "list[dict]":
                   "cohort_items": _coerce_repos(item.get("cohort_items")),
                   # 依存（先行タスクの title）。enqueue 後に id へ決定的に解決される（after_titles）
                   "after_titles": _coerce_titles(item.get("after")),
+                  # 誘導・レビュー記述（実行前レビューの判断材料 兼 ワーカーへの指示）
+                  **{k: str(item.get(k) or "").strip()
+                     for k in ("why", "out_of_scope", "hints") if str(item.get(k) or "").strip()},
                   "source": "charter"}
             specs.append(assign_plan_workspace(charter, sp))
     return specs
@@ -218,6 +225,7 @@ def _review_prompt(charter: "Charter", granularity: "str | None" = None) -> str:
         + "\n\n出力は JSON 配列のみ。各要素は {\"title\": str, \"verify\": str,"
         " \"workspace\": \"name\"（唯一の書込先・必須。verify が操作するパスの owns を持つ repo）,"
         " \"refs\": [\"name\", ...]（読むだけの参照）}（改善タスクと検証）。"
+        " 各タスクには \"why\": str（何が不足でこの改善が要るのか・人のレビュー向けに 1 文）を付けること。"
         " 問題が無ければ空配列 [] を返してください。")
 
 
@@ -237,6 +245,7 @@ def review_via_agent(cfg: "Config", charter: "Charter") -> "list[dict]":
                   "verify": _strip_code(str(i.get("verify", "") or "").strip()),
                   "workspace": _strip_code(str(i.get("workspace") or "").strip()),
                   "refs": _coerce_repos(i.get("refs")) or _coerce_repos(i.get("repos")),
+                  **({"why": str(i.get("why") or "").strip()} if str(i.get("why") or "").strip() else {}),
                   "source": "review"}
             specs.append(assign_plan_workspace(charter, sp))
     return specs

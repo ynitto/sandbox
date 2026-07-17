@@ -82,14 +82,20 @@ def plan_stub(request: str):
     改行の扱い: 空行（段落 = "\\n\\n"）を含む**構造化された要求**（build_request が組み立てる
     charter 文脈・完了条件つきの要求など）は 1 件の要求として扱い、行ごとに細切れのタスクへ
     分割しない。さもないと対象リポジトリ一覧などの 1 行 1 行が別タスク（=別イシュー）になり、
-    gitlab executor のタイトル/本文が文脈行で埋まってしまう。空行の無いフラットなリスト
+    gitlab executor のタイトル/本文が文脈行で埋まってしまう。**';' / '->' の区切りも構造化
+    要求では解釈しない**（verify コマンドや誘導・レビュー記述の本文に普通に混ざるため。
+    区切りのミニ言語はフラットな 1 行/リスト要求専用）。空行の無いフラットなリスト
     （例 "task1\\ntask2\\ntask3"）は従来どおり改行を区切りとして扱う。"""
-    src = request if "\n\n" in request else request.replace("\n", ";")
-    segments = [s.strip() for s in src.split(";") if s.strip()]
-    if not segments:
+    structured = "\n\n" in request
+    if structured:
         segments = [request.strip() or "no-op"]
+    else:
+        segments = [s.strip() for s in request.replace("\n", ";").split(";") if s.strip()]
+        if not segments:
+            segments = [request.strip() or "no-op"]
     # 単一セグメントかつ依存記号（'->')も無い場合はタスク数をランダム展開
-    if len(segments) == 1 and "->" not in segments[0]:
+    # （構造化要求は常にここを通る＝本文中の '->' を依存とは解釈しない）
+    if len(segments) == 1 and (structured or "->" not in segments[0]):
         n = random.randint(2, 5)
         base = _first_line(segments[0])   # 構造化要求でも見出しを 1 行に保つ（文脈行で埋めない）
         segments = [f"{base}（サブタスク{j + 1}）" for j in range(n)]

@@ -37,6 +37,39 @@
     },
     "review": { "type": "string", "description": "human = verify PASS でも done 前に人の承認（検収ゲート）" },
     "note": { "type": "string", "description": "自由記述（保持される）" },
+    "why": {
+      "type": "string",
+      "description": "背景・目的（なぜやるか・価値）。act 要求文とレビュー票（needs）に注入され、実装判断とレビューの基準になる"
+    },
+    "desc": {
+      "type": ["string", "array"],
+      "items": { "type": "string" },
+      "description": "作業内容の詳細（タイトルで足りない具体の指示）。配列は ⏎ 連結で 1 行化される"
+    },
+    "scope": {
+      "type": ["string", "array"],
+      "items": { "type": "string" },
+      "description": "変更してよいファイル/領域。この範囲の外はワーカーに変更させない"
+    },
+    "out_of_scope": {
+      "type": ["string", "array"],
+      "items": { "type": "string" },
+      "description": "やらないこと（非目標）。スコープ膨張・過剰実装を防ぐ（範囲外は @followup 提案へ誘導）"
+    },
+    "constraints": {
+      "type": ["string", "array"],
+      "items": { "type": "string" },
+      "description": "このタスク固有の制約（守るべき規約・禁止事項。rules.md/charter への上乗せ層）"
+    },
+    "hints": {
+      "type": ["string", "array"],
+      "items": { "type": "string" },
+      "description": "実装の手がかり（関連ファイル・参考実装・調査済み情報。ワーカーは現物で確認する）"
+    },
+    "demo": {
+      "type": "string",
+      "description": "人の確認観点（検収で人が何をどう確かめるか。ワーカーにも伝わる）"
+    },
     "expect": {
       "type": "string",
       "enum": ["changes", "none"],

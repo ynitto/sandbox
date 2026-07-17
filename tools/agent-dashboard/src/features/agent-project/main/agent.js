@@ -393,7 +393,12 @@ const DOCTOR_MODES = {
   },
 };
 
-const STRUCTURED_ASSIST_MODES = new Set(['followup-suggest', 'enqueue-assist']);
+const STRUCTURED_ASSIST_MODES = new Set(['followup-suggest', 'enqueue-assist', 'task-guide']);
+
+// 誘導・レビュー記述フィールド（agent-project の TASK_GUIDE_KEYS と同じ。
+// 意味論の正典は tools/agent-project/backlog.md.example）。task-guide 補完と
+// フォローアップ提案の受け渡しに使う。値は 1 行（改行は ⏎ 規約）。
+const TASK_GUIDE_KEYS = ['why', 'desc', 'scope', 'out_of_scope', 'constraints', 'hints', 'demo'];
 
 function resolveDoctorMode(mode) {
   const key = String(mode || 'consultation');
@@ -517,12 +522,32 @@ function taskAssistPrompt(mode, context, userPrompt = '') {
       '検収結果を見て、追加でやるべきフォローアップタスク案だけを JSON で返してください。\n' +
       'コマンド実行・ファイル変更・inbox投入はしないでください。提案は人が確認してから追加します。\n\n' +
       '出力は次の形の JSON オブジェクトのみ（説明文・コードフェンスなし）:\n' +
-      '{"rationale":"...","suggestions":[{"title":"...","verify":"...","accept":"...","priority":0,"after":["T1"],"note":"..."}]}\n' +
+      '{"rationale":"...","suggestions":[{"title":"...","verify":"...","accept":"...","priority":0,"after":["T1"],"note":"...",' +
+      '"why":"...","out_of_scope":"...","hints":"..."}]}\n' +
       '- suggestions は 0〜5 件。不要なら空配列。\n' +
       '- verify は exit 0 = PASS のシェルコマンドを優先。書けなければ accept に自然文。\n' +
-      '- after は既存タスク ID のみ（未知 ID を触造しない）。priority は整数。\n\n' +
+      '- after は既存タスク ID のみ（未知 ID を触造しない）。priority は整数。\n' +
+      '- why（このタスクが必要な理由・1文）は必ず。out_of_scope（やらないこと）と hints（実装の手がかり）は有益なら。\n\n' +
       `charter:\n${charter}\n\n既存 backlog:\n${backlog || '(空)'}\n\n` +
       `検収対象:\n${JSON.stringify(selected, null, 2)}\n` +
+      (note ? `\nユーザー補足:\n${note}\n` : '')
+    );
+  }
+  if (mode === 'task-guide') {
+    const task = ctx.task || {};
+    return (
+      'あなたはAgent Dashboardの読み取り専用バックログ記述アシスタントです。\n' +
+      '以下のタスクの「意図と境界」の記述（人のレビュー材料 兼 実行ワーカーへの誘導）を補完してください。\n' +
+      'コマンド実行・ファイル変更はしないでください。提案は人が確認してから反映します。\n\n' +
+      '出力は次の形の JSON オブジェクトのみ（説明文・コードフェンスなし）:\n' +
+      '{"why":"背景・目的（なぜやるか・1文）","desc":"作業内容の詳細","scope":"変更してよい範囲",' +
+      '"out_of_scope":"やらないこと","constraints":"タスク固有の制約","hints":"実装の手がかり",' +
+      '"demo":"人の確認観点","rationale":"提案の根拠・1文"}\n' +
+      '- 各値は 1 行（改行は ⏎）。charter・既存 backlog・タスク定義から根拠をもって書ける項目だけ埋め、\n' +
+      '  推測になる項目は空文字にすること（憶測で境界や制約を発明しない）。\n' +
+      '- 既に値がある項目は、明確な改善があるときだけ置換案を出し、なければ現在の値をそのまま返すこと。\n\n' +
+      `charter:\n${charter}\n\n既存 backlog:\n${backlog || '(空)'}\n\n` +
+      `対象タスク:\n${JSON.stringify(task, null, 2)}\n` +
       (note ? `\nユーザー補足:\n${note}\n` : '')
     );
   }
@@ -551,12 +576,17 @@ function normalizeAfter(value) {
   return [...new Set(parts.map((x) => String(x).trim()).filter(Boolean))];
 }
 
+// 誘導・レビュー記述の値を 1 行へ正規化（md の 1 行 = 1 フィールド規約。改行は ⏎）
+function normalizeGuideValue(v, max = 500) {
+  return String(v == null ? '' : v).trim().replace(/\s*\n\s*/g, ' ⏎ ').slice(0, max);
+}
+
 function normalizeFollowupSuggestions(obj) {
   const list = Array.isArray(obj && obj.suggestions) ? obj.suggestions : [];
   const suggestions = list.slice(0, 5).map((item, i) => {
     const s = item && typeof item === 'object' ? item : {};
     const pr = parseInt(s.priority, 10);
-    return {
+    const out = {
       title: String(s.title || '').trim() || `フォローアップ ${i + 1}`,
       verify: String(s.verify || '').trim(),
       accept: String(s.accept || '').trim(),
@@ -564,11 +594,25 @@ function normalizeFollowupSuggestions(obj) {
       after: normalizeAfter(s.after),
       note: String(s.note || '').trim(),
     };
+    for (const key of TASK_GUIDE_KEYS) {
+      const gv = normalizeGuideValue(s[key]);
+      if (gv) out[key] = gv;
+    }
+    return out;
   }).filter((s) => s.title);
   return {
     rationale: String((obj && obj.rationale) || '').trim(),
     suggestions,
   };
+}
+
+// task-guide（意図と境界の AI 補完）の応答正規化。空文字は「提案なし」の明示。
+function normalizeTaskGuide(obj) {
+  const out = { rationale: String((obj && obj.rationale) || '').trim() };
+  for (const key of TASK_GUIDE_KEYS) {
+    out[key] = normalizeGuideValue(obj && obj[key]);
+  }
+  return out;
 }
 
 function normalizeEnqueueAssist(obj) {
@@ -706,7 +750,9 @@ async function completeTaskAssist(cfg, { dir, mode, context, userPrompt }) {
   }
   const fields = m === 'followup-suggest'
     ? normalizeFollowupSuggestions(obj)
-    : normalizeEnqueueAssist(obj);
+    : m === 'task-guide'
+      ? normalizeTaskGuide(obj)
+      : normalizeEnqueueAssist(obj);
   return {
     mode: m,
     fields,
@@ -771,8 +817,10 @@ module.exports = {
   doctorPrompt,
   resolveDoctorMode,
   taskAssistPrompt,
+  TASK_GUIDE_KEYS,
   normalizeFollowupSuggestions,
   normalizeEnqueueAssist,
+  normalizeTaskGuide,
   planBacklogAdjustments,
   normalizeDraftFields,
   completeCharter,

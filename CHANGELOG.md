@@ -77,6 +77,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
     ターン成果を単一コミットにまとめる all-or-nothing 原子性で、夜間停止・電源断でも
     バスに壊れた中間状態を残さない。実行時間ベースの予算なので不在時間は予算を消費しない。
 
+### agent-project: バックログに誘導・レビュー記述フィールドを追加（why / desc / scope / out_of_scope / constraints / hints / demo）
+
+一般的なバックログ項目の慣行（背景・説明・スコープ境界・制約・確認手順）に合わせた任意
+フィールドをタスク書式に追加。**人のレビュー**と**エージェント誘導**の両方に効く:
+
+- **act 要求文へ整形注入**（`build_request`）: desc（作業内容の詳細）→ why（判断基準）→
+  scope / out_of_scope（境界。範囲外は `@followup` 提案へ誘導）→ constraints（タスク固有の
+  制約）→ hints（実装の手がかり）→ demo（人の検収観点）の順でワーカーに提示され、書けば
+  挙動が変わる。値は 1 行（改行・リストは ⏎ 規約で 1 行化）。
+- **レビュー票に判断材料として掲載**: 実行前レビュー（plan-review）・検収・blocked の
+  `needs/<id>.md` のタスク定義ブロックに載り、「なぜこのタスクか」「どこまでやるか」から
+  人が判断できる。plan（charter 分解）と敵対的レビューのプランナーは **why を必ず**、
+  out_of_scope / hints を有益なら付けて提案する。
+- **CLI・cohort・assess に対応**: `enqueue --why … --scope …` / `revise <id> --out-of-scope …`
+  （commands/ の JSON ドロップも同キーを受理）。cohort は pilot・生成メンバへ引き継ぎ
+  （`{item}` 差し込み可）。投入時アセスメント（c/r/a 採点）も記述があれば材料にする。
+- done の根拠は従来どおり **verify のみ**（これらは誘導であって完了条件ではない）。
+  書式の正典 `backlog.md.example`・JSON スキーマ `schemas/task.schema.json` を更新。
+- **AI による補完**: dashboard のタスク詳細（修正フォーム）に「意図と境界」セクションと
+  **「✦ AI で補完」**を追加 — 新モード `task-guide` が charter・既存 backlog・タスク定義から
+  根拠のある項目だけを下書きし（憶測で境界を発明しない契約）、人が確認してから revise で送信。
+  フォローアップ提案（検収 AI 補助）も why を必ず・out_of_scope / hints を有益なら付けて提案し、
+  タスク追加フォームへ引き継がれる。本体側は plan-review 差し戻しの AI 修正（plan_rework）が
+  誘導記述の補完・更新に対応（応答にキーが無い項目は既存値を温存）。
+- **表示・引き継ぎの整合**: dashboard のタスク詳細で誘導記述を散文表示（⏎ は改行へ復元。
+  feedback/note も同様に）、バックログ一覧に「目的（why）」を表示。inbox 投入・完了タスクの
+  再投入・cohort・spec 展開の全経路で欠落しないよう許可リストを統一。
+- **agent-flow**: stub プランナーが構造化要求（空行を含む＝build_request の要求文）を本文中の
+  `;` / `->` で誤分割していたのを修正（区切りのミニ言語はフラットな 1 行/リスト要求専用に。
+  verify コマンドや誘導記述に混ざる記号で issue が細切れにならない）。
+
 ### agent-dashboard / agent-project: 検収・定常業務の 4 つの不具合を修正
 
 - **verify 未定義タスクを人の承認で完了できるように**: verify の無いタスクは工程完了後に

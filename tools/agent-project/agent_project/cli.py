@@ -124,6 +124,14 @@ def main(argv=None) -> int:
                           "title/verify 中の {item} に各対象を差し込む")
     enq.add_argument("--review", default=None, help="検収ゲート（human で done 前に承認）")
     enq.add_argument("--note", default=None, help="メモ（保持される）")
+    enq.add_argument("--why", default=None, help="背景・目的（なぜやるか。レビューと実装判断の基準になる）")
+    enq.add_argument("--desc", default=None, help="作業内容の詳細（タイトルで足りない具体の指示。改行は ⏎）")
+    enq.add_argument("--scope", default=None, help="変更してよい範囲（ファイル/領域。この外は変更させない）")
+    enq.add_argument("--out-of-scope", dest="out_of_scope", default=None,
+                     help="やらないこと（非目標。スコープ膨張を防ぐ）")
+    enq.add_argument("--constraints", default=None, help="タスク固有の制約（守るべき規約・禁止事項）")
+    enq.add_argument("--hints", default=None, help="実装の手がかり（関連ファイル・参考実装・調査済み情報）")
+    enq.add_argument("--demo", default=None, help="人の確認観点（検収で何をどう確かめるか）")
     enq.add_argument("--id", default=None, help="タスク ID を明示（既定はタイトルから自動生成）")
     enq.add_argument("--json", action="store_true", help="stdin か --file の JSON（オブジェクト/配列）で投入")
     enq.add_argument("--file", default=None, help="--json の入力ファイル（既定 stdin）")
@@ -154,6 +162,19 @@ def main(argv=None) -> int:
     rv.add_argument("--after", dest="rv_after", default=None,
                     help="依存タスク ID を置換（カンマ区切り。'' / none で解除。循環は拒否）")
     rv.add_argument("--note", dest="rv_note", default=None, help="メモを置換（'' / none で削除）")
+    rv.add_argument("--why", dest="rv_why", default=None, help="背景・目的を置換（'' / none で削除）")
+    rv.add_argument("--desc", dest="rv_desc", default=None,
+                    help="作業内容の詳細を置換（改行は ⏎。'' / none で削除）")
+    rv.add_argument("--scope", dest="rv_scope", default=None,
+                    help="変更してよい範囲を置換（'' / none で削除）")
+    rv.add_argument("--out-of-scope", dest="rv_out_of_scope", default=None,
+                    help="やらないことを置換（'' / none で削除）")
+    rv.add_argument("--constraints", dest="rv_constraints", default=None,
+                    help="タスク固有の制約を置換（'' / none で削除）")
+    rv.add_argument("--hints", dest="rv_hints", default=None,
+                    help="実装の手がかりを置換（'' / none で削除）")
+    rv.add_argument("--demo", dest="rv_demo", default=None,
+                    help="人の確認観点を置換（'' / none で削除）")
     rv.add_argument("--level", dest="rv_level", default=None,
                     help="自律度を置換（report/assisted/unattended）")
     rv.add_argument("--track", dest="rv_track", default=None, help="track を置換（'' / none で削除）")

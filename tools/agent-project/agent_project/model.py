@@ -140,10 +140,17 @@ def delete_task_file(cfg: "Config", task: Task) -> None:
 # enqueue（汎用の取り込み口）— 外部ソース(webhook/メール/issue 抽出)は薄いアダプタで
 #   ここへ流し込む。コアは stdlib のみ・ネットワーク非依存・決定的を保つ。
 # ---------------------------------------------------------------------------
+# 人のレビューとエージェント誘導のための記述フィールド（意味論の正典は backlog.md.example）。
+#   why=背景・目的 / desc=作業内容の詳細 / scope=変更してよい範囲 / out_of_scope=やらないこと /
+#   constraints=タスク固有の制約 / hints=実装の手がかり / demo=人の検収観点。
+# build_request が act 要求文へ、needs の票がレビュー材料へ、それぞれ整形注入する。
+# 値は 1 行（改行は ⏎ 規約・feedback と同じ）。JSON のリスト指定は ⏎ 連結で 1 行化される。
+TASK_GUIDE_KEYS = ("why", "desc", "scope", "out_of_scope", "constraints", "hints", "demo")
+
 ENQUEUE_KNOWN_KEYS = {"id", "title", "verify", "priority", "source", "status",
                       "after", "review", "note", "accept", "verify_template", "repos",
                       "workspace", "refs", "paths", "routed_by",
-                      "cohort_items", "cohort", "cohort_role"}
+                      "cohort_items", "cohort", "cohort_role", *TASK_GUIDE_KEYS}
 
 
 def _slug_id(text: str) -> str:
@@ -204,9 +211,16 @@ def task_from_spec(cfg: "Config", spec: dict) -> Task:
     except (TypeError, ValueError):
         t.priority = 0
     for k in ("after", "review", "note", "accept", "verify_template", "repos",   # 既知の追加フィールド
-              "workspace", "refs", "paths", "routed_by"):   # ルーティング: 書込先・参照repo・触るパス・解決経路
+              "workspace", "refs", "paths", "routed_by",   # ルーティング: 書込先・参照repo・触るパス・解決経路
+              *TASK_GUIDE_KEYS):                           # 誘導・レビュー記述（why/desc/scope/…）
         v = spec.get(k)
-        if v not in (None, "", []):
+        if v in (None, "", []):
+            continue
+        if k in TASK_GUIDE_KEYS:
+            # md は 1 行 = 1 フィールドなので、リストと生の改行を ⏎ 規約へ畳む（feedback と同じ）
+            val = " ⏎ ".join(map(str, v)) if isinstance(v, list) else str(v)
+            t.extra.append((k, val.replace("\n", " ⏎ ")))
+        else:
             t.extra.append((k, ",".join(map(str, v)) if isinstance(v, list) else str(v)))
     for k, v in spec.items():                        # 未知キーも保持（取りこぼさない）
         if k not in ENQUEUE_KNOWN_KEYS and v not in (None, "", []):
@@ -294,6 +308,9 @@ def create_cohort(cfg: "Config", spec: dict) -> Task:
     cid = _unique_cohort_id(cfg, _slug_id(title_t) or "cohort")
     pilot_item, rest = items[0], items[1:]
     repos = spec.get("repos")
+    # 誘導・レビュー記述（why/desc/…）は pilot にも残り生成メンバにも引き継ぐ（{item} 差し込み可）
+    guide = {k: (" ⏎ ".join(map(str, v)) if isinstance(v, list) else str(v))
+             for k, v in ((k, spec.get(k)) for k in TASK_GUIDE_KEYS) if v not in (None, "", [])}
     pilot_spec = {
         "title": _apply_item(title_t, pilot_item),
         "verify": _apply_item(verify_t, pilot_item, fallback=False) if verify_t else "",
@@ -302,6 +319,7 @@ def create_cohort(cfg: "Config", spec: dict) -> Task:
         "source": str(spec.get("source", "") or "cohort"),
         "repos": repos,
         "priority": spec.get("priority", 0),
+        **{k: _apply_item(v, pilot_item, fallback=False) for k, v in guide.items()},
     }
     pilot = task_from_spec(cfg, pilot_spec)
     pilot.set("cohort", cid)
@@ -318,6 +336,7 @@ def create_cohort(cfg: "Config", spec: dict) -> Task:
         "source": str(spec.get("source", "") or "cohort"),
         "status": "pending",
         "feedback": "",
+        "guide": guide,                    # 誘導・レビュー記述のテンプレ（{item} はメンバ生成時に差し込み）
     })
     append_journal(cfg.journal, f"cohort {cid}: pilot {pilot.id} を作成（残り {len(rest)} 件は承認後に生成）")
     return pilot
@@ -342,6 +361,8 @@ def materialize_cohort_rest(cfg: "Config", pilot: Task, feedback: str = "") -> "
             "accept": state.get("accept") or None,
             "source": str(state.get("source", "") or "cohort"),
             "repos": repos,
+            **{k: _apply_item(str(v), item, fallback=False)
+               for k, v in (state.get("guide") or {}).items() if k in TASK_GUIDE_KEYS},
         }
         m = task_from_spec(cfg, mspec)
         m.set("cohort", cid)

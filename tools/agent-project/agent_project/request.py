@@ -162,11 +162,40 @@ def linked_learnings_context(cfg: "Config", max_chars: int = 800,
     return block[:max_chars]
 
 
+# 誘導・レビュー記述フィールド（TASK_GUIDE_KEYS）の act 要求文向けラベル。
+# 各ラベルは「ワーカーがどう扱うべきか」まで含めて明示する（書けば挙動が変わる契約）。
+# 意味論の正典は backlog.md.example。desc（何をやるか）を先頭に、判断基準（why）→
+# 境界（scope/out_of_scope/constraints）→ 参考（hints）→ 検収観点（demo）の順で提示する。
+_TASK_GUIDE_LABELS = (
+    ("desc", "作業内容の詳細"),
+    ("why", "背景・目的（実装の判断に迷ったらこの意図に沿うこと）"),
+    ("scope", "スコープ（変更してよい範囲。この範囲の外は変更しない）"),
+    ("out_of_scope", "やらないこと（スコープ外。必要に気づいても手を出さず @followup 行で提案する）"),
+    ("constraints", "このタスク固有の制約（必ず守ること）"),
+    ("hints", "実装の手がかり（参考情報。鵜呑みにせず現物のコードで確認すること）"),
+    ("demo", "人の確認観点（完了後に人がこの観点で検収する。満たした状態にすること）"),
+)
+
+
+def task_guide_block(task: Task) -> str:
+    """人が書いた誘導フィールド（why/desc/scope/…）を act 要求文のブロックに整形する。
+    無ければ空＝従来どおり。値の ⏎（1 行化規約）は改行へ戻して読ませる。"""
+    parts = []
+    for key, label in _TASK_GUIDE_LABELS:
+        v = str(task.get(key) or "").strip()
+        if v:
+            parts.append(f"{label}:\n  " + re.sub(r"\s*⏎\s*", "\n  ", v))
+    return "\n".join(parts)
+
+
 def build_request(task: Task, cfg: "Config | None" = None) -> str:
-    base = (f"{task.title}\n\n"
-            f"このタスクは完了条件を満たすまで反復し、満たしたら終了すること（loop-until-done）。\n"
-            f"完了条件: 次のシェルコマンドが終了コード 0 で成功すること:\n"
-            f"  {task.verify or '（verify 未定義）'}\n\nタスクID: {task.id}")
+    base = f"{task.title}\n\n"
+    guide = task_guide_block(task)
+    if guide:
+        base += guide + "\n\n"
+    base += (f"このタスクは完了条件を満たすまで反復し、満たしたら終了すること（loop-until-done）。\n"
+             f"完了条件: 次のシェルコマンドが終了コード 0 で成功すること:\n"
+             f"  {task.verify or '（verify 未定義）'}\n\nタスクID: {task.id}")
     fb = task.feedback()
     if fb:
         base += f"\n\n人からのフィードバック（必ず反映すること）:\n{fb}"
