@@ -1,8 +1,9 @@
-python install.py --all-skills --agent copilot
-python install.py --all-skills --agent kiro
-python install.py --all-skills --agent claude
-python install.py --all-skills --agent codex
-python install.py --all-skills --agent cursor
+python install.py --all-skills --agent copilot --skip-config --excludes-external-skills
+python install.py --all-skills --agent kiro --skip-config --excludes-external-skills
+python install.py --all-skills --agent claude --skip-config --excludes-external-skills
+python install.py --all-skills --agent codex --skip-config --excludes-external-skills
+python install.py --all-skills --agent cursor --skip-config --excludes-external-skills
 bash ./tools/codd-gate/install.sh
 bash ./tools/agent-flow/install.sh
+bash ./tools/agent-amigos/install.sh
 bash ./tools/agent-project/install.sh
