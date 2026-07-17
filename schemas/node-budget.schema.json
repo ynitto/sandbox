@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "node-budget.schema.json",
+  "title": "ノード予算 — ノード横断の実質実行時間の上限と台帳（データ契約）",
+  "description": "ノード（マシン）単位の agent CLI 実質実行時間の予算。定常業務（routine）・agent-project（project）・agent-flow（flow）・agent-amigos（amigos）の全ワークロードが同じ台帳に記帳し、合計が上限を超えないよう各ツールが自律的に抑制する。管理面（agent-dashboard / 各ツールの CLI）は config を書き、台帳を読む。置き場所: $AGENT_BUDGET_DIR（既定 ~/.agent/budget/）。config.json と ledger/<YYYYMMDD>.jsonl（UTC 日付・追記専用）。",
+  "$defs": {
+    "config": {
+      "type": "object",
+      "description": "config.json — ノードの予算設定（人 / dashboard が書く。0 = 無制限）",
+      "properties": {
+        "version": {"type": "integer", "const": 1},
+        "execution_minutes": {
+          "type": "number", "minimum": 0, "default": 0,
+          "description": "全ワークロード合計の上限（分）。0 = 無制限"
+        },
+        "period": {
+          "enum": ["day", "month", "total"], "default": "day",
+          "description": "上限の適用期間（UTC）。day = 日次リセット"
+        },
+        "workloads": {
+          "type": "object",
+          "description": "ワークロード別の内訳上限（分）。省略 / 0 = 無制限。合計上限と AND で効く",
+          "properties": {
+            "routine": {"type": "number", "minimum": 0},
+            "project": {"type": "number", "minimum": 0},
+            "flow": {"type": "number", "minimum": 0},
+            "amigos": {"type": "number", "minimum": 0}
+          },
+          "additionalProperties": {"type": "number", "minimum": 0}
+        },
+        "updated_at": {"type": "string", "description": "ISO8601 UTC"},
+        "updated_by": {"type": "string", "description": "書いた主体（dashboard / cli / 人）"}
+      },
+      "additionalProperties": true
+    },
+    "ledger_record": {
+      "type": "object",
+      "description": "ledger/<YYYYMMDD>.jsonl の 1 行 — 1 回の agent CLI 実行の記帳（各ツールが O_APPEND で追記。書き換え・削除はしない）",
+      "required": ["ts", "workload", "seconds"],
+      "properties": {
+        "ts": {"type": "string", "description": "ISO8601 UTC"},
+        "workload": {
+          "type": "string",
+          "description": "routine（定常業務: kiro-loop / agent-loop）| project（agent-project）| flow（agent-flow）| amigos（agent-amigos）。追加は additive"
+        },
+        "tool": {"type": "string", "description": "記帳したツール名"},
+        "seconds": {"type": "number", "minimum": 0, "description": "agent CLI の実実行秒"},
+        "ref": {"type": "string", "description": "帰属（例 amigos: <mission-id>/<role>、project: <project>/<task-id>）"},
+        "node": {"type": "string", "description": "ノード ID"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

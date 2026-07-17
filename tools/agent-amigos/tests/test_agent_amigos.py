@@ -62,6 +62,8 @@ class AmigosTestCase(unittest.TestCase):
             f.write("# design\n受入基準: 成果物が揃うこと。\n")
         os.environ["AGENT_AMIGOS_STUB_COST"] = "0.01"
         self.addCleanup(os.environ.pop, "AGENT_AMIGOS_STUB_COST", None)
+        os.environ["AGENT_BUDGET_DIR"] = os.path.join(self.tmp, "node-budget")
+        self.addCleanup(os.environ.pop, "AGENT_BUDGET_DIR", None)
 
     def post(self, spec=None, mid="am-test") -> str:
         roles_path = os.path.join(self.tmp, "roles.json")
@@ -422,6 +424,82 @@ class AwayProtocolTests(AmigosTestCase):
         self.assertEqual(st["state"], "working")
 
 
+class NodeBudgetTests(AmigosTestCase):
+    """ノード予算（P1 拡張、設計書 §3.3）: 請負側の上限。共有台帳で全ワークロード合計を管理。"""
+
+    def test_zero_config_is_unlimited(self):
+        from agent_amigos import nodebudget
+        self.assertFalse(nodebudget.state()["exceeded"])   # 設定なし = 0 = 無制限
+        mid = self.post()
+        d = self.daemon()
+        for _ in range(12):
+            d.cycle()
+            if self.phase(mid) == "reviewing":
+                break
+        self.assertEqual(self.phase(mid), "reviewing")     # 制限なしで完走
+
+    def test_exhaustion_pauses_and_notifies_owner(self):
+        from agent_amigos import nodebudget
+        os.environ["AGENT_AMIGOS_STUB_COST"] = "1.0"
+        nodebudget.save_config(execution_minutes=1.0 / 60)   # ノード上限 = 1 秒
+        mid = self.post()
+        d = self.daemon()
+        for _ in range(6):
+            d.cycle()
+        mp = self.bus.mission(mid)
+        # ミッションは failed にならない（ノード予算はノードの都合 — §3.3）
+        self.assertNotEqual(self.phase(mid), "failed")
+        statuses = [read_json(mp.status(n)) for n in
+                    (f"owner-node--{r}" for r in ("architect", "impl", "reviewer"))]
+        paused = [s for s in statuses if s and s.get("state") == "paused"]
+        self.assertTrue(paused, "ノード予算超過で amigo が paused になるべき")
+        self.assertIn("node-budget", paused[0].get("note", ""))
+        owner_inbox = read_inbox(mp, "owner")
+        self.assertTrue(any("[node-budget]" in m.get("body", "") for m in owner_inbox),
+                        "owner へ node-budget 理由の通知が届くべき")
+        # 台帳に amigos ワークロードで記帳されている
+        self.assertGreater(nodebudget.spent_seconds("day", "amigos"), 0)
+
+    def test_raising_limit_resumes_to_completion(self):
+        from agent_amigos import nodebudget
+        os.environ["AGENT_AMIGOS_STUB_COST"] = "1.0"
+        nodebudget.save_config(execution_minutes=1.0 / 60)
+        mid = self.post()
+        d = self.daemon()
+        for _ in range(4):
+            d.cycle()
+        self.assertNotEqual(self.phase(mid), "reviewing")
+        nodebudget.save_config(execution_minutes=0)          # 0 = 無制限へ引き上げ
+        for _ in range(12):
+            d.cycle()
+            if self.phase(mid) == "reviewing":
+                break
+        self.assertEqual(self.phase(mid), "reviewing")       # paused から復帰して完走
+
+    def test_workload_cap_applies_even_if_total_unlimited(self):
+        from agent_amigos import nodebudget
+        os.environ["AGENT_AMIGOS_STUB_COST"] = "1.0"
+        nodebudget.save_config(execution_minutes=0,
+                               workload_minutes={"amigos": 1.0 / 60})
+        # 他ワークロード（定常業務など）の消費は amigos 内訳に影響しない
+        nodebudget.record(100.0, workload="routine", tool="kiro-loop")
+        mid = self.post()
+        d = self.daemon()
+        for _ in range(6):
+            d.cycle()
+        mp = self.bus.mission(mid)
+        statuses = [read_json(mp.status(f"owner-node--{r}"))
+                    for r in ("architect", "impl", "reviewer")]
+        self.assertTrue(any(s and s.get("state") == "paused" for s in statuses))
+
+    def test_ledger_is_shared_across_workloads(self):
+        from agent_amigos import nodebudget
+        nodebudget.save_config(execution_minutes=2.0 / 60)   # 合計 2 秒
+        nodebudget.record(100.0, workload="project", tool="agent-project")
+        # 定常業務・プロジェクトの消費だけで合計上限に達する → amigos は 1 ターンも回せない
+        self.assertTrue(nodebudget.state()["exceeded"])
+
+
 @unittest.skipUnless(shutil.which("git"), "git が必要")
 class GitBusTests(unittest.TestCase):
     """GitBus（P1、設計書 §5.1）: 専用バスリポジトリ + ミッション別ブランチ。"""
@@ -436,6 +514,8 @@ class GitBusTests(unittest.TestCase):
         self.addCleanup(os.environ.pop, "AGENT_AMIGOS_PULL_INTERVAL", None)
         os.environ["AGENT_AMIGOS_STUB_COST"] = "0.01"
         self.addCleanup(os.environ.pop, "AGENT_AMIGOS_STUB_COST", None)
+        os.environ["AGENT_BUDGET_DIR"] = os.path.join(self.tmp, "node-budget")
+        self.addCleanup(os.environ.pop, "AGENT_BUDGET_DIR", None)
         self.design = os.path.join(self.tmp, "design.md")
         with open(self.design, "w", encoding="utf-8") as f:
             f.write("# design\n")

@@ -7,6 +7,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-amigos: ノード予算（請負側の上限）とツール横断の共有台帳を追加
+
+- **予算を二層に**: ミッション予算（依頼側がバスに宣言、§3.2）に加えて、
+  **請負ノード側でも上限を設定可能**に。ノード予算はツール横断の**共有台帳契約**
+  （新規 [`schemas/node-budget.schema.json`](schemas/node-budget.schema.json)、
+  置き場所 `$AGENT_BUDGET_DIR`＝既定 `~/.agent/budget/`）で管理され、
+  定常業務（routine）・agent-project（project）・agent-flow（flow）・amigos の
+  **全ワークロード合計**に上限を掛ける。**0 = 無制限**（既定）。期間は day / month /
+  total（日次リセットが既定）。ワークロード別の内訳上限も設定可。
+- **amigos 側の実装**: ターン開始前に台帳の合計をチェックし、超過中はそのノードの
+  amigo だけ **paused**（`[node-budget]` タグ・遷移時に一度だけ owner へ通知）。
+  **ミッションは殺さない** — 他ノードは進行継続、上限引き上げ・期間更新で自動復帰。
+  各ターンの CLI 実行秒は `workload: amigos`・`ref: <mission>/<role>` で台帳にも記帳
+  （バス events = ミッション予算、台帳 = ノード予算の二重帳簿）。
+  CLI: `agent-amigos budget node [--limit-minutes N] [--period day|month|total]
+  [--amigos-minutes N]`（表示・設定）。status にもノード予算行を表示。
+- **管理は依頼側・請負側どちらも**: agent-dashboard はこの契約（config.json を書き
+  ledger を読む）でどちらのノードの管理面にもなれる。dashboard の管理タブと
+  kiro-loop / agent-project / agent-flow の記帳・抑制の組み込みは、この契約に従う
+  フォローアップ（契約が先、実装は各ツール — repos / task / agent-cli と同じ流儀）。
+- テスト 32 件に拡充（+5: 0 = 無制限で完走・超過で paused ＋ owner 通知・上限引き上げで
+  復帰完走・内訳上限（他ワークロード消費は不干渉）・他ツール消費だけで合計上限に到達）。
+
 ### agent-amigos: P1（GitBus 分散・away プロトコル）を実装
 
 - **GitBus**（`--bus git+<url>`）: オンプレ git remote の**専用バスリポジトリ**で

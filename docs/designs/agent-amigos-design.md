@@ -168,6 +168,43 @@ budget:
 - **予算の追加・収束条件の変更はオーナーのみ**: `agent-amigos budget add <mid> --minutes 60`
   等が mission.yaml を改訂し、`decisions.jsonl` に記録する（amigo は次ターンから読む）。
 
+### 3.3 ノード予算 — 請負側の上限と共有台帳
+
+ミッション予算（§3.2 = **依頼側**の宣言）とは独立に、**請負側（各ノード）も自分の上限**を
+設定できる。ノードで動く LLM 仕事は amigos だけではない — 定常業務（kiro-loop /
+agent-loop）・agent-project・agent-flow が同じマシンの同じ CLI 資源を食う。そこで
+予算は**ノード横断の共有台帳**で管理し、**全ワークロードの合計**が上限を超えないよう
+各ツールが自律的に抑制する。
+
+**共有台帳契約**（正典: [`schemas/node-budget.schema.json`](../../schemas/node-budget.schema.json)。
+ツール間はデータ契約のみで結合 — repos / task / agent-cli と同じ流儀）:
+
+```
+$AGENT_BUDGET_DIR（既定 ~/.agent/budget/）
+  config.json               # 上限設定（人 / agent-dashboard / CLI が書く）
+  ledger/<YYYYMMDD>.jsonl   # 記帳（UTC 日付・追記専用・O_APPEND、各ツールが 1 実行 1 行）
+```
+
+- `config.json`: 合計上限 `execution_minutes`（**0 = 無制限**、既定）・適用期間
+  `period: day|month|total`（既定 day）・ワークロード別の内訳上限 `workloads:
+  {routine, project, flow, amigos}`（0/省略 = 無制限。合計上限と AND で効く）。
+- 記帳: `{ts, workload, tool, seconds, ref, node}`。amigos は `workload: amigos`、
+  `ref: <mission-id>/<role>` で記帳する（バスの events はミッション予算の会計、
+  台帳はノード予算の会計 — 二重帳簿だが対象が違う）。
+- **超過時の挙動（amigos）**: そのノードの amigo は CLI ターンを開始せず **paused**
+  （`[node-budget]` タグ・遷移時に一度だけ owner へ通知）。**ミッションは殺さない** —
+  他ノードの amigo は進行を続け、依頼側は通知を見て別ノードへの再アサインや待ちを
+  判断できる。上限を上げる（または期間が更新される）と自動で復帰する。
+- **管理は依頼側・請負側どちらも**: 依頼側はミッション予算（バス上・budget add）、
+  請負側はノード予算（ローカル・`agent-amigos budget node --limit-minutes N`）。
+  **agent-dashboard は両方の管理面**になる — ノード予算は config.json を書き
+  ledger を読むだけなので、dashboard 側はこの契約を読むタブを足せばよい
+  （定常業務・プロジェクト・amigos の消費内訳と上限をノードごとに表示・編集）。
+- **フォローアップ**: kiro-loop / agent-project / agent-flow の記帳・抑制の組み込みと
+  dashboard の管理タブは本設計の契約に従う後続タスク（契約が先、実装は各ツール）。
+- チェックはロックなしの読み合計なので、上振れは「進行中ターン × 同時実行数」に
+  有界（§3.2 と同じ性質）。
+
 ---
 
 ## 4. バス上のファイルレイアウトと書き込み規律
@@ -578,7 +615,8 @@ agent-amigos gc        [--keep-days 14]
 | 計画的ノード停止（定時シャットダウン） | SIGTERM フック → `state: away`（`resume_at` 付き） | ロール保持のまま翌朝続きから。`away_grace` 超過やオーナー判断で再募集へ（§6.6） |
 | ターン途中の電源断 | —（検知不要） | ターン原子性（単一コミット）によりバスは「全部か無か」。そのターンのやり直しのみで不整合なし（§6.6） |
 | amigo ノード死亡（クラッシュ） | ハートビート途絶 → lease 失効（away 宣言なし） | ロール再募集。後任が status（引き継ぎメモ）/events/artifacts から引き継ぎ（§6.5） |
-| 予算枯渇 | events の `cli_seconds` 総和（決定的会計、§3.2） | soft で wrap-up モード → hard で現状統合・`partial: true` 納品。オーナーは budget add で追加可 |
+| 予算枯渇（ミッション） | events の `cli_seconds` 総和（決定的会計、§3.2） | soft で wrap-up モード → hard で現状統合・`partial: true` 納品。オーナーは budget add で追加可 |
+| 予算枯渇（ノード） | 共有台帳の合計（§3.3） | そのノードの amigo だけ paused（`[node-budget]`・owner へ一度通知）。ミッションは継続。上限引き上げ/期間更新で自動復帰 |
 | 会話の空転（誰も進まない） | `quiescence_turns` の静穏化検知（§3.2） | 現状で統合へ進め、良し悪しは受入判定に委ねる |
 | agent CLI ハング | プラグイン timeout | ターン失敗 → リトライ、繰り返せば paused ＋ owner 通知 |
 | quota/auth/env | `[agent-error:*]` タグ | amigo paused・環境修復後に続きから（§9） |
@@ -669,3 +707,9 @@ question_timeout のエスカレーション・lease 失効→再募集、が P0
    既定とし、引き継ぎコストを払うのは grace 超過かオーナー判断のときだけ。ターンを
    単一コミットの all-or-nothing にすることで、任意のタイミングの電源断でも
    バスに壊れた中間状態が残らない。
+9. **予算は二層（ミッション = 依頼側 / ノード = 請負側）で、ノード側はツール横断の
+   共有台帳** — ノードの CLI 資源は amigos 専有ではないため、上限は「そのミッションで
+   いくら」ではなく「このマシンで合計いくら」も必要になる。台帳をデータ契約
+   （schemas/node-budget）にすることで、定常業務・project・flow が同じ台帳に記帳でき、
+   agent-dashboard は契約を読むだけで依頼側・請負側どちらの管理面にもなれる。
+   ノード予算超過はノードの都合なので amigo を paused に留め、ミッションを殺さない。

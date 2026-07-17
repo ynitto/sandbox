@@ -92,7 +92,13 @@ def cmd_run(args) -> int:
 
 
 def cmd_status(args) -> int:
+    from . import nodebudget
     bus, _node = _resolve(args)
+    nb = nodebudget.state()
+    if nb["limit_s"] or nb["workload_limit_s"]:
+        lim = f"{nb['limit_s'] / 60:.0f}m" if nb["limit_s"] else "∞"
+        print(f"ノード予算（{nb['period']}）: {nb['spent_s'] / 60:.1f}m/{lim}"
+              f"{'  ← 超過中（amigo は paused）' if nb['exceeded'] else ''}")
     mids = [args.mission] if args.mission else bus.list_missions()
     for mid in mids:
         mp, mission, roles = _mission(bus, mid)
@@ -177,6 +183,12 @@ def cmd_reject(args) -> int:
 
 
 def cmd_budget(args) -> int:
+    if args.action == "node":
+        return _cmd_budget_node(args)
+    if not args.mission:
+        raise SystemExit("[agent-amigos] budget add にはミッション ID が必要です")
+    if args.minutes is None:
+        raise SystemExit("[agent-amigos] budget add には --minutes が必要です")
     bus, node = _resolve(args)
     mp, mission, _roles = _mission(bus, args.mission)
     _require_owner(mission, node)
@@ -191,6 +203,35 @@ def cmd_budget(args) -> int:
                                           f"{budget['execution_minutes']} 分"})
     bus.sync_push(f"budget add {args.mission}")
     print(f"予算を追加しました: {budget['execution_minutes']} 分")
+    return 0
+
+
+def _cmd_budget_node(args) -> int:
+    """ノード予算（請負側の上限、§3.3）の表示・設定。台帳・設定は
+    $AGENT_BUDGET_DIR（既定 ~/.agent/budget/）のツール横断契約
+    （schemas/node-budget.schema.json）。agent-dashboard も同じファイルを管理する。"""
+    from . import nodebudget
+    changed = False
+    if args.limit_minutes is not None:
+        nodebudget.save_config(execution_minutes=args.limit_minutes)
+        changed = True
+    if args.period:
+        nodebudget.save_config(period=args.period)
+        changed = True
+    if args.amigos_minutes is not None:
+        nodebudget.save_config(workload_minutes={"amigos": args.amigos_minutes})
+        changed = True
+    cfg = nodebudget.load_config()
+    nb = nodebudget.state()
+    lim = f"{cfg['execution_minutes']:.0f}m" if cfg["execution_minutes"] else "∞（0 = 無制限）"
+    print(f"ノード予算{'を更新しました' if changed else ''}: 合計 {lim} / period={cfg['period']}")
+    print(f"  消費（{nb['period']}・全ワークロード合計）: {nb['spent_s'] / 60:.1f}m"
+          f"{'  ← 超過中' if nb['exceeded'] else ''}")
+    for wl, mins in sorted(cfg.get("workloads", {}).items()):
+        if mins:
+            print(f"  内訳上限 {wl}: {mins:.0f}m"
+                  f"（消費 {nodebudget.spent_seconds(cfg['period'], wl) / 60:.1f}m）")
+    print(f"  設定/台帳: {nodebudget.budget_dir()}")
     return 0
 
 
@@ -309,11 +350,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--feedback", required=True)
     p.set_defaults(fn=cmd_reject)
 
-    p = sub.add_parser("budget", help="予算を追加する（オーナー）")
+    p = sub.add_parser("budget",
+                       help="予算の管理: add = ミッション予算の追加（オーナー）、"
+                            "node = このノードの上限の表示・設定（請負側）")
     _bus_arg(p); _node_arg(p)
-    p.add_argument("action", choices=["add"])
-    p.add_argument("mission")
-    p.add_argument("--minutes", type=float, required=True)
+    p.add_argument("action", choices=["add", "node"])
+    p.add_argument("mission", nargs="?", default=None)
+    p.add_argument("--minutes", type=float, default=None, help="add: 追加する分数")
+    p.add_argument("--limit-minutes", type=float, default=None,
+                   help="node: 合計上限（分）。0 = 無制限")
+    p.add_argument("--period", choices=["day", "month", "total"], default=None,
+                   help="node: 上限の適用期間（既定 day）")
+    p.add_argument("--amigos-minutes", type=float, default=None,
+                   help="node: amigos ワークロードの内訳上限（分）。0 = 無制限")
     p.set_defaults(fn=cmd_budget)
 
     p = sub.add_parser("say", help="人がバスに直接発言する（介入）")
