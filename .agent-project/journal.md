@@ -970,3 +970,5 @@
 - 2026-07-17 05:58:45 === agent-project 停止 reason=drained cycles=3 done=0 blocked=3 notified=True promoted=0 ===
 - 2026-07-17 05:58:47 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
 - 2026-07-17 05:58:47 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-18 02:29:56 state-git 同期: import=2 export=3
+- 2026-07-18 02:29:56 === project 開始 v1 acceptance=2 ===
