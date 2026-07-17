@@ -24,6 +24,21 @@ function wslDistro(p) {
   return unc ? unc[1] : '';
 }
 
+// Windows ドライブパス（C:\foo\bar）→ WSL の /mnt/c/foo/bar。該当しなければ ''。
+function winDriveToWsl(p) {
+  const m = String(p || '').replace(/\//g, '\\').match(/^([A-Za-z]):(\\.*)?$/);
+  if (!m) return '';
+  const rest = (m[2] || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  return `/mnt/${m[1].toLowerCase()}${rest}`;
+}
+
+// repo（WSL UNC / POSIX / Windows ドライブ）を WSL 側の Linux パスへ寄せる。
+// Windows ドライブ上のリポジトリでも kiro-loop のペイン cwd（/mnt/c/...）と照合できる。
+function toWslCwd(p) {
+  if (isWslPath(p)) return wslPath(p);
+  return winDriveToWsl(p) || String(p || '');
+}
+
 function decodeCliOutput(buf) {
   if (buf == null) return '';
   if (typeof buf === 'string') return buf;
@@ -66,4 +81,6 @@ function shInWsl(script, timeoutMs = 8000, distro = '') {
   }));
 }
 
-module.exports = { shellQuote, isWslPath, wslPath, wslDistro, decodeCliOutput, shInWsl };
+module.exports = {
+  shellQuote, isWslPath, wslPath, wslDistro, winDriveToWsl, toWslCwd, decodeCliOutput, shInWsl,
+};

@@ -143,7 +143,8 @@ function recordRun(cfg, item, res) {
     type: item.type === 'state-machine' ? 'state-machine' : 'loop',
     repo: String(item.repo || item.cwd || ''),
     ok: !!(res && res.ok),
-    message: String((res && (res.stderr || res.stdout || res.error)) || '').trim().slice(0, 300),
+    // 別ウィンドウ実行（launched）は stdout/stderr を持たないため message を残す
+    message: String((res && (res.stderr || res.stdout || res.error || res.message)) || '').trim().slice(0, 300),
   });
 }
 

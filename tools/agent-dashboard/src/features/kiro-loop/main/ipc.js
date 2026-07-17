@@ -7,9 +7,11 @@ function registerIpc(ctx) {
 
   handle('kiroLoop:listSessions', (args = {}) => {
     const cfg = (loadConfig() || {}).kiroLoop || {};
+    // 既定接頭辞は 'kiro' — kiro-loop の自動命名（kiro-loop-…）だけでなく、
+    // `kiro-loop send` が作る既定セッション（'kiro'）も拾う。
     return tmux.listSessions({
       repo: args.repo || '',
-      prefix: args.prefix || cfg.sessionPrefix || 'kiro-loop-',
+      prefix: args.prefix || cfg.sessionPrefix || 'kiro',
     });
   });
 

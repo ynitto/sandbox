@@ -8,7 +8,7 @@ function pathDigest(linuxPath) {
 }
 
 function normalizeLinuxPath(p) {
-  const s = exec.wslPath(p || '');
+  const s = exec.toWslCwd(p || '');
   if (!s) return '';
   // 末尾スラッシュを揃えて照合を安定させる
   return s.replace(/\/+$/, '') || '/';
@@ -19,7 +19,7 @@ function listTmuxSessions(prefix, distro = '') {
   if (!r.ok && !r.stdout) {
     return { ok: false, sessions: [], error: r.stderr || r.error || 'tmux list-sessions に失敗しました' };
   }
-  const pref = String(prefix || 'kiro-loop-');
+  const pref = String(prefix || 'kiro');
   const sessions = r.stdout
     .split(/\r?\n/)
     .map((s) => s.trim())
@@ -46,28 +46,115 @@ function paneMeta(session, distro = '') {
   });
 }
 
+// tmux サーバ上の全ペイン（全セッション横断）。pane_id はサーバ全体で一意なので、
+// セッション名が分からなくても pane から session を引ける。
+function allPanes(distro = '') {
+  const r = exec.shInWsl(
+    'tmux list-panes -a -F "#{pane_id}\\t#{session_name}\\t#{pane_current_path}\\t#{pane_title}\\t#{pane_active}" 2>/dev/null || true',
+    8000,
+    distro
+  );
+  const out = new Map();
+  for (const line of String(r.stdout || '').split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const [paneId, session, cwd, title, active] = line.split('\t');
+    if (!paneId) continue;
+    out.set(paneId, {
+      paneId,
+      session: session || '',
+      cwd: cwd || '',
+      title: title || '',
+      active: active === '1',
+    });
+  }
+  return out;
+}
+
+// kiro-loop デーモンの状態ファイル（~/.kiro/loop-state/*.json）を読む。
+// { pid, cwd, sessions: [{ name, id, pane, alive }] } の配列。
+// デーモンを tmux セッションの中で起動すると、ワーカーペインは「人のセッション」
+// （名前は任意）内に分割で作られ、セッション名（kiro-loop-…）では見つけられない。
+// 状態ファイルの pane_id 直参照ならセッション名に依存せず視聴できる。
+function readLoopStates(distro = '') {
+  const r = exec.shInWsl(
+    'for f in "$HOME"/.kiro/loop-state/*.json; do [ -f "$f" ] || continue; printf "\\036"; cat "$f"; done 2>/dev/null || true',
+    8000,
+    distro
+  );
+  if (!r.stdout) return [];
+  const out = [];
+  for (const chunk of r.stdout.split('\u001e')) {
+    const t = chunk.trim();
+    if (!t) continue;
+    try {
+      const data = JSON.parse(t);
+      if (data && typeof data === 'object') out.push(data);
+    } catch { /* 壊れた・書きかけの状態ファイルはスキップ */ }
+  }
+  return out;
+}
+
+function repoMatchesCwd(want, cwd) {
+  if (!want) return true;
+  if (!cwd) return false;
+  return cwd === want || cwd.startsWith(`${want}/`);
+}
+
 function listSessions({ repo, prefix } = {}) {
   const distro = exec.wslDistro(repo || '');
-  const listed = listTmuxSessions(prefix, distro);
-  if (!listed.ok && !listed.sessions.length) {
-    return { ok: false, items: [], error: listed.error };
-  }
   const want = normalizeLinuxPath(repo);
   const digest = want ? pathDigest(want) : '';
   const items = [];
+  const seenTargets = new Set();
+  const seenSessions = new Set();
+
+  // 1) kiro-loop 状態ファイル由来のペイン（tmux 内で起動されたデーモンでも見つかる）
+  const states = readLoopStates(distro);
+  const panes = states.length ? allPanes(distro) : new Map();
+  for (const st of states) {
+    const stateCwd = normalizeLinuxPath(st.cwd || '');
+    for (const s of Array.isArray(st.sessions) ? st.sessions : []) {
+      const pane = s && s.pane ? panes.get(String(s.pane)) : null;
+      if (!pane) continue; // ペインが消えている（dead / 状態ファイルが古い）
+      const cwd = normalizeLinuxPath(pane.cwd || '') || stateCwd;
+      if (!repoMatchesCwd(want, cwd) && !repoMatchesCwd(want, stateCwd)) continue;
+      if (seenTargets.has(pane.paneId)) continue;
+      seenTargets.add(pane.paneId);
+      seenSessions.add(pane.session);
+      items.push({
+        session: pane.session,
+        target: pane.paneId,
+        name: String(s.name || s.id || ''),
+        cwd,
+        panes: [pane],
+        alive: true,
+      });
+    }
+  }
+
+  // 2) セッション名（接頭辞）由来 — スタンドアロン起動（kiro / kiro-loop-<digest>-…）向け
+  const listed = listTmuxSessions(prefix, distro);
+  if (!listed.ok && !listed.sessions.length && !items.length) {
+    return { ok: false, items: [], error: listed.error };
+  }
   for (const session of listed.sessions) {
-    const panes = paneMeta(session, distro);
-    const primary = panes.find((p) => p.active) || panes[0] || null;
+    if (seenSessions.has(session)) continue;
+    const sessionPanes = paneMeta(session, distro);
+    const primary = sessionPanes.find((p) => p.active) || sessionPanes[0] || null;
     const cwd = primary ? normalizeLinuxPath(primary.cwd) : '';
     const matchRepo = !want
       || (digest && session.includes(digest))
-      || (cwd && (cwd === want || cwd.startsWith(`${want}/`)));
+      || repoMatchesCwd(want, cwd);
     if (!matchRepo) continue;
+    const target = (primary && primary.paneId) || session;
+    if (seenTargets.has(target)) continue;
+    seenTargets.add(target);
     items.push({
       session,
-      target: (primary && primary.paneId) || session,
+      target,
+      name: '',
       cwd,
-      panes,
+      panes: sessionPanes,
       alive: true,
     });
   }
@@ -92,4 +179,5 @@ function capture({ target, lines, repo } = {}) {
 
 module.exports = {
   pathDigest, normalizeLinuxPath, listTmuxSessions, listSessions, capture, paneMeta,
+  allPanes, readLoopStates,
 };

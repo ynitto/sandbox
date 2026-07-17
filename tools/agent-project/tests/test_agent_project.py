@@ -2120,6 +2120,45 @@ class TestDecisionRecords(unittest.TestCase):
             self.assertNotIn("policy:deny", " ".join(why for _t, why in moved))
             self.assertNotEqual(tasks[0].norm_status(), "blocked")
 
+    def test_approve_completes_blocked_task_without_verify(self):
+        """verify 未定義で人の確認待ち（blocked）になったタスクは、承認で done 確定する。
+
+        従来は approve-and-fix（ready 積み直し）に落ちて同じ工程が再実行され、また
+        verify 未定義で blocked に戻る無限往復だった（承認しても完了できない不具合）。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            bd = d / "backlog"
+            bd.mkdir(parents=True)
+            (bd / "T1.md").write_text(
+                "## T1: 成果確認待ち\n- status: blocked\n- source: human\n"
+                "- verify: \n- retries: 1\n"
+                "- needs_reason: verify 未定義（工程は完了しています。完了条件が無いため"
+                "自動では done にできません。成果を確認し、問題なければ approve してください）\n",
+                encoding="utf-8")
+            c = cfg_for(d)
+            self.assertEqual(km.cmd_approve(c, "T1", "成果を確認した"), 0)
+            self.assertEqual(km.load_tasks(d / "backlog"), [])       # backlog から消える
+            self.assertTrue((d / "archive" / "T1.md").exists())      # done として退避（納品書つき）
+            self.assertIn("action  : approve-done", (d / "decisions" / "T1.md").read_text())
+
+    def test_approve_requeues_blocked_env_failure_even_without_verify(self):
+        # 環境要因（env_resume）の blocked は verify が無くても done にしない —
+        # 「環境を直してから approve すると続きから再開」の契約（ready 積み直し）を守る。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            bd = d / "backlog"
+            bd.mkdir(parents=True)
+            (bd / "T1.md").write_text(
+                "## T1: 環境エラー\n- status: blocked\n- source: human\n"
+                "- verify: \n- retries: 1\n- env_resume: 1\n"
+                "- needs_reason: [agent-error:auth] 環境の問題（認証切れ）… verify 未定義\n",
+                encoding="utf-8")
+            c = cfg_for(d)
+            self.assertEqual(km.cmd_approve(c, "T1", "認証を直した"), 0)
+            tasks = km.load_tasks(d / "backlog")
+            self.assertEqual(len(tasks), 1)
+            self.assertEqual(tasks[0].status, "ready")
+
     def test_policy_is_not_appended_twice(self):
         # policy は「人の上書き指示」の集合であって履歴ではない。同じ hold を繰り返しても増えない
         with tempfile.TemporaryDirectory() as d:

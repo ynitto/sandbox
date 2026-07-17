@@ -118,6 +118,34 @@ const doneRun = { runId: 'req-x-T1-r1', status: 'done' };
 }
 
 {
+  // verify 未定義で確認待ちの blocked は「承認して完了にする」へ誘導する（承認で done 確定）
+  const h = taskCompletionHint(
+    {
+      status: 'blocked',
+      verify: '',
+      extra: { last_run: 'req-x-T1-r1', needs_reason: 'verify 未定義（工程は完了しています…）' },
+    },
+    { runs: [doneRun] }
+  );
+  assert.strictEqual(h.unsettledDone, true);
+  assert.match(h.completeHow, /承認して完了にする/);
+  assert.match(h.needAsk, /納品確定/);
+}
+
+{
+  // verify があるタスクの blocked は従来どおり（承認完了へ誘導しない）
+  const h = taskCompletionHint(
+    {
+      status: 'blocked',
+      verify: 'npm test',
+      extra: { last_run: 'req-x-T1-r1', needs_reason: '繰り返し NG（retries=3）: verify 未定義ではない失敗' },
+    },
+    { runs: [doneRun] }
+  );
+  assert.ok(!/承認して完了にする/.test(h.completeHow));
+}
+
+{
   const h = taskCompletionHint({ status: 'proposed', extra: {} }, { runs: [] });
   assert.match(h.completeHow, /計画を承認/);
   assert.match(h.needAsk, /完了になりません/);

@@ -906,9 +906,15 @@ function sameMachineStatus(status) {
 }
 
 // POSIX 絶対パスを Windows から読める WSL UNC へ（distro が取れなければそのまま）。
+// /mnt/<drive>/… は Windows ドライブの実体なので UNC ではなく C:\… へ直接変換する。
+// これが無いと、WSL 側が記録した /mnt/c/… の検収リポジトリを Windows の dashboard が
+// \\wsl.localhost\<distro>\mnt\c\…（または C:\mnt\c\…）として解決し
+// 「リポジトリが見つかりません: /mnt/c/…」で diff が読めない。
 function toViewerPath(p) {
   const s = String(p || '');
   if (process.platform !== 'win32' || !_isPosixAbs(s)) return s;
+  const mnt = s.match(/^\/mnt\/([a-z])(\/.*)?$/i);
+  if (mnt) return `${mnt[1].toUpperCase()}:${(mnt[2] || '/').replace(/\//g, '\\')}`;
   const distro = _defaultWslDistro();
   if (!distro) return s;
   const rest = s.replace(/\//g, '\\');
