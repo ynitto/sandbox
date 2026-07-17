@@ -353,6 +353,7 @@ assert.strictEqual(
   'run-last',
   '要対応に対応するタスクのlast_runを優先する'
 );
+// 長い工程出力は冒頭＋末尾の抜粋にする（全文連結で詳細情報が巨大化しないように）。
 const longOutput = `先頭-${'x'.repeat(5000)}-末尾`;
 const fullOutput = formatNeedFullOutput(
   { body: 'needs原文' },
@@ -360,7 +361,16 @@ const fullOutput = formatNeedFullOutput(
 );
 assert.ok(fullOutput.includes('needs原文'));
 assert.ok(fullOutput.includes('run-last') && fullOutput.includes('工程 verify'));
-assert.ok(fullOutput.includes(longOutput), '5000文字を超える工程出力も省略しない');
+assert.ok(!fullOutput.includes(longOutput), '長い工程出力は全文を連結しない');
+assert.ok(fullOutput.includes('先頭-') && fullOutput.includes('-末尾'), '冒頭と末尾は残す');
+assert.ok(fullOutput.includes('中略'), '省略があることを明示する');
+assert.ok(fullOutput.includes('bus/runs/run-last/results/'), '全文の所在を案内する');
+// 短い出力はそのまま
+const shortOutput = formatNeedFullOutput(
+  { body: 'needs原文' },
+  { run: { runId: 'r2', nodes: { a: { id: 'a', output: '短い出力' } } }, events: [] }
+);
+assert.ok(shortOutput.includes('短い出力') && !shortOutput.includes('中略'));
 
 // flowGroupBucket は表示分類だけを検証するため、助言判定を小さなスタブで注入する。
 // eslint-disable-next-line no-new-func

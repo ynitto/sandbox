@@ -576,9 +576,18 @@ async function heal(dir) {
   });
 }
 
+// repo は WSL 側の agent-project が記録した POSIX パス（/home/...）のことがある。
+// Windows の dashboard では path.resolve が C:\home\... に化けて「リポジトリが見つかりません」
+// になるため、WSL UNC（\\wsl.localhost\<distro>\...）へ変換してから解決する。
+function bridgeRepoPath(repo) {
+  const { _isPosixAbs, toViewerPath } = require('../../features/agent-project/main/project');
+  const raw = String(repo || '');
+  return process.platform === 'win32' && _isPosixAbs(raw) ? toViewerPath(raw) : raw;
+}
+
 // 検収サブ画面用: 作業ブランチの差分（ファイル指定可）。サイズ上限付き。
 async function diffRange(repo, { base, ref, file, maxBytes = 200_000, workingTree = false } = {}) {
-  const root = path.resolve(String(repo || ''));
+  const root = path.resolve(bridgeRepoPath(repo));
   if (!root || !fs.existsSync(root)) throw new Error(`リポジトリが見つかりません: ${repo}`);
   const baseRef = String(base || 'main').trim() || 'main';
   const tip = String(ref || '').trim();
@@ -633,4 +642,6 @@ async function diffRange(repo, { base, ref, file, maxBytes = 200_000, workingTre
   };
 }
 
-module.exports = { pull, commitPush, syncInto, syncPathsInto, health, heal, diffRange, RUNTIME_DIRS };
+module.exports = {
+  pull, commitPush, syncInto, syncPathsInto, health, heal, diffRange, bridgeRepoPath, RUNTIME_DIRS,
+};

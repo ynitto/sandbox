@@ -1457,6 +1457,16 @@ class TestRunLoop(unittest.TestCase):
             self.assertIn("b.txt", ev)                       # 差分
             self.assertIn("→ PASS", ev)                      # 検証
 
+    def test_delivery_evidence_verify_undefined_is_not_fail(self):
+        # verify 未定義（空文字）は FAIL でなく「確認待ち」として書く（失敗と誤読させない）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            ev = km.delivery_evidence(cfg_for(d, workdir=d), "", None, location="local",
+                                      verify="", vmsg="verify 未定義（自己申告では done にできない）",
+                                      ok=False)
+            self.assertIn("- 検証: 未定義", ev)
+            self.assertNotIn("FAIL", ev)
+
     def test_budget_stop(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)

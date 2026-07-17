@@ -40,6 +40,27 @@ const git = require('../src/main/git');
     assert.doesNotMatch(selected.text, /other\.js/);
     assert.strictEqual(selected.file, 'app.js');
     console.log('ok - ファイル選択時は選択したファイルの差分だけを返す');
+
+    // 検収物の path が WSL 側の POSIX パスでも、win32 では UNC へ橋渡ししてから解決する
+    {
+      const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+      const origDistro = process.env.WSL_DISTRO_NAME;
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      process.env.WSL_DISTRO_NAME = 'Ubuntu';
+      try {
+        assert.strictEqual(
+          git.bridgeRepoPath('/home/dev/proj'),
+          '\\\\wsl.localhost\\Ubuntu\\home\\dev\\proj'
+        );
+        assert.strictEqual(git.bridgeRepoPath('C:\\proj'), 'C:\\proj');   // Windows パスはそのまま
+      } finally {
+        if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
+        if (origDistro === undefined) delete process.env.WSL_DISTRO_NAME;
+        else process.env.WSL_DISTRO_NAME = origDistro;
+      }
+      assert.strictEqual(git.bridgeRepoPath('/home/dev/proj'), '/home/dev/proj'); // 非 win32 は素通し
+      console.log('ok - diffRange は WSL の POSIX パスを win32 で UNC へ橋渡しする');
+    }
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
   }
