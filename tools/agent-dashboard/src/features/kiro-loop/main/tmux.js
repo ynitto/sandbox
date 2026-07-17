@@ -27,38 +27,46 @@ function listTmuxSessions(prefix, distro = '') {
   return { ok: true, sessions, error: '' };
 }
 
+// tmux -F へ渡す区切りは**本物のタブ文字**でなければならない。ソースに '\\t'
+// （バックスラッシュ + t の 2 文字）と書くと、シェルの二重引用符も tmux フォーマットも
+// これをタブに変換せず、出力がタブで split できずペイン解析が全滅する（端末が
+// 表示できなかった不具合の一因）。TAB 定数を埋め込んで事故を防ぐ。
+const TAB = '\t';
+
 function paneMeta(session, distro = '') {
   // 先頭ペインの cwd と pane_id。マルチペイン時は list で詳細を取る。
   const r = exec.shInWsl(
-    `tmux list-panes -t ${exec.shellQuote(session)} -F "#{pane_id}\\t#{pane_current_path}\\t#{pane_title}\\t#{pane_active}" 2>/dev/null || true`,
+    `tmux list-panes -t ${exec.shellQuote(session)} -F "#{pane_id}${TAB}#{pane_current_path}${TAB}#{pane_title}${TAB}#{pane_active}" 2>/dev/null || true`,
     8000,
     distro
   );
   if (!r.stdout.trim()) return [];
   return r.stdout.split(/\r?\n/).filter(Boolean).map((line) => {
-    const [paneId, cwd, title, active] = line.split('\t');
+    const [paneId, cwd, title, active] = line.split(TAB);
     return {
       paneId: paneId || '',
       cwd: cwd || '',
       title: title || '',
       active: active === '1',
     };
-  });
+  }).filter((p) => p.paneId.startsWith('%'));
+  // ↑ sh -lc（ログインシェル）のプロファイル出力（nvm 等）が stdout に混入することが
+  //   あるため、tmux のペイン行（%N 開始）だけを受け取る。
 }
 
 // tmux サーバ上の全ペイン（全セッション横断）。pane_id はサーバ全体で一意なので、
 // セッション名が分からなくても pane から session を引ける。
 function allPanes(distro = '') {
   const r = exec.shInWsl(
-    'tmux list-panes -a -F "#{pane_id}\\t#{session_name}\\t#{pane_current_path}\\t#{pane_title}\\t#{pane_active}" 2>/dev/null || true',
+    `tmux list-panes -a -F "#{pane_id}${TAB}#{session_name}${TAB}#{pane_current_path}${TAB}#{pane_title}${TAB}#{pane_active}" 2>/dev/null || true`,
     8000,
     distro
   );
   const out = new Map();
   for (const line of String(r.stdout || '').split(/\r?\n/)) {
     if (!line.trim()) continue;
-    const [paneId, session, cwd, title, active] = line.split('\t');
-    if (!paneId) continue;
+    const [paneId, session, cwd, title, active] = line.split(TAB);
+    if (!paneId || !paneId.startsWith('%')) continue; // プロファイル出力等のノイズ行を除外
     out.set(paneId, {
       paneId,
       session: session || '',

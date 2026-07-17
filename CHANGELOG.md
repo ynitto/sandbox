@@ -23,13 +23,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   （60 秒 kill）はセッション未起動時の kiro-cli 立ち上げ待ちで失敗し、理由も見えなかった。
   Windows では既定で**新しいコンソールウィンドウ**で `send` を実行し、送信先ペインを特定
   できたらそのまま `tmux attach` して**動いている様子を見られる**（`cowork.runWindow:
-  false` で従来動作）。
-- **定型業務の「端末」が tmux 画面を表示できない問題**: kiro-loop を tmux セッション内で
-  起動するとワーカーペインは人のセッション（任意名）内に作られ、`tmux ls` の
-  セッション名（`kiro-loop-…`）では見つけられなかった。**`~/.kiro/loop-state/*.json`
-  （デーモンの状態ファイル）から pane_id を直接発見**して視聴する。既定接頭辞も `kiro`
-  に広げ（`send` の既定セッション `kiro` を拾う）、Windows ドライブ上の repo と
-  `/mnt/c/...` の cwd の突き合わせにも対応。
+  false` で従来動作）。ウィンドウは `cmd /s /c start … wsl.exe` で開く（GUI プロセスから
+  の直接 spawn では対話可能なコンソールが割り当てられずウィンドウが出ない）。スクリプト
+  本文は `%TEMP%\agent-dashboard\` の一時ファイル経由で cmd の引用規則を回避。あわせて
+  `loopCommand` の**複数語コマンド**（`python3 ~/…/kiro-loop.py` 等）と先頭 `~` の展開に
+  対応（全体を 1 トークンとして引用して `not found` になっていた）。
+- **定型業務の「端末」が tmux 画面を表示できない問題**: 原因は 2 つ。
+  (1) tmux `-F` フォーマットの区切りがソース上リテラル `\t`（バックスラッシュ + t）で、
+  tmux はこれをタブに変換せずそのまま出力するため、ペイン解析が全滅していた —
+  本物のタブ文字を埋め込む形に修正し、ログインシェルのプロファイル出力ノイズ
+  （nvm 等）も除外。
+  (2) kiro-loop を tmux セッション内で起動するとワーカーペインは人のセッション（任意名）
+  内に作られ、`tmux ls` のセッション名（`kiro-loop-…`）では見つけられない —
+  **`~/.kiro/loop-state/*.json`（デーモンの状態ファイル）から pane_id を直接発見**して
+  視聴する。既定接頭辞も `kiro` に広げ（`send` の既定セッション `kiro` を拾う）、
+  Windows ドライブ上の repo と `/mnt/c/...` の cwd の突き合わせにも対応。
+  実 tmux + kiro-loop デーモン（セッション内起動）での動作を確認済み。
 
 ### agent-dashboard: 計画レビュー・検収・バックログの AI 補助
 

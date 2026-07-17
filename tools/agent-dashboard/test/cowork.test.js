@@ -141,12 +141,32 @@ test('win32 の loop 実行は既定で別ウィンドウ（WSL tmux）起動に
     assert.strictEqual(launched.ok, true);
     assert.strictEqual(launched.launched, true, '新しいウィンドウでの起動として返る');
     assert.match(launched.message, /別ウィンドウ/);
+    // GUI プロセスからの直接 spawn ではコンソールが割り当てられずウィンドウが出ない。
+    // cmd の start で新しいコンソールを開かせる（スクリプト本文は一時ファイル経由）。
+    assert.match(launched.windowCommand, /^cmd \/s \/c start "/, 'cmd の start でウィンドウを開く');
+    assert.match(launched.windowCommand, /wsl\.exe .*-e sh -lc /, 'wsl.exe で sh を起動する');
+    assert.ok(launched.scriptFile, '実行スクリプトを一時ファイルへ書く');
+    assert.ok(fs.existsSync(launched.scriptFile), 'スクリプトファイルが実在する');
+    assert.ok(
+      fs.readFileSync(launched.scriptFile, 'utf8').includes("'kiro-loop' 'send' '毎朝レビュー'"),
+      'スクリプト本文に send コマンドが入る'
+    );
     const legacy = makeLoopProvider({ loopCommand: 'kiro-loop', runWindow: false })
       .run({ id: 'X', cwd: 'C:\\proj\\app' });
     assert.ok(/wsl\.exe/.test(legacy.error), `runWindow:false は従来の同期 wsl.exe 実行: ${legacy.error}`);
   } finally {
     if (orig) Object.defineProperty(process, 'platform', orig);
   }
+});
+
+test('windowStartCommand は start のタイトル・distro・スクリプトパスを cmd 規則で組み立てる', () => {
+  const line = cowork_loopProvider.windowStartCommand('Ubuntu', '/mnt/c/Users/dev/Temp/agent-dashboard/run.sh');
+  assert.strictEqual(
+    line,
+    'start "定常業務 (agent-dashboard)" wsl.exe -d "Ubuntu" -e sh -lc ". \'/mnt/c/Users/dev/Temp/agent-dashboard/run.sh\'"'
+  );
+  const noDistro = cowork_loopProvider.windowStartCommand('', '/mnt/c/t/run.sh');
+  assert.ok(!noDistro.includes('-d '), 'distro 未指定なら -d を付けない');
 });
 
 test('windowScript は cd → send 実行 → 送信先ペインのセッションへ tmux attach を組み立てる', () => {
