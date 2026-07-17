@@ -24,6 +24,20 @@ function wslDistro(p) {
   return unc ? unc[1] : '';
 }
 
+// Windows ドライブパス（C:\foo\bar）→ WSL の /mnt/c/foo/bar。該当しなければ ''。
+function winDriveToWsl(p) {
+  const m = String(p || '').replace(/\//g, '\\').match(/^([A-Za-z]):(\\.*)?$/);
+  if (!m) return '';
+  const rest = (m[2] || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  return `/mnt/${m[1].toLowerCase()}${rest}`;
+}
+
+// cwd（WSL UNC / POSIX / Windows ドライブ）を WSL 側の Linux パスへ寄せる。
+function toWslCwd(p) {
+  if (isWslPath(p)) return wslPath(p);
+  return winDriveToWsl(p);
+}
+
 // Windows ネイティブ CLI は CP932、WSL は UTF-8。encoding:'utf8' 固定だと日本語が文字化けする。
 // buffer で受け取り、UTF-8 → だめなら Shift_JIS（CP932 系）へフォールバックする。
 function decodeCliOutput(buf) {
@@ -52,11 +66,15 @@ function resultOf(res) {
 
 function sh(command, args, options = {}) {
   const argv = (args || []).map(String);
-  if (process.platform === 'win32' && isWslPath(options.cwd)) {
-    const cwd = wslPath(options.cwd);
+  if (process.platform === 'win32') {
+    // kiro-loop / agent-loop（と statemachine-use を発動するプロンプト送信）は WSL 側にしか
+    // 無い想定。リポジトリが Windows ドライブ上でも wsl.exe 経由でプロジェクトルートから
+    // 実行する（Windows で直接 spawn すると ENOENT になる）。
+    const cwd = toWslCwd(options.cwd);
     const distro = wslDistro(options.cwd);
     // LANG を明示しないと WSL 側のロケールで日本語 stderr が化けることがある。
-    const script = `export LANG=C.UTF-8 LC_ALL=C.UTF-8; cd ${shellQuote(cwd)} && ${shellQuote(command)} ${argv.map(shellQuote).join(' ')}`;
+    const cd = cwd ? `cd ${shellQuote(cwd)} && ` : '';
+    const script = `export LANG=C.UTF-8 LC_ALL=C.UTF-8; ${cd}${shellQuote(command)} ${argv.map(shellQuote).join(' ')}`;
     const wslArgs = distro ? ['-d', distro, '-e', 'sh', '-lc', script] : ['-e', 'sh', '-lc', script];
     const res = spawnSync('wsl.exe', wslArgs, {
       encoding: 'buffer',
@@ -93,4 +111,6 @@ function makeLoopProvider(cfg) {
   };
 }
 
-module.exports = { makeLoopProvider, isWslPath, wslPath, wslDistro, shellQuote, sh, decodeCliOutput };
+module.exports = {
+  makeLoopProvider, isWslPath, wslPath, wslDistro, winDriveToWsl, toWslCwd, shellQuote, sh, decodeCliOutput,
+};
