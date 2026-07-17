@@ -67,12 +67,12 @@ def normalize_mission(spec: dict) -> "tuple[dict, list]":
             mission[k] = str(m[k])
     if m.get("staffing_timeout") is not None:
         mission["staffing_timeout"] = float(m["staffing_timeout"])
-    if mission["assignment_policy"] != "first-come":
-        raise SystemExit(f"[agent-amigos] assignment_policy={mission['assignment_policy']!r} は"
-                         " P0 未対応です（first-come のみ。owner-picks は P2）")
-    if mission["acceptance"] != "manual":
-        raise SystemExit(f"[agent-amigos] acceptance={mission['acceptance']!r} は P0 未対応です"
-                         "（manual のみ。agent / codd-gate は P2）")
+    if mission["assignment_policy"] not in ("first-come", "owner-picks"):
+        raise SystemExit(f"[agent-amigos] assignment_policy={mission['assignment_policy']!r} が"
+                         "不正です（first-come | owner-picks）")
+    if mission["acceptance"] not in ("manual", "agent"):
+        raise SystemExit(f"[agent-amigos] acceptance={mission['acceptance']!r} は未対応です"
+                         "（manual | agent。codd-gate は将来拡張 — 設計書 §8.2）")
     mission["convergence"] = {**CONVERGENCE_DEFAULTS, **dict(m.get("convergence") or {})}
     if mission["convergence"]["done_when"] not in ("all-required-done", "reviewer-approved"):
         raise SystemExit(f"[agent-amigos] convergence.done_when が不正です: "

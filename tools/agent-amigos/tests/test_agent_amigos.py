@@ -98,15 +98,18 @@ class NormalizeTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             normalize_mission(spec)
 
-    def test_rejects_unknown_collaborator_and_p2_policies(self):
+    def test_rejects_unknown_collaborator_and_invalid_policies(self):
         spec = base_spec()
         spec["roles"][1]["collaborates_with"] = ["ghost"]
         with self.assertRaises(SystemExit):
             normalize_mission(spec)
         with self.assertRaises(SystemExit):
-            normalize_mission(base_spec(assignment_policy="owner-picks"))
+            normalize_mission(base_spec(assignment_policy="lottery"))
         with self.assertRaises(SystemExit):
-            normalize_mission(base_spec(acceptance="codd-gate"))
+            normalize_mission(base_spec(acceptance="codd-gate"))   # 将来拡張（未対応）
+        # P2 で追加されたポリシーは通る
+        normalize_mission(base_spec(assignment_policy="owner-picks"))
+        normalize_mission(base_spec(acceptance="agent"))
 
 
 class ClaimTests(AmigosTestCase):
@@ -612,6 +615,233 @@ class GitBusTests(unittest.TestCase):
         self.assertNotIn("mission/am-gc", self._origin_branches())
         bus_c = self.make("c")
         self.assertEqual(bus_c.list_missions(), [])
+
+
+class OwnerPicksTests(AmigosTestCase):
+    """owner-picks（P2、設計書 §6.3）: claim は応募、確定はオーナーの assign。"""
+
+    def post_op(self, mid="am-op"):
+        spec = base_spec(assignment_policy="owner-picks", staffing_timeout=9999)
+        return self.post(spec, mid)
+
+    def test_claims_are_applications_not_confirmations(self):
+        from agent_amigos.assign import applicants, apply_role
+        mid = self.post_op()
+        mp = self.bus.mission(mid)
+        roles = load_roles(mp)
+        apply_role(self.bus, mp, "impl", "node-a", "stub")
+        apply_role(self.bus, mp, "impl", "node-b", "codex")
+        # 応募が 2 件並び、mirror_roster では自動確定されない
+        self.assertEqual([a["node"] for a in applicants(mp, "impl")], ["node-a", "node-b"])
+        roster = mirror_roster(self.bus, mp, roles, "owner-node", policy="owner-picks")
+        self.assertNotIn("impl", roster)
+
+    def test_owner_confirms_applicant(self):
+        from agent_amigos.assign import apply_role, confirm_assignment
+        mid = self.post_op()
+        mp = self.bus.mission(mid)
+        apply_role(self.bus, mp, "impl", "node-a", "stub")
+        apply_role(self.bus, mp, "impl", "node-b", "codex")
+        roster = confirm_assignment(self.bus, mp, "impl", "node-b")   # 後着でも選べる
+        self.assertEqual(roster["impl"]["node"], "node-b")
+        self.assertEqual(roster["impl"]["agent_cli"], "codex")
+        # 応募していないノードは確定できない
+        with self.assertRaises(SystemExit):
+            confirm_assignment(self.bus, mp, "impl", "node-ghost")
+
+    def test_owner_picks_end_to_end_with_self_staff(self):
+        # staffing_timeout=0: オーナーが応募 + 即時自己確定して 1 ノードで完走する
+        spec = base_spec(assignment_policy="owner-picks", staffing_timeout=0)
+        mid = self.post(spec, "am-op-e2e")
+        d = self.daemon()
+        for _ in range(12):
+            d.cycle()
+            if self.phase(mid) == "reviewing":
+                break
+        self.assertEqual(self.phase(mid), "reviewing")
+
+
+class AcceptanceAgentTests(AmigosTestCase):
+    """acceptance: agent（P2、設計書 §8.2）: オーナーノードの自動受入判定。
+    stub 判定は決定的（partial → 差し戻し、完全 → 受入）。"""
+
+    def test_auto_accept_full_delivery(self):
+        spec = base_spec(acceptance="agent")
+        mid = self.post(spec)
+        d = self.daemon()
+        for _ in range(14):
+            d.cycle()
+            if self.phase(mid) == "done":
+                break
+        self.assertEqual(self.phase(mid), "done")     # 人の accept なしで done に到達
+        mp = self.bus.mission(mid)
+        final = read_json(mp.final())
+        self.assertTrue(final["accepted"])
+        self.assertTrue(str(final["by"]).startswith("agent:"))
+
+    def test_partial_rejected_then_escalates_to_human(self):
+        os.environ["AGENT_AMIGOS_STUB_COST"] = "1.0"
+        spec = base_spec(acceptance="agent",
+                         convergence={"done_when": "all-required-done", "review_rounds": 2},
+                         budget={"execution_minutes": 1.0 / 60})   # 予算枯渇 → partial 納品
+        mid = self.post(spec)
+        d = self.daemon()
+        for _ in range(20):
+            d.cycle()
+        mp = self.bus.mission(mid)
+        # 自動判定は partial を差し戻し続けるが review_rounds で止まり、人へ委ねる
+        self.assertNotEqual(self.phase(mid), "done")
+        rejections = sorted(os.listdir(mp.rejections_dir()))
+        self.assertEqual(len(rejections), 2)          # 上限 review_rounds=2 で停止
+        owner_inbox = read_inbox(mp, "owner")
+        self.assertTrue(any(m["type"] == "decision-request"
+                            and "受入の自動判定" in m.get("subject", "")
+                            for m in owner_inbox))
+        # final は書かれていない（done を作れるのは人の判断のみ）
+        self.assertIsNone(read_json(mp.final()))
+
+
+class HubBusTests(AmigosTestCase):
+    """HubBus（P2、設計書 §5.2）: 薄い中継サーバ経由で P1 と同じ動作。"""
+
+    def setUp(self):
+        super().setUp()
+        from agent_amigos import hub
+        self.data = os.path.join(self.tmp, "hub-data")
+        self.server = hub.serve(self.data, "127.0.0.1", 0)   # 空きポート
+        self.port = self.server.server_port
+        self.thread = __import__("threading").Thread(target=self.server.serve_forever,
+                                                     daemon=True)
+        self.thread.start()
+        self.addCleanup(self.server.shutdown)
+        os.environ["AGENT_AMIGOS_PULL_INTERVAL"] = "0"
+        self.addCleanup(os.environ.pop, "AGENT_AMIGOS_PULL_INTERVAL", None)
+
+    def hub_bus(self, name):
+        from agent_amigos.bus import make_bus
+        return make_bus(f"hub+http://127.0.0.1:{self.port}",
+                        workdir=os.path.join(self.tmp, f"hub-wd-{name}"))
+
+    def test_two_nodes_e2e_over_hub(self):
+        bus_a, bus_b = self.hub_bus("a"), self.hub_bus("b")
+        roles_path = os.path.join(self.tmp, "roles.json")
+        with open(roles_path, "w", encoding="utf-8") as f:
+            json.dump(base_spec(staffing_timeout=9999), f)
+        mid = post_mission(bus_a, self.design, roles_path, "owner-node", "am-hub")
+        self.assertEqual(bus_b.list_missions(), ["am-hub"])   # hub 越しに公示が見える
+        a = NodeDaemon(bus_a, "owner-node", agent_cli="stub", interval=0,
+                       roles_filter=["architect", "reviewer"])
+        b = NodeDaemon(bus_b, "node-b", agent_cli="stub", interval=0,
+                       roles_filter=["impl"])
+        b.cycle()
+        phase = None
+        for _ in range(14):
+            a.cycle()
+            b.cycle()
+            mp = bus_a.mission(mid)
+            phase = derive_phase(load_mission(mp), load_roles(mp), mp)
+            if phase == "reviewing":
+                break
+        self.assertEqual(phase, "reviewing")
+        roster = read_json(bus_a.mission(mid).roster())
+        self.assertEqual(roster["impl"]["node"], "node-b")
+        # 質問/回答が hub 越しに往復している
+        mp_b = bus_b.mission(mid)
+        self.assertTrue(any(m["type"] == "question"
+                            for m in read_inbox(mp_b, "architect")))
+        # hub のデータディレクトリはミッションレイアウトそのまま（dashboard が直接読める形）
+        self.assertTrue(os.path.isfile(
+            os.path.join(self.data, "missions", "am-hub", "deliverable", "MANIFEST.json")))
+
+    def test_claim_race_over_hub(self):
+        bus_a, bus_b = self.hub_bus("a"), self.hub_bus("b")
+        roles_path = os.path.join(self.tmp, "roles.json")
+        with open(roles_path, "w", encoding="utf-8") as f:
+            json.dump(base_spec(staffing_timeout=9999), f)
+        mid = post_mission(bus_a, self.design, roles_path, "owner-node", "am-race")
+        bus_b.sync_pull(force=True)
+        mp_a, mp_b = bus_a.mission(mid), bus_b.mission(mid)
+        self.assertTrue(claim_role(bus_a, mp_a, "impl", "node-a"))
+        self.assertFalse(claim_role(bus_b, mp_b, "impl", "node-b"))
+        self.assertEqual(winner(mp_b, "impl"), "node-a")   # 全ノードが同じ勝者を導く
+
+    def test_auth_token_rejects_without_bearer(self):
+        from agent_amigos import hub
+        server = hub.serve(os.path.join(self.tmp, "hub-auth"), "127.0.0.1", 0,
+                           token="secret")
+        thread = __import__("threading").Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.shutdown)
+        bus = __import__("agent_amigos.bus", fromlist=["make_bus"]).make_bus(
+            f"hub+http://127.0.0.1:{server.server_port}",
+            workdir=os.path.join(self.tmp, "hub-wd-auth"))
+        with self.assertRaises(RuntimeError):
+            bus.sync_pull(force=True)                      # トークンなし → 401
+        os.environ["AGENT_AMIGOS_HUB_TOKEN"] = "secret"
+        self.addCleanup(os.environ.pop, "AGENT_AMIGOS_HUB_TOKEN", None)
+        bus.sync_pull(force=True)                          # トークンあり → 通る
+
+    def test_gc_removes_tree_on_hub(self):
+        bus_a = self.hub_bus("a")
+        roles_path = os.path.join(self.tmp, "roles.json")
+        with open(roles_path, "w", encoding="utf-8") as f:
+            json.dump(base_spec(), f)
+        mid = post_mission(bus_a, self.design, roles_path, "owner-node", "am-gc")
+        write_json_atomic(bus_a.mission(mid).cancelled(), {"ts": "2026-01-01T00:00:00Z"})
+        bus_a.sync_push("cancel")
+        bus_a.remove_mission(mid)
+        bus_c = self.hub_bus("c")
+        self.assertEqual(bus_c.list_missions(), [])
+        self.assertFalse(os.path.isdir(os.path.join(self.data, "missions", "am-gc")))
+
+
+class MissionSchemaTests(AmigosTestCase):
+    """schemas/amigos-mission.schema.json（正典）と normalize_mission の突き合わせ。
+    実行時は stdlib パーサが検証する（jsonschema 依存なし）— スキーマの enum/既定値が
+    実装とズレていないことをテストで担保する。"""
+
+    def _schema(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "..", "..",
+                            "schemas", "amigos-mission.schema.json")
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_schema_enums_match_implementation(self):
+        schema = self._schema()
+        props = schema["properties"]["mission"]["properties"]
+        self.assertEqual(props["assignment_policy"]["enum"], ["first-come", "owner-picks"])
+        self.assertEqual(props["staffing_policy"]["enum"], ["self-staff", "wait", "fail"])
+        self.assertEqual(props["acceptance"]["enum"], ["manual", "agent"])
+        conv = props["convergence"]["properties"]
+        self.assertEqual(conv["done_when"]["enum"],
+                         ["all-required-done", "reviewer-approved"])
+        budget = props["budget"]["properties"]
+        self.assertEqual(budget["on_exhausted"]["enum"], ["wrap-up", "fail"])
+
+    def test_schema_defaults_match_normalize(self):
+        from agent_amigos.mission import (BUDGET_DEFAULTS, CONVERGENCE_DEFAULTS,
+                                          DEFAULTS)
+        schema = self._schema()
+        props = schema["properties"]["mission"]["properties"]
+        self.assertEqual(props["assignment_policy"]["default"], DEFAULTS["assignment_policy"])
+        self.assertEqual(props["staffing_policy"]["default"], DEFAULTS["staffing_policy"])
+        self.assertEqual(props["acceptance"]["default"], DEFAULTS["acceptance"])
+        self.assertEqual(props["staffing_timeout"]["default"], DEFAULTS["staffing_timeout"])
+        conv = props["convergence"]["properties"]
+        for key in ("quiescence_turns", "review_rounds", "question_timeout"):
+            self.assertEqual(conv[key]["default"], CONVERGENCE_DEFAULTS[key], key)
+        self.assertEqual(conv["done_when"]["default"], CONVERGENCE_DEFAULTS["done_when"])
+        budget = props["budget"]["properties"]
+        for key in ("execution_minutes", "per_role_turns", "soft_ratio", "on_exhausted"):
+            self.assertEqual(budget[key]["default"], BUDGET_DEFAULTS[key], key)
+
+    def test_normalized_roles_validate_against_role_schema_keys(self):
+        _mission, roles = __import__("agent_amigos.mission", fromlist=["normalize_mission"]) \
+            .normalize_mission(base_spec())
+        role_props = set(self._schema()["properties"]["roles"]["items"]["properties"])
+        for role in roles:
+            self.assertTrue(set(role).issubset(role_props),
+                            f"スキーマに無いキー: {set(role) - role_props}")
 
 
 if __name__ == "__main__":

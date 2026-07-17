@@ -11,7 +11,7 @@ from .assign import unfilled_required
 from .bus import make_bus
 from .daemon import NodeDaemon, default_node_id
 from .messages import build_message, message_path, unanswered_questions, valid_target
-from .mission import (convergence_state, current_round, derive_phase,
+from .mission import (convergence_state, derive_phase,
                       load_mission, load_roles, post_mission)
 from .util import now_iso, read_json, write_json_atomic
 
@@ -130,6 +130,14 @@ def cmd_status(args) -> int:
         unfilled = unfilled_required(roles, roster)
         if unfilled:
             print(f"  未充足の必須ロール: {', '.join(unfilled)}")
+            if str(mission.get("assignment_policy")) == "owner-picks":
+                from .assign import applicants
+                for rid in unfilled:
+                    rows = applicants(mp, rid)
+                    if rows:
+                        who = ", ".join(a["node"] for a in rows)
+                        print(f"    {rid} への応募: {who}"
+                              f"（agent-amigos assign {mid} {rid} <node> で確定）")
     return 0
 
 
@@ -150,35 +158,45 @@ def cmd_collect(args) -> int:
 
 
 def cmd_accept(args) -> int:
+    from .ownerops import accept_mission
     bus, node = _resolve(args)
-    mp, mission, roles = _mission(bus, args.mission)
+    mp, mission, _roles = _mission(bus, args.mission)
     _require_owner(mission, node)
     if not read_json(mp.manifest()):
         raise SystemExit("[agent-amigos] deliverable がまだありません（受入対象がありません）")
-    bus.sync_pull()
-    write_json_atomic(mp.final(), {"accepted": True, "ts": now_iso(), "by": node,
-                                   "round": current_round(mp)})
-    bus.sync_push(f"accept {args.mission}")
+    accept_mission(bus, mp, by=node)
     print(f"受入しました: {args.mission}（done）")
     return 0
 
 
 def cmd_reject(args) -> int:
+    from .ownerops import reject_mission
+    bus, node = _resolve(args)
+    mp, mission, _roles = _mission(bus, args.mission)
+    _require_owner(mission, node)
+    new_round = reject_mission(bus, mp, args.feedback, by=node)
+    print(f"差し戻しました: {args.mission}（round={new_round} で再作業）")
+    return 0
+
+
+def cmd_assign(args) -> int:
+    """owner-picks: 応募者をロールへ確定する（オーナー。設計書 §6.3）。"""
+    from .assign import applicants, confirm_assignment
     bus, node = _resolve(args)
     mp, mission, roles = _mission(bus, args.mission)
     _require_owner(mission, node)
-    bus.sync_pull()
-    rnd = current_round(mp)
-    write_json_atomic(os.path.join(mp.rejections_dir(), f"{rnd:04d}.json"),
-                      {"round": rnd, "feedback": args.feedback, "ts": now_iso(), "by": node})
-    _mid, msg = build_message("owner", "all", "feedback",
-                             subject=f"差し戻し round={rnd + 1}", body=args.feedback)
-    write_json_atomic(message_path(mp, msg), msg)
-    from .util import append_jsonl
-    append_jsonl(mp.decisions(), {"ts": now_iso(), "kind": "reject",
-                                  "body": f"round={rnd} を差し戻し: {args.feedback}"})
-    bus.sync_push(f"reject {args.mission}")
-    print(f"差し戻しました: {args.mission}（round={rnd + 1} で再作業）")
+    if args.role not in roles:
+        raise SystemExit(f"[agent-amigos] ロールが存在しません: {args.role!r}")
+    bus.sync_pull(force=True)
+    if not args.node:
+        rows = applicants(mp, args.role)
+        if not rows:
+            print(f"ロール {args.role} への応募はまだありません")
+        for a in rows:
+            print(f"  {a['node']}  cli={a.get('agent_cli') or '-'}  {a.get('claimed_at') or ''}")
+        return 0
+    confirm_assignment(bus, mp, args.role, args.node)
+    print(f"確定しました: {args.role} → {args.node}")
     return 0
 
 
@@ -350,6 +368,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--feedback", required=True)
     p.set_defaults(fn=cmd_reject)
 
+    p = sub.add_parser("assign", help="owner-picks: 応募者をロールへ確定する（オーナー）")
+    _bus_arg(p); _node_arg(p)
+    p.add_argument("mission")
+    p.add_argument("role")
+    p.add_argument("node", nargs="?", default=None,
+                   help="確定するノード（省略時は応募者一覧を表示）")
+    p.set_defaults(fn=cmd_assign)
+
     p = sub.add_parser("budget",
                        help="予算の管理: add = ミッション予算の追加（オーナー）、"
                             "node = このノードの上限の表示・設定（請負側）")
@@ -384,6 +410,9 @@ def build_parser() -> argparse.ArgumentParser:
     _bus_arg(p); _node_arg(p)
     p.add_argument("--keep-days", type=float, default=14)
     p.set_defaults(fn=cmd_gc)
+
+    from . import hub
+    hub.add_parser(sub)
     return ap
 
 

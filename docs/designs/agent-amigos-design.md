@@ -1,9 +1,10 @@
 # agent-amigos — 役割駆動マルチエージェント協働ツール 設計書
 
-> 作成日: 2026-07-17 ／ ステータス: **P0（MVP）・P1（GitBus 分散・away）実装済み**（P2: hub・dashboard は未着手）
+> 作成日: 2026-07-17 ／ ステータス: **P0（MVP）・P1（GitBus 分散・away）・P2（hub・owner-picks・
+> acceptance: agent・スキーマ正典化）実装済み**（残: acceptance: codd-gate = 将来拡張）
 > 対象ブランチ: `claude/agent-amigos-design-u1gy34`
 > 実装: `tools/agent-amigos/`（`agent-amigos.py` ＋ `agent_amigos/` パッケージ・
-> `tests/test_agent_amigos.py`）。`schemas/amigos-mission.schema.json` の正典化は P2。
+> `tests/test_agent_amigos.py`）。正典スキーマ: `schemas/amigos-mission.schema.json`。
 >
 > **実装メモ（設計との差分）**:
 > - バス上の公示は正規化 **JSON**（`mission.json` / `roles/<id>.json`）で置く —
@@ -303,15 +304,23 @@ agent-flow の `Bus` 抽象（`sync_pull()` / `sync_push(msg)`）と同じ形で
 いずれの場合も**中央はただの転送・保管であり、調整役ではない**。アサインの勝者決定や状態遷移は
 各ノードが決定的に導く（§6）ため、中央が落ちても壊れない（回復後に同期が追いつくだけ）。
 
-### 5.2 HubBus / hub サーバ（P2・任意）
+### 5.2 HubBus / hub サーバ（P2・任意）— 実装済み
 
-- stdlib のみ（`http.server`）の薄い API: `PUT /o/<path>`（作成専用・上書き 409）、
-  `GET /o/<path>`、`GET /list/<prefix>?since=<cursor>`（追加分の列挙、long-poll 可）。
-- セマンティクスは「**追記専用のファイル置き場**」であり、§4 のレイアウトをそのまま写像する。
-  条件付き PUT（create-only）だけで足りるのは、レイアウトが最初から追記・名義分割で
-  設計されているため。
-- 認証は Bearer トークン（環境変数）。TLS はリバースプロキシに委譲。オンプレ限定を前提とし、
-  インターネット公開は非対応と明記する。
+- stdlib のみ（`http.server`）の薄い API:
+  `PUT /o/<path>`（**所有者上書き** — 所有権分割 §4.2 により 1 パス 1 書き手なので、
+  hub は最後の書き込みを保持するだけで裁定しない）、`GET /o/<path>`、
+  `GET /list?prefix=&since=<rev>[&wait=<sec>]`（単調増加リビジョンによる差分列挙・
+  long-poll 可）、`DELETE /tree?prefix=`（gc）。
+- セマンティクスは「**ファイル置き場**」であり、§4 のレイアウトをそのまま写像する。
+  **hub のデータディレクトリはミッションレイアウト（`missions/<mid>/…`）そのもの**で、
+  hub ホスト上の agent-dashboard は busDirs にそこを指すだけで読める。
+- クライアント（HubBus）は GitBus と同じくローカルミラー上で動き、`since=<rev>` の
+  差分 pull（間隔律速・claim の勝者確認は force）と、前回 push 時とハッシュが変わった
+  自分の書き込み分だけの push を行う。協調ロジックは他バスと完全に同一。
+- 認証は Bearer トークン（`AGENT_AMIGOS_HUB_TOKEN`）。TLS はリバースプロキシに委譲。
+  オンプレ限定を前提とし、インターネット公開は非対応。クライアントは環境のプロキシ設定を
+  常に迂回して hub へ直接接続する（LAN 前提）。
+- 起動: `agent-amigos hub --data <dir> [--host] [--port] [--token]`。
 
 ### 5.3 レイテンシの期待値
 
@@ -678,7 +687,7 @@ agent-amigos gc        [--keep-days 14]
 |---|---|---|
 | **P0（MVP）** | LocalBus / post・join・run・status・collect / claim 型アサイン＋self-staff / inbox＋all チャンネル / アクション封筒ランナー（ターン原子性込み） / **収束条件・予算会計（`cli_seconds` 集計・wrap-up・quiescence）** / integrator＋manual 受入 / agent-cli プラグイン | 1 マシン上で 3 ロール（architect・impl・reviewer）が相互に質問・レビューしながら成果物を 1 つ納品し、`collect` で取り出せる。予算枯渇で partial 納品に収束する。stub CLI（LLM なし）でプロトコルのユニットテストが通る |
 | **P1（分散）** | GitBus（**専用バスリポジトリ＋ミッション別ブランチ**、state_git の同期規律を移植）/ lease・ハートビート・ロール再募集 / **away プロトコル（graceful offboard・引き継ぎメモ・away_grace）** / エラートリアージ連携 / adaptive interval / budget add・say・cancel・gc | 2 ノード（別 PC）でロール分担して P0 と同じ納品ができる。ノードを 1 つ kill してもロール再募集で完走し、**定時シャットダウン→翌朝再起動をまたいでも同じ担当が続きから完走する** |
-| **P2（拡張）** | HubBus＋hub サーバ / owner-picks / acceptance: agent・codd-gate / agent-dashboard がバスリポジトリを直接読むミッションタブ（生存表示は `fresh_after_sec` 方式） / `schemas/amigos-mission.schema.json` 正典化 | hub 経由で P1 と同じ動作。dashboard でミッション名簿・会話・状態・予算消費が読める |
+| **P2（拡張）** | HubBus＋hub サーバ / owner-picks（応募 → `assign` で確定・自己補充両対応） / acceptance: agent（自動判定・review_rounds 超で人へエスカレーション） / agent-dashboard の Amigos タブ / `schemas/amigos-mission.schema.json` 正典化 | ✅ 完了（hub 経由の 2 ノード E2E・claim 競合・認証・gc をテストで検証。dashboard はローカルバス / GitBus workdir / hub データディレクトリを読める）。**残**: acceptance: codd-gate（将来拡張・§8.2）と seats>1 |
 
 テスト方針は agent-flow と同じく、**stub エージェント（決め打ち応答）でプロトコル層を
 LLM なしに決定的に検証**する。claim の二重アサインなし・書き込み規律違反の棄却・

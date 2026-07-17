@@ -1,13 +1,13 @@
 # agent-amigos 役割ミッション表の例（post --roles で渡す。JSON でも可）
-# 設計書: docs/designs/agent-amigos-design.md §10
+# 設計書: docs/designs/agent-amigos-design.md §10 ／ 正典スキーマ: schemas/amigos-mission.schema.json
 mission:
   title: 社内 FAQ ボットの MVP
   goal: design-doc.md の受入基準をすべて満たす FAQ ボットを納品する
   # deadline: 2026-07-24T09:00:00Z    # 任意（wall-clock。超過は owner へ通知のみ）
-  assignment_policy: first-come        # P0 は first-come のみ
+  assignment_policy: first-come        # first-come（claim 勝者＝確定）| owner-picks（assign で確定）
   staffing_policy: self-staff          # self-staff | wait | fail
   staffing_timeout: 600                # 秒。経過後に未充足の必須ロールをオーナーが自己補充
-  acceptance: manual                   # P0 は manual のみ
+  acceptance: manual                   # manual | agent（オーナー CLI が自動判定・上限超で人へ）
   convergence:
     done_when: reviewer-approved       # all-required-done | reviewer-approved
     quiescence_turns: 3                # 全ロール静穏がこのターン数続いたら統合へ（partial）

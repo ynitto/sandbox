@@ -7,6 +7,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-amigos: P2（hub サーバ・owner-picks・acceptance: agent・スキーマ正典化）を実装
+
+- **hub サーバ + HubBus**（`--bus hub+<url>`）: git が使えない環境・低レイテンシ向けの
+  任意コンポーネント。stdlib http.server の薄い API（所有者上書き PUT / リビジョン付き
+  差分 list（long-poll 可）/ tree 削除）で、**調整はしない**（中央が落ちても壊れない）。
+  データディレクトリはミッションレイアウトそのまま — hub ホストの dashboard は
+  busDirs に指すだけで読める。クライアントはローカルミラー + 差分同期（claim の
+  勝者確認は force pull）、Bearer 認証（`AGENT_AMIGOS_HUB_TOKEN`）、プロキシ迂回で
+  LAN 直結。起動: `agent-amigos hub --data <dir>`。
+- **owner-picks**: claim は「応募」になり、確定はオーナーの `agent-amigos assign
+  <mid> <role> <node>` だけが行う（応募者一覧は `assign <mid> <role>` / status に表示）。
+  自己補充（self-staff）は応募 + 即時確定で従来どおり 1 ノード完結。mirror_roster は
+  自動確定せず離脱の掃除のみ（away 保持・クラッシュ再募集は両ポリシー共通）。
+- **acceptance: agent**: reviewing になるとオーナーノードの agent CLI が design doc と
+  deliverable（有界抜粋）を突き合わせて accept / reject を自動判定。差し戻しは通常の
+  ラウンドとして働き、`convergence.review_rounds` 回で停止して owner へ
+  decision-request をエスカレーション（**無限ループを作らない**。final を書けるのは
+  オーナーノードだけ、の不変条件は維持）。stub 判定は決定的（partial → 差し戻し）。
+  codd-gate 受入は将来拡張のまま。
+- **スキーマ正典化**: [`schemas/amigos-mission.schema.json`](schemas/amigos-mission.schema.json)
+  を新設（post --roles 入力の契約）。enum・既定値が実装（normalize_mission）とズレて
+  いないことをテストで担保する。
+- テスト 44 件（+12: hub 2 ノード E2E・hub 越し claim 競合・Bearer 認証・hub gc /
+  owner-picks 応募と確定・E2E / 自動受入 done 到達・partial 差し戻し → 上限で人へ /
+  スキーマ突き合わせ ×3）。
+
 ### kiro-loop / agent-project / agent-flow: ノード予算（node-budget 契約）の記帳・抑制を組み込み
 
 - ノード予算の共有台帳（[`schemas/node-budget.schema.json`](schemas/node-budget.schema.json)）

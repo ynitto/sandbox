@@ -44,6 +44,22 @@ def claim_role(bus: Bus, mp: MissionPaths, role_id: str, node_id: str,
     return winner(mp, role_id) == node_id
 
 
+def apply_role(bus: Bus, mp: MissionPaths, role_id: str, node_id: str,
+               agent_cli: "str | None" = None, lease: "float | None" = None) -> None:
+    """owner-picks 用の応募: 自分名義の claim を書くだけで勝者判定はしない
+    （確定はオーナーの roster 書き込み。設計書 §6.3）。既に応募済みなら lease を延長する。"""
+    existing = read_json(mp.assignment(role_id, node_id))
+    if isinstance(existing, dict) and existing.get("node") == node_id:
+        renew_lease(mp, role_id, node_id, lease)
+        return
+    write_json_atomic(mp.assignment(role_id, node_id),
+                      {"node": node_id, "ts": unique_ts(), "agent_cli": agent_cli,
+                       "lease_until": time.time() + (lease if lease is not None
+                                                     else default_lease()),
+                       "claimed_at": now_iso()})
+    bus.sync_push(f"apply {role_id} by {node_id}")
+
+
 def live_claims(mp: MissionPaths, role_id: str) -> list:
     """lease 内の claim（(ts, node) 昇順）。期限切れは孤児として無視する。"""
     claims = []
@@ -120,9 +136,12 @@ def is_away_within_grace(mp: MissionPaths, role_id: str, node_id: str) -> bool:
 
 
 def mirror_roster(bus: Bus, mp: MissionPaths, roles: "dict[str, dict]",
-                  owner_node: str) -> dict:
-    """first-come: claim 勝者＝確定。オーナーが導出結果を roster.json に鏡写しする
-    （表示・監査用。設計書 §6.3）。roster はオーナーのみ書く。
+                  owner_node: str, policy: str = "first-come") -> dict:
+    """roster の維持（オーナーのみ書く。設計書 §6.3）。
+
+    - first-come: claim 勝者＝確定。導出結果を roster.json に鏡写しする（表示・監査用）。
+    - owner-picks: claim は「応募」。自動確定はせず、オーナーの明示アサイン
+      （confirm_assignment）だけが roster を埋める。ここでは離脱の掃除のみ行う。
 
     away 保持（§6.6）: 担当の lease が切れていても `state: away` かつ
     resume_at + grace 内なら roster から外さない（再募集しない）。
@@ -130,25 +149,49 @@ def mirror_roster(bus: Bus, mp: MissionPaths, roles: "dict[str, dict]",
     roster = read_json(mp.roster()) or {}
     changed = False
     for role_id in roles:
-        w = winner(mp, role_id)
         cur = (roster.get(role_id) or {}).get("node")
-        if w and cur != w:
-            if cur and is_away_within_grace(mp, role_id, cur):
-                continue     # away 中の担当を横取り claim から守る
-            claim = read_json(mp.assignment(role_id, w)) or {}
-            roster[role_id] = {"node": w, "agent_cli": claim.get("agent_cli"),
-                               "confirmed_at": now_iso()}
-            changed = True
-        elif cur and not w:
-            if is_away_within_grace(mp, role_id, cur):
-                continue     # 計画停止 → ロール保持のまま復帰を待つ
-            # 担当消滅（lease 失効・away 宣言なし = クラッシュ）→ 再募集へ
-            del roster[role_id]
-            changed = True
+        if policy == "first-come":
+            w = winner(mp, role_id)
+            if w and cur != w:
+                if cur and is_away_within_grace(mp, role_id, cur):
+                    continue     # away 中の担当を横取り claim から守る
+                claim = read_json(mp.assignment(role_id, w)) or {}
+                roster[role_id] = {"node": w, "agent_cli": claim.get("agent_cli"),
+                                   "confirmed_at": now_iso()}
+                changed = True
+                continue
+        # 担当消滅の掃除（両ポリシー共通）: lease 失効かつ away でない = クラッシュ → 再募集
+        if cur:
+            claim = read_json(mp.assignment(role_id, cur)) or {}
+            lease_alive = float(claim.get("lease_until") or 0) >= time.time()
+            if not lease_alive and not is_away_within_grace(mp, role_id, cur):
+                del roster[role_id]
+                changed = True
     if changed:
         write_json_atomic(mp.roster(), roster)
         bus.sync_push("roster")
     return roster
+
+
+def confirm_assignment(bus: Bus, mp: MissionPaths, role_id: str, node_id: str) -> dict:
+    """owner-picks: オーナーが応募者を確定する（roster への明示書き込み。設計書 §6.3）。
+    応募（claim）が実在することを検証する。"""
+    claim = read_json(mp.assignment(role_id, node_id))
+    if not isinstance(claim, dict) or claim.get("node") != node_id:
+        raise SystemExit(f"[agent-amigos] {node_id} はロール {role_id} に応募していません")
+    roster = read_json(mp.roster()) or {}
+    roster[role_id] = {"node": node_id, "agent_cli": claim.get("agent_cli"),
+                       "confirmed_at": now_iso()}
+    write_json_atomic(mp.roster(), roster)
+    bus.sync_push(f"assign {role_id} -> {node_id}")
+    return roster
+
+
+def applicants(mp: MissionPaths, role_id: str) -> list:
+    """ロールへの有効な応募者一覧（(ts, node) 昇順 = 応募順）。owner-picks の判断材料。"""
+    return [{"node": node, "agent_cli": data.get("agent_cli"),
+             "claimed_at": data.get("claimed_at")}
+            for _ts, node, data in live_claims(mp, role_id)]
 
 
 def unfilled_required(roles: "dict[str, dict]", roster: dict) -> list:

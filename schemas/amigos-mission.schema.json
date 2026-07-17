@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "amigos-mission.schema.json",
+  "title": "agent-amigos ミッション公示（design doc と併せて post するミッション + 役割ミッション表）",
+  "description": "オーナーが `agent-amigos post --roles <file>` へ渡す入力（YAML/JSON）の契約。post 時に正規化 JSON としてバスへ置かれる（mission.json / roles/<id>.json）。検証は agent-amigos の stdlib パーサ（normalize_mission）が行い、本スキーマは契約の文書化とテスト突き合わせに使う。正典設計: docs/designs/agent-amigos-design.md §10。",
+  "type": "object",
+  "required": ["roles"],
+  "properties": {
+    "mission": {
+      "type": "object",
+      "properties": {
+        "title": {"type": "string"},
+        "goal": {"type": "string", "description": "ミッション全体の目標（全 amigo のプロンプトに載る）"},
+        "deadline": {"type": "string", "description": "wall-clock の締切（ISO8601）。超過はオーナー通知のみ（自動 fail しない）"},
+        "assignment_policy": {
+          "enum": ["first-come", "owner-picks"], "default": "first-come",
+          "description": "first-come: claim 勝者＝確定（決定的タイブレーク）。owner-picks: claim は応募、確定は agent-amigos assign"
+        },
+        "staffing_policy": {
+          "enum": ["self-staff", "wait", "fail"], "default": "self-staff",
+          "description": "staffing_timeout 経過後の未充足必須ロールの扱い。self-staff = オーナーノードが自己補充（1 ノード完結の保証）"
+        },
+        "staffing_timeout": {"type": "number", "minimum": 0, "default": 600},
+        "acceptance": {
+          "enum": ["manual", "agent"], "default": "manual",
+          "description": "受入判定。manual = 人が accept/reject。agent = オーナーノードの agent CLI が design doc と突き合わせて自動判定（review_rounds 回差し戻しで人へエスカレーション）。codd-gate は将来拡張"
+        },
+        "convergence": {
+          "type": "object",
+          "description": "収束条件（設計書 §3.2）",
+          "properties": {
+            "done_when": {"enum": ["all-required-done", "reviewer-approved"], "default": "all-required-done"},
+            "quiescence_turns": {"type": "integer", "minimum": 0, "default": 3,
+              "description": "全ロール静穏（新着ゼロ・未回答質問ゼロ）がこのターン数続いたら partial 統合へ。0 = 無効"},
+            "review_rounds": {"type": "integer", "minimum": 0, "default": 2,
+              "description": "レビュー指摘 → 修正の往復上限（acceptance: agent の差し戻し上限を兼ねる）"},
+            "question_timeout": {"type": "integer", "minimum": 1, "default": 2,
+              "description": "未回答質問を owner へ decision-request 昇格するまでの自ターン数"}
+          },
+          "additionalProperties": false
+        },
+        "budget": {
+          "type": "object",
+          "description": "ミッション予算 = 全 amigo の agent CLI 実質実行時間の合計（設計書 §3.2。ノード予算 = node-budget.schema.json とは独立の依頼側上限）",
+          "properties": {
+            "execution_minutes": {"type": "number", "minimum": 0, "default": 0, "description": "0 = 無制限"},
+            "per_role_turns": {"type": "integer", "minimum": 0, "default": 30},
+            "soft_ratio": {"type": "number", "exclusiveMinimum": 0, "maximum": 1, "default": 0.9},
+            "on_exhausted": {"enum": ["wrap-up", "fail"], "default": "wrap-up"}
+          },
+          "additionalProperties": false
+        },
+        "workspace": {
+          "type": "object",
+          "description": "コード成果物用の対象リポジトリ（設計書 §8.3。バスに巨大ファイルを積まない）",
+          "properties": {"repo": {"type": "string"}},
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "roles": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^(?!all$|owner$)[^/]+$",
+                 "description": "ロール ID（all / owner は予約語・/ 不可）"},
+          "title": {"type": "string"},
+          "mission": {"type": "string", "description": "このロールの個別ミッション（プロンプトの中核）"},
+          "deliverables": {"type": "array", "items": {"type": "string"},
+                           "description": "artifacts に書く成果物の相対パス"},
+          "required": {"type": "boolean", "default": true},
+          "seats": {"type": "integer", "const": 1, "description": "P0-P2 は 1 のみ"},
+          "agent_cli": {"type": "string", "description": "このロールが使う agent CLI（未指定はノード既定）"},
+          "model": {"type": "string"},
+          "requires": {
+            "type": "object",
+            "description": "ノード能力とのマッチング条件（join --tags / --agent-cli と突き合わせ）",
+            "properties": {
+              "tags": {"type": "array", "items": {"type": "string"}},
+              "cli": {"type": "string"}
+            },
+            "additionalProperties": true
+          },
+          "collaborates_with": {"type": "array", "items": {"type": "string"},
+                                "description": "会話相手のヒント（実行順序の強制ではない）"},
+          "approver": {"type": "boolean", "default": false,
+                       "description": "done_when: reviewer-approved の承認者"},
+          "builtin": {"enum": ["", "integrator"], "default": "",
+                      "description": "integrator: 成果物統合の組み込みロール（省略時は自動追加）"}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

@@ -17,8 +17,8 @@ import signal
 import socket
 import time
 
-from .assign import (claim_role, matches_role, mirror_roster, staffing_expired,
-                     unfilled_required, winner)
+from .assign import (apply_role, claim_role, confirm_assignment, matches_role,
+                     mirror_roster, staffing_expired, unfilled_required, winner)
 from .bus import Bus
 from .mission import derive_phase, load_mission, load_roles
 from .runner import AmigoRunner
@@ -81,9 +81,11 @@ class NodeDaemon:
             if phase in ("done", "cancelled", "failed"):
                 continue
             i_am_owner = mission.get("owner_node") == self.node_id
+            policy = str(mission.get("assignment_policy") or "first-come")
             roster = read_json(mp.roster()) or {}
 
-            # 応募: 未充足ロールのうち能力が合うものを claim（first-come）
+            # 応募: 未充足ロールのうち能力が合うものへ。
+            # first-come は claim（勝者＝確定）、owner-picks は応募のみ（確定はオーナー）。
             for role in roles.values():
                 rid = role["id"]
                 if rid in roster:
@@ -95,21 +97,34 @@ class NodeDaemon:
                     continue    # integrator はオーナーノードの組み込み職務（§8.1）
                 if not matches_role(role, self.tags, [self.agent_cli] if self.agent_cli else []):
                     continue
+                if policy == "owner-picks":
+                    apply_role(self.bus, mp, rid, self.node_id, self.agent_cli)
+                    continue
                 if winner(mp, rid) == self.node_id:
                     continue    # claim 済み（roster への鏡写しはオーナー待ち）
                 if claim_role(self.bus, mp, rid, self.node_id, self.agent_cli):
                     log(self.node_id, f"{mid}: ロール {rid} を獲得しました")
 
-            # オーナー職務: roster 鏡写し・自己補充
+            # オーナー職務: roster 維持・自己補充・受入の自動判定
             if i_am_owner:
-                roster = mirror_roster(self.bus, mp, roles, self.node_id)
+                roster = mirror_roster(self.bus, mp, roles, self.node_id, policy=policy)
                 unfilled = unfilled_required(roles, roster)
                 if unfilled and str(mission.get("staffing_policy")) == "self-staff" \
                         and staffing_expired(mission):
                     for rid in unfilled:
-                        if claim_role(self.bus, mp, rid, self.node_id, self.agent_cli):
+                        if policy == "owner-picks":
+                            apply_role(self.bus, mp, rid, self.node_id, self.agent_cli)
+                            confirm_assignment(self.bus, mp, rid, self.node_id)
                             log(self.node_id, f"{mid}: 未充足ロール {rid} を自己補充します")
-                    roster = mirror_roster(self.bus, mp, roles, self.node_id)
+                        elif claim_role(self.bus, mp, rid, self.node_id, self.agent_cli):
+                            log(self.node_id, f"{mid}: 未充足ロール {rid} を自己補充します")
+                    roster = mirror_roster(self.bus, mp, roles, self.node_id, policy=policy)
+                if str(mission.get("acceptance")) == "agent" and phase == "reviewing":
+                    from .ownerops import acceptance_turn
+                    result = acceptance_turn(self.bus, mp, mission, self.node_id,
+                                             self.agent_cli)
+                    if result in ("accepted", "rejected"):
+                        self._active = True
 
             # 自分の amigo のターン
             for rid, ent in sorted(roster.items()):

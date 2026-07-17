@@ -142,14 +142,15 @@ def make_bus(spec: str, workdir: "str | None" = None) -> Bus:
     """バス指定からバス実装を作る。
     - ローカルディレクトリ: そのままパス
     - `git+<url>`: 専用バスリポジトリ（ミッション別ブランチ、設計書 §5.1）
-    - `hub+<url>`: P2（未実装）
+    - `hub+<url>`: hub サーバ経由（`agent-amigos hub` の対向、設計書 §5.2）
     """
     s = str(spec or "").strip()
     if s.startswith("git+"):
         from .gitbus import GitBus
         return GitBus(s[4:], workdir=workdir)
     if s.startswith("hub+"):
-        raise SystemExit("[agent-amigos] バス種別 'hub' は未実装です（P2。設計書 §5.2）")
+        from .hubbus import HubBus
+        return HubBus(s[4:], workdir=workdir)
     if not s:
         raise SystemExit("[agent-amigos] バスのパスを指定してください（--bus <dir>）")
     return Bus(s)
