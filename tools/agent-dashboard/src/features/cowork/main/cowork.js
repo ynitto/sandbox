@@ -247,10 +247,11 @@ function runLoop(config, itemIdValue) {
   const cfg = config.cowork || {};
   const item = resolveItem(config, itemIdValue);
   if (!item) throw new Error(`Cowork 作業が見つかりません: ${itemIdValue}`);
-  // 発見 loop の実行対象は kiro-loop の prompt 名（合成 id ではない）。
+  // 実行対象は kiro-loop の prompt 名（合成 id ではない）。`send` が cwd の
+  // .kiro/kiro-loop.* から名前解決するため、手動項目も表示名を優先する。
   const runId = item.source === 'discovered'
     ? ((item._src && item._src.promptName) || item.name)
-    : (item.id || item.name);
+    : (item.name || item.id);
   const cwd = viewerRepo(item.repo || item.cwd) || item.repo || item.cwd;
   return makeLoopProvider(cfg).run({ ...item, cwd, id: runId });
 }

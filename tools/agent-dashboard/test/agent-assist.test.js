@@ -353,14 +353,39 @@ test('planBacklogAdjustments: 差分がある未実施タスクだけ revise 対
   assert.ok(planned.skipped.some((s) => s.id === 'T9'));
 });
 
-test('buildDoctorCommand: WSL UNC を cwd にしない（Windows ネイティブ CLI 対策）', () => {
+test('buildDoctorCommand: WSL UNC を cwd に保持する（runCommand が wsl.exe 経由で実行）', () => {
   const unc = '\\\\wsl.localhost\\Ubuntu\\home\\me\\proj';
   const c = agent.buildDoctorCommand('kiro', '', 'x', unc);
-  if (process.platform === 'win32') {
-    assert.strictEqual(c.cwd, null);
-  } else {
-    assert.strictEqual(c.cwd, unc);
-  }
+  assert.strictEqual(c.cwd, unc);
+});
+
+test('doctorPrompt: snapshotFile 指定時は stdin を使わずファイル参照で指示する', () => {
+  const p = agent.doctorPrompt({ tab: 'needs' }, '', { snapshotFile: '/tmp/snap.md' });
+  assert.strictEqual(p.stdin, null, 'stdin は使わない（kiro-cli は positional 併用時に stdin を読まない）');
+  assert.strictEqual(p.file, '/tmp/snap.md');
+  assert.ok(p.argv.includes('/tmp/snap.md'), 'argv がファイルパスを参照する');
+  assert.ok(p.argv.includes('fs_read'), 'fs_read で読ませる');
+  assert.ok(p.body.includes('"tab": "needs"'), '本文（spill へ書く内容）に画面 JSON を含む');
+});
+
+test('buildDoctorCommand: kiro + file は fs_read だけを信頼し stdin を渡さない', () => {
+  const prompt = agent.doctorPrompt({ tab: 'needs' }, '', { snapshotFile: '/tmp/snap.md' });
+  const c = agent.buildDoctorCommand('kiro', '', prompt, '/project');
+  assert.ok(c.args.includes('--trust-tools=fs_read'));
+  assert.ok(!c.args.includes('--trust-all-tools'));
+  assert.strictEqual(c.stdin, null);
+  assert.ok(c.args[c.args.length - 1].includes('/tmp/snap.md'));
+});
+
+test('spillTarget / writeSpill: 一時ファイルへ書き、CLI から見えるパスと後始末を返す', () => {
+  const t = agent.spillTarget('/home/me/proj');
+  assert.ok(t.writePath && t.cliPath, 'パスを返す');
+  const spill = agent.writeSpill('/home/me/proj', 'CONTENT');
+  assert.ok(spill, '書き込みに成功する');
+  assert.strictEqual(fs.readFileSync(spill.writePath, 'utf8'), 'CONTENT');
+  spill.cleanup();
+  assert.ok(!fs.existsSync(spill.writePath), 'cleanup で削除される');
+  spill.cleanup(); // 二重 cleanup でも例外にしない
 });
 
 test('Doctorはpreloadの限定APIから専用IPCだけを呼び出す', () => {

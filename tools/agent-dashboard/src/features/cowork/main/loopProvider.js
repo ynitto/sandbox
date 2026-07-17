@@ -84,7 +84,10 @@ function makeLoopProvider(cfg) {
     command,
     replacementHint: cfg.nextLoopProvider || 'agent-loop',
     run(job) {
-      const args = Array.isArray(job.args) ? job.args : ['run', job.id || job.name].filter(Boolean);
+      // kiro-loop / agent-loop に `run` サブコマンドは無い。単発実行は
+      // `send <プロンプト名>` — cwd（ワークスペース）の .kiro/kiro-loop.* から
+      // 定期プロンプト名を解決してセッションへ送信する（送信のみで応答は待たない）。
+      const args = Array.isArray(job.args) ? job.args : ['send', job.id || job.name].filter(Boolean);
       return sh(command, args, { cwd: job.cwd || job.repo, timeoutMs: job.timeoutMs || 60000 });
     },
   };

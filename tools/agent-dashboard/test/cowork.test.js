@@ -7,6 +7,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const cowork = require('../src/features/cowork/main/cowork');
+const { makeLoopProvider } = require('../src/features/cowork/main/loopProvider');
 
 let passed = 0;
 function test(name, fn) {
@@ -86,6 +87,19 @@ test('decodeCliOutput は不正 UTF-8 を Shift_JIS として読む', () => {
   const buf = Buffer.from([0x82, 0xa0]);
   assert.strictEqual(cowork.decodeCliOutput(buf), 'あ');
   assert.strictEqual(cowork.decodeCliOutput(Buffer.from('ok', 'utf8')), 'ok');
+});
+
+test('loop 実行は kiro-loop の send サブコマンドでプロンプト名を送る（run は存在しない）', () => {
+  // command を echo に差し替えて、組み立てられた引数だけを検証する
+  const r = makeLoopProvider({ loopCommand: 'echo' }).run({ id: '毎朝レビュー', cwd: os.tmpdir() });
+  assert.ok(r.ok, `echo が成功する: ${r.error || r.stderr}`);
+  assert.strictEqual(r.stdout, 'send 毎朝レビュー');
+});
+
+test('loop 実行は明示 args があればそれを優先する', () => {
+  const r = makeLoopProvider({ loopCommand: 'echo' }).run({ id: 'X', args: ['send', '-s', 'sess', 'X'], cwd: os.tmpdir() });
+  assert.ok(r.ok);
+  assert.strictEqual(r.stdout, 'send -s sess X');
 });
 
 test('overview の既定はプロセス探査せず probed=false', () => {
