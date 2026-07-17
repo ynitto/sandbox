@@ -1,8 +1,0 @@
-{
-  "command": "revise",
-  "id": "agent-project-codd-gate--042729",
-  "reason": "要対応画面で検証コマンドを変更",
-  "actor": "agent-dashboard",
-  "ts": "2026-07-17T18:05:42.809Z",
-  "verify": "echo \"ok\""
-}

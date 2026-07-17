@@ -1,8 +1,0 @@
-{
-  "id": "t5",
-  "goal": "spec に従い tools/agent-project の _first_command_line を実装し、ラベル付き出力から codd-gate コマンド行を抽出できるようにする（既存呼び出し元の挙動は維持）",
-  "deps": [
-    "t4"
-  ],
-  "kind": "generate"
-}
