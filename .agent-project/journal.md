@@ -976,3 +976,59 @@
 - 2026-07-18 02:30:01 feedback 取り込み: agent-project-codd-gate--042729 を再開
 - 2026-07-18 02:30:01 feedback 取り込み: docs-designs-README-042729 を再開
 - 2026-07-18 02:30:01 feedback 取り込み: verify-codd-gate-042729 を再開
+- 2026-07-18 02:41:43 needs 再生成: codd-ref-github-instructions-common-i-211b96（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-ref-github-instructions-common-i-ea8e99（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-ref-github-instructions-common-i-30a833（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-ref-github-instructions-common-i-c0647a（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-ref-github-skills-agent-cli-prox-c72ea1（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-ref-github-skills-agent-flow-SKI-90d612（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-ref-github-skills-agent-loop-mes-f72a9c（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-ref-github-skills-agent-project-ea33e5（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-ref-github-skills-agent-project-e01703（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-ref-github-skills-agentic-search-e38e67（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-ref-github-skills-agentic-search-f58bbb（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-ref-github-skills-agentic-search-4b7a96（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-ref-github-skills-agentic-search-5b7d04（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-ref-github-skills-api-designer-S-e02848（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-doc-github-skills-api-designer-s-1773b6（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-doc-github-skills-bruno-e2e-buil-e1fe36（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-doc-github-skills-bruno-e2e-buil-73b53b（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-doc-github-skills-code-to-specs-0d54c8（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-doc-github-skills-flow-planner-s-6c6fc2（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-doc-github-skills-flow-worker-sc-6c94c4（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-doc-github-skills-git-skill-mana-d1d2af（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-doc-github-skills-git-skill-mana-ae2a61（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-doc-github-skills-git-skill-mana-ad2134（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-doc-github-skills-git-skill-mana-9b9d8d（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-doc-github-skills-git-skill-mana-817ace（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-doc-github-skills-git-skill-mana-75b45d（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-doc-github-skills-git-skill-mana-93c0a5（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-doc-github-skills-git-skill-mana-56a038（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-doc-github-skills-gitlab-idd-scr-4473d8（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-doc-github-skills-jenkins-use-sc-5db770（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-doc-github-skills-ltm-use-script-4de53a（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-doc-github-skills-moltbook-use-c-17f639（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-doc-github-skills-moltbook-use-s-57d701（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-doc-github-skills-moltbook-use-s-d8c982（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-test-github-skills-agent-reviewer-6b71d7（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-test-github-skills-agent-reviewer-419e24（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-test-github-skills-agentic-search-222e87（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-test-github-skills-api-designer-s-dafcbf（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-test-github-skills-bruno-e2e-buil-09109b（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-test-github-skills-bruno-e2e-buil-07c728（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-test-github-skills-code-to-specs-b5261c（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-test-github-skills-dependency-aud-6c00cf（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-test-github-skills-flow-planner-s-7e930f（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-test-github-skills-git-skill-mana-09564c（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-test-github-skills-git-skill-mana-d5e1c1（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-test-github-skills-git-skill-mana-780c68（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-test-github-skills-git-skill-mana-9ca551（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-test-github-skills-git-skill-mana-eeab03（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-test-github-skills-git-skill-mana-db7d2f（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-test-github-skills-git-skill-mana-33b3a8（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-test-github-skills-git-skill-mana-acbd71（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-test-github-skills-git-skill-mana-b67929（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-test-github-skills-git-skill-mana-901492（proposed）
+- 2026-07-18 02:41:43 needs 再生成: codd-test-github-skills-git-skill-mana-97626a（proposed）
+- 2026-07-18 02:41:43 === agent-project 開始 tasks=60 ingested=3 planner=agent executor=agent dry_run=False ===
+- 2026-07-18 02:41:43 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
