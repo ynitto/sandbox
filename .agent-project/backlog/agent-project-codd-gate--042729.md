@@ -1,5 +1,5 @@
 ## agent-project-codd-gate--042729: agent-projectにcodd-gate自動検出とregression/intake結線を完成させ連携を有効化する
-- status: blocked
+- status: doing
 - source: charter
 - priority: 0
 - verify: `echo "ok"`
@@ -9,5 +9,6 @@
 - rev: 2
 - workspace: src
 - routed_by: explicit-alias
-- last_run: req-ef1f92c3-agent-project-codd-gate--042729-r4-v2
 - needs_reason: 回帰検知: グローバル検査 `codd-gate verify --debt --sync --repos repos.json --max-broken 1563 --max-undocumented 354 --max-untested 444` 失敗 — exit=1 失敗した工程: `codd-gate verify --debt --sync --repos repos.json --max-broken 1563 --max-undocumented 354 --max-untested 444` ub/skills/agent-cli-proxy/SKILL.md 行291: r
+- last_run: req-ef1f92c3-agent-project-codd-gate--042729-r4-v2
+- flow_run: req-ef1f92c3-agent-project-codd-gate--042729-r4-v2
