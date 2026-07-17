@@ -1,7 +1,0 @@
-{
-  "command": "approve",
-  "id": "agent-project-codd-gate--042729",
-  "reason": "検証失敗を確認・受容して完了",
-  "actor": "agent-dashboard",
-  "ts": "2026-07-17T21:34:48.599Z"
-}
