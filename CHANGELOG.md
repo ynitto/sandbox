@@ -15,9 +15,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   （質問・回答・レビュー・決定）で相互協働しながら 1 つの成果物を組み上げてオーナーへ
   納品する協働基盤の設計。kiro / claude / copilot / codex / cursor は既存の
   agent-cli プラグイン契約（`agents/<name>.json`）をそのまま利用。バスは agent-flow と
-  同じファイルベース（LocalBus / GitBus / 任意の HubBus）で、中央サーバは「転送のみ」
-  （オンプレ git remote を中央に据えるのが第一候補）。1 ノードでも未充足ロールの
-  自己補充（self-staff）で完結する。`docs/designs/README.md` の索引にも追加（24 → 25 件）。
+  同じファイルベース（LocalBus / GitBus / 任意の HubBus）で、中央サーバは「転送のみ」。
+  1 ノードでも未充足ロールの自己補充（self-staff）で完結する。
+  `docs/designs/README.md` の索引にも追加（24 → 25 件）。
+  - **収束条件と予算**: オーナーは post 時に収束条件（全必須ロール完了・レビュー承認・
+    静穏化）と予算（**実質実行時間** = 全 amigo の agent CLI 実行秒の総和）を宣言でき、
+    amigo はその範囲内で自律的にやり取りして収束する。会計はバス上の追記ログの総和で
+    決定的、枯渇時は wrap-up（現状統合の partial 納品）。予算追加はオーナーのみ。
+  - **中央は専用バスリポジトリ**: オンプレ git remote に `amigos-bus.git` を新規に切り、
+    `main`（公示インデックス）＋ `mission/<mid>` ブランチで**ミッション（タスク）単位に分離**。
+    同期の運用規律（間隔律速・rebase リトライ・force push 禁止・自パスのみステージ・
+    `fresh_after_sec` 生存表示）は agent-dashboard / agent-project の state_git を流用。
+  - **定期シャットダウン耐性**: 計画停止をクラッシュと区別する away プロトコル
+    （graceful offboard・毎ターン更新の引き継ぎメモ・away_grace までロール保持）と、
+    ターン成果を単一コミットにまとめる all-or-nothing 原子性で、夜間停止・電源断でも
+    バスに壊れた中間状態を残さない。実行時間ベースの予算なので不在時間は予算を消費しない。
 
 ### agent-dashboard / agent-project: 検収・定常業務の 4 つの不具合を修正
 
