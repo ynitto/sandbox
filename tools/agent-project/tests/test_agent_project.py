@@ -2159,6 +2159,52 @@ class TestDecisionRecords(unittest.TestCase):
             self.assertEqual(len(tasks), 1)
             self.assertEqual(tasks[0].status, "ready")
 
+    def test_approve_completes_blocked_verification_failure_after_done_run(self):
+        """成果生成runがdoneなら、最終検証NGを人が受領してdone確定できる。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            bd = d / "backlog"
+            bd.mkdir(parents=True)
+            (bd / "T1.md").write_text(
+                "## T1: 成果は完成・最終検証NG\n- status: blocked\n- source: human\n"
+                "- verify: npm test\n- retries: 3\n- last_run: run-done\n"
+                "- needs_reason: 繰り返し NG（exit=2）\n",
+                encoding="utf-8",
+            )
+            c = cfg_for(d)
+            run_dir = c.bus / "runs" / "run-done"
+            run_dir.mkdir(parents=True)
+            (run_dir / "meta.json").write_text(
+                json.dumps({"status": "done"}), encoding="utf-8"
+            )
+
+            self.assertEqual(km.cmd_approve(c, "T1", "成果を確認し、この検証差異を受容する"), 0)
+            self.assertEqual(km.load_tasks(d / "backlog"), [])
+            self.assertTrue((d / "archive" / "T1.md").exists())
+            self.assertIn("action  : approve-done", (d / "decisions" / "T1.md").read_text())
+
+    def test_approve_does_not_complete_verification_failure_before_run_done(self):
+        """run未完了なら従来どおりreadyへ戻し、途中成果を完了扱いしない。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            bd = d / "backlog"
+            bd.mkdir(parents=True)
+            (bd / "T1.md").write_text(
+                "## T1: 実行途中\n- status: blocked\n- source: human\n"
+                "- verify: npm test\n- retries: 1\n- last_run: run-failed\n"
+                "- needs_reason: 検証コマンドが失敗しました（exit=2）\n",
+                encoding="utf-8",
+            )
+            c = cfg_for(d)
+            run_dir = c.bus / "runs" / "run-failed"
+            run_dir.mkdir(parents=True)
+            (run_dir / "meta.json").write_text(
+                json.dumps({"status": "failed"}), encoding="utf-8"
+            )
+
+            self.assertEqual(km.cmd_approve(c, "T1", "続行"), 0)
+            self.assertEqual(km.load_tasks(d / "backlog")[0].status, "ready")
+
     def test_policy_is_not_appended_twice(self):
         # policy は「人の上書き指示」の集合であって履歴ではない。同じ hold を繰り返しても増えない
         with tempfile.TemporaryDirectory() as d:

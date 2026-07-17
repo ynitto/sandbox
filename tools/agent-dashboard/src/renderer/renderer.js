@@ -3097,6 +3097,8 @@ function needCompleteHowHtml(n) {
         : 'まだプロジェクト完了の段階ではありません。';
   } else if (n.kind === 'blocked' && isVerifyPendingNeed(p, n)) {
     line = '承認すると、このタスクは完了します（検証コマンド未定義のため、人の確認が完了の根拠になります）。';
+  } else if (n.kind === 'blocked' && canManuallyCompleteNeed(p, n, state.flowRuns)) {
+    line = '成果生成は完了しています。検証失敗を確認・受容できる場合は、承認するとこのタスクを完了できます。';
   } else if (!line && n.kind === 'blocked') {
     line = '指示を送ると、作業を再開します。';
   }
@@ -3143,10 +3145,15 @@ function needActionsHtml(n) {
     // verify 未定義の確認待ち: 承認 = done 確定（本体 cmd_approve が完了させる）。
     // 従来はこのボタンが無く、成果が揃った run を人の承認で完了にできなかった。
     const verifyPending = isVerifyPendingNeed(state.project, n);
-    if (verifyPending) {
-      buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}" title="成果を確認済みならこのタスクを完了（納品確定）にします">承認して完了にする</button>`);
+    const manualCompletion = canManuallyCompleteNeed(state.project, n, state.flowRuns);
+    const canApproveCompletion = verifyPending || manualCompletion;
+    if (canApproveCompletion) {
+      const title = manualCompletion
+        ? '成果と検証失敗を確認・受容し、このタスクを完了（納品確定）にします'
+        : '成果を確認済みならこのタスクを完了（納品確定）にします';
+      buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}" title="${esc(title)}">承認して完了にする</button>`);
     }
-    buttons.push(`<button class="${verifyPending ? '' : 'primary-inline'}" data-act="feedback" data-id="${esc(n.id)}">指示を送って再開</button>`);
+    buttons.push(`<button class="${canApproveCompletion ? '' : 'primary-inline'}" data-act="feedback" data-id="${esc(n.id)}">指示を送って再開</button>`);
     buttons.push(`<button data-act="rerun" data-id="${esc(n.id)}">そのまま再実行</button>`);
     buttons.push(`<button data-act="hold" data-id="${esc(n.id)}" title="このタスクを止めて保留にします">保留にする</button>`);
   }
@@ -3210,6 +3217,41 @@ function relatedRunIdForNeed(project, need, flowRuns) {
 function taskForNeed(project, need) {
   const taskId = String((need && (need.taskId || need.id)) || '');
   return ((project && project.backlog) || []).find((task) => String(task.id) === taskId) || null;
+}
+
+function completedTaskForNeed(project, need) {
+  const taskId = String((need && (need.taskId || need.id)) || '');
+  const archived = ((project && project.archive) || []).find((task) => String(task.id) === taskId);
+  if (archived) return archived;
+  return ((project && project.backlog) || []).find(
+    (task) => String(task.id) === taskId && String(task.status || '') === 'done'
+  ) || null;
+}
+
+function completedRunForNeed(project, need, flowRuns) {
+  const runId = relatedRunIdForNeed(project, need, flowRuns);
+  const run = (flowRuns || []).find((item) => String(item.runId || '') === String(runId || ''));
+  return run && String(run.status || '') === 'done' ? run : null;
+}
+
+function canManuallyCompleteNeed(project, need, flowRuns) {
+  if (!need || String(need.kind || 'blocked') !== 'blocked') return false;
+  const task = taskForNeed(project, need);
+  if (!task || String(task.status || '') !== 'blocked') return false;
+  if (String(((task.extra || {}).env_resume) || '') === '1') return false;
+  if (!needFailureViewModel(need)) return false;
+  return Boolean(completedRunForNeed(project, need, flowRuns));
+}
+
+function needApprovalReason(project, need, flowRuns, input) {
+  const note = String(input || '').trim();
+  if (!canManuallyCompleteNeed(project, need, flowRuns)) return note;
+  return ['検証失敗を確認・受容して完了', note].filter(Boolean).join(': ');
+}
+
+function needArtifactsButtonHtml(project, need, flowRuns) {
+  if (!completedTaskForNeed(project, need) && !completedRunForNeed(project, need, flowRuns)) return '';
+  return `<button type="button" class="primary-inline" data-need-artifacts="${esc(need.id)}">成果を確認</button>`;
 }
 
 // verify 未定義のまま工程が完了し、人の確認待ちで blocked になっている票。
@@ -3482,6 +3524,32 @@ async function openRunArtifacts(runId) {
   if (!run || String(run.status) !== 'done') return toast('完了runの成果が見つかりません');
   const model = runArtifactViewModel(state.project, run);
   return openDeliveryArtifactsModel(model, `成果を見る — ${model.title}`);
+}
+
+async function openNeedArtifacts(needId) {
+  const project = state.project;
+  const need = project && project.needs.find((item) => item.id === needId);
+  if (!need) return toast('要対応項目が見つかりません');
+  const run = completedRunForNeed(project, need, state.flowRuns);
+  const task = completedTaskForNeed(project, need) || taskForNeed(project, need);
+  let artifactRun = run;
+  if (run && state.flowRun && state.flowRun.run && state.flowRun.run.runId === run.runId) {
+    artifactRun = state.flowRun.run;
+  } else if (run) {
+    const loaded = await guard('成果runの読込', () =>
+      api.flowRun(project.dir, project.busDir, run.runId)
+    );
+    if (loaded && loaded.run) artifactRun = loaded.run;
+  }
+  const model = artifactRun
+    ? runArtifactViewModel(project, artifactRun)
+    : {
+        ...need,
+        taskStatus: task ? String(task.status || 'done') : 'done',
+        readOnly: true,
+        decided: true,
+      };
+  return openDeliveryArtifactsModel(model, `成果を確認 — ${needDisplayTitle(need)}`);
 }
 
 async function openDeliveryArtifactsModel(need, title) {
@@ -3943,6 +4011,21 @@ function canDiagnoseNeed(need) {
   return Boolean(needFailureViewModel(need));
 }
 
+function needAssistActionsHtml(need, settled) {
+  const specialized = [];
+  if (!settled && need.kind === 'plan-review') {
+    specialized.push(`<button class="primary-inline" data-plan-critique="${esc(need.id)}">AIで計画を批評</button>`);
+  }
+  if (!settled && need.kind === 'review') {
+    specialized.push(`<button type="button" data-delivery-rationale="${esc(need.id)}">変更理由を説明</button>`);
+  }
+  if (!settled && canDiagnoseNeed(need)) {
+    specialized.push(`<button class="primary-inline" data-failure-diagnose="${esc(need.id)}">AIで失敗を診断</button>`);
+  }
+  if (specialized.length) return specialized.join('');
+  return `<button type="button" data-need-consult="${esc(need.id)}">AIに相談</button>`;
+}
+
 function needListSummary(need) {
   const failure = needFailureViewModel(need);
   return failure ? failure.summary : (NEED_ASK[need.kind] || NEED_ASK.blocked);
@@ -4063,16 +4146,7 @@ function renderNeedDetail(p, n) {
       <div class="need-facts-heading">
         <h3>状況</h3>
         <div class="need-assist-actions">
-          <button type="button" data-need-consult="${esc(n.id)}">AIに相談</button>
-          ${!settled && n.kind === 'plan-review'
-            ? `<button class="primary-inline" data-plan-critique="${esc(n.id)}">AIで計画を批評</button>`
-            : ''}
-          ${!settled && n.kind === 'review'
-            ? `<button type="button" data-delivery-rationale="${esc(n.id)}">変更理由を説明</button>`
-            : ''}
-          ${!settled && canDiagnoseNeed(n)
-            ? `<button class="primary-inline" data-failure-diagnose="${esc(n.id)}">AIで失敗を診断</button>`
-            : ''}
+          ${needAssistActionsHtml(n, settled)}
         </div>
       </div>
       ${renderNeedFacts(n) || '<p class="muted">追加の状況説明はありません。</p>'}
@@ -4081,6 +4155,7 @@ function renderNeedDetail(p, n) {
     <section class="need-evidence">
       <h3>成果物</h3>
       ${specFilesHtml(p, n) || '<p class="muted">関連するSpecはありません。</p>'}
+      ${needArtifactsButtonHtml(p, n, state.flowRuns)}
       ${detailBlock}
       <button class="need-output-button subtle-action" data-need-output="${esc(n.id)}">詳細情報を開く</button>
     </section>
@@ -4102,6 +4177,9 @@ function bindNeedDetail(root) {
   }
   for (const btn of root.querySelectorAll('button[data-delivery-review]')) {
     btn.addEventListener('click', () => openDeliveryReview(btn.dataset.deliveryReview));
+  }
+  for (const btn of root.querySelectorAll('button[data-need-artifacts]')) {
+    btn.addEventListener('click', () => openNeedArtifacts(btn.dataset.needArtifacts));
   }
   for (const btn of root.querySelectorAll('button[data-need-consult]')) {
     btn.addEventListener('click', () => {
@@ -4313,7 +4391,8 @@ async function handleNeedAction(btn) {
       await api.submitFeedback(need.file, '', feedbackStub);
       toast('そのまま再実行するよう回答しました', true);
     } else if (act === 'approve') {
-      const res = await api.runAction({ dir: p.dir, action: 'approve', id, reason: text });
+      const reason = needApprovalReason(p, need, state.flowRuns, text);
+      const res = await api.runAction({ dir: p.dir, action: 'approve', id, reason });
       // 指示は commands/CLI 経由で needs ファイル自体は変わらない。取り込みまで
       // カードが未対応のまま残らないよう送信済みマーカーを付ける
       markNeedSent(need);

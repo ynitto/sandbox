@@ -100,13 +100,31 @@ def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
         if msg:
             print(msg)
         return 0
-    # verify 未定義で人へ回った blocked タスクの承認 = done 確定。
+    # verify 未定義、または成果生成 run は完了したが最終検証で失敗して人へ回った blocked
+    # タスクの承認 = done 確定。後者は検証差異を人が確認・受容した明示的な納品判断である。
     # 工程は完了済みで、needs 票も「成果を確認し、問題なければ approve してください」と
     # 案内している——ここで ready へ積み直すと同じ工程が再実行され、また verify 未定義で
     # blocked に戻る無限往復になる（承認で完了できないと報告された不具合）。
     # 環境要因（env_resume）の approve は従来どおり続きから再開させるため対象外。
-    if (t.norm_status() == "blocked" and not t.verify and not t.get("env_resume")
-            and "verify 未定義" in str(t.get("needs_reason") or "")):
+    needs_reason = str(t.get("needs_reason") or "")
+    reason_lower = needs_reason.lower()
+    approval_lower = str(reason or "").lower()
+    verify_undefined = (not t.verify and "verify 未定義" in needs_reason)
+    explicit_verification_acceptance = (
+        any(word in approval_lower for word in ("verify", "検証", "テスト", "test", "回帰"))
+        and any(word in approval_lower for word in ("受容", "承認", "完了", "accept"))
+    )
+    recorded_verification_failure = (
+        any(word in reason_lower for word in ("verify", "検証", "テスト", "test", "回帰"))
+        and any(word in reason_lower for word in ("fail", "失敗", "ng", "exit="))
+    )
+    completed_verification_failure = (
+        bool(_completed_last_run(cfg, t))
+        and (recorded_verification_failure or explicit_verification_acceptance)
+    )
+    if (t.norm_status() == "blocked" and not t.get("env_resume")
+            and "[agent-error:" not in reason_lower
+            and (verify_undefined or completed_verification_failure)):
         ok, msg = approve_review_done(cfg, t, reason)
         if not ok:
             print(msg, file=sys.stderr)

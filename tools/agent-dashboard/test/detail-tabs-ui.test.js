@@ -68,6 +68,30 @@ const captureNeedsScroll = new Function(`${grab('captureNeedsScroll')}; return c
 // eslint-disable-next-line no-new-func
 const restoreNeedsScroll = new Function(`${grab('restoreNeedsScroll')}; return restoreNeedsScroll;`)();
 // eslint-disable-next-line no-new-func
+const completedTaskForNeed = new Function(`${grab('completedTaskForNeed')}; return completedTaskForNeed;`)();
+// eslint-disable-next-line no-new-func
+const completedRunForNeed = new Function(
+  'relatedRunIdForNeed', `${grab('completedRunForNeed')}; return completedRunForNeed;`
+)(relatedRunIdForNeed);
+// eslint-disable-next-line no-new-func
+const canManuallyCompleteNeed = new Function(
+  'taskForNeed', 'completedRunForNeed', 'needFailureViewModel',
+  `${grab('canManuallyCompleteNeed')}; return canManuallyCompleteNeed;`
+)(taskForNeed, completedRunForNeed, needFailureViewModel);
+// eslint-disable-next-line no-new-func
+const needApprovalReason = new Function(
+  'canManuallyCompleteNeed', `${grab('needApprovalReason')}; return needApprovalReason;`
+)(canManuallyCompleteNeed);
+// eslint-disable-next-line no-new-func
+const needAssistActionsHtml = new Function(
+  'esc', 'canDiagnoseNeed', `${grab('needAssistActionsHtml')}; return needAssistActionsHtml;`
+)((value) => String(value == null ? '' : value), canDiagnoseNeed);
+// eslint-disable-next-line no-new-func
+const needArtifactsButtonHtml = new Function(
+  'esc', 'completedTaskForNeed', 'completedRunForNeed',
+  `${grab('needArtifactsButtonHtml')}; return needArtifactsButtonHtml;`
+)((value) => String(value == null ? '' : value), completedTaskForNeed, completedRunForNeed);
+// eslint-disable-next-line no-new-func
 const runArtifactViewModel = new Function(
   'sanitizeTaskId', `${grab('runArtifactViewModel')}; return runArtifactViewModel;`
 )((id) => String(id == null ? '' : id).replace(/[^\w.-]+/g, '_').slice(0, 60));
@@ -311,7 +335,8 @@ const renderNeedDetailWithVerifyRevision = new Function(
   'isNeedSent', 'esc', 'needKindLabel', 'riskBadgeHtml', 'needDisplayTitle', 'NEED_ASK',
   'renderNeedFacts', 'needActionsHtml', 'specFilesHtml', 'mdToHtml', 'needVerifyRevisionHtml',
   'taskForNeed', 'taskCompletionHint', 'runsForTask', 'canDiagnoseNeed', 'relatedRunIdForNeed',
-  'state', 'runFinalVerificationFailure', 'finalVerificationFailureHtml',
+  'state', 'runFinalVerificationFailure', 'finalVerificationFailureHtml', 'needAssistActionsHtml',
+  'needArtifactsButtonHtml',
   `${grab('renderNeedDetail')}; return renderNeedDetail;`
 )(
   () => false,
@@ -332,7 +357,9 @@ const renderNeedDetailWithVerifyRevision = new Function(
   () => '',
   { flowRuns: [] },
   () => null,
-  () => ''
+  () => '',
+  needAssistActionsHtml,
+  needArtifactsButtonHtml
 );
 assert.ok(
   renderNeedDetailWithVerifyRevision(
@@ -347,11 +374,72 @@ const failureDiagnosisHtml = renderNeedDetailWithVerifyRevision(
 );
 assert.ok(failureDiagnosisHtml.includes('data-failure-diagnose="T1"'));
 assert.ok(failureDiagnosisHtml.includes('AIで失敗を診断'));
-assert.ok(failureDiagnosisHtml.includes('data-need-consult="T1"'));
-assert.ok(failureDiagnosisHtml.includes('AIに相談'));
+assert.ok(!failureDiagnosisHtml.includes('data-need-consult="T1"'), '専用の失敗診断がある場合は汎用AI相談を重複表示しない');
+assert.ok(!failureDiagnosisHtml.includes('>AIに相談<'));
+assert.match(
+  needAssistActionsHtml({ id: 'plain', kind: 'blocked' }, false),
+  /data-need-consult="plain"[^>]*>AIに相談</,
+  '専用AI操作がない要対応には汎用相談を残す'
+);
+assert.ok(!needAssistActionsHtml({ id: 'plan', kind: 'plan-review' }, false).includes('data-need-consult'));
+assert.ok(!needAssistActionsHtml({ id: 'review', kind: 'review' }, false).includes('data-need-consult'));
 assert.ok(renderer.includes("querySelectorAll('button[data-need-consult]')"), '要確認からAI相談を開く配線が必要');
 assert.ok(renderer.includes('function openFailureDiagnosis('), '失敗診断を自動開始する入口が必要');
 assert.ok(renderer.includes('mode: state.doctorMode'), '追加質問でも診断モードを維持する');
+
+const completedProject = {
+  backlog: [],
+  archive: [{ id: 'T-DONE', status: 'done', title: '完了済み' }],
+};
+assert.strictEqual(completedTaskForNeed(completedProject, { id: 'T-DONE' }).status, 'done');
+assert.match(
+  needArtifactsButtonHtml(completedProject, { id: 'T-DONE' }, []),
+  /data-need-artifacts="T-DONE"[^>]*>成果を確認</,
+  '完了タスクの要対応詳細から検収ダイアログを開ける'
+);
+assert.ok(renderer.includes('function openNeedArtifacts('), '要対応項目から成果ダイアログを開く入口が必要');
+
+const doneRunProject = {
+  backlog: [{
+    id: 'T-VERIFY', status: 'blocked', verify: 'npm test',
+    extra: { last_run: 'run-verify-done', needs_reason: '検証コマンドが失敗 exit=2' },
+  }],
+  archive: [],
+};
+const verifyFailureNeed = {
+  id: 'T-VERIFY', taskId: 'T-VERIFY', kind: 'blocked',
+  failureSummary: '検証コマンドが失敗しました（終了コード 2）。',
+};
+const doneRuns = [{ runId: 'run-verify-done', taskId: 'T-VERIFY', status: 'done' }];
+assert.strictEqual(
+  canManuallyCompleteNeed(doneRunProject, verifyFailureNeed, doneRuns),
+  true,
+  '工程が完了した検証失敗はユーザー判断で完了承認できる'
+);
+assert.strictEqual(
+  needApprovalReason(doneRunProject, verifyFailureNeed, doneRuns, 'この環境では許容する'),
+  '検証失敗を確認・受容して完了: この環境では許容する',
+  '完了承認は本体へ検証差異の明示受容として渡す'
+);
+assert.strictEqual(
+  needApprovalReason(doneRunProject, verifyFailureNeed, [{ ...doneRuns[0], status: 'failed' }], '続行'),
+  '続行',
+  'run未完了の通常承認理由は書き換えない'
+);
+assert.strictEqual(
+  canManuallyCompleteNeed(doneRunProject, verifyFailureNeed, [{ ...doneRuns[0], status: 'failed' }]),
+  false,
+  'run自体が未完了なら完了承認を出さない'
+);
+assert.strictEqual(
+  canManuallyCompleteNeed(
+    { backlog: [{ ...doneRunProject.backlog[0], extra: { ...doneRunProject.backlog[0].extra, env_resume: '1' } }] },
+    verifyFailureNeed,
+    doneRuns
+  ),
+  false,
+  '環境修復後に再開すべき失敗は完了承認の対象外'
+);
 
 const needs = [
   { id: 'open-old', date: '2026-07-12' },
@@ -537,6 +625,7 @@ assert.match(
       { id: 'T3', status: 'blocked', verify: '', extra: { env_resume: '1', needs_reason: '[agent-error:env] verify 未定義' } },
     ],
   };
+  const actionState = { project, flowRuns: [] };
   assert.strictEqual(
     isVerifyPendingNeed(project, { id: 'T1', taskId: 'T1', kind: 'blocked', why: 'verify 未定義（工程は完了しています…）' }),
     true
@@ -560,16 +649,17 @@ assert.match(
   // eslint-disable-next-line no-new-func
   const needActionsHtml = new Function(
     'esc', 'state', 'isVerifyPendingNeed', 'milestoneStatusFor', 'milestoneVersionName',
-    'statusLabel', 'needCompleteHowHtml',
+    'statusLabel', 'needCompleteHowHtml', 'canManuallyCompleteNeed',
     `${grab('needActionsHtml')}; return needActionsHtml;`
   )(
     (value) => String(value == null ? '' : value),
-    { project },
+    actionState,
     isVerifyPendingNeed,
     () => null,
     () => null,
     (status) => String(status || ''),
-    () => ''
+    () => '',
+    canManuallyCompleteNeed
   );
   const pendingHtml = needActionsHtml({
     id: 'T1', taskId: 'T1', kind: 'blocked', why: 'verify 未定義（工程は完了しています…）', file: '/p/needs/T1.md',
@@ -580,6 +670,15 @@ assert.match(
     id: 'T2', taskId: 'T2', kind: 'blocked', why: '検証が失敗', file: '/p/needs/T2.md',
   });
   assert.ok(!plainHtml.includes('data-act="approve"'), '通常の blocked に承認完了ボタンを出さない');
+
+  actionState.project = doneRunProject;
+  actionState.flowRuns = doneRuns;
+  const completedFailureHtml = needActionsHtml(verifyFailureNeed);
+  assert.match(
+    completedFailureHtml,
+    /data-act="approve"[^>]*>承認して完了にする</,
+    '工程完了済みの検証失敗には人の完了承認を出す'
+  );
 }
 
 console.log('detail-tabs-ui: all tests passed');
