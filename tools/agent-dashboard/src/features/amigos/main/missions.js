@@ -204,8 +204,9 @@ function readMissionSummary(id, dir) {
   };
 }
 
-function overview(cfg) {
-  const busDirs = discoverBusDirs(cfg);
+function overview(cfg, extraBusDirs) {
+  const busDirs = [...new Set([...discoverBusDirs(cfg),
+                               ...(extraBusDirs || []).filter(Boolean)])];
   const missions = [];
   const errors = [];
   for (const busDir of busDirs) {

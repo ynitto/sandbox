@@ -1,6 +1,21 @@
 # Amigos feature
 
-agent-amigos（役割駆動マルチエージェント協働）の独立した制御面。2 つの責務を持つ。
+agent-amigos（役割駆動マルチエージェント協働）の独立した制御面。3 つの責務を持つ。
+
+## ホーム（常駐デーモン）との連携 — タスク依頼と手動引き受け
+
+- **ホーム** = `.kiro/kiro-amigos.{yaml,yml,json}` を持つディレクトリ（設定ファイルが
+  自動発見マーカーを兼ねる — kiro-loop の `.kiro/kiro-loop.*` と同じ流儀）。
+  `amigos.homeDirs` の明示指定 + 全体設定 `projects.roots` 配下の走査で見つけ、
+  ホームのバス（設定 `bus`、既定はホーム自身）をミッション一覧に含める。
+- **タスク依頼（post）**: 「タスクを依頼…」フォーム（投函先ホーム・タイトル・goal・
+  design doc 本文・役割ミッション表 JSON）→ ホームの
+  `.kiro/kiro-amigos/commands/*.json` へ post 指示を投函。常駐デーモンが取り込んで公示する。
+- **手動引き受け（claim）**: 募集中ロールの「引き受け」ボタン → 同じく claim 指示を投函。
+  ホーム側を `manual_claim: true` にすると自動応募が止まり、手動引き受けだけで回せる。
+- dashboard がバスへ直接書くことは無い（書くのはホームの commands ドロップだけ —
+  agent-project の commands/ と同じ「プロセス間 API を持たない」結合方式）。
+  投函先は発見済みホームのみに検証される。
 
 ## ミッション一覧（読み取り専用）
 

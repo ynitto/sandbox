@@ -1688,3 +1688,4 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .amigos-phase-reviewing { border: 1px solid var(--accent); }
 .amigos-phase-done { border: 1px solid var(--accent2); }
 .amigos-phase-failed, .amigos-phase-cancelled { border: 1px solid rgba(255, 99, 99, 0.6); }
+.amigos-claim-btn { margin-left: 6px; padding: 0 8px; font-size: 11px; line-height: 18px; }

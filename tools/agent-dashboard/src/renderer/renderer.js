@@ -6426,6 +6426,7 @@ function setupPolling() {
         || ($('dlg-cowork-work') && $('dlg-cowork-work').open)
         || ($('dlg-cowork-save') && $('dlg-cowork-save').open)
         || ($('dlg-cowork-history') && $('dlg-cowork-history').open)
+        || ($('dlg-amigos-post') && $('dlg-amigos-post').open)
       )
         return;
       const ae = document.activeElement;
@@ -6560,7 +6561,8 @@ function updateAmigosTabVisibility() {
   const a = state.amigos;
   const show = !!(
     a &&
-    ((a.missions && a.missions.length) || (a.budget && a.budget.hasData) || a.error)
+    ((a.missions && a.missions.length) || (a.homes && a.homes.length) ||
+      (a.budget && a.budget.hasData) || a.error)
   );
   btn.classList.toggle('hidden', !show);
   btn.hidden = !show;
@@ -6645,10 +6647,17 @@ function amigosBudgetPanelHtml(budget) {
 }
 
 function amigosMissionRowHtml(m) {
+  const active = !['done', 'failed', 'cancelled'].includes(m.phase);
   const roleChips = (m.roles || [])
     .map((r) => {
       const stateMark = r.state === 'paused' ? ' ⏸' : r.done ? ' ✓' : '';
       const cls = r.state === 'paused' ? 'amigos-role paused' : r.done ? 'amigos-role done' : 'amigos-role';
+      if (!r.node && m.home && active) {
+        // 募集中 × ホーム配下のミッション → 手動引き受け（commands/ へ claim を投函）
+        return `<span class="${cls}" title="${esc(r.title)}">${esc(r.id)}@募集中
+          <button class="amigos-claim-btn" data-home="${esc(m.home)}"
+            data-mission="${esc(m.id)}" data-role="${esc(r.id)}">引き受け</button></span>`;
+      }
       const who = r.node ? esc(r.node) : '募集中';
       return `<span class="${cls}" title="${esc(r.title)}">${esc(r.id)}@${who}${stateMark}</span>`;
     })
@@ -6667,6 +6676,57 @@ function amigosMissionRowHtml(m) {
     <td class="num mono">${esc(budgetTxt)}</td>
     <td class="num">${m.unanswered ? `${m.unanswered} 件` : '<span class="muted">-</span>'}</td>
   </tr>`;
+}
+
+const AMIGOS_ROLES_SAMPLE = JSON.stringify(
+  [
+    { id: 'architect', mission: '設計を確定し質問に回答する', deliverables: ['architecture.md'] },
+    { id: 'impl', mission: '実装する', deliverables: ['src/'], collaborates_with: ['architect'] },
+    { id: 'reviewer', mission: '成果物をレビューする', approver: true },
+  ],
+  null,
+  2
+);
+
+function openAmigosRequestDialog() {
+  const dlg = $('dlg-amigos-post');
+  if (!dlg) return;
+  const homes = (state.amigos && state.amigos.homes) || [];
+  const sel = $('amigos-post-home');
+  sel.innerHTML = homes
+    .map((h) => `<option value="${esc(h.dir)}">${esc(h.dir)}${h.nodeId ? `（${esc(h.nodeId)}）` : ''}</option>`)
+    .join('');
+  if (!$('amigos-post-roles').value.trim()) $('amigos-post-roles').value = AMIGOS_ROLES_SAMPLE;
+  dlg.showModal();
+}
+
+function setupAmigosDialogs() {
+  const dlg = $('dlg-amigos-post');
+  if (!dlg) return;
+  $('btn-amigos-post-cancel').addEventListener('click', () => dlg.close());
+  dlg.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    guard('タスクの依頼', async () => {
+      let roles;
+      try {
+        roles = JSON.parse($('amigos-post-roles').value);
+      } catch (e) {
+        toast(`役割ミッション表が JSON として読めません: ${e.message}`);
+        return;
+      }
+      await api.amigosRequest({
+        home: $('amigos-post-home').value,
+        title: $('amigos-post-title').value.trim(),
+        goal: $('amigos-post-goal').value.trim(),
+        design: $('amigos-post-design').value,
+        roles,
+      });
+      dlg.close();
+      toast('依頼を投函しました（常駐デーモンが取り込み、公示します）', true);
+      await refreshAmigos();
+      renderAmigos();
+    });
+  });
 }
 
 function renderAmigos() {
@@ -6698,7 +6758,10 @@ function renderAmigos() {
           <h2>Amigos</h2>
           <p class="muted">agent-amigos ミッションの進行と、このノードの予算を管理します（一覧は読み取り専用）。</p>
         </div>
-        <div class="row"><button id="btn-amigos-refresh">更新</button></div>
+        <div class="row">
+          ${(a.homes || []).length ? '<button id="btn-amigos-request">タスクを依頼…</button>' : ''}
+          <button id="btn-amigos-refresh">更新</button>
+        </div>
       </header>
       ${amigosBudgetPanelHtml(a.budget)}
       <section>
@@ -6716,6 +6779,19 @@ function renderAmigos() {
         renderAmigos();
       })
     );
+  const requestBtn = $('btn-amigos-request');
+  if (requestBtn) requestBtn.addEventListener('click', () => openAmigosRequestDialog());
+  // 手動引き受け: 募集中ロールの「引き受け」→ ホームの commands/ へ claim を投函
+  for (const btn of el.querySelectorAll('.amigos-claim-btn')) {
+    btn.addEventListener('click', () =>
+      guard('タスクの引き受け', async () => {
+        btn.disabled = true;
+        await api.amigosClaim(btn.dataset.home, btn.dataset.mission, btn.dataset.role);
+        toast(`引き受けを投函しました: ${btn.dataset.mission}/${btn.dataset.role}`
+              + '（常駐デーモンが取り込みます）', true);
+      })
+    );
+  }
   const saveBtn = $('btn-amigos-budget-save');
   if (saveBtn)
     saveBtn.addEventListener('click', () =>
@@ -7348,6 +7424,7 @@ async function init() {
     });
   }
   $('btn-cw-ok').addEventListener('click', (ev) => { ev.preventDefault(); applyCoworkWorkDialog(); });
+  setupAmigosDialogs();
   $('btn-cw-save-cancel').addEventListener('click', () => $('dlg-cowork-save').close());
   $('btn-cw-save-ok').addEventListener('click', (ev) => { ev.preventDefault(); saveCoworkDraft(); });
   const btnCoworkOpen = $('btn-settings-cowork-open');

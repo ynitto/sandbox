@@ -156,6 +156,40 @@
     </form>
   </dialog>
 
+  <!-- ======== Amigos タスク依頼（commands/ へ post を投函） ======== -->
+  <dialog id="dlg-amigos-post" class="wide">
+    <form method="dialog">
+      <h2>Amigos にタスクを依頼</h2>
+      <p class="muted">ホームの commands/ へ依頼を投函します。常駐デーモンが取り込み、
+        design doc と役割ミッション表でミッションを公示します。</p>
+      <div class="field">
+        <label>投函先ホーム（常駐デーモン）</label>
+        <select id="amigos-post-home"></select>
+      </div>
+      <div class="field">
+        <label>タイトル</label>
+        <input id="amigos-post-title" placeholder="例: 社内 FAQ ボットの MVP" />
+      </div>
+      <div class="field">
+        <label>目標（goal）</label>
+        <input id="amigos-post-goal" placeholder="例: design doc の受入基準をすべて満たして納品する" />
+      </div>
+      <div class="field">
+        <label>design doc（Markdown 本文）</label>
+        <textarea id="amigos-post-design" rows="8" class="mono"
+          placeholder="# 設計&#10;受入基準: ..."></textarea>
+      </div>
+      <div class="field">
+        <label>役割ミッション表（JSON 配列。契約: schemas/mission.schema.json の roles）</label>
+        <textarea id="amigos-post-roles" rows="6" class="mono"></textarea>
+      </div>
+      <div class="dialog-actions">
+        <button id="btn-amigos-post-cancel" value="cancel" type="button">キャンセル</button>
+        <button id="btn-amigos-post-ok" value="default">依頼を投函</button>
+      </div>
+    </form>
+  </dialog>
+
   <!-- ======== プロジェクト設定ダイアログ ======== -->
   <dialog id="dlg-project-settings" class="wide">
     <div id="project-settings-body"></div>
