@@ -6,3 +6,4 @@
 - retries: 0
 - note: 接続マップ上でどのドキュメントからも参照されていない
 - paths: .github/skills/flow-worker/scripts/prompt.py
+- assess: c=1 r=1 a=1
