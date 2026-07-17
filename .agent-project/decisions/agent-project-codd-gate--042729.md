@@ -34,3 +34,9 @@
 - reason  : チェックで承認
 - affects : agent-project-codd-gate--042729 → ready
 
+## DR-0007  2026-07-18  actor: nitto
+- context : agent-project-codd-gate--042729（agent-projectにcodd-gate自動検出とregression/intake結線を完成させ連携を有効化する）を人が修正（revise）
+- action  : revise
+- reason  : 要対応画面で検証コマンドを変更
+- affects : verify: echo "ok"; agent-project-codd-gate--042729 → ready
+

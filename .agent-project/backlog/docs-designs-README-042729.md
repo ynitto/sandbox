@@ -1,5 +1,5 @@
 ## docs-designs-README-042729: 設計書の読み取り口（docs/designs/README）を作り主要設計への導線を通す
-- status: doing
+- status: blocked
 - source: charter
 - priority: 0
 - verify: `test -f docs/designs/README.md && grep -q 'agent-project-design.md' docs/designs/README.md && grep -q 'agent-flow-design.md' docs/designs/README.md && grep -q 'codd-gate-design.md' docs/designs/README.md && grep -q 'agent-tools-rename-design.md' docs/designs/README.md`
@@ -8,6 +8,5 @@
 - assess: c=1 r=1 a=1
 - workspace: src
 - routed_by: explicit-alias
-- needs_reason: 繰り返し NG（retries=3）: workspace repo の clone 失敗（https://github.com/ynitto/sandbox@ap/docs-designs-README-042729）: Cloning into '/var/folders/8c/s6jh85ls4tq3fmzkl0jk5jcc0000gn/T/agent-verify-qfv8pzur/repo'... ⏎ fatal: Remote branch ap/docs-designs-README-042729 not found in upstream origin
 - last_run: req-ef1f92c3-docs-designs-README-042729-r3
-- flow_run: req-ef1f92c3-docs-designs-README-042729-r3
+- needs_reason: 回帰検知: グローバル検査 `codd-gate verify --debt --sync --repos repos.json --max-broken 1563 --max-undocumented 354 --max-untested 444` 失敗 — exit=1 失敗した工程: `codd-gate verify --debt --sync --repos repos.json --max-broken 1563 --max-undocumented 354 --max-untested 444` md が解決できない ⏎   - src:.github/skills/agent-
