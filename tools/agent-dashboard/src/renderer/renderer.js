@@ -6325,7 +6325,9 @@ function populateSettingsFields() {
   )
     .map(([name, bus]) => `${name} = ${bus}`)
     .join('\n');
-  $('cfg-agent-cli').value = (cfg.agent && cfg.agent.cli) || 'kiro';
+  // 空欄 = 未設定（プロジェクト設定 → 既定 kiro のフォールバック）。'kiro' で埋めると
+  // 保存時に「明示 kiro」が固定され、プロジェクトの agent_cli が二度と効かなくなる。
+  $('cfg-agent-cli').value = (cfg.agent && cfg.agent.cli) || '';
   $('cfg-agent-model').value = (cfg.agent && cfg.agent.model) || '';
   $('cfg-agent-timeout').value = (cfg.agent && cfg.agent.timeoutSec) || 180;
   $('cfg-gl-url').value = cfg.gitlab.baseUrl || '';
@@ -6455,7 +6457,7 @@ async function saveSettings() {
     .filter(Boolean)
     .reduce((acc, [name, bus]) => ((acc[name] = bus), acc), {});
   cfg.agent = cfg.agent || {};
-  cfg.agent.cli = $('cfg-agent-cli').value;
+  cfg.agent.cli = $('cfg-agent-cli').value.trim();
   cfg.agent.model = $('cfg-agent-model').value.trim();
   cfg.agent.timeoutSec = Math.max(30, parseInt($('cfg-agent-timeout').value, 10) || 180);
   cfg.gitlab.baseUrl = $('cfg-gl-url').value.trim();

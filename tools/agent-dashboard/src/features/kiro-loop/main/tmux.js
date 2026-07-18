@@ -78,14 +78,15 @@ function allPanes(distro = '') {
   return out;
 }
 
-// kiro-loop デーモンの状態ファイル（~/.kiro/loop-state/*.json）を読む。
+// kiro-loop デーモンの状態ファイル（~/.kiro/loop-state/*.json。agent-loop クローンは
+// ~/.agent/loop-state/*.json — 同じレコード形式なので両方読む）。
 // { pid, cwd, sessions: [{ name, id, pane, alive }] } の配列。
 // デーモンを tmux セッションの中で起動すると、ワーカーペインは「人のセッション」
 // （名前は任意）内に分割で作られ、セッション名（kiro-loop-…）では見つけられない。
 // 状態ファイルの pane_id 直参照ならセッション名に依存せず視聴できる。
 function readLoopStates(distro = '') {
   const r = exec.shInWsl(
-    'for f in "$HOME"/.kiro/loop-state/*.json; do [ -f "$f" ] || continue; printf "\\036"; cat "$f"; done 2>/dev/null || true',
+    'for f in "$HOME"/.kiro/loop-state/*.json "$HOME"/.agent/loop-state/*.json; do [ -f "$f" ] || continue; printf "\\036"; cat "$f"; done 2>/dev/null || true',
     8000,
     distro
   );

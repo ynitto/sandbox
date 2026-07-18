@@ -333,15 +333,18 @@
       <h3>AIアシスタント</h3>
       <div class="row2">
         <div class="field">
-          <label>エージェント CLI（charter 補完と Doctor で共通）</label>
-          <select id="cfg-agent-cli">
+          <label>エージェント CLI（charter 補完と Doctor で共通。空欄はプロジェクト設定 → 既定 kiro）</label>
+          <input id="cfg-agent-cli" class="mono" list="cfg-agent-cli-options"
+            placeholder="kiro / claude / copilot / codex / cursor / ollama / <agents プラグイン名>" />
+          <datalist id="cfg-agent-cli-options">
             <option value="kiro">kiro（既定・kiro-cli chat）</option>
             <option value="claude">claude（Claude Code）</option>
             <option value="copilot">copilot（GitHub Copilot CLI）</option>
             <option value="codex">codex（Codex CLI）</option>
             <option value="cursor">cursor（Cursor Agent）</option>
             <option value="ollama">ollama（ローカルモデル）</option>
-          </select>
+          </datalist>
+          <div class="muted">組み込み以外の名前は agents/&lt;名前&gt;.json プラグイン（schemas/agent-cli.schema.json）として解決します。</div>
         </div>
         <div class="field">
           <label>モデル（空 = CLI / プロジェクト設定の既定）</label>

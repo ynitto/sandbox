@@ -7,6 +7,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: エージェント CLI 界面を共通契約（agent-cli.schema.json）に整合
+
+- **agents/`<name>`.json プラグイン CLI のローダを実装**: agent-cli.schema.json は共有者に
+  agent-dashboard を挙げていたが、実装は 6 種ハードコードで未知の CLI 名は黙って kiro に
+  フォールバックしていた。本体（agent-project / agent-flow / agent-amigos）と同じ契約・
+  探索順（`$KIRO_AGENTS_DIR` → `<プロジェクト>/agents/` → `~/.agent/agents/` →
+  `~/.kiro/agents/`）で解決し、`{model}` / `{output_file}` テンプレ・`prompt_via` /
+  `prompt_flag` / `model_flag` / `default_model` / `output: file` / `env` / `timeout` /
+  `empty_output_is_error` を解釈する（AI 補助・Doctor・構造化 Assist の全経路）。
+- **CLI 解決順を ipc の契約どおりに修正**: `resolveAgent` がプロジェクト設定を無視して
+  常に Viewer 設定（既定 kiro）を使っていた（`readProjectAgent` は dead code だった）。
+  「⚙ Viewer 明示設定 > プロジェクト設定（agent-project.yaml / agent-flow.yaml の
+  agent_cli / model）> 既定 kiro」へ。設定画面の CLI 欄は datalist 付き入力にして
+  プラグイン名も指定でき、空欄＝未設定（プロジェクト設定へフォールバック）を保つ。
+- **agent-loop クローンの端末視聴**: 端末（tmux）発見が `~/.kiro/loop-state/` のみを
+  読んでいたため、agent-loop（状態は `~/.agent/loop-state/`・同形式）のデーモンが
+  見つからなかった。両ディレクトリを読む。
+- kiro-loop との界面（設定ファイル・loop-state 形式・tmux 命名・send のプロンプト名解決・
+  入力プロンプト検出正規表現・node-budget 分担）は突き合わせの結果、齟齬なしを確認。
+
 ### agent-amigos / agent-dashboard: 入出力データの契約をスキーマへ整合
 
 - **`schemas/amigos-command.schema.json` を新設**: `<home>/.agent/agent-amigos/commands/*.json`
