@@ -10,3 +10,4 @@
 - hints: 除去/改名対象: configfile._apply_codd_gate_auto_wiring、doctor._codd_gate_wiring_module / doctor_codd_gate_findings、model._codd_gate_debt_module と `import codd_gate_*`。intake は schemas/task 相当の汎用 JSON パース＋ id 冪等のまま維持。自動配線は sibling（codd_gate_wiring / codd_gate_regression）か設定明示に寄せ、パッケージ内に codd_gate 名を残さない。TestCoddGateAutoWiring など `_codd_gate_wiring_module` を mock するテストも新境界へ追随。完了後は agent-reviewer で境界レビュー。
 - charter: v1
 - after: codd-gate-163827
+- assess: c=2 r=2 a=1

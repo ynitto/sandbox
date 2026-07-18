@@ -10,3 +10,4 @@
 - out_of_scope: agent_project / dashboard の実装変更やテスト改修
 - hints: ドキュメントは slop-police スキルで整える。正典は docs/designs/codd-gate-design.md §4（差し込み点 E1–E3）と §4.1（自動検出レイヤ）。受入の `! git grep ... _apply_codd_gate|_codd_gate|import codd_gate` を設計上の完了条件として明記し、永続化は `codd_gate_regression.py`・有効化は yaml/CLI のみ、と境界を書く。tools/agent-project/README.md の一貫性ゲート節も同じ境界に揃える。
 - charter: v1
+- assess: c=2 r=1 a=1

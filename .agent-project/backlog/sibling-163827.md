@@ -10,3 +10,4 @@
 - hints: tools/agent-project/codd_gate_{detect,status,routing,base,debt,wiring,regression}.py は残し、責務を『検出・推奨文字列・yaml 冪等注入・（必要なら）CLI 所見』に限定。README / GUIDE から build_config メモリ自動配線の記述を消し、明示設定または `python3 codd_gate_regression.py --config …` へ誘導。docs/designs/codd-gate-design.md §4.1 の『現在地』も実装に合わせて更新（文章は slop-police）。
 - charter: v1
 - after: agent_project-codd_gate-163827
+- assess: c=2 r=2 a=2

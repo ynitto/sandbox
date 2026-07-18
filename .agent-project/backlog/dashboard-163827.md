@@ -11,3 +11,4 @@
 - hints: 概要またはプロジェクト情報に regression_cmd/intake_cmd（設定の有無）を可視化し、未結線時は README と同じ有効化導線（設定編集／sibling CLI）を示す。needs の codd-gate / 回帰失敗要約（needs-diagnosis）の可読性を落とさない。公式契約（needs/inbox/commands）以外へ書かない。実装後は agent-reviewer で UX レビュー。
 - charter: v1
 - after: codd-gate-163827, sibling-163827
+- assess: c=2 r=1 a=1
