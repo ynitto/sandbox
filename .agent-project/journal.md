@@ -108,3 +108,5 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-19 05:58:20 run 再開: agent_project-codd_gate-163827 は req-ef1f92c3-agent_project-codd_gate-163827-r0 の失敗ノードだけをやり直します（done は温存）
 - 2026-07-19 06:35:10 verify: agent_project-codd_gate-163827 を https://github.com/ynitto/sandbox@ap/agent_project-codd_gate-163827（path=tools/agent-project） のクローン内で検証
 - 2026-07-19 06:35:11 cycle 1: agent_project-codd_gate-163827 → 人の判断（回帰検知）
+- 2026-07-19 06:35:14 state-git 同期: import=6 export=9
+- 2026-07-19 06:35:14 === agent-project 停止 reason=drained cycles=1 done=0 blocked=1 notified=True promoted=0 ===
