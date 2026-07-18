@@ -1,8 +1,0 @@
-{
-  "id": "done",
-  "goal": "完了条件コマンド（TestIntake/TestLoopEngineering の3テスト成功＋`git grep` で import codd_gate/_apply_codd_gate/_codd_gate が tools/agent-project/agent_project 配下0件）が exit 0 になるまで反復検証し、失敗時は該当モジュールの修正へ差し戻す",
-  "deps": [
-    "synth"
-  ],
-  "kind": "verify"
-}

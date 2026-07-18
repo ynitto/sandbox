@@ -1,6 +1,0 @@
-{
-  "id": "doc",
-  "goal": "doctor._codd_gate_wiring_module / doctor_codd_gate_findings を汎用名（例: wiring_module / findings）へ改名・汎用化し、doctor から codd_gate 名を除去する",
-  "deps": [],
-  "kind": "work"
-}

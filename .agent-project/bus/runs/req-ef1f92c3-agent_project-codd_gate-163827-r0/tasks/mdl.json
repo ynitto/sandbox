@@ -1,6 +1,0 @@
-{
-  "id": "mdl",
-  "goal": "model._codd_gate_debt_module と `import codd_gate_*` をパッケージから除去し、model が codd_gate 実装へ直接依存しないよう差し込み点のみに切り替える",
-  "deps": [],
-  "kind": "work"
-}

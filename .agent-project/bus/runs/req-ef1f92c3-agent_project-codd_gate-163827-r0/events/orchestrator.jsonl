@@ -1,2 +1,0 @@
-{"ts": "2026-07-18T12:32:25Z", "who": "orchestrator", "kind": "planned", "patterns": ["fan-out-and-synthesize", "adversarial-verification", "loop-until-done"], "parallelism": 4, "tasks": ["cfg", "doc", "mdl", "itk", "test", "gate", "synth", "done"]}
-{"ts": "2026-07-18T20:45:47Z", "who": "orchestrator", "kind": "replan", "iteration": 1, "added": ["rev"]}
