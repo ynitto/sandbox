@@ -3,48 +3,51 @@
     "base": "main",
     "desc": "agent-amigos",
     "owns": [
-      "tools/agent-amigos"
+      "tools/agent-amigos/**"
     ],
+    "path": "tools/agent-amigos",
     "url": "https://github.com/ynitto/sandbox"
   },
   "agent-dashboard": {
     "base": "main",
     "desc": "agent-dashboard",
     "owns": [
-      "tools/agent-dashboard"
+      "tools/agent-dashboard/**"
     ],
+    "path": "tools/agent-dashboard",
     "url": "https://github.com/ynitto/sandbox"
   },
   "agent-flow": {
     "base": "main",
     "desc": "agent-flow",
     "owns": [
-      "tools/agent-flow"
+      "tools/agent-flow/**"
     ],
+    "path": "tools/agent-flow",
     "url": "https://github.com/ynitto/sandbox"
   },
   "agent-loop": {
     "base": "main",
     "desc": "agent-loop",
     "owns": [
-      "tools/agent-loop"
+      "tools/agent-loop/**"
     ],
+    "path": "tools/agent-loop",
     "url": "https://github.com/ynitto/sandbox"
   },
   "agent-project": {
     "base": "main",
     "desc": "agent-project",
     "owns": [
-      "tools/agent-project"
+      "tools/agent-project/**"
     ],
+    "path": "tools/agent-project",
     "url": "https://github.com/ynitto/sandbox"
   },
   "skills": {
     "base": "main",
     "desc": "skills",
-    "owns": [
-      ".github/skills"
-    ],
+    "path": ".github/skills",
     "url": "https://github.com/ynitto/sandbox"
   }
 }

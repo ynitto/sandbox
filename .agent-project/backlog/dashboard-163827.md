@@ -1,0 +1,14 @@
+## dashboard-163827: dashboard で一貫性ゲートの状態把握と有効化を支援する
+- status: proposed
+- source: charter
+- priority: 0
+- verify: `grep -nE 'regression_cmd|intake_cmd|一貫性ゲート' tools/agent-dashboard/src/renderer/renderer.js tools/agent-dashboard/src/features/agent-project/main/project.js && node tools/agent-dashboard/test/needs-diagnosis.test.js && node tools/agent-dashboard/test/overview-ui.test.js`
+- retries: 0
+- workspace: agent-dashboard
+- refs: agent-project
+- why: パッケージ内マジック配線を外した後も、人が regression/intake の有無とゲート失敗の意味を画面から判断・対処できるようにするため。
+- out_of_scope: agent-project 本体のフック実装・done 不変条件を破る UI からの状態書換
+- hints: 概要またはプロジェクト情報に regression_cmd/intake_cmd（設定の有無）を可視化し、未結線時は README と同じ有効化導線（設定編集／sibling CLI）を示す。needs の codd-gate / 回帰失敗要約（needs-diagnosis）の可読性を落とさない。公式契約（needs/inbox/commands）以外へ書かない。実装後は agent-reviewer で UX レビュー。
+- charter: v1
+- after: codd-gate-163827, sibling-163827
+- assess: c=2 r=1 a=1

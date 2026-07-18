@@ -1,8 +1,10 @@
 {
-  "host": "Mac",
+  "host": "yuuichinoMacBook-Air.local",
   "watch": true,
   "level": "unattended",
   "paused": false,
-  "updated_iso": "2026-07-15 04:28:45",
-  "fresh_after_sec": 600.0
+  "updated_iso": "2026-07-18 17:17:38",
+  "fresh_after_sec": 600.0,
+  "runtime": "darwin",
+  "wsl_distro": null
 }

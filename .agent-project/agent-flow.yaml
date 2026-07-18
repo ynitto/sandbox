@@ -9,11 +9,11 @@
 
 agent_cli: claude      # agents で指定しない役割（doctor 等）の既定
 
-agents:
-  planner:   {agent_cli: claude, model: opus}        # 戦略選定・分解
-  evaluator: {agent_cli: codex, model: gpt-5.6-sol}  # 継続判断・再計画
-  worker:    {agent_cli: claude, model: sonnet}      # 全 kind の既定
-  verify:    {agent_cli: copilot}                    # 個別 kind は worker より優先
+# agents:
+#   planner:   {agent_cli: claude, model: opus}        # 戦略選定・分解
+#   evaluator: {agent_cli: codex, model: gpt-5.6-sol}  # 継続判断・再計画
+#   worker:    {agent_cli: claude, model: sonnet}      # 全 kind の既定
+#   verify:    {agent_cli: copilot}                    # 個別 kind は worker より優先
 
 granularity: coarse
 kiro_timeout: 900
