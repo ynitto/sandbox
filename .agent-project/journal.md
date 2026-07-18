@@ -22,3 +22,5 @@
 - 2026-07-18 10:31:24 state-git 同期: import=1 export=1
 - 2026-07-18 16:25:18 === project watch: 監視中（charter 更新/フィードバック待ち）===
 - 2026-07-18 16:30:03 state-git 同期: import=1 export=2
+- 2026-07-18 16:36:31 === project 開始 v1 acceptance=2 ===
+- 2026-07-18 16:38:27 project cycle 1: plan cycle 1 で 5 件投入 ['codd-gate-163827', 'agent_project-codd_gate-163827', 'sibling-163827', 'dashboard-163827', 'enq-20260718-163827']

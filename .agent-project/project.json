@@ -1,0 +1,18 @@
+{
+  "charters": {
+    "v1": {
+      "id": ".agent-project-v1",
+      "name": "v1",
+      "history": [],
+      "best": 0,
+      "stall": 0,
+      "acceptance_synth": {
+        "agent-project codd-gate 連携対応コードが個別対応ではなく将来別の CLI にも転用できること": "PYTHONPATH=tools/agent-project python3 tools/agent-project/tests/test_agent_project.py TestIntake.test_run_intake_enqueues_and_dedups_by_id TestLoopEngineering.test_regression_gate_blocks_on_failure TestLoopEngineering.test_regression_gate_passes && ! git grep -n -E '(^|[[:space:]])(import|from)[[:space:]]+codd_gate|_apply_codd_gate|_codd_gate' -- tools/agent-project/agent_project",
+        "agent-project の設計書とコードの一貫性が保たれていること": "test -n \"${KIRO_BASE_REV:-}\" && python3 tools/codd-gate/codd-gate.py verify --base \"$KIRO_BASE_REV\" --strict && python3 -m unittest discover -s tools/agent-project/tests"
+      },
+      "planned_charter_sig": "502cc5b20d377958c2c2679ab8bcb8f4a85628d47fb5f9bfc10de92571324565",
+      "acceptance_total": 2
+    }
+  },
+  "updated": "2026-07-18T16:36:31"
+}
