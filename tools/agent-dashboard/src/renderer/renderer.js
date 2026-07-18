@@ -3512,6 +3512,33 @@ function completedRunForNeed(project, need, flowRuns) {
   return run && String(run.status || '') === 'done' ? run : null;
 }
 
+// 同一タスクの系統内でいちばん新しい done の run（リトライ世代の降順）。
+// last_run（最新試行）が実行中・失敗のときでも、旧世代の完了成果を見る導線に使う
+// （リトライ中に「成果を確認」が消える＝成果物が消失したように見える問題の対策）。
+// 完了承認の可否判定（completedRunForNeed）はあくまで最新試行の done を根拠にするため、
+// このフォールバックは成果の閲覧にだけ使う。
+function newestDoneRunForNeed(project, need, flowRuns) {
+  const taskId = String((need && (need.taskId || need.id)) || '');
+  if (!taskId) return null;
+  const key = sanitizeTaskId(taskId);
+  return (
+    (flowRuns || [])
+      .filter((r) => r.taskId && sanitizeTaskId(r.taskId) === key && String(r.status) === 'done')
+      .sort(
+        (a, b) =>
+          (b.retries || 0) - (a.retries || 0) ||
+          String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || ''))
+      )[0] || null
+  );
+}
+
+// 成果の閲覧に使う run: 最新試行が done ならそれ、でなければ系統内の最新 done 世代。
+function artifactRunForNeed(project, need, flowRuns) {
+  return (
+    completedRunForNeed(project, need, flowRuns) || newestDoneRunForNeed(project, need, flowRuns)
+  );
+}
+
 // 要対応詳細のバナー、完了承認ボタン、検収ダイアログを同じ判定へ揃える。
 // status=done は orchestrator がフローを終了した一次情報。検証をフローノードとして数える
 // 形式では counts.failed / waiting が残るため、ノード集計を完了承認の可否に重ねない。
@@ -3545,7 +3572,8 @@ function needApprovalReason(project, need, flowRuns, input) {
 function needArtifactsButtonHtml(project, need, flowRuns) {
   // 未承認の検証失敗は回答欄の主操作から同じ検収ダイアログへ進むため、重複表示しない。
   if (canManuallyCompleteNeed(project, need, flowRuns)) return '';
-  if (!completedTaskForNeed(project, need) && !completedRunForNeed(project, need, flowRuns)) return '';
+  // リトライ中（最新試行が未完）でも、系統内に done 世代があれば成果への導線を残す
+  if (!completedTaskForNeed(project, need) && !artifactRunForNeed(project, need, flowRuns)) return '';
   return `<button type="button" class="primary-inline" data-need-artifacts="${esc(need.id)}">成果を確認</button>`;
 }
 
@@ -3847,7 +3875,9 @@ async function openNeedArtifacts(needId) {
   const project = state.project;
   const need = project && project.needs.find((item) => item.id === needId);
   if (!need) return toast('要対応項目が見つかりません');
-  const run = completedRunForNeed(project, need, state.flowRuns);
+  // 閲覧は系統フォールバック付き（リトライ中でも旧世代の完了成果を見られる）。
+  // 承認可否の判定は completedRunForNeed（最新試行の done）側が担い、ここでは変えない。
+  const run = artifactRunForNeed(project, need, state.flowRuns);
   const task = completedTaskForNeed(project, need) || taskForNeed(project, need);
   let artifactRun = run;
   if (run && state.flowRun && state.flowRun.run && state.flowRun.run.runId === run.runId) {
@@ -5382,7 +5412,13 @@ const viewTabs = [
     ${req.body ? `<div class="flow-request-body">${proseHtml(req.body)}</div>` : ''}
     ${adviceBanner}
     ${relationshipStrip({ run })}
-    ${archived ? '<p class="muted">完了済みの記録です。</p>' : ''}
+    ${
+      run.tombstone
+        ? '<p class="muted">リトライ（世代交代）で置き換えられた実行の記録です。工程出力は抜粋で、成果物の実体・イベントは新しい実行に引き継がれています。</p>'
+        : archived
+          ? '<p class="muted">完了済みの記録です。</p>'
+          : ''
+    }
     ${run.failureReason ? `<div class="flow-failure">失敗理由: ${esc(String(run.failureReason).replace(/\[agent-error:[a-z]+\]\s*/g, ''))}</div>` : ''}
     <div class="flow-progress-block">
       <div class="progress"><div style="width:${pct}%"></div></div>

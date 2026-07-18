@@ -27,6 +27,11 @@ class Bus:
         self.meta_path = os.path.join(self.run_dir, "meta.json")
         self.graph_path = os.path.join(self.run_dir, "graph.json")
         self.final_path = os.path.join(self.run_dir, "final.json")
+        # inherited/<旧run-id>.json … リトライ（世代交代）で削除した先行 run の墓標（要約）。
+        # inherit_from が先行 run を掃除する前に meta・final・results（出力は抜粋）を残す。
+        # これが無いと、完走したのに verify NG でリトライされた run の成果記録が bus から
+        # 完全に消え、viewer（agent-dashboard）がポーリングしていなければ二度と見られない。
+        self.inherited_dir = os.path.join(self.run_dir, "inherited")
 
     # --- 転送フック（ローカルバスでは no-op、GitBus が上書き） ---
     def sync_pull(self) -> None:
@@ -477,6 +482,69 @@ class Bus:
         return Bus(self.root, run_id)
 
     # --- リトライ時の引き継ぎ（先行 run のデータ破棄設計） ---
+
+    # 墓標に残す工程出力の上限（冒頭＋末尾）。全文を残すと git バス同期・run dir が肥大する。
+    # 全文の正は削除される旧 run の results/ だったので、要約であることを明示して抜粋する。
+    TOMBSTONE_OUTPUT_HEAD = 1200
+    TOMBSTONE_OUTPUT_TAIL = 2400
+
+    @classmethod
+    def _tombstone_excerpt(cls, text: str) -> str:
+        s = "" if text is None else str(text)
+        limit = cls.TOMBSTONE_OUTPUT_HEAD + cls.TOMBSTONE_OUTPUT_TAIL
+        if len(s) <= limit:
+            return s
+        omitted = len(s) - limit
+        return (s[:cls.TOMBSTONE_OUTPUT_HEAD]
+                + f"\n…（中略 {omitted} 文字）…\n"
+                + s[-cls.TOMBSTONE_OUTPUT_TAIL:])
+
+    def _predecessor_tombstone(self, old: "Bus", old_meta: dict) -> dict:
+        """削除する先行 run の要約（墓標）。meta・graph（計画）・final・全ノードの results
+        （出力は抜粋）・成果物ファイル名の一覧を残す。viewer はこれを「アーカイブ済み run」
+        相当として表示できる（工程出力の全文と成果物の実体は旧 run と共に消える）。"""
+        results: dict = {}
+        for nid in old.task_ids():
+            res = old.read_result(nid)
+            if not res:
+                continue
+            rec = dict(res)
+            if isinstance(rec.get("output"), str):
+                rec["output"] = self._tombstone_excerpt(rec["output"])
+            results[nid] = rec
+        artifacts: list = []
+        if os.path.isdir(old.artifacts_dir):
+            for base, _dirs, files in os.walk(old.artifacts_dir):
+                rel = os.path.relpath(base, old.artifacts_dir)
+                for f in files:
+                    p = f if rel == "." else os.path.join(rel, f)
+                    artifacts.append(p.replace(os.sep, "/"))
+        return {
+            "run_id": os.path.basename(old.run_dir),
+            "saved_at": now_iso(),
+            "meta": old_meta,
+            "graph": read_json(old.graph_path),
+            "final": read_json(old.final_path),
+            "results": results,
+            "artifacts": sorted(artifacts),
+        }
+
+    def _preserve_predecessor(self, old: "Bus", old_meta: dict) -> None:
+        """先行 run を削除する前に、その墓標をこの run の inherited/ へ書き残す。
+        先行 run 自身が持っていた墓標（さらに前の世代）も引き継ぐ＝リトライ連鎖の全世代の
+        要約が最新 run に残る。"""
+        os.makedirs(self.inherited_dir, exist_ok=True)
+        if os.path.isdir(old.inherited_dir):           # 前々世代以前の墓標を持ち越す
+            for f in os.listdir(old.inherited_dir):
+                if not f.endswith(".json"):
+                    continue
+                dst = os.path.join(self.inherited_dir, f)
+                if not os.path.exists(dst):
+                    shutil.copy2(os.path.join(old.inherited_dir, f), dst)
+        old_id = os.path.basename(old.run_dir)
+        write_json_atomic(os.path.join(self.inherited_dir, f"{old_id}.json"),
+                          self._predecessor_tombstone(old, old_meta))
+
     def _seed_from(self, old: "Bus", request: str = "") -> int:
         """先行 run `old` の再利用可能な状態をこの（新しい）run dir へコピーする。
         戻り値＝引き継いだ done ノード数。graph.json（計画）・tasks/（ノード仕様）・
@@ -556,6 +624,15 @@ class Bus:
         # この run が既に実体を持つ（別経路で再開中）なら seed しない＝上書き事故を防ぐ
         if read_json(self.meta_path) is None and not fully_done:
             seeded = self._seed_from(old, request=request)
+        # 削除の前に旧 run の墓標（meta・final・results 要約）をこの run へ残す。
+        # 特に「全ノード done だが verify NG」のリトライは結果を引き継がない設計のため、
+        # 墓標が無いと完走した run の成果記録が bus から即座に完全消滅する
+        # （viewer がその瞬間にポーリングしていない限り二度と見られない）。
+        # 墓標の保存失敗で掃除・リトライ自体は止めない。
+        try:
+            self._preserve_predecessor(old, old_meta)
+        except OSError:
+            pass
         self.remove_run(old_run_id)                    # 終端/孤児のみ到達＝安全に掃除
         return {"inherited": seeded > 0, "seeded_nodes": seeded, "deleted": True,
                 "reason": ("完全 done のため状態は引き継がず掃除のみ" if fully_done

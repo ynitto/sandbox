@@ -92,15 +92,42 @@ const needAssistActionsHtml = new Function(
   'esc', 'canDiagnoseNeed', `${grab('needAssistActionsHtml')}; return needAssistActionsHtml;`
 )((value) => String(value == null ? '' : value), canDiagnoseNeed);
 // eslint-disable-next-line no-new-func
+const newestDoneRunForNeed = new Function(
+  'sanitizeTaskId', `${grab('newestDoneRunForNeed')}; return newestDoneRunForNeed;`
+)((id) => String(id == null ? '' : id).replace(/[^\w.-]+/g, '_').slice(0, 60));
+// eslint-disable-next-line no-new-func
+const artifactRunForNeed = new Function(
+  'completedRunForNeed', 'newestDoneRunForNeed',
+  `${grab('artifactRunForNeed')}; return artifactRunForNeed;`
+)(completedRunForNeed, newestDoneRunForNeed);
+// eslint-disable-next-line no-new-func
 const needArtifactsButtonHtml = new Function(
-  'esc', 'completedTaskForNeed', 'completedRunForNeed', 'canManuallyCompleteNeed',
+  'esc', 'completedTaskForNeed', 'artifactRunForNeed', 'canManuallyCompleteNeed',
   `${grab('needArtifactsButtonHtml')}; return needArtifactsButtonHtml;`
 )(
   (value) => String(value == null ? '' : value),
   completedTaskForNeed,
-  completedRunForNeed,
+  artifactRunForNeed,
   canManuallyCompleteNeed
 );
+
+// リトライ中の成果導線: last_run（最新試行）が実行中でも、系統内に done 世代があれば
+// 「成果を確認」の導線が残る（リトライで成果が消えたように見えない）
+{
+  const project = {
+    backlog: [{ id: 'T9', status: 'doing', extra: { last_run: 'req-h-T9-r1' } }],
+    archive: [],
+  };
+  const need = { id: 'T9', taskId: 'T9', kind: 'blocked' };
+  const runs = [
+    { runId: 'req-h-T9-r1', taskId: 'T9', status: 'running', retries: 1 },
+    { runId: 'req-h-T9-r0', taskId: 'T9', status: 'done', retries: 0 },
+  ];
+  assert.strictEqual(completedRunForNeed(project, need, runs), null, '最新試行は未完＝承認根拠にはならない');
+  const fallback = artifactRunForNeed(project, need, runs);
+  assert.ok(fallback && fallback.runId === 'req-h-T9-r0', '閲覧は系統内の最新 done 世代へフォールバック');
+  assert.match(needArtifactsButtonHtml(project, need, runs), /成果を確認/, 'リトライ中も成果導線が残る');
+}
 // eslint-disable-next-line no-new-func
 const runArtifactViewModel = new Function(
   'sanitizeTaskId', `${grab('runArtifactViewModel')}; return runArtifactViewModel;`

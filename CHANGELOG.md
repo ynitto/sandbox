@@ -7,6 +7,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-flow / agent-dashboard: リトライで旧 run の成果記録が消えないようにする（墓標）
+
+- **agent-flow**: リトライ（新 run-id での世代交代）時、`inherit_from` が先行 run を bus から
+  削除する前に墓標 `runs/<新>/inherited/<旧run-id>.json`（meta・graph・final・results の要約。
+  工程出力は冒頭 1200＋末尾 2400 字の抜粋）を残すようにした。特に「全ノード done だが
+  verify NG → feedback 付きリトライ」は結果を引き継がない設計のため、これまで完走した run の
+  成果記録がリトライ開始の瞬間に bus から完全消滅していた（viewer がその瞬間にポーリング
+  していなければ二度と見られない＝「リトライした run の成果物が dashboard 上で消失」の正体）。
+  前世代の墓標も持ち越すため、最新 run に全世代の要約が残る。
+- **agent-dashboard**: 墓標を readRun 互換のサマリへ変換して読み（`readInheritedTombstones`）、
+  ポーリング時に flow-archive へ補完保存する（live 中に撮れた終端スナップショットがあれば
+  そちらを正とし、無い/実行途中の写ししか無いときだけ墓標で置き換える）。フロータブでは
+  「リトライで置き換えられた実行の記録」と明示する。
+- **リトライ中も成果への導線を残す**: 要対応の「成果を確認」は最新試行（last_run）が done の
+  ときしか出ず、リトライ実行中は旧世代の完了成果へ到達できなかった。閲覧は系統内の最新 done
+  世代へフォールバックする（完了承認の可否判定は従来どおり最新試行の done を根拠にする）。
+- **「そのまま再実行」の run-id が系統から切れる問題を修正**: 旧形式 `<run-id>-retry-<ts>` は
+  決定的 run-id の解析（`REQ_ID_RE`）に合わず taskId/lineage が失われていた。req- 形式は
+  `-v<retry-ts>` として付け、系統解析を保つ（長い id も切り詰めず保持）。
+
 ### agent-dashboard: 計画バージョンの継承を agent-project の規則に揃える（マスター憲章）
 
 - **新規プロジェクト作成で入力した制約・前提が最初のバージョンに効かないバグを修正**:

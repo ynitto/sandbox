@@ -79,6 +79,7 @@ function registerIpc(ctx) {
     const allLive = flow.listRuns(busDir, 0);
     const lim = Math.max(0, Number(limit) || 30);
     const runs = lim > 0 ? allLive.slice(0, lim) : allLive;
+    const live = new Set(allLive.map((r) => r.runId));
     if (dir) {
       for (const r of allLive) {
         try {
@@ -86,9 +87,28 @@ function registerIpc(ctx) {
         } catch {
           /* アーカイブ失敗は一覧表示の失敗にしない */
         }
+        // リトライ（世代交代）で bus から削除された旧世代の墓標（runs/<新>/inherited/）も
+        // アーカイブへ写す。viewer が削除の瞬間にポーリングしていなくても旧世代の成果記録が
+        // 残る。live 中にポーリングで撮れた終端スナップショット（イベント付き・より詳しい）が
+        // 既にあればそちらを正とし、無い/実行途中の古い写ししか無いときだけ墓標で置き換える。
+        let tombs = [];
+        try {
+          tombs = flow.readInheritedTombstones(busDir, r.runId);
+        } catch {
+          /* 墓標の読込失敗も一覧表示の失敗にしない */
+        }
+        for (const t of tombs) {
+          if (live.has(t.runId)) continue;
+          try {
+            const existing = flow.readArchivedRun(dir, t.runId);
+            const st = existing && existing.run ? String(existing.run.status || '') : '';
+            if (!existing || !flow.TERMINAL.has(st)) flow.archiveRunSnapshot(dir, busDir, t);
+          } catch {
+            /* 補完失敗も致命的でない */
+          }
+        }
       }
     }
-    const live = new Set(allLive.map((r) => r.runId));
     const archived = dir
       ? flow.listArchivedRuns(dir).filter((a) => !live.has(a.runId))
       : [];

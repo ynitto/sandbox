@@ -140,16 +140,20 @@ test('canceled run は readRun で終端扱い（alive=null＝応答なしにし
   assert.strictEqual(run.alive, null); // TERMINAL に含む＝孤児（応答なし）判定の対象外
 });
 
-test('resubmitRun は長い run-id でも接頭辞を落とさない', () => {
+test('resubmitRun は長い run-id でも接頭辞と系統解析（taskId/lineage）を保つ', () => {
   const longId = `req-${'a'.repeat(40)}-TASK-LONG-NAME-r0`;
   const runDir = makeRun(bus, longId);
   writeJson(path.join(runDir, 'meta.json'), {
     request: 'do it', status: 'failed', created_at: '2026-01-01T00:00:00Z',
   });
   const res = flow.resubmitRun(bus, longId);
-  assert.ok(res.runId.startsWith('req-'), res.runId);
+  // req- 形式は元 id を丸ごと保持し -v で付ける＝切り詰めて系統を壊さない
+  // （旧実装の 80 文字上限は元 id をスライスして taskId/lineage の解析を壊していた）
+  assert.ok(res.runId.startsWith(longId), res.runId);
   assert.ok(res.runId.includes('retry-'), res.runId);
-  assert.ok(res.runId.length <= 80, String(res.runId.length));
+  const parsed = flow.parseRunId(res.runId);
+  assert.strictEqual(parsed.taskId, 'TASK-LONG-NAME', '再投入後もタスクへ紐づく');
+  assert.ok(res.runId.length <= 160, `FS のファイル名制限に収まる: ${res.runId.length}`);
 });
 
 console.log(`\n${passed} passed`);

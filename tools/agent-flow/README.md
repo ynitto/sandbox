@@ -360,6 +360,11 @@ claim は lease 超過で自動的に無効化され、別ノードが再 claim 
   results/<id>.json    # 成果（claim 成功者のみ書く）
   events/<who>.jsonl   # 追記専用ログ（各ノードが自分のファイルだけ）
   final.json           # 統合結果
+  inherited/<旧run-id>.json  # リトライ（世代交代）で削除した先行 run の墓標
+                       # （meta・graph・final・results の要約。出力は抜粋）。
+                       # inherit_from が先行 run を掃除する前に残す＝完走したのに
+                       # verify NG でリトライされた run の成果記録が消えない。
+                       # 前世代の墓標も持ち越すため、最新 run に全世代の要約が残る
 ```
 
 **ノードクローンの自己回復（git バス）**：各ノードのクローンは使い捨てのキャッシュで、
