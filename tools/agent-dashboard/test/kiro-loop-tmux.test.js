@@ -191,13 +191,18 @@ test('feature preload が kiroLoop API を出す', () => {
   const api = loop.preloadApi();
   assert.strictEqual(typeof api.kiroLoopListSessions, 'function');
   assert.strictEqual(typeof api.kiroLoopCapture, 'function');
+  assert.strictEqual(typeof api.kiroLoopState, 'function');
+  assert.strictEqual(typeof api.kiroLoopSend, 'function');
   const registered = [];
   loop.registerIpc({
     handle: (channel) => registered.push(channel),
     loadConfig: () => ({ kiroLoop: { sessionPrefix: 'kiro-loop-' } }),
     saveConfig: () => ({}),
   });
-  assert.deepStrictEqual(registered.sort(), ['kiroLoop:capture', 'kiroLoop:listSessions'].sort());
+  assert.deepStrictEqual(
+    registered.sort(),
+    ['kiroLoop:capture', 'kiroLoop:listSessions', 'kiroLoop:send', 'kiroLoop:state'].sort()
+  );
   assert.ok(loop.configDefaults.kiroLoop);
 });
 

@@ -123,6 +123,8 @@ cwd が変わらない限り同じセッション名が生成される。
 
 **状態ファイル**: `~/.kiro/loop-state/<pid>.json`  
 `ls`/`send` サブコマンドがこれを読んでペイン情報を取得する。
+`sessions[]` の各レコードには、プロンプト送信のたびに `last_sent_at`（epoch 秒）と
+`last_send_ok` を記録する（agent-dashboard の構造化状態ビューが参照する）。
 
 ---
 

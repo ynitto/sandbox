@@ -529,6 +529,19 @@ button:disabled { opacity: 0.4; cursor: default; }
   min-width: 220px;
   max-width: 100%;
 }
+.kiro-loop-state { flex: none; }
+.kiro-loop-state table { width: 100%; }
+.kiro-loop-send {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex: none;
+}
+.kiro-loop-send input {
+  flex: 1;
+  min-width: 240px;
+}
 .kiro-loop-capture {
   flex: 1;
   min-height: 200px;

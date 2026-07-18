@@ -1130,6 +1130,7 @@ class SessionManager:
         self._tmux_names: dict[str, str] = {}
         self._prompt_cwds: dict[str, str | None] = {}
         self._restart_locks: dict[str, threading.Lock] = {}
+        self._last_sends: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
 
         self._tmux_bin: str | None = None
@@ -1383,6 +1384,9 @@ class SessionManager:
         print(f"[kiro-loop] send [{cwd}] (pane={pane_target}) {short}", file=sys.stderr, flush=True)
 
         ok, err = _send_to_pane(pane_target, prompt_text)
+        with self._lock:
+            self._last_sends[prompt_id] = {"at": time.time(), "ok": ok}
+        self.write_state()
         if not ok:
             log.warning("テキスト送信に失敗しました: %s", err)
             print(f"[kiro-loop] done [{cwd}] failed", file=sys.stderr, flush=True)
@@ -1526,14 +1530,20 @@ class SessionManager:
         with self._lock:
             items = list(self._panes.items())
             names = dict(self._prompt_names)
+            last_sends = {k: dict(v) for k, v in self._last_sends.items()}
         sessions_data = []
         for prompt_id, pane_target in items:
-            sessions_data.append({
+            record = {
                 "name": names.get(prompt_id, prompt_id),
                 "id": prompt_id,
                 "pane": pane_target,
                 "alive": self._pane_exists(pane_target),
-            })
+            }
+            last = last_sends.get(prompt_id)
+            if last:
+                record["last_sent_at"] = last.get("at")
+                record["last_send_ok"] = bool(last.get("ok"))
+            sessions_data.append(record)
         data = {
             "pid": os.getpid(),
             "cwd": self._target_path,

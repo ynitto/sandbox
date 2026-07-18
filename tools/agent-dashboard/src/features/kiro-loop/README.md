@@ -5,6 +5,8 @@ Windows の agent-dashboard から、WSL 上の kiro-loop **tmux セッション
 - ジョブ一覧・設定・実行ボタンは **Cowork** 側
 - この feature は **生きている tmux の capture-pane 視聴**（Phase A）
 - 将来 Phase B で `node-pty` + `xterm.js` の `tmux attach` に差し替える想定
+- Phase C の構造化状態（最終実行時刻・alive/busy）と `kiro-loop send` 経由の復旧送信は実装済み
+  （busy 拒否は renderer が「送信待機」に変換して自動再送する）
 
 設計: [`docs/designs/agent-dashboard-kiro-loop-terminal-design.md`](../../../../../docs/designs/agent-dashboard-kiro-loop-terminal-design.md)
 
@@ -29,7 +31,10 @@ repo が Windows ドライブ上（`C:\...`）でも `/mnt/c/...` へ寄せて c
 |-----|----------|
 | `api.kiroLoopListSessions({ repo? })` | `kiroLoop:listSessions` |
 | `api.kiroLoopCapture({ target, lines? })` | `kiroLoop:capture` |
+| `api.kiroLoopState({ repo? })` | `kiroLoop:state`（loop-state の last_sent_at ＋ slot の busy） |
+| `api.kiroLoopSend({ repo, target, prompt })` | `kiroLoop:send`（`kiro-loop send` 経由。busy 拒否は `busy: true`） |
 
 ## UI
 
-Cowork タブの各ジョブ「端末」→ 読み取り専用パネル。セッションが無いときは空状態。
+Cowork タブの各ジョブ「端末」→ 稼働状態テーブル（プロンプト別の最終実行時刻・状態）＋
+復旧送信フォーム（定期プロンプト名 or 自由文）＋読み取り専用パネル。セッションが無いときは空状態。

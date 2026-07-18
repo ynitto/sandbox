@@ -109,6 +109,62 @@ function repoMatchesCwd(want, cwd) {
   return cwd === want || cwd.startsWith(`${want}/`);
 }
 
+// 実行中スロットのペイン ID 集合（~/.kiro/slots/pane_<id>.json。agent-loop クローンは
+// ~/.agent/slots — ファイル名だけで busy 判定できるので中身は読まない）。
+function readSlotPanes(distro = '') {
+  const r = exec.shInWsl(
+    'ls "$HOME"/.kiro/slots/pane_*.json "$HOME"/.agent/slots/pane_*.json 2>/dev/null || true',
+    8000,
+    distro
+  );
+  const out = new Set();
+  for (const line of String(r.stdout || '').split(/\r?\n/)) {
+    const m = line.trim().match(/pane_([^/]+)\.json$/);
+    if (m) out.add(`%${m[1]}`);
+  }
+  return out;
+}
+
+// 構造化状態ビュー: loop-state（last_sent_at / last_send_ok 含む）を repo で絞り、
+// ペイン存在（alive）とスロット（busy）を突き合わせて返す。tmux を開かずに
+// 「最終実行時刻・稼働状態」を見せるためのデータソース。
+function stateSummary({ repo } = {}) {
+  const distro = exec.wslDistro(repo || '');
+  const want = normalizeLinuxPath(repo);
+  const states = readLoopStates(distro);
+  const panes = states.length ? allPanes(distro) : new Map();
+  const busyPanes = states.length ? readSlotPanes(distro) : new Set();
+  const daemons = [];
+  for (const st of states) {
+    const stateCwd = normalizeLinuxPath(st.cwd || '');
+    const sessionsRaw = Array.isArray(st.sessions) ? st.sessions : [];
+    const matches = repoMatchesCwd(want, stateCwd) || sessionsRaw.some((s) => {
+      const pane = s && s.pane ? panes.get(String(s.pane)) : null;
+      return pane && repoMatchesCwd(want, normalizeLinuxPath(pane.cwd || ''));
+    });
+    if (!matches) continue;
+    const sessions = sessionsRaw.map((s) => {
+      const paneId = String((s && s.pane) || '');
+      const pane = paneId ? panes.get(paneId) : null;
+      return {
+        name: String((s && (s.name || s.id)) || ''),
+        pane: paneId,
+        alive: !!pane,
+        busy: !!pane && busyPanes.has(paneId),
+        lastSentAt: Number(s && s.last_sent_at) > 0 ? Number(s.last_sent_at) : 0,
+        lastSendOk: !s || s.last_send_ok !== false,
+      };
+    });
+    daemons.push({
+      pid: Number(st.pid) || 0,
+      cwd: stateCwd,
+      updatedAt: Number(st.updated_at) || 0,
+      sessions,
+    });
+  }
+  return { ok: true, daemons, error: '' };
+}
+
 function listSessions({ repo, prefix } = {}) {
   const distro = exec.wslDistro(repo || '');
   const want = normalizeLinuxPath(repo);
@@ -188,5 +244,5 @@ function capture({ target, lines, repo } = {}) {
 
 module.exports = {
   pathDigest, normalizeLinuxPath, listTmuxSessions, listSessions, capture, paneMeta,
-  allPanes, readLoopStates,
+  allPanes, readLoopStates, readSlotPanes, stateSummary,
 };

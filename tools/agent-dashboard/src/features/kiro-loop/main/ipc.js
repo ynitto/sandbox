@@ -1,6 +1,7 @@
 'use strict';
 
 const tmux = require('./tmux');
+const send = require('./send');
 
 function registerIpc(ctx) {
   const { handle, loadConfig } = ctx;
@@ -19,6 +20,14 @@ function registerIpc(ctx) {
     target: args.target || args.session || '',
     lines: args.lines,
     repo: args.repo || '',
+  }));
+
+  handle('kiroLoop:state', (args = {}) => tmux.stateSummary({ repo: args.repo || '' }));
+
+  handle('kiroLoop:send', (args = {}) => send.sendPrompt({
+    repo: args.repo || '',
+    target: args.target || '',
+    prompt: args.prompt || '',
   }));
 }
 

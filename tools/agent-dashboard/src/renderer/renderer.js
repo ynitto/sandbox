@@ -7907,6 +7907,9 @@ function startKiroLoopCapturePoll() {
         : `更新 ${new Date(state.kiroLoopTerm.at).toLocaleTimeString('ja-JP')} ／ 読み取り専用（capture-pane）`;
       meta.classList.toggle('sync-error', !!state.kiroLoopTerm.error);
     }
+    // 構造化状態（最終実行時刻・alive/busy）は capture より低頻度で追従する
+    state.kiroLoopTerm.stateTick = (state.kiroLoopTerm.stateTick || 0) + 1;
+    if (state.kiroLoopTerm.stateTick % 5 === 1) refreshKiroLoopState();
   };
   tick();
   state.kiroLoopTimer = setInterval(tick, kiroLoopCaptureSec() * 1000);
@@ -7918,6 +7921,7 @@ async function openKiroLoopTerminal({ repo, name } = {}) {
     return;
   }
   setKiroLoopTabVisible(true);
+  kiroLoopCancelWait();
   state.kiroLoopTerm = {
     repo: repo || '',
     name: name || '',
@@ -7925,11 +7929,14 @@ async function openKiroLoopTerminal({ repo, name } = {}) {
     session: '',
     items: [],
     text: '',
+    summary: null,
+    send: null,
     error: 'セッションを検索しています…',
     at: Date.now(),
   };
   switchTab('kiro-loop');
   renderKiroLoopTerminal();
+  refreshKiroLoopState();
   const listed = await guard('tmux セッション', () => api.kiroLoopListSessions({ repo: repo || '' }));
   if (!listed) {
     state.kiroLoopTerm.error = 'セッション一覧の取得に失敗しました';
@@ -7975,6 +7982,15 @@ function renderKiroLoopTerminal() {
         </label>
         <span id="kiro-loop-term-meta" class="muted">${esc(term.error || '読み取り専用（capture-pane）')}</span>
       </div>
+      <div id="kiro-loop-state" class="kiro-loop-state">${kiroLoopStateHtml(term.summary)}</div>
+      <div class="kiro-loop-send">
+        <input id="kiro-loop-send-text" type="text"
+          placeholder="復旧送信するプロンプト（定期プロンプト名か自由文）" value="${esc((term.send && term.send.text) || '')}">
+        ${term.name ? `<button id="btn-kiro-loop-send-periodic" title="定期プロンプト名を kiro-loop send に渡し、ワークスペース設定の本文を送ります">定期プロンプト「${esc(term.name)}」を送る</button>` : ''}
+        <button id="btn-kiro-loop-send">送信</button>
+        <button id="btn-kiro-loop-send-cancel" class="hidden">待機を中止</button>
+        <span id="kiro-loop-send-meta" class="muted">${esc((term.send && term.send.message) || '')}</span>
+      </div>
       <pre id="kiro-loop-capture" class="kiro-loop-capture mono" aria-live="polite">${esc(stripAnsi(term.text || (term.error && !term.target ? '' : '…')))}</pre>
     </div>`;
   const sel = $('kiro-loop-target');
@@ -7995,11 +8011,128 @@ function renderKiroLoopTerminal() {
   if (close) {
     close.addEventListener('click', () => {
       stopKiroLoopCapturePoll();
+      kiroLoopCancelWait();
       state.kiroLoopTerm = null;
       setKiroLoopTabVisible(false);
       switchTab('cowork');
     });
   }
+  const sendBtn = $('btn-kiro-loop-send');
+  const sendText = $('kiro-loop-send-text');
+  if (sendBtn && sendText) {
+    sendBtn.addEventListener('click', () => kiroLoopSendPrompt(sendText.value));
+    sendText.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') kiroLoopSendPrompt(sendText.value);
+    });
+  }
+  const periodicBtn = $('btn-kiro-loop-send-periodic');
+  if (periodicBtn) periodicBtn.addEventListener('click', () => kiroLoopSendPrompt(term.name));
+  const cancelBtn = $('btn-kiro-loop-send-cancel');
+  if (cancelBtn) {
+    cancelBtn.addEventListener('click', () => {
+      kiroLoopCancelWait();
+      updateKiroLoopSendMeta();
+    });
+  }
+  updateKiroLoopSendMeta();
+}
+
+// ---------------------------------------------------------------------------
+// kiro-loop 構造化状態と復旧送信（Phase C）
+// ---------------------------------------------------------------------------
+
+function kiroLoopStateHtml(summary) {
+  const rows = [];
+  for (const d of (summary && summary.daemons) || []) {
+    for (const s of d.sessions || []) {
+      const label = !s.alive ? '停止' : (s.busy ? '処理中' : '待機中');
+      const cls = !s.alive ? 'st-failed' : (s.busy ? 'st-running' : 'st-ready');
+      const lastSent = s.lastSentAt
+        ? `${fmtTime(new Date(s.lastSentAt * 1000).toISOString())}${s.lastSendOk === false ? '（送信失敗）' : ''}`
+        : '—';
+      rows.push(`<tr>
+        <td>${esc(s.name || s.pane)}</td>
+        <td><span class="status-chip ${cls}">${label}</span></td>
+        <td class="mono">${esc(lastSent)}</td>
+      </tr>`);
+    }
+  }
+  if (!summary) return '<p class="muted">稼働状態を読み込んでいます…</p>';
+  if (!rows.length) return '<p class="muted">稼働中の kiro-loop デーモンはありません。</p>';
+  return `<table class="list"><tr><th>プロンプト</th><th>状態</th><th>最終実行</th></tr>${rows.join('')}</table>`;
+}
+
+async function refreshKiroLoopState() {
+  const term = state.kiroLoopTerm;
+  if (!term || !api.kiroLoopState) return;
+  const res = await api.kiroLoopState({ repo: term.repo }).catch(() => null);
+  if (state.kiroLoopTerm !== term) return;
+  term.summary = res && res.ok ? res : { daemons: [] };
+  const el = $('kiro-loop-state');
+  if (el) el.innerHTML = kiroLoopStateHtml(term.summary);
+}
+
+function kiroLoopCancelWait() {
+  if (state.kiroLoopSendTimer) {
+    clearTimeout(state.kiroLoopSendTimer);
+    state.kiroLoopSendTimer = null;
+  }
+  const term = state.kiroLoopTerm;
+  if (term && term.send && term.send.phase === 'waiting') {
+    term.send = { text: term.send.text, phase: '', message: '' };
+  }
+}
+
+function updateKiroLoopSendMeta() {
+  const term = state.kiroLoopTerm;
+  const meta = $('kiro-loop-send-meta');
+  if (!meta) return;
+  const send = (term && term.send) || {};
+  meta.textContent = send.message || '';
+  meta.classList.toggle('sync-error', send.phase === 'error');
+  const cancel = $('btn-kiro-loop-send-cancel');
+  if (cancel) cancel.classList.toggle('hidden', send.phase !== 'waiting');
+}
+
+const KIRO_LOOP_SEND_RETRY_SEC = 15;
+
+async function kiroLoopSendPrompt(promptText) {
+  const term = state.kiroLoopTerm;
+  if (!term) return;
+  if (!api.kiroLoopSend) {
+    toast('kiro-loop 送信 API がありません');
+    return;
+  }
+  const text = String(promptText || '').trim();
+  if (!text) {
+    toast('送信するプロンプトを入力してください');
+    return;
+  }
+  kiroLoopCancelWait();
+  term.send = { text, phase: 'sending', message: '送信しています…' };
+  updateKiroLoopSendMeta();
+  const res = await api.kiroLoopSend({ repo: term.repo, target: term.target, prompt: text })
+    .catch((err) => ({ ok: false, busy: false, error: err.message || String(err) }));
+  if (state.kiroLoopTerm !== term) return;
+  if (res && res.ok) {
+    term.send = { text: '', phase: 'ok', message: `送信しました（${new Date().toLocaleTimeString('ja-JP')}）` };
+    const input = $('kiro-loop-send-text');
+    if (input) input.value = '';
+    toast('プロンプトを送信しました');
+    refreshKiroLoopState();
+  } else if (res && res.busy) {
+    // busy 拒否は失敗ではなく「送信待機」— 完了を待って自動で再送する
+    term.send = { text, phase: 'waiting', message: `処理中のため送信待機中…（${KIRO_LOOP_SEND_RETRY_SEC} 秒ごとに自動再送）` };
+    state.kiroLoopSendTimer = setTimeout(() => {
+      state.kiroLoopSendTimer = null;
+      if (state.kiroLoopTerm === term && term.send && term.send.phase === 'waiting') {
+        kiroLoopSendPrompt(text);
+      }
+    }, KIRO_LOOP_SEND_RETRY_SEC * 1000);
+  } else {
+    term.send = { text, phase: 'error', message: `送信できませんでした: ${(res && (res.error || res.detail)) || '不明なエラー'}` };
+  }
+  updateKiroLoopSendMeta();
 }
 
 async function openCoworkFromSettings() {

@@ -51,7 +51,7 @@ test('agent-project preload に discover / flowRuns がある', () => {
   assert.deepStrictEqual(calls, [['dashboard:discover', undefined]]);
 });
 
-test('kiro-loop は tmux 視聴 API を登録する', () => {
+test('kiro-loop は tmux 視聴・構造化状態・復旧送信 API を登録する', () => {
   const loop = loadFeatures().find((f) => f.id === 'kiro-loop');
   const registered = [];
   loop.registerIpc({
@@ -59,10 +59,15 @@ test('kiro-loop は tmux 視聴 API を登録する', () => {
     loadConfig: () => ({}),
     saveConfig: () => ({}),
   });
-  assert.deepStrictEqual(registered.sort(), ['kiroLoop:capture', 'kiroLoop:listSessions'].sort());
+  assert.deepStrictEqual(
+    registered.sort(),
+    ['kiroLoop:capture', 'kiroLoop:listSessions', 'kiroLoop:send', 'kiroLoop:state'].sort()
+  );
   const api = loop.preloadApi();
   assert.strictEqual(typeof api.kiroLoopListSessions, 'function');
   assert.strictEqual(typeof api.kiroLoopCapture, 'function');
+  assert.strictEqual(typeof api.kiroLoopState, 'function');
+  assert.strictEqual(typeof api.kiroLoopSend, 'function');
   assert.ok(loop.configDefaults.kiroLoop);
 });
 
