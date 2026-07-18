@@ -12,8 +12,8 @@
   "status": "failed",
   "created_at": "2026-07-18T12:29:57Z",
   "executor": "agent",
-  "orch_lease_until": 1784390049.7902,
-  "heartbeat_at": "2026-07-18T15:52:09Z",
-  "updated_at": "2026-07-18T15:52:10Z",
+  "orch_lease_until": 1784408230.432066,
+  "heartbeat_at": "2026-07-18T20:55:10Z",
+  "updated_at": "2026-07-18T20:55:19Z",
   "failure_reason": "agent-flow run タイムアウト（3600s）"
 }

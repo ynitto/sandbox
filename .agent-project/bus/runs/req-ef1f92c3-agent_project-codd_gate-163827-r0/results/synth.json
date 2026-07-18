@@ -1,0 +1,19 @@
+{
+  "id": "synth",
+  "who": "worker-2",
+  "status": "done",
+  "output": "## 統合結果\n\n4モジュールの変更は**整合しており、追加の実装変更は不要**だった。設計書（境界記述）の陳腐化 3 箇所のみを修正した。\n\n### 統合後の境界\n`agent_project/` パッケージ本体に codd_gate 依存はゼロ。差し込み点は設定キー（`regression_cmd`/`intake_cmd`）そのもので、codd-gate 固有の判断は全て sibling へ外出しされている。\n\n| 層 | 新境界 | 担当 |\n|---|---|---|\n| Config 生成 | `_apply_codd_gate_auto_wiring` を関数ごと除去、素通しのみ | cfg |\n| 配線の検出・提示 | `doctor._wiring_module()` → `importlib` で sibling 遅延解決 | doc |\n| intake 検証 | `model._parse_intake_records`（検出器非依存・本体同梱） | mdl |\n\n### 入力報告の矛盾（3 件、いずれも解消）\n1. `doc` が引き継いだ「`configfile.py:220` が旧名を呼ぶ」→ 後続の `cfg` が呼び出し側を丸ごと除去したため参照自体が消滅。改名追随は不要だった。\n2. **`doc`/`test` 双方が挙げた `_sibling_module(name)` への DRY 統合 followup は対象消滅（moot）**。`mdl` が model 側ローダを削除済みで、同型ローダは doctor 側 1 箇所しか残っていない。`doc` は `mdl` 着地前に書き、`test` はそれを再検査せず引き写していた。実施しない判断とした。\n3. `mdl` が「model 限定タスクなので対象外」と @followup に回した `codd_gate_debt.py` の stale docstring は、モジュール境界の記述であり本タスクの担当範囲と判断して修正した。\n\n### 変更（境界記述の整合のみ。文章推敲はしていない）\n除去済みの `model → codd_gate_debt` 遅延 import 関係を現存として記述していた 3 箇所 — `codd_gate_debt.py` の module docstring、`codd_gate_wiring.py` の非責務リスト、`tests/test_agent_project.py:290` のコメント。README は `cfg` が更新済みで追加の不整合なし、GUIDE/ROUTING は codd 参照ゼロ。\n\n### 検証\n- 受入 grep（`agent_project/` 配下の `import codd_gate`/`_apply_codd_gate`/`_codd_gate`/`doctor_codd_gate_findings`）→ **0 hit**\n- 除去済みシンボルの残存参照 → 意図的な非存在ガード 1 行のみ（stale ではない）\n- sibling 4 スイート **72 passed** / 境界周辺 **54 passed** / フルスイート **796 passed, 3 failed**（編集前後で同一）\n\n失敗 3 件は 4 報告すべてが挙げた pre-existing failure。うち `TestJournalRotation` は、実行ログでアーカイブ名が `.1, .10, .11 … .19, .2` の順に並ぶのを確認でき、`cfg`/`test` の「文字列ソート起因」という推定が実出力で裏付けられた（followup に原因確定として記録）。\n\n**成果物**: `artifacts/synth/integration-report.md`\n\nなお followup として、README が参照する `docs/designs/codd-gate-design.md` §4.1「自動検出レイヤ」は configfile の自動配線消滅で記述がズレている可能性が高いが、書込許可範囲外のため未確認のまま残している。commit/push は規約どおり実施していない。",
+  "finished_at": "2026-07-18T20:13:45Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox",
+      "branch": "ap/agent_project-codd_gate-163827",
+      "commit": "65d32ee1f14ff43a680d6b6ea0038d12f60a2f3b",
+      "target": "main",
+      "path": "tools/agent-project"
+    }
+  },
+  "artifacts": [
+    "artifacts/synth/integration-report.md"
+  ]
+}

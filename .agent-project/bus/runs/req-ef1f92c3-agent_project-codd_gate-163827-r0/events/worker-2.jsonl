@@ -7,3 +7,9 @@
 {"ts": "2026-07-18T13:19:06Z", "who": "worker-2", "kind": "claimed", "node": "gate"}
 {"ts": "2026-07-18T13:59:07Z", "who": "worker-2", "kind": "claimed", "node": "gate"}
 {"ts": "2026-07-18T15:09:34Z", "who": "worker-2", "kind": "claimed", "node": "gate"}
+{"ts": "2026-07-18T19:55:19Z", "who": "worker-2", "kind": "claimed", "node": "gate"}
+{"ts": "2026-07-18T20:04:03Z", "who": "worker-2", "kind": "result", "node": "gate", "status": "done"}
+{"ts": "2026-07-18T20:04:03Z", "who": "worker-2", "kind": "claimed", "node": "synth"}
+{"ts": "2026-07-18T20:13:45Z", "who": "worker-2", "kind": "result", "node": "synth", "status": "done"}
+{"ts": "2026-07-18T20:13:45Z", "who": "worker-2", "kind": "claimed", "node": "done"}
+{"ts": "2026-07-18T20:43:32Z", "who": "worker-2", "kind": "result", "node": "done", "status": "done"}
