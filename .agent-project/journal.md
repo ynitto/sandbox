@@ -77,3 +77,4 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-18 23:37:04 run 再開: agent_project-codd_gate-163827 は req-ef1f92c3-agent_project-codd_gate-163827-r0 の失敗ノードだけをやり直します（done は温存）
 - 2026-07-19 00:52:10 flow detach: agent_project-codd_gate-163827 の run req-ef1f92c3-agent_project-codd_gate-163827-r0 を failed（agent-flow run タイムアウト（3600s））
 - 2026-07-19 00:52:13 cycle 3: agent_project-codd_gate-163827 → 人の判断（繰り返し NG）
+- 2026-07-19 00:52:15 === agent-project 停止 reason=drained cycles=3 done=0 blocked=1 notified=True promoted=0 ===
