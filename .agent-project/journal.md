@@ -39,3 +39,5 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-18 17:17:38 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
 - 2026-07-18 17:17:38 警告: origin へ未 push のコミットが 1 件ある（main）。worker と verify は origin から clone するため、これらの成果は彼らから 見えない（ローカルでは通るのに verify が落ち続ける）。`git -C /Users/nitto/Workspace/sandbox push origin main` を検討すること
 - 2026-07-18 17:17:38 === agent-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
+- 2026-07-18 17:17:39 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-18 17:17:40 === project watch: 監視中（charter 更新/フィードバック待ち）===
