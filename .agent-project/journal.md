@@ -98,3 +98,5 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-19 05:55:22 cycle 1: agent_project-codd_gate-163827 → 人の判断（繰り返し NG）
 - 2026-07-19 05:55:25 state-git 同期: import=5 export=15
 - 2026-07-19 05:55:25 === agent-project 停止 reason=drained cycles=1 done=0 blocked=1 notified=True promoted=0 ===
+- 2026-07-19 05:55:27 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-19 05:55:27 === project watch: 監視中（charter 更新/フィードバック待ち）===
