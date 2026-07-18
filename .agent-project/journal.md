@@ -98,3 +98,13 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-19 05:55:22 cycle 1: agent_project-codd_gate-163827 → 人の判断（繰り返し NG）
 - 2026-07-19 05:55:25 state-git 同期: import=5 export=15
 - 2026-07-19 05:55:25 === agent-project 停止 reason=drained cycles=1 done=0 blocked=1 notified=True promoted=0 ===
+- 2026-07-19 05:55:27 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-19 05:55:27 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-19 05:58:19 === project 開始 v1 acceptance=2 ===
+- 2026-07-19 05:58:20 intake NG (exit 2): codd-gate tasks --debt --repos ./repos.json
+- 2026-07-19 05:58:20 feedback 取り込み: agent_project-codd_gate-163827 を再開
+- 2026-07-19 05:58:20 === agent-project 開始 tasks=4 ingested=1 planner=agent executor=agent dry_run=False ===
+- 2026-07-19 05:58:20 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
+- 2026-07-19 05:58:20 run 再開: agent_project-codd_gate-163827 は req-ef1f92c3-agent_project-codd_gate-163827-r0 の失敗ノードだけをやり直します（done は温存）
+- 2026-07-19 06:35:10 verify: agent_project-codd_gate-163827 を https://github.com/ynitto/sandbox@ap/agent_project-codd_gate-163827（path=tools/agent-project） のクローン内で検証
+- 2026-07-19 06:35:11 cycle 1: agent_project-codd_gate-163827 → 人の判断（回帰検知）

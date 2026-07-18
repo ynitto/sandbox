@@ -12,4 +12,4 @@
 - after: codd-gate-163827
 - assess: c=2 r=2 a=1
 - last_run: req-ef1f92c3-agent_project-codd_gate-163827-r0
-- needs_reason: 繰り返し NG（retries=4）: agent-flow run タイムアウト（3600s）
+- needs_reason: 回帰検知: グローバル検査 `codd-gate verify --base "$KIRO_BASE_REV" --repos ./repos.json` 失敗 — exit=2 失敗した工程: `codd-gate verify --base e51dd5bb927c12fc3c79cccdcd2d46e4bf794b14 --repos ./repos.json` [codd-gate] エラー: スキャン可能な repo がありません（--repo-dir <name>=<dir> か --sync を指定）

@@ -1,0 +1,19 @@
+{
+  "id": "rev",
+  "who": "worker-1",
+  "status": "done",
+  "output": "# 境界レビュー完了 — 修正 2 件、@followup 5 件\n\n成果物: `artifacts/rev/review-report.md`\n\n## (a) 成果\n\n**修正した 2 件**（いずれも `tools/agent-project` 配下）:\n\n| ファイル | 変更 |\n|---|---|\n| `README.md` L279-286 | 指示の必須 1 件。`codd_gate_regression.py` の恒久注入を `regression_cmd` 限定と読める記述へ直し、`intake_cmd` の恒久設定は設定ファイル直接編集であると併記 |\n| `agent_project/doctor.py` `_wiring_module()` | 観点 (2) で**実測した縮退漏れ**を修正 |\n\n観点 (2) の欠陥が本レビューの実質的な収穫です。観点は「sibling 不在・import 失敗・属性欠落の**いずれでも**空リストへ縮退するか」ですが、修正前は **3 つのうち 1 つしか縮退していませんでした**:\n\n```\nA attr-missing  -> RAISED AttributeError : module 'codd_gate_wiring' has no attribute 'detect_wiring'\nB import-raises -> RAISED ValueError : boom at import\n```\n\nどちらも `cmd_doctor` 経由で **doctor コマンド全体を落とします**。docstring は「見つからない・解決失敗のときは None」と書いており、コードが自分の契約を満たしていませんでした。import を `except Exception` へ広げ、返す前に本体が呼ぶ関数 `(\"detect_wiring\", \"doctor_findings\")` の存在を検証する形に。修正後は両ケースとも `findings = []`、実プロバイダは従来どおり finding 1 件を返します。\n\nこれは本差分が新規に作った欠陥ではありません（旧 `_codd_gate_wiring_module` も ImportError のみ捕捉）。ただし `_apply_codd_gate_auto_wiring` 除去で **doctor が唯一の結線導線になった**ため、完了条件の一部と判断して修正しました（followup 指定は「ユニットテスト**追加**」であり、縮退の堅牢化は除外リストに無いため。テスト追加は指示どおり行っていません）。\n\n観点 (1)(3)(4) は合格。(5) は旧 `test_wiring_module_unavailable_is_a_noop` 相当の担保が doctor 側に無く**純減**していますが、指示どおり followup に留めました。\n\n## (b) 検証\n\n- **受入コマンド**: `Ran 3 tests / OK`、grep 0 hit、**FINAL EXIT CODE: 0**\n- **フルスイート**: `Ran 714 tests / FAILED (failures=3)` — 失敗テスト名は pre-existing の 3 件と完全一致。新規失敗 0\n- **縮退の実測**: 属性欠落・import 時例外・実プロバイダの 3 ケースを直接実行して修正前後を比較\n\nなお今回の (2) の修正は**既存テストでは検出されません**（doctor の配線導線に直接テストが 0 件のため）。スクリプト実測で担保し、回帰テスト化を followup に挙げています。\n\n## (c) 前提・範囲外\n\n採用した前提: `except Exception` の握り潰しは finding を出さず沈黙させました（doctor の出力を増やすと既存テストの期待に触れうるうえ、no-op 縮退という文書化済みの契約に沿うため）。`codd_gate_regression.py` への `intake_cmd` upsert 追加は指示どおり採っていません。\n\n**不採用にした指摘が 1 件**あります。旧 `to_spec()` は `title` を `.strip()` していましたが、新経路は生の dict をそのまま渡すため前後空白が保存されます。汎用パススルーのフックとしてはレコードを加工しない方が正しく、title 正規化の責務は `enqueue_task` 側にあると判断し、スコープ超過として直しませんでした。\n\n範囲外の 5 件（設計書の陳腐化、provider 文字列の設定キー化、doctor 配線導線のテスト、pre-existing failure 3 件、`codd_gate_debt` の実利用者棚卸し）はレポート末尾に `@followup` 行で記載しています。",
+  "finished_at": "2026-07-18T21:28:23Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox",
+      "branch": "ap/agent_project-codd_gate-163827",
+      "commit": "d5e03f4026070e62b32081b698e3347dd27c9510",
+      "target": "main",
+      "path": "tools/agent-project"
+    }
+  },
+  "artifacts": [
+    "artifacts/rev/review-report.md"
+  ]
+}
