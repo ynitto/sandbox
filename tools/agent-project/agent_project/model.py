@@ -500,7 +500,14 @@ def _parse_intake_records(text: str) -> "tuple[list[dict], list[str]]":
     トップレベルは object（1件）でも array（複数件）でもよい（`run_intake` の従来挙動と対称）。
     レコード単位に検証し、不備（非 object・title 欠落）はそのレコードだけ errors に落として残りは
     通す（1件の不備で全体を捨てない）。空文字列・空白のみは 0 件（正常系）。呼び出し側は errors を
-    journal へそのまま流す。"""
+    journal へそのまま流す。
+
+    `title` と `id` は spec へ入れる前に文字列化して strip する。intake_cmd は本体の外にある任意の
+    プロセスなので、JSON の値が文字列である保証がない（`{"id": 123}` は妥当な JSON）。生のまま
+    下流へ渡すと `_slug_id` が int に `.strip()` を呼んで AttributeError になり、`run_intake` の
+    except（ValueError のみ）を貫通して watch ループごと落ちる。strip 後に空になった `id` は
+    キーごと落とし、`_gen_task_id` の自動採番へ倒す（空白だけの id を採番の種にしない）。
+    title/id 以外のフィールドは解釈せず素通しする。"""
     stripped = (text or "").strip()
     if not stripped:
         return [], []
@@ -515,10 +522,18 @@ def _parse_intake_records(text: str) -> "tuple[list[dict], list[str]]":
         if not isinstance(raw, dict):
             errors.append(f"[{i}] レコードが object ではない（{type(raw).__name__}）")
             continue
-        if not str(raw.get("title", "") or "").strip():
+        title = str(raw.get("title", "") or "").strip()
+        if not title:
             errors.append(f"[{i}] title が空/欠落している（task.schema.json の required を満たさない）")
             continue
-        specs.append(raw)
+        spec = {"title": title}
+        rid = raw.get("id")
+        if rid not in (None, ""):            # `0` は「id が無い」ではないので or "" で潰さない
+            rid = str(rid).strip()
+            if rid:
+                spec["id"] = rid
+        spec.update({k: v for k, v in raw.items() if k not in ("title", "id")})
+        specs.append(spec)
     return specs, errors
 
 
