@@ -291,20 +291,31 @@ def _wiring_module():
     `agent_project/__init__.py` の実パスを指すため、その1階層上へ足す）を使い、直接の import 文で
     特定プロバイダへハード依存しないよう `importlib` 越しに名前解決する（＝本体は差し込み点のみ）。
     見つからない・解決失敗のときは None を返し、呼び出し側は所見なし（空リスト）へ no-op 縮退する
-    （この配線連携は任意機能。プロバイダ欠落で doctor 自体は壊さない）。"""
+    （この配線連携は任意機能。プロバイダ欠落で doctor 自体は壊さない）。
+
+    「解決失敗」は import できないことに限らない。プロバイダは本体の外にあり本体が版を握れない
+    以上、(a) module 名が別物へ解決される（同名の無関係な module が sys.path 先頭に居る）、
+    (b) import 時にプロバイダ自身が例外を投げる、(c) 解決できても本体が呼ぶ関数を持たない、
+    のいずれも起こりうる。どれも None へ畳んで doctor 全体は走り切らせる——結線所見が出ないのは
+    任意機能の欠落だが、doctor が落ちるのは診断コマンドとして致命的で、失う情報が桁違いに多い。"""
     import importlib
     provider = "codd_gate_wiring"
-    try:
-        return importlib.import_module(provider)
-    except ImportError:
-        pass
+    required = ("detect_wiring", "doctor_findings")   # 本体が呼ぶ関数＝プロバイダ契約の全部
+
+    def resolve():
+        try:
+            mod = importlib.import_module(provider)
+        except Exception:                             # ImportError に限らない（上記 (b)）
+            return None
+        return mod if all(hasattr(mod, a) for a in required) else None   # 上記 (a)/(c)
+
+    mod = resolve()
+    if mod is not None:
+        return mod
     sib = Path(__file__).resolve().parent.parent
     if str(sib) not in sys.path:
         sys.path.insert(0, str(sib))
-    try:
-        return importlib.import_module(provider)
-    except ImportError:
-        return None
+    return resolve()
 
 
 def doctor_wiring_findings(cfg: "Config", which=shutil.which, run=subprocess.run) -> "list[dict]":
