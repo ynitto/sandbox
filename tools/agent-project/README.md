@@ -271,19 +271,22 @@ CLI からも付与・修正できる。
   done せず検収待ちへ。`gate` がタスク一致なのに対し `protect` は**変更されたパス**一致。
 - **一貫性ゲート（codd-gate 連携・オプション）**: ドキュメント・コード・テストの整合は**完全独立**の
   ツール [`codd-gate`](../codd-gate/README.md)（本ツールの install.sh が隣にあれば同梱インストールする）で
-  護れる。結合は共通スキーマ（`schemas/`）のみ——リポジトリ定義は本ツールが charter から自動生成する
+  護れる。結合は共通スキーマ（`schemas/`）のみ。リポジトリ定義は本ツールが charter から自動生成する
   `<root>/repos.json` を codd-gate が `--repos` で読む。**有効化は設定だけ**:
   `regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV" --repos <root>/repos.json'`（done 確定前の
   差分ゲート）＋ `intake_cmd: 'codd-gate tasks --debt --repos <root>/repos.json'`（負債を修復タスクとして
   自動返済）＋ charter acceptance に `codd-gate verify --debt --max-broken N …`（受入の負債ラチェット）。
-  上記2行は**手書きしなくてもよい**: `<root>/repos.json` が実在すれば、起動時の Config 生成
-  （`build_config`）が codd-gate の実在・バージョン・repos.json 互換性を自動検出し、`regression_cmd`/
-  `intake_cmd` が未設定のときだけメモリ上で自動的に埋める（既に手書き・CLI 指定済みの値は上書き
-  しない）。`.agent/agent-project.yaml` ファイル自体は書き換えない（人専有ファイルのため）ので、
-  ファイルへ恒久的に書き込みたい場合は `python3 codd_gate_regression.py --config
-  .agent/agent-project.yaml` を実行する。codd-gate 未検出・非互換の環境では両者とも no-op に縮退し、
-  上記2行は設定されないまま（詳細は
-  [`codd-gate-design.md`](../../docs/designs/codd-gate-design.md) §4.1「自動検出レイヤ」）。
+  パッケージ（`agent_project`）は codd_gate_* を import・結合・依存しない。値を書く主体は一つだけで、
+  有効化は人か install 手順が `regression_cmd`/`intake_cmd` を yaml/CLI に書き、永続化は sibling の
+  `codd_gate_regression.py`（`python3 codd_gate_regression.py --config .agent/agent-project.yaml`）が
+  yaml へ冪等注入する。起動時の Config 生成（`build_config`）が codd-gate を自動検出して値を差し込む
+  配線層は無い。手で書いていなければ空のまま（＝連携なし）で通過する。`.agent/agent-project.yaml` は
+  人専有ファイルなので機械が勝手に書き換えず、書き手は人か人が起動した `codd_gate_regression.py` に
+  限られる。`codd_gate_*.py` は `tools/agent-project/` 直下の任意 sibling 部品で、欠落・削除しても
+  パッケージは同一挙動（依存しないため）。codd-gate 未検出・非互換の環境では生成ツールが値を書かず
+  no-op に縮退する（詳細は
+  [`codd-gate-design.md`](../../docs/designs/codd-gate-design.md) §4「プラグイン境界」・§4.1「任意部品」・
+  §4.2「境界の完了条件」）。
 
 ### policy.md（人による上書き・per-project）
 
