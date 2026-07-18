@@ -11,6 +11,7 @@
 //   commands/ と同じ結合方式）。常駐デーモンが次のサイクルで取り込む。
 //   dashboard はバスへ直接書かない — 書くのは常にホームの commands ドロップだけ。
 
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -52,7 +53,7 @@ function readConfigFile(file) {
     }
     return null;
   }
-  // YAML はトップレベルのスカラだけ読む（bus / node_id / manual_claim で足りる。
+  // YAML はトップレベルのスカラだけ読む（bus / bus_workdir / node_id / manual_claim で足りる。
   // hub: 等のネストは daemon 側の関心で dashboard は読まない）
   return { file, values: parseFlatYaml(text) };
 }
@@ -120,7 +121,20 @@ function discoverHomes(cfg) {
     const values = (conf && conf.values) || {};
     const busSpec = String(values.bus || '.');
     let busDir = null;
-    if (!busSpec.startsWith('git+') && !busSpec.startsWith('hub+')) {
+    if (busSpec.startsWith('git+') || busSpec.startsWith('hub+')) {
+      // GitBus / HubBus はローカルミラー（workdir）がバスの実体。agent-amigos と同じ導出:
+      // 設定 bus_workdir、無ければ ~/.agent/amigos/{bus|hub}/<sha1(url)[:8]>（gitbus.py / hubbus.py）。
+      // これが無いとミッション → ホームの対応（引き受け・依頼の投函先解決）が git/hub バスで切れる。
+      if (values.bus_workdir) {
+        const p = expandHome(String(values.bus_workdir));
+        busDir = path.isAbsolute(p) ? p : path.resolve(dir, p);
+      } else {
+        const url = busSpec.slice(4);
+        const digest = crypto.createHash('sha1').update(url, 'utf8').digest('hex').slice(0, 8);
+        const kind = busSpec.startsWith('git+') ? 'bus' : 'hub';
+        busDir = path.join(os.homedir(), '.agent', 'amigos', kind, digest);
+      }
+    } else {
       const p = expandHome(busSpec);
       busDir = path.isAbsolute(p) ? p : path.resolve(dir, p);
     }
@@ -137,6 +151,8 @@ function discoverHomes(cfg) {
   return homes;
 }
 
+// 投函できるコマンド。契約の正典は schemas/amigos-command.schema.json（取り込み側は
+// agent_amigos/commands.py の _dispatch）。両者の一致はテストで担保する。
 const ALLOWED_COMMANDS = new Set(['post', 'claim', 'assign', 'accept', 'reject', 'cancel', 'say']);
 
 // 指示の投函: ホーム検証（発見済みのホームのみ）→ commands/ へアトミックに 1 ファイル書く。
@@ -157,4 +173,4 @@ function writeCommand(cfg, homeDir, rec) {
   return { home: home.dir, file: target };
 }
 
-module.exports = { discoverHomes, writeCommand, readConfig };
+module.exports = { discoverHomes, writeCommand, readConfig, ALLOWED_COMMANDS };

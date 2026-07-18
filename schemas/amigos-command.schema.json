@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "amigos-command.schema.json",
+  "title": "agent-amigos 指示ドロップ（<home>/.agent/agent-amigos/commands/*.json）",
+  "description": "常駐デーモンへの指示のファイル契約。外部操作者（人・agent-dashboard・スキル）が JSON を 1 ファイル置き、デーモンが次サイクルで取り込む（agent-project の commands/ と同じ「プロセス間 API を持たない」結合）。処理成功でファイルは削除、失敗は <name>.rejected へ改名して再試行しない。正典実装は agent_amigos/commands.py（ingest_commands / _dispatch）、投函側の実装は agent-dashboard features/amigos/main/homes.js（writeCommand）。assign / accept / reject / cancel は owner-only（デーモンのノードがミッションの owner_node のときだけ成功する）。未知キーは無視される（前方互換・追加は additive）。",
+  "type": "object",
+  "required": ["command"],
+  "properties": {
+    "command": {
+      "enum": ["post", "claim", "assign", "accept", "reject", "cancel", "say"]
+    }
+  },
+  "oneOf": [
+    {
+      "description": "post — ミッション公示。design doc と役割ミッション表（mission.schema.json の roles）を渡す。design doc は <home>/.agent/agent-amigos/designs/<mid>.md へ、正規化 spec は designs/<mid>-roles.json へ永続化されてから post される",
+      "properties": {
+        "command": {"const": "post"},
+        "title": {"type": "string", "description": "mission.title の上書き（トップレベル簡易指定）"},
+        "goal": {"type": "string", "description": "mission.goal の上書き（トップレベル簡易指定）"},
+        "design": {"type": "string", "description": "design doc の本文。design_file と排他（どちらか必須）"},
+        "design_file": {"type": "string", "description": "design doc のファイルパス（~ 展開あり）。design と排他"},
+        "mission_id": {"type": "string", "description": "省略時は am-<YYYYMMDDHHMMSS>-<hex4> を自動採番"},
+        "mission": {
+          "type": "object",
+          "description": "mission.schema.json の mission ブロック（assignment_policy / staffing_* / acceptance / convergence / budget / workspace …）の上書き"
+        },
+        "roles": {
+          "type": "array",
+          "minItems": 1,
+          "description": "役割ミッション表（mission.schema.json の roles と同形。必須）",
+          "items": {"type": "object", "required": ["id"]}
+        }
+      },
+      "required": ["command", "roles"],
+      "anyOf": [{"required": ["design"]}, {"required": ["design_file"]}]
+    },
+    {
+      "description": "claim — 手動引き受け。assignment_policy が owner-picks なら応募（オーナー自身なら応募＋即時確定）、first-come なら先着 claim",
+      "properties": {
+        "command": {"const": "claim"},
+        "mission": {"type": "string"},
+        "role": {"type": "string"}
+      },
+      "required": ["command", "mission", "role"]
+    },
+    {
+      "description": "assign — owner-picks の確定（owner-only）",
+      "properties": {
+        "command": {"const": "assign"},
+        "mission": {"type": "string"},
+        "role": {"type": "string"},
+        "node": {"type": "string"}
+      },
+      "required": ["command", "mission", "role", "node"]
+    },
+    {
+      "description": "accept — 受入確定（owner-only。deliverable/MANIFEST.json が無ければ拒否される）",
+      "properties": {
+        "command": {"const": "accept"},
+        "mission": {"type": "string"}
+      },
+      "required": ["command", "mission"]
+    },
+    {
+      "description": "reject — 差し戻し（owner-only。rejections/<NNNN>.json が増え round が進む）",
+      "properties": {
+        "command": {"const": "reject"},
+        "mission": {"type": "string"},
+        "feedback": {"type": "string", "description": "差し戻し理由（省略時 '差し戻し'）。feedback メッセージとして all へ配信される"}
+      },
+      "required": ["command", "mission"]
+    },
+    {
+      "description": "cancel — ミッション中止（owner-only。cancelled.json を書く）",
+      "properties": {
+        "command": {"const": "cancel"},
+        "mission": {"type": "string"},
+        "reason": {"type": "string"}
+      },
+      "required": ["command", "mission"]
+    },
+    {
+      "description": "say — 会話へ人の発言を投函。送り主はオーナーノードなら owner、それ以外は human:<node>",
+      "properties": {
+        "command": {"const": "say"},
+        "mission": {"type": "string"},
+        "to": {"type": "string", "default": "all", "description": "宛先: <role-id> | all | owner"},
+        "type": {
+          "type": "string",
+          "default": "info",
+          "description": "メッセージ種別（messages.MESSAGE_TYPES: question / answer / request / review / status / decision-request / info / wrap-up / approve / feedback）"
+        },
+        "subject": {"type": "string"},
+        "body": {"type": "string"}
+      },
+      "required": ["command", "mission"]
+    }
+  ]
+}

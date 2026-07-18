@@ -844,6 +844,78 @@ class MissionSchemaTests(AmigosTestCase):
                             f"スキーマに無いキー: {set(role) - role_props}")
 
 
+class CommandSchemaTests(AmigosTestCase):
+    """schemas/amigos-command.schema.json（commands/ ドロップの契約）と
+    commands._dispatch の突き合わせ。投函側（agent-dashboard writeCommand・人）と
+    取り込み側でコマンド一覧・必須フィールドがズレていないことをテストで担保する。"""
+
+    def _schema(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "..", "..",
+                            "schemas", "amigos-command.schema.json")
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_schema_commands_match_dispatch(self):
+        schema = self._schema()
+        self.assertEqual(schema["properties"]["command"]["enum"],
+                         ["post", "claim", "assign", "accept", "reject", "cancel", "say"])
+        # oneOf の const 一覧も enum と一致する（宣言漏れ・重複なし）
+        consts = [e["properties"]["command"]["const"] for e in schema["oneOf"]]
+        self.assertEqual(consts, schema["properties"]["command"]["enum"])
+
+    def test_schema_required_fields_match_dispatch_validation(self):
+        """スキーマの required と _dispatch の実検証が一致する:
+        必須欠落のドロップは .rejected になり、必須が揃えば成功する。"""
+        from agent_amigos.commands import ingest_commands
+        from agent_amigos.configfile import commands_dir
+        home = os.path.join(self.tmp, "home")
+        cdir = commands_dir(home)
+        os.makedirs(cdir, exist_ok=True)
+
+        def drop(name, rec):
+            with open(os.path.join(cdir, name), "w", encoding="utf-8") as f:
+                json.dump(rec, f, ensure_ascii=False)
+
+        # post: roles 必須・design か design_file が必須（スキーマの required / anyOf と同じ）
+        drop("bad-post.json", {"command": "post", "design": "# d\n"})
+        drop("bad-post2.json", {"command": "post",
+                                "roles": [{"id": "impl", "mission": "実装"}]})
+        drop("ok-post.json", {"command": "post", "mission_id": "am-schema",
+                              "design": "# d\n", "title": "t",
+                              "mission": {"staffing_timeout": 0},
+                              "roles": [{"id": "impl", "mission": "実装",
+                                         "deliverables": ["main.py"]}]})
+        ingest_commands(self.bus, "owner-node", home)
+        names = sorted(os.listdir(cdir))
+        self.assertIn("bad-post.json.rejected", names, "roles 欠落は棄却")
+        self.assertIn("bad-post2.json.rejected", names, "design/design_file 欠落は棄却")
+        self.assertNotIn("ok-post.json", names, "必須が揃えば処理されて消える")
+        self.assertIsNotNone(read_json(self.bus.mission("am-schema").mission_json()))
+        # 未知コマンド（enum 外）も棄却
+        drop("bad-cmd.json", {"command": "rm-rf"})
+        ingest_commands(self.bus, "owner-node", home)
+        self.assertIn("bad-cmd.json.rejected", sorted(os.listdir(cdir)))
+
+    def test_posted_mission_matches_bus_read_contract(self):
+        """バスへ書かれる mission.json が $defs.posted_mission（外部ビュアーの読取契約）に
+        合う: 実行時フィールド（id / owner_node / posted_at）が required どおり存在する。"""
+        schema = self._schema_mission()
+        required = schema["$defs"]["posted_mission"]["required"]
+        self.assertEqual(sorted(required), ["id", "owner_node", "posted_at"])
+        mid = self.post(mid="am-posted")
+        doc = read_json(self.bus.mission(mid).mission_json())
+        for key in required:
+            self.assertIn(key, doc, f"posted mission.json に {key} が無い")
+        self.assertEqual(doc["id"], mid)
+        self.assertEqual(doc["owner_node"], "owner-node")
+
+    def _schema_mission(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "..", "..",
+                            "schemas", "mission.schema.json")
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+
 class ConfigFileTests(unittest.TestCase):
     """`.agent/agent-amigos.yaml` 設定（agent-project と同じ CLI > config > 既定の流儀）。"""
 

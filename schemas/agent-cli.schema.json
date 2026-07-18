@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "kiro/agent-cli.schema.json",
   "title": "エージェント CLI プラグイン定義",
-  "description": "agent-project / agent-flow / agent-dashboard が共有する、エージェント CLI の宣言的な差し込み口。組み込み（kiro/claude/copilot/codex）以外の CLI（cursor / ollama / hermes …）は、この契約に従う agents/<name>.json を置くだけで agent_cli: <name> として使える。結合はこのデータ契約のみで、各ツールが自前の小さなローダで解釈する（ツール間のコード依存は作らない）。探索順: $KIRO_AGENTS_DIR → <プロジェクトルート>/agents/ → ~/.kiro/agents/。",
+  "description": "agent-project / agent-flow / agent-amigos / agent-dashboard が共有する、エージェント CLI の宣言的な差し込み口。組み込み（kiro/claude/copilot/codex）以外の CLI（cursor / ollama / hermes …）は、この契約に従う agents/<name>.json を置くだけで agent_cli: <name> として使える。結合はこのデータ契約のみで、各ツールが自前の小さなローダで解釈する（ツール間のコード依存は作らない）。探索順: $KIRO_AGENTS_DIR → <プロジェクトルート>/agents/ → ~/.kiro/agents/。",
   "type": "object",
   "required": ["command"],
   "additionalProperties": false,

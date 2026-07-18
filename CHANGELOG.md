@@ -7,6 +7,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-amigos / agent-dashboard: 入出力データの契約をスキーマへ整合
+
+- **`schemas/amigos-command.schema.json` を新設**: `<home>/.agent/agent-amigos/commands/*.json`
+  の指示ドロップ契約（post / claim / assign / accept / reject / cancel / say の各ペイロード・
+  owner-only 権限・成功で削除/失敗で .rejected の規約）を明文化。投函側（人・agent-dashboard）と
+  取り込み側（`agent_amigos/commands.py`）が同じ契約を参照し、コマンド一覧・必須フィールドの
+  一致を両側のテストで担保（Python `CommandSchemaTests` / dashboard `amigos.test.js`）。
+- **mission.schema.json にバスの読取契約（`$defs`）を追記**: 外部ビュアーが読む正規化出力
+  `mission.json`（`id`/`owner_node`/`posted_at`）・`deliverable/MANIFEST.json`・`final.json`・
+  `cancelled.json` の形を文書化（従来は additionalProperties で偶然通っていた）。
+  `workspace` には「将来 checkout を実装する場合は repos.schema.json のエントリ形に揃える」旨を明記。
+- agent-cli.schema.json の共有ツール一覧に agent-amigos を追記（`agentcli.py` は同スキーマの
+  プラグインローダを実装済みだった）。
+- **agent-dashboard: GitBus / HubBus ホームのミッション対応付けを修正**: `bus: git+…` / `hub+…`
+  のホームは busDir が解決されず、ミッション → ホームの対応（引き受け・依頼の投函先解決）が
+  切れていた。設定 `bus_workdir`、無ければ agent-amigos と同じ既定
+  `~/.agent/amigos/{bus|hub}/<sha1(url)[:8]>` へ解決する。ミッション自動発見も GitBus の
+  `bus/*` に加えて HubBus ミラーの `hub/*` を対象にした。
+
 ### agent-flow / agent-dashboard: リトライで旧 run の成果記録が消えないようにする（墓標）
 
 - **agent-flow**: リトライ（新 run-id での世代交代）時、`inherit_from` が先行 run を bus から

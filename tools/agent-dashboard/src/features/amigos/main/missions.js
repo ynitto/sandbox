@@ -56,8 +56,14 @@ function discoverBusDirs(cfg) {
   const c = (cfg && cfg.amigos) || {};
   const configured = (Array.isArray(c.busDirs) ? c.busDirs : []).map(expandHome).filter(Boolean);
   if (configured.length) return configured;
-  const base = path.join(os.homedir(), '.agent', 'amigos', 'bus');
-  return listDirs(base).map((n) => path.join(base, n));
+  // GitBus 既定 workdir（bus/<digest>）に加え、HubBus のローカルミラー（hub/<digest>）も
+  // 同じ missions/<mid>/ レイアウトなので自動発見の対象にする（hubbus.py と同じ置き場）。
+  const out = [];
+  for (const kind of ['bus', 'hub']) {
+    const base = path.join(os.homedir(), '.agent', 'amigos', kind);
+    out.push(...listDirs(base).map((n) => path.join(base, n)));
+  }
+  return out;
 }
 
 // バスディレクトリ内のミッション実体 [{id, dir}] を列挙する（両形式対応）。
