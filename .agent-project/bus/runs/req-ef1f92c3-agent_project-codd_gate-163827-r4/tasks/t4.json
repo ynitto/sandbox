@@ -1,0 +1,8 @@
+{
+  "id": "t4",
+  "goal": "t2 の境界契約に従い、doctor の配線モジュール参照と findings 収集を汎用フック経由へ置換する。_codd_gate_wiring_module と doctor_codd_gate_findings を除去または汎用名へ改名し、doctor が診断時に収集する findings の内容・件数・出力順を変更前と等価に保つ。codd_gate_wiring / codd_gate_regression が存在しない環境でも doctor が例外を出さず degrade することを確認する。スコープは tools/agent-project 配下のみ。成果物: 変更差分と、findings が変更前後で一致することの実測（あり／なし両環境での doctor 実行結果）。",
+  "deps": [
+    "t2"
+  ],
+  "kind": "work"
+}

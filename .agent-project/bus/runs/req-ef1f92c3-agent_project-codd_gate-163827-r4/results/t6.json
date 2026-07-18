@@ -1,0 +1,13 @@
+{
+  "id": "t6",
+  "who": "worker-2",
+  "status": "failed",
+  "output": "実行エラー: workspace rebase が競合しました（ap/agent_project-codd_gate-163827）: Rebasing (1/1)\nerror: could not apply 71412f4... [agent-flow] t6 (req-ef1f92c3-agent_project-codd_gate-163827-r4)\nhint: Resolve all conflicts manually, mark them as resolved with\nhint: \"git add/rm <conflicted_files>\", then run \"git rebase --continue\".\nhint: You can instead skip this commit: run \"git",
+  "finished_at": "2026-07-18T22:27:45Z",
+  "data": {
+    "error_class": "content"
+  },
+  "artifacts": [
+    "artifacts/t6/intake-and-test-migration.md"
+  ]
+}

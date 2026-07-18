@@ -1,0 +1,195 @@
+{
+  "cmd_doctor": {
+    "exit": 1,
+    "raised": null,
+    "stdout": {
+      "agent_used": true,
+      "applied": 0,
+      "findings": [
+        {
+          "category": "env",
+          "evidence": "workdir=<ROOT> に .git が無い",
+          "fix": "成果物リポジトリ上で実行するか、charter の repos に owns: を付けて route で書込先を割り当てる",
+          "severity": "info",
+          "source": "check",
+          "title": "workdir が git リポジトリでない"
+        },
+        {
+          "category": "config",
+          "evidence": "未作成: <ROOT>/backlog, <ROOT>/needs, <ROOT>/decisions",
+          "fix": "backlog / needs / decisions を作成する",
+          "fix_action": "create-dirs",
+          "severity": "warn",
+          "source": "check",
+          "title": "必須ディレクトリが未作成"
+        },
+        {
+          "category": "config",
+          "evidence": "未作成",
+          "fix": "decisions / journal / needs を作成する（run か doctor --fix で自動作成）",
+          "fix_action": "create-dirs",
+          "severity": "warn",
+          "source": "check",
+          "title": "監査未達: 状態/観測（decisions・journal）"
+        },
+        {
+          "category": "config",
+          "evidence": "needs/ 未作成",
+          "fix": "decisions / journal / needs を作成する（run か doctor --fix で自動作成）",
+          "fix_action": "create-dirs",
+          "severity": "warn",
+          "source": "check",
+          "title": "監査未達: 人へのエスカレーション先（needs/）"
+        },
+        {
+          "category": "config",
+          "evidence": "未設定（無人運用は要設定）",
+          "fix": "max_cost か max_tokens を設定（config か --max-cost/--max-tokens）",
+          "severity": "warn",
+          "source": "check",
+          "title": "監査未達: コスト予算（max_tokens か max_cost）"
+        },
+        {
+          "category": "config",
+          "evidence": "未設定（.env/secrets/auth 等を守れていない）",
+          "fix": "policy.md に protect: を追加（.env / **/secrets/** / auth/** など）",
+          "fix_action": "policy-protect",
+          "severity": "warn",
+          "source": "check",
+          "title": "監査未達: パス保護デニーリスト（policy protect:）"
+        },
+        {
+          "category": "config",
+          "evidence": "<ROOT>/bus を担当する agent-flow daemon が見つかりません（run が local 実行に落ち、夜間停止からの自動再開・gitlab 長期委譲の継続が効きません）",
+          "fix": "manage_flow_daemon: true を設定（agent-project が自動起動）",
+          "severity": "warn",
+          "source": "check",
+          "title": "agent-flow daemon 不在"
+        },
+        {
+          "category": "config",
+          "evidence": "cfg.regression_cmd が codd-gate verify --base を指していない",
+          "fix": "agent-project.yaml に設定: regression_cmd: 'codd-gate verify --base \"$KIRO_BASE_REV\" --repos <ROOT>/repos.json'",
+          "severity": "info",
+          "source": "check",
+          "title": "codd-gate は検出済みだが regression_cmd が未結線"
+        },
+        {
+          "category": "config",
+          "evidence": "cfg.intake_cmd が codd-gate tasks --debt を指していない",
+          "fix": "agent-project.yaml に設定: intake_cmd: 'codd-gate tasks --debt --repos <ROOT>/repos.json'",
+          "severity": "info",
+          "source": "check",
+          "title": "codd-gate は検出済みだが intake_cmd が未結線"
+        }
+      ],
+      "fix": false,
+      "flow_findings": 0,
+      "issues_filed": false,
+      "skill_available": true,
+      "unresolved": 9,
+      "with_flow": true
+    }
+  },
+  "deterministic": [
+    {
+      "category": "env",
+      "evidence": "workdir=<ROOT> に .git が無い",
+      "fix": "成果物リポジトリ上で実行するか、charter の repos に owns: を付けて route で書込先を割り当てる",
+      "severity": "info",
+      "title": "workdir が git リポジトリでない"
+    },
+    {
+      "category": "config",
+      "evidence": "未作成: <ROOT>/backlog, <ROOT>/needs, <ROOT>/decisions",
+      "fix": "backlog / needs / decisions を作成する",
+      "fix_action": "create-dirs",
+      "severity": "warn",
+      "title": "必須ディレクトリが未作成"
+    },
+    {
+      "category": "config",
+      "evidence": "未作成",
+      "fix": "decisions / journal / needs を作成する（run か doctor --fix で自動作成）",
+      "fix_action": "create-dirs",
+      "severity": "warn",
+      "title": "監査未達: 状態/観測（decisions・journal）"
+    },
+    {
+      "category": "config",
+      "evidence": "needs/ 未作成",
+      "fix": "decisions / journal / needs を作成する（run か doctor --fix で自動作成）",
+      "fix_action": "create-dirs",
+      "severity": "warn",
+      "title": "監査未達: 人へのエスカレーション先（needs/）"
+    },
+    {
+      "category": "config",
+      "evidence": "未設定（無人運用は要設定）",
+      "fix": "max_cost か max_tokens を設定（config か --max-cost/--max-tokens）",
+      "severity": "warn",
+      "title": "監査未達: コスト予算（max_tokens か max_cost）"
+    },
+    {
+      "category": "config",
+      "evidence": "未設定（.env/secrets/auth 等を守れていない）",
+      "fix": "policy.md に protect: を追加（.env / **/secrets/** / auth/** など）",
+      "fix_action": "policy-protect",
+      "severity": "warn",
+      "title": "監査未達: パス保護デニーリスト（policy protect:）"
+    },
+    {
+      "category": "config",
+      "evidence": "<ROOT>/bus を担当する agent-flow daemon が見つかりません（run が local 実行に落ち、夜間停止からの自動再開・gitlab 長期委譲の継続が効きません）",
+      "fix": "manage_flow_daemon: true を設定（agent-project が自動起動）",
+      "severity": "warn",
+      "title": "agent-flow daemon 不在"
+    },
+    {
+      "category": "config",
+      "evidence": "cfg.regression_cmd が codd-gate verify --base を指していない",
+      "fix": "agent-project.yaml に設定: regression_cmd: 'codd-gate verify --base \"$KIRO_BASE_REV\" --repos <ROOT>/repos.json'",
+      "severity": "info",
+      "title": "codd-gate は検出済みだが regression_cmd が未結線"
+    },
+    {
+      "category": "config",
+      "evidence": "cfg.intake_cmd が codd-gate tasks --debt を指していない",
+      "fix": "agent-project.yaml に設定: intake_cmd: 'codd-gate tasks --debt --repos <ROOT>/repos.json'",
+      "severity": "info",
+      "title": "codd-gate は検出済みだが intake_cmd が未結線"
+    }
+  ],
+  "wiring_real": [
+    {
+      "category": "config",
+      "evidence": "cfg.regression_cmd が codd-gate verify --base を指していない",
+      "fix": "agent-project.yaml に設定: regression_cmd: 'codd-gate verify --base \"$KIRO_BASE_REV\" --repos <ROOT>/repos.json'",
+      "severity": "info",
+      "title": "codd-gate は検出済みだが regression_cmd が未結線"
+    },
+    {
+      "category": "config",
+      "evidence": "cfg.intake_cmd が codd-gate tasks --debt を指していない",
+      "fix": "agent-project.yaml に設定: intake_cmd: 'codd-gate tasks --debt --repos <ROOT>/repos.json'",
+      "severity": "info",
+      "title": "codd-gate は検出済みだが intake_cmd が未結線"
+    }
+  ],
+  "wiring_unwired": [
+    {
+      "category": "config",
+      "evidence": "cfg.regression_cmd が codd-gate verify --base を指していない",
+      "fix": "agent-project.yaml に設定: regression_cmd: 'codd-gate verify --base \"$KIRO_BASE_REV\" --repos <ROOT>/repos.json'",
+      "severity": "info",
+      "title": "codd-gate は検出済みだが regression_cmd が未結線"
+    },
+    {
+      "category": "config",
+      "evidence": "cfg.intake_cmd が codd-gate tasks --debt を指していない",
+      "fix": "agent-project.yaml に設定: intake_cmd: 'codd-gate tasks --debt --repos <ROOT>/repos.json'",
+      "severity": "info",
+      "title": "codd-gate は検出済みだが intake_cmd が未結線"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "id": "t6",
+  "goal": "t2 の境界契約に従い、intake の境界のみを調整しつつテストを新境界へ追随させる。intake は schemas/task 相当の汎用 JSON パースと id による冪等 enqueue の振る舞いを維持し、codd_gate 固有の知識を持たない形へ境界だけを整える。並行して tools/agent-project/tests/test_agent_project.py の TestCoddGateAutoWiring など _codd_gate_wiring_module を mock/patch しているテストを、t2 が定めた新しい注入点・フック名へ書き換える。書き換え後のテストが「名前を変えただけで実際には何も検証していない空振り」になっていないこと（意図的にフックを壊すと落ちること）を確認する。成果物: 変更差分と、mock 追随漏れがないことの根拠（旧名が残っていないこと＋故意破壊で落ちることの実測）。",
+  "deps": [
+    "t2"
+  ],
+  "kind": "work"
+}

@@ -1,0 +1,86 @@
+{
+  "strategy": {
+    "patterns": [
+      "fan-out-and-synthesize",
+      "adversarial-verification",
+      "loop-until-done"
+    ],
+    "parallelism": 4,
+    "review": true,
+    "reason": "[flow-planner] リファクタリング（命名の脱結合・依存方向の反転）であり、ユースケース上は migration-pipeline が直撃する。汎用フック境界を確定したあと、configfile / doctor / model / intake+tests の4系統は互いに独立した変更として並列化できる（fan-out、Decision Matrix でも score=7 で首位タイ）。ただし制約が『振る舞い等価』『codd_gate 連携を壊さない』を要求するため、名前だけ消えて配線が死ぬ・mock 追随漏れでテストが空振りする、といった見かけ上パスする欠陥を検証ノードで潰す必要がある（adversarial-verification、同 score=7、quality_focus=accuracy と整合）。さらに完了条件が『3テスト緑 + git grep 0件で終了コード 0』という機械判定であり、制約にも loop-until-done が明記されているため、統合後の検証コマンドが 0 を返すまで実装→検証を反復する。並列数 4 は subtasks の実装単位（configfile / doctor / model / intake+tests）に一致させ、fan-out の目安 [3,6] 内かつ境界設計の先行フェーズ後に一斉展開できる粒度として選んだ。data_flow=static で対象モジュールが事前に確定しているため map-reduce は採らない。（粒度 coarse）"
+  },
+  "nodes": {
+    "t1": {
+      "goal": "tools/agent-project/agent_project 配下を全走査し、codd_gate への参照点を証拠付きで列挙する。最低限 configfile._apply_codd_gate_auto_wiring、doctor._codd_gate_wiring_module / doctor_codd_gate_findings、model._codd_gate_debt_module、および `import codd_gate_*` / `from codd_gate_*` を file:line で特定する。あわせて tools/agent-project/tests 側で _codd_gate_wiring_module 等を mock/patch している箇所（TestCoddGateAutoWiring を含む）と、intake の schemas/task 相当 JSON パース＋id 冪等処理の現在の実装位置を洗い出す。成果物: 参照点一覧（file:line / シンボル / 役割 / 呼び出し元 / 除去か改名か維持かの区分）と、完了条件の git grep 正規表現に現在ヒットする全行の実測リスト。",
+      "deps": [],
+      "kind": "work"
+    },
+    "t2": {
+      "goal": "t1 の参照点一覧を入力に、agent_project パッケージ内へ codd_gate 名を一切残さない汎用フック境界を確定する。sibling モジュール検出方式（codd_gate_wiring / codd_gate_regression を外部名として動的解決）と設定明示方式のどちらへ寄せるかを、振る舞い等価と codd_gate 連携の非破壊を基準に決定し、却下した案とその理由も残す。確定させるのは、フック名（配線 / findings 収集 / debt の3系統）、登録・解決経路、モジュール未存在時のフォールバック挙動、テストからの注入点（何を patch すれば差し替わるか）、および configfile / doctor / model / intake+tests の各実装者が守るべき共通シグネチャ。成果物: フック境界の設計メモ（インターフェース定義・解決順序・フォールバック表・注入点）と、後続4系統への実装契約。",
+      "deps": [
+        "t1"
+      ],
+      "kind": "generate"
+    },
+    "t3": {
+      "goal": "t2 の境界契約に従い、configfile の自動配線を汎用フック解決へ置換する。_apply_codd_gate_auto_wiring を除去または codd_gate 名を含まない汎用名へ改名し、内部の codd_gate 直接参照・import を t2 で定めたフック解決経路へ差し替える。設定ファイル読み込み時の配線結果（どのモジュールがどの順で配線されるか、未存在時に何が起きるか）は変更前と等価に保つ。スコープは tools/agent-project 配下のみ。tools/codd-gate 本体には手を触れない。成果物: 変更差分と、振る舞い等価であることの根拠（変更前後で配線結果が一致することの確認手順と実行結果）。",
+      "deps": [
+        "t2"
+      ],
+      "kind": "work"
+    },
+    "t4": {
+      "goal": "t2 の境界契約に従い、doctor の配線モジュール参照と findings 収集を汎用フック経由へ置換する。_codd_gate_wiring_module と doctor_codd_gate_findings を除去または汎用名へ改名し、doctor が診断時に収集する findings の内容・件数・出力順を変更前と等価に保つ。codd_gate_wiring / codd_gate_regression が存在しない環境でも doctor が例外を出さず degrade することを確認する。スコープは tools/agent-project 配下のみ。成果物: 変更差分と、findings が変更前後で一致することの実測（あり／なし両環境での doctor 実行結果）。",
+      "deps": [
+        "t2"
+      ],
+      "kind": "work"
+    },
+    "t5": {
+      "goal": "t2 の境界契約に従い、model の debt モジュール参照を汎用フック経由へ置換する。_codd_gate_debt_module を除去または汎用名へ改名し、`import codd_gate_*` 相当の直接 import を排除する。debt 情報の取得結果（取得できた場合の値、モジュール未存在時の既定値）を変更前と等価に保つ。スコープは tools/agent-project 配下のみ。成果物: 変更差分と、debt 取得の振る舞い等価を示す確認結果。",
+      "deps": [
+        "t2"
+      ],
+      "kind": "work"
+    },
+    "t6": {
+      "goal": "t2 の境界契約に従い、intake の境界のみを調整しつつテストを新境界へ追随させる。intake は schemas/task 相当の汎用 JSON パースと id による冪等 enqueue の振る舞いを維持し、codd_gate 固有の知識を持たない形へ境界だけを整える。並行して tools/agent-project/tests/test_agent_project.py の TestCoddGateAutoWiring など _codd_gate_wiring_module を mock/patch しているテストを、t2 が定めた新しい注入点・フック名へ書き換える。書き換え後のテストが「名前を変えただけで実際には何も検証していない空振り」になっていないこと（意図的にフックを壊すと落ちること）を確認する。成果物: 変更差分と、mock 追随漏れがないことの根拠（旧名が残っていないこと＋故意破壊で落ちることの実測）。",
+      "deps": [
+        "t2"
+      ],
+      "kind": "work"
+    },
+    "gate": {
+      "goal": "t3〜t6 の変更を敵対的に検証し、見かけ上パスする欠陥を潰す。具体的には (1) 名前だけ消えて配線が実際には死んでいないか（フック解決が本当に呼ばれ、対象モジュールが配線されるかを実行トレースで確認）、(2) テストの mock 追随漏れで検証が空振りしていないか（フック実装を故意に壊して該当テストが赤くなるか）、(3) codd_gate 連携（configfile 配線 → doctor findings → model debt → regression gate）がエンドツーエンドで従前どおり成立するか、(4) intake の id 冪等が維持されているか、(5) codd_gate_wiring / codd_gate_regression が存在しない環境で例外を出さないか、を確認する。落ちた項目は該当実装ノードへ差し戻す指摘として file:line 付きで返す。成果物: 検証項目ごとの合否と証拠（実行コマンドと出力）。",
+      "deps": [
+        "t3",
+        "t4",
+        "t5",
+        "t6"
+      ],
+      "kind": "verify"
+    },
+    "synth": {
+      "goal": "gate を通過した t3〜t6 の変更を統合し、agent_project パッケージ全体として矛盾のない一つの汎用フック境界へまとめる。フック名・解決順序・フォールバック挙動が4系統で揃っているかを突き合わせ、ズレがあれば統一する。t2 の設計判断（採用案・却下案・フォールバック表・注入点）を設計書へ反映し、slop-police を適用して日本語を整える。スコープ外（dashboard UI・設計書の文章のみの推敲・tools/codd-gate 本体）に踏み込む必要を見つけた場合は実装せず @followup 行として記録する。成果物: 統合後の差分一式、更新済み設計書、@followup 行の一覧。",
+      "deps": [
+        "gate"
+      ],
+      "kind": "synthesize"
+    },
+    "loop": {
+      "goal": "完了条件のシェルコマンドが終了コード 0 を返すまで、実装修正と再実行を反復する。実行するのは `PYTHONPATH=tools/agent-project python3 tools/agent-project/tests/test_agent_project.py TestIntake.test_run_intake_enqueues_and_dedups_by_id TestLoopEngineering.test_regression_gate_blocks_on_failure TestLoopEngineering.test_regression_gate_passes && ! git grep -n -E '(^|[[:space:]])(import|from)[[:space:]]+codd_gate|_apply_codd_gate|_codd_gate' -- tools/agent-project/agent_project`。失敗した場合はテスト失敗か grep ヒットかを切り分け、原因箇所を特定して修正し、再度フルコマンドを実行する。テストを緩める・grep 対象を回避するだけの見せかけの通過は禁止で、修正のたびに振る舞い等価が保たれているかを確認する。成果物: 反復ごとの実行ログと、最終的に終了コード 0 を得たコマンド出力。",
+      "deps": [
+        "synth"
+      ],
+      "kind": "verify"
+    },
+    "rev": {
+      "goal": "完了条件を満たした最終成果に対し agent-reviewer スキルで境界レビューを受ける。レビュー観点は、汎用フック境界が本当に codd_gate 非依存か（パッケージ内に固有名・固有知識が残っていないか）、設計の『本体は無改造・差し込み点のみ』がコードとして成立しているか、フォールバックと注入点が設計書の記述と一致しているか、スコープ外へ踏み込んでいないか。指摘のうち完了条件・振る舞い等価に関わるものは loop へ差し戻して修正し、スコープ外のものは @followup 行として残す。最後に、以後の全ノードが従うべき恒常的な制約を機械可読な JSON `{\"constraints\": [\"…\"]}` として最終成果に添える。成果物: レビュー結果、対応した指摘と見送った指摘の一覧、constraints JSON。",
+      "deps": [
+        "loop"
+      ],
+      "kind": "judge"
+    }
+  },
+  "iteration": 0
+}

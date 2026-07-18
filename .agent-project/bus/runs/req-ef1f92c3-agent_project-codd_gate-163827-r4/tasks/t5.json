@@ -1,0 +1,8 @@
+{
+  "id": "t5",
+  "goal": "t2 の境界契約に従い、model の debt モジュール参照を汎用フック経由へ置換する。_codd_gate_debt_module を除去または汎用名へ改名し、`import codd_gate_*` 相当の直接 import を排除する。debt 情報の取得結果（取得できた場合の値、モジュール未存在時の既定値）を変更前と等価に保つ。スコープは tools/agent-project 配下のみ。成果物: 変更差分と、debt 取得の振る舞い等価を示す確認結果。",
+  "deps": [
+    "t2"
+  ],
+  "kind": "work"
+}

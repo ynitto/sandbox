@@ -1,0 +1,6 @@
+{
+  "id": "t1",
+  "goal": "tools/agent-project/agent_project 配下を全走査し、codd_gate への参照点を証拠付きで列挙する。最低限 configfile._apply_codd_gate_auto_wiring、doctor._codd_gate_wiring_module / doctor_codd_gate_findings、model._codd_gate_debt_module、および `import codd_gate_*` / `from codd_gate_*` を file:line で特定する。あわせて tools/agent-project/tests 側で _codd_gate_wiring_module 等を mock/patch している箇所（TestCoddGateAutoWiring を含む）と、intake の schemas/task 相当 JSON パース＋id 冪等処理の現在の実装位置を洗い出す。成果物: 参照点一覧（file:line / シンボル / 役割 / 呼び出し元 / 除去か改名か維持かの区分）と、完了条件の git grep 正規表現に現在ヒットする全行の実測リスト。",
+  "deps": [],
+  "kind": "work"
+}

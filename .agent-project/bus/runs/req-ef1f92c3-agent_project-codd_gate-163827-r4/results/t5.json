@@ -1,0 +1,19 @@
+{
+  "id": "t5",
+  "who": "worker-1",
+  "status": "done",
+  "output": "# model の debt 参照撤去と振る舞い等価の回復（r4 / t5）\n\n**切り口: 指示された撤去は r0 で済んでいた。r4 に残っていたのは「等価」の側で、そこに破れが3つあった。**\n\n成果物: `artifacts/t5/model-debt-hook.md`。変更は `tools/agent-project/agent_project/model.py` の1ファイル（18+/3-）。\n\n## (a) 成果サマリー\n\n`_codd_gate_debt_module` の除去と直接 import の排除は r0 の `mdl` コミット（`2e5ff35`）で完了済みで、現 HEAD の model.py に `codd_gate` は 0 ヒットだった。debt の差し込み点は `intake_cmd`（プロセス境界）へ一本化されており、t2 の設計どおり model は `_hook_provider` を呼ばない。\n\n残っていたのは `DriftItem.to_spec()` が担っていた `title` / `id` の型正規化。r0 は生の dict を素通ししていた。`_parse_intake_records` に正規化を戻した。\n\n| 入力 | 変更前（r0） | 変更後 | 元実装 |\n|---|---|---|---|\n| `{\"id\": 123}` | **AttributeError で watch ループが落ちる** | `\"123\"` | `\"123\"` |\n| `{\"id\": 1.5}` | **AttributeError** | `\"1-5\"` | `\"1-5\"` |\n| `{\"id\": 0}` | id 喪失・自動採番（冪等キーが消える） | `\"0\"` | `\"0\"` |\n| `{\"id\": \"   \"}` | id が文字列 `\"task\"` になる | 自動採番 | 自動採番 |\n\n1件目は t2 が設計メモ §8 で予測していたもの。**2〜4件目は t5 で新たに見つけた**（t2 の一覧には無い）。特に `id: 0` は、正規化を素直に `str(raw.get(\"id\",\"\") or \"\").strip()` と書くと再発する——`0 or \"\"` が `\"\"` に潰れるため。元実装の `raw_id not in (None, \"\")` 判定をそのまま書き、コードにコメントを残した。\n\n## (b) 検証と結果\n\nsibling の `codd_gate_debt.py` は未変更で残っているので、変更前の振る舞いの生き証人として直接使える。\n\n- **差分検証 23/23 完全一致** — `_parse_intake_records(text)` と `([i.to_spec() for i in parse_debt_output(text).items], errors)` を specs・errors 両方で突き合わせ。id が int/float/0/false/null/空文字/空白のみ/前後空白/欠落、title が空/欠落/非文字列、非 object 混在、追加フィールド素通し、キー順、ネスト値をカバー。\n- **end-to-end（`run_intake`）** — 変更前実装を復元した対照群と並べて実測。変更前 3件クラッシュ/不一致 → 変更後 0件。冪等（2回目 0件）も id 有りの全ケースで維持。\n- **全体スイート 714 tests, 3 failures** — `TestDaemonRouting.test_kf_base_passes_flow_config` / `TestJournalRotation.test_rotation_archives_and_starts_fresh` / `TestProjectLayer.test_version_inherits_master_charter`。契約 §5 が「main 由来・これだけ残る状態を合格」と定めた 3 件と完全一致。いずれも intake 経路と無関係（パス正規化・journal ローテ・charter 継承）。\n- **受入 grep 逐語・model.py の `codd_gate` 全ヒット** — ともにヒット無し（exit 1）。\n- **受入テスト 4 件** — `TestIntake.test_run_intake_enqueues_and_dedups_by_id` / `TestLoopEngineering` 回帰ゲート 2 件 / `TestCoddGateNoAutoWiring` すべて OK。\n- `git status --porcelain` は `M tools/agent-project/agent_project/model.py` の 1 行のみ。\n\n## (c) 前提・未解決・範囲外\n\n**採用した前提**: ①タスク文の「モジュール未存在時の既定値を等価に保つ」は文字どおりには満たせない——変更前の「module 不在時の緩いパース」分岐は、パーサが本体同梱になった時点で到達不能になるため。「取得できた場合の値」（= module 有り経路）を等価の基準に採り、これを 23/23 で証明した。生成タスクの観点では両分岐は元々ほぼ一致しており（差は journal の文言と、緩い側が非文字列 id でクラッシュすること）、失われるのは劣化側の挙動だけと判断した。②tests への追加は契約 §5 で intake+tests 担当の割当なので書いていない（回帰ガードは上記プローブで実測済み、テスト化は t5 の範囲外）。\n\n**厳格 grep の残り 3 行は doctor.py:288/302/324** で、契約 §4 の doctor 担当分。model の完了判定には影響しない。\n\n**範囲外で見つけた問題**（手を出していない）: `run_intake` の except が `ValueError` のみで、呼び出し元 `loop.py:610` / `mr.py:558` も無防備。今回は正規化で根本を直したので現時点の既知経路では顕在化しないが、`enqueue_task` 系が将来 `ValueError` 以外を投げると watch ループが落ちる構造は残っている。@followup intake 呼び出し元の例外境界を見直す :: `run_intake` の except 節と loop/mr 側のガードを設計として揃える",
+  "finished_at": "2026-07-18T22:10:36Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox",
+      "branch": "ap/agent_project-codd_gate-163827",
+      "commit": "11ef6b2140b65eb424c8a419f407327036dddcb4",
+      "target": "main",
+      "path": "tools/agent-project"
+    }
+  },
+  "artifacts": [
+    "artifacts/t5/model-debt-hook.md"
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "id": "loop",
+  "goal": "完了条件のシェルコマンドが終了コード 0 を返すまで、実装修正と再実行を反復する。実行するのは `PYTHONPATH=tools/agent-project python3 tools/agent-project/tests/test_agent_project.py TestIntake.test_run_intake_enqueues_and_dedups_by_id TestLoopEngineering.test_regression_gate_blocks_on_failure TestLoopEngineering.test_regression_gate_passes && ! git grep -n -E '(^|[[:space:]])(import|from)[[:space:]]+codd_gate|_apply_codd_gate|_codd_gate' -- tools/agent-project/agent_project`。失敗した場合はテスト失敗か grep ヒットかを切り分け、原因箇所を特定して修正し、再度フルコマンドを実行する。テストを緩める・grep 対象を回避するだけの見せかけの通過は禁止で、修正のたびに振る舞い等価が保たれているかを確認する。成果物: 反復ごとの実行ログと、最終的に終了コード 0 を得たコマンド出力。",
+  "deps": [
+    "synth"
+  ],
+  "kind": "verify"
+}
