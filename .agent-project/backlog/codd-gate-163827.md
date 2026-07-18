@@ -1,5 +1,5 @@
 ## codd-gate-163827: codd-gate 連携の目標境界を設計書に固定する
-- status: proposed
+- status: ready
 - source: charter
 - priority: 0
 - verify: `grep -nE 'agent_project.*(import|結合|依存).*(しない|外|禁止)|パッケージ.*(codd_gate|sibling)|有効化は設定' tools/agent-project/README.md && grep -nE 'regression_cmd|intake_cmd|codd_gate_\*\.py|自動検出' tools/agent-project/README.md && test -f docs/designs/codd-gate-design.md && grep -nE 'agent_project パッケージ|_apply_codd_gate|sibling|汎用フック' docs/designs/codd-gate-design.md`
