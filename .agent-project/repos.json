@@ -1,0 +1,50 @@
+{
+  "agent-amigos": {
+    "base": "main",
+    "desc": "agent-amigos",
+    "owns": [
+      "tools/agent-amigos"
+    ],
+    "url": "https://github.com/ynitto/sandbox"
+  },
+  "agent-dashboard": {
+    "base": "main",
+    "desc": "agent-dashboard",
+    "owns": [
+      "tools/agent-dashboard"
+    ],
+    "url": "https://github.com/ynitto/sandbox"
+  },
+  "agent-flow": {
+    "base": "main",
+    "desc": "agent-flow",
+    "owns": [
+      "tools/agent-flow"
+    ],
+    "url": "https://github.com/ynitto/sandbox"
+  },
+  "agent-loop": {
+    "base": "main",
+    "desc": "agent-loop",
+    "owns": [
+      "tools/agent-loop"
+    ],
+    "url": "https://github.com/ynitto/sandbox"
+  },
+  "agent-project": {
+    "base": "main",
+    "desc": "agent-project",
+    "owns": [
+      "tools/agent-project"
+    ],
+    "url": "https://github.com/ynitto/sandbox"
+  },
+  "skills": {
+    "base": "main",
+    "desc": "skills",
+    "owns": [
+      ".github/skills"
+    ],
+    "url": "https://github.com/ynitto/sandbox"
+  }
+}

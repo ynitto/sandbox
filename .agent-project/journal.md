@@ -1,23 +1,12 @@
-- 2026-07-15 04:18:21 === project watch: 監視中（charter 更新/フィードバック待ち）===
-- 2026-07-15 04:24:03 === project 開始 v1 acceptance=2 ===
-- 2026-07-15 04:27:29 cohort item: pilot agent-project-design-md-042729 を作成（残り 4 件は承認後に生成）
-- 2026-07-15 04:27:29 project cycle 1: plan cycle 1 で 6 件投入 ['verify-codd-gate-042729', 'agent-project-codd-gate--042729', 'docs-designs-README-042729', 'agent-project-design-md-042729', 'agent-dashboard-codd-gat-042729', 'doc-code-test-codd-gate--042729']
-- 2026-07-15 04:28:45 needs 再生成: verify-codd-gate-042729（proposed）
-- 2026-07-15 04:28:45 needs 再生成: agent-project-codd-gate--042729（proposed）
-- 2026-07-15 04:28:45 needs 再生成: docs-designs-README-042729（proposed）
-- 2026-07-15 04:28:45 needs 再生成: agent-project-design-md-042729（proposed）
-- 2026-07-15 04:28:45 needs 再生成: agent-dashboard-codd-gat-042729（proposed）
-- 2026-07-15 04:28:45 needs 再生成: doc-code-test-codd-gate--042729（proposed）
-- 2026-07-15 04:28:45 === agent-project 開始 tasks=6 ingested=0 planner=agent executor=agent dry_run=False ===
-- 2026-07-15 04:28:45 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
-- 2026-07-15 04:28:45 警告: origin へ未 push のコミットが 1 件ある（main）。worker と verify は origin から clone するため、これらの成果は彼らから 見えない（ローカルでは通るのに verify が落ち続ける）。`git -C /Users/nitto/Workspace/sandbox push origin main` を検討すること
-- 2026-07-15 04:28:45 === agent-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
-- 2026-07-15 04:28:49 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
-- 2026-07-15 04:28:50 === project watch: 監視中（charter 更新/フィードバック待ち）===
-- 2026-07-15 04:28:55 plan-review 承認: agent-dashboard-codd-gat-042729 → ready
-- 2026-07-15 04:28:55 commands 取り込み: approve agent-dashboard-codd-gat-042729（viewer-approve-agent-dashboard-codd-gat-042729-1784057317444.json）
-- 2026-07-15 04:28:55 plan-review 承認: agent-project-codd-gate--042729 → ready
-- 2026-07-15 04:28:55 commands 取り込み: approve agent-project-codd-gate--042729（viewer-approve-agent-project-codd-gate--042729-1784057320576.json）
-- 2026-07-15 04:28:55 plan-review 承認: agent-project-design-md-042729 → ready
-- 2026-07-15 04:28:55 commands 取り込み: approve agent-project-design-md-042729（viewer-approve-agent-project-design-md-042729-1784057324759.json）
-- 2026-07-15 04:28:55 === project 開始 v1 acceptance=2 ===
+- 2026-07-18 06:59:09 本体側 .agent-project への編集を状態へ取り込みました: .agent-project/agent-flow.yaml
+- 2026-07-18 06:59:09 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-18 07:03:30 state-git 同期: import=1 export=0
+- 2026-07-18 08:34:27 state-git 同期: import=1 export=0
+- 2026-07-18 08:49:29 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-18 08:49:41 state-git 同期: import=1 export=0
+- 2026-07-18 09:28:01 === update: 更新を適用（c2480325）===
+- 2026-07-18 09:28:03 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-18 09:46:03 commands 取り込み: replan（viewer-replan-project-1784335560006.json）
+- 2026-07-18 09:46:03 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-18 09:48:25 state-git 同期: import=2 export=1
+- 2026-07-18 09:48:25 commands 取り込み: replan（viewer-replan-project-1784335560006.json）
