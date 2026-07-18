@@ -69,3 +69,11 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-18 21:29:57 警告: origin へ未 push のコミットが 2 件ある（main）。worker と verify は origin から clone するため、これらの成果は彼らから 見えない（ローカルでは通るのに verify が落ち続ける）。`git -C /Users/nitto/Workspace/sandbox push origin main` を検討すること
 - 2026-07-18 22:29:57 flow detach: agent_project-codd_gate-163827 の run req-ef1f92c3-agent_project-codd_gate-163827-r0 を failed（agent-flow run タイムアウト（3600s））
 - 2026-07-18 22:29:58 cycle 1: agent_project-codd_gate-163827 NG 積み直し (1/2) — agent-flow run タイムアウト（3600s）
+- 2026-07-18 22:30:01 state-git 同期: import=6 export=7
+- 2026-07-18 22:30:01 commands 取り込み失敗: viewer-approve-codd-gate-163827-1784377794811.json: approve codd-gate-163827 が失敗 (exit 2)
+- 2026-07-18 22:30:01 run 再開: agent_project-codd_gate-163827 は req-ef1f92c3-agent_project-codd_gate-163827-r0 の失敗ノードだけをやり直します（done は温存）
+- 2026-07-18 23:37:01 flow detach: agent_project-codd_gate-163827 の run req-ef1f92c3-agent_project-codd_gate-163827-r0 を failed（agent-flow run タイムアウト（3600s））
+- 2026-07-18 23:37:01 cycle 2: agent_project-codd_gate-163827 NG 積み直し (2/2) — agent-flow run タイムアウト（3600s）
+- 2026-07-18 23:37:04 run 再開: agent_project-codd_gate-163827 は req-ef1f92c3-agent_project-codd_gate-163827-r0 の失敗ノードだけをやり直します（done は温存）
+- 2026-07-19 00:52:10 flow detach: agent_project-codd_gate-163827 の run req-ef1f92c3-agent_project-codd_gate-163827-r0 を failed（agent-flow run タイムアウト（3600s））
+- 2026-07-19 00:52:13 cycle 3: agent_project-codd_gate-163827 → 人の判断（繰り返し NG）
