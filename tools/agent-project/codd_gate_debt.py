@@ -20,11 +20,12 @@ schemas/task.schema.json の契約（`title` が必須。additionalProperties: t
 このモジュールが意図的に含めないもの（同一 run の別タスクの責務）:
   - `codd-gate` プロセス自体の起動・stdout 取得（b2/e2。ここでは受け取ったテキストだけを扱う）
 
-agent-project.py への結線・cfg.intake_cmd/run_intake との統合、id ベースの冪等排除（e2）は
-`agent_project/model.py` の `run_intake`/`_codd_gate_debt_module` が担う（この module を遅延
-import し、使えれば `parse_debt_output` でレコード単位検証、使えなければ従来の緩いパースへ
-no-op 縮退する）。id ベースの冪等排除自体は `run_intake` 側の責務のまま
-（`DriftItem.id`/`to_spec()` を経由するだけで、このモジュールは重複判定を持たない）。
+agent-project 本体の intake 経路（`cfg.intake_cmd` → `agent_project/model.py` の `run_intake`）は
+**この module に依存しない**。差し込み点は `intake_cmd` 設定そのものであり、本体側は検出器非依存の
+`_parse_intake_records`（model.py 同梱の汎用パーサ）で同じレコード単位検証（非 object・title 欠落を
+その1件だけ errors に落とす）を行う。id ベースの冪等排除（e2）も `run_intake` 側の責務。
+本 module は `DriftItem` への正規化（`to_spec()` 経由の spec 化を含む）を必要とする呼び出し側のための
+独立したアダプタとして残り、重複判定は持たない。
 
 依存は標準ライブラリのみ。
 """

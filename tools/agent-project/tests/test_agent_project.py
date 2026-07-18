@@ -287,7 +287,7 @@ class TestIntake(unittest.TestCase):
 
     def test_run_intake_one_bad_record_does_not_block_the_rest(self):
         # codd-gate tasks --debt 想定: 1件が title 欠落でも、残りは取り込まれる
-        # （codd_gate_debt.parse_debt_output 経由のレコード単位検証）。
+        # （model 本体同梱の _parse_intake_records によるレコード単位検証。検出器非依存）。
         with tempfile.TemporaryDirectory() as d:
             cmd = ("printf '%s' '[{\"id\":\"OK1\",\"title\":\"ok\",\"verify\":\"true\"},"
                    "{\"id\":\"BAD1\"}]'")
