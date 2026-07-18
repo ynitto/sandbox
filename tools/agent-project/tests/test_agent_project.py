@@ -2154,7 +2154,9 @@ class TestDecisionRecords(unittest.TestCase):
                 "- needs_reason: [agent-error:auth] 環境の問題（認証切れ）… verify 未定義\n",
                 encoding="utf-8")
             c = cfg_for(d)
-            self.assertEqual(km.cmd_approve(c, "T1", "認証を直した"), 0)
+            self.assertEqual(
+                km.cmd_approve(c, "T1", "検証失敗を確認・受容して完了"), 0
+            )
             tasks = km.load_tasks(d / "backlog")
             self.assertEqual(len(tasks), 1)
             self.assertEqual(tasks[0].status, "ready")
@@ -2183,6 +2185,32 @@ class TestDecisionRecords(unittest.TestCase):
             self.assertTrue((d / "archive" / "T1.md").exists())
             self.assertIn("action  : approve-done", (d / "decisions" / "T1.md").read_text())
 
+    def test_approve_completes_explicitly_accepted_verification_failure_with_env_resume(self):
+        """env_resumeが残っていても、完了runの検証差異を明示受容すればdone確定できる。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            bd = d / "backlog"
+            bd.mkdir(parents=True)
+            (bd / "T1.md").write_text(
+                "## T1: 成果は完成・回帰検証NG\n- status: blocked\n- source: human\n"
+                "- verify: codd-gate verify\n- retries: 3\n- last_run: run-done\n"
+                "- env_resume: 1\n"
+                "- needs_reason: 回帰検知: codd-gate verify 失敗（exit=1）\n",
+                encoding="utf-8",
+            )
+            c = cfg_for(d)
+            run_dir = c.bus / "runs" / "run-done"
+            run_dir.mkdir(parents=True)
+            (run_dir / "meta.json").write_text(
+                json.dumps({"status": "done"}), encoding="utf-8"
+            )
+
+            self.assertEqual(
+                km.cmd_approve(c, "T1", "検証失敗を確認・受容して完了"), 0
+            )
+            self.assertEqual(km.load_tasks(d / "backlog"), [])
+            self.assertTrue((d / "archive" / "T1.md").exists())
+
     def test_approve_does_not_complete_verification_failure_before_run_done(self):
         """run未完了なら従来どおりreadyへ戻し、途中成果を完了扱いしない。"""
         with tempfile.TemporaryDirectory() as d:
@@ -2202,7 +2230,9 @@ class TestDecisionRecords(unittest.TestCase):
                 json.dumps({"status": "failed"}), encoding="utf-8"
             )
 
-            self.assertEqual(km.cmd_approve(c, "T1", "続行"), 0)
+            self.assertEqual(
+                km.cmd_approve(c, "T1", "検証失敗を確認・受容して完了"), 0
+            )
             self.assertEqual(km.load_tasks(d / "backlog")[0].status, "ready")
 
     def test_policy_is_not_appended_twice(self):

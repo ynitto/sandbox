@@ -67,6 +67,33 @@ function esc(s) {
     .replaceAll('"', '&quot;');
 }
 
+// ダイアログの本文だけをスクロール領域にまとめる。既存のフォーム構造と
+// イベント配線を保ったまま、すべての画面で見出しと操作ボタンを常に表示する。
+function setupDialogLayouts() {
+  for (const dialog of document.querySelectorAll('dialog')) {
+    const shell = dialog.querySelector(':scope > form') || dialog;
+    if (shell.querySelector(':scope > .dialog-scroll-body')) continue;
+
+    shell.classList.add('dialog-shell');
+    const children = [...shell.children];
+    const heading = children.find((el) => el.classList.contains('dialog-heading') || el.matches('h2'));
+    const actions = children.find((el) => el.classList.contains('dialog-actions'));
+    if (heading && heading.matches('h2')) heading.classList.add('dialog-heading', 'dialog-heading-simple');
+
+    const body = document.createElement('div');
+    body.className = 'dialog-scroll-body';
+    const content = children.filter((el) => el !== heading && el !== actions);
+    if (content.length) {
+      content[0].before(body);
+      for (const el of content) body.appendChild(el);
+    } else if (actions) {
+      actions.before(body);
+    } else {
+      shell.appendChild(body);
+    }
+  }
+}
+
 // 内部動作の詳細（配送経路・ファイルパス・判定根拠など）はユーザー向け UI に出さず、
 // 開発者コンソールへ記録する。UI に見せる文言はプロジェクト管理の言葉に揃える。
 function uiLog(...args) {
@@ -777,13 +804,16 @@ async function reloadProject({ refreshRemoteHealth = true } = {}) {
   const project = await guard('プロジェクト読込', () => api.readProject(state.selectedDir));
   if (!project) return;
   project.needs = stabilizeMilestoneNeeds(state.project, project);
-  state.project = project;
   // 同期の健康状態（ローカル参照のみ・リモートへは触らない）。失敗しても表示を欠くだけ。
-  state.gitHealth = await api.gitHealth(project.dir, refreshRemoteHealth).catch(() => null);
+  const gitHealth = await api.gitHealth(project.dir, refreshRemoteHealth).catch(() => null);
   // バスが未作成でも daemon の稼働はロックファイルから判定できるため常に読む。
   // project.dir は run アーカイブ（<dir>/flow-archive/）の置き場として渡す。
   const fr = (await guard('フロー読込', () => api.flowRuns(project.dir, project.busDir))) || {};
+  // project だけ先に差し替えると、flowRuns が前プロジェクト分または空の短い時間が生じ、
+  // 完了runを根拠にする承認ボタンが消える。両方を読み終えてから表示状態へ反映する。
   state.flowRuns = fr.runs || [];
+  state.project = project;
+  state.gitHealth = gitHealth;
   state.flowDaemon = fr.daemon || null;
   if (state.flowRunId && !state.flowRuns.some((r) => r.runId === state.flowRunId)) {
     state.flowRunId = null;
@@ -1049,6 +1079,80 @@ function overviewGoal(p) {
   return current ? current.goal || current.name : '目標はまだ設定されていません';
 }
 
+function versionUsage(p, name) {
+  const belongsTo = (task) => String((task.extra && task.extra.charter) || '').trim() === name;
+  return {
+    active: (p.backlog || []).filter(belongsTo).length,
+    done: (p.archive || []).filter(belongsTo).length,
+  };
+}
+
+function overviewVersionsHtml(p) {
+  const versions = p.charters || [];
+  const stateByVersion = (p.projectState && p.projectState.charters) || {};
+  const cards = versions.map((ch) => {
+    const usage = versionUsage(p, ch.name);
+    const used = usage.active + usage.done;
+    const versionState = stateByVersion[ch.name] || {};
+    const status = versionState.status
+      ? statusLabel(versionState.status)
+      : usage.active
+        ? '進行中'
+        : usage.done
+          ? '作業完了'
+          : '未開始';
+    const deleteHelp = used
+      ? `<p class="version-delete-note">関連する作業が ${used} 件あるため削除できません。</p>`
+      : '';
+    return `<article class="overview-version-card">
+      <div class="version-card-heading">
+        <div>
+          <h3>${esc(ch.name)}</h3>
+          <span class="version-state">${esc(status)}</span>
+        </div>
+      </div>
+      <div class="version-card-goal">${ch.goal ? proseHtml(ch.goal) : '<span class="muted">やることは未設定です。</span>'}</div>
+      <div class="version-card-counts" aria-label="作業状況">
+        <span><strong>${usage.active}</strong> 進行中</span>
+        <span><strong>${usage.done}</strong> 完了</span>
+      </div>
+      ${deleteHelp}
+      <div class="version-card-actions">
+        <button class="summary-link secondary" data-version-edit="${esc(ch.name)}">編集</button>
+        <button class="danger" data-version-delete="${esc(ch.name)}"${used ? ' disabled' : ''}>削除</button>
+      </div>
+    </article>`;
+  }).join('');
+  const canPromote = p.charter && !p.charter.master && versions.length;
+  return `<section class="overview-version-section" aria-labelledby="overview-versions-title">
+    <div class="overview-version-heading">
+      <div>
+        <h2 id="overview-versions-title">計画バージョン</h2>
+        <p>目的ごとの計画と進み具合を管理します。</p>
+      </div>
+      <div class="summary-actions">
+        ${canPromote ? '<button class="summary-link secondary" id="btn-overview-promote-version">初版に名前を付ける</button>' : ''}
+        <button class="summary-link" id="btn-overview-add-version">バージョンを追加</button>
+      </div>
+    </div>
+    ${cards ? `<div class="overview-version-grid">${cards}</div>` : '<div class="overview-version-empty">計画バージョンはまだありません。最初のバージョンを追加してください。</div>'}
+  </section>`;
+}
+
+async function deleteOverviewVersion(name) {
+  const p = state.project;
+  if (!p) return;
+  const yes = await confirmDialog(
+    `計画バージョン「${name}」を削除します。\nこの操作は元に戻せません。よろしいですか？`
+  );
+  if (!yes) return;
+  const res = await guard('計画バージョンの削除', () => api.deleteCharter(p.dir, name));
+  if (!res) return;
+  toast(`計画バージョン「${name}」を削除しました`, true);
+  gitPushAfterWrite(`agent-dashboard: delete charters/${name}.md`, p.dir);
+  await reloadProject();
+}
+
 function renderOverview() {
   const p = state.project;
   const el = $('tab-overview');
@@ -1119,10 +1223,21 @@ function renderOverview() {
           <button class="summary-link secondary" data-summary-tab="history">成果を見る</button>
         </section>
       </div>
+      ${overviewVersionsHtml(p)}
     </div>`;
 
   for (const btn of el.querySelectorAll('button[data-summary-tab]')) {
     btn.addEventListener('click', () => switchTab(btn.dataset.summaryTab));
+  }
+  const addVersion = $('btn-overview-add-version');
+  if (addVersion) addVersion.addEventListener('click', openAddCharterVersion);
+  const promoteVersion = $('btn-overview-promote-version');
+  if (promoteVersion) promoteVersion.addEventListener('click', openPromoteCharter);
+  for (const btn of el.querySelectorAll('button[data-version-edit]')) {
+    btn.addEventListener('click', () => openProjectFile(`charters/${btn.dataset.versionEdit}.md`));
+  }
+  for (const btn of el.querySelectorAll('button[data-version-delete]')) {
+    btn.addEventListener('click', () => deleteOverviewVersion(btn.dataset.versionDelete));
   }
   bindLifecycleButtons(el);
 }
@@ -1131,13 +1246,6 @@ function openProjectSettings() {
   const p = state.project;
   if (!p) return;
   const isMaster = !!(p.charter && p.charter.master);
-  const versions = (p.charters || [])
-    .map((ch) => `<li><span><strong>${esc(ch.name)}</strong>${ch.goal ? ` — ${esc(ch.goal)}` : ''}</span>
-      <button data-edit="charters/${esc(ch.name)}.md">編集</button></li>`)
-    .join('');
-  const promote = p.charter && !isMaster && p.charters && p.charters.length
-    ? '<button id="btn-settings-promote-charter">初版に名前を付ける</button>'
-    : '';
   const danger = p.charter
     ? `<section class="project-settings-section danger-zone">
         <h3>リセット</h3>
@@ -1147,7 +1255,6 @@ function openProjectSettings() {
     : '';
 
   $('project-settings-body').innerHTML = `
-    <h2>プロジェクト設定</h2>
     <p class="muted">${esc(p.name)}</p>
     <section class="project-settings-section">
       <h3>プロジェクト定義</h3>
@@ -1157,14 +1264,6 @@ function openProjectSettings() {
         <button data-edit="rules.md">プロジェクトルール</button>
         <button data-edit="repos.json">リポジトリ</button>
       </div>
-    </section>
-    <section class="project-settings-section">
-      <div class="settings-section-heading">
-        <h3>計画バージョン</h3>
-        <button id="btn-settings-add-version">追加</button>
-      </div>
-      ${versions ? `<ul class="settings-version-list">${versions}</ul>` : '<p class="muted">計画バージョンはまだありません。</p>'}
-      ${promote}
     </section>
     <section class="project-settings-section">
       <h3>調査と高度な設定</h3>
@@ -1179,16 +1278,6 @@ function openProjectSettings() {
       openProjectFile(btn.dataset.edit);
     });
   }
-  const add = $('btn-settings-add-version');
-  if (add) add.addEventListener('click', () => {
-    $('dlg-project-settings').close();
-    openAddCharterVersion();
-  });
-  const promoteBtn = $('btn-settings-promote-charter');
-  if (promoteBtn) promoteBtn.addEventListener('click', () => {
-    $('dlg-project-settings').close();
-    openPromoteCharter();
-  });
   const reset = $('btn-settings-reset');
   if (reset) reset.addEventListener('click', () => {
     $('dlg-project-settings').close();
@@ -1667,7 +1756,7 @@ function renderBacklog() {
 
   $('btn-enqueue').addEventListener('click', () => openEnqueueDialog());
   const replanBtn = $('btn-replan');
-  if (replanBtn && !replanPending) replanBtn.addEventListener('click', () => requestReplan());
+  if (replanBtn && !replanPending) replanBtn.addEventListener('click', openReplanDialog);
 
   for (const chip of el.querySelectorAll('.chip[data-filter]')) {
     chip.addEventListener('click', () => {
@@ -1825,8 +1914,8 @@ function showTaskDialog(id, scope) {
               title="${claimed ? '実行中のタスクは削除できません' : 'タスクをゴミ箱へ移動します（決定記録は残りません）'}">🗑 削除</button>
           </div>
         </div>`;
+  $('dlg-task-title').innerHTML = `<span class="mono">${esc(t.id)}</span>: ${esc(t.title)}`;
   $('dlg-task-body').innerHTML = `
-    <h2><span class="mono">${esc(t.id)}</span>: ${esc(t.title)}</h2>
     ${relationshipStrip({ taskId: t.id })}
     <table class="list">
       <tr><th>状態</th><td>${statusCell}</td></tr>
@@ -2007,6 +2096,7 @@ function showTaskDialog(id, scope) {
         after: t.extra.after || '',
         level: t.extra.level || '',
         track: t.extra.track || '',
+        charter: t.extra.charter || '',
         ...Object.fromEntries(GUIDE_KEYS.map((k) => [k, t.extra[k] || ''])),
       });
     });
@@ -2017,17 +2107,55 @@ function showTaskDialog(id, scope) {
 // charter からのバックログ再分解を要求する（エラー回復用）。本体が次パスで charter を
 // 分解し直し、取りこぼした差分だけを backlog へ入れる（done / 既存と類似は投入しない）。
 // 状態（done 等）は書き換えず、公式契約（commands/replan・CLI replan）だけで届ける。
-async function requestReplan() {
+function fillCharterSelect(select, p, selected) {
+  if (!select) return '';
+  const versions = (p && p.charters) || [];
+  select.replaceChildren();
+  if (!versions.length) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = '初版（プロジェクト憲章）';
+    select.appendChild(option);
+    select.disabled = true;
+    return '';
+  }
+  select.disabled = false;
+  for (const version of versions) {
+    const option = document.createElement('option');
+    option.value = version.name;
+    option.textContent = version.goal ? `${version.name} — ${version.goal}` : version.name;
+    select.appendChild(option);
+  }
+  const names = new Set(versions.map((version) => version.name));
+  const preferred = names.has(selected)
+    ? selected
+    : names.has(state.backlogCharter)
+      ? state.backlogCharter
+      : versions[0].name;
+  select.value = preferred;
+  return preferred;
+}
+
+function openReplanDialog() {
   const p = state.project;
   if (!p) return toast('プロジェクトを選択してください');
+  fillCharterSelect($('replan-charter'), p, state.backlogCharter || '');
+  $('dlg-replan').showModal();
+}
+
+async function requestReplan(charter = '') {
+  const p = state.project;
+  if (!p) return toast('プロジェクトを選択してください');
+  if ($('dlg-replan').open) $('dlg-replan').close();
+  const versionText = charter ? `計画バージョン「${charter}」` : 'プロジェクト憲章';
   const yes = await confirmDialog(
-    `${p.name}: プロジェクト憲章からタスクを作り直します。\n` +
+    `${p.name}: ${versionText}からタスクを作り直します。\n` +
       '進行中・却下済みと重複するタスクは追加されません（完了済みと同種のやり直しは作り直されます）。\n' +
       'タスクの状態は書き換えません。反映は次の実行サイクルです（即時ではありません）。よろしいですか？'
   );
   if (!yes) return;
   const ok = await guard('計画の作り直し', async () => {
-    const res = await api.requestReplan(p.dir, 'agent-dashboard から再分解を要求');
+    const res = await api.requestReplan(p.dir, 'agent-dashboard から再分解を要求', charter);
     uiLog('replan', res);
     toast('計画の作り直しを依頼しました（次の実行で反映されます）', true);
     return true;
@@ -2053,9 +2181,10 @@ function backlogAssistRows(p) {
   }));
 }
 
-function charterAssistContext(p) {
+function charterAssistContext(p, charterName = '') {
   if (!p) return { goal: '', acceptance: '' };
-  const ch = p.charter || (p.charters || []).find((c) => c.goal) || (p.charters || [])[0] || {};
+  const version = charterName ? (p.charters || []).find((c) => c.name === charterName) : null;
+  const ch = version || p.charter || (p.charters || []).find((c) => c.goal) || (p.charters || [])[0] || {};
   const acceptance = Array.isArray(ch.acceptanceItems)
     ? ch.acceptanceItems.join('\n')
     : Array.isArray(ch.acceptance)
@@ -2065,6 +2194,8 @@ function charterAssistContext(p) {
     name: ch.name || p.name || '',
     goal: String(ch.goal || ''),
     acceptance,
+    constraints: String(ch.constraints || (version && p.charter && p.charter.constraints) || ''),
+    assumptions: String(ch.assumptions || (version && p.charter && p.charter.assumptions) || ''),
   };
 }
 
@@ -2262,6 +2393,7 @@ function openEnqueueDialog(prefill = {}) {
   $('enq-note').value = prefill.note || '';
   $('enq-id').value = prefill.id || '';
   $('enq-after').value = Array.isArray(prefill.after) ? prefill.after.join(', ') : (prefill.after || '');
+  fillCharterSelect($('enq-charter'), state.project, prefill.charter || '');
   // level / track と誘導・レビュー記述（why 等）はフォームに出さないが、
   // 再投入・フォローアップ提案では元の値を引き継いで送る（inbox ドロップに載る）
   state.enqueueExtra = {
@@ -2294,7 +2426,7 @@ async function aiEnqueueAssist() {
       dir: p.dir,
       mode: 'enqueue-assist',
       context: {
-        charter: charterAssistContext(p),
+        charter: charterAssistContext(p, $('enq-charter').value),
         backlog: backlogAssistRows(p),
         draft: {
           title,
@@ -2340,6 +2472,7 @@ async function submitEnqueue() {
     note: $('enq-note').value,
     id: $('enq-id').value,
     after: $('enq-after').value,
+    charter: $('enq-charter').value,
     level: extra.level,
     track: extra.track,
     ...Object.fromEntries(GUIDE_KEYS.map((k) => [k, extra[k] || ''])),
@@ -2557,12 +2690,23 @@ async function openCharterForm(name, opts) {
   const fields = res.fields;
   const isVersion = /^charters\//.test(name);
   const isMaster = !isVersion && !!fields.master;
+  // 旧形式のバージョンは制約・前提セクションを持たない。画面上では実際に適用される
+  // マスター値を初期表示し、保存後はその版の明示値として扱えるようにする。
+  if (isVersion && res.exists && (!fields._constraintsDefined || !fields._assumptionsDefined)) {
+    const inherited = await guard('共通設定の読込', () => api.readCharterFields(p.dir, 'charter.md'));
+    if (inherited && inherited.fields) {
+      if (!fields._constraintsDefined) fields.constraints = inherited.fields.constraints || [];
+      if (!fields._assumptionsDefined) fields.assumptions = inherited.fields.assumptions || [];
+    }
+  }
   // 新規バージョン追加時は、前バージョン（または憲章）から引き継いだ やること/完了条件/成果物 を
   // 初期値にする（既存ファイルの編集では上書きしない＝res.exists のときは seed を使わない）。
   if (!res.exists && opts) {
     if (opts.seedGoal) fields.goal = opts.seedGoal;
     if (Array.isArray(opts.seedAcceptance)) fields.acceptance = opts.seedAcceptance;
     if (Array.isArray(opts.seedDeliverables)) fields.deliverables = opts.seedDeliverables;
+    if (Array.isArray(opts.seedConstraints)) fields.constraints = opts.seedConstraints;
+    if (Array.isArray(opts.seedAssumptions)) fields.assumptions = opts.seedAssumptions;
   }
   charterForm = { dir: p.dir, name, fields, isVersion, isMaster, exists: res.exists };
 
@@ -2574,7 +2718,7 @@ async function openCharterForm(name, opts) {
       ? 'マスター憲章を編集'
       : '憲章を編集';
   $('ec-desc').textContent = isVersion
-    ? 'このバージョンで達成すること（やること）と完了条件を書きます。制約・前提・対象リポジトリはマスター憲章から引き継がれます。'
+    ? 'このバージョンで達成すること、完了条件、制約、前提を設定します。新規作成時は共通設定を引き継ぎ、ここで個別に変更できます。'
     : isMaster
       ? '全バージョン共通の前提です。ここからタスクは作られません（完了条件は各バージョンが持ちます）。'
       : '目標と完了条件、制約・前提・成果物を記入します。';
@@ -2595,10 +2739,9 @@ async function openCharterForm(name, opts) {
   // 成果物は常に出す
   renderSimpleList($('ec-deliverables'), fields.deliverables, '例: report.py');
 
-  // 制約・前提はマスター/単一のみ（バージョンは継承）
-  const showConstraints = !isVersion;
-  $('ec-constraints-field').classList.toggle('hidden', !showConstraints);
-  $('ec-assumptions-field').classList.toggle('hidden', !showConstraints);
+  // 制約・前提は新規版で共通設定をコピーするが、保存後は各バージョン固有の値になる。
+  $('ec-constraints-field').classList.remove('hidden');
+  $('ec-assumptions-field').classList.remove('hidden');
   renderSimpleList($('ec-constraints'), fields.constraints, '例: 標準ライブラリのみ');
   renderSimpleList($('ec-assumptions'), fields.assumptions, '例: 入力は UTF-8');
 
@@ -2632,10 +2775,8 @@ async function saveCharterForm() {
   f.goal = $('ec-goal').value.trim();
   f.deliverables = readSimpleList($('ec-deliverables'));
   if (!cf.isMaster) f.acceptance = readSimpleList($('ec-acceptance'));
-  if (!cf.isVersion) {
-    f.constraints = readSimpleList($('ec-constraints'));
-    f.assumptions = readSimpleList($('ec-assumptions'));
-  }
+  f.constraints = readSimpleList($('ec-constraints'));
+  f.assumptions = readSimpleList($('ec-assumptions'));
   const ok = await guard('保存', async () => {
     await api.writeCharterFields(cf.dir, cf.name, f);
     return true;
@@ -2839,7 +2980,7 @@ async function openAddCharterVersion() {
   const src = p.charters && p.charters.length ? '直近のバージョン' : 'マスター憲章';
   $('nc-title').textContent = '計画バージョンを追加';
   $('nc-desc').textContent = master
-    ? `バージョン名を決めると、続けて内容を入力する画面が開きます（${src}の やること・完了条件・成果物 を引き継いだ状態で開くので、そこから編集できます。制約・前提・対象リポジトリはマスター憲章から自動継承されます）。`
+    ? `バージョン名を決めると、続けて内容を入力する画面が開きます（${src}の やること・完了条件・成果物 と、共通の制約・前提を引き継ぎます。すべてこのバージョン用に変更できます）。`
     : p.charter && !(p.charters && p.charters.length)
       ? '新しい計画バージョンを作成します。作成後はバージョン一覧の計画だけが実行され、' +
         '初版は実行の対象から外れます（概要タブの「⤴ バージョン名を付ける」で初版も並行して進められます）。'
@@ -2871,7 +3012,7 @@ async function submitNewCharterVersion() {
   }
   // 初期値の引き継ぎ元: 直近の計画バージョン（あれば）、無ければマスター/初版の憲章。
   // その やること/完了条件/成果物 をフォームの初期状態に入れて、前バージョンから編集して作れる
-  // ようにする（制約・前提・対象リポジトリはマスターから自動継承なのでフォームには出さない）。
+  // ようにする。制約・前提は共通設定からコピーし、この版だけの値としてフォームで変更できる。
   const srcName =
     p.charters && p.charters.length ? `charters/${p.charters[p.charters.length - 1].name}.md` : 'charter.md';
   let seed = {};
@@ -2882,6 +3023,11 @@ async function submitNewCharterVersion() {
       seedAcceptance: Array.isArray(src.fields.acceptance) ? src.fields.acceptance : [],
       seedDeliverables: Array.isArray(src.fields.deliverables) ? src.fields.deliverables : [],
     };
+  }
+  const master = await guard('共通設定の読込', () => api.readCharterFields(p.dir, 'charter.md'));
+  if (master && master.fields) {
+    seed.seedConstraints = Array.isArray(master.fields.constraints) ? master.fields.constraints : [];
+    seed.seedAssumptions = Array.isArray(master.fields.assumptions) ? master.fields.assumptions : [];
   }
   // 名前を決めたら、続けて内容（やること・完了条件）を入力するバージョンのフォームを開く（保存で新規作成）
   await openCharterForm(`charters/${name}.md`, seed);
@@ -3097,7 +3243,8 @@ function needCompleteHowHtml(n) {
   return `<div class="task-complete-banner need-complete-how">${esc(line)}</div>`;
 }
 
-function needActionsHtml(n) {
+function needActionsHtml(n, options) {
+  const inReview = Boolean(options && options.inReview);
   const kind = n.kind || 'blocked';
   const buttons = [];
   if (kind === 'plan-review') {
@@ -3142,7 +3289,11 @@ function needActionsHtml(n) {
       const title = manualCompletion
         ? '成果と検証失敗を確認・受容し、このタスクを完了（納品確定）にします'
         : '成果を確認済みならこのタスクを完了（納品確定）にします';
-      buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}" title="${esc(title)}">承認して完了にする</button>`);
+      if (manualCompletion && !inReview) {
+        buttons.push(`<button type="button" class="primary-inline" data-need-artifacts="${esc(n.id)}" title="ファイル差分を確認してから承認します">差分を確認して承認</button>`);
+      } else {
+        buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}" title="${esc(title)}">承認して完了にする</button>`);
+      }
     }
     buttons.push(`<button class="${canApproveCompletion ? '' : 'primary-inline'}" data-act="feedback" data-id="${esc(n.id)}">指示を送って再開</button>`);
     buttons.push(`<button data-act="rerun" data-id="${esc(n.id)}">そのまま再実行</button>`);
@@ -3230,21 +3381,18 @@ function completedRunForNeed(project, need, flowRuns) {
 }
 
 // 要対応詳細のバナー、完了承認ボタン、検収ダイアログを同じ判定へ揃える。
-// status=done は orchestrator が工程を完了した一次情報。新形式で工程集計もある場合は、
-// failed や未完了が混じらないことを追加確認する。旧runの集計欠落だけで表示を変えない。
+// status=done は orchestrator がフローを終了した一次情報。検証をフローノードとして数える
+// 形式では counts.failed / waiting が残るため、ノード集計を完了承認の可否に重ねない。
+// env_resume も検証失敗で付くことがあるため、通常の環境障害との区別はバックエンドで
+// 「検証差異を明示受容した理由」と agent-error 記録を使って行う。
 function needFinalVerificationFailure(project, need, flowRuns) {
   if (!need || String(need.kind || 'blocked') !== 'blocked') return null;
   const task = taskForNeed(project, need);
   if (!task || String(task.status || '') !== 'blocked') return null;
-  if (String(((task.extra || {}).env_resume) || '') === '1') return null;
   const failure = needFailureViewModel(need);
   if (!failure) return null;
   const run = completedRunForNeed(project, need, flowRuns);
   if (!run) return null;
-  const total = Number(run.total || 0);
-  const counts = run.counts || {};
-  if (Number(counts.failed || 0) > 0) return null;
-  if (total > 0 && Number(counts.done || 0) < total) return null;
   return {
     title: '工程は全て成功・最終検証で失敗',
     summary: failure.summary,
@@ -3263,6 +3411,8 @@ function needApprovalReason(project, need, flowRuns, input) {
 }
 
 function needArtifactsButtonHtml(project, need, flowRuns) {
+  // 未承認の検証失敗は回答欄の主操作から同じ検収ダイアログへ進むため、重複表示しない。
+  if (canManuallyCompleteNeed(project, need, flowRuns)) return '';
   if (!completedTaskForNeed(project, need) && !completedRunForNeed(project, need, flowRuns)) return '';
   return `<button type="button" class="primary-inline" data-need-artifacts="${esc(need.id)}">成果を確認</button>`;
 }
@@ -3484,7 +3634,7 @@ function deliveryReviewFooterHtml(need) {
   return `<h3>要確認コメント・操作</h3>${
     need.decided || isNeedSent(need)
       ? '<p class="muted">この要確認項目には回答済みです。</p>'
-      : needActionsHtml(need)
+      : needActionsHtml(need, { inReview: true })
   }`;
 }
 
@@ -3637,10 +3787,9 @@ async function openDeliveryArtifactsModel(need, title) {
           ? 'リポジトリの情報またはGitの状態を確認し、もう一度開いてください。'
           : '現在の比較条件では、検収対象となる変更を検出しませんでした。'}</p>
       </section>`;
-  const summaryBlock = need.summary
-    ? `<section class="delivery-artifact-summary"><h3>成果の要約</h3><p>${esc(need.summary)}</p></section>`
-    : '';
-  $('delivery-review-body').innerHTML = `${summaryBlock}${mrBlock}${emptyNotice}
+  // このダイアログの主目的はファイル差分の検収。run の summary は複数ノード分が長くなり、
+  // overflow:hidden の本文内で差分レイアウト全体を画面外へ押し出すため、ここには載せない。
+  $('delivery-review-body').innerHTML = `${mrBlock}${emptyNotice}
     <div id="delivery-assist-panel" class="delivery-assist-panel hidden" aria-live="polite"></div>
     <div class="delivery-review-layout">
       <aside class="delivery-file-panel" aria-label="変更ファイル">
@@ -6092,6 +6241,7 @@ function technicalProjectInfoHtml() {
 
 function openAdvancedSettings() {
   populateSettingsFields();
+  renderAdvancedBudgetSettings();
   $('dlg-advanced-settings').showModal();
 }
 
@@ -6595,6 +6745,7 @@ function setupPolling() {
         $('dlg-technical-info').open ||
         $('dlg-task').open ||
         $('dlg-enqueue').open ||
+        $('dlg-replan').open ||
         $('dlg-confirm').open ||
         $('dlg-new-project').open ||
         $('dlg-edit-file').open ||
@@ -6609,6 +6760,7 @@ function setupPolling() {
         || ($('dlg-cowork-save') && $('dlg-cowork-save').open)
         || ($('dlg-cowork-history') && $('dlg-cowork-history').open)
         || ($('dlg-amigos-post') && $('dlg-amigos-post').open)
+        || ($('dlg-amigos-detail') && $('dlg-amigos-detail').open)
       )
         return;
       const ae = document.activeElement;
@@ -6722,7 +6874,7 @@ async function refreshCowork({ probe = false, forceDiscover = false } = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// Amigos タブ（agent-amigos ミッションの読み取りビュー + ノード予算の管理面）
+// ミッションタブ（agent-amigos ミッションの読み取りビュー）
 // ---------------------------------------------------------------------------
 
 async function refreshAmigos() {
@@ -6735,7 +6887,7 @@ async function refreshAmigos() {
   updateAmigosTabVisibility();
 }
 
-// ミッションも予算データも無いときはタブを隠す（cowork と同じ流儀）。
+// ミッションも依頼先ホームも無いときはタブを隠す（cowork と同じ流儀）。
 function updateAmigosTabVisibility() {
   const btn = $('tab-btn-amigos');
   const pane = $('tab-amigos');
@@ -6744,7 +6896,7 @@ function updateAmigosTabVisibility() {
   const show = !!(
     a &&
     ((a.missions && a.missions.length) || (a.homes && a.homes.length) ||
-      (a.budget && a.budget.hasData) || a.error)
+      a.error)
   );
   btn.classList.toggle('hidden', !show);
   btn.hidden = !show;
@@ -6759,12 +6911,12 @@ function amigosMin(sec) {
 function amigosPhaseLabel(phase) {
   return (
     {
-      open: '募集中',
-      working: '進行中',
-      integrating: '統合中',
-      reviewing: '受入待ち',
+      open: '担当者を募集中',
+      working: '作業中',
+      integrating: '成果をまとめています',
+      reviewing: '確認待ち',
       done: '完了',
-      failed: '失敗',
+      failed: '要確認',
       cancelled: '中止',
     }[phase] || phase
   );
@@ -6772,7 +6924,7 @@ function amigosPhaseLabel(phase) {
 
 function amigosWorkloadLabel(wl) {
   return (
-    { routine: '定常業務', project: 'プロジェクト', flow: 'フロー', amigos: 'Amigos' }[wl] || wl
+    { routine: '定常業務', project: 'プロジェクト', flow: 'フロー', amigos: 'ミッション' }[wl] || wl
   );
 }
 
@@ -6802,8 +6954,8 @@ function amigosBudgetPanelHtml(budget) {
         <div>
           <span class="summary-kicker">ノード予算</span>
           <h3>このノードの実行時間（${esc(periodLabel)}: 合計 ${esc(amigosMin(budget.totalSeconds))} 分 / 上限 ${esc(limitTxt)}
-            ${budget.exceeded ? '<span class="amigos-over-badge">超過中 — amigo は一時停止</span>' : ''}</h3>
-          <p class="muted">定常業務・プロジェクト・フロー・Amigos の合計に上限を掛けます（0 = 無制限）。
+            ${budget.exceeded ? '<span class="amigos-over-badge">超過中 — ミッションの担当は一時停止</span>' : ''}</h3>
+          <p class="muted">定常業務・プロジェクト・フロー・ミッションの合計に上限を掛けます（0 = 無制限）。
             設定は依頼側・請負側どちらのノードでも同じ契約（${esc(budget.dir)}）です。</p>
         </div>
       </header>
@@ -6819,7 +6971,7 @@ function amigosBudgetPanelHtml(budget) {
             <option value="total" ${cfg.period === 'total' ? 'selected' : ''}>累計（total）</option>
           </select>
         </label>
-        <button id="btn-amigos-budget-save" ${state.amigosBudgetSaving ? 'disabled' : ''}>上限を保存</button>
+        <button type="button" id="btn-amigos-budget-save" ${state.amigosBudgetSaving ? 'disabled' : ''}>上限を保存</button>
       </div>
       <table class="amigos-table">
         <thead><tr><th>ワークロード</th><th>消費</th><th>内訳上限（分・0=無制限）</th><th></th></tr></thead>
@@ -6828,36 +6980,220 @@ function amigosBudgetPanelHtml(budget) {
     </section>`;
 }
 
-function amigosMissionRowHtml(m) {
-  const active = !['done', 'failed', 'cancelled'].includes(m.phase);
-  const roleChips = (m.roles || [])
-    .map((r) => {
-      const stateMark = r.state === 'paused' ? ' ⏸' : r.done ? ' ✓' : '';
-      const cls = r.state === 'paused' ? 'amigos-role paused' : r.done ? 'amigos-role done' : 'amigos-role';
-      if (!r.node && m.home && active) {
-        // 募集中 × ホーム配下のミッション → 手動引き受け（commands/ へ claim を投函）
-        return `<span class="${cls}" title="${esc(r.title)}">${esc(r.id)}@募集中
-          <button class="amigos-claim-btn" data-home="${esc(m.home)}"
-            data-mission="${esc(m.id)}" data-role="${esc(r.id)}">引き受け</button></span>`;
+function setupAmigosBudgetSave(root) {
+  const saveBtn = root && root.querySelector('#btn-amigos-budget-save');
+  if (!saveBtn) return;
+  saveBtn.addEventListener('click', () =>
+    guard('ノード予算の保存', async () => {
+      const workloads = {};
+      for (const input of root.querySelectorAll('.amigos-wl-limit')) {
+        workloads[input.dataset.wl] = Number(input.value || 0);
       }
-      const who = r.node ? esc(r.node) : '募集中';
-      return `<span class="${cls}" title="${esc(r.title)}">${esc(r.id)}@${who}${stateMark}</span>`;
+      state.amigosBudgetSaving = true;
+      try {
+        const budget = await api.amigosBudgetSave({
+          executionMinutes: Number((root.querySelector('#amigos-budget-total') || {}).value || 0),
+          period: (root.querySelector('#amigos-budget-period') || {}).value || 'day',
+          workloads,
+        });
+        state.amigos = { ...(state.amigos || {}), budget };
+        toast('ノード予算を保存しました', true);
+      } finally {
+        state.amigosBudgetSaving = false;
+      }
+      renderAdvancedBudgetSettings();
     })
-    .join(' ');
-  const b = m.budget || {};
-  const budgetTxt = b.limitSeconds
-    ? `${amigosMin(b.spentSeconds)}/${amigosMin(b.limitSeconds)}分${b.hard ? '（枯渇）' : b.soft ? '（wrap-up）' : ''}`
-    : `${amigosMin(b.spentSeconds)}分/∞`;
-  const partial = m.manifest && m.manifest.partial ? ' <span class="amigos-partial">partial</span>' : '';
-  return `<tr>
-    <td><div><strong>${esc(m.title)}</strong>${partial}</div>
-        <div class="muted mono">${esc(m.id)} · owner=${esc(m.owner || '?')}</div></td>
-    <td><span class="amigos-phase amigos-phase-${esc(m.phase)}">${esc(amigosPhaseLabel(m.phase))}</span>
-        <div class="muted">round ${m.round}</div></td>
-    <td>${roleChips || '<span class="muted">（ロールなし）</span>'}</td>
-    <td class="num mono">${esc(budgetTxt)}</td>
-    <td class="num">${m.unanswered ? `${m.unanswered} 件` : '<span class="muted">-</span>'}</td>
-  </tr>`;
+  );
+}
+
+function renderAdvancedBudgetSettings() {
+  const el = $('advanced-budget-body');
+  if (!el) return;
+  const amigos = state.amigos;
+  if (amigos && amigos.error) {
+    el.innerHTML = `<p class="muted">予算情報を読み込めませんでした: ${esc(amigos.error)}</p>`;
+    return;
+  }
+  if (!amigos || !amigos.budget) {
+    el.innerHTML = '<p class="muted">予算情報を読み込み中です。</p>';
+    return;
+  }
+  el.innerHTML = amigosBudgetPanelHtml(amigos.budget);
+  setupAmigosBudgetSave(el);
+}
+
+function amigosNextStep(m) {
+  return (
+    {
+      open: '担当者が揃うと作業を開始します。',
+      working: '担当メンバーが作業を進めています。',
+      integrating: '各担当の成果をひとつにまとめています。',
+      reviewing: '成果の確認を待っています。',
+      done: 'このミッションは完了しました。',
+      failed: '作業を続けるために確認が必要です。',
+      cancelled: 'このミッションは中止されました。',
+    }[m.phase] || '状況を確認しています。'
+  );
+}
+
+function amigosMemberStatus(role) {
+  if (role.done) return '完了';
+  if (!role.node) return '参加待ち';
+  if (role.state === 'paused') return '一時停止';
+  if (role.state === 'idle') return '待機中';
+  return '作業中';
+}
+
+function amigosFriendlyNote(note) {
+  return String(note || '')
+    .replace(/\[node-budget\]\s*/gi, '利用時間の上限に達したため、')
+    .replace(/\bamigo\b/gi, '担当エージェント')
+    .trim();
+}
+
+function amigosMessageTypeLabel(type) {
+  return (
+    {
+      question: '質問',
+      answer: '回答',
+      request: '依頼',
+      review: '確認結果',
+      'decision-request': '判断のお願い',
+      status: '進捗共有',
+      info: '共有',
+      'wrap-up': 'まとめ',
+      approve: '確認完了',
+      feedback: '修正依頼',
+    }[type] || '共有'
+  );
+}
+
+function amigosMissionProgress(m) {
+  const members = m.roles || [];
+  const done = members.filter((r) => r.done).length;
+  return { done, total: members.length };
+}
+
+function amigosMissionAttention(m) {
+  const paused = (m.roles || []).filter((r) => r.state === 'paused').length;
+  const count = Number(m.attentionCount || 0) + paused;
+  if (!count) return '';
+  return `<div class="amigos-attention" role="status">確認が必要な項目が ${count} 件あります</div>`;
+}
+
+function amigosMissionCardHtml(m) {
+  const progress = amigosMissionProgress(m);
+  const progressText = progress.total
+    ? `${progress.total}人中${progress.done}人が完了`
+    : '担当者を確認中';
+  const goal = m.goal ? `<p class="amigos-card-goal">${esc(m.goal)}</p>` : '';
+  return `<article class="amigos-mission-card">
+    <div class="amigos-card-heading">
+      <div>
+        <span class="amigos-phase amigos-phase-${esc(m.phase)}">${esc(amigosPhaseLabel(m.phase))}</span>
+        <h3>${esc(m.title)}</h3>
+      </div>
+    </div>
+    ${goal}
+    <p class="amigos-next-step">${esc(amigosNextStep(m))}</p>
+    <div class="amigos-card-meta">
+      <span>${esc(progressText)}</span>
+      ${(m.messages || []).length ? `<span>やりとり ${(m.messages || []).length} 件</span>` : '<span>やりとりはまだありません</span>'}
+    </div>
+    ${amigosMissionAttention(m)}
+    <div class="amigos-card-actions">
+      <button type="button" class="primary-inline" data-amigos-detail="${esc(m.id)}">詳しく見る</button>
+    </div>
+  </article>`;
+}
+
+function amigosMemberHtml(role, mission) {
+  const active = !['done', 'failed', 'cancelled'].includes(mission.phase);
+  const claim = !role.node && mission.home && active
+    ? `<button type="button" class="amigos-claim-btn" data-home="${esc(mission.home)}"
+        data-mission="${esc(mission.id)}" data-role="${esc(role.id)}">この担当を引き受ける</button>`
+    : '';
+  return `<article class="amigos-member${role.state === 'paused' ? ' is-paused' : ''}">
+    <div class="amigos-member-heading">
+      <h4>${esc(role.displayName || role.title || '担当メンバー')}</h4>
+      <span class="amigos-member-status">${esc(amigosMemberStatus(role))}</span>
+    </div>
+    ${role.responsibility ? `<p>${esc(role.responsibility)}</p>` : '<p class="muted">担当内容を確認中です。</p>'}
+    ${role.note ? `<p class="amigos-member-note">${esc(amigosFriendlyNote(role.note))}</p>` : ''}
+    ${claim}
+  </article>`;
+}
+
+function amigosMessageHtml(message) {
+  const route = message.toLabel === '全員'
+    ? `${message.fromLabel}から全員へ`
+    : `${message.fromLabel}から${message.toLabel}へ`;
+  const answered = message.type === 'question' && message.answered
+    ? '<span class="amigos-message-answer">回答済み</span>'
+    : '';
+  const attention = message.requiresAttention ? ' is-attention' : '';
+  return `<details class="amigos-message${attention}">
+    <summary>
+      <span class="amigos-message-kind">${esc(amigosMessageTypeLabel(message.type))}</span>
+      <span class="amigos-message-summary"><strong>${esc(message.summary || '内容を確認')}</strong><small>${esc(route)}</small></span>
+      ${answered}
+    </summary>
+    <div class="amigos-message-body">
+      ${message.body ? `<p>${esc(message.body)}</p>` : '<p class="muted">本文はありません。</p>'}
+      ${message.createdAt ? `<time datetime="${esc(message.createdAt)}">${esc(fmtTime(message.createdAt))}</time>` : ''}
+    </div>
+  </details>`;
+}
+
+function amigosMissionDetailHtml(m) {
+  const progress = amigosMissionProgress(m);
+  const progressText = progress.total ? `${progress.total}人中${progress.done}人が完了` : '担当者を確認中';
+  const members = (m.roles || []).map((role) => amigosMemberHtml(role, m)).join('');
+  const conversation = (m.messages || []).length
+    ? (m.messages || []).map(amigosMessageHtml).join('')
+    : '<div class="empty compact">まだやりとりはありません。</div>';
+  return `<div class="amigos-detail-content">
+    ${amigosMissionAttention(m)}
+    <section class="amigos-detail-section">
+      <h3>現在の状況</h3>
+      <div class="amigos-detail-status">
+        <span class="amigos-phase amigos-phase-${esc(m.phase)}">${esc(amigosPhaseLabel(m.phase))}</span>
+        <strong>${esc(progressText)}</strong>
+      </div>
+      ${m.goal ? `<p class="amigos-detail-goal">${esc(m.goal)}</p>` : ''}
+      <p>${esc(amigosNextStep(m))}</p>
+    </section>
+    <section class="amigos-detail-section">
+      <h3>メンバーの作業状況</h3>
+      <div class="amigos-member-grid">${members || '<div class="empty compact">担当者を確認中です。</div>'}</div>
+    </section>
+    <section class="amigos-detail-section">
+      <h3>やりとり</h3>
+      <p class="muted">要点を時系列で表示しています。発言を選ぶと全文を確認できます。</p>
+      <div class="amigos-conversation">${conversation}</div>
+    </section>
+  </div>`;
+}
+
+function setupAmigosClaimButtons(root) {
+  for (const btn of root.querySelectorAll('.amigos-claim-btn')) {
+    btn.addEventListener('click', () =>
+      guard('担当の引き受け', async () => {
+        btn.disabled = true;
+        await api.amigosClaim(btn.dataset.home, btn.dataset.mission, btn.dataset.role);
+        toast('担当の引き受けを依頼しました', true);
+      })
+    );
+  }
+}
+
+function openAmigosDetail(missionId) {
+  const mission = ((state.amigos && state.amigos.missions) || []).find((m) => m.id === missionId);
+  if (!mission) return;
+  $('amigos-detail-title').textContent = mission.title || 'ミッション詳細';
+  $('amigos-detail-body').innerHTML = amigosMissionDetailHtml(mission);
+  setupAmigosClaimButtons($('amigos-detail-body'));
+  $('dlg-amigos-detail').showModal();
 }
 
 const AMIGOS_ROLES_SAMPLE = JSON.stringify(
@@ -6876,7 +7212,7 @@ function openAmigosRequestDialog() {
   const homes = (state.amigos && state.amigos.homes) || [];
   const sel = $('amigos-post-home');
   sel.innerHTML = homes
-    .map((h) => `<option value="${esc(h.dir)}">${esc(h.dir)}${h.nodeId ? `（${esc(h.nodeId)}）` : ''}</option>`)
+    .map((h, index) => `<option value="${esc(h.dir)}">${esc(coworkRepoLabel(h.dir) || `実行先 ${index + 1}`)}</option>`)
     .join('');
   if (!$('amigos-post-roles').value.trim()) $('amigos-post-roles').value = AMIGOS_ROLES_SAMPLE;
   dlg.showModal();
@@ -6886,6 +7222,7 @@ function setupAmigosDialogs() {
   const dlg = $('dlg-amigos-post');
   if (!dlg) return;
   $('btn-amigos-post-cancel').addEventListener('click', () => dlg.close());
+  $('btn-amigos-detail-close').addEventListener('click', () => $('dlg-amigos-detail').close());
   dlg.addEventListener('submit', (ev) => {
     ev.preventDefault();
     guard('タスクの依頼', async () => {
@@ -6893,7 +7230,7 @@ function setupAmigosDialogs() {
       try {
         roles = JSON.parse($('amigos-post-roles').value);
       } catch (e) {
-        toast(`役割ミッション表が JSON として読めません: ${e.message}`);
+        toast(`担当チームの設定を読み取れません: ${e.message}`);
         return;
       }
       await api.amigosRequest({
@@ -6918,34 +7255,30 @@ function renderAmigos() {
   const a = state.amigos;
   if (!a) return;
   if (a.error) {
-    el.innerHTML = `<div class="empty"><strong>Amigos を読み込めませんでした</strong><span>${esc(a.error)}</span></div>`;
+    el.innerHTML = `<div class="empty"><strong>ミッションを読み込めませんでした</strong><span>${esc(a.error)}</span></div>`;
     return;
   }
   const missions = a.missions || [];
   const missionsHtml = missions.length
-    ? `<table class="amigos-table">
-        <thead><tr><th>ミッション</th><th>状態</th><th>ロール / 担当</th><th>ミッション予算</th><th>未回答</th></tr></thead>
-        <tbody>${missions.map(amigosMissionRowHtml).join('')}</tbody>
-      </table>`
+    ? `<div class="amigos-mission-grid">${missions.map(amigosMissionCardHtml).join('')}</div>`
     : `<div class="empty"><strong>ミッションがありません</strong>
-        <span>agent-amigos post で公示するか、設定 amigos.busDirs にバスの場所を追加してください。</span></div>`;
+        <span>新しい作業を始めるには「ミッションを依頼」を選んでください。</span></div>`;
   const errorsHtml = (a.errors || []).length
-    ? `<p class="muted">読み取りエラー: ${a.errors.map((e) => esc(e)).join(' / ')}</p>`
+    ? '<p class="muted">一部のミッションを読み込めませんでした。更新しても直らない場合は詳細情報を確認してください。</p>'
     : '';
   el.innerHTML = `
     <div class="amigos-shell">
       <header class="cowork-header">
         <div>
           <span class="summary-kicker">協働</span>
-          <h2>Amigos</h2>
-          <p class="muted">agent-amigos ミッションの進行と、このノードの予算を管理します（一覧は読み取り専用）。</p>
+          <h2>ミッション</h2>
+          <p class="muted">複数の担当メンバーで進める作業の状況を確認できます。</p>
         </div>
         <div class="row">
-          ${(a.homes || []).length ? '<button id="btn-amigos-request">タスクを依頼…</button>' : ''}
+          ${(a.homes || []).length ? '<button id="btn-amigos-request">ミッションを依頼…</button>' : ''}
           <button id="btn-amigos-refresh">更新</button>
         </div>
       </header>
-      ${amigosBudgetPanelHtml(a.budget)}
       <section>
         <h3>ミッション（${missions.length} 件）</h3>
         ${missionsHtml}
@@ -6956,47 +7289,16 @@ function renderAmigos() {
   const refreshBtn = $('btn-amigos-refresh');
   if (refreshBtn)
     refreshBtn.addEventListener('click', () =>
-      guard('Amigos 更新', async () => {
+      guard('ミッション更新', async () => {
         await refreshAmigos();
         renderAmigos();
       })
     );
   const requestBtn = $('btn-amigos-request');
   if (requestBtn) requestBtn.addEventListener('click', () => openAmigosRequestDialog());
-  // 手動引き受け: 募集中ロールの「引き受け」→ ホームの commands/ へ claim を投函
-  for (const btn of el.querySelectorAll('.amigos-claim-btn')) {
-    btn.addEventListener('click', () =>
-      guard('タスクの引き受け', async () => {
-        btn.disabled = true;
-        await api.amigosClaim(btn.dataset.home, btn.dataset.mission, btn.dataset.role);
-        toast(`引き受けを投函しました: ${btn.dataset.mission}/${btn.dataset.role}`
-              + '（常駐デーモンが取り込みます）', true);
-      })
-    );
+  for (const btn of el.querySelectorAll('[data-amigos-detail]')) {
+    btn.addEventListener('click', () => openAmigosDetail(btn.dataset.amigosDetail));
   }
-  const saveBtn = $('btn-amigos-budget-save');
-  if (saveBtn)
-    saveBtn.addEventListener('click', () =>
-      guard('ノード予算の保存', async () => {
-        const workloads = {};
-        for (const input of el.querySelectorAll('.amigos-wl-limit')) {
-          workloads[input.dataset.wl] = Number(input.value || 0);
-        }
-        state.amigosBudgetSaving = true;
-        try {
-          const budget = await api.amigosBudgetSave({
-            executionMinutes: Number(($('amigos-budget-total') || {}).value || 0),
-            period: (($('amigos-budget-period') || {}).value) || 'day',
-            workloads,
-          });
-          state.amigos = { ...state.amigos, budget };
-          toast('ノード予算を保存しました', true);
-        } finally {
-          state.amigosBudgetSaving = false;
-        }
-        renderAmigos();
-      })
-    );
 }
 
 function workTypeLabel(type) {
@@ -7577,6 +7879,7 @@ async function saveCoworkDraft() {
 // ---------------------------------------------------------------------------
 
 async function init() {
+  setupDialogLayouts();
   state.config = await guard('設定読込', () => api.getConfig());
   initTabs();
   $('btn-refresh').addEventListener('click', () => refreshAll({ sync: false }));
@@ -7615,6 +7918,8 @@ async function init() {
   $('btn-enq-cancel').addEventListener('click', () => $('dlg-enqueue').close());
   $('btn-enq-submit').addEventListener('click', submitEnqueue);
   $('btn-enq-ai').addEventListener('click', aiEnqueueAssist);
+  $('btn-replan-cancel').addEventListener('click', () => $('dlg-replan').close());
+  $('btn-replan-submit').addEventListener('click', () => requestReplan($('replan-charter').value));
   // 新規プロジェクト作成
   $('btn-new-project').addEventListener('click', openNewProject);
   $('btn-np-cancel').addEventListener('click', () => $('dlg-new-project').close());

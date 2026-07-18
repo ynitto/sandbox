@@ -28,6 +28,11 @@ function mkProject() {
   return { root, dir };
 }
 
+function addVersion(dir, name) {
+  fs.mkdirSync(path.join(dir, 'charters'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'charters', `${name}.md`), `# Charter: ${name}\n## goal\n${name}\n`, 'utf8');
+}
+
 function readDropped(dir) {
   const cdir = path.join(dir, 'commands');
   const files = fs.readdirSync(cdir).filter((f) => f.endsWith('.json'));
@@ -50,6 +55,62 @@ function readDropped(dir) {
       assert.ok(!('id' in rec), 'プロジェクト単位なので id は載せない');
       assert.strictEqual(rec.reason, '取りこぼし回復');
       assert.strictEqual(rec.actor, 'agent-dashboard');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  await test('タスク追加は選択した計画バージョンを inbox 契約へ保存する', async () => {
+    const { root, dir } = mkProject();
+    try {
+      addVersion(dir, 'v2');
+      const res = actions.enqueueToInbox(dir, { title: '版固有の作業', charter: 'v2' });
+      const spec = JSON.parse(fs.readFileSync(res.file, 'utf8'));
+      assert.strictEqual(spec.charter, 'v2');
+      assert.throws(
+        () => actions.enqueueToInbox(dir, { title: '不明な版', charter: 'missing' }),
+        /計画バージョン.*見つかりません/
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  await test('版指定なしのタスク追加は従来どおり charter キーを省略する', async () => {
+    const { root, dir } = mkProject();
+    try {
+      const res = actions.enqueueToInbox(dir, { title: '従来の作業' });
+      const spec = JSON.parse(fs.readFileSync(res.file, 'utf8'));
+      assert.ok(!('charter' in spec));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  await test('計画の作り直しは選択したバージョンを replan コマンドへ保存する', async () => {
+    const { root, dir } = mkProject();
+    try {
+      addVersion(dir, 'v2');
+      await actions.requestReplan({ projects: { actionMode: 'file' } }, {
+        dir,
+        reason: 'v2 の計画を回復',
+        charter: 'v2',
+      });
+      const { rec } = readDropped(dir);
+      assert.strictEqual(rec.charter, 'v2');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  await test('存在しないバージョンの再計画は要求ファイルを作らず拒否する', async () => {
+    const { root, dir } = mkProject();
+    try {
+      await assert.rejects(
+        actions.requestReplan({ projects: { actionMode: 'file' } }, { dir, charter: 'missing' }),
+        /計画バージョン.*見つかりません/
+      );
+      assert.ok(!fs.existsSync(path.join(dir, 'commands')));
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

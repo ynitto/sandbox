@@ -23,7 +23,7 @@ module.exports = {
     invoke('dashboard:feedback', { file, feedback, stub }),
   enqueueTask: (invoke) => (dir, spec) => invoke('dashboard:enqueue', { dir, spec }),
   runAction: (invoke) => (args) => invoke('dashboard:action', args),
-  requestReplan: (invoke) => (dir, reason) => invoke('dashboard:replan', { dir, reason }),
+  requestReplan: (invoke) => (dir, reason, charter) => invoke('dashboard:replan', { dir, reason, charter }),
   requestLifecycle: (invoke) => (dir, action, reason) =>
     invoke('dashboard:lifecycle', { dir, action, reason }),
   startProject: (invoke) => (dir) => invoke('dashboard:start', { dir }),
@@ -32,6 +32,7 @@ module.exports = {
 
   createProject: (invoke) => (spec) => invoke('dashboard:createProject', { spec }),
   promoteCharter: (invoke) => (dir, name) => invoke('dashboard:promoteCharter', { dir, name }),
+  deleteCharter: (invoke) => (dir, name) => invoke('dashboard:deleteCharter', { dir, name }),
   readProjectFile: (invoke) => (dir, name) => invoke('dashboard:readFile', { dir, name }),
   writeProjectFile: (invoke) => (dir, name, content) =>
     invoke('dashboard:writeFile', { dir, name, content }),

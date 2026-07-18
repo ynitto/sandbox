@@ -140,4 +140,48 @@ test('writeProjectFile は不正な repos.json を拒否する', () => {
   }
 });
 
+// --- deleteCharterVersion ---
+test('deleteCharterVersion は未使用の計画バージョンだけを削除する', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-auth-'));
+  try {
+    const dir = path.join(tmp, 'project');
+    fs.mkdirSync(path.join(dir, 'charters'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'charters', 'v2.md'), '# Charter: v2\n');
+    const res = authoring.deleteCharterVersion(dir, 'v2');
+    assert.strictEqual(res.name, 'v2');
+    assert.ok(!fs.existsSync(path.join(dir, 'charters', 'v2.md')));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('deleteCharterVersion は関連する作業や完了履歴があれば削除しない', () => {
+  for (const folder of ['backlog', 'archive']) {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-auth-'));
+    try {
+      const dir = path.join(tmp, 'project');
+      fs.mkdirSync(path.join(dir, 'charters'), { recursive: true });
+      fs.mkdirSync(path.join(dir, folder), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'charters', 'v2.md'), '# Charter: v2\n');
+      fs.writeFileSync(path.join(dir, folder, 'T1.md'), '## T1\n- charter: v2\n');
+      assert.throws(() => authoring.deleteCharterVersion(dir, 'v2'), /関連する作業.*削除できません/);
+      assert.ok(fs.existsSync(path.join(dir, 'charters', 'v2.md')), `${folder} 使用中の版を保持`);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+});
+
+test('deleteCharterVersion は不正名と存在しない版を明示的に拒否する', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-auth-'));
+  try {
+    for (const bad of ['', '.', '..', '../v2', 'a/b', 'a b']) {
+      assert.throws(() => authoring.deleteCharterVersion(tmp, bad), /バージョン名/);
+    }
+    assert.throws(() => authoring.deleteCharterVersion(tmp, 'missing'), /見つかりません/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 console.log(`\n${passed} passed`);

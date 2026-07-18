@@ -1037,7 +1037,9 @@ function removeProjectRegistration(cfg, dir) {
       const file = path.join(idir, f);
       const rec = readJson(file);
       if (!rec) continue;
-      const candidates = [rec.root, rec.root_windows, rec.effective_root, rec.effective_root_windows];
+      const candidates = [rec.root, rec.root_windows, rec.effective_root, rec.effective_root_windows]
+        .filter(Boolean)
+        .flatMap((r) => [r, projectWorkspaceDir(r)]);
       if (candidates.some((r) => r && (pathsEqual(r, dir) || pathsEqual(r, resolved)))) {
         fs.unlinkSync(file);
         return { removedFrom: 'instance', file };
@@ -1169,7 +1171,13 @@ function resolveProjectRoot(workspaceDir) {
   const raw = fromWorkspace && cfg.values ? cfg.values.root : null;
   const branch =
     (fromWorkspace && cfg.values && cfg.values.state_branch) || DEFAULT_STATE_BRANCH;
-  if (!raw) return toStateWorktree(ws, branch);
+  if (!raw) {
+    // 設定を開発フォルダに置かず、状態だけを <workspace>/.agent-project に置く従来構成。
+    // 開発フォルダを登録した場合も、稼働レコードが指す状態フォルダと同じ実体へ解決する。
+    const nestedState = path.join(ws, '.agent-project');
+    if (hasProjectStateMarkers(nestedState)) return toStateWorktree(nestedState, branch);
+    return toStateWorktree(ws, branch);
+  }
   const r = String(raw).replace(/^~(?=$|\/|\\)/, os.homedir());
   // yaml に Linux 絶対パス（/home/...）が書いてあると、win32 の path.resolve は
   // C:\home\... に化けて実在しない。Windows ビュアーでは WSL UNC へ翻訳する。
@@ -1300,7 +1308,7 @@ function toStateWorktree(root, branch) {
   return isProjectDir(candidate) ? candidate : root;  // 未作成なら本体のまま（従来動作）
 }
 
-function isProjectDir(dir) {
+function hasProjectStateMarkers(dir) {
   return (
     hasProjectManifest(dir) ||
     fs.existsSync(path.join(dir, 'backlog')) ||
@@ -1309,6 +1317,17 @@ function isProjectDir(dir) {
     fs.existsSync(path.join(dir, 'needs')) ||
     fs.existsSync(path.join(dir, 'archive'))
   );
+}
+
+function isProjectDir(dir) {
+  return hasProjectStateMarkers(dir) || hasProjectStateMarkers(path.join(dir, '.agent-project'));
+}
+
+// instances の root は状態領域を指す。既定の隠し状態フォルダなら、その親がユーザーが
+// 開発時に扱うワークスペースなので、一覧の識別子と表示名は親へ戻す。
+function projectWorkspaceDir(projectRoot) {
+  const resolved = path.resolve(String(projectRoot || ''));
+  return path.basename(resolved) === '.agent-project' ? path.dirname(resolved) : resolved;
 }
 
 // 登録ルートがプロジェクトそのものでないとき、配下からプロジェクト
@@ -1384,8 +1403,9 @@ function discover(cfg) {
       inst.root;
     if (!preferred) continue;
     const resolved = _isPosixAbs(preferred) ? toViewerPath(preferred) : path.resolve(String(preferred));
-    if (![...roots.keys()].some((k) => pathsEqual(k, resolved))) {
-      roots.set(resolved, { root: resolved, source: 'instance' });
+    const workspace = projectWorkspaceDir(resolved);
+    if (![...roots.keys()].some((k) => pathsEqual(k, workspace) || pathsEqual(k, resolved))) {
+      roots.set(workspace, { root: workspace, source: 'instance' });
     }
   }
 
@@ -1417,13 +1437,13 @@ function discover(cfg) {
       hasCharterFile || safeList(path.join(dir, 'charters')).some((f) => f.endsWith('.md'));
     const charterName = hasCharterFile ? (parseCharter(readText(charterFile)) || {}).name || '' : '';
     projects.push({
-      name: path.basename(workspace),
+      name: path.basename(projectWorkspaceDir(workspace)),
       charterName,
       dir: workspace,        // 選択・登録解除はワークスペース基準（readProject の入力もこれ）
       root: dir,             // プロジェクトルート（状態の置き場。readProject が操作の基準にする）
       source,
       exists: fs.existsSync(workspace),
-      isProject: isProjectDir(workspace),
+      isProject: isProjectDir(workspace) || isProjectDir(dir),
       hasCharter,
       backlogCount: tasks.length,
       byStatus,

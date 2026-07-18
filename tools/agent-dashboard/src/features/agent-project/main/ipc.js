@@ -336,9 +336,9 @@ function registerIpc(ctx) {
   // charter からのバックログ再分解を要求（エラー回復・やり直し）。プロジェクト単位（id 無し）。
   // 本体が次パスで charter を分解し直す。冪等照合は「done 以外」（処理中＋却下済み）と行い、
   // done と類似のタスクだけ再作成を許可する（過去の完了実績がやり直しを弾かない）。
-  handle('dashboard:replan', ({ dir, reason }) => {
+  handle('dashboard:replan', ({ dir, reason, charter }) => {
     if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
-    return actions.requestReplan(loadConfig(), { dir, reason });
+    return actions.requestReplan(loadConfig(), { dir, reason, charter });
   });
 
   // プロジェクト単位のライフサイクル操作（pause / resume / stop）。commands/ ドロップ
@@ -365,6 +365,10 @@ function registerIpc(ctx) {
   handle('dashboard:promoteCharter', ({ dir, name }) => {
     if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
     return authoring.promoteCharterVersion(dir, name);
+  });
+  handle('dashboard:deleteCharter', ({ dir, name }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    return authoring.deleteCharterVersion(dir, name);
   });
   handle('dashboard:readFile', ({ dir, name }) => {
     if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');

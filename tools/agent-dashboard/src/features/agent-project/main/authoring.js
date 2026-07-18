@@ -186,6 +186,8 @@ function charterToFields(text) {
     goal: (doc.sections.goal || '').trim(),
     constraints: sectionItems(doc.sections.constraints),
     assumptions: sectionItems(doc.sections.assumptions),
+    _constraintsDefined: Object.prototype.hasOwnProperty.call(doc.sections, 'constraints'),
+    _assumptionsDefined: Object.prototype.hasOwnProperty.call(doc.sections, 'assumptions'),
     deliverables: sectionItems(doc.sections.deliverables),
     acceptance: sectionItems(doc.sections.acceptance),
     _reposRaw: doc.sections.repos || '',
@@ -472,6 +474,38 @@ function promoteCharterVersion(dir, name) {
   return { from: src, to: dst, name: nm, tagged };
 }
 
+// 未使用の計画バージョンを削除する。画面の disabled 表示だけを信用せず、削除直前に
+// backlog / archive の帰属メタデータを読み直す。作業中・完了済みのどちらかに紐づく版は、
+// 履歴との対応が失われるため削除しない。
+function deleteCharterVersion(dir, name) {
+  const nm = String(name || '').trim();
+  if (!nm || nm === '.' || nm === '..' || BAD_NAME_RE.test(nm)) {
+    throw new Error(`バージョン名が不正です（空白・区切り文字は不可）: ${nm || '(空)'}`);
+  }
+  const file = editablePath(dir, `charters/${nm}.md`);
+  if (!fs.existsSync(file)) throw new Error(`計画バージョンが見つかりません: ${nm}`);
+
+  const related = [];
+  for (const folder of ['backlog', 'archive']) {
+    const taskDir = path.join(dir, folder);
+    for (const entry of safeList(taskDir)) {
+      if (!entry.endsWith('.md')) continue;
+      try {
+        const text = fs.readFileSync(path.join(taskDir, entry), 'utf8');
+        const m = text.match(/^\s*-\s+charter\s*:\s*(.+?)\s*$/m);
+        if (m && m[1].trim() === nm) related.push(`${folder}/${entry}`);
+      } catch (e) {
+        throw new Error(`関連する作業を確認できないため削除できません: ${folder}/${entry} (${e.message})`);
+      }
+    }
+  }
+  if (related.length) {
+    throw new Error(`関連する作業が ${related.length} 件あるため削除できません: ${nm}`);
+  }
+  fs.unlinkSync(file);
+  return { file, name: nm };
+}
+
 // ---------------------------------------------------------------------------
 // 上位入力ファイルの読み書き（編集）
 // ---------------------------------------------------------------------------
@@ -534,6 +568,7 @@ module.exports = {
   exportReposJson,
   createProject,
   promoteCharterVersion,
+  deleteCharterVersion,
   readProjectFile,
   writeProjectFile,
   isGeneratedRepos,

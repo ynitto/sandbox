@@ -358,6 +358,50 @@ button:disabled { opacity: 0.4; cursor: default; }
 .summary-link:hover { border-color: var(--accent2); }
 .summary-deliveries { overflow-x: auto; margin-bottom: 12px; }
 
+.overview-version-section {
+  margin-top: 14px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg2);
+}
+.overview-version-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 16px;
+}
+.overview-version-heading h2 { margin: 0; font-size: 18px; }
+.overview-version-heading p { margin: 5px 0 0; color: var(--muted); }
+.overview-version-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: 12px;
+}
+.overview-version-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  transition: border-color 160ms ease, transform 160ms ease;
+}
+.overview-version-card:hover { border-color: var(--accent2); transform: translateY(-1px); }
+.version-card-heading h3 { margin: 0 0 5px; font-size: 17px; overflow-wrap: anywhere; }
+.version-state { color: var(--muted); font-size: 12px; }
+.version-card-goal { min-height: 44px; line-height: 1.55; overflow-wrap: anywhere; }
+.version-card-counts { display: flex; flex-wrap: wrap; gap: 8px 18px; color: var(--muted); font-size: 12px; }
+.version-card-counts strong { color: var(--fg); font-size: 16px; }
+.version-delete-note { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.version-card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; }
+.version-card-actions button { min-height: 44px; }
+.version-card-actions button:disabled { cursor: not-allowed; opacity: 0.45; }
+.overview-version-empty { padding: 24px; border: 1px dashed var(--border); border-radius: 8px; color: var(--muted); text-align: center; }
+
 /* プロジェクト固有の編集・危険操作は概要から分離する。 */
 .project-settings-section { padding: 14px 0; border-top: 1px solid var(--border); }
 .project-settings-section h3 { margin-top: 0; color: var(--fg); }
@@ -1174,21 +1218,54 @@ svg.graph .node-issue:hover circle { stroke: var(--fg); }
 /* ---------- ダイアログ・トースト ---------- */
 
 dialog {
+  --dialog-gutter: 16px;
   background: var(--bg2);
   color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 8px;
   min-width: 560px;
   max-width: 80vw;
-  max-height: 85vh;
-  overflow-y: auto;
+  max-height: calc(100vh - 32px);
+  padding: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+dialog[open] { display: flex; flex-direction: column; }
+dialog[open] > form.dialog-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: calc(100vh - 34px);
+  margin: 0;
 }
 dialog.wide { min-width: 720px; }
 dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
 dialog h2 { margin-top: 0; font-size: 15px; }
 dialog h3 { font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
-.dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.dialog-heading {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 56px;
+  margin: 0;
+  padding: 14px var(--dialog-gutter) 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+  box-sizing: border-box;
+  z-index: 2;
+}
+.dialog-heading-simple { align-items: center; }
 .dialog-heading h2 { margin: 2px 0 0; }
+.dialog-scroll-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: var(--dialog-gutter);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  box-sizing: border-box;
+}
 .output-dialog, .doctor-dialog { width: min(1000px, 80vw); }
 .delivery-dialog { width: min(1500px, 94vw); max-width: 94vw; overflow: hidden; }
 .full-output {
@@ -1352,6 +1429,8 @@ dialog h3 { font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
 }
 .delivery-review-actions h3 { margin: 0 0 8px; color: var(--fg); }
 .delivery-review-actions .need-complete-how { margin: 0 0 8px; }
+.delivery-review-actions .need-actions { display: flex; flex-direction: column; }
+.delivery-review-actions .need-buttons { order: -1; margin-bottom: 8px; }
 .delivery-review-actions .need-input { min-height: 54px; }
 .delivery-review-actions .need-buttons { flex-wrap: wrap; }
 .need-delivery-cta { gap: 8px; align-items: center; margin-top: 6px; }
@@ -1405,7 +1484,18 @@ dialog h3 { font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
 .enq-adj-item label { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 8px; cursor: pointer; }
 .enq-adj-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .enq-adj-skipped { margin-top: 8px; }
-.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.dialog-actions {
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 0;
+  padding: 12px var(--dialog-gutter);
+  border-top: 1px solid var(--border);
+  background: var(--bg2);
+  box-sizing: border-box;
+  z-index: 2;
+}
 .primary-inline { background: var(--accent); border-color: var(--accent); color: #fff; }
 button.danger { border-color: var(--red); color: var(--red); }
 
@@ -1647,6 +1737,12 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   .summary-headline { font-size: 20px; }
   .summary-stats { gap: 5px; }
   .summary-stats > div { padding: 8px 4px; }
+  .overview-version-section { padding: 16px; }
+  .overview-version-heading { flex-direction: column; }
+  .overview-version-heading .summary-actions,
+  .overview-version-heading .summary-actions button,
+  .version-card-actions,
+  .version-card-actions button { width: 100%; }
   .project-header-main { align-items: flex-start; }
   #project-title { flex-wrap: wrap; }
   dialog, dialog.wide { min-width: 0; width: calc(100vw - 24px); max-width: calc(100vw - 24px); }
@@ -1684,7 +1780,7 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
 }
 
-/* --- Amigos タブ（agent-amigos ミッション + ノード予算） --- */
+/* --- ミッション一覧 + 詳細設定のノード予算 --- */
 .amigos-shell { display: flex; flex-direction: column; gap: 16px; }
 .amigos-budget { background: var(--bg2); border: 1px solid var(--bg3); border-radius: 8px; padding: 12px 14px; }
 .amigos-budget-controls { gap: 12px; align-items: flex-end; flex-wrap: wrap; margin: 8px 0; }
@@ -1705,3 +1801,96 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .amigos-phase-done { border: 1px solid var(--accent2); }
 .amigos-phase-failed, .amigos-phase-cancelled { border: 1px solid rgba(255, 99, 99, 0.6); }
 .amigos-claim-btn { margin-left: 6px; padding: 0 8px; font-size: 11px; line-height: 18px; }
+
+.amigos-mission-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: 14px;
+}
+.amigos-mission-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg2);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.12);
+}
+.amigos-card-heading { display: flex; justify-content: space-between; gap: 12px; }
+.amigos-card-heading h3 { margin: 8px 0 0; font-size: 17px; color: var(--fg); }
+.amigos-card-goal, .amigos-next-step { margin: 0; line-height: 1.6; overflow-wrap: anywhere; }
+.amigos-card-goal { color: var(--fg); }
+.amigos-next-step { color: var(--muted); }
+.amigos-card-meta { display: flex; flex-wrap: wrap; gap: 6px 16px; color: var(--muted); font-size: 12px; }
+.amigos-card-actions { display: flex; justify-content: flex-end; margin-top: auto; }
+.amigos-card-actions button { min-height: 44px; }
+.amigos-team-settings { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; }
+.amigos-team-settings summary { min-height: 32px; cursor: pointer; color: var(--muted); }
+.amigos-team-settings .field { margin-top: 10px; }
+.amigos-attention {
+  padding: 9px 11px;
+  border: 1px solid rgba(255, 184, 77, 0.55);
+  border-radius: 7px;
+  color: #ffd28a;
+  background: rgba(255, 184, 77, 0.08);
+  font-size: 12px;
+}
+.amigos-detail-dialog {
+  width: min(920px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow: hidden;
+}
+.amigos-detail-content { display: flex; flex-direction: column; gap: 20px; }
+.amigos-detail-section { padding-top: 16px; border-top: 1px solid var(--border); }
+.amigos-detail-section:first-of-type { padding-top: 0; border-top: 0; }
+.amigos-detail-section h3 { margin: 0 0 10px; color: var(--fg); font-size: 15px; }
+.amigos-detail-status { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.amigos-detail-goal { max-width: 72ch; font-size: 15px; line-height: 1.65; overflow-wrap: anywhere; }
+.amigos-member-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 10px;
+}
+.amigos-member { min-width: 0; padding: 13px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg2); }
+.amigos-member.is-paused { border-color: rgba(255, 184, 77, 0.55); }
+.amigos-member-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.amigos-member-heading h4 { margin: 0; font-size: 14px; }
+.amigos-member-status { flex: none; padding: 2px 8px; border-radius: 999px; background: var(--bg3); color: var(--muted); font-size: 11px; }
+.amigos-member p { margin: 8px 0 0; line-height: 1.55; overflow-wrap: anywhere; }
+.amigos-member-note { padding-top: 8px; border-top: 1px solid var(--border); color: var(--muted); }
+.amigos-member .amigos-claim-btn { min-height: 40px; margin: 10px 0 0; line-height: normal; }
+.amigos-conversation { display: flex; flex-direction: column; gap: 8px; }
+.amigos-message { border: 1px solid var(--border); border-radius: 8px; background: var(--bg2); }
+.amigos-message.is-attention { border-color: rgba(255, 184, 77, 0.55); }
+.amigos-message summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 10px 12px;
+  cursor: pointer;
+  list-style: none;
+}
+.amigos-message summary::-webkit-details-marker { display: none; }
+.amigos-message summary::before { content: '›'; flex: none; color: var(--muted); font-size: 18px; transition: transform 180ms ease; }
+.amigos-message[open] summary::before { transform: rotate(90deg); }
+.amigos-message-kind { flex: none; min-width: 72px; color: var(--muted); font-size: 12px; }
+.amigos-message-summary { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 3px; }
+.amigos-message-summary strong, .amigos-message-summary small { overflow-wrap: anywhere; }
+.amigos-message-summary small { color: var(--muted); }
+.amigos-message-answer { flex: none; color: var(--accent2); font-size: 11px; }
+.amigos-message-body { padding: 0 14px 14px 108px; }
+.amigos-message-body p { margin: 0; white-space: pre-wrap; line-height: 1.65; overflow-wrap: anywhere; }
+.amigos-message-body time { display: block; margin-top: 8px; color: var(--muted); font-size: 11px; }
+
+@media (max-width: 700px) {
+  .amigos-mission-card { padding: 14px; }
+  .amigos-card-actions, .amigos-card-actions button { width: 100%; }
+  .amigos-detail-dialog { width: calc(100vw - 16px); max-height: calc(100vh - 16px); }
+  .amigos-message summary { align-items: flex-start; flex-wrap: wrap; }
+  .amigos-message-kind { min-width: 0; }
+  .amigos-message-answer { margin-left: auto; }
+  .amigos-message-body { padding: 0 12px 12px; }
+}

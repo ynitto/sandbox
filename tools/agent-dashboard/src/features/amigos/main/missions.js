@@ -78,22 +78,31 @@ function missionDirsIn(busDir) {
 }
 
 function collectMessages(dir) {
-  const msgs = [];
+  const msgs = new Map();
   const inboxRoot = path.join(dir, 'inbox');
   for (const role of listDirs(inboxRoot)) {
     for (const f of listJsonFiles(path.join(inboxRoot, role))) {
       const m = readJson(path.join(inboxRoot, role, f));
-      if (m && m.id) msgs.push(m);
+      if (m && m.id && !msgs.has(m.id)) msgs.set(m.id, m);
     }
   }
   const allRoot = path.join(dir, 'channels', 'all');
   for (const who of listDirs(allRoot)) {
     for (const f of listJsonFiles(path.join(allRoot, who))) {
       const m = readJson(path.join(allRoot, who, f));
-      if (m && m.id) msgs.push(m);
+      if (m && m.id && !msgs.has(m.id)) msgs.set(m.id, m);
     }
   }
-  return msgs;
+  return [...msgs.values()].sort((a, b) => {
+    const byTime = String(a.created_at || '').localeCompare(String(b.created_at || ''));
+    return byTime || String(a.id).localeCompare(String(b.id));
+  });
+}
+
+function messageSummary(message, max = 120) {
+  const text = String(message.subject || message.body || '').replace(/\s+/g, ' ').trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 1).trimEnd()}…`;
 }
 
 function readMissionSummary(id, dir) {
@@ -148,12 +157,15 @@ function readMissionSummary(id, dir) {
   // ロール別の状態（roster の担当 × status の done_round / state）
   const roleRows = Object.values(roles)
     .sort((a, b) => String(a.id).localeCompare(String(b.id)))
-    .map((r) => {
+    .map((r, index) => {
       const ent = roster[r.id];
       const st = ent ? statuses[`${ent.node}--${r.id}`] : null;
+      const explicitTitle = String(r.title || '').trim();
       return {
         id: r.id,
-        title: r.title || r.id,
+        title: explicitTitle || r.id,
+        displayName: explicitTitle || (r.builtin === 'integrator' ? '成果の取りまとめ' : `担当 ${index + 1}`),
+        responsibility: String(r.mission || '').trim(),
         required: r.required !== false,
         builtin: r.builtin || '',
         node: ent ? ent.node : null,
@@ -170,6 +182,31 @@ function readMissionSummary(id, dir) {
   const unanswered = msgs.filter(
     (m) => m.type === 'question' && m.to !== 'owner' && !answered.has(m.id)
   ).length;
+  const roleLabels = Object.fromEntries(roleRows.map((r) => [r.id, r.displayName]));
+  const participantLabel = (who) => {
+    if (who === 'owner') return '進行役';
+    if (who === 'all') return '全員';
+    if (who === 'system') return 'システム';
+    return roleLabels[who] || '担当エージェント';
+  };
+  const messages = msgs.map((m) => {
+    const requiresAttention =
+      (m.type === 'question' && !answered.has(m.id)) ||
+      (m.type === 'decision-request' && m.to === 'owner');
+    return {
+      id: m.id,
+      fromLabel: participantLabel(m.from),
+      toLabel: participantLabel(m.to),
+      type: String(m.type || 'info'),
+      subject: String(m.subject || '').trim(),
+      body: String(m.body || '').trim(),
+      summary: messageSummary(m),
+      replyTo: m.reply_to || null,
+      createdAt: m.created_at || '',
+      answered: m.type === 'question' && answered.has(m.id),
+      requiresAttention,
+    };
+  });
 
   // phase の近似導出（表示用）
   const manifest = readJson(path.join(dir, 'deliverable', 'MANIFEST.json'));
@@ -195,6 +232,8 @@ function readMissionSummary(id, dir) {
     round,
     staffed,
     roles: roleRows,
+    messages,
+    attentionCount: messages.filter((m) => m.requiresAttention).length,
     unanswered,
     pausedRoles: roleRows.filter((r) => r.state === 'paused').map((r) => r.id),
     budget: { spentSeconds, limitSeconds, soft, hard },

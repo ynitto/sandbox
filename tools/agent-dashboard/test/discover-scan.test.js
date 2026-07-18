@@ -86,6 +86,92 @@ function mkdirp(...parts) {
     assert.strictEqual(projects[0].isProject, true);
   });
 
+  await test('discover は開発フォルダと配下の稼働中 .agent-project を同じプロジェクトに統合する', async () => {
+    const root = mkRoot();
+    const workspace = mkdirp(root, 'alpha');
+    const stateRoot = mkdirp(workspace, '.agent-project');
+    mkdirp(stateRoot, 'backlog');
+    const home = mkRoot();
+    const instances = mkdirp(home, '.agent-project', 'instances');
+    fs.writeFileSync(path.join(instances, 'host-123.json'), JSON.stringify({
+      pid: 123,
+      host: 'host',
+      root: stateRoot,
+      project: '.agent-project',
+      heartbeat: Date.now() / 1000,
+      ttl: 90,
+    }), 'utf8');
+    const origHome = os.homedir;
+    os.homedir = () => home;
+    try {
+      const cfg = { projects: { roots: [workspace], autoDiscover: true } };
+      const { projects } = project.discover(cfg);
+      assert.strictEqual(projects.length, 1);
+      assert.strictEqual(projects[0].name, 'alpha');
+      assert.strictEqual(projects[0].dir, workspace);
+      assert.strictEqual(projects[0].root, stateRoot);
+      assert.strictEqual(projects[0].isProject, true);
+    } finally {
+      os.homedir = origHome;
+    }
+  });
+
+  await test('discover は親フォルダ指定でも配下の .agent-project を発見し稼働レコードと重複させない', async () => {
+    const root = mkRoot();
+    const workspace = mkdirp(root, 'alpha');
+    const stateRoot = mkdirp(workspace, '.agent-project');
+    mkdirp(stateRoot, 'backlog');
+    const home = mkRoot();
+    const instances = mkdirp(home, '.agent-project', 'instances');
+    fs.writeFileSync(path.join(instances, 'host-456.json'), JSON.stringify({
+      pid: 456,
+      host: 'host',
+      root: stateRoot,
+      heartbeat: Date.now() / 1000,
+      ttl: 90,
+    }), 'utf8');
+    const origHome = os.homedir;
+    os.homedir = () => home;
+    try {
+      const cfg = { projects: { roots: [root], autoDiscover: true } };
+      const { projects } = project.discover(cfg);
+      assert.strictEqual(projects.length, 1);
+      assert.strictEqual(projects[0].name, 'alpha');
+      assert.strictEqual(projects[0].dir, workspace);
+      assert.strictEqual(projects[0].root, stateRoot);
+    } finally {
+      os.homedir = origHome;
+    }
+  });
+
+  await test('discover は稼働中プロジェクトだけを自動追加しても .agent-project を表示名にしない', async () => {
+    const root = mkRoot();
+    const workspace = mkdirp(root, 'alpha');
+    const stateRoot = mkdirp(workspace, '.agent-project');
+    mkdirp(stateRoot, 'backlog');
+    const home = mkRoot();
+    const instances = mkdirp(home, '.agent-project', 'instances');
+    fs.writeFileSync(path.join(instances, 'host-789.json'), JSON.stringify({
+      pid: 789,
+      host: 'host',
+      root: stateRoot,
+      heartbeat: Date.now() / 1000,
+      ttl: 90,
+    }), 'utf8');
+    const origHome = os.homedir;
+    os.homedir = () => home;
+    try {
+      const { projects } = project.discover({ projects: { roots: [], autoDiscover: true } });
+      assert.strictEqual(projects.length, 1);
+      assert.strictEqual(projects[0].name, 'alpha');
+      assert.strictEqual(projects[0].dir, workspace);
+      assert.strictEqual(projects[0].root, stateRoot);
+      assert.strictEqual(projects[0].source, 'instance');
+    } finally {
+      os.homedir = origHome;
+    }
+  });
+
   await test('discover は空の親フォルダを従来どおり非プロジェクトの 1 件として残す', async () => {
     const root = mkRoot();
     const cfg = { projects: { roots: [root], autoDiscover: false } };

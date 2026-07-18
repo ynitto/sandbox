@@ -26,6 +26,8 @@ test('charterToFields は各セクションを配列/文字列に分解する', 
   assert.strictEqual(f.master, false);
   assert.strictEqual(f.goal, 'CSV を要約する');
   assert.deepStrictEqual(f.constraints, ['標準ライブラリのみ', '後方互換を壊さない']);
+  assert.strictEqual(f._constraintsDefined, true);
+  assert.strictEqual(f._assumptionsDefined, false);
   assert.deepStrictEqual(f.acceptance, ['pytest -q', 'accept: 使用例が載っている']);
   assert.match(f._reposRaw, /app = git@h:t\/app\.git/); // repos は保持（フォームでは触らない）
 });
@@ -62,9 +64,14 @@ test('マスター憲章のフォームは完了条件を書き出さない', ()
 });
 
 test('バージョン（master=false）のフォームは完了条件を書き出す', () => {
-  const f = { name: 'v2', master: false, goal: 'やること', acceptance: ['pytest -q'] };
+  const f = {
+    name: 'v2', master: false, goal: 'やること', acceptance: ['pytest -q'],
+    constraints: ['v2 だけの制約'], assumptions: ['v2 だけの前提'],
+  };
   const out = authoring.fieldsToCharter(f);
   assert.match(out, /## acceptance\n- pytest -q/);
+  assert.match(out, /## constraints\n- v2 だけの制約/);
+  assert.match(out, /## assumptions\n- v2 だけの前提/);
   assert.ok(!/^## master$/m.test(out));
 });
 

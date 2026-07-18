@@ -71,8 +71,8 @@
         <button class="tab" data-tab="needs" data-feature="agent-project">要対応 <span id="needs-badge" class="badge hidden"></span></button>
         <button class="tab" data-tab="flow" data-feature="agent-project">実行</button>
         <button class="tab" data-tab="history" data-feature="agent-project">成果</button>
+        <button class="tab hidden" data-tab="amigos" data-feature="amigos" id="tab-btn-amigos" hidden>ミッション</button>
         <button class="tab hidden" data-tab="cowork" data-feature="cowork" id="tab-btn-cowork" hidden>定常業務</button>
-        <button class="tab hidden" data-tab="amigos" data-feature="amigos" id="tab-btn-amigos" hidden>Amigos</button>
         <button class="tab hidden" data-tab="kiro-loop" data-feature="kiro-loop" id="tab-btn-kiro-loop" hidden>端末</button>
       </nav>
 
@@ -156,14 +156,13 @@
     </form>
   </dialog>
 
-  <!-- ======== Amigos タスク依頼（commands/ へ post を投函） ======== -->
+  <!-- ======== ミッション依頼（commands/ へ post を投函） ======== -->
   <dialog id="dlg-amigos-post" class="wide">
     <form method="dialog">
-      <h2>Amigos にタスクを依頼</h2>
-      <p class="muted">ホームの commands/ へ依頼を投函します。常駐デーモンが取り込み、
-        design doc と役割ミッション表でミッションを公示します。</p>
+      <h2>ミッションを依頼</h2>
+      <p class="muted">目標と進め方を入力すると、担当メンバーが協力して作業を進めます。</p>
       <div class="field">
-        <label>投函先ホーム（常駐デーモン）</label>
+        <label>実行先</label>
         <select id="amigos-post-home"></select>
       </div>
       <div class="field">
@@ -171,18 +170,21 @@
         <input id="amigos-post-title" placeholder="例: 社内 FAQ ボットの MVP" />
       </div>
       <div class="field">
-        <label>目標（goal）</label>
-        <input id="amigos-post-goal" placeholder="例: design doc の受入基準をすべて満たして納品する" />
+        <label>完了したときの状態</label>
+        <input id="amigos-post-goal" placeholder="例: 必要な機能が動作し、確認できる状態にする" />
       </div>
       <div class="field">
-        <label>design doc（Markdown 本文）</label>
+        <label>進め方・完了条件</label>
         <textarea id="amigos-post-design" rows="8" class="mono"
-          placeholder="# 設計&#10;受入基準: ..."></textarea>
+          placeholder="例:&#10;必要な画面を作る&#10;テストで動作を確認する"></textarea>
       </div>
-      <div class="field">
-        <label>役割ミッション表（JSON 配列。契約: schemas/mission.schema.json の roles）</label>
-        <textarea id="amigos-post-roles" rows="6" class="mono"></textarea>
-      </div>
+      <details class="amigos-team-settings">
+        <summary>担当チームの設定</summary>
+        <div class="field">
+          <label>担当の構成（通常はそのままで構いません）</label>
+          <textarea id="amigos-post-roles" rows="6" class="mono"></textarea>
+        </div>
+      </details>
       <div class="dialog-actions">
         <button id="btn-amigos-post-cancel" value="cancel" type="button">キャンセル</button>
         <button id="btn-amigos-post-ok" value="default">依頼を投函</button>
@@ -190,8 +192,18 @@
     </form>
   </dialog>
 
+  <!-- ======== ミッション詳細 ======== -->
+  <dialog id="dlg-amigos-detail" class="wide amigos-detail-dialog" aria-labelledby="amigos-detail-title">
+    <div class="dialog-heading">
+      <div><span class="summary-kicker">ミッション</span><h2 id="amigos-detail-title">詳細</h2></div>
+      <button type="button" id="btn-amigos-detail-close" aria-label="ミッション詳細を閉じる">閉じる</button>
+    </div>
+    <div id="amigos-detail-body"></div>
+  </dialog>
+
   <!-- ======== プロジェクト設定ダイアログ ======== -->
   <dialog id="dlg-project-settings" class="wide">
+    <div class="dialog-heading"><h2>プロジェクト設定</h2></div>
     <div id="project-settings-body"></div>
     <div class="dialog-actions">
       <button id="btn-project-settings-close">閉じる</button>
@@ -290,6 +302,10 @@
           placeholder="例:&#10;alpha = /home/me/clones/alpha/agent-flow&#10;beta = C:\clones\beta\agent-flow"
         ></textarea>
       </div>
+      <section id="advanced-budget-settings">
+        <h3>予算管理</h3>
+        <div id="advanced-budget-body"></div>
+      </section>
       <h3>定常業務</h3>
       <div class="row2">
         <div class="field">
@@ -442,6 +458,11 @@
   <dialog id="dlg-enqueue">
     <h2 id="enq-heading">タスクを追加</h2>
     <div id="enq-reinject-note" class="muted hidden" style="margin-bottom:8px"></div>
+    <div class="field" id="enq-charter-field">
+      <label for="enq-charter">計画バージョン</label>
+      <select id="enq-charter"></select>
+      <div class="muted">選択したバージョンの目標・制約・前提を、このタスクの実行に適用します。</div>
+    </div>
     <div class="field">
       <label>タイトル（必須）</label>
       <input id="enq-title" placeholder="例: README に使用例を追加する" />
@@ -491,6 +512,21 @@
     </div>
   </dialog>
 
+  <!-- ======== 計画の作り直し ======== -->
+  <dialog id="dlg-replan">
+    <h2>計画を作り直す</h2>
+    <div class="field">
+      <label for="replan-charter">計画バージョン</label>
+      <select id="replan-charter"></select>
+      <div class="muted">選択したバージョンの目標・制約・前提から、タスクを分解し直します。</div>
+    </div>
+    <p class="muted">進行中・却下済みと重複するタスクは追加されません。完了済みと同種の作業は、やり直しとして作成されます。</p>
+    <div class="dialog-actions">
+      <button id="btn-replan-cancel">キャンセル</button>
+      <button id="btn-replan-submit" class="primary-inline">作り直しを依頼</button>
+    </div>
+  </dialog>
+
   <!-- ======== 確認ダイアログ（削除など破壊的操作の前に出す） ======== -->
   <dialog id="dlg-confirm">
     <h2>確認</h2>
@@ -503,6 +539,7 @@
 
   <!-- ======== タスク詳細ダイアログ ======== -->
   <dialog id="dlg-task">
+    <div class="dialog-heading"><h2 id="dlg-task-title">タスク詳細</h2></div>
     <div id="dlg-task-body"></div>
     <div class="dialog-actions">
       <button id="btn-task-close">閉じる</button>
@@ -655,7 +692,7 @@
       <div id="ec-assumptions" class="list-editor"></div>
       <button type="button" class="chip" data-add-list="ec-assumptions">＋ 追加</button>
     </div>
-    <div class="muted hidden" id="ec-inherit-note">制約・前提・対象リポジトリはマスター憲章から引き継がれます。</div>
+    <div class="muted hidden" id="ec-inherit-note">制約・前提は共通設定を初期値として引き継ぎ、このバージョンだけの内容に変更できます。対象リポジトリは共通設定を使用します。</div>
     <div class="muted" id="ec-hint"></div>
     <div class="dialog-actions">
       <button id="btn-ec-raw" title="マークダウンを直接編集する画面に切り替えます">テキストで編集</button>

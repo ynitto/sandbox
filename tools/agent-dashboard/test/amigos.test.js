@@ -119,8 +119,8 @@ function makeMission(dir, mid, { phaseSetup } = {}) {
     posted_at: '2026-07-17T00:00:00Z',
     budget: { execution_minutes: 1, soft_ratio: 0.9, on_exhausted: 'wrap-up' },
   });
-  w('roles/architect.json', { id: 'architect', title: '設計', required: true });
-  w('roles/impl.json', { id: 'impl', title: '実装', required: true });
+  w('roles/architect.json', { id: 'architect', title: '設計担当', mission: '全体の方針を決める', required: true });
+  w('roles/impl.json', { id: 'impl', title: '実装担当', mission: '画面を実装する', required: true });
   w('roles/integrator.json', { id: 'integrator', required: true, builtin: 'integrator' });
   if (phaseSetup !== 'open') {
     w('roster.json', {
@@ -155,6 +155,46 @@ test('ミッション: ローカルバス形式を読み phase/予算/未回答/
   const impl = m.roles.find((r) => r.id === 'impl');
   assert.strictEqual(impl.node, 'node-b');
   assert.strictEqual(impl.state, 'paused');
+  assert.strictEqual(impl.responsibility, '画面を実装する');
+});
+
+test('ミッション詳細: 会話を重複なく時系列化し、表示名・返信・要確認を導出する', () => {
+  const bus = tmpdir('amigos-detail-');
+  const dir = makeMission(bus, 'am-detail', { phaseSetup: 'open' });
+  const writeMessage = (rel, data) => {
+    const target = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, JSON.stringify(data));
+  };
+  const question = {
+    id: 'msg-1', from: 'impl', to: 'architect', type: 'question',
+    subject: '表示方針の確認', body: 'カードには目的を載せますか？', created_at: '2026-07-18T01:00:00Z',
+  };
+  writeMessage('inbox/architect/msg-1-impl.json', question);
+  writeMessage('channels/all/impl/msg-1.json', question); // 同じメッセージは1件にまとめる
+  writeMessage('inbox/impl/msg-2-architect.json', {
+    id: 'msg-2', from: 'architect', to: 'impl', type: 'answer', reply_to: 'msg-1',
+    subject: '', body: '目的を一行で表示してください。', created_at: '2026-07-18T01:01:00Z',
+  });
+  writeMessage('inbox/owner/msg-3-architect.json', {
+    id: 'msg-3', from: 'architect', to: 'owner', type: 'decision-request',
+    subject: '確認をお願いします', body: '公開範囲を決めてください。', created_at: '2026-07-18T01:02:00Z',
+  });
+  writeMessage('channels/all/impl/msg-4.json', {
+    id: 'msg-4', from: 'impl', to: 'all', type: 'status',
+    subject: '', body: 'カード部分まで完了しました。\n次は詳細画面です。', created_at: '2026-07-18T01:03:00Z',
+  });
+
+  const detail = missions.readMissionSummary('am-detail', dir);
+  assert.strictEqual(detail.messages.length, 4);
+  assert.deepStrictEqual(detail.messages.map((m) => m.id), ['msg-1', 'msg-2', 'msg-3', 'msg-4']);
+  assert.strictEqual(detail.messages[0].fromLabel, '実装担当');
+  assert.strictEqual(detail.messages[0].toLabel, '設計担当');
+  assert.strictEqual(detail.messages[0].answered, true);
+  assert.strictEqual(detail.messages[1].replyTo, 'msg-1');
+  assert.strictEqual(detail.messages[2].requiresAttention, true);
+  assert.strictEqual(detail.messages[3].summary, 'カード部分まで完了しました。 次は詳細画面です。');
+  assert.strictEqual(detail.attentionCount, 1);
 });
 
 test('ミッション: 募集中（roster 未充足）は open、MANIFEST 現行ラウンドは reviewing', () => {

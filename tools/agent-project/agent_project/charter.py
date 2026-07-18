@@ -485,7 +485,8 @@ def charter_names(cfg: "Config") -> "list[str]":
 def _merge_master_charter(cfg: "Config", ch: "Charter") -> "Charter":
     """マスター憲章（ルート charter.md・`## master` 付き）を計画バージョンへ継承する。
     バージョン側が空のフィールド（goal/deliverables/acceptance）はマスターで補い、
-    制約・前提・links・repos はマスター∪バージョンで合成する。raw は両方を連結し、
+    制約・前提はバージョンに見出しがあればその値（空も可）、無ければマスターを使う。
+    links・repos はマスター∪バージョンで合成する。raw は両方を連結し、
     マスターの編集も再計画判定（plan signature）と accepted 再開判定（full signature）に効かせる。"""
     if not _has_master_charter(cfg):
         return ch
@@ -497,8 +498,12 @@ def _merge_master_charter(cfg: "Config", ch: "Charter") -> "Charter":
     ch.goal = ch.goal or base.goal
     ch.deliverables = ch.deliverables or list(base.deliverables)
     ch.acceptance = ch.acceptance or list(base.acceptance)
-    ch.constraints = base.constraints + [c for c in ch.constraints if c not in base.constraints]
-    ch.assumptions = base.assumptions + [a for a in ch.assumptions if a not in base.assumptions]
+    # 旧バージョンは ## constraints / ## assumptions 自体を持たないためマスターへフォールバック。
+    # 新しいフォームが空セクションを明示した場合は「継承値を空に上書き」という意思として扱う。
+    if not re.search(r"(?m)^##\s+constraints\b", ch.raw or "", re.I):
+        ch.constraints = list(base.constraints)
+    if not re.search(r"(?m)^##\s+assumptions\b", ch.raw or "", re.I):
+        ch.assumptions = list(base.assumptions)
     seen_links = {s.get("text") for s in ch.link_specs}
     for s in base.link_specs:
         if s.get("text") not in seen_links:

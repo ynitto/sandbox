@@ -110,10 +110,23 @@ function slugify(s) {
   return t || 'task';
 }
 
+function validateCharterVersion(projectDir, value) {
+  const name = String(value || '').trim();
+  if (!name) return '';
+  if (name === '.' || name === '..' || path.basename(name) !== name || /[\\/\x00-\x1f]/.test(name)) {
+    throw new Error(`計画バージョン名が不正です: ${name}`);
+  }
+  const file = path.join(projectDir, 'charters', `${name}.md`);
+  if (!fs.existsSync(file)) throw new Error(`計画バージョン「${name}」が見つかりません`);
+  return name;
+}
+
 function enqueueToInbox(projectDir, spec) {
   const title = String(spec.title || '').trim();
   if (!title) throw new Error('タイトルは必須です');
   const clean = { title };
+  const charter = validateCharterVersion(projectDir, spec.charter);
+  if (charter) clean.charter = charter;
   for (const key of ['id', 'verify', 'accept', 'verify_template', 'note', 'after', 'level', 'track',
     'why', 'desc', 'scope', 'out_of_scope', 'constraints', 'hints', 'demo']) {
     const v = spec[key];
@@ -160,7 +173,7 @@ function revisePayload({ fields, feedback }) {
 // commands/<name>.json のドロップ（agent-project の ingest_commands が拾う）。
 // 書きかけを watch に読ませないよう .tmp に書いてから rename する。
 // replan / pause / resume / stop はプロジェクト単位（id 不要）なので id を載せない。
-function dropCommand(projectDir, { action, id, reason, fields, feedback, run }) {
+function dropCommand(projectDir, { action, id, reason, fields, feedback, run, charter }) {
   const dir = path.join(projectDir, 'commands');
   fs.mkdirSync(dir, { recursive: true });
   const projectScoped = action === 'replan' || LIFECYCLE_ACTIONS.has(action);
@@ -172,6 +185,7 @@ function dropCommand(projectDir, { action, id, reason, fields, feedback, run }) 
     ts: new Date().toISOString(),
     ...(action === 'revise' ? revisePayload({ fields, feedback }) : {}),
     ...(action === 'resume-run' && run ? { run: String(run) } : {}),
+    ...(action === 'replan' && charter ? { charter: String(charter) } : {}),
   };
   const slug = projectScoped ? 'project' : slugify(id);
   const file = path.join(dir, `viewer-${action}-${slug}-${Date.now()}.json`);
@@ -375,13 +389,14 @@ async function runAction(cfg, { dir, action, id, reason, fields, feedback, run }
 // 処理中タスクの二重投入や却下済みの復活はせず、done と類似のタスクだけやり直しとして再作成される。
 // 経路は runAction と同じ auto/file/cli 契約。file は commands/replan ドロップ、cli は
 // `agent-project replan --reason ...`。稼働中はドロップ・停止中は CLI・CLI 不可はドロップ退避。
-async function requestReplan(cfg, { dir, reason }) {
+async function requestReplan(cfg, { dir, reason, charter }) {
   const why = String(reason || '').trim() || 'agent-dashboard から再分解を要求';
+  const charterName = validateCharterVersion(dir, charter);
   const mode = (cfg.projects && cfg.projects.actionMode) || 'auto';
 
   const wslUnc = process.platform === 'win32' && /^\\\\wsl(?:\$|\.localhost)\\/i.test(String(dir || ''));
   if (mode === 'file' || wslUnc || (mode !== 'cli' && project.isProjectRunning(dir))) {
-    const { file } = dropCommand(dir, { action: 'replan', reason: why });
+    const { file } = dropCommand(dir, { action: 'replan', reason: why, charter: charterName });
     return {
       output: 'charter からの再分解を要求しました（稼働中の agent-project が次パスで取り込みます）',
       file,
@@ -392,6 +407,7 @@ async function requestReplan(cfg, { dir, reason }) {
     const command = (cfg.projects && cfg.projects.command) || 'agent-project';
     const root = project.fromStateWorktree(path.resolve(dir));
     const args = ['replan', '--reason', why, '--root', root];
+    if (charterName) args.push('--charter', charterName);
     const cfgPath = findProjectConfig(root, dir);
     if (cfgPath) args.push('--config', cfgPath);
     const cwd = cfgPath ? path.dirname(cfgPath) : root;
@@ -399,7 +415,7 @@ async function requestReplan(cfg, { dir, reason }) {
     return { ...res, via: 'cli' };
   } catch (err) {
     if (mode === 'cli') throw err;
-    const { file } = dropCommand(dir, { action: 'replan', reason: why });
+    const { file } = dropCommand(dir, { action: 'replan', reason: why, charter: charterName });
     return {
       output:
         'CLI を実行できないため再分解の要求ファイルを置きました' +
@@ -470,6 +486,7 @@ module.exports = {
   submitFeedback,
   buildNeedsStub,
   enqueueToInbox,
+  validateCharterVersion,
   dropCommand,
   runAction,
   requestReplan,
