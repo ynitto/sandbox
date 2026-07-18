@@ -1,0 +1,18 @@
+{
+  "request": "codd-gate 連携の目標境界を設計書に固定する\n\n背景・目的（実装の判断に迷ったらこの意図に沿うこと）:\n  『パッケージは汎用フックのみ・codd_gate_* は sibling 任意部品』を実装前に文書で合意しないと、整理の完了判定と dashboard の見せ方がぶれるため。\nやらないこと（スコープ外。必要に気づいても手を出さず @followup 行で提案する）:\n  agent_project / dashboard の実装変更やテスト改修\n実装の手がかり（参考情報。鵜呑みにせず現物のコードで確認すること）:\n  ドキュメントは slop-police スキルで整える。正典は docs/designs/codd-gate-design.md §4（差し込み点 E1–E3）と §4.1（自動検出レイヤ）。受入の `! git grep ... _apply_codd_gate|_codd_gate|import codd_gate` を設計上の完了条件として明記し、永続化は `codd_gate_regression.py`・有効化は yaml/CLI のみ、と境界を書く。tools/agent-project/README.md の一貫性ゲート節も同じ境界に揃える。\n\nこのタスクは完了条件を満たすまで反復し、満たしたら終了すること（loop-until-done）。\n完了条件: 次のシェルコマンドが終了コード 0 で成功すること:\n  grep -nE 'agent_project.*(import|結合|依存).*(しない|外|禁止)|パッケージ.*(codd_gate|sibling)|有効化は設定' tools/agent-project/README.md && grep -nE 'regression_cmd|intake_cmd|codd_gate_\\*\\.py|自動検出' tools/agent-project/README.md && test -f docs/designs/codd-gate-design.md && grep -nE 'agent_project パッケージ|_apply_codd_gate|sibling|汎用フック' docs/designs/codd-gate-design.md\n\nタスクID: codd-gate-163827\n\n実行中に、分散した他ノードも従うべき恒常的な制約・規約を発見したら、最終成果に 機械可読な JSON `{\"constraints\": [\"…\"]}` を添えること（無ければ省略可）。これは以後の全ノードへ伝播され一貫性の基準になる。\n\nプロジェクト定義（charter・常に踏まえること。成果物が目標/制約に反しないこと）:\n目標: * agent-project の codd-gate 連携コードを整理する\n* agent-dashboard でのユーザビリティを考慮する\n対象リポジトリ（タスクは説明を見て関係するものを選び、その base/target ブランチで作業。path 指定があればそのフォルダ配下のみ変更）:\n- agent-amigos = https://github.com/ynitto/sandbox（path=tools/agent-amigos, base=main, target=main, 書込先候補（owns: tools/agent-amigos/**））\n    説明: agent-amigos\n- agent-dashboard = https://github.com/ynitto/sandbox（path=tools/agent-dashboard, base=main, target=main, 書込先候補（owns: tools/agent-dashboard/**））\n    説明: agent-dashboard\n- agent-flow = https://github.com/ynitto/sandbox（path=tools/agent-flow, base=main, target=main, 書込先候補（owns: tools/agent-flow/**））\n    説明: agent-flow\n- agent-loop = https://github.com/ynitto/sandbox（path=tools/agent-loop, base=main, target=main, 書込先候補（owns: tools/agent-loop/**））\n    説明: agent-loop\n- agent-project = https://github.com/ynitto/sandbox（path=tools/agent-project, base=main, target=main, 書込先候補（owns: tools/agent-project/**））\n    説明: agent-project\n- skills = https://github.com/ynitto/sandbox（path=.github/skills, base=main, target=main, 参照のみ・push しない）\n    説明: skills\n成果物:\n- agent-project ソースコード\n- 設計書\n\nプロジェクトルール（rules.md・全タスク共通。必ず従うこと）:\n* ドキュメントタスクには slop-police スキルを使うこと\n* レビューには agent-review スキルを使うこと\n\nこのタスクに関する過去の判断記録（needs の判断結果・必ず踏まえること）:\n## DR-0001  2026-07-18  actor: nitto\n- context : codd-gate-163827（codd-gate 連携の目標境界を設計書に固定する）の実行を承認\n- action  : plan-approve\n- reason  : agent-dashboard から操作\n- affects : codd-gate-163827 → ready",
+  "workspace": {
+    "url": "https://github.com/ynitto/sandbox",
+    "path": "tools/agent-project",
+    "base": "main",
+    "target": "main",
+    "desc": "agent-project",
+    "branch": "ap/codd-gate-163827"
+  },
+  "references": [],
+  "status": "done",
+  "created_at": "2026-07-18T08:18:07Z",
+  "executor": "agent",
+  "orch_lease_until": 1784365779.1406012,
+  "heartbeat_at": "2026-07-18T09:07:39Z",
+  "updated_at": "2026-07-18T09:10:59Z"
+}

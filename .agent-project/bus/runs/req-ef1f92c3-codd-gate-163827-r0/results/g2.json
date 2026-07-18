@@ -1,0 +1,10 @@
+{
+  "id": "g2",
+  "who": "worker-2",
+  "status": "done",
+  "output": "成果物を `artifacts/g2/draft-s4-completion-condition.md` に書き出した。\n\n**切り口**: 受入コマンドを貼るだけに留めず、「§4 の境界を測る決定的ゲート」として明文化し、実測に基づき exit 0 の逐語的意味と適用スコープ（判定面はパッケージ／任意 sibling・tests は対象外）まで確定させた。\n\n## (a) 成果\n設計書 §4 に新設 §4.2「境界の完了条件（決定的ゲート）」の草案を作成。3 点で構成：\n1. **完了条件の明文化** — `! git grep -nE '_apply_codd_gate|_codd_gate|import codd_gate' tools/agent-project` の exit 0 を §4 境界の設計上の完了条件として据える。\n2. **exit 0 の逐語翻訳** — `!` 否定と `git grep` の exit 規約を示し、3 パターンが封じる違反を表で 1 対 1 に対応（自動配線入口の不在／私設ブリッジの不在／任意部品の直接 import の不在）。\n3. **適用スコープの確定** — 対象面はパッケージ `tools/agent-project/agent_project`。\n\n## (b) 検証\n- 受入コマンドを作業ツリーで実測 → 現状 **exit 1（FAIL）**。ヒットを「パッケージ側の境界違反（configfile/doctor/model の 3 ファイル＝t1 の G1/G2 と一致）」と「任意 sibling・tests（`resolve_codd_gate` 等が正当に `_codd_gate` に当たる）」に分類。\n- パッケージ限定 `git grep … agent_project` のヒットは 3 ファイルのみ。判定面をパッケージに絞れば exit 0 が「パッケージ結合ゼロ」＝目標境界を過不足なく表すことを確認。\n- 設計書はリポジトリルート `docs/designs/`（編集許可の `tools/agent-project` 配下外）にあるため直接編集せず草案を渡した。作業ツリーは無変更。\n\n## (c) 前提・未解決・範囲外\n- **重要な未解決（評価役判断）**: run の受入は対象パスを `tools/agent-project` にピン留めしているが、実測上そのパスは任意 sibling の `codd_gate_*.py` と tests を含み `_codd_gate` に当たる。**sibling を `tools/agent-project` 直下に残す限り、パッケージ結合を除去しても exit 0 に到達できない**。草案では判定面を `tools/agent-project/agent_project` に絞ることを既定として推奨。パスを修正するか sibling を移設するかは境界の置き場所を決める判断のため評価役に委ねた（前者推奨）。\n- **@followup**: ① 受入コマンドのパスを `…/agent_project` へ修正 ② 草案の設計書反映＋§4.1「現在地」・README 書換（t1 G1/G2）③ PASS させる実装（自動配線・ブリッジ除去）はいずれも本タスク範囲外。",
+  "finished_at": "2026-07-18T08:36:27Z",
+  "artifacts": [
+    "artifacts/g2/draft-s4-completion-condition.md"
+  ]
+}

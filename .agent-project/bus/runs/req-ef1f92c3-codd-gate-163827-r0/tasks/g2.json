@@ -1,0 +1,8 @@
+{
+  "id": "g2",
+  "goal": "設計書 §4 向けに、受入コマンド `! git grep -nE '_apply_codd_gate|_codd_gate|import codd_gate' tools/agent-project` が終了コード0であることを設計上の完了条件として明記する草案を書く",
+  "deps": [
+    "t1"
+  ],
+  "kind": "generate"
+}

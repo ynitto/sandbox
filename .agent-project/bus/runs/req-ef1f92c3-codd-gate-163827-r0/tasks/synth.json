@@ -1,0 +1,8 @@
+{
+  "id": "synth",
+  "goal": "検証済みの3草案を docs/designs/codd-gate-design.md §4/§4.1 に統合して書き込み、続けて（境界合意後の順序で）tools/agent-project/README.md 一貫性ゲート節を同じ境界へ整合させる。README には agent_project 非依存（import/結合/依存しない）・パッケージは codd_gate を持たず sibling・有効化は設定・regression_cmd/intake_cmd/codd_gate_*.py・自動検出の各文言を含める。両ドキュメントを slop-police スキルで整える",
+  "deps": [
+    "gate"
+  ],
+  "kind": "synthesize"
+}

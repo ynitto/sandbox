@@ -1,0 +1,8 @@
+{
+  "id": "g1",
+  "goal": "設計書 §4 向けに、agent_project パッケージは汎用フックのみで codd_gate_* は sibling 任意部品であり、agent_project は _apply_codd_gate/_codd_gate を持たず import codd_gate もしない、という境界定義の草案を書く（キーワード: agent_project パッケージ／汎用フック／sibling／_apply_codd_gate を含める）",
+  "deps": [
+    "t1"
+  ],
+  "kind": "generate"
+}

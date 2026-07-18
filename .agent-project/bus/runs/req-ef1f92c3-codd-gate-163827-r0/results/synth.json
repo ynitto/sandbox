@@ -1,0 +1,19 @@
+{
+  "id": "synth",
+  "who": "worker-1",
+  "status": "done",
+  "output": "統合を完了。作業ツリーの2ファイルへ書き込み済み。\n\n## 成果（working tree）\n\n**`docs/designs/codd-gate-design.md` §4/§4.1/§4.2** — 3草案を1つの境界文書へ統合。\n- §4 冒頭に **プラグイン境界（規範）3条**: パッケージ（`agent_project/*`）＝汎用フックのみ・codd-gate を名指し／import／自動配線しない／`codd_gate_*.py`＝直下の任意 sibling／`regression_cmd`・`intake_cmd` の書き手は一つ（有効化=yaml・CLI、永続化=`codd_gate_regression.py`）。`build_config` が値を差す経路は無し。\n- §4.1 を「自動検出レイヤ」から「値の組み立てと永続化を担う任意部品」へ再フレーム。モジュール表を実コード照合済み API に整え、「現在地（自動配線）」段落を **有効化／永続化／可搬性** へ全面書換。\n- §4.2 **境界の完了条件**を新設。正典受入 `! git grep _apply_codd_gate -- tools/agent-project`（exit 0）を明記。\n\n**`tools/agent-project/README.md` 一貫性ゲート節** — 同じ境界へ整合。必須文言5点をすべて充足（非依存 import・結合・依存しない／パッケージは持たず sibling／有効化は設定だけ／`regression_cmd`・`intake_cmd`・`codd_gate_*.py`／自動検出配線は無い）。リンク先を §4「プラグイン境界」・§4.1「任意部品」・§4.2「境界の完了条件」へ更新。\n\n## 統合上の判断\n- **重複**: g1「4.0 規範」と g3「境界3条」を、g3 の単一書き手フレーミングを骨格に1ブロックへ集約。\n- **矛盾**: 「未検出→no-op」の旧記述を「生成ツールが `usable=False` を見て値を書かない」へ統一。前反復の gate 差し戻し3件（`\\s` false green・完了条件の草案不一致・デッドリンク）は統合済み。\n- **本反復の仕上げ**: slop-police で §4.1 見出しの装飾ダッシュを house style の名詞句へ修正。据え置きブロック（差し込み点選択の妥当性）の既存 `——`・「まさに」はスコープ外のため触れず @followup 化。\n\n## 検証（現物突合）\n- §4.2 の事実主張はコードと一致: `_apply_codd_gate` は `configfile.py:201,376` のみ（sibling/tests に無し）。\n- 正典受入は現状 **FAIL**（コード未変更）＝§4.2 が指す「実装後に成立させる目標述語」どおり。\n- 死んだ相互参照なし。両ドキュメントの境界文言は同一。\n\n成果物レポートは `artifacts/synth/synthesis.md` に更新済み。commit/push は agent-flow に委ねる（未実行）。\n\n**@followup**（スコープ外）: ①`_apply_codd_gate_auto_wiring` 除去で受入 PASS ②doctor/model の sibling import 除去 or 温存の意思決定 ③§1 不変条件へ第7条追記 ④据え置きブロックの slop 整え。",
+  "finished_at": "2026-07-18T09:04:01Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox",
+      "branch": "ap/codd-gate-163827",
+      "commit": "ff2b1f9a98e63b2801a39b5587e3a320c45ee0e1",
+      "target": "main",
+      "path": "tools/agent-project"
+    }
+  },
+  "artifacts": [
+    "artifacts/synth/synthesis.md"
+  ]
+}

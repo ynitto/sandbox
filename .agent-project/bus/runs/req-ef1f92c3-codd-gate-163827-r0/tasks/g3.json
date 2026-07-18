@@ -1,0 +1,8 @@
+{
+  "id": "g3",
+  "goal": "設計書 §4/§4.1 向けに、永続化は codd_gate_regression.py・有効化は yaml/CLI のみという責務境界と、自動検出レイヤ（regression_cmd/intake_cmd/codd_gate_*.py）の記述を書く草案を作る",
+  "deps": [
+    "t1"
+  ],
+  "kind": "generate"
+}

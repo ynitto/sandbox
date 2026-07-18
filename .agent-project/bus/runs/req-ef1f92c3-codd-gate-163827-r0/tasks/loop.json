@@ -1,0 +1,8 @@
+{
+  "id": "loop",
+  "goal": "完了条件のシェル grep 群（README の境界・regression_cmd 等・設計書の存在と境界語）を実行し、終了コード0になるまで両ドキュメントの文言を反復修正する（loop-until-done）。スコープ外（agent_project/dashboard の実装・テスト変更）には手を出さず、気づいた必要事項は @followup 行で提案する",
+  "deps": [
+    "synth"
+  ],
+  "kind": "verify"
+}

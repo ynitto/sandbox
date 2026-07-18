@@ -1,0 +1,6 @@
+{
+  "id": "t1",
+  "goal": "docs/designs/codd-gate-design.md §4（差し込み点 E1–E3）・§4.1（自動検出レイヤ）と tools/agent-project/README.md 一貫性ゲート節の現行記述を読み、目標境界『agent_project=汎用フックのみ／codd_gate_*=sibling 任意部品』とのギャップ（不足・矛盾・曖昧な文言）を具体的に列挙する",
+  "deps": [],
+  "kind": "work"
+}

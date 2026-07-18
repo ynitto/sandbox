@@ -1,0 +1,10 @@
+{
+  "id": "g1",
+  "who": "worker-2",
+  "status": "done",
+  "output": "成果物を `artifacts/g1/boundary-draft.md` に出力した。以下は報告契約に沿った自己完結サマリー。\n\n## (a) 成果 / サマリー\n\n**切り口: 境界を散文の宣言でなく、git grep で反証可能な「不変条件＋禁止事項」の集合として定義し、整理の完了判定と dashboard 表示を同じ機械述語に束ねる。**\n\n§4 冒頭に置く境界定義の草案（候補 g1）を書いた。中身は 5 パート:\n\n- **4.0 プラグイン境界（規範）** — 一文定義「agent_project パッケージは E1〜E6 の**汎用フック**だけを提供し codd-gate を名指ししない／codd_gate_* はフックへ値を供給する **sibling** 任意部品」。二つの主体（パッケージ＝`agent_project/`／sibling 群＝`tools/agent-project/` 直下の `codd_gate_*.py`）を、**配置由来**で定義（パッケージ・ディレクトリの外＝兄弟位置にあることが「任意・可搬・非依存」を構造的に裏付ける）。\n- **禁止事項** — (1) `_apply_codd_gate_auto_wiring`/`_apply_codd_gate`/`_codd_gate*` をパッケージ配下に持たない、(2) codd_gate_* を import しない、(3) 人専有 yaml へ機械が書かない。\n- **許容される結合** — `schemas/` の共通契約と、汎用フックへの値供給（人 or `codd_gate_regression.py`）の 2 経路だけ。\n- **欠落時の可搬性保証**（t1-G5 の是正）と **§1 不変条件 第 7 条の追記案**（t1-G4 の是正）。\n- **完了判定** — 反証可能な受入述語 P1〜P5（正典 `! git grep _apply_codd_gate` を P1 に置き、名指し禁止の完全形 P2/P3、強境界 P4、可搬性の挙動述語 P5 を積む）。\n\n## (b) 検証内容と結果\n\n- 完了条件のキーワード 4 語（agent_project パッケージ／汎用フック／sibling／_apply_codd_gate）を全て本文に含めたことを確認。\n- 正典と実読照合: §4 冒頭 L241–244・表 L246–252・§4.1 L260–261・§5 L306–329（t1 で「アライン済み」）と矛盾しない上位規範として記述。置換要求は §4.1 L284–295 と README L279–282 に限定（t1-G1/G2 の是正対象）。\n- 受入述語を現行コードに突き合わせ（t1 実測を再利用）: `configfile.py:201,376` が P1 を、`doctor.py`/`model.py` の sibling import が P3/P4 を現時点で満たさない＝草案は「実装後に成立させる目標述語」を正しく指す。\n- ドキュメント草案のためテスト/型は非対象。文章は slop-police 観点で調整。workspace repo は一切書き換えていない（生成タスク・成果物は bus artifact のみ）。\n\n## (c) 採用した前提・未解決・範囲外\n\n- **前提**: 目標境界を t1 と同一に固定（受入 `! git grep _apply_codd_gate` を根拠）。「sibling」を配置由来で定義。§4 への実挿入位置（4.0／§1 第 7 条／両方）の確定は統合・評価タスクに委ねる。\n- **未解決（判断待ち）**: `doctor.py`(`codd_gate_wiring`)・`model.py`(`codd_gate_debt`) の sibling import を**除去**するか**汎用 optional-import として温存**するか。草案は「除去」に倒して禁止事項 2・P3/P4 を書いた。温存なら禁止事項 2 を緩め P4 を落とす必要がある（境界の厳密度そのものの意思決定）。\n- **範囲外（@followup）**: 実装タスクで `_apply_codd_gate_auto_wiring` 除去＋§4.1 L284–295／README L279–286 の書換が P1 成立に必要／§4.1 見出し「自動検出レイヤ」の語彙を sibling 任意部品像へ寄せる（t1-G3）。",
+  "finished_at": "2026-07-18T08:30:11Z",
+  "artifacts": [
+    "artifacts/g1/boundary-draft.md"
+  ]
+}

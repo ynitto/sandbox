@@ -44,3 +44,8 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-18 17:18:07 plan-review 承認: codd-gate-163827 → ready
 - 2026-07-18 17:18:07 commands 取り込み: approve codd-gate-163827（viewer-approve-codd-gate-163827-1784362684356.json）
 - 2026-07-18 17:18:07 === project 開始 v1 acceptance=2 ===
+- 2026-07-18 17:18:07 === agent-project 開始 tasks=5 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-18 17:18:07 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
+- 2026-07-18 17:18:07 警告: origin へ未 push のコミットが 1 件ある（main）。worker と verify は origin から clone するため、これらの成果は彼らから 見えない（ローカルでは通るのに verify が落ち続ける）。`git -C /Users/nitto/Workspace/sandbox push origin main` を検討すること
+- 2026-07-18 18:11:03 verify: codd-gate-163827 を https://github.com/ynitto/sandbox@ap/codd-gate-163827（path=tools/agent-project） のクローン内で検証
+- 2026-07-18 18:11:04 cycle 1: codd-gate-163827 → 人の判断（回帰検知）

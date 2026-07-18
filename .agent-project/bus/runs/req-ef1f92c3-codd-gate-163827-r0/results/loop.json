@@ -1,0 +1,13 @@
+{
+  "id": "loop",
+  "who": "worker-1",
+  "status": "done",
+  "output": "verify=pass\n\n## 検証結果\n\n完了条件のシェル grep 群（backlog `codd-gate-163827` の `verify` 原文）を作業ツリーで独立実行し、**総合終了コード 0** を確認した（分解実行・`bash -c` 一括の両方）。文言修正は不要で、loop-until-done は反復ゼロで満たされている。指示どおり両ドキュメントは一切書き換えていない。\n\n**再導出して突き合わせた点:**\n- **(1) 完了条件全項目** — part1 README 境界 hit / part2 `regression_cmd` 等 hit / part3 設計書 `test -f` 成功 / part4 設計書境界語 hit。すべて exit 0。\n- **(2)(4) 事実の妥当性** — `_apply_codd_gate` は `agent_project/configfile.py:201,376` のみ（§4.2 の主張どおり sibling・tests に無し）。正典受入 `! git grep _apply_codd_gate -- tools/agent-project` は現状 FAIL＝§4.2 が言う「実装後に成立させる目標述語」と一致。否定 grep の論理説明も正確。\n- **(3) 抜け漏れ・相互参照** — README が指す §4「プラグイン境界」(L239)・§4.1「任意部品」(L273)・§4.2「境界の完了条件」(L354) は実見出し。§4.2 → §4.1「有効化／永続化」の太字ラベルも実在。デッドリンクなし。\n- **(5) スコープ** — 変更は `docs/designs/codd-gate-design.md` と `tools/agent-project/README.md` の2ファイルのみ。agent_project/dashboard 実装・テストへの混入なし。\n\n**検出した軽微点（fail 事由ではない）:** README L438 付近が「§4.1「外部 CLI の差し込み点」にカタログ化」と参照するが、§4.1 の実見出しは「値の組み立てと永続化を担う任意部品」で、「外部 CLI の差し込み点」の語は §4 冒頭(L242)にある。これは main 時点（§4.1=「自動検出レイヤ」）から**既存**のラベルずれで、本 run の diff は L438 を触っておらず、完了条件 grep にも変更領域にも掛からない。→ @followup 化。\n\n検証レポートは `artifacts/loop/verify-report.md` に出力済み。\n\n@followup（スコープ外）: README L438 の「§4.1「外部 CLI の差し込み点」」参照を §4 本文へ向け直す（既存のラベルずれ、別タスク）。\n\n```json\n{\"ok\": true, \"issues\": [\"(minor) tools/agent-project/README.md L438 付近の相互参照『設計書 §4.1「外部 CLI の差し込み点」』が §4.1 の実見出し『値の組み立てと永続化を担う任意部品』と不一致。『外部 CLI の差し込み点』の語は §4 冒頭(L242)にあるため参照先を §4 本文へ直すのが妥当。main 時点(§4.1=自動検出レイヤ)から既存のラベルずれで本 run の変更・完了条件 grep のスコープ外のため minor、pass 据え置き。\"]}\n```",
+  "finished_at": "2026-07-18T09:08:14Z",
+  "data": {
+    "ok": true
+  },
+  "artifacts": [
+    "artifacts/loop/verify-report.md"
+  ]
+}

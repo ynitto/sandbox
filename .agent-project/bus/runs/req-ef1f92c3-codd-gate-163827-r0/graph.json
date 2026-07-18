@@ -1,0 +1,64 @@
+{
+  "strategy": {
+    "patterns": [
+      "fan-out-and-synthesize",
+      "adversarial-verification",
+      "loop-until-done"
+    ],
+    "parallelism": 3,
+    "review": true,
+    "reason": "[flow-planner] 二成果物（設計書 codd-gate-design.md §4/§4.1・README 一貫性ゲート節）を観点別（境界定義／受入 git grep の完了条件化／永続化・有効化の責務分離／自動検出レイヤ）に分割して並列執筆し統合する（fan-out-and-synthesize）。quality_focus=accuracy かつ境界文言は完了判定と dashboard の見せ方がぶれないよう厳密・一貫である必要があるため、統合前に検証gateを挟む（adversarial-verification, review=true）。完了条件が受入 `! git grep ... _apply_codd_gate|_codd_gate|import codd_gate` の終了コード0という機械判定可能な明確条件で、一発で満たす可能性が低いため grep 群が0になるまで文言を反復修正する（loop-until-done）。この『並列生成→検証→品質達成まで反復』構造は migration-pipeline に一致する。順序依存（設計書で境界合意→README を整合）と slop-police 整形は各ノード内の手順として処理する。Decision Matrix 最上位の tournament はスコア5だが目的が『複数候補から最良案を選ぶ』ではなく整合性ある単一の境界文書を固定・合意することのため不採用。（粒度 coarse）"
+  },
+  "nodes": {
+    "t1": {
+      "goal": "docs/designs/codd-gate-design.md §4（差し込み点 E1–E3）・§4.1（自動検出レイヤ）と tools/agent-project/README.md 一貫性ゲート節の現行記述を読み、目標境界『agent_project=汎用フックのみ／codd_gate_*=sibling 任意部品』とのギャップ（不足・矛盾・曖昧な文言）を具体的に列挙する",
+      "deps": [],
+      "kind": "work"
+    },
+    "g1": {
+      "goal": "設計書 §4 向けに、agent_project パッケージは汎用フックのみで codd_gate_* は sibling 任意部品であり、agent_project は _apply_codd_gate/_codd_gate を持たず import codd_gate もしない、という境界定義の草案を書く（キーワード: agent_project パッケージ／汎用フック／sibling／_apply_codd_gate を含める）",
+      "deps": [
+        "t1"
+      ],
+      "kind": "generate"
+    },
+    "g2": {
+      "goal": "設計書 §4 向けに、受入コマンド `! git grep -nE '_apply_codd_gate|_codd_gate|import codd_gate' tools/agent-project` が終了コード0であることを設計上の完了条件として明記する草案を書く",
+      "deps": [
+        "t1"
+      ],
+      "kind": "generate"
+    },
+    "g3": {
+      "goal": "設計書 §4/§4.1 向けに、永続化は codd_gate_regression.py・有効化は yaml/CLI のみという責務境界と、自動検出レイヤ（regression_cmd/intake_cmd/codd_gate_*.py）の記述を書く草案を作る",
+      "deps": [
+        "t1"
+      ],
+      "kind": "generate"
+    },
+    "gate": {
+      "goal": "g1/g2/g3 の3草案の境界文言が厳密かつ相互に一貫し、完了判定（git grep が0件）と agent-dashboard の見せ方がぶれないことを敵対的に検証する。用語ゆれ・抜け・矛盾を指摘し、問題があれば具体的な修正要求を付けて差し戻す",
+      "deps": [
+        "g1",
+        "g2",
+        "g3"
+      ],
+      "kind": "verify"
+    },
+    "synth": {
+      "goal": "検証済みの3草案を docs/designs/codd-gate-design.md §4/§4.1 に統合して書き込み、続けて（境界合意後の順序で）tools/agent-project/README.md 一貫性ゲート節を同じ境界へ整合させる。README には agent_project 非依存（import/結合/依存しない）・パッケージは codd_gate を持たず sibling・有効化は設定・regression_cmd/intake_cmd/codd_gate_*.py・自動検出の各文言を含める。両ドキュメントを slop-police スキルで整える",
+      "deps": [
+        "gate"
+      ],
+      "kind": "synthesize"
+    },
+    "loop": {
+      "goal": "完了条件のシェル grep 群（README の境界・regression_cmd 等・設計書の存在と境界語）を実行し、終了コード0になるまで両ドキュメントの文言を反復修正する（loop-until-done）。スコープ外（agent_project/dashboard の実装・テスト変更）には手を出さず、気づいた必要事項は @followup 行で提案する",
+      "deps": [
+        "synth"
+      ],
+      "kind": "verify"
+    }
+  },
+  "iteration": 0
+}
