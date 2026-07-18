@@ -11,7 +11,7 @@ delivery: [{"name":"sandbox","role":"write","url":"https://github.com/ynitto/san
 
 ## Context and Problem Statement
 
-- なぜ: 回帰検知: グローバル検査 `codd-gate verify --base "$KIRO_BASE_REV" --repos ./repos.json` 失敗 — exit=2 失敗した工程: `codd-gate verify --base e51dd5bb927c12fc3c79cccdcd2d46e4bf794b14 --repos ./repos.json` [codd-gate] エラー: スキャン可能な repo がありません（--repo-dir <name>=<dir> か --sync を指定）
+- なぜ: 繰り返し NG（retries=4）: agent-flow run タイムアウト（3600s）
 - 状態: blocked（agent-project の判断待ち）
 
 ## 判断材料（成果物の所在・差分・検証）
@@ -27,12 +27,12 @@ delivery: [{"name":"sandbox","role":"write","url":"https://github.com/ynitto/san
     - tools/agent-project/codd_gate_wiring.py
     - tools/agent-project/tests/test_agent_project.py
 - 実行先: local
-- 検証: `PYTHONPATH=tools/agent-project python3 tools/agent-project/tests/test_agent_project.py TestIntake.test_run_intake_enqueues_and_dedups_by_id TestLoopEngineering.test_regression_gate_blocks_on_failure TestLoopEngineering.test_regression_gate_passes && ! git grep -n -E '(^|[[:space:]])(import|from)[[:space:]]+codd_gate|_apply_codd_gate|_codd_gate' -- tools/agent-project/agent_project` → PASS（exit=0 --- 通知（要対応）--- # 要対応（agent-project）  ## 判断待ち（blocked） - T1: x     なぜ: 回帰検知: グローバル検査 `false` 失敗 — exit=1 失敗した工程: `false`      対応: needs/T1.md に方針を書く、または `approve T1` / `hold T1`  ... -----------）
+- 検証: `PYTHONPATH=tools/agent-project python3 tools/agent-project/tests/test_agent_project.py TestIntake.test_run_intake_enqueues_and_dedups_by_id TestLoopEngineering.test_regression_gate_blocks_on_failure TestLoopEngineering.test_regression_gate_passes && ! git grep -n -E '(^|[[:space:]])(import|from)[[:space:]]+codd_gate|_apply_codd_gate|_codd_gate' -- tools/agent-project/agent_project` → FAIL（agent-flow run タイムアウト（3600s））
 
 ## Decision Outcome
 
 <!-- 人の決定の記入欄（MADR の Decision Outcome）。方針・指示をここに書く。 -->
-- [ ] 確定（このボックスを [x] にして保存すると取り込みます）
+- [x] 確定（このボックスを [x] にして保存すると取り込みます）
 
 <!-- 上の [ ] を [x] にした時だけ反映されます（書きかけでの誤発火を防ぐため）。
      下に修正方針・指示を書いてください。空のままでも [x] なら『そのまま再実行』。
