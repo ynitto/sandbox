@@ -61,3 +61,11 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-18 18:11:06 === agent-project 停止 reason=drained cycles=1 done=0 blocked=1 notified=True promoted=0 ===
 - 2026-07-18 18:11:08 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
 - 2026-07-18 18:11:08 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-18 21:29:56 commands 取り込み: approve codd-gate-163827（viewer-approve-codd-gate-163827-1784377794811.json）
+- 2026-07-18 21:29:56 === project 開始 v1 acceptance=2 ===
+- 2026-07-18 21:29:57 intake NG (exit 2): codd-gate tasks --debt --repos ./repos.json
+- 2026-07-18 21:29:57 === agent-project 開始 tasks=4 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-18 21:29:57 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
+- 2026-07-18 21:29:57 警告: origin へ未 push のコミットが 2 件ある（main）。worker と verify は origin から clone するため、これらの成果は彼らから 見えない（ローカルでは通るのに verify が落ち続ける）。`git -C /Users/nitto/Workspace/sandbox push origin main` を検討すること
+- 2026-07-18 22:29:57 flow detach: agent_project-codd_gate-163827 の run req-ef1f92c3-agent_project-codd_gate-163827-r0 を failed（agent-flow run タイムアウト（3600s））
+- 2026-07-18 22:29:58 cycle 1: agent_project-codd_gate-163827 NG 積み直し (1/2) — agent-flow run タイムアウト（3600s）

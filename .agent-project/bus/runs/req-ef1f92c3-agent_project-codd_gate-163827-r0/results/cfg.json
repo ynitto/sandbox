@@ -1,0 +1,19 @@
+{
+  "id": "cfg",
+  "who": "worker-2",
+  "status": "done",
+  "output": "## 成果サマリー\n\n`configfile.py` から codd_gate 固有の実行時自動配線を撤去し、「差し込み点のみ」を満たす状態にした。到着時点で作業ツリーに当該変更が**既に適用済み**だったため（本 run の先行ステップによる）、完了条件と突き合わせて正当性を検証し、冗長な再編集はせず（許可範囲 `tools/agent-project` 内で追加の書き換えなし）、中間成果物を出力した。\n\n**configfile 側（除去）**\n- `_apply_codd_gate_auto_wiring(cfg)` 関数と `build_config` 末尾の呼び出しを削除済み。\n- 残る `regression_cmd`/`intake_cmd` は**汎用の設定キー**（CLI > 設定ファイル > 既定の素通し）のみ。codd-gate はコメント/help の**例示**に現れるだけで、検出・probe・sibling import・自動代入といった配線ロジックは 0 hit（`grep -E \"detect_wiring|_codd_gate_wiring_module|resolve_codd_gate|import codd_gate|apply_.*wiring\"`）。\n\n**外出し先（externalization）** — configfile は関与しない\n- 検出・提示: `codd_gate_wiring.detect_wiring` + `doctor_findings`（doctor が推奨コマンドを finding 提示）。\n- 恒久注入 CLI: `codd_gate_regression.py`（`main()` の `--config` + `apply_to_file`、検出結果駆動で冪等注入）。\n- 明示指定: `regression_cmd`/`intake_cmd` を設定/CLI に直接記述（build_config はそのまま採用）。\n\n## 検証内容と結果\n- `pytest -k \"CoddGateNoAutoWiring or ConfigFile\"` → **15 passed**（repos.json があっても補わない・明示値素通し・関数非存在の回帰ガード固定）。\n- `pytest test_codd_gate_wiring.py test_codd_gate_regression.py` → **39 passed**（外出し先が機能）。\n- import sanity: `build_config` 存在 / `_apply_codd_gate_auto_wiring` 非存在 を確認。\n- フルスイート → **711 passed, 3 failed**。失敗 3 件は本変更と無関係（diff は `TestConfigFile`/`TestCoddGate*` のみ、当該 3 テストは未変更）:\n  - `TestJournalRotation::test_rotation_archives_and_starts_fresh` — 同一秒タイムスタンプのアーカイブ名サフィックス(`.1`..`.19`)を文字列ソートするための順序崩れ（決定性/環境依存）。\n  - `TestProjectLayer::test_version_inherits_master_charter` — charter 制約の和集合継承。\n  - `TestDaemonRouting::test_kf_base_passes_flow_config` — daemon への flow_config 受け渡し。\n  いずれも `regression_cmd`/`intake_cmd`/codd_gate/自動配線に触れず、pre-existing failure。\n\n## 前提・未解決・範囲外\n- **採用した前提**: 変更が既に working tree に適用済み → 完了条件検証に徹し再編集せず（commit/push は agent-flow が実施）。\n- **範囲外で見つけた問題（直さず報告）**: 上記フルスイート pre-existing failure 3 件。特に `TestJournalRotation` はアーカイブ名の文字列ソート起因の決定性欠如。`@followup: journal ローテーションのアーカイブ名をゼロ埋め連番にし lexicographic ソートを安定化`。\n\n**中間成果物**: `bus/runs/req-ef1f92c3-agent_project-codd_gate-163827-r0/artifacts/cfg/configfile-decodd-report.md`",
+  "finished_at": "2026-07-18T13:06:46Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox",
+      "branch": "ap/agent_project-codd_gate-163827",
+      "commit": "b694cb9121a455a3274a823592bfe39534c03dac",
+      "target": "main",
+      "path": "tools/agent-project"
+    }
+  },
+  "artifacts": [
+    "artifacts/cfg/configfile-decodd-report.md"
+  ]
+}

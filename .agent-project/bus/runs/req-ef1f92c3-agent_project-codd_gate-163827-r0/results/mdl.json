@@ -1,0 +1,19 @@
+{
+  "id": "mdl",
+  "who": "worker-1",
+  "status": "done",
+  "output": "タスク完了。\n\n## (a) 成果\n`tools/agent-project/agent_project/model.py` から codd_gate 実装への直接依存を除去し、差し込み点のみに切り替えた。\n\n- **削除**: `_codd_gate_debt_module()`（`import codd_gate_debt` を sys.path 経由で遅延 import していた関数）— パッケージ内の `import codd_gate_*` はこれが唯一。\n- **追加**: `_parse_intake_records(text) -> (specs, errors)` — intake_cmd の stdout をレコード単位に検証する**検出器非依存の汎用パーサ**。\n- `run_intake` を codd_gate 分岐から `_parse_intake_records` 一本へ簡素化（34 追加 / 38 削除）。\n\n**採用した前提**: README §「外部 CLI の差し込み点」が明示する通り、差し込み点は `intake_cmd` 設定そのものであり codd-gate はその一例。レコード検証は intake フックの汎用契約なので model 本体にネイティブ実装として持たせ、`import codd_gate_*` を断った。これで「本体は無改造・差し込み点（intake_cmd）のみ」を満たす。\n\n## (b) 検証\n- `grep \"codd_gate\\|import codd\" model.py` → **該当なし**（受入 grep 条件を満たす）。\n- パッケージ exec 合成 OK（`_parse_intake_records` あり／`_codd_gate_debt_module` なしを確認）。\n- `TestIntake` + `test_codd_gate_debt` → **16 tests OK**。\"title が空/欠落\" を journal に要求する `test_run_intake_one_bad_record_does_not_block_the_rest` も通過（挙動は従来の codd_gate_debt 経路と等価）。\n- 全スイート 801 tests。失敗は 3 件のみで**すべて本変更と無関係の既存/環境依存**。うち charter 継承・journal ローテーションの 2 件は、HEAD の未改変 model.py に一時退避して同テストを流し**同一に失敗**することを確認（先行既存）。残り 1 件は macOS `/var`→`/private/var` シンボリックリンクのパス比較。\n\n## (c) 前提・範囲外\n- package 全体に残る `import codd_gate_wiring`（configfile.py / doctor.py）は**別タスクの担当**で本タスク対象外（触れていない）。\n- **範囲外で発見（未編集・別タスク判断）**: `codd_gate_debt.py` の docstring（25–26 行）が「model.py が本 module を遅延 import する」と記述しており本変更で stale 化。sibling adapter で model 限定タスクの対象外かつ他タスクが再編し得るため未編集。報告に `@followup` として記載済み。\n\n中間成果物: `bus/runs/req-ef1f92c3-agent_project-codd_gate-163827-r0/artifacts/mdl/model-codd-gate-decoupling.md`",
+  "finished_at": "2026-07-18T12:46:10Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox",
+      "branch": "ap/agent_project-codd_gate-163827",
+      "commit": "2e5ff35b401a735be9e1278ab9fdf59acc2c87b3",
+      "target": "main",
+      "path": "tools/agent-project"
+    }
+  },
+  "artifacts": [
+    "artifacts/mdl/model-codd-gate-decoupling.md"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "id": "test",
+  "goal": "TestCoddGateAutoWiring など _codd_gate_wiring_module を mock するテストを新境界（改名後モジュール／sibling 呼び出し）へ追随させ、TestLoopEngineering の regression gate テスト（blocks_on_failure / passes）が新境界で通るよう mock を付け替える",
+  "deps": [
+    "cfg",
+    "doc",
+    "mdl",
+    "itk"
+  ],
+  "kind": "work"
+}

@@ -1,0 +1,6 @@
+{
+  "id": "cfg",
+  "goal": "configfile._apply_codd_gate_auto_wiring を除去し、自動配線を sibling（codd_gate_wiring / codd_gate_regression）呼び出しか設定の明示指定へ外出しして、configfile 内に codd_gate 固有の自動配線ロジックを残さない",
+  "deps": [],
+  "kind": "work"
+}

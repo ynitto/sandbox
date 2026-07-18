@@ -1,0 +1,66 @@
+{
+  "strategy": {
+    "patterns": [
+      "fan-out-and-synthesize",
+      "adversarial-verification",
+      "loop-until-done"
+    ],
+    "parallelism": 4,
+    "review": true,
+    "reason": "[flow-planner] codd_gate 依存の除去は configfile・doctor・model・intake という独立モジュールへの並列変更に自然に分割でき（fan-out-and-synthesize, 並列数4）、mock 境界の付け替えを含むリファクタリングで正確性が最重要のため統合前に境界レビュー＋回帰の検証gateを挟む（adversarial-verification）。さらに『3テスト成功＋git grep 0件が exit 0 になるまで反復』という明確な完了条件が制約に明示されており（loop-until-done）、これは典型的な移行タスクなので複合テンプレート migration-pipeline が最適に一致する。（粒度 coarse）"
+  },
+  "nodes": {
+    "cfg": {
+      "goal": "configfile._apply_codd_gate_auto_wiring を除去し、自動配線を sibling（codd_gate_wiring / codd_gate_regression）呼び出しか設定の明示指定へ外出しして、configfile 内に codd_gate 固有の自動配線ロジックを残さない",
+      "deps": [],
+      "kind": "work"
+    },
+    "doc": {
+      "goal": "doctor._codd_gate_wiring_module / doctor_codd_gate_findings を汎用名（例: wiring_module / findings）へ改名・汎用化し、doctor から codd_gate 名を除去する",
+      "deps": [],
+      "kind": "work"
+    },
+    "mdl": {
+      "goal": "model._codd_gate_debt_module と `import codd_gate_*` をパッケージから除去し、model が codd_gate 実装へ直接依存しないよう差し込み点のみに切り替える",
+      "deps": [],
+      "kind": "work"
+    },
+    "itk": {
+      "goal": "intake を schemas/task 相当の汎用 JSON パース＋id 冪等のまま維持し、TestIntake.test_run_intake_enqueues_and_dedups_by_id の回帰が保たれることを確認する",
+      "deps": [],
+      "kind": "work"
+    },
+    "test": {
+      "goal": "TestCoddGateAutoWiring など _codd_gate_wiring_module を mock するテストを新境界（改名後モジュール／sibling 呼び出し）へ追随させ、TestLoopEngineering の regression gate テスト（blocks_on_failure / passes）が新境界で通るよう mock を付け替える",
+      "deps": [
+        "cfg",
+        "doc",
+        "mdl",
+        "itk"
+      ],
+      "kind": "work"
+    },
+    "gate": {
+      "goal": "agent-reviewer で新しいモジュール境界と mock 付け替えを adversarial にレビューし、『本体無改造・差し込み点のみ』の充足・intake/regression 回帰・codd_gate 名残存の有無を統合前の検証gateとして確認する",
+      "deps": [
+        "test"
+      ],
+      "kind": "verify"
+    },
+    "synth": {
+      "goal": "4モジュールの変更とテスト追随を統合し、設計書を新境界（sibling 配線・差し込み点のみ）に合わせて整合更新する（文章推敲のみは行わない）",
+      "deps": [
+        "gate"
+      ],
+      "kind": "synthesize"
+    },
+    "done": {
+      "goal": "完了条件コマンド（TestIntake/TestLoopEngineering の3テスト成功＋`git grep` で import codd_gate/_apply_codd_gate/_codd_gate が tools/agent-project/agent_project 配下0件）が exit 0 になるまで反復検証し、失敗時は該当モジュールの修正へ差し戻す",
+      "deps": [
+        "synth"
+      ],
+      "kind": "verify"
+    }
+  },
+  "iteration": 0
+}

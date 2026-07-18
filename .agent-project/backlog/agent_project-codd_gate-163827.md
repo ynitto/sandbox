@@ -3,7 +3,7 @@
 - source: charter
 - priority: 0
 - verify: `PYTHONPATH=tools/agent-project python3 tools/agent-project/tests/test_agent_project.py TestIntake.test_run_intake_enqueues_and_dedups_by_id TestLoopEngineering.test_regression_gate_blocks_on_failure TestLoopEngineering.test_regression_gate_passes && ! git grep -n -E '(^|[[:space:]])(import|from)[[:space:]]+codd_gate|_apply_codd_gate|_codd_gate' -- tools/agent-project/agent_project`
-- retries: 0
+- retries: 1
 - workspace: agent-project
 - why: 設計の『本体は無改造・差し込み点のみ』をコードで真にし、受入の grep 条件と intake/regression 回帰テストを同時に満たすため。
 - out_of_scope: dashboard UI・設計書の文章だけの推敲・codd-gate 本体（tools/codd-gate）の仕様変更
@@ -11,3 +11,4 @@
 - charter: v1
 - after: codd-gate-163827
 - assess: c=2 r=2 a=1
+- last_run: req-ef1f92c3-agent_project-codd_gate-163827-r0

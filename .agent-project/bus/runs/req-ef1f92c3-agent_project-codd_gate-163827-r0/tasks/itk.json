@@ -1,0 +1,6 @@
+{
+  "id": "itk",
+  "goal": "intake を schemas/task 相当の汎用 JSON パース＋id 冪等のまま維持し、TestIntake.test_run_intake_enqueues_and_dedups_by_id の回帰が保たれることを確認する",
+  "deps": [],
+  "kind": "work"
+}

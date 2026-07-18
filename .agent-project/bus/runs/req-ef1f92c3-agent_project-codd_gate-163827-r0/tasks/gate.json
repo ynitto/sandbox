@@ -1,0 +1,8 @@
+{
+  "id": "gate",
+  "goal": "agent-reviewer で新しいモジュール境界と mock 付け替えを adversarial にレビューし、『本体無改造・差し込み点のみ』の充足・intake/regression 回帰・codd_gate 名残存の有無を統合前の検証gateとして確認する",
+  "deps": [
+    "test"
+  ],
+  "kind": "verify"
+}
