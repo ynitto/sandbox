@@ -165,13 +165,16 @@ function parseCharter(text) {
   if (!text) return null;
   const charter = { name: '', sections: {} };
   let current = null;
+  // 見出しの規則は本体（agent-project の _CHARTER_NAME_RE / _CHARTER_SECTION_RE）と
+  // authoring.js parseCharterDoc に合わせる: タイトルは `# Charter|憲章`（コロン任意）、
+  // セクションは `## <英字キー>` に後続テキストがあってもよい（例 `## goal（目標）`）。
   for (const line of String(text).replace(/\r\n/g, '\n').split('\n')) {
-    const title = line.match(/^#\s+Charter:\s*(.+)$/);
+    const title = line.match(/^#\s+(?:Charter|憲章)\s*[:：]?\s*(.+?)\s*$/);
     if (title) {
-      charter.name = title[1].trim();
+      if (!charter.name) charter.name = title[1].trim(); // 最初の宣言を採用（本体の search と同じ）
       continue;
     }
-    const sec = line.match(/^##\s+(\w+)\s*$/);
+    const sec = line.match(/^##\s+([A-Za-z]+)\b/);
     if (sec) {
       current = sec[1].toLowerCase();
       charter.sections[current] = [];

@@ -94,9 +94,13 @@ function charterReposLines(repos) {
 // spec.master が真なら `## master` セクションを付けたマスター憲章（全バージョン共通の前提。
 // kiro-project はこれを分解せず、charters/<名前>.md の計画バージョンへ継承する）にする。
 // マスター憲章は完了条件（acceptance）を持たない: 完了条件は各計画バージョンが定義する。
+// spec.version が真（計画バージョン charters/<名前>.md の生成）のときは、空の constraints /
+// assumptions を**見出しごと省略**する。本体の継承規則は「見出しがあって空＝継承値を空に上書き」
+// なので、空見出しを書くとマスターの制約・前提がそのバージョンに適用されなくなるため。
 function buildCharter(spec) {
   const name = String((spec && spec.name) || '').trim() || 'project';
   const master = !!(spec && spec.master);
+  const version = !master && !!(spec && spec.version);
   const out = [`# Charter: ${name}`, ''];
   const section = (key, body, hint) => {
     out.push(`## ${key}`);
@@ -113,8 +117,10 @@ function buildCharter(spec) {
     );
   }
   section('goal', String((spec && spec.goal) || '').trim());
-  section('constraints', bulletize(spec && spec.constraints));
-  section('assumptions', bulletize(spec && spec.assumptions));
+  const constraints = bulletize(spec && spec.constraints);
+  const assumptions = bulletize(spec && spec.assumptions);
+  if (!version || constraints) section('constraints', constraints);
+  if (!version || assumptions) section('assumptions', assumptions);
   section('deliverables', bulletize(spec && spec.deliverables));
   if (!master) {
     // 完了条件（acceptance）はマスターには書かない。計画バージョン（またはバージョン運用でない
@@ -197,6 +203,9 @@ function charterToFields(text) {
 }
 
 // フォームフィールド → charter.md。master は完了条件（acceptance）を書かない（バージョンが持つ）。
+// constraints / assumptions は `_constraintsDefined` / `_assumptionsDefined` が **明示的に false**
+// のとき見出しごと省略する（見出し無し＝マスターへ動的に継承。本体の _merge_master_charter と
+// 同じ「見出しの有無」規則）。フラグ未指定（undefined）は従来どおり常に書く（後方互換）。
 function fieldsToCharter(f) {
   const bul = (arr) =>
     (Array.isArray(arr) ? arr : [])
@@ -219,8 +228,8 @@ function fieldsToCharter(f) {
     );
   }
   sec('goal', String((f && f.goal) || '').trim());
-  sec('constraints', bul(f && f.constraints));
-  sec('assumptions', bul(f && f.assumptions));
+  if (!f || f._constraintsDefined !== false) sec('constraints', bul(f && f.constraints));
+  if (!f || f._assumptionsDefined !== false) sec('assumptions', bul(f && f.assumptions));
   sec('deliverables', bul(f && f.deliverables));
   if (!(f && f.master)) sec('acceptance', bul(f && f.acceptance));
   if (((f && f._reposRaw) || '').trim()) sec('repos', f._reposRaw.trim());
@@ -290,7 +299,7 @@ function validateRepoRows(rows) {
     names.add(name);
     const base = String(r.base || '').trim();
     const key = [String(r.url).trim(), String(r.path || '').trim().replace(/\/+$/, ''),
-      base, String(r.target || '').trim() || base].join(' ');
+      base, String(r.target || '').trim() || base].join('\0');
     if (identities.has(key)) {
       const where = String(r.path || '').trim() ? `path '${r.path}'` : 'path 無し';
       throw new Error(
@@ -404,10 +413,13 @@ function createProject(spec) {
   if (master && charterName) {
     versionFile = path.join(dir, 'charters', `${charterName}.md`);
     fs.mkdirSync(path.dirname(versionFile), { recursive: true });
+    // version: true — 制約・前提の空見出しを書かない＝マスター（charter.md に書いた
+    // constraints/assumptions）が本体の継承でこのバージョンへ適用される。空見出しを書くと
+    // 「継承値を空に上書き」と解釈され、フォームに入力した制約・前提が効かなくなる。
     fs.writeFileSync(
       versionFile,
-      buildCharter({ name: charterName, goal: spec.goal, deliverables: spec.deliverables,
-                     acceptance: spec.acceptance }),
+      buildCharter({ name: charterName, version: true, goal: spec.goal,
+                     deliverables: spec.deliverables, acceptance: spec.acceptance }),
       'utf8'
     );
   }

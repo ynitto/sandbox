@@ -29,8 +29,11 @@ const projectSettingsSource = renderer.slice(
   renderer.indexOf('\n// プロジェクトのリセット', renderer.indexOf('function openProjectSettings('))
 );
 assert.ok(!projectSettingsSource.includes('計画バージョン'), '計画バージョン管理をプロジェクト設定に重複表示しません');
-assert.ok(renderer.includes('opts.seedConstraints'), '新規版は共通の制約を引き継ぎます');
-assert.ok(renderer.includes('opts.seedAssumptions'), '新規版は共通の前提を引き継ぎます');
+// 新規版・見出し無しの版は、共通設定（マスター）の制約・前提を「継承値」としてフォームに表示し、
+// 変更しない限り見出しを書かずマスターへの追従を維持する（コピーで固定しない）。
+assert.ok(renderer.includes('inheritedConstraints'), '版フォームは共通の制約を継承値として表示します');
+assert.ok(renderer.includes('inheritedAssumptions'), '版フォームは共通の前提を継承値として表示します');
+assert.ok(renderer.includes('_constraintsDefined = cf.origConstraintsDefined'), '継承中は変更したときだけ明示値として保存します');
 assert.ok(!renderer.includes("const showConstraints = !isVersion"), '版ごとの制約・前提を編集可能にします');
 for (const id of ['enq-charter', 'dlg-replan', 'replan-charter', 'btn-replan-submit']) {
   assert.ok(html.includes(`id="${id}"`), `タスク操作の版指定に ${id} が必要です`);

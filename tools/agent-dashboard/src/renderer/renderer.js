@@ -1116,7 +1116,13 @@ function overviewVersionsHtml(p) {
           <span class="version-state">${esc(status)}</span>
         </div>
       </div>
-      <div class="version-card-goal">${ch.goal ? proseHtml(ch.goal) : '<span class="muted">やることは未設定です。</span>'}</div>
+      <div class="version-card-goal">${
+        ch.goal
+          ? proseHtml(ch.goal)
+          : p.charter && p.charter.master && p.charter.goal
+            ? `${proseHtml(p.charter.goal)}<div class="muted">（共通設定の目標を継承）</div>`
+            : '<span class="muted">やることは未設定です。</span>'
+      }</div>
       <div class="version-card-counts" aria-label="作業状況">
         <span><strong>${usage.active}</strong> 進行中</span>
         <span><strong>${usage.done}</strong> 完了</span>
@@ -2191,17 +2197,27 @@ function charterAssistContext(p, charterName = '') {
   if (!p) return { goal: '', acceptance: '' };
   const version = charterName ? (p.charters || []).find((c) => c.name === charterName) : null;
   const ch = version || p.charter || (p.charters || []).find((c) => c.goal) || (p.charters || [])[0] || {};
-  const acceptance = Array.isArray(ch.acceptanceItems)
-    ? ch.acceptanceItems.join('\n')
-    : Array.isArray(ch.acceptance)
-      ? ch.acceptance.join('\n')
-      : String(ch.acceptance || '');
+  // マスター憲章からの継承（本体 _merge_master_charter と同じ規則）:
+  //   goal / acceptance … バージョン側が空ならマスターへフォールバック
+  //   constraints / assumptions … バージョン側に**見出しが無ければ**マスターへフォールバック
+  //     （見出しがあって空＝「継承値を空に上書き」の明示の意思なので、空でも埋め戻さない。
+  //     parseCharter はセクションを見出しの在るキーだけ持つため in 判定で見出しの有無が分かる）
+  const master = version && p.charter && p.charter.master ? p.charter : null;
+  const acceptanceOf = (c) =>
+    Array.isArray(c.acceptanceItems)
+      ? c.acceptanceItems.join('\n')
+      : Array.isArray(c.acceptance)
+        ? c.acceptance.join('\n')
+        : String(c.acceptance || '');
+  const acceptance = acceptanceOf(ch) || (master ? acceptanceOf(master) : '');
+  const inherited = (key) =>
+    key in ch ? String(ch[key] || '') : master ? String(master[key] || '') : '';
   return {
     name: ch.name || p.name || '',
-    goal: String(ch.goal || ''),
+    goal: String(ch.goal || (master && master.goal) || ''),
     acceptance,
-    constraints: String(ch.constraints || (version && p.charter && p.charter.constraints) || ''),
-    assumptions: String(ch.assumptions || (version && p.charter && p.charter.assumptions) || ''),
+    constraints: master ? inherited('constraints') : String(ch.constraints || ''),
+    assumptions: master ? inherited('assumptions') : String(ch.assumptions || ''),
   };
 }
 
@@ -2734,25 +2750,37 @@ async function openCharterForm(name, opts) {
   const fields = res.fields;
   const isVersion = /^charters\//.test(name);
   const isMaster = !isVersion && !!fields.master;
-  // 旧形式のバージョンは制約・前提セクションを持たない。画面上では実際に適用される
-  // マスター値を初期表示し、保存後はその版の明示値として扱えるようにする。
-  if (isVersion && res.exists && (!fields._constraintsDefined || !fields._assumptionsDefined)) {
+  // 継承の判定材料（プレビューで fields を書き換える前に控える）。
+  // 見出しの無いバージョンはマスターへ**動的に**追従する（本体 _merge_master_charter の
+  // 「見出しの有無」規則）。画面には実際に適用されるマスター値を初期表示し、保存時は
+  // 「値を変えたときだけ」明示値として見出しを書く（変えなければ追従を維持）。
+  const origConstraintsDefined = !!fields._constraintsDefined;
+  const origAssumptionsDefined = !!fields._assumptionsDefined;
+  let inheritedConstraints = null;
+  let inheritedAssumptions = null;
+  if (isVersion && (!origConstraintsDefined || !origAssumptionsDefined)) {
     const inherited = await guard('共通設定の読込', () => api.readCharterFields(p.dir, 'charter.md'));
-    if (inherited && inherited.fields) {
-      if (!fields._constraintsDefined) fields.constraints = inherited.fields.constraints || [];
-      if (!fields._assumptionsDefined) fields.assumptions = inherited.fields.assumptions || [];
+    // 継承元になるのは charter.md がマスター（## master 付き）のときだけ。
+    // 非マスターの charter.md から本体は継承しないので、値を「継承」として見せない。
+    if (inherited && inherited.fields && inherited.fields.master) {
+      inheritedConstraints = inherited.fields.constraints || [];
+      inheritedAssumptions = inherited.fields.assumptions || [];
+      if (!origConstraintsDefined) fields.constraints = inheritedConstraints.slice();
+      if (!origAssumptionsDefined) fields.assumptions = inheritedAssumptions.slice();
     }
   }
   // 新規バージョン追加時は、前バージョン（または憲章）から引き継いだ やること/完了条件/成果物 を
   // 初期値にする（既存ファイルの編集では上書きしない＝res.exists のときは seed を使わない）。
+  // 制約・前提はコピーせず、上の継承表示に任せる（コピーすると追従が切れた明示値になる）。
   if (!res.exists && opts) {
     if (opts.seedGoal) fields.goal = opts.seedGoal;
     if (Array.isArray(opts.seedAcceptance)) fields.acceptance = opts.seedAcceptance;
     if (Array.isArray(opts.seedDeliverables)) fields.deliverables = opts.seedDeliverables;
-    if (Array.isArray(opts.seedConstraints)) fields.constraints = opts.seedConstraints;
-    if (Array.isArray(opts.seedAssumptions)) fields.assumptions = opts.seedAssumptions;
   }
-  charterForm = { dir: p.dir, name, fields, isVersion, isMaster, exists: res.exists };
+  charterForm = {
+    dir: p.dir, name, fields, isVersion, isMaster, exists: res.exists,
+    origConstraintsDefined, origAssumptionsDefined, inheritedConstraints, inheritedAssumptions,
+  };
 
   // 見出し・説明
   const verName = isVersion ? name.replace(/^charters\//, '').replace(/\.md$/, '') : '';
@@ -2789,7 +2817,24 @@ async function openCharterForm(name, opts) {
   renderSimpleList($('ec-constraints'), fields.constraints, '例: 標準ライブラリのみ');
   renderSimpleList($('ec-assumptions'), fields.assumptions, '例: 入力は UTF-8');
 
-  $('ec-inherit-note').classList.toggle('hidden', !isVersion);
+  // 継承の状態を実態に合わせて表示する:
+  //   追従中（見出し無し・マスターあり）→ 変更しない限り共通設定に追従し続ける
+  //   明示値（見出しあり）→ このバージョン固有・共通設定の変更には追従しない
+  const note = $('ec-inherit-note');
+  if (isVersion && inheritedConstraints !== null) {
+    note.textContent =
+      origConstraintsDefined && origAssumptionsDefined
+        ? '制約・前提はこのバージョン固有の値です（共通設定の変更には追従しません）。対象リポジトリは共通設定を使用します。'
+        : '制約・前提は共通設定（マスター）の値を表示しています。変更しなければ共通設定に追従し続け、' +
+          '変更するとこのバージョンだけの値になります（すべて削除すると「空で上書き」として保存されます）。' +
+          '対象リポジトリは共通設定を使用します。';
+    note.classList.remove('hidden');
+  } else if (isVersion) {
+    note.textContent = '制約・前提はこのバージョン固有の値です。対象リポジトリは共通設定を使用します。';
+    note.classList.remove('hidden');
+  } else {
+    note.classList.add('hidden');
+  }
   $('ec-hint').textContent = res.exists
     ? '保存した内容は次回の自動実行から反映されます'
     : '未作成 — 保存すると新規作成します';
@@ -2819,8 +2864,20 @@ async function saveCharterForm() {
   f.goal = $('ec-goal').value.trim();
   f.deliverables = readSimpleList($('ec-deliverables'));
   if (!cf.isMaster) f.acceptance = readSimpleList($('ec-acceptance'));
-  f.constraints = readSimpleList($('ec-constraints'));
-  f.assumptions = readSimpleList($('ec-assumptions'));
+  const cons = readSimpleList($('ec-constraints'));
+  const assum = readSimpleList($('ec-assumptions'));
+  f.constraints = cons;
+  f.assumptions = assum;
+  // 見出しの扱い（本体の継承規則「見出しがあれば明示値・無ければマスターへ追従」と対）:
+  //   元々見出しがある → 明示値のまま維持。
+  //   マスターへ追従中 → 値を変えていなければ見出しを書かず追従を維持、変えたときだけ明示化
+  //   （全削除は「継承を空に上書き」の明示の意思として空見出しを書く）。
+  //   継承元が無い → 値を入れたときだけ見出しを書く。
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  f._constraintsDefined = cf.origConstraintsDefined
+    || (cf.inheritedConstraints !== null ? !same(cons, cf.inheritedConstraints) : cons.length > 0);
+  f._assumptionsDefined = cf.origAssumptionsDefined
+    || (cf.inheritedAssumptions !== null ? !same(assum, cf.inheritedAssumptions) : assum.length > 0);
   const ok = await guard('保存', async () => {
     await api.writeCharterFields(cf.dir, cf.name, f);
     return true;
@@ -3088,7 +3145,9 @@ async function submitNewCharterVersion() {
   }
   // 初期値の引き継ぎ元: 直近の計画バージョン（あれば）、無ければマスター/初版の憲章。
   // その やること/完了条件/成果物 をフォームの初期状態に入れて、前バージョンから編集して作れる
-  // ようにする。制約・前提は共通設定からコピーし、この版だけの値としてフォームで変更できる。
+  // ようにする。制約・前提はここでコピーしない — マスターがあれば openCharterForm が
+  // 「継承値の表示」として出し、変更しない限りマスターへの追従が保たれる（コピーすると
+  // その時点のスナップショットで固定され、以後の共通設定の変更が伝わらなくなる）。
   const srcName =
     p.charters && p.charters.length ? `charters/${p.charters[p.charters.length - 1].name}.md` : 'charter.md';
   let seed = {};
@@ -3099,11 +3158,6 @@ async function submitNewCharterVersion() {
       seedAcceptance: Array.isArray(src.fields.acceptance) ? src.fields.acceptance : [],
       seedDeliverables: Array.isArray(src.fields.deliverables) ? src.fields.deliverables : [],
     };
-  }
-  const master = await guard('共通設定の読込', () => api.readCharterFields(p.dir, 'charter.md'));
-  if (master && master.fields) {
-    seed.seedConstraints = Array.isArray(master.fields.constraints) ? master.fields.constraints : [];
-    seed.seedAssumptions = Array.isArray(master.fields.assumptions) ? master.fields.assumptions : [];
   }
   // 名前を決めたら、続けて内容（やること・完了条件）を入力するバージョンのフォームを開く（保存で新規作成）
   await openCharterForm(`charters/${name}.md`, seed);
@@ -3120,7 +3174,9 @@ async function insertCharterTemplate() {
   }
   const m = /^charters\/([^/\\]+)\.md$/.exec(ef.name);
   const fallback = (state.project && state.project.name) || 'project';
-  const res = await guard('雛形の取得', () => api.charterTemplate(m ? m[1] : fallback));
+  // バージョン（charters/<name>.md）の雛形は空の制約・前提見出しを持たない
+  // （そのまま保存してもマスターの制約・前提を「空に上書き」しない）
+  const res = await guard('雛形の取得', () => api.charterTemplate(m ? m[1] : fallback, !!m));
   if (!res) return;
   $('ef-content').value = res.content;
   $('ef-ai-status').textContent = '雛形を挿入しました — 各セクションを埋めるか、✨ AI 補完で下書きできます';

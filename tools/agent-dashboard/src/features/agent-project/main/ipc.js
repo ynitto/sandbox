@@ -379,9 +379,11 @@ function registerIpc(ctx) {
     return authoring.writeProjectFile(dir, name, content);
   });
 
-  // charter.md の雛形（新規・空ファイル編集時の挿入用。authoring.buildCharter と同一の書式）
-  handle('dashboard:charterTemplate', ({ name }) => ({
-    content: authoring.buildCharter({ name: String(name || '').trim() || 'project' }),
+  // charter.md の雛形（新規・空ファイル編集時の挿入用。authoring.buildCharter と同一の書式）。
+  // version 指定（charters/<name>.md 用）は空の制約・前提見出しを省く＝そのまま保存しても
+  // マスターの制約・前提が「空に上書き」されない。
+  handle('dashboard:charterTemplate', ({ name, version }) => ({
+    content: authoring.buildCharter({ name: String(name || '').trim() || 'project', version: !!version }),
   }));
 
   // フォーム編集: charter / policy / repos を構造化データで読み書きする（マークダウン/JSON を
