@@ -108,6 +108,29 @@ python kiro-loop.py [--config FILE] [--no-daemon] [--log-level LEVEL]
   --log-level     DEBUG / INFO / WARNING / ERROR（デフォルト: INFO）
 ```
 
+## エージェント無しで試す（スタブ）
+
+kiro-cli を入れずに kiro-loop の動きを確認できます。`--stub` を付けると、kiro-cli の代わりに
+同梱のダミーエージェント（`stub/kiro-cli-stub.py`）を tmux ペインで起動します。LLM は呼ばず、
+受け取った文章を読み上げて数秒後に応答を返すだけですが、kiro-loop から見た振る舞い
+（待機中・処理中・完了）は本物と同じなので、定期送信・同時実行スロット・状態ファイルの
+`last_sent_at`・agent-dashboard からの送信まで通しで確認できます。
+
+```bash
+kiro-loop --stub                        # スタブで起動（応答まで既定 5 秒）
+KIRO_LOOP_STUB_DELAY=20 kiro-loop --stub  # 応答を遅くして「処理中」を観察する
+kiro-loop ls                            # 起動したペインを確認
+kiro-loop send "動作確認"                # 送信を試す（スタブが応答する）
+```
+
+| 指定 | 意味 |
+|------|------|
+| `--stub` | 同梱スタブを使う（`KIRO_LOOP_STUB=1` でも同じ） |
+| `KIRO_LOOP_STUB_DELAY` | スタブが応答するまでの秒数（既定 5） |
+| `KIRO_LOOP_AGENT_BIN` | 任意の実行ファイルをエージェントとして使う（自作スタブ向け） |
+
+スタブ単体でも起動できます（`./stub/kiro-cli-stub.py chat`）。終了は Ctrl+C。
+
 ## タスクスケジューラ連携（Windows + WSL）
 
 ### 多重起動防止

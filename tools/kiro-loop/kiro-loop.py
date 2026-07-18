@@ -119,6 +119,38 @@ _PROMPT_RE = re.compile(r"(^\s*[>?❯›]\s*$|!>)", re.MULTILINE)
 _ENV_LAST_ACTIVE = "KIRO_LAST_ACTIVE"
 _AGENTS_DIR = Path.home() / ".kiro" / "agents"
 
+# スタブモード: kiro-cli の代わりに同梱のダミーエージェントを起動し、エージェント CLI
+# 無しでループの実動作（定期送信・処理中判定・スロット解放・復旧送信）を確認する。
+# 環境変数で持つのは、tmux ペインと send サブコマンドの双方に効かせるため。
+_STUB_ENV = "KIRO_LOOP_STUB"
+_AGENT_BIN_ENV = "KIRO_LOOP_AGENT_BIN"
+_STUB_BIN = Path(__file__).resolve().parent / "stub" / "kiro-cli-stub.py"
+
+
+def _stub_enabled() -> bool:
+    return os.environ.get(_STUB_ENV, "").strip().lower() not in ("", "0", "false", "no")
+
+
+def _resolve_agent_bin() -> tuple[str | None, str]:
+    """起動する対話エージェントの実行ファイルを返す。(パス, エラー文言) を返す。"""
+    override = os.environ.get(_AGENT_BIN_ENV, "").strip()
+    if override:
+        if shutil.which(override) or Path(override).is_file():
+            return override, ""
+        return None, f"{_AGENT_BIN_ENV} に指定された '{override}' が見つかりません。"
+    if _stub_enabled():
+        if _STUB_BIN.is_file():
+            return str(_STUB_BIN), ""
+        return None, f"スタブが見つかりません: {_STUB_BIN}"
+    kiro_bin = shutil.which("kiro-cli")
+    if kiro_bin:
+        return kiro_bin, ""
+    return None, (
+        "kiro-cli が PATH に見つかりません。インストールするか、"
+        "エージェント無しで動作を確認するなら --stub を付けて起動してください。"
+    )
+
+
 # ---------------------------------------------------------------------------
 # inbound webhook 用定数
 # ---------------------------------------------------------------------------
@@ -1299,9 +1331,9 @@ class SessionManager:
         """新しい kiro-cli ペインを起動して管理下に登録する。"""
         if shutil.which("tmux") is None:
             raise RuntimeError("tmux が PATH に見つかりません。`sudo apt install tmux` を実行してください。")
-        kiro_bin = shutil.which("kiro-cli")
+        kiro_bin, bin_error = _resolve_agent_bin()
         if kiro_bin is None:
-            raise RuntimeError("kiro-cli が PATH に見つかりません。インストールしてください。")
+            raise RuntimeError(bin_error)
 
         session_cwd = self._resolve_cwd(cwd)
 
@@ -2646,6 +2678,10 @@ def _auto_attach_tmux_if_needed(args: argparse.Namespace) -> None:
     if args.split_direction:
         command_parts.extend(["--split-direction", shlex.quote(args.split_direction)])
 
+    # tmux サーバの環境は引き継がれないことがあるため、スタブ指定は引数で明示的に渡す
+    if _stub_enabled():
+        command_parts.append("--stub")
+
     command_parts.append("--controller-mode")
     controller_cmd = " ".join(command_parts)
 
@@ -3058,9 +3094,9 @@ def cmd_slot_release() -> None:
 
 def cmd_send(args: argparse.Namespace, cwd: Path) -> None:
     """プロンプトを tmux セッションの kiro-cli に送信する。"""
-    kiro_bin = shutil.which("kiro-cli")
+    kiro_bin, bin_error = _resolve_agent_bin()
     if kiro_bin is None:
-        print("[kiro-loop] ERROR: kiro-cli が PATH に見つかりません。", file=sys.stderr)
+        print(f"[kiro-loop] ERROR: {bin_error}", file=sys.stderr)
         sys.exit(1)
 
     prompt_arg = " ".join(args.prompt).strip()
@@ -3245,6 +3281,7 @@ def main() -> None:
         epilog="""
 使い方:
   kiro-loop                              # デーモンモードで起動
+  kiro-loop --stub                       # エージェント無しで動作確認（ダミー応答）
   kiro-loop ls                           # kiro 関連セッションを一覧表示
   kiro-loop send "プロンプト"             # セッションにプロンプトを送信
   kiro-loop send task.md                 # ファイル内容を読んで実行
@@ -3267,6 +3304,11 @@ def main() -> None:
         "--no-auto-attach",
         action="store_true",
         help="tmux 外で起動時に自動アタッチしない",
+    )
+    parser.add_argument(
+        "--stub",
+        action="store_true",
+        help="kiro-cli の代わりに同梱スタブを起動する（エージェント無しで動作確認する）",
     )
     parser.add_argument(
         "--controller-mode",
@@ -3353,6 +3395,10 @@ def main() -> None:
 
     logging.getLogger().setLevel(args.log_level)
 
+    # 環境変数で持たせ、tmux ペインの起動と send サブコマンドの双方へ引き継ぐ
+    if getattr(args, "stub", False):
+        os.environ[_STUB_ENV] = "1"
+
     cwd = Path.cwd()
 
     if args.subcommand == "ls":
@@ -3391,6 +3437,9 @@ def main() -> None:
 
     log_file = configure_file_logging()
     log.info("ファイルログを開始しました: %s", log_file)
+
+    if _stub_enabled():
+        log.info("スタブモードで起動します（kiro-cli は使わず %s を起動します）。", _STUB_BIN)
 
     config, config_path, has_local_config = load_config(cwd)
 

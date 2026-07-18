@@ -128,6 +128,12 @@ cwd が変わらない限り同じセッション名が生成される。
 
 ---
 
+**エージェント実行ファイルの解決** (`_resolve_agent_bin`): `KIRO_LOOP_AGENT_BIN` → `--stub` /
+`KIRO_LOOP_STUB`（同梱の `stub/kiro-cli-stub.py`）→ `shutil.which("kiro-cli")` の順。ペイン起動
+（`_start_pane`）と `send` サブコマンドの双方がこれを使う。スタブは kiro-loop が依存する
+kiro-cli の振る舞い — 待機中は `>` だけの行を最終行に出し、処理中は出さない（`_PROMPT_RE`）—
+だけを真似るので、判定・スロット・状態ファイルの経路は本番と同じコードが走る。
+
 ### 3.4 `PeriodicScheduler`
 
 **役割**: 各プロンプトエントリの `next_run_at` を管理し、時刻が来たらペインへ送信する。

@@ -7689,7 +7689,7 @@ function renderCowork() {
           <div class="cowork-item-actions">
             <button data-cowork-run="${esc(id)}" data-cowork-type="${esc(item.type || 'loop')}" data-cowork-name="${esc(item.name || id)}" ${busyId ? 'disabled' : ''}>${busyId === id ? '実行中…' : '実行'}</button>
             ${(item.type !== 'state-machine' || pairedLoop) && item.repo && api.kiroLoopListSessions
-              ? `<button data-cowork-term-repo="${esc(item.repo)}" data-cowork-term-name="${esc(item.name || id)}" ${busyId ? 'disabled' : ''}>端末</button>`
+              ? `<button data-cowork-term-repo="${esc(item.repo)}" data-cowork-term-name="${esc(item.name || id)}" title="この作業を動かしているエージェントの実行状況を見る" ${busyId ? 'disabled' : ''}>実行状況</button>`
               : ''}
             ${api.coworkItemLogs ? `<button data-cowork-history="${esc(id)}" data-cowork-name="${esc(item.name || id)}">履歴</button>` : ''}
             <button data-cowork-edit="${i}" ${busyId ? 'disabled' : ''}>編集</button>
@@ -7904,7 +7904,7 @@ function startKiroLoopCapturePoll() {
     if (meta) {
       meta.textContent = state.kiroLoopTerm.error
         ? state.kiroLoopTerm.error
-        : `更新 ${new Date(state.kiroLoopTerm.at).toLocaleTimeString('ja-JP')} ／ 読み取り専用（capture-pane）`;
+        : `${new Date(state.kiroLoopTerm.at).toLocaleTimeString('ja-JP')} 時点 ／ エージェントの画面をそのまま映しています（ここには入力できません）`;
       meta.classList.toggle('sync-error', !!state.kiroLoopTerm.error);
     }
     // 構造化状態（最終実行時刻・alive/busy）は capture より低頻度で追従する
@@ -7917,7 +7917,7 @@ function startKiroLoopCapturePoll() {
 
 async function openKiroLoopTerminal({ repo, name } = {}) {
   if (!api.kiroLoopListSessions) {
-    toast('kiro-loop 端末 API がありません');
+    toast('このビルドでは実行状況の表示に対応していません');
     return;
   }
   setKiroLoopTabVisible(true);
@@ -7931,7 +7931,7 @@ async function openKiroLoopTerminal({ repo, name } = {}) {
     text: '',
     summary: null,
     send: null,
-    error: 'セッションを検索しています…',
+    error: '動いているエージェントを探しています…',
     at: Date.now(),
   };
   switchTab('kiro-loop');
@@ -7939,7 +7939,7 @@ async function openKiroLoopTerminal({ repo, name } = {}) {
   refreshKiroLoopState();
   const listed = await guard('tmux セッション', () => api.kiroLoopListSessions({ repo: repo || '' }));
   if (!listed) {
-    state.kiroLoopTerm.error = 'セッション一覧の取得に失敗しました';
+    state.kiroLoopTerm.error = 'エージェントの一覧を取得できませんでした';
     renderKiroLoopTerminal();
     return;
   }
@@ -7948,7 +7948,7 @@ async function openKiroLoopTerminal({ repo, name } = {}) {
   state.kiroLoopTerm.items = items;
   state.kiroLoopTerm.session = first ? first.session : '';
   state.kiroLoopTerm.target = first ? first.target : '';
-  state.kiroLoopTerm.error = first ? '' : (listed.error || 'このリポジトリに紐づく kiro-loop tmux セッションはありません');
+  state.kiroLoopTerm.error = first ? '' : (listed.error || 'このフォルダで動いているエージェントは見つかりませんでした');
   renderKiroLoopTerminal();
   if (first) startKiroLoopCapturePoll();
 }
@@ -7958,7 +7958,7 @@ function renderKiroLoopTerminal() {
   if (!el) return;
   const term = state.kiroLoopTerm;
   if (!term) {
-    el.innerHTML = '<div class="empty">Cowork の「端末」から kiro-loop の tmux を開いてください。<br>Windows dashboard → WSL の tmux を capture-pane で視聴します（入力はできません）。</div>';
+    el.innerHTML = '<div class="empty"><strong>見る対象が選ばれていません</strong><span>定常業務タブで作業を選び、「実行状況」を押すとここに表示されます。</span></div>';
     return;
   }
   const opts = (term.items || []).map((it) =>
@@ -7968,27 +7968,28 @@ function renderKiroLoopTerminal() {
     <div class="kiro-loop-term">
       <header class="kiro-loop-term-header">
         <div>
-          <h2 class="summary-kicker">kiro-loop 端末</h2>
-          <p class="muted">${esc(term.name || 'tmux')} ／ ${esc(term.repo || '（リポジトリ未指定）')}</p>
+          <h2 class="summary-kicker">エージェントの実行状況</h2>
+          <p class="muted">${esc(term.name || '定常業務')} ／ ${esc(term.repo || '（フォルダ未指定）')}</p>
+          <p class="muted">設定ファイル（kiro-loop.yaml）に登録した予定が、決まった間隔でここのエージェントへ自動で送られます。</p>
         </div>
         <div class="row">
-          <button id="btn-kiro-loop-refresh">再読込</button>
+          <button id="btn-kiro-loop-refresh">最新の状態にする</button>
           <button id="btn-kiro-loop-close">閉じる</button>
         </div>
       </header>
       <div class="kiro-loop-term-toolbar">
-        <label class="muted">セッション
-          <select id="kiro-loop-target" ${opts ? '' : 'disabled'}>${opts || '<option value="">（なし）</option>'}</select>
+        <label class="muted">表示中のエージェント
+          <select id="kiro-loop-target" ${opts ? '' : 'disabled'}>${opts || '<option value="">（見つかりません）</option>'}</select>
         </label>
-        <span id="kiro-loop-term-meta" class="muted">${esc(term.error || '読み取り専用（capture-pane）')}</span>
+        <span id="kiro-loop-term-meta" class="muted">${esc(term.error || 'エージェントの画面をそのまま映しています（ここには入力できません）')}</span>
       </div>
       <div id="kiro-loop-state" class="kiro-loop-state">${kiroLoopStateHtml(term.summary)}</div>
       <div class="kiro-loop-send">
         <input id="kiro-loop-send-text" type="text"
-          placeholder="復旧送信するプロンプト（定期プロンプト名か自由文）" value="${esc((term.send && term.send.text) || '')}">
-        ${term.name ? `<button id="btn-kiro-loop-send-periodic" title="定期プロンプト名を kiro-loop send に渡し、ワークスペース設定の本文を送ります">定期プロンプト「${esc(term.name)}」を送る</button>` : ''}
-        <button id="btn-kiro-loop-send">送信</button>
-        <button id="btn-kiro-loop-send-cancel" class="hidden">待機を中止</button>
+          placeholder="エージェントに送る指示（予定の名前を入れると、その本文が送られます）" value="${esc((term.send && term.send.text) || '')}">
+        ${term.name ? `<button id="btn-kiro-loop-send-periodic" title="設定ファイルに書かれたこの予定の本文を、次回を待たずに送ります">「${esc(term.name)}」を今すぐ送る</button>` : ''}
+        <button id="btn-kiro-loop-send">送る</button>
+        <button id="btn-kiro-loop-send-cancel" class="hidden">送るのをやめる</button>
         <span id="kiro-loop-send-meta" class="muted">${esc((term.send && term.send.message) || '')}</span>
       </div>
       <pre id="kiro-loop-capture" class="kiro-loop-capture mono" aria-live="polite">${esc(stripAnsi(term.text || (term.error && !term.target ? '' : '…')))}</pre>
@@ -8045,11 +8046,11 @@ function kiroLoopStateHtml(summary) {
   const rows = [];
   for (const d of (summary && summary.daemons) || []) {
     for (const s of d.sessions || []) {
-      const label = !s.alive ? '停止' : (s.busy ? '処理中' : '待機中');
+      const label = !s.alive ? '止まっています' : (s.busy ? '応答中' : '待機中');
       const cls = !s.alive ? 'st-failed' : (s.busy ? 'st-running' : 'st-ready');
       const lastSent = s.lastSentAt
-        ? `${fmtTime(new Date(s.lastSentAt * 1000).toISOString())}${s.lastSendOk === false ? '（送信失敗）' : ''}`
-        : '—';
+        ? `${fmtTime(new Date(s.lastSentAt * 1000).toISOString())}${s.lastSendOk === false ? '（送信に失敗）' : ''}`
+        : 'まだありません';
       rows.push(`<tr>
         <td>${esc(s.name || s.pane)}</td>
         <td><span class="status-chip ${cls}">${label}</span></td>
@@ -8057,9 +8058,14 @@ function kiroLoopStateHtml(summary) {
       </tr>`);
     }
   }
-  if (!summary) return '<p class="muted">稼働状態を読み込んでいます…</p>';
-  if (!rows.length) return '<p class="muted">稼働中の kiro-loop デーモンはありません。</p>';
-  return `<table class="list"><tr><th>プロンプト</th><th>状態</th><th>最終実行</th></tr>${rows.join('')}</table>`;
+  if (!summary) return '<p class="muted">状態を読み込んでいます…</p>';
+  if (!rows.length) {
+    return '<p class="muted">このフォルダで自動実行しているものは見つかりません（kiro-loop が起動していないか、別のフォルダで動いています）。</p>';
+  }
+  return `<table class="list">
+    <tr><th>予定の名前</th><th>いまの状態</th><th>最後に送った時刻</th></tr>${rows.join('')}
+  </table>
+  <p class="muted">「予定の名前」は設定ファイル（kiro-loop.yaml の prompts）で付けた名前です。名前を送ると、そこに書かれた本文がエージェントへ送られます。</p>`;
 }
 
 async function refreshKiroLoopState() {
@@ -8100,29 +8106,29 @@ async function kiroLoopSendPrompt(promptText) {
   const term = state.kiroLoopTerm;
   if (!term) return;
   if (!api.kiroLoopSend) {
-    toast('kiro-loop 送信 API がありません');
+    toast('このビルドではエージェントへの送信に対応していません');
     return;
   }
   const text = String(promptText || '').trim();
   if (!text) {
-    toast('送信するプロンプトを入力してください');
+    toast('送る指示を入力してください');
     return;
   }
   kiroLoopCancelWait();
-  term.send = { text, phase: 'sending', message: '送信しています…' };
+  term.send = { text, phase: 'sending', message: 'エージェントに送っています…' };
   updateKiroLoopSendMeta();
   const res = await api.kiroLoopSend({ repo: term.repo, target: term.target, prompt: text })
     .catch((err) => ({ ok: false, busy: false, error: err.message || String(err) }));
   if (state.kiroLoopTerm !== term) return;
   if (res && res.ok) {
-    term.send = { text: '', phase: 'ok', message: `送信しました（${new Date().toLocaleTimeString('ja-JP')}）` };
+    term.send = { text: '', phase: 'ok', message: `送りました（${new Date().toLocaleTimeString('ja-JP')}）。下の画面に応答が出ます。` };
     const input = $('kiro-loop-send-text');
     if (input) input.value = '';
-    toast('プロンプトを送信しました');
+    toast('エージェントに送りました', true);
     refreshKiroLoopState();
   } else if (res && res.busy) {
     // busy 拒否は失敗ではなく「送信待機」— 完了を待って自動で再送する
-    term.send = { text, phase: 'waiting', message: `処理中のため送信待機中…（${KIRO_LOOP_SEND_RETRY_SEC} 秒ごとに自動再送）` };
+    term.send = { text, phase: 'waiting', message: `エージェントが応答中です。手が空くまで待って自動で送ります（${KIRO_LOOP_SEND_RETRY_SEC} 秒ごとに再試行）。` };
     state.kiroLoopSendTimer = setTimeout(() => {
       state.kiroLoopSendTimer = null;
       if (state.kiroLoopTerm === term && term.send && term.send.phase === 'waiting') {
@@ -8130,7 +8136,7 @@ async function kiroLoopSendPrompt(promptText) {
       }
     }, KIRO_LOOP_SEND_RETRY_SEC * 1000);
   } else {
-    term.send = { text, phase: 'error', message: `送信できませんでした: ${(res && (res.error || res.detail)) || '不明なエラー'}` };
+    term.send = { text, phase: 'error', message: `送れませんでした: ${(res && (res.error || res.detail)) || '原因不明'}` };
   }
   updateKiroLoopSendMeta();
 }
