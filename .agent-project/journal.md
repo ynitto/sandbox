@@ -49,3 +49,15 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-18 17:18:07 警告: origin へ未 push のコミットが 1 件ある（main）。worker と verify は origin から clone するため、これらの成果は彼らから 見えない（ローカルでは通るのに verify が落ち続ける）。`git -C /Users/nitto/Workspace/sandbox push origin main` を検討すること
 - 2026-07-18 18:11:03 verify: codd-gate-163827 を https://github.com/ynitto/sandbox@ap/codd-gate-163827（path=tools/agent-project） のクローン内で検証
 - 2026-07-18 18:11:04 cycle 1: codd-gate-163827 → 人の判断（回帰検知）
+- 2026-07-18 18:11:06 state-git 同期: import=4 export=5
+- 2026-07-18 18:11:06 plan-review 承認: agent_project-codd_gate-163827 → ready
+- 2026-07-18 18:11:06 commands 取り込み: approve agent_project-codd_gate-163827（viewer-approve-agent_project-codd_gate-163827-1784362691424.json）
+- 2026-07-18 18:11:06 plan-review 承認: dashboard-163827 → ready
+- 2026-07-18 18:11:06 commands 取り込み: approve dashboard-163827（viewer-approve-dashboard-163827-1784362692172.json）
+- 2026-07-18 18:11:06 plan-review 承認: enq-20260718-163827 → ready
+- 2026-07-18 18:11:06 commands 取り込み: approve enq-20260718-163827（viewer-approve-enq-20260718-163827-1784362694255.json）
+- 2026-07-18 18:11:06 plan-review 承認: sibling-163827 → ready
+- 2026-07-18 18:11:06 commands 取り込み: approve sibling-163827（viewer-approve-sibling-163827-1784362688806.json）
+- 2026-07-18 18:11:06 === agent-project 停止 reason=drained cycles=1 done=0 blocked=1 notified=True promoted=0 ===
+- 2026-07-18 18:11:08 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-18 18:11:08 === project watch: 監視中（charter 更新/フィードバック待ち）===

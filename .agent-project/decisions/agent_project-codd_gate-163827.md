@@ -1,0 +1,6 @@
+## DR-0001  2026-07-18  actor: nitto
+- context : agent_project-codd_gate-163827（agent_project を codd_gate 非依存の汎用フックへ整理する）の実行を承認
+- action  : plan-approve
+- reason  : agent-dashboard から操作
+- affects : agent_project-codd_gate-163827 → ready
+

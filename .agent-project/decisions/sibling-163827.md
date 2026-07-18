@@ -1,0 +1,6 @@
+## DR-0001  2026-07-18  actor: nitto
+- context : sibling-163827（sibling 自動検出レイヤと利用手順を新境界へ追随させる）の実行を承認
+- action  : plan-approve
+- reason  : agent-dashboard から操作
+- affects : sibling-163827 → ready
+

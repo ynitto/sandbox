@@ -1,5 +1,5 @@
 ## agent_project-codd_gate-163827: agent_project を codd_gate 非依存の汎用フックへ整理する
-- status: proposed
+- status: ready
 - source: charter
 - priority: 0
 - verify: `PYTHONPATH=tools/agent-project python3 tools/agent-project/tests/test_agent_project.py TestIntake.test_run_intake_enqueues_and_dedups_by_id TestLoopEngineering.test_regression_gate_blocks_on_failure TestLoopEngineering.test_regression_gate_passes && ! git grep -n -E '(^|[[:space:]])(import|from)[[:space:]]+codd_gate|_apply_codd_gate|_codd_gate' -- tools/agent-project/agent_project`
