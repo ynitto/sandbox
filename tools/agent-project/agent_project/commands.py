@@ -11,12 +11,18 @@ def approve_review_done(cfg: Config, t: Task, reason: str) -> "tuple[bool, str]"
     タスク MR があれば Stage 2 と同一規則で自動決着（クリーンならマージ・未クリーンなら
     差し戻しコメントを付けて review のまま needs 票を書き直す）。"""
     tid = t.id
-    mr_ok, mr_msg = finalize_task_mr(cfg, t)
+    mr_ok, mr_msg = finalize_task_delivery(cfg, t)
     if not mr_ok:
-        write_needs_file(cfg, t, f"承認されたが MR が未クリーン: {mr_msg}", review=True,
-                         evidence=f"- MR: {t.get('mr_url', '')}")
-        return (False, f"{tid}: MR が未クリーンのため done にできません（{mr_msg}）。"
-                       f"解消後に再度 approve してください。")
+        mr_url = str(t.get("mr_url") or "")
+        delivery = delivery_entries(cfg, t, mr_url=mr_url)
+        try:
+            evidence = delivery_evidence(cfg, "", None, "local", task=t, mr_url=mr_url)
+        except Exception:  # noqa: BLE001 — 統合失敗の票は必ず残す
+            evidence = f"- MR: {mr_url}" if mr_url else ""
+        write_needs_file(cfg, t, f"承認されたが成果ブランチを統合できない: {mr_msg}", review=True,
+                         evidence=evidence, mr_url=mr_url, delivery=delivery)
+        return (False, f"{tid}: 成果ブランチをターゲットへ統合できないため done にできません"
+                       f"（{mr_msg}）。解消後に再度 approve してください。")
     lines = [f"{tid}: {mr_msg}"] if mr_msg else []
     # 検収ゲートの承認 = done 確定（verify は実行済み。保持した成果参照で納品書を書く）
     ex = dict(t.extra)

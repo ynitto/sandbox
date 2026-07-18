@@ -167,6 +167,54 @@ def finalize_task_mr(cfg: "Config", task: "Task") -> "tuple[bool, str]":
         return False, f"MR の決着に失敗（解消/再試行してください）: {e}"
 
 
+def finalize_task_delivery(cfg: "Config", task: "Task") -> "tuple[bool, str]":
+    """検収承認された作業ブランチを target へ統合する。
+
+    GitLab MR が使える場合はレビュー情報を保ったまま API でマージする。MR を作れない場合も
+    origin 上の target が作業ブランチの祖先であることを確認し、fast-forward push で統合する。
+    統合できなければ review を維持し、成果未反映のまま done にしない。
+    """
+    if _task_mr_coords(task) is None:
+        if ensure_task_mr(cfg, task):
+            persist_task(cfg, task)
+    if _task_mr_coords(task) is not None:
+        return finalize_task_mr(cfg, task)
+
+    work = _task_work_branch(cfg, task)
+    if work is None:
+        return True, ""  # 書込 workspace を持たない読み取り専用・旧形式タスク
+    target, branch = work
+    repo = _source_repo(cfg)
+    ref, files = work_branch_changes(cfg, target, branch, repo=repo)
+    if not ref:
+        return False, f"作業ブランチ {branch} を解決できないため、{target} へマージできません"
+
+    def run(*args: str):
+        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True,
+                              text=True, timeout=180)
+
+    if run("check-ref-format", "--branch", target).returncode != 0 \
+            or run("check-ref-format", "--branch", branch).returncode != 0:
+        return False, "作業ブランチまたはターゲットブランチ名が不正です"
+    fetched = run("fetch", "-q", "origin", target)
+    target_ref = f"origin/{target}" if fetched.returncode == 0 else target
+    # 既に target 側へ取り込まれていれば冪等成功。
+    if run("merge-base", "--is-ancestor", ref, target_ref).returncode == 0:
+        return True, f"作業ブランチ {branch} は {target} へ統合済み"
+    # target が進んで分岐している場合は、暗黙の競合解決をせず review のまま差し戻す。
+    if run("merge-base", "--is-ancestor", target_ref, ref).returncode != 0:
+        return False, f"{target} が作業開始後に更新されています。{branch} を更新して再検収してください"
+    if not files:
+        return False, f"{target} と {branch} の検収差分を取得できません"
+    pushed = run("push", "origin", f"{ref}:refs/heads/{target}", "--porcelain")
+    if pushed.returncode != 0:
+        why = (pushed.stderr or pushed.stdout or "git push failed").strip()[:300]
+        return False, f"作業ブランチを {target} へマージできません: {why}"
+    # target への反映後だけ作業ブランチを削除する。削除失敗は納品結果を巻き戻さない。
+    run("push", "origin", "--delete", branch)
+    return True, f"作業ブランチ {branch} を {target} へ fast-forward マージ"
+
+
 def close_task_mr(cfg: "Config", task: "Task", reason: str) -> None:
     """却下（reject）時: タスク MR をクローズしソースブランチを削除する（best-effort・
     gitlab-review-viewer の却下と同じ規則）。GitLab 未設定なら何もしない。"""

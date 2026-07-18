@@ -7699,6 +7699,25 @@ class TestStateGitSync(unittest.TestCase):
         km.state_sync(cfg, force=True)
         self.assertEqual(nf.read_text(encoding="utf-8"), "human answer\n")
 
+    def test_conflict_remote_needs_deletion_does_not_erase_machine_replacement(self):
+        """needs の本文は人の編集を優先するが、削除は機械の lifecycle 入力ではない。
+
+        古い plan-review 票を viewer 側が消した直後に、実行側が blocked 票へ置き換えた場合、
+        stale な削除で新しい票を消してはならない。backlog が blocked のまま needs だけ失われると
+        要対応画面と実状態が分裂するため、同時競合では実行側の置換を保持する。
+        """
+        cfg = self._cfg()
+        nf = cfg.needs / "T1.md"
+        nf.write_text("plan-review\n", encoding="utf-8")
+        km.state_sync(cfg, force=True)
+        other = self._other()
+        rn = other / "kp" / "needs" / "T1.md"
+        rn.unlink()
+        self._commit_push(other, "viewer: remove stale plan review")
+        nf.write_text("blocked with delivery\n", encoding="utf-8")
+        km.state_sync(cfg, force=True)
+        self.assertEqual(nf.read_text(encoding="utf-8"), "blocked with delivery\n")
+
     def test_conflict_repos_registry_prefers_remote(self):
         # repos.{json,yaml,yml} は人が書くレジストリ（charter ## repos の互換入力）なので
         # policy.md / charter.md と同じくリモート優先（viewer 側の編集を取りこぼさない）。
@@ -8009,6 +8028,26 @@ class TestDirectStateGit(unittest.TestCase):
         km.state_sync(cfg, force=True)
         got = self._other("del-check")
         self.assertFalse((got / "backlog" / "T1.md").exists())  # 削除も worktree 経由で反映
+
+    def test_direct_merge_remote_needs_deletion_keeps_local_replacement(self):
+        """direct モードでも stale な needs 削除より新しい機械票を優先する。"""
+        cfg = self._cfg()
+        nf = cfg.needs / "T1.md"
+        nf.write_text("plan-review\n", encoding="utf-8")
+        km.state_sync(cfg, force=True)
+
+        other = self._other("viewer-delete")
+        (other / "needs" / "T1.md").unlink()
+        subprocess.run(["git", "-C", str(other), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(other), "commit", "-qm", "delete stale need"], check=True)
+        subprocess.run(["git", "-C", str(other), "push", "-q", "origin", "main"],
+                       check=True, capture_output=True)
+
+        nf.write_text("blocked with delivery\n", encoding="utf-8")
+        km.state_sync(cfg, force=True)
+        got = self._other("needs-check")
+        self.assertEqual((got / "needs" / "T1.md").read_text(encoding="utf-8"),
+                         "blocked with delivery\n")
 
     def test_direct_sync_keeps_working_tree_clean_after_export(self):
         # CAS でブランチを進めた後、対象パスの index を新 HEAD に追随させる
@@ -9938,6 +9977,50 @@ class TestTaskBranchAndDeliveryReview(unittest.TestCase):
             with mock.patch.object(km, "_gl_token", return_value=""):
                 self.assertEqual(km.ensure_task_mr(cfg, t), "")   # トークン無し＝記録のみで続行
 
+    def test_delivery_entries_compares_task_branch_with_target(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, task_branch=True)
+            t = self._mr_task(cfg, d)
+            meta = {
+                "workspace": {
+                    "url": "https://gitlab.example.com/g/app.git",
+                    "base": "main",
+                    "target": "release",
+                    "branch": "ap/T1",
+                }
+            }
+            with mock.patch.object(km, "_task_run_meta", return_value=meta), \
+                 mock.patch.object(km, "work_branch_changes", return_value=("origin/ap/T1", ["src/a.py"])) as changes:
+                entries = km.delivery_entries(cfg, t)
+            changes.assert_called_once_with(cfg, "release", "ap/T1", repo=mock.ANY)
+            self.assertEqual(entries[0]["target"], "release")
+            self.assertEqual(entries[0]["base"], "release")
+
+    def test_approve_without_mr_fast_forwards_target_branch(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, task_branch=True)
+            t = self._mr_task(cfg, d)
+            t.status = "review"
+            km.persist_task(cfg, t)
+            calls = []
+
+            def run(cmd, **kwargs):
+                calls.append(cmd)
+                if "merge-base" in cmd and cmd[-2:] == ["origin/ap/T1", "origin/release"]:
+                    return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            with mock.patch.object(km, "ensure_task_mr", return_value=""), \
+                 mock.patch.object(km, "_task_work_branch", return_value=("release", "ap/T1")), \
+                 mock.patch.object(km, "work_branch_changes", return_value=("origin/ap/T1", ["src/a.py"])), \
+                 mock.patch.object(km.subprocess, "run", side_effect=run):
+                ok, msg = km.finalize_task_delivery(cfg, t)
+            self.assertTrue(ok, msg)
+            self.assertTrue(any(cmd[-2:] == ["origin/ap/T1:refs/heads/release", "--porcelain"]
+                                for cmd in calls if "push" in cmd))
+
     def _review_task_with_mr(self, cfg, d):
         t = self._mr_task(cfg, d)
         t.status = "review"
@@ -10092,6 +10175,20 @@ class DeliveryEvidenceTests(unittest.TestCase):
             self.assertEqual(wb, ("main", "ap/T1"))
             _ref, files = km.work_branch_changes(cfg, *wb)
             self.assertEqual(sorted(files), ["src.py", "test_src.py"])
+
+    def test_work_branch_is_recovered_after_run_metadata_is_cleaned(self):
+        """検収時までに bus run が GC 済みでも、永続化した workspace から作業 branch を復元する。"""
+        with tempfile.TemporaryDirectory() as d:
+            top = self._repo()
+            cfg = cfg_for(Path(d), task_branch=True, task_branch_prefix="ap/")
+            cfg.state_top = top
+            t = km.Task(id="T1", title="直す", status="blocked", verify="true")
+            t.extra.append(("workspace", str(top)))
+            self.assertEqual(km._task_work_branch(cfg, t), ("main", "ap/T1"))
+            entries = km.delivery_entries(cfg, t)
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(entries[0]["branch"], "ap/T1")
+            self.assertEqual(sorted(entries[0]["files"]), ["src.py", "test_src.py"])
 
     def test_falls_back_when_no_work_branch(self):
         # 単発実行（作業ブランチが無い）では従来どおり workdir を見る

@@ -43,7 +43,7 @@
         },
         "owns": {
           "$ref": "#/definitions/globs",
-          "description": "担当パスのグロブ。kiro-projects のワークスペース・ルーティング（タスク→書込先）の根拠。無指定＝参照リポジトリ（読むだけ・書込先にしない）"
+          "description": "担当パスのグロブ。agent-project のワークスペース・ルーティング（タスク→書込先）の根拠。無指定＝参照リポジトリ（読むだけ・書込先にしない）"
         },
         "readonly": {
           "type": "boolean",

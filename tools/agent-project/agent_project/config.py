@@ -271,12 +271,22 @@ def _task_run_meta(cfg: "Config", task: "Task") -> dict:
 
 
 def _task_work_branch(cfg: "Config", task: "Task") -> "tuple[str, str] | None":
-    """タスクの作業ブランチ (base, branch)。agent-flow が run メタへ記録した workspace から取る。"""
+    """タスクの作業ブランチ (target, branch)。
+
+    通常は agent-flow の run メタを正とする。検収は run GC より長く残り得るため、メタが消えた後は
+    backlog に永続化済みの workspace と task_branch 契約から同じ値を再構成する。
+    """
     ws = (_task_run_meta(cfg, task).get("workspace") or {})
     branch = str(ws.get("branch") or "").strip()
+    target = str(ws.get("target") or ws.get("base") or "").strip()
+    if not branch and getattr(cfg, "task_branch", False) and str(task.get("workspace") or "").strip():
+        spec = _workspace_spec_for(cfg, task) or {}
+        branch = str(spec.get("branch") or task_branch_name(cfg, task)).strip()
+        target = str(spec.get("target") or spec.get("base") or target).strip()
     if not branch:
         return None
-    return (str(ws.get("base") or "main").strip() or "main"), branch
+    target = target or "main"
+    return target, branch
 
 
 def work_branch_changes(cfg: "Config", base: str, branch: str,
@@ -321,25 +331,29 @@ def delivery_entries(cfg: "Config", task: "Task | None" = None,
         return []
     meta = _task_run_meta(cfg, task)
     ws = meta.get("workspace") or {}
-    branch = str(ws.get("branch") or "").strip()
-    base = str(ws.get("base") or "main").strip() or "main"
+    work = _task_work_branch(cfg, task)
+    target, branch = work if work is not None else ("main", "")
+    # run GC 後は永続 workspace spec を表示情報にも使う。ブランチだけ復元しても delivery が空なら
+    # 検収不能になるため、生成と承認で同じ _task_work_branch 契約を共有する。
+    persisted_ws = _workspace_spec_for(cfg, task) or {}
     entries: "list[dict]" = []
     if branch:
         repo = _source_repo(cfg)
-        ref, files = work_branch_changes(cfg, base, branch, repo=repo)
-        url = str(ws.get("url") or "")
+        ref, files = work_branch_changes(cfg, target, branch, repo=repo)
+        url = str(ws.get("url") or persisted_ws.get("url") or "")
         name = _repo_label(url, fallback=repo.name)
         entry = {
             "name": name,
             "role": "write",
             "url": url,
             "path": str(repo),
-            "base": base,
+            "base": target,
+            "target": target,
             "branch": branch,
             "ref": ref,
             "files": files[:max_files],
             "files_total": len(files),
-            "diff_cmd": f"git -C {repo} diff {base}...{ref}" if ref else "",
+            "diff_cmd": f"git -C {repo} diff {target}...{ref}" if ref else "",
             "mr_url": str(mr_url or task.get("mr_url") or "").strip(),
         }
         entries.append(entry)
@@ -355,7 +369,8 @@ def delivery_entries(cfg: "Config", task: "Task | None" = None,
             "role": "reference",
             "url": rurl,
             "path": "",
-            "base": str(ref_spec.get("base") or base),
+            "base": str(ref_spec.get("base") or target),
+            "target": str(ref_spec.get("target") or ref_spec.get("base") or target),
             "branch": str(ref_spec.get("branch") or ""),
             "ref": "",
             "files": [],

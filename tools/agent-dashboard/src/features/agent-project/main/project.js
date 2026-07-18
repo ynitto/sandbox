@@ -426,6 +426,7 @@ function _normalizeDelivery(entries) {
         url: String(e.url || ''),
         path: String(e.path || ''),
         base: String(e.base || ''),
+        target: String(e.target || e.base || ''),
         branch: String(e.branch || ''),
         ref: String(e.ref || ''),
         files,
@@ -684,23 +685,34 @@ function listMdDir(dir, parser) {
 // 本体の ensure_needs と同じ契約: needs は status の投影で、票が失われても検収・承認導線を残す。
 // ここではファイルを書かず表示用だけを合成する（承認は commands/ 経由で needs ファイルが無くても届く）。
 function synthesizeNeedsFromBacklog(needs, backlog, needsDir) {
+  const expectedKind = (status) =>
+    status === 'review' ? 'review' : status === 'proposed' ? 'plan-review' : status === 'blocked' ? 'blocked' : '';
+  const taskById = new Map((backlog || []).map((t) => [String(t.id), t]));
   const have = new Set();
+  const out = [];
   for (const n of needs || []) {
+    const tid = String(n.taskId || n.id || '');
+    const task = taskById.get(tid);
+    const expected = task ? expectedKind(String(task.status || '')) : '';
+    // needs は backlog status の投影。古い plan-review が残ったまま task が blocked/review へ
+    // 進んだ場合、存在するだけで合成を抑止せず、下で正しい種別の表示票に置き換える。
+    if (expected && String(n.kind || '') !== expected) continue;
+    out.push(n);
     if (n.id) have.add(String(n.id));
     if (n.taskId) have.add(String(n.taskId));
   }
-  const out = [...(needs || [])];
   for (const t of backlog || []) {
     const st = String(t.status || '');
     if (!['review', 'blocked', 'proposed'].includes(st)) continue;
     if (have.has(String(t.id))) continue;
-    const kind = st === 'review' ? 'review' : st === 'proposed' ? 'plan-review' : 'blocked';
+    const kind = expectedKind(st);
     const why =
       st === 'review'
         ? '成果物の検収待ち（承認すると完了になります）'
         : st === 'proposed'
           ? '新規タスクの実行前レビュー（承認されるまで実行しません）'
-          : `実行が止まっています（retries=${t.retries || 0}）。指示を送るか、そのまま再実行してください。`;
+          : (t.extra && t.extra.needs_reason) ||
+            `実行が止まっています（retries=${t.retries || 0}）。指示を送るか、そのまま再実行してください。`;
     out.push({
       id: t.id,
       taskId: t.id,

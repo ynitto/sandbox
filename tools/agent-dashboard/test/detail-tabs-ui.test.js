@@ -180,6 +180,26 @@ const deliveryDiffOutputFormat = new Function(
 )();
 assert.strictEqual(deliveryDiffOutputFormat(900), 'side-by-side');
 assert.strictEqual(deliveryDiffOutputFormat(375), 'line-by-line', '狭い画面で左右比較を押し込まない');
+assert.strictEqual(deliveryDiffOutputFormat(719), 'line-by-line', '差分ペインが狭い場合は行単位表示にする');
+assert.strictEqual(deliveryDiffOutputFormat(720), 'side-by-side', '十分な差分ペイン幅でだけ左右比較にする');
+assert.match(
+  renderer,
+  /deliveryDiffOutputFormat\(view\.clientWidth\)/,
+  '表示方式はウィンドウ全体ではなく実際の差分ペイン幅で決める'
+);
+assert.ok(
+  renderer.includes('new ResizeObserver(') && renderer.includes('renderDeliveryDiff(view._deliveryDiffText)'),
+  'ダイアログを開いたまま幅が変わっても表示方式を再選択する'
+);
+// eslint-disable-next-line no-new-func
+const deliveryDiffRequest = new Function(
+  `${grab('deliveryDiffRequest')}; return deliveryDiffRequest;`
+)();
+assert.strictEqual(
+  deliveryDiffRequest({ path: '/work/app', target: 'release', base: 'main', ref: 'origin/ap/T1' }).base,
+  'release',
+  '検収差分はclone起点のbaseではなく、実際のマージ先targetと比較する'
+);
 
 {
   const delivery = [{ name: 'app', role: 'write', branch: 'ap/T1', target: 'develop', base: 'main' }];
@@ -727,6 +747,24 @@ assert.match(
   css,
   /\.delivery-diff-view\s+\.d2h-wrapper[\s\S]*?max-width:\s*100%/,
   'Diff2Htmlの内側要素を成果ペイン幅へ収める'
+);
+for (const stateClass of ['', '.d2h-info', '.d2h-del', '.d2h-ins', '.d2h-del.d2h-change', '.d2h-ins.d2h-change']) {
+  const escaped = stateClass.replaceAll('.', '\\.');
+  assert.match(
+    css,
+    new RegExp(`\\.delivery-diff-view\\s+\\.d2h-code-side-linenumber${escaped}\\s*\\{[^}]*background(?:-color)?:\\s*#[0-9a-fA-F]{6}`),
+    `左右比較の行番号列 ${stateClass || '通常'} は下のコードが透けない不透明背景にする`
+  );
+}
+assert.match(
+  css,
+  /\.delivery-diff-view\s+\.d2h-files-diff\s+\.d2h-diff-tbody\s+tr\s*\{[^}]*position:\s*relative/,
+  '左右比較の各コード行を行番号列の配置基準にする'
+);
+assert.match(
+  css,
+  /\.delivery-diff-view\s+\.d2h-code-side-linenumber\s*\{[^}]*inset-block:\s*0[^}]*height:\s*auto/,
+  '行番号列をコード行の上端から下端まで伸ばす'
 );
 
 // verify 未定義の確認待ち（blocked）は「承認して完了にする」を出す（承認で done 確定）

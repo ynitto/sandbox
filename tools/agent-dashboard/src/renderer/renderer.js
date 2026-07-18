@@ -1656,6 +1656,30 @@ function pipelineRibbonHtml(p) {
   return `<div class="pipeline">${cells}</div>`;
 }
 
+function taskListItemViewModel(task, hint) {
+  const priority = Number(task.priority) || 0;
+  const priorityLevel = priority >= 8 ? '高' : priority >= 4 ? '中' : '低';
+  return {
+    id: String(task.id || ''),
+    title: String(task.title || '名称未設定のタスク'),
+    status: String(task.status || 'unknown'),
+    statusText: statusLabel(task.status || 'unknown'),
+    priority,
+    priorityText: `${priorityLevel} ${priority}`,
+    nextAction: String((hint && hint.completeHow) || '詳細を確認してください'),
+  };
+}
+
+function taskListItemHtml(item, scope) {
+  return `<button type="button" class="task-list-item" data-task="${esc(item.id)}" data-scope="${esc(scope)}" role="listitem" aria-label="${esc(item.title)}の詳細を開く">
+    <span class="task-list-status" data-label="状態" aria-label="状態 ${esc(item.statusText)}">${statusChip(item.status)}</span>
+    <span class="task-list-title" data-label="タスク">${esc(item.title)}</span>
+    <span class="task-list-priority" data-label="優先度" aria-label="優先度 ${esc(item.priorityText)}">${esc(item.priorityText)}</span>
+    <span class="task-list-next" data-label="次の行動">${esc(item.nextAction)}</span>
+    <svg class="task-list-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9 18 6-6-6-6" /></svg>
+  </button>`;
+}
+
 function renderBacklog() {
   const p = state.project;
   const el = $('tab-backlog');
@@ -1665,7 +1689,7 @@ function renderBacklog() {
   }
   const chips = BACKLOG_FILTERS.map(
     ([key, label]) =>
-      `<button class="chip ${state.backlogFilter === key ? 'active' : ''}" data-filter="${key}">${label}</button>`
+      `<button class="chip ${state.backlogFilter === key ? 'active' : ''}" data-filter="${key}" aria-pressed="${state.backlogFilter === key}">${label}</button>`
   ).join('');
 
   let tasks;
@@ -1690,7 +1714,7 @@ function renderBacklog() {
       charterChipDefs
         .map(
           ([v, label]) =>
-            `<button class="chip ${((state.backlogCharter || '') === v) ? 'active' : ''}" data-charter-filter="${esc(v)}">${esc(label)}</button>`
+            `<button class="chip ${((state.backlogCharter || '') === v) ? 'active' : ''}" data-charter-filter="${esc(v)}" aria-pressed="${((state.backlogCharter || '') === v)}">${esc(label)}</button>`
         )
         .join('')
     : '';
@@ -1698,71 +1722,45 @@ function renderBacklog() {
   // priority 降順 → 古い順（planner none と同じ感覚）
   tasks = [...tasks].sort((a, b) => b.priority - a.priority || a.mtime - b.mtime);
 
-  const rows = tasks
+  const taskItems = tasks
     .map((t) => {
-      const extras = [];
-      if (t.extra.charter) extras.push(`バージョン: ${t.extra.charter}`);
-      if (t.extra.why) extras.push(`目的: ${t.extra.why}`);
-      else if (charterNames.length) extras.push('バージョン: 初版'); // 複数バージョン運用でのタグ無し＝charter.md 由来
-      if (t.extra.after) extras.push(`依存: ${t.extra.after}`);
-      if (t.extra.level) extras.push(`自動化レベル: ${t.extra.level}`);
-      if (t.extra.track) extras.push(`系列: ${t.extra.track}`);
-      if (t.extra.review) extras.push(`検収: ${t.extra.review}`);
-      if (t.status === 'offloaded' && t.extra.flow_loc) {
-        extras.push('委任先で実行中'); // act_async: agent-flow daemon で結果待ち（所在はタスク詳細で見る）
-      }
       const rr = runsForTask(t.id); // 紐づく agent-flow run（リトライ系統）
       const hint =
         state.backlogFilter === 'archive'
           ? taskCompletionHint(t, { runs: rr, archived: true })
           : taskCompletionHint(t, { runs: rr });
-      if (hint.statusNote) extras.unshift(hint.statusNote);
-      extras.push(hint.completeHow);
-      const runBadge = rr.length
-        ? ` <button class="badge run-link" data-goto-run="${esc(rr[0].runId)}" title="関連する実行 ${rr.length} 件（最新: ${esc(runStatusCaption(rr[0].status, { taskArchived: state.backlogFilter === 'archive' }))}）を開く">⚙${rr.length}</button>`
-        : '';
-      // 非ブロッキング委譲（offloaded）は flow_run（実行中の run-id）へ直接リンクする
-      // （runsForTask が拾えない＝フローバス未登録でも辿れるように明示リンクを出す）。
-      const offloadRun = t.status === 'offloaded' ? String(t.extra.flow_run || '').trim() : '';
-      const offloadBadge =
-        offloadRun && !(rr.length && rr[0].runId === offloadRun)
-          ? ` <button class="badge run-link" data-goto-run="${esc(offloadRun)}" title="実行中の作業を開く">▶ 実行</button>`
-          : '';
-      return `<tr class="clickable" data-task="${esc(t.id)}" data-scope="${state.backlogFilter === 'archive' ? 'archive' : 'backlog'}">
-        <td class="mono">${esc(t.id)}</td>
-        <td>${esc(t.title)}</td>
-        <td>${statusChip(t.status)}${p.claims.includes(t.id) ? ' <span class="badge info" title="実行中">▶</span>' : ''}${isReviseSent(t) ? ' <span class="badge" title="修正指示を送信済み（反映待ち）">✎</span>' : ''}${runBadge}${offloadBadge}</td>
-        <td>${t.priority}</td>
-        <td>${t.retries}</td>
-        <td>${t.verify ? '✓' : t.extra.accept || t.extra.verify_template ? '△' : '—'}</td>
-        <td class="muted task-complete-how">${esc(extras.join(' ／ '))}</td>
-      </tr>`;
+      return taskListItemHtml(
+        taskListItemViewModel(t, hint),
+        state.backlogFilter === 'archive' ? 'archive' : 'backlog'
+      );
     })
     .join('');
 
   const replanPending = !!p.replanPending;
   el.innerHTML = `
     ${pipelineRibbonHtml(p)}
-    <div class="filters">${chips}${charterChips}<span class="muted">${tasks.length} 件</span>
-      ${p.inboxFiles && p.inboxFiles.length ? `<span class="badge info" title="追加したタスクは次の実行サイクルで一覧に載ります">追加待ち ${p.inboxFiles.length}</span>` : ''}
-      ${replanPending ? '<span class="badge info" title="計画の作り直しを依頼済みです。次の実行で反映されます">再計画 反映待ち</span>' : ''}
-      <span class="spacer"></span>
-      <button id="btn-replan" class="primary-inline"${replanPending ? ' disabled' : ''} title="プロジェクト憲章からタスクを作り直します（やり直し・復旧用）。進行中・却下済みと重複するタスクは追加されません（完了済みと同種のやり直しは作り直されます）">↻ 計画を作り直す</button>
-      <button id="btn-enqueue" class="primary-inline" title="タスクを 1 件追加します（次の実行サイクルで一覧に載ります）">＋ タスクを追加</button>
-    </div>
-    <details class="backlog-help" data-ui-key="backlog-help">
-      <summary>タスク一覧の変え方（反映は次の実行サイクル・即時ではありません）</summary>
-      <div class="muted">
-        <b>追加</b>: 「＋ タスクを追加」→ 次の実行サイクルで一覧に載ります。<br>
-        <b>変更</b>: 行をクリック →「✎ 修正を指示」でタイトル・優先度・完了条件・依存関係の変更と、作業への指示ができます。実行中のタスクに送ると、現在の作業を打ち切って修正内容でやり直します。<br>
-        <b>計画の作り直し</b>: 「↻ 計画を作り直す」→ プロジェクト憲章からタスクを分解し直します。進行中・却下済みと重複するタスクは追加されません（完了済みと同種のやり直しは作り直されます）。計画の失敗やタスクの誤削除、完了後のやり直しからの復旧に使います。<br>
-        タスクの完了は検証結果だけで決まるため、この画面から状態（完了など）を直接書き換えることはできません。
+    <div class="task-toolbar">
+      <div class="task-toolbar-filters">
+        <div class="filters" aria-label="タスクの状態で絞り込む">${chips}<span class="task-count">${tasks.length} 件</span>
+          ${p.inboxFiles && p.inboxFiles.length ? `<span class="badge info" title="追加したタスクは次の実行サイクルで一覧に載ります">追加待ち ${p.inboxFiles.length}</span>` : ''}
+          ${replanPending ? '<span class="badge info" title="計画の作り直しを依頼済みです。次の実行で反映されます">再計画 反映待ち</span>' : ''}
+        </div>
+        ${charterChips ? `<div class="filters task-version-filters" aria-label="計画バージョンで絞り込む">${charterChips}</div>` : ''}
       </div>
-    </details>
+      <div class="task-toolbar-actions">
+        <button id="btn-replan"${replanPending ? ' disabled' : ''} title="プロジェクト憲章からタスクを作り直します">計画を作り直す</button>
+        <button id="btn-enqueue" class="primary-inline" title="タスクを1件追加します">タスクを追加</button>
+      </div>
+    </div>
     ${
-      rows
-        ? `<table class="list"><tr><th>ID</th><th>タイトル</th><th>状態</th><th>優先度</th><th>再試行</th><th>検証</th><th>属性</th></tr>${rows}</table>`
-        : '<div class="empty">タスクなし</div>'
+      taskItems
+        ? `<div class="task-list-grid" role="list" aria-label="タスク一覧">
+            <div class="task-list-header" aria-hidden="true">
+              <span>状態</span><span>タスク</span><span>優先度</span><span>次の行動</span><span></span>
+            </div>
+            <div class="task-list-items">${taskItems}</div>
+          </div>`
+        : '<div class="empty task-list-empty">この条件に一致するタスクはありません</div>'
     }`;
 
   $('btn-enqueue').addEventListener('click', () => openEnqueueDialog());
@@ -1781,10 +1779,9 @@ function renderBacklog() {
       renderBacklog();
     });
   }
-  for (const row of el.querySelectorAll('tr[data-task]')) {
+  for (const row of el.querySelectorAll('.task-list-item[data-task]')) {
     row.addEventListener('click', () => showTaskDialog(row.dataset.task, row.dataset.scope));
   }
-  bindRelationship(el); // 行内の run バッジ（⚙N）クリックでフロータブへ（行クリックより優先）
 }
 
 // revise（人の即時フィードバック）も commands/ 経由で届くためタスクファイル自体は
@@ -3803,7 +3800,7 @@ function deliveryRepoMetaHtml(entry) {
   const bits = [];
   if (entry.branch) bits.push(`作業ブランチ <code>${esc(entry.branch)}</code>`);
   if (entry.target || entry.base) bits.push(`ターゲット <code>${esc(entry.target || entry.base)}</code>`);
-  if (entry.base) bits.push(`ベース <code>${esc(entry.base)}</code>`);
+  if (entry.base && entry.base !== entry.target) bits.push(`ベース <code>${esc(entry.base)}</code>`);
   if (entry.path) bits.push(`所在 <code>${esc(entry.path)}</code>`);
   if (entry.url && entry.role === 'reference') bits.push(`URL ${esc(entry.url)}`);
   return bits.map((b) => `<div class="delivery-repo-meta-line">${b}</div>`).join('');
@@ -3988,7 +3985,7 @@ async function openDeliveryArtifactsModel(need, title) {
 function deliveryDiffRequest(entry, file = '') {
   return {
     repo: entry.path,
-    base: entry.base || 'main',
+    base: entry.target || entry.base || 'main',
     ref: entry.ref || undefined,
     file: file || undefined,
     workingTree: !entry.ref,
@@ -4016,14 +4013,36 @@ async function hydrateDeliveryEntries(entries) {
   }));
 }
 
-function deliveryDiffOutputFormat(viewportWidth) {
-  return Number(viewportWidth) < 768 ? 'line-by-line' : 'side-by-side';
+function deliveryDiffOutputFormat(diffPaneWidth) {
+  // ウィンドウ幅ではなく、ファイル一覧を除いた実際の描画領域で判定する。
+  // diff2html の左右表示は各ペインが約 360px を下回ると、行番号・強調表示・長い行が
+  // 同じ狭い領域へ押し込まれるため、720px 未満では一列表示へ切り替える。
+  return Number(diffPaneWidth) < 720 ? 'line-by-line' : 'side-by-side';
+}
+
+let deliveryDiffResizeObserver = null;
+
+function observeDeliveryDiffWidth(view) {
+  if (typeof ResizeObserver !== 'function') return;
+  if (deliveryDiffResizeObserver) deliveryDiffResizeObserver.disconnect();
+  deliveryDiffResizeObserver = new ResizeObserver((entries) => {
+    const width = entries[0] && entries[0].contentRect ? entries[0].contentRect.width : view.clientWidth;
+    const next = deliveryDiffOutputFormat(width);
+    const current = view.dataset.diffOutputFormat || '';
+    if (current && next !== current && view._deliveryDiffText) {
+      renderDeliveryDiff(view._deliveryDiffText);
+    }
+  });
+  deliveryDiffResizeObserver.observe(view);
 }
 
 function renderDeliveryDiff(diffText) {
   const view = $('delivery-diff-view');
+  if (deliveryDiffResizeObserver) deliveryDiffResizeObserver.disconnect();
+  view._deliveryDiffText = diffText;
   view.replaceChildren();
   if (!diffText) {
+    delete view.dataset.diffOutputFormat;
     view.textContent = '(差分なし)';
     return;
   }
@@ -4034,7 +4053,8 @@ function renderDeliveryDiff(diffText) {
     view.appendChild(fallback);
     return;
   }
-  const outputFormat = deliveryDiffOutputFormat(window.innerWidth);
+  const outputFormat = deliveryDiffOutputFormat(view.clientWidth);
+  view.dataset.diffOutputFormat = outputFormat;
   const mode = $('dlg-delivery-review').querySelector('.delivery-diff-mode');
   if (mode) mode.textContent = outputFormat === 'side-by-side' ? '左右比較' : '行単位';
   const ui = new Diff2HtmlUI(view, diffText, {
@@ -4047,6 +4067,7 @@ function renderDeliveryDiff(diffText) {
     colorScheme: 'dark',
   });
   ui.draw();
+  observeDeliveryDiffWidth(view);
 }
 
 async function collectDeliveryDiffSections(need, { maxChars = 80000 } = {}) {
@@ -4377,6 +4398,44 @@ function needListSummary(need) {
   return failure ? failure.summary : (NEED_ASK[need.kind] || NEED_ASK.blocked);
 }
 
+function needListItemViewModel(need, bucket, age) {
+  const stateText = { open: '未対応', sent: '送信済み', done: '回答済み' }[bucket] || String(bucket || '未対応');
+  const risk = String((need && need.risk) || '');
+  return {
+    id: String((need && need.id) || ''),
+    state: String(bucket || 'open'),
+    stateText,
+    kindText: needKindLabel(need && need.kind),
+    title: needDisplayTitle(need || {}),
+    decision: needListSummary(need || {}),
+    failure: Boolean(needFailureViewModel(need)),
+    risk,
+    riskText: RISK_LABELS[risk] || 'リスク未設定',
+    ageText: String((age && age.label) || '—'),
+    ageLevel: String((age && age.level) || ''),
+  };
+}
+
+function needListItemHtml(item, selected, slaHours) {
+  const stateClass = { open: 'st-blocked', sent: 'st-review', done: 'st-done' }[item.state] || '';
+  const riskClass = item.risk ? ` risk-${esc(item.risk)}` : '';
+  const ageTitle = item.ageText === '—'
+    ? '待ち時間の計測対象外です'
+    : `最終更新からの経過時間（SLA ${esc(slaHours)}h 超で赤）`;
+  return `<button type="button" class="need-list-item ${selected ? 'selected' : ''}" data-need-select="${esc(item.id)}"
+    role="listitem" aria-pressed="${selected}"${selected ? ' aria-current="true"' : ''} aria-label="${esc(item.title)}の詳細を開く">
+    <span class="need-list-type" data-label="状態と種類">
+      <span class="status-chip ${stateClass}">${esc(item.stateText)}</span>
+      <span class="need-list-kind">${esc(item.kindText)}</span>
+      <span class="risk-badge${riskClass}">${esc(item.riskText)}</span>
+    </span>
+    <strong class="need-list-title" data-label="確認事項">${esc(item.title)}</strong>
+    <span class="need-list-summary ${item.failure ? 'failure' : ''}" data-label="判断すること">${esc(item.decision)}</span>
+    <span class="need-list-age ${esc(item.ageLevel)}" data-label="待ち時間" title="${ageTitle}">${esc(item.ageText)}</span>
+    <svg class="need-list-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9 18 6-6-6-6" /></svg>
+  </button>`;
+}
+
 function renderNeedFacts(n) {
   const facts = [];
   const failure = needFailureViewModel(n);
@@ -4661,27 +4720,26 @@ function renderNeeds(options) {
     .map((n) => {
       const selected = n.id === state.needsSelectedId;
       const age = ages[n.id];
-      const ageBadge = age && age.label
-        ? `<span class="need-age ${age.level}" title="最終更新からの経過時間（SLA ${slaHours}h 超で赤）">${esc(age.label)}</span>`
-        : '';
-      return `<button class="need-list-item ${selected ? 'selected' : ''}" data-need-select="${esc(n.id)}"
-        aria-pressed="${selected}"${selected ? ' aria-current="true"' : ''}>
-        <span class="need-list-meta">
-          <span class="badge">${esc(needKindLabel(n.kind))}</span>
-          ${riskBadgeHtml(n)}
-          ${ageBadge}
-        </span>
-        <strong>${esc(needDisplayTitle(n))}</strong>
-        <span class="need-list-summary ${needFailureViewModel(n) ? 'failure' : ''}">${esc(needListSummary(n))}</span>
-      </button>`;
+      return needListItemHtml(
+        needListItemViewModel(n, needBucket(n, isNeedSent), age),
+        selected,
+        slaHours
+      );
     })
     .join('');
 
   const gitlab = state.needsFilter === 'gitlab'
     ? '<div class="queue-single"><div id="needs-gitlab"></div></div>'
-    : `<div class="master-detail ${state.needsMobileDetail ? 'show-detail' : ''}">
+    : `<div class="master-detail needs-layout ${state.needsMobileDetail ? 'show-detail' : ''}">
         <aside class="master-list" aria-label="要対応一覧">
-          ${list || '<div class="empty">この状態の項目はありません</div>'}
+          ${list
+            ? `<div class="need-list-grid" role="list">
+                <div class="need-list-header" aria-hidden="true">
+                  <span>状態・種類</span><span>確認事項</span><span>判断すること</span><span>待ち時間</span><span></span>
+                </div>
+                <div class="need-list-items">${list}</div>
+              </div>`
+            : '<div class="empty need-list-empty">この状態の項目はありません</div>'}
         </aside>
         <main class="detail-panel">${renderNeedDetail(p, model.selected)}</main>
       </div>`;

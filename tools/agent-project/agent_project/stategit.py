@@ -198,6 +198,21 @@ class StateGit:
             parts and parts[-1] in _STATE_REMOTE_WINS_FILES)
 
     @staticmethod
+    def _take_local_on_conflict(rel: str, local_present: bool, remote_present: bool) -> bool:
+        """同時変更の所有権を返す。
+
+        needs の *本文編集* は人（remote）を正とする一方、needs の生成・削除は backlog lifecycle の
+        投影なので機械（local）が所有する。したがって remote の削除と local の新規生成・置換が
+        競合した場合だけ local を保持する。これにより人のフィードバックは従来どおり優先しつつ、
+        stale な票の削除で新しい blocked/review 票が失われることを防ぐ。
+        """
+        parts = Path(rel).parts
+        is_need = "needs" in parts[:-1]
+        if is_need and local_present and not remote_present:
+            return True
+        return not StateGit._remote_wins(rel)
+
+    @staticmethod
     def _scan(root: Path) -> "dict[str, str]":
         """root 配下の同期対象ファイルを {相対パス: sha256} で返す（除外規則は両側で同一）。"""
         out: dict[str, str] = {}
@@ -241,7 +256,8 @@ class StateGit:
             elif lh == bh:                    # リモートだけが変えた → import
                 take_local = False
             else:                             # 同時変更 → 決定的裁定
-                take_local = not self._remote_wins(rel)
+                take_local = self._take_local_on_conflict(
+                    rel, local_present=lh is not None, remote_present=rh is not None)
             src, dst, h = (lroot, rroot, lh) if take_local else (rroot, lroot, rh)
             try:
                 if h is None:                 # 片側の削除を伝播
@@ -272,13 +288,17 @@ class StateGit:
             for path in conflicted:
                 rel = path[len(self.subdir) + 1:] if self.subdir and \
                     path.startswith(self.subdir + "/") else path
-                side = "--ours" if self._remote_wins(rel) else "--theirs"
+                stages = self._git("ls-files", "-u", "--", path).stdout
+                remote_present = bool(re.search(r"\s2\t", stages))  # rebase ours = remote/upstream
+                local_present = bool(re.search(r"\s3\t", stages))   # rebase theirs = local commit
+                take_local = self._take_local_on_conflict(
+                    rel, local_present=local_present, remote_present=remote_present)
+                side = "--theirs" if take_local else "--ours"
                 if self._git("checkout", side, "--", path).returncode != 0:
                     # checkout 失敗＝選んだ側にステージが無い add/delete 衝突とは限らない
                     # （権限・sparse 等でも失敗する）。本当に無いときだけ削除に合わせる。
                     # 無条件に rm すると backlog/needs がサイレントに消えて同期で伝播する。
                     stage = "2" if side == "--ours" else "3"
-                    stages = self._git("ls-files", "-u", "--", path).stdout
                     if not re.search(rf"\s{stage}\t", stages):
                         self._git("rm", "-q", "--", path)   # add/delete 衝突: 消えた側に合わせる
                 self._git("add", "--", path)
@@ -765,7 +785,9 @@ class DirectStateGit:
                              f"{mode},{union_sha},{path}").returncode != 0:
                         return None
                     continue
-                want = 3 if StateGit._remote_wins(rel) else 2
+                take_local = StateGit._take_local_on_conflict(
+                    rel, local_present=2 in stages, remote_present=3 in stages)
+                want = 2 if take_local else 3
                 if want in stages:            # 選んだ側が「削除」なら消えたままにする
                     mode, sha = stages[want]
                     if _igit("update-index", "--add", "--cacheinfo",
@@ -1141,5 +1163,4 @@ def state_git_for(cfg: "Config") -> "StateGit | DirectStateGit | None":
 # 起動はバスロックで冪等（既に稼働なら二重起動しない）。agent-project 停止時も detached で残すため、
 # in-flight run（gitlab 長期委譲・夜間停止からの孤児再開）は daemon 側でそのまま継続する。
 FLOW_STATE_SUBDIR = "agent-flow"   # プロジェクト固有リポジトリ内の agent-flow 名前空間（viewer は <clone>/agent-flow）
-
 

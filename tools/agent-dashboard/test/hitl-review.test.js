@@ -154,6 +154,27 @@ function mkProject() {
     assert.match(body, /- \[x\]/);
   });
 
+  await test('backlog と種別が違う stale needs は status の投影へ自己修復する', async () => {
+    const dir = mkProject();
+    fs.mkdirSync(path.join(dir, 'needs'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'backlog', 'T-stale.md'),
+      '## T-stale: 検証失敗\n- status: blocked\n- needs_reason: 回帰テスト失敗\n',
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(dir, 'needs', 'T-stale.md'),
+      '---\nkind: plan-review\ntask-id: T-stale\n---\n# 古い計画レビュー\n',
+      'utf8'
+    );
+    const p = project.readProject(dir, { projects: {} });
+    const matches = p.needs.filter((n) => n.id === 'T-stale' || n.taskId === 'T-stale');
+    assert.strictEqual(matches.length, 1, '同じタスクの票を二重表示しない');
+    assert.strictEqual(matches[0].kind, 'blocked', 'backlog status を正として種別を補正する');
+    assert.strictEqual(matches[0].status, 'blocked');
+    assert.ok(matches[0].synthesized, '不整合を表示時に明示的に自己修復する');
+  });
+
   await test('charters の name はファイル名を優先する（# Charter タイトルが違っても化けない）', async () => {
     // 前バージョンをコピーしてタイトルを直し忘れると `# Charter:` が同じ名前になりがち。
     // それでもバージョンの identity（表示名・編集先・charter タグ）はファイル名でなければならない。
