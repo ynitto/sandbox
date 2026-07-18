@@ -333,15 +333,18 @@
       <h3>AIアシスタント</h3>
       <div class="row2">
         <div class="field">
-          <label>エージェント CLI（charter 補完と Doctor で共通）</label>
-          <select id="cfg-agent-cli">
+          <label>エージェント CLI（charter 補完と Doctor で共通。空欄はプロジェクト設定 → 既定 kiro）</label>
+          <input id="cfg-agent-cli" class="mono" list="cfg-agent-cli-options"
+            placeholder="kiro / claude / copilot / codex / cursor / ollama / <agents プラグイン名>" />
+          <datalist id="cfg-agent-cli-options">
             <option value="kiro">kiro（既定・kiro-cli chat）</option>
             <option value="claude">claude（Claude Code）</option>
             <option value="copilot">copilot（GitHub Copilot CLI）</option>
             <option value="codex">codex（Codex CLI）</option>
             <option value="cursor">cursor（Cursor Agent）</option>
             <option value="ollama">ollama（ローカルモデル）</option>
-          </select>
+          </datalist>
+          <div class="muted">組み込み以外の名前は agents/&lt;名前&gt;.json プラグイン（schemas/agent-cli.schema.json）として解決します。</div>
         </div>
         <div class="field">
           <label>モデル（空 = CLI / プロジェクト設定の既定）</label>
@@ -495,6 +498,10 @@
         <input id="enq-after" class="mono" list="enq-after-options" placeholder="例: T1, T2" />
         <datalist id="enq-after-options"></datalist>
       </div>
+    </div>
+    <div class="field" id="enq-workspace-field">
+      <label for="enq-workspace">書込先リポジトリ（任意 — リポジトリ一覧の書込先から選択。省略で自動ルーティング）</label>
+      <select id="enq-workspace"></select>
     </div>
     <details id="enq-backlog-panel" class="enq-backlog-panel">
       <summary>既存バックログ（依存・優先度の参考）</summary>
@@ -719,7 +726,11 @@
   <!-- ======== リポジトリ一覧（repos）フォーム編集ダイアログ ======== -->
   <dialog id="dlg-edit-repos" class="wide">
     <h2>リポジトリ一覧を編集</h2>
-    <p class="muted">作業対象のリポジトリです。担当範囲（owns）を書くと成果物の書き込み先、書かなければ参照のみになります。</p>
+    <p class="muted">
+      作業対象のリポジトリです。担当範囲（owns）を書くと成果物の書き込み先、書かなければ参照のみになります。
+      モノレポは「モノレポ内フォルダ」（例 apps/api）を書いて、同じ URL をフォルダ別の行に分けられます。
+    </p>
+    <div id="er-warning" class="warning hidden"></div>
     <div id="er-rows"></div>
     <button type="button" id="btn-er-add" class="chip">＋ リポジトリを追加</button>
     <div class="dialog-actions">

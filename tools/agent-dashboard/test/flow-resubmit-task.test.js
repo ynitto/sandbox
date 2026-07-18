@@ -88,6 +88,11 @@ const hoursAgo = (h) => new Date(Date.now() - h * 3600_000).toISOString().replac
     assert.ok(!res.viaTask, 'タスク経路には乗らない');
     const inbox = fs.readdirSync(path.join(busDir, 'inbox'));
     assert.strictEqual(inbox.length, 1, 'inbox に新しい run が入る');
+    // req- 形式の再投入 ID は -v 接尾辞で作る＝parseRunId の系統解析（taskId/lineage）が保たれ、
+    // 素の -retry- 接尾辞のように系統から切れない
+    const parsed = flow.parseRunId(res.runId);
+    assert.strictEqual(parsed.taskId, 'TASK-9', '再投入 run も元タスクに紐づく');
+    assert.strictEqual(parsed.lineageId, 'req-a1b2c3d4-TASK-9', 'リトライ系統も保たれる');
   });
 
   await test('素の run-id（タスク ID を持たない）も inbox へ', async () => {

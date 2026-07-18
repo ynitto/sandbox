@@ -476,8 +476,11 @@ function resubmitRun(busDir, runId) {
   if (!request) throw new Error('meta.json に request がありません（再投入できません）');
   // 末尾スライスだと長い req-… の接頭辞が落ちる。末尾に retry 接尾辞を足し、長すぎれば中央を落とす。
   const stamp = `retry-${Date.now()}`;
-  let newId = `${runId}-${stamp}`;
-  if (newId.length > 80) {
+  // agent-project の決定的 run-id（req-…-r<n>）は `-v<rev>` 形式で付けると REQ_ID_RE の
+  // 系統解析（taskId / lineageId）が保たれ、やり直しが元タスクのリトライ系統に載る。
+  // `-retry-<ts>` を素で足すと正規表現に合わず taskId/lineage が切れる（素の run-… はそのまま）。
+  let newId = REQ_ID_RE.test(runId) ? `${runId}-v${stamp}` : `${runId}-${stamp}`;
+  if (newId.length > 80 && !REQ_ID_RE.test(runId)) {
     const keep = 80 - stamp.length - 1;
     newId = `${runId.slice(0, Math.max(8, keep))}-${stamp}`;
   }
@@ -729,6 +732,118 @@ function listArchivedRuns(projectDir) {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// リトライ世代交代の墓標（runs/<新run>/inherited/<旧run-id>.json）
+// ---------------------------------------------------------------------------
+// agent-flow の inherit_from はリトライ（新 run-id での世代交代）時に先行 run を bus から
+// 削除し、代わりに meta・final・results（出力は抜粋）の要約＝墓標を新 run の inherited/ に
+// 残す。ここでは墓標を readRun 相当のサマリへ変換し、「アーカイブ済み run」として一覧・
+// 詳細に出せるようにする。viewer が削除の瞬間にポーリングしていなくても、リトライで
+// 成果の記録が消えない。
+
+// 墓標 → readRun 互換サマリ。ノード状態は results の status だけから決まる
+// （墓標は終端 run の写しなので claim/park は存在しない）。
+function summarizeTombstone(tomb) {
+  if (!tomb || !tomb.run_id) return null;
+  const runId = String(tomb.run_id);
+  const meta = (tomb.meta && typeof tomb.meta === 'object' && tomb.meta) || {};
+  const graph = (tomb.graph && typeof tomb.graph === 'object' && tomb.graph) || {};
+  const nodesIn = (graph.nodes && typeof graph.nodes === 'object' && graph.nodes) || {};
+  const results = (tomb.results && typeof tomb.results === 'object' && tomb.results) || {};
+  const ids = [...new Set([...Object.keys(nodesIn), ...Object.keys(results)])];
+  const nodes = {};
+  for (const id of ids) {
+    const spec = nodesIn[id] || {};
+    const res = results[id] || null;
+    const data = res && res.data !== undefined ? res.data : null;
+    const record = data && typeof data === 'object' && !Array.isArray(data) ? data : null;
+    nodes[id] = {
+      id,
+      goal: String(spec.goal || ''),
+      deps: Array.isArray(spec.deps) ? spec.deps.map(String) : [],
+      kind: String(spec.kind || 'work'),
+      retries: Number(spec.retries || 0),
+      state: res ? (res.status === 'failed' ? 'failed' : 'done') : 'pending',
+      who: res ? res.who || null : null,
+      finishedAt: res ? res.finished_at || null : null,
+      heartbeatAt: null,
+      leaseUntil: null,
+      output: res && typeof res.output === 'string' ? res.output : null,
+      data,
+      issueUrl: (record && record.web_url) || null,
+      parked: false,
+      throttled: false,
+      parkActiveSeen: false,
+      rejected: Boolean(record && record.decision === 'rejected'),
+      taskToken: nodeTaskToken(runId, id),
+    };
+  }
+  const counts = { done: 0, failed: 0, claimed: 0, pending: 0, waiting: 0, parked: 0 };
+  for (const n of Object.values(nodes)) counts[n.state] = (counts[n.state] || 0) + 1;
+  const total = Object.keys(nodes).length;
+  const gitlabIssues = [];
+  for (const n of Object.values(nodes)) {
+    const d = n.data;
+    if (d && typeof d === 'object' && !Array.isArray(d) && (d.issue_iid || d.web_url)) {
+      gitlabIssues.push({
+        nodeId: n.id,
+        issueIid: d.issue_iid || null,
+        url: d.web_url || '',
+        decision: d.decision || null,
+        mergedMrs: Array.isArray(d.merged_mrs) ? d.merged_mrs : [],
+        state: n.state,
+      });
+    }
+  }
+  const idParts = parseRunId(runId);
+  const final = tomb.final
+    ? { finishedAt: tomb.final.finished_at || null, summary: tomb.final.summary || '' }
+    : null;
+  return {
+    runId,
+    status: String(meta.status || (final ? 'done' : 'unknown')),
+    taskId: idParts.taskId || taskIdOfRun(runId, meta),
+    retries: idParts.retries,
+    rev: idParts.rev,
+    lineageId: idParts.lineageId,
+    inheritedFrom: meta.inherited_from || null,
+    alive: null,
+    heartbeatAt: null,
+    resumeCount: 0,
+    workspace: meta.workspace || null,
+    references: Array.isArray(meta.references) ? meta.references : [],
+    executor: meta.executor || null,
+    gitlabish: meta.executor ? meta.executor === 'gitlab' : gitlabIssues.length > 0,
+    request: String(meta.request || ''),
+    createdAt: meta.created_at || null,
+    updatedAt: meta.updated_at || tomb.saved_at || null,
+    failureReason: meta.failure_reason || null,
+    strategy: graph.strategy || null,
+    iteration: Number(graph.iteration || 0),
+    nodes,
+    counts,
+    total,
+    progress: total ? (counts.done + counts.failed) / total : 0,
+    gitlabIssues,
+    final,
+    // 墓標由来: 成果物ファイルの実体・イベントは旧 run と共に消えている（記録のみ）
+    tombstone: true,
+    tombstoneArtifacts: Array.isArray(tomb.artifacts) ? tomb.artifacts.map(String) : [],
+  };
+}
+
+// ある run が抱える墓標（削除済み先行世代）のサマリ一覧
+function readInheritedTombstones(busDir, runId) {
+  const dir = path.join(busDir, 'runs', runId, 'inherited');
+  const out = [];
+  for (const f of safeList(dir)) {
+    if (!f.endsWith('.json')) continue;
+    const run = summarizeTombstone(readJson(path.join(dir, f)));
+    if (run) out.push(run);
+  }
+  return out;
+}
+
 // バス配下の run を新しい順に一覧する（各 run はサマリのみ）。
 // limit<=0 は件数制限なし（live 集合の判定用）。
 function listRuns(busDir, limit = 30) {
@@ -869,6 +984,9 @@ module.exports = {
   readRunEvents,
   readNodeEvents,
   listRuns,
+  summarizeTombstone,
+  readInheritedTombstones,
+  TERMINAL,
   archiveRunSnapshot,
   listArchivedRuns,
   removeArchivedRun,

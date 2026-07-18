@@ -544,6 +544,13 @@ const GUIDE_LABELS = {
 
 const PROSE_EXTRA_KEYS = new Set(['feedback', 'needs_reason', 'note', 'accept', ...GUIDE_KEYS]);
 
+// タスク追加・再投入でフォームに出さずに引き継ぐフィールド（task.schema.json の人が書ける
+// フィールドのうち、専用入力欄が無いもの。system 管理の routed_by/cohort* は引き継がない）
+const ENQUEUE_PASSTHROUGH_KEYS = [
+  'level', 'track', 'verify_template', 'review', 'expect', 'followup', 'refs', 'paths',
+  ...GUIDE_KEYS,
+];
+
 function statusChip(status) {
   // 表示はプロジェクト管理の言葉、内部の状態名は title（ホバー）で確認できる
   return `<span class="status-chip st-${esc(status)}" title="${esc(status)}">${esc(statusLabel(status))}</span>`;
@@ -1109,7 +1116,13 @@ function overviewVersionsHtml(p) {
           <span class="version-state">${esc(status)}</span>
         </div>
       </div>
-      <div class="version-card-goal">${ch.goal ? proseHtml(ch.goal) : '<span class="muted">やることは未設定です。</span>'}</div>
+      <div class="version-card-goal">${
+        ch.goal
+          ? proseHtml(ch.goal)
+          : p.charter && p.charter.master && p.charter.goal
+            ? `${proseHtml(p.charter.goal)}<div class="muted">（共通設定の目標を継承）</div>`
+            : '<span class="muted">やることは未設定です。</span>'
+      }</div>
       <div class="version-card-counts" aria-label="作業状況">
         <span><strong>${usage.active}</strong> 進行中</span>
         <span><strong>${usage.done}</strong> 完了</span>
@@ -2092,10 +2105,11 @@ function showTaskDialog(id, scope) {
         priority: t.priority,
         note: t.extra.note || '',
         after: t.extra.after || '',
-        level: t.extra.level || '',
-        track: t.extra.track || '',
         charter: t.extra.charter || '',
-        ...Object.fromEntries(GUIDE_KEYS.map((k) => [k, t.extra[k] || ''])),
+        workspace: t.extra.workspace || '',
+        // ルーティング・検収・誘導フィールドは網羅的に引き継ぐ（task.schema.json の
+        // 「未知キーは保持」契約。system 管理の routed_by/cohort* は新タスクへ持ち込まない）
+        ...Object.fromEntries(ENQUEUE_PASSTHROUGH_KEYS.map((k) => [k, t.extra[k] || ''])),
       });
     });
   }
@@ -2183,17 +2197,27 @@ function charterAssistContext(p, charterName = '') {
   if (!p) return { goal: '', acceptance: '' };
   const version = charterName ? (p.charters || []).find((c) => c.name === charterName) : null;
   const ch = version || p.charter || (p.charters || []).find((c) => c.goal) || (p.charters || [])[0] || {};
-  const acceptance = Array.isArray(ch.acceptanceItems)
-    ? ch.acceptanceItems.join('\n')
-    : Array.isArray(ch.acceptance)
-      ? ch.acceptance.join('\n')
-      : String(ch.acceptance || '');
+  // マスター憲章からの継承（本体 _merge_master_charter と同じ規則）:
+  //   goal / acceptance … バージョン側が空ならマスターへフォールバック
+  //   constraints / assumptions … バージョン側に**見出しが無ければ**マスターへフォールバック
+  //     （見出しがあって空＝「継承値を空に上書き」の明示の意思なので、空でも埋め戻さない。
+  //     parseCharter はセクションを見出しの在るキーだけ持つため in 判定で見出しの有無が分かる）
+  const master = version && p.charter && p.charter.master ? p.charter : null;
+  const acceptanceOf = (c) =>
+    Array.isArray(c.acceptanceItems)
+      ? c.acceptanceItems.join('\n')
+      : Array.isArray(c.acceptance)
+        ? c.acceptance.join('\n')
+        : String(c.acceptance || '');
+  const acceptance = acceptanceOf(ch) || (master ? acceptanceOf(master) : '');
+  const inherited = (key) =>
+    key in ch ? String(ch[key] || '') : master ? String(master[key] || '') : '';
   return {
     name: ch.name || p.name || '',
-    goal: String(ch.goal || ''),
+    goal: String(ch.goal || (master && master.goal) || ''),
     acceptance,
-    constraints: String(ch.constraints || (version && p.charter && p.charter.constraints) || ''),
-    assumptions: String(ch.assumptions || (version && p.charter && p.charter.assumptions) || ''),
+    constraints: master ? inherited('constraints') : String(ch.constraints || ''),
+    assumptions: master ? inherited('assumptions') : String(ch.assumptions || ''),
   };
 }
 
@@ -2392,13 +2416,16 @@ function openEnqueueDialog(prefill = {}) {
   $('enq-id').value = prefill.id || '';
   $('enq-after').value = Array.isArray(prefill.after) ? prefill.after.join(', ') : (prefill.after || '');
   fillCharterSelect($('enq-charter'), state.project, prefill.charter || '');
-  // level / track と誘導・レビュー記述（why 等）はフォームに出さないが、
-  // 再投入・フォローアップ提案では元の値を引き継いで送る（inbox ドロップに載る）
-  state.enqueueExtra = {
-    level: prefill.level || '',
-    track: prefill.track || '',
-    ...Object.fromEntries(GUIDE_KEYS.map((k) => [k, prefill[k] || ''])),
-  };
+  fillWorkspaceSelect($('enq-workspace'), state.project, prefill.workspace || '');
+  // level / track と誘導・レビュー記述（why 等）・ルーティング/検収系（refs/paths/review/expect/
+  // followup/verify_template）はフォームに出さないが、再投入・フォローアップ提案では
+  // 元の値を引き継いで送る（task.schema.json の「未知キーは保持」契約を UI 経由でも守る）
+  state.enqueueExtra = Object.fromEntries(
+    ENQUEUE_PASSTHROUGH_KEYS.map((k) => [
+      k,
+      Array.isArray(prefill[k]) ? prefill[k].join(', ') : prefill[k] || '',
+    ])
+  );
   fillEnqueueAfterOptions(state.project);
   renderEnqueueBacklogSummary(state.project);
   state.enqueueAdjustments = [];
@@ -2458,6 +2485,36 @@ async function aiEnqueueAssist() {
   }
 }
 
+// 書込先（workspace）の選択肢: リポジトリ一覧（repos.json）のうち owns を持つ＝書込先の
+// エントリ名。空 = 自動ルーティング（owns と paths の突き合わせ）。モノレポは path 別の
+// エントリ名で担当フォルダを指せる。既存値がリストに無くても消さない（選択肢に足す）。
+function fillWorkspaceSelect(select, p, selected) {
+  if (!select) return;
+  const names = [];
+  if (p && p.repos && typeof p.repos === 'object') {
+    for (const [name, e] of Object.entries(p.repos)) {
+      if (name.startsWith('_') || !e || typeof e !== 'object') continue;
+      const owns = Array.isArray(e.owns) ? e.owns.length : String(e.owns || '').trim();
+      if (owns) names.push(name);
+    }
+  }
+  if (selected && !names.includes(selected)) names.push(selected);
+  select.replaceChildren();
+  const auto = document.createElement('option');
+  auto.value = '';
+  auto.textContent = '自動（担当範囲から推定）';
+  select.appendChild(auto);
+  for (const name of names) {
+    const option = document.createElement('option');
+    option.value = name;
+    option.textContent = name;
+    select.appendChild(option);
+  }
+  select.value = selected || '';
+  const field = $('enq-workspace-field');
+  if (field) field.classList.toggle('hidden', !names.length);
+}
+
 async function submitEnqueue() {
   const p = state.project;
   if (!p) return;
@@ -2471,9 +2528,8 @@ async function submitEnqueue() {
     id: $('enq-id').value,
     after: $('enq-after').value,
     charter: $('enq-charter').value,
-    level: extra.level,
-    track: extra.track,
-    ...Object.fromEntries(GUIDE_KEYS.map((k) => [k, extra[k] || ''])),
+    workspace: $('enq-workspace') ? $('enq-workspace').value : '',
+    ...Object.fromEntries(ENQUEUE_PASSTHROUGH_KEYS.map((k) => [k, extra[k] || ''])),
   };
   const ok = await guard('タスク追加', async () => {
     const res = await api.enqueueTask(p.dir, spec);
@@ -2510,14 +2566,18 @@ function knownRoots() {
   return [...roots].filter(Boolean);
 }
 
-// 新規プロジェクトの repos 行を 1 つ追加する（任意・複数可）
+// 新規プロジェクトの repos 行を 1 つ追加する（任意・複数可）。
+// path はモノレポ内の担当フォルダ＝同じ URL を役割別に複数エントリへ分ける識別子
+// （schemas/repos.schema.json の (url, path, base) identity）。target は MR/PR 先（省略=base）。
 function addRepoRow(prefill = {}) {
   const wrap = document.createElement('div');
   wrap.className = 'np-repo-row';
   wrap.innerHTML = `
     <input class="np-r-name mono" placeholder="名前" value="${esc(prefill.name || '')}" />
     <input class="np-r-url mono" placeholder="git URL（必須）" value="${esc(prefill.url || '')}" />
-    <input class="np-r-base mono" placeholder="ベースブランチ 例 main" value="${esc(prefill.base || '')}" />
+    <input class="np-r-base mono" placeholder="ベース 例 main" value="${esc(prefill.base || '')}" />
+    <input class="np-r-target mono" placeholder="MR先（省略=ベース）" value="${esc(prefill.target || '')}" />
+    <input class="np-r-path mono" placeholder="モノレポ内フォルダ 例 apps/api" value="${esc(prefill.path || '')}" />
     <input class="np-r-owns mono" placeholder="担当範囲（省略=参照のみ）" value="${esc(prefill.owns || '')}" />
     <input class="np-r-desc" placeholder="説明" value="${esc(prefill.desc || '')}" />
     <button type="button" class="np-r-del" title="この行を削除">✕</button>`;
@@ -2588,6 +2648,8 @@ async function submitNewProject() {
       name: row.querySelector('.np-r-name').value.trim(),
       url: row.querySelector('.np-r-url').value.trim(),
       base: row.querySelector('.np-r-base').value.trim(),
+      target: row.querySelector('.np-r-target').value.trim(),
+      path: row.querySelector('.np-r-path').value.trim(),
       owns: row.querySelector('.np-r-owns').value.trim(),
       desc: row.querySelector('.np-r-desc').value.trim(),
     }))
@@ -2688,25 +2750,37 @@ async function openCharterForm(name, opts) {
   const fields = res.fields;
   const isVersion = /^charters\//.test(name);
   const isMaster = !isVersion && !!fields.master;
-  // 旧形式のバージョンは制約・前提セクションを持たない。画面上では実際に適用される
-  // マスター値を初期表示し、保存後はその版の明示値として扱えるようにする。
-  if (isVersion && res.exists && (!fields._constraintsDefined || !fields._assumptionsDefined)) {
+  // 継承の判定材料（プレビューで fields を書き換える前に控える）。
+  // 見出しの無いバージョンはマスターへ**動的に**追従する（本体 _merge_master_charter の
+  // 「見出しの有無」規則）。画面には実際に適用されるマスター値を初期表示し、保存時は
+  // 「値を変えたときだけ」明示値として見出しを書く（変えなければ追従を維持）。
+  const origConstraintsDefined = !!fields._constraintsDefined;
+  const origAssumptionsDefined = !!fields._assumptionsDefined;
+  let inheritedConstraints = null;
+  let inheritedAssumptions = null;
+  if (isVersion && (!origConstraintsDefined || !origAssumptionsDefined)) {
     const inherited = await guard('共通設定の読込', () => api.readCharterFields(p.dir, 'charter.md'));
-    if (inherited && inherited.fields) {
-      if (!fields._constraintsDefined) fields.constraints = inherited.fields.constraints || [];
-      if (!fields._assumptionsDefined) fields.assumptions = inherited.fields.assumptions || [];
+    // 継承元になるのは charter.md がマスター（## master 付き）のときだけ。
+    // 非マスターの charter.md から本体は継承しないので、値を「継承」として見せない。
+    if (inherited && inherited.fields && inherited.fields.master) {
+      inheritedConstraints = inherited.fields.constraints || [];
+      inheritedAssumptions = inherited.fields.assumptions || [];
+      if (!origConstraintsDefined) fields.constraints = inheritedConstraints.slice();
+      if (!origAssumptionsDefined) fields.assumptions = inheritedAssumptions.slice();
     }
   }
   // 新規バージョン追加時は、前バージョン（または憲章）から引き継いだ やること/完了条件/成果物 を
   // 初期値にする（既存ファイルの編集では上書きしない＝res.exists のときは seed を使わない）。
+  // 制約・前提はコピーせず、上の継承表示に任せる（コピーすると追従が切れた明示値になる）。
   if (!res.exists && opts) {
     if (opts.seedGoal) fields.goal = opts.seedGoal;
     if (Array.isArray(opts.seedAcceptance)) fields.acceptance = opts.seedAcceptance;
     if (Array.isArray(opts.seedDeliverables)) fields.deliverables = opts.seedDeliverables;
-    if (Array.isArray(opts.seedConstraints)) fields.constraints = opts.seedConstraints;
-    if (Array.isArray(opts.seedAssumptions)) fields.assumptions = opts.seedAssumptions;
   }
-  charterForm = { dir: p.dir, name, fields, isVersion, isMaster, exists: res.exists };
+  charterForm = {
+    dir: p.dir, name, fields, isVersion, isMaster, exists: res.exists,
+    origConstraintsDefined, origAssumptionsDefined, inheritedConstraints, inheritedAssumptions,
+  };
 
   // 見出し・説明
   const verName = isVersion ? name.replace(/^charters\//, '').replace(/\.md$/, '') : '';
@@ -2743,7 +2817,24 @@ async function openCharterForm(name, opts) {
   renderSimpleList($('ec-constraints'), fields.constraints, '例: 標準ライブラリのみ');
   renderSimpleList($('ec-assumptions'), fields.assumptions, '例: 入力は UTF-8');
 
-  $('ec-inherit-note').classList.toggle('hidden', !isVersion);
+  // 継承の状態を実態に合わせて表示する:
+  //   追従中（見出し無し・マスターあり）→ 変更しない限り共通設定に追従し続ける
+  //   明示値（見出しあり）→ このバージョン固有・共通設定の変更には追従しない
+  const note = $('ec-inherit-note');
+  if (isVersion && inheritedConstraints !== null) {
+    note.textContent =
+      origConstraintsDefined && origAssumptionsDefined
+        ? '制約・前提はこのバージョン固有の値です（共通設定の変更には追従しません）。対象リポジトリは共通設定を使用します。'
+        : '制約・前提は共通設定（マスター）の値を表示しています。変更しなければ共通設定に追従し続け、' +
+          '変更するとこのバージョンだけの値になります（すべて削除すると「空で上書き」として保存されます）。' +
+          '対象リポジトリは共通設定を使用します。';
+    note.classList.remove('hidden');
+  } else if (isVersion) {
+    note.textContent = '制約・前提はこのバージョン固有の値です。対象リポジトリは共通設定を使用します。';
+    note.classList.remove('hidden');
+  } else {
+    note.classList.add('hidden');
+  }
   $('ec-hint').textContent = res.exists
     ? '保存した内容は次回の自動実行から反映されます'
     : '未作成 — 保存すると新規作成します';
@@ -2773,8 +2864,20 @@ async function saveCharterForm() {
   f.goal = $('ec-goal').value.trim();
   f.deliverables = readSimpleList($('ec-deliverables'));
   if (!cf.isMaster) f.acceptance = readSimpleList($('ec-acceptance'));
-  f.constraints = readSimpleList($('ec-constraints'));
-  f.assumptions = readSimpleList($('ec-assumptions'));
+  const cons = readSimpleList($('ec-constraints'));
+  const assum = readSimpleList($('ec-assumptions'));
+  f.constraints = cons;
+  f.assumptions = assum;
+  // 見出しの扱い（本体の継承規則「見出しがあれば明示値・無ければマスターへ追従」と対）:
+  //   元々見出しがある → 明示値のまま維持。
+  //   マスターへ追従中 → 値を変えていなければ見出しを書かず追従を維持、変えたときだけ明示化
+  //   （全削除は「継承を空に上書き」の明示の意思として空見出しを書く）。
+  //   継承元が無い → 値を入れたときだけ見出しを書く。
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  f._constraintsDefined = cf.origConstraintsDefined
+    || (cf.inheritedConstraints !== null ? !same(cons, cf.inheritedConstraints) : cons.length > 0);
+  f._assumptionsDefined = cf.origAssumptionsDefined
+    || (cf.inheritedAssumptions !== null ? !same(assum, cf.inheritedAssumptions) : assum.length > 0);
   const ok = await guard('保存', async () => {
     await api.writeCharterFields(cf.dir, cf.name, f);
     return true;
@@ -2870,10 +2973,20 @@ function renderRepoRows(container, rows) {
     row.innerHTML =
       `<input class="er-name mono" placeholder="名前" value="${esc((r && r.name) || '')}" />` +
       `<input class="er-url mono" placeholder="git URL（必須）" value="${esc((r && r.url) || '')}" />` +
-      `<input class="er-base mono" placeholder="ベースブランチ 例 main" value="${esc((r && r.base) || '')}" />` +
+      `<input class="er-base mono" placeholder="ベース 例 main" value="${esc((r && r.base) || '')}" />` +
+      `<input class="er-target mono" placeholder="MR先（省略=ベース）" value="${esc((r && r.target) || '')}" />` +
+      `<input class="er-path mono" placeholder="モノレポ内フォルダ 例 apps/api" value="${esc((r && r.path) || '')}" />` +
       `<input class="er-owns mono" placeholder="担当範囲（省略=参照のみ）" value="${esc((r && r.owns) || '')}" />` +
       `<input class="er-desc" placeholder="説明" value="${esc((r && r.desc) || '')}" />` +
       `<button type="button" class="np-r-del" title="削除">✕</button>`;
+    // フォームが列を持たないキー（readonly/local/docs 等 = _extra）は行の DOM に持ち回り、
+    // 保存時にそのまま書き戻す（フォームを開いて保存しただけで消えないように）。
+    row._readonly = !!(r && r.readonly);
+    row._extra = (r && r._extra) || null;
+    if (row._extra) {
+      row.querySelector('.er-desc').title =
+        `フォーム外の設定を保持しています: ${Object.keys(row._extra).join(', ')}（保存時にそのまま残ります）`;
+    }
     row.querySelector('.np-r-del').addEventListener('click', () => row.remove());
     container.appendChild(row);
   };
@@ -2886,8 +2999,26 @@ async function openReposForm() {
   if (!p) return toast('プロジェクトを選択してください');
   const res = await guard('リポジトリ一覧の読込', () => api.readRepos(p.dir));
   if (!res) return;
+  // repos.yaml / repos.yml が正のプロジェクトはフォームで扱えない（保存すると repos.json が
+  // できるが本体は yaml 優先で無視する）。生テキスト編集へ誘導する。
+  if (res.yamlFile) {
+    toast(`このプロジェクトは ${res.yamlFile} が正です。テキスト編集で開きます`);
+    return openEditFile(res.yamlFile);
+  }
   reposForm = { dir: p.dir };
   renderRepoRows($('er-rows'), res.rows);
+  const warn = $('er-warning');
+  if (warn) {
+    if (res.generated) {
+      warn.textContent =
+        '⚠ この repos.json は charter.md の ## repos から自動生成されています。ここで保存すると' +
+        '手管理（repos.json が正）に切り替わり、以後 charter の ## repos は反映されなくなります。' +
+        'charter 主導のままにするなら、charter.md の ## repos を編集してください。';
+      warn.classList.remove('hidden');
+    } else {
+      warn.classList.add('hidden');
+    }
+  }
   $('dlg-edit-repos').showModal();
 }
 
@@ -2899,8 +3030,12 @@ async function saveReposForm() {
       name: row.querySelector('.er-name').value.trim(),
       url: row.querySelector('.er-url').value.trim(),
       base: row.querySelector('.er-base').value.trim(),
+      target: row.querySelector('.er-target').value.trim(),
+      path: row.querySelector('.er-path').value.trim(),
       owns: row.querySelector('.er-owns').value.trim(),
       desc: row.querySelector('.er-desc').value.trim(),
+      readonly: row._readonly || false,
+      ...(row._extra ? { _extra: row._extra } : {}),
     }))
     .filter((r) => r.url);
   const ok = await guard('保存', async () => {
@@ -3010,7 +3145,9 @@ async function submitNewCharterVersion() {
   }
   // 初期値の引き継ぎ元: 直近の計画バージョン（あれば）、無ければマスター/初版の憲章。
   // その やること/完了条件/成果物 をフォームの初期状態に入れて、前バージョンから編集して作れる
-  // ようにする。制約・前提は共通設定からコピーし、この版だけの値としてフォームで変更できる。
+  // ようにする。制約・前提はここでコピーしない — マスターがあれば openCharterForm が
+  // 「継承値の表示」として出し、変更しない限りマスターへの追従が保たれる（コピーすると
+  // その時点のスナップショットで固定され、以後の共通設定の変更が伝わらなくなる）。
   const srcName =
     p.charters && p.charters.length ? `charters/${p.charters[p.charters.length - 1].name}.md` : 'charter.md';
   let seed = {};
@@ -3021,11 +3158,6 @@ async function submitNewCharterVersion() {
       seedAcceptance: Array.isArray(src.fields.acceptance) ? src.fields.acceptance : [],
       seedDeliverables: Array.isArray(src.fields.deliverables) ? src.fields.deliverables : [],
     };
-  }
-  const master = await guard('共通設定の読込', () => api.readCharterFields(p.dir, 'charter.md'));
-  if (master && master.fields) {
-    seed.seedConstraints = Array.isArray(master.fields.constraints) ? master.fields.constraints : [];
-    seed.seedAssumptions = Array.isArray(master.fields.assumptions) ? master.fields.assumptions : [];
   }
   // 名前を決めたら、続けて内容（やること・完了条件）を入力するバージョンのフォームを開く（保存で新規作成）
   await openCharterForm(`charters/${name}.md`, seed);
@@ -3042,7 +3174,9 @@ async function insertCharterTemplate() {
   }
   const m = /^charters\/([^/\\]+)\.md$/.exec(ef.name);
   const fallback = (state.project && state.project.name) || 'project';
-  const res = await guard('雛形の取得', () => api.charterTemplate(m ? m[1] : fallback));
+  // バージョン（charters/<name>.md）の雛形は空の制約・前提見出しを持たない
+  // （そのまま保存してもマスターの制約・前提を「空に上書き」しない）
+  const res = await guard('雛形の取得', () => api.charterTemplate(m ? m[1] : fallback, !!m));
   if (!res) return;
   $('ef-content').value = res.content;
   $('ef-ai-status').textContent = '雛形を挿入しました — 各セクションを埋めるか、✨ AI 補完で下書きできます';
@@ -3378,6 +3512,33 @@ function completedRunForNeed(project, need, flowRuns) {
   return run && String(run.status || '') === 'done' ? run : null;
 }
 
+// 同一タスクの系統内でいちばん新しい done の run（リトライ世代の降順）。
+// last_run（最新試行）が実行中・失敗のときでも、旧世代の完了成果を見る導線に使う
+// （リトライ中に「成果を確認」が消える＝成果物が消失したように見える問題の対策）。
+// 完了承認の可否判定（completedRunForNeed）はあくまで最新試行の done を根拠にするため、
+// このフォールバックは成果の閲覧にだけ使う。
+function newestDoneRunForNeed(project, need, flowRuns) {
+  const taskId = String((need && (need.taskId || need.id)) || '');
+  if (!taskId) return null;
+  const key = sanitizeTaskId(taskId);
+  return (
+    (flowRuns || [])
+      .filter((r) => r.taskId && sanitizeTaskId(r.taskId) === key && String(r.status) === 'done')
+      .sort(
+        (a, b) =>
+          (b.retries || 0) - (a.retries || 0) ||
+          String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || ''))
+      )[0] || null
+  );
+}
+
+// 成果の閲覧に使う run: 最新試行が done ならそれ、でなければ系統内の最新 done 世代。
+function artifactRunForNeed(project, need, flowRuns) {
+  return (
+    completedRunForNeed(project, need, flowRuns) || newestDoneRunForNeed(project, need, flowRuns)
+  );
+}
+
 // 要対応詳細のバナー、完了承認ボタン、検収ダイアログを同じ判定へ揃える。
 // status=done は orchestrator がフローを終了した一次情報。検証をフローノードとして数える
 // 形式では counts.failed / waiting が残るため、ノード集計を完了承認の可否に重ねない。
@@ -3411,7 +3572,8 @@ function needApprovalReason(project, need, flowRuns, input) {
 function needArtifactsButtonHtml(project, need, flowRuns) {
   // 未承認の検証失敗は回答欄の主操作から同じ検収ダイアログへ進むため、重複表示しない。
   if (canManuallyCompleteNeed(project, need, flowRuns)) return '';
-  if (!completedTaskForNeed(project, need) && !completedRunForNeed(project, need, flowRuns)) return '';
+  // リトライ中（最新試行が未完）でも、系統内に done 世代があれば成果への導線を残す
+  if (!completedTaskForNeed(project, need) && !artifactRunForNeed(project, need, flowRuns)) return '';
   return `<button type="button" class="primary-inline" data-need-artifacts="${esc(need.id)}">成果を確認</button>`;
 }
 
@@ -3713,7 +3875,9 @@ async function openNeedArtifacts(needId) {
   const project = state.project;
   const need = project && project.needs.find((item) => item.id === needId);
   if (!need) return toast('要対応項目が見つかりません');
-  const run = completedRunForNeed(project, need, state.flowRuns);
+  // 閲覧は系統フォールバック付き（リトライ中でも旧世代の完了成果を見られる）。
+  // 承認可否の判定は completedRunForNeed（最新試行の done）側が担い、ここでは変えない。
+  const run = artifactRunForNeed(project, need, state.flowRuns);
   const task = completedTaskForNeed(project, need) || taskForNeed(project, need);
   let artifactRun = run;
   if (run && state.flowRun && state.flowRun.run && state.flowRun.run.runId === run.runId) {
@@ -5248,7 +5412,13 @@ const viewTabs = [
     ${req.body ? `<div class="flow-request-body">${proseHtml(req.body)}</div>` : ''}
     ${adviceBanner}
     ${relationshipStrip({ run })}
-    ${archived ? '<p class="muted">完了済みの記録です。</p>' : ''}
+    ${
+      run.tombstone
+        ? '<p class="muted">リトライ（世代交代）で置き換えられた実行の記録です。工程出力は抜粋で、成果物の実体・イベントは新しい実行に引き継がれています。</p>'
+        : archived
+          ? '<p class="muted">完了済みの記録です。</p>'
+          : ''
+    }
     ${run.failureReason ? `<div class="flow-failure">失敗理由: ${esc(String(run.failureReason).replace(/\[agent-error:[a-z]+\]\s*/g, ''))}</div>` : ''}
     <div class="flow-progress-block">
       <div class="progress"><div style="width:${pct}%"></div></div>
@@ -6155,7 +6325,9 @@ function populateSettingsFields() {
   )
     .map(([name, bus]) => `${name} = ${bus}`)
     .join('\n');
-  $('cfg-agent-cli').value = (cfg.agent && cfg.agent.cli) || 'kiro';
+  // 空欄 = 未設定（プロジェクト設定 → 既定 kiro のフォールバック）。'kiro' で埋めると
+  // 保存時に「明示 kiro」が固定され、プロジェクトの agent_cli が二度と効かなくなる。
+  $('cfg-agent-cli').value = (cfg.agent && cfg.agent.cli) || '';
   $('cfg-agent-model').value = (cfg.agent && cfg.agent.model) || '';
   $('cfg-agent-timeout').value = (cfg.agent && cfg.agent.timeoutSec) || 180;
   $('cfg-gl-url').value = cfg.gitlab.baseUrl || '';
@@ -6285,7 +6457,7 @@ async function saveSettings() {
     .filter(Boolean)
     .reduce((acc, [name, bus]) => ((acc[name] = bus), acc), {});
   cfg.agent = cfg.agent || {};
-  cfg.agent.cli = $('cfg-agent-cli').value;
+  cfg.agent.cli = $('cfg-agent-cli').value.trim();
   cfg.agent.model = $('cfg-agent-model').value.trim();
   cfg.agent.timeoutSec = Math.max(30, parseInt($('cfg-agent-timeout').value, 10) || 180);
   cfg.gitlab.baseUrl = $('cfg-gl-url').value.trim();

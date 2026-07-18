@@ -36,7 +36,7 @@ module.exports = {
   readProjectFile: (invoke) => (dir, name) => invoke('dashboard:readFile', { dir, name }),
   writeProjectFile: (invoke) => (dir, name, content) =>
     invoke('dashboard:writeFile', { dir, name, content }),
-  charterTemplate: (invoke) => (name) => invoke('dashboard:charterTemplate', { name }),
+  charterTemplate: (invoke) => (name, version) => invoke('dashboard:charterTemplate', { name, version }),
   // フォーム編集（charter / policy / repos を構造化データで読み書き）
   readCharterFields: (invoke) => (dir, name) => invoke('dashboard:readCharterFields', { dir, name }),
   writeCharterFields: (invoke) => (dir, name, fields) =>

@@ -7,6 +7,109 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: エージェント CLI 界面を共通契約（agent-cli.schema.json）に整合
+
+- **agents/`<name>`.json プラグイン CLI のローダを実装**: agent-cli.schema.json は共有者に
+  agent-dashboard を挙げていたが、実装は 6 種ハードコードで未知の CLI 名は黙って kiro に
+  フォールバックしていた。本体（agent-project / agent-flow / agent-amigos）と同じ契約・
+  探索順（`$KIRO_AGENTS_DIR` → `<プロジェクト>/agents/` → `~/.agent/agents/` →
+  `~/.kiro/agents/`）で解決し、`{model}` / `{output_file}` テンプレ・`prompt_via` /
+  `prompt_flag` / `model_flag` / `default_model` / `output: file` / `env` / `timeout` /
+  `empty_output_is_error` を解釈する（AI 補助・Doctor・構造化 Assist の全経路）。
+- **CLI 解決順を ipc の契約どおりに修正**: `resolveAgent` がプロジェクト設定を無視して
+  常に Viewer 設定（既定 kiro）を使っていた（`readProjectAgent` は dead code だった）。
+  「⚙ Viewer 明示設定 > プロジェクト設定（agent-project.yaml / agent-flow.yaml の
+  agent_cli / model）> 既定 kiro」へ。設定画面の CLI 欄は datalist 付き入力にして
+  プラグイン名も指定でき、空欄＝未設定（プロジェクト設定へフォールバック）を保つ。
+- **agent-loop クローンの端末視聴**: 端末（tmux）発見が `~/.kiro/loop-state/` のみを
+  読んでいたため、agent-loop（状態は `~/.agent/loop-state/`・同形式）のデーモンが
+  見つからなかった。両ディレクトリを読む。
+- kiro-loop との界面（設定ファイル・loop-state 形式・tmux 命名・send のプロンプト名解決・
+  入力プロンプト検出正規表現・node-budget 分担）は突き合わせの結果、齟齬なしを確認。
+
+### agent-amigos / agent-dashboard: 入出力データの契約をスキーマへ整合
+
+- **`schemas/amigos-command.schema.json` を新設**: `<home>/.agent/agent-amigos/commands/*.json`
+  の指示ドロップ契約（post / claim / assign / accept / reject / cancel / say の各ペイロード・
+  owner-only 権限・成功で削除/失敗で .rejected の規約）を明文化。投函側（人・agent-dashboard）と
+  取り込み側（`agent_amigos/commands.py`）が同じ契約を参照し、コマンド一覧・必須フィールドの
+  一致を両側のテストで担保（Python `CommandSchemaTests` / dashboard `amigos.test.js`）。
+- **mission.schema.json にバスの読取契約（`$defs`）を追記**: 外部ビュアーが読む正規化出力
+  `mission.json`（`id`/`owner_node`/`posted_at`）・`deliverable/MANIFEST.json`・`final.json`・
+  `cancelled.json` の形を文書化（従来は additionalProperties で偶然通っていた）。
+  `workspace` には「将来 checkout を実装する場合は repos.schema.json のエントリ形に揃える」旨を明記。
+- agent-cli.schema.json の共有ツール一覧に agent-amigos を追記（`agentcli.py` は同スキーマの
+  プラグインローダを実装済みだった）。
+- **agent-dashboard: GitBus / HubBus ホームのミッション対応付けを修正**: `bus: git+…` / `hub+…`
+  のホームは busDir が解決されず、ミッション → ホームの対応（引き受け・依頼の投函先解決）が
+  切れていた。設定 `bus_workdir`、無ければ agent-amigos と同じ既定
+  `~/.agent/amigos/{bus|hub}/<sha1(url)[:8]>` へ解決する。ミッション自動発見も GitBus の
+  `bus/*` に加えて HubBus ミラーの `hub/*` を対象にした。
+
+### agent-flow / agent-dashboard: リトライで旧 run の成果記録が消えないようにする（墓標）
+
+- **agent-flow**: リトライ（新 run-id での世代交代）時、`inherit_from` が先行 run を bus から
+  削除する前に墓標 `runs/<新>/inherited/<旧run-id>.json`（meta・graph・final・results の要約。
+  工程出力は冒頭 1200＋末尾 2400 字の抜粋）を残すようにした。特に「全ノード done だが
+  verify NG → feedback 付きリトライ」は結果を引き継がない設計のため、これまで完走した run の
+  成果記録がリトライ開始の瞬間に bus から完全消滅していた（viewer がその瞬間にポーリング
+  していなければ二度と見られない＝「リトライした run の成果物が dashboard 上で消失」の正体）。
+  前世代の墓標も持ち越すため、最新 run に全世代の要約が残る。
+- **agent-dashboard**: 墓標を readRun 互換のサマリへ変換して読み（`readInheritedTombstones`）、
+  ポーリング時に flow-archive へ補完保存する（live 中に撮れた終端スナップショットがあれば
+  そちらを正とし、無い/実行途中の写ししか無いときだけ墓標で置き換える）。フロータブでは
+  「リトライで置き換えられた実行の記録」と明示する。
+- **リトライ中も成果への導線を残す**: 要対応の「成果を確認」は最新試行（last_run）が done の
+  ときしか出ず、リトライ実行中は旧世代の完了成果へ到達できなかった。閲覧は系統内の最新 done
+  世代へフォールバックする（完了承認の可否判定は従来どおり最新試行の done を根拠にする）。
+- **「そのまま再実行」の run-id が系統から切れる問題を修正**: 旧形式 `<run-id>-retry-<ts>` は
+  決定的 run-id の解析（`REQ_ID_RE`）に合わず taskId/lineage が失われていた。req- 形式は
+  `-v<retry-ts>` として付け、系統解析を保つ（長い id も切り詰めず保持）。
+
+### agent-dashboard: 計画バージョンの継承を agent-project の規則に揃える（マスター憲章）
+
+- **新規プロジェクト作成で入力した制約・前提が最初のバージョンに効かないバグを修正**:
+  生成されるバージョン charter が空の `## constraints` / `## assumptions` 見出しを持っており、
+  本体の継承規則「見出しがあって空＝継承値を空に上書き」によりマスターの制約・前提が
+  適用されなかった。バージョン生成（`buildCharter` の `version` 指定・バージョン雛形）では
+  空の制約・前提を見出しごと省略する。
+- **フォーム保存が継承を黙って切断しないようにした**: 見出しの無い（マスターへ追従中の）
+  バージョンをフォームで開いて保存すると、マスター値のスナップショットが明示値として
+  書き込まれ、以後マスターの変更が伝搬しなかった。継承値から**変更したときだけ**見出しを
+  書いて明示化し、変更しなければ見出しを書かず追従を維持する（全削除は「空で上書き」として
+  空見出しを書く＝本体の意味論と同じ）。フォームの注記も追従中/固有値で出し分ける。
+- **継承プレビュー・seed のマスター判定**: フォームが charter.md のマスター宣言
+  （`## master`）を確認せずに制約・前提を「継承値」として表示していたのを、マスターの
+  ときだけにした（非マスター charter.md から本体は継承しない）。
+- **表示用 charter パーサを本体の規則に統一**: `## goal（目標）` のような注釈付き見出しや
+  `# 憲章`（コロン任意）タイトルを取りこぼしていた（フォーム用パーサとも食い違っていた）。
+- **AI 補助・概要表示の継承フォールバックを本体と同じ規則に**: goal/acceptance は
+  「空ならマスター」、constraints/assumptions は「見出しが無ければマスター」（明示の空は
+  空のまま）。概要のバージョンカードは goal 未設定時に共通設定の目標を継承表示する。
+
+### agent-dashboard: repos / タスクの UI を agent-project のモデルに揃える（モノレポ対応）
+
+- **repos フォームに `path`（モノレポ内フォルダ）と `target`（MR 先）を追加**（新規プロジェクト・
+  編集の両方）。schemas/repos.schema.json の identity (url, path, base) どおり、同じ URL を
+  path 別の行に分けてモノレポを表現できるようにした。保存時は名前重複と (url, path, base/target)
+  重複を本体（parse_charter）と同じ規則で検証する。
+- **フォーム往復でデータを失わないようにした**: これまで repos.json をフォームで開いて保存すると
+  `path`/`target`/`readonly`/`local`/`docs` などフォームに列が無いキーが黙って消えていた。
+  読み込み時に `_extra` として保持し、保存時にそのまま書き戻す（スキーマの additionalProperties /
+  本体の未知キー保持と同じ契約）。
+- **repos.yaml / repos.yml のプロジェクトで編集が無効になる問題を修正**: 本体は
+  `repos.{yaml,yml,json}` の優先順で読むが、dashboard は repos.json 固定だった（yaml 運用では
+  一覧が空に見え、フォーム保存した repos.json は本体に無視される）。ファイル解決を本体と同じ
+  優先順に揃え、yaml/yml が正のときはフォームではなく生テキスト編集へ誘導する。
+- **自動生成 repos.json（`_meta.generated_from`）の警告をフォームにも表示**: 生テキスト編集と
+  同様に「保存すると手管理へ切り替わり charter の ## repos は反映されなくなる」ことを保存前に示す。
+- **タスク追加に「書込先リポジトリ（workspace）」選択を追加**し、inbox 契約が
+  `workspace` / `refs` / `paths` / `review` / `expect` / `followup`（task.schema.json の
+  ルーティング・検収フィールド）を通すようにした。done タスクの「編集してやり直す」も
+  これらを含めて引き継ぐ（従来は再投入で消えていた）。
+- schemas/task.schema.json の `status` enum に `proposed` / `offloaded` / `rejected` を追加
+  （agent-project の VALID_STATUS と同期。dashboard は以前から表示対応済み）。
+
 ### agent-amigos: 設定パスを `.agent/agent-amigos.yaml` へ移行
 
 - 設定・状態領域を agent-project と同じ `.agent/` 配下へ揃えた。

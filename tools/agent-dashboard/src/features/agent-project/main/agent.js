@@ -5,9 +5,12 @@
 // 受け取る。ファイルへの書き込みはこのビュアー側（authoring.js）が行う — 「人が書く
 // 上位入力だけを書く」護りをエージェント経由で迂回しない。
 //
-// 使う CLI とモデルの解決順:
-//   ⚙ Viewer アシスタント設定（agent.cli / agent.model）を charter 補完と Doctor で共用する。
-//   未設定・旧設定の空値は kiro として扱う。
+// 使う CLI とモデルの解決順（resolveAgent）:
+//   ⚙ Viewer アシスタント設定（agent.cli / agent.model）
+//   > プロジェクト設定（agent-project.yaml / agent-flow.yaml の agent_cli / model）
+//   > 既定 kiro
+// 組み込み以外の名前は agents/<name>.json プラグイン（schemas/agent-cli.schema.json）
+// として解決する — 本体（agent-project / agent-flow / agent-amigos）と同じデータ契約。
 
 const fs = require('fs');
 const os = require('os');
@@ -16,6 +19,107 @@ const { spawn } = require('child_process');
 const { readToolConfig } = require('./toolconfig');
 
 const AGENT_CLIS = new Set(['kiro', 'claude', 'copilot', 'codex', 'cursor', 'ollama']);
+
+// ---------------------------------------------------------------------------
+// agents/<name>.json プラグイン CLI（schemas/agent-cli.schema.json）
+// ---------------------------------------------------------------------------
+// agent-project / agent-flow / agent-amigos と同じデータ契約で、組み込み以外の CLI
+// （hermes 等）を宣言的に差し込む。結合はこの契約のみ — 各ツールが自前の小さな
+// ローダで解釈する（Python 側の実装は agent_amigos/agentcli.py 等）。
+// 探索順も契約どおり: $KIRO_AGENTS_DIR → <プロジェクト>/agents/ → ~/.agent/agents/ → ~/.kiro/agents/
+
+function agentPluginDirs(projectDir) {
+  const dirs = [];
+  if (process.env.KIRO_AGENTS_DIR) dirs.push(String(process.env.KIRO_AGENTS_DIR));
+  if (projectDir) dirs.push(path.join(String(projectDir), 'agents'));
+  dirs.push(path.join(os.homedir(), '.agent', 'agents'));
+  dirs.push(path.join(os.homedir(), '.kiro', 'agents'));
+  return dirs;
+}
+
+// スキーマの各フィールドを正規化する。command 必須・output=file は {output_file} 必須。
+// 解釈できない定義は null（呼び出し側が「プラグイン無し」として扱う）。
+function normalizeAgentPlugin(spec, name, file) {
+  if (!spec || typeof spec !== 'object') return null;
+  if (!Array.isArray(spec.command) || !spec.command.length) return null;
+  const command = spec.command.map(String);
+  const output = spec.output === 'file' ? 'file' : 'stdout';
+  if (output === 'file' && !command.some((t) => t.includes('{output_file}'))) return null;
+  return {
+    name: String(spec.name || name),
+    file,
+    command,
+    promptVia: spec.prompt_via === 'argv' ? 'argv' : 'stdin',
+    promptFlag: spec.prompt_flag != null ? String(spec.prompt_flag) : null,
+    modelFlag: spec.model_flag != null ? String(spec.model_flag) : null,
+    defaultModel: spec.default_model != null ? String(spec.default_model) : null,
+    output,
+    env: spec.env && typeof spec.env === 'object' ? spec.env : {},
+    timeoutMs: Number(spec.timeout) > 0 ? Number(spec.timeout) * 1000 : null,
+    emptyOutputIsError: spec.empty_output_is_error !== false,
+  };
+}
+
+function loadAgentPlugin(name, projectDir) {
+  const nm = String(name || '').trim();
+  if (!nm || !/^[\w.-]+$/.test(nm) || AGENT_CLIS.has(nm)) return null;
+  for (const dir of agentPluginDirs(projectDir)) {
+    let spec;
+    try {
+      spec = JSON.parse(fs.readFileSync(path.join(dir, `${nm}.json`), 'utf8'));
+    } catch {
+      continue;
+    }
+    const plugin = normalizeAgentPlugin(spec, nm, path.join(dir, `${nm}.json`));
+    if (plugin) return plugin;
+  }
+  return null;
+}
+
+// プラグイン定義からコマンドラインを組み立てる（スキーマの規則どおり）:
+//   {model} … モデル名。未指定ならそのトークンごと省く
+//   {output_file} … output=file のとき最終応答を書かせる一時ファイル
+//   model_flag … command に {model} が無くモデル指定があるときだけ argv 末尾に付く
+//   prompt_via=stdin（既定）は stdin 渡し、argv は末尾引数（prompt_flag 指定時はフラグの値）
+function buildPluginCommand(plugin, model, prompt) {
+  const m = String(model || plugin.defaultModel || '');
+  const argv = [];
+  let outputFile = null;
+  for (const tok of plugin.command) {
+    if (tok.includes('{model}')) {
+      if (!m) continue;
+      argv.push(tok.split('{model}').join(m));
+      continue;
+    }
+    if (tok.includes('{output_file}')) {
+      outputFile = outputFile
+        || path.join(os.tmpdir(),
+          `agent-dashboard-plugin-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.txt`);
+      argv.push(tok.split('{output_file}').join(outputFile));
+      continue;
+    }
+    argv.push(tok);
+  }
+  if (m && plugin.modelFlag && !plugin.command.some((t) => t.includes('{model}'))) {
+    argv.push(plugin.modelFlag, m);
+  }
+  let stdin = null;
+  const text = String(prompt == null ? '' : prompt);
+  if (plugin.promptVia === 'argv') {
+    if (plugin.promptFlag) argv.push(plugin.promptFlag, text);
+    else argv.push(text);
+  } else {
+    stdin = text;
+  }
+  return {
+    command: argv[0],
+    args: argv.slice(1),
+    stdin,
+    env: plugin.env,
+    outputFile,
+    emptyOutputIsError: plugin.emptyOutputIsError,
+  };
+}
 
 // プロジェクト設定（agent-project.yaml → 無ければ agent-flow.yaml）から agent_cli / model を拾う。
 // 探索順は本体の _find_config と同じ root 直下 → .agent/（readToolConfig が ~/.agent も見る）。
@@ -35,15 +139,39 @@ function readProjectAgent(projectDir) {
   return {};
 }
 
-// Viewer 共通設定から CLI・モデル・タイムアウトを確定する。
+// CLI・モデル・タイムアウトを確定する。解決順（ipc の agent:charter 契約と同じ）:
+//   ⚙ Viewer アシスタント設定（agent.cli / agent.model）が最優先
+//   > プロジェクト設定（agent-project.yaml / agent-flow.yaml の agent_cli / model）
+//   > 既定 kiro
+// 組み込み（AGENT_CLIS）以外の名前は agents/<name>.json プラグイン
+// （schemas/agent-cli.schema.json）として解決を試みる。見つからない名前は既定へ倒す
+// （黙って別 CLI で走らせない — source で由来を返し、表示側が判断できる）。
 function resolveAgent(cfg, projectDir) {
   const ac = (cfg && cfg.agent) || {};
-  const explicit = String(ac.cli || '').toLowerCase();
-  const cli = AGENT_CLIS.has(explicit) ? explicit : 'kiro';
-  const model = String(ac.model || '').trim();
   const timeoutMs = Math.max(30, Number(ac.timeoutSec) || 180) * 1000;
-  const source = AGENT_CLIS.has(explicit) ? 'settings' : 'default';
-  return { cli, model, timeoutMs, source, projectFile: null };
+  const candidates = [
+    { cli: String(ac.cli || '').toLowerCase(), model: String(ac.model || '').trim(),
+      source: 'settings', projectFile: null },
+  ];
+  const proj = readProjectAgent(projectDir);
+  if (proj.cli) {
+    candidates.push({ cli: proj.cli, model: String(proj.model || '').trim(),
+                      source: 'project', projectFile: proj.file || null });
+  }
+  for (const c of candidates) {
+    if (!c.cli) continue;
+    if (AGENT_CLIS.has(c.cli)) {
+      return { cli: c.cli, model: c.model, timeoutMs, source: c.source,
+               projectFile: c.projectFile, plugin: null };
+    }
+    const plugin = loadAgentPlugin(c.cli, projectDir);
+    if (plugin) {
+      return { cli: c.cli, model: c.model, timeoutMs, source: c.source,
+               projectFile: c.projectFile, plugin };
+    }
+  }
+  return { cli: 'kiro', model: String(ac.model || '').trim(), timeoutMs,
+           source: 'default', projectFile: null, plugin: null };
 }
 
 // エージェント CLI のコマンドラインを組み立てる。
@@ -93,11 +221,17 @@ function buildCommand(cli, model, prompt) {
 // （agent-project の _agent_cmd も kiro へ stdin を渡す経路を持たない）。
 // そこでスナップショットは一時ファイル（parts.file）へ退避し、読み取り専用の
 // fs_read だけを信頼して「まずそのファイルを読む」よう短い argv で指示する。
-function buildDoctorCommand(cli, model, prompt, projectDir) {
+function buildDoctorCommand(cli, model, prompt, projectDir, plugin = null) {
   const parts = typeof prompt === 'object' && prompt && (prompt.argv || prompt.stdin)
     ? prompt
     : { argv: String(prompt || ''), stdin: null, text: String(prompt || '') };
   const cwd = safeCwd(projectDir);
+
+  // プラグイン CLI（agents/<name>.json）: 読み取り専用フラグの共通契約は持たないため、
+  // 宣言どおりのコマンドへ本文全文を渡す（cursor/ollama の既存フォールバックと同格）。
+  if (plugin) {
+    return { ...buildPluginCommand(plugin, model, parts.text || parts.argv), cwd };
+  }
 
   if (cli === 'kiro') {
     // parts.file がある時だけ fs_read（読み取り専用）を信頼する。無ければ従来どおり
@@ -193,13 +327,15 @@ function writeSpill(dir, content) {
   };
 }
 
-function commandResultText(command, code, stdout, stderr) {
+function commandResultText(command, code, stdout, stderr, { emptyOutputIsError = true } = {}) {
   const out = stripAnsi(stdout).trim();
   const err = stripAnsi(stderr).trim();
   if (code !== 0) {
     throw new Error(`${command} が失敗しました (exit ${code}): ${(err || out).slice(-400)}`);
   }
   if (out) return out;
+  // プラグイン CLI（empty_output_is_error: false）は空応答を成功として許す
+  if (!emptyOutputIsError) return '';
   // Kiro CLI は利用上限到達などを stderr に出しながら exit 0 を返すことがある。
   // 空 stdout を成功として返すと renderer では「助言はありませんでした」に化け、
   // ユーザーが認証・利用上限・起動警告のどれを直すべきか分からない。
@@ -217,7 +353,7 @@ function commandResultText(command, code, stdout, stderr) {
     : `${command} は正常終了しましたが、応答本文が空でした`);
 }
 
-function runCommand({ command, args, stdin, cwd }, timeoutMs) {
+function runCommand({ command, args, stdin, cwd, env, outputFile, emptyOutputIsError }, timeoutMs) {
   // argv 配列で渡し、cmd.exe 経由の再クオートを避ける（Windows で改行付きプロンプトが
   // 先頭行で切れる・8191 文字制限に当たるのを防ぐ）。PATHEXT で .exe/.cmd は解決される。
   return new Promise((resolve, reject) => {
@@ -240,7 +376,10 @@ function runCommand({ command, args, stdin, cwd }, timeoutMs) {
       shell: false,
       windowsHide: true,
       cwd: spawnCwd,
-      env: { ...process.env, NO_COLOR: '1', TERM: 'dumb' },
+      // env はプラグイン定義（agents/<name>.json の env）の上書きマージ。
+      // wsl.exe 経路では Windows 環境変数が WSL 側へそのまま伝わらない制約がある
+      // （NO_COLOR/TERM も同様の既知の制約）。
+      env: { ...process.env, NO_COLOR: '1', TERM: 'dumb', ...(env || {}) },
     });
     let out = '';
     let err = '';
@@ -257,7 +396,20 @@ function runCommand({ command, args, stdin, cwd }, timeoutMs) {
     child.on('close', (code) => {
       clearTimeout(timer);
       try {
-        resolve(commandResultText(command, code, out, err));
+        // output=file のプラグイン（agents/<name>.json）: 最終応答は {output_file} に書かれる。
+        // stdout がイベントログで汚れる CLI 向け（codex の --output-last-message と同型）。
+        if (outputFile) {
+          let fileText = '';
+          try {
+            fileText = fs.readFileSync(outputFile, 'utf8');
+          } catch { /* CLI が書かなかった → stdout へフォールバック */ }
+          try { fs.unlinkSync(outputFile); } catch { /* 後始末失敗は無害 */ }
+          if (fileText.trim()) {
+            resolve(fileText.trim());
+            return;
+          }
+        }
+        resolve(commandResultText(command, code, out, err, { emptyOutputIsError }));
       } catch (e) {
         reject(e);
       }
@@ -271,8 +423,12 @@ function runCommand({ command, args, stdin, cwd }, timeoutMs) {
 
 // dir（プロジェクトディレクトリ）を cwd として渡す。WSL UNC の場合は runCommand が
 // wsl.exe 経由で実行するため、CLI が WSL 側にしか無い環境でも charter 補完が動く。
-function runAgent({ cli, model, timeoutMs }, prompt, dir) {
-  return runCommand({ ...buildCommand(cli, model, prompt), cwd: safeCwd(dir) }, timeoutMs);
+// プラグイン CLI（resolved.plugin）は agents/<name>.json の宣言（argv テンプレ・
+// prompt_via・timeout 等）で組み立てる。
+function runAgent({ cli, model, timeoutMs, plugin }, prompt, dir) {
+  const spec = plugin ? buildPluginCommand(plugin, model, prompt) : buildCommand(cli, model, prompt);
+  return runCommand({ ...spec, cwd: safeCwd(dir) },
+    plugin && plugin.timeoutMs ? plugin.timeoutMs : timeoutMs);
 }
 
 // 応答から最初の JSON オブジェクト {...} を取り出す（説明文が混じっても拾う。
@@ -477,8 +633,8 @@ async function completeDoctor(cfg, { dir, context, userPrompt, mode }) {
   let raw;
   try {
     raw = await runCommand(
-      buildDoctorCommand(resolved.cli, resolved.model, prompt, dir),
-      resolved.timeoutMs
+      buildDoctorCommand(resolved.cli, resolved.model, prompt, dir, resolved.plugin),
+      resolved.plugin && resolved.plugin.timeoutMs ? resolved.plugin.timeoutMs : resolved.timeoutMs
     );
   } finally {
     if (spill) spill.cleanup();
@@ -738,8 +894,8 @@ async function completeTaskAssist(cfg, { dir, mode, context, userPrompt }) {
   let raw;
   try {
     raw = await runCommand(
-      buildDoctorCommand(resolved.cli, resolved.model, prompt, dir),
-      resolved.timeoutMs
+      buildDoctorCommand(resolved.cli, resolved.model, prompt, dir, resolved.plugin),
+      resolved.plugin && resolved.plugin.timeoutMs ? resolved.plugin.timeoutMs : resolved.timeoutMs
     );
   } finally {
     if (spill) spill.cleanup();
@@ -803,6 +959,10 @@ module.exports = {
   STRUCTURED_ASSIST_MODES,
   resolveAgent,
   readProjectAgent,
+  loadAgentPlugin,
+  normalizeAgentPlugin,
+  buildPluginCommand,
+  agentPluginDirs,
   buildCommand,
   buildDoctorCommand,
   runAgent,

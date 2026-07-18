@@ -2,7 +2,61 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "mission.schema.json",
   "title": "協働ミッション公示（design doc と併せて post するミッション + 役割ミッション表）",
-  "description": "オーナーが `agent-amigos post --roles <file>` へ渡す入力（YAML/JSON）の契約。post 時に正規化 JSON としてバスへ置かれる（mission.json / roles/<id>.json）。検証は agent-amigos の stdlib パーサ（normalize_mission）が行い、本スキーマは契約の文書化とテスト突き合わせに使う。正典設計: docs/designs/agent-amigos-design.md §10。",
+  "description": "オーナーが `agent-amigos post --roles <file>` へ渡す入力（YAML/JSON）の契約。post 時に正規化 JSON としてバスへ置かれる（mission.json / roles/<id>.json）。検証は agent-amigos の stdlib パーサ（normalize_mission）が行い、本スキーマは契約の文書化とテスト突き合わせに使う。バスへ書かれる読取契約（外部ビュアー = agent-dashboard 等が読む正規化出力）は $defs.posted_mission / $defs.manifest / $defs.final / $defs.cancelled を参照。正典設計: docs/designs/agent-amigos-design.md §10。",
+  "$defs": {
+    "posted_mission": {
+      "type": "object",
+      "description": "バス上の missions/<mid>/mission.json — post 時に normalize_mission の正規化 mission ブロック（title / goal / deadline / assignment_policy / staffing_policy / staffing_timeout / acceptance / convergence / budget / workspace）へ実行時フィールドを加えた形。外部ビュアーはこれを読取専用で読む（書き込み所有権はオーナー / amigo）",
+      "required": ["id", "owner_node", "posted_at"],
+      "properties": {
+        "id": {"type": "string", "description": "ミッション id（am-<YYYYMMDDHHMMSS>-<hex4>。post --mission-id / commands の mission_id で明示も可）"},
+        "owner_node": {"type": "string", "description": "公示したオーナーノードの node_id（owner-only コマンドの権限判定の根拠）"},
+        "posted_at": {"type": "string", "description": "公示時刻（ISO8601 UTC）"}
+      },
+      "additionalProperties": true
+    },
+    "manifest": {
+      "type": "object",
+      "description": "バス上の missions/<mid>/deliverable/MANIFEST.json — integrator が書く統合成果の索引。round が現行ラウンドと一致すれば受入待ち（reviewing）",
+      "properties": {
+        "mission": {"type": "string"},
+        "round": {"type": "integer", "description": "生成時のラウンド（rejections/*.json の件数）。reject で無効化される"},
+        "partial": {"type": "boolean", "description": "部分統合（静穏化・予算 wrap-up 等で全ロール完了前に統合した）か"},
+        "reason": {"type": "string", "description": "partial の理由"},
+        "files": {
+          "type": "object",
+          "description": "ロール別の成果物一覧 {role: [{path, sha256_16}]}",
+          "additionalProperties": {
+            "type": "array",
+            "items": {"type": "object", "properties": {"path": {"type": "string"}, "sha256_16": {"type": "string"}}}
+          }
+        },
+        "generated_at": {"type": "string"},
+        "generated_by": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "final": {
+      "type": "object",
+      "description": "バス上の missions/<mid>/final.json — 受入確定の記録（accepted: true で phase=done）。書けるのはオーナーノードのみ",
+      "properties": {
+        "accepted": {"type": "boolean"},
+        "ts": {"type": "string"},
+        "by": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "cancelled": {
+      "type": "object",
+      "description": "バス上の missions/<mid>/cancelled.json — 中止の記録（存在すれば phase=cancelled）",
+      "properties": {
+        "ts": {"type": "string"},
+        "by": {"type": "string"},
+        "reason": {"type": "string"}
+      },
+      "additionalProperties": true
+    }
+  },
   "type": "object",
   "required": ["roles"],
   "properties": {
@@ -52,7 +106,7 @@
         },
         "workspace": {
           "type": "object",
-          "description": "コード成果物用の対象リポジトリ（設計書 §8.3。バスに巨大ファイルを積まない）",
+          "description": "コード成果物用の対象リポジトリ（設計書 §8.3。バスに巨大ファイルを積まない）。現状は opaque passthrough（checkout 実装なし）。将来 checkout を実装する場合は repos.schema.json のエントリ形（url/base/path/owns）または repos レジストリのエントリ名参照に揃えること（リポジトリ定義のスキーマを増やさない）",
           "properties": {"repo": {"type": "string"}},
           "additionalProperties": true
         }

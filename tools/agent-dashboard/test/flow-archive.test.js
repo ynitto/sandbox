@@ -88,6 +88,59 @@ test('archiveRunSnapshot → bus 掃除後も listArchivedRuns / readArchivedRun
   }
 });
 
+test('リトライ墓標（inherited/）→ readRun 互換サマリ → アーカイブとして読める', () => {
+  // agent-flow の inherit_from は世代交代で旧 run を bus から削除し、墓標
+  // runs/<新>/inherited/<旧>.json を残す。viewer はこれを「アーカイブ済み run」相当で
+  // 表示できる＝リトライで旧世代の成果記録が消えない。
+  const newId = 'req-abc123-T1-r1';
+  const oldId = 'req-abc123-T1-r0';
+  const { root, busDir, runDir } = mkBus(newId);
+  try {
+    fs.mkdirSync(path.join(runDir, 'inherited'), { recursive: true });
+    fs.writeFileSync(
+      path.join(runDir, 'inherited', `${oldId}.json`),
+      JSON.stringify({
+        run_id: oldId,
+        saved_at: '2026-07-11T00:20:00Z',
+        meta: {
+          status: 'done', request: 'CSV を要約する',
+          created_at: '2026-07-10T00:00:00Z', updated_at: '2026-07-10T00:10:00Z',
+        },
+        graph: { nodes: { a: { goal: 'A', deps: [] }, b: { goal: 'B', deps: ['a'] } } },
+        final: { finished_at: '2026-07-10T00:10:00Z', summary: '完走（verify NG で世代交代）' },
+        results: {
+          a: { status: 'done', who: 'w1', output: 'out-a', finished_at: '2026-07-10T00:05:00Z' },
+          b: { status: 'failed', who: 'w1', output: 'boom', finished_at: '2026-07-10T00:06:00Z' },
+        },
+        artifacts: ['a/report.md'],
+      }),
+      'utf8'
+    );
+    const tombs = flow.readInheritedTombstones(busDir, newId);
+    assert.strictEqual(tombs.length, 1);
+    const t = tombs[0];
+    assert.strictEqual(t.runId, oldId);
+    assert.strictEqual(t.status, 'done');
+    assert.strictEqual(t.taskId, 'T1', '系統情報（taskId/lineage）が解ける');
+    assert.strictEqual(t.lineageId, 'req-abc123-T1');
+    assert.strictEqual(t.tombstone, true);
+    assert.strictEqual(t.counts.done, 1);
+    assert.strictEqual(t.counts.failed, 1);
+    assert.strictEqual(t.nodes.a.output, 'out-a', '工程出力（抜粋）が残る');
+    assert.strictEqual(t.final.summary, '完走（verify NG で世代交代）');
+    assert.deepStrictEqual(t.tombstoneArtifacts, ['a/report.md']);
+    // アーカイブへ写せば bus から新 run が消えても読める（ipc flow:runs の補完と同じ経路）
+    assert.strictEqual(flow.archiveRunSnapshot(root, busDir, t), true);
+    fs.rmSync(runDir, { recursive: true, force: true });
+    const snap = flow.readArchivedRun(root, oldId);
+    assert.ok(snap && snap.run && snap.run.runId === oldId);
+    assert.strictEqual(snap.run.tombstone, true);
+    assert.strictEqual(snap.run.counts.done, 1);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('スナップショットの長い工程出力は冒頭＋末尾の抜粋で保存される', () => {
   const { root, busDir, runDir } = mkBus('run-long-output');
   const long = `先頭-${'x'.repeat(9000)}-末尾`;

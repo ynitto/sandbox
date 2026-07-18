@@ -246,6 +246,64 @@ class InheritTests(unittest.TestCase):
         self.assertIsNone(kf.read_json(new.meta_path))   # 新 run は白紙（feedback 付きで再計画）
         self.assertNotIn("req-y-t-r0", new.list_runs())
 
+    def test_tombstone_preserves_predecessor_records(self):
+        """先行 run の削除前に墓標（inherited/<old>.json）が残る。失敗ノードの結果も
+        要約に含む（seed は done だけだが、記録としては全ノード残す）。"""
+        old = self._mk_run("req-tb-t-r0")
+        self._add_task(old, "t1")
+        self._add_task(old, "t2")
+        old.write_result("t1", "w", "done", "out1", data={"k": 1})
+        old.write_result("t2", "w", "failed", "boom")
+        old.mark_run_failed("req-tb-t-r0", "timed out")
+
+        new = kf.Bus(self.tmp, "req-tb-t-r1")
+        new.inherit_from("req-tb-t-r0")
+
+        tomb = kf.read_json(os.path.join(new.inherited_dir, "req-tb-t-r0.json"))
+        self.assertIsNotNone(tomb, "墓標が残る")
+        self.assertEqual(tomb["run_id"], "req-tb-t-r0")
+        self.assertEqual(tomb["meta"].get("status"), "failed")
+        self.assertIn("t1", tomb["results"])
+        self.assertIn("t2", tomb["results"], "失敗ノードの記録も墓標には残す")
+        self.assertEqual(tomb["results"]["t2"]["status"], "failed")
+        self.assertIsNotNone(tomb.get("graph"))
+
+    def test_tombstone_on_fully_done_predecessor(self):
+        """全ノード done（verify NG リトライ）は状態を引き継がないが、墓標は残る＝
+        完走した run の成果記録がリトライで消えない。長い出力は抜粋になる。"""
+        old = self._mk_run("req-tbd-t-r0")
+        self._add_task(old, "t1")
+        long_out = "x" * 10000
+        old.write_result("t1", "w", "done", long_out)
+        old.set_status("done")
+
+        new = kf.Bus(self.tmp, "req-tbd-t-r1")
+        info = new.inherit_from("req-tbd-t-r0")
+
+        self.assertEqual(info["seeded_nodes"], 0)
+        self.assertIsNone(kf.read_json(new.meta_path))   # 新 run は白紙のまま
+        tomb = kf.read_json(os.path.join(new.inherited_dir, "req-tbd-t-r0.json"))
+        self.assertIsNotNone(tomb)
+        out = tomb["results"]["t1"]["output"]
+        self.assertIn("中略", out, "長い出力は抜粋で残す")
+        self.assertLess(len(out), len(long_out))
+
+    def test_tombstone_chain_is_carried_forward(self):
+        """r0→r1→r2 と世代交代しても、r2 に全世代の墓標が残る（r1 削除時に r1 の
+        inherited/ を持ち越す）。"""
+        r0 = self._mk_run("req-ch-t-r0")
+        self._add_task(r0, "t1")
+        self._add_task(r0, "t2")                          # 未完ノードを残す＝部分引き継ぎで r1 が実体化する
+        r0.write_result("t1", "w", "done", "out0")
+        r0.mark_run_failed("req-ch-t-r0", "gen0")
+        r1 = kf.Bus(self.tmp, "req-ch-t-r1")
+        r1.inherit_from("req-ch-t-r0")
+        r1.mark_run_failed("req-ch-t-r1", "gen1")
+        r2 = kf.Bus(self.tmp, "req-ch-t-r2")
+        r2.inherit_from("req-ch-t-r1")
+        self.assertIsNotNone(kf.read_json(os.path.join(r2.inherited_dir, "req-ch-t-r0.json")))
+        self.assertIsNotNone(kf.read_json(os.path.join(r2.inherited_dir, "req-ch-t-r1.json")))
+
     def test_live_predecessor_is_untouched(self):
         old = self._mk_run("req-z-t-r0")
         self._add_task(old, "t1")

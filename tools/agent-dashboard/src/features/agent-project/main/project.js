@@ -11,6 +11,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { readToolConfig } = require('./toolconfig');
+const { reposFileName } = require('./authoring');
 
 // agent-project.py と同じ正規表現
 const HEAD_RE = /^##\s+(\S+?):\s*(.*)$/;
@@ -164,13 +165,16 @@ function parseCharter(text) {
   if (!text) return null;
   const charter = { name: '', sections: {} };
   let current = null;
+  // 見出しの規則は本体（agent-project の _CHARTER_NAME_RE / _CHARTER_SECTION_RE）と
+  // authoring.js parseCharterDoc に合わせる: タイトルは `# Charter|憲章`（コロン任意）、
+  // セクションは `## <英字キー>` に後続テキストがあってもよい（例 `## goal（目標）`）。
   for (const line of String(text).replace(/\r\n/g, '\n').split('\n')) {
-    const title = line.match(/^#\s+Charter:\s*(.+)$/);
+    const title = line.match(/^#\s+(?:Charter|憲章)\s*[:：]?\s*(.+?)\s*$/);
     if (title) {
-      charter.name = title[1].trim();
+      if (!charter.name) charter.name = title[1].trim(); // 最初の宣言を採用（本体の search と同じ）
       continue;
     }
-    const sec = line.match(/^##\s+(\w+)\s*$/);
+    const sec = line.match(/^##\s+([A-Za-z]+)\b/);
     if (sec) {
       current = sec[1].toLowerCase();
       charter.sections[current] = [];
@@ -1601,6 +1605,8 @@ function readProject(workspaceDir, cfg) {
     }
   }
 
+  const reposFile = reposFileName(dir);
+
   return {
     dir,                                  // プロジェクトルート（状態の置き場。操作の基準）
     workspace,                            // ワークスペース（登録フォルダ。設定 .agent/ の在り処）
@@ -1625,7 +1631,11 @@ function readProject(workspaceDir, cfg) {
     runLog: readRunLog(path.join(dir, 'run-log.jsonl')),
     delivery: readDelivery(path.join(dir, 'DELIVERY.md')),
     projectState: readJson(path.join(dir, 'project.json')),
-    repos: readJson(path.join(dir, 'repos.json')),
+    // 実効レジストリは yaml → yml → json の優先順（本体の REPOS_FILE_NAMES と同じ）。
+    // yaml/yml が正のときはパーサが無く repos は null にする（残骸の repos.json を読んで
+    // 古い内容を見せない）。どのファイルが正かは reposFile で UI へ伝える。
+    reposFile,
+    repos: reposFile === 'repos.json' ? readJson(path.join(dir, 'repos.json')) : null,
     autonomy,
     liveness: projectLiveness(dir),
     busDir: bus.busDir,

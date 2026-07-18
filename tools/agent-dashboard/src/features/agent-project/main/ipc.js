@@ -79,6 +79,7 @@ function registerIpc(ctx) {
     const allLive = flow.listRuns(busDir, 0);
     const lim = Math.max(0, Number(limit) || 30);
     const runs = lim > 0 ? allLive.slice(0, lim) : allLive;
+    const live = new Set(allLive.map((r) => r.runId));
     if (dir) {
       for (const r of allLive) {
         try {
@@ -86,9 +87,28 @@ function registerIpc(ctx) {
         } catch {
           /* アーカイブ失敗は一覧表示の失敗にしない */
         }
+        // リトライ（世代交代）で bus から削除された旧世代の墓標（runs/<新>/inherited/）も
+        // アーカイブへ写す。viewer が削除の瞬間にポーリングしていなくても旧世代の成果記録が
+        // 残る。live 中にポーリングで撮れた終端スナップショット（イベント付き・より詳しい）が
+        // 既にあればそちらを正とし、無い/実行途中の古い写ししか無いときだけ墓標で置き換える。
+        let tombs = [];
+        try {
+          tombs = flow.readInheritedTombstones(busDir, r.runId);
+        } catch {
+          /* 墓標の読込失敗も一覧表示の失敗にしない */
+        }
+        for (const t of tombs) {
+          if (live.has(t.runId)) continue;
+          try {
+            const existing = flow.readArchivedRun(dir, t.runId);
+            const st = existing && existing.run ? String(existing.run.status || '') : '';
+            if (!existing || !flow.TERMINAL.has(st)) flow.archiveRunSnapshot(dir, busDir, t);
+          } catch {
+            /* 補完失敗も致命的でない */
+          }
+        }
       }
     }
-    const live = new Set(allLive.map((r) => r.runId));
     const archived = dir
       ? flow.listArchivedRuns(dir).filter((a) => !live.has(a.runId))
       : [];
@@ -379,9 +399,11 @@ function registerIpc(ctx) {
     return authoring.writeProjectFile(dir, name, content);
   });
 
-  // charter.md の雛形（新規・空ファイル編集時の挿入用。authoring.buildCharter と同一の書式）
-  handle('dashboard:charterTemplate', ({ name }) => ({
-    content: authoring.buildCharter({ name: String(name || '').trim() || 'project' }),
+  // charter.md の雛形（新規・空ファイル編集時の挿入用。authoring.buildCharter と同一の書式）。
+  // version 指定（charters/<name>.md 用）は空の制約・前提見出しを省く＝そのまま保存しても
+  // マスターの制約・前提が「空に上書き」されない。
+  handle('dashboard:charterTemplate', ({ name, version }) => ({
+    content: authoring.buildCharter({ name: String(name || '').trim() || 'project', version: !!version }),
   }));
 
   // フォーム編集: charter / policy / repos を構造化データで読み書きする（マークダウン/JSON を
@@ -406,11 +428,29 @@ function registerIpc(ctx) {
   });
   handle('dashboard:readRepos', ({ dir }) => {
     if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    // 実効レジストリは yaml → yml → json の優先順（本体と同じ）。yaml/yml が正のときは
+    // フォームで repos.json を書いても本体に無視されるため、yamlFile を返して
+    // レンダラを生テキスト編集へ誘導する（フォームでの読み書きはしない）。
+    const name = authoring.reposFileName(dir);
+    if (name !== 'repos.json') {
+      const info = authoring.readProjectFile(dir, name);
+      return { rows: [], exists: info.exists, file: info.file, yamlFile: name, generated: false };
+    }
     const info = authoring.readProjectFile(dir, 'repos.json');
-    return { rows: authoring.reposJsonToRows(info.content || ''), exists: info.exists, file: info.file };
+    return {
+      rows: authoring.reposJsonToRows(info.content || ''),
+      exists: info.exists,
+      file: info.file,
+      generated: info.generated,
+    };
   });
   handle('dashboard:writeRepos', ({ dir, rows }) => {
     if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    const name = authoring.reposFileName(dir);
+    if (name !== 'repos.json') {
+      throw new Error(`このプロジェクトは ${name} が正です。フォームではなくテキスト編集で ${name} を編集してください`);
+    }
+    authoring.validateRepoRows(rows || []);
     // フォーム編集は _meta 無し（手管理）で書く＝ repos.json が正になり本体が上書きしない
     return authoring.writeProjectFile(dir, 'repos.json', authoring.exportReposJson(rows || [], false));
   });
