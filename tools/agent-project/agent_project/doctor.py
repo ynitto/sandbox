@@ -284,34 +284,35 @@ def doctor_flow_bus_coverage_findings(cfg: "Config") -> "list[dict]":
     }]
 
 
-def _codd_gate_wiring_module():
-    """`codd_gate_wiring`（tools/agent-project 直下の sibling module。codd-gate の実在・schemas
-    互換・regression/intake 結線の有無を判定する）を遅延 import する。`model.py` の
-    `_codd_gate_debt_module` と同じ理由・同じ sys.path 解決（`__init__.py` の exec 合成により
-    `__file__` は常に `agent_project/__init__.py` の実パスを指すため、その1階層上へ足す）。
-    見つからない・import 失敗のときは None を返し、呼び出し側は所見なし（空リスト）へ
-    no-op 縮退する（codd-gate 連携は任意機能。欠落で doctor 自体は壊さない）。"""
+def _wiring_module():
+    """任意の sibling 配線プロバイダ（`tools/agent-project` 直下の `codd_gate_wiring` module。
+    regression/intake 結線の有無・schemas 互換を判定する）を遅延解決する。パッケージ内の他所と
+    同じ sys.path 解決（`__init__.py` の exec 合成により `__file__` は常に
+    `agent_project/__init__.py` の実パスを指すため、その1階層上へ足す）を使い、直接の import 文で
+    特定プロバイダへハード依存しないよう `importlib` 越しに名前解決する（＝本体は差し込み点のみ）。
+    見つからない・解決失敗のときは None を返し、呼び出し側は所見なし（空リスト）へ no-op 縮退する
+    （この配線連携は任意機能。プロバイダ欠落で doctor 自体は壊さない）。"""
+    import importlib
+    provider = "codd_gate_wiring"
     try:
-        import codd_gate_wiring
-        return codd_gate_wiring
+        return importlib.import_module(provider)
     except ImportError:
         pass
     sib = Path(__file__).resolve().parent.parent
     if str(sib) not in sys.path:
         sys.path.insert(0, str(sib))
     try:
-        import codd_gate_wiring
-        return codd_gate_wiring
+        return importlib.import_module(provider)
     except ImportError:
         return None
 
 
-def doctor_codd_gate_findings(cfg: "Config", which=shutil.which, run=subprocess.run) -> "list[dict]":
-    """codd-gate の自動検出結果と regression_cmd/intake_cmd の結線の有無を doctor の finding
-    形式で返す（決定的・LLM 不要）。repos.json（`repo_registry_path`）が実在すれば schemas 契約
-    も併せて判定する。sibling module `codd_gate_wiring` が使えない環境では空リストへ no-op
+def doctor_wiring_findings(cfg: "Config", which=shutil.which, run=subprocess.run) -> "list[dict]":
+    """sibling 配線プロバイダの自動検出結果と regression_cmd/intake_cmd の結線の有無を doctor の
+    finding 形式で返す（決定的・LLM 不要）。repos.json（`repo_registry_path`）が実在すれば schemas
+    契約も併せて判定する。プロバイダ（`codd_gate_wiring`）が使えない環境では空リストへ no-op
     縮退する。"""
-    wiring = _codd_gate_wiring_module()
+    wiring = _wiring_module()
     if wiring is None:
         return []
     judgment = wiring.detect_wiring(
@@ -525,7 +526,7 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
     終了コード: 0=健康 / 1=未解決の所見あり / 2=未解決の critical あり。"""
     # 決定的所見は ensure_dirs より前に集める（create-dirs 所見を消さないため）
     deterministic = (doctor_env_findings(cfg) + doctor_audit_findings(cfg)
-                     + doctor_flow_bus_coverage_findings(cfg) + doctor_codd_gate_findings(cfg))
+                     + doctor_flow_bus_coverage_findings(cfg) + doctor_wiring_findings(cfg))
     for f in deterministic:
         f["source"] = "check"
     signals = collect_doctor_signals(cfg)
