@@ -10,3 +10,4 @@
 - 2026-07-18 09:46:03 === project watch: 監視中（charter 更新/フィードバック待ち）===
 - 2026-07-18 09:48:25 state-git 同期: import=2 export=1
 - 2026-07-18 09:48:25 commands 取り込み: replan（viewer-replan-project-1784335560006.json）
+- 2026-07-18 09:48:25 === project watch: 監視中（charter 更新/フィードバック待ち）===
