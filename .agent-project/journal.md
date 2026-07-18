@@ -7,3 +7,4 @@
 - 2026-07-18 09:28:01 === update: 更新を適用（c2480325）===
 - 2026-07-18 09:28:03 === project watch: 監視中（charter 更新/フィードバック待ち）===
 - 2026-07-18 09:46:03 commands 取り込み: replan（viewer-replan-project-1784335560006.json）
+- 2026-07-18 09:46:03 === project watch: 監視中（charter 更新/フィードバック待ち）===
