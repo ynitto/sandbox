@@ -127,10 +127,16 @@ function enqueueToInbox(projectDir, spec) {
   const clean = { title };
   const charter = validateCharterVersion(projectDir, spec.charter);
   if (charter) clean.charter = charter;
+  // task.schema.json の人が書けるフィールド（system 管理の routed_by/cohort* は通さない）。
+  // workspace/refs/paths はルーティング（書込先・モノレポの担当領域）の明示指定、
+  // review/expect/followup は検収・偽 done 対策・派生タスクの契約。
   for (const key of ['id', 'verify', 'accept', 'verify_template', 'note', 'after', 'level', 'track',
-    'why', 'desc', 'scope', 'out_of_scope', 'constraints', 'hints', 'demo']) {
+    'why', 'desc', 'scope', 'out_of_scope', 'constraints', 'hints', 'demo',
+    'workspace', 'refs', 'paths', 'review', 'expect', 'followup']) {
     const v = spec[key];
-    if (v !== undefined && v !== null && String(v).trim() !== '') clean[key] = String(v).trim();
+    if (v === undefined || v === null) continue;
+    const s = Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean).join(', ') : String(v).trim();
+    if (s !== '') clean[key] = s;
   }
   const pr = parseInt(spec.priority, 10);
   if (!isNaN(pr) && pr !== 0) clean.priority = pr;

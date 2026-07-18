@@ -245,7 +245,11 @@ function rulesToPolicy(rules) {
   return lines.length ? `${lines.join('\n')}\n` : '';
 }
 
-// repos.json ↔ フォーム行（name/url/base/owns/desc）。
+// repos.json ↔ フォーム行（name/url/base/target/path/owns/desc/readonly）。
+// フォームが列を持たないキー（local/dir/docs/tests/code や未知キー）は _extra に原文のまま
+// 保持し、exportReposJson が書き戻す＝フォームの往復でデータを失わない（スキーマの
+// additionalProperties: true / Python 側の未知キー保持と同じ契約）。
+const REPO_ROW_KEYS = ['url', 'desc', 'base', 'target', 'path'];
 function reposJsonToRows(content) {
   let data;
   try {
@@ -256,16 +260,46 @@ function reposJsonToRows(content) {
   if (!data || typeof data !== 'object') return [];
   const rows = [];
   for (const [name, e] of Object.entries(data)) {
-    if (name === '_meta' || !e || typeof e !== 'object') continue;
-    rows.push({
-      name,
-      url: e.url || '',
-      base: e.base || '',
-      owns: Array.isArray(e.owns) ? e.owns.join(', ') : e.owns || '',
-      desc: e.desc || '',
-    });
+    if (name.startsWith('_') || !e || typeof e !== 'object') continue;
+    const row = { name };
+    for (const k of REPO_ROW_KEYS) row[k] = e[k] || '';
+    row.owns = Array.isArray(e.owns) ? e.owns.join(', ') : e.owns || '';
+    row.readonly = !!e.readonly;
+    const extra = {};
+    for (const [k, v] of Object.entries(e)) {
+      if (!REPO_ROW_KEYS.includes(k) && k !== 'owns' && k !== 'readonly') extra[k] = v;
+    }
+    if (Object.keys(extra).length) row._extra = extra;
+    rows.push(row);
   }
   return rows;
+}
+
+// リポジトリの identity は (url, path, base/target)＝モノレポは path 別・ブランチ別は base 別の
+// エントリで区別する（schemas/repos.schema.json / Python 側 parse_charter と同じ規則）。
+// 名前の重複はエントリを黙って上書きしてしまうため先に弾く。
+function validateRepoRows(rows) {
+  const names = new Set();
+  const identities = new Map();
+  for (const r of Array.isArray(rows) ? rows : []) {
+    if (!r || !String(r.url || '').trim()) continue;
+    const name = String(r.name || '').trim() || String(r.url).trim();
+    if (names.has(name)) {
+      throw new Error(`リポジトリ名 '${name}' が重複しています（名前はエントリごとに一意にしてください）`);
+    }
+    names.add(name);
+    const base = String(r.base || '').trim();
+    const key = [String(r.url).trim(), String(r.path || '').trim().replace(/\/+$/, ''),
+      base, String(r.target || '').trim() || base].join(' ');
+    if (identities.has(key)) {
+      const where = String(r.path || '').trim() ? `path '${r.path}'` : 'path 無し';
+      throw new Error(
+        `'${name}' は同じ URL の '${identities.get(key)}' と ${where}・base・target まで一致して重複しています` +
+          '（モノレポは path＝作業フォルダ か base/target＝ブランチ のいずれかで区別してください）'
+      );
+    }
+    identities.set(key, name);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -310,6 +344,13 @@ function exportReposJson(repos, includeMeta = true) {
     const owns = splitGlobs(e.owns);
     if (owns.length) rec.owns = owns;
     if (e.readonly && !owns.length) rec.readonly = true;
+    // フォームが列を持たないキー（reposJsonToRows が _extra へ退避）を書き戻す。
+    // フォームで編集した明示フィールドが常に勝つ。
+    if (e._extra && typeof e._extra === 'object') {
+      for (const [k, v] of Object.entries(e._extra)) {
+        if (!(k in rec) && k !== 'owns' && k !== 'readonly') rec[k] = v;
+      }
+    }
     const key = String(e.name || '').trim() || String(e.url).trim() || `repo${Object.keys(entries).length + 1}`;
     entries[key] = rec;
   }
@@ -510,6 +551,18 @@ function deleteCharterVersion(dir, name) {
 // 上位入力ファイルの読み書き（編集）
 // ---------------------------------------------------------------------------
 
+// 実効 repos レジストリのファイル名解決。agent-project（REPOS_FILE_NAMES）と同じ優先順で、
+// yaml → yml → json の順に実在するものを返す（無ければ既定の repos.json）。
+// repos.yaml/yml が正のプロジェクトで repos.json だけを読み書きすると、表示は空・編集は
+// 本体に無視される（yaml 優先）ため、必ずここを通して解決する。
+const REPOS_FILE_NAMES = ['repos.yaml', 'repos.yml', 'repos.json'];
+function reposFileName(dir) {
+  for (const name of REPOS_FILE_NAMES) {
+    if (fs.existsSync(path.join(dir, name))) return name;
+  }
+  return 'repos.json';
+}
+
 // repos.json が「charter からの自動生成物」か（_meta.generated_from マーカー）。
 // 生成物を直接編集しても run 時に charter から上書きされるため、UI で警告するのに使う。
 function isGeneratedRepos(name, content) {
@@ -572,6 +625,8 @@ module.exports = {
   readProjectFile,
   writeProjectFile,
   isGeneratedRepos,
+  reposFileName,
+  validateRepoRows,
   parseCharterDoc,
   charterToFields,
   fieldsToCharter,

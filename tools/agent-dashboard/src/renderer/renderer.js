@@ -544,6 +544,13 @@ const GUIDE_LABELS = {
 
 const PROSE_EXTRA_KEYS = new Set(['feedback', 'needs_reason', 'note', 'accept', ...GUIDE_KEYS]);
 
+// タスク追加・再投入でフォームに出さずに引き継ぐフィールド（task.schema.json の人が書ける
+// フィールドのうち、専用入力欄が無いもの。system 管理の routed_by/cohort* は引き継がない）
+const ENQUEUE_PASSTHROUGH_KEYS = [
+  'level', 'track', 'verify_template', 'review', 'expect', 'followup', 'refs', 'paths',
+  ...GUIDE_KEYS,
+];
+
 function statusChip(status) {
   // 表示はプロジェクト管理の言葉、内部の状態名は title（ホバー）で確認できる
   return `<span class="status-chip st-${esc(status)}" title="${esc(status)}">${esc(statusLabel(status))}</span>`;
@@ -2092,10 +2099,11 @@ function showTaskDialog(id, scope) {
         priority: t.priority,
         note: t.extra.note || '',
         after: t.extra.after || '',
-        level: t.extra.level || '',
-        track: t.extra.track || '',
         charter: t.extra.charter || '',
-        ...Object.fromEntries(GUIDE_KEYS.map((k) => [k, t.extra[k] || ''])),
+        workspace: t.extra.workspace || '',
+        // ルーティング・検収・誘導フィールドは網羅的に引き継ぐ（task.schema.json の
+        // 「未知キーは保持」契約。system 管理の routed_by/cohort* は新タスクへ持ち込まない）
+        ...Object.fromEntries(ENQUEUE_PASSTHROUGH_KEYS.map((k) => [k, t.extra[k] || ''])),
       });
     });
   }
@@ -2392,13 +2400,16 @@ function openEnqueueDialog(prefill = {}) {
   $('enq-id').value = prefill.id || '';
   $('enq-after').value = Array.isArray(prefill.after) ? prefill.after.join(', ') : (prefill.after || '');
   fillCharterSelect($('enq-charter'), state.project, prefill.charter || '');
-  // level / track と誘導・レビュー記述（why 等）はフォームに出さないが、
-  // 再投入・フォローアップ提案では元の値を引き継いで送る（inbox ドロップに載る）
-  state.enqueueExtra = {
-    level: prefill.level || '',
-    track: prefill.track || '',
-    ...Object.fromEntries(GUIDE_KEYS.map((k) => [k, prefill[k] || ''])),
-  };
+  fillWorkspaceSelect($('enq-workspace'), state.project, prefill.workspace || '');
+  // level / track と誘導・レビュー記述（why 等）・ルーティング/検収系（refs/paths/review/expect/
+  // followup/verify_template）はフォームに出さないが、再投入・フォローアップ提案では
+  // 元の値を引き継いで送る（task.schema.json の「未知キーは保持」契約を UI 経由でも守る）
+  state.enqueueExtra = Object.fromEntries(
+    ENQUEUE_PASSTHROUGH_KEYS.map((k) => [
+      k,
+      Array.isArray(prefill[k]) ? prefill[k].join(', ') : prefill[k] || '',
+    ])
+  );
   fillEnqueueAfterOptions(state.project);
   renderEnqueueBacklogSummary(state.project);
   state.enqueueAdjustments = [];
@@ -2458,6 +2469,36 @@ async function aiEnqueueAssist() {
   }
 }
 
+// 書込先（workspace）の選択肢: リポジトリ一覧（repos.json）のうち owns を持つ＝書込先の
+// エントリ名。空 = 自動ルーティング（owns と paths の突き合わせ）。モノレポは path 別の
+// エントリ名で担当フォルダを指せる。既存値がリストに無くても消さない（選択肢に足す）。
+function fillWorkspaceSelect(select, p, selected) {
+  if (!select) return;
+  const names = [];
+  if (p && p.repos && typeof p.repos === 'object') {
+    for (const [name, e] of Object.entries(p.repos)) {
+      if (name.startsWith('_') || !e || typeof e !== 'object') continue;
+      const owns = Array.isArray(e.owns) ? e.owns.length : String(e.owns || '').trim();
+      if (owns) names.push(name);
+    }
+  }
+  if (selected && !names.includes(selected)) names.push(selected);
+  select.replaceChildren();
+  const auto = document.createElement('option');
+  auto.value = '';
+  auto.textContent = '自動（担当範囲から推定）';
+  select.appendChild(auto);
+  for (const name of names) {
+    const option = document.createElement('option');
+    option.value = name;
+    option.textContent = name;
+    select.appendChild(option);
+  }
+  select.value = selected || '';
+  const field = $('enq-workspace-field');
+  if (field) field.classList.toggle('hidden', !names.length);
+}
+
 async function submitEnqueue() {
   const p = state.project;
   if (!p) return;
@@ -2471,9 +2512,8 @@ async function submitEnqueue() {
     id: $('enq-id').value,
     after: $('enq-after').value,
     charter: $('enq-charter').value,
-    level: extra.level,
-    track: extra.track,
-    ...Object.fromEntries(GUIDE_KEYS.map((k) => [k, extra[k] || ''])),
+    workspace: $('enq-workspace') ? $('enq-workspace').value : '',
+    ...Object.fromEntries(ENQUEUE_PASSTHROUGH_KEYS.map((k) => [k, extra[k] || ''])),
   };
   const ok = await guard('タスク追加', async () => {
     const res = await api.enqueueTask(p.dir, spec);
@@ -2510,14 +2550,18 @@ function knownRoots() {
   return [...roots].filter(Boolean);
 }
 
-// 新規プロジェクトの repos 行を 1 つ追加する（任意・複数可）
+// 新規プロジェクトの repos 行を 1 つ追加する（任意・複数可）。
+// path はモノレポ内の担当フォルダ＝同じ URL を役割別に複数エントリへ分ける識別子
+// （schemas/repos.schema.json の (url, path, base) identity）。target は MR/PR 先（省略=base）。
 function addRepoRow(prefill = {}) {
   const wrap = document.createElement('div');
   wrap.className = 'np-repo-row';
   wrap.innerHTML = `
     <input class="np-r-name mono" placeholder="名前" value="${esc(prefill.name || '')}" />
     <input class="np-r-url mono" placeholder="git URL（必須）" value="${esc(prefill.url || '')}" />
-    <input class="np-r-base mono" placeholder="ベースブランチ 例 main" value="${esc(prefill.base || '')}" />
+    <input class="np-r-base mono" placeholder="ベース 例 main" value="${esc(prefill.base || '')}" />
+    <input class="np-r-target mono" placeholder="MR先（省略=ベース）" value="${esc(prefill.target || '')}" />
+    <input class="np-r-path mono" placeholder="モノレポ内フォルダ 例 apps/api" value="${esc(prefill.path || '')}" />
     <input class="np-r-owns mono" placeholder="担当範囲（省略=参照のみ）" value="${esc(prefill.owns || '')}" />
     <input class="np-r-desc" placeholder="説明" value="${esc(prefill.desc || '')}" />
     <button type="button" class="np-r-del" title="この行を削除">✕</button>`;
@@ -2588,6 +2632,8 @@ async function submitNewProject() {
       name: row.querySelector('.np-r-name').value.trim(),
       url: row.querySelector('.np-r-url').value.trim(),
       base: row.querySelector('.np-r-base').value.trim(),
+      target: row.querySelector('.np-r-target').value.trim(),
+      path: row.querySelector('.np-r-path').value.trim(),
       owns: row.querySelector('.np-r-owns').value.trim(),
       desc: row.querySelector('.np-r-desc').value.trim(),
     }))
@@ -2870,10 +2916,20 @@ function renderRepoRows(container, rows) {
     row.innerHTML =
       `<input class="er-name mono" placeholder="名前" value="${esc((r && r.name) || '')}" />` +
       `<input class="er-url mono" placeholder="git URL（必須）" value="${esc((r && r.url) || '')}" />` +
-      `<input class="er-base mono" placeholder="ベースブランチ 例 main" value="${esc((r && r.base) || '')}" />` +
+      `<input class="er-base mono" placeholder="ベース 例 main" value="${esc((r && r.base) || '')}" />` +
+      `<input class="er-target mono" placeholder="MR先（省略=ベース）" value="${esc((r && r.target) || '')}" />` +
+      `<input class="er-path mono" placeholder="モノレポ内フォルダ 例 apps/api" value="${esc((r && r.path) || '')}" />` +
       `<input class="er-owns mono" placeholder="担当範囲（省略=参照のみ）" value="${esc((r && r.owns) || '')}" />` +
       `<input class="er-desc" placeholder="説明" value="${esc((r && r.desc) || '')}" />` +
       `<button type="button" class="np-r-del" title="削除">✕</button>`;
+    // フォームが列を持たないキー（readonly/local/docs 等 = _extra）は行の DOM に持ち回り、
+    // 保存時にそのまま書き戻す（フォームを開いて保存しただけで消えないように）。
+    row._readonly = !!(r && r.readonly);
+    row._extra = (r && r._extra) || null;
+    if (row._extra) {
+      row.querySelector('.er-desc').title =
+        `フォーム外の設定を保持しています: ${Object.keys(row._extra).join(', ')}（保存時にそのまま残ります）`;
+    }
     row.querySelector('.np-r-del').addEventListener('click', () => row.remove());
     container.appendChild(row);
   };
@@ -2886,8 +2942,26 @@ async function openReposForm() {
   if (!p) return toast('プロジェクトを選択してください');
   const res = await guard('リポジトリ一覧の読込', () => api.readRepos(p.dir));
   if (!res) return;
+  // repos.yaml / repos.yml が正のプロジェクトはフォームで扱えない（保存すると repos.json が
+  // できるが本体は yaml 優先で無視する）。生テキスト編集へ誘導する。
+  if (res.yamlFile) {
+    toast(`このプロジェクトは ${res.yamlFile} が正です。テキスト編集で開きます`);
+    return openEditFile(res.yamlFile);
+  }
   reposForm = { dir: p.dir };
   renderRepoRows($('er-rows'), res.rows);
+  const warn = $('er-warning');
+  if (warn) {
+    if (res.generated) {
+      warn.textContent =
+        '⚠ この repos.json は charter.md の ## repos から自動生成されています。ここで保存すると' +
+        '手管理（repos.json が正）に切り替わり、以後 charter の ## repos は反映されなくなります。' +
+        'charter 主導のままにするなら、charter.md の ## repos を編集してください。';
+      warn.classList.remove('hidden');
+    } else {
+      warn.classList.add('hidden');
+    }
+  }
   $('dlg-edit-repos').showModal();
 }
 
@@ -2899,8 +2973,12 @@ async function saveReposForm() {
       name: row.querySelector('.er-name').value.trim(),
       url: row.querySelector('.er-url').value.trim(),
       base: row.querySelector('.er-base').value.trim(),
+      target: row.querySelector('.er-target').value.trim(),
+      path: row.querySelector('.er-path').value.trim(),
       owns: row.querySelector('.er-owns').value.trim(),
       desc: row.querySelector('.er-desc').value.trim(),
+      readonly: row._readonly || false,
+      ...(row._extra ? { _extra: row._extra } : {}),
     }))
     .filter((r) => r.url);
   const ok = await guard('保存', async () => {

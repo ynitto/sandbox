@@ -26,8 +26,8 @@
     "priority": { "type": ["integer", "string"], "description": "優先度（整数・大ほど高。既定 0）" },
     "status": {
       "type": "string",
-      "enum": ["inbox", "draft", "ready", "doing", "done", "blocked", "review"],
-      "description": "省略時: verify（または accept/verify_template）有→ready / 無→inbox（人の triage 行き）"
+      "enum": ["inbox", "draft", "proposed", "ready", "doing", "done", "blocked", "review", "offloaded", "rejected"],
+      "description": "省略時: verify（または accept/verify_template）有→ready / 無→inbox（人の triage 行き）。proposed=実行前レビュー待ち（plan_review。approve で ready）/ offloaded=実行層 daemon へ submit 済み・結果待ち（act_async）/ rejected=人が却下（agent_project の VALID_STATUS と同期）"
     },
     "source": { "type": "string", "description": "出自（human / enqueue / inbox / triage / followup / charter 等）" },
     "after": {

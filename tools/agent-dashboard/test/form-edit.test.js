@@ -4,6 +4,9 @@
 // 追加依存なしで `node test/form-edit.test.js` で走る。
 
 const assert = require('assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const authoring = require('../src/main/authoring');
 
 let passed = 0;
@@ -134,6 +137,69 @@ test('reposJsonToRows / exportReposJson（_meta 無し）は往復する', () =>
   assert.ok(!data._meta, 'フォーム保存では _meta を付けない（repos.json が正になる）');
   assert.deepStrictEqual(data.app.owns, ['apps/**', 'services/**']);
   assert.strictEqual(data.lib.url, 'git@h:t/lib.git');
+});
+
+test('repos フォーム往復は path/target/readonly とフォーム外キー（local 等）を失わない', () => {
+  // モノレポ: 同じ URL を path 別のエントリに分け、local / dir / docs などフォームに
+  // 列が無いキーも持つ repos.json。フォームを開いて保存しても消えないこと。
+  const json = JSON.stringify({
+    'app-api': {
+      url: 'git@h:t/mono.git', base: 'main', target: 'develop', path: 'apps/api',
+      owns: ['apps/api/**'], local: '/home/me/mono', docs: ['docs/**'],
+    },
+    'app-web': { url: 'git@h:t/mono.git', base: 'main', path: 'apps/web', owns: ['apps/web/**'] },
+    spec: { url: 'git@h:t/spec.git', readonly: true },
+  });
+  const rows = authoring.reposJsonToRows(json);
+  const api = rows.find((r) => r.name === 'app-api');
+  assert.strictEqual(api.path, 'apps/api');
+  assert.strictEqual(api.target, 'develop');
+  assert.deepStrictEqual(api._extra, { local: '/home/me/mono', docs: ['docs/**'] });
+  assert.strictEqual(rows.find((r) => r.name === 'spec').readonly, true);
+  const data = JSON.parse(authoring.exportReposJson(rows, false));
+  assert.strictEqual(data['app-api'].path, 'apps/api');
+  assert.strictEqual(data['app-api'].target, 'develop');
+  assert.strictEqual(data['app-api'].local, '/home/me/mono', 'フォーム外キーが保存で戻る');
+  assert.deepStrictEqual(data['app-api'].docs, ['docs/**']);
+  assert.strictEqual(data['app-web'].path, 'apps/web');
+  assert.strictEqual(data.spec.readonly, true, '参照のみフラグが保存で戻る');
+});
+
+test('validateRepoRows は名前重複と (url, path, base) 重複を弾く', () => {
+  // モノレポの正しい分割（path 違い）は通る
+  authoring.validateRepoRows([
+    { name: 'api', url: 'git@h:t/mono.git', base: 'main', path: 'apps/api' },
+    { name: 'web', url: 'git@h:t/mono.git', base: 'main', path: 'apps/web' },
+  ]);
+  // 名前が同じ → エントリを黙って上書きするので弾く
+  assert.throws(
+    () => authoring.validateRepoRows([
+      { name: 'app', url: 'git@h:t/a.git' },
+      { name: 'app', url: 'git@h:t/b.git' },
+    ]),
+    /リポジトリ名 'app' が重複/
+  );
+  // 同じ URL で path も base/target も同じ → identity が潰れるので弾く
+  assert.throws(
+    () => authoring.validateRepoRows([
+      { name: 'a', url: 'git@h:t/mono.git', base: 'main' },
+      { name: 'b', url: 'git@h:t/mono.git', base: 'main' },
+    ]),
+    /重複/
+  );
+});
+
+test('reposFileName は本体と同じ yaml → yml → json の優先順で解決する', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-form-'));
+  try {
+    assert.strictEqual(authoring.reposFileName(tmp), 'repos.json', '無ければ既定 repos.json');
+    fs.writeFileSync(path.join(tmp, 'repos.json'), '{}', 'utf8');
+    assert.strictEqual(authoring.reposFileName(tmp), 'repos.json');
+    fs.writeFileSync(path.join(tmp, 'repos.yaml'), 'app:\n  url: git@h:t/a.git\n', 'utf8');
+    assert.strictEqual(authoring.reposFileName(tmp), 'repos.yaml', 'yaml があれば yaml が正');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 console.log(`\n${passed} passed`);

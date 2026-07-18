@@ -406,11 +406,29 @@ function registerIpc(ctx) {
   });
   handle('dashboard:readRepos', ({ dir }) => {
     if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    // 実効レジストリは yaml → yml → json の優先順（本体と同じ）。yaml/yml が正のときは
+    // フォームで repos.json を書いても本体に無視されるため、yamlFile を返して
+    // レンダラを生テキスト編集へ誘導する（フォームでの読み書きはしない）。
+    const name = authoring.reposFileName(dir);
+    if (name !== 'repos.json') {
+      const info = authoring.readProjectFile(dir, name);
+      return { rows: [], exists: info.exists, file: info.file, yamlFile: name, generated: false };
+    }
     const info = authoring.readProjectFile(dir, 'repos.json');
-    return { rows: authoring.reposJsonToRows(info.content || ''), exists: info.exists, file: info.file };
+    return {
+      rows: authoring.reposJsonToRows(info.content || ''),
+      exists: info.exists,
+      file: info.file,
+      generated: info.generated,
+    };
   });
   handle('dashboard:writeRepos', ({ dir, rows }) => {
     if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    const name = authoring.reposFileName(dir);
+    if (name !== 'repos.json') {
+      throw new Error(`このプロジェクトは ${name} が正です。フォームではなくテキスト編集で ${name} を編集してください`);
+    }
+    authoring.validateRepoRows(rows || []);
     // フォーム編集は _meta 無し（手管理）で書く＝ repos.json が正になり本体が上書きしない
     return authoring.writeProjectFile(dir, 'repos.json', authoring.exportReposJson(rows || [], false));
   });

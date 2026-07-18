@@ -496,6 +496,10 @@
         <datalist id="enq-after-options"></datalist>
       </div>
     </div>
+    <div class="field" id="enq-workspace-field">
+      <label for="enq-workspace">書込先リポジトリ（任意 — リポジトリ一覧の書込先から選択。省略で自動ルーティング）</label>
+      <select id="enq-workspace"></select>
+    </div>
     <details id="enq-backlog-panel" class="enq-backlog-panel">
       <summary>既存バックログ（依存・優先度の参考）</summary>
       <div id="enq-backlog-summary" class="enq-backlog-summary muted"></div>
@@ -719,7 +723,11 @@
   <!-- ======== リポジトリ一覧（repos）フォーム編集ダイアログ ======== -->
   <dialog id="dlg-edit-repos" class="wide">
     <h2>リポジトリ一覧を編集</h2>
-    <p class="muted">作業対象のリポジトリです。担当範囲（owns）を書くと成果物の書き込み先、書かなければ参照のみになります。</p>
+    <p class="muted">
+      作業対象のリポジトリです。担当範囲（owns）を書くと成果物の書き込み先、書かなければ参照のみになります。
+      モノレポは「モノレポ内フォルダ」（例 apps/api）を書いて、同じ URL をフォルダ別の行に分けられます。
+    </p>
+    <div id="er-warning" class="warning hidden"></div>
     <div id="er-rows"></div>
     <button type="button" id="btn-er-add" class="chip">＋ リポジトリを追加</button>
     <div class="dialog-actions">

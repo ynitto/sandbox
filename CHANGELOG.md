@@ -7,6 +7,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: repos / タスクの UI を agent-project のモデルに揃える（モノレポ対応）
+
+- **repos フォームに `path`（モノレポ内フォルダ）と `target`（MR 先）を追加**（新規プロジェクト・
+  編集の両方）。schemas/repos.schema.json の identity (url, path, base) どおり、同じ URL を
+  path 別の行に分けてモノレポを表現できるようにした。保存時は名前重複と (url, path, base/target)
+  重複を本体（parse_charter）と同じ規則で検証する。
+- **フォーム往復でデータを失わないようにした**: これまで repos.json をフォームで開いて保存すると
+  `path`/`target`/`readonly`/`local`/`docs` などフォームに列が無いキーが黙って消えていた。
+  読み込み時に `_extra` として保持し、保存時にそのまま書き戻す（スキーマの additionalProperties /
+  本体の未知キー保持と同じ契約）。
+- **repos.yaml / repos.yml のプロジェクトで編集が無効になる問題を修正**: 本体は
+  `repos.{yaml,yml,json}` の優先順で読むが、dashboard は repos.json 固定だった（yaml 運用では
+  一覧が空に見え、フォーム保存した repos.json は本体に無視される）。ファイル解決を本体と同じ
+  優先順に揃え、yaml/yml が正のときはフォームではなく生テキスト編集へ誘導する。
+- **自動生成 repos.json（`_meta.generated_from`）の警告をフォームにも表示**: 生テキスト編集と
+  同様に「保存すると手管理へ切り替わり charter の ## repos は反映されなくなる」ことを保存前に示す。
+- **タスク追加に「書込先リポジトリ（workspace）」選択を追加**し、inbox 契約が
+  `workspace` / `refs` / `paths` / `review` / `expect` / `followup`（task.schema.json の
+  ルーティング・検収フィールド）を通すようにした。done タスクの「編集してやり直す」も
+  これらを含めて引き継ぐ（従来は再投入で消えていた）。
+- schemas/task.schema.json の `status` enum に `proposed` / `offloaded` / `rejected` を追加
+  （agent-project の VALID_STATUS と同期。dashboard は以前から表示対応済み）。
+
 ### agent-amigos: 設定パスを `.agent/agent-amigos.yaml` へ移行
 
 - 設定・状態領域を agent-project と同じ `.agent/` 配下へ揃えた。

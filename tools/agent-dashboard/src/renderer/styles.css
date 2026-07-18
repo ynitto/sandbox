@@ -1539,7 +1539,8 @@ button.danger { border-color: var(--red); color: var(--red); }
 .edit-toolbar .row { align-items: center; gap: 6px; flex-wrap: wrap; }
 
 /* 編集ダイアログの警告バナー（自動生成 repos.json 等） */
-#ef-warning {
+#ef-warning,
+#er-warning {
   border: 1px solid var(--red);
   border-radius: 6px;
   padding: 6px 8px;
@@ -1557,15 +1558,18 @@ button.danger { border-color: var(--red); color: var(--red); }
 }
 .np-repo-row .np-r-name { flex: 0 0 90px; }
 .np-repo-row .np-r-url { flex: 2; }
-.np-repo-row .np-r-base { flex: 0 0 90px; }
+.np-repo-row .np-r-base { flex: 0 0 80px; }
+.np-repo-row .np-r-target { flex: 0 0 80px; }
+.np-repo-row .np-r-path { flex: 1; }
 .np-repo-row .np-r-owns { flex: 1.4; }
 .np-repo-row .np-r-desc { flex: 1.6; }
-.np-repo-row .np-r-name { flex: 0 0 90px; }
 .np-repo-row .np-r-del { flex: none; border-color: var(--red); color: var(--red); }
 /* repos フォーム編集の行（新規プロジェクトの repos 行と同じレイアウト） */
 .np-repo-row .er-name { flex: 0 0 90px; }
 .np-repo-row .er-url { flex: 2; }
-.np-repo-row .er-base { flex: 0 0 90px; }
+.np-repo-row .er-base { flex: 0 0 80px; }
+.np-repo-row .er-target { flex: 0 0 80px; }
+.np-repo-row .er-path { flex: 1; }
 .np-repo-row .er-owns { flex: 1.4; }
 .np-repo-row .er-desc { flex: 1.6; }
 

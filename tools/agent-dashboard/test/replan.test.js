@@ -87,6 +87,32 @@ function readDropped(dir) {
     }
   });
 
+  await test('タスク追加はルーティング・検収フィールド（workspace/refs/paths/review/expect/followup）を通す', async () => {
+    const { root, dir } = mkProject();
+    try {
+      const res = actions.enqueueToInbox(dir, {
+        title: 'モノレポの api を直す',
+        workspace: 'app-api',
+        paths: ['apps/api/**', 'libs/shared/**'], // 配列はカンマ区切りへ畳む（inbox JSON は両形式可）
+        refs: 'design-docs',
+        review: 'human',
+        expect: 'changes',
+        followup: '後続 :: true',
+        routed_by: 'owns:apps/api/**', // system が書き戻す監査キー（人の再投入では引き継がない）
+      });
+      const spec = JSON.parse(fs.readFileSync(res.file, 'utf8'));
+      assert.strictEqual(spec.workspace, 'app-api');
+      assert.strictEqual(spec.paths, 'apps/api/**, libs/shared/**');
+      assert.strictEqual(spec.refs, 'design-docs');
+      assert.strictEqual(spec.review, 'human');
+      assert.strictEqual(spec.expect, 'changes');
+      assert.strictEqual(spec.followup, '後続 :: true');
+      assert.ok(!('routed_by' in spec), 'system 管理キーは通さない');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   await test('計画の作り直しは選択したバージョンを replan コマンドへ保存する', async () => {
     const { root, dir } = mkProject();
     try {
