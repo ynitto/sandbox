@@ -29,3 +29,13 @@
 - 2026-07-18 17:17:37 project plan: 分解に失敗（[agent-error:env] claude 失敗 (rc=1): 実行環境の問題です（モデル名・CLI の導入・PATH を確認してください）
 There's an issue with the selected model (auto). It may not exist or you may not have access to it. Run --model to pick a different model.）
 - 2026-07-18 17:17:37 本体側 .agent-project への編集を状態へ取り込みました: .agent-project/agent-flow.yaml
+- 2026-07-18 17:17:38 intake NG (exit 2): codd-gate tasks --debt --repos ./repos.json
+- 2026-07-18 17:17:38 needs 再生成: codd-gate-163827（proposed）
+- 2026-07-18 17:17:38 needs 再生成: agent_project-codd_gate-163827（proposed）
+- 2026-07-18 17:17:38 needs 再生成: sibling-163827（proposed）
+- 2026-07-18 17:17:38 needs 再生成: dashboard-163827（proposed）
+- 2026-07-18 17:17:38 needs 再生成: enq-20260718-163827（proposed）
+- 2026-07-18 17:17:38 === agent-project 開始 tasks=5 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-18 17:17:38 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
+- 2026-07-18 17:17:38 警告: origin へ未 push のコミットが 1 件ある（main）。worker と verify は origin から clone するため、これらの成果は彼らから 見えない（ローカルでは通るのに verify が落ち続ける）。`git -C /Users/nitto/Workspace/sandbox push origin main` を検討すること
+- 2026-07-18 17:17:38 === agent-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
