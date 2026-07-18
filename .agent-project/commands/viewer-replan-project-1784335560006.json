@@ -1,7 +1,0 @@
-{
-  "command": "replan",
-  "reason": "agent-dashboard から再分解を要求",
-  "actor": "agent-dashboard",
-  "ts": "2026-07-18T00:46:00.005Z",
-  "charter": "v1"
-}
