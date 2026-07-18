@@ -45,8 +45,6 @@ const state = {
   kiroLoopTerm: null, // { repo, name, target, session, items, text, error, at }
   kiroLoopTimer: null,
   coworkRun: null,       // { id, phase: 'running'|'ok'|'error', message, at }
-  coworkForceShow: false, // 設定から「開く」したとき、作業 0 件でもタブを出す
-  coworkShowAll: false,  // true: 選択プロジェクトに関わらず全作業を表示
   coworkHistory: null,   // 履歴ダイアログのモデル { id, name, logs, history, file, text }
   timer: null,
   busy: false,
@@ -6824,6 +6822,14 @@ function coworkItemCount() {
   return Math.max(live, draft, cfg);
 }
 
+function selectedProjectFolder() {
+  if (state.project && (state.project.workspace || state.project.dir)) {
+    return state.project.workspace || state.project.dir;
+  }
+  const selected = (state.discovery.projects || []).find((project) => project && project.dir === state.selectedDir);
+  return (selected && (selected.workspace || selected.dir)) || state.selectedDir || '';
+}
+
 // 選択中workspaceが提供する画面を決める。設定rootsはagent-project以外の
 // kiro-loop専用フォルダも含むため、登録されているだけではagent-project扱いにしない。
 function workspaceFeatureModel(discovery, selectedDir, coworkCount) {
@@ -6844,7 +6850,8 @@ function updateCoworkTabVisibility() {
   const btn = $('tab-btn-cowork');
   const pane = $('tab-cowork');
   if (!btn || !pane) return;
-  const coworkAvailable = state.coworkForceShow || coworkItemCount() > 0 || !!(state.cowork && state.cowork.error);
+  const folder = selectedProjectFolder();
+  const coworkAvailable = coworkHasProjectConfig(state.cowork, folder);
   const features = workspaceFeatureModel(state.discovery, state.selectedDir, coworkAvailable ? 1 : 0);
   for (const el of document.querySelectorAll('.tab[data-feature="agent-project"], .tabpane[data-feature="agent-project"]')) {
     el.classList.toggle('hidden', !features.agentProject);
@@ -6887,21 +6894,39 @@ async function refreshAmigos() {
   updateAmigosTabVisibility();
 }
 
+// agent-amigos の設定ホームとミッションを、現在選択しているプロジェクトだけに限定する。
+// home が無いミッションは全体バス由来で所属を確定できないため表示しない。
+function amigosForProject(amigos, projectFolder) {
+  const source = amigos || {};
+  const key = coworkPathKey(projectFolder);
+  if (!key) return { ...source, homes: [], missions: [], errors: [] };
+  const homes = (source.homes || []).filter(
+    (home) => !!home.configFile && coworkPathKey(home.dir) === key
+  );
+  const allowed = new Set(homes.map((home) => coworkPathKey(home.dir)));
+  const missions = (source.missions || []).filter((mission) => allowed.has(coworkPathKey(mission.home)));
+  return { ...source, homes, missions, errors: [] };
+}
+
 // ミッションも依頼先ホームも無いときはタブを隠す（cowork と同じ流儀）。
 function updateAmigosTabVisibility() {
   const btn = $('tab-btn-amigos');
   const pane = $('tab-amigos');
   if (!btn || !pane) return;
-  const a = state.amigos;
+  const a = amigosForProject(state.amigos, selectedProjectFolder());
   const show = !!(
     a &&
-    ((a.missions && a.missions.length) || (a.homes && a.homes.length) ||
-      a.error)
+    ((a.missions && a.missions.length) || (a.homes && a.homes.length))
   );
   btn.classList.toggle('hidden', !show);
   btn.hidden = !show;
   pane.classList.toggle('hidden', !show);
   pane.hidden = !show;
+  if (!show && btn.classList.contains('active')) {
+    const fallback = [...document.querySelectorAll('.tab')]
+      .find((tab) => tab !== btn && !tab.hidden && !tab.classList.contains('hidden'));
+    if (fallback) switchTab(fallback.dataset.tab);
+  }
 }
 
 function amigosMin(sec) {
@@ -7188,7 +7213,8 @@ function setupAmigosClaimButtons(root) {
 }
 
 function openAmigosDetail(missionId) {
-  const mission = ((state.amigos && state.amigos.missions) || []).find((m) => m.id === missionId);
+  const scoped = amigosForProject(state.amigos, selectedProjectFolder());
+  const mission = (scoped.missions || []).find((m) => m.id === missionId);
   if (!mission) return;
   $('amigos-detail-title').textContent = mission.title || 'ミッション詳細';
   $('amigos-detail-body').innerHTML = amigosMissionDetailHtml(mission);
@@ -7209,7 +7235,7 @@ const AMIGOS_ROLES_SAMPLE = JSON.stringify(
 function openAmigosRequestDialog() {
   const dlg = $('dlg-amigos-post');
   if (!dlg) return;
-  const homes = (state.amigos && state.amigos.homes) || [];
+  const homes = amigosForProject(state.amigos, selectedProjectFolder()).homes || [];
   const sel = $('amigos-post-home');
   sel.innerHTML = homes
     .map((h, index) => `<option value="${esc(h.dir)}">${esc(coworkRepoLabel(h.dir) || `実行先 ${index + 1}`)}</option>`)
@@ -7252,7 +7278,7 @@ function renderAmigos() {
   const el = $('tab-amigos');
   if (!el) return;
   updateAmigosTabVisibility();
-  const a = state.amigos;
+  const a = amigosForProject(state.amigos, selectedProjectFolder());
   if (!a) return;
   if (a.error) {
     el.innerHTML = `<div class="empty"><strong>ミッションを読み込めませんでした</strong><span>${esc(a.error)}</span></div>`;
@@ -7333,13 +7359,18 @@ function coworkPathKey(p) {
   return s.replace(/\/+/g, '/').replace(/\/$/, '').toLowerCase();
 }
 
-// 表示対象の絞り込み: 選択中プロジェクトの作業だけを出す（coworkShowAll で全件表示）。
+// 表示対象の絞り込み: 選択中プロジェクトの作業だけを出す。
 // 返り値は { item, index } — index は draft 配列の位置（編集/削除がそのまま使える）。
-function coworkVisibleEntries(draft, selectedDir, showAll) {
+function coworkVisibleEntries(draft, selectedDir) {
   const entries = (draft || []).map((item, index) => ({ item, index }));
-  if (showAll || !selectedDir) return entries;
+  if (!selectedDir) return [];
   const key = coworkPathKey(selectedDir);
   return entries.filter(({ item }) => coworkPathKey(item.repo || item.cwd) === key);
+}
+
+function coworkHasProjectConfig(cowork, projectFolder) {
+  const key = coworkPathKey(projectFolder);
+  return !!key && ((cowork && cowork.discoveredRepos) || []).some((repo) => coworkPathKey(repo) === key);
 }
 
 function coworkRunBannerHtml() {
@@ -7370,11 +7401,9 @@ function renderCowork() {
     return;
   }
   // 選択中プロジェクトの作業だけを表示する（従来は全プロジェクトの作業が常に並んでいた）。
-  const entries = coworkVisibleEntries(draft, state.selectedDir, state.coworkShowAll);
-  const filtered = !state.coworkShowAll && !!state.selectedDir;
-  const scopeLabel = filtered
-    ? `このプロジェクトの作業 ${entries.length} 件（全 ${draft.length} 件）`
-    : `全プロジェクトの作業 ${draft.length} 件`;
+  const folder = selectedProjectFolder();
+  const entries = coworkHasProjectConfig(cw, folder) ? coworkVisibleEntries(draft, folder) : [];
+  const scopeLabel = `このプロジェクトの作業 ${entries.length} 件`;
   el.innerHTML = `
     <div class="cowork-shell">
       <header class="cowork-header">
@@ -7392,7 +7421,6 @@ function renderCowork() {
       </header>
       <div class="cowork-scope muted">
         <span>${esc(scopeLabel)}</span>
-        ${state.selectedDir ? `<label><input type="checkbox" id="cowork-show-all" ${state.coworkShowAll ? 'checked' : ''} /> すべてのプロジェクトを表示</label>` : ''}
       </div>
       ${coworkRunBannerHtml()}
       ${entries.length ? `<div class="cowork-list" role="list">${entries.map(({ item, index: i }) => {
@@ -7439,10 +7467,7 @@ function renderCowork() {
           </div>
         </article>`;
       }).join('')}</div>`
-      : draft.length
-        ? `<div class="empty"><strong>このプロジェクトに登録された定常業務はありません</strong>
-            <span>他のプロジェクトには ${draft.length} 件あります。「すべてのプロジェクトを表示」で確認できます。</span></div>`
-        : '<div class="empty"><strong>登録された作業はありません</strong><span>「追加」から定期実行や定型作業を登録できます。</span></div>'}
+      : '<div class="empty"><strong>このプロジェクトに登録された定常業務はありません</strong><span>プロジェクトの設定ファイルに作業を追加してください。</span></div>'}
     </div>`;
   const technicalInfo = el.querySelector('[data-open-technical-info]');
   if (technicalInfo) technicalInfo.addEventListener('click', openTechnicalInfo);
@@ -7455,13 +7480,6 @@ function renderCowork() {
     refreshBtn.addEventListener('click', async () => {
       await refreshCowork({ probe: true, forceDiscover: true });
       state.coworkDraft = null;
-      renderCowork();
-    });
-  }
-  const showAll = $('cowork-show-all');
-  if (showAll) {
-    showAll.addEventListener('change', () => {
-      state.coworkShowAll = showAll.checked;
       renderCowork();
     });
   }
@@ -7755,13 +7773,15 @@ function renderKiroLoopTerminal() {
 }
 
 async function openCoworkFromSettings() {
-  state.coworkForceShow = true;
-  updateCoworkTabVisibility();
   if ($('dlg-settings').open) $('dlg-settings').close();
   if ($('dlg-advanced-settings').open) $('dlg-advanced-settings').close();
   if ($('dlg-technical-info').open) $('dlg-technical-info').close();
-  switchTab('cowork');
   await refreshCowork({ forceDiscover: true });
+  if (!coworkHasProjectConfig(state.cowork, selectedProjectFolder())) {
+    toast('このプロジェクトには定常業務の設定ファイルがありません');
+    return;
+  }
+  switchTab('cowork');
   renderCowork();
   if (!coworkDraft().length) openCoworkWorkDialog(-1);
 }
@@ -7837,7 +7857,6 @@ function applyCoworkWorkDialog() {
   }
   if (idx >= 0) coworkDraft()[idx] = item;
   else coworkDraft().push(item);
-  state.coworkForceShow = true;
   $('dlg-cowork-work').close();
   updateCoworkTabVisibility();
   renderCowork();

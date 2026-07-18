@@ -254,6 +254,7 @@ test('overview は config + discovered をマージし source と state を付�
   const ov = cowork.overview({ projects: { roots: [root] }, cowork: { items: [] } });
   assert.strictEqual(ov.items.length, 3);
   assert.ok(ov.items.every((i) => i.source === 'discovered' && i.state));
+  assert.deepStrictEqual(ov.discoveredRepos, [path.join(root, 'projD')]);
 });
 
 // --- 書き戻し（外科的） ---

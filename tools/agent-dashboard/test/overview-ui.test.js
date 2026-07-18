@@ -92,6 +92,11 @@ const coworkVisibleEntries = new Function(
   'coworkPathKey',
   `${grab('coworkVisibleEntries')}; return coworkVisibleEntries;`
 )(coworkPathKey);
+// eslint-disable-next-line no-new-func
+const coworkHasProjectConfig = new Function(
+  'coworkPathKey',
+  `${grab('coworkHasProjectConfig')}; return coworkHasProjectConfig;`
+)(coworkPathKey);
 
 assert.strictEqual(coworkPathKey('\\\\wsl.localhost\\Ubuntu\\home\\me\\proj\\'), '/home/me/proj');
 assert.strictEqual(coworkPathKey('/home/me/proj'), '/home/me/proj');
@@ -105,17 +110,51 @@ assert.strictEqual(coworkPathKey('C:\\Users\\Me\\proj'), 'c:/users/me/proj');
     { id: 'c', repo: '/home/me/proj-b' },
   ];
   // 選択プロジェクトの作業だけ（UNC と POSIX は同一視・index は draft の位置を保つ）
-  const vis = coworkVisibleEntries(draft, '/home/me/proj-b', false);
+  const vis = coworkVisibleEntries(draft, '/home/me/proj-b');
   assert.deepStrictEqual(vis.map((e) => e.item.id), ['b', 'c'], '選択プロジェクトの作業だけを表示する');
   assert.deepStrictEqual(vis.map((e) => e.index), [1, 2], 'index は draft の位置（編集/削除用）');
-  // showAll / 未選択は全件
-  assert.strictEqual(coworkVisibleEntries(draft, '/home/me/proj-b', true).length, 3);
-  assert.strictEqual(coworkVisibleEntries(draft, null, false).length, 3);
+  assert.strictEqual(coworkVisibleEntries(draft, null).length, 0, 'プロジェクト未選択では一覧を出さない');
+  assert.strictEqual(
+    coworkHasProjectConfig({ discoveredRepos: ['/home/me/proj-b'] }, '/home/me/proj-b'),
+    true,
+    '選択プロジェクト自身の設定ファイルだけを認識する'
+  );
+  assert.strictEqual(coworkHasProjectConfig({ discoveredRepos: ['/home/me/proj-a'] }, '/home/me/proj-b'), false);
+}
+
+// eslint-disable-next-line no-new-func
+const amigosForProject = new Function(
+  'coworkPathKey',
+  `${grab('amigosForProject')}; return amigosForProject;`
+)(coworkPathKey);
+{
+  const scoped = amigosForProject({
+    homes: [
+      { dir: '/work/a', configFile: '/work/a/agent-amigos.yaml' },
+      { dir: '/work/b', configFile: '/work/b/agent-amigos.yaml' },
+      { dir: '/work/b', configFile: null },
+    ],
+    missions: [
+      { id: 'a1', home: '/work/a' },
+      { id: 'b1', home: '/work/b' },
+      { id: 'global', home: null },
+    ],
+    errors: ['other project error'],
+  }, '/work/b');
+  assert.deepStrictEqual(scoped.homes.map((h) => h.dir), ['/work/b']);
+  assert.deepStrictEqual(scoped.missions.map((m) => m.id), ['b1']);
+  assert.deepStrictEqual(scoped.errors, [], '他プロジェクトの読込エラーも表示しない');
+  assert.strictEqual(amigosForProject({ homes: [], missions: [{ id: 'x' }] }, '/work/b').missions.length, 0);
+  assert.strictEqual(
+    amigosForProject({ homes: [{ dir: '/work/b', configFile: null }], missions: [] }, '/work/b').homes.length,
+    0,
+    'フォルダ内に設定ファイルがない明示ホームは表示しない'
+  );
 }
 
 assert.match(html, /id="dlg-cowork-history"/, '定常業務の実行履歴ダイアログがある');
 assert.ok(renderer.includes('data-cowork-history'), '定常業務に履歴ボタンがある');
-assert.ok(renderer.includes('すべてのプロジェクトを表示'), '全プロジェクト表示の切替がある');
+assert.ok(!renderer.includes('すべてのプロジェクトを表示'), '他プロジェクトを表示する切替を置かない');
 
 assert.ok(!html.includes('id="btn-mode"'), '表示モード切替を残さない');
 assert.match(html, /data-tab="overview"[^>]*>概要/);

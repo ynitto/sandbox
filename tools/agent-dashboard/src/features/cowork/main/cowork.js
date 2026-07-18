@@ -313,11 +313,18 @@ function overview(config, opts = {}) {
   const configItems = itemsOf(cfg).map((item, i) => normalizeItem(item, i, cfg, stateOpts));
   const discovered = discoverNormalized(config, cfg, discoverOpts);
   const items = dedupeItems([...configItems, ...discovered]);
+  const discoveredByKey = new Map();
+  for (const item of discovered) {
+    if (item.repo) discoveredByKey.set(_pathKey(item.repo), item.repo);
+  }
   return {
     loopProvider: loop.provider,
     loopCommand: loop.command,
     replacementHint: loop.replacementHint,
     stateMachineCommand: cfg.stateMachineCommand || 'statemachine-use',
+    // renderer が「選択プロジェクトに設定ファイルがあるか」を判定する根拠。
+    // items は手動設定との重複排除で source=config になる場合があるため、発見元を別に保持する。
+    discoveredRepos: [...discoveredByKey.values()],
     items,
   };
 }
