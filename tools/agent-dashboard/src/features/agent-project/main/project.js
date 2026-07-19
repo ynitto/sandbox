@@ -439,6 +439,28 @@ function _normalizeDelivery(entries) {
     });
 }
 
+// agent-project が frontmatter へ書いた失敗の解釈を、そのまま表示モデルの形へ移す。
+// **ここで解釈し直さない**——生データを見て判断できるのは書き手だけで、読み手が散文から
+// 復元しようとすると、書き手の文言が変わった瞬間に静かに食い違う。
+function _failureFromFrontmatter(fmFields) {
+  const get = (k) => String(fmFields[k] || '').trim();
+  const context = {
+    category: get('failure-category'),
+    owner: get('failure-owner'),
+    command: get('failure-command'),
+    workdir: get('failure-workdir'),
+    exitCode: get('failure-exit'),
+    target: get('failure-target'),
+    resolvedTarget: get('failure-target'),
+  };
+  const hasContext = Object.values(context).some(Boolean);
+  return {
+    summary: get('failure-summary'),
+    resolution: get('failure-resolution'),
+    context: hasContext ? context : null,
+  };
+}
+
 // verify の自由文を、画面で共通表示できる「原因・実行条件・確認手順」に正規化する。
 // 特定ツール名には依存しない。解釈できない値は空のままにし、生ログを根拠として必ず残す。
 function _diagnoseFailure(why, detail) {
@@ -588,6 +610,7 @@ function parseNeeds(text, id) {
   const fm = s.match(/^---\n([\s\S]*?)\n---\n?/);
   let body = s;
   let deliveryRaw = '';
+  const fmFields = {};          // frontmatter の生キー（失敗の構造化フィールドを読むのに使う）
   if (fm) {
     body = s.slice(fm[0].length);
     for (const line of fm[1].split('\n')) {
@@ -595,6 +618,7 @@ function parseNeeds(text, id) {
       if (!kv) continue;
       const key = kv[1];
       const val = kv[2].trim();
+      fmFields[key] = val;
       if (key === 'kind') need.kind = val;
       else if (key === 'date') need.date = val;
       else if (key === 'status') need.status = val;
@@ -649,10 +673,20 @@ function parseNeeds(text, id) {
     .trim();
   // stub 実行・無変更で痩せた判断材料は、内部パスだけの羅列に見えて分かりにくい。退化行を
   // 落として（実質情報を残しつつ）viewer 側で「成果情報なし」と一言添えられるよう印を付ける。
-  const failureDiagnosis = _diagnoseFailure(need.why, need.detail);
+  // 失敗の解釈は agent-project（生データを持っている側）が frontmatter へ構造化して書く。
+  // ここはそれを運ぶだけ。_diagnoseFailure は **その項目が無い旧記録のためのフォールバック**で、
+  // 新しく書かれる票では使われない。両側が独立に散文を解釈していたのが、書き手の文言変更で
+  // 読み手だけが静かに壊れる原因だった。
+  const failureDiagnosis = fmFields['failure-summary']
+    ? _failureFromFrontmatter(fmFields)
+    : _diagnoseFailure(need.why, need.detail);
   need.failureSummary = failureDiagnosis.summary;
   need.failureResolution = failureDiagnosis.resolution;
   need.failureContext = failureDiagnosis.context;
+  need.failureClass = String(fmFields['failure-class'] || '');
+  need.failureChain = String(fmFields['failure-chain'] || '').split(',').filter(Boolean);
+  need.failurePhase = String(fmFields['failure-phase'] || '');
+  need.verifyVerdict = String(fmFields['verify-verdict'] || '');
   need.evidenceThin = _evidenceThin(need.detail);
   if (need.evidenceThin) need.detail = _stripThinEvidence(need.detail);
   // 差分を「成果物」と「内部記録（bus/ の run ログ等）」に分ける。実行のたびに書かれる内部

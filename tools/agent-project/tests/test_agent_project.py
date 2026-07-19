@@ -1488,6 +1488,60 @@ class TestRunLoop(unittest.TestCase):
             self.assertIn("→ FAIL", ran)
             self.assertNotIn("未実行", ran)
 
+    def test_diagnose_verify_failure_reads_raw_output(self):
+        """検証の解釈は生の verify 出力から行う（判断材料の散文を読み直さない）。
+
+        以前この解釈は agent-dashboard 側にあり、agent-project が書いた散文を正規表現で
+        読み直していた。書き手の文言が変わると読み手だけが静かに壊れる。"""
+        d = km.diagnose_verify_failure("pytest -q", "exit=1 3 failed, 20 passed")
+        self.assertEqual(d["summary"], "テストが 3 件失敗しました。")
+        self.assertEqual(d["category"], "テスト失敗")
+        self.assertEqual(d["exit_code"], "1")
+        d = km.diagnose_verify_failure("x", "exit=127 foo: command not found")
+        self.assertIn("「foo」", d["summary"])
+        self.assertEqual(d["owner"], "検査設定・実行環境")
+        d = km.diagnose_verify_failure("a && b", "exit=1 失敗した工程: `grep -q x README.md`")
+        self.assertIn("grep -q x README.md", d["summary"])
+        self.assertEqual(d["command"], "grep -q x README.md")
+        # テストは通っているが後段が落ちた（「テストの失敗ではない」と言えることが要点）
+        d = km.diagnose_verify_failure("a && b", "exit=2 29 passed")
+        self.assertIn("29 件成功", d["summary"])
+        # 解釈できなければ空。空は「分からない」であって「失敗していない」ではない
+        self.assertEqual(km.diagnose_verify_failure("x", "")["summary"], "")
+        self.assertEqual(km.diagnose_verify_failure("x", "なにかよく分からない出力")["summary"], "")
+
+    def test_needs_file_carries_structured_failure(self):
+        """needs の frontmatter に失敗の構造化フィールドが載る（表示層は読むだけ）。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            mkb(d, "T1", verify="false")
+            t = km.load_tasks(cfg.backlog)[0]
+            km.write_needs_file(cfg, t, "検証に失敗", failure={
+                "cls": "control", "chain": ["control", "quota"],
+                "phase": km.PHASE_ACT, "verdict": km.VERIFY_NOT_RUN,
+                "summary": "テストが 3 件失敗しました。", "exit_code": "1",
+            })
+            fm = km.needs_path(cfg, "T1").read_text(encoding="utf-8").split("---")[1]
+            self.assertIn("failure-class: control", fm)
+            self.assertIn("failure-chain: control,quota", fm)
+            self.assertIn(f"failure-phase: {km.PHASE_ACT}", fm)
+            self.assertIn(f"verify-verdict: {km.VERIFY_NOT_RUN}", fm)
+            self.assertIn("failure-summary: テストが 3 件失敗しました。", fm)
+            self.assertIn("failure-exit: 1", fm)
+
+    def test_needs_file_without_failure_keeps_old_shape(self):
+        """失敗情報が無い票は従来どおりの frontmatter（旧記録と同じ見た目を保つ）。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            mkb(d, "T1")
+            t = km.load_tasks(cfg.backlog)[0]
+            km.write_needs_file(cfg, t, "ふつうのブロック")
+            fm = km.needs_path(cfg, "T1").read_text(encoding="utf-8").split("---")[1]
+            self.assertNotIn("failure-", fm)
+            self.assertNotIn("verify-verdict", fm)
+
     def test_verify_verdict_normalizes_ok_and_ran(self):
         self.assertEqual(km.verify_verdict(True), km.VERIFY_PASSED)
         self.assertEqual(km.verify_verdict(False), km.VERIFY_FAILED)

@@ -569,3 +569,85 @@ def has_verify_plan(task: "Task") -> bool:
     return bool(ex.get("accept", "").strip() or ex.get("verify_template", "").strip())
 
 
+
+# --- verify 失敗の解釈（単一の解釈点） ---------------------------------------------------
+# 以前この解釈は agent-dashboard 側にあり、**agent-project が書いた判断材料の散文を正規表現で
+# 読み直して**いた。書き手が文言を少し変えるだけで読み手の正規表現が外れ、表示だけが静かに
+# 壊れる（走ってもいない検証を「失敗しました」と言い切る等）。生データを持っているここで
+# 一度だけ解釈し、結果を needs へ構造化して渡す。特定ツール名には依存しない。
+_VERIFY_DIAG_EMPTY = {"summary": "", "resolution": "", "category": "", "owner": "",
+                      "command": "", "workdir": "", "exit_code": "",
+                      "target": "", "resolved_target": ""}
+
+
+def diagnose_verify_failure(cmd: str, vmsg: str, workdir: "Path | str | None" = None) -> dict:
+    """verify の生出力を「原因・対処・根拠」へ正規化する。解釈できなければ空 dict を返す
+    （空は「分からない」であって「失敗していない」ではない。呼び出し側で断定しないこと）。"""
+    raw = str(vmsg or "")
+    if not raw.strip():
+        return dict(_VERIFY_DIAG_EMPTY)
+    wd = str(workdir or "")
+    step = (re.search(r"失敗した工程:\s*`([^`]+)`", raw) or [None, ""])[1] if "失敗した工程" in raw else ""
+    exit_code = (re.search(r"exit=(\d+)", raw) or [None, ""])[1] if "exit=" in raw else ""
+    passed = (re.search(r"(\d+)\s+passed", raw) or [None, ""])[1] if "passed" in raw else ""
+    failed = (re.search(r"(\d+)\s+failed", raw) or [None, ""])[1] if "failed" in raw else ""
+    cmd_missing = (re.search(r"([\w./-]+):\s*command not found", raw) or [None, ""])[1]
+    miss_en = (re.search(r"(?:file or directory not found|No such file or directory)[:\s]+([^\s)）]+)",
+                         raw, re.I) or [None, ""])[1]
+    miss_ja = (re.search(r"(?:エラー\s*[:：]\s*)?[^\n]*?(?:見つかりません|存在しません)\s*[:：]\s*([^\s)）]+)",
+                         raw) or [None, ""])[1]
+    not_found = miss_en or miss_ja
+
+    d = dict(_VERIFY_DIAG_EMPTY)
+    d["command"] = step or str(cmd or "")
+    d["workdir"] = wd
+    d["exit_code"] = exit_code
+
+    if cmd_missing:
+        d.update(category="実行環境", owner="検査設定・実行環境",
+                 summary=f"検証に必要なコマンド「{cmd_missing}」が実行環境に見つかりません。",
+                 resolution=f"「{cmd_missing}」がインストール済みか、検証プロセスの PATH から"
+                            "実行できるかを確認してから再実行してください。")
+        return d
+    if not_found:
+        resolved = (os.path.join(wd, not_found) if wd and not os.path.isabs(not_found) else not_found)
+        d.update(category="パス・入力", owner="検査設定・実行環境",
+                 target=not_found, resolved_target=os.path.normpath(resolved) if resolved else "",
+                 summary=f"検証コマンドが必要なパス「{d['resolved_target'] or not_found}」を"
+                         "見つけられませんでした。",
+                 resolution="対象が実際に存在する場所を確認し、コマンドのパス指定を実行ディレクトリ"
+                            "基準の正しい相対パス、または絶対パスへ変更して再実行してください。")
+        return d
+    if failed:
+        d.update(category="テスト失敗", owner="成果物",
+                 summary=f"テストが {failed} 件失敗しました。",
+                 resolution="失敗したテスト名と最初のエラーを生ログで確認し、成果物を修正して"
+                            "同じ検証コマンドを再実行してください。")
+        return d
+    if re.search(r"no tests ran", raw, re.I):
+        d.update(category="検証対象なし", owner="検査設定・実行環境",
+                 summary="テストが 1 件も実行されませんでした（対象が見つからないか、条件に一致しません）。",
+                 resolution="テスト対象のパス、選択条件、実行ディレクトリを確認してから再実行してください。")
+        return d
+    if step:
+        d.update(category="検証工程", owner="要確認",
+                 summary=f"検証コマンドの工程「{step}」で失敗しました（それより前の工程は成功しています）。",
+                 resolution="生ログの該当工程を確認し、表示された作業ディレクトリで同じコマンドを"
+                            "再現して原因を切り分けてください。")
+        return d
+    if exit_code and passed and exit_code != "0":
+        # 「テストは通っているのに exit≠0」: && 連鎖の後段（grep・外部チェック等）が沈黙して
+        # 失敗した記録。どこが落ちたかは残っていないが、少なくとも「テストの失敗ではない」ことを言う
+        # （テスト成功の出力だけを見せられて混乱するのが一番まずい）。
+        d.update(category="検証工程", owner="検査設定・実行環境",
+                 summary=f"テストは {passed} 件成功していますが、検証コマンドの後段の工程"
+                         f"（grep や外部チェックなど）が失敗しています（終了コード {exit_code}）。",
+                 resolution="テスト後に実行される工程を生ログで確認し、その工程を単独で再実行してください。")
+        return d
+    if exit_code:
+        d.update(category="不明な検証失敗", owner="要確認",
+                 summary=f"検証コマンドが失敗しました（終了コード {exit_code}）。",
+                 resolution="実行コマンド・作業ディレクトリ・生ログを確認し、同じ条件で再現して"
+                            "原因を切り分けてください。")
+        return d
+    return dict(_VERIFY_DIAG_EMPTY)

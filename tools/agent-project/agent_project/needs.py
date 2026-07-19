@@ -7,8 +7,43 @@ def needs_path(cfg: "Config", tid: str) -> Path:
     return cfg.needs / f"{tid}.md"
 
 
+# needs へ載せる失敗の構造化フィールド。表示層はこれを読むだけにして、散文の再解析をやめる
+# （書き手の文言が変わると読み手の正規表現が外れ、表示だけが静かに壊れるのを断つ）。
+# 値は 1 行・キーは frontmatter 互換。空の項目は書かない＝旧記録と同じ見た目を保つ。
+_FAILURE_FM_KEYS = (
+    ("failure-class", "cls"),            # proximate cause（control/quota/auth/env/transient）
+    ("failure-chain", "chain"),          # 観測した全分類（カンマ区切り。根拠として保持）
+    ("failure-phase", "phase"),          # どの工程まで到達したか
+    ("verify-verdict", "verdict"),       # 検証の結末（passed/failed/not_run/unknown）
+    ("failure-summary", "summary"),      # 解釈できた失敗の要約（できなければ書かない）
+    ("failure-resolution", "resolution"),
+    ("failure-category", "category"),
+    ("failure-owner", "owner"),
+    ("failure-command", "command"),
+    ("failure-workdir", "workdir"),
+    ("failure-exit", "exit_code"),
+    ("failure-target", "resolved_target"),
+)
+
+
+def _failure_frontmatter(failure: "dict | None") -> str:
+    """失敗の構造化フィールドを frontmatter 行へ。改行は 1 行に畳む（キー: 値 の契約を守る）。"""
+    if not failure:
+        return ""
+    out = ""
+    for key, src in _FAILURE_FM_KEYS:
+        val = failure.get(src)
+        if isinstance(val, (list, tuple)):
+            val = ",".join(str(v) for v in val)
+        val = " ".join(str(val or "").split())
+        if val:
+            out += f"{key}: {val}\n"
+    return out
+
+
 def _madr_frontmatter(rec_id: str, kind: str, risk: str = "",
-                      mr_url: str = "", delivery: "list | None" = None) -> str:
+                      mr_url: str = "", delivery: "list | None" = None,
+                      failure: "dict | None" = None) -> str:
     """needs/<id>.md の MADR（Markdown Any Decision Records）互換 frontmatter。
     status は常に proposed で生成し、人の確定（[x]）＝決定。ファイル自体は取り込み時に
     消費され、恒久の決定記録は decisions/<id>.md（DR）に残る。
@@ -23,6 +58,7 @@ def _madr_frontmatter(rec_id: str, kind: str, risk: str = "",
     if delivery:
         # JSON 1 行（viewer がパース）。複数リポジトリの書込/参照を構造化する。
         extra += f"delivery: {json.dumps(delivery, ensure_ascii=False, separators=(',', ':'))}\n"
+    extra += _failure_frontmatter(failure)
     return (
         "---\n"
         "status: proposed\n"
@@ -38,7 +74,8 @@ def _madr_frontmatter(rec_id: str, kind: str, risk: str = "",
 def write_needs_file(cfg: "Config", task: Task, reason: str, review: bool = False,
                      evidence: str = "", kind: str = "",
                      risk: "tuple[str, str] | None" = None,
-                     mr_url: str = "", delivery: "list | None" = None) -> None:
+                     mr_url: str = "", delivery: "list | None" = None,
+                     failure: "dict | None" = None) -> None:
     cfg.needs.mkdir(parents=True, exist_ok=True)
     if kind == "plan-review":   # 実行前レビュー（proposed。承認されるまで実行しない）
         state = "proposed（実行前レビュー待ち・未実行）"
@@ -79,7 +116,7 @@ def write_needs_file(cfg: "Config", task: Task, reason: str, review: bool = Fals
     fm_mr = str(mr_url or (task.get("mr_url") if review else "") or "").strip()
     fm_delivery = delivery if delivery is not None else None
     body = (
-        f"{_madr_frontmatter(task.id, kind, risk=risk[0] if risk else '', mr_url=fm_mr if review else '', delivery=fm_delivery)}"
+        f"{_madr_frontmatter(task.id, kind, risk=risk[0] if risk else '', mr_url=fm_mr if review else '', delivery=fm_delivery, failure=failure)}"
         f"# 要対応: {task.id} — {task.title}\n\n"
         f"## Context and Problem Statement\n\n"
         f"- なぜ: {reason}\n"

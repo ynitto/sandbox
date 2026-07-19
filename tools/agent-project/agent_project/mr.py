@@ -397,7 +397,24 @@ def _flow_failure_blob(cfg, task) -> str:
     return "\n".join(p for p in parts if p)
 
 
-def _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location="local"):
+def _failure_record(cfg, task, blob, vmsg, phase, verdict) -> dict:
+    """needs へ載せる失敗の構造化レコード（表示層はこれを読むだけ）。
+
+    分類（chain）と検証の解釈（diagnose_verify_failure）を、生データを持っているここで
+    一度だけ行う。以前は agent-dashboard が判断材料の**散文を正規表現で読み直して**おり、
+    書き手の文言が変わると読み手だけが静かに壊れた。解釈できない項目は空のままにする
+    （空は「分からない」であって「失敗していない」ではない）。"""
+    chain = agent_error_chain(blob)
+    rec = {"cls": chain[0] if chain else "", "chain": chain,
+           "phase": str(phase or ""), "verdict": str(verdict or "")}
+    # 検証の所見は「検証まで到達した」ときだけ。未実行の記録から所見を作らない。
+    if verdict == VERIFY_FAILED and task.verify:
+        rec.update(diagnose_verify_failure(task.verify, vmsg, cfg.workdir))
+    return rec
+
+
+def _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location="local",
+                    phase=PHASE_VERIFY, verdict=VERIFY_FAILED):
     """verify=NG → 上限内なら積み直し / 学習で自動解決 / 上限超で人へエスカレーション。
     委譲 executor（gitlab）の却下なら、人コメント（やり直し指示）を次 act の feedback に注入する。
 
@@ -407,6 +424,7 @@ def _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location="local"):
     落ち続ける。リトライを焼かず・裁定（これも LLM 呼び出し＝同じ理由で失敗する）も呼ばず、
     原因と直し方を明記して人へ回す。環境を直して approve すれば同じ run の続きから再開する。"""
     blob = f"{vmsg}\n{_flow_failure_blob(cfg, task)}"
+    failure = _failure_record(cfg, task, blob, vmsg, phase, verdict)
     triage = classify_agent_failure(blob)
     if triage and triage[0] in AGENT_ERROR_ENV_CLASSES:
         cls, hint = triage
@@ -424,7 +442,7 @@ def _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location="local"):
         _block(cfg, task, f"[agent-error:{cls}] {category}（{label}）: {hint}{also} "
                           "タスクの内容の問題ではないため、リトライ回数は消費していません。"
                           f"{remedy} approve すると、同じ run の続き（失敗した工程だけ）"
-                          "から再開します。", reasons, evidence=ev)
+                          "から再開します。", reasons, evidence=ev, failure=failure)
         append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（{category}: {label}。"
                                     f"リトライ・裁定は消費しない）")
         return

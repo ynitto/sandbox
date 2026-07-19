@@ -265,7 +265,8 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
                                    verify=task.verify, vmsg="", ok=False,
                                    verdict=VERIFY_NOT_RUN, phase=PHASE_ACT, task=task)
             _settle_failure(cfg, task, str(msg or "daemon run failed")[:500],
-                            cycle0 + settled + 1, ev, reasons, loc)
+                            cycle0 + settled + 1, ev, reasons, loc,
+                            phase=PHASE_ACT, verdict=VERIFY_NOT_RUN)
             release_claim(cfg, task)
             settled += 1
             continue
@@ -430,7 +431,7 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
                                        verify=task.verify, vmsg="", ok=False,
                                        verdict=VERIFY_NOT_RUN, phase=PHASE_ACT, task=task)
                 _settle_failure(cfg, task, str(act_msg or "act failed")[:500], cycle, ev,
-                                reasons, location)
+                                reasons, location, phase=PHASE_ACT, verdict=VERIFY_NOT_RUN)
                 release_claim(cfg, task)
                 continue
             res = _settle_task(cfg, task, location, act_msg, cycle, dtok, dusd, git_base,
