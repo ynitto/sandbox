@@ -161,7 +161,8 @@ assert.match(html, /data-tab="overview"[^>]*>概要/);
 assert.match(html, /data-feature="agent-project"/);
 assert.match(html, /data-tab="backlog"[^>]*>タスク/);
 assert.match(html, /data-tab="flow"[^>]*>実行/);
-assert.match(html, /id="btn-project-settings"/);
+assert.ok(!html.includes('id="btn-project-settings"'), '浮いたプロジェクト設定ボタンを残さない');
+assert.match(html, /data-tab="project-settings"[^>]*>プロジェクト設定/);
 assert.match(html, /class="nav-group"[^>]+aria-labelledby="projects-group-title"/);
 assert.match(html, /id="projects-group-title"[^>]*>プロジェクト</);
 assert.match(html, /id="project-list"/);
@@ -213,16 +214,16 @@ assert.match(css, /\.sidebar-actions button,[\s\S]*?min-width: 44px; height: 44p
     status: [{ tool: 'agent-flow', workload: 'flow', instructions_revision_applied: 2 }],
   };
   const out = panel(ov);
-  assert.ok(out.includes('グローバル指示（全ノード共通）'), 'パネル見出しが必要');
+  assert.ok(out.includes('すべてのエージェントへの共通指示'), '利用者向けのパネル見出しが必要');
   assert.ok(out.includes('id="orch-instr-text"'), '指示文 textarea が必要');
   assert.ok(out.includes('回答は日本語。'), '既存の指示文が反映される');
   assert.ok(out.includes('id="btn-orch-instr-save"'), '保存ボタンが必要');
   assert.ok(out.includes('karpathy-guidelines'), '棚卸しのスキルが行に出る');
   assert.ok(out.includes('checked'), '選択済みスキル / 有効トグルが checked');
-  assert.ok(out.includes('未反映 r2/3'), 'status の未反映バッジが出る');
+  assert.ok(out.includes('未反映（2/3）'), '実行サービスの未反映バッジが出る');
   assert.ok(out.includes('agent-instructions rev:3'), 'プレビューが描画結果を出す');
 }
-assert.match(renderer, /orchInstructionsPanelHtml\(ov\)/);
+assert.match(renderer, /orchInstructionsPanelHtml\(overview\)/);
 assert.match(renderer, /api\.orchestrationInstructionsSave/);
 
 console.log('overview-ui: all tests passed');

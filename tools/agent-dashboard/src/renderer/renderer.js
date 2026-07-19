@@ -54,6 +54,8 @@ const state = {
   coworkHistory: null,   // 履歴ダイアログのモデル { id, name, logs, history, file, text }
   timer: null,
   busy: false,
+  globalSettingsSection: 'app', // app / agents / sync / routine / integrations
+  globalSettingsDirty: false,
   // 要対応（needs）の前回カウント。増分を検知して OS 通知する（張り付き監視の解消）。
   // initialized=false の初回はベースライン取得のみで通知しない（起動時の殺到を避ける）。
   notify: { counts: {}, initialized: false },
@@ -849,7 +851,9 @@ async function reloadProject({ refreshRemoteHealth = true } = {}) {
 function renderHeader() {
   const p = state.project;
   if (!p) return;
-  $('btn-project-settings').classList.remove('hidden');
+  const settingsTab = $('tab-btn-project-settings');
+  settingsTab.classList.remove('hidden');
+  settingsTab.hidden = false;
   const charterName = p.charter && p.charter.name ? p.charter.name : '';
   $('project-name').textContent = charterName && charterName !== p.name
     ? `${charterName} (${p.name})`
@@ -1259,53 +1263,59 @@ function renderOverview() {
   bindLifecycleButtons(el);
 }
 
-function openProjectSettings() {
+function renderProjectSettings() {
+  const el = $('tab-project-settings');
+  if (!el) return;
   const p = state.project;
-  if (!p) return;
+  if (!p) {
+    el.innerHTML = '<div class="empty">プロジェクトを選択してください。</div>';
+    return;
+  }
   const isMaster = !!(p.charter && p.charter.master);
   const danger = p.charter
-    ? `<section class="project-settings-section danger-zone">
-        <h3>リセット</h3>
+    ? `<section class="project-settings-card danger-zone" aria-labelledby="project-settings-danger-title">
+        <span class="summary-kicker">危険な操作</span>
+        <h3 id="project-settings-danger-title">プロジェクトのリセット</h3>
         <p class="muted">計画、タスク、履歴を消して最初からやり直します。憲章は残ります。</p>
         <button class="danger" id="btn-settings-reset">プロジェクトをリセット</button>
       </section>`
     : '';
 
-  $('project-settings-body').innerHTML = `
-    <p class="muted">${esc(p.name)}</p>
-    <section class="project-settings-section">
-      <h3>プロジェクト定義</h3>
+  el.innerHTML = `<div class="project-settings-shell">
+    <header class="cowork-header">
+      <div>
+        <span class="summary-kicker">選択中のプロジェクトに適用</span>
+        <h2>プロジェクト設定</h2>
+        <p class="muted">${esc(p.name)} の目的、ルール、対象リポジトリを管理します。</p>
+      </div>
+    </header>
+    <section class="project-settings-card" aria-labelledby="project-settings-definition-title">
+      <span class="summary-kicker">基本設定</span>
+      <h3 id="project-settings-definition-title">プロジェクト定義</h3>
+      <p class="muted">プロジェクトの目的と、作業時に守るルールを編集します。</p>
       <div class="settings-action-grid">
-        <button data-edit="charter.md">${isMaster ? 'マスター憲章' : '憲章'}</button>
-        <button data-edit="policy.md">運用ルール</button>
-        <button data-edit="rules.md">プロジェクトルール</button>
-        <button data-edit="repos.json">リポジトリ</button>
+        <button type="button" data-edit="charter.md"><strong>${isMaster ? 'マスター憲章' : '憲章'}</strong><span>目的と完了条件</span></button>
+        <button type="button" data-edit="policy.md"><strong>運用ルール</strong><span>進め方と判断基準</span></button>
+        <button type="button" data-edit="rules.md"><strong>プロジェクトルール</strong><span>すべての作業で守ること</span></button>
+        <button type="button" data-edit="repos.json"><strong>リポジトリ</strong><span>作業対象と書き込み範囲</span></button>
       </div>
     </section>
-    <section class="project-settings-section">
-      <h3>調査と高度な設定</h3>
+    <section class="project-settings-card" aria-labelledby="project-settings-technical-title">
+      <span class="summary-kicker">診断</span>
+      <h3 id="project-settings-technical-title">調査と高度な設定</h3>
       <p class="muted">実行ID、内部ログ、同期方式などは通常の操作には必要ありません。</p>
-      <button id="btn-project-technical-info">詳細情報を開く</button>
+      <button type="button" id="btn-project-technical-info">詳細情報を開く</button>
     </section>
-    ${danger}`;
+    ${danger}
+  </div>`;
 
-  for (const btn of $('project-settings-body').querySelectorAll('button[data-edit]')) {
-    btn.addEventListener('click', () => {
-      $('dlg-project-settings').close();
-      openProjectFile(btn.dataset.edit);
-    });
+  for (const btn of el.querySelectorAll('button[data-edit]')) {
+    btn.addEventListener('click', () => openProjectFile(btn.dataset.edit));
   }
   const reset = $('btn-settings-reset');
-  if (reset) reset.addEventListener('click', () => {
-    $('dlg-project-settings').close();
-    resetProject();
-  });
+  if (reset) reset.addEventListener('click', resetProject);
   const technicalInfo = $('btn-project-technical-info');
-  if (technicalInfo) technicalInfo.addEventListener('click', () => {
-    $('dlg-project-settings').close();
-    openTechnicalInfo();
-  });
-  $('dlg-project-settings').showModal();
+  if (technicalInfo) technicalInfo.addEventListener('click', () => openTechnicalInfo());
 }
 
 // プロジェクトのリセット（危険操作）。charter.md 以外の全データを削除し、バスの
@@ -4974,10 +4984,41 @@ function humanWaitingAdvice(task) {
 // 失敗トリアージ（agent-flow が meta.failure_reason に載せる決定的タグ [agent-error:<class>]）。
 // 環境要因ならタスク状態（blocked 等）より先に「何を直すか」を言い切る。
 function agentErrorAdvice(run, found) {
-  const tri = /\[agent-error:(quota|auth|env)\]/.exec(String(run.failureReason || ''));
+  const failure = String(run.failureReason || '');
+  const tri = /\[agent-error:(quota|auth|env)\]/.exec(failure);
   if (!tri) return null;
+  // 旧 run は meta.failure_reason が quota の汎用文言まで丸められている。
+  // ノード出力には発生元タグが残るため、それも合わせて判定する。
+  const nodeOutputs = Object.values(run.nodes || {})
+    .map((node) => String((node && node.output) || ''))
+    .join('\n');
+  const detail = `${failure}\n${nodeOutputs}`;
+  if (tri[1] === 'quota' && /\[agent-control\]/.test(detail)) {
+    const paused = /lifecycle=pause\b/.test(detail);
+    return {
+      kind: 'human',
+      cls: 'act',
+      chip: paused ? '⏸ 実行一時停止中' : '⏹ 実行停止中',
+      text:
+        `AI の利用上限ではありません。オーケストレーション設定で対象の実行が${paused ? '一時停止' : '停止'}されたため、` +
+        'run が失敗終了しました。全体設定の「エージェント」で対象ワークロードを「実行」に戻し、' +
+        '要対応タブから再開してください（完了済みの工程は温存されています）。',
+      taskId: found && found.task ? found.task.id : null,
+    };
+  }
+  if (tri[1] === 'quota' && /\[node-budget\]/.test(detail)) {
+    return {
+      kind: 'human',
+      cls: 'act',
+      chip: '⏲ ノード予算上限',
+      text:
+        'AI サービス側の利用上限ではありません。このマシンに設定した実行時間またはトークン予算に達しました。' +
+        '全体設定の「エージェント」にあるオーケストレーション予算を確認し、上限を変更するか期間更新後に再開してください。',
+      taskId: found && found.task ? found.task.id : null,
+    };
+  }
   const map = {
-    quota: ['⏲ 利用上限', 'AI の利用上限に達したため止まりました。時間をおく（またはプランを' +
+    quota: ['⏲ AI 利用上限', 'AI サービス側の利用上限に達したため止まりました。時間をおく（またはプランを' +
       '見直す）と回復します。回復後、要対応タブで該当タスクを承認すると続きから再開します' +
       '（完了済みの工程は温存されています）。'],
     auth: ['🔑 認証切れ', 'エージェント CLI の認証が切れたため止まりました。再ログインしてから、' +
@@ -6389,7 +6430,8 @@ function renderAllTabs() {
   renderHistory();
   renderCowork();
   renderAmigos();
-  renderOrchestration();
+  renderProjectSettings();
+  if (!state.globalSettingsDirty || !$('tab-orchestration').childElementCount) renderOrchestration();
   renderKiroLoopTerminal();
   for (const [name] of featureTabs) renderFeatureTab(name);
   restoreUiState(ui);
@@ -6448,9 +6490,11 @@ function populateSettingsFields() {
   $('cfg-cowork-sm-command').value = cw.stateMachineCommand || 'statemachine-use';
 }
 
-function openSettings() {
-  populateSettingsFields();
-  $('dlg-settings').showModal();
+function openGlobalSettings(section = 'app') {
+  state.globalSettingsSection = GLOBAL_SETTINGS_SECTIONS.some((item) => item.id === section) ? section : 'app';
+  state.globalSettingsDirty = false;
+  switchTab('orchestration');
+  renderOrchestration();
 }
 
 function strategyDisplayLabel(strategy) {
@@ -6516,53 +6560,10 @@ function technicalProjectInfoHtml() {
     </section>`;
 }
 
-function coworkTechnicalInfoHtml() {
-  const folder = selectedProjectFolder();
-  const entries = coworkHasProjectConfig(state.cowork, folder)
-    ? coworkVisibleEntries(coworkDraft(), folder)
-    : [];
-  const selected = coworkSelectedEntry(entries, folder);
-  if (!selected) {
-    return '<div class="empty compact">定常業務を選ぶと、その設定と実行状態を確認できます。</div>';
-  }
-  const { item, index } = selected;
-  const id = coworkEntryId(item, index);
-  const live = ((state.cowork && state.cowork.items) || [])
-    .find((candidate, candidateIndex) => coworkEntryId(candidate, candidateIndex) === id) || item;
-  const execution = live.state || item.state || {};
-  const status = execution.running ? 'running' : (execution.status || 'unknown');
-  const sourceFile = (item._src && (item._src.file || (item._src.loop && item._src.loop.file))) || '';
-  const coworkConfig = (state.config && state.config.cowork) || {};
-  const provider = item.type === 'state-machine'
-    ? (coworkConfig.stateMachineCommand || 'statemachine-use')
-    : (coworkConfig.loopCommand || coworkConfig.loopProvider || 'kiro-loop');
-  return `<section class="developer-summary">
-    <div class="settings-section-heading"><div><span class="summary-kicker">選択中</span><h3>${esc(item.name || id)}</h3></div></div>
-    <dl class="developer-facts">
-      <div><dt>実行状態</dt><dd><span class="status-chip ${coworkStatusClass(status)}">${esc(statusLabel(status))}</span></dd></div>
-      <div><dt>最終確認</dt><dd>${execution.lastLogAt ? esc(fmtTime(execution.lastLogAt)) : '記録なし'}</dd></div>
-      <div><dt>種類</dt><dd>${esc(workTypeLabel(item.type))}</dd></div>
-      <div><dt>実行コマンド</dt><dd class="mono">${esc(provider)}</dd></div>
-      <div><dt>実行予定</dt><dd class="mono">${esc(item.schedule || '手動実行')}</dd></div>
-      <div><dt>有効状態</dt><dd>${item.enabled === false ? '無効' : '有効'}</dd></div>
-      <div><dt>対象リポジトリ</dt><dd class="mono">${esc(item.repo || item.cwd || '未設定')}</dd></div>
-      <div><dt>設定ファイル</dt><dd class="mono">${esc(sourceFile || '画面から登録')}</dd></div>
-    </dl>
-    ${state.cowork && state.cowork.error ? `<p class="cowork-item-error" role="alert">${esc(state.cowork.error)}</p>` : ''}
-  </section>`;
-}
-
-function openAdvancedSettings() {
-  populateSettingsFields();
-  renderAdvancedBudgetSettings();
-  $('dlg-advanced-settings').showModal();
-}
-
-function openTechnicalInfo(scope) {
-  const coworkScope = scope === 'cowork';
-  $('technical-info-kicker').textContent = coworkScope ? '定常業務' : '選択中';
-  $('technical-info-title').textContent = coworkScope ? '定常業務の診断情報' : '詳細情報';
-  $('technical-project-info').innerHTML = coworkScope ? coworkTechnicalInfoHtml() : technicalProjectInfoHtml();
+function openTechnicalInfo() {
+  $('technical-info-kicker').textContent = '選択中';
+  $('technical-info-title').textContent = '詳細情報';
+  $('technical-project-info').innerHTML = technicalProjectInfoHtml();
   for (const btn of $('technical-project-info').querySelectorAll('[data-technical-tab]')) {
     btn.addEventListener('click', () => {
       $('dlg-technical-info').close();
@@ -6572,56 +6573,58 @@ function openTechnicalInfo(scope) {
   $('dlg-technical-info').showModal();
 }
 
-async function saveSettings() {
+async function saveGlobalSettingsSection(section) {
   const cfg = state.config;
-  cfg.projects = cfg.projects || {};
-  cfg.projects.roots = $('cfg-roots')
-    .value.split('\n')
-    .map((s) => s.trim())
-    .filter(Boolean);
-  cfg.projects.autoDiscover = $('cfg-autodiscover').checked;
-  cfg.projects.refreshSec = Math.max(0, parseInt($('cfg-refresh').value, 10) || 0);
-  cfg.projects.gitPullSec = Math.max(0, parseInt($('cfg-git-pull').value, 10) || 0);
-  cfg.projects.gitAutoPush = $('cfg-git-autopush').checked;
-  cfg.notifications = cfg.notifications || {};
-  cfg.notifications.enabled = $('cfg-notify').checked;
-  cfg.projects.needsSlaHours = Math.max(1, parseInt($('cfg-needs-sla').value, 10) || 24);
-  cfg.projects.command = $('cfg-project-command').value.trim() || 'agent-project';
-  cfg.projects.actionMode = $('cfg-action-mode').value;
-  cfg.projects.flowBus = $('cfg-flow-bus').value.trim();
-  cfg.projects.flowLockDir = $('cfg-flow-lockdir').value.trim();
-  // 1 行 1 件「プロジェクト名 = バスパス」を写像へ。空行・不正行は無視する。
-  cfg.projects.flowBusByProject = $('cfg-flow-bus-by-project')
-    .value.split('\n')
-    .map((line) => {
+  if (section === 'app') {
+    cfg.projects = cfg.projects || {};
+    cfg.projects.roots = $('cfg-roots').value.split('\n').map((s) => s.trim()).filter(Boolean);
+    cfg.projects.autoDiscover = $('cfg-autodiscover').checked;
+    cfg.projects.refreshSec = Math.max(0, parseInt($('cfg-refresh').value, 10) || 0);
+    cfg.notifications = cfg.notifications || {};
+    cfg.notifications.enabled = $('cfg-notify').checked;
+    cfg.projects.needsSlaHours = Math.max(1, parseInt($('cfg-needs-sla').value, 10) || 24);
+  } else if (section === 'agents') {
+    cfg.agent = cfg.agent || {};
+    cfg.agent.cli = $('cfg-agent-cli').value.trim();
+    cfg.agent.model = $('cfg-agent-model').value.trim();
+    cfg.agent.timeoutSec = Math.max(30, parseInt($('cfg-agent-timeout').value, 10) || 180);
+  } else if (section === 'sync') {
+    cfg.projects = cfg.projects || {};
+    cfg.projects.gitPullSec = Math.max(0, parseInt($('cfg-git-pull').value, 10) || 0);
+    cfg.projects.gitAutoPush = $('cfg-git-autopush').checked;
+    cfg.projects.command = $('cfg-project-command').value.trim() || 'agent-project';
+    cfg.projects.actionMode = $('cfg-action-mode').value;
+    cfg.projects.flowBus = $('cfg-flow-bus').value.trim();
+    cfg.projects.flowLockDir = $('cfg-flow-lockdir').value.trim();
+    cfg.projects.flowBusByProject = $('cfg-flow-bus-by-project').value.split('\n').map((line) => {
       const i = line.indexOf('=');
       if (i < 0) return null;
       const name = line.slice(0, i).trim();
       const bus = line.slice(i + 1).trim();
       return name && bus ? [name, bus] : null;
-    })
-    .filter(Boolean)
-    .reduce((acc, [name, bus]) => ((acc[name] = bus), acc), {});
-  cfg.agent = cfg.agent || {};
-  cfg.agent.cli = $('cfg-agent-cli').value.trim();
-  cfg.agent.model = $('cfg-agent-model').value.trim();
-  cfg.agent.timeoutSec = Math.max(30, parseInt($('cfg-agent-timeout').value, 10) || 180);
-  cfg.gitlab.baseUrl = $('cfg-gl-url').value.trim();
-  cfg.gitlab.token = $('cfg-gl-token').value.trim();
-  cfg.reviewViewer.mode = $('cfg-rv-mode').value;
-  cfg.reviewViewer.exePath = $('cfg-rv-exepath').value.trim();
-  cfg.reviewViewer.command = $('cfg-rv-command').value.trim();
-  cfg.cowork = cfg.cowork || {};
-  cfg.cowork.loopProvider = $('cfg-cowork-loop-provider').value.trim() || 'kiro-loop';
-  cfg.cowork.loopCommand = $('cfg-cowork-loop-command').value.trim() || cfg.cowork.loopProvider;
-  cfg.cowork.stateMachineCommand = $('cfg-cowork-sm-command').value.trim() || 'statemachine-use';
+    }).filter(Boolean).reduce((acc, [name, bus]) => ((acc[name] = bus), acc), {});
+  } else if (section === 'routine') {
+    cfg.cowork = cfg.cowork || {};
+    cfg.cowork.loopProvider = $('cfg-cowork-loop-provider').value.trim() || 'kiro-loop';
+    cfg.cowork.loopCommand = $('cfg-cowork-loop-command').value.trim() || cfg.cowork.loopProvider;
+    cfg.cowork.stateMachineCommand = $('cfg-cowork-sm-command').value.trim() || 'statemachine-use';
+  } else if (section === 'integrations') {
+    cfg.gitlab = cfg.gitlab || {};
+    cfg.reviewViewer = cfg.reviewViewer || {};
+    cfg.gitlab.baseUrl = $('cfg-gl-url').value.trim();
+    cfg.gitlab.token = $('cfg-gl-token').value.trim();
+    cfg.reviewViewer.mode = $('cfg-rv-mode').value;
+    cfg.reviewViewer.exePath = $('cfg-rv-exepath').value.trim();
+    cfg.reviewViewer.command = $('cfg-rv-command').value.trim();
+  } else {
+    throw new Error('保存する設定の種類が不明です');
+  }
   state.config = await api.saveConfig(cfg);
+  state.globalSettingsDirty = false;
   setupPolling();
   await refreshAll();
-  if ($('dlg-settings').open) $('dlg-settings').close();
-  if ($('dlg-advanced-settings').open) $('dlg-advanced-settings').close();
-  if ($('dlg-technical-info').open) $('dlg-technical-info').close();
-  toast('設定を保存しました', true);
+  const label = (GLOBAL_SETTINGS_SECTIONS.find((item) => item.id === section) || {}).label || '設定';
+  toast(`${label}の設定を保存しました`, true);
 }
 
 // ---------------------------------------------------------------------------
@@ -7045,7 +7048,7 @@ async function refreshAll({ sync = true } = {}) {
     if (state.selectedDir) await reloadProject({ refreshRemoteHealth: sync });
     if (activeTab() === 'cowork') renderCowork();
     if (activeTab() === 'amigos') renderAmigos();
-    if (activeTab() === 'orchestration') renderOrchestration();
+    if (activeTab() === 'orchestration' && !state.globalSettingsDirty) renderOrchestration();
     // 登録済みフィーチャータブ: 非同期取得（refresh）してから表示中なら描画する。
     for (const [name, h] of featureTabs) {
       if (typeof h.refresh === 'function') {
@@ -7069,8 +7072,6 @@ function setupPolling() {
     state.timer = setInterval(() => {
       // ダイアログを開いている間・入力中は更新しない（書きかけの入力を消さない）
       if (
-        $('dlg-settings').open ||
-        $('dlg-advanced-settings').open ||
         $('dlg-technical-info').open ||
         $('dlg-task').open ||
         $('dlg-enqueue').open ||
@@ -7298,100 +7299,6 @@ function amigosWorkloadLabel(wl) {
   return (
     { routine: '定常業務', project: 'プロジェクト', flow: 'フロー', amigos: 'ミッション' }[wl] || wl
   );
-}
-
-function amigosBudgetPanelHtml(budget) {
-  if (!budget) return '';
-  const cfg = budget.config || { execution_minutes: 0, period: 'day', workloads: {} };
-  const workloads = [...new Set([...(budget.knownWorkloads || []), ...Object.keys(budget.totals || {})])];
-  const periodLabel = { day: '今日', month: '今月', total: '累計' }[cfg.period] || cfg.period;
-  const limitTxt = cfg.execution_minutes > 0 ? `${amigosMin(budget.limitSeconds)}分` : '無制限';
-  const rows = workloads
-    .map((wl) => {
-      const spent = amigosMin((budget.totals || {})[wl]);
-      const lim = Number((cfg.workloads || {})[wl] || 0);
-      const over = (budget.exceededWorkloads || []).includes(wl);
-      return `<tr${over ? ' class="amigos-over"' : ''}>
-        <td>${esc(amigosWorkloadLabel(wl))}</td>
-        <td class="num mono">${esc(spent)} 分</td>
-        <td><input type="number" min="0" step="1" class="mono amigos-wl-limit" data-wl="${esc(wl)}"
-             value="${lim || 0}" title="0 = 無制限" /></td>
-        <td class="muted">${over ? '超過中' : lim > 0 ? '' : '無制限'}</td>
-      </tr>`;
-    })
-    .join('');
-  return `
-    <section class="amigos-budget">
-      <header class="row">
-        <div>
-          <span class="summary-kicker">ノード予算</span>
-          <h3>このノードの実行時間（${esc(periodLabel)}: 合計 ${esc(amigosMin(budget.totalSeconds))} 分 / 上限 ${esc(limitTxt)}
-            ${budget.exceeded ? '<span class="amigos-over-badge">超過中 — ミッションの担当は一時停止</span>' : ''}</h3>
-          <p class="muted">定常業務・プロジェクト・フロー・ミッションの合計に上限を掛けます（0 = 無制限）。
-            設定は依頼側・請負側どちらのノードでも同じ契約（${esc(budget.dir)}）です。</p>
-        </div>
-      </header>
-      <div class="row amigos-budget-controls">
-        <label>合計上限（分）
-          <input type="number" min="0" step="1" id="amigos-budget-total" class="mono"
-            value="${cfg.execution_minutes || 0}" title="0 = 無制限" />
-        </label>
-        <label>期間
-          <select id="amigos-budget-period">
-            <option value="day" ${cfg.period === 'day' ? 'selected' : ''}>日次（day）</option>
-            <option value="month" ${cfg.period === 'month' ? 'selected' : ''}>月次（month）</option>
-            <option value="total" ${cfg.period === 'total' ? 'selected' : ''}>累計（total）</option>
-          </select>
-        </label>
-        <button type="button" id="btn-amigos-budget-save" ${state.amigosBudgetSaving ? 'disabled' : ''}>上限を保存</button>
-      </div>
-      <table class="amigos-table">
-        <thead><tr><th>ワークロード</th><th>消費</th><th>内訳上限（分・0=無制限）</th><th></th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </section>`;
-}
-
-function setupAmigosBudgetSave(root) {
-  const saveBtn = root && root.querySelector('#btn-amigos-budget-save');
-  if (!saveBtn) return;
-  saveBtn.addEventListener('click', () =>
-    guard('ノード予算の保存', async () => {
-      const workloads = {};
-      for (const input of root.querySelectorAll('.amigos-wl-limit')) {
-        workloads[input.dataset.wl] = Number(input.value || 0);
-      }
-      state.amigosBudgetSaving = true;
-      try {
-        const budget = await api.amigosBudgetSave({
-          executionMinutes: Number((root.querySelector('#amigos-budget-total') || {}).value || 0),
-          period: (root.querySelector('#amigos-budget-period') || {}).value || 'day',
-          workloads,
-        });
-        state.amigos = { ...(state.amigos || {}), budget };
-        toast('ノード予算を保存しました', true);
-      } finally {
-        state.amigosBudgetSaving = false;
-      }
-      renderAdvancedBudgetSettings();
-    })
-  );
-}
-
-function renderAdvancedBudgetSettings() {
-  const el = $('advanced-budget-body');
-  if (!el) return;
-  const amigos = state.amigos;
-  if (amigos && amigos.error) {
-    el.innerHTML = `<p class="muted">予算情報を読み込めませんでした: ${esc(amigos.error)}</p>`;
-    return;
-  }
-  if (!amigos || !amigos.budget) {
-    el.innerHTML = '<p class="muted">予算情報を読み込み中です。</p>';
-    return;
-  }
-  el.innerHTML = amigosBudgetPanelHtml(amigos.budget);
-  setupAmigosBudgetSave(el);
 }
 
 function amigosNextStep(m) {
@@ -8003,8 +7910,7 @@ function workTypeLabel(type) {
 }
 
 // ---------------------------------------------------------------------------
-// オーケストレーションタブ（ノード予算 v2 / エージェント制御 / ドロップイン棚卸し）
-// ノード横断（マシン単位）の管理面。プロジェクト選択に依存せず常に表示する。
+// エージェント管理タブ。この端末全体の設定で、プロジェクト選択に依存しない。
 // 色だけに頼らず状態語を併記する（既存 UI 方針を踏襲）。
 // ---------------------------------------------------------------------------
 
@@ -8012,7 +7918,7 @@ async function refreshOrchestration() {
   if (!api.orchestrationOverview) return;
   try {
     state.orchestration = await api.orchestrationOverview();
-    // グローバル指示のスキル選択候補（棚卸し）。失敗しても overview 表示は続ける。
+    // 共通指示のスキル候補。取得に失敗しても画面表示は続ける。
     if (api.orchestrationSkillsInventory) {
       try { state.orchSkillsInventory = await api.orchestrationSkillsInventory(); }
       catch { state.orchSkillsInventory = []; }
@@ -8022,7 +7928,7 @@ async function refreshOrchestration() {
   }
 }
 
-// トークン数を読みやすく（1.20M / 340k / 512）。
+// AI 利用量を読みやすく（1.20M / 340k / 512）。
 function orchTokens(n) {
   const v = Number(n || 0);
   if (v >= 1e6) return `${(v / 1e6).toFixed(2).replace(/\.?0+$/, '')}M`;
@@ -8043,14 +7949,14 @@ function orchBadge(kind, text) {
   return `<span class="orch-badge orch-badge-${esc(kind)}">${esc(text)}</span>`;
 }
 
-// 1. 予算ゲージ（トークン実測/推定の内訳 + 時間消費 + ワークロード別バー）
+// 1. 利用量（実測/推定の内訳 + 時間消費 + 機能別バー）
 function orchBudgetPanelHtml(budget) {
-  if (!budget) return '<section class="orch-panel"><p class="muted">予算情報がありません。</p></section>';
+  if (!budget) return '<section class="orch-panel"><p class="muted">利用量の情報がありません。</p></section>';
   const cfg = budget.config || {};
   const periodLabel = { day: '今日', month: '今月', total: '累計' }[cfg.period] || cfg.period;
   const tt = budget.totalTokens || { measured: 0, estimated: 0, total: 0 };
   const limit = Number(budget.tokenLimit || 0);
-  const limitTxt = limit > 0 ? `${orchTokens(limit)} tok` : '無制限';
+  const limitTxt = limit > 0 ? `${orchTokens(limit)} トークン` : '無制限';
   // 全体トークンゲージ（実測 + 推定の積み上げ）
   const denom = limit > 0 ? limit : Math.max(tt.total, 1);
   const mPct = Math.min(100, (tt.measured / denom) * 100);
@@ -8059,7 +7965,7 @@ function orchBudgetPanelHtml(budget) {
     ? `${amigosMin(budget.totalSeconds)} / ${amigosMin(budget.limitSeconds)} 分`
     : `${amigosMin(budget.totalSeconds)} 分（上限なし）`;
   const overBadge = budget.exceeded
-    ? orchBadge('over', '超過中 — 各エンジンは新規実行を抑制')
+    ? orchBadge('over', '上限到達 — 新しい実行を制限中')
     : orchBadge('ok', '余裕あり');
 
   const wlRows = (budget.knownWorkloads || [])
@@ -8067,13 +7973,13 @@ function orchBudgetPanelHtml(budget) {
     .map((wl) => {
       const w = (budget.workloads || {})[wl] || { measuredTokens: 0, estimatedTokens: 0, totalTokens: 0, tokenCap: 0 };
       const cap = Number(w.tokenCap || 0);
-      const capTxt = cap > 0 ? `${orchTokens(cap)} tok` : '無制限';
+      const capTxt = cap > 0 ? `${orchTokens(cap)} トークン` : '無制限';
       const d = cap > 0 ? cap : Math.max(w.totalTokens, 1);
       const mp = Math.min(100, (w.measuredTokens / d) * 100);
       const ep = Math.min(100 - mp, (w.estimatedTokens / d) * 100);
       let badge = '';
-      if (w.tokenExceeded) badge = orchBadge('over', '実効上限に到達');
-      else if (w.soft) badge = orchBadge('soft', '縮退開始（soft）');
+      if (w.tokenExceeded) badge = orchBadge('over', '上限に到達');
+      else if (w.soft) badge = orchBadge('soft', '節約モード');
       else if (w.timeExceeded) badge = orchBadge('over', '時間上限に到達');
       return `<tr>
         <td>${esc(amigosWorkloadLabel(wl))}</td>
@@ -8091,16 +7997,15 @@ function orchBudgetPanelHtml(budget) {
   return `<section class="orch-panel">
     <header class="row">
       <div>
-        <span class="summary-kicker">ノード予算 v2</span>
-        <h3>トークン消費（${esc(periodLabel)}）</h3>
-        <p class="muted">実測分と推定分（トークン未報告 CLI の seconds × レート）を分けて表示します。
-          設定はノード共通の契約（${esc(budget.dir || '')}）です。</p>
+        <span class="summary-kicker">利用状況</span>
+        <h3>AI利用量（${esc(periodLabel)}）</h3>
+        <p class="muted">すべての機能で使った量を、取得できた値と推定値に分けて表示します。</p>
       </div>
       <div>${overBadge}</div>
     </header>
     <div class="orch-gauge">
       <div class="orch-gauge-head">
-        <strong>合計 ${esc(orchTokens(tt.total))} tok</strong>
+        <strong>合計 ${esc(orchTokens(tt.total))} トークン</strong>
         <span class="muted">/ 上限 ${esc(limitTxt)}</span>
         <span class="orch-legend"><span class="orch-swatch orch-bar-measured"></span>実測 ${esc(orchTokens(tt.measured))}</span>
         <span class="orch-legend"><span class="orch-swatch orch-bar-estimated"></span>推定 ${esc(orchTokens(tt.estimated))}</span>
@@ -8112,13 +8017,13 @@ function orchBudgetPanelHtml(budget) {
       </div>
     </div>
     <table class="amigos-table orch-table">
-      <thead><tr><th>ワークロード</th><th>消費（実測+推定）</th><th>消費 / 実効上限</th><th>状態</th></tr></thead>
+      <thead><tr><th>機能</th><th>内訳</th><th>利用量 / 上限</th><th>状態</th></tr></thead>
       <tbody>${wlRows}</tbody>
     </table>
   </section>`;
 }
 
-// 2. 配分エディタ（weight / min / max / on_exhausted / soft_ratio / auto|static / 再配分 / 較正）
+// 2. 利用上限と配分
 function orchAllocationPanelHtml(budget) {
   if (!budget) return '';
   const alloc = (budget.config && budget.config.allocation) || {};
@@ -8142,34 +8047,33 @@ function orchAllocationPanelHtml(budget) {
   return `<section class="orch-panel">
     <header class="row">
       <div>
-        <span class="summary-kicker">配分</span>
-        <h3>ワークロードへのトークン配分</h3>
-        <p class="muted">残り枠を weight 比で配り、下限/上限でクランプします。auto は「いま再配分」で computed を更新します
-          （静的上限と全体上限は常に有効）。</p>
+        <span class="summary-kicker">利用上限</span>
+        <h3>機能ごとの利用量を設定</h3>
+        <p class="muted">全体の上限を各機能へ配分します。配分比と最低保証、上限を指定できます。</p>
       </div>
     </header>
     <div class="row orch-alloc-controls">
-      <label>トークン上限
+      <label>全体の上限（トークン）
         <input type="number" min="0" step="10000" id="orch-token-limit" class="mono" value="${Number(budget.tokenLimit || 0)}" title="0 = 無制限" />
       </label>
-      <label>soft_ratio（縮退開始比）
+      <label>節約モードを始める割合
         <input type="number" min="0" max="1" step="0.05" id="orch-soft-ratio" class="mono" value="${softVal}" />
       </label>
-      <label>再配分モード
+      <label>配分方法
         <select id="orch-alloc-mode">
-          <option value="static"${mode === 'static' ? ' selected' : ''}>手動（static）</option>
-          <option value="auto"${mode === 'auto' ? ' selected' : ''}>自動（auto）</option>
+          <option value="static"${mode === 'static' ? ' selected' : ''}>手動</option>
+          <option value="auto"${mode === 'auto' ? ' selected' : ''}>自動</option>
         </select>
       </label>
     </div>
     <table class="amigos-table orch-table">
-      <thead><tr><th>ワークロード</th><th>weight</th><th>min_tokens</th><th>max_tokens</th><th>枯渇時</th></tr></thead>
+      <thead><tr><th>機能</th><th>配分比</th><th>最低保証</th><th>上限</th><th>上限到達時</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
     <div class="row orch-actions">
-      <button type="button" id="btn-orch-alloc-save"${state.orchSaving ? ' disabled' : ''}>配分を保存</button>
-      <button type="button" id="btn-orch-rebalance">いま再配分</button>
-      <button type="button" id="btn-orch-calibrate">レート較正</button>
+      <button type="button" id="btn-orch-alloc-save"${state.orchSaving ? ' disabled' : ''}>利用上限を保存</button>
+      <button type="button" id="btn-orch-rebalance">配分を更新</button>
+      <button type="button" id="btn-orch-calibrate">推定値を調整</button>
     </div>
   </section>`;
 }
@@ -8193,7 +8097,7 @@ function orchAgentsEditorHtml(wl, wc) {
   const known = ORCH_AGENT_KEYS[wl];
   // routine は用途別の概念が無い（kiro-loop は CLI/モデルを選ばない）ため編集 UI を出さない。
   if (known && known.length === 0 && wl === 'routine') {
-    return '<div class="orch-agents-none"><small class="muted">このワークロードは用途別の上書きに対応しません（tmux 送信のため）。</small></div>';
+    return '<div class="orch-agents-none"><small class="muted">定常業務では、用途ごとの変更はできません。</small></div>';
   }
   const listId = `orch-keys-${esc(wl)}`;
   const datalist = (known && known.length)
@@ -8209,23 +8113,23 @@ function orchAgentsEditorHtml(wl, wc) {
     </tr>`;
   }).join('');
   const addRow = `<tr class="orch-agent-add">
-      <td><input type="text" class="orch-agent-new-key" list="${listId}" placeholder="${(known && known.length) ? '用途 / ロール名' : 'ロール id'}" /></td>
-      <td><input type="text" class="orch-agent-new-cli" placeholder="agent_cli" /></td>
-      <td><input type="text" class="orch-agent-new-model" placeholder="model" /></td>
+      <td><input type="text" class="orch-agent-new-key" list="${listId}" placeholder="${(known && known.length) ? '用途 / 担当名' : '担当名'}" /></td>
+      <td><input type="text" class="orch-agent-new-cli" placeholder="エージェント" /></td>
+      <td><input type="text" class="orch-agent-new-model" placeholder="モデル" /></td>
       <td><small class="muted">保存で追加</small></td>
     </tr>`;
-  const summaryLabel = keys.length ? `用途 / ロール別の上書き（${keys.length}）` : '用途 / ロール別の上書きを追加';
+  const summaryLabel = keys.length ? `用途 / 担当ごとの変更（${keys.length}）` : '用途 / 担当ごとの変更を追加';
   return `<details class="orch-agents"${keys.length ? ' open' : ''}>
     <summary>${esc(summaryLabel)}</summary>
     ${datalist}
     <table class="amigos-table orch-agents-table">
-      <thead><tr><th>用途 / ロール / 種別</th><th>agent_cli</th><th>model</th><th></th></tr></thead>
+      <thead><tr><th>用途 / 担当 / 種別</th><th>エージェント</th><th>モデル</th><th></th></tr></thead>
       <tbody>${rows}${addRow}</tbody>
     </table>
   </details>`;
 }
 
-// 3. エージェント割当マトリクス（ワークロード既定＋用途 / ロール別の上書き）→ control.json
+// 3. 機能ごとのエージェント設定
 function orchMatrixPanelHtml(overview) {
   const control = overview.control || { workloads: {} };
   const wls = (overview.budget && overview.budget.knownWorkloads) || ['routine', 'project', 'flow', 'amigos'];
@@ -8235,9 +8139,9 @@ function orchMatrixPanelHtml(overview) {
     return `<div class="orch-ctrl-wl" data-orch-ctrl-wl="${esc(wl)}">
       <div class="orch-ctrl-head">
         <strong>${esc(amigosWorkloadLabel(wl))}</strong>
-        <label>agent_cli<input type="text" class="orch-ctrl-cli" placeholder="（設定に従う）" value="${esc(wc.agent_cli || '')}" /></label>
-        <label>model<input type="text" class="orch-ctrl-model" placeholder="（設定に従う）" value="${esc(wc.model || '')}" /></label>
-        <label>縮退時 model<input type="text" class="orch-ctrl-degraded-model" placeholder="soft 時に切替" value="${esc(deg.model || '')}" /></label>
+        <label>エージェント<input type="text" class="orch-ctrl-cli" placeholder="各機能の設定を使用" value="${esc(wc.agent_cli || '')}" /></label>
+        <label>モデル<input type="text" class="orch-ctrl-model" placeholder="各機能の設定を使用" value="${esc(wc.model || '')}" /></label>
+        <label>節約時のモデル<input type="text" class="orch-ctrl-degraded-model" placeholder="変更しない" value="${esc(deg.model || '')}" /></label>
       </div>
       ${orchAgentsEditorHtml(wl, wc)}
     </div>`;
@@ -8245,22 +8149,20 @@ function orchMatrixPanelHtml(overview) {
   return `<section class="orch-panel">
     <header class="row">
       <div>
-        <span class="summary-kicker">割当</span>
-        <h3>エージェント / モデルの横断上書き</h3>
-        <p class="muted">空欄 = 上書きなし（各エンジンの設定ファイルに従う）。ワークロード既定に加え、
-          用途 / ロール / ノード種別（planner・verify・reviewer 等）別にも上書きできます。
-          保存すると control の revision が 1 つ進みます。</p>
+        <span class="summary-kicker">担当設定</span>
+        <h3>機能ごとのエージェントとモデル</h3>
+        <p class="muted">空欄の項目は各機能の設定を使います。必要な場合だけ、用途や担当ごとに変更できます。</p>
       </div>
-      <div>${orchBadge('muted', `revision ${Number(control.revision || 0)}`)}</div>
+      <div>${orchBadge('muted', `設定版 ${Number(control.revision || 0)}`)}</div>
     </header>
     <div class="orch-ctrl-blocks">${blocks}</div>
     <div class="row orch-actions">
-      <button type="button" id="btn-orch-control-save"${state.orchSaving ? ' disabled' : ''}>割当を保存</button>
+      <button type="button" id="btn-orch-control-save"${state.orchSaving ? ' disabled' : ''}>担当設定を保存</button>
     </div>
   </section>`;
 }
 
-// 4. エンジン状態（status/ 一覧: tool/pid/lifecycle/revision applied↔desired/budget）+ lifecycle 操作
+// 4. 実行サービスの状態と操作
 function orchStatusPanelHtml(overview) {
   const status = overview.status || [];
   const control = overview.control || { workloads: {}, revision: 0 };
@@ -8270,13 +8172,13 @@ function orchStatusPanelHtml(overview) {
     const desired = ((control.workloads || {})[wl] || {}).lifecycle || 'run';
     const applied = Number(s.revision_applied);
     const revBadge = Number.isFinite(applied)
-      ? (applied >= desiredRev ? orchBadge('ok', `反映済 r${applied}`) : orchBadge('soft', `未反映 r${applied}/${desiredRev}`))
-      : orchBadge('muted', 'revision 不明');
+      ? (applied >= desiredRev ? orchBadge('ok', `反映済み（設定版 ${applied}）`) : orchBadge('soft', `未反映（${applied}/${desiredRev}）`))
+      : orchBadge('muted', '反映状況不明');
     const budget = s.budget || {};
     const budgetBadge = budget.exceeded ? orchBadge('over', '超過') : budget.soft ? orchBadge('soft', '縮退中') : orchBadge('ok', '正常');
-    const freshBadge = s.fresh ? orchBadge('ok', '最新') : orchBadge('over', '古い（停止の疑い）');
+    const freshBadge = s.fresh ? orchBadge('ok', '接続中') : orchBadge('over', '応答なし');
     return `<tr>
-      <td>${esc(s.tool || '?')}<br><small class="muted">${esc(amigosWorkloadLabel(wl))} / pid ${esc(String(s.pid || '-'))}</small></td>
+      <td>${esc(s.tool || '?')}<br><small class="muted">${esc(amigosWorkloadLabel(wl))}</small></td>
       <td>${orchBadge(s.lifecycle === 'run' ? 'ok' : 'soft', orchLifecycleLabel(s.lifecycle))}
           <br><small class="muted">指示: ${esc(orchLifecycleLabel(desired))}</small></td>
       <td>${revBadge}</td>
@@ -8287,25 +8189,23 @@ function orchStatusPanelHtml(overview) {
         <button type="button" data-orch-lc="stop" data-orch-wl="${esc(wl)}">停止</button>
       </td>
     </tr>`;
-  }).join('') : '<tr><td colspan="5" class="muted">稼働中エンジンのハートビート（status/）がありません。</td></tr>';
+  }).join('') : '<tr><td colspan="5" class="muted">稼働中の実行サービスはありません。</td></tr>';
   return `<section class="orch-panel">
     <header class="row">
       <div>
-        <span class="summary-kicker">エンジン状態</span>
-        <h3>稼働中エンジン（status/）</h3>
-        <p class="muted">各エンジンが書くハートビート。指示（control）の反映状況と予算判定を突き合わせます。
-          反映は pull 型のため次のサイクルで効きます。</p>
+        <span class="summary-kicker">稼働状況</span>
+        <h3>実行サービス</h3>
+        <p class="muted">エージェントを動かしているサービスの状態と、設定の反映状況を確認できます。</p>
       </div>
     </header>
     <table class="amigos-table orch-table">
-      <thead><tr><th>ツール</th><th>lifecycle</th><th>revision</th><th>予算 / 鮮度</th><th>操作</th></tr></thead>
+      <thead><tr><th>サービス</th><th>稼働状態</th><th>設定の反映</th><th>利用量 / 接続</th><th>操作</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
   </section>`;
 }
 
-// 4.5 グローバル指示（agent-instructions）: 全ノード共通の指示文・推奨スキル・ツール方針の編集 +
-// 描画プレビュー + 適用状況。dashboard が書き、各エンジンが実行エージェントへ注入する。
+// 4.5 共通指示: すべてのエージェントへ渡す指示と適用状況。
 function orchInstructionsPanelHtml(overview) {
   const gi = overview.instructions || { enabled: true, text: '', skills: [], tools: {}, revision: 0, max_chars: 2000 };
   const preview = overview.instructionsPreview || '';
@@ -8327,60 +8227,59 @@ function orchInstructionsPanelHtml(overview) {
       <input type="text" class="orch-skill-note" placeholder="いつ使うか（任意）" value="${esc(note)}" />
       <small class="muted">${esc(where)}</small>
     </div>`;
-  }).join('') || '<p class="muted">スキルが見つかりません（.github/skills / ~/.agent/skills / ~/.kiro/skills）。</p>';
+  }).join('') || '<p class="muted">利用できるスキルが見つかりません。</p>';
   const allow = (gi.tools && Array.isArray(gi.tools.allow)) ? gi.tools.allow.join(', ') : '';
   const denyNote = (gi.tools && gi.tools.deny_note) || '';
   const appliedRows = (overview.status || []).map((s) => {
     const applied = Number(s.instructions_revision_applied);
     const badge = Number.isFinite(applied)
-      ? (applied >= Number(gi.revision || 0) ? orchBadge('ok', `反映済 r${applied}`) : orchBadge('soft', `未反映 r${applied}/${gi.revision}`))
-      : orchBadge('muted', '未注入');
+      ? (applied >= Number(gi.revision || 0) ? orchBadge('ok', `反映済み（設定版 ${applied}）`) : orchBadge('soft', `未反映（${applied}/${gi.revision}）`))
+      : orchBadge('muted', '反映待ち');
     return `<tr><td>${esc(s.tool || '?')} <small class="muted">${esc(amigosWorkloadLabel(String(s.workload || '')))}</small></td><td>${badge}</td></tr>`;
-  }).join('') || '<tr><td colspan="2" class="muted">稼働中エンジンのハートビートがありません。</td></tr>';
+  }).join('') || '<tr><td colspan="2" class="muted">稼働中の実行サービスはありません。</td></tr>';
   return `<section class="orch-panel">
     <header class="row">
       <div>
         <span class="summary-kicker">共通指示</span>
-        <h3>グローバル指示（全ノード共通）</h3>
-        <p class="muted">全エンジンの実行エージェントへ注入するノード共通の指示文・推奨スキル・ツール方針。
-          agent-flow の委譲先ノードへは run スナップショットで伝播します。反映は pull 型で次のサイクル
-          / kiro-loop は次の送信から効きます（最弱の層＝タスク・プロジェクト規則が優先）。</p>
+        <h3>すべてのエージェントへの共通指示</h3>
+        <p class="muted">この端末で実行するエージェントへ、共通の指示・推奨スキル・利用できるツールを設定します。
+          個別のタスクやプロジェクトに指示がある場合は、そちらが優先されます。</p>
       </div>
-      <div>${gi.enabled ? orchBadge('ok', `有効 r${esc(String(gi.revision || 0))}`) : orchBadge('soft', '無効')}</div>
+      <div>${gi.enabled ? orchBadge('ok', `有効・設定版 ${esc(String(gi.revision || 0))}`) : orchBadge('soft', '無効')}</div>
     </header>
-    <label class="orch-instr-enabled"><input type="checkbox" id="orch-instr-enabled" ${gi.enabled ? 'checked' : ''} /> 有効にする（オフで全エンジン no-op）</label>
-    <label class="orch-instr-field">指示文（Markdown）
+    <label class="orch-instr-enabled"><input type="checkbox" id="orch-instr-enabled" ${gi.enabled ? 'checked' : ''} /> 共通指示を使用する</label>
+    <label class="orch-instr-field">指示内容
       <textarea id="orch-instr-text" class="mono" rows="6" placeholder="例: 回答は日本語。破壊的変更の前に必ず既存テストを確認する。">${esc(gi.text || '')}</textarea>
     </label>
-    <div class="orch-instr-field">推奨スキル（ローカルに存在する場合のみ効く）
+    <div class="orch-instr-field">推奨スキル
       <div class="orch-skill-list">${skillRows}</div>
     </div>
     <div class="row">
-      <label class="orch-instr-field">ツール（許可・カンマ区切り）
+      <label class="orch-instr-field">利用できるツール（カンマ区切り）
         <input type="text" id="orch-instr-allow" placeholder="fs_read, fs_write, execute_bash" value="${esc(allow)}" />
       </label>
-      <label class="orch-instr-field">ツール方針（助言）
+      <label class="orch-instr-field">ツール利用時の注意
         <input type="text" id="orch-instr-deny" placeholder="外部への push 系は人の確認を経る" value="${esc(denyNote)}" />
       </label>
-      <label class="orch-instr-field">最大文字数
+      <label class="orch-instr-field">指示の最大文字数
         <input type="number" id="orch-instr-max" min="0" max="8000" value="${esc(String(gi.max_chars || 2000))}" />
       </label>
     </div>
     <div class="row orch-actions">
-      <button type="button" id="btn-orch-instr-save">保存（revision +1）</button>
+      <button type="button" id="btn-orch-instr-save">共通指示を保存</button>
     </div>
     <details class="orch-instr-preview">
-      <summary>プレビュー（エンジンが受け取る描画結果）</summary>
-      <pre class="mono orch-instr-preview-body">${esc(preview || '（有効な指示がありません — 何も注入されません）')}</pre>
+      <summary>エージェントに渡される内容を確認</summary>
+      <pre class="mono orch-instr-preview-body">${esc(preview || '（現在、エージェントへ渡す共通指示はありません）')}</pre>
     </details>
     <details class="orch-instr-applied">
-      <summary>適用状況（instructions_revision_applied）</summary>
-      <table class="amigos-table orch-table"><thead><tr><th>ツール</th><th>反映</th></tr></thead><tbody>${appliedRows}</tbody></table>
+      <summary>実行サービスへの反映状況</summary>
+      <table class="amigos-table orch-table"><thead><tr><th>サービス</th><th>反映</th></tr></thead><tbody>${appliedRows}</tbody></table>
     </details>
   </section>`;
 }
 
-// 5. エージェント CLI 棚卸し（組み込み + ドロップイン: shadowed マーカー + 検証エラー）+ 作成/編集/削除
+// 5. 利用できるエージェントの一覧と追加定義。
 function orchInventoryPanelHtml(overview) {
   const inv = overview.agents || { builtins: [], dropins: [] };
   const builtins = (inv.builtins || []).map((b) => orchBadge('muted', b)).join(' ');
@@ -8388,7 +8287,7 @@ function orchInventoryPanelHtml(overview) {
     const errs = (d.errors || []).length
       ? `<div class="orch-errors">${d.errors.map((e) => `<div class="orch-error">${esc(e)}</div>`).join('')}</div>`
       : '';
-    const shadow = d.shadowed ? orchBadge('soft', '陰り（先勝ちで無効）') : orchBadge('ok', '有効');
+    const shadow = d.shadowed ? orchBadge('soft', '同名の設定があるため無効') : orchBadge('ok', '利用可能');
     const specText = d.spec ? JSON.stringify(d.spec, null, 2) : '';
     return `<details class="orch-dropin" data-orch-dropin="${i}">
       <summary><strong>${esc(d.name)}</strong> ${shadow}
@@ -8400,69 +8299,285 @@ function orchInventoryPanelHtml(overview) {
         <button type="button" class="orch-dropin-delete" data-orch-name="${esc(d.name)}" data-orch-dir="${esc(d.dir || '')}">削除</button>
       </div>
     </details>`;
-  }).join('') || '<p class="muted">ドロップイン定義（agents/&lt;name&gt;.json）はありません。</p>';
+  }).join('') || '<p class="muted">追加したエージェントはありません。</p>';
   const sample = JSON.stringify({ command: ['cursor', 'run', '{model}'], prompt_via: 'stdin', output: 'stdout' }, null, 2);
   return `<section class="orch-panel">
     <header class="row">
       <div>
-        <span class="summary-kicker">エージェント CLI</span>
-        <h3>組み込みとドロップインの棚卸し</h3>
-        <p class="muted">組み込み（上書き不可）と探索ディレクトリのドロップイン。同名は先勝ちで後段を陰らせます。
-          契約（agent-cli）の検証エラーはその場で表示します。</p>
+        <span class="summary-kicker">利用可能なエージェント</span>
+        <h3>エージェント一覧</h3>
+        <p class="muted">最初から利用できるエージェントと、この端末に追加したエージェントを確認・編集できます。</p>
       </div>
     </header>
-    <p>組み込み: ${builtins}</p>
+    <p>標準: ${builtins}</p>
     <div class="orch-dropins">${dropins}</div>
     <details class="orch-dropin orch-new">
-      <summary><strong>＋ 新しいドロップインを作成</strong></summary>
-      <label class="orch-new-name">名前（&lt;name&gt;.json のファイル名）
+      <summary><strong>新しいエージェントを追加</strong></summary>
+      <label class="orch-new-name">エージェント名
         <input type="text" id="orch-new-name" placeholder="cursor" />
       </label>
       <textarea id="orch-new-spec" class="mono" rows="8">${esc(sample)}</textarea>
       <div class="row orch-actions">
         <button type="button" id="btn-orch-new-save">作成</button>
       </div>
-      <p class="muted">既定の書込先は ~/.agent/agents/。command は 1 要素以上、output は stdout/file、prompt_via は stdin/argv。</p>
+      <p class="muted">コマンド形式などの詳細を JSON で指定します。</p>
     </details>
   </section>`;
+}
+
+const GLOBAL_SETTINGS_SECTIONS = [
+  { id: 'app', label: 'アプリ' },
+  { id: 'agents', label: 'エージェント' },
+  { id: 'sync', label: '同期と実行' },
+  { id: 'routine', label: '定常業務' },
+  { id: 'integrations', label: '外部連携' },
+];
+
+function globalSettingsPaneHtml(id, content) {
+  const active = state.globalSettingsSection === id;
+  return `<section id="global-settings-panel-${id}" class="global-settings-pane"
+    role="tabpanel" aria-labelledby="global-settings-tab-${id}" ${active ? '' : 'hidden'}>${content}</section>`;
+}
+
+function globalSettingsAppHtml() {
+  return `<div class="global-settings-card">
+    <header class="global-settings-card-heading">
+      <span class="summary-kicker">アプリ</span>
+      <h2>表示と通知</h2>
+      <p class="muted">プロジェクトの探し方と、画面更新・通知の動作を設定します。</p>
+    </header>
+    <div class="field">
+      <label for="cfg-roots">プロジェクトを探すフォルダ（1行に1つ）</label>
+      <textarea id="cfg-roots" rows="4" placeholder="例: C:\src\payments&#10;/home/me/src/webapp"></textarea>
+      <p class="field-help">親フォルダを登録すると、その中のプロジェクトも自動で見つけます。</p>
+    </div>
+    <div class="row2">
+      <div class="field"><label class="check"><input type="checkbox" id="cfg-autodiscover" /> 稼働中のプロジェクトを自動で追加</label></div>
+      <div class="field"><label for="cfg-refresh">表示の更新間隔（秒）</label><input id="cfg-refresh" type="number" min="0" step="1" /></div>
+    </div>
+    <div class="row2">
+      <div class="field"><label class="check"><input type="checkbox" id="cfg-notify" /> 対応が必要になったら通知する</label></div>
+      <div class="field"><label for="cfg-needs-sla">長時間未対応として知らせるまで（時間）</label><input id="cfg-needs-sla" type="number" min="1" step="1" /></div>
+    </div>
+    <div class="global-settings-actions"><button type="button" id="btn-save-app-settings" class="primary-inline">アプリ設定を保存</button></div>
+  </div>`;
+}
+
+function globalSettingsAssistantHtml() {
+  return `<section class="orch-panel">
+    <header class="row"><div>
+      <span class="summary-kicker">画面内AI</span>
+      <h3>AIアシスタント</h3>
+      <p class="muted">計画の下書きや画面上の相談に使うエージェントを設定します。</p>
+    </div></header>
+    <div class="row2">
+      <div class="field">
+        <label for="cfg-agent-cli">使用するエージェント</label>
+        <input id="cfg-agent-cli" class="mono" list="cfg-agent-cli-options" placeholder="プロジェクト設定に従う" />
+        <datalist id="cfg-agent-cli-options">
+          <option value="kiro">kiro</option><option value="claude">Claude Code</option>
+          <option value="copilot">GitHub Copilot CLI</option><option value="codex">Codex CLI</option>
+          <option value="cursor">Cursor Agent</option><option value="ollama">ローカルモデル</option>
+        </datalist>
+      </div>
+      <div class="field"><label for="cfg-agent-model">モデル</label><input id="cfg-agent-model" class="mono" placeholder="エージェントの既定を使用" /></div>
+    </div>
+    <div class="field global-settings-short-field"><label for="cfg-agent-timeout">応答を待つ時間（秒）</label><input id="cfg-agent-timeout" type="number" min="30" step="10" /></div>
+    <div class="global-settings-actions"><button type="button" id="btn-save-agent-settings" class="primary-inline">AIアシスタント設定を保存</button></div>
+  </section>`;
+}
+
+function globalSettingsSyncHtml() {
+  return `<div class="global-settings-card">
+    <header class="global-settings-card-heading">
+      <span class="summary-kicker">同期と実行</span>
+      <h2>変更の共有と実行場所</h2>
+      <p class="muted">複数の環境で状態を共有する場合の動作を設定します。</p>
+    </header>
+    <h3>変更の共有</h3>
+    <div class="row2">
+      <div class="field"><label for="cfg-git-pull">共有先を確認する間隔（秒・0で自動確認なし）</label><input id="cfg-git-pull" type="number" min="0" step="1" /></div>
+      <div class="field"><label class="check"><input type="checkbox" id="cfg-git-autopush" /> 操作した変更を自動で共有する</label></div>
+    </div>
+    <div class="row2">
+      <div class="field"><label for="cfg-action-mode">承認や優先度変更の届け方</label><select id="cfg-action-mode">
+        <option value="auto">自動</option><option value="file">共有ファイルを使用</option><option value="cli">実行コマンドを使用</option>
+      </select></div>
+      <div class="field"><label for="cfg-project-command">プロジェクト操作コマンド</label><input id="cfg-project-command" class="mono" placeholder="agent-project" /></div>
+    </div>
+    <h3>実行データの共有先</h3>
+    <div class="row2">
+      <div class="field"><label for="cfg-flow-bus">共通の共有先</label><input id="cfg-flow-bus" class="mono" placeholder="空欄なら自動で探します" /></div>
+      <div class="field"><label for="cfg-flow-lockdir">実行状態の保存先</label><input id="cfg-flow-lockdir" class="mono" placeholder="空欄なら既定の場所を使用" /></div>
+    </div>
+    <div class="field"><label for="cfg-flow-bus-by-project">プロジェクトごとの共有先（1行に1つ）</label>
+      <textarea id="cfg-flow-bus-by-project" class="mono" rows="4" placeholder="alpha = /home/me/clones/alpha/agent-flow"></textarea></div>
+    <div class="global-settings-actions"><button type="button" id="btn-save-sync-settings" class="primary-inline">同期と実行の設定を保存</button></div>
+  </div>`;
+}
+
+function globalSettingsRoutineHtml() {
+  return `<div class="global-settings-card">
+    <header class="global-settings-card-heading">
+      <span class="summary-kicker">定常業務</span>
+      <h2>定期実行と定型処理</h2>
+      <p class="muted">定常業務を動かすコマンドを設定します。通常は変更不要です。</p>
+    </header>
+    <div class="row2">
+      <div class="field"><label for="cfg-cowork-loop-provider">定期実行の種類</label><input id="cfg-cowork-loop-provider" class="mono" placeholder="kiro-loop" /></div>
+      <div class="field"><label for="cfg-cowork-loop-command">定期実行コマンド</label><input id="cfg-cowork-loop-command" class="mono" placeholder="kiro-loop" /></div>
+    </div>
+    <div class="row2">
+      <div class="field"><label for="cfg-cowork-sm-command">定型処理コマンド</label><input id="cfg-cowork-sm-command" class="mono" placeholder="statemachine-use" /></div>
+      <div class="field global-settings-open-field"><button type="button" id="btn-settings-cowork-open">定常業務を開く</button></div>
+    </div>
+    <div class="global-settings-actions"><button type="button" id="btn-save-routine-settings" class="primary-inline">定常業務の設定を保存</button></div>
+  </div>`;
+}
+
+function globalSettingsIntegrationsHtml() {
+  return `<div class="global-settings-card">
+    <header class="global-settings-card-heading">
+      <span class="summary-kicker">外部連携</span>
+      <h2>GitLabとレビュー画面</h2>
+      <p class="muted">レビュー待ちの取得と、専用レビュー画面の開き方を設定します。</p>
+    </header>
+    <h3>GitLab</h3>
+    <div class="row2">
+      <div class="field"><label for="cfg-gl-url">GitLabのURL</label><input id="cfg-gl-url" placeholder="https://gitlab.example.com" /></div>
+      <div class="field"><label for="cfg-gl-token">アクセストークン</label><input id="cfg-gl-token" type="password" placeholder="glpat-..." /></div>
+    </div>
+    <h3>レビュー画面</h3>
+    <div class="row2">
+      <div class="field"><label for="cfg-rv-mode">起動方法</label><select id="cfg-rv-mode">
+        <option value="protocol">アプリ連携</option><option value="exe">実行ファイルを指定</option><option value="command">コマンドを指定</option>
+      </select></div>
+      <div class="field"><label for="cfg-rv-exepath">実行ファイルの場所</label><input id="cfg-rv-exepath" class="mono" placeholder="例: C:\Apps\GitLab Review Viewer.exe" /></div>
+    </div>
+    <div class="field"><label for="cfg-rv-command">起動コマンド</label><input id="cfg-rv-command" class="mono" placeholder="{url} などの値を利用できます" /></div>
+    <div class="global-settings-actions"><button type="button" id="btn-save-integrations-settings" class="primary-inline">外部連携の設定を保存</button></div>
+  </div>`;
+}
+
+function globalSettingsAgentsHtml(overview) {
+  if (!overview) return `${globalSettingsAssistantHtml()}<div class="empty compact">エージェント情報を読み込んでいます。</div>`;
+  if (overview.error) return `${globalSettingsAssistantHtml()}<div class="empty compact"><strong>エージェント情報を読み込めませんでした</strong><span>${esc(overview.error)}</span></div>`;
+  return `${globalSettingsAssistantHtml()}
+    <section class="agent-management-section" aria-labelledby="agent-management-status-title">
+      <header class="agent-management-section-heading"><span class="summary-kicker">確認</span><h2 id="agent-management-status-title">利用状況</h2>
+        <p class="muted">AIの利用量と、現在動いている実行サービスを確認します。</p></header>
+      ${orchBudgetPanelHtml(overview.budget)}${orchStatusPanelHtml(overview)}
+    </section>
+    <section class="agent-management-section" aria-labelledby="agent-management-settings-title">
+      <header class="agent-management-section-heading"><span class="summary-kicker">共通設定</span><h2 id="agent-management-settings-title">共通設定</h2>
+        <p class="muted">この端末で動くすべてのエージェントへ適用します。</p></header>
+      ${orchInstructionsPanelHtml(overview)}${orchAllocationPanelHtml(overview.budget)}${orchMatrixPanelHtml(overview)}
+    </section>
+    <section class="agent-management-section" aria-labelledby="agent-management-agents-title">
+      <header class="agent-management-section-heading"><span class="summary-kicker">登録内容</span><h2 id="agent-management-agents-title">エージェント一覧</h2>
+        <p class="muted">この端末で選択できるエージェントを管理します。</p></header>
+      ${orchInventoryPanelHtml(overview)}
+    </section>`;
 }
 
 function renderOrchestration() {
   const el = $('tab-orchestration');
   if (!el) return;
   const ov = state.orchestration;
-  if (!ov) {
-    el.innerHTML = '<div class="empty"><strong>読み込み中…</strong></div>';
-    return;
-  }
-  if (ov.error) {
-    el.innerHTML = `<div class="empty"><strong>オーケストレーション情報を読み込めませんでした</strong><span>${esc(ov.error)}</span></div>`;
-    return;
-  }
+  const section = GLOBAL_SETTINGS_SECTIONS.some((item) => item.id === state.globalSettingsSection)
+    ? state.globalSettingsSection : 'app';
+  state.globalSettingsSection = section;
+  const tabs = GLOBAL_SETTINGS_SECTIONS.map((item) => `<button type="button" role="tab"
+    id="global-settings-tab-${item.id}" data-global-settings-section="${item.id}"
+    aria-controls="global-settings-panel-${item.id}" aria-selected="${item.id === section}"
+    tabindex="${item.id === section ? '0' : '-1'}" class="${item.id === section ? 'active' : ''}">${item.label}</button>`).join('');
+  const options = GLOBAL_SETTINGS_SECTIONS.map((item) => `<option value="${item.id}"${item.id === section ? ' selected' : ''}>${item.label}</option>`).join('');
   el.innerHTML = `
-    <div class="orch-shell">
+    <div class="orch-shell global-settings-shell">
       <header class="cowork-header">
         <div>
-          <span class="summary-kicker">ノード運用</span>
-          <h2>オーケストレーション</h2>
-          <p class="muted">このマシンのトークン予算・エージェント割当・稼働エンジンを横断して見て操作します。</p>
+          <span class="summary-kicker">すべてのプロジェクトに適用</span>
+          <h2>全体設定</h2>
+          <p class="muted">この端末で使うアプリ、エージェント、連携機能をまとめて管理します。</p>
         </div>
-        <div class="row"><button id="btn-orch-refresh">更新</button></div>
+        <div class="row global-settings-agent-refresh" ${section === 'agents' ? '' : 'hidden'}><button id="btn-orch-refresh">最新の状態にする</button></div>
       </header>
-      ${orchBudgetPanelHtml(ov.budget)}
-      ${orchAllocationPanelHtml(ov.budget)}
-      ${orchMatrixPanelHtml(ov)}
-      ${orchInstructionsPanelHtml(ov)}
-      ${orchStatusPanelHtml(ov)}
-      ${orchInventoryPanelHtml(ov)}
+      <div class="global-settings-tabs" role="tablist" aria-label="設定の種類">${tabs}</div>
+      <label class="global-settings-select" for="global-settings-select">設定の種類
+        <select id="global-settings-select">${options}</select>
+      </label>
+      ${globalSettingsPaneHtml('app', globalSettingsAppHtml())}
+      ${globalSettingsPaneHtml('agents', globalSettingsAgentsHtml(ov))}
+      ${globalSettingsPaneHtml('sync', globalSettingsSyncHtml())}
+      ${globalSettingsPaneHtml('routine', globalSettingsRoutineHtml())}
+      ${globalSettingsPaneHtml('integrations', globalSettingsIntegrationsHtml())}
     </div>`;
+  populateSettingsFields();
+  setupGlobalSettings(el);
   setupOrchestration(el);
+}
+
+function selectGlobalSettingsSection(root, section, { focus = false } = {}) {
+  if (!GLOBAL_SETTINGS_SECTIONS.some((item) => item.id === section)) return;
+  state.globalSettingsSection = section;
+  for (const tab of root.querySelectorAll('[data-global-settings-section]')) {
+    const selected = tab.dataset.globalSettingsSection === section;
+    tab.classList.toggle('active', selected);
+    tab.setAttribute('aria-selected', String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    if (selected && focus) tab.focus();
+  }
+  for (const pane of root.querySelectorAll('.global-settings-pane')) {
+    pane.hidden = pane.id !== `global-settings-panel-${section}`;
+  }
+  const select = root.querySelector('#global-settings-select');
+  if (select) select.value = section;
+  const refresh = root.querySelector('.global-settings-agent-refresh');
+  if (refresh) refresh.hidden = section !== 'agents';
+  root.closest('.tabpane').scrollTop = 0;
+}
+
+function setupGlobalSettings(root) {
+  const tabs = [...root.querySelectorAll('[data-global-settings-section]')];
+  for (const tab of tabs) {
+    tab.addEventListener('click', () => selectGlobalSettingsSection(root, tab.dataset.globalSettingsSection));
+    tab.addEventListener('keydown', (event) => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const current = tabs.indexOf(tab);
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1
+        : (current + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+      selectGlobalSettingsSection(root, tabs[next].dataset.globalSettingsSection, { focus: true });
+    });
+  }
+  const select = root.querySelector('#global-settings-select');
+  if (select) select.addEventListener('change', () => selectGlobalSettingsSection(root, select.value));
+  for (const field of root.querySelectorAll('.global-settings-pane [id^="cfg-"]')) {
+    field.addEventListener('input', () => { state.globalSettingsDirty = true; });
+    field.addEventListener('change', () => { state.globalSettingsDirty = true; });
+  }
+  const saveButtons = {
+    'btn-save-app-settings': 'app',
+    'btn-save-agent-settings': 'agents',
+    'btn-save-sync-settings': 'sync',
+    'btn-save-routine-settings': 'routine',
+    'btn-save-integrations-settings': 'integrations',
+  };
+  for (const [id, section] of Object.entries(saveButtons)) {
+    const button = root.querySelector(`#${id}`);
+    const label = (GLOBAL_SETTINGS_SECTIONS.find((item) => item.id === section) || {}).label || '全体';
+    if (button) button.addEventListener('click', () => guard(`${label}設定の保存`, () => saveGlobalSettingsSection(section)));
+  }
+  const coworkOpen = root.querySelector('#btn-settings-cowork-open');
+  if (coworkOpen) coworkOpen.addEventListener('click', openCoworkFromSettings);
 }
 
 function setupOrchestration(root) {
   const refreshBtn = root.querySelector('#btn-orch-refresh');
-  if (refreshBtn) refreshBtn.addEventListener('click', () =>
-    guard('オーケストレーション更新', async () => { await refreshOrchestration(); renderOrchestration(); }));
+  if (refreshBtn) refreshBtn.addEventListener('click', () => {
+    if (state.globalSettingsDirty) return toast('入力中の設定を保存してから最新の状態にしてください');
+    return guard('エージェント情報の更新', async () => { await refreshOrchestration(); renderOrchestration(); });
+  });
 
   // 配分の保存
   const allocSave = root.querySelector('#btn-orch-alloc-save');
@@ -8588,7 +8703,7 @@ function setupOrchestration(root) {
 
   // lifecycle 操作
   for (const btn of root.querySelectorAll('[data-orch-lc]')) {
-    btn.addEventListener('click', () => guard('エンジン操作', async () => {
+    btn.addEventListener('click', () => guard('実行サービスの操作', async () => {
       await api.orchestrationLifecycle({ workload: btn.getAttribute('data-orch-wl'), action: btn.getAttribute('data-orch-lc') });
       toast(`${orchLifecycleLabel(btn.getAttribute('data-orch-lc'))}を指示しました`, true);
       await refreshOrchestration();
@@ -8596,35 +8711,35 @@ function setupOrchestration(root) {
     }));
   }
 
-  // ドロップインの保存・削除
+  // 追加エージェントの保存・削除
   for (const btn of root.querySelectorAll('.orch-dropin-save')) {
-    btn.addEventListener('click', () => guard('ドロップイン保存', async () => {
+    btn.addEventListener('click', () => guard('エージェント設定の保存', async () => {
       const details = btn.closest('.orch-dropin');
       const ta = details.querySelector('.orch-dropin-spec');
       let spec;
       try { spec = JSON.parse(ta.value); } catch (e) { throw new Error(`JSON として読めません: ${e.message}`); }
       await api.orchestrationAgentSave({ name: btn.getAttribute('data-orch-name'), dir: btn.getAttribute('data-orch-dir'), spec });
-      toast('ドロップインを保存しました', true);
+      toast('エージェント設定を保存しました', true);
       await refreshOrchestration();
       renderOrchestration();
     }));
   }
   for (const btn of root.querySelectorAll('.orch-dropin-delete')) {
-    btn.addEventListener('click', () => guard('ドロップイン削除', async () => {
+    btn.addEventListener('click', () => guard('エージェント設定の削除', async () => {
       await api.orchestrationAgentDelete({ name: btn.getAttribute('data-orch-name'), dir: btn.getAttribute('data-orch-dir') });
-      toast('ドロップインを削除しました', true);
+      toast('エージェント設定を削除しました', true);
       await refreshOrchestration();
       renderOrchestration();
     }));
   }
   const newSave = root.querySelector('#btn-orch-new-save');
-  if (newSave) newSave.addEventListener('click', () => guard('ドロップイン作成', async () => {
+  if (newSave) newSave.addEventListener('click', () => guard('エージェントの追加', async () => {
     const name = (root.querySelector('#orch-new-name') || {}).value || '';
     let spec;
     try { spec = JSON.parse((root.querySelector('#orch-new-spec') || {}).value || '{}'); }
     catch (e) { throw new Error(`JSON として読めません: ${e.message}`); }
     await api.orchestrationAgentSave({ name: name.trim(), spec });
-    toast('ドロップインを作成しました', true);
+    toast('エージェントを追加しました', true);
     await refreshOrchestration();
     renderOrchestration();
   }));
@@ -8975,8 +9090,6 @@ function renderCowork() {
           <button id="btn-cowork-add">追加</button>
           <button id="btn-cowork-save">保存</button>
           <button id="btn-cowork-refresh" title="最新の状態を確認">更新</button>
-          <button type="button" class="subtle-action" data-open-technical-info
-            title="設定・同期状態などの診断情報を表示">診断情報</button>
         </div>
       </header>
       <div class="cowork-scope muted">
@@ -8990,8 +9103,6 @@ function renderCowork() {
       : '<div class="empty"><strong>このプロジェクトに登録された定常業務はありません</strong><span>プロジェクトの設定ファイルに作業を追加してください。</span></div>'}
     </div>`;
   bindCoworkRoutineSelector(el);
-  const technicalInfo = el.querySelector('[data-open-technical-info]');
-  if (technicalInfo) technicalInfo.addEventListener('click', () => openTechnicalInfo('cowork'));
   const addBtn = $('btn-cowork-add');
   if (addBtn) addBtn.addEventListener('click', () => openCoworkWorkDialog(-1));
   const saveBtn = $('btn-cowork-save');
@@ -9461,8 +9572,6 @@ async function kiroLoopSendPrompt(promptText, attempt = 1) {
 }
 
 async function openCoworkFromSettings() {
-  if ($('dlg-settings').open) $('dlg-settings').close();
-  if ($('dlg-advanced-settings').open) $('dlg-advanced-settings').close();
   if ($('dlg-technical-info').open) $('dlg-technical-info').close();
   await refreshCowork({ forceDiscover: true });
   if (!coworkHasProjectConfig(state.cowork, selectedProjectFolder())) {
@@ -9600,16 +9709,7 @@ async function init() {
   $('btn-doctor-close').addEventListener('click', () => $('dlg-doctor').close());
   $('btn-need-output-close').addEventListener('click', () => $('dlg-need-output').close());
   $('btn-delivery-review-close').addEventListener('click', () => $('dlg-delivery-review').close());
-  $('btn-settings').addEventListener('click', openSettings);
-  $('btn-project-settings').addEventListener('click', openProjectSettings);
-  $('btn-project-settings-close').addEventListener('click', () => $('dlg-project-settings').close());
-  $('btn-save-settings').addEventListener('click', () => saveSettings());
-  $('btn-open-advanced-settings').addEventListener('click', () => {
-    $('dlg-settings').close();
-    openAdvancedSettings();
-  });
-  $('btn-advanced-settings-close').addEventListener('click', () => $('dlg-advanced-settings').close());
-  $('btn-save-advanced-settings').addEventListener('click', () => saveSettings());
+  $('btn-settings').addEventListener('click', () => openGlobalSettings('app'));
   $('btn-technical-info-close').addEventListener('click', () => $('dlg-technical-info').close());
   $('btn-cw-cancel').addEventListener('click', () => $('dlg-cowork-work').close());
   const chClose = $('btn-cowork-history-close');
@@ -9623,8 +9723,6 @@ async function init() {
   setupAmigosDialogs();
   $('btn-cw-save-cancel').addEventListener('click', () => $('dlg-cowork-save').close());
   $('btn-cw-save-ok').addEventListener('click', (ev) => { ev.preventDefault(); saveCoworkDraft(); });
-  const btnCoworkOpen = $('btn-settings-cowork-open');
-  if (btnCoworkOpen) btnCoworkOpen.addEventListener('click', (ev) => { ev.preventDefault(); openCoworkFromSettings(); });
   $('btn-task-close').addEventListener('click', () => $('dlg-task').close());
   $('btn-enq-cancel').addEventListener('click', () => $('dlg-enqueue').close());
   $('btn-enq-submit').addEventListener('click', submitEnqueue);

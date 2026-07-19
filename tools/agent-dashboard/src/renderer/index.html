@@ -60,7 +60,6 @@
             <span id="project-name" class="muted">プロジェクトを選択してください</span>
             <span id="project-badges"></span>
           </div>
-          <button id="btn-project-settings" class="hidden">プロジェクト設定</button>
         </div>
         <div id="project-meta" class="muted" aria-live="polite"></div>
       </header>
@@ -73,8 +72,13 @@
         <button class="tab" data-tab="history" data-feature="agent-project">成果</button>
         <button class="tab hidden" data-tab="amigos" data-feature="amigos" id="tab-btn-amigos" hidden>ミッション</button>
         <button class="tab hidden" data-tab="cowork" data-feature="cowork" id="tab-btn-cowork" hidden>定常業務</button>
-        <button class="tab" data-tab="orchestration" data-feature="orchestration" id="tab-btn-orchestration">オーケストレーション</button>
         <button class="tab" data-tab="delegation" data-feature="delegation" id="tab-btn-delegation">委譲</button>
+        <span class="tab-utility-group">
+          <button class="tab tab-project-settings hidden" data-tab="project-settings" data-feature="agent-project"
+            id="tab-btn-project-settings" hidden>プロジェクト設定</button>
+          <button class="tab tab-global-settings" data-tab="orchestration" data-feature="orchestration" id="tab-btn-orchestration"
+            title="すべてのプロジェクトで使う設定">全体設定</button>
+        </span>
       </nav>
 
       <section id="content">
@@ -85,6 +89,7 @@
         <div id="tab-history" class="tabpane" data-feature="agent-project"></div>
         <div id="tab-cowork" class="tabpane" data-feature="cowork"></div>
         <div id="tab-amigos" class="tabpane" data-feature="amigos"></div>
+        <div id="tab-project-settings" class="tabpane" data-feature="agent-project"></div>
         <div id="tab-orchestration" class="tabpane" data-feature="orchestration"></div>
         <div id="tab-delegation" class="tabpane" data-feature="delegation"></div>
       </section>
@@ -231,209 +236,6 @@
       <div class="dialog-actions">
         <button id="btn-amigos-reject-cancel" value="cancel" type="button">キャンセル</button>
         <button id="btn-amigos-reject-ok" value="default">修正を依頼する</button>
-      </div>
-    </form>
-  </dialog>
-
-  <!-- ======== プロジェクト設定ダイアログ ======== -->
-  <dialog id="dlg-project-settings" class="wide">
-    <div class="dialog-heading"><h2>プロジェクト設定</h2></div>
-    <div id="project-settings-body"></div>
-    <div class="dialog-actions">
-      <button id="btn-project-settings-close">閉じる</button>
-    </div>
-  </dialog>
-
-  <!-- ======== 日常利用の設定 ======== -->
-  <dialog id="dlg-settings">
-    <form method="dialog">
-      <div class="dialog-heading">
-        <div><span class="summary-kicker">アプリ</span><h2>設定</h2></div>
-      </div>
-      <div class="field">
-        <label for="cfg-roots">プロジェクトを探すフォルダ（1行に1つ）</label>
-        <textarea id="cfg-roots" rows="4" placeholder="例: C:\src\payments&#10;/home/me/src/webapp&#10;/home/me/src　← 親フォルダごと登録も可"></textarea>
-        <p class="field-help">親フォルダを登録すると、その中のプロジェクトも自動で見つけます。</p>
-      </div>
-      <div class="row2">
-        <div class="field">
-          <label class="check"><input type="checkbox" id="cfg-autodiscover" /> 稼働中のプロジェクトを自動で追加</label>
-        </div>
-        <div class="field">
-          <label for="cfg-refresh">表示の更新間隔（秒）</label>
-          <input id="cfg-refresh" type="number" min="0" step="1" />
-        </div>
-      </div>
-      <div class="row2">
-        <div class="field">
-          <label class="check"><input type="checkbox" id="cfg-notify" /> 対応が必要になったら通知する</label>
-        </div>
-        <div class="field">
-          <label for="cfg-needs-sla">長時間未対応として知らせるまで（時間）</label>
-          <input id="cfg-needs-sla" type="number" min="1" step="1" />
-        </div>
-      </div>
-      <button type="button" id="btn-open-advanced-settings" class="subtle-action">詳細設定を開く</button>
-      <div class="dialog-actions">
-        <button value="cancel">キャンセル</button>
-        <button id="btn-save-settings" value="default" class="primary-inline">保存</button>
-      </div>
-    </form>
-  </dialog>
-
-  <!-- ======== グローバルな詳細設定 ======== -->
-  <dialog id="dlg-advanced-settings" class="wide developer-dialog">
-    <form method="dialog">
-      <div class="dialog-heading">
-        <div><span class="summary-kicker">アプリ</span><h2>詳細設定</h2></div>
-        <button type="button" id="btn-advanced-settings-close" aria-label="詳細設定を閉じる">閉じる</button>
-      </div>
-      <h3>同期と指示</h3>
-      <div class="row2">
-        <div class="field">
-          <label>git pull 間隔（秒・0 で自動なし。下限 60 秒）</label>
-          <input id="cfg-git-pull" type="number" min="0" step="1" />
-        </div>
-        <div class="field">
-          <label class="check" title="指示ドロップ・inbox 投入・needs 記入・削除のたびに、操作したディレクトリだけをコミットして push します（状態共有 git 前提。push 競合は pull --rebase で自動吸収）">
-            <input type="checkbox" id="cfg-git-autopush" /> 操作を都度コミットしてプッシュ（状態共有 git）</label>
-        </div>
-      </div>
-      <div class="row2">
-        <div class="field">
-          <label>指示（承認 / 保留 / 優先度変更）の届け方</label>
-          <select id="cfg-action-mode">
-            <option value="auto">自動（稼働中はファイル、停止中は CLI）</option>
-            <option value="file">常にファイル（commands/ ドロップ。WSL 向け）</option>
-            <option value="cli">常に CLI（従来）</option>
-          </select>
-        </div>
-        <div class="field">
-          <label>agent-project CLI（停止中の指示に使用。PATH に無ければ "python3 /path/agent-project.py"）</label>
-          <input id="cfg-project-command" class="mono" placeholder="agent-project" />
-        </div>
-      </div>
-      <h3>実行基盤</h3>
-      <div class="row2">
-        <div class="field">
-          <label>共有バス（--bus 運用時のみ。空なら bus/ を自動発見）</label>
-          <input id="cfg-flow-bus" class="mono" placeholder="例: /home/me/work/.agent-flow" />
-        </div>
-        <div class="field">
-          <label>daemon ロック置き場（lock_dir。空なら既定を導出）</label>
-          <input id="cfg-flow-lockdir" class="mono" placeholder="例: /tmp/agent-flow-locks" />
-        </div>
-      </div>
-      <div class="field">
-        <label
-          >プロジェクト単位バス（pure-remote で agent-flow の鏡写し先 clone を割り当てる場合。1 行 1 件
-          <code>プロジェクト名 = &lt;clone&gt;/agent-flow</code>）</label
-        >
-        <textarea
-          id="cfg-flow-bus-by-project"
-          class="mono"
-          rows="3"
-          placeholder="例:&#10;alpha = /home/me/clones/alpha/agent-flow&#10;beta = C:\clones\beta\agent-flow"
-        ></textarea>
-      </div>
-      <section id="advanced-budget-settings">
-        <h3>予算管理</h3>
-        <div id="advanced-budget-body"></div>
-      </section>
-      <h3>定常業務</h3>
-      <div class="row2">
-        <div class="field">
-          <label>定期実行 provider（将来 agent-loop に差し替え可）</label>
-          <input id="cfg-cowork-loop-provider" class="mono" placeholder="kiro-loop" />
-        </div>
-        <div class="field">
-          <label>定期実行コマンド</label>
-          <input id="cfg-cowork-loop-command" class="mono" placeholder="kiro-loop" />
-        </div>
-      </div>
-      <div class="muted" style="font-size:11px">
-        リポジトリ内の <span class="mono">.kiro/kiro-loop.*</span> / <span class="mono">.statemachine/*/workflow.yaml</span> が見つかると Cowork タブに自動表示します。手動追加もできます。作業が無いときはタブを隠し、左ペインには出しません。
-      </div>
-      <div class="row2">
-        <div class="field">
-          <label>statemachine-use コマンド</label>
-          <input id="cfg-cowork-sm-command" class="mono" placeholder="statemachine-use" />
-        </div>
-        <div class="field" style="display:flex;align-items:flex-end">
-          <button type="button" id="btn-settings-cowork-open">定常業務を開く</button>
-        </div>
-      </div>
-
-      <h3>AIアシスタント</h3>
-      <div class="row2">
-        <div class="field">
-          <label>エージェント CLI（charter 補完と Doctor で共通。空欄はプロジェクト設定 → 既定 kiro）</label>
-          <input id="cfg-agent-cli" class="mono" list="cfg-agent-cli-options"
-            placeholder="kiro / claude / copilot / codex / cursor / ollama / <agents プラグイン名>" />
-          <datalist id="cfg-agent-cli-options">
-            <option value="kiro">kiro（既定・kiro-cli chat）</option>
-            <option value="claude">claude（Claude Code）</option>
-            <option value="copilot">copilot（GitHub Copilot CLI）</option>
-            <option value="codex">codex（Codex CLI）</option>
-            <option value="cursor">cursor（Cursor Agent）</option>
-            <option value="ollama">ollama（ローカルモデル）</option>
-          </datalist>
-          <div class="muted">組み込み以外の名前は agents/&lt;名前&gt;.json プラグイン（schemas/agent-cli.schema.json）として解決します。</div>
-        </div>
-        <div class="field">
-          <label>モデル（空 = CLI / プロジェクト設定の既定）</label>
-          <input id="cfg-agent-model" class="mono" placeholder="例: sonnet / claude-sonnet-4.5 / gpt-5" />
-        </div>
-      </div>
-      <div class="row2">
-        <div class="field">
-          <label>補完タイムアウト（秒・下限 30）</label>
-          <input id="cfg-agent-timeout" type="number" min="30" step="10" />
-        </div>
-        <div class="field"></div>
-      </div>
-      <div class="muted" style="font-size:11px">
-        本体（agent-project / agent-flow）が使う CLI・モデルは各プロジェクトの
-        agent-project.yaml / agent-flow.yaml の <code class="mono">agent_cli</code> / <code class="mono">model</code> で設定します
-        本設定は、このビュアーの charter 下書き・補完と読み取り専用 Doctor に共通で使います。
-      </div>
-      <h3>GitLab（イシュー状態の補完・任意）</h3>
-      <div class="row2">
-        <div class="field">
-          <label>Base URL</label>
-          <input id="cfg-gl-url" placeholder="https://gitlab.example.com" />
-        </div>
-        <div class="field">
-          <label>アクセストークン（read_api）</label>
-          <input id="cfg-gl-token" type="password" placeholder="glpat-..." />
-        </div>
-      </div>
-      <h3>gitlab-review-viewer 連携</h3>
-      <div class="row2">
-        <div class="field">
-          <label>起動方法</label>
-          <select id="cfg-rv-mode">
-            <option value="protocol">プロトコル（gitlab-review-viewer://・要 OS 登録）</option>
-            <option value="exe">実行ファイル直接（portable exe 向け）</option>
-            <option value="command">コマンド</option>
-          </select>
-        </div>
-        <div class="field">
-          <label>実行ファイルのパス（exe モード。portable exe でも連携起動できます）</label>
-          <input id="cfg-rv-exepath" class="mono" placeholder='例: C:\Apps\GitLab Review Viewer.exe' />
-        </div>
-      </div>
-      <div class="field">
-        <label>コマンド（command モード。{url} {projectPath} {type} {iid} {protocolUrl} を置換）</label>
-        <input id="cfg-rv-command" placeholder='例: "C:\Apps\GitLab Review Viewer.exe" "{protocolUrl}"' />
-      </div>
-      <div class="muted" style="font-size:11px">
-        portable exe はカスタム URL スキームを OS 登録できないため、protocol では連携起動できません。
-        「実行ファイル直接」を選び gitlab-review-viewer の exe パスを指定してください。
-      </div>
-      <div class="dialog-actions">
-        <button value="cancel">キャンセル</button>
-        <button id="btn-save-advanced-settings" value="default" class="primary-inline">保存</button>
       </div>
     </form>
   </dialog>

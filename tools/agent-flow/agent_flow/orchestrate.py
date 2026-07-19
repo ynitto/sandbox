@@ -41,8 +41,20 @@ def _env_failure_reason(results: dict) -> "str | None":
                     "回復せず、run を打ち切りました。自動再開（auto-heal）の対象です"
                     "（完了済みの工程は温存されます）。")
         if cls in AGENT_ERROR_ENV_CLASSES:
-            hint = next((h for c, _, h in _AGENT_ERROR_PATTERNS if c == cls), "")
-            return (f"[agent-error:{cls}] 環境要因の失敗（{nid}）: {hint} "
+            # quota は「外部 AI の利用上限」だけでなく、管理面の pause/stop と
+            # ノード予算超過にも使う。発生元を捨てると dashboard がすべて
+            # 「AI の利用上限」と誤案内するため、機械可読マーカーを run まで運ぶ。
+            output = str(r.get("output", ""))
+            source = next((f"[{name}]" for name in ("agent-control", "node-budget")
+                           if f"[{name}]" in output), "")
+            source = f" {source}" if source else ""
+            if "[agent-control]" in source:
+                hint = "管理面で対象ワークロードの実行が一時停止または停止されています。"
+            elif "[node-budget]" in source:
+                hint = "このノードに設定した実行時間またはトークン予算に達しています。"
+            else:
+                hint = next((h for c, _, h in _AGENT_ERROR_PATTERNS if c == cls), "")
+            return (f"[agent-error:{cls}]{source} 環境要因の失敗（{nid}）: {hint} "
                     "リトライを打ち切りました。環境を直してから再開してください"
                     "（完了済みの工程は温存されます）。")
     return None
