@@ -32,3 +32,4 @@
 {"ts": "2026-07-19T21:38:47", "reason": "drained", "level": "unattended", "cycles": 0, "done": 0, "blocked": 1, "review": 0, "archived": 0, "escalations": 0, "spawned": 0, "inboxed": 0, "tokens": 0, "cost": 0.0, "duration_s": 0.0}
 {"ts": "2026-07-19T21:38:57", "reason": "drained", "level": "unattended", "cycles": 0, "done": 0, "blocked": 1, "review": 0, "archived": 0, "escalations": 0, "spawned": 0, "inboxed": 0, "tokens": 0, "cost": 0.0, "duration_s": 0.0}
 {"ts": "2026-07-19T21:40:24", "reason": "drained", "level": "unattended", "cycles": 1, "done": 0, "blocked": 1, "review": 0, "archived": 0, "escalations": 1, "spawned": 0, "inboxed": 0, "tokens": 0, "cost": 0.0, "duration_s": 6.47}
+{"ts": "2026-07-19T21:40:39", "reason": "drained", "level": "unattended", "cycles": 1, "done": 0, "blocked": 1, "review": 0, "archived": 0, "escalations": 1, "spawned": 0, "inboxed": 0, "tokens": 0, "cost": 0.0, "duration_s": 6.45}
