@@ -226,4 +226,32 @@ assert.match(css, /\.sidebar-actions button,[\s\S]*?min-width: 44px; height: 44p
 assert.match(renderer, /orchInstructionsPanelHtml\(overview\)/);
 assert.match(renderer, /api\.orchestrationInstructionsSave/);
 
+// --- 実行サービスは PID ごとでなくワークロードごとに表示する ---
+{
+  const escStub = (s) => String(s == null ? '' : s);
+  const badgeStub = (kind, label) => `<span class="${kind}">${label}</span>`;
+  const labelStub = (w) => ({ flow: 'フロー' }[w] || w);
+  const lifecycleStub = (v) => ({ run: '稼働', pause: '一時停止', stop: '停止' }[v] || v);
+  // eslint-disable-next-line no-new-func
+  const panel = new Function('esc', 'orchBadge', 'amigosWorkloadLabel', 'orchLifecycleLabel',
+    `${grab('orchStatusPanelHtml')}; return orchStatusPanelHtml;`)(
+    escStub, badgeStub, labelStub, lifecycleStub);
+  const out = panel({
+    control: { revision: 2, workloads: { flow: { lifecycle: 'stop' } } },
+    budget: { knownWorkloads: ['flow'] },
+    status: [
+      { tool: 'agent-flow', workload: 'flow', pid: 101, lifecycle: 'stop', fresh: false, revision_applied: 2 },
+      { tool: 'agent-flow', workload: 'flow', pid: 102, lifecycle: 'stop', fresh: false, revision_applied: 2 },
+      { tool: 'agent-flow', workload: 'flow', pid: 103, lifecycle: 'stop', fresh: true, revision_applied: 2 },
+    ],
+  });
+  assert.strictEqual((out.match(/<tr>/g) || []).length, 2, '見出しとフロー1行だけを表示する');
+  assert.strictEqual((out.match(/data-orch-wl="flow"/g) || []).length, 2, '操作は許可と全体停止の2つだけ');
+  assert.ok(out.includes('稼働中 1件'));
+  assert.ok(out.includes('終了済み記録 2件は非表示'));
+  assert.ok(out.includes('端末全体で停止'));
+  assert.ok(!out.includes('一時停止</button>'), '停止と同じ動作の一時停止ボタンを出さない');
+}
+assert.match(renderer, /個別のrunを止める操作ではありません/);
+
 console.log('overview-ui: all tests passed');

@@ -8137,26 +8137,38 @@ function orchStatusPanelHtml(overview) {
   const status = overview.status || [];
   const control = overview.control || { workloads: {}, revision: 0 };
   const desiredRev = Number(control.revision || 0);
-  const rows = status.length ? status.map((s) => {
-    const wl = String(s.workload || '');
+  const workloads = [...new Set([
+    ...((overview.budget && overview.budget.knownWorkloads) || []),
+    ...Object.keys(control.workloads || {}),
+    ...status.map((s) => String(s.workload || '')).filter(Boolean),
+  ])];
+  const rows = workloads.length ? workloads.map((wl) => {
+    const records = status.filter((s) => String(s.workload || '') === wl);
+    const active = records.filter((s) => s.fresh);
+    const stale = records.length - active.length;
+    const tools = [...new Set(records.map((s) => String(s.tool || '')).filter(Boolean))];
     const desired = ((control.workloads || {})[wl] || {}).lifecycle || 'run';
-    const applied = Number(s.revision_applied);
-    const revBadge = Number.isFinite(applied)
-      ? (applied >= desiredRev ? orchBadge('ok', `反映済み（設定版 ${applied}）`) : orchBadge('soft', `未反映（${applied}/${desiredRev}）`))
-      : orchBadge('muted', '反映状況不明');
-    const budget = s.budget || {};
-    const budgetBadge = budget.exceeded ? orchBadge('over', '超過') : budget.soft ? orchBadge('soft', '縮退中') : orchBadge('ok', '正常');
-    const freshBadge = s.fresh ? orchBadge('ok', '接続中') : orchBadge('over', '応答なし');
+    const applied = active.map((s) => Number(s.revision_applied)).filter(Number.isFinite);
+    const oldestApplied = applied.length ? Math.min(...applied) : null;
+    const revBadge = oldestApplied === null
+      ? orchBadge('muted', '稼働中のサービスなし')
+      : (oldestApplied >= desiredRev
+        ? orchBadge('ok', `反映済み（設定版 ${oldestApplied}）`)
+        : orchBadge('soft', `未反映（${oldestApplied}/${desiredRev}）`));
+    const exceeded = active.some((s) => (s.budget || {}).exceeded);
+    const soft = active.some((s) => (s.budget || {}).soft);
+    const budgetBadge = exceeded ? orchBadge('over', '超過') : soft ? orchBadge('soft', '縮退中') : orchBadge('ok', '正常');
+    const activity = active.length
+      ? `${orchBadge('ok', `稼働中 ${active.length}件`)}${stale ? ` <small class="muted">終了済み記録 ${stale}件は非表示</small>` : ''}`
+      : `${orchBadge('muted', '現在は稼働なし')}${stale ? ` <small class="muted">終了済み記録 ${stale}件は非表示</small>` : ''}`;
     return `<tr>
-      <td>${esc(s.tool || '?')}<br><small class="muted">${esc(amigosWorkloadLabel(wl))}</small></td>
-      <td>${orchBadge(s.lifecycle === 'run' ? 'ok' : 'soft', orchLifecycleLabel(s.lifecycle))}
-          <br><small class="muted">指示: ${esc(orchLifecycleLabel(desired))}</small></td>
+      <td><strong>${esc(amigosWorkloadLabel(wl))}</strong>${tools.length ? `<br><small class="muted">${esc(tools.join(', '))}</small>` : ''}</td>
+      <td>${orchBadge(desired === 'run' ? 'ok' : 'soft', `端末全体: ${orchLifecycleLabel(desired)}`)}<br>${activity}</td>
       <td>${revBadge}</td>
-      <td>${budgetBadge} ${freshBadge}</td>
+      <td>${budgetBadge}</td>
       <td class="orch-lc-actions">
-        <button type="button" data-orch-lc="run" data-orch-wl="${esc(wl)}">再開</button>
-        <button type="button" data-orch-lc="pause" data-orch-wl="${esc(wl)}">一時停止</button>
-        <button type="button" data-orch-lc="stop" data-orch-wl="${esc(wl)}">停止</button>
+        <button type="button" data-orch-lc="run" data-orch-wl="${esc(wl)}"${desired === 'run' ? ' disabled' : ''}>実行を許可</button>
+        <button type="button" class="danger" data-orch-lc="stop" data-orch-wl="${esc(wl)}"${desired === 'stop' ? ' disabled' : ''}>端末全体で停止</button>
       </td>
     </tr>`;
   }).join('') : '<tr><td colspan="5" class="muted">稼働中の実行サービスはありません。</td></tr>';
@@ -8164,8 +8176,8 @@ function orchStatusPanelHtml(overview) {
     <header class="row">
       <div>
         <span class="summary-kicker">稼働状況</span>
-        <h3>実行サービス</h3>
-        <p class="muted">エージェントを動かしているサービスの状態と、設定の反映状況を確認できます。</p>
+        <h3>実行の許可・停止</h3>
+        <p class="muted">機能の種類ごとに1行表示します。「端末全体で停止」は個別のrunやPIDではなく、この端末にある同種のエージェント呼び出しをすべて拒否します。</p>
       </div>
     </header>
     <table class="amigos-table orch-table">
@@ -8674,8 +8686,17 @@ function setupOrchestration(root) {
   // lifecycle 操作
   for (const btn of root.querySelectorAll('[data-orch-lc]')) {
     btn.addEventListener('click', () => guard('実行サービスの操作', async () => {
-      await api.orchestrationLifecycle({ workload: btn.getAttribute('data-orch-wl'), action: btn.getAttribute('data-orch-lc') });
-      toast(`${orchLifecycleLabel(btn.getAttribute('data-orch-lc'))}を指示しました`, true);
+      const workload = btn.getAttribute('data-orch-wl');
+      const action = btn.getAttribute('data-orch-lc');
+      if (action === 'stop') {
+        const yes = await confirmDialog(
+          `「${amigosWorkloadLabel(workload)}」のエージェント呼び出しを、この端末全体で停止します。\n\n` +
+          '個別のrunを止める操作ではありません。進行中のrunも次の呼び出しで失敗する場合があります。よろしいですか？'
+        );
+        if (!yes) return;
+      }
+      await api.orchestrationLifecycle({ workload, action });
+      toast(action === 'run' ? '端末全体で実行を許可しました' : '端末全体で実行を停止しました', true);
       await refreshOrchestration();
       renderOrchestration();
     }));
