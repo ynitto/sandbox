@@ -11362,6 +11362,8 @@ class NodeBudgetV2AndControlTests(unittest.TestCase):
         with self.assertRaises(RuntimeError) as ctx:
             km._run_agent_cli("x", None, purpose="plan")
         self.assertIn("[agent-control]", str(ctx.exception))
+        self.assertIn("[agent-error:control]", str(ctx.exception))
+        self.assertEqual(km.classify_agent_failure(str(ctx.exception))[0], "control")
 
 
 if __name__ == "__main__":

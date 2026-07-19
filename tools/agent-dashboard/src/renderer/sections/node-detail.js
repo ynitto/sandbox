@@ -215,6 +215,22 @@ async function resubmitFlowRun() {
 async function _resubmitFlowRun() {
   const run = state.flowRun && state.flowRun.run;
   if (!run) return;
+  // 別画面・別プロセスで変更された端末全体設定も含め、再実行の直前に正本を読み直す。
+  await refreshOrchestration();
+  const flowControl = (((state.orchestration || {}).control || {}).workloads || {}).flow || {};
+  const lifecycle = flowControl.lifecycle || 'run';
+  if (lifecycle !== 'run') {
+    const allow = await confirmDialog(
+      `フローは端末全体で「${orchLifecycleLabel(lifecycle)}」になっています。\n\n` +
+      'このまま再実行しても、次のエージェント呼び出しで再び失敗します。実行を許可してからやり直しますか？'
+    );
+    if (!allow) return;
+    const resumed = await guard('フローの実行許可', () =>
+      api.orchestrationLifecycle({ workload: 'flow', action: 'run' })
+    );
+    if (resumed === undefined) return;
+    await refreshOrchestration();
+  }
   // 押す前に「正確に何が起きるか」を工程名で見せる。グラフの赤いノードが確実に
   // 再実行されるのか・完了分が捨てられないか、を推測させない。
   const nodes = Object.values(run.nodes || {});

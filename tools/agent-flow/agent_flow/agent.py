@@ -502,11 +502,13 @@ def _write_status(effective_cli: str = "", effective_model: str = "", lifecycle:
 # エラー本文から「誰が直すか」を分類し、メッセージ先頭の機械可読タグ [agent-error:<class>] で運ぶ。
 # agent-flow は run の打ち切り（環境要因なら全ノードでリトライを焼かない）、agent-project は
 # リトライ節約と人への説明、viewer は行動提示に同じ判定を使う。
-#   quota=利用上限（時間をおけば回復）/ auth=認証切れ（人が直す）/ env=実行環境の問題（人が直す）
-#   / transient=一時的（通常リトライで解ける）。該当なし＝内容の問題（タスク単位の retry / 再計画）。
-AGENT_ERROR_ENV_CLASSES = ("quota", "auth", "env")
-_AGENT_ERROR_TAG_RE = re.compile(r"\[agent-error:(quota|auth|env|transient)\]")
+#   control=管理設定による停止（明示的に run へ戻すまで継続）/ quota=利用上限（時間をおけば回復）/
+#   auth=認証切れ（人が直す）/ env=実行環境の問題（人が直す）/ transient=一時的。
+AGENT_ERROR_ENV_CLASSES = ("control", "quota", "auth", "env")
+_AGENT_ERROR_TAG_RE = re.compile(r"\[agent-error:(control|quota|auth|env|transient)\]")
 _AGENT_ERROR_PATTERNS = (
+    ("control", re.compile(r"\[agent-control\]", re.I),
+     "管理設定で実行が停止されています（dashboard で実行を許可してください）"),
     ("quota", re.compile(r"usage limit|quota exceeded|rate.?limit|too many requests", re.I),
      "利用上限に達しています（時間をおくか、プラン・クレジットを見直してください）"),
     ("auth", re.compile(r"AccessDenied|Unauthorized|authentication failed|not authenticated"
@@ -560,7 +562,7 @@ def run_agent(prompt: str, model: str | None, purpose: str = "") -> str:
 
     レイヤ1（自己回復リトライ）: 失敗が transient 分類（接続断・5xx・overloaded・timeout）なら、
     ここで指数バックオフ再試行して上位層（グラフ再計画の retries 予算）へ持ち上げない。
-    quota/auth/env・内容の問題（タグ無し）は再試行せず即座に上位へ（従来どおり）。
+    control/quota/auth/env・内容の問題（タグ無し）は再試行せず即座に上位へ（従来どおり）。
     実行中は worker の Heartbeat が claim lease を延長し続けるため、再試行で実行が延びても
     分散環境で横取りされない。試行し尽くした失敗は例外に attempts 属性を載せて raise する
     （worker が data.attempts として failed result に構造化する）。"""
@@ -569,7 +571,7 @@ def run_agent(prompt: str, model: str | None, purpose: str = "") -> str:
     if lifecycle in ("pause", "stop"):
         _write_status(lifecycle=lifecycle)
         raise RuntimeError(
-            f"[agent-error:quota] [agent-control] このワークロード（flow）は管理面により "
+            f"[agent-error:control] [agent-control] このワークロード（flow）は管理面により "
             f"lifecycle={lifecycle} 指定です。dashboard のオーケストレーションタブで run に戻して"
             "ください")
     nb = _node_budget_state()
@@ -931,4 +933,3 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
     elif kind == "verify":
         data = _normalize_verify(text, data)
     return text, data
-

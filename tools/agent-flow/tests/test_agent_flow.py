@@ -6136,22 +6136,23 @@ class TestAgentPluginAndTriage(unittest.TestCase):
         self.assertIn("[agent-error:auth]", reason)
         self.assertIn("温存", reason)                  # 完了済みは捨てない、と言い切る
 
-    def test_env_failure_preserves_quota_source_marker(self):
-        """quota を表示層が利用上限と誤認しないよう、発生元を run まで運ぶ。"""
+    def test_env_failure_preserves_control_and_budget_classes(self):
+        """管理停止と利用上限を別クラスのまま run まで運ぶ。"""
         nodes = {"t1": {"goal": "a", "deps": [], "kind": "work"}}
         args = types.SimpleNamespace(executor="stub", max_fanout=50, review=False,
                                      exemplar_first=False, max_retries=3)
-        for source in ("agent-control", "node-budget"):
-            with self.subTest(source=source):
+        for source, error_class in (("agent-control", "control"), ("node-budget", "quota")):
+            with self.subTest(source=source, error_class=error_class):
                 results = {
                     "t1": {
                         "status": "failed",
-                        "output": (f"実行エラー: [agent-error:quota] [{source}] "
+                        "output": (f"実行エラー: [agent-error:{error_class}] [{source}] "
                                    "管理面により実行できません"),
                     },
                 }
                 decision, _, reason = kf._continue(args, "req", nodes, results, 0)
                 self.assertEqual(decision, "failed")
+                self.assertIn(f"[agent-error:{error_class}]", reason)
                 self.assertIn(f"[{source}]", reason)
                 self.assertNotIn("プラン・クレジット", reason)
 
@@ -6706,7 +6707,8 @@ class AgentControlTests(unittest.TestCase):
         with self.assertRaises(RuntimeError) as ctx:
             kf.run_agent("x", None, purpose="worker")
         self.assertIn("[agent-control]", str(ctx.exception))
-        self.assertIn("[agent-error:quota]", str(ctx.exception))
+        self.assertIn("[agent-error:control]", str(ctx.exception))
+        self.assertEqual(kf.classify_agent_failure(str(ctx.exception))[0], "control")
 
     def test_status_heartbeat_written(self):
         self._control({"version": 1, "revision": 7, "workloads": {"flow": {}}})

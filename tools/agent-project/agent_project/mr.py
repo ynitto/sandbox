@@ -401,21 +401,25 @@ def _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location="local"):
     """verify=NG → 上限内なら積み直し / 学習で自動解決 / 上限超で人へエスカレーション。
     委譲 executor（gitlab）の却下なら、人コメント（やり直し指示）を次 act の feedback に注入する。
 
-    その前に**失敗トリアージ**: 失敗が環境要因（quota=利用上限 / auth=認証切れ / env=CLI・
+    その前に**失敗トリアージ**: 失敗が実行制御または環境要因（control=管理停止 /
+    quota=利用上限 / auth=認証切れ / env=CLI・
     モデルの問題）なら、これはタスクの内容と無関係で、リトライしても同じ理由で全タスクが
     落ち続ける。リトライを焼かず・裁定（これも LLM 呼び出し＝同じ理由で失敗する）も呼ばず、
     原因と直し方を明記して人へ回す。環境を直して approve すれば同じ run の続きから再開する。"""
     triage = classify_agent_failure(f"{vmsg}\n{_flow_failure_blob(cfg, task)}")
     if triage and triage[0] in AGENT_ERROR_ENV_CLASSES:
         cls, hint = triage
-        label = {"quota": "利用上限", "auth": "認証切れ", "env": "実行環境の問題"}[cls]
+        label = {"control": "管理設定による停止", "quota": "利用上限",
+                 "auth": "認証切れ", "env": "実行環境の問題"}[cls]
+        category = "実行制御" if cls == "control" else "環境の問題"
+        remedy = "全体設定で実行を許可してから" if cls == "control" else "環境を直してから"
         # needs にメモを書いて [x] しても run_id_for が新 run を作らないよう、再開約束を残す。
         task.set("env_resume", "1")
-        _block(cfg, task, f"[agent-error:{cls}] 環境の問題（{label}）: {hint} "
+        _block(cfg, task, f"[agent-error:{cls}] {category}（{label}）: {hint} "
                           "タスクの内容の問題ではないため、リトライ回数は消費していません。"
-                          "環境を直してから approve すると、同じ run の続き（失敗した工程だけ）"
+                          f"{remedy} approve すると、同じ run の続き（失敗した工程だけ）"
                           "から再開します。", reasons, evidence=ev)
-        append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（環境の問題: {label}。"
+        append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（{category}: {label}。"
                                     f"リトライ・裁定は消費しない）")
         return
     task.retries += 1

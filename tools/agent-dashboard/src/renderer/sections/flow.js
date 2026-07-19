@@ -139,7 +139,7 @@ function humanWaitingAdvice(task) {
 // 環境要因ならタスク状態（blocked 等）より先に「何を直すか」を言い切る。
 function agentErrorAdvice(run, found) {
   const failure = String(run.failureReason || '');
-  const tri = /\[agent-error:(quota|auth|env)\]/.exec(failure);
+  const tri = /\[agent-error:(control|quota|auth|env)\]/.exec(failure);
   if (!tri) return null;
   // 旧 run は meta.failure_reason が quota の汎用文言まで丸められている。
   // ノード出力には発生元タグが残るため、それも合わせて判定する。
@@ -147,7 +147,7 @@ function agentErrorAdvice(run, found) {
     .map((node) => String((node && node.output) || ''))
     .join('\n');
   const detail = `${failure}\n${nodeOutputs}`;
-  if (tri[1] === 'quota' && /\[agent-control\]/.test(detail)) {
+  if (tri[1] === 'control' || (tri[1] === 'quota' && /\[agent-control\]/.test(detail))) {
     const paused = /lifecycle=pause\b/.test(detail);
     return {
       kind: 'human',

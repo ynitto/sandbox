@@ -214,7 +214,7 @@ function orchAgentsEditorHtml(wl, wc) {
       <td><small class="muted">保存で追加</small></td>
     </tr>`;
   const summaryLabel = keys.length ? `用途 / 担当ごとの変更（${keys.length}）` : '用途 / 担当ごとの変更を追加';
-  return `<details class="orch-agents"${keys.length ? ' open' : ''}>
+  return `<details class="orch-agents" data-ui-key="orch-agents-${esc(wl)}"${keys.length ? ' open' : ''}>
     <summary>${esc(summaryLabel)}</summary>
     ${datalist}
     <table class="amigos-table orch-agents-table">
@@ -322,19 +322,14 @@ function orchInstructionsPanelHtml(overview) {
     if (typeof s === 'string') selected.set(s, '');
     else if (s && s.name) selected.set(s.name, s.note || '');
   }
-  // 選択候補（棚卸し）＋ 既に選択済みだが棚卸しに無い名前も行として出す。
-  const names = new Set(inv.map((s) => s.name));
-  for (const n of selected.keys()) names.add(n);
-  const skillRows = [...names].sort().map((name) => {
-    const on = selected.has(name);
+  const inventoryByName = new Map(inv.map((s) => [s.name, s]));
+  const skillRows = [...selected.keys()].sort().map((name) => {
     const note = selected.get(name) || '';
-    const where = (inv.find((s) => s.name === name) || {}).dir || '';
-    return `<div class="orch-skill-row" data-orch-skill="${esc(name)}">
-      <label><input type="checkbox" class="orch-skill-on" ${on ? 'checked' : ''} /> <strong>${esc(name)}</strong></label>
-      <input type="text" class="orch-skill-note" placeholder="いつ使うか（任意）" value="${esc(note)}" />
-      <small class="muted">${esc(where)}</small>
-    </div>`;
-  }).join('') || '<p class="muted">利用できるスキルが見つかりません。</p>';
+    const where = (inventoryByName.get(name) || {}).dir || '';
+    return orchSkillRowHtml(name, note, where);
+  }).join('');
+  const skillOptions = inv.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)))
+    .map((s) => `<option value="${esc(s.name)}" label="${esc(s.dir || '')}"></option>`).join('');
   const allow = (gi.tools && Array.isArray(gi.tools.allow)) ? gi.tools.allow.join(', ') : '';
   const denyNote = (gi.tools && gi.tools.deny_note) || '';
   const appliedRows = (overview.status || []).map((s) => {
@@ -359,7 +354,19 @@ function orchInstructionsPanelHtml(overview) {
       <textarea id="orch-instr-text" class="mono" rows="6" placeholder="例: 回答は日本語。破壊的変更の前に必ず既存テストを確認する。">${esc(gi.text || '')}</textarea>
     </label>
     <div class="orch-instr-field">推奨スキル
-      <div class="orch-skill-list">${skillRows}</div>
+      <div class="orch-skill-picker">
+        <label for="orch-skill-add">スキル名</label>
+        <div class="orch-skill-add-row">
+          <input type="text" id="orch-skill-add" list="orch-skill-options" autocomplete="off"
+            aria-describedby="orch-skill-add-help" placeholder="名前を入力して候補から選択" />
+          <datalist id="orch-skill-options">${skillOptions}</datalist>
+          <button type="button" id="btn-orch-skill-add" disabled>追加</button>
+        </div>
+        <small id="orch-skill-add-help" class="muted">名前の一部を入力すると、この端末で利用できるスキルが候補に表示されます。</small>
+      </div>
+      <div class="orch-skill-list" id="orch-skill-selected">
+        ${skillRows || '<p class="muted orch-skill-empty">追加されたスキルはありません。</p>'}
+      </div>
     </div>
     <div class="row">
       <label class="orch-instr-field">利用できるツール（カンマ区切り）
@@ -375,15 +382,25 @@ function orchInstructionsPanelHtml(overview) {
     <div class="row orch-actions">
       <button type="button" id="btn-orch-instr-save">共通指示を保存</button>
     </div>
-    <details class="orch-instr-preview">
+    <details class="orch-instr-preview" data-ui-key="orch-instr-preview">
       <summary>エージェントに渡される内容を確認</summary>
       <pre class="mono orch-instr-preview-body">${esc(preview || '（現在、エージェントへ渡す共通指示はありません）')}</pre>
     </details>
-    <details class="orch-instr-applied">
+    <details class="orch-instr-applied" data-ui-key="orch-instr-applied">
       <summary>実行サービスへの反映状況</summary>
       <table class="amigos-table orch-table"><thead><tr><th>サービス</th><th>反映</th></tr></thead><tbody>${appliedRows}</tbody></table>
     </details>
   </section>`;
+}
+
+function orchSkillRowHtml(name, note = '', where = '') {
+  return `<div class="orch-skill-row" data-orch-skill="${esc(name)}">
+    <div class="orch-skill-identity"><strong>${esc(name)}</strong>${where ? `<small class="muted">${esc(where)}</small>` : ''}</div>
+    <label class="orch-skill-note-label"><span>使う場面（任意）</span>
+      <input type="text" class="orch-skill-note" placeholder="例: コード修正時" value="${esc(note)}" />
+    </label>
+    <button type="button" class="orch-skill-remove" aria-label="${esc(name)}を削除">削除</button>
+  </div>`;
 }
 
 // 5. 利用できるエージェントの一覧と追加定義。
@@ -396,7 +413,7 @@ function orchInventoryPanelHtml(overview) {
       : '';
     const shadow = d.shadowed ? orchBadge('soft', '同名の設定があるため無効') : orchBadge('ok', '利用可能');
     const specText = d.spec ? JSON.stringify(d.spec, null, 2) : '';
-    return `<details class="orch-dropin" data-orch-dropin="${i}">
+    return `<details class="orch-dropin" data-orch-dropin="${i}" data-ui-key="orch-dropin-${esc(d.name)}">
       <summary><strong>${esc(d.name)}</strong> ${shadow}
         <small class="muted">${esc(d.dir || '')}</small></summary>
       ${errs}
@@ -418,7 +435,7 @@ function orchInventoryPanelHtml(overview) {
     </header>
     <p>標準: ${builtins}</p>
     <div class="orch-dropins">${dropins}</div>
-    <details class="orch-dropin orch-new">
+    <details class="orch-dropin orch-new" data-ui-key="orch-dropin-new">
       <summary><strong>新しいエージェントを追加</strong></summary>
       <label class="orch-new-name">エージェント名
         <input type="text" id="orch-new-name" placeholder="cursor" />
@@ -588,6 +605,7 @@ function globalSettingsAgentsHtml(overview) {
 }
 
 function renderOrchestration() {
+  const ui = captureUiState();
   const el = $('tab-orchestration');
   if (!el) return;
   const ov = state.orchestration;
@@ -622,6 +640,7 @@ function renderOrchestration() {
   populateSettingsFields();
   setupGlobalSettings(el);
   setupOrchestration(el);
+  restoreUiState(ui);
 }
 
 function selectGlobalSettingsSection(root, section, { focus = false } = {}) {
@@ -682,7 +701,9 @@ function setupGlobalSettings(root) {
 function setupOrchestration(root) {
   const refreshBtn = root.querySelector('#btn-orch-refresh');
   if (refreshBtn) refreshBtn.addEventListener('click', () => {
-    if (state.globalSettingsDirty) return toast('入力中の設定を保存してから最新の状態にしてください');
+    if (state.globalSettingsDirty || state.orchInstructionsDirty) {
+      return toast('入力中の設定を保存してから最新の状態にしてください');
+    }
     return guard('エージェント情報の更新', async () => { await refreshOrchestration(); renderOrchestration(); });
   });
 
@@ -780,11 +801,67 @@ function setupOrchestration(root) {
   }));
 
   // グローバル指示（agent-instructions）の保存
+  const skillInput = root.querySelector('#orch-skill-add');
+  const skillAdd = root.querySelector('#btn-orch-skill-add');
+  const skillList = root.querySelector('#orch-skill-selected');
+  const skillInventory = new Map((state.orchSkillsInventory || []).map((s) => [String(s.name), s]));
+  const updateSkillAdd = () => {
+    if (skillAdd) skillAdd.disabled = !skillInput || !skillInput.value.trim();
+  };
+  const addSkill = () => {
+    if (!skillInput || !skillList) return;
+    const name = skillInput.value.trim();
+    if (!name) return;
+    const candidate = skillInventory.get(name);
+    if (!candidate) {
+      toast('候補にあるスキル名を選択してください');
+      skillInput.focus();
+      return;
+    }
+    const existing = [...skillList.querySelectorAll('.orch-skill-row')]
+      .find((row) => row.getAttribute('data-orch-skill') === name);
+    if (existing) {
+      toast('そのスキルは追加済みです');
+      existing.querySelector('.orch-skill-note').focus();
+      return;
+    }
+    const empty = skillList.querySelector('.orch-skill-empty');
+    if (empty) empty.remove();
+    skillList.insertAdjacentHTML('beforeend', orchSkillRowHtml(name, '', candidate.dir || ''));
+    skillInput.value = '';
+    updateSkillAdd();
+    state.orchInstructionsDirty = true;
+    skillInput.focus();
+  };
+  if (skillInput) {
+    skillInput.addEventListener('input', updateSkillAdd);
+    skillInput.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      addSkill();
+    });
+  }
+  if (skillAdd) skillAdd.addEventListener('click', addSkill);
+  if (skillList) skillList.addEventListener('click', (event) => {
+    const remove = event.target.closest('.orch-skill-remove');
+    if (!remove) return;
+    remove.closest('.orch-skill-row').remove();
+    if (!skillList.querySelector('.orch-skill-row')) {
+      skillList.innerHTML = '<p class="muted orch-skill-empty">追加されたスキルはありません。</p>';
+    }
+    state.orchInstructionsDirty = true;
+  });
+  for (const field of root.querySelectorAll(
+    '#orch-instr-enabled, #orch-instr-text, #orch-instr-allow, #orch-instr-deny, #orch-instr-max, .orch-skill-note'
+  )) {
+    field.addEventListener('input', () => { state.orchInstructionsDirty = true; });
+    field.addEventListener('change', () => { state.orchInstructionsDirty = true; });
+  }
+
   const instrSave = root.querySelector('#btn-orch-instr-save');
   if (instrSave) instrSave.addEventListener('click', () => guard('共通指示の保存', async () => {
     const skills = [];
     for (const row of root.querySelectorAll('.orch-skill-row')) {
-      if (!row.querySelector('.orch-skill-on').checked) continue;
       const name = row.getAttribute('data-orch-skill');
       const note = row.querySelector('.orch-skill-note').value.trim();
       skills.push(note ? { name, note } : name);
@@ -803,6 +880,7 @@ function setupOrchestration(root) {
     try {
       await api.orchestrationInstructionsSave(payload);
       toast('共通指示を保存しました', true);
+      state.orchInstructionsDirty = false;
     } finally { state.orchSaving = false; }
     await refreshOrchestration();
     renderOrchestration();

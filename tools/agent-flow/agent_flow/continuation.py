@@ -304,11 +304,11 @@ def continue_agent(request: str, nodes: dict, results: dict, iteration: int,
     try:
         text = run_agent(prompt, None, purpose="evaluator")
     except Exception as e:  # noqa: BLE001
-        # 評価役の LLM 呼び出し自体の失敗。transient / quota はレイヤ1（run_agent 内の再試行）を
+        # 評価役の LLM 呼び出し自体の失敗。transient / control / quota は内容判定へ進めない。
         # 経てなお失敗している＝環境の一時不調であり、内容判定（fallback の done/failed 推定）に
         # 進まずタグ付きで failed 終端する → レイヤ4（auto-heal）/ 人の環境復旧が拾う。
         triage = classify_agent_failure(str(e))
-        if triage and triage[0] in ("transient", "quota"):
+        if triage and triage[0] in ("transient", "control", "quota"):
             return "failed", [], (f"[agent-error:{triage[0]}] 評価役の呼び出しが失敗: {e}"
                                   "（done ノードは温存・自動/手動の再開で続きから）")
         return _evaluator_fallback(results, f"評価役を呼び出せず: {e}")
@@ -331,4 +331,3 @@ def continue_agent(request: str, nodes: dict, results: dict, iteration: int,
     if data.get("decision") == "replan" and new:
         return "replan", new, str(data.get("reason", ""))
     return "done", [], str(data.get("reason", "done"))
-

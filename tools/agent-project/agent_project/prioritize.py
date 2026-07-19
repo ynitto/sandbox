@@ -265,14 +265,17 @@ def _plugin_error_patterns() -> "tuple":
 # エラー本文から「誰が直すか」を分類する。分類はメッセージ先頭の機械可読タグ
 # [agent-error:<class>] として運び、agent-flow の run 打ち切り・agent-project のリトライ節約・
 # viewer の行動提示が同じ判定を共有する（CLI 固有規則はプラグイン定義の errors）。
+#   control  : 管理設定による停止 — 明示的に run へ戻すまで継続する
 #   quota    : 利用上限 — 時間をおけば回復する（タスクのリトライを焼かない）
 #   auth     : 認証切れ — 人が環境を直すまで全タスク共倒れ（即座に人へ）
 #   env      : 実行環境の問題（CLI 不在・モデル不正 等）— 人が環境を直す
 #   transient: 一時的（タイムアウト・接続断）— 通常リトライで解ける
 #   （どれにも当たらなければ「内容の問題」= 従来どおりタスク単位の retry / 裁定）
-AGENT_ERROR_ENV_CLASSES = ("quota", "auth", "env")
-_AGENT_ERROR_TAG_RE = re.compile(r"\[agent-error:(quota|auth|env|transient)\]")
+AGENT_ERROR_ENV_CLASSES = ("control", "quota", "auth", "env")
+_AGENT_ERROR_TAG_RE = re.compile(r"\[agent-error:(control|quota|auth|env|transient)\]")
 _AGENT_ERROR_PATTERNS = (
+    ("control", re.compile(r"\[agent-control\]", re.I),
+     "管理設定で実行が停止されています（dashboard で実行を許可してください）"),
     ("quota", re.compile(r"usage limit|quota exceeded|rate.?limit|too many requests", re.I),
      "利用上限に達しています（時間をおくか、プラン・クレジットを見直してください）"),
     ("auth", re.compile(r"AccessDenied|Unauthorized|authentication failed|not authenticated"
@@ -572,7 +575,7 @@ def _run_agent_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
     if lifecycle in ("pause", "stop"):
         _write_status(lifecycle=lifecycle)
         raise RuntimeError(
-            f"[agent-error:quota] [agent-control] このワークロード（project）は管理面により "
+            f"[agent-error:control] [agent-control] このワークロード（project）は管理面により "
             f"lifecycle={lifecycle} 指定です。dashboard のオーケストレーションタブで run に戻して"
             "ください")
     nb = _node_budget_state()

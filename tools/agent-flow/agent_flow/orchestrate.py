@@ -15,7 +15,7 @@ def _plan_strategy(args):
 
 
 def _env_failure_reason(results: dict) -> "str | None":
-    """失敗結果に環境要因（quota/auth/env）または transient のトリアージタグがあれば、その説明を返す。
+    """失敗結果に実行制御・環境要因または transient のトリアージタグがあれば、その説明を返す。
 
     環境が壊れているとき（認証切れ・利用上限・CLI 不在）は、どのノードをリトライしても
     同じ理由で落ちる。実際 codex の利用上限で全ノードが 1 つずつリトライを焼き尽くし、
@@ -41,9 +41,8 @@ def _env_failure_reason(results: dict) -> "str | None":
                     "回復せず、run を打ち切りました。自動再開（auto-heal）の対象です"
                     "（完了済みの工程は温存されます）。")
         if cls in AGENT_ERROR_ENV_CLASSES:
-            # quota は「外部 AI の利用上限」だけでなく、管理面の pause/stop と
-            # ノード予算超過にも使う。発生元を捨てると dashboard がすべて
-            # 「AI の利用上限」と誤案内するため、機械可読マーカーを run まで運ぶ。
+            # 発生元マーカーも run まで運び、旧版の quota+[agent-control] と
+            # node-budget の利用上限を表示層が区別できるようにする。
             output = str(r.get("output", ""))
             source = next((f"[{name}]" for name in ("agent-control", "node-budget")
                            if f"[{name}]" in output), "")
@@ -54,14 +53,17 @@ def _env_failure_reason(results: dict) -> "str | None":
                 hint = "このノードに設定した実行時間またはトークン予算に達しています。"
             else:
                 hint = next((h for c, _, h in _AGENT_ERROR_PATTERNS if c == cls), "")
-            return (f"[agent-error:{cls}]{source} 環境要因の失敗（{nid}）: {hint} "
-                    "リトライを打ち切りました。環境を直してから再開してください"
+            category = "実行制御による停止" if cls == "control" else "環境要因の失敗"
+            remedy = ("dashboard で実行を許可してから再開してください"
+                      if cls == "control" else "環境を直してから再開してください")
+            return (f"[agent-error:{cls}]{source} {category}（{nid}）: {hint} "
+                    f"リトライを打ち切りました。{remedy}"
                     "（完了済みの工程は温存されます）。")
     return None
 
 
 def _continue(args, request, nodes, results, iteration, strategy=None):
-    # 失敗トリアージ: 環境要因（quota/auth/env）の失敗が 1 つでもあれば再計画せず打ち切る。
+    # 失敗トリアージ: 実行制御・環境要因の失敗が 1 つでもあれば再計画せず打ち切る。
     # planner（stub/エージェント）に依らず先に判定する（LLM 評価も同じ環境で失敗するため）。
     env_fail = _env_failure_reason(results)
     if env_fail:

@@ -56,6 +56,7 @@ const state = {
   busy: false,
   globalSettingsSection: 'app', // app / agents / sync / routine / integrations
   globalSettingsDirty: false,
+  orchInstructionsDirty: false, // 共通指示・推奨スキルの未保存入力（ポーリング再描画から保護）
   // 要対応（needs）の前回カウント。増分を検知して OS 通知する（張り付き監視の解消）。
   // initialized=false の初回はベースライン取得のみで通知しない（起動時の殺到を避ける）。
   notify: { counts: {}, initialized: false },
@@ -915,10 +916,12 @@ function captureUiState() {
     if (el.id) scroll[el.id] = { top: el.scrollTop, left: el.scrollLeft };
   }
   const open = [];
+  const details = {};
   for (const d of document.querySelectorAll('details[data-ui-key]')) {
+    details[d.dataset.uiKey] = d.open;
     if (d.open) open.push(d.dataset.uiKey);
   }
-  return { scroll, open: new Set(open) };
+  return { scroll, open: new Set(open), details };
 }
 
 function restoreUiState(ui) {
@@ -926,7 +929,12 @@ function restoreUiState(ui) {
   // details を先に開いてスクロール範囲を確定する。閉じたまま scrollTop を代入すると、
   // ブラウザが短いレイアウトの最大値へ丸め、その後 details を開いても元の位置へ戻らない。
   for (const d of document.querySelectorAll('details[data-ui-key]')) {
-    if (ui.open.has(d.dataset.uiKey)) d.open = true;
+    const key = d.dataset.uiKey;
+    if (ui.details && Object.prototype.hasOwnProperty.call(ui.details, key)) {
+      d.open = ui.details[key];
+    } else if (ui.open.has(key)) {
+      d.open = true;
+    }
   }
   for (const [id, pos] of Object.entries(ui.scroll)) {
     const el = document.getElementById(id);
@@ -963,7 +971,7 @@ function renderAllTabs() {
   renderCowork();
   renderAmigos();
   renderProjectSettings();
-  if (!state.globalSettingsDirty || !$('tab-orchestration').childElementCount) renderOrchestration();
+  if ((!state.globalSettingsDirty && !state.orchInstructionsDirty) || !$('tab-orchestration').childElementCount) renderOrchestration();
   renderKiroLoopTerminal();
   for (const [name] of featureTabs) renderFeatureTab(name);
   restoreUiState(ui);
@@ -1025,6 +1033,7 @@ function populateSettingsFields() {
 function openGlobalSettings(section = 'app') {
   state.globalSettingsSection = GLOBAL_SETTINGS_SECTIONS.some((item) => item.id === section) ? section : 'app';
   state.globalSettingsDirty = false;
+  state.orchInstructionsDirty = false;
   switchTab('orchestration');
   renderOrchestration();
 }
@@ -1580,7 +1589,7 @@ async function refreshAll({ sync = true } = {}) {
     if (state.selectedDir) await reloadProject({ refreshRemoteHealth: sync });
     if (activeTab() === 'cowork') renderCowork();
     if (activeTab() === 'amigos') renderAmigos();
-    if (activeTab() === 'orchestration' && !state.globalSettingsDirty) renderOrchestration();
+    if (activeTab() === 'orchestration' && !state.globalSettingsDirty && !state.orchInstructionsDirty) renderOrchestration();
     // 登録済みフィーチャータブ: 非同期取得（refresh）してから表示中なら描画する。
     for (const [name, h] of featureTabs) {
       if (typeof h.refresh === 'function') {

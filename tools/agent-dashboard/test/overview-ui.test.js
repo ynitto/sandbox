@@ -199,10 +199,13 @@ assert.match(css, /\.sidebar-actions button,[\s\S]*?min-width: 44px; height: 44p
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const orchBadgeStub = (kind, label) => `<span class="badge ${kind}">${escStub(label)}</span>`;
   const wlLabelStub = (w) => w;
-  const stateStub = { orchSkillsInventory: [{ name: 'karpathy-guidelines', dir: '/x/.github/skills' }] };
+  const stateStub = { orchSkillsInventory: [
+    { name: 'karpathy-guidelines', dir: '/x/.github/skills' },
+    { name: 'systematic-debugging', dir: '/x/.agents/skills' },
+  ] };
   // eslint-disable-next-line no-new-func
   const panel = new Function('esc', 'orchBadge', 'amigosWorkloadLabel', 'state',
-    `${grab('orchInstructionsPanelHtml')}; return orchInstructionsPanelHtml;`)(
+    `${grab('orchSkillRowHtml')}; ${grab('orchInstructionsPanelHtml')}; return orchInstructionsPanelHtml;`)(
     escStub, orchBadgeStub, wlLabelStub, stateStub);
   const ov = {
     instructions: {
@@ -218,13 +221,32 @@ assert.match(css, /\.sidebar-actions button,[\s\S]*?min-width: 44px; height: 44p
   assert.ok(out.includes('id="orch-instr-text"'), '指示文 textarea が必要');
   assert.ok(out.includes('回答は日本語。'), '既存の指示文が反映される');
   assert.ok(out.includes('id="btn-orch-instr-save"'), '保存ボタンが必要');
-  assert.ok(out.includes('karpathy-guidelines'), '棚卸しのスキルが行に出る');
-  assert.ok(out.includes('checked'), '選択済みスキル / 有効トグルが checked');
+  assert.strictEqual((out.match(/class="orch-skill-row"/g) || []).length, 1,
+    '選択済みスキルだけを編集行として表示する');
+  assert.ok(out.includes('id="orch-skill-add"'), '名前を入力して追加する欄がある');
+  assert.ok(out.includes('list="orch-skill-options"'), '入力欄が候補リストにつながっている');
+  assert.ok(out.includes('<option value="systematic-debugging"'), '未選択スキルが入力候補に出る');
+  assert.ok(out.includes('karpathy-guidelines'), '選択済みスキルが行に出る');
+  assert.ok(!out.includes('class="orch-skill-on"'), '大量のチェックボックス一覧を表示しない');
+  assert.ok(out.includes('data-ui-key="orch-instr-preview"'), 'プレビューの開閉状態を復元できるキーがある');
   assert.ok(out.includes('未反映（2/3）'), '実行サービスの未反映バッジが出る');
   assert.ok(out.includes('agent-instructions rev:3'), 'プレビューが描画結果を出す');
 }
 assert.match(renderer, /orchInstructionsPanelHtml\(overview\)/);
 assert.match(renderer, /api\.orchestrationInstructionsSave/);
+{
+  const render = grab('renderOrchestration');
+  assert.match(render, /captureUiState\(\)/, '全体設定の再描画前に開閉・スクロール状態を保存する');
+  assert.match(render, /restoreUiState\(/, '全体設定の再描画後に開閉・スクロール状態を復元する');
+}
+assert.match(renderer, /details\[d\.dataset\.uiKey\] = d\.open/,
+  '開いた状態だけでなく、利用者が閉じた状態も保存する');
+assert.match(renderer, /d\.open = ui\.details\[key\]/, '保存した開閉状態をそのまま復元する');
+assert.match(renderer, /data-ui-key="orch-agents-/, '担当設定の開閉状態に安定キーがある');
+assert.match(renderer, /data-ui-key="orch-dropin-new"/, 'エージェント追加欄の開閉状態に安定キーがある');
+assert.match(renderer, /btn-orch-skill-add/);
+assert.match(renderer, /orch-skill-remove/);
+assert.match(renderer, /orchInstructionsDirty/, '共通指示の未保存入力を自動更新から保護する');
 
 // --- 実行サービスは PID ごとでなくワークロードごとに表示する ---
 {
