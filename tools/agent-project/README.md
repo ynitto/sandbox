@@ -272,20 +272,19 @@ CLI からも付与・修正できる。
 - **一貫性ゲート（codd-gate 連携・オプション）**: ドキュメント・コード・テストの整合は**完全独立**の
   ツール [`codd-gate`](../codd-gate/README.md)（本ツールの install.sh が隣にあれば同梱インストールする）で
   護れる。結合は共通スキーマ（`schemas/`）のみ——リポジトリ定義は本ツールが charter から自動生成する
-  `<root>/repos.json` を codd-gate が `--repos` で読む。**有効化は設定だけ**:
+  `<root>/repos.json` を codd-gate が `--repos` で読む。**有効化は `.agent/agent-project.yaml` へ2行書く**:
   `regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV" --repos <root>/repos.json'`（done 確定前の
   差分ゲート）＋ `intake_cmd: 'codd-gate tasks --debt --repos <root>/repos.json'`（負債を修復タスクとして
-  自動返済）＋ charter acceptance に `codd-gate verify --debt --max-broken N …`（受入の負債ラチェット）。
-  上記2行の生成は**本体（configfile）に埋め込まない**——起動時の Config 生成（`build_config`）は
-  codd-gate 固有の実行時自動配線を持たず、`regression_cmd`/`intake_cmd` は設定ファイル/CLI/既定の
-  値をそのまま使う（差し込み点のみ）。生成・結線は sibling へ外出しした: `<root>/repos.json` が実在
-  する環境で codd-gate を検出し、未結線なら `doctor` が推奨コマンド文字列を finding として提示する
-  （`codd_gate_wiring`）。ファイルへ恒久的に書き込む CLI があるのは `regression_cmd` の1行だけ:
-  `python3 codd_gate_regression.py --config .agent/agent-project.yaml`（検出結果駆動で、この1キーのみ
-  冪等 upsert）。`intake_cmd` に対応する注入 CLI は無いので、恒久設定は
-  `.agent/agent-project.yaml` を直接編集する。codd-gate 未検出・非互換の環境では
-  両経路とも no-op に縮退し、上記2行は設定されないまま（詳細は
-  [`codd-gate-design.md`](../../docs/designs/codd-gate-design.md) §4.1「自動検出レイヤ」）。
+  自動返済）。charter acceptance に `codd-gate verify --debt --max-broken N …` を足せば受入の負債ラチェットも
+  効く。`regression_cmd` の行は手書きの代わりに CLI で入れてもよい:
+  `python3 codd_gate_regression.py --config .agent/agent-project.yaml`（codd-gate を実測してこの1キーだけを
+  冪等 upsert する。`--repos` 省略時は設定の `root:` から `<root>/repos.json` を推定し、`--dry-run` なら
+  書かずに結果だけ出す）。`intake_cmd` に対応する注入 CLI は無いので、こちらは yaml を直接編集する。
+  codd-gate が未検出・バージョン/schema 非互換なら CLI は何も書かない（使えないものへ結線しない）。
+  結線できているかは `doctor` が見る: codd-gate を検出できたのに `regression_cmd`/`intake_cmd` がそれを
+  指していなければ、貼れる推奨コマンド文字列を info の所見として出す（`codd_gate_wiring`。
+  `<root>/repos.json` が実在すれば schemas 契約の互換も併せて判定する）。詳細は
+  [`codd-gate-design.md`](../../docs/designs/codd-gate-design.md) §4.1「自動検出レイヤ」。
 
 ### policy.md（人による上書き・per-project）
 
