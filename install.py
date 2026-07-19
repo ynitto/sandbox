@@ -1505,10 +1505,11 @@ RTK_INSTALL_SH = (
     "https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh"
 )
 
+# --auto-patch は Claude settings.json 用。--codex / --copilot とは併用不可。
 RTK_AGENT_INIT_ARGS: dict[str, list[str]] = {
     "claude": ["-g", "--auto-patch"],
-    "copilot": ["-g", "--copilot", "--auto-patch"],
-    "codex": ["-g", "--codex", "--auto-patch"],
+    "copilot": ["-g", "--copilot"],
+    "codex": ["-g", "--codex"],
 }
 
 RTK_SUPPORTED_ENVS = frozenset({"mac", "linux", "wsl"})
