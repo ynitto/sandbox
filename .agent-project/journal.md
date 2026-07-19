@@ -309,3 +309,8 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-19 20:50:37 === agent-project 停止 reason=drained cycles=1 done=0 blocked=1 notified=True promoted=0 ===
 - 2026-07-19 20:50:39 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
 - 2026-07-19 20:50:39 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-19 20:52:26 === project 開始 v1 acceptance=2 ===
+- 2026-07-19 20:52:27 intake NG (exit 2): codd-gate tasks --debt --repos ./repos.json
+- 2026-07-19 20:52:27 === agent-project 開始 tasks=4 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-19 20:52:27 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
+- 2026-07-19 20:52:27 === agent-project 停止 reason=drained cycles=0 done=0 blocked=1 notified=False promoted=0 ===
