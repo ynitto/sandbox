@@ -201,18 +201,51 @@ def finalize_task_delivery(cfg: "Config", task: "Task") -> "tuple[bool, str]":
     # 既に target 側へ取り込まれていれば冪等成功。
     if run("merge-base", "--is-ancestor", ref, target_ref).returncode == 0:
         return True, f"作業ブランチ {branch} は {target} へ統合済み"
-    # target が進んで分岐している場合は、暗黙の競合解決をせず review のまま差し戻す。
-    if run("merge-base", "--is-ancestor", target_ref, ref).returncode != 0:
-        return False, f"{target} が作業開始後に更新されています。{branch} を更新して再検収してください"
     if not files:
         return False, f"{target} と {branch} の検収差分を取得できません"
-    pushed = run("push", "origin", f"{ref}:refs/heads/{target}", "--porcelain")
+
+    push_ref = ref
+    diverged = run("merge-base", "--is-ancestor", target_ref, ref).returncode != 0
+    if diverged:
+        # target が作業開始後に進んでいても、人が検収承認した成果を永久に
+        # done にできない理由にはしない。現在の作業ツリーを触らない一時 worktree で
+        # 通常マージを試し、Git が競合無しと判定できた場合だけ target へ push する。
+        # 競合時は一切解決せず review を維持し、人に具体的な理由を返す。
+        with tempfile.TemporaryDirectory(prefix="agent-project-approve-merge-") as merge_dir:
+            added = run("worktree", "add", "--detach", merge_dir, target_ref)
+            if added.returncode != 0:
+                why = (added.stderr or added.stdout or "git worktree add failed").strip()[:300]
+                return False, f"{target} と {branch} の統合準備に失敗しました: {why}"
+            try:
+                merged = subprocess.run(
+                    ["git", "-C", merge_dir,
+                     "-c", "user.name=agent-project",
+                     "-c", "user.email=agent-project@localhost",
+                     "merge", "--no-ff", "--no-edit", ref],
+                    capture_output=True, text=True, timeout=180,
+                )
+                if merged.returncode != 0:
+                    why = (merged.stderr or merged.stdout or "git merge failed").strip()[:500]
+                    return False, (f"{target} と {branch} の自動統合で競合しました。"
+                                   f"成果ブランチを更新して再検収してください: {why}")
+                head = subprocess.run(
+                    ["git", "-C", merge_dir, "rev-parse", "HEAD"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if head.returncode != 0 or not head.stdout.strip():
+                    return False, f"{target} と {branch} の統合コミットを確定できません"
+                push_ref = head.stdout.strip()
+            finally:
+                run("worktree", "remove", "--force", merge_dir)
+
+    pushed = run("push", "origin", f"{push_ref}:refs/heads/{target}", "--porcelain")
     if pushed.returncode != 0:
         why = (pushed.stderr or pushed.stdout or "git push failed").strip()[:300]
         return False, f"作業ブランチを {target} へマージできません: {why}"
     # target への反映後だけ作業ブランチを削除する。削除失敗は納品結果を巻き戻さない。
     run("push", "origin", "--delete", branch)
-    return True, f"作業ブランチ {branch} を {target} へ fast-forward マージ"
+    mode = "競合なしで統合" if diverged else "fast-forward マージ"
+    return True, f"作業ブランチ {branch} を {target} へ {mode}"
 
 
 def close_task_mr(cfg: "Config", task: "Task", reason: str) -> None:

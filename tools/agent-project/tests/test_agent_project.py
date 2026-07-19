@@ -10180,6 +10180,35 @@ class TestTaskBranchAndDeliveryReview(unittest.TestCase):
             self.assertTrue(any(cmd[-2:] == ["origin/ap/T1:refs/heads/release", "--porcelain"]
                                 for cmd in calls if "push" in cmd))
 
+    def test_approve_without_mr_cleanly_merges_diverged_target(self):
+        """target が進んでも競合が無ければ、検収承認で安全に統合する。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, task_branch=True)
+            t = self._mr_task(cfg, d)
+            calls = []
+
+            def run(cmd, **kwargs):
+                calls.append(cmd)
+                # 作業→target も target→作業も ancestor でない（分岐）。
+                if "merge-base" in cmd:
+                    return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+                if "rev-parse" in cmd and cmd[-1] == "HEAD":
+                    return subprocess.CompletedProcess(cmd, 0, stdout="merge-commit\n", stderr="")
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            with mock.patch.object(km, "ensure_task_mr", return_value=""), \
+                 mock.patch.object(km, "_task_work_branch", return_value=("release", "ap/T1")), \
+                 mock.patch.object(km, "work_branch_changes",
+                                   return_value=("origin/ap/T1", ["src/a.py"])), \
+                 mock.patch.object(km.subprocess, "run", side_effect=run):
+                ok, msg = km.finalize_task_delivery(cfg, t)
+
+            self.assertTrue(ok, msg)
+            self.assertTrue(any("worktree" in cmd and "add" in cmd for cmd in calls))
+            self.assertTrue(any(cmd[-2:] == ["merge-commit:refs/heads/release", "--porcelain"]
+                                for cmd in calls if "push" in cmd))
+
     def _review_task_with_mr(self, cfg, d):
         t = self._mr_task(cfg, d)
         t.status = "review"
