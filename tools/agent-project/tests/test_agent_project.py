@@ -287,7 +287,7 @@ class TestIntake(unittest.TestCase):
 
     def test_run_intake_one_bad_record_does_not_block_the_rest(self):
         # codd-gate tasks --debt 想定: 1件が title 欠落でも、残りは取り込まれる
-        # （codd_gate_debt.parse_debt_output 経由のレコード単位検証）。
+        # （model 本体同梱の _parse_intake_records によるレコード単位検証。検出器非依存）。
         with tempfile.TemporaryDirectory() as d:
             cmd = ("printf '%s' '[{\"id\":\"OK1\",\"title\":\"ok\",\"verify\":\"true\"},"
                    "{\"id\":\"BAD1\"}]'")
@@ -3996,11 +3996,12 @@ class TestConfigFile(unittest.TestCase):
                          (False, True, True, True))                    # 組み込み既定
 
 
-class TestCoddGateAutoWiring(unittest.TestCase):
-    """build_config が codd-gate を自動検出して regression_cmd/intake_cmd を冪等に補う経路。
+class TestCoddGateNoAutoWiring(unittest.TestCase):
+    """build_config は codd-gate 固有の実行時自動配線を持たない（configfile は差し込み点のみ）。
 
-    このリポジトリには tools/codd-gate/codd-gate.py が同梱されており、`resolve_codd_gate` の
-    同梱パスへの解決フォールバックで実バイナリとして検出できる（t1/t3 の実環境検証と同じ前提）。
+    有効化は「設定だけ」——regression_cmd/intake_cmd を agent-project.yaml へ明示するか、
+    sibling CLI（codd_gate_regression.py）でファイルへ恒久注入する。repos.json が実在しても
+    build_config はバイナリへ probe せず、メモリ上の cfg を勝手に埋めない。
     """
 
     @staticmethod
@@ -4009,62 +4010,32 @@ class TestCoddGateAutoWiring(unittest.TestCase):
         km.resolve_config(ns)
         return km.build_config(ns)
 
-    def test_no_repos_json_skips_detection_entirely(self):
-        # repos.json が無いプロジェクトでは codd-gate へ一切問い合わせず None のまま
-        # （毎コマンド起動でバイナリへ probe するコストを払わない）。
-        with tempfile.TemporaryDirectory() as d:
-            with mock.patch.object(km, "_codd_gate_wiring_module") as spy:
-                cfg = self._build(d)
-            spy.assert_not_called()
-        self.assertIsNone(cfg.regression_cmd)
-        self.assertIsNone(cfg.intake_cmd)
+    def test_configfile_has_no_codd_gate_auto_wiring_hook(self):
+        # 除去済みの自動配線関数が再導入されていないことを固定する（設計の回帰ガード）。
+        self.assertFalse(hasattr(km, "_apply_codd_gate_auto_wiring"))
 
-    def test_repos_json_present_wires_both_commands(self):
+    def test_repos_json_present_does_not_auto_wire(self):
+        # repos.json があっても build_config は regression_cmd/intake_cmd を補わない。
         with tempfile.TemporaryDirectory() as d:
             (Path(d) / "repos.json").write_text(
                 json.dumps({"app": {"url": "git@h:t/a.git"}}), encoding="utf-8")
             cfg = self._build(d)
-        self.assertIsNotNone(cfg.regression_cmd)
-        self.assertRegex(cfg.regression_cmd, r"codd-gate verify --base .* --repos ")
-        self.assertIsNotNone(cfg.intake_cmd)
-        self.assertRegex(cfg.intake_cmd, r"codd-gate tasks --debt --repos ")
-
-    def test_explicit_regression_cmd_is_not_overwritten(self):
-        # 明示済みの regression_cmd は保持しつつ、intake_cmd は独立して補われる（部分結線）。
-        with tempfile.TemporaryDirectory() as d:
-            (Path(d) / "repos.json").write_text(
-                json.dumps({"app": {"url": "git@h:t/a.git"}}), encoding="utf-8")
-            cfg = self._build(d, regression_cmd="echo custom-check")
-        self.assertEqual(cfg.regression_cmd, "echo custom-check")
-        self.assertIsNotNone(cfg.intake_cmd)
-
-    def test_explicit_both_set_skips_detection_entirely(self):
-        with tempfile.TemporaryDirectory() as d:
-            (Path(d) / "repos.json").write_text(
-                json.dumps({"app": {"url": "git@h:t/a.git"}}), encoding="utf-8")
-            with mock.patch.object(km, "_codd_gate_wiring_module") as spy:
-                cfg = self._build(d, regression_cmd="echo a", intake_cmd="echo b")
-            spy.assert_not_called()
-        self.assertEqual((cfg.regression_cmd, cfg.intake_cmd), ("echo a", "echo b"))
-
-    def test_wiring_module_unavailable_is_a_noop(self):
-        # sibling module が import できない環境（配布形態の欠落等）は既存動作（None のまま）に縮退する。
-        with tempfile.TemporaryDirectory() as d:
-            (Path(d) / "repos.json").write_text(
-                json.dumps({"app": {"url": "git@h:t/a.git"}}), encoding="utf-8")
-            with mock.patch.object(km, "_codd_gate_wiring_module", return_value=None):
-                cfg = self._build(d)
         self.assertIsNone(cfg.regression_cmd)
         self.assertIsNone(cfg.intake_cmd)
 
-    def test_idempotent_across_repeated_builds(self):
+    def test_no_repos_json_leaves_commands_unset(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._build(d)
+        self.assertIsNone(cfg.regression_cmd)
+        self.assertIsNone(cfg.intake_cmd)
+
+    def test_explicit_commands_pass_through_unchanged(self):
+        # 明示設定は build_config を素通りする（自動検出による上書きも補完も起きない）。
         with tempfile.TemporaryDirectory() as d:
             (Path(d) / "repos.json").write_text(
                 json.dumps({"app": {"url": "git@h:t/a.git"}}), encoding="utf-8")
-            first = self._build(d)
-            second = self._build(d)
-        self.assertEqual(first.regression_cmd, second.regression_cmd)
-        self.assertEqual(first.intake_cmd, second.intake_cmd)
+            cfg = self._build(d, regression_cmd="echo a", intake_cmd="echo b")
+        self.assertEqual((cfg.regression_cmd, cfg.intake_cmd), ("echo a", "echo b"))
 
 
 class TestAutoAdjudicate(unittest.TestCase):

@@ -20,6 +20,7 @@ import pkgutil as _pkgutil
 # top-to-bottom で NameError なく実行できた以上、import 時の前方参照はすべて満たされる。
 _FRAGMENTS = (
     "_head",       # 共有 import と最下層の定数
+    "hooks",       # 任意フック（外部プロバイダ module）の能力ベース解決
     "model",       # Task / enqueue / cohort / intake
     "policy",      # Policy / 自律レベル / パス保護ゲート
     "decisions",   # 決定記録 / DR 学習 / ltm 昇格

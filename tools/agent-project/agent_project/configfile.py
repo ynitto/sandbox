@@ -117,6 +117,7 @@ CONFIG_DEFAULTS = {
     "regression_cmd": None,     # done 確定前のグローバル回帰検査コマンド（巻き込み事故の検知）
     "regression_revert": False,
     "intake_cmd": None,         # 外部ゲート/検出器から修復タスクを汲み上げるコマンド（例: codd-gate tasks --debt）
+    "hooks": {},                # 任意フックのプロバイダ指定（能力キー -> module 名）。既定は sibling 自動検出
     "intake_interval": 600.0,   # intake の実行間隔（秒）。0 以下で毎パス/毎 poll
     "auto_level_max": "assisted",   # 自動昇格の ceiling（unattended への自動到達は明示時のみ）
     "level_promote_after": 5,       # 昇格に要する連続 clean 数
@@ -167,6 +168,19 @@ CONFIG_DEFAULTS = {
 }
 
 
+def _normalize_hooks(raw) -> dict:
+    """`hooks:` を 能力キー -> module 名 の対応表へ正規化する。
+
+    設定ファイルは人が手で書くので型は保証されない。壊れていても例外にせず空（＝sibling 自動
+    検出）へ落とす——設定ミスでプロセスが起動しない方が、任意フックが効かないことより高くつく。
+    値の妥当性（その名前が import できるか）はここでは見ない。解決は _hook_provider の責務で、
+    明示指定が効いていないことは doctor が warn として可視化する。"""
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k).strip(): str(v).strip()
+            for k, v in raw.items() if isinstance(v, str) and str(v).strip()}
+
+
 def _find_config(explicit):
     """設定ファイルの探索: 1) --config 明示 2) ./（ルート直下）3) ./.agent/ 4) ~/.agent/。
     ルート直下を最優先にするのは 1 root = 1 プロジェクト構成で agent-project.yaml が
@@ -196,37 +210,6 @@ def resolve_config(args):
         if getattr(args, key, None) is None:
             setattr(args, key, cfg.get(key, dflt))
     return args
-
-
-def _apply_codd_gate_auto_wiring(cfg: "Config") -> None:
-    """`regression_cmd`/`intake_cmd` が（CLI にも設定ファイルにも）明示されていないときだけ、
-    codd-gate の自動検出結果（`codd_gate_wiring.detect_wiring`）から**メモリ上の** `cfg` を
-    冪等に補う。`.agent/agent-project.yaml` そのものは一切書き換えない——同ファイルは
-    `state.py` の `_HUMAN_OWNED_STATE_FILES`（「機械が絶対に書かない」設定ファイル。状態
-    worktree の鏡合わせがこの前提の上に立っている）に含まれるため、ここでファイルへ
-    書き込むとその不変条件を壊す。
-
-    repos.json（`repo_registry_path`）が存在するプロジェクトだけを対象にする（存在しない
-    場合はまだ charter からの自動生成前後の過渡期・or 本当に repos が無いプロジェクトで、
-    無条件に codd-gate バイナリへ問い合わせるコストを毎コマンド起動ごとに払わないため）。
-    sibling module `codd_gate_wiring` が無い・codd-gate 未検出・非互換・capability 不足の
-    いずれでも何もせず、`cfg.regression_cmd`/`cfg.intake_cmd` は元の None のまま
-    （呼び出し元から見て今までと動作が変わらない＝no-op 縮退）。"""
-    if cfg.regression_cmd and cfg.intake_cmd:
-        return                                  # 両方すでに明示設定済みなら検出すら走らせない
-    repos_path = repo_registry_path(cfg)
-    if repos_path is None:
-        return
-    wiring = _codd_gate_wiring_module()
-    if wiring is None:
-        return
-    judgment = wiring.detect_wiring(
-        regression_cmd=cfg.regression_cmd, intake_cmd=cfg.intake_cmd,
-        repos_path=repos_path, vcwd=cfg.workdir)
-    if not cfg.regression_cmd and judgment.recommended_regression_cmd:
-        cfg.regression_cmd = judgment.recommended_regression_cmd
-    if not cfg.intake_cmd and judgment.recommended_intake_cmd:
-        cfg.intake_cmd = judgment.recommended_intake_cmd
 
 
 def build_config(args) -> Config:
@@ -329,6 +312,8 @@ def build_config(args) -> Config:
         regression_revert=bool(getattr(args, "regression_revert", False)),
         intake_cmd=getattr(args, "intake_cmd", None),
         intake_interval=float(getattr(args, "intake_interval", 600.0) or 0.0),
+        # 型が壊れていても例外にせず既定（自動検出）へ落とす。設定ミスは doctor が warn で見せる。
+        hooks=_normalize_hooks(getattr(args, "hooks", None)),
         require_progress=bool(getattr(args, "require_progress", False)),
         auto_level=bool(getattr(args, "auto_level", False)),
         auto_level_max=str(getattr(args, "auto_level_max", "assisted") or "assisted"),
@@ -373,7 +358,6 @@ def build_config(args) -> Config:
         update_subdir=str(getattr(args, "update_subdir", TOOL_SUBDIR) or TOOL_SUBDIR),
         update_installer=str(getattr(args, "update_installer", "install.sh") or "install.sh"),
     )
-    _apply_codd_gate_auto_wiring(cfg)
     return cfg
 
 

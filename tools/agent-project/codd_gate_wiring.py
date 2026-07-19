@@ -15,7 +15,8 @@
   - `.agent/agent-project.yaml` / `cfg.regression_cmd`・`cfg.intake_cmd` への実書き込み・永続化
     （regression 結線タスクの責務。本モジュールは推奨文字列を返すだけで、どこへも書かない）
   - `codd-gate tasks --debt` 出力の enqueue 経路統合（intake 結線タスクの責務。
-    `codd_gate_debt.py`/`agent_project/model.py` の `run_intake` が既に担う）
+    `agent_project/model.py` の `run_intake` が検出器非依存の `_parse_intake_records` で担う。
+    本体は `intake_cmd` という差し込み点のみを持ち、codd-gate 固有の実装へは依存しない）
   - `mr.py`/`model.py` の実行時フックを `CoddGateStatus.command()` ベースの動的組み立てへ
     置き換えること（現行の `cfg.regression_cmd`/`cfg.intake_cmd` は静的文字列のまま動く前提を
     崩さない——置き換えは影響範囲が大きく別タスクの責務）
