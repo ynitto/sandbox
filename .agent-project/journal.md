@@ -256,3 +256,5 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-19 18:54:36 run 再開: agent_project-codd_gate-163827 は req-ef1f92c3-agent_project-codd_gate-163827-r4 の失敗ノードだけをやり直します（done は温存）
 - 2026-07-19 18:54:43 cycle 1: agent_project-codd_gate-163827 → 人の判断（環境の問題: 利用上限。リトライ・裁定は消費しない）
 - 2026-07-19 18:54:44 === agent-project 停止 reason=drained cycles=1 done=0 blocked=1 notified=True promoted=0 ===
+- 2026-07-19 18:54:46 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-19 18:54:46 === project watch: 監視中（charter 更新/フィードバック待ち）===
