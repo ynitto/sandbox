@@ -12,7 +12,7 @@ import os
 import shutil
 import time
 
-from . import agentcli, nodebudget
+from . import agentcli, control, nodebudget
 from .bus import Bus, MissionPaths, TurnTxn
 from .mission import convergence_state, current_round, load_mission, load_roles
 from .messages import (build_message, message_path, new_messages, read_channel_all,
@@ -105,11 +105,31 @@ class AmigoRunner:
         if not want_work:
             return self._idle_turn(st, cursor, fresh)
 
+        # agent-control（管理面）: lifecycle=pause/stop 指定ならこのノードの amigo は働かない。
+        # ミッションは殺さず paused に留める（他ノード・上限緩和で再開）。owner へ一度だけ通知。
+        life = control.lifecycle()
+        if life in ("pause", "stop"):
+            if st.get("state") != "paused":
+                txn = TurnTxn()
+                st["state"] = "paused"
+                st["note"] = f"[agent-control] 管理面により lifecycle={life} 指定"
+                st["heartbeat"] = now_iso()
+                self._queue_message(txn, "owner", "status", subject="amigo paused",
+                                    body=f"[agent-control] {self.who}: lifecycle={life}（管理面指定）。"
+                                         "dashboard のオーケストレーションタブで run に戻してください。")
+                txn.write_json(self.mp.status(self.who), st)
+                txn.apply(self.bus, f"{self.who} paused (agent-control {life})")
+                log(self.who, f"paused: agent-control lifecycle={life}")
+            control.write_status(life=life)
+            return "paused"
+
         # ノード予算（請負側の上限、§3.3）: ミッション予算とは独立に、このノードの
         # 全ワークロード合計（定常業務・project・flow・amigos の共有台帳）で抑制する。
-        # 超過中は CLI ターンを開始せず paused（ミッションは殺さない — 他ノードは継続）。
+        # v2 でトークン上限も見る。超過かつ on_exhausted != degrade なら paused
+        # （ミッションは殺さない — 他ノードは継続）。degrade は縮退指定で継続する。
         nb = nodebudget.state()
-        if nb["exceeded"]:
+        control.write_status(life=life, budget=nb)
+        if nb["exceeded"] and nb.get("on_exhausted") != "degrade":
             if st.get("state") != "paused":       # 遷移時だけ owner へ通知（毎ターン鳴らさない）
                 txn = TurnTxn()
                 st["state"] = "paused"
@@ -134,13 +154,26 @@ class AmigoRunner:
                                     "現状を納品可能な形に整えてください。")
 
         cli = (self.agent_cli or role.get("agent_cli") or "stub")
+        model = self.model or role.get("model") or None
+        # agent-control（管理面の横断上書き）が最優先。soft/縮退中は degraded を重ねる。
+        c_cli, c_model = control.override(self.role_id)
+        if c_cli:
+            cli = c_cli
+        if c_model:
+            model = c_model
+        if nb.get("soft") or (nb.get("exceeded") and nb.get("on_exhausted") == "degrade"):
+            d_cli, d_model = control.degraded()
+            if d_cli:
+                cli = d_cli
+            if d_model:
+                model = d_model
         try:
             if cli == "stub":
                 actions, cli_seconds = self._stub_actions(mission, roles, role, st, fresh,
                                                           rnd, wrap_up), _stub_cost()
             else:
                 actions, cli_seconds = self._llm_actions(mission, roles, role, st, fresh,
-                                                         rnd, wrap_up, cli)
+                                                         rnd, wrap_up, cli, model)
         except RuntimeError as e:
             triage = agentcli.classify_agent_failure(str(e))
             if triage and triage[0] in agentcli.AGENT_ERROR_ENV_CLASSES:
@@ -170,9 +203,11 @@ class AmigoRunner:
                          {"ts": now_iso(), "turn": st["turn"], "cli_seconds": cli_seconds,
                           "actions": len(applied), "rejected": rejected})
         txn.apply(self.bus, f"{self.who} turn {st['turn']}")
-        # ノードの共有台帳へも記帳（バス events = ミッション予算、台帳 = ノード予算）
+        # ノードの共有台帳へも記帳（バス events = ミッション予算、台帳 = ノード予算）。
+        # agent_cli / model を帰属として付す（トークンは stub/CLI とも実測できないため付さない）。
         nodebudget.record(cli_seconds, ref=f"{self.mp.mission_id}/{self.role_id}",
-                          node=self.node_id)
+                          node=self.node_id, agent_cli=(cli if cli != "stub" else ""),
+                          model=model or "")
         return "acted" if applied else "idle"
 
     # --- idle（LLM を呼ばないターン） ----------------------------------------
@@ -391,10 +426,11 @@ class AmigoRunner:
 
     # --- LLM 実行（kiro/claude/copilot/codex/プラグイン） --------------------
     def _llm_actions(self, mission: dict, roles: dict, role: dict, st: dict,
-                     fresh: list, rnd: int, wrap_up: bool, cli: str) -> "tuple[list, float]":
+                     fresh: list, rnd: int, wrap_up: bool, cli: str,
+                     model: "str | None" = None) -> "tuple[list, float]":
         prompt = self._build_prompt(mission, roles, role, st, fresh, rnd, wrap_up)
         t0 = time.monotonic()
-        text = agentcli.run_agent(prompt, cli, self.model or role.get("model"))
+        text = agentcli.run_agent(prompt, cli, model or self.model or role.get("model"))
         seconds = time.monotonic() - t0
         data = extract_json(text)
         actions = data.get("actions") if isinstance(data, dict) else data

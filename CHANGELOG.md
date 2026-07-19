@@ -7,6 +7,50 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### schemas / agent-dashboard: ノード予算 v2（トークン一次）とオーケストレーション契約の正典化
+
+予算の一次単位を実行時間（分）からトークンへ刷新し、稼働中エンジンへの横断操作
+（エージェント / モデル変更・縮退・一時停止 / 停止・委譲誘導）を dashboard が書き
+エンジンが読む宣言的データ契約に統一する設計を確定した
+（`docs/plans/2026-07-19-agent-dashboard-orchestration-token-budget-design.md`）。
+
+- **`schemas/node-budget.schema.json` v2（additive）**: 台帳に実測 `tokens_in` / `tokens_out` /
+  `agent_cli` / `model` / `usd` を追記可能に。config に `tokens`（トークン合計上限）・
+  `allocation`（weight / min・max クランプ / `on_exhausted: pause|stop|degrade` / soft_ratio）・
+  `computed`（管理面が再計算する実効上限）・`rates`（トークン未報告 CLI の推定レート表）を追加。
+  台帳には事実のみ書き、推定は読み出し時（配分・較正の知能は管理面、エンジンは従来の単純比較）。
+  v1 リーダは分上限だけを執行し続ける互換設計。
+- **`schemas/agent-control.schema.json` 新設**: `$AGENT_CONTROL_DIR`（既定 `~/.agent/control/`）の
+  `control.json`（望ましい状態）＋ `status/<tool>-<pid>.json`（適用ハートビート）。優先順位は
+  control > CLI 引数 > 設定ファイル > 組み込み既定。kiro-loop は予算枯渇時に従来の一時停止でなく
+  `on_exhausted: stop` で graceful 停止できるようになる（routine の推奨既定）。
+- **4 エンジンへ v2 予算＋agent-control を実装**: agent-flow（`run_agent`）・agent-project
+  （`_run_agent_cli`）・agent-amigos（`runner` / `nodebudget` / 新 `control`）・kiro-loop
+  （`_run_loop`）の各チョークポイントに、① トークン集計（実測 or `rates` 推定）による超過判定、
+  ② control のエージェント / モデル横断上書き（既存の解決関数の先頭に 1 段）、③ soft_ratio 到達時の
+  `degraded` 適用、④ lifecycle（run|pause|stop）適用、⑤ `status/` ハートビート書出し、を追加。
+  台帳へ `agent_cli` / `model` / 実測トークン（agent-project は `@cost` から）を帰属付きで記帳。
+  **kiro-loop は `on_exhausted: stop` / lifecycle=stop で `_request_shutdown()`（自 SIGTERM →
+  既存 `_cleanup`）により graceful 停止**し、停止理由を state ディレクトリへ残す。
+- **agent-amigos CLI**: `budget node --limit-tokens` を追加し、消費表示にトークンを併記。
+  `save_config` は dashboard が書いた v2 キー（allocation / rates 等）を保持する（未知キーを消さない）。
+- **agent-dashboard オーケストレーションタブ**: 新制御面 `src/features/orchestration/`（予算ゲージ・
+  配分エディタ＋再配分/レート較正・エージェント割当マトリクス・エンジン状態＋lifecycle 操作・
+  agent-cli ドロップイン棚卸し）。割当マトリクスはワークロード既定に加え、**用途 / ロール / ノード
+  種別（`agents.<key>`）別の上書きを追加・編集・削除**できる（project は用途・flow は役割＋kind を
+  候補補完、amigos はロール id 自由入力、routine は非対応を明示）。既存 amigos 予算パネルは互換で存置。
+- テスト: 各エンジンに v2 予算（トークン実測 / 推定・computed 上限・soft/degrade）と agent-control
+  （上書き解決順・lifecycle・status・kiro-loop の stop 発火）の単体テストを追加。dashboard に
+  orchestration（予算集計 / 配分 / 較正 / control の agents.<key> 追加・削除 / ドロップイン）テストを追加。
+
+### agent-project: 計画バージョンの制約継承テストを実装意思に合わせて修正
+
+`charters/<name>.md` の制約 / 前提の継承は「バージョンが `## constraints` を明示すれば置換、
+見出しが無ければマスターから継承、空見出しなら継承値を消す」意思で実装されている（`_merge_master_charter`）。
+`test_version_inherits_master_charter` の表明だけが旧来の「和集合」前提のまま残って失敗していたため、
+実装意思（＝同テストの docstring の記述）に合わせて修正し、対称の 2 ケース
+（見出し省略→継承 / 空見出し→クリア）を追加した。
+
 ### agent-project / agent-dashboard: 「承認して完了にする」を出し分けで消さない
 
 要対応の画面で承認操作が見当たらず完了できない、という報告が繰り返し出ていた。原因は

@@ -6373,6 +6373,7 @@ function renderAllTabs() {
   renderHistory();
   renderCowork();
   renderAmigos();
+  renderOrchestration();
   renderKiroLoopTerminal();
   restoreUiState(ui);
 }
@@ -7021,9 +7022,11 @@ async function refreshAll({ sync = true } = {}) {
     // Cowork は軽量 overview（ログ推定のみ・発見キャッシュ利用）。重いプロセス探査は実行直後/手動更新のみ。
     await refreshCowork();
     await refreshAmigos();
+    await refreshOrchestration();
     if (state.selectedDir) await reloadProject({ refreshRemoteHealth: sync });
     if (activeTab() === 'cowork') renderCowork();
     if (activeTab() === 'amigos') renderAmigos();
+    if (activeTab() === 'orchestration') renderOrchestration();
   } finally {
     state.busy = false;
   }
@@ -7967,6 +7970,523 @@ function renderAmigos() {
 
 function workTypeLabel(type) {
   return type === 'state-machine' ? '定型業務' : '定期実行';
+}
+
+// ---------------------------------------------------------------------------
+// オーケストレーションタブ（ノード予算 v2 / エージェント制御 / ドロップイン棚卸し）
+// ノード横断（マシン単位）の管理面。プロジェクト選択に依存せず常に表示する。
+// 色だけに頼らず状態語を併記する（既存 UI 方針を踏襲）。
+// ---------------------------------------------------------------------------
+
+async function refreshOrchestration() {
+  if (!api.orchestrationOverview) return;
+  try {
+    state.orchestration = await api.orchestrationOverview();
+  } catch (err) {
+    state.orchestration = { error: err.message };
+  }
+}
+
+// トークン数を読みやすく（1.20M / 340k / 512）。
+function orchTokens(n) {
+  const v = Number(n || 0);
+  if (v >= 1e6) return `${(v / 1e6).toFixed(2).replace(/\.?0+$/, '')}M`;
+  if (v >= 1e3) return `${(v / 1e3).toFixed(1).replace(/\.0$/, '')}k`;
+  return String(Math.round(v));
+}
+
+function orchLifecycleLabel(lc) {
+  return { run: '稼働', pause: '一時停止', stop: '停止' }[lc] || lc || '未指定';
+}
+
+function orchOnExhaustedLabel(v) {
+  return { pause: '一時停止', stop: '停止', degrade: '縮退' }[v] || v;
+}
+
+// 状態バッジ（色 + 状態語）。kind は ok / soft / over / muted。
+function orchBadge(kind, text) {
+  return `<span class="orch-badge orch-badge-${esc(kind)}">${esc(text)}</span>`;
+}
+
+// 1. 予算ゲージ（トークン実測/推定の内訳 + 時間消費 + ワークロード別バー）
+function orchBudgetPanelHtml(budget) {
+  if (!budget) return '<section class="orch-panel"><p class="muted">予算情報がありません。</p></section>';
+  const cfg = budget.config || {};
+  const periodLabel = { day: '今日', month: '今月', total: '累計' }[cfg.period] || cfg.period;
+  const tt = budget.totalTokens || { measured: 0, estimated: 0, total: 0 };
+  const limit = Number(budget.tokenLimit || 0);
+  const limitTxt = limit > 0 ? `${orchTokens(limit)} tok` : '無制限';
+  // 全体トークンゲージ（実測 + 推定の積み上げ）
+  const denom = limit > 0 ? limit : Math.max(tt.total, 1);
+  const mPct = Math.min(100, (tt.measured / denom) * 100);
+  const ePct = Math.min(100 - mPct, (tt.estimated / denom) * 100);
+  const timeTxt = cfg.execution_minutes > 0
+    ? `${amigosMin(budget.totalSeconds)} / ${amigosMin(budget.limitSeconds)} 分`
+    : `${amigosMin(budget.totalSeconds)} 分（上限なし）`;
+  const overBadge = budget.exceeded
+    ? orchBadge('over', '超過中 — 各エンジンは新規実行を抑制')
+    : orchBadge('ok', '余裕あり');
+
+  const wlRows = (budget.knownWorkloads || [])
+    .concat(Object.keys(budget.workloads || {}).filter((w) => !(budget.knownWorkloads || []).includes(w)))
+    .map((wl) => {
+      const w = (budget.workloads || {})[wl] || { measuredTokens: 0, estimatedTokens: 0, totalTokens: 0, tokenCap: 0 };
+      const cap = Number(w.tokenCap || 0);
+      const capTxt = cap > 0 ? `${orchTokens(cap)} tok` : '無制限';
+      const d = cap > 0 ? cap : Math.max(w.totalTokens, 1);
+      const mp = Math.min(100, (w.measuredTokens / d) * 100);
+      const ep = Math.min(100 - mp, (w.estimatedTokens / d) * 100);
+      let badge = '';
+      if (w.tokenExceeded) badge = orchBadge('over', '実効上限に到達');
+      else if (w.soft) badge = orchBadge('soft', '縮退開始（soft）');
+      else if (w.timeExceeded) badge = orchBadge('over', '時間上限に到達');
+      return `<tr>
+        <td>${esc(amigosWorkloadLabel(wl))}</td>
+        <td class="orch-bar-cell">
+          <div class="orch-bar" title="実測 ${esc(orchTokens(w.measuredTokens))} / 推定 ${esc(orchTokens(w.estimatedTokens))}">
+            <span class="orch-bar-measured" style="width:${mp.toFixed(1)}%"></span>
+            <span class="orch-bar-estimated" style="width:${ep.toFixed(1)}%"></span>
+          </div>
+        </td>
+        <td class="num mono">${esc(orchTokens(w.totalTokens))} / ${esc(capTxt)}</td>
+        <td>${badge}</td>
+      </tr>`;
+    }).join('');
+
+  return `<section class="orch-panel">
+    <header class="row">
+      <div>
+        <span class="summary-kicker">ノード予算 v2</span>
+        <h3>トークン消費（${esc(periodLabel)}）</h3>
+        <p class="muted">実測分と推定分（トークン未報告 CLI の seconds × レート）を分けて表示します。
+          設定はノード共通の契約（${esc(budget.dir || '')}）です。</p>
+      </div>
+      <div>${overBadge}</div>
+    </header>
+    <div class="orch-gauge">
+      <div class="orch-gauge-head">
+        <strong>合計 ${esc(orchTokens(tt.total))} tok</strong>
+        <span class="muted">/ 上限 ${esc(limitTxt)}</span>
+        <span class="orch-legend"><span class="orch-swatch orch-bar-measured"></span>実測 ${esc(orchTokens(tt.measured))}</span>
+        <span class="orch-legend"><span class="orch-swatch orch-bar-estimated"></span>推定 ${esc(orchTokens(tt.estimated))}</span>
+        <span class="muted">・時間 ${esc(timeTxt)}</span>
+      </div>
+      <div class="orch-bar orch-bar-lg">
+        <span class="orch-bar-measured" style="width:${mPct.toFixed(1)}%"></span>
+        <span class="orch-bar-estimated" style="width:${ePct.toFixed(1)}%"></span>
+      </div>
+    </div>
+    <table class="amigos-table orch-table">
+      <thead><tr><th>ワークロード</th><th>消費（実測+推定）</th><th>消費 / 実効上限</th><th>状態</th></tr></thead>
+      <tbody>${wlRows}</tbody>
+    </table>
+  </section>`;
+}
+
+// 2. 配分エディタ（weight / min / max / on_exhausted / soft_ratio / auto|static / 再配分 / 較正）
+function orchAllocationPanelHtml(budget) {
+  if (!budget) return '';
+  const alloc = (budget.config && budget.config.allocation) || {};
+  const allocWl = (alloc.workloads && typeof alloc.workloads === 'object') ? alloc.workloads : {};
+  const mode = alloc.mode === 'auto' ? 'auto' : 'static';
+  const soft = Number(alloc.soft_ratio);
+  const softVal = Number.isFinite(soft) ? soft : 0.9;
+  const rows = (budget.knownWorkloads || []).map((wl) => {
+    const a = allocWl[wl] || {};
+    const onEx = ['pause', 'stop', 'degrade'].includes(a.on_exhausted) ? a.on_exhausted : 'pause';
+    return `<tr data-orch-alloc-wl="${esc(wl)}">
+      <td>${esc(amigosWorkloadLabel(wl))}</td>
+      <td><input type="number" min="0" step="1" class="mono orch-alloc-weight" value="${Number(a.weight !== undefined ? a.weight : 1)}" /></td>
+      <td><input type="number" min="0" step="1000" class="mono orch-alloc-min" value="${Number(a.min_tokens || 0)}" title="0 = 下限なし" /></td>
+      <td><input type="number" min="0" step="1000" class="mono orch-alloc-max" value="${Number(a.max_tokens || 0)}" title="0 = 上限なし" /></td>
+      <td><select class="orch-alloc-onex">
+        ${['pause', 'stop', 'degrade'].map((v) => `<option value="${v}"${v === onEx ? ' selected' : ''}>${esc(orchOnExhaustedLabel(v))}</option>`).join('')}
+      </select></td>
+    </tr>`;
+  }).join('');
+  return `<section class="orch-panel">
+    <header class="row">
+      <div>
+        <span class="summary-kicker">配分</span>
+        <h3>ワークロードへのトークン配分</h3>
+        <p class="muted">残り枠を weight 比で配り、下限/上限でクランプします。auto は「いま再配分」で computed を更新します
+          （静的上限と全体上限は常に有効）。</p>
+      </div>
+    </header>
+    <div class="row orch-alloc-controls">
+      <label>トークン上限
+        <input type="number" min="0" step="10000" id="orch-token-limit" class="mono" value="${Number(budget.tokenLimit || 0)}" title="0 = 無制限" />
+      </label>
+      <label>soft_ratio（縮退開始比）
+        <input type="number" min="0" max="1" step="0.05" id="orch-soft-ratio" class="mono" value="${softVal}" />
+      </label>
+      <label>再配分モード
+        <select id="orch-alloc-mode">
+          <option value="static"${mode === 'static' ? ' selected' : ''}>手動（static）</option>
+          <option value="auto"${mode === 'auto' ? ' selected' : ''}>自動（auto）</option>
+        </select>
+      </label>
+    </div>
+    <table class="amigos-table orch-table">
+      <thead><tr><th>ワークロード</th><th>weight</th><th>min_tokens</th><th>max_tokens</th><th>枯渇時</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="row orch-actions">
+      <button type="button" id="btn-orch-alloc-save"${state.orchSaving ? ' disabled' : ''}>配分を保存</button>
+      <button type="button" id="btn-orch-rebalance">いま再配分</button>
+      <button type="button" id="btn-orch-calibrate">レート較正</button>
+    </div>
+  </section>`;
+}
+
+// ワークロード別の「用途 / ロール / ノード種別」候補（agents.<key> 上書きのキー補完）。
+// project: AGENT_PURPOSES / flow: 役割＋ノード kind / amigos: ロール id は動的（自由入力）/
+// routine（kiro-loop）: エージェント選択をしない（tmux 送信）ため用途別なし。
+const ORCH_AGENT_KEYS = {
+  project: ['plan', 'review', 'prioritize', 'route', 'adjudicate', 'verify',
+    'distill', 'assess', 'repo_map', 'doctor'],
+  flow: ['planner', 'evaluator', 'worker', 'work', 'generate', 'classify',
+    'synthesize', 'verify', 'filter', 'judge', 'reduce', 'split', 'map'],
+  amigos: [],
+  routine: [],
+};
+
+// 1 ワークロードの用途 / ロール別上書きの小テーブル（既存キーの編集・削除＋新規追加行）。
+function orchAgentsEditorHtml(wl, wc) {
+  const agents = wc.agents || {};
+  const keys = Object.keys(agents);
+  const known = ORCH_AGENT_KEYS[wl];
+  // routine は用途別の概念が無い（kiro-loop は CLI/モデルを選ばない）ため編集 UI を出さない。
+  if (known && known.length === 0 && wl === 'routine') {
+    return '<div class="orch-agents-none"><small class="muted">このワークロードは用途別の上書きに対応しません（tmux 送信のため）。</small></div>';
+  }
+  const listId = `orch-keys-${esc(wl)}`;
+  const datalist = (known && known.length)
+    ? `<datalist id="${listId}">${known.map((k) => `<option value="${esc(k)}"></option>`).join('')}</datalist>`
+    : '';
+  const rows = keys.map((key) => {
+    const ov = agents[key] || {};
+    return `<tr class="orch-agent-row" data-orch-key="${esc(key)}">
+      <td><code>${esc(key)}</code></td>
+      <td><input type="text" class="orch-agent-cli" placeholder="（既定）" value="${esc(ov.agent_cli || '')}" /></td>
+      <td><input type="text" class="orch-agent-model" placeholder="（既定）" value="${esc(ov.model || '')}" /></td>
+      <td><label class="orch-agent-rm"><input type="checkbox" class="orch-agent-remove" /> 削除</label></td>
+    </tr>`;
+  }).join('');
+  const addRow = `<tr class="orch-agent-add">
+      <td><input type="text" class="orch-agent-new-key" list="${listId}" placeholder="${(known && known.length) ? '用途 / ロール名' : 'ロール id'}" /></td>
+      <td><input type="text" class="orch-agent-new-cli" placeholder="agent_cli" /></td>
+      <td><input type="text" class="orch-agent-new-model" placeholder="model" /></td>
+      <td><small class="muted">保存で追加</small></td>
+    </tr>`;
+  const summaryLabel = keys.length ? `用途 / ロール別の上書き（${keys.length}）` : '用途 / ロール別の上書きを追加';
+  return `<details class="orch-agents"${keys.length ? ' open' : ''}>
+    <summary>${esc(summaryLabel)}</summary>
+    ${datalist}
+    <table class="amigos-table orch-agents-table">
+      <thead><tr><th>用途 / ロール / 種別</th><th>agent_cli</th><th>model</th><th></th></tr></thead>
+      <tbody>${rows}${addRow}</tbody>
+    </table>
+  </details>`;
+}
+
+// 3. エージェント割当マトリクス（ワークロード既定＋用途 / ロール別の上書き）→ control.json
+function orchMatrixPanelHtml(overview) {
+  const control = overview.control || { workloads: {} };
+  const wls = (overview.budget && overview.budget.knownWorkloads) || ['routine', 'project', 'flow', 'amigos'];
+  const blocks = wls.map((wl) => {
+    const wc = (control.workloads || {})[wl] || {};
+    const deg = wc.degraded || {};
+    return `<div class="orch-ctrl-wl" data-orch-ctrl-wl="${esc(wl)}">
+      <div class="orch-ctrl-head">
+        <strong>${esc(amigosWorkloadLabel(wl))}</strong>
+        <label>agent_cli<input type="text" class="orch-ctrl-cli" placeholder="（設定に従う）" value="${esc(wc.agent_cli || '')}" /></label>
+        <label>model<input type="text" class="orch-ctrl-model" placeholder="（設定に従う）" value="${esc(wc.model || '')}" /></label>
+        <label>縮退時 model<input type="text" class="orch-ctrl-degraded-model" placeholder="soft 時に切替" value="${esc(deg.model || '')}" /></label>
+      </div>
+      ${orchAgentsEditorHtml(wl, wc)}
+    </div>`;
+  }).join('');
+  return `<section class="orch-panel">
+    <header class="row">
+      <div>
+        <span class="summary-kicker">割当</span>
+        <h3>エージェント / モデルの横断上書き</h3>
+        <p class="muted">空欄 = 上書きなし（各エンジンの設定ファイルに従う）。ワークロード既定に加え、
+          用途 / ロール / ノード種別（planner・verify・reviewer 等）別にも上書きできます。
+          保存すると control の revision が 1 つ進みます。</p>
+      </div>
+      <div>${orchBadge('muted', `revision ${Number(control.revision || 0)}`)}</div>
+    </header>
+    <div class="orch-ctrl-blocks">${blocks}</div>
+    <div class="row orch-actions">
+      <button type="button" id="btn-orch-control-save"${state.orchSaving ? ' disabled' : ''}>割当を保存</button>
+    </div>
+  </section>`;
+}
+
+// 4. エンジン状態（status/ 一覧: tool/pid/lifecycle/revision applied↔desired/budget）+ lifecycle 操作
+function orchStatusPanelHtml(overview) {
+  const status = overview.status || [];
+  const control = overview.control || { workloads: {}, revision: 0 };
+  const desiredRev = Number(control.revision || 0);
+  const rows = status.length ? status.map((s) => {
+    const wl = String(s.workload || '');
+    const desired = ((control.workloads || {})[wl] || {}).lifecycle || 'run';
+    const applied = Number(s.revision_applied);
+    const revBadge = Number.isFinite(applied)
+      ? (applied >= desiredRev ? orchBadge('ok', `反映済 r${applied}`) : orchBadge('soft', `未反映 r${applied}/${desiredRev}`))
+      : orchBadge('muted', 'revision 不明');
+    const budget = s.budget || {};
+    const budgetBadge = budget.exceeded ? orchBadge('over', '超過') : budget.soft ? orchBadge('soft', '縮退中') : orchBadge('ok', '正常');
+    const freshBadge = s.fresh ? orchBadge('ok', '最新') : orchBadge('over', '古い（停止の疑い）');
+    return `<tr>
+      <td>${esc(s.tool || '?')}<br><small class="muted">${esc(amigosWorkloadLabel(wl))} / pid ${esc(String(s.pid || '-'))}</small></td>
+      <td>${orchBadge(s.lifecycle === 'run' ? 'ok' : 'soft', orchLifecycleLabel(s.lifecycle))}
+          <br><small class="muted">指示: ${esc(orchLifecycleLabel(desired))}</small></td>
+      <td>${revBadge}</td>
+      <td>${budgetBadge} ${freshBadge}</td>
+      <td class="orch-lc-actions">
+        <button type="button" data-orch-lc="run" data-orch-wl="${esc(wl)}">再開</button>
+        <button type="button" data-orch-lc="pause" data-orch-wl="${esc(wl)}">一時停止</button>
+        <button type="button" data-orch-lc="stop" data-orch-wl="${esc(wl)}">停止</button>
+      </td>
+    </tr>`;
+  }).join('') : '<tr><td colspan="5" class="muted">稼働中エンジンのハートビート（status/）がありません。</td></tr>';
+  return `<section class="orch-panel">
+    <header class="row">
+      <div>
+        <span class="summary-kicker">エンジン状態</span>
+        <h3>稼働中エンジン（status/）</h3>
+        <p class="muted">各エンジンが書くハートビート。指示（control）の反映状況と予算判定を突き合わせます。
+          反映は pull 型のため次のサイクルで効きます。</p>
+      </div>
+    </header>
+    <table class="amigos-table orch-table">
+      <thead><tr><th>ツール</th><th>lifecycle</th><th>revision</th><th>予算 / 鮮度</th><th>操作</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </section>`;
+}
+
+// 5. エージェント CLI 棚卸し（組み込み + ドロップイン: shadowed マーカー + 検証エラー）+ 作成/編集/削除
+function orchInventoryPanelHtml(overview) {
+  const inv = overview.agents || { builtins: [], dropins: [] };
+  const builtins = (inv.builtins || []).map((b) => orchBadge('muted', b)).join(' ');
+  const dropins = (inv.dropins || []).map((d, i) => {
+    const errs = (d.errors || []).length
+      ? `<div class="orch-errors">${d.errors.map((e) => `<div class="orch-error">${esc(e)}</div>`).join('')}</div>`
+      : '';
+    const shadow = d.shadowed ? orchBadge('soft', '陰り（先勝ちで無効）') : orchBadge('ok', '有効');
+    const specText = d.spec ? JSON.stringify(d.spec, null, 2) : '';
+    return `<details class="orch-dropin" data-orch-dropin="${i}">
+      <summary><strong>${esc(d.name)}</strong> ${shadow}
+        <small class="muted">${esc(d.dir || '')}</small></summary>
+      ${errs}
+      <textarea class="orch-dropin-spec mono" rows="8" data-orch-name="${esc(d.name)}" data-orch-dir="${esc(d.dir || '')}">${esc(specText)}</textarea>
+      <div class="row orch-actions">
+        <button type="button" class="orch-dropin-save" data-orch-name="${esc(d.name)}" data-orch-dir="${esc(d.dir || '')}">保存</button>
+        <button type="button" class="orch-dropin-delete" data-orch-name="${esc(d.name)}" data-orch-dir="${esc(d.dir || '')}">削除</button>
+      </div>
+    </details>`;
+  }).join('') || '<p class="muted">ドロップイン定義（agents/&lt;name&gt;.json）はありません。</p>';
+  const sample = JSON.stringify({ command: ['cursor', 'run', '{model}'], prompt_via: 'stdin', output: 'stdout' }, null, 2);
+  return `<section class="orch-panel">
+    <header class="row">
+      <div>
+        <span class="summary-kicker">エージェント CLI</span>
+        <h3>組み込みとドロップインの棚卸し</h3>
+        <p class="muted">組み込み（上書き不可）と探索ディレクトリのドロップイン。同名は先勝ちで後段を陰らせます。
+          契約（agent-cli）の検証エラーはその場で表示します。</p>
+      </div>
+    </header>
+    <p>組み込み: ${builtins}</p>
+    <div class="orch-dropins">${dropins}</div>
+    <details class="orch-dropin orch-new">
+      <summary><strong>＋ 新しいドロップインを作成</strong></summary>
+      <label class="orch-new-name">名前（&lt;name&gt;.json のファイル名）
+        <input type="text" id="orch-new-name" placeholder="cursor" />
+      </label>
+      <textarea id="orch-new-spec" class="mono" rows="8">${esc(sample)}</textarea>
+      <div class="row orch-actions">
+        <button type="button" id="btn-orch-new-save">作成</button>
+      </div>
+      <p class="muted">既定の書込先は ~/.agent/agents/。command は 1 要素以上、output は stdout/file、prompt_via は stdin/argv。</p>
+    </details>
+  </section>`;
+}
+
+function renderOrchestration() {
+  const el = $('tab-orchestration');
+  if (!el) return;
+  const ov = state.orchestration;
+  if (!ov) {
+    el.innerHTML = '<div class="empty"><strong>読み込み中…</strong></div>';
+    return;
+  }
+  if (ov.error) {
+    el.innerHTML = `<div class="empty"><strong>オーケストレーション情報を読み込めませんでした</strong><span>${esc(ov.error)}</span></div>`;
+    return;
+  }
+  el.innerHTML = `
+    <div class="orch-shell">
+      <header class="cowork-header">
+        <div>
+          <span class="summary-kicker">ノード運用</span>
+          <h2>オーケストレーション</h2>
+          <p class="muted">このマシンのトークン予算・エージェント割当・稼働エンジンを横断して見て操作します。</p>
+        </div>
+        <div class="row"><button id="btn-orch-refresh">更新</button></div>
+      </header>
+      ${orchBudgetPanelHtml(ov.budget)}
+      ${orchAllocationPanelHtml(ov.budget)}
+      ${orchMatrixPanelHtml(ov)}
+      ${orchStatusPanelHtml(ov)}
+      ${orchInventoryPanelHtml(ov)}
+    </div>`;
+  setupOrchestration(el);
+}
+
+function setupOrchestration(root) {
+  const refreshBtn = root.querySelector('#btn-orch-refresh');
+  if (refreshBtn) refreshBtn.addEventListener('click', () =>
+    guard('オーケストレーション更新', async () => { await refreshOrchestration(); renderOrchestration(); }));
+
+  // 配分の保存
+  const allocSave = root.querySelector('#btn-orch-alloc-save');
+  if (allocSave) allocSave.addEventListener('click', () => guard('配分の保存', async () => {
+    const workloads = {};
+    for (const tr of root.querySelectorAll('[data-orch-alloc-wl]')) {
+      const wl = tr.getAttribute('data-orch-alloc-wl');
+      workloads[wl] = {
+        weight: Number(tr.querySelector('.orch-alloc-weight').value || 0),
+        min_tokens: Number(tr.querySelector('.orch-alloc-min').value || 0),
+        max_tokens: Number(tr.querySelector('.orch-alloc-max').value || 0),
+        on_exhausted: tr.querySelector('.orch-alloc-onex').value,
+      };
+    }
+    state.orchSaving = true;
+    try {
+      await api.orchestrationBudgetSave({
+        tokens: Number((root.querySelector('#orch-token-limit') || {}).value || 0),
+        allocation: {
+          mode: (root.querySelector('#orch-alloc-mode') || {}).value || 'static',
+          soft_ratio: Number((root.querySelector('#orch-soft-ratio') || {}).value || 0.9),
+          workloads,
+        },
+      });
+      toast('配分を保存しました', true);
+    } finally { state.orchSaving = false; }
+    await refreshOrchestration();
+    renderOrchestration();
+  }));
+
+  const rebalanceBtn = root.querySelector('#btn-orch-rebalance');
+  if (rebalanceBtn) rebalanceBtn.addEventListener('click', () => guard('再配分', async () => {
+    await api.orchestrationRebalance();
+    toast('再配分しました（computed を更新）', true);
+    await refreshOrchestration();
+    renderOrchestration();
+  }));
+
+  const calibrateBtn = root.querySelector('#btn-orch-calibrate');
+  if (calibrateBtn) calibrateBtn.addEventListener('click', () => guard('レート較正', async () => {
+    await api.orchestrationCalibrate();
+    toast('レートを較正しました', true);
+    await refreshOrchestration();
+    renderOrchestration();
+  }));
+
+  // 割当（control）の保存
+  const controlSave = root.querySelector('#btn-orch-control-save');
+  if (controlSave) controlSave.addEventListener('click', () => guard('割当の保存', async () => {
+    const workloads = {};
+    for (const block of root.querySelectorAll('[data-orch-ctrl-wl]')) {
+      const wl = block.getAttribute('data-orch-ctrl-wl');
+      const cli = block.querySelector('.orch-ctrl-cli').value.trim();
+      const model = block.querySelector('.orch-ctrl-model').value.trim();
+      const degModel = block.querySelector('.orch-ctrl-degraded-model').value.trim();
+      const wc = {
+        agent_cli: cli || null,
+        model: model || null,
+        degraded: degModel ? { model: degModel } : null,
+      };
+      // 用途 / ロール別の上書き（agents.<key>）を集める。削除チェックは null（＝キー削除）。
+      const agents = {};
+      for (const arow of block.querySelectorAll('.orch-agent-row')) {
+        const key = arow.getAttribute('data-orch-key');
+        if (arow.querySelector('.orch-agent-remove').checked) {
+          agents[key] = null;
+          continue;
+        }
+        const acli = arow.querySelector('.orch-agent-cli').value.trim();
+        const amodel = arow.querySelector('.orch-agent-model').value.trim();
+        agents[key] = { agent_cli: acli || null, model: amodel || null };
+      }
+      const addRow = block.querySelector('.orch-agent-add');
+      if (addRow) {
+        const nk = addRow.querySelector('.orch-agent-new-key').value.trim();
+        if (nk) {
+          agents[nk] = {
+            agent_cli: addRow.querySelector('.orch-agent-new-cli').value.trim() || null,
+            model: addRow.querySelector('.orch-agent-new-model').value.trim() || null,
+          };
+        }
+      }
+      if (Object.keys(agents).length) wc.agents = agents;
+      workloads[wl] = wc;
+    }
+    state.orchSaving = true;
+    try {
+      await api.orchestrationControlSave({ workloads });
+      toast('割当を保存しました', true);
+    } finally { state.orchSaving = false; }
+    await refreshOrchestration();
+    renderOrchestration();
+  }));
+
+  // lifecycle 操作
+  for (const btn of root.querySelectorAll('[data-orch-lc]')) {
+    btn.addEventListener('click', () => guard('エンジン操作', async () => {
+      await api.orchestrationLifecycle({ workload: btn.getAttribute('data-orch-wl'), action: btn.getAttribute('data-orch-lc') });
+      toast(`${orchLifecycleLabel(btn.getAttribute('data-orch-lc'))}を指示しました`, true);
+      await refreshOrchestration();
+      renderOrchestration();
+    }));
+  }
+
+  // ドロップインの保存・削除
+  for (const btn of root.querySelectorAll('.orch-dropin-save')) {
+    btn.addEventListener('click', () => guard('ドロップイン保存', async () => {
+      const details = btn.closest('.orch-dropin');
+      const ta = details.querySelector('.orch-dropin-spec');
+      let spec;
+      try { spec = JSON.parse(ta.value); } catch (e) { throw new Error(`JSON として読めません: ${e.message}`); }
+      await api.orchestrationAgentSave({ name: btn.getAttribute('data-orch-name'), dir: btn.getAttribute('data-orch-dir'), spec });
+      toast('ドロップインを保存しました', true);
+      await refreshOrchestration();
+      renderOrchestration();
+    }));
+  }
+  for (const btn of root.querySelectorAll('.orch-dropin-delete')) {
+    btn.addEventListener('click', () => guard('ドロップイン削除', async () => {
+      await api.orchestrationAgentDelete({ name: btn.getAttribute('data-orch-name'), dir: btn.getAttribute('data-orch-dir') });
+      toast('ドロップインを削除しました', true);
+      await refreshOrchestration();
+      renderOrchestration();
+    }));
+  }
+  const newSave = root.querySelector('#btn-orch-new-save');
+  if (newSave) newSave.addEventListener('click', () => guard('ドロップイン作成', async () => {
+    const name = (root.querySelector('#orch-new-name') || {}).value || '';
+    let spec;
+    try { spec = JSON.parse((root.querySelector('#orch-new-spec') || {}).value || '{}'); }
+    catch (e) { throw new Error(`JSON として読めません: ${e.message}`); }
+    await api.orchestrationAgentSave({ name: name.trim(), spec });
+    toast('ドロップインを作成しました', true);
+    await refreshOrchestration();
+    renderOrchestration();
+  }));
 }
 
 function coworkStatusClass(status) {
@@ -9017,6 +9537,7 @@ async function init() {
 
   await refreshDiscovery();
   await refreshCowork();
+  await refreshOrchestration();
   const last = localStorage.getItem('kpv:selected');
   const all = state.discovery.projects;
   const target = all.find((p) => p.dir === last) || all[0];

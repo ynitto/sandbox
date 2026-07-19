@@ -653,6 +653,73 @@ class NodeBudgetTests(AmigosTestCase):
         self.assertTrue(nodebudget.state()["exceeded"])
 
 
+class NodeBudgetV2AndControlTests(AmigosTestCase):
+    """ノード予算 v2（トークン一次・rates 推定）と agent-control（上書き・lifecycle・status）。"""
+
+    def setUp(self):
+        super().setUp()
+        os.environ["AGENT_CONTROL_DIR"] = os.path.join(self.tmp, "control")
+        self.addCleanup(os.environ.pop, "AGENT_CONTROL_DIR", None)
+        from agent_amigos import control
+        control._CACHE["mtime"] = None
+
+    def _budget(self, cfg):
+        d = os.path.join(self.tmp, "node-budget")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "config.json"), "w", encoding="utf-8") as f:
+            json.dump(cfg, f)
+
+    def _control(self, ctl):
+        from agent_amigos import control
+        d = os.path.join(self.tmp, "control")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "control.json"), "w", encoding="utf-8") as f:
+            json.dump(ctl, f)
+        control._CACHE["mtime"] = None
+
+    def test_token_budget_measured_and_estimated(self):
+        from agent_amigos import nodebudget
+        self._budget({"version": 2, "tokens": 1000, "rates": {"per_cli": {"claude": 100}}})
+        nodebudget.record(8.0, agent_cli="claude")                     # 800 推定
+        self.assertFalse(nodebudget.state()["exceeded"])
+        nodebudget.record(0.1, tokens_in=150, tokens_out=100)          # +250 = 1050 実測
+        st = nodebudget.state()
+        self.assertTrue(st["exceeded"])
+        self.assertGreaterEqual(st["spent_tokens"], 1000)
+
+    def test_save_config_preserves_v2_keys(self):
+        from agent_amigos import nodebudget
+        self._budget({"version": 2, "tokens": 500,
+                      "allocation": {"soft_ratio": 0.5}, "rates": {"per_cli": {"kiro": 10}}})
+        nodebudget.save_config(execution_minutes=5)                    # v1 上限だけ更新
+        raw = nodebudget._raw_config()
+        self.assertEqual(raw["tokens"], 500)                          # v2 キーを消さない
+        self.assertEqual(raw["allocation"]["soft_ratio"], 0.5)
+        self.assertEqual(raw["execution_minutes"], 5)
+
+    def test_control_override_and_degraded(self):
+        from agent_amigos import control
+        self._control({"version": 1, "revision": 4,
+                       "workloads": {"amigos": {"agents": {"reviewer": {"model": "opus"}},
+                                                "degraded": {"model": "haiku"}}}})
+        self.assertEqual(control.override("reviewer"), (None, "opus"))
+        self.assertEqual(control.degraded(), (None, "haiku"))
+
+    def test_control_lifecycle_pauses_amigo(self):
+        self._control({"version": 1, "workloads": {"amigos": {"lifecycle": "stop"}}})
+        mid = self.post()
+        d = self.daemon()
+        for _ in range(4):
+            d.cycle()
+        mp = self.bus.mission(mid)
+        self.assertNotEqual(self.phase(mid), "failed")               # ミッションは殺さない
+        statuses = [read_json(mp.status(f"owner-node--{r}"))
+                    for r in ("architect", "impl", "reviewer")]
+        paused = [s for s in statuses if s and s.get("state") == "paused"]
+        self.assertTrue(paused, "lifecycle=stop で amigo は paused になるべき")
+        self.assertIn("agent-control", paused[0].get("note", ""))
+
+
 @unittest.skipUnless(shutil.which("git"), "git が必要")
 class GitBusTests(unittest.TestCase):
     """GitBus（P1、設計書 §5.1）: 専用バスリポジトリ + ミッション別ブランチ。"""

@@ -6580,5 +6580,129 @@ class NodeBudgetTests(unittest.TestCase):
         self.assertGreater(rec["seconds"], 0)
 
 
+class NodeBudgetV2Tests(unittest.TestCase):
+    """ノード予算 v2（トークン一次・rates 推定・配分 computed・soft/degrade）。"""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="kf-nbv2-")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        os.environ["AGENT_BUDGET_DIR"] = self.dir
+        self.addCleanup(os.environ.pop, "AGENT_BUDGET_DIR", None)
+
+    def _config(self, cfg):
+        with open(os.path.join(self.dir, "config.json"), "w", encoding="utf-8") as f:
+            json.dump(cfg, f)
+
+    def _ledger(self, records, day=None):
+        led = os.path.join(self.dir, "ledger")
+        os.makedirs(led, exist_ok=True)
+        day = day or time.strftime("%Y%m%d", time.gmtime())
+        with open(os.path.join(led, f"{day}.jsonl"), "a", encoding="utf-8") as f:
+            for rec in records:
+                f.write(json.dumps(rec) + "\n")
+
+    def test_measured_tokens_used_directly(self):
+        self._config({"version": 2, "tokens": 1000})
+        self._ledger([{"workload": "flow", "seconds": 5, "tokens_in": 600, "tokens_out": 500}])
+        st = kf._node_budget_state()
+        self.assertEqual(st["spent_tokens"], 1100)
+        self.assertTrue(st["exceeded"])                     # トークン上限で超過
+
+    def test_estimated_tokens_from_rate_when_unreported(self):
+        # トークン未報告行は seconds × rate（cli:model → cli → default）で推定
+        self._config({"version": 2, "tokens": 1000,
+                      "rates": {"default_tokens_per_second": 100,
+                                "per_cli": {"kiro": 50, "claude:opus": 200}}})
+        self._ledger([{"workload": "flow", "seconds": 10, "agent_cli": "kiro"},           # 500
+                      {"workload": "flow", "seconds": 2, "agent_cli": "claude", "model": "opus"}])  # 400
+        st = kf._node_budget_state()
+        self.assertAlmostEqual(st["spent_tokens"], 900)
+        self.assertFalse(st["exceeded"])
+        self._ledger([{"workload": "routine", "seconds": 5}])  # default 100 → +500 = 1400
+        self.assertTrue(kf._node_budget_state()["exceeded"])
+
+    def test_computed_per_workload_cap(self):
+        # computed.workloads.flow.tokens が自ワークロードの実効上限
+        self._config({"version": 2, "tokens": 100000,
+                      "computed": {"workloads": {"flow": {"tokens": 500}}}})
+        self._ledger([{"workload": "flow", "seconds": 1, "tokens_in": 500, "tokens_out": 1}])
+        self.assertTrue(kf._node_budget_state()["exceeded"])   # 全体は余裕でも自 WL 上限で超過
+
+    def test_soft_ratio_triggers_degrade_flag(self):
+        self._config({"version": 2, "tokens": 1000,
+                      "allocation": {"soft_ratio": 0.8}})
+        self._ledger([{"workload": "flow", "seconds": 1, "tokens_in": 850, "tokens_out": 0}])
+        st = kf._node_budget_state()
+        self.assertTrue(st["soft"])                           # 0.8 到達・未超過
+        self.assertFalse(st["exceeded"])
+
+    def test_on_exhausted_degrade_does_not_block_run(self):
+        # on_exhausted=degrade は超過中も控えず、_agent_for が degraded 指定を適用する
+        self._config({"version": 2, "tokens": 100,
+                      "allocation": {"workloads": {"flow": {"on_exhausted": "degrade"}}}})
+        self._ledger([{"workload": "flow", "seconds": 1, "tokens_in": 200, "tokens_out": 0}])
+        os.environ["AGENT_CONTROL_DIR"] = self.dir
+        self.addCleanup(os.environ.pop, "AGENT_CONTROL_DIR", None)
+        with open(os.path.join(self.dir, "control.json"), "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "revision": 1,
+                       "workloads": {"flow": {"degraded": {"model": "haiku"}}}}, f)
+        with mock.patch.object(kf, "_run_agent_once", return_value="ok") as m:
+            self.assertEqual(kf.run_agent("x", None, purpose="worker"), "ok")
+        m.assert_called_once()                                # 控えず実行された
+
+
+class AgentControlTests(unittest.TestCase):
+    """agent-control 契約（control.json 上書き・lifecycle・status ハートビート）。"""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="kf-control-")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        os.environ["AGENT_CONTROL_DIR"] = self.dir
+        self.addCleanup(os.environ.pop, "AGENT_CONTROL_DIR", None)
+        os.environ["AGENT_BUDGET_DIR"] = self.dir       # 予算は無設定（None）
+        self.addCleanup(os.environ.pop, "AGENT_BUDGET_DIR", None)
+        kf._CONTROL_CACHE["mtime"] = None               # mtime キャッシュを毎テストで無効化
+
+    def _control(self, ctl):
+        with open(os.path.join(self.dir, "control.json"), "w", encoding="utf-8") as f:
+            json.dump(ctl, f)
+        kf._CONTROL_CACHE["mtime"] = None
+
+    def test_override_resolution_order(self):
+        # agents[purpose] > workload > defaults
+        self._control({"version": 1, "defaults": {"model": "sonnet"},
+                       "workloads": {"flow": {"model": "opus",
+                                              "agents": {"planner": {"agent_cli": "cursor"}}}}})
+        self.assertEqual(kf._control_override("planner"), ("cursor", "opus"))
+        self.assertEqual(kf._control_override("worker"), (None, "opus"))
+
+    def test_control_overrides_agent_for(self):
+        self._control({"version": 1,
+                       "workloads": {"flow": {"agents": {"verify": {"model": "opus"}}}}})
+        cli, model = kf._agent_for("verify")
+        self.assertEqual(model, "opus")                 # control が最優先
+
+    def test_lifecycle_pause_blocks_run_agent(self):
+        self._control({"version": 1, "workloads": {"flow": {"lifecycle": "pause"}}})
+        with self.assertRaises(RuntimeError) as ctx:
+            kf.run_agent("x", None, purpose="worker")
+        self.assertIn("[agent-control]", str(ctx.exception))
+        self.assertIn("[agent-error:quota]", str(ctx.exception))
+
+    def test_status_heartbeat_written(self):
+        self._control({"version": 1, "revision": 7, "workloads": {"flow": {}}})
+        with mock.patch.object(kf, "_run_agent_once", return_value="ok"):
+            kf.run_agent("x", None, purpose="worker")
+        status_dir = os.path.join(self.dir, "status")
+        files = [n for n in os.listdir(status_dir) if n.endswith(".json")]
+        self.assertTrue(files)
+        with open(os.path.join(status_dir, files[0]), encoding="utf-8") as f:
+            rec = json.load(f)
+        self.assertEqual(rec["tool"], "agent-flow")
+        self.assertEqual(rec["workload"], "flow")
+        self.assertEqual(rec["revision_applied"], 7)
+        self.assertEqual(rec["lifecycle"], "run")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

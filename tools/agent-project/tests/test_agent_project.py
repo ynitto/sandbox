@@ -5820,9 +5820,11 @@ class TestProjectLayer(unittest.TestCase):
             ch = km._load_named_charter(cfg, "v1")
             self.assertEqual(ch.goal, "CSV 要約機能を作る")     # goal はバージョン優先
             self.assertEqual(ch.acceptance, [f"test -f {flag}"])  # acceptance はマスター継承
-            self.assertIn("標準ライブラリのみ", ch.constraints)   # 制約は和集合
-            self.assertIn("追加の制約", ch.constraints)
-            self.assertIn("入力は UTF-8", ch.assumptions)
+            # 制約はバージョンが ## constraints を明示していれば置換（マスターの値は混ぜない）。
+            # 明示した内容がそのバージョンの意思 — 空セクションなら「継承値を消す」意思として扱う。
+            self.assertEqual(ch.constraints, ["追加の制約"])
+            # 前提はバージョンに ## assumptions 見出しが無いのでマスターから継承する。
+            self.assertEqual(ch.assumptions, ["入力は UTF-8"])
 
             # 継承済み acceptance で v1 が通常どおり収束する（マスター側は動かない）
             code = km.cmd_project(cfg, planner=lambda c: [], runner=lambda c: _drained(),
@@ -5830,6 +5832,41 @@ class TestProjectLayer(unittest.TestCase):
             self.assertNotEqual(code, 0)                       # converged（人待ち）
             st = km.load_charter_state(cfg, "v1")
             self.assertEqual(st["status"], km.REASON_PROJECT_CONVERGED)
+
+    def test_version_omitting_section_inherits_master(self):
+        # バージョンが ## constraints / ## assumptions を持たなければ、両方マスターから継承する。
+        # （明示置換の対称：見出しが無ければフォールバック、空見出しなら継承値を消す）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, "# Charter: 全体\n\n## master\n- マスター\n\n"
+                             "## goal\n普遍的な目標\n\n## constraints\n- 標準ライブラリのみ\n\n"
+                             "## assumptions\n- 入力は UTF-8\n\n"
+                             "## acceptance\n- `true`\n")
+            cd = d / "charters"
+            cd.mkdir()
+            # v2 は goal だけを持ち、constraints / assumptions の見出しを一切書かない。
+            (cd / "v2.md").write_text(
+                "# Charter: v2\n\n## goal\nCSV 集計\n", encoding="utf-8")
+            cfg = cfg_for(d)
+            ch = km._load_named_charter(cfg, "v2")
+            self.assertEqual(ch.goal, "CSV 集計")               # goal はバージョン優先
+            self.assertEqual(ch.constraints, ["標準ライブラリのみ"])  # 見出しが無い→マスター継承
+            self.assertEqual(ch.assumptions, ["入力は UTF-8"])   # 同上
+
+    def test_version_empty_section_clears_inherited(self):
+        # バージョンが ## constraints 見出しを空で置けば、マスターの制約を継承せず空にする意思。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, "# Charter: 全体\n\n## master\n- マスター\n\n"
+                             "## goal\n普遍的な目標\n\n## constraints\n- 標準ライブラリのみ\n\n"
+                             "## acceptance\n- `true`\n")
+            cd = d / "charters"
+            cd.mkdir()
+            (cd / "v3.md").write_text(
+                "# Charter: v3\n\n## goal\n制約なし版\n\n## constraints\n", encoding="utf-8")
+            cfg = cfg_for(d)
+            ch = km._load_named_charter(cfg, "v3")
+            self.assertEqual(ch.constraints, [])                # 空見出し＝継承値を消す
 
     def test_version_target_overrides_shared_registry(self):
         # 共有レジストリ（repos.json）を使っていても、各バージョン charter の ## repos が
@@ -11245,6 +11282,54 @@ class NodeBudgetTests(unittest.TestCase):
         self.assertEqual(rec["workload"], "project")
         self.assertEqual(rec["tool"], "agent-project")
         self.assertEqual(rec["seconds"], 2.0)
+
+
+class NodeBudgetV2AndControlTests(unittest.TestCase):
+    """ノード予算 v2（トークン一次・rates 推定）と agent-control（上書き・lifecycle・status）。"""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="kp-nbv2-")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        os.environ["AGENT_BUDGET_DIR"] = self.dir
+        os.environ["AGENT_CONTROL_DIR"] = self.dir
+        self.addCleanup(os.environ.pop, "AGENT_BUDGET_DIR", None)
+        self.addCleanup(os.environ.pop, "AGENT_CONTROL_DIR", None)
+        km._CONTROL_CACHE["mtime"] = None
+
+    def _budget(self, cfg):
+        with open(os.path.join(self.dir, "config.json"), "w", encoding="utf-8") as f:
+            json.dump(cfg, f)
+
+    def _control(self, ctl):
+        with open(os.path.join(self.dir, "control.json"), "w", encoding="utf-8") as f:
+            json.dump(ctl, f)
+        km._CONTROL_CACHE["mtime"] = None
+
+    def _ledger(self, records):
+        led = os.path.join(self.dir, "ledger")
+        os.makedirs(led, exist_ok=True)
+        day = time.strftime("%Y%m%d", time.gmtime())
+        with open(os.path.join(led, f"{day}.jsonl"), "a", encoding="utf-8") as f:
+            for rec in records:
+                f.write(json.dumps(rec) + "\n")
+
+    def test_token_limit_with_estimation(self):
+        self._budget({"version": 2, "tokens": 1000,
+                      "rates": {"per_cli": {"kiro": 100}}})
+        self._ledger([{"workload": "project", "seconds": 8, "agent_cli": "kiro"}])   # 800 (est)
+        self.assertFalse(km._node_budget_state()["exceeded"])
+        self._ledger([{"workload": "project", "seconds": 1, "tokens_in": 150,
+                       "tokens_out": 100}])                                          # +250 = 1050
+        self.assertTrue(km._node_budget_state()["exceeded"])
+
+    def test_control_override_and_lifecycle(self):
+        self._control({"version": 1, "revision": 3,
+                       "workloads": {"project": {"agents": {"plan": {"model": "opus"}}}}})
+        self.assertEqual(km._agent_for("plan")[1], "opus")
+        self._control({"version": 1, "workloads": {"project": {"lifecycle": "stop"}}})
+        with self.assertRaises(RuntimeError) as ctx:
+            km._run_agent_cli("x", None, purpose="plan")
+        self.assertIn("[agent-control]", str(ctx.exception))
 
 
 if __name__ == "__main__":
