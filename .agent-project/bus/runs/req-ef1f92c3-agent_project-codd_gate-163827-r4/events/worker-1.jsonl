@@ -10,3 +10,5 @@
 {"ts": "2026-07-19T02:15:06Z", "who": "worker-1", "kind": "claimed", "node": "t6"}
 {"ts": "2026-07-19T09:51:31Z", "who": "worker-1", "kind": "claimed", "node": "loop"}
 {"ts": "2026-07-19T09:51:32Z", "who": "worker-1", "kind": "result", "node": "loop", "status": "failed"}
+{"ts": "2026-07-19T09:51:56Z", "who": "worker-1", "kind": "claimed", "node": "loop"}
+{"ts": "2026-07-19T09:51:56Z", "who": "worker-1", "kind": "result", "node": "loop", "status": "failed"}
