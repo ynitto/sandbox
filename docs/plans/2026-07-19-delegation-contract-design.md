@@ -74,6 +74,23 @@ flow のタスク単位の承認は gitlab executor の GitLab 台帳（`status:
 スキル・人からの投函が必要になった時点の将来拡張とし、その際も封筒は同形を使う
 （処理成功で削除・失敗は `.rejected` 改名、amigos commands と同じ規約）。
 
+### D7. agent-control の `delegation`（誘導）とは役割を分けて併存する
+
+`agent-control.schema.json` の `delegation: {prefer, max_open_issues}` は「このノードで
+抱え込まず外へ出せ」という**実行場所の誘導**（flow だけが解釈）。本契約は「何をどう公示し
+誰が落札したか」という**委譲そのもののライフサイクル**。関心が直交するので統合しない。
+両方が同時に効いてよい（例: 本契約で公示した flow run のタスクを、agent-control の誘導で
+gitlab executor 経由の park & poll に流す）。
+
+### D8. 応答なし（stalled）はフェーズではなく重畳フラグ `stale` で表す
+
+ライフサイクル（§5.2 のフェーズ）と生死観測は直交する関心なので、フェーズ enum には
+含めない。理由: (a) フェーズ写像がエンジン既存の導出（flow `meta.status` / amigos
+`derive_phase`）と 1:1 のまま保てる、(b) flow の「run lease 失効」と amigos の「ノード
+heartbeat 途絶」は意味の異なる信号で、1 つのフェーズ値に畳むと歪む、(c) 沈黙時に元の状態
+（working だったか waiting だったか）が失われない — UI は「working + 応答なし」と重畳表示
+できる。ビューは `stale: boolean`（+ amigos は該当ユニットを `stale_units[]` で列挙）。
+
 ## 3. 委譲要求封筒（書き込み契約）
 
 全 op 共通: `op` / `version: 1` / `id` / `workload` が必須。未知キーは無視（前方互換・追加は additive）。
@@ -86,7 +103,7 @@ flow のタスク単位の承認は gitlab executor の GitLab 台帳（`status:
 | `workload` | `flow` \| `amigos`（必須） | ルーティング先エンジン（D2） |
 | `goal` | string（必須） | 何を達成するか。flow: `submit_request.request` 本文 / amigos: `mission.goal` |
 | `title` | string | 表示名。amigos: `mission.title` / flow: 未解釈（ビューの表示にのみ使用） |
-| `design` | string (markdown) | 設計文書本文。amigos: design doc（**必須入力**。省略時はアダプタが goal + references から合成）/ flow: request 本文へ「## 設計」節として前置 |
+| `design` | string (markdown) | 設計文書本文。**契約上は省略可**。amigos: design doc（amigos 側の post は design を要求するため、省略時はアダプタが goal + references から合成して投函）/ flow: request 本文へ「## 設計」節として前置 |
 | `workspace` | object | 成果物の書込先リポジトリ。`repos.schema.json` のエントリ形 `{url, path, base}`。flow: `submit_request.workspace` / amigos: `mission.workspace`（現状 opaque passthrough） |
 | `references` | array of object | 参照リポジトリ（読むだけ）。同エントリ形。flow: `submit_request.references` / amigos: design doc に「## 参照リポジトリ」節として描画 |
 | `policy.assignment` | `first-come`（既定）\| `owner-picks` | 入札方式。amigos: `mission.assignment_policy` へ透過 / flow: `first-come` のみ（`owner-picks` は投函前拒否、D4） |
@@ -166,6 +183,8 @@ amigos: `cancel` コマンド。flow: `flow.js:cancelRun` の 3 手（`inbox/can
 | `units[].bids[].state` | `applied`（応募中・owner-picks 未確定）\| `winner`（決定的タイブレーク勝者 or roster 確定）\| `lost` \| `expired`（lease 失効） |
 | `units[].assignee` | 確定担当（amigos: `roster.json` 優先 / flow: claim 勝者） |
 | `bids_open` | owner-picks で未確定ユニットが存在（UI の「落札」操作を活性化） |
+| `stale` | 応答なしの重畳フラグ（フェーズと直交、D8）。flow: 非終端 run の `orch_lease_until` 失効（`runAlive` と同一規則）/ amigos: roster 確定ノードの heartbeat 途絶 |
+| `stale_units[]` | 応答なしのユニット列挙（amigos のノード heartbeat はユニット単位のため） |
 | `progress` | `{units_total, units_done, units_failed, units_open}` |
 | `budget` | `{spent_seconds, limit_minutes}`。amigos: `events/*.jsonl` の `cli_seconds` 総和 / flow: `null`（node-budget 台帳が別契約） |
 | `result` | `{status, accepted?, by?, ts?, path?}`。flow: `final.json` / amigos: `final.json` + `deliverable/MANIFEST.json` |
@@ -179,8 +198,10 @@ amigos: `cancel` コマンド。flow: `flow.js:cancelRun` の 3 手（`inbox/can
 | `working` | run 生存（`orch_lease_until` 内）・実行中 | `working` / `integrating` |
 | `waiting` | 生存 `waits/` あり（park = 承認待ち） | —（ユニット単位の away はビューでは `units[].state` で表現） |
 | `reviewing` | —（GitLab 側で表現） | `reviewing`（accept 待ち） |
-| `stalled` | run が非終端かつ lease 失効（応答なし。`runAlive` と同一規則） | roster 確定済みノードの heartbeat 途絶 |
 | `done` / `failed` / `cancelled` | `meta.status` | `derive_phase` |
+
+応答なしはフェーズに含めず `stale` フラグの重畳で表す（D8）。フェーズはエンジン既存の
+導出規則との 1:1 写像を保つ。
 
 ## 6. 実装計画（すべて agent-dashboard 側・エンジン無変更）
 
@@ -204,6 +225,9 @@ amigos: `cancel` コマンド。flow: `flow.js:cancelRun` の 3 手（`inbox/can
   （`claims-applied/` 名前空間 + orchestrator 確定）を flow 側に**別実装**で追加すれば、
   `workload: flow` × `owner-picks` の拒否を外すだけで契約は不変。
 - **ドロップディレクトリ**（`$AGENT_DELEGATION_DIR`）: スキル・人からの投函口。封筒は同形。
+- **flow への commands 形式投函口**: flow は既に `inbox/` と `inbox/cancels/` というコマンド的な
+  口を持つため v1 はアダプタ変換で足りるが、操作の種類が増えるなら amigos と同じ
+  `commands/*.json` 契約（処理成功で削除・失敗は `.rejected` 改名）へ寄せる余地がある。
 - **`workload: project` / `routine`**: `task.schema.json` との橋渡し（enqueueToInbox への写像）。
 - **共通 claim 仕様書**: `(ts, who)` タイブレーク・lease・書く→push→pull→再判定の手順を
   `docs/designs/` に「同じ仕様・別実装」として明文化し、片側だけの変更でズレる事故を防ぐ。
