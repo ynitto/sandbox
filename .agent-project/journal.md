@@ -386,3 +386,12 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-19 21:40:33 run 再開: sibling-163827 は req-ef1f92c3-sibling-163827-r0 の失敗ノードだけをやり直します（done は温存）
 - 2026-07-19 21:40:39 cycle 1: sibling-163827 → 人の判断（環境の問題: 利用上限。リトライ・裁定は消費しない）
 - 2026-07-19 21:40:39 === agent-project 停止 reason=drained cycles=1 done=0 blocked=1 notified=True promoted=0 ===
+- 2026-07-19 21:40:41 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-19 21:40:41 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-19 21:41:13 === project 開始 v1 acceptance=2 ===
+- 2026-07-19 21:41:13 feedback 取り込み: sibling-163827 を再開
+- 2026-07-19 21:41:13 === agent-project 開始 tasks=3 ingested=1 planner=agent executor=agent dry_run=False ===
+- 2026-07-19 21:41:13 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
+- 2026-07-19 21:41:13 run 再開: sibling-163827 は req-ef1f92c3-sibling-163827-r0 の失敗ノードだけをやり直します（done は温存）
+- 2026-07-19 21:41:19 cycle 1: sibling-163827 → 人の判断（環境の問題: 利用上限。リトライ・裁定は消費しない）
+- 2026-07-19 21:41:20 === agent-project 停止 reason=drained cycles=1 done=0 blocked=1 notified=True promoted=0 ===

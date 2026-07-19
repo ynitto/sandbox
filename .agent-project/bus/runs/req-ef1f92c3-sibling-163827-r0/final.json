@@ -1,6 +1,6 @@
 {
   "request": "sibling 自動検出レイヤと利用手順を新境界へ追随させる\n\n背景・目的（実装の判断に迷ったらこの意図に沿うこと）:\n  パッケージ外の検出・yaml 注入・doctor 所見の置き場と README の有効化手順を一貫させ、利用者が結線方法を迷わないようにするため。\nやらないこと（スコープ外。必要に気づいても手を出さず @followup 行で提案する）:\n  agent_project パッケージ内への再結合・dashboard 変更\n実装の手がかり（参考情報。鵜呑みにせず現物のコードで確認すること）:\n  tools/agent-project/codd_gate_{detect,status,routing,base,debt,wiring,regression}.py は残し、責務を『検出・推奨文字列・yaml 冪等注入・（必要なら）CLI 所見』に限定。README / GUIDE から build_config メモリ自動配線の記述を消し、明示設定または `python3 codd_gate_regression.py --config …` へ誘導。docs/designs/codd-gate-design.md §4.1 の『現在地』も実装に合わせて更新（文章は slop-police）。\n\nこのタスクは完了条件を満たすまで反復し、満たしたら終了すること（loop-until-done）。\n完了条件: 次のシェルコマンドが終了コード 0 で成功すること:\n  PYTHONPATH=tools/agent-project python3 -m unittest discover -s tools/agent-project/tests -p 'test_codd_gate_*.py' && grep -nE 'codd_gate_regression|regression_cmd|intake_cmd' tools/agent-project/README.md && ! grep -nE 'build_config.*メモリ上で自動|_apply_codd_gate_auto_wiring' tools/agent-project/README.md\n\nタスクID: sibling-163827\n\n実行中に、分散した他ノードも従うべき恒常的な制約・規約を発見したら、最終成果に 機械可読な JSON `{\"constraints\": [\"…\"]}` を添えること（無ければ省略可）。これは以後の全ノードへ伝播され一貫性の基準になる。\n\nプロジェクト定義（charter・常に踏まえること。成果物が目標/制約に反しないこと）:\n目標: * agent-project の codd-gate 連携コードを整理する\n* agent-dashboard でのユーザビリティを考慮する\n対象リポジトリ（タスクは説明を見て関係するものを選び、その base/target ブランチで作業。path 指定があればそのフォルダ配下のみ変更）:\n- agent-amigos = https://github.com/ynitto/sandbox（path=tools/agent-amigos, base=main, target=main, 書込先候補（owns: tools/agent-amigos/**））\n    説明: agent-amigos\n- agent-dashboard = https://github.com/ynitto/sandbox（path=tools/agent-dashboard, base=main, target=main, 書込先候補（owns: tools/agent-dashboard/**））\n    説明: agent-dashboard\n- agent-flow = https://github.com/ynitto/sandbox（path=tools/agent-flow, base=main, target=main, 書込先候補（owns: tools/agent-flow/**））\n    説明: agent-flow\n- agent-loop = https://github.com/ynitto/sandbox（path=tools/agent-loop, base=main, target=main, 書込先候補（owns: tools/agent-loop/**））\n    説明: agent-loop\n- agent-project = https://github.com/ynitto/sandbox（path=tools/agent-project, base=main, target=main, 書込先候補（owns: tools/agent-project/**））\n    説明: agent-project\n- skills = https://github.com/ynitto/sandbox（path=.github/skills, base=main, target=main, 参照のみ・push しない）\n    説明: skills\n成果物:\n- agent-project ソースコード\n- 設計書\n\nプロジェクトルール（rules.md・全タスク共通。必ず従うこと）:\n* ドキュメントタスクには slop-police スキルを使うこと\n* レビューには agent-review スキルを使うこと\n\nこのタスクに関する過去の判断記録（needs の判断結果・必ず踏まえること）:\n## DR-0001  2026-07-18  actor: nitto\n- context : sibling-163827（sibling 自動検出レイヤと利用手順を新境界へ追随させる）の実行を承認\n- action  : plan-approve\n- reason  : agent-dashboard から操作\n- affects : sibling-163827 → ready",
-  "finished_at": "2026-07-19T12:40:35Z",
+  "finished_at": "2026-07-19T12:41:15Z",
   "iterations": 0,
   "strategy": {
     "patterns": [
@@ -16,10 +16,10 @@
   "results": {
     "t1": {
       "id": "t1",
-      "who": "worker-2",
+      "who": "worker-1",
       "status": "failed",
       "output": "実行エラー: [agent-error:quota] [agent-control] このワークロード（flow）は管理面により lifecycle=stop 指定です。dashboard のオーケストレーションタブで run に戻してください",
-      "finished_at": "2026-07-19T12:40:35Z",
+      "finished_at": "2026-07-19T12:41:15Z",
       "data": {
         "error_class": "quota"
       }
