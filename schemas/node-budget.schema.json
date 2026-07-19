@@ -1,17 +1,17 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "node-budget.schema.json",
-  "title": "ノード予算 — ノード横断の実質実行時間の上限と台帳（データ契約）",
-  "description": "ノード（マシン）単位の agent CLI 実質実行時間の予算。定常業務（routine）・agent-project（project）・agent-flow（flow）・agent-amigos（amigos）の全ワークロードが同じ台帳に記帳し、合計が上限を超えないよう各ツールが自律的に抑制する。管理面（agent-dashboard / 各ツールの CLI）は config を書き、台帳を読む。置き場所: $AGENT_BUDGET_DIR（既定 ~/.agent/budget/）。config.json と ledger/<YYYYMMDD>.jsonl（UTC 日付・追記専用）。",
+  "title": "ノード予算 v2 — トークン一次のノード横断予算と台帳（データ契約）",
+  "description": "ノード（マシン）単位の agent CLI 予算。定常業務（routine）・agent-project（project）・agent-flow（flow）・agent-amigos（amigos）の全ワークロードが同じ台帳に記帳し、合計が上限を超えないよう各ツールが自律的に抑制する。v2 で一次単位をトークンへ拡張（実行時間の上限は v1 互換で有効・AND）。台帳の必須項目は従来どおり実測秒で、トークンは実測できた行だけに書く。トークン未報告の行は読む側が rates（tokens/秒）で読み出し時に推定する（台帳には事実のみ・推定値は書かない）。配分（allocation/computed）の知能は管理面（agent-dashboard / 各ツール CLI）に置き、エンジンは「自分の消費 ≥ 自分の上限、または全体消費 ≥ 全体上限なら控える」の単純比較だけを行う。管理面は config を書き、台帳を読む。置き場所: $AGENT_BUDGET_DIR（既定 ~/.agent/budget/）。config.json と ledger/<YYYYMMDD>.jsonl（UTC 日付・追記専用）。設計: docs/plans/2026-07-19-agent-dashboard-orchestration-token-budget-design.md",
   "$defs": {
     "config": {
       "type": "object",
-      "description": "config.json — ノードの予算設定（人 / dashboard が書く。0 = 無制限）",
+      "description": "config.json — ノードの予算設定（人 / dashboard が書く。0 = 無制限。v1 のキーは意味を変えず有効）",
       "properties": {
-        "version": {"type": "integer", "const": 1},
+        "version": {"enum": [1, 2], "description": "1 = 分上限のみ / 2 = トークン・配分キーを解釈する"},
         "execution_minutes": {
           "type": "number", "minimum": 0, "default": 0,
-          "description": "全ワークロード合計の上限（分）。0 = 無制限"
+          "description": "v1 互換: 全ワークロード合計の実行時間上限（分）。0 = 無制限。tokens と AND"
         },
         "period": {
           "enum": ["day", "month", "total"], "default": "day",
@@ -19,7 +19,7 @@
         },
         "workloads": {
           "type": "object",
-          "description": "ワークロード別の内訳上限（分）。省略 / 0 = 無制限。合計上限と AND で効く",
+          "description": "v1 互換: ワークロード別の内訳上限（分）。省略 / 0 = 無制限。合計上限と AND で効く",
           "properties": {
             "routine": {"type": "number", "minimum": 0},
             "project": {"type": "number", "minimum": 0},
@@ -28,6 +28,73 @@
           },
           "additionalProperties": {"type": "number", "minimum": 0}
         },
+        "tokens": {
+          "type": "number", "minimum": 0, "default": 0,
+          "description": "v2: 期間内トークン合計上限（実測＋推定の合算）。0 = 無制限"
+        },
+        "allocation": {
+          "type": "object",
+          "description": "v2: 配分宣言（人 / dashboard が書く）。実効上限の計算は管理面が行い computed へ書く",
+          "properties": {
+            "mode": {
+              "enum": ["static", "auto"], "default": "static",
+              "description": "static = computed を再計算しない（min/max と全体上限のみ）/ auto = 管理面が rebalance_interval_sec ごとに computed を再計算"
+            },
+            "soft_ratio": {
+              "type": "number", "minimum": 0, "maximum": 1, "default": 0.9,
+              "description": "実効上限に対する縮退（degrade）開始比。agent-control の degraded 指定を適用する"
+            },
+            "rebalance_interval_sec": {"type": "number", "minimum": 0, "default": 300},
+            "workloads": {
+              "type": "object",
+              "description": "ワークロード名 → 配分パラメータ",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "weight": {"type": "number", "minimum": 0, "default": 1, "description": "残り枠の配分比"},
+                  "min_tokens": {"type": "number", "minimum": 0, "default": 0, "description": "実効上限の下限クランプ"},
+                  "max_tokens": {"type": "number", "minimum": 0, "default": 0, "description": "実効上限の上限クランプ。0 = なし"},
+                  "on_exhausted": {
+                    "enum": ["pause", "stop", "degrade"], "default": "pause",
+                    "description": "実効上限到達時: pause = 新規実行を控え自動再開 / stop = graceful にプロセス終了（再開は明示的な再起動のみ）/ degrade = 縮退指定のまま継続（無ければ pause 相当）"
+                  }
+                },
+                "additionalProperties": true
+              }
+            }
+          },
+          "additionalProperties": true
+        },
+        "computed": {
+          "type": "object",
+          "description": "v2: アロケータの出力（管理面だけが書く）。エンジンは自ワークロードの tokens を上限として読むだけ",
+          "properties": {
+            "workloads": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {"tokens": {"type": "number", "minimum": 0}},
+                "additionalProperties": true
+              }
+            },
+            "computed_at": {"type": "string", "description": "ISO8601 UTC"},
+            "computed_by": {"type": "string"}
+          },
+          "additionalProperties": true
+        },
+        "rates": {
+          "type": "object",
+          "description": "v2: トークン未報告行の推定レート表（tokens/秒）。エンジンはこの表だけを使う。較正（台帳の実測行からの中央値）は管理面が行い書き戻す",
+          "properties": {
+            "default_tokens_per_second": {"type": "number", "minimum": 0},
+            "per_cli": {
+              "type": "object",
+              "description": "キーは \"<agent_cli>\" または \"<agent_cli>:<model>\"。解決は cli:model → cli → default の順",
+              "additionalProperties": {"type": "number", "minimum": 0}
+            }
+          },
+          "additionalProperties": true
+        },
         "updated_at": {"type": "string", "description": "ISO8601 UTC"},
         "updated_by": {"type": "string", "description": "書いた主体（dashboard / cli / 人）"}
       },
@@ -35,7 +102,7 @@
     },
     "ledger_record": {
       "type": "object",
-      "description": "ledger/<YYYYMMDD>.jsonl の 1 行 — 1 回の agent CLI 実行の記帳（各ツールが O_APPEND で追記。書き換え・削除はしない）",
+      "description": "ledger/<YYYYMMDD>.jsonl の 1 行 — 1 回の agent CLI 実行の記帳（各ツールが O_APPEND で追記。書き換え・削除はしない）。消費集計: tokens_in+tokens_out があればその値、無ければ seconds × rate で読み出し時に推定",
       "required": ["ts", "workload", "seconds"],
       "properties": {
         "ts": {"type": "string", "description": "ISO8601 UTC"},
@@ -46,7 +113,12 @@
         "tool": {"type": "string", "description": "記帳したツール名"},
         "seconds": {"type": "number", "minimum": 0, "description": "agent CLI の実実行秒"},
         "ref": {"type": "string", "description": "帰属（例 amigos: <mission-id>/<role>、project: <project>/<task-id>）"},
-        "node": {"type": "string", "description": "ノード ID"}
+        "node": {"type": "string", "description": "ノード ID"},
+        "agent_cli": {"type": "string", "description": "v2: 実行したエージェント CLI 名（組み込み名またはドロップイン名）"},
+        "model": {"type": "string", "description": "v2: 実行モデル名（指定があったときだけ）"},
+        "tokens_in": {"type": "number", "minimum": 0, "description": "v2: 実測入力トークン（実測できたときだけ書く。推定値は書かない）"},
+        "tokens_out": {"type": "number", "minimum": 0, "description": "v2: 実測出力トークン（同上）"},
+        "usd": {"type": "number", "minimum": 0, "description": "v2: 補助情報のコスト（USD）。予算の一次単位にはしない"}
       },
       "additionalProperties": true
     }

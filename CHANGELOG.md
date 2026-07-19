@@ -7,6 +7,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### schemas / agent-dashboard: ノード予算 v2（トークン一次）とオーケストレーション契約の正典化
+
+予算の一次単位を実行時間（分）からトークンへ刷新し、稼働中エンジンへの横断操作
+（エージェント / モデル変更・縮退・一時停止 / 停止・委譲誘導）を dashboard が書き
+エンジンが読む宣言的データ契約に統一する設計を確定した
+（`docs/plans/2026-07-19-agent-dashboard-orchestration-token-budget-design.md`）。
+
+- **`schemas/node-budget.schema.json` v2（additive）**: 台帳に実測 `tokens_in` / `tokens_out` /
+  `agent_cli` / `model` / `usd` を追記可能に。config に `tokens`（トークン合計上限）・
+  `allocation`（weight / min・max クランプ / `on_exhausted: pause|stop|degrade` / soft_ratio）・
+  `computed`（管理面が再計算する実効上限）・`rates`（トークン未報告 CLI の推定レート表）を追加。
+  台帳には事実のみ書き、推定は読み出し時（配分・較正の知能は管理面、エンジンは従来の単純比較）。
+  v1 リーダは分上限だけを執行し続ける互換設計。
+- **`schemas/agent-control.schema.json` 新設**: `$AGENT_CONTROL_DIR`（既定 `~/.agent/control/`）の
+  `control.json`（望ましい状態）＋ `status/<tool>-<pid>.json`（適用ハートビート）。優先順位は
+  control > CLI 引数 > 設定ファイル > 組み込み既定。kiro-loop は予算枯渇時に従来の一時停止でなく
+  `on_exhausted: stop` で graceful 停止できるようになる（routine の推奨既定）。
+
 ### agent-project / agent-dashboard: 「承認して完了にする」を出し分けで消さない
 
 要対応の画面で承認操作が見当たらず完了できない、という報告が繰り返し出ていた。原因は

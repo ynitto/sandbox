@@ -1,4 +1,4 @@
-# schemas/ — ツール横断の共通スキーマ（repos / task / node-budget / mission / amigos-command / delivery）
+# schemas/ — ツール横断の共通スキーマ（repos / task / node-budget / agent-control / mission / amigos-command / delivery）
 
 agent-project・agent-flow・codd-gate・agent-amigos が**データ契約だけで**結合するための独立スキーマ。
 ツール同士は互いの実装を知らず、ここで定義する形式だけを読む/書く（結合は常に一方向×データ）。
@@ -7,7 +7,8 @@ agent-project・agent-flow・codd-gate・agent-amigos が**データ契約だけ
 |----------|-----------|--------------------|
 | [`repos.schema.json`](repos.schema.json) | リポジトリレジストリ（identity = **(url, path, base)**＝パス＋ブランチで一意） | 共有（本ディレクトリが正典） |
 | [`task.schema.json`](task.schema.json) | 制御層タスク（バックログ 1 件）の JSON 表現 | kiro-projects（Markdown 形の正典は `tools/kiro-projects/backlog.md.example`） |
-| [`node-budget.schema.json`](node-budget.schema.json) | ノード単位の実質実行時間の予算（`$AGENT_BUDGET_DIR`＝既定 `~/.agent/budget/` の config.json ＋ ledger/<YYYYMMDD>.jsonl） | 共有（本ディレクトリが正典。初出は agent-amigos 設計書 §3.3） |
+| [`node-budget.schema.json`](node-budget.schema.json) | ノード単位の予算 v2 — トークン一次（実行時間上限は v1 互換で AND）＋配分宣言（`$AGENT_BUDGET_DIR`＝既定 `~/.agent/budget/` の config.json ＋ ledger/<YYYYMMDD>.jsonl） | 共有（本ディレクトリが正典。初出は agent-amigos 設計書 §3.3、v2 は `docs/plans/2026-07-19-agent-dashboard-orchestration-token-budget-design.md`） |
+| [`agent-control.schema.json`](agent-control.schema.json) | 管理面→各エンジンの宣言的オーケストレーション（`$AGENT_CONTROL_DIR`＝既定 `~/.agent/control/` の control.json ＋ status/<tool>-<pid>.json）。エージェント CLI / モデルの横断上書き・縮退・一時停止 / 停止・委譲誘導。優先順位は control > CLI 引数 > 設定ファイル > 組み込み既定 | 共有（本ディレクトリが正典。設計は `docs/plans/2026-07-19-agent-dashboard-orchestration-token-budget-design.md`） |
 | [`mission.schema.json`](mission.schema.json) | 協働ミッションの公示（agent-amigos の `post --roles` に渡すミッション + 役割ミッション表）。バスへ書かれる読取契約（外部ビュアーが読む `mission.json` / `MANIFEST.json` / `final.json` / `cancelled.json`）は `$defs` に文書化 | agent-amigos（検証は stdlib パーサ `normalize_mission`。スキーマは文書化とテスト突き合わせ — enum/既定値の一致をテストで担保） |
 | [`amigos-command.schema.json`](amigos-command.schema.json) | agent-amigos への指示ドロップ（`<home>/.agent/agent-amigos/commands/*.json` — post / claim / assign / accept / reject / cancel / say）。投函側は人・agent-dashboard、取り込み側は常駐デーモン | agent-amigos（取り込みの正典は `agent_amigos/commands.py`。コマンド一覧の一致を両側のテストで担保 — Python `CommandSchemaTests` / dashboard `amigos.test.js`） |
 | [`delivery.schema.json`](delivery.schema.json) | agent-amigos の納品書（accept 時にオーナーホームの `deliveries/<mid>/delivery.json` へ書かれる受領記録）。バスの `MANIFEST.json` が integrator の組み立て記録（gc 対象）なのに対し、こちらは受入という事実と搬出先の永続記録 | agent-amigos（書き手は owner デーモン。読み手は agent-dashboard の納品一覧と `agent-amigos deliveries`） |
@@ -38,6 +39,30 @@ agent-project・agent-flow・codd-gate・agent-amigos が**データ契約だけ
   がこの契約でワークロード別消費の表示と上限編集を行う。
 - 超過チェックはロックなしの読み合計で、上振れは「進行中実行 × 同時実行数」に有界。
   台帳は日付ファイル分割なので日次/月次の集計と gc（古い日付の削除）が安い。
+- **v2（トークン一次・設計済み、段階導入中）**: 台帳の必須項目は従来どおり `seconds` のまま、
+  実測できた実行だけ `tokens_in` / `tokens_out`（＋ `agent_cli` / `model` / `usd`）を追記する。
+  トークン未報告の行は読む側が config の `rates`（tokens/秒。解決は `cli:model` → `cli` →
+  default）で**読み出し時に推定**する——台帳には事実のみ、推定値は書かない。config には
+  `tokens`（期間内トークン合計上限）と `allocation`（weight / min_tokens / max_tokens /
+  `on_exhausted: pause|stop|degrade` / soft_ratio）を宣言でき、実効上限の再計算
+  （work-conserving な再配分）と rates の較正は**管理面だけ**が行って `computed` /
+  `rates` へ書き戻す。エンジンの判定は v1 と同じ単純比較のまま。v1 しか知らない
+  リーダは分上限だけを執行し続ける（additive・安全側）。
+
+## agent-control — 誰がどう読む/書くか
+
+- **管理面（agent-dashboard / 各ツール CLI / 人）**: `$AGENT_CONTROL_DIR`（既定
+  `~/.agent/control/`）の `control.json` に望ましい状態を原子書換で書く（`revision` 単調増加）。
+  内容は (1) エージェント CLI / モデルの横断上書き（ワークロード既定＋各エンジンの既存語彙
+  — project の purpose / flow の planner/evaluator/worker/kind / amigos のロール id — 別）、
+  (2) `degraded`（node-budget soft_ratio 到達中の縮退指定）、(3) `lifecycle: run|pause|stop`、
+  (4) `delegation`（flow のみ解釈: prefer local|remote / max_open_issues）。
+- **各エンジン（適用側）**: 既存のチョークポイント / サイクル先頭で mtime を見て再読込し、
+  優先順位 **control > CLI 引数 > 設定ファイル > 組み込み既定** で解決する（push 型 IPC なし）。
+  `lifecycle` は desired state — `stop` のまま再起動されたエンジンは起動時チェックで即終了する。
+  適用状況は `status/<tool>-<pid>.json` へハートビート書換（`revision_applied` / `effective` /
+  `lifecycle` / `budget.soft|exceeded` / `fresh_after_sec`）し、管理面が desired との乖離を
+  可視化する。未知のワークロード・未知のキーは無害に無視（repos と同じ規則）。
 
 ## repos — 誰がどう読むか
 
