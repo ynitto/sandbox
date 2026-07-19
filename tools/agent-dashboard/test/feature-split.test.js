@@ -1,6 +1,6 @@
 'use strict';
 
-// 制御面分離（base / agent-project / kiro-loop / cowork / amigos）の配線テスト。
+// 制御面分離（base / agent-project / kiro-loop / cowork / amigos / participation）の配線テスト。
 // Electron は起動せず、feature 列挙・preload 合成・互換シムだけを検証する。
 
 const assert = require('assert');
@@ -16,11 +16,11 @@ function test(name, fn) {
   console.log(`ok - ${name}`);
 }
 
-test('features に agent-project / kiro-loop / cowork / amigos / orchestration / delegation が並ぶ', () => {
+test('features に各制御面が並ぶ', () => {
   const features = loadFeatures();
   const ids = features.map((f) => f.id);
   assert.deepStrictEqual(ids,
-    ['agent-project', 'kiro-loop', 'cowork', 'amigos', 'orchestration', 'delegation']);
+    ['agent-project', 'kiro-loop', 'cowork', 'amigos', 'orchestration', 'delegation', 'participation']);
 });
 
 test('各 feature が registerIpc / preloadApi / configDefaults を持つ', () => {
@@ -152,6 +152,11 @@ test('base / feature の入口ファイルが存在する', () => {
     'features/orchestration/main/control.js',
     'features/orchestration/main/agents.js',
     'features/orchestration/main/ipc.js',
+    'features/participation/index.js',
+    'features/participation/model.js',
+    'features/participation/preload.js',
+    'features/participation/main/participation.js',
+    'features/participation/main/ipc.js',
   ]) {
     assert.ok(fs.existsSync(path.join(root, rel)), rel);
   }
@@ -167,6 +172,8 @@ test('HTML に data-feature マーカーがある', () => {
   assert.ok(html.includes('tab-amigos'));
   assert.ok(html.includes('data-feature="orchestration"'));
   assert.ok(html.includes('tab-orchestration'));
+  assert.ok(html.includes('data-feature="participation"'));
+  assert.ok(html.includes('tab-participation'));
 });
 
 test('orchestration はノード予算 v2 / 制御 / ドロップイン API を登録する', () => {
@@ -223,6 +230,25 @@ test('delegation は共通封筒の投函・一覧 API を登録する', () => {
   });
   assert.strictEqual(post({ workload: 'flow', goal: 'x' }), 'ok');
   assert.deepStrictEqual(calls, [['delegation:post', { workload: 'flow', goal: 'x' }]]);
+});
+
+test('participation はrun限定ワーカーの参加 API を登録する', () => {
+  const participation = loadFeatures().find((f) => f.id === 'participation');
+  const registered = [];
+  participation.registerIpc({
+    handle: (channel) => registered.push(channel),
+    loadConfig: () => ({}),
+  });
+  assert.deepStrictEqual(registered, ['participation:flowJoin']);
+  const api = participation.preloadApi();
+  assert.strictEqual(typeof api.participationFlowJoin, 'function');
+  const calls = [];
+  const join = api.participationFlowJoin((channel, args) => {
+    calls.push([channel, args]);
+    return 'ok';
+  });
+  assert.strictEqual(join({ runId: 'run-1' }), 'ok');
+  assert.deepStrictEqual(calls, [['participation:flowJoin', { runId: 'run-1' }]]);
 });
 
 console.log(`\n${passed} tests passed`);
