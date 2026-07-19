@@ -170,3 +170,8 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-19 15:18:19 run 再開: agent_project-codd_gate-163827 は req-ef1f92c3-agent_project-codd_gate-163827-r4 の失敗ノードだけをやり直します（done は温存）
 - 2026-07-19 16:18:20 flow detach: agent_project-codd_gate-163827 の run req-ef1f92c3-agent_project-codd_gate-163827-r4 を failed（agent-flow run タイムアウト（3600s））
 - 2026-07-19 16:18:22 cycle 1: agent_project-codd_gate-163827 → 人の判断（繰り返し NG）
+- 2026-07-19 16:18:26 state-git 同期: import=6 export=15
+- 2026-07-19 16:18:26 commands 取り込み: approve agent_project-codd_gate-163827（viewer-approve-agent_project-codd_gate-163827-1784441895161.json）
+- 2026-07-19 16:18:26 run 再開: agent_project-codd_gate-163827 は req-ef1f92c3-agent_project-codd_gate-163827-r4 の失敗ノードだけをやり直します（done は温存）
+- 2026-07-19 16:46:04 cycle 2: agent_project-codd_gate-163827 → 人の判断（環境の問題: 利用上限。リトライ・裁定は消費しない）
+- 2026-07-19 16:46:07 === agent-project 停止 reason=drained cycles=2 done=0 blocked=1 notified=True promoted=0 ===

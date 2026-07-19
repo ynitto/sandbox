@@ -12,4 +12,5 @@
 - after: codd-gate-163827
 - assess: c=2 r=2 a=1
 - last_run: req-ef1f92c3-agent_project-codd_gate-163827-r4
-- needs_reason: 繰り返し NG（retries=8）: agent-flow run タイムアウト（3600s）
+- env_resume: 1
+- needs_reason: [agent-error:quota] 環境の問題（利用上限）: 利用上限に達しています（時間をおくか、プラン・クレジットを見直してください） タスクの内容の問題ではないため、リトライ回数は消費していません。環境を直してから approve すると、同じ run の続き（失敗した工程だけ）から再開します。

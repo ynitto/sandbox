@@ -11,7 +11,7 @@ delivery: [{"name":"sandbox","role":"write","url":"https://github.com/ynitto/san
 
 ## Context and Problem Statement
 
-- なぜ: 繰り返し NG（retries=8）: agent-flow run タイムアウト（3600s）
+- なぜ: [agent-error:quota] 環境の問題（利用上限）: 利用上限に達しています（時間をおくか、プラン・クレジットを見直してください） タスクの内容の問題ではないため、リトライ回数は消費していません。環境を直してから approve すると、同じ run の続き（失敗した工程だけ）から再開します。
 - 状態: blocked（agent-project の判断待ち）
 
 ## 判断材料（成果物の所在・差分・検証）
@@ -31,7 +31,7 @@ delivery: [{"name":"sandbox","role":"write","url":"https://github.com/ynitto/san
     - tools/agent-project/codd_gate_wiring.py
     - tools/agent-project/tests/test_agent_project.py
 - 実行先: local
-- 検証: `PYTHONPATH=tools/agent-project python3 tools/agent-project/tests/test_agent_project.py TestIntake.test_run_intake_enqueues_and_dedups_by_id TestLoopEngineering.test_regression_gate_blocks_on_failure TestLoopEngineering.test_regression_gate_passes && ! git grep -n -E '(^|[[:space:]])(import|from)[[:space:]]+codd_gate|_apply_codd_gate|_codd_gate' -- tools/agent-project/agent_project` → FAIL（agent-flow run タイムアウト（3600s））
+- 検証: `PYTHONPATH=tools/agent-project python3 tools/agent-project/tests/test_agent_project.py TestIntake.test_run_intake_enqueues_and_dedups_by_id TestLoopEngineering.test_regression_gate_blocks_on_failure TestLoopEngineering.test_regression_gate_passes && ! git grep -n -E '(^|[[:space:]])(import|from)[[:space:]]+codd_gate|_apply_codd_gate|_codd_gate' -- tools/agent-project/agent_project` → FAIL（み・6ファイル +174/-17）  | ファイル | 内容 | |---|---| | `agent_project/config.py` | `Config.hooks_error` を追加 | | `agent_project/configfile.py` | `_hooks_co - loop [failed]: 実行エラー: [agent-error:quota] [agent-cont）
 
 ## Decision Outcome
 

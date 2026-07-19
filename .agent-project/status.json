@@ -3,7 +3,7 @@
   "watch": true,
   "level": "unattended",
   "paused": false,
-  "updated_iso": "2026-07-19 15:16:47",
+  "updated_iso": "2026-07-19 16:46:07",
   "fresh_after_sec": 600.0,
   "runtime": "darwin",
   "wsl_distro": null
