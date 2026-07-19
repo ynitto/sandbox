@@ -7982,6 +7982,11 @@ async function refreshOrchestration() {
   if (!api.orchestrationOverview) return;
   try {
     state.orchestration = await api.orchestrationOverview();
+    // グローバル指示のスキル選択候補（棚卸し）。失敗しても overview 表示は続ける。
+    if (api.orchestrationSkillsInventory) {
+      try { state.orchSkillsInventory = await api.orchestrationSkillsInventory(); }
+      catch { state.orchSkillsInventory = []; }
+    }
   } catch (err) {
     state.orchestration = { error: err.message };
   }
@@ -8269,6 +8274,82 @@ function orchStatusPanelHtml(overview) {
   </section>`;
 }
 
+// 4.5 グローバル指示（agent-instructions）: 全ノード共通の指示文・推奨スキル・ツール方針の編集 +
+// 描画プレビュー + 適用状況。dashboard が書き、各エンジンが実行エージェントへ注入する。
+function orchInstructionsPanelHtml(overview) {
+  const gi = overview.instructions || { enabled: true, text: '', skills: [], tools: {}, revision: 0, max_chars: 2000 };
+  const preview = overview.instructionsPreview || '';
+  const inv = state.orchSkillsInventory || [];
+  const selected = new Map();
+  for (const s of gi.skills || []) {
+    if (typeof s === 'string') selected.set(s, '');
+    else if (s && s.name) selected.set(s.name, s.note || '');
+  }
+  // 選択候補（棚卸し）＋ 既に選択済みだが棚卸しに無い名前も行として出す。
+  const names = new Set(inv.map((s) => s.name));
+  for (const n of selected.keys()) names.add(n);
+  const skillRows = [...names].sort().map((name) => {
+    const on = selected.has(name);
+    const note = selected.get(name) || '';
+    const where = (inv.find((s) => s.name === name) || {}).dir || '';
+    return `<div class="orch-skill-row" data-orch-skill="${esc(name)}">
+      <label><input type="checkbox" class="orch-skill-on" ${on ? 'checked' : ''} /> <strong>${esc(name)}</strong></label>
+      <input type="text" class="orch-skill-note" placeholder="いつ使うか（任意）" value="${esc(note)}" />
+      <small class="muted">${esc(where)}</small>
+    </div>`;
+  }).join('') || '<p class="muted">スキルが見つかりません（.github/skills / ~/.agent/skills / ~/.kiro/skills）。</p>';
+  const allow = (gi.tools && Array.isArray(gi.tools.allow)) ? gi.tools.allow.join(', ') : '';
+  const denyNote = (gi.tools && gi.tools.deny_note) || '';
+  const appliedRows = (overview.status || []).map((s) => {
+    const applied = Number(s.instructions_revision_applied);
+    const badge = Number.isFinite(applied)
+      ? (applied >= Number(gi.revision || 0) ? orchBadge('ok', `反映済 r${applied}`) : orchBadge('soft', `未反映 r${applied}/${gi.revision}`))
+      : orchBadge('muted', '未注入');
+    return `<tr><td>${esc(s.tool || '?')} <small class="muted">${esc(amigosWorkloadLabel(String(s.workload || '')))}</small></td><td>${badge}</td></tr>`;
+  }).join('') || '<tr><td colspan="2" class="muted">稼働中エンジンのハートビートがありません。</td></tr>';
+  return `<section class="orch-panel">
+    <header class="row">
+      <div>
+        <span class="summary-kicker">共通指示</span>
+        <h3>グローバル指示（全ノード共通）</h3>
+        <p class="muted">全エンジンの実行エージェントへ注入するノード共通の指示文・推奨スキル・ツール方針。
+          agent-flow の委譲先ノードへは run スナップショットで伝播します。反映は pull 型で次のサイクル
+          / kiro-loop は次の送信から効きます（最弱の層＝タスク・プロジェクト規則が優先）。</p>
+      </div>
+      <div>${gi.enabled ? orchBadge('ok', `有効 r${esc(String(gi.revision || 0))}`) : orchBadge('soft', '無効')}</div>
+    </header>
+    <label class="orch-instr-enabled"><input type="checkbox" id="orch-instr-enabled" ${gi.enabled ? 'checked' : ''} /> 有効にする（オフで全エンジン no-op）</label>
+    <label class="orch-instr-field">指示文（Markdown）
+      <textarea id="orch-instr-text" class="mono" rows="6" placeholder="例: 回答は日本語。破壊的変更の前に必ず既存テストを確認する。">${esc(gi.text || '')}</textarea>
+    </label>
+    <div class="orch-instr-field">推奨スキル（ローカルに存在する場合のみ効く）
+      <div class="orch-skill-list">${skillRows}</div>
+    </div>
+    <div class="row">
+      <label class="orch-instr-field">ツール（許可・カンマ区切り）
+        <input type="text" id="orch-instr-allow" placeholder="fs_read, fs_write, execute_bash" value="${esc(allow)}" />
+      </label>
+      <label class="orch-instr-field">ツール方針（助言）
+        <input type="text" id="orch-instr-deny" placeholder="外部への push 系は人の確認を経る" value="${esc(denyNote)}" />
+      </label>
+      <label class="orch-instr-field">最大文字数
+        <input type="number" id="orch-instr-max" min="0" max="8000" value="${esc(String(gi.max_chars || 2000))}" />
+      </label>
+    </div>
+    <div class="row orch-actions">
+      <button type="button" id="btn-orch-instr-save">保存（revision +1）</button>
+    </div>
+    <details class="orch-instr-preview">
+      <summary>プレビュー（エンジンが受け取る描画結果）</summary>
+      <pre class="mono orch-instr-preview-body">${esc(preview || '（有効な指示がありません — 何も注入されません）')}</pre>
+    </details>
+    <details class="orch-instr-applied">
+      <summary>適用状況（instructions_revision_applied）</summary>
+      <table class="amigos-table orch-table"><thead><tr><th>ツール</th><th>反映</th></tr></thead><tbody>${appliedRows}</tbody></table>
+    </details>
+  </section>`;
+}
+
 // 5. エージェント CLI 棚卸し（組み込み + ドロップイン: shadowed マーカー + 検証エラー）+ 作成/編集/削除
 function orchInventoryPanelHtml(overview) {
   const inv = overview.agents || { builtins: [], dropins: [] };
@@ -8341,6 +8422,7 @@ function renderOrchestration() {
       ${orchBudgetPanelHtml(ov.budget)}
       ${orchAllocationPanelHtml(ov.budget)}
       ${orchMatrixPanelHtml(ov)}
+      ${orchInstructionsPanelHtml(ov)}
       ${orchStatusPanelHtml(ov)}
       ${orchInventoryPanelHtml(ov)}
     </div>`;
@@ -8440,6 +8522,35 @@ function setupOrchestration(root) {
     try {
       await api.orchestrationControlSave({ workloads });
       toast('割当を保存しました', true);
+    } finally { state.orchSaving = false; }
+    await refreshOrchestration();
+    renderOrchestration();
+  }));
+
+  // グローバル指示（agent-instructions）の保存
+  const instrSave = root.querySelector('#btn-orch-instr-save');
+  if (instrSave) instrSave.addEventListener('click', () => guard('共通指示の保存', async () => {
+    const skills = [];
+    for (const row of root.querySelectorAll('.orch-skill-row')) {
+      if (!row.querySelector('.orch-skill-on').checked) continue;
+      const name = row.getAttribute('data-orch-skill');
+      const note = row.querySelector('.orch-skill-note').value.trim();
+      skills.push(note ? { name, note } : name);
+    }
+    const allow = (root.querySelector('#orch-instr-allow').value || '')
+      .split(',').map((s) => s.trim()).filter(Boolean);
+    const denyNote = root.querySelector('#orch-instr-deny').value.trim();
+    const payload = {
+      enabled: root.querySelector('#orch-instr-enabled').checked,
+      text: root.querySelector('#orch-instr-text').value,
+      skills,
+      tools: { allow, deny_note: denyNote },
+      max_chars: Number(root.querySelector('#orch-instr-max').value || 2000),
+    };
+    state.orchSaving = true;
+    try {
+      await api.orchestrationInstructionsSave(payload);
+      toast('共通指示を保存しました', true);
     } finally { state.orchSaving = false; }
     await refreshOrchestration();
     renderOrchestration();
