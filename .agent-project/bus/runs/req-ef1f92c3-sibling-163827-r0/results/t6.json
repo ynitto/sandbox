@@ -1,0 +1,19 @@
+{
+  "id": "t6",
+  "who": "worker-2",
+  "status": "done",
+  "output": "## (a) 成果\n\n`tools/agent-project/tests/test_codd_gate_{regression,wiring}.py` に、新境界の各経路を固定するテストを追加。成果物: `artifacts/t6/codd-gate-test-boundary.md`（テスト↔完了条件の対応表・変異検査結果）。\n\n**着手時点で「自動配線前提のテスト」は残っていなかった。** `grep \"自動配線|auto_wiring|build_config|configfile\"` のヒットは「自動配線は存在しない」と明記する docstring 3件だけ。加えて worktree には t6 相当の未コミット変更（`TestCliMain` / `TestHookResolution` の初版）が既にあった。取り消さずその上に積み、**差し替えではなく未固定の経路の追加**が実作業になった。\n\n追加した4件:\n\n| テスト | 押さえた穴 |\n|---|---|\n| `test_explicit_repos_and_base_flags_override_inference` | 明示設定（`--repos`/`--base`）が `root:` 推定に勝つ |\n| `test_explicit_binary_bypasses_path_lookup` | 明示設定（`explicit=`）が PATH 解決に勝つ。プローブ argv も明示実体を叩く |\n| `test_stale_value_is_updated_in_place_then_stable` | **更新経路**の冪等性（既存値の置換→2回目は差分ゼロ）。隣接 `intake_cmd` は不可侵 |\n| `test_hand_written_canonical_config_is_left_untouched` | 生成値と手書き正準値の一致（CLI を通しても人の記述が往復しない） |\n\n冪等性は**挿入・更新・初回 no-op** の3経路すべてで「2回目 `changed=False`・本文一致・mtime 不変」を主張する状態になった。\n\n## (b) 検証\n\n- `PYTHONPATH=tools/agent-project python3 -m unittest discover -s tools/agent-project/tests -p 'test_codd_gate_*.py'` → **97 tests OK**（着手前 81）\n- **変異検査**（一時コピーに対して実施、worktree は汚していない）— テストが実効性を持つことを確認:\n  - `upsert_config_text` の「同値なら無変更」分岐を削除 → 6件 failed\n  - `main()` が `--repos` 明示指定を無視 → 1件 failed（該当テストのみ）\n  - `resolve_codd_gate` が `explicit` を無視 → 1件 failed（該当テストのみ）\n- 変更は `tools/agent-project/tests/` 配下のテスト3ファイルのみ。production コードは無改変。\n\n初稿で `assertTrue(all(... for a in judgment.capabilities and [[...]]))` という恒真の assertion を書いてしまい、プローブ argv を記録して実際に検証する形へ差し替えた。\n\n## (c) 前提・未解決・範囲外\n\n**採用した前提**\n\n- CLI テストの検出は `--codd-gate /opt/bin/codd-gate`（実在しないパスの明示指定）で決定的にした。`detect_status` は実在確認のみで subprocess を起動しないため、テストの成否が「その機械に codd-gate が入っているか」に左右されない。\n- 「二回実行で差分が出ない」を、内容一致に加え **mtime 不変**まで含めて解釈した（`apply_to_file` が無変更時に書き込み自体を省略する設計に合わせた）。\n\n**範囲外で見つけた問題（手を出していない）**\n\n- @followup `tests/test_agent_project.py:3998-` の `TestCoddGateNoAutoWiring` はファイルパターン外かつ t1 が「意図的に残す回帰ガード」と判定済みのため未変更。\n- @followup `codd_gate_base.py` は呼び出し元も `tests/test_codd_gate_base.py` も無いまま（t1 申し送り⑤）。存置/削除が決まるまでテストを書いていない。\n- @followup `test_codd_gate_wiring.py` の `_load_hooks_fragment()` は `agent_project/hooks.py` を自前で exec する。`hooks.py` が新たな import を必要とするよう変わると helper の globals 追加が要る。",
+  "finished_at": "2026-07-19T20:33:02Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox",
+      "branch": "ap/sibling-163827",
+      "commit": "96b197e57cf9d409596a652a3dafb5b1d869ba70",
+      "target": "main",
+      "path": "tools/agent-project"
+    }
+  },
+  "artifacts": [
+    "artifacts/t6/codd-gate-test-boundary.md"
+  ]
+}

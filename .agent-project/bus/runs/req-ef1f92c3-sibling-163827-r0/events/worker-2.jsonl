@@ -6,3 +6,9 @@
 {"ts": "2026-07-19T12:43:54Z", "who": "worker-2", "kind": "result", "node": "t1", "status": "failed"}
 {"ts": "2026-07-19T19:45:22Z", "who": "worker-2", "kind": "claimed", "node": "t1"}
 {"ts": "2026-07-19T19:45:23Z", "who": "worker-2", "kind": "result", "node": "t1", "status": "failed"}
+{"ts": "2026-07-19T20:13:29Z", "who": "worker-2", "kind": "claimed", "node": "t6"}
+{"ts": "2026-07-19T20:33:02Z", "who": "worker-2", "kind": "result", "node": "t6", "status": "done"}
+{"ts": "2026-07-19T20:33:03Z", "who": "worker-2", "kind": "claimed", "node": "t4"}
+{"ts": "2026-07-19T20:41:45Z", "who": "worker-2", "kind": "result", "node": "t4", "status": "done"}
+{"ts": "2026-07-19T20:41:45Z", "who": "worker-2", "kind": "claimed", "node": "t5"}
+{"ts": "2026-07-19T20:50:43Z", "who": "worker-2", "kind": "result", "node": "t5", "status": "done"}

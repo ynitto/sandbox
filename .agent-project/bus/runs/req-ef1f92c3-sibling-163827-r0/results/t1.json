@@ -1,10 +1,10 @@
 {
   "id": "t1",
-  "who": "worker-2",
-  "status": "failed",
-  "output": "実行エラー: [agent-error:quota] [agent-control] このワークロード（flow）は管理面により lifecycle=stop 指定です。dashboard のオーケストレーションタブで run に戻してください",
-  "finished_at": "2026-07-19T19:45:23Z",
-  "data": {
-    "error_class": "quota"
-  }
+  "who": "worker-1",
+  "status": "done",
+  "output": "## (a) 成果\n\n棚卸し表を出力: `bus/runs/req-ef1f92c3-sibling-163827-r0/artifacts/t1/codd-gate-sibling-inventory.md`\nワークスペースへの変更なし（調査タスクのため）。\n\n**中核の2点:**\n\n1. **`build_config` のメモリ上自動配線は既にコードから消えている。** `_apply_codd_gate_auto_wiring` の実装は `configfile.py` に存在せず、残存は「再導入を禁じる回帰ガードテスト」（`tests/test_agent_project.py:3998-4040`）と「未更新の設計書」（`docs/designs/codd-gate-design.md:284-304`）だけ。README:279-288 は新境界へ追随済み。\n2. **依存方向は逆転済み。** `agent_project/` は `codd_gate_*` を1つも import せず固有名も持たない。`agent_project/hooks.py:15-18` の能力レジストリ（`wiring.detect`→`detect_wiring`、`wiring.findings`→`doctor_findings`）で sibling を昇順走査し、両方を持つ `codd_gate_wiring.py` だけが当選する。sibling→パッケージの依存も 0 本。\n\n**7モジュールの構図:** detect（生の検出値）→ status（no-op 縮退）＋ routing（実引数）→ wiring（実測配線・doctor 所見・唯一の hook プロバイダ）／ regression（yaml 冪等注入 CLI）。`base` と `debt` は依存グラフから孤立。\n\n**ドキュメント該当箇所:** README 272-288（中核節）・93・445・521／設計書 §4.1 は 258-330、うち **284-304 が stale**／**GUIDE.md は `codd`・`intake_cmd`・`hooks` の出現数がすべて 0**（`regression_cmd` のみ :100 / :125 / :313 / :457）。\n\n## (b) 検証\n\n- 単体テスト `test_codd_gate_*.py` → **81 tests OK**\n- `grep -rn \"_apply_codd_gate_auto_wiring\" .` → 実装ヒット 0\n- `grep -rni \"codd\" agent_project/` → 9件すべてコメント・allowlist 文字列・例示、`import codd_gate_*` は 0件\n\n## (c) 前提・範囲外の発見\n\n**採用した前提:** 「洗い出し」を実装の現状追認と解し、除去済みの箇所も「残存 0」として明示的に記録した（後続が「探したが無かった」を再実行せずに済むため）。\n\n**範囲外で見つけた問題（手を出していない）:**\n\n- @followup 設計書 §4.1:284-304 が消滅した自動配線を現存機能として記述（差し替えの骨子を artifact §5-① に記載）\n- @followup GUIDE.md に一貫性ゲートの導線が皆無\n- @followup README:281-283 の「repos.json が実在する環境で検出」は旧 build_config の発火条件で、現行 doctor 経路の条件ではない（`detect_wiring` は repos.json の有無に関わらず走り、実在時は schema チェックが増えるだけ）\n- @followup `codd_gate_base.py:7-11` / `codd_gate_detect.py:5` の `agent-project.py:NNNN` 行番号参照が、パッケージ分割で全滅（現在地を artifact に対応表として記載）\n- @followup `codd_gate_base.py` は呼び出し元も単体テストも無い（`tests/test_codd_gate_base.py` 不在）。存置/削除の判断が必要\n- @followup `_HOOK_CACHE` は `None` もキャッシュするため、cfg を差し替えるテストを書く後続は `clear()` が必要",
+  "finished_at": "2026-07-19T20:13:29Z",
+  "artifacts": [
+    "artifacts/t1/codd-gate-sibling-inventory.md"
+  ]
 }

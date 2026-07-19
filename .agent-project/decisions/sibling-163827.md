@@ -54,3 +54,10 @@
 - reason  : チェックで承認
 - affects : sibling-163827 → ready
 
+## DR-0010  2026-07-20  actor: nitto
+- context : sibling-163827（sibling 自動検出レイヤと利用手順を新境界へ追随させる）を人の判断から復帰
+- action  : approve-and-fix
+- reason  : 実行制御を run に戻したため、環境要因ブロックから続きを再開
+- affects : sibling-163827 → ready
+- learn: sibling 自動検出レイヤと利用手順を新境界へ追随させる :: 実行制御を run に戻したため、環境要因ブロックから続きを再開
+
