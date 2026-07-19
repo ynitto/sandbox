@@ -1467,6 +1467,34 @@ class TestRunLoop(unittest.TestCase):
             self.assertIn("- 検証: 未定義", ev)
             self.assertNotIn("FAIL", ev)
 
+    def test_delivery_evidence_verify_not_run_is_not_fail(self):
+        """act が失敗して検証まで到達しなかった記録を FAIL と書かない。
+
+        bool では「実行して落ちた」と「そこまで到達していない」が同じ False に潰れる。
+        潰すと、着手前に止まった run の判断材料に「検証 → FAIL」が残り、画面は
+        「検証コマンドが失敗しました」と表示する。verify は一度も走っていないので、
+        人は存在しないテスト失敗を調べに行き、本当の原因には辿り着けない。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            ev = km.delivery_evidence(
+                cfg_for(d, workdir=d), "", None, location="local",
+                verify="pytest -q", vmsg="", ok=False, verdict=km.VERIFY_NOT_RUN)
+            self.assertIn("→ 未実行", ev)
+            self.assertNotIn("FAIL", ev)
+            # 実行された失敗は従来どおり FAIL（未実行と取り違えない）
+            ran = km.delivery_evidence(
+                cfg_for(d, workdir=d), "", None, location="local",
+                verify="pytest -q", vmsg="1 failed", ok=False)
+            self.assertIn("→ FAIL", ran)
+            self.assertNotIn("未実行", ran)
+
+    def test_verify_verdict_normalizes_ok_and_ran(self):
+        self.assertEqual(km.verify_verdict(True), km.VERIFY_PASSED)
+        self.assertEqual(km.verify_verdict(False), km.VERIFY_FAILED)
+        self.assertEqual(km.verify_verdict(None), km.VERIFY_UNKNOWN)
+        self.assertEqual(km.verify_verdict(False, ran=False), km.VERIFY_NOT_RUN)
+        self.assertEqual(km.verify_verdict(True, ran=False), km.VERIFY_NOT_RUN)
+
     def test_budget_stop(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
@@ -3297,12 +3325,18 @@ class TestDaemonRouting(unittest.TestCase):
             yaml.write_text("executor: stub\n", encoding="utf-8")
             c = cfg_for(d, flow_config=str(yaml))
             base = km._kf_base(c, False)
-            self.assertIn("--config", base)
-            self.assertEqual(base[base.index("--config") + 1], str(yaml.resolve()))
-            # daemon 経路とも揃う（片方だけ付けると設定が割れる）
             daemon = km.flow_daemon_cmd(c, 2)
+            self.assertIn("--config", base)
             self.assertIn("--config", daemon)
-            self.assertEqual(daemon[daemon.index("--config") + 1], str(yaml.resolve()))
+            got_base = base[base.index("--config") + 1]
+            got_daemon = daemon[daemon.index("--config") + 1]
+            # 主経路と daemon 経路が同じ設定ファイルを指すことが本題（片方だけ付けると設定が割れる）。
+            # 突き合わせは「同じファイルか」で行う。文字列一致にすると macOS の
+            # /var → /private/var のような symlink 表記の違いだけで落ちる——本体は
+            # abspath 止まりで symlink を解決しない（人が設定したパスの形を保つ）。
+            self.assertEqual(got_base, got_daemon)
+            self.assertTrue(os.path.isabs(got_base))
+            self.assertTrue(os.path.samefile(got_base, yaml))
 
     def test_daemon_detection(self):
         if km.fcntl is None:
@@ -7361,6 +7395,41 @@ class TestFailureTriage(unittest.TestCase):
         # 内容の問題（該当なし）は None
         self.assertIsNone(km.classify_agent_failure("テストが 3 件落ちました"))
 
+    def test_source_marker_beats_stale_tag(self):
+        """発生元マーカーはタグより強い。
+
+        タグを無条件に正とすると、内側で付いた分類を外側から上書きできない。実際
+        [agent-control] による停止が quota タグを載せたまま運ばれ、画面は「利用上限です。
+        時間をおいてください」と表示した——必要な操作は「実行を run に戻す」で、待っても
+        永久に回復しない。生の本文に残るマーカーは後から見ても正しいので、それを先に見る。"""
+        stale = ("[agent-error:quota] [agent-control] このワークロード（flow）は管理面により "
+                 "lifecycle=stop 指定です")
+        cls, hint = km.classify_agent_failure(stale)
+        self.assertEqual(cls, "control")
+        self.assertIn("dashboard", hint)
+        # node-budget（このノードの予算超過）は quota のまま
+        self.assertEqual(
+            km.classify_agent_failure("[node-budget] このノードのトークン予算を超過しています")[0],
+            "quota")
+        # マーカーが無ければ従来どおりタグが正
+        self.assertEqual(km.classify_agent_failure("[agent-error:auth] なにか")[0], "auth")
+
+    def test_error_chain_keeps_every_observed_class(self):
+        """観測した分類を先頭以外も残す。
+
+        先頭（proximate cause）だけ保存すると、分類器が後で直っても保存済みの記録は
+        誤ったままになる。実際 quota タグと [agent-control] マーカーが同居した記録で、
+        捨てた側が正しかった。根拠として全部を持ち、表示は先頭を使う。"""
+        stale = ("[agent-error:quota] [agent-control] このワークロード（flow）は管理面により "
+                 "lifecycle=stop 指定です")
+        self.assertEqual(km.agent_error_chain(stale), ["control", "quota"])
+        self.assertEqual(km.classify_agent_failure(stale)[0], "control")
+        # 単一分類は 1 要素、該当なしは空
+        self.assertEqual(km.agent_error_chain("[agent-error:auth] なにか"), ["auth"])
+        self.assertEqual(km.agent_error_chain("テストが 3 件落ちました"), [])
+        # パターン一致（タグ無し）も拾う
+        self.assertEqual(km.agent_error_chain("codex error: usage limit reached"), ["quota"])
+
     def test_settle_failure_env_class_blocks_without_burning_retries(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
@@ -8243,7 +8312,12 @@ class TestJournalRotation(unittest.TestCase):
         self.assertFalse((self.tmp / "journal-archive").exists())
 
     def test_rotation_archives_and_starts_fresh(self):
-        with mock.patch.object(km, "_JOURNAL_MAX_BYTES", 200):
+        # 見るのは「退避しても行が失われない」ことだけ。保持世代の刈り込みは別テスト
+        # （_JOURNAL_KEEP=0 で無制限）。両方を1つのテストで見ると、ローテーション行に
+        # 載るアーカイブ名＝**ホスト名の長さ**で退避回数が変わり、保持世代 20 を超えるか
+        # どうかが実行環境まかせになる（長いホスト名の機材でだけ落ちていた）。
+        with mock.patch.object(km, "_JOURNAL_MAX_BYTES", 200), \
+             mock.patch.object(km, "_JOURNAL_KEEP", 0):
             for i in range(30):
                 km.append_journal(self.journal, f"line {i} " + "x" * 40)
         arch = sorted((self.tmp / "journal-archive").iterdir())
@@ -8262,6 +8336,16 @@ class TestJournalRotation(unittest.TestCase):
                 km.append_journal(self.journal, f"line {i} " + "y" * 40)
         arch = [p for p in (self.tmp / "journal-archive").iterdir() if p.is_file()]
         self.assertLessEqual(len(arch), 2)                      # 保持世代で刈り込む
+        # **どれが残るか**まで見る。同一秒に複数回退避すると連番が付くが、ゼロ詰めしないと
+        # 名前順で ".10" が ".2" より前に並び、刈り込みが最古ではなく任意の世代を消して
+        # journal の行が歯抜けに失われる。残るのは常に直近＝最も新しい行を含む世代。
+        kept = "".join(p.read_text(encoding="utf-8") for p in arch)
+        self.assertIn("line 59 ", kept + self.journal.read_text(encoding="utf-8"))
+        self.assertNotIn("line 0 ", kept)                       # 最古が残り続けない
+        newest = max(arch, key=lambda p: p.stat().st_mtime)
+        others = [p for p in arch if p is not newest]
+        for p in others:                                        # 残った世代は連続している
+            self.assertLessEqual(p.stat().st_mtime, newest.stat().st_mtime)
 
     def test_rotation_disabled_with_zero(self):
         with mock.patch.object(km, "_JOURNAL_MAX_BYTES", 0):

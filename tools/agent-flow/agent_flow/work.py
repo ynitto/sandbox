@@ -167,8 +167,13 @@ def cmd_work(args) -> int:
             # 文字列タグに依存せず読めるよう、分類と in-place 試行数を data に載せる。
             # transient がここへ来た＝レイヤ1（run_agent 内の再試行）を使い切っている。
             triage = classify_agent_failure(str(e))
+            chain = agent_error_chain(str(e))
             rdata = {**(rdata if isinstance(rdata, dict) else {}),
                      "error_class": triage[0] if triage else "content"}
+            # 観測した分類を全部残す。error_class（先頭＝proximate cause）だけを保存すると、
+            # 分類器が後で直っても保存済みの記録は誤ったままになる（実際そうなった）。
+            if len(chain) > 1:
+                rdata["error_chain"] = chain
             attempts = getattr(e, "attempts", None)
             if attempts:
                 rdata["attempts"] = int(attempts)

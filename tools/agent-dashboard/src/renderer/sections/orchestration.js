@@ -35,8 +35,52 @@ function orchLifecycleLabel(lc) {
   return { run: '稼働', pause: '一時停止', stop: '停止' }[lc] || lc || '未指定';
 }
 
+// タスクの実行に必要なワークロード。どちらかが止まっていれば承認も再実行も着手前に弾かれる
+// （project=agent-project のループ / flow=agent-flow のノード実行）。
+const ORCH_BLOCKING_WORKLOADS = ['project', 'flow'];
+
 function orchOnExhaustedLabel(v) {
   return { pause: '一時停止', stop: '停止', degrade: '縮退' }[v] || v;
+}
+
+// この端末の実行制御（control.json）で止まっているワークロード。
+// pause / stop の間は、承認も再実行も「送れるが実行されない」——本体は着手前に
+// [agent-control] で弾き、その失敗が誤分類されて「利用上限」等の別の理由として
+// 画面に出ることがあった。人は上限が空くのを待ち、実際に必要な操作（稼働に戻す）へ
+// 辿り着けない。押す前にここで見えるようにして、その往復を断つ。
+function orchBlockedWorkloads() {
+  const ov = state.orchestration;
+  const workloads = (ov && ov.control && ov.control.workloads) || {};
+  const blocked = [];
+  for (const name of ORCH_BLOCKING_WORKLOADS) {
+    const lifecycle = String((workloads[name] || {}).lifecycle || 'run');
+    if (lifecycle === 'pause' || lifecycle === 'stop') blocked.push({ workload: name, lifecycle });
+  }
+  return blocked;
+}
+
+// 実行が止まっているときの警告。止まっていなければ空文字（通常時は何も足さない）。
+function orchBlockedBannerHtml() {
+  const blocked = orchBlockedWorkloads();
+  if (!blocked.length) return '';
+  const detail = blocked
+    .map((b) => `${b.workload} = ${orchLifecycleLabel(b.lifecycle)}`)
+    .join(' / ');
+  return `<div class="need-blocker" role="status">
+    <strong>⏸ 実行が管理面で止まっています（${esc(detail)}）</strong>
+    <span>このまま承認・再実行を送っても、着手前に止められて同じ要対応に戻ります。</span>
+    <button type="button" class="primary-inline" data-orch-open="1">エージェント管理を開いて稼働に戻す</button>
+  </div>`;
+}
+
+// ブロッカー警告内の導線。タブ切替は .tab のクリックハンドラが正（二重実装しない）。
+function bindOrchBlockedBanner(root) {
+  for (const btn of (root || document).querySelectorAll('[data-orch-open]')) {
+    btn.addEventListener('click', () => {
+      const tab = document.querySelector('.tab[data-tab="orchestration"]');
+      if (tab) tab.click();
+    });
+  }
 }
 
 // 状態バッジ（色 + 状態語）。kind は ok / soft / over / muted。

@@ -30,26 +30,30 @@ def _env_failure_reason(results: dict) -> "str | None":
     for nid, r in results.items():
         if r.get("status") != "failed":
             continue
-        # 構造化 error_class（worker が data に載せる）を優先し、無ければ output のタグを読む
+        # 発生元マーカー > 構造化 error_class（worker が data に載せる）> output のタグ。
+        # error_class は「その時の分類器」の答えなので、旧版が付けた誤分類をそのまま運ぶ
+        # （実際 [agent-control] の停止が quota として保存され、再開しても直らなかった）。
+        # 生の output に残るマーカーだけは後から見ても正しいので、それを最優先にする。
+        output = str(r.get("output", ""))
         d = r.get("data")
-        cls = d.get("error_class") if isinstance(d, dict) else None
+        cls = _source_marker_class(output)
+        if cls is None:
+            cls = d.get("error_class") if isinstance(d, dict) else None
         if cls not in ("transient",) + AGENT_ERROR_ENV_CLASSES:
-            m = _AGENT_ERROR_TAG_RE.search(str(r.get("output", "")))
+            m = _AGENT_ERROR_TAG_RE.search(output)
             cls = m.group(1) if m else None
         if cls == "transient":
             return (f"[agent-error:transient] 一時的エラーの失敗（{nid}）: in-place 再試行でも"
                     "回復せず、run を打ち切りました。自動再開（auto-heal）の対象です"
                     "（完了済みの工程は温存されます）。")
         if cls in AGENT_ERROR_ENV_CLASSES:
-            # 発生元マーカーも run まで運び、旧版の quota+[agent-control] と
-            # node-budget の利用上限を表示層が区別できるようにする。
-            output = str(r.get("output", ""))
-            source = next((f"[{name}]" for name in ("agent-control", "node-budget")
-                           if f"[{name}]" in output), "")
-            source = f" {source}" if source else ""
-            if "[agent-control]" in source:
+            # 発生元マーカーも run まで運び、管理面の停止と node-budget の予算超過を
+            # 表示層が区別できるようにする（どちらも「止まっている」だが直し方が違う）。
+            marker = next((mk for mk, _ in _AGENT_ERROR_SOURCE_CLASSES if mk in output), "")
+            source = f" {marker}" if marker else ""
+            if marker == "[agent-control]":
                 hint = "管理面で対象ワークロードの実行が一時停止または停止されています。"
-            elif "[node-budget]" in source:
+            elif marker == "[node-budget]":
                 hint = "このノードに設定した実行時間またはトークン予算に達しています。"
             else:
                 hint = next((h for c, _, h in _AGENT_ERROR_PATTERNS if c == cls), "")

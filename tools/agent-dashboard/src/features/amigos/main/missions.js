@@ -245,6 +245,7 @@ function readMissionSummary(id, dir) {
     dir,
     title: mission.title || id,
     goal: mission.goal || '',
+    assignmentPolicy: mission.assignment_policy || 'first-come',
     owner: mission.owner_node || '',
     postedAt: mission.posted_at || '',
     phase,

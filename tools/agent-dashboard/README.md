@@ -27,7 +27,7 @@ agent-amigos ミッションとノード予算（`src/features/amigos/`）を同
 2. `sections/*.js` — 各タブの描画（overview / backlog / needs / flow / node-detail / gitlab /
    history / amigos / orchestration / cowork / kiro-loop）。中身は関数宣言のみで load 時実行を持たない
    ため、相互の順序は不問。
-3. `features/*.js` — `registerFeatureTab` で自分のタブを差し込む独立モジュール（例 `delegation.js`）。
+3. `features/*.js` — `registerFeatureTab` で自分のタブを差し込む独立モジュール。
 4. `bootstrap.js` — `init()` の定義と呼び出し。全関数が出揃った後に動くよう**最後**に読む。
 
 テストはソースを文字列走査するため、`test/helpers/renderer-src.js` が上記を結合して

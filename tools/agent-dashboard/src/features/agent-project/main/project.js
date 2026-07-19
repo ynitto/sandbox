@@ -446,6 +446,9 @@ function _diagnoseFailure(why, detail) {
   const raw = `${why || ''} ${verify}`;
   const empty = { summary: '', resolution: '', context: null };
   if (!raw.trim()) return empty;
+  // 検証まで到達していない（act が失敗して止まった）記録からは、検証の所見を作らない。
+  // 失敗の理由は別にある——ここで何か言うと、その本当の理由を覆い隠す。
+  if (/→\s*未実行/.test(verify)) return empty;
   const workdir = (String(detail || '').match(/^-\s*所在\s*[:：]\s*(\S+)/m) || [])[1];
   const missingEnglish = (raw.match(/(?:file or directory not found|No such file or directory)[:\s]+([^\s)）]+)/i) || [])[1];
   const missingJapanese = (raw.match(/(?:エラー\s*[:：]\s*)?[^\n]*?(?:見つかりません|存在しません)\s*[:：]\s*([^\s)）]+)/) || [])[1];

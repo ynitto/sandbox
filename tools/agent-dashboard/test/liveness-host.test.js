@@ -55,7 +55,11 @@ test('自ホストが書いた status.json は status-local（別マシン扱い
 
 test('別ホストが書いた status.json は従来どおり status-sync（別マシン）', () => {
   const dir = projectWithStatus({
-    host: `${os.hostname()}-other`,
+    // 別ホストは**前置**で作る。後置（`${os.hostname()}-other`）だと、ホスト名に
+    // ドットが含まれる環境（macOS の `foo.local` 等）で短縮名が変わらず、hostsMatch が
+    // 同一マシンと判定してしまう——DNS サフィックス差の吸収は本体の意図した挙動なので、
+    // 別マシンを表したいテスト側が短縮名まで変える必要がある。
+    host: `other-${os.hostname()}`,
     watch: true,
     paused: false,
     updated_iso: isoAgo(60),

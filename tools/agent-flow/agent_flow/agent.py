@@ -525,18 +525,54 @@ _AGENT_ERROR_PATTERNS = (
 )
 
 
+# 発生元マーカー → 分類。マーカーは止めた本人（raise した箇所）が書くので、外側の層が
+# 後から載せたタグより確かな証拠になる。タグを無条件に正とすると、内側で付いた分類が
+# 外へ運ばれ続けて上書きできない——実際 [agent-control] による停止が quota として運ばれ、
+# 画面は「利用上限です。時間をおいてください」と表示した。必要な操作は「実行を run に
+# 戻す」で、待っても永久に回復しない。マーカーがあればそれを先に見る。
+_AGENT_ERROR_SOURCE_CLASSES = (
+    ("[agent-control]", "control"),
+    ("[node-budget]", "quota"),
+)
+
+
+def _source_marker_class(text: str) -> "str | None":
+    """本文中の発生元マーカーから分類を引く（無ければ None）。"""
+    return next((cls for marker, cls in _AGENT_ERROR_SOURCE_CLASSES if marker in text), None)
+
+
+def agent_error_chain(blob: str) -> "list[str]":
+    """本文から観測できる分類を**すべて**、確からしい順に返す（該当なしは空）。
+
+    層をまたぐ間に分類は複数載る（内側が付けたタグの外側にマーカーが増える等）。
+    先頭だけ残して他を捨てると、後から「本当は何が起きていたか」を復元できない——
+    実際 quota タグと [agent-control] マーカーが同居した記録で、捨てた側が正しかった。
+    先頭が proximate cause（表示・行動提示に使う）で、残りは根拠として保持する。"""
+    text = str(blob or "")
+    chain: "list[str]" = []
+    marker = _source_marker_class(text)
+    if marker:
+        chain.append(marker)
+    for m in _AGENT_ERROR_TAG_RE.finditer(text):
+        if m.group(1) not in chain:
+            chain.append(m.group(1))
+    if not chain:
+        for cls, pat, _ in _plugin_error_patterns() + _AGENT_ERROR_PATTERNS:
+            if pat.search(text) and cls not in chain:
+                chain.append(cls)
+    return chain
+
+
 def classify_agent_failure(blob: str) -> "tuple[str, str] | None":
     """エラー本文を (class, hint) に分類する（該当なしは None＝内容の問題）。
-    既にタグ付きならそれが正。プラグイン定義の errors を汎用パターンより先に評価する。"""
-    text = str(blob or "")
-    m = _AGENT_ERROR_TAG_RE.search(text)
-    if m:
-        hint = next((h for c, _, h in _AGENT_ERROR_PATTERNS if c == m.group(1)), "")
-        return m.group(1), hint
-    for cls, pat, hint in _plugin_error_patterns() + _AGENT_ERROR_PATTERNS:
-        if pat.search(text):
-            return cls, hint
-    return None
+    発生元マーカー > [agent-error:] タグ > プラグイン定義 > 汎用パターン の順に見る。
+    全分類が要るときは agent_error_chain を使う（ここは先頭＝proximate cause だけ返す）。"""
+    chain = agent_error_chain(blob)
+    if not chain:
+        return None
+    cls = chain[0]
+    hint = next((h for c, _, h in _plugin_error_patterns() + _AGENT_ERROR_PATTERNS if c == cls), "")
+    return cls, hint
 
 
 def _agent_failure(cli: str, rc: int, out: str, err: str) -> str:

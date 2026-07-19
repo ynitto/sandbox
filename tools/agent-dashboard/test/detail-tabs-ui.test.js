@@ -297,10 +297,12 @@ assert.strictEqual(
   false,
   '失敗情報のない通常検収には診断操作を出さない'
 );
+// 解析済みの失敗（producer が summary と context を対で出す）はそのまま投影する。
 assert.deepStrictEqual(
   needFailureViewModel({
     kind: 'blocked',
     why: '検証コマンド工程で失敗',
+    failureSummary: '検証コマンドが失敗しました（終了コード 2）。',
     failureContext: { category: '検証工程', command: 'npm test', exitCode: '2' },
   }),
   {
@@ -308,7 +310,24 @@ assert.deepStrictEqual(
     resolution: '',
     context: { category: '検証工程', command: 'npm test', exitCode: '2' },
   },
-  'failureSummary が無くても検証失敗コンテキストを表示モデルへ投影する'
+  '解析済みの失敗要約と根拠をそのまま表示モデルへ運ぶ'
+);
+// 表示層は散文から失敗要約を作らない。作ると、検証まで到達していない失敗（実行制御による
+// 停止・認証切れなど）にも「検証コマンドが失敗しました」と出て、人は走ってもいないテストを
+// 探しに行く。解析できなかった失敗は要約を出さず、生の判断材料を読ませる。
+assert.strictEqual(
+  needFailureViewModel({ kind: 'blocked', why: '検証コマンドが FAIL しました' }),
+  null,
+  '散文に検証・FAIL があるだけでは検証失敗と断定しない'
+);
+assert.strictEqual(
+  needFailureViewModel({
+    kind: 'blocked',
+    why: '[agent-error:control] 実行制御（管理設定による停止）',
+    detail: '- 検証: `npm test` → 未実行（実行が検証まで到達しなかったため、テストの成否は分かっていません）',
+  }),
+  null,
+  '検証が未実行の記録から検証失敗の要約を作らない'
 );
 assert.strictEqual(
   needFailureViewModel({ kind: 'blocked', why: 'verify 未定義（工程は完了しています）' }),
@@ -787,7 +806,7 @@ assert.match(
   // eslint-disable-next-line no-new-func
   const needActionsHtml = new Function(
     'esc', 'state', 'milestoneStatusFor', 'milestoneVersionName',
-    'statusLabel', 'needCompleteHowHtml', 'needHasDeliverable',
+    'statusLabel', 'needCompleteHowHtml', 'needHasDeliverable', 'orchBlockedBannerHtml',
     `${grab('needActionsHtml')}; return needActionsHtml;`
   )(
     (value) => String(value == null ? '' : value),
@@ -796,7 +815,8 @@ assert.match(
     () => null,
     (status) => String(status || ''),
     () => '',
-    needHasDeliverable
+    needHasDeliverable,
+    () => ''            // 実行制御は稼働中＝警告なし（停止時の文言は orchestration-blocker で検証）
   );
   const pendingHtml = needActionsHtml({
     id: 'T1', taskId: 'T1', kind: 'blocked', why: 'verify 未定義（工程は完了しています…）', file: '/p/needs/T1.md',

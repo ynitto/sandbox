@@ -72,7 +72,8 @@
         <button class="tab" data-tab="history" data-feature="agent-project">成果</button>
         <button class="tab hidden" data-tab="amigos" data-feature="amigos" id="tab-btn-amigos" hidden>ミッション</button>
         <button class="tab hidden" data-tab="cowork" data-feature="cowork" id="tab-btn-cowork" hidden>定常業務</button>
-        <button class="tab" data-tab="delegation" data-feature="delegation" id="tab-btn-delegation">委譲</button>
+        <button class="tab hidden" data-tab="participation" data-feature="participation"
+          id="tab-btn-participation" hidden>参加</button>
         <span class="tab-utility-group">
           <button class="tab tab-project-settings hidden" data-tab="project-settings" data-feature="agent-project"
             id="tab-btn-project-settings" hidden>プロジェクト設定</button>
@@ -89,9 +90,9 @@
         <div id="tab-history" class="tabpane" data-feature="agent-project"></div>
         <div id="tab-cowork" class="tabpane" data-feature="cowork"></div>
         <div id="tab-amigos" class="tabpane" data-feature="amigos"></div>
+        <div id="tab-participation" class="tabpane hidden" data-feature="participation" hidden></div>
         <div id="tab-project-settings" class="tabpane" data-feature="agent-project"></div>
         <div id="tab-orchestration" class="tabpane" data-feature="orchestration"></div>
-        <div id="tab-delegation" class="tabpane" data-feature="delegation"></div>
       </section>
     </main>
   </div>
@@ -598,7 +599,8 @@
   <script src="sections/orchestration.js"></script>
   <script src="sections/cowork.js"></script>
   <script src="sections/kiro-loop.js"></script>
-  <script src="features/delegation.js"></script>
+  <script src="../features/participation/model.js"></script>
+  <script src="features/participation.js"></script>
   <script src="bootstrap.js"></script>
 </body>
 </html>

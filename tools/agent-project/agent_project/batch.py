@@ -40,19 +40,26 @@ def rotate_journal(path: Path, max_bytes: "int | None" = None,
         arch_dir.mkdir(parents=True, exist_ok=True)
         ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
         host = re.sub(r"[^A-Za-z0-9._-]", "-", socket.gethostname())[:24] or "host"
-        dest = arch_dir / f"{path.stem}-{ts}-{host}{path.suffix}"
-        n = 1
+        # 同一秒に複数回ローテーションすると連番が付く。ゼロ詰めしないと名前順で ".10" が
+        # ".2" より前に並び、刈り込みが**最古ではなく任意の世代**を消す（journal の行が
+        # 歯抜けに失われた）。ゼロ詰めして、同一秒内でも名前順＝時系列にする。
+        base = f"{path.stem}-{ts}-{host}"
+        n = 0
+        dest = arch_dir / f"{base}.{n:03d}{path.suffix}"
         while dest.exists():
-            dest = arch_dir / f"{path.stem}-{ts}-{host}.{n}{path.suffix}"
             n += 1
+            dest = arch_dir / f"{base}.{n:03d}{path.suffix}"
         path.replace(dest)                 # 同一ファイルシステム内の原子的 rename
     except OSError:
         return None
     keep_n = _JOURNAL_KEEP if keep is None else keep
     if keep_n > 0:
         try:
-            arch = sorted(p for p in arch_dir.iterdir()
-                          if p.is_file() and p.name.startswith(path.stem + "-"))
+            # 刈り込みは mtime 順（＝退避した順）。名前順だけに頼ると、旧命名で残っている
+            # アーカイブや別ホストのタイムスタンプが混ざったときに時系列と食い違う。
+            arch = sorted((p for p in arch_dir.iterdir()
+                           if p.is_file() and p.name.startswith(path.stem + "-")),
+                          key=lambda p: (p.stat().st_mtime, p.name))
             for old in arch[:-keep_n]:
                 old.unlink()
         except OSError:

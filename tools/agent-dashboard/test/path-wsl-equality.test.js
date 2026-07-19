@@ -81,8 +81,10 @@ test('sameMachineStatus: runtime=wsl は win32 で同一マシン', () => {
   if (process.platform === 'win32') {
     assert.ok(sameMachineStatus({ host: 'other-box', runtime: 'wsl' }));
   } else {
-    // Linux では hostname 不一致なら同一マシン扱いにしない（runtime だけでは不足）
-    assert.ok(!sameMachineStatus({ host: `${os.hostname()}-x`, runtime: 'wsl' }));
+    // Linux では hostname 不一致なら同一マシン扱いにしない（runtime だけでは不足）。
+    // 別ホストは前置で作る: 後置だとホスト名にドットを含む環境（macOS の `foo.local`）で
+    // 短縮名が変わらず、DNS サフィックス差を吸収する hostsMatch が一致と判定する。
+    assert.ok(!sameMachineStatus({ host: `x-${os.hostname()}`, runtime: 'wsl' }));
   }
   assert.ok(sameMachineStatus({ host: os.hostname(), runtime: 'linux' }));
 });
@@ -121,7 +123,8 @@ test('projectLiveness: effective_root_windows（状態 worktree UNC）で instan
 test('projectLiveness: status.json の runtime=wsl は win32 で status-local', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-wsl-st-'));
   fs.writeFileSync(path.join(dir, 'status.json'), JSON.stringify({
-    host: `${os.hostname()}-wsl-distinct`,
+    // 前置で別ホストにする（後置はドット入りホスト名で短縮名が変わらない。上の注記参照）
+    host: `wsl-distinct-${os.hostname()}`,
     runtime: 'wsl',
     watch: true,
     paused: false,

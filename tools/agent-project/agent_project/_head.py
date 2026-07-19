@@ -6,6 +6,7 @@ import argparse
 import contextlib
 import fnmatch
 import hashlib
+import io
 import json
 import os
 import re
