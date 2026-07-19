@@ -204,6 +204,32 @@ fi
 ok "インストールしました: $INSTALL_PATH"
 
 # ---------------------------------------------------------------------------
+# 7.5 スタブ（--stub 用のダミーエージェント）のインストール
+#
+# kiro-loop は自分と同じ場所の stub/kiro-cli-stub.py を起動する（_resolve_agent_bin）。
+# ここでコピーしないと --stub が使えない。更新を忘れると古いスタブが黙って動き続け、
+# 直したはずの不具合が再現するため、毎回上書きする。
+# ---------------------------------------------------------------------------
+info "スタブをインストールしています..."
+
+STUB_SRC="${SCRIPT_DIR}/stub/kiro-cli-stub.py"
+if [[ -f "$STUB_SRC" ]]; then
+  STUB_DIR="${INSTALL_PREFIX}/stub"
+  STUB_PATH="${STUB_DIR}/kiro-cli-stub.py"
+  mkdir -p "$STUB_DIR"
+  cp "$STUB_SRC" "$STUB_PATH"
+  chmod +x "$STUB_PATH"
+  if [[ "$OS" == "Darwin" ]]; then
+    sed -i '' "1s|.*|#!/usr/bin/env ${PYTHON_CMD}|" "$STUB_PATH"
+  else
+    sed -i "1s|.*|#!/usr/bin/env ${PYTHON_CMD}|" "$STUB_PATH"
+  fi
+  ok "インストールしました: $STUB_PATH"
+else
+  warn "スタブが見つからないためスキップします: $STUB_SRC（--stub は使えません）"
+fi
+
+# ---------------------------------------------------------------------------
 # 8. 同時実行数制御用ファイルのインストール
 # ---------------------------------------------------------------------------
 info "同時実行数制御用ファイルをインストールしています..."
@@ -260,6 +286,7 @@ echo ""
 echo "  使い方:"
 echo "    cd ~/projects/my-app"
 echo "    kiro-loop                                      # デーモンモードで起動"
+echo "    kiro-loop --stub                               # エージェント無しで動作確認"
 echo "    kiro-loop ls                                   # kiro 関連セッションを一覧表示"
 echo "    kiro-loop send 'コードをレビューして'           # プロンプトを送信"
 echo "    kiro-loop send task.md                         # ファイル内容を読んで実行"
