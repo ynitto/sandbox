@@ -123,6 +123,22 @@ def test_request_is_trimmed():
     assert "あ" * 401 not in p
 
 
+def test_worker_prompt_prepends_global_instructions():
+    block = "<!-- agent-instructions rev:4 -->\n## 共通指示（agent-dashboard 管理・全ノード共通）\n回答は日本語。"
+    p = fw.build({"role": "worker", "kind": "work", "goal": "g", "instructions": block})
+    # ブロックは先頭に置かれ、タスク本文より前に来る
+    assert p.startswith(block)
+    assert p.index(block) < p.index("タスク(work)")
+    # 最弱の層であることを明示する文言
+    assert "個別タスクの指示" in p and "それらを優先" in p
+
+
+def test_worker_prompt_without_instructions_unchanged():
+    p = fw.build({"role": "worker", "kind": "work", "goal": "g"})
+    assert "agent-instructions" not in p
+    assert p.startswith("あなたは分散 Dynamic Workflow")
+
+
 def test_cli_stdin_roundtrip():
     payload = {"role": "worker", "kind": "work", "goal": "CLIテスト"}
     proc = subprocess.run([sys.executable, SCRIPT], input=json.dumps(payload),

@@ -69,6 +69,10 @@ def build_parser() -> argparse.ArgumentParser:
                    default=None,
                    help="各ノード完了後に成果物リポジトリの clone を即削除する（設定 cleanup_per_node と同義）。"
                         "長命 worker（--keep-alive）のディスク積み上がりを抑える（既定: worker 終了時に一括削除）")
+    p.add_argument("--no-global-instructions", dest="no_global_instructions",
+                   action="store_true", default=False,
+                   help="グローバル指示（agent-instructions）の meta スナップショット / ワーカー注入を無効化する"
+                        "（既定: ~/.agent/instructions/instructions.json があれば注入）")
     # サブコマンド未指定なら daemon として扱う（required=False）
     sub = p.add_subparsers(dest="cmd")
 

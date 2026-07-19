@@ -9,4 +9,6 @@ module.exports = {
   orchestrationLifecycle: (invoke) => (payload) => invoke('orchestration:lifecycle', payload || {}),
   orchestrationAgentSave: (invoke) => (payload) => invoke('orchestration:agentSave', payload || {}),
   orchestrationAgentDelete: (invoke) => (payload) => invoke('orchestration:agentDelete', payload || {}),
+  orchestrationInstructionsSave: (invoke) => (payload) => invoke('orchestration:instructionsSave', payload || {}),
+  orchestrationSkillsInventory: (invoke) => () => invoke('orchestration:skillsInventory', {}),
 };

@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-instructions.schema.json",
+  "title": "グローバル指示 — 管理面→各エンジンのノード共通指示（データ契約）",
+  "description": "agent-dashboard が編集し、各エンジン（agent-project / agent-flow / kiro-loop / agent-loop）が実行エージェント CLI へ注入するノード共通の指示。CLAUDE.md / AGENTS.md のような常設指示書に相当するが、(1) dashboard から動的に変更でき（revision 単調増加）、(2) agent-flow の run では meta.json スナップショットとして委譲先ノードへ伝播する点が異なる。各エンジンは同一の決定的規則で JSON を有界テキストブロックへ描画し、実行エージェント（成果物を作る worker / 定常業務）のプロンプトへ前置する。planner / 裁定 / prioritize / doctor 等のメタ LLM 呼び出しへは注入しない。スキルは名前参照のみ（実体は node federation が配布）。優先順位は最弱の層（タスク > brief > プロジェクト規則 charter/rules > 共通指示）。フェイルセーフ: 不在 / 破損 / enabled=false はすべて『指示なし』＝エンジンを止めない。置き場所: $AGENT_INSTRUCTIONS_DIR（既定 ~/.agent/instructions/）の instructions.json（管理面が原子書換）。設計: docs/plans/2026-07-19-agent-dashboard-global-instructions-design.md",
+  "$defs": {
+    "skill_ref": {
+      "description": "推奨スキルの名前参照。文字列（名前だけ）または {name, note}。実体は運ばず、ノードにローカル存在する場合のみ効く",
+      "oneOf": [
+        {"type": "string", "minLength": 1},
+        {
+          "type": "object",
+          "required": ["name"],
+          "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "note": {"type": "string", "description": "このスキルをいつ使うかの補足（描画時に名前の後ろへ出す）"}
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "instructions": {
+      "type": "object",
+      "description": "instructions.json — ノード共通指示（管理面だけが書く。原子書換）",
+      "properties": {
+        "version": {"type": "integer", "const": 1},
+        "revision": {
+          "type": "integer", "minimum": 0,
+          "description": "単調増加。エンジンが status/<tool>-<pid>.json（agent-control 契約）へ書く instructions_revision_applied と突き合わせ、未反映を可視化する"
+        },
+        "enabled": {
+          "type": "boolean", "default": true,
+          "description": "false なら全エンジンで完全 no-op（削除せず一時停止できる）"
+        },
+        "text": {
+          "type": "string",
+          "description": "指示本文（Markdown）。これが主役。エンジンはこれをブロック先頭の見出しの下に描画する"
+        },
+        "skills": {
+          "type": "array",
+          "description": "推奨スキルの名前参照。実体は運ばない（node federation の責務）",
+          "items": {"$ref": "#/$defs/skill_ref"}
+        },
+        "tools": {
+          "type": "object",
+          "description": "ツール方針。allow は kiro-cli --agent の tools へ強制反映できる唯一のフィールド（常駐系のみ・ペイン再起動が反映点）。プロンプト組立系（flow / project）では助言テキストになる",
+          "properties": {
+            "allow": {
+              "type": "array", "items": {"type": "string"},
+              "description": "許可するツール名。常駐系（kiro-loop / agent-loop）では --agent JSON の tools へマージ。プロンプト組立系では『ツール（許可）:』の助言行として描画"
+            },
+            "deny_note": {
+              "type": "string",
+              "description": "否定・注意の方針（助言テキスト専用。kiro agent 形式に否定リストが無いため強制はしない）"
+            }
+          },
+          "additionalProperties": true
+        },
+        "max_chars": {
+          "type": "integer", "minimum": 0, "default": 2000,
+          "description": "描画後ブロックの上限文字数（既定 2000・ハード上限 8000）。超過は末尾切り詰め（… 付与）。プロンプトを圧迫しないための有界化（rules.md の 1200 上限と同じ発想）"
+        },
+        "updated_at": {"type": "string", "description": "ISO8601 UTC"},
+        "updated_by": {"type": "string", "description": "書いた主体（dashboard / cli / 人）"}
+      },
+      "additionalProperties": true
+    },
+    "meta_snapshot": {
+      "type": "object",
+      "description": "agent-flow の runs/<run-id>/meta.json に additive で載る委譲伝播用スナップショット（キー名 instructions）。投入ノードの描画済みブロックを固定し、GitBus 同期で全ワーカーへ届ける（run 単位の一貫性基準。ワーカーはローカルの instructions.json を読まない）。managed by agent-flow",
+      "properties": {
+        "revision": {"type": "integer", "minimum": 0, "description": "スナップショット時の instructions.revision"},
+        "text": {"type": "string", "description": "描画済みブロック（マーカー行 <!-- agent-instructions rev:N --> 付き・有界）"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

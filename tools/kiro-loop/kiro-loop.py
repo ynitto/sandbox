@@ -385,6 +385,107 @@ def _control_lifecycle() -> str:
     return str(_control_workload().get("lifecycle") or "run")
 
 
+# ---------------------------------------------------------------------------
+# グローバル指示（agent-instructions 契約）: dashboard が編集し、実行エージェント（定常業務の
+# kiro-cli ペイン）へ paste 時に注入するノード共通指示。正典: schemas/agent-instructions.schema.json。
+# 実体は $AGENT_INSTRUCTIONS_DIR（既定 ~/.agent/instructions/）の instructions.json。
+# 長寿命チャットの文脈を汚さないよう、ペインごとに revision 差分があるときだけ前置する。
+# skills / tools は kiro-cli --agent JSON（ペイン起動時に再生成）へ反映する。レンダラは
+# dashboard（JS）・agent-flow（Python）と同一出力になるよう決定的に保つ（stdlib のみ）。
+# ---------------------------------------------------------------------------
+AGENT_INSTRUCTIONS_MARKER = "<!-- agent-instructions"
+_AGENT_INSTRUCTIONS_HEADING = "## 共通指示（agent-dashboard 管理・全ノード共通）"
+_AGENT_INSTRUCTIONS_DEFAULT_MAX = 2000
+_AGENT_INSTRUCTIONS_HARD_MAX = 8000
+_INSTRUCTIONS_REV_APPLIED: "int | None" = None
+
+
+def _instructions_dir() -> str:
+    return os.path.abspath(os.path.expanduser(
+        os.environ.get("AGENT_INSTRUCTIONS_DIR", os.path.join("~", ".agent", "instructions"))))
+
+
+def _load_instructions() -> "dict | None":
+    """instructions.json を読む。無ければ / 壊れていれば None（＝指示なし）。"""
+    path = os.path.join(_instructions_dir(), "instructions.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _instructions_clamp_max(v) -> int:
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return _AGENT_INSTRUCTIONS_DEFAULT_MAX
+    return _AGENT_INSTRUCTIONS_DEFAULT_MAX if n <= 0 else min(n, _AGENT_INSTRUCTIONS_HARD_MAX)
+
+
+def render_instructions_block(data: "dict | None", max_chars: "int | None" = None) -> str:
+    """契約 → 決定的テキストブロック。dashboard / agent-flow と同一出力。
+    enabled=false / 中身なしのときは空文字（＝注入しない）。"""
+    if not isinstance(data, dict) or data.get("enabled") is False:
+        return ""
+    text = str(data.get("text") or "").strip()
+    skills = []
+    for s in (data.get("skills") or []):
+        if isinstance(s, str):
+            name, note = s.strip(), ""
+        elif isinstance(s, dict):
+            name, note = str(s.get("name") or "").strip(), str(s.get("note") or "").strip()
+        else:
+            continue
+        if name:
+            skills.append((name, note))
+    tools = data.get("tools") if isinstance(data.get("tools"), dict) else {}
+    allow = [str(t).strip() for t in (tools.get("allow") or []) if str(t).strip()]
+    deny_note = str(tools.get("deny_note") or "").strip()
+    if not text and not skills and not allow and not deny_note:
+        return ""
+    try:
+        rev = int(data.get("revision") or 0)
+    except (TypeError, ValueError):
+        rev = 0
+    marker = f"{AGENT_INSTRUCTIONS_MARKER} rev:{rev} -->"
+    lines = [marker, _AGENT_INSTRUCTIONS_HEADING]
+    if text:
+        lines.append(text)
+    if skills:
+        lines.append("")
+        lines.append("推奨スキル（ローカルに存在する場合のみ適用）:")
+        for name, note in skills:
+            lines.append(f"- {name}" + (f" — {note}" if note else ""))
+    if allow:
+        lines.append("ツール（許可）: " + ", ".join(allow))
+    if deny_note:
+        lines.append(f"ツール方針: {deny_note}")
+    block = "\n".join(lines)
+    cap = _instructions_clamp_max(max_chars if max_chars is not None else data.get("max_chars"))
+    if len(block) > cap:
+        block = marker if cap <= len(marker) else block[:cap - 1].rstrip() + "…"
+    return block
+
+
+def _instructions_revision(data: "dict | None") -> int:
+    try:
+        return int((data or {}).get("revision") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def prepend_instructions(target: str, block: str) -> str:
+    """block を target 先頭へ前置。既にマーカーを含むなら二重注入しない。"""
+    t = str(target or "")
+    if not block:
+        return t
+    if AGENT_INSTRUCTIONS_MARKER in t:
+        return t
+    return f"{block}\n\n{t}" if t else block
+
+
 def _write_status(lifecycle: str = "run", budget: "dict | None" = None,
                   fresh_after_sec: int = 120) -> None:
     """status/<tool>-<pid>.json へ適用状況ハートビートを原子書換する（best-effort）。"""
@@ -398,6 +499,9 @@ def _write_status(lifecycle: str = "run", budget: "dict | None" = None,
                "fresh_after_sec": fresh_after_sec, "ts": _utc_iso()}
         if ctl.get("revision") is not None:
             rec["revision_applied"] = ctl.get("revision")
+        # グローバル指示: 直近で paste 注入したブロックの revision（未注入は省略）。
+        if _INSTRUCTIONS_REV_APPLIED is not None:
+            rec["instructions_revision_applied"] = _INSTRUCTIONS_REV_APPLIED
         if budget is not None:
             rec["budget"] = {"exceeded": bool(budget.get("exceeded")),
                              "soft": bool(budget.get("soft"))}
@@ -1313,6 +1417,9 @@ class SessionManager:
         self._prompt_cwds: dict[str, str | None] = {}
         self._restart_locks: dict[str, threading.Lock] = {}
         self._last_sends: dict[str, dict[str, Any]] = {}
+        # グローバル指示: ペインごとに「最後に注入した instructions.revision」を覚え、
+        # revision が変わったときだけ次の送信に前置する（長寿命チャットの文脈を汚さない）。
+        self._instr_rev: dict[str, int] = {}
         self._lock = threading.Lock()
 
         self._tmux_bin: str | None = None
@@ -1561,6 +1668,8 @@ class SessionManager:
             log.warning("kiro-cli ペインが存在しません (prompt_id=%s)。", prompt_id)
             return False
 
+        prompt_text = self._maybe_prepend_instructions(prompt_id, prompt_text)
+
         short = prompt_text[:80] + ("..." if len(prompt_text) > 80 else "")
         log.info("プロンプトを送信します [%s] (pane=%s): %s", cwd, pane_target, short)
         print(f"[kiro-loop] send [{cwd}] (pane={pane_target}) {short}", file=sys.stderr, flush=True)
@@ -1576,6 +1685,32 @@ class SessionManager:
 
         print(f"[kiro-loop] done [{cwd}] sent", file=sys.stderr, flush=True)
         return True
+
+    def _maybe_prepend_instructions(self, prompt_id: str, prompt_text: str) -> str:
+        """グローバル指示（agent-instructions）を送信プロンプト先頭へ前置する。
+        このペインで未注入 or revision が変わったときだけ前置し、覚えた revision を更新する
+        （長寿命の kiro-cli チャットに毎回付けると文脈が汚れるため差分注入）。
+        不在 / 破損 / 無効 / 既にマーカー混入済みはすべて no-op（フェイルセーフ）。"""
+        global _INSTRUCTIONS_REV_APPLIED
+        try:
+            data = _load_instructions()
+            block = render_instructions_block(data)
+            if not block:
+                return prompt_text
+            rev = _instructions_revision(data)
+            with self._lock:
+                already = self._instr_rev.get(prompt_id)
+            if already == rev:
+                return prompt_text  # このペインには同 revision を注入済み
+            merged = prepend_instructions(prompt_text, block)
+            if merged is not prompt_text and merged != prompt_text:
+                with self._lock:
+                    self._instr_rev[prompt_id] = rev
+                _INSTRUCTIONS_REV_APPLIED = rev
+                log.info("グローバル指示 rev:%s をペイン %s へ注入します。", rev, prompt_id)
+            return merged
+        except Exception:  # noqa: BLE001 — 指示注入の失敗で送信を止めない
+            return prompt_text
 
     def is_pane_alive(self, prompt_id: str) -> bool:
         """ペインが存在するか確認する。"""

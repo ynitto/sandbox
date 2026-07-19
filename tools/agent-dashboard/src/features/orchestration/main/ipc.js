@@ -3,21 +3,27 @@
 const budget = require('./budget');
 const control = require('./control');
 const agents = require('./agents');
+const instructions = require('./instructions');
 
 function registerIpc(ctx) {
   const { handle, loadConfig } = ctx;
 
   // 1 ポーリングでオーケストレーション面をまとめて返す:
   // 予算 usage v2（実測＋推定の内訳つき）・control 現在値・status/ 一覧（fresh 判定つき）・
-  // エージェント CLI ドロップイン棚卸し。
+  // エージェント CLI ドロップイン棚卸し・グローバル指示（現在値＋描画プレビュー）。
   handle('orchestration:overview', () => {
     const cfg = loadConfig();
     const controlDir = control.resolveControlDir(cfg);
+    const instructionsDir = instructions.resolveInstructionsDir(cfg);
+    const gi = instructions.loadInstructions(instructionsDir);
     return {
       budget: budget.usage(cfg),
       control: control.loadControl(controlDir),
       status: control.readStatus(controlDir),
       agents: agents.list(cfg),
+      instructions: gi,
+      instructionsPreview: instructions.renderBlock(gi),
+      instructionsDir,
       budgetDir: budget.resolveBudgetDir(cfg),
       controlDir,
     };
@@ -38,6 +44,12 @@ function registerIpc(ctx) {
   // ドロップイン定義の作成・編集・削除
   handle('orchestration:agentSave', (payload) => agents.save(loadConfig(), payload || {}));
   handle('orchestration:agentDelete', (payload) => agents.remove(loadConfig(), payload || {}));
+
+  // グローバル指示（agent-instructions 契約）の保存（revision +1）とスキル候補の棚卸し。
+  handle('orchestration:instructionsSave', (payload) =>
+    instructions.saveInstructions(loadConfig(), payload || {})
+  );
+  handle('orchestration:skillsInventory', () => instructions.skillsInventory(loadConfig()));
 }
 
 module.exports = { registerIpc };

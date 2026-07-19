@@ -192,4 +192,37 @@ assert.match(css, /button:focus-visible/);
 assert.match(css, /@media \(max-width: 680px\)/);
 assert.match(css, /\.sidebar-actions button,[\s\S]*?min-width: 44px; height: 44px;/);
 
+// --- グローバル指示（agent-instructions）パネル ---
+{
+  const escStub = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const orchBadgeStub = (kind, label) => `<span class="badge ${kind}">${escStub(label)}</span>`;
+  const wlLabelStub = (w) => w;
+  const stateStub = { orchSkillsInventory: [{ name: 'karpathy-guidelines', dir: '/x/.github/skills' }] };
+  // eslint-disable-next-line no-new-func
+  const panel = new Function('esc', 'orchBadge', 'amigosWorkloadLabel', 'state',
+    `${grab('orchInstructionsPanelHtml')}; return orchInstructionsPanelHtml;`)(
+    escStub, orchBadgeStub, wlLabelStub, stateStub);
+  const ov = {
+    instructions: {
+      enabled: true, revision: 3, text: '回答は日本語。',
+      skills: [{ name: 'karpathy-guidelines', note: '常時適用' }], tools: { allow: ['fs_read'], deny_note: 'push は確認' },
+      max_chars: 2000,
+    },
+    instructionsPreview: '<!-- agent-instructions rev:3 -->\n## 共通指示（agent-dashboard 管理・全ノード共通）\n回答は日本語。',
+    status: [{ tool: 'agent-flow', workload: 'flow', instructions_revision_applied: 2 }],
+  };
+  const out = panel(ov);
+  assert.ok(out.includes('グローバル指示（全ノード共通）'), 'パネル見出しが必要');
+  assert.ok(out.includes('id="orch-instr-text"'), '指示文 textarea が必要');
+  assert.ok(out.includes('回答は日本語。'), '既存の指示文が反映される');
+  assert.ok(out.includes('id="btn-orch-instr-save"'), '保存ボタンが必要');
+  assert.ok(out.includes('karpathy-guidelines'), '棚卸しのスキルが行に出る');
+  assert.ok(out.includes('checked'), '選択済みスキル / 有効トグルが checked');
+  assert.ok(out.includes('未反映 r2/3'), 'status の未反映バッジが出る');
+  assert.ok(out.includes('agent-instructions rev:3'), 'プレビューが描画結果を出す');
+}
+assert.match(renderer, /orchInstructionsPanelHtml\(ov\)/);
+assert.match(renderer, /api\.orchestrationInstructionsSave/);
+
 console.log('overview-ui: all tests passed');

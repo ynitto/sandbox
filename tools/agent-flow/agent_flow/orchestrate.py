@@ -197,6 +197,13 @@ def cmd_orchestrate(args) -> int:
     bus.ensure_run(args.request, parse_workspace(getattr(args, "workspace", None)),
                    parse_references(getattr(args, "references", None)))
     bus.note_executor(getattr(args, "executor", None) or "agent")   # viewer の表示切替用
+    # グローバル指示（agent-instructions）を投入ノードの instructions.json から meta へ固定する。
+    # GitBus 同期で委譲先ワーカーへ伝播する（run 単位の一貫性基準）。--no-global-instructions /
+    # 環境変数 AGENT_FLOW_NO_GLOBAL_INSTRUCTIONS=1 で無効化。
+    if not (getattr(args, "no_global_instructions", False)
+            or os.environ.get("AGENT_FLOW_NO_GLOBAL_INSTRUCTIONS") == "1"):
+        if bus.snapshot_instructions():
+            bus.sync_push(f"snapshot global instructions {args.run_id}")
     # 生存リース（heartbeat）は orchestrator 自身が張る。daemon 経由の run だけが lease を持つと、
     # agent-flow run で都度起動される run（agent-project の主経路）には lease が永久に書かれず、
     # 消費者側の「停滞 run か？」判定（run_is_orphaned / _run_resumable）が lease の不在を

@@ -41,6 +41,9 @@ class SessionManager:
         self._tmux_names: dict[str, str] = {}
         self._prompt_cwds: dict[str, str | None] = {}
         self._restart_locks: dict[str, threading.Lock] = {}
+        # グローバル指示: ペインごとに「最後に注入した instructions.revision」を覚え、
+        # revision が変わったときだけ次の送信に前置する（長寿命チャットの文脈を汚さない）。
+        self._instr_rev: dict[str, int] = {}
         self._lock = threading.Lock()
 
         self._tmux_bin: str | None = None
@@ -289,6 +292,8 @@ class SessionManager:
             log.warning("kiro-cli ペインが存在しません (prompt_id=%s)。", prompt_id)
             return False
 
+        prompt_text = self._maybe_prepend_instructions(prompt_id, prompt_text)
+
         short = prompt_text[:80] + ("..." if len(prompt_text) > 80 else "")
         log.info("プロンプトを送信します [%s] (pane=%s): %s", cwd, pane_target, short)
         print(f"[agent-loop] send [{cwd}] (pane={pane_target}) {short}", file=sys.stderr, flush=True)
@@ -301,6 +306,31 @@ class SessionManager:
 
         print(f"[agent-loop] done [{cwd}] sent", file=sys.stderr, flush=True)
         return True
+
+    def _maybe_prepend_instructions(self, prompt_id: str, prompt_text: str) -> str:
+        """グローバル指示（agent-instructions）を送信プロンプト先頭へ前置する。
+        このペインで未注入 or revision が変わったときだけ前置し、覚えた revision を更新する。
+        不在 / 破損 / 無効 / 既にマーカー混入済みはすべて no-op（フェイルセーフ）。"""
+        global _INSTRUCTIONS_REV_APPLIED
+        try:
+            data = _load_instructions()
+            block = render_instructions_block(data)
+            if not block:
+                return prompt_text
+            rev = _instructions_revision(data)
+            with self._lock:
+                already = self._instr_rev.get(prompt_id)
+            if already == rev:
+                return prompt_text
+            merged = prepend_instructions(prompt_text, block)
+            if merged != prompt_text:
+                with self._lock:
+                    self._instr_rev[prompt_id] = rev
+                _INSTRUCTIONS_REV_APPLIED = rev
+                log.info("グローバル指示 rev:%s をペイン %s へ注入します。", rev, prompt_id)
+            return merged
+        except Exception:  # noqa: BLE001 — 指示注入の失敗で送信を止めない
+            return prompt_text
 
     def is_pane_alive(self, prompt_id: str) -> bool:
         """ペインが存在するか確認する。"""

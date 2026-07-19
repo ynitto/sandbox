@@ -482,6 +482,10 @@ def _write_status(effective_cli: str = "", effective_model: str = "", lifecycle:
                "fresh_after_sec": fresh_after_sec, "ts": now_iso()}
         if ctl.get("revision") is not None:
             rec["revision_applied"] = ctl.get("revision")
+        # グローバル指示（agent-instructions）: ワーカーが注入した run スナップショットの revision。
+        # dashboard が instructions.revision と突き合わせ未反映を可視化する（agent-control status へ相乗り）。
+        if _INSTRUCTIONS_REV_APPLIED is not None:
+            rec["instructions_revision_applied"] = _INSTRUCTIONS_REV_APPLIED
         if budget is not None:
             rec["budget"] = {"exceeded": bool(budget.get("exceeded")),
                              "soft": bool(budget.get("soft"))}
@@ -847,7 +851,8 @@ def _flow_worker_prompt(payload: dict) -> "str | None":
 def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
                  art_dir: "str | None" = None, dep_arts: "dict | None" = None,
                  repo_instruction: str = "", workspace: "dict | None" = None,
-                 references: "list[dict] | None" = None, request: str = ""):
+                 references: "list[dict] | None" = None, request: str = "",
+                 instructions: str = ""):
     role = {
         "classify": "分類役。入力を適切なカテゴリへ分類し『class=<ラベル>』形式で出力。",
         "synthesize": "統合役。依存タスクの成果を統合して 1 つの成果物にまとめる。",
@@ -880,6 +885,8 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
         "deps": {d: {"output": _dep_text(r), "data": _dep_data(r)} for d, r in deps.items()},
         "repo_instruction": repo_instruction, "artifact_note": art_note,
         "workspace": workspace, "references": references or [],
+        # グローバル指示（run スナップショットの描画済みブロック）。スキルが受け取り先頭へ前置する。
+        "instructions": instructions,
     })
     if not prompt:
         prompt = f"あなたは分散 Dynamic Workflow の{role}\nタスク({kind}): {goal}\n"
@@ -897,6 +904,9 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
                 lines.append(line)
             prompt += "\n依存タスクの成果:\n" + "\n".join(lines) + "\n"
         prompt += "\n成果物を簡潔に直接出力してください。"
+    # グローバル指示を先頭へ前置する。flow-worker スキルが既に前置していれば（マーカー検出で）
+    # 二重注入しない＝新旧どちらのスキルでも 1 回だけ効く（組み込み fallback でも同様）。
+    prompt = prepend_instructions(prompt, instructions)
     text = run_agent(prompt, model, purpose=kind)   # agents: の kind 別上書き（無ければ worker）
     # 構造化データを意図する kind のみ JSON を抽出（自由記述の本文から JSON 風断片を
     # data に誤昇格させない）。

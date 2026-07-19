@@ -107,7 +107,13 @@ def cmd_work(args) -> int:
         # 依存の成果は構造化データ込みの完全な result dict で渡す
         dep_results = _collect_dep_results(bus, node, kind)
         # run の元要求（全体文脈）。対応 executor（agent の flow-worker プロンプト等）へ渡す。
-        run_request = str((read_json(bus.meta_path) or {}).get("request", ""))
+        _meta_now = read_json(bus.meta_path) or {}
+        run_request = str(_meta_now.get("request", ""))
+        # グローバル指示（agent-instructions）: 投入ノードが meta へ固定した描画済みブロック。
+        # ワーカーはローカルの instructions.json を読まず、この run スナップショットを唯一の基準に使う。
+        _gi = _meta_now.get("instructions")
+        run_instructions = str(_gi.get("text", "")) if isinstance(_gi, dict) else ""
+        _note_instructions_applied(_gi.get("revision") if isinstance(_gi, dict) else None)
         # 中間成果物プロトコル: 自ノードの出力先を用意し、依存ノードの成果物パスを集める。
         # これにより大きな成果物は output/data に貼らずファイル参照で受け渡せる。
         art_dir = bus.ensure_artifact_dir(nid)
@@ -130,7 +136,8 @@ def cmd_work(args) -> int:
         try:
             output, rdata = call_executor(execute, kind, goal, dep_results, args.model,
                                           art_dir, dep_arts, instruction, workspace=ws,
-                                          references=references, request=run_request)
+                                          references=references, request=run_request,
+                                          instructions=run_instructions)
             # エージェントが編集したらワークスペースの作業ブランチへ commit して push する
             # （変更が無ければ何もしない＝調査タスク等ではブランチを作らない）。
             delivery = finalize_workspace(ws, args.run_id, nid)
