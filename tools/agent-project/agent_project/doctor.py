@@ -284,52 +284,54 @@ def doctor_flow_bus_coverage_findings(cfg: "Config") -> "list[dict]":
     }]
 
 
-def _wiring_module():
-    """任意の sibling 配線プロバイダ（`tools/agent-project` 直下の `codd_gate_wiring` module。
-    regression/intake 結線の有無・schemas 互換を判定する）を遅延解決する。パッケージ内の他所と
-    同じ sys.path 解決（`__init__.py` の exec 合成により `__file__` は常に
-    `agent_project/__init__.py` の実パスを指すため、その1階層上へ足す）を使い、直接の import 文で
-    特定プロバイダへハード依存しないよう `importlib` 越しに名前解決する（＝本体は差し込み点のみ）。
-    見つからない・解決失敗のときは None を返し、呼び出し側は所見なし（空リスト）へ no-op 縮退する
-    （この配線連携は任意機能。プロバイダ欠落で doctor 自体は壊さない）。
+def _hook_misconfig_findings(cfg: "Config") -> "list[dict]":
+    """フックの設定ミスだけを所見にする。未指定での不在は任意機能が無いだけなので無言（空）。
 
-    「解決失敗」は import できないことに限らない。プロバイダは本体の外にあり本体が版を握れない
-    以上、(a) module 名が別物へ解決される（同名の無関係な module が sys.path 先頭に居る）、
-    (b) import 時にプロバイダ自身が例外を投げる、(c) 解決できても本体が呼ぶ関数を持たない、
-    のいずれも起こりうる。どれも None へ畳んで doctor 全体は走り切らせる——結線所見が出ないのは
-    任意機能の欠落だが、doctor が落ちるのは診断コマンドとして致命的で、失う情報が桁違いに多い。"""
-    import importlib
-    provider = "codd_gate_wiring"
-    required = ("detect_wiring", "doctor_findings")   # 本体が呼ぶ関数＝プロバイダ契約の全部
+    人が `hooks:` に名前を書いたのに効いていない状態は、書いた本人からは配線が黙って
+    無視されたようにしか見えない。既定の不在と同じ扱いにすると設定ミスが観測できないため、
+    明示指定の解決失敗に限って warn を出す。"""
+    def warn(title: str, evidence: str) -> "list[dict]":
+        return [{
+            "category": "config", "severity": "warn", "title": title, "evidence": evidence,
+            "fix": "agent-project.yaml の hooks を修正するか、行ごと削除して自動検出に戻す",
+        }]
 
-    def resolve():
-        try:
-            mod = importlib.import_module(provider)
-        except Exception:                             # ImportError に限らない（上記 (b)）
-            return None
-        return mod if all(hasattr(mod, a) for a in required) else None   # 上記 (a)/(c)
-
-    mod = resolve()
-    if mod is not None:
-        return mod
-    sib = Path(__file__).resolve().parent.parent
-    if str(sib) not in sys.path:
-        sys.path.insert(0, str(sib))
-    return resolve()
+    hooks = getattr(cfg, "hooks", None)
+    if hooks is not None and not isinstance(hooks, dict):
+        # 型が壊れていれば指定は丸ごと読めない。自動検出がたまたま当たっても、書いた設定が
+        # 効いていない事実は変わらないので所見にする。
+        return warn("hooks の設定型が不正",
+                    _hook_resolution_error("wiring.detect", cfg) or "hooks は能力キー -> module 名の対応表")
+    for capability in ("wiring.detect", "wiring.findings"):
+        reason = _hook_resolution_error(capability, cfg)
+        if reason:
+            # 1つの設定キー（hooks.wiring）が両方の能力を担うため、能力ごとに並べず1件へまとめる。
+            return warn("指定した配線プロバイダを解決できない", reason)
+    return []
 
 
 def doctor_wiring_findings(cfg: "Config", which=shutil.which, run=subprocess.run) -> "list[dict]":
-    """sibling 配線プロバイダの自動検出結果と regression_cmd/intake_cmd の結線の有無を doctor の
-    finding 形式で返す（決定的・LLM 不要）。repos.json（`repo_registry_path`）が実在すれば schemas
-    契約も併せて判定する。プロバイダ（`codd_gate_wiring`）が使えない環境では空リストへ no-op
-    縮退する。"""
-    wiring = _wiring_module()
-    if wiring is None:
-        return []
-    judgment = wiring.detect_wiring(
-        regression_cmd=cfg.regression_cmd, intake_cmd=cfg.intake_cmd,
-        repos_path=repo_registry_path(cfg), which=which, run=run)
-    return wiring.doctor_findings(judgment)
+    """配線プロバイダの検出結果と regression_cmd/intake_cmd の結線の有無を doctor の finding 形式で
+    返す（決定的・LLM 不要）。repos.json（`repo_registry_path`）が実在すれば schemas 契約も併せて
+    判定する。プロバイダは能力で解決する任意フック（`_hook_provider`）で、本体は固有名を持たない。
+
+    プロバイダが使えない環境では空リストへ no-op 縮退する。「解決失敗」は import できないことに
+    限らない（別物への解決・import 時の例外・契約関数の欠落）が、どれも空へ畳んで doctor 全体は
+    走り切らせる——結線所見が出ないのは任意機能の欠落だが、doctor が落ちるのは診断コマンドとして
+    致命的で、失う情報が桁違いに多い。プロバイダ呼び出し自体が投げた例外も同じ理由で畳む。"""
+    out = _hook_misconfig_findings(cfg)          # 既定（hooks 未指定）では常に空
+    detect = _hook_provider("wiring.detect", cfg)
+    render = _hook_provider("wiring.findings", cfg)
+    if detect is None or render is None:
+        # 片方だけで走らせない。属性が片方だけ改名された環境で半端な判定を出すより無所見が正しい。
+        return out
+    try:
+        judgment = detect.detect_wiring(
+            regression_cmd=cfg.regression_cmd, intake_cmd=cfg.intake_cmd,
+            repos_path=repo_registry_path(cfg), which=which, run=run)
+        return out + list(render.doctor_findings(judgment))   # judgment は本体にとって不透明
+    except Exception:
+        return out
 
 
 def collect_doctor_signals(cfg: "Config") -> dict:
