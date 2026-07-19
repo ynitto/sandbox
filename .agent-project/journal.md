@@ -336,3 +336,5 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-19 20:57:48 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
 - 2026-07-19 20:59:43 cycle 1: sibling-163827 → 人の判断（環境の問題: 利用上限。リトライ・裁定は消費しない）
 - 2026-07-19 20:59:45 === agent-project 停止 reason=drained cycles=1 done=0 blocked=1 notified=True promoted=0 ===
+- 2026-07-19 20:59:47 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-19 20:59:47 === project watch: 監視中（charter 更新/フィードバック待ち）===
