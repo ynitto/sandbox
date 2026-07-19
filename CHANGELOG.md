@@ -34,8 +34,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   既存 `_cleanup`）により graceful 停止**し、停止理由を state ディレクトリへ残す。
 - **agent-amigos CLI**: `budget node --limit-tokens` を追加し、消費表示にトークンを併記。
   `save_config` は dashboard が書いた v2 キー（allocation / rates 等）を保持する（未知キーを消さない）。
+- **agent-dashboard オーケストレーションタブ**: 新制御面 `src/features/orchestration/`（予算ゲージ・
+  配分エディタ＋再配分/レート較正・エージェント割当マトリクス・エンジン状態＋lifecycle 操作・
+  agent-cli ドロップイン棚卸し）。割当マトリクスはワークロード既定に加え、**用途 / ロール / ノード
+  種別（`agents.<key>`）別の上書きを追加・編集・削除**できる（project は用途・flow は役割＋kind を
+  候補補完、amigos はロール id 自由入力、routine は非対応を明示）。既存 amigos 予算パネルは互換で存置。
 - テスト: 各エンジンに v2 予算（トークン実測 / 推定・computed 上限・soft/degrade）と agent-control
-  （上書き解決順・lifecycle・status・kiro-loop の stop 発火）の単体テストを追加（全スイート green）。
+  （上書き解決順・lifecycle・status・kiro-loop の stop 発火）の単体テストを追加。dashboard に
+  orchestration（予算集計 / 配分 / 較正 / control の agents.<key> 追加・削除 / ドロップイン）テストを追加。
+
+### agent-project: 計画バージョンの制約継承テストを実装意思に合わせて修正
+
+`charters/<name>.md` の制約 / 前提の継承は「バージョンが `## constraints` を明示すれば置換、
+見出しが無ければマスターから継承、空見出しなら継承値を消す」意思で実装されている（`_merge_master_charter`）。
+`test_version_inherits_master_charter` の表明だけが旧来の「和集合」前提のまま残って失敗していたため、
+実装意思（＝同テストの docstring の記述）に合わせて修正し、対称の 2 ケース
+（見出し省略→継承 / 空見出し→クリア）を追加した。
 
 ### agent-project / agent-dashboard: 「承認して完了にする」を出し分けで消さない
 

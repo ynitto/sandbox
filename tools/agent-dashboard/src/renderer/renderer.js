@@ -8139,38 +8139,86 @@ function orchAllocationPanelHtml(budget) {
   </section>`;
 }
 
-// 3. エージェント割当マトリクス（行=ワークロード、列=agent_cli/model/縮退モデル）→ control.json
+// ワークロード別の「用途 / ロール / ノード種別」候補（agents.<key> 上書きのキー補完）。
+// project: AGENT_PURPOSES / flow: 役割＋ノード kind / amigos: ロール id は動的（自由入力）/
+// routine（kiro-loop）: エージェント選択をしない（tmux 送信）ため用途別なし。
+const ORCH_AGENT_KEYS = {
+  project: ['plan', 'review', 'prioritize', 'route', 'adjudicate', 'verify',
+    'distill', 'assess', 'repo_map', 'doctor'],
+  flow: ['planner', 'evaluator', 'worker', 'work', 'generate', 'classify',
+    'synthesize', 'verify', 'filter', 'judge', 'reduce', 'split', 'map'],
+  amigos: [],
+  routine: [],
+};
+
+// 1 ワークロードの用途 / ロール別上書きの小テーブル（既存キーの編集・削除＋新規追加行）。
+function orchAgentsEditorHtml(wl, wc) {
+  const agents = wc.agents || {};
+  const keys = Object.keys(agents);
+  const known = ORCH_AGENT_KEYS[wl];
+  // routine は用途別の概念が無い（kiro-loop は CLI/モデルを選ばない）ため編集 UI を出さない。
+  if (known && known.length === 0 && wl === 'routine') {
+    return '<div class="orch-agents-none"><small class="muted">このワークロードは用途別の上書きに対応しません（tmux 送信のため）。</small></div>';
+  }
+  const listId = `orch-keys-${esc(wl)}`;
+  const datalist = (known && known.length)
+    ? `<datalist id="${listId}">${known.map((k) => `<option value="${esc(k)}"></option>`).join('')}</datalist>`
+    : '';
+  const rows = keys.map((key) => {
+    const ov = agents[key] || {};
+    return `<tr class="orch-agent-row" data-orch-key="${esc(key)}">
+      <td><code>${esc(key)}</code></td>
+      <td><input type="text" class="orch-agent-cli" placeholder="（既定）" value="${esc(ov.agent_cli || '')}" /></td>
+      <td><input type="text" class="orch-agent-model" placeholder="（既定）" value="${esc(ov.model || '')}" /></td>
+      <td><label class="orch-agent-rm"><input type="checkbox" class="orch-agent-remove" /> 削除</label></td>
+    </tr>`;
+  }).join('');
+  const addRow = `<tr class="orch-agent-add">
+      <td><input type="text" class="orch-agent-new-key" list="${listId}" placeholder="${(known && known.length) ? '用途 / ロール名' : 'ロール id'}" /></td>
+      <td><input type="text" class="orch-agent-new-cli" placeholder="agent_cli" /></td>
+      <td><input type="text" class="orch-agent-new-model" placeholder="model" /></td>
+      <td><small class="muted">保存で追加</small></td>
+    </tr>`;
+  const summaryLabel = keys.length ? `用途 / ロール別の上書き（${keys.length}）` : '用途 / ロール別の上書きを追加';
+  return `<details class="orch-agents"${keys.length ? ' open' : ''}>
+    <summary>${esc(summaryLabel)}</summary>
+    ${datalist}
+    <table class="amigos-table orch-agents-table">
+      <thead><tr><th>用途 / ロール / 種別</th><th>agent_cli</th><th>model</th><th></th></tr></thead>
+      <tbody>${rows}${addRow}</tbody>
+    </table>
+  </details>`;
+}
+
+// 3. エージェント割当マトリクス（ワークロード既定＋用途 / ロール別の上書き）→ control.json
 function orchMatrixPanelHtml(overview) {
   const control = overview.control || { workloads: {} };
   const wls = (overview.budget && overview.budget.knownWorkloads) || ['routine', 'project', 'flow', 'amigos'];
-  const rows = wls.map((wl) => {
+  const blocks = wls.map((wl) => {
     const wc = (control.workloads || {})[wl] || {};
     const deg = wc.degraded || {};
-    const agentKeys = Object.keys(wc.agents || {});
-    const keysHint = agentKeys.length
-      ? `<small class="muted">用途別: ${esc(agentKeys.join(', '))}</small>`
-      : '<small class="muted">用途別の上書きなし</small>';
-    return `<tr data-orch-ctrl-wl="${esc(wl)}">
-      <td>${esc(amigosWorkloadLabel(wl))}<br>${keysHint}</td>
-      <td><input type="text" class="orch-ctrl-cli" placeholder="（設定に従う）" value="${esc(wc.agent_cli || '')}" /></td>
-      <td><input type="text" class="orch-ctrl-model" placeholder="（設定に従う）" value="${esc(wc.model || '')}" /></td>
-      <td><input type="text" class="orch-ctrl-degraded-model" placeholder="縮退時モデル" value="${esc(deg.model || '')}" /></td>
-    </tr>`;
+    return `<div class="orch-ctrl-wl" data-orch-ctrl-wl="${esc(wl)}">
+      <div class="orch-ctrl-head">
+        <strong>${esc(amigosWorkloadLabel(wl))}</strong>
+        <label>agent_cli<input type="text" class="orch-ctrl-cli" placeholder="（設定に従う）" value="${esc(wc.agent_cli || '')}" /></label>
+        <label>model<input type="text" class="orch-ctrl-model" placeholder="（設定に従う）" value="${esc(wc.model || '')}" /></label>
+        <label>縮退時 model<input type="text" class="orch-ctrl-degraded-model" placeholder="soft 時に切替" value="${esc(deg.model || '')}" /></label>
+      </div>
+      ${orchAgentsEditorHtml(wl, wc)}
+    </div>`;
   }).join('');
   return `<section class="orch-panel">
     <header class="row">
       <div>
         <span class="summary-kicker">割当</span>
         <h3>エージェント / モデルの横断上書き</h3>
-        <p class="muted">空欄 = 上書きなし（各エンジンの設定ファイルに従う）。保存すると control の revision が 1 つ進みます。
-          用途別（planner / verify 等）の細かな上書きは今後の拡張（TODO）。</p>
+        <p class="muted">空欄 = 上書きなし（各エンジンの設定ファイルに従う）。ワークロード既定に加え、
+          用途 / ロール / ノード種別（planner・verify・reviewer 等）別にも上書きできます。
+          保存すると control の revision が 1 つ進みます。</p>
       </div>
       <div>${orchBadge('muted', `revision ${Number(control.revision || 0)}`)}</div>
     </header>
-    <table class="amigos-table orch-table">
-      <thead><tr><th>ワークロード</th><th>agent_cli</th><th>model</th><th>縮退時モデル</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
+    <div class="orch-ctrl-blocks">${blocks}</div>
     <div class="row orch-actions">
       <button type="button" id="btn-orch-control-save"${state.orchSaving ? ' disabled' : ''}>割当を保存</button>
     </div>
@@ -8353,16 +8401,40 @@ function setupOrchestration(root) {
   const controlSave = root.querySelector('#btn-orch-control-save');
   if (controlSave) controlSave.addEventListener('click', () => guard('割当の保存', async () => {
     const workloads = {};
-    for (const tr of root.querySelectorAll('[data-orch-ctrl-wl]')) {
-      const wl = tr.getAttribute('data-orch-ctrl-wl');
-      const cli = tr.querySelector('.orch-ctrl-cli').value.trim();
-      const model = tr.querySelector('.orch-ctrl-model').value.trim();
-      const degModel = tr.querySelector('.orch-ctrl-degraded-model').value.trim();
-      workloads[wl] = {
+    for (const block of root.querySelectorAll('[data-orch-ctrl-wl]')) {
+      const wl = block.getAttribute('data-orch-ctrl-wl');
+      const cli = block.querySelector('.orch-ctrl-cli').value.trim();
+      const model = block.querySelector('.orch-ctrl-model').value.trim();
+      const degModel = block.querySelector('.orch-ctrl-degraded-model').value.trim();
+      const wc = {
         agent_cli: cli || null,
         model: model || null,
         degraded: degModel ? { model: degModel } : null,
       };
+      // 用途 / ロール別の上書き（agents.<key>）を集める。削除チェックは null（＝キー削除）。
+      const agents = {};
+      for (const arow of block.querySelectorAll('.orch-agent-row')) {
+        const key = arow.getAttribute('data-orch-key');
+        if (arow.querySelector('.orch-agent-remove').checked) {
+          agents[key] = null;
+          continue;
+        }
+        const acli = arow.querySelector('.orch-agent-cli').value.trim();
+        const amodel = arow.querySelector('.orch-agent-model').value.trim();
+        agents[key] = { agent_cli: acli || null, model: amodel || null };
+      }
+      const addRow = block.querySelector('.orch-agent-add');
+      if (addRow) {
+        const nk = addRow.querySelector('.orch-agent-new-key').value.trim();
+        if (nk) {
+          agents[nk] = {
+            agent_cli: addRow.querySelector('.orch-agent-new-cli').value.trim() || null,
+            model: addRow.querySelector('.orch-agent-new-model').value.trim() || null,
+          };
+        }
+      }
+      if (Object.keys(agents).length) wc.agents = agents;
+      workloads[wl] = wc;
     }
     state.orchSaving = true;
     try {

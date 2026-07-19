@@ -2408,6 +2408,26 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .orch-table input[type="number"] { width: 8em; }
 .orch-table input[type="text"] { width: 100%; min-width: 8em; }
 
+/* 割当マトリクス: ワークロード既定 + 用途 / ロール別の上書き */
+.orch-ctrl-blocks { display: flex; flex-direction: column; gap: 10px; }
+.orch-ctrl-wl {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.orch-ctrl-head { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+.orch-ctrl-head > strong { align-self: center; min-width: 7em; }
+.orch-ctrl-head label { display: flex; flex-direction: column; font-size: 12px; color: var(--muted); gap: 2px; }
+.orch-ctrl-head input[type="text"] { min-width: 10em; }
+.orch-agents { margin-top: 8px; }
+.orch-agents > summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+.orch-agents-table { width: 100%; margin-top: 6px; }
+.orch-agents-table input[type="text"] { width: 100%; min-width: 7em; }
+.orch-agents-table code { font-size: 12px; }
+.orch-agent-rm { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; white-space: nowrap; }
+.orch-agent-add input { opacity: 0.95; }
+.orch-agents-none { margin-top: 8px; }
+
 /* 状態バッジ: 色だけに頼らず状態語を併記する */
 .orch-badge {
   display: inline-block;
