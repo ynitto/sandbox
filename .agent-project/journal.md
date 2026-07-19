@@ -178,3 +178,9 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-19 16:46:09 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
 - 2026-07-19 16:46:09 === project watch: 監視中（charter 更新/フィードバック待ち）===
 - 2026-07-19 17:15:28 === update: 更新を適用（0fa319f0）===
+- 2026-07-19 17:15:31 === project 開始 v1 acceptance=2 ===
+- 2026-07-19 17:15:31 intake NG (exit 2): codd-gate tasks --debt --repos ./repos.json
+- 2026-07-19 17:15:31 === agent-project 開始 tasks=4 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-19 17:15:31 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
+- 2026-07-19 17:15:31 警告: origin へ未 push のコミットが 2 件ある（main）。worker と verify は origin から clone するため、これらの成果は彼らから 見えない（ローカルでは通るのに verify が落ち続ける）。`git -C /Users/nitto/Workspace/sandbox push origin main` を検討すること
+- 2026-07-19 17:15:31 === agent-project 停止 reason=drained cycles=0 done=0 blocked=1 notified=False promoted=0 ===
