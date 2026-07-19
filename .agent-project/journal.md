@@ -467,3 +467,8 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-20 06:09:00 flow detach: sibling-163827 の run req-ef1f92c3-sibling-163827-r0 を failed（agent-flow run タイムアウト（3600s））
 - 2026-07-20 06:09:01 cycle 1: sibling-163827 NG 積み直し (1/2) — agent-flow run タイムアウト（3600s）
 - 2026-07-20 06:09:04 run 再開: sibling-163827 は req-ef1f92c3-sibling-163827-r0 の失敗ノードだけをやり直します（done は温存）
+- 2026-07-20 07:13:23 === project 開始 v1 acceptance=2 ===
+- 2026-07-20 07:13:23 doing 回復: sibling-163827 を ready へ戻す（実行者が失踪＝結果は返らない）
+- 2026-07-20 07:13:23 === agent-project 開始 tasks=3 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-20 07:13:23 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
+- 2026-07-20 07:13:24 run 再開: sibling-163827 は req-ef1f92c3-sibling-163827-r0 の失敗ノードだけをやり直します（done は温存）
