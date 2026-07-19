@@ -3,12 +3,20 @@
 regression_cmd の生成（codd-gate 検出結果に応じた no-op 縮退込み）と、
 .agent/agent-project.yaml への冪等な行編集（挿入位置・更新・no-op）を検証する。
 
+本モジュールの CLI（`--config`）は codd-gate 連携を有効化する唯一の書き込み経路。実行時に
+cfg を書き換える自動配線は存在しないため、「検出 → 推奨文字列の生成 → yaml への冪等注入」の
+一気通貫を `main()` の呼び出しとして検証する（TestCliMain）。
+
     python -m unittest discover -s tools/agent-project/tests
 """
+import contextlib
+import io
+import json
 import re
 import sys
 import tempfile
 import unittest
+import unittest.mock as mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -188,6 +196,163 @@ class TestApplyToFile(unittest.TestCase):
             changed = regression.apply_to_file(cfg, None)
             self.assertFalse(changed)
             self.assertFalse(cfg.exists())
+
+
+class TestCliMain(unittest.TestCase):
+    """`python3 codd_gate_regression.py --config <yaml>` の一気通貫。
+
+    codd-gate の実体は `--codd-gate` で明示指定する。既定の解決（PATH → 同梱パス）は実行環境に
+    依存し、テストの成否が「その機械に codd-gate が入っているか」で変わってしまうため
+    （`detect_status` は実在確認だけで subprocess を起動しないので、明示指定すればプローブ無しに
+    決定的な usable=True を作れる）。
+    """
+
+    def _run_cli(self, argv: "list[str]") -> "tuple[int, dict]":
+        """main() を呼び、終了コードと stdout の JSON を返す。"""
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = regression.main(argv)
+        return rc, json.loads(buf.getvalue())
+
+    def _config_with(self, d: str, text: str) -> Path:
+        cfg = Path(d) / ".agent" / "agent-project.yaml"
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_text(text, encoding="utf-8")
+        return cfg
+
+    def test_detects_generates_and_injects_in_one_pass(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._config_with(d, "root: .agent-project\n\nagent_cli: claude\n")
+
+            rc, payload = self._run_cli(
+                ["--config", str(cfg), "--codd-gate", "/opt/bin/codd-gate"])
+
+            self.assertEqual(rc, 0)
+            self.assertTrue(payload["usable"])          # 検出
+            self.assertEqual(                            # 推奨文字列の生成（README 正準値）
+                payload["cmd"],
+                'codd-gate verify --base "$KIRO_BASE_REV" --repos .agent-project/repos.json')
+            self.assertTrue(payload["changed"])          # yaml 注入
+            self.assertRegex(cfg.read_text(encoding="utf-8"), COMPLETION_RE)
+
+    def test_repos_path_inferred_from_root_key_without_explicit_flag(self):
+        # --repos 省略時は設定の root: から <root>/repos.json を推定する（README の規約）。
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._config_with(d, "root: custom-state\nagent_cli: claude\n")
+
+            _, payload = self._run_cli(
+                ["--config", str(cfg), "--codd-gate", "/opt/bin/codd-gate"])
+
+            self.assertIn("--repos custom-state/repos.json", payload["cmd"])
+            self.assertIn("--repos custom-state/repos.json", cfg.read_text(encoding="utf-8"))
+
+    def test_explicit_repos_and_base_flags_override_inference(self):
+        # 明示指定は推定に勝つ。root: があっても --repos が優先され、--base も渡した値がそのまま
+        # 埋まる（既定の "$KIRO_BASE_REV" 以外を使う運用——固定 rev での検証等——を塞がない）。
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._config_with(d, "root: .agent-project\nagent_cli: claude\n")
+
+            _, payload = self._run_cli([
+                "--config", str(cfg), "--codd-gate", "/opt/bin/codd-gate",
+                "--repos", "/srv/registry/repos.json", "--base", "origin/main"])
+
+            self.assertEqual(
+                payload["cmd"],
+                "codd-gate verify --base origin/main --repos /srv/registry/repos.json")
+            self.assertNotIn(".agent-project/repos.json", payload["cmd"])
+            self.assertIn(payload["cmd"], cfg.read_text(encoding="utf-8"))
+
+    def test_second_run_produces_no_diff(self):
+        # 冪等性の本体: 同じ引数での再実行は changed=False で、ファイルの中身も mtime も動かない
+        # （設定ファイルは人の編集物なので、再実行のたびに差分・mtime が出ると git 上で騒がしい）。
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._config_with(
+                d,
+                "root: .agent-project\n\n"
+                "# 人が書いたコメント\n"
+                "agent_cli: claude\nmodel: auto\n")
+            argv = ["--config", str(cfg), "--codd-gate", "/opt/bin/codd-gate"]
+
+            _, first = self._run_cli(argv)
+            text_after_first = cfg.read_text(encoding="utf-8")
+            mtime_after_first = cfg.stat().st_mtime_ns
+
+            _, second = self._run_cli(argv)
+
+            self.assertTrue(first["changed"])
+            self.assertFalse(second["changed"])
+            self.assertEqual(cfg.read_text(encoding="utf-8"), text_after_first)
+            self.assertEqual(cfg.stat().st_mtime_ns, mtime_after_first)
+            # 1回目の注入でも人の記述は失われない（load→dump のラウンドトリップをしない設計）。
+            self.assertIn("# 人が書いたコメント", text_after_first)
+            self.assertIn("model: auto", text_after_first)
+            self.assertEqual(
+                len(re.findall(r"^regression_cmd:", text_after_first, re.MULTILINE)), 1)
+
+    def test_hand_written_canonical_config_is_left_untouched(self):
+        # 冪等性のもう一方の端: 人が README どおりに手で書いた設定に対しては、CLI は最初の実行から
+        # no-op になる。生成値と手書きの正準値が一致していることの検証でもある（両者がずれると
+        # 「CLI を通すたびに人の記述が書き換わる」＝設定ファイルが git 上で往復する）。
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._config_with(d, REAL_FILE_SNIPPET)
+
+            _, payload = self._run_cli(
+                ["--config", str(cfg), "--codd-gate", "/opt/bin/codd-gate"])
+
+            self.assertFalse(payload["changed"])
+            self.assertEqual(cfg.read_text(encoding="utf-8"), REAL_FILE_SNIPPET)
+
+    def test_stale_value_is_updated_in_place_then_stable(self):
+        # 更新経路（挿入ではなく置換）でも冪等性が成り立つこと。古い値が1回目で置き換わり、
+        # 2回目は差分ゼロ——挿入経路（test_second_run_produces_no_diff）とは別の分岐を通る。
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._config_with(
+                d,
+                "root: .agent-project\n"
+                "regression_cmd: 'codd-gate verify --base HEAD~1 --repos old/repos.json'\n"
+                "intake_cmd: 'codd-gate tasks --debt --repos .agent-project/repos.json'\n")
+            argv = ["--config", str(cfg), "--codd-gate", "/opt/bin/codd-gate"]
+
+            _, first = self._run_cli(argv)
+            text_after_first = cfg.read_text(encoding="utf-8")
+            _, second = self._run_cli(argv)
+
+            self.assertTrue(first["changed"])
+            self.assertFalse(second["changed"])
+            self.assertEqual(cfg.read_text(encoding="utf-8"), text_after_first)
+            self.assertNotIn("old/repos.json", text_after_first)
+            self.assertEqual(
+                len(re.findall(r"^regression_cmd:", text_after_first, re.MULTILINE)), 1)
+            # 隣接する intake_cmd は本 CLI の対象外なので触らない（注入は1キーだけ）。
+            self.assertIn(
+                "intake_cmd: 'codd-gate tasks --debt --repos .agent-project/repos.json'",
+                text_after_first)
+
+    def test_dry_run_reports_change_without_writing(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d) / ".agent" / "agent-project.yaml"
+
+            _, payload = self._run_cli(
+                ["--config", str(cfg), "--codd-gate", "/opt/bin/codd-gate", "--dry-run"])
+
+            self.assertTrue(payload["changed"])   # 「変わるはず」は報告する
+            self.assertTrue(payload["dry_run"])
+            self.assertFalse(cfg.exists())        # が、書かない
+
+    def test_noop_when_codd_gate_not_detected(self):
+        # 未検出なら壊れたコマンドを書き込まず、既存の手書き設定にも触れない（no-op 縮退）。
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._config_with(d, "root: .\nregression_cmd: 'make -s smoke'\n")
+            before = cfg.read_text(encoding="utf-8")
+
+            with mock.patch.object(regression, "detect_status",
+                                    return_value=status_mod.build_status(None)):
+                _, payload = self._run_cli(["--config", str(cfg)])
+
+            self.assertFalse(payload["usable"])
+            self.assertIsNone(payload["cmd"])
+            self.assertFalse(payload["changed"])
+            self.assertEqual(cfg.read_text(encoding="utf-8"), before)
 
 
 class TestInferDefaultReposPath(unittest.TestCase):

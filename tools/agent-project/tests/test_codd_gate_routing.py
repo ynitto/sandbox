@@ -93,9 +93,11 @@ class TestBuildRoutingArgs(unittest.TestCase):
 class TestAgentProjectYamlWiring(unittest.TestCase):
     """`.agent/agent-project.yaml` の regression_cmd/intake_cmd が codd-gate へルーティング
     されることを検証する（README.md の正準値・build_routing_args が組み立てる --repos/--repo-dir
-    を埋め込む）。実際の cfg.regression_cmd/cfg.intake_cmd への自動配線（b3/c1/e1）は別タスクの
-    担当のため、ここでは agent_project パッケージの config loader は経由せず、素の YAML
-    読み書きで .agent/agent-project.yaml の内容そのものを検証する
+    を埋め込む）。この2行は人が書くか `codd_gate_regression.py --config` が注入するかの
+    どちらかで、実行時に cfg へ値を差し込む自動配線は存在しない（設定ファイルに書かれた文字列が
+    そのまま実行される）。したがって検証対象は設定ファイルの内容そのもので足り、ここでは
+    agent_project パッケージの config loader は経由せず、素の YAML 読み書きで
+    .agent/agent-project.yaml の内容を検証する
     （agent_project の import は cwd 上の設定ファイル探索・watch/state-git 等の副作用を伴うため、
     単体テストでは避けるのが安全——実際に過去そのインポートが実リポジトリへの誤コミットを
     引き起こしている）。
