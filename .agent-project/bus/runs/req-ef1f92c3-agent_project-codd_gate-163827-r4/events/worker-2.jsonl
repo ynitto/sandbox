@@ -5,3 +5,4 @@
 {"ts": "2026-07-19T00:57:21Z", "who": "worker-2", "kind": "result", "node": "t3", "status": "done"}
 {"ts": "2026-07-19T00:57:21Z", "who": "worker-2", "kind": "claimed", "node": "t4"}
 {"ts": "2026-07-19T01:09:43Z", "who": "worker-2", "kind": "result", "node": "t4", "status": "done"}
+{"ts": "2026-07-19T01:17:18Z", "who": "worker-2", "kind": "claimed", "node": "t6"}

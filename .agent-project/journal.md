@@ -143,3 +143,14 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-19 09:29:34 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
 - 2026-07-19 09:29:34 run 再開: agent_project-codd_gate-163827 は req-ef1f92c3-agent_project-codd_gate-163827-r4 の失敗ノードだけをやり直します（done は温存）
 - 2026-07-19 10:17:16 state-git 同期: import=7 export=19
+- 2026-07-19 10:17:16 flow detach: agent_project-codd_gate-163827 の run req-ef1f92c3-agent_project-codd_gate-163827-r4 を canceled（成果を確認して完了を承認）
+- 2026-07-19 10:17:16 commands 取り込み: approve agent_project-codd_gate-163827（viewer-approve-agent_project-codd_gate-163827-1784420970909.json）
+- 2026-07-19 10:17:16 === project 開始 v1 acceptance=2 ===
+- 2026-07-19 10:17:17 intake NG (exit 2): codd-gate tasks --debt --repos ./repos.json
+- 2026-07-19 10:17:17 === agent-project 開始 tasks=4 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-19 10:17:17 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
+- 2026-07-19 10:17:17 警告: origin へ未 push のコミットが 2 件ある（main）。worker と verify は origin から clone するため、これらの成果は彼らから 見えない（ローカルでは通るのに verify が落ち続ける）。`git -C /Users/nitto/Workspace/sandbox push origin main` を検討すること
+- 2026-07-19 10:17:17 run 再開: agent_project-codd_gate-163827 は req-ef1f92c3-agent_project-codd_gate-163827-r4 の失敗ノードだけをやり直します（done は温存）
+- 2026-07-19 11:31:17 flow detach: agent_project-codd_gate-163827 の run req-ef1f92c3-agent_project-codd_gate-163827-r4 を failed（agent-flow run タイムアウト（3600s））
+- 2026-07-19 11:31:20 cycle 1: agent_project-codd_gate-163827 → 人の判断（繰り返し NG）
+- 2026-07-19 11:31:22 === agent-project 停止 reason=drained cycles=1 done=0 blocked=1 notified=True promoted=0 ===
