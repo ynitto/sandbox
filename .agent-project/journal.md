@@ -186,3 +186,12 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-19 17:15:31 === agent-project 停止 reason=drained cycles=0 done=0 blocked=1 notified=False promoted=0 ===
 - 2026-07-19 17:15:33 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
 - 2026-07-19 17:15:33 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-19 18:51:30 commands 取り込み: approve agent_project-codd_gate-163827（viewer-approve-agent_project-codd_gate-163827-1784454688117.json）
+- 2026-07-19 18:51:30 === project 開始 v1 acceptance=2 ===
+- 2026-07-19 18:51:30 intake NG (exit 2): codd-gate tasks --debt --repos ./repos.json
+- 2026-07-19 18:51:30 === agent-project 開始 tasks=4 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-19 18:51:30 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
+- 2026-07-19 18:51:30 警告: origin へ未 push のコミットが 2 件ある（main）。worker と verify は origin から clone するため、これらの成果は彼らから 見えない（ローカルでは通るのに verify が落ち続ける）。`git -C /Users/nitto/Workspace/sandbox push origin main` を検討すること
+- 2026-07-19 18:51:30 run 再開: agent_project-codd_gate-163827 は req-ef1f92c3-agent_project-codd_gate-163827-r4 の失敗ノードだけをやり直します（done は温存）
+- 2026-07-19 18:51:36 cycle 1: agent_project-codd_gate-163827 → 人の判断（環境の問題: 利用上限。リトライ・裁定は消費しない）
+- 2026-07-19 18:51:36 === agent-project 停止 reason=drained cycles=1 done=0 blocked=1 notified=True promoted=0 ===

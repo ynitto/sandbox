@@ -1,9 +1,9 @@
 {
   "id": "loop",
-  "who": "worker-2",
+  "who": "worker-1",
   "status": "failed",
   "output": "実行エラー: [agent-error:quota] [agent-control] このワークロード（flow）は管理面により lifecycle=stop 指定です。dashboard のオーケストレーションタブで run に戻してください",
-  "finished_at": "2026-07-19T07:46:01Z",
+  "finished_at": "2026-07-19T09:51:32Z",
   "data": {
     "error_class": "quota"
   }
