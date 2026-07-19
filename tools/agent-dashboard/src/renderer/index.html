@@ -581,7 +581,24 @@
 
   <script src="../../node_modules/diff2html/bundles/js/diff2html-ui-slim.min.js"></script>
   <script src="routine-ui-cache.js"></script>
+  <!-- renderer は保守性のため機能ごとに分割（クラシックスクリプトのグローバルスコープを共有）。
+       読み込み順が意味を持つ: core（state/$/共有定数・タブ制御・ポーリング）→ 各セクション →
+       フィーチャータブ → bootstrap（init を最後に実行）。 -->
   <script src="renderer.js"></script>
+  <script src="sections/overview.js"></script>
+  <script src="sections/backlog.js"></script>
+  <script src="sections/authoring.js"></script>
+  <script src="sections/form-edit.js"></script>
+  <script src="sections/needs.js"></script>
+  <script src="sections/flow.js"></script>
+  <script src="sections/node-detail.js"></script>
+  <script src="sections/gitlab.js"></script>
+  <script src="sections/history.js"></script>
+  <script src="sections/amigos.js"></script>
+  <script src="sections/orchestration.js"></script>
+  <script src="sections/cowork.js"></script>
+  <script src="sections/kiro-loop.js"></script>
   <script src="features/delegation.js"></script>
+  <script src="bootstrap.js"></script>
 </body>
 </html>

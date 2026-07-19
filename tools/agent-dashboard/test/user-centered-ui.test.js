@@ -6,7 +6,7 @@ const path = require('path');
 
 const root = path.join(__dirname, '..', 'src', 'renderer');
 const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
-const renderer = fs.readFileSync(path.join(root, 'renderer.js'), 'utf8');
+const renderer = require('./helpers/renderer-src').read();
 const css = fs.readFileSync(path.join(root, 'styles.css'), 'utf8');
 
 assert.match(html, /<meta name="viewport" content="width=device-width, initial-scale=1"/);

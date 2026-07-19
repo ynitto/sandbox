@@ -24,7 +24,7 @@ function test(name, fn) {
 }
 
 // --- renderer.js から関数を抽出（ブレース対応で本体を切り出す） ---------------
-const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'renderer.js'), 'utf8');
+const src = require('./helpers/renderer-src').read();
 
 function grab(name) {
   const at = src.indexOf(`function ${name}(`);

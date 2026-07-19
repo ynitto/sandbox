@@ -10,7 +10,7 @@ const path = require('path');
 const notify = require('../src/main/notify');
 
 // renderer.js から純関数のソースを切り出して評価する（他 UI テストと同じ grab パターン）。
-const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'renderer.js'), 'utf8');
+const renderer = require('./helpers/renderer-src').read();
 function grab(name) {
   const at = renderer.indexOf(`function ${name}(`);
   assert.ok(at >= 0, `renderer.js に function ${name} が見つかりません`);
