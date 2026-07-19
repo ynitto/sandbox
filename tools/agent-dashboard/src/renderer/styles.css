@@ -267,7 +267,6 @@ button:disabled { opacity: 0.4; cursor: default; }
 #project-title { display: flex; align-items: baseline; gap: 10px; }
 #project-name { font-size: 18px; font-weight: 650; }
 #project-meta { font-size: 11px; margin-top: 3px; }
-#btn-project-settings { flex: none; }
 
 #tabs {
   display: flex;
@@ -290,6 +289,22 @@ button:disabled { opacity: 0.4; cursor: default; }
 }
 .tab:hover { color: var(--fg); }
 .tab.active { color: var(--fg); border-bottom-color: var(--accent); }
+.tab-utility-group {
+  display: flex;
+  align-items: stretch;
+  flex: none;
+  margin-left: auto;
+}
+.tab-project-settings {
+  margin-left: 8px;
+  border-left: 1px solid var(--border);
+  font-weight: 600;
+}
+.tab-global-settings {
+  margin-left: 8px;
+  border-left: 1px solid var(--border);
+  font-weight: 600;
+}
 
 /* ---------- 概要ハブ ---------- */
 
@@ -405,11 +420,28 @@ button:disabled { opacity: 0.4; cursor: default; }
 .version-card-actions button:disabled { cursor: not-allowed; opacity: 0.45; }
 .overview-version-empty { padding: 24px; border: 1px dashed var(--border); border-radius: 8px; color: var(--muted); text-align: center; }
 
-/* プロジェクト固有の編集・危険操作は概要から分離する。 */
-.project-settings-section { padding: 14px 0; border-top: 1px solid var(--border); }
-.project-settings-section h3 { margin-top: 0; color: var(--fg); }
+/* プロジェクト固有の編集・危険操作は日常画面から分離する。 */
+.project-settings-shell { max-width: 920px; margin: 0 auto; }
+.project-settings-card {
+  margin-top: 14px;
+  padding: 18px 20px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg2);
+}
+.project-settings-card h3 { margin: 0 0 6px; color: var(--fg); }
+.project-settings-card > p { margin: 0 0 16px; max-width: 68em; }
 .settings-action-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.settings-action-grid button { min-height: 40px; text-align: left; }
+.settings-action-grid button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-height: 58px;
+  padding: 10px 12px;
+  text-align: left;
+}
+.settings-action-grid button span { color: var(--muted); font-size: 11px; font-weight: 400; }
 .settings-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .settings-version-list { list-style: none; padding: 0; margin: 8px 0; }
 .settings-version-list li {
@@ -421,7 +453,8 @@ button:disabled { opacity: 0.4; cursor: default; }
   border-bottom: 1px solid var(--border);
 }
 .settings-version-list li span { min-width: 0; overflow-wrap: anywhere; }
-.danger-zone { margin-top: 6px; border-color: var(--red); }
+.danger-zone { border-color: color-mix(in srgb, var(--red) 65%, var(--border)); }
+.danger-zone .summary-kicker, .danger-zone h3 { color: var(--red); }
 .subtle-action { color: var(--muted); background: transparent; }
 
 .page-heading,
@@ -2161,18 +2194,12 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
 }
 
-/* --- ミッション一覧 + 詳細設定のノード予算 --- */
+/* --- ミッション一覧 --- */
 .amigos-shell { display: flex; flex-direction: column; gap: 16px; }
-.amigos-budget { background: var(--bg2); border: 1px solid var(--bg3); border-radius: 8px; padding: 12px 14px; }
-.amigos-budget-controls { gap: 12px; align-items: flex-end; flex-wrap: wrap; margin: 8px 0; }
-.amigos-budget-controls label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
-.amigos-budget-controls input, .amigos-budget-controls select { width: 130px; }
 .amigos-table { width: 100%; border-collapse: collapse; }
 .amigos-table th, .amigos-table td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--bg3); vertical-align: top; }
 .amigos-table td.num { text-align: right; white-space: nowrap; }
 .amigos-table input[type="number"] { width: 110px; }
-.amigos-table tr.amigos-over td { background: rgba(255, 99, 99, 0.08); }
-.amigos-over-badge { margin-left: 8px; font-size: 12px; color: #ff8f8f; border: 1px solid rgba(255, 99, 99, 0.5); border-radius: 999px; padding: 1px 8px; }
 .amigos-role { display: inline-block; margin: 1px 2px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--bg3); background: var(--bg3); font-size: 12px; }
 .amigos-role.done { border-color: var(--accent2); }
 .amigos-role.paused { border-color: rgba(255, 99, 99, 0.6); }
@@ -2390,8 +2417,62 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   .amigos-message-body { padding: 0 12px 12px; }
 }
 
-/* ======== オーケストレーションタブ ======== */
+/* ======== 全体設定タブ ======== */
 .orch-shell { display: flex; flex-direction: column; gap: 18px; }
+.global-settings-shell { max-width: 1120px; margin: 0 auto; }
+.global-settings-tabs {
+  position: sticky;
+  top: -1px;
+  z-index: 10;
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg2);
+}
+.global-settings-tabs button {
+  flex: 0 1 auto;
+  min-height: 40px;
+  padding: 7px 12px;
+  border-color: transparent;
+  border-radius: 6px;
+  color: var(--muted);
+  background: transparent;
+}
+.global-settings-tabs button:hover { color: var(--fg); background: var(--bg3); }
+.global-settings-tabs button.active { color: var(--fg); border-color: var(--accent); background: var(--bg3); }
+.global-settings-select { display: none; }
+.global-settings-pane { min-width: 0; }
+.global-settings-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg2);
+  padding: 18px;
+}
+.global-settings-card-heading { margin-bottom: 18px; }
+.global-settings-card-heading h2 { margin: 2px 0 4px; font-size: 20px; }
+.global-settings-card-heading p { margin: 0; max-width: 68em; }
+.global-settings-card > h3 { margin: 20px 0 10px; padding-top: 16px; border-top: 1px solid var(--border); }
+.global-settings-actions { display: flex; justify-content: flex-end; margin-top: 18px; }
+.global-settings-short-field { max-width: 280px; }
+.global-settings-open-field { display: flex; align-items: flex-end; }
+.global-settings-agent-refresh[hidden] { display: none; }
+.agent-management-section { display: flex; flex-direction: column; gap: 12px; scroll-margin-top: 64px; }
+.agent-management-section + .agent-management-section {
+  margin-top: 22px;
+  padding-top: 22px;
+  border-top: 1px solid var(--border);
+}
+.agent-management-section-heading h2 { margin: 2px 0 4px; font-size: 20px; }
+.agent-management-section-heading p { margin: 0; max-width: 68em; }
+@media (max-width: 680px) {
+  .global-settings-tabs { display: none; }
+  .global-settings-select { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 12px; }
+  .global-settings-select select { min-height: 44px; width: 100%; }
+  .global-settings-card { padding: 14px; }
+  .global-settings-actions button, .global-settings-open-field button { width: 100%; min-height: 44px; }
+}
 .orch-panel {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -2408,7 +2489,7 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .orch-table input[type="number"] { width: 8em; }
 .orch-table input[type="text"] { width: 100%; min-width: 8em; }
 
-/* 割当マトリクス: ワークロード既定 + 用途 / ロール別の上書き */
+/* 機能ごとのエージェント設定 */
 .orch-ctrl-blocks { display: flex; flex-direction: column; gap: 10px; }
 .orch-ctrl-wl {
   border: 1px solid var(--border);
@@ -2461,7 +2542,7 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .orch-legend { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; }
 .orch-swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
 
-/* ドロップイン棚卸し */
+/* 追加エージェント */
 .orch-dropins { display: flex; flex-direction: column; gap: 8px; }
 .orch-dropin { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; background: var(--bg); }
 .orch-dropin > summary { cursor: pointer; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }

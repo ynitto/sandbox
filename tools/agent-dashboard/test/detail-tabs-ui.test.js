@@ -678,7 +678,7 @@ assert.ok(renderer.includes("$('btn-doctor-submit').disabled = true"));
 assert.ok(!html.includes('id="btn-git-heal"'), '同期修復は Doctor の固定操作にしない');
 assert.ok(renderer.includes('id="btn-sync-now"'), '同期状態の横に文脈付き操作を表示する');
 for (const cli of ['kiro', 'claude', 'copilot', 'codex', 'cursor', 'ollama']) {
-  assert.ok(html.includes(`<option value="${cli}"`), `${cli} を設定で選択できる必要があります`);
+  assert.ok(renderer.includes(`<option value="${cli}"`), `${cli} を設定で選択できる必要があります`);
 }
 assert.ok(renderer.includes('詳細情報を開く'));
 assert.ok(renderer.includes('検収物を確認'));
