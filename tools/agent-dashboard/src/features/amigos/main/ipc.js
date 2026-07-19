@@ -3,6 +3,7 @@
 const path = require('path');
 
 const budget = require('./budget');
+const deliveries = require('./deliveries');
 const homes = require('./homes');
 const missions = require('./missions');
 
@@ -19,7 +20,31 @@ function registerIpc(ctx) {
     for (const m of ov.missions) {
       m.home = byBus.get(path.resolve(m.busDir)) || null;
     }
-    return { ...ov, homes: homeList, budget: budget.usage(cfg) };
+    // 納品はミッション単位で見せる（利用者が考える単位はミッション）。
+    // 一覧では中身を運ばず、メタ情報だけをミッションへ結びつける。
+    const received = deliveries.list(homeList);
+    const byMission = new Map(received.map((d) => [d.mission, d]));
+    for (const m of ov.missions) {
+      m.delivery = byMission.get(m.id) || null;
+    }
+    // バスから消えた（gc 済み）ミッションの納品は行き場が無くなるので別に返す
+    const known = new Set(ov.missions.map((m) => m.id));
+    return {
+      ...ov,
+      homes: homeList,
+      budget: budget.usage(cfg),
+      deliveries: received,
+      orphanDeliveries: received.filter((d) => !known.has(d.mission)),
+    };
+  });
+  // 受け取り済み成果物の中身（ミッション詳細を開いたときだけ読む）
+  handle('amigos:deliveryContents', (payload) => {
+    const p = payload || {};
+    const home = homes.discoverHomes(loadConfig()).find(
+      (h) => path.resolve(h.dir) === path.resolve(String(p.home || ''))
+    );
+    if (!home) throw new Error(`amigos ホームではありません: ${p.home}`);
+    return deliveries.readContents(home.dir, String(p.mission || ''));
   });
   handle('amigos:budgetSave', (payload) => budget.save(loadConfig(), payload || {}));
   // タスク依頼: ホームの commands/ へ post 指示を投函（常駐デーモンが取り込む）
@@ -47,6 +72,24 @@ function registerIpc(ctx) {
     if (!p.mission || !p.role) throw new Error('mission と role が必要です');
     return homes.writeCommand(loadConfig(), p.home, {
       command: 'claim', mission: String(p.mission), role: String(p.role),
+    });
+  });
+  // 受入判定: accept / reject も commands 投函で owner デーモンに委ねる。
+  // 納品棚への搬出は accept を取り込んだ owner デーモンが行う（dashboard は書かない）。
+  handle('amigos:accept', (payload) => {
+    const p = payload || {};
+    if (!p.mission) throw new Error('mission が必要です');
+    return homes.writeCommand(loadConfig(), p.home, {
+      command: 'accept', mission: String(p.mission),
+    });
+  });
+  handle('amigos:reject', (payload) => {
+    const p = payload || {};
+    if (!p.mission) throw new Error('mission が必要です');
+    const feedback = String(p.feedback || '').trim();
+    if (!feedback) throw new Error('差し戻しには修正依頼の内容が必要です');
+    return homes.writeCommand(loadConfig(), p.home, {
+      command: 'reject', mission: String(p.mission), feedback,
     });
   });
 }

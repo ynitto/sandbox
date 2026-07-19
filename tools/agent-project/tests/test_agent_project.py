@@ -2235,6 +2235,96 @@ class TestDecisionRecords(unittest.TestCase):
             )
             self.assertEqual(km.load_tasks(d / "backlog")[0].status, "ready")
 
+    def test_approve_complete_flag_completes_regardless_of_reason_wording(self):
+        """complete=True は承認理由の文面に依存せず done 確定する。
+
+        以前は理由に「検証」「受容」等のキーワードが揃ったときだけ完了し、外れると
+        黙って ready へ積み直していた。推定が外れると同じ工程を再実行してまた要対応へ
+        戻る往復になり、「承認して完了にできない」と繰り返し報告された。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            bd = d / "backlog"
+            bd.mkdir(parents=True)
+            (bd / "T1.md").write_text(
+                "## T1: 成果は完成・最終検証NG\n- status: blocked\n- source: human\n"
+                "- verify: npm test\n- retries: 3\n- last_run: run-done\n"
+                "- needs_reason: 繰り返し NG（exit=2）\n",
+                encoding="utf-8",
+            )
+            c = cfg_for(d)
+            run_dir = c.bus / "runs" / "run-done"
+            run_dir.mkdir(parents=True)
+            (run_dir / "meta.json").write_text(
+                json.dumps({"status": "done"}), encoding="utf-8")
+
+            # キーワードを 1 つも含まない理由でも完了する
+            self.assertEqual(km.cmd_approve(c, "T1", "これでよい", complete=True), 0)
+            self.assertEqual(km.load_tasks(d / "backlog"), [])
+            self.assertTrue((d / "archive" / "T1.md").exists())
+            self.assertIn("action  : approve-done",
+                          (d / "decisions" / "T1.md").read_text())
+
+    def test_approve_complete_flag_completes_without_run_metadata(self):
+        """run の meta が読めなくても、人が完了を選べば完了する。
+
+        画面は「検収物があるか」で承認を出す。本体が別の材料（run meta）で再判定して
+        食い違うと、承認したのに完了しない状態が生まれる。判断の主は人に一本化する。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            bd = d / "backlog"
+            bd.mkdir(parents=True)
+            (bd / "T1.md").write_text(
+                "## T1: 成果あり・run メタ欠落\n- status: blocked\n- source: human\n"
+                "- verify: npm test\n- retries: 2\n- last_run: run-missing\n"
+                "- needs_reason: 検証コマンドが失敗しました（exit=1）\n",
+                encoding="utf-8",
+            )
+            c = cfg_for(d)
+            self.assertEqual(km.cmd_approve(c, "T1", "成果を確認して完了を承認",
+                                            complete=True), 0)
+            self.assertEqual(km.load_tasks(d / "backlog"), [])
+            self.assertTrue((d / "archive" / "T1.md").exists())
+
+    def test_approve_without_complete_still_requeues(self):
+        """complete を渡さない従来の承認は、これまでどおり積み直し。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            bd = d / "backlog"
+            bd.mkdir(parents=True)
+            (bd / "T1.md").write_text(
+                "## T1: 直して再実行\n- status: blocked\n- source: human\n"
+                "- verify: npm test\n- retries: 1\n"
+                "- needs_reason: 検証コマンドが失敗しました（exit=2）\n",
+                encoding="utf-8",
+            )
+            c = cfg_for(d)
+            self.assertEqual(km.cmd_approve(c, "T1", "直したので進めて"), 0)
+            self.assertEqual(km.load_tasks(d / "backlog")[0].status, "ready")
+
+    def test_approve_complete_via_commands_drop(self):
+        """agent-dashboard の投函（commands/*.json）で complete が本体まで届く。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            bd = d / "backlog"
+            bd.mkdir(parents=True)
+            (bd / "T1.md").write_text(
+                "## T1: 検収待ち\n- status: blocked\n- source: human\n"
+                "- verify: npm test\n- retries: 2\n- last_run: run-done\n"
+                "- needs_reason: 検証コマンドが失敗しました（exit=2）\n",
+                encoding="utf-8",
+            )
+            c = cfg_for(d)
+            cdir = d / "commands"
+            cdir.mkdir(parents=True, exist_ok=True)
+            (cdir / "viewer-approve-t1.json").write_text(
+                json.dumps({"command": "approve", "id": "T1", "complete": True,
+                            "reason": "成果を確認して完了を承認",
+                            "actor": "agent-dashboard"}),
+                encoding="utf-8")
+            km.ingest_commands(c)
+            self.assertEqual(km.load_tasks(d / "backlog"), [])
+            self.assertTrue((d / "archive" / "T1.md").exists())
+
     def test_policy_is_not_appended_twice(self):
         # policy は「人の上書き指示」の集合であって履歴ではない。同じ hold を繰り返しても増えない
         with tempfile.TemporaryDirectory() as d:

@@ -7,6 +7,53 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-project / agent-dashboard: 「承認して完了にする」を出し分けで消さない
+
+要対応の画面で承認操作が見当たらず完了できない、という報告が繰り返し出ていた。原因は
+**「承認 = 完了」か「承認 = 積み直し」かを両側が別々に推定していた**こと。条件分岐を削り、
+意図を明示する形へ変えた。
+
+- **本体（agent-project）**: `approve --complete`（commands ドロップは `{"complete": true}`）を
+  追加。完了確定はこのフラグで決まり、**承認理由の文面には依存しない**。以前は理由に
+  「検証」「受容」等のキーワードが揃ったときだけ完了し、外れると黙って ready へ積み直して
+  同じ工程を再実行、また要対応へ戻る往復になっていた。旧経路（キーワード推定・verify 未定義）は
+  後方互換のため残す。
+- **画面（agent-dashboard）**: 承認ボタンの出し分けを「**検収物が少しでもあるか**」の 1 条件に
+  統一（`needHasDeliverable`）。従来は「blocked かつ task が blocked かつ検証失敗の解析に成功し
+  かつ完了 run が見つかった」の AND 連鎖で、どれか 1 つ欠けるとボタンごと消えていた。あわせて
+  run 一覧の非同期読み込み前でもタスクの `last_run` で判定し、**読み込みタイミングでボタンが
+  出たり消えたりしない**ようにした。差分検収ダイアログ経由に限定していた制約も外し、
+  要対応の画面から直接承認できる（成果を見る導線は従来どおり併置）。
+
+### agent-amigos / agent-dashboard: 成果物の納品を push 型（納品棚）にする
+
+- **accept が納品棚へ搬出する**: バスの `deliverable/` は gc 対象なので、collect し忘れが
+  成果物の喪失に直結していた。accept 成立時に owner デーモンが
+  `<home>/deliveries/<mid>/` へ搬出し、納品書 `delivery.json`（受入日時・受入者・partial・
+  消費実行時間・ファイル一覧、正典 `schemas/delivery.schema.json`）と受領一覧
+  `<home>/DELIVERY.md` を書く。agent-project の archive + DELIVERY.md と同じ二段構え。
+  `collect` は「納品棚とは別の場所へ改めてコピーする」補助へ降格。
+- **正本の置き場を種別で分ける**: 文書・調査結果・画像は本体を納品棚へ、コードは
+  `workspace.repo` の統合ブランチが正本で参照だけ、10MB 超は搬出せず参照だけ
+  （`exported: false`）。納品棚は gc の既定では消さない（`--deliveries-keep-days` 明示時のみ）。
+- **CLI**: `deliveries [-v]` を追加。`accept` / `deliveries` / `gc` は `--home` でホームを
+  上書きできる（既定は設定ファイルの位置）。
+- **dashboard**: 受入待ちミッションの成果物プレビュー（markdown は本文・画像はインライン・
+  他はメタ情報）と「この成果を受け取る / 修正を依頼する」、受け取り済み成果物の閲覧
+  （「保存先を開く」は既存の `shell:openPath`）を追加。受入操作は accept / reject の
+  commands 投函で、**dashboard がバスへ書かない規律は不変**。
+- **成果物はミッション単位で見せる**: 納品を独立した一覧として並べると、利用者が考える単位
+  （ミッション）と画面の単位がずれる。overview で納品をミッションへ結び付け、詳細ダイアログの
+  「受け取った成果物」節で中身（markdown は本文・画像はインライン）まで開けるようにした。
+  中身は詳細を開いたときに `amigos:deliveryContents` で 1 件だけ読む（ポーリングで全文を運ばない）。
+  読み方は受入プレビューと共通化（`preview.js`）。gc でバスから消えたミッションの納品だけは
+  行き場が無くなるので「過去の成果物」節へ回す。
+- **dashboard の無言の失敗を 3 つ塞いだ**: (1) 修正依頼が `window.prompt`（Electron 未対応）
+  で例外になっていたのを専用ダイアログへ。(2) 納品 0 件のとき節ごと描かず「どこで受け取るのか」が
+  画面から消えていたのを、保存先を案内する空状態に。(3) 投函した指示が常駐停止で取り込まれない
+  ことに気づけなかったので、未取り込み件数（`pendingCommands`）を画面に出す。
+  あわせてプロジェクト未選択時に納品だけがスコープを素通りしていた不具合も修正。
+
 ### agent-dashboard: エージェント CLI 界面を共通契約（agent-cli.schema.json）に整合
 
 - **agents/`<name>`.json プラグイン CLI のローダを実装**: agent-cli.schema.json は共有者に

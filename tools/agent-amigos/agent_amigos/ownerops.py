@@ -14,15 +14,28 @@ import time
 from . import agentcli, nodebudget
 from .bus import Bus, MissionPaths
 from .messages import build_message, message_path, read_inbox
-from .mission import current_round
+from .mission import current_round, load_mission
 from .util import append_jsonl, extract_json, log, now_iso, read_json, write_json_atomic
 
 
-def accept_mission(bus: Bus, mp: MissionPaths, by: str) -> None:
+def accept_mission(bus: Bus, mp: MissionPaths, by: str,
+                   home: "str | None" = None, mission: "dict | None" = None) -> None:
+    """受入を確定し、home が与えられていれば納品棚へ搬出する（push 型納品）。
+
+    搬出はバスへの書き込みではなくオーナーのローカル操作なので、final.json を
+    push した後に行う。搬出に失敗しても受入自体は成立させる（納品棚は再搬出できるが、
+    accept の取り消しはできない）。"""
     bus.sync_pull()
     write_json_atomic(mp.final(), {"accepted": True, "ts": now_iso(), "by": by,
                                    "round": current_round(mp)})
     bus.sync_push(f"accept {mp.mission_id}")
+    if not home:
+        return
+    from .delivery import export_delivery
+    try:
+        export_delivery(mp, mission or load_mission(mp), home, by)
+    except OSError as e:
+        log("owner", f"{mp.mission_id}: 納品棚への搬出に失敗しました（受入は成立）: {e}")
 
 
 def reject_mission(bus: Bus, mp: MissionPaths, feedback: str, by: str) -> int:
@@ -86,7 +99,7 @@ def _deliverable_digest(mp: MissionPaths, max_files: int = 20, max_chars: int = 
 
 
 def acceptance_turn(bus: Bus, mp: MissionPaths, mission: dict, node_id: str,
-                    agent_cli: "str | None" = None) -> str:
+                    agent_cli: "str | None" = None, home: "str | None" = None) -> str:
     """acceptance: agent の 1 判定。phase が reviewing のときだけ呼ぶ。
     返り値: accepted | rejected | escalated | skipped"""
     manifest = read_json(mp.manifest())
@@ -149,7 +162,7 @@ def acceptance_turn(bus: Bus, mp: MissionPaths, mission: dict, node_id: str,
         feedback = str(data.get("feedback") or "受入基準を満たしていません。")
 
     if accept:
-        accept_mission(bus, mp, by=f"agent:{node_id}")
+        accept_mission(bus, mp, by=f"agent:{node_id}", home=home, mission=mission)
         log("owner", f"{mp.mission_id}: 自動受入しました（round={rnd}）")
         return "accepted"
     reject_mission(bus, mp, feedback, by=f"agent:{node_id}")

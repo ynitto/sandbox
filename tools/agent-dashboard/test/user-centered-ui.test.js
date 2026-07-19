@@ -13,6 +13,8 @@ assert.match(html, /<meta name="viewport" content="width=device-width, initial-s
 assert.match(html, /data-tab="history"[^>]*>成果</);
 assert.match(html, /data-tab="cowork"[^>]*[^>]*>定常業務</);
 assert.match(html, /data-tab="amigos"[^>]*>ミッション</);
+assert.ok(html.includes('id="dlg-kiro-loop"'), '実行状況はダイアログとして表示します');
+assert.ok(!html.includes('id="tab-btn-kiro-loop"'), '実行状況をメインタブとして重複表示しません');
 assert.ok(
   html.indexOf('data-tab="amigos"') < html.indexOf('data-tab="cowork"'),
   'ミッションタブは定常業務の左に置きます'
@@ -105,14 +107,24 @@ assert.ok(!missionRequestDialog.includes('schemas/mission.schema.json'), '依頼
 assert.ok(!missionRequestDialog.includes('design doc'), '依頼画面に内部の成果物名を出しません');
 assert.match(missionRequestDialog, /<details[^>]*class="amigos-team-settings"/);
 assert.match(advancedSettings, /<h2>詳細設定<\/h2>/);
-assert.match(technicalInfo, /<h2>詳細情報<\/h2>/);
+assert.match(technicalInfo, /<h2 id="technical-info-title">詳細情報<\/h2>/);
 assert.ok(!technicalInfo.includes('技術情報'));
 assert.ok(!advancedSettings.includes('technical-project-info'));
 assert.ok(!technicalInfo.includes('btn-save-advanced-settings'));
 
 assert.ok(renderer.includes('function openAdvancedSettings()'));
-assert.ok(renderer.includes('function openTechnicalInfo()'));
+assert.ok(renderer.includes('function openTechnicalInfo(scope)'));
 assert.ok(renderer.includes('function technicalProjectInfoHtml()'));
+assert.ok(renderer.includes('function coworkTechnicalInfoHtml()'), '定常業務専用の診断情報を生成します');
+const coworkTechnicalInfoSource = renderer.slice(
+  renderer.indexOf('function coworkTechnicalInfoHtml('),
+  renderer.indexOf('\nfunction openAdvancedSettings(', renderer.indexOf('function coworkTechnicalInfoHtml('))
+);
+for (const unrelated of ['state.flowRun', '.busDir', '.journal', 'daemonBadge()', 'data-technical-tab']) {
+  assert.ok(!coworkTechnicalInfoSource.includes(unrelated), `定常業務の診断情報に agent-project 項目 ${unrelated} を混ぜません`);
+}
+assert.ok(coworkTechnicalInfoSource.includes('設定ファイル'), '定常業務の設定元を診断できます');
+assert.ok(coworkTechnicalInfoSource.includes('実行状態'), '選択中業務の実行状態を診断できます');
 assert.ok(!renderer.includes('function developerProjectInfoHtml()'));
 assert.ok(renderer.includes('data-open-technical-info'));
 assert.ok(renderer.includes('内部ログを開く'));
@@ -133,6 +145,87 @@ assert.match(css, /\.amigos-detail-dialog\s*\{/);
 assert.match(css, /\.amigos-conversation\s*\{/);
 assert.match(css, /\.overview-version-grid\s*\{/);
 assert.match(css, /\.overview-version-card\s*\{/);
+const renderCoworkSource = renderer.slice(
+  renderer.indexOf('function renderCowork('),
+  renderer.indexOf('\n// ---------------------------------------------------------------------------\n// 定常業務の実行履歴', renderer.indexOf('function renderCowork('))
+);
+assert.ok(renderer.includes('function coworkRoutineSelectorHtml('), '定常業務の共通セレクターが必要です');
+assert.ok(renderer.includes('data-cowork-search'), '件数が多い定常業務を名前で絞り込めます');
+assert.ok(renderer.includes('function applyCoworkRoutineFilter('), '検索は一覧DOMだけを絞り込みます');
+assert.ok(renderCoworkSource.includes('coworkRoutineSelectorHtml('), '定常業務画面の上部で業務を選択します');
+assert.ok(renderCoworkSource.includes('coworkSelectedDetailHtml('), '下部には選択中の業務だけを表示します');
+assert.ok(renderCoworkSource.includes('class="cowork-split-view"'), '一覧と選択中業務を上下の固定領域に分けます');
+assert.ok(renderCoworkSource.includes('class="cowork-list-pane"'), '上段を一覧専用領域にします');
+assert.ok(renderCoworkSource.includes('class="cowork-detail-pane"'), '下段を詳細専用領域にします');
+assert.ok(renderCoworkSource.includes('<button id="btn-cowork-save">保存</button>'), '保存ボタンは省略されない短い文言にします');
+assert.ok(renderCoworkSource.includes('title="設定・同期状態などの診断情報を表示">診断情報</button>'), '内部情報ボタンは用途が分かる名称と説明にします');
+assert.ok(renderCoworkSource.includes("openTechnicalInfo('cowork')"), '定常業務からは専用の診断情報を開きます');
+assert.ok(!renderCoworkSource.includes('class="cowork-list"'), '全業務の大きなカードを並べません');
+assert.ok(renderer.includes('function selectCoworkRoutine('), '選択状態を画面間で共有します');
+const selectCoworkRoutineSource = renderer.slice(
+  renderer.indexOf('function selectCoworkRoutine('),
+  renderer.indexOf('\nfunction coworkRoutineSelectorHtml(', renderer.indexOf('function selectCoworkRoutine('))
+);
+assert.ok(!selectCoworkRoutineSource.includes('renderCowork()'), '選択時に一覧全体を再描画してスクロールを失いません');
+assert.ok(selectCoworkRoutineSource.includes('updateCoworkSelectedDetail('), '選択時は下部詳細だけを更新します');
+assert.ok(renderer.includes('id="cowork-routine-selector-${esc(searchKey)}"'), '定期更新後に一覧のスクロール位置を復元できる識別子が必要です');
+assert.ok(renderer.includes('data-ui-scroll-key'), '再描画される内部スクロール領域を共通保存処理の対象にします');
+assert.ok(renderer.includes("document.querySelectorAll('.tabpane, [data-ui-scroll-key]"), '共通保存処理が宣言済みの内部スクロール領域を走査します');
+const restoreUiStateSource = renderer.slice(
+  renderer.indexOf('function restoreUiState('),
+  renderer.indexOf('\nfunction renderAllTabs(', renderer.indexOf('function restoreUiState('))
+);
+assert.ok(
+  restoreUiStateSource.indexOf("document.querySelectorAll('details[data-ui-key]')")
+    < restoreUiStateSource.indexOf('Object.entries(ui.scroll)'),
+  '詳細を開いてレイアウトを確定してからスクロール位置を復元します'
+);
+const coworkSelectedDetailSource = renderer.slice(
+  renderer.indexOf('function coworkSelectedDetailHtml('),
+  renderer.indexOf('\nfunction updateCoworkSelectedDetail(', renderer.indexOf('function coworkSelectedDetailHtml('))
+);
+assert.ok(!coworkSelectedDetailSource.includes('<details'), '選択中業務の情報は折りたたまず常に表示します');
+assert.ok(renderCoworkSource.includes('const ui = captureUiState();'), '定常業務の再描画前にUI状態を保存します');
+assert.ok(renderCoworkSource.includes('restoreUiState(ui);'), '定常業務の再描画後にUI状態を復元します');
+const renderKiroLoopSource = renderer.slice(
+  renderer.indexOf('function renderKiroLoopTerminal('),
+  renderer.indexOf('\n// ---------------------------------------------------------------------------\n// kiro-loop 構造化状態', renderer.indexOf('function renderKiroLoopTerminal('))
+);
+assert.ok(!renderKiroLoopSource.includes('coworkRoutineSelectorHtml('), 'ダイアログでは選択済みの定常業務だけを表示します');
+assert.ok(!renderKiroLoopSource.includes('kiro-loop-target'), '表示中エージェントの選択UIを表示しません');
+assert.ok(!renderKiroLoopSource.includes('<details'), '実行状況は折りたたまず常に表示します');
+assert.ok(renderKiroLoopSource.includes('class="kiro-loop-agent-panel"'), '選択済み業務のエージェント画面を常時表示します');
+assert.ok(renderer.includes('function kiroLoopRoutineSession('), '選択した定常業務に対応するエージェントだけを特定します');
+const kiroLoopRoutineSessionSource = renderer.slice(
+  renderer.indexOf('function kiroLoopRoutineSession('),
+  renderer.indexOf('\nasync function openKiroLoopTerminal(', renderer.indexOf('function kiroLoopRoutineSession('))
+);
+// eslint-disable-next-line no-new-func
+const kiroLoopRoutineSession = new Function(`${kiroLoopRoutineSessionSource}; return kiroLoopRoutineSession;`)();
+assert.strictEqual(
+  kiroLoopRoutineSession([{ name: '日次レビュー', target: '%1' }, { name: '月次集計', target: '%2' }], '月次集計').target,
+  '%2',
+  '選択した定常業務と同名のエージェントを表示します'
+);
+assert.strictEqual(
+  kiroLoopRoutineSession([{ name: '日次レビュー' }, { name: '月次集計' }], '別の業務'),
+  null,
+  '複数候補から無関係なエージェントを推測して表示しません'
+);
+assert.match(css, /\.cowork-routine-selector\s*\{[^}]*overflow-x:\s*hidden/s);
+assert.match(css, /\.cowork-routine-selector\s*\{[^}]*grid-template-columns:/s);
+assert.match(css, /\.cowork-routine-selector\s*\{[^}]*overflow-y:\s*auto/s);
+assert.match(css, /\.cowork-routine-selector\s*\{[^}]*minmax\(230px,\s*1fr\)/s);
+assert.match(css, /\.cowork-routine-option\s*\{[^}]*height:\s*76px/s);
+assert.match(css, /\.cowork-routine-option-head strong\s*\{[^}]*-webkit-line-clamp:\s*2/s);
+assert.match(css, /\.cowork-routine-option-head strong\s*\{[^}]*white-space:\s*normal/s);
+assert.match(css, /\.cowork-selected-detail\s*\{[^}]*min-width:\s*0/s);
+assert.match(css, /#tab-cowork\.active\s*\{[^}]*overflow:\s*hidden/s);
+assert.match(css, /\.cowork-split-view\s*\{[^}]*grid-template-rows:\s*240px\s+minmax\(0,\s*1fr\)/s);
+assert.match(css, /\.cowork-list-pane\s*\{[^}]*overflow:\s*hidden/s);
+assert.match(css, /\.cowork-detail-pane\s*\{[^}]*overflow-y:\s*auto/s);
+assert.match(css, /\.kiro-loop-dialog\[open\]\s*\{[^}]*height:/s);
+assert.match(css, /\.kiro-loop-agent-panel\s*\{[^}]*min-height:\s*0/s);
 assert.ok(renderer.includes('function setupDialogLayouts()'), '全ダイアログを共通の固定ヘッダ・フッタ構造に整えます');
 assert.match(css, /dialog\[open\]\s*\{[^}]*display:\s*flex/s);
 assert.match(css, /\.dialog-scroll-body\s*\{[^}]*overflow-y:\s*auto/s);

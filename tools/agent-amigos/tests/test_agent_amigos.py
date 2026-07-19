@@ -28,6 +28,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from agent_amigos.assign import claim_role, mirror_roster, winner  # noqa: E402
 from agent_amigos.bus import Bus  # noqa: E402
 from agent_amigos.daemon import NodeDaemon  # noqa: E402
+from agent_amigos import delivery  # noqa: E402
+from agent_amigos.delivery import deliveries_dir, delivery_json  # noqa: E402
+from agent_amigos.ownerops import accept_mission  # noqa: E402
 from agent_amigos.mission import (convergence_state, derive_phase, load_mission,  # noqa: E402
                                   load_roles, normalize_mission, post_mission)
 from agent_amigos.messages import read_inbox, unanswered_questions  # noqa: E402
@@ -349,10 +352,16 @@ class CliTests(AmigosTestCase):
         # 非オーナーは受入できない
         with self.assertRaises(SystemExit):
             cli.main(["accept", "--bus", self.bus.root, "--node-id", "other", "am-cli"])
+        home = os.path.join(self.tmp, "home")
         rc = cli.main(["accept", "--bus", self.bus.root, "--node-id", "owner-node",
-                       "am-cli"])
+                       "--home", home, "am-cli"])
         self.assertEqual(rc, 0)
         self.assertEqual(self.phase("am-cli"), "done")
+        # accept は納品棚へ搬出する（push 型納品）
+        self.assertTrue(os.path.isfile(
+            os.path.join(home, "deliveries", "am-cli", "delivery.json")))
+        rc = cli.main(["deliveries", "--bus", self.bus.root, "--home", home, "-v"])
+        self.assertEqual(rc, 0)
 
     def test_cancel_stops_runners(self):
         mid = self.post()
@@ -362,6 +371,147 @@ class CliTests(AmigosTestCase):
         self.assertEqual(self.phase(mid), "cancelled")
         runner = AmigoRunner(self.bus, mid, "impl", "n1", "stub")
         self.assertEqual(runner.turn_once(), "exit")
+
+
+class DeliveryTests(AmigosTestCase):
+    """納品棚（accept 時の push 型搬出）。
+    設計: docs/plans/2026-07-19-agent-amigos-deliverable-delivery-design.md"""
+
+    def setUp(self):
+        super().setUp()
+        self.home = os.path.join(self.tmp, "home")
+
+    def drive_to_reviewing(self, spec=None, mid="am-deliv", **kw):
+        mid = self.post(spec, mid)
+        d = self.daemon(home=self.home, **kw)
+        for _ in range(14):
+            d.cycle()
+            if self.phase(mid) in ("reviewing", "done"):
+                break
+        return mid, d
+
+    def test_accept_exports_deliverable_and_writes_receipt(self):
+        mid, _d = self.drive_to_reviewing()
+        self.assertEqual(self.phase(mid), "reviewing")
+        accept_mission(self.bus, self.bus.mission(mid), by="owner-node",
+                       home=self.home, mission=load_mission(self.bus.mission(mid)))
+        self.assertEqual(self.phase(mid), "done")
+
+        rec = read_json(delivery_json(self.home, mid))
+        self.assertEqual(rec["mission"], mid)
+        self.assertEqual(rec["accepted_by"], "owner-node")
+        self.assertFalse(rec["partial"])
+        self.assertGreater(rec["execution_seconds"], 0)
+        # 成果物の本体が納品棚にあり、MANIFEST は納品書へ置き換わっている
+        paths = [f["path"] for f in rec["files"]]
+        self.assertIn("architect/architecture.md", paths)
+        self.assertIn("impl/src/main.py", paths)
+        self.assertTrue(all(f["exported"] for f in rec["files"]))
+        for rel in paths:
+            self.assertTrue(os.path.isfile(os.path.join(self.home, "deliveries", mid, rel)))
+        self.assertFalse(os.path.exists(
+            os.path.join(self.home, "deliveries", mid, "MANIFEST.json")))
+        # 由来ロールとハッシュは MANIFEST から引き継ぐ
+        arch = next(f for f in rec["files"] if f["path"] == "architect/architecture.md")
+        self.assertEqual(arch["role"], "architect")
+        self.assertTrue(arch["sha256_16"])
+        # 受領一覧に 1 行増える
+        with open(os.path.join(self.home, "DELIVERY.md"), encoding="utf-8") as f:
+            index = f.read()
+        self.assertIn(mid, index)
+        self.assertIn("| 受入日時 |", index)
+
+    def test_oversized_file_is_referenced_not_exported(self):
+        mid, _d = self.drive_to_reviewing()
+        mp = self.bus.mission(mid)
+        big = os.path.join(mp.deliverable_dir(), "architect", "big.bin")
+        with open(big, "wb") as f:
+            f.write(b"0" * (delivery.MAX_EXPORT_BYTES + 1))
+        accept_mission(self.bus, mp, by="owner-node", home=self.home,
+                       mission=load_mission(mp))
+        rec = read_json(delivery_json(self.home, mid))
+        row = next(f for f in rec["files"] if f["path"] == "architect/big.bin")
+        self.assertFalse(row["exported"])
+        self.assertEqual(row["skip_reason"], "size")
+        self.assertFalse(os.path.exists(
+            os.path.join(self.home, "deliveries", mid, "architect", "big.bin")))
+
+    def test_code_deliverable_records_repo_reference_only(self):
+        spec = base_spec(workspace={"repo": "ssh://git@gitlab.local/team/faq-bot.git"})
+        mid, _d = self.drive_to_reviewing(spec)
+        mp = self.bus.mission(mid)
+        accept_mission(self.bus, mp, by="owner-node", home=self.home,
+                       mission=load_mission(mp))
+        rec = read_json(delivery_json(self.home, mid))
+        self.assertEqual(rec["code"]["repo"], "ssh://git@gitlab.local/team/faq-bot.git")
+        self.assertEqual(rec["code"]["branch"], f"amigos/{mid}/integration")
+
+    def test_reject_then_accept_replaces_stale_shelf_contents(self):
+        mid, d = self.drive_to_reviewing()
+        mp = self.bus.mission(mid)
+        accept_mission(self.bus, mp, by="owner-node", home=self.home,
+                       mission=load_mission(mp))
+        stale = os.path.join(self.home, "deliveries", mid, "architect", "stale.md")
+        os.makedirs(os.path.dirname(stale), exist_ok=True)
+        with open(stale, "w", encoding="utf-8") as f:
+            f.write("前ラウンドの残骸")
+        # 再 accept（同じミッションの搬出をやり直す）は棚を作り直す
+        accept_mission(self.bus, mp, by="owner-node", home=self.home,
+                       mission=load_mission(mp))
+        self.assertFalse(os.path.exists(stale))
+        self.assertTrue(os.path.isfile(delivery_json(self.home, mid)))
+
+    def test_agent_acceptance_exports_too(self):
+        spec = base_spec(acceptance="agent")
+        mid = self.post(spec, "am-auto")
+        d = self.daemon(home=self.home)
+        for _ in range(14):
+            d.cycle()
+            if self.phase(mid) == "done":
+                break
+        self.assertEqual(self.phase(mid), "done")
+        rec = read_json(delivery_json(self.home, mid))
+        self.assertTrue(str(rec["accepted_by"]).startswith("agent:"))
+        self.assertEqual(rec["acceptance"], "agent")
+
+    def test_accept_command_drop_exports_to_home(self):
+        from agent_amigos.configfile import commands_dir
+        spec = base_spec(staffing_timeout=0)
+        mid = self.post(spec, "am-cmd-deliv")
+        d = NodeDaemon(self.bus, "owner-node", agent_cli="stub", interval=0,
+                       commands_home=self.home)
+        for _ in range(14):
+            d.cycle()
+            if self.phase(mid) == "reviewing":
+                break
+        cdir = commands_dir(self.home)
+        os.makedirs(cdir, exist_ok=True)
+        with open(os.path.join(cdir, "accept.json"), "w", encoding="utf-8") as f:
+            json.dump({"command": "accept", "mission": mid}, f)
+        d.cycle()
+        self.assertEqual(self.phase(mid), "done")
+        self.assertTrue(os.path.isfile(delivery_json(self.home, mid)))
+
+    def test_no_home_keeps_accept_working_without_export(self):
+        mid, _d = self.drive_to_reviewing()
+        mp = self.bus.mission(mid)
+        accept_mission(self.bus, mp, by="owner-node")     # home 無し = 搬出しない
+        self.assertEqual(self.phase(mid), "done")
+        self.assertFalse(os.path.exists(deliveries_dir(self.home)))
+
+    def test_gc_keeps_shelf_by_default(self):
+        mid, _d = self.drive_to_reviewing()
+        mp = self.bus.mission(mid)
+        accept_mission(self.bus, mp, by="owner-node", home=self.home,
+                       mission=load_mission(mp))
+        shelf = os.path.join(self.home, "deliveries", mid)
+        os.utime(shelf, (0, 0))
+        cli.main(["gc", "--bus", self.bus.root, "--home", self.home, "--keep-days", "0"])
+        self.assertFalse(self.bus.mission(mid).exists())   # バスからは消える
+        self.assertTrue(os.path.isdir(shelf))              # 納品棚は残る
+        cli.main(["gc", "--bus", self.bus.root, "--home", self.home,
+                  "--keep-days", "0", "--deliveries-keep-days", "1"])
+        self.assertFalse(os.path.isdir(shelf))             # 明示指定でのみ消える
 
 
 class AwayProtocolTests(AmigosTestCase):

@@ -179,7 +179,7 @@ function revisePayload({ fields, feedback }) {
 // commands/<name>.json のドロップ（agent-project の ingest_commands が拾う）。
 // 書きかけを watch に読ませないよう .tmp に書いてから rename する。
 // replan / pause / resume / stop はプロジェクト単位（id 不要）なので id を載せない。
-function dropCommand(projectDir, { action, id, reason, fields, feedback, run, charter }) {
+function dropCommand(projectDir, { action, id, reason, fields, feedback, run, charter, complete }) {
   const dir = path.join(projectDir, 'commands');
   fs.mkdirSync(dir, { recursive: true });
   const projectScoped = action === 'replan' || LIFECYCLE_ACTIONS.has(action);
@@ -192,6 +192,8 @@ function dropCommand(projectDir, { action, id, reason, fields, feedback, run, ch
     ...(action === 'revise' ? revisePayload({ fields, feedback }) : {}),
     ...(action === 'resume-run' && run ? { run: String(run) } : {}),
     ...(action === 'replan' && charter ? { charter: String(charter) } : {}),
+    // 承認 = 完了か積み直しかは呼び出し側が明示する（本体は文面から推定しない）
+    ...(action === 'approve' && complete ? { complete: true } : {}),
   };
   const slug = projectScoped ? 'project' : slugify(id);
   const file = path.join(dir, `viewer-${action}-${slug}-${Date.now()}.json`);
@@ -318,7 +320,7 @@ function runProjectCli(command, args, timeoutMs = 60000, cwd) {
 }
 
 // CLI 実行（approve / hold / reprioritize / revise / resume-run）。本体が稼働していないときの経路
-async function runActionViaCli(cfg, { dir, action, id, reason, fields, feedback, run }) {
+async function runActionViaCli(cfg, { dir, action, id, reason, fields, feedback, run, complete }) {
   const command = (cfg.projects && cfg.projects.command) || 'agent-project';
   // ファイル操作は状態ルート（dir）。CLI --root は本体側（二重リダイレクト防止）。
   const root = project.fromStateWorktree(path.resolve(dir));
@@ -326,7 +328,9 @@ async function runActionViaCli(cfg, { dir, action, id, reason, fields, feedback,
   const cfgPath = findProjectConfig(root, dir);
   if (cfgPath) base.push('--config', cfgPath);
   let args;
-  if (action === 'approve') args = ['approve', id, '--reason', reason, ...base];
+  if (action === 'approve') {
+    args = ['approve', id, '--reason', reason, ...(complete ? ['--complete'] : []), ...base];
+  }
   else if (action === 'reject') args = ['reject', id, '--reason', reason, ...base];
   else if (action === 'hold') args = ['hold', id, '--reason', reason, ...base];
   else if (action === 'pin') args = ['reprioritize', id, '--pin', '--reason', reason, ...base];
@@ -350,7 +354,7 @@ async function runActionViaCli(cfg, { dir, action, id, reason, fields, feedback,
 //                 稼働していなければ CLI、CLI も使えなければドロップにフォールバック
 //   file        … 常に commands/ ドロップ（WSL 内の本体・CLI 無し環境向け）
 //   cli         … 常に CLI（従来の挙動）
-async function runAction(cfg, { dir, action, id, reason, fields, feedback, run }) {
+async function runAction(cfg, { dir, action, id, reason, fields, feedback, run, complete }) {
   if (!COMMAND_ACTIONS.has(action)) throw new Error(`不明なアクション: ${action}`);
   const why = String(reason || '').trim() || 'agent-dashboard から操作';
   const mode = (cfg.projects && cfg.projects.actionMode) || 'auto';

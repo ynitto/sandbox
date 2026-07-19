@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "delivery.schema.json",
+  "title": "納品書（agent-amigos 納品棚 <home>/deliveries/<mid>/delivery.json）",
+  "description": "オーナーの accept 成立時に owner ノードが納品棚へ搬出した成果物の受領記録。バスの deliverable/MANIFEST.json が integrator の組み立て記録（受け渡しの場・gc 対象）であるのに対し、本契約は受入という事実と搬出先を刻む永続記録（gc 対象外）。読取専用の外部ビュアー（agent-dashboard の納品一覧）はこれを読む。正典設計: docs/plans/2026-07-19-agent-amigos-deliverable-delivery-design.md",
+  "type": "object",
+  "required": ["mission", "accepted_at", "files"],
+  "properties": {
+    "mission": {"type": "string", "description": "ミッション id（am-…）"},
+    "title": {"type": "string", "description": "ミッションのタイトル（mission.json より）"},
+    "goal": {"type": "string", "description": "ミッションの目的（mission.json より）"},
+    "accepted_at": {"type": "string", "description": "受入時刻（ISO8601 UTC）"},
+    "accepted_by": {"type": "string", "description": "受入者。人/CLI は node_id、acceptance: agent の自動判定は agent:<node_id>"},
+    "acceptance": {"type": "string", "description": "受入方式（mission.json の acceptance: manual | agent | codd-gate）"},
+    "round": {"type": "integer", "description": "受入時のラウンド（差し戻し回数）"},
+    "partial": {"type": "boolean", "description": "部分納品か（MANIFEST から引き継ぐ）"},
+    "partial_reason": {"type": "string", "description": "partial の理由（静穏化・予算 wrap-up 等）"},
+    "execution_seconds": {"type": "number", "description": "消費した実質実行時間（バス events の cli_seconds 総和）。依頼者が後から費用を見られる"},
+    "files": {
+      "type": "array",
+      "description": "納品ファイル一覧。exported: true は納品棚に本体があり、false は搬出しなかった（サイズ上限超過）ものの参照",
+      "items": {
+        "type": "object",
+        "required": ["path", "exported"],
+        "properties": {
+          "path": {"type": "string", "description": "納品棚内の相対パス（deliverable 内の相対パスと同じ。<role>/<...> 形）"},
+          "role": {"type": "string", "description": "由来ロール"},
+          "sha256_16": {"type": "string", "description": "MANIFEST から引き継ぐ内容ハッシュ（先頭 16 桁）"},
+          "bytes": {"type": "integer", "description": "ファイルサイズ"},
+          "exported": {"type": "boolean", "description": "納品棚へ本体を搬出したか"},
+          "skip_reason": {"type": "string", "description": "exported: false の理由（size: 上限超過）"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "code": {
+      "type": "object",
+      "description": "コード成果物の参照（mission.workspace.repo 宣言時のみ）。本体は repo が正本で、納品棚には参照だけを置く",
+      "properties": {
+        "repo": {"type": "string", "description": "対象リポジトリ（mission.workspace.repo）"},
+        "branch": {"type": "string", "description": "統合ブランチ（amigos/<mission-id>/integration）"}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

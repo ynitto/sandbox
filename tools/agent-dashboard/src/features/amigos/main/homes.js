@@ -105,7 +105,17 @@ function scanRoots(roots, depth) {
   return found;
 }
 
-// ホーム一覧: [{dir, configFile, busSpec, busDir|null, nodeId, manualClaim, commandsDir}]
+function pendingCommandCount(commandsDir) {
+  try {
+    return fs.readdirSync(commandsDir)
+      .filter((n) => n.endsWith('.json') && !n.includes('.tmp.')).length;
+  } catch {
+    return 0;
+  }
+}
+
+// ホーム一覧: [{dir, configFile, busSpec, busDir|null, nodeId, manualClaim,
+//               commandsDir, pendingCommands}]
 function discoverHomes(cfg) {
   const a = (cfg && cfg.amigos) || {};
   const explicit = (Array.isArray(a.homeDirs) ? a.homeDirs : [])
@@ -138,6 +148,7 @@ function discoverHomes(cfg) {
       const p = expandHome(busSpec);
       busDir = path.isAbsolute(p) ? p : path.resolve(dir, p);
     }
+    const commandsDir = path.join(dir, '.agent', 'agent-amigos', 'commands');
     homes.push({
       dir,
       configFile: conf ? conf.file : null,
@@ -145,7 +156,10 @@ function discoverHomes(cfg) {
       busDir,
       nodeId: values.node_id ? String(values.node_id) : null,
       manualClaim: isTruthy(values.manual_claim),
-      commandsDir: path.join(dir, '.agent', 'agent-amigos', 'commands'),
+      commandsDir,
+      // 未取り込みの指示。投函は常駐デーモンが取り込んで初めて効くので、
+      // 溜まったままなら常駐が動いていない（画面に出して無言の失敗を防ぐ）。
+      pendingCommands: pendingCommandCount(commandsDir),
     });
   }
   return homes;

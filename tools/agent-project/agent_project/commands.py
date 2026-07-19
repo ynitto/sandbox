@@ -58,7 +58,13 @@ def approve_review_done(cfg: Config, t: Task, reason: str) -> "tuple[bool, str]"
     return (True, "\n".join(lines))
 
 
-def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
+def cmd_approve(cfg: Config, tid: str, reason: str, complete: bool = False) -> int:
+    """判断待ちの承認。
+
+    complete=True は「この成果を受け入れて完了（done 確定）にする」という人の明示。
+    検収待ち（blocked / review）で有効で、承認理由の文面には依存しない。
+    complete=False（既定）は従来どおり「ブロックを解いて積み直す」。
+    """
     tasks = load_tasks(cfg.backlog)
     t = next((x for x in tasks if x.id == tid), None)
     if t is None:
@@ -114,21 +120,27 @@ def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
     # env_resume は通常の環境障害だけでなく、完了run後の回帰検証失敗にも付く。
     # 一律除外せず、完了runと「検証差異を受容して完了」の明示理由がそろった場合だけ
     # done 確定する。[agent-error:*] の純粋な環境障害は従来どおり再開扱いに残す。
+    # 「承認 = 完了」か「承認 = 積み直し」かは、**呼び出し側が complete で明示する**。
+    # 以前は承認理由の文面（"検証"・"受容" 等のキーワード）から推定していたが、
+    # 推定が外れると黙って ready へ積み直し、同じ工程が再実行されてまた blocked に戻る
+    # 無限往復になっていた（承認して完了にできない、と繰り返し報告された不具合）。
+    # 検収物があるかの判断は人が画面で行う。ここで別の材料から再判定して食い違わせない。
     needs_reason = str(t.get("needs_reason") or "")
     reason_lower = needs_reason.lower()
     approval_lower = str(reason or "").lower()
     verify_undefined = (not t.verify and "verify 未定義" in needs_reason)
-    explicit_verification_acceptance = (
-        any(word in approval_lower for word in ("verify", "検証", "テスト", "test", "回帰"))
-        and any(word in approval_lower for word in ("受容", "承認", "完了", "accept"))
-    )
-    completed_verification_failure = (
+    # 旧経路（complete を渡さない CLI・古いドロップ）のための後方互換の推定。
+    legacy_verification_acceptance = (
         bool(_completed_last_run(cfg, t))
-        and explicit_verification_acceptance
+        and any(word in approval_lower for word in ("verify", "検証", "テスト", "test", "回帰"))
+        and any(word in approval_lower for word in ("受容", "承認", "完了", "accept"))
+        and "[agent-error:" not in reason_lower
     )
-    if (t.norm_status() == "blocked" and "[agent-error:" not in reason_lower
-            and ((verify_undefined and not t.get("env_resume"))
-                 or completed_verification_failure)):
+    if t.norm_status() == "blocked" and (
+            complete
+            or legacy_verification_acceptance
+            or (verify_undefined and not t.get("env_resume")
+                and "[agent-error:" not in reason_lower)):
         ok, msg = approve_review_done(cfg, t, reason)
         if not ok:
             print(msg, file=sys.stderr)
@@ -621,7 +633,9 @@ def ingest_commands(cfg: "Config") -> "list[str]":
             _reject_command(cfg, f, f"未知の指示: command={action!r} id={tid!r}")
             continue
         if action == "approve":
-            rc = cmd_approve(cfg, tid, reason)
+            # complete: 「成果を受け入れて完了にする」の明示（agent-dashboard の
+            # 「承認して完了にする」）。無ければ従来どおり積み直し。
+            rc = cmd_approve(cfg, tid, reason, complete=bool(rec.get("complete")))
         elif action == "reject":
             rc = cmd_reject(cfg, tid, reason)
         elif action == "hold":

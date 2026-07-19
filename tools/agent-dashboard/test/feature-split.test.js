@@ -103,12 +103,16 @@ test('amigos はミッションビューとノード予算 API を登録する',
     saveConfig: () => ({}),
   });
   assert.deepStrictEqual(registered.sort(),
-    ['amigos:budgetSave', 'amigos:claim', 'amigos:overview', 'amigos:request'].sort());
+    ['amigos:accept', 'amigos:budgetSave', 'amigos:claim', 'amigos:deliveryContents',
+     'amigos:overview', 'amigos:reject', 'amigos:request'].sort());
   const api = amigos.preloadApi();
   assert.strictEqual(typeof api.amigosOverview, 'function');
   assert.strictEqual(typeof api.amigosBudgetSave, 'function');
   assert.strictEqual(typeof api.amigosRequest, 'function');
   assert.strictEqual(typeof api.amigosClaim, 'function');
+  assert.strictEqual(typeof api.amigosAccept, 'function');
+  assert.strictEqual(typeof api.amigosReject, 'function');
+  assert.strictEqual(typeof api.amigosDeliveryContents, 'function');
   const calls = [];
   const overview = api.amigosOverview((channel, args) => {
     calls.push([channel, args]);

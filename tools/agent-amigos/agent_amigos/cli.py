@@ -11,6 +11,7 @@ from .assign import unfilled_required
 from .bus import make_bus
 from .configfile import load_settings, resolve_bus_spec
 from .daemon import NodeDaemon, default_node_id
+from .delivery import deliveries_dir, delivery_dir, list_deliveries
 from .messages import build_message, message_path, unanswered_questions, valid_target
 from .mission import (convergence_state, derive_phase,
                       load_mission, load_roles, post_mission)
@@ -44,6 +45,21 @@ def _resolve(args) -> "tuple":
     return bus, node
 
 
+def _node_home(args) -> str:
+    """ノードのホーム（納品棚 `<home>/deliveries/` と DELIVERY.md の置き場）。
+    --home 明示 > 設定ファイルの位置（configfile の探索順）。"""
+    explicit = getattr(args, "home", None)
+    if explicit:
+        return os.path.abspath(os.path.expanduser(explicit))
+    return load_settings(getattr(args, "config", None))["_home"]
+
+
+def _home_arg(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--home", default=None,
+                   help="納品棚（<home>/deliveries/）の置き場。"
+                        "既定は設定ファイルのあるディレクトリ（無ければ cwd）")
+
+
 def _require_owner(mission: dict, node: str) -> None:
     if mission.get("owner_node") != node:
         raise SystemExit(f"[agent-amigos] このコマンドはオーナーノード"
@@ -71,7 +87,8 @@ def cmd_post(args) -> int:
     print(f"ミッションを公示しました: {mid}（owner={node}）")
     if args.serve:
         NodeDaemon(bus, node, agent_cli=args.agent_cli, interval=args.interval,
-                   resume_hours=args.resume_hours).run(cycles=args.cycles)
+                   resume_hours=args.resume_hours,
+                   home=_node_home(args)).run(cycles=args.cycles)
     return 0
 
 
@@ -81,7 +98,8 @@ def cmd_join(args) -> int:
     tags = [t for t in (args.tags or "").split(",") if t]
     NodeDaemon(bus, node, agent_cli=args.agent_cli, tags=tags,
                roles_filter=roles_filter, interval=args.interval,
-               resume_hours=args.resume_hours).run(cycles=args.cycles)
+               resume_hours=args.resume_hours,
+               home=_node_home(args)).run(cycles=args.cycles)
     return 0
 
 
@@ -215,6 +233,8 @@ def cmd_collect(args) -> int:
     shutil.copytree(mp.deliverable_dir(), out, dirs_exist_ok=True)
     partial = "（partial — 予算枯渇/静穏化による部分納品）" if manifest.get("partial") else ""
     print(f"deliverable を取り出しました → {out} {partial}")
+    print("  ※ accept すると納品棚（<home>/deliveries/<mid>/）へ自動で搬出されます。"
+          "collect は別の場所へ改めてコピーしたいときに使います")
     print(f"  round={manifest.get('round')} reason={manifest.get('reason')} "
           f"files={sum(len(v) for v in (manifest.get('files') or {}).values())}")
     return 0
@@ -227,8 +247,37 @@ def cmd_accept(args) -> int:
     _require_owner(mission, node)
     if not read_json(mp.manifest()):
         raise SystemExit("[agent-amigos] deliverable がまだありません（受入対象がありません）")
-    accept_mission(bus, mp, by=node)
+    home = _node_home(args)
+    accept_mission(bus, mp, by=node, home=home, mission=mission)
     print(f"受入しました: {args.mission}（done）")
+    print(f"  納品先: {delivery_dir(home, args.mission)}")
+    return 0
+
+
+def cmd_deliveries(args) -> int:
+    """納品棚の一覧（受領済みの成果物）。詳細は各 delivery.json と DELIVERY.md。"""
+    home = _node_home(args)
+    rows = list_deliveries(home)
+    if not rows:
+        print(f"納品はまだありません（納品棚: {deliveries_dir(home)}）")
+        return 0
+    for rec in rows:
+        state = "partial" if rec.get("partial") else "完全"
+        exported = sum(1 for f in rec.get("files") or [] if f.get("exported"))
+        refs = len(rec.get("files") or []) - exported
+        print(f"{rec.get('accepted_at')}  {rec['mission']}  {state}  "
+              f"{float(rec.get('execution_seconds') or 0) / 60:.1f}m  "
+              f"{exported} ファイル{f'（+参照 {refs}）' if refs else ''}  "
+              f"{str(rec.get('title') or '')[:40]}")
+        if args.verbose:
+            print(f"    → {delivery_dir(home, rec['mission'])}")
+            for f in rec.get("files") or []:
+                mark = " " if f.get("exported") else "参照のみ"
+                print(f"      {f['path']:<40} {f.get('bytes', 0):>9} B {mark}")
+            if rec.get("code"):
+                print(f"      コード: {rec['code'].get('repo')} "
+                      f"({rec['code'].get('branch')})")
+    print(f"（納品棚: {deliveries_dir(home)} ／ 一覧: {os.path.join(home, 'DELIVERY.md')}）")
     return 0
 
 
@@ -360,7 +409,20 @@ def cmd_gc(args) -> int:
         bus.remove_mission(mid)     # GitBus はブランチ削除 + index 除去（§5.1）
         removed += 1
         print(f"削除: {mid}")
-    print(f"gc 完了（{removed} 件削除）")
+    print(f"gc 完了（バス {removed} 件削除）")
+    # 納品棚は既定で消さない（バスと違い、受け取った成果物の唯一の置き場になるため）。
+    if args.deliveries_keep_days:
+        home = _node_home(args)
+        keep_s = args.deliveries_keep_days * 86400
+        dropped = 0
+        for rec in list_deliveries(home):
+            path = delivery_dir(home, rec["mission"])
+            if time.time() - os.path.getmtime(path) < keep_s:
+                continue
+            shutil.rmtree(path, ignore_errors=True)
+            dropped += 1
+            print(f"納品棚から削除: {rec['mission']}")
+        print(f"（納品棚 {dropped} 件削除。DELIVERY.md の履歴行は残します）")
     return 0
 
 
@@ -438,10 +500,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", required=True)
     p.set_defaults(fn=cmd_collect)
 
-    p = sub.add_parser("accept", help="受入する（オーナー）")
-    _bus_arg(p); _node_arg(p)
+    p = sub.add_parser("accept", help="受入する（オーナー。納品棚へ自動搬出）")
+    _bus_arg(p); _node_arg(p); _home_arg(p)
     p.add_argument("mission")
     p.set_defaults(fn=cmd_accept)
+
+    p = sub.add_parser("deliveries", help="納品棚（受領済みの成果物）を一覧する")
+    _bus_arg(p); _node_arg(p); _home_arg(p)
+    p.add_argument("--verbose", "-v", action="store_true", help="ファイル一覧まで表示する")
+    p.set_defaults(fn=cmd_deliveries)
 
     p = sub.add_parser("reject", help="差し戻す（オーナー）")
     _bus_arg(p); _node_arg(p)
@@ -488,8 +555,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(fn=cmd_cancel)
 
     p = sub.add_parser("gc", help="終了済みミッションを掃除する")
-    _bus_arg(p); _node_arg(p)
+    _bus_arg(p); _node_arg(p); _home_arg(p)
     p.add_argument("--keep-days", type=float, default=14)
+    p.add_argument("--deliveries-keep-days", type=float, default=0,
+                   help="納品棚も掃除する（既定 0 = 無期限に残す）。"
+                        "納品棚は受け取った成果物の唯一の置き場になるため自動では消さない")
     p.set_defaults(fn=cmd_gc)
 
     from . import hub
@@ -501,7 +571,8 @@ def build_parser() -> argparse.ArgumentParser:
 # （agent-project の run --watch 既定と同じ流儀 — PC 起動時に立ち上げっぱなしにして
 # cwd のホームを面倒見る daemon 用途を一級にする）。
 _SUBCOMMANDS = {"serve", "init-bus", "post", "join", "run", "status", "collect",
-                "accept", "reject", "assign", "budget", "say", "cancel", "gc", "hub"}
+                "accept", "reject", "assign", "budget", "say", "cancel", "gc", "hub",
+                "deliveries"}
 
 
 def resolve_argv(argv: "list[str] | None") -> "list[str]":

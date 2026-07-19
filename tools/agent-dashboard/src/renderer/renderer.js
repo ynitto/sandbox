@@ -1,6 +1,6 @@
 'use strict';
 
-/* global api, Diff2HtmlUI */
+/* global api, Diff2HtmlUI, RoutineUiCache */
 
 const $ = (id) => document.getElementById(id);
 
@@ -39,10 +39,16 @@ const state = {
   cowork: null,
   coworkDraft: null,
   coworkEditIndex: -1,
+  coworkSelections: {}, // project path → selected routine id
+  coworkSearches: { cowork: '' },
+  coworkHistoryCache: RoutineUiCache.createBoundedAsyncCache({ max: 12, ttlMs: 60000 }),
   amigos: null, // amigos:overview のスナップショット { missions, budget, errors }
   amigosBudgetSaving: false,
+  amigosReject: null, // 修正依頼ダイアログの対象 { home, missionId }
   // kiro-loop 端末（Phase A: capture-pane 視聴）
   kiroLoopTerm: null, // { repo, name, target, session, items, text, error, at }
+  kiroLoopCache: RoutineUiCache.createBoundedAsyncCache({ max: 8, ttlMs: 30000 }), // repo → session list
+  kiroLoopStateCache: RoutineUiCache.createBoundedAsyncCache({ max: 8, ttlMs: 10000 }), // repo → status summary
   kiroLoopTimer: null,
   coworkRun: null,       // { id, phase: 'running'|'ok'|'error', message, at }
   coworkHistory: null,   // 履歴ダイアログのモデル { id, name, logs, history, file, text }
@@ -1461,8 +1467,6 @@ function switchTab(name) {
   const pane = $(`tab-${name}`);
   if (pane) pane.classList.add('active');
   if (name === 'needs') refreshGitLab(false); // 要対応タブに GitLab レビュー待ちを併載しているため
-  if (name === 'kiro-loop') startKiroLoopCapturePoll();
-  else stopKiroLoopCapturePoll();
 }
 
 // run を選んでフロータブへ遷移。
@@ -3363,8 +3367,8 @@ function needCompleteHowHtml(n) {
         : 'まだプロジェクト完了の段階ではありません。';
   } else if (n.kind === 'blocked' && isVerifyPendingNeed(p, n)) {
     line = '承認すると、このタスクは完了します（検証コマンド未定義のため、人の確認が完了の根拠になります）。';
-  } else if (n.kind === 'blocked' && canManuallyCompleteNeed(p, n, state.flowRuns)) {
-    line = '成果生成は完了しています。検証失敗を確認・受容できる場合は、承認するとこのタスクを完了できます。';
+  } else if (n.kind === 'blocked' && needHasDeliverable(p, n, state.flowRuns)) {
+    line = '成果はできています。内容を確認して問題なければ、承認するとこのタスクを完了できます。';
   } else if (!line && n.kind === 'blocked') {
     line = '指示を送ると、作業を再開します。';
   }
@@ -3409,20 +3413,14 @@ function needActionsHtml(n, options) {
       buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}">↩ 指示を送る</button>`);
     }
   } else {
-    // verify 未定義の確認待ち: 承認 = done 確定（本体 cmd_approve が完了させる）。
-    // 従来はこのボタンが無く、成果が揃った run を人の承認で完了にできなかった。
-    const verifyPending = isVerifyPendingNeed(state.project, n);
-    const manualCompletion = canManuallyCompleteNeed(state.project, n, state.flowRuns);
-    const canApproveCompletion = verifyPending || manualCompletion;
+    // 検収物が少しでもあれば「承認して完了にする」を出す（本体は complete で完了確定する）。
+    // 差分を先に見たい人向けに「差分を確認して承認」も併置し、承認そのものは常に押せる形にする
+    // ——「見当たらないから完了できない」を作らないことを、細かい出し分けより優先する。
+    // 成果を見る導線は needArtifactsButtonHtml（「成果を確認」）が別に出すので、
+    // ここは承認そのものだけを置く（同じ操作を 2 つ並べない）。
+    const canApproveCompletion = needHasDeliverable(state.project, n, state.flowRuns);
     if (canApproveCompletion) {
-      const title = manualCompletion
-        ? '成果と検証失敗を確認・受容し、このタスクを完了（納品確定）にします'
-        : '成果を確認済みならこのタスクを完了（納品確定）にします';
-      if (manualCompletion && !inReview) {
-        buttons.push(`<button type="button" class="primary-inline" data-need-artifacts="${esc(n.id)}" title="ファイル差分を確認してから承認します">差分を確認して承認</button>`);
-      } else {
-        buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}" title="${esc(title)}">承認して完了にする</button>`);
-      }
+      buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}" title="成果を確認済みとして、このタスクを完了（納品確定）にします">承認して完了にする</button>`);
     }
     buttons.push(`<button class="${canApproveCompletion ? '' : 'primary-inline'}" data-act="feedback" data-id="${esc(n.id)}">指示を送って再開</button>`);
     buttons.push(`<button data-act="rerun" data-id="${esc(n.id)}">そのまま再実行</button>`);
@@ -3556,19 +3554,33 @@ function needFinalVerificationFailure(project, need, flowRuns) {
   };
 }
 
-function canManuallyCompleteNeed(project, need, flowRuns) {
-  return Boolean(needFinalVerificationFailure(project, need, flowRuns));
+// 承認 = 完了にできるか。「検収物が少しでもあるなら人が完了を選べる」の 1 条件に絞る。
+//
+// 以前は「blocked かつ task.status が blocked かつ検証失敗の解析に成功しかつ完了 run が
+// 見つかった」という AND 連鎖で出し分けており、どれか 1 つ欠けると承認ボタンごと消えて
+// 完了できなくなっていた（何度直しても別の抜け道で再発した）。完了させてよいかの判断は
+// 人がするので、画面は「見せるものがあるか」だけを見る。
+function needHasDeliverable(project, need, flowRuns) {
+  if (!need || String(need.kind || 'blocked') !== 'blocked') return false;
+  if (isVerifyPendingNeed(project, need)) return true;
+  if (completedTaskForNeed(project, need)) return true;
+  // タスク自身が持つ実行履歴で判定する。run 一覧（flowRuns）は非同期に読むので、
+  // それだけに頼ると読み込み前は「成果なし」と誤判定してボタンが消える
+  // （画面を開くたびに出たり消えたりする、と報告された症状の一因）。
+  const task = taskForNeed(project, need);
+  if (task && String(((task.extra || {}).last_run) || '').trim()) return true;
+  return Boolean(artifactRunForNeed(project, need, flowRuns));
 }
 
+// 承認理由は決定記録として残すだけ。**本体の分岐材料にはしない**
+// （文面から「完了か積み直しか」を推定させない — 意図は complete フラグで明示する）。
 function needApprovalReason(project, need, flowRuns, input) {
-  const note = String(input || '').trim();
-  if (!canManuallyCompleteNeed(project, need, flowRuns)) return note;
-  return ['検証失敗を確認・受容して完了', note].filter(Boolean).join(': ');
+  return String(input || '').trim() || '成果を確認して完了を承認';
 }
 
+// 成果（差分）を見る導線。承認できるかとは独立に、見るものがあるなら常に出す
+// （承認状態で出し分けると「成果も承認も見当たらない」状態が生まれる）。
 function needArtifactsButtonHtml(project, need, flowRuns) {
-  // 未承認の検証失敗は回答欄の主操作から同じ検収ダイアログへ進むため、重複表示しない。
-  if (canManuallyCompleteNeed(project, need, flowRuns)) return '';
   // リトライ中（最新試行が未完）でも、系統内に done 世代があれば成果への導線を残す
   if (!completedTaskForNeed(project, need) && !artifactRunForNeed(project, need, flowRuns)) return '';
   return `<button type="button" class="primary-inline" data-need-artifacts="${esc(need.id)}">成果を確認</button>`;
@@ -4794,7 +4806,12 @@ async function handleNeedAction(btn) {
       toast('そのまま再実行するよう回答しました', true);
     } else if (act === 'approve') {
       const reason = needApprovalReason(p, need, state.flowRuns, text);
-      const res = await api.runAction({ dir: p.dir, action: 'approve', id, reason });
+      // 検収待ち（成果がある blocked / review）の承認は完了確定の意図を明示して送る。
+      // 本体に文面から推測させない（推測が外れると黙って積み直され、同じ工程を
+      // 再実行してまた要対応に戻る往復になっていた）。
+      const complete = String(need.kind || 'blocked') === 'review'
+        || needHasDeliverable(p, need, state.flowRuns);
+      const res = await api.runAction({ dir: p.dir, action: 'approve', id, reason, complete });
       // 指示は commands/CLI 経由で needs ファイル自体は変わらない。取り込みまで
       // カードが未対応のまま残らないよう送信済みマーカーを付ける
       markNeedSent(need);
@@ -5078,6 +5095,40 @@ function runAdvice(run, group) {
     text: 'この実行は自動では再開されません。「↻ 失敗した工程だけやり直す」を押すと、失敗・未実行の工程だけが再実行されます（完了済みは温存）。' };
 }
 
+// run の再実行操作について、表示可否・文言・説明を一つのモデルにまとめる。
+// 工程詳細と概要の操作欄が別々に条件判定すると、存在しないボタンを案内してしまうため。
+function flowRetryUi(run, advice) {
+  const doneCount = (run.counts && run.counts.done) || 0;
+  const failedCount = (run.counts && run.counts.failed) || 0;
+  const isStalled = run.alive === false && run.status !== 'done';
+  const canRetry = run.status === 'failed' || run.status === 'canceled' || isStalled;
+  const remainCount = failedCount
+    + ((run.counts && run.counts.pending) || 0)
+    + ((run.counts && run.counts.waiting) || 0)
+    + ((run.counts && run.counts.parked) || 0);
+  const partial = canRetry && doneCount > 0 && run.status !== 'canceled';
+  const label = run.status === 'canceled'
+    ? '↻ 新しくやり直す'
+    : partial
+      ? `↻ 失敗した工程だけやり直す（残り ${remainCount} 件）`
+      : '↻ 同じ内容でやり直す';
+  const title = run.status === 'canceled'
+    ? '中止した実行の続きからは再開できません。タスクを積み直して新しい実行を始めます'
+    : partial
+      ? `失敗・未実行の工程だけを実行し直します。成功した ${doneCount} 件はそのまま使います（作り直しません）`
+        + (advice.kind === 'auto' ? '\n※ 放置しても本体が自動で同じことをします（このボタンは前倒し指示）' : '')
+      : '同じ内容でやり直します（タスクを積み直して本体に実行させます）';
+  return {
+    canRetry,
+    partial,
+    doneCount,
+    remainCount,
+    label,
+    title,
+    show: !run.archived && canRetry && !['human', 'old'].includes(advice.kind),
+  };
+}
+
 // 一覧の行・詳細バナー共通の advice チップ HTML（見守り系は一覧では出さない＝騒がない）
 function adviceChip(a) {
   return `<span class="advice-chip advice-${a.cls}" title="${esc(a.text)}">${esc(a.chip)}</span>`;
@@ -5322,8 +5373,13 @@ function renderFlowDetail() {
         `<span class="key"><span class="sw state-sw-${st}" style="background:${swColor(st)}"></span>${label}</span>`
     )
     .join('');
+  // 工程説明と概要の操作欄で、同じ再実行可否・文言を共有する。
+  const group = lineageGroups(state.flowRuns).find((g) =>
+    g.attempts.some((a) => a.runId === run.runId));
+  const advice = runAdvice(run, group);
+  const retryUi = flowRetryUi(run, advice);
   const node = state.flowNodeId ? run.nodes[state.flowNodeId] : null;
-  const nodeDetail = node ? renderFlowNode(run, node) : '';
+  const nodeDetail = node ? renderFlowNode(run, node, retryUi, advice) : '';
   const events = (fr.events || [])
     .map(
       (ev) =>
@@ -5334,9 +5390,6 @@ function renderFlowDetail() {
     .join('');
   // 「次に何が起きるか・あなたの出番はあるか」を最上部で言い切る（runAdvice）。
   // 状態チップ・応答なしバッジの読み解きを人に要求しない。
-  const group = lineageGroups(state.flowRuns).find((g) =>
-    g.attempts.some((a) => a.runId === run.runId));
-  const advice = runAdvice(run, group);
   const adviceActions = [
     advice.kind === 'human'
       ? `<button class="chip primary-inline" data-goto-needs="${esc(advice.taskId || '')}">${
@@ -5372,42 +5425,14 @@ function renderFlowDetail() {
   // タスクを積み直すと本体が同じ run を再開し、agent-flow が失敗ノードだけ pending へ戻すため。
   // ボタンの文言は実際に起きることに合わせる（「最初からやり直す」と読めると、成功した工程まで
   // 捨てられると誤解する — 実際 25 ノード中 1 つの失敗で 14 ノード分の成果を捨てていた）。
-  const doneCount = (run.counts && run.counts.done) || 0;
-  const failedCount = (run.counts && run.counts.failed) || 0;
-  // 停滞（orchestrator が消えて非終端のまま止まった run）も、失敗と同じくやり直せる。
-  // status だけを見ると救えない: orchestrator が落ちると run は status=running のまま残り、
-  // 失敗ノードも pending ノードも誰も進めない（実際 25 ノード中 14 done / 1 failed のまま
-  // 「実行中」に見え続け、やり直しボタンが出なかった）。生存リース（alive）で実態を見る。
-  // 上の `stalled` は「応答なし」バッジ用の HTML 断片。ここでは判定そのものを使う。
-  const isStalled = run.alive === false && run.status !== 'done';
-  const canRetry = run.status === 'failed' || run.status === 'canceled' || isStalled;
-  const remainCount =
-    failedCount +
-    ((run.counts && run.counts.pending) || 0) +
-    ((run.counts && run.counts.waiting) || 0) +
-    ((run.counts && run.counts.parked) || 0);
-  // canceled は続きから再開できない（agent-project は新 run を作る）。部分やり直し表記を出さない。
-  const partial = canRetry && doneCount > 0 && run.status !== 'canceled';
-  const resubmitLabel = run.status === 'canceled'
-    ? '↻ 新しくやり直す'
-    : partial
-    ? `↻ 失敗した工程だけやり直す（残り ${remainCount} 件）`
-    : '↻ 同じ内容でやり直す';
-  const resubmitTitle = run.status === 'canceled'
-    ? '中止した実行の続きからは再開できません。タスクを積み直して新しい実行を始めます'
-    : partial
-    ? `失敗・未実行の工程だけを実行し直します。成功した ${doneCount} 件はそのまま使います（作り直しません）`
-      + (advice.kind === 'auto' ? '\n※ 放置しても本体が自動で同じことをします（このボタンは前倒し指示）' : '')
-    : '同じ内容でやり直します（タスクを積み直して本体に実行させます）';
   // ボタンの出し分けも advice に従う:
   //  - human（判断待ち）: 出さない。ここで積み直すと人の判断ゲートを素通りしてしまう
   //    （正しい導線は要対応タブ — バナーのボタンが誘導する）
   //  - old（古い試行）: 出さない。最新の試行側で操作する
   //  - manual/restart: 主要操作として強調 ／ auto: 通常表示（押さなくてもよい）
-  const showResubmit = !archived && canRetry && !['human', 'old'].includes(advice.kind);
-  const resubmit = showResubmit
+  const resubmit = retryUi.show
     ? `<button class="chip ${['manual', 'restart'].includes(advice.kind) ? 'primary-inline' : ''}"
-        id="flow-resubmit" title="${esc(resubmitTitle)}">${esc(resubmitLabel)}</button>`
+        id="flow-resubmit" title="${esc(retryUi.title)}">${esc(retryUi.label)}</button>`
     : '';
   // 不要な run の削除。実行中（orchestrator 生存）は不可 — 終端と応答なし（孤児）のみ。
   // アーカイブ（bus に実体が無く記録だけ残ったもの）も消せる: 消せないと一覧に永久に居座る。
@@ -5543,14 +5568,18 @@ function nodeTimeline(nodeId) {
 // 存在しない — やり直しの単位は run で、agent-flow が失敗・未実行の工程だけを pending へ
 // 戻して done を温存する。その規則をノード詳細でその場で伝える（run が止まっているときだけ。
 // 実行中の run では紛らわしいので出さない）。
-function nodeFateLine(run, effState) {
+function nodeFateLine(run, effState, retryUi, advice) {
   const runStopped =
     TERMINAL_RUN_STATES.has(String(run.status)) || (run.alive === false && run.status !== 'done');
   if (!runStopped || run.archived) return '';
   const msg =
     effState === 'failed'
-      ? '⟳ この工程は「↻ 失敗した工程だけやり直す」で<b>必ず再実行されます</b>' +
-        '（この工程だけの単体再実行はありません。完了済みの工程は作り直されません）'
+      ? retryUi && retryUi.show
+        ? `⟳ この工程は「概要」タブの「${esc(retryUi.label)}」で<b>必ず再実行されます</b>` +
+          '（この工程だけの単体再実行はありません。完了済みの工程は作り直されません）'
+        : advice && advice.kind === 'human'
+          ? '⏸ この工程は失敗しています。現在は再実行ではなく、先に「要対応」タブで確認・回答してください。'
+          : '⏸ この工程は失敗しています。実行全体の案内に従って対応してください。'
       : effState === 'done'
         ? '✓ この工程は完了済みです。やり直しても<b>作り直されません</b>（成果はそのまま使われます）'
         : ['pending', 'waiting', 'claimed'].includes(effState)
@@ -5682,7 +5711,7 @@ function nodeIssueBlock(run, node) {
   return `<div class="section-title">関連する GitLab イシュー</div>${rows.join('\n')}`;
 }
 
-function renderFlowNode(run, node) {
+function renderFlowNode(run, node, retryUi, advice) {
   const evs = nodeTimeline(node.id);
   const timeline = evs.length
     ? `<div class="section-title">タイムライン</div><div class="events">${evs
@@ -5701,7 +5730,7 @@ function renderFlowNode(run, node) {
       <h3><span class="mono">${esc(node.id)}</span> [${esc(node.kind)}] — ${stateLabel}${node.who ? ` @${esc(node.who)}` : ''}</h3>
       <div class="node-goal">${proseHtml(node.goal) || '<span class="muted">（目標なし）</span>'}</div>
       ${node.deps.length ? `<div class="muted" style="margin-top:4px">依存: ${node.deps.map(esc).join(', ')}</div>` : ''}
-      ${nodeFateLine(run, effState)}
+      ${nodeFateLine(run, effState, retryUi, advice)}
       ${nodeParkLine(node)}
       ${nodeProgressLine(node)}
       ${nodeIssueBlock(run, node)}
@@ -6308,7 +6337,7 @@ function renderHistory() {
 // 位置と data-ui-key 付き <details> の開閉を控え、描画後に復元する（存在しなくなった要素は無視）。
 function captureUiState() {
   const scroll = {};
-  for (const el of document.querySelectorAll('.tabpane, #tree, #flow-runs, #flow-view-body, #graph-box')) {
+  for (const el of document.querySelectorAll('.tabpane, [data-ui-scroll-key], #tree, #flow-runs, #flow-view-body, #graph-box')) {
     if (el.id) scroll[el.id] = { top: el.scrollTop, left: el.scrollLeft };
   }
   const open = [];
@@ -6320,15 +6349,17 @@ function captureUiState() {
 
 function restoreUiState(ui) {
   if (!ui) return;
+  // details を先に開いてスクロール範囲を確定する。閉じたまま scrollTop を代入すると、
+  // ブラウザが短いレイアウトの最大値へ丸め、その後 details を開いても元の位置へ戻らない。
+  for (const d of document.querySelectorAll('details[data-ui-key]')) {
+    if (ui.open.has(d.dataset.uiKey)) d.open = true;
+  }
   for (const [id, pos] of Object.entries(ui.scroll)) {
     const el = document.getElementById(id);
     if (el) {
       el.scrollTop = pos.top;
       el.scrollLeft = pos.left;
     }
-  }
-  for (const d of document.querySelectorAll('details[data-ui-key]')) {
-    if (ui.open.has(d.dataset.uiKey)) d.open = true;
   }
 }
 
@@ -6359,8 +6390,6 @@ function initTabs() {
       tab.classList.add('active');
       $(`tab-${tab.dataset.tab}`).classList.add('active');
       if (tab.dataset.tab === 'needs') refreshGitLab(false);
-      if (tab.dataset.tab === 'kiro-loop') startKiroLoopCapturePoll();
-      else stopKiroLoopCapturePoll();
     });
   }
 }
@@ -6467,14 +6496,53 @@ function technicalProjectInfoHtml() {
     </section>`;
 }
 
+function coworkTechnicalInfoHtml() {
+  const folder = selectedProjectFolder();
+  const entries = coworkHasProjectConfig(state.cowork, folder)
+    ? coworkVisibleEntries(coworkDraft(), folder)
+    : [];
+  const selected = coworkSelectedEntry(entries, folder);
+  if (!selected) {
+    return '<div class="empty compact">定常業務を選ぶと、その設定と実行状態を確認できます。</div>';
+  }
+  const { item, index } = selected;
+  const id = coworkEntryId(item, index);
+  const live = ((state.cowork && state.cowork.items) || [])
+    .find((candidate, candidateIndex) => coworkEntryId(candidate, candidateIndex) === id) || item;
+  const execution = live.state || item.state || {};
+  const status = execution.running ? 'running' : (execution.status || 'unknown');
+  const sourceFile = (item._src && (item._src.file || (item._src.loop && item._src.loop.file))) || '';
+  const coworkConfig = (state.config && state.config.cowork) || {};
+  const provider = item.type === 'state-machine'
+    ? (coworkConfig.stateMachineCommand || 'statemachine-use')
+    : (coworkConfig.loopCommand || coworkConfig.loopProvider || 'kiro-loop');
+  return `<section class="developer-summary">
+    <div class="settings-section-heading"><div><span class="summary-kicker">選択中</span><h3>${esc(item.name || id)}</h3></div></div>
+    <dl class="developer-facts">
+      <div><dt>実行状態</dt><dd><span class="status-chip ${coworkStatusClass(status)}">${esc(statusLabel(status))}</span></dd></div>
+      <div><dt>最終確認</dt><dd>${execution.lastLogAt ? esc(fmtTime(execution.lastLogAt)) : '記録なし'}</dd></div>
+      <div><dt>種類</dt><dd>${esc(workTypeLabel(item.type))}</dd></div>
+      <div><dt>実行コマンド</dt><dd class="mono">${esc(provider)}</dd></div>
+      <div><dt>実行予定</dt><dd class="mono">${esc(item.schedule || '手動実行')}</dd></div>
+      <div><dt>有効状態</dt><dd>${item.enabled === false ? '無効' : '有効'}</dd></div>
+      <div><dt>対象リポジトリ</dt><dd class="mono">${esc(item.repo || item.cwd || '未設定')}</dd></div>
+      <div><dt>設定ファイル</dt><dd class="mono">${esc(sourceFile || '画面から登録')}</dd></div>
+    </dl>
+    ${state.cowork && state.cowork.error ? `<p class="cowork-item-error" role="alert">${esc(state.cowork.error)}</p>` : ''}
+  </section>`;
+}
+
 function openAdvancedSettings() {
   populateSettingsFields();
   renderAdvancedBudgetSettings();
   $('dlg-advanced-settings').showModal();
 }
 
-function openTechnicalInfo() {
-  $('technical-project-info').innerHTML = technicalProjectInfoHtml();
+function openTechnicalInfo(scope) {
+  const coworkScope = scope === 'cowork';
+  $('technical-info-kicker').textContent = coworkScope ? '定常業務' : '選択中';
+  $('technical-info-title').textContent = coworkScope ? '定常業務の診断情報' : '詳細情報';
+  $('technical-project-info').innerHTML = coworkScope ? coworkTechnicalInfoHtml() : technicalProjectInfoHtml();
   for (const btn of $('technical-project-info').querySelectorAll('[data-technical-tab]')) {
     btn.addEventListener('click', () => {
       $('dlg-technical-info').close();
@@ -7129,13 +7197,29 @@ async function refreshAmigos() {
 function amigosForProject(amigos, projectFolder) {
   const source = amigos || {};
   const key = coworkPathKey(projectFolder);
-  if (!key) return { ...source, homes: [], missions: [], errors: [] };
+  if (!key) return { ...source, homes: [], missions: [], deliveries: [], errors: [] };
   const homes = (source.homes || []).filter(
     (home) => !!home.configFile && coworkPathKey(home.dir) === key
   );
   const allowed = new Set(homes.map((home) => coworkPathKey(home.dir)));
   const missions = (source.missions || []).filter((mission) => allowed.has(coworkPathKey(mission.home)));
-  return { ...source, homes, missions, errors: [] };
+  const deliveries = (source.deliveries || []).filter((d) => allowed.has(coworkPathKey(d.home)));
+  // バスから消えた（gc 済み）ミッションの納品も、ミッションと同じ器で開けるようにする。
+  const orphanMissions = (source.orphanDeliveries || [])
+    .filter((d) => allowed.has(coworkPathKey(d.home)))
+    .map((d) => ({
+      id: d.mission,
+      title: d.title || d.mission,
+      goal: d.goal || '',
+      phase: 'done',
+      roles: [],
+      messages: [],
+      attentionCount: 0,
+      home: d.home,
+      delivery: d,
+      archived: true,     // ミッションの経過は残っていない（成果物だけ）
+    }));
+  return { ...source, homes, missions, deliveries, orphanMissions, errors: [] };
 }
 
 // ミッションも依頼先ホームも無いときはタブを隠す（cowork と同じ流儀）。
@@ -7338,9 +7422,14 @@ function amigosMissionAttention(m) {
 
 function amigosMissionCardHtml(m) {
   const progress = amigosMissionProgress(m);
-  const progressText = progress.total
-    ? `${progress.total}人中${progress.done}人が完了`
-    : '担当者を確認中';
+  const progressText = m.archived
+    ? '経過は整理済み'
+    : (progress.total ? `${progress.total}人中${progress.done}人が完了` : '担当者を確認中');
+  const received = m.delivery
+    ? `<div class="amigos-received-line">受け取り済み ・
+        ${esc((m.delivery.files || []).filter((f) => f.exported).length)} ファイル
+        ${m.delivery.partial ? '（一部のみ）' : ''}</div>`
+    : '';
   const goal = m.goal ? `<p class="amigos-card-goal">${esc(m.goal)}</p>` : '';
   return `<article class="amigos-mission-card">
     <div class="amigos-card-heading">
@@ -7353,11 +7442,17 @@ function amigosMissionCardHtml(m) {
     <p class="amigos-next-step">${esc(amigosNextStep(m))}</p>
     <div class="amigos-card-meta">
       <span>${esc(progressText)}</span>
-      ${(m.messages || []).length ? `<span>やりとり ${(m.messages || []).length} 件</span>` : '<span>やりとりはまだありません</span>'}
+      ${m.archived
+        ? ''
+        : ((m.messages || []).length
+          ? `<span>やりとり ${(m.messages || []).length} 件</span>`
+          : '<span>やりとりはまだありません</span>')}
     </div>
+    ${received}
     ${amigosMissionAttention(m)}
     <div class="amigos-card-actions">
-      <button type="button" class="primary-inline" data-amigos-detail="${esc(m.id)}">詳しく見る</button>
+      <button type="button" class="primary-inline" data-amigos-detail="${esc(m.id)}">
+        ${m.delivery ? '成果物を見る' : '詳しく見る'}</button>
     </div>
   </article>`;
 }
@@ -7400,13 +7495,109 @@ function amigosMessageHtml(message) {
   </details>`;
 }
 
+// 受入プレビュー: 成果物はプログラムに限らないので、文書は本文、画像は縮小表示、
+// それ以外はメタ情報だけを見せる。受け取り先の実体は納品棚（accept 後に生える）。
+function amigosDeliverableFileHtml(file) {
+  const meta = `<small>${esc(file.role || '')}${file.role ? ' ・ ' : ''}${esc(fmtLogSize(file.bytes))}</small>`;
+  let body;
+  if (file.kind === 'image') {
+    body = `<img class="amigos-preview-image" src="${esc(file.dataUri)}" alt="${esc(file.path)}">`;
+  } else if (file.kind === 'markdown') {
+    body = `<div class="amigos-preview-doc">${mdToHtml(file.text || '')}</div>`;
+  } else if (file.kind === 'text') {
+    body = `<pre class="amigos-preview-text">${esc(file.text || '')}</pre>`;
+  } else {
+    body = '<p class="muted">この形式は画面で表示できません。受け入れるとファイルとして受け取れます。</p>';
+  }
+  const cut = file.truncated ? '<p class="muted">長いため一部だけ表示しています。</p>' : '';
+  return `<details class="amigos-preview-file">
+    <summary><span class="amigos-preview-path">${esc(file.path)}</span>${meta}</summary>
+    <div class="amigos-preview-body">${body}${cut}</div>
+  </details>`;
+}
+
+// 受け取り済みの成果物（納品棚）。中身は開いたときに読むので、ここは器だけ描く。
+function amigosReceivedSectionHtml(m) {
+  const d = m.delivery;
+  if (!d) return '';
+  const partial = d.partial
+    ? '<p class="muted">予算や作業の打ち切りにより、一部だけの成果物です。</p>'
+    : '';
+  const refs = (d.files || []).filter((f) => !f.exported);
+  const refNote = refs.length
+    ? `<p class="muted">${refs.length} 件は大きいため保存せず、参照だけ記録しています:
+        ${esc(refs.map((f) => f.path).join(', '))}</p>`
+    : '';
+  const code = d.code
+    ? `<p class="muted">コードは ${esc(d.code.repo || '')} の
+        ${esc(d.code.branch || '')} にあります。</p>`
+    : '';
+  return `<section class="amigos-detail-section">
+    <h3>受け取った成果物</h3>
+    <p class="muted">${esc(fmtTime(d.acceptedAt))} に受け取り ・
+      実行時間 ${esc(amigosMin(d.executionSeconds))} 分</p>
+    ${partial}
+    <div class="amigos-preview-list" id="amigos-received-body">
+      <div class="empty compact">読み込んでいます…</div>
+    </div>
+    ${refNote}
+    ${code}
+    <div class="amigos-accept-actions">
+      <button type="button" class="primary-inline" data-amigos-open="${esc(d.dir)}">保存先を開く</button>
+    </div>
+  </section>`;
+}
+
+function amigosDeliverableSectionHtml(m) {
+  if (m.phase !== 'reviewing' || !m.deliverable) return '';
+  const files = m.deliverable.files || [];
+  const partial = m.manifest && m.manifest.partial
+    ? '<p class="amigos-attention" role="status">予算や作業の打ち切りにより、一部だけの成果物です。</p>'
+    : '';
+  const more = m.deliverable.truncated
+    ? `<p class="muted">全 ${Number(m.deliverable.total || 0)} 件のうち先頭だけ表示しています。</p>`
+    : '';
+  const list = files.length
+    ? files.map(amigosDeliverableFileHtml).join('')
+    : '<div class="empty compact">成果物のファイルがありません。</div>';
+  const actions = m.home
+    ? `<div class="amigos-accept-actions">
+        <button type="button" class="primary-inline" data-amigos-accept="${esc(m.id)}"
+          data-home="${esc(m.home)}">この成果を受け取る</button>
+        <button type="button" data-amigos-reject="${esc(m.id)}"
+          data-home="${esc(m.home)}">修正を依頼する</button>
+      </div>
+      <p class="muted">受け取ると成果物が納品棚（deliveries フォルダ）へ保存されます。</p>`
+    : '<p class="muted">このミッションの受け取り操作はオーナーの端末から行います。</p>';
+  return `<section class="amigos-detail-section">
+    <h3>成果物の確認</h3>
+    ${partial}
+    <div class="amigos-preview-list">${list}</div>
+    ${more}
+    ${actions}
+  </section>`;
+}
+
 function amigosMissionDetailHtml(m) {
   const progress = amigosMissionProgress(m);
-  const progressText = progress.total ? `${progress.total}人中${progress.done}人が完了` : '担当者を確認中';
+  const progressText = m.archived
+    ? '経過は整理済み'
+    : (progress.total ? `${progress.total}人中${progress.done}人が完了` : '担当者を確認中');
   const members = (m.roles || []).map((role) => amigosMemberHtml(role, m)).join('');
   const conversation = (m.messages || []).length
     ? (m.messages || []).map(amigosMessageHtml).join('')
     : '<div class="empty compact">まだやりとりはありません。</div>';
+  // 経過が整理済みのものは、担当・やりとりの節を出さない（空欄を並べない）
+  const progressSections = m.archived ? '' : `
+    <section class="amigos-detail-section">
+      <h3>メンバーの作業状況</h3>
+      <div class="amigos-member-grid">${members || '<div class="empty compact">担当者を確認中です。</div>'}</div>
+    </section>
+    <section class="amigos-detail-section">
+      <h3>やりとり</h3>
+      <p class="muted">要点を時系列で表示しています。発言を選ぶと全文を確認できます。</p>
+      <div class="amigos-conversation">${conversation}</div>
+    </section>`;
   return `<div class="amigos-detail-content">
     ${amigosMissionAttention(m)}
     <section class="amigos-detail-section">
@@ -7416,18 +7607,22 @@ function amigosMissionDetailHtml(m) {
         <strong>${esc(progressText)}</strong>
       </div>
       ${m.goal ? `<p class="amigos-detail-goal">${esc(m.goal)}</p>` : ''}
-      <p>${esc(amigosNextStep(m))}</p>
+      <p>${esc(m.archived
+        ? 'このミッションの経過は整理済みで、受け取った成果物だけが残っています。'
+        : amigosNextStep(m))}</p>
     </section>
-    <section class="amigos-detail-section">
-      <h3>メンバーの作業状況</h3>
-      <div class="amigos-member-grid">${members || '<div class="empty compact">担当者を確認中です。</div>'}</div>
-    </section>
-    <section class="amigos-detail-section">
-      <h3>やりとり</h3>
-      <p class="muted">要点を時系列で表示しています。発言を選ぶと全文を確認できます。</p>
-      <div class="amigos-conversation">${conversation}</div>
-    </section>
+    ${amigosReceivedSectionHtml(m)}
+    ${amigosDeliverableSectionHtml(m)}
+    ${progressSections}
   </div>`;
+}
+
+function setupAmigosOpenButtons(root) {
+  for (const btn of root.querySelectorAll('[data-amigos-open]')) {
+    btn.addEventListener('click', () =>
+      guard('保存先を開く', () => api.openPath(btn.dataset.amigosOpen))
+    );
+  }
 }
 
 function setupAmigosClaimButtons(root) {
@@ -7442,14 +7637,71 @@ function setupAmigosClaimButtons(root) {
   }
 }
 
+// 受入判定は commands 投函（accept / reject）で owner デーモンへ委ねる。
+// dashboard がバスへ直接書くことはない。
+function setupAmigosAcceptButtons(root) {
+  for (const btn of root.querySelectorAll('[data-amigos-accept]')) {
+    btn.addEventListener('click', () =>
+      guard('成果の受け取り', async () => {
+        btn.disabled = true;
+        await api.amigosAccept(btn.dataset.home, btn.dataset.amigosAccept);
+        $('dlg-amigos-detail').close();
+        toast('受け取りを依頼しました（納品棚へ保存されます）', true);
+        await refreshAmigos();
+        renderAmigos();
+      })
+    );
+  }
+  for (const btn of root.querySelectorAll('[data-amigos-reject]')) {
+    btn.addEventListener('click', () =>
+      openAmigosRejectDialog(btn.dataset.home, btn.dataset.amigosReject)
+    );
+  }
+}
+
+// 修正依頼の入力。Electron の renderer には window.prompt が無いので、
+// 他のダイアログと同じ <dialog> + form で受ける。
+function openAmigosRejectDialog(home, missionId) {
+  const dlg = $('dlg-amigos-reject');
+  if (!dlg) return;
+  state.amigosReject = { home, missionId };
+  $('amigos-reject-feedback').value = '';
+  dlg.showModal();
+  $('amigos-reject-feedback').focus();
+}
+
+// 受け取り済み成果物の中身は詳細を開いたときに読む（一覧のポーリングで
+// 全ミッションの全文・画像を運ばない）。
+async function loadAmigosReceived(mission) {
+  const box = $('amigos-received-body');
+  if (!box || !mission.delivery || !api.amigosDeliveryContents) return;
+  try {
+    const got = await api.amigosDeliveryContents(mission.delivery.home, mission.id);
+    const files = got.files || [];
+    box.innerHTML = files.length
+      ? files.map(amigosDeliverableFileHtml).join('')
+      : '<div class="empty compact">保存されたファイルがありません（参照のみの納品です）。</div>';
+    if (got.truncated) {
+      box.insertAdjacentHTML('beforeend',
+        `<p class="muted">全 ${Number(got.total || 0)} 件のうち先頭だけ表示しています。</p>`);
+    }
+  } catch (err) {
+    box.innerHTML = `<div class="empty compact">成果物を読み込めませんでした: ${esc(err.message)}</div>`;
+  }
+}
+
 function openAmigosDetail(missionId) {
   const scoped = amigosForProject(state.amigos, selectedProjectFolder());
-  const mission = (scoped.missions || []).find((m) => m.id === missionId);
+  const mission = (scoped.missions || []).find((m) => m.id === missionId)
+    || (scoped.orphanMissions || []).find((m) => m.id === missionId);
   if (!mission) return;
   $('amigos-detail-title').textContent = mission.title || 'ミッション詳細';
   $('amigos-detail-body').innerHTML = amigosMissionDetailHtml(mission);
   setupAmigosClaimButtons($('amigos-detail-body'));
+  setupAmigosAcceptButtons($('amigos-detail-body'));
+  setupAmigosOpenButtons($('amigos-detail-body'));
   $('dlg-amigos-detail').showModal();
+  loadAmigosReceived(mission);
 }
 
 const AMIGOS_ROLES_SAMPLE = JSON.stringify(
@@ -7474,7 +7726,31 @@ function openAmigosRequestDialog() {
   dlg.showModal();
 }
 
+function setupAmigosRejectDialog() {
+  const dlg = $('dlg-amigos-reject');
+  if (!dlg) return;
+  $('btn-amigos-reject-cancel').addEventListener('click', () => dlg.close());
+  dlg.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const target = state.amigosReject || {};
+    const feedback = $('amigos-reject-feedback').value.trim();
+    if (!feedback) {
+      toast('修正してほしい内容を入力してください');
+      return;
+    }
+    guard('修正の依頼', async () => {
+      await api.amigosReject(target.home, target.missionId, feedback);
+      dlg.close();
+      $('dlg-amigos-detail').close();
+      toast('修正依頼を送りました（担当が作業をやり直します）', true);
+      await refreshAmigos();
+      renderAmigos();
+    });
+  });
+}
+
 function setupAmigosDialogs() {
+  setupAmigosRejectDialog();
   const dlg = $('dlg-amigos-post');
   if (!dlg) return;
   $('btn-amigos-post-cancel').addEventListener('click', () => dlg.close());
@@ -7522,6 +7798,31 @@ function renderAmigos() {
   const errorsHtml = (a.errors || []).length
     ? '<p class="muted">一部のミッションを読み込めませんでした。更新しても直らない場合は詳細情報を確認してください。</p>'
     : '';
+  // 成果物はミッションの中で見せる（利用者が考える単位はミッション）。ここに残すのは
+  // ミッションの経過が整理済みで、成果物だけが残っているものだけ。
+  const archived = a.orphanMissions || [];
+  const archivedHtml = archived.length
+    ? `<section>
+        <h3>過去の成果物（${archived.length} 件）</h3>
+        <p class="muted">ミッションの経過は整理済みで、受け取った成果物だけが残っています。</p>
+        <div class="amigos-mission-grid">${archived.map(amigosMissionCardHtml).join('')}</div>
+      </section>`
+    : '';
+  const shelfPaths = (a.homes || []).map((h) => `${h.dir}/deliveries`);
+  const shelfHint = (a.homes || []).length
+    ? `<p class="muted">受け取った成果物はミッションを開くと中身を確認できます。
+        保存先: ${esc(shelfPaths.join(' / '))}</p>`
+    : '';
+
+  // 投函した指示は常駐デーモンが取り込んで初めて効く。溜まったままなら黙って
+  // 失敗しているのと同じなので、画面で知らせる。
+  const pending = (a.homes || []).reduce((n, h) => n + (Number(h.pendingCommands) || 0), 0);
+  const pendingHtml = pending
+    ? `<div class="amigos-attention" role="status">
+        依頼した操作が ${pending} 件、まだ実行されていません。
+        担当エージェントの常駐（agent-amigos）が停止している可能性があります。
+      </div>`
+    : '';
   el.innerHTML = `
     <div class="amigos-shell">
       <header class="cowork-header">
@@ -7535,11 +7836,14 @@ function renderAmigos() {
           <button id="btn-amigos-refresh">更新</button>
         </div>
       </header>
+      ${pendingHtml}
       <section>
         <h3>ミッション（${missions.length} 件）</h3>
         ${missionsHtml}
+        ${shelfHint}
         ${errorsHtml}
       </section>
+      ${archivedHtml}
     </div>`;
 
   const refreshBtn = $('btn-amigos-refresh');
@@ -7555,6 +7859,7 @@ function renderAmigos() {
   for (const btn of el.querySelectorAll('[data-amigos-detail]')) {
     btn.addEventListener('click', () => openAmigosDetail(btn.dataset.amigosDetail));
   }
+  setupAmigosOpenButtons(el);
 }
 
 function workTypeLabel(type) {
@@ -7598,6 +7903,117 @@ function coworkVisibleEntries(draft, selectedDir) {
   return entries.filter(({ item }) => coworkPathKey(item.repo || item.cwd) === key);
 }
 
+function coworkEntryId(item, index) {
+  return String((item && (item.id || item.name)) || `${(item && item.type) || 'loop'}-${index + 1}`);
+}
+
+function coworkSelectedEntry(entries, projectFolder) {
+  if (!entries.length) return null;
+  const projectKey = coworkPathKey(projectFolder);
+  const selectedId = state.coworkSelections[projectKey];
+  const selected = entries.find(({ item, index }) => coworkEntryId(item, index) === selectedId);
+  if (selected) return selected;
+  const observed = new Map(((state.cowork && state.cowork.items) || []).map((item, index) => [coworkEntryId(item, index), item]));
+  const preferred = entries.find(({ item, index }) => {
+    const live = observed.get(coworkEntryId(item, index)) || item;
+    const st = live.state || {};
+    return st.running || ['failed', 'error', 'blocked'].includes(String(st.status || ''));
+  }) || entries[0];
+  state.coworkSelections[projectKey] = coworkEntryId(preferred.item, preferred.index);
+  return preferred;
+}
+
+function selectCoworkRoutine(id, { openStatus = false } = {}) {
+  const folder = selectedProjectFolder();
+  const entries = coworkVisibleEntries(coworkDraft(), folder);
+  const entry = entries.find(({ item, index }) => coworkEntryId(item, index) === String(id));
+  if (!entry) return;
+  state.coworkSelections[coworkPathKey(folder)] = coworkEntryId(entry.item, entry.index);
+  if (activeTab() === 'cowork') updateCoworkSelectedDetail(entry, folder);
+  if (openStatus) {
+    openKiroLoopTerminal({
+      id: coworkEntryId(entry.item, entry.index),
+      repo: entry.item.repo || entry.item.cwd || '',
+      name: entry.item.name || coworkEntryId(entry.item, entry.index),
+    });
+  }
+}
+
+function coworkRoutineSelectorHtml(
+  entries,
+  selectedId,
+  label = '定常業務を選択',
+  labelId = 'cowork-routine-picker-label',
+  searchKey = 'cowork'
+) {
+  if (!entries.length) return '';
+  return `<section class="cowork-routine-picker" aria-labelledby="${esc(labelId)}">
+    <div class="cowork-routine-picker-heading">
+      <div><span class="summary-kicker">選択</span><h3 id="${esc(labelId)}">${esc(label)}</h3></div>
+      <div class="cowork-routine-tools">
+        <input type="search" class="cowork-routine-search" data-cowork-search="${esc(searchKey)}"
+          aria-label="定常業務を名前で検索" placeholder="名前で検索" value="${esc(state.coworkSearches[searchKey] || '')}">
+        <span class="muted" data-cowork-visible-count>${entries.length} 件</span>
+      </div>
+    </div>
+    <div id="cowork-routine-selector-${esc(searchKey)}" class="cowork-routine-selector" data-ui-scroll-key role="tablist" aria-label="${esc(label)}">${entries.map(({ item, index }) => {
+      const id = coworkEntryId(item, index);
+      const st = item.state || {};
+      const running = !!st.running;
+      const status = running ? 'running' : (st.status || 'unknown');
+      const selected = id === selectedId;
+      return `<button type="button" class="cowork-routine-option ${selected ? 'selected' : ''}"
+        role="tab" aria-selected="${selected}" tabindex="${selected ? '0' : '-1'}" data-cowork-select="${esc(id)}"
+        data-cowork-search-text="${esc(String(item.name || id).toLocaleLowerCase('ja-JP'))}" aria-label="${esc(item.name || id)}">
+        <span class="cowork-routine-option-head"><strong title="${esc(item.name || id)}">${esc(item.name || id)}</strong>
+          <span class="status-chip ${coworkStatusClass(status)}">${esc(statusLabel(status))}</span></span>
+        <span class="cowork-routine-option-meta"><span>${esc(item.schedule || '予定なし')}</span><span>${st.lastLogAt ? `最終 ${esc(fmtAgo(st.lastLogAt))}` : '未実行'}</span></span>
+      </button>`;
+    }).join('')}</div>
+  </section>`;
+}
+
+function applyCoworkRoutineFilter(root) {
+  const input = root.querySelector('[data-cowork-search]');
+  if (!input) return;
+  const query = input.value.trim().toLocaleLowerCase('ja-JP');
+  state.coworkSearches[input.dataset.coworkSearch] = input.value;
+  let visible = 0;
+  for (const button of root.querySelectorAll('[data-cowork-select]')) {
+    const matches = !query || String(button.dataset.coworkSearchText || '').includes(query);
+    button.hidden = !matches;
+    if (matches) visible += 1;
+  }
+  const count = root.querySelector('[data-cowork-visible-count]');
+  if (count) count.textContent = query ? `${visible} / ${root.querySelectorAll('[data-cowork-select]').length} 件` : `${visible} 件`;
+}
+
+function bindCoworkRoutineSelector(root) {
+  const buttons = [...root.querySelectorAll('[data-cowork-select]')];
+  const search = root.querySelector('[data-cowork-search]');
+  if (search) search.addEventListener('input', () => applyCoworkRoutineFilter(root));
+  applyCoworkRoutineFilter(root);
+  buttons.forEach((button) => {
+    button.addEventListener('click', () => selectCoworkRoutine(button.dataset.coworkSelect));
+    button.addEventListener('keydown', (ev) => {
+      if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(ev.key)) return;
+      ev.preventDefault();
+      const navigable = buttons.filter((candidate) => !candidate.hidden);
+      const currentIndex = navigable.indexOf(button);
+      if (currentIndex < 0 || !navigable.length) return;
+      const backward = ev.key === 'ArrowLeft' || ev.key === 'ArrowUp';
+      const nextIndex = ev.key === 'Home'
+        ? 0
+        : ev.key === 'End'
+          ? navigable.length - 1
+          : (currentIndex + (backward ? -1 : 1) + navigable.length) % navigable.length;
+      const next = navigable[nextIndex];
+      selectCoworkRoutine(next.dataset.coworkSelect);
+      next.focus();
+    });
+  });
+}
+
 function coworkHasProjectConfig(cowork, projectFolder) {
   const key = coworkPathKey(projectFolder);
   return !!key && ((cowork && cowork.discoveredRepos) || []).some((repo) => coworkPathKey(repo) === key);
@@ -7618,113 +8034,108 @@ function coworkRunBannerHtml() {
   return `<div class="cowork-run-banner error" role="alert">「${esc(r.name || r.id)}」の実行に失敗しました${r.message ? `: ${esc(r.message)}` : ''}</div>`;
 }
 
-function renderCowork() {
-  const el = $('tab-cowork');
-  if (!el) return;
-  updateCoworkTabVisibility();
-  const cw = state.cowork;
-  const draft = coworkDraft();
-  const observed = new Map(((cw && cw.items) || []).map((x) => [String(x.id), x]));
-  const busyId = state.coworkRun && state.coworkRun.phase === 'running' ? String(state.coworkRun.id) : '';
-  if (cw && cw.error) {
-    el.innerHTML = `<div class="empty"><strong>定常業務を読み込めませんでした</strong><span>${esc(cw.error)}</span></div>`;
-    return;
-  }
-  // 選択中プロジェクトの作業だけを表示する（従来は全プロジェクトの作業が常に並んでいた）。
-  const folder = selectedProjectFolder();
-  const entries = coworkHasProjectConfig(cw, folder) ? coworkVisibleEntries(draft, folder) : [];
-  const scopeLabel = `このプロジェクトの作業 ${entries.length} 件`;
-  el.innerHTML = `
-    <div class="cowork-shell">
-      <header class="cowork-header">
-        <div>
-          <span class="summary-kicker">自動化</span>
-          <h2>定常業務</h2>
-          <p class="muted">繰り返し実行する作業を確認・実行できます。</p>
-        </div>
-        <div class="row">
-          <button id="btn-cowork-add">追加</button>
-          <button id="btn-cowork-save">保存…</button>
-          <button id="btn-cowork-refresh" title="最新の状態を確認">更新</button>
-          <button type="button" class="subtle-action" data-open-technical-info>詳細情報</button>
-        </div>
-      </header>
-      <div class="cowork-scope muted">
-        <span>${esc(scopeLabel)}</span>
+function coworkSelectedDetailHtml(entry, observed, busyId) {
+  if (!entry) return '';
+  const { item, index } = entry;
+  const id = coworkEntryId(item, index);
+  const live = observed.get(id) || {};
+  const st = live.state || item.state || {};
+  const discovered = item.source === 'discovered';
+  const pairedLoop = !!(item._src && item._src.loop);
+  const disabledWork = item.enabled === false;
+  const running = !!st.running || busyId === id;
+  const status = running ? 'running' : (st.status || 'unknown');
+  const run = state.coworkRun && String(state.coworkRun.id) === id ? state.coworkRun : null;
+  const typeDetail = item.type === 'state-machine'
+    ? (item.workflow ? item.workflow : 'workflow 未設定')
+    : 'kiro-loop';
+  const lastResult = running
+    ? '実行中です'
+    : run && run.phase === 'error'
+      ? run.message || '実行に失敗しました'
+      : st.lastLogAt
+        ? `${statusLabel(status)}・${fmtTime(st.lastLogAt)}`
+        : 'まだ実行記録がありません';
+  return `<article class="cowork-selected-detail ${running ? 'is-running' : ''} ${run && run.phase === 'error' ? 'is-error' : ''}" aria-labelledby="cowork-selected-title">
+    <div class="cowork-selected-hero">
+      <div class="cowork-selected-heading">
+        <span class="summary-kicker">選択中の定常業務</span>
+        <h2 id="cowork-selected-title" title="${esc(item.name || id)}">${esc(item.name || id)}</h2>
+        <div class="row"><span class="status-chip ${coworkStatusClass(status)}">${esc(statusLabel(status))}</span>
+          <span class="label-chip">${esc(workTypeLabel(item.type))}</span>${disabledWork ? '<span class="label-chip">無効</span>' : ''}</div>
       </div>
-      ${coworkRunBannerHtml()}
-      ${entries.length ? `<div class="cowork-list" role="list">${entries.map(({ item, index: i }) => {
-        const id = String(item.id || item.name || `${item.type || 'loop'}-${i + 1}`);
-        const live = observed.get(id) || {};
-        const st = live.state || item.state || {};
-        const discovered = item.source === 'discovered';
-        const pairedLoop = !!(item._src && item._src.loop);
-        const disabledWork = item.enabled === false;
-        const running = !!st.running || busyId === id;
-        const status = running ? 'running' : (st.status || 'unknown');
-        const run = state.coworkRun && String(state.coworkRun.id) === id ? state.coworkRun : null;
-        // 統合項目（kiro-loop の対エントリを持つステートマシン）は schedule も併記する
-        const detail = item.type === 'state-machine'
-          ? [item.workflow ? `workflow ${item.workflow}` : 'workflow 未設定',
-             item.schedule ? `schedule ${item.schedule}` : ''].filter(Boolean).join(' ／ ')
-          : (item.schedule ? `schedule ${item.schedule}` : 'schedule 未設定');
-        return `<article class="cowork-item ${running ? 'is-running' : ''} ${run && run.phase === 'error' ? 'is-error' : ''}" role="listitem">
-          <div class="cowork-item-main">
-            <div class="cowork-item-title">
-              <span class="dot ${running ? 'running' : ''}" title="${running ? '実行中' : '停止中'}"></span>
-              <strong>${esc(item.name || id)}</strong>
-              <span class="status-chip ${coworkStatusClass(status)}" title="${esc(status)}">${esc(statusLabel(status))}</span>
-              <span class="label-chip">${esc(workTypeLabel(item.type))}</span>
-              ${discovered ? '<span class="label-chip">設定ファイル</span>' : '<span class="label-chip">手動</span>'}
-              ${pairedLoop ? '<span class="label-chip">定期実行つき</span>' : ''}
-              ${disabledWork ? '<span class="label-chip">無効</span>' : ''}
-            </div>
-            <div class="cowork-item-sub muted">
-              <span title="${esc(item.repo || '')}">${esc(coworkRepoLabel(item.repo))}</span>
-              <span>${esc(detail)}</span>
-              ${st.lastLogAt ? `<span>最終ログ ${esc(fmtTime(st.lastLogAt))}</span>` : ''}
-            </div>
-            ${run && run.phase === 'error' ? '<p class="cowork-item-error">実行できませんでした。詳細情報で原因を確認してください。</p>' : ''}
-          </div>
-          <div class="cowork-item-actions">
-            <button data-cowork-run="${esc(id)}" data-cowork-type="${esc(item.type || 'loop')}" data-cowork-name="${esc(item.name || id)}" ${busyId ? 'disabled' : ''}>${busyId === id ? '実行中…' : '実行'}</button>
-            ${(item.type !== 'state-machine' || pairedLoop) && item.repo && api.kiroLoopListSessions
-              ? `<button data-cowork-term-repo="${esc(item.repo)}" data-cowork-term-name="${esc(item.name || id)}" title="この作業を動かしているエージェントの実行状況を見る" ${busyId ? 'disabled' : ''}>実行状況</button>`
-              : ''}
-            ${api.coworkItemLogs ? `<button data-cowork-history="${esc(id)}" data-cowork-name="${esc(item.name || id)}">履歴</button>` : ''}
-            <button data-cowork-edit="${i}" ${busyId ? 'disabled' : ''}>編集</button>
-            ${discovered ? '' : `<button data-cowork-delete="${i}" ${busyId ? 'disabled' : ''}>削除</button>`}
-          </div>
-        </article>`;
-      }).join('')}</div>`
-      : '<div class="empty"><strong>このプロジェクトに登録された定常業務はありません</strong><span>プロジェクトの設定ファイルに作業を追加してください。</span></div>'}
-    </div>`;
-  const technicalInfo = el.querySelector('[data-open-technical-info]');
-  if (technicalInfo) technicalInfo.addEventListener('click', openTechnicalInfo);
-  const addBtn = $('btn-cowork-add');
-  if (addBtn) addBtn.addEventListener('click', () => openCoworkWorkDialog(-1));
-  const saveBtn = $('btn-cowork-save');
-  if (saveBtn) saveBtn.addEventListener('click', openCoworkSaveDialog);
-  const refreshBtn = $('btn-cowork-refresh');
-  if (refreshBtn) {
-    refreshBtn.addEventListener('click', async () => {
-      await refreshCowork({ probe: true, forceDiscover: true });
-      state.coworkDraft = null;
-      renderCowork();
-    });
+      <button class="cowork-primary-run" data-cowork-run="${esc(id)}" data-cowork-type="${esc(item.type || 'loop')}" data-cowork-name="${esc(item.name || id)}" ${busyId || disabledWork ? 'disabled' : ''}>${busyId === id ? '実行中…' : '今すぐ実行'}</button>
+    </div>
+    <div class="cowork-status-grid">
+      <div><span>現在</span><strong>${esc(statusLabel(status))}</strong></div>
+      <div><span>最終結果</span><strong title="${esc(lastResult)}">${esc(lastResult)}</strong></div>
+      <div><span>実行予定</span><strong>${esc(item.schedule || '手動実行')}</strong></div>
+      <div><span>対象</span><strong title="${esc(item.repo || '')}">${esc(coworkRepoLabel(item.repo))}</strong></div>
+    </div>
+    <section class="cowork-latest-result">
+      <div><span class="summary-kicker">最新結果</span><p>${esc(lastResult)}</p></div>
+      <button data-cowork-history="${esc(id)}" data-cowork-name="${esc(item.name || id)}" ${api.coworkItemLogs ? '' : 'disabled'}>履歴とログ</button>
+    </section>
+    ${run && run.phase === 'error' ? `<p class="cowork-item-error" role="alert">${esc(run.message || '実行できませんでした。')}</p>` : ''}
+    <section class="cowork-more-details" aria-label="設定とその他の操作">
+      <h3>設定とその他の操作</h3>
+      <dl class="cowork-facts">
+        <div><dt>種類</dt><dd>${esc(typeDetail)}</dd></div>
+        <div><dt>登録元</dt><dd>${discovered ? '設定ファイル' : '手動登録'}</dd></div>
+        <div><dt>定期実行</dt><dd>${pairedLoop ? '有効' : (item.schedule ? '設定あり' : 'なし')}</dd></div>
+        <div><dt>リポジトリ</dt><dd title="${esc(item.repo || '')}">${esc(item.repo || '未設定')}</dd></div>
+      </dl>
+      <div class="cowork-secondary-actions">
+        ${(item.type !== 'state-machine' || pairedLoop) && item.repo && api.kiroLoopListSessions
+          ? `<button data-cowork-term-repo="${esc(item.repo)}" data-cowork-term-name="${esc(item.name || id)}" data-cowork-term-id="${esc(id)}">実行状況を見る</button>`
+          : ''}
+        <button data-cowork-edit="${index}" ${busyId ? 'disabled' : ''}>編集</button>
+        ${discovered ? '' : `<button data-cowork-delete="${index}" ${busyId ? 'disabled' : ''}>削除</button>`}
+      </div>
+    </section>
+  </article>`;
+}
+
+function updateCoworkSelectedDetail(entry, folder) {
+  const root = $('tab-cowork');
+  const slot = $('cowork-selected-slot');
+  if (!root || !slot || !entry) return;
+  const selectedId = coworkEntryId(entry.item, entry.index);
+  for (const button of root.querySelectorAll('[data-cowork-select]')) {
+    const selected = button.dataset.coworkSelect === selectedId;
+    button.classList.toggle('selected', selected);
+    button.setAttribute('aria-selected', String(selected));
+    button.tabIndex = selected ? 0 : -1;
   }
-  el.querySelectorAll('[data-cowork-history]').forEach((btn) => btn.addEventListener('click', () =>
+  const observed = new Map(((state.cowork && state.cowork.items) || [])
+    .map((item, index) => [coworkEntryId(item, index), item]));
+  const busyId = state.coworkRun && state.coworkRun.phase === 'running' ? String(state.coworkRun.id) : '';
+  slot.innerHTML = coworkSelectedDetailHtml(entry, observed, busyId);
+  slot.scrollTop = 0;
+  bindCoworkDetailActions(slot, folder);
+}
+
+function bindCoworkDetailActions(root, folder) {
+  root.querySelectorAll('[data-cowork-history]').forEach((btn) => btn.addEventListener('click', () =>
     openCoworkHistory(btn.dataset.coworkHistory, btn.dataset.coworkName || '')));
-  el.querySelectorAll('[data-cowork-edit]').forEach((btn) => btn.addEventListener('click', () => openCoworkWorkDialog(Number(btn.dataset.coworkEdit))));
-  el.querySelectorAll('[data-cowork-delete]').forEach((btn) => btn.addEventListener('click', () => {
-    coworkDraft().splice(Number(btn.dataset.coworkDelete), 1);
+  root.querySelectorAll('[data-cowork-edit]').forEach((btn) => btn.addEventListener('click', () =>
+    openCoworkWorkDialog(Number(btn.dataset.coworkEdit))));
+  root.querySelectorAll('[data-cowork-delete]').forEach((btn) => btn.addEventListener('click', () => {
+    const index = Number(btn.dataset.coworkDelete);
+    const deleting = coworkDraft()[index];
+    coworkDraft().splice(index, 1);
+    if (deleting) {
+      state.coworkHistoryCache.delete(coworkEntryId(deleting, index));
+      delete state.coworkSelections[coworkPathKey(folder)];
+    }
     updateCoworkTabVisibility();
     renderCowork();
   }));
-  el.querySelectorAll('[data-cowork-run]').forEach((btn) => btn.addEventListener('click', async () => {
+  root.querySelectorAll('[data-cowork-run]').forEach((btn) => btn.addEventListener('click', async () => {
     const id = btn.dataset.coworkRun;
     const type = btn.dataset.coworkType;
     const name = btn.dataset.coworkName || id;
+    const routine = coworkDraft().find((item, index) => coworkEntryId(item, index) === id);
     state.coworkRun = { id, name, phase: 'running', message: '', detail: '', at: Date.now() };
     renderCowork();
     let res;
@@ -7746,6 +8157,8 @@ function renderCowork() {
       detail: detail.slice(0, 1200),
       at: Date.now(),
     };
+    state.coworkHistoryCache.delete(id);
+    if (routine) state.kiroLoopStateCache.delete(coworkPathKey(routine.repo || routine.cwd));
     toast(
       res && res.ok
         ? (res.launched
@@ -7757,9 +8170,79 @@ function renderCowork() {
     await refreshCowork({ probe: true });
     renderCowork();
   }));
-  el.querySelectorAll('[data-cowork-term-repo]').forEach((btn) => btn.addEventListener('click', () => {
-    openKiroLoopTerminal({ repo: btn.dataset.coworkTermRepo, name: btn.dataset.coworkTermName || '' });
+  root.querySelectorAll('[data-cowork-term-repo]').forEach((btn) => btn.addEventListener('click', () => {
+    openKiroLoopTerminal({
+      id: btn.dataset.coworkTermId || '',
+      repo: btn.dataset.coworkTermRepo,
+      name: btn.dataset.coworkTermName || '',
+    });
   }));
+}
+
+function renderCowork() {
+  const ui = captureUiState();
+  const el = $('tab-cowork');
+  if (!el) return;
+  updateCoworkTabVisibility();
+  const cw = state.cowork;
+  const draft = coworkDraft();
+  const observed = new Map(((cw && cw.items) || []).map((x) => [String(x.id), x]));
+  const busyId = state.coworkRun && state.coworkRun.phase === 'running' ? String(state.coworkRun.id) : '';
+  if (cw && cw.error) {
+    el.innerHTML = `<div class="empty"><strong>定常業務を読み込めませんでした</strong><span>${esc(cw.error)}</span></div>`;
+    restoreUiState(ui);
+    return;
+  }
+  // 選択中プロジェクトの作業だけを表示する（従来は全プロジェクトの作業が常に並んでいた）。
+  const folder = selectedProjectFolder();
+  const entries = coworkHasProjectConfig(cw, folder) ? coworkVisibleEntries(draft, folder) : [];
+  const selected = coworkSelectedEntry(entries, folder);
+  const selectedId = selected ? coworkEntryId(selected.item, selected.index) : '';
+  const scopeLabel = `このプロジェクトの作業 ${entries.length} 件`;
+  el.innerHTML = `
+    <div class="cowork-shell">
+      <header class="cowork-header">
+        <div>
+          <span class="summary-kicker">自動化</span>
+          <h2>定常業務</h2>
+          <p class="muted">繰り返し実行する作業を確認・実行できます。</p>
+        </div>
+        <div class="row">
+          <button id="btn-cowork-add">追加</button>
+          <button id="btn-cowork-save">保存</button>
+          <button id="btn-cowork-refresh" title="最新の状態を確認">更新</button>
+          <button type="button" class="subtle-action" data-open-technical-info
+            title="設定・同期状態などの診断情報を表示">診断情報</button>
+        </div>
+      </header>
+      <div class="cowork-scope muted">
+        <span>${esc(scopeLabel)}</span>
+      </div>
+      ${coworkRunBannerHtml()}
+      ${entries.length ? `<div class="cowork-split-view">
+        <section class="cowork-list-pane" aria-label="定常業務の一覧">${coworkRoutineSelectorHtml(entries, selectedId)}</section>
+        <div id="cowork-selected-slot" class="cowork-detail-pane" data-ui-scroll-key>${coworkSelectedDetailHtml(selected, observed, busyId)}</div>
+      </div>`
+      : '<div class="empty"><strong>このプロジェクトに登録された定常業務はありません</strong><span>プロジェクトの設定ファイルに作業を追加してください。</span></div>'}
+    </div>`;
+  bindCoworkRoutineSelector(el);
+  const technicalInfo = el.querySelector('[data-open-technical-info]');
+  if (technicalInfo) technicalInfo.addEventListener('click', () => openTechnicalInfo('cowork'));
+  const addBtn = $('btn-cowork-add');
+  if (addBtn) addBtn.addEventListener('click', () => openCoworkWorkDialog(-1));
+  const saveBtn = $('btn-cowork-save');
+  if (saveBtn) saveBtn.addEventListener('click', openCoworkSaveDialog);
+  const refreshBtn = $('btn-cowork-refresh');
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', async () => {
+      state.coworkHistoryCache.clear();
+      await refreshCowork({ probe: true, forceDiscover: true });
+      state.coworkDraft = null;
+      renderCowork();
+    });
+  }
+  bindCoworkDetailActions(el, folder);
+  restoreUiState(ui);
 }
 
 // ---------------------------------------------------------------------------
@@ -7780,7 +8263,10 @@ async function openCoworkHistory(id, name) {
   $('cowork-history-title').textContent = `実行履歴とログ — ${name || id}`;
   $('cowork-history-body').innerHTML = '<p class="muted">読み込んでいます…</p>';
   if (!dlg.open) dlg.showModal();
-  const res = await guard('実行履歴の読込', () => api.coworkItemLogs(id));
+  const res = await state.coworkHistoryCache.load(
+    id,
+    () => guard('実行履歴の読込', () => api.coworkItemLogs(id))
+  );
   if (!state.coworkHistory || state.coworkHistory.id !== id) return; // 閉じられた/切替済み
   if (!res) {
     $('cowork-history-body').innerHTML = '<p class="muted">実行履歴を読み込めませんでした。</p>';
@@ -7855,15 +8341,26 @@ function stripAnsi(s) {
     .replace(/\r/g, '');
 }
 
-function setKiroLoopTabVisible(show) {
-  const btn = $('tab-btn-kiro-loop');
-  if (!btn) return;
-  btn.classList.toggle('hidden', !show);
-  btn.hidden = !show;
-  if (!show && activeTab() === 'kiro-loop') {
+function setKiroLoopDialogVisible(show) {
+  const dialog = $('dlg-kiro-loop');
+  if (!dialog) return;
+  if (show && !dialog.open) dialog.showModal();
+  if (!show && dialog.open) dialog.close();
+}
+
+function setupKiroLoopDialog() {
+  const dialog = $('dlg-kiro-loop');
+  if (!dialog) return;
+  $('btn-kiro-loop-refresh').addEventListener('click', () => {
+    const term = state.kiroLoopTerm;
+    if (term) openKiroLoopTerminal({ id: term.id, repo: term.repo, name: term.name, force: true });
+  });
+  $('btn-kiro-loop-close').addEventListener('click', () => dialog.close());
+  dialog.addEventListener('close', () => {
     stopKiroLoopCapturePoll();
-    switchTab('cowork');
-  }
+    kiroLoopCancelWait();
+    state.kiroLoopTerm = null;
+  });
 }
 
 function stopKiroLoopCapturePoll() {
@@ -7882,7 +8379,8 @@ function startKiroLoopCapturePoll() {
   stopKiroLoopCapturePoll();
   if (!state.kiroLoopTerm || !state.kiroLoopTerm.target) return;
   const tick = async () => {
-    if (activeTab() !== 'kiro-loop' || !state.kiroLoopTerm || !state.kiroLoopTerm.target) return;
+    const dialog = $('dlg-kiro-loop');
+    if (!dialog || !dialog.open || !state.kiroLoopTerm || !state.kiroLoopTerm.target) return;
     if (!api.kiroLoopCapture) return;
     const target = state.kiroLoopTerm.target;
     const repo = state.kiroLoopTerm.repo;
@@ -7915,109 +8413,135 @@ function startKiroLoopCapturePoll() {
   state.kiroLoopTimer = setInterval(tick, kiroLoopCaptureSec() * 1000);
 }
 
-async function openKiroLoopTerminal({ repo, name } = {}) {
+function kiroLoopRoutineSession(items, routineName) {
+  const sessions = Array.isArray(items) ? items : [];
+  const wanted = String(routineName || '').trim().toLocaleLowerCase('ja-JP');
+  if (!wanted) return sessions.length === 1 ? sessions[0] : null;
+  const named = sessions.filter((item) => String(item && item.name || '').trim());
+  const exact = named.find((item) => String(item.name).trim().toLocaleLowerCase('ja-JP') === wanted);
+  if (exact) return exact;
+  const partial = named.find((item) => {
+    const name = String(item.name).trim().toLocaleLowerCase('ja-JP');
+    return name.includes(wanted) || wanted.includes(name);
+  });
+  if (partial) return partial;
+  return sessions.length === 1 ? sessions[0] : null;
+}
+
+async function openKiroLoopTerminal({ id, repo, name, force = false } = {}) {
   if (!api.kiroLoopListSessions) {
     toast('このビルドでは実行状況の表示に対応していません');
     return;
   }
-  setKiroLoopTabVisible(true);
   kiroLoopCancelWait();
+  stopKiroLoopCapturePoll();
+  const repoKey = coworkPathKey(repo);
+  const cached = state.kiroLoopCache.get(repoKey) || null;
+  const cacheFresh = !!state.kiroLoopCache.peek(repoKey);
+  if (repoKey && id) state.coworkSelections[repoKey] = String(id);
+  const previous = state.kiroLoopTerm
+    && coworkPathKey(state.kiroLoopTerm.repo) === repoKey
+    && String(state.kiroLoopTerm.id || '') === String(id || '')
+    ? state.kiroLoopTerm
+    : null;
+  const cachedItems = cached ? cached.items || [] : [];
+  const cachedSession = kiroLoopRoutineSession(cachedItems, name);
+  const cachedTarget = cachedSession ? cachedSession.target : '';
   state.kiroLoopTerm = {
+    id: id || '',
     repo: repo || '',
     name: name || '',
-    target: '',
-    session: '',
-    items: [],
-    text: '',
-    summary: null,
+    target: cachedTarget,
+    session: (cachedSession && cachedSession.session) || '',
+    items: cachedItems,
+    text: previous ? previous.text || '' : '',
+    summary: state.kiroLoopStateCache.get(repoKey) || null,
     send: null,
-    error: '動いているエージェントを探しています…',
+    error: cacheFresh
+      ? (cachedSession ? '' : 'この定常業務に対応するエージェントは見つかりませんでした')
+      : '動いているエージェントを探しています…',
     at: Date.now(),
   };
-  switchTab('kiro-loop');
+  setKiroLoopDialogVisible(true);
   renderKiroLoopTerminal();
-  refreshKiroLoopState();
-  const listed = await guard('tmux セッション', () => api.kiroLoopListSessions({ repo: repo || '' }));
-  if (!listed) {
+  if (cacheFresh && !force) {
+    if (state.kiroLoopTerm.target) startKiroLoopCapturePoll();
+    refreshKiroLoopState();
+    return;
+  }
+  const listed = await state.kiroLoopCache.load(repoKey, async () => {
+    const result = await guard('tmux セッション', () => api.kiroLoopListSessions({ repo: repo || '' }));
+    if (!result) return { items: [], error: 'エージェントの一覧を取得できませんでした' };
+    return { items: result.items || [], error: result.error || '' };
+  }, { force });
+  if (!state.kiroLoopTerm || coworkPathKey(state.kiroLoopTerm.repo) !== repoKey || state.kiroLoopTerm.id !== (id || '')) return;
+  if (!listed || (!listed.items && listed.error)) {
     state.kiroLoopTerm.error = 'エージェントの一覧を取得できませんでした';
     renderKiroLoopTerminal();
     return;
   }
   const items = listed.items || [];
-  const first = items[0] || null;
+  const first = kiroLoopRoutineSession(items, name);
   state.kiroLoopTerm.items = items;
   state.kiroLoopTerm.session = first ? first.session : '';
   state.kiroLoopTerm.target = first ? first.target : '';
-  state.kiroLoopTerm.error = first ? '' : (listed.error || 'このフォルダで動いているエージェントは見つかりませんでした');
+  state.kiroLoopTerm.error = first
+    ? ''
+    : (listed.error || 'この定常業務に対応するエージェントは見つかりませんでした');
   renderKiroLoopTerminal();
+  refreshKiroLoopState({ force: true });
   if (first) startKiroLoopCapturePoll();
 }
 
 function renderKiroLoopTerminal() {
-  const el = $('tab-kiro-loop');
+  const ui = captureUiState();
+  const el = $('kiro-loop-dialog-body');
   if (!el) return;
   const term = state.kiroLoopTerm;
   if (!term) {
-    el.innerHTML = '<div class="empty"><strong>見る対象が選ばれていません</strong><span>定常業務タブで作業を選び、「実行状況」を押すとここに表示されます。</span></div>';
+    el.innerHTML = '';
     return;
   }
-  const opts = (term.items || []).map((it) =>
-    `<option value="${esc(it.target)}" ${it.target === term.target ? 'selected' : ''}>${esc(it.session)}${it.name ? `（${esc(it.name)}）` : ''}${it.cwd ? ` — ${esc(it.cwd)}` : ''}</option>`
-  ).join('');
+  const folder = selectedProjectFolder();
+  const entries = coworkHasProjectConfig(state.cowork, folder) ? coworkVisibleEntries(coworkDraft(), folder) : [];
+  const selected = entries.find(({ item, index }) => coworkEntryId(item, index) === String(term.id))
+    || coworkSelectedEntry(entries, folder);
+  const selectedId = selected ? coworkEntryId(selected.item, selected.index) : String(term.id || '');
+  const selectedItem = selected ? selected.item : null;
+  const selectedState = (selectedItem && selectedItem.state) || {};
+  const selectedStatus = selectedState.running ? 'running' : (selectedState.status || 'unknown');
   el.innerHTML = `
     <div class="kiro-loop-term">
-      <header class="kiro-loop-term-header">
-        <div>
-          <h2 class="summary-kicker">エージェントの実行状況</h2>
-          <p class="muted">${esc(term.name || '定常業務')} ／ ${esc(term.repo || '（フォルダ未指定）')}</p>
-          <p class="muted">設定ファイル（kiro-loop.yaml）に登録した予定が、決まった間隔でここのエージェントへ自動で送られます。</p>
+      <section class="kiro-loop-overview" aria-labelledby="kiro-loop-selected-title">
+        <div class="kiro-loop-overview-heading">
+          <div><span class="summary-kicker">選択中</span><h3 id="kiro-loop-selected-title">${esc(term.name || (selectedItem && selectedItem.name) || selectedId || '定常業務')}</h3></div>
+          <span class="status-chip ${coworkStatusClass(selectedStatus)}">${esc(statusLabel(selectedStatus))}</span>
         </div>
-        <div class="row">
-          <button id="btn-kiro-loop-refresh">最新の状態にする</button>
-          <button id="btn-kiro-loop-close">閉じる</button>
+        <div class="kiro-loop-overview-facts">
+          <div><span>実行予定</span><strong>${esc((selectedItem && selectedItem.schedule) || '手動実行')}</strong></div>
+          <div><span>最終確認</span><strong>${term.at ? esc(fmtAgo(new Date(term.at).toISOString())) : '未確認'}</strong></div>
+          <div><span>対象</span><strong title="${esc(term.repo || '')}">${esc(coworkRepoLabel(term.repo))}</strong></div>
         </div>
-      </header>
-      <div class="kiro-loop-term-toolbar">
-        <label class="muted">表示中のエージェント
-          <select id="kiro-loop-target" ${opts ? '' : 'disabled'}>${opts || '<option value="">（見つかりません）</option>'}</select>
-        </label>
-        <span id="kiro-loop-term-meta" class="muted">${esc(term.error || 'エージェントの画面をそのまま映しています（ここには入力できません）')}</span>
-      </div>
-      <div id="kiro-loop-state" class="kiro-loop-state">${kiroLoopStateHtml(term.summary)}</div>
-      <div class="kiro-loop-send">
-        <input id="kiro-loop-send-text" type="text"
-          placeholder="エージェントに送る指示（予定の名前を入れると、その本文が送られます）" value="${esc((term.send && term.send.text) || '')}">
-        ${term.name ? `<button id="btn-kiro-loop-send-periodic" title="設定ファイルに書かれたこの予定の本文を、次回を待たずに送ります">「${esc(term.name)}」を今すぐ送る</button>` : ''}
-        <button id="btn-kiro-loop-send">送る</button>
-        <button id="btn-kiro-loop-send-cancel" class="hidden">送るのをやめる</button>
-        <span id="kiro-loop-send-meta" class="muted">${esc((term.send && term.send.message) || '')}</span>
-      </div>
-      <pre id="kiro-loop-capture" class="kiro-loop-capture mono" aria-live="polite">${esc(stripAnsi(term.text || (term.error && !term.target ? '' : '…')))}</pre>
+        <div id="kiro-loop-state" class="kiro-loop-state">${kiroLoopStateHtml(term.summary, term.name)}</div>
+        <div class="kiro-loop-primary-actions">
+          ${term.name ? `<button id="btn-kiro-loop-send-periodic" class="primary" title="設定されたこの定常業務を次回予定を待たずに送ります">今すぐ実行</button>` : ''}
+          <span id="kiro-loop-send-meta" class="muted">${esc((term.send && term.send.message) || '')}</span>
+        </div>
+      </section>
+      <section class="kiro-loop-agent-panel" aria-labelledby="kiro-loop-agent-title">
+        <div class="kiro-loop-term-toolbar">
+          <div><span class="summary-kicker">対応するエージェント</span><h3 id="kiro-loop-agent-title">エージェントの画面と個別指示</h3></div>
+          <span id="kiro-loop-term-meta" class="muted">${esc(term.error || 'エージェントの画面を表示しています')}</span>
+        </div>
+        <div class="kiro-loop-send">
+          <input id="kiro-loop-send-text" type="text" aria-label="エージェントへの個別指示" placeholder="エージェントへの個別指示" value="${esc((term.send && term.send.text) || '')}">
+          <button id="btn-kiro-loop-send">送る</button>
+          <button id="btn-kiro-loop-send-cancel" class="hidden">送るのをやめる</button>
+        </div>
+        <pre id="kiro-loop-capture" class="kiro-loop-capture mono" data-ui-scroll-key aria-live="polite">${esc(stripAnsi(term.text || (term.error && !term.target ? '' : '…')))}</pre>
+      </section>
     </div>`;
-  const sel = $('kiro-loop-target');
-  if (sel) {
-    sel.addEventListener('change', () => {
-      const item = (term.items || []).find((x) => x.target === sel.value);
-      state.kiroLoopTerm.target = sel.value;
-      state.kiroLoopTerm.session = item ? item.session : sel.value;
-      state.kiroLoopTerm.error = '';
-      startKiroLoopCapturePoll();
-    });
-  }
-  const refresh = $('btn-kiro-loop-refresh');
-  if (refresh) {
-    refresh.addEventListener('click', () => openKiroLoopTerminal({ repo: term.repo, name: term.name }));
-  }
-  const close = $('btn-kiro-loop-close');
-  if (close) {
-    close.addEventListener('click', () => {
-      stopKiroLoopCapturePoll();
-      kiroLoopCancelWait();
-      state.kiroLoopTerm = null;
-      setKiroLoopTabVisible(false);
-      switchTab('cowork');
-    });
-  }
+  restoreUiState(ui);
   const sendBtn = $('btn-kiro-loop-send');
   const sendText = $('kiro-loop-send-text');
   if (sendBtn && sendText) {
@@ -8042,10 +8566,13 @@ function renderKiroLoopTerminal() {
 // kiro-loop 構造化状態と復旧送信（Phase C）
 // ---------------------------------------------------------------------------
 
-function kiroLoopStateHtml(summary) {
+function kiroLoopStateHtml(summary, routineName = '') {
   const rows = [];
+  const wanted = String(routineName || '').trim().toLowerCase();
   for (const d of (summary && summary.daemons) || []) {
     for (const s of d.sessions || []) {
+      const sessionName = String(s.name || s.pane || '').trim().toLowerCase();
+      if (wanted && sessionName !== wanted && !sessionName.includes(wanted)) continue;
       const label = !s.alive ? '止まっています' : (s.busy ? '応答中' : '待機中');
       const cls = !s.alive ? 'st-failed' : (s.busy ? 'st-running' : 'st-ready');
       const lastSent = s.lastSentAt
@@ -8068,14 +8595,27 @@ function kiroLoopStateHtml(summary) {
   <p class="muted">「予定の名前」は設定ファイル（kiro-loop.yaml の prompts）で付けた名前です。名前を送ると、そこに書かれた本文がエージェントへ送られます。</p>`;
 }
 
-async function refreshKiroLoopState() {
+async function refreshKiroLoopState({ force = false } = {}) {
   const term = state.kiroLoopTerm;
   if (!term || !api.kiroLoopState) return;
-  const res = await api.kiroLoopState({ repo: term.repo }).catch(() => null);
+  const repoKey = coworkPathKey(term.repo);
+  const cached = state.kiroLoopStateCache.peek(repoKey);
+  if (!force && cached) {
+    term.summary = cached;
+    const el = $('kiro-loop-state');
+    if (el) el.innerHTML = kiroLoopStateHtml(term.summary, term.name);
+    return;
+  }
+  const res = await state.kiroLoopStateCache.load(
+    repoKey,
+    () => api.kiroLoopState({ repo: term.repo }).catch(() => null),
+    { force }
+  );
   if (state.kiroLoopTerm !== term) return;
   term.summary = res && res.ok ? res : { daemons: [] };
+  state.kiroLoopStateCache.set(repoKey, term.summary);
   const el = $('kiro-loop-state');
-  if (el) el.innerHTML = kiroLoopStateHtml(term.summary);
+  if (el) el.innerHTML = kiroLoopStateHtml(term.summary, term.name);
 }
 
 function kiroLoopCancelWait() {
@@ -8249,6 +8789,9 @@ async function saveCoworkDraft() {
   if (!res) return;
   state.config = res.config;
   state.coworkDraft = null;
+  state.coworkHistoryCache.clear();
+  state.kiroLoopCache.clear();
+  state.kiroLoopStateCache.clear();
   $('dlg-cowork-save').close();
   await refreshCowork({ forceDiscover: true });
   updateCoworkTabVisibility();
@@ -8268,6 +8811,7 @@ async function saveCoworkDraft() {
 
 async function init() {
   setupDialogLayouts();
+  setupKiroLoopDialog();
   state.config = await guard('設定読込', () => api.getConfig());
   initTabs();
   $('btn-refresh').addEventListener('click', () => refreshAll({ sync: false }));

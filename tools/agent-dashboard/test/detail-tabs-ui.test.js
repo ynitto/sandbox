@@ -79,14 +79,9 @@ const needFinalVerificationFailure = new Function(
   `${grab('needFinalVerificationFailure')}; return needFinalVerificationFailure;`
 )(taskForNeed, completedRunForNeed, needFailureViewModel);
 // eslint-disable-next-line no-new-func
-const canManuallyCompleteNeed = new Function(
-  'needFinalVerificationFailure',
-  `${grab('canManuallyCompleteNeed')}; return canManuallyCompleteNeed;`
-)(needFinalVerificationFailure);
-// eslint-disable-next-line no-new-func
 const needApprovalReason = new Function(
-  'canManuallyCompleteNeed', `${grab('needApprovalReason')}; return needApprovalReason;`
-)(canManuallyCompleteNeed);
+  `${grab('needApprovalReason')}; return needApprovalReason;`
+)();
 // eslint-disable-next-line no-new-func
 const needAssistActionsHtml = new Function(
   'esc', 'canDiagnoseNeed', `${grab('needAssistActionsHtml')}; return needAssistActionsHtml;`
@@ -102,13 +97,12 @@ const artifactRunForNeed = new Function(
 )(completedRunForNeed, newestDoneRunForNeed);
 // eslint-disable-next-line no-new-func
 const needArtifactsButtonHtml = new Function(
-  'esc', 'completedTaskForNeed', 'artifactRunForNeed', 'canManuallyCompleteNeed',
+  'esc', 'completedTaskForNeed', 'artifactRunForNeed',
   `${grab('needArtifactsButtonHtml')}; return needArtifactsButtonHtml;`
 )(
   (value) => String(value == null ? '' : value),
   completedTaskForNeed,
-  artifactRunForNeed,
-  canManuallyCompleteNeed
+  artifactRunForNeed
 );
 
 // リトライ中の成果導線: last_run（最新試行）が実行中でも、系統内に done 世代があれば
@@ -511,10 +505,26 @@ const verifyFailureNeed = {
   failureSummary: '検証コマンドが失敗しました（終了コード 2）。',
 };
 const doneRuns = [{ runId: 'run-verify-done', taskId: 'T-VERIFY', status: 'done' }];
+// 承認理由は決定記録として残すだけで、本体の分岐材料にはしない
+// （文面から「完了か積み直しか」を推定させない — 意図は complete フラグで送る）。
 assert.strictEqual(
-  canManuallyCompleteNeed(doneRunProject, verifyFailureNeed, doneRuns),
-  true,
-  '工程が完了した検証失敗はユーザー判断で完了承認できる'
+  needApprovalReason(doneRunProject, verifyFailureNeed, doneRuns, 'この環境では許容する'),
+  'この環境では許容する',
+  '人が書いた理由をそのまま決定記録にする'
+);
+assert.strictEqual(
+  needApprovalReason(doneRunProject, verifyFailureNeed, doneRuns, '   '),
+  '成果を確認して完了を承認',
+  '未記入でも意味のある決定記録を残す'
+);
+assert.ok(
+  !renderer.includes('検証失敗を確認・受容して完了'),
+  '本体に完了意図を伝えるための決め打ち文言を承認理由へ混ぜない'
+);
+assert.match(
+  renderer.slice(renderer.indexOf("} else if (act === 'approve') {")).slice(0, 800),
+  /action: 'approve'[^)]*complete/s,
+  '承認は完了意図（complete）を明示して送る'
 );
 assert.strictEqual(
   relatedRunIdForNeed(
@@ -527,39 +537,6 @@ assert.strictEqual(
   ),
   'new-done',
   'last_run が無い場合は同一タスクの最新runを使う'
-);
-assert.strictEqual(
-  needApprovalReason(doneRunProject, verifyFailureNeed, doneRuns, 'この環境では許容する'),
-  '検証失敗を確認・受容して完了: この環境では許容する',
-  '完了承認は本体へ検証差異の明示受容として渡す'
-);
-assert.strictEqual(
-  needApprovalReason(doneRunProject, verifyFailureNeed, [{ ...doneRuns[0], status: 'failed' }], '続行'),
-  '続行',
-  'run未完了の通常承認理由は書き換えない'
-);
-assert.strictEqual(
-  canManuallyCompleteNeed(doneRunProject, verifyFailureNeed, [{ ...doneRuns[0], status: 'failed' }]),
-  false,
-  'run自体が未完了なら完了承認を出さない'
-);
-assert.strictEqual(
-  canManuallyCompleteNeed(
-    { backlog: [{ ...doneRunProject.backlog[0], extra: { ...doneRunProject.backlog[0].extra, env_resume: '1' } }] },
-    verifyFailureNeed,
-    doneRuns
-  ),
-  true,
-  'env_resumeが残っていても、完了run後の検証失敗は人が受領して完了できる'
-);
-assert.strictEqual(
-  canManuallyCompleteNeed(
-    doneRunProject,
-    verifyFailureNeed,
-    [{ ...doneRuns[0], total: 6, counts: { done: 3, failed: 1, waiting: 2 } }]
-  ),
-  true,
-  'runがdoneなら、検証工程をfailedとして数える形式でも人が受領して完了できる'
 );
 
 const needs = [
@@ -802,19 +779,24 @@ assert.match(
   );
 
   // eslint-disable-next-line no-new-func
+  // eslint-disable-next-line no-new-func
+  const needHasDeliverable = new Function(
+    'isVerifyPendingNeed', 'completedTaskForNeed', 'artifactRunForNeed', 'taskForNeed',
+    `${grab('needHasDeliverable')}; return needHasDeliverable;`
+  )(isVerifyPendingNeed, completedTaskForNeed, artifactRunForNeed, taskForNeed);
+  // eslint-disable-next-line no-new-func
   const needActionsHtml = new Function(
-    'esc', 'state', 'isVerifyPendingNeed', 'milestoneStatusFor', 'milestoneVersionName',
-    'statusLabel', 'needCompleteHowHtml', 'canManuallyCompleteNeed',
+    'esc', 'state', 'milestoneStatusFor', 'milestoneVersionName',
+    'statusLabel', 'needCompleteHowHtml', 'needHasDeliverable',
     `${grab('needActionsHtml')}; return needActionsHtml;`
   )(
     (value) => String(value == null ? '' : value),
     actionState,
-    isVerifyPendingNeed,
     () => null,
     () => null,
     (status) => String(status || ''),
     () => '',
-    canManuallyCompleteNeed
+    needHasDeliverable
   );
   const pendingHtml = needActionsHtml({
     id: 'T1', taskId: 'T1', kind: 'blocked', why: 'verify 未定義（工程は完了しています…）', file: '/p/needs/T1.md',
@@ -826,22 +808,57 @@ assert.match(
   });
   assert.ok(!plainHtml.includes('data-act="approve"'), '通常の blocked に承認完了ボタンを出さない');
 
+  // 検収物が少しでもあれば、要対応の画面から直接「承認して完了にする」を押せる。
+  // 以前は差分検収ダイアログ経由に限定していたが、経路が絞られるほど
+  // 「操作が見当たらない」状態が生まれるため、承認は常に出す方針へ変えた。
   actionState.project = doneRunProject;
   actionState.flowRuns = doneRuns;
   const completedFailureHtml = needActionsHtml(verifyFailureNeed);
   assert.match(
     completedFailureHtml,
-    /data-need-artifacts="T-VERIFY"[^>]*>差分を確認して承認</,
-    '工程完了済みの検証失敗は、まず差分検収ダイアログへ進める'
-  );
-  assert.ok(
-    !completedFailureHtml.includes('data-act="approve"'),
-    '要対応詳細から検収を飛ばして直接承認できない'
+    /data-act="approve"[^>]*>承認して完了にする</,
+    '工程完了済みの検証失敗は要対応の画面から直接完了承認できる'
   );
   assert.match(
     needActionsHtml(verifyFailureNeed, { inReview: true }),
     /data-act="approve"[^>]*>承認して完了にする</,
-    '差分検収ダイアログ内でのみ完了承認できる'
+    '差分検収ダイアログ内でも同じ承認ができる'
+  );
+
+  // 「少しでも検収物があれば承認できる」— 以前は AND 連鎖のどれか 1 つが欠けると
+  // 承認ボタンごと消えていた。欠けがちだった条件を 1 つずつ落として確認する。
+  const runsMissing = { ...doneRunProject };
+  assert.strictEqual(
+    needHasDeliverable(runsMissing, verifyFailureNeed, []),
+    true,
+    'run 一覧が未読み込みでも、タスクの last_run があれば承認できる'
+  );
+  assert.strictEqual(
+    needHasDeliverable(
+      { backlog: [{ id: 'T-VERIFY', status: 'doing', extra: { last_run: 'run-verify-done' } }], archive: [] },
+      verifyFailureNeed,
+      doneRuns
+    ),
+    true,
+    'タスクの状態が blocked でなくても、成果があれば承認できる'
+  );
+  assert.strictEqual(
+    needHasDeliverable(
+      { backlog: [{ id: 'T-VERIFY', status: 'blocked', extra: {} }], archive: [] },
+      { id: 'T-VERIFY', taskId: 'T-VERIFY', kind: 'blocked' },
+      doneRuns
+    ),
+    true,
+    '失敗内容を解析できなくても、完了した run があれば承認できる'
+  );
+  assert.strictEqual(
+    needHasDeliverable(
+      { backlog: [{ id: 'T-NEW', status: 'blocked', extra: {} }], archive: [] },
+      { id: 'T-NEW', taskId: 'T-NEW', kind: 'blocked', why: '着手前に失敗' },
+      []
+    ),
+    false,
+    '成果が一度も出ていないものは完了承認を出さない（再開・指示が正しい導線）'
   );
 }
 

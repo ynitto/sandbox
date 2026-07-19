@@ -58,6 +58,25 @@ function makeAdvisor(project) {
   return new Function('state', code)({ project });
 }
 
+function makeNodePresenter(project) {
+  const code = [
+    'const TERMINAL_RUN_STATES = new Set(["done", "failed", "canceled"]);',
+    'const statusLabel = (s) => ({ review: "検収待ち", blocked: "要対応", proposed: "計画承認待ち" }[s] || s);',
+    'const esc = (s) => String(s == null ? "" : s);',
+    grab('sanitizeTaskId'),
+    grab('shortRunId'),
+    grab('taskOfRun'),
+    grab('humanWaitingAdvice'),
+    grab('agentErrorAdvice'),
+    grab('runAdvice'),
+    grab('flowRetryUi'),
+    grab('nodeFateLine'),
+    'return { runAdvice, flowRetryUi, nodeFateLine };',
+  ].join('\n');
+  // eslint-disable-next-line no-new-func
+  return new Function('state', code)({ project });
+}
+
 // --- テストデータ --------------------------------------------------------------
 const RID = 'req-abcd1234-T-9-r1';
 const baseRun = (over = {}) => ({
@@ -121,6 +140,28 @@ test('失敗 + タスクが review（判断待ち）→ 要対応タブへ誘導
   assert.match(a.text, /要対応/);
   assert.match(a.chip, /検収待ち/);
   assert.strictEqual(a.taskId, 'T-9');
+});
+
+test('判断待ちの失敗工程 → 存在しない再実行ボタンを案内せず要対応へ誘導する', () => {
+  const presenter = makeNodePresenter(project({ taskStatus: 'review' }));
+  const r = baseRun({ status: 'failed', alive: false });
+  const advice = presenter.runAdvice(r, group(r));
+  const retry = presenter.flowRetryUi(r, advice);
+  assert.strictEqual(retry.show, false);
+  const line = presenter.nodeFateLine(r, 'failed', retry, advice);
+  assert.match(line, /要対応/);
+  assert.ok(!line.includes('失敗した工程だけやり直す'), '非表示のボタン名を案内しない');
+});
+
+test('再実行できる失敗工程 → ボタンがある「概要」タブを明示する', () => {
+  const presenter = makeNodePresenter(project({ taskStatus: null }));
+  const r = baseRun({ taskId: null, status: 'failed', alive: false });
+  const advice = presenter.runAdvice(r, group(r));
+  const retry = presenter.flowRetryUi(r, advice);
+  assert.strictEqual(retry.show, true);
+  const line = presenter.nodeFateLine(r, 'failed', retry, advice);
+  assert.match(line, /概要/);
+  assert.ok(line.includes(retry.label));
 });
 
 test('done + タスクが review（検収待ち）→ 完了扱いにせず要確認へ（delivery_review）', () => {

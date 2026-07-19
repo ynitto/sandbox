@@ -136,8 +136,12 @@ def main(argv=None) -> int:
     enq.add_argument("--json", action="store_true", help="stdin か --file の JSON（オブジェクト/配列）で投入")
     enq.add_argument("--file", default=None, help="--json の入力ファイル（既定 stdin）")
 
-    ap = sub.add_parser("approve", help="判断待ちを修正承認して積み直し（決定記録）")
+    ap = sub.add_parser("approve", help="判断待ちを修正承認して積み直し（決定記録）。"
+                                        "--complete で成果を受け入れて完了（done 確定）にする")
     _add_common(ap); ap.add_argument("id"); ap.add_argument("--reason", required=True)
+    ap.add_argument("--complete", action="store_true",
+                    help="成果を受け入れて完了にする（検収待ちの blocked / review が対象）。"
+                         "省略時は従来どおりブロックを解いて積み直す")
     hd = sub.add_parser("hold", help="policy に deny 追加し保留（決定記録）")
     _add_common(hd); hd.add_argument("id"); hd.add_argument("--reason", required=True)
     rp = sub.add_parser("reprioritize", help="policy に pin/defer 追加（決定記録）")
@@ -279,7 +283,8 @@ def main(argv=None) -> int:
                                      getattr(args, "check", False)),
         "promote": lambda: cmd_promote(cfg),
         "rot": lambda: cmd_rot(cfg, getattr(args, "fix", False)),
-        "approve": lambda: cmd_approve(cfg, args.id, args.reason),
+        "approve": lambda: cmd_approve(cfg, args.id, args.reason,
+                                       complete=bool(getattr(args, "complete", False))),
         "reject": lambda: cmd_reject(cfg, args.id, args.reason),
         "resume-run": lambda: cmd_resume_run(cfg, args.id, args.run,
                                              args.reason or "run の続きから再開"),

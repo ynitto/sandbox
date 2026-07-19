@@ -73,7 +73,6 @@
         <button class="tab" data-tab="history" data-feature="agent-project">成果</button>
         <button class="tab hidden" data-tab="amigos" data-feature="amigos" id="tab-btn-amigos" hidden>ミッション</button>
         <button class="tab hidden" data-tab="cowork" data-feature="cowork" id="tab-btn-cowork" hidden>定常業務</button>
-        <button class="tab hidden" data-tab="kiro-loop" data-feature="kiro-loop" id="tab-btn-kiro-loop" hidden>実行状況</button>
       </nav>
 
       <section id="content">
@@ -84,10 +83,24 @@
         <div id="tab-history" class="tabpane" data-feature="agent-project"></div>
         <div id="tab-cowork" class="tabpane" data-feature="cowork"></div>
         <div id="tab-amigos" class="tabpane" data-feature="amigos"></div>
-        <div id="tab-kiro-loop" class="tabpane" data-feature="kiro-loop"></div>
       </section>
     </main>
   </div>
+
+  <!-- ======== 選択中の定常業務の実行状況 ======== -->
+  <dialog id="dlg-kiro-loop" class="kiro-loop-dialog" data-feature="kiro-loop" aria-labelledby="kiro-loop-dialog-title">
+    <header class="dialog-heading">
+      <div>
+        <span class="summary-kicker">選択中の定常業務</span>
+        <h2 id="kiro-loop-dialog-title">実行状況</h2>
+      </div>
+      <div class="row">
+        <button id="btn-kiro-loop-refresh" type="button">最新の状態にする</button>
+        <button id="btn-kiro-loop-close" type="button">閉じる</button>
+      </div>
+    </header>
+    <div id="kiro-loop-dialog-body"></div>
+  </dialog>
 
 
   <!-- ======== 定常業務の編集 ======== -->
@@ -199,6 +212,23 @@
       <button type="button" id="btn-amigos-detail-close" aria-label="ミッション詳細を閉じる">閉じる</button>
     </div>
     <div id="amigos-detail-body"></div>
+  </dialog>
+
+  <!-- ======== 修正依頼（差し戻し） ======== -->
+  <dialog id="dlg-amigos-reject">
+    <form method="dialog">
+      <h2>修正を依頼</h2>
+      <p class="muted">どこをどう直してほしいかを伝えると、担当メンバーが作業をやり直します。</p>
+      <div class="field">
+        <label for="amigos-reject-feedback">修正してほしい内容</label>
+        <textarea id="amigos-reject-feedback" rows="6"
+          placeholder="例: 調査結果に出典が無いので、各項目に参照元を追記してください"></textarea>
+      </div>
+      <div class="dialog-actions">
+        <button id="btn-amigos-reject-cancel" value="cancel" type="button">キャンセル</button>
+        <button id="btn-amigos-reject-ok" value="default">修正を依頼する</button>
+      </div>
+    </form>
   </dialog>
 
   <!-- ======== プロジェクト設定ダイアログ ======== -->
@@ -407,7 +437,7 @@
   <!-- ======== 選択中の画面・実行の詳細情報 ======== -->
   <dialog id="dlg-technical-info" class="wide developer-dialog">
     <div class="dialog-heading">
-      <div><span class="summary-kicker">選択中</span><h2>詳細情報</h2></div>
+      <div><span id="technical-info-kicker" class="summary-kicker">選択中</span><h2 id="technical-info-title">詳細情報</h2></div>
       <button type="button" id="btn-technical-info-close" aria-label="詳細情報を閉じる">閉じる</button>
     </div>
     <div id="technical-project-info" class="developer-project-info"></div>
@@ -744,6 +774,7 @@
   <div id="toast" class="hidden"></div>
 
   <script src="../../node_modules/diff2html/bundles/js/diff2html-ui-slim.min.js"></script>
+  <script src="routine-ui-cache.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

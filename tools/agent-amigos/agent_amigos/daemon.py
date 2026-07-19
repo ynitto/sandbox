@@ -46,7 +46,8 @@ class NodeDaemon:
     def __init__(self, bus: Bus, node_id: str, agent_cli: "str | None" = None,
                  tags: "list[str] | None" = None, roles_filter: "list[str] | None" = None,
                  interval: float = 5.0, resume_hours: float = 12.0,
-                 manual_claim: bool = False, commands_home: "str | None" = None):
+                 manual_claim: bool = False, commands_home: "str | None" = None,
+                 home: "str | None" = None):
         self.bus = bus
         self.node_id = node_id
         self.agent_cli = agent_cli
@@ -60,6 +61,9 @@ class NodeDaemon:
         # commands_home: 指示のファイル取り込み（<home>/.agent/agent-amigos/commands/）を
         # 有効にするホームディレクトリ。None = 取り込まない
         self.commands_home = commands_home
+        # home: 納品棚（<home>/deliveries/）の置き場。既定は commands_home と同じ
+        # ディレクトリ（＝ノードのホーム）。None なら accept しても搬出しない
+        self.home = home if home is not None else commands_home
         self._runners: "dict[tuple[str, str], AmigoRunner]" = {}
         self._active = False
         self._stopping = False
@@ -134,7 +138,7 @@ class NodeDaemon:
                 if str(mission.get("acceptance")) == "agent" and phase == "reviewing":
                     from .ownerops import acceptance_turn
                     result = acceptance_turn(self.bus, mp, mission, self.node_id,
-                                             self.agent_cli)
+                                             self.agent_cli, home=self.home)
                     if result in ("accepted", "rejected"):
                         self._active = True
 

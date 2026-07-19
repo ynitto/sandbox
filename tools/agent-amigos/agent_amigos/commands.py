@@ -106,8 +106,8 @@ def _dispatch(bus: Bus, node_id: str, agent_cli: "str | None", home: str, rec: d
         _require_owner(mission, node_id)
         if not read_json(mp.manifest()):
             raise ValueError("deliverable がまだありません（受入対象なし）")
-        accept_mission(bus, mp, by=node_id)
-        return f"accept {mid}"
+        accept_mission(bus, mp, by=node_id, home=home, mission=mission)
+        return f"accept {mid}（納品先: deliveries/{mid}/）"
     if cmd == "reject":
         from .ownerops import reject_mission
         _require_owner(mission, node_id)

@@ -272,6 +272,9 @@ button:disabled { opacity: 0.4; cursor: default; }
 #tabs {
   display: flex;
   gap: 2px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
   padding: 0 10px;
   border-bottom: 1px solid var(--border);
   background: var(--bg2);
@@ -489,6 +492,7 @@ button:disabled { opacity: 0.4; cursor: default; }
   flex: 1;
   display: flex;
   flex-direction: column;
+  min-width: 0;
   min-height: 0;
   overflow: hidden;
   padding: 14px;
@@ -497,25 +501,62 @@ button:disabled { opacity: 0.4; cursor: default; }
 .tabpane.active { display: block; flex: 1; min-height: 0; overflow-y: auto; }
 #tab-flow.active { display: flex; flex-direction: column; overflow: hidden; }
 #tab-needs.active { display: flex; flex-direction: column; overflow: hidden; }
-#tab-kiro-loop.active { display: flex; flex-direction: column; overflow: hidden; }
+#tab-cowork.active { display: flex; flex-direction: column; overflow: hidden; }
 
 /* ---------- kiro-loop 端末（Phase A: capture-pane） ---------- */
+.kiro-loop-dialog[open] {
+  width: min(1100px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  height: min(780px, calc(100vh - 32px));
+  min-width: 0;
+}
+.kiro-loop-dialog .dialog-scroll-body { display: flex; min-height: 0; padding: 14px; overflow: hidden; }
+#kiro-loop-dialog-body { display: flex; flex: 1; min-width: 0; min-height: 0; }
 .kiro-loop-term {
   display: flex;
+  flex: 1;
   flex-direction: column;
   gap: 10px;
-  height: 100%;
+  min-width: 0;
   min-height: 0;
 }
-.kiro-loop-term-header {
+.kiro-loop-overview {
+  flex: none;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg2);
+}
+.kiro-loop-overview-heading {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  flex: none;
 }
-.kiro-loop-term-header h2 { margin: 0 0 4px; }
-.kiro-loop-term-header p { margin: 0; }
+.kiro-loop-overview-heading h3 { margin: 3px 0 12px; font-size: 18px; overflow-wrap: anywhere; }
+.kiro-loop-overview-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.kiro-loop-overview-facts > div { min-width: 0; padding: 9px 10px; border-radius: 7px; background: var(--bg3); }
+.kiro-loop-overview-facts span { display: block; margin-bottom: 3px; color: var(--muted); font-size: 11px; }
+.kiro-loop-overview-facts strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kiro-loop-primary-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.kiro-loop-agent-panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg2);
+}
 .kiro-loop-term-toolbar {
   display: flex;
   align-items: center;
@@ -524,11 +565,7 @@ button:disabled { opacity: 0.4; cursor: default; }
   flex-wrap: wrap;
   flex: none;
 }
-.kiro-loop-term-toolbar select {
-  margin-left: 6px;
-  min-width: 220px;
-  max-width: 100%;
-}
+.kiro-loop-term-toolbar h3 { margin: 2px 0 0; color: var(--fg); }
 .kiro-loop-state { flex: none; }
 .kiro-loop-state table { width: 100%; }
 .kiro-loop-send {
@@ -559,7 +596,7 @@ button:disabled { opacity: 0.4; cursor: default; }
 }
 
 /* ---------- Cowork（プロジェクトタブと同じトーンの一覧） ---------- */
-.cowork-shell { display: flex; flex-direction: column; gap: 12px; min-height: 100%; }
+.cowork-shell { display: flex; flex: 1; flex-direction: column; gap: 12px; height: 100%; min-height: 0; }
 .cowork-header {
   display: flex;
   align-items: flex-start;
@@ -577,6 +614,104 @@ button:disabled { opacity: 0.4; cursor: default; }
   font-size: 12px;
 }
 .cowork-scope label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.cowork-split-view {
+  display: grid;
+  flex: 1;
+  grid-template-rows: 240px minmax(0, 1fr);
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+}
+.cowork-list-pane,
+.cowork-detail-pane { min-width: 0; min-height: 0; border: 1px solid var(--border); border-radius: 9px; background: var(--bg2); }
+.cowork-list-pane { padding: 10px; overflow: hidden; }
+.cowork-detail-pane { overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
+.cowork-routine-picker { display: flex; flex-direction: column; height: 100%; min-width: 0; min-height: 0; }
+.cowork-routine-picker-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 7px;
+}
+.cowork-routine-picker-heading h3 { margin: 2px 0 0; font-size: 14px; }
+.cowork-routine-tools { display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; }
+.cowork-routine-search { width: min(240px, 36vw); min-width: 140px; }
+.cowork-routine-selector {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+  min-height: 0;
+  padding: 2px 2px 7px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.cowork-routine-option {
+  height: 76px;
+  min-height: 76px;
+  min-width: 0;
+  padding: 7px 9px;
+  text-align: left;
+  border-color: var(--border);
+  background: var(--bg2);
+}
+.cowork-routine-option:hover { background: var(--bg3); }
+.cowork-routine-option.selected { border-color: var(--accent); background: var(--bg3); box-shadow: inset 0 -2px var(--accent); }
+.cowork-routine-option-head,
+.cowork-routine-option-meta { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; min-width: 0; }
+.cowork-routine-option-head strong {
+  display: -webkit-box;
+  min-width: 0;
+  min-height: 2.7em;
+  overflow: hidden;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.cowork-routine-option-head .status-chip { flex: none; align-self: flex-start; }
+.cowork-routine-option-meta { margin-top: 5px; color: var(--muted); font-size: 11px; }
+.cowork-routine-option-meta span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cowork-selected-detail {
+  min-width: 0;
+  min-height: 100%;
+  padding: 18px;
+  overflow: visible;
+  border: 0;
+  border-left: 3px solid transparent;
+  border-radius: 8px;
+  background: var(--bg2);
+  box-sizing: border-box;
+}
+#cowork-selected-slot > .cowork-selected-detail { min-height: 100%; }
+.cowork-selected-detail.is-running { border-left-color: var(--accent2); }
+.cowork-selected-detail.is-error { border-left-color: var(--red); }
+.cowork-selected-hero { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; min-width: 0; }
+.cowork-selected-heading { min-width: 0; }
+.cowork-selected-heading h2 { margin: 4px 0 9px; overflow-wrap: anywhere; }
+.cowork-primary-run { min-width: 130px; min-height: 44px; flex: none; }
+.cowork-status-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 16px 0 10px;
+}
+.cowork-status-grid > div { min-width: 0; padding: 10px; border-radius: 7px; background: var(--bg3); }
+.cowork-status-grid span { display: block; margin-bottom: 4px; color: var(--muted); font-size: 11px; }
+.cowork-status-grid strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cowork-latest-result { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 0; }
+.cowork-latest-result p { margin: 4px 0 0; overflow-wrap: anywhere; }
+.cowork-more-details { margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--border); }
+.cowork-more-details h3 { margin: 0 0 10px; color: var(--muted); }
+.cowork-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; margin: 0 0 12px; background: var(--border); border: 1px solid var(--border); }
+.cowork-facts > div { min-width: 0; padding: 9px 10px; background: var(--bg3); }
+.cowork-facts dt { color: var(--muted); font-size: 11px; }
+.cowork-facts dd { margin: 3px 0 0; overflow-wrap: anywhere; }
+.cowork-secondary-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 /* 実行履歴とログ */
 .cowork-history-body { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
 .cowork-history-body h3 { margin: 0 0 6px; font-size: 13px; }
@@ -1975,9 +2110,23 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   .overview-version-heading .summary-actions button,
   .version-card-actions,
   .version-card-actions button { width: 100%; }
+  .cowork-header,
+  .cowork-selected-hero,
+  .kiro-loop-overview-heading { flex-direction: column; }
+  .cowork-header .row,
+  .cowork-primary-run { width: 100%; }
+  .cowork-status-grid,
+  .kiro-loop-overview-facts,
+  .cowork-facts { grid-template-columns: 1fr; }
+  .cowork-latest-result { align-items: flex-start; flex-direction: column; }
+  .cowork-routine-selector { grid-template-columns: 1fr; }
+  .cowork-routine-picker-heading { align-items: stretch; flex-direction: column; }
+  .cowork-routine-tools { justify-content: space-between; width: 100%; }
+  .cowork-routine-search { width: 100%; }
   .project-header-main { align-items: flex-start; }
   #project-title { flex-wrap: wrap; }
   dialog, dialog.wide { min-width: 0; width: calc(100vw - 24px); max-width: calc(100vw - 24px); }
+  .kiro-loop-dialog[open] { width: calc(100vw - 24px); max-width: calc(100vw - 24px); height: calc(100vh - 24px); }
   .output-dialog, .doctor-dialog, .delivery-dialog { width: calc(100vw - 24px); }
   .full-output { height: 64vh; }
   .sidebar-header { align-items: flex-start; }
@@ -2117,8 +2266,48 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .amigos-message-body p { margin: 0; white-space: pre-wrap; line-height: 1.65; overflow-wrap: anywhere; }
 .amigos-message-body time { display: block; margin-top: 8px; color: var(--muted); font-size: 11px; }
 
+/* 受入プレビューと納品棚 */
+.amigos-preview-list { display: flex; flex-direction: column; gap: 8px; }
+.amigos-preview-file { border: 1px solid var(--border); border-radius: 8px; background: var(--bg2); }
+.amigos-preview-file summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  min-height: 40px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+.amigos-preview-path { min-width: 0; overflow-wrap: anywhere; }
+.amigos-preview-file summary small { color: var(--muted); }
+.amigos-preview-body { padding: 0 12px 12px; }
+.amigos-preview-doc { max-width: 78ch; line-height: 1.7; overflow-wrap: anywhere; }
+.amigos-preview-text {
+  max-height: 420px;
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  border-radius: 6px;
+  background: var(--bg3);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.amigos-preview-image { max-width: 100%; height: auto; border-radius: 6px; }
+.amigos-accept-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.amigos-accept-actions button { min-height: 44px; }
+
+.amigos-received-line {
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--muted);
+  background: var(--bg3);
+  font-size: 12px;
+}
+
 @media (max-width: 700px) {
   .amigos-mission-card { padding: 14px; }
+  .amigos-accept-actions button { width: 100%; }
   .amigos-card-actions, .amigos-card-actions button { width: 100%; }
   .amigos-detail-dialog { width: calc(100vw - 16px); max-height: calc(100vh - 16px); }
   .amigos-message summary { align-items: flex-start; flex-wrap: wrap; }

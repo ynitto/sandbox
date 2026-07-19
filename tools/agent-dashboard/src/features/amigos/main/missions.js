@@ -16,6 +16,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const preview = require('./preview');
+
 function expandHome(p) {
   if (!p) return p;
   return p === '~' || p.startsWith('~/') ? path.join(os.homedir(), p.slice(1)) : p;
@@ -109,6 +111,11 @@ function messageSummary(message, max = 120) {
   const text = String(message.subject || message.body || '').replace(/\s+/g, ' ').trim();
   if (text.length <= max) return text;
   return `${text.slice(0, max - 1).trimEnd()}…`;
+}
+
+// 受入待ちの成果物プレビュー（読み方の正典は preview.js — 納品棚と同じ読み方を使う）。
+function readDeliverablePreview(dir) {
+  return preview.readPreview(path.join(dir, 'deliverable'), ['MANIFEST.json']);
 }
 
 function readMissionSummary(id, dir) {
@@ -246,6 +253,8 @@ function readMissionSummary(id, dir) {
     manifest: manifest
       ? { round: manifest.round, partial: !!manifest.partial, reason: manifest.reason || '' }
       : null,
+    // 受入プレビューは受入待ちのときだけ読む（他フェーズで毎回全成果物を読まない）
+    deliverable: phase === 'reviewing' ? readDeliverablePreview(dir) : null,
   };
 }
 
@@ -268,4 +277,6 @@ function overview(cfg, extraBusDirs) {
   return { busDirs, missions, errors };
 }
 
-module.exports = { discoverBusDirs, missionDirsIn, readMissionSummary, overview };
+module.exports = {
+  discoverBusDirs, missionDirsIn, readMissionSummary, overview, readDeliverablePreview,
+};
