@@ -12,8 +12,8 @@
   "status": "failed",
   "created_at": "2026-07-18T21:35:22Z",
   "executor": "agent",
-  "orch_lease_until": 1784454849.479153,
-  "heartbeat_at": "2026-07-19T09:52:09Z",
-  "updated_at": "2026-07-19T09:52:11Z",
+  "orch_lease_until": 1784454899.485378,
+  "heartbeat_at": "2026-07-19T09:52:59Z",
+  "updated_at": "2026-07-19T09:53:01Z",
   "failure_reason": "[agent-error:quota] 環境要因の失敗（loop）: 利用上限に達しています（時間をおくか、プラン・クレジットを見直してください） リトライを打ち切りました。環境を直してから再開してください（完了済みの工程は温存されます）。"
 }
