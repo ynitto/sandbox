@@ -125,6 +125,32 @@ function readSlotPanes(distro = '') {
   return out;
 }
 
+// 定期プロンプト名 → 送信先ペイン。`kiro-loop send` は送信先を省略すると、ペインが
+// 複数動いているとき「複数のペインが動作中です」で失敗する。名前が分かるときは
+// loop-state から引いて -s で明示する。見つからなければ '' を返す（従来どおり CLI に任せる）。
+function findPane({ repo, name } = {}) {
+  const target = String(name || '').trim();
+  if (!target) return '';
+  const distro = exec.wslDistro(repo || '');
+  const states = readLoopStates(distro);
+  if (!states.length) return '';
+  const want = normalizeLinuxPath(repo);
+  const panes = allPanes(distro);
+  for (const st of states) {
+    const stateCwd = normalizeLinuxPath(st.cwd || '');
+    for (const s of Array.isArray(st.sessions) ? st.sessions : []) {
+      if (String((s && (s.name || s.id)) || '') !== target) continue;
+      const paneId = String((s && s.pane) || '');
+      const pane = paneId ? panes.get(paneId) : null;
+      if (!pane) continue;                       // ペインが消えている（状態ファイルが古い）
+      const cwd = normalizeLinuxPath(pane.cwd || '') || stateCwd;
+      if (want && !repoMatchesCwd(want, cwd) && !repoMatchesCwd(want, stateCwd)) continue;
+      return paneId;
+    }
+  }
+  return '';
+}
+
 // 構造化状態ビュー: loop-state（last_sent_at / last_send_ok 含む）を repo で絞り、
 // ペイン存在（alive）とスロット（busy）を突き合わせて返す。tmux を開かずに
 // 「最終実行時刻・稼働状態」を見せるためのデータソース。
@@ -244,5 +270,5 @@ function capture({ target, lines, repo } = {}) {
 
 module.exports = {
   pathDigest, normalizeLinuxPath, listTmuxSessions, listSessions, capture, paneMeta,
-  allPanes, readLoopStates, readSlotPanes, stateSummary,
+  allPanes, readLoopStates, readSlotPanes, stateSummary, findPane,
 };

@@ -7,3 +7,4 @@ bash ./tools/codd-gate/install.sh
 bash ./tools/agent-flow/install.sh
 bash ./tools/agent-amigos/install.sh
 bash ./tools/agent-project/install.sh
+bash ./tools/kiro-loop/install.sh

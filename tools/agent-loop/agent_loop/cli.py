@@ -144,7 +144,7 @@ def main() -> None:
 
     running_pid = _find_running_daemon(cwd)
     if running_pid is not None:
-        log.info("既に実行中のプロセスがあります。起動をスキップします。", flush=True)
+        log.info("既に実行中のプロセスがあります (pid=%d)。起動をスキップします。", running_pid)
         sys.exit(0)
 
     # tmux 外で起動された場合、自己を tmux 内で再実行
@@ -153,7 +153,7 @@ def main() -> None:
     # 再度チェック（tmux 内での再起動後）
     running_pid = _find_running_daemon(cwd)
     if running_pid is not None:
-        log.info("既に実行中のプロセスがあります。起動をスキップします。", flush=True)
+        log.info("既に実行中のプロセスがあります (pid=%d)。起動をスキップします。", running_pid)
         sys.exit(0)
 
     log_file = configure_file_logging()

@@ -7426,33 +7426,35 @@ function amigosMissionCardHtml(m) {
     ? '経過は整理済み'
     : (progress.total ? `${progress.total}人中${progress.done}人が完了` : '担当者を確認中');
   const received = m.delivery
-    ? `<div class="amigos-received-line">受け取り済み ・
-        ${esc((m.delivery.files || []).filter((f) => f.exported).length)} ファイル
-        ${m.delivery.partial ? '（一部のみ）' : ''}</div>`
+    ? `<span class="amigos-card-fact">成果物
+        ${esc((m.delivery.files || []).filter((f) => f.exported).length)} 件
+        ${m.delivery.partial ? '（一部）' : ''}</span>`
     : '';
   const goal = m.goal ? `<p class="amigos-card-goal">${esc(m.goal)}</p>` : '';
   return `<article class="amigos-mission-card">
     <div class="amigos-card-heading">
-      <div>
-        <span class="amigos-phase amigos-phase-${esc(m.phase)}">${esc(amigosPhaseLabel(m.phase))}</span>
-        <h3>${esc(m.title)}</h3>
-      </div>
+      <span class="amigos-phase amigos-phase-${esc(m.phase)}">${esc(amigosPhaseLabel(m.phase))}</span>
+      <h3>${esc(m.title)}</h3>
     </div>
-    ${goal}
-    <p class="amigos-next-step">${esc(amigosNextStep(m))}</p>
-    <div class="amigos-card-meta">
-      <span>${esc(progressText)}</span>
+    <div class="amigos-card-summary">
+      ${goal}
+      <p class="amigos-next-step">${esc(amigosNextStep(m))}</p>
+    </div>
+    ${amigosMissionAttention(m)}
+    <div class="amigos-card-footer">
+      <div class="amigos-card-meta">
+        <span class="amigos-card-fact">${esc(progressText)}</span>
       ${m.archived
         ? ''
         : ((m.messages || []).length
-          ? `<span>やりとり ${(m.messages || []).length} 件</span>`
-          : '<span>やりとりはまだありません</span>')}
-    </div>
-    ${received}
-    ${amigosMissionAttention(m)}
-    <div class="amigos-card-actions">
-      <button type="button" class="primary-inline" data-amigos-detail="${esc(m.id)}">
-        ${m.delivery ? '成果物を見る' : '詳しく見る'}</button>
+          ? `<span class="amigos-card-fact">やりとり ${(m.messages || []).length} 件</span>`
+          : '<span class="amigos-card-fact">やりとり 0 件</span>')}
+        ${received}
+      </div>
+      <div class="amigos-card-actions">
+        <button type="button" class="primary-inline" data-amigos-detail="${esc(m.id)}">
+          ${m.delivery ? '成果物を見る' : '詳しく見る'}</button>
+      </div>
     </div>
   </article>`;
 }
@@ -7495,8 +7497,8 @@ function amigosMessageHtml(message) {
   </details>`;
 }
 
-// 受入プレビュー: 成果物はプログラムに限らないので、文書は本文、画像は縮小表示、
-// それ以外はメタ情報だけを見せる。受け取り先の実体は納品棚（accept 後に生える）。
+// 成果物はプログラムに限らないので、文書は本文、画像は縮小表示、
+// それ以外はメタ情報だけを見せる。受入待ちと受け取り済みで同じプレビューを使う。
 function amigosDeliverableFileHtml(file) {
   const meta = `<small>${esc(file.role || '')}${file.role ? ' ・ ' : ''}${esc(fmtLogSize(file.bytes))}</small>`;
   let body;
@@ -7510,10 +7512,48 @@ function amigosDeliverableFileHtml(file) {
     body = '<p class="muted">この形式は画面で表示できません。受け入れるとファイルとして受け取れます。</p>';
   }
   const cut = file.truncated ? '<p class="muted">長いため一部だけ表示しています。</p>' : '';
-  return `<details class="amigos-preview-file">
-    <summary><span class="amigos-preview-path">${esc(file.path)}</span>${meta}</summary>
-    <div class="amigos-preview-body">${body}${cut}</div>
-  </details>`;
+  return `<div class="amigos-preview-heading">
+      <strong class="amigos-preview-path">${esc(file.path)}</strong>${meta}
+    </div>
+    <div class="amigos-preview-body">${body}${cut}</div>`;
+}
+
+function amigosArtifactWorkspaceHtml(files, label) {
+  const entries = files || [];
+  if (!entries.length) return '<div class="empty compact">成果物のファイルがありません。</div>';
+  const buttons = entries.map((file, index) => `<button type="button" class="amigos-artifact-file${index === 0 ? ' active' : ''}"
+      data-amigos-file="${index}" aria-current="${index === 0 ? 'true' : 'false'}"
+      title="${esc(file.path)} の内容を表示">
+      <span>${esc(file.path)}</span>
+      <small>${esc(file.role || '')}${file.role ? ' ・ ' : ''}${esc(fmtLogSize(file.bytes))}</small>
+    </button>`).join('');
+  return `<div class="amigos-artifact-workspace">
+    <aside class="amigos-artifact-files" aria-label="${esc(label || '成果物')}のファイル一覧">
+      <div class="amigos-artifact-files-title"><strong>ファイル</strong><span>${entries.length} 件</span></div>
+      <div class="amigos-artifact-file-list">${buttons}</div>
+    </aside>
+    <section class="amigos-artifact-preview" aria-label="選択したファイルの内容" aria-live="polite">
+      ${amigosDeliverableFileHtml(entries[0])}
+    </section>
+  </div>`;
+}
+
+function setupAmigosArtifactWorkspace(root, files) {
+  if (!root) return;
+  const entries = files || [];
+  const previewPane = root.querySelector('.amigos-artifact-preview');
+  for (const btn of root.querySelectorAll('[data-amigos-file]')) {
+    btn.addEventListener('click', () => {
+      const file = entries[Number(btn.dataset.amigosFile)];
+      if (!file || !previewPane) return;
+      for (const item of root.querySelectorAll('[data-amigos-file]')) {
+        const selected = item === btn;
+        item.classList.toggle('active', selected);
+        item.setAttribute('aria-current', selected ? 'true' : 'false');
+      }
+      previewPane.innerHTML = amigosDeliverableFileHtml(file);
+    });
+  }
 }
 
 // 受け取り済みの成果物（納品棚）。中身は開いたときに読むので、ここは器だけ描く。
@@ -7532,20 +7572,36 @@ function amigosReceivedSectionHtml(m) {
     ? `<p class="muted">コードは ${esc(d.code.repo || '')} の
         ${esc(d.code.branch || '')} にあります。</p>`
     : '';
-  return `<section class="amigos-detail-section">
-    <h3>受け取った成果物</h3>
-    <p class="muted">${esc(fmtTime(d.acceptedAt))} に受け取り ・
-      実行時間 ${esc(amigosMin(d.executionSeconds))} 分</p>
-    ${partial}
-    <div class="amigos-preview-list" id="amigos-received-body">
-      <div class="empty compact">読み込んでいます…</div>
+  const exported = (d.files || []).filter((file) => file.exported).length;
+  return `<details class="amigos-received-section amigos-detail-section">
+    <summary>
+      <span class="amigos-received-title">受け取った成果物</span>
+      <span class="amigos-received-summary">${esc(fmtTime(d.acceptedAt))} ・ ${exported} ファイル${d.partial ? ' ・ 一部のみ' : ''}</span>
+    </summary>
+    <div class="amigos-received-content">
+      <p class="muted">実行時間 ${esc(amigosMin(d.executionSeconds))} 分</p>
+      ${partial}
+      <div class="amigos-preview-list" id="amigos-received-body">
+        <div class="empty compact">開くと成果物を読み込みます。</div>
+      </div>
+      ${refNote}
+      ${code}
+      <div class="amigos-accept-actions">
+        <button type="button" data-amigos-open="${esc(d.dir)}">納品棚を開く</button>
+        <button type="button" class="primary-inline" data-amigos-export="${esc(m.id)}"
+          data-home="${esc(d.home || m.home || '')}">別フォルダへ保存</button>
+      </div>
+      <p class="amigos-export-status muted" data-amigos-export-status aria-live="polite"></p>
     </div>
-    ${refNote}
-    ${code}
-    <div class="amigos-accept-actions">
-      <button type="button" class="primary-inline" data-amigos-open="${esc(d.dir)}">保存先を開く</button>
-    </div>
-  </section>`;
+  </details>`;
+}
+
+function amigosIntegrationHtml(m) {
+  const integration = m && m.integration;
+  if (!integration) return '';
+  return `<div class="amigos-integration amigos-integration-${esc(integration.status)}" role="status">
+    <span>自動処理</span><strong>${esc(integration.label)}</strong>
+  </div>`;
 }
 
 function amigosDeliverableSectionHtml(m) {
@@ -7558,7 +7614,7 @@ function amigosDeliverableSectionHtml(m) {
     ? `<p class="muted">全 ${Number(m.deliverable.total || 0)} 件のうち先頭だけ表示しています。</p>`
     : '';
   const list = files.length
-    ? files.map(amigosDeliverableFileHtml).join('')
+    ? amigosArtifactWorkspaceHtml(files, '受入待ち成果物')
     : '<div class="empty compact">成果物のファイルがありません。</div>';
   const actions = m.home
     ? `<div class="amigos-accept-actions">
@@ -7599,13 +7655,16 @@ function amigosMissionDetailHtml(m) {
       <div class="amigos-conversation">${conversation}</div>
     </section>`;
   return `<div class="amigos-detail-content">
-    ${amigosMissionAttention(m)}
-    <section class="amigos-detail-section">
-      <h3>現在の状況</h3>
+    <section class="amigos-detail-overview">
+      <div class="amigos-detail-overview-head">
+        <h3>現在の状況</h3>
+        ${amigosMissionAttention(m)}
+      </div>
       <div class="amigos-detail-status">
         <span class="amigos-phase amigos-phase-${esc(m.phase)}">${esc(amigosPhaseLabel(m.phase))}</span>
         <strong>${esc(progressText)}</strong>
       </div>
+      ${amigosIntegrationHtml(m)}
       ${m.goal ? `<p class="amigos-detail-goal">${esc(m.goal)}</p>` : ''}
       <p>${esc(m.archived
         ? 'このミッションの経過は整理済みで、受け取った成果物だけが残っています。'
@@ -7621,6 +7680,33 @@ function setupAmigosOpenButtons(root) {
   for (const btn of root.querySelectorAll('[data-amigos-open]')) {
     btn.addEventListener('click', () =>
       guard('保存先を開く', () => api.openPath(btn.dataset.amigosOpen))
+    );
+  }
+}
+
+function setupAmigosExportButtons(root) {
+  for (const btn of root.querySelectorAll('[data-amigos-export]')) {
+    btn.addEventListener('click', () =>
+      guard('成果物の保存', async () => {
+        const status = btn.closest('.amigos-detail-section').querySelector('[data-amigos-export-status]');
+        btn.disabled = true;
+        if (status) status.textContent = '保存先を選択してください。';
+        try {
+          const result = await api.amigosDeliveryExport(btn.dataset.home, btn.dataset.amigosExport);
+          if (result.canceled) {
+            if (status) status.textContent = '保存をキャンセルしました。';
+            return;
+          }
+          const notes = [];
+          if (result.skipped) notes.push(`参照のみ ${result.skipped} 件は対象外`);
+          if (result.missing) notes.push(`見つからないファイル ${result.missing} 件`);
+          const message = `${result.copied} 件を ${result.target} へ保存しました${notes.length ? `（${notes.join('、')}）` : ''}。`;
+          if (status) status.textContent = message;
+          toast('成果物を別フォルダへ保存しました', true);
+        } finally {
+          btn.disabled = false;
+        }
+      })
     );
   }
 }
@@ -7674,20 +7760,35 @@ function openAmigosRejectDialog(home, missionId) {
 // 全ミッションの全文・画像を運ばない）。
 async function loadAmigosReceived(mission) {
   const box = $('amigos-received-body');
-  if (!box || !mission.delivery || !api.amigosDeliveryContents) return;
+  if (!box || !mission.delivery || !api.amigosDeliveryContents) return false;
+  box.innerHTML = '<div class="empty compact">読み込んでいます…</div>';
   try {
     const got = await api.amigosDeliveryContents(mission.delivery.home, mission.id);
     const files = got.files || [];
     box.innerHTML = files.length
-      ? files.map(amigosDeliverableFileHtml).join('')
+      ? amigosArtifactWorkspaceHtml(files, '受け取った成果物')
       : '<div class="empty compact">保存されたファイルがありません（参照のみの納品です）。</div>';
+    setupAmigosArtifactWorkspace(box, files);
     if (got.truncated) {
       box.insertAdjacentHTML('beforeend',
         `<p class="muted">全 ${Number(got.total || 0)} 件のうち先頭だけ表示しています。</p>`);
     }
+    return true;
   } catch (err) {
     box.innerHTML = `<div class="empty compact">成果物を読み込めませんでした: ${esc(err.message)}</div>`;
+    return false;
   }
+}
+
+function setupAmigosReceived(root, mission) {
+  const details = root && root.querySelector('.amigos-received-section');
+  if (!details || !mission.delivery) return;
+  details.addEventListener('toggle', async () => {
+    if (!details.open || details.dataset.loadState) return;
+    details.dataset.loadState = 'loading';
+    const loaded = await loadAmigosReceived(mission);
+    details.dataset.loadState = loaded ? 'done' : '';
+  });
 }
 
 function openAmigosDetail(missionId) {
@@ -7700,8 +7801,10 @@ function openAmigosDetail(missionId) {
   setupAmigosClaimButtons($('amigos-detail-body'));
   setupAmigosAcceptButtons($('amigos-detail-body'));
   setupAmigosOpenButtons($('amigos-detail-body'));
+  setupAmigosExportButtons($('amigos-detail-body'));
+  setupAmigosArtifactWorkspace($('amigos-detail-body'), (mission.deliverable || {}).files || []);
+  setupAmigosReceived($('amigos-detail-body'), mission);
   $('dlg-amigos-detail').showModal();
-  loadAmigosReceived(mission);
 }
 
 const AMIGOS_ROLES_SAMPLE = JSON.stringify(
@@ -7832,7 +7935,7 @@ function renderAmigos() {
           <p class="muted">複数の担当メンバーで進める作業の状況を確認できます。</p>
         </div>
         <div class="row">
-          ${(a.homes || []).length ? '<button id="btn-amigos-request">ミッションを依頼…</button>' : ''}
+          ${(a.homes || []).length ? '<button id="btn-amigos-request">ミッションを依頼</button>' : ''}
           <button id="btn-amigos-refresh">更新</button>
         </div>
       </header>
@@ -8641,8 +8744,11 @@ function updateKiroLoopSendMeta() {
 }
 
 const KIRO_LOOP_SEND_RETRY_SEC = 15;
+// 応答中の自動再送は上限を設ける。ペインが固まっている・スロットが解放されないままだと
+// 「応答中」が永久に続き、待っているのか壊れているのか区別できなくなるため。
+const KIRO_LOOP_SEND_MAX_RETRY = 8;
 
-async function kiroLoopSendPrompt(promptText) {
+async function kiroLoopSendPrompt(promptText, attempt = 1) {
   const term = state.kiroLoopTerm;
   if (!term) return;
   if (!api.kiroLoopSend) {
@@ -8666,13 +8772,25 @@ async function kiroLoopSendPrompt(promptText) {
     if (input) input.value = '';
     toast('エージェントに送りました', true);
     refreshKiroLoopState();
+  } else if (res && res.busy && attempt >= KIRO_LOOP_SEND_MAX_RETRY) {
+    // 待ち続けても空かない = ペインが固まっているか、実行枠が解放されていない
+    const waited = Math.round((KIRO_LOOP_SEND_MAX_RETRY * KIRO_LOOP_SEND_RETRY_SEC) / 60);
+    term.send = {
+      text,
+      phase: 'error',
+      message: `${waited} 分待っても応答中のままなので送信をやめました。下の画面でエージェントが止まっていないか確認してください（止まっている場合は実行枠が空かないため、他の予定も動きません）。`,
+    };
   } else if (res && res.busy) {
     // busy 拒否は失敗ではなく「送信待機」— 完了を待って自動で再送する
-    term.send = { text, phase: 'waiting', message: `エージェントが応答中です。手が空くまで待って自動で送ります（${KIRO_LOOP_SEND_RETRY_SEC} 秒ごとに再試行）。` };
+    term.send = {
+      text,
+      phase: 'waiting',
+      message: `エージェントが応答中です。手が空くまで待って自動で送ります（${KIRO_LOOP_SEND_RETRY_SEC} 秒ごとに再試行 ${attempt}/${KIRO_LOOP_SEND_MAX_RETRY}）。`,
+    };
     state.kiroLoopSendTimer = setTimeout(() => {
       state.kiroLoopSendTimer = null;
       if (state.kiroLoopTerm === term && term.send && term.send.phase === 'waiting') {
-        kiroLoopSendPrompt(text);
+        kiroLoopSendPrompt(text, attempt + 1);
       }
     }, KIRO_LOOP_SEND_RETRY_SEC * 1000);
   } else {

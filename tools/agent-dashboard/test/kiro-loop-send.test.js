@@ -83,6 +83,24 @@ test('stateSummary は repo 不一致のデーモンを返さない', () => {
   }
 });
 
+test('findPane は予定の名前から生きているペインを引く', () => {
+  const orig = exec.shInWsl;
+  exec.shInWsl = stubShInWsl([
+    ['loop-state', okOut(`${loopState}`)],
+    ['list-panes -a', okOut('%5\tkiro\t/home/me/app\tkiro\t1\n%6\tkiro\t/home/me/app\tkiro\t0\n')],
+  ]);
+  try {
+    assert.strictEqual(tmux.findPane({ repo: '/home/me/app', name: 'hourly' }), '%6');
+    // ペインが消えている予定（%9）は引かない — 古い状態ファイルへ送らないため
+    assert.strictEqual(tmux.findPane({ repo: '/home/me/app', name: 'stale' }), '');
+    assert.strictEqual(tmux.findPane({ repo: '/home/me/app', name: '未知' }), '');
+    assert.strictEqual(tmux.findPane({ repo: '/home/me/other', name: 'nightly' }), '');
+    assert.strictEqual(tmux.findPane({ repo: '/home/me/app', name: '' }), '');
+  } finally {
+    exec.shInWsl = orig;
+  }
+});
+
 test('sendPrompt は repo を cwd にして kiro-loop send を呼ぶ', () => {
   const orig = exec.shInWsl;
   let script = '';

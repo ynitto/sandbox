@@ -11,6 +11,7 @@ tmux 越しの症状としてしか現れず原因が追いにくい。ここで
 from __future__ import annotations
 
 import os
+import pty
 import re
 import select
 import subprocess
@@ -88,8 +89,49 @@ def main() -> int:
         proc.kill()
         proc.wait(timeout=5)
 
+    test_long_single_line()
+
     print(f"\n{passed} tests passed")
     return 0
+
+
+def test_long_single_line() -> None:
+    """1024 バイトを超える 1 行を端末経由で受け取れるか。
+
+    `kiro-loop send` は複数行プロンプトを 1 行に連結して送る。端末の行編集（正準モード）が
+    有効なままだと 1 行の上限（macOS は 1024 バイト）で入力が捨てられ、改行が届かず
+    スタブが永久に固まる（= スロットを握ったままループ全体が止まる）。pty 越しでしか
+    再現しないので、ここでは擬似端末を使う。
+    """
+    master, slave = pty.openpty()
+    proc = subprocess.Popen(
+        [sys.executable, str(STUB), "chat", "--delay", "0"],
+        stdin=slave, stdout=slave, stderr=slave, close_fds=True,
+    )
+    os.close(slave)
+    try:
+        deadline = time.time() + 10
+        out = ""
+        while time.time() < deadline and ">" not in out:
+            if select.select([master], [], [], 0.2)[0]:
+                out += os.read(master, 4096).decode("utf-8", errors="replace")
+        check("擬似端末でも待機中になる", bool(PROMPT_RE.search(out)))
+
+        long_line = "あ" * 500 + " 最後まで届いたか"   # 約 1500 バイトの 1 行
+        os.write(master, (long_line + "\n").encode("utf-8"))
+
+        got = ""
+        deadline = time.time() + 15
+        while time.time() < deadline and "完了しました" not in got:
+            if select.select([master], [], [], 0.2)[0]:
+                got += os.read(master, 65536).decode("utf-8", errors="replace")
+        check("1024 バイト超の 1 行でも固まらず応答する", "完了しました" in got)
+        # スタブは受信文字数を報告する。全文字そろっていれば取りこぼしていない。
+        check("行の末尾まで受け取れている", f"受信しました（{len(long_line)} 文字）" in got)
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
+        os.close(master)
 
 
 if __name__ == "__main__":

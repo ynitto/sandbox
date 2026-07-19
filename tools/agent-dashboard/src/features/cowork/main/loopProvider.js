@@ -291,6 +291,21 @@ function runChatWindow({ chatCommand, prompt, cwd }) {
   return res.ok ? { ...res, session } : res;
 }
 
+// `send <プロンプト名>` の引数を組む。ペインが複数動いていると送信先を省略した send は
+// 「複数のペインが動作中です」で失敗するため、名前からペインを引けたら -s で明示する。
+function sendArgsFor(job) {
+  if (Array.isArray(job.args)) return job.args;
+  const name = job.id || job.name;
+  if (!name) return ['send'];
+  let pane = '';
+  try {
+    pane = require('../../kiro-loop/main/tmux').findPane({ repo: job.cwd || job.repo, name });
+  } catch {
+    pane = '';   // 解決できなければ従来どおり CLI の自動解決に任せる
+  }
+  return pane ? ['send', '-s', pane, name] : ['send', name];
+}
+
 function makeLoopProvider(cfg) {
   const provider = cfg.loopProvider || 'kiro-loop';
   const command = cfg.loopCommand || provider;
@@ -313,14 +328,12 @@ function makeLoopProvider(cfg) {
           });
         }
         // 明示 args（レガシー）の項目は従来どおり <loopCommand> をウィンドウで実行する
-        const winArgs = Array.isArray(job.args) ? job.args : ['send', job.id || job.name].filter(Boolean);
-        return runInWindow(command, winArgs, { cwd: job.cwd || job.repo });
+        return runInWindow(command, sendArgsFor(job), { cwd: job.cwd || job.repo });
       }
       // kiro-loop / agent-loop に `run` サブコマンドは無い。単発実行は
       // `send <プロンプト名>` — cwd（ワークスペース）の .kiro/kiro-loop.* から
       // 定期プロンプト名を解決してセッションへ送信する（送信のみで応答は待たない）。
-      const args = Array.isArray(job.args) ? job.args : ['send', job.id || job.name].filter(Boolean);
-      return sh(command, args, { cwd: job.cwd || job.repo, timeoutMs: job.timeoutMs || 60000 });
+      return sh(command, sendArgsFor(job), { cwd: job.cwd || job.repo, timeoutMs: job.timeoutMs || 60000 });
     },
   };
 }

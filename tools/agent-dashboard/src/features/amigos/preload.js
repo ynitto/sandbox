@@ -9,6 +9,8 @@ module.exports = {
   amigosAccept: (invoke) => (home, mission) => invoke('amigos:accept', { home, mission }),
   amigosDeliveryContents: (invoke) => (home, mission) =>
     invoke('amigos:deliveryContents', { home, mission }),
+  amigosDeliveryExport: (invoke) => (home, mission) =>
+    invoke('amigos:deliveryExport', { home, mission }),
   amigosReject: (invoke) => (home, mission, feedback) =>
     invoke('amigos:reject', { home, mission, feedback }),
 };

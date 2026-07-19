@@ -168,7 +168,7 @@ function readMissionSummary(id, dir) {
   const soft = limitSeconds > 0 && spentSeconds >= limitSeconds * softRatio;
 
   // ロール別の状態（roster の担当 × status の done_round / state）
-  const roleRows = Object.values(roles)
+  const allRoleRows = Object.values(roles)
     .sort((a, b) => String(a.id).localeCompare(String(b.id)))
     .map((r, index) => {
       const ent = roster[r.id];
@@ -195,7 +195,7 @@ function readMissionSummary(id, dir) {
   const unanswered = msgs.filter(
     (m) => m.type === 'question' && m.to !== 'owner' && !answered.has(m.id)
   ).length;
-  const roleLabels = Object.fromEntries(roleRows.map((r) => [r.id, r.displayName]));
+  const roleLabels = Object.fromEntries(allRoleRows.map((r) => [r.id, r.displayName]));
   const participantLabel = (who) => {
     if (who === 'owner') return '進行役';
     if (who === 'all') return '全員';
@@ -224,15 +224,21 @@ function readMissionSummary(id, dir) {
   // phase の近似導出（表示用）
   const manifest = readJson(path.join(dir, 'deliverable', 'MANIFEST.json'));
   const finalDoc = readJson(path.join(dir, 'final.json'));
-  const requiredWorkers = roleRows.filter((r) => r.required && r.builtin !== 'integrator');
+  const roleRows = allRoleRows.filter((r) => r.builtin !== 'integrator');
+  const requiredWorkers = roleRows.filter((r) => r.required);
   const staffed = requiredWorkers.every((r) => r.node);
+  const workersDone = staffed && requiredWorkers.every((r) => r.done);
+  const currentManifest = !!(manifest && Number(manifest.round) === round);
+  const integration = currentManifest
+    ? { status: 'done', label: '成果物の取りまとめ完了' }
+    : (workersDone ? { status: 'working', label: '成果物をまとめています' } : null);
   let phase = 'working';
   if (readJson(path.join(dir, 'cancelled.json'))) phase = 'cancelled';
   else if (finalDoc && finalDoc.accepted) phase = 'done';
   else if (hard && budgetCfg.on_exhausted === 'fail') phase = 'failed';
   else if (!staffed) phase = 'open';
-  else if (manifest && Number(manifest.round) === round) phase = 'reviewing';
-  else if (requiredWorkers.every((r) => r.done)) phase = 'integrating';
+  else if (currentManifest) phase = 'reviewing';
+  else if (workersDone) phase = 'integrating';
 
   return {
     id,
@@ -245,6 +251,7 @@ function readMissionSummary(id, dir) {
     round,
     staffed,
     roles: roleRows,
+    integration,
     messages,
     attentionCount: messages.filter((m) => m.requiresAttention).length,
     unanswered,

@@ -8,7 +8,7 @@ const homes = require('./homes');
 const missions = require('./missions');
 
 function registerIpc(ctx) {
-  const { handle, loadConfig } = ctx;
+  const { dialog, handle, loadConfig } = ctx;
   // 一覧（ミッション近似ビュー + ホーム + ノード予算）— renderer の 1 ポーリングで返す
   handle('amigos:overview', () => {
     const cfg = loadConfig();
@@ -45,6 +45,28 @@ function registerIpc(ctx) {
     );
     if (!home) throw new Error(`amigos ホームではありません: ${p.home}`);
     return deliveries.readContents(home.dir, String(p.mission || ''));
+  });
+  handle('amigos:deliveryExport', async (payload) => {
+    const p = payload || {};
+    const home = homes.discoverHomes(loadConfig()).find(
+      (h) => path.resolve(h.dir) === path.resolve(String(p.home || ''))
+    );
+    if (!home) throw new Error(`amigos ホームではありません: ${p.home}`);
+    if (!dialog || typeof dialog.showOpenDialog !== 'function') {
+      throw new Error('フォルダ選択を利用できません');
+    }
+    const selected = await dialog.showOpenDialog({
+      title: '成果物の保存先を選択',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (selected.canceled || !selected.filePaths || !selected.filePaths[0]) {
+      return { canceled: true };
+    }
+    return { canceled: false, ...deliveries.copyToFolder(
+      home.dir,
+      String(p.mission || ''),
+      selected.filePaths[0]
+    ) };
   });
   handle('amigos:budgetSave', (payload) => budget.save(loadConfig(), payload || {}));
   // タスク依頼: ホームの commands/ へ post 指示を投函（常駐デーモンが取り込む）

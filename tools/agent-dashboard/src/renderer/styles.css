@@ -2189,23 +2189,33 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   gap: 14px;
 }
 .amigos-mission-card {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 13px;
   min-width: 0;
-  padding: 18px;
+  padding: 16px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--bg2);
   box-shadow: 0 3px 12px rgba(0, 0, 0, 0.12);
 }
-.amigos-card-heading { display: flex; justify-content: space-between; gap: 12px; }
-.amigos-card-heading h3 { margin: 8px 0 0; font-size: 17px; color: var(--fg); }
+.amigos-card-heading { display: flex; align-items: flex-start; gap: 10px; }
+.amigos-card-heading .amigos-phase { flex: none; margin-top: 2px; }
+.amigos-card-heading h3 { min-width: 0; margin: 0; font-size: 17px; line-height: 1.4; color: var(--fg); overflow-wrap: anywhere; }
+.amigos-card-summary { min-width: 0; }
 .amigos-card-goal, .amigos-next-step { margin: 0; line-height: 1.6; overflow-wrap: anywhere; }
-.amigos-card-goal { color: var(--fg); }
-.amigos-next-step { color: var(--muted); }
-.amigos-card-meta { display: flex; flex-wrap: wrap; gap: 6px 16px; color: var(--muted); font-size: 12px; }
-.amigos-card-actions { display: flex; justify-content: flex-end; margin-top: auto; }
+.amigos-card-goal {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--fg);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.amigos-next-step { margin-top: 5px; color: var(--muted); font-size: 12px; }
+.amigos-card-footer { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; padding-top: 11px; border-top: 1px solid var(--border); }
+.amigos-card-meta { display: flex; flex: 1; min-width: 0; flex-wrap: wrap; gap: 6px 14px; color: var(--muted); font-size: 12px; }
+.amigos-card-fact { white-space: nowrap; }
+.amigos-card-actions { display: flex; flex: none; justify-content: flex-end; }
 .amigos-card-actions button { min-height: 44px; }
 .amigos-team-settings { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; }
 .amigos-team-settings summary { min-height: 32px; cursor: pointer; color: var(--muted); }
@@ -2219,15 +2229,33 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   font-size: 12px;
 }
 .amigos-detail-dialog {
-  width: min(920px, calc(100vw - 32px));
+  width: min(1180px, calc(100vw - 32px));
   max-height: calc(100vh - 32px);
   overflow: hidden;
 }
-.amigos-detail-content { display: flex; flex-direction: column; gap: 20px; }
+.amigos-detail-content { display: flex; min-height: 0; flex-direction: column; gap: 20px; overflow-y: auto; }
 .amigos-detail-section { padding-top: 16px; border-top: 1px solid var(--border); }
-.amigos-detail-section:first-of-type { padding-top: 0; border-top: 0; }
 .amigos-detail-section h3 { margin: 0 0 10px; color: var(--fg); font-size: 15px; }
+.amigos-detail-overview { padding: 14px 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg2); }
+.amigos-detail-overview h3 { margin: 0; color: var(--fg); font-size: 15px; }
+.amigos-detail-overview-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.amigos-detail-overview-head .amigos-attention { max-width: 420px; }
 .amigos-detail-status { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.amigos-integration {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-top: 11px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg3);
+  font-size: 12px;
+}
+.amigos-integration span { color: var(--muted); }
+.amigos-integration-working { border-color: rgba(88, 166, 255, 0.45); }
+.amigos-integration-done strong { color: var(--accent2); }
 .amigos-detail-goal { max-width: 72ch; font-size: 15px; line-height: 1.65; overflow-wrap: anywhere; }
 .amigos-member-grid {
   display: grid;
@@ -2266,24 +2294,64 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .amigos-message-body p { margin: 0; white-space: pre-wrap; line-height: 1.65; overflow-wrap: anywhere; }
 .amigos-message-body time { display: block; margin-top: 8px; color: var(--muted); font-size: 11px; }
 
-/* 受入プレビューと納品棚 */
-.amigos-preview-list { display: flex; flex-direction: column; gap: 8px; }
-.amigos-preview-file { border: 1px solid var(--border); border-radius: 8px; background: var(--bg2); }
-.amigos-preview-file summary {
+/* 受入プレビューと納品棚: 検収ダイアログと同じファイル一覧 + 内容ペイン */
+.amigos-received-section > summary {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  min-height: 40px;
-  padding: 8px 12px;
+  gap: 8px 14px;
+  min-height: 44px;
   cursor: pointer;
+  list-style: none;
 }
+.amigos-received-section > summary::-webkit-details-marker { display: none; }
+.amigos-received-section > summary::before { content: '›'; flex: none; color: var(--muted); font-size: 18px; transition: transform 180ms ease; }
+.amigos-received-section[open] > summary::before { transform: rotate(90deg); }
+.amigos-received-title { color: var(--fg); font-size: 15px; font-weight: 600; }
+.amigos-received-summary { color: var(--muted); font-size: 12px; }
+.amigos-received-content { padding-top: 10px; }
+.amigos-received-content > .muted:first-child { margin-top: 0; }
+.amigos-preview-list { min-width: 0; }
+.amigos-artifact-workspace {
+  display: grid;
+  grid-template-columns: minmax(210px, 28%) minmax(0, 1fr);
+  min-width: 0;
+  min-height: 360px;
+  max-height: min(58vh, 620px);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg2);
+}
+.amigos-artifact-files { display: flex; min-width: 0; flex-direction: column; overflow: hidden; border-right: 1px solid var(--border); }
+.amigos-artifact-files-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 42px; padding: 9px 12px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+.amigos-artifact-file-list { min-height: 0; overflow-y: auto; }
+.amigos-artifact-file {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  padding: 8px 12px;
+  overflow: hidden;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+}
+.amigos-artifact-file:hover { background: rgba(88, 166, 255, 0.10); }
+.amigos-artifact-file.active { background: rgba(88, 166, 255, 0.18); box-shadow: inset 3px 0 var(--accent); }
+.amigos-artifact-file span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.amigos-artifact-file small { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+.amigos-artifact-preview { min-width: 0; overflow: auto; background: var(--bg); }
+.amigos-preview-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; min-height: 44px; padding: 9px 14px; border-bottom: 1px solid var(--border); background: var(--bg2); }
 .amigos-preview-path { min-width: 0; overflow-wrap: anywhere; }
-.amigos-preview-file summary small { color: var(--muted); }
-.amigos-preview-body { padding: 0 12px 12px; }
+.amigos-preview-heading small { color: var(--muted); }
+.amigos-preview-body { min-width: 0; padding: 14px; }
 .amigos-preview-doc { max-width: 78ch; line-height: 1.7; overflow-wrap: anywhere; }
 .amigos-preview-text {
-  max-height: 420px;
   margin: 0;
   padding: 10px;
   overflow: auto;
@@ -2295,6 +2363,7 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .amigos-preview-image { max-width: 100%; height: auto; border-radius: 6px; }
 .amigos-accept-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
 .amigos-accept-actions button { min-height: 44px; }
+.amigos-export-status:empty { display: none; }
 
 .amigos-received-line {
   padding: 7px 10px;
@@ -2307,9 +2376,14 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 
 @media (max-width: 700px) {
   .amigos-mission-card { padding: 14px; }
+  .amigos-card-footer { align-items: stretch; flex-direction: column; }
   .amigos-accept-actions button { width: 100%; }
   .amigos-card-actions, .amigos-card-actions button { width: 100%; }
   .amigos-detail-dialog { width: calc(100vw - 16px); max-height: calc(100vh - 16px); }
+  .amigos-detail-overview-head { flex-direction: column; }
+  .amigos-artifact-workspace { grid-template-columns: minmax(0, 1fr); max-height: none; }
+  .amigos-artifact-files { max-height: 210px; border-right: 0; border-bottom: 1px solid var(--border); }
+  .amigos-artifact-preview { min-height: 280px; max-height: 52vh; }
   .amigos-message summary { align-items: flex-start; flex-wrap: wrap; }
   .amigos-message-kind { min-width: 0; }
   .amigos-message-answer { margin-left: auto; }

@@ -21,11 +21,16 @@ kiro-cli 互換のため、chat などのサブコマンドと --trust-all-tools
 
 from __future__ import annotations   # 古い python3（3.9 等）でも起動できるようにする
 
+import contextlib
 import datetime as dt
 import os
 import select
+import shutil
+import subprocess
 import sys
+import termios
 import time
+from pathlib import Path
 
 DEFAULT_DELAY = 5.0
 # 複数行プロンプトは paste-buffer で 1 行ずつ届くため、この間隔で続きが来なければ
@@ -55,18 +60,77 @@ def _now() -> str:
     return dt.datetime.now().strftime("%H:%M:%S")
 
 
+@contextlib.contextmanager
+def _no_line_editing():
+    """端末の行編集（正準モード）を切る。
+
+    正準モードのままだと 1 行の長さに上限（macOS は 1024 バイト）があり、それを超える
+    プロンプトは端末ドライバに捨てられて改行が届かず、読み取りが永久に止まる。
+    実際 `kiro-loop send` は複数行プロンプトを 1 行に連結して送るため、長いプロンプトで
+    確実に踏む。kiro-cli のような TUI は自前で入力を扱うのでこの制限を受けない。
+    """
+    if not sys.stdin.isatty():
+        yield
+        return
+    fd = sys.stdin.fileno()
+    saved = termios.tcgetattr(fd)
+    try:
+        mode = termios.tcgetattr(fd)
+        mode[3] &= ~termios.ICANON        # lflag: 行編集を切る（ECHO と ISIG は残す）
+        mode[6][termios.VMIN] = 1
+        mode[6][termios.VTIME] = 0
+        termios.tcsetattr(fd, termios.TCSANOW, mode)
+        yield
+    finally:
+        termios.tcsetattr(fd, termios.TCSAFLUSH, saved)
+
+
 def _read_message() -> str | None:
     """1 通分の入力を読む（続けて届いた行は同じメッセージとして束ねる）。"""
-    first = sys.stdin.readline()
-    if not first:
-        return None
-    lines = [first.rstrip("\n")]
-    while select.select([sys.stdin], [], [], _COALESCE_SEC)[0]:
-        nxt = sys.stdin.readline()
-        if not nxt:
-            break
-        lines.append(nxt.rstrip("\n"))
-    return "\n".join(lines).strip()
+    fd = sys.stdin.fileno()
+    buf = b""
+    while True:
+        # 改行まで来ていて、続きが途切れたら 1 通として確定する
+        if buf and (b"\n" in buf or b"\r" in buf):
+            if not select.select([fd], [], [], _COALESCE_SEC)[0]:
+                break
+        elif not select.select([fd], [], [], 1.0)[0]:
+            continue                       # 入力待ち（人が打っている途中）
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            return buf.decode("utf-8", errors="replace").strip() or None
+        if chunk.startswith(b"\x04") and not buf:
+            return None                    # Ctrl+D
+        buf += chunk
+    text = buf.decode("utf-8", errors="replace").replace("\r", "\n")
+    return "\n".join(line.strip() for line in text.split("\n")).strip()
+
+
+_LOOP_SCRIPT = Path(__file__).resolve().parent.parent / "kiro-loop.py"
+
+
+def _release_slot() -> None:
+    """実行枠（スロット）を解放する。
+
+    本番では kiro-cli の agent hook が `kiro-loop slot-release` を呼ぶ。スタブにはフックが
+    無いので自分で呼ぶ。これをしないと、外部からの送信（agent-dashboard や kiro-loop send）
+    で取られた枠が猶予時間（既定 2 時間）まで残り、そのペインが「応答中」のまま止まる。
+    デーモン自身の定期送信は SlotMonitor が解放するので、そちらには影響しない。
+    """
+    if not os.environ.get("TMUX_PANE"):
+        return
+    cli = shutil.which("kiro-loop") or shutil.which("agent-loop")
+    if cli:
+        argv = [cli, "slot-release"]
+    elif _LOOP_SCRIPT.is_file():
+        argv = [sys.executable, str(_LOOP_SCRIPT), "slot-release"]
+    else:
+        return
+    try:
+        subprocess.run(argv, timeout=15,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass          # 解放できなくても応答は続ける（猶予時間で自動解放される）
 
 
 def _respond(message: str, delay: float) -> None:
@@ -79,12 +143,10 @@ def _respond(message: str, delay: float) -> None:
     sys.stdout.flush()
     time.sleep(delay)
     print(f"[stub] {_now()} 完了しました。これはスタブの応答です（LLM は呼んでいません）。")
+    _release_slot()
 
 
-def main() -> int:
-    delay = _delay_seconds(sys.argv[1:])
-    print("kiro-cli スタブを起動しました（LLM は呼びません）。")
-    print(f"受け取ったプロンプトに約 {delay:.0f} 秒で応答します。終了は Ctrl+C。")
+def _loop(delay: float) -> None:
     while True:
         # 最終行を `>` だけにする = kiro-loop から見た「待機中」
         print("\n>", end="", flush=True)
@@ -102,6 +164,14 @@ def main() -> int:
             _respond(message, delay)
         except KeyboardInterrupt:
             print("\n[stub] 中断しました。")
+
+
+def main() -> int:
+    delay = _delay_seconds(sys.argv[1:])
+    print("kiro-cli スタブを起動しました（LLM は呼びません）。")
+    print(f"受け取ったプロンプトに約 {delay:.0f} 秒で応答します。終了は Ctrl+C。")
+    with _no_line_editing():
+        _loop(delay)
     print("\n[stub] 終了します。")
     return 0
 
