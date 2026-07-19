@@ -340,3 +340,15 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-19 20:59:47 === project watch: 監視中（charter 更新/フィードバック待ち）===
 - 2026-07-19 21:38:27 commands 取り込み失敗: viewer-approve-sibling-163827-1784464704147.json: approve sibling-163827 が失敗 (exit 1)
 - 2026-07-19 21:38:27 === project 開始 v1 acceptance=2 ===
+- 2026-07-19 21:38:28 intake NG (exit 2): codd-gate tasks --debt --repos ./repos.json
+- 2026-07-19 21:38:28 === agent-project 開始 tasks=3 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-19 21:38:28 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
+- 2026-07-19 21:38:28 === agent-project 停止 reason=drained cycles=0 done=0 blocked=1 notified=False promoted=0 ===
+- 2026-07-19 21:38:30 state-git 同期: import=6 export=4
+- 2026-07-19 21:38:30 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-19 21:38:30 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-19 21:38:37 commands 取り込み失敗: viewer-approve-sibling-163827-1784464704147.json: approve sibling-163827 が失敗 (exit 1)
+- 2026-07-19 21:38:37 === project 開始 v1 acceptance=2 ===
+- 2026-07-19 21:38:37 === agent-project 開始 tasks=3 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-19 21:38:37 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
+- 2026-07-19 21:38:37 === agent-project 停止 reason=drained cycles=0 done=0 blocked=1 notified=False promoted=0 ===
