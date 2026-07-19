@@ -177,3 +177,4 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-19 16:46:07 === agent-project 停止 reason=drained cycles=2 done=0 blocked=1 notified=True promoted=0 ===
 - 2026-07-19 16:46:09 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
 - 2026-07-19 16:46:09 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-19 17:15:28 === update: 更新を適用（0fa319f0）===
