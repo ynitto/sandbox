@@ -466,3 +466,4 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-20 05:08:59 run 再開: sibling-163827 は req-ef1f92c3-sibling-163827-r0 の失敗ノードだけをやり直します（done は温存）
 - 2026-07-20 06:09:00 flow detach: sibling-163827 の run req-ef1f92c3-sibling-163827-r0 を failed（agent-flow run タイムアウト（3600s））
 - 2026-07-20 06:09:01 cycle 1: sibling-163827 NG 積み直し (1/2) — agent-flow run タイムアウト（3600s）
+- 2026-07-20 06:09:04 run 再開: sibling-163827 は req-ef1f92c3-sibling-163827-r0 の失敗ノードだけをやり直します（done は温存）
