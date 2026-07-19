@@ -1,13 +1,19 @@
 {
   "id": "t6",
-  "who": "worker-2",
+  "who": "worker-1",
   "status": "failed",
-  "output": "実行エラー: workspace rebase が競合しました（ap/agent_project-codd_gate-163827）: Rebasing (1/1)\nerror: could not apply 71412f4... [agent-flow] t6 (req-ef1f92c3-agent_project-codd_gate-163827-r4)\nhint: Resolve all conflicts manually, mark them as resolved with\nhint: \"git add/rm <conflicted_files>\", then run \"git rebase --continue\".\nhint: You can instead skip this commit: run \"git",
-  "finished_at": "2026-07-18T22:27:45Z",
+  "output": "実行エラー: [agent-error:transient] claude タイムアウト（900s 超過）（3 回試行後）",
+  "finished_at": "2026-07-19T01:14:53Z",
   "data": {
-    "error_class": "content"
+    "error_class": "transient",
+    "attempts": 3
   },
   "artifacts": [
-    "artifacts/t6/intake-and-test-migration.md"
+    "artifacts/t6/doctor-reference-for-t4.diff",
+    "artifacts/t6/intake-and-test-migration.md",
+    "artifacts/t6/mutation-matrix.py",
+    "artifacts/t6/mutation-matrix.txt",
+    "artifacts/t6/mutation-probe.py",
+    "artifacts/t6/tests-change.diff"
   ]
 }

@@ -1,0 +1,88 @@
+=== baseline（変異なし）===
+  TestHookResolution: rc=0 ['Ran 11 tests in 0.010s', 'OK']
+  TestDoctorWiringFindings: rc=0 ['Ran 7 tests in 0.004s', 'OK']
+  TestIntake: rc=0 ['Ran 11 tests in 0.831s', 'OK']
+
+=== mutants ===
+  M1 検出        フック解決そのもの（常に None）
+       -> ERROR: test_config_name_wins_over_scan (__main__.TestHookResolution); ERROR: test_unrelated_siblings_are_not_imported (__main__.TestHookResolution); FAIL: test_absence_is_cached_too (__main__.TestHook
+  M2 検出        前置フィルタ（無関係 sibling を総当たり import）
+       -> FAIL: test_unrelated_siblings_are_not_imported (__main__.TestHookResolution)
+  M3 検出        明示指定の失敗で自動検出へ落ちない
+       -> FAIL: test_explicit_name_does_not_fall_back_to_scan (__main__.TestHookResolution)
+  M4 検出        解決結果のキャッシュ
+       -> FAIL: test_result_is_cached_per_capability (__main__.TestHookResolution)
+  M5 検出        必須属性の検査（契約不足の module を採用）
+       -> FAIL: test_capabilities_resolve_independently (__main__.TestHookResolution); FAIL: test_module_without_required_attr_is_rejected (__main__.TestHookResolution)
+  M6 検出        能力キー名（wiring.detect -> detect へ改名）
+       -> ERROR: test_unrelated_siblings_are_not_imported (__main__.TestHookResolution); FAIL: test_real_package_resolves_wiring_capabilities (__main__.TestHookResolution); FAIL: test_scan_finds_provider_by_cap
+  M7 検出        sibling 不在時に sys.path を汚さない
+       -> FAIL: test_missing_sibling_dir_resolves_to_none (__main__.TestHookResolution)
+  M8 検出        片側だけ解決したときプロバイダを呼ばない
+       -> FAIL: test_half_resolved_provider_does_not_run (__main__.TestDoctorWiringFindings) (present='wiring.detect')
+  M9 検出        プロバイダ例外の畳み込み
+       -> ERROR: test_cmd_doctor_survives_broken_provider (__main__.TestDoctorWiringFindings); ERROR: test_provider_exception_degrades_to_empty (__main__.TestDoctorWiringFindings)
+  M10 検出        明示指定ミスの warn（黙って空へ）
+       -> FAIL: test_unresolvable_explicit_provider_warns (__main__.TestDoctorWiringFindings)
+  M11 検出        注入引数の受け渡し（which を握り潰す）
+       -> FAIL: test_injected_arguments_reach_provider (__main__.TestDoctorWiringFindings)
+  M12 検出        id の型正規化（生の値を素通し）
+       -> ERROR: test_run_intake_accepts_non_string_id (__main__.TestIntake); ERROR: test_run_intake_dedups_non_string_id (__main__.TestIntake); FAIL: test_parse_intake_records_normalizes_title_and_id (__main__
+  M13 検出        title の正規化（strip しない）
+       -> FAIL: test_parse_intake_records_normalizes_title_and_id (__main__.TestIntake)
+  M14 検出        プロバイダ名を本体へ書き戻す（走査が空振りしたら固有名で import）
+       -> FAIL: test_empty_sibling_dir_resolves_to_none (__main__.TestHookResolution)
+  M15 検出        プロバイダの findings を本体が解釈する（不透明性）
+       -> FAIL: test_provider_findings_pass_through (__main__.TestDoctorWiringFindings)
+  M16 検出        未指定の不在も所見にする（無言縮退）
+       -> FAIL: test_no_provider_degrades_to_empty (__main__.TestDoctorWiringFindings)
+  M17 検出        未知フィールドの素通し（本体が検出器の語彙を持つ）
+       -> FAIL: test_parse_intake_records_passes_unknown_fields_through (__main__.TestIntake)
+
+=== 空振り一覧 ===
+なし（全変異を検出）
+baseline: rc=0 落ちたテスト=なし（新テスト総数 23）
+M1   ho 7本が赤 ['TestHookResolution.test_absence_is_cached_too', 'TestHookResolution.test_capabilities_resolve_independently', 'TestHookResolution.test_config_name_wins_over_scan'] +他
+M2   ho 1本が赤 ['TestHookResolution.test_unrelated_siblings_are_not_imported']
+M3   ho 2本が赤 ['TestDoctorWiringFindings.test_unresolvable_explicit_provider_warns', 'TestHookResolution.test_explicit_name_does_not_fall_back_to_scan']
+M4   ho 1本が赤 ['TestHookResolution.test_result_is_cached_per_capability']
+M5   ho 2本が赤 ['TestHookResolution.test_capabilities_resolve_independently', 'TestHookResolution.test_module_without_required_attr_is_rejected']
+M6   ho 3本が赤 ['TestHookResolution.test_real_package_resolves_wiring_capabilities', 'TestHookResolution.test_scan_finds_provider_by_capability', 'TestHookResolution.test_unrelated_siblings_are_not_imported']
+M7   ho 1本が赤 ['TestHookResolution.test_missing_sibling_dir_resolves_to_none']
+M8   do 1本が赤 ['TestDoctorWiringFindings.test_half_resolved_provider_does_not_run']
+M9   do 2本が赤 ['TestDoctorWiringFindings.test_cmd_doctor_survives_broken_provider', 'TestDoctorWiringFindings.test_provider_exception_degrades_to_empty']
+M10  do 1本が赤 ['TestDoctorWiringFindings.test_unresolvable_explicit_provider_warns']
+M11  do 1本が赤 ['TestDoctorWiringFindings.test_injected_arguments_reach_provider']
+M12  mo 4本が赤 ['TestIntake.test_parse_intake_records_normalizes_title_and_id', 'TestIntake.test_run_intake_accepts_non_string_id', 'TestIntake.test_run_intake_blank_id_falls_back_to_generated_id'] +他
+M13  mo 1本が赤 ['TestIntake.test_parse_intake_records_normalizes_title_and_id']
+M14  ho 2本が赤 ['TestHookResolution.test_absence_is_cached_too', 'TestHookResolution.test_empty_sibling_dir_resolves_to_none']
+M15  do 1本が赤 ['TestDoctorWiringFindings.test_provider_findings_pass_through']
+M16  do 2本が赤 ['TestDoctorWiringFindings.test_half_resolved_provider_does_not_run', 'TestDoctorWiringFindings.test_no_provider_degrades_to_empty']
+M17  mo 1本が赤 ['TestIntake.test_parse_intake_records_passes_unknown_fields_through']
+
+=== 被覆行列（テスト -> それを殺した変異）===
+  TestHookResolution.test_scan_finds_provider_by_capability  M1,M6
+  TestHookResolution.test_config_name_wins_over_scan         M1
+  TestHookResolution.test_explicit_name_does_not_fall_back_to_scan M3
+  TestHookResolution.test_module_without_required_attr_is_rejected M5
+  TestHookResolution.test_capabilities_resolve_independently M1,M5
+  TestHookResolution.test_empty_sibling_dir_resolves_to_none M14
+  TestHookResolution.test_missing_sibling_dir_resolves_to_none M7
+  TestHookResolution.test_unrelated_siblings_are_not_imported M1,M2,M6
+  TestHookResolution.test_result_is_cached_per_capability    M1,M4
+  TestHookResolution.test_absence_is_cached_too              M1,M14
+  TestHookResolution.test_real_package_resolves_wiring_capabilities M1,M6
+  TestDoctorWiringFindings.test_provider_findings_pass_through M15
+  TestDoctorWiringFindings.test_no_provider_degrades_to_empty M16
+  TestDoctorWiringFindings.test_half_resolved_provider_does_not_run M8,M16
+  TestDoctorWiringFindings.test_provider_exception_degrades_to_empty M9
+  TestDoctorWiringFindings.test_injected_arguments_reach_provider M11
+  TestDoctorWiringFindings.test_unresolvable_explicit_provider_warns M3,M10
+  TestDoctorWiringFindings.test_cmd_doctor_survives_broken_provider M9
+  TestIntake.test_parse_intake_records_normalizes_title_and_id M12,M13
+  TestIntake.test_parse_intake_records_passes_unknown_fields_through M17
+  TestIntake.test_run_intake_accepts_non_string_id           M12
+  TestIntake.test_run_intake_blank_id_falls_back_to_generated_id M12
+  TestIntake.test_run_intake_dedups_non_string_id            M12
+
+空振り候補: なし（新テスト 23 本すべてが最低1つの変異を検出）

@@ -1,0 +1,55 @@
+{
+  "absent_provider_scan": {
+    "wiring.detect": null,
+    "wiring.findings": null
+  },
+  "build_config": {
+    "bare": {
+      "hooks": {},
+      "intake_cmd": null,
+      "provider_imported_by_config_load": [],
+      "regression_cmd": null
+    },
+    "explicit_commands": {
+      "hooks": {},
+      "intake_cmd": "my-intake",
+      "provider_imported_by_config_load": [],
+      "regression_cmd": "my-regression"
+    },
+    "hooks_bogus": {
+      "hooks": {
+        "wiring": "no_such_module"
+      },
+      "intake_cmd": null,
+      "provider_imported_by_config_load": [],
+      "regression_cmd": null
+    },
+    "hooks_configured": {
+      "hooks": {
+        "wiring": "codd_gate_wiring"
+      },
+      "intake_cmd": null,
+      "provider_imported_by_config_load": [],
+      "regression_cmd": null
+    },
+    "repos_json_present": {
+      "hooks": {},
+      "intake_cmd": null,
+      "provider_imported_by_config_load": [],
+      "regression_cmd": null
+    }
+  },
+  "capability_resolution": {
+    "wiring.detect": "codd_gate_wiring",
+    "wiring.findings": "codd_gate_wiring"
+  },
+  "sibling_candidates_in_scan_order": [
+    "codd_gate_base",
+    "codd_gate_debt",
+    "codd_gate_detect",
+    "codd_gate_regression",
+    "codd_gate_routing",
+    "codd_gate_status",
+    "codd_gate_wiring"
+  ]
+}

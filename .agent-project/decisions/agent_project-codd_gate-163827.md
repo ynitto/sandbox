@@ -22,3 +22,10 @@
 - reason  : チェックで承認
 - affects : agent_project-codd_gate-163827 → ready
 
+## DR-0005  2026-07-19  actor: nitto
+- context : agent_project-codd_gate-163827（agent_project を codd_gate 非依存の汎用フックへ整理する）を人の判断から復帰
+- action  : approve-and-fix
+- reason  : 成果を確認して完了を承認
+- affects : agent_project-codd_gate-163827 → ready
+- learn: agent_project を codd_gate 非依存の汎用フックへ整理する :: 成果を確認して完了を承認
+

@@ -1,0 +1,30 @@
+{
+  "id": "t4",
+  "who": "worker-2",
+  "status": "done",
+  "output": "# t4 完了報告 — doctor の配線参照を汎用フックへ置換\n\n## (a) 成果\n\n変更は `tools/agent-project/agent_project/doctor.py` の1ファイルのみ。実測の詳細は `artifacts/t4/equivalence-measurement.md`。\n\n- `_wiring_module()` を**削除**（`codd_gate_wiring` を直に import していた唯一の箇所）。解決は t3 が入れた `_hook_provider(\"wiring.detect\"/\"wiring.findings\", cfg)` へ委譲。\n- `doctor_wiring_findings` は名前・シグネチャ・呼び出し元（`doctor.py:540`）を変えずに中身だけ差し替え。`detect` と `render` の**両方**が揃ったときだけプロバイダ経路へ入り、プロバイダ由来の例外は畳む。\n- `_hook_misconfig_findings(cfg)` を追加。明示指定の解決失敗にだけ `warn` を出し、未指定での不在は無言。\n- docstring から `codd_gate_wiring` を除去。「解決失敗は import 失敗に限らない」「no-op 縮退の理由」という判断内容は残し、固有名だけ落とした。\n\nパッケージ内の `codd_gate` は 0 件（厳格 grep・受入 grep とも空）。\n\n## (b) 検証\n\n**findings 等価性 — 4通りすべて diff 空。** before（HEAD 38a1ccd8 の doctor.py）と after を同一手順の4ツリーへ配置し、`which=None` / `which=found` × provider あり/なしで比較。件数だけでなく各 finding の category/severity/title/evidence/fix まで含めて完全一致。\n\n| 環境 | which=None | which=found |\n|---|---|---|\n| provider あり | 1件 info（変化なし） | 1件 warn（変化なし） |\n| provider なし | 0件（変化なし） | 0件（変化なし） |\n\n**degrade** — `codd_gate_wiring` / `codd_gate_regression` が import 経路のどこにも無いツリーで実 CLI（`agent-project doctor --json`）を実行。例外なく完走し JSON を出力、provider あり環境と `unresolved` 同数。\n\n**テスト** — 全体 714 tests / failures=3。t2 §5 がスコープ外と宣言した main 由来の3件（`TestDaemonRouting` / `TestJournalRotation` / `TestProjectLayer`）と一致、増加なし。`TestCoddGateNoAutoWiring TestIntake TestLoopEngineering` は 22 tests OK。\n\n**実装途中で契約との乖離を2件、実測で見つけて直した。** ①能力キー2つをループして warn を出していたため、`hooks.wiring` 1つの設定ミスで警告が2件並んだ（契約 §5 は1件）→ 設定キー単位で1件へ集約。②`hooks` の型が不正でも sibling 自動検出が当たると warn が出なかった → 型チェックをプロバイダ解決の成否と切り離し、常に評価するようにした。書いた設定が効いていない事実は自動検出の当たり外れと無関係なため。\n\n## (c) 前提・未解決・範囲外\n\n**採用した前提**: ①「変更前」は本ブランチ HEAD（t3/t5 適用済み）とした。t3 の `hooks.py` が前提の置換であり、main との比較は意味を持たないため。②契約 §4 の `_hook_misconfig_findings` はプロバイダ未解決時のみ返す形で書かれているが、上記②の理由で型不正のみ解決成功時も返すよう拡張した（既定 `hooks={}` では常に空なので等価性は保たれる。実測で確認済み）。③固定 root で測った理由は tempfile 名が finding の `fix` に混ざり実体が同じでも差分が出るため。\n\n**未解決**: なし。契約 §4 の4項目はすべて実装・実測済み。\n\n**範囲外で気づいた点**: `TestDoctorWiringFindings` / `TestHookResolution` の新設は契約 §5 で t6（intake+tests 担当）の割り当てなので手を出していない。本タスクでは同等の確認をプローブスクリプトで実施しており、その6ケースは §5 の表とそのまま対応するので移植できる。\n\n@followup `_hook_misconfig_findings` の型不正チェックは wiring 系統に閉じている。将来 `HOOK_CAPABILITIES` に系統が増えると同じ warn が系統数だけ出る可能性があり、そのときは系統横断で1件へまとめる必要がある。",
+  "finished_at": "2026-07-19T01:09:43Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox",
+      "branch": "ap/agent_project-codd_gate-163827",
+      "commit": "ce6337dfafa74bd0b484803a83c4d9916b447e3e",
+      "target": "main",
+      "path": "tools/agent-project"
+    }
+  },
+  "artifacts": [
+    "artifacts/t4/equivalence-measurement.md",
+    "artifacts/t4/err.after.txt",
+    "artifacts/t4/err.before.txt",
+    "artifacts/t4/no-provider.after.json",
+    "artifacts/t4/no-provider.before.json",
+    "artifacts/t4/no-regression.after.json",
+    "artifacts/t4/no-regression.before.json",
+    "artifacts/t4/no-wiring.after.json",
+    "artifacts/t4/no-wiring.before.json",
+    "artifacts/t4/wiring_probe.py",
+    "artifacts/t4/with-provider.after.json",
+    "artifacts/t4/with-provider.before.json"
+  ]
+}

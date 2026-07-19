@@ -1,0 +1,52 @@
+{
+  "absent_provider_scan": "<no scan hook>",
+  "build_config": {
+    "bare": {
+      "hooks": "<no attr>",
+      "intake_cmd": null,
+      "provider_imported_by_config_load": [],
+      "regression_cmd": null
+    },
+    "explicit_commands": {
+      "hooks": "<no attr>",
+      "intake_cmd": "my-intake",
+      "provider_imported_by_config_load": [],
+      "regression_cmd": "my-regression"
+    },
+    "hooks_bogus": {
+      "hooks": "<no attr>",
+      "intake_cmd": "codd-gate tasks --debt --repos ./repos.json",
+      "provider_imported_by_config_load": [],
+      "regression_cmd": "codd-gate verify --base \"$KIRO_BASE_REV\" --repos ./repos.json"
+    },
+    "hooks_configured": {
+      "hooks": "<no attr>",
+      "intake_cmd": "codd-gate tasks --debt --repos ./repos.json",
+      "provider_imported_by_config_load": [],
+      "regression_cmd": "codd-gate verify --base \"$KIRO_BASE_REV\" --repos ./repos.json"
+    },
+    "repos_json_present": {
+      "hooks": "<no attr>",
+      "intake_cmd": "codd-gate tasks --debt --repos ./repos.json",
+      "provider_imported_by_config_load": [
+        "codd_gate_detect",
+        "codd_gate_routing",
+        "codd_gate_status",
+        "codd_gate_wiring"
+      ],
+      "regression_cmd": "codd-gate verify --base \"$KIRO_BASE_REV\" --repos ./repos.json"
+    }
+  },
+  "capability_resolution": {
+    "<legacy>_codd_gate_wiring_module": "codd_gate_wiring"
+  },
+  "sibling_candidates_in_scan_order": [
+    "codd_gate_base",
+    "codd_gate_debt",
+    "codd_gate_detect",
+    "codd_gate_regression",
+    "codd_gate_routing",
+    "codd_gate_status",
+    "codd_gate_wiring"
+  ]
+}

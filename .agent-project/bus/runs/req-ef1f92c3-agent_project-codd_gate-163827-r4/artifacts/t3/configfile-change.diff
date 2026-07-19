@@ -1,0 +1,85 @@
+diff --git a/tools/agent-project/agent-project.yaml.example b/tools/agent-project/agent-project.yaml.example
+index 6c8214ae..3b82bb9e 100644
+--- a/tools/agent-project/agent-project.yaml.example
++++ b/tools/agent-project/agent-project.yaml.example
+@@ -179,6 +179,13 @@ max_spawn: 20              # 1 run で生成できる派生タスク（followup
+ # intake_cmd: codd-gate tasks --debt
+ # intake_interval: 600            # 実行間隔（秒。既定 600。0 以下で毎パス/毎 poll）
+ 
++# 任意フックのプロバイダ指定（能力キー -> module 名）。本体はプロバイダの固有名を持たず、
++# 未指定なら agent-project 直下の sibling を「必要な関数を持つか」で走査して自動検出する。
++# 通常は書かなくてよい。別実装へ差し替える／自動検出の当たりを固定したいときだけ書く。
++# 明示した名前が解決できない場合は自動検出へ落ちず無効になる（doctor が warn で知らせる）。
++# hooks:
++#   wiring: codd_gate_wiring      # 配線検出（detect_wiring / doctor_findings）のプロバイダ
++
+ # ---------------------------------------------------------------------------
+ # プロジェクト層（project サブコマンド: charter 駆動の plan→execute→evaluate）
+ # ---------------------------------------------------------------------------
+diff --git a/tools/agent-project/agent_project/__init__.py b/tools/agent-project/agent_project/__init__.py
+index 81691757..a6069857 100644
+--- a/tools/agent-project/agent_project/__init__.py
++++ b/tools/agent-project/agent_project/__init__.py
+@@ -20,6 +20,7 @@ import pkgutil as _pkgutil
+ # top-to-bottom で NameError なく実行できた以上、import 時の前方参照はすべて満たされる。
+ _FRAGMENTS = (
+     "_head",       # 共有 import と最下層の定数
++    "hooks",       # 任意フック（外部プロバイダ module）の能力ベース解決
+     "model",       # Task / enqueue / cohort / intake
+     "policy",      # Policy / 自律レベル / パス保護ゲート
+     "decisions",   # 決定記録 / DR 学習 / ltm 昇格
+diff --git a/tools/agent-project/agent_project/config.py b/tools/agent-project/agent_project/config.py
+index cd6be688..47e9ca2d 100644
+--- a/tools/agent-project/agent_project/config.py
++++ b/tools/agent-project/agent_project/config.py
+@@ -123,6 +123,9 @@ class Config:
+     regression_revert: bool = False      # 回帰時に作業ツリーの未コミット変更を巻き戻す（既定 off）
+     intake_cmd: "str | None" = None      # 外部の決定的ゲート/検出器から修復タスクを汲み上げる取り込みコマンド
+     intake_interval: float = 600.0       # intake_cmd の実行間隔（秒）。0 以下なら毎回（パス開始/idle poll 毎）
++    # 任意フックのプロバイダ指定（能力キー -> module 名）。本体はプロバイダの固有名を持たず、
++    # 未指定なら sibling ディレクトリを能力で走査して引き当てる（hooks.py の _hook_provider）。
++    hooks: dict = field(default_factory=dict)
+     ltm: bool = False               # ltm-use 長期記憶への昇格＋横断 recall（既定 off: home へ書くため明示）
+     ltm_home: "Path | None" = None  # ltm-use ストアのルート（既定 KIRO_LTM_HOME→~/.claude）
+     promote_threshold: int = 2      # learn ルールがこの回数以上効いたら昇格
+diff --git a/tools/agent-project/agent_project/configfile.py b/tools/agent-project/agent_project/configfile.py
+index b8095517..2c9a187f 100644
+--- a/tools/agent-project/agent_project/configfile.py
++++ b/tools/agent-project/agent_project/configfile.py
+@@ -117,6 +117,7 @@ CONFIG_DEFAULTS = {
+     "regression_cmd": None,     # done 確定前のグローバル回帰検査コマンド（巻き込み事故の検知）
+     "regression_revert": False,
+     "intake_cmd": None,         # 外部ゲート/検出器から修復タスクを汲み上げるコマンド（例: codd-gate tasks --debt）
++    "hooks": {},                # 任意フックのプロバイダ指定（能力キー -> module 名）。既定は sibling 自動検出
+     "intake_interval": 600.0,   # intake の実行間隔（秒）。0 以下で毎パス/毎 poll
+     "auto_level_max": "assisted",   # 自動昇格の ceiling（unattended への自動到達は明示時のみ）
+     "level_promote_after": 5,       # 昇格に要する連続 clean 数
+@@ -167,6 +168,19 @@ CONFIG_DEFAULTS = {
+ }
+ 
+ 
++def _normalize_hooks(raw) -> dict:
++    """`hooks:` を 能力キー -> module 名 の対応表へ正規化する。
++
++    設定ファイルは人が手で書くので型は保証されない。壊れていても例外にせず空（＝sibling 自動
++    検出）へ落とす——設定ミスでプロセスが起動しない方が、任意フックが効かないことより高くつく。
++    値の妥当性（その名前が import できるか）はここでは見ない。解決は _hook_provider の責務で、
++    明示指定が効いていないことは doctor が warn として可視化する。"""
++    if not isinstance(raw, dict):
++        return {}
++    return {str(k).strip(): str(v).strip()
++            for k, v in raw.items() if isinstance(v, str) and str(v).strip()}
++
++
+ def _find_config(explicit):
+     """設定ファイルの探索: 1) --config 明示 2) ./（ルート直下）3) ./.agent/ 4) ~/.agent/。
+     ルート直下を最優先にするのは 1 root = 1 プロジェクト構成で agent-project.yaml が
+@@ -298,6 +312,8 @@ def build_config(args) -> Config:
+         regression_revert=bool(getattr(args, "regression_revert", False)),
+         intake_cmd=getattr(args, "intake_cmd", None),
+         intake_interval=float(getattr(args, "intake_interval", 600.0) or 0.0),
++        # 型が壊れていても例外にせず既定（自動検出）へ落とす。設定ミスは doctor が warn で見せる。
++        hooks=_normalize_hooks(getattr(args, "hooks", None)),
+         require_progress=bool(getattr(args, "require_progress", False)),
+         auto_level=bool(getattr(args, "auto_level", False)),
+         auto_level_max=str(getattr(args, "auto_level_max", "assisted") or "assisted"),

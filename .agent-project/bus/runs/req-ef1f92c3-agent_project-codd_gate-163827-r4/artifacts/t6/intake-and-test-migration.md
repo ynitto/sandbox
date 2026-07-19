@@ -1,43 +1,44 @@
-# intake 境界の調整とテストの新境界追随（r4 / t6）
+# intake 境界とテストの新境界追随（r4 / t6）
 
-**切り口: 「旧名が残っていない」は追随の必要条件でしかない。テストが実際に何かを掴んでいる証拠は、フックを 1 箇所ずつ壊した変異体でテスト単位の被覆行列を取り、新テスト全件が最低 1 つの変異体で赤くなることでしか出せない。実測したら 1 本が実プロバイダの存在で通っていた空振りだった。**
+**切り口: 「旧名が残っていない」は空振りしていない証拠にならない。テスト 1 本ずつの被覆行列を変異解析で取り、新テスト 24 本すべてが最低 1 つの変異で赤くなることを実測した。最初の 13 変異では 4 本が誰にも殺されず残ったので、その 4 本が守っている性質を壊す変異を後から足して埋めた。あわせて、受入の grep を 1 回きりのゲートから常設の回帰ガードへ移した（名前は次の変更で戻ってくる）。**
 
-対象: `/var/folders/8c/s6jh85ls4tq3fmzkl0jk5jcc0000gn/T/agent-flow-ws-81333-t3as3cgh/sandbox`（HEAD `d5e03f4`）
+作業ツリー: `/var/folders/8c/.../agent-flow-ws-15863-kgpbpfhz/sandbox`（HEAD `11ef6b21` = t5）
+検証環境: ブランチ先端 `38a1ccd8`（= t3 の `hooks.py` を含む）を `git_worktree.py provision` で取得し、`/tmp` の scratch へ複製して実行（共有チェックアウトへは書き込んでいない）。
 
 ---
 
 ## 1. 変更
 
 ```
-tools/agent-project/agent_project/model.py        |  21 +-
-tools/agent-project/tests/test_agent_project.py   | 289 +++++++++++++++++++++++-
+tools/agent-project/tests/test_agent_project.py | 296 +++++++++++++++++++++
 ```
 
-`agent_project` 配下で触ったのは `model.py` の `_parse_intake_records` 1 関数だけ。`hooks.py` / `doctor.py` / `configfile.py` は t3・t4・t5 の担当なので手を出していない。
+**`agent_project` 配下は 1 行も変更していない。** テストの 296 行はすべて追加で、削除は 0 行（`git diff --numstat` = `296 0`）。
 
-### 1.1 intake 境界（`_parse_intake_records`）
+### 1.1 intake 境界 — 調整は不要だった
 
-実装契約 §3 の id / title 型正規化を入れた。JSON は id を数値で書けるが、`_gen_task_id` → `_slug_id` は `.strip()` を呼ぶ。正規化が無いと非文字列 id が `AttributeError` になり、`run_intake` の except（`ValueError` のみ）を抜けて watch ループごと落ちる。
+t2 契約 §3 の id / title 型正規化は t5 が `model.py` へ入れ済み（HEAD `11ef6b21`）。現物を読み直した結果、intake 側にこのタスクで直す境界は残っていない。
 
-| キー | 変更後 |
-|---|---|
-| `title` | `str(...).strip()` した値を spec に入れる（従来は検証のみで生値を素通し） |
-| `id` | `str(...).strip()`。空なら spec からキーごと落とす（＝自動採番へ） |
-| その他 | 素通し（変えない） |
+| 確認項目 | 現状 | 判定 |
+|---|---|---|
+| `_parse_intake_records` の汎用性 | title/id を正規化し、他フィールドは解釈せず素通し | 維持 |
+| id による冪等 enqueue | `run_intake` の `existing` 集合 + `_slug_id` 突合 | 維持 |
+| 特定検出器への依存 | module フック無し。差し込み点は `intake_cmd`（プロセス境界）のみ | 契約 §3 どおり |
+| パッケージ内の `codd_gate` | `model.py` に 0 件（`codd-gate` ハイフンの例示のみ。契約 §0.2 で許可） | 合格 |
 
-`errors` の文言・分類、レコード単位に落とす方針、`run_intake` の冪等ロジックはいずれも変えていない。schemas/task 相当の汎用 JSON パースのまま、特定検出器の知識は持たない。
+「変更が不要なら何も書き換えない」に従い、コードは触っていない。無理に手を入れると t5 の 23/23 差分検証済みの実装を壊すだけになる。
 
 ### 1.2 テストの新境界追随
 
 | 区分 | 内容 |
 |---|---|
-| 改名 | `TestCoddGateNoAutoWiring` → `TestNoAutoWiring`、`test_configfile_has_no_codd_gate_auto_wiring_hook` → `test_configfile_has_no_auto_wiring_hook`。docstring の `codd_gate_regression.py` 言及も一般名へ。`hasattr(km, "_apply_codd_gate_auto_wiring")` の**アサート文字列は残した**（禁止する対象の名前そのもの。契約 §5 の指示どおり） |
-| 新設 | `TestHookResolution`（10 本）— 能力表の固定、素の環境での sibling スキャン、設定明示の優先、フルキー > 前半キー、明示失敗でスキャンへ落ちないこと、契約不足 module の棄却、sibling 不在、前置フィルタ、キャッシュ（成功・`None` 両方） |
-| 新設 | `TestDoctorWiringFindings`（7 本）— findings 素通し、注入引数の到達、無言縮退、片欠け不走行（両方向）、プロバイダ例外の吸収、明示指定失敗の warn、非 dict hooks の warn |
-| 追加 | `TestIntake` へ 4 本 — パーサの正規化、非文字列 id の受理、非文字列 id の冪等、下流へ渡る spec が正規化済みであること |
-| 共通 | `_HookTestBase` — `_HOOK_CACHE.clear()` と `sys.path` / `sys.modules` の巻き戻しを `addCleanup` で担保 |
+| 新設 `TestHookResolution`（12 本） | 能力スキャン、設定明示の優先、明示失敗でスキャンへ落ちないこと、契約不足 module の棄却、能力ごとの独立解決、sibling 空 / 不在（`sys.path` を汚さないことまで）、前置フィルタ、キャッシュ（成功・`None` 両方）、素の環境での実解決、**本体がプロバイダの module 名を書いていないこと** |
+| 新設 `TestDoctorWiringFindings`（7 本） | findings 素通し、注入引数の到達、無言縮退、片欠け不走行（両方向・**呼ばれていないこと**を観測）、プロバイダ例外の吸収、明示指定失敗の warn、`cmd_doctor` が壊れたプロバイダで死なないこと |
+| `TestIntake` へ追加（5 本） | パーサの title/id 正規化、未知フィールドの素通し、非文字列 id の受理、空白 id の自動採番、非文字列 id の冪等 |
 
-注入点は設計メモ §7 のとおり `_hook_provider` に一本化した。`mock.patch.object(km, "_hook_provider", ...)` だけで doctor 側の全経路が差し替わる。走査対象ディレクトリの差し替えは `mock.patch.object(km, "__file__", ...)`（`_hook_provider` は sibling を `Path(__file__).resolve().parent.parent` で求め、exec 合成により `__file__` は共有名前空間の変数）。
+注入点は `_hook_provider` に一本化されているので、doctor 側は `mock.patch.object(km, "_hook_provider", ...)` だけで全経路が差し替わる。走査対象ディレクトリの差し替えは `km.__file__` の付け替え（`__init__.py` の exec 合成により断片内の `__file__` は共有名前空間の変数で、`_hook_sibling_dir()` はその 1 階層上を見る）。
+
+`test_package_does_not_name_sibling_providers` は契約 §0.1 の厳格 grep を常設テストにしたもの。禁止する名前を書き下さず sibling の実ファイル名から導くので、将来別のプロバイダが増えても効く。既存の `test_every_emitted_category_is_registered_and_labelled`（`doctor.py` のソースを読んでカテゴリ表と突き合わせる）と同じ、このファイルにすでにある書き方に合わせた。
 
 ---
 
@@ -46,104 +47,91 @@ tools/agent-project/tests/test_agent_project.py   | 289 +++++++++++++++++++++++-
 ### 2.1 旧名が残っていないこと
 
 ```
-$ grep -nE 'TestCoddGate|_codd_gate_wiring_module|doctor_codd_gate_findings|_codd_gate_debt_module|_wiring_module' \
+$ grep -nE '_codd_gate_wiring_module|doctor_codd_gate_findings|_codd_gate_debt_module|_wiring_module' \
     tools/agent-project/tests/test_agent_project.py
-(なし)
+(0 件)
 
-$ grep -nE 'codd_gate' tools/agent-project/tests/test_agent_project.py
-3943:        self.assertFalse(hasattr(km, "_apply_codd_gate_auto_wiring"))
+$ grep -nE 'CoddGate|codd_gate' tools/agent-project/tests/test_agent_project.py
+4173:class TestCoddGateNoAutoWiring(unittest.TestCase):
+4177:    sibling CLI（codd_gate_regression.py）でファイルへ恒久注入する。…
+4187:    def test_configfile_has_no_codd_gate_auto_wiring_hook(self):
+4189:        self.assertFalse(hasattr(km, "_apply_codd_gate_auto_wiring"))
 ```
 
-残る 1 行は「再導入を禁止する関数名」を書いた回帰ガードで、契約 §5 が明示的に残せと指示している箇所。
+**`_codd_gate_wiring_module` を mock/patch しているテストは元から 1 件も存在しなかった**（t1 §5 の「配線経路にテスト 0 件」と整合）。タスク文が挙げる `TestCoddGateAutoWiring` も実在せず、あるのは自動配線の**不在**を固定する `TestCoddGateNoAutoWiring` だけ。したがって本タスクの実質は「mock の追随」ではなく、空だった配線経路に新境界向けのテストを新規に敷くことだった。残る 4 行の扱いは §4 に書く。
 
-なお `_codd_gate_wiring_module` を mock/patch しているテストは**元から 1 件も存在しなかった**（t1 §5 の「配線経路にテスト 0 件」と整合）。タスク文中の `TestCoddGateAutoWiring` も実在せず、実在したのは自動配線の**不在**を固定する `TestCoddGateNoAutoWiring` のみ。したがって本タスクの実質は「追随」ではなく、空だった配線経路に新境界向けのテストを新規に敷くことだった。
+### 2.2 変異解析 — 空振りしていないことの実測
 
-### 2.2 テストが空振りでないこと（変異体 22 通り × テスト単位の被覆行列）
+再現手順（成果物の `mutation-probe.py` / `mutation-matrix.py` が実行可能な形で入っている）:
 
-`hooks.py` / `doctor.py` / `model.py` を 1 箇所ずつ壊した変異体を作り、**テスト単位で**赤/緑を記録した。harness は `/tmp/t6-mutate2.py`、参照実装込みの検証ツリーは `/tmp/t6-sim/`。ベースライン 31 tests OK。
+```
+python3 mutation-matrix.py     # 変異を 1 つずつ入れて全新テストを走らせ、被覆行列を出す
+```
 
-| # | 故意に壊した内容 | 赤くなったテスト |
+17 変異すべてを検出。新テスト 23 本すべてが最低 1 つの変異で赤くなった（全文は `mutation-matrix.txt`）。
+
+| 変異 | 壊した性質 | 赤くなったテスト |
 |---|---|---|
-| H1 | 前置フィルタを外す（全 sibling を無差別 import） | `test_scan_does_not_import_unrelated_siblings` |
-| H2 | 設定明示の失敗で sibling スキャンへ落ちる | `test_explicit_miss_does_not_fall_back_to_scan` ほか 2 |
-| H3 | キャッシュを効かせない | `test_resolution_is_cached` / `test_missing_provider_is_cached_too` |
-| H4 | 契約チェックを外す | `test_explicit_module_missing_contract_is_rejected` |
-| H5 | 前半キーがフルキーを上書きする | `test_full_capability_key_beats_prefix_key` |
-| H6 | スキャン失敗時に特定 module 名へハード依存で戻る | `test_absent_sibling_dir_yields_none` ほか 1 |
-| H7 | 能力表から findings 契約を落とす | `test_capability_table_pins_the_contract` ほか 1 |
-| H8 | sibling スキャン自体を無効化する | `test_sibling_scan_finds_provider_in_real_tree` ほか 2 |
-| H9 | 設定明示を無視して常にスキャンする | `test_config_hooks_win_over_sibling_scan` ほか 3 |
-| D1 | 片方だけの解決でも走る（`or` → `and`） | `test_half_resolved_provider_does_not_run` |
-| D2 | プロバイダ例外を握り潰さない | `test_provider_exception_does_not_break_doctor` |
-| D3 | 注入引数 `which`/`run` を渡さない | `test_injected_args_reach_the_provider` |
-| D4 | cfg の cmd を渡さない | `test_injected_args_reach_the_provider` |
-| D5 | 明示指定の失敗を無言で縮退させる | `test_explicit_misconfig_is_reported_as_warn` ほか 1 |
-| D6 | findings を素通ししない | `test_provider_findings_pass_through` |
-| D7 | プロバイダ不在でも所見を出す | `test_no_provider_and_no_config_is_silent` ほか 3 |
-| D8 | 非 dict hooks で例外を投げる | `test_non_dict_hooks_is_reported_as_warn` |
-| D9 | 非 dict hooks の判定分岐ごと落とす | `test_non_dict_hooks_is_reported_as_warn` |
-| M1 | title の正規化を外す | `test_parse_intake_records_normalizes_id_and_title` ほか 1 |
-| M2 | id の文字列化を外す | 上記＋`test_run_intake_accepts_non_string_id` ほか 2 |
-| M3 | id の strip を外す | `test_parse_intake_records_normalizes_id_and_title` ほか 1 |
-| M4 | 空 id をキーごと落とさない | 同上 |
-| M5 | 入力 dict のコピーをやめる | **緑のまま**（等価変異。§2.3 に理由） |
+| M1 | フック解決そのもの（常に `None`） | HookResolution 7 本 |
+| M2 | 前置フィルタ（無関係 sibling を総当たり import） | `test_unrelated_siblings_are_not_imported` |
+| M3 | 明示失敗で自動検出へ落ちない | `test_explicit_name_does_not_fall_back_to_scan` ほか |
+| M4 | 解決結果のキャッシュ | `test_result_is_cached_per_capability` |
+| M5 | 必須属性の検査 | `test_module_without_required_attr_is_rejected` ほか |
+| M6 | 能力キー名（`wiring.detect` → `detect`） | HookResolution 3 本 |
+| M7 | 不在 sibling を `sys.path` へ積まない | `test_missing_sibling_dir_resolves_to_none` |
+| M8 | 片側だけ解決したとき呼ばない | `test_half_resolved_provider_does_not_run` |
+| M9 | プロバイダ例外の畳み込み | `test_provider_exception_degrades_to_empty` ほか |
+| M10 | 明示指定ミスの warn | `test_unresolvable_explicit_provider_warns` |
+| M11 | 注入引数の受け渡し（`which` を握り潰す） | `test_injected_arguments_reach_provider` |
+| M12 | id の型正規化 | Intake 4 本 |
+| M13 | title の正規化 | `test_parse_intake_records_normalizes_title_and_id` |
+| M14 | プロバイダ固有名を本体へ書き戻す | `test_empty_sibling_dir_resolves_to_none` |
+| M15 | findings を本体が解釈する（不透明性） | `test_provider_findings_pass_through` |
+| M16 | 未指定の不在も所見にする（無言縮退） | `test_no_provider_degrades_to_empty` |
+| M17 | 未知フィールドの素通し（本体が検出器の語彙を持つ） | `test_parse_intake_records_passes_unknown_fields_through` |
 
-**t6 が新設した 21 本すべてが最低 1 つの変異体で赤。** 一度も赤にならなかった 10 本はいずれも t6 が書いていない既存テスト（`TestNoAutoWiring` の configfile 自動配線不在 4 本、`TestIntake` / watch の既存 6 本）で、フックの変異面と主題が交わらないため。
+M14〜M17 は後から足した。M1〜M13 は「境界を殺す」方向の変異ばかりで、**縮退・素通し・不透明性を主張するテストは殺しても同じ返り値になって隠れる**。緩める方向（固有名を書き戻す・findings を選別する・黙るべき所で喋る・未知フィールドを落とす）でないと観測できない。この 4 本は最初の 13 変異では全部緑のままで、行列を取らなければ空振りと区別がつかなかった。
 
-### 2.3 実測で潰した空振り 3 件
+### 2.3 テスト実行
 
-被覆行列は一発で埋まっていない。3 本を書き直している。
+| 環境 | 対象 | 結果 |
+|---|---|---|
+| 先端 `38a1ccd8` + 本変更 + t4 相当の doctor | `TestHookResolution` `TestDoctorWiringFindings` `TestIntake` `TestCoddGateNoAutoWiring` | **34 tests OK** |
+| 同上 | 全体 | **738 tests / failures=3**（契約 §5 が合格条件とする main 由来の 3 件のみ） |
+| 先端 `38a1ccd8` + 本変更（**t4 未着**） | 同 4 クラス | **34 tests / failures=8**（§3 に詳述） |
+| 作業ツリー `11ef6b21` | 受入 3 件（`TestIntake.test_run_intake_enqueues_and_dedups_by_id` / `TestLoopEngineering.test_regression_gate_{blocks_on_failure,passes}`） | OK (rc=0) |
+| 作業ツリー `11ef6b21` | `TestIntake` `TestCoddGateNoAutoWiring` | 15 tests OK |
+| 作業ツリー `11ef6b21` | 受入 grep（backlog 逐語） | 0 件（rc=1 = 合格） |
 
-1. **`test_non_dict_hooks_degrades_without_raising` → `test_non_dict_hooks_is_reported_as_warn`（今回修正）** — D8（非 dict で例外を投げる）でも D9（分岐ごと削除）でも緑のまま残った。原因は実プロバイダの存在。非 dict `hooks` でも `_hook_provider` は sibling スキャンで実 module を引き当てて成功するため `_hook_misconfig_findings` へ入らず、`assertIsInstance(got, list)` が「型不正を扱えている」ではなく「たまたま所見が返った」で通っていた。`mock.patch.object(km, "_hook_provider", lambda cap, cfg=None: None)` で解決を落とし、warn 1 件と title を固定するよう書き直した。D5 / D7 / D8 / D9 の 4 通りで赤になる。
-
-2. **`test_run_intake_trims_and_autonumbers_blank_id`（削除）** — `_slug_id` が下流で既に `strip()` しているので、`id: "  x  "` は正規化の有無に関わらず `"x"` になる。契約 §5 のケース 2・3 は `run_intake` のレベルでは変更前後で振る舞いが同じで、差が出るのは `_parse_intake_records` の返り値だけ。代わりに `enqueue_task` の spy で下流へ渡る spec を見る `test_run_intake_hands_normalized_specs_downstream` を置いた（M1〜M4 で赤）。
-
-3. **`test_half_resolved_provider_does_not_run`（書き直し）** — 戻り値だけを見ていたため、片欠けのまま走っても `except Exception` に吸われて空リストになり「走らなかった」と区別できなかった。`detect_wiring` が**呼ばれたか**を観測するよう書き直し、`subTest` で両方向を回す。
-
-M5（入力 dict のコピーをやめる）が緑のまま残るのは**等価変異で、テストの穴ではない**。`_parse_intake_records` は text を受け取って内部で `json.loads` するため、パース済み dict への参照を外部の呼び出し側が持つ経路が無く、`spec = dict(raw)` と `spec = raw` の差は関数の外から観測できない。ここに固定テストを足しても必ず緑になる空振りなので、意図的に書いていない（`dict(raw)` は防御的なスタイルであって契約ではない）。
-
-### 2.4 テスト実行
-
-worktree 単体（`hooks.py` 未着地の統合前状態）:
-
-```
-$ PYTHONPATH=. python3 tests/test_agent_project.py TestIntake TestNoAutoWiring
-Ran 14 tests in 0.557s
-OK
-
-$ PYTHONPATH=. python3 tests/test_agent_project.py           # 全体
-Ran 735 tests in 294.276s
-FAILED (failures=3, errors=17)
-```
-
-- **failures=3** は `TestDaemonRouting.test_kf_base_passes_flow_config` / `TestJournalRotation.test_rotation_archives_and_starts_fresh` / `TestProjectLayer.test_version_inherits_master_charter`。契約 §5 が「この 3 件だけが残る状態を合格」とした main 由来の既存 failure。
-- **errors=17** は `TestHookResolution` 10 + `TestDoctorWiringFindings` 7 の全件で、原因はすべて `AttributeError: module 'agent_project' has no attribute '_HOOK_CACHE'`。t3 の `hooks.py` と t4 の `doctor` が入れば解消する統合前の想定内の赤で、他のテストは 1 件も壊していない。
-
-参照実装ツリー（契約 §1・§2・§4 の逐語から `hooks.py` / `doctor.py` を組んだもの）では全件緑:
-
-```
-$ cd /tmp/t6-sim/agent-project
-$ PYTHONPATH=. python3 tests/test_agent_project.py \
-      TestHookResolution TestDoctorWiringFindings TestIntake TestNoAutoWiring
-Ran 31 tests in 0.592s
-OK
-```
+作業ツリー単体では `hooks.py`（t3・`38a1ccd8`）が未取得のため `TestHookResolution` / `TestDoctorWiringFindings` は走らない。合流後の状態を測るため、ブランチ先端を provision して scratch へ複製し、そこへ本変更を載せて実行した。
 
 ---
 
-## 3. 採用した前提
+## 3. t4（doctor）へ渡す前提 — 現時点で 7 件が赤
 
-1. **`_parse_intake_records` の正規化を t6 で実装した。** 契約 §3 はこれを model 実装者（t5）に割り当てているが、t5 の goal 文は `_codd_gate_debt_module` の除去（r0 で実施済み）に向いており、正規化が落ちる可能性がある。一方 t6 の goal は「id による冪等 enqueue の振る舞いを維持」を明示していて、この関数は intake の境界そのもの。知っていて赤いテストを渡すより実装する方が妥当と判断した。**t5 が同じ修正を入れると `model.py` で衝突する**ので、統合時に確認が要る（内容は契約 §3 の逐語なので、どちらが残っても振る舞いは同じ）。
-2. **`TestCoddGateNoAutoWiring` は改名した。** 契約 §5 は「改名は任意」とするが、t6 の goal が成果物として「旧名が残っていないこと」を要求しているので字義どおり従った。
-3. **非 dict `hooks` の warn は契約 §4-3 の逐語どおり固定した。** 前回の報告はこの分岐を「`build_config` が `{}` へ落とすので到達不能」として弱いアサートに逃がしていたが、これは誤り。到達不能なのは `build_config` 経由の場合だけで、`doctor_wiring_findings` にプロバイダ不在の cfg が渡れば分岐は生きる。契約どおり warn を固定した（t4 がこの分岐を実装しないと赤くなる）。
-4. **`cfg` は `types.SimpleNamespace(hooks=...)` で代用した箇所がある。** `Config` に `hooks` を足すのは t3 の担当。解決ロジックだけを見るテストは SimpleNamespace で書き、`Config` 経由が要る `TestDoctorWiringFindings` は `cfg_for(d, hooks=...)` を使っている（＝t3 のフィールド追加を暗黙に固定する）。
-5. **`hooks.py` の参照実装は成果物に含めない。** 検証のためだけに `/tmp/t6-sim/` に置いた。worktree へは書いていない（t3 との衝突を避けるため）。
+`TestDoctorWiringFindings` は t2 契約 §4 の doctor を前提に書いてある。ブランチ先端の `doctor.py` はまだ `_wiring_module()`（固有名 `codd_gate_wiring` 直書き）なので、`_hook_provider` を patch しても効かず 7 件とも赤い。t4 が §4 を実装すれば緑になることは、契約どおりの doctor を scratch に当てて実測済み（§2.3 の 1 行目）。**その実装を `doctor-reference-for-t4.diff` として同梱した。**
+
+差分のうち、契約本文からは読み取りにくい 1 点を明示する。
+
+> `_hook_misconfig_findings` は **`hooks.<系統>` キーごとに 1 件へまとめること。** `wiring.detect` と `wiring.findings` は同じ `hooks.wiring` 設定から引くので、能力ごとに素直に finding を作ると 1 つの設定ミスで 2 件出る。契約 §5 の期待は「warn が 1 件」なので、前半キーで dedupe する。
 
 ---
 
-## 4. 未解決事項・範囲外で見つけた問題
+## 4. 前提・未解決・範囲外
 
-- **[統合時の要確認]** 上記前提 1 の `model.py` 衝突。t5 の成果と突き合わせること。
-- **[範囲外・未実施]** 契約 §6-5 の「変更前後で `doctor_wiring_findings` の出力が 1 文字も変わらない」実測は、`doctor.py` を触る t4 の担当。t6 は `doctor` に触れていないので出力に影響しない。
-- **[範囲外]** 既存 3 failures（`TestDaemonRouting` / `TestJournalRotation` / `TestProjectLayer`）は t1 が main 由来と切り分け済み。触っていない。
-- `@followup agent_project の hooks 設定を非 dict で書いたときの挙動を build_config の握り潰しと doctor の warn の二重防御のままにするか一本化するか決める :: PYTHONPATH=tools/agent-project python3 tools/agent-project/tests/test_agent_project.py TestDoctorWiringFindings`
+**採用した前提**
+
+1. **`TestCoddGateNoAutoWiring` は改名しない。** 契約 §5 は改名を任意とし、契約 §6 の完了判定コマンドがこのクラス名を逐語で叩く。改名すると gate/verify がテスト名解決に失敗する。テストファイルは契約 §0.1 の厳格 grep（`-- tools/agent-project/agent_project`）の対象外なので、残しても完了判定に影響しない。タスク文の「旧名が残っていないこと」は、**mock/patch していた注入点の旧名**（`_codd_gate_wiring_module` / `_wiring_module` / `doctor_codd_gate_findings`）と読み、そちらは 0 件を確認した。
+2. `hasattr(km, "_apply_codd_gate_auto_wiring")` のアサート文字列は残す（契約 §5 の明示指示。禁止する対象の名前そのもの）。
+3. intake は「調整が不要と確認できたら触らない」を調整の一形態と読んだ。t5 の実装が契約 §3 を満たしているため、重ねて書き換えない。
+
+**未解決**
+
+- `TestDoctorWiringFindings` 7 件は t4 が着地するまで赤い。fan-out の並列実行では避けられない（契約 §5 も「実装前に書けば赤になるのが正しい」と明記）。gate は t3+t4+t5+t6 の合流後に判定すること。
+- 変異解析は scratch 複製上で実施（共有チェックアウトを汚さないため）。CI へ常設する場合は別途タスク化が要る。
+
+**範囲外で見つけたこと（手を出していない）**
+
+- `@followup` 変異解析（`mutation-probe.py`）を回帰の定常ゲートへ組み込む。今回は 1 回限りの実測に留めた。
+- `@followup` 契約 §6 の完了判定コマンドが `TestCoddGateNoAutoWiring` を逐語で参照している。クラス名から `CoddGate` を落とすなら、契約側の記述と同時に直す必要がある（テスト単独で改名すると gate が壊れる）。
+- 既存 3 failures（`TestDaemonRouting.test_kf_base_passes_flow_config` / `TestJournalRotation.test_rotation_archives_and_starts_fresh` / `TestProjectLayer.test_version_inherits_master_charter`）は main 由来。t1 が切り分け済みで、契約 §5 が「直そうとしないこと」としているため触っていない。

@@ -1,0 +1,140 @@
+{
+  "request": "agent_project を codd_gate 非依存の汎用フックへ整理する\n\n背景・目的（実装の判断に迷ったらこの意図に沿うこと）:\n  設計の『本体は無改造・差し込み点のみ』をコードで真にし、受入の grep 条件と intake/regression 回帰テストを同時に満たすため。\nやらないこと（スコープ外。必要に気づいても手を出さず @followup 行で提案する）:\n  dashboard UI・設計書の文章だけの推敲・codd-gate 本体（tools/codd-gate）の仕様変更\n実装の手がかり（参考情報。鵜呑みにせず現物のコードで確認すること）:\n  除去/改名対象: configfile._apply_codd_gate_auto_wiring、doctor._codd_gate_wiring_module / doctor_codd_gate_findings、model._codd_gate_debt_module と `import codd_gate_*`。intake は schemas/task 相当の汎用 JSON パース＋ id 冪等のまま維持。自動配線は sibling（codd_gate_wiring / codd_gate_regression）か設定明示に寄せ、パッケージ内に codd_gate 名を残さない。TestCoddGateAutoWiring など `_codd_gate_wiring_module` を mock するテストも新境界へ追随。完了後は agent-reviewer で境界レビュー。\n\nこのタスクは完了条件を満たすまで反復し、満たしたら終了すること（loop-until-done）。\n完了条件: 次のシェルコマンドが終了コード 0 で成功すること:\n  PYTHONPATH=tools/agent-project python3 tools/agent-project/tests/test_agent_project.py TestIntake.test_run_intake_enqueues_and_dedups_by_id TestLoopEngineering.test_regression_gate_blocks_on_failure TestLoopEngineering.test_regression_gate_passes && ! git grep -n -E '(^|[[:space:]])(import|from)[[:space:]]+codd_gate|_apply_codd_gate|_codd_gate' -- tools/agent-project/agent_project\n\nタスクID: agent_project-codd_gate-163827\n\n実行中に、分散した他ノードも従うべき恒常的な制約・規約を発見したら、最終成果に 機械可読な JSON `{\"constraints\": [\"…\"]}` を添えること（無ければ省略可）。これは以後の全ノードへ伝播され一貫性の基準になる。\n\nプロジェクト定義（charter・常に踏まえること。成果物が目標/制約に反しないこと）:\n目標: * agent-project の codd-gate 連携コードを整理する\n* agent-dashboard でのユーザビリティを考慮する\n対象リポジトリ（タスクは説明を見て関係するものを選び、その base/target ブランチで作業。path 指定があればそのフォルダ配下のみ変更）:\n- agent-amigos = https://github.com/ynitto/sandbox（path=tools/agent-amigos, base=main, target=main, 書込先候補（owns: tools/agent-amigos/**））\n    説明: agent-amigos\n- agent-dashboard = https://github.com/ynitto/sandbox（path=tools/agent-dashboard, base=main, target=main, 書込先候補（owns: tools/agent-dashboard/**））\n    説明: agent-dashboard\n- agent-flow = https://github.com/ynitto/sandbox（path=tools/agent-flow, base=main, target=main, 書込先候補（owns: tools/agent-flow/**））\n    説明: agent-flow\n- agent-loop = https://github.com/ynitto/sandbox（path=tools/agent-loop, base=main, target=main, 書込先候補（owns: tools/agent-loop/**））\n    説明: agent-loop\n- agent-project = https://github.com/ynitto/sandbox（path=tools/agent-project, base=main, target=main, 書込先候補（owns: tools/agent-project/**））\n    説明: agent-project\n- skills = https://github.com/ynitto/sandbox（path=.github/skills, base=main, target=main, 参照のみ・push しない）\n    説明: skills\n成果物:\n- agent-project ソースコード\n- 設計書\n\nプロジェクトルール（rules.md・全タスク共通。必ず従うこと）:\n* ドキュメントタスクには slop-police スキルを使うこと\n* レビューには agent-review スキルを使うこと\n\nこのタスクに関する過去の判断記録（needs の判断結果・必ず踏まえること）:\n## DR-0001  2026-07-18  actor: nitto\n- context : agent_project-codd_gate-163827（agent_project を codd_gate 非依存の汎用フックへ整理する）の実行を承認\n- action  : plan-approve\n- reason  : agent-dashboard から操作\n- affects : agent_project-codd_gate-163827 → ready\n\n## DR-0002  2026-07-19  actor: nitto\n- context : agent_project-codd_gate-163827（agent_project を codd_gate 非依存の汎用フックへ整理する）に人のフィードバック\n- action  : feedback-resume\n- reason  : チェックで承認\n- affects : agent_project-codd_gate-163827 → ready\n\n## DR-0003  2026-07-19  actor: nitto\n- context : agent_project-codd_gate-163827（agent_project を codd_gate 非依存の汎用フックへ整理する）に人のフィードバック\n- action  : feedback-resume\n- reason  : チェックで承認\n- affects : agent_project-codd_gate-163827 → ready\n\n## DR-0004  2026-07-19  actor: nitto\n- context : agent_project-codd_gate-163827（agent_project を codd_gate 非依存の汎用フックへ整理する）に人のフィードバック\n- action  : feedback-resume\n- reason  : チェックで承認\n- affects : agent_project-codd_gate-163827 → ready",
+  "finished_at": "2026-07-19T01:14:54Z",
+  "iterations": 0,
+  "strategy": {
+    "patterns": [
+      "fan-out-and-synthesize",
+      "adversarial-verification",
+      "loop-until-done"
+    ],
+    "parallelism": 4,
+    "review": true,
+    "reason": "[flow-planner] リファクタリング（命名の脱結合・依存方向の反転）であり、ユースケース上は migration-pipeline が直撃する。汎用フック境界を確定したあと、configfile / doctor / model / intake+tests の4系統は互いに独立した変更として並列化できる（fan-out、Decision Matrix でも score=7 で首位タイ）。ただし制約が『振る舞い等価』『codd_gate 連携を壊さない』を要求するため、名前だけ消えて配線が死ぬ・mock 追随漏れでテストが空振りする、といった見かけ上パスする欠陥を検証ノードで潰す必要がある（adversarial-verification、同 score=7、quality_focus=accuracy と整合）。さらに完了条件が『3テスト緑 + git grep 0件で終了コード 0』という機械判定であり、制約にも loop-until-done が明記されているため、統合後の検証コマンドが 0 を返すまで実装→検証を反復する。並列数 4 は subtasks の実装単位（configfile / doctor / model / intake+tests）に一致させ、fan-out の目安 [3,6] 内かつ境界設計の先行フェーズ後に一斉展開できる粒度として選んだ。data_flow=static で対象モジュールが事前に確定しているため map-reduce は採らない。（粒度 coarse）"
+  },
+  "summary": "- t1 [done]: # codd_gate 参照点インベントリ（r4 / t1）\n\n成果物: `bus/runs/req-ef1f92c3-agent_project-codd_gate-163827-r4/artifacts/t1/codd_gate-reference-inventory.md`\n\n## (a) 成果サマリー\n\n**hints が挙げた除去/改名対象 4 シンボルは、すでに HEAD 上に存在しな\n- t2 [done]: # 汎用フック境界の確定（r4 / t2）\n\n**切り口: 決定軸を「sibling 検出 vs 設定明示」から「外部名の所有権は誰か」へ置き換える。名前を設定へ譲り、既定は名前ではなく能力（属性の集合）で引き当てる。**\n\n成果物（`artifacts/t2/`）: `hook-boundary-design.md`（設計メモ）、`implementation-contract.md`（後続4系\n- t3 [done]: # t3 完了報告 — configfile の汎用フック化\n\n## (a) 成果\n\n**configfile 層は t2 契約 §2 を満たした状態で確定。追加コードは書かず、実装の検証と等価性の立証を行った。**\n\n作業ツリーにあった未コミットの t3 実装（前試行ぶん）を契約と突き合わせ、11 項目すべてが仕様どおりに動くことを実測で確認した。欠落・逸脱は見つからなかったため、コードは変更し\n- t4 [done]: # t4 完了報告 — doctor の配線参照を汎用フックへ置換\n\n## (a) 成果\n\n変更は `tools/agent-project/agent_project/doctor.py` の1ファイルのみ。実測の詳細は `artifacts/t4/equivalence-measurement.md`。\n\n- `_wiring_module()` を**削除**（`codd_gate_wiri\n- t5 [done]: # model の debt 参照撤去と振る舞い等価の回復（r4 / t5）\n\n**切り口: 指示された撤去は r0 で済んでいた。r4 に残っていたのは「等価」の側で、そこに破れが3つあった。**\n\n成果物: `artifacts/t5/model-debt-hook.md`。変更は `tools/agent-project/agent_project/model.py` の1ファイル（18+/\n- t6 [failed]: 実行エラー: [agent-error:transient] claude タイムアウト（900s 超過）（3 回試行後）\n- gate [None]: \n- synth [None]: \n- loop [None]: \n- rev [None]: ",
+  "results": {
+    "t1": {
+      "id": "t1",
+      "who": "worker-1",
+      "status": "done",
+      "output": "# codd_gate 参照点インベントリ（r4 / t1）\n\n成果物: `bus/runs/req-ef1f92c3-agent_project-codd_gate-163827-r4/artifacts/t1/codd_gate-reference-inventory.md`\n\n## (a) 成果サマリー\n\n**hints が挙げた除去/改名対象 4 シンボルは、すでに HEAD 上に存在しない。** 作業ツリーの HEAD は `d5e03f4`（r0 の rev コミット）で、main 分岐直後ではなく r0 の refactor が適用済み。\n\n| main での位置 | シンボル | 区分 | HEAD での姿 |\n|---|---|---|---|\n| `configfile.py:201`（呼出 `:376`） | `_apply_codd_gate_auto_wiring` | **除去** | 無し。有効化は yaml 明示 / sibling CLI 注入へ |\n| `doctor.py:287`（呼出 `:314`） | `_codd_gate_wiring_module` | **改名** | `_wiring_module`（`doctor.py:287`） |\n| `doctor.py:309`（呼出 `:528`） | `doctor_codd_gate_findings` | **改名** | `doctor_wiring_findings`（`:321`、呼出 `:540`） |\n| `model.py:494`（呼出 `:552`） | `_codd_gate_debt_module` | **除去→汎用置換** | `_parse_intake_records`（`model.py:494`） |\n\n`import codd_gate_*` / `from codd_gate_*` は `agent_project/` 配下 **0 件**。唯一の実コード参照は `doctor.py:302` の文字列リテラル `provider = \"codd_gate_wiring\"`（`importlib` 越しの差し込み点）で、受入 grep の 3 分岐すべてに構文的に掛からないため維持と判断した。\n\nintake の JSON パース＋id 冪等は `model.py:494-522`（`_parse_intake_records`、`:519` が `task.schema.json` の required を参照）と `model.py:525-577`（`run_intake`、冪等の実体は `:562` の `existing` 集合と `:564-566` の skip）に現存、全て維持。\n\n## (b) 検証と結果\n\n受入 grep を逐語実行 → **0 hit / exit 1 → PASS**（ヒットする全行のリストは空）。受入テスト 3 件 → **OK**。全体スイート → 714 tests, **3 failures**。\n\nこの 3 件（`TestDaemonRouting` / `TestJournalRotation` / `TestProjectLayer`）は main（`9a7302f`）を別 worktree へ provision して同一の 3 failures をアサーション文言まで再現確認済み、**本タスクと無関係な既存不具合**。worktree は release 済み。ファイルは一切変更していない。\n\n## (c) 前提・未解決\n\n前提として、受入 grep のスコープは backlog の verify 逐語どおり `agent_project` 配下に限った。sibling `codd_gate_*.py` とその専用テストは 47 行ヒットするが条件違反にあたらない（sibling が自分を import するのは設計どおり）。\n\n**r4 で潰す価値がある穴が 1 点**: 改名後の `doctor_wiring_findings` / `_wiring_module` はテストが 0 件。r0 が `TestCoddGateAutoWiring` → `TestCoddGateNoAutoWiring` へ書き換えた際に旧名を mock する 3 テストを削除し、新名で貼り直していない。受入 grep も verify テストもこれを検知しないため、`doctor.py:287-333` のプロバイダ解決・契約チェック・no-op 縮退の分岐が無防備になっている。調査タスクのスコープ外なので修正は行わず、報告に留めた。",
+      "finished_at": "2026-07-18T21:51:07Z",
+      "artifacts": [
+        "artifacts/t1/codd_gate-reference-inventory.md"
+      ]
+    },
+    "t2": {
+      "id": "t2",
+      "who": "worker-1",
+      "status": "done",
+      "output": "# 汎用フック境界の確定（r4 / t2）\n\n**切り口: 決定軸を「sibling 検出 vs 設定明示」から「外部名の所有権は誰か」へ置き換える。名前を設定へ譲り、既定は名前ではなく能力（属性の集合）で引き当てる。**\n\n成果物（`artifacts/t2/`）: `hook-boundary-design.md`（設計メモ）、`implementation-contract.md`（後続4系統の実装契約）\n\n## (a) 成果サマリー\n\n二択のどちらにも寄せず、**設定明示を第一・sibling 能力スキャンを第二とする単一解決器 `_hook_provider(capability, cfg)`** へ一本化する。名前を誰が持つか（設定）と既定でどう見つけるか（能力スキャン）を分けると、二択のままでは両立しなかった「codd_gate 名 0」と「非破壊」が同時に立つ。\n\n| 系統 | 境界 | フック名 | 解決経路 |\n|---|---|---|---|\n| 配線 | Python module | `wiring.detect` / 属性 `detect_wiring` | 設定 → sibling 能力スキャン |\n| findings 収集 | Python module | `wiring.findings` / 属性 `doctor_findings` | 同上 |\n| debt | **プロセス境界** | 設定キー `intake_cmd` | 設定のみ。module 解決を持たない |\n\n却下: ①現状維持（厳格 grep で `doctor.py:288,302,324` が残る）②設定明示のみ（既定なしで既存環境の所見が黙って消える）③env 変数指定（設定が二箇所に散り doctor が失敗理由を説明できない）④sibling へマーカー属性追加（プロバイダ側の編集を強制。既存の必須属性が事実上のマーカーとして機能済み）⑤debt にも module フック再導入（`intake_cmd` と二重の差し込み点になり片方が遊ぶ）。\n\n設計の要点は**フォールバックの非対称**。明示指定の解決失敗は doctor で warn、未指定での不在は無言。現行はどちらも一律無言で設定ミスが観測できない。\n\n## (b) 検証と結果\n\nコードは変更していない（境界の確定が本タスク。実装は後続4系統）。設計はプロセス内プロトタイプで実測した。\n\n- 能力スキャンが `wiring.detect` / `wiring.findings` とも `codd_gate_wiring` へ解決\n- 試作の findings と現行 `doctor_wiring_findings` が**一致**（結線済み相当 0 件／`which=None` 注入時はその実行で 2 件、title まで同一）\n- ソーステキストの前置フィルタにより直接 import は `codd_gate_wiring` のみ。`codd_gate_debt` / `codd_gate_regression` は未 import\n- sibling 不在（空ディレクトリ）で `None` → no-op 縮退\n- 厳格 grep `git grep -nE 'codd_gate' -- tools/agent-project/agent_project` は現状 3 行ヒット。これが除去対象\n\n**振る舞い等価の破れを 1 件、実測で発見した。** r0 の `_codd_gate_debt_module` → `_parse_intake_records` 置き換えで id の型正規化が落ちており、intake_cmd が `{\"title\":\"A\",\"id\":123}` を吐くと `_slug_id` が int に `.strip()` を呼んで `AttributeError`。`run_intake` の except は `ValueError` のみ、呼び出し元（`loop.py:610` / `mr.py:558`）も無防備で、**watch ループが落ちる**。main 経路は `'123'` へ正規化していた。実装契約の model 担当・必須項目に入れ、回帰テスト 4 ケースを intake+tests 担当へ割り当てた。\n\n## (c) 前提・未解決・範囲外\n\n**前提**: ①「codd_gate 名を一切残さない」は受入 grep より厳しい条件として字義どおり読み、`doctor.py:302` の文字列リテラルも除去対象にした（t1 は維持と判断したが、その根拠は名前を設定へ移す第三の道を検討していない）②禁止対象は module 名 `codd_gate*` に限り、CLI 名 `codd-gate` の例示は残す ③`detect_wiring` の返り値 `judgment` は本体にとって不透明という現行の暗黙前提を契約として明文化 ④本タスクではコードを書かない。\n\n**未解決（実装契約へ反映済み）**: 上記 id 正規化。t1 §5 の「配線経路にテスト 0 件」は新しい注入点 `_hook_provider` に対して書き直す形で intake+tests 担当へ。\n\n**範囲外**: 既存 3 failures（`TestDaemonRouting` / `TestJournalRotation` / `TestProjectLayer`）は t1 が main 由来と切り分け済み。`hooks` の CLI フラグは今回定義せず followup 化。能力スキャンは sibling ディレクトリのみを見るため、site-packages 等に置かれたプロバイダは現行より拾えなくなる（逃げ道は `hooks:` 設定明示。標準インストールでは差が出ない）。\n\nワークスペースのファイルは一切変更していない（`git status --porcelain` はクリーン）。",
+      "finished_at": "2026-07-18T22:00:39Z",
+      "artifacts": [
+        "artifacts/t2/hook-boundary-design.md",
+        "artifacts/t2/implementation-contract.md"
+      ]
+    },
+    "t3": {
+      "id": "t3",
+      "who": "worker-2",
+      "status": "done",
+      "output": "# t3 完了報告 — configfile の汎用フック化\n\n## (a) 成果\n\n**configfile 層は t2 契約 §2 を満たした状態で確定。追加コードは書かず、実装の検証と等価性の立証を行った。**\n\n作業ツリーにあった未コミットの t3 実装（前試行ぶん）を契約と突き合わせ、11 項目すべてが仕様どおりに動くことを実測で確認した。欠落・逸脱は見つからなかったため、コードは変更していない。\n\n変更差分（`artifacts/t3/configfile-change.diff` / `hooks.py.new`）は 4 ファイル +27 行と新規フラグメント 1 本:\n\n| ファイル | 内容 |\n|---|---|\n| `agent_project/hooks.py`（新規） | `_hook_provider` — 設定明示 → sibling 能力スキャンの単一解決器。`HOOK_CAPABILITIES` / `_HOOK_CACHE` / `_hook_resolution_error` |\n| `agent_project/__init__.py` | `_FRAGMENTS` へ `hooks` を `_head` 直後・`model` 前に挿入 |\n| `agent_project/config.py` | `Config.hooks: dict` |\n| `agent_project/configfile.py` | `CONFIG_DEFAULTS[\"hooks\"]`、`_normalize_hooks`、`build_config` での設定 |\n| `agent-project.yaml.example` | `hooks:` の例（パッケージ外なので module 名を書いてよい） |\n\n`_apply_codd_gate_auto_wiring` は **r0 の時点ですでに削除済み**で、t3 のスコープに残作業はなかった。パッケージ内の `codd_gate` 参照も configfile 系 4 ファイルでは 0 件。\n\n## (b) 検証と結果\n\n等価性の判定は、`main` / `head`(=`11ef6b21`) / 作業ツリーの 3 本で同一プローブを走らせた実測による。ベースラインは `git_worktree.py provision` で取得（使用後 release 済み）。\n\n**head → now（t3 の変更ぶん）: 5 シナリオすべてで配線結果が完全一致。** `regression_cmd` / `intake_cmd` / provider import 副作用の行は 1 行も動かない。JSON 差分は追加された観測項目（`cfg.hooks`・`capability_resolution`・`absent_provider_scan`）だけで、`_hook_provider` は設定読み込み経路からは誰も呼んでいない追加の差し込み点にとどまる。provider 不在時は両能力とも `null` で例外なし。\n\n契約 §2 の 11 項目（既定スキャン／明示優先／明示ミスで自動検出へ落ちない／契約不足の棄却／フルキー優先／dict 以外の無視／前置フィルタ／キャッシュ／`_hook_resolution_error` 3 種）はすべて期待どおり。\n\nテスト: `TestCoddGateNoAutoWiring` + `TestConfigFile` + 受入 3 件 → **18 tests OK**。全体 → **714 tests / failures=3**（契約 §5 が合格条件として明記した main 由来の 3 件のみ）。\n\ngrep: 受入 grep（backlog 逐語）はパッケージ全体で **0 件**。厳格 grep は configfile 系 4 ファイルで 0 件。\n\n## (c) 前提・未解決・範囲外\n\n**採用した前提 — 「変更前と等価」の基準点。** main 基準で読むと**等価ではない**。main は repos.json が実在すると config 読み込み時に `regression_cmd` / `intake_cmd` を自動配線していたが、r0 がこれを削除し、`head` の時点ですでに `None` / `None` になっている。t2 契約 §2「守ること」（自動配線を復活させない）とこのブランチの `TestCoddGateNoAutoWiring` 3 ケースが同じ決定を固定しているため、**基準点を r0 適用後の `head` と読み**、復活させなかった。main 基準では未達なので gate/synth の判断材料として明示する。復活させる判断になった場合、`_hook_provider` 経由で codd_gate 名なしに実装可能だが、上記 3 テストが赤になる。\n\n**t6 への申し送り（誤って赤になるテスト）。** 契約 §5 テストケース 6 を「走査前後の `sys.modules` 差分に契約を満たさない sibling が現れない」と字義どおり書くと**失敗する**。差分には `codd_gate_detect` / `codd_gate_routing` / `codd_gate_status` が現れるが、これは前置フィルタの漏れではなく採用された `codd_gate_wiring` 自身の import（`codd_gate_wiring.py:40,47,48`）。直接 import されないことを主張できるのは `codd_gate_base` / `codd_gate_debt` / `codd_gate_regression` の 3 本なので、その不在を見る形にすること。main も同じ 4 本を import していたため推移的依存の範囲は不変。\n\n**範囲外で見つけた問題。**\n- `doctor.py:288,302,324` に `codd_gate` が残存（t4 スコープ・未完了。results に t4 なし）。run 完了条件の厳格 grep はこれで非 0。\n- `_normalize_hooks` は非文字列値を黙って捨てるため、`hooks: {wiring: 123}` が無言で自動検出へ落ちる（`hooks` は dict なので doctor の型不正 warn も出ない）。契約 §2.2 の `getattr(...) or {}` でも `_hook_configured_name` の `isinstance(name, str)` で同じ結果になる契約内在の穴で、t3 の実装逸脱ではない。@followup 設定値の型不正も doctor で warn する。\n- `git diff main HEAD` に `codd_gate_wiring.py` / `codd_gate_debt.py` の変更が入っている（r0 由来）。契約 §0.5「sibling の `codd_gate_*.py` は変更しない」に抵触するが、r0 の成果で t3 は触れていない。\n\n成果物は `artifacts/t3/` に `behavior-equivalence.md`（根拠と再現手順）、`configfile_wiring_probe.py`、`wiring.{main,head,now}.json`、`configfile-change.diff`、`hooks.py.new`。commit/push は行っていない。",
+      "finished_at": "2026-07-19T00:57:21Z",
+      "data": {
+        "delivery": {
+          "url": "https://github.com/ynitto/sandbox",
+          "branch": "ap/agent_project-codd_gate-163827",
+          "commit": "38a1ccd85f747a93ceb5eafde9066af551cfea23",
+          "target": "main",
+          "path": "tools/agent-project"
+        }
+      },
+      "artifacts": [
+        "artifacts/t3/behavior-equivalence.md",
+        "artifacts/t3/configfile-change.diff",
+        "artifacts/t3/configfile_wiring_probe.py",
+        "artifacts/t3/hooks.py.new",
+        "artifacts/t3/wiring.head.err",
+        "artifacts/t3/wiring.head.json",
+        "artifacts/t3/wiring.main.err",
+        "artifacts/t3/wiring.main.json",
+        "artifacts/t3/wiring.now.err",
+        "artifacts/t3/wiring.now.json"
+      ]
+    },
+    "t4": {
+      "id": "t4",
+      "who": "worker-2",
+      "status": "done",
+      "output": "# t4 完了報告 — doctor の配線参照を汎用フックへ置換\n\n## (a) 成果\n\n変更は `tools/agent-project/agent_project/doctor.py` の1ファイルのみ。実測の詳細は `artifacts/t4/equivalence-measurement.md`。\n\n- `_wiring_module()` を**削除**（`codd_gate_wiring` を直に import していた唯一の箇所）。解決は t3 が入れた `_hook_provider(\"wiring.detect\"/\"wiring.findings\", cfg)` へ委譲。\n- `doctor_wiring_findings` は名前・シグネチャ・呼び出し元（`doctor.py:540`）を変えずに中身だけ差し替え。`detect` と `render` の**両方**が揃ったときだけプロバイダ経路へ入り、プロバイダ由来の例外は畳む。\n- `_hook_misconfig_findings(cfg)` を追加。明示指定の解決失敗にだけ `warn` を出し、未指定での不在は無言。\n- docstring から `codd_gate_wiring` を除去。「解決失敗は import 失敗に限らない」「no-op 縮退の理由」という判断内容は残し、固有名だけ落とした。\n\nパッケージ内の `codd_gate` は 0 件（厳格 grep・受入 grep とも空）。\n\n## (b) 検証\n\n**findings 等価性 — 4通りすべて diff 空。** before（HEAD 38a1ccd8 の doctor.py）と after を同一手順の4ツリーへ配置し、`which=None` / `which=found` × provider あり/なしで比較。件数だけでなく各 finding の category/severity/title/evidence/fix まで含めて完全一致。\n\n| 環境 | which=None | which=found |\n|---|---|---|\n| provider あり | 1件 info（変化なし） | 1件 warn（変化なし） |\n| provider なし | 0件（変化なし） | 0件（変化なし） |\n\n**degrade** — `codd_gate_wiring` / `codd_gate_regression` が import 経路のどこにも無いツリーで実 CLI（`agent-project doctor --json`）を実行。例外なく完走し JSON を出力、provider あり環境と `unresolved` 同数。\n\n**テスト** — 全体 714 tests / failures=3。t2 §5 がスコープ外と宣言した main 由来の3件（`TestDaemonRouting` / `TestJournalRotation` / `TestProjectLayer`）と一致、増加なし。`TestCoddGateNoAutoWiring TestIntake TestLoopEngineering` は 22 tests OK。\n\n**実装途中で契約との乖離を2件、実測で見つけて直した。** ①能力キー2つをループして warn を出していたため、`hooks.wiring` 1つの設定ミスで警告が2件並んだ（契約 §5 は1件）→ 設定キー単位で1件へ集約。②`hooks` の型が不正でも sibling 自動検出が当たると warn が出なかった → 型チェックをプロバイダ解決の成否と切り離し、常に評価するようにした。書いた設定が効いていない事実は自動検出の当たり外れと無関係なため。\n\n## (c) 前提・未解決・範囲外\n\n**採用した前提**: ①「変更前」は本ブランチ HEAD（t3/t5 適用済み）とした。t3 の `hooks.py` が前提の置換であり、main との比較は意味を持たないため。②契約 §4 の `_hook_misconfig_findings` はプロバイダ未解決時のみ返す形で書かれているが、上記②の理由で型不正のみ解決成功時も返すよう拡張した（既定 `hooks={}` では常に空なので等価性は保たれる。実測で確認済み）。③固定 root で測った理由は tempfile 名が finding の `fix` に混ざり実体が同じでも差分が出るため。\n\n**未解決**: なし。契約 §4 の4項目はすべて実装・実測済み。\n\n**範囲外で気づいた点**: `TestDoctorWiringFindings` / `TestHookResolution` の新設は契約 §5 で t6（intake+tests 担当）の割り当てなので手を出していない。本タスクでは同等の確認をプローブスクリプトで実施しており、その6ケースは §5 の表とそのまま対応するので移植できる。\n\n@followup `_hook_misconfig_findings` の型不正チェックは wiring 系統に閉じている。将来 `HOOK_CAPABILITIES` に系統が増えると同じ warn が系統数だけ出る可能性があり、そのときは系統横断で1件へまとめる必要がある。",
+      "finished_at": "2026-07-19T01:09:43Z",
+      "data": {
+        "delivery": {
+          "url": "https://github.com/ynitto/sandbox",
+          "branch": "ap/agent_project-codd_gate-163827",
+          "commit": "ce6337dfafa74bd0b484803a83c4d9916b447e3e",
+          "target": "main",
+          "path": "tools/agent-project"
+        }
+      },
+      "artifacts": [
+        "artifacts/t4/equivalence-measurement.md",
+        "artifacts/t4/err.after.txt",
+        "artifacts/t4/err.before.txt",
+        "artifacts/t4/no-provider.after.json",
+        "artifacts/t4/no-provider.before.json",
+        "artifacts/t4/no-regression.after.json",
+        "artifacts/t4/no-regression.before.json",
+        "artifacts/t4/no-wiring.after.json",
+        "artifacts/t4/no-wiring.before.json",
+        "artifacts/t4/wiring_probe.py",
+        "artifacts/t4/with-provider.after.json",
+        "artifacts/t4/with-provider.before.json"
+      ]
+    },
+    "t5": {
+      "id": "t5",
+      "who": "worker-1",
+      "status": "done",
+      "output": "# model の debt 参照撤去と振る舞い等価の回復（r4 / t5）\n\n**切り口: 指示された撤去は r0 で済んでいた。r4 に残っていたのは「等価」の側で、そこに破れが3つあった。**\n\n成果物: `artifacts/t5/model-debt-hook.md`。変更は `tools/agent-project/agent_project/model.py` の1ファイル（18+/3-）。\n\n## (a) 成果サマリー\n\n`_codd_gate_debt_module` の除去と直接 import の排除は r0 の `mdl` コミット（`2e5ff35`）で完了済みで、現 HEAD の model.py に `codd_gate` は 0 ヒットだった。debt の差し込み点は `intake_cmd`（プロセス境界）へ一本化されており、t2 の設計どおり model は `_hook_provider` を呼ばない。\n\n残っていたのは `DriftItem.to_spec()` が担っていた `title` / `id` の型正規化。r0 は生の dict を素通ししていた。`_parse_intake_records` に正規化を戻した。\n\n| 入力 | 変更前（r0） | 変更後 | 元実装 |\n|---|---|---|---|\n| `{\"id\": 123}` | **AttributeError で watch ループが落ちる** | `\"123\"` | `\"123\"` |\n| `{\"id\": 1.5}` | **AttributeError** | `\"1-5\"` | `\"1-5\"` |\n| `{\"id\": 0}` | id 喪失・自動採番（冪等キーが消える） | `\"0\"` | `\"0\"` |\n| `{\"id\": \"   \"}` | id が文字列 `\"task\"` になる | 自動採番 | 自動採番 |\n\n1件目は t2 が設計メモ §8 で予測していたもの。**2〜4件目は t5 で新たに見つけた**（t2 の一覧には無い）。特に `id: 0` は、正規化を素直に `str(raw.get(\"id\",\"\") or \"\").strip()` と書くと再発する——`0 or \"\"` が `\"\"` に潰れるため。元実装の `raw_id not in (None, \"\")` 判定をそのまま書き、コードにコメントを残した。\n\n## (b) 検証と結果\n\nsibling の `codd_gate_debt.py` は未変更で残っているので、変更前の振る舞いの生き証人として直接使える。\n\n- **差分検証 23/23 完全一致** — `_parse_intake_records(text)` と `([i.to_spec() for i in parse_debt_output(text).items], errors)` を specs・errors 両方で突き合わせ。id が int/float/0/false/null/空文字/空白のみ/前後空白/欠落、title が空/欠落/非文字列、非 object 混在、追加フィールド素通し、キー順、ネスト値をカバー。\n- **end-to-end（`run_intake`）** — 変更前実装を復元した対照群と並べて実測。変更前 3件クラッシュ/不一致 → 変更後 0件。冪等（2回目 0件）も id 有りの全ケースで維持。\n- **全体スイート 714 tests, 3 failures** — `TestDaemonRouting.test_kf_base_passes_flow_config` / `TestJournalRotation.test_rotation_archives_and_starts_fresh` / `TestProjectLayer.test_version_inherits_master_charter`。契約 §5 が「main 由来・これだけ残る状態を合格」と定めた 3 件と完全一致。いずれも intake 経路と無関係（パス正規化・journal ローテ・charter 継承）。\n- **受入 grep 逐語・model.py の `codd_gate` 全ヒット** — ともにヒット無し（exit 1）。\n- **受入テスト 4 件** — `TestIntake.test_run_intake_enqueues_and_dedups_by_id` / `TestLoopEngineering` 回帰ゲート 2 件 / `TestCoddGateNoAutoWiring` すべて OK。\n- `git status --porcelain` は `M tools/agent-project/agent_project/model.py` の 1 行のみ。\n\n## (c) 前提・未解決・範囲外\n\n**採用した前提**: ①タスク文の「モジュール未存在時の既定値を等価に保つ」は文字どおりには満たせない——変更前の「module 不在時の緩いパース」分岐は、パーサが本体同梱になった時点で到達不能になるため。「取得できた場合の値」（= module 有り経路）を等価の基準に採り、これを 23/23 で証明した。生成タスクの観点では両分岐は元々ほぼ一致しており（差は journal の文言と、緩い側が非文字列 id でクラッシュすること）、失われるのは劣化側の挙動だけと判断した。②tests への追加は契約 §5 で intake+tests 担当の割当なので書いていない（回帰ガードは上記プローブで実測済み、テスト化は t5 の範囲外）。\n\n**厳格 grep の残り 3 行は doctor.py:288/302/324** で、契約 §4 の doctor 担当分。model の完了判定には影響しない。\n\n**範囲外で見つけた問題**（手を出していない）: `run_intake` の except が `ValueError` のみで、呼び出し元 `loop.py:610` / `mr.py:558` も無防備。今回は正規化で根本を直したので現時点の既知経路では顕在化しないが、`enqueue_task` 系が将来 `ValueError` 以外を投げると watch ループが落ちる構造は残っている。@followup intake 呼び出し元の例外境界を見直す :: `run_intake` の except 節と loop/mr 側のガードを設計として揃える",
+      "finished_at": "2026-07-18T22:10:36Z",
+      "data": {
+        "delivery": {
+          "url": "https://github.com/ynitto/sandbox",
+          "branch": "ap/agent_project-codd_gate-163827",
+          "commit": "11ef6b2140b65eb424c8a419f407327036dddcb4",
+          "target": "main",
+          "path": "tools/agent-project"
+        }
+      },
+      "artifacts": [
+        "artifacts/t5/model-debt-hook.md"
+      ]
+    },
+    "t6": {
+      "id": "t6",
+      "who": "worker-1",
+      "status": "failed",
+      "output": "実行エラー: [agent-error:transient] claude タイムアウト（900s 超過）（3 回試行後）",
+      "finished_at": "2026-07-19T01:14:53Z",
+      "data": {
+        "error_class": "transient",
+        "attempts": 3
+      },
+      "artifacts": [
+        "artifacts/t6/doctor-reference-for-t4.diff",
+        "artifacts/t6/intake-and-test-migration.md",
+        "artifacts/t6/mutation-matrix.py",
+        "artifacts/t6/mutation-matrix.txt",
+        "artifacts/t6/mutation-probe.py",
+        "artifacts/t6/tests-change.diff"
+      ]
+    },
+    "gate": {},
+    "synth": {},
+    "loop": {},
+    "rev": {}
+  },
+  "failure_reason": "[agent-error:transient] 一時的エラーの失敗（t6）: in-place 再試行でも回復せず、run を打ち切りました。自動再開（auto-heal）の対象です（完了済みの工程は温存されます）。"
+}

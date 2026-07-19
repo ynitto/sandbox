@@ -1,0 +1,28 @@
+{
+  "id": "t3",
+  "who": "worker-2",
+  "status": "done",
+  "output": "# t3 完了報告 — configfile の汎用フック化\n\n## (a) 成果\n\n**configfile 層は t2 契約 §2 を満たした状態で確定。追加コードは書かず、実装の検証と等価性の立証を行った。**\n\n作業ツリーにあった未コミットの t3 実装（前試行ぶん）を契約と突き合わせ、11 項目すべてが仕様どおりに動くことを実測で確認した。欠落・逸脱は見つからなかったため、コードは変更していない。\n\n変更差分（`artifacts/t3/configfile-change.diff` / `hooks.py.new`）は 4 ファイル +27 行と新規フラグメント 1 本:\n\n| ファイル | 内容 |\n|---|---|\n| `agent_project/hooks.py`（新規） | `_hook_provider` — 設定明示 → sibling 能力スキャンの単一解決器。`HOOK_CAPABILITIES` / `_HOOK_CACHE` / `_hook_resolution_error` |\n| `agent_project/__init__.py` | `_FRAGMENTS` へ `hooks` を `_head` 直後・`model` 前に挿入 |\n| `agent_project/config.py` | `Config.hooks: dict` |\n| `agent_project/configfile.py` | `CONFIG_DEFAULTS[\"hooks\"]`、`_normalize_hooks`、`build_config` での設定 |\n| `agent-project.yaml.example` | `hooks:` の例（パッケージ外なので module 名を書いてよい） |\n\n`_apply_codd_gate_auto_wiring` は **r0 の時点ですでに削除済み**で、t3 のスコープに残作業はなかった。パッケージ内の `codd_gate` 参照も configfile 系 4 ファイルでは 0 件。\n\n## (b) 検証と結果\n\n等価性の判定は、`main` / `head`(=`11ef6b21`) / 作業ツリーの 3 本で同一プローブを走らせた実測による。ベースラインは `git_worktree.py provision` で取得（使用後 release 済み）。\n\n**head → now（t3 の変更ぶん）: 5 シナリオすべてで配線結果が完全一致。** `regression_cmd` / `intake_cmd` / provider import 副作用の行は 1 行も動かない。JSON 差分は追加された観測項目（`cfg.hooks`・`capability_resolution`・`absent_provider_scan`）だけで、`_hook_provider` は設定読み込み経路からは誰も呼んでいない追加の差し込み点にとどまる。provider 不在時は両能力とも `null` で例外なし。\n\n契約 §2 の 11 項目（既定スキャン／明示優先／明示ミスで自動検出へ落ちない／契約不足の棄却／フルキー優先／dict 以外の無視／前置フィルタ／キャッシュ／`_hook_resolution_error` 3 種）はすべて期待どおり。\n\nテスト: `TestCoddGateNoAutoWiring` + `TestConfigFile` + 受入 3 件 → **18 tests OK**。全体 → **714 tests / failures=3**（契約 §5 が合格条件として明記した main 由来の 3 件のみ）。\n\ngrep: 受入 grep（backlog 逐語）はパッケージ全体で **0 件**。厳格 grep は configfile 系 4 ファイルで 0 件。\n\n## (c) 前提・未解決・範囲外\n\n**採用した前提 — 「変更前と等価」の基準点。** main 基準で読むと**等価ではない**。main は repos.json が実在すると config 読み込み時に `regression_cmd` / `intake_cmd` を自動配線していたが、r0 がこれを削除し、`head` の時点ですでに `None` / `None` になっている。t2 契約 §2「守ること」（自動配線を復活させない）とこのブランチの `TestCoddGateNoAutoWiring` 3 ケースが同じ決定を固定しているため、**基準点を r0 適用後の `head` と読み**、復活させなかった。main 基準では未達なので gate/synth の判断材料として明示する。復活させる判断になった場合、`_hook_provider` 経由で codd_gate 名なしに実装可能だが、上記 3 テストが赤になる。\n\n**t6 への申し送り（誤って赤になるテスト）。** 契約 §5 テストケース 6 を「走査前後の `sys.modules` 差分に契約を満たさない sibling が現れない」と字義どおり書くと**失敗する**。差分には `codd_gate_detect` / `codd_gate_routing` / `codd_gate_status` が現れるが、これは前置フィルタの漏れではなく採用された `codd_gate_wiring` 自身の import（`codd_gate_wiring.py:40,47,48`）。直接 import されないことを主張できるのは `codd_gate_base` / `codd_gate_debt` / `codd_gate_regression` の 3 本なので、その不在を見る形にすること。main も同じ 4 本を import していたため推移的依存の範囲は不変。\n\n**範囲外で見つけた問題。**\n- `doctor.py:288,302,324` に `codd_gate` が残存（t4 スコープ・未完了。results に t4 なし）。run 完了条件の厳格 grep はこれで非 0。\n- `_normalize_hooks` は非文字列値を黙って捨てるため、`hooks: {wiring: 123}` が無言で自動検出へ落ちる（`hooks` は dict なので doctor の型不正 warn も出ない）。契約 §2.2 の `getattr(...) or {}` でも `_hook_configured_name` の `isinstance(name, str)` で同じ結果になる契約内在の穴で、t3 の実装逸脱ではない。@followup 設定値の型不正も doctor で warn する。\n- `git diff main HEAD` に `codd_gate_wiring.py` / `codd_gate_debt.py` の変更が入っている（r0 由来）。契約 §0.5「sibling の `codd_gate_*.py` は変更しない」に抵触するが、r0 の成果で t3 は触れていない。\n\n成果物は `artifacts/t3/` に `behavior-equivalence.md`（根拠と再現手順）、`configfile_wiring_probe.py`、`wiring.{main,head,now}.json`、`configfile-change.diff`、`hooks.py.new`。commit/push は行っていない。",
+  "finished_at": "2026-07-19T00:57:21Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox",
+      "branch": "ap/agent_project-codd_gate-163827",
+      "commit": "38a1ccd85f747a93ceb5eafde9066af551cfea23",
+      "target": "main",
+      "path": "tools/agent-project"
+    }
+  },
+  "artifacts": [
+    "artifacts/t3/behavior-equivalence.md",
+    "artifacts/t3/configfile-change.diff",
+    "artifacts/t3/configfile_wiring_probe.py",
+    "artifacts/t3/hooks.py.new",
+    "artifacts/t3/wiring.head.err",
+    "artifacts/t3/wiring.head.json",
+    "artifacts/t3/wiring.main.err",
+    "artifacts/t3/wiring.main.json",
+    "artifacts/t3/wiring.now.err",
+    "artifacts/t3/wiring.now.json"
+  ]
+}
