@@ -2,3 +2,5 @@
 {"ts": "2026-07-19T11:59:37Z", "who": "worker-1", "kind": "result", "node": "t1", "status": "failed"}
 {"ts": "2026-07-19T12:41:14Z", "who": "worker-1", "kind": "claimed", "node": "t1"}
 {"ts": "2026-07-19T12:41:15Z", "who": "worker-1", "kind": "result", "node": "t1", "status": "failed"}
+{"ts": "2026-07-19T12:41:28Z", "who": "worker-1", "kind": "claimed", "node": "t1"}
+{"ts": "2026-07-19T12:41:29Z", "who": "worker-1", "kind": "result", "node": "t1", "status": "failed"}

@@ -3,7 +3,7 @@
   "who": "worker-1",
   "status": "failed",
   "output": "実行エラー: [agent-error:quota] [agent-control] このワークロード（flow）は管理面により lifecycle=stop 指定です。dashboard のオーケストレーションタブで run に戻してください",
-  "finished_at": "2026-07-19T12:41:15Z",
+  "finished_at": "2026-07-19T12:41:29Z",
   "data": {
     "error_class": "quota"
   }
