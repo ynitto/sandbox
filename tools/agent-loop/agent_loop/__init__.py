@@ -15,6 +15,7 @@ _FRAGMENTS = (
     "inbox",
     "cron",
     "config",
+    "instructions",
     "tmux_util",
     "session",
     "scheduler",

@@ -175,21 +175,27 @@ request 本文より後段（ワーカーのプロンプト組立時）に足さ
 
 ### kiro-loop / agent-loop（tmux 常駐系）
 
-1. **paste 時注入（text）**: `send_prompt` 経路で、ペインごとに「最後に注入した revision」を
-   記録し、**未注入または revision が変わったときだけ**次の送信プロンプトの先頭へブロックを
-   前置する。長寿命チャットに毎回付けるのは文脈の汚染なので revision 差分のときのみ。
-   これで「dashboard で変更 → 次の定期送信 / inbox 配送から反映」の動的性が出る。
-2. **ペイン起動時反映（skills / tools）**: install.sh が一度だけ生成していた
-   `~/.kiro/agents/kiro-loop-concurrency.json` を、**ペイン起動時の再生成**へ移す。
-   再生成時に `instructions.json` の `skills` を `resources`
-   （`skill://~/.kiro/skills/<name>/**` 等、既存の探索ルートに沿った glob）へ、
-   `tools.allow` を `tools` へマージする（concurrency の hooks は維持）。
-   ユーザーが `kiro_options.agent` で自前のエージェントを指定している場合は
-   上書きせず、テキスト注入（1.）のみ行う。skills / tools の反映は**ペイン再起動時**が
-   反映点になる（動的性の限界として明記。text は paste 時なので即時）。
+1. **paste 時注入（text・実装済み）**: `send_prompt` 経路で、ペインごとに「最後に注入した
+   revision」を `self._instr_rev` に記録し、**未注入または revision が変わったときだけ**次の
+   送信プロンプトの先頭へブロックを前置する（`_maybe_prepend_instructions`）。長寿命チャットに
+   毎回付けるのは文脈の汚染なので revision 差分のときのみ。これで「dashboard で変更 → 次の
+   定期送信 / inbox 配送から反映」の動的性が出る。ブロックは指示文だけでなく**推奨スキル・
+   ツール方針も助言テキストとして**含む（`推奨スキル:` / `ツール（許可）:` 行）ので、
+   skills / tools の意図もこの 1 経路でエージェントへ届く。
+2. **skills / tools の native 反映（v1 では見送り）**: kiro-cli `--agent` JSON への
+   `resources`（skill）/ `tools` の強制反映は、既定の concurrency エージェント
+   （`~/.kiro/agents/kiro-loop-concurrency.json`）が既に `skill://~/.kiro/skills/**/SKILL.md`
+   で**全ローカルスキルを glob**し `tools:["*"]` で**全ツールを許可**しているため、
+   スキルの追加参照・ツールの許可拡大は実質すでに効いている。native 反映の唯一の追加効果は
+   ツールの**制限**だが、install が所有するファイルをペイン起動ごとに書き換える副作用と
+   ツール絞り込みの破壊リスクに見合わない。よって v1 は 1. の助言テキストで skills / tools を
+   届けるに留め、`--agent` 再生成は将来課題とする（ペイン再起動が反映点になる制約も残るため）。
 3. inbox メッセージ（エージェント間メッセージング）には載せない — 受信側ループが
    自ノードの instructions.json で注入するので、メッセージ本文を汚す必要がない。
-4. agent-loop へは kiro-loop からのクローン同期で反映する（既存の流儀）。
+4. **status**: 直近に paste 注入したブロックの revision を `instructions_revision_applied` として
+   agent-control の status ハートビートへ相乗りする。
+5. agent-loop へは同じ実装をクローンして反映する（`agent_loop/instructions.py` +
+   `session.py` の `_maybe_prepend_instructions`。kiro-loop の後継クローンという既存の流儀）。
 
 ### agent-dashboard 自身（cowork）
 

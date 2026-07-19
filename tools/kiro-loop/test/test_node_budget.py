@@ -12,7 +12,9 @@ import json
 import os
 import pathlib
 import tempfile
+import threading
 import time
+import types
 import unittest
 from unittest import mock
 
@@ -100,6 +102,57 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(rec["tool"], "kiro-loop")
         self.assertEqual(rec["workload"], "routine")
         self.assertEqual(rec["revision_applied"], 5)
+
+
+class GlobalInstructionsTests(unittest.TestCase):
+    """グローバル指示（agent-instructions 契約）: 描画・差分注入・status 相乗り。"""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="kl-instr-")
+        os.environ["AGENT_INSTRUCTIONS_DIR"] = self.dir
+        self.addCleanup(os.environ.pop, "AGENT_INSTRUCTIONS_DIR", None)
+        kl._INSTRUCTIONS_REV_APPLIED = None
+        self.addCleanup(setattr, kl, "_INSTRUCTIONS_REV_APPLIED", None)
+
+    def _write(self, obj):
+        with open(os.path.join(self.dir, "instructions.json"), "w", encoding="utf-8") as f:
+            json.dump(obj, f)
+
+    def test_render_and_disabled(self):
+        b = kl.render_instructions_block({
+            "revision": 5, "enabled": True, "text": "回答は日本語。",
+            "skills": ["karpathy-guidelines", {"name": "self-checking", "note": "提出前に自己評価"}],
+            "tools": {"allow": ["fs_read"], "deny_note": "push は人の確認"}})
+        self.assertTrue(b.startswith("<!-- agent-instructions rev:5 -->"))
+        self.assertIn("- self-checking — 提出前に自己評価", b)
+        self.assertIn("ツール（許可）: fs_read", b)
+        self.assertEqual(kl.render_instructions_block({"enabled": False, "text": "x", "revision": 1}), "")
+
+    def test_maybe_prepend_only_on_revision_change(self):
+        self._write({"version": 1, "revision": 2, "enabled": True, "text": "共通指示Y"})
+        # SessionManager を作らず、必要な属性だけ持つ軽量スタブでメソッドを検証する
+        stub = types.SimpleNamespace(_instr_rev={}, _lock=threading.Lock())
+        first = kl.SessionManager._maybe_prepend_instructions(stub, "p1", "タスク")
+        self.assertTrue(first.startswith("<!-- agent-instructions rev:2 -->"))
+        self.assertIn("共通指示Y", first)
+        self.assertEqual(kl._INSTRUCTIONS_REV_APPLIED, 2)
+        # 同 revision の再送では前置しない（差分注入）
+        second = kl.SessionManager._maybe_prepend_instructions(stub, "p1", "次のタスク")
+        self.assertEqual(second, "次のタスク")
+        # revision が上がれば再注入
+        self._write({"version": 1, "revision": 3, "enabled": True, "text": "共通指示Z"})
+        third = kl.SessionManager._maybe_prepend_instructions(stub, "p1", "また")
+        self.assertTrue(third.startswith("<!-- agent-instructions rev:3 -->"))
+
+    def test_status_carries_instructions_revision(self):
+        os.environ["AGENT_CONTROL_DIR"] = self.dir
+        self.addCleanup(os.environ.pop, "AGENT_CONTROL_DIR", None)
+        kl._CONTROL_CACHE["mtime"] = None
+        kl._INSTRUCTIONS_REV_APPLIED = 4
+        kl._write_status(lifecycle="run")
+        sf = os.path.join(self.dir, "status")
+        rec = json.load(open(os.path.join(sf, os.listdir(sf)[0]), encoding="utf-8"))
+        self.assertEqual(rec["instructions_revision_applied"], 4)
 
 
 class SchedulerStopTests(unittest.TestCase):
