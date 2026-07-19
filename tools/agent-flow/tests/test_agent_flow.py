@@ -6136,6 +6136,25 @@ class TestAgentPluginAndTriage(unittest.TestCase):
         self.assertIn("[agent-error:auth]", reason)
         self.assertIn("温存", reason)                  # 完了済みは捨てない、と言い切る
 
+    def test_env_failure_preserves_quota_source_marker(self):
+        """quota を表示層が利用上限と誤認しないよう、発生元を run まで運ぶ。"""
+        nodes = {"t1": {"goal": "a", "deps": [], "kind": "work"}}
+        args = types.SimpleNamespace(executor="stub", max_fanout=50, review=False,
+                                     exemplar_first=False, max_retries=3)
+        for source in ("agent-control", "node-budget"):
+            with self.subTest(source=source):
+                results = {
+                    "t1": {
+                        "status": "failed",
+                        "output": (f"実行エラー: [agent-error:quota] [{source}] "
+                                   "管理面により実行できません"),
+                    },
+                }
+                decision, _, reason = kf._continue(args, "req", nodes, results, 0)
+                self.assertEqual(decision, "failed")
+                self.assertIn(f"[{source}]", reason)
+                self.assertNotIn("プラン・クレジット", reason)
+
     def test_content_failure_still_replans(self):
         # タグ無し（内容の問題）は従来どおり retry タスクを生成する
         nodes = {"t1": {"goal": "a", "deps": [], "kind": "work"}}

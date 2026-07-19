@@ -2325,6 +2325,38 @@ class TestDecisionRecords(unittest.TestCase):
             self.assertEqual(km.load_tasks(d / "backlog"), [])
             self.assertTrue((d / "archive" / "T1.md").exists())
 
+    def test_approve_from_legacy_dashboard_completion_button_is_done(self):
+        """起動中の旧 dashboard が complete を送らなくても、完了ボタンの正規文言は done にする。
+
+        Electron を更新後に再起動しないと、旧 renderer が「成果を確認して完了を承認」
+        という明示的な完了意図だけを送る。これを通常 approve として積み直すと、
+        同じ環境失敗 run を再開し、再び要確認へ戻る。
+        """
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            bd = d / "backlog"
+            bd.mkdir(parents=True)
+            (bd / "T1.md").write_text(
+                "## T1: 成果あり・環境失敗\n- status: blocked\n- source: human\n"
+                "- verify: npm test\n- retries: 2\n- last_run: run-failed\n- env_resume: 1\n"
+                "- needs_reason: [agent-error:quota] 環境の問題\n",
+                encoding="utf-8",
+            )
+            c = cfg_for(d)
+            cdir = d / "commands"
+            cdir.mkdir(parents=True, exist_ok=True)
+            (cdir / "viewer-approve-t1.json").write_text(
+                json.dumps({"command": "approve", "id": "T1",
+                            "reason": "成果を確認して完了を承認",
+                            "actor": "agent-dashboard"}),
+                encoding="utf-8")
+
+            km.ingest_commands(c)
+
+            self.assertEqual(km.load_tasks(d / "backlog"), [])
+            self.assertTrue((d / "archive" / "T1.md").exists())
+            self.assertFalse(list(cdir.glob("*.err")))
+
     def test_policy_is_not_appended_twice(self):
         # policy は「人の上書き指示」の集合であって履歴ではない。同じ hold を繰り返しても増えない
         with tempfile.TemporaryDirectory() as d:

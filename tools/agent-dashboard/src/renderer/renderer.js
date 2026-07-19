@@ -4983,10 +4983,41 @@ function humanWaitingAdvice(task) {
 // 失敗トリアージ（agent-flow が meta.failure_reason に載せる決定的タグ [agent-error:<class>]）。
 // 環境要因ならタスク状態（blocked 等）より先に「何を直すか」を言い切る。
 function agentErrorAdvice(run, found) {
-  const tri = /\[agent-error:(quota|auth|env)\]/.exec(String(run.failureReason || ''));
+  const failure = String(run.failureReason || '');
+  const tri = /\[agent-error:(quota|auth|env)\]/.exec(failure);
   if (!tri) return null;
+  // 旧 run は meta.failure_reason が quota の汎用文言まで丸められている。
+  // ノード出力には発生元タグが残るため、それも合わせて判定する。
+  const nodeOutputs = Object.values(run.nodes || {})
+    .map((node) => String((node && node.output) || ''))
+    .join('\n');
+  const detail = `${failure}\n${nodeOutputs}`;
+  if (tri[1] === 'quota' && /\[agent-control\]/.test(detail)) {
+    const paused = /lifecycle=pause\b/.test(detail);
+    return {
+      kind: 'human',
+      cls: 'act',
+      chip: paused ? '⏸ 実行一時停止中' : '⏹ 実行停止中',
+      text:
+        `AI の利用上限ではありません。オーケストレーション設定で対象の実行が${paused ? '一時停止' : '停止'}されたため、` +
+        'run が失敗終了しました。全体設定の「エージェント」で対象ワークロードを「実行」に戻し、' +
+        '要対応タブから再開してください（完了済みの工程は温存されています）。',
+      taskId: found && found.task ? found.task.id : null,
+    };
+  }
+  if (tri[1] === 'quota' && /\[node-budget\]/.test(detail)) {
+    return {
+      kind: 'human',
+      cls: 'act',
+      chip: '⏲ ノード予算上限',
+      text:
+        'AI サービス側の利用上限ではありません。このマシンに設定した実行時間またはトークン予算に達しました。' +
+        '全体設定の「エージェント」にあるオーケストレーション予算を確認し、上限を変更するか期間更新後に再開してください。',
+      taskId: found && found.task ? found.task.id : null,
+    };
+  }
   const map = {
-    quota: ['⏲ 利用上限', 'AI の利用上限に達したため止まりました。時間をおく（またはプランを' +
+    quota: ['⏲ AI 利用上限', 'AI サービス側の利用上限に達したため止まりました。時間をおく（またはプランを' +
       '見直す）と回復します。回復後、要対応タブで該当タスクを承認すると続きから再開します' +
       '（完了済みの工程は温存されています）。'],
     auth: ['🔑 認証切れ', 'エージェント CLI の認証が切れたため止まりました。再ログインしてから、' +
@@ -6510,47 +6541,10 @@ function technicalProjectInfoHtml() {
     </section>`;
 }
 
-function coworkTechnicalInfoHtml() {
-  const folder = selectedProjectFolder();
-  const entries = coworkHasProjectConfig(state.cowork, folder)
-    ? coworkVisibleEntries(coworkDraft(), folder)
-    : [];
-  const selected = coworkSelectedEntry(entries, folder);
-  if (!selected) {
-    return '<div class="empty compact">定常業務を選ぶと、その設定と実行状態を確認できます。</div>';
-  }
-  const { item, index } = selected;
-  const id = coworkEntryId(item, index);
-  const live = ((state.cowork && state.cowork.items) || [])
-    .find((candidate, candidateIndex) => coworkEntryId(candidate, candidateIndex) === id) || item;
-  const execution = live.state || item.state || {};
-  const status = execution.running ? 'running' : (execution.status || 'unknown');
-  const sourceFile = (item._src && (item._src.file || (item._src.loop && item._src.loop.file))) || '';
-  const coworkConfig = (state.config && state.config.cowork) || {};
-  const provider = item.type === 'state-machine'
-    ? (coworkConfig.stateMachineCommand || 'statemachine-use')
-    : (coworkConfig.loopCommand || coworkConfig.loopProvider || 'kiro-loop');
-  return `<section class="developer-summary">
-    <div class="settings-section-heading"><div><span class="summary-kicker">選択中</span><h3>${esc(item.name || id)}</h3></div></div>
-    <dl class="developer-facts">
-      <div><dt>実行状態</dt><dd><span class="status-chip ${coworkStatusClass(status)}">${esc(statusLabel(status))}</span></dd></div>
-      <div><dt>最終確認</dt><dd>${execution.lastLogAt ? esc(fmtTime(execution.lastLogAt)) : '記録なし'}</dd></div>
-      <div><dt>種類</dt><dd>${esc(workTypeLabel(item.type))}</dd></div>
-      <div><dt>実行コマンド</dt><dd class="mono">${esc(provider)}</dd></div>
-      <div><dt>実行予定</dt><dd class="mono">${esc(item.schedule || '手動実行')}</dd></div>
-      <div><dt>有効状態</dt><dd>${item.enabled === false ? '無効' : '有効'}</dd></div>
-      <div><dt>対象リポジトリ</dt><dd class="mono">${esc(item.repo || item.cwd || '未設定')}</dd></div>
-      <div><dt>設定ファイル</dt><dd class="mono">${esc(sourceFile || '画面から登録')}</dd></div>
-    </dl>
-    ${state.cowork && state.cowork.error ? `<p class="cowork-item-error" role="alert">${esc(state.cowork.error)}</p>` : ''}
-  </section>`;
-}
-
-function openTechnicalInfo(scope) {
-  const coworkScope = scope === 'cowork';
-  $('technical-info-kicker').textContent = coworkScope ? '定常業務' : '選択中';
-  $('technical-info-title').textContent = coworkScope ? '定常業務の診断情報' : '詳細情報';
-  $('technical-project-info').innerHTML = coworkScope ? coworkTechnicalInfoHtml() : technicalProjectInfoHtml();
+function openTechnicalInfo() {
+  $('technical-info-kicker').textContent = '選択中';
+  $('technical-info-title').textContent = '詳細情報';
+  $('technical-project-info').innerHTML = technicalProjectInfoHtml();
   for (const btn of $('technical-project-info').querySelectorAll('[data-technical-tab]')) {
     btn.addEventListener('click', () => {
       $('dlg-technical-info').close();
@@ -9066,8 +9060,6 @@ function renderCowork() {
           <button id="btn-cowork-add">追加</button>
           <button id="btn-cowork-save">保存</button>
           <button id="btn-cowork-refresh" title="最新の状態を確認">更新</button>
-          <button type="button" class="subtle-action" data-open-technical-info
-            title="設定・同期状態などの診断情報を表示">診断情報</button>
         </div>
       </header>
       <div class="cowork-scope muted">
@@ -9081,8 +9073,6 @@ function renderCowork() {
       : '<div class="empty"><strong>このプロジェクトに登録された定常業務はありません</strong><span>プロジェクトの設定ファイルに作業を追加してください。</span></div>'}
     </div>`;
   bindCoworkRoutineSelector(el);
-  const technicalInfo = el.querySelector('[data-open-technical-info]');
-  if (technicalInfo) technicalInfo.addEventListener('click', () => openTechnicalInfo('cowork'));
   const addBtn = $('btn-cowork-add');
   if (addBtn) addBtn.addEventListener('click', () => openCoworkWorkDialog(-1));
   const saveBtn = $('btn-cowork-save');

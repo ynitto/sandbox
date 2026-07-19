@@ -129,6 +129,11 @@ def cmd_approve(cfg: Config, tid: str, reason: str, complete: bool = False) -> i
     reason_lower = needs_reason.lower()
     approval_lower = str(reason or "").lower()
     verify_undefined = (not t.verify and "verify 未定義" in needs_reason)
+    # complete フラグ対応前の agent-dashboard も「承認して完了にする」
+    # ボタンからこの決定的文言を送っていた。Electron は更新後も再起動まで
+    # 旧 renderer が動くため、その明示意図だけは complete=True と同じに扱う。
+    # 一般の approve 理由まで完了扱いにしないよう、完全一致に限定する。
+    legacy_dashboard_complete = str(reason or "").strip().rstrip("。") == "成果を確認して完了を承認"
     # 旧経路（complete を渡さない CLI・古いドロップ）のための後方互換の推定。
     legacy_verification_acceptance = (
         bool(_completed_last_run(cfg, t))
@@ -138,6 +143,7 @@ def cmd_approve(cfg: Config, tid: str, reason: str, complete: bool = False) -> i
     )
     if t.norm_status() == "blocked" and (
             complete
+            or legacy_dashboard_complete
             or legacy_verification_acceptance
             or (verify_undefined and not t.get("env_resume")
                 and "[agent-error:" not in reason_lower)):
