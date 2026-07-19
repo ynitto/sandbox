@@ -6704,5 +6704,117 @@ class AgentControlTests(unittest.TestCase):
         self.assertEqual(rec["lifecycle"], "run")
 
 
+class GlobalInstructionsTests(unittest.TestCase):
+    """グローバル指示（agent-instructions 契約）: 描画・meta スナップショット・ワーカー注入・status。"""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="kf-instr-")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        self.instr = tempfile.mkdtemp(prefix="kf-instr-home-")
+        self.addCleanup(shutil.rmtree, self.instr, ignore_errors=True)
+        os.environ["AGENT_INSTRUCTIONS_DIR"] = self.instr
+        self.addCleanup(os.environ.pop, "AGENT_INSTRUCTIONS_DIR", None)
+        kf._INSTRUCTIONS_REV_APPLIED = None
+        self.addCleanup(setattr, kf, "_INSTRUCTIONS_REV_APPLIED", None)
+
+    def _write_instructions(self, obj):
+        with open(os.path.join(self.instr, "instructions.json"), "w", encoding="utf-8") as f:
+            json.dump(obj, f)
+
+    def test_render_matches_canonical_format(self):
+        block = kf.render_instructions_block({
+            "revision": 5, "enabled": True, "text": "回答は日本語。",
+            "skills": ["karpathy-guidelines", {"name": "self-checking", "note": "提出前に自己評価"}],
+            "tools": {"allow": ["fs_read"], "deny_note": "push は人の確認"}, "max_chars": 2000,
+        })
+        self.assertTrue(block.startswith("<!-- agent-instructions rev:5 -->\n"))
+        self.assertIn("## 共通指示（agent-dashboard 管理・全ノード共通）", block)
+        self.assertIn("- self-checking — 提出前に自己評価", block)
+        self.assertIn("ツール（許可）: fs_read", block)
+        self.assertEqual(kf.render_instructions_block({"enabled": False, "text": "x", "revision": 1}), "")
+        self.assertEqual(kf.render_instructions_block(None), "")
+
+    def test_render_truncates_but_keeps_marker(self):
+        block = kf.render_instructions_block({"revision": 3, "enabled": True, "text": "あ" * 500}, 80)
+        self.assertLessEqual(len(block), 80)
+        self.assertTrue(block.startswith("<!-- agent-instructions rev:3 -->"))
+        self.assertTrue(block.endswith("…"))
+
+    def test_prepend_dedups_on_marker(self):
+        block = "<!-- agent-instructions rev:1 -->\nX"
+        merged = kf.prepend_instructions("本文", block)
+        self.assertTrue(merged.startswith(block))
+        self.assertIn("本文", merged)
+        self.assertEqual(kf.prepend_instructions(merged, block), merged)  # 二重注入しない
+
+    def test_snapshot_writes_meta_and_propagates(self):
+        self._write_instructions({"version": 1, "revision": 2, "enabled": True, "text": "共通指示X"})
+        bus = kf.Bus(self.dir, "run-gi")
+        bus.ensure_run("元要求")
+        self.assertTrue(bus.snapshot_instructions())
+        meta = bus.run_meta("run-gi")
+        self.assertEqual(meta["instructions"]["revision"], 2)
+        self.assertIn("共通指示X", meta["instructions"]["text"])
+        self.assertTrue(meta["instructions"]["text"].startswith("<!-- agent-instructions rev:2 -->"))
+        # 冪等: 既にスナップショット済みなら再書き込みしない
+        self.assertFalse(bus.snapshot_instructions())
+
+    def test_snapshot_skips_when_disabled_or_empty(self):
+        self._write_instructions({"version": 1, "revision": 1, "enabled": False, "text": "x"})
+        bus = kf.Bus(self.dir, "run-off")
+        bus.ensure_run("req")
+        self.assertFalse(bus.snapshot_instructions())
+        self.assertNotIn("instructions", bus.run_meta("run-off"))
+
+    def test_snapshot_skips_when_request_has_marker(self):
+        self._write_instructions({"version": 1, "revision": 1, "enabled": True, "text": "x"})
+        bus = kf.Bus(self.dir, "run-mk")
+        bus.ensure_run("<!-- agent-instructions rev:9 --> 既に注入済みの要求")
+        self.assertFalse(bus.snapshot_instructions())
+
+    def test_execute_agent_injects_block_via_builtin_prompt(self):
+        block = "<!-- agent-instructions rev:4 -->\n## 共通指示（agent-dashboard 管理・全ノード共通）\n回答は日本語。"
+        captured = {}
+
+        def fake_run_agent(prompt, model, purpose=""):
+            captured["prompt"] = prompt
+            return "ok"
+
+        # flow-worker スキルを無効化して組み込み fallback プロンプトを通す
+        with mock.patch.object(kf, "_flow_worker_prompt", return_value=None), \
+             mock.patch.object(kf, "run_agent", side_effect=fake_run_agent):
+            kf.execute_agent("work", "タスクG", {}, None, instructions=block)
+        self.assertTrue(captured["prompt"].startswith(block))
+        self.assertIn("タスクG", captured["prompt"])
+
+    def test_execute_agent_no_double_inject_when_prompt_has_marker(self):
+        block = "<!-- agent-instructions rev:4 -->\n共通指示"
+        # スキルが既にブロックを前置したプロンプトを返す → 外側は二重注入しない
+        skill_prompt = block + "\n\nタスク本文"
+        captured = {}
+
+        def fake_run_agent(prompt, model, purpose=""):
+            captured["prompt"] = prompt
+            return "ok"
+
+        with mock.patch.object(kf, "_flow_worker_prompt", return_value=skill_prompt), \
+             mock.patch.object(kf, "run_agent", side_effect=fake_run_agent):
+            kf.execute_agent("work", "g", {}, None, instructions=block)
+        self.assertEqual(captured["prompt"].count("agent-instructions"), 1)
+
+    def test_status_carries_instructions_revision_applied(self):
+        os.environ["AGENT_CONTROL_DIR"] = self.dir
+        self.addCleanup(os.environ.pop, "AGENT_CONTROL_DIR", None)
+        kf._CONTROL_CACHE["mtime"] = None
+        kf._note_instructions_applied(3)
+        with mock.patch.object(kf, "_run_agent_once", return_value="ok"):
+            kf.run_agent("x", None, purpose="worker")
+        status_dir = os.path.join(self.dir, "status")
+        files = [n for n in os.listdir(status_dir) if n.endswith(".json")]
+        with open(os.path.join(status_dir, files[0]), encoding="utf-8") as f:
+            rec = json.load(f)
+        self.assertEqual(rec["instructions_revision_applied"], 3)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -322,6 +322,10 @@ def _spawn_worker(base: list, args, rid: str, wid: str):
 
 
 def cmd_run(args) -> int:
+    # グローバル指示の無効化を子プロセス（orchestrate / work）へ環境変数で伝搬する
+    # （子は argv を組み立て直すため、フラグは env で確実に届ける）。
+    if getattr(args, "no_global_instructions", False):
+        os.environ["AGENT_FLOW_NO_GLOBAL_INSTRUCTIONS"] = "1"
     probe = make_bus(args, "run")
     probe.sync_pull()
     resuming = bool(args.run_id) and probe.run_exists(args.run_id)

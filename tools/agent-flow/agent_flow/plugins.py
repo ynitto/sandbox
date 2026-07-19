@@ -37,7 +37,7 @@ def _executor_accepts(execute, name: str) -> bool:
 
 def call_executor(execute, kind: str, goal: str, dep_results: dict, model: "str | None",
                   art_dir, dep_arts, repo_instruction: str = "", workspace: "dict | None" = None,
-                  references: "list[dict] | None" = None, request: str = ""):
+                  references: "list[dict] | None" = None, request: str = "", instructions: str = ""):
     """executor を呼ぶ単一の入口。
     - `repo_instruction`（ワークスペース＋参照の作業指示テキスト）は、受け取れる executor には**別引数**で
       渡して goal を汚さない（gitlab のイシュータイトル/目的が指示で埋まらないようにする）。
@@ -55,6 +55,8 @@ def call_executor(execute, kind: str, goal: str, dep_results: dict, model: "str 
         kwargs["references"] = references
     if request and _executor_accepts(execute, "request"):
         kwargs["request"] = request  # run の元要求（worker が全体文脈として使う）
+    if instructions and _executor_accepts(execute, "instructions"):
+        kwargs["instructions"] = instructions  # グローバル指示（run スナップショットの描画済みブロック）
     if kwargs or not repo_instruction:
         return execute(kind, goal, dep_results, model, art_dir, dep_arts, **kwargs)
     g = (repo_instruction + "\n\n" + goal) if repo_instruction else goal

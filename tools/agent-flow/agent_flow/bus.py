@@ -61,6 +61,25 @@ class Bus:
                 "created_at": now_iso(),
             })
 
+    def snapshot_instructions(self) -> bool:
+        """グローバル指示（agent-instructions 契約）をこの run の meta.json へ固定する。
+        投入ノードの instructions.json を描画し additive キー instructions:{revision,text} を書く。
+        GitBus 同期で全ワーカーへ届く＝run 単位の一貫性基準（ワーカーはローカルを読まない）。
+        冪等: 既にスナップショット済み・終端・request にマーカー混入済み・無効/空なら何もしない。"""
+        meta = read_json(self.meta_path) or {}
+        if meta.get("status") in TERMINAL:
+            return False
+        if isinstance(meta.get("instructions"), dict):
+            return False
+        if AGENT_INSTRUCTIONS_MARKER in str(meta.get("request", "")):
+            return False
+        snap = local_instructions_snapshot()
+        if not snap:
+            return False
+        meta["instructions"] = snap
+        write_json_atomic(self.meta_path, meta)
+        return True
+
     def run_workspace(self) -> "dict | None":
         """この run の唯一の書込先ワークスペース spec（meta に記録）。無ければ None（読み取り専用 run）。"""
         meta = read_json(self.meta_path) or {}

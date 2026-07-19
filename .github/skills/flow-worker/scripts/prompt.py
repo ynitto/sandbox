@@ -171,8 +171,17 @@ def build_worker_prompt(p: dict) -> str:
     """worker/verify の各 kind 向けプロンプト。"""
     kind = str(p.get("kind") or "work")
     role = ROLE_LINES.get(kind, ROLE_LINES["work"])
-    parts = [f"あなたは分散 Dynamic Workflow の{role}",
-             f"タスク({kind}): {p.get('goal', '')}"]
+    parts = []
+    # グローバル指示（agent-instructions）: agent-flow が run スナップショットから渡す描画済み
+    # ブロック（マーカー付き）。ノード全体の基準として先頭へ置く。個別タスク・全体文脈・
+    # プロジェクト規則と矛盾する場合はそれらが優先（最弱の層）であることを明示する。
+    instructions = str(p.get("instructions") or "").strip()
+    if instructions:
+        parts.append(instructions)
+        parts.append("上記の共通指示はノード全体の基準です。個別タスクの指示・全体文脈・"
+                     "プロジェクト規則と矛盾する場合は、それらを優先してください。")
+    parts.append(f"あなたは分散 Dynamic Workflow の{role}")
+    parts.append(f"タスク({kind}): {p.get('goal', '')}")
     if p.get("request"):
         parts.append("【全体文脈】この run の元要求（担当は上記タスクのみ。全体を一人でやり直さない）: "
                      + _trim(p["request"], 400))
