@@ -1,0 +1,27 @@
+{
+  "id": "t6",
+  "who": "worker-2",
+  "status": "done",
+  "output": "## (a) 成果\n\n**intake の境界: 変更ゼロ。テスト +19 件（差分は `tools/agent-project/tests/test_agent_project.py` のみ、243 行追加）。**\n\nintake の境界はすでに t2 契約を満たしていた。`_parse_intake_records` は `schemas/task` 相当の汎用パーサで、id/title の型正規化も t5 が入れ終わっており、`run_intake` の冪等 enqueue も無改造。パッケージ内の `codd_gate` 名は 0 hit。残るのは `run_intake` docstring の「例: `codd-gate tasks --debt`」だけで、これは CLI 名（契約 §0.2 で明示的に許可）。**触るべき境界が無かったので触らなかった。**\n\nタスク文が指す `TestCoddGateAutoWiring` / `_codd_gate_wiring_module` を patch するテストは、r4 の HEAD 時点で既に存在しない（r0 で除去済み）。**改名対象ではなく空白**だったので、新しい注入点に対するテストを新設して埋めた。\n\n| 追加先 | 件数 | 内容 |\n|---|---|---|\n| `TestHookResolution`（新設） | 7 | sibling 能力スキャン / 設定明示の優先 / 明示失敗で自動検出へ落ちない / 契約不足 module の棄却 / sibling 不在 / 前置フィルタ / キャッシュ（ヒットも不在も） |\n| `TestDoctorWiringFindings`（新設） | 7 | findings 素通し / 不在は無言 / 明示失敗は warn / hooks 型不正 / 片方だけ解決なら呼ばない / プロバイダ例外の畳み込み / 注入引数の到達 |\n| `TestIntake`（追加） | 5 | `_parse_intake_records` の正規化等値 / 非文字列 id / 空白付き id / 空白だけの id / 正規化後 id での冪等 |\n\n成果物: `artifacts/t6/` に `tests-diff.patch`・`mutation-evidence.md`・`mutation_probe.py`。\n\n## (b) 検証\n\n**空振りでないことの実測**: 13 ミューテーション（差し込み点の性質を 1 つずつ壊す → 対象テストだけ実行 → `finally` で原文へ復元しバイト比較で確認）を `mutation_probe.py` で流し、**全部が赤**。\n\n初回実行で 2 件が緑になり、テスト側の弱さが露見したので直した。\n\n- `if detect is None or render is None` を `and` に変えても緑だった。片方 `None` で先へ進むと `None.detect_wiring` が `AttributeError` を投げ、直後の `except Exception` が畳んで結果は同じ `[]` になる。差が出るのは「プロバイダを呼んだか」だけなので、`detect_wiring` を呼ばないこと自体をアサートへ格上げした。\n- 空白だけの id をキーごと落とさなくても、`run_intake` 経由では `_slug_id` が空へ潰して自動採番に倒れ、振る舞いが変わらなかった。この性質はパーサの出力にしか現れないため `_parse_intake_records` の等値テストを足した。\n\n**スイート**: 714 → 733 件。失敗は変更前と同じ 3 件（`TestDaemonRouting.test_kf_base_passes_flow_config` / `TestJournalRotation.test_rotation_archives_and_starts_fresh` / `TestProjectLayer.test_version_inherits_master_charter`）のみで、契約 §5 の「この 3 件だけが残る状態を合格」と一致。契約 §6 の grep 1・2 は 0 hit、テスト 3・4 は OK。\n\n**旧名の残存**: tests 側の唯一の hit は `assertFalse(hasattr(km, \"_apply_codd_gate_auto_wiring\"))` — 禁止対象の名前を書いた否定アサートなので残すのが正しい（契約 §5 も同判断）。\n\n**プロバイダ実解決**: hooks 未指定の素の環境で `_hook_provider(\"wiring.detect\")` が実プロバイダへ解決し、`doctor_wiring_findings` が所見を出し続けることを確認。所見文言の `codd-gate` はプロバイダ側の文字列で、パッケージ内には無い。\n\n## (c) 前提・未解決・範囲外\n\n**採用した前提**: ①タスク文の「`TestCoddGateAutoWiring` を書き換える」は現物と食い違うため、意図（新境界にテストを追随させる）を採って新設で埋めた。②`TestCoddGateNoAutoWiring` の改名は契約 §5 で任意とされているので見送った（クラス名を変えても検証内容は 1 ビットも増えない）。③intake の境界調整は「必要なら」と読み、現物が契約を満たしているので変更しない判断をした。\n\n**未解決**: 契約 §6-5 の「変更前後で doctor 出力が一致」は before 側に未変更 worktree が要る。本タスクの差分はテストのみで doctor 経路に触れていないため before=after が自明と判断し、代わりに現行ツリーでプロバイダが解決し所見が出ることの実測を置いた。t3〜t5 の差分を含めた before/after 比較は検証役の判断に委ねる。\n\n**範囲外で見つけたもの**: `run_intake` の `sid = _slug_id(str(sp.get(\"id\", \"\") or \"\"))` は t5 の正規化により防御が二重になった。害は無く、消すと `enqueue_task` を直接叩く経路の保険が減るので触っていない。@followup として記す。",
+  "finished_at": "2026-07-19T06:30:41Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox",
+      "branch": "ap/agent_project-codd_gate-163827",
+      "commit": "da915dc81531e51ac60bb4fc3e33ac4f3e1ba82f",
+      "target": "main",
+      "path": "tools/agent-project"
+    }
+  },
+  "artifacts": [
+    "artifacts/t6/doctor-reference-for-t4.diff",
+    "artifacts/t6/intake-and-test-migration.md",
+    "artifacts/t6/mutation-evidence.md",
+    "artifacts/t6/mutation-matrix.py",
+    "artifacts/t6/mutation-matrix.txt",
+    "artifacts/t6/mutation-probe.py",
+    "artifacts/t6/mutation_probe.py",
+    "artifacts/t6/tests-change.diff",
+    "artifacts/t6/tests-diff.patch"
+  ]
+}

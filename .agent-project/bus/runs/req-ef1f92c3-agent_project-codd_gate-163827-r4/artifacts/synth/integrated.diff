@@ -1,0 +1,319 @@
+diff --git a/tools/agent-project/README.md b/tools/agent-project/README.md
+index a88a0a70..10872577 100644
+--- a/tools/agent-project/README.md
++++ b/tools/agent-project/README.md
+@@ -286,6 +286,13 @@ CLI からも付与・修正できる。
+   `.agent/agent-project.yaml` を直接編集する。codd-gate 未検出・非互換の環境では
+   両経路とも no-op に縮退し、上記2行は設定されないまま（詳細は
+   [`codd-gate-design.md`](../../docs/designs/codd-gate-design.md) §4.1「自動検出レイヤ」）。
++  プロバイダを解決する仕組み自体（能力キー・`hooks:` での明示・フォールバック）は
++  [`HOOKS.md`](HOOKS.md) にある。
++  > **移行（後方非互換）**: これ以前の版は `repos.json` が実在すると起動時に `regression_cmd` /
++  > `intake_cmd` を自動で補っていた。本版は補わない。自動配線に頼っていたプロジェクトは、上げた
++  > 時点で**回帰ゲートと負債の汲み上げが黙って止まる**。`doctor` の未結線所見に出る推奨コマンドを
++  > `.agent/agent-project.yaml` へ書き写すか、`codd_gate_regression.py` を一度走らせて
++  > `regression_cmd` を恒久化すること。yaml に既に書いてあった環境は影響を受けない。
+ 
+ ### policy.md（人による上書き・per-project）
+ 
+diff --git a/tools/agent-project/agent_project/config.py b/tools/agent-project/agent_project/config.py
+index 47e9ca2d..e7b9e4e8 100644
+--- a/tools/agent-project/agent_project/config.py
++++ b/tools/agent-project/agent_project/config.py
+@@ -126,6 +126,9 @@ class Config:
+     # 任意フックのプロバイダ指定（能力キー -> module 名）。本体はプロバイダの固有名を持たず、
+     # 未指定なら sibling ディレクトリを能力で走査して引き当てる（hooks.py の _hook_provider）。
+     hooks: dict = field(default_factory=dict)
++    # hooks: の正規化で捨てた内容（型不正など。捨てていなければ None）。cfg には正規化後の
++    # 対応表しか残らないので、doctor が「書かなかった」と「書いたが読めなかった」を区別する材料。
++    hooks_error: "str | None" = None
+     ltm: bool = False               # ltm-use 長期記憶への昇格＋横断 recall（既定 off: home へ書くため明示）
+     ltm_home: "Path | None" = None  # ltm-use ストアのルート（既定 KIRO_LTM_HOME→~/.claude）
+     promote_threshold: int = 2      # learn ルールがこの回数以上効いたら昇格
+diff --git a/tools/agent-project/agent_project/configfile.py b/tools/agent-project/agent_project/configfile.py
+index 2c9a187f..5b7ba02f 100644
+--- a/tools/agent-project/agent_project/configfile.py
++++ b/tools/agent-project/agent_project/configfile.py
+@@ -174,13 +174,34 @@ def _normalize_hooks(raw) -> dict:
+     設定ファイルは人が手で書くので型は保証されない。壊れていても例外にせず空（＝sibling 自動
+     検出）へ落とす——設定ミスでプロセスが起動しない方が、任意フックが効かないことより高くつく。
+     値の妥当性（その名前が import できるか）はここでは見ない。解決は _hook_provider の責務で、
+-    明示指定が効いていないことは doctor が warn として可視化する。"""
++    明示指定が効いていないことは doctor が warn として可視化する。
++
++    捨てた分は `_hooks_config_error` が言葉にして cfg へ持ち上げる。正規化だけして黙ると、
++    書いた本人からは配線が理由なく無視されたようにしか見えない。"""
+     if not isinstance(raw, dict):
+         return {}
+     return {str(k).strip(): str(v).strip()
+             for k, v in raw.items() if isinstance(v, str) and str(v).strip()}
+ 
+ 
++def _hooks_config_error(raw) -> "str | None":
++    """`hooks:` の正規化で捨てた内容を1行で説明する（捨てていなければ None）。
++
++    型不正の検出をここに置くのは、生の設定値を持っているのがこの層だけだから。cfg には
++    正規化後の対応表しか残らず、doctor からは「書かなかった」と「書いたが読めなかった」の
++    区別が付かなくなる。捨てる判断そのものは `_normalize_hooks` が正典で、ここはその結果と
++    生の値を突き合わせるだけにして二重定義を避ける。"""
++    if raw is None:
++        return None
++    if not isinstance(raw, dict):
++        return f"hooks が対応表（能力キー -> module 名）ではない（{type(raw).__name__}）"
++    kept = _normalize_hooks(raw)
++    dropped = sorted(str(k) for k in raw if str(k).strip() not in kept)
++    if dropped:
++        return "hooks の値が module 名（文字列）になっていないキー: " + " / ".join(dropped)
++    return None
++
++
+ def _find_config(explicit):
+     """設定ファイルの探索: 1) --config 明示 2) ./（ルート直下）3) ./.agent/ 4) ~/.agent/。
+     ルート直下を最優先にするのは 1 root = 1 プロジェクト構成で agent-project.yaml が
+@@ -312,8 +333,10 @@ def build_config(args) -> Config:
+         regression_revert=bool(getattr(args, "regression_revert", False)),
+         intake_cmd=getattr(args, "intake_cmd", None),
+         intake_interval=float(getattr(args, "intake_interval", 600.0) or 0.0),
+-        # 型が壊れていても例外にせず既定（自動検出）へ落とす。設定ミスは doctor が warn で見せる。
++        # 型が壊れていても例外にせず既定（自動検出）へ落とす。捨てた理由は hooks_error に残し、
++        # doctor が warn で見せる（黙って落とすと設定ミスが観測できない）。
+         hooks=_normalize_hooks(getattr(args, "hooks", None)),
++        hooks_error=_hooks_config_error(getattr(args, "hooks", None)),
+         require_progress=bool(getattr(args, "require_progress", False)),
+         auto_level=bool(getattr(args, "auto_level", False)),
+         auto_level_max=str(getattr(args, "auto_level_max", "assisted") or "assisted"),
+diff --git a/tools/agent-project/agent_project/doctor.py b/tools/agent-project/agent_project/doctor.py
+index ec84b60a..418d2f0e 100644
+--- a/tools/agent-project/agent_project/doctor.py
++++ b/tools/agent-project/agent_project/doctor.py
+@@ -289,19 +289,20 @@ def _hook_misconfig_findings(cfg: "Config") -> "list[dict]":
+ 
+     人が `hooks:` に名前を書いたのに効いていない状態は、書いた本人からは配線が黙って
+     無視されたようにしか見えない。既定の不在と同じ扱いにすると設定ミスが観測できないため、
+-    明示指定の解決失敗に限って warn を出す。"""
++    明示指定の解決失敗に限って warn を出す。
++
++    失敗は2段階あり、材料の出所が違う。設定値そのものが読めない（型不正・値が文字列でない）のは
++    configfile が正規化時に見て `cfg.hooks_error` へ残す。読めた名前が解決できないのは
++    `_hook_resolution_error` が見る。前者は自動検出がたまたま当たっても所見にする——書いた設定が
++    効いていない事実は、代わりが見つかったかどうかとは無関係だから。"""
+     def warn(title: str, evidence: str) -> "list[dict]":
+         return [{
+             "category": "config", "severity": "warn", "title": title, "evidence": evidence,
+             "fix": "agent-project.yaml の hooks を修正するか、行ごと削除して自動検出に戻す",
+         }]
+ 
+-    hooks = getattr(cfg, "hooks", None)
+-    if hooks is not None and not isinstance(hooks, dict):
+-        # 型が壊れていれば指定は丸ごと読めない。自動検出がたまたま当たっても、書いた設定が
+-        # 効いていない事実は変わらないので所見にする。
+-        return warn("hooks の設定型が不正",
+-                    _hook_resolution_error("wiring.detect", cfg) or "hooks は能力キー -> module 名の対応表")
++    if getattr(cfg, "hooks_error", None):
++        return warn("hooks の設定が読めない", cfg.hooks_error)
+     for capability in ("wiring.detect", "wiring.findings"):
+         reason = _hook_resolution_error(capability, cfg)
+         if reason:
+diff --git a/tools/agent-project/agent_project/hooks.py b/tools/agent-project/agent_project/hooks.py
+index 3f5250e3..b8032cc1 100644
+--- a/tools/agent-project/agent_project/hooks.py
++++ b/tools/agent-project/agent_project/hooks.py
+@@ -136,10 +136,11 @@ def _hook_resolution_error(capability: str, cfg) -> "str | None":
+     """明示指定があるのに解決できなかったときだけ理由文字列を返す。既定（未指定）は None。
+ 
+     未指定で見つからないのは任意機能の不在＝所見にしない。人が名前を書いたのに効いていない場合
+-    だけ知らせる（現行はどちらも一律無言で、設定ミスが観測できなかった）。"""
+-    hooks = getattr(cfg, "hooks", None) if cfg is not None else None
+-    if hooks is not None and not isinstance(hooks, dict):
+-        return f"hooks の設定型が不正（{type(hooks).__name__}）。能力キー -> module 名の対応表を書く"
++    だけ知らせる（現行はどちらも一律無言で、設定ミスが観測できなかった）。
++
++    見るのは「名前は読めたが解決できない」だけ。設定値そのものの型不正は生の値を持つ configfile
++    が正規化時に検出して `cfg.hooks_error` へ残す（ここへ重ねると同じ warn を二経路が作り、
++    どちらが出したのかテストからも運用からも区別できなくなる）。"""
+     name = _hook_configured_name(capability, cfg)
+     if not name:
+         return None
+diff --git a/tools/agent-project/tests/test_agent_project.py b/tools/agent-project/tests/test_agent_project.py
+index fe3f69d9..41becd4a 100644
+--- a/tools/agent-project/tests/test_agent_project.py
++++ b/tools/agent-project/tests/test_agent_project.py
+@@ -301,14 +301,18 @@ class TestIntake(unittest.TestCase):
+     def test_parse_intake_records_normalizes_title_and_id(self):
+         # 境界（汎用パーサ）そのものを固定する。title/id は文字列化して strip、strip 後に空の
+         # id はキーごと落として自動採番へ倒す。それ以外のフィールドは解釈せず素通し。
++        # `id: 0` は falsy だが「id が無い」ではない。`str(raw.get("id", "") or "")` と素直に
++        # 書くと 0 が空へ潰れて冪等キーが消え、同じ発見が毎周期積み上がる（test_..._zero_id）。
+         specs, errors = km._parse_intake_records(json.dumps([
+             {"title": "drift A", "id": 123},
+             {"title": " B ", "id": "  x  ", "verify": "true"},
+             {"title": "C", "id": "   "},
++            {"title": "D", "id": 0},
+         ]))
+         self.assertEqual(specs, [{"title": "drift A", "id": "123"},
+                                  {"title": "B", "id": "x", "verify": "true"},
+-                                 {"title": "C"}])
++                                 {"title": "C"},
++                                 {"title": "D", "id": "0"}])
+         self.assertEqual(errors, [])
+ 
+     def test_run_intake_normalizes_non_string_id(self):
+@@ -349,6 +353,18 @@ class TestIntake(unittest.TestCase):
+             self.assertEqual(km.run_intake(cfg), [])
+             self.assertEqual([p.stem for p in cfg.backlog.glob("*.md")], ["123"])
+ 
++    def test_run_intake_dedups_by_zero_id(self):
++        # 冪等キーが falsy な値でも効くこと。0 を「id 無し」と誤読すると毎周期 _gen_task_id で
++        # 別 id が振られ、同じ発見が backlog へ無限に積み上がる（パーサ側では見えず、
++        # 2 周目以降の件数にしか現れない退行）。
++        with tempfile.TemporaryDirectory() as d:
++            cmd = "printf '%s' '[{\"id\":0,\"title\":\"z\",\"verify\":\"true\"}]'"
++            cfg = self._cfg(Path(d), cmd)
++            km.ensure_dirs(cfg)
++            self.assertEqual([t.id for t in km.run_intake(cfg)], ["0"])
++            self.assertEqual(km.run_intake(cfg), [])
++            self.assertEqual([p.stem for p in cfg.backlog.glob("*.md")], ["0"])
++
+     def test_run_loop_intakes_and_consumes(self):
+         with tempfile.TemporaryDirectory() as d:
+             cfg = self._cfg(Path(d), "printf '%s' '{\"id\":\"L1\",\"title\":\"l\",\"verify\":\"true\"}'")
+@@ -3999,6 +4015,14 @@ class TestHookResolution(unittest.TestCase):
+         self.addCleanup(shutil.rmtree, d, True)
+         return cfg_for(d, hooks=hooks)
+ 
++    def test_capability_keys_used_by_callers_exist_in_the_table(self):
++        # 能力キーは hooks.py の表と各系統の呼び出し側に文字列として二重に現れる。表の側を
++        # 改名すると、呼び出し側は解決に失敗して黙って no-op へ落ちる（例外も所見も出ない）。
++        # 表が能力キーの正典であることを固定して、片側だけの改名を赤で止める。
++        for capability in ("wiring.detect", "wiring.findings"):
++            self.assertIn(capability, km.HOOK_CAPABILITIES)
++            self.assertTrue(km._hook_required(capability))
++
+     def test_sibling_scan_resolves_provider_by_capability(self):
+         # 素の環境（hooks 未指定）で、契約を満たす sibling が能力キーから引き当たる。
+         detect = km._hook_provider("wiring.detect")
+@@ -4054,6 +4078,44 @@ class TestHookResolution(unittest.TestCase):
+         self.assertNotIn(decoy, sys.modules)
+         self.assertFalse(marker.exists())                           # import 副作用が走っていない
+ 
++    def test_scan_picks_the_first_candidate_in_name_order(self):
++        # 走査順は決定的でなければならない。候補が複数ある環境（プロバイダを差し替える途中や
++        # 別実装の同居）で採用先が glob の返す順＝ファイルシステム依存になると、同じツリーでも
++        # マシンによって配線先が変わる。glob が逆順を返しても名前の昇順で先頭を採ること。
++        first, second = self._name("aaa"), self._name("bbb")
++        scan = self._module_dir({
++            first: "def detect_wiring(**kw):\n    return 'first'\n",
++            second: "def detect_wiring(**kw):\n    return 'second'\n",
++        })
++        self.assertLess(first, second)
++
++        class ReversedDir:                       # 走査順だけ入れ替えた sibling ディレクトリ
++            def __init__(self, real):
++                self._real = real
++
++            def __str__(self):
++                return str(self._real)
++
++            def is_dir(self):
++                return True
++
++            def glob(self, pattern):
++                return sorted(self._real.glob(pattern), reverse=True)
++
++        mod = km._hook_scan_siblings(("detect_wiring",), ReversedDir(scan))
++        self.assertEqual(getattr(mod, "__name__", None), first)
++
++    def test_scan_skips_private_and_non_module_filenames(self):
++        # sibling には module として import できない名前のファイルが同居する（`agent-project.py`
++        # が実例）。候補に混ぜると import 例外を数だけ踏む。名前で先に落とす。
++        scan = self._module_dir({})
++        body = "def detect_wiring(**kw):\n    return 'x'\n"
++        for stem in ("_private_probe", "agent-project-probe"):
++            (scan / f"{stem}.py").write_text(body, encoding="utf-8")
++            self.addCleanup(sys.modules.pop, stem, None)
++        with mock.patch.object(km, "_hook_sibling_dir", lambda: scan):
++            self.assertIsNone(km._hook_provider("wiring.detect"))
++
+     def test_result_is_cached_including_misses(self):
+         # 走査はディスクを読む。ヒットも不在も 1 回だけにする（不在環境で毎回走らせない）。
+         scans = []
+@@ -4076,6 +4138,52 @@ class TestHookResolution(unittest.TestCase):
+             self.assertEqual(len(scans), 2)
+ 
+ 
++class TestHookConfig(unittest.TestCase):
++    """設定ファイルの `hooks:` → cfg（正規化層）。設定は人が手で書くので型は保証されない。
++
++    壊れた値で起動を止めないこと（任意フックの設定ミスがプロセスを殺す方が高くつく）と、
++    捨てたことを黙らないことの両立が要る。捨てた理由は cfg.hooks_error に残り、doctor が読む。
++    """
++
++    @staticmethod
++    def _build(hooks):
++        d = Path(tempfile.mkdtemp(prefix="kp-hookcfg-"))
++        path = d / "agent-project.json"          # JSON も同じキー（PyYAML 非依存でロードできる）
++        path.write_text(json.dumps({"hooks": hooks}), encoding="utf-8")
++        ns = types.SimpleNamespace(root=str(d), config=str(path))
++        km.resolve_config(ns)
++        cfg = km.build_config(ns)
++        shutil.rmtree(d, ignore_errors=True)
++        return cfg
++
++    def test_mapping_is_normalized_without_error(self):
++        cfg = self._build({" wiring ": " codd_gate_wiring "})
++        self.assertEqual(cfg.hooks, {"wiring": "codd_gate_wiring"})
++        self.assertIsNone(cfg.hooks_error)
++
++    def test_non_mapping_falls_back_to_autodetect_and_is_recorded(self):
++        # `hooks: codd_gate_wiring` と書いてしまう形。対応表として読めないので丸ごと捨てるが、
++        # 自動検出がたまたま当たると設定が効いていないことに気づけないため理由を残す。
++        cfg = self._build("codd_gate_wiring")
++        self.assertEqual(cfg.hooks, {})
++        self.assertIn("対応表", cfg.hooks_error or "")
++
++    def test_non_string_value_is_dropped_and_recorded(self):
++        # 値が module 名でないキーだけを落とす。読める指定は生かす（1つの誤記で全部捨てない）。
++        cfg = self._build({"wiring": 123, "other": "some_module"})
++        self.assertEqual(cfg.hooks, {"other": "some_module"})
++        self.assertIn("wiring", cfg.hooks_error or "")
++
++    def test_absent_hooks_is_not_an_error(self):
++        # 未指定は既定（sibling 自動検出）。所見の材料にしない。
++        d = Path(tempfile.mkdtemp(prefix="kp-hookcfg-"))
++        self.addCleanup(shutil.rmtree, d, True)
++        ns = types.SimpleNamespace(root=str(d), config=None)
++        km.resolve_config(ns)
++        cfg = km.build_config(ns)
++        self.assertEqual((cfg.hooks, cfg.hooks_error), ({}, None))
++
++
+ class TestDoctorWiringFindings(unittest.TestCase):
+     """doctor の配線所見。プロバイダは能力で解決する任意フックで、本体は固有名も判定の中身も
+     持たない。プロバイダ不在・例外は空へ畳み、診断コマンド自体は走り切らせる。"""
+@@ -4125,9 +4233,23 @@ class TestDoctorWiringFindings(unittest.TestCase):
+         self.assertEqual((got[0]["category"], got[0]["severity"]), ("config", "warn"))
+         self.assertIn("kphook_absent_provider", got[0]["evidence"])
+ 
+-    def test_broken_hooks_type_is_reported(self):
+-        got = km.doctor_wiring_findings(self._cfg(hooks=["wiring"]))
+-        self.assertEqual([f["severity"] for f in got], ["warn"])
++    def test_broken_hooks_config_is_reported(self):
++        # 設定が読めなかった所見と、名前は読めたが解決できなかった所見は別物。severity だけ見ると
++        # 両者が同じ warn なので、どちらの経路が出したのか区別が付かない（title まで固定する）。
++        cfg = self._cfg(hooks_error="hooks が対応表ではない（str）")
++        with mock.patch.object(km, "_hook_provider", lambda cap, cfg=None: None):
++            got = km.doctor_wiring_findings(cfg)
++        self.assertEqual([(f["severity"], f["title"]) for f in got],
++                         [("warn", "hooks の設定が読めない")])
++
++    def test_broken_hooks_config_is_reported_even_when_autodetect_succeeds(self):
++        # 自動検出が当たってプロバイダが解決できても、書いた設定が効いていない事実は変わらない。
++        # 所見を解決の成否に従属させると、当たりの環境でだけ設定ミスが消える。
++        cfg = self._cfg(hooks_error="hooks の値が module 名（文字列）になっていないキー: wiring")
++        provider = self._provider(findings=[{"title": "p", "severity": "info"}])
++        with mock.patch.object(km, "_hook_provider", lambda cap, cfg=None: provider):
++            got = km.doctor_wiring_findings(cfg)
++        self.assertEqual([f["title"] for f in got], ["hooks の設定が読めない", "p"])
+ 
+     def test_half_resolved_capability_does_not_call_provider(self):
+         # 属性が片方だけ改名された環境で半端に走らせない。結果が空になるだけでは足りない

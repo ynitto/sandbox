@@ -1,0 +1,22 @@
+{
+  "id": "synth",
+  "who": "worker-2",
+  "status": "done",
+  "output": "統合完了。全検証パス。\n\n## 成果\n\n**統合後の差分**（`tools/agent-project` 配下のみ・6ファイル +174/-17）\n\n| ファイル | 内容 |\n|---|---|\n| `agent_project/config.py` | `Config.hooks_error` を追加 |\n| `agent_project/configfile.py` | `_hooks_config_error` を新設。捨てた理由を `cfg.hooks_error` へ |\n| `agent_project/doctor.py` | 型判定を自前で持たず `cfg.hooks_error` を読むだけに |\n| `agent_project/hooks.py` | `_hook_resolution_error` から型判定を除去（責務を戻す） |\n| `tests/test_agent_project.py` | +9件（`TestHookConfig` 新設4件ほか） |\n| `README.md` | 移行ノート＋`HOOKS.md` への参照 |\n\n**更新済み設計書**: `tools/agent-project/HOOKS.md`（新規。t2 の採用案・却下案・フォールバック表・注入点を反映済み。今回「自動配線は復活させない」節と、フォールバック表 row 3 の誤記修正を追加）\n\n## 突き合わせでわかったこと\n\n**4系統は揃っていなかったのではなく、揃える対象が1つしかなかった。** module フックを持つのは wiring だけで、debt は `intake_cmd`（プロセス境界）。t2 が「3系統を対称にする」案を却下済みで、`_hook_provider` の呼び出しは `doctor.py:324,325` の2箇所のみ、どちらも `cfg` を渡している。\n\n**実際のズレは1つ、型不正の warn が二経路にあったこと。** t3（configfile）と t4（doctor）が同じ「`hooks:` の型が壊れている」を独立に検出しており、gate の minor-1（分岐を `if False:` にしても緑）はその重複の症状だった。生の設定値を持つ configfile へ一本化し、t3 が「契約内在の穴」として申し送った未解決事項（`hooks: {wiring: 123}` が無言で落ちる）も同時に閉じた。\n\n**gate fail-1 は (a) 破壊的変更として受けた。** (b) のフック経由復活は grep 条件を満たすが、消したかったのは名前ではなく結合そのもので、「本体は無改造・差し込み点のみ」という元要求と正面から衝突する。README に移行ノート、HOOKS.md に却下理由を記録した。severity の info→warn は見送り（プロバイダ側の所見で本体に書き換える口が無く、契約 §0.5 がその変更を禁じている。info は新規インストールには正しい）。\n\n## 検証\n\n- 全体スイート **742 tests / failures=3** — 契約 §5 が合格条件とした main 由来の3件のみ\n- タスクの完了条件を逐語実行 → **PASS**（受入3テスト OK＋受入 grep 0 hit）\n- ミューテーション **6/6 KILLED** — gate が生存と報告した4件すべてを含む\n- 厳格 grep `codd_gate`（パッケージ内）0 hit\n\n入力の誤りが1件。gate の `e2e_probe.py` の C セクションは `{\"items\": [...]}` を渡しているが、この形は main の `parse_debt_output` でも同じく 0 件＋エラーになる（両者とも `items` キーを開かない）。**退行ではなくプローブ側の誤り。** また t3 が契約 §0.5 抵触として申し送った sibling 変更は docstring のみで、削除済みシンボルへの参照を消すものだったので差し戻さない。\n\n## @followup\n\n```\n@followup hooks 設定ミスの warn を系統横断で1件へまとめる :: HOOK_CAPABILITIES に系統を2つ以上足した状態で doctor を走らせ、同じ設定ミスの warn が系統数だけ並ばないこと\n@followup intake 呼び出し元の例外境界を見直す :: run_intake の except 節と loop.py:610 / mr.py:558 のガードを設計として揃える\n@followup 設計書 §4.1 から module フック（HOOKS.md）への参照を張る :: docs/designs/agent-project-design.md は外部 CLI の差し込み点だけをカタログ化していて module フックへの導線が無い（スコープ外）\n@followup 未結線所見の severity を移行期だけ warn へ上げるか決める :: codd_gate_wiring.doctor_findings の変更が要る。契約 §0.5 とスコープ外なのでプロバイダ側の判断（リリースノートで代替する案を採用済み）\n@followup gate の e2e_probe.py の C セクションの入力 shape を配列へ直す :: {\"items\": [...]} は main でも 0 件になる。後続が debt intake の退行と誤読する\n```\n\n成果物は `artifacts/synth/` に `integration-report.md`・`integrated.diff`・`HOOKS.md`・`mutation_recheck.py`。commit/push は行っていない。",
+  "finished_at": "2026-07-19T07:05:59Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox",
+      "branch": "ap/agent_project-codd_gate-163827",
+      "commit": "54b9f5ef402458715e1f179de51a3044e8f56469",
+      "target": "main",
+      "path": "tools/agent-project"
+    }
+  },
+  "artifacts": [
+    "artifacts/synth/HOOKS.md",
+    "artifacts/synth/integrated.diff",
+    "artifacts/synth/integration-report.md",
+    "artifacts/synth/mutation_recheck.py"
+  ]
+}

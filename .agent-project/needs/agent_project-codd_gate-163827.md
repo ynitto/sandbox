@@ -4,24 +4,28 @@ date: 2026-07-19
 decision-makers: [human]
 task-id: agent_project-codd_gate-163827
 kind: blocked
-delivery: [{"name":"sandbox","role":"write","url":"https://github.com/ynitto/sandbox","path":"/Users/nitto/Workspace/sandbox","base":"main","target":"main","branch":"ap/agent_project-codd_gate-163827","ref":"origin/ap/agent_project-codd_gate-163827","files":["tools/agent-project/README.md","tools/agent-project/agent_project/configfile.py","tools/agent-project/agent_project/doctor.py","tools/agent-project/agent_project/model.py","tools/agent-project/codd_gate_debt.py","tools/agent-project/codd_gate_wiring.py","tools/agent-project/tests/test_agent_project.py"],"files_total":7,"diff_cmd":"git -C /Users/nitto/Workspace/sandbox diff main...origin/ap/agent_project-codd_gate-163827","mr_url":""}]
+delivery: [{"name":"sandbox","role":"write","url":"https://github.com/ynitto/sandbox","path":"/Users/nitto/Workspace/sandbox","base":"main","target":"main","branch":"ap/agent_project-codd_gate-163827","ref":"origin/ap/agent_project-codd_gate-163827","files":["tools/agent-project/README.md","tools/agent-project/agent-project.yaml.example","tools/agent-project/agent_project/__init__.py","tools/agent-project/agent_project/config.py","tools/agent-project/agent_project/configfile.py","tools/agent-project/agent_project/doctor.py","tools/agent-project/agent_project/hooks.py","tools/agent-project/agent_project/model.py","tools/agent-project/codd_gate_debt.py","tools/agent-project/codd_gate_wiring.py","tools/agent-project/tests/test_agent_project.py"],"files_total":11,"diff_cmd":"git -C /Users/nitto/Workspace/sandbox diff main...origin/ap/agent_project-codd_gate-163827","mr_url":""}]
 ---
 
 # 要対応: agent_project-codd_gate-163827 — agent_project を codd_gate 非依存の汎用フックへ整理する
 
 ## Context and Problem Statement
 
-- なぜ: 繰り返し NG（retries=7）: agent-flow run タイムアウト（3600s）
+- なぜ: 繰り返し NG（retries=8）: agent-flow run タイムアウト（3600s）
 - 状態: blocked（agent-project の判断待ち）
 
 ## 判断材料（成果物の所在・差分・検証）
-- 成果物: ブランチ `ap/agent_project-codd_gate-163827`（7 ファイル変更・base `main`）
+- 成果物: ブランチ `ap/agent_project-codd_gate-163827`（11 ファイル変更・base `main`）
 - 所在: /Users/nitto/Workspace/sandbox
 - 差分を見る: `git -C /Users/nitto/Workspace/sandbox diff main...origin/ap/agent_project-codd_gate-163827`
-- 変更ファイル（7 件）:
+- 変更ファイル（11 件）:
     - tools/agent-project/README.md
+    - tools/agent-project/agent-project.yaml.example
+    - tools/agent-project/agent_project/__init__.py
+    - tools/agent-project/agent_project/config.py
     - tools/agent-project/agent_project/configfile.py
     - tools/agent-project/agent_project/doctor.py
+    - tools/agent-project/agent_project/hooks.py
     - tools/agent-project/agent_project/model.py
     - tools/agent-project/codd_gate_debt.py
     - tools/agent-project/codd_gate_wiring.py

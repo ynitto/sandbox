@@ -1,0 +1,261 @@
+diff --git a/tools/agent-project/tests/test_agent_project.py b/tools/agent-project/tests/test_agent_project.py
+index b4b414ff..fe3f69d9 100644
+--- a/tools/agent-project/tests/test_agent_project.py
++++ b/tools/agent-project/tests/test_agent_project.py
+@@ -298,6 +298,57 @@ class TestIntake(unittest.TestCase):
+             self.assertEqual([p.stem for p in cfg.backlog.glob("*.md")], ["OK1"])
+             self.assertIn("title が空/欠落", cfg.journal.read_text(encoding="utf-8"))
+ 
++    def test_parse_intake_records_normalizes_title_and_id(self):
++        # 境界（汎用パーサ）そのものを固定する。title/id は文字列化して strip、strip 後に空の
++        # id はキーごと落として自動採番へ倒す。それ以外のフィールドは解釈せず素通し。
++        specs, errors = km._parse_intake_records(json.dumps([
++            {"title": "drift A", "id": 123},
++            {"title": " B ", "id": "  x  ", "verify": "true"},
++            {"title": "C", "id": "   "},
++        ]))
++        self.assertEqual(specs, [{"title": "drift A", "id": "123"},
++                                 {"title": "B", "id": "x", "verify": "true"},
++                                 {"title": "C"}])
++        self.assertEqual(errors, [])
++
++    def test_run_intake_normalizes_non_string_id(self):
++        # intake_cmd は本体の外にある任意のプロセスで、JSON の値が文字列である保証がない。
++        # 生の int を下流へ渡すと _slug_id が .strip() で AttributeError を投げ、run_intake の
++        # except（ValueError のみ）を貫通して watch ループごと落ちる。文字列化して吸収する。
++        with tempfile.TemporaryDirectory() as d:
++            cmd = "printf '%s' '[{\"id\":123,\"title\":\"n\",\"verify\":\"true\"}]'"
++            cfg = self._cfg(Path(d), cmd)
++            km.ensure_dirs(cfg)
++            self.assertEqual([t.id for t in km.run_intake(cfg)], ["123"])
++            self.assertEqual([p.stem for p in cfg.backlog.glob("*.md")], ["123"])
++
++    def test_run_intake_strips_whitespace_in_id(self):
++        with tempfile.TemporaryDirectory() as d:
++            cmd = "printf '%s' '[{\"id\":\"  x  \",\"title\":\"w\",\"verify\":\"true\"}]'"
++            cfg = self._cfg(Path(d), cmd)
++            km.ensure_dirs(cfg)
++            self.assertEqual([t.id for t in km.run_intake(cfg)], ["x"])
++
++    def test_run_intake_blank_id_falls_back_to_generated_id(self):
++        # 空白だけの id を採番の種にしない（キーごと落として _gen_task_id へ倒す）。
++        with tempfile.TemporaryDirectory() as d:
++            cmd = "printf '%s' '[{\"id\":\"   \",\"title\":\"blank\",\"verify\":\"true\"}]'"
++            cfg = self._cfg(Path(d), cmd)
++            km.ensure_dirs(cfg)
++            got = km.run_intake(cfg)
++            self.assertEqual(len(got), 1)
++            self.assertTrue(got[0].id.strip())
++
++    def test_run_intake_dedups_by_id_after_normalization(self):
++        # 冪等の突合は正規化後の id で行う。2 周目が 0 件でなければ、同じ発見が毎周期積み上がる。
++        with tempfile.TemporaryDirectory() as d:
++            cmd = "printf '%s' '[{\"id\":123,\"title\":\"n\",\"verify\":\"true\"}]'"
++            cfg = self._cfg(Path(d), cmd)
++            km.ensure_dirs(cfg)
++            self.assertEqual(len(km.run_intake(cfg)), 1)
++            self.assertEqual(km.run_intake(cfg), [])
++            self.assertEqual([p.stem for p in cfg.backlog.glob("*.md")], ["123"])
++
+     def test_run_loop_intakes_and_consumes(self):
+         with tempfile.TemporaryDirectory() as d:
+             cfg = self._cfg(Path(d), "printf '%s' '{\"id\":\"L1\",\"title\":\"l\",\"verify\":\"true\"}'")
+@@ -3916,6 +3967,198 @@ class TestCoddGateNoAutoWiring(unittest.TestCase):
+         self.assertEqual((cfg.regression_cmd, cfg.intake_cmd), ("echo a", "echo b"))
+ 
+ 
++class TestHookResolution(unittest.TestCase):
++    """任意フックの解決（`_hook_provider`）。本体は能力キーだけを知り、それを満たす module の
++    名前は設定が所有する。設定の明示指定 → sibling の能力スキャン、の順で引き当てる。
++
++    差し込み点そのものなので、壊れても本体は静かに no-op へ縮退する＝黙って機能が消える。
++    ここが唯一の観測点になる。"""
++
++    def setUp(self):
++        km._HOOK_CACHE.clear()
++        self._path = list(sys.path)
++
++    def tearDown(self):
++        km._HOOK_CACHE.clear()           # 解決結果（fake も None も）を後続テストへ持ち越さない
++        sys.path[:] = self._path
++
++    def _name(self, suffix):
++        return "kphook_%s_%s" % (self.id().rsplit(".", 1)[-1], suffix)
++
++    def _module_dir(self, sources):
++        """一時ディレクトリへ probe module を書き出す。名前はテスト毎にユニーク（import キャッシュ回避）。"""
++        d = Path(tempfile.mkdtemp(prefix="kp-hooks-"))
++        self.addCleanup(shutil.rmtree, d, True)
++        for name, src in sources.items():
++            (d / f"{name}.py").write_text(src, encoding="utf-8")
++            self.addCleanup(sys.modules.pop, name, None)
++        return d
++
++    def _cfg(self, hooks):
++        d = Path(tempfile.mkdtemp(prefix="kp-hooks-cfg-"))
++        self.addCleanup(shutil.rmtree, d, True)
++        return cfg_for(d, hooks=hooks)
++
++    def test_sibling_scan_resolves_provider_by_capability(self):
++        # 素の環境（hooks 未指定）で、契約を満たす sibling が能力キーから引き当たる。
++        detect = km._hook_provider("wiring.detect")
++        render = km._hook_provider("wiring.findings")
++        self.assertTrue(callable(getattr(detect, "detect_wiring", None)))
++        self.assertTrue(callable(getattr(render, "doctor_findings", None)))
++
++    def test_configured_name_wins_over_sibling_scan(self):
++        # 名前の所有権は設定にある。明示すれば sibling より優先される。
++        name = self._name("provider")
++        sys.path.insert(0, str(self._module_dir(
++            {name: "def detect_wiring(**kw):\n    return 'probe'\n"})))
++        mod = km._hook_provider("wiring.detect", self._cfg({"wiring": name}))
++        self.assertEqual(getattr(mod, "__name__", None), name)
++
++    def test_configured_name_that_fails_does_not_fall_back(self):
++        # 人が名前を書いた以上、その意図を黙って別物で置き換えない（設定ミスは doctor が warn する）。
++        cfg = self._cfg({"wiring": self._name("absent")})
++        self.assertIsNone(km._hook_provider("wiring.detect", cfg))
++        km._HOOK_CACHE.clear()
++        self.assertIsNotNone(km._hook_provider("wiring.detect"))   # 未指定なら拾える＝空振りでない
++
++    def test_configured_module_without_contract_is_rejected(self):
++        # import できても本体が呼ぶ関数を持たなければ解決失敗。半端な module で走らせない。
++        name = self._name("nocontract")
++        sys.path.insert(0, str(self._module_dir({name: "VALUE = 1\n"})))
++        self.assertIsNone(km._hook_provider("wiring.detect", self._cfg({"wiring": name})))
++
++    def test_missing_sibling_dir_resolves_to_none(self):
++        empty = Path(tempfile.mkdtemp(prefix="kp-hooks-empty-"))
++        self.addCleanup(shutil.rmtree, empty, True)
++        with mock.patch.object(km, "_hook_sibling_dir", lambda: empty):
++            self.assertIsNone(km._hook_provider("wiring.detect"))
++
++    def test_prefilter_does_not_import_unrelated_siblings(self):
++        # 走査は sibling を総当たり import しない。契約の関数を定義していないファイルは
++        # ソーステキストの前置フィルタで落とし、import 副作用（初期化・パス操作・プロセス起動）を
++        # 本体へ持ち込まない。decoy は昇順で provider より先に来る＝フィルタが無ければ先に当たる。
++        decoy, provider = self._name("aa_decoy"), self._name("zz_provider")
++        marker = Path(tempfile.mkdtemp(prefix="kp-hooks-marker-")) / "imported"
++        self.addCleanup(shutil.rmtree, marker.parent, True)
++        scan = self._module_dir({
++            # detect_wiring 属性は持つが def で定義しない＝前置フィルタだけが弾ける形。
++            decoy: ("from pathlib import Path\n"
++                    f"Path({str(marker)!r}).write_text('x', encoding='utf-8')\n"
++                    "detect_wiring = lambda **kw: 'decoy'\n"),
++            provider: "def detect_wiring(**kw):\n    return 'provider'\n",
++        })
++        self.assertLess(decoy, provider)                            # sorted() の前提を固定
++        with mock.patch.object(km, "_hook_sibling_dir", lambda: scan):
++            mod = km._hook_provider("wiring.detect")
++        self.assertEqual(getattr(mod, "__name__", None), provider)
++        self.assertNotIn(decoy, sys.modules)
++        self.assertFalse(marker.exists())                           # import 副作用が走っていない
++
++    def test_result_is_cached_including_misses(self):
++        # 走査はディスクを読む。ヒットも不在も 1 回だけにする（不在環境で毎回走らせない）。
++        scans = []
++        original = km._hook_scan_siblings
++
++        def counting(*a, **kw):
++            scans.append(1)
++            return original(*a, **kw)
++
++        with mock.patch.object(km, "_hook_scan_siblings", counting):
++            first = km._hook_provider("wiring.detect")
++            self.assertIs(km._hook_provider("wiring.detect"), first)
++            self.assertEqual(len(scans), 1)
++            km._HOOK_CACHE.clear()
++            empty = Path(tempfile.mkdtemp(prefix="kp-hooks-empty-"))
++            self.addCleanup(shutil.rmtree, empty, True)
++            with mock.patch.object(km, "_hook_sibling_dir", lambda: empty):
++                self.assertIsNone(km._hook_provider("wiring.detect"))
++                self.assertIsNone(km._hook_provider("wiring.detect"))
++            self.assertEqual(len(scans), 2)
++
++
++class TestDoctorWiringFindings(unittest.TestCase):
++    """doctor の配線所見。プロバイダは能力で解決する任意フックで、本体は固有名も判定の中身も
++    持たない。プロバイダ不在・例外は空へ畳み、診断コマンド自体は走り切らせる。"""
++
++    def setUp(self):
++        km._HOOK_CACHE.clear()
++
++    def tearDown(self):
++        km._HOOK_CACHE.clear()
++
++    def _cfg(self, **kw):
++        d = Path(tempfile.mkdtemp(prefix="kp-wiring-"))
++        self.addCleanup(shutil.rmtree, d, True)
++        base = dict(regression_cmd="rc", intake_cmd="ic")
++        base.update(kw)
++        return cfg_for(d, **base)
++
++    @staticmethod
++    def _provider(findings=None, seen=None, boom=False):
++        def detect_wiring(**kw):
++            if seen is not None:
++                seen.update(kw)
++            if boom:
++                raise RuntimeError("プロバイダ内部の失敗")
++            return object()                       # judgment は本体にとって不透明
++
++        return types.SimpleNamespace(
++            detect_wiring=detect_wiring,
++            doctor_findings=lambda judgment: list(findings or []))
++
++    def test_provider_findings_pass_through(self):
++        want = [{"category": "config", "severity": "warn", "title": "p"}]
++        provider = self._provider(findings=want)
++        with mock.patch.object(km, "_hook_provider", lambda cap, cfg=None: provider):
++            self.assertEqual(km.doctor_wiring_findings(self._cfg()), want)
++
++    def test_absent_provider_is_silent(self):
++        # 未指定での不在は任意機能が無いだけ。所見にしない（無言で縮退）。
++        with mock.patch.object(km, "_hook_provider", lambda cap, cfg=None: None):
++            self.assertEqual(km.doctor_wiring_findings(self._cfg()), [])
++
++    def test_configured_provider_that_fails_is_reported(self):
++        # 人が書いた設定が効いていないことだけは知らせる（既定の不在と同じ扱いにしない）。
++        cfg = self._cfg(hooks={"wiring": "kphook_absent_provider"})
++        got = km.doctor_wiring_findings(cfg)
++        self.assertEqual(len(got), 1)
++        self.assertEqual((got[0]["category"], got[0]["severity"]), ("config", "warn"))
++        self.assertIn("kphook_absent_provider", got[0]["evidence"])
++
++    def test_broken_hooks_type_is_reported(self):
++        got = km.doctor_wiring_findings(self._cfg(hooks=["wiring"]))
++        self.assertEqual([f["severity"] for f in got], ["warn"])
++
++    def test_half_resolved_capability_does_not_call_provider(self):
++        # 属性が片方だけ改名された環境で半端に走らせない。結果が空になるだけでは足りない
++        # （呼んでから例外で畳んでも空になる）。detect_wiring は環境を probe する＝副作用を
++        # 持つので、揃っていない時点で呼ばないことまで固定する。
++        seen = {}
++        provider = self._provider(findings=[{"title": "x"}], seen=seen)
++        with mock.patch.object(km, "_hook_provider",
++                               lambda cap, cfg=None: provider if cap == "wiring.detect" else None):
++            self.assertEqual(km.doctor_wiring_findings(self._cfg()), [])
++        self.assertEqual(seen, {})
++
++    def test_provider_exception_does_not_break_doctor(self):
++        provider = self._provider(boom=True)
++        with mock.patch.object(km, "_hook_provider", lambda cap, cfg=None: provider):
++            self.assertEqual(km.doctor_wiring_findings(self._cfg()), [])
++
++    def test_injected_arguments_reach_the_provider(self):
++        seen = {}
++        provider = self._provider(seen=seen)
++        cfg = self._cfg()
++        (cfg.backlog.parent / "repos.json").write_text(
++            json.dumps({"app": {"url": "git@h:t/a.git"}}), encoding="utf-8")
++        which, run = (lambda n, path=None: None), (lambda *a, **kw: None)
++        with mock.patch.object(km, "_hook_provider", lambda cap, cfg=None: provider):
++            km.doctor_wiring_findings(cfg, which=which, run=run)
++        self.assertEqual((seen["regression_cmd"], seen["intake_cmd"]), ("rc", "ic"))
++        self.assertEqual((seen["which"], seen["run"]), (which, run))
++        self.assertEqual(Path(seen["repos_path"]).name, "repos.json")
++
++
+ class TestAutoAdjudicate(unittest.TestCase):
+     """needs に落とす前の kiro-cli 自律裁定ゲート（既定 off・有限回・人 policy 不介入）。"""
+ 
