@@ -48,3 +48,9 @@
 - reason  : チェックで承認
 - affects : sibling-163827 → ready
 
+## DR-0009  2026-07-20  actor: nitto
+- context : sibling-163827（sibling 自動検出レイヤと利用手順を新境界へ追随させる）に人のフィードバック
+- action  : feedback-resume
+- reason  : チェックで承認
+- affects : sibling-163827 → ready
+

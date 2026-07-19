@@ -12,8 +12,8 @@
   "status": "failed",
   "created_at": "2026-07-19T11:57:48Z",
   "executor": "agent",
-  "orch_lease_until": 1784490424.75526,
-  "heartbeat_at": "2026-07-19T19:45:04Z",
-  "updated_at": "2026-07-19T19:45:08Z",
+  "orch_lease_until": 1784490441.3502452,
+  "heartbeat_at": "2026-07-19T19:45:21Z",
+  "updated_at": "2026-07-19T19:45:25Z",
   "failure_reason": "[agent-error:quota] [agent-control] 環境要因の失敗（t1）: 管理面で対象ワークロードの実行が一時停止または停止されています。 リトライを打ち切りました。環境を直してから再開してください（完了済みの工程は温存されます）。"
 }

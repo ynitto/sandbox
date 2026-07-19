@@ -4,3 +4,5 @@
 {"ts": "2026-07-19T12:40:35Z", "who": "worker-2", "kind": "result", "node": "t1", "status": "failed"}
 {"ts": "2026-07-19T12:43:53Z", "who": "worker-2", "kind": "claimed", "node": "t1"}
 {"ts": "2026-07-19T12:43:54Z", "who": "worker-2", "kind": "result", "node": "t1", "status": "failed"}
+{"ts": "2026-07-19T19:45:22Z", "who": "worker-2", "kind": "claimed", "node": "t1"}
+{"ts": "2026-07-19T19:45:23Z", "who": "worker-2", "kind": "result", "node": "t1", "status": "failed"}
