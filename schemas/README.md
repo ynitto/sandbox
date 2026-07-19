@@ -1,4 +1,4 @@
-# schemas/ — ツール横断の共通スキーマ（repos / task / node-budget / agent-control / agent-instructions / mission / amigos-command / delivery）
+# schemas/ — ツール横断の共通スキーマ（repos / task / node-budget / agent-control / agent-instructions / mission / amigos-command / delivery / delegation）
 
 agent-project・agent-flow・codd-gate・agent-amigos が**データ契約だけで**結合するための独立スキーマ。
 ツール同士は互いの実装を知らず、ここで定義する形式だけを読む/書く（結合は常に一方向×データ）。
@@ -13,6 +13,7 @@ agent-project・agent-flow・codd-gate・agent-amigos が**データ契約だけ
 | [`mission.schema.json`](mission.schema.json) | 協働ミッションの公示（agent-amigos の `post --roles` に渡すミッション + 役割ミッション表）。バスへ書かれる読取契約（外部ビュアーが読む `mission.json` / `MANIFEST.json` / `final.json` / `cancelled.json`）は `$defs` に文書化 | agent-amigos（検証は stdlib パーサ `normalize_mission`。スキーマは文書化とテスト突き合わせ — enum/既定値の一致をテストで担保） |
 | [`amigos-command.schema.json`](amigos-command.schema.json) | agent-amigos への指示ドロップ（`<home>/.agent/agent-amigos/commands/*.json` — post / claim / assign / accept / reject / cancel / say）。投函側は人・agent-dashboard、取り込み側は常駐デーモン | agent-amigos（取り込みの正典は `agent_amigos/commands.py`。コマンド一覧の一致を両側のテストで担保 — Python `CommandSchemaTests` / dashboard `amigos.test.js`） |
 | [`delivery.schema.json`](delivery.schema.json) | agent-amigos の納品書（accept 時にオーナーホームの `deliveries/<mid>/delivery.json` へ書かれる受領記録）。バスの `MANIFEST.json` が integrator の組み立て記録（gc 対象）なのに対し、こちらは受入という事実と搬出先の永続記録 | agent-amigos（書き手は owner デーモン。読み手は agent-dashboard の納品一覧と `agent-amigos deliveries`） |
+| [`delegation.schema.json`](delegation.schema.json) | **ドラフト（設計段階・実装未着手）** — agent-dashboard から agent-flow / agent-amigos への委譲をエンジン非依存に扱う封筒（post / award / accept / reject / cancel）と正規化ビュー（`$defs.delegation_view` — 公示→入札→落札→受入の観測）。バス・claim プロトコルは統一せず、dashboard のエンジン別アダプタがネイティブ形式（amigos-command / flow inbox）へ決定的に変換する。共通 id を両エンジンの native id に採用（対応表なし） | 共有（本ディレクトリが正典。設計は `docs/plans/2026-07-19-delegation-contract-design.md`） |
 
 ## node-budget — 誰がどう読む/書くか
 

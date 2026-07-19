@@ -1,0 +1,265 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "delegation.schema.json",
+  "title": "委譲契約 — agent-dashboard から agent-flow / agent-amigos への公示→入札→落札→受入（ドラフト）",
+  "description": "エンジン非依存の委譲封筒（書き込み契約）と正規化ビュー（読み取り契約 $defs.delegation_view）。バス・claim プロトコルは統一せず、ダッシュボードのエンジン別アダプタが本封筒をエンジンネイティブ形式（amigos: amigos-command.schema.json の post/assign/accept/reject/cancel、flow: inbox/<req-id>.json = submit_request と inbox/cancels/ マーカー）へ決定的に変換する。共通 id は両エンジンの native id にそのまま採用される（amigos: mission_id 明示指定 / flow: req-id は任意文字列）が、突き合わせの正はビューの native_id。v1 の置き場はダッシュボード IPC 契約（renderer→main の投函ペイロードと一覧応答）。未知キーは無視される（前方互換・追加は additive）。設計: docs/plans/2026-07-19-delegation-contract-design.md",
+  "type": "object",
+  "required": ["op", "version", "id", "workload"],
+  "properties": {
+    "op": {"enum": ["post", "award", "accept", "reject", "cancel"]},
+    "version": {"type": "integer", "const": 1},
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,64}$",
+      "description": "冪等キー（推奨形 dg-<YYYYMMDDHHMMSS>-<hex4>）。amigos の mission_id / flow の req-id にそのまま採用。同一 id の再投函は同一公示（二重公示防止）"
+    },
+    "workload": {
+      "type": "string",
+      "description": "ルーティング先エンジン。agent-control / node-budget と同じ語彙（v1 は flow / amigos。project / routine は将来 additive）",
+      "enum": ["flow", "amigos"]
+    }
+  },
+  "oneOf": [
+    {
+      "description": "post — 公示。共通コアは依頼側の関心事（何を・どこで・どう割り当て・いくらまで・いつまでに）。エンジンの内部語彙（amigos の roles / flow の executor）は engine.<workload> に置く。エンジンが解釈しないフィールドの扱いは設計書 §4 解釈マトリクスが正",
+      "properties": {
+        "op": {"const": "post"},
+        "goal": {
+          "type": "string",
+          "description": "何を達成するか（必須）。flow: submit_request.request 本文 / amigos: mission.goal"
+        },
+        "title": {
+          "type": "string",
+          "description": "表示名。amigos: mission.title / flow: 未解釈（ビュー表示のみ）"
+        },
+        "design": {
+          "type": "string",
+          "description": "設計文書本文（markdown）。amigos: design doc（省略時はアダプタが goal + references から合成）/ flow: request 本文へ「## 設計」節として前置"
+        },
+        "workspace": {
+          "type": "object",
+          "description": "成果物の唯一の書込先リポジトリ（repos.schema.json のエントリ形 url/path/base）。flow: submit_request.workspace / amigos: mission.workspace（passthrough）",
+          "properties": {
+            "url": {"type": "string"},
+            "path": {"type": "string"},
+            "base": {"type": "string"}
+          },
+          "additionalProperties": true
+        },
+        "references": {
+          "type": "array",
+          "description": "参照リポジトリ（読むだけ）。flow: submit_request.references / amigos: design doc に「## 参照リポジトリ」節として描画",
+          "items": {"type": "object", "additionalProperties": true}
+        },
+        "policy": {
+          "type": "object",
+          "properties": {
+            "assignment": {
+              "enum": ["first-come", "owner-picks"],
+              "default": "first-come",
+              "description": "入札方式。first-come = claim 勝者が即落札（決定的タイブレーク）。owner-picks = claim は応募・落札は award。amigos: 両対応 / flow: first-come のみ（owner-picks はアダプタが投函前に拒否 — 黙って落とさない）"
+            },
+            "staffing": {
+              "enum": ["self-staff", "wait", "fail"],
+              "default": "self-staff",
+              "description": "staffing_timeout_sec 経過後の未充足の扱い。amigos: mission.staffing_policy / flow: 未解釈"
+            },
+            "staffing_timeout_sec": {
+              "type": "number",
+              "minimum": 0,
+              "default": 600,
+              "description": "amigos: mission.staffing_timeout / flow: 未解釈"
+            }
+          },
+          "additionalProperties": true
+        },
+        "acceptance": {
+          "enum": ["manual", "agent"],
+          "default": "manual",
+          "description": "受入判定。amigos: mission.acceptance / flow: 未解釈（タスク単位の承認は gitlab executor の GitLab 台帳が正）"
+        },
+        "budget": {
+          "type": "object",
+          "description": "依頼側予算。amigos: mission.budget へ写像 / flow: 未解釈（ノード側は node-budget.schema.json が既にカバー）",
+          "properties": {
+            "execution_minutes": {"type": "number", "minimum": 0, "default": 0, "description": "0 = 無制限"},
+            "per_unit_turns": {"type": "integer", "minimum": 0, "default": 30, "description": "amigos: mission.budget.per_role_turns"}
+          },
+          "additionalProperties": true
+        },
+        "deadline": {
+          "type": "string",
+          "description": "ISO8601。amigos: mission.deadline（通知のみ・自動 fail しない）/ flow: 未解釈"
+        },
+        "priority": {
+          "enum": ["low", "normal", "high"],
+          "default": "normal",
+          "description": "flow: gitlab executor の priority:* ラベル / amigos: 未解釈（将来 additive）"
+        },
+        "requested_by": {
+          "type": "string",
+          "description": "出自（dashboard / human:<name> / スキル名）。flow: submit_request.submitter / amigos: 監査用"
+        },
+        "requested_at": {"type": "string", "description": "ISO8601 UTC（アダプタが刻印）"},
+        "engine": {
+          "type": "object",
+          "description": "エンジン固有 passthrough（共通コアに漏らさない）。自 workload のブロックだけが読まれる",
+          "properties": {
+            "amigos": {
+              "type": "object",
+              "properties": {
+                "roles": {
+                  "type": "array",
+                  "minItems": 1,
+                  "description": "役割ミッション表（mission.schema.json の roles と同形。workload=amigos では必須）",
+                  "items": {"type": "object", "required": ["id"]}
+                },
+                "mission": {
+                  "type": "object",
+                  "description": "mission ブロックの追加上書き（convergence 等。共通コア由来の値より優先）"
+                }
+              },
+              "additionalProperties": true
+            },
+            "flow": {
+              "type": "object",
+              "properties": {
+                "executor": {"type": "string", "description": "executor プラグイン（例 gitlab）"},
+                "inherit_from": {"type": "string", "description": "リトライ時の引き継ぎ元 run-id（submit_request.inherit_from）"}
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "required": ["op", "goal"]
+    },
+    {
+      "description": "award — owner-picks の落札確定。amigos: assign コマンド（owner-only）へ変換 / flow: v1 非対応（拒否）",
+      "properties": {
+        "op": {"const": "award"},
+        "unit": {"type": "string", "description": "ロール id（amigos）"},
+        "node": {"type": "string", "description": "落札ノード"}
+      },
+      "required": ["op", "unit", "node"]
+    },
+    {
+      "description": "accept — 受入確定。amigos: accept コマンド（owner-only）/ flow: v1 非対応",
+      "properties": {"op": {"const": "accept"}},
+      "required": ["op"]
+    },
+    {
+      "description": "reject — 差し戻し。amigos: reject コマンド（owner-only）/ flow: v1 非対応",
+      "properties": {
+        "op": {"const": "reject"},
+        "feedback": {"type": "string", "description": "差し戻し理由"}
+      },
+      "required": ["op"]
+    },
+    {
+      "description": "cancel — 中止。amigos: cancel コマンド / flow: inbox/cancels/<run-id>.json マーカー + meta 終端 + waits 掃除（flow.js:cancelRun と同一の 3 手）",
+      "properties": {
+        "op": {"const": "cancel"},
+        "reason": {"type": "string"}
+      },
+      "required": ["op"]
+    }
+  ],
+  "$defs": {
+    "delegation_view": {
+      "type": "object",
+      "description": "正規化ビュー（読み取り契約）— 各アダプタがバス上のファイルだけから導出する（CLI に聞かない）。flow: inbox / runs/<id>/{meta,graph}.json / claims / waits / results（node_state と同一規則）。amigos: mission.json / roles / assignments / roster.json / status / rejections / MANIFEST.json / final.json / cancelled.json（derive_phase と同一規則）",
+      "required": ["id", "workload", "native_id", "phase"],
+      "properties": {
+        "id": {"type": "string"},
+        "workload": {"type": "string"},
+        "native_id": {
+          "type": "string",
+          "description": "エンジン側 id（flow: run-id / amigos: mission-id）。通常は共通 id と同一文字列だが、突き合わせの正はこちら"
+        },
+        "phase": {
+          "enum": ["open", "working", "waiting", "reviewing", "stalled", "done", "failed", "cancelled"],
+          "description": "正規化フェーズ。写像は設計書 §5.2（flow: inbox未claim=open / run生存=working / waits生存=waiting / lease失効=stalled。amigos: open=open / working・integrating=working / reviewing=reviewing / heartbeat途絶=stalled）"
+        },
+        "title": {"type": "string"},
+        "goal": {"type": "string"},
+        "units": {
+          "type": "array",
+          "description": "入札対象の単位（amigos = ロール / flow = グラフノード）",
+          "items": {
+            "type": "object",
+            "required": ["unit", "state"],
+            "properties": {
+              "unit": {"type": "string", "description": "ロール id / ノード id"},
+              "kind": {"type": "string", "description": "flow: ノード種別（work/verify/…）/ amigos: ロール title"},
+              "state": {
+                "enum": ["open", "claimed", "waiting", "done", "failed"],
+                "description": "open = 入札受付中 / claimed = 落札・実行中 / waiting = park（flow の承認待ち）・away（amigos）"
+              },
+              "bids": {
+                "type": "array",
+                "description": "入札一覧の正規化（flow: claims/<node>/*.json / amigos: assignments/<role>/*.json）",
+                "items": {
+                  "type": "object",
+                  "required": ["who", "ts", "state"],
+                  "properties": {
+                    "who": {"type": "string"},
+                    "ts": {"type": "number", "description": "決定的タイブレークの根拠（(ts, who) 最小が勝者）"},
+                    "claimed_at": {"type": "string"},
+                    "lease_until": {"type": "number"},
+                    "agent_cli": {"type": "string", "description": "amigos のみ"},
+                    "state": {
+                      "enum": ["applied", "winner", "lost", "expired"],
+                      "description": "applied = 応募中（owner-picks 未確定）/ winner = タイブレーク勝者 or roster 確定 / expired = lease 失効"
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              },
+              "assignee": {"type": "string", "description": "確定担当（amigos: roster.json 優先 / flow: claim 勝者）"}
+            },
+            "additionalProperties": true
+          }
+        },
+        "bids_open": {
+          "type": "boolean",
+          "description": "owner-picks で未確定ユニットが存在（UI の落札操作を活性化）"
+        },
+        "progress": {
+          "type": "object",
+          "properties": {
+            "units_total": {"type": "integer"},
+            "units_done": {"type": "integer"},
+            "units_failed": {"type": "integer"},
+            "units_open": {"type": "integer"}
+          },
+          "additionalProperties": true
+        },
+        "budget": {
+          "type": ["object", "null"],
+          "description": "amigos: events/*.jsonl の cli_seconds 総和 / flow: null（node-budget 台帳が別契約）",
+          "properties": {
+            "spent_seconds": {"type": "number"},
+            "limit_minutes": {"type": "number"}
+          },
+          "additionalProperties": true
+        },
+        "result": {
+          "type": "object",
+          "description": "flow: final.json / amigos: final.json + deliverable/MANIFEST.json",
+          "properties": {
+            "status": {"type": "string"},
+            "accepted": {"type": "boolean"},
+            "by": {"type": "string"},
+            "ts": {"type": "string"},
+            "path": {"type": "string"}
+          },
+          "additionalProperties": true
+        },
+        "updated_at": {"type": "string"}
+      },
+      "additionalProperties": true
+    }
+  }
+}
