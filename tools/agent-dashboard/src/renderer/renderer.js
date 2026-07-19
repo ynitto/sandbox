@@ -1477,6 +1477,7 @@ function switchTab(name) {
   const pane = $(`tab-${name}`);
   if (pane) pane.classList.add('active');
   if (name === 'needs') refreshGitLab(false); // 要対応タブに GitLab レビュー待ちを併載しているため
+  if (featureTabs.has(name)) renderFeatureTab(name); // 登録済みフィーチャータブは遷移時に描画
 }
 
 // run を選んでフロータブへ遷移。
@@ -6404,6 +6405,21 @@ function restoreUiState(ui) {
   }
 }
 
+// フィーチャータブの登録簿。外部の feature モジュール（src/renderer/features/*.js）が
+// registerFeatureTab(name, { render, refresh }) で自分のタブを差し込む。renderer.js の
+// コアを触らずタブを増やせる（開放閉鎖）。render はタブ描画、refresh は非同期データ取得。
+const featureTabs = new Map();
+function registerFeatureTab(name, hooks) {
+  featureTabs.set(String(name), hooks || {});
+}
+globalThis.registerFeatureTab = registerFeatureTab;
+
+// 登録済みフィーチャータブのうち name に対応するものを描画する（未登録なら何もしない）。
+function renderFeatureTab(name) {
+  const h = featureTabs.get(String(name));
+  if (h && typeof h.render === 'function') h.render();
+}
+
 function renderAllTabs() {
   const ui = captureUiState();
   renderOverview();
@@ -6417,6 +6433,7 @@ function renderAllTabs() {
   renderProjectSettings();
   if (!state.globalSettingsDirty || !$('tab-orchestration').childElementCount) renderOrchestration();
   renderKiroLoopTerminal();
+  for (const [name] of featureTabs) renderFeatureTab(name);
   restoreUiState(ui);
 }
 
@@ -6433,6 +6450,8 @@ function initTabs() {
       tab.classList.add('active');
       $(`tab-${tab.dataset.tab}`).classList.add('active');
       if (tab.dataset.tab === 'needs') refreshGitLab(false);
+      // 登録済みフィーチャータブは切り替え時に即描画（初回表示を空にしない）
+      if (featureTabs.has(tab.dataset.tab)) renderFeatureTab(tab.dataset.tab);
     });
   }
 }
@@ -7030,6 +7049,17 @@ async function refreshAll({ sync = true } = {}) {
     if (activeTab() === 'cowork') renderCowork();
     if (activeTab() === 'amigos') renderAmigos();
     if (activeTab() === 'orchestration' && !state.globalSettingsDirty) renderOrchestration();
+    // 登録済みフィーチャータブ: 非同期取得（refresh）してから表示中なら描画する。
+    for (const [name, h] of featureTabs) {
+      if (typeof h.refresh === 'function') {
+        try {
+          await h.refresh();
+        } catch {
+          /* 取得失敗はモジュール側で表示。ポーリングは止めない */
+        }
+      }
+      if (activeTab() === name) renderFeatureTab(name);
+    }
   } finally {
     state.busy = false;
   }

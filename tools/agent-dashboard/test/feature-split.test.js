@@ -16,10 +16,11 @@ function test(name, fn) {
   console.log(`ok - ${name}`);
 }
 
-test('features に agent-project / kiro-loop / cowork / amigos / orchestration が並ぶ', () => {
+test('features に agent-project / kiro-loop / cowork / amigos / orchestration / delegation が並ぶ', () => {
   const features = loadFeatures();
   const ids = features.map((f) => f.id);
-  assert.deepStrictEqual(ids, ['agent-project', 'kiro-loop', 'cowork', 'amigos', 'orchestration']);
+  assert.deepStrictEqual(ids,
+    ['agent-project', 'kiro-loop', 'cowork', 'amigos', 'orchestration', 'delegation']);
 });
 
 test('各 feature が registerIpc / preloadApi / configDefaults を持つ', () => {
@@ -195,6 +196,33 @@ test('orchestration はノード予算 v2 / 制御 / ドロップイン API を�
     'orchestrationControlSave', 'orchestrationLifecycle', 'orchestrationAgentSave', 'orchestrationAgentDelete']) {
     assert.strictEqual(typeof api[name], 'function', name);
   }
+});
+
+test('delegation は共通封筒の投函・一覧 API を登録する', () => {
+  const del = loadFeatures().find((f) => f.id === 'delegation');
+  assert.ok(del.configDefaults.delegation);
+  assert.deepStrictEqual(del.configDefaults.delegation.flowBusDirs, []);
+  const registered = [];
+  del.registerIpc({
+    handle: (channel) => registered.push(channel),
+    loadConfig: () => ({}),
+    saveConfig: () => ({}),
+  });
+  assert.deepStrictEqual(registered.sort(),
+    ['delegation:accept', 'delegation:award', 'delegation:cancel', 'delegation:list',
+     'delegation:post', 'delegation:reject'].sort());
+  const api = del.preloadApi();
+  for (const name of ['delegationList', 'delegationPost', 'delegationAward',
+    'delegationAccept', 'delegationReject', 'delegationCancel']) {
+    assert.strictEqual(typeof api[name], 'function', name);
+  }
+  const calls = [];
+  const post = api.delegationPost((channel, args) => {
+    calls.push([channel, args]);
+    return 'ok';
+  });
+  assert.strictEqual(post({ workload: 'flow', goal: 'x' }), 'ok');
+  assert.deepStrictEqual(calls, [['delegation:post', { workload: 'flow', goal: 'x' }]]);
 });
 
 console.log(`\n${passed} tests passed`);

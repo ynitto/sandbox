@@ -276,13 +276,15 @@ CLI からも付与・修正できる。
   `regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV" --repos <root>/repos.json'`（done 確定前の
   差分ゲート）＋ `intake_cmd: 'codd-gate tasks --debt --repos <root>/repos.json'`（負債を修復タスクとして
   自動返済）＋ charter acceptance に `codd-gate verify --debt --max-broken N …`（受入の負債ラチェット）。
-  上記2行は**手書きしなくてもよい**: `<root>/repos.json` が実在すれば、起動時の Config 生成
-  （`build_config`）が codd-gate の実在・バージョン・repos.json 互換性を自動検出し、`regression_cmd`/
-  `intake_cmd` が未設定のときだけメモリ上で自動的に埋める（既に手書き・CLI 指定済みの値は上書き
-  しない）。`.agent/agent-project.yaml` ファイル自体は書き換えない（人専有ファイルのため）ので、
-  ファイルへ恒久的に書き込みたい場合は `python3 codd_gate_regression.py --config
-  .agent/agent-project.yaml` を実行する。codd-gate 未検出・非互換の環境では両者とも no-op に縮退し、
-  上記2行は設定されないまま（詳細は
+  上記2行の生成は**本体（configfile）に埋め込まない**——起動時の Config 生成（`build_config`）は
+  codd-gate 固有の実行時自動配線を持たず、`regression_cmd`/`intake_cmd` は設定ファイル/CLI/既定の
+  値をそのまま使う（差し込み点のみ）。生成・結線は sibling へ外出しした: `<root>/repos.json` が実在
+  する環境で codd-gate を検出し、未結線なら `doctor` が推奨コマンド文字列を finding として提示する
+  （`codd_gate_wiring`）。ファイルへ恒久的に書き込む CLI があるのは `regression_cmd` の1行だけ:
+  `python3 codd_gate_regression.py --config .agent/agent-project.yaml`（検出結果駆動で、この1キーのみ
+  冪等 upsert）。`intake_cmd` に対応する注入 CLI は無いので、恒久設定は
+  `.agent/agent-project.yaml` を直接編集する。codd-gate 未検出・非互換の環境では
+  両経路とも no-op に縮退し、上記2行は設定されないまま（詳細は
   [`codd-gate-design.md`](../../docs/designs/codd-gate-design.md) §4.1「自動検出レイヤ」）。
 
 ### policy.md（人による上書き・per-project）
