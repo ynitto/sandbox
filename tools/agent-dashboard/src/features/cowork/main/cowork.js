@@ -13,6 +13,7 @@ const {
   discoverCoworkItems, parseKiroLoopPrompts, scheduleOf, detectMarkers, kiroLoopPromptTexts,
 } = require('./discover');
 const { applyKiroLoopEdits, applyStatemachineEdits } = require('./writeback');
+const globalInstructions = require('../../orchestration/main/instructions');
 
 // 発見結果キャッシュ。overview のポーリングごとに roots を再走査しない。
 const DISCOVER_TTL_MS = 30000;
@@ -362,6 +363,22 @@ function withInputAssist(prompt) {
   return p ? `${p}\n\n${INPUT_ASSIST}` : p;
 }
 
+// グローバル指示（agent-instructions 契約）を起動プロンプト先頭へ前置する。
+// dashboard は指示の書き手であると同時に、自分が起動する CLI に対する読み手でもある
+// （cowork の定常業務 / 定型業務ウィンドウ）。二重注入・空・破損はすべて no-op。
+// config には .orchestration が載る（instructionsDir 解決に使う）。
+function withGlobalInstructions(config, prompt) {
+  const p = String(prompt || '');
+  if (!p) return p;
+  try {
+    const dir = globalInstructions.resolveInstructionsDir(config || {});
+    const block = globalInstructions.renderBlock(globalInstructions.loadInstructions(dir));
+    return globalInstructions.prependBlock(p, block);
+  } catch {
+    return p; // フェイルセーフ: 指示の描画失敗で起動を止めない
+  }
+}
+
 // repo の .kiro/kiro-loop.{yaml,yml,json} から定期プロンプト本文を名前で解決する。
 // 見つからなければ ''（呼び出し側が代替の指示文へフォールバックする）。
 function resolveLoopPromptText(repo, promptName) {
@@ -404,10 +421,10 @@ function runLoop(config, itemIdValue) {
   // 明示 args の項目は従来の <loopCommand> 実行のまま（prompt を渡さない）。
   const prompt = Array.isArray(item.args)
     ? undefined
-    : withInputAssist(
+    : withGlobalInstructions(config, withInputAssist(
       resolveLoopPromptText(item.repo || item.cwd, runId)
         || `.kiro/kiro-loop.yml（または kiro-loop.yaml / .json）の定期プロンプト「${runId}」の本文を読んで、その指示を実行して`
-    );
+    ));
   const res = makeLoopProvider(cfg).run({ ...item, cwd, id: runId, prompt });
   recordRun(cfg, { ...item, type: 'loop' }, res);
   return res;
@@ -434,7 +451,7 @@ function runStateMachine(config, itemIdValue, input) {
     const smPrompt = (pairedBody && !input)
       ? pairedBody
       : `statemachine-use スキルで${smName}ステートマシンを実行して${input ? `。入力: ${String(input)}` : ''}`;
-    prompt = withInputAssist(smPrompt);
+    prompt = withGlobalInstructions(config, withInputAssist(smPrompt));
     // 非ウィンドウ実行（非 win32 / runWindow:false）用の従来 send 引数も併せて用意する
     const legacy = (pairedName && !input)
       ? pairedName
@@ -653,5 +670,5 @@ module.exports = {
   resolveItem, findItem, dedupeItems, applyDiscoveredEdits, gitCommitFiles,
   invalidateDiscoverCache, decodeCliOutput, viewerRepo,
   itemLogs, readLog, appendHistory, readHistory, historyFile,
-  resolveLoopPromptText, withInputAssist,
+  resolveLoopPromptText, withInputAssist, withGlobalInstructions,
 };
