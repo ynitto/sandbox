@@ -96,7 +96,7 @@ test('render は入札状況（落札待ち/応募中）を例外なく描画す
 // --- renderer.js の拡張シーム -----------------------------------------------
 
 test('renderer.js にフィーチャータブ登録簿がある', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'renderer.js'), 'utf8');
+  const src = require('./helpers/renderer-src').read();
   assert.ok(src.includes('function registerFeatureTab('), 'registerFeatureTab を定義');
   assert.ok(src.includes('globalThis.registerFeatureTab'), 'グローバルへ公開');
   assert.ok(src.includes('function renderFeatureTab('), 'renderFeatureTab で描画');

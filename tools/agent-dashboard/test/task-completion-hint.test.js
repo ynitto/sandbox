@@ -4,7 +4,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 
-const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'renderer.js'), 'utf8');
+const renderer = require('./helpers/renderer-src').read();
 
 function grab(name) {
   const at = renderer.indexOf(`function ${name}(`);

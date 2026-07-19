@@ -17,6 +17,22 @@ agent-amigos ミッションとノード予算（`src/features/amigos/`）を同
 （動的プラグインではない。列挙合成のみ。詳細は
 [`docs/designs/agent-dashboard-feature-split-design.md`](../../docs/designs/agent-dashboard-feature-split-design.md)）。
 
+**renderer の構成（機能分割）**: 画面側（`src/renderer/`）は保守性のため 1 本の
+巨大 `renderer.js` を機能ごとのファイルへ分割している。すべて**クラシックスクリプト**で、
+`index.html` の `<script>` 読み込み順を通じてグローバルスコープを共有する（バンドラなし）。
+読み込み順に意味があり、この契約を守る限りファイルを増やせる:
+
+1. `renderer.js`（**core**）— `state` / `$` / 共有定数・ユーティリティ・発見/プロジェクト選択・
+   タブ制御・ポーリング・git pull と、フィーチャータブ登録簿（`registerFeatureTab`）を宣言。**最初**に読む。
+2. `sections/*.js` — 各タブの描画（overview / backlog / needs / flow / node-detail / gitlab /
+   history / amigos / orchestration / cowork / kiro-loop）。中身は関数宣言のみで load 時実行を持たない
+   ため、相互の順序は不問。
+3. `features/*.js` — `registerFeatureTab` で自分のタブを差し込む独立モジュール（例 `delegation.js`）。
+4. `bootstrap.js` — `init()` の定義と呼び出し。全関数が出揃った後に動くよう**最後**に読む。
+
+テストはソースを文字列走査するため、`test/helpers/renderer-src.js` が上記を結合して
+「元の renderer.js 相当の全文」を返す（アサーションはコードのファイル位置に依存しない）。
+
 **ミッションタブ**（`src/features/amigos/`）: agent-amigos ミッションの進行
 を、目的・現在の状態・担当状況が分かる要約カードで一覧する。「詳しく見る」から、
 担当メンバーごとの作業状況と、エージェント間のやりとり（要約＋全文展開）を確認できる。
