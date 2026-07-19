@@ -277,3 +277,13 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-19 20:39:00 run 再開: agent_project-codd_gate-163827 は req-ef1f92c3-agent_project-codd_gate-163827-r4 の失敗ノードだけをやり直します（done は温存）
 - 2026-07-19 20:39:07 cycle 1: agent_project-codd_gate-163827 → 人の判断（環境の問題: 利用上限。リトライ・裁定は消費しない）
 - 2026-07-19 20:39:07 === agent-project 停止 reason=drained cycles=1 done=0 blocked=1 notified=True promoted=0 ===
+- 2026-07-19 20:39:09 state-git 同期: import=6 export=3
+- 2026-07-19 20:39:09 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-19 20:39:09 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-19 20:39:15 commands 取り込み: approve agent_project-codd_gate-163827（viewer-approve-agent_project-codd_gate-163827-1784461137935.json）
+- 2026-07-19 20:39:15 === project 開始 v1 acceptance=2 ===
+- 2026-07-19 20:39:15 === agent-project 開始 tasks=4 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-19 20:39:15 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
+- 2026-07-19 20:39:15 run 再開: agent_project-codd_gate-163827 は req-ef1f92c3-agent_project-codd_gate-163827-r4 の失敗ノードだけをやり直します（done は温存）
+- 2026-07-19 20:39:22 cycle 1: agent_project-codd_gate-163827 → 人の判断（環境の問題: 利用上限。リトライ・裁定は消費しない）
+- 2026-07-19 20:39:23 === agent-project 停止 reason=drained cycles=1 done=0 blocked=1 notified=True promoted=0 ===
