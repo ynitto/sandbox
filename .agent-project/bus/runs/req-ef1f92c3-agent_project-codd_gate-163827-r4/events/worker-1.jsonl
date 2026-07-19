@@ -20,3 +20,5 @@
 {"ts": "2026-07-19T10:23:22Z", "who": "worker-1", "kind": "result", "node": "loop", "status": "failed"}
 {"ts": "2026-07-19T11:39:02Z", "who": "worker-1", "kind": "claimed", "node": "loop"}
 {"ts": "2026-07-19T11:39:03Z", "who": "worker-1", "kind": "result", "node": "loop", "status": "failed"}
+{"ts": "2026-07-19T11:50:32Z", "who": "worker-1", "kind": "claimed", "node": "loop"}
+{"ts": "2026-07-19T11:50:33Z", "who": "worker-1", "kind": "result", "node": "loop", "status": "failed"}
