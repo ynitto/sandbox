@@ -123,6 +123,9 @@ class Config:
     regression_revert: bool = False      # 回帰時に作業ツリーの未コミット変更を巻き戻す（既定 off）
     intake_cmd: "str | None" = None      # 外部の決定的ゲート/検出器から修復タスクを汲み上げる取り込みコマンド
     intake_interval: float = 600.0       # intake_cmd の実行間隔（秒）。0 以下なら毎回（パス開始/idle poll 毎）
+    # 任意フックのプロバイダ指定（能力キー -> module 名）。本体はプロバイダの固有名を持たず、
+    # 未指定なら sibling ディレクトリを能力で走査して引き当てる（hooks.py の _hook_provider）。
+    hooks: dict = field(default_factory=dict)
     ltm: bool = False               # ltm-use 長期記憶への昇格＋横断 recall（既定 off: home へ書くため明示）
     ltm_home: "Path | None" = None  # ltm-use ストアのルート（既定 KIRO_LTM_HOME→~/.claude）
     promote_threshold: int = 2      # learn ルールがこの回数以上効いたら昇格

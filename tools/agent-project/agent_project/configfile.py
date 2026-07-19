@@ -117,6 +117,7 @@ CONFIG_DEFAULTS = {
     "regression_cmd": None,     # done 確定前のグローバル回帰検査コマンド（巻き込み事故の検知）
     "regression_revert": False,
     "intake_cmd": None,         # 外部ゲート/検出器から修復タスクを汲み上げるコマンド（例: codd-gate tasks --debt）
+    "hooks": {},                # 任意フックのプロバイダ指定（能力キー -> module 名）。既定は sibling 自動検出
     "intake_interval": 600.0,   # intake の実行間隔（秒）。0 以下で毎パス/毎 poll
     "auto_level_max": "assisted",   # 自動昇格の ceiling（unattended への自動到達は明示時のみ）
     "level_promote_after": 5,       # 昇格に要する連続 clean 数
@@ -165,6 +166,19 @@ CONFIG_DEFAULTS = {
     "bus_keep_runs": 20,  # 掃除しても残す直近 run 数（viewer のフロータブが読む一次ソース）
     "with_flow": True,   # doctor: 実行層 agent-flow doctor も連携実行（CLI 既定 on・直接 Config は off）
 }
+
+
+def _normalize_hooks(raw) -> dict:
+    """`hooks:` を 能力キー -> module 名 の対応表へ正規化する。
+
+    設定ファイルは人が手で書くので型は保証されない。壊れていても例外にせず空（＝sibling 自動
+    検出）へ落とす——設定ミスでプロセスが起動しない方が、任意フックが効かないことより高くつく。
+    値の妥当性（その名前が import できるか）はここでは見ない。解決は _hook_provider の責務で、
+    明示指定が効いていないことは doctor が warn として可視化する。"""
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k).strip(): str(v).strip()
+            for k, v in raw.items() if isinstance(v, str) and str(v).strip()}
 
 
 def _find_config(explicit):
@@ -298,6 +312,8 @@ def build_config(args) -> Config:
         regression_revert=bool(getattr(args, "regression_revert", False)),
         intake_cmd=getattr(args, "intake_cmd", None),
         intake_interval=float(getattr(args, "intake_interval", 600.0) or 0.0),
+        # 型が壊れていても例外にせず既定（自動検出）へ落とす。設定ミスは doctor が warn で見せる。
+        hooks=_normalize_hooks(getattr(args, "hooks", None)),
         require_progress=bool(getattr(args, "require_progress", False)),
         auto_level=bool(getattr(args, "auto_level", False)),
         auto_level_max=str(getattr(args, "auto_level_max", "assisted") or "assisted"),
