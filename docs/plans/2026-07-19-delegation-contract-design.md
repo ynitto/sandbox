@@ -1,7 +1,7 @@
 # 委譲契約（delegation contract）設計 — agent-dashboard から agent-flow / agent-amigos へ同じ形で入札を扱う
 
 - 日付: 2026-07-19
-- 状態: 契約・アダプタ・IPC 実装済み（agent-dashboard 側・エンジン無変更）。renderer UI は残作業
+- 状態: 実装済み（agent-dashboard 側・エンジン無変更）。契約・アダプタ・IPC・renderer UI まで完了
 - 契約: [`schemas/delegation.schema.json`](../../schemas/delegation.schema.json)
 - 実装: `tools/agent-dashboard/src/features/delegation/`（`main/contract.js` / `main/amigos-adapter.js` / `main/flow-adapter.js` / `main/ipc.js`）、テスト `test/delegation.test.js`
 - 関連: `docs/plans/2026-07-19-agent-dashboard-orchestration-token-budget-design.md`（agent-control / node-budget）、
@@ -218,10 +218,14 @@ amigos: `cancel` コマンド。flow: `flow.js:cancelRun` の 3 手（`inbox/can
    `readMissionSummary` の出力 + バスの `assignments/<role>/` を読んで入札の勝者/応募/失効を
    決定的タイブレークで判定（`assign.py:winner` と同一規則）。flow は `readRun` の出力から
    先着=勝者 1 件を射影。
-4. ⏳ **残作業** — renderer UI。「委譲」ペインで workload 選択 → 共通フォーム + engine 固有
-   セクション（amigos のロール表 / flow の executor）→ 入札状況（`units[].bids`）と落札操作
-   （owner-picks のみ）。preload API は配線済み（`delegationList/Post/Award/Accept/Reject/Cancel`）
-   なので renderer から即呼べる。
+4. ✅ renderer UI。「委譲」タブで workload 選択 → 共通フォーム + engine 固有セクション
+   （amigos のロール表 + ホーム / flow の executor + バス）→ 入札状況（`units[].bids` を
+   落札/応募中/不落/失効で表示）と落札（owner-picks の applied に「落札」ボタン）・受入/差し戻し/
+   中止の操作。実装は `src/renderer/features/delegation.js`（独立モジュール）。
+   renderer.js には**フィーチャータブ登録簿**（`registerFeatureTab` / `featureTabs` /
+   `renderFeatureTab`）という拡張シームを入れ、コアを触らずタブを差し込めるようにした
+   （保守性向上 — 今後の feature も同パターンで追加）。差し戻しは Electron で動かない
+   `window.prompt` を使わずインライン入力で受ける（amigos の既存方針に合わせた）。
 5. ✅ テスト `test/delegation.test.js`（封筒検証・両アダプタの変換とビュー・IPC 配線・
    `amigos-command.schema.json` の enum 一致を突き合わせ）。`test/feature-split.test.js` に
    feature 配線の確認を追加。Python 側は既存の `CommandSchemaTests` / inbox 形式テストが引き続き正。
