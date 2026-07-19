@@ -1,8 +1,9 @@
 # 委譲契約（delegation contract）設計 — agent-dashboard から agent-flow / agent-amigos へ同じ形で入札を扱う
 
 - 日付: 2026-07-19
-- 状態: 設計（実装未着手）
-- 契約ドラフト: [`schemas/delegation.schema.json`](../../schemas/delegation.schema.json)
+- 状態: 契約・アダプタ・IPC 実装済み（agent-dashboard 側・エンジン無変更）。renderer UI は残作業
+- 契約: [`schemas/delegation.schema.json`](../../schemas/delegation.schema.json)
+- 実装: `tools/agent-dashboard/src/features/delegation/`（`main/contract.js` / `main/amigos-adapter.js` / `main/flow-adapter.js` / `main/ipc.js`）、テスト `test/delegation.test.js`
 - 関連: `docs/plans/2026-07-19-agent-dashboard-orchestration-token-budget-design.md`（agent-control / node-budget）、
   `schemas/amigos-command.schema.json`、`schemas/mission.schema.json`、`schemas/task.schema.json`
 
@@ -203,21 +204,27 @@ amigos: `cancel` コマンド。flow: `flow.js:cancelRun` の 3 手（`inbox/can
 応答なしはフェーズに含めず `stale` フラグの重畳で表す（D8）。フェーズはエンジン既存の
 導出規則との 1:1 写像を保つ。
 
-## 6. 実装計画（すべて agent-dashboard 側・エンジン無変更）
+## 6. 実装状況（すべて agent-dashboard 側・エンジン無変更）
 
-1. `schemas/delegation.schema.json` を正典化（本設計とドラフトのレビュー後）。
-2. `src/features/orchestration/`（または新 feature `delegation/`）に共通投函口
-   `delegation:post|award|accept|reject|cancel` と一覧 `delegation:list` の IPC を追加。
-   実体は既存アダプタへの薄い委譲:
+新 feature `src/features/delegation/` として実装した（`features/index.js` に登録）。
+
+1. ✅ `schemas/delegation.schema.json` を正典化。
+2. ✅ 共通投函口 `delegation:post|award|accept|reject|cancel` と一覧 `delegation:list` の IPC
+   （`main/ipc.js`）。実体は既存アダプタ／契約への薄い委譲:
    - amigos = `features/amigos/main/homes.js:writeCommand`（`amigos-command` 契約）
-   - flow = `features/agent-project/main/flow.js` の inbox 投函 / `cancelRun`
-3. 各アダプタに `toDelegationView()` を追加（既存の `readRun` / `readMissionSummary` の
-   出力からの射影。新しいファイル読取は不要）。
-4. UI: 「委譲」ペインで workload 選択 → 共通フォーム + engine 固有セクション（amigos の
-   ロール表 / flow の executor）→ 入札状況（`units[].bids`）と落札操作（owner-picks のみ）。
-5. テスト: amigos-command と同じく**両側テストで契約一致を担保**
-   （dashboard 側 `delegation.test.js` で封筒→ネイティブ変換の固定妥当性、
-   Python 側は既存の `CommandSchemaTests` / inbox 形式テストが引き続き正）。
+   - flow = `main/flow-adapter.js:submitPost`（inbox 投函）/ `flow.js:cancelRun`（cancel の 3 手）
+3. ✅ 契約コア `main/contract.js`（封筒の検証・id 採番・エンジン非対称の fail-fast）と
+   各アダプタの `toView()`（`main/amigos-adapter.js` / `main/flow-adapter.js`）。amigos は
+   `readMissionSummary` の出力 + バスの `assignments/<role>/` を読んで入札の勝者/応募/失効を
+   決定的タイブレークで判定（`assign.py:winner` と同一規則）。flow は `readRun` の出力から
+   先着=勝者 1 件を射影。
+4. ⏳ **残作業** — renderer UI。「委譲」ペインで workload 選択 → 共通フォーム + engine 固有
+   セクション（amigos のロール表 / flow の executor）→ 入札状況（`units[].bids`）と落札操作
+   （owner-picks のみ）。preload API は配線済み（`delegationList/Post/Award/Accept/Reject/Cancel`）
+   なので renderer から即呼べる。
+5. ✅ テスト `test/delegation.test.js`（封筒検証・両アダプタの変換とビュー・IPC 配線・
+   `amigos-command.schema.json` の enum 一致を突き合わせ）。`test/feature-split.test.js` に
+   feature 配線の確認を追加。Python 側は既存の `CommandSchemaTests` / inbox 形式テストが引き続き正。
 
 ## 7. 将来拡張（v1 スコープ外・契約は additive に受け入れ可能な形にしてある）
 
