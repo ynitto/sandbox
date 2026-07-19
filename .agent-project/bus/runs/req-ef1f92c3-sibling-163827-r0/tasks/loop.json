@@ -1,0 +1,8 @@
+{
+  "id": "loop",
+  "goal": "gate で列挙された不一致を修正したうえで、完了条件コマンド『PYTHONPATH=tools/agent-project python3 -m unittest discover -s tools/agent-project/tests -p \\'test_codd_gate_*.py\\' && grep -nE \\'codd_gate_regression|regression_cmd|intake_cmd\\' tools/agent-project/README.md && ! grep -nE \\'build_config.*メモリ上で自動|_apply_codd_gate_auto_wiring\\' tools/agent-project/README.md』を実行し、終了コード 0 になるまで原因を特定して修正と再実行を繰り返す。失敗のたびに何が落ちたかと修正内容を記録する",
+  "deps": [
+    "gate"
+  ],
+  "kind": "verify"
+}

@@ -1,0 +1,8 @@
+{
+  "id": "t6",
+  "goal": "tools/agent-project/tests/test_codd_gate_*.py を新しい境界に追随させる。自動配線が働くことを前提にしたテストを、明示設定・CLI 経由（--config）での検出・推奨文字列生成・yaml 冪等注入を検証するテストへ差し替え、yaml 注入の冪等性（二回実行で差分が出ないこと）を確認するケースを含める。PYTHONPATH=tools/agent-project python3 -m unittest discover -s tools/agent-project/tests -p 'test_codd_gate_*.py' が通る状態にする",
+  "deps": [
+    "t1"
+  ],
+  "kind": "work"
+}

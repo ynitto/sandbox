@@ -1,0 +1,8 @@
+{
+  "id": "t7",
+  "goal": "docs/designs/codd-gate-design.md §4.1『現在地』を、t2/t3 で確定した実装後の境界（パッケージ外に置いた検出・推奨・yaml 注入・CLI 所見と、agent_project 側との結線が明示設定のみになったこと）に合わせて更新する。設計意図と実装の食い違いが残らないよう現物のコードを読んで書き、slop-police スキルを適用する",
+  "deps": [
+    "t3"
+  ],
+  "kind": "generate"
+}

@@ -1,0 +1,8 @@
+{
+  "id": "t4",
+  "goal": "tools/agent-project/README.md の codd-gate 有効化手順を、build_config によるメモリ上の自動配線前提から『yaml への明示設定』または『python3 codd_gate_regression.py --config …』への誘導へ書き換える。自動配線を説明する記述を除去し、grep -nE 'codd_gate_regression|regression_cmd|intake_cmd' がヒットし、かつ grep -nE 'build_config.*メモリ上で自動|_apply_codd_gate_auto_wiring' が 0 ヒットになる状態にする。文章は slop-police スキルを適用して書く",
+  "deps": [
+    "t1"
+  ],
+  "kind": "generate"
+}

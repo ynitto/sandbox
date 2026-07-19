@@ -1,0 +1,8 @@
+{
+  "id": "t2",
+  "goal": "codd_gate_wiring.py / codd_gate_base.py から agent_project への自動配線経路を切り離し、これらモジュールの責務を『sibling 検出・推奨文字列の生成・yaml への冪等注入・（必要なら）CLI 所見の出力』に限定する。agent_project パッケージ内への再結合と dashboard の変更は行わない。切り離しで宙に浮く公開関数は削除ではなく明示呼び出し用 API として残すか判断し、判断理由をコード近傍のコメントではなく作業報告に書く",
+  "deps": [
+    "t1"
+  ],
+  "kind": "work"
+}

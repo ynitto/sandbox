@@ -133,3 +133,10 @@
 - affects : agent_project-codd_gate-163827 → ready
 - learn: agent_project を codd_gate 非依存の汎用フックへ整理する :: 成果を確認して完了を承認
 
+## DR-0021  2026-07-19  actor: nitto
+- context : agent_project-codd_gate-163827（agent_project を codd_gate 非依存の汎用フックへ整理する）を検収承認
+- action  : approve-done
+- reason  : 成果を確認して完了を承認
+- affects : agent_project-codd_gate-163827 → done
+- learn: agent_project を codd_gate 非依存の汎用フックへ整理する :: 成果を確認して完了を承認
+

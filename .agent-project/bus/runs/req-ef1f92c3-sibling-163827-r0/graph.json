@@ -1,0 +1,87 @@
+{
+  "strategy": {
+    "patterns": [
+      "fan-out-and-synthesize",
+      "adversarial-verification",
+      "loop-until-done"
+    ],
+    "parallelism": 4,
+    "review": true,
+    "reason": "[flow-planner] サブタスクは『コード整理（wiring/base の自動配線切り離し＋CLI 化）』『README』『GUIDE』『設計書 §4.1』『テスト更新』とレイヤ別に分割でき、最後に境界の一貫性を統合判定する必要があるため fan-out-and-synthesize が主軸。ただし本件の本質はコードと文書の境界一致であり、片側だけ直すと不整合が残る（quality_focus=accuracy）ので、統合前に検証gateを置く adversarial-verification を重ねる。さらに完了条件が『unittest + README grep 二種が終了コード 0』と機械判定可能で、制約にも loop-until-done が明示されているため反復ゲートを付ける。この三段構成は migration-pipeline テンプレートそのもの（並列変更→検証→品質達成まで反復）。並列数は subtasks の独立性から 4（コード＋CLI／README＋GUIDE／設計書／テスト）。棚卸しは事前フェーズ、設計書 §4.1 の『現在地』はコード確定後に書く順序依存があるため、これらは並列枠に含めず逐次段に置く。data_flow=static で対象ファイルが列挙済みのため map-reduce は不要。（粒度 coarse）"
+  },
+  "nodes": {
+    "t1": {
+      "goal": "tools/agent-project/codd_gate_{detect,status,routing,base,debt,wiring,regression}.py を読み、各ファイルの現在の責務と、build_config によるメモリ上の自動配線（_apply_codd_gate_auto_wiring 相当）が残っている箇所・呼び出し元・agent_project パッケージへの依存方向を洗い出して一覧化する。README.md / GUIDE.md / docs/designs/codd-gate-design.md §4.1 の該当記述箇所（行番号）も併せて特定し、後続タスクが参照できる棚卸し表として出力する",
+      "deps": [],
+      "kind": "work"
+    },
+    "t2": {
+      "goal": "codd_gate_wiring.py / codd_gate_base.py から agent_project への自動配線経路を切り離し、これらモジュールの責務を『sibling 検出・推奨文字列の生成・yaml への冪等注入・（必要なら）CLI 所見の出力』に限定する。agent_project パッケージ内への再結合と dashboard の変更は行わない。切り離しで宙に浮く公開関数は削除ではなく明示呼び出し用 API として残すか判断し、判断理由をコード近傍のコメントではなく作業報告に書く",
+      "deps": [
+        "t1"
+      ],
+      "kind": "work"
+    },
+    "t3": {
+      "goal": "codd_gate_regression.py に --config で設定ファイルを明示指定する結線導線を CLI として成立させる（引数パース・ヘルプ文言・終了コード・設定不在時のエラーメッセージまで含めて動作させる）。t2 で切り離した検出・推奨・yaml 注入の各機能へ、自動配線に頼らず CLI から到達できることを実際にコマンドを実行して確認する",
+      "deps": [
+        "t2"
+      ],
+      "kind": "work"
+    },
+    "t4": {
+      "goal": "tools/agent-project/README.md の codd-gate 有効化手順を、build_config によるメモリ上の自動配線前提から『yaml への明示設定』または『python3 codd_gate_regression.py --config …』への誘導へ書き換える。自動配線を説明する記述を除去し、grep -nE 'codd_gate_regression|regression_cmd|intake_cmd' がヒットし、かつ grep -nE 'build_config.*メモリ上で自動|_apply_codd_gate_auto_wiring' が 0 ヒットになる状態にする。文章は slop-police スキルを適用して書く",
+      "deps": [
+        "t1"
+      ],
+      "kind": "generate"
+    },
+    "t5": {
+      "goal": "tools/agent-project/GUIDE.md から build_config によるメモリ自動配線の記述を削除し、有効化手順・用語・コマンド例の表現を t4 の README と揃える。README と GUIDE で同じ操作を違う名前で呼んでいる箇所があれば統一する。文章は slop-police スキルを適用して書く",
+      "deps": [
+        "t1"
+      ],
+      "kind": "generate"
+    },
+    "t6": {
+      "goal": "tools/agent-project/tests/test_codd_gate_*.py を新しい境界に追随させる。自動配線が働くことを前提にしたテストを、明示設定・CLI 経由（--config）での検出・推奨文字列生成・yaml 冪等注入を検証するテストへ差し替え、yaml 注入の冪等性（二回実行で差分が出ないこと）を確認するケースを含める。PYTHONPATH=tools/agent-project python3 -m unittest discover -s tools/agent-project/tests -p 'test_codd_gate_*.py' が通る状態にする",
+      "deps": [
+        "t1"
+      ],
+      "kind": "work"
+    },
+    "t7": {
+      "goal": "docs/designs/codd-gate-design.md §4.1『現在地』を、t2/t3 で確定した実装後の境界（パッケージ外に置いた検出・推奨・yaml 注入・CLI 所見と、agent_project 側との結線が明示設定のみになったこと）に合わせて更新する。設計意図と実装の食い違いが残らないよう現物のコードを読んで書き、slop-police スキルを適用する",
+      "deps": [
+        "t3"
+      ],
+      "kind": "generate"
+    },
+    "gate": {
+      "goal": "コードと文書の境界一致を敵対的に検証する。t2/t3 の実装、t4/t5 の手順記述、t7 の設計書 §4.1 を突き合わせ、(a) 自動配線の記述や実装が残っていないか、(b) README/GUIDE のコマンドが実際に動くか（記載どおりに実行して確認）、(c) 設計書の『現在地』が実装と食い違っていないか、(d) スコープ外（agent_project パッケージ内への再結合・dashboard 変更）に触れていないかを、各項目について反証を試みる姿勢で点検し、不一致を具体的な file:line で列挙する",
+      "deps": [
+        "t3",
+        "t4",
+        "t5",
+        "t6",
+        "t7"
+      ],
+      "kind": "verify"
+    },
+    "loop": {
+      "goal": "gate で列挙された不一致を修正したうえで、完了条件コマンド『PYTHONPATH=tools/agent-project python3 -m unittest discover -s tools/agent-project/tests -p \\'test_codd_gate_*.py\\' && grep -nE \\'codd_gate_regression|regression_cmd|intake_cmd\\' tools/agent-project/README.md && ! grep -nE \\'build_config.*メモリ上で自動|_apply_codd_gate_auto_wiring\\' tools/agent-project/README.md』を実行し、終了コード 0 になるまで原因を特定して修正と再実行を繰り返す。失敗のたびに何が落ちたかと修正内容を記録する",
+      "deps": [
+        "gate"
+      ],
+      "kind": "verify"
+    },
+    "synth": {
+      "goal": "新境界（パッケージ外の検出・推奨・yaml 注入・CLI 所見と、明示設定による結線）を一枚の説明としてまとめ、変更したファイル一覧・完了条件コマンドの実行結果・スコープ外として手を出さなかった事項を @followup 行で提示する。他ノードへ伝播すべき恒常的な規約を機械可読な JSON {\"constraints\": [...]} として添える",
+      "deps": [
+        "loop"
+      ],
+      "kind": "synthesize"
+    }
+  },
+  "iteration": 0
+}

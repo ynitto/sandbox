@@ -1,5 +1,5 @@
 ## agent_project-codd_gate-163827: agent_project を codd_gate 非依存の汎用フックへ整理する
-- status: blocked
+- status: done
 - source: charter
 - priority: 0
 - verify: `PYTHONPATH=tools/agent-project python3 tools/agent-project/tests/test_agent_project.py TestIntake.test_run_intake_enqueues_and_dedups_by_id TestLoopEngineering.test_regression_gate_blocks_on_failure TestLoopEngineering.test_regression_gate_passes && ! git grep -n -E '(^|[[:space:]])(import|from)[[:space:]]+codd_gate|_apply_codd_gate|_codd_gate' -- tools/agent-project/agent_project`
@@ -14,3 +14,9 @@
 - last_run: req-ef1f92c3-agent_project-codd_gate-163827-r4
 - env_resume: 1
 - needs_reason: [agent-error:quota] 環境の問題（利用上限）: 利用上限に達しています（時間をおくか、プラン・クレジットを見直してください） タスクの内容の問題ではないため、リトライ回数は消費していません。環境を直してから approve すると、同じ run の続き（失敗した工程だけ）から再開します。
+- archived: 2026-07-19 20:57:42
+
+## 納品書
+- 完了 : 2026-07-19 20:57:42
+- verify: `PYTHONPATH=tools/agent-project python3 tools/agent-project/tests/test_agent_project.py TestIntake.test_run_intake_enqueues_and_dedups_by_id TestLoopEngineering.test_regression_gate_blocks_on_failure TestLoopEngineering.test_regression_gate_passes && ! git grep -n -E '(^|[[:space:]])(import|from)[[:space:]]+codd_gate|_apply_codd_gate|_codd_gate' -- tools/agent-project/agent_project` → PASS（承認: 成果を確認して完了を承認）
+- 成果 : 

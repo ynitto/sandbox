@@ -1,0 +1,8 @@
+{
+  "id": "t5",
+  "goal": "tools/agent-project/GUIDE.md から build_config によるメモリ自動配線の記述を削除し、有効化手順・用語・コマンド例の表現を t4 の README と揃える。README と GUIDE で同じ操作を違う名前で呼んでいる箇所があれば統一する。文章は slop-police スキルを適用して書く",
+  "deps": [
+    "t1"
+  ],
+  "kind": "generate"
+}

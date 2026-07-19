@@ -1,0 +1,6 @@
+{
+  "id": "t1",
+  "goal": "tools/agent-project/codd_gate_{detect,status,routing,base,debt,wiring,regression}.py を読み、各ファイルの現在の責務と、build_config によるメモリ上の自動配線（_apply_codd_gate_auto_wiring 相当）が残っている箇所・呼び出し元・agent_project パッケージへの依存方向を洗い出して一覧化する。README.md / GUIDE.md / docs/designs/codd-gate-design.md §4.1 の該当記述箇所（行番号）も併せて特定し、後続タスクが参照できる棚卸し表として出力する",
+  "deps": [],
+  "kind": "work"
+}
