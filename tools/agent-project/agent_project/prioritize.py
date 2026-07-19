@@ -85,9 +85,24 @@ def _normalize_agent_overrides(raw) -> "dict[str, dict]":
 
 def _agent_for(purpose: str) -> "tuple[str, str | None]":
     """処理（purpose）の実効エージェント。(agent_cli, model 上書き) を返す。
-    設定 agents: の該当キー ＞ グローバル agent_cli（model 上書きは無ければ None＝呼び出し値）。"""
+    agent-control（管理面の横断上書き）＞ 設定 agents: の該当キー ＞ グローバル agent_cli。
+    soft/縮退中は control の degraded を重ねる（model 上書きは無ければ None＝呼び出し値）。"""
     ov = _AGENT_OVERRIDES.get(purpose) or {}
-    return (str(ov.get("agent_cli") or _AGENT_CLI).lower(), ov.get("model") or None)
+    cli = str(ov.get("agent_cli") or _AGENT_CLI).lower()
+    model = ov.get("model") or None
+    c_cli, c_model = _control_override(purpose)
+    if c_cli:
+        cli = c_cli.lower()
+    if c_model:
+        model = c_model
+    nb = _node_budget_state()
+    if nb and (nb.get("soft") or (nb.get("exceeded") and nb.get("on_exhausted") == "degrade")):
+        d_cli, d_model = _control_degraded()
+        if d_cli:
+            cli = d_cli.lower()
+        if d_model:
+            model = d_model
+    return cli, model
 
 
 def _agent_cmd(cli: str, model: "str | None",
@@ -306,13 +321,19 @@ def _agent_failure(cli: str, rc: int, out: str, err: str) -> str:
     return f"{head}\n{tail[-500:]}" if tail else head
 
 
-# --- ノード予算（node-budget 契約: schemas/node-budget.schema.json） ----------------------
-# ノード（マシン）単位の実質実行時間の共有台帳。定常業務（kiro-loop）・agent-project・
-# agent-flow・agent-amigos が同じ台帳（$AGENT_BUDGET_DIR、既定 ~/.agent/budget/）に記帳し、
-# 合計が上限（0 = 無制限）を超えたら新規の LLM 実行を控える。読み書きは各ツールが自前で持つ
-# （agent-cli プラグインと同じ「データ契約のみ・コード共有なし」の流儀）。
+# --- ノード予算 v2（node-budget 契約: schemas/node-budget.schema.json） --------------------
+# ノード（マシン）単位の共有台帳。定常業務（kiro-loop）・agent-project・agent-flow・
+# agent-amigos が同じ台帳（$AGENT_BUDGET_DIR、既定 ~/.agent/budget/）に記帳し、合計が上限
+# （0 = 無制限）を超えたら新規の LLM 実行を控える。v2 で一次単位をトークンへ拡張（時間上限は
+# v1 互換で AND）。台帳には実測のみ（実測秒＋実測できたトークン）を書き、未報告行は rates で
+# 読み出し時に推定する。配分・較正の知能は管理面（dashboard）にあり、エンジンは単純比較のみ。
+# 読み書きは各ツールが自前で持つ（データ契約のみ・コード共有なし）。
 _NODE_BUDGET_WORKLOAD = "project"
 _NODE_BUDGET_TOOL = "agent-project"
+
+
+def _utc_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def _node_budget_dir() -> str:
@@ -320,8 +341,43 @@ def _node_budget_dir() -> str:
         os.environ.get("AGENT_BUDGET_DIR", os.path.join("~", ".agent", "budget"))))
 
 
+def _node_budget_rate(cfg: dict, cli: str, model: str) -> float:
+    """トークン未報告行の推定レート（tokens/秒）。解決順 cli:model → cli → default。"""
+    rates = cfg.get("rates") or {}
+    per = rates.get("per_cli") or {}
+    for key in (f"{cli}:{model}" if model else None, cli or None):
+        if key and per.get(key):
+            try:
+                return float(per[key])
+            except (TypeError, ValueError):
+                pass
+    try:
+        return float(rates.get("default_tokens_per_second") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _row_tokens(rec: dict, cfg: dict) -> float:
+    """1 記帳のトークン消費。実測（tokens_in+tokens_out）があればその値、無ければ秒 × レート。"""
+    ti, to = rec.get("tokens_in"), rec.get("tokens_out")
+    if ti is not None or to is not None:
+        try:
+            return float(ti or 0) + float(to or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    try:
+        sec = float(rec.get("seconds") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if sec <= 0:
+        return 0.0
+    return sec * _node_budget_rate(cfg, str(rec.get("agent_cli") or ""), str(rec.get("model") or ""))
+
+
 def _node_budget_state() -> "dict | None":
-    """ノード予算の消費状況。設定が無い/上限 0 なら None（= 無制限・チェック不要）。"""
+    """ノード予算の消費状況。設定が無い/上限が全て 0 なら None（= 無制限・チェック不要）。
+    exceeded は時間上限・トークン上限（合計 or 自ワークロードの実効上限）のいずれか到達。
+    soft は縮退開始（soft_ratio 到達・未超過）。on_exhausted は超過時の方針。"""
     base = _node_budget_dir()
     try:
         with open(os.path.join(base, "config.json"), encoding="utf-8") as f:
@@ -330,12 +386,22 @@ def _node_budget_state() -> "dict | None":
         return None
     limit_min = float(cfg.get("execution_minutes") or 0)
     wl_limit_min = float((cfg.get("workloads") or {}).get(_NODE_BUDGET_WORKLOAD) or 0)
-    if limit_min <= 0 and wl_limit_min <= 0:
+    token_limit = float(cfg.get("tokens") or 0)
+    alloc = cfg.get("allocation") or {}
+    wl_alloc = (alloc.get("workloads") or {}).get(_NODE_BUDGET_WORKLOAD) or {}
+    computed = ((cfg.get("computed") or {}).get("workloads") or {}).get(_NODE_BUDGET_WORKLOAD) or {}
+    eff_wl_tokens = float(computed.get("tokens") or 0) or float(wl_alloc.get("max_tokens") or 0)
+    on_exhausted = str(wl_alloc.get("on_exhausted") or "pause")
+    try:
+        soft_ratio = float(alloc.get("soft_ratio") or 0.9)
+    except (TypeError, ValueError):
+        soft_ratio = 0.9
+    if limit_min <= 0 and wl_limit_min <= 0 and token_limit <= 0 and eff_wl_tokens <= 0:
         return None
     period = str(cfg.get("period") or "day")
     prefix = (time.strftime("%Y%m%d", time.gmtime()) if period == "day"
               else time.strftime("%Y%m", time.gmtime()) if period == "month" else "")
-    total = wl_total = 0.0
+    total = wl_total = tok_total = wl_tok = 0.0
     led = os.path.join(base, "ledger")
     try:
         names = sorted(n for n in os.listdir(led)
@@ -354,30 +420,53 @@ def _node_budget_state() -> "dict | None":
                         sec = float(rec.get("seconds") or 0)
                     except (ValueError, TypeError):
                         continue
-                    if sec <= 0:
-                        continue
-                    total += sec
-                    if rec.get("workload") == _NODE_BUDGET_WORKLOAD:
-                        wl_total += sec
+                    toks = _row_tokens(rec, cfg)
+                    is_wl = rec.get("workload") == _NODE_BUDGET_WORKLOAD
+                    if sec > 0:
+                        total += sec
+                        if is_wl:
+                            wl_total += sec
+                    if toks > 0:
+                        tok_total += toks
+                        if is_wl:
+                            wl_tok += toks
         except OSError:
             continue
-    exceeded = ((limit_min > 0 and total >= limit_min * 60)
-                or (wl_limit_min > 0 and wl_total >= wl_limit_min * 60))
-    return {"exceeded": exceeded, "spent_min": total / 60, "limit_min": limit_min,
-            "period": period}
+    time_exceeded = ((limit_min > 0 and total >= limit_min * 60)
+                     or (wl_limit_min > 0 and wl_total >= wl_limit_min * 60))
+    token_exceeded = ((token_limit > 0 and tok_total >= token_limit)
+                      or (eff_wl_tokens > 0 and wl_tok >= eff_wl_tokens))
+    exceeded = bool(time_exceeded or token_exceeded)
+    soft_cap = eff_wl_tokens or token_limit
+    soft_spent = wl_tok if eff_wl_tokens else tok_total
+    soft = bool(soft_cap > 0 and soft_spent >= soft_ratio * soft_cap and not exceeded)
+    return {"exceeded": exceeded, "soft": soft, "on_exhausted": on_exhausted,
+            "spent_min": total / 60, "limit_min": limit_min,
+            "spent_tokens": tok_total, "token_limit": token_limit, "period": period}
 
 
-def _node_budget_record(seconds: float, ref: str = "") -> None:
-    """台帳へ 1 記帳を追記する（O_APPEND — 複数プロセスの同時追記でも行は壊れない）。"""
-    if seconds <= 0:
+def _node_budget_record(seconds: float, ref: str = "", agent_cli: str = "",
+                        model: str = "", tokens_in=None, tokens_out=None, usd=None) -> None:
+    """台帳へ 1 記帳を追記する（O_APPEND — 複数プロセスの同時追記でも行は壊れない）。
+    tokens_* は実測できたときだけ渡す（推定値は書かない）。agent_cli / model は帰属。"""
+    if seconds <= 0 and not tokens_in and not tokens_out:
         return
     d = os.path.join(_node_budget_dir(), "ledger")
     try:
         os.makedirs(d, exist_ok=True)
-        line = json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                           "workload": _NODE_BUDGET_WORKLOAD,
-                           "tool": _NODE_BUDGET_TOOL, "seconds": round(float(seconds), 3),
-                           "ref": ref}, ensure_ascii=False) + "\n"
+        rec = {"ts": _utc_iso(), "workload": _NODE_BUDGET_WORKLOAD,
+               "tool": _NODE_BUDGET_TOOL, "seconds": round(float(seconds), 3), "ref": ref}
+        if agent_cli:
+            rec["agent_cli"] = str(agent_cli)
+        if model:
+            rec["model"] = str(model)
+        if tokens_in is not None:
+            rec["tokens_in"] = float(tokens_in)
+        if tokens_out is not None:
+            rec["tokens_out"] = float(tokens_out)
+        if usd is not None:
+            rec["usd"] = float(usd)
+        line = json.dumps(rec, ensure_ascii=False) + "\n"
         fd = os.open(os.path.join(d, time.strftime("%Y%m%d", time.gmtime()) + ".jsonl"),
                      os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
         try:
@@ -388,21 +477,120 @@ def _node_budget_record(seconds: float, ref: str = "") -> None:
         pass    # 記帳失敗で実行を止めない（台帳は best-effort、上限は次の実行前チェックで効く）
 
 
+# --- agent-control（管理面→エンジンの宣言的オーケストレーション契約） ----------------------
+# schemas/agent-control.schema.json。$AGENT_CONTROL_DIR（既定 ~/.agent/control/）の control.json
+# に管理面が「望ましい状態」を書き、各エンジンが mtime を見て pull で適用する（push 型 IPC なし）。
+# 優先順位 control > CLI 引数 > 設定ファイル > 組み込み既定。適用状況は status/<tool>-<pid>.json へ。
+_CONTROL_CACHE = {"mtime": None, "data": {}}
+
+
+def _control_dir() -> str:
+    return os.path.abspath(os.path.expanduser(
+        os.environ.get("AGENT_CONTROL_DIR", os.path.join("~", ".agent", "control"))))
+
+
+def _load_control() -> dict:
+    """control.json を mtime キャッシュ付きで読む。無ければ {}。"""
+    path = os.path.join(_control_dir(), "control.json")
+    try:
+        mtime = os.stat(path).st_mtime
+    except OSError:
+        _CONTROL_CACHE["mtime"], _CONTROL_CACHE["data"] = None, {}
+        return {}
+    if _CONTROL_CACHE["mtime"] != mtime:
+        try:
+            with open(path, encoding="utf-8") as f:
+                _CONTROL_CACHE["data"] = json.load(f) or {}
+        except (OSError, ValueError):
+            _CONTROL_CACHE["data"] = {}
+        _CONTROL_CACHE["mtime"] = mtime
+    return _CONTROL_CACHE["data"]
+
+
+def _control_workload() -> dict:
+    return dict((_load_control().get("workloads") or {}).get(_NODE_BUDGET_WORKLOAD) or {})
+
+
+def _control_lifecycle() -> str:
+    """このワークロードの望ましい lifecycle（run|pause|stop）。既定 run。"""
+    return str(_control_workload().get("lifecycle") or "run")
+
+
+def _control_override(key: str = "") -> "tuple[str | None, str | None]":
+    """(agent_cli, model) の上書き。解決 workloads[wl].agents[key] > workloads[wl] > defaults。"""
+    ctl = _load_control()
+    wl = _control_workload()
+    agents = wl.get("agents") or {}
+    layers = ([agents.get(key) or {}] if key else []) + [wl, ctl.get("defaults") or {}]
+    cli = model = None
+    for layer in layers:
+        if cli is None and layer.get("agent_cli"):
+            cli = str(layer.get("agent_cli"))
+        if model is None and layer.get("model"):
+            model = str(layer.get("model"))
+    return cli, model
+
+
+def _control_degraded() -> "tuple[str | None, str | None]":
+    d = _control_workload().get("degraded") or {}
+    return (str(d["agent_cli"]) if d.get("agent_cli") else None,
+            str(d["model"]) if d.get("model") else None)
+
+
+def _write_status(effective_cli: str = "", effective_model: str = "", lifecycle: str = "run",
+                  budget: "dict | None" = None, fresh_after_sec: int = 120) -> None:
+    """status/<tool>-<pid>.json へ適用状況ハートビートを原子書換する（best-effort）。"""
+    ctl = _load_control()
+    d = os.path.join(_control_dir(), "status")
+    try:
+        os.makedirs(d, exist_ok=True)
+        rec = {"tool": _NODE_BUDGET_TOOL, "workload": _NODE_BUDGET_WORKLOAD,
+               "pid": os.getpid(), "lifecycle": lifecycle,
+               "effective": {"agent_cli": effective_cli or None, "model": effective_model or None},
+               "fresh_after_sec": fresh_after_sec, "ts": _utc_iso()}
+        if ctl.get("revision") is not None:
+            rec["revision_applied"] = ctl.get("revision")
+        if budget is not None:
+            rec["budget"] = {"exceeded": bool(budget.get("exceeded")),
+                             "soft": bool(budget.get("soft"))}
+        target = os.path.join(d, f"{_NODE_BUDGET_TOOL}-{os.getpid()}.json")
+        tmp = target + f".tmp.{os.getpid()}"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(rec, f, ensure_ascii=False)
+        os.replace(tmp, target)
+    except OSError:
+        pass
+
+
 def _run_agent_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
     """エージェント CLI（設定 agent_cli: kiro/claude/copilot/codex）を 1 回呼び出してテキスト応答を返す。
     このツールの LLM 呼び出し（分解・優先順位・裁定・ルーティング等）はすべてここを通る。
     purpose（AGENT_PURPOSES のいずれか）を渡すと、設定 agents: の処理毎上書き
     （agent_cli / model）が効く。model は 上書き ＞ 呼び出し値（通常グローバル model）。"""
+    # agent-control: このワークロードが pause/stop 指定なら新規実行を控える（環境要因として運ぶ）。
+    lifecycle = _control_lifecycle()
+    if lifecycle in ("pause", "stop"):
+        _write_status(lifecycle=lifecycle)
+        raise RuntimeError(
+            f"[agent-error:quota] [agent-control] このワークロード（project）は管理面により "
+            f"lifecycle={lifecycle} 指定です。dashboard のオーケストレーションタブで run に戻して"
+            "ください")
     nb = _node_budget_state()
-    if nb and nb["exceeded"]:
+    # 超過かつ on_exhausted != degrade なら控える。degrade は縮退指定で継続（_agent_for が適用）。
+    if nb and nb["exceeded"] and nb.get("on_exhausted") != "degrade":
         # ノード予算超過は環境要因（時間経過か人の上限変更で回復）— quota 分類で全層に運ぶ
         # （リトライ・裁定を焼かず needs へ。環境を直せば続きから、の既存フローに乗る）。
+        _write_status(lifecycle=lifecycle, budget=nb)
+        unit = ("トークン" if nb.get("token_limit") else "実行時間")
         raise RuntimeError(
-            f"[agent-error:quota] [node-budget] このノードの実行時間予算を超過しています"
-            f"（{nb['spent_min']:.1f}分/{nb['limit_min']:.0f}分・period={nb['period']}）。"
-            "上限を上げる（agent-amigos budget node / dashboard の Amigos タブ）か"
+            f"[agent-error:quota] [node-budget] このノードの{unit}予算を超過しています"
+            f"（{nb['spent_min']:.1f}分/{nb['limit_min']:.0f}分・"
+            f"{nb['spent_tokens']:.0f}tok/{nb['token_limit']:.0f}tok・period={nb['period']}）。"
+            "上限を上げる（dashboard のオーケストレーションタブ / agent-amigos budget node）か"
             "期間の更新を待ってください")
     cli, model_ov = _agent_for(purpose)
+    _write_status(effective_cli=cli, effective_model=(model_ov or model or ""),
+                  lifecycle=lifecycle, budget=nb)
     cmd, stdin_text, out_file = _agent_cmd(cli, model_ov or model, prompt)
     plug = _AGENT_PLUGIN_CACHE.get(cli)   # _agent_cmd がロード済み（組み込み CLI は None）
     # 発生源で色を抑止（NO_COLOR/TERM=dumb）。残った ANSI は strip_ansi で除去する二段構え。
@@ -412,7 +600,12 @@ def _run_agent_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
         t0 = time.monotonic()
         proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", input=stdin_text,
                               timeout=timeout, env=env)
-        _node_budget_record(time.monotonic() - t0, ref=purpose or "agent")
+        # トークン実測: エージェントが `@cost tokens=… usd=…` を吐けば台帳へ帰属付きで記帳する。
+        _cost_tokens, _cost_usd = parse_cost(proc.stdout or "")
+        _node_budget_record(time.monotonic() - t0, ref=purpose or "agent",
+                            agent_cli=cli, model=(model_ov or model or ""),
+                            tokens_out=(_cost_tokens or None) if _cost_tokens else None,
+                            usd=(_cost_usd or None) if _cost_usd else None)
         if proc.returncode != 0:
             raise RuntimeError(_agent_failure(cmd[0], proc.returncode, proc.stdout, proc.stderr))
         text = strip_ansi(proc.stdout).strip()

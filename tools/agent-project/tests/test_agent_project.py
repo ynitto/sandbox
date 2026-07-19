@@ -11247,5 +11247,53 @@ class NodeBudgetTests(unittest.TestCase):
         self.assertEqual(rec["seconds"], 2.0)
 
 
+class NodeBudgetV2AndControlTests(unittest.TestCase):
+    """ノード予算 v2（トークン一次・rates 推定）と agent-control（上書き・lifecycle・status）。"""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="kp-nbv2-")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        os.environ["AGENT_BUDGET_DIR"] = self.dir
+        os.environ["AGENT_CONTROL_DIR"] = self.dir
+        self.addCleanup(os.environ.pop, "AGENT_BUDGET_DIR", None)
+        self.addCleanup(os.environ.pop, "AGENT_CONTROL_DIR", None)
+        km._CONTROL_CACHE["mtime"] = None
+
+    def _budget(self, cfg):
+        with open(os.path.join(self.dir, "config.json"), "w", encoding="utf-8") as f:
+            json.dump(cfg, f)
+
+    def _control(self, ctl):
+        with open(os.path.join(self.dir, "control.json"), "w", encoding="utf-8") as f:
+            json.dump(ctl, f)
+        km._CONTROL_CACHE["mtime"] = None
+
+    def _ledger(self, records):
+        led = os.path.join(self.dir, "ledger")
+        os.makedirs(led, exist_ok=True)
+        day = time.strftime("%Y%m%d", time.gmtime())
+        with open(os.path.join(led, f"{day}.jsonl"), "a", encoding="utf-8") as f:
+            for rec in records:
+                f.write(json.dumps(rec) + "\n")
+
+    def test_token_limit_with_estimation(self):
+        self._budget({"version": 2, "tokens": 1000,
+                      "rates": {"per_cli": {"kiro": 100}}})
+        self._ledger([{"workload": "project", "seconds": 8, "agent_cli": "kiro"}])   # 800 (est)
+        self.assertFalse(km._node_budget_state()["exceeded"])
+        self._ledger([{"workload": "project", "seconds": 1, "tokens_in": 150,
+                       "tokens_out": 100}])                                          # +250 = 1050
+        self.assertTrue(km._node_budget_state()["exceeded"])
+
+    def test_control_override_and_lifecycle(self):
+        self._control({"version": 1, "revision": 3,
+                       "workloads": {"project": {"agents": {"plan": {"model": "opus"}}}}})
+        self.assertEqual(km._agent_for("plan")[1], "opus")
+        self._control({"version": 1, "workloads": {"project": {"lifecycle": "stop"}}})
+        with self.assertRaises(RuntimeError) as ctx:
+            km._run_agent_cli("x", None, purpose="plan")
+        self.assertIn("[agent-control]", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -24,6 +24,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   `control.json`（望ましい状態）＋ `status/<tool>-<pid>.json`（適用ハートビート）。優先順位は
   control > CLI 引数 > 設定ファイル > 組み込み既定。kiro-loop は予算枯渇時に従来の一時停止でなく
   `on_exhausted: stop` で graceful 停止できるようになる（routine の推奨既定）。
+- **4 エンジンへ v2 予算＋agent-control を実装**: agent-flow（`run_agent`）・agent-project
+  （`_run_agent_cli`）・agent-amigos（`runner` / `nodebudget` / 新 `control`）・kiro-loop
+  （`_run_loop`）の各チョークポイントに、① トークン集計（実測 or `rates` 推定）による超過判定、
+  ② control のエージェント / モデル横断上書き（既存の解決関数の先頭に 1 段）、③ soft_ratio 到達時の
+  `degraded` 適用、④ lifecycle（run|pause|stop）適用、⑤ `status/` ハートビート書出し、を追加。
+  台帳へ `agent_cli` / `model` / 実測トークン（agent-project は `@cost` から）を帰属付きで記帳。
+  **kiro-loop は `on_exhausted: stop` / lifecycle=stop で `_request_shutdown()`（自 SIGTERM →
+  既存 `_cleanup`）により graceful 停止**し、停止理由を state ディレクトリへ残す。
+- **agent-amigos CLI**: `budget node --limit-tokens` を追加し、消費表示にトークンを併記。
+  `save_config` は dashboard が書いた v2 キー（allocation / rates 等）を保持する（未知キーを消さない）。
+- テスト: 各エンジンに v2 予算（トークン実測 / 推定・computed 上限・soft/degrade）と agent-control
+  （上書き解決順・lifecycle・status・kiro-loop の stop 発火）の単体テストを追加（全スイート green）。
 
 ### agent-project / agent-dashboard: 「承認して完了にする」を出し分けで消さない
 

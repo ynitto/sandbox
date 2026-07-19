@@ -16,10 +16,10 @@ function test(name, fn) {
   console.log(`ok - ${name}`);
 }
 
-test('features に agent-project / kiro-loop / cowork / amigos が並ぶ', () => {
+test('features に agent-project / kiro-loop / cowork / amigos / orchestration が並ぶ', () => {
   const features = loadFeatures();
   const ids = features.map((f) => f.id);
-  assert.deepStrictEqual(ids, ['agent-project', 'kiro-loop', 'cowork', 'amigos']);
+  assert.deepStrictEqual(ids, ['agent-project', 'kiro-loop', 'cowork', 'amigos', 'orchestration']);
 });
 
 test('各 feature が registerIpc / preloadApi / configDefaults を持つ', () => {
@@ -144,6 +144,13 @@ test('base / feature の入口ファイルが存在する', () => {
     'features/cowork/README.md',
     'features/amigos/index.js',
     'features/amigos/README.md',
+    'features/orchestration/index.js',
+    'features/orchestration/config.js',
+    'features/orchestration/preload.js',
+    'features/orchestration/main/budget.js',
+    'features/orchestration/main/control.js',
+    'features/orchestration/main/agents.js',
+    'features/orchestration/main/ipc.js',
   ]) {
     assert.ok(fs.existsSync(path.join(root, rel)), rel);
   }
@@ -157,6 +164,36 @@ test('HTML に data-feature マーカーがある', () => {
   assert.ok(html.includes('tab-cowork'));
   assert.ok(html.includes('data-feature="amigos"'));
   assert.ok(html.includes('tab-amigos'));
+  assert.ok(html.includes('data-feature="orchestration"'));
+  assert.ok(html.includes('tab-orchestration'));
+});
+
+test('orchestration はノード予算 v2 / 制御 / ドロップイン API を登録する', () => {
+  const orch = loadFeatures().find((f) => f.id === 'orchestration');
+  assert.ok(orch.configDefaults.orchestration);
+  assert.strictEqual(orch.configDefaults.orchestration.refreshSec, 15);
+  const registered = [];
+  orch.registerIpc({
+    handle: (channel) => registered.push(channel),
+    loadConfig: () => ({}),
+    saveConfig: () => ({}),
+  });
+  assert.deepStrictEqual(registered.sort(),
+    ['orchestration:agentDelete', 'orchestration:agentSave', 'orchestration:budgetSave',
+     'orchestration:calibrate', 'orchestration:controlSave', 'orchestration:lifecycle',
+     'orchestration:overview', 'orchestration:rebalance'].sort());
+  const api = orch.preloadApi();
+  const calls = [];
+  const overview = api.orchestrationOverview((channel, args) => {
+    calls.push([channel, args]);
+    return 'ok';
+  });
+  assert.strictEqual(overview(), 'ok');
+  assert.deepStrictEqual(calls, [['orchestration:overview', {}]]);
+  for (const name of ['orchestrationBudgetSave', 'orchestrationRebalance', 'orchestrationCalibrate',
+    'orchestrationControlSave', 'orchestrationLifecycle', 'orchestrationAgentSave', 'orchestrationAgentDelete']) {
+    assert.strictEqual(typeof api[name], 'function', name);
+  }
 });
 
 console.log(`\n${passed} tests passed`);

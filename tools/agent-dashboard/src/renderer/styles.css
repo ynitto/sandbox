@@ -2389,3 +2389,64 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   .amigos-message-answer { margin-left: auto; }
   .amigos-message-body { padding: 0 12px 12px; }
 }
+
+/* ======== オーケストレーションタブ ======== */
+.orch-shell { display: flex; flex-direction: column; gap: 18px; }
+.orch-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg2);
+  padding: 14px 16px;
+}
+.orch-panel > header.row { justify-content: space-between; align-items: flex-start; gap: 12px; }
+.orch-panel h3 { margin: 2px 0 4px; }
+.orch-table { width: 100%; }
+.orch-table td, .orch-table th { vertical-align: middle; }
+.orch-actions { gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.orch-alloc-controls, .orch-alloc-controls label { gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+.orch-alloc-controls label { display: flex; flex-direction: column; font-size: 12px; color: var(--muted); }
+.orch-table input[type="number"] { width: 8em; }
+.orch-table input[type="text"] { width: 100%; min-width: 8em; }
+
+/* 状態バッジ: 色だけに頼らず状態語を併記する */
+.orch-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.orch-badge-ok { color: var(--green); border-color: var(--green); }
+.orch-badge-soft { color: var(--yellow); border-color: var(--yellow); }
+.orch-badge-over { color: var(--red); border-color: var(--red); }
+.orch-badge-muted { color: var(--muted); }
+
+/* トークン消費バー（実測 + 推定の積み上げ） */
+.orch-gauge { margin: 10px 0 6px; }
+.orch-gauge-head { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; margin-bottom: 6px; }
+.orch-bar {
+  position: relative;
+  display: flex;
+  height: 12px;
+  border-radius: 6px;
+  background: var(--bg3);
+  overflow: hidden;
+  min-width: 80px;
+}
+.orch-bar-lg { height: 18px; }
+.orch-bar-cell { width: 40%; }
+.orch-bar-measured { background: var(--accent2); height: 100%; display: inline-block; }
+.orch-bar-estimated { background: var(--yellow); opacity: 0.55; height: 100%; display: inline-block; }
+.orch-legend { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; }
+.orch-swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+
+/* ドロップイン棚卸し */
+.orch-dropins { display: flex; flex-direction: column; gap: 8px; }
+.orch-dropin { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; background: var(--bg); }
+.orch-dropin > summary { cursor: pointer; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.orch-dropin-spec, #orch-new-spec { width: 100%; margin-top: 8px; }
+.orch-new-name { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+.orch-errors { margin: 8px 0; }
+.orch-error { color: var(--red); font-size: 12px; }
+.orch-lc-actions { display: flex; gap: 4px; flex-wrap: wrap; }

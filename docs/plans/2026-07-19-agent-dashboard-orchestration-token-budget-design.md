@@ -250,19 +250,26 @@ v1 の性質は変わらない。
   で外へ出す量を絞る。予算の `degrade` と組み合わせると「枠が細ったら安いモデルに落とし、
   それでも足りなければ外へ出す」という段階縮退がデータ契約だけで表現できる。
 
-## エンジン側の変更
+## エンジン側の変更（実装済み）
 
-いずれも「チョークポイントに読みを 1 段足す＋台帳の追記列を増やす」に留める。
+いずれも「チョークポイントに読みを 1 段足す＋台帳の追記列を増やす」に留める。4 エンジンとも
+実装済み（各ツールに v2 予算＋control の単体テストを追加、全スイート green）。
 
 | エンジン | 変更点 |
 |---|---|
-| agent-project | `_run_agent_cli`（prioritize.py）: ① control 読込（mtime キャッシュ）を `_agent_for` の前段に追加 ② node-budget 判定をトークン集計対応へ ③ `@cost` パース結果（tokens/usd）と agent_cli/model を台帳行に追記 ④ lifecycle は既存 commands の pause/resume/stop へ写像 |
-| agent-amigos | `agentcli.run_agent` / `nodebudget.py`: 同上（ロール別 override は `runner.py` のロール解決の前段）。超過時の amigo paused / owner 通知は現行どおり |
-| agent-flow | `run_agent`（agent.py）: 同上。worker（work.py）はクレーム前に lifecycle/pause を確認。daemon は status 書き出しに revision_applied を追加（既存 `write_daemon_status` を拡張） |
-| kiro-loop | `_run_loop` サイクル先頭: 予算判定をトークン対応にし、**超過時は `on_exhausted` を見て `stop` なら `_cleanup()` → 終了**（state ファイルに `stopped_reason: node-budget` を残す）。control の lifecycle=stop も同経路。トークンは計測できないため台帳は従来どおり seconds のみ（スロット保持時間近似）＋ `agent_cli: kiro` を付す |
+| agent-project | `_run_agent_cli`（prioritize.py）: ① control 読込（mtime キャッシュ）を `_agent_for` の前段に追加 ② node-budget 判定をトークン集計対応へ ③ `@cost` パース結果（tokens/usd）と agent_cli/model を台帳行に追記 ④ lifecycle=pause/stop を quota 分類の環境要因として即終端（既存フローに乗る） |
+| agent-amigos | `runner.py` のロール解決の前段に control 上書き（ロール別）。新 `control.py` を追加。`nodebudget.py` を v2 化（`_totals` でトークン集計・`save_config` は v2 キーを保持）。lifecycle=pause/stop と超過（非 degrade）で amigo を paused にし owner へ通知（現行の paused 経路を流用） |
+| agent-flow | `run_agent`（agent.py）: 同上。`_agent_for` の先頭に control 上書き＋soft/degrade の縮退適用。lifecycle=pause/stop・超過（非 degrade）は quota 分類で run 終端。台帳へ agent_cli/model 帰属。status ハートビート書出し |
+| kiro-loop | `_run_loop` サイクル先頭: 予算判定をトークン対応にし、**超過時は `on_exhausted` を見て `stop` なら `_request_shutdown()`（自 SIGTERM → 既存 `_signal_handler`/`_cleanup`）で graceful 終了**（`_STATE_DIR/stopped-<pid>.json` に `stopped_reason` を残す）。control の lifecycle=stop も同経路、pause は送信抑止。トークンは計測できないため台帳は従来どおり seconds のみ（スロット保持時間近似）＋ `agent_cli: kiro` を付す |
 
 kiro-loop の停止は「一時停止（現行）」から「既定で停止」へ変わるが、`on_exhausted` を
 `pause` に戻せば現行挙動を選べる。停止後の再開導線は dashboard の cowork（`runLoop`）を使う。
+
+> 実装メモ: エンジン間はコード共有せず、v2 予算リーダ（`_node_budget_rate` / `_row_tokens` /
+> `_node_budget_state`）と control リーダ（`_load_control` / `_control_override` /
+> `_control_lifecycle` / `_write_status`）を各ツールが自前で持つ（データ契約のみ結合の流儀）。
+> agent-flow の worker（work.py）ノードでのクレーム前 lifecycle 確認と daemon の
+> `write_daemon_status` への revision 統合は後続（現状は run_agent チョークポイントで抑止済み）。
 
 ## agent-dashboard 側の変更
 

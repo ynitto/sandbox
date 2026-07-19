@@ -345,6 +345,9 @@ def _cmd_budget_node(args) -> int:
     if args.limit_minutes is not None:
         nodebudget.save_config(execution_minutes=args.limit_minutes)
         changed = True
+    if getattr(args, "limit_tokens", None) is not None:
+        nodebudget.save_config(tokens=args.limit_tokens)
+        changed = True
     if args.period:
         nodebudget.save_config(period=args.period)
         changed = True
@@ -354,8 +357,11 @@ def _cmd_budget_node(args) -> int:
     cfg = nodebudget.load_config()
     nb = nodebudget.state()
     lim = f"{cfg['execution_minutes']:.0f}m" if cfg["execution_minutes"] else "∞（0 = 無制限）"
-    print(f"ノード予算{'を更新しました' if changed else ''}: 合計 {lim} / period={cfg['period']}")
+    tlim = f"{cfg['tokens']:.0f}tok" if cfg.get("tokens") else "∞"
+    print(f"ノード予算{'を更新しました' if changed else ''}: 合計 {lim} / トークン {tlim}"
+          f" / period={cfg['period']}")
     print(f"  消費（{nb['period']}・全ワークロード合計）: {nb['spent_s'] / 60:.1f}m"
+          f" / {nb['spent_tokens']:.0f}tok"
           f"{'  ← 超過中' if nb['exceeded'] else ''}")
     for wl, mins in sorted(cfg.get("workloads", {}).items()):
         if mins:
@@ -533,6 +539,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--minutes", type=float, default=None, help="add: 追加する分数")
     p.add_argument("--limit-minutes", type=float, default=None,
                    help="node: 合計上限（分）。0 = 無制限")
+    p.add_argument("--limit-tokens", type=float, default=None,
+                   help="node: 合計トークン上限（v2・実測＋推定の合算）。0 = 無制限")
     p.add_argument("--period", choices=["day", "month", "total"], default=None,
                    help="node: 上限の適用期間（既定 day）")
     p.add_argument("--amigos-minutes", type=float, default=None,
