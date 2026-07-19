@@ -1361,6 +1361,8 @@ def setup_graphify(agent_type: str, force: bool = False) -> bool:
 
 CAVEMAN_REPO = "JuliusBrussee/caveman"
 
+# install.py --agent → caveman 公式 --only / skills -a プロファイル
+# skills 系は必ず -g（ホーム＝グローバル）へ入れる。プロジェクト配下には書かない。
 CAVEMAN_AGENT_IDS: dict[str, str] = {
     "claude": "claude",
     "codex": "codex",
@@ -1368,30 +1370,114 @@ CAVEMAN_AGENT_IDS: dict[str, str] = {
     "copilot": "copilot",
 }
 
+CAVEMAN_SKILLS_PROFILES: dict[str, str] = {
+    "codex": "codex",          # → ~/.codex/skills/
+    "kiro": "kiro-cli",        # → ~/.kiro/skills/
+    "copilot": "github-copilot",  # → ~/.copilot/skills/
+}
+
+
+def _caveman_global_skill_dirs(agent_type: str, paths: dict[str, str]) -> list[str]:
+    """ホーム配下の caveman スキル候補パスを返す。"""
+    home = paths["user_home"]
+    agent_home = paths["agent_home"]
+    dirs = [
+        os.path.join(agent_home, "skills", "caveman"),
+        os.path.join(home, ".agents", "skills", "caveman"),
+    ]
+    if agent_type == "codex":
+        dirs.insert(0, os.path.join(home, ".codex", "skills", "caveman"))
+    elif agent_type == "kiro":
+        dirs.insert(0, os.path.join(home, ".kiro", "skills", "caveman"))
+    elif agent_type == "copilot":
+        dirs.insert(0, os.path.join(home, ".copilot", "skills", "caveman"))
+    elif agent_type == "claude":
+        dirs.insert(0, os.path.join(home, ".claude", "skills", "caveman"))
+    return dirs
+
 
 def _caveman_installed_for_agent(agent_type: str, paths: dict[str, str]) -> bool:
-    """caveman が対象エージェント向けに入っているか（ベストエフォート）。"""
-    candidates = [
-        os.path.join(paths["skill_home"], "caveman", "SKILL.md"),
-        os.path.join(paths["user_home"], ".agents", "skills", "caveman", "SKILL.md"),
-        os.path.join(paths["agent_home"], "skills", "caveman", "SKILL.md"),
-    ]
+    """caveman がホーム（グローバル）に入っているか（ベストエフォート）。"""
+    for d in _caveman_global_skill_dirs(agent_type, paths):
+        if os.path.isfile(os.path.join(d, "SKILL.md")):
+            return True
     if agent_type == "claude":
-        candidates.extend([
+        claude_markers = [
             os.path.join(paths["agent_home"], "hooks", "caveman-activate.js"),
             os.path.join(paths["agent_home"], ".caveman-active"),
-        ])
-    return any(os.path.exists(p) for p in candidates)
+            os.path.join(paths["user_home"], ".claude", "plugins", "marketplaces", "caveman"),
+            os.path.join(paths["user_home"], ".claude", "plugins", "cache", "caveman"),
+        ]
+        return any(os.path.exists(p) for p in claude_markers)
+    return False
+
+
+def _install_caveman_claude(force: bool, paths: dict[str, str]) -> bool:
+    """Claude Code: 公式インストーラで ~/.claude に plugin + hooks を入れる。"""
+    cmd = [
+        "npx", "-y", f"github:{CAVEMAN_REPO}",
+        "--",
+        "--only", "claude",
+        "--non-interactive",
+    ]
+    if force:
+        cmd.append("--force")
+    print("   caveman をホーム (~/.claude) にインストール中...")
+    print(f"   $ {' '.join(cmd)}")
+    # プロジェクト CWD だと skills フォールバックが project スコープになるため HOME で実行
+    try:
+        result = subprocess.run(cmd, cwd=paths["user_home"])
+    except FileNotFoundError:
+        print("   ✗ npx が見つかりません (Node.js をインストールしてください)")
+        return False
+    if result.returncode == 0:
+        print("   ✓ caveman を claude 向けにホームへインストールしました")
+        return True
+    print(f"   ✗ caveman のインストールに失敗しました (code {result.returncode})")
+    return False
+
+
+def _install_caveman_skills_global(agent_type: str, force: bool, paths: dict[str, str]) -> bool:
+    """codex / kiro / copilot: ``npx skills add -g`` でホームに入れる。"""
+    profile = CAVEMAN_SKILLS_PROFILES[agent_type]
+    cmd = [
+        "npx", "-y", "skills", "add", CAVEMAN_REPO,
+        "--skill", "*",
+        "-a", profile,
+        "--yes",
+        "-g",  # ユーザーホーム（グローバル）。プロジェクトの .agents/skills には書かない
+    ]
+    print(f"   caveman をホームへインストール中 (skills -g, profile={profile})...")
+    print(f"   $ {' '.join(cmd)}")
+    try:
+        result = subprocess.run(cmd, cwd=paths["user_home"])
+    except FileNotFoundError:
+        print("   ✗ npx が見つかりません (Node.js をインストールしてください)")
+        return False
+    if result.returncode == 0:
+        # 導入先を表示
+        for d in _caveman_global_skill_dirs(agent_type, paths):
+            if os.path.isfile(os.path.join(d, "SKILL.md")):
+                print(f"   ✓ {d}")
+                break
+        else:
+            print(f"   ✓ caveman を {agent_type} 向けにホームへインストールしました")
+        return True
+    print(f"   ✗ caveman のインストールに失敗しました (code {result.returncode})")
+    if force:
+        print("     tip: npx skills remove caveman -g のあと再実行してください")
+    return False
 
 
 def setup_caveman(agent_type: str, force: bool = False) -> bool:
-    """juliusbrussee/caveman を --agent 向けにインストールする。
+    """juliusbrussee/caveman を --agent 向けにホーム（グローバル）へインストールする。
 
-    導入済みならスキップ（公式は厳密な semver 比較が弱いため存在チェック中心）。
-    ``--force-external`` 時のみ再実行する。
+    - claude: 公式インストーラ → ~/.claude（plugin + hooks）
+    - codex / kiro / copilot: ``npx skills add -g`` → ~/.codex|~/.kiro|~/.copilot/skills/
+    - プロジェクトローカルには書かない（``--with-init`` は使わない）
+    - 導入済みならスキップ（``--force-external`` で再実行）
     """
-    caveman_id = CAVEMAN_AGENT_IDS.get(agent_type)
-    if caveman_id is None:
+    if agent_type not in CAVEMAN_AGENT_IDS:
         print(f"   ⚠ caveman はエージェント '{agent_type}' に未対応のためスキップします")
         return False
 
@@ -1402,31 +1488,17 @@ def setup_caveman(agent_type: str, force: bool = False) -> bool:
 
     paths = resolve_paths(agent_type)
     if _caveman_installed_for_agent(agent_type, paths) and not force:
-        print(f"   ✓ caveman は {agent_type} 向けに導入済み → スキップ")
+        print(f"   ✓ caveman は {agent_type} 向けにホームへ導入済み → スキップ")
+        for d in _caveman_global_skill_dirs(agent_type, paths):
+            if os.path.isfile(os.path.join(d, "SKILL.md")):
+                print(f"     {d}")
+                break
         print("     再インストールする場合は --force-external を指定してください")
         return True
 
-    cmd = [
-        "npx", "-y", f"github:{CAVEMAN_REPO}",
-        "--",
-        "--only", caveman_id,
-        "--non-interactive",
-    ]
-    if force:
-        cmd.append("--force")
-    print(f"   caveman をインストール中 (agent={caveman_id})...")
-    print(f"   $ {' '.join(cmd)}")
-    try:
-        result = subprocess.run(cmd)
-    except FileNotFoundError:
-        print("   ✗ npx が見つかりません (Node.js をインストールしてください)")
-        return False
-
-    if result.returncode == 0:
-        print(f"   ✓ caveman を {caveman_id} 向けにインストールしました")
-        return True
-    print(f"   ✗ caveman のインストールに失敗しました (code {result.returncode})")
-    return False
+    if agent_type == "claude":
+        return _install_caveman_claude(force=force, paths=paths)
+    return _install_caveman_skills_global(agent_type, force=force, paths=paths)
 
 
 RTK_INSTALL_SH = (
