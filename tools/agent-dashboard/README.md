@@ -290,6 +290,7 @@ agent-project の人間ループはこのアプリ内で完結できる。いず
 | バージョン（複数 charter）の一覧・編集 | 概要タブ「バージョン」／バックログの charter フィルタ | `charters/<名前>.md`（1 ファイル = 1 バージョン）を一覧し、バージョンごとの acceptance 達成状況・状態を表示。各 charter は「✎ 編集」から直接編集できる。バックログはタスクの `charter:` タグでバージョン別に絞り込める。新規プロジェクト作成でも charter 名（バージョン）を指定可能 |
 | ✎ プロジェクトファイル編集 | 概要タブ「プロジェクトファイル」 | 人が書く**上位入力だけ**をアプリ内で直接編集: `charter.md`（最上位入力）／`policy.md`（運用ルール）／`repos.json`（レジストリ）。保存すると次の run で後段データ（backlog 生成・ルーティング）に反映される。repos.json が charter からの自動生成物（`_meta`）のときは「run 時に charter で上書きされる」旨を警告する。JSON は保存前に構文検証。タスク状態ファイル（`backlog/*.md` の status 等）は編集対象にしない — done の不変条件を壊さないため |
 | ↻ revise して再投入 | タスク詳細（**archive のみ**） | archive（done）タスクの内容（title / verify / accept / priority / note / after / level / track）を prefill した投入フォームを開き、編集して `inbox/<name>.json` ドロップ。**新しいタスク**として triage→verify を通す（archive の記録はそのまま残る）。誤 done などの**エラー復帰用途**。元 ID を引き継ぐが衝突時は本体が採番し直す |
+| 👤 監視担当を割り当て | タスク詳細（backlog）の「監視担当」行 | **例外的に viewer 管理のサイドカーファイル**（`assignments.json`・agent-project の契約外）だけを書く。タスク状態ファイルには触れない（done の不変条件に影響しない）。空にして保存で解除（→[チーム運用](#チーム運用バックログの監視担当を分担する)） |
 | レビュー操作（承認/差し戻し/コメント） | レビュー待ちタブ／フロータブのノード詳細 →「レビューで開く」 | gitlab-review-viewer へ引き継ぎ |
 | 🗑 タスク削除 | タスク詳細（backlog のみ） | **例外的にファイル操作**（削除の公式契約が無いため）。確認のうえ `backlog/<id>.md` をゴミ箱へ移動。実行中（**doing かつクレーム中**）だけ拒否 — クレームロックは worker クラッシュや review/blocked 滞留で残骸が残るため、doing 以外ではロックがあっても削除でき、残骸ロックも一緒に掃除する。決定記録 DR は残らない — 記録を残したい場合は「保留（hold）」を使う |
 | ■ run キャンセル | フロータブの run 詳細 | run を **canceled** に終端化する唯一の hard-stop。`inbox/cancels/<run-id>.json` に cancel マーカーを置き（git 同期で他 PC / daemon へ伝わる）、`meta.json` を canceled に確定し、`waits/`（承認待ち）を掃除して監視の再ポーリングを止める。**承認待ちで park 中の run も暴走中の run も止められる**。起票済みの GitLab イシューは残す（追跡だけやめる＝agent-flow の既定。イシュークローズは daemon の `cancel --close-issues` か gitlab-review-viewer に任せる — この viewer の GitLab クライアントは読み取り専用）。終端済み run には効かない（不可逆） |
@@ -311,6 +312,38 @@ agent-project の人間ループはこのアプリ内で完結できる。いず
   auto（稼働中はファイル・停止中は CLI・CLI 不可ならファイルに退避）／file（常にファイル）／
   cli（常に CLI。PATH に無ければ `python3 /path/to/agent-project.py` 形式で指定）
 - 入力中は自動更新を一時停止する（書きかけのフィードバックが消えない）
+
+### チーム運用（バックログの監視担当を分担する）
+
+複数人でひとつのプロジェクトを見るとき、**各バックログタスクに「監視担当」（その進捗・
+要対応・検収を見る人）を割り当てて、監視コントロールを人の間で分散**できる。これは
+エージェントの**実作業の分担（ルーティング・workspace）とは別軸**で、厳密な排他制御は
+しない——「誰が見るか」が画面上でわかるための軽量な運用機能。
+
+- **データ**: プロジェクトルート直下の `assignments.json`（viewer 管理のサイドカー。
+  `{ "members": [...], "tasks": { "<task-id>": "<名前>" } }`）。agent-project の契約ファイル
+  ではないため本体の動作・done の不変条件には一切影響せず、state_git 同期の対象なので
+  （ドット始まり・`flow-archive`/`claims` 以外は全て同期される）**チームの clone 全員に共有**
+  される。「操作を都度コミットしてプッシュ」（gitAutoPush）が有効なら割り当ての保存で
+  即 push される。
+- **手書きも可**: backlog の md に `- owner: <名前>` と書いてもよい（本体は未知キーを
+  保持する契約）。`assignments.json` の割り当てがあればそちらが優先。タスク追加時に
+  inbox JSON へ `owner` を含めても同様に保持される。
+- **UI**:
+  - バックログタブ — 一覧の各行に 👤 バッジ、ツールバーに「担当:」チップ
+    （全員／メンバー名／未担当）。タスク詳細の「監視担当」行で割り当て・解除
+    （入力欄は既存メンバーの datalist 付き。新しい名前を書けばメンバーに追加される）
+  - 要対応タブ — 一覧・詳細カードに 👤 バッジ。誰が判断すべき票かが一目でわかる
+
+**ミーティングの流れ（推奨運用）**:
+
+1. バックログタブを画面共有し、状態チップ（実行中／検収待ち／要対応…）とパイプラインで
+   進捗を確認する
+2. 判断が要るタスク・新しいタスクを開き、「監視担当」に人を割り当てて保存する
+   （そのまま push され、次の pull で全員の画面に反映される）
+3. ミーティング後、各メンバーは自分の clone で「担当:」チップを自分の名前にして
+   **自分の担当だけ**を追う。要対応タブでは 👤 バッジで自分宛ての判断待ちを拾う
+4. 担当の変更・解除はいつでも上書きできる（記録は git 履歴に残る）
 
 ### Viewer アシスタント（AI 下書き・Doctor）
 
@@ -514,7 +547,8 @@ npm run dist             # Windows 向けビルド（portable + NSIS → release
   exe は実行ファイルへディープリンクを argv 直渡し（portable exe 向け・プロトコル登録に依存しない）
 - `src/main/actions.js` … 人のアクション層。needs 記入（Decision Outcome + `[x]`）・
   inbox JSON ドロップ・commands JSON ドロップ（approve/hold/pin/defer/revise。稼働していなければ
-  CLI にフォールバック）の 3 契約のみを使う。`requestReplan` は charter からのバックログ再分解を
+  CLI にフォールバック）の 3 契約のみを使う。監視担当の割り当て（`setTaskOwner`）だけは
+  契約外の viewer 管理サイドカー `assignments.json` への書き込み（タスク状態には触れない）。`requestReplan` は charter からのバックログ再分解を
   `commands/`（`{"command":"replan"}`・id 無し）／CLI `replan` で要求する（エラー回復。本体が
   既存＋archive（done）タイトルで重複排除するので done と類似は投入されない）
 - `src/main/authoring.js` … オーサリング層（新規作成・上位入力ファイルの編集）。
