@@ -77,6 +77,12 @@ class MissionPaths:
     def rejections_dir(self) -> str:
         return os.path.join(self.root, "rejections")
 
+    def pruned_dir(self) -> str:
+        return os.path.join(self.root, "pruned")
+
+    def pruned(self, role_id: str) -> str:
+        return os.path.join(self.root, "pruned", f"{role_id}.json")
+
     def deliverable_dir(self) -> str:
         return os.path.join(self.root, "deliverable")
 

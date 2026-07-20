@@ -14,8 +14,42 @@ import time
 from . import agentcli, nodebudget
 from .bus import Bus, MissionPaths
 from .messages import build_message, message_path, read_inbox
-from .mission import current_round, load_mission
+from .mission import current_round, load_mission, load_roles, normalize_added_roles
 from .util import append_jsonl, extract_json, log, now_iso, read_json, write_json_atomic
+
+
+def restaff_mission(bus: Bus, mp: MissionPaths, add: "list | None" = None,
+                    prune: "list | None" = None, by: str = "owner") -> dict:
+    """実行中のチーム編成を変更する（G5・owner-only）。
+
+    - add: 追加する役割ミッション表（正規化・席展開して roles/<id>.json を書く）。
+      新ロールは通常どおり募集・充足される（1 ノードなら self-staff が拾う）。
+    - prune: 停止するロール id（`pruned/<id>.json` を書く）。剪定ロールは収束計算・募集・
+      ターン実行から外れる（担当 amigo は次ターンで exit）。既に完了したミッションには効かない。
+    戻り値: {"added": [...], "pruned": [...]}。
+    """
+    bus.sync_pull()
+    existing = load_roles(mp)
+    added_ids, pruned_ids = [], []
+    if add:
+        for role in normalize_added_roles(add, set(existing)):
+            write_json_atomic(mp.role_json(role["id"]), role)
+            added_ids.append(role["id"])
+    for rid in (prune or []):
+        rid = str(rid)
+        if rid not in existing:
+            raise SystemExit(f"[agent-amigos] 剪定対象のロールが存在しません: {rid!r}")
+        write_json_atomic(mp.pruned(rid), {"role": rid, "ts": now_iso(), "by": by})
+        pruned_ids.append(rid)
+    append_jsonl(mp.decisions(), {"ts": now_iso(), "kind": "restaff",
+                                  "body": f"add={added_ids} prune={pruned_ids} by={by}"})
+    if added_ids or pruned_ids:
+        _mid, msg = build_message("owner", "all", "info",
+                                 subject="チーム編成を変更しました",
+                                 body=f"追加: {added_ids or 'なし'} / 停止: {pruned_ids or 'なし'}")
+        write_json_atomic(message_path(mp, msg), msg)
+    bus.sync_push(f"restaff {mp.mission_id}")
+    return {"added": added_ids, "pruned": pruned_ids}
 
 
 def accept_mission(bus: Bus, mp: MissionPaths, by: str,

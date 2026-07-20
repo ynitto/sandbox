@@ -151,6 +151,8 @@
                     "description": "並列同一シート数（G1）。N>1 は正規化時に <id>#0..#N-1 の具体席ロールへ展開される。各席は独立した amigo として同じロールミッションを実行する"},
           "rounds": {"type": "integer", "minimum": 0, "default": 0,
                      "description": "同期討論ラウンド数（G3）。>0（seats>=2 のみ）で、各席は round-<k>.md を 1 ラウンドずつ書き、全席が前ラウンドを出し切るまで次へ進めない（ラウンドバリア）。最終ラウンドの主張が ANSWER.md になる。done_when: consensus と併用で合意到達時に早期終了"},
+          "topology": {"enum": ["complete", "ring", "star", "tree"],
+                       "description": "同期討論（rounds>=1）の通信トポロジ。各席が毎ラウンド読む相手を制限する（バリアは全席同期のまま）。complete=全席（既定）、ring=前後の隣席、star=席0 がハブ、tree=二分木の親子。exchange-of-thought 由来"},
           "aggregate": {"enum": ["majority", "consensus", "weighted-vote", "approval-count", "gather"],
                         "description": "seats>=2 の席グループを integrator が決定的に集約する方式（G2）。majority=多数決、consensus=一致判定つき最頻値、weighted-vote=席の重み合計、approval-count=スコア最大の候補、gather=全席を集める。各席は回答を aggregate_answer（既定 ANSWER.md）へ書く"},
           "aggregate_answer": {"type": "string", "description": "集約が読む各席の正準回答ファイル名（artifacts 内相対パス。既定は単一 deliverable、無ければ ANSWER.md）"},

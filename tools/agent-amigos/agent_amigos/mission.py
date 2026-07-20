@@ -49,6 +49,33 @@ AGGREGATE_MODES = ("majority", "consensus", "weighted-vote", "approval-count", "
 DEFAULT_ANSWER_FILE = "ANSWER.md"       # 集約が読む各席の正準回答ファイル（席の artifacts 内）
 DEFAULT_SCORE_FILE = "SCORE"            # weighted-vote / approval-count が読む席の数値信号ファイル
 
+# 同期討論（G3）の通信トポロジ（各席が毎ラウンド読む相手を制限する）。バリアは全席同期のまま。
+#   complete — 全席が全席の前ラウンドを読む（既定。EoT の bus 相当）
+#   ring     — 前後の隣席のみ
+#   star     — 席0 がハブ: 席0 は全席を、他席は席0 のみを読む
+#   tree     — 二分木: 親と子のみを読む
+TOPOLOGIES = ("complete", "ring", "star", "tree")
+
+
+def topology_neighbors(idx: int, n: int, topology: str) -> "list[int]":
+    """トポロジ上で席 idx が読む相手席の index 一覧（自分は含めない）。"""
+    if n <= 1:
+        return []
+    topo = topology or "complete"
+    if topo == "ring":
+        return sorted({(idx - 1) % n, (idx + 1) % n} - {idx})
+    if topo == "star":
+        return [j for j in range(n) if j != idx] if idx == 0 else [0]
+    if topo == "tree":
+        neigh = set()
+        if idx > 0:
+            neigh.add((idx - 1) // 2)           # 親
+        for c in (2 * idx + 1, 2 * idx + 2):    # 子
+            if c < n:
+                neigh.add(c)
+        return sorted(neigh - {idx})
+    return [j for j in range(n) if j != idx]    # complete / bus
+
 
 def _expand_seats(base_roles: list) -> list:
     """seats>1 のロールを N 個の具体席ロール（`<id>#0..#N-1`）へ展開する（G1）。
@@ -111,6 +138,85 @@ def _load_spec_file(path: str) -> dict:
     return data
 
 
+def _build_role(r: dict) -> dict:
+    """役割ミッション表の 1 行を検証し正規化ロール dict へ（normalize_mission / restaff 共用）。"""
+    rid = str(r.get("id") or "").strip()
+    if not rid or "/" in rid or "#" in rid or rid in ("all", "owner"):
+        raise SystemExit(f"[agent-amigos] ロール id が不正です: {rid!r}"
+                         "（all / owner は予約語、/ と # は不可）")
+    seats = int(r.get("seats", 1))
+    if seats < 1:
+        raise SystemExit(f"[agent-amigos] seats は 1 以上が必要です（ロール {rid}）")
+    aggregate = r.get("aggregate")
+    if aggregate is not None:
+        aggregate = str(aggregate)
+        if aggregate not in AGGREGATE_MODES:
+            raise SystemExit(f"[agent-amigos] aggregate={aggregate!r} が不正です"
+                             f"（{' | '.join(AGGREGATE_MODES)}）")
+        if seats < 2:
+            raise SystemExit(f"[agent-amigos] aggregate は seats>=2 のロールにのみ指定できます"
+                             f"（ロール {rid}）")
+    rounds = int(r.get("rounds", 0))         # 同期討論ラウンド数（G3）。0 = 無効
+    if rounds < 0:
+        raise SystemExit(f"[agent-amigos] rounds は 0 以上が必要です（ロール {rid}）")
+    if rounds >= 1 and seats < 2:
+        raise SystemExit(f"[agent-amigos] rounds（同期討論）は seats>=2 のロールにのみ"
+                         f"指定できます（ロール {rid}）")
+    topology = r.get("topology")
+    if topology is not None:
+        topology = str(topology)
+        if topology not in TOPOLOGIES:
+            raise SystemExit(f"[agent-amigos] topology={topology!r} が不正です"
+                             f"（{' | '.join(TOPOLOGIES)}）")
+        if rounds < 1:
+            raise SystemExit(f"[agent-amigos] topology は rounds>=1（同期討論）のロールにのみ"
+                             f"指定できます（ロール {rid}）")
+    role = {"id": rid,
+            "title": str(r.get("title") or rid),
+            "mission": str(r.get("mission") or ""),
+            "deliverables": [str(d) for d in (r.get("deliverables") or [])],
+            "required": bool(r.get("required", True)),
+            "seats": seats,
+            "rounds": rounds,
+            "topology": topology,
+            "aggregate": aggregate,
+            "aggregate_answer": (str(r["aggregate_answer"])
+                                 if r.get("aggregate_answer") else None),
+            "aggregate_score": (str(r["aggregate_score"])
+                                if r.get("aggregate_score") else None),
+            "agent_cli": r.get("agent_cli"),
+            "model": r.get("model"),
+            "requires": dict(r.get("requires") or {}),
+            "collaborates_with": [str(c) for c in (r.get("collaborates_with") or [])],
+            "approver": bool(r.get("approver", False)),
+            "builtin": str(r.get("builtin") or "")}
+    if role["builtin"] == "integrator" and seats != 1:
+        raise SystemExit("[agent-amigos] integrator に seats>1 は指定できません")
+    return role
+
+
+def normalize_added_roles(roles_in: list, existing_ids: "set[str]") -> list:
+    """restaff で追加するロール列を検証・正規化・席展開する（既存 id との衝突は拒否）。"""
+    if not isinstance(roles_in, list) or not roles_in:
+        raise SystemExit("[agent-amigos] restaff add には 1 つ以上のロールが必要です")
+    seen = set(existing_ids)
+    new_base = []
+    for r in roles_in:
+        role = _build_role(r)
+        if role["builtin"] == "integrator":
+            raise SystemExit("[agent-amigos] restaff で integrator は追加できません")
+        if role["id"] in seen:
+            raise SystemExit(f"[agent-amigos] 追加ロール id が既存と衝突します: {role['id']!r}")
+        seen.add(role["id"])
+        new_base.append(role)
+    for role in new_base:
+        for c in role["collaborates_with"]:
+            if c not in seen:
+                raise SystemExit(f"[agent-amigos] 追加ロール {role['id']} の collaborates_with に"
+                                 f" 未定義ロール {c!r} があります")
+    return _expand_seats(new_base)
+
+
 def normalize_mission(spec: dict) -> "tuple[dict, list]":
     """roles.yaml の内容を検証し (mission 設定, ロール定義列) に正規化する。"""
     m = dict(spec.get("mission") or {})
@@ -144,51 +250,10 @@ def normalize_mission(spec: dict) -> "tuple[dict, list]":
     seen = set()
     has_integrator = False
     for r in roles_in:
-        rid = str(r.get("id") or "").strip()
-        if not rid or "/" in rid or "#" in rid or rid in ("all", "owner"):
-            raise SystemExit(f"[agent-amigos] ロール id が不正です: {rid!r}"
-                             "（all / owner は予約語、/ と # は不可）")
-        if rid in seen:
-            raise SystemExit(f"[agent-amigos] ロール id が重複しています: {rid!r}")
-        seen.add(rid)
-        seats = int(r.get("seats", 1))
-        if seats < 1:
-            raise SystemExit(f"[agent-amigos] seats は 1 以上が必要です（ロール {rid}）")
-        aggregate = r.get("aggregate")
-        if aggregate is not None:
-            aggregate = str(aggregate)
-            if aggregate not in AGGREGATE_MODES:
-                raise SystemExit(f"[agent-amigos] aggregate={aggregate!r} が不正です"
-                                 f"（{' | '.join(AGGREGATE_MODES)}）")
-            if seats < 2:
-                raise SystemExit(f"[agent-amigos] aggregate は seats>=2 のロールにのみ指定できます"
-                                 f"（ロール {rid}）")
-        rounds = int(r.get("rounds", 0))     # 同期討論ラウンド数（G3）。0 = 無効
-        if rounds < 0:
-            raise SystemExit(f"[agent-amigos] rounds は 0 以上が必要です（ロール {rid}）")
-        if rounds >= 1 and seats < 2:
-            raise SystemExit(f"[agent-amigos] rounds（同期討論）は seats>=2 のロールにのみ"
-                             f"指定できます（ロール {rid}）")
-        role = {"id": rid,
-                "title": str(r.get("title") or rid),
-                "mission": str(r.get("mission") or ""),
-                "deliverables": [str(d) for d in (r.get("deliverables") or [])],
-                "required": bool(r.get("required", True)),
-                "seats": seats,
-                "rounds": rounds,
-                "aggregate": aggregate,
-                "aggregate_answer": (str(r["aggregate_answer"])
-                                     if r.get("aggregate_answer") else None),
-                "aggregate_score": (str(r["aggregate_score"])
-                                    if r.get("aggregate_score") else None),
-                "agent_cli": r.get("agent_cli"),
-                "model": r.get("model"),
-                "requires": dict(r.get("requires") or {}),
-                "collaborates_with": [str(c) for c in (r.get("collaborates_with") or [])],
-                "approver": bool(r.get("approver", False)),
-                "builtin": str(r.get("builtin") or "")}
-        if role["builtin"] == "integrator" and seats != 1:
-            raise SystemExit("[agent-amigos] integrator に seats>1 は指定できません")
+        role = _build_role(r)
+        if role["id"] in seen:
+            raise SystemExit(f"[agent-amigos] ロール id が重複しています: {role['id']!r}")
+        seen.add(role["id"])
         if role["builtin"] == "integrator":
             has_integrator = True
         base_roles.append(role)
@@ -203,7 +268,7 @@ def normalize_mission(spec: dict) -> "tuple[dict, list]":
         roles.append({"id": "integrator", "title": "統合", "mission":
                       "全ロールの成果物を検証・統合し deliverable/ を組み立てる。",
                       "deliverables": [], "required": True, "seats": 1, "rounds": 0,
-                      "aggregate": None,
+                      "topology": None, "aggregate": None,
                       "aggregate_answer": None, "aggregate_score": None, "agent_cli": None,
                       "model": None, "requires": {}, "collaborates_with": [],
                       "approver": False, "builtin": "integrator", "seat_group": "integrator",
@@ -341,6 +406,23 @@ def group_consensus(mp: MissionPaths, seat_roles: list, ratio: float, min_n: int
     return top / len(answers) >= ratio
 
 
+# --- 動的編成（G5・restaff の剪定マーカー） ----------------------------------
+
+def pruned_roles(mp: MissionPaths) -> "set[str]":
+    """実行中に剪定（stop）されたロール id（`pruned/<id>.json` の存在から導出）。"""
+    try:
+        return {n[:-5] for n in os.listdir(mp.pruned_dir())
+                if n.endswith(".json") and ".tmp." not in n}
+    except FileNotFoundError:
+        return set()
+
+
+def active_roles(roles: "dict[str, dict]", mp: MissionPaths) -> "dict[str, dict]":
+    """剪定されていないロールだけを返す（収束・募集・ターン実行はこれを見る）。"""
+    pruned = pruned_roles(mp)
+    return {rid: r for rid, r in roles.items() if rid not in pruned}
+
+
 # --- 収束判定（設計書 §3.2） -------------------------------------------------
 
 def convergence_state(mission: dict, roles: "dict[str, dict]", mp: MissionPaths) -> dict:
@@ -352,6 +434,7 @@ def convergence_state(mission: dict, roles: "dict[str, dict]", mp: MissionPaths)
     rnd = current_round(mp)
     statuses = load_statuses(mp)
     roster = read_json(mp.roster()) or {}
+    roles = active_roles(roles, mp)             # 剪定ロールは収束計算から除外（G5）
     required = [r for r in roles.values() if r.get("required")]
     staffed = all(r["id"] in roster for r in required)
     budget = budget_state(mission, mp)

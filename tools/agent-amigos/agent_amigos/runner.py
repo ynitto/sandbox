@@ -15,7 +15,8 @@ import time
 from . import agentcli, control, nodebudget
 from .bus import Bus, MissionPaths, TurnTxn
 from .mission import (DEFAULT_ANSWER_FILE, DEFAULT_SCORE_FILE, convergence_state,
-                      current_round, load_mission, load_roles)
+                      current_round, load_mission, load_roles, pruned_roles,
+                      topology_neighbors)
 from .messages import (build_message, message_path, new_messages, read_channel_all,
                        valid_target)
 from .util import extract_json, log, now_iso, read_json, safe_relpath
@@ -64,6 +65,8 @@ class AmigoRunner:
         roles = load_roles(self.mp)
         role = roles.get(self.role_id)
         if role is None:
+            return "exit"
+        if self.role_id in pruned_roles(self.mp):    # 剪定された（G5）→ このロールは停止
             return "exit"
         if os.path.isfile(self.mp.cancelled()):
             return "exit"
@@ -406,6 +409,16 @@ class AmigoRunner:
         return sorted(r["id"] for r in roles.values()
                       if r.get("seat_group") == g and int(r.get("seat_count") or 1) > 1)
 
+    def _topology_readable(self, role: dict, peers: list) -> list:
+        """通信トポロジ上でこの席が読める相手席（自分は除く）。既定 complete = 全席。"""
+        topo = role.get("topology") or "complete"
+        if topo == "complete":
+            return [p for p in peers if p != self.role_id]
+        n = int(role.get("seat_count") or 1)
+        idx = int(role.get("seat_index") or 0)
+        group = role.get("seat_group")
+        return [f"{group}#{j}" for j in topology_neighbors(idx, n, topo)]
+
     def _read_round(self, seat_id: str, r: int) -> "str | None":
         path = os.path.join(self.mp.artifacts_dir(seat_id), f"round-{r}.md")
         try:
@@ -453,7 +466,9 @@ class AmigoRunner:
             return self._finish_debate(roles, role, st, rnd, r - 1)  # 合意で早期確定
         cli = (self.agent_cli or role.get("agent_cli") or "stub")
         model = self.model or role.get("model") or None
-        peer_pos = ({p: self._read_round(p, r - 1) for p in peers if p != self.role_id}
+        # 通信トポロジ: 各席が読む相手を制限する（バリアは全席同期のまま）
+        readable = self._topology_readable(role, peers)
+        peer_pos = ({p: self._read_round(p, r - 1) for p in readable}
                     if r >= 1 else {})
         if cli == "stub":
             content, secs = self._stub_debate(role, r), _stub_cost()

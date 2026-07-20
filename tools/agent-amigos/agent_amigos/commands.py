@@ -12,6 +12,8 @@ JSON を 1 ファイル置くだけで、常駐デーモンが次のサイクル
         # ロール未指定。team-builder スキルで最適なロール表を設計してから post する
     {"command": "claim",  "mission": "<mid>", "role": "<role-id>"}      # 手動引き受け
     {"command": "assign", "mission": "<mid>", "role": "...", "node": "..."}  # owner-picks 確定
+    {"command": "restaff", "mission": "<mid>", "add": [ {…役割…} ], "prune": ["<role-id>"]}
+        # 実行中のチーム編成変更（G5・owner-only）: ロール追加 / 停止（剪定）
     {"command": "accept", "mission": "<mid>"}
     {"command": "reject", "mission": "<mid>", "feedback": "..."}
     {"command": "cancel", "mission": "<mid>", "reason": "..."}
@@ -148,6 +150,15 @@ def _dispatch(bus: Bus, node_id: str, agent_cli: "str | None", home: str, rec: d
         _require_owner(mission, node_id)
         confirm_assignment(bus, mp, str(rec.get("role") or ""), str(rec.get("node") or ""))
         return f"assign {mid}/{rec.get('role')} → {rec.get('node')}"
+    if cmd == "restaff":
+        from .ownerops import restaff_mission
+        _require_owner(mission, node_id)
+        add = rec.get("add") if isinstance(rec.get("add"), list) else None
+        prune = rec.get("prune") if isinstance(rec.get("prune"), list) else None
+        if not add and not prune:
+            raise ValueError("restaff には add（役割配列）か prune（id 配列）が必要です")
+        result = restaff_mission(bus, mp, add=add, prune=prune, by=node_id)
+        return f"restaff {mid}（追加 {result['added']} / 停止 {result['pruned']}）"
     if cmd == "accept":
         from .ownerops import accept_mission
         _require_owner(mission, node_id)

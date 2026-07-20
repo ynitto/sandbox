@@ -1075,7 +1075,7 @@ class CommandSchemaTests(AmigosTestCase):
     def test_schema_commands_match_dispatch(self):
         schema = self._schema()
         self.assertEqual(schema["properties"]["command"]["enum"],
-                         ["post", "build-team", "claim", "assign", "accept",
+                         ["post", "build-team", "claim", "assign", "restaff", "accept",
                           "reject", "cancel", "say"])
         # oneOf の const 一覧も enum と一致する（宣言漏れ・重複なし）
         consts = [e["properties"]["command"]["const"] for e in schema["oneOf"]]
@@ -1880,6 +1880,116 @@ class DebateRoundsTests(AmigosTestCase):
         self.assertEqual(self._round_files(mid, "debater#0"), ["round-0.md"])  # round-1 を作らない
         with open(os.path.join(mp.artifacts_dir("debater#0"), "ANSWER.md"), encoding="utf-8") as f:
             self.assertEqual(f.read().strip(), "同じ主張")
+
+
+class TopologyTests(AmigosTestCase):
+    """同期討論の通信トポロジ（各席が読む相手の制限）。"""
+
+    def test_topology_neighbors(self):
+        from agent_amigos.mission import topology_neighbors
+        self.assertEqual([topology_neighbors(i, 5, "ring") for i in range(5)],
+                         [[1, 4], [0, 2], [1, 3], [2, 4], [0, 3]])
+        self.assertEqual(topology_neighbors(0, 4, "star"), [1, 2, 3])
+        self.assertEqual(topology_neighbors(2, 4, "star"), [0])
+        self.assertEqual(topology_neighbors(0, 7, "tree"), [1, 2])
+        self.assertEqual(sorted(topology_neighbors(1, 7, "tree")), [0, 3, 4])
+
+    def test_topology_requires_rounds(self):
+        with self.assertRaises(SystemExit):
+            normalize_mission({"roles": [{"id": "d", "seats": 3, "topology": "ring"}]})
+        with self.assertRaises(SystemExit):
+            normalize_mission({"roles": [{"id": "d", "seats": 3, "rounds": 2,
+                                          "topology": "mesh"}]})
+
+    def test_star_spoke_reads_only_hub(self):
+        from agent_amigos.runner import AmigoRunner
+        spec = {"mission": {"title": "d", "goal": "g"},
+                "roles": [{"id": "d", "mission": "討論", "seats": 4, "rounds": 2,
+                           "topology": "star"}]}
+        mid = self.post(spec, mid="am-star")
+        roles = load_roles(self.bus.mission(mid))
+        spoke = roles["d#2"]
+        r = AmigoRunner(self.bus, mid, "d#2", "owner-node")
+        peers = sorted(roles)
+        self.assertEqual(r._topology_readable(spoke, peers), ["d#0"])   # ハブのみ
+        hub = roles["d#0"]
+        rh = AmigoRunner(self.bus, mid, "d#0", "owner-node")
+        self.assertEqual(rh._topology_readable(hub, peers), ["d#1", "d#2", "d#3"])
+
+
+class RestaffTests(AmigosTestCase):
+    """G5: 実行中のチーム編成変更（restaff = ロール追加・剪定）。"""
+
+    def setUp(self):
+        super().setUp()
+        self.home = os.path.join(self.tmp, "home")
+
+    def _post_two(self):
+        spec = {"mission": {"title": "t", "goal": "g", "staffing_timeout": 0,
+                            "convergence": {"done_when": "all-required-done", "quiescence_turns": 99}},
+                "roles": [{"id": "worker", "mission": "作る", "deliverables": ["out.md"]},
+                          {"id": "extra", "mission": "任意", "required": False}]}
+        return self.post(spec, mid="am-restaff")
+
+    def test_restaff_add_and_prune(self):
+        from agent_amigos.ownerops import restaff_mission
+        from agent_amigos.mission import pruned_roles
+        mid = self._post_two()
+        mp = self.bus.mission(mid)
+        res = restaff_mission(self.bus, mp, add=[{"id": "reviewer", "mission": "見る",
+                                                 "approver": True}], prune=["extra"], by="owner-node")
+        self.assertEqual(res["added"], ["reviewer"])
+        self.assertEqual(res["pruned"], ["extra"])
+        self.assertIn("extra", pruned_roles(mp))
+        self.assertIn("reviewer", load_roles(mp))          # roles/reviewer.json が書かれた
+        # 剪定ロールは収束計算から外れる
+        cs = convergence_state(load_mission(mp), load_roles(mp), mp)
+        # active roles に extra は含まれない
+        from agent_amigos.mission import active_roles
+        self.assertNotIn("extra", active_roles(load_roles(mp), mp))
+
+    def test_pruned_role_runner_exits(self):
+        from agent_amigos.runner import AmigoRunner
+        from agent_amigos.ownerops import restaff_mission
+        mid = self._post_two()
+        mp = self.bus.mission(mid)
+        write_json_atomic(mp.roster(), {rid: {"node": "owner-node"} for rid in load_roles(mp)})
+        restaff_mission(self.bus, mp, prune=["extra"], by="owner-node")
+        r = AmigoRunner(self.bus, mid, "extra", "owner-node", agent_cli="stub")
+        self.assertEqual(r.turn_once(), "exit")
+
+    def test_restaff_prune_unknown_rejected(self):
+        from agent_amigos.ownerops import restaff_mission
+        mid = self._post_two()
+        with self.assertRaises(SystemExit):
+            restaff_mission(self.bus, self.bus.mission(mid), prune=["ghost"], by="owner-node")
+
+    def test_restaff_command_owner_only(self):
+        from agent_amigos.commands import ingest_commands
+        from agent_amigos.configfile import commands_dir
+        mid = self._post_two()
+        cdir = commands_dir(self.home)
+        os.makedirs(cdir, exist_ok=True)
+        with open(os.path.join(cdir, "rs.json"), "w", encoding="utf-8") as f:
+            json.dump({"command": "restaff", "mission": mid, "prune": ["extra"]}, f)
+        # 非オーナーノードは拒否 → .rejected
+        ingest_commands(self.bus, "other-node", self.home)
+        self.assertIn("rs.json.rejected", os.listdir(cdir))
+
+    def test_restaff_command_add_prune(self):
+        from agent_amigos.commands import ingest_commands
+        from agent_amigos.configfile import commands_dir
+        from agent_amigos.mission import pruned_roles
+        mid = self._post_two()
+        cdir = commands_dir(self.home)
+        os.makedirs(cdir, exist_ok=True)
+        with open(os.path.join(cdir, "rs.json"), "w", encoding="utf-8") as f:
+            json.dump({"command": "restaff", "mission": mid,
+                       "add": [{"id": "qa", "mission": "検証", "approver": True}],
+                       "prune": ["extra"]}, f, ensure_ascii=False)
+        ingest_commands(self.bus, "owner-node", self.home)
+        self.assertIn("qa", load_roles(self.bus.mission(mid)))
+        self.assertIn("extra", pruned_roles(self.bus.mission(mid)))
 
 
 if __name__ == "__main__":

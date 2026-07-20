@@ -114,17 +114,27 @@ agent-amigos が**そのまま**表現できるのは:
   (b) agent-amigos 内に軽量な「候補ノード＋スコアラー＋選抜」の**有界探索ロール群**を
   組み込みパターンとして持つ（分岐数・深さを上限付きで）。まずは (a) を推奨。
 
-### G5. 実行中の動的チーム編成（recruit / prune）
+### G5. 実行中の動的チーム編成（recruit / prune）— ✅ 実装済み（基盤）
 
-- **現状**: ロースターは公示時に確定。実行中のロール追加・削除・専門家の動的招集は無い
-  （self-staff は「未充足ロールの補充」だけで、新ロールは生やさない）。
-- **要るパターン**: agentverse（実行中に再編成）, dylan（弱いエージェントを毎ラウンド剪定）,
-  meta-prompting（司会が専門家をその場で発明）, exchange-of-thought（トポロジ切替）。
-- **近似**: ロースターを最初に固定して代替（動的性は失われる）。→ **拡張待ち**。
-- **拡張提案**: オーナー操作に `restaff`（ロールの追加・停止）を追加し、`acceptance: agent` と
-  同様にオーナーノードの CLI が「途中でチーム構成を見直す」ターンを回せるようにする。
-  team-builder を**ミッション途中でも**呼び出し、現状の会話・成果を踏まえて差分編成を提案する
-  （「team-builder の常駐化」）。DyLAN 的剪定は席の評価＋停止（G1/G2 と併用）で表現する。
+- **実装**: owner 操作 **`restaff`**（CLI `agent-amigos restaff <mid> --add <roles> --prune <ids>`、
+  commands `{"command":"restaff", …}`）。
+  - **add**: 追加ロールを `normalize_added_roles` で検証・席展開して `roles/<id>.json` を書く。
+    新ロールは通常どおり募集・充足される（1 ノードなら self-staff が拾う）。追加で必須ロールが
+    増えれば収束が再び開き、統合し直す。
+  - **prune**: `pruned/<id>.json` を書く。剪定ロールは `active_roles` で収束・募集・ターン実行から
+    外れ、担当 amigo は次ターンで exit する。
+- **写せるようになったこと**: exchange-of-thought は topology（下記）で **native**。AgentVerse
+  （再編成）・meta-prompting（専門家の追加）は **restaff の add を owner／制御ループが呼ぶ
+  ワークフロー**として表現する（team-builder を途中で再度呼んで差分編成 → restaff）。DyLAN 的
+  剪定は席の評価（`SCORE`/aggregate）＋ restaff の prune で表現する。
+- **残**: 完全自律の自己組織化（毎ラウンド自動で剪定・招集する制御ループ）は restaff を叩く
+  上位ワークフロー側の責務とする（コアは編成変更の**プリミティブ**までを提供）。
+
+### 通信トポロジ制御（同期討論の拡張）— ✅ 実装済み
+
+- **実装**: 討論席（rounds>=1）に `topology`（`complete`（既定）/ `ring` / `star` / `tree`）を
+  指定でき、各席が毎ラウンド**読む相手を制限**する（`topology_neighbors`）。ラウンドバリアは
+  全席同期のまま（読む範囲だけを絞る）。exchange-of-thought の bus/star/ring/tree に対応。
 
 ---
 
@@ -135,10 +145,13 @@ agent-amigos が**そのまま**表現できるのは:
 | tree-of-thoughts | G4（探索木） | まず agent-flow 委譲を推奨 |
 | graph-of-thoughts | G4（分岐＋マージ） | 同上 |
 | lats | G4（MCTS） | 同上 |
-| dylan | G3＋G5＋G2（同期＋剪定＋投票） | 席評価＋停止＋集約が揃えば近づく |
-| agentverse | G5（動的再編成） | restaff ＋ team-builder 常駐で表現 |
-| meta-prompting | G5（動的専門家招集） | 同上 |
-| exchange-of-thought | G3＋G2（トポロジ同期＋投票） | 通信トポロジは別途 |
+| dylan | 自律制御（G3+G5+G2 は実装済み） | 席評価（SCORE）＋ restaff prune を叩く上位ループで表現 |
+| agentverse | 自律制御（G5 は実装済み） | 再編成は restaff add、判定は approver。自律ループは上位 |
+| meta-prompting | 自律制御（G5 は実装済み） | 専門家追加は restaff add。司会ループは上位 |
+
+exchange-of-thought は topology（G3 拡張）で **native 化してカタログに追加済み**。
+dylan / agentverse / meta-prompting は「restaff を叩く上位ワークフロー」で表現でき、残るのは
+その**自律制御ループ**（コア外）。純粋に**現実装で写せない**のは G4（探索木）系のみ。
 
 ---
 
@@ -151,10 +164,11 @@ agent-amigos が**そのまま**表現できるのは:
    - `pairwise-rank` のみ、比較が意味判断のため決定的集約にせず ranker ロールに委ねる設計とした。
 2. ~~**G3 同期ラウンド**~~ — ✅ **実装済み**（`rounds: N` ＋ ラウンドバリア ＋ consensus 早期終了）。
    debate 系（multiagent-debate / persuasive-debate / reconcile）が忠実になった。残は通信トポロジ制御。
-3. **G5 restaff ＋ team-builder 常駐** — 動的編成。オーナー操作とスキル呼び出しの組み合わせで、
-   コア変更は小さい。
-4. **G4 探索木** — まず **agent-flow への委譲**（team-builder が agent-flow プランを出力）で
-   住み分ける。agent-amigos 本体への探索構造の内蔵は最後。
+3. ~~**G5 restaff**~~ ＋ ~~通信トポロジ~~ — ✅ **実装済み**。restaff（add/prune）で動的編成の
+   プリミティブを、topology（complete/ring/star/tree）で討論の伝播制御を提供。AgentVerse/DyLAN/
+   meta-prompting は restaff を叩く上位ワークフローで表現する（自律制御ループはコア外）。
+4. **G4 探索木** — 唯一の現実装未対応。まず **agent-flow への委譲**（team-builder が agent-flow
+   プランを出力）で住み分ける。agent-amigos 本体への探索構造の内蔵は最後。
 
 いずれも「入力の前段（チーム設計）を賢くする」今回の方針の延長で、協働プロトコルのコアは
 据え置いたまま段階的に価値を上げられる。

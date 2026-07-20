@@ -387,6 +387,29 @@ def cmd_assign(args) -> int:
     return 0
 
 
+def cmd_restaff(args) -> int:
+    """実行中のチーム編成を変更する（G5・オーナー）: ロールの追加 / 停止（剪定）。"""
+    from .ownerops import restaff_mission
+    from .mission import _load_spec_file
+    bus, node = _resolve(args)
+    mp, mission, _roles = _mission(bus, args.mission)
+    _require_owner(mission, node)
+    add = None
+    if args.add:
+        spec = _load_spec_file(args.add)
+        add = spec.get("roles") if isinstance(spec, dict) and "roles" in spec else spec
+        if not isinstance(add, list):
+            raise SystemExit("[agent-amigos] --add は役割ミッション表（roles 配列 / {roles:[…]}）"
+                             "のファイルを指定してください")
+    prune = [p for p in (args.prune or "").split(",") if p]
+    if not add and not prune:
+        raise SystemExit("[agent-amigos] restaff には --add か --prune が必要です")
+    result = restaff_mission(bus, mp, add=add, prune=prune, by=node)
+    print(f"チーム編成を変更しました: 追加={result['added'] or 'なし'} "
+          f"停止={result['pruned'] or 'なし'}")
+    return 0
+
+
 def cmd_budget(args) -> int:
     if args.action == "node":
         return _cmd_budget_node(args)
@@ -636,6 +659,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help="確定するノード（省略時は応募者一覧を表示）")
     p.set_defaults(fn=cmd_assign)
 
+    p = sub.add_parser("restaff",
+                       help="実行中のチーム編成を変更（オーナー）: --add <roles.json> で役割追加、"
+                            "--prune <id,...> で役割停止（剪定）")
+    _bus_arg(p); _node_arg(p)
+    p.add_argument("mission")
+    p.add_argument("--add", default=None, help="追加する役割ミッション表（YAML/JSON）")
+    p.add_argument("--prune", default="", help="停止するロール id（カンマ区切り）")
+    p.set_defaults(fn=cmd_restaff)
+
     p = sub.add_parser("budget",
                        help="予算の管理: add = ミッション予算の追加（オーナー）、"
                             "node = このノードの上限の表示・設定（請負側）")
@@ -685,8 +717,8 @@ def build_parser() -> argparse.ArgumentParser:
 # （agent-project の run --watch 既定と同じ流儀 — PC 起動時に立ち上げっぱなしにして
 # cwd のホームを面倒見る daemon 用途を一級にする）。
 _SUBCOMMANDS = {"serve", "init-bus", "post", "build-team", "join", "run", "status",
-                "collect", "accept", "reject", "assign", "budget", "say", "cancel", "gc",
-                "hub", "deliveries"}
+                "collect", "accept", "reject", "assign", "restaff", "budget", "say",
+                "cancel", "gc", "hub", "deliveries"}
 
 
 def resolve_argv(argv: "list[str] | None") -> "list[str]":

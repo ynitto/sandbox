@@ -7,7 +7,7 @@
   "required": ["command"],
   "properties": {
     "command": {
-      "enum": ["post", "build-team", "claim", "assign", "accept", "reject", "cancel", "say"]
+      "enum": ["post", "build-team", "claim", "assign", "restaff", "accept", "reject", "cancel", "say"]
     }
   },
   "oneOf": [
@@ -80,6 +80,25 @@
         "node": {"type": "string"}
       },
       "required": ["command", "mission", "role", "node"]
+    },
+    {
+      "description": "restaff — 実行中のチーム編成変更（owner-only・G5）。add でロールを追加（正規化・席展開して roles/<id>.json を書く）、prune でロールを停止（pruned/<id>.json を書き、収束・募集・実行から外す）。AgentVerse 的な再編成・DyLAN 的な剪定・meta-prompting 的な専門家追加の基盤",
+      "properties": {
+        "command": {"const": "restaff"},
+        "mission": {"type": "string"},
+        "add": {
+          "type": "array",
+          "description": "追加する役割ミッション表（mission.schema.json の roles と同形。既存 id とは衝突不可）",
+          "items": {"type": "object", "required": ["id"]}
+        },
+        "prune": {
+          "type": "array",
+          "description": "停止するロール id の配列",
+          "items": {"type": "string"}
+        }
+      },
+      "required": ["command", "mission"],
+      "anyOf": [{"required": ["add"]}, {"required": ["prune"]}]
     },
     {
       "description": "accept — 受入確定（owner-only。deliverable/MANIFEST.json が無ければ拒否される）",
