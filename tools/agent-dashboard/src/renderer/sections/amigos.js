@@ -559,18 +559,17 @@ function applyAmigosPostMode() {
   const mode = selectedAmigosPostMode();
   const rolesBox = $('amigos-post-roles-details');
   const hint = $('amigos-buildteam-hint');
-  if (rolesBox) rolesBox.style.display = mode === 'roles' ? '' : 'none';
-  if (hint) hint.style.display = mode === 'team-building' ? '' : 'none';
+  if (rolesBox) rolesBox.hidden = mode !== 'roles';
+  if (hint) hint.hidden = mode !== 'team-building';
 }
 
 function openAmigosRequestDialog() {
   const dlg = $('dlg-amigos-post');
   if (!dlg) return;
   const homes = amigosForProject(state.amigos, selectedProjectFolder()).homes || [];
-  const sel = $('amigos-post-home');
-  sel.innerHTML = homes
-    .map((h, index) => `<option value="${esc(h.dir)}">${esc(coworkRepoLabel(h.dir) || `実行先 ${index + 1}`)}</option>`)
-    .join('');
+  const home = homes[0];
+  $('amigos-post-home').value = home?.dir || '';
+  $('amigos-post-home-label').textContent = home ? (coworkRepoLabel(home.dir) || '現在のチーム') : '未設定';
   if (!$('amigos-post-roles').value.trim()) $('amigos-post-roles').value = AMIGOS_ROLES_SAMPLE;
   applyAmigosPostMode();
   dlg.showModal();
@@ -628,7 +627,7 @@ function setupAmigosDialogs() {
           capabilities: $('amigos-post-capabilities').value.trim(),
         });
         dlg.close();
-        toast('依頼を投函しました（team-building スキルが役割を設計し、公示します）', true);
+        toast('依頼しました。内容に合わせて担当を編成し、作業を開始します', true);
         await refreshAmigos();
         renderAmigos();
       });

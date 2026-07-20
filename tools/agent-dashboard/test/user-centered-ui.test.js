@@ -150,6 +150,21 @@ const missionRequestDialog = html.slice(
   html.indexOf('<dialog id="dlg-amigos-post"'),
   html.indexOf('<dialog id="dlg-amigos-detail"')
 );
+assert.match(missionRequestDialog, /<form[^>]*class="dialog-shell"/,
+  '項目が増えても依頼ダイアログ全体が画面外へはみ出さない');
+assert.ok(missionRequestDialog.includes('class="dialog-scroll-body"'),
+  '入力欄だけをスクロールできる');
+assert.ok(missionRequestDialog.includes('おまかせ編成'));
+assert.ok(missionRequestDialog.includes('自分で役割を指定'));
+assert.ok(!missionRequestDialog.includes('<select id="amigos-post-home"'),
+  '対象チームは固定表示にし、選択操作を出さない');
+assert.match(missionRequestDialog, /<strong id="amigos-post-home-label"/,
+  '固定された対象チーム名を表示する');
+assert.match(css, /\.amigos-request-dialog\[open\]\s*\{[^}]*height:/s,
+  'モード切替でダイアログ外形を変えない');
+assert.match(css, /\.amigos-mode input\s*\{[^}]*position:\s*absolute;[^}]*opacity:\s*0/s,
+  'ラジオ入力はカードへ視覚的に統合する');
+assert.ok(!missionRequestDialog.includes('team-building スキル'), '利用者向け説明に内部スキル名を出さない');
 assert.ok(!missionRequestDialog.includes('commands/'), '依頼画面に内部ディレクトリを出しません');
 assert.ok(!missionRequestDialog.includes('schemas/mission.schema.json'), '依頼画面にスキーマ名を出しません');
 assert.ok(!missionRequestDialog.includes('design doc'), '依頼画面に内部の成果物名を出しません');

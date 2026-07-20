@@ -181,52 +181,59 @@
   </dialog>
 
   <!-- ======== ミッション依頼（commands/ へ post を投函） ======== -->
-  <dialog id="dlg-amigos-post" class="wide">
-    <form method="dialog">
-      <h2>ミッションを依頼</h2>
-      <p class="muted">目標と進め方を入力すると、担当メンバーが協力して作業を進めます。</p>
-      <div class="field">
-        <label>実行先</label>
-        <select id="amigos-post-home"></select>
-      </div>
-      <div class="field">
-        <label>チームの決め方</label>
-        <div id="amigos-post-mode" class="amigos-mode" role="radiogroup">
-          <label><input type="radio" name="amigos-post-mode" value="team-building" checked />
-            チームビルディング（役割を自動で設計）</label>
-          <label><input type="radio" name="amigos-post-mode" value="roles" />
-            役割を自分で指定する</label>
+  <dialog id="dlg-amigos-post" class="wide amigos-request-dialog" aria-labelledby="amigos-post-title-heading">
+    <form method="dialog" class="dialog-shell">
+      <header class="dialog-heading">
+        <div>
+          <span class="summary-kicker">チームで進める作業</span>
+          <h2 id="amigos-post-title-heading">ミッションを依頼</h2>
+          <p class="muted">達成したい状態と進め方を入力してください。</p>
         </div>
+      </header>
+      <div class="dialog-scroll-body">
+      <div class="field amigos-fixed-team">
+        <span class="muted">対象チーム</span>
+        <strong id="amigos-post-home-label"></strong>
+        <input id="amigos-post-home" type="hidden" />
       </div>
+      <fieldset class="field amigos-mode-field">
+        <legend>担当の決め方</legend>
+        <div id="amigos-post-mode" class="amigos-mode" role="radiogroup">
+          <label class="amigos-mode-option"><input type="radio" name="amigos-post-mode" value="team-building" checked />
+            <span><strong>おまかせ編成</strong><small>内容に合わせて必要な担当を自動で決めます</small></span></label>
+          <label class="amigos-mode-option"><input type="radio" name="amigos-post-mode" value="roles" />
+            <span><strong>自分で役割を指定</strong><small>担当の構成をJSONで指定します</small></span></label>
+        </div>
+      </fieldset>
       <div class="field">
-        <label>タイトル</label>
+        <label for="amigos-post-title">タイトル</label>
         <input id="amigos-post-title" placeholder="例: 社内 FAQ ボットの MVP" />
       </div>
       <div class="field">
-        <label>完了したときの状態</label>
+        <label for="amigos-post-goal">完了したときの状態</label>
         <input id="amigos-post-goal" placeholder="例: 必要な機能が動作し、確認できる状態にする" />
       </div>
       <div class="field">
-        <label>進め方・完了条件</label>
-        <textarea id="amigos-post-design" rows="8" class="mono"
+        <label for="amigos-post-design">進め方・完了条件</label>
+        <textarea id="amigos-post-design" rows="6"
           placeholder="例:&#10;必要な画面を作る&#10;テストで動作を確認する"></textarea>
       </div>
       <div id="amigos-buildteam-hint" class="field amigos-buildteam-hint">
-        <p class="muted">ミッションから最適な役割と各役割への指示を team-building スキルが設計します。
-          役割を指定する必要はありません。</p>
-        <label>使える環境（任意・カンマ区切り）</label>
+        <label for="amigos-post-capabilities">利用できる技術・環境 <span class="muted">（任意）</span></label>
         <input id="amigos-post-capabilities" placeholder="例: python, frontend" />
+        <small class="muted">複数ある場合はカンマで区切ってください。</small>
       </div>
-      <details id="amigos-post-roles-details" class="amigos-team-settings">
-        <summary>担当チームの設定</summary>
+      <details id="amigos-post-roles-details" class="amigos-team-settings" hidden>
+        <summary>担当の構成を編集</summary>
         <div class="field">
-          <label>担当の構成（通常はそのままで構いません）</label>
+          <label for="amigos-post-roles">担当の構成</label>
           <textarea id="amigos-post-roles" rows="6" class="mono"></textarea>
         </div>
       </details>
+      </div>
       <div class="dialog-actions">
         <button id="btn-amigos-post-cancel" value="cancel" type="button">キャンセル</button>
-        <button id="btn-amigos-post-ok" value="default">依頼を投函</button>
+        <button id="btn-amigos-post-ok" class="primary-inline" value="default">ミッションを依頼</button>
       </div>
     </form>
   </dialog>
