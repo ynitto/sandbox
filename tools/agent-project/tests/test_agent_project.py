@@ -11226,6 +11226,17 @@ class ProjectRulesTests(unittest.TestCase):
         # rules.md は人の入力パス（同時変更はリモート＝人の編集を優先）
         self.assertIn("rules.md", km._STATE_REMOTE_WINS_FILES)
 
+    def test_state_git_remote_wins_includes_assignments(self):
+        # assignments.json（dashboard の監視担当メタ）も人が書くサイドカー。
+        # 複数メンバーの同時編集はリモート＝人の割り当てを優先し取りこぼさない。
+        self.assertIn("assignments.json", km._STATE_REMOTE_WINS_FILES)
+        # 除外・機械状態ではないこと（同期対象＝チームへ配られる）
+        self.assertFalse(km.StateGit._excluded(Path("assignments.json")))
+        self.assertTrue(km.StateGit._remote_wins("assignments.json"))
+        # 同時競合ではローカルを勝たせない（リモートの人の編集を優先）
+        self.assertFalse(
+            km.StateGit._take_local_on_conflict("assignments.json", True, True))
+
 
 class AgentOverrideTests(unittest.TestCase):
     """処理（purpose）毎のエージェント上書き（設定 agents:・yaml 専用）。
