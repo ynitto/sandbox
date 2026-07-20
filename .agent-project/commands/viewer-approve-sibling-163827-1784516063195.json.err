@@ -1,0 +1,11 @@
+{
+  "error": "approve sibling-163827 が失敗 (exit 1): sibling-163827: 成果ブランチをターゲットへ統合できないため done にできません（main と ap/sibling-163827 の自動統合で競合しました。成果ブランチを更新して再検収してください: Auto-merging tools/agent-project/GUIDE.md",
+  "failed_at": "2026-07-20 11:54:24",
+  "command": {
+    "command": "approve",
+    "id": "sibling-163827",
+    "reason": "成果を確認して完了を承認",
+    "actor": "agent-dashboard",
+    "ts": "2026-07-20T02:54:23.195Z"
+  }
+}
