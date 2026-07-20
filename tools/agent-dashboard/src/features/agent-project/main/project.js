@@ -198,6 +198,41 @@ function effectiveOwner(assignments, task) {
 }
 
 // ---------------------------------------------------------------------------
+// レビューコメント（reviews/<task-id>/*.json）— viewer 管理のチーム運用メタデータ。
+//   成果物レビューを複数メンバーで行うための、タスク（成果物）単位のコメント束。
+//   agent-project の契約ファイルではない（本体は読まない）＝ done の不変条件に影響しない。
+//   1 コメント = 1 ファイル。複数メンバーが別 PC から同時にコメントしてもファイル名が
+//   別なので state_git 同期で自然にマージされる（全体 JSON の last-write-wins を避ける。
+//   バスの runs/ と同じ流儀）。書式: { author, text, ts, editedTs? }。
+// ---------------------------------------------------------------------------
+
+const REVIEWS_DIR = 'reviews';
+
+function readReviewComments(dir, taskId) {
+  const tid = String(taskId || '').trim();
+  if (!tid || tid !== path.basename(tid)) return [];
+  const cdir = path.join(dir, REVIEWS_DIR, tid);
+  const out = [];
+  for (const f of safeList(cdir)) {
+    if (!f.endsWith('.json')) continue;
+    const rec = readJson(path.join(cdir, f));
+    if (!rec || typeof rec !== 'object') continue;
+    const text = String(rec.text || '').trim();
+    if (!text) continue;
+    out.push({
+      id: f.replace(/\.json$/, ''),
+      author: String(rec.author || '').trim() || '匿名',
+      text,
+      ts: String(rec.ts || ''),
+      editedTs: rec.editedTs ? String(rec.editedTs) : '',
+    });
+  }
+  // 投稿時刻の昇順（会話として読める順）。ts 欠落はファイル名末尾で代替。
+  out.sort((a, b) => String(a.ts || a.id).localeCompare(String(b.ts || b.id)));
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // charter.md
 // ---------------------------------------------------------------------------
 
@@ -1662,10 +1697,14 @@ function readProject(workspaceDir, cfg) {
     const cf = commandFailures[String(need.taskId || need.id || '').trim()];
     if (cf && !need.decided) need.commandFailure = cf;
   }
-  // 要対応カードにも監視担当を載せる（誰がこの判断を見るかの分担を画面で示す）
+  // 要対応カードにも監視担当を載せる（誰がこの判断を見るかの分担を画面で示す）。
+  // 併せて成果物レビューのコメント（reviews/<task-id>/）も載せる＝複数メンバーの
+  // コメントを担当者が一箇所で確認・整理して承認/再実行を判断できる。
   const ownerByTask = new Map([...backlog, ...archive].map((t) => [String(t.id), t.owner || '']));
   for (const need of needs) {
-    need.owner = ownerByTask.get(String(need.taskId || need.id || '').trim()) || '';
+    const tid = String(need.taskId || need.id || '').trim();
+    need.owner = ownerByTask.get(tid) || '';
+    need.comments = readReviewComments(dir, tid);
   }
   const projectCfg = readToolConfig('agent-project', [workspace, ...agentDirCandidates(workspace)]);
   const stateBranch = (projectCfg && projectCfg.values && projectCfg.values.state_branch) || DEFAULT_STATE_BRANCH;
@@ -1792,6 +1831,8 @@ module.exports = {
   readAssignments,
   effectiveOwner,
   ASSIGNMENTS_FILE,
+  readReviewComments,
+  REVIEWS_DIR,
   parseCharter,
   parsePolicy,
   parseNeeds,

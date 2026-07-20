@@ -176,6 +176,64 @@ function setTaskOwner(projectDir, id, owner) {
 }
 
 // ---------------------------------------------------------------------------
+// レビューコメント（reviews/<task-id>/*.json）— 成果物レビューを複数メンバーで行う。
+// 1 コメント = 1 ファイル（同時投稿がファイル名衝突せず state_git でマージされる）。
+// viewer 管理のサイドカーなのでタスク状態・done の不変条件には触れない。
+// 書きかけを watch/同期に載せないよう .tmp に書いてから rename する。
+// ---------------------------------------------------------------------------
+
+function _reviewDir(projectDir, taskId) {
+  const tid = String(taskId || '').trim();
+  if (!tid || tid !== path.basename(tid)) throw new Error(`不正なタスク ID です: ${taskId}`);
+  return path.join(projectDir, project.REVIEWS_DIR, tid);
+}
+
+function _commentFile(dir, commentId) {
+  const cid = String(commentId || '').trim();
+  if (!cid || cid !== path.basename(cid) || /[\\/]/.test(cid)) {
+    throw new Error(`不正なコメント ID です: ${commentId}`);
+  }
+  return path.join(dir, `${cid}.json`);
+}
+
+function addReviewComment(projectDir, taskId, { author, text }) {
+  const body = String(text || '').trim();
+  if (!body) throw new Error('コメント本文が空です');
+  const dir = _reviewDir(projectDir, taskId);
+  fs.mkdirSync(dir, { recursive: true });
+  const ts = new Date().toISOString();
+  // ファイル名に ts を含めて時系列に並べやすくする（同ミリ秒の衝突は slug で分ける）。
+  const cid = `${ts.replace(/[:.]/g, '-')}-${slugify(author || 'anon')}`;
+  const rec = { author: String(author || '').trim().slice(0, 60) || '匿名', text: body, ts };
+  const file = path.join(dir, `${cid}.json`);
+  fs.writeFileSync(`${file}.tmp`, `${JSON.stringify(rec, null, 2)}\n`, 'utf8');
+  fs.renameSync(`${file}.tmp`, file);
+  return { file, id: cid, comment: { id: cid, ...rec } };
+}
+
+// 監視担当者がコメントを整理（編集）する。author/ts は保持し editedTs を足す。
+function editReviewComment(projectDir, taskId, commentId, text) {
+  const body = String(text || '').trim();
+  if (!body) throw new Error('コメント本文が空です');
+  const dir = _reviewDir(projectDir, taskId);
+  const file = _commentFile(dir, commentId);
+  const cur = project.readReviewComments(projectDir, taskId).find((c) => c.id === String(commentId));
+  if (!cur) throw new Error(`コメントが見つかりません: ${commentId}`);
+  const rec = { author: cur.author, text: body, ts: cur.ts, editedTs: new Date().toISOString() };
+  fs.writeFileSync(`${file}.tmp`, `${JSON.stringify(rec, null, 2)}\n`, 'utf8');
+  fs.renameSync(`${file}.tmp`, file);
+  return { file, id: String(commentId), comment: { id: String(commentId), ...rec } };
+}
+
+async function deleteReviewComment(projectDir, taskId, commentId, trash) {
+  const dir = _reviewDir(projectDir, taskId);
+  const file = _commentFile(dir, commentId);
+  if (!fs.existsSync(file)) throw new Error(`コメントが見つかりません: ${commentId}`);
+  const via = trash ? await trash(file) : (fs.rmSync(file, { force: true }), 'delete');
+  return { file, id: String(commentId), via };
+}
+
+// ---------------------------------------------------------------------------
 // 3. 人の指示（approve / hold / pin / defer / revise）
 // ---------------------------------------------------------------------------
 
@@ -524,6 +582,9 @@ module.exports = {
   buildNeedsStub,
   enqueueToInbox,
   setTaskOwner,
+  addReviewComment,
+  editReviewComment,
+  deleteReviewComment,
   validateCharterVersion,
   dropCommand,
   runAction,

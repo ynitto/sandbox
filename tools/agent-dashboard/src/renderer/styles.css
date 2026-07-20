@@ -365,6 +365,24 @@ button:disabled { opacity: 0.4; cursor: default; }
 .owner-edit { gap: 6px; align-items: center; }
 .owner-edit input { max-width: 220px; }
 
+/* 成果物レビューのコメント（チーム運用）: 複数メンバーの投稿を一覧し、担当者が整理して判断する */
+.need-comments { margin-top: 14px; }
+.rc-list { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.rc-item {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg2);
+}
+.rc-head { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.rc-author { font-weight: 650; }
+.rc-time { font-size: 11px; }
+.rc-text { margin-top: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.rc-edit-box { margin-top: 6px; }
+.rc-edit-box textarea, .rc-add textarea, .rc-add .rc-author { width: 100%; box-sizing: border-box; }
+.rc-add { display: flex; flex-direction: column; gap: 6px; }
+.rc-add .rc-author { max-width: 260px; }
+
 #sidebar-footer {
   padding: 6px 10px;
   border-top: 1px solid var(--border);
