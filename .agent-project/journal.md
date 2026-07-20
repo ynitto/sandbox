@@ -583,3 +583,5 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-20 15:59:07 === project watch: 監視中（charter 更新/フィードバック待ち）===
 - 2026-07-20 16:20:52 commands 取り込み: resume-run dashboard-163827（viewer-resume-run-dashboard-163827-1784532051908.json）
 - 2026-07-21 05:56:05 state-git 同期: import=6 export=5
+- 2026-07-21 05:56:06 commands 取り込み: resume-run dashboard-163827（viewer-resume-run-dashboard-163827-1784532051908.json）
+- 2026-07-21 06:11:10 === project 開始 v1 acceptance=2 ===

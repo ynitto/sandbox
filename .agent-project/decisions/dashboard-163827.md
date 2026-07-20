@@ -10,3 +10,9 @@
 - reason  : 要対応画面から再実行（失敗した工程だけやり直し）
 - affects : dashboard-163827 → ready (last_run=req-ef1f92c3-dashboard-163827-r0)
 
+## DR-0003  2026-07-21  actor: nitto
+- context : dashboard-163827 を run req-ef1f92c3-dashboard-163827-r0 の続きから再開
+- action  : resume-run
+- reason  : 要対応画面から再実行（失敗した工程だけやり直し）
+- affects : dashboard-163827 → ready (last_run=req-ef1f92c3-dashboard-163827-r0)
+
