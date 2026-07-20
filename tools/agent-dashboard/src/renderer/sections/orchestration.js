@@ -371,11 +371,11 @@ function orchInstructionsPanelHtml(overview) {
   const inventoryByName = new Map(inv.map((s) => [s.name, s]));
   const skillRows = [...selected.keys()].sort().map((name) => {
     const note = selected.get(name) || '';
-    const where = (inventoryByName.get(name) || {}).dir || '';
-    return orchSkillRowHtml(name, note, where);
+    return orchSkillRowHtml(name, note, inventoryByName.get(name));
   }).join('');
   const skillOptions = inv.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)))
-    .map((s) => `<option value="${esc(s.name)}" label="${esc(s.dir || '')}"></option>`).join('');
+    .filter((s) => !selected.has(s.name))
+    .map((s) => `<option value="${esc(s.name)}"></option>`).join('');
   const allow = (gi.tools && Array.isArray(gi.tools.allow)) ? gi.tools.allow.join(', ') : '';
   const denyNote = (gi.tools && gi.tools.deny_note) || '';
   const appliedRows = (overview.status || []).map((s) => {
@@ -401,14 +401,14 @@ function orchInstructionsPanelHtml(overview) {
     </label>
     <div class="orch-instr-field">推奨スキル
       <div class="orch-skill-picker">
-        <label for="orch-skill-add">スキル名</label>
+        <label for="orch-skill-add">候補から追加</label>
         <div class="orch-skill-add-row">
           <input type="text" id="orch-skill-add" list="orch-skill-options" autocomplete="off"
             aria-describedby="orch-skill-add-help" placeholder="名前を入力して候補から選択" />
           <datalist id="orch-skill-options">${skillOptions}</datalist>
           <button type="button" id="btn-orch-skill-add" disabled>追加</button>
         </div>
-        <small id="orch-skill-add-help" class="muted">名前の一部を入力すると、この端末で利用できるスキルが候補に表示されます。</small>
+        <small id="orch-skill-add-help" class="muted">名前の一部を入力してください。各エージェントと共通のスキル置き場から候補を表示します。</small>
       </div>
       <div class="orch-skill-list" id="orch-skill-selected">
         ${skillRows || '<p class="muted orch-skill-empty">追加されたスキルはありません。</p>'}
@@ -441,9 +441,22 @@ function orchInstructionsPanelHtml(overview) {
   </section>`;
 }
 
-function orchSkillRowHtml(name, note = '', where = '') {
+function orchSkillRowHtml(name, note = '', skill = null) {
+  const info = skill || {};
+  const sourceLabels = { kiro: 'Kiro', copilot: 'Copilot', claude: 'Claude', codex: 'Codex', agents: '共通' };
+  const metadata = [];
+  if (info.category) metadata.push(`分類: ${info.category}`);
+  if (info.version) metadata.push(`バージョン: ${info.version}`);
+  if (Array.isArray(info.tags) && info.tags.length) metadata.push(`タグ: ${info.tags.join(', ')}`);
+  if (Array.isArray(info.sources) && info.sources.length) {
+    metadata.push(`利用元: ${info.sources.map((source) => sourceLabels[source] || source).join(', ')}`);
+  }
   return `<div class="orch-skill-row" data-orch-skill="${esc(name)}">
-    <div class="orch-skill-identity"><strong>${esc(name)}</strong>${where ? `<small class="muted">${esc(where)}</small>` : ''}</div>
+    <div class="orch-skill-info">
+      <div class="orch-skill-identity"><strong>${esc(name)}</strong></div>
+      ${info.description ? `<p class="orch-skill-description">${esc(info.description)}</p>` : ''}
+      ${metadata.length ? `<small class="muted orch-skill-meta">${esc(metadata.join(' · '))}</small>` : ''}
+    </div>
     <label class="orch-skill-note-label"><span>使う場面（任意）</span>
       <input type="text" class="orch-skill-note" placeholder="例: コード修正時" value="${esc(note)}" />
     </label>
@@ -1056,7 +1069,7 @@ function setupOrchestration(root) {
     }
     const empty = skillList.querySelector('.orch-skill-empty');
     if (empty) empty.remove();
-    skillList.insertAdjacentHTML('beforeend', orchSkillRowHtml(name, '', candidate.dir || ''));
+    skillList.insertAdjacentHTML('beforeend', orchSkillRowHtml(name, '', candidate));
     skillInput.value = '';
     updateSkillAdd();
     state.orchInstructionsDirty = true;

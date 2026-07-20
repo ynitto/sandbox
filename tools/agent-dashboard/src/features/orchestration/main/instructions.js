@@ -193,34 +193,116 @@ function saveInstructions(cfg, patch) {
   return loadInstructions(dir);
 }
 
-// スキル選択候補の棚卸し。エンジンと同じ探索順で SKILL.md を持つスキル名を列挙する
-// （存在確認のみ・中身は読まない）。first-wins で同名は先に現れたディレクトリの定義が勝つ。
-function skillsInventory(cfg) {
-  const dirs = [];
-  const roots = cfg && cfg.projects && Array.isArray(cfg.projects.roots) ? cfg.projects.roots : [];
-  for (const root of roots) {
-    if (root) dirs.push(path.join(expandHome(String(root)), '.github', 'skills'));
+function yamlScalar(value) {
+  const v = String(value || '').trim();
+  if (v.startsWith('"') && v.endsWith('"')) {
+    try { return JSON.parse(v); } catch { return v.slice(1, -1); }
   }
-  dirs.push(agentHomeSubdir('skills'));
-  dirs.push(path.join(os.homedir(), '.kiro', 'skills'));
-  const seen = new Set();
-  const out = [];
-  for (const dir of dirs) {
-    let names;
-    try {
-      names = fs.readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory());
-    } catch {
-      continue;
+  if (v.startsWith("'") && v.endsWith("'")) return v.slice(1, -1).replace(/''/g, "'");
+  return v;
+}
+
+// 外部 YAML 依存を増やさず、UI に必要な一般的な frontmatter 属性だけを読む。
+function skillFrontmatter(file) {
+  let text;
+  try { text = fs.readFileSync(file, 'utf8'); } catch { return {}; }
+  const match = text.match(/^---\s*\r?\n([\s\S]*?)\r?\n---(?:\s*\r?\n|$)/);
+  if (!match) return {};
+  const lines = match[1].split(/\r?\n/);
+  const valueFor = (key, indent = 0) => {
+    const re = new RegExp(`^\\s{${indent}}${key.replace('-', '\\-')}:\\s*(.*)$`);
+    const index = lines.findIndex((line) => re.test(line));
+    if (index < 0) return '';
+    const raw = lines[index].match(re)[1];
+    if (raw !== '>' && raw !== '|') return yamlScalar(raw);
+    const block = [];
+    for (let i = index + 1; i < lines.length; i += 1) {
+      if (!lines[i].trim()) { block.push(''); continue; }
+      if (lines[i].match(/^\s*/)[0].length <= indent) break;
+      block.push(lines[i].trim());
     }
-    for (const ent of names.sort((a, b) => a.name.localeCompare(b.name))) {
-      const name = ent.name;
-      if (seen.has(name)) continue;
-      if (!fs.existsSync(path.join(dir, name, 'SKILL.md'))) continue;
-      seen.add(name);
-      out.push({ name, dir });
+    return block.join(raw === '>' ? ' ' : '\n').trim();
+  };
+  const tags = [];
+  const tagsAt = lines.findIndex((line) => /^\s{2}tags:\s*(.*)$/.test(line));
+  if (tagsAt >= 0) {
+    const inline = lines[tagsAt].match(/^\s{2}tags:\s*(.*)$/)[1].trim();
+    if (inline.startsWith('[') && inline.endsWith(']')) {
+      tags.push(...inline.slice(1, -1).split(',').map(yamlScalar).filter(Boolean));
+    } else {
+      for (let i = tagsAt + 1; i < lines.length; i += 1) {
+        const item = lines[i].match(/^\s{4}-\s*(.+)$/);
+        if (!item) break;
+        const tag = yamlScalar(item[1]);
+        if (tag) tags.push(tag);
+      }
     }
   }
-  return out;
+  return {
+    name: valueFor('name'),
+    description: valueFor('description'),
+    version: valueFor('version', 2),
+    category: valueFor('category', 2),
+    tags,
+  };
+}
+
+function skillFilesUnder(root) {
+  const files = [];
+  const pending = [root];
+  const visited = new Set();
+  while (pending.length) {
+    const dir = pending.pop();
+    let real;
+    try { real = fs.realpathSync(dir); } catch { continue; }
+    if (visited.has(real)) continue;
+    visited.add(real);
+    if (fs.existsSync(path.join(real, 'SKILL.md'))) files.push(path.join(real, 'SKILL.md'));
+    let entries;
+    try { entries = fs.readdirSync(real, { withFileTypes: true }); } catch { continue; }
+    for (const ent of entries) {
+      if (ent.name === '.git' || ent.name === 'node_modules') continue;
+      const child = path.join(real, ent.name);
+      try {
+        if (ent.isDirectory() || (ent.isSymbolicLink() && fs.statSync(child).isDirectory())) pending.push(child);
+      } catch { /* 壊れたリンクは候補から除外 */ }
+    }
+  }
+  return files.sort((a, b) => a.localeCompare(b));
+}
+
+// 主要 CLI と共通置き場にある全 SKILL.md を棚卸しする。同名は探索順の定義を使い、利用元だけ統合する。
+function skillsInventory(_cfg, homeDir = os.homedir()) {
+  const roots = [
+    ['kiro', path.join(homeDir, '.kiro', 'skills')],
+    ['copilot', path.join(homeDir, '.copilot', 'skills')],
+    ['claude', path.join(homeDir, '.claude', 'skills')],
+    ['codex', path.join(homeDir, '.codex', 'skills')],
+    ['agents', path.join(homeDir, '.agents', 'skills')],
+  ];
+  const byName = new Map();
+  for (const [source, root] of roots) {
+    for (const file of skillFilesUnder(root)) {
+      const frontmatter = skillFrontmatter(file);
+      const name = String(frontmatter.name || path.basename(path.dirname(file))).trim();
+      if (!name) continue;
+      if (byName.has(name)) {
+        const current = byName.get(name);
+        if (!current.sources.includes(source)) current.sources.push(source);
+        continue;
+      }
+      byName.set(name, {
+        name,
+        description: frontmatter.description || '',
+        category: frontmatter.category || '',
+        version: frontmatter.version || '',
+        tags: frontmatter.tags || [],
+        sources: [source],
+        dir: path.dirname(file),
+      });
+    }
+  }
+  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 module.exports = {

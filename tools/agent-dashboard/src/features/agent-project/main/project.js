@@ -748,18 +748,23 @@ function listCommandFailures(dir) {
 // needs/<id>.md が無い判断待ちタスク（review / blocked / proposed）を backlog status から補う。
 // 本体の ensure_needs と同じ契約: needs は status の投影で、票が失われても検収・承認導線を残す。
 // ここではファイルを書かず表示用だけを合成する（承認は commands/ 経由で needs ファイルが無くても届く）。
-function synthesizeNeedsFromBacklog(needs, backlog, needsDir) {
+function synthesizeNeedsFromBacklog(needs, backlog, needsDir, archive) {
   const expectedKind = (status) =>
     status === 'review' ? 'review' : status === 'proposed' ? 'plan-review' : status === 'blocked' ? 'blocked' : '';
   const taskById = new Map((backlog || []).map((t) => [String(t.id), t]));
+  const archivedIds = new Set((archive || []).map((t) => String(t.id)));
   const have = new Set();
   const out = [];
   for (const n of needs || []) {
     const tid = String(n.taskId || n.id || '');
     const task = taskById.get(tid);
     const expected = task ? expectedKind(String(task.status || '')) : '';
-    // needs は backlog status の投影。古い plan-review が残ったまま task が blocked/review へ
-    // 進んだ場合、存在するだけで合成を抑止せず、下で正しい種別の表示票に置き換える。
+    // needs は status の投影。タスクが判断待ちを抜けた（done で archive 済み・ready/doing へ
+    // 戻った）のに票ファイルだけ残ると、決着済みの判断がカードとして出続ける。投影から
+    // 外れた票はここで落とす。タスクを持たない票（charter/milestone カード）は対象外。
+    if (archivedIds.has(tid) || (task && !expected)) continue;
+    // 古い plan-review が残ったまま task が blocked/review へ進んだ場合、存在するだけで
+    // 合成を抑止せず、下で正しい種別の表示票に置き換える。
     if (expected && String(n.kind || '') !== expected) continue;
     out.push(n);
     if (n.id) have.add(String(n.id));
@@ -1600,7 +1605,7 @@ function readProject(workspaceDir, cfg) {
   const archive = listTasks(path.join(dir, 'archive'));
   const needsDir = path.join(dir, 'needs');
   const needs = attachDeliveryHintsFromBacklog(
-    synthesizeNeedsFromBacklog(listMdDir(needsDir, parseNeeds), backlog, needsDir),
+    synthesizeNeedsFromBacklog(listMdDir(needsDir, parseNeeds), backlog, needsDir, archive),
     backlog
   );
   // 直前の指示の失敗（commands/*.err）を該当カードへ。決着済みカードには出さない。

@@ -200,8 +200,11 @@ assert.match(css, /\.sidebar-actions button,[\s\S]*?min-width: 44px; height: 44p
   const orchBadgeStub = (kind, label) => `<span class="badge ${kind}">${escStub(label)}</span>`;
   const wlLabelStub = (w) => w;
   const stateStub = { orchSkillsInventory: [
-    { name: 'karpathy-guidelines', dir: '/x/.github/skills' },
-    { name: 'systematic-debugging', dir: '/x/.agents/skills' },
+    {
+      name: 'karpathy-guidelines', description: 'LLM向けの実装原則', category: 'coding',
+      version: '1.2.0', tags: ['quality', 'code'], sources: ['kiro', 'agents'], dir: '/secret/skills',
+    },
+    { name: 'systematic-debugging', description: '原因を段階的に調べる', sources: ['claude'] },
   ] };
   // eslint-disable-next-line no-new-func
   const panel = new Function('esc', 'orchBadge', 'amigosWorkloadLabel', 'state',
@@ -227,6 +230,11 @@ assert.match(css, /\.sidebar-actions button,[\s\S]*?min-width: 44px; height: 44p
   assert.ok(out.includes('list="orch-skill-options"'), '入力欄が候補リストにつながっている');
   assert.ok(out.includes('<option value="systematic-debugging"'), '未選択スキルが入力候補に出る');
   assert.ok(out.includes('karpathy-guidelines'), '選択済みスキルが行に出る');
+  assert.ok(out.includes('LLM向けの実装原則'), '選択後は説明が表示される');
+  assert.ok(out.includes('分類: coding'), '選択後は分類が表示される');
+  assert.ok(out.includes('タグ: quality, code'), '選択後はタグが表示される');
+  assert.ok(out.includes('利用元: Kiro, 共通'), '重複したスキルの利用元がまとめて表示される');
+  assert.ok(!out.includes('/secret/skills'), '内部の保存パスは表示しない');
   assert.ok(!out.includes('class="orch-skill-on"'), '大量のチェックボックス一覧を表示しない');
   assert.ok(out.includes('data-ui-key="orch-instr-preview"'), 'プレビューの開閉状態を復元できるキーがある');
   assert.ok(out.includes('未反映（2/3）'), '実行サービスの未反映バッジが出る');

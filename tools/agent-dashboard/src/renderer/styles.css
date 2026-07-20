@@ -2716,13 +2716,17 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .orch-skill-picker > label { color: var(--text); font-weight: 600; }
 .orch-skill-add-row { display: flex; gap: 8px; align-items: center; }
 .orch-skill-add-row input { flex: 1 1 260px; min-width: 0; }
-.orch-skill-list { display: flex; flex-direction: column; gap: 8px; max-height: 280px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin-top: 8px; background: var(--bg); }
-.orch-skill-row { display: grid; grid-template-columns: minmax(180px, 0.8fr) minmax(220px, 1.2fr) auto; gap: 10px; align-items: end; padding: 8px; border: 1px solid var(--border); border-radius: 6px; }
+.orch-skill-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.orch-skill-row { display: grid; grid-template-columns: minmax(240px, 1.2fr) minmax(200px, 0.8fr) auto; gap: 12px; align-items: end; padding: 10px 0; border-top: 1px solid var(--border); }
+.orch-skill-row:first-child { border-top: 0; }
+.orch-skill-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; align-self: center; }
 .orch-skill-identity { display: flex; flex-direction: column; gap: 3px; min-width: 0; overflow-wrap: anywhere; align-self: center; }
+.orch-skill-description { margin: 0; color: var(--text); font-size: 12px; line-height: 1.45; }
+.orch-skill-meta { overflow-wrap: anywhere; line-height: 1.45; }
 .orch-skill-note-label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .orch-skill-note-label span { font-size: 11px; color: var(--muted); }
 .orch-skill-note { width: 100%; }
-.orch-skill-remove { min-height: 36px; }
+.orch-skill-remove { min-height: 32px; }
 .orch-skill-empty { margin: 4px; }
 .orch-instr-preview-body { white-space: pre-wrap; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin-top: 6px; font-size: 12px; }
 .orch-instr-preview, .orch-instr-applied { margin-top: 10px; }

@@ -112,4 +112,17 @@ test('renderNeedDetail は取り込み失敗時に操作を出し直す（送信
   assert.match(renderer, /n\.decided \|\| \(!n\.commandFailure && isNeedSent\(n\)\)/);
 });
 
+test('決着したタスクの票は投影から外す（archive 済み・判断待ちを抜けた）', () => {
+  const need = (id) => ({ id, taskId: id, kind: 'review', decided: false });
+  const out = project.synthesizeNeedsFromBacklog(
+    [need('T-done'), need('T-doing'), need('T-review'), { id: 'v1', kind: 'milestone' }],
+    [{ id: 'T-doing', status: 'doing' }, { id: 'T-review', status: 'review' }],
+    '/tmp/needs',
+    [{ id: 'T-done', status: 'done' }]
+  );
+  const ids = out.map((n) => n.id).sort();
+  // 判断待ちの票と、タスクを持たない milestone 票だけが残る
+  assert.deepStrictEqual(ids, ['T-review', 'v1']);
+});
+
 console.log(`passed ${passed} tests`);
