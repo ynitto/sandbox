@@ -404,10 +404,11 @@ function orchInstructionsPanelHtml(overview) {
         <label for="orch-skill-add">候補から追加</label>
         <div class="orch-skill-add-row">
           <input type="text" id="orch-skill-add" list="orch-skill-options" autocomplete="off"
-            aria-describedby="orch-skill-add-help" placeholder="名前を入力して候補から選択" />
+            aria-describedby="orch-skill-add-help orch-skill-candidate-description" placeholder="名前を入力して候補から選択" />
           <datalist id="orch-skill-options">${skillOptions}</datalist>
           <button type="button" id="btn-orch-skill-add" disabled>追加</button>
         </div>
+        <p id="orch-skill-candidate-description" class="orch-skill-candidate-description" aria-live="polite" hidden></p>
         <small id="orch-skill-add-help" class="muted">名前の一部を入力してください。各エージェントと共通のスキル置き場から候補を表示します。</small>
       </div>
       <div class="orch-skill-list" id="orch-skill-selected">
@@ -451,17 +452,24 @@ function orchSkillRowHtml(name, note = '', skill = null) {
   if (Array.isArray(info.sources) && info.sources.length) {
     metadata.push(`利用元: ${info.sources.map((source) => sourceLabels[source] || source).join(', ')}`);
   }
+  const hasDetails = info.description || metadata.length;
   return `<div class="orch-skill-row" data-orch-skill="${esc(name)}">
-    <div class="orch-skill-info">
-      <div class="orch-skill-identity"><strong>${esc(name)}</strong></div>
-      ${info.description ? `<p class="orch-skill-description">${esc(info.description)}</p>` : ''}
-      ${metadata.length ? `<small class="muted orch-skill-meta">${esc(metadata.join(' · '))}</small>` : ''}
-    </div>
+    <div class="orch-skill-identity"><strong>${esc(name)}</strong></div>
     <label class="orch-skill-note-label"><span>使う場面（任意）</span>
       <input type="text" class="orch-skill-note" placeholder="例: コード修正時" value="${esc(note)}" />
     </label>
     <button type="button" class="orch-skill-remove" aria-label="${esc(name)}を削除">削除</button>
+    ${hasDetails ? `<details class="orch-skill-details" data-ui-key="orch-skill-details-${esc(name)}">
+      <summary>説明と属性を表示</summary>
+      ${info.description ? `<p class="orch-skill-description">${esc(info.description)}</p>` : ''}
+      ${metadata.length ? `<small class="muted orch-skill-meta">${esc(metadata.join(' · '))}</small>` : ''}
+    </details>` : ''}
   </div>`;
+}
+
+function shortSkillDescription(text) {
+  const chars = Array.from(String(text || '').trim());
+  return chars.length > 100 ? `${chars.slice(0, 100).join('')}…` : chars.join('');
 }
 
 // 4.6 セッション開始コマンド: セッションが始まった直後に 1 回だけ走らせる前準備。
@@ -1046,9 +1054,15 @@ function setupOrchestration(root) {
   const skillInput = root.querySelector('#orch-skill-add');
   const skillAdd = root.querySelector('#btn-orch-skill-add');
   const skillList = root.querySelector('#orch-skill-selected');
+  const skillDescription = root.querySelector('#orch-skill-candidate-description');
   const skillInventory = new Map((state.orchSkillsInventory || []).map((s) => [String(s.name), s]));
   const updateSkillAdd = () => {
     if (skillAdd) skillAdd.disabled = !skillInput || !skillInput.value.trim();
+    if (skillDescription) {
+      const candidate = skillInput ? skillInventory.get(skillInput.value.trim()) : null;
+      skillDescription.textContent = shortSkillDescription(candidate && candidate.description);
+      skillDescription.hidden = !skillDescription.textContent;
+    }
   };
   const addSkill = () => {
     if (!skillInput || !skillList) return;
@@ -1406,7 +1420,10 @@ function bindCoworkRoutineSelector(root) {
 
 function coworkHasProjectConfig(cowork, projectFolder) {
   const key = coworkPathKey(projectFolder);
-  return !!key && ((cowork && cowork.discoveredRepos) || []).some((repo) => coworkPathKey(repo) === key);
+  return !!key && (
+    ((cowork && cowork.discoveredRepos) || []).some((repo) => coworkPathKey(repo) === key)
+    || ((cowork && cowork.items) || []).some((item) => coworkPathKey(item.repo || item.cwd) === key)
+  );
 }
 
 function coworkRunBannerHtml() {
@@ -1436,9 +1453,7 @@ function coworkSelectedDetailHtml(entry, observed, busyId) {
   const running = !!st.running || busyId === id;
   const status = running ? 'running' : (st.status || 'unknown');
   const run = state.coworkRun && String(state.coworkRun.id) === id ? state.coworkRun : null;
-  const typeDetail = item.type === 'state-machine'
-    ? (item.workflow ? item.workflow : 'workflow 未設定')
-    : 'kiro-loop';
+  const typeDetail = workTypeLabel(item.type);
   const lastResult = running
     ? '実行中です'
     : run && run.phase === 'error'
@@ -1585,7 +1600,8 @@ function renderCowork() {
   }
   // 選択中プロジェクトの作業だけを表示する（従来は全プロジェクトの作業が常に並んでいた）。
   const folder = selectedProjectFolder();
-  const entries = coworkHasProjectConfig(cw, folder) ? coworkVisibleEntries(draft, folder) : [];
+  const entries = (coworkHasProjectConfig(cw, folder) || state.coworkForcedOpen)
+    ? coworkVisibleEntries(draft, folder) : [];
   const selected = coworkSelectedEntry(entries, folder);
   const selectedId = selected ? coworkEntryId(selected.item, selected.index) : '';
   const scopeLabel = `このプロジェクトの作業 ${entries.length} 件`;

@@ -5,14 +5,14 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const {
-  makeLoopProvider, isWslPath, wslPath, wslDistro, toWslCwd, shellQuote, decodeCliOutput,
+  makeLoopProvider, runChatWindow, isWslPath, wslPath, wslDistro, toWslCwd, shellQuote, decodeCliOutput,
 } = require('./loopProvider');
 const { _pathKey, _isPosixAbs, toViewerPath } = require('../../agent-project/main/project');
 const { parseFlatYaml } = require('../../agent-project/main/toolconfig');
 const {
   discoverCoworkItems, parseKiroLoopPrompts, scheduleOf, detectMarkers, kiroLoopPromptTexts,
 } = require('./discover');
-const { applyKiroLoopEdits, applyStatemachineEdits } = require('./writeback');
+const { applyKiroLoopEdits, applyStatemachineEdits, upsertManagedKiroPrompt } = require('./writeback');
 const globalInstructions = require('../../orchestration/main/instructions');
 const sessionCommands = require('../../orchestration/main/sessionCommands');
 
@@ -241,6 +241,8 @@ function normalizeItem(item, i, cfg, stateOpts) {
     branch: item.branch || '',
     schedule: item.schedule || item.cron || '',
     workflow: item.workflow || item.file || '',
+    prompt: item.prompt || '',
+    instruction: item.instruction || '',
     description: item.description || '',
     command: type === 'state-machine' ? (cfg.stateMachineCommand || 'statemachine-use') : (cfg.loopCommand || cfg.loopProvider || 'kiro-loop'),
     source: 'config',
@@ -259,6 +261,8 @@ function normalizeDiscovered(d, cfg, stateOpts) {
     branch: '',
     schedule: d.schedule || '',
     workflow: d.workflow || '',
+    prompt: d.prompt || '',
+    instruction: '',
     description: d.description || '',
     command: type === 'state-machine' ? (cfg.stateMachineCommand || 'statemachine-use') : (cfg.loopCommand || cfg.loopProvider || 'kiro-loop'),
     source: 'discovered',
@@ -270,7 +274,8 @@ function normalizeDiscovered(d, cfg, stateOpts) {
 
 // 重複排除キー: type|repo実体|ジョブ名。先に並ぶ config 項目が発見項目に勝つ（手動登録が正）。
 function jobKey(it) {
-  const name = (it._src && (it._src.promptName || it._src.workflowName)) || it.name || '';
+  const name = (it._src && (it._src.promptName || it._src.workflowName))
+    || (it.type === 'state-machine' && it.workflow) || it.name || '';
   return `${it.type}|${_pathKey(it.repo || '')}|${name}`;
 }
 
@@ -486,6 +491,36 @@ function runStateMachine(config, itemIdValue, input) {
   return res;
 }
 
+function stateMachineCreationPrompt(name, machine, instruction) {
+  return `statemachine-use スキルの作成モードで、次の指示から「${name}」ステートマシンを作成してください。\n`
+    + `生成先は .statemachine/${machine}/ とし、作成だけを行って実行はしないでください。\n\n`
+    + `指示:\n${instruction}`;
+}
+
+function generateStateMachine(config, payload = {}) {
+  const repo = String(payload.repo || '').trim();
+  const name = String(payload.name || '').trim();
+  const machine = String(payload.machine || '').trim();
+  const instruction = String(payload.instruction || '').trim();
+  if (!repo || !name || !instruction) throw new Error('名前と定型業務の手順を入力してください');
+  if (!/^[A-Za-z0-9_.-]+$/.test(machine) || machine === '.' || machine === '..') {
+    throw new Error('定型業務の識別名が不正です');
+  }
+  const gitRoot = gitInRepo(repo, ['rev-parse', '--show-toplevel'], 10000);
+  if (!gitRoot.ok) throw new Error('選択中の作業フォルダは Git リポジトリではありません');
+  const cfg = config.cowork || {};
+  const prompt = withGlobalInstructions(config, stateMachineCreationPrompt(name, machine, instruction));
+  return runChatWindow({
+    chatCommand: cfg.chatCommand || 'kiro-cli chat --trust-all-tools',
+    prompt,
+    cwd: repo,
+    sessionCommands: planSessionCommands(config, repo),
+    sessionKey: 'statemachine-builder',
+    title: '定型業務を作成',
+    message: '外部ターミナルで定型業務の作成を開始しました',
+  });
+}
+
 function gitInRepo(repo, args, timeoutMs) {
   if (process.platform === 'win32' && isWslPath(repo)) {
     const distro = wslDistro(repo);
@@ -543,6 +578,9 @@ function applyKiroLoopJson(raw, items) {
     const p = prompts[it._src.promptIndex];
     if (!p || typeof p !== 'object') continue;
     if ((it.name || '') !== (p.name || '')) { p.name = it.name || ''; changed = true; }
+    if (Object.prototype.hasOwnProperty.call(it, 'prompt') && String(it.prompt || '') !== String(p.prompt || '')) {
+      p.prompt = String(it.prompt || ''); changed = true;
+    }
     const curEnabled = p.enabled !== false;
     if ((it.enabled !== false) !== curEnabled) { p.enabled = it.enabled !== false; changed = true; }
     if (it._src.scheduleKey === 'cron') {
@@ -598,6 +636,7 @@ function applyDiscoveredEdits(discovered) {
         if (r.changed) newText = r.text;
       } else {
         const current = parseKiroLoopPrompts(raw.replace(/\r\n/g, '\n'));
+        const currentTexts = kiroLoopPromptTexts(raw.replace(/\r\n/g, '\n'));
         const edits = [];
         for (const it of items) {
           const cur = current[it._src.promptIndex] || {};
@@ -605,6 +644,10 @@ function applyDiscoveredEdits(discovered) {
           let changed = false;
           if ((it.name || '') !== (cur.name || '')) { edit.name = it.name || ''; changed = true; }
           if ((it.enabled !== false) !== (cur.enabled !== false)) { edit.enabled = it.enabled !== false; changed = true; }
+          if (Object.prototype.hasOwnProperty.call(it, 'prompt')
+              && String(it.prompt || '') !== String(currentTexts[it._src.promptIndex] || '')) {
+            edit.prompt = String(it.prompt || ''); changed = true;
+          }
           if (it._src.scheduleKey && (it.schedule || '') !== scheduleOf(cur).schedule) {
             edit.schedule = it.schedule || '';
             changed = true;
@@ -651,6 +694,39 @@ function stripRuntimeFields(it) {
   return rest;
 }
 
+function applyManagedItems(items) {
+  const byRepo = new Map();
+  for (const item of items.filter((it) => it.managed && it.repo)) {
+    const key = _pathKey(item.repo);
+    if (!byRepo.has(key)) byRepo.set(key, { repo: item.repo, items: [] });
+    byRepo.get(key).items.push(item);
+  }
+  const touched = [];
+  const errors = [];
+  for (const { repo, items: repoItems } of byRepo.values()) {
+    const root = viewerRepo(repo) || repo;
+    const file = path.join(root, '.kiro', 'kiro-loop.yml');
+    let raw = '';
+    try { raw = fs.readFileSync(file, 'utf8'); } catch { raw = 'prompts:\n'; }
+    let next = raw;
+    for (const item of repoItems) {
+      const prompt = item.type === 'state-machine'
+        ? (item.schedule ? `statemachine-use スキルで${item.workflow || item.id}ステートマシンを実行して` : null)
+        : String(item.prompt || '').trim();
+      next = upsertManagedKiroPrompt(next, item, prompt).text;
+    }
+    if (next === raw) continue;
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, next, 'utf8');
+      touched.push({ repo, relFiles: [relPosix(repo, file)] });
+    } catch (err) {
+      errors.push(`kiro-loop.yml の書き込み失敗: ${err.message}`);
+    }
+  }
+  return { touched, errors };
+}
+
 function saveWork(config, saveConfig, { items, branch, createBranch, push } = {}) {
   const all = Array.isArray(items) ? items : [];
   const configItems = all.filter((it) => it.source !== 'discovered');
@@ -663,6 +739,7 @@ function saveWork(config, saveConfig, { items, branch, createBranch, push } = {}
 
   // 2) 発見項目の編集を実体ファイルへ書き戻し
   const wb = applyDiscoveredEdits(discovered);
+  const managed = applyManagedItems(configItems);
 
   // 3) touched repo（書き戻し先）＋手動項目の repo を commit → branch/create/push
   const repoMap = new Map(); // repoKey -> { repo, relFiles:Set }
@@ -676,6 +753,10 @@ function saveWork(config, saveConfig, { items, branch, createBranch, push } = {}
     const e = ensure(t.repo);
     if (e) t.relFiles.forEach((f) => e.relFiles.add(f));
   }
+  for (const t of managed.touched) {
+    const e = ensure(t.repo);
+    if (e) t.relFiles.forEach((f) => e.relFiles.add(f));
+  }
   for (const it of configItems) ensure(it.repo);
 
   const git = [...repoMap.values()].map(({ repo, relFiles }) => {
@@ -685,13 +766,14 @@ function saveWork(config, saveConfig, { items, branch, createBranch, push } = {}
     return { repo, result: { ...save, commit } };
   });
   invalidateDiscoverCache();
-  return { config: saved, git, writeback: { errors: wb.errors } };
+  return { config: saved, git, writeback: { errors: [...wb.errors, ...managed.errors] } };
 }
 
 module.exports = {
-  overview, runLoop, runStateMachine, saveWork, itemsOf, wslPath, dynamicState,
+  overview, runLoop, runStateMachine, generateStateMachine, saveWork, itemsOf, wslPath, dynamicState,
   resolveItem, findItem, dedupeItems, applyDiscoveredEdits, gitCommitFiles,
   invalidateDiscoverCache, decodeCliOutput, viewerRepo,
   itemLogs, readLog, appendHistory, readHistory, historyFile,
   resolveLoopPromptText, withInputAssist, withGlobalInstructions, planSessionCommands,
+  applyManagedItems, stateMachineCreationPrompt,
 };

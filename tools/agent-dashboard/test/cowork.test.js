@@ -424,4 +424,12 @@ test('overview の既定はプロセス探査せず probed=false', () => {
   assert.strictEqual(probed.items[0].state.probed, true);
 });
 
+test('定型業務の作成指示は statemachine-use の作成モードと生成先を明示する', () => {
+  const prompt = cowork.stateMachineCreationPrompt('リリース確認', 'release-check', '確認後に承認する');
+  assert.match(prompt, /statemachine-use スキルの作成モード/);
+  assert.match(prompt, /\.statemachine\/release-check\//);
+  assert.match(prompt, /確認後に承認する/);
+  assert.match(prompt, /実行はしない/);
+});
+
 console.log(`\n${passed} cowork tests passed`);

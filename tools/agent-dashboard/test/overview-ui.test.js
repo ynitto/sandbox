@@ -120,6 +120,8 @@ assert.strictEqual(coworkPathKey('C:\\Users\\Me\\proj'), 'c:/users/me/proj');
     '選択プロジェクト自身の設定ファイルだけを認識する'
   );
   assert.strictEqual(coworkHasProjectConfig({ discoveredRepos: ['/home/me/proj-a'] }, '/home/me/proj-b'), false);
+  assert.strictEqual(coworkHasProjectConfig({ items: [{ repo: '/home/me/proj-b' }] }, '/home/me/proj-b'), true,
+    '手動追加した作業だけのプロジェクトも定常業務を表示する');
 }
 
 // eslint-disable-next-line no-new-func
@@ -228,8 +230,11 @@ assert.match(css, /\.sidebar-actions button,[\s\S]*?min-width: 44px; height: 44p
     '選択済みスキルだけを編集行として表示する');
   assert.ok(out.includes('id="orch-skill-add"'), '名前を入力して追加する欄がある');
   assert.ok(out.includes('list="orch-skill-options"'), '入力欄が候補リストにつながっている');
+  assert.ok(out.includes('id="orch-skill-candidate-description"'), '追加前の候補説明欄がある');
   assert.ok(out.includes('<option value="systematic-debugging"'), '未選択スキルが入力候補に出る');
   assert.ok(out.includes('karpathy-guidelines'), '選択済みスキルが行に出る');
+  assert.ok(out.includes('class="orch-skill-details"'), '説明と属性は開閉できる詳細領域に入る');
+  assert.ok(out.includes('<summary>説明と属性を表示</summary>'), '詳細を表示する操作が明確である');
   assert.ok(out.includes('LLM向けの実装原則'), '選択後は説明が表示される');
   assert.ok(out.includes('分類: coding'), '選択後は分類が表示される');
   assert.ok(out.includes('タグ: quality, code'), '選択後はタグが表示される');
@@ -239,6 +244,12 @@ assert.match(css, /\.sidebar-actions button,[\s\S]*?min-width: 44px; height: 44p
   assert.ok(out.includes('data-ui-key="orch-instr-preview"'), 'プレビューの開閉状態を復元できるキーがある');
   assert.ok(out.includes('未反映（2/3）'), '実行サービスの未反映バッジが出る');
   assert.ok(out.includes('agent-instructions rev:3'), 'プレビューが描画結果を出す');
+}
+{
+  // eslint-disable-next-line no-new-func
+  const shorten = new Function(`${grab('shortSkillDescription')}; return shortSkillDescription;`)();
+  assert.strictEqual(shorten('あ'.repeat(101)), `${'あ'.repeat(100)}…`, '候補説明は100文字で打ち切る');
+  assert.strictEqual(shorten('短い説明'), '短い説明', '短い候補説明はそのまま表示する');
 }
 assert.match(renderer, /orchInstructionsPanelHtml\(overview\)/);
 assert.match(renderer, /api\.orchestrationInstructionsSave/);

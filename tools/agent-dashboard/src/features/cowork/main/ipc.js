@@ -9,6 +9,7 @@ function registerIpc(ctx) {
   handle('cowork:runStateMachine', ({ itemId, machineId, input }) =>
     cowork.runStateMachine(loadConfig(), itemId || machineId, input)
   );
+  handle('cowork:generateStateMachine', (payload) => cowork.generateStateMachine(loadConfig(), payload || {}));
   handle('cowork:saveWork', (payload) => cowork.saveWork(loadConfig(), saveConfig, payload || {}));
   // 項目ごとの実行履歴（dashboard 発の実行記録）とリポジトリのログ候補
   handle('cowork:itemLogs', ({ itemId }) => cowork.itemLogs(loadConfig(), itemId));

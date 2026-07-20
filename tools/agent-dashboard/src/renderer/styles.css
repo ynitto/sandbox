@@ -2731,17 +2731,22 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .orch-skill-picker > label { color: var(--text); font-weight: 600; }
 .orch-skill-add-row { display: flex; gap: 8px; align-items: center; }
 .orch-skill-add-row input { flex: 1 1 260px; min-width: 0; }
-.orch-skill-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
-.orch-skill-row { display: grid; grid-template-columns: minmax(240px, 1.2fr) minmax(200px, 0.8fr) auto; gap: 12px; align-items: end; padding: 10px 0; border-top: 1px solid var(--border); }
+.orch-skill-candidate-description { margin: 1px 0 0; padding-left: 1px; color: var(--text); font-size: 12px; line-height: 1.45; }
+.orch-skill-list { display: flex; flex-direction: column; margin-top: 8px; }
+.orch-skill-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px 12px; align-items: start; padding: 12px 0; border-top: 1px solid var(--border); }
 .orch-skill-row:first-child { border-top: 0; }
-.orch-skill-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; align-self: center; }
-.orch-skill-identity { display: flex; flex-direction: column; gap: 3px; min-width: 0; overflow-wrap: anywhere; align-self: center; }
-.orch-skill-description { margin: 0; color: var(--text); font-size: 12px; line-height: 1.45; }
-.orch-skill-meta { overflow-wrap: anywhere; line-height: 1.45; }
-.orch-skill-note-label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.orch-skill-identity { min-width: 0; overflow-wrap: anywhere; grid-column: 1; grid-row: 1; }
+.orch-skill-identity strong { color: var(--text); font-size: 14px; line-height: 1.35; }
+.orch-skill-description { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.orch-skill-meta { overflow-wrap: anywhere; font-size: 11px; line-height: 1.45; }
+.orch-skill-note-label { display: flex; flex-direction: column; gap: 4px; min-width: 0; grid-column: 1 / -1; grid-row: 2; }
 .orch-skill-note-label span { font-size: 11px; color: var(--muted); }
 .orch-skill-note { width: 100%; }
-.orch-skill-remove { min-height: 32px; }
+.orch-skill-remove { min-height: 32px; grid-column: 2; grid-row: 1; align-self: start; }
+.orch-skill-details { grid-column: 1 / -1; grid-row: 3; font-size: 12px; }
+.orch-skill-details > summary { color: var(--muted); cursor: pointer; }
+.orch-skill-details .orch-skill-description { margin-top: 6px; }
+.orch-skill-details .orch-skill-meta { display: block; margin-top: 3px; }
 .orch-skill-empty { margin: 4px; }
 .orch-instr-preview-body { white-space: pre-wrap; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin-top: 6px; font-size: 12px; }
 .orch-instr-preview, .orch-instr-applied { margin-top: 10px; }
@@ -2771,7 +2776,7 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 
 @media (max-width: 680px) {
   .orch-skill-add-row { align-items: stretch; flex-direction: column; }
-  .orch-skill-row { grid-template-columns: 1fr; align-items: stretch; }
+  .orch-skill-row { grid-template-columns: minmax(0, 1fr) auto; }
   .orch-sess-head, .orch-sess-process-only, .orch-sess-when-grid { flex-direction: column; align-items: stretch; }
   .orch-sess-narrow { flex: 1 1 auto; }
 }

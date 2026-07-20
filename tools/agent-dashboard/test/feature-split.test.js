@@ -82,6 +82,7 @@ test('cowork は定期実行と定型業務 API を登録する', () => {
   const api = cowork.preloadApi();
   assert.strictEqual(typeof api.coworkOverview, 'function');
   assert.strictEqual(typeof api.coworkSaveWork, 'function');
+  assert.strictEqual(typeof api.coworkGenerateStateMachine, 'function');
   const calls = [];
   const overview = api.coworkOverview((channel, args) => {
     calls.push([channel, args]);

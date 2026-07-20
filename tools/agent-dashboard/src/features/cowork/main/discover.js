@@ -318,6 +318,7 @@ function discoverCoworkItems(config) {
             name: e.name || `定期実行 ${idx + 1}`,
             repo: folder,
             schedule,
+            prompt: kiro.texts[idx] || '',
             enabled: e.enabled !== false,
             _src: {
               kind: 'kiro-loop', file: mk.kiroFile, format: kiro.format,

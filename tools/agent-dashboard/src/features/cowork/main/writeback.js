@@ -1,8 +1,8 @@
 'use strict';
 
 // 発見項目の編集を **実体ファイル** へ外科的に書き戻す。YAML ライブラリを使わず、所有する
-// スカラ行（kiro-loop の name/interval_minutes/cron/enabled、statemachine の先頭 name/description）
-// だけを行単位で書換/挿入し、ブロックスカラ `prompt: |`・コメント・順序・他エントリは一切触らない。
+// kiro-loop の所有フィールドと statemachine の先頭 name/description だけを書き換え、
+// コメント・順序・他エントリは触らない。
 // フル再シリアライズはコメント破壊のリスクが高いため採らない。
 
 const { parseKiroLoopPromptsWithLines, scalarValue } = require('./discover');
@@ -39,11 +39,11 @@ function parseIntervalMinutes(schedule) {
 }
 
 // out 再構成: repl（行 index→新行）と inserts（beforeIndex→行配列）を適用。
-function rebuild(lines, repl, inserts, eol) {
+function rebuild(lines, repl, inserts, eol, removed = new Set()) {
   const out = [];
   for (let i = 0; i <= lines.length; i += 1) {
     if (inserts.has(i)) out.push(...inserts.get(i));
-    if (i < lines.length) out.push(repl.has(i) ? repl.get(i) : lines[i]);
+    if (i < lines.length && !removed.has(i)) out.push(repl.has(i) ? repl.get(i) : lines[i]);
   }
   return out.join(eol);
 }
@@ -52,8 +52,7 @@ function detectEol(rawText) {
   return String(rawText).includes('\r\n') ? '\r\n' : '\n';
 }
 
-// edits: [{ promptIndex, promptName, name?, schedule?, enabled?, scheduleKey }]
-//   name/schedule/enabled は「変更後の値」。存在するキーのみ書き戻す。
+// edits: [{ promptIndex, promptName, name?, prompt?, schedule?, enabled?, scheduleKey }]
 // 返り値 { text, errors }。実際の差分が無くても text は等価（元コメント/構造を保持）。
 function applyKiroLoopEdits(rawText, edits) {
   const eol = detectEol(rawText);
@@ -62,6 +61,7 @@ function applyKiroLoopEdits(rawText, edits) {
   const entries = parseKiroLoopPromptsWithLines(norm);
   const repl = new Map();
   const inserts = new Map();
+  const removed = new Set();
   const errors = [];
 
   const addInsert = (beforeIdx, text) => {
@@ -92,12 +92,32 @@ function applyKiroLoopEdits(rawText, edits) {
         addInsert(entry.dashLine + 1, pad + key + ': ' + valueText);
       }
     };
+    const setPrompt = (value) => {
+      const f = entry.fields.prompt;
+      const body = String(value || '').replace(/\r\n/g, '\n').split('\n')
+        .map((line) => `${' '.repeat(entry.fieldIndent + 2)}${line}`).join(eol);
+      if (!f) {
+        addInsert(entry.dashLine + 1, `${pad}prompt: |${eol}${body}`);
+        return;
+      }
+      const prefix = f.line === entry.dashLine ? (entry.dashPrefix || pad) : pad;
+      repl.set(f.line, `${prefix}prompt: |${trailingComment(lines[f.line])}${eol}${body}`);
+      if (/^[|>]/.test(String(f.rawVal || '').trim())) {
+        for (let i = f.line + 1; i < lines.length; i += 1) {
+          if (lines[i].trim() && lines[i].match(/^\s*/)[0].length <= entry.fieldIndent) break;
+          removed.add(i);
+        }
+      }
+    };
 
     if (Object.prototype.hasOwnProperty.call(edit, 'name') && edit.name !== undefined) {
       setField('name', yamlDq(edit.name));
     }
     if (Object.prototype.hasOwnProperty.call(edit, 'enabled') && edit.enabled !== undefined) {
       setField('enabled', edit.enabled ? 'true' : 'false');
+    }
+    if (Object.prototype.hasOwnProperty.call(edit, 'prompt') && edit.prompt !== undefined) {
+      setPrompt(edit.prompt);
     }
     if (Object.prototype.hasOwnProperty.call(edit, 'schedule') && edit.schedule !== undefined) {
       if (edit.scheduleKey === 'cron') {
@@ -110,7 +130,36 @@ function applyKiroLoopEdits(rawText, edits) {
       // scheduleKey==='' の項目は schedule を書き戻さない（読んだ物理フィールドが無い）
     }
   }
-  return { text: rebuild(lines, repl, inserts, eol), errors };
+  return { text: rebuild(lines, repl, inserts, eol, removed), errors };
+}
+
+// dashboard で追加した項目は marker 付きの1ブロックとして所有し、安全に追加・更新・削除する。
+function upsertManagedKiroPrompt(rawText, item, prompt) {
+  const eol = detectEol(rawText);
+  const id = String(item.id || '').replace(/[^A-Za-z0-9_.-]+/g, '-');
+  const marker = `  # agent-dashboard: ${id}`;
+  let lines = String(rawText || '').replace(/\r\n/g, '\n').split('\n');
+  let start = lines.findIndex((line) => line === marker);
+  if (start >= 0) {
+    let end = start + 2;
+    while (end < lines.length && !/^\S/.test(lines[end]) && !/^ {2}(?:#|-\s)/.test(lines[end])) end += 1;
+    lines.splice(start, end - start);
+  }
+  if (prompt == null) return { text: lines.join(eol), changed: start >= 0 };
+  let promptsAt = lines.findIndex((line) => /^prompts:\s*(#.*)?$/.test(line));
+  if (promptsAt < 0) {
+    while (lines.length && !lines[lines.length - 1]) lines.pop();
+    lines.push('', 'prompts:');
+    promptsAt = lines.length - 1;
+  }
+  const body = String(prompt).replace(/\r\n/g, '\n').split('\n').map((line) => `      ${line}`);
+  const schedule = String(item.schedule || '').trim();
+  const interval = parseIntervalMinutes(schedule);
+  const block = [marker, `  - name: ${yamlDq(item.name || item.id)}`, '    prompt: |', ...body];
+  if (schedule) block.push(interval != null ? `    interval_minutes: ${interval}` : `    cron: ${yamlDq(schedule)}`);
+  block.push('    enabled: true', '');
+  lines.splice(promptsAt + 1, 0, ...block);
+  return { text: lines.join(eol), changed: true };
 }
 
 // statemachine の workflow.yaml: states: より前の列0 name:/description: のみ書換/挿入。
@@ -154,6 +203,7 @@ function applyStatemachineEdits(rawText, edits) {
 
 module.exports = {
   applyKiroLoopEdits,
+  upsertManagedKiroPrompt,
   applyStatemachineEdits,
   trailingComment,
   parseIntervalMinutes,

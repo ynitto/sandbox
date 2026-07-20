@@ -24,6 +24,7 @@ async function init() {
   $('btn-settings').addEventListener('click', () => openGlobalSettings('app'));
   $('btn-technical-info-close').addEventListener('click', () => $('dlg-technical-info').close());
   $('btn-cw-cancel').addEventListener('click', () => $('dlg-cowork-work').close());
+  $('cw-type').addEventListener('change', updateCoworkWorkFields);
   const chClose = $('btn-cowork-history-close');
   if (chClose) {
     chClose.addEventListener('click', () => {
@@ -31,7 +32,7 @@ async function init() {
       $('dlg-cowork-history').close();
     });
   }
-  $('btn-cw-ok').addEventListener('click', (ev) => { ev.preventDefault(); applyCoworkWorkDialog(); });
+  $('btn-cw-ok').addEventListener('click', async (ev) => { ev.preventDefault(); await applyCoworkWorkDialog(); });
   setupAmigosDialogs();
   $('btn-cw-save-cancel').addEventListener('click', () => $('dlg-cowork-save').close());
   $('btn-cw-save-ok').addEventListener('click', (ev) => { ev.preventDefault(); saveCoworkDraft(); });

@@ -698,5 +698,5 @@ function renderAmigos() {
 }
 
 function workTypeLabel(type) {
-  return type === 'state-machine' ? '定型業務' : '定期実行';
+  return type === 'state-machine' ? '定型業務' : 'プロンプト';
 }

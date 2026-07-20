@@ -39,6 +39,17 @@ for (const id of ['btn-project-settings', 'dlg-project-settings', 'project-setti
 }
 assert.ok(!html.includes('>オーケストレーション</button>'), '内部用語をタブ名に出しません');
 assert.ok(!html.includes('>Amigos</button>'), 'UI のタブ名に内部機能名 Amigos を出しません');
+const coworkDialog = html.slice(
+  html.indexOf('<dialog id="dlg-cowork-work"'),
+  html.indexOf('<dialog id="dlg-cowork-save"')
+);
+assert.ok(coworkDialog.includes('<option value="loop">プロンプト</option>'));
+assert.ok(coworkDialog.includes('<option value="state-machine">定型業務</option>'));
+for (const removed of ['cw-repo', 'cw-workflow', 'cw-description', 'cw-enabled']) {
+  assert.ok(!coworkDialog.includes(`id="${removed}"`), `${removed} は作業ダイアログに表示しません`);
+}
+assert.ok(coworkDialog.includes('id="cw-prompt-field"'));
+assert.ok(coworkDialog.includes('id="cw-instruction-field"'));
 assert.ok(!html.includes('定期・定型作業'));
 assert.ok(!renderer.includes('定期・定型作業'));
 assert.ok(renderer.includes('function overviewVersionsHtml('), '概要画面に計画バージョン一覧が必要です');

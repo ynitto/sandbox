@@ -121,42 +121,35 @@
 
 
   <!-- ======== 定常業務の編集 ======== -->
-  <dialog id="dlg-cowork-work" class="wide">
+  <dialog id="dlg-cowork-work">
     <form method="dialog">
       <h2 id="cowork-work-title">作業を編集</h2>
       <div class="row2">
         <div class="field">
-          <label>対象フォルダ</label>
-          <select id="cw-repo"></select>
-        </div>
-        <div class="field">
-          <label>種類</label>
+          <label for="cw-type">種類</label>
           <select id="cw-type">
-            <option value="loop">kiro-loop / agent-loop 定期実行</option>
-            <option value="state-machine">statemachine-use 定型業務</option>
+            <option value="loop">プロンプト</option>
+            <option value="state-machine">定型業務</option>
           </select>
         </div>
-      </div>
-      <div class="row2">
         <div class="field">
-          <label>名前</label>
-          <input id="cw-name" />
-        </div>
-        <div class="field">
-          <label>スケジュール（定期実行のみ）</label>
-          <input id="cw-schedule" class="mono" placeholder="例: 0 9 * * *" />
+          <label for="cw-name">名前</label>
+          <input id="cw-name" autocomplete="off" />
         </div>
       </div>
-      <div class="field">
-        <label>workflow（statemachine-use の定型業務のみ）</label>
-        <input id="cw-workflow" class="mono" placeholder="例: workflows/release.yaml" />
+      <div class="field" id="cw-prompt-field">
+        <label for="cw-prompt">プロンプト</label>
+        <textarea id="cw-prompt" rows="6" placeholder="エージェントに繰り返し実行してほしい内容"></textarea>
+      </div>
+      <div class="field" id="cw-instruction-field" hidden>
+        <label for="cw-instruction">定型業務の手順</label>
+        <textarea id="cw-instruction" rows="6" placeholder="判断や分岐を含む一連の手順を文章で入力"></textarea>
+        <small class="muted">確定すると、外部ターミナルでエージェントがステートマシンを作成します。</small>
       </div>
       <div class="field">
-        <label>説明</label>
-        <textarea id="cw-description" rows="3"></textarea>
-      </div>
-      <div class="field" id="cw-enabled-field">
-        <label><input type="checkbox" id="cw-enabled" /> 有効（定期実行のみ・kiro-loop の enabled）</label>
+        <label for="cw-schedule">スケジュール（任意）</label>
+        <input id="cw-schedule" class="mono" placeholder="例: 0 9 * * *" />
+        <small class="muted">空欄の場合は手動実行のみです。</small>
       </div>
       <div class="dialog-actions">
         <button id="btn-cw-cancel" value="cancel">キャンセル</button>

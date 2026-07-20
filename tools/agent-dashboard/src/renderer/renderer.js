@@ -1752,7 +1752,7 @@ function updateCoworkTabVisibility() {
   const pane = $('tab-cowork');
   if (!btn || !pane) return;
   const folder = selectedProjectFolder();
-  const coworkAvailable = coworkHasProjectConfig(state.cowork, folder);
+  const coworkAvailable = coworkHasProjectConfig(state.cowork, folder) || state.coworkForcedOpen;
   const features = workspaceFeatureModel(state.discovery, state.selectedDir, coworkAvailable ? 1 : 0);
   for (const el of document.querySelectorAll('.tab[data-feature="agent-project"], .tabpane[data-feature="agent-project"]')) {
     el.classList.toggle('hidden', !features.agentProject);
