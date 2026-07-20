@@ -503,3 +503,5 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-20 11:49:08 verify: sibling-163827 を https://github.com/ynitto/sandbox@ap/sibling-163827（path=tools/agent-project） のクローン内で検証
 - 2026-07-20 11:49:08 cycle 2: sibling-163827 → 検収待ち（承認ゲート） — commit ef1f92c3
 - 2026-07-20 11:49:11 === agent-project 停止 reason=drained cycles=2 done=0 blocked=0 notified=True promoted=0 ===
+- 2026-07-20 11:49:13 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-20 11:49:13 === project watch: 監視中（charter 更新/フィードバック待ち）===
