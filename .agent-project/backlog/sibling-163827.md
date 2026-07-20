@@ -1,5 +1,5 @@
 ## sibling-163827: sibling 自動検出レイヤと利用手順を新境界へ追随させる
-- status: blocked
+- status: review
 - source: charter
 - priority: 0
 - verify: `PYTHONPATH=tools/agent-project python3 -m unittest discover -s tools/agent-project/tests -p 'test_codd_gate_*.py' && grep -nE 'codd_gate_regression|regression_cmd|intake_cmd' tools/agent-project/README.md && ! grep -nE 'build_config.*メモリ上で自動|_apply_codd_gate_auto_wiring' tools/agent-project/README.md`
@@ -11,5 +11,9 @@
 - charter: v1
 - after: agent_project-codd_gate-163827
 - assess: c=2 r=2 a=2
-- last_run: req-ef1f92c3-sibling-163827-r0
 - needs_reason: 繰り返し NG（retries=4）: agent-flow run タイムアウト（3600s）
+- last_run: req-ef1f92c3-sibling-163827-r0
+- gate_ref: commit ef1f92c3
+- gate_ts: 2026-07-20 11:49:08
+- gate_branch: 
+- gate_vmsg: exit=0 codd-gate を検出できたのに `regression_cmd`/`intake_cmd` が 447:- **取り込みコマンド（intake_cmd）**: 外部の決定的ゲート/検出器を **watch の周期で pull** する汎用フック（push 型の 448:  inbox と対）。設定 `intake_cmd:`（CLI `--intake-cmd`）のコマンドをパ

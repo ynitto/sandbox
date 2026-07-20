@@ -67,3 +67,9 @@
 - reason  : 要対応画面から再実行（失敗した工程だけやり直し）
 - affects : sibling-163827 → ready (last_run=req-ef1f92c3-sibling-163827-r0)
 
+## DR-0012  2026-07-20  actor: nitto
+- context : sibling-163827 を run req-ef1f92c3-sibling-163827-r0 の続きから再開
+- action  : resume-run
+- reason  : 要対応画面から再実行（失敗した工程だけやり直し）
+- affects : sibling-163827 → ready (last_run=req-ef1f92c3-sibling-163827-r0)
+

@@ -497,3 +497,9 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-20 10:16:58 run 再開: sibling-163827 は req-ef1f92c3-sibling-163827-r0 の失敗ノードだけをやり直します（done は温存）
 - 2026-07-20 11:16:59 flow detach: sibling-163827 の run req-ef1f92c3-sibling-163827-r0 を failed（agent-flow run タイムアウト（3600s））
 - 2026-07-20 11:17:01 cycle 1: sibling-163827 → 人の判断（繰り返し NG）
+- 2026-07-20 11:17:04 state-git 同期: import=5 export=16
+- 2026-07-20 11:17:04 commands 取り込み: resume-run sibling-163827（viewer-resume-run-sibling-163827-1784510217150.json）
+- 2026-07-20 11:17:04 run 再開: sibling-163827 は req-ef1f92c3-sibling-163827-r0 の失敗ノードだけをやり直します（done は温存）
+- 2026-07-20 11:49:08 verify: sibling-163827 を https://github.com/ynitto/sandbox@ap/sibling-163827（path=tools/agent-project） のクローン内で検証
+- 2026-07-20 11:49:08 cycle 2: sibling-163827 → 検収待ち（承認ゲート） — commit ef1f92c3
+- 2026-07-20 11:49:11 === agent-project 停止 reason=drained cycles=2 done=0 blocked=0 notified=True promoted=0 ===

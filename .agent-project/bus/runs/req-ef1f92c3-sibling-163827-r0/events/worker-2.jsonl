@@ -25,3 +25,5 @@
 {"ts": "2026-07-20T02:01:18Z", "who": "worker-2", "kind": "result", "node": "t7", "status": "done"}
 {"ts": "2026-07-20T02:01:18Z", "who": "worker-2", "kind": "claimed", "node": "gate"}
 {"ts": "2026-07-20T02:10:57Z", "who": "worker-2", "kind": "result", "node": "gate", "status": "done"}
+{"ts": "2026-07-20T02:45:07Z", "who": "worker-2", "kind": "claimed", "node": "synth"}
+{"ts": "2026-07-20T02:48:44Z", "who": "worker-2", "kind": "result", "node": "synth", "status": "done"}
