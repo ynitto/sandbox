@@ -1103,28 +1103,45 @@ function consistencyGateHtml(p) {
       </dd>
     </div>`).join('');
 
-  // 未結線が 1 つでもあれば有効化導線を出す（出典: tools/agent-project/README.md「一貫性ゲート」）。
-  // regression_cmd だけは冪等 upsert の CLI があり、intake_cmd は設定ファイルを直接編集する。
+  // 未結線が 1 つでもあれば有効化導線を出す。書く行・CLI・注意書きは
+  // tools/agent-project/README.md「一貫性ゲート（codd-gate 連携・オプション）」の原文に合わせる
+  // （画面と README で手順が食い違うと、どちらが正か人が判断できなくなる）。
+  //   - 有効化は設定ファイルへ 2 行書く。`<root>/repos.json` は README 同様プレースホルダのまま出す
+  //     （このプロジェクトの root は結線判定に使っていないので、ここで勝手に埋めない）。
+  //   - regression_cmd の行だけは sibling CLI codd_gate_regression.py で冪等 upsert できる。
+  //     intake_cmd に対応する注入 CLI は無いので yaml を直接編集する。
+  //   - CLI の --config は**既存の**設定ファイルを指すこと（無ければエラーで止まる）。
+  //     よって設定ファイル未検出のときは CLI を勧めず、作成手順だけを出す。
   const wiredAll = gate.regressionWired && gate.intakeWired;
+  const lines = [
+    !gate.regressionWired && `regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV" --repos <root>/repos.json'`,
+    !gate.intakeWired && `intake_cmd: 'codd-gate tasks --debt --repos <root>/repos.json'`,
+  ].filter(Boolean);
+  const cliHint = gate.configFile && !gate.regressionWired
+    ? `<p><code>regression_cmd</code> の行は手書きの代わりに CLI で入れてもよい:
+        <code>python3 codd_gate_regression.py --config ${esc(gate.configFile)}</code>
+        （codd-gate を実測してこの 1 キーだけを冪等 upsert する。<code>--dry-run</code> なら書かずに結果だけ出す。
+        codd-gate が未検出・バージョン/schema 非互換なら何も書かない）。</p>`
+    : '';
+  const intakeHint = !gate.intakeWired
+    ? `<p><code>intake_cmd</code> に対応する注入 CLI は無いので、こちらは yaml を直接編集する。</p>`
+    : '';
   const enable = wiredAll
     ? ''
-    : gate.configFile
-      ? `<div class="need-resolution">
-          <span class="label-chip">有効化</span>
-          設定ファイル <span class="mono">${esc(gate.configFile)}</span> に不足している行を追加します。
-          <code>regression_cmd</code> は
-          <code>python3 codd_gate_regression.py --config ${esc(gate.configFile)}</code>
-          でも注入できます（<code>intake_cmd</code> に対応する CLI はないので手で追記します）。
-          <div class="summary-actions">
-            <button class="summary-link secondary" data-gate-open="${esc(gate.configFile)}">設定ファイルを開く</button>
-          </div>
-        </div>`
-      : `<div class="need-resolution">
-          <span class="label-chip">有効化</span>
-          このワークスペース配下に agent-project の設定ファイルが見つかりません。
-          <span class="mono">.agent/agent-project.yaml</span> を作成し、
-          <code>regression_cmd</code> と <code>intake_cmd</code> の 2 行を書き足してください。
-        </div>`;
+    : `<div class="need-resolution">
+        <span class="label-chip">有効化</span>
+        ${gate.configFile
+          ? `設定ファイル <span class="mono">${esc(gate.configFile)}</span> へ次の行を書く:`
+          : `agent-project の設定ファイルが見つかりません。ワークスペース直下に
+             <span class="mono">.agents/agent-project.yaml</span> を作り、次の行を書く:`}
+        <pre class="mono">${esc(lines.join('\n'))}</pre>
+        ${cliHint}${intakeHint}
+        ${gate.configFile
+          ? `<div class="summary-actions">
+              <button class="summary-link secondary" data-gate-open="${esc(gate.configFile)}">設定ファイルを開く</button>
+            </div>`
+          : ''}
+      </div>`;
 
   return `<section class="overview-version-section" aria-labelledby="consistency-gate-title">
     <div class="overview-version-heading">
