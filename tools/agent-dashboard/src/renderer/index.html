@@ -190,6 +190,15 @@
         <select id="amigos-post-home"></select>
       </div>
       <div class="field">
+        <label>チームの決め方</label>
+        <div id="amigos-post-mode" class="amigos-mode" role="radiogroup">
+          <label><input type="radio" name="amigos-post-mode" value="team-building" checked />
+            チームビルディング（役割を自動で設計）</label>
+          <label><input type="radio" name="amigos-post-mode" value="roles" />
+            役割を自分で指定する</label>
+        </div>
+      </div>
+      <div class="field">
         <label>タイトル</label>
         <input id="amigos-post-title" placeholder="例: 社内 FAQ ボットの MVP" />
       </div>
@@ -202,7 +211,13 @@
         <textarea id="amigos-post-design" rows="8" class="mono"
           placeholder="例:&#10;必要な画面を作る&#10;テストで動作を確認する"></textarea>
       </div>
-      <details class="amigos-team-settings">
+      <div id="amigos-buildteam-hint" class="field amigos-buildteam-hint">
+        <p class="muted">ミッションから最適な役割と各役割への指示を team-building スキルが設計します。
+          役割を指定する必要はありません。</p>
+        <label>使える環境（任意・カンマ区切り）</label>
+        <input id="amigos-post-capabilities" placeholder="例: python, frontend" />
+      </div>
+      <details id="amigos-post-roles-details" class="amigos-team-settings">
         <summary>担当チームの設定</summary>
         <div class="field">
           <label>担当の構成（通常はそのままで構いません）</label>
