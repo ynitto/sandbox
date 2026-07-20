@@ -487,3 +487,4 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-20 09:09:45 run 再開: sibling-163827 は req-ef1f92c3-sibling-163827-r0 の失敗ノードだけをやり直します（done は温存）
 - 2026-07-20 10:09:45 flow detach: sibling-163827 の run req-ef1f92c3-sibling-163827-r0 を failed（agent-flow run タイムアウト（3600s））
 - 2026-07-20 10:09:48 cycle 2: sibling-163827 → 人の判断（繰り返し NG）
+- 2026-07-20 10:09:51 === agent-project 停止 reason=drained cycles=2 done=0 blocked=1 notified=True promoted=0 ===
