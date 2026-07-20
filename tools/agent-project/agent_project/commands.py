@@ -565,8 +565,14 @@ def _clear_rejected_commands(cfg: "Config", tid: str) -> None:
             payload = json.loads(e.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        cmd = payload.get("command") if isinstance(payload, dict) else None
-        if str((cmd or {}).get("id", "") or "") != tid:
+        if not isinstance(payload, dict):
+            continue
+        cmd = payload.get("command")
+        # 新形式は {"command": {..., "id": ...}}、旧 _reject_command は元の指示 JSON を
+        # そのまま改名したので {"command": "approve", "id": ...}（command が文字列, id は最上位）。
+        # 両形式から task id を取り出す（旧 .err を str.get で踏むと AttributeError で落ちていた）。
+        err_tid = cmd.get("id") if isinstance(cmd, dict) else payload.get("id")
+        if str(err_tid or "") != tid:
             continue
         try:
             e.unlink()
