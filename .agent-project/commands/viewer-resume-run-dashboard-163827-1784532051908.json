@@ -1,8 +1,0 @@
-{
-  "command": "resume-run",
-  "id": "dashboard-163827",
-  "reason": "要対応画面から再実行（失敗した工程だけやり直し）",
-  "actor": "agent-dashboard",
-  "ts": "2026-07-20T07:20:51.908Z",
-  "run": "req-ef1f92c3-dashboard-163827-r0"
-}

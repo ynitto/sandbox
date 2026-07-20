@@ -1,5 +1,5 @@
 ## dashboard-163827: dashboard で一貫性ゲートの状態把握と有効化を支援する
-- status: blocked
+- status: ready
 - source: charter
 - priority: 0
 - verify: `grep -nE 'regression_cmd|intake_cmd|一貫性ゲート' tools/agent-dashboard/src/renderer/renderer.js tools/agent-dashboard/src/features/agent-project/main/project.js && node tools/agent-dashboard/test/needs-diagnosis.test.js && node tools/agent-dashboard/test/overview-ui.test.js`
@@ -12,5 +12,5 @@
 - charter: v1
 - after: codd-gate-163827, sibling-163827
 - assess: c=2 r=1 a=1
-- last_run: req-ef1f92c3-dashboard-163827-r0
 - needs_reason: 繰り返し NG（retries=3）: agent-flow run タイムアウト（3600s）
+- last_run: req-ef1f92c3-dashboard-163827-r0
