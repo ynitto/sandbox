@@ -19,6 +19,8 @@ module.exports = {
     invoke('flow:cancel', { dir, busDir, runId, reason }),
   glFindIssueByToken: (invoke) => (args) => invoke('gitlab:findIssueByToken', args),
 
+  // 監視担当の割り当て（assignments.json）。空の owner で解除
+  setTaskOwner: (invoke) => (dir, id, owner) => invoke('dashboard:setOwner', { dir, id, owner }),
   submitFeedback: (invoke) => (file, feedback, stub) =>
     invoke('dashboard:feedback', { file, feedback, stub }),
   enqueueTask: (invoke) => (dir, spec) => invoke('dashboard:enqueue', { dir, spec }),

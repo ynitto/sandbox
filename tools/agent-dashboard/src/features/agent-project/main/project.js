@@ -159,6 +159,45 @@ function listTasks(dir) {
 }
 
 // ---------------------------------------------------------------------------
+// 監視担当（assignments.json）— viewer 管理のチーム運用メタデータ
+//   タスクの「実作業の分担（エージェント）」とは別軸の、人の監視・検収の分担。
+//   agent-project の契約ファイルではない（本体は読まない）ため、書いても
+//   done の不変条件・状態遷移には一切影響しない。プロジェクトルート直下に
+//   置くので state_git 同期（ドット始まり・flow-archive/claims 以外は全て対象）で
+//   チームに共有される。書式:
+//     { "members": ["alice", "bob"], "tasks": { "<task-id>": "alice" } }
+// ---------------------------------------------------------------------------
+
+const ASSIGNMENTS_FILE = 'assignments.json';
+
+function readAssignments(dir) {
+  const raw = readJson(path.join(dir, ASSIGNMENTS_FILE));
+  const out = { members: [], tasks: {} };
+  if (raw && typeof raw === 'object') {
+    if (Array.isArray(raw.members)) {
+      out.members = raw.members.map((m) => String(m).trim()).filter(Boolean);
+    }
+    if (raw.tasks && typeof raw.tasks === 'object') {
+      for (const [id, name] of Object.entries(raw.tasks)) {
+        const v = String(name == null ? '' : name).trim();
+        if (v) out.tasks[String(id)] = v;
+      }
+    }
+  }
+  return out;
+}
+
+// タスクの実効担当: assignments.json（viewer の割り当て）＞ backlog md の `- owner:`
+// （未知キーは本体が保持する契約なので、手書き・inbox 経由の owner も生きる）。
+function effectiveOwner(assignments, task) {
+  return (
+    (assignments.tasks && assignments.tasks[task.id]) ||
+    String((task.extra && task.extra.owner) || '').trim() ||
+    ''
+  );
+}
+
+// ---------------------------------------------------------------------------
 // charter.md
 // ---------------------------------------------------------------------------
 
@@ -1598,6 +1637,15 @@ function readProject(workspaceDir, cfg) {
   const dir = resolveProjectRoot(workspace);
   const backlog = listTasks(path.join(dir, 'backlog'));
   const archive = listTasks(path.join(dir, 'archive'));
+  // 監視担当（チーム運用）: 各タスクへ実効担当を載せ、メンバー一覧は割り当て済みの
+  // 名前も合流して返す（ミーティングで新しい名前を書けばそのまま選択肢になる）。
+  const assignments = readAssignments(dir);
+  const memberSet = new Set(assignments.members);
+  for (const t of [...backlog, ...archive]) {
+    t.owner = effectiveOwner(assignments, t);
+    if (t.owner) memberSet.add(t.owner);
+  }
+  assignments.members = [...memberSet].sort((a, b) => a.localeCompare(b, 'ja'));
   const needsDir = path.join(dir, 'needs');
   const needs = attachDeliveryHintsFromBacklog(
     synthesizeNeedsFromBacklog(listMdDir(needsDir, parseNeeds), backlog, needsDir),
@@ -1608,6 +1656,11 @@ function readProject(workspaceDir, cfg) {
   for (const need of needs) {
     const cf = commandFailures[String(need.taskId || need.id || '').trim()];
     if (cf && !need.decided) need.commandFailure = cf;
+  }
+  // 要対応カードにも監視担当を載せる（誰がこの判断を見るかの分担を画面で示す）
+  const ownerByTask = new Map([...backlog, ...archive].map((t) => [String(t.id), t.owner || '']));
+  for (const need of needs) {
+    need.owner = ownerByTask.get(String(need.taskId || need.id || '').trim()) || '';
   }
   const projectCfg = readToolConfig('agent-project', [workspace, ...agentDirCandidates(workspace)]);
   const stateBranch = (projectCfg && projectCfg.values && projectCfg.values.state_branch) || DEFAULT_STATE_BRANCH;
@@ -1701,6 +1754,7 @@ function readProject(workspaceDir, cfg) {
     policy: parsePolicy(readText(path.join(dir, 'policy.md'))),
     backlog,
     archive,
+    assignments,                          // 監視担当（viewer 管理・assignments.json）
     byStatus,
     claims,
     needs,
@@ -1730,6 +1784,9 @@ function readProject(workspaceDir, cfg) {
 module.exports = {
   dependentsOf,
   parseTask,
+  readAssignments,
+  effectiveOwner,
+  ASSIGNMENTS_FILE,
   parseCharter,
   parsePolicy,
   parseNeeds,

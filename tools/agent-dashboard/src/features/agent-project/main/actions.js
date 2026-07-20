@@ -150,6 +150,32 @@ function enqueueToInbox(projectDir, spec) {
 }
 
 // ---------------------------------------------------------------------------
+// 監視担当の割り当て（assignments.json）— viewer 管理のチーム運用メタデータ。
+// タスク状態ファイル（backlog/*.md）には触れない: agent-project の契約の外にある
+// サイドカーファイルへの書き込みなので、done の不変条件・状態遷移に影響しない。
+// プロジェクトルート直下に置くため state_git 同期でチームへ共有される。
+// 書きかけを同期に載せないよう .tmp に書いてから rename する。
+// ---------------------------------------------------------------------------
+
+function setTaskOwner(projectDir, id, owner) {
+  const tid = String(id || '').trim();
+  if (!tid || tid !== path.basename(tid)) throw new Error(`不正なタスク ID です: ${id}`);
+  const name = String(owner || '').trim().slice(0, 60);
+  const file = path.join(projectDir, project.ASSIGNMENTS_FILE);
+  const cur = project.readAssignments(projectDir);
+  if (name) {
+    cur.tasks[tid] = name;
+    if (!cur.members.includes(name)) cur.members.push(name);
+  } else {
+    delete cur.tasks[tid];
+  }
+  fs.mkdirSync(projectDir, { recursive: true });
+  fs.writeFileSync(`${file}.tmp`, `${JSON.stringify(cur, null, 2)}\n`, 'utf8');
+  fs.renameSync(`${file}.tmp`, file);
+  return { file, id: tid, owner: name };
+}
+
+// ---------------------------------------------------------------------------
 // 3. 人の指示（approve / hold / pin / defer / revise）
 // ---------------------------------------------------------------------------
 
@@ -497,6 +523,7 @@ module.exports = {
   submitFeedback,
   buildNeedsStub,
   enqueueToInbox,
+  setTaskOwner,
   validateCharterVersion,
   dropCommand,
   runAction,

@@ -51,6 +51,7 @@ assert.deepStrictEqual(item, {
   title: '検索機能の成果を確認',
   decision: '成果物を確認し、完了にしてよいか判断してください。',
   failure: false,
+  owner: '',
   risk: 'high',
   riskText: 'リスク高',
   ageText: '9時間待ち',
