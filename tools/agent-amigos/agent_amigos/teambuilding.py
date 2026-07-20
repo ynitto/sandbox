@@ -1,11 +1,11 @@
 """チームビルディング — ミッションから最適なロールミッション表を設計する。
 
 従来の入力契約（design doc ＋ ロールミッション表）はそのままに、「ミッションだけ」から
-ロールと各ロールへ渡すプロンプト（ミッション文）を設計する段を **team-building スキル**として
+ロールと各ロールへ渡すプロンプト（ミッション文）を設計する段を **team-builder スキル**として
 切り出す。ここではそのスキルの手順を agent CLI に渡して実行させ、返ってきた設計（roles 列）を
 `normalize_mission` で検証してから、従来の公示経路（post）へ合流する。
 
-- スキル本体（正典）: `.github/skills/team-building/SKILL.md`。ここではそれを探索して
+- スキル本体（正典）: `.github/skills/team-builder/SKILL.md`。ここではそれを探索して
   プロンプトへ載せる（＝スキルを呼び出す）。見つからない環境（zipapp 単体・未インストール）
   向けに、手順の要点を組み込みフォールバックとして持つ。
 - LLM 呼び出しは agentcli.run_agent（全 LLM 呼び出しの単一チョークポイント）を使う。
@@ -20,13 +20,13 @@ from .configfile import agent_home_subdir
 from .mission import normalize_mission
 from .util import extract_json
 
-SKILL_NAME = "team-building"
-SKILL_ENV = "AGENT_AMIGOS_TEAM_BUILDING_SKILL"
+SKILL_NAME = "team-builder"
+SKILL_ENV = "AGENT_AMIGOS_TEAM_BUILDER_SKILL"
 
 # スキル本体を探索できない環境向けの最小手順。SKILL.md の「プロセス」「出力契約」の要点を
-# 写したもの（正典は .github/skills/team-building/SKILL.md）。
+# 写したもの（正典は .github/skills/team-builder/SKILL.md）。
 BUILTIN_INSTRUCTIONS = """\
-# team-building（組み込みフォールバック手順）
+# team-builder（組み込みフォールバック手順）
 
 ミッション（ゴール）だけから、協働で仕上げるのに最適なロール構成と、各ロールへ渡す
 ミッション文（＝そのノードのプロンプト）を設計する。出力は agent-amigos のロールミッション表。
@@ -87,7 +87,7 @@ def _repo_skill_path() -> "str | None":
 
 
 def _skill_search_paths() -> "list[str]":
-    """team-building/SKILL.md の探索候補（先勝ち）。install.py の配置先とリポジトリ内。"""
+    """team-builder/SKILL.md の探索候補（先勝ち）。install.py の配置先とリポジトリ内。"""
     paths = []
     envp = _env_skill_path()
     if envp:
@@ -107,7 +107,7 @@ def _skill_search_paths() -> "list[str]":
 
 
 def resolve_skill_instructions() -> "tuple[str, str]":
-    """team-building スキルの手順本文と出所を返す。見つからなければ組み込みフォールバック。"""
+    """team-builder スキルの手順本文と出所を返す。見つからなければ組み込みフォールバック。"""
     for p in _skill_search_paths():
         try:
             if p and os.path.isfile(p):
@@ -141,10 +141,10 @@ def brief_text(brief: dict) -> str:
 def build_prompt(brief: dict, instructions: str) -> str:
     """スキル手順 ＋ ブリーフ ＋ 出力契約 を 1 つのプロンプトに束ねる。"""
     return (
-        "あなたは分散協働ミッションのチーム設計者です。以下の team-building スキルの手順に"
+        "あなたは分散協働ミッションのチーム設計者です。以下の team-builder スキルの手順に"
         "従い、与えられたミッションから最適なロール構成と各ロールへ渡すミッション文"
         "（プロンプト）を設計してください。\n\n"
-        "===== team-building スキル手順 =====\n"
+        "===== team-builder スキル手順 =====\n"
         f"{instructions}\n"
         "===== ミッションブリーフ =====\n"
         f"{brief_text(brief)}\n\n"
@@ -167,11 +167,11 @@ def build_team(brief: dict, cli: str, model: "str | None" = None,
     設計に失敗（出力が壊れている・ロールが不正）した場合は RuntimeError。
     """
     if not (brief.get("goal") or brief.get("design")):
-        raise RuntimeError("team-building には goal か design のどちらかが必要です")
+        raise RuntimeError("team-builder には goal か design のどちらかが必要です")
     resolved_cli = (cli or "").strip().lower()
     if not resolved_cli or resolved_cli == "stub":
         raise RuntimeError(
-            "team-building は実際の agent CLI が必要です（--agent-cli claude/codex/… を指定してください。"
+            "team-builder は実際の agent CLI が必要です（--agent-cli claude/codex/… を指定してください。"
             "stub / 未指定では設計できません）")
 
     instructions, source = resolve_skill_instructions()
@@ -181,10 +181,10 @@ def build_team(brief: dict, cli: str, model: "str | None" = None,
     if isinstance(data, list):          # roles 配列だけ返ってきた場合は包む
         data = {"roles": data}
     if not isinstance(data, dict):
-        raise RuntimeError("team-building 出力から {\"roles\": [...]} を抽出できませんでした")
+        raise RuntimeError("team-builder 出力から {\"roles\": [...]} を抽出できませんでした")
     roles = data.get("roles")
     if not isinstance(roles, list) or not roles:
-        raise RuntimeError("team-building 出力に roles（1 つ以上のロール）がありません")
+        raise RuntimeError("team-builder 出力に roles（1 つ以上のロール）がありません")
 
     mission_over = dict(data.get("mission") or {})
     for k in ("title", "goal"):         # LLM が省いてもブリーフ値で公示できるように補完
@@ -210,5 +210,5 @@ def brief_to_design_doc(brief: dict) -> str:
         parts.append(f"## ゴール\n{brief['goal']}")
     if brief.get("constraints"):
         parts.append(f"## 制約\n{brief['constraints']}")
-    parts.append("## 備考\nこの design doc は team-building（ミッションのみ）から自動生成されました。")
+    parts.append("## 備考\nこの design doc は team-builder（ミッションのみ）から自動生成されました。")
     return "\n\n".join(parts) + "\n"

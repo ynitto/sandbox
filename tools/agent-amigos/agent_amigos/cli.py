@@ -107,7 +107,7 @@ def _write_roles_spec(path: str, spec: dict) -> None:
 
 
 def cmd_build_team(args) -> int:
-    """チームビルディング: ミッション（ゴール/design）だけから team-building スキルで
+    """チームビルディング: ミッション（ゴール/design）だけから team-builder スキルで
     最適なロールミッション表を設計する。既定はドライラン（設計を表示）。
     --out で保存、--post で公示（従来の post 経路へ合流）まで行う。"""
     import json
@@ -126,7 +126,7 @@ def cmd_build_team(args) -> int:
     mission_over, roles, meta = teambuilding.build_team(
         brief, args.agent_cli or "", model=args.model)
     spec = {"mission": mission_over, "roles": roles}
-    log(node, f"team-building 完了: roles={len(roles)} skill={meta.get('skill_source')}")
+    log(node, f"team-builder 完了: roles={len(roles)} skill={meta.get('skill_source')}")
 
     if args.out:
         _write_roles_spec(args.out, spec)
@@ -540,7 +540,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("build-team",
                        help="チームビルディング: ミッション（ゴール/design）だけから "
-                            "team-building スキルで最適なロール表を設計する（既定はドライラン）")
+                            "team-builder スキルで最適なロール表を設計する（既定はドライラン）")
     _bus_arg(p); _node_arg(p); _home_arg(p)
     p.add_argument("--goal", default=None, help="ミッションの目標（design が無ければ必須）")
     p.add_argument("--title", default=None, help="ミッションの短い名前")

@@ -6,7 +6,7 @@
 - オーナーノードが「design doc ＋ 役割ミッション表」で**ミッションを公示**すると、
   参加ノードの**アサイン受付**が始まる。
 - 役割表を書かず**ミッション（ゴール）だけを投げる「チームビルディング」**も選べる
-  （従来の入力契約はそのまま並存）。[team-building スキル](../../.github/skills/team-building/)が
+  （従来の入力契約はそのまま並存）。[team-builder スキル](../../.github/skills/team-builder/)が
   最適な役割構成と各役割へ渡すプロンプトを設計し、そのまま公示経路へ合流する
   （`build-team` コマンド。詳細は[下記](#チームビルディングミッションだけ投げる)）。
 - 参加ノードはロールを claim して **amigo** になり、型付きメッセージ
@@ -70,7 +70,7 @@ cat > .agents/agent-amigos/commands/claim.json <<'EOF'
 {"command": "claim", "mission": "am-…", "role": "impl-api"}
 EOF
 
-# チームビルディング依頼の例（ロール未指定。team-building スキルが役割を設計して公示）
+# チームビルディング依頼の例（ロール未指定。team-builder スキルが役割を設計して公示）
 cat > .agents/agent-amigos/commands/build-team.json <<'EOF'
 {"command": "build-team", "title": "FAQ ボット", "goal": "社内 FAQ ボットの MVP を納品する",
  "capabilities": ["python"], "agent_cli": "claude"}
@@ -97,7 +97,7 @@ agent-amigos deliveries -v
 ## チームビルディング（ミッションだけ投げる）
 
 役割ミッション表を人が書く代わりに、**ミッション（ゴール／design doc）だけ**を渡すと、
-[team-building スキル](../../.github/skills/team-building/)が最適な役割構成と各役割へ渡す
+[team-builder スキル](../../.github/skills/team-builder/)が最適な役割構成と各役割へ渡す
 プロンプトを設計する。設計結果は従来と同じロールミッション表なので、そのまま公示経路
 （アサイン → 協働 → 統合 → 受入）へ合流する。**従来の `post`（役割指定）はそのまま使える** —
 チームビルディングはその前段を自動化するもう 1 つの入口。

@@ -626,7 +626,7 @@ roles:
 
 役割ミッション表を人が書く従来経路（`post`）はそのままに、**ミッション（ゴール／design doc）
 だけ**から上記の役割表を設計する入口を追加する（`build-team`）。設計手順自体は
-`.github/skills/team-building/` に **team-building スキル**として切り出し、agent-amigos は
+`.github/skills/team-builder/` に **team-builder スキル**として切り出し、agent-amigos は
 それを呼び出して実現する（手順の単一ソース化。人＝Claude Code / Copilot からも同じスキルで
 設計できる）。
 

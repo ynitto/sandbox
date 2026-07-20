@@ -9,7 +9,7 @@ JSON を 1 ファイル置くだけで、常駐デーモンが次のサイクル
      "roles": [ {...役割ミッション表の 1 行...} ], "mission": {…任意の mission 上書き…}}
     {"command": "build-team", "title": "...", "goal": "...", "design": "<任意>",
      "constraints": "<任意>", "capabilities": ["python", ...], "agent_cli": "claude"}
-        # ロール未指定。team-building スキルで最適なロール表を設計してから post する
+        # ロール未指定。team-builder スキルで最適なロール表を設計してから post する
     {"command": "claim",  "mission": "<mid>", "role": "<role-id>"}      # 手動引き受け
     {"command": "assign", "mission": "<mid>", "role": "...", "node": "..."}  # owner-picks 確定
     {"command": "accept", "mission": "<mid>"}
@@ -70,7 +70,7 @@ def _do_post(bus: Bus, node_id: str, home: str, rec: dict) -> str:
 
 def _do_build_team(bus: Bus, node_id: str, agent_cli: "str | None", home: str,
                    rec: dict) -> str:
-    """チームビルディング: ロール未指定のミッションから team-building スキルで
+    """チームビルディング: ロール未指定のミッションから team-builder スキルで
     最適なロールミッション表を設計し、そのまま従来の post 経路へ流す。"""
     from . import teambuilding
     design = rec.get("design")

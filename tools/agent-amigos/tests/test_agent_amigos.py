@@ -1402,7 +1402,7 @@ class NodeIdHomeMigrationTests(unittest.TestCase):
 
 
 class TeamBuildingTests(AmigosTestCase):
-    """チームビルディング（ミッションのみ → team-building スキルで役割設計 → 従来 post へ合流）。
+    """チームビルディング（ミッションのみ → team-builder スキルで役割設計 → 従来 post へ合流）。
 
     LLM は使わず agentcli.run_agent を差し替えて設計出力を注入する。
     """
@@ -1432,7 +1432,7 @@ class TeamBuildingTests(AmigosTestCase):
         from agent_amigos import teambuilding
         text, source = teambuilding.resolve_skill_instructions()
         self.assertTrue(source.endswith("SKILL.md") or source == "(builtin)")
-        self.assertIn("team-building", text.lower())
+        self.assertIn("team-builder", text.lower())
 
     def test_build_team_designs_and_validates(self):
         from agent_amigos import teambuilding

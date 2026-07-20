@@ -1,12 +1,12 @@
 ---
-name: team-building
+name: team-builder
 description: agent-amigos 向けに、ミッション（ゴール）だけから最適なノード役割と各役割へ渡すプロンプトを設計し、mission.schema.json 準拠のロールミッション表を組み立てるスキル。「チームを組んで」「役割を設計して」「ミッションだけ投げてチームビルディングして」「このゴールに必要なロールを作って」「役割ミッション表を自動生成して」「誰に何をやらせるか決めて」で発動する。従来の post（役割指定）はそのまま、ロール未定のミッションから設計する。build-team コマンド（CLI / dashboard）から呼ばれる機械可読な出力契約を持つ。
 metadata:
   version: 1.0.0
   tier: stable
   category: orchestration
   tags:
-    - team-building
+    - team-builder
     - agent-amigos
     - role-design
     - multi-agent
@@ -14,7 +14,7 @@ metadata:
     - orchestration
 ---
 
-# team-building — ミッションから最適なチームを設計する
+# team-builder — ミッションから最適なチームを設計する
 
 ## 概要
 

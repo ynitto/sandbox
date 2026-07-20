@@ -89,7 +89,7 @@ function registerIpc(ctx) {
     });
   });
   // チームビルディング依頼: ロール未指定のミッションだけを投函（取り込み側が
-  // team-building スキルで最適なロール表を設計してから公示する。従来の post と並存）
+  // team-builder スキルで最適なロール表を設計してから公示する。従来の post と並存）
   handle('amigos:buildTeam', (payload) => {
     const p = payload || {};
     const goal = String(p.goal || '').trim();

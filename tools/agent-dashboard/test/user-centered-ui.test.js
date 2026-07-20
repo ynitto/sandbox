@@ -164,7 +164,7 @@ assert.match(css, /\.amigos-request-dialog\[open\]\s*\{[^}]*height:/s,
   'モード切替でダイアログ外形を変えない');
 assert.match(css, /\.amigos-mode input\s*\{[^}]*position:\s*absolute;[^}]*opacity:\s*0/s,
   'ラジオ入力はカードへ視覚的に統合する');
-assert.ok(!missionRequestDialog.includes('team-building スキル'), '利用者向け説明に内部スキル名を出さない');
+assert.ok(!missionRequestDialog.includes('team-builder スキル'), '利用者向け説明に内部スキル名を出さない');
 assert.ok(!missionRequestDialog.includes('commands/'), '依頼画面に内部ディレクトリを出しません');
 assert.ok(!missionRequestDialog.includes('schemas/mission.schema.json'), '依頼画面にスキーマ名を出しません');
 assert.ok(!missionRequestDialog.includes('design doc'), '依頼画面に内部の成果物名を出しません');
