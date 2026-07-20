@@ -247,9 +247,6 @@ function buildInteractiveCommand(resolved) {
 }
 
 function openInteractiveChat(cfg, projectDir) {
-  if (process.platform !== 'win32') {
-    throw new Error('外部ターミナルでのCLIチャット起動は Windows / WSL で利用できます');
-  }
   const resolved = resolveAgent(cfg, projectDir);
   const { runChatWindow } = require('../../cowork/main/loopProvider');
   // セッション開始コマンド（agent-session-commands）。このボタンも新しい tmux セッションを

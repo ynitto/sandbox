@@ -27,7 +27,8 @@ assert.match(projectHeader, /id="btn-cli-chat"[^>]*disabled/);
 assert.ok(projectHeader.includes('CLIチャットを開く'), 'CLIチャットは対象が分かるプロジェクトヘッダーに置きます');
 assert.ok(renderer.includes('function openCliChat('));
 assert.ok(renderer.includes('api.agentOpenChat({ dir })'), '選択中ワークスペースをCLIチャット起動へ渡します');
-assert.match(css, /\.project-cli-chat\s*\{[^}]*min-height:\s*44px/s);
+assert.match(css, /\.project-cli-chat\s*\{[^}]*min-height:\s*36px/s);
+assert.match(css, /@media \(pointer:\s*coarse\)[\s\S]*?\.project-cli-chat\s*\{[^}]*min-height:\s*44px/s);
 assert.ok(
   html.indexOf('data-tab="project-settings"') < html.indexOf('data-tab="orchestration"'),
   'プロジェクト設定は全体設定の左に置きます'

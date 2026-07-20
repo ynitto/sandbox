@@ -151,7 +151,7 @@ function windowScript(command, argv, cwd) {
 // 実行スクリプトの一時ファイル置き場。%TEMP%\agent-dashboard\ に書き、WSL からは
 // /mnt/<drive> 経由で読む。スクリプト本文を cmd.exe のコマンドラインに載せない
 // （' % ^ & 等の引用規則で本文が化ける）ためのワンクッション。
-function writeWindowScript(script) {
+function writeWindowScript(script, platform = process.platform) {
   const fs = require('fs');
   const os = require('os');
   const path = require('path');
@@ -161,14 +161,50 @@ function writeWindowScript(script) {
   try {
     const cutoff = Date.now() - 24 * 60 * 60 * 1000;
     for (const f of fs.readdirSync(dir)) {
-      if (!/^cowork-run-.*\.sh$/.test(f)) continue;
+      if (!/^cowork-run-.*\.(?:sh|command)$/.test(f)) continue;
       const p = path.join(dir, f);
       try { if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p); } catch { /* 掃除失敗は無視 */ }
     }
   } catch { /* 掃除失敗は無視 */ }
-  const file = path.join(dir, `cowork-run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.sh`);
-  fs.writeFileSync(file, `${script.replace(/\r\n/g, '\n')}\n`, 'utf8');
+  const ext = platform === 'darwin' ? 'command' : 'sh';
+  const file = path.join(dir, `cowork-run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`);
+  fs.writeFileSync(file, `#!/bin/sh\n${script.replace(/\r\n/g, '\n')}\n`, 'utf8');
+  if (platform !== 'win32') fs.chmodSync(file, 0o700);
   return file;
+}
+
+function findExecutable(name) {
+  const fs = require('fs');
+  const path = require('path');
+  for (const dir of String(process.env.PATH || '').split(path.delimiter).filter(Boolean)) {
+    const file = path.join(dir, name);
+    try {
+      fs.accessSync(file, fs.constants.X_OK);
+      return file;
+    } catch { /* 次の PATH 候補へ */ }
+  }
+  return '';
+}
+
+function terminalLaunchSpec(platform, scriptFile, which = findExecutable) {
+  if (platform === 'darwin') {
+    return { command: 'open', args: ['-a', 'Terminal', scriptFile], terminal: 'Terminal' };
+  }
+  if (platform !== 'linux') throw new Error(`未対応のOSです: ${platform}`);
+  const candidates = [
+    ['x-terminal-emulator', ['-e', scriptFile]],
+    ['gnome-terminal', ['--', scriptFile]],
+    ['konsole', ['-e', scriptFile]],
+    ['xfce4-terminal', ['-e', scriptFile]],
+    ['kitty', [scriptFile]],
+    ['alacritty', ['-e', scriptFile]],
+    ['xterm', ['-e', scriptFile]],
+  ];
+  for (const [name, args] of candidates) {
+    const command = which(name);
+    if (command) return { command, args, terminal: name };
+  }
+  throw new Error('利用できる外部ターミナルが見つかりません');
 }
 
 // `cmd /s /c start "<title>" wsl.exe …` のコマンドライン。windowsVerbatimArguments で
@@ -181,23 +217,40 @@ function windowStartCommand(distro, wslScriptPath, title = '定常業務 (agent-
 // スクリプトを新しいコンソールウィンドウ（WSL）で起動する共通処理。
 // 成否は「ウィンドウ起動の受付」まで（実行結果はウィンドウ内で人が見る）。
 function launchWindowScript(script, options = {}) {
-  const distro = wslDistro(options.cwd);
+  const platform = process.platform;
   let scriptFile;
   try {
-    scriptFile = writeWindowScript(script);
+    scriptFile = writeWindowScript(script, platform);
   } catch (e) {
     return { ok: false, status: -1, stdout: '', stderr: '', error: `実行スクリプトを書けません: ${e.message}` };
   }
-  // C:\Users\...\Temp\... → /mnt/c/users/.../temp/...（テスト等で変換できなければそのまま）
-  const wslScriptPath = winDriveToWsl(scriptFile) || scriptFile.replace(/\\/g, '/');
-  const cmdline = windowStartCommand(distro, wslScriptPath, options.title);
+  let command;
+  let args;
+  let windowCommand;
+  let terminal = '';
+  let spawnOptions = { stdio: 'ignore', detached: true };
+  if (platform === 'win32') {
+    const distro = wslDistro(options.cwd);
+    // C:\Users\...\Temp\... → /mnt/c/users/.../temp/...（変換できなければそのまま）
+    const wslScriptPath = winDriveToWsl(scriptFile) || scriptFile.replace(/\\/g, '/');
+    const cmdline = windowStartCommand(distro, wslScriptPath, options.title);
+    command = 'cmd.exe';
+    args = ['/d', '/s', '/c', cmdline];
+    windowCommand = `cmd /s /c ${cmdline}`;
+    terminal = 'WSL';
+    spawnOptions = { ...spawnOptions, windowsHide: true, windowsVerbatimArguments: true };
+  } else {
+    let spec;
+    try {
+      spec = terminalLaunchSpec(platform, scriptFile);
+    } catch (e) {
+      return { ok: false, status: -1, stdout: '', stderr: '', error: e.message, scriptFile };
+    }
+    ({ command, args, terminal } = spec);
+    windowCommand = [command, ...args].map(shellQuote).join(' ');
+  }
   try {
-    const child = spawn('cmd.exe', ['/d', '/s', '/c', cmdline], {
-      stdio: 'ignore',
-      windowsHide: true,              // 隠すのは cmd 自身。start が開く新ウィンドウは表示される
-      windowsVerbatimArguments: true, // cmdline を Node に再引用させずそのまま渡す
-      detached: true,
-    });
+    const child = spawn(command, args, spawnOptions);
     child.on('error', () => {}); // 起動失敗（ENOENT 等）で main プロセスを落とさない
     child.unref();
   } catch (e) {
@@ -210,8 +263,9 @@ function launchWindowScript(script, options = {}) {
     stdout: '',
     stderr: '',
     error: '',
-    message: options.message || '別ウィンドウ（WSL tmux）で実行を開始しました',
-    windowCommand: `cmd /s /c ${cmdline}`,
+    message: options.message || `別ウィンドウ（${terminal} / tmux）で実行を開始しました`,
+    windowCommand,
+    terminal,
     scriptFile,
   };
 }
@@ -257,7 +311,8 @@ function chatSessionName(linuxCwd, cli = '') {
 function sessionProcessLines(entries) {
   return (entries || []).filter((e) => e.mode === 'process' && !e.skip).map((e) => {
     const body = e.cwd ? `cd ${shellQuote(e.cwd)} && ${e.run}` : e.run;
-    const run = `timeout ${Number(e.timeout) || 60} sh -c ${shellQuote(body)}`;
+    const seconds = Number(e.timeout) || 60;
+    const run = `{ if command -v timeout >/dev/null 2>&1; then timeout ${seconds} sh -c ${shellQuote(body)}; else sh -c ${shellQuote(body)}; fi; }`;
     const onFail = e.on_error === 'fail'
       ? `{ echo "[agent-dashboard] セッション開始コマンド ${e.id} が失敗したため起動しません"; read _; exit 1; }`
       : `echo "[agent-dashboard] セッション開始コマンド ${e.id} が失敗しました（続行します）"`;
@@ -285,6 +340,19 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands }
   const cd = cwd ? `cd ${shellQuote(cwd)} || { echo "[agent-dashboard] cd 失敗: ${cwd}"; read _; exit 1; }; ` : '';
   const preLines = sessionProcessLines(sessionCommands);
   const chatLines = sessionChatLines(sessionCommands);
+  const create = `tmux new-session -s "$__ses" ${cwd ? `-c ${shellQuote(cwd)} ` : ''}${shellQuote(`exec ${chat}`)}`;
+  if (!sendPrompt && !chatLines) {
+    return (
+      `export LANG=C.UTF-8 LC_ALL=C.UTF-8; ${cd}` +
+      `__ses=${shellQuote(ses)}; ` +
+      `if ! tmux has-session -t "$__ses" 2>/dev/null; then ` +
+      preLines +
+      `echo "[agent-dashboard] tmux セッション $__ses を作成してエージェントCLIへ接続します（Ctrl+b d で離脱）"; ` +
+      `${create} || echo "[agent-dashboard] tmux セッションを開始できませんでした"; ` +
+      `else echo "[agent-dashboard] CLIチャットへ接続します（Ctrl+b d で離脱）"; tmux attach -t "$__ses"; fi; ` +
+      `echo; echo "[agent-dashboard] Enter でこのウィンドウを閉じます"; read _`
+    );
+  }
   return (
     `export LANG=C.UTF-8 LC_ALL=C.UTF-8; ${cd}` +
     `__ses=${shellQuote(ses)}; __new=0; ` +
@@ -293,7 +361,7 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands }
     // セッションを新しく作るときだけ前準備を走らせる（既存セッションへの送信では走らせない）
     preLines +
     `echo "[agent-dashboard] tmux セッション $__ses を作成してエージェントCLIを起動します"; ` +
-    `tmux new-session -d -s "$__ses" ${cwd ? `-c ${shellQuote(cwd)} ` : ''}${shellQuote(`exec ${chat}`)} || { echo "[agent-dashboard] tmux セッション作成に失敗しました"; read _; exit 1; }; ` +
+    `${create.replace('new-session', 'new-session -d')} || { echo "[agent-dashboard] tmux セッション作成に失敗しました"; read _; exit 1; }; ` +
     `fi; ` +
     // 入力プロンプトの検出待ちは「何かを送るとき」だけ行う。業務プロンプトが無くても、
     // 新規セッションに chat モードの開始コマンドがあるなら送る必要があるので待つ
@@ -393,5 +461,5 @@ module.exports = {
   decodeCliOutput, windowScript, windowStartCommand, writeWindowScript, runInWindow,
   chatWindowScript, chatSessionName, runChatWindow, launchWindowScript,
   sessionProcessLines, sessionChatLines,
-  splitCommand, quoteToken, expandHome,
+  splitCommand, quoteToken, expandHome, findExecutable, terminalLaunchSpec,
 };
