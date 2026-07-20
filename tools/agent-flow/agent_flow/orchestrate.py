@@ -199,6 +199,15 @@ def _orch_check_canceled(bus: Bus, args, who: str) -> bool:
 
 def cmd_orchestrate(args) -> int:
     who = args.node_id
+    # セッション開始コマンド（agent-session-commands）。orchestrator も 1 プロセス＝1 セッション
+    # として扱い、bus に触る前に前準備を済ませる。on_error='fail' が失敗したら起こさない。
+    if not run_session_commands(who, {
+        "engine": "agent-flow", "workload": "flow", "cwd": os.getcwd(),
+        "workspace": os.getcwd(), "agent_cli": getattr(args, "agent_cli", "") or "",
+        "model": getattr(args, "model", "") or "", "run_id": getattr(args, "run_id", "") or "",
+        "node_id": who,
+    }):
+        return 1
     bus = make_bus(args, who)
     bus.sync_pull()
     # リトライ: 先行 run（--inherit-from）から確定済みノードを引き継ぎ、先行 run を掃除する。

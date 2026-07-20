@@ -413,8 +413,10 @@ function orchInstructionsPanelHtml(overview) {
       </div>
     </div>
     <div class="row">
-      <label class="orch-instr-field">利用できるツール（カンマ区切り）
-        <input type="text" id="orch-instr-allow" placeholder="fs_read, fs_write, execute_bash" value="${esc(allow)}" />
+      <label class="orch-instr-field">使ってほしいツール（カンマ区切り）
+        <input type="text" id="orch-instr-allow" placeholder="fs_read, fs_write, execute_bash" value="${esc(allow)}"
+          aria-describedby="orch-instr-allow-help" />
+        <small id="orch-instr-allow-help" class="muted">指示文として伝えるだけで、実行時に制限はかかりません。</small>
       </label>
       <label class="orch-instr-field">ツール利用時の注意
         <input type="text" id="orch-instr-deny" placeholder="外部への push 系は人の確認を経る" value="${esc(denyNote)}" />
@@ -445,6 +447,187 @@ function orchSkillRowHtml(name, note = '', where = '') {
     </label>
     <button type="button" class="orch-skill-remove" aria-label="${esc(name)}を削除">削除</button>
   </div>`;
+}
+
+// 4.6 セッション開始コマンド: セッションが始まった直後に 1 回だけ走らせる前準備。
+// 正典は agent-session-commands 契約（schemas/agent-session-commands.schema.json）。
+// 共通指示（テキスト注入）と違い副作用があるため、委譲先ノードへは伝播しない。
+const ORCH_SESSION_ENGINES = [
+  { id: 'kiro-loop', label: '定常業務（kiro-loop）', chat: true },
+  { id: 'agent-loop', label: '定常業務（agent-loop）', chat: true },
+  { id: 'dashboard', label: 'このアプリ（定常業務ウィンドウ）', chat: true },
+  { id: 'agent-flow', label: 'タスク実行（agent-flow）', chat: false },
+];
+
+function orchSessionRowHtml(cmd, index) {
+  const c = cmd || {};
+  const mode = c.mode === 'chat' ? 'chat' : 'process';
+  const when = c.when || {};
+  const list = (v) => (Array.isArray(v) ? v.join(', ') : '');
+  return `<div class="orch-sess-row" data-orch-sess="${index}" data-orch-sess-mode="${mode}">
+    <div class="orch-sess-head">
+      <label class="orch-sess-field orch-sess-id"><span>名前（ID）</span>
+        <input type="text" class="orch-sess-id-input mono" placeholder="sync-repo" value="${esc(c.id || '')}" />
+      </label>
+      <label class="orch-sess-field"><span>実行方法</span>
+        <select class="orch-sess-mode">
+          <option value="process"${mode === 'process' ? ' selected' : ''}>コマンドを実行する</option>
+          <option value="chat"${mode === 'chat' ? ' selected' : ''}>エージェントに送る</option>
+        </select>
+      </label>
+      <label class="orch-sess-field"><span>失敗したとき</span>
+        <select class="orch-sess-onerror">
+          <option value="warn"${c.on_error !== 'fail' ? ' selected' : ''}>続行する</option>
+          <option value="fail"${c.on_error === 'fail' ? ' selected' : ''}>開始を中止する</option>
+        </select>
+      </label>
+      <button type="button" class="orch-sess-remove" aria-label="${esc(c.id || `${index + 1}行目`)}を削除">削除</button>
+    </div>
+    <label class="orch-sess-field orch-sess-run-field"><span class="orch-sess-run-label">${mode === 'chat' ? 'エージェントへ送る内容' : '実行するコマンド'}</span>
+      <textarea class="orch-sess-run mono" rows="2" placeholder="git -C &quot;{cwd}&quot; fetch --prune">${esc(c.run || '')}</textarea>
+    </label>
+    <div class="orch-sess-process-only" ${mode === 'chat' ? 'hidden' : ''}>
+      <label class="orch-sess-field"><span>実行する場所（省略可）</span>
+        <input type="text" class="orch-sess-cwd mono" placeholder="{workspace}" value="${esc(c.cwd || '')}" />
+      </label>
+      <label class="orch-sess-field orch-sess-narrow"><span>上限秒</span>
+        <input type="number" class="orch-sess-timeout" min="1" max="600" placeholder="60" value="${esc(c.timeout === undefined ? '' : String(c.timeout))}" />
+      </label>
+    </div>
+    <details class="orch-sess-when" data-ui-key="orch-sess-when-${index}">
+      <summary>使う条件をしぼる（空欄ならすべてに適用）</summary>
+      <div class="orch-sess-when-grid">
+        <label class="orch-sess-field"><span>実行サービス</span>
+          <input type="text" class="orch-sess-when-engines mono" placeholder="kiro-loop, agent-flow" value="${esc(list(when.engines))}" />
+        </label>
+        <label class="orch-sess-field"><span>ワークロード</span>
+          <input type="text" class="orch-sess-when-workloads mono" placeholder="routine, flow" value="${esc(list(when.workloads))}" />
+        </label>
+        <label class="orch-sess-field"><span>エージェント</span>
+          <input type="text" class="orch-sess-when-cli mono" placeholder="kiro, claude" value="${esc(list(when.agent_cli))}" />
+        </label>
+      </div>
+    </details>
+  </div>`;
+}
+
+function orchSessionPreviewHtml() {
+  const pv = state.orchSessionPreview;
+  if (!pv) return '<p class="muted">「この内容で確認」を押すと、実行サービスごとの実行内容を表示します。</p>';
+  if (pv.error) return `<p class="muted">プレビューを作れませんでした: ${esc(pv.error)}</p>`;
+  const entries = pv.entries || [];
+  if (!entries.length) return '<p class="muted">このサービスで実行されるコマンドはありません。</p>';
+  const reason = {
+    when: '条件に合わないため実行しません',
+    'no-session': 'このサービスにはセッションがないため送れません',
+    budget: '合計の上限秒を超えるため実行しません',
+  };
+  const rows = entries.map((e, i) => {
+    const skipped = !!e.skip;
+    const label = e.mode === 'chat' ? 'エージェントに送る' : 'コマンドを実行';
+    const note = skipped
+      ? `<small class="muted">${esc(reason[e.skip] || 'スキップします')}</small>`
+      : `<small class="muted">${esc(e.mode === 'chat' ? '' : `${e.cwd || '（セッションの場所）'} / 上限 ${e.timeout} 秒 / ${e.on_error === 'fail' ? '失敗したら開始を中止' : '失敗しても続行'}`)}</small>`;
+    return `<li class="orch-sess-preview-item${skipped ? ' orch-sess-preview-skipped' : ''}">
+      <div class="orch-sess-preview-head"><strong>${esc(String(i + 1))}. ${esc(e.id)}</strong> ${orchBadge(skipped ? 'muted' : 'ok', label)}</div>
+      <pre class="mono">${esc(e.run)}</pre>${note}
+    </li>`;
+  }).join('');
+  return `<ol class="orch-sess-preview-list">${rows}</ol>`;
+}
+
+function orchSessionCommandsPanelHtml(overview) {
+  const sc = overview.sessionCommands || { enabled: true, commands: [], revision: 0, max_total_timeout: 120 };
+  const commands = Array.isArray(sc.commands) ? sc.commands : [];
+  const rows = commands.map((c, i) => orchSessionRowHtml(c, i)).join('')
+    || '<p class="muted orch-sess-empty">登録されたコマンドはありません。</p>';
+  const engineOptions = ORCH_SESSION_ENGINES.map((e) => {
+    const selected = (state.orchSessionPreview || {}).engine === e.id;
+    return `<option value="${esc(e.id)}"${selected ? ' selected' : ''}>${esc(e.label)}</option>`;
+  }).join('');
+  const appliedRows = (overview.status || []).map((s) => {
+    const applied = Number(s.session_commands_revision_applied);
+    const badge = Number.isFinite(applied)
+      ? (applied >= Number(sc.revision || 0) ? orchBadge('ok', `反映済み（設定版 ${applied}）`) : orchBadge('soft', `未反映（${applied}/${sc.revision}）`))
+      : orchBadge('muted', '反映待ち');
+    return `<tr><td>${esc(s.tool || '?')} <small class="muted">${esc(amigosWorkloadLabel(String(s.workload || '')))}</small></td><td>${badge}</td></tr>`;
+  }).join('') || '<tr><td colspan="2" class="muted">稼働中の実行サービスはありません。</td></tr>';
+  return `<section class="orch-panel orch-sess-panel">
+    <header class="row">
+      <div>
+        <span class="summary-kicker">セッション開始時</span>
+        <h3>セッションが始まったときに実行すること</h3>
+        <p class="muted">エージェントのセッションが始まった直後に、上から順に 1 回だけ実行します。
+          リポジトリの取得や開発環境の起動といった下準備に使います。</p>
+      </div>
+      <div>${sc.enabled ? orchBadge('ok', `有効・設定版 ${esc(String(sc.revision || 0))}`) : orchBadge('soft', '無効')}</div>
+    </header>
+    <label class="orch-sess-enabled"><input type="checkbox" id="orch-sess-enabled" ${sc.enabled ? 'checked' : ''} /> セッション開始時のコマンドを使用する</label>
+    <div class="orch-sess-list" id="orch-sess-list">${rows}</div>
+    <div class="row orch-sess-controls">
+      <button type="button" id="btn-orch-sess-add">コマンドを追加</button>
+      <label class="orch-sess-field orch-sess-narrow"><span>すべての合計の上限秒</span>
+        <input type="number" id="orch-sess-max-total" min="1" max="600" value="${esc(String(sc.max_total_timeout || 120))}" />
+      </label>
+    </div>
+    <ul class="orch-sess-notes muted">
+      <li>コマンドはそのままシェルへ渡します。空白を含む場所を指す <code>{cwd}</code> などは <code>"</code> で囲んでください。</li>
+      <li>「失敗したとき: 開始を中止する」を選ぶと、そのコマンドが失敗したときエージェントが起動しなくなります。</li>
+      <li>設定を変えても、すでに動いているセッションには反映されません。次に始まるセッションから有効になります。</li>
+    </ul>
+    <div class="row orch-actions">
+      <button type="button" id="btn-orch-sess-save">セッション開始時のコマンドを保存</button>
+    </div>
+    <details class="orch-sess-preview" data-ui-key="orch-sess-preview" open>
+      <summary>実行される内容を確認</summary>
+      <div class="row orch-sess-preview-controls">
+        <label class="orch-sess-field"><span>確認する実行サービス</span>
+          <select id="orch-sess-preview-engine">${engineOptions}</select>
+        </label>
+        <button type="button" id="btn-orch-sess-preview">この内容で確認</button>
+      </div>
+      <div id="orch-sess-preview-body">${orchSessionPreviewHtml()}</div>
+    </details>
+    <details class="orch-sess-applied" data-ui-key="orch-sess-applied">
+      <summary>実行サービスへの反映状況</summary>
+      <table class="amigos-table orch-table"><thead><tr><th>サービス</th><th>反映</th></tr></thead><tbody>${appliedRows}</tbody></table>
+    </details>
+  </section>`;
+}
+
+// 画面の入力を agent-session-commands 契約の形へ読み出す。保存とプレビューで同じものを使う
+// （プレビューが「保存したら何が起きるか」と一致する）。
+function readSessionCommandsForm(root) {
+  const csv = (el) => (el && el.value ? el.value.split(',').map((s) => s.trim()).filter(Boolean) : []);
+  const commands = [...root.querySelectorAll('.orch-sess-row')].map((row) => {
+    const mode = row.querySelector('.orch-sess-mode').value === 'chat' ? 'chat' : 'process';
+    const cmd = {
+      id: row.querySelector('.orch-sess-id-input').value.trim(),
+      mode,
+      run: row.querySelector('.orch-sess-run').value.trim(),
+      on_error: row.querySelector('.orch-sess-onerror').value === 'fail' ? 'fail' : 'warn',
+    };
+    if (mode === 'process') {
+      const cwd = row.querySelector('.orch-sess-cwd').value.trim();
+      if (cwd) cmd.cwd = cwd;
+      const timeout = row.querySelector('.orch-sess-timeout').value.trim();
+      if (timeout) cmd.timeout = Number(timeout);
+    }
+    const when = {
+      engines: csv(row.querySelector('.orch-sess-when-engines')),
+      workloads: csv(row.querySelector('.orch-sess-when-workloads')),
+      agent_cli: csv(row.querySelector('.orch-sess-when-cli')),
+    };
+    if (when.engines.length || when.workloads.length || when.agent_cli.length) cmd.when = when;
+    return cmd;
+  });
+  const enabled = root.querySelector('#orch-sess-enabled');
+  const maxTotal = root.querySelector('#orch-sess-max-total');
+  return {
+    enabled: enabled ? enabled.checked : true,
+    commands,
+    max_total_timeout: Number((maxTotal && maxTotal.value) || 120),
+  };
 }
 
 // 5. 利用できるエージェントの一覧と追加定義。
@@ -639,7 +822,7 @@ function globalSettingsAgentsHtml(overview) {
     <section class="agent-management-section" aria-labelledby="agent-management-settings-title">
       <header class="agent-management-section-heading"><span class="summary-kicker">共通設定</span><h2 id="agent-management-settings-title">共通設定</h2>
         <p class="muted">この端末で動くすべてのエージェントへ適用します。</p></header>
-      ${orchInstructionsPanelHtml(overview)}${orchAllocationPanelHtml(overview.budget)}${orchMatrixPanelHtml(overview)}
+      ${orchInstructionsPanelHtml(overview)}${orchSessionCommandsPanelHtml(overview)}${orchAllocationPanelHtml(overview.budget)}${orchMatrixPanelHtml(overview)}
     </section>
     <section class="agent-management-section" aria-labelledby="agent-management-agents-title">
       <header class="agent-management-section-heading"><span class="summary-kicker">登録内容</span><h2 id="agent-management-agents-title">エージェント一覧</h2>
@@ -745,7 +928,7 @@ function setupGlobalSettings(root) {
 function setupOrchestration(root) {
   const refreshBtn = root.querySelector('#btn-orch-refresh');
   if (refreshBtn) refreshBtn.addEventListener('click', () => {
-    if (state.globalSettingsDirty || state.orchInstructionsDirty) {
+    if (state.globalSettingsDirty || state.orchInstructionsDirty || state.orchSessionDirty) {
       return toast('入力中の設定を保存してから最新の状態にしてください');
     }
     return guard('エージェント情報の更新', async () => { await refreshOrchestration(); renderOrchestration(); });
@@ -925,6 +1108,81 @@ function setupOrchestration(root) {
       await api.orchestrationInstructionsSave(payload);
       toast('共通指示を保存しました', true);
       state.orchInstructionsDirty = false;
+    } finally { state.orchSaving = false; }
+    await refreshOrchestration();
+    renderOrchestration();
+  }));
+
+  // セッション開始コマンド（agent-session-commands）の編集・プレビュー・保存
+  const sessList = root.querySelector('#orch-sess-list');
+  const markSessionDirty = () => { state.orchSessionDirty = true; };
+  // 実行方法の切替でラベルと process 専用欄の出し分けを合わせる（保存前に見た目で分かるように）。
+  const syncSessionRow = (row) => {
+    const mode = row.querySelector('.orch-sess-mode').value === 'chat' ? 'chat' : 'process';
+    row.setAttribute('data-orch-sess-mode', mode);
+    row.querySelector('.orch-sess-run-label').textContent =
+      mode === 'chat' ? 'エージェントへ送る内容' : '実行するコマンド';
+    row.querySelector('.orch-sess-process-only').hidden = mode === 'chat';
+  };
+  if (sessList) {
+    sessList.addEventListener('input', markSessionDirty);
+    sessList.addEventListener('change', (event) => {
+      markSessionDirty();
+      const mode = event.target.closest('.orch-sess-mode');
+      if (mode) syncSessionRow(mode.closest('.orch-sess-row'));
+    });
+    sessList.addEventListener('click', (event) => {
+      const remove = event.target.closest('.orch-sess-remove');
+      if (!remove) return;
+      remove.closest('.orch-sess-row').remove();
+      if (!sessList.querySelector('.orch-sess-row')) {
+        sessList.innerHTML = '<p class="muted orch-sess-empty">登録されたコマンドはありません。</p>';
+      }
+      markSessionDirty();
+    });
+  }
+  const sessAdd = root.querySelector('#btn-orch-sess-add');
+  if (sessAdd && sessList) sessAdd.addEventListener('click', () => {
+    const empty = sessList.querySelector('.orch-sess-empty');
+    if (empty) empty.remove();
+    const index = sessList.querySelectorAll('.orch-sess-row').length;
+    sessList.insertAdjacentHTML('beforeend', orchSessionRowHtml({ mode: 'process', on_error: 'warn' }, index));
+    markSessionDirty();
+    const added = sessList.lastElementChild;
+    if (added) added.querySelector('.orch-sess-id-input').focus();
+  });
+  for (const field of root.querySelectorAll('#orch-sess-enabled, #orch-sess-max-total')) {
+    field.addEventListener('input', markSessionDirty);
+    field.addEventListener('change', markSessionDirty);
+  }
+
+  const sessPreview = root.querySelector('#btn-orch-sess-preview');
+  if (sessPreview) sessPreview.addEventListener('click', () => guard('実行内容の確認', async () => {
+    const engine = (root.querySelector('#orch-sess-preview-engine') || {}).value || 'kiro-loop';
+    const data = readSessionCommandsForm(root);
+    let entries;
+    try {
+      entries = await api.orchestrationSessionCommandsPreview({
+        data,
+        // 実際のセッションでは cwd / workspace は起動時に決まる。ここでは何が入るかを示す。
+        context: { engine, workload: engine === 'agent-flow' ? 'flow' : 'routine' },
+      });
+      state.orchSessionPreview = { engine, entries };
+    } catch (err) {
+      state.orchSessionPreview = { engine, error: err.message };
+    }
+    const body = root.querySelector('#orch-sess-preview-body');
+    if (body) body.innerHTML = orchSessionPreviewHtml();
+  }));
+
+  const sessSave = root.querySelector('#btn-orch-sess-save');
+  if (sessSave) sessSave.addEventListener('click', () => guard('セッション開始時のコマンドの保存', async () => {
+    const payload = readSessionCommandsForm(root);
+    state.orchSaving = true;
+    try {
+      await api.orchestrationSessionCommandsSave(payload);
+      toast('セッション開始時のコマンドを保存しました', true);
+      state.orchSessionDirty = false;
     } finally { state.orchSaving = false; }
     await refreshOrchestration();
     renderOrchestration();

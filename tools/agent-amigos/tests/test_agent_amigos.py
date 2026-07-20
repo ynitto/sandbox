@@ -1347,5 +1347,57 @@ class HubRescanTests(AmigosTestCase):
             load_mission(remote.mission("am-direct"))["budget"]["execution_minutes"], 77)
 
 
+class NodeIdHomeMigrationTests(unittest.TestCase):
+    """node.json は共通ホーム移行中も既存のノード ID を失わない。
+
+    ID は claim / assign / メッセージ宛先に使われるため、振り直しは同一性の断絶になる。
+    他の状態と違い「新旧の両方を読む」ことで、どちらに置かれていても拾えるようにしてある。
+    """
+
+    def setUp(self):
+        from agent_amigos import daemon as _daemon
+        self.daemon = _daemon
+        self.home = tempfile.mkdtemp(prefix="am-home-")
+        self.addCleanup(shutil.rmtree, self.home, ignore_errors=True)
+        self._real_expanduser = os.path.expanduser
+        os.path.expanduser = lambda p: (
+            p.replace("~", self.home, 1) if isinstance(p, str) and p.startswith("~") else p)
+        self.addCleanup(setattr, os.path, "expanduser", self._real_expanduser)
+        os.environ.pop("AGENT_AMIGOS_NODE", None)
+
+    def _write_node(self, home_dir, node_id):
+        d = os.path.join(self.home, home_dir, "amigos")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "node.json"), "w", encoding="utf-8") as f:
+            json.dump({"id": node_id}, f)
+
+    def test_env_var_wins(self):
+        os.environ["AGENT_AMIGOS_NODE"] = "from-env"
+        self.addCleanup(os.environ.pop, "AGENT_AMIGOS_NODE", None)
+        self.assertEqual(self.daemon.default_node_id(), "from-env")
+
+    def test_legacy_home_id_is_preserved(self):
+        self._write_node(".agent", "legacy-node")
+        self.assertEqual(self.daemon.default_node_id(), "legacy-node")
+
+    def test_legacy_id_survives_when_new_home_dir_exists_but_file_does_not(self):
+        """移行の途中（新ホームのディレクトリだけ先にできた端末）でも ID を振り直さない。"""
+        self._write_node(".agent", "legacy-node")
+        os.makedirs(os.path.join(self.home, ".agents", "amigos"), exist_ok=True)
+        self.assertEqual(self.daemon.default_node_id(), "legacy-node")
+
+    def test_new_home_takes_precedence(self):
+        self._write_node(".agent", "legacy-node")
+        self._write_node(".agents", "new-node")
+        self.assertEqual(self.daemon.default_node_id(), "new-node")
+
+    def test_fresh_id_is_minted_into_new_home(self):
+        nid = self.daemon.default_node_id()
+        self.assertTrue(nid)
+        self.assertTrue(os.path.exists(
+            os.path.join(self.home, ".agents", "amigos", "node.json")))
+        self.assertEqual(self.daemon.default_node_id(), nid, "採番後は同じ ID を返す")
+
+
 if __name__ == "__main__":
     unittest.main()

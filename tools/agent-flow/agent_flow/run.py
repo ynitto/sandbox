@@ -326,6 +326,9 @@ def cmd_run(args) -> int:
     # （子は argv を組み立て直すため、フラグは env で確実に届ける）。
     if getattr(args, "no_global_instructions", False):
         os.environ["AGENT_FLOW_NO_GLOBAL_INSTRUCTIONS"] = "1"
+    # セッション開始コマンドの無効化も同じ流儀で子へ伝える。
+    if getattr(args, "no_session_commands", False):
+        os.environ["AGENT_FLOW_NO_SESSION_COMMANDS"] = "1"
     probe = make_bus(args, "run")
     probe.sync_pull()
     resuming = bool(args.run_id) and probe.run_exists(args.run_id)

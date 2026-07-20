@@ -14,6 +14,7 @@ async function init() {
   state.config = await guard('設定読込', () => api.getConfig());
   initTabs();
   $('btn-refresh').addEventListener('click', () => refreshAll({ sync: false }));
+  $('btn-cli-chat').addEventListener('click', openCliChat);
   $('btn-doctor').addEventListener('click', openDoctor);
   $('btn-doctor-submit').addEventListener('click', askDoctor);
   $('btn-doctor-apply-feedback').addEventListener('click', applyDoctorFeedbackDraft);

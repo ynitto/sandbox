@@ -195,7 +195,7 @@ def _normalize_agent_plugin(name: str, raw: dict, path: str) -> dict:
 
 
 def load_agent_plugin(name: str) -> "dict | None":
-    """agents/<name>.json を探索順（$KIRO_AGENTS_DIR → <cwd>/agents → ~/.agent/agents → ~/.kiro/agents）に読む。
+    """agents/<name>.json を探索順（$KIRO_AGENTS_DIR → <cwd>/agents → ~/.agents/agents → ~/.kiro/agents）に読む。
     無ければ None（プロセス内キャッシュ）。壊れた定義は黙って無視せず RuntimeError。"""
     key = str(name or "").strip().lower()
     if not key:
@@ -259,7 +259,7 @@ def _plugin_error_patterns() -> tuple:
 
 # --- ノード予算 v2（node-budget 契約: schemas/node-budget.schema.json） --------------------
 # ノード（マシン）単位の共有台帳。定常業務（kiro-loop）・agent-project・agent-flow・
-# agent-amigos が同じ台帳（$AGENT_BUDGET_DIR、既定 ~/.agent/budget/）に記帳し、合計が上限
+# agent-amigos が同じ台帳（$AGENT_BUDGET_DIR、既定 ~/.agents/budget/）に記帳し、合計が上限
 # （0 = 無制限）を超えたら新規の LLM 実行を控える。v2 で一次単位をトークンへ拡張（時間上限は
 # v1 互換で AND）。台帳には実測のみ（実測秒＋実測できたトークン）を書き、未報告行は rates で
 # 読み出し時に推定する。配分・較正の知能は管理面（dashboard）にあり、エンジンは単純比較のみ。
@@ -409,7 +409,7 @@ def _node_budget_record(seconds: float, ref: str = "", agent_cli: str = "",
 
 
 # --- agent-control（管理面→エンジンの宣言的オーケストレーション契約） ----------------------
-# schemas/agent-control.schema.json。$AGENT_CONTROL_DIR（既定 ~/.agent/control/）の control.json
+# schemas/agent-control.schema.json。$AGENT_CONTROL_DIR（既定 ~/.agents/control/）の control.json
 # に管理面が「望ましい状態」を書き、各エンジンが mtime を見て pull で適用する（push 型 IPC なし）。
 # 優先順位 control > CLI 引数 > 設定ファイル > 組み込み既定。適用状況は status/<tool>-<pid>.json へ。
 _CONTROL_CACHE = {"mtime": None, "data": {}}
@@ -484,6 +484,9 @@ def _write_status(effective_cli: str = "", effective_model: str = "", lifecycle:
         # dashboard が instructions.revision と突き合わせ未反映を可視化する（agent-control status へ相乗り）。
         if _INSTRUCTIONS_REV_APPLIED is not None:
             rec["instructions_revision_applied"] = _INSTRUCTIONS_REV_APPLIED
+        # セッション開始コマンド: このワーカープロセスの起動時に適用した revision（未適用は省略）。
+        if _SESSION_COMMANDS_REV_APPLIED is not None:
+            rec["session_commands_revision_applied"] = _SESSION_COMMANDS_REV_APPLIED
         if budget is not None:
             rec["budget"] = {"exceeded": bool(budget.get("exceeded")),
                              "soft": bool(budget.get("soft"))}
@@ -700,7 +703,7 @@ def _run_agent_once(prompt: str, model: str | None, purpose: str = "") -> str:
             raise RuntimeError(
                 f"未知の agent_cli です: {cli!r}（組み込みは kiro/claude/copilot/codex。"
                 f"それ以外は agents/{cli}.json 定義が必要です — 契約: schemas/agent-cli.schema.json・"
-                f"探索順: $KIRO_AGENTS_DIR → <cwd>/agents → ~/.agent/agents → ~/.kiro/agents）")
+                f"探索順: $KIRO_AGENTS_DIR → <cwd>/agents → ~/.agents/agents → ~/.kiro/agents）")
         if plug["prompt_via"] == "argv" and len(prompt.encode("utf-8")) > _agent_argv_limit():
             fd, spill = tempfile.mkstemp(prefix="agent-flow-prompt-", suffix=".txt")
             with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -709,7 +712,9 @@ def _run_agent_once(prompt: str, model: str | None, purpose: str = "") -> str:
                       f"必ずファイルの内容を読み込み、その指示に従ってタスクを実行してください: {spill}")
         cmd, stdin_text, out_file = _plugin_agent_cmd(plug, model, prompt)
     plug = _AGENT_PLUGIN_CACHE.get(cli)   # プラグインなら env/timeout の上書きが効く
-    env = {**os.environ, **((plug or {}).get("env") or {})}
+    # 発生源で色を抑止（NO_COLOR/TERM=dumb）。残った ANSI は strip_ansi で除去する二段構え
+    # （agent-project と同じ扱い）。プラグイン定義の env は最後に載せるので上書きできる。
+    env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", **((plug or {}).get("env") or {})}
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", input=stdin_text,
                               timeout=(plug or {}).get("timeout") or _agent_timeout(), env=env)

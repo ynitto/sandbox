@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-session-commands.schema.json",
+  "title": "セッション開始コマンド — 管理面→各エンジンのセッション前準備（データ契約）",
+  "description": "agent-dashboard が編集し、各エンジン（kiro-loop / agent-loop / agent-flow / agent-dashboard cowork）がエージェントのセッション開始時に 1 回だけ実行するコマンド列。process モードはホスト側のシェルで実行して完了を待ち（git fetch / docker compose up / 認証更新など、AI CLI が動き出す前に終わっていなければ意味がない前準備）、chat モードはセッションへ最初のプロンプトとして送る（CLI 内部のスラッシュコマンドやスキル起動はプロセス起動引数からは撃てない）。agent-instructions と同じ流儀（pull 型・原子書換・revision 単調増加・agent-control の status ハートビートへ相乗り）だが、**委譲先ノードへ伝播しない点だけが非対称**である。任意コマンド実行の到達範囲をその端末に置いた設定ファイルへ閉じ込めるため、agent-flow の meta.json にも GitBus にも載せない。「セッション」の実体はエンジンで異なる: 常駐系（kiro-loop / agent-loop / cowork）は tmux ペイン 1 本、単発系（agent-flow）はワーカープロセス 1 つ。単発系にセッションが無いため chat モードは適用されずスキップされる。フェイルセーフ: 不在 / 破損 / enabled=false はすべて『コマンドなし』＝エンジンを止めない。既定の on_error=warn では失敗しても続行し、fail を明示したときだけセッション開始を中止する。置き場所: $AGENT_SESSION_DIR（既定 ~/.agents/session/）の session.json（管理面が原子書換）。設計: docs/plans/2026-07-20-agent-dashboard-session-commands-design.md",
+  "$defs": {
+    "when": {
+      "type": "object",
+      "description": "適用条件。指定したキーはすべて満たす必要がある（AND 結合）。キーを省略すればその軸では絞らない。オブジェクトごと省略すれば全適用",
+      "properties": {
+        "engines": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "実行中のエンジン名。kiro-loop / agent-loop / agent-flow / dashboard。将来 agent-project / agent-amigos を足せるよう語彙は開いている"
+        },
+        "workloads": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "agent-control のワークロード名（routine / flow / project / amigos）。既存語彙を流用する"
+        },
+        "agent_cli": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "解決済みの CLI 名（kiro / claude / copilot / codex / ドロップイン名）"
+        }
+      },
+      "additionalProperties": true
+    },
+    "command": {
+      "type": "object",
+      "description": "セッション開始時に実行する 1 コマンド",
+      "required": ["id", "run"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "一意な識別子。ログ・実行済み記録・UI の行キーに使う"
+        },
+        "mode": {
+          "enum": ["process", "chat"],
+          "default": "process",
+          "description": "process=ホストのシェルで実行し完了を待つ / chat=セッションへ最初のプロンプトとして送信（常駐系のみ。単発系ではスキップ）"
+        },
+        "run": {
+          "type": "string",
+          "minLength": 1,
+          "description": "process ならシェルコマンド文字列、chat なら送信するテキスト。プレースホルダ {cwd} {workspace} {engine} {workload} {agent_cli} {model} {run_id} {node_id} を使える（未定義は空文字へ落とす）。**シェルクォートは行わない** — 空白を含むパスが入りうる箇所は利用者が引用符で囲む（例 git -C \"{cwd}\" fetch）。自動クォートすると && でつないだ複合コマンドが書けなくなるため、この責任は利用者側に置く"
+        },
+        "cwd": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "実行ディレクトリ（process のみ）。プレースホルダ可。省略時はセッションの cwd"
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {"type": "string"},
+          "description": "追加の環境変数（process のみ。os.environ に上書きマージ）。値にプレースホルダ可"
+        },
+        "timeout": {
+          "type": ["number", "null"],
+          "default": null,
+          "description": "このコマンド単体の上限秒（process のみ。null なら既定 60）。超過は打ち切って on_error に従う"
+        },
+        "on_error": {
+          "enum": ["warn", "fail"],
+          "default": "warn",
+          "description": "warn=失敗しても続行（既定・フェイルセーフ） / fail=セッション開始を中止（常駐系ではペインを作らない）。前準備が必須のときだけ fail を選ぶ"
+        },
+        "when": {"$ref": "#/$defs/when"}
+      },
+      "additionalProperties": true
+    },
+    "session_commands": {
+      "type": "object",
+      "description": "session.json — セッション開始コマンド（管理面だけが書く。原子書換）",
+      "properties": {
+        "version": {"type": "integer", "const": 1},
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "単調増加。エンジンが status/<tool>-<pid>.json（agent-control 契約）へ書く session_commands_revision_applied と突き合わせ、未反映を可視化する。revision を上げても既存セッションには遡及しない（常駐系の反映点はペイン再起動）"
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "false なら全エンジンで完全 no-op（削除せず一時停止できる）"
+        },
+        "commands": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/command"},
+          "description": "実行するコマンドの順序付きリスト。**配列順に逐次実行**する（並列にしない。前準備は順序に意味があることが多い）。1 セッションにつき 1 回だけ"
+        },
+        "max_total_timeout": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 120,
+          "description": "全コマンド合計の上限秒（既定 120・ハード上限 600）。超過したら残りを打ち切って警告する。セッション開始が無限に伸びるのを防ぐ有界化"
+        },
+        "updated_at": {"type": "string", "description": "ISO8601 UTC"},
+        "updated_by": {"type": "string", "description": "書いた主体（dashboard / cli / 人）"}
+      },
+      "additionalProperties": true
+    }
+  },
+  "allOf": [{"$ref": "#/$defs/session_commands"}]
+}

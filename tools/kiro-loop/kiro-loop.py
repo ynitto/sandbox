@@ -204,7 +204,7 @@ _STATE_DIR = Path.home() / ".kiro" / "loop-state"  # デーモン状態ファイ
 # ノード予算（node-budget 契約: schemas/node-budget.schema.json）
 #
 # ノード（マシン）単位の実質実行時間の共有台帳。定常業務（kiro-loop）・agent-project・
-# agent-flow・agent-amigos が同じ台帳（$AGENT_BUDGET_DIR、既定 ~/.agent/budget/）に記帳し、
+# agent-flow・agent-amigos が同じ台帳（$AGENT_BUDGET_DIR、既定 ~/.agents/budget/）に記帳し、
 # 合計が上限（0 = 無制限）を超えたら新規のプロンプト送信を控える。
 # kiro-loop は subprocess で LLM を呼ばない（tmux の kiro-cli に送信する）ため、
 # 実行秒はセマフォスロットの保持時間（送信 → 完了検知）で近似して記帳する。
@@ -361,7 +361,7 @@ def _node_budget_record(seconds: float, ref: str = "", agent_cli: str = "routine
 
 # ---------------------------------------------------------------------------
 # agent-control（管理面→エンジンの宣言的オーケストレーション契約）
-# schemas/agent-control.schema.json。$AGENT_CONTROL_DIR（既定 ~/.agent/control/）の control.json
+# schemas/agent-control.schema.json。$AGENT_CONTROL_DIR（既定 ~/.agents/control/）の control.json
 # に管理面が「望ましい状態」を書き、kiro-loop はサイクル先頭で mtime を見て pull で適用する。
 # routine ワークロードでは lifecycle（run|pause|stop）を解釈する。適用状況は status/ へ。
 # ---------------------------------------------------------------------------
@@ -403,7 +403,7 @@ def _control_lifecycle() -> str:
 # ---------------------------------------------------------------------------
 # グローバル指示（agent-instructions 契約）: dashboard が編集し、実行エージェント（定常業務の
 # kiro-cli ペイン）へ paste 時に注入するノード共通指示。正典: schemas/agent-instructions.schema.json。
-# 実体は $AGENT_INSTRUCTIONS_DIR（既定 ~/.agent/instructions/）の instructions.json。
+# 実体は $AGENT_INSTRUCTIONS_DIR（既定 ~/.agents/instructions/）の instructions.json。
 # 長寿命チャットの文脈を汚さないよう、ペインごとに revision 差分があるときだけ前置する。
 # skills / tools は kiro-cli --agent JSON（ペイン起動時に再生成）へ反映する。レンダラは
 # dashboard（JS）・agent-flow（Python）と同一出力になるよう決定的に保つ（stdlib のみ）。
@@ -501,6 +501,212 @@ def prepend_instructions(target: str, block: str) -> str:
     return f"{block}\n\n{t}" if t else block
 
 
+# ---------------------------------------------------------------------------
+# セッション開始コマンド（agent-session-commands 契約）: dashboard が編集し、ペイン（＝セッション）を
+# 起こすたびに 1 回だけ走らせる前準備。正典: schemas/agent-session-commands.schema.json。
+# 実体は $AGENT_SESSION_DIR（既定 ~/.agents/session/）の session.json。
+# process モードはペイン生成の前にホストで、chat モードは生成後の最初の送信として送る。
+# 共通指示と違い**委譲先ノードへ伝播しない** — 副作用のあるコマンドの到達範囲をこの端末に閉じる。
+# 計画（展開・when 判定・合計秒の有界化）は dashboard（JS）・agent-loop / agent-flow（Python）と同一。
+# ---------------------------------------------------------------------------
+_SESSION_COMMANDS_DEFAULT_TIMEOUT = 60
+_SESSION_COMMANDS_DEFAULT_MAX_TOTAL = 120
+_SESSION_COMMANDS_HARD_MAX_TOTAL = 600
+_SESSION_COMMANDS_CHAT_ENGINES = ("kiro-loop", "agent-loop", "dashboard")
+_SESSION_COMMANDS_PLACEHOLDER_RE = re.compile(
+    r"\{(cwd|workspace|engine|workload|agent_cli|model|run_id|node_id)\}"
+)
+_SESSION_COMMANDS_REV_APPLIED: "int | None" = None
+
+
+def _session_commands_dir() -> str:
+    return os.path.abspath(os.path.expanduser(
+        os.environ.get("AGENT_SESSION_DIR", os.path.join("~", _agent_home(), "session"))))
+
+
+def _load_session_commands() -> "dict | None":
+    """session.json を読む。無ければ / 壊れていれば None（＝コマンドなし）。"""
+    path = os.path.join(_session_commands_dir(), "session.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _session_commands_revision(data: "dict | None") -> int:
+    try:
+        return int((data or {}).get("revision") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _session_commands_clamp_total(v) -> int:
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return _SESSION_COMMANDS_DEFAULT_MAX_TOTAL
+    if n <= 0:
+        return _SESSION_COMMANDS_DEFAULT_MAX_TOTAL
+    return min(n, _SESSION_COMMANDS_HARD_MAX_TOTAL)
+
+
+def _session_commands_clamp_timeout(v) -> int:
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return _SESSION_COMMANDS_DEFAULT_TIMEOUT
+    if n <= 0:
+        return _SESSION_COMMANDS_DEFAULT_TIMEOUT
+    return min(n, _SESSION_COMMANDS_HARD_MAX_TOTAL)
+
+
+def expand_session_placeholders(text, ctx: "dict | None") -> str:
+    """プレースホルダを展開する。未定義は空文字へ落とす。**クォートは足さない**
+    （空白を含むパスの引用は利用者の責任。複合コマンドを書けるようにするための選択）。"""
+    c = ctx if isinstance(ctx, dict) else {}
+    return _SESSION_COMMANDS_PLACEHOLDER_RE.sub(
+        lambda m: str(c.get(m.group(1)) or ""), str(text or "")
+    )
+
+
+def session_command_matches(when: "dict | None", ctx: "dict | None") -> bool:
+    """when 判定。指定された軸をすべて満たすときだけ True（AND 結合）。
+    判定材料が ctx に無い軸は絞れないので通す（フェイルセーフ側）。"""
+    if not isinstance(when, dict):
+        return True
+    c = ctx if isinstance(ctx, dict) else {}
+    for key, ctx_key in (("engines", "engine"), ("workloads", "workload"), ("agent_cli", "agent_cli")):
+        values = when.get(key)
+        if not isinstance(values, list):
+            continue
+        allowed = [str(v).strip() for v in values if str(v).strip()]
+        if not allowed:
+            continue
+        actual = str(c.get(ctx_key) or "").strip()
+        if not actual:
+            continue
+        if actual not in allowed:
+            return False
+    return True
+
+
+def plan_session_commands(data: "dict | None", ctx: "dict | None") -> list:
+    """実行計画を組み立てる（決定的・副作用なし）。dashboard のプレビューと同一結果。"""
+    out: list = []
+    if not isinstance(data, dict) or data.get("enabled") is False:
+        return out
+    c = ctx if isinstance(ctx, dict) else {}
+    engine = str(c.get("engine") or "").strip()
+    budget = _session_commands_clamp_total(data.get("max_total_timeout"))
+    spent = 0
+    for item in (data.get("commands") or []):
+        if not isinstance(item, dict):
+            continue
+        cid = str(item.get("id") or "").strip()
+        run = str(item.get("run") or "").strip()
+        if not cid or not run:
+            continue
+        mode = item.get("mode") if item.get("mode") in ("process", "chat") else "process"
+        on_error = item.get("on_error") if item.get("on_error") in ("warn", "fail") else "warn"
+        entry = {
+            "id": cid,
+            "mode": mode,
+            "run": expand_session_placeholders(run, c),
+            "on_error": on_error,
+            "skip": None,
+        }
+        if mode == "process":
+            cwd = str(item.get("cwd") or "").strip()
+            entry["cwd"] = expand_session_placeholders(cwd, c) if cwd else str(c.get("cwd") or "")
+            entry["timeout"] = _session_commands_clamp_timeout(item.get("timeout"))
+            env = item.get("env")
+            if isinstance(env, dict) and env:
+                entry["env"] = {
+                    str(k): expand_session_placeholders(v, c) for k, v in env.items() if str(k).strip()
+                }
+        if not session_command_matches(item.get("when"), c):
+            entry["skip"] = "when"
+        elif mode == "chat" and engine and engine not in _SESSION_COMMANDS_CHAT_ENGINES:
+            entry["skip"] = "no-session"
+        elif mode == "process":
+            if spent >= budget:
+                entry["skip"] = "budget"
+            else:
+                entry["timeout"] = min(entry["timeout"], budget - spent)
+                spent += entry["timeout"]
+        out.append(entry)
+    return out
+
+
+def _run_session_process_command(entry: dict) -> "tuple[bool, str]":
+    """process モードの 1 件を実行する。(成功か, 失敗理由) を返す。"""
+    env = dict(os.environ)
+    env.update(entry.get("env") or {})
+    cwd = entry.get("cwd") or None
+    if cwd and not os.path.isdir(cwd):
+        cwd = None  # 消えている cwd で落とさない
+    try:
+        proc = subprocess.run(
+            entry["run"], shell=True, cwd=cwd, env=env,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=entry.get("timeout") or _SESSION_COMMANDS_DEFAULT_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"{entry.get('timeout')} 秒でタイムアウトしました"
+    except OSError as exc:
+        return False, str(exc)
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        return False, f"終了コード {proc.returncode}: {tail[-1] if tail else '出力なし'}"
+    return True, ""
+
+
+def run_session_commands(ctx: "dict | None", send_chat=None, modes=("process", "chat")) -> bool:
+    """セッション開始コマンドを配列順に逐次実行する。
+
+    戻り値は「セッションを開始してよいか」。on_error='fail' のコマンドが失敗したときだけ
+    False を返す。それ以外はすべて True（不在・破損・無効・個々の失敗はフェイルセーフで続行）。
+    """
+    global _SESSION_COMMANDS_REV_APPLIED
+    try:
+        data = _load_session_commands()
+        entries = plan_session_commands(data, ctx)
+    except Exception:  # noqa: BLE001 — 計画の失敗でセッション開始を止めない
+        return True
+    if not entries:
+        return True
+    rev = _session_commands_revision(data)
+    for entry in entries:
+        if entry["mode"] not in modes:
+            continue
+        if entry.get("skip"):
+            log.info("セッション開始コマンド '%s' をスキップします（理由: %s）。", entry["id"], entry["skip"])
+            continue
+        if entry["mode"] == "chat":
+            if send_chat is None:
+                continue
+            try:
+                send_chat(entry["run"])
+            except Exception as exc:  # noqa: BLE001
+                log.warning("セッション開始コマンド '%s' の送信に失敗しました: %s", entry["id"], exc)
+            continue
+        log.info("セッション開始コマンド '%s' を実行します: %s", entry["id"], entry["run"])
+        ok, reason = _run_session_process_command(entry)
+        if ok:
+            continue
+        if entry["on_error"] == "fail":
+            log.error(
+                "セッション開始コマンド '%s' が失敗したためセッションを開始しません: %s",
+                entry["id"], reason,
+            )
+            return False
+        log.warning("セッション開始コマンド '%s' が失敗しました（続行します）: %s", entry["id"], reason)
+    _SESSION_COMMANDS_REV_APPLIED = rev
+    return True
+
+
 def _write_status(lifecycle: str = "run", budget: "dict | None" = None,
                   fresh_after_sec: int = 120) -> None:
     """status/<tool>-<pid>.json へ適用状況ハートビートを原子書換する（best-effort）。"""
@@ -517,6 +723,9 @@ def _write_status(lifecycle: str = "run", budget: "dict | None" = None,
         # グローバル指示: 直近で paste 注入したブロックの revision（未注入は省略）。
         if _INSTRUCTIONS_REV_APPLIED is not None:
             rec["instructions_revision_applied"] = _INSTRUCTIONS_REV_APPLIED
+        # セッション開始コマンド: 直近のペイン起動で適用した revision（未適用は省略）。
+        if _SESSION_COMMANDS_REV_APPLIED is not None:
+            rec["session_commands_revision_applied"] = _SESSION_COMMANDS_REV_APPLIED
         if budget is not None:
             rec["budget"] = {"exceeded": bool(budget.get("exceeded")),
                              "soft": bool(budget.get("soft"))}
@@ -1609,6 +1818,13 @@ class SessionManager:
 
         session_cwd = self._resolve_cwd(cwd)
 
+        # セッション開始コマンド（agent-session-commands）の process モード。ペインを作る
+        # **前**に走らせる。前準備が終わっていない環境でエージェントを動かさないため、
+        # on_error='fail' が失敗したらここで諦める（ペインを作らない）。
+        if not run_session_commands(self._session_command_context(session_cwd), modes=("process",)):
+            log.error("プロンプト '%s' はセッション開始コマンドの失敗により起動しません。", prompt_name)
+            return False
+
         cmd_args = ["chat"] + self._kiro_args_base[:]
         if self._uses_concurrency_agent:
             agent_file = Path.home() / ".kiro" / "agents" / f"{CONCURRENCY_AGENT_NAME}.json"
@@ -1636,8 +1852,40 @@ class SessionManager:
             "プロンプト '%s' 用ペインを起動しました (pane=%s, tmux=%s, args=%s)。",
             prompt_name, pane_target, attach_session_name, self._kiro_args_base,
         )
+        # chat モードは、CLI が入力を受け付ける状態になってから業務プロンプトより先に送る。
+        # ペインの生成と「プロンプトが出ている」は別の瞬間なので、ここで待ってから送信する。
+        self._send_session_chat_commands(pane_target, session_cwd)
         self.write_state()
         return True
+
+    def _session_command_context(self, session_cwd: str) -> dict:
+        """セッション開始コマンドの when 判定・プレースホルダ展開に渡す文脈。"""
+        return {
+            "engine": "kiro-loop",
+            "workload": "routine",
+            "cwd": session_cwd,
+            "workspace": self._target_path,
+            "agent_cli": "kiro",
+        }
+
+    def _send_session_chat_commands(self, pane_target: str, session_cwd: str) -> None:
+        """chat モードのセッション開始コマンドをペインへ送る（失敗しても起動は続ける）。"""
+        try:
+            deadline = time.time() + _SEND_STARTUP_TIMEOUT
+            while time.time() < deadline:
+                if _pane_has_prompt(_capture_pane(pane_target)):
+                    break
+                time.sleep(0.5)
+            else:
+                log.warning("ペイン %s の起動待ちがタイムアウトしたため chat コマンドは送りません。", pane_target)
+                return
+            run_session_commands(
+                self._session_command_context(session_cwd),
+                send_chat=lambda text: _send_to_pane(pane_target, text),
+                modes=("chat",),
+            )
+        except Exception:  # noqa: BLE001 — 開始コマンドの送信失敗でペイン起動を無効にしない
+            log.warning("セッション開始コマンド（送信）に失敗しました。", exc_info=True)
 
     def _stop_pane(self, prompt_id: str) -> None:
         """ペインを終了する（_restart_locks は保持する）。"""

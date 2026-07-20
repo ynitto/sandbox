@@ -4,19 +4,24 @@ const budget = require('./budget');
 const control = require('./control');
 const agents = require('./agents');
 const instructions = require('./instructions');
+const sessionCommands = require('./sessionCommands');
 
 function registerIpc(ctx) {
   const { handle, loadConfig } = ctx;
 
   // 1 ポーリングでオーケストレーション面をまとめて返す:
   // 予算 usage v2（実測＋推定の内訳つき）・control 現在値・status/ 一覧（fresh 判定つき）・
-  // エージェント CLI ドロップイン棚卸し・グローバル指示（現在値＋描画プレビュー）。
+  // エージェント CLI ドロップイン棚卸し・グローバル指示（現在値＋描画プレビュー）・
+  // セッション開始コマンド（現在値。プレビューはエンジンを選ぶ必要があるため renderer 側で組む）。
   handle('orchestration:overview', () => {
     const cfg = loadConfig();
     const controlDir = control.resolveControlDir(cfg);
     const instructionsDir = instructions.resolveInstructionsDir(cfg);
     const gi = instructions.loadInstructions(instructionsDir);
+    const sessionDir = sessionCommands.resolveSessionDir(cfg);
     return {
+      sessionCommands: sessionCommands.loadSessionCommands(sessionDir),
+      sessionDir,
       budget: budget.usage(cfg),
       control: control.loadControl(controlDir),
       status: control.readStatus(controlDir),
@@ -50,6 +55,19 @@ function registerIpc(ctx) {
     instructions.saveInstructions(loadConfig(), payload || {})
   );
   handle('orchestration:skillsInventory', () => instructions.skillsInventory(loadConfig()));
+
+  // セッション開始コマンド（agent-session-commands 契約）の保存（revision +1）と、
+  // エンジンを指定した実行計画のプレビュー（プレースホルダ展開・when 判定・有界化まで済んだもの）。
+  handle('orchestration:sessionCommandsSave', (payload) =>
+    sessionCommands.saveSessionCommands(loadConfig(), payload || {})
+  );
+  handle('orchestration:sessionCommandsPreview', (payload) => {
+    const p = payload || {};
+    const data = p.data || sessionCommands.loadSessionCommands(
+      sessionCommands.resolveSessionDir(loadConfig())
+    );
+    return sessionCommands.plan(data, p.context || {});
+  });
 }
 
 module.exports = { registerIpc };

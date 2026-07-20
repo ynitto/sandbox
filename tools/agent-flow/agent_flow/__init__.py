@@ -23,6 +23,7 @@ _FRAGMENTS = (
     "config",        # 設定ファイル / CONFIG_DEFAULTS / resolve
     "util",          # 小道具（now_iso / read_json / write_json_atomic）
     "instructions",  # グローバル指示（agent-instructions 契約）の読取・描画
+    "session_commands",  # セッション開始コマンド（agent-session-commands 契約）の読取・実行
     "bus",           # Bus（ローカルメッセージバス）
     "gitbus",        # GitBus + make_bus / cleanup_active_clones
     "stategit",      # StateGit + daemon 状態ヘルパ

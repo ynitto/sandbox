@@ -43,6 +43,7 @@ test('agent-project preload に discover / flowRuns がある', () => {
   const api = stack.preloadApi();
   assert.strictEqual(typeof api.discover, 'function');
   assert.strictEqual(typeof api.flowRuns, 'function');
+  assert.strictEqual(typeof api.agentOpenChat, 'function');
   const calls = [];
   const discover = api.discover((channel, args) => {
     calls.push([channel, args]);
@@ -190,6 +191,7 @@ test('orchestration はノード予算 v2 / 制御 / ドロップイン API を�
     ['orchestration:agentDelete', 'orchestration:agentSave', 'orchestration:budgetSave',
      'orchestration:calibrate', 'orchestration:controlSave', 'orchestration:instructionsSave',
      'orchestration:lifecycle', 'orchestration:overview', 'orchestration:rebalance',
+     'orchestration:sessionCommandsPreview', 'orchestration:sessionCommandsSave',
      'orchestration:skillsInventory'].sort());
   const api = orch.preloadApi();
   const calls = [];

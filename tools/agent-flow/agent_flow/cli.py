@@ -72,7 +72,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-global-instructions", dest="no_global_instructions",
                    action="store_true", default=False,
                    help="グローバル指示（agent-instructions）の meta スナップショット / ワーカー注入を無効化する"
-                        "（既定: ~/.agent/instructions/instructions.json があれば注入）")
+                        "（既定: ~/.agents/instructions/instructions.json があれば注入）")
+    p.add_argument("--no-session-commands", dest="no_session_commands",
+                   action="store_true", default=False,
+                   help="セッション開始コマンド（agent-session-commands）の実行を無効化する"
+                        "（既定: ~/.agents/session/session.json があればワーカー起動時に実行）")
     # サブコマンド未指定なら daemon として扱う（required=False）
     sub = p.add_subparsers(dest="cmd")
 

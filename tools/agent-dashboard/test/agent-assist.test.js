@@ -60,6 +60,25 @@ test('buildCommand: モデル未指定なら --model を付けない', () => {
   }
 });
 
+test('buildInteractiveCommand: 全体設定のCLI・モデルを対話コマンドへ変換する', () => {
+  assert.deepStrictEqual(
+    agent.buildInteractiveCommand({ cli: 'kiro', model: 'auto', plugin: null }),
+    ['kiro-cli', 'chat', '--trust-all-tools', '--model', 'auto']
+  );
+  assert.deepStrictEqual(
+    agent.buildInteractiveCommand({ cli: 'claude', model: 'sonnet', plugin: null }),
+    ['claude', '--model', 'sonnet']
+  );
+  assert.deepStrictEqual(
+    agent.buildInteractiveCommand({ cli: 'codex', model: 'gpt-5', plugin: null }),
+    ['codex', '--model', 'gpt-5']
+  );
+  assert.throws(
+    () => agent.buildInteractiveCommand({ cli: 'ollama', model: '', plugin: null }),
+    /モデルを設定/
+  );
+});
+
 test('buildDoctorCommand: kiro はツールを一切許可せず、短い argv + stdin で助言する', () => {
   const prompt = agent.doctorPrompt({ tab: 'needs' });
   const c = agent.buildDoctorCommand('kiro', '', prompt, '/project');

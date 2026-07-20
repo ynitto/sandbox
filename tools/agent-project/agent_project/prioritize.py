@@ -356,7 +356,7 @@ def _agent_failure(cli: str, rc: int, out: str, err: str) -> str:
 
 # --- ノード予算 v2（node-budget 契約: schemas/node-budget.schema.json） --------------------
 # ノード（マシン）単位の共有台帳。定常業務（kiro-loop）・agent-project・agent-flow・
-# agent-amigos が同じ台帳（$AGENT_BUDGET_DIR、既定 ~/.agent/budget/）に記帳し、合計が上限
+# agent-amigos が同じ台帳（$AGENT_BUDGET_DIR、既定 ~/.agents/budget/）に記帳し、合計が上限
 # （0 = 無制限）を超えたら新規の LLM 実行を控える。v2 で一次単位をトークンへ拡張（時間上限は
 # v1 互換で AND）。台帳には実測のみ（実測秒＋実測できたトークン）を書き、未報告行は rates で
 # 読み出し時に推定する。配分・較正の知能は管理面（dashboard）にあり、エンジンは単純比較のみ。
@@ -510,7 +510,7 @@ def _node_budget_record(seconds: float, ref: str = "", agent_cli: str = "",
 
 
 # --- agent-control（管理面→エンジンの宣言的オーケストレーション契約） ----------------------
-# schemas/agent-control.schema.json。$AGENT_CONTROL_DIR（既定 ~/.agent/control/）の control.json
+# schemas/agent-control.schema.json。$AGENT_CONTROL_DIR（既定 ~/.agents/control/）の control.json
 # に管理面が「望ましい状態」を書き、各エンジンが mtime を見て pull で適用する（push 型 IPC なし）。
 # 優先順位 control > CLI 引数 > 設定ファイル > 組み込み既定。適用状況は status/<tool>-<pid>.json へ。
 _CONTROL_CACHE = {"mtime": None, "data": {}}

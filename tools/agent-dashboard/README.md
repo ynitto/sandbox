@@ -41,6 +41,15 @@ agent-amigos ミッションとノード予算（`src/features/amigos/`）を同
 依頼側・請負側どちらのノードでも同じ）は、アプリの「全体設定 → エージェント」で
 機能別の消費内訳を表示・編集する。ミッションも依頼先ホームも無いときはタブ自体を隠す。
 
+**セッション開始コマンド**（[agent-session-commands 契約](../../schemas/agent-session-commands.schema.json)
+— 「全体設定 → エージェント → 共通設定」で編集）: エージェントのセッションが始まった直後に、
+上から順に 1 回だけ実行する前準備。`process` はホストのシェルで実行して完了を待ち（`git fetch`・
+`docker compose up` など）、`chat` はセッションへ最初のプロンプトとして送る。常駐系
+（kiro-loop / agent-loop / このアプリの定常業務ウィンドウ）は tmux ペイン 1 本、agent-flow は
+ワーカープロセス 1 つが「セッション」にあたる。共通指示（agent-instructions）と違い**委譲先
+ノードへは伝播しない** — コマンドの到達範囲を、その端末に置いた設定ファイルへ閉じ込める。
+設定: [`docs/plans/2026-07-20-agent-dashboard-session-commands-design.md`](../../docs/plans/2026-07-20-agent-dashboard-session-commands-design.md)。
+
 **概要から詳細へ**: 最初の画面で「現在の状態／あなたの対応／進捗／成果」を把握し、
 必要な箇所だけ「タスクを見る」「実行を見る」「成果を見る」から深掘りできる。
 プロジェクト定義の編集やリセットは「プロジェクト設定」にまとめ、日常の確認画面から分離している。

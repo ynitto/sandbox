@@ -43,6 +43,16 @@ def cmd_work(args) -> int:
     idle_exit = getattr(args, "idle_exit", False)
     log(who, f"ワーカー起動 (executor={args.executor}, keep_alive={args.keep_alive}, "
              f"idle_exit={idle_exit})")
+    # セッション開始コマンド（agent-session-commands）。agent-flow の「セッション」は
+    # このワーカープロセス 1 つなので、ここで 1 回だけ走らせる（ノードごとの CLI 呼び出し
+    # には入れない）。on_error='fail' が失敗したらワーカーを起こさない。
+    if not run_session_commands(who, {
+        "engine": "agent-flow", "workload": "flow", "cwd": os.getcwd(),
+        "workspace": os.getcwd(), "agent_cli": getattr(args, "agent_cli", "") or "",
+        "model": getattr(args, "model", "") or "", "run_id": getattr(args, "run_id", "") or "",
+        "node_id": who,
+    }):
+        return 1
     # executor を一度だけ解決する（組み込み agent/stub or プラグイン）。
     execute = make_executor(args)
     # park & poll: 親（daemon/run）が service_waits で面倒を見るときだけ deferral を有効化する。

@@ -2,7 +2,7 @@
 
 // グローバル指示（agent-instructions 契約）の読み書きと決定的レンダリング、スキル棚卸し。
 // 正典: schemas/agent-instructions.schema.json。実体は $AGENT_INSTRUCTIONS_DIR
-// （既定 ~/.agent/instructions/）の instructions.json（管理面が原子書換）。
+// （既定 ~/.agents/instructions/）の instructions.json（管理面が原子書換）。
 //
 // dashboard は instructions.json に「全ノード共通の指示」を書き revision を単調増加させる。
 // 各エンジンはこれを描画して実行エージェント（worker / 定常業務）のプロンプトへ前置する。

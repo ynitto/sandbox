@@ -22,6 +22,12 @@ assert.ok(
 assert.ok(!html.includes('tab-scope-label'), '全体設定の左に補助ラベルを置きません');
 assert.match(html, /data-tab="project-settings"[^>]*>プロジェクト設定</);
 assert.match(html, /data-tab="orchestration"[^>]*>全体設定</);
+const projectHeader = html.slice(html.indexOf('<header id="project-header">'), html.indexOf('<nav id="tabs">'));
+assert.match(projectHeader, /id="btn-cli-chat"[^>]*disabled/);
+assert.ok(projectHeader.includes('CLIチャットを開く'), 'CLIチャットは対象が分かるプロジェクトヘッダーに置きます');
+assert.ok(renderer.includes('function openCliChat('));
+assert.ok(renderer.includes('api.agentOpenChat({ dir })'), '選択中ワークスペースをCLIチャット起動へ渡します');
+assert.match(css, /\.project-cli-chat\s*\{[^}]*min-height:\s*44px/s);
 assert.ok(
   html.indexOf('data-tab="project-settings"') < html.indexOf('data-tab="orchestration"'),
   'プロジェクト設定は全体設定の左に置きます'

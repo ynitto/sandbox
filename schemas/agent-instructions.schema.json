@@ -43,11 +43,11 @@
         },
         "tools": {
           "type": "object",
-          "description": "ツール方針。allow は kiro-cli --agent の tools へ強制反映できる唯一のフィールド（常駐系のみ・ペイン再起動が反映点）。プロンプト組立系（flow / project）では助言テキストになる",
+          "description": "ツール方針。**現状はすべてのエンジンで助言テキスト**として描画するだけで、強制力は無い（kiro-cli --agent の tools への反映は設計時に見送られた。常駐系の既定エージェントが既に tools:[\"*\"] を持ち、install が所有するファイルをペイン起動ごとに書き換える副作用に見合わないため）",
           "properties": {
             "allow": {
               "type": "array", "items": {"type": "string"},
-              "description": "許可するツール名。常駐系（kiro-loop / agent-loop）では --agent JSON の tools へマージ。プロンプト組立系では『ツール（許可）:』の助言行として描画"
+              "description": "許可するツール名。全エンジンで『ツール（許可）:』の助言行として描画する（実行時に強制されるわけではない）"
             },
             "deny_note": {
               "type": "string",

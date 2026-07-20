@@ -57,6 +57,8 @@ const state = {
   globalSettingsSection: 'app', // app / agents / sync / routine / integrations
   globalSettingsDirty: false,
   orchInstructionsDirty: false, // 共通指示・推奨スキルの未保存入力（ポーリング再描画から保護）
+  orchSessionDirty: false,      // セッション開始コマンドの未保存入力（同上）
+  orchSessionPreview: null,     // { engine, entries } プレビューの取得結果
   // 要対応（needs）の前回カウント。増分を検知して OS 通知する（張り付き監視の解消）。
   // initialized=false の初回はベースライン取得のみで通知しない（起動時の殺到を避ける）。
   notify: { counts: {}, initialized: false },
@@ -960,8 +962,32 @@ function renderFeatureTab(name) {
   if (h && typeof h.render === 'function') h.render();
 }
 
+function renderCliChatButton() {
+  const button = $('btn-cli-chat');
+  if (!button) return;
+  button.disabled = !selectedProjectFolder() || button.dataset.busy === 'true';
+}
+
+async function openCliChat() {
+  const dir = selectedProjectFolder();
+  if (!dir) return toast('CLIチャットを開くプロジェクトを選択してください');
+  const button = $('btn-cli-chat');
+  button.dataset.busy = 'true';
+  button.setAttribute('aria-busy', 'true');
+  renderCliChatButton();
+  try {
+    const result = await guard('CLIチャットを開けません', () => api.agentOpenChat({ dir }));
+    if (result) toast(`${result.cli}${result.model ? ` / ${result.model}` : ''} のCLIチャットを開きました`, true);
+  } finally {
+    delete button.dataset.busy;
+    button.removeAttribute('aria-busy');
+    renderCliChatButton();
+  }
+}
+
 function renderAllTabs() {
   const ui = captureUiState();
+  renderCliChatButton();
   renderOverview();
   renderBacklog();
   renderNeeds();
@@ -971,7 +997,7 @@ function renderAllTabs() {
   renderCowork();
   renderAmigos();
   renderProjectSettings();
-  if ((!state.globalSettingsDirty && !state.orchInstructionsDirty) || !$('tab-orchestration').childElementCount) renderOrchestration();
+  if ((!state.globalSettingsDirty && !state.orchInstructionsDirty && !state.orchSessionDirty) || !$('tab-orchestration').childElementCount) renderOrchestration();
   renderKiroLoopTerminal();
   for (const [name] of featureTabs) renderFeatureTab(name);
   restoreUiState(ui);
@@ -1034,6 +1060,7 @@ function openGlobalSettings(section = 'app') {
   state.globalSettingsSection = GLOBAL_SETTINGS_SECTIONS.some((item) => item.id === section) ? section : 'app';
   state.globalSettingsDirty = false;
   state.orchInstructionsDirty = false;
+  state.orchSessionDirty = false;
   switchTab('orchestration');
   renderOrchestration();
 }
@@ -1589,7 +1616,7 @@ async function refreshAll({ sync = true } = {}) {
     if (state.selectedDir) await reloadProject({ refreshRemoteHealth: sync });
     if (activeTab() === 'cowork') renderCowork();
     if (activeTab() === 'amigos') renderAmigos();
-    if (activeTab() === 'orchestration' && !state.globalSettingsDirty && !state.orchInstructionsDirty) renderOrchestration();
+    if (activeTab() === 'orchestration' && !state.globalSettingsDirty && !state.orchInstructionsDirty && !state.orchSessionDirty) renderOrchestration();
     // 登録済みフィーチャータブ: 非同期取得（refresh）してから表示中なら描画する。
     for (const [name, h] of featureTabs) {
       if (typeof h.refresh === 'function') {
