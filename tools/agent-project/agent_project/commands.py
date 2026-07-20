@@ -552,6 +552,28 @@ def _reject_command(cfg: "Config", f: Path, why: str) -> None:
                 pass
 
 
+def _clear_rejected_commands(cfg: "Config", tid: str) -> None:
+    """同じタスクへの指示が通ったら、過去の失敗退避（*.err）を掃除する。
+
+    .err は viewer が「直前の指示は失敗した」バナーを出す根拠になる。成功後も残すと、
+    解決済みの失敗が同じタスクの次の要対応カードに出続ける（直ったのに失敗表示）。
+    掃除は成功時だけ——失敗の履歴を先に消すと、失敗が誰にも見えない元の不具合に戻る。"""
+    if not tid:
+        return
+    for e in commands_dir(cfg).glob("*.err"):
+        try:
+            payload = json.loads(e.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        cmd = payload.get("command") if isinstance(payload, dict) else None
+        if str((cmd or {}).get("id", "") or "") != tid:
+            continue
+        try:
+            e.unlink()
+        except OSError:
+            pass
+
+
 def _read_command(f: Path) -> "tuple[dict | None, str]":
     """指示ファイルを読む。(rec, why) を返す。rec が None なら why が理由（未完・不正）。
 
@@ -646,6 +668,7 @@ def ingest_commands(cfg: "Config") -> "list[str]":
                 except OSError:
                     pass
                 append_journal(cfg.journal, f"commands 取り込み: resume-run {tid}（{f.name}）")
+                _clear_rejected_commands(cfg, tid)
                 done.append(f"resume-run:{tid}")
             else:
                 _reject_command(cfg, f, f"resume-run {tid} が失敗 (exit {rc})")
@@ -682,6 +705,7 @@ def ingest_commands(cfg: "Config") -> "list[str]":
             except OSError:
                 pass
             append_journal(cfg.journal, f"commands 取り込み: {action} {tid}（{f.name}）")
+            _clear_rejected_commands(cfg, tid)
             done.append(f"{action}:{tid}")
         else:
             detail = f": {errmsg.splitlines()[0][:300]}" if errmsg else ""

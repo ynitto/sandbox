@@ -1924,7 +1924,8 @@ def setup_ponytail(agent_type: str, force: bool = False) -> bool:
     return _install_ponytail_plugin(agent_type, force=force)
 
 
-HEADROOM_PKG = "headroom-ai[all]"
+# MCP / proxy 用。`[all]` は PyTorch 等で非常に重いので使わない。
+HEADROOM_PKG = "headroom-ai[proxy]"
 HEADROOM_PYPI = "headroom-ai"
 
 # wrap 対応 + MCP 配線可能なエージェント（kiro は wrap 非対応だが MCP は可）
@@ -1966,8 +1967,45 @@ def _headroom_bin_path() -> str | None:
     return None
 
 
+def _headroom_uv_tool_dir() -> str:
+    return os.path.join(os.path.expanduser("~"), ".local", "share", "uv", "tools", "headroom-ai")
+
+
+def _warn_headroom_uv_permissions() -> None:
+    """root 所有の uv tool 残骸があると install が固まる／失敗するので警告する。"""
+    tool_dir = _headroom_uv_tool_dir()
+    if not os.path.isdir(tool_dir):
+        return
+    try:
+        st = os.stat(tool_dir)
+    except OSError:
+        return
+    if hasattr(st, "st_uid") and st.st_uid == 0 and os.geteuid() != 0:
+        print(f"   ⚠ {tool_dir} が root 所有です。uv が止まる原因になります。")
+        print(f"     解消例: sudo rm -rf {tool_dir}")
+
+
+def _run_streaming(cmd: list[str], *, timeout: int = 600) -> int:
+    """標準入出力をそのまま見せて長時間コマンドを実行する。"""
+    try:
+        result = subprocess.run(cmd, timeout=timeout)
+        return result.returncode
+    except subprocess.TimeoutExpired:
+        print(f"   ✗ タイムアウト ({timeout}s): {' '.join(cmd)}")
+        return 124
+    except FileNotFoundError:
+        return 127
+
+
 def _install_headroom_cli() -> str | None:
-    """uv → pipx → pip の順で headroom-ai[all] を入れ、バイナリパスを返す。"""
+    """uv → pipx → pip の順で headroom-ai[proxy] を入れ、バイナリパスを返す。
+
+    出力はキャプチャせずストリームする（無出力だと固まって見えるため）。
+    ``[all]`` ではなく ``[proxy]``（MCP 含む）を使い、導入時間を抑える。
+    """
+    _warn_headroom_uv_permissions()
+    print("   メモ: MCP/proxy 用 extras を入れます（[all] は重いので使いません）")
+
     installers: list[tuple[str, list[str]]] = []
     if shutil.which("uv"):
         # README: macOS では 3.13 を明示（LiteLLM / ホイール互換）
@@ -1995,9 +2033,10 @@ def _install_headroom_cli() -> str | None:
         if key in seen:
             continue
         seen.add(key)
-        print(f"   {name} で {HEADROOM_PKG} をインストール中...")
+        print(f"   {name} で {HEADROOM_PKG} をインストール中（進捗が流れます）...")
         print(f"   $ {' '.join(cmd)}")
-        rc, _, err = _run_text(cmd, timeout=600)
+        sys.stdout.flush()
+        rc = _run_streaming(cmd, timeout=600)
         if rc == 0:
             bin_path = _headroom_bin_path()
             if bin_path:
@@ -2006,15 +2045,14 @@ def _install_headroom_cli() -> str | None:
             print("   ⚠ インストール成功だが headroom コマンドが見つかりません (PATH を確認)")
             return None
         print(f"   ✗ {name} でのインストールに失敗 (code {rc})")
-        if err:
-            print(f"     {err.strip().splitlines()[-1]}")
     return None
 
 
 def _upgrade_headroom_cli(headroom_bin: str) -> bool:
     """headroom update、だめなら uv/pipx/pip で更新。"""
     print("   headroom update を試行...")
-    rc, out, err = _run_text([headroom_bin, "update"], timeout=600)
+    sys.stdout.flush()
+    rc = _run_streaming([headroom_bin, "update"], timeout=600)
     if rc == 0:
         print("   ✓ headroom を更新しました (headroom update)")
         return True
@@ -2027,15 +2065,12 @@ def _upgrade_headroom_cli(headroom_bin: str) -> bool:
         if shutil.which(cmd[0]) is None:
             continue
         print(f"   {name} で更新中...")
-        rc2, _, err2 = _run_text(cmd, timeout=600)
+        sys.stdout.flush()
+        rc2 = _run_streaming(cmd, timeout=600)
         if rc2 == 0:
             print(f"   ✓ headroom を更新しました ({name})")
             return True
         print(f"   ✗ {name} 更新失敗 (code {rc2})")
-        if err2:
-            print(f"     {err2.strip().splitlines()[-1]}")
-    if err or out:
-        print(f"   ✗ headroom update 失敗: {(err or out).strip().splitlines()[-1]}")
     return False
 
 

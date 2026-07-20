@@ -209,10 +209,12 @@ function orchAllocationPanelHtml(budget) {
       <thead><tr><th>機能</th><th>配分比</th><th>最低保証</th><th>上限</th><th>上限到達時</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
-    <div class="row orch-actions">
-      <button type="button" id="btn-orch-alloc-save"${state.orchSaving ? ' disabled' : ''}>利用上限を保存</button>
-      <button type="button" id="btn-orch-rebalance">配分を更新</button>
-      <button type="button" id="btn-orch-calibrate">推定値を調整</button>
+    <div class="settings-save-actions">
+      <div class="settings-secondary-actions">
+        <button type="button" id="btn-orch-rebalance">配分を更新</button>
+        <button type="button" id="btn-orch-calibrate">推定値を調整</button>
+      </div>
+      <button type="button" id="btn-orch-alloc-save" class="primary-inline"${state.orchSaving ? ' disabled' : ''}>保存</button>
     </div>
   </section>`;
 }
@@ -295,8 +297,8 @@ function orchMatrixPanelHtml(overview) {
       <div>${orchBadge('muted', `設定版 ${Number(control.revision || 0)}`)}</div>
     </header>
     <div class="orch-ctrl-blocks">${blocks}</div>
-    <div class="row orch-actions">
-      <button type="button" id="btn-orch-control-save"${state.orchSaving ? ' disabled' : ''}>担当設定を保存</button>
+    <div class="settings-save-actions">
+      <button type="button" id="btn-orch-control-save" class="primary-inline"${state.orchSaving ? ' disabled' : ''}>保存</button>
     </div>
   </section>`;
 }
@@ -425,8 +427,8 @@ function orchInstructionsPanelHtml(overview) {
         <input type="number" id="orch-instr-max" min="0" max="8000" value="${esc(String(gi.max_chars || 2000))}" />
       </label>
     </div>
-    <div class="row orch-actions">
-      <button type="button" id="btn-orch-instr-save">共通指示を保存</button>
+    <div class="settings-save-actions">
+      <button type="button" id="btn-orch-instr-save" class="primary-inline">保存</button>
     </div>
     <details class="orch-instr-preview" data-ui-key="orch-instr-preview">
       <summary>エージェントに渡される内容を確認</summary>
@@ -555,14 +557,14 @@ function orchSessionCommandsPanelHtml(overview) {
   return `<section class="orch-panel orch-sess-panel">
     <header class="row">
       <div>
-        <span class="summary-kicker">セッション開始時</span>
-        <h3>セッションが始まったときに実行すること</h3>
-        <p class="muted">エージェントのセッションが始まった直後に、上から順に 1 回だけ実行します。
-          リポジトリの取得や開発環境の起動といった下準備に使います。</p>
+        <span class="summary-kicker">使用するコマンド</span>
+        <h3>エージェントを始める前のコマンド</h3>
+        <p class="muted">通常は設定しなくても使えます。リポジトリの取得や開発環境の起動など、
+          毎回必要な下準備がある場合だけ追加してください。上から順に 1 回実行します。</p>
       </div>
       <div>${sc.enabled ? orchBadge('ok', `有効・設定版 ${esc(String(sc.revision || 0))}`) : orchBadge('soft', '無効')}</div>
     </header>
-    <label class="orch-sess-enabled"><input type="checkbox" id="orch-sess-enabled" ${sc.enabled ? 'checked' : ''} /> セッション開始時のコマンドを使用する</label>
+    <label class="orch-sess-enabled"><input type="checkbox" id="orch-sess-enabled" ${sc.enabled ? 'checked' : ''} /> 登録したコマンドを使用する</label>
     <div class="orch-sess-list" id="orch-sess-list">${rows}</div>
     <div class="row orch-sess-controls">
       <button type="button" id="btn-orch-sess-add">コマンドを追加</button>
@@ -575,8 +577,8 @@ function orchSessionCommandsPanelHtml(overview) {
       <li>「失敗したとき: 開始を中止する」を選ぶと、そのコマンドが失敗したときエージェントが起動しなくなります。</li>
       <li>設定を変えても、すでに動いているセッションには反映されません。次に始まるセッションから有効になります。</li>
     </ul>
-    <div class="row orch-actions">
-      <button type="button" id="btn-orch-sess-save">セッション開始時のコマンドを保存</button>
+    <div class="settings-save-actions">
+      <button type="button" id="btn-orch-sess-save" class="primary-inline">保存</button>
     </div>
     <details class="orch-sess-preview" data-ui-key="orch-sess-preview" open>
       <summary>実行される内容を確認</summary>
@@ -645,9 +647,9 @@ function orchInventoryPanelHtml(overview) {
         <small class="muted">${esc(d.dir || '')}</small></summary>
       ${errs}
       <textarea class="orch-dropin-spec mono" rows="8" data-orch-name="${esc(d.name)}" data-orch-dir="${esc(d.dir || '')}">${esc(specText)}</textarea>
-      <div class="row orch-actions">
-        <button type="button" class="orch-dropin-save" data-orch-name="${esc(d.name)}" data-orch-dir="${esc(d.dir || '')}">保存</button>
-        <button type="button" class="orch-dropin-delete" data-orch-name="${esc(d.name)}" data-orch-dir="${esc(d.dir || '')}">削除</button>
+      <div class="settings-save-actions">
+        <button type="button" class="orch-dropin-delete danger" data-orch-name="${esc(d.name)}" data-orch-dir="${esc(d.dir || '')}">削除</button>
+        <button type="button" class="orch-dropin-save primary-inline" data-orch-name="${esc(d.name)}" data-orch-dir="${esc(d.dir || '')}">保存</button>
       </div>
     </details>`;
   }).join('') || '<p class="muted">追加したエージェントはありません。</p>';
@@ -668,8 +670,8 @@ function orchInventoryPanelHtml(overview) {
         <input type="text" id="orch-new-name" placeholder="cursor" />
       </label>
       <textarea id="orch-new-spec" class="mono" rows="8">${esc(sample)}</textarea>
-      <div class="row orch-actions">
-        <button type="button" id="btn-orch-new-save">作成</button>
+      <div class="settings-save-actions">
+        <button type="button" id="btn-orch-new-save" class="primary-inline">追加</button>
       </div>
       <p class="muted">コマンド形式などの詳細を JSON で指定します。</p>
     </details>
@@ -710,7 +712,7 @@ function globalSettingsAppHtml() {
       <div class="field"><label class="check"><input type="checkbox" id="cfg-notify" /> 対応が必要になったら通知する</label></div>
       <div class="field"><label for="cfg-needs-sla">長時間未対応として知らせるまで（時間）</label><input id="cfg-needs-sla" type="number" min="1" step="1" /></div>
     </div>
-    <div class="global-settings-actions"><button type="button" id="btn-save-app-settings" class="primary-inline">アプリ設定を保存</button></div>
+    <div class="settings-save-actions"><button type="button" id="btn-save-app-settings" class="primary-inline">保存</button></div>
   </div>`;
 }
 
@@ -719,7 +721,7 @@ function globalSettingsAssistantHtml() {
     <header class="row"><div>
       <span class="summary-kicker">画面内AI</span>
       <h3>AIアシスタント</h3>
-      <p class="muted">計画の下書きや画面上の相談に使うエージェントを設定します。</p>
+      <p class="muted">まず「使用するエージェント」を選んでください。モデルと待ち時間は、必要な場合だけ変更します。</p>
     </div></header>
     <div class="row2">
       <div class="field">
@@ -734,7 +736,7 @@ function globalSettingsAssistantHtml() {
       <div class="field"><label for="cfg-agent-model">モデル</label><input id="cfg-agent-model" class="mono" placeholder="エージェントの既定を使用" /></div>
     </div>
     <div class="field global-settings-short-field"><label for="cfg-agent-timeout">応答を待つ時間（秒）</label><input id="cfg-agent-timeout" type="number" min="30" step="10" /></div>
-    <div class="global-settings-actions"><button type="button" id="btn-save-agent-settings" class="primary-inline">AIアシスタント設定を保存</button></div>
+    <div class="settings-save-actions"><button type="button" id="btn-save-agent-settings" class="primary-inline">保存</button></div>
   </section>`;
 }
 
@@ -763,7 +765,7 @@ function globalSettingsSyncHtml() {
     </div>
     <div class="field"><label for="cfg-flow-bus-by-project">プロジェクトごとの共有先（1行に1つ）</label>
       <textarea id="cfg-flow-bus-by-project" class="mono" rows="4" placeholder="alpha = /home/me/clones/alpha/agent-flow"></textarea></div>
-    <div class="global-settings-actions"><button type="button" id="btn-save-sync-settings" class="primary-inline">同期と実行の設定を保存</button></div>
+    <div class="settings-save-actions"><button type="button" id="btn-save-sync-settings" class="primary-inline">保存</button></div>
   </div>`;
 }
 
@@ -782,7 +784,7 @@ function globalSettingsRoutineHtml() {
       <div class="field"><label for="cfg-cowork-sm-command">定型処理コマンド</label><input id="cfg-cowork-sm-command" class="mono" placeholder="statemachine-use" /></div>
       <div class="field global-settings-open-field"><button type="button" id="btn-settings-cowork-open">定常業務を開く</button></div>
     </div>
-    <div class="global-settings-actions"><button type="button" id="btn-save-routine-settings" class="primary-inline">定常業務の設定を保存</button></div>
+    <div class="settings-save-actions"><button type="button" id="btn-save-routine-settings" class="primary-inline">保存</button></div>
   </div>`;
 }
 
@@ -806,7 +808,7 @@ function globalSettingsIntegrationsHtml() {
       <div class="field"><label for="cfg-rv-exepath">実行ファイルの場所</label><input id="cfg-rv-exepath" class="mono" placeholder="例: C:\Apps\GitLab Review Viewer.exe" /></div>
     </div>
     <div class="field"><label for="cfg-rv-command">起動コマンド</label><input id="cfg-rv-command" class="mono" placeholder="{url} などの値を利用できます" /></div>
-    <div class="global-settings-actions"><button type="button" id="btn-save-integrations-settings" class="primary-inline">外部連携の設定を保存</button></div>
+    <div class="settings-save-actions"><button type="button" id="btn-save-integrations-settings" class="primary-inline">保存</button></div>
   </div>`;
 }
 
@@ -814,15 +816,15 @@ function globalSettingsAgentsHtml(overview) {
   if (!overview) return `${globalSettingsAssistantHtml()}<div class="empty compact">エージェント情報を読み込んでいます。</div>`;
   if (overview.error) return `${globalSettingsAssistantHtml()}<div class="empty compact"><strong>エージェント情報を読み込めませんでした</strong><span>${esc(overview.error)}</span></div>`;
   return `${globalSettingsAssistantHtml()}
+    <section class="agent-management-section" aria-labelledby="agent-management-settings-title">
+      <header class="agent-management-section-heading"><span class="summary-kicker">必要に応じて</span><h2 id="agent-management-settings-title">共通設定</h2>
+        <p class="muted">すべてのエージェントへ共通の指示・コマンド・利用上限・担当が必要な場合だけ設定します。</p></header>
+      ${orchInstructionsPanelHtml(overview)}${orchSessionCommandsPanelHtml(overview)}${orchAllocationPanelHtml(overview.budget)}${orchMatrixPanelHtml(overview)}
+    </section>
     <section class="agent-management-section" aria-labelledby="agent-management-status-title">
       <header class="agent-management-section-heading"><span class="summary-kicker">確認</span><h2 id="agent-management-status-title">利用状況</h2>
         <p class="muted">AIの利用量と、現在動いている実行サービスを確認します。</p></header>
       ${orchBudgetPanelHtml(overview.budget)}${orchStatusPanelHtml(overview)}
-    </section>
-    <section class="agent-management-section" aria-labelledby="agent-management-settings-title">
-      <header class="agent-management-section-heading"><span class="summary-kicker">共通設定</span><h2 id="agent-management-settings-title">共通設定</h2>
-        <p class="muted">この端末で動くすべてのエージェントへ適用します。</p></header>
-      ${orchInstructionsPanelHtml(overview)}${orchSessionCommandsPanelHtml(overview)}${orchAllocationPanelHtml(overview.budget)}${orchMatrixPanelHtml(overview)}
     </section>
     <section class="agent-management-section" aria-labelledby="agent-management-agents-title">
       <header class="agent-management-section-heading"><span class="summary-kicker">登録内容</span><h2 id="agent-management-agents-title">エージェント一覧</h2>

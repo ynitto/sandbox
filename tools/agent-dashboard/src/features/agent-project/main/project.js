@@ -719,6 +719,32 @@ function listMdDir(dir, parser) {
   return out;
 }
 
+// commands/*.err — 本体が取り込みに失敗して退避した指示（本体 _reject_command と対）。
+// 中身は {error, failed_at, command:{command,id,...}}。タスク id ごとに最新の 1 件へまとめ、
+// 対応する needs カードへ「直前の指示は失敗した」根拠として渡す。承認の失敗は非同期
+// （ドロップ→後で取り込み）なので送信時トーストでは伝えられず、これが無いと失敗が
+// 誰にも見えないまま同じボタンが繰り返し押される。
+function listCommandFailures(dir) {
+  const out = {};
+  const cdir = path.join(dir, 'commands');
+  for (const f of safeList(cdir)) {
+    if (!f.endsWith('.err')) continue;
+    const rec = readJson(path.join(cdir, f));
+    if (!rec || typeof rec !== 'object') continue;
+    const cmd = rec.command && typeof rec.command === 'object' ? rec.command : {};
+    const tid = String(cmd.id || '').trim();
+    if (!tid) continue;
+    const entry = {
+      action: String(cmd.command || ''),
+      error: String(rec.error || ''),
+      failedAt: String(rec.failed_at || ''),
+    };
+    const prev = out[tid];
+    if (!prev || String(prev.failedAt) < entry.failedAt) out[tid] = entry;
+  }
+  return out;
+}
+
 // needs/<id>.md が無い判断待ちタスク（review / blocked / proposed）を backlog status から補う。
 // 本体の ensure_needs と同じ契約: needs は status の投影で、票が失われても検収・承認導線を残す。
 // ここではファイルを書かず表示用だけを合成する（承認は commands/ 経由で needs ファイルが無くても届く）。
@@ -1577,6 +1603,12 @@ function readProject(workspaceDir, cfg) {
     synthesizeNeedsFromBacklog(listMdDir(needsDir, parseNeeds), backlog, needsDir),
     backlog
   );
+  // 直前の指示の失敗（commands/*.err）を該当カードへ。決着済みカードには出さない。
+  const commandFailures = listCommandFailures(dir);
+  for (const need of needs) {
+    const cf = commandFailures[String(need.taskId || need.id || '').trim()];
+    if (cf && !need.decided) need.commandFailure = cf;
+  }
   const projectCfg = readToolConfig('agent-project', [workspace, ...agentDirCandidates(workspace)]);
   const stateBranch = (projectCfg && projectCfg.values && projectCfg.values.state_branch) || DEFAULT_STATE_BRANCH;
   const gp = gitShowPrefix(dir);
@@ -1703,6 +1735,7 @@ module.exports = {
   parseNeeds,
   synthesizeNeedsFromBacklog,
   attachDeliveryHintsFromBacklog,
+  listCommandFailures,
   _splitDiff,
   _deliveryFromDetail,
   _extractMrUrls,

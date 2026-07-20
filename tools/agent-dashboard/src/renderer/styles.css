@@ -1634,6 +1634,20 @@ table.list tr.clickable:hover { background: var(--bg2); }
 }
 .final-verification-failure strong { color: #ff8d88; }
 .final-verification-failure span { line-height: 1.5; }
+/* 直前の指示（承認等）が本体の取り込みで失敗したことを知らせるバナー（commands/*.err） */
+.need-command-failure {
+  display: grid;
+  gap: 4px;
+  margin: 10px 0 14px;
+  padding: 11px 13px;
+  border: 1px solid rgba(220, 50, 47, 0.65);
+  border-left-width: 4px;
+  border-radius: 7px;
+  background: rgba(220, 50, 47, 0.11);
+  color: var(--fg);
+}
+.need-command-failure strong { color: #ff8d88; }
+.need-command-failure span { line-height: 1.5; overflow-wrap: anywhere; }
 /* verify 未定義など「失敗ではなく確認待ち」の情報バナー（赤＝エラーと誤読させない） */
 .final-verification-failure.info {
   border-color: rgba(38, 139, 210, 0.6);
@@ -2579,7 +2593,21 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .global-settings-card-heading h2 { margin: 2px 0 4px; font-size: 20px; }
 .global-settings-card-heading p { margin: 0; max-width: 68em; }
 .global-settings-card > h3 { margin: 20px 0 10px; padding-top: 16px; border-top: 1px solid var(--border); }
-.global-settings-actions { display: flex; justify-content: flex-end; margin-top: 18px; }
+.settings-save-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.settings-save-actions > .primary-inline { min-width: 96px; }
+.settings-save-actions button { min-height: 38px; }
+.settings-secondary-actions { display: flex; gap: 8px; margin-right: auto; flex-wrap: wrap; }
+@media (pointer: coarse) {
+  .settings-save-actions button { min-height: 44px; }
+}
 .global-settings-short-field { max-width: 280px; }
 .global-settings-open-field { display: flex; align-items: flex-end; }
 .global-settings-agent-refresh[hidden] { display: none; }
@@ -2596,7 +2624,10 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   .global-settings-select { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 12px; }
   .global-settings-select select { min-height: 44px; width: 100%; }
   .global-settings-card { padding: 14px; }
-  .global-settings-actions button, .global-settings-open-field button { width: 100%; min-height: 44px; }
+  .settings-save-actions { align-items: stretch; flex-direction: column-reverse; }
+  .settings-save-actions > button, .settings-secondary-actions button,
+  .global-settings-open-field button { width: 100%; min-height: 44px; }
+  .settings-secondary-actions { margin-right: 0; flex-direction: column; }
 }
 .orch-panel {
   border: 1px solid var(--border);

@@ -151,6 +151,30 @@ function needCompleteHowHtml(n) {
   return `<div class="task-complete-banner need-complete-how">${esc(line)}</div>`;
 }
 
+const COMMAND_ACTION_LABELS = {
+  approve: '承認',
+  hold: '保留',
+  reject: '却下',
+  revise: '修正指示',
+  pin: '優先度変更',
+  defer: '優先度変更',
+  'resume-run': '再実行',
+};
+
+// 直前の指示（承認・保留など）が本体で取り込みに失敗した（commands/*.err）ことを知らせる
+// バナー。取り込みは非同期なので送信時トーストは成功しか言えない——ここで理由を見せないと、
+// カードが未対応へ戻る理由が分からず同じボタンが繰り返し押される（実際そうなっていた）。
+function commandFailureHtml(n) {
+  const cf = n && n.commandFailure;
+  if (!cf) return '';
+  const label = COMMAND_ACTION_LABELS[cf.action] || cf.action || '指示';
+  return `<div class="need-command-failure" role="alert">
+    <strong>「${esc(label)}」は届きましたが、処理に失敗しました${cf.failedAt ? `（${esc(cf.failedAt)}）` : ''}</strong>
+    <span>${esc(cf.error || '')}</span>
+    <span class="muted">原因を解消してから、もう一度同じ操作を送ってください。</span>
+  </div>`;
+}
+
 function needActionsHtml(n, options) {
   const inReview = Boolean(options && options.inReview);
   const kind = n.kind || 'blocked';
@@ -611,8 +635,8 @@ function deliveryReviewFooterHtml(need) {
     const label = need.taskStatus ? statusLabel(need.taskStatus) : '関連タスクなし';
     return `<h3>タスクの状態</h3><p><span class="status-chip st-${esc(need.taskStatus || '')}">${esc(label)}</span></p>`;
   }
-  return `<h3>要確認コメント・操作</h3>${
-    need.decided || isNeedSent(need)
+  return `<h3>要確認コメント・操作</h3>${commandFailureHtml(need)}${
+    need.decided || (!need.commandFailure && isNeedSent(need))
       ? '<p class="muted">この要確認項目には回答済みです。</p>'
       : needActionsHtml(need, { inReview: true })
   }`;
@@ -1123,6 +1147,9 @@ function specFilesHtml(p, n) {
 
 function needBucket(n, sentFn) {
   if (n.decided) return 'done';
+  // 送信後に本体側で取り込みが失敗した指示（commands/*.err → n.commandFailure）は
+  // 「送信済み」に隠さない。失敗の事実と理由を見せて、次の操作をできるようにする。
+  if (n.commandFailure) return 'open';
   return sentFn(n) ? 'sent' : 'open';
 }
 
@@ -1234,8 +1261,10 @@ function needListItemViewModel(need, bucket, age) {
     stateText,
     kindText: needKindLabel(need && need.kind),
     title: needDisplayTitle(need || {}),
-    decision: needListSummary(need || {}),
-    failure: Boolean(needFailureViewModel(need)),
+    decision: need && need.commandFailure
+      ? `${COMMAND_ACTION_LABELS[need.commandFailure.action] || need.commandFailure.action}の取り込みに失敗しました — 詳細を開いて理由を確認してください`
+      : needListSummary(need || {}),
+    failure: Boolean(needFailureViewModel(need)) || Boolean(need && need.commandFailure),
     risk,
     riskText: RISK_LABELS[risk] || 'リスク未設定',
     ageText: String((age && age.label) || '—'),
@@ -1333,10 +1362,11 @@ function renderNeedFacts(n) {
 
 function renderNeedDetail(p, n) {
   if (!n) return '<div class="empty need-detail-empty">この状態の項目はありません</div>';
-  const settled = n.decided || isNeedSent(n);
+  // 取り込み失敗（commandFailure）があるカードは送信済み扱いにしない＝操作を出し直す
+  const settled = n.decided || (!n.commandFailure && isNeedSent(n));
   const chip = n.decided
     ? '<span class="status-chip st-done">回答済み</span>'
-    : isNeedSent(n)
+    : settled
       ? '<span class="status-chip st-review">送信済み</span>'
       : '<span class="status-chip st-blocked">未対応</span>';
   const detail = (n.detail || '').trim();
@@ -1367,6 +1397,7 @@ function renderNeedDetail(p, n) {
       </div>
       <span class="muted">${esc(n.date || '')}</span>
     </header>
+    ${commandFailureHtml(n)}
     ${finalVerificationFailureHtml(finalVerificationFailure)}
     <section class="need-decision">
       <h3>判断すること</h3>
@@ -1531,7 +1562,7 @@ function renderNeeds(options) {
     state.needsSelectedId,
     state.needsMobileDetail,
     filters.map((x) => x[2]),
-    p.needs.map((n) => [n.id, n.kind, n.decided, isNeedSent(n), n.why, n.summary, n.risk, n.failureSummary || '', n.failureResolution || '', n.failureContext || null, (n.detail || '').length]),
+    p.needs.map((n) => [n.id, n.kind, n.decided, isNeedSent(n), n.why, n.summary, n.risk, n.failureSummary || '', n.failureResolution || '', n.failureContext || null, n.commandFailure || null, (n.detail || '').length]),
     model.items.map((n) => (ages[n.id] ? `${ages[n.id].level}|${ages[n.id].label}` : '')),
   ]);
   if (el.dataset.sig === sig && el.childElementCount) return;

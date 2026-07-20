@@ -95,6 +95,12 @@ for (const id of ['btn-save-app-settings', 'btn-save-agent-settings', 'btn-save-
   'btn-save-routine-settings', 'btn-save-integrations-settings']) {
   assert.ok(renderer.includes(`id="${id}"`), `${id} で分類単位に保存します`);
 }
+assert.ok(renderer.includes('まず「使用するエージェント」を選んでください'),
+  'エージェント設定で最初に入力する項目を明示します');
+assert.ok(renderer.includes('必要な場合だけ設定します'),
+  '共通設定が任意であることを明示します');
+assert.ok(renderer.includes('class="settings-save-actions"'), 'カードの保存位置を共通化します');
+assert.ok(css.includes('.settings-save-actions'), '保存フッターを同じ配置で描画します');
 const renderAmigosSource = renderer.slice(
   renderer.indexOf('function renderAmigos('),
   renderer.indexOf('\nfunction workTypeLabel(', renderer.indexOf('function renderAmigos('))

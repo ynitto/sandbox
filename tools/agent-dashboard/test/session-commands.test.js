@@ -275,6 +275,10 @@ test('設定カードは保存・追加・プレビューの動線を持つ', ()
   }
   assert.ok(src.includes('orchestrationSessionCommandsSave'));
   assert.ok(src.includes('orchestrationSessionCommandsPreview'));
+  assert.ok(src.includes('使用するコマンド'), '利用者が設定内容を見出しだけで判断できる');
+  assert.ok(src.includes('通常は設定しなくても使えます'), '設定が任意であることを明示する');
+  assert.ok(/id="btn-orch-sess-save" class="primary-inline"[^>]*>保存</.test(src),
+    '保存操作は共通の色と短い文言にする');
 });
 
 test('未保存の入力はポーリング再描画から守る', () => {

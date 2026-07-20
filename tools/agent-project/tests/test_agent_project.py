@@ -2494,6 +2494,29 @@ class TestCommandsIngest(unittest.TestCase):
             self.assertEqual(len(list(cd.glob("*.json.err"))), 3)    # .err に退避
             self.assertIn("commands 取り込み失敗", (d / "journal.md").read_text())
 
+    def test_ingest_success_clears_stale_err_for_same_task(self):
+        # .err は viewer の「直前の指示は失敗した」バナーの根拠。同じタスクへの指示が
+        # 通ったら掃除しないと、解決済みの失敗が次の要対応カードに出続ける。
+        # 他タスクの .err と JSON でないゴミは残す（失敗の履歴を巻き添えで消さない）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="blocked", verify="true")
+            c = cfg_for(d)
+            km.ensure_dirs(c)
+            cd = km.commands_dir(c)
+            (cd / "old1.json.err").write_text(json.dumps(
+                {"error": "統合失敗", "failed_at": "2026-07-20 00:00:00",
+                 "command": {"command": "approve", "id": "T1"}}), encoding="utf-8")
+            (cd / "old2.json.err").write_text(json.dumps(
+                {"error": "別タスク", "failed_at": "2026-07-20 00:00:00",
+                 "command": {"command": "approve", "id": "T9"}}), encoding="utf-8")
+            (cd / "garbage.json.err").write_text("{oops", encoding="utf-8")
+            (cd / "a.json").write_text(json.dumps(
+                {"command": "approve", "id": "T1", "reason": "直した"}), encoding="utf-8")
+            self.assertEqual(km.ingest_commands(c), ["approve:T1"])
+            self.assertEqual(sorted(p.name for p in cd.glob("*.err")),
+                             ["garbage.json.err", "old2.json.err"])
+
     def test_has_work_wakes_on_commands(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
