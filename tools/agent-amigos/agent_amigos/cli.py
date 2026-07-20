@@ -92,6 +92,70 @@ def cmd_post(args) -> int:
     return 0
 
 
+def _write_roles_spec(path: str, spec: dict) -> None:
+    """設計したロールミッション表を YAML / JSON で書き出す（拡張子で選択）。"""
+    if path.lower().endswith((".yaml", ".yml")):
+        try:
+            import yaml  # type: ignore
+        except ImportError:
+            raise SystemExit("[agent-amigos] YAML 出力には PyYAML が必要です"
+                             "（.json を指定するか pip install pyyaml）")
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(spec, f, allow_unicode=True, sort_keys=False)
+    else:
+        write_json_atomic(path, spec)
+
+
+def cmd_build_team(args) -> int:
+    """チームビルディング: ミッション（ゴール/design）だけから team-building スキルで
+    最適なロールミッション表を設計する。既定はドライラン（設計を表示）。
+    --out で保存、--post で公示（従来の post 経路へ合流）まで行う。"""
+    import json
+    from . import teambuilding
+    bus, node = _resolve(args)
+    design_text = None
+    if args.design:
+        if not os.path.isfile(args.design):
+            raise SystemExit(f"[agent-amigos] design doc が見つかりません: {args.design}")
+        with open(args.design, encoding="utf-8") as f:
+            design_text = f.read()
+    brief = {"title": args.title, "goal": args.goal, "design": design_text,
+             "constraints": args.constraints,
+             "capabilities": [t for t in (args.capabilities or "").split(",") if t],
+             "agent_cli": args.agent_cli}
+    mission_over, roles, meta = teambuilding.build_team(
+        brief, args.agent_cli or "", model=args.model)
+    spec = {"mission": mission_over, "roles": roles}
+    log(node, f"team-building 完了: roles={len(roles)} skill={meta.get('skill_source')}")
+
+    if args.out:
+        _write_roles_spec(args.out, spec)
+        print(f"ロールミッション表を書き出しました: {args.out}（roles={len(roles)}）")
+        print(f"  内容を確認・調整してから: agent-amigos post --design <doc> --roles {args.out}")
+        return 0
+    if not args.post:
+        print(json.dumps(spec, ensure_ascii=False, indent=2))
+        return 0
+
+    # --post: design doc（無ければブリーフから生成）＋ 設計した roles で公示する
+    import tempfile
+    workdir = tempfile.mkdtemp(prefix="agent-amigos-build-team-")
+    design_path = args.design
+    if not design_path:
+        design_path = os.path.join(workdir, "design.md")
+        with open(design_path, "w", encoding="utf-8") as f:
+            f.write(teambuilding.brief_to_design_doc(brief))
+    roles_path = os.path.join(workdir, "roles.json")
+    write_json_atomic(roles_path, spec)
+    mid = post_mission(bus, design_path, roles_path, node, args.mission_id)
+    print(f"チームを設計し公示しました: {mid}（owner={node}, roles={len(roles)}）")
+    if args.serve:
+        NodeDaemon(bus, node, agent_cli=args.agent_cli, interval=args.interval,
+                   resume_hours=args.resume_hours,
+                   home=_node_home(args)).run(cycles=args.cycles)
+    return 0
+
+
 def cmd_join(args) -> int:
     bus, node = _resolve(args)
     roles_filter = [r for r in (args.roles or "").split(",") if r]
@@ -474,6 +538,32 @@ def build_parser() -> argparse.ArgumentParser:
                    help="graceful offboard 時の resume_at（時間後。away 保持の期待復帰時刻）")
     p.set_defaults(fn=cmd_post)
 
+    p = sub.add_parser("build-team",
+                       help="チームビルディング: ミッション（ゴール/design）だけから "
+                            "team-building スキルで最適なロール表を設計する（既定はドライラン）")
+    _bus_arg(p); _node_arg(p); _home_arg(p)
+    p.add_argument("--goal", default=None, help="ミッションの目標（design が無ければ必須）")
+    p.add_argument("--title", default=None, help="ミッションの短い名前")
+    p.add_argument("--design", default=None,
+                   help="design doc（Markdown）。あれば正典として設計に反映し、公示にも使う")
+    p.add_argument("--constraints", default=None, help="予算・締切・技術/体制の制約")
+    p.add_argument("--capabilities", default="",
+                   help="使えるノードの能力タグ（カンマ区切り。requires.tags の候補）")
+    p.add_argument("--agent-cli", default=None,
+                   help="設計に使う agent CLI（かつ各ロールの既定。stub/未指定は不可）")
+    p.add_argument("--model", default=None, help="設計に使うモデル（任意）")
+    p.add_argument("--out", default=None,
+                   help="設計したロール表の書き出し先（.yaml/.json）。指定時は公示しない")
+    p.add_argument("--post", action="store_true",
+                   help="設計後そのまま公示する（従来の post 経路へ合流）")
+    p.add_argument("--serve", action="store_true",
+                   help="--post と併用: 公示後そのままオーナーノードのデーモンとして常駐する")
+    p.add_argument("--mission-id", default=None)
+    p.add_argument("--interval", type=float, default=5.0)
+    p.add_argument("--cycles", type=int, default=0, help="デーモン巡回数（0=無限。テスト用）")
+    p.add_argument("--resume-hours", type=float, default=12.0)
+    p.set_defaults(fn=cmd_build_team)
+
     p = sub.add_parser("join", help="参加ノードのデーモンを起動する")
     _bus_arg(p); _node_arg(p)
     p.add_argument("--roles", default="", help="応募するロールの絞り込み（カンマ区切り）")
@@ -578,9 +668,9 @@ def build_parser() -> argparse.ArgumentParser:
 # 既知のサブコマンド。省略して呼ばれたら「常駐起動（serve）」を既定にする
 # （agent-project の run --watch 既定と同じ流儀 — PC 起動時に立ち上げっぱなしにして
 # cwd のホームを面倒見る daemon 用途を一級にする）。
-_SUBCOMMANDS = {"serve", "init-bus", "post", "join", "run", "status", "collect",
-                "accept", "reject", "assign", "budget", "say", "cancel", "gc", "hub",
-                "deliveries"}
+_SUBCOMMANDS = {"serve", "init-bus", "post", "build-team", "join", "run", "status",
+                "collect", "accept", "reject", "assign", "budget", "say", "cancel", "gc",
+                "hub", "deliveries"}
 
 
 def resolve_argv(argv: "list[str] | None") -> "list[str]":

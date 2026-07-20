@@ -2,12 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "amigos-command.schema.json",
   "title": "agent-amigos 指示ドロップ（<home>/.agents/agent-amigos/commands/*.json）",
-  "description": "常駐デーモンへの指示のファイル契約。外部操作者（人・agent-dashboard・スキル）が JSON を 1 ファイル置き、デーモンが次サイクルで取り込む（agent-project の commands/ と同じ「プロセス間 API を持たない」結合）。処理成功でファイルは削除、失敗は <name>.rejected へ改名して再試行しない。正典実装は agent_amigos/commands.py（ingest_commands / _dispatch）、投函側の実装は agent-dashboard features/amigos/main/homes.js（writeCommand）。assign / accept / reject / cancel は owner-only（デーモンのノードがミッションの owner_node のときだけ成功する）。未知キーは無視される（前方互換・追加は additive）。",
+  "description": "常駐デーモンへの指示のファイル契約。外部操作者（人・agent-dashboard・スキル）が JSON を 1 ファイル置き、デーモンが次サイクルで取り込む（agent-project の commands/ と同じ「プロセス間 API を持たない」結合）。処理成功でファイルは削除、失敗は <name>.rejected へ改名して再試行しない。正典実装は agent_amigos/commands.py（ingest_commands / _dispatch）、投函側の実装は agent-dashboard features/amigos/main/homes.js（writeCommand）。post はロールを明示する従来の入力契約、build-team はロール未指定のミッションから team-building スキルでロール表を設計してから post する（従来の入力契約はそのまま並存）。assign / accept / reject / cancel は owner-only（デーモンのノードがミッションの owner_node のときだけ成功する）。未知キーは無視される（前方互換・追加は additive）。",
   "type": "object",
   "required": ["command"],
   "properties": {
     "command": {
-      "enum": ["post", "claim", "assign", "accept", "reject", "cancel", "say"]
+      "enum": ["post", "build-team", "claim", "assign", "accept", "reject", "cancel", "say"]
     }
   },
   "oneOf": [
@@ -33,6 +33,33 @@
       },
       "required": ["command", "roles"],
       "anyOf": [{"required": ["design"]}, {"required": ["design_file"]}]
+    },
+    {
+      "description": "build-team — チームビルディング公示。ロールを渡さず、ミッション（goal / design / constraints / capabilities）だけを渡す。取り込み側が team-building スキル（.github/skills/team-building）を agent CLI で実行して最適なロールミッション表を設計し、そのまま従来の post 経路で公示する。design / design_file が無ければ goal からミニマルな design doc を自動生成する。設計に使う agent CLI は agent_cli（省略時はデーモンの既定。stub / 未指定では失敗する）",
+      "properties": {
+        "command": {"const": "build-team"},
+        "title": {"type": "string", "description": "mission.title（設計の入力かつ既定の上書き）"},
+        "goal": {"type": "string", "description": "mission.goal（設計の主入力。design が無ければ必須）"},
+        "design": {"type": "string", "description": "design doc の本文（あれば正典として設計へ反映し公示にも使う）。design_file と排他"},
+        "design_file": {"type": "string", "description": "design doc のファイルパス（~ 展開あり）。design と排他"},
+        "constraints": {"type": "string", "description": "予算・締切・技術/体制の制約（設計へ反映）"},
+        "capabilities": {
+          "description": "使えるノードの能力（requires.tags の候補）。配列または文字列",
+          "oneOf": [
+            {"type": "array", "items": {"type": "string"}},
+            {"type": "string"}
+          ]
+        },
+        "agent_cli": {"type": "string", "description": "設計に使う agent CLI かつ各ロールの既定（省略時はデーモンの既定。stub / 未指定は不可）"},
+        "model": {"type": "string", "description": "設計に使うモデル（任意）"},
+        "mission_id": {"type": "string", "description": "省略時は自動採番"},
+        "mission": {
+          "type": "object",
+          "description": "設計された mission ブロックへの明示上書き（設計値より優先。mission.schema.json の mission ブロック）"
+        }
+      },
+      "required": ["command"],
+      "anyOf": [{"required": ["goal"]}, {"required": ["design"]}, {"required": ["design_file"]}]
     },
     {
       "description": "claim — 手動引き受け。assignment_policy が owner-picks なら応募（オーナー自身なら応募＋即時確定）、first-come なら先着 claim",

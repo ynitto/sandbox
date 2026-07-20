@@ -1075,7 +1075,8 @@ class CommandSchemaTests(AmigosTestCase):
     def test_schema_commands_match_dispatch(self):
         schema = self._schema()
         self.assertEqual(schema["properties"]["command"]["enum"],
-                         ["post", "claim", "assign", "accept", "reject", "cancel", "say"])
+                         ["post", "build-team", "claim", "assign", "accept",
+                          "reject", "cancel", "say"])
         # oneOf の const 一覧も enum と一致する（宣言漏れ・重複なし）
         consts = [e["properties"]["command"]["const"] for e in schema["oneOf"]]
         self.assertEqual(consts, schema["properties"]["command"]["enum"])
@@ -1267,9 +1268,10 @@ class CommandsIngestTests(AmigosTestCase):
             if self.phase("am-cmd") == "reviewing":
                 break
         self.assertEqual(self.phase("am-cmd"), "reviewing")
-        # 取り込んだ design doc はホームの状態領域へ永続化される
+        # 取り込んだ design doc はホームの状態領域（.agents 移行後は .agents/…）へ永続化される
+        from agent_amigos.configfile import state_dir
         self.assertTrue(os.path.isfile(os.path.join(
-            self.home, ".agent", "agent-amigos", "designs", "am-cmd.md")))
+            state_dir(self.home), "designs", "am-cmd.md")))
         # 処理済みドロップは消える
         self.assertEqual([n for n in os.listdir(self.cdir) if n.endswith(".json")], [])
 
@@ -1397,6 +1399,140 @@ class NodeIdHomeMigrationTests(unittest.TestCase):
         self.assertTrue(os.path.exists(
             os.path.join(self.home, ".agents", "amigos", "node.json")))
         self.assertEqual(self.daemon.default_node_id(), nid, "採番後は同じ ID を返す")
+
+
+class TeamBuildingTests(AmigosTestCase):
+    """チームビルディング（ミッションのみ → team-building スキルで役割設計 → 従来 post へ合流）。
+
+    LLM は使わず agentcli.run_agent を差し替えて設計出力を注入する。
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.home = os.path.join(self.tmp, "home")
+
+    DESIGN = {
+        "mission": {"budget": {"execution_minutes": 45},
+                    "convergence": {"done_when": "reviewer-approved"}},
+        "roles": [
+            {"id": "architect", "mission": "設計を確定する", "deliverables": ["architecture.md"]},
+            {"id": "impl", "mission": "実装する", "deliverables": ["src/"],
+             "requires": {"tags": ["python"]}, "collaborates_with": ["architect"]},
+            {"id": "reviewer", "mission": "レビューする", "approver": True},
+        ],
+    }
+
+    def _stub_agent(self, output):
+        from agent_amigos import agentcli
+        original = agentcli.run_agent
+        agentcli.run_agent = lambda *a, **k: output
+        self.addCleanup(setattr, agentcli, "run_agent", original)
+
+    def test_skill_is_resolved_from_repo(self):
+        from agent_amigos import teambuilding
+        text, source = teambuilding.resolve_skill_instructions()
+        self.assertTrue(source.endswith("SKILL.md") or source == "(builtin)")
+        self.assertIn("team-building", text.lower())
+
+    def test_build_team_designs_and_validates(self):
+        from agent_amigos import teambuilding
+        # 設計 JSON の前後に地の文があっても extract_json が拾える
+        self._stub_agent("設計結果:\n" + json.dumps(self.DESIGN, ensure_ascii=False) + "\n以上")
+        brief = {"title": "FAQ", "goal": "FAQ ボットを作る",
+                 "capabilities": ["python"], "agent_cli": "claude"}
+        mission_over, roles, meta = teambuilding.build_team(brief, "claude")
+        ids = [r["id"] for r in roles]
+        self.assertEqual(ids, ["architect", "impl", "reviewer"])
+        # agent_cli 未指定のロールにはブリーフ既定が補われる
+        self.assertTrue(all(r.get("agent_cli") == "claude" for r in roles))
+        self.assertEqual(mission_over["title"], "FAQ")   # ブリーフから補完
+        self.assertEqual(mission_over["goal"], "FAQ ボットを作る")
+        self.assertTrue(meta.get("skill_source"))
+
+    def test_build_team_requires_real_cli(self):
+        from agent_amigos import teambuilding
+        self._stub_agent(json.dumps(self.DESIGN))
+        with self.assertRaises(RuntimeError):
+            teambuilding.build_team({"goal": "x"}, "stub")
+        with self.assertRaises(RuntimeError):
+            teambuilding.build_team({"goal": "x"}, "")
+
+    def test_build_team_needs_goal_or_design(self):
+        from agent_amigos import teambuilding
+        self._stub_agent(json.dumps(self.DESIGN))
+        with self.assertRaises(RuntimeError):
+            teambuilding.build_team({"title": "no goal"}, "claude")
+
+    def test_build_team_rejects_invalid_design(self):
+        from agent_amigos import teambuilding
+        bad = {"roles": [{"id": "a", "mission": "x"}, {"id": "a", "mission": "y"}]}  # 重複 id
+        self._stub_agent(json.dumps(bad))
+        with self.assertRaises(RuntimeError):
+            teambuilding.build_team({"goal": "g"}, "claude")
+
+    def test_build_team_rejects_empty_roles(self):
+        from agent_amigos import teambuilding
+        self._stub_agent(json.dumps({"roles": []}))
+        with self.assertRaises(RuntimeError):
+            teambuilding.build_team({"goal": "g"}, "claude")
+
+    def test_build_team_command_posts_mission(self):
+        """dashboard/人が投函する build-team 指示を常駐デーモンが取り込み公示する。"""
+        from agent_amigos.configfile import commands_dir
+        self._stub_agent(json.dumps(self.DESIGN, ensure_ascii=False))
+        cdir = commands_dir(self.home)
+        os.makedirs(cdir, exist_ok=True)
+        with open(os.path.join(cdir, "bt.json"), "w", encoding="utf-8") as f:
+            json.dump({"command": "build-team", "title": "FAQ", "goal": "FAQ ボットを作る",
+                       "capabilities": ["python"], "agent_cli": "claude"}, f, ensure_ascii=False)
+        d = NodeDaemon(self.bus, "owner-node", agent_cli="claude", interval=0,
+                       commands_home=self.home)
+        d.cycle()
+        mids = self.bus.list_missions()
+        self.assertEqual(len(mids), 1)
+        mp = self.bus.mission(mids[0])
+        mission = load_mission(mp)
+        roles = load_roles(mp)
+        self.assertEqual(mission["title"], "FAQ")
+        self.assertEqual(mission["convergence"]["done_when"], "reviewer-approved")
+        # 設計したロール + 省略された integrator の自動補充 + design doc 自動生成
+        self.assertEqual(set(roles), {"architect", "impl", "reviewer", "integrator"})
+        self.assertTrue(os.path.isfile(mp.design_doc()))
+
+    def test_build_team_command_uses_given_design_doc(self):
+        from agent_amigos.configfile import commands_dir
+        self._stub_agent(json.dumps(self.DESIGN, ensure_ascii=False))
+        cdir = commands_dir(self.home)
+        os.makedirs(cdir, exist_ok=True)
+        with open(os.path.join(cdir, "bt.json"), "w", encoding="utf-8") as f:
+            json.dump({"command": "build-team", "goal": "g", "design": "# 与えた設計\n受入基準\n",
+                       "agent_cli": "claude"}, f, ensure_ascii=False)
+        NodeDaemon(self.bus, "owner-node", agent_cli="claude", interval=0,
+                   commands_home=self.home).cycle()
+        mids = self.bus.list_missions()
+        self.assertEqual(len(mids), 1)
+        with open(self.bus.mission(mids[0]).design_doc(), encoding="utf-8") as f:
+            self.assertIn("与えた設計", f.read())
+
+    def test_build_team_cli_out_dry_run(self):
+        from agent_amigos import teambuilding  # noqa: F401 (ensures import path)
+        self._stub_agent(json.dumps(self.DESIGN, ensure_ascii=False))
+        out = os.path.join(self.tmp, "roles.json")
+        rc = cli.main(["build-team", "--bus", self.bus.root, "--goal", "g",
+                       "--agent-cli", "claude", "--out", out, "--node-id", "n1"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.bus.list_missions(), [])   # ドライランは公示しない
+        spec = read_json(out)
+        self.assertEqual([r["id"] for r in spec["roles"]], ["architect", "impl", "reviewer"])
+
+    def test_build_team_cli_post(self):
+        self._stub_agent(json.dumps(self.DESIGN, ensure_ascii=False))
+        rc = cli.main(["build-team", "--bus", self.bus.root, "--goal", "g", "--title", "T",
+                       "--agent-cli", "claude", "--post", "--node-id", "n1"])
+        self.assertEqual(rc, 0)
+        mids = self.bus.list_missions()
+        self.assertEqual(len(mids), 1)
+        self.assertEqual(load_mission(self.bus.mission(mids[0]))["title"], "T")
 
 
 if __name__ == "__main__":

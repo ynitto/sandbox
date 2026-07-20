@@ -2401,6 +2401,11 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .amigos-team-settings { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; }
 .amigos-team-settings summary { min-height: 32px; cursor: pointer; color: var(--muted); }
 .amigos-team-settings .field { margin-top: 10px; }
+.amigos-mode { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.amigos-mode label { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; cursor: pointer; }
+.amigos-mode input { min-height: 0; }
+.amigos-buildteam-hint { margin: 6px 0 10px; padding: 10px 12px; border: 1px dashed var(--border); border-radius: 8px; }
+.amigos-buildteam-hint p { margin: 0 0 8px; }
 .amigos-attention {
   padding: 9px 11px;
   border: 1px solid rgba(255, 184, 77, 0.55);
