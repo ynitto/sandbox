@@ -1292,7 +1292,20 @@ function needListItemHtml(item, selected, slaHours) {
   </button>`;
 }
 
-function renderNeedFacts(n) {
+// gate-derived か（＝この検証失敗が一貫性ゲートの回帰検査由来か）。断定はしない——producer が
+// 既に検証失敗と判定した failure に対し、失敗した工程コマンドや文面がゲート由来かを見て
+// 表示を足すだけ。外れても「一貫性ゲート」ラベルが 1 つ増えるだけで害はない（canDiagnoseNeed と
+// 同じ「推測してよい場所」の扱い。断定側の needFailureViewModel はここに関与しない）。
+function needGateFailure(failure, n) {
+  if (!failure) return false;
+  const cmd = String((failure.context && failure.context.command) || '');
+  if (/codd-gate/.test(cmd)) return true;
+  return /(?:一貫性ゲート|回帰検知|codd[- ]?gate)/i.test(
+    `${failure.summary || ''}\n${(n && n.why) || ''}`
+  );
+}
+
+function renderNeedFacts(p, n) {
   const facts = [];
   const failure = needFailureViewModel(n);
   if (failure) {
@@ -1314,6 +1327,26 @@ function renderNeedFacts(n) {
           `<div><dt>${esc(label)}</dt><dd>${label === 'コマンド' ? `<code>${esc(value)}</code>` : esc(value)}</dd></div>`
         ).join('')}</dl>`);
       }
+    }
+    // ゲート由来の失敗には、概要の「一貫性ゲート」節と同じ語彙で結線状態を添える。失敗の意味
+    // （＝一貫性ゲートが完了前に止めた）と、直した後にドリフトが自動起票されるか（intake_cmd の
+    // 結線）を、失敗を見ているその場で判断できるようにする。既存の検証失敗要約（見出し・要約行・
+    // context）はそのまま——このブロックは後ろに足すだけで、可読性を落とさない。
+    if (needGateFailure(failure, n)) {
+      const gate = p && p.consistencyGate;
+      const intakeLine = !gate
+        ? '概要タブの「一貫性ゲート」で結線状態と有効化を確認できます。'
+        : gate.intakeWired
+          ? `検出したドリフトは <span class="badge info">結線済み</span> の <span class="mono">intake_cmd</span> で修復タスクへ起票されます。`
+          : `ドリフトの取り込み（<span class="mono">intake_cmd</span>）は <span class="badge warn">未結線</span> です。直してもドリフトは自動起票されないため、概要タブの「一貫性ゲート」で有効化してください。`;
+      const open = gate && gate.configFile && !(gate.regressionWired && gate.intakeWired)
+        ? `<div class="summary-actions"><button class="summary-link secondary" data-open="${esc(gate.configFile)}">設定ファイルを開く</button></div>`
+        : '';
+      facts.push(`<div class="need-resolution need-gate">
+        <span class="label-chip">一貫性ゲート</span>
+        この失敗は完了前の回帰検査（<span class="mono">regression_cmd</span>）が止めたものです。${intakeLine}
+        ${open}
+      </div>`);
     }
   }
   if (n.why) facts.push(`<div><span class="label-chip">理由</span>${prosePreview(n.why, 240)}</div>`);
@@ -1410,7 +1443,7 @@ function renderNeedDetail(p, n) {
           ${needAssistActionsHtml(n, settled)}
         </div>
       </div>
-      ${renderNeedFacts(n) || '<p class="muted">追加の状況説明はありません。</p>'}
+      ${renderNeedFacts(p, n) || '<p class="muted">追加の状況説明はありません。</p>'}
     </section>
     ${settled ? '' : `<section class="need-response"><h3>回答</h3>${needActionsHtml(n)}${needVerifyRevisionHtml(p, n)}</section>`}
     <section class="need-evidence">
@@ -1562,6 +1595,7 @@ function renderNeeds(options) {
     state.needsSelectedId,
     state.needsMobileDetail,
     filters.map((x) => x[2]),
+    p.consistencyGate || null,
     p.needs.map((n) => [n.id, n.kind, n.decided, isNeedSent(n), n.why, n.summary, n.risk, n.failureSummary || '', n.failureResolution || '', n.failureContext || null, n.commandFailure || null, (n.detail || '').length]),
     model.items.map((n) => (ages[n.id] ? `${ages[n.id].level}|${ages[n.id].label}` : '')),
   ]);
