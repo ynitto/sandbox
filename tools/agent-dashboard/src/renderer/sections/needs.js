@@ -1265,6 +1265,7 @@ function needListItemViewModel(need, bucket, age) {
       ? `${COMMAND_ACTION_LABELS[need.commandFailure.action] || need.commandFailure.action}の取り込みに失敗しました — 詳細を開いて理由を確認してください`
       : needListSummary(need || {}),
     failure: Boolean(needFailureViewModel(need)) || Boolean(need && need.commandFailure),
+    owner: String((need && need.owner) || '').trim(),
     risk,
     riskText: RISK_LABELS[risk] || 'リスク未設定',
     ageText: String((age && age.label) || '—'),
@@ -1284,6 +1285,7 @@ function needListItemHtml(item, selected, slaHours) {
       <span class="status-chip ${stateClass}">${esc(item.stateText)}</span>
       <span class="need-list-kind">${esc(item.kindText)}</span>
       <span class="risk-badge${riskClass}">${esc(item.riskText)}</span>
+      ${item.owner ? ownerBadgeHtml(item.owner) : ''}
     </span>
     <strong class="need-list-title" data-label="確認事項">${esc(item.title)}</strong>
     <span class="need-list-summary ${item.failure ? 'failure' : ''}" data-label="判断すること">${esc(item.decision)}</span>
@@ -1391,7 +1393,7 @@ function renderNeedDetail(p, n) {
       <div>
         <div class="need-detail-badges">
           <span class="badge" title="${esc(n.kind || 'blocked')}">${esc(needKindLabel(n.kind))}</span>
-          ${riskBadgeHtml(n)} ${chip}${unsettle}
+          ${riskBadgeHtml(n)} ${ownerBadgeHtml(n.owner)} ${chip}${unsettle}
         </div>
         <h2>${esc(needDisplayTitle(n))}</h2>
       </div>
@@ -1562,7 +1564,7 @@ function renderNeeds(options) {
     state.needsSelectedId,
     state.needsMobileDetail,
     filters.map((x) => x[2]),
-    p.needs.map((n) => [n.id, n.kind, n.decided, isNeedSent(n), n.why, n.summary, n.risk, n.failureSummary || '', n.failureResolution || '', n.failureContext || null, n.commandFailure || null, (n.detail || '').length]),
+    p.needs.map((n) => [n.id, n.kind, n.decided, isNeedSent(n), n.why, n.summary, n.risk, n.owner || '', n.failureSummary || '', n.failureResolution || '', n.failureContext || null, n.commandFailure || null, (n.detail || '').length]),
     model.items.map((n) => (ages[n.id] ? `${ages[n.id].level}|${ages[n.id].label}` : '')),
   ]);
   if (el.dataset.sig === sig && el.childElementCount) return;

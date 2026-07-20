@@ -312,6 +312,33 @@ function pipelineRibbonHtml(p) {
   return `<div class="pipeline">${cells}</div>`;
 }
 
+// ---------------------------------------------------------------------------
+// 監視担当（チーム運用）: ミーティングで各タスクに「見る人」を割り当て、進捗確認・
+// 検収・要対応の監視を分担する。実作業（エージェント）の分担とは別軸で、
+// assignments.json（viewer 管理のサイドカー）にだけ書く＝タスク状態には触れない。
+// ---------------------------------------------------------------------------
+
+const OWNER_UNASSIGNED = '__none__'; // 「未担当」フィルタの番兵値（表示専用）
+
+// 担当フィルタのチップ定義。メンバーが誰もいなければ空（チップ行ごと出さない）。
+function ownerFilterChoices(p) {
+  const members = (p && p.assignments && p.assignments.members) || [];
+  if (!members.length) return [];
+  return [['', '全員'], ...members.map((m) => [m, m]), [OWNER_UNASSIGNED, '未担当']];
+}
+
+function filterTasksByOwner(tasks, key) {
+  if (!key) return tasks;
+  if (key === OWNER_UNASSIGNED) return tasks.filter((t) => !String(t.owner || '').trim());
+  return tasks.filter((t) => String(t.owner || '').trim() === key);
+}
+
+function ownerBadgeHtml(owner) {
+  const name = String(owner || '').trim();
+  if (!name) return '';
+  return `<span class="owner-badge" title="監視担当（このタスクの進捗・要対応を見る人）">👤 ${esc(name)}</span>`;
+}
+
 function taskListItemViewModel(task, hint) {
   const priority = Number(task.priority) || 0;
   const priorityLevel = priority >= 8 ? '高' : priority >= 4 ? '中' : '低';
@@ -322,6 +349,7 @@ function taskListItemViewModel(task, hint) {
     statusText: statusLabel(task.status || 'unknown'),
     priority,
     priorityText: `${priorityLevel} ${priority}`,
+    owner: String(task.owner || '').trim(),
     nextAction: String((hint && hint.completeHow) || '詳細を確認してください'),
   };
 }
@@ -329,7 +357,7 @@ function taskListItemViewModel(task, hint) {
 function taskListItemHtml(item, scope) {
   return `<button type="button" class="task-list-item" data-task="${esc(item.id)}" data-scope="${esc(scope)}" role="listitem" aria-label="${esc(item.title)}の詳細を開く">
     <span class="task-list-status" data-label="状態" aria-label="状態 ${esc(item.statusText)}">${statusChip(item.status)}</span>
-    <span class="task-list-title" data-label="タスク">${esc(item.title)}</span>
+    <span class="task-list-title" data-label="タスク">${esc(item.title)}${item.owner ? ` ${ownerBadgeHtml(item.owner)}` : ''}</span>
     <span class="task-list-priority" data-label="優先度" aria-label="優先度 ${esc(item.priorityText)}">${esc(item.priorityText)}</span>
     <span class="task-list-next" data-label="次の行動">${esc(item.nextAction)}</span>
     <svg class="task-list-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9 18 6-6-6-6" /></svg>
@@ -375,6 +403,21 @@ function renderBacklog() {
         .join('')
     : '';
 
+  // 監視担当フィルタ（チーム運用）。ミーティングで「自分の担当だけ」に絞って進捗を追える。
+  // メンバーが誰もいなくなったらフィルタも解除する（チップ無しで絞り込みが残留しない）
+  const ownerChipDefs = ownerFilterChoices(p);
+  if (!ownerChipDefs.length) state.backlogOwner = '';
+  tasks = filterTasksByOwner(tasks, state.backlogOwner || '');
+  const ownerChips = ownerChipDefs.length
+    ? `<span class="muted" style="margin-left:8px">担当:</span>` +
+      ownerChipDefs
+        .map(
+          ([v, label]) =>
+            `<button class="chip ${((state.backlogOwner || '') === v) ? 'active' : ''}" data-owner-filter="${esc(v)}" aria-pressed="${((state.backlogOwner || '') === v)}">${esc(label)}</button>`
+        )
+        .join('')
+    : '';
+
   // priority 降順 → 古い順（planner none と同じ感覚）
   tasks = [...tasks].sort((a, b) => b.priority - a.priority || a.mtime - b.mtime);
 
@@ -402,6 +445,7 @@ function renderBacklog() {
           ${replanPending ? '<span class="badge info" title="計画の作り直しを依頼済みです。次の実行で反映されます">再計画 反映待ち</span>' : ''}
         </div>
         ${charterChips ? `<div class="filters task-version-filters" aria-label="計画バージョンで絞り込む">${charterChips}</div>` : ''}
+        ${ownerChips ? `<div class="filters task-owner-filters" aria-label="監視担当で絞り込む">${ownerChips}</div>` : ''}
       </div>
       <div class="task-toolbar-actions">
         <button id="btn-replan"${replanPending ? ' disabled' : ''} title="プロジェクト憲章からタスクを作り直します">計画を作り直す</button>
@@ -432,6 +476,12 @@ function renderBacklog() {
   for (const chip of el.querySelectorAll('.chip[data-charter-filter]')) {
     chip.addEventListener('click', () => {
       state.backlogCharter = chip.dataset.charterFilter;
+      renderBacklog();
+    });
+  }
+  for (const chip of el.querySelectorAll('.chip[data-owner-filter]')) {
+    chip.addEventListener('click', () => {
+      state.backlogOwner = chip.dataset.ownerFilter;
       renderBacklog();
     });
   }
@@ -526,6 +576,7 @@ function showTaskDialog(id, scope) {
   const t = list.find((x) => x.id === id);
   if (!t) return;
   const extraRows = Object.entries(t.extra)
+    .filter(([k]) => k !== 'owner') // 監視担当は専用行（下の「監視担当」）で表示・編集する
     .map(([k, v]) => {
       // flow_run（offloaded の委譲先 run-id）はフロータブの該当 run へのリンクにする
       let cell;
@@ -586,6 +637,21 @@ function showTaskDialog(id, scope) {
       <tr><th>完了まで</th><td class="task-complete-how">${esc(hint.completeHow)}</td></tr>
       <tr><th>出自</th><td>${esc(t.source)}</td></tr>
       <tr><th>優先度</th><td>${t.priority}</td></tr>
+      <tr><th>監視担当</th><td>${
+        scope === 'archive'
+          ? t.owner
+            ? ownerBadgeHtml(t.owner)
+            : '<span class="muted">（未担当）</span>'
+          : `<div class="row owner-edit">
+              <input id="task-owner" list="task-owner-list" value="${esc(t.owner || '')}"
+                placeholder="担当者名（空にして保存で解除）" />
+              <datalist id="task-owner-list">${((p.assignments && p.assignments.members) || [])
+                .map((m) => `<option value="${esc(m)}"></option>`)
+                .join('')}</datalist>
+              <button id="btn-task-owner" title="このタスクの進捗・要対応を見る人を決めます（実作業の分担とは別）">担当を保存</button>
+            </div>
+            <span class="muted">エージェントの実作業とは別軸の、人の監視・検収の分担です</span>`
+      }</td></tr>
       <tr><th>再試行</th><td>${t.retries}</td></tr>
       <tr><th>検証コマンド</th><td>${t.verify ? `<pre class="mono">${esc(t.verify)}</pre>` : '<span class="muted">（未定義）</span>'}</td></tr>
       ${depRow}
@@ -624,6 +690,28 @@ function showTaskDialog(id, scope) {
       });
       if (ok) {
         gitPushAfterWrite(`agent-dashboard: ${btn.dataset.taskact} ${t.id}`, p.dir);
+        $('dlg-task').close();
+        await reloadProject();
+      }
+    });
+  }
+  // 監視担当の割り当て（assignments.json への書き込みのみ。タスク状態には触れない）
+  const ownBtn = $('btn-task-owner');
+  if (ownBtn) {
+    ownBtn.addEventListener('click', async () => {
+      const owner = $('task-owner').value.trim();
+      if (owner === String(t.owner || '').trim()) return toast('担当は変わっていません');
+      const ok = await guard('監視担当の設定', async () => {
+        const res = await api.setTaskOwner(p.dir, t.id, owner);
+        uiLog('setOwner', t.id, res);
+        toast(
+          owner ? `${t.id} の監視担当を「${owner}」にしました` : `${t.id} の監視担当を解除しました`,
+          true
+        );
+        return true;
+      });
+      if (ok) {
+        gitPushAfterWrite(`agent-dashboard: 監視担当 ${t.id} → ${owner || '（解除）'}`, p.dir);
         $('dlg-task').close();
         await reloadProject();
       }

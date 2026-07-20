@@ -21,6 +21,7 @@ const state = {
   // { [runId]: { loading, at, byNode: {[id]:{reconciled,url,issueState,labels,relatedMrs,...}} } }
   flowReconcile: {},
   backlogFilter: 'active',
+  backlogOwner: '', // 監視担当フィルタ（'' = 全員 / '__none__' = 未担当 / それ以外 = 担当者名）
   needsFilter: 'open', // open / sent / done / gitlab
   needsSelectedId: null,
   needsMobileDetail: false,

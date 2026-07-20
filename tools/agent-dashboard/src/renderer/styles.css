@@ -350,6 +350,21 @@ button:disabled { opacity: 0.4; cursor: default; }
 .risk-badge.risk-med { color: var(--yellow); border-color: var(--yellow); }
 .risk-badge.risk-high { color: var(--red); border-color: var(--red); }
 
+/* 監視担当（チーム運用）バッジ: バックログ行・要対応カードで「誰が見るか」を示す */
+.owner-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.owner-edit { gap: 6px; align-items: center; }
+.owner-edit input { max-width: 220px; }
+
 #sidebar-footer {
   padding: 6px 10px;
   border-top: 1px solid var(--border);
