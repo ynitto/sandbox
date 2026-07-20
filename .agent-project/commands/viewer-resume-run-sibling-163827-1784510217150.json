@@ -1,0 +1,8 @@
+{
+  "command": "resume-run",
+  "id": "sibling-163827",
+  "reason": "要対応画面から再実行（失敗した工程だけやり直し）",
+  "actor": "agent-dashboard",
+  "ts": "2026-07-20T01:16:57.150Z",
+  "run": "req-ef1f92c3-sibling-163827-r0"
+}
