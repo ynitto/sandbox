@@ -31,6 +31,21 @@
             "items": {"type": "object", "properties": {"path": {"type": "string"}, "sha256_16": {"type": "string"}}}
           }
         },
+        "aggregates": {
+          "type": "array",
+          "description": "席グループ（seats>1 ＋ aggregate 指定）の集約結果（G2）。integrator が決定的に集計する",
+          "items": {
+            "type": "object",
+            "properties": {
+              "group": {"type": "string", "description": "席グループの基底ロール id"},
+              "mode": {"enum": ["majority", "consensus", "gather"]},
+              "winner": {"type": ["string", "null"], "description": "majority/consensus: 採択された回答（正規化済み）"},
+              "agreed": {"type": "boolean", "description": "consensus: 全席一致だったか"},
+              "votes": {"type": "integer", "description": "回答を出した席数"},
+              "tally": {"type": "object", "description": "回答→得票数"}
+            }
+          }
+        },
         "generated_at": {"type": "string"},
         "generated_by": {"type": "string"}
       },
@@ -119,14 +134,18 @@
         "type": "object",
         "required": ["id"],
         "properties": {
-          "id": {"type": "string", "pattern": "^(?!all$|owner$)[^/]+$",
-                 "description": "ロール ID（all / owner は予約語・/ 不可）"},
+          "id": {"type": "string", "pattern": "^(?!all$|owner$)[^/#]+$",
+                 "description": "ロール ID（all / owner は予約語・/ と # は不可。# は席の内部区切り）"},
           "title": {"type": "string"},
           "mission": {"type": "string", "description": "このロールの個別ミッション（プロンプトの中核）"},
           "deliverables": {"type": "array", "items": {"type": "string"},
                            "description": "artifacts に書く成果物の相対パス"},
           "required": {"type": "boolean", "default": true},
-          "seats": {"type": "integer", "const": 1, "description": "P0-P2 は 1 のみ"},
+          "seats": {"type": "integer", "minimum": 1, "default": 1,
+                    "description": "並列同一シート数（G1）。N>1 は正規化時に <id>#0..#N-1 の具体席ロールへ展開される。各席は独立した amigo として同じロールミッションを実行する"},
+          "aggregate": {"enum": ["majority", "consensus", "gather"],
+                        "description": "seats>=2 の席グループを integrator が決定的に集約する方式（G2）。majority=多数決、consensus=一致判定つき最頻値、gather=全席を集める。各席は回答を aggregate_answer（既定 ANSWER.md）へ書く"},
+          "aggregate_answer": {"type": "string", "description": "集約が読む各席の正準回答ファイル名（artifacts 内相対パス。既定は単一 deliverable、無ければ ANSWER.md）"},
           "agent_cli": {"type": "string", "description": "このロールが使う agent CLI（未指定はノード既定）"},
           "model": {"type": "string"},
           "requires": {
@@ -143,7 +162,10 @@
           "approver": {"type": "boolean", "default": false,
                        "description": "done_when: reviewer-approved の承認者"},
           "builtin": {"enum": ["", "integrator"], "default": "",
-                      "description": "integrator: 成果物統合の組み込みロール（省略時は自動追加）"}
+                      "description": "integrator: 成果物統合の組み込みロール（省略時は自動追加）"},
+          "seat_group": {"type": "string", "description": "（正規化が付与）席展開の基底ロール id。seats>1 でなくても自身の id が入る"},
+          "seat_index": {"type": "integer", "description": "（正規化が付与）席番号（0 始まり）"},
+          "seat_count": {"type": "integer", "description": "（正規化が付与）このグループの席総数"}
         },
         "additionalProperties": true
       }

@@ -62,27 +62,31 @@ agent-amigos が**そのまま**表現できるのは:
 写せない。カタログでは複数の別ロール＋integrator の判断で**近似**（`feasibility: partial`）しているが、
 以下を入れれば「近似」を「忠実」にできる。
 
-### G1. 並列同一シート（`seats > 1`）
+### G1. 並列同一シート（`seats > 1`）— ✅ 実装済み
 
-- **現状**: `normalize_mission` が `seats>1` を明示的に弾く（P0 未対応）。1 ロール＝1 名。
-- **要るパターン**: self-consistency, agent-forest, universal-self-consistency, mixture-of-agents,
-  multiagent-debate, mav-bon, selfcheckgpt（いずれも「同じ役割の N 人」を並べる）。
-- **近似の割り切り**: `solver-a/b/c` のように別 id で複製している（人数が固定・冗長）。
-- **拡張提案**: `seats: N` を実装し、roster/claim/status を `<role>#<k>` の名前空間へ拡張。
-  1 ロール定義から N 席を募集・充足し、integrator は席をまたいで集約する。決定的 claim・
-  lease・away の各規律は席単位に一般化する（既存の名前空間付き claim の自然な拡張）。
+- **実装**: `seats: N`（N≥2）を `normalize_mission` が `<role>#0..#N-1` の具体席ロールへ**展開**する
+  （`_expand_seats`）。各席は独立した通常ロールなので、claim / roster / runner / 収束 / 統合 /
+  納品の既存機構をそのまま再利用する（コアの協働プロトコルに手を入れない）。`collaborates_with` が
+  席化グループを指す場合は席 id 群へ書き換える。1 ノード運用でも self-staff が全席を充足する。
+- **使い方**: ロールに `seats: 5` を付けるだけ。sampling/voting/ensembling 系（self-consistency,
+  agent-forest, mixture-of-agents, universal-self-consistency 等）が忠実に写せるようになった。
+- **残**: 展開は静的（公示時に席数固定）。実行中の席の増減は G5。
 
-### G2. 集約・投票プリミティブ（gather 種別）
+### G2. 集約・投票プリミティブ — ✅ 実装済み（基本モード）
 
-- **現状**: integrator は自由記述の統合のみ。多数決・一貫性選抜・ペア順位・確信度重み付けが無い。
-- **要るパターン**: self-consistency（多数決）, agent-forest（多数決）, mav-bon（承認数集計）,
-  reconcile（確信度重み投票）, prd-peer-rank（ピア信頼度重み）, llm-blender（双方向ペア対戦）,
-  codet（テスト通過数順位）。
-- **近似**: integrator に「最も一貫する解を選べ」と指示するだけ（集計の再現性が無い）。
-- **拡張提案**: integrator に**集約モード**を宣言できるようにする
-  （`aggregate: majority | self-consistency | pairwise-rank | approval-count | weighted-vote`）。
-  席／候補ロールの成果物を機械的に集計し、決定的に勝者・融合結果を出す。収束条件
-  `done_when: consensus`（合意率しきい値）も併せて用意する。
+- **実装**: 席グループに `aggregate` を宣言でき、integrator が**決定的に集約**する。
+  各席は回答を `aggregate_answer`（既定 `ANSWER.md`）へ書き、integrator が
+  `deliverable/<group>/AGGREGATE.{md,json}` と manifest の `aggregates` に結果を残す。
+  - `majority` — 最頻値（決定的タイブレーク: 得票降順 → 回答昇順）
+  - `consensus` — 全席一致の判定（`agreed`）つき最頻値
+  - `gather` — 全席の回答を席見出し付きで集める（選抜せず、後段の approver/aggregator が統合）
+- **写せるようになったパターン**: self-consistency / agent-forest（majority）、
+  mixture-of-agents / universal-self-consistency（gather ＋ aggregator/selector）。
+- **残（未実装の高度な集約）**: `weighted-vote`（確信度重み: reconcile）、`approval-count`
+  （承認数選抜: mav-bon）、`pairwise-rank`（双方向ペア対戦: llm-blender, prd-peer-rank）。
+  これらは approver の判断で近似する。将来 `aggregate` のモード追加で忠実化できる。
+- **残**: 収束条件 `done_when: consensus`（合意率しきい値での早期収束）は未実装
+  （現状は全席 done ＝ all-required-done で締め、consensus は集約結果の `agreed` フラグで表す）。
 
 ### G3. 同期ラウンド（ラウンドバリア）
 
@@ -136,10 +140,10 @@ agent-amigos が**そのまま**表現できるのは:
 
 ## 実装の優先順位（推奨）
 
-1. **G1 seats>1** ＋ **G2 集約モード** — この 2 つで sampling/voting/ensembling 系の大半
-   （self-consistency, agent-forest, mixture-of-agents, mav-bon, llm-blender, codet 等）が
-   「近似」から「忠実」になる。カバレッジ最大・実装は既存の名前空間付き claim / integrator の
-   自然な拡張で、コアの原則（状態のファイル導出・決定的 claim）を壊さない。
+1. ~~**G1 seats>1** ＋ **G2 集約モード**~~ — ✅ **実装済み**（seats 展開 ＋ majority/consensus/gather）。
+   sampling/voting/ensembling 系の大半が「近似」から「忠実」になった。コアの原則（状態のファイル
+   導出・決定的 claim）は据え置き、seats はロール展開・集約は integrator の拡張で実現した。
+   - 続きの G2: `weighted-vote` / `approval-count` / `pairwise-rank` の集約モード追加、`done_when: consensus`。
 2. **G3 同期ラウンド** — debate 系の忠実度が上がる。runner のターンループにバリアを足す中規模。
 3. **G5 restaff ＋ team-builder 常駐** — 動的編成。オーナー操作とスキル呼び出しの組み合わせで、
    コア変更は小さい。

@@ -1613,5 +1613,131 @@ class TeamBuildingTests(AmigosTestCase):
         self.assertEqual(load_mission(self.bus.mission(mids[0]))["title"], "T")
 
 
+class SeatsAggregationTests(AmigosTestCase):
+    """G1（seats>1・並列同一シート）と G2（integrator の決定的集約）。"""
+
+    def _seats_spec(self, mode, seats=3, **extra):
+        role = {"id": "solver", "mission": "独立に解く", "seats": seats,
+                "deliverables": ["ANSWER.md"]}
+        if mode:
+            role["aggregate"] = mode
+        role.update(extra)
+        return {"mission": {"title": "t", "goal": "g", "staffing_timeout": 0,
+                            "convergence": {"done_when": "all-required-done",
+                                            "quiescence_turns": 9}},
+                "roles": [role]}
+
+    def _aggregate(self, mid, answers):
+        """指定した席回答を artifacts へ書き、integrator の集約だけを走らせる。"""
+        from agent_amigos.runner import AmigoRunner
+        from agent_amigos.bus import TurnTxn
+        mp = self.bus.mission(mid)
+        for sid, ans in answers.items():
+            if ans is None:
+                continue
+            p = os.path.join(mp.artifacts_dir(sid), "ANSWER.md")
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(ans)
+        runner = AmigoRunner(self.bus, mid, "integrator", "owner-node")
+        txn = TurnTxn()
+        summary = runner._aggregate_seat_groups(txn, load_roles(mp))
+        txn.apply(self.bus)
+        agg = read_json(os.path.join(mp.deliverable_dir(), "solver", "AGGREGATE.json"))
+        return summary[0], agg
+
+    # --- G1: 展開・検証 ------------------------------------------------------
+    def test_seats_expand_into_concrete_roles(self):
+        _m, roles = normalize_mission(self._seats_spec("majority", seats=3))
+        ids = {r["id"] for r in roles}
+        self.assertEqual({"solver#0", "solver#1", "solver#2", "integrator"}, ids)
+        s0 = next(r for r in roles if r["id"] == "solver#0")
+        self.assertEqual(s0["seat_group"], "solver")
+        self.assertEqual(s0["seat_count"], 3)
+        self.assertEqual(s0["aggregate"], "majority")
+
+    def test_collaborates_with_remapped_to_seats(self):
+        spec = {"mission": {"title": "t", "goal": "g"},
+                "roles": [{"id": "solver", "mission": "解く", "seats": 2},
+                          {"id": "reviewer", "mission": "見る", "approver": True,
+                           "collaborates_with": ["solver"]}]}
+        _m, roles = normalize_mission(spec)
+        rv = next(r for r in roles if r["id"] == "reviewer")
+        self.assertEqual(sorted(rv["collaborates_with"]), ["solver#0", "solver#1"])
+
+    def test_seats_validation(self):
+        with self.assertRaises(SystemExit):                     # aggregate on seats<2
+            normalize_mission({"roles": [{"id": "x", "seats": 1, "aggregate": "majority"}]})
+        with self.assertRaises(SystemExit):                     # unknown aggregate
+            normalize_mission({"roles": [{"id": "x", "seats": 2, "aggregate": "nope"}]})
+        with self.assertRaises(SystemExit):                     # seats < 1
+            normalize_mission({"roles": [{"id": "x", "seats": 0}]})
+        with self.assertRaises(SystemExit):                     # '#' reserved in id
+            normalize_mission({"roles": [{"id": "a#0"}]})
+
+    # --- G2: 集約モード ------------------------------------------------------
+    def test_aggregate_majority(self):
+        mid = self.post(self._seats_spec("majority"), mid="am-maj")
+        summary, agg = self._aggregate(mid, {"solver#0": "A", "solver#1": "A", "solver#2": "B"})
+        self.assertEqual(summary["mode"], "majority")
+        self.assertEqual(agg["winner"], "A")
+        self.assertEqual(agg["votes"], 3)
+        self.assertEqual(agg["tally"], {"A": 2, "B": 1})
+        self.assertFalse(agg["agreed"])
+        # 勝者が AGGREGATE.md に書かれる
+        md = os.path.join(self.bus.mission(mid).deliverable_dir(), "solver", "AGGREGATE.md")
+        with open(md, encoding="utf-8") as f:
+            self.assertEqual(f.read().strip(), "A")
+
+    def test_aggregate_majority_tiebreak_is_deterministic(self):
+        mid = self.post(self._seats_spec("majority", seats=2), mid="am-tie")
+        _s, agg = self._aggregate(mid, {"solver#0": "B", "solver#1": "A"})
+        self.assertEqual(agg["winner"], "A")     # 得票同数は回答昇順で決定的
+
+    def test_aggregate_consensus(self):
+        mid = self.post(self._seats_spec("consensus"), mid="am-con")
+        _s, agg = self._aggregate(mid, {"solver#0": "X", "solver#1": "X", "solver#2": "X"})
+        self.assertTrue(agg["agreed"])
+        self.assertEqual(agg["winner"], "X")
+        mid2 = self.post(self._seats_spec("consensus"), mid="am-con2")
+        _s2, agg2 = self._aggregate(mid2, {"solver#0": "X", "solver#1": "Y", "solver#2": "X"})
+        self.assertFalse(agg2["agreed"])          # 割れたら agreed=false（最頻値は X）
+        self.assertEqual(agg2["winner"], "X")
+
+    def test_aggregate_gather(self):
+        mid = self.post(self._seats_spec("gather"), mid="am-gat")
+        summary, _agg = self._aggregate(mid, {"solver#0": "one", "solver#1": "two",
+                                              "solver#2": "three"})
+        self.assertEqual(summary["mode"], "gather")
+        self.assertEqual(summary["collected"], 3)
+        md = os.path.join(self.bus.mission(mid).deliverable_dir(), "solver", "AGGREGATE.md")
+        with open(md, encoding="utf-8") as f:
+            body = f.read()
+        for token in ("solver#0", "solver#1", "solver#2", "one", "two", "three"):
+            self.assertIn(token, body)
+
+    def test_aggregate_missing_answers_are_skipped(self):
+        mid = self.post(self._seats_spec("majority"), mid="am-miss")
+        _s, agg = self._aggregate(mid, {"solver#0": "A", "solver#1": "A", "solver#2": None})
+        self.assertEqual(agg["votes"], 2)         # 未回答席は票に数えない
+        self.assertEqual(agg["winner"], "A")
+        self.assertFalse(agg["seats"]["solver#2"]["present"])
+
+    # --- E2E: stub で seats が統合まで到達し manifest に集約が載る ------------
+    def test_seats_end_to_end_stub_produces_aggregates(self):
+        mid = self.post(self._seats_spec("majority"), mid="am-e2e")
+        d = NodeDaemon(self.bus, "owner-node", agent_cli="stub", interval=0)
+        for _ in range(25):
+            d.cycle()
+            if self.phase(mid) == "reviewing":
+                break
+        self.assertEqual(self.phase(mid), "reviewing")
+        man = read_json(self.bus.mission(mid).manifest())
+        aggs = {a["group"]: a for a in man.get("aggregates") or []}
+        self.assertIn("solver", aggs)
+        self.assertEqual(aggs["solver"]["mode"], "majority")
+        self.assertEqual(aggs["solver"]["votes"], 3)   # 3 席とも ANSWER.md を書いた
+
+
 if __name__ == "__main__":
     unittest.main()

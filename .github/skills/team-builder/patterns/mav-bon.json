@@ -41,5 +41,5 @@
     }
   },
   "feasibility": "partial",
-  "feasibility_note": "承認数の集計選抜は集約プリミティブが要る（拡張 G2）。"
+  "feasibility_note": "候補は seats>1（G1）で並べられる。承認数による選抜（approval-count）は未実装（G2 の追加モード待ち）で、verifier（approver）の全員承認ゲートで近似する。"
 }

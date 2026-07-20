@@ -220,6 +220,29 @@ agent-amigos assign <mid> impl-api node-b # node-b に確定
 掃除したいときだけ `gc --deliveries-keep-days N` を明示する。
 `accept` / `deliveries` / `gc` のホームは設定ファイルの位置で決まり、`--home` で上書きできる。
 
+## 並列同一シート（seats）と集約（aggregate）
+
+sampling/voting/ensembling 型のために、同じロールを**複数席**に増やして独立に走らせ、
+成果を**決定的に集約**できる。
+
+```yaml
+roles:
+  - id: solver
+    mission: 問題を独立に解き、最終回答を ANSWER.md に書く（他席は見ない）。
+    deliverables: [ANSWER.md]
+    seats: 5             # solver#0..#4 の独立席へ展開（各席が同じロールを実行）
+    aggregate: majority  # integrator が決定的に集約: majority | consensus | gather
+```
+
+- **seats: N（G1）** は公示（正規化）時に `solver#0..#N-1` の具体席ロールへ展開される。各席は
+  通常の 1 席ロールなので、claim・roster・収束・統合・納品の既存機構をそのまま使う（1 ノードでも
+  self-staff が全席を充足）。
+- **aggregate（G2）** は integrator が席の回答（既定 `ANSWER.md`）を集める方式:
+  `majority`（多数決）/ `consensus`（全席一致の判定つき最頻値）/ `gather`（全席を集約収集）。
+  結果は `deliverable/<id>/AGGREGATE.{md,json}` と `MANIFEST.json` の `aggregates` に残る。
+- 重み付き投票・承認数選抜・ペア順位などの高度な集約や同期ラウンドは未実装（拡張提案:
+  [`docs/designs/agent-amigos-teambuilder-patterns.md`](../../docs/designs/agent-amigos-teambuilder-patterns.md)）。
+
 ## acceptance: agent（受入の自動判定）
 
 `acceptance: agent` にすると、reviewing になった時点で**オーナーノードの agent CLI** が

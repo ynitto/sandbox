@@ -40,4 +40,12 @@ roles:
     mission: 全ロールの成果物を design-doc.md と突き合わせてレビューし、指摘を返す。
     required: true
     approver: true                     # done_when: reviewer-approved の承認者
+  # 並列同一シート（G1）＋ 決定的集約（G2）の例 — 同じロールを N 席に増やし多数決する:
+  # - id: solver
+  #   title: ソルバー
+  #   mission: 問題を独立に解き、最終回答を ANSWER.md に書く（他席は見ない）。
+  #   deliverables: [ANSWER.md]
+  #   seats: 5                         # solver#0..#4 の独立席へ展開される
+  #   aggregate: majority              # integrator が多数決（majority|consensus|gather）
+  #   # aggregate_answer: ANSWER.md    # 集約が読む正準回答ファイル（既定は単一 deliverable）
   # integrator は省略可（省略時はオーナーノードが自動で self-staff する組み込みロール）

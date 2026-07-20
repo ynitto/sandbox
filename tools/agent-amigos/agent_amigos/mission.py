@@ -36,6 +36,58 @@ BUDGET_DEFAULTS = {
     "on_exhausted": "wrap-up",          # wrap-up | fail
 }
 
+# seats>1（並列同一シート、G1）のロールに付ける集約モード（G2。integrator が決定的に集約）。
+#   majority   — 各席の回答（answer ファイル）の最頻値を選ぶ（多数決）。決定的タイブレーク
+#   consensus  — 全席一致なら採用、割れたら flag（agreed:false）付きで最頻値を採る
+#   gather     — 全席の回答を席見出し付きで 1 ファイルに集める（選抜せず統合）
+AGGREGATE_MODES = ("majority", "consensus", "gather")
+DEFAULT_ANSWER_FILE = "ANSWER.md"       # 集約が読む各席の正準回答ファイル（席の artifacts 内）
+
+
+def _expand_seats(base_roles: list) -> list:
+    """seats>1 のロールを N 個の具体席ロール（`<id>#0..#N-1`）へ展開する（G1）。
+
+    展開後は各席が通常の 1 席ロールなので、claim / roster / runner / 収束 / 統合 /
+    納品の既存機構をそのまま再利用できる（コアに手を入れない）。collaborates_with が
+    席化グループの基底 id を指す場合は、その席 id 群へ書き換える（実在ロールへの参照に保つ）。
+    """
+    group_ids: "dict[str, list]" = {}
+    for r in base_roles:
+        n = int(r.get("seats", 1))
+        group_ids[r["id"]] = ([r["id"]] if n <= 1
+                              else [f"{r['id']}#{k}" for k in range(n)])
+
+    def _remap(collabs: list) -> list:
+        out = []
+        for c in collabs:
+            out.extend(group_ids.get(c, [c]))
+        return out
+
+    expanded = []
+    for r in base_roles:
+        n = int(r.get("seats", 1))
+        if n <= 1:
+            role = dict(r)
+            role["collaborates_with"] = _remap(role.get("collaborates_with") or [])
+            role["seat_group"] = r["id"]
+            role["seat_index"] = 0
+            role["seat_count"] = 1
+            expanded.append(role)
+            continue
+        for k in range(n):
+            s = dict(r)
+            s["id"] = f"{r['id']}#{k}"
+            s["seats"] = 1
+            s["title"] = f"{r.get('title') or r['id']}（席 {k + 1}/{n}）"
+            s["seat_group"] = r["id"]
+            s["seat_index"] = k
+            s["seat_count"] = n
+            s["aggregate"] = r.get("aggregate")
+            s["aggregate_answer"] = r.get("aggregate_answer")
+            s["collaborates_with"] = _remap(r.get("collaborates_with") or [])
+            expanded.append(s)
+    return expanded
+
 
 def _load_spec_file(path: str) -> dict:
     if path.lower().endswith((".yaml", ".yml")):
@@ -80,44 +132,61 @@ def normalize_mission(spec: dict) -> "tuple[dict, list]":
     mission["budget"] = {**BUDGET_DEFAULTS, **dict(m.get("budget") or {})}
     mission["workspace"] = dict(m.get("workspace") or {})
 
-    roles = []
+    base_roles = []
     seen = set()
     has_integrator = False
     for r in roles_in:
         rid = str(r.get("id") or "").strip()
-        if not rid or "/" in rid or rid in ("all", "owner"):
+        if not rid or "/" in rid or "#" in rid or rid in ("all", "owner"):
             raise SystemExit(f"[agent-amigos] ロール id が不正です: {rid!r}"
-                             "（all / owner は予約語）")
+                             "（all / owner は予約語、/ と # は不可）")
         if rid in seen:
             raise SystemExit(f"[agent-amigos] ロール id が重複しています: {rid!r}")
         seen.add(rid)
+        seats = int(r.get("seats", 1))
+        if seats < 1:
+            raise SystemExit(f"[agent-amigos] seats は 1 以上が必要です（ロール {rid}）")
+        aggregate = r.get("aggregate")
+        if aggregate is not None:
+            aggregate = str(aggregate)
+            if aggregate not in AGGREGATE_MODES:
+                raise SystemExit(f"[agent-amigos] aggregate={aggregate!r} が不正です"
+                                 f"（{' | '.join(AGGREGATE_MODES)}）")
+            if seats < 2:
+                raise SystemExit(f"[agent-amigos] aggregate は seats>=2 のロールにのみ指定できます"
+                                 f"（ロール {rid}）")
         role = {"id": rid,
                 "title": str(r.get("title") or rid),
                 "mission": str(r.get("mission") or ""),
                 "deliverables": [str(d) for d in (r.get("deliverables") or [])],
                 "required": bool(r.get("required", True)),
-                "seats": int(r.get("seats", 1)),
+                "seats": seats,
+                "aggregate": aggregate,
+                "aggregate_answer": (str(r["aggregate_answer"])
+                                     if r.get("aggregate_answer") else None),
                 "agent_cli": r.get("agent_cli"),
                 "model": r.get("model"),
                 "requires": dict(r.get("requires") or {}),
                 "collaborates_with": [str(c) for c in (r.get("collaborates_with") or [])],
                 "approver": bool(r.get("approver", False)),
                 "builtin": str(r.get("builtin") or "")}
-        if role["seats"] != 1:
-            raise SystemExit(f"[agent-amigos] seats>1 は P0 未対応です（ロール {rid}）")
+        if role["builtin"] == "integrator" and seats != 1:
+            raise SystemExit("[agent-amigos] integrator に seats>1 は指定できません")
         if role["builtin"] == "integrator":
             has_integrator = True
-        roles.append(role)
-    for role in roles:
+        base_roles.append(role)
+    for role in base_roles:
         for c in role["collaborates_with"]:
             if c not in seen:
                 raise SystemExit(f"[agent-amigos] ロール {role['id']} の collaborates_with に"
                                  f" 未定義ロール {c!r} があります")
+    roles = _expand_seats(base_roles)
     if not has_integrator:
         # integrator 省略時はオーナーノードが self-staff する組み込みロールを自動追加（§8.1）
         roles.append({"id": "integrator", "title": "統合", "mission":
                       "全ロールの成果物を検証・統合し deliverable/ を組み立てる。",
-                      "deliverables": [], "required": True, "seats": 1, "agent_cli": None,
+                      "deliverables": [], "required": True, "seats": 1, "aggregate": None,
+                      "aggregate_answer": None, "agent_cli": None,
                       "model": None, "requires": {}, "collaborates_with": [],
                       "approver": False, "builtin": "integrator"})
     return mission, roles

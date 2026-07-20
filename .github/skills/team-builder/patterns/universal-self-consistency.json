@@ -12,25 +12,21 @@
   "team": {
     "roles": [
       {
-        "id": "solver-a",
-        "role": "独立に解く",
+        "id": "solver",
+        "role": "独立に解き ANSWER.md に書く（他席は見ない）",
         "required": true,
-        "approver": false
-      },
-      {
-        "id": "solver-b",
-        "role": "独立に解く",
-        "required": true,
-        "approver": false
+        "approver": false,
+        "seats": 4,
+        "aggregate": "gather",
+        "count_hint": "3-5"
       },
       {
         "id": "selector",
-        "role": "全解を読み最も一貫する 1 つを選ぶ",
+        "role": "集めた全解（AGGREGATE）を読み、最も母集団と一貫する 1 つを選ぶ",
         "required": true,
         "approver": true,
         "collaborates_with": [
-          "solver-a",
-          "solver-b"
+          "solver"
         ]
       }
     ],
@@ -39,5 +35,5 @@
     }
   },
   "feasibility": "partial",
-  "feasibility_note": "self-consistency の意味的選抜版。seats>1 は未対応（G1）。"
+  "feasibility_note": "解は seats>1（G1）＋ aggregate: gather（G2）で集約収集できる。厳密一致の多数決ではなく意味的選抜のため、selector（approver）が最も一貫する解を選ぶ（純多数決なら self-consistency の majority を使う）。"
 }

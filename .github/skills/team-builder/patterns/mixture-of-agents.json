@@ -13,30 +13,28 @@
   "team": {
     "roles": [
       {
-        "id": "proposer-a",
-        "role": "独立に案を作る（他案は参照しない）",
+        "id": "proposer",
+        "role": "独立に案を作り ANSWER.md に書く（他案は参照しない）",
         "required": true,
-        "approver": false
+        "approver": false,
+        "seats": 3,
+        "aggregate": "gather",
+        "count_hint": "3-4"
       },
       {
-        "id": "proposer-b",
-        "role": "独立に別案を作る",
+        "id": "aggregator",
+        "role": "集めた全提案（deliverable の AGGREGATE）を読み、1 つの改良版へ合成する",
         "required": true,
-        "approver": false
-      },
-      {
-        "id": "proposer-c",
-        "role": "独立にさらに別案を作る",
-        "required": true,
-        "approver": false
+        "approver": true,
+        "collaborates_with": ["proposer"]
       }
     ],
     "convergence": {
-      "done_when": "all-required-done"
+      "done_when": "reviewer-approved"
     },
     "budget_hint": "中（例 90 分）"
   },
   "feasibility": "partial",
-  "feasibility_note": "層状の並列提案は別 id の複数 proposer で近似（seats>1 が無い）。各案の統合は integrator（自動ロール）が担う＝MoA の aggregator。",
-  "notes": "proposer は互いに参照しない（会話規約）。integrator に『選抜でなく統合』を指示。"
+  "feasibility_note": "提案は seats>1（G1）＋ aggregate: gather（G2）で N 席を集約収集できる。ただし MoA の『合成』は決定的集約では作れない（LLM 合成）ため、aggregator ロールが集めた提案を読んで統合する。",
+  "notes": "proposer は互いに参照しない（会話規約）。合成は aggregator（approver）が担い、integrator は gather で提案を束ねる。"
 }
