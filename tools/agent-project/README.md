@@ -284,9 +284,14 @@ CLI からも付与・修正できる。
   `--config` は**既存の設定ファイル**を指すこと——無ければ `regression_cmd` だけの半端な yaml を作らず
   エラーで止まる。終了コードは 0=注入済み（再実行の no-op も 0）、1=設定ファイルが無い・読めない、
   2=引数誤り、3=codd-gate が使えず何も書いていない（`--help` にも同じ表を出す）。
-  結線できているかは `doctor` が見る: codd-gate を検出できたのに `regression_cmd`/`intake_cmd` がそれを
-  指していなければ、貼れる推奨コマンド文字列を info の所見として出す（`codd_gate_wiring`。
-  `<root>/repos.json` が実在すれば schemas 契約の互換も併せて判定する）。詳細は
+  結線できているかは設定を足さずに `python3 codd_gate_wiring.py --config .agent/agent-project.yaml` で見る
+  （`regression_wired`/`intake_wired` と推奨コマンド文字列を JSON で返す）。同じ判定を `doctor` の所見にも
+  載せたいなら `.agent/agent-project.yaml` へ `hooks:` ＋ `  wiring: codd_gate_wiring` の2行を書く——
+  `codd_gate_wiring` は契約名を別名で公開していて sibling の自動検出に載らないので、明示しない限り
+  doctor は無所見のままになる。書いたうえで codd-gate を検出できたのに `regression_cmd`/`intake_cmd` が
+  それを指していなければ、貼れる推奨コマンド文字列を info の所見として出す（doctor 経路は
+  `<root>/repos.json` が実在するときだけ推奨を組み立て、併せて schemas 契約の互換も判定する。
+  まだ無ければ上の CLI を使う——`--repos` を自分で決められる）。詳細は
   [`codd-gate-design.md`](../../docs/designs/codd-gate-design.md) §4.1「自動検出レイヤ」。
 
 ### policy.md（人による上書き・per-project）
