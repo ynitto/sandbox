@@ -210,7 +210,9 @@ class TestCliMain(unittest.TestCase):
     def _run_cli(self, argv: "list[str]") -> "tuple[int, dict]":
         """main() を呼び、終了コードと stdout の JSON を返す。"""
         buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
+        # stderr も飲む（未検出ケースの診断メッセージがテスト出力に混ざるのを防ぐだけ。
+        # その内容の検証は TestCliContract の担当）。
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
             rc = regression.main(argv)
         return rc, json.loads(buf.getvalue())
 
@@ -330,14 +332,16 @@ class TestCliMain(unittest.TestCase):
 
     def test_dry_run_reports_change_without_writing(self):
         with tempfile.TemporaryDirectory() as d:
-            cfg = Path(d) / ".agent" / "agent-project.yaml"
+            cfg = self._config_with(d, "root: .agent-project\nagent_cli: claude\n")
+            before = cfg.read_text(encoding="utf-8")
 
-            _, payload = self._run_cli(
+            rc, payload = self._run_cli(
                 ["--config", str(cfg), "--codd-gate", "/opt/bin/codd-gate", "--dry-run"])
 
+            self.assertEqual(rc, regression.EXIT_OK)
             self.assertTrue(payload["changed"])   # 「変わるはず」は報告する
             self.assertTrue(payload["dry_run"])
-            self.assertFalse(cfg.exists())        # が、書かない
+            self.assertEqual(cfg.read_text(encoding="utf-8"), before)  # が、書かない
 
     def test_noop_when_codd_gate_not_detected(self):
         # 未検出なら壊れたコマンドを書き込まず、既存の手書き設定にも触れない（no-op 縮退）。
@@ -353,6 +357,91 @@ class TestCliMain(unittest.TestCase):
             self.assertIsNone(payload["cmd"])
             self.assertFalse(payload["changed"])
             self.assertEqual(cfg.read_text(encoding="utf-8"), before)
+
+
+class TestCliContract(unittest.TestCase):
+    """CLI としての外形（終了コード・stderr・ヘルプ）。
+
+    JSON の中身は TestCliMain が見る。ここで固定するのは「シェルから使えるか」——
+    呼び出し側が `$?` だけで分岐でき、失敗の理由が stderr に日本語で出ること。
+    """
+
+    def _run(self, argv: "list[str]") -> "tuple[int, str, str]":
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = regression.main(argv)
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_missing_config_errors_instead_of_creating_a_half_baked_file(self):
+        # --config のパス誤りが「新規ファイル生成として成功」に化けないこと。regression_cmd
+        # だけの yaml は root:/agent_cli: を欠き、本体が起動できない。
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d) / ".agent" / "agent-project.yaml"
+
+            rc, out, err = self._run(
+                ["--config", str(cfg), "--codd-gate", "/opt/bin/codd-gate"])
+
+            self.assertEqual(rc, regression.EXIT_CONFIG_MISSING)
+            self.assertFalse(cfg.exists())
+            self.assertIn("設定ファイルがありません", err)
+            self.assertIn(str(cfg), err)      # どのパスを見に行ったかを示す
+            self.assertEqual(out, "")         # 成功時の JSON は出さない
+
+    def test_missing_config_is_an_error_even_under_dry_run(self):
+        # --dry-run は「書かない」だけで、対象不在の誤りを見逃す指定ではない。
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d) / "nope.yaml"
+
+            rc, _, err = self._run(["--config", str(cfg), "--dry-run"])
+
+            self.assertEqual(rc, regression.EXIT_CONFIG_MISSING)
+            self.assertIn("設定ファイルがありません", err)
+
+    def test_unreadable_config_reports_the_os_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d) / "as-a-directory.yaml"
+            cfg.mkdir()                        # 読めない = FileNotFoundError 以外の OSError
+
+            rc, _, err = self._run(["--config", str(cfg)])
+
+            self.assertEqual(rc, regression.EXIT_CONFIG_MISSING)
+            self.assertIn("読めません", err)
+
+    def test_undetected_codd_gate_exits_distinctly_from_a_bad_path(self):
+        # 「未導入だから飛ばす」と「パスを間違えている」を $? で区別できること。
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d) / "agent-project.yaml"
+            cfg.write_text("root: .\nagent_cli: claude\n", encoding="utf-8")
+
+            with mock.patch.object(regression, "detect_status",
+                                   return_value=status_mod.build_status(None)):
+                rc, out, err = self._run(["--config", str(cfg)])
+
+            self.assertEqual(rc, regression.EXIT_UNUSABLE)
+            self.assertNotEqual(regression.EXIT_UNUSABLE, regression.EXIT_CONFIG_MISSING)
+            self.assertNotEqual(regression.EXIT_UNUSABLE, 2)   # argparse の使用法エラーと衝突しない
+            self.assertIsNone(json.loads(out)["cmd"])          # 機械可読な報告は出す
+            self.assertIn("組み立てられません", err)
+            self.assertIn("変更していません", err)
+
+    def test_usage_error_exits_2_without_touching_anything(self):
+        with self.assertRaises(SystemExit) as cm:
+            with contextlib.redirect_stderr(io.StringIO()):
+                regression.main(["--no-such-flag"])
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_help_documents_every_flag_and_the_exit_codes(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), self.assertRaises(SystemExit) as cm:
+            regression.main(["--help"])
+        text = buf.getvalue()
+
+        self.assertEqual(cm.exception.code, 0)
+        for flag in ("--config", "--codd-gate", "--repos", "--base", "--dry-run"):
+            self.assertIn(flag, text)
+        self.assertIn("終了コード", text)
+        for code in (regression.EXIT_CONFIG_MISSING, regression.EXIT_UNUSABLE):
+            self.assertRegex(text, rf"(?m)^\s+{code}\s")
 
 
 class TestInferDefaultReposPath(unittest.TestCase):

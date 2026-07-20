@@ -281,6 +281,9 @@ CLI からも付与・修正できる。
   冪等 upsert する。`--repos` 省略時は設定の `root:` から `<root>/repos.json` を推定し、`--dry-run` なら
   書かずに結果だけ出す）。`intake_cmd` に対応する注入 CLI は無いので、こちらは yaml を直接編集する。
   codd-gate が未検出・バージョン/schema 非互換なら CLI は何も書かない（使えないものへ結線しない）。
+  `--config` は**既存の設定ファイル**を指すこと——無ければ `regression_cmd` だけの半端な yaml を作らず
+  エラーで止まる。終了コードは 0=注入済み（再実行の no-op も 0）、1=設定ファイルが無い・読めない、
+  2=引数誤り、3=codd-gate が使えず何も書いていない（`--help` にも同じ表を出す）。
   結線できているかは `doctor` が見る: codd-gate を検出できたのに `regression_cmd`/`intake_cmd` がそれを
   指していなければ、貼れる推奨コマンド文字列を info の所見として出す（`codd_gate_wiring`。
   `<root>/repos.json` が実在すれば schemas 契約の互換も併せて判定する）。詳細は

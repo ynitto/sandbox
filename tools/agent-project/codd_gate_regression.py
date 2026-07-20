@@ -28,6 +28,10 @@ agent-project.yaml に書けば足りる。本モジュールはこの1行を人
 
 CLI:
     python3 codd_gate_regression.py --config .agent/agent-project.yaml [--repos <path>] [--dry-run]
+
+`--config` は自動配線に頼らずこの3機能（検出・推奨文字列の生成・yaml 冪等注入）へ到達する
+唯一の入口。終了コードは `EXIT_*` 定数を参照（呼び出し側が「未導入だから飛ばす」と
+「パスを間違えている」を区別できるよう別の値にしてある）。
 """
 from __future__ import annotations
 
@@ -42,6 +46,11 @@ from codd_gate_routing import resolve_repos_arg
 from codd_gate_status import CoddGateStatus, detect_status
 
 KEY = "regression_cmd"
+# CLI の終了コード。argparse が使用法エラーに使う 2 は避ける（衝突すると呼び出し側が
+# 「引数を間違えた」と「codd-gate が無い」を取り違える）。
+EXIT_OK = 0
+EXIT_CONFIG_MISSING = 1
+EXIT_UNUSABLE = 3
 DEFAULT_BASE_PLACEHOLDER = '"$KIRO_BASE_REV"'
 DEFAULT_REPOS_PATH = ".agent-project/repos.json"
 # 新規キー挿入位置の探索順（README.md 記載順=regression_cmd→intake_cmd に揃える）。
@@ -159,22 +168,61 @@ def apply_to_file(yaml_path: "str | Path", cmd: "str | None", key: str = KEY) ->
     return changed
 
 
-def main(argv: "list[str] | None" = None) -> int:
-    parser = argparse.ArgumentParser(description="codd-gate 検出結果から regression_cmd を生成し "
-                                                  "agent-project.yaml へ冪等注入する")
+_EPILOG = f"""\
+終了コード:
+  {EXIT_OK}  注入した、または既に同じ値が入っていた（冪等 no-op）
+  {EXIT_CONFIG_MISSING}  --config の設定ファイルが無い・読めない
+  2  引数の使い方が誤っている（argparse）
+  {EXIT_UNUSABLE}  codd-gate が使えず regression_cmd を組み立てられない（何も書いていない）
+
+例:
+  python3 codd_gate_regression.py --config .agent/agent-project.yaml --dry-run
+  python3 codd_gate_regression.py --config .agent/agent-project.yaml
+"""
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="codd_gate_regression.py",
+        description="codd-gate を実測し、regression_cmd の1行だけを agent-project.yaml へ冪等注入する",
+        epilog=_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", default=".agent/agent-project.yaml",
-                         help="注入先の agent-project.yaml（既定 .agent/agent-project.yaml）")
+                        help="注入先の agent-project.yaml。既に存在している必要がある"
+                             "（既定 .agent/agent-project.yaml）")
     parser.add_argument("--codd-gate", dest="codd_gate", default=None,
-                         help="codd-gate の実体を明示指定（既定は PATH→同梱パスの順で自動解決）")
+                        help="codd-gate の実体を明示指定（既定は PATH→同梱パスの順で自動解決）")
     parser.add_argument("--repos", default=None,
-                         help="--repos に渡す repos.json パス（既定は設定の root: から推定）")
+                        help="--repos に渡す repos.json パス（既定は設定の root: から推定）")
     parser.add_argument("--base", default=DEFAULT_BASE_PLACEHOLDER,
-                         help='--base に渡す値（既定 "$KIRO_BASE_REV"）')
+                        help='--base に渡す値（既定 "$KIRO_BASE_REV"）')
     parser.add_argument("--dry-run", action="store_true", help="書き込まず結果のみ表示する")
+    return parser
+
+
+def main(argv: "list[str] | None" = None) -> int:
+    """検出→推奨文字列の生成→yaml 冪等注入を1回の実行で通す（自動配線を経ない唯一の入口）。
+
+    設定ファイルが無いときに空テキストから作らないのは、regression_cmd だけを持つ
+    agent-project.yaml は `root:`／`agent_cli:` を欠いて本体が起動できない半端な設定になり、
+    しかも「--config のパスを間違えた」という最も多い誤りが黙って新規ファイル生成として
+    成功してしまうため——読み手が気づけない失敗を、その場のエラーに倒す。
+    """
+    parser = _build_parser()
     args = parser.parse_args(argv)
 
     path = Path(args.config)
-    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        print(f"error: 設定ファイルがありません: {path}\n"
+              f"       agent-project の設定ファイル（既定 .agent/agent-project.yaml）を先に用意し、"
+              f"--config でそのパスを指定してください。", file=sys.stderr)
+        return EXIT_CONFIG_MISSING
+    except OSError as exc:
+        print(f"error: 設定ファイルを読めません: {path}: {exc}", file=sys.stderr)
+        return EXIT_CONFIG_MISSING
+
     repos_path = args.repos or infer_default_repos_path(text)
 
     status = detect_status(args.codd_gate)
@@ -188,7 +236,11 @@ def main(argv: "list[str] | None" = None) -> int:
         "usable": status.usable, "reason": status.reason, "cmd": cmd,
         "changed": changed, "config": str(path), "dry_run": bool(args.dry_run),
     }, ensure_ascii=False))
-    return 0
+    if cmd is None:
+        print(f"error: codd-gate が使えないため regression_cmd を組み立てられません"
+              f"（{status.reason}）。設定ファイルは変更していません。", file=sys.stderr)
+        return EXIT_UNUSABLE
+    return EXIT_OK
 
 
 if __name__ == "__main__":
