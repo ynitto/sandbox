@@ -18,28 +18,24 @@
         "approver": false
       },
       {
-        "id": "debater-a",
-        "role": "案 A を擁護する",
+        "id": "debater",
+        "role": "割り当てられた側（席0=案A擁護 / 席1=案B擁護）として、毎ラウンド相手の前主張に反論しつつ自案を擁護する",
         "required": true,
         "approver": false,
-        "collaborates_with": [
-          "setter"
-        ]
-      },
-      {
-        "id": "debater-b",
-        "role": "案 B を擁護する",
-        "required": true,
-        "approver": false,
+        "seats": 2,
+        "rounds": 2,
         "collaborates_with": [
           "setter"
         ]
       },
       {
         "id": "judge",
-        "role": "優勢な案を選び承認する",
+        "role": "両者の最終主張から優勢な案を選び承認する",
         "required": true,
-        "approver": true
+        "approver": true,
+        "collaborates_with": [
+          "debater"
+        ]
       }
     ],
     "convergence": {
@@ -47,5 +43,6 @@
       "review_rounds": 1
     }
   },
-  "feasibility": "partial"
+  "feasibility": "native",
+  "feasibility_note": "2 席の割当側討論を rounds:2（G3）で同期させ、judge が裁定する。席0/席1 の役割差はミッション文で指定する。"
 }

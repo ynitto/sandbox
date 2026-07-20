@@ -46,6 +46,8 @@ roles:
   #   mission: 問題を独立に解き、最終回答を ANSWER.md に書く（他席は見ない）。
   #   deliverables: [ANSWER.md]
   #   seats: 5                         # solver#0..#4 の独立席へ展開される
-  #   aggregate: majority              # integrator が多数決（majority|consensus|gather）
+  #   aggregate: majority              # integrator が集約: majority|consensus|weighted-vote|approval-count|gather
+  #   # rounds: 3                      # 同期討論（G3）: 全席が前ラウンドを出し切るまで次へ進めない
   #   # aggregate_answer: ANSWER.md    # 集約が読む正準回答ファイル（既定は単一 deliverable）
+  #   # aggregate_score: SCORE         # weighted-vote / approval-count の数値信号ファイル
   # integrator は省略可（省略時はオーナーノードが自動で self-staff する組み込みロール）

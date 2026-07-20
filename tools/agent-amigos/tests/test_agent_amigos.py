@@ -1803,5 +1803,84 @@ class SeatsAggregationTests(AmigosTestCase):
         self.assertEqual(aggs["solver"]["votes"], 3)   # 3 席とも ANSWER.md を書いた
 
 
+class DebateRoundsTests(AmigosTestCase):
+    """G3: 同期討論ラウンド（ラウンドバリア）。"""
+
+    def _debate_spec(self, seats=3, rounds=3, done_when="all-required-done", **conv):
+        c = {"done_when": done_when, "quiescence_turns": 99}
+        c.update(conv)
+        return {"mission": {"title": "d", "goal": "g", "staffing_timeout": 0, "convergence": c},
+                "roles": [{"id": "debater", "mission": "立場を論じる", "seats": seats,
+                           "rounds": rounds, "aggregate": "majority",
+                           "deliverables": ["ANSWER.md"]}]}
+
+    def _round_files(self, mid, seat_id):
+        mp = self.bus.mission(mid)
+        try:
+            return sorted(f for f in os.listdir(mp.artifacts_dir(seat_id))
+                          if f.startswith("round-"))
+        except FileNotFoundError:
+            return []
+
+    def test_rounds_validation(self):
+        with self.assertRaises(SystemExit):        # rounds on seats<2
+            normalize_mission({"roles": [{"id": "x", "seats": 1, "rounds": 2}]})
+        with self.assertRaises(SystemExit):        # rounds < 0
+            normalize_mission({"roles": [{"id": "x", "seats": 2, "rounds": -1}]})
+        _m, roles = normalize_mission({"roles": [{"id": "x", "seats": 2, "rounds": 3}]})
+        self.assertTrue(all(r["rounds"] == 3 for r in roles if r.get("seat_group") == "x"))
+
+    def test_round_barrier_blocks_until_peers_catch_up(self):
+        from agent_amigos.runner import AmigoRunner
+        mid = self.post(self._debate_spec(seats=3, rounds=3), mid="am-barrier")
+        mp = self.bus.mission(mid)
+        write_json_atomic(mp.roster(),
+                          {rid: {"node": "owner-node"} for rid in load_roles(mp)})
+        r0 = AmigoRunner(self.bus, mid, "debater#0", "owner-node", agent_cli="stub")
+        r0.turn_once()                             # 席0: round-0 を書く
+        self.assertEqual(self._round_files(mid, "debater#0"), ["round-0.md"])
+        r0.turn_once()                             # 他席が round-0 未 → バリアで待つ
+        self.assertEqual(self._round_files(mid, "debater#0"), ["round-0.md"])
+        # 他 2 席も round-0 を出すと、席0 が round-1 へ進める
+        AmigoRunner(self.bus, mid, "debater#1", "owner-node", agent_cli="stub").turn_once()
+        AmigoRunner(self.bus, mid, "debater#2", "owner-node", agent_cli="stub").turn_once()
+        r0.turn_once()
+        self.assertEqual(self._round_files(mid, "debater#0"), ["round-0.md", "round-1.md"])
+
+    def test_debate_e2e_reaches_reviewing_with_all_rounds(self):
+        mid = self.post(self._debate_spec(seats=3, rounds=3), mid="am-debate-e2e")
+        d = NodeDaemon(self.bus, "owner-node", agent_cli="stub", interval=0)
+        for _ in range(40):
+            d.cycle()
+            if self.phase(mid) == "reviewing":
+                break
+        self.assertEqual(self.phase(mid), "reviewing")
+        for sid in ("debater#0", "debater#1", "debater#2"):
+            self.assertEqual(self._round_files(mid, sid),
+                             ["round-0.md", "round-1.md", "round-2.md"])
+            mp = self.bus.mission(mid)
+            self.assertTrue(os.path.isfile(os.path.join(mp.artifacts_dir(sid), "ANSWER.md")))
+
+    def test_consensus_early_stop_finalizes_before_last_round(self):
+        from agent_amigos.runner import AmigoRunner
+        mid = self.post(self._debate_spec(seats=3, rounds=5, done_when="consensus",
+                                          consensus_ratio=0.6, consensus_min=2),
+                        mid="am-early")
+        mp = self.bus.mission(mid)
+        write_json_atomic(mp.roster(),
+                          {rid: {"node": "owner-node"} for rid in load_roles(mp)})
+        # 全席が round-0 を同じ主張で出したと仮定（合意）
+        for sid in ("debater#0", "debater#1", "debater#2"):
+            p = os.path.join(mp.artifacts_dir(sid), "round-0.md")
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w", encoding="utf-8") as f:
+                f.write("同じ主張")
+        # 席0 のターン: round-1 を出す前に合意を検出して早期確定（ANSWER=round-0）
+        AmigoRunner(self.bus, mid, "debater#0", "owner-node", agent_cli="stub").turn_once()
+        self.assertEqual(self._round_files(mid, "debater#0"), ["round-0.md"])  # round-1 を作らない
+        with open(os.path.join(mp.artifacts_dir("debater#0"), "ANSWER.md"), encoding="utf-8") as f:
+            self.assertEqual(f.read().strip(), "同じ主張")
+
+
 if __name__ == "__main__":
     unittest.main()

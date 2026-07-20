@@ -13,10 +13,11 @@
     "roles": [
       {
         "id": "member",
-        "role": "独立に見解を述べ、回答を ANSWER.md、確信度(0-1)を SCORE に書く",
+        "role": "毎ラウンド他席の前主張を踏まえて見解を更新し、最終主張を ANSWER.md、確信度(0-1)を SCORE に書く",
         "required": true,
         "approver": false,
         "seats": 3,
+        "rounds": 2,
         "aggregate": "weighted-vote",
         "count_hint": "3-5"
       }
@@ -27,5 +28,5 @@
     }
   },
   "feasibility": "native",
-  "feasibility_note": "member を seats>1（G1）で並べ、aggregate: weighted-vote（G2）で確信度（SCORE）重みの投票を integrator が決定的に集計する。done_when: consensus で合意到達時に早期収束する。"
+  "feasibility_note": "member を seats>1（G1）＋ rounds:2（G3・同期ラウンド）で円卓討論させ、aggregate: weighted-vote（G2）で確信度（SCORE）重みの投票を integrator が決定的に集計する。done_when: consensus で合意到達時に早期収束する。"
 }

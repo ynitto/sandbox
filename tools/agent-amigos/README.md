@@ -244,7 +244,10 @@ roles:
   結果は `deliverable/<id>/AGGREGATE.{md,json}` と `MANIFEST.json` の `aggregates` に残る。
 - **収束を早める**: `convergence.done_when: consensus`（＋ `consensus_ratio` / `consensus_min`）で、
   席グループが合意に達したら全席の完了を待たず収束する。
-- ペア比較順位・同期ラウンド・探索木・動的編成は未実装（拡張提案:
+- **同期討論（G3）**: 席グループに `rounds: N` を付けると、各席が `round-<k>.md` を 1 ラウンドずつ書き、
+  **全席が前ラウンドを出し切るまで次へ進めない**（ラウンドバリア）。最終ラウンドの主張が ANSWER.md
+  になる。discuss → judge/aggregate の討論パターンに使う。`done_when: consensus` で合意時に早期終了。
+- ペア比較順位・通信トポロジ制御・探索木・動的編成は未実装（拡張提案:
   [`docs/designs/agent-amigos-teambuilder-patterns.md`](../../docs/designs/agent-amigos-teambuilder-patterns.md)）。
 
 ## acceptance: agent（受入の自動判定）

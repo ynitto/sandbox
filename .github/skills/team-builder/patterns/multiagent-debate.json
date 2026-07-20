@@ -4,7 +4,7 @@
   "category": "debate-consensus",
   "tier": "high",
   "source": "Multiagent Debate (Du et al., 2023) / MAD (Liang et al., 2024)",
-  "when_to_use": "正解が自明でない・見解が割れる推論。異なる立場を戦わせ、裁定者が結論を出したいとき。",
+  "when_to_use": "正解が自明でない・見解が割れる推論。複数の立場を同期ラウンドで戦わせ、裁定者が結論を出したいとき。",
   "signals": [
     "結論が割れうる",
     "根拠の突き合わせが要る",
@@ -13,39 +13,30 @@
   "team": {
     "roles": [
       {
-        "id": "debater-a",
-        "role": "立場 A を根拠付きで主張し、相手の反証に応答する",
-        "required": true,
-        "approver": false
-      },
-      {
-        "id": "debater-b",
-        "role": "立場 B（または反証役）として A の弱点を突き、対案を示す",
+        "id": "debater",
+        "role": "毎ラウンド、他席の前ラウンドの主張を踏まえて自分の立場を根拠付きで述べ更新する（最終主張は ANSWER.md）",
         "required": true,
         "approver": false,
-        "collaborates_with": [
-          "debater-a"
-        ]
+        "seats": 3,
+        "rounds": 3,
+        "count_hint": "2-4"
       },
       {
         "id": "judge",
-        "role": "両者の論拠を突き合わせて評価し、最終結論を裁定・承認する",
+        "role": "各席の最終主張を突き合わせて評価し、最終結論を裁定・承認する",
         "required": true,
         "approver": true,
         "collaborates_with": [
-          "debater-a",
-          "debater-b"
+          "debater"
         ]
       }
     ],
     "convergence": {
       "done_when": "reviewer-approved",
-      "quiescence_turns": 2,
       "review_rounds": 1
     },
     "budget_hint": "中（例 90 分）"
   },
-  "feasibility": "partial",
-  "feasibility_note": "discussants は seats>1（G1）で 3 人以上に増やせる。多数決なら aggregate: majority（G2）＋ done_when: consensus で合意到達時に早期収束できる。ただし同期ラウンドは無い（拡張 G3 待ち）ためメッセージ往復＋judge の裁定で近似する。",
-  "notes": "judge を approver にして reviewer-approved で締める。討論の往復は quiescence で収束させる。"
+  "feasibility": "native",
+  "feasibility_note": "debater を seats>1（G1）＋ rounds:N（G3・同期ラウンド）で回す。全席が前ラウンドを出し切るまで次へ進めないバリアが効く。裁定は judge（approver）が最終主張を見て行う。多数決で締めたいなら judge の代わりに aggregate: majority ＋ done_when: consensus も選べる。"
 }

@@ -163,12 +163,19 @@ def normalize_mission(spec: dict) -> "tuple[dict, list]":
             if seats < 2:
                 raise SystemExit(f"[agent-amigos] aggregate は seats>=2 のロールにのみ指定できます"
                                  f"（ロール {rid}）")
+        rounds = int(r.get("rounds", 0))     # 同期討論ラウンド数（G3）。0 = 無効
+        if rounds < 0:
+            raise SystemExit(f"[agent-amigos] rounds は 0 以上が必要です（ロール {rid}）")
+        if rounds >= 1 and seats < 2:
+            raise SystemExit(f"[agent-amigos] rounds（同期討論）は seats>=2 のロールにのみ"
+                             f"指定できます（ロール {rid}）")
         role = {"id": rid,
                 "title": str(r.get("title") or rid),
                 "mission": str(r.get("mission") or ""),
                 "deliverables": [str(d) for d in (r.get("deliverables") or [])],
                 "required": bool(r.get("required", True)),
                 "seats": seats,
+                "rounds": rounds,
                 "aggregate": aggregate,
                 "aggregate_answer": (str(r["aggregate_answer"])
                                      if r.get("aggregate_answer") else None),
@@ -195,7 +202,8 @@ def normalize_mission(spec: dict) -> "tuple[dict, list]":
         # integrator 省略時はオーナーノードが self-staff する組み込みロールを自動追加（§8.1）
         roles.append({"id": "integrator", "title": "統合", "mission":
                       "全ロールの成果物を検証・統合し deliverable/ を組み立てる。",
-                      "deliverables": [], "required": True, "seats": 1, "aggregate": None,
+                      "deliverables": [], "required": True, "seats": 1, "rounds": 0,
+                      "aggregate": None,
                       "aggregate_answer": None, "aggregate_score": None, "agent_cli": None,
                       "model": None, "requires": {}, "collaborates_with": [],
                       "approver": False, "builtin": "integrator", "seat_group": "integrator",

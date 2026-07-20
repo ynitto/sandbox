@@ -89,16 +89,19 @@ agent-amigos が**そのまま**表現できるのは:
 - **残（未実装）**: `pairwise-rank`（双方向ペア対戦: llm-blender, prd-peer-rank）は比較が意味判断
   のため決定的集約にできない。ranker ロール（approver）に委ねる設計とする（＝拡張ではなく設計方針）。
 
-### G3. 同期ラウンド（ラウンドバリア）
+### G3. 同期ラウンド（ラウンドバリア）— ✅ 実装済み
 
-- **現状**: 会話は自由記述＋ `quiescence_turns` の静穏収束のみ。「全員が k ラウンド目を出し切って
-  から次へ」という同期が無い。
-- **要るパターン**: multiagent-debate, reconcile, exchange-of-thought, chateval（逐次ボット読み）,
-  persuasive-debate, dylan。
-- **近似**: メッセージ往復＋ integrator/judge の裁定で流す（ラウンド境界は曖昧）。
-- **拡張提案**: ミッションに `rounds: {count, barrier: true}` を持たせ、各ラウンドで全席の発話が
-  揃うまで次ラウンドへ進めない**バリア**を runner に実装する（`round`/差し戻しラウンドとは別軸の
-  「議論ラウンド」）。early-stop（合意時）も許す。
+- **実装**: 席グループに `rounds: N` を付けると、各席が `round-<k>.md` を 1 ラウンドずつ書き、
+  runner が**全席の round-(k-1) が揃うまで round-k へ進めない**バリアを課す（`_rounds_turn`）。
+  最終ラウンドの主張が ANSWER.md になり declare_done する。バリアはファイル存在で判定するので
+  非同期のターンループ上でも決定的に同期する（差し戻しラウンドとは別軸の「議論ラウンド」）。
+- **早期終了**: `done_when: consensus` と併用すると、前ラウンドで席が合意（`consensus_ratio` 到達）
+  した時点で残りラウンドを打ち切って確定する。
+- **写せるようになったパターン**: multiagent-debate / persuasive-debate（seats+rounds+judge）、
+  reconcile（seats+rounds+weighted-vote+consensus）。裁定は judge（approver）か aggregate で締める。
+- **残**: 通信トポロジ制御（exchange-of-thought の bus/star/ring/tree）は未対応。全席が全席の前
+  ラウンドを読む全結合のみ。複数ロールにまたがる討論（affirmative/negative を別ロールにする形）は
+  1 席グループ内の席差（ミッション文で役割を割り当てる）で表現する。
 
 ### G4. 探索木・分岐評価（branch → score → prune）
 
@@ -146,7 +149,8 @@ agent-amigos が**そのまま**表現できるのは:
    sampling/voting/ensembling 系の大半が「近似」から「忠実」になった。コアの原則（状態のファイル
    導出・決定的 claim）は据え置き、seats はロール展開・集約は integrator の拡張で実現した。
    - `pairwise-rank` のみ、比較が意味判断のため決定的集約にせず ranker ロールに委ねる設計とした。
-2. **G3 同期ラウンド** — debate 系の忠実度が上がる。runner のターンループにバリアを足す中規模。
+2. ~~**G3 同期ラウンド**~~ — ✅ **実装済み**（`rounds: N` ＋ ラウンドバリア ＋ consensus 早期終了）。
+   debate 系（multiagent-debate / persuasive-debate / reconcile）が忠実になった。残は通信トポロジ制御。
 3. **G5 restaff ＋ team-builder 常駐** — 動的編成。オーナー操作とスキル呼び出しの組み合わせで、
    コア変更は小さい。
 4. **G4 探索木** — まず **agent-flow への委譲**（team-builder が agent-flow プランを出力）で
