@@ -1,0 +1,19 @@
+{
+  "id": "t4",
+  "who": "worker-1",
+  "status": "done",
+  "output": "## (a) 成果\n\n`readProject()` の返り値に `consistencyGate` を 1 キー追加。読み取り専用。\n\n変更ファイル 3 件（すべて `tools/agent-dashboard/` 配下）:\n\n| ファイル | 変更 |\n|---|---|\n| `src/features/agent-project/main/project.js` | `_configFromWorkspace(cfg, ws)` 抽出（`resolveProjectRoot` のインライン判定を関数化して共用）＋ `consistencyGateStatus(cfg, workspace)` 追加 ＋ 返り値に `consistencyGate:` |\n| `test/consistency-gate.test.js` | 新規 4 ケース |\n| `package.json` | `test` スクリプトへ 1 本追加 |\n\nペイロード形:\n\n```js\nconsistencyGate: {\n  configFile: '<abs path>' | null,  // 未検出なら null\n  regressionWired: bool,            // 判定はこちら\n  intakeWired: bool,\n  regressionCmd: '<cmd>' | null,    // 表示用のみ\n  intakeCmd: '<cmd>' | null,\n}\n```\n\n設定は既存の `projectCfg`（`readProject` が既に持っている）を再利用。yaml の読み直しなし、`toolconfig.js` は無改造。IPC / preload はスキーマ非依存なので `state.project.consistencyGate` でそのまま renderer に届く。\n\nUI 側への申し送り: `bus/runs/req-ef1f92c3-dashboard-163827-r0/artifacts/t4/t4-payload-contract.md`\n\n## (b) 検証\n\n- `node test/consistency-gate.test.js` → 4 passed。両方結線 / 片方のみ / キー無し / 設定ファイル自体が無い、の 4 ケース。\n- 全 58 テストを個別実行 → **`test/detail-tabs-ui.test.js` のみ FAIL**、他は全通過。\n\n失敗は既存のもので本変更と無関係。原因は `src/renderer/sections/needs.js:167` の `commandFailureHtml` が `renderNeedDetail` の自由変数として増えたのに、テスト側 `new Function(...)` の注入リスト（`detail-tabs-ui.test.js:447-453`）が追随していない:\n\n```\nReferenceError: commandFailureHtml is not defined\n```\n\n本タスクの diff は `project.js` / `package.json` / 新規テストの 3 件のみで renderer には一切触れていない（`git status --porcelain` で確認済み）。失敗テストは `project.js` を require しない（`require` は assert/fs/path/`helpers/renderer-src` の 4 つのみ）。\n\n`~/.agents` グローバル設定の混入テスト（4 件目）は、この実機では実際にグローバル設定へ `regression_cmd` が存在するため空振りではなく有効に働いている。\n\n## (c) 前提・未解決・範囲外\n\n**採用した前提**\n\n1. 「プロジェクト情報ペイロード」= `readProject()` の返り値（t1 §7-1 の判断を踏襲）。`discover()` の一覧サマリには足していない。\n2. 結線判定は yaml 2 キーの直読み。`codd_gate_wiring.py` の shell out はしない（パス依存＋python3 起動コスト。`recommended_*_cmd` を画面に出す要求が確定したら要再検討）。\n3. 表示用文字列はコマンド全文をそのまま載せた。値は codd-gate の CLI 呼び出しで、秘匿情報を含まない前提。切り詰めが要るなら renderer 側で行う。\n4. キー名は `consistencyGate`（要求文の「一貫性ゲート」に合わせた）。sibling CLI の JSON は `regression_wired` / `intake_wired` だが、dashboard 内は camelCase なので `regressionWired` / `intakeWired` に寄せた。\n\n**t1 の制約 B に対応済み**: `_configFromWorkspace` を必ず通すので、プロジェクトに設定が無いときに `~/.agents` のグローバル設定を見て「結線済み」と誤表示しない。`resolveProjectRoot` の判定と同一関数なので、片方だけ挙動がずれることもない。\n\n**範囲外で見つけた問題（未修正）**\n\n- @followup `test/detail-tabs-ui.test.js` の `new Function` 注入リストが `needs.js` の `commandFailureHtml` 追加に追随しておらず、`npm test` が本タスク以前から途中で落ちる。テストハーネスが自由変数を手で列挙する構造なので、renderer にヘルパを足すたび壊れる。修正は 1 語追加だが原因は renderer 側の変更で、本タスクの範囲外。\n- @followup t1 の所見 A（`toolconfig.js:39` の行内コメント除去がクォート内も切る）は未修正のまま。値に ` #` を含む `regression_cmd` を書かれると dashboard だけが値を欠いて誤表示する。現行設定に該当なし。\n\n**未解決**: needs 側の codd-gate 由来の失敗要約（t1 §7 の申し送り）は本タスクの範囲外で未着手。",
+  "finished_at": "2026-07-20T06:47:55Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox",
+      "branch": "ap/dashboard-163827",
+      "commit": "a3acdc9affa5f92d3886e2fed1f2b0f67e94169d",
+      "target": "main",
+      "path": "tools/agent-dashboard"
+    }
+  },
+  "artifacts": [
+    "artifacts/t4/t4-payload-contract.md"
+  ]
+}

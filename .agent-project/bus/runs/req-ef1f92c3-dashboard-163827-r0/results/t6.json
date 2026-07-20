@@ -1,0 +1,19 @@
+{
+  "id": "t6",
+  "who": "worker-1",
+  "status": "done",
+  "output": "## (a) 成果\n\n未結線時の有効化導線を README `tools/agent-project/README.md:272-295`「一貫性ゲート（codd-gate 連携・オプション）」の原文と一致させた。t5 が置いた `enable` ブロックのみ差し替え（バッジ・行・セクション構造は据え置き）。\n\n| ファイル | 変更 |\n|---|---|\n| `src/renderer/renderer.js` | `consistencyGateHtml` の `enable` ブロック |\n| `test/consistency-gate-ui.test.js` | ケース差し替え ＋ README 突き合わせ追加 |\n\n直した乖離 4 件:\n\n1. **書くべき行が画面に無かった** — 「不足している行を追加します」だけだった。README の 2 行を `<pre class=\"mono\">` にそのまま出す。**未結線のキーの行だけ**。`<root>/repos.json` は README 同様プレースホルダのまま（root は結線判定に使っておらず、埋めると嘘になる）。\n2. **`intake_cmd` 未結線時に注入 CLI を勧めていた** — `codd_gate_regression.py` は `regression_cmd` の 1 キーしか書かない。CLI 提示を `configFile あり && regression_cmd 未結線` に限定し、`intake_cmd` 未結線時は README の「対応する注入 CLI は無いので、こちらは yaml を直接編集する」を出す。\n3. **設定ファイル未検出時のパスが `.agent/`** — README は `.agents/agent-project.yaml`。`src/base/main/agent-home.js:15-16` でも `.agents` が現行・`.agent` は legacy。`.agents/` へ統一（実在の設定を検出できたときは実パスを出すので新旧どちらでも正しい）。\n4. **設定ファイル未検出時に CLI を勧めない** — README:284「`--config` は既存の設定ファイルを指すこと——無ければ…エラーで止まる」。\n\nCSS 追加ゼロ。`pre.mono` は `styles.css:1019-1026` に既存（枠・`overflow-x: auto`・`white-space: pre-wrap`）。詳細と描画実物: `artifacts/t6/t6-enable-guidance.md`\n\n## (b) 検証\n\n- `node test/consistency-gate-ui.test.js` → ok。ケース: 両結線（導線なし）／`intake_cmd` のみ未結線（CLI を出さない・結線済みの行を書けと言わない）／`regression_cmd` のみ未結線（CLI 実パス ＋ `--dry-run`）／設定ファイル無し（ボタンも CLI も出さない・`.agents/` を示す）／XSS。\n- **README 突き合わせテストを追加**。README からバッククォート内の `regression_cmd: '…'` / `intake_cmd: '…'` を正規表現で抜き、`esc()` を通した文字列が描画結果に含まれることを assert する。README の文言が変わればテストが落ちて気づける。単体配布で README が無い場合は `fs.existsSync` でスキップ。\n- 描画結果を実際にダンプして目視確認（成果物に転記）。`node --check` 通過。\n- **全 59 テスト個別実行 → 58 PASS、`test/detail-tabs-ui.test.js` のみ FAIL**。`ReferenceError: commandFailureHtml is not defined` — t4/t5 が報告した既存の失敗と同一。`git status --porcelain` で本タスクの diff は上記 2 ファイルのみ、`needs.js` に触れていないことを確認済み。\n\n## (c) 前提・未解決・範囲外\n\n**採用した前提**\n\n1. 「README」= `tools/agent-project/README.md` の一貫性ゲート節（t5 が出典として挙げた箇所）。`tools/codd-gate/README.md:196-197` にも同じ 2 行があるが、`--repos` の値が異なる（`.agent-project/projects/default/repos.json`）。有効化の主導線は agent-project 側なので前者を正典とした。\n2. 「同一文言」= 人が貼り付ける文字列（yaml 2 行・CLI コマンド）は逐語一致、説明文は README の主張を落とさない範囲で画面用に短縮。逐語一致すべき部分だけをテストで固定した。\n3. `<root>` は展開しない。ペイロードに root が無く、README も placeholder のまま提示している。\n\n**範囲外で見つけた問題（未修正）**\n\n- @followup `test/detail-tabs-ui.test.js` の `new Function` 注入リストが `needs.js` の `commandFailureHtml` に追随せず `npm test` が途中で落ちる（t4・t5 と同一指摘）。\n- @followup README `:275` は `.agents/agent-project.yaml`、GUIDE.md `:129-130` と `codd_gate_regression.py --config` の既定は `.agent/agent-project.yaml`。`.agents` が現行・`.agent` が legacy なので **README が正、GUIDE と CLI 既定が旧名のまま**。ドキュメント/CLI 側の統一は `tools/agent-project` 配下で本タスクの許可フォルダ外につき未着手。",
+  "finished_at": "2026-07-20T06:58:27Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox",
+      "branch": "ap/dashboard-163827",
+      "commit": "c626eccbdb6eeeb8f59133b27d833d6dc68aa517",
+      "target": "main",
+      "path": "tools/agent-dashboard"
+    }
+  },
+  "artifacts": [
+    "artifacts/t6/t6-enable-guidance.md"
+  ]
+}

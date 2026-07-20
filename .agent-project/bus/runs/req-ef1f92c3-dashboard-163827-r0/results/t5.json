@@ -1,0 +1,19 @@
+{
+  "id": "t5",
+  "who": "worker-1",
+  "status": "done",
+  "output": "## (a) 成果\n\n概要タブに「一貫性ゲート」節を追加。表示のみ、状態書換なし。\n\n| ファイル | 変更 |\n|---|---|\n| `src/renderer/renderer.js` | `consistencyGateHtml(p)`（純関数）＋ `bindConsistencyGate(root)` を追加 |\n| `src/renderer/sections/overview.js` | `renderOverview()` に呼び出し 2 行 |\n| `test/consistency-gate-ui.test.js` | 新規 5 ケース |\n| `package.json` | `test` に 1 本追加 |\n\nrenderer.js は分割済みだが、完了条件が「識別子と文言が renderer.js に出現すること」なので**表示ロジック本体を renderer.js に置き、overview.js からは呼ぶだけ**にした。グローバルスコープ共有・読み込み順 renderer.js → sections/* なので動く。\n\n描画は `state.project.consistencyGate`（t4 ペイロード）を読み、「計画バージョン」節の上に独立 section。`<dt>` にラベル + yaml キー名（`regression_cmd` / `intake_cmd`）、`<dd>` に `結線済み`（`.badge info` + コマンド全文）または `未結線`（`.badge warn` + 説明）。未結線が 1 つでもあれば有効化導線を出す — `configFile` あり: 編集先パス + `codd_gate_regression.py --config <path>` + `api.openPath` で開くボタン（needs の `data-open` と同じ既存経路）／null: `.agent/agent-project.yaml` 作成手順のみ。`intake_cmd` に注入 CLI が無いことも明記。\n\n**CSS 追加ゼロ。** 既存クラスのみ（`.badge.ok` は存在しないので結線済みは `.badge.info`）。詳細: `artifacts/t5/t5-ui-section.md`\n\n## (b) 検証\n\n- `node test/consistency-gate-ui.test.js` → ok。空ペイロード / 両結線 / 片方 / 設定ファイル無し / XSS（`<img src=x onerror=...>` が `&lt;img` に）。完了条件そのもの（`regression_cmd`・`intake_cmd`・`一貫性ゲート` が renderer.js に出現）もテスト内で assert。\n- `node --check` 両ファイル通過。\n- 全 56 テスト個別実行 → **55 PASS、`test/detail-tabs-ui.test.js` のみ FAIL**。`ReferenceError: commandFailureHtml is not defined` — t4 が報告した既存の失敗と同一メッセージ。本タスクの diff は renderer.js / overview.js / package.json / 新規テストの 4 件で `needs.js` に触れていない（`git status --porcelain` で確認）。\n\n## (c) 前提・未解決・範囲外\n\n**採用した前提**\n\n1. 完了条件の「renderer.js に出現」は文字列 grep と解釈し、実装本体を renderer.js に置いた。t2 は overview.js を推奨したが、完了条件の literal を優先し、呼び出し側だけ overview.js に残す折衷にした。\n2. 「バッジ表示」= 結線済み/未結線の 2 値バッジ。`.badge.ok` が CSS に無いため結線済みは `.badge.info`。\n3. 配置は `.overview-grid` の 4 枚目ではなく独立 section（グリッドが 3 カラム前提、t2 §1）。\n4. コマンド全文をそのまま表示（t4 前提 3 を踏襲。秘匿情報を含まない前提）。切り詰めなし。\n5. 有効化導線は「設定ファイルを開く」＋「人が打つコマンドの提示」に限定。内蔵エディタの allowlist（`authoring.js`）は触っていない ＝ UI からの状態書換経路なし（done 不変条件）。\n\n**範囲外で見つけた問題（未修正）**\n\n- @followup `test/detail-tabs-ui.test.js` の `new Function` 注入リストが `needs.js` の `commandFailureHtml` に追随しておらず `npm test` が途中で落ちる（t4 と同じ指摘）。テストハーネスが自由変数を手で列挙する構造が根因で、renderer にヘルパを足すたび壊れる。本タスクの `consistencyGateHtml` は自由変数を `esc` 1 つに抑えて同じ罠を避けた。\n- @followup needs 側の codd-gate 由来の失敗要約（t2 §4.2 の `renderNeedFacts`）は未着手。",
+  "finished_at": "2026-07-20T06:52:41Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox",
+      "branch": "ap/dashboard-163827",
+      "commit": "1e17603a5647bc735ab460c90ab3acfba4760464",
+      "target": "main",
+      "path": "tools/agent-dashboard"
+    }
+  },
+  "artifacts": [
+    "artifacts/t5/t5-ui-section.md"
+  ]
+}
