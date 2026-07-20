@@ -1,0 +1,20 @@
+{
+  "id": "loop",
+  "who": "worker-1",
+  "status": "done",
+  "output": "verify=pass\n\ngate が挙げた不一致を修正し、完了条件コマンドは**終了コード 0**。失敗回数 0（修正を入れた時点で初回から 0）。\n\n**依存結論の再導出**\n\ngate の「`hooks:` を書かないと doctor は無所見」は自分で実測して確認した（`_hook_scan_siblings(('detect_wiring',))` → `None`。`codd_gate_wiring.py:228-229` の別名公開が前置フィルタ `^def <属性名>(` に載らない）。\n\nただし gate の裏取りには前提がもう1段抜けていた。4通りを実機で回して切り分けた結果:\n\n| 条件 | doctor の「未結線」所見 |\n|---|---|\n| `hooks:` あり・`repos.json` **なし** | **0 件** |\n| `hooks:` あり・`repos.json` あり | 2 件 |\n| `hooks:` なし（両方） | 0 件 |\n\n原因は `codd_gate_wiring.py:145` の `can_recommend = status.usable and repos_path is not None` と、`charter.py:326` の `repo_registry_path` が実在しなければ `None` を返すこと。gate は `repos.json` を「schemas 互換判定の条件」としか書いていないが、実際は**推奨コマンドを組み立てる条件そのもの**。README にはこの前提も併記した。\n\n**修正（3ファイル・文章のみ）**\n\n- `README.md:287-293` — 設定不要の `python3 codd_gate_wiring.py --config …` を先に置き、doctor 所見は `hooks:` ＋ `wiring: codd_gate_wiring` の2行を書いたときだけ到達する旨、および `repos.json` 実在が前提である旨を追記\n- `GUIDE.md:194-198` — 手順は複製せず「`hooks:` に明示したときだけ」の条件を追加、正本は README と明示\n- `agent-project.yaml.example:185-187` — 「契約名を別名で公開するプロバイダは走査に載らない」を追記し、直下の唯一の例が自動検出されない矛盾を解消\n\n**スコープ** — 差分は `tools/agent-project/` 配下の3ファイルのみ（`git status --porcelain` で確認）。`agent_project/`・dashboard は 0。gate の minor 4件目は `docs/designs/` 配下で当タスクの書込許可外のため着手せず、@followup に回した。\n\n詳細は `artifacts/loop/verify-loop-report.md`。\n\n```json\n{\"ok\": true, \"issues\": [\"(minor) docs/designs/codd-gate-design.md:262 のモジュール表（codd_gate_wiring.py 行）に recommend_regression_cmd が無い。CLI から使われる公開名で codd_gate_regression.infer_default_repos_path と対になるため表に載せる。当タスクの書込許可が tools/agent-project 配下に限定されているため未着手（@followup）\", \"(minor) gate 報告は repos.json の実在を『schemas 互換判定の条件』としか書いていないが、実測では judge_wiring の can_recommend 条件そのもので、不在だと hooks: を書いても doctor 所見は 0 件になる。README にはこの前提を追記済みだが、設計書 §4.1 側にも同じ条件が書かれていないなら追随させるとよい\"]}\n```",
+  "finished_at": "2026-07-20T02:15:05Z",
+  "data": {
+    "ok": true,
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox",
+      "branch": "ap/sibling-163827",
+      "commit": "d18aa997cdd2f9d5e011273a265f47f16006b515",
+      "target": "main",
+      "path": "tools/agent-project"
+    }
+  },
+  "artifacts": [
+    "artifacts/loop/verify-loop-report.md"
+  ]
+}

@@ -490,3 +490,10 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-20 10:09:51 === agent-project 停止 reason=drained cycles=2 done=0 blocked=1 notified=True promoted=0 ===
 - 2026-07-20 10:09:53 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
 - 2026-07-20 10:09:53 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-20 10:16:58 commands 取り込み: resume-run sibling-163827（viewer-resume-run-sibling-163827-1784510217150.json）
+- 2026-07-20 10:16:58 === project 開始 v1 acceptance=2 ===
+- 2026-07-20 10:16:58 === agent-project 開始 tasks=3 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-20 10:16:58 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
+- 2026-07-20 10:16:58 run 再開: sibling-163827 は req-ef1f92c3-sibling-163827-r0 の失敗ノードだけをやり直します（done は温存）
+- 2026-07-20 11:16:59 flow detach: sibling-163827 の run req-ef1f92c3-sibling-163827-r0 を failed（agent-flow run タイムアウト（3600s））
+- 2026-07-20 11:17:01 cycle 1: sibling-163827 → 人の判断（繰り返し NG）

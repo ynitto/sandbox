@@ -1,0 +1,19 @@
+{
+  "id": "t7",
+  "who": "worker-2",
+  "status": "done",
+  "output": "## (a) 成果\n\n切り口: **有効化の入口を数え上げて閉じる**。§4.1「現在地」を「消えた自動配線の説明」ではなく「利用者が connect できる経路は3つだけ」という閉じた集合として書き直した。閉じて書けば、消えた自動配線が書き忘れか意図的な不在かを読者が判別できる。\n\n変更は `docs/designs/codd-gate-design.md` §4.1 のみ（モジュール表2行、「現在地」ブロック全体、最終更新日）。コードは無変更。詳細: `artifacts/t7/codd-gate-design-4-1-update.md`\n\n| 論点 | 更新前 | 実装の現在地 |\n|---|---|---|\n| `build_config` の自動配線 | repos.json 実在時に cfg を埋める | 削除済み。パッケージ内に `codd_gate` の固有名なし |\n| 有効化の入口 | 自動配線＋手書き＋CLI が併存 | 明示設定のみ（yaml 手書き / `codd_gate_regression.py --config` / `hooks:` 指定） |\n| doctor からの到達 | 記述なし | `hooks: {wiring: codd_gate_wiring}` を書いたときだけ |\n| `codd_gate_wiring` の公開名 | `detect_wiring`/`doctor_findings` が実体 | 実体は `probe_wiring`/`render_findings`。契約名は末尾の別名 |\n| `codd_gate_regression.py` | 「生成ツール」まで | 終了コード 0/1/2/3、`--config` 実在必須（t3 を反映） |\n| no-op 縮退 | 自動配線が保証 | 各入口へ分散。E2 の「未インストール環境で block」は残る |\n\n別名公開の理由（sibling 走査のソーステキスト前置フィルタ `^def <属性名>(` を意図的に外す）は、置き場と有効化手順を一致させるための設計判断として本文に残した。\n\n## (b) 検証\n\n現物のコードで7点を実測: パッケージ内に codd_gate の import 0 件 / `TestCoddGateNoAutoWiring` PASS / `_hook_scan_siblings((\"detect_wiring\",))` と `((\"doctor_findings\",))` が両方 `None` / `hooks` 明示指定でだけ module を解決 / `codd_gate_wiring.py` CLI は不在パスでも `rc=0` で何も作らない / `_HUMAN_OWNED_STATE_FILES` が `(\"agent-flow.yaml\", \"agent-project.yaml\")` / `EXIT_*` と `_EPILOG` が本文の 0/1/2/3 と一致。\n\nテスト: `pytest -k codd` → **115 passed**。全体 → **842 passed / 2 failed**（t3 と同一の環境依存2件。journal ローテーションの連番と macOS の `/var`→`/private/var`。どちらも docs/ を読まない）。\n\n## (c) 前提・範囲外\n\n**採用した前提**: 「明示設定のみ」を「機械が `cfg.regression_cmd`/`intake_cmd` に値を入れる経路が無いこと」と解した。doctor のフック解決は `hooks:` 未指定なら sibling を走査する汎用機構なので文字どおりの「明示のみ」ではないが、`codd_gate_wiring` は別名公開で走査から自ら降りている。この二段構えを本文で書き分けた。\n\n`/caveman` と `/ponytail` はこの環境にスキルが存在せず実行できていない。slop-police は適用済み（全角ダッシュを撤去し、既存節の「——」多用に引きずられないようコロンと読点へ置換）。\n\n**範囲外の発見**:\n- @followup `README.md` の一貫性ゲート節は「結線できているかは doctor が見る」と書くが、`hooks:` を書かない限り到達しない。README は別タスク担当のため未修正\n- @followup `agent-project.yaml.example` の `hooks:` コメント（「未指定なら自動検出」）は汎用説明としては正しいが、直下の例 `codd_gate_wiring` は自動検出されず誤読を招く\n- @followup `intake_cmd` に注入 CLI が無い非対称は本文に明記したが未解消（t3 の followup と同じ）",
+  "finished_at": "2026-07-20T02:01:18Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox",
+      "branch": "ap/sibling-163827",
+      "commit": "5186bafa21561f9655cdbef0944f6b446b3ed915",
+      "target": "main",
+      "path": "tools/agent-project"
+    }
+  },
+  "artifacts": [
+    "artifacts/t7/codd-gate-design-4-1-update.md"
+  ]
+}

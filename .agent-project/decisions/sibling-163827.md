@@ -61,3 +61,9 @@
 - affects : sibling-163827 → ready
 - learn: sibling 自動検出レイヤと利用手順を新境界へ追随させる :: 実行制御を run に戻したため、環境要因ブロックから続きを再開
 
+## DR-0011  2026-07-20  actor: nitto
+- context : sibling-163827 を run req-ef1f92c3-sibling-163827-r0 の続きから再開
+- action  : resume-run
+- reason  : 要対応画面から再実行（失敗した工程だけやり直し）
+- affects : sibling-163827 → ready (last_run=req-ef1f92c3-sibling-163827-r0)
+

@@ -1,0 +1,20 @@
+{
+  "id": "t3",
+  "who": "worker-2",
+  "status": "done",
+  "output": "## (a) 成果\n\n`codd_gate_regression.py` の `--config` 導線を CLI として成立させた。詳細: `artifacts/t3/codd-gate-regression-cli.md`\n\n`main()` 自体は着手時点で動いていた（検出→推奨文字列→yaml 注入は通る）。欠けていたのは**シェルから呼んだ側が結果を判断できる面**で、そこを埋めた。\n\n| 面 | 着手時 | 変更後 |\n|---|---|---|\n| 終了コード | 常に `0`（未検出でも 0） | `0`/`1`/`2`/`3` を区別（`EXIT_*` 定数を公開） |\n| 設定不在時 | 空テキスト扱い → **`regression_cmd` 1行だけの yaml を新規作成** | stderr にエラー、`1` で停止、何も作らない |\n| ヘルプ | フラグ列挙のみ | 終了コード表・実行例を epilog に追加 |\n| stderr | 未使用（失敗も stdout の JSON だけ） | 失敗理由を日本語で出す（JSON 契約は維持） |\n\n最も実害があったのは設定不在時。`--config` のパス誤りという最頻の間違いが、エラーではなく「新規ファイル生成として成功」していた。できる yaml は `root:`/`agent_cli:` を欠き本体が起動できない。\n\n`1`（パスが違う）と `3`（codd-gate 未導入）を分けたのは、呼び出し側が `$?` だけで「飛ばしてよい不在」と「直させるべき誤り」を区別できるようにするため。**書き込みの no-op 縮退は不変**で、ライブラリ層（`build_regression_cmd` 他）はシグネチャ・振る舞いとも無変更。存在チェックは CLI 層だけに置いた。\n\n触ったのは `codd_gate_regression.py` / `tests/test_codd_gate_regression.py` / `README.md`（一貫性ゲート項が CLI 挙動の正本なので終了コードを1文追記。GUIDE には複製せず）の3ファイル。\n\n## (b) 検証\n\n`test_codd_gate_*.py` → **111 tests OK**（t2 の 104 + 新設 `TestCliContract` 7）。全体スイート → **844 tests / failures=2**（t2 報告と同一の環境依存2件。journal アーカイブ連番の辞書順ソートと macOS の `/var`→`/private/var`。どちらも `codd_gate_*` を import しない）。\n\n実コマンドを叩いての確認 — **t2 で切り離した3機能へ自動配線を経ず `--config` 一本で到達できることを #4〜#8 で実測**（検出=`usable`、推奨生成=`cmd`、yaml 注入=`changed` と実ファイル）:\n\n| # | コマンド | 結果 |\n|---|---|---|\n| 1 | `--help` | フラグ5種＋終了コード表＋実行例、rc=0 |\n| 2 | `--config <不在パス>` | `error: 設定ファイルがありません: <パス>` を stderr、**rc=1**、ファイル未作成 |\n| 3 | `--bogus` | usage エラー、rc=2 |\n| 4 | `--dry-run` | JSON に `cmd` 生成・`changed:true`、**md5 不変**、rc=0 |\n| 5 | 素の実行 | 注入成功。人が書いたコメント・`model: auto` 保持、`agent_cli:` 直前にブロック挿入、rc=0 |\n| 6 | 再実行 | `changed:false`、rc=0（冪等） |\n| 7 | `--repos`/`--base` 明示 | 明示値が in-place 置換、rc=0 |\n| 8 | 未検出に固定 | `cmd:null`/`changed:false`、stderr に理由、**rc=3**、設定不変 |\n| 9 | `codd_gate_wiring.py --config <同じ yaml>` | `regression_wired: true`（独立経路からの突き合わせ） |\n\n## (c) 前提・範囲外\n\n**採用した前提**: 「CLI として成立させる」を「機能追加」ではなく「呼び出し側が結果を判断できる契約と診断を与えること」と解した（機能は t2 時点で動いていたため）。設定ファイル不在はエラー扱い — opt-in ゲートを入れる相手は既に agent-project を使っている人で、設定は必ず先に存在する。`--dry-run` は「書かない」だけの指定で、対象不在を見逃す指定ではない。\n\n**範囲外の発見**:\n- @followup `--codd-gate` に**存在しないパスを渡しても `usable=true`** になる。`resolve_codd_gate` が explicit 指定を実在確認せず信頼する設計で、既存テストがその性質を使って架空パス `/opt/bin/codd-gate` から決定的な `usable=True` を作っている。CLI 層で弾くのが素直だが既存テスト5件超の前提を壊すため触っていない。検出層の設計判断として別途決めるべき\n- @followup `intake_cmd` には対応する注入 CLI が無く、`regression_cmd` だけ2経路という非対称が利用手順の分かりにくさとして残る\n- @followup 全体スイートの環境依存 failure 2 件（本変更と無関係、t2 から継続）",
+  "finished_at": "2026-07-20T01:51:10Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox",
+      "branch": "ap/sibling-163827",
+      "commit": "59f043393aea3e0383518c8662ebafad6e1a4e61",
+      "target": "main",
+      "path": "tools/agent-project"
+    }
+  },
+  "artifacts": [
+    "artifacts/t3/codd-gate-regression-cli-report.md",
+    "artifacts/t3/codd-gate-regression-cli.md"
+  ]
+}
