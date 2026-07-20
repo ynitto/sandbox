@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
 """codd_gate_base — 差分ゲート（regression_cmd）向け base rev 解決（tools/agent-project 配下）。
 
-d2（.agent-project/bus/runs/run-20260712-213419-5922/artifacts/d2/
-codd-gate-status-interface-design.md）4.1 節は regression_cmd の argv を
-`--base "$KIRO_BASE_REV"` という**シェル変数参照のまま**組み立てる設計だが、これは
-`_settle_task`（agent-project.py:4906-）が venv 経由で `KIRO_BASE_REV` を注入できた場合にしか
-機能しない。`git_change_baseline`/`_task_verify_cwd`（agent-project.py:831, 5514-5519）は
-`_git_out` が空文字を返す（非 git ワークスペース・初回コミット前 等）と `KIRO_BASE_REV` を
-一切注入しない（`venv = None`）ため、regression_cmd の `$KIRO_BASE_REV` はシェル側で未定義
-→ 空文字に展開され、codd-gate の `--base ""` が `_die` する（tools/codd-gate/codd-gate.py:1078-1080）。
+推奨される regression_cmd は `--base "$KIRO_BASE_REV"` を**シェル変数参照のまま**埋め込む
+（`codd_gate_wiring.recommend_regression_cmd` / `codd_gate_regression.build_regression_cmd`）。
+これは agent-project 本体がタスク実行時に `KIRO_BASE_REV` を注入できた場合にしか機能しない。
+非 git ワークスペース・初回コミット前など、本体が変更 baseline を取れず変数を注入しない状況では
+シェル側で未定義 → 空文字に展開され、codd-gate の `--base ""` が失敗する。
 
-本モジュールはこの穴を埋める、regression フック配線（b3）が使う**純粋関数**を1つだけ提供する。
-agent-project.py 側の型（Task/Charter）には依存せず、呼び出し側が `charter_repo_spec_map(ch)
-.get(task.get("workspace"), {}).get("base")` などで取り出した文字列を渡す（a1/a4 と同じ、
-最小依存・単体テスト容易性を優先する設計）。
+本モジュールはその穴を埋める**純粋関数**を1つだけ提供する。ただし**誰も本モジュールを自動では
+掴まない**——本体は base rev を Python 側で解決せず（推奨文字列に変数参照をそのまま残す設計）、
+本モジュールは `agent_project/hooks.py` の能力契約（`HOOK_CAPABILITIES`）も満たさないため、
+sibling 走査でも `hooks:` の明示指定でも本体には繋がらない。使うのは、シェル変数の展開に頼らず
+具体的な rev を埋めた regression_cmd を組み立てたい呼び出し元が、明示的に import したときだけ。
 
-このモジュールが意図的に含めないもの（同一 run の別タスクの責務）:
-  - `cfg.regression_cmd` への自動配線・呼び出し（b3）
-  - repos.json パス／`--repo-dir` の組み立て（b2）
-  - codd-gate 検出・no-op 縮退（a1/a4）
+本体側の型（Task/Charter）には依存せず、呼び出し側が charter の repo エントリから取り出した
+base ブランチ名を文字列として渡す（他の codd_gate_* と同じ、最小依存・単体テスト容易性を
+優先する設計）。
+
+このモジュールが意図的に含めないもの:
+  - `cfg.regression_cmd` への自動配線・呼び出し
+  - repos.json パス／`--repo-dir` の組み立て（codd_gate_routing）
+  - codd-gate 検出・no-op 縮退（codd_gate_detect / codd_gate_status）
 
 依存は標準ライブラリのみ。
 """

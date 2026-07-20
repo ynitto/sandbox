@@ -1,14 +1,15 @@
 """codd_gate_wiring の単体テスト（標準ライブラリ unittest）。
 
 regression_cmd/intake_cmd の結線判定（regression_wired/intake_wired）、推奨コマンド組み立て
-（recommend_regression_cmd/recommend_intake_cmd）、実測配線（detect_wiring）の3ケース
+（recommend_regression_cmd/recommend_intake_cmd）、実測配線（probe_wiring）の3ケース
 （未検出・検出済み未結線・検出済み結線済み）を、subprocess を起動せず `which=`/`run=` の
 依存性注入で決定的に検証する（test_codd_gate_detect.py と同じパターン）。
 
 加えて、このモジュールが本体（agent_project）へどう繋がるかを検証する（TestHookResolution）。
 本体は実行時に cfg を書き換える自動配線を持たず、設定 `hooks:` の明示指定 → sibling の能力
-スキャン、の順で「能力を満たす module」を引き当てるだけ。その解決先として codd_gate_wiring が
-当選することと、明示指定が外れたときに黙って別物へ流れないことを押さえる。
+スキャン、の順で「能力を満たす module」を引き当てるだけ。codd_gate_wiring は前者でだけ当選し、
+後者（零設定の自動検出）では当選しないこと——利用者が名前を書いたときにだけ繋がること——を
+両方向から押さえる。
 
     python -m unittest discover -s tools/agent-project/tests
 """
@@ -159,7 +160,7 @@ class TestJudgeWiringPure(unittest.TestCase):
 
 
 class TestDetectWiringIntegrated(unittest.TestCase):
-    """detect_wiring — resolve/get_version/check_repos_schema_compat/detect_capabilities を
+    """probe_wiring — resolve/get_version/check_repos_schema_compat/detect_capabilities を
     一気通貫で実測配線し、WiringJudgment まで組み立てる（依存性注入で subprocess は起動しない）。"""
 
     def test_binary_absent_degrades_to_noop(self):
@@ -167,7 +168,7 @@ class TestDetectWiringIntegrated(unittest.TestCase):
         # 同梱パス（tools/codd-gate/codd-gate.py）も無い状態を再現する
         # （test_codd_gate_detect.py の test_resolve_codd_gate_absent_when_path_and_bundled_both_missing と同じ手法）
         with mock.patch.object(detect.Path, "exists", return_value=False):
-            judgment = wiring.detect_wiring(which=which)
+            judgment = wiring.probe_wiring(which=which)
         self.assertFalse(judgment.usable)
         self.assertFalse(judgment.actionable)
         self.assertEqual(len(judgment.status.findings), 1)
@@ -187,7 +188,7 @@ class TestDetectWiringIntegrated(unittest.TestCase):
             repos_path = Path(d) / "repos.json"
             repos_path.write_text('{"svc": {"url": "https://example/svc.git"}}', encoding="utf-8")
 
-            judgment = wiring.detect_wiring(
+            judgment = wiring.probe_wiring(
                 regression_cmd=None, intake_cmd=None, repos_path=repos_path,
                 which=which, run=run)
 
@@ -214,7 +215,7 @@ class TestDetectWiringIntegrated(unittest.TestCase):
                     argv, 0, stdout="usage: codd-gate {verify,tasks} ...\n")
             return subprocess.CompletedProcess(argv, 0, stdout="--debt\n")
 
-        judgment = wiring.detect_wiring(
+        judgment = wiring.probe_wiring(
             repos_path=".agent-project/repos.json", explicit="/opt/tools/codd-gate",
             which=which, run=run)
 
@@ -233,7 +234,7 @@ class TestDetectWiringIntegrated(unittest.TestCase):
             repos_path = Path(d) / "repos.json"
             repos_path.write_text("[]", encoding="utf-8")  # トップレベルが object でない = 非互換
 
-            judgment = wiring.detect_wiring(repos_path=repos_path, which=which, run=run)
+            judgment = wiring.probe_wiring(repos_path=repos_path, which=which, run=run)
 
         self.assertFalse(judgment.usable)
         self.assertFalse(judgment.actionable)
@@ -242,7 +243,7 @@ class TestDetectWiringIntegrated(unittest.TestCase):
         which = lambda name: "/usr/local/bin/codd-gate" if name == detect.BINARY_NAME else None
         run = _fake_run(0, stdout="codd-gate 1.2.0\n")
 
-        judgment = wiring.detect_wiring(
+        judgment = wiring.probe_wiring(
             repos_path="/nonexistent/repos.json", which=which, run=run)
 
         self.assertTrue(judgment.usable)
@@ -251,7 +252,7 @@ class TestDetectWiringIntegrated(unittest.TestCase):
 class TestDoctorFindings(unittest.TestCase):
     def test_not_usable_reuses_status_findings(self):
         judgment = wiring.judge_wiring(status.build_status(None), None, None)
-        findings = wiring.doctor_findings(judgment)
+        findings = wiring.render_findings(judgment)
         self.assertEqual(findings, judgment.status.findings)
 
     def test_fully_wired_has_no_findings(self):
@@ -261,7 +262,7 @@ class TestDoctorFindings(unittest.TestCase):
             regression_cmd='codd-gate verify --base "$KIRO_BASE_REV" --repos repos.json',
             intake_cmd="codd-gate tasks --debt --repos repos.json",
             repos_path="repos.json")
-        self.assertEqual(wiring.doctor_findings(judgment), [])
+        self.assertEqual(wiring.render_findings(judgment), [])
 
     def test_actionable_reports_info_findings_with_fix_suggestion(self):
         result = status.build_status(["codd-gate"], version=(1, 0, 0), schema_ok=True)
@@ -269,7 +270,7 @@ class TestDoctorFindings(unittest.TestCase):
             result, regression_cmd=None, intake_cmd=None,
             capabilities={"verify": True, "tasks": True, "debt": True},
             repos_path="repos.json")
-        findings = wiring.doctor_findings(judgment)
+        findings = wiring.render_findings(judgment)
         self.assertEqual(len(findings), 2)
         self.assertTrue(all(f["severity"] == "info" for f in findings))
         self.assertIn(judgment.recommended_regression_cmd, findings[0]["fix"])
@@ -280,8 +281,9 @@ class TestHookResolution(unittest.TestCase):
     """本体 → codd_gate_wiring の結線が「能力による解決」だけで成立することの検証。
 
     本体側に `codd_gate_wiring` という固有名は無く、`.agent/agent-project.yaml` が実行時に
-    書き換わることもない。結線の経路は (1) `hooks:` の明示指定、(2) 未指定時の sibling 走査、
-    の2つだけ。
+    書き換わることもない。本体が持つ解決経路は (1) `hooks:` の明示指定、(2) 未指定時の sibling
+    走査、の2つだが、このモジュールが載るのは (1) だけ（(2) は module docstring の理由で意図的に
+    切ってある）。零設定で使いたい利用者向けの経路は `python3 codd_gate_wiring.py` の CLI。
     """
 
     def setUp(self):
@@ -323,20 +325,35 @@ class TestHookResolution(unittest.TestCase):
         # 未指定での不在は「任意機能が無い」だけ。所見にしない。
         self.assertIsNone(self.hooks._hook_resolution_error("wiring.detect", _Cfg(None)))
 
-    def test_sibling_scan_selects_this_module_when_unconfigured(self):
-        # 明示指定が無ければ sibling を昇順走査する。両方の能力を持つのは codd_gate_wiring だけ。
+    def test_sibling_scan_does_not_select_this_module_when_unconfigured(self):
+        # 零設定では繋がらない（切り離しの本体）。sibling 走査はソーステキストの前置フィルタ
+        # `^def <属性名>(` でプロバイダを選ぶため、契約名を別名で公開している本モジュールは
+        # 候補に上がらない。この検出レイヤが doctor に現れるのは `hooks:` を書いたときだけ。
         for capability in ("wiring.detect", "wiring.findings"):
             with self.subTest(capability=capability):
                 self.hooks._HOOK_CACHE.clear()
-                self.assertIs(self.hooks._hook_provider(capability, _Cfg(None)), wiring)
+                self.assertIsNone(self.hooks._hook_provider(capability, _Cfg(None)))
+
+    def test_no_sibling_provides_the_capabilities_by_autodetect(self):
+        # 上のケースを codd_gate_wiring 以外へも広げる。sibling のどれかが `def detect_wiring(`
+        # を持てば自動配線が復活するため、走査そのものが空振ることを固定する。
+        for capability, required in self.hooks.HOOK_CAPABILITIES.items():
+            with self.subTest(capability=capability):
+                self.assertIsNone(self.hooks._hook_scan_siblings(required))
 
     def test_this_module_satisfies_the_declared_capability_contract(self):
-        # 本体が求める属性名（HOOK_CAPABILITIES）と、このモジュールの公開関数の対応。
-        # 改名すれば結線が黙って切れるため、契約そのものをテストで固定する。
+        # 本体が求める属性名（HOOK_CAPABILITIES）と、このモジュールの公開 API の対応。
+        # 別名を消せば `hooks:` の明示指定まで黙って切れるため、契約そのものをテストで固定する。
         for capability, required in self.hooks.HOOK_CAPABILITIES.items():
             with self.subTest(capability=capability):
                 for attr in required:
                     self.assertTrue(callable(getattr(wiring, attr, None)))
+
+    def test_contract_names_are_aliases_of_the_modules_own_functions(self):
+        # 別名は改名の痕跡ではなく結線点。実体（probe_wiring/render_findings）と同一である
+        # ことを押さえておかないと、片方だけ直して契約名が古い実装を指す事故が起きる。
+        self.assertIs(wiring.detect_wiring, wiring.probe_wiring)
+        self.assertIs(wiring.doctor_findings, wiring.render_findings)
 
 
 if __name__ == "__main__":
