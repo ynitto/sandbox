@@ -573,3 +573,4 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-20 13:54:53 run 再開: dashboard-163827 は req-ef1f92c3-dashboard-163827-r0 の失敗ノードだけをやり直します（done は温存）
 - 2026-07-20 14:58:53 flow detach: dashboard-163827 の run req-ef1f92c3-dashboard-163827-r0 を failed（agent-flow run タイムアウト（3600s））
 - 2026-07-20 14:58:54 cycle 2: dashboard-163827 NG 積み直し (2/2) — agent-flow run タイムアウト（3600s）
+- 2026-07-20 14:58:57 run 再開: dashboard-163827 は req-ef1f92c3-dashboard-163827-r0 の失敗ノードだけをやり直します（done は温存）
