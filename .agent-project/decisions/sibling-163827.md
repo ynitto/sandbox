@@ -73,3 +73,10 @@
 - reason  : 要対応画面から再実行（失敗した工程だけやり直し）
 - affects : sibling-163827 → ready (last_run=req-ef1f92c3-sibling-163827-r0)
 
+## DR-0013  2026-07-20  actor: nitto
+- context : sibling-163827（sibling 自動検出レイヤと利用手順を新境界へ追随させる）を検収承認
+- action  : approve-done
+- reason  : 成果を確認して完了を承認
+- affects : sibling-163827 → done
+- learn: sibling 自動検出レイヤと利用手順を新境界へ追随させる :: 成果を確認して完了を承認
+

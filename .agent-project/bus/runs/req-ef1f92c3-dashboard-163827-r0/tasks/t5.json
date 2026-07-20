@@ -1,0 +1,9 @@
+{
+  "id": "t5",
+  "goal": "renderer.js に「一貫性ゲート」状態セクションを追加し、t4 のペイロードから regression_cmd / intake_cmd それぞれの結線済み／未結線をバッジ表示する。識別子 regression_cmd・intake_cmd と『一貫性ゲート』文言が renderer.js に出現すること",
+  "deps": [
+    "t2",
+    "t4"
+  ],
+  "kind": "work"
+}

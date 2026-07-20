@@ -1,0 +1,10 @@
+{
+  "id": "t8",
+  "goal": "test/needs-diagnosis.test.js と test/overview-ui.test.js に新表示（ゲートバッジ・未結線導線・診断要約の共存）の検証を追加する。既存アサーションは一切変更・削除せず、node で両テストが終了コード 0 になること",
+  "deps": [
+    "t3",
+    "t6",
+    "t7"
+  ],
+  "kind": "work"
+}

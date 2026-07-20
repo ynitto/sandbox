@@ -562,3 +562,11 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-20 12:30:11 === agent-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
 - 2026-07-20 12:30:13 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
 - 2026-07-20 12:30:13 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-20 12:31:30 commands 取り込み: approve sibling-163827（viewer-approve-sibling-163827-1784518282248.json）
+- 2026-07-20 12:54:48 state-git 同期: import=6 export=7
+- 2026-07-20 12:54:49 commands 取り込み失敗: viewer-approve-sibling-163827-1784518282248.json: approve sibling-163827 が失敗 (exit 2): エラー: タスクが見つかりません: sibling-163827
+- 2026-07-20 12:54:49 === project 開始 v1 acceptance=2 ===
+- 2026-07-20 12:54:49 === agent-project 開始 tasks=2 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-20 12:54:49 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
+- 2026-07-20 13:54:50 flow detach: dashboard-163827 の run req-ef1f92c3-dashboard-163827-r0 を failed（agent-flow run タイムアウト（3600s））
+- 2026-07-20 13:54:51 cycle 1: dashboard-163827 NG 積み直し (1/2) — agent-flow run タイムアウト（3600s）

@@ -1,0 +1,6 @@
+{
+  "id": "t2",
+  "goal": "tools/agent-dashboard/src/renderer/renderer.js の概要／プロジェクト情報セクションと、needs の codd-gate / 回帰失敗要約（needs-diagnosis）を描画している箇所を特定し、一貫性ゲート状態セクションを差し込める DOM 構造とレンダリング関数を洗い出す",
+  "deps": [],
+  "kind": "work"
+}

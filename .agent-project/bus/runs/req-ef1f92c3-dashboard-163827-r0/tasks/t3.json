@@ -1,0 +1,6 @@
+{
+  "id": "t3",
+  "goal": "tools/agent-dashboard/test/needs-diagnosis.test.js と test/overview-ui.test.js を読み、既存アサーション（壊してはならない期待値）と、テストが renderer/project.js をどうロード・スタブしているかを棚卸しして、新表示の検証を追加できる差し込み点を特定する",
+  "deps": [],
+  "kind": "work"
+}

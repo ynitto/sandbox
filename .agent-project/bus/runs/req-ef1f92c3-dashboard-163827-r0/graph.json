@@ -1,0 +1,93 @@
+{
+  "strategy": {
+    "patterns": [
+      "fan-out-and-synthesize",
+      "adversarial-verification",
+      "loop-until-done"
+    ],
+    "parallelism": 3,
+    "review": true,
+    "reason": "[flow-planner] レイヤ別（main の状態供給 / renderer 表示 / テスト）に3分割できるが、順序依存（main → renderer → テスト）があるため並列度は3に抑える。完了条件が固定grep（識別子 regression_cmd/intake_cmd と『一貫性ゲート』文言が renderer.js・project.js 両方に出現）＋2テスト（needs-diagnosis.test.js / overview-ui.test.js）と機械判定可能で、既存アサーション非破壊が要るため loop-until-done で緑になるまで反復する。quality_focus=accuracy かつ done 不変条件（UI から状態書換禁止・公式契約 needs/inbox/commands 以外へ書かない・owns 境界 tools/agent-dashboard/** 逸脱禁止）の違反は統合後に発見すると手戻りが大きいので、統合前に adversarial-verification の検証gateを置く。データ量が実行時決定でない（対象ファイル・観点は静的に確定）ため map-reduce は不要。（粒度 coarse）"
+  },
+  "nodes": {
+    "t1": {
+      "goal": "tools/agent-dashboard/src/features/agent-project/main/project.js を読み、agent-project 設定（.agent/agent-project.yaml 等）から regression_cmd / intake_cmd を読む既存経路と、renderer へ渡すプロジェクト情報ペイロード（公式契約 needs/inbox/commands）の生成箇所を特定する。書込先は tools/agent-dashboard/** のみ、agent-project 本体は触らない前提を確認する",
+      "deps": [],
+      "kind": "work"
+    },
+    "t2": {
+      "goal": "tools/agent-dashboard/src/renderer/renderer.js の概要／プロジェクト情報セクションと、needs の codd-gate / 回帰失敗要約（needs-diagnosis）を描画している箇所を特定し、一貫性ゲート状態セクションを差し込める DOM 構造とレンダリング関数を洗い出す",
+      "deps": [],
+      "kind": "work"
+    },
+    "t3": {
+      "goal": "tools/agent-dashboard/test/needs-diagnosis.test.js と test/overview-ui.test.js を読み、既存アサーション（壊してはならない期待値）と、テストが renderer/project.js をどうロード・スタブしているかを棚卸しして、新表示の検証を追加できる差し込み点を特定する",
+      "deps": [],
+      "kind": "work"
+    },
+    "t4": {
+      "goal": "project.js で regression_cmd / intake_cmd の「設定有無」（値そのものではなくフラグ＋任意で表示用文字列）をプロジェクト情報ペイロードへ載せる。公式契約 needs/inbox/commands 以外のファイルへは書かず、UI からの状態書換経路は作らない（読み取り専用）",
+      "deps": [
+        "t1"
+      ],
+      "kind": "work"
+    },
+    "t5": {
+      "goal": "renderer.js に「一貫性ゲート」状態セクションを追加し、t4 のペイロードから regression_cmd / intake_cmd それぞれの結線済み／未結線をバッジ表示する。識別子 regression_cmd・intake_cmd と『一貫性ゲート』文言が renderer.js に出現すること",
+      "deps": [
+        "t2",
+        "t4"
+      ],
+      "kind": "work"
+    },
+    "t6": {
+      "goal": "未結線時に README と同一文言の有効化導線（設定編集手順／sibling CLI コマンド）をゲート状態セクション内に提示する。README の該当節を原文確認し、文言の乖離を作らない",
+      "deps": [
+        "t5"
+      ],
+      "kind": "work"
+    },
+    "t7": {
+      "goal": "needs の codd-gate / 回帰失敗要約（needs-diagnosis）表示をゲート状態セクションと統合表示しつつ、既存の要約可読性（見出し・要約行・詳細の折り畳み等）を落とさないことを実画面相当の DOM で確認する",
+      "deps": [
+        "t5"
+      ],
+      "kind": "work"
+    },
+    "t8": {
+      "goal": "test/needs-diagnosis.test.js と test/overview-ui.test.js に新表示（ゲートバッジ・未結線導線・診断要約の共存）の検証を追加する。既存アサーションは一切変更・削除せず、node で両テストが終了コード 0 になること",
+      "deps": [
+        "t3",
+        "t6",
+        "t7"
+      ],
+      "kind": "work"
+    },
+    "gate": {
+      "goal": "done 不変条件の敵対的検証: (a) UI から agent-project の状態を書き換える経路が新設されていないか、(b) 公式契約 needs/inbox/commands 以外へ書いていないか、(c) 変更が owns 境界 tools/agent-dashboard/** を逸脱していないか、(d) 既存テストアサーションを緩めて緑にしていないか、を diff とコードから反証を試みる形で検査し、違反を具体箇所付きで報告する",
+      "deps": [
+        "t4",
+        "t6",
+        "t7",
+        "t8"
+      ],
+      "kind": "verify"
+    },
+    "ux": {
+      "goal": "agent-reviewer スキルで UX レビューを実施し、結線済み／未結線の判別しやすさ、有効化導線の実行可能性、診断要約の可読性低下の有無を指摘として出し、指摘を実装へ反映する",
+      "deps": [
+        "gate"
+      ],
+      "kind": "judge"
+    },
+    "synth": {
+      "goal": "gate と ux の指摘を反映して統合し、完了条件コマンド `grep -nE 'regression_cmd|intake_cmd|一貫性ゲート' tools/agent-dashboard/src/renderer/renderer.js tools/agent-dashboard/src/features/agent-project/main/project.js && node tools/agent-dashboard/test/needs-diagnosis.test.js && node tools/agent-dashboard/test/overview-ui.test.js` を実行し、終了コード 0 になるまで修正と再実行を反復する。緑になったら変更点・スコープ外の気づきを @followup 行として最終成果へまとめる",
+      "deps": [
+        "gate",
+        "ux"
+      ],
+      "kind": "synthesize"
+    }
+  },
+  "iteration": 0
+}

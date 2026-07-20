@@ -1,0 +1,8 @@
+{
+  "id": "t4",
+  "goal": "project.js で regression_cmd / intake_cmd の「設定有無」（値そのものではなくフラグ＋任意で表示用文字列）をプロジェクト情報ペイロードへ載せる。公式契約 needs/inbox/commands 以外のファイルへは書かず、UI からの状態書換経路は作らない（読み取り専用）",
+  "deps": [
+    "t1"
+  ],
+  "kind": "work"
+}

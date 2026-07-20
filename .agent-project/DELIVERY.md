@@ -4,3 +4,4 @@
 |---|---|---|---|---|
 | codd-gate-163827 | codd-gate 連携の目標境界を設計書に固定する | PASS |  | 2026-07-18 21:29:56 |
 | agent_project-codd_gate-163827 | agent_project を codd_gate 非依存の汎用フックへ整理する | PASS |  | 2026-07-19 20:57:42 |
+| sibling-163827 | sibling 自動検出レイヤと利用手順を新境界へ追随させる | PASS | commit ef1f92c3 | 2026-07-20 11:49:08 |

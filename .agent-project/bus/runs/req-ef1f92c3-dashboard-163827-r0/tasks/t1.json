@@ -1,0 +1,6 @@
+{
+  "id": "t1",
+  "goal": "tools/agent-dashboard/src/features/agent-project/main/project.js を読み、agent-project 設定（.agent/agent-project.yaml 等）から regression_cmd / intake_cmd を読む既存経路と、renderer へ渡すプロジェクト情報ペイロード（公式契約 needs/inbox/commands）の生成箇所を特定する。書込先は tools/agent-dashboard/** のみ、agent-project 本体は触らない前提を確認する",
+  "deps": [],
+  "kind": "work"
+}

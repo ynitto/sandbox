@@ -1,0 +1,11 @@
+{
+  "id": "gate",
+  "goal": "done 不変条件の敵対的検証: (a) UI から agent-project の状態を書き換える経路が新設されていないか、(b) 公式契約 needs/inbox/commands 以外へ書いていないか、(c) 変更が owns 境界 tools/agent-dashboard/** を逸脱していないか、(d) 既存テストアサーションを緩めて緑にしていないか、を diff とコードから反証を試みる形で検査し、違反を具体箇所付きで報告する",
+  "deps": [
+    "t4",
+    "t6",
+    "t7",
+    "t8"
+  ],
+  "kind": "verify"
+}

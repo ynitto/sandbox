@@ -1,0 +1,9 @@
+{
+  "id": "synth",
+  "goal": "gate と ux の指摘を反映して統合し、完了条件コマンド `grep -nE 'regression_cmd|intake_cmd|一貫性ゲート' tools/agent-dashboard/src/renderer/renderer.js tools/agent-dashboard/src/features/agent-project/main/project.js && node tools/agent-dashboard/test/needs-diagnosis.test.js && node tools/agent-dashboard/test/overview-ui.test.js` を実行し、終了コード 0 になるまで修正と再実行を反復する。緑になったら変更点・スコープ外の気づきを @followup 行として最終成果へまとめる",
+  "deps": [
+    "gate",
+    "ux"
+  ],
+  "kind": "synthesize"
+}
