@@ -21,6 +21,13 @@ module.exports = {
 
   // 監視担当の割り当て（assignments.json）。空の owner で解除
   setTaskOwner: (invoke) => (dir, id, owner) => invoke('dashboard:setOwner', { dir, id, owner }),
+  // 成果物レビューのコメント（reviews/<task-id>/）。複数メンバーで投稿・整理する
+  addReviewComment: (invoke) => (dir, taskId, author, text) =>
+    invoke('dashboard:addComment', { dir, taskId, author, text }),
+  editReviewComment: (invoke) => (dir, taskId, commentId, text) =>
+    invoke('dashboard:editComment', { dir, taskId, commentId, text }),
+  deleteReviewComment: (invoke) => (dir, taskId, commentId) =>
+    invoke('dashboard:deleteComment', { dir, taskId, commentId }),
   submitFeedback: (invoke) => (file, feedback, stub) =>
     invoke('dashboard:feedback', { file, feedback, stub }),
   enqueueTask: (invoke) => (dir, spec) => invoke('dashboard:enqueue', { dir, spec }),

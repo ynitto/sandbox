@@ -450,7 +450,7 @@ const renderNeedDetailWithVerifyRevision = new Function(
   'renderNeedFacts', 'needActionsHtml', 'specFilesHtml', 'mdToHtml', 'needVerifyRevisionHtml',
   'taskForNeed', 'taskCompletionHint', 'runsForTask', 'canDiagnoseNeed',
   'state', 'needFinalVerificationFailure', 'finalVerificationFailureHtml', 'needAssistActionsHtml',
-  'needArtifactsButtonHtml', 'ownerBadgeHtml', 'commandFailureHtml',
+  'needArtifactsButtonHtml', 'ownerBadgeHtml', 'commandFailureHtml', 'reviewCommentsHtml',
   `${grab('renderNeedDetail')}; return renderNeedDetail;`
 )(
   () => false,
@@ -473,6 +473,7 @@ const renderNeedDetailWithVerifyRevision = new Function(
   () => '',
   needAssistActionsHtml,
   needArtifactsButtonHtml,
+  () => '',
   () => '',
   () => ''
 );

@@ -1362,6 +1362,147 @@ function renderNeedFacts(n) {
   return facts.join('');
 }
 
+// 成果物レビューのコメント（チーム運用）: 複数メンバーが成果物にコメントを入れ、
+// 監視担当者が確認・整理して承認/再実行を判断する。投稿者名は localStorage に覚える
+// （設定画面を増やさない最小構成。空なら「匿名」で保存される）。
+function reviewerName() {
+  try {
+    return localStorage.getItem('kpv:reviewerName') || '';
+  } catch {
+    return '';
+  }
+}
+function setReviewerName(v) {
+  try {
+    localStorage.setItem('kpv:reviewerName', String(v || '').trim());
+  } catch {
+    /* localStorage 不可でも致命的でない */
+  }
+}
+
+function reviewCommentTime(ts) {
+  const s = String(ts || '');
+  return s ? s.slice(0, 16).replace('T', ' ') : '';
+}
+
+function reviewCommentItemHtml(c) {
+  return `<li class="rc-item" data-rc-id="${esc(c.id)}">
+    <div class="rc-head">
+      <span class="rc-author">👤 ${esc(c.author)}</span>
+      <span class="rc-time muted">${esc(reviewCommentTime(c.ts))}${c.editedTs ? '（編集済み）' : ''}</span>
+      <span class="spacer"></span>
+      <button class="linklike rc-edit-btn" data-rc-edit="${esc(c.id)}">編集</button>
+      <button class="linklike danger" data-rc-del="${esc(c.id)}">削除</button>
+    </div>
+    <div class="rc-text">${esc(c.text)}</div>
+  </li>`;
+}
+
+// 成果物レビュー（検収待ち＝review／人待ち＝blocked）でだけ出す。plan-review 等では出さない。
+function reviewCommentsHtml(n) {
+  if (!['review', 'blocked'].includes(n.kind || 'blocked')) return '';
+  const comments = n.comments || [];
+  const list = comments.length
+    ? `<ul class="rc-list">${comments.map(reviewCommentItemHtml).join('')}</ul>`
+    : '<p class="muted">まだレビューコメントはありません。メンバーが成果物へコメントを残せます。</p>';
+  return `<section class="need-comments" data-rc-need="${esc(n.id)}" data-rc-task="${esc(n.taskId || n.id)}">
+    <h3>レビューコメント <span class="muted">（${comments.length}）</span></h3>
+    ${list}
+    <div class="rc-add">
+      <input class="rc-author" placeholder="あなたの名前（コメントに付きます）" value="${esc(reviewerName())}" />
+      <textarea class="rc-input" rows="2" placeholder="成果物へのコメント（他のメンバーと担当者が確認できます）"></textarea>
+      <div class="row need-buttons"><span class="spacer"></span>
+        <button class="primary-inline" data-rc-add>コメントを追加</button></div>
+    </div>
+  </section>`;
+}
+
+function bindReviewComments(root) {
+  const section = root.querySelector('.need-comments');
+  if (!section) return;
+  const p = state.project;
+  if (!p) return;
+  const needId = section.dataset.rcNeed;
+  const taskId = section.dataset.rcTask;
+  const authorInput = section.querySelector('.rc-author');
+  if (authorInput) {
+    authorInput.addEventListener('change', () => setReviewerName(authorInput.value));
+  }
+  const addBtn = section.querySelector('[data-rc-add]');
+  if (addBtn) {
+    addBtn.addEventListener('click', async () => {
+      const author = authorInput ? authorInput.value.trim() : '';
+      const ta = section.querySelector('.rc-input');
+      const text = ta ? ta.value.trim() : '';
+      if (!text) return toast('コメントを入力してください');
+      setReviewerName(author);
+      const ok = await guard('コメント追加', async () => {
+        const res = await api.addReviewComment(p.dir, taskId, author, text);
+        uiLog('addComment', taskId, res);
+        toast('コメントを追加しました', true);
+        return true;
+      });
+      if (ok) {
+        gitPushAfterWrite(`agent-dashboard: review comment ${taskId}`, p.dir);
+        await reloadProject();
+      }
+    });
+  }
+  for (const btn of section.querySelectorAll('[data-rc-del]')) {
+    btn.addEventListener('click', async () => {
+      const yes = await confirmDialog('このレビューコメントを削除します。よろしいですか？');
+      if (!yes) return;
+      const ok = await guard('コメント削除', async () => {
+        const res = await api.deleteReviewComment(p.dir, taskId, btn.dataset.rcDel);
+        uiLog('deleteComment', taskId, res);
+        toast('コメントを削除しました', true);
+        return true;
+      });
+      if (ok) {
+        gitPushAfterWrite(`agent-dashboard: delete comment ${taskId}`, p.dir);
+        await reloadProject();
+      }
+    });
+  }
+  for (const btn of section.querySelectorAll('[data-rc-edit]')) {
+    btn.addEventListener('click', () => {
+      const item = btn.closest('.rc-item');
+      if (!item || item.querySelector('.rc-edit-box')) return; // 既に編集中
+      const need = (p.needs || []).find((x) => x.id === needId);
+      const c = ((need && need.comments) || []).find((x) => x.id === btn.dataset.rcEdit);
+      if (!c) return;
+      const textDiv = item.querySelector('.rc-text');
+      const box = document.createElement('div');
+      box.className = 'rc-edit-box';
+      box.innerHTML = `<textarea class="rc-edit-input" rows="3"></textarea>
+        <div class="row need-buttons"><span class="spacer"></span>
+          <button class="rc-edit-cancel">キャンセル</button>
+          <button class="primary-inline rc-edit-save">保存</button></div>`;
+      box.querySelector('.rc-edit-input').value = c.text;
+      textDiv.after(box);
+      textDiv.style.display = 'none';
+      box.querySelector('.rc-edit-cancel').addEventListener('click', () => {
+        box.remove();
+        textDiv.style.display = '';
+      });
+      box.querySelector('.rc-edit-save').addEventListener('click', async () => {
+        const text = box.querySelector('.rc-edit-input').value.trim();
+        if (!text) return toast('コメントを入力してください');
+        const ok = await guard('コメント編集', async () => {
+          const res = await api.editReviewComment(p.dir, taskId, c.id, text);
+          uiLog('editComment', taskId, res);
+          toast('コメントを編集しました', true);
+          return true;
+        });
+        if (ok) {
+          gitPushAfterWrite(`agent-dashboard: edit comment ${taskId}`, p.dir);
+          await reloadProject();
+        }
+      });
+    });
+  }
+}
+
 function renderNeedDetail(p, n) {
   if (!n) return '<div class="empty need-detail-empty">この状態の項目はありません</div>';
   // 取り込み失敗（commandFailure）があるカードは送信済み扱いにしない＝操作を出し直す
@@ -1422,11 +1563,13 @@ function renderNeedDetail(p, n) {
       ${detailBlock}
       <button class="need-output-button subtle-action" data-need-output="${esc(n.id)}">詳細情報を開く</button>
     </section>
+    ${reviewCommentsHtml(n)}
   </article>`;
 }
 
 function bindNeedDetail(root) {
   bindOrchBlockedBanner(root);
+  bindReviewComments(root);
   for (const btn of root.querySelectorAll('button[data-open]')) {
     btn.addEventListener('click', () => guard('ファイルを開く', () => api.openPath(btn.dataset.open)));
   }
@@ -1564,7 +1707,7 @@ function renderNeeds(options) {
     state.needsSelectedId,
     state.needsMobileDetail,
     filters.map((x) => x[2]),
-    p.needs.map((n) => [n.id, n.kind, n.decided, isNeedSent(n), n.why, n.summary, n.risk, n.owner || '', n.failureSummary || '', n.failureResolution || '', n.failureContext || null, n.commandFailure || null, (n.detail || '').length]),
+    p.needs.map((n) => [n.id, n.kind, n.decided, isNeedSent(n), n.why, n.summary, n.risk, n.owner || '', (n.comments || []).map((c) => `${c.id}:${c.editedTs || ''}`).join(','), n.failureSummary || '', n.failureResolution || '', n.failureContext || null, n.commandFailure || null, (n.detail || '').length]),
     model.items.map((n) => (ages[n.id] ? `${ages[n.id].level}|${ages[n.id].label}` : '')),
   ]);
   if (el.dataset.sig === sig && el.childElementCount) return;

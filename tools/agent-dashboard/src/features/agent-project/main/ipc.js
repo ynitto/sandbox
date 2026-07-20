@@ -355,6 +355,21 @@ function registerIpc(ctx) {
     return actions.setTaskOwner(dir, id, owner);
   });
 
+  // 成果物レビューのコメント（reviews/<task-id>/）。複数メンバーが投稿し、監視担当者が
+  // 確認・整理して承認/再実行を判断する。1 コメント = 1 ファイル（同時投稿が衝突しない）。
+  handle('dashboard:addComment', ({ dir, taskId, author, text }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    return actions.addReviewComment(dir, taskId, { author, text });
+  });
+  handle('dashboard:editComment', ({ dir, taskId, commentId, text }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    return actions.editReviewComment(dir, taskId, commentId, text);
+  });
+  handle('dashboard:deleteComment', ({ dir, taskId, commentId }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    return actions.deleteReviewComment(dir, taskId, commentId, trash);
+  });
+
   // 人のアクション（needs 回答・タスク投入・決定記録を残す CLI 操作）
   handle('dashboard:feedback', ({ file, feedback, stub }) => actions.submitFeedback(file, feedback, stub));
   handle('dashboard:enqueue', ({ dir, spec }) => actions.enqueueToInbox(dir, spec || {}));

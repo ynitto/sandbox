@@ -291,6 +291,7 @@ agent-project の人間ループはこのアプリ内で完結できる。いず
 | ✎ プロジェクトファイル編集 | 概要タブ「プロジェクトファイル」 | 人が書く**上位入力だけ**をアプリ内で直接編集: `charter.md`（最上位入力）／`policy.md`（運用ルール）／`repos.json`（レジストリ）。保存すると次の run で後段データ（backlog 生成・ルーティング）に反映される。repos.json が charter からの自動生成物（`_meta`）のときは「run 時に charter で上書きされる」旨を警告する。JSON は保存前に構文検証。タスク状態ファイル（`backlog/*.md` の status 等）は編集対象にしない — done の不変条件を壊さないため |
 | ↻ revise して再投入 | タスク詳細（**archive のみ**） | archive（done）タスクの内容（title / verify / accept / priority / note / after / level / track）を prefill した投入フォームを開き、編集して `inbox/<name>.json` ドロップ。**新しいタスク**として triage→verify を通す（archive の記録はそのまま残る）。誤 done などの**エラー復帰用途**。元 ID を引き継ぐが衝突時は本体が採番し直す |
 | 👤 監視担当を割り当て | タスク詳細（backlog）の「監視担当」行 | **例外的に viewer 管理のサイドカーファイル**（`assignments.json`・agent-project の契約外）だけを書く。タスク状態ファイルには触れない（done の不変条件に影響しない）。空にして保存で解除（→[チーム運用](#チーム運用バックログの監視担当を分担する)） |
+| 💬 レビューコメント（追加/編集/削除） | 要対応カード（review / blocked）の「レビューコメント」 | 成果物レビューを複数メンバーで行う。**viewer 管理のサイドカー**（`reviews/<task-id>/*.json`・1 コメント = 1 ファイル・agent-project の契約外）だけを書く。同時投稿はファイル名が別なので state_git で自然にマージされる。承認/再実行の判断は既存の承認/差し戻し/revise で行う（→[チーム運用](#チーム運用成果物レビューを複数メンバーで行う)） |
 | レビュー操作（承認/差し戻し/コメント） | レビュー待ちタブ／フロータブのノード詳細 →「レビューで開く」 | gitlab-review-viewer へ引き継ぎ |
 | 🗑 タスク削除 | タスク詳細（backlog のみ） | **例外的にファイル操作**（削除の公式契約が無いため）。確認のうえ `backlog/<id>.md` をゴミ箱へ移動。実行中（**doing かつクレーム中**）だけ拒否 — クレームロックは worker クラッシュや review/blocked 滞留で残骸が残るため、doing 以外ではロックがあっても削除でき、残骸ロックも一緒に掃除する。決定記録 DR は残らない — 記録を残したい場合は「保留（hold）」を使う |
 | ■ run キャンセル | フロータブの run 詳細 | run を **canceled** に終端化する唯一の hard-stop。`inbox/cancels/<run-id>.json` に cancel マーカーを置き（git 同期で他 PC / daemon へ伝わる）、`meta.json` を canceled に確定し、`waits/`（承認待ち）を掃除して監視の再ポーリングを止める。**承認待ちで park 中の run も暴走中の run も止められる**。起票済みの GitLab イシューは残す（追跡だけやめる＝agent-flow の既定。イシュークローズは daemon の `cancel --close-issues` か gitlab-review-viewer に任せる — この viewer の GitLab クライアントは読み取り専用）。終端済み run には効かない（不可逆） |
@@ -344,6 +345,39 @@ agent-project の人間ループはこのアプリ内で完結できる。いず
 3. ミーティング後、各メンバーは自分の clone で「担当:」チップを自分の名前にして
    **自分の担当だけ**を追う。要対応タブでは 👤 バッジで自分宛ての判断待ちを拾う
 4. 担当の変更・解除はいつでも上書きできる（記録は git 履歴に残る）
+
+### チーム運用（成果物レビューを複数メンバーで行う）
+
+バックログの成果物ができた（検収待ち＝review、または人待ち＝blocked）とき、**複数メンバーが
+成果物にコメントを入れ、監視担当者がそれらを確認・整理して「承認するか再実行するか」を判断**
+できる。判断（承認/差し戻し/revise）は既存の要対応アクションがそのまま担い、追加するのは
+**コメントの層だけ**（必要最小限）。
+
+- **データ**: プロジェクトルート直下の `reviews/<task-id>/*.json`（**1 コメント = 1 ファイル**・
+  `{ author, text, ts, editedTs? }`）。viewer 管理のサイドカーで agent-project の契約外＝
+  タスク状態・done の不変条件には触れない。1 コメント 1 ファイルなので、**複数メンバーが
+  別 PC から同時にコメントしてもファイル名が衝突せず state_git 同期で自然にマージ**される
+  （全体 JSON の last-write-wins で消えない。バスの `runs/` と同じ流儀）。同期対象なので
+  チームの clone 全員に配られ、gitAutoPush 有効なら投稿で即 push。
+- **UI**（要対応カードの「レビューコメント」セクション・review / blocked でだけ出す）:
+  - 各メンバーは名前（localStorage に記憶）とコメントを入れて「コメントを追加」
+  - 一覧で全員のコメント（投稿者・時刻・本文）を確認。**監視担当者は各コメントを編集・
+    削除して整理**できる（編集済みは「（編集済み）」表示）
+  - 整理したうえで、同じカードの**承認 / 差し戻し（＝再実行）/ ✎ 修正して指示（revise）**で
+    決着させる（コメント層と判断層は分離。判断は従来どおり公式契約 commands/ 経由）
+
+**レビューの流れ（推奨運用）**:
+
+1. 成果物が検収待ち（review）になると要対応タブに票が立つ（👤 監視担当バッジ付き）
+2. メンバーは票を開き、「検収物を確認」で差分を見ながら「レビューコメント」に指摘を残す
+   （push され、各自の pull で全員に共有される）
+3. 監視担当者はコメントを確認し、重複や解決済みを編集・削除して論点を整理する
+4. 整理した内容をもとに、**承認**（完了確定）／**差し戻し**（コメントを反映指示にして再実行）
+   ／**✎ revise**（verify・指示の修正を添えて再実行）のいずれかで決着させる
+
+> 補足（運用でカバー・今は未実装）: コメントの新着通知・返信スレッド・投稿者ごとの権限・
+> 解決/未解決の状態管理は入れていない（フラットな一覧＋編集・削除で足りる想定）。必要に
+> なったら足せる。
 
 ### Viewer アシスタント（AI 下書き・Doctor）
 
@@ -547,8 +581,10 @@ npm run dist             # Windows 向けビルド（portable + NSIS → release
   exe は実行ファイルへディープリンクを argv 直渡し（portable exe 向け・プロトコル登録に依存しない）
 - `src/main/actions.js` … 人のアクション層。needs 記入（Decision Outcome + `[x]`）・
   inbox JSON ドロップ・commands JSON ドロップ（approve/hold/pin/defer/revise。稼働していなければ
-  CLI にフォールバック）の 3 契約のみを使う。監視担当の割り当て（`setTaskOwner`）だけは
-  契約外の viewer 管理サイドカー `assignments.json` への書き込み（タスク状態には触れない）。`requestReplan` は charter からのバックログ再分解を
+  CLI にフォールバック）の 3 契約のみを使う。監視担当の割り当て（`setTaskOwner`）と
+  レビューコメント（`addReviewComment` / `editReviewComment` / `deleteReviewComment`）だけは
+  契約外の viewer 管理サイドカー（`assignments.json` / `reviews/<task-id>/*.json`）への書き込み
+  （どちらもタスク状態には触れない＝done の不変条件を壊さない）。`requestReplan` は charter からのバックログ再分解を
   `commands/`（`{"command":"replan"}`・id 無し）／CLI `replan` で要求する（エラー回復。本体が
   既存＋archive（done）タイトルで重複排除するので done と類似は投入されない）
 - `src/main/authoring.js` … オーサリング層（新規作成・上位入力ファイルの編集）。
