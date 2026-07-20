@@ -549,6 +549,20 @@ const AMIGOS_ROLES_SAMPLE = JSON.stringify(
   2
 );
 
+function selectedAmigosPostMode() {
+  const checked = document.querySelector('input[name="amigos-post-mode"]:checked');
+  return checked ? checked.value : 'team-building';
+}
+
+// モードに応じて「担当チームの設定（役割指定）」と「チームビルディングの案内」を出し分ける。
+function applyAmigosPostMode() {
+  const mode = selectedAmigosPostMode();
+  const rolesBox = $('amigos-post-roles-details');
+  const hint = $('amigos-buildteam-hint');
+  if (rolesBox) rolesBox.style.display = mode === 'roles' ? '' : 'none';
+  if (hint) hint.style.display = mode === 'team-building' ? '' : 'none';
+}
+
 function openAmigosRequestDialog() {
   const dlg = $('dlg-amigos-post');
   if (!dlg) return;
@@ -558,6 +572,7 @@ function openAmigosRequestDialog() {
     .map((h, index) => `<option value="${esc(h.dir)}">${esc(coworkRepoLabel(h.dir) || `実行先 ${index + 1}`)}</option>`)
     .join('');
   if (!$('amigos-post-roles').value.trim()) $('amigos-post-roles').value = AMIGOS_ROLES_SAMPLE;
+  applyAmigosPostMode();
   dlg.showModal();
 }
 
@@ -590,8 +605,35 @@ function setupAmigosDialogs() {
   if (!dlg) return;
   $('btn-amigos-post-cancel').addEventListener('click', () => dlg.close());
   $('btn-amigos-detail-close').addEventListener('click', () => $('dlg-amigos-detail').close());
+  document.querySelectorAll('input[name="amigos-post-mode"]').forEach((el) => {
+    el.addEventListener('change', applyAmigosPostMode);
+  });
   dlg.addEventListener('submit', (ev) => {
     ev.preventDefault();
+    const mode = selectedAmigosPostMode();
+    const common = {
+      home: $('amigos-post-home').value,
+      title: $('amigos-post-title').value.trim(),
+      goal: $('amigos-post-goal').value.trim(),
+      design: $('amigos-post-design').value,
+    };
+    if (mode === 'team-building') {
+      if (!common.goal && !common.design.trim()) {
+        toast('「完了したときの状態」か「進め方」を入力してください');
+        return;
+      }
+      guard('チームビルディングの依頼', async () => {
+        await api.amigosBuildTeam({
+          ...common,
+          capabilities: $('amigos-post-capabilities').value.trim(),
+        });
+        dlg.close();
+        toast('依頼を投函しました（team-building スキルが役割を設計し、公示します）', true);
+        await refreshAmigos();
+        renderAmigos();
+      });
+      return;
+    }
     guard('タスクの依頼', async () => {
       let roles;
       try {
@@ -600,13 +642,7 @@ function setupAmigosDialogs() {
         toast(`担当チームの設定を読み取れません: ${e.message}`);
         return;
       }
-      await api.amigosRequest({
-        home: $('amigos-post-home').value,
-        title: $('amigos-post-title').value.trim(),
-        goal: $('amigos-post-goal').value.trim(),
-        design: $('amigos-post-design').value,
-        roles,
-      });
+      await api.amigosRequest({ ...common, roles });
       dlg.close();
       toast('依頼を投函しました（常駐デーモンが取り込み、公示します）', true);
       await refreshAmigos();

@@ -622,6 +622,28 @@ roles:
 `collaborates_with` は依存グラフではなく**会話のヒント**に留める（実行順序の強制はしない。
 順序が本質の仕事はタスクグラフ＝agent-flow の領分、§15）。
 
+### 10.1 チームビルディング — ミッションから役割表を設計する
+
+役割ミッション表を人が書く従来経路（`post`）はそのままに、**ミッション（ゴール／design doc）
+だけ**から上記の役割表を設計する入口を追加する（`build-team`）。設計手順自体は
+`.github/skills/team-building/` に **team-building スキル**として切り出し、agent-amigos は
+それを呼び出して実現する（手順の単一ソース化。人＝Claude Code / Copilot からも同じスキルで
+設計できる）。
+
+- **実装**: `agent_amigos/teambuilding.py`。スキル本文を探索（インストール済みスキルホーム →
+  リポジトリ内 `.github/skills` → 組み込みフォールバック）してプロンプト化し、
+  `agentcli.run_agent`（全 LLM 呼び出しの単一チョークポイント、§9）で 1 回実行する。
+- **出力契約**: `{"mission": {…任意…}, "roles": [ … ]}`（`mission.schema.json` の roles と同形）。
+  返ってきた設計は `normalize_mission` で検証してから、そのまま `post` 経路へ合流する
+  （以降のアサイン → 協働 → 統合 → 受入は従来と一切変わらない）。
+- **入口**: CLI `build-team`（既定はドライラン、`--out` 保存 / `--post` 公示）と、commands
+  ドロップ `{"command":"build-team", …}`（dashboard のミッション画面が「チームビルディング」
+  モードで投函する）。design doc が無ければゴールから最小 design doc を自動生成する。
+- 設計には実際の agent CLI が要る（`stub` / 未指定は不可）。予算・締切は不確かなら省略し既定に委ねる。
+
+これは agent-amigos に「入力の前段（役割設計）を自動化する」もう 1 つの入口を足すだけで、
+コアのプロトコル（状態のファイル導出・決定的 claim・収束会計）には手を入れない。
+
 ---
 
 ## 11. CLI コマンド体系
@@ -630,7 +652,9 @@ roles:
 agent-amigos           # サブコマンド省略 = serve（常駐起動）。cwd がホーム
 agent-amigos serve     [--hub/--no-hub] [--manual-claim] [--cycles N]
 agent-amigos init-bus  (--dir <path> | --git <url> [--subdir amigos] | --hub <url>)
-agent-amigos post      --design design-doc.md --roles roles.yaml     # オーナー: 公示
+agent-amigos post      --design design-doc.md --roles roles.yaml     # オーナー: 公示（役割指定）
+agent-amigos build-team --goal "..." [--design d.md] --agent-cli claude [--out f | --post]
+                                                                     # オーナー: ミッションから役割設計（§10.1）
 agent-amigos join      [--roles r1,r2] [--agent-cli codex] [--tags python,frontend]
                                                                      # 参加ノード: 常駐デーモン
 agent-amigos run       --mission <mid> --role <role> [--once]        # 単発 amigo（デバッグ用）

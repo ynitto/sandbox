@@ -88,6 +88,29 @@ function registerIpc(ctx) {
       roles,
     });
   });
+  // チームビルディング依頼: ロール未指定のミッションだけを投函（取り込み側が
+  // team-building スキルで最適なロール表を設計してから公示する。従来の post と並存）
+  handle('amigos:buildTeam', (payload) => {
+    const p = payload || {};
+    const goal = String(p.goal || '').trim();
+    const design = String(p.design || '').trim();
+    if (!goal && !design) {
+      throw new Error('チームビルディングには「完了したときの状態」か「進め方」が必要です');
+    }
+    let capabilities = p.capabilities;
+    if (typeof capabilities === 'string') {
+      capabilities = capabilities.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+    return homes.writeCommand(loadConfig(), p.home, {
+      command: 'build-team',
+      title: String(p.title || ''),
+      goal,
+      design,
+      capabilities: Array.isArray(capabilities) && capabilities.length ? capabilities : undefined,
+      agent_cli: p.agentCli ? String(p.agentCli) : undefined,
+      mission: p.mission && typeof p.mission === 'object' ? p.mission : undefined,
+    });
+  });
   // 手動引き受け: ホームの commands/ へ claim 指示を投函
   handle('amigos:claim', (payload) => {
     const p = payload || {};
