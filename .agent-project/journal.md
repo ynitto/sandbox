@@ -503,3 +503,10 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-20 11:49:08 verify: sibling-163827 を https://github.com/ynitto/sandbox@ap/sibling-163827（path=tools/agent-project） のクローン内で検証
 - 2026-07-20 11:49:08 cycle 2: sibling-163827 → 検収待ち（承認ゲート） — commit ef1f92c3
 - 2026-07-20 11:49:11 === agent-project 停止 reason=drained cycles=2 done=0 blocked=0 notified=True promoted=0 ===
+- 2026-07-20 11:49:13 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-20 11:49:13 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-20 11:50:43 commands 取り込み失敗: viewer-approve-sibling-163827-1784515841859.json: approve sibling-163827 が失敗 (exit 1): sibling-163827: 成果ブランチをターゲットへ統合できないため done にできません（main と ap/sibling-163827 の自動統合で競合しました。成果ブランチを更新して再検収してください: Auto-merging tools/agent-project/GUIDE.md
+- 2026-07-20 11:50:43 === project 開始 v1 acceptance=2 ===
+- 2026-07-20 11:50:43 === agent-project 開始 tasks=3 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-20 11:50:43 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
+- 2026-07-20 11:50:43 === agent-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
