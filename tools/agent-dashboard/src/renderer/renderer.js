@@ -1083,6 +1083,71 @@ function strategyDisplayLabel(strategy) {
   }
 }
 
+// 一貫性ゲート（codd-gate 連携）の結線状態。結線判定は main 側 consistencyGateStatus() が
+// 設定 yaml の regression_cmd / intake_cmd を読んで済ませてあるので、ここは表示だけを行う。
+// UI から設定を書き換えない（done 不変条件）。有効化は「設定ファイルを開く」か
+// 「人が打つコマンドを見せる」に留める（startAgentProject と同じ考え方）。
+function consistencyGateHtml(p) {
+  const gate = p && p.consistencyGate;
+  if (!gate) return '';
+  const rows = [
+    ['regression_cmd', '完了前の回帰検査', gate.regressionWired, gate.regressionCmd,
+      '作業を done にする直前に全体を検査し、ドキュメントが置き去りのまま完了するのを止めます。'],
+    ['intake_cmd', 'ドリフトの取り込み', gate.intakeWired, gate.intakeCmd,
+      '検出したドキュメントとコードのズレを、修復タスクとしてバックログへ積みます。'],
+  ].map(([key, label, wired, cmd, note]) => `<div>
+      <dt>${esc(label)}<br><span class="mono">${key}</span></dt>
+      <dd>
+        <span class="badge ${wired ? 'info' : 'warn'}">${wired ? '結線済み' : '未結線'}</span>
+        ${wired ? `<code>${esc(cmd)}</code>` : `<span class="muted">${esc(note)}</span>`}
+      </dd>
+    </div>`).join('');
+
+  // 未結線が 1 つでもあれば有効化導線を出す（出典: tools/agent-project/README.md「一貫性ゲート」）。
+  // regression_cmd だけは冪等 upsert の CLI があり、intake_cmd は設定ファイルを直接編集する。
+  const wiredAll = gate.regressionWired && gate.intakeWired;
+  const enable = wiredAll
+    ? ''
+    : gate.configFile
+      ? `<div class="need-resolution">
+          <span class="label-chip">有効化</span>
+          設定ファイル <span class="mono">${esc(gate.configFile)}</span> に不足している行を追加します。
+          <code>regression_cmd</code> は
+          <code>python3 codd_gate_regression.py --config ${esc(gate.configFile)}</code>
+          でも注入できます（<code>intake_cmd</code> に対応する CLI はないので手で追記します）。
+          <div class="summary-actions">
+            <button class="summary-link secondary" data-gate-open="${esc(gate.configFile)}">設定ファイルを開く</button>
+          </div>
+        </div>`
+      : `<div class="need-resolution">
+          <span class="label-chip">有効化</span>
+          このワークスペース配下に agent-project の設定ファイルが見つかりません。
+          <span class="mono">.agent/agent-project.yaml</span> を作成し、
+          <code>regression_cmd</code> と <code>intake_cmd</code> の 2 行を書き足してください。
+        </div>`;
+
+  return `<section class="overview-version-section" aria-labelledby="consistency-gate-title">
+    <div class="overview-version-heading">
+      <div>
+        <h2 id="consistency-gate-title">一貫性ゲート</h2>
+        <p>${wiredAll
+          ? 'ドキュメントとコードのズレを自動で検知・修復する仕組みが有効です。'
+          : 'ドキュメントとコードのズレを自動で検知する仕組みです。未結線の項目は検査されません。'}</p>
+      </div>
+      <div class="summary-actions"><span class="badge ${wiredAll ? 'info' : 'warn'}">${wiredAll ? '有効' : '一部のみ'}</span></div>
+    </div>
+    <dl class="need-failure-context">${rows}</dl>
+    ${enable}
+  </section>`;
+}
+
+// 有効化導線のボタン。設定ファイルを OS の既定エディタで開くだけ（読み書きは行わない）。
+function bindConsistencyGate(root) {
+  for (const btn of root.querySelectorAll('button[data-gate-open]')) {
+    btn.addEventListener('click', () => guard('設定ファイルを開く', () => api.openPath(btn.dataset.gateOpen)));
+  }
+}
+
 function technicalProjectInfoHtml() {
   const p = state.project;
   if (!p) {
