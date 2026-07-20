@@ -1,0 +1,45 @@
+{
+  "id": "mav-bon",
+  "name": "BoN-MAV（多観点検証×Best-of-N）",
+  "category": "verification-judging",
+  "tier": "medium",
+  "source": "BoN-MAV (Lifshitz et al., 2025)",
+  "when_to_use": "複数候補を、複数の観点検証者の合否で採点して最良を選ぶとき。",
+  "signals": [
+    "候補から最良選抜",
+    "多観点の合否検証"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "gen-a",
+        "role": "候補を作る",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "gen-b",
+        "role": "別候補を作る",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "verifier-1",
+        "role": "観点 1 で各候補を合否判定する",
+        "required": true,
+        "approver": true
+      },
+      {
+        "id": "verifier-2",
+        "role": "観点 2 で各候補を合否判定する",
+        "required": true,
+        "approver": true
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved"
+    }
+  },
+  "feasibility": "partial",
+  "feasibility_note": "承認数の集計選抜は集約プリミティブが要る（拡張 G2）。"
+}

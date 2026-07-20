@@ -1,0 +1,40 @@
+{
+  "id": "agent-forest",
+  "name": "Agent Forest（多数決）",
+  "category": "sampling-voting",
+  "tier": "medium",
+  "source": "More Agents Is All You Need (Li et al., 2024)",
+  "when_to_use": "同一問題を多数のエージェントで独立に解き、多数決で頑健化したいとき。",
+  "signals": [
+    "頑健性重視",
+    "多数決で決める"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "solver-a",
+        "role": "独立に解く",
+        "required": true,
+        "approver": false,
+        "count_hint": "3-10"
+      },
+      {
+        "id": "solver-b",
+        "role": "独立に解く",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "solver-c",
+        "role": "独立に解く",
+        "required": true,
+        "approver": false
+      }
+    ],
+    "convergence": {
+      "done_when": "all-required-done"
+    }
+  },
+  "feasibility": "partial",
+  "feasibility_note": "真の多数決集計・seats>1 は拡張（G1/G2）。integrator が合意選択で近似。"
+}

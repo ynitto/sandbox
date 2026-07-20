@@ -1428,6 +1428,19 @@ class TeamBuildingTests(AmigosTestCase):
         agentcli.run_agent = lambda *a, **k: output
         self.addCleanup(setattr, agentcli, "run_agent", original)
 
+    def _capture_agent(self, output):
+        """run_agent を差し替え、渡されたプロンプトを self._last_prompt に記録する。"""
+        from agent_amigos import agentcli
+        original = agentcli.run_agent
+        box = {}
+
+        def _fake(prompt, *a, **k):
+            box.setdefault("prompt", prompt)   # 最初の呼び出し（設計）を記録。
+            return output                       # 後続の amigo ターンでは上書きしない
+        agentcli.run_agent = _fake
+        self.addCleanup(setattr, agentcli, "run_agent", original)
+        return box
+
     def test_skill_is_resolved_from_repo(self):
         from agent_amigos import teambuilding
         text, source = teambuilding.resolve_skill_instructions()
@@ -1513,6 +1526,71 @@ class TeamBuildingTests(AmigosTestCase):
         self.assertEqual(len(mids), 1)
         with open(self.bus.mission(mids[0]).design_doc(), encoding="utf-8") as f:
             self.assertIn("与えた設計", f.read())
+
+    # --- オーケストレーションパターン（カタログ・自動選択・明示指定） --------------
+
+    def test_pattern_catalog_loads_and_tiers(self):
+        from agent_amigos import teambuilding
+        high = teambuilding.list_patterns(tier="high")
+        allp = teambuilding.list_patterns()
+        self.assertGreaterEqual(len(high), 8)
+        self.assertGreater(len(allp), len(high))          # medium も存在する
+        ids = {p["id"] for p in high}
+        self.assertIn("self-refine", ids)
+        self.assertIn("metagpt-sop", ids)
+        for p in allp:                                    # 契約の必須キー
+            for k in ("id", "name", "category", "tier", "when_to_use", "team", "feasibility"):
+                self.assertIn(k, p, p.get("id"))
+            self.assertTrue((p["team"].get("roles")))
+
+    def test_build_team_injects_high_patterns_and_records_choice(self):
+        from agent_amigos import teambuilding
+        box = self._capture_agent(json.dumps(
+            {"pattern": "self-refine", **self.DESIGN}, ensure_ascii=False))
+        _mo, _roles, meta = teambuilding.build_team({"goal": "磨き上げたい"}, "claude")
+        # 高価値パターンのカタログがプロンプトへ注入されている（自動選択）
+        self.assertIn("self-refine", box["prompt"])
+        self.assertIn("metagpt-sop", box["prompt"])
+        self.assertNotIn("reflexion", box["prompt"])       # medium は自動選択に載らない
+        self.assertEqual(meta["chosen_pattern"], "self-refine")
+
+    def test_build_team_forced_pattern_injects_only_that(self):
+        from agent_amigos import teambuilding
+        box = self._capture_agent(json.dumps(self.DESIGN, ensure_ascii=False))
+        _mo, _roles, meta = teambuilding.build_team(
+            {"goal": "g"}, "claude", pattern="reflexion")       # medium を明示指定
+        self.assertIn("reflexion", box["prompt"])
+        self.assertIn("厳守", box["prompt"])                    # forced 見出し
+        self.assertEqual(meta["chosen_pattern"], "reflexion")   # 指定が優先
+
+    def test_build_team_unknown_pattern_rejected(self):
+        from agent_amigos import teambuilding
+        self._stub_agent(json.dumps(self.DESIGN, ensure_ascii=False))
+        with self.assertRaises(RuntimeError):
+            teambuilding.build_team({"goal": "g"}, "claude", pattern="does-not-exist")
+
+    def test_build_team_pattern_none_is_normalized(self):
+        from agent_amigos import teambuilding
+        self._stub_agent(json.dumps({"pattern": "none", **self.DESIGN}, ensure_ascii=False))
+        _mo, _roles, meta = teambuilding.build_team({"goal": "g"}, "claude")
+        self.assertIsNone(meta["chosen_pattern"])
+
+    def test_build_team_command_passes_pattern(self):
+        from agent_amigos.configfile import commands_dir
+        box = self._capture_agent(json.dumps(self.DESIGN, ensure_ascii=False))
+        cdir = commands_dir(self.home)
+        os.makedirs(cdir, exist_ok=True)
+        with open(os.path.join(cdir, "bt.json"), "w", encoding="utf-8") as f:
+            json.dump({"command": "build-team", "goal": "g", "agent_cli": "claude",
+                       "pattern": "agentcoder"}, f, ensure_ascii=False)
+        NodeDaemon(self.bus, "owner-node", agent_cli="claude", interval=0,
+                   commands_home=self.home).cycle()
+        self.assertIn("agentcoder", box["prompt"])
+        self.assertEqual(len(self.bus.list_missions()), 1)
+
+    def test_cli_list_patterns(self):
+        rc = cli.main(["build-team", "--list-patterns"])
+        self.assertEqual(rc, 0)
 
     def test_build_team_cli_out_dry_run(self):
         from agent_amigos import teambuilding  # noqa: F401 (ensures import path)

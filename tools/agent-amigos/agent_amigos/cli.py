@@ -112,6 +112,16 @@ def cmd_build_team(args) -> int:
     --out で保存、--post で公示（従来の post 経路へ合流）まで行う。"""
     import json
     from . import teambuilding
+    if args.list_patterns:
+        rows = teambuilding.list_patterns()
+        if not rows:
+            print("パターンカタログが見つかりません（スキル未インストール？）")
+            return 0
+        print(f"オーケストレーションパターン（{len(rows)} 件。high=自動選択対象 / medium=--pattern で明示指定）:")
+        for p in sorted(rows, key=lambda r: (r.get("tier") != "high", r.get("id"))):
+            print(f"  [{p.get('tier'):<6}] {p.get('id'):<24} {p.get('name')}")
+            print(f"           {p.get('when_to_use', '')}")
+        return 0
     bus, node = _resolve(args)
     design_text = None
     if args.design:
@@ -124,9 +134,10 @@ def cmd_build_team(args) -> int:
              "capabilities": [t for t in (args.capabilities or "").split(",") if t],
              "agent_cli": args.agent_cli}
     mission_over, roles, meta = teambuilding.build_team(
-        brief, args.agent_cli or "", model=args.model)
+        brief, args.agent_cli or "", model=args.model, pattern=args.pattern)
     spec = {"mission": mission_over, "roles": roles}
-    log(node, f"team-builder 完了: roles={len(roles)} skill={meta.get('skill_source')}")
+    log(node, f"team-builder 完了: roles={len(roles)} "
+              f"pattern={meta.get('chosen_pattern') or '-'} skill={meta.get('skill_source')}")
 
     if args.out:
         _write_roles_spec(args.out, spec)
@@ -552,6 +563,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--agent-cli", default=None,
                    help="設計に使う agent CLI（かつ各ロールの既定。stub/未指定は不可）")
     p.add_argument("--model", default=None, help="設計に使うモデル（任意）")
+    p.add_argument("--pattern", default=None,
+                   help="使うオーケストレーションパターンを id で指定（省略時は高価値パターンから"
+                        "ミッションに応じて自動選択）。一覧は --list-patterns")
+    p.add_argument("--list-patterns", action="store_true",
+                   help="利用可能なパターンの一覧を表示して終了する")
     p.add_argument("--out", default=None,
                    help="設計したロール表の書き出し先（.yaml/.json）。指定時は公示しない")
     p.add_argument("--post", action="store_true",

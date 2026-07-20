@@ -1,0 +1,51 @@
+{
+  "id": "multiagent-debate",
+  "name": "マルチエージェント討論",
+  "category": "debate-consensus",
+  "tier": "high",
+  "source": "Multiagent Debate (Du et al., 2023) / MAD (Liang et al., 2024)",
+  "when_to_use": "正解が自明でない・見解が割れる推論。異なる立場を戦わせ、裁定者が結論を出したいとき。",
+  "signals": [
+    "結論が割れうる",
+    "根拠の突き合わせが要る",
+    "単独だと視野が狭い"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "debater-a",
+        "role": "立場 A を根拠付きで主張し、相手の反証に応答する",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "debater-b",
+        "role": "立場 B（または反証役）として A の弱点を突き、対案を示す",
+        "required": true,
+        "approver": false,
+        "collaborates_with": [
+          "debater-a"
+        ]
+      },
+      {
+        "id": "judge",
+        "role": "両者の論拠を突き合わせて評価し、最終結論を裁定・承認する",
+        "required": true,
+        "approver": true,
+        "collaborates_with": [
+          "debater-a",
+          "debater-b"
+        ]
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved",
+      "quiescence_turns": 2,
+      "review_rounds": 1
+    },
+    "budget_hint": "中（例 90 分）"
+  },
+  "feasibility": "partial",
+  "feasibility_note": "同期ラウンド＋多数決ではなく、メッセージ往復＋judge の裁定で近似する。3 人以上の並列討論や投票集計は seats>1／集約プリミティブが要る（拡張 G1/G3）。",
+  "notes": "judge を approver にして reviewer-approved で締める。討論の往復は quiescence で収束させる。"
+}

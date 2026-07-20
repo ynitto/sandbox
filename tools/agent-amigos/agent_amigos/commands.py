@@ -90,7 +90,8 @@ def _do_build_team(bus: Bus, node_id: str, agent_cli: "str | None", home: str,
         "agent_cli": rec.get("agent_cli") or agent_cli,
     }
     cli = str(rec.get("agent_cli") or agent_cli or "")
-    mission_over, roles, meta = teambuilding.build_team(brief, cli, model=rec.get("model"))
+    mission_over, roles, meta = teambuilding.build_team(
+        brief, cli, model=rec.get("model"), pattern=rec.get("pattern"))
     # 明示 mission 上書き（rec.mission）は設計値より優先する
     merged_mission = {**mission_over, **dict(rec.get("mission") or {})}
     post_rec = {"command": "post", "roles": roles, "mission": merged_mission,
@@ -105,7 +106,8 @@ def _do_build_team(bus: Bus, node_id: str, agent_cli: "str | None", home: str,
     else:
         post_rec["design"] = teambuilding.brief_to_design_doc(brief)
     result = _do_post(bus, node_id, home, post_rec)
-    return f"build-team → {result}（roles={len(roles)}, skill={meta.get('skill_source')}）"
+    return (f"build-team → {result}（roles={len(roles)}, "
+            f"pattern={meta.get('chosen_pattern') or '-'}, skill={meta.get('skill_source')}）")
 
 
 def _do_claim(bus: Bus, node_id: str, agent_cli: "str | None", rec: dict) -> str:

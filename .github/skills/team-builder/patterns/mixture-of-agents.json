@@ -1,0 +1,42 @@
+{
+  "id": "mixture-of-agents",
+  "name": "Mixture-of-Agents（多提案→統合）",
+  "category": "ensembling",
+  "tier": "high",
+  "source": "Mixture-of-Agents / MoA (Wang et al., 2024)",
+  "when_to_use": "多様な独立提案を集めて 1 つに統合し品質を底上げしたいとき（選抜でなく合成）。",
+  "signals": [
+    "多様な視点で質を上げたい",
+    "1 つに統合したい",
+    "単一案だと偏る"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "proposer-a",
+        "role": "独立に案を作る（他案は参照しない）",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "proposer-b",
+        "role": "独立に別案を作る",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "proposer-c",
+        "role": "独立にさらに別案を作る",
+        "required": true,
+        "approver": false
+      }
+    ],
+    "convergence": {
+      "done_when": "all-required-done"
+    },
+    "budget_hint": "中（例 90 分）"
+  },
+  "feasibility": "partial",
+  "feasibility_note": "層状の並列提案は別 id の複数 proposer で近似（seats>1 が無い）。各案の統合は integrator（自動ロール）が担う＝MoA の aggregator。",
+  "notes": "proposer は互いに参照しない（会話規約）。integrator に『選抜でなく統合』を指示。"
+}

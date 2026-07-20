@@ -1,0 +1,45 @@
+{
+  "id": "skeleton-of-thought",
+  "name": "Skeleton-of-Thought",
+  "category": "search-writing",
+  "tier": "medium",
+  "source": "Skeleton-of-Thought (Ning et al., 2024)",
+  "when_to_use": "先に骨子（アウトライン）を作り、各節を分担展開して結合したいとき。",
+  "signals": [
+    "構造の決まった文書",
+    "節ごとに分担できる"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "planner",
+        "role": "骨子（アウトライン）を作る",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "writer-a",
+        "role": "担当の節を展開する",
+        "required": true,
+        "approver": false,
+        "collaborates_with": [
+          "planner"
+        ]
+      },
+      {
+        "id": "writer-b",
+        "role": "別の節を展開する",
+        "required": true,
+        "approver": false,
+        "collaborates_with": [
+          "planner"
+        ]
+      }
+    ],
+    "convergence": {
+      "done_when": "all-required-done"
+    }
+  },
+  "feasibility": "partial",
+  "feasibility_note": "節の並列展開は別 id ロールで近似。結合は integrator。"
+}

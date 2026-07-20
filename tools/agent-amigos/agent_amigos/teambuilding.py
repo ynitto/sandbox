@@ -13,12 +13,14 @@
 """
 from __future__ import annotations
 
+import glob
+import json
 import os
 
 from . import agentcli
 from .configfile import agent_home_subdir
 from .mission import normalize_mission
-from .util import extract_json
+from .util import extract_json, read_json
 
 SKILL_NAME = "team-builder"
 SKILL_ENV = "AGENT_AMIGOS_TEAM_BUILDER_SKILL"
@@ -51,6 +53,7 @@ OUTPUT_CONTRACT = """\
 # 出力契約（厳守）
 次の JSON **だけ**を出力してください（前後に説明文・コードフェンス以外の地の文を付けない）:
 {
+  "pattern": "<採用したパターンの id。どれも使わなければ \\"none\\">",
   "mission": { "title": "...", "goal": "...",
                "convergence": {"done_when": "all-required-done|reviewer-approved"},
                "budget": {"execution_minutes": <int>} },
@@ -118,6 +121,77 @@ def resolve_skill_instructions() -> "tuple[str, str]":
     return BUILTIN_INSTRUCTIONS, "(builtin)"
 
 
+# --- オーケストレーションパターン（論文由来のチーム設計テンプレ） -----------------
+# patterns/<id>.json（スキルディレクトリ配下）。tier=high は自動選択に載せ、
+# tier=medium は JSON のみ（--pattern <id> の明示指定でだけ使える）。契約は
+# references/pattern.schema.json。
+
+def _patterns_dir(skill_source: str) -> "str | None":
+    """resolve_skill_instructions が返した SKILL.md の隣の patterns/ ディレクトリ。
+    組み込みフォールバック（(builtin)）のときは patterns を持たない。"""
+    if not skill_source or skill_source == "(builtin)" or not os.path.isfile(skill_source):
+        return None
+    d = os.path.join(os.path.dirname(skill_source), "patterns")
+    return d if os.path.isdir(d) else None
+
+
+def load_patterns(skill_source: str, tier: "str | None" = None,
+                  only_id: "str | None" = None) -> "list[dict]":
+    """patterns/*.json を読み込む。tier で絞り込み（None=全件）、only_id で 1 件指定。"""
+    pdir = _patterns_dir(skill_source)
+    if not pdir:
+        return []
+    out = []
+    for path in sorted(glob.glob(os.path.join(pdir, "*.json"))):
+        rec = read_json(path)
+        if not isinstance(rec, dict) or not rec.get("id"):
+            continue
+        if only_id is not None and rec.get("id") != only_id:
+            continue
+        if tier is not None and rec.get("tier") != tier:
+            continue
+        out.append(rec)
+    return out
+
+
+def _pattern_summary(rec: dict) -> str:
+    """1 パターンをプロンプト用の簡潔なブロックへ。"""
+    team = rec.get("team") or {}
+    roles = team.get("roles") or []
+    role_line = "; ".join(f"{r.get('id')}: {r.get('role', '')}"
+                          + ("[approver]" if r.get("approver") else "")
+                          + (f"[×{r['count_hint']}]" if r.get("count_hint") else "")
+                          for r in roles)
+    conv = team.get("convergence") or {}
+    conv_line = ", ".join(f"{k}={v}" for k, v in conv.items()) or "（既定）"
+    lines = [f"### {rec.get('id')} — {rec.get('name')}（{rec.get('category')}）",
+             f"- 使いどころ: {rec.get('when_to_use', '')}"]
+    if rec.get("signals"):
+        lines.append(f"- 目印: {', '.join(rec['signals'])}")
+    lines.append(f"- ロール骨格: {role_line}")
+    lines.append(f"- 収束: {conv_line}"
+                 + (f" / 予算目安: {team['budget_hint']}" if team.get("budget_hint") else ""))
+    if rec.get("feasibility") and rec["feasibility"] != "native":
+        lines.append(f"- 実現度: {rec['feasibility']} — {rec.get('feasibility_note', '')}")
+    return "\n".join(lines)
+
+
+def format_patterns_block(patterns: "list[dict]", forced: bool = False) -> str:
+    """パターン群をプロンプトのカタログ節へ。forced=True は「必ずこのパターンを使う」指示。"""
+    if not patterns:
+        return ""
+    body = "\n\n".join(_pattern_summary(p) for p in patterns)
+    if forced:
+        head = ("===== 使用するパターン（指定・厳守） =====\n"
+                "次のパターンのロール骨格・収束条件をミッションに合わせて具体化してください。")
+    else:
+        head = ("===== オーケストレーションパターン・カタログ（高価値・自動選択対象） =====\n"
+                "まずミッションの性質に最も合うパターンを 1 つ選ぶ（複数を組み合わせても、"
+                "どれも合わなければ素の設計でもよい）。選んだら、そのロール骨格と収束条件を"
+                "ミッションに合わせて具体化し、出力の \"pattern\" にその id（または none）を書く。")
+    return f"{head}\n\n{body}"
+
+
 def brief_text(brief: dict) -> str:
     """ミッションブリーフを人間可読なプロンプト断片へ。"""
     lines = []
@@ -138,14 +212,16 @@ def brief_text(brief: dict) -> str:
     return "\n\n".join(lines)
 
 
-def build_prompt(brief: dict, instructions: str) -> str:
-    """スキル手順 ＋ ブリーフ ＋ 出力契約 を 1 つのプロンプトに束ねる。"""
+def build_prompt(brief: dict, instructions: str, patterns_block: str = "") -> str:
+    """スキル手順 ＋ パターンカタログ ＋ ブリーフ ＋ 出力契約 を 1 つのプロンプトに束ねる。"""
+    pat_section = f"{patterns_block}\n\n" if patterns_block else ""
     return (
         "あなたは分散協働ミッションのチーム設計者です。以下の team-builder スキルの手順に"
         "従い、与えられたミッションから最適なロール構成と各ロールへ渡すミッション文"
         "（プロンプト）を設計してください。\n\n"
         "===== team-builder スキル手順 =====\n"
         f"{instructions}\n"
+        f"{pat_section}"
         "===== ミッションブリーフ =====\n"
         f"{brief_text(brief)}\n\n"
         "===== 厳守する出力形式 =====\n"
@@ -159,11 +235,22 @@ def _agent_cli_default(role: dict, brief: dict) -> None:
         role["agent_cli"] = brief["agent_cli"]
 
 
+def list_patterns(tier: "str | None" = None) -> "list[dict]":
+    """カタログのパターン一覧（CLI --list-patterns 用）。tier=None は全件。"""
+    _txt, source = resolve_skill_instructions()
+    return load_patterns(source, tier=tier)
+
+
 def build_team(brief: dict, cli: str, model: "str | None" = None,
-               timeout: "float | None" = None) -> "tuple[dict, list, dict]":
+               timeout: "float | None" = None,
+               pattern: "str | None" = None) -> "tuple[dict, list, dict]":
     """ミッションブリーフからロールミッション表を設計する。
 
+    pattern を指定するとそのパターン（tier 不問）を必ず使うよう指示する。省略時は
+    高価値パターン（tier=high）をカタログとして提示し、LLM に最適なものを選ばせる。
+
     返り値: (mission 上書き dict, roles 列, meta)。roles は normalize_mission で検証済み。
+    meta には skill_source と、採用パターン（chosen_pattern）が入る。
     設計に失敗（出力が壊れている・ロールが不正）した場合は RuntimeError。
     """
     if not (brief.get("goal") or brief.get("design")):
@@ -175,7 +262,16 @@ def build_team(brief: dict, cli: str, model: "str | None" = None,
             "stub / 未指定では設計できません）")
 
     instructions, source = resolve_skill_instructions()
-    prompt = build_prompt(brief, instructions)
+    if pattern:
+        chosen = load_patterns(source, only_id=pattern)
+        if not chosen:
+            available = ", ".join(p["id"] for p in load_patterns(source)) or "（カタログ無し）"
+            raise RuntimeError(f"パターン {pattern!r} が見つかりません。利用可能: {available}")
+        patterns_block = format_patterns_block(chosen, forced=True)
+    else:
+        patterns_block = format_patterns_block(load_patterns(source, tier="high"))
+
+    prompt = build_prompt(brief, instructions, patterns_block)
     text = agentcli.run_agent(prompt, resolved_cli, model, timeout)
     data = extract_json(text)
     if isinstance(data, list):          # roles 配列だけ返ってきた場合は包む
@@ -199,7 +295,10 @@ def build_team(brief: dict, cli: str, model: "str | None" = None,
         normalize_mission(spec)         # 妥当性検証（不正は SystemExit → RuntimeError に翻訳）
     except SystemExit as e:
         raise RuntimeError(f"設計されたロールミッション表が不正です: {e}")
-    return mission_over, roles, {"skill_source": source}
+    chosen_pattern = pattern or (str(data.get("pattern")) if data.get("pattern") else None)
+    if chosen_pattern in ("none", "None", ""):
+        chosen_pattern = None
+    return mission_over, roles, {"skill_source": source, "chosen_pattern": chosen_pattern}
 
 
 def brief_to_design_doc(brief: dict) -> str:

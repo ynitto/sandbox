@@ -1,0 +1,43 @@
+{
+  "id": "universal-self-consistency",
+  "name": "Universal Self-Consistency",
+  "category": "sampling-voting",
+  "tier": "medium",
+  "source": "Universal Self-Consistency / USC (Chen et al., 2023)",
+  "when_to_use": "自由形式の答えを複数出し、最も母集団と一貫する 1 つを選ばせたいとき。",
+  "signals": [
+    "自由形式で厳密一致できない",
+    "一貫性で選ぶ"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "solver-a",
+        "role": "独立に解く",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "solver-b",
+        "role": "独立に解く",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "selector",
+        "role": "全解を読み最も一貫する 1 つを選ぶ",
+        "required": true,
+        "approver": true,
+        "collaborates_with": [
+          "solver-a",
+          "solver-b"
+        ]
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved"
+    }
+  },
+  "feasibility": "partial",
+  "feasibility_note": "self-consistency の意味的選抜版。seats>1 は未対応（G1）。"
+}

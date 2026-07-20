@@ -1,0 +1,51 @@
+{
+  "id": "persuasive-debate",
+  "name": "Persuasive Debate（割当側討論）",
+  "category": "debate-consensus",
+  "tier": "medium",
+  "source": "Persuasive LLMs (Khan et al., 2024)",
+  "when_to_use": "二者択一を、各案の擁護役を割り当てて論じさせ裁定したいとき。",
+  "signals": [
+    "二択の意思決定",
+    "各案を強く擁護させたい"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "setter",
+        "role": "対立する 2 案を用意する",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "debater-a",
+        "role": "案 A を擁護する",
+        "required": true,
+        "approver": false,
+        "collaborates_with": [
+          "setter"
+        ]
+      },
+      {
+        "id": "debater-b",
+        "role": "案 B を擁護する",
+        "required": true,
+        "approver": false,
+        "collaborates_with": [
+          "setter"
+        ]
+      },
+      {
+        "id": "judge",
+        "role": "優勢な案を選び承認する",
+        "required": true,
+        "approver": true
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved",
+      "review_rounds": 1
+    }
+  },
+  "feasibility": "partial"
+}

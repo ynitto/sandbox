@@ -1,0 +1,46 @@
+{
+  "id": "chatdev",
+  "name": "ChatDev（対話型ウォーターフォール）",
+  "category": "software-sop",
+  "tier": "medium",
+  "source": "ChatDev (Qian et al., 2024)",
+  "when_to_use": "設計→実装→レビュー→テスト→文書の工程を対話で進める開発。",
+  "signals": [
+    "開発の全工程",
+    "文書まで含む"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "instructor",
+        "role": "各工程の指示と受入を担う",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "programmer",
+        "role": "実装する",
+        "required": true,
+        "approver": false,
+        "collaborates_with": [
+          "instructor"
+        ]
+      },
+      {
+        "id": "reviewer",
+        "role": "レビュー・テストで承認する",
+        "required": true,
+        "approver": true,
+        "collaborates_with": [
+          "programmer"
+        ]
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved",
+      "review_rounds": 2
+    }
+  },
+  "feasibility": "native",
+  "feasibility_note": "metagpt-sop とほぼ同型。工程数が多いとき。"
+}

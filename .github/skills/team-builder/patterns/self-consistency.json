@@ -1,0 +1,43 @@
+{
+  "id": "self-consistency",
+  "name": "Self-Consistency（多解→合意選択）",
+  "category": "sampling-voting",
+  "tier": "high",
+  "source": "Self-Consistency (Wang et al., 2023)",
+  "when_to_use": "単発だと不安定な問題で、独立に複数回解いて最も一貫する解を採りたいとき。",
+  "signals": [
+    "答えのブレを抑えたい",
+    "独立に解ける",
+    "合意・多数派で信頼度を上げたい"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "solver-a",
+        "role": "問題を独立に解く（他解は見ない）",
+        "required": true,
+        "approver": false,
+        "count_hint": "3-5"
+      },
+      {
+        "id": "solver-b",
+        "role": "問題を独立に解く",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "solver-c",
+        "role": "問題を独立に解く",
+        "required": true,
+        "approver": false
+      }
+    ],
+    "convergence": {
+      "done_when": "all-required-done"
+    },
+    "budget_hint": "小〜中（例 60 分）"
+  },
+  "feasibility": "partial",
+  "feasibility_note": "並列サンプリング＋多数決を、別 id の複数 solver ＋ integrator の合意選択で近似。真の投票集計（Counter）は集約プリミティブが要る（拡張 G2）。seats>1 も未対応（G1）。",
+  "notes": "integrator に『最も一貫する解を選ぶ（合意）』を指示。ばらけたら差し戻し。"
+}

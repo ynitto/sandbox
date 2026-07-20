@@ -1,0 +1,52 @@
+{
+  "id": "reconcile",
+  "name": "ReConcile（円卓合意）",
+  "category": "debate-consensus",
+  "tier": "medium",
+  "source": "ReConcile (Chen et al., 2024)",
+  "when_to_use": "異質な複数エージェントが確信度付きで議論し合意に至りたいとき。",
+  "signals": [
+    "異質な視点の合議",
+    "確信度で重み付け"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "member-a",
+        "role": "確信度付きで見解を述べ議論する",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "member-b",
+        "role": "別視点で議論する",
+        "required": true,
+        "approver": false,
+        "collaborates_with": [
+          "member-a"
+        ]
+      },
+      {
+        "id": "member-c",
+        "role": "さらに別視点で議論する",
+        "required": true,
+        "approver": false,
+        "collaborates_with": [
+          "member-a"
+        ]
+      },
+      {
+        "id": "moderator",
+        "role": "合意を取りまとめ承認する",
+        "required": true,
+        "approver": true
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved",
+      "quiescence_turns": 2
+    }
+  },
+  "feasibility": "partial",
+  "feasibility_note": "確信度重み付き投票は集約プリミティブが要る（拡張 G2）。"
+}

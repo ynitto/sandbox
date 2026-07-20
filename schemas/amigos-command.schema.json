@@ -52,6 +52,7 @@
         },
         "agent_cli": {"type": "string", "description": "設計に使う agent CLI かつ各ロールの既定（省略時はデーモンの既定。stub / 未指定は不可）"},
         "model": {"type": "string", "description": "設計に使うモデル（任意）"},
+        "pattern": {"type": "string", "description": "使うオーケストレーションパターンを id で明示指定（省略時は高価値パターンからミッションに応じて自動選択。カタログ: .github/skills/team-builder/patterns/）"},
         "mission_id": {"type": "string", "description": "省略時は自動採番"},
         "mission": {
           "type": "object",
