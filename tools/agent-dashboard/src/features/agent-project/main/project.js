@@ -12,6 +12,7 @@ const os = require('os');
 const path = require('path');
 const { readToolConfig } = require('./toolconfig');
 const { reposFileName } = require('./authoring');
+const { agentDirCandidates } = require('../../../base/main/agent-home');
 
 // agent-project.py と同じ正規表現
 const HEAD_RE = /^##\s+(\S+?):\s*(.*)$/;
@@ -1197,7 +1198,7 @@ const TOOL_CONFIG_NAMES = ['agent-project.yaml', 'agent-project.yml', 'agent-pro
 
 function hasProjectManifest(dir) {
   return TOOL_CONFIG_NAMES.some(
-    (n) => fs.existsSync(path.join(dir, n)) || fs.existsSync(path.join(dir, '.agent', n))
+    (n) => fs.existsSync(path.join(dir, n)) || agentDirCandidates(dir).some((d) => fs.existsSync(path.join(d, n)))
   );
 }
 
@@ -1218,7 +1219,7 @@ function hasProjectManifest(dir) {
 function resolveProjectRoot(workspaceDir) {
   const ws = path.resolve(String(workspaceDir || ''));
   if (!ws) return ws;
-  const cfg = readToolConfig('agent-project', [ws, path.join(ws, '.agent')]);
+  const cfg = readToolConfig('agent-project', [ws, ...agentDirCandidates(ws)]);
   const fromWorkspace =
     cfg && cfg.file && path.resolve(cfg.file).startsWith(ws + path.sep);
   const raw = fromWorkspace && cfg.values ? cfg.values.root : null;
@@ -1546,7 +1547,7 @@ function resolveBusDir(projectDir, workspaceDir, cfg) {
     push(preferred, cfg.projects.flowBus, 'config');
   }
 
-  const toolCfg = readToolConfig('agent-project', [workspace, path.join(workspace, '.agent')]);
+  const toolCfg = readToolConfig('agent-project', [workspace, ...agentDirCandidates(workspace)]);
   if (toolCfg && toolCfg.values.bus) {
     const raw = String(toolCfg.values.bus);
     push(preferred, path.isAbsolute(raw) ? raw : path.join(projectDir, raw), 'agent-project.yaml');
@@ -1576,7 +1577,7 @@ function readProject(workspaceDir, cfg) {
     synthesizeNeedsFromBacklog(listMdDir(needsDir, parseNeeds), backlog, needsDir),
     backlog
   );
-  const projectCfg = readToolConfig('agent-project', [workspace, path.join(workspace, '.agent')]);
+  const projectCfg = readToolConfig('agent-project', [workspace, ...agentDirCandidates(workspace)]);
   const stateBranch = (projectCfg && projectCfg.values && projectCfg.values.state_branch) || DEFAULT_STATE_BRANCH;
   const gp = gitShowPrefix(dir);
   if (gp.ok) {

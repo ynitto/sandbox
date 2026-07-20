@@ -31,8 +31,8 @@ test('findProjectConfig は状態ルート直下の yaml も見つける', () =>
 test('findProjectConfig は本体側 .agent/ も従来どおり探す', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-cfg2-'));
   const root = path.join(tmp, 'ws');
-  fs.mkdirSync(path.join(root, '.agent'), { recursive: true });
-  const yaml = path.join(root, '.agent', 'agent-project.yaml');
+  fs.mkdirSync(path.join(root, '.agents'), { recursive: true });
+  const yaml = path.join(root, '.agents', 'agent-project.yaml');
   fs.writeFileSync(yaml, 'root: .\n');
   assert.strictEqual(actions.findProjectConfig(root), yaml);
 });

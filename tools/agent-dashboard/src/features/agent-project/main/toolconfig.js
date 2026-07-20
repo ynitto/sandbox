@@ -10,6 +10,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { agentHomeDir } = require('../../../base/main/agent-home');
 
 function readText(file) {
   try {
@@ -43,7 +44,7 @@ function parseFlatYaml(text) {
 
 // baseDirs（.agent ディレクトリ候補）を順に探索し、最初に見つかった設定を返す
 function readToolConfig(baseName, baseDirs) {
-  const dirs = [...(baseDirs || []), path.join(os.homedir(), '.agent')];
+  const dirs = [...(baseDirs || []), agentHomeDir()];
   for (const dir of dirs) {
     if (!dir) continue;
     for (const ext of ['yaml', 'yml', 'json']) {

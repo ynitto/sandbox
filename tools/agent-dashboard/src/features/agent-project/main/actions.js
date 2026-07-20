@@ -19,6 +19,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const project = require('./project');
+const { agentDirCandidates } = require('../../../base/main/agent-home');
 
 const DECISION_MARKER = '## Decision Outcome';
 
@@ -224,9 +225,9 @@ function findProjectConfig(...dirs) {
     const resolved = path.resolve(d);
     for (const base of [
       resolved,
-      path.join(resolved, '.agent'),
+      ...agentDirCandidates(resolved),
       path.dirname(resolved),
-      path.join(path.dirname(resolved), '.agent'),
+      ...agentDirCandidates(path.dirname(resolved)),
     ]) {
       if (!bases.includes(base)) bases.push(base);
     }

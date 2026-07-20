@@ -160,7 +160,7 @@ except json.JSONDecodeError as e:
 
 ```python
 # 悪い例
-SKILL_DIR = "/home/alice/.agent/skills"
+SKILL_DIR = "/home/alice/.agents/skills"
 OUTPUT = "C:\\Users\\Alice\\output.txt"
 ```
 

@@ -11,6 +11,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { agentHomeSubdir } = require('../../../base/main/agent-home');
 
 const LIFECYCLES = ['run', 'pause', 'stop'];
 const DELEGATION_PREFER = ['local', 'remote'];
@@ -23,7 +24,7 @@ function expandHome(p) {
 function resolveControlDir(cfg) {
   const c = (cfg && cfg.orchestration) || {};
   return expandHome(
-    c.controlDir || process.env.AGENT_CONTROL_DIR || path.join(os.homedir(), '.agent', 'control')
+    c.controlDir || process.env.AGENT_CONTROL_DIR || agentHomeSubdir('control')
   );
 }
 

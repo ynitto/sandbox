@@ -274,7 +274,7 @@ sed -n '1,30p' <レコードの journal>                                       #
 常駐の**起動/停止/再起動**は lifecycle コマンドで（プロセスを直接 kill しない）。対象は `--root` で選ぶ:
 
 ```bash
-$KA start   --root <ROOT>    # detached 常駐起動（重複監視は拒否。設定は --config か .agent/ に寄せる）
+$KA start   --root <ROOT>    # detached 常駐起動（重複監視は拒否。設定は --config か .agents/ に寄せる）
 $KA stop    --root <ROOT>    # graceful 停止（SIGTERM→居残りは SIGKILL）。--pid / --all も可
 $KA restart --root <ROOT>    # 同じプロジェクトを止めてから起動し直す
 $KA instances                                 # どの project を誰(pid)が監視中か先に確認
@@ -284,7 +284,7 @@ $KA instances                                 # どの project を誰(pid)が監
 有無と停止理由を報告**する（勝手に done 扱いしない）。終了コード: `0`=完走で判断待ち無し / `1`=判断待ちあり / `2`=予算停止。
 巻き込み事故を防ぎたい案件では `run --regression-cmd "<共通スモーク>"` を提案する。
 
-**設定ファイル**で既定を恒久化できる（`CLI > 設定ファイル > 既定`）。`./.agent/agent-project.yaml`（or `~/.agent/…`）に
+**設定ファイル**で既定を恒久化できる（`CLI > 設定ファイル > 既定`）。`./.agents/agent-project.yaml`（or `~/.agents/…`）に
 置くと自動検出。サンプルは `tools/agent-project/agent-project.yaml.example`。executor/planner/poll/予算/level/throttle 等の
 スカラ＋真偽フラグを書ける（個別パスは CLI 専用）。PyYAML 無しなら同キーの JSON（`agent-project.json`）。
 

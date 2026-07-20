@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 
+from .configfile import agent_home_subdir
 from .util import now_iso
 
 WORKLOAD = "amigos"
@@ -23,8 +24,7 @@ _CACHE = {"mtime": None, "data": {}}
 
 
 def control_dir() -> str:
-    return os.path.abspath(os.path.expanduser(
-        os.environ.get("AGENT_CONTROL_DIR", os.path.join("~", ".agent", "control"))))
+    return agent_home_subdir("AGENT_CONTROL_DIR", "control")
 
 
 def load_control() -> dict:

@@ -315,7 +315,7 @@ test('IPC: amigos post は発見済みホームの commands/ へ投函する', (
   assert.strictEqual(rec.command, 'post');
   assert.strictEqual(rec.mission_id, res.id);
   assert.strictEqual(path.dirname(res.file),
-    path.join(home, '.agent', 'agent-amigos', 'commands'));
+    path.join(home, '.agents', 'agent-amigos', 'commands'));
 });
 
 test('IPC: flow post はバスの inbox/ へ投函する', () => {

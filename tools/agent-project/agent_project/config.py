@@ -11,7 +11,7 @@ TOOL_SUBDIR = "tools/agent-project"
 # 自動解決する（repositories.origin.url → install_dir）。設定ファイルの update_repo で明示も可。
 DEFAULT_UPDATE_REPO = ""
 # skill-registry.json を探すエージェントホーム（install.py の AGENT_DIRS に対応）。
-_AGENT_HOME_DIRS = (".agent", ".kiro", ".claude", ".copilot", ".codex")
+_AGENT_HOME_DIRS = (AGENT_HOME, AGENT_HOME_LEGACY, ".kiro", ".claude", ".copilot", ".codex")
 
 # 自己更新の再起動先 cwd（main で起動時の cwd を捕捉。「動いていたカレントディレクトリ」へ戻す）。
 _START_CWD: "str | None" = None

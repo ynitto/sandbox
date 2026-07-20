@@ -863,7 +863,7 @@ system が書くフィールド（§5.10・人は直接書かない）: `assess`
 `--repo-map` `--rules-capture` `--dry-run` `--once`。
 
 **設定ファイル（`CLI > 設定ファイル > 既定`）**: `agent-project.{yaml,yml,json}` に書ける（探索: `--config` 明示 →
-`./`（ルート直下＝プロジェクトのマニフェスト。viewer の自動発見マーカーを兼ねる）→ `./.agent/` → `~/.agent/`）。YAML は PyYAML 任意・無ければ JSON。CLI default を None にし `resolve_config` が「CLI 未指定キーだけ
+`./`（ルート直下＝プロジェクトのマニフェスト。viewer の自動発見マーカーを兼ねる）→ `./.agents/` → `~/.agents/`）。YAML は PyYAML 任意・無ければ JSON。CLI default を None にし `resolve_config` が「CLI 未指定キーだけ
 設定ファイル→既定 で埋める」。スカラ＋真偽フラグ（三値 `--flag`/`--no-flag`）が対象、個別パス上書き・実行限定フラグは
 CLI 専用。サンプルは `agent-project.yaml.example`。
 

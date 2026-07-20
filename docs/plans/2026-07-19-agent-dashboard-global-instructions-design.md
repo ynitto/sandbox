@@ -70,16 +70,16 @@ agent-control は revision・status ハートビート・pull 読取が既に揃
 
 ### 案 C: 新契約 agent-instructions（採用）
 
-`$AGENT_INSTRUCTIONS_DIR`（既定 `~/.agent/instructions/`）の `instructions.json` を正典とする
-独立契約。budget（`~/.agent/budget/`）・control（`~/.agent/control/`）・drop-in
-（`~/.agent/agents/`）と同じ置き場所の流儀・同じ pull 型・同じ原子書換。
+`$AGENT_INSTRUCTIONS_DIR`（既定 `~/.agents/instructions/`）の `instructions.json` を正典とする
+独立契約。budget（`~/.agents/budget/`）・control（`~/.agents/control/`）・drop-in
+（`~/.agents/agents/`）と同じ置き場所の流儀・同じ pull 型・同じ原子書換。
 指示文の**委譲伝播だけは agent-flow の meta.json スナップショット**に乗せ、
 run 単位の一貫性と GitBus 同期をそのまま利用する。
 
 ## データ契約
 
 正典: `schemas/agent-instructions.schema.json`（新設。stdlib の json だけで読める）。
-置き場所: `$AGENT_INSTRUCTIONS_DIR`（既定 `~/.agent/instructions/`）の `instructions.json`。
+置き場所: `$AGENT_INSTRUCTIONS_DIR`（既定 `~/.agents/instructions/`）の `instructions.json`。
 書き手は管理面（agent-dashboard / CLI / 人）のみ・原子書換。読み手は各エンジン。
 
 ```json
@@ -166,7 +166,7 @@ dashboard はこれを読み、「rev 5 を配ったが kiro-loop はまだ rev 
 ### agent-project
 
 自前の注入は行わない。act（実作業）は agent-flow へ委譲されるため、上記スナップショットが
-そのまま効く（同一マシンで agent-flow が走るので同じ `~/.agent/instructions/` を読む）。
+そのまま効く（同一マシンで agent-flow が走るので同じ `~/.agents/instructions/` を読む）。
 `build_request` に足す案は、agent-flow 側と**二重注入**になるため採らない
 （マーカー判定はあるが、責務は一箇所に置く）。優先順位は結果として
 **タスク > brief > プロジェクト（charter / rules） > 共通指示**となる — 共通指示は
@@ -212,7 +212,7 @@ drop-in と同じ管理面の一部として扱う。
   スキーマ検証・atomicWriteJson）。`control.js` とほぼ同型。
   IPC: `orchestration:instructionsGet` / `orchestration:instructionsSave`。
 - **skills 一覧の供給**: 選択候補を出すため、エンジンと同じ探索順
-  （`<root>/.github/skills/` → `~/.agent/skills/` → `~/.kiro/skills/`）でスキル名を列挙する
+  （`<root>/.github/skills/` → `~/.agents/skills/` → `~/.kiro/skills/`）でスキル名を列挙する
   `orchestration:skillsInventory` を足す（SKILL.md の存在確認のみ。中身は読まない）。
 - **renderer**: オーケストレーションタブに「共通指示」カード。
   - `enabled` トグル / 本文 textarea / スキル選択（inventory からチェック + note 編集）/

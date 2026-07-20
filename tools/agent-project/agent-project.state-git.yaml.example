@@ -19,7 +19,7 @@
 #   ★状態の実体（プロジェクトルート / bus）は WSL 側ファイルシステム（ext4）に置く。
 #     /mnt/c 配下（DrvFS）は遅く flock 系ロックも不安定なため、常駐の状態置き場にしない。
 #   設定ファイルは <root>/agent-project.yaml（ルート直下＝プロジェクトのマニフェスト。推奨）
-#   か <root>/.agent/agent-project.yaml か ~/.agent/ に置く。
+#   か <root>/.agents/agent-project.yaml か ~/.agents/ に置く。
 #
 # ── 起動（WSL・プロジェクトルートで）──
 #   agent-flow daemon &        # 実行層（同じバスで常駐。agent-flow.state-git.yaml.example を読む）
@@ -88,7 +88,7 @@ act_async: true            # 非ブロッキング委譲: submit して待たず
 
 # --- agent-flow daemon を agent-project に管理させる場合 ---
 # manage_flow_daemon: true                 # agent-flow daemon を自動起動・監視
-# flow_config: ~/.agent/agent-flow.yaml      # agent-flow の設定（executor/state_git_subdir/gitlab.*/defer_waits 等）
+# flow_config: ~/.agents/agent-flow.yaml      # agent-flow の設定（executor/state_git_subdir/gitlab.*/defer_waits 等）
 #                                          #   はこのファイルに集約
 # flow_max_workers: 6                      # daemon の worker 上限
 

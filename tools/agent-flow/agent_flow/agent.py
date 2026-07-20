@@ -162,7 +162,7 @@ def _agent_plugin_dirs() -> list:
     if envd:
         dirs.append(os.path.expanduser(envd))
     dirs.append(os.path.join(os.getcwd(), "agents"))
-    dirs.append(os.path.expanduser("~/.agent/agents"))
+    dirs.append(agent_home_subdir("", "agents"))
     dirs.append(os.path.expanduser("~/.kiro/agents"))
     return dirs
 
@@ -269,8 +269,7 @@ _NODE_BUDGET_TOOL = "agent-flow"
 
 
 def _node_budget_dir() -> str:
-    return os.path.abspath(os.path.expanduser(
-        os.environ.get("AGENT_BUDGET_DIR", os.path.join("~", ".agent", "budget"))))
+    return os.path.abspath(agent_home_subdir("AGENT_BUDGET_DIR", "budget"))
 
 
 def _node_budget_rate(cfg: dict, cli: str, model: str) -> float:
@@ -417,8 +416,7 @@ _CONTROL_CACHE = {"mtime": None, "data": {}}
 
 
 def _control_dir() -> str:
-    return os.path.abspath(os.path.expanduser(
-        os.environ.get("AGENT_CONTROL_DIR", os.path.join("~", ".agent", "control"))))
+    return os.path.abspath(agent_home_subdir("AGENT_CONTROL_DIR", "control"))
 
 
 def _load_control() -> dict:

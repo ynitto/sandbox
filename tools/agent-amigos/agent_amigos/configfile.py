@@ -1,14 +1,14 @@
-"""設定ファイル — `.agent/agent-amigos.yaml`（agent-project と同じ流儀）。
+"""設定ファイル — `.agents/agent-amigos.yaml`（agent-project と同じ流儀）。
 
 優先順位は CLI > 設定ファイル > 組み込み既定。環境ごとに決まる値（バス・ノード名・
 使う CLI・hub 公開）をファイルに書き、その場限りの上書きだけ CLI で渡す。
 PyYAML 無し環境は JSON（同じキー・`agent-amigos.json`）で書ける。
 
-探索順: 1) --config 明示 2) `<cwd>/agent-amigos.*` 3) `<cwd>/.agent/agent-amigos.*`
-4) `~/.agent/agent-amigos.*`。
+探索順: 1) --config 明示 2) `<cwd>/agent-amigos.*` 3) `<cwd>/.agents/agent-amigos.*`
+4) `~/.agents/agent-amigos.*`（旧 `.agent/` も後方互換で読む）。
 プロジェクトローカルの設定があるディレクトリが amigos ノードのホーム（＝既定のバス・
 hub データ）になり、agent-dashboard の自動発見マーカーも兼ねる。グローバル設定
-（`~/.agent/`）のときのホームは cwd。
+（`~/.agents/`）のときのホームは cwd。
 """
 from __future__ import annotations
 
@@ -23,8 +23,38 @@ DEFAULT_CONFIG_NAMES = [
 ]
 
 
+
+# エージェント共通ホーム。`.agent` から `.agents` へ改名した。旧ホームが残っている環境では、
+# 新ホームがまだ無い間だけ旧ホームを使う（両方へ書くと状態が分裂するため）。
+AGENT_HOME = ".agents"
+AGENT_HOME_LEGACY = ".agent"
+
+
+def _agent_home_dir(root: "str | None" = None) -> str:
+    """エージェント共通ホーム（既定 ~/.agents）。旧 ~/.agent しか無ければそちらを返す。"""
+    base = os.path.expanduser(root) if root else os.path.expanduser("~")
+    new = os.path.join(base, AGENT_HOME)
+    old = os.path.join(base, AGENT_HOME_LEGACY)
+    return old if (not os.path.isdir(new) and os.path.isdir(old)) else new
+
+
+
+def agent_home_subdir(env_var: str, *parts: str) -> str:
+    """共通ホーム配下の状態ディレクトリ（`$<env_var>` があればそれを最優先）。
+
+    **判定はサブディレクトリ単位で行う。** ホーム単位で見ると、`.agents/skills` だけ先に
+    作られた環境で「新ホームは在る」と判断され、まだ移していない `.agent/control` を
+    見失う。項目ごとに実在する方へ寄せれば、移行が部分的に進んでも状態は 1 か所に定まる。"""
+    override = os.environ.get(env_var)
+    if override:
+        return os.path.expanduser(override)
+    home = os.path.expanduser("~")
+    new = os.path.join(home, AGENT_HOME, *parts)
+    old = os.path.join(home, AGENT_HOME_LEGACY, *parts)
+    return old if (not os.path.exists(new) and os.path.exists(old)) else new
+
 def _global_agent_dir() -> str:
-    return os.path.join(os.path.expanduser("~"), ".agent")
+    return str(_agent_home_dir())
 
 
 # 設定ファイルで上書きできるキーと組み込み既定。
@@ -68,7 +98,8 @@ def find_config(explicit: "str | None" = None, cwd: "str | None" = None) -> "str
             raise SystemExit(f"[agent-amigos] 設定ファイルが見つかりません: {explicit}")
         return p
     base = os.path.abspath(cwd or os.getcwd())
-    for search in (base, os.path.join(base, ".agent"), _global_agent_dir()):
+    for search in (base, os.path.join(base, ".agents"), os.path.join(base, ".agent"),
+                   _global_agent_dir()):
         for name in DEFAULT_CONFIG_NAMES:
             cand = os.path.join(search, name)
             if os.path.isfile(cand):
@@ -87,7 +118,7 @@ def _resolve_home(path: "str | None", cwd: "str | None") -> str:
         return cwd_abs
     abspath = os.path.abspath(path)
     parent = os.path.dirname(abspath)
-    if os.path.basename(parent) == ".agent":
+    if os.path.basename(parent) in (".agents", ".agent"):
         if os.path.abspath(parent) == os.path.abspath(_global_agent_dir()):
             return cwd_abs
         return os.path.dirname(parent)
@@ -131,7 +162,7 @@ def resolve_bus_spec(settings: dict, cli_bus: "str | None") -> str:
 
 def state_dir(home: str) -> str:
     """ホーム内の状態領域（commands / designs の親）。"""
-    return os.path.join(home, ".agent", "agent-amigos")
+    return os.path.join(str(_agent_home_dir(home)), "agent-amigos")
 
 
 def commands_dir(home: str) -> str:

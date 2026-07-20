@@ -43,7 +43,7 @@ ISSUE_ASSIGNEE = os.environ.get("AGENT_LOOP_ISSUE_ASSIGNEE", "")  # 例: "MY_USE
 # 状態ファイル（iid -> updated_at を記録）。
 STATE_FILE = Path(
     os.environ.get("AGENT_LOOP_ISSUE_STATE_FILE", "")
-    or (Path.home() / ".agent" / "hooks" / "gitlab-issue-state.json")
+    or (Path.home() / ".agents" / "hooks" / "gitlab-issue-state.json")
 )
 
 # --- プロンプトテンプレート --------------------------------------------

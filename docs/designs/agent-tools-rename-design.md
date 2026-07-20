@@ -36,7 +36,7 @@
 | Python パッケージ | （旧は単一/既存のまま） | `agent_project` / `agent_flow` / `agent_loop` |
 | CLI / エントリ | `kiro-*.py` | `agent-*.py` |
 | 設定ファイル名 | `kiro-*.yaml` | `agent-*.yaml` |
-| 設定探索ホーム | `.kiro/` / `~/.kiro/` | `.agent/` / `~/.agent/`（skills/agents は `.kiro` も継続探索） |
+| 設定探索ホーム | `.kiro/` / `~/.kiro/` | `.agents/` / `~/.agents/`（skills/agents は `.kiro` も継続探索） |
 | 状態ディレクトリ | `.kiro-project` | `.agent-project` |
 | ホーム env | `KIRO_PROJECT_HOME` 等 | `AGENT_PROJECT_HOME` 等（`KIRO_AGENTS_DIR` / `KIRO_STATE_HOME` は共有のため維持） |
 | daemon ロック | `kiro-flow-locks` | `agent-flow-locks` |

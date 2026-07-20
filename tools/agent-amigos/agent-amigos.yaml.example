@@ -1,18 +1,18 @@
-# .agent/agent-amigos.yaml — agent-amigos ノードの設定（cwd = ホーム）
+# .agents/agent-amigos.yaml — agent-amigos ノードの設定（cwd = ホーム）
 #
 # このファイルを置いたディレクトリが amigos ノードの「ホーム」になる:
 #   - `agent-amigos`（サブコマンド省略 = serve）でこのホームを面倒見る常駐デーモンが起動
 #   - 既定ではホーム自身がローカルバス（missions/ がここに生える）
 #   - agent-dashboard の自動発見マーカーを兼ねる（projects.roots 配下を走査）
-#   - 依頼・手動引き受けは .agent/agent-amigos/commands/*.json で投函される
+#   - 依頼・手動引き受けは .agents/agent-amigos/commands/*.json で投函される
 # 優先順位は CLI > このファイル > 組み込み既定。PyYAML 無しなら同じキーの
-# .agent/agent-amigos.json でもよい。
+# .agents/agent-amigos.json でもよい。
 
 # バス: ローカル dir（ホームからの相対可）/ git+<url> / hub+<url>。既定 "."（ホーム自身）
 bus: .
-# bus_workdir: ~/.agent/amigos/bus-mirror   # GitBus/HubBus のミラー作業領域
+# bus_workdir: ~/.agents/amigos/bus-mirror   # GitBus/HubBus のミラー作業領域
 
-node_id: my-node          # 既定: ~/.agent/amigos/node.json に自動採番
+node_id: my-node          # 既定: ~/.agents/amigos/node.json に自動採番
 agent_cli: claude         # このノードの既定 agent CLI（stub = LLM なしのプロトコル検証）
 tags: []                  # 能力タグ（ロール requires.tags とのマッチング）
 roles: []                 # 応募するロールの絞り込み（空 = 全ロール）

@@ -147,7 +147,7 @@ def _agent_cmd(cli: str, model: "str | None",
         raise RuntimeError(
             f"未知の agent_cli です: {cli!r}（組み込みは kiro/claude/copilot/codex。"
             f"それ以外は agents/{cli}.json 定義が必要です — 契約: schemas/agent-cli.schema.json・"
-            f"探索順: $KIRO_AGENTS_DIR → <root>/agents → ~/.agent/agents → ~/.kiro/agents）")
+            f"探索順: $KIRO_AGENTS_DIR → <root>/agents → ~/.agents/agents → ~/.kiro/agents）")
     return _plugin_agent_cmd(plug, model, prompt)
 
 
@@ -164,7 +164,7 @@ def _agent_plugin_dirs() -> "list[Path]":
     if envd:
         dirs.append(Path(envd).expanduser())
     dirs.append(Path.cwd() / "agents")            # プロジェクトルート（run は cwd=root で動く）
-    dirs.append(Path.home() / ".agent" / "agents")
+    dirs.append(agent_home_subdir("", "agents"))
     dirs.append(Path.home() / ".kiro" / "agents")
     return dirs
 
@@ -370,8 +370,7 @@ def _utc_iso() -> str:
 
 
 def _node_budget_dir() -> str:
-    return os.path.abspath(os.path.expanduser(
-        os.environ.get("AGENT_BUDGET_DIR", os.path.join("~", ".agent", "budget"))))
+    return str(agent_home_subdir("AGENT_BUDGET_DIR", "budget").absolute())
 
 
 def _node_budget_rate(cfg: dict, cli: str, model: str) -> float:
@@ -518,8 +517,7 @@ _CONTROL_CACHE = {"mtime": None, "data": {}}
 
 
 def _control_dir() -> str:
-    return os.path.abspath(os.path.expanduser(
-        os.environ.get("AGENT_CONTROL_DIR", os.path.join("~", ".agent", "control"))))
+    return str(agent_home_subdir("AGENT_CONTROL_DIR", "control").absolute())
 
 
 def _load_control() -> dict:

@@ -12,6 +12,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { agentHomeSubdir } = require('../../../base/main/agent-home');
 
 const BUILTINS = ['kiro', 'claude', 'copilot', 'codex'];
 const ALLOWED_KEYS = [
@@ -39,7 +40,7 @@ function searchDirs(cfg) {
   for (const root of roots) {
     if (root) dirs.push(path.join(expandHome(String(root)), 'agents'));
   }
-  dirs.push(path.join(os.homedir(), '.agent', 'agents'));
+  dirs.push(agentHomeSubdir('agents'));
   dirs.push(path.join(os.homedir(), '.kiro', 'agents'));
   // 重複は先勝ちで畳む
   const seen = new Set();
@@ -54,7 +55,7 @@ function searchDirs(cfg) {
 }
 
 function defaultSaveDir() {
-  return path.join(os.homedir(), '.agent', 'agents');
+  return agentHomeSubdir('agents');
 }
 
 // 契約（agent-cli.schema.json）の必須・許可・enum を静的検証する。エラーは文字列配列で返す（throw しない）。

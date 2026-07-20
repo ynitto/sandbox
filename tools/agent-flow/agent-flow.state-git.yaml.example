@@ -8,8 +8,8 @@
 #   このファイルは agent-flow 側で一致させるべき値だけを持つ）
 #
 # ── WSL メモ ──
-#   Windows: C:\work\ops\.agent\agent-flow.yaml          ← このファイル（Windows 側クローンで管理）
-#   WSL:     ln -s /mnt/c/work/ops/.agent/agent-flow.yaml ~/.agent/agent-flow.yaml
+#   Windows: C:\work\ops\.agents\agent-flow.yaml          ← このファイル（Windows 側クローンで管理）
+#   WSL:     ln -s /mnt/c/work/ops/.agents/agent-flow.yaml ~/.agents/agent-flow.yaml
 #   読むのは WSL のプロセスなので【パス類は WSL 側のパスで書く】。バスと .state-git クローンは
 #   WSL 側ファイルシステム（ext4）に置く（/mnt/c は遅く flock 系ロックも不安定）。
 #   起動（WSL）: agent-flow daemon
@@ -58,8 +58,8 @@ state_git_subdir: agent-flow
 # state_git はコンテナ状態のみで、バスは同期しない）。上から順に確認する:
 #   1. daemon がこの設定を読めているか
 #      → daemon 起動ログの2行目に `state-git: 有効 → …（バス … をリモートへ鏡写し）` が出るか。
-#        `無効（未設定）` なら agent-flow.yaml が読めていない（--config か 起動 cwd 直下 / .agent/ を確認）。
-#        cwd 直下や .agent/ に別の agent-flow.yaml があるとそちらが勝つ点に注意（直下が最優先）。
+#        `無効（未設定）` なら agent-flow.yaml が読めていない（--config か 起動 cwd 直下 / .agents/ を確認）。
+#        cwd 直下や .agents/ に別の agent-flow.yaml があるとそちらが勝つ点に注意（直下が最優先）。
 #   2. クローンとコミットができているか
 #      → <bus>/.state-git/ が生成され、そこで `git log` にコミットが増えるか。
 #        SSH 鍵など push 認証が WSL 側ユーザーで通ること（手動 `git -C <bus>/.state-git push` で確認）。

@@ -146,8 +146,8 @@ test('resolveAgent: 設定もプロジェクト設定も無ければ既定 kiro'
 test('readProjectAgent: 本体側の設定参照機能は後方互換として維持する', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-agent-'));
   try {
-    fs.mkdirSync(path.join(tmp, '.agent'));
-    fs.writeFileSync(path.join(tmp, '.agent', 'agent-project.yaml'), 'agent_cli: copilot\n');
+    fs.mkdirSync(path.join(tmp, '.agents'));
+    fs.writeFileSync(path.join(tmp, '.agents', 'agent-project.yaml'), 'agent_cli: copilot\n');
     const r = agent.readProjectAgent(tmp);
     assert.strictEqual(r.cli, 'copilot');
   } finally {

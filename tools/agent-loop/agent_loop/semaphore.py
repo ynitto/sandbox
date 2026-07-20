@@ -6,10 +6,10 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 
 CONCURRENCY_AGENT_NAME = "agent-loop-concurrency"
-_SLOTS_DIR = Path.home() / ".agent" / "slots"
+_SLOTS_DIR = agent_home_subdir("", "slots")
 _SLOTS_MUTEX = _SLOTS_DIR / ".lock"
 _DEFAULT_SLOT_TIMEOUT = 7200  # 猶予時間のデフォルト値（秒）
-_STATE_DIR = Path.home() / ".agent" / "loop-state"  # デーモン状態ファイルディレクトリ
+_STATE_DIR = agent_home_subdir("", "loop-state")  # デーモン状態ファイルディレクトリ
 
 
 class GlobalSemaphore:

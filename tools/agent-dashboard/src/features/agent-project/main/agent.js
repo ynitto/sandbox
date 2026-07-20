@@ -17,6 +17,7 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const { readToolConfig } = require('./toolconfig');
+const { agentHomeSubdir, agentDirCandidates } = require('../../../base/main/agent-home');
 
 const AGENT_CLIS = new Set(['kiro', 'claude', 'copilot', 'codex', 'cursor', 'ollama']);
 
@@ -32,7 +33,7 @@ function agentPluginDirs(projectDir) {
   const dirs = [];
   if (process.env.KIRO_AGENTS_DIR) dirs.push(String(process.env.KIRO_AGENTS_DIR));
   if (projectDir) dirs.push(path.join(String(projectDir), 'agents'));
-  dirs.push(path.join(os.homedir(), '.agent', 'agents'));
+  dirs.push(agentHomeSubdir('agents'));
   dirs.push(path.join(os.homedir(), '.kiro', 'agents'));
   return dirs;
 }
@@ -125,7 +126,7 @@ function buildPluginCommand(plugin, model, prompt) {
 // 探索順は本体の _find_config と同じ root 直下 → .agent/（readToolConfig が ~/.agent も見る）。
 function readProjectAgent(projectDir) {
   if (!projectDir) return {};
-  const baseDirs = [projectDir, path.join(projectDir, '.agent')];
+  const baseDirs = [projectDir, ...agentDirCandidates(projectDir)];
   for (const name of ['agent-project', 'agent-flow']) {
     const cfg = readToolConfig(name, baseDirs);
     if (cfg && (cfg.values.agent_cli || cfg.values.model)) {

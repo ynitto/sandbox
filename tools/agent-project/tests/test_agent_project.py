@@ -7434,6 +7434,46 @@ class TestVerifyFailingStep(unittest.TestCase):
         self.assertIn("失敗した工程: `false`", msg)
 
 
+class TestAgentHome(unittest.TestCase):
+    """エージェント共通ホームの解決（`.agent` → `.agents` 改名の後方互換）。
+
+    判定はサブディレクトリ単位。ホーム単位で見ると `.agents/skills` だけ先に作られた環境で
+    「新ホームは在る」と誤判断し、まだ移していない `.agent/control` を見失う。"""
+
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.home, ignore_errors=True)
+        patcher = mock.patch.object(km.Path, "home", staticmethod(lambda: self.home))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_defaults_to_new_home(self):
+        self.assertEqual(km.agent_home_subdir("", "control"), self.home / ".agents" / "control")
+
+    def test_falls_back_to_legacy_when_only_legacy_exists(self):
+        (self.home / ".agent" / "control").mkdir(parents=True)
+        self.assertEqual(km.agent_home_subdir("", "control"), self.home / ".agent" / "control")
+
+    def test_partial_migration_keeps_unmigrated_items_on_legacy(self):
+        # skills だけ先に新ホームへ入った状態（実際にこうなっていた）
+        (self.home / ".agent" / "control").mkdir(parents=True)
+        (self.home / ".agents" / "skills").mkdir(parents=True)
+        self.assertEqual(km.agent_home_subdir("", "skills"), self.home / ".agents" / "skills")
+        self.assertEqual(km.agent_home_subdir("", "control"), self.home / ".agent" / "control",
+                         "ホーム単位で判定すると、ここで control を見失う")
+
+    def test_uses_new_home_after_migration(self):
+        (self.home / ".agent" / "control").mkdir(parents=True)
+        (self.home / ".agents" / "control").mkdir(parents=True)
+        self.assertEqual(km.agent_home_subdir("", "control"), self.home / ".agents" / "control")
+
+    def test_env_override_wins(self):
+        (self.home / ".agent" / "control").mkdir(parents=True)
+        with mock.patch.dict(os.environ, {"AGENT_CONTROL_DIR": "/tmp/explicit"}):
+            self.assertEqual(km.agent_home_subdir("AGENT_CONTROL_DIR", "control"),
+                             Path("/tmp/explicit"))
+
+
 class TestFailureTriage(unittest.TestCase):
     """失敗トリアージ: 環境要因（quota/auth/env）はタスクの内容と無関係 —
     リトライを焼かず・裁定も呼ばず、原因と直し方を明記して人へ回す。"""

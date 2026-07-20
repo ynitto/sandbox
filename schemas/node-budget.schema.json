@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "node-budget.schema.json",
   "title": "ノード予算 v2 — トークン一次のノード横断予算と台帳（データ契約）",
-  "description": "ノード（マシン）単位の agent CLI 予算。定常業務（routine）・agent-project（project）・agent-flow（flow）・agent-amigos（amigos）の全ワークロードが同じ台帳に記帳し、合計が上限を超えないよう各ツールが自律的に抑制する。v2 で一次単位をトークンへ拡張（実行時間の上限は v1 互換で有効・AND）。台帳の必須項目は従来どおり実測秒で、トークンは実測できた行だけに書く。トークン未報告の行は読む側が rates（tokens/秒）で読み出し時に推定する（台帳には事実のみ・推定値は書かない）。配分（allocation/computed）の知能は管理面（agent-dashboard / 各ツール CLI）に置き、エンジンは「自分の消費 ≥ 自分の上限、または全体消費 ≥ 全体上限なら控える」の単純比較だけを行う。管理面は config を書き、台帳を読む。置き場所: $AGENT_BUDGET_DIR（既定 ~/.agent/budget/）。config.json と ledger/<YYYYMMDD>.jsonl（UTC 日付・追記専用）。設計: docs/plans/2026-07-19-agent-dashboard-orchestration-token-budget-design.md",
+  "description": "ノード（マシン）単位の agent CLI 予算。定常業務（routine）・agent-project（project）・agent-flow（flow）・agent-amigos（amigos）の全ワークロードが同じ台帳に記帳し、合計が上限を超えないよう各ツールが自律的に抑制する。v2 で一次単位をトークンへ拡張（実行時間の上限は v1 互換で有効・AND）。台帳の必須項目は従来どおり実測秒で、トークンは実測できた行だけに書く。トークン未報告の行は読む側が rates（tokens/秒）で読み出し時に推定する（台帳には事実のみ・推定値は書かない）。配分（allocation/computed）の知能は管理面（agent-dashboard / 各ツール CLI）に置き、エンジンは「自分の消費 ≥ 自分の上限、または全体消費 ≥ 全体上限なら控える」の単純比較だけを行う。管理面は config を書き、台帳を読む。置き場所: $AGENT_BUDGET_DIR（既定 ~/.agents/budget/）。config.json と ledger/<YYYYMMDD>.jsonl（UTC 日付・追記専用）。設計: docs/plans/2026-07-19-agent-dashboard-orchestration-token-budget-design.md",
   "$defs": {
     "config": {
       "type": "object",

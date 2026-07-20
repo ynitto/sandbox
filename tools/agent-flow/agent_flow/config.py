@@ -32,7 +32,7 @@ TOOL_SUBDIR = "tools/agent-flow"
 # 自動解決する（repositories.origin.url → install_dir）。設定ファイルの update_repo で明示も可。
 DEFAULT_UPDATE_REPO = ""
 # skill-registry.json を探すエージェントホーム（install.py の AGENT_DIRS に対応）。
-_AGENT_HOME_DIRS = (".agent", ".kiro", ".claude", ".copilot", ".codex")
+_AGENT_HOME_DIRS = (AGENT_HOME, AGENT_HOME_LEGACY, ".kiro", ".claude", ".copilot", ".codex")
 
 # 環境ごとに変わる値の組み込み既定。設定ファイルのキーもこの名前（snake_case）。
 CONFIG_DEFAULTS = {
@@ -217,8 +217,9 @@ def _find_config(explicit):
             sys.exit(1)
         return p
     for base in (os.getcwd(),
-                 os.path.join(os.getcwd(), ".agent"),
-                 os.path.join(os.path.expanduser("~"), ".agent")):
+                 os.path.join(os.getcwd(), AGENT_HOME),
+                 os.path.join(os.getcwd(), AGENT_HOME_LEGACY),
+                 agent_home_dir()):
         for name in DEFAULT_CONFIG_NAMES:
             cand = os.path.join(base, name)
             if os.path.isfile(cand):

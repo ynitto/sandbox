@@ -13,6 +13,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { agentHomeSubdir } = require('../../../base/main/agent-home');
 
 const MARKER_PREFIX = '<!-- agent-instructions';
 const HEADING = '## 共通指示（agent-dashboard 管理・全ノード共通）';
@@ -29,7 +30,7 @@ function resolveInstructionsDir(cfg) {
   return expandHome(
     c.instructionsDir ||
       process.env.AGENT_INSTRUCTIONS_DIR ||
-      path.join(os.homedir(), '.agent', 'instructions')
+      agentHomeSubdir('instructions')
   );
 }
 
@@ -200,7 +201,7 @@ function skillsInventory(cfg) {
   for (const root of roots) {
     if (root) dirs.push(path.join(expandHome(String(root)), '.github', 'skills'));
   }
-  dirs.push(path.join(os.homedir(), '.agent', 'skills'));
+  dirs.push(agentHomeSubdir('skills'));
   dirs.push(path.join(os.homedir(), '.kiro', 'skills'));
   const seen = new Set();
   const out = [];

@@ -127,6 +127,21 @@ _AGENT_BIN_ENV = "KIRO_LOOP_AGENT_BIN"
 _STUB_BIN = Path(__file__).resolve().parent / "stub" / "kiro-cli-stub.py"
 
 
+
+# エージェント共通ホームのディレクトリ名。`.agent` から `.agents` へ改名した。
+# 旧ホームが残っている環境では、新ホームがまだ無い間だけ旧ホームを使う
+# （両方へ書くと実行制御や予算の状態が分裂するため）。
+AGENT_HOME = ".agents"
+AGENT_HOME_LEGACY = ".agent"
+
+
+def _agent_home() -> str:
+    home = os.path.expanduser("~")
+    new = os.path.join(home, AGENT_HOME)
+    old = os.path.join(home, AGENT_HOME_LEGACY)
+    return AGENT_HOME_LEGACY if (not os.path.isdir(new) and os.path.isdir(old)) else AGENT_HOME
+
+
 def _stub_enabled() -> bool:
     return os.environ.get(_STUB_ENV, "").strip().lower() not in ("", "0", "false", "no")
 
@@ -205,7 +220,7 @@ def _utc_iso() -> str:
 
 def _node_budget_dir() -> str:
     return os.path.abspath(os.path.expanduser(
-        os.environ.get("AGENT_BUDGET_DIR", os.path.join("~", ".agent", "budget"))))
+        os.environ.get("AGENT_BUDGET_DIR", os.path.join("~", _agent_home(), "budget"))))
 
 
 def _node_budget_rate(cfg: dict, cli: str, model: str) -> float:
@@ -355,7 +370,7 @@ _CONTROL_CACHE = {"mtime": None, "data": {}}
 
 def _control_dir() -> str:
     return os.path.abspath(os.path.expanduser(
-        os.environ.get("AGENT_CONTROL_DIR", os.path.join("~", ".agent", "control"))))
+        os.environ.get("AGENT_CONTROL_DIR", os.path.join("~", _agent_home(), "control"))))
 
 
 def _load_control() -> dict:
@@ -402,7 +417,7 @@ _INSTRUCTIONS_REV_APPLIED: "int | None" = None
 
 def _instructions_dir() -> str:
     return os.path.abspath(os.path.expanduser(
-        os.environ.get("AGENT_INSTRUCTIONS_DIR", os.path.join("~", ".agent", "instructions"))))
+        os.environ.get("AGENT_INSTRUCTIONS_DIR", os.path.join("~", _agent_home(), "instructions"))))
 
 
 def _load_instructions() -> "dict | None":

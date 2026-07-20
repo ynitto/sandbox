@@ -24,8 +24,7 @@ _INSTRUCTIONS_REV_APPLIED: "int | None" = None
 
 
 def _instructions_dir() -> str:
-    return os.path.abspath(os.path.expanduser(
-        os.environ.get("AGENT_INSTRUCTIONS_DIR", os.path.join("~", ".agent", "instructions"))))
+    return os.path.abspath(agent_home_subdir("AGENT_INSTRUCTIONS_DIR", "instructions"))
 
 
 def load_instructions(directory: "str | None" = None) -> "dict | None":

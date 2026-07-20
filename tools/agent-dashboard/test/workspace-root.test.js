@@ -21,7 +21,7 @@ function test(name, fn) {
   console.log(`ok - ${name}`);
 }
 
-function mkWorkspace({ root = '.agent-project', configDir = '.agent' } = {}) {
+function mkWorkspace({ root = '.agent-project', configDir = '.agents' } = {}) {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-ws-'));
   fs.mkdirSync(path.join(ws, configDir), { recursive: true });
   fs.writeFileSync(

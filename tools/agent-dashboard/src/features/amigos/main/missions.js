@@ -17,6 +17,7 @@ const os = require('os');
 const path = require('path');
 
 const preview = require('./preview');
+const { agentHomeSubdir } = require('../../../base/main/agent-home');
 
 function expandHome(p) {
   if (!p) return p;
@@ -62,7 +63,7 @@ function discoverBusDirs(cfg) {
   // 同じ missions/<mid>/ レイアウトなので自動発見の対象にする（hubbus.py と同じ置き場）。
   const out = [];
   for (const kind of ['bus', 'hub']) {
-    const base = path.join(os.homedir(), '.agent', 'amigos', kind);
+    const base = agentHomeSubdir('amigos', kind);
     out.push(...listDirs(base).map((n) => path.join(base, n)));
   }
   return out;
