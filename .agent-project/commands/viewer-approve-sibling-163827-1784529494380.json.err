@@ -1,0 +1,11 @@
+{
+  "error": "approve sibling-163827 が失敗 (exit 2): エラー: タスクが見つかりません: sibling-163827",
+  "failed_at": "2026-07-20 15:59:05",
+  "command": {
+    "command": "approve",
+    "id": "sibling-163827",
+    "reason": "成果を確認して完了を承認",
+    "actor": "agent-dashboard",
+    "ts": "2026-07-20T06:38:14.379Z"
+  }
+}
