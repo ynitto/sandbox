@@ -3,7 +3,7 @@ from __future__ import annotations
 # 単体 import しない。agent_flow/__init__.py が共有名前空間へ順に exec 合成する。
 #
 # 正典: schemas/agent-instructions.schema.json。実体は $AGENT_INSTRUCTIONS_DIR
-# （既定 ~/.agent/instructions/）の instructions.json（管理面＝agent-dashboard が原子書換）。
+# （既定 ~/.agents/instructions/）の instructions.json（管理面＝agent-dashboard が原子書換）。
 #
 # agent-flow は run 作成時（orchestrate の ensure_run 後）に投入ノードの instructions.json を
 # 描画して runs/<run-id>/meta.json に additive キー instructions:{revision,text} として固定する。
@@ -24,8 +24,7 @@ _INSTRUCTIONS_REV_APPLIED: "int | None" = None
 
 
 def _instructions_dir() -> str:
-    return os.path.abspath(os.path.expanduser(
-        os.environ.get("AGENT_INSTRUCTIONS_DIR", os.path.join("~", ".agent", "instructions"))))
+    return os.path.abspath(agent_home_subdir("AGENT_INSTRUCTIONS_DIR", "instructions"))
 
 
 def load_instructions(directory: "str | None" = None) -> "dict | None":

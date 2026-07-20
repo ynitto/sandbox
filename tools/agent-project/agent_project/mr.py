@@ -397,7 +397,24 @@ def _flow_failure_blob(cfg, task) -> str:
     return "\n".join(p for p in parts if p)
 
 
-def _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location="local"):
+def _failure_record(cfg, task, blob, vmsg, phase, verdict) -> dict:
+    """needs へ載せる失敗の構造化レコード（表示層はこれを読むだけ）。
+
+    分類（chain）と検証の解釈（diagnose_verify_failure）を、生データを持っているここで
+    一度だけ行う。以前は agent-dashboard が判断材料の**散文を正規表現で読み直して**おり、
+    書き手の文言が変わると読み手だけが静かに壊れた。解釈できない項目は空のままにする
+    （空は「分からない」であって「失敗していない」ではない）。"""
+    chain = agent_error_chain(blob)
+    rec = {"cls": chain[0] if chain else "", "chain": chain,
+           "phase": str(phase or ""), "verdict": str(verdict or "")}
+    # 検証の所見は「検証まで到達した」ときだけ。未実行の記録から所見を作らない。
+    if verdict == VERIFY_FAILED and task.verify:
+        rec.update(diagnose_verify_failure(task.verify, vmsg, cfg.workdir))
+    return rec
+
+
+def _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location="local",
+                    phase=PHASE_VERIFY, verdict=VERIFY_FAILED):
     """verify=NG → 上限内なら積み直し / 学習で自動解決 / 上限超で人へエスカレーション。
     委譲 executor（gitlab）の却下なら、人コメント（やり直し指示）を次 act の feedback に注入する。
 
@@ -406,19 +423,26 @@ def _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location="local"):
     モデルの問題）なら、これはタスクの内容と無関係で、リトライしても同じ理由で全タスクが
     落ち続ける。リトライを焼かず・裁定（これも LLM 呼び出し＝同じ理由で失敗する）も呼ばず、
     原因と直し方を明記して人へ回す。環境を直して approve すれば同じ run の続きから再開する。"""
-    triage = classify_agent_failure(f"{vmsg}\n{_flow_failure_blob(cfg, task)}")
+    blob = f"{vmsg}\n{_flow_failure_blob(cfg, task)}"
+    failure = _failure_record(cfg, task, blob, vmsg, phase, verdict)
+    triage = classify_agent_failure(blob)
     if triage and triage[0] in AGENT_ERROR_ENV_CLASSES:
         cls, hint = triage
-        label = {"control": "管理設定による停止", "quota": "利用上限",
-                 "auth": "認証切れ", "env": "実行環境の問題"}[cls]
+        labels = {"control": "管理設定による停止", "quota": "利用上限",
+                  "auth": "認証切れ", "env": "実行環境の問題", "transient": "一時的なエラー"}
+        label = labels[cls]
         category = "実行制御" if cls == "control" else "環境の問題"
         remedy = "全体設定で実行を許可してから" if cls == "control" else "環境を直してから"
+        # 併記された他の分類も残す。1 つに畳むと、実行制御で止まった記録に前回の利用上限が
+        # 混ざっていたことが消え、なぜその分類になったのかを後から追えない。
+        others = [labels.get(c, c) for c in agent_error_chain(blob)[1:] if c in labels]
+        also = f"（記録にはほかに {'・'.join(others)} の痕跡もあります）" if others else ""
         # needs にメモを書いて [x] しても run_id_for が新 run を作らないよう、再開約束を残す。
         task.set("env_resume", "1")
-        _block(cfg, task, f"[agent-error:{cls}] {category}（{label}）: {hint} "
+        _block(cfg, task, f"[agent-error:{cls}] {category}（{label}）: {hint}{also} "
                           "タスクの内容の問題ではないため、リトライ回数は消費していません。"
                           f"{remedy} approve すると、同じ run の続き（失敗した工程だけ）"
-                          "から再開します。", reasons, evidence=ev)
+                          "から再開します。", reasons, evidence=ev, failure=failure)
         append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（{category}: {label}。"
                                     f"リトライ・裁定は消費しない）")
         return
@@ -542,7 +566,8 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
         ok, flaky, vmsg = run_verify_stable(task.verify, vcwd, cfg.verify_timeout,
                                             cfg.verify_confirm, venv)
         ev = delivery_evidence(cfg, act_msg, git_base, location,
-                               verify=task.verify, vmsg=vmsg, ok=ok, task=task)
+                               verify=task.verify, vmsg=vmsg, ok=ok,
+                               phase=PHASE_VERIFY, task=task)
         if ok and not flaky and cfg.regression_cmd:    # done 確定前のグローバル回帰ゲート（巻き込み事故）
             # 回帰検査は **常に git-bus ルート（workdir）** で走らせる。task.verify と違い
             # cfg.regression_cmd はグローバル検査で、パス（例 `--repos <root>/repos.json`）も
@@ -562,7 +587,8 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
     except RuntimeError as e:      # workspace clone 失敗等は黙って workdir に倒さず NG（成果の無い場所で誤判定しない）
         ok, flaky, vmsg = False, False, str(e)[:500]
         ev = delivery_evidence(cfg, act_msg, git_base, location,
-                               verify=task.verify, vmsg=vmsg, ok=ok, task=task)
+                               verify=task.verify, vmsg=vmsg, ok=ok,
+                               phase=PHASE_VERIFY, task=task)
     finally:
         if vtmp:
             shutil.rmtree(vtmp, ignore_errors=True)

@@ -11,7 +11,7 @@ TOOL_SUBDIR = "tools/agent-project"
 # 自動解決する（repositories.origin.url → install_dir）。設定ファイルの update_repo で明示も可。
 DEFAULT_UPDATE_REPO = ""
 # skill-registry.json を探すエージェントホーム（install.py の AGENT_DIRS に対応）。
-_AGENT_HOME_DIRS = (".agent", ".kiro", ".claude", ".copilot", ".codex")
+_AGENT_HOME_DIRS = (AGENT_HOME, AGENT_HOME_LEGACY, ".kiro", ".claude", ".copilot", ".codex")
 
 # 自己更新の再起動先 cwd（main で起動時の cwd を捕捉。「動いていたカレントディレクトリ」へ戻す）。
 _START_CWD: "str | None" = None
@@ -387,7 +387,8 @@ def delivery_entries(cfg: "Config", task: "Task | None" = None,
 def delivery_evidence(cfg: "Config", act_msg: str, git_base, location: str = "local",
                       verify: "str | None" = None, vmsg: str = "", ok: "bool | None" = None,
                       max_files: int = 12, task: "Task | None" = None,
-                      mr_url: str = "") -> str:
+                      mr_url: str = "", verdict: "str | None" = None,
+                      phase: "str | None" = None) -> str:
     """人が「成果物がどこにあり・何が差分で・検証はどうだったか」を判断できる材料を作る。
     needs（判断待ち）と DELIVERY/archive（受領）双方の説明欄に使う。git でなければ ref/差分は空。
 
@@ -440,8 +441,9 @@ def delivery_evidence(cfg: "Config", act_msg: str, git_base, location: str = "lo
             else:
                 lines.append(f"- 変更ファイル: なし（`{e['base']}` と差が無い＝成果物が空）")
         lines.append(f"- 実行先: {location}")
+        lines += _phase_evidence_lines(phase)
         if verify is not None:
-            lines.append(_verify_evidence_line(verify, vmsg, ok))
+            lines.append(_verify_evidence_line(verify, vmsg, ok, verdict))
         return "\n".join(lines)
 
     # 作業ブランチが特定できないとき（単発実行・git 以外）は従来どおり workdir を見る
@@ -464,17 +466,66 @@ def delivery_evidence(cfg: "Config", act_msg: str, git_base, location: str = "lo
             lines.append(f"    - …他 {len(changed) - len(shown)} 件")
     elif git_base is not None:
         lines.append("- 差分: baseline 以降の変更なし")
+    lines += _phase_evidence_lines(phase)
     if verify is not None:
-        lines.append(_verify_evidence_line(verify, vmsg, ok))
+        lines.append(_verify_evidence_line(verify, vmsg, ok, verdict))
     return "\n".join(lines)
 
 
-def _verify_evidence_line(verify, vmsg: str, ok: "bool | None") -> str:
+# 検証の結末。bool では「実行して落ちた」と「そこまで到達していない」が同じ False に潰れる。
+# 潰すと、着手前に止まった run が判断材料に「検証 → FAIL」と書かれ、画面は「検証コマンドが
+# 失敗しました」と表示する。人は存在しないテスト失敗を調べに行き、本当の原因（実行制御・
+# 認証・上限など）には辿り着けない。到達しなかったことは、失敗ではなく未実行として書く。
+VERIFY_PASSED = "passed"
+VERIFY_FAILED = "failed"
+VERIFY_NOT_RUN = "not_run"        # act が失敗し、検証まで到達していない
+VERIFY_UNKNOWN = "unknown"        # 結末を判定できない（旧記録など）
+
+# どの工程まで到達したか。verdict（検証の結末）と対で記録する——結末だけだと
+# 「なぜ検証していないのか」が残らず、読む側が理由を推測して埋めてしまう。
+# 判断材料に 1 行残し、表示層は phase != verify のとき検証の成否に言及しない。
+PHASE_PLAN = "plan"               # 計画・分解
+PHASE_ACT = "act"                 # 実装（agent-flow の run）
+PHASE_VERIFY = "verify"           # 完了条件の検証
+PHASE_REGRESSION = "regression"   # done 確定前のグローバル回帰検査
+PHASE_LABELS = {
+    PHASE_PLAN: "計画",
+    PHASE_ACT: "実装",
+    PHASE_VERIFY: "検証",
+    PHASE_REGRESSION: "回帰検査",
+}
+
+
+def verify_verdict(ok: "bool | None", ran: bool = True) -> str:
+    """(ok, ran) を検証の結末語彙へ正規化する。呼び出し側が個別に文字列を組み立てない。"""
+    if not ran:
+        return VERIFY_NOT_RUN
+    if ok is None:
+        return VERIFY_UNKNOWN
+    return VERIFY_PASSED if ok else VERIFY_FAILED
+
+
+def _phase_evidence_lines(phase: "str | None") -> "list[str]":
+    """到達工程の 1 行（未指定なら書かない＝旧記録と同じ見た目を保つ）。
+    「どこまで進んだか」を残しておかないと、読む側が結末から逆算して埋めてしまう。"""
+    label = PHASE_LABELS.get(str(phase or ""))
+    return [f"- 到達工程: {phase}（{label}）"] if label else []
+
+
+def _verify_evidence_line(verify, vmsg: str, ok: "bool | None",
+                          verdict: "str | None" = None) -> str:
     """判断材料の検証行。verify 未定義は「FAIL（失敗）」ではなく確認待ちとして書く
-    （空 verify を FAIL と書くと、成功した成果が失敗と誤読される）。"""
+    （空 verify を FAIL と書くと、成功した成果が失敗と誤読される）。
+    verdict を渡さない旧呼び出しは従来どおり ok から導く。"""
     if not str(verify or "").strip():
         return "- 検証: 未定義（自動では完了にできないため、成果を確認して承認してください）"
-    res = "PASS" if ok else ("FAIL" if ok is not None else "?")
+    v = verdict or verify_verdict(ok)
+    if v == VERIFY_NOT_RUN:
+        # ここに act の失敗本文は載せない。それは検証の出力ではないし、載せると
+        # 「検証が失敗した」と読める。失敗の理由は needs の「なぜ」に別途書かれる。
+        return (f"- 検証: `{verify}` → 未実行"
+                "（実行が検証まで到達しなかったため、テストの成否は分かっていません）")
+    res = {VERIFY_PASSED: "PASS", VERIFY_FAILED: "FAIL"}.get(v, "?")
     vm = (vmsg or "").replace("\n", " ").strip()[:200]
     return f"- 検証: `{verify}` → {res}" + (f"（{vm}）" if vm else "")
 

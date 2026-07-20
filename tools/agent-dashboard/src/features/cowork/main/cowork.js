@@ -14,6 +14,7 @@ const {
 } = require('./discover');
 const { applyKiroLoopEdits, applyStatemachineEdits } = require('./writeback');
 const globalInstructions = require('../../orchestration/main/instructions');
+const sessionCommands = require('../../orchestration/main/sessionCommands');
 
 // 発見結果キャッシュ。overview のポーリングごとに roots を再走査しない。
 const DISCOVER_TTL_MS = 30000;
@@ -379,6 +380,23 @@ function withGlobalInstructions(config, prompt) {
   }
 }
 
+// セッション開始コマンド（agent-session-commands 契約）の実行計画。tmux セッションを新しく
+// 作るときだけ走るシェル片へ落とすため、ここで when 判定とプレースホルダ展開まで済ませる。
+// 不在・破損・無効はすべて空配列（＝何も差し込まない）。
+function planSessionCommands(config, cwd) {
+  try {
+    const dir = sessionCommands.resolveSessionDir(config || {});
+    // コマンドは WSL 側のシェルで走るため、{cwd} / {workspace} は Linux パスへ揃える
+    // （Windows パスのまま渡すと cd も git -C も刺さらない）。
+    const linuxCwd = toWslCwd(cwd) || String(cwd || '');
+    return sessionCommands.plan(sessionCommands.loadSessionCommands(dir), {
+      engine: 'dashboard', workload: 'routine', cwd: linuxCwd, workspace: linuxCwd, agent_cli: 'kiro',
+    });
+  } catch {
+    return []; // フェイルセーフ: 計画の失敗で起動を止めない
+  }
+}
+
 // repo の .kiro/kiro-loop.{yaml,yml,json} から定期プロンプト本文を名前で解決する。
 // 見つからなければ ''（呼び出し側が代替の指示文へフォールバックする）。
 function resolveLoopPromptText(repo, promptName) {
@@ -425,7 +443,9 @@ function runLoop(config, itemIdValue) {
       resolveLoopPromptText(item.repo || item.cwd, runId)
         || `.kiro/kiro-loop.yml（または kiro-loop.yaml / .json）の定期プロンプト「${runId}」の本文を読んで、その指示を実行して`
     ));
-  const res = makeLoopProvider(cfg).run({ ...item, cwd, id: runId, prompt });
+  const res = makeLoopProvider(cfg).run({
+    ...item, cwd, id: runId, prompt, sessionCommands: planSessionCommands(config, cwd),
+  });
   recordRun(cfg, { ...item, type: 'loop' }, res);
   return res;
 }
@@ -458,7 +478,10 @@ function runStateMachine(config, itemIdValue, input) {
       : `${smName} ステートマシンを実行して${input ? `。入力: ${String(input)}` : ''}`;
     args = ['send', legacy];
   }
-  const res = makeLoopProvider(cfg).run({ ...item, cwd, args, prompt, timeoutMs: item.timeoutMs || 60000 });
+  const res = makeLoopProvider(cfg).run({
+    ...item, cwd, args, prompt, timeoutMs: item.timeoutMs || 60000,
+    sessionCommands: planSessionCommands(config, cwd),
+  });
   recordRun(cfg, { ...item, type: 'state-machine' }, res);
   return res;
 }
@@ -670,5 +693,5 @@ module.exports = {
   resolveItem, findItem, dedupeItems, applyDiscoveredEdits, gitCommitFiles,
   invalidateDiscoverCache, decodeCliOutput, viewerRepo,
   itemLogs, readLog, appendHistory, readHistory, historyFile,
-  resolveLoopPromptText, withInputAssist, withGlobalInstructions,
+  resolveLoopPromptText, withInputAssist, withGlobalInstructions, planSessionCommands,
 };

@@ -5,13 +5,14 @@
 // agents/<name>.json を置くだけで agent_cli: <name> として使える。
 //
 // 探索順（first-wins。同名は先勝ちで後段を陰らせる）:
-//   $KIRO_AGENTS_DIR → <プロジェクトルート>/agents/ → ~/.agent/agents/ → ~/.kiro/agents/
+//   $KIRO_AGENTS_DIR → <プロジェクトルート>/agents/ → ~/.agents/agents/ → ~/.kiro/agents/
 // dashboard は棚卸し（どこに何があるか・検証エラー）を見せ、その場で作成・編集・削除できる。
 // 結合はデータ契約のみ（各エンジンは自前の小さなローダで解釈する）。
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { agentHomeSubdir } = require('../../../base/main/agent-home');
 
 const BUILTINS = ['kiro', 'claude', 'copilot', 'codex'];
 const ALLOWED_KEYS = [
@@ -39,7 +40,7 @@ function searchDirs(cfg) {
   for (const root of roots) {
     if (root) dirs.push(path.join(expandHome(String(root)), 'agents'));
   }
-  dirs.push(path.join(os.homedir(), '.agent', 'agents'));
+  dirs.push(agentHomeSubdir('agents'));
   dirs.push(path.join(os.homedir(), '.kiro', 'agents'));
   // 重複は先勝ちで畳む
   const seen = new Set();
@@ -54,7 +55,7 @@ function searchDirs(cfg) {
 }
 
 function defaultSaveDir() {
-  return path.join(os.homedir(), '.agent', 'agents');
+  return agentHomeSubdir('agents');
 }
 
 // 契約（agent-cli.schema.json）の必須・許可・enum を静的検証する。エラーは文字列配列で返す（throw しない）。
@@ -131,7 +132,7 @@ function list(cfg) {
   return { builtins: BUILTINS.slice(), dropins };
 }
 
-// ドロップイン定義の作成・編集。既定の書込先は ~/.agent/agents/。検証を通ってから原子書換。
+// ドロップイン定義の作成・編集。既定の書込先は ~/.agents/agents/。検証を通ってから原子書換。
 function save(cfg, payload) {
   const p = payload || {};
   const name = String(p.name || '').trim();

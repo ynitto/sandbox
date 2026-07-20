@@ -43,6 +43,16 @@ def cmd_work(args) -> int:
     idle_exit = getattr(args, "idle_exit", False)
     log(who, f"ワーカー起動 (executor={args.executor}, keep_alive={args.keep_alive}, "
              f"idle_exit={idle_exit})")
+    # セッション開始コマンド（agent-session-commands）。agent-flow の「セッション」は
+    # このワーカープロセス 1 つなので、ここで 1 回だけ走らせる（ノードごとの CLI 呼び出し
+    # には入れない）。on_error='fail' が失敗したらワーカーを起こさない。
+    if not run_session_commands(who, {
+        "engine": "agent-flow", "workload": "flow", "cwd": os.getcwd(),
+        "workspace": os.getcwd(), "agent_cli": getattr(args, "agent_cli", "") or "",
+        "model": getattr(args, "model", "") or "", "run_id": getattr(args, "run_id", "") or "",
+        "node_id": who,
+    }):
+        return 1
     # executor を一度だけ解決する（組み込み agent/stub or プラグイン）。
     execute = make_executor(args)
     # park & poll: 親（daemon/run）が service_waits で面倒を見るときだけ deferral を有効化する。
@@ -167,8 +177,13 @@ def cmd_work(args) -> int:
             # 文字列タグに依存せず読めるよう、分類と in-place 試行数を data に載せる。
             # transient がここへ来た＝レイヤ1（run_agent 内の再試行）を使い切っている。
             triage = classify_agent_failure(str(e))
+            chain = agent_error_chain(str(e))
             rdata = {**(rdata if isinstance(rdata, dict) else {}),
                      "error_class": triage[0] if triage else "content"}
+            # 観測した分類を全部残す。error_class（先頭＝proximate cause）だけを保存すると、
+            # 分類器が後で直っても保存済みの記録は誤ったままになる（実際そうなった）。
+            if len(chain) > 1:
+                rdata["error_chain"] = chain
             attempts = getattr(e, "attempts", None)
             if attempts:
                 rdata["attempts"] = int(attempts)

@@ -162,7 +162,7 @@ def _agent_plugin_dirs() -> list:
     if envd:
         dirs.append(os.path.expanduser(envd))
     dirs.append(os.path.join(os.getcwd(), "agents"))
-    dirs.append(os.path.expanduser("~/.agent/agents"))
+    dirs.append(agent_home_subdir("", "agents"))
     dirs.append(os.path.expanduser("~/.kiro/agents"))
     return dirs
 
@@ -195,7 +195,7 @@ def _normalize_agent_plugin(name: str, raw: dict, path: str) -> dict:
 
 
 def load_agent_plugin(name: str) -> "dict | None":
-    """agents/<name>.json を探索順（$KIRO_AGENTS_DIR → <cwd>/agents → ~/.agent/agents → ~/.kiro/agents）に読む。
+    """agents/<name>.json を探索順（$KIRO_AGENTS_DIR → <cwd>/agents → ~/.agents/agents → ~/.kiro/agents）に読む。
     無ければ None（プロセス内キャッシュ）。壊れた定義は黙って無視せず RuntimeError。"""
     key = str(name or "").strip().lower()
     if not key:
@@ -259,7 +259,7 @@ def _plugin_error_patterns() -> tuple:
 
 # --- ノード予算 v2（node-budget 契約: schemas/node-budget.schema.json） --------------------
 # ノード（マシン）単位の共有台帳。定常業務（kiro-loop）・agent-project・agent-flow・
-# agent-amigos が同じ台帳（$AGENT_BUDGET_DIR、既定 ~/.agent/budget/）に記帳し、合計が上限
+# agent-amigos が同じ台帳（$AGENT_BUDGET_DIR、既定 ~/.agents/budget/）に記帳し、合計が上限
 # （0 = 無制限）を超えたら新規の LLM 実行を控える。v2 で一次単位をトークンへ拡張（時間上限は
 # v1 互換で AND）。台帳には実測のみ（実測秒＋実測できたトークン）を書き、未報告行は rates で
 # 読み出し時に推定する。配分・較正の知能は管理面（dashboard）にあり、エンジンは単純比較のみ。
@@ -269,8 +269,7 @@ _NODE_BUDGET_TOOL = "agent-flow"
 
 
 def _node_budget_dir() -> str:
-    return os.path.abspath(os.path.expanduser(
-        os.environ.get("AGENT_BUDGET_DIR", os.path.join("~", ".agent", "budget"))))
+    return os.path.abspath(agent_home_subdir("AGENT_BUDGET_DIR", "budget"))
 
 
 def _node_budget_rate(cfg: dict, cli: str, model: str) -> float:
@@ -410,15 +409,14 @@ def _node_budget_record(seconds: float, ref: str = "", agent_cli: str = "",
 
 
 # --- agent-control（管理面→エンジンの宣言的オーケストレーション契約） ----------------------
-# schemas/agent-control.schema.json。$AGENT_CONTROL_DIR（既定 ~/.agent/control/）の control.json
+# schemas/agent-control.schema.json。$AGENT_CONTROL_DIR（既定 ~/.agents/control/）の control.json
 # に管理面が「望ましい状態」を書き、各エンジンが mtime を見て pull で適用する（push 型 IPC なし）。
 # 優先順位 control > CLI 引数 > 設定ファイル > 組み込み既定。適用状況は status/<tool>-<pid>.json へ。
 _CONTROL_CACHE = {"mtime": None, "data": {}}
 
 
 def _control_dir() -> str:
-    return os.path.abspath(os.path.expanduser(
-        os.environ.get("AGENT_CONTROL_DIR", os.path.join("~", ".agent", "control"))))
+    return os.path.abspath(agent_home_subdir("AGENT_CONTROL_DIR", "control"))
 
 
 def _load_control() -> dict:
@@ -486,6 +484,9 @@ def _write_status(effective_cli: str = "", effective_model: str = "", lifecycle:
         # dashboard が instructions.revision と突き合わせ未反映を可視化する（agent-control status へ相乗り）。
         if _INSTRUCTIONS_REV_APPLIED is not None:
             rec["instructions_revision_applied"] = _INSTRUCTIONS_REV_APPLIED
+        # セッション開始コマンド: このワーカープロセスの起動時に適用した revision（未適用は省略）。
+        if _SESSION_COMMANDS_REV_APPLIED is not None:
+            rec["session_commands_revision_applied"] = _SESSION_COMMANDS_REV_APPLIED
         if budget is not None:
             rec["budget"] = {"exceeded": bool(budget.get("exceeded")),
                              "soft": bool(budget.get("soft"))}
@@ -525,18 +526,54 @@ _AGENT_ERROR_PATTERNS = (
 )
 
 
+# 発生元マーカー → 分類。マーカーは止めた本人（raise した箇所）が書くので、外側の層が
+# 後から載せたタグより確かな証拠になる。タグを無条件に正とすると、内側で付いた分類が
+# 外へ運ばれ続けて上書きできない——実際 [agent-control] による停止が quota として運ばれ、
+# 画面は「利用上限です。時間をおいてください」と表示した。必要な操作は「実行を run に
+# 戻す」で、待っても永久に回復しない。マーカーがあればそれを先に見る。
+_AGENT_ERROR_SOURCE_CLASSES = (
+    ("[agent-control]", "control"),
+    ("[node-budget]", "quota"),
+)
+
+
+def _source_marker_class(text: str) -> "str | None":
+    """本文中の発生元マーカーから分類を引く（無ければ None）。"""
+    return next((cls for marker, cls in _AGENT_ERROR_SOURCE_CLASSES if marker in text), None)
+
+
+def agent_error_chain(blob: str) -> "list[str]":
+    """本文から観測できる分類を**すべて**、確からしい順に返す（該当なしは空）。
+
+    層をまたぐ間に分類は複数載る（内側が付けたタグの外側にマーカーが増える等）。
+    先頭だけ残して他を捨てると、後から「本当は何が起きていたか」を復元できない——
+    実際 quota タグと [agent-control] マーカーが同居した記録で、捨てた側が正しかった。
+    先頭が proximate cause（表示・行動提示に使う）で、残りは根拠として保持する。"""
+    text = str(blob or "")
+    chain: "list[str]" = []
+    marker = _source_marker_class(text)
+    if marker:
+        chain.append(marker)
+    for m in _AGENT_ERROR_TAG_RE.finditer(text):
+        if m.group(1) not in chain:
+            chain.append(m.group(1))
+    if not chain:
+        for cls, pat, _ in _plugin_error_patterns() + _AGENT_ERROR_PATTERNS:
+            if pat.search(text) and cls not in chain:
+                chain.append(cls)
+    return chain
+
+
 def classify_agent_failure(blob: str) -> "tuple[str, str] | None":
     """エラー本文を (class, hint) に分類する（該当なしは None＝内容の問題）。
-    既にタグ付きならそれが正。プラグイン定義の errors を汎用パターンより先に評価する。"""
-    text = str(blob or "")
-    m = _AGENT_ERROR_TAG_RE.search(text)
-    if m:
-        hint = next((h for c, _, h in _AGENT_ERROR_PATTERNS if c == m.group(1)), "")
-        return m.group(1), hint
-    for cls, pat, hint in _plugin_error_patterns() + _AGENT_ERROR_PATTERNS:
-        if pat.search(text):
-            return cls, hint
-    return None
+    発生元マーカー > [agent-error:] タグ > プラグイン定義 > 汎用パターン の順に見る。
+    全分類が要るときは agent_error_chain を使う（ここは先頭＝proximate cause だけ返す）。"""
+    chain = agent_error_chain(blob)
+    if not chain:
+        return None
+    cls = chain[0]
+    hint = next((h for c, _, h in _plugin_error_patterns() + _AGENT_ERROR_PATTERNS if c == cls), "")
+    return cls, hint
 
 
 def _agent_failure(cli: str, rc: int, out: str, err: str) -> str:
@@ -666,7 +703,7 @@ def _run_agent_once(prompt: str, model: str | None, purpose: str = "") -> str:
             raise RuntimeError(
                 f"未知の agent_cli です: {cli!r}（組み込みは kiro/claude/copilot/codex。"
                 f"それ以外は agents/{cli}.json 定義が必要です — 契約: schemas/agent-cli.schema.json・"
-                f"探索順: $KIRO_AGENTS_DIR → <cwd>/agents → ~/.agent/agents → ~/.kiro/agents）")
+                f"探索順: $KIRO_AGENTS_DIR → <cwd>/agents → ~/.agents/agents → ~/.kiro/agents）")
         if plug["prompt_via"] == "argv" and len(prompt.encode("utf-8")) > _agent_argv_limit():
             fd, spill = tempfile.mkstemp(prefix="agent-flow-prompt-", suffix=".txt")
             with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -675,7 +712,9 @@ def _run_agent_once(prompt: str, model: str | None, purpose: str = "") -> str:
                       f"必ずファイルの内容を読み込み、その指示に従ってタスクを実行してください: {spill}")
         cmd, stdin_text, out_file = _plugin_agent_cmd(plug, model, prompt)
     plug = _AGENT_PLUGIN_CACHE.get(cli)   # プラグインなら env/timeout の上書きが効く
-    env = {**os.environ, **((plug or {}).get("env") or {})}
+    # 発生源で色を抑止（NO_COLOR/TERM=dumb）。残った ANSI は strip_ansi で除去する二段構え
+    # （agent-project と同じ扱い）。プラグイン定義の env は最後に載せるので上書きできる。
+    env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", **((plug or {}).get("env") or {})}
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", input=stdin_text,
                               timeout=(plug or {}).get("timeout") or _agent_timeout(), env=env)

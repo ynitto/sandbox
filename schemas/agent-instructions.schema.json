@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "agent-instructions.schema.json",
   "title": "グローバル指示 — 管理面→各エンジンのノード共通指示（データ契約）",
-  "description": "agent-dashboard が編集し、各エンジン（agent-project / agent-flow / kiro-loop / agent-loop）が実行エージェント CLI へ注入するノード共通の指示。CLAUDE.md / AGENTS.md のような常設指示書に相当するが、(1) dashboard から動的に変更でき（revision 単調増加）、(2) agent-flow の run では meta.json スナップショットとして委譲先ノードへ伝播する点が異なる。各エンジンは同一の決定的規則で JSON を有界テキストブロックへ描画し、実行エージェント（成果物を作る worker / 定常業務）のプロンプトへ前置する。planner / 裁定 / prioritize / doctor 等のメタ LLM 呼び出しへは注入しない。スキルは名前参照のみ（実体は node federation が配布）。優先順位は最弱の層（タスク > brief > プロジェクト規則 charter/rules > 共通指示）。フェイルセーフ: 不在 / 破損 / enabled=false はすべて『指示なし』＝エンジンを止めない。置き場所: $AGENT_INSTRUCTIONS_DIR（既定 ~/.agent/instructions/）の instructions.json（管理面が原子書換）。設計: docs/plans/2026-07-19-agent-dashboard-global-instructions-design.md",
+  "description": "agent-dashboard が編集し、各エンジン（agent-project / agent-flow / kiro-loop / agent-loop）が実行エージェント CLI へ注入するノード共通の指示。CLAUDE.md / AGENTS.md のような常設指示書に相当するが、(1) dashboard から動的に変更でき（revision 単調増加）、(2) agent-flow の run では meta.json スナップショットとして委譲先ノードへ伝播する点が異なる。各エンジンは同一の決定的規則で JSON を有界テキストブロックへ描画し、実行エージェント（成果物を作る worker / 定常業務）のプロンプトへ前置する。planner / 裁定 / prioritize / doctor 等のメタ LLM 呼び出しへは注入しない。スキルは名前参照のみ（実体は node federation が配布）。優先順位は最弱の層（タスク > brief > プロジェクト規則 charter/rules > 共通指示）。フェイルセーフ: 不在 / 破損 / enabled=false はすべて『指示なし』＝エンジンを止めない。置き場所: $AGENT_INSTRUCTIONS_DIR（既定 ~/.agents/instructions/）の instructions.json（管理面が原子書換）。設計: docs/plans/2026-07-19-agent-dashboard-global-instructions-design.md",
   "$defs": {
     "skill_ref": {
       "description": "推奨スキルの名前参照。文字列（名前だけ）または {name, note}。実体は運ばず、ノードにローカル存在する場合のみ効く",
@@ -43,11 +43,11 @@
         },
         "tools": {
           "type": "object",
-          "description": "ツール方針。allow は kiro-cli --agent の tools へ強制反映できる唯一のフィールド（常駐系のみ・ペイン再起動が反映点）。プロンプト組立系（flow / project）では助言テキストになる",
+          "description": "ツール方針。**現状はすべてのエンジンで助言テキスト**として描画するだけで、強制力は無い（kiro-cli --agent の tools への反映は設計時に見送られた。常駐系の既定エージェントが既に tools:[\"*\"] を持ち、install が所有するファイルをペイン起動ごとに書き換える副作用に見合わないため）",
           "properties": {
             "allow": {
               "type": "array", "items": {"type": "string"},
-              "description": "許可するツール名。常駐系（kiro-loop / agent-loop）では --agent JSON の tools へマージ。プロンプト組立系では『ツール（許可）:』の助言行として描画"
+              "description": "許可するツール名。全エンジンで『ツール（許可）:』の助言行として描画する（実行時に強制されるわけではない）"
             },
             "deny_note": {
               "type": "string",

@@ -42,7 +42,7 @@ class HubBus(Bus):
         self.url = url.rstrip("/")
         digest = hashlib.sha1(self.url.encode("utf-8")).hexdigest()[:8]
         self.root = os.path.abspath(os.path.expanduser(
-            workdir or os.path.join("~", ".agent", "amigos", "hub", digest)))
+            workdir or os.path.join("~", ".agents", "amigos", "hub", digest)))
         self.pull_interval = pull_interval if pull_interval is not None else _pull_interval()
         os.makedirs(self.root, exist_ok=True)
         # オンプレ LAN 前提: 環境のプロキシ設定を常に迂回して hub へ直接届ける

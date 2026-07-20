@@ -12,6 +12,7 @@ const os = require('os');
 const path = require('path');
 const { readToolConfig } = require('./toolconfig');
 const { reposFileName } = require('./authoring');
+const { agentDirCandidates } = require('../../../base/main/agent-home');
 
 // agent-project.py と同じ正規表現
 const HEAD_RE = /^##\s+(\S+?):\s*(.*)$/;
@@ -439,6 +440,28 @@ function _normalizeDelivery(entries) {
     });
 }
 
+// agent-project が frontmatter へ書いた失敗の解釈を、そのまま表示モデルの形へ移す。
+// **ここで解釈し直さない**——生データを見て判断できるのは書き手だけで、読み手が散文から
+// 復元しようとすると、書き手の文言が変わった瞬間に静かに食い違う。
+function _failureFromFrontmatter(fmFields) {
+  const get = (k) => String(fmFields[k] || '').trim();
+  const context = {
+    category: get('failure-category'),
+    owner: get('failure-owner'),
+    command: get('failure-command'),
+    workdir: get('failure-workdir'),
+    exitCode: get('failure-exit'),
+    target: get('failure-target'),
+    resolvedTarget: get('failure-target'),
+  };
+  const hasContext = Object.values(context).some(Boolean);
+  return {
+    summary: get('failure-summary'),
+    resolution: get('failure-resolution'),
+    context: hasContext ? context : null,
+  };
+}
+
 // verify の自由文を、画面で共通表示できる「原因・実行条件・確認手順」に正規化する。
 // 特定ツール名には依存しない。解釈できない値は空のままにし、生ログを根拠として必ず残す。
 function _diagnoseFailure(why, detail) {
@@ -446,6 +469,9 @@ function _diagnoseFailure(why, detail) {
   const raw = `${why || ''} ${verify}`;
   const empty = { summary: '', resolution: '', context: null };
   if (!raw.trim()) return empty;
+  // 検証まで到達していない（act が失敗して止まった）記録からは、検証の所見を作らない。
+  // 失敗の理由は別にある——ここで何か言うと、その本当の理由を覆い隠す。
+  if (/→\s*未実行/.test(verify)) return empty;
   const workdir = (String(detail || '').match(/^-\s*所在\s*[:：]\s*(\S+)/m) || [])[1];
   const missingEnglish = (raw.match(/(?:file or directory not found|No such file or directory)[:\s]+([^\s)）]+)/i) || [])[1];
   const missingJapanese = (raw.match(/(?:エラー\s*[:：]\s*)?[^\n]*?(?:見つかりません|存在しません)\s*[:：]\s*([^\s)）]+)/) || [])[1];
@@ -585,6 +611,7 @@ function parseNeeds(text, id) {
   const fm = s.match(/^---\n([\s\S]*?)\n---\n?/);
   let body = s;
   let deliveryRaw = '';
+  const fmFields = {};          // frontmatter の生キー（失敗の構造化フィールドを読むのに使う）
   if (fm) {
     body = s.slice(fm[0].length);
     for (const line of fm[1].split('\n')) {
@@ -592,6 +619,7 @@ function parseNeeds(text, id) {
       if (!kv) continue;
       const key = kv[1];
       const val = kv[2].trim();
+      fmFields[key] = val;
       if (key === 'kind') need.kind = val;
       else if (key === 'date') need.date = val;
       else if (key === 'status') need.status = val;
@@ -646,10 +674,20 @@ function parseNeeds(text, id) {
     .trim();
   // stub 実行・無変更で痩せた判断材料は、内部パスだけの羅列に見えて分かりにくい。退化行を
   // 落として（実質情報を残しつつ）viewer 側で「成果情報なし」と一言添えられるよう印を付ける。
-  const failureDiagnosis = _diagnoseFailure(need.why, need.detail);
+  // 失敗の解釈は agent-project（生データを持っている側）が frontmatter へ構造化して書く。
+  // ここはそれを運ぶだけ。_diagnoseFailure は **その項目が無い旧記録のためのフォールバック**で、
+  // 新しく書かれる票では使われない。両側が独立に散文を解釈していたのが、書き手の文言変更で
+  // 読み手だけが静かに壊れる原因だった。
+  const failureDiagnosis = fmFields['failure-summary']
+    ? _failureFromFrontmatter(fmFields)
+    : _diagnoseFailure(need.why, need.detail);
   need.failureSummary = failureDiagnosis.summary;
   need.failureResolution = failureDiagnosis.resolution;
   need.failureContext = failureDiagnosis.context;
+  need.failureClass = String(fmFields['failure-class'] || '');
+  need.failureChain = String(fmFields['failure-chain'] || '').split(',').filter(Boolean);
+  need.failurePhase = String(fmFields['failure-phase'] || '');
+  need.verifyVerdict = String(fmFields['verify-verdict'] || '');
   need.evidenceThin = _evidenceThin(need.detail);
   if (need.evidenceThin) need.detail = _stripThinEvidence(need.detail);
   // 差分を「成果物」と「内部記録（bus/ の run ログ等）」に分ける。実行のたびに書かれる内部
@@ -677,6 +715,32 @@ function listMdDir(dir, parser) {
     item.mtime = statMtime(file);
     item.file = file;
     out.push(item);
+  }
+  return out;
+}
+
+// commands/*.err — 本体が取り込みに失敗して退避した指示（本体 _reject_command と対）。
+// 中身は {error, failed_at, command:{command,id,...}}。タスク id ごとに最新の 1 件へまとめ、
+// 対応する needs カードへ「直前の指示は失敗した」根拠として渡す。承認の失敗は非同期
+// （ドロップ→後で取り込み）なので送信時トーストでは伝えられず、これが無いと失敗が
+// 誰にも見えないまま同じボタンが繰り返し押される。
+function listCommandFailures(dir) {
+  const out = {};
+  const cdir = path.join(dir, 'commands');
+  for (const f of safeList(cdir)) {
+    if (!f.endsWith('.err')) continue;
+    const rec = readJson(path.join(cdir, f));
+    if (!rec || typeof rec !== 'object') continue;
+    const cmd = rec.command && typeof rec.command === 'object' ? rec.command : {};
+    const tid = String(cmd.id || '').trim();
+    if (!tid) continue;
+    const entry = {
+      action: String(cmd.command || ''),
+      error: String(rec.error || ''),
+      failedAt: String(rec.failed_at || ''),
+    };
+    const prev = out[tid];
+    if (!prev || String(prev.failedAt) < entry.failedAt) out[tid] = entry;
   }
   return out;
 }
@@ -1160,7 +1224,7 @@ const TOOL_CONFIG_NAMES = ['agent-project.yaml', 'agent-project.yml', 'agent-pro
 
 function hasProjectManifest(dir) {
   return TOOL_CONFIG_NAMES.some(
-    (n) => fs.existsSync(path.join(dir, n)) || fs.existsSync(path.join(dir, '.agent', n))
+    (n) => fs.existsSync(path.join(dir, n)) || agentDirCandidates(dir).some((d) => fs.existsSync(path.join(d, n)))
   );
 }
 
@@ -1181,7 +1245,7 @@ function hasProjectManifest(dir) {
 function resolveProjectRoot(workspaceDir) {
   const ws = path.resolve(String(workspaceDir || ''));
   if (!ws) return ws;
-  const cfg = readToolConfig('agent-project', [ws, path.join(ws, '.agent')]);
+  const cfg = readToolConfig('agent-project', [ws, ...agentDirCandidates(ws)]);
   const fromWorkspace =
     cfg && cfg.file && path.resolve(cfg.file).startsWith(ws + path.sep);
   const raw = fromWorkspace && cfg.values ? cfg.values.root : null;
@@ -1509,7 +1573,7 @@ function resolveBusDir(projectDir, workspaceDir, cfg) {
     push(preferred, cfg.projects.flowBus, 'config');
   }
 
-  const toolCfg = readToolConfig('agent-project', [workspace, path.join(workspace, '.agent')]);
+  const toolCfg = readToolConfig('agent-project', [workspace, ...agentDirCandidates(workspace)]);
   if (toolCfg && toolCfg.values.bus) {
     const raw = String(toolCfg.values.bus);
     push(preferred, path.isAbsolute(raw) ? raw : path.join(projectDir, raw), 'agent-project.yaml');
@@ -1539,7 +1603,13 @@ function readProject(workspaceDir, cfg) {
     synthesizeNeedsFromBacklog(listMdDir(needsDir, parseNeeds), backlog, needsDir),
     backlog
   );
-  const projectCfg = readToolConfig('agent-project', [workspace, path.join(workspace, '.agent')]);
+  // 直前の指示の失敗（commands/*.err）を該当カードへ。決着済みカードには出さない。
+  const commandFailures = listCommandFailures(dir);
+  for (const need of needs) {
+    const cf = commandFailures[String(need.taskId || need.id || '').trim()];
+    if (cf && !need.decided) need.commandFailure = cf;
+  }
+  const projectCfg = readToolConfig('agent-project', [workspace, ...agentDirCandidates(workspace)]);
   const stateBranch = (projectCfg && projectCfg.values && projectCfg.values.state_branch) || DEFAULT_STATE_BRANCH;
   const gp = gitShowPrefix(dir);
   if (gp.ok) {
@@ -1665,6 +1735,7 @@ module.exports = {
   parseNeeds,
   synthesizeNeedsFromBacklog,
   attachDeliveryHintsFromBacklog,
+  listCommandFailures,
   _splitDiff,
   _deliveryFromDetail,
   _extractMrUrls,

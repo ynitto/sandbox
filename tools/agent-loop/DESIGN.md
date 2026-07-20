@@ -119,7 +119,7 @@ agent-loop-{dir_name}-{sha1(resolved_path)[:8]}-{instance_id}
 ```
 cwd が変わらない限り同じセッション名が生成される。
 
-**状態ファイル**: `~/.agent/loop-state/<pid>.json`  
+**状態ファイル**: `~/.agents/loop-state/<pid>.json`  
 `ls`/`send` サブコマンドがこれを読んでペイン情報を取得する。
 
 ---
@@ -211,7 +211,7 @@ _drain_pane_queue() でキュー済みプロンプトを送信試行
 ## 5. ファイルシステムレイアウト
 
 ```
-~/.agent/
+~/.agents/
 ├── agent-loop.yaml            グローバル設定ファイル（load_config が参照）
 ├── agent-loop.log             ローテートログ（7世代保持）
 ├── agents/
@@ -224,7 +224,7 @@ _drain_pane_queue() でキュー済みプロンプトを送信試行
     └── <pid>.json            デーモン状態（ls/send が参照）
 
 <project>/
-└── .agent/
+└── .agents/
     ├── agent-loop.yaml        ワークスペース固有設定（prompts / kiro_options）
     └── agent-loop.yml         同上（どちらか一方）
 
@@ -238,14 +238,14 @@ _drain_pane_queue() でキュー済みプロンプトを送信試行
 ## 6. 設定の優先順位
 
 ```
-1. ~/.agent/agent-loop.yaml  ← グローバル設定（kiro_options, タイムアウト, max_concurrent）
-2. <project>/.agent/agent-loop.yml  ← ワークスペース固有プロンプト・kiro_options
+1. ~/.agents/agent-loop.yaml  ← グローバル設定（kiro_options, タイムアウト, max_concurrent）
+2. <project>/.agents/agent-loop.yml  ← ワークスペース固有プロンプト・kiro_options
 3. <project>/.vscode/settings.json agentExecutor.periodicPrompts
-   （~/.agent/ に設定ファイルがない場合のみ有効）
+   （~/.agents/ に設定ファイルがない場合のみ有効）
 ```
 
-`kiro_options` は `~/.agent/agent-loop.yaml` を優先し、ない場合に `.agent/agent-loop.yml` を使用。  
-`prompts` は `.agent/agent-loop.yml` が正とし、起動後はこのファイルへ書き込む。
+`kiro_options` は `~/.agents/agent-loop.yaml` を優先し、ない場合に `.agents/agent-loop.yml` を使用。  
+`prompts` は `.agents/agent-loop.yml` が正とし、起動後はこのファイルへ書き込む。
 
 ---
 
@@ -259,7 +259,7 @@ _drain_pane_queue() でキュー済みプロンプトを送信試行
 1. `--session` 未指定時 → 状態ファイルから alive なペインを自動解決（複数時はエラー）
 2. `PROMPT` の解決順序:
    - ファイルとして存在する → 内容を読んで「実行してください」と送信
-   - `.agent/agent-loop.yml` のプロンプト名と一致 → そのテキストを使用
+   - `.agents/agent-loop.yml` のプロンプト名と一致 → そのテキストを使用
    - そのまま自然文として送信
 3. ペインが処理中（スロットあり or プロンプト非表示）なら送信拒否
 4. `max_concurrent > 0` のデーモン管理下ペインにはスロットを取得してから送信
@@ -359,7 +359,7 @@ kiro-cli agent hook (stop)
 - 送信先は既存の名前付きセッション（`prompts` エントリ）。webhook 専用エントリはスケジュール不要（`next_run_at = math.inf`）で、`_drain_external_one()` 経由でのみ送信される。
 
 ### 設定ファイルの読み込み先を変更する
-`load_config()` がグローバル設定（`~/.agent/`）、`_load_prompt_file_data()` がワークスペース設定（`<project>/.agent/`）を担当する。両者の役割を混在させないこと。
+`load_config()` がグローバル設定（`~/.agents/`）、`_load_prompt_file_data()` がワークスペース設定（`<project>/.agents/`）を担当する。両者の役割を混在させないこと。
 
 ### スレッド安全性
 `SessionManager._lock` と `PeriodicScheduler._lock` は別物。クロスロックによるデッドロックを避けるため、両方を同時に保持するコードは書かない。
@@ -373,9 +373,9 @@ kiro-cli agent hook (stop)
 
 | 操作 | コマンド |
 |---|---|
-| デーモンログ確認 | `tail -f ~/.agent/agent-loop.log` |
+| デーモンログ確認 | `tail -f ~/.agents/agent-loop.log` |
 | スロット状態確認 | `ls ~/.kiro/slots/` |
-| デーモン状態確認 | `ls ~/.agent/loop-state/` |
+| デーモン状態確認 | `ls ~/.agents/loop-state/` |
 | セッション一覧 | `agent-loop ls` |
 | スロット強制解放 | `rm ~/.kiro/slots/pane_<ID>.json` |
 | デーモン強制停止 | `kill <pid>` (状態ファイルの `pid` フィールド参照) |

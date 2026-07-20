@@ -1,6 +1,6 @@
 """agent-control — 管理面→エンジンの宣言的オーケストレーション契約（agent-amigos 側の読取）。
 
-正典: schemas/agent-control.schema.json。$AGENT_CONTROL_DIR（既定 ~/.agent/control/）の
+正典: schemas/agent-control.schema.json。$AGENT_CONTROL_DIR（既定 ~/.agents/control/）の
 control.json に管理面（agent-dashboard / CLI / 人）が「望ましい状態」を書き、amigos ランナーが
 ターン先頭で mtime を見て pull で適用する（push 型 IPC なし）。amigos のワークロードでは:
 
@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 
+from .configfile import agent_home_subdir
 from .util import now_iso
 
 WORKLOAD = "amigos"
@@ -23,8 +24,7 @@ _CACHE = {"mtime": None, "data": {}}
 
 
 def control_dir() -> str:
-    return os.path.abspath(os.path.expanduser(
-        os.environ.get("AGENT_CONTROL_DIR", os.path.join("~", ".agent", "control"))))
+    return agent_home_subdir("AGENT_CONTROL_DIR", "control")
 
 
 def load_control() -> dict:

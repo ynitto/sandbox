@@ -16,6 +16,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { parseFlatYaml } = require('../../agent-project/main/toolconfig');
+const { AGENT_HOME, AGENT_HOME_LEGACY, agentHomeDir, agentHomeSubdir } = require('../../../base/main/agent-home');
 
 const CONFIG_NAMES = ['agent-amigos.yaml', 'agent-amigos.yml', 'agent-amigos.json'];
 
@@ -65,7 +66,8 @@ function readConfig(dir) {
     if (found) return found;
   }
   for (const name of CONFIG_NAMES) {
-    const found = readConfigFile(path.join(dir, '.agent', name));
+    const found = readConfigFile(path.join(dir, AGENT_HOME, name))
+      || readConfigFile(path.join(dir, AGENT_HOME_LEGACY, name));
     if (found) return found;
   }
   return null;
@@ -142,13 +144,13 @@ function discoverHomes(cfg) {
         const url = busSpec.slice(4);
         const digest = crypto.createHash('sha1').update(url, 'utf8').digest('hex').slice(0, 8);
         const kind = busSpec.startsWith('git+') ? 'bus' : 'hub';
-        busDir = path.join(os.homedir(), '.agent', 'amigos', kind, digest);
+        busDir = agentHomeSubdir('amigos', kind, digest);
       }
     } else {
       const p = expandHome(busSpec);
       busDir = path.isAbsolute(p) ? p : path.resolve(dir, p);
     }
-    const commandsDir = path.join(dir, '.agent', 'agent-amigos', 'commands');
+    const commandsDir = path.join(agentHomeDir(dir), 'agent-amigos', 'commands');
     homes.push({
       dir,
       configFile: conf ? conf.file : null,

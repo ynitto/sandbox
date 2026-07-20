@@ -17,6 +17,7 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const { readToolConfig } = require('./toolconfig');
+const { agentHomeSubdir, agentDirCandidates } = require('../../../base/main/agent-home');
 
 const AGENT_CLIS = new Set(['kiro', 'claude', 'copilot', 'codex', 'cursor', 'ollama']);
 
@@ -26,13 +27,13 @@ const AGENT_CLIS = new Set(['kiro', 'claude', 'copilot', 'codex', 'cursor', 'oll
 // agent-project / agent-flow / agent-amigos と同じデータ契約で、組み込み以外の CLI
 // （hermes 等）を宣言的に差し込む。結合はこの契約のみ — 各ツールが自前の小さな
 // ローダで解釈する（Python 側の実装は agent_amigos/agentcli.py 等）。
-// 探索順も契約どおり: $KIRO_AGENTS_DIR → <プロジェクト>/agents/ → ~/.agent/agents/ → ~/.kiro/agents/
+// 探索順も契約どおり: $KIRO_AGENTS_DIR → <プロジェクト>/agents/ → ~/.agents/agents/ → ~/.kiro/agents/
 
 function agentPluginDirs(projectDir) {
   const dirs = [];
   if (process.env.KIRO_AGENTS_DIR) dirs.push(String(process.env.KIRO_AGENTS_DIR));
   if (projectDir) dirs.push(path.join(String(projectDir), 'agents'));
-  dirs.push(path.join(os.homedir(), '.agent', 'agents'));
+  dirs.push(agentHomeSubdir('agents'));
   dirs.push(path.join(os.homedir(), '.kiro', 'agents'));
   return dirs;
 }
@@ -125,7 +126,7 @@ function buildPluginCommand(plugin, model, prompt) {
 // 探索順は本体の _find_config と同じ root 直下 → .agent/（readToolConfig が ~/.agent も見る）。
 function readProjectAgent(projectDir) {
   if (!projectDir) return {};
-  const baseDirs = [projectDir, path.join(projectDir, '.agent')];
+  const baseDirs = [projectDir, ...agentDirCandidates(projectDir)];
   for (const name of ['agent-project', 'agent-flow']) {
     const cfg = readToolConfig(name, baseDirs);
     if (cfg && (cfg.values.agent_cli || cfg.values.model)) {
@@ -210,6 +211,58 @@ function buildCommand(cli, model, prompt) {
   if (model) args.push('--model', model);
   args.push(prompt);
   return { command: 'kiro-cli', args, stdin: null };
+}
+
+// 外部 tmux で人が直接操作する対話コマンド。ヘッドレス用 buildCommand の
+// -p / exec / --no-interactive は付けず、保存済みの CLI・モデルだけを反映する。
+function buildInteractiveCommand(resolved) {
+  const cli = String((resolved && resolved.cli) || '');
+  const model = String((resolved && resolved.model) || '');
+  const plugin = resolved && resolved.plugin;
+  if (plugin) {
+    if (plugin.command.some((token) => String(token).includes('{output_file}'))) {
+      throw new Error(`${cli} の定義はファイル出力専用のため、CLIチャットを開けません`);
+    }
+    const command = plugin.command.flatMap((token) => {
+      const value = String(token);
+      if (!value.includes('{model}')) return [value];
+      return model ? [value.split('{model}').join(model)] : [];
+    });
+    if (model && plugin.modelFlag && !plugin.command.some((token) => String(token).includes('{model}'))) {
+      command.push(plugin.modelFlag, model);
+    }
+    return command;
+  }
+  const withModel = (command) => model ? [...command, '--model', model] : command;
+  if (cli === 'kiro') return withModel(['kiro-cli', 'chat', '--trust-all-tools']);
+  if (cli === 'claude') return withModel(['claude']);
+  if (cli === 'copilot') return withModel(['copilot']);
+  if (cli === 'codex') return withModel(['codex']);
+  if (cli === 'cursor') return withModel(['cursor-agent']);
+  if (cli === 'ollama') {
+    if (!model) throw new Error('ollama のCLIチャットを開くにはモデルを設定してください');
+    return ['ollama', 'run', model];
+  }
+  throw new Error(`CLIチャットに対応していないエージェントです: ${cli}`);
+}
+
+function openInteractiveChat(cfg, projectDir) {
+  const resolved = resolveAgent(cfg, projectDir);
+  const { runChatWindow } = require('../../cowork/main/loopProvider');
+  // セッション開始コマンド（agent-session-commands）。このボタンも新しい tmux セッションを
+  // 起こす経路なので、定常業務ウィンドウと同じ前準備を通す（cowork と同じ計画関数を使う）。
+  const { planSessionCommands } = require('../../cowork/main/cowork');
+  const result = runChatWindow({
+    chatCommand: buildInteractiveCommand(resolved),
+    prompt: null,
+    cwd: projectDir,
+    sessionCommands: planSessionCommands(cfg, projectDir),
+    sessionKey: resolved.cli,
+    title: `CLIチャット (${resolved.cli})`,
+    message: `${resolved.cli} のCLIチャットを別ウィンドウで開きました`,
+  });
+  if (!result.ok) throw new Error(result.error || '外部ターミナルを起動できませんでした');
+  return { ...result, cli: resolved.cli, model: resolved.model };
 }
 
 // Doctor は画面から渡された文脈だけを説明する。通常の charter 補完とは分け、
@@ -964,6 +1017,8 @@ module.exports = {
   buildPluginCommand,
   agentPluginDirs,
   buildCommand,
+  buildInteractiveCommand,
+  openInteractiveChat,
   buildDoctorCommand,
   runAgent,
   spillTarget,

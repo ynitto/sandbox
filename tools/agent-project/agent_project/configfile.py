@@ -192,8 +192,9 @@ def _find_config(explicit):
             sys.exit(1)
         return p
     for base in (os.getcwd(),
-                 os.path.join(os.getcwd(), ".agent"),
-                 os.path.join(os.path.expanduser("~"), ".agent")):
+                 os.path.join(os.getcwd(), AGENT_HOME),
+                 os.path.join(os.getcwd(), AGENT_HOME_LEGACY),
+                 str(agent_home_dir())):
         for name in DEFAULT_CONFIG_NAMES:
             cand = os.path.join(base, name)
             if os.path.isfile(cand):

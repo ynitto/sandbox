@@ -11,4 +11,8 @@ module.exports = {
   orchestrationAgentDelete: (invoke) => (payload) => invoke('orchestration:agentDelete', payload || {}),
   orchestrationInstructionsSave: (invoke) => (payload) => invoke('orchestration:instructionsSave', payload || {}),
   orchestrationSkillsInventory: (invoke) => () => invoke('orchestration:skillsInventory', {}),
+  orchestrationSessionCommandsSave: (invoke) => (payload) =>
+    invoke('orchestration:sessionCommandsSave', payload || {}),
+  orchestrationSessionCommandsPreview: (invoke) => (payload) =>
+    invoke('orchestration:sessionCommandsPreview', payload || {}),
 };

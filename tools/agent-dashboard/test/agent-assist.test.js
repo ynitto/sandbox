@@ -60,6 +60,25 @@ test('buildCommand: モデル未指定なら --model を付けない', () => {
   }
 });
 
+test('buildInteractiveCommand: 全体設定のCLI・モデルを対話コマンドへ変換する', () => {
+  assert.deepStrictEqual(
+    agent.buildInteractiveCommand({ cli: 'kiro', model: 'auto', plugin: null }),
+    ['kiro-cli', 'chat', '--trust-all-tools', '--model', 'auto']
+  );
+  assert.deepStrictEqual(
+    agent.buildInteractiveCommand({ cli: 'claude', model: 'sonnet', plugin: null }),
+    ['claude', '--model', 'sonnet']
+  );
+  assert.deepStrictEqual(
+    agent.buildInteractiveCommand({ cli: 'codex', model: 'gpt-5', plugin: null }),
+    ['codex', '--model', 'gpt-5']
+  );
+  assert.throws(
+    () => agent.buildInteractiveCommand({ cli: 'ollama', model: '', plugin: null }),
+    /モデルを設定/
+  );
+});
+
 test('buildDoctorCommand: kiro はツールを一切許可せず、短い argv + stdin で助言する', () => {
   const prompt = agent.doctorPrompt({ tab: 'needs' });
   const c = agent.buildDoctorCommand('kiro', '', prompt, '/project');
@@ -146,8 +165,8 @@ test('resolveAgent: 設定もプロジェクト設定も無ければ既定 kiro'
 test('readProjectAgent: 本体側の設定参照機能は後方互換として維持する', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-agent-'));
   try {
-    fs.mkdirSync(path.join(tmp, '.agent'));
-    fs.writeFileSync(path.join(tmp, '.agent', 'agent-project.yaml'), 'agent_cli: copilot\n');
+    fs.mkdirSync(path.join(tmp, '.agents'));
+    fs.writeFileSync(path.join(tmp, '.agents', 'agent-project.yaml'), 'agent_cli: copilot\n');
     const r = agent.readProjectAgent(tmp);
     assert.strictEqual(r.cli, 'copilot');
   } finally {

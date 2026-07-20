@@ -488,6 +488,12 @@ function registerIpc(ctx) {
   // ⚙ 設定画面の表示用: 今どの CLI / モデルで補完するかの解決結果（実行はしない）
   handle('agent:resolve', ({ dir }) => agent.resolveAgent(loadConfig(), dir));
 
+  // 保存済みの全体エージェント設定で、選択中ワークスペースの対話CLIを外部 tmux に開く。
+  handle('agent:openChat', ({ dir }) => {
+    if (!dir) throw new Error('プロジェクトを選択してください');
+    return agent.openInteractiveChat(loadConfig(), dir);
+  });
+
   // gitlab-review-viewer へレビューを引き継ぐ
   handle('review:open', ({ target }) => openInReviewViewer(loadConfig(), target || {}));
 

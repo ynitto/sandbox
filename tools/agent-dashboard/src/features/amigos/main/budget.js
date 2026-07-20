@@ -10,6 +10,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { agentHomeSubdir } = require('../../../base/main/agent-home');
 
 const KNOWN_WORKLOADS = ['routine', 'project', 'flow', 'amigos'];
 
@@ -21,7 +22,7 @@ function expandHome(p) {
 function resolveBudgetDir(cfg) {
   const c = (cfg && cfg.amigos) || {};
   return expandHome(
-    c.budgetDir || process.env.AGENT_BUDGET_DIR || path.join(os.homedir(), '.agent', 'budget')
+    c.budgetDir || process.env.AGENT_BUDGET_DIR || agentHomeSubdir('budget')
   );
 }
 

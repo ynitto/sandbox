@@ -42,8 +42,8 @@ function mkdirp(...parts) {
   await test('scanForProjects は .agent/agent-project.yaml とマーカー（charter.md 等）も発見する', async () => {
     const root = mkRoot();
     const a = mkdirp(root, 'alpha');
-    mkdirp(a, '.agent');
-    fs.writeFileSync(path.join(a, '.agent', 'agent-project.yaml'), 'root: .\n', 'utf8');
+    mkdirp(a, '.agents');
+    fs.writeFileSync(path.join(a, '.agents', 'agent-project.yaml'), 'root: .\n', 'utf8');
     const b = mkdirp(root, 'beta');
     fs.writeFileSync(path.join(b, 'charter.md'), '# Charter: b\n', 'utf8');
     assert.deepStrictEqual(project.scanForProjects(root, 2), [a, b].sort());

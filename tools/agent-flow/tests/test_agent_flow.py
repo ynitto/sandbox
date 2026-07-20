@@ -6837,5 +6837,155 @@ class GlobalInstructionsTests(unittest.TestCase):
         self.assertEqual(rec["instructions_revision_applied"], 3)
 
 
+class SessionCommandsTests(unittest.TestCase):
+    """セッション開始コマンド（agent-session-commands 契約）: 計画の決定性・実行・非伝播・status。"""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="kf-sess-")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        self.home = tempfile.mkdtemp(prefix="kf-sess-home-")
+        self.addCleanup(shutil.rmtree, self.home, ignore_errors=True)
+        os.environ["AGENT_SESSION_DIR"] = self.home
+        self.addCleanup(os.environ.pop, "AGENT_SESSION_DIR", None)
+        os.environ.pop("AGENT_FLOW_NO_SESSION_COMMANDS", None)
+        self.addCleanup(os.environ.pop, "AGENT_FLOW_NO_SESSION_COMMANDS", None)
+        kf._SESSION_COMMANDS_REV_APPLIED = None
+        self.addCleanup(setattr, kf, "_SESSION_COMMANDS_REV_APPLIED", None)
+
+    def _write(self, obj):
+        with open(os.path.join(self.home, "session.json"), "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False)
+
+    # -- 読取のフェイルセーフ ------------------------------------------------
+
+    def test_load_missing_and_broken_are_no_op(self):
+        self.assertIsNone(kf.load_session_commands())
+        with open(os.path.join(self.home, "session.json"), "w", encoding="utf-8") as f:
+            f.write("{ 壊れた JSON")
+        self.assertIsNone(kf.load_session_commands())
+        self.assertEqual(kf.plan_session_commands(None, {"engine": "agent-flow"}), [])
+
+    def test_disabled_is_complete_no_op(self):
+        data = {"enabled": False, "commands": [{"id": "a", "run": "echo hi"}]}
+        self.assertEqual(kf.plan_session_commands(data, {"engine": "agent-flow"}), [])
+
+    # -- 計画の決定性 --------------------------------------------------------
+
+    def test_placeholders_expand_deterministically_without_quoting(self):
+        ctx = {"cwd": "/w/my repo", "run_id": "r1"}
+        self.assertEqual(kf.expand_session_placeholders("cd {cwd} && ls", ctx), "cd /w/my repo && ls")
+        self.assertEqual(kf.expand_session_placeholders("x {node_id} y", ctx), "x  y")
+        self.assertEqual(kf.expand_session_placeholders("{unknown}", ctx), "{unknown}")
+
+    def test_when_is_and_joined_and_absent_axes_pass(self):
+        when = {"engines": ["agent-flow"], "workloads": ["flow"]}
+        self.assertTrue(kf.session_command_matches(when, {"engine": "agent-flow", "workload": "flow"}))
+        self.assertFalse(kf.session_command_matches(when, {"engine": "kiro-loop", "workload": "flow"}))
+        self.assertTrue(kf.session_command_matches(None, {"engine": "kiro-loop"}))
+        self.assertTrue(kf.session_command_matches(when, {}))
+
+    def test_chat_is_skipped_on_single_shot_engine(self):
+        data = {"commands": [{"id": "c", "mode": "chat", "run": "docs を読んで"}]}
+        entries = kf.plan_session_commands(data, {"engine": "agent-flow"})
+        self.assertEqual(entries[0]["skip"], "no-session")
+
+    def test_total_budget_truncates_then_skips(self):
+        data = {"max_total_timeout": 100, "commands": [
+            {"id": "a", "run": "x", "timeout": 60},
+            {"id": "b", "run": "y", "timeout": 60},
+            {"id": "c", "run": "z", "timeout": 30},
+        ]}
+        entries = kf.plan_session_commands(data, {"engine": "agent-flow"})
+        self.assertEqual(entries[0]["timeout"], 60)
+        self.assertEqual(entries[1]["timeout"], 40)
+        self.assertEqual(entries[2]["skip"], "budget")
+
+    def test_plan_matches_dashboard_preview_shape(self):
+        """dashboard（JS の plan）と同じキー・同じ既定値を返す（プレビューと実行が一致する）。"""
+        entries = kf.plan_session_commands(
+            {"commands": [{"id": "a", "run": "echo hi"}]}, {"engine": "agent-flow", "cwd": "/w"})
+        self.assertEqual(entries[0]["cwd"], "/w")
+        self.assertEqual(entries[0]["timeout"], 60)
+        self.assertEqual(entries[0]["on_error"], "warn")
+        self.assertIsNone(entries[0]["skip"])
+
+    # -- 実行 ----------------------------------------------------------------
+
+    def test_commands_run_in_array_order(self):
+        marker = os.path.join(self.dir, "order.txt")
+        self._write({"commands": [
+            {"id": "first", "run": f"echo 1 >> {marker}"},
+            {"id": "second", "run": f"echo 2 >> {marker}"},
+        ]})
+        self.assertTrue(kf.run_session_commands("w1", {"engine": "agent-flow"}))
+        with open(marker, encoding="utf-8") as f:
+            self.assertEqual(f.read().split(), ["1", "2"])
+
+    def test_warn_continues_and_fail_aborts(self):
+        marker = os.path.join(self.dir, "after.txt")
+        self._write({"commands": [
+            {"id": "bad", "run": "exit 3", "on_error": "warn"},
+            {"id": "after", "run": f"echo ok > {marker}"},
+        ]})
+        self.assertTrue(kf.run_session_commands("w1", {"engine": "agent-flow"}))
+        self.assertTrue(os.path.exists(marker), "warn は後続を止めない")
+
+        os.remove(marker)
+        self._write({"commands": [
+            {"id": "bad", "run": "exit 3", "on_error": "fail"},
+            {"id": "after", "run": f"echo ok > {marker}"},
+        ]})
+        self.assertFalse(kf.run_session_commands("w1", {"engine": "agent-flow"}))
+        self.assertFalse(os.path.exists(marker), "fail は後続を実行しない")
+
+    def test_env_and_cwd_are_applied(self):
+        out = os.path.join(self.dir, "env.txt")
+        self._write({"commands": [{
+            "id": "e", "run": f"printf '%s %s' \"$SESS_TEST\" \"$(pwd)\" > {out}",
+            "cwd": self.dir, "env": {"SESS_TEST": "v-{run_id}"},
+        }]})
+        self.assertTrue(kf.run_session_commands("w1", {"engine": "agent-flow", "run_id": "r9"}))
+        with open(out, encoding="utf-8") as f:
+            body = f.read()
+        self.assertIn("v-r9", body)
+        self.assertIn(os.path.realpath(self.dir), os.path.realpath(body.split(" ", 1)[1]))
+
+    def test_timeout_is_bounded(self):
+        self._write({"commands": [{"id": "slow", "run": "sleep 5", "timeout": 1, "on_error": "fail"}]})
+        started = time.time()
+        self.assertFalse(kf.run_session_commands("w1", {"engine": "agent-flow"}))
+        self.assertLess(time.time() - started, 4, "timeout で打ち切る")
+
+    def test_env_opt_out_disables_everything(self):
+        marker = os.path.join(self.dir, "never.txt")
+        self._write({"commands": [{"id": "a", "run": f"echo x > {marker}"}]})
+        os.environ["AGENT_FLOW_NO_SESSION_COMMANDS"] = "1"
+        self.assertTrue(kf.run_session_commands("w1", {"engine": "agent-flow"}))
+        self.assertFalse(os.path.exists(marker))
+
+    # -- 非伝播と status -----------------------------------------------------
+
+    def test_commands_are_never_snapshotted_into_meta(self):
+        """副作用のあるコマンドは meta.json（＝GitBus）へ載せない。本契約の不変条件。"""
+        src = pathlib.Path(kf.__file__).parent.joinpath("bus.py").read_text(encoding="utf-8") \
+            if hasattr(kf, "__file__") and kf.__file__ else ""
+        self.assertNotIn("session_commands", src)
+        self.assertNotIn("session.json", src)
+
+    def test_status_carries_session_commands_revision_applied(self):
+        os.environ["AGENT_CONTROL_DIR"] = self.dir
+        self.addCleanup(os.environ.pop, "AGENT_CONTROL_DIR", None)
+        kf._CONTROL_CACHE["mtime"] = None
+        self._write({"revision": 7, "commands": [{"id": "a", "run": "true"}]})
+        kf.run_session_commands("w1", {"engine": "agent-flow"})
+        with mock.patch.object(kf, "_run_agent_once", return_value="ok"):
+            kf.run_agent("x", None, purpose="worker")
+        status_dir = os.path.join(self.dir, "status")
+        files = [n for n in os.listdir(status_dir) if n.endswith(".json")]
+        with open(os.path.join(status_dir, files[0]), encoding="utf-8") as f:
+            rec = json.load(f)
+        self.assertEqual(rec["session_commands_revision_applied"], 7)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -9,8 +9,9 @@
 // - amigos … agent-amigos ミッションの読み取りビューとノード予算（node-budget 契約）の管理
 // - orchestration … ノード予算 v2（トークン配分）・エージェント制御（agent-control）・
 //                    エージェント CLI ドロップイン（agent-cli）の横断オーケストレーション管理面
-// - delegation … agent-flow / agent-amigos への委譲を共通封筒（delegation 契約）で扱う面。
-//                 workload を選ぶだけで両エンジンへ同じ操作（公示→入札→落札→受入→中止）を投函
+// - delegation … agent-flow / agent-amigos 間の内部連携を共通封筒（delegation 契約）で扱う。
+//                 利用者の操作はミッション／要対応／実行へ集約し、独立画面は持たない
+// - participation … flow / amigos の募集中の仕事へ、この端末から参加するための小さい操作面
 //
 // 新しい制御面を足す手順:
 //   1. src/features/<id>/ を agent-project や kiro-loop を雛形に作る
@@ -28,6 +29,7 @@ function loadFeatures() {
     require('./amigos'),
     require('./orchestration'),
     require('./delegation'),
+    require('./participation'),
   ];
 }
 

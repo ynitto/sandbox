@@ -1467,6 +1467,88 @@ class TestRunLoop(unittest.TestCase):
             self.assertIn("- 検証: 未定義", ev)
             self.assertNotIn("FAIL", ev)
 
+    def test_delivery_evidence_verify_not_run_is_not_fail(self):
+        """act が失敗して検証まで到達しなかった記録を FAIL と書かない。
+
+        bool では「実行して落ちた」と「そこまで到達していない」が同じ False に潰れる。
+        潰すと、着手前に止まった run の判断材料に「検証 → FAIL」が残り、画面は
+        「検証コマンドが失敗しました」と表示する。verify は一度も走っていないので、
+        人は存在しないテスト失敗を調べに行き、本当の原因には辿り着けない。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            ev = km.delivery_evidence(
+                cfg_for(d, workdir=d), "", None, location="local",
+                verify="pytest -q", vmsg="", ok=False, verdict=km.VERIFY_NOT_RUN)
+            self.assertIn("→ 未実行", ev)
+            self.assertNotIn("FAIL", ev)
+            # 実行された失敗は従来どおり FAIL（未実行と取り違えない）
+            ran = km.delivery_evidence(
+                cfg_for(d, workdir=d), "", None, location="local",
+                verify="pytest -q", vmsg="1 failed", ok=False)
+            self.assertIn("→ FAIL", ran)
+            self.assertNotIn("未実行", ran)
+
+    def test_diagnose_verify_failure_reads_raw_output(self):
+        """検証の解釈は生の verify 出力から行う（判断材料の散文を読み直さない）。
+
+        以前この解釈は agent-dashboard 側にあり、agent-project が書いた散文を正規表現で
+        読み直していた。書き手の文言が変わると読み手だけが静かに壊れる。"""
+        d = km.diagnose_verify_failure("pytest -q", "exit=1 3 failed, 20 passed")
+        self.assertEqual(d["summary"], "テストが 3 件失敗しました。")
+        self.assertEqual(d["category"], "テスト失敗")
+        self.assertEqual(d["exit_code"], "1")
+        d = km.diagnose_verify_failure("x", "exit=127 foo: command not found")
+        self.assertIn("「foo」", d["summary"])
+        self.assertEqual(d["owner"], "検査設定・実行環境")
+        d = km.diagnose_verify_failure("a && b", "exit=1 失敗した工程: `grep -q x README.md`")
+        self.assertIn("grep -q x README.md", d["summary"])
+        self.assertEqual(d["command"], "grep -q x README.md")
+        # テストは通っているが後段が落ちた（「テストの失敗ではない」と言えることが要点）
+        d = km.diagnose_verify_failure("a && b", "exit=2 29 passed")
+        self.assertIn("29 件成功", d["summary"])
+        # 解釈できなければ空。空は「分からない」であって「失敗していない」ではない
+        self.assertEqual(km.diagnose_verify_failure("x", "")["summary"], "")
+        self.assertEqual(km.diagnose_verify_failure("x", "なにかよく分からない出力")["summary"], "")
+
+    def test_needs_file_carries_structured_failure(self):
+        """needs の frontmatter に失敗の構造化フィールドが載る（表示層は読むだけ）。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            mkb(d, "T1", verify="false")
+            t = km.load_tasks(cfg.backlog)[0]
+            km.write_needs_file(cfg, t, "検証に失敗", failure={
+                "cls": "control", "chain": ["control", "quota"],
+                "phase": km.PHASE_ACT, "verdict": km.VERIFY_NOT_RUN,
+                "summary": "テストが 3 件失敗しました。", "exit_code": "1",
+            })
+            fm = km.needs_path(cfg, "T1").read_text(encoding="utf-8").split("---")[1]
+            self.assertIn("failure-class: control", fm)
+            self.assertIn("failure-chain: control,quota", fm)
+            self.assertIn(f"failure-phase: {km.PHASE_ACT}", fm)
+            self.assertIn(f"verify-verdict: {km.VERIFY_NOT_RUN}", fm)
+            self.assertIn("failure-summary: テストが 3 件失敗しました。", fm)
+            self.assertIn("failure-exit: 1", fm)
+
+    def test_needs_file_without_failure_keeps_old_shape(self):
+        """失敗情報が無い票は従来どおりの frontmatter（旧記録と同じ見た目を保つ）。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            mkb(d, "T1")
+            t = km.load_tasks(cfg.backlog)[0]
+            km.write_needs_file(cfg, t, "ふつうのブロック")
+            fm = km.needs_path(cfg, "T1").read_text(encoding="utf-8").split("---")[1]
+            self.assertNotIn("failure-", fm)
+            self.assertNotIn("verify-verdict", fm)
+
+    def test_verify_verdict_normalizes_ok_and_ran(self):
+        self.assertEqual(km.verify_verdict(True), km.VERIFY_PASSED)
+        self.assertEqual(km.verify_verdict(False), km.VERIFY_FAILED)
+        self.assertEqual(km.verify_verdict(None), km.VERIFY_UNKNOWN)
+        self.assertEqual(km.verify_verdict(False, ran=False), km.VERIFY_NOT_RUN)
+        self.assertEqual(km.verify_verdict(True, ran=False), km.VERIFY_NOT_RUN)
+
     def test_budget_stop(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
@@ -2412,6 +2494,29 @@ class TestCommandsIngest(unittest.TestCase):
             self.assertEqual(len(list(cd.glob("*.json.err"))), 3)    # .err に退避
             self.assertIn("commands 取り込み失敗", (d / "journal.md").read_text())
 
+    def test_ingest_success_clears_stale_err_for_same_task(self):
+        # .err は viewer の「直前の指示は失敗した」バナーの根拠。同じタスクへの指示が
+        # 通ったら掃除しないと、解決済みの失敗が次の要対応カードに出続ける。
+        # 他タスクの .err と JSON でないゴミは残す（失敗の履歴を巻き添えで消さない）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="blocked", verify="true")
+            c = cfg_for(d)
+            km.ensure_dirs(c)
+            cd = km.commands_dir(c)
+            (cd / "old1.json.err").write_text(json.dumps(
+                {"error": "統合失敗", "failed_at": "2026-07-20 00:00:00",
+                 "command": {"command": "approve", "id": "T1"}}), encoding="utf-8")
+            (cd / "old2.json.err").write_text(json.dumps(
+                {"error": "別タスク", "failed_at": "2026-07-20 00:00:00",
+                 "command": {"command": "approve", "id": "T9"}}), encoding="utf-8")
+            (cd / "garbage.json.err").write_text("{oops", encoding="utf-8")
+            (cd / "a.json").write_text(json.dumps(
+                {"command": "approve", "id": "T1", "reason": "直した"}), encoding="utf-8")
+            self.assertEqual(km.ingest_commands(c), ["approve:T1"])
+            self.assertEqual(sorted(p.name for p in cd.glob("*.err")),
+                             ["garbage.json.err", "old2.json.err"])
+
     def test_has_work_wakes_on_commands(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
@@ -3297,12 +3402,18 @@ class TestDaemonRouting(unittest.TestCase):
             yaml.write_text("executor: stub\n", encoding="utf-8")
             c = cfg_for(d, flow_config=str(yaml))
             base = km._kf_base(c, False)
-            self.assertIn("--config", base)
-            self.assertEqual(base[base.index("--config") + 1], str(yaml.resolve()))
-            # daemon 経路とも揃う（片方だけ付けると設定が割れる）
             daemon = km.flow_daemon_cmd(c, 2)
+            self.assertIn("--config", base)
             self.assertIn("--config", daemon)
-            self.assertEqual(daemon[daemon.index("--config") + 1], str(yaml.resolve()))
+            got_base = base[base.index("--config") + 1]
+            got_daemon = daemon[daemon.index("--config") + 1]
+            # 主経路と daemon 経路が同じ設定ファイルを指すことが本題（片方だけ付けると設定が割れる）。
+            # 突き合わせは「同じファイルか」で行う。文字列一致にすると macOS の
+            # /var → /private/var のような symlink 表記の違いだけで落ちる——本体は
+            # abspath 止まりで symlink を解決しない（人が設定したパスの形を保つ）。
+            self.assertEqual(got_base, got_daemon)
+            self.assertTrue(os.path.isabs(got_base))
+            self.assertTrue(os.path.samefile(got_base, yaml))
 
     def test_daemon_detection(self):
         if km.fcntl is None:
@@ -7346,6 +7457,46 @@ class TestVerifyFailingStep(unittest.TestCase):
         self.assertIn("失敗した工程: `false`", msg)
 
 
+class TestAgentHome(unittest.TestCase):
+    """エージェント共通ホームの解決（`.agent` → `.agents` 改名の後方互換）。
+
+    判定はサブディレクトリ単位。ホーム単位で見ると `.agents/skills` だけ先に作られた環境で
+    「新ホームは在る」と誤判断し、まだ移していない `.agent/control` を見失う。"""
+
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.home, ignore_errors=True)
+        patcher = mock.patch.object(km.Path, "home", staticmethod(lambda: self.home))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_defaults_to_new_home(self):
+        self.assertEqual(km.agent_home_subdir("", "control"), self.home / ".agents" / "control")
+
+    def test_falls_back_to_legacy_when_only_legacy_exists(self):
+        (self.home / ".agent" / "control").mkdir(parents=True)
+        self.assertEqual(km.agent_home_subdir("", "control"), self.home / ".agent" / "control")
+
+    def test_partial_migration_keeps_unmigrated_items_on_legacy(self):
+        # skills だけ先に新ホームへ入った状態（実際にこうなっていた）
+        (self.home / ".agent" / "control").mkdir(parents=True)
+        (self.home / ".agents" / "skills").mkdir(parents=True)
+        self.assertEqual(km.agent_home_subdir("", "skills"), self.home / ".agents" / "skills")
+        self.assertEqual(km.agent_home_subdir("", "control"), self.home / ".agent" / "control",
+                         "ホーム単位で判定すると、ここで control を見失う")
+
+    def test_uses_new_home_after_migration(self):
+        (self.home / ".agent" / "control").mkdir(parents=True)
+        (self.home / ".agents" / "control").mkdir(parents=True)
+        self.assertEqual(km.agent_home_subdir("", "control"), self.home / ".agents" / "control")
+
+    def test_env_override_wins(self):
+        (self.home / ".agent" / "control").mkdir(parents=True)
+        with mock.patch.dict(os.environ, {"AGENT_CONTROL_DIR": "/tmp/explicit"}):
+            self.assertEqual(km.agent_home_subdir("AGENT_CONTROL_DIR", "control"),
+                             Path("/tmp/explicit"))
+
+
 class TestFailureTriage(unittest.TestCase):
     """失敗トリアージ: 環境要因（quota/auth/env）はタスクの内容と無関係 —
     リトライを焼かず・裁定も呼ばず、原因と直し方を明記して人へ回す。"""
@@ -7360,6 +7511,41 @@ class TestFailureTriage(unittest.TestCase):
         self.assertEqual(cls, "auth")
         # 内容の問題（該当なし）は None
         self.assertIsNone(km.classify_agent_failure("テストが 3 件落ちました"))
+
+    def test_source_marker_beats_stale_tag(self):
+        """発生元マーカーはタグより強い。
+
+        タグを無条件に正とすると、内側で付いた分類を外側から上書きできない。実際
+        [agent-control] による停止が quota タグを載せたまま運ばれ、画面は「利用上限です。
+        時間をおいてください」と表示した——必要な操作は「実行を run に戻す」で、待っても
+        永久に回復しない。生の本文に残るマーカーは後から見ても正しいので、それを先に見る。"""
+        stale = ("[agent-error:quota] [agent-control] このワークロード（flow）は管理面により "
+                 "lifecycle=stop 指定です")
+        cls, hint = km.classify_agent_failure(stale)
+        self.assertEqual(cls, "control")
+        self.assertIn("dashboard", hint)
+        # node-budget（このノードの予算超過）は quota のまま
+        self.assertEqual(
+            km.classify_agent_failure("[node-budget] このノードのトークン予算を超過しています")[0],
+            "quota")
+        # マーカーが無ければ従来どおりタグが正
+        self.assertEqual(km.classify_agent_failure("[agent-error:auth] なにか")[0], "auth")
+
+    def test_error_chain_keeps_every_observed_class(self):
+        """観測した分類を先頭以外も残す。
+
+        先頭（proximate cause）だけ保存すると、分類器が後で直っても保存済みの記録は
+        誤ったままになる。実際 quota タグと [agent-control] マーカーが同居した記録で、
+        捨てた側が正しかった。根拠として全部を持ち、表示は先頭を使う。"""
+        stale = ("[agent-error:quota] [agent-control] このワークロード（flow）は管理面により "
+                 "lifecycle=stop 指定です")
+        self.assertEqual(km.agent_error_chain(stale), ["control", "quota"])
+        self.assertEqual(km.classify_agent_failure(stale)[0], "control")
+        # 単一分類は 1 要素、該当なしは空
+        self.assertEqual(km.agent_error_chain("[agent-error:auth] なにか"), ["auth"])
+        self.assertEqual(km.agent_error_chain("テストが 3 件落ちました"), [])
+        # パターン一致（タグ無し）も拾う
+        self.assertEqual(km.agent_error_chain("codex error: usage limit reached"), ["quota"])
 
     def test_settle_failure_env_class_blocks_without_burning_retries(self):
         with tempfile.TemporaryDirectory() as d:
@@ -8243,7 +8429,12 @@ class TestJournalRotation(unittest.TestCase):
         self.assertFalse((self.tmp / "journal-archive").exists())
 
     def test_rotation_archives_and_starts_fresh(self):
-        with mock.patch.object(km, "_JOURNAL_MAX_BYTES", 200):
+        # 見るのは「退避しても行が失われない」ことだけ。保持世代の刈り込みは別テスト
+        # （_JOURNAL_KEEP=0 で無制限）。両方を1つのテストで見ると、ローテーション行に
+        # 載るアーカイブ名＝**ホスト名の長さ**で退避回数が変わり、保持世代 20 を超えるか
+        # どうかが実行環境まかせになる（長いホスト名の機材でだけ落ちていた）。
+        with mock.patch.object(km, "_JOURNAL_MAX_BYTES", 200), \
+             mock.patch.object(km, "_JOURNAL_KEEP", 0):
             for i in range(30):
                 km.append_journal(self.journal, f"line {i} " + "x" * 40)
         arch = sorted((self.tmp / "journal-archive").iterdir())
@@ -8262,6 +8453,16 @@ class TestJournalRotation(unittest.TestCase):
                 km.append_journal(self.journal, f"line {i} " + "y" * 40)
         arch = [p for p in (self.tmp / "journal-archive").iterdir() if p.is_file()]
         self.assertLessEqual(len(arch), 2)                      # 保持世代で刈り込む
+        # **どれが残るか**まで見る。同一秒に複数回退避すると連番が付くが、ゼロ詰めしないと
+        # 名前順で ".10" が ".2" より前に並び、刈り込みが最古ではなく任意の世代を消して
+        # journal の行が歯抜けに失われる。残るのは常に直近＝最も新しい行を含む世代。
+        kept = "".join(p.read_text(encoding="utf-8") for p in arch)
+        self.assertIn("line 59 ", kept + self.journal.read_text(encoding="utf-8"))
+        self.assertNotIn("line 0 ", kept)                       # 最古が残り続けない
+        newest = max(arch, key=lambda p: p.stat().st_mtime)
+        others = [p for p in arch if p is not newest]
+        for p in others:                                        # 残った世代は連続している
+            self.assertLessEqual(p.stat().st_mtime, newest.stat().st_mtime)
 
     def test_rotation_disabled_with_zero(self):
         with mock.patch.object(km, "_JOURNAL_MAX_BYTES", 0):

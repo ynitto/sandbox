@@ -147,7 +147,7 @@ def _agent_cmd(cli: str, model: "str | None",
         raise RuntimeError(
             f"未知の agent_cli です: {cli!r}（組み込みは kiro/claude/copilot/codex。"
             f"それ以外は agents/{cli}.json 定義が必要です — 契約: schemas/agent-cli.schema.json・"
-            f"探索順: $KIRO_AGENTS_DIR → <root>/agents → ~/.agent/agents → ~/.kiro/agents）")
+            f"探索順: $KIRO_AGENTS_DIR → <root>/agents → ~/.agents/agents → ~/.kiro/agents）")
     return _plugin_agent_cmd(plug, model, prompt)
 
 
@@ -164,7 +164,7 @@ def _agent_plugin_dirs() -> "list[Path]":
     if envd:
         dirs.append(Path(envd).expanduser())
     dirs.append(Path.cwd() / "agents")            # プロジェクトルート（run は cwd=root で動く）
-    dirs.append(Path.home() / ".agent" / "agents")
+    dirs.append(agent_home_subdir("", "agents"))
     dirs.append(Path.home() / ".kiro" / "agents")
     return dirs
 
@@ -292,19 +292,49 @@ _AGENT_ERROR_PATTERNS = (
 )
 
 
+# 発生元マーカー → 分類（agent-flow の同名定義と同じ契約）。マーカーは止めた本人が書くので、
+# 外側の層が後から載せたタグより確かな証拠になる。タグを無条件に正とすると、内側で付いた
+# 分類を上書きできず、[agent-control] の停止が「利用上限」として人に提示され続ける。
+_AGENT_ERROR_SOURCE_CLASSES = (
+    ("[agent-control]", "control"),
+    ("[node-budget]", "quota"),
+)
+
+
+def _source_marker_class(text: str) -> "str | None":
+    """本文中の発生元マーカーから分類を引く（無ければ None）。"""
+    return next((cls for marker, cls in _AGENT_ERROR_SOURCE_CLASSES if marker in text), None)
+
+
+def agent_error_chain(blob: str) -> "list[str]":
+    """本文から観測できる分類を**すべて**、確からしい順に返す（agent-flow の同名定義と同じ契約）。
+    先頭が proximate cause（表示・行動提示に使う）で、残りは根拠として保持する——
+    先頭以外を捨てると、後から「本当は何が起きていたか」を復元できない。"""
+    text = str(blob or "")
+    chain: "list[str]" = []
+    marker = _source_marker_class(text)
+    if marker:
+        chain.append(marker)
+    for m in _AGENT_ERROR_TAG_RE.finditer(text):
+        if m.group(1) not in chain:
+            chain.append(m.group(1))
+    if not chain:
+        for cls, pat, _ in _plugin_error_patterns() + _AGENT_ERROR_PATTERNS:
+            if pat.search(text) and cls not in chain:
+                chain.append(cls)
+    return chain
+
+
 def classify_agent_failure(blob: str) -> "tuple[str, str] | None":
     """エラー本文を (class, hint) に分類する（該当なしは None＝内容の問題）。
-    既に [agent-error:] タグ付き（agent-flow 経由）ならそれが正。プラグイン定義の
-    errors（CLI 固有知識）を汎用パターンより先に評価する。"""
-    text = str(blob or "")
-    m = _AGENT_ERROR_TAG_RE.search(text)
-    if m:
-        hint = next((h for c, _, h in _AGENT_ERROR_PATTERNS if c == m.group(1)), "")
-        return m.group(1), hint
-    for cls, pat, hint in _plugin_error_patterns() + _AGENT_ERROR_PATTERNS:
-        if pat.search(text):
-            return cls, hint
-    return None
+    発生元マーカー > [agent-error:] タグ（agent-flow 経由）> プラグイン定義（CLI 固有知識）
+    > 汎用パターン の順に見る。全分類が要るときは agent_error_chain を使う。"""
+    chain = agent_error_chain(blob)
+    if not chain:
+        return None
+    cls = chain[0]
+    hint = next((h for c, _, h in _plugin_error_patterns() + _AGENT_ERROR_PATTERNS if c == cls), "")
+    return cls, hint
 
 
 def _agent_failure(cli: str, rc: int, out: str, err: str) -> str:
@@ -326,7 +356,7 @@ def _agent_failure(cli: str, rc: int, out: str, err: str) -> str:
 
 # --- ノード予算 v2（node-budget 契約: schemas/node-budget.schema.json） --------------------
 # ノード（マシン）単位の共有台帳。定常業務（kiro-loop）・agent-project・agent-flow・
-# agent-amigos が同じ台帳（$AGENT_BUDGET_DIR、既定 ~/.agent/budget/）に記帳し、合計が上限
+# agent-amigos が同じ台帳（$AGENT_BUDGET_DIR、既定 ~/.agents/budget/）に記帳し、合計が上限
 # （0 = 無制限）を超えたら新規の LLM 実行を控える。v2 で一次単位をトークンへ拡張（時間上限は
 # v1 互換で AND）。台帳には実測のみ（実測秒＋実測できたトークン）を書き、未報告行は rates で
 # 読み出し時に推定する。配分・較正の知能は管理面（dashboard）にあり、エンジンは単純比較のみ。
@@ -340,8 +370,7 @@ def _utc_iso() -> str:
 
 
 def _node_budget_dir() -> str:
-    return os.path.abspath(os.path.expanduser(
-        os.environ.get("AGENT_BUDGET_DIR", os.path.join("~", ".agent", "budget"))))
+    return str(agent_home_subdir("AGENT_BUDGET_DIR", "budget").absolute())
 
 
 def _node_budget_rate(cfg: dict, cli: str, model: str) -> float:
@@ -481,15 +510,14 @@ def _node_budget_record(seconds: float, ref: str = "", agent_cli: str = "",
 
 
 # --- agent-control（管理面→エンジンの宣言的オーケストレーション契約） ----------------------
-# schemas/agent-control.schema.json。$AGENT_CONTROL_DIR（既定 ~/.agent/control/）の control.json
+# schemas/agent-control.schema.json。$AGENT_CONTROL_DIR（既定 ~/.agents/control/）の control.json
 # に管理面が「望ましい状態」を書き、各エンジンが mtime を見て pull で適用する（push 型 IPC なし）。
 # 優先順位 control > CLI 引数 > 設定ファイル > 組み込み既定。適用状況は status/<tool>-<pid>.json へ。
 _CONTROL_CACHE = {"mtime": None, "data": {}}
 
 
 def _control_dir() -> str:
-    return os.path.abspath(os.path.expanduser(
-        os.environ.get("AGENT_CONTROL_DIR", os.path.join("~", ".agent", "control"))))
+    return str(agent_home_subdir("AGENT_CONTROL_DIR", "control").absolute())
 
 
 def _load_control() -> dict:

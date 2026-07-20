@@ -2,7 +2,7 @@
 
 // グローバル指示（agent-instructions 契約）の読み書きと決定的レンダリング、スキル棚卸し。
 // 正典: schemas/agent-instructions.schema.json。実体は $AGENT_INSTRUCTIONS_DIR
-// （既定 ~/.agent/instructions/）の instructions.json（管理面が原子書換）。
+// （既定 ~/.agents/instructions/）の instructions.json（管理面が原子書換）。
 //
 // dashboard は instructions.json に「全ノード共通の指示」を書き revision を単調増加させる。
 // 各エンジンはこれを描画して実行エージェント（worker / 定常業務）のプロンプトへ前置する。
@@ -13,6 +13,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { agentHomeSubdir } = require('../../../base/main/agent-home');
 
 const MARKER_PREFIX = '<!-- agent-instructions';
 const HEADING = '## 共通指示（agent-dashboard 管理・全ノード共通）';
@@ -29,7 +30,7 @@ function resolveInstructionsDir(cfg) {
   return expandHome(
     c.instructionsDir ||
       process.env.AGENT_INSTRUCTIONS_DIR ||
-      path.join(os.homedir(), '.agent', 'instructions')
+      agentHomeSubdir('instructions')
   );
 }
 
@@ -200,7 +201,7 @@ function skillsInventory(cfg) {
   for (const root of roots) {
     if (root) dirs.push(path.join(expandHome(String(root)), '.github', 'skills'));
   }
-  dirs.push(path.join(os.homedir(), '.agent', 'skills'));
+  dirs.push(agentHomeSubdir('skills'));
   dirs.push(path.join(os.homedir(), '.kiro', 'skills'));
   const seen = new Set();
   const out = [];

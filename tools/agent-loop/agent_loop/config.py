@@ -22,7 +22,7 @@ def load_config(cwd: Path) -> tuple[dict[str, Any], Path, bool]:
     ~/.agent/ 配下の DEFAULT_CONFIG_NAMES を探す。
     ファイルが存在しない場合は空の config とデフォルトパスを返す（終了しない）。
     """
-    agent_home = Path.home() / ".agent"
+    agent_home = agent_home_dir()
     config_path = find_default_config(agent_home)
     if config_path is None:
         default_path = agent_home / "agent-loop.yaml"
@@ -194,12 +194,12 @@ def load_vscode_periodic_prompts(base_path: Path) -> list[dict[str, Any]]:
 
 def _prompt_file(base_path: str) -> Path:
     """起動ディレクトリ単位の定期プロンプト設定ファイルパスを返す。"""
-    return Path(base_path) / ".agent" / "agent-loop.yml"
+    return Path(base_path) / AGENT_HOME / "agent-loop.yml"
 
 
 def _load_prompt_file_data(base_path: str) -> dict[str, Any]:
     """起動ディレクトリ配下 .agent/ から設定ファイル（DEFAULT_CONFIG_NAMES）を探して読む。"""
-    agent_dir = Path(base_path) / ".agent"
+    agent_dir = agent_home_dir(base_path)
     path: Path | None = None
     for name in DEFAULT_CONFIG_NAMES:
         candidate = agent_dir / name

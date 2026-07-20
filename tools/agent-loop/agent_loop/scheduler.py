@@ -22,6 +22,8 @@ class PeriodicScheduler:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        # lifecycle=pause / 予算超過の警告を 10 分に 1 回へ間引くための最終警告時刻。
+        self._node_budget_warned_at = 0.0
         # event_hook / webhook モジュールのキャッシュ: {hook_path: (mtime, module)}
         # webhook は HTTP スレッドから、event_hook は scheduler スレッドから読むためロックで保護する。
         self._hook_cache: dict[str, tuple[float, Any]] = {}
@@ -444,6 +446,51 @@ class PeriodicScheduler:
     def _run_loop(self) -> None:
         while not self._stop_event.wait(1):
             now = time.time()
+            # agent-control（管理面）が lifecycle=stop を指定していれば graceful に停止する。
+            # pause なら送信を控える（予算 pause と同じ）。run は通常運転。
+            lifecycle = _control_lifecycle()
+            nb = _node_budget_state()
+            _write_status(lifecycle=lifecycle, budget=nb)
+            if lifecycle == "stop":
+                log.warning("[agent-control] 管理面により lifecycle=stop 指定です。"
+                            "agent-loop を停止します。")
+                _write_stopped_reason("agent-control:stop")
+                self._request_shutdown()
+                return
+            if lifecycle == "pause":
+                if now - self._node_budget_warned_at > 600:
+                    self._node_budget_warned_at = now
+                    log.warning("[agent-control] 管理面により lifecycle=pause 指定です。"
+                                "定期送信を停止中 — dashboard の全体設定から "
+                                "run に戻してください。")
+                continue
+            # ノード予算（node-budget 契約 v2: トークン / 時間）超過時の方針。
+            # on_exhausted=stop（routine の推奨既定）なら graceful 停止、それ以外は送信を控える
+            # （定期発火・外部キューともこのサイクルでは dispatch せず、キューは保持される）。
+            if nb and nb["exceeded"]:
+                if nb.get("on_exhausted") == "stop":
+                    unit = "トークン" if nb.get("token_limit") else "実行時間"
+                    log.warning(
+                        "[node-budget] このノードの%s予算を超過しました"
+                        "（%.1f分 / %.0ftok・period=%s・on_exhausted=stop）。"
+                        "agent-loop を停止します — 再開は dashboard の定常業務から"
+                        "再起動してください。",
+                        unit, nb["spent_min"], nb["spent_tokens"], nb["period"],
+                    )
+                    _write_stopped_reason("node-budget")
+                    self._request_shutdown()
+                    return
+                if now - self._node_budget_warned_at > 600:
+                    self._node_budget_warned_at = now
+                    log.warning(
+                        "[node-budget] このノードの予算を超過しています"
+                        "（%.1f分/%.0f分・%.0ftok/%.0ftok・period=%s）。定期送信を停止中 — "
+                        "上限を上げる（dashboard の全体設定 / agent-amigos budget node）か"
+                        "期間の更新を待ってください。",
+                        nb["spent_min"], nb["limit_min"], nb["spent_tokens"],
+                        nb["token_limit"], nb["period"],
+                    )
+                continue
             with self._lock:
                 entries = [e.copy() for e in self._entries]
 
@@ -498,6 +545,16 @@ class PeriodicScheduler:
                     self._dispatch_prompt(entry, pane_id)
 
                 self._update_entry(str(entry.get("id", "")), next_run_at=self._next_run_at_for_entry(entry))
+
+    def _request_shutdown(self) -> None:
+        """スケジューラスレッドからプロセス全体の graceful 終了を要求する。
+        自プロセスへ SIGTERM を送り、登録済みのシグナルハンドラ（stop_event・後片付け・
+        sys.exit）に委ねる。シグナル未登録の環境ではスケジューラ停止のみ。"""
+        self._stop_event.set()
+        try:
+            os.kill(os.getpid(), signal.SIGTERM)
+        except (OSError, ValueError, AttributeError):
+            pass
 
     def stop(self) -> None:
         self._stop_event.set()

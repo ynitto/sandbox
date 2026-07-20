@@ -6,6 +6,7 @@ import argparse
 import contextlib
 import fnmatch
 import hashlib
+import io
 import json
 import os
 import re
@@ -30,6 +31,37 @@ try:
     import msvcrt  # Windows のみ。POSIX では None（fcntl を使う）。
 except ImportError:
     msvcrt = None
+
+# エージェント共通ホームのディレクトリ名。`.agent` から `.agents` へ改名した
+# （複数のエージェントが相乗りする持ち物であることを名前で示す）。
+# 旧ホームが残っている環境では、新ホームがまだ無い間だけ旧ホームを使う——両方へ書くと
+# 実行制御や予算の状態が分裂し、「どちらか片方だけ正しい」状況が生まれる。
+AGENT_HOME = ".agents"
+AGENT_HOME_LEGACY = ".agent"
+
+
+def agent_home_dir(root=None) -> Path:
+    """エージェント共通ホーム（既定 ~/.agents）。旧 ~/.agent しか無ければそちらを返す。"""
+    base = Path(root).expanduser() if root else Path.home()
+    new, old = base / AGENT_HOME, base / AGENT_HOME_LEGACY
+    return old if (not new.exists() and old.exists()) else new
+
+
+def agent_home_subdir(env_var: str, *parts: str) -> Path:
+    """共通ホーム配下の状態ディレクトリ（`$<env_var>` があればそれを最優先）。
+
+    **判定はサブディレクトリ単位で行う。** ホーム単位で見ると、`.agents/skills` だけ先に
+    作られた環境（スキル導入が先行した）で「新ホームは在る」と判断され、まだ移していない
+    `.agent/control` を見失う。項目ごとに実在する方へ寄せれば、移行が部分的に進んだ
+    状態でも状態は 1 か所に定まる。"""
+    override = os.environ.get(env_var)
+    if override:
+        return Path(os.path.expanduser(override))
+    home = Path.home()
+    new, old = home / AGENT_HOME, home / AGENT_HOME_LEGACY
+    new_p, old_p = new.joinpath(*parts), old.joinpath(*parts)
+    return old_p if (not new_p.exists() and old_p.exists()) else new_p
+
 
 VALID_STATUS = ("inbox", "draft", "proposed", "ready", "doing", "done", "blocked", "review",
                 "offloaded", "rejected")

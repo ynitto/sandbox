@@ -137,13 +137,42 @@ function needCompleteHowHtml(n) {
         : 'まだプロジェクト完了の段階ではありません。';
   } else if (n.kind === 'blocked' && isVerifyPendingNeed(p, n)) {
     line = '承認すると、このタスクは完了します（検証コマンド未定義のため、人の確認が完了の根拠になります）。';
-  } else if (n.kind === 'blocked' && needHasDeliverable(p, n, state.flowRuns)) {
+  } else if (n.kind === 'blocked' && needHasArtifacts(p, n, state.flowRuns)) {
     line = '成果はできています。内容を確認して問題なければ、承認するとこのタスクを完了できます。';
+  } else if (n.kind === 'blocked' && needHasDeliverable(p, n, state.flowRuns)) {
+    // 完了は選べるが、成果物は確認できていない（実行はしたが差分が無い・取得できない）。
+    // ここで「成果はできています」と言うと、着手前に止まった run でも成果があることに
+    // なってしまう。断定せず、確認してから判断してもらう。
+    line = '成果物は確認できていません。内容を確かめたうえで、完了にしてよければ承認できます。';
   } else if (!line && n.kind === 'blocked') {
     line = '指示を送ると、作業を再開します。';
   }
   if (!line) return '';
   return `<div class="task-complete-banner need-complete-how">${esc(line)}</div>`;
+}
+
+const COMMAND_ACTION_LABELS = {
+  approve: '承認',
+  hold: '保留',
+  reject: '却下',
+  revise: '修正指示',
+  pin: '優先度変更',
+  defer: '優先度変更',
+  'resume-run': '再実行',
+};
+
+// 直前の指示（承認・保留など）が本体で取り込みに失敗した（commands/*.err）ことを知らせる
+// バナー。取り込みは非同期なので送信時トーストは成功しか言えない——ここで理由を見せないと、
+// カードが未対応へ戻る理由が分からず同じボタンが繰り返し押される（実際そうなっていた）。
+function commandFailureHtml(n) {
+  const cf = n && n.commandFailure;
+  if (!cf) return '';
+  const label = COMMAND_ACTION_LABELS[cf.action] || cf.action || '指示';
+  return `<div class="need-command-failure" role="alert">
+    <strong>「${esc(label)}」は届きましたが、処理に失敗しました${cf.failedAt ? `（${esc(cf.failedAt)}）` : ''}</strong>
+    <span>${esc(cf.error || '')}</span>
+    <span class="muted">原因を解消してから、もう一度同じ操作を送ってください。</span>
+  </div>`;
 }
 
 function needActionsHtml(n, options) {
@@ -202,7 +231,9 @@ function needActionsHtml(n, options) {
       : kind === 'review'
         ? '差し戻しの修正方針・却下の理由（承認だけなら空欄のままで構いません）'
         : '修正方針・指示（空のまま再実行もできます）';
-  return `${needCompleteHowHtml(n)}<div class="need-actions" data-need="${esc(n.id)}">
+  // 実行制御で止まっているなら、操作を出す前にそう言う。押せなくはしない——止めたのも
+  // 人なので、承認だけ先に送っておく判断はあり得る。「送っても動かない」を隠さないことが要点。
+  return `${orchBlockedBannerHtml()}${needCompleteHowHtml(n)}<div class="need-actions" data-need="${esc(n.id)}">
     <textarea rows="2" class="need-input" placeholder="${esc(ph)}"></textarea>
     <div class="row need-buttons">${buttons.join('')}
       <span class="spacer"></span>
@@ -260,6 +291,20 @@ function relatedRunIdForNeed(project, need, flowRuns) {
 function taskForNeed(project, need) {
   const taskId = String((need && (need.taskId || need.id)) || '');
   return ((project && project.backlog) || []).find((task) => String(task.id) === taskId) || null;
+}
+
+// 「そのまま再実行」をどの口へ送るか。
+//   resume-run … 再開できる run がある。本体が last_run を固定して ready へ積み直す正規の口で、
+//                 失敗した工程だけやり直し done は温存される。指示ファイルが残るので
+//                 失敗すれば journal と .err に理由が残る。
+//   feedback   … 再開できる run が無い票（run を持たない blocked・合成カード）。
+//                 needs ファイルの空 [x] で作業を再開させる従来の口。
+// 経路の選択をここに閉じ込める（呼び出し側で条件を書くと、片方だけ直して食い違う）。
+function needRerunPlan(project, need) {
+  const task = taskForNeed(project, need);
+  const run = String(((task && task.extra) || {}).last_run || '').trim();
+  if (task && run) return { via: 'resume-run', id: String(task.id), run };
+  return { via: 'feedback' };
 }
 
 function completedTaskForNeed(project, need) {
@@ -339,6 +384,26 @@ function needHasDeliverable(project, need, flowRuns) {
   // （画面を開くたびに出たり消えたりする、と報告された症状の一因）。
   const task = taskForNeed(project, need);
   if (task && String(((task.extra || {}).last_run) || '').trim()) return true;
+  return Boolean(artifactRunForNeed(project, need, flowRuns));
+}
+
+// 成果物が**実際にある**か。上の needHasDeliverable（＝人が完了を選べるか）とは別の問い。
+//
+// 両者を 1 つの述語で兼ねていたため、「実行を 1 回試した」ことを示すだけの last_run が
+// 成果の根拠に使われ、着手前に止まって成果物ゼロの票にも「成果はできています。」と
+// 表示していた。ボタンを出すかどうかは人の判断に委ねてよい（見せるものが無くても
+// 完了を選ぶ権利はある）が、**何があるかの断定には実データだけを使う**。
+// ここで見るのは「あると分かるもの」だけで、分からない場合は false を返す
+// （ref 未解決などで差分を取れないときは、無いのではなく分からない）。
+function needHasArtifacts(project, need, flowRuns) {
+  if (!need || String(need.kind || 'blocked') !== 'blocked') return false;
+  if (isVerifyPendingNeed(project, need)) return true;   // 工程は完了済み＝成果はある
+  if (completedTaskForNeed(project, need)) return true;
+  const diff = need.diff;
+  if (diff && diff.hasDiff && (diff.artifacts || []).length) return true;
+  for (const e of need.delivery || []) {
+    if ((e.files || []).length || String(e.mr_url || '').trim()) return true;
+  }
   return Boolean(artifactRunForNeed(project, need, flowRuns));
 }
 
@@ -570,8 +635,8 @@ function deliveryReviewFooterHtml(need) {
     const label = need.taskStatus ? statusLabel(need.taskStatus) : '関連タスクなし';
     return `<h3>タスクの状態</h3><p><span class="status-chip st-${esc(need.taskStatus || '')}">${esc(label)}</span></p>`;
   }
-  return `<h3>要確認コメント・操作</h3>${
-    need.decided || isNeedSent(need)
+  return `<h3>要確認コメント・操作</h3>${commandFailureHtml(need)}${
+    need.decided || (!need.commandFailure && isNeedSent(need))
       ? '<p class="muted">この要確認項目には回答済みです。</p>'
       : needActionsHtml(need, { inReview: true })
   }`;
@@ -1082,6 +1147,9 @@ function specFilesHtml(p, n) {
 
 function needBucket(n, sentFn) {
   if (n.decided) return 'done';
+  // 送信後に本体側で取り込みが失敗した指示（commands/*.err → n.commandFailure）は
+  // 「送信済み」に隠さない。失敗の事実と理由を見せて、次の操作をできるようにする。
+  if (n.commandFailure) return 'open';
   return sentFn(n) ? 'sent' : 'open';
 }
 
@@ -1132,32 +1200,36 @@ function needsViewModel(needs, filter, selectedId, sentFn) {
   return { counts, items, selected, selectedId: selected ? selected.id : null };
 }
 
+// 検証失敗の表示モデル。**解析済みの事実（failureSummary / failureContext）だけを使う。**
+//
+// 以前はここが散文を正規表現で読み、「検証」と「FAIL」が同じ行にあれば検証失敗と断定して
+// 要約文を組み立てていた。判定が必ず何かを返そうとするので「分からない」が表現できず、
+// 実行制御で着手前に止まった run にも「検証コマンドが失敗しました。」と出す——verify は
+// 一度も走っていないのに、人は存在しないテスト失敗を探しに行くことになる。
+// 解析は producer（main/project.js の _diagnoseFailure）に一本化し、ここは運ぶだけにする。
+// 解析できなかった失敗は要約を作らず、生の判断材料と「なぜ」をそのまま読ませる。
 function needFailureViewModel(need) {
   if (!need) return null;
-  const prose = [need.failureSummary, need.why, need.detail].filter(Boolean).join('\n');
-  if (/verify\s*未定義/i.test(prose)) return null;
-  const context = need.failureContext || null;
-  const hasFailureSignal = Boolean(
-    need.failureSummary ||
-    context ||
-    /(?:検証|verify|テスト|test|回帰|コマンド)[^\n]*(?:失敗|FAIL|NG|exit\s*=\s*[1-9]\d*)/i.test(prose)
-  );
-  if (!hasFailureSignal) return null;
-  const exitCode = context && String(context.exitCode || '').trim();
+  const summary = String((need && need.failureSummary) || '').trim();
+  if (!summary) return null;
+  if (/verify\s*未定義/i.test(summary)) return null;
   return {
-    summary: String(
-      need.failureSummary ||
-      (exitCode
-        ? `検証コマンドが失敗しました（終了コード ${exitCode}）。`
-        : '検証コマンドが失敗しました。')
-    ),
+    summary,
     resolution: String(need.failureResolution || ''),
-    context,
+    context: need.failureContext || null,
   };
 }
 
+// AI 診断を出すか。解析できなかった失敗こそ診断の出番なので、ここでは散文からの推測を残す。
+// 「助けを出すか」の判断に外れがあっても、余計なボタンが 1 つ出るだけで害はない。
+// 起きたことの断定（needFailureViewModel）には使わない——そちらの外れは、走っていない
+// 検証を「失敗しました」と言い切ることになる。推測してよい場所を、この 2 つで分けている。
 function canDiagnoseNeed(need) {
-  return Boolean(needFailureViewModel(need));
+  if (!need) return false;
+  if (needFailureViewModel(need)) return true;
+  const prose = [need.why, need.detail].filter(Boolean).join('\n');
+  if (/verify\s*未定義/i.test(prose)) return false;
+  return /(?:検証|verify|テスト|test|回帰|コマンド)[^\n]*(?:失敗|FAIL|NG|exit\s*=\s*[1-9]\d*)/i.test(prose);
 }
 
 function needAssistActionsHtml(need, settled) {
@@ -1189,8 +1261,10 @@ function needListItemViewModel(need, bucket, age) {
     stateText,
     kindText: needKindLabel(need && need.kind),
     title: needDisplayTitle(need || {}),
-    decision: needListSummary(need || {}),
-    failure: Boolean(needFailureViewModel(need)),
+    decision: need && need.commandFailure
+      ? `${COMMAND_ACTION_LABELS[need.commandFailure.action] || need.commandFailure.action}の取り込みに失敗しました — 詳細を開いて理由を確認してください`
+      : needListSummary(need || {}),
+    failure: Boolean(needFailureViewModel(need)) || Boolean(need && need.commandFailure),
     risk,
     riskText: RISK_LABELS[risk] || 'リスク未設定',
     ageText: String((age && age.label) || '—'),
@@ -1288,10 +1362,11 @@ function renderNeedFacts(n) {
 
 function renderNeedDetail(p, n) {
   if (!n) return '<div class="empty need-detail-empty">この状態の項目はありません</div>';
-  const settled = n.decided || isNeedSent(n);
+  // 取り込み失敗（commandFailure）があるカードは送信済み扱いにしない＝操作を出し直す
+  const settled = n.decided || (!n.commandFailure && isNeedSent(n));
   const chip = n.decided
     ? '<span class="status-chip st-done">回答済み</span>'
-    : isNeedSent(n)
+    : settled
       ? '<span class="status-chip st-review">送信済み</span>'
       : '<span class="status-chip st-blocked">未対応</span>';
   const detail = (n.detail || '').trim();
@@ -1322,6 +1397,7 @@ function renderNeedDetail(p, n) {
       </div>
       <span class="muted">${esc(n.date || '')}</span>
     </header>
+    ${commandFailureHtml(n)}
     ${finalVerificationFailureHtml(finalVerificationFailure)}
     <section class="need-decision">
       <h3>判断すること</h3>
@@ -1348,6 +1424,7 @@ function renderNeedDetail(p, n) {
 }
 
 function bindNeedDetail(root) {
+  bindOrchBlockedBanner(root);
   for (const btn of root.querySelectorAll('button[data-open]')) {
     btn.addEventListener('click', () => guard('ファイルを開く', () => api.openPath(btn.dataset.open)));
   }
@@ -1485,7 +1562,7 @@ function renderNeeds(options) {
     state.needsSelectedId,
     state.needsMobileDetail,
     filters.map((x) => x[2]),
-    p.needs.map((n) => [n.id, n.kind, n.decided, isNeedSent(n), n.why, n.summary, n.risk, n.failureSummary || '', n.failureResolution || '', n.failureContext || null, (n.detail || '').length]),
+    p.needs.map((n) => [n.id, n.kind, n.decided, isNeedSent(n), n.why, n.summary, n.risk, n.failureSummary || '', n.failureResolution || '', n.failureContext || null, n.commandFailure || null, (n.detail || '').length]),
     model.items.map((n) => (ages[n.id] ? `${ages[n.id].level}|${ages[n.id].label}` : '')),
   ]);
   if (el.dataset.sig === sig && el.childElementCount) return;
@@ -1572,8 +1649,27 @@ async function handleNeedAction(btn) {
       await api.submitFeedback(need.file, text, feedbackStub);
       toast(text ? '回答を送信しました（次の実行で反映されます）' : '回答を確定しました', true);
     } else if (act === 'rerun') {
-      await api.submitFeedback(need.file, '', feedbackStub);
-      toast('そのまま再実行するよう回答しました', true);
+      // 「そのまま再実行」は resume-run（本体が last_run の固定と ready への積み直しを
+      // 原子的に行う正規の口）を使う。実行画面の再実行ボタンは以前からこの口だが、
+      // 要対応カードだけが needs ファイルへ空フィードバックを書く旧経路のままだった——
+      // コマンドも journal も残らないので、失敗しても画面には何も出ず、同じ状態に
+      // 戻ったようにしか見えない。再開できる run が無い票だけ従来の口へ落とす。
+      const plan = needRerunPlan(p, need);
+      if (plan.via === 'resume-run') {
+        const res = await api.runAction({
+          dir: p.dir,
+          action: 'resume-run',
+          id: plan.id,
+          run: plan.run,
+          reason: '要対応画面から再実行（失敗した工程だけやり直し）',
+        });
+        markNeedSent(need);
+        uiLog('needAction rerun', id, res);
+        toast('再実行を送信しました（失敗した工程だけやり直します）', true);
+      } else {
+        await api.submitFeedback(need.file, '', feedbackStub);
+        toast('そのまま再実行するよう回答しました', true);
+      }
     } else if (act === 'approve') {
       const reason = needApprovalReason(p, need, state.flowRuns, text);
       // 検収待ち（成果がある blocked / review）の承認は完了確定の意図を明示して送る。

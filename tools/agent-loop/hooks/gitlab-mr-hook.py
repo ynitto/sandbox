@@ -41,7 +41,7 @@ MR_SOURCE_BRANCH_PREFIX = os.environ.get("AGENT_LOOP_MR_SOURCE_BRANCH_PREFIX", "
 # 状態ファイル（iid -> updated_at を記録）。
 STATE_FILE = Path(
     os.environ.get("AGENT_LOOP_MR_STATE_FILE", "")
-    or (Path.home() / ".agent" / "hooks" / "gitlab-mr-state.json")
+    or (Path.home() / ".agents" / "hooks" / "gitlab-mr-state.json")
 )
 
 # --- プロンプトテンプレート --------------------------------------------

@@ -3,7 +3,7 @@
 ミッション予算（依頼側がバスに宣言）とは独立に、**各ノードが自分の上限**を持てる。
 台帳はツール横断の共有契約（正典: schemas/node-budget.schema.json）:
 
-    $AGENT_BUDGET_DIR（既定 ~/.agent/budget/）
+    $AGENT_BUDGET_DIR（既定 ~/.agents/budget/）
       config.json               … 上限設定（人 / agent-dashboard / CLI が書く。0 = 無制限）
       ledger/<YYYYMMDD>.jsonl   … 記帳（UTC 日付・追記専用・O_APPEND）
 
@@ -21,15 +21,18 @@ import json
 import os
 import time
 
+from .configfile import agent_home_subdir
 from .util import now_iso, read_json, read_jsonl, write_json_atomic
 
-DEFAULT_DIR = "~/.agent/budget"
 WORKLOAD = "amigos"
 
 
 def budget_dir() -> str:
-    return os.path.abspath(os.path.expanduser(
-        os.environ.get("AGENT_BUDGET_DIR", DEFAULT_DIR)))
+    """共有台帳の場所。共通ホームはサブディレクトリ単位で新旧を判定する
+    （agent-project / agent-flow / kiro-loop / agent-dashboard と同じ解決）。
+    旧 ~/.agent/budget 決め打ちだと、.agents へ移行済みの端末で agent-amigos だけ
+    別の台帳へ記帳し、ツール横断の合計という契約の前提が崩れる。"""
+    return os.path.abspath(agent_home_subdir("AGENT_BUDGET_DIR", "budget"))
 
 
 def config_path() -> str:

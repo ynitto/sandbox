@@ -218,6 +218,13 @@ class SessionManager:
 
         session_cwd = self._resolve_cwd(cwd)
 
+        # セッション開始コマンド（agent-session-commands）の process モード。ペインを作る
+        # **前**に走らせる。前準備が終わっていない環境でエージェントを動かさないため、
+        # on_error='fail' が失敗したらここで諦める（ペインを作らない）。
+        if not run_session_commands(self._session_command_context(session_cwd), modes=("process",)):
+            log.error("プロンプト '%s' はセッション開始コマンドの失敗により起動しません。", prompt_name)
+            return False
+
         cmd_args = ["chat"] + self._kiro_args_base[:]
         if self._uses_concurrency_agent:
             agent_file = Path.home() / ".kiro" / "agents" / f"{CONCURRENCY_AGENT_NAME}.json"
@@ -245,8 +252,40 @@ class SessionManager:
             "プロンプト '%s' 用ペインを起動しました (pane=%s, tmux=%s, args=%s)。",
             prompt_name, pane_target, attach_session_name, self._kiro_args_base,
         )
+        # chat モードは、CLI が入力を受け付ける状態になってから業務プロンプトより先に送る。
+        # ペインの生成と「プロンプトが出ている」は別の瞬間なので、ここで待ってから送信する。
+        self._send_session_chat_commands(pane_target, session_cwd)
         self.write_state()
         return True
+
+    def _session_command_context(self, session_cwd: str) -> dict:
+        """セッション開始コマンドの when 判定・プレースホルダ展開に渡す文脈。"""
+        return {
+            "engine": "agent-loop",
+            "workload": "routine",
+            "cwd": session_cwd,
+            "workspace": self._target_path,
+            "agent_cli": "kiro",
+        }
+
+    def _send_session_chat_commands(self, pane_target: str, session_cwd: str) -> None:
+        """chat モードのセッション開始コマンドをペインへ送る（失敗しても起動は続ける）。"""
+        try:
+            deadline = time.time() + _SEND_STARTUP_TIMEOUT
+            while time.time() < deadline:
+                if _pane_has_prompt(_capture_pane(pane_target)):
+                    break
+                time.sleep(0.5)
+            else:
+                log.warning("ペイン %s の起動待ちがタイムアウトしたため chat コマンドは送りません。", pane_target)
+                return
+            run_session_commands(
+                self._session_command_context(session_cwd),
+                send_chat=lambda text: _send_to_pane(pane_target, text),
+                modes=("chat",),
+            )
+        except Exception:  # noqa: BLE001 — 開始コマンドの送信失敗でペイン起動を無効にしない
+            log.warning("セッション開始コマンド（送信）に失敗しました。", exc_info=True)
 
     def _stop_pane(self, prompt_id: str) -> None:
         """ペインを終了する（_restart_locks は保持する）。"""

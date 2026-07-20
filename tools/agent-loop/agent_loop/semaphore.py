@@ -6,18 +6,18 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 
 CONCURRENCY_AGENT_NAME = "agent-loop-concurrency"
-_SLOTS_DIR = Path.home() / ".agent" / "slots"
+_SLOTS_DIR = agent_home_subdir("", "slots")
 _SLOTS_MUTEX = _SLOTS_DIR / ".lock"
 _DEFAULT_SLOT_TIMEOUT = 7200  # 猶予時間のデフォルト値（秒）
-_STATE_DIR = Path.home() / ".agent" / "loop-state"  # デーモン状態ファイルディレクトリ
+_STATE_DIR = agent_home_subdir("", "loop-state")  # デーモン状態ファイルディレクトリ
 
 
 class GlobalSemaphore:
-    """ファイルベースの分散セマフォ。複数 agent-loop プロセス間で kiro-cli の同時実行数を制御する。
+    """ファイルベースの分散セマフォ。複数 agent-loop プロセス間でエージェント CLI の同時実行数を制御する。
 
-    スロットファイル:     ~/.agent/slots/pane_{N}.json
-    クールダウンファイル: ~/.agent/slots/cooldown_{N}.json
-    ミューテックス:       ~/.agent/slots/.lock (fcntl.flock)
+    スロットファイル:     ~/.agents/slots/pane_{N}.json
+    クールダウンファイル: ~/.agents/slots/cooldown_{N}.json
+    ミューテックス:       ~/.agents/slots/.lock (fcntl.flock)
     """
 
     def __init__(self, max_concurrent: int, slot_timeout_seconds: int = _DEFAULT_SLOT_TIMEOUT, cooldown_seconds: int = 0) -> None:
@@ -60,9 +60,19 @@ class GlobalSemaphore:
             return True  # エラー時は実行を許可（安全側に倒す）
 
     def release(self, pane_id: str) -> None:
-        """スロットを解放する（冪等）。クールダウンが設定されている場合は記録する。"""
+        """スロットを解放する（冪等）。クールダウンが設定されている場合は記録する。
+        解放時、スロットの保持時間（送信 → 完了検知）をノード予算の台帳へ記帳する
+        （エージェント CLI の実行時間の近似。node-budget 契約）。"""
+        slot_file = self._slot_path(pane_id)
         try:
-            self._slot_path(pane_id).unlink(missing_ok=True)
+            data = json.loads(slot_file.read_text(encoding="utf-8"))
+            elapsed = time.time() - float(data.get("acquired_at", 0))
+            if 0 < elapsed <= self._slot_timeout:   # タイムアウト強制解放は実行時間として数えない
+                _node_budget_record(elapsed, ref=pane_id)
+        except (OSError, json.JSONDecodeError, ValueError, TypeError):
+            pass
+        try:
+            slot_file.unlink(missing_ok=True)
         except OSError:
             pass
         if self.cooldown_seconds > 0:

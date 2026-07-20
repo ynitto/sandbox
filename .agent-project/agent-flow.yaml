@@ -1,8 +1,8 @@
 # agent-flow の設定（agent-project 経由の実行で読まれるのはこのファイル）。
 #
 # agent-project は agent-flow を cwd=<root>（= この .agent-project ディレクトリ）で起動する。
-# agent-flow の設定探索は cwd 直下 → cwd/.agent → ~/.agent の順なので、ワークスペース側の
-# <repo>/.agent/agent-flow.yaml は探索対象に入らない（あちらは agent-flow を repo 直下から
+# agent-flow の設定探索は cwd 直下 → cwd/.agents → ~/.agents の順なので、ワークスペース側の
+# <repo>/.agents/agent-flow.yaml は探索対象に入らない（あちらは agent-flow を repo 直下から
 # 直接叩くとき用）。ここに置かないと組み込み既定（agent_cli: kiro）で worker が動く。
 #
 # bus は agent-project が --bus で明示的に渡すため、ここでは指定しない。

@@ -338,7 +338,7 @@ def cmd_budget(args) -> int:
 
 def _cmd_budget_node(args) -> int:
     """ノード予算（請負側の上限、§3.3）の表示・設定。台帳・設定は
-    $AGENT_BUDGET_DIR（既定 ~/.agent/budget/）のツール横断契約
+    $AGENT_BUDGET_DIR（既定 ~/.agents/budget/）のツール横断契約
     （schemas/node-budget.schema.json）。agent-dashboard も同じファイルを管理する。"""
     from . import nodebudget
     changed = False

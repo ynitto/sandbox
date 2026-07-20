@@ -2,7 +2,7 @@
 
 - 組み込み: kiro / claude / copilot / codex / stub。
 - それ以外は agents/<name>.json プラグイン定義（契約: schemas/agent-cli.schema.json、
-  探索順: $KIRO_AGENTS_DIR → <cwd>/agents → ~/.agent/agents → ~/.kiro/agents）。
+  探索順: $KIRO_AGENTS_DIR → <cwd>/agents → ~/.agents/agents → ~/.kiro/agents）。
   agent-flow / agent-project と同じデータ契約を読む（ローダは自前 = コード依存を作らない）。
 - 失敗は決定的トリアージで [agent-error:<class>] タグを付ける
   （agent-cli-plugin-design.md。quota/auth/env は環境要因 → amigo を paused に）。
@@ -18,6 +18,7 @@ import re
 import subprocess
 import tempfile
 
+from .configfile import agent_home_subdir
 from .util import strip_ansi
 
 BUILTIN_CLIS = ("kiro", "claude", "copilot", "codex", "stub")
@@ -52,7 +53,10 @@ def _plugin_dirs() -> list:
     if envd:
         dirs.append(os.path.expanduser(envd))
     dirs.append(os.path.join(os.getcwd(), "agents"))
-    dirs.append(os.path.expanduser("~/.agent/agents"))
+    # 共通ホームはサブディレクトリ単位で新旧を判定する（agent-project / agent-flow /
+    # agent-dashboard と同じ解決）。旧 ~/.agent/agents 決め打ちだと、.agents へ移行済みの
+    # 端末で他ツールが読む定義を agent-amigos だけ見落とす。
+    dirs.append(agent_home_subdir("", "agents"))
     dirs.append(os.path.expanduser("~/.kiro/agents"))
     return dirs
 
@@ -226,7 +230,9 @@ def run_agent(prompt: str, cli: str, model: "str | None" = None,
         if plug["prompt_via"] == "argv" and len(prompt.encode("utf-8")) > DEFAULT_ARGV_LIMIT:
             spill, prompt = _spill_prompt(prompt)
         cmd, stdin_text, out_file = _plugin_cmd(plug, model, prompt)
-    env = {**os.environ, **((plug or {}).get("env") or {})}
+    # 発生源で色を抑止（NO_COLOR/TERM=dumb）。残った ANSI は strip_ansi で除去する二段構え
+    # （agent-project と同じ扱い）。プラグイン定義の env は最後に載せるので上書きできる。
+    env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", **((plug or {}).get("env") or {})}
     eff_timeout = (plug or {}).get("timeout") or timeout or DEFAULT_TIMEOUT
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",

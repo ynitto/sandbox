@@ -437,7 +437,7 @@ planner を flow-planner スキルへ外出ししたのと同じ作戦で、`exe
 （mtime キャッシュで再ロード対応）。
 
 - **検索順**: スクリプト同階層 `executors/` → リポジトリ `tools/agent-flow/executors/` →
-  `~/.agent/agent-flow/executors/`（インストーラ配置）→ 設定 `executor_dir`。
+  `~/.agents/agent-flow/executors/`（インストーラ配置）→ 設定 `executor_dir`。
 - **設定渡し**: 同名のトップレベル設定ブロック（例 `gitlab:`）を JSON 化し、環境変数
   `AGENT_FLOW_EXECUTOR_CONFIG` でプラグインへ渡す（プラグインは個別環境変数で上書き可）。
   組み込み executor の実体は import 時参照を握らず呼び出し時に `globals()` から解決する
@@ -449,8 +449,8 @@ planner を flow-planner スキルへ外出ししたのと同じ作戦で、`exe
     解決した値（例 gitlab の `repo_url`/`conn_label`）が確実に届く。worker 側 `make_executor` は、
     自分で設定ブロックを解決できたときだけ env を更新し、解決できない（空/None）ときは親が注入した
     値を尊重して上書きしない。
-- **インストール**: `install.sh` が同梱プラグインを `~/.agent/agent-flow/executors/` へコピーする
-  （kiro-loop が補助アセットを `~/.agent/` 配下へ置くのと同じ流儀）。単一ファイル配布後も
+- **インストール**: `install.sh` が同梱プラグインを `~/.agents/agent-flow/executors/` へコピーする
+  （kiro-loop が補助アセットを `~/.agents/` 配下へ置くのと同じ流儀）。単一ファイル配布後も
   `--executor <name>` が名前解決できる。
 
 **gitlab ワーカーバス**（opt-in・`executors/gitlab.py`）: 各ワーカータスクを gitlab-idd
@@ -582,7 +582,7 @@ Claude Code スキル `.github/skills/agent-flow/` がこの CLI の呼び出し
 
 環境ごとに決まる値を設定ファイルへ外出しできる（kiro-loop と同じ流儀）。
 
-- **探索順序（フォールバック）**: `--config <path>` → `./.agent/` → `~/.agent/` の
+- **探索順序（フォールバック）**: `--config <path>` → `./.agents/` → `~/.agents/` の
   `agent-flow.{yaml,yml,json}`。
 - **形式**: PyYAML があれば YAML、無ければ JSON（同じキー。PyYAML は任意）。
 - **優先順位**: CLI 引数 > 設定ファイル > 組み込み既定（`CONFIG_DEFAULTS`）。

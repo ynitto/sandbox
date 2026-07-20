@@ -526,13 +526,50 @@ def commands_dir(cfg: "Config") -> Path:
 
 
 def _reject_command(cfg: "Config", f: Path, why: str) -> None:
-    """処理できない指示ファイルは .err に退避して journal に残す（無限再試行を防ぐ）。"""
+    """処理できない指示ファイルは .err に退避して journal に残す（無限再試行を防ぐ）。
+
+    退避先には失敗理由も書く。以前は元の JSON をそのまま改名するだけだったので、
+    「なぜ通らなかったか」は journal を grep しないと分からず、画面には成功トーストだけが
+    出ていた（承認を押しても何も起きない、と繰り返し報告された不具合の一因）。
+    元の指示は `command` として保持し、消費側が理由と一緒に読めるようにする。"""
     append_journal(cfg.journal, f"commands 取り込み失敗: {f.name}: {why}")
+    dest = f.with_name(f.name + ".err")
     try:
-        f.rename(f.with_name(f.name + ".err"))
+        try:
+            rec = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            rec = None
+        payload = {"error": why, "failed_at": _now_ts(), "command": rec}
+        dest.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        f.unlink()
     except OSError:
         try:
-            f.unlink()
+            f.rename(dest)
+        except OSError:
+            try:
+                f.unlink()
+            except OSError:
+                pass
+
+
+def _clear_rejected_commands(cfg: "Config", tid: str) -> None:
+    """同じタスクへの指示が通ったら、過去の失敗退避（*.err）を掃除する。
+
+    .err は viewer が「直前の指示は失敗した」バナーを出す根拠になる。成功後も残すと、
+    解決済みの失敗が同じタスクの次の要対応カードに出続ける（直ったのに失敗表示）。
+    掃除は成功時だけ——失敗の履歴を先に消すと、失敗が誰にも見えない元の不具合に戻る。"""
+    if not tid:
+        return
+    for e in commands_dir(cfg).glob("*.err"):
+        try:
+            payload = json.loads(e.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        cmd = payload.get("command") if isinstance(payload, dict) else None
+        if str((cmd or {}).get("id", "") or "") != tid:
+            continue
+        try:
+            e.unlink()
         except OSError:
             pass
 
@@ -631,6 +668,7 @@ def ingest_commands(cfg: "Config") -> "list[str]":
                 except OSError:
                     pass
                 append_journal(cfg.journal, f"commands 取り込み: resume-run {tid}（{f.name}）")
+                _clear_rejected_commands(cfg, tid)
                 done.append(f"resume-run:{tid}")
             else:
                 _reject_command(cfg, f, f"resume-run {tid} が失敗 (exit {rc})")
@@ -638,28 +676,40 @@ def ingest_commands(cfg: "Config") -> "list[str]":
         if action not in COMMAND_ACTIONS or not tid:
             _reject_command(cfg, f, f"未知の指示: command={action!r} id={tid!r}")
             continue
-        if action == "approve":
-            # complete: 「成果を受け入れて完了にする」の明示（agent-dashboard の
-            # 「承認して完了にする」）。無ければ従来どおり積み直し。
-            rc = cmd_approve(cfg, tid, reason, complete=bool(rec.get("complete")))
-        elif action == "reject":
-            rc = cmd_reject(cfg, tid, reason)
-        elif action == "hold":
-            rc = cmd_hold(cfg, tid, reason)
-        elif action == "revise":
-            fields = {k: rec[k] for k in REVISE_FIELDS if k in rec}
-            rc = cmd_revise(cfg, tid, fields, str(rec.get("feedback", "") or ""), reason)
-        else:
-            rc = cmd_reprioritize(cfg, tid, action, reason)
+        # cmd_* は失敗理由を stderr に書く。それを拾って退避先と journal へ運ぶ——
+        # 「approve が失敗 (exit 1)」だけでは何を直せば通るのか分からず、画面には
+        # 成功トーストしか出ないため、失敗が誰にも見えないまま同じ操作が繰り返される。
+        errbuf = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(errbuf):
+                if action == "approve":
+                    # complete: 「成果を受け入れて完了にする」の明示（agent-dashboard の
+                    # 「承認して完了にする」）。無ければ従来どおり積み直し。
+                    rc = cmd_approve(cfg, tid, reason, complete=bool(rec.get("complete")))
+                elif action == "reject":
+                    rc = cmd_reject(cfg, tid, reason)
+                elif action == "hold":
+                    rc = cmd_hold(cfg, tid, reason)
+                elif action == "revise":
+                    fields = {k: rec[k] for k in REVISE_FIELDS if k in rec}
+                    rc = cmd_revise(cfg, tid, fields, str(rec.get("feedback", "") or ""), reason)
+                else:
+                    rc = cmd_reprioritize(cfg, tid, action, reason)
+        finally:
+            errmsg = errbuf.getvalue().strip()
+            if errmsg:
+                sys.stderr.write(errmsg + "\n")   # 端末での従来の見え方は変えない
         if rc == 0:
             try:
                 f.unlink()
             except OSError:
                 pass
             append_journal(cfg.journal, f"commands 取り込み: {action} {tid}（{f.name}）")
+            _clear_rejected_commands(cfg, tid)
             done.append(f"{action}:{tid}")
         else:
-            _reject_command(cfg, f, f"{action} {tid} が失敗 (exit {rc})")
+            detail = f": {errmsg.splitlines()[0][:300]}" if errmsg else ""
+            _reject_command(cfg, f, f"{action} {tid} が失敗 (exit {rc}){detail}")
     return done
 
 

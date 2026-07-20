@@ -48,7 +48,7 @@ class GitBus(Bus):
         self.url = url
         digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:8]
         self.root = os.path.abspath(os.path.expanduser(
-            workdir or os.path.join("~", ".agent", "amigos", "bus", digest)))
+            workdir or os.path.join("~", ".agents", "amigos", "bus", digest)))
         self.pull_interval = pull_interval if pull_interval is not None else _pull_interval()
         self._last_pull: "dict[str, float]" = {}
         os.makedirs(self.root, exist_ok=True)

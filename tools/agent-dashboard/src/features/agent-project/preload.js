@@ -50,6 +50,7 @@ module.exports = {
   agentTaskAssist: (invoke) => (args) => invoke('agent:taskAssist', args),
   agentPlanAdjustments: (invoke) => (args) => invoke('agent:planAdjustments', args),
   agentResolve: (invoke) => (dir) => invoke('agent:resolve', { dir }),
+  agentOpenChat: (invoke) => (args) => invoke('agent:openChat', args || {}),
 
   glReconcileRun: (invoke) => (args) => invoke('gitlab:reconcileRun', args),
 

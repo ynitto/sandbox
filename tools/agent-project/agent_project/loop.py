@@ -258,13 +258,15 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
             release_claim(cfg, task)
             settled += 1
             continue
-        # act/flow 失敗: verify=true で偽 done にしない（canceled 以外の not ok）
+        # act/flow 失敗: verify=true で偽 done にしない（canceled 以外の not ok）。
+        # 上の act 失敗と同じく、検証はここまで到達していないので未実行として記録する。
         if not ok:
             ev = delivery_evidence(cfg, msg, gb, loc,
-                                   verify=task.verify, vmsg=str(msg or ""),
-                                   ok=False, task=task)
+                                   verify=task.verify, vmsg="", ok=False,
+                                   verdict=VERIFY_NOT_RUN, phase=PHASE_ACT, task=task)
             _settle_failure(cfg, task, str(msg or "daemon run failed")[:500],
-                            cycle0 + settled + 1, ev, reasons, loc)
+                            cycle0 + settled + 1, ev, reasons, loc,
+                            phase=PHASE_ACT, verdict=VERIFY_NOT_RUN)
             release_claim(cfg, task)
             settled += 1
             continue
@@ -421,12 +423,15 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
                 release_claim(cfg, task)
                 continue
             # act 失敗（daemon failed 等）: verify=true の偽 done/review を防ぐ。失敗経路へ。
+            # verify はここでは走っていない。ok=False で「検証が失敗した」と書くと、着手前に
+            # 止まった run が画面で「検証コマンドが失敗しました」になり、人は存在しない
+            # テスト失敗を調べに行く。未実行は未実行として記録する。
             if act_ok is False:
                 ev = delivery_evidence(cfg, act_msg, git_base, location,
-                                       verify=task.verify, vmsg=str(act_msg or ""),
-                                       ok=False, task=task)
+                                       verify=task.verify, vmsg="", ok=False,
+                                       verdict=VERIFY_NOT_RUN, phase=PHASE_ACT, task=task)
                 _settle_failure(cfg, task, str(act_msg or "act failed")[:500], cycle, ev,
-                                reasons, location)
+                                reasons, location, phase=PHASE_ACT, verdict=VERIFY_NOT_RUN)
                 release_claim(cfg, task)
                 continue
             res = _settle_task(cfg, task, location, act_msg, cycle, dtok, dusd, git_base,

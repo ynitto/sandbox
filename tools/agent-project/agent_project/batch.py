@@ -40,19 +40,26 @@ def rotate_journal(path: Path, max_bytes: "int | None" = None,
         arch_dir.mkdir(parents=True, exist_ok=True)
         ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
         host = re.sub(r"[^A-Za-z0-9._-]", "-", socket.gethostname())[:24] or "host"
-        dest = arch_dir / f"{path.stem}-{ts}-{host}{path.suffix}"
-        n = 1
+        # 同一秒に複数回ローテーションすると連番が付く。ゼロ詰めしないと名前順で ".10" が
+        # ".2" より前に並び、刈り込みが**最古ではなく任意の世代**を消す（journal の行が
+        # 歯抜けに失われた）。ゼロ詰めして、同一秒内でも名前順＝時系列にする。
+        base = f"{path.stem}-{ts}-{host}"
+        n = 0
+        dest = arch_dir / f"{base}.{n:03d}{path.suffix}"
         while dest.exists():
-            dest = arch_dir / f"{path.stem}-{ts}-{host}.{n}{path.suffix}"
             n += 1
+            dest = arch_dir / f"{base}.{n:03d}{path.suffix}"
         path.replace(dest)                 # 同一ファイルシステム内の原子的 rename
     except OSError:
         return None
     keep_n = _JOURNAL_KEEP if keep is None else keep
     if keep_n > 0:
         try:
-            arch = sorted(p for p in arch_dir.iterdir()
-                          if p.is_file() and p.name.startswith(path.stem + "-"))
+            # 刈り込みは mtime 順（＝退避した順）。名前順だけに頼ると、旧命名で残っている
+            # アーカイブや別ホストのタイムスタンプが混ざったときに時系列と食い違う。
+            arch = sorted((p for p in arch_dir.iterdir()
+                           if p.is_file() and p.name.startswith(path.stem + "-")),
+                          key=lambda p: (p.stat().st_mtime, p.name))
             for old in arch[:-keep_n]:
                 old.unlink()
         except OSError:
@@ -84,7 +91,7 @@ def append_runlog(path: "Path | None", record: dict) -> None:
         pass
 
 
-def _block(cfg, task, reason, reasons, evidence: str = ""):
+def _block(cfg, task, reason, reasons, evidence: str = "", failure: "dict | None" = None):
     # offloaded のまま blocked にすると、走っている flow が放置され reap も拾えない。
     if task.norm_status() == "offloaded" or task.get("flow_run"):
         detached = detach_flow_run(cfg, task, reason[:120] or "hold/block により委譲から切り離し")
@@ -101,7 +108,7 @@ def _block(cfg, task, reason, reasons, evidence: str = ""):
         delivery = delivery_entries(cfg, task)
     except Exception:  # noqa: BLE001 — delivery 取得失敗で本来の blocked 遷移を壊さない
         delivery = None
-    write_needs_file(cfg, task, reason, evidence=evidence, delivery=delivery)
+    write_needs_file(cfg, task, reason, evidence=evidence, delivery=delivery, failure=failure)
     release_claim(cfg, task)              # blocked は doing でなくなる＝実行権（claim）を解放（人手 hold 含む）
 
 

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "agent-control.schema.json",
   "title": "エージェント制御 — 管理面→各エンジンの宣言的オーケストレーション（データ契約）",
-  "description": "agent-dashboard / 各ツール CLI / 人が書く「望ましい状態」を、agent-project（project）・agent-amigos（amigos）・agent-flow（flow）・kiro-loop / agent-loop（routine）が既存のチョークポイント / サイクル先頭で読み適用する pull 型の制御契約。エージェント CLI・モデルの横断上書き、縮退（degraded）、一時停止 / 停止（lifecycle）、委譲誘導（delegation）を表す。優先順位は control > CLI 引数 > 設定ファイル > 組み込み既定（エントリを null にすれば即座に元へ戻る明示的・可逆な上書き）。agent_cli の実体解決は従来どおり組み込み → agents/<name>.json ドロップイン探索で、control は「どれを使うか」だけを言う。置き場所: $AGENT_CONTROL_DIR（既定 ~/.agent/control/）。control.json（管理面が原子書換）と status/<tool>-<pid>.json（各エンジンが適用状況をハートビート書換、管理面が読む）。未知のワークロード・未知のキーは無害に無視する。設計: docs/plans/2026-07-19-agent-dashboard-orchestration-token-budget-design.md",
+  "description": "agent-dashboard / 各ツール CLI / 人が書く「望ましい状態」を、agent-project（project）・agent-amigos（amigos）・agent-flow（flow）・kiro-loop / agent-loop（routine）が既存のチョークポイント / サイクル先頭で読み適用する pull 型の制御契約。エージェント CLI・モデルの横断上書き、縮退（degraded）、一時停止 / 停止（lifecycle）、委譲誘導（delegation）を表す。優先順位は control > CLI 引数 > 設定ファイル > 組み込み既定（エントリを null にすれば即座に元へ戻る明示的・可逆な上書き）。agent_cli の実体解決は従来どおり組み込み → agents/<name>.json ドロップイン探索で、control は「どれを使うか」だけを言う。置き場所: $AGENT_CONTROL_DIR（既定 ~/.agents/control/）。control.json（管理面が原子書換）と status/<tool>-<pid>.json（各エンジンが適用状況をハートビート書換、管理面が読む）。未知のワークロード・未知のキーは無害に無視する。設計: docs/plans/2026-07-19-agent-dashboard-orchestration-token-budget-design.md",
   "$defs": {
     "agent_override": {
       "type": "object",
