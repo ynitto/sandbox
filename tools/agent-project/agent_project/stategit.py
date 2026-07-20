@@ -46,8 +46,12 @@ _STATE_REMOTE_WINS_DIRS = {"commands", "inbox", "needs"}
 # rules.md（プロジェクトルール）も人が書くのが正なのでリモート優先。システムの昇格追記
 # （promote_rules）は実行側ローカルで起きるが、同時変更時は人の編集を取りこぼさない側に倒す
 # （昇格は冪等なので次パスで再追記される）。
+# assignments.json（agent-dashboard の監視担当メタ）も人が dashboard から書くサイドカーで、
+# 本体は読まない（機械状態ではない）。複数メンバーが別 PC で担当を編集しうるので、同時変更は
+# リモート＝人の編集を優先し、他メンバーの割り当てをローカルの古い版で潰さない。
 _STATE_REMOTE_WINS_FILES = {"policy.md", "charter.md", "rules.md",
-                            "repos.json", "repos.yaml", "repos.yml"}
+                            "repos.json", "repos.yaml", "repos.yml",
+                            "assignments.json"}
 
 
 class StateGit:
