@@ -1242,12 +1242,17 @@ function hasProjectManifest(dir) {
 // ~/.agent のグローバル設定にある `root:` は使わない: それを採るとすべてのワークスペースが同じ
 // 状態フォルダを指してしまう（本体は 1 プロセス 1 プロジェクトなので困らないが、ビュアーは
 // 複数プロジェクトを同時に扱う）。
+// readToolConfig は最後に ~/.agents を探すので、プロジェクトに設定が無いとグローバル設定が返る。
+// 「このワークスペースの設定か」を必ずこれで検査してから値を採る。
+function _configFromWorkspace(cfg, ws) {
+  return !!(cfg && cfg.file && path.resolve(cfg.file).startsWith(ws + path.sep));
+}
+
 function resolveProjectRoot(workspaceDir) {
   const ws = path.resolve(String(workspaceDir || ''));
   if (!ws) return ws;
   const cfg = readToolConfig('agent-project', [ws, ...agentDirCandidates(ws)]);
-  const fromWorkspace =
-    cfg && cfg.file && path.resolve(cfg.file).startsWith(ws + path.sep);
+  const fromWorkspace = _configFromWorkspace(cfg, ws);
   const raw = fromWorkspace && cfg.values ? cfg.values.root : null;
   const branch =
     (fromWorkspace && cfg.values && cfg.values.state_branch) || DEFAULT_STATE_BRANCH;
@@ -1589,6 +1594,26 @@ function resolveBusDir(projectDir, workspaceDir, cfg) {
   return { busDir: first.dir, hasBus: false, source: first.source, candidates: ordered };
 }
 
+// 一貫性ゲート（codd-gate）の結線状態。設定 yaml の regression_cmd / intake_cmd が
+// 「書かれているか」だけを見る（コマンドは実行しないし、値の妥当性も判定しない）。
+// 読み取り専用: ここから設定を書き換える経路は作らない。有効化は README の手順
+// （設定編集 / codd_gate_regression.py）に人が従う。
+function consistencyGateStatus(cfg, workspace) {
+  const values = (_configFromWorkspace(cfg, workspace) && cfg.values) || {};
+  const pick = (key) => String(values[key] || '').trim() || null;
+  const regressionCmd = pick('regression_cmd');
+  const intakeCmd = pick('intake_cmd');
+  return {
+    // 有効化の導線で「どのファイルを編集するか」を示すための実パス。未検出なら null。
+    configFile: _configFromWorkspace(cfg, workspace) ? cfg.file : null,
+    regressionWired: !!regressionCmd,
+    intakeWired: !!intakeCmd,
+    // 表示用（何が設定されているかを人が確認するため）。判定にはフラグ側を使う。
+    regressionCmd,
+    intakeCmd,
+  };
+}
+
 // 1 プロジェクトの完全なスナップショット。
 // 入力は**ワークスペース**（登録するフォルダ）。状態は resolveProjectRoot が導く
 // **プロジェクトルート**（dir）の直下から読む。返り値の `dir` はプロジェクトルートで、
@@ -1719,6 +1744,8 @@ function readProject(workspaceDir, cfg) {
     reposFile,
     repos: reposFile === 'repos.json' ? readJson(path.join(dir, 'repos.json')) : null,
     autonomy,
+    // 一貫性ゲート（codd-gate）が設定 yaml に結線されているか。読み取り専用の事実。
+    consistencyGate: consistencyGateStatus(projectCfg, workspace),
     liveness: projectLiveness(dir),
     busDir: bus.busDir,
     hasBus: bus.hasBus,
