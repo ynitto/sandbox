@@ -24,11 +24,14 @@ DEFAULTS = {
     "acceptance": "manual",
 }
 CONVERGENCE_DEFAULTS = {
-    "done_when": "all-required-done",   # all-required-done | reviewer-approved
+    "done_when": "all-required-done",   # all-required-done | reviewer-approved | consensus
     "quiescence_turns": 3,
     "review_rounds": 2,
     "question_timeout": 2,              # 未回答質問を owner へ昇格するまでの自ターン数（§7.3）
+    "consensus_ratio": 0.6,            # done_when=consensus: 席グループの最頻回答の占有率しきい値
+    "consensus_min": 2,                # done_when=consensus: 合意判定に要る最小回答席数
 }
+DONE_WHEN_MODES = ("all-required-done", "reviewer-approved", "consensus")
 BUDGET_DEFAULTS = {
     "execution_minutes": 0,             # 0 = 無制限
     "per_role_turns": 30,
@@ -37,11 +40,14 @@ BUDGET_DEFAULTS = {
 }
 
 # seats>1（並列同一シート、G1）のロールに付ける集約モード（G2。integrator が決定的に集約）。
-#   majority   — 各席の回答（answer ファイル）の最頻値を選ぶ（多数決）。決定的タイブレーク
-#   consensus  — 全席一致なら採用、割れたら flag（agreed:false）付きで最頻値を採る
-#   gather     — 全席の回答を席見出し付きで 1 ファイルに集める（選抜せず統合）
-AGGREGATE_MODES = ("majority", "consensus", "gather")
+#   majority       — 各席の回答（answer ファイル）の最頻値を選ぶ（多数決）。決定的タイブレーク
+#   consensus      — 全席一致なら採用、割れたら flag（agreed:false）付きで最頻値を採る
+#   weighted-vote  — 席ごとの重み（SCORE ファイル、既定 1.0）を回答ごとに合計して最大を採る
+#   approval-count — 各席を候補とみなし、スコア（SCORE ファイル、既定 0）最大の候補を選ぶ
+#   gather         — 全席の回答を席見出し付きで 1 ファイルに集める（選抜せず統合）
+AGGREGATE_MODES = ("majority", "consensus", "weighted-vote", "approval-count", "gather")
 DEFAULT_ANSWER_FILE = "ANSWER.md"       # 集約が読む各席の正準回答ファイル（席の artifacts 内）
+DEFAULT_SCORE_FILE = "SCORE"            # weighted-vote / approval-count が読む席の数値信号ファイル
 
 
 def _expand_seats(base_roles: list) -> list:
@@ -84,6 +90,7 @@ def _expand_seats(base_roles: list) -> list:
             s["seat_count"] = n
             s["aggregate"] = r.get("aggregate")
             s["aggregate_answer"] = r.get("aggregate_answer")
+            s["aggregate_score"] = r.get("aggregate_score")
             s["collaborates_with"] = _remap(r.get("collaborates_with") or [])
             expanded.append(s)
     return expanded
@@ -126,9 +133,10 @@ def normalize_mission(spec: dict) -> "tuple[dict, list]":
         raise SystemExit(f"[agent-amigos] acceptance={mission['acceptance']!r} は未対応です"
                          "（manual | agent。codd-gate は将来拡張 — 設計書 §8.2）")
     mission["convergence"] = {**CONVERGENCE_DEFAULTS, **dict(m.get("convergence") or {})}
-    if mission["convergence"]["done_when"] not in ("all-required-done", "reviewer-approved"):
+    if mission["convergence"]["done_when"] not in DONE_WHEN_MODES:
         raise SystemExit(f"[agent-amigos] convergence.done_when が不正です: "
-                         f"{mission['convergence']['done_when']!r}")
+                         f"{mission['convergence']['done_when']!r}"
+                         f"（{' | '.join(DONE_WHEN_MODES)}）")
     mission["budget"] = {**BUDGET_DEFAULTS, **dict(m.get("budget") or {})}
     mission["workspace"] = dict(m.get("workspace") or {})
 
@@ -164,6 +172,8 @@ def normalize_mission(spec: dict) -> "tuple[dict, list]":
                 "aggregate": aggregate,
                 "aggregate_answer": (str(r["aggregate_answer"])
                                      if r.get("aggregate_answer") else None),
+                "aggregate_score": (str(r["aggregate_score"])
+                                    if r.get("aggregate_score") else None),
                 "agent_cli": r.get("agent_cli"),
                 "model": r.get("model"),
                 "requires": dict(r.get("requires") or {}),
@@ -186,9 +196,10 @@ def normalize_mission(spec: dict) -> "tuple[dict, list]":
         roles.append({"id": "integrator", "title": "統合", "mission":
                       "全ロールの成果物を検証・統合し deliverable/ を組み立てる。",
                       "deliverables": [], "required": True, "seats": 1, "aggregate": None,
-                      "aggregate_answer": None, "agent_cli": None,
+                      "aggregate_answer": None, "aggregate_score": None, "agent_cli": None,
                       "model": None, "requires": {}, "collaborates_with": [],
-                      "approver": False, "builtin": "integrator"})
+                      "approver": False, "builtin": "integrator", "seat_group": "integrator",
+                      "seat_index": 0, "seat_count": 1})
     return mission, roles
 
 
@@ -284,6 +295,44 @@ def role_status(mp: MissionPaths, statuses: "dict[str, dict]", role_id: str) -> 
     return statuses.get(f"{ent['node']}--{role_id}")
 
 
+# --- 席グループの集約・合意（G1/G2） ----------------------------------------
+
+def seat_answer_file(role: dict) -> str:
+    """席の正準回答ファイル名: aggregate_answer > 単一 deliverable > 既定 ANSWER.md。"""
+    dels = role.get("deliverables") or []
+    return role.get("aggregate_answer") or (dels[0] if len(dels) == 1 else DEFAULT_ANSWER_FILE)
+
+
+def seat_groups_with_aggregate(roles: "dict[str, dict]") -> "dict[str, list]":
+    """aggregate 指定のある席グループ {基底 id: [席ロール…]} を返す。"""
+    groups: "dict[str, list]" = {}
+    for r in roles.values():
+        g = r.get("seat_group")
+        if g and int(r.get("seat_count") or 1) > 1 and r.get("aggregate"):
+            groups.setdefault(g, []).append(r)
+    return groups
+
+
+def read_seat_answer(mp: MissionPaths, seat_id: str, answer_file: str) -> "str | None":
+    path = os.path.join(mp.artifacts_dir(seat_id), answer_file)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def group_consensus(mp: MissionPaths, seat_roles: list, ratio: float, min_n: int) -> bool:
+    """席グループが合意に達したか: 回答済み席数 >= min_n かつ 最頻回答の占有率 >= ratio。"""
+    from collections import Counter
+    af = seat_answer_file(seat_roles[0])
+    answers = [a for a in (read_seat_answer(mp, r["id"], af) for r in seat_roles) if a]
+    if len(answers) < max(min_n, 1):
+        return False
+    top = Counter(answers).most_common(1)[0][1]
+    return top / len(answers) >= ratio
+
+
 # --- 収束判定（設計書 §3.2） -------------------------------------------------
 
 def convergence_state(mission: dict, roles: "dict[str, dict]", mp: MissionPaths) -> dict:
@@ -309,10 +358,27 @@ def convergence_state(mission: dict, roles: "dict[str, dict]", mp: MissionPaths)
         if st and st.get("approved_round") == rnd:
             approved_roles.append(r["id"])
     workers = [r for r in required if r.get("builtin") != "integrator"]
-    all_done = staffed and all(r["id"] in done_roles for r in workers)
-    if conv.get("done_when") == "reviewer-approved":
-        approvers = [r for r in roles.values() if r.get("approver")]
-        all_done = all_done and all(r["id"] in approved_roles for r in approvers)
+    done_when = conv.get("done_when")
+    if done_when == "consensus":
+        # 席グループが合意に達し、席以外の必須ワーカー（承認者を除く）が完了したら収束。
+        # 全席の完了は待たない（早期停止）。席グループが無ければ all-required-done に退避。
+        groups = seat_groups_with_aggregate(roles)
+        seat_ids = {r["id"] for grp in groups.values() for r in grp}
+        plain = [r for r in workers if r["id"] not in seat_ids and not r.get("approver")]
+        base_done = staffed and all(r["id"] in done_roles for r in plain)
+        if groups:
+            ratio = float(conv.get("consensus_ratio") or 0.0)
+            min_n = int(conv.get("consensus_min") or 0)
+            cons_ok = all(group_consensus(mp, sr, ratio, min_n)
+                          for sr in groups.values())
+            all_done = base_done and cons_ok
+        else:
+            all_done = staffed and all(r["id"] in done_roles for r in workers)
+    else:
+        all_done = staffed and all(r["id"] in done_roles for r in workers)
+        if done_when == "reviewer-approved":
+            approvers = [r for r in roles.values() if r.get("approver")]
+            all_done = all_done and all(r["id"] in approved_roles for r in approvers)
 
     unanswered = len(unanswered_questions(mp, roles))
     q_turns = int(conv.get("quiescence_turns") or 0)

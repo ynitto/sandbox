@@ -46,6 +46,6 @@
     "budget_hint": "中（例 90 分）"
   },
   "feasibility": "partial",
-  "feasibility_note": "discussants は seats>1（G1）で 3 人以上に増やせる。ただし同期ラウンドは無い（拡張 G3 待ち）ためメッセージ往復＋judge の裁定で近似する。最終決定は judge が担う（多数決なら別途 aggregate: majority も可）。",
+  "feasibility_note": "discussants は seats>1（G1）で 3 人以上に増やせる。多数決なら aggregate: majority（G2）＋ done_when: consensus で合意到達時に早期収束できる。ただし同期ラウンドは無い（拡張 G3 待ち）ためメッセージ往復＋judge の裁定で近似する。",
   "notes": "judge を approver にして reviewer-approved で締める。討論の往復は quiescence で収束させる。"
 }

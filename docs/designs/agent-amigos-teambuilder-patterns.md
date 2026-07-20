@@ -80,13 +80,14 @@ agent-amigos が**そのまま**表現できるのは:
   - `majority` — 最頻値（決定的タイブレーク: 得票降順 → 回答昇順）
   - `consensus` — 全席一致の判定（`agreed`）つき最頻値
   - `gather` — 全席の回答を席見出し付きで集める（選抜せず、後段の approver/aggregator が統合）
-- **写せるようになったパターン**: self-consistency / agent-forest（majority）、
-  mixture-of-agents / universal-self-consistency（gather ＋ aggregator/selector）。
-- **残（未実装の高度な集約）**: `weighted-vote`（確信度重み: reconcile）、`approval-count`
-  （承認数選抜: mav-bon）、`pairwise-rank`（双方向ペア対戦: llm-blender, prd-peer-rank）。
-  これらは approver の判断で近似する。将来 `aggregate` のモード追加で忠実化できる。
-- **残**: 収束条件 `done_when: consensus`（合意率しきい値での早期収束）は未実装
-  （現状は全席 done ＝ all-required-done で締め、consensus は集約結果の `agreed` フラグで表す）。
+- **集約モード**: `majority` / `consensus` / **`weighted-vote`**（席の `SCORE` を回答ごとに合計）/
+  **`approval-count`**（`SCORE` 最大の候補席を選抜）/ `gather`。weighted-vote と approval-count も
+  **実装済み**。写せるパターン: self-consistency / agent-forest（majority）、reconcile（weighted-vote）、
+  mav-bon（approval-count）、mixture-of-agents / universal-self-consistency（gather ＋ aggregator/selector）。
+- **`done_when: consensus`（早期収束）**: ✅ 実装済み。席グループの最頻回答が `consensus_ratio`
+  （既定 0.6・`consensus_min` 席以上）を占めたら、全席の完了を待たず収束する。
+- **残（未実装）**: `pairwise-rank`（双方向ペア対戦: llm-blender, prd-peer-rank）は比較が意味判断
+  のため決定的集約にできない。ranker ロール（approver）に委ねる設計とする（＝拡張ではなく設計方針）。
 
 ### G3. 同期ラウンド（ラウンドバリア）
 
@@ -140,10 +141,11 @@ agent-amigos が**そのまま**表現できるのは:
 
 ## 実装の優先順位（推奨）
 
-1. ~~**G1 seats>1** ＋ **G2 集約モード**~~ — ✅ **実装済み**（seats 展開 ＋ majority/consensus/gather）。
+1. ~~**G1 seats>1** ＋ **G2 集約モード**~~ — ✅ **実装済み**（seats 展開 ＋
+   majority/consensus/weighted-vote/approval-count/gather ＋ `done_when: consensus`）。
    sampling/voting/ensembling 系の大半が「近似」から「忠実」になった。コアの原則（状態のファイル
    導出・決定的 claim）は据え置き、seats はロール展開・集約は integrator の拡張で実現した。
-   - 続きの G2: `weighted-vote` / `approval-count` / `pairwise-rank` の集約モード追加、`done_when: consensus`。
+   - `pairwise-rank` のみ、比較が意味判断のため決定的集約にせず ranker ロールに委ねる設計とした。
 2. **G3 同期ラウンド** — debate 系の忠実度が上がる。runner のターンループにバリアを足す中規模。
 3. **G5 restaff ＋ team-builder 常駐** — 動的編成。オーナー操作とスキル呼び出しの組み合わせで、
    コア変更は小さい。

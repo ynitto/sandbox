@@ -38,11 +38,12 @@
             "type": "object",
             "properties": {
               "group": {"type": "string", "description": "席グループの基底ロール id"},
-              "mode": {"enum": ["majority", "consensus", "gather"]},
-              "winner": {"type": ["string", "null"], "description": "majority/consensus: 採択された回答（正規化済み）"},
-              "agreed": {"type": "boolean", "description": "consensus: 全席一致だったか"},
+              "mode": {"enum": ["majority", "consensus", "weighted-vote", "approval-count", "gather"]},
+              "winner": {"type": ["string", "null"], "description": "採択された回答（正規化済み）。gather は無し"},
+              "agreed": {"type": "boolean", "description": "consensus 系: 全席一致だったか"},
               "votes": {"type": "integer", "description": "回答を出した席数"},
-              "tally": {"type": "object", "description": "回答→得票数"}
+              "tally": {"type": "object", "description": "回答→得票（weighted-vote は重み合計）"},
+              "winner_score": {"type": ["number", "null"], "description": "approval-count: 勝者候補のスコア"}
             }
           }
         },
@@ -98,13 +99,18 @@
           "type": "object",
           "description": "収束条件（設計書 §3.2）",
           "properties": {
-            "done_when": {"enum": ["all-required-done", "reviewer-approved"], "default": "all-required-done"},
+            "done_when": {"enum": ["all-required-done", "reviewer-approved", "consensus"], "default": "all-required-done",
+              "description": "収束条件。all-required-done=全必須ロール完了、reviewer-approved=承認者の approve も要る、consensus=席グループ（seats+aggregate）が合意に達したら早期収束（全席の完了は待たない）"},
             "quiescence_turns": {"type": "integer", "minimum": 0, "default": 3,
               "description": "全ロール静穏（新着ゼロ・未回答質問ゼロ）がこのターン数続いたら partial 統合へ。0 = 無効"},
             "review_rounds": {"type": "integer", "minimum": 0, "default": 2,
               "description": "レビュー指摘 → 修正の往復上限（acceptance: agent の差し戻し上限を兼ねる）"},
             "question_timeout": {"type": "integer", "minimum": 1, "default": 2,
-              "description": "未回答質問を owner へ decision-request 昇格するまでの自ターン数"}
+              "description": "未回答質問を owner へ decision-request 昇格するまでの自ターン数"},
+            "consensus_ratio": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.6,
+              "description": "done_when: consensus — 席グループの最頻回答が占めるべき割合のしきい値"},
+            "consensus_min": {"type": "integer", "minimum": 1, "default": 2,
+              "description": "done_when: consensus — 合意判定に要る最小回答席数"}
           },
           "additionalProperties": false
         },
@@ -143,9 +149,10 @@
           "required": {"type": "boolean", "default": true},
           "seats": {"type": "integer", "minimum": 1, "default": 1,
                     "description": "並列同一シート数（G1）。N>1 は正規化時に <id>#0..#N-1 の具体席ロールへ展開される。各席は独立した amigo として同じロールミッションを実行する"},
-          "aggregate": {"enum": ["majority", "consensus", "gather"],
-                        "description": "seats>=2 の席グループを integrator が決定的に集約する方式（G2）。majority=多数決、consensus=一致判定つき最頻値、gather=全席を集める。各席は回答を aggregate_answer（既定 ANSWER.md）へ書く"},
+          "aggregate": {"enum": ["majority", "consensus", "weighted-vote", "approval-count", "gather"],
+                        "description": "seats>=2 の席グループを integrator が決定的に集約する方式（G2）。majority=多数決、consensus=一致判定つき最頻値、weighted-vote=席の重み合計、approval-count=スコア最大の候補、gather=全席を集める。各席は回答を aggregate_answer（既定 ANSWER.md）へ書く"},
           "aggregate_answer": {"type": "string", "description": "集約が読む各席の正準回答ファイル名（artifacts 内相対パス。既定は単一 deliverable、無ければ ANSWER.md）"},
+          "aggregate_score": {"type": "string", "description": "weighted-vote / approval-count が読む各席の数値信号ファイル名（既定 SCORE）。weighted-vote は投票の重み（既定 1.0）、approval-count は候補スコア（既定 0）として解釈する"},
           "agent_cli": {"type": "string", "description": "このロールが使う agent CLI（未指定はノード既定）"},
           "model": {"type": "string"},
           "requires": {

@@ -4,7 +4,7 @@
   "category": "debate-consensus",
   "tier": "medium",
   "source": "ReConcile (Chen et al., 2024)",
-  "when_to_use": "異質な複数エージェントが確信度付きで議論し合意に至りたいとき。",
+  "when_to_use": "異質な複数エージェントが確信度付きで見解を出し、確信度重みの合意に至りたいとき。",
   "signals": [
     "異質な視点の合議",
     "確信度で重み付け"
@@ -12,41 +12,20 @@
   "team": {
     "roles": [
       {
-        "id": "member-a",
-        "role": "確信度付きで見解を述べ議論する",
-        "required": true,
-        "approver": false
-      },
-      {
-        "id": "member-b",
-        "role": "別視点で議論する",
+        "id": "member",
+        "role": "独立に見解を述べ、回答を ANSWER.md、確信度(0-1)を SCORE に書く",
         "required": true,
         "approver": false,
-        "collaborates_with": [
-          "member-a"
-        ]
-      },
-      {
-        "id": "member-c",
-        "role": "さらに別視点で議論する",
-        "required": true,
-        "approver": false,
-        "collaborates_with": [
-          "member-a"
-        ]
-      },
-      {
-        "id": "moderator",
-        "role": "合意を取りまとめ承認する",
-        "required": true,
-        "approver": true
+        "seats": 3,
+        "aggregate": "weighted-vote",
+        "count_hint": "3-5"
       }
     ],
     "convergence": {
-      "done_when": "reviewer-approved",
-      "quiescence_turns": 2
+      "done_when": "consensus",
+      "consensus_ratio": 0.6
     }
   },
-  "feasibility": "partial",
-  "feasibility_note": "member は seats>1（G1）で増やせ、単純多数決は aggregate: majority（G2）で可能。確信度重み付き投票は未実装（G2 の重み付きモード追加待ち）で、moderator の裁定で近似する。"
+  "feasibility": "native",
+  "feasibility_note": "member を seats>1（G1）で並べ、aggregate: weighted-vote（G2）で確信度（SCORE）重みの投票を integrator が決定的に集計する。done_when: consensus で合意到達時に早期収束する。"
 }

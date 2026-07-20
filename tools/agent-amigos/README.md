@@ -237,10 +237,14 @@ roles:
 - **seats: N（G1）** は公示（正規化）時に `solver#0..#N-1` の具体席ロールへ展開される。各席は
   通常の 1 席ロールなので、claim・roster・収束・統合・納品の既存機構をそのまま使う（1 ノードでも
   self-staff が全席を充足）。
-- **aggregate（G2）** は integrator が席の回答（既定 `ANSWER.md`）を集める方式:
-  `majority`（多数決）/ `consensus`（全席一致の判定つき最頻値）/ `gather`（全席を集約収集）。
+- **aggregate（G2）** は integrator が席の回答（既定 `ANSWER.md`）を決定的に集約する方式:
+  `majority`（多数決）/ `consensus`（全席一致の判定つき最頻値）/ `weighted-vote`（席の重み `SCORE`
+  を回答ごとに合計）/ `approval-count`（`SCORE` 最大の候補席を選抜）/ `gather`（全席を集約収集）。
+  `weighted-vote` / `approval-count` の席は数値を `SCORE`（`aggregate_score` で変更可）に書く。
   結果は `deliverable/<id>/AGGREGATE.{md,json}` と `MANIFEST.json` の `aggregates` に残る。
-- 重み付き投票・承認数選抜・ペア順位などの高度な集約や同期ラウンドは未実装（拡張提案:
+- **収束を早める**: `convergence.done_when: consensus`（＋ `consensus_ratio` / `consensus_min`）で、
+  席グループが合意に達したら全席の完了を待たず収束する。
+- ペア比較順位・同期ラウンド・探索木・動的編成は未実装（拡張提案:
   [`docs/designs/agent-amigos-teambuilder-patterns.md`](../../docs/designs/agent-amigos-teambuilder-patterns.md)）。
 
 ## acceptance: agent（受入の自動判定）

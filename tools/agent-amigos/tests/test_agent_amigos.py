@@ -1030,8 +1030,8 @@ class MissionSchemaTests(AmigosTestCase):
         self.assertEqual(props["staffing_policy"]["enum"], ["self-staff", "wait", "fail"])
         self.assertEqual(props["acceptance"]["enum"], ["manual", "agent"])
         conv = props["convergence"]["properties"]
-        self.assertEqual(conv["done_when"]["enum"],
-                         ["all-required-done", "reviewer-approved"])
+        from agent_amigos.mission import DONE_WHEN_MODES
+        self.assertEqual(conv["done_when"]["enum"], list(DONE_WHEN_MODES))
         budget = props["budget"]["properties"]
         self.assertEqual(budget["on_exhausted"]["enum"], ["wrap-up", "fail"])
 
@@ -1627,18 +1627,22 @@ class SeatsAggregationTests(AmigosTestCase):
                                             "quiescence_turns": 9}},
                 "roles": [role]}
 
-    def _aggregate(self, mid, answers):
-        """指定した席回答を artifacts へ書き、integrator の集約だけを走らせる。"""
+    def _aggregate(self, mid, answers, scores=None):
+        """指定した席回答（と任意の SCORE）を artifacts へ書き、集約だけを走らせる。"""
         from agent_amigos.runner import AmigoRunner
         from agent_amigos.bus import TurnTxn
         mp = self.bus.mission(mid)
         for sid, ans in answers.items():
-            if ans is None:
-                continue
-            p = os.path.join(mp.artifacts_dir(sid), "ANSWER.md")
+            if ans is not None:
+                p = os.path.join(mp.artifacts_dir(sid), "ANSWER.md")
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write(ans)
+        for sid, sc in (scores or {}).items():
+            p = os.path.join(mp.artifacts_dir(sid), "SCORE")
             os.makedirs(os.path.dirname(p), exist_ok=True)
             with open(p, "w", encoding="utf-8") as f:
-                f.write(ans)
+                f.write(str(sc))
         runner = AmigoRunner(self.bus, mid, "integrator", "owner-node")
         txn = TurnTxn()
         summary = runner._aggregate_seat_groups(txn, load_roles(mp))
@@ -1722,6 +1726,66 @@ class SeatsAggregationTests(AmigosTestCase):
         self.assertEqual(agg["votes"], 2)         # 未回答席は票に数えない
         self.assertEqual(agg["winner"], "A")
         self.assertFalse(agg["seats"]["solver#2"]["present"])
+
+    def test_aggregate_weighted_vote(self):
+        mid = self.post(self._seats_spec("weighted-vote"), mid="am-wv")
+        # A が 2 席・B が 1 席だが、B の重みが大きいので B が勝つ
+        _s, agg = self._aggregate(mid, {"solver#0": "A", "solver#1": "A", "solver#2": "B"},
+                                  scores={"solver#0": 1, "solver#1": 1, "solver#2": 5})
+        self.assertEqual(agg["winner"], "B")
+        self.assertEqual(agg["tally"], {"A": 2.0, "B": 5.0})
+
+    def test_aggregate_weighted_vote_defaults_to_one(self):
+        mid = self.post(self._seats_spec("weighted-vote"), mid="am-wv2")
+        _s, agg = self._aggregate(mid, {"solver#0": "A", "solver#1": "A", "solver#2": "B"})
+        self.assertEqual(agg["winner"], "A")     # 重み未指定は 1.0 = majority と同じ
+
+    def test_aggregate_approval_count(self):
+        mid = self.post(self._seats_spec("approval-count"), mid="am-ap")
+        # スコア最大の候補（席）が勝つ
+        _s, agg = self._aggregate(mid, {"solver#0": "X", "solver#1": "Y", "solver#2": "Z"},
+                                  scores={"solver#0": 2, "solver#1": 9, "solver#2": 3})
+        self.assertEqual(agg["winner"], "Y")
+        self.assertEqual(agg["winner_seat"], "solver#1")
+        self.assertEqual(agg["winner_score"], 9.0)
+
+    # --- done_when: consensus（早期収束） ------------------------------------
+    def _stage_consensus(self, spec, answers, mid):
+        self.post(spec, mid=mid)
+        mp = self.bus.mission(mid)
+        roles = load_roles(mp)
+        write_json_atomic(mp.roster(), {rid: {"node": "owner-node"} for rid in roles})
+        for sid, ans in answers.items():
+            p = os.path.join(mp.artifacts_dir(sid), "ANSWER.md")
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(ans)
+        return convergence_state(load_mission(mp), roles, mp)
+
+    def test_done_when_consensus_converges_when_ratio_met(self):
+        spec = self._seats_spec("majority")
+        spec["mission"]["convergence"] = {"done_when": "consensus", "consensus_ratio": 0.6,
+                                          "consensus_min": 2, "quiescence_turns": 0}
+        cs = self._stage_consensus(spec, {"solver#0": "A", "solver#1": "A",
+                                          "solver#2": "B"}, "am-cons-y")   # 2/3 = 0.66
+        self.assertTrue(cs["converged"])
+        self.assertEqual(cs["reason"], "done")
+
+    def test_done_when_consensus_waits_when_split(self):
+        spec = self._seats_spec("majority")
+        spec["mission"]["convergence"] = {"done_when": "consensus", "consensus_ratio": 0.6,
+                                          "consensus_min": 2, "quiescence_turns": 0}
+        cs = self._stage_consensus(spec, {"solver#0": "A", "solver#1": "B",
+                                          "solver#2": "C"}, "am-cons-n")   # 1/3 < 0.6
+        self.assertFalse(cs["converged"])
+
+    def test_done_when_consensus_needs_min_answers(self):
+        spec = self._seats_spec("majority", seats=5)
+        spec["mission"]["convergence"] = {"done_when": "consensus", "consensus_ratio": 0.6,
+                                          "consensus_min": 3, "quiescence_turns": 0}
+        cs = self._stage_consensus(spec, {"solver#0": "A", "solver#1": "A"},
+                                   "am-cons-min")    # 一致だが回答 2 < min 3
+        self.assertFalse(cs["converged"])
 
     # --- E2E: stub で seats が統合まで到達し manifest に集約が載る ------------
     def test_seats_end_to_end_stub_produces_aggregates(self):
