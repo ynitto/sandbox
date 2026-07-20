@@ -14,3 +14,5 @@
 {"ts": "2026-07-19T20:50:43Z", "who": "worker-2", "kind": "result", "node": "t5", "status": "done"}
 {"ts": "2026-07-19T22:13:24Z", "who": "worker-2", "kind": "claimed", "node": "t2"}
 {"ts": "2026-07-19T22:43:24Z", "who": "worker-2", "kind": "claimed", "node": "t2"}
+{"ts": "2026-07-19T23:13:25Z", "who": "worker-2", "kind": "claimed", "node": "t2"}
+{"ts": "2026-07-19T23:58:42Z", "who": "worker-2", "kind": "result", "node": "t2", "status": "failed"}
