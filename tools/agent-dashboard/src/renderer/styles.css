@@ -1777,6 +1777,7 @@ dialog[open] > form.dialog-shell {
   margin: 0;
 }
 dialog.wide { min-width: 720px; }
+#dlg-cowork-work .cowork-kind-help { display: block; min-height: 2.9em; }
 dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
 dialog h2 { margin-top: 0; font-size: 15px; }
 dialog h3 { font-size: 13px; color: var(--muted); margin: 14px 0 6px; }

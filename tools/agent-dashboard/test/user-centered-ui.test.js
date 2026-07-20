@@ -50,6 +50,9 @@ for (const removed of ['cw-repo', 'cw-workflow', 'cw-description', 'cw-enabled']
 }
 assert.ok(coworkDialog.includes('id="cw-prompt-field"'));
 assert.ok(coworkDialog.includes('id="cw-instruction-field"'));
+assert.strictEqual((coworkDialog.match(/cowork-kind-help/g) || []).length, 2,
+  '種類を切り替えても補足欄の高さを揃える');
+assert.match(css, /#dlg-cowork-work \.cowork-kind-help\s*\{[^}]*min-height:\s*2\.9em/s);
 assert.ok(!html.includes('定期・定型作業'));
 assert.ok(!renderer.includes('定期・定型作業'));
 assert.ok(renderer.includes('function overviewVersionsHtml('), '概要画面に計画バージョン一覧が必要です');
