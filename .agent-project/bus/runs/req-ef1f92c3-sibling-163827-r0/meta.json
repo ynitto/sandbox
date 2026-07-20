@@ -12,12 +12,10 @@
   "status": "failed",
   "created_at": "2026-07-19T11:57:48Z",
   "executor": "agent",
-  "orch_lease_until": 1784506266.899486,
-  "heartbeat_at": "2026-07-20T00:09:06Z",
-  "updated_at": "2026-07-20T00:09:42Z",
+  "orch_lease_until": 1784509879.280454,
+  "heartbeat_at": "2026-07-20T01:09:19Z",
+  "updated_at": "2026-07-20T01:09:45Z",
   "healed_at": "2026-07-20T00:03:45Z",
-  "heal_count": 1,
-  "heal_progress": 5,
   "instructions": {
     "revision": 2,
     "text": "<!-- agent-instructions rev:2 -->\n## 共通指示（agent-dashboard 管理・全ノード共通）\n作業開始前に `/caveman` と `/ponytail full` を実行する。\n\n推奨スキル（ローカルに存在する場合のみ適用）:\n- slop-police — ドキュメント生成時"

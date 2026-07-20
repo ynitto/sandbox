@@ -1,0 +1,22 @@
+{
+  "id": "t2",
+  "who": "worker-2",
+  "status": "done",
+  "output": "## (a) 成果\n\n`codd_gate_wiring.py` / `codd_gate_base.py` から agent_project への自動配線経路を切り離した。詳細報告: `artifacts/t2/codd-gate-decoupling-report.md`\n\n**切り離しの実体**: `agent_project/hooks.py:83` の sibling 自動走査は import 前にソーステキストへ `^def <必須属性>\\s*\\(` の前置フィルタをかける。従来の `codd_gate_wiring` は `def detect_wiring(` / `def doctor_findings(` を持つため零設定で当選し、利用者が何も書かなくても doctor へ繋がっていた。実装の名前をモジュール自身の語彙へ戻し（`probe_wiring` / `render_findings`）、契約名は末尾の**別名**として公開した。`hasattr` を見る明示指定（`hooks: {wiring: codd_gate_wiring}`）では解決でき、ソーステキストを見る自動走査では候補に上がらない。`agent_project/` は無変更。\n\n**受け皿**: 自動配線を切ると零設定で現状を知る手段が消えるため、`codd_gate_wiring.py` に CLI（`main()`）を追加。所見を JSON で stdout へ出すだけで、どこへも書かない。\n\n**`codd_gate_base.py`**: コードは無変更、docstring から分割で全滅した `agent-project.py:4906-` 等の行番号参照と run ローカルな語を外し「明示 import 専用」へ書き換え。`tests/test_codd_gate_base.py` を新規追加。\n\n## (b) 検証\n\n| 検証 | 結果 |\n|---|---|\n| `test_codd_gate_*.py` | **105 tests OK**（t1 時点 81 → 他タスク +18 → 本タスク +6） |\n| 全体スイート | 832 tests / failures=2（**いずれも codd_gate 無関係の環境依存**） |\n| CLI 実行 | exit=0、同梱 codd-gate を検出し info 所見 2 件を JSON 出力 |\n| 零設定 `doctor_wiring_findings` | **`[]`** ＝自動配線が実際に切れている |\n| 明示 `hooks:` での `_hook_provider` | 両能力とも `codd_gate_wiring` を解決 ＝明示経路は生きている |\n\nfailures 2 件は macOS の `/var`→`/private/var` シンボリックリンクと、journal アーカイブ連番の辞書順ソート（`.1 .10 ... .2`）に起因。どちらも変更ファイルを import しない。\n\n回帰テストで「零設定で当選しない」「**どの sibling も**自動走査に当選しない」「明示指定の契約は満たす」「別名が実体と同一」を四方向から固定した。\n\n## (c) 判断・前提・申し送り\n\n**宙に浮く公開関数は全て存置**。`detect_wiring`/`doctor_findings` は `HOOK_CAPABILITIES` が要求する属性名そのもので、消すと明示指定まで壊れる — 切りたいのは零設定で勝手に繋がることであって接続点そのものではない。`resolve_base_rev` は呼び出し元ゼロだが、埋めている穴（推奨文字列が `$KIRO_BASE_REV` をシェル変数参照のまま埋め込むため、本体が baseline を取れないと `--base \"\"` で失敗する）が本タスクで塞がっていないこと、純粋関数 23 行で存置コストが小さいのに対し削除後に同じ穴へ当たると設計判断から作り直しになる非対称性から残した。ただし呼び出し元もテストも無い API は次に読む人には削除候補にしか見えないため、単体テストを追加して契約をコードとして固定した。\n\n**採用した前提**: 「自動配線経路」を hooks.py の sibling 自動走査と解した（`_apply_codd_gate_auto_wiring` は t1 のとおり除去済みで、残る最後の自動経路がこれ）。手段は本体側でなく sibling 側を変えた — 走査を消すと codd_gate 以外のプロバイダの経路まで塞ぐため。\n\n**範囲外の発見**:\n- @followup README:281-283 の「未結線なら doctor が finding として提示する」は**いまや `hooks:` を書いた環境でのみ**成立。README に `hooks:` の説明が皆無で、有効化手順が辿れない\n- @followup `docs/designs/codd-gate-design.md:284-304` の差し替え時は「自動走査には載らない／明示指定と CLI の 2 経路」を反映すること\n- @followup `agent_project/config.py:127` のコメントは機構として正しいが、実際に当選する sibling は現在ゼロ\n- @followup 全体スイートの環境依存 failure 2 件\n- @followup `codd_gate_debt.py` も呼び出し元ゼロ。`codd_gate_base` と同じ扱いにするかの判断は未了",
+  "finished_at": "2026-07-20T00:58:48Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox",
+      "branch": "ap/sibling-163827",
+      "commit": "9fb7c8681f14e40cea0683c913258cf3cc4d0846",
+      "target": "main",
+      "path": "tools/agent-project"
+    }
+  },
+  "artifacts": [
+    "artifacts/t2/codd-gate-boundary-decisions.md",
+    "artifacts/t2/codd-gate-decoupling-note.md",
+    "artifacts/t2/codd-gate-decoupling-report.md",
+    "artifacts/t2/codd-gate-wiring-decoupling.md"
+  ]
+}
