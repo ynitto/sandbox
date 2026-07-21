@@ -72,6 +72,9 @@ state_repo_branch: main                                # --dest-branch と一致
 ```
 
 CLI/環境での個別上書きも可: `--state-repo` / `--state-repo-branch` / `--state-repo-dir`。
+`--state-repo-dir` は**成果物top の親を基準**に解決する（相対なら親配下、絶対ならそのまま）。
+例: 成果物が `/home/me/src/app` で `state_repo_dir: mystate` → `/home/me/src/mystate`。既定は
+`<repo>-state`（この例では `/home/me/src/app-state`）。
 
 エンジンを再起動すると、状態は専用リポジトリの通常 clone に置かれ、`backup_state`（成果物 main
 へのミラー）は自動的に無効になる。**clone 先は既定で `<repo>-state`**（例: `app` → `app-state`）。

@@ -84,7 +84,7 @@ act_async: true            # 非ブロッキング委譲: submit して待たず
 # 空なら従来の worktree 方式（後方互換）。clone 失敗時も worktree 方式へ自動フォールバック。
 # state_repo: git@gitlab.example.com:team/proj-state.git   # 専用リポジトリ（全 PC 共有）
 # state_repo_branch: main             # 専用リポジトリ内で状態を載せるブランチ（既定 main）
-# state_repo_dir: ""                  # ローカル clone 先（既定 <成果物repo>-state の隣。旧 worktree と別名。PC 毎に上書き可）
+# state_repo_dir: ""                  # ローカル clone 先（成果物top の親を基準に解決。相対=親配下/絶対=そのまま。既定 <成果物repo>-state）
 
 # --- 状態の git 保存・共有 ---
 # direct モード（ルートが clone）なら設定不要。ルートが git でない場合のみ管理クローン方式:

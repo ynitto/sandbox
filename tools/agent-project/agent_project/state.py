@@ -188,9 +188,11 @@ def _redirect_root_to_state_repo(source_root: Path, state_repo: str, repo_dir: s
     clone に失敗したら (source_root, None) を返し、呼び出し側は従来の worktree 方式へ倒す。"""
     deliverable_top = _git_toplevel_of(source_root if source_root.is_dir() else source_root.parent)
     base = deliverable_top or source_root
-    # 既定の clone 先は <repo>-state。旧 worktree（<repo>-agent-state）と **別名** にして衝突を避ける
-    # （同名だと _ensure_state_repo_clone が旧 worktree を掴んで移行が効かない）。dir 明示も可。
-    dst = (Path(repo_dir).expanduser().resolve() if repo_dir
+    # 既定の clone 先は <成果物top>.parent/<repo>-state。旧 worktree（<repo>-agent-state）と **別名**
+    # にして衝突を避ける（同名だと _ensure_state_repo_clone が旧 worktree を掴んで移行が効かない）。
+    # state_repo_dir を明示したときも **成果物top の親を基準** に解決する（相対なら親配下、絶対なら
+    # そのまま＝pathlib の / 演算子の規約）。既定と同じ「成果物の隣」を素直に指定できる。
+    dst = (base.parent / Path(repo_dir).expanduser() if repo_dir
            else (base.parent / f"{base.name}-state"))
     if not _ensure_state_repo_clone(state_repo, dst, branch):
         return source_root, None

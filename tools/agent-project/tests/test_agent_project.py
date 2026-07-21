@@ -8380,6 +8380,19 @@ class TestStateRepoSeparation(unittest.TestCase):
         self.assertEqual(cfg.backlog.parent, (self.deliverable.parent / "app-state").resolve())
         self.assertNotIn("agent-state", cfg.backlog.parent.name)
 
+    def test_state_repo_dir_relative_resolves_under_deliverable_parent(self):
+        # state_repo_dir（相対）は成果物top の親を基準に解決する（既定と同じ「成果物の隣」を素直に指定）。
+        cfg = self._build(root=str(self.deliverable), state_repo=str(self.state_remote),
+                          state_repo_dir="custom-state")
+        self.assertEqual(cfg.backlog.parent, (self.deliverable.parent / "custom-state").resolve())
+
+    def test_state_repo_dir_absolute_is_respected(self):
+        # 絶対パスはそのまま（pathlib の / 規約: 親 / 絶対パス = 絶対パス）。
+        abs_dir = self.tmp / "elsewhere" / "app-state"
+        cfg = self._build(root=str(self.deliverable), state_repo=str(self.state_remote),
+                          state_repo_dir=str(abs_dir))
+        self.assertEqual(cfg.backlog.parent, abs_dir.resolve())
+
     def test_state_repo_rejects_dir_that_is_not_the_state_clone(self):
         # state_repo_dir が別リポジトリ（旧 worktree 相当）を指していたら再利用せず worktree へ倒す。
         # 別 remote の clone を用意して origin を食い違わせる。
