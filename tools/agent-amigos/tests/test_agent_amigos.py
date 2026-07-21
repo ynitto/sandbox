@@ -1539,9 +1539,12 @@ class TeamBuildingTests(AmigosTestCase):
         self.assertIn("self-refine", ids)
         self.assertIn("metagpt-sop", ids)
         for p in allp:                                    # 契約の必須キー
-            for k in ("id", "name", "category", "tier", "when_to_use", "team", "feasibility"):
+            for k in ("id", "name", "category", "tier", "when_to_use", "feasibility"):
                 self.assertIn(k, p, p.get("id"))
-            self.assertTrue((p["team"].get("roles")))
+            if p.get("target") == "agent-flow":
+                self.assertIn("flow", p, p.get("id"))     # 委譲パターンは team を持たない
+            else:
+                self.assertTrue((p.get("team") or {}).get("roles"), p.get("id"))
 
     def test_build_team_injects_high_patterns_and_records_choice(self):
         from agent_amigos import teambuilding
@@ -1591,6 +1594,56 @@ class TeamBuildingTests(AmigosTestCase):
     def test_cli_list_patterns(self):
         rc = cli.main(["build-team", "--list-patterns"])
         self.assertEqual(rc, 0)
+
+    # --- G4: agent-flow への委譲（探索木・動的分解） -------------------------
+    def _stub_flow(self):
+        self._stub_agent(json.dumps({"target": "agent-flow", "pattern": "tree-of-thoughts",
+                                     "flow": {"goal": "24 パズルを解く",
+                                              "strategy": "分岐→スコア→ビーム"}}))
+
+    def test_build_team_flow_target_returns_delegation(self):
+        from agent_amigos import teambuilding
+        self._stub_flow()
+        mo, roles, meta = teambuilding.build_team({"goal": "パズル", "title": "p"}, "claude")
+        self.assertEqual(meta["target"], "agent-flow")
+        self.assertEqual(roles, [])
+        d = meta["delegation"]
+        self.assertEqual((d["op"], d["workload"], d["version"]), ("post", "flow", 1))
+        self.assertTrue(d["id"].startswith("dg-"))
+        self.assertIn("戦略ヒント", d["goal"])              # strategy が goal に畳まれる
+        # delegation.schema.json の必須キーを満たす
+        schema = read_json(os.path.join(os.path.dirname(__file__), "..", "..", "..",
+                                        "schemas", "delegation.schema.json"))
+        for k in schema["required"]:
+            self.assertIn(k, d)
+
+    def test_build_team_flow_cli_dry_run_prints_envelope(self):
+        import io
+        import contextlib
+        self._stub_flow()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = cli.main(["build-team", "--bus", self.bus.root, "--goal", "g",
+                           "--agent-cli", "claude", "--node-id", "n1"])
+        self.assertEqual(rc, 0)
+        out = buf.getvalue()
+        self.assertIn('"workload": "flow"', out)
+        self.assertIn("agent-flow submit", out)
+        self.assertEqual(self.bus.list_missions(), [])     # amigos へは公示しない
+
+    def test_build_team_command_flow_writes_delegation_not_mission(self):
+        from agent_amigos.configfile import commands_dir, state_dir
+        self._stub_flow()
+        cdir = commands_dir(self.home)
+        os.makedirs(cdir, exist_ok=True)
+        with open(os.path.join(cdir, "bt.json"), "w", encoding="utf-8") as f:
+            json.dump({"command": "build-team", "goal": "探索する", "agent_cli": "claude"}, f,
+                      ensure_ascii=False)
+        NodeDaemon(self.bus, "owner-node", agent_cli="claude", interval=0,
+                   commands_home=self.home).cycle()
+        self.assertEqual(self.bus.list_missions(), [])     # amigos ミッションは作らない
+        designs = os.path.join(state_dir(self.home), "designs")
+        self.assertTrue(any(n.endswith("-delegation.json") for n in os.listdir(designs)))
 
     def test_build_team_cli_out_dry_run(self):
         from agent_amigos import teambuilding  # noqa: F401 (ensures import path)

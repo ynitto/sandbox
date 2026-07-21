@@ -252,8 +252,11 @@ roles:
 - **動的編成（G5）**: `agent-amigos restaff <mid> --add <roles.yaml> --prune <id,...>` で、実行中に
   ロールを追加・停止できる（オーナー）。追加ロールは通常どおり募集・充足され、剪定ロールは収束・
   募集・実行から外れる。AgentVerse 的な再編成・DyLAN 的な剪定の基盤。
-- 探索木（Tree/Graph-of-Thoughts）は未実装（agent-flow 委譲を推奨。拡張提案:
-  [`docs/designs/agent-amigos-teambuilder-patterns.md`](../../docs/designs/agent-amigos-teambuilder-patterns.md)）。
+- **探索木・動的分解（G4）**: Tree/Graph-of-Thoughts・LATS のような探索は役割協働の領分ではなく
+  **agent-flow へ委譲**する。team-builder は探索が本質のミッションを見分けて `target: agent-flow` の
+  委譲封筒（`delegation.schema.json` の workload=flow）を出力する（`build-team` が表示・保存し
+  `agent-flow submit` を提示）。詳細:
+  [`docs/designs/agent-amigos-teambuilder-patterns.md`](../../docs/designs/agent-amigos-teambuilder-patterns.md)。
 
 ## acceptance: agent（受入の自動判定）
 

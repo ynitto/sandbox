@@ -94,6 +94,16 @@ def _do_build_team(bus: Bus, node_id: str, agent_cli: "str | None", home: str,
     cli = str(rec.get("agent_cli") or agent_cli or "")
     mission_over, roles, meta = teambuilding.build_team(
         brief, cli, model=rec.get("model"), pattern=rec.get("pattern"))
+
+    # target=agent-flow: amigos へは公示せず、委譲封筒を状態領域へ書く（G4）。
+    # amigos デーモンは flow を実行しない — dashboard の委譲アダプタ / agent-flow が拾う。
+    if meta.get("target") == "agent-flow":
+        deleg = meta["delegation"]
+        path = os.path.join(_designs_dir(home), f"{deleg['id']}-delegation.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        write_json_atomic(path, deleg)
+        return (f"build-team → agent-flow 委譲（探索木・動的分解）: {deleg['id']} を "
+                f"{path} に出力（amigos へは公示しません。agent-flow submit / 委譲アダプタで実行）")
     # 明示 mission 上書き（rec.mission）は設計値より優先する
     merged_mission = {**mission_over, **dict(rec.get("mission") or {})}
     post_rec = {"command": "post", "roles": roles, "mission": merged_mission,

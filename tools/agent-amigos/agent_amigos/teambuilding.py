@@ -20,7 +20,7 @@ import os
 from . import agentcli
 from .configfile import agent_home_subdir
 from .mission import normalize_mission
-from .util import extract_json, read_json
+from .util import extract_json, now_iso, read_json
 
 SKILL_NAME = "team-builder"
 SKILL_ENV = "AGENT_AMIGOS_TEAM_BUILDER_SKILL"
@@ -53,6 +53,7 @@ OUTPUT_CONTRACT = """\
 # 出力契約（厳守）
 次の JSON **だけ**を出力してください（前後に説明文・コードフェンス以外の地の文を付けない）:
 {
+  "target": "amigos",   // 既定 amigos（役割協働）。探索木・動的分解が本質なら "agent-flow"
   "pattern": "<採用したパターンの id。どれも使わなければ \\"none\\">",
   "mission": { "title": "...", "goal": "...",
                "convergence": {"done_when": "all-required-done|reviewer-approved"},
@@ -65,8 +66,19 @@ OUTPUT_CONTRACT = """\
      "approver": true|false, "collaborates_with": ["<他ロールの id>"]}
   ]
 }
-- roles は 1 つ以上必須。mission ブロックは任意（省略時は agent-amigos の既定）。
+- roles は 1 つ以上必須（target=amigos のとき）。mission ブロックは任意（省略時は agent-amigos の既定）。
 - integrator は書かなくてよい（オーナーが自動補充する）。明示するなら builtin: "integrator"。
+
+## agent-flow へ委譲する場合（探索木・動的分解が本質のミッション）
+Tree/Graph-of-Thoughts・LATS のような「分岐 → スコア → 剪定」の探索や、実行時にデータ駆動で
+タスクが増える動的分解は、役割協働（amigos）より **agent-flow（タスクグラフ）**が適する。その場合は
+roles を出さず、次を出力する（target=agent-flow）:
+{
+  "target": "agent-flow",
+  "pattern": "<tree-of-thoughts 等 / none>",
+  "flow": { "goal": "<agent-flow へ渡す要求本文（; 区切りの段でもよい）>",
+            "title": "<任意>", "strategy": "<任意: 分解方針のヒント>" }
+}
 """
 
 
@@ -156,6 +168,16 @@ def load_patterns(skill_source: str, tier: "str | None" = None,
 
 def _pattern_summary(rec: dict) -> str:
     """1 パターンをプロンプト用の簡潔なブロックへ。"""
+    if rec.get("target") == "agent-flow":
+        flow = rec.get("flow") or {}
+        lines = [f"### {rec.get('id')} — {rec.get('name')}（{rec.get('category')}・→ agent-flow 委譲）",
+                 f"- 使いどころ: {rec.get('when_to_use', '')}"]
+        if rec.get("signals"):
+            lines.append(f"- 目印: {', '.join(rec['signals'])}")
+        if flow.get("strategy"):
+            lines.append(f"- 委譲方針: {flow['strategy']}")
+        lines.append("- 出力: target=agent-flow ＋ flow.goal（roles は出さない）")
+        return "\n".join(lines)
     team = rec.get("team") or {}
     roles = team.get("roles") or []
     role_line = "; ".join(f"{r.get('id')}: {r.get('role', '')}"
@@ -241,6 +263,32 @@ def list_patterns(tier: "str | None" = None) -> "list[dict]":
     return load_patterns(source, tier=tier)
 
 
+def _delegation_id() -> str:
+    import time
+    return f"dg-{time.strftime('%Y%m%d%H%M%S')}-{os.urandom(2).hex()}"
+
+
+def build_flow_delegation(brief: dict, data: dict) -> dict:
+    """target=agent-flow の設計を、エンジン非依存の委譲封筒（delegation.schema.json の
+    op=post / workload=flow）へ組み立てる。ダッシュボードの委譲アダプタや agent-flow submit が
+    これを受け取り、タスクグラフ分解 → 分散探索を実行する（探索木は agent-flow の領分・G4）。"""
+    flow = dict(data.get("flow") or {})
+    goal = str(flow.get("goal") or brief.get("goal") or brief.get("title") or "").strip()
+    if not goal:
+        raise RuntimeError("agent-flow 委譲には goal（flow.goal かブリーフの goal）が必要です")
+    strategy = str(flow.get("strategy") or "").strip()
+    if strategy:
+        goal = f"{goal}\n\n戦略ヒント: {strategy}"
+    env = {"op": "post", "version": 1, "id": _delegation_id(), "workload": "flow",
+           "goal": goal, "requested_by": "team-builder", "requested_at": now_iso()}
+    title = flow.get("title") or brief.get("title")
+    if title:
+        env["title"] = str(title)
+    if brief.get("design"):
+        env["design"] = str(brief["design"])
+    return env
+
+
 def build_team(brief: dict, cli: str, model: "str | None" = None,
                timeout: "float | None" = None,
                pattern: "str | None" = None) -> "tuple[dict, list, dict]":
@@ -278,6 +326,15 @@ def build_team(brief: dict, cli: str, model: "str | None" = None,
         data = {"roles": data}
     if not isinstance(data, dict):
         raise RuntimeError("team-builder 出力から {\"roles\": [...]} を抽出できませんでした")
+
+    chosen_pattern = pattern or (str(data.get("pattern")) if data.get("pattern") else None)
+    if chosen_pattern in ("none", "None", ""):
+        chosen_pattern = None
+    if str(data.get("target") or "amigos").lower() in ("agent-flow", "flow"):
+        deleg = build_flow_delegation(brief, data)
+        return {}, [], {"skill_source": source, "chosen_pattern": chosen_pattern,
+                        "target": "agent-flow", "delegation": deleg}
+
     roles = data.get("roles")
     if not isinstance(roles, list) or not roles:
         raise RuntimeError("team-builder 出力に roles（1 つ以上のロール）がありません")
@@ -295,10 +352,8 @@ def build_team(brief: dict, cli: str, model: "str | None" = None,
         normalize_mission(spec)         # 妥当性検証（不正は SystemExit → RuntimeError に翻訳）
     except SystemExit as e:
         raise RuntimeError(f"設計されたロールミッション表が不正です: {e}")
-    chosen_pattern = pattern or (str(data.get("pattern")) if data.get("pattern") else None)
-    if chosen_pattern in ("none", "None", ""):
-        chosen_pattern = None
-    return mission_over, roles, {"skill_source": source, "chosen_pattern": chosen_pattern}
+    return mission_over, roles, {"skill_source": source, "chosen_pattern": chosen_pattern,
+                                 "target": "amigos"}
 
 
 def brief_to_design_doc(brief: dict) -> str:

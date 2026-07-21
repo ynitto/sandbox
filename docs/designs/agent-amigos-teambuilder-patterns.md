@@ -103,16 +103,20 @@ agent-amigos が**そのまま**表現できるのは:
   ラウンドを読む全結合のみ。複数ロールにまたがる討論（affirmative/negative を別ロールにする形）は
   1 席グループ内の席差（ミッション文で役割を割り当てる）で表現する。
 
-### G4. 探索木・分岐評価（branch → score → prune）
+### G4. 探索木・分岐評価（branch → score → prune）— ✅ agent-flow へ委譲で対応
 
-- **現状**: 分岐・バックトラック・ビーム/ MCTS のような探索構造が無い。ラウンドは線形。
-- **要るパターン**: tree-of-thoughts（BFS＋ビーム）, graph-of-thoughts（分岐＋マージ）,
-  lats（MCTS）。
-- **近似**: 現状は困難（探索の状態管理そのものが無い）。→ **拡張待ち**（カタログにも入れない）。
-- **拡張提案**: 2 案。(a) 探索は agent-flow（タスクグラフ／Dynamic Workflow）の領分として
-  **team-builder が agent-flow プランを出力する**経路を用意する（住み分け）。
-  (b) agent-amigos 内に軽量な「候補ノード＋スコアラー＋選抜」の**有界探索ロール群**を
-  組み込みパターンとして持つ（分岐数・深さを上限付きで）。まずは (a) を推奨。
+- **方針**: 探索木・動的分解は agent-amigos の役割協働の領分ではなく **agent-flow（タスクグラフ／
+  Dynamic Workflow）の領分**。無理に agent-amigos へ内蔵せず、**team-builder が委譲する**（住み分け）。
+- **実装**: team-builder スキルの出力契約に `target`（`amigos` 既定 / `agent-flow`）を追加。
+  ミッションが探索木・動的分解が本質だと判断したら、roles ではなく
+  **委譲封筒（`delegation.schema.json` の op=post / workload=flow）**を出力する
+  （`teambuilding.build_flow_delegation`）。CLI `build-team` はそれを表示／保存し、`agent-flow submit`
+  のコマンドを提示する。commands 経由では amigos へ公示せず委譲封筒を状態領域へ書く（ダッシュボードの
+  委譲アダプタ / agent-flow が拾う）。
+- **カタログ**: tree-of-thoughts / graph-of-thoughts / lats を `target: agent-flow` のパターンとして
+  追加（探索方針のヒント付き）。
+- **残（agent-amigos 内蔵は非目標）**: agent-amigos 本体に探索構造を持たせる案（有界探索ロール群）は
+  当面採らない。探索は agent-flow に委ね、team-builder が二つのエンジンのルータとして働く。
 
 ### G5. 実行中の動的チーム編成（recruit / prune）— ✅ 実装済み（基盤）
 
@@ -140,18 +144,20 @@ agent-amigos が**そのまま**表現できるのは:
 
 ## 拡張待ちパターン（現状はカタログ非搭載）
 
-| pattern | 主因ギャップ | 備考 |
-|---------|-------------|------|
-| tree-of-thoughts | G4（探索木） | まず agent-flow 委譲を推奨 |
-| graph-of-thoughts | G4（分岐＋マージ） | 同上 |
-| lats | G4（MCTS） | 同上 |
-| dylan | 自律制御（G3+G5+G2 は実装済み） | 席評価（SCORE）＋ restaff prune を叩く上位ループで表現 |
+| pattern | 扱い | 備考 |
+|---------|------|------|
+| tree-of-thoughts | → agent-flow 委譲（実装済み） | target=agent-flow でカタログ化 |
+| graph-of-thoughts | → agent-flow 委譲（実装済み） | 同上 |
+| lats | → agent-flow 委譲（実装済み） | 同上 |
+| dylan | 自律制御（G2/G3/G5 は実装済み） | 席評価（SCORE）＋ restaff prune を叩く上位ループで表現 |
 | agentverse | 自律制御（G5 は実装済み） | 再編成は restaff add、判定は approver。自律ループは上位 |
 | meta-prompting | 自律制御（G5 は実装済み） | 専門家追加は restaff add。司会ループは上位 |
 
-exchange-of-thought は topology（G3 拡張）で **native 化してカタログに追加済み**。
+exchange-of-thought は topology（G3 拡張）で **native 化**。tree/graph-of-thoughts・lats は
+**agent-flow 委譲**でカタログ化（team-builder が `target: agent-flow` で委譲封筒を出力）。
 dylan / agentverse / meta-prompting は「restaff を叩く上位ワークフロー」で表現でき、残るのは
-その**自律制御ループ**（コア外）。純粋に**現実装で写せない**のは G4（探索木）系のみ。
+その**自律制御ループ**（コア外）。つまり全 40 パターンが、実装済みのプリミティブ ＋ agent-flow 委譲
+＋ 上位ワークフローのいずれかで表現できる状態になった。
 
 ---
 
@@ -167,8 +173,8 @@ dylan / agentverse / meta-prompting は「restaff を叩く上位ワークフロ
 3. ~~**G5 restaff**~~ ＋ ~~通信トポロジ~~ — ✅ **実装済み**。restaff（add/prune）で動的編成の
    プリミティブを、topology（complete/ring/star/tree）で討論の伝播制御を提供。AgentVerse/DyLAN/
    meta-prompting は restaff を叩く上位ワークフローで表現する（自律制御ループはコア外）。
-4. **G4 探索木** — 唯一の現実装未対応。まず **agent-flow への委譲**（team-builder が agent-flow
-   プランを出力）で住み分ける。agent-amigos 本体への探索構造の内蔵は最後。
+4. ~~**G4 探索木**~~ — ✅ **agent-flow 委譲で対応**（team-builder が `target: agent-flow` の委譲封筒を
+   出力し、探索は agent-flow が担う）。agent-amigos 本体への探索構造の内蔵は非目標。
 
 いずれも「入力の前段（チーム設計）を賢くする」今回の方針の延長で、協働プロトコルのコアは
 据え置いたまま段階的に価値を上げられる。

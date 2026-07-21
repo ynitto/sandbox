@@ -4,11 +4,26 @@
   "title": "team-builder オーケストレーションパターン（.github/skills/team-builder/patterns/<id>.json）",
   "description": "マルチエージェント・オーケストレーションのパターン（論文由来）を agent-amigos のロールミッション表へ写像するためのデータ契約。tier=high はスキルの自動パターン選択に載る（teambuilding が高価値パターンをプロンプトへ注入する）。tier=medium は JSON のみで、自動選択には入らない（CLI --pattern <id> で明示指定はできる）。出典カタログ: h5i-python/examples/papers。",
   "type": "object",
-  "required": ["id", "name", "category", "tier", "when_to_use", "team", "feasibility"],
+  "required": ["id", "name", "category", "tier", "when_to_use", "feasibility"],
+  "allOf": [
+    {"if": {"properties": {"target": {"const": "agent-flow"}}, "required": ["target"]},
+     "then": {"required": ["flow"]},
+     "else": {"required": ["team"]}}
+  ],
   "properties": {
     "id": {"type": "string", "pattern": "^[a-z0-9-]+$", "description": "パターン識別子（ファイル名と一致）"},
     "name": {"type": "string", "description": "パターン名（人が読む）"},
     "source": {"type": "string", "description": "出典（論文名・著者・年）"},
+    "target": {"enum": ["amigos", "agent-flow"], "default": "amigos",
+               "description": "実行先エンジン。amigos=役割協働（team を持つ）。agent-flow=探索木・動的分解を agent-flow へ委譲（flow を持つ・G4）"},
+    "flow": {
+      "type": "object",
+      "description": "target=agent-flow のとき: agent-flow への委譲ヒント",
+      "properties": {
+        "strategy": {"type": "string", "description": "分解・探索方針のヒント（agent-flow の要求本文へ）"},
+        "notes": {"type": "string"}
+      }
+    },
     "category": {
       "enum": ["refine-loop", "sampling-voting", "debate-consensus", "verification-judging",
                "ensembling", "search-writing", "software-sop", "team-topology"],

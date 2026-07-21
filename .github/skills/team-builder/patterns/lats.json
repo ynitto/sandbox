@@ -1,0 +1,16 @@
+{
+  "id": "lats",
+  "name": "LATS — Language Agent Tree Search",
+  "category": "search-writing",
+  "tier": "medium",
+  "target": "agent-flow",
+  "source": "LATS (Zhou et al., 2024)",
+  "when_to_use": "MCTS 的に解を探索し、外部信号（実行結果）で価値を更新しながら最良ノードを選ぶ問題。",
+  "signals": ["試行→評価→バックプロパゲーション", "外部フィードバックで価値更新", "探索予算内で最良解"],
+  "flow": {
+    "strategy": "UCT で葉を選択 → 解を改稿 → 価値評価器＋実行検証でスコア → 価値を逆伝播、を探索予算まで反復し最良ノードを採用。",
+    "notes": "MCTS の選択・展開・評価・逆伝播は agent-flow の反復分解・再計画で表現する。"
+  },
+  "feasibility": "needs-extension",
+  "feasibility_note": "MCTS 探索は役割協働では表せない（G4）。agent-flow へ委譲する。"
+}

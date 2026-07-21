@@ -135,6 +135,22 @@ def cmd_build_team(args) -> int:
              "agent_cli": args.agent_cli}
     mission_over, roles, meta = teambuilding.build_team(
         brief, args.agent_cli or "", model=args.model, pattern=args.pattern)
+
+    # target=agent-flow: 探索木・動的分解は agent-flow へ委譲する（roles は出さない・G4）
+    if meta.get("target") == "agent-flow":
+        deleg = meta["delegation"]
+        log(node, f"team-builder 完了: target=agent-flow "
+                  f"pattern={meta.get('chosen_pattern') or '-'} id={deleg['id']}")
+        if args.out:
+            write_json_atomic(args.out, deleg)
+            print(f"agent-flow 委譲封筒を書き出しました: {args.out}（id={deleg['id']}）")
+        else:
+            print(json.dumps(deleg, ensure_ascii=False, indent=2))
+        print("  ※ このミッションは探索木・動的分解が本質のため agent-flow へ委譲します（役割協働ではない）。")
+        print(f"  実行: agent-flow submit {json.dumps(deleg['goal'], ensure_ascii=False)}")
+        print("  （dashboard の委譲アダプタでも投函できます — workload=flow）")
+        return 0
+
     spec = {"mission": mission_over, "roles": roles}
     log(node, f"team-builder 完了: roles={len(roles)} "
               f"pattern={meta.get('chosen_pattern') or '-'} skill={meta.get('skill_source')}")
