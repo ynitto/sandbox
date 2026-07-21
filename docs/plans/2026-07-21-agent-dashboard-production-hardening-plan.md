@@ -19,7 +19,16 @@
 >   注: claim 調停の push 化(案 6-3)・`status/<node>.json` 分割・停止ノード回収 UI は未実装
 >   (未割当タスクを default_node 空のまま複数の名前付きエンジンで走らせると従来同様の
 >   二重実行リスクが残る。回避は各タスクへ node 割当か default_node を 1 台に設定）。
-> - 残りの案・フェーズ(状態リポジトリ分離ほか)は未着手。
+> - **Phase 2「状態リポジトリ分離(案 1)」のコード+移行手順を実装済み(適用は保留)**。
+>   `state_repo` 設定で状態を成果物リポジトリの worktree ではなく専用リポジトリの通常 clone に
+>   置き(`state.py` の `_redirect_root_to_state_repo`)、本体 main へのミラー(`backup_state`)を
+>   無効化する。clone は普通の git リポジトリなので既存の `DirectStateGit` 同期がそのまま効く。
+>   未設定なら従来の worktree 方式、clone 失敗時も worktree 方式へ自動フォールバック(後方互換)。
+>   移行スクリプト `migrate-state-repo.sh` と手順書 `docs/guides/state-repo-migration.md` あり。
+>   テスト: エンジン 4 件(`TestStateRepoSeparation`)。**worktree コードの削除・既存プロジェクト
+>   への本適用は実機(多 PC/Gitea)確認まで保留**(方針: コード+手順を用意し適用は保留)。
+> - 残りの案・フェーズ(操作経路 file-drop 一本化+CLI 削除ほか)は未着手。
+>   CLI 削除は完全撤去の方針(後続フェーズ)。
 
 ## 前提となる運用形態
 

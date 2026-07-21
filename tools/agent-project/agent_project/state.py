@@ -120,6 +120,57 @@ def _redirect_root_to_state_worktree(root: Path, wt_dir: str,
     return dst, top
 
 
+def _ensure_state_repo_clone(state_repo: str, dst: Path, branch: str) -> bool:
+    """状態専用リポジトリ（案1）を dst へ通常 clone する（worktree ではない普通のクローン）。
+
+    既に clone 済み（dst/.git あり）なら何もしない（以降は DirectStateGit が pull/push で追従）。
+    branch がリモートに在れば単一ブランチで取り、無ければ普通に clone してそのブランチを用意する
+    （移行スクリプトが先に push している前提だが、空リポジトリでも壊れないようにする）。
+    失敗したら False を返し、呼び出し側は従来の worktree 方式へフォールバックする（黙って本体を
+    dirty にしない）。"""
+    if (dst / ".git").exists():
+        return True
+
+    def _run(*args) -> "subprocess.CompletedProcess | None":
+        try:
+            return subprocess.run(["git", *args], capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace", timeout=180)
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return False
+    r = _run("clone", "-q", "--branch", branch, str(state_repo), str(dst))
+    if r is not None and r.returncode == 0:
+        return True
+    # branch が無い（新規/空リポジトリ等）: 普通に clone してブランチを用意する
+    r = _run("clone", "-q", str(state_repo), str(dst))
+    if r is None or r.returncode != 0:
+        return False
+    cur = _git_line(dst, "rev-parse", "--abbrev-ref", "HEAD") or ""
+    if cur != branch:
+        _run("-C", str(dst), "checkout", "-q", "-B", branch)   # 最初の commit_state/push で確定する
+    return True
+
+
+def _redirect_root_to_state_repo(source_root: Path, state_repo: str, repo_dir: str,
+                                 branch: str) -> "tuple[Path, Path | None]":
+    """状態を専用リポジトリ（state_repo）の通常 clone に置く（worktree リダイレクトの代替・案1）。
+
+    (状態ルート=clone, 成果物リポジトリの top or None) を返す。成果物 top は _source_repo が
+    ap/<task-id> の実体差分を引くのに使う（成果物は従来どおり成果物リポジトリ側に残る）。
+    clone に失敗したら (source_root, None) を返し、呼び出し側は従来の worktree 方式へ倒す。"""
+    deliverable_top = _git_toplevel_of(source_root if source_root.is_dir() else source_root.parent)
+    base = deliverable_top or source_root
+    dst = (Path(repo_dir).expanduser().resolve() if repo_dir
+           else (base.parent / f"{base.name}-agent-state"))
+    if not _ensure_state_repo_clone(state_repo, dst, branch):
+        return source_root, None
+    return dst.resolve(), deliverable_top
+
+
 # 状態のうち「人の判断・計画が動いた」もの。これが変わったら即コミットする（履歴として意味がある）。
 _STATE_SIGNIFICANT = ("charter.md", "charters", "backlog", "needs", "decisions", "repos.json",
                       "policy.md", "rules.md", "archive", "DELIVERY.md", "specs",

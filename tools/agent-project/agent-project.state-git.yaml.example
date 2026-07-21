@@ -77,6 +77,15 @@ act_async: true            # 非ブロッキング委譲: submit して待たず
 #                             #   自動昇格（既定 on）。rules.md は人が書くのが正・viewer 側の編集も
 #                             #   git 同期でそのまま届く（人の入力パス＝同時変更はリモート優先）
 
+# --- 状態専用リポジトリ（案1: 状態と成果物の分離。移行手順 docs/guides/state-repo-migration.md）---
+# root は成果物リポジトリのまま、状態（.agent-project 一式）を専用リポジトリの通常 clone に置く。
+# worktree（<repo>-agent-state）方式と本体 main へのバックアップ（ドリフト源）を回避する。
+# 専用リポジトリの clone は普通の git リポジトリなので direct 同期がそのまま効く。
+# 空なら従来の worktree 方式（後方互換）。clone 失敗時も worktree 方式へ自動フォールバック。
+# state_repo: git@gitlab.example.com:team/proj-state.git   # 専用リポジトリ（全 PC 共有）
+# state_repo_branch: main             # 専用リポジトリ内で状態を載せるブランチ（既定 main）
+# state_repo_dir: ""                  # ローカル clone 先（既定 <成果物repo>-agent-state の隣。PC 毎に上書き可）
+
 # --- 状態の git 保存・共有 ---
 # direct モード（ルートが clone）なら設定不要。ルートが git でない場合のみ管理クローン方式:
 # state_git: git@gitlab.example.com:team/agent-state.git

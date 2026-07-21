@@ -8298,6 +8298,83 @@ class TestStateGitSync(unittest.TestCase):
         self.assertEqual(seen, ["B"])                        # 初回 plan は取り込み後の charter を見る
 
 
+class TestStateRepoSeparation(unittest.TestCase):
+    """案1: 状態専用リポジトリ。状態を成果物リポジトリの worktree ではなく、専用リポジトリの
+    通常 clone に置く（worktree 二重実装・本体 main へのバックアップ＝ドリフト源を回避）。
+    未設定なら従来の worktree 方式、clone 失敗時も worktree 方式へフォールバックする。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        km._STATE_GITS.clear()
+        self.env = {**os.environ, "GIT_CONFIG_COUNT": "1",
+                    "GIT_CONFIG_KEY_0": "commit.gpgsign", "GIT_CONFIG_VALUE_0": "false"}
+        # 状態専用リポジトリ（bare + main を確立）
+        self.state_remote = self.tmp / "state.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(self.state_remote)], check=True)
+        seed = self.tmp / "state-seed"
+        subprocess.run(["git", "clone", "-q", str(self.state_remote), str(seed)],
+                       check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(seed), "config", "user.email", "s@t"], check=True)
+        subprocess.run(["git", "-C", str(seed), "config", "user.name", "s"], check=True)
+        subprocess.run(["git", "-C", str(seed), "checkout", "-qb", "main"], check=True)
+        (seed / "charter.md").write_text("# Charter\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(seed), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(seed), "commit", "-qm", "init"], check=True, env=self.env)
+        subprocess.run(["git", "-C", str(seed), "push", "-q", "-u", "origin", "main"],
+                       check=True, capture_output=True)
+        # 成果物リポジトリ（状態とは別リポジトリ。初期コミットありで worktree フォールバックも効く）
+        self.deliverable = self.tmp / "app"
+        subprocess.run(["git", "init", "-q", str(self.deliverable)], check=True)
+        subprocess.run(["git", "-C", str(self.deliverable), "config", "user.email", "a@t"], check=True)
+        subprocess.run(["git", "-C", str(self.deliverable), "config", "user.name", "a"], check=True)
+        (self.deliverable / "README.md").write_text("app\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.deliverable), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(self.deliverable), "commit", "-qm", "init"],
+                       check=True, env=self.env)
+
+    def _build(self, **cli):
+        ns = types.SimpleNamespace(config=None, **cli)
+        km.resolve_config(ns)
+        orig = (km._AGENT_CLI, km._AGENT_TIMEOUT)
+        try:
+            return km.build_config(ns)
+        finally:
+            km._AGENT_CLI, km._AGENT_TIMEOUT = orig
+
+    def test_state_repo_redirects_to_clone_and_disables_backup(self):
+        cfg = self._build(root=str(self.deliverable), state_repo=str(self.state_remote))
+        clone = self.deliverable.parent / "app-agent-state"
+        self.assertTrue((clone / ".git").exists())               # 専用リポジトリを通常 clone した
+        self.assertEqual(cfg.backlog, clone.resolve() / "backlog")  # 状態ルートは clone
+        self.assertEqual(cfg.state_backup_branch, "")            # 本体 main へのミラー無効（ドリフト源を断つ）
+        self.assertEqual(cfg.state_top, self.deliverable.resolve())  # 成果物 top（_source_repo 用）
+        self.assertIsInstance(km.state_git_for(cfg), km.DirectStateGit)  # direct 同期が効く
+
+    def test_state_repo_reuses_existing_clone(self):
+        cfg1 = self._build(root=str(self.deliverable), state_repo=str(self.state_remote))
+        clone = self.deliverable.parent / "app-agent-state"
+        marker = clone / ".git" / "HEAD"
+        stamp = marker.stat().st_mtime
+        km._STATE_GITS.clear()
+        cfg2 = self._build(root=str(self.deliverable), state_repo=str(self.state_remote))
+        self.assertEqual(marker.stat().st_mtime, stamp)          # 再 clone せず既存を再利用
+        self.assertEqual(cfg1.backlog, cfg2.backlog)
+
+    def test_state_repo_unset_uses_worktree(self):
+        cfg = self._build(root=str(self.deliverable), state_repo="")
+        self.assertEqual(cfg.state_repo, "")
+        self.assertFalse((self.deliverable.parent / "app-agent-state" / ".git").exists()
+                         and bool(cfg.state_repo))               # state_repo clone は作らない
+
+    def test_state_repo_clone_failure_falls_back_to_worktree(self):
+        bad = str(self.tmp / "does-not-exist.git")
+        cfg = self._build(root=str(self.deliverable), state_repo=bad)
+        self.assertEqual(cfg.state_repo, bad)
+        self.assertNotEqual(cfg.state_backup_branch, "")         # フォールバック時はミラー既定を維持
+        self.assertEqual(cfg.state_top, self.deliverable.resolve())  # worktree 方式（成果物 top）
+
+
 class TestDirectStateGit(unittest.TestCase):
     """direct モード: プロジェクトルート自体が git クローンなら、管理クローンを介さず
     そのリポジトリへ直接コミット・push する（viewer が git 越しに編集・検収する前提を素直にする）。"""

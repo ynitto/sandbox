@@ -94,6 +94,11 @@ CONFIG_DEFAULTS = {
     # worktree（切りっぱなし）へ逃がす。設定の root は本体のまま書ける（人が書く自然な形）。
     # 本体の作業ツリー・index を一切汚さず、状態の履歴は同じリポジトリの別ブランチに残る。
     # git 管理外・worktree を作れない場合は自動で本体へフォールバックする（設定は要らない）。
+    # 状態専用リポジトリ（案1: 状態と成果物の分離）。設定すると状態を専用リポジトリの通常 clone に
+    # 置き、worktree 方式と本体 main へのバックアップ（ドリフト源）を回避する。空なら従来の worktree 方式。
+    "state_repo": "",                   # 専用リポジトリの URL/パス（全 PC 共有）。空で無効
+    "state_repo_dir": "",               # ローカル clone 先（空＝<成果物repo>-agent-state の隣。PC 毎に上書き可）
+    "state_repo_branch": "main",        # 専用リポジトリ内で状態を載せるブランチ
     "state_worktree_dir": "",           # 既定: <repo>-agent-state（リポジトリの隣）
     "state_branch": "agent-state",       # 状態を載せるブランチ（無ければ作る）
     "state_commit": True,               # 状態 worktree の変更を git にコミットする
@@ -226,10 +231,28 @@ def build_config(args) -> Config:
     # 本体を指したままでよい）。以降のパスはすべてこの実効 root を基準に組まれる。
     state_top: "Path | None" = None
     source_root = root                    # リダイレクト前＝人・外部操作者が --root に渡す値
-    root, state_top = _redirect_root_to_state_worktree(
-        root,
-        str(getattr(args, "state_worktree_dir", "") or ""),
-        str(getattr(args, "state_branch", "agent-state") or "agent-state"))
+    # 案1: 状態専用リポジトリが設定されていれば、worktree ではなくその通常 clone を状態ルートにする。
+    # clone は普通の git リポジトリなので direct モード（DirectStateGit）がそのまま同期する。clone に
+    # 失敗したら従来の worktree 方式へフォールバックし、状態を本体 dirty にしない。
+    state_repo = str(getattr(args, "state_repo", "") or "").strip()
+    if state_repo:
+        root, state_top = _redirect_root_to_state_repo(
+            source_root, state_repo,
+            str(getattr(args, "state_repo_dir", "") or ""),
+            str(getattr(args, "state_repo_branch", "main") or "main"))
+        if state_top is not None:
+            # 状態を専用リポジトリに隔離する＝成果物 main へのミラー（ドリフト源）は行わない。
+            args.state_backup_branch = ""
+        else:
+            root, state_top = _redirect_root_to_state_worktree(
+                source_root,
+                str(getattr(args, "state_worktree_dir", "") or ""),
+                str(getattr(args, "state_branch", "agent-state") or "agent-state"))
+    else:
+        root, state_top = _redirect_root_to_state_worktree(
+            root,
+            str(getattr(args, "state_worktree_dir", "") or ""),
+            str(getattr(args, "state_branch", "agent-state") or "agent-state"))
     # act / verify の作業ディレクトリ。相対値は root 基準（既定 . = root）。
     wd = Path(str(getattr(args, "workdir", None) or ".")).expanduser()
     workdir = (wd if wd.is_absolute() else (root / wd)).resolve()
@@ -275,6 +298,9 @@ def build_config(args) -> Config:
         flow_config=getattr(args, "flow_config", None) or None,
         flow_max_workers=max(1, int(getattr(args, "flow_max_workers", 4) or 4)),
         status_interval=max(0.0, float(getattr(args, "status_interval", 0.0) or 0.0)),
+        state_repo=state_repo,
+        state_repo_dir=str(getattr(args, "state_repo_dir", "") or ""),
+        state_repo_branch=str(getattr(args, "state_repo_branch", "main") or "main"),
         state_worktree_dir=str(getattr(args, "state_worktree_dir", "") or ""),
         state_branch=str(getattr(args, "state_branch", "agent-state") or "agent-state"),
         state_commit=bool(getattr(args, "state_commit", True)),
@@ -410,6 +436,14 @@ def _add_common(sp):
     sp.add_argument("--state-git-interval", type=float, default=None,
                     help="state_git の fetch/push の最短間隔（秒。既定 300）。リモートサーバへの"
                          "負荷を一定に保つ律速。0 で毎同期")
+    sp.add_argument("--state-repo", default=None,
+                    help="状態専用リポジトリ（案1: 状態と成果物の分離）の URL/パス。設定すると状態を"
+                         "専用リポジトリの通常 clone に置き、worktree 方式と本体 main へのバックアップを"
+                         "回避する。空なら従来の worktree 方式（後方互換）")
+    sp.add_argument("--state-repo-dir", default=None,
+                    help="状態専用リポジトリのローカル clone 先（既定 <成果物repo>-agent-state の隣）")
+    sp.add_argument("--state-repo-branch", default=None,
+                    help="状態専用リポジトリ内で状態を載せるブランチ（既定 main）")
     sp.add_argument("--status-interval", type=float, default=None,
                     help="watch アイドル中に status.json（生存信号。リモート viewer の稼働判定に使う）を"
                          "更新する間隔（秒。既定 0＝無効）。0 のままなら idle 中に status.json は触らず、"
