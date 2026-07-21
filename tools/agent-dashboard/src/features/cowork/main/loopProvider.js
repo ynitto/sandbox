@@ -324,16 +324,20 @@ function sessionProcessLines(entries) {
   }).join('');
 }
 
-// chat モードは、kiro-cli が入力を受け付けてから業務プロンプトより先に送る。
-// paste-buffer は -p（ブラケットペースト）で送る。スラッシュコマンドの補完メニューを持つ
-// CLI（Claude Code 等）へ素のペーストをすると、非同期のメニュー描画と競合して文字が
-// 入れ替わる/区切りが混入する（例: `/caveman` → `/cavem,an`）。-p ならアプリはペースト
-// として一括挿入し、そのまま Enter で確定・実行できる（-p 非対応の CLI では素のペーストに戻る）。
+// 送信テキストは 1 行へ畳む（kiro-loop の送信と同じ）。改行を含めて送ると kiro-cli 等が
+// 途中で確定してしまうため、複数行は空白でつなぐ。
+function oneLine(s) {
+  return String(s == null ? '' : s).replace(/\r?\n/g, ' ').trim();
+}
+
+// chat モード（「エージェントに送る」）は、CLI が入力を受け付けてから業務プロンプトより先に送る。
+// 送信は paste-buffer ではなく send-keys（キーストローク）で行う——kiro-cli 等はスラッシュ
+// コマンドの補完メニューを持ち、一括ペーストだと非同期のメニュー描画と競合して文字が化ける
+// （例: `/caveman` → `/cavem,an`）。kiro-loop と同じく send-keys で「打鍵」し、確定の Enter を
+// 分けて送る（-l は文字列を key 名として解釈させず、そのまま入力する）。
 function sessionChatLines(entries) {
-  return (entries || []).filter((e) => e.mode === 'chat' && !e.skip).map((e, i) => (
-    `tmux set-buffer -b agentdash-s${i} -- ${shellQuote(e.run)}; ` +
-    `tmux paste-buffer -p -t "$__ses" -b agentdash-s${i}; ` +
-    `tmux delete-buffer -b agentdash-s${i} 2>/dev/null; ` +
+  return (entries || []).filter((e) => e.mode === 'chat' && !e.skip).map((e) => (
+    `tmux send-keys -t "$__ses" -l -- ${shellQuote(oneLine(e.run))}; ` +
     `sleep 1; tmux send-keys -t "$__ses" Enter; sleep 1; `
   )).join('');
 }
@@ -371,39 +375,30 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands }
     `echo "[agent-dashboard] tmux セッション $__ses を作成してエージェントCLIを起動します"; ` +
     `${create.replace('new-session', 'new-session -d')} || { echo "[agent-dashboard] tmux セッション作成に失敗しました"; read _; exit 1; }; ` +
     `fi; ` +
-    // 入力プロンプトの検出待ちは「何かを送るとき」だけ行う。業務プロンプトが無くても、
-    // 新規セッションに chat モードの開始コマンドがあるなら送る必要があるので待つ
-    // （接続するだけの起動で何も送らないときは、従来どおり待たずにアタッチする）。
+    // 送るものがあるときは、プロンプト検出＋送信を **バックグラウンド**に回し、前面はすぐ
+    // アタッチして「起動の様子」を見せる。従来は検出が終わるまで最大 60 秒 "起動を待っています"
+    // で固まって見えた（CLI の起動自体が遅いと、その間ずっと真っ黒な待ち画面だった）。
+    // 検出は kiro-loop と同じく「末尾（非空）3 行にプロンプトがあるか」を 0.5 秒間隔で見る
+    // （画面全体を見ると起動バナー中の `>` を早合点し、未起動のまま送って文字化けする）。
     (sendPrompt || chatLines
-      ? `echo "[agent-dashboard] エージェントCLIの起動を待っています…"; ` +
-        `__i=0; __ok=0; ` +
-        `while [ $__i -lt 60 ]; do ` +
-        // 素のプロンプト（`>` `❯` `›` `?`）に加え、枠で囲う入力欄（Claude Code の `│ > │` 等）も
-        // 検出する。枠付きを取りこぼすと一致せず 60 秒まるごと待ってからアタッチする（＝極端に遅い）。
-        `if tmux capture-pane -p -t "$__ses" 2>/dev/null | grep -qE "^[[:space:]]*[>?❯›][[:space:]]*$|!>|│[[:space:]]*[>❯›]"; then __ok=1; break; fi; ` +
-        `sleep 1; __i=$((__i+1)); ` +
-        `done; ` +
-        `if [ $__ok -eq 1 ]; then ` +
+      ? `( __i=0; while [ $__i -lt 120 ]; do ` +
+        `if tmux capture-pane -p -t "$__ses" 2>/dev/null | grep -v "^[[:space:]]*$" | tail -n 3 | ` +
+        `grep -qE "^[[:space:]]*[>?❯›][[:space:]]*$|!>|│[[:space:]]*[>❯›]"; then ` +
         // 「エージェントに送る」開始コマンドの送信タイミング:
         //   ・業務プロンプトを送る定常ループ … 前準備の二重送信を避け、新規セッション時だけ送る。
-        //   ・CLIチャットの手動オープン（業務プロンプト無し）… 開くたびに毎回送る。既存セッションへ
-        //     再接続したときも設定した「エージェントに送る」を適用する（新規時しか送らないと、
-        //     セッションが常駐する CLIチャットでは初回以降・設定変更後に一度も効かない）。
+        //   ・CLIチャットの手動オープン（業務プロンプト無し）… 開くたびに毎回送る（常駐セッションへ
+        //     再接続したときも設定した「エージェントに送る」を適用する）。
         (chatLines
           ? (sendPrompt ? `if [ $__new -eq 1 ]; then ${chatLines}fi; ` : chatLines)
           : '') +
+        // 業務プロンプトも send-keys（打鍵）で送る。paste-buffer の一括ペーストは
+        // スラッシュ補完メニューを持つ CLI で化けるため（kiro-loop と同じ方式へ揃える）。
         (sendPrompt
-          // 複数行プロンプトを崩さず送るため send-keys ではなく paste-buffer を使う。
-          // -p（ブラケットペースト）でスラッシュ補完メニューとの競合による文字化けを防ぐ。
-          ? `tmux set-buffer -b agentdash -- ${shellQuote(prompt)}; ` +
-            `tmux paste-buffer -p -t "$__ses" -b agentdash; ` +
-            `tmux delete-buffer -b agentdash 2>/dev/null; ` +
-            `sleep 1; tmux send-keys -t "$__ses" Enter; ` +
-            `echo "[agent-dashboard] プロンプトを送信しました。アタッチします（Ctrl+b d で離脱）"; `
-          : `echo "[agent-dashboard] CLIチャットへ接続します（Ctrl+b d で離脱）"; `) +
-        `else ` +
-        `echo "[agent-dashboard] エージェントCLIの入力プロンプトを検出できませんでした。アタッチして状態を確認してください"; ` +
-        `fi; ` +
+          ? `tmux send-keys -t "$__ses" -l -- ${shellQuote(oneLine(prompt))}; ` +
+            `sleep 1; tmux send-keys -t "$__ses" Enter; `
+          : '') +
+        `break; fi; sleep 0.5; __i=$((__i+1)); done ) & ` +
+        `echo "[agent-dashboard] エージェントCLIに接続します（起動後に自動で送信します・Ctrl+b d で離脱）"; ` +
         `sleep 1; tmux attach -t "$__ses"; `
       : `echo "[agent-dashboard] CLIチャットへ接続します（Ctrl+b d で離脱）"; sleep 1; tmux attach -t "$__ses"; `) +
     `echo; echo "[agent-dashboard] Enter でこのウィンドウを閉じます"; read _`

@@ -7,6 +7,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: kiro-cli の CLIチャットで「エージェントに送る」が文字化け・起動待ちで固まる不具合を修正
+
+`src/features/cowork/main/loopProvider.js`。kiro-cli 等スラッシュ補完メニューを持つ CLI 向けに、
+kiro-loop（kiro-cli 用の実績ある送信方式）へ揃えた。
+
+- **送信方式を `paste-buffer`（一括ペースト）から `send-keys -l`（打鍵）へ変更**。一括ペーストは
+  kiro-cli のスラッシュコマンド補完メニューの非同期描画と競合し、文字が化けていた
+  （例: `/caveman` → `/cavem,an`）。kiro-loop と同じく 1 文字ずつ「打鍵」し、確定の Enter を
+  分けて送る。複数行は空白で 1 行に畳む（kiro-loop と同じ）。
+- **前面はすぐアタッチし、プロンプト検出＋送信はバックグラウンドで行う**ように変更。従来は入力
+  プロンプト検出が終わるまで最大 60 秒 “起動を待っています” で固まって見えた（CLI 起動が遅いと
+  その間ずっと待ち画面）。今は接続後に CLI 起動の様子が見え、準備でき次第に自動送信する。
+- **プロンプト検出を「画面末尾（非空）3 行」に限定**（0.5 秒間隔）。従来は画面全体を見ていたため、
+  起動バナー中の `>` を早合点して未起動のまま送信し、文字化けの一因になっていた（kiro-loop の
+  `_pane_has_prompt` と同じ判定）。
+
 ### agent-dashboard: 検収画面の差分が target ブランチではなくローカル HEAD と比較していた不具合を修正
 
 `src/base/main/git.js`（`diffRange`）と `src/renderer/sections/needs.js`。
