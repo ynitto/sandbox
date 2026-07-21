@@ -210,7 +210,7 @@ test('chat は send-keys で送り、業務プロンプトより前に置く', (
   assert.ok(chatAt > 0 && promptAt > 0);
   assert.ok(chatAt < promptAt, 'chat コマンドは業務プロンプトより先に送る');
   // スラッシュ補完メニューでの文字化けを避けるため、一括ペーストではなく send-keys で打鍵する。
-  assert.ok(script.includes('send-keys -t "$__ses" -l --'), 'send-keys（打鍵）で送る');
+  assert.ok(script.includes('send-keys -t "$__ses" -- '), 'send-keys -- <text> Enter で送る');
   assert.ok(!script.includes('paste-buffer'), 'paste-buffer は使わない');
 });
 

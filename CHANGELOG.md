@@ -7,6 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: CLIチャットの「エージェントに送る」がまったく入力されない不具合を修正（send-keys の形）
+
+`src/features/cowork/main/loopProvider.js`。送信を `tmux send-keys -t <pane> -l -- <text>` ＋別 Enter で
+組み立てていたが、この形（特に `-l --` の組み合わせ／テキストと Enter の分割）では文字が届かない
+環境があった。kiro-cli 用に実績のある kiro-loop の `send_prompt_to_session` と**完全に同じ形**
+（`tmux send-keys -t <pane> -- <1行テキスト> Enter` の 1 コール・`-l` なし）へ揃える。
+
 ### agent-dashboard: CLIチャットの「エージェントに送る」が送られなくなる不具合を修正（プロンプト検出）
 
 `src/features/cowork/main/loopProvider.js`。プロンプト検出を「画面末尾（非空）3 行」に絞ったところ、
