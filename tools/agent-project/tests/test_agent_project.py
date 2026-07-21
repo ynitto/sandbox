@@ -2572,6 +2572,63 @@ class TestCommandsIngest(unittest.TestCase):
             self.assertNotIn("r0000.json", remaining)        # 最古が消える
             self.assertIn(f"r{keep + 24:04d}.json", remaining)  # 最新は残る
 
+    def test_node_unnamed_engine_runs_everything(self):
+        # 無名エンジン（node 未設定）は従来どおり全タスクを消化する（後方互換）。
+        with tempfile.TemporaryDirectory() as d:
+            c = cfg_for(Path(d))  # node="" 既定
+            t_assigned = km.Task(id="T", title="T", status="ready", verify="true")
+            t_assigned.set("node", "pcB")
+            t_plain = km.Task(id="U", title="U", status="ready", verify="true")
+            self.assertTrue(km.task_runnable_here(c, t_assigned))
+            self.assertTrue(km.task_runnable_here(c, t_plain))
+
+    def test_node_named_engine_honors_assignment(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = cfg_for(Path(d), node="pcA")  # default_node="" 既定
+            mine = km.Task(id="T", title="T", status="ready", verify="true"); mine.set("node", "pcA")
+            others = km.Task(id="U", title="U", status="ready", verify="true"); others.set("node", "pcB")
+            plain = km.Task(id="V", title="V", status="ready", verify="true")
+            self.assertTrue(km.task_runnable_here(c, mine))      # 自ノード宛ては消化
+            self.assertFalse(km.task_runnable_here(c, others))   # 他ノード宛ては消化しない
+            self.assertTrue(km.task_runnable_here(c, plain))     # 未割当かつ default 空＝誰でも（従来）
+
+    def test_node_default_funnels_unassigned(self):
+        with tempfile.TemporaryDirectory() as d:
+            cA = cfg_for(Path(d), node="pcA", default_node="pcA")
+            cB = cfg_for(Path(d), node="pcB", default_node="pcA")
+            plain = km.Task(id="T", title="T", status="ready", verify="true")
+            self.assertTrue(km.task_runnable_here(cA, plain))    # default が未割当を拾う
+            self.assertFalse(km.task_runnable_here(cB, plain))   # 非 default は未割当を拾わない
+            assigned_b = km.Task(id="U", title="U", status="ready", verify="true"); assigned_b.set("node", "pcB")
+            self.assertTrue(km.task_runnable_here(cB, assigned_b))  # 明示割当は default に依らず優先
+
+    def test_node_has_work_skips_other_node_ready(self):
+        # pcA エンジンは pcB 宛ての ready だけでは起きない（空パスの busy-loop 防止）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T", status="ready", verify="true")
+            (d / "backlog" / "T.md").write_text(
+                "## T: T\n- status: ready\n- source: human\n- verify: `true`\n"
+                "- retries: 0\n- node: pcB\n", encoding="utf-8")
+            c = cfg_for(d, node="pcA")
+            self.assertFalse(km.has_work(c))
+            # 自ノード宛てを足すと起きる
+            mkb(d, "U", status="ready", verify="true")
+            (d / "backlog" / "U.md").write_text(
+                "## U: U\n- status: ready\n- source: human\n- verify: `true`\n"
+                "- retries: 0\n- node: pcA\n", encoding="utf-8")
+            self.assertTrue(km.has_work(c))
+
+    def test_node_revise_reassigns(self):
+        # 監視者が revise で実行 PC（node）を付け替えられる。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T", status="ready", verify="true")
+            c = cfg_for(d, actor="watcher")
+            self.assertEqual(km.cmd_revise(c, "T", {"node": "pcB"}, "", "担当変更"), 0)
+            t = next(t for t in km.load_tasks(c.backlog) if t.id == "T")
+            self.assertEqual(t.get("node"), "pcB")
+
     def test_has_work_wakes_on_commands(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)

@@ -38,6 +38,9 @@ CONFIG_DEFAULTS = {
     "planner": "agent",
     "flow_planner": "flow-planner",
     "route_planner": "agent",
+    # node 未指定タスクを既定でどの PC（ノード）が拾うか。プロジェクト共有設定（空＝誰でも／従来）。
+    # 各 PC 固有の node 名は共有 yaml に置かず CLI --node / 環境変数 AGENT_PROJECT_NODE から取る。
+    "default_node": "",
     "default_workspace": "",
     "location": "auto",
     "model": None,
@@ -283,6 +286,9 @@ def build_config(args) -> Config:
         force=bool(getattr(args, "force", False)),
         lock_dir=getattr(args, "lock_dir", None),
         agent_flow=args.agent_flow, planner=args.planner, flow_planner=args.flow_planner,
+        # node はこの PC 固有なので CLI/環境変数のみ（共有 yaml からは読まない）。default_node は共有可。
+        node=str(getattr(args, "node", None) or os.environ.get("AGENT_PROJECT_NODE", "") or "").strip(),
+        default_node=str(getattr(args, "default_node", "") or "").strip(),
         route_planner=str(getattr(args, "route_planner", "agent") or "agent"),
         default_workspace=str(getattr(args, "default_workspace", "") or ""),
         location=args.location, executor=args.executor,
@@ -414,6 +420,10 @@ def _add_common(sp):
                     help="agent-flow daemon ロックの置き場（設定ファイル lock_dir と同義）。"
                          "外部起動の daemon を発見するため agent-flow 側と一致させる")
     sp.add_argument("--agent-flow", default=None)
+    sp.add_argument("--node", dest="node", default=None,
+                    help="この PC（エンジン）のノード名（複数 PC のバックログ分担）。指定すると "
+                         "node 割当が一致するタスクと未割当タスク（default_node 規則）だけを消化する。"
+                         "環境変数 AGENT_PROJECT_NODE でも指定可。未指定（無名）は従来どおり全消化")
     sp.add_argument("--planner", default=None, choices=["agent", "none"],
                     help="優先順位付け: agent=エージェント委譲（priority 加味）/ none=priority＋古さ（既定 agent）")
     sp.add_argument("--flow-planner", default=None,

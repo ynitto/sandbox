@@ -4,13 +4,22 @@
 > 機能や制約を削ってでも全体をシンプルにする再設計計画。
 > 全てをシステムで解決せず、負荷の低い作業は人間の運用に寄せる。
 
-> **実装状況（2026-07-21）**: Phase 1 の「操作の受理確認(ack)」を先行実装済み。
-> エンジンは commands 取り込み成功時に `commands/processed/<name>.json` へ受理レシートを
-> 残し(`agent_project/commands.py` の `_write_command_receipt`)、dashboard は
-> `listCommandReceipts` でそれを読み、要対応カードに「受理されました」を表示する
-> (`project.js` / `renderer/sections/needs.js`)。テスト: エンジン側 3 件
-> (`test_agent_project.py`)、dashboard 側 5 件(`command-receipt.test.js`)。
-> 残りの案・フェーズは未着手。
+> **実装状況（2026-07-21）**:
+> - **Phase 1「操作の受理確認(ack)」実装済み**。エンジンは commands 取り込み成功時に
+>   `commands/processed/<name>.json` へ受理レシートを残し(`commands.py` の
+>   `_write_command_receipt`)、dashboard は `listCommandReceipts` でそれを読み、要対応
+>   カードに「受理されました」を表示する(`project.js` / `renderer/sections/needs.js`)。
+>   テスト: エンジン 3 件、dashboard 5 件(`command-receipt.test.js`)。
+> - **Phase 2.5「ノード割当」の静的割当(案 6-A)を先行実装済み**。エンジンにノード名
+>   (`--node` / 環境変数 `AGENT_PROJECT_NODE`、共有 yaml には載せない)を与え、タスクの
+>   `- node:` 割当に一致するタスク＋未割当タスク(`default_node` 規則)だけを消化する
+>   (`prioritize.py` の `task_runnable_here`、`loop.py` の選択・`has_work`)。無名エンジンは
+>   従来どおり全消化(後方互換)。dashboard は revise で `node` を付け替え可能
+>   (`REVISE_KEYS` + revise フォームの実行ノード欄)。テスト: エンジン 5 件。
+>   注: claim 調停の push 化(案 6-3)・`status/<node>.json` 分割・停止ノード回収 UI は未実装
+>   (未割当タスクを default_node 空のまま複数の名前付きエンジンで走らせると従来同様の
+>   二重実行リスクが残る。回避は各タスクへ node 割当か default_node を 1 台に設定）。
+> - 残りの案・フェーズ(状態リポジトリ分離ほか)は未着手。
 
 ## 前提となる運用形態
 

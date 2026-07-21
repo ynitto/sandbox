@@ -295,7 +295,7 @@ def cmd_replan(cfg: Config, reason: str, charter_name: str = "") -> int:
 #   現在の試行の結果は確定させず（done にせず）修正内容で積み直す＝早い軌道修正。
 # ---------------------------------------------------------------------------
 REVISE_FIELDS = ("title", "priority", "verify", "accept", "after",
-                 "note", "level", "track", *TASK_GUIDE_KEYS)
+                 "note", "level", "track", "node", *TASK_GUIDE_KEYS)
 _CLEAR_VALUES = ("", "-", "none")      # フィールド削除の明示値（revise の置換規約）
 
 

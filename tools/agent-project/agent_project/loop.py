@@ -359,7 +359,8 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
             tasks = load_tasks(cfg.backlog)    # settle が状態を変えたので再読
 
         order_all = [t for t in prioritize(tasks, policy, cfg.planner, cfg.model, ranker)
-                     if t.id not in unavailable]  # 他 worker/インスタンスがクレーム済みは除外
+                     if t.id not in unavailable        # 他 worker/インスタンスがクレーム済みは除外
+                     and task_runnable_here(cfg, t)]    # 他ノード（PC）へ割当済みは消化しない
         levels = {t.id: resolve_level(t, cfg, autonomy_cache) for t in order_all}
         for t in order_all:                       # report タスクは実行せず「計画」に載せて保留（塩漬け）
             if levels[t.id] == "report" and t.id not in plan_seen:
@@ -537,7 +538,9 @@ def has_work(cfg: Config) -> bool:
     数千まで増え、journal が秒単位で埋まる）。dependents が ready でも ready_after_deps が
     空なら起こさない。"""
     tasks = load_tasks(cfg.backlog)
-    if ready_after_deps(tasks):
+    # 他ノード（PC）へ割当済みの ready では起こさない。起こすと消化対象ゼロの空パスを
+    # 毎 poll 繰り返す（cycles が増え journal が埋まる）。自ノードが消化できる ready だけで起こす。
+    if any(task_runnable_here(cfg, t) for t in ready_after_deps(tasks)):
         return True
     for t in tasks:
         st = t.norm_status()

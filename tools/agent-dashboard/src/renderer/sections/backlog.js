@@ -548,6 +548,7 @@ function reviseAreaHtml(t) {
       </div>
       <div class="field"><label>系列（同種タスクのグループ名。空にすると削除）</label><input id="rv-track" value="${esc(t.extra.track || '')}" /></div>
     </div>
+    <div class="field"><label>実行ノード（このタスクを動かす PC のエンジン名。複数 PC で分担するとき指定。空にすると未割当＝既定ノードが拾う）</label><input id="rv-node" value="${esc(t.extra.node || '')}" /></div>
     <div class="field"><label>メモ（空にすると削除）</label><input id="rv-note" value="${esc(t.extra.note || '')}" /></div>
     <details class="revise-guide" ${GUIDE_KEYS.some((k) => t.extra[k]) ? 'open' : ''}>
       <summary>意図と境界（レビュー材料 兼 実行ワーカーへの誘導。空にすると削除）</summary>
@@ -730,6 +731,7 @@ function showTaskDialog(id, scope) {
         ['accept', $('rv-accept').value.trim(), String(t.extra.accept || '')],
         ['level', $('rv-level').value.trim(), String(t.extra.level || '')],
         ['track', $('rv-track').value.trim(), String(t.extra.track || '')],
+        ['node', $('rv-node').value.trim(), String(t.extra.node || '')],
         ['note', $('rv-note').value.trim(), String(t.extra.note || '')],
         ...GUIDE_KEYS.map((k) => [k, $(`rv-${k}`).value.trim(), String(t.extra[k] || '')]),
       ];

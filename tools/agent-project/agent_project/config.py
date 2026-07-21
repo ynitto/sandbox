@@ -65,6 +65,13 @@ class Config:
                                            # ごとに 1 回だけ書き直し、state_git の commit-if-diff に乗る
     lock_dir: "str | None" = None   # agent-flow daemon ロックの置き場（外部 daemon 発見のため agent-flow と一致させる）
     agent_flow: "str | None" = None
+    # 複数 PC のノード割当（バックログ単位で実行 PC を選ぶ）。node はこの PC のエンジン名で、
+    # PC 毎に異なるため CLI --node か環境変数 AGENT_PROJECT_NODE からのみ取り（共有 yaml には
+    # 載せない＝全 PC 同名になる事故を防ぐ）。空なら無名エンジン＝従来どおり全タスクを消化する。
+    # default_node はプロジェクト共有設定で、node 未指定タスクをどの PC が拾うかの既定
+    # （空なら従来どおり誰でも拾う）。割当の一致判定は task_runnable_here。
+    node: str = ""
+    default_node: str = ""
     planner: str = "agent"         # 優先順位付け戦略: agent（エージェント委譲）/ none（priority＋古さ）
     flow_planner: str = "flow-planner"  # agent-flow run に渡す planner
     # ルーティング: タスク → ちょうど1つの書込先ワークスペースを決める自動判断。agent=曖昧時に

@@ -7,6 +7,29 @@ def consumable_tasks(tasks: "list[Task]") -> "list[Task]":
     return [t for t in tasks if t.consumable()]
 
 
+def task_runnable_here(cfg: "Config", t: "Task") -> bool:
+    """このエンジン（cfg.node）がこのタスクを消化してよいか（複数 PC のノード割当）。
+
+    後方互換: エンジンに node 名が無ければ常に True（無名エンジン＝従来どおり全消化）。
+    node 名があるとき:
+      - タスクに `- node:` 指定があれば、名前が一致するノードだけが消化する
+        （バックログ単位で実行 PC を選ぶ＝監視者が revise で node を付け替える）。
+      - タスクが未指定なら、default_node（プロジェクト共有設定）が空（＝誰でも／従来）か、
+        自分が default_node のときだけ消化する（未指定タスクの拾い先を 1 台に寄せられる）。
+    注意: これは正の割当フィルタで、claim 自体はホスト内原子性のまま。異なるノードへ
+    明示割当したタスクは互いに触らないが、未指定タスクを default_node 空のまま複数の名前付き
+    エンジンで走らせると従来同様の二重実行リスクが残る（回避は各タスクへ node を割り当てるか
+    default_node を 1 台に設定する）。"""
+    mine = str(getattr(cfg, "node", "") or "").strip()
+    if not mine:
+        return True                                   # 無名エンジン＝フィルタしない（従来動作）
+    assigned = str(t.get("node", "") or "").strip()
+    if assigned:
+        return assigned == mine
+    default = str(getattr(cfg, "default_node", "") or "").strip()
+    return (not default) or (default == mine)
+
+
 def task_deps(task: "Task") -> "list[str]":
     """`- after: T1, T2` の依存 ID 群（カンマ/空白区切り）。無ければ空。"""
     raw = task.get("after", "")
