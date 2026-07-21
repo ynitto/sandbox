@@ -187,10 +187,13 @@ test('chatWindowScript は tmux セッション確保 → 起動待ち → paste
   assert.ok(script.includes('exec ') && script.includes('kiro-cli') && script.includes('--trust-all-tools'),
     'chatCommand を argv 分解して起動する');
   assert.ok(script.includes('grep -qE'), 'kiro-cli の入力プロンプトを待つ');
-  assert.ok(script.includes('tmux set-buffer') && script.includes('tmux paste-buffer'), '複数行プロンプトを paste-buffer で送る');
+  assert.ok(script.includes('tmux set-buffer') && script.includes('tmux paste-buffer -p'),
+    'スラッシュ補完との競合を避けるためブラケットペースト（-p）で送る');
   assert.ok(script.includes("'レビューして {{target}}'"), 'プロンプト本文を引用して埋め込む');
   assert.ok(script.includes('tmux attach -t "$__ses"'), '送信後はアタッチして進行を見せる');
   assert.ok(script.includes('read _'), '終了時にウィンドウを即閉じしない');
+  // 枠付き入力欄（Claude Code の `│ > │` 等）も検出する（取りこぼすと 60 秒待って極端に遅い）。
+  assert.ok(script.includes('│[[:space:]]*[>❯›]'), '枠で囲うプロンプトも入力待ち判定に含める');
 });
 
 test('chatSessionName は kiro 接頭辞 + repo digest（端末タブの既定発見に載る）', () => {
