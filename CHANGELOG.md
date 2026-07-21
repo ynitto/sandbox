@@ -7,6 +7,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard / kiro-loop / agent-loop: 実行状況ダイアログの送信が `[[: not found` / `python: No such file or directory` で失敗する不具合を修正
+
+- **agent-dashboard**: `src/features/kiro-loop/main/exec.js` の `shInWsl` を `sh -lc`（dash）から
+  `bash -lc` へ変更。dash だと利用者の profile / `~/.bashrc` の bash 構文 `[[ … ]]` が
+  `sh: N: [[: not found` になり、そこで止まって venv 有効化も走らず、kiro-loop の
+  `#!/usr/bin/env python` が解決できず `python: No such file or directory` になっていた。
+- **kiro-loop / agent-loop**: スクリプトの shebang を `#!/usr/bin/env python` → `#!/usr/bin/env python3`
+  へ修正（`kiro-loop.py` / `kiro-send.py` / `agent-send.py`）。インストーラの python 検出順も
+  `python python3` → `python3 python` にし、`python` 未存在（python3 のみ）の環境でも動くようにした。
+
+### agent-dashboard: ステートマシン実行時、必要な入力パラメータを人へ質問させる
+
+`src/features/cowork/main/cowork.js`。statemachine-use で作ったステートマシンに入力パラメータが要る
+場合、勝手に仮の値で進めず、人へ質問してから実行させる。従来は汎用的な補助文だけだったが、
+定義（`.statemachine/<name>/workflow.yaml`）を読んで**具体的に必要な入力を洗い出す**ようにした:
+
+- action/condition が `{{input}}` を参照していて、実行時に入力が渡されていない → 実行対象の入力を要求
+- `context` の初期値が空（`""` / 空欄）のキー → その `context.<key>` を要求
+
+必要な入力があるときは、起動プロンプトに項目名を列挙し「値が不明なものを箇条書きで質問し、回答を
+得てから実行して」と明示する。定義を読めない/追加入力が不要なときは従来の汎用補助へフォールバック。
+
+### agent-dashboard: kiro-cli の入力プレースホルダを起動検出パターンに追加
+
+`src/features/cowork/main/loopProvider.js`。kiro-cli は入力欄に `>` ではなくゴーストテキスト
+「Ask a question or describe a task」を表示するため、「行全体が素のプロンプトだけ」という判定に
+一致せず、起動検出が発火せずコマンドが送られなかった。検出正規表現にこのプレースホルダ
+（`ask a question` / `describe a task`・大小無視）を追加する。入力受付中にだけ出るため、準備完了の
+合図として適切。
+
 ### agent-dashboard: CLIチャットの「エージェントに送る」がまったく入力されない不具合を修正（send-keys の形）
 
 `src/features/cowork/main/loopProvider.js`。送信を `tmux send-keys -t <pane> -l -- <text>` ＋別 Enter で
