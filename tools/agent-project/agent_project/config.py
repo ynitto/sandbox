@@ -52,7 +52,8 @@ class Config:
     # URL は全 PC 共有（共有 yaml 可）。clone 先 dir は既定 <repo>-state（旧 worktree <repo>-agent-state と別名。PC 毎に上書き可）。
     # 空なら従来どおり worktree 方式（後方互換）。clone 失敗時も worktree 方式へ自動フォールバック。
     state_repo: str = ""
-    state_repo_dir: str = ""            # ローカル clone 先（空＝<成果物repo>-state の隣。旧 worktree と別名）
+    state_repo_dir: str = ""            # ローカル clone 先（成果物top の親を基準に解決。相対なら親配下、
+    #                                      絶対ならそのまま。空＝<成果物repo>-state。旧 worktree と別名）
     state_repo_branch: str = "main"    # 専用リポジトリ内で状態を載せるブランチ
     # 状態 worktree（build_config が root を差し替える。下の _redirect_root_to_state_worktree 参照）
     state_worktree_dir: str = ""
