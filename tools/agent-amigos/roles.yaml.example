@@ -17,6 +17,11 @@ mission:
     per_role_turns: 30                 # ロールあたりターン上限（空転の保険）
     soft_ratio: 0.9                    # これを超えたら wrap-up モード
     on_exhausted: wrap-up              # wrap-up（現状統合の partial 納品）| fail
+  # conductor:                          # 自律コンダクタ（既定 off・オプトイン）
+  #   enabled: true                     # 実行中に owner が team-builder 的判断で restaff を回す
+  #   cli: claude                       # 判断に使う agent CLI（stub は判断しない）
+  #   max_ops: 3                        # 1 回の restaff で許す add+prune 上限
+  #   max_total_ops: 12                 # ミッション全体の restaff 総上限（暴走止め）
 
 roles:
   - id: architect

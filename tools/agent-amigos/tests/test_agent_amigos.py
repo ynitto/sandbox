@@ -2045,5 +2045,82 @@ class RestaffTests(AmigosTestCase):
         self.assertIn("extra", pruned_roles(self.bus.mission(mid)))
 
 
+class ConductorTests(AmigosTestCase):
+    """自律コンダクタ（オプトイン・G5 上位ループ）: 実行中に restaff で編成を調整する。"""
+
+    def _post(self, conductor=None, roles=None):
+        m = {"title": "t", "goal": "g", "staffing_timeout": 0,
+             "convergence": {"done_when": "all-required-done", "quiescence_turns": 99}}
+        if conductor is not None:
+            m["conductor"] = conductor
+        spec = {"mission": m, "roles": roles or
+                [{"id": "worker", "mission": "作る", "deliverables": ["out.md"]},
+                 {"id": "extra", "mission": "余剰", "required": False}]}
+        return self.post(spec, mid="am-cond")
+
+    def _mock_decision(self, decision):
+        from agent_amigos import agentcli
+        orig = agentcli.run_agent
+        calls = []
+
+        def fake(prompt, *a, **k):
+            calls.append(prompt)
+            return json.dumps(decision)
+        agentcli.run_agent = fake
+        self.addCleanup(setattr, agentcli, "run_agent", orig)
+        return calls
+
+    def test_conductor_disabled_is_skipped(self):
+        from agent_amigos.ownerops import conductor_turn
+        mid = self._post()                                  # conductor 無し
+        mp = self.bus.mission(mid)
+        self.assertEqual(conductor_turn(self.bus, mp, load_mission(mp), "owner-node", "claude"),
+                         "skipped")
+
+    def test_conductor_applies_add_and_prune_then_round_gated(self):
+        from agent_amigos.ownerops import conductor_turn
+        from agent_amigos.mission import pruned_roles
+        calls = self._mock_decision({"add": [{"id": "reviewer", "mission": "見る",
+                                             "approver": True}], "prune": ["extra"], "reason": "x"})
+        mid = self._post(conductor={"enabled": True, "cli": "claude"})
+        mp = self.bus.mission(mid)
+        mission = load_mission(mp)
+        self.assertEqual(conductor_turn(self.bus, mp, mission, "owner-node", "claude"), "acted")
+        self.assertIn("reviewer", load_roles(mp))
+        self.assertIn("extra", pruned_roles(mp))
+        n = len(calls)
+        # 同一ラウンドの再評価はしない（LLM を毎サイクル呼ばない）
+        self.assertEqual(conductor_turn(self.bus, mp, mission, "owner-node", "claude"), "idle")
+        self.assertEqual(len(calls), n)
+
+    def test_conductor_stub_is_noop(self):
+        from agent_amigos.ownerops import conductor_turn
+        mid = self._post(conductor={"enabled": True, "cli": "stub"})
+        mp = self.bus.mission(mid)
+        self.assertEqual(conductor_turn(self.bus, mp, load_mission(mp), "owner-node", "stub"),
+                         "idle")
+
+    def test_conductor_guardrails_protect_core_roles(self):
+        from agent_amigos.ownerops import conductor_turn
+        from agent_amigos.mission import pruned_roles
+        self._mock_decision({"add": [], "prune": ["integrator", "worker"], "reason": "x"})
+        mid = self._post(conductor={"enabled": True, "cli": "claude"},
+                         roles=[{"id": "worker", "mission": "w"}])   # 唯一の必須ワーカー
+        mp = self.bus.mission(mid)
+        conductor_turn(self.bus, mp, load_mission(mp), "owner-node", "claude")
+        self.assertNotIn("integrator", pruned_roles(mp))   # integrator は守る
+        self.assertNotIn("worker", pruned_roles(mp))       # 最後の必須ワーカーは守る
+
+    def test_conductor_respects_max_total_ops(self):
+        from agent_amigos.ownerops import conductor_turn
+        calls = self._mock_decision({"add": [{"id": "r", "mission": "m"}], "prune": [],
+                                     "reason": "x"})
+        mid = self._post(conductor={"enabled": True, "cli": "claude", "max_total_ops": 0})
+        mp = self.bus.mission(mid)
+        self.assertEqual(conductor_turn(self.bus, mp, load_mission(mp), "owner-node", "claude"),
+                         "idle")
+        self.assertEqual(len(calls), 0)                    # 上限で LLM を呼ぶ前に止まる
+
+
 if __name__ == "__main__":
     unittest.main()

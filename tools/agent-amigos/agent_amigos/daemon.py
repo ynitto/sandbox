@@ -157,6 +157,12 @@ class NodeDaemon:
                                              self.agent_cli, home=self.home)
                     if result in ("accepted", "rejected"):
                         self._active = True
+                # 自律コンダクタ（オプトイン・G5 上位ループ）: 実行中に restaff で編成を調整
+                if (mission.get("conductor") or {}).get("enabled") and phase in ("working", "open"):
+                    from .ownerops import conductor_turn
+                    if conductor_turn(self.bus, mp, mission, self.node_id,
+                                      self.agent_cli) == "acted":
+                        self._active = True
 
             # 自分の amigo のターン
             for rid, ent in sorted(roster.items()):

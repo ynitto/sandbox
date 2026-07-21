@@ -38,6 +38,15 @@ BUDGET_DEFAULTS = {
     "soft_ratio": 0.9,
     "on_exhausted": "wrap-up",          # wrap-up | fail
 }
+# 自律コンダクタ（オプトイン）— オーナーノードが実行中に team-builder 的な判断で restaff する。
+# AgentVerse（再編成）/ DyLAN（剪定）/ meta-prompting（専門家追加）を回すための上位ループ。
+CONDUCTOR_DEFAULTS = {
+    "enabled": False,                   # 既定 off（明示オプトイン）
+    "cli": None,                        # 判断に使う agent CLI（未指定はオーナーの既定）
+    "max_ops": 3,                       # 1 回の restaff で許す add+prune の上限
+    "max_total_ops": 12,               # ミッション全体での restaff 操作の総上限（暴走止め）
+    "interval_rounds": 1,              # 何ラウンドおきに評価するか（1 = 毎ラウンド 1 回）
+}
 
 # seats>1（並列同一シート、G1）のロールに付ける集約モード（G2。integrator が決定的に集約）。
 #   majority       — 各席の回答（answer ファイル）の最頻値を選ぶ（多数決）。決定的タイブレーク
@@ -245,6 +254,8 @@ def normalize_mission(spec: dict) -> "tuple[dict, list]":
                          f"（{' | '.join(DONE_WHEN_MODES)}）")
     mission["budget"] = {**BUDGET_DEFAULTS, **dict(m.get("budget") or {})}
     mission["workspace"] = dict(m.get("workspace") or {})
+    mission["conductor"] = {**CONDUCTOR_DEFAULTS, **dict(m.get("conductor") or {})}
+    mission["conductor"]["enabled"] = bool(mission["conductor"]["enabled"])
 
     base_roles = []
     seen = set()

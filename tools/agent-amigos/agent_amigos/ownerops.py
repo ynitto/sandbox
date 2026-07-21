@@ -14,7 +14,8 @@ import time
 from . import agentcli, nodebudget
 from .bus import Bus, MissionPaths
 from .messages import build_message, message_path, read_inbox
-from .mission import current_round, load_mission, load_roles, normalize_added_roles
+from .mission import (active_roles, current_round, load_mission, load_roles,
+                      load_statuses, normalize_added_roles, role_status)
 from .util import append_jsonl, extract_json, log, now_iso, read_json, write_json_atomic
 
 
@@ -50,6 +51,145 @@ def restaff_mission(bus: Bus, mp: MissionPaths, add: "list | None" = None,
         write_json_atomic(message_path(mp, msg), msg)
     bus.sync_push(f"restaff {mp.mission_id}")
     return {"added": added_ids, "pruned": pruned_ids}
+
+
+def _save_conductor(bus: Bus, mp: MissionPaths, state: dict) -> None:
+    write_json_atomic(mp.conductor_state(), state)
+    bus.sync_push("conductor")
+
+
+def _latest_reject_feedback(mp: MissionPaths) -> str:
+    try:
+        names = sorted(n for n in os.listdir(mp.rejections_dir()) if n.endswith(".json"))
+    except FileNotFoundError:
+        return ""
+    if not names:
+        return ""
+    return str((read_json(os.path.join(mp.rejections_dir(), names[-1])) or {}).get("feedback") or "")
+
+
+def _safe_prune(prune: list, roles: dict, mission: dict) -> list:
+    """剪定してよいロールだけに絞る（integrator・唯一の承認者・最後の必須ワーカーは守る）。"""
+    done_when = (mission.get("convergence") or {}).get("done_when")
+    approvers = {rid for rid, r in roles.items() if r.get("approver")}
+    req_workers = [rid for rid, r in roles.items()
+                   if r.get("required") and r.get("builtin") != "integrator"]
+    out = []
+    for pid in prune:
+        pid = str(pid)
+        r = roles.get(pid)
+        if not r or r.get("builtin") == "integrator":
+            continue
+        if done_when == "reviewer-approved" and pid in approvers and len(approvers) <= 1:
+            continue
+        remaining = [w for w in req_workers if w != pid and w not in out]
+        if pid in req_workers and not remaining:
+            continue                         # 必須ワーカーを全滅させない
+        out.append(pid)
+    return out
+
+
+def _ask_conductor(mp: MissionPaths, mission: dict, roles: dict, node_id: str, cli: str) -> dict:
+    design = ""
+    try:
+        with open(mp.design_doc(), encoding="utf-8") as f:
+            design = f.read()
+    except OSError:
+        pass
+    statuses = load_statuses(mp)
+    lines = []
+    for rid, r in sorted(roles.items()):
+        st = role_status(mp, statuses, rid) or {}
+        lines.append(f"- {rid}（{r.get('title')}） required={r.get('required')} "
+                     f"approver={r.get('approver')} seats={r.get('seat_count', 1)} "
+                     f"turn={st.get('turn', '-')} done={st.get('done_round') is not None} "
+                     f"note={(st.get('note') or '')[:60]}")
+    prompt = f"""あなたは実行中のミッションのコンダクタ（オーナー代理）です。現在のチームと進捗を見て、
+チーム編成を調整すべきか判断してください。過不足を直す最小限の変更だけを提案します（不要なら空）。
+
+# ゴール
+{mission.get('goal')}
+
+# design doc（抜粋）
+{design[:3000]}
+
+# 現在のロールと状態
+{chr(10).join(lines)}
+
+# 直近の差し戻し（あれば）
+{_latest_reject_feedback(mp) or '（なし）'}
+
+# 判断の指針
+- 専門性が不足・進捗が滞るなら role を add（AgentVerse / meta-prompting 的な招集）。
+- 明らかに不要・重複・機能していない role は prune（DyLAN 的な剪定）。integrator は消さない。
+- 変更が不要なら add も prune も空にする。過剰・頻繁な変更はしない。
+
+# 出力契約（これ以外を出力しないこと）
+次の JSON だけを出力してください:
+{{"add": [ {{"id":"...","title":"...","mission":"...","required":true,"approver":false}} ],
+ "prune": ["role-id"], "reason": "簡潔な理由"}}
+"""
+    t0 = time.monotonic()
+    text = agentcli.run_agent(prompt, cli)
+    nodebudget.record(time.monotonic() - t0, ref=f"{mp.mission_id}/conductor", node=node_id)
+    data = extract_json(text)
+    if not isinstance(data, dict):
+        raise RuntimeError("conductor 出力を JSON オブジェクトとして解釈できません")
+    return data
+
+
+def conductor_turn(bus: Bus, mp: MissionPaths, mission: dict, node_id: str,
+                   agent_cli: "str | None" = None) -> str:
+    """自律コンダクタの 1 評価（オーナーノードで phase=working/open のとき呼ぶ）。
+
+    1 ラウンドにつき 1 回だけ team-builder 的判断で restaff（add/prune）する。LLM を毎サイクル
+    呼ばないようラウンドで律速し、総操作数を max_total_ops で頭打ちにする（暴走止め）。
+    返り値: acted | idle | skipped。"""
+    conf = mission.get("conductor") or {}
+    if not conf.get("enabled"):
+        return "skipped"
+    roles = active_roles(load_roles(mp), mp)
+    rnd = current_round(mp)
+    state = read_json(mp.conductor_state()) or {"last_round": -1, "ops": 0}
+    if int(state.get("last_round", -1)) == rnd:
+        return "idle"                        # このラウンドは評価済み
+    interval = max(1, int(conf.get("interval_rounds") or 1))
+    if rnd % interval != 0 or int(state.get("ops") or 0) >= int(conf.get("max_total_ops", 12)):
+        state["last_round"] = rnd
+        _save_conductor(bus, mp, state)
+        return "idle"
+    cli = (conf.get("cli") or agent_cli or "stub").strip().lower()
+    state["last_round"] = rnd                 # no-op でも再評価しない（LLM churn 防止）
+    if cli == "stub":
+        _save_conductor(bus, mp, state)
+        return "idle"                         # stub は判断しない（配線検証は run_agent 差し替え）
+    try:
+        decision = _ask_conductor(mp, mission, roles, node_id, cli)
+    except RuntimeError as e:
+        log("owner", f"{mp.mission_id}: conductor 判断に失敗（スキップ）: {str(e)[:120]}")
+        _save_conductor(bus, mp, state)
+        return "idle"
+    add = decision.get("add") if isinstance(decision.get("add"), list) else []
+    prune = _safe_prune(decision.get("prune") if isinstance(decision.get("prune"), list) else [],
+                        roles, mission)
+    cap = max(0, int(conf.get("max_ops", 3)))
+    prune = prune[:cap]                        # 合計 cap（prune 優先）
+    add = add[:max(0, cap - len(prune))]
+    if not add and not prune:
+        _save_conductor(bus, mp, state)
+        return "idle"
+    try:
+        result = restaff_mission(bus, mp, add=add or None, prune=prune or None,
+                                 by=f"conductor:{node_id}")
+    except SystemExit as e:
+        log("owner", f"{mp.mission_id}: conductor restaff 失敗（スキップ）: {str(e)[:120]}")
+        _save_conductor(bus, mp, state)
+        return "idle"
+    state["ops"] = int(state.get("ops") or 0) + len(result["added"]) + len(result["pruned"])
+    _save_conductor(bus, mp, state)
+    log("owner", f"{mp.mission_id}: conductor 編成変更 追加={result['added']} 停止={result['pruned']}"
+                 f"（{str(decision.get('reason') or '')[:80]}）")
+    return "acted" if (result["added"] or result["pruned"]) else "idle"
 
 
 def accept_mission(bus: Bus, mp: MissionPaths, by: str,

@@ -127,12 +127,17 @@ agent-amigos が**そのまま**表現できるのは:
     増えれば収束が再び開き、統合し直す。
   - **prune**: `pruned/<id>.json` を書く。剪定ロールは `active_roles` で収束・募集・ターン実行から
     外れ、担当 amigo は次ターンで exit する。
-- **写せるようになったこと**: exchange-of-thought は topology（下記）で **native**。AgentVerse
-  （再編成）・meta-prompting（専門家の追加）は **restaff の add を owner／制御ループが呼ぶ
-  ワークフロー**として表現する（team-builder を途中で再度呼んで差分編成 → restaff）。DyLAN 的
-  剪定は席の評価（`SCORE`/aggregate）＋ restaff の prune で表現する。
-- **残**: 完全自律の自己組織化（毎ラウンド自動で剪定・招集する制御ループ）は restaff を叩く
-  上位ワークフロー側の責務とする（コアは編成変更の**プリミティブ**までを提供）。
+- **自律コンダクタ（オプトイン）— ✅ 実装済み**: `mission.conductor.enabled=true` で、オーナー
+  ノードが実行中に **team-builder 的な判断で restaff を回す**上位ループを内蔵する
+  （`ownerops.conductor_turn`、`acceptance: agent` と同じくオーナー CLI ターンとして動く）。
+  現在のロール・進捗・直近の差し戻しを見て `{add, prune}` を LLM に決めさせ、restaff で適用する。
+  - **暴走止め**: ラウンドで律速（1 ラウンド 1 回・LLM を毎サイクル呼ばない）／総操作数
+    `max_total_ops`／1 回の `max_ops`。**ガードレール**: integrator・唯一の承認者・最後の必須
+    ワーカーは剪定しない。stub は判断しない。
+  - これで AgentVerse（再編成）・meta-prompting（専門家招集）・DyLAN（`SCORE` 評価 → prune）が
+    **agent-amigos 内で自律的に**回る。既定は off（明示オプトイン）。
+- **残**: より高度な制御（複雑な評価関数・多段の再編成戦略）は、conductor の判断プロンプトを
+  差し替えるか、外部オーケストレーションから restaff を叩く形で拡張できる（コアは据え置き）。
 
 ### 通信トポロジ制御（同期討論の拡張）— ✅ 実装済み
 
@@ -149,15 +154,15 @@ agent-amigos が**そのまま**表現できるのは:
 | tree-of-thoughts | → agent-flow 委譲（実装済み） | target=agent-flow でカタログ化 |
 | graph-of-thoughts | → agent-flow 委譲（実装済み） | 同上 |
 | lats | → agent-flow 委譲（実装済み） | 同上 |
-| dylan | 自律制御（G2/G3/G5 は実装済み） | 席評価（SCORE）＋ restaff prune を叩く上位ループで表現 |
-| agentverse | 自律制御（G5 は実装済み） | 再編成は restaff add、判定は approver。自律ループは上位 |
-| meta-prompting | 自律制御（G5 は実装済み） | 専門家追加は restaff add。司会ループは上位 |
+| dylan | 自律コンダクタ（実装済み） | 席評価（SCORE）＋ conductor の prune |
+| agentverse | 自律コンダクタ（実装済み） | 再編成は conductor の add、判定は approver |
+| meta-prompting | 自律コンダクタ（実装済み） | 専門家追加は conductor の add |
 
 exchange-of-thought は topology（G3 拡張）で **native 化**。tree/graph-of-thoughts・lats は
-**agent-flow 委譲**でカタログ化（team-builder が `target: agent-flow` で委譲封筒を出力）。
-dylan / agentverse / meta-prompting は「restaff を叩く上位ワークフロー」で表現でき、残るのは
-その**自律制御ループ**（コア外）。つまり全 40 パターンが、実装済みのプリミティブ ＋ agent-flow 委譲
-＋ 上位ワークフローのいずれかで表現できる状態になった。
+**agent-flow 委譲**でカタログ化。dylan / agentverse / meta-prompting は **自律コンダクタ
+（`mission.conductor`）** で agent-amigos 内で自律的に回せる。つまり論文由来 40 パターンが、
+実装済みプリミティブ（G1/G2/G3/G5）＋ agent-flow 委譲（G4）＋ 自律コンダクタのいずれかで
+**すべて表現できる状態**になった。
 
 ---
 
@@ -170,9 +175,9 @@ dylan / agentverse / meta-prompting は「restaff を叩く上位ワークフロ
    - `pairwise-rank` のみ、比較が意味判断のため決定的集約にせず ranker ロールに委ねる設計とした。
 2. ~~**G3 同期ラウンド**~~ — ✅ **実装済み**（`rounds: N` ＋ ラウンドバリア ＋ consensus 早期終了）。
    debate 系（multiagent-debate / persuasive-debate / reconcile）が忠実になった。残は通信トポロジ制御。
-3. ~~**G5 restaff**~~ ＋ ~~通信トポロジ~~ — ✅ **実装済み**。restaff（add/prune）で動的編成の
-   プリミティブを、topology（complete/ring/star/tree）で討論の伝播制御を提供。AgentVerse/DyLAN/
-   meta-prompting は restaff を叩く上位ワークフローで表現する（自律制御ループはコア外）。
+3. ~~**G5 restaff**~~ ＋ ~~通信トポロジ~~ ＋ ~~自律コンダクタ~~ — ✅ **実装済み**。restaff（add/prune）
+   のプリミティブ、topology（complete/ring/star/tree）の伝播制御、そして `mission.conductor`
+   （オプトイン）で AgentVerse/DyLAN/meta-prompting の自律ループを agent-amigos 内に内蔵。
 4. ~~**G4 探索木**~~ — ✅ **agent-flow 委譲で対応**（team-builder が `target: agent-flow` の委譲封筒を
    出力し、探索は agent-flow が担う）。agent-amigos 本体への探索構造の内蔵は非目標。
 

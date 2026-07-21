@@ -130,6 +130,18 @@
           "description": "コード成果物用の対象リポジトリ（設計書 §8.3。バスに巨大ファイルを積まない）。現状は opaque passthrough（checkout 実装なし）。将来 checkout を実装する場合は repos.schema.json のエントリ形（url/base/path/owns）または repos レジストリのエントリ名参照に揃えること（リポジトリ定義のスキーマを増やさない）",
           "properties": {"repo": {"type": "string"}},
           "additionalProperties": true
+        },
+        "conductor": {
+          "type": "object",
+          "description": "自律コンダクタ（オプトイン・G5 上位ループ）。enabled=true で、オーナーノードが実行中に team-builder 的な判断で restaff（ロール add/prune）する。AgentVerse（再編成）/ DyLAN（剪定）/ meta-prompting（専門家追加）を回すための上位ループ。ラウンドで律速し max_total_ops で暴走を止める",
+          "properties": {
+            "enabled": {"type": "boolean", "default": false},
+            "cli": {"type": ["string", "null"], "description": "判断に使う agent CLI（未指定はオーナーの既定。stub は判断しない）"},
+            "max_ops": {"type": "integer", "minimum": 0, "default": 3, "description": "1 回の restaff で許す add+prune の合計上限"},
+            "max_total_ops": {"type": "integer", "minimum": 0, "default": 12, "description": "ミッション全体の restaff 操作の総上限（暴走止め）"},
+            "interval_rounds": {"type": "integer", "minimum": 1, "default": 1, "description": "何ラウンドおきに評価するか"}
+          },
+          "additionalProperties": true
         }
       },
       "additionalProperties": true

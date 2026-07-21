@@ -251,7 +251,12 @@ roles:
   各席が毎ラウンド読む相手を制限できる（exchange-of-thought）。
 - **動的編成（G5）**: `agent-amigos restaff <mid> --add <roles.yaml> --prune <id,...>` で、実行中に
   ロールを追加・停止できる（オーナー）。追加ロールは通常どおり募集・充足され、剪定ロールは収束・
-  募集・実行から外れる。AgentVerse 的な再編成・DyLAN 的な剪定の基盤。
+  募集・実行から外れる。
+- **自律コンダクタ**: `mission.conductor.enabled: true` にすると、オーナーノードが実行中に
+  team-builder 的な判断で restaff を自動で回す（`acceptance: agent` と同じオーナー CLI ターン）。
+  AgentVerse（再編成）・DyLAN（`SCORE` 評価 → 剪定）・meta-prompting（専門家招集）が agent-amigos 内で
+  自律的に回る。ラウンド律速・`max_total_ops`・ガードレール（integrator/唯一の承認者/最後の必須
+  ワーカーは守る）付き。既定は off。
 - **探索木・動的分解（G4）**: Tree/Graph-of-Thoughts・LATS のような探索は役割協働の領分ではなく
   **agent-flow へ委譲**する。team-builder は探索が本質のミッションを見分けて `target: agent-flow` の
   委譲封筒（`delegation.schema.json` の workload=flow）を出力する（`build-team` が表示・保存し
