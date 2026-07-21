@@ -187,8 +187,8 @@ test('chatWindowScript は tmux セッション確保 → 起動待ち → paste
   assert.ok(script.includes('exec ') && script.includes('kiro-cli') && script.includes('--trust-all-tools'),
     'chatCommand を argv 分解して起動する');
   assert.ok(script.includes('grep -qE'), 'kiro-cli の入力プロンプトを待つ');
-  assert.ok(script.includes('tmux send-keys -t "$__ses" -l --'),
-    'スラッシュ補完メニューでの文字化けを避けるため send-keys（打鍵）で送る');
+  assert.ok(script.includes('tmux send-keys -t "$__ses" -- ') && script.includes(' Enter;'),
+    'kiro-loop と同じ send-keys -- <text> Enter（1コール）で送る');
   assert.ok(!script.includes('paste-buffer'), '一括ペースト（paste-buffer）は使わない');
   assert.ok(script.includes("'レビューして {{target}}'"), 'プロンプト本文を引用して埋め込む');
   assert.ok(script.includes('tmux attach -t "$__ses"'), '送信後はアタッチして進行を見せる');
