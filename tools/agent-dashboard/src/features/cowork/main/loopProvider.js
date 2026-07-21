@@ -209,9 +209,12 @@ function terminalLaunchSpec(platform, scriptFile, which = findExecutable) {
 
 // `cmd /s /c start "<title>" wsl.exe …` のコマンドライン。windowsVerbatimArguments で
 // そのまま渡すため自前で組み立てる（Node の既定の引用は cmd.exe の規則と一致しない）。
+// ログインシェルは bash を使う（sh=dash だと利用者の ~/.bashrc / profile にある
+// bash 構文 `[[ … ]]` が `sh: N: [[: not found` になり、そこで止まると venv 有効化も
+// 走らず「No virtual environment found」のままエージェントが起動できない）。
 function windowStartCommand(distro, wslScriptPath, title = '定常業務 (agent-dashboard)') {
   const d = distro ? `-d "${distro}" ` : '';
-  return `start "${title}" wsl.exe ${d}-e sh -lc ". '${wslScriptPath}'"`;
+  return `start "${title}" wsl.exe ${d}-e bash -lc ". '${wslScriptPath}'"`;
 }
 
 // スクリプトを新しいコンソールウィンドウ（WSL）で起動する共通処理。

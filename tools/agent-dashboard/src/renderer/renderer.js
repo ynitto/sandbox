@@ -1746,7 +1746,8 @@ function workspaceFeatureModel(discovery, selectedDir, coworkCount) {
   };
 }
 
-// 作業（発見 or 手動）が無いときは Cowork タブを隠す。設定から明示オープン中は例外。
+// 定常業務タブは常に表示する（作業が未登録のプロジェクトでも、空状態から追加へ導ける）。
+// agent-project 系タブだけはワークスペースの内容に応じて出し分ける。
 function updateCoworkTabVisibility() {
   const btn = $('tab-btn-cowork');
   const pane = $('tab-cowork');
@@ -1758,13 +1759,15 @@ function updateCoworkTabVisibility() {
     el.classList.toggle('hidden', !features.agentProject);
     el.hidden = !features.agentProject;
   }
-  btn.classList.toggle('hidden', !features.cowork);
-  btn.hidden = !features.cowork;
-  pane.classList.toggle('hidden', !features.cowork);
-  pane.hidden = !features.cowork;
+  // 定常業務タブ・ペインは常時表示（隠さない）。
+  btn.classList.remove('hidden');
+  btn.hidden = false;
+  pane.classList.remove('hidden');
+  pane.hidden = false;
   const current = document.querySelector('.tab.active');
   if (!current || current.hidden || current.classList.contains('hidden')) {
-    if (features.defaultTab) switchTab(features.defaultTab);
+    // 現在のタブが隠れたときは、既定タブ（無ければ常時表示の定常業務）へ退避する。
+    switchTab(features.defaultTab || 'cowork');
   }
 }
 

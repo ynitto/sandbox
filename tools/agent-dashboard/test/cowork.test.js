@@ -160,7 +160,7 @@ test('win32 の loop 実行は既定で別ウィンドウ（WSL tmux）起動に
     // GUI プロセスからの直接 spawn ではコンソールが割り当てられずウィンドウが出ない。
     // cmd の start で新しいコンソールを開かせる（スクリプト本文は一時ファイル経由）。
     assert.match(launched.windowCommand, /^cmd \/s \/c start "/, 'cmd の start でウィンドウを開く');
-    assert.match(launched.windowCommand, /wsl\.exe .*-e sh -lc /, 'wsl.exe で sh を起動する');
+    assert.match(launched.windowCommand, /wsl\.exe .*-e bash -lc /, 'wsl.exe で bash ログインシェルを起動する');
     assert.ok(launched.scriptFile, '実行スクリプトを一時ファイルへ書く');
     assert.ok(fs.existsSync(launched.scriptFile), 'スクリプトファイルが実在する');
     assert.ok(
@@ -324,7 +324,7 @@ test('windowStartCommand は start のタイトル・distro・スクリプトパ
   const line = cowork_loopProvider.windowStartCommand('Ubuntu', '/mnt/c/Users/dev/Temp/agent-dashboard/run.sh');
   assert.strictEqual(
     line,
-    'start "定常業務 (agent-dashboard)" wsl.exe -d "Ubuntu" -e sh -lc ". \'/mnt/c/Users/dev/Temp/agent-dashboard/run.sh\'"'
+    'start "定常業務 (agent-dashboard)" wsl.exe -d "Ubuntu" -e bash -lc ". \'/mnt/c/Users/dev/Temp/agent-dashboard/run.sh\'"'
   );
   const noDistro = cowork_loopProvider.windowStartCommand('', '/mnt/c/t/run.sh');
   assert.ok(!noDistro.includes('-d '), 'distro 未指定なら -d を付けない');
