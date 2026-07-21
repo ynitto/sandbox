@@ -1032,6 +1032,7 @@ function populateSettingsFields() {
   $('cfg-git-autopush').checked = !!(cfg.projects && cfg.projects.gitAutoPush);
   $('cfg-notify').checked = !(cfg.notifications && cfg.notifications.enabled === false);
   $('cfg-needs-sla').value = cfg.projects && cfg.projects.needsSlaHours !== undefined ? cfg.projects.needsSlaHours : 24;
+  if ($('cfg-role')) $('cfg-role').value = cfg.role === 'viewer' ? 'viewer' : 'engineer';
   $('cfg-project-command').value = (cfg.projects && cfg.projects.command) || 'agent-project';
   $('cfg-flow-bus').value = (cfg.projects && cfg.projects.flowBus) || '';
   $('cfg-flow-lockdir').value = (cfg.projects && cfg.projects.flowLockDir) || '';
@@ -1151,6 +1152,7 @@ async function saveGlobalSettingsSection(section) {
     cfg.notifications = cfg.notifications || {};
     cfg.notifications.enabled = $('cfg-notify').checked;
     cfg.projects.needsSlaHours = Math.max(1, parseInt($('cfg-needs-sla').value, 10) || 24);
+    if ($('cfg-role')) cfg.role = $('cfg-role').value === 'viewer' ? 'viewer' : 'engineer';
   } else if (section === 'agents') {
     cfg.agent = cfg.agent || {};
     cfg.agent.cli = $('cfg-agent-cli').value.trim();

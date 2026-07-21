@@ -802,15 +802,12 @@ async function openDeliveryArtifactsModel(need, title) {
   const allDiffs = canShowAllDiffs
     ? `<button class="primary-inline" data-delivery-all-diff>すべての差分を表示</button>`
     : '';
-  const assistToolbar = !need.decided && !isNeedSent(need)
-    ? `<div class="delivery-review-toolbar delivery-assist-toolbar">
-        ${allDiffs}
-        <button type="button" data-delivery-rationale="${esc(need.id)}">変更理由を説明</button>
-        <button type="button" data-delivery-followup="${esc(need.id)}">フォローアップ案</button>
-      </div>`
-    : allDiffs
-      ? `<div class="delivery-review-toolbar">${allDiffs}</div>`
-      : '';
+  // 検収経路から dashboard 側の WSL ヘッドレス AI 呼び出し（変更理由の説明・フォローアップ案）を
+  // 撤去した（案3）。多段シェル越しの同期 AI 実行が「起動を待っています」で固まる停滞の元だった。
+  // AI による accept→verify 合成はエンジン側ループ内で行う。ここは差分表示のみ残す。
+  const assistToolbar = allDiffs
+    ? `<div class="delivery-review-toolbar">${allDiffs}</div>`
+    : '';
   const emptyNotice = reviewState.hasContent
     ? ''
     : `<section class="delivery-empty-state" role="status">
@@ -1112,12 +1109,7 @@ function wireDeliveryReview(root, need) {
       if (ok) $('dlg-delivery-review').close();
     });
   }
-  for (const btn of root.querySelectorAll('[data-delivery-rationale]')) {
-    btn.addEventListener('click', () => openDeliveryRationale(btn.dataset.deliveryRationale));
-  }
-  for (const btn of root.querySelectorAll('[data-delivery-followup]')) {
-    btn.addEventListener('click', () => openDeliveryFollowup(btn.dataset.deliveryFollowup));
-  }
+  // 検収経路の WSL ヘッドレス AI（変更理由の説明・フォローアップ案）は撤去した（案3）。
   const allDiffs = root.querySelector('[data-delivery-all-diff]');
   if (allDiffs) {
     allDiffs.addEventListener('click', async () => {
@@ -1268,12 +1260,13 @@ function canDiagnoseNeed(need) {
 }
 
 function needAssistActionsHtml(need, settled) {
+  // 検収（review）は accept の判断そのもの。dashboard 側の WSL ヘッドレス AI をこの経路に
+  // 置かない（案3）。「変更理由を説明」も汎用「AIに相談」も出さず、AI 支援ボタンは無しにする
+  // （accept→verify の AI 合成はエンジン側ループ内で行う）。
+  if (need && need.kind === 'review') return '';
   const specialized = [];
   if (!settled && need.kind === 'plan-review') {
     specialized.push(`<button class="primary-inline" data-plan-critique="${esc(need.id)}">AIで計画を批評</button>`);
-  }
-  if (!settled && need.kind === 'review') {
-    specialized.push(`<button type="button" data-delivery-rationale="${esc(need.id)}">変更理由を説明</button>`);
   }
   if (!settled && canDiagnoseNeed(need)) {
     specialized.push(`<button class="primary-inline" data-failure-diagnose="${esc(need.id)}">AIで失敗を診断</button>`);
@@ -1635,9 +1628,6 @@ function bindNeedDetail(root) {
   }
   for (const btn of root.querySelectorAll('button[data-plan-critique]')) {
     btn.addEventListener('click', () => openPlanCritique(btn.dataset.planCritique));
-  }
-  for (const btn of root.querySelectorAll('button[data-delivery-rationale]')) {
-    btn.addEventListener('click', () => openDeliveryRationale(btn.dataset.deliveryRationale));
   }
   for (const btn of root.querySelectorAll('button[data-verify-revise]')) {
     btn.addEventListener('click', async () => {

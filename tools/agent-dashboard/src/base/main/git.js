@@ -698,6 +698,53 @@ async function diffRange(repo, { base, ref, file, branch, fetch = false, maxByte
   };
 }
 
+// セットアップ診断（案4）: 登録された各 clone の有効性を赤/緑で返し、誤設定を沈黙させない。
+// 閲覧のみ（role:viewer）でも「clone が有効か・追跡ブランチがあるか」は要る（同期の前提）。
+// 重いリモート取得はしない（refreshRemote:false）＝表示は速く、ネットワーク断でも返る。
+// 各 clone: { root, exists, isRepo, hasUpstream, level:'ok'|'warn'|'error', summary }。
+async function diagnostics(config) {
+  const cfg = config || {};
+  const role = cfg.role === 'viewer' ? 'viewer' : 'engineer';
+  const roots = cfg.projects && Array.isArray(cfg.projects.roots) ? cfg.projects.roots : [];
+  const clones = [];
+  for (const root of roots) {
+    const r = String(root || '').trim();
+    if (!r) continue;
+    let exists = false;
+    try {
+      exists = fs.existsSync(r);
+    } catch {
+      exists = false;
+    }
+    let h = null;
+    if (exists) {
+      try {
+        h = await health(r, { refreshRemote: false });
+      } catch {
+        h = null;
+      }
+    }
+    const isRepo = !!(h && !h.notRepo);
+    const hasUpstream = !!(h && h.upstream);
+    const level = !exists ? 'error' : !isRepo ? 'warn' : !hasUpstream ? 'warn' : 'ok';
+    const summary = !exists
+      ? 'フォルダが見つかりません（⚙ 設定のワークスペースのパスを確認）'
+      : !isRepo
+      ? 'git リポジトリではありません（状態リポジトリを clone して登録してください）'
+      : !hasUpstream
+      ? '追跡ブランチが未設定です（git 同期されません）'
+      : (h && h.summary) || '正常';
+    clones.push({ root: r, exists, isRepo, hasUpstream, level, summary });
+  }
+  const worst = clones.some((c) => c.level === 'error')
+    ? 'error'
+    : clones.some((c) => c.level === 'warn')
+    ? 'warn'
+    : 'ok';
+  return { role, clones, level: worst };
+}
+
 module.exports = {
-  pull, commitPush, syncInto, syncPathsInto, health, heal, diffRange, bridgeRepoPath, RUNTIME_DIRS,
+  pull, commitPush, syncInto, syncPathsInto, health, heal, diffRange, bridgeRepoPath,
+  diagnostics, RUNTIME_DIRS,
 };

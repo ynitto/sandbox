@@ -1158,6 +1158,12 @@ function openEnqueueDialog(prefill = {}) {
   $('enq-note').value = prefill.note || '';
   $('enq-id').value = prefill.id || '';
   $('enq-after').value = Array.isArray(prefill.after) ? prefill.after.join(', ') : (prefill.after || '');
+  // 構造化フォームの入力（案5・案3）。再投入では元の値を引き継ぎ、通常は空にする。
+  const setEnq = (id, v) => { const el = $(id); if (el) el.value = v || ''; };
+  setEnq('enq-verify-template', prefill.verify_template);
+  setEnq('enq-why', prefill.why);
+  setEnq('enq-scope', prefill.scope);
+  setEnq('enq-out_of_scope', prefill.out_of_scope);
   fillCharterSelect($('enq-charter'), state.project, prefill.charter || '');
   fillWorkspaceSelect($('enq-workspace'), state.project, prefill.workspace || '');
   // level / track と誘導・レビュー記述（why 等）・ルーティング/検収系（refs/paths/review/expect/
@@ -1274,6 +1280,25 @@ async function submitEnqueue() {
     workspace: $('enq-workspace') ? $('enq-workspace').value : '',
     ...Object.fromEntries(ENQUEUE_PASSTHROUGH_KEYS.map((k) => [k, extra[k] || ''])),
   };
+  // 構造化フォーム（案5・案3）。passthrough の空値を上書きするため spread の後に読む。
+  const enqField = (id) => { const el = $(id); return el ? el.value.trim() : ''; };
+  spec.verify_template = enqField('enq-verify-template') || spec.verify_template || '';
+  spec.why = enqField('enq-why') || spec.why || '';
+  spec.scope = enqField('enq-scope') || spec.scope || '';
+  spec.out_of_scope = enqField('enq-out_of_scope') || spec.out_of_scope || '';
+  // 作成時 lint（案5・非ブロック）: 情報不足・曖昧 accept を投入前に見せ、続行するか監視者が選ぶ。
+  try {
+    const warnings = await api.lintTask(spec);
+    if (Array.isArray(warnings) && warnings.length) {
+      const body = warnings.map((w) => `・${w.message}`).join('\n');
+      const proceed = await confirmDialog(
+        `このタスクは次の点で情報が不足しています:\n\n${body}\n\nこのまま追加しますか？（あとで編集もできます）`
+      );
+      if (!proceed) return; // 追加を中断してフォームに戻る（ブロックではなく監視者の選択）
+    }
+  } catch (e) {
+    uiLog('lint skipped', String((e && e.message) || e));
+  }
   const ok = await guard('タスク追加', async () => {
     const res = await api.enqueueTask(p.dir, spec);
     uiLog('enqueue', res);

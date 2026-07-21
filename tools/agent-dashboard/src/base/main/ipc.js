@@ -65,6 +65,8 @@ function registerBaseIpcHandlers() {
     if (!dir) throw new Error('対象ディレクトリが指定されていません');
     return git.heal(dir);
   });
+  // セットアップ診断（案4）: 登録 clone の有効性・追跡ブランチを役割つきで返す。
+  handle('setup:diagnostics', () => git.diagnostics(loadConfig()));
 
   // 検収サブ画面: 作業ブランチの git 差分（複数リポジトリ対応）。
   // branch/fetch は「fetch 後に origin/<branch> を優先」する検収の鮮度更新に使う。

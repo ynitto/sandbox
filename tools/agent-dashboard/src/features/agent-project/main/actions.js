@@ -132,7 +132,7 @@ function enqueueToInbox(projectDir, spec) {
   // workspace/refs/paths はルーティング（書込先・モノレポの担当領域）の明示指定、
   // review/expect/followup は検収・偽 done 対策・派生タスクの契約。
   for (const key of ['id', 'verify', 'accept', 'verify_template', 'note', 'after', 'level', 'track',
-    'why', 'desc', 'scope', 'out_of_scope', 'constraints', 'hints', 'demo',
+    'node', 'why', 'desc', 'scope', 'out_of_scope', 'constraints', 'hints', 'demo',
     'workspace', 'refs', 'paths', 'review', 'expect', 'followup']) {
     const v = spec[key];
     if (v === undefined || v === null) continue;

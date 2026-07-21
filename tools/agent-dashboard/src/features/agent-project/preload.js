@@ -31,6 +31,7 @@ module.exports = {
   submitFeedback: (invoke) => (file, feedback, stub) =>
     invoke('dashboard:feedback', { file, feedback, stub }),
   enqueueTask: (invoke) => (dir, spec) => invoke('dashboard:enqueue', { dir, spec }),
+  lintTask: (invoke) => (spec) => invoke('dashboard:lintTask', { spec }),
   runAction: (invoke) => (args) => invoke('dashboard:action', args),
   requestReplan: (invoke) => (dir, reason, charter) => invoke('dashboard:replan', { dir, reason, charter }),
   requestLifecycle: (invoke) => (dir, action, reason) =>

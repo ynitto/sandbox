@@ -35,8 +35,27 @@
 >   落ちていた approve の `complete` フラグ(「承認して完了にする」)を修正。`actionMode` 設定と
 >   設定 UI も削除。本体起動(`startProject`)のみ CLI を残す(停止中エンジンは commands を読めない
 >   ため。既存の手動コマンド案内フォールバックあり)。テスト: dashboard 3 件追加・関連更新。
-> - 残りの案・フェーズ(verify テンプレ第一級化・停止耐性の完成・viewer/engineer 役割分離・
->   バックログ構造化ほか)は未着手。
+> - **案5「バックログ構造化+作成時 lint」実装済み**。作成フォームに構造化フィールド
+>   (verify テンプレート・why/scope/out_of_scope)を追加し、投入前に情報不足・曖昧 accept を
+>   警告する(非ブロック。`authoring.js` の `lintTaskSpec` + IPC `dashboard:lintTask`)。
+>   enqueue が `node` フィールドも通す。テスト: dashboard 4 件。
+> - **案3「verify テンプレ第一級化+検収経路の AI 撤去」実装済み**。作成フォームに verify
+>   テンプレート選択(決定的展開のカタログ)を第一級で追加。検収(review)経路から dashboard 側の
+>   WSL ヘッドレス AI(「変更理由を説明」「フォローアップ案」「AIに相談」)を撤去
+>   (`needs.js`)。accept→verify の AI 合成はエンジン側ループのまま。
+> - **案6「停止耐性」の可視化を実装済み**。エンジンがノード別 `status/<node>.json` を書き
+>   (`loop.py`)、dashboard が `readNodeStatuses` で読んで概要に実行ノード一覧(稼働/応答なし)を
+>   表示(`project.js`/`overview.js`)。停止ノードのタスク回収は既存 resume-run/revise に乗る。
+>   テスト: エンジン 2 件・dashboard 2 件。**claim 調停の push 化(二重実行の完全排除)は多 PC
+>   実機検証が要るため見送り**(要各タスクへの node 割当 or default_node 設定)。
+> - **案4「viewer/engineer 役割分離+セットアップ診断」実装済み**。`role` 設定(既定 engineer)を
+>   追加し、viewer では本体起動ボタンを隠す(`overview.js`)。設定に役割選択とセットアップ診断
+>   ボタン(登録 clone の有効性を赤/緑表示。`git.js` の `diagnostics` + IPC `setup:diagnostics`)を
+>   追加。テスト: dashboard 2 件。**役割による UI 出し分けの網羅・設定のプロジェクト側移管は
+>   段階的に拡張予定**。
+>
+> 注: dashboard の描画層(renderer)は本環境に画面が無く実行検証ができないため、フル
+> テストスイート(構文・文字列契約・分離 eval)での検証に留まる。UI の手動スモークテストを推奨。
 
 ## 前提となる運用形態
 

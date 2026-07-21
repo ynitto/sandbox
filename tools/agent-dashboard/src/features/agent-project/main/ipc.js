@@ -373,6 +373,8 @@ function registerIpc(ctx) {
   // 人のアクション（needs 回答・タスク投入・決定記録を残す CLI 操作）
   handle('dashboard:feedback', ({ file, feedback, stub }) => actions.submitFeedback(file, feedback, stub));
   handle('dashboard:enqueue', ({ dir, spec }) => actions.enqueueToInbox(dir, spec || {}));
+  // 作成時 lint（案5）: 投入前に情報不足・曖昧 accept を警告する（非ブロック。判断は監視者）。
+  handle('dashboard:lintTask', ({ spec }) => authoring.lintTaskSpec(spec || {}));
   handle('dashboard:action', (args) => actions.runAction(loadConfig(), args));
 
   // charter からのバックログ再分解を要求（エラー回復・やり直し）。プロジェクト単位（id 無し）。

@@ -204,6 +204,29 @@ const git_health_of = (dir) => git.health(dir);
     assert.ok(!after.midRebase, '巻き戻し後に残骸が残らない');
   });
 
+  await test('diagnostics: clone の有効性を役割つきで赤/緑判定する（案4）', async () => {
+    const { root, work } = scaffold();
+    const plain = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-diag-plain-'));
+    const missing = path.join(root, 'no-such-dir');
+    const res = await git.diagnostics({
+      role: 'viewer',
+      projects: { roots: [work, plain, missing] },
+    });
+    assert.strictEqual(res.role, 'viewer');
+    const byRoot = Object.fromEntries(res.clones.map((c) => [c.root, c]));
+    assert.strictEqual(byRoot[work].level, 'ok', '追跡ブランチのある clone は ok');
+    assert.strictEqual(byRoot[plain].level, 'warn', 'git でないフォルダは warn');
+    assert.strictEqual(byRoot[missing].level, 'error', '存在しないパスは error');
+    assert.strictEqual(res.level, 'error', '最悪値を全体レベルにする');
+    fs.rmSync(plain, { recursive: true, force: true });
+  });
+
+  await test('diagnostics: 既定 role は engineer', async () => {
+    const res = await git.diagnostics({ projects: { roots: [] } });
+    assert.strictEqual(res.role, 'engineer');
+    assert.strictEqual(res.level, 'ok');
+  });
+
   console.log(`\n${passed} passed`);
 })().catch((e) => {
   console.error('FAILED:', e.message);

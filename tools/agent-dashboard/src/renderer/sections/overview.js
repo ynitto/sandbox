@@ -40,6 +40,33 @@ async function submitPromoteCharter(name) {
 // （＋git push）で届き、リモート本体（WSL・別ホスト）の watch が同期間隔内に取り込む。
 // 起動だけはドロップでは届かない（停止中の本体は commands/ を読めない）ため、
 // この PC の CLI で `agent-project start` を実行する（startAgentProject）。
+// 複数 PC 分散運用のノード別生存一覧（案6）。status/<node>.json 由来の p.nodes を表示する。
+// どのノード（PC）が生きているか・応答なし（heartbeat 途絶）かを一目で見せる。ノードが
+// 無い（無名エンジン・単一 PC）ときは何も出さない＝従来の見た目を変えない。純関数。
+function nodesSummaryHtml(nodes) {
+  const list = Array.isArray(nodes) ? nodes : [];
+  if (!list.length) return '';
+  const rows = list
+    .map((n) => {
+      const alive = n.running ? 'ok' : 'stale';
+      const dot = n.running ? '🟢' : '🔴';
+      const age =
+        n.ageSec == null
+          ? ''
+          : n.running
+          ? '稼働中'
+          : `応答なし（最終確認 ${typeof humanizeAge === 'function' ? humanizeAge(n.ageSec * 1000) : `${Math.round(n.ageSec)}秒前`}）`;
+      const host = n.host ? ` <span class="muted">@${esc(n.host)}</span>` : '';
+      return `<li class="node-row node-${alive}">${dot} <b>${esc(n.node)}</b>${host} <span class="muted">${esc(age)}</span></li>`;
+    })
+    .join('');
+  return `<section class="summary-card nodes-card" aria-label="実行ノード一覧">
+    <h2 class="summary-kicker">実行ノード（PC）</h2>
+    <ul class="nodes-list">${rows}</ul>
+    <p class="muted">応答なしのノードに割り当てたタスクは、担当を付け替えるか要対応から再実行できます。</p>
+  </section>`;
+}
+
 function lifecycleCardHtml(p) {
   const live = p.liveness || {};
   const paused = !!live.paused;
@@ -291,11 +318,16 @@ function renderOverview() {
     .reverse()
     .map((cells) => `<tr>${cells.map((c) => `<td>${linkify(c)}</td>`).join('')}</tr>`)
     .join('');
+  // 役割 viewer は本体（エンジン）を動かさない＝この PC での起動ボタンは出さない（案4）。
+  // engineer 専用の起動をビュアー機で押すと、CLI 不在や WSL パスで失敗する（誤設定の元）。
+  const isViewer = state.config && state.config.role === 'viewer';
   const lifecycle = s.live.running
     ? s.live.paused
       ? '<button class="summary-link" data-lifecycle="resume">再開</button>'
       : '<button class="summary-link secondary" data-lifecycle="pause">一時停止</button>'
-    : '<button class="summary-link" data-start-kiro>自動実行を開始</button>';
+    : isViewer
+      ? '<span class="muted">停止中（この PC は閲覧専用。実行ノードで開始してください）</span>'
+      : '<button class="summary-link" data-start-kiro>自動実行を開始</button>';
 
   el.innerHTML = `
     <div class="overview-shell">
@@ -314,6 +346,7 @@ function renderOverview() {
         <div class="summary-progress-label">${s.total ? `${s.done} / ${s.total} 件完了（${s.progress}%）` : 'タスクはまだありません'}</div>
       </section>
 
+      ${nodesSummaryHtml(p.nodes)}
       <div class="overview-grid">
         <section class="summary-card action-card ${s.undecided.length ? 'has-action' : ''}" aria-labelledby="summary-action-title">
           <h2 class="summary-kicker" id="summary-action-title">あなたの対応</h2>

@@ -1250,6 +1250,32 @@ function readStatus(dir) {
   return { ...rec, ageSec, fresh: ageSec >= 0 && ageSec <= freshSec };
 }
 
+// ノード別生存信号 status/<node>.json（本体 write_status のノード別書き出しと対）。
+// 複数 PC 分散運用で「どのノード（PC）が生きているか／実行中か」を一覧するための読み取り。
+// 各ノードが別ファイルなので、同期越しでも上書き合戦にならず全ノードの状態が並ぶ。
+function readNodeStatuses(dir) {
+  const sdir = path.join(dir, 'status');
+  const out = [];
+  for (const f of safeList(sdir)) {
+    if (!f.endsWith('.json')) continue;
+    const rec = readJson(path.join(sdir, f));
+    if (!rec || typeof rec !== 'object') continue;
+    const updatedMs = Date.parse(rec.updated_iso || '');
+    const ageSec = isNaN(updatedMs) ? null : (Date.now() - updatedMs) / 1000;
+    const freshSec = Number(rec.fresh_after_sec) || 120;
+    out.push({
+      node: String(rec.node || f.replace(/\.json$/, '')),
+      host: String(rec.host || ''),
+      running: ageSec !== null && ageSec >= 0 && ageSec <= freshSec,
+      ageSec: ageSec === null ? null : Math.round(ageSec),
+      paused: !!rec.paused,
+      level: rec.level,
+      watch: rec.watch,
+    });
+  }
+  return out.sort((a, b) => String(a.node).localeCompare(String(b.node)));
+}
+
 // プロジェクトの agent-projects の稼働判定。判定根拠と経過時間も返す（UI 表示用）:
 //   'instances'   … 同一ホストの instances（heartbeat 鮮度）から確定判定（従来どおり。CLI 不要）
 //   'status-sync' … リモート本体（state_git 越し）は同期されてきた status.json の新しさで近似判定
@@ -1905,6 +1931,7 @@ function readProject(workspaceDir, cfg) {
     repos: reposFile === 'repos.json' ? readJson(path.join(dir, 'repos.json')) : null,
     autonomy,
     liveness: projectLiveness(dir),
+    nodes: readNodeStatuses(dir),   // 複数 PC 分散運用のノード別生存一覧（無ければ空）
     busDir: bus.busDir,
     hasBus: bus.hasBus,
     busSource: bus.source,
@@ -1927,6 +1954,7 @@ module.exports = {
   attachDeliveryHintsFromBacklog,
   listCommandFailures,
   listCommandReceipts,
+  readNodeStatuses,
   _splitDiff,
   _deliveryFromDetail,
   _extractMrUrls,
