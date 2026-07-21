@@ -7,6 +7,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: kiro-cli の入力プレースホルダを起動検出パターンに追加
+
+`src/features/cowork/main/loopProvider.js`。kiro-cli は入力欄に `>` ではなくゴーストテキスト
+「Ask a question or describe a task」を表示するため、「行全体が素のプロンプトだけ」という判定に
+一致せず、起動検出が発火せずコマンドが送られなかった。検出正規表現にこのプレースホルダ
+（`ask a question` / `describe a task`・大小無視）を追加する。入力受付中にだけ出るため、準備完了の
+合図として適切。
+
 ### agent-dashboard: CLIチャットの「エージェントに送る」がまったく入力されない不具合を修正（send-keys の形）
 
 `src/features/cowork/main/loopProvider.js`。送信を `tmux send-keys -t <pane> -l -- <text>` ＋別 Enter で
