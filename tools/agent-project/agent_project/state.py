@@ -178,7 +178,8 @@ _STATE_SIGNIFICANT = ("charter.md", "charters", "backlog", "needs", "decisions",
                       # 「変化なし」と読まれてコミットされず、鏡との差分が延々残る。
                       "agent-flow.yaml", "agent-project.yaml")
 # 実行の副産物。watch が回る限り数秒ごとに変わるので、まとめてコミットする（履歴を秒で埋めない）。
-_STATE_NOISE = ("journal.md", "status.json", "run-log.jsonl", "project.json",
+# status/ はノード別生存信号（status/<node>.json）。単一 status.json と同じくノイズ扱いで batch する。
+_STATE_NOISE = ("journal.md", "status.json", "status", "run-log.jsonl", "project.json",
                 "bus", "claims", "flow-archive", "commands", "inbox", "journal-archive")
 _last_state_commit: float = 0.0
 

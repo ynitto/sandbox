@@ -100,6 +100,20 @@ def status_path(cfg: "Config") -> Path:
     return cfg.backlog.parent / "status.json"
 
 
+def status_dir(cfg: "Config") -> Path:
+    """ノード毎の生存信号 status/<node>.json の置き場（複数 PC 分散運用）。"""
+    return cfg.backlog.parent / "status"
+
+
+def node_status_path(cfg: "Config") -> "Path | None":
+    """このエンジンのノード別生存信号ファイル。node 未設定（無名エンジン）なら None。"""
+    node = str(getattr(cfg, "node", "") or "").strip()
+    if not node:
+        return None
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", node).strip("-") or "node"
+    return status_dir(cfg) / f"{safe}.json"
+
+
 def pause_path(cfg: "Config") -> Path:
     return cfg.backlog.parent / "paused.json"
 
@@ -129,16 +143,29 @@ def write_status(cfg: "Config") -> None:
     rec = {
         "host": socket.gethostname(), "watch": cfg.watch, "level": cfg.level,
         "paused": is_paused(cfg),
+        # ノード名（複数 PC 分散運用）。無名エンジンは空（従来と同じ見え方）。
+        "node": str(getattr(cfg, "node", "") or "").strip(),
         "updated_iso": _now_ts(), "fresh_after_sec": _status_fresh_after_sec(cfg),
         # Windows ビュアーが同一マシンの WSL 本体を「別マシン」と誤認しないための信号
         **detect_runtime(),
     }
+    body = json.dumps(rec, ensure_ascii=False, indent=2)
     try:
-        p = status_path(cfg)
+        p = status_path(cfg)                       # 従来の単一 status.json（後方互換）
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+        p.write_text(body, encoding="utf-8")
     except OSError:
         pass
+    # ノード名があれば status/<node>.json にも書く。複数の名前付きエンジンが同じ状態リポジトリを
+    # 共有しても、各ノードが別ファイルを持つので単一 status.json の上書き合戦にならない。
+    # viewer はこのディレクトリを読んでノード一覧（生存・実行中）を出せる。
+    np = node_status_path(cfg)
+    if np is not None:
+        try:
+            np.parent.mkdir(parents=True, exist_ok=True)
+            np.write_text(body, encoding="utf-8")
+        except OSError:
+            pass
 
 
 def maybe_heartbeat_status(cfg: "Config") -> None:

@@ -2619,6 +2619,28 @@ class TestCommandsIngest(unittest.TestCase):
                 "- retries: 0\n- node: pcA\n", encoding="utf-8")
             self.assertTrue(km.has_work(c))
 
+    def test_node_status_writes_per_node_file(self):
+        # ノード名があれば status.json に加えて status/<node>.json を書く（複数 PC の生存一覧用）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            c = cfg_for(d, node="pc-A")
+            km.ensure_dirs(c)
+            km.write_status(c)
+            shared = json.loads((d / "status.json").read_text(encoding="utf-8"))
+            self.assertEqual(shared["node"], "pc-A")               # 単一 status にもノード名
+            per = json.loads((d / "status" / "pc-A.json").read_text(encoding="utf-8"))
+            self.assertEqual(per["node"], "pc-A")
+
+    def test_node_status_no_per_node_file_when_unnamed(self):
+        # 無名エンジンは従来どおり status.json のみ（status/ を作らない）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            c = cfg_for(d)  # node="" 既定
+            km.ensure_dirs(c)
+            km.write_status(c)
+            self.assertTrue((d / "status.json").exists())
+            self.assertFalse((d / "status").exists())
+
     def test_node_revise_reassigns(self):
         # 監視者が revise で実行 PC（node）を付け替えられる。
         with tempfile.TemporaryDirectory() as d:
