@@ -27,51 +27,70 @@ worktree も sparse-checkout も main へのバックアップも要らなくな
 
 ## 手順
 
-### 1. 状態を専用リポジトリへ移す
+### 1. 状態を専用リポジトリへ移す（状態だけ・ルート直下）
 
-移行スクリプトで、既存 `agent-state` ブランチの内容（履歴ごと）を専用リポジトリへ push する。
-これはコピーで、成果物側の `agent-state` ブランチや `<repo>-agent-state` フォルダは消さない。
+移行スクリプトは、**状態エントリ**（backlog / needs / decisions / charter / charters /
+project.json / journal など）だけを専用リポジトリの**ルート直下**へ 1 コミットで置く。
+成果物ファイルは混ぜない。元の状態フォルダや worktree は消さない（安定確認後に手動削除）。
+
+`--state-dir` には「`backlog/` や `project.json` がある**実際の状態フォルダ**」を渡す:
+
+- worktree 運用なら通常 `<repo>-agent-state`（sparse なら `<repo>-agent-state/.agent-project`）。
+- 本体同居なら `<repo>/.agent-project` か `<repo>` 直下。
+- 迷ったら `ls` して `backlog/` が直下にあるフォルダを指定する。
 
 ```bash
-# まず dry-run で実行内容を確認
+# まず dry-run で「何を移すか」を確認
 bash tools/agent-project/migrate-state-repo.sh \
-  --source /path/to/app \
+  --state-dir /path/to/app-agent-state \
   --state-repo https://gitea.example/you/app-state.git \
   --dry-run
 
 # 問題なければ本実行
 bash tools/agent-project/migrate-state-repo.sh \
-  --source /path/to/app \
+  --state-dir /path/to/app-agent-state \
   --state-repo https://gitea.example/you/app-state.git
 ```
 
-既定では成果物側 `agent-state` を専用リポジトリの `main` へ移す。ブランチ名を変えたいときは
-`--source-branch` / `--dest-branch` を使う。専用リポジトリに既存内容があると非 fast-forward で
-止まる（意図せぬ上書き防止）。
+既定の移行先ブランチは `main`（`--dest-branch` で変更可）。**空リポジトリの既定ブランチ**が
+`main` でないと、普通の `git clone` が空チェックアウトになる（エンジンは `--branch` 付き clone
+なので影響しない）。ローカルの bare ならスクリプトが自動で直し、リモート（Gitea/GitLab）は
+「既定ブランチを `main` に設定してください」と促す。
+
+> **なぜ「状態だけ・ルート直下」か**: 旧 `agent-state` ブランチをそのまま push すると、
+> 成果物リポジトリの全ファイルが混ざり、さらに状態が `<rel>` サブディレクトリに入って、
+> エンジン（clone のルートを状態ルートとして読む）と場所が食い違う。結果、**バージョン情報
+> などが引き継がれない**。状態エントリだけをルート直下に並べれば確実に読める。
 
 ### 2. エンジン設定を切り替える
 
-`agent-project.yaml`（成果物リポジトリ側の設定。全 PC 共有）に次を追加する:
+`agent-project.yaml`（全 PC 共有）に次を追加する:
 
 ```yaml
 state_repo: https://gitea.example/you/app-state.git   # 専用リポジトリ URL（全 PC 共有）
 state_repo_branch: main                                # --dest-branch と一致させる
 ```
 
-CLI や環境で個別に上書きもできる（PC 毎に clone 先を変えたいとき）:
+CLI/環境での個別上書きも可: `--state-repo` / `--state-repo-branch` / `--state-repo-dir`。
 
-- `--state-repo <URL>` / `--state-repo-branch <branch>`
-- `--state-repo-dir <path>`（clone 先。既定は `<成果物repo>-agent-state` の隣）
+エンジンを再起動すると、状態は専用リポジトリの通常 clone に置かれ、`backup_state`（成果物 main
+へのミラー）は自動的に無効になる。**clone 先は既定で `<repo>-state`**（例: `app` → `app-state`）。
+これは**旧 worktree `<repo>-agent-state` とは別フォルダ**で、衝突しない（同名だと旧 worktree を
+掴んで移行が効かなかった不具合を修正済み）。既存フォルダがあっても、その `origin` が `state_repo`
+と一致しなければ再利用せず worktree 方式へフォールバックし、理由を表示する（黙って旧構成を使わない）。
 
-エンジンを再起動すると、状態は専用リポジトリの通常 clone（既定 `<repo>-agent-state`）に置かれ、
-`backup_state`（成果物 main へのミラー）は自動的に無効になる。**専用リポジトリの clone に失敗した
-場合は、従来の worktree 方式へ自動フォールバックする**（状態を本体 dirty にしない）。
+### 3. 各 PC を切り替える（clone は自動・dashboard には状態 clone を登録）
 
-### 3. 各 PC を切り替える
+- **エンジンを動かす PC**: 上記の設定＋再起動だけでよい。エンジンが専用リポジトリを
+  `<repo>-state` へ**自動 clone** する（手動 clone 不要）。
+- **dashboard には `<repo>-state`（状態 clone）を登録する**。成果物リポジトリではなく、
+  この状態 clone のフォルダを開く。エンジンと dashboard が同じ PC なら、エンジンが作った
+  `<repo>-state` をそのまま登録すればよい（別途 clone しなくてよい）。
+- **閲覧のみ（viewer）の PC**: `git clone <state_repo> app-state` して dashboard に登録するだけ。
+  WSL/CLI 設定は不要（⚙ 設定の役割を viewer にすると本体起動ボタンも隠れる）。
 
-各 PC は専用リポジトリを clone し直して dashboard に登録する（成果物リポジトリの clone は
-検収 diff 用に併存してよい）。閲覧のみの PC は「専用リポジトリを clone + dashboard に登録」で
-完結する。
+> 成果物の diff（検収）は従来どおり成果物リポジトリの `origin/<branch>` を fetch して見るため、
+> 検収 diff 用に成果物リポジトリの clone を併存させてもよい（必須ではない）。
 
 ### 4. 安定を確認してから旧構成を削除（手動）
 
@@ -79,14 +98,71 @@ CLI や環境で個別に上書きもできる（PC 毎に clone 先を変えた
 以下を**人が手動で**削除する（自動削除はしない）:
 
 - 成果物リポジトリの `agent-state` ブランチ
-- `<repo>-agent-state` worktree フォルダ（`git worktree remove` → フォルダ削除）
+- 旧 `<repo>-agent-state` worktree フォルダ（`git worktree remove` → フォルダ削除）
+
+新 clone は `<repo>-state`、旧 worktree は `<repo>-agent-state` と**名前が別**なので、旧構成を
+残したまま新構成へ切り替えられる（ロールバックの保険になる）。
+
+## デーモン起動時のカレントパス（cwd）
+
+エンジンは起動時に **cwd → `cwd/.agent/` → `~/.agent/`** の順で `agent-project.yaml` を探す
+（`--config` 明示が最優先）。`state_repo:` はこの設定から読むので、**状態リポジトリを clone する
+前に読める場所**に無いといけない（状態 clone の中だけに置くと、clone する前に読めず起動できない）。
+
+したがって:
+
+- **cwd = 成果物（deliverable）リポジトリ**にして起動するのが基本。そこに最小の
+  `agent-project.yaml` を置く:
+
+  ```yaml
+  # <成果物repo>/agent-project.yaml（起動のブートストラップ。state_repo はここで読む）
+  root: .                       # cwd（成果物repo）を root に。source_root として state_top に使う
+  state_repo: https://gitea.example/you/app-state.git
+  state_repo_branch: main
+  # 他の運用設定（planner / level / gitlab 等）もここに書いてよい
+  ```
+
+  ```bash
+  cd /path/to/app            # 成果物リポジトリ
+  agent-project start        # ここを cwd に。状態は自動で app-state に clone される
+  ```
+
+- **cwd に依存させたくないデーモン**（systemd / Windows Task Scheduler / wsl-launcher 等）では、
+  cwd を当てにせず**絶対パスで明示**する:
+
+  ```bash
+  agent-project start \
+    --root /home/me/src/app \
+    --state-repo https://gitea.example/you/app-state.git \
+    --state-repo-branch main
+  # あるいは --config /home/me/src/app/agent-project.yaml を渡す
+  ```
+
+  `--state-repo` を CLI で渡せば設定ファイルの発見に一切依存しない。`--root` は成果物
+  リポジトリの絶対パス（`state_top` に使われ、検収 diff の解決に必要）。
+
+> 補足: `charter.md` / `repos.json` / `backlog/` などの状態本体は状態リポジトリ（`app-state`）側に
+> あり、clone 後にそこから読まれる。cwd の `agent-project.yaml` は「どの状態リポジトリを使うか」を
+> 伝えるブートストラップとして必要（状態 clone の中の設定は起動時には読まれない）。
+
+## よくある質問（移行でつまずいた点）
+
+- **状態専用リポジトリに成果物ファイルが全部入る** → 旧スクリプトの挙動。現行スクリプトは
+  状態エントリだけをルート直下に置くので混ざらない。移行し直すには、空の専用リポジトリに
+  対して現行スクリプトを再実行する。
+- **再起動しても専用リポジトリが使われない/バージョン情報が引き継がれない** → 旧既定の
+  clone 先 `<repo>-agent-state` が旧 worktree と同名で、旧 worktree を掴んでいた。現行は
+  `<repo>-state` に clone する。旧構成が `app-agent-state` に残っていても衝突しない。
+- **dashboard にどのフォルダを登録する？** → 状態 clone（`<repo>-state`）。成果物リポジトリ
+  ではない。
+- **手動 clone は必要？** → エンジン PC は不要（自動 clone）。閲覧専用 PC は `git clone` 1 回。
 
 ## 履歴のリセット（任意・年数回の運用）
 
 状態専用リポジトリの履歴が肥大したら、現在のツリーだけを残して履歴を積み直す:
 
 ```bash
-cd app-agent-state
+cd app-state
 git checkout --orphan fresh
 git add -A && git commit -m "状態履歴リセット（現時点のスナップショット）"
 git branch -D main && git branch -m main

@@ -120,16 +120,40 @@ def _redirect_root_to_state_worktree(root: Path, wt_dir: str,
     return dst, top
 
 
+def _same_git_remote(a: str, b: str) -> bool:
+    """2 つの git リモート指定（URL/パス）が同じリポジトリを指すか（末尾 .git・スラッシュ・
+    ローカルパスの絶対化を吸収して比較）。移行が効いているかの確認に使う。"""
+    def norm(u: str) -> str:
+        s = str(u or "").strip().rstrip("/")
+        if s.endswith(".git"):
+            s = s[:-4]
+        if "://" not in s and "@" not in s:            # ローカルパスらしい → 絶対化
+            try:
+                return str(Path(s).expanduser().resolve())
+            except (OSError, RuntimeError):
+                return s
+        return s
+    return bool(a) and bool(b) and norm(a) == norm(b)
+
+
 def _ensure_state_repo_clone(state_repo: str, dst: Path, branch: str) -> bool:
     """状態専用リポジトリ（案1）を dst へ通常 clone する（worktree ではない普通のクローン）。
 
-    既に clone 済み（dst/.git あり）なら何もしない（以降は DirectStateGit が pull/push で追従）。
-    branch がリモートに在れば単一ブランチで取り、無ければ普通に clone してそのブランチを用意する
-    （移行スクリプトが先に push している前提だが、空リポジトリでも壊れないようにする）。
-    失敗したら False を返し、呼び出し側は従来の worktree 方式へフォールバックする（黙って本体を
-    dirty にしない）。"""
+    既存 dst が **本当に state_repo の clone か** を origin で確認してから再利用する。旧 worktree
+    （<repo>-agent-state）や別リポジトリの clone を誤って再利用すると、状態がそちらへ書かれ移行が
+    まったく効かない（実際に「再起動しても状態専用リポジトリが使われない」で踏んだ落とし穴）。
+    origin が食い違えば worktree 方式へフォールバックし、理由を明示する（黙って旧構成を使わない）。
+    branch がリモートに在れば単一ブランチで取り、無ければ普通に clone してそのブランチを用意する。
+    失敗したら False を返し、呼び出し側は従来の worktree 方式へフォールバックする。"""
     if (dst / ".git").exists():
-        return True
+        origin = _git_line(dst, "remote", "get-url", "origin") or ""
+        if _same_git_remote(origin, state_repo):
+            return True                                 # 正しい state_repo の clone → 再利用
+        print(f"[agent-project] {dst} は state_repo（{state_repo}）の clone ではありません"
+              f"（origin={origin or '不明'}）。旧 worktree 等と衝突している可能性があります。"
+              f" state_repo_dir で別パスを指定するか、その dst を退避してください。"
+              f" 今回は worktree 方式にフォールバックします。", file=sys.stderr)
+        return False
 
     def _run(*args) -> "subprocess.CompletedProcess | None":
         try:
@@ -164,8 +188,10 @@ def _redirect_root_to_state_repo(source_root: Path, state_repo: str, repo_dir: s
     clone に失敗したら (source_root, None) を返し、呼び出し側は従来の worktree 方式へ倒す。"""
     deliverable_top = _git_toplevel_of(source_root if source_root.is_dir() else source_root.parent)
     base = deliverable_top or source_root
+    # 既定の clone 先は <repo>-state。旧 worktree（<repo>-agent-state）と **別名** にして衝突を避ける
+    # （同名だと _ensure_state_repo_clone が旧 worktree を掴んで移行が効かない）。dir 明示も可。
     dst = (Path(repo_dir).expanduser().resolve() if repo_dir
-           else (base.parent / f"{base.name}-agent-state"))
+           else (base.parent / f"{base.name}-state"))
     if not _ensure_state_repo_clone(state_repo, dst, branch):
         return source_root, None
     return dst.resolve(), deliverable_top

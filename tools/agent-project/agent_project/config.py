@@ -49,10 +49,10 @@ class Config:
     # 状態専用リポジトリ（案1: 状態と成果物の分離）。設定すると状態（.agent-project 一式）を
     # 成果物リポジトリの worktree ではなく、専用リポジトリの通常 clone に置く。worktree の
     # 二重実装・sparse-checkout・本体 main へのバックアップ（ドリフト源）を回避する。
-    # URL は全 PC 共有（共有 yaml 可）。clone 先 dir は既定 <repo>-agent-state（PC 毎に上書き可）。
+    # URL は全 PC 共有（共有 yaml 可）。clone 先 dir は既定 <repo>-state（旧 worktree <repo>-agent-state と別名。PC 毎に上書き可）。
     # 空なら従来どおり worktree 方式（後方互換）。clone 失敗時も worktree 方式へ自動フォールバック。
     state_repo: str = ""
-    state_repo_dir: str = ""            # ローカル clone 先（空＝<成果物repo>-agent-state の隣）
+    state_repo_dir: str = ""            # ローカル clone 先（空＝<成果物repo>-state の隣。旧 worktree と別名）
     state_repo_branch: str = "main"    # 専用リポジトリ内で状態を載せるブランチ
     # 状態 worktree（build_config が root を差し替える。下の _redirect_root_to_state_worktree 参照）
     state_worktree_dir: str = ""
