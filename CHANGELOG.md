@@ -7,6 +7,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: CLIチャットの「エージェントに送る」が送られなくなる不具合を修正（プロンプト検出）
+
+`src/features/cowork/main/loopProvider.js`。プロンプト検出を「画面末尾（非空）3 行」に絞ったところ、
+kiro-cli のように**入力欄の下にステータス行/ヒントを出す** CLI では素のプロンプト（`>`）が末尾 3 行から
+外れて一致せず、開始コマンドが送られなくなっていた。検出を**画面全体**の走査へ戻す（判定は従来どおり
+「行全体が素のプロンプトだけ」で、起動バナー本文には出にくい形）。送信の打鍵化（send-keys）・前面即
+アタッチ＋バックグラウンド送信はそのまま。
+
 ### agent-dashboard: kiro-cli の CLIチャットで「エージェントに送る」が文字化け・起動待ちで固まる不具合を修正
 
 `src/features/cowork/main/loopProvider.js`。kiro-cli 等スラッシュ補完メニューを持つ CLI 向けに、
