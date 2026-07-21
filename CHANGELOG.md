@@ -7,6 +7,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: CLIチャットのセッション開始コマンド（「エージェントに送る」）が効かない不具合を修正
+
+`src/features/cowork/main/loopProvider.js`。
+
+- **「エージェントに送る」（chat モードのセッション開始コマンド）が CLIチャットで効かない不具合を修正**。
+  従来は chat モードの開始コマンドを **tmux セッションを新規作成したときだけ**（`__new`）送っていた。
+  CLIチャットのウィンドウは離脱（Ctrl+b d）してもセッションが常駐するため、初回オープン以降・および
+  「セッションを作った後に開始コマンドを設定した」ケースでは一度も送られなかった。手動オープン
+  （業務プロンプト無し）の経路では、既存セッションへ再接続したときも毎回送るように変更した。
+  業務プロンプトを送る定常ループの経路は従来どおり新規セッション時だけに限定し、周期送信での
+  前準備の二重実行を避ける。
+- **process モードのセッション開始コマンドを bash で実行**するよう変更。従来は `sh -c`（dash）で
+  走らせていたため、`source .venv/bin/activate` や `[[ … ]]` などの bash 構文が
+  `sh: source: not found` 等で失敗していた。
+
 ### agent-dashboard: 定常業務タブの常時表示と Windows CLI チャットのログインシェル修正
 
 - **定常業務タブを常に表示**（`src/renderer/renderer.js` の `updateCoworkTabVisibility`）。
