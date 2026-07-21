@@ -7,6 +7,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: 状態フォルダ（<project>-agent-state）が無ければ開いたときに自動作成する
+
+`src/features/agent-project/main/project.js`。プロジェクトを開いたとき、状態 worktree
+（`<repo>-agent-state`）が無く、かつ `agent-state` ブランチが存在すれば、`git worktree add` で
+自動作成するようにした（agent-project の `_ensure_state_worktree` と同型：`--no-checkout` →
+状態ディレクトリだけ sparse checkout → checkout）。
+
+- ブランチはローカル `refs/heads/agent-state` か remote-tracking `refs/remotes/origin/agent-state` を
+  使う。どちらも無ければ作らない（クローン元が無い＝本体未セットアップ）。**fetch はしない**
+  （readProject から同期的に呼ぶため UI をネットワーク待ちで固まらせない。通常の clone は
+  `origin/agent-state` の remote-tracking ref を持つのでこれで足りる）。
+- 既存・非 git・ブランチ未存在はすべて no-op。作成失敗・再試行はセッション内で 1 回に抑制。
+
 ### agent-dashboard / kiro-loop / agent-loop: 実行状況ダイアログの送信が `[[: not found` / `python: No such file or directory` で失敗する不具合を修正
 
 - **agent-dashboard**: `src/features/kiro-loop/main/exec.js` の `shInWsl` を `sh -lc`（dash）から

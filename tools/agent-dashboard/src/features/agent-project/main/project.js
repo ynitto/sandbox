@@ -1330,12 +1330,18 @@ function resolveProjectRoot(workspaceDir) {
   const raw = fromWorkspace && cfg.values ? cfg.values.root : null;
   const branch =
     (fromWorkspace && cfg.values && cfg.values.state_branch) || DEFAULT_STATE_BRANCH;
+  // 状態 worktree（<repo>-<branch>）が無ければ agent-state ブランチから作ってから解決する
+  // （プロジェクトを開いたときに自動作成する。既存・非 git・ブランチ未存在はすべて no-op）。
+  const resolve = (r) => {
+    try { ensureStateWorktree(r, branch); } catch { /* 作成失敗で読込は止めない */ }
+    return toStateWorktree(r, branch);
+  };
   if (!raw) {
     // 設定を開発フォルダに置かず、状態だけを <workspace>/.agent-project に置く従来構成。
     // 開発フォルダを登録した場合も、稼働レコードが指す状態フォルダと同じ実体へ解決する。
     const nestedState = path.join(ws, '.agent-project');
-    if (hasProjectStateMarkers(nestedState)) return toStateWorktree(nestedState, branch);
-    return toStateWorktree(ws, branch);
+    if (hasProjectStateMarkers(nestedState)) return resolve(nestedState);
+    return resolve(ws);
   }
   const r = String(raw).replace(/^~(?=$|\/|\\)/, os.homedir());
   // yaml に Linux 絶対パス（/home/...）が書いてあると、win32 の path.resolve は
@@ -1348,7 +1354,7 @@ function resolveProjectRoot(workspaceDir) {
   } else {
     root = path.resolve(ws, r);
   }
-  return toStateWorktree(root, branch);
+  return resolve(root);
 }
 
 const DEFAULT_STATE_BRANCH = 'agent-state';
@@ -1465,6 +1471,56 @@ function toStateWorktree(root, branch) {
   const candidate = _stateWorktreePath(root, gp.prefix, branch);
   if (!candidate) return root;                        // 既に状態 worktree の中にいる
   return isProjectDir(candidate) ? candidate : root;  // 未作成なら本体のまま（従来動作）
+}
+
+// 同一 worktree への作成再試行を 1 セッション 1 回に抑える（ブランチ未存在・作成失敗時に
+// ポーリングのたびに git を叩かないため）。
+const _stateWorktreeAttempts = new Set();
+
+// 状態 worktree（<repo>-<branch>）が未作成なら、agent-state ブランチから git worktree add で作る。
+// agent-project の _ensure_state_worktree と同型: --no-checkout で骨だけ作り、状態ディレクトリだけを
+// sparse checkout してから中身を出す（リポジトリ全体を複製しない）。
+//   ・ブランチはローカル refs/heads/<branch> か remote-tracking refs/remotes/origin/<branch> を使う。
+//     どちらも無ければ作らない（本体が未セットアップ＝クローン元が無い）。fetch はしない
+//     （UI（readProject）から同期的に呼ぶため、ネットワーク待ちで固まらせない。通常の clone は
+//      origin/<branch> の remote-tracking ref を持つので、これだけで足りる）。
+//   ・失敗・非 git・既存はすべて no-op。戻り値は情報用（created/reason）。
+function ensureStateWorktree(root, branch = DEFAULT_STATE_BRANCH) {
+  const gp = gitShowPrefix(root);
+  if (!gp.ok) return { ok: false, created: false, reason: 'non-git' };
+  const stateDir = _stateWorktreePath(root, gp.prefix, branch);
+  if (!stateDir) return { ok: true, created: false, reason: 'already-state' };
+  const worktreeTop = _repoTopPath(stateDir, gp.prefix);
+  if (!worktreeTop) return { ok: false, created: false, reason: 'no-path' };
+  if (fs.existsSync(path.join(worktreeTop, '.git'))) {
+    return { ok: true, created: false, reason: 'exists', path: worktreeTop };
+  }
+  const key = _pathKey(worktreeTop);
+  if (_stateWorktreeAttempts.has(key)) return { ok: false, created: false, reason: 'attempted', path: worktreeTop };
+  _stateWorktreeAttempts.add(key);
+  const top = _repoTopPath(root, gp.prefix);
+  const rel = String(gp.prefix || '').replace(/\/+$/, '');
+  const git = (cwd, args, timeout = 60000) =>
+    require('child_process').spawnSync('git', ['-C', cwd, ...args],
+      { encoding: 'utf8', timeout, windowsHide: true });
+  const hasLocal = git(top, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).status === 0;
+  const hasRemote = !hasLocal
+    && git(top, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`]).status === 0;
+  if (!hasLocal && !hasRemote) return { ok: false, created: false, reason: 'no-branch', path: worktreeTop };
+  const addArgs = hasLocal
+    ? ['worktree', 'add', '--no-checkout', worktreeTop, branch]
+    : ['worktree', 'add', '--no-checkout', '--track', '-b', branch, worktreeTop, `origin/${branch}`];
+  const add = git(top, addArgs, 60000);
+  if (add.status !== 0) {
+    const err = String((add.stderr || '') || (add.error && add.error.message) || '').trim().slice(0, 200);
+    return { ok: false, created: false, reason: 'worktree-add-failed', error: err, path: worktreeTop };
+  }
+  if (rel) {
+    git(worktreeTop, ['sparse-checkout', 'init', '--cone'], 30000);
+    git(worktreeTop, ['sparse-checkout', 'set', rel], 30000);
+  }
+  git(worktreeTop, ['checkout'], 120000);
+  return { ok: true, created: true, path: worktreeTop };
 }
 
 function hasProjectStateMarkers(dir) {
@@ -1854,6 +1910,7 @@ module.exports = {
   readProject,
   resolveProjectRoot,
   fromStateWorktree,
+  ensureStateWorktree,
   resolveBusDir,
   _stateWorktreePath,
   _sourceRootPath,
