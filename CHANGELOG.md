@@ -7,6 +7,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: 定常業務タブの常時表示と Windows CLI チャットのログインシェル修正
+
+- **定常業務タブを常に表示**（`src/renderer/renderer.js` の `updateCoworkTabVisibility`）。
+  従来は「発見済み or 手動登録の作業が無いプロジェクトではタブごと隠す」挙動だったが、
+  作業が未登録でも空状態（`renderCowork` の「このプロジェクトに登録された定常業務はありません」）
+  から追加へ導けるよう、定常業務タブ・ペインは常時表示にした。現在のタブが隠れたときの退避先も
+  既定タブが無ければ常時表示の定常業務へ倒す。agent-project 系タブの出し分けは従来どおり。
+- **Windows から CLI チャットを開くと `sh: N: [[: not found` /
+  `No virtual environment found in .venv or ~/.venv` で起動できない不具合を修正**
+  （`src/features/cowork/main/loopProvider.js` の `windowStartCommand`）。
+  別ウィンドウの WSL 実行を `wsl.exe -e sh -lc …`（sh=dash）で起動していたため、
+  利用者の `~/.bashrc` / profile にある bash 構文 `[[ … ]]` が dash で解釈できずエラーになり、
+  そこで止まって venv 有効化も走らず、エージェント CLI が起動できないまま長時間待たされていた。
+  ログインシェルを **bash**（`wsl.exe -e bash -lc …`）に変更し、bash 構文と venv 自動有効化が
+  正しく走るようにした。
+
 ### schemas / agent-dashboard: ノード予算 v2（トークン一次）とオーケストレーション契約の正典化
 
 予算の一次単位を実行時間（分）からトークンへ刷新し、稼働中エンジンへの横断操作
