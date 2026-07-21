@@ -145,6 +145,18 @@ CLI/環境での個別上書きも可: `--state-repo` / `--state-repo-branch` / 
 > あり、clone 後にそこから読まれる。cwd の `agent-project.yaml` は「どの状態リポジトリを使うか」を
 > 伝えるブートストラップとして必要（状態 clone の中の設定は起動時には読まれない）。
 
+### `agent-project.yaml` は両方に置くのか？ → いいえ
+
+エンジンが実際に読む `agent-project.yaml` は **cwd（成果物リポジトリ or `~/.agent`）の 1 つだけ**。
+これを正として編集する。状態リポジトリ側に同名ファイルを置いても**起動時には読まれない**
+（設定は状態 clone より前に読むため）。したがって:
+
+- 設定は cwd 側（成果物repo の `agent-project.yaml`、または `~/.agent/agent-project.yaml`）に置く。
+- 移行スクリプトは `agent-project.yaml` / `agent-flow.yaml` を状態リポジトリへ**コピーしない**
+  （混乱を避けるため）。`state_repo:` を含むこのブートストラップ設定は、移行時に人が cwd 側へ
+  用意する（旧設定に `state_repo:` を足すだけ）。
+- `agent-flow.yaml`（agent-flow デーモンの設定）も同様に cwd 側／`--config` で渡す。
+
 ## よくある質問（移行でつまずいた点）
 
 - **状態専用リポジトリに成果物ファイルが全部入る** → 旧スクリプトの挙動。現行スクリプトは

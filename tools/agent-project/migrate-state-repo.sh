@@ -34,10 +34,12 @@ warn()  { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
 error() { echo -e "${RED}[ERROR]${RESET} $*" >&2; }
 
 # 状態エントリ（_STATE_SIGNIFICANT + _STATE_NOISE と対応。これだけを専用リポジトリへ移す）。
+# agent-project.yaml / agent-flow.yaml は **含めない**: これらは起動のブートストラップ設定で、
+# エンジンは状態リポジトリを clone する前に cwd（成果物repo or ~/.agent）から読む。状態リポジトリ側に
+# 置いても起動時には読まれず、「どちらを編集するのか」の混乱を生むだけ。設定は cwd 側を正とする。
 STATE_ENTRIES=(
   charter.md charters backlog needs decisions repos.json policy.md rules.md
   archive DELIVERY.md specs cohorts autonomy project.json
-  agent-flow.yaml agent-project.yaml
   journal.md status.json status run-log.jsonl
   # bus/ は viewer が実行中 run を見るために同期対象。inbox/commands は入力口。
   bus inbox commands
