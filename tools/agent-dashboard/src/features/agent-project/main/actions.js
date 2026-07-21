@@ -404,122 +404,46 @@ function runProjectCli(command, args, timeoutMs = 60000, cwd) {
   });
 }
 
-// CLI 実行（approve / hold / reprioritize / revise / resume-run）。本体が稼働していないときの経路
-async function runActionViaCli(cfg, { dir, action, id, reason, fields, feedback, run, complete }) {
-  const command = (cfg.projects && cfg.projects.command) || 'agent-project';
-  // ファイル操作は状態ルート（dir）。CLI --root は本体側（二重リダイレクト防止）。
-  const root = project.fromStateWorktree(path.resolve(dir));
-  const base = ['--root', root];
-  const cfgPath = findProjectConfig(root, dir);
-  if (cfgPath) base.push('--config', cfgPath);
-  let args;
-  if (action === 'approve') {
-    args = ['approve', id, '--reason', reason, ...(complete ? ['--complete'] : []), ...base];
-  }
-  else if (action === 'reject') args = ['reject', id, '--reason', reason, ...base];
-  else if (action === 'hold') args = ['hold', id, '--reason', reason, ...base];
-  else if (action === 'pin') args = ['reprioritize', id, '--pin', '--reason', reason, ...base];
-  else if (action === 'resume-run') args = ['resume-run', id, '--run', String(run), '--reason', reason, ...base];
-  else if (action === 'revise') {
-    const payload = revisePayload({ fields, feedback });
-    args = ['revise', id, '--reason', reason];
-    for (const [key, value] of Object.entries(payload)) args.push(`--${key}`, value);
-    args.push(...base);
-  } else args = ['reprioritize', id, '--defer', '--reason', reason, ...base];
-  const cwd = cfgPath ? path.dirname(cfgPath) : root;
-  return runProjectCli(command, args, 60000, cwd);
-}
-
 // action: approve | hold | pin | defer | revise
 //   revise は fields（title/priority/verify/accept/after/note/level/track の置換）と
 //   feedback（次の act に必ず届く指示）を追加で受ける。実行中（doing）のタスクは
 //   本体側が現在の試行を確定せず修正内容で積み直す（早い軌道修正）。
-// 経路は project.actionMode で制御する:
-//   auto（既定）… 本体が稼働中（instances の heartbeat）なら commands/ ドロップ、
-//                 稼働していなければ CLI、CLI も使えなければドロップにフォールバック
-//   file        … 常に commands/ ドロップ（WSL 内の本体・CLI 無し環境向け）
-//   cli         … 常に CLI（従来の挙動）
+// 経路は commands/ ドロップの一本（案2後半）。以前は actionMode(auto/file/cli) で CLI 直接実行と
+// サイレントフォールバックに分岐していたが、CLI パス誤り時に「押しても何も起きない」原因不明の
+// 停滞を生んでいた。稼働中の本体（同一 PC の WSL・別ホスト問わず）が git 同期越しに ingest し、
+// 受理レシート（commands/processed/）でカードに「受理済み」を返す。停止中は取り込み待ちのまま
+// 残り、送信済み表示で「エンジン待ち」が見える（サイレントに失敗しない）。
 async function runAction(cfg, { dir, action, id, reason, fields, feedback, run, complete }) {
   if (!COMMAND_ACTIONS.has(action)) throw new Error(`不明なアクション: ${action}`);
   const why = String(reason || '').trim() || 'agent-dashboard から操作';
-  const mode = (cfg.projects && cfg.projects.actionMode) || 'auto';
   if (action === 'revise' && Object.keys(revisePayload({ fields, feedback })).length === 0) {
     throw new Error('revise には変更フィールドかフィードバックの指定が必要です');
   }
   if (action === 'resume-run' && !String(run || '').trim()) {
     throw new Error('resume-run には再開する run-id の指定が必要です');
   }
-
-  // Windows ビュアーが WSL UNC パスを開いているときは、Windows 側の agent-project CLI は
-  // WSL 内の本体と別世界なので、auto でもファイルドロップを優先する。
-  const wslUnc = process.platform === 'win32' && /^\\\\wsl(?:\$|\.localhost)\\/i.test(String(dir || ''));
-  if (mode === 'file' || wslUnc || (mode !== 'cli' && project.isProjectRunning(dir))) {
-    const { file } = dropCommand(dir, { action, id, reason: why, fields, feedback, run });
-    return {
-      output: `${action} ${id}: 指示ファイルを投入しました（稼働中の agent-project が取り込みます）`,
-      file,
-      via: 'file',
-    };
-  }
-  try {
-    const res = await runActionViaCli(cfg, { dir, action, id, reason: why, fields, feedback, run });
-    return { ...res, via: 'cli' };
-  } catch (err) {
-    if (mode === 'cli') throw err;
-    // CLI が無い/失敗 → ファイルドロップに退避（次回の agent-project 起動時に取り込まれる）
-    const { file } = dropCommand(dir, { action, id, reason: why, fields, feedback, run });
-    return {
-      output:
-        `${action} ${id}: CLI を実行できないため指示ファイルを置きました` +
-        `（次回の agent-project 起動時に取り込まれます）`,
-      file,
-      via: 'file-fallback',
-      cliError: err.message,
-    };
-  }
+  const { file } = dropCommand(dir, { action, id, reason: why, fields, feedback, run, complete });
+  return {
+    output: `${action} ${id}: 指示ファイルを投入しました（稼働中の agent-project が取り込み、受理後にカードへ反映されます）`,
+    file,
+    via: 'file',
+  };
 }
 
 // charter からのバックログ再分解を要求する（エラー回復用の一発の口。プロジェクト単位＝id 無し）。
 // 本体は次パスで charter を分解し直す。冪等照合は「done 以外」（処理中＋却下済み）と行う＝
 // 処理中タスクの二重投入や却下済みの復活はせず、done と類似のタスクだけやり直しとして再作成される。
-// 経路は runAction と同じ auto/file/cli 契約。file は commands/replan ドロップ、cli は
-// `agent-project replan --reason ...`。稼働中はドロップ・停止中は CLI・CLI 不可はドロップ退避。
+// 経路は runAction と同じく commands/replan ドロップの一本（案2後半）。稼働中の本体が次パスで
+// 取り込み、受理レシートでカードへ反映する。停止中は取り込み待ちのまま残る（サイレント失敗しない）。
 async function requestReplan(cfg, { dir, reason, charter }) {
   const why = String(reason || '').trim() || 'agent-dashboard から再分解を要求';
   const charterName = validateCharterVersion(dir, charter);
-  const mode = (cfg.projects && cfg.projects.actionMode) || 'auto';
-
-  const wslUnc = process.platform === 'win32' && /^\\\\wsl(?:\$|\.localhost)\\/i.test(String(dir || ''));
-  if (mode === 'file' || wslUnc || (mode !== 'cli' && project.isProjectRunning(dir))) {
-    const { file } = dropCommand(dir, { action: 'replan', reason: why, charter: charterName });
-    return {
-      output: 'charter からの再分解を要求しました（稼働中の agent-project が次パスで取り込みます）',
-      file,
-      via: 'file',
-    };
-  }
-  try {
-    const command = (cfg.projects && cfg.projects.command) || 'agent-project';
-    const root = project.fromStateWorktree(path.resolve(dir));
-    const args = ['replan', '--reason', why, '--root', root];
-    if (charterName) args.push('--charter', charterName);
-    const cfgPath = findProjectConfig(root, dir);
-    if (cfgPath) args.push('--config', cfgPath);
-    const cwd = cfgPath ? path.dirname(cfgPath) : root;
-    const res = await runProjectCli(command, args, 60000, cwd);
-    return { ...res, via: 'cli' };
-  } catch (err) {
-    if (mode === 'cli') throw err;
-    const { file } = dropCommand(dir, { action: 'replan', reason: why, charter: charterName });
-    return {
-      output:
-        'CLI を実行できないため再分解の要求ファイルを置きました' +
-        '（次回の agent-project 起動時に取り込まれます）',
-      file,
-      via: 'file-fallback',
-      cliError: err.message,
-    };
-  }
+  const { file } = dropCommand(dir, { action: 'replan', reason: why, charter: charterName });
+  return {
+    output: 'charter からの再分解を要求しました（稼働中の agent-project が次パスで取り込みます）',
+    file,
+    via: 'file',
+  };
 }
 
 // プロジェクト単位のライフサイクル操作（pause / resume / stop）。

@@ -27,8 +27,16 @@
 >   移行スクリプト `migrate-state-repo.sh` と手順書 `docs/guides/state-repo-migration.md` あり。
 >   テスト: エンジン 4 件(`TestStateRepoSeparation`)。**worktree コードの削除・既存プロジェクト
 >   への本適用は実機(多 PC/Gitea)確認まで保留**(方針: コード+手順を用意し適用は保留)。
-> - 残りの案・フェーズ(操作経路 file-drop 一本化+CLI 削除ほか)は未着手。
->   CLI 削除は完全撤去の方針(後続フェーズ)。
+> - **Phase 1「操作経路の file-drop 一本化+CLI 完全削除(案 2 後半)」実装済み**。
+>   dashboard の `runAction`/`requestReplan` から `actionMode`(auto/file/cli)分岐・CLI 直接実行
+>   (`runActionViaCli`)・サイレントフォールバックを撤去し、commands ドロップ一本にした
+>   (`actions.js`)。稼働中の本体が同期越しに取り込み、受理レシート(ack)でカードへ反映。停止中は
+>   取り込み待ちで残り「押しても何も起きない」原因不明の停滞を排除。併せて file-drop 経路で
+>   落ちていた approve の `complete` フラグ(「承認して完了にする」)を修正。`actionMode` 設定と
+>   設定 UI も削除。本体起動(`startProject`)のみ CLI を残す(停止中エンジンは commands を読めない
+>   ため。既存の手動コマンド案内フォールバックあり)。テスト: dashboard 3 件追加・関連更新。
+> - 残りの案・フェーズ(verify テンプレ第一級化・停止耐性の完成・viewer/engineer 役割分離・
+>   バックログ構造化ほか)は未着手。
 
 ## 前提となる運用形態
 

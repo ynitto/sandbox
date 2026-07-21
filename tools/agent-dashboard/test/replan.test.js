@@ -2,7 +2,7 @@
 
 // バックログ再分解（エラー回復）のビュアー層テスト。追加依存なしで
 // `node test/replan.test.js` で走る。
-//   - actions.requestReplan: file / cli / fallback の 3 経路と commands ドロップの形
+//   - actions.requestReplan: commands ドロップ一本（案2後半で CLI/フォールバック経路を撤去）
 //   - project.replanRequestPending: commands ドロップ・.replan.request マーカーの検知
 
 const assert = require('assert');
@@ -153,32 +153,19 @@ function readDropped(dir) {
     }
   });
 
-  await test('requestReplan(auto・稼働中) は commands にドロップする', async () => {
+  await test('requestReplan は稼働状態に依らず commands にドロップする（CLI 経路なし）', async () => {
+    // 案2後半: 稼働中/停止中/CLI 有無で分岐せず、常に commands ドロップ一本。
+    // CLI 実行・file-fallback・cliError は撤去（「押しても何も起きない」原因不明の停滞の元）。
     const { root, dir } = mkProject();
     const orig = project.isProjectRunning;
-    project.isProjectRunning = () => true; // 稼働中扱い → file-drop 経路
-    try {
-      const res = await actions.requestReplan({ projects: { actionMode: 'auto' } }, { dir });
-      assert.strictEqual(res.via, 'file');
-      const { rec } = readDropped(dir);
-      assert.strictEqual(rec.command, 'replan');
-    } finally {
-      project.isProjectRunning = orig;
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  await test('requestReplan(auto・停止中・CLI 不可) は要求ファイルへ退避する', async () => {
-    const { root, dir } = mkProject();
-    const orig = project.isProjectRunning;
-    project.isProjectRunning = () => false; // 停止中 → CLI を試み、失敗したらドロップ退避
+    project.isProjectRunning = () => false; // 停止中でも CLI へ行かずドロップ
     try {
       const res = await actions.requestReplan(
-        { projects: { actionMode: 'auto', command: 'definitely-not-a-real-kiro-binary-xyz' } },
+        { projects: { command: 'definitely-not-a-real-kiro-binary-xyz' } },
         { dir }
       );
-      assert.strictEqual(res.via, 'file-fallback', 'CLI 失敗でドロップ退避');
-      assert.ok(res.cliError, 'CLI エラーを添える');
+      assert.strictEqual(res.via, 'file', '常に file 経路');
+      assert.ok(!('cliError' in res), 'CLI エラー概念は無い');
       const { rec } = readDropped(dir);
       assert.strictEqual(rec.command, 'replan');
     } finally {

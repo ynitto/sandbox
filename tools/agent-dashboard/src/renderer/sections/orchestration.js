@@ -773,12 +773,7 @@ function globalSettingsSyncHtml() {
       <div class="field"><label for="cfg-git-pull">共有先を確認する間隔（秒・0で自動確認なし）</label><input id="cfg-git-pull" type="number" min="0" step="1" /></div>
       <div class="field"><label class="check"><input type="checkbox" id="cfg-git-autopush" /> 操作した変更を自動で共有する</label></div>
     </div>
-    <div class="row2">
-      <div class="field"><label for="cfg-action-mode">承認や優先度変更の届け方</label><select id="cfg-action-mode">
-        <option value="auto">自動</option><option value="file">共有ファイルを使用</option><option value="cli">実行コマンドを使用</option>
-      </select></div>
-      <div class="field"><label for="cfg-project-command">プロジェクト操作コマンド</label><input id="cfg-project-command" class="mono" placeholder="agent-project" /></div>
-    </div>
+    <div class="field"><label for="cfg-project-command">プロジェクト操作コマンド（本体の起動に使用）</label><input id="cfg-project-command" class="mono" placeholder="agent-project" /></div>
     <h3>実行データの共有先</h3>
     <div class="row2">
       <div class="field"><label for="cfg-flow-bus">共通の共有先</label><input id="cfg-flow-bus" class="mono" placeholder="空欄なら自動で探します" /></div>
