@@ -315,7 +315,8 @@ function sessionProcessLines(entries) {
   return (entries || []).filter((e) => e.mode === 'process' && !e.skip).map((e) => {
     const body = e.cwd ? `cd ${shellQuote(e.cwd)} && ${e.run}` : e.run;
     const seconds = Number(e.timeout) || 60;
-    const run = `{ if command -v timeout >/dev/null 2>&1; then timeout ${seconds} sh -c ${shellQuote(body)}; else sh -c ${shellQuote(body)}; fi; }`;
+    // bash で走らせる（sh=dash だと `source` や `[[ … ]]` 等の bash 構文が not found になる）。
+    const run = `{ if command -v timeout >/dev/null 2>&1; then timeout ${seconds} bash -c ${shellQuote(body)}; else bash -c ${shellQuote(body)}; fi; }`;
     const onFail = e.on_error === 'fail'
       ? `{ echo "[agent-dashboard] セッション開始コマンド ${e.id} が失敗したため起動しません"; read _; exit 1; }`
       : `echo "[agent-dashboard] セッション開始コマンド ${e.id} が失敗しました（続行します）"`;
@@ -377,7 +378,14 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands }
         `sleep 1; __i=$((__i+1)); ` +
         `done; ` +
         `if [ $__ok -eq 1 ]; then ` +
-        (chatLines ? `if [ $__new -eq 1 ]; then ${chatLines}fi; ` : '') +
+        // 「エージェントに送る」開始コマンドの送信タイミング:
+        //   ・業務プロンプトを送る定常ループ … 前準備の二重送信を避け、新規セッション時だけ送る。
+        //   ・CLIチャットの手動オープン（業務プロンプト無し）… 開くたびに毎回送る。既存セッションへ
+        //     再接続したときも設定した「エージェントに送る」を適用する（新規時しか送らないと、
+        //     セッションが常駐する CLIチャットでは初回以降・設定変更後に一度も効かない）。
+        (chatLines
+          ? (sendPrompt ? `if [ $__new -eq 1 ]; then ${chatLines}fi; ` : chatLines)
+          : '') +
         (sendPrompt
           // 複数行プロンプトを崩さず送るため send-keys ではなく paste-buffer を使う
           ? `tmux set-buffer -b agentdash -- ${shellQuote(prompt)}; ` +
