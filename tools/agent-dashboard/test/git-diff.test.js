@@ -21,6 +21,7 @@ const git = require('../src/main/git');
     fs.writeFileSync(path.join(repo, '.agent-project', 'state.json'), '{"run": 1}\n');
     execFileSync('git', ['-C', repo, 'add', 'app.js', 'other.js', '.kiro-project/state.json', '.agent-project/state.json']);
     execFileSync('git', ['-C', repo, 'commit', '-qm', 'initial']);
+    const mainBranch = execFileSync('git', ['-C', repo, 'rev-parse', '--abbrev-ref', 'HEAD']).toString().trim();
     fs.writeFileSync(path.join(repo, 'app.js'), 'const value = 2;\n');
     fs.writeFileSync(path.join(repo, 'other.js'), 'const other = 2;\n');
     fs.writeFileSync(path.join(repo, '.kiro-project', 'state.json'), '{"run": 2}\n');
@@ -40,6 +41,25 @@ const git = require('../src/main/git');
     assert.doesNotMatch(selected.text, /other\.js/);
     assert.strictEqual(selected.file, 'app.js');
     console.log('ok - ファイル選択時は選択したファイルの差分だけを返す');
+
+    // 作業 ref が未解決でも、target ブランチが分かるならローカル HEAD ではなく
+    // target との差分（分岐点＝merge-base から作業ツリーまで、未コミット分も含む）を出す。
+    execFileSync('git', ['-C', repo, 'checkout', '-q', '-b', 'work']);
+    execFileSync('git', ['-C', repo, 'commit', '-qam', 'work commit']); // value=2 等をコミット
+    fs.writeFileSync(path.join(repo, 'app.js'), 'const value = 3;\n');   // さらに未コミット変更
+    const vsTarget = await git.diffRange(repo, { base: mainBranch, workingTree: true });
+    assert.match(vsTarget.text, /-const value = 1;/, 'target の分岐点（initial）を比較元にする');
+    assert.match(vsTarget.text, /\+const value = 3;/, '未コミットの変更も含める');
+    assert.strictEqual(vsTarget.base, mainBranch, '比較元は target ブランチ');
+    assert.strictEqual(vsTarget.mode, 'working-tree-vs-target');
+    assert.ok(vsTarget.files.includes('app.js') && vsTarget.files.includes('other.js'));
+    assert.doesNotMatch(vsTarget.text, /\.agent-project/, '内部ディレクトリは除外する');
+    console.log('ok - target 指定時はローカル HEAD でなく target との差分を出す');
+
+    // target が解決できない（存在しないブランチ）ときは従来どおり作業ツリー vs HEAD へ倒す。
+    const unknownTarget = await git.diffRange(repo, { base: 'no-such-branch', workingTree: true });
+    assert.strictEqual(unknownTarget.mode, 'working-tree', 'target 未解決なら HEAD 比較へフォールバック');
+    console.log('ok - target が解決できないときは HEAD 差分へフォールバックする');
 
     // 検収物の path が WSL 側の POSIX パスでも、win32 では UNC へ橋渡ししてから解決する
     {

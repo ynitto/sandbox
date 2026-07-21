@@ -595,7 +595,28 @@ async function diffRange(repo, { base, ref, file, maxBytes = 200_000, workingTre
   if ((!workingTree && /[\s;|&`$]/.test(baseRef)) || /[\s;|&`$]/.test(tip)) {
     throw new Error('不正な git ref です');
   }
-  const args = ['-C', root, 'diff', '--no-color', workingTree ? 'HEAD' : `${baseRef}...${tip}`];
+  // 差分の左辺（比較元）を決める。
+  //   range   … 解決済みの作業 ref があるとき。target...ref（検収の標準＝GitHub PR と同じ三点比較）。
+  //   working … 作業 ref が未解決のとき。target ブランチが分かるなら、その分岐点（merge-base）から
+  //             作業ツリーまでを見せる（未コミット分も含め「target に対して何を変えたか」）。
+  //             target が渡されない/解決できないときだけ HEAD（純粋なローカル作業ツリー）へ倒す。
+  let leftSide;
+  let usedBase = '';
+  if (!workingTree) {
+    leftSide = `${baseRef}...${tip}`;
+    usedBase = baseRef;
+  } else {
+    const target = String(base || '').trim();
+    if (target && !/[\s;|&`$]/.test(target)) {
+      const mb = await gitOnce(['-C', root, 'merge-base', target, 'HEAD'], 10000);
+      if (mb.code === 0 && String(mb.out || '').trim()) {
+        leftSide = String(mb.out).trim();
+        usedBase = target;
+      }
+    }
+    if (!leftSide) leftSide = 'HEAD';
+  }
+  const args = ['-C', root, 'diff', '--no-color', leftSide];
   const f = String(file || '').trim();
   const internalPath = /(^|\/)\.agent-project\//;
   const excludes = [':(glob,exclude)**/.agent-project/**'];
@@ -621,7 +642,7 @@ async function diffRange(repo, { base, ref, file, maxBytes = 200_000, workingTre
   let files = f ? [f] : [];
   if (!f) {
     const nameArgs = [
-      '-C', root, 'diff', '--name-only', '-z', workingTree ? 'HEAD' : `${baseRef}...${tip}`,
+      '-C', root, 'diff', '--name-only', '-z', leftSide,
       '--', '.', ...excludes,
     ];
     const names = await gitOnce(nameArgs, 60000);
@@ -635,10 +656,11 @@ async function diffRange(repo, { base, ref, file, maxBytes = 200_000, workingTre
     files,
     truncated,
     repo: root,
-    base: workingTree ? '' : baseRef,
+    base: usedBase,
     ref: tip,
     file: f,
-    mode: workingTree ? 'working-tree' : 'range',
+    // working-tree でも target と比較できたら、単なるローカル差分と区別できるようにする。
+    mode: workingTree ? (usedBase ? 'working-tree-vs-target' : 'working-tree') : 'range',
   };
 }
 

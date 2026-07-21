@@ -325,12 +325,16 @@ function sessionProcessLines(entries) {
 }
 
 // chat モードは、kiro-cli が入力を受け付けてから業務プロンプトより先に送る。
+// paste-buffer は -p（ブラケットペースト）で送る。スラッシュコマンドの補完メニューを持つ
+// CLI（Claude Code 等）へ素のペーストをすると、非同期のメニュー描画と競合して文字が
+// 入れ替わる/区切りが混入する（例: `/caveman` → `/cavem,an`）。-p ならアプリはペースト
+// として一括挿入し、そのまま Enter で確定・実行できる（-p 非対応の CLI では素のペーストに戻る）。
 function sessionChatLines(entries) {
   return (entries || []).filter((e) => e.mode === 'chat' && !e.skip).map((e, i) => (
     `tmux set-buffer -b agentdash-s${i} -- ${shellQuote(e.run)}; ` +
-    `tmux paste-buffer -t "$__ses" -b agentdash-s${i}; ` +
+    `tmux paste-buffer -p -t "$__ses" -b agentdash-s${i}; ` +
     `tmux delete-buffer -b agentdash-s${i} 2>/dev/null; ` +
-    `tmux send-keys -t "$__ses" Enter; sleep 1; `
+    `sleep 1; tmux send-keys -t "$__ses" Enter; sleep 1; `
   )).join('');
 }
 
@@ -374,7 +378,9 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands }
       ? `echo "[agent-dashboard] エージェントCLIの起動を待っています…"; ` +
         `__i=0; __ok=0; ` +
         `while [ $__i -lt 60 ]; do ` +
-        `if tmux capture-pane -p -t "$__ses" 2>/dev/null | grep -qE "^[[:space:]]*[>?❯›][[:space:]]*$|!>"; then __ok=1; break; fi; ` +
+        // 素のプロンプト（`>` `❯` `›` `?`）に加え、枠で囲う入力欄（Claude Code の `│ > │` 等）も
+        // 検出する。枠付きを取りこぼすと一致せず 60 秒まるごと待ってからアタッチする（＝極端に遅い）。
+        `if tmux capture-pane -p -t "$__ses" 2>/dev/null | grep -qE "^[[:space:]]*[>?❯›][[:space:]]*$|!>|│[[:space:]]*[>❯›]"; then __ok=1; break; fi; ` +
         `sleep 1; __i=$((__i+1)); ` +
         `done; ` +
         `if [ $__ok -eq 1 ]; then ` +
@@ -387,11 +393,12 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands }
           ? (sendPrompt ? `if [ $__new -eq 1 ]; then ${chatLines}fi; ` : chatLines)
           : '') +
         (sendPrompt
-          // 複数行プロンプトを崩さず送るため send-keys ではなく paste-buffer を使う
+          // 複数行プロンプトを崩さず送るため send-keys ではなく paste-buffer を使う。
+          // -p（ブラケットペースト）でスラッシュ補完メニューとの競合による文字化けを防ぐ。
           ? `tmux set-buffer -b agentdash -- ${shellQuote(prompt)}; ` +
-            `tmux paste-buffer -t "$__ses" -b agentdash; ` +
+            `tmux paste-buffer -p -t "$__ses" -b agentdash; ` +
             `tmux delete-buffer -b agentdash 2>/dev/null; ` +
-            `tmux send-keys -t "$__ses" Enter; ` +
+            `sleep 1; tmux send-keys -t "$__ses" Enter; ` +
             `echo "[agent-dashboard] プロンプトを送信しました。アタッチします（Ctrl+b d で離脱）"; `
           : `echo "[agent-dashboard] CLIチャットへ接続します（Ctrl+b d で離脱）"; `) +
         `else ` +

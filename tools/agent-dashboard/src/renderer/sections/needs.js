@@ -923,9 +923,12 @@ async function collectDeliveryDiffSections(need, { maxChars = 80000 } = {}) {
   );
   const sections = await Promise.all(
     entries.map(async (entry) => {
+      const compareBase = entry.target || entry.base;
       const label = entry.ref
         ? `${entry.base || 'main'}...${entry.ref}`
-        : '現在の作業ツリー（HEADとの差分）';
+        : compareBase
+          ? `${compareBase} との差分（作業ツリー）`
+          : '現在の作業ツリー（HEADとの差分）';
       const files = (entry.files || []).slice(0, 40);
       try {
         const res = await api.gitDiff(deliveryDiffRequest(entry));

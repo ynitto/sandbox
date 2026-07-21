@@ -7,7 +7,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
-### agent-dashboard: CLIチャットのセッション開始コマンド（「エージェントに送る」）が効かない不具合を修正
+### agent-dashboard: 検収画面の差分が target ブランチではなくローカル HEAD と比較していた不具合を修正
+
+`src/base/main/git.js`（`diffRange`）と `src/renderer/sections/needs.js`。
+
+- 作業 ref が未解決の検収物で、差分の比較元が **ローカルの現在ブランチ（HEAD）** になっており、
+  設定した **target ブランチと比較されていなかった**。working-tree 差分のとき、target ブランチが
+  分かるなら、その分岐点（`git merge-base <target> HEAD`）から作業ツリーまでを比較するようにした
+  （未コミット分も含め「target に対して何を変えたか」を表示）。target が渡されない/解決できない
+  ときだけ従来どおり HEAD との差分へフォールバックする。
+- 差分ラベルを「現在の作業ツリー（HEADとの差分）」から「`<target>` との差分（作業ツリー）」へ変更。
+
+### agent-dashboard: CLIチャットの起動が極端に遅い・送信コマンドが文字化けする不具合を修正
+
+`src/features/cowork/main/loopProvider.js`。
+
+- **起動が極端に遅い**（毎回 60 秒待たされる）不具合を修正。エージェント起動後の入力プロンプト
+  検出が、素のプロンプト（`>` `❯` `›` `?` だけの行）しか一致せず、**枠で囲う入力欄**を持つ CLI
+  （Claude Code の `│ > │` 等）では一致しないため、検出ループが上限の 60 秒まるごと待ってから
+  アタッチしていた。検出正規表現に枠付きプロンプト（`│` に続く `>` `❯` `›`）を追加し、素早く
+  検出してアタッチするようにした。
+- **「エージェントに送る」コマンドが文字化けする**不具合を修正（例: `/caveman` → `/cavem,an`）。
+  `tmux paste-buffer` の素のペーストが、スラッシュコマンドの補完メニューを持つ CLI（Claude Code
+  等）の非同期メニュー描画と競合して文字を崩していた。ブラケットペースト（`paste-buffer -p`）で
+  一括挿入し、ペースト確定を待ってから Enter で送るようにした（`-p` 非対応 CLI では素のペーストに
+  フォールバックするため kiro-cli 等はそのまま動く）。
 
 `src/features/cowork/main/loopProvider.js`。
 
