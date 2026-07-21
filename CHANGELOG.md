@@ -7,6 +7,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: 検収画面の差分が target ブランチではなくローカル HEAD と比較していた不具合を修正
+
+`src/base/main/git.js`（`diffRange`）と `src/renderer/sections/needs.js`。
+
+- 作業 ref が未解決の検収物で、差分の比較元が **ローカルの現在ブランチ（HEAD）** になっており、
+  設定した **target ブランチと比較されていなかった**。working-tree 差分のとき、target ブランチが
+  分かるなら、その分岐点（`git merge-base <target> HEAD`）から作業ツリーまでを比較するようにした
+  （未コミット分も含め「target に対して何を変えたか」を表示）。target が渡されない/解決できない
+  ときだけ従来どおり HEAD との差分へフォールバックする。
+- 差分ラベルを「現在の作業ツリー（HEADとの差分）」から「`<target>` との差分（作業ツリー）」へ変更。
+
 ### agent-dashboard: CLIチャットの起動が極端に遅い・送信コマンドが文字化けする不具合を修正
 
 `src/features/cowork/main/loopProvider.js`。
