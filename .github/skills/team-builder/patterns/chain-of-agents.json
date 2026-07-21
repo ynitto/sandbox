@@ -1,0 +1,45 @@
+{
+  "id": "chain-of-agents",
+  "name": "Chain-of-Agents（長文脈の連鎖）",
+  "category": "search-writing",
+  "tier": "medium",
+  "source": "Chain of Agents (Zhang et al., 2024)",
+  "when_to_use": "長大な入力をチャンク分割し、逐次に要約・引き継いで最終回答を作りたいとき。",
+  "signals": [
+    "長い文脈/大量資料",
+    "逐次に読み継ぐ"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "worker-a",
+        "role": "担当チャンクを処理し引き継ぎ単位を渡す",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "worker-b",
+        "role": "次チャンクを処理し引き継ぐ",
+        "required": true,
+        "approver": false,
+        "collaborates_with": [
+          "worker-a"
+        ]
+      },
+      {
+        "id": "manager",
+        "role": "最終の引き継ぎ単位から回答を作る",
+        "required": true,
+        "approver": false,
+        "collaborates_with": [
+          "worker-b"
+        ]
+      }
+    ],
+    "convergence": {
+      "done_when": "all-required-done"
+    }
+  },
+  "feasibility": "partial",
+  "feasibility_note": "チャンク数が可変な逐次連鎖は固定ロール数で近似。"
+}

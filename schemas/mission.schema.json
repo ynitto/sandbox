@@ -31,6 +31,22 @@
             "items": {"type": "object", "properties": {"path": {"type": "string"}, "sha256_16": {"type": "string"}}}
           }
         },
+        "aggregates": {
+          "type": "array",
+          "description": "席グループ（seats>1 ＋ aggregate 指定）の集約結果（G2）。integrator が決定的に集計する",
+          "items": {
+            "type": "object",
+            "properties": {
+              "group": {"type": "string", "description": "席グループの基底ロール id"},
+              "mode": {"enum": ["majority", "consensus", "weighted-vote", "approval-count", "gather"]},
+              "winner": {"type": ["string", "null"], "description": "採択された回答（正規化済み）。gather は無し"},
+              "agreed": {"type": "boolean", "description": "consensus 系: 全席一致だったか"},
+              "votes": {"type": "integer", "description": "回答を出した席数"},
+              "tally": {"type": "object", "description": "回答→得票（weighted-vote は重み合計）"},
+              "winner_score": {"type": ["number", "null"], "description": "approval-count: 勝者候補のスコア"}
+            }
+          }
+        },
         "generated_at": {"type": "string"},
         "generated_by": {"type": "string"}
       },
@@ -83,13 +99,18 @@
           "type": "object",
           "description": "収束条件（設計書 §3.2）",
           "properties": {
-            "done_when": {"enum": ["all-required-done", "reviewer-approved"], "default": "all-required-done"},
+            "done_when": {"enum": ["all-required-done", "reviewer-approved", "consensus"], "default": "all-required-done",
+              "description": "収束条件。all-required-done=全必須ロール完了、reviewer-approved=承認者の approve も要る、consensus=席グループ（seats+aggregate）が合意に達したら早期収束（全席の完了は待たない）"},
             "quiescence_turns": {"type": "integer", "minimum": 0, "default": 3,
               "description": "全ロール静穏（新着ゼロ・未回答質問ゼロ）がこのターン数続いたら partial 統合へ。0 = 無効"},
             "review_rounds": {"type": "integer", "minimum": 0, "default": 2,
               "description": "レビュー指摘 → 修正の往復上限（acceptance: agent の差し戻し上限を兼ねる）"},
             "question_timeout": {"type": "integer", "minimum": 1, "default": 2,
-              "description": "未回答質問を owner へ decision-request 昇格するまでの自ターン数"}
+              "description": "未回答質問を owner へ decision-request 昇格するまでの自ターン数"},
+            "consensus_ratio": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.6,
+              "description": "done_when: consensus — 席グループの最頻回答が占めるべき割合のしきい値"},
+            "consensus_min": {"type": "integer", "minimum": 1, "default": 2,
+              "description": "done_when: consensus — 合意判定に要る最小回答席数"}
           },
           "additionalProperties": false
         },
@@ -109,6 +130,18 @@
           "description": "コード成果物用の対象リポジトリ（設計書 §8.3。バスに巨大ファイルを積まない）。現状は opaque passthrough（checkout 実装なし）。将来 checkout を実装する場合は repos.schema.json のエントリ形（url/base/path/owns）または repos レジストリのエントリ名参照に揃えること（リポジトリ定義のスキーマを増やさない）",
           "properties": {"repo": {"type": "string"}},
           "additionalProperties": true
+        },
+        "conductor": {
+          "type": "object",
+          "description": "自律コンダクタ（オプトイン・G5 上位ループ）。enabled=true で、オーナーノードが実行中に team-builder 的な判断で restaff（ロール add/prune）する。AgentVerse（再編成）/ DyLAN（剪定）/ meta-prompting（専門家追加）を回すための上位ループ。ラウンドで律速し max_total_ops で暴走を止める",
+          "properties": {
+            "enabled": {"type": "boolean", "default": false},
+            "cli": {"type": ["string", "null"], "description": "判断に使う agent CLI（未指定はオーナーの既定。stub は判断しない）"},
+            "max_ops": {"type": "integer", "minimum": 0, "default": 3, "description": "1 回の restaff で許す add+prune の合計上限"},
+            "max_total_ops": {"type": "integer", "minimum": 0, "default": 12, "description": "ミッション全体の restaff 操作の総上限（暴走止め）"},
+            "interval_rounds": {"type": "integer", "minimum": 1, "default": 1, "description": "何ラウンドおきに評価するか"}
+          },
+          "additionalProperties": true
         }
       },
       "additionalProperties": true
@@ -119,14 +152,23 @@
         "type": "object",
         "required": ["id"],
         "properties": {
-          "id": {"type": "string", "pattern": "^(?!all$|owner$)[^/]+$",
-                 "description": "ロール ID（all / owner は予約語・/ 不可）"},
+          "id": {"type": "string", "pattern": "^(?!all$|owner$)[^/#]+$",
+                 "description": "ロール ID（all / owner は予約語・/ と # は不可。# は席の内部区切り）"},
           "title": {"type": "string"},
           "mission": {"type": "string", "description": "このロールの個別ミッション（プロンプトの中核）"},
           "deliverables": {"type": "array", "items": {"type": "string"},
                            "description": "artifacts に書く成果物の相対パス"},
           "required": {"type": "boolean", "default": true},
-          "seats": {"type": "integer", "const": 1, "description": "P0-P2 は 1 のみ"},
+          "seats": {"type": "integer", "minimum": 1, "default": 1,
+                    "description": "並列同一シート数（G1）。N>1 は正規化時に <id>#0..#N-1 の具体席ロールへ展開される。各席は独立した amigo として同じロールミッションを実行する"},
+          "rounds": {"type": "integer", "minimum": 0, "default": 0,
+                     "description": "同期討論ラウンド数（G3）。>0（seats>=2 のみ）で、各席は round-<k>.md を 1 ラウンドずつ書き、全席が前ラウンドを出し切るまで次へ進めない（ラウンドバリア）。最終ラウンドの主張が ANSWER.md になる。done_when: consensus と併用で合意到達時に早期終了"},
+          "topology": {"enum": ["complete", "ring", "star", "tree"],
+                       "description": "同期討論（rounds>=1）の通信トポロジ。各席が毎ラウンド読む相手を制限する（バリアは全席同期のまま）。complete=全席（既定）、ring=前後の隣席、star=席0 がハブ、tree=二分木の親子。exchange-of-thought 由来"},
+          "aggregate": {"enum": ["majority", "consensus", "weighted-vote", "approval-count", "gather"],
+                        "description": "seats>=2 の席グループを integrator が決定的に集約する方式（G2）。majority=多数決、consensus=一致判定つき最頻値、weighted-vote=席の重み合計、approval-count=スコア最大の候補、gather=全席を集める。各席は回答を aggregate_answer（既定 ANSWER.md）へ書く"},
+          "aggregate_answer": {"type": "string", "description": "集約が読む各席の正準回答ファイル名（artifacts 内相対パス。既定は単一 deliverable、無ければ ANSWER.md）"},
+          "aggregate_score": {"type": "string", "description": "weighted-vote / approval-count が読む各席の数値信号ファイル名（既定 SCORE）。weighted-vote は投票の重み（既定 1.0）、approval-count は候補スコア（既定 0）として解釈する"},
           "agent_cli": {"type": "string", "description": "このロールが使う agent CLI（未指定はノード既定）"},
           "model": {"type": "string"},
           "requires": {
@@ -143,7 +185,10 @@
           "approver": {"type": "boolean", "default": false,
                        "description": "done_when: reviewer-approved の承認者"},
           "builtin": {"enum": ["", "integrator"], "default": "",
-                      "description": "integrator: 成果物統合の組み込みロール（省略時は自動追加）"}
+                      "description": "integrator: 成果物統合の組み込みロール（省略時は自動追加）"},
+          "seat_group": {"type": "string", "description": "（正規化が付与）席展開の基底ロール id。seats>1 でなくても自身の id が入る"},
+          "seat_index": {"type": "integer", "description": "（正規化が付与）席番号（0 始まり）"},
+          "seat_count": {"type": "integer", "description": "（正規化が付与）このグループの席総数"}
         },
         "additionalProperties": true
       }

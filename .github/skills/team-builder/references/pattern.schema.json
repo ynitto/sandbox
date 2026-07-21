@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "team-builder-pattern.schema.json",
+  "title": "team-builder オーケストレーションパターン（.github/skills/team-builder/patterns/<id>.json）",
+  "description": "マルチエージェント・オーケストレーションのパターン（論文由来）を agent-amigos のロールミッション表へ写像するためのデータ契約。tier=high はスキルの自動パターン選択に載る（teambuilding が高価値パターンをプロンプトへ注入する）。tier=medium は JSON のみで、自動選択には入らない（CLI --pattern <id> で明示指定はできる）。出典カタログ: h5i-python/examples/papers。",
+  "type": "object",
+  "required": ["id", "name", "category", "tier", "when_to_use", "feasibility"],
+  "allOf": [
+    {"if": {"properties": {"target": {"const": "agent-flow"}}, "required": ["target"]},
+     "then": {"required": ["flow"]},
+     "else": {"required": ["team"]}}
+  ],
+  "properties": {
+    "id": {"type": "string", "pattern": "^[a-z0-9-]+$", "description": "パターン識別子（ファイル名と一致）"},
+    "name": {"type": "string", "description": "パターン名（人が読む）"},
+    "source": {"type": "string", "description": "出典（論文名・著者・年）"},
+    "target": {"enum": ["amigos", "agent-flow"], "default": "amigos",
+               "description": "実行先エンジン。amigos=役割協働（team を持つ）。agent-flow=探索木・動的分解を agent-flow へ委譲（flow を持つ・G4）"},
+    "flow": {
+      "type": "object",
+      "description": "target=agent-flow のとき: agent-flow への委譲ヒント",
+      "properties": {
+        "strategy": {"type": "string", "description": "分解・探索方針のヒント（agent-flow の要求本文へ）"},
+        "notes": {"type": "string"}
+      }
+    },
+    "category": {
+      "enum": ["refine-loop", "sampling-voting", "debate-consensus", "verification-judging",
+               "ensembling", "search-writing", "software-sop", "team-topology"],
+      "description": "パターンの大分類（README の 8 カテゴリ）"
+    },
+    "tier": {
+      "enum": ["high", "medium"],
+      "description": "high = スキルの自動選択対象（高価値・現実装で有効に写せる）。medium = JSON のみ（自動選択外・--pattern で明示指定可）"
+    },
+    "when_to_use": {"type": "string", "description": "どんなミッションのときこのパターンが最適か（選択の判断材料）"},
+    "signals": {
+      "type": "array", "items": {"type": "string"},
+      "description": "選択トリガーとなるミッションの特徴（例: 明確な受入基準・正誤が判定可能・広い解空間・長い文脈…）"
+    },
+    "team": {
+      "type": "object",
+      "description": "agent-amigos ロールミッション表への写像（骨格。team-builder がミッションに合わせて具体化する）",
+      "required": ["roles"],
+      "properties": {
+        "roles": {
+          "type": "array", "minItems": 1,
+          "description": "ロール骨格（mission.schema.json の roles と同形の部分集合）",
+          "items": {
+            "type": "object", "required": ["id", "role"],
+            "properties": {
+              "id": {"type": "string"},
+              "role": {"type": "string", "description": "このロールの責務（team-builder が mission 文へ展開する種）"},
+              "required": {"type": "boolean", "default": true},
+              "approver": {"type": "boolean", "default": false},
+              "collaborates_with": {"type": "array", "items": {"type": "string"}},
+              "count_hint": {"type": "string", "description": "同種ロールを何人置くか（例 '2-3'。現実装は別 id で複製。seats>1 は拡張待ち）"}
+            }
+          }
+        },
+        "convergence": {
+          "type": "object",
+          "description": "推奨する収束条件（mission.convergence へ）",
+          "properties": {
+            "done_when": {"enum": ["all-required-done", "reviewer-approved"]},
+            "review_rounds": {"type": "integer"},
+            "quiescence_turns": {"type": "integer"}
+          }
+        },
+        "budget_hint": {"type": "string", "description": "予算の目安（実実行時間。保守的に）"}
+      }
+    },
+    "feasibility": {
+      "enum": ["native", "partial", "needs-extension"],
+      "description": "native = 現実装で完全に表現できる。partial = 近似できる（本来の同期・投票などは割り切る）。needs-extension = 現実装では表現できない（拡張提案の対象）"
+    },
+    "feasibility_note": {"type": "string", "description": "近似の割り切りや、足りない機能の説明"},
+    "notes": {"type": "string", "description": "設計上の勘所"}
+  },
+  "additionalProperties": true
+}

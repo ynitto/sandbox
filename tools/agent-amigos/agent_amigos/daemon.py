@@ -20,7 +20,7 @@ import time
 from .assign import (apply_role, claim_role, confirm_assignment, matches_role,
                      mirror_roster, staffing_expired, unfilled_required, winner)
 from .bus import Bus
-from .mission import derive_phase, load_mission, load_roles
+from .mission import active_roles, derive_phase, load_mission, load_roles
 from .runner import AmigoRunner
 from .util import log, now_iso, read_json, write_json_atomic
 
@@ -106,7 +106,7 @@ class NodeDaemon:
                 mission = load_mission(mp)
             except SystemExit:
                 continue
-            roles = load_roles(mp)
+            roles = active_roles(load_roles(mp), mp)   # 剪定ロールは募集・実行から外す（G5）
             phase = derive_phase(mission, roles, mp)
             seen[mid] = phase
             if phase in ("done", "cancelled", "failed"):
@@ -156,6 +156,12 @@ class NodeDaemon:
                     result = acceptance_turn(self.bus, mp, mission, self.node_id,
                                              self.agent_cli, home=self.home)
                     if result in ("accepted", "rejected"):
+                        self._active = True
+                # 自律コンダクタ（オプトイン・G5 上位ループ）: 実行中に restaff で編成を調整
+                if (mission.get("conductor") or {}).get("enabled") and phase in ("working", "open"):
+                    from .ownerops import conductor_turn
+                    if conductor_turn(self.bus, mp, mission, self.node_id,
+                                      self.agent_cli) == "acted":
                         self._active = True
 
             # 自分の amigo のターン

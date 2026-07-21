@@ -1,0 +1,42 @@
+{
+  "id": "multiagent-debate",
+  "name": "マルチエージェント討論",
+  "category": "debate-consensus",
+  "tier": "high",
+  "source": "Multiagent Debate (Du et al., 2023) / MAD (Liang et al., 2024)",
+  "when_to_use": "正解が自明でない・見解が割れる推論。複数の立場を同期ラウンドで戦わせ、裁定者が結論を出したいとき。",
+  "signals": [
+    "結論が割れうる",
+    "根拠の突き合わせが要る",
+    "単独だと視野が狭い"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "debater",
+        "role": "毎ラウンド、他席の前ラウンドの主張を踏まえて自分の立場を根拠付きで述べ更新する（最終主張は ANSWER.md）",
+        "required": true,
+        "approver": false,
+        "seats": 3,
+        "rounds": 3,
+        "count_hint": "2-4"
+      },
+      {
+        "id": "judge",
+        "role": "各席の最終主張を突き合わせて評価し、最終結論を裁定・承認する",
+        "required": true,
+        "approver": true,
+        "collaborates_with": [
+          "debater"
+        ]
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved",
+      "review_rounds": 1
+    },
+    "budget_hint": "中（例 90 分）"
+  },
+  "feasibility": "native",
+  "feasibility_note": "debater を seats>1（G1）＋ rounds:N（G3・同期ラウンド）で回す。全席が前ラウンドを出し切るまで次へ進めないバリアが効く。裁定は judge（approver）が最終主張を見て行う。多数決で締めたいなら judge の代わりに aggregate: majority ＋ done_when: consensus も選べる。"
+}

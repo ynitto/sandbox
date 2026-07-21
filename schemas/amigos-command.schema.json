@@ -2,12 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "amigos-command.schema.json",
   "title": "agent-amigos 指示ドロップ（<home>/.agents/agent-amigos/commands/*.json）",
-  "description": "常駐デーモンへの指示のファイル契約。外部操作者（人・agent-dashboard・スキル）が JSON を 1 ファイル置き、デーモンが次サイクルで取り込む（agent-project の commands/ と同じ「プロセス間 API を持たない」結合）。処理成功でファイルは削除、失敗は <name>.rejected へ改名して再試行しない。正典実装は agent_amigos/commands.py（ingest_commands / _dispatch）、投函側の実装は agent-dashboard features/amigos/main/homes.js（writeCommand）。post はロールを明示する従来の入力契約、build-team はロール未指定のミッションから team-building スキルでロール表を設計してから post する（従来の入力契約はそのまま並存）。assign / accept / reject / cancel は owner-only（デーモンのノードがミッションの owner_node のときだけ成功する）。未知キーは無視される（前方互換・追加は additive）。",
+  "description": "常駐デーモンへの指示のファイル契約。外部操作者（人・agent-dashboard・スキル）が JSON を 1 ファイル置き、デーモンが次サイクルで取り込む（agent-project の commands/ と同じ「プロセス間 API を持たない」結合）。処理成功でファイルは削除、失敗は <name>.rejected へ改名して再試行しない。正典実装は agent_amigos/commands.py（ingest_commands / _dispatch）、投函側の実装は agent-dashboard features/amigos/main/homes.js（writeCommand）。post はロールを明示する従来の入力契約、build-team はロール未指定のミッションから team-builder スキルでロール表を設計してから post する（従来の入力契約はそのまま並存）。assign / accept / reject / cancel は owner-only（デーモンのノードがミッションの owner_node のときだけ成功する）。未知キーは無視される（前方互換・追加は additive）。",
   "type": "object",
   "required": ["command"],
   "properties": {
     "command": {
-      "enum": ["post", "build-team", "claim", "assign", "accept", "reject", "cancel", "say"]
+      "enum": ["post", "build-team", "claim", "assign", "restaff", "accept", "reject", "cancel", "say"]
     }
   },
   "oneOf": [
@@ -35,7 +35,7 @@
       "anyOf": [{"required": ["design"]}, {"required": ["design_file"]}]
     },
     {
-      "description": "build-team — チームビルディング公示。ロールを渡さず、ミッション（goal / design / constraints / capabilities）だけを渡す。取り込み側が team-building スキル（.github/skills/team-building）を agent CLI で実行して最適なロールミッション表を設計し、そのまま従来の post 経路で公示する。design / design_file が無ければ goal からミニマルな design doc を自動生成する。設計に使う agent CLI は agent_cli（省略時はデーモンの既定。stub / 未指定では失敗する）",
+      "description": "build-team — チームビルディング公示。ロールを渡さず、ミッション（goal / design / constraints / capabilities）だけを渡す。取り込み側が team-builder スキル（.github/skills/team-builder）を agent CLI で実行して最適なロールミッション表を設計し、そのまま従来の post 経路で公示する。design / design_file が無ければ goal からミニマルな design doc を自動生成する。設計に使う agent CLI は agent_cli（省略時はデーモンの既定。stub / 未指定では失敗する）",
       "properties": {
         "command": {"const": "build-team"},
         "title": {"type": "string", "description": "mission.title（設計の入力かつ既定の上書き）"},
@@ -52,6 +52,7 @@
         },
         "agent_cli": {"type": "string", "description": "設計に使う agent CLI かつ各ロールの既定（省略時はデーモンの既定。stub / 未指定は不可）"},
         "model": {"type": "string", "description": "設計に使うモデル（任意）"},
+        "pattern": {"type": "string", "description": "使うオーケストレーションパターンを id で明示指定（省略時は高価値パターンからミッションに応じて自動選択。カタログ: .github/skills/team-builder/patterns/）"},
         "mission_id": {"type": "string", "description": "省略時は自動採番"},
         "mission": {
           "type": "object",
@@ -79,6 +80,25 @@
         "node": {"type": "string"}
       },
       "required": ["command", "mission", "role", "node"]
+    },
+    {
+      "description": "restaff — 実行中のチーム編成変更（owner-only・G5）。add でロールを追加（正規化・席展開して roles/<id>.json を書く）、prune でロールを停止（pruned/<id>.json を書き、収束・募集・実行から外す）。AgentVerse 的な再編成・DyLAN 的な剪定・meta-prompting 的な専門家追加の基盤",
+      "properties": {
+        "command": {"const": "restaff"},
+        "mission": {"type": "string"},
+        "add": {
+          "type": "array",
+          "description": "追加する役割ミッション表（mission.schema.json の roles と同形。既存 id とは衝突不可）",
+          "items": {"type": "object", "required": ["id"]}
+        },
+        "prune": {
+          "type": "array",
+          "description": "停止するロール id の配列",
+          "items": {"type": "string"}
+        }
+      },
+      "required": ["command", "mission"],
+      "anyOf": [{"required": ["add"]}, {"required": ["prune"]}]
     },
     {
       "description": "accept — 受入確定（owner-only。deliverable/MANIFEST.json が無ければ拒否される）",

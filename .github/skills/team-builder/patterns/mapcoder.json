@@ -1,0 +1,43 @@
+{
+  "id": "mapcoder",
+  "name": "MapCoder",
+  "category": "software-sop",
+  "tier": "medium",
+  "source": "MapCoder (Islam et al., 2024)",
+  "when_to_use": "類似例の想起→計画→実装→デバッグで、複数計画を信頼度順に試したいとき。",
+  "signals": [
+    "競技/難コード",
+    "複数アプローチを順に試す"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "planner",
+        "role": "解法計画を立てる（複数案を優先順位付け）",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "coder",
+        "role": "計画に沿って実装しデバッグする",
+        "required": true,
+        "approver": false,
+        "collaborates_with": [
+          "planner"
+        ]
+      },
+      {
+        "id": "verifier",
+        "role": "テストで判定し承認する",
+        "required": true,
+        "approver": true
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved",
+      "review_rounds": 3
+    }
+  },
+  "feasibility": "partial",
+  "feasibility_note": "複数計画の並列展開は逐次フォールバックで近似。"
+}

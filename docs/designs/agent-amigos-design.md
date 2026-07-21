@@ -347,9 +347,15 @@ agent-flow の `Bus` 抽象（`sync_pull()` / `sync_push(msg)`）と同じ形で
 
 ### 6.2 勝者決定 — agent-flow の claim プロトコルを流用
 
-席数 `seats: N` のロールは、有効（lease 内）な claim のうち **`(ts, who)` 昇順の先頭 N 件**が
-決定的に勝者となる。全ノードが同じ集合から同じ勝者を導くため、ローカルでも git でも
-二重アサインが起きない（agent-flow §5.1 と同一の理屈。push 競合は rebase リトライで吸収）。
+各ロールは、有効（lease 内）な claim のうち **`(ts, who)` 昇順の先頭 1 件**が決定的に勝者となる。
+全ノードが同じ集合から同じ勝者を導くため、ローカルでも git でも二重アサインが起きない
+（agent-flow §5.1 と同一の理屈。push 競合は rebase リトライで吸収）。
+
+席数 `seats: N`（N>1）のロールは、公示（正規化）時に `<role>#0..#N-1` の **N 個の具体席ロール**へ
+展開される（`_expand_seats`、G1）。各席は通常の 1 席ロールなので claim / roster / 収束 / 統合の
+機構をそのまま使い、上記の「1 ロール＝勝者 1 名」が席ごとに成立する。1 ノード運用でも self-staff が
+全席を充足する。席の成果は integrator が `aggregate`（majority / consensus / gather、G2）で決定的に
+集約する（§8.1）。
 
 ### 6.3 確定名簿（roster）と承認ポリシー
 
@@ -626,7 +632,7 @@ roles:
 
 役割ミッション表を人が書く従来経路（`post`）はそのままに、**ミッション（ゴール／design doc）
 だけ**から上記の役割表を設計する入口を追加する（`build-team`）。設計手順自体は
-`.github/skills/team-building/` に **team-building スキル**として切り出し、agent-amigos は
+`.github/skills/team-builder/` に **team-builder スキル**として切り出し、agent-amigos は
 それを呼び出して実現する（手順の単一ソース化。人＝Claude Code / Copilot からも同じスキルで
 設計できる）。
 
@@ -767,7 +773,8 @@ agent-amigos gc        [--keep-days 14]
 |---|---|---|
 | **P0（MVP）** | LocalBus / post・join・run・status・collect / claim 型アサイン＋self-staff / inbox＋all チャンネル / アクション封筒ランナー（ターン原子性込み） / **収束条件・予算会計（`cli_seconds` 集計・wrap-up・quiescence）** / integrator＋manual 受入 / agent-cli プラグイン | 1 マシン上で 3 ロール（architect・impl・reviewer）が相互に質問・レビューしながら成果物を 1 つ納品し、`collect` で取り出せる。予算枯渇で partial 納品に収束する。stub CLI（LLM なし）でプロトコルのユニットテストが通る |
 | **P1（分散）** | GitBus（**専用バスリポジトリ＋ミッション別ブランチ**、state_git の同期規律を移植）/ lease・ハートビート・ロール再募集 / **away プロトコル（graceful offboard・引き継ぎメモ・away_grace）** / エラートリアージ連携 / adaptive interval / budget add・say・cancel・gc | 2 ノード（別 PC）でロール分担して P0 と同じ納品ができる。ノードを 1 つ kill してもロール再募集で完走し、**定時シャットダウン→翌朝再起動をまたいでも同じ担当が続きから完走する** |
-| **P2（拡張）** | HubBus＋hub サーバ / owner-picks（応募 → `assign` で確定・自己補充両対応） / acceptance: agent（自動判定・review_rounds 超で人へエスカレーション） / agent-dashboard の Amigos タブ / `schemas/mission.schema.json` 正典化 | ✅ 完了（hub 経由の 2 ノード E2E・claim 競合・認証・gc をテストで検証。dashboard はローカルバス / GitBus workdir / hub データディレクトリを読める）。**残**: acceptance: codd-gate（将来拡張・§8.2）と seats>1 |
+| **P2（拡張）** | HubBus＋hub サーバ / owner-picks（応募 → `assign` で確定・自己補充両対応） / acceptance: agent（自動判定・review_rounds 超で人へエスカレーション） / agent-dashboard の Amigos タブ / `schemas/mission.schema.json` 正典化 | ✅ 完了（hub 経由の 2 ノード E2E・claim 競合・認証・gc をテストで検証。dashboard はローカルバス / GitBus workdir / hub データディレクトリを読める）。**残**: acceptance: codd-gate（将来拡張・§8.2） |
+| **拡張（team-builder パターン起点）** | seats>1（G1）／ 決定的集約 aggregate: majority/consensus/weighted-vote/approval-count/gather（G2）／ done_when: consensus ／ 同期討論 rounds:N ＋ 通信トポロジ topology（G3）／ 実行中の動的編成 restaff add/prune ＋ 自律コンダクタ mission.conductor（G5）／ 探索木は agent-flow 委譲（G4）。オーケストレーションパターンのカタログ（`.github/skills/team-builder/patterns/`）と自動選択 | ✅ 実装済み（`agent-amigos-teambuilder-patterns.md`）。論文由来 40 パターンはプリミティブ ＋ agent-flow 委譲 ＋ 自律コンダクタで表現可能。**残**: pairwise-rank（ranker ロールで対応） |
 
 テスト方針は agent-flow と同じく、**stub エージェント（決め打ち応答）でプロトコル層を
 LLM なしに決定的に検証**する。claim の二重アサインなし・書き込み規律違反の棄却・

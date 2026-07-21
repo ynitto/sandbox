@@ -1,0 +1,39 @@
+{
+  "id": "least-to-most",
+  "name": "Least-to-Most（順次分解）",
+  "category": "search-writing",
+  "tier": "high",
+  "source": "Least-to-Most Prompting (Zhou et al., 2023)",
+  "when_to_use": "難問を、易→難の順序付き部分問題へ分解し、順に積み上げて解きたいとき。",
+  "signals": [
+    "段階的に積み上がる",
+    "部分問題に分解できる",
+    "前段の答えを次段で使う"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "decomposer",
+        "role": "問題を易しい順の部分問題へ分解する",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "solver",
+        "role": "各部分問題を順に解き、前段の答えを踏まえて最終解を組み立てる",
+        "required": true,
+        "approver": false,
+        "collaborates_with": [
+          "decomposer"
+        ]
+      }
+    ],
+    "convergence": {
+      "done_when": "all-required-done"
+    },
+    "budget_hint": "中（例 90 分）"
+  },
+  "feasibility": "native",
+  "feasibility_note": "順序は collaborates_with と会話で表現。厳密な依存グラフ実行が本質なら agent-flow が適する。",
+  "notes": "並行性が無く順序が本質の作業は agent-flow（タスクグラフ）委譲も検討。"
+}

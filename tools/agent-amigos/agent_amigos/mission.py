@@ -24,17 +24,112 @@ DEFAULTS = {
     "acceptance": "manual",
 }
 CONVERGENCE_DEFAULTS = {
-    "done_when": "all-required-done",   # all-required-done | reviewer-approved
+    "done_when": "all-required-done",   # all-required-done | reviewer-approved | consensus
     "quiescence_turns": 3,
     "review_rounds": 2,
     "question_timeout": 2,              # 未回答質問を owner へ昇格するまでの自ターン数（§7.3）
+    "consensus_ratio": 0.6,            # done_when=consensus: 席グループの最頻回答の占有率しきい値
+    "consensus_min": 2,                # done_when=consensus: 合意判定に要る最小回答席数
 }
+DONE_WHEN_MODES = ("all-required-done", "reviewer-approved", "consensus")
 BUDGET_DEFAULTS = {
     "execution_minutes": 0,             # 0 = 無制限
     "per_role_turns": 30,
     "soft_ratio": 0.9,
     "on_exhausted": "wrap-up",          # wrap-up | fail
 }
+# 自律コンダクタ（オプトイン）— オーナーノードが実行中に team-builder 的な判断で restaff する。
+# AgentVerse（再編成）/ DyLAN（剪定）/ meta-prompting（専門家追加）を回すための上位ループ。
+CONDUCTOR_DEFAULTS = {
+    "enabled": False,                   # 既定 off（明示オプトイン）
+    "cli": None,                        # 判断に使う agent CLI（未指定はオーナーの既定）
+    "max_ops": 3,                       # 1 回の restaff で許す add+prune の上限
+    "max_total_ops": 12,               # ミッション全体での restaff 操作の総上限（暴走止め）
+    "interval_rounds": 1,              # 何ラウンドおきに評価するか（1 = 毎ラウンド 1 回）
+}
+
+# seats>1（並列同一シート、G1）のロールに付ける集約モード（G2。integrator が決定的に集約）。
+#   majority       — 各席の回答（answer ファイル）の最頻値を選ぶ（多数決）。決定的タイブレーク
+#   consensus      — 全席一致なら採用、割れたら flag（agreed:false）付きで最頻値を採る
+#   weighted-vote  — 席ごとの重み（SCORE ファイル、既定 1.0）を回答ごとに合計して最大を採る
+#   approval-count — 各席を候補とみなし、スコア（SCORE ファイル、既定 0）最大の候補を選ぶ
+#   gather         — 全席の回答を席見出し付きで 1 ファイルに集める（選抜せず統合）
+AGGREGATE_MODES = ("majority", "consensus", "weighted-vote", "approval-count", "gather")
+DEFAULT_ANSWER_FILE = "ANSWER.md"       # 集約が読む各席の正準回答ファイル（席の artifacts 内）
+DEFAULT_SCORE_FILE = "SCORE"            # weighted-vote / approval-count が読む席の数値信号ファイル
+
+# 同期討論（G3）の通信トポロジ（各席が毎ラウンド読む相手を制限する）。バリアは全席同期のまま。
+#   complete — 全席が全席の前ラウンドを読む（既定。EoT の bus 相当）
+#   ring     — 前後の隣席のみ
+#   star     — 席0 がハブ: 席0 は全席を、他席は席0 のみを読む
+#   tree     — 二分木: 親と子のみを読む
+TOPOLOGIES = ("complete", "ring", "star", "tree")
+
+
+def topology_neighbors(idx: int, n: int, topology: str) -> "list[int]":
+    """トポロジ上で席 idx が読む相手席の index 一覧（自分は含めない）。"""
+    if n <= 1:
+        return []
+    topo = topology or "complete"
+    if topo == "ring":
+        return sorted({(idx - 1) % n, (idx + 1) % n} - {idx})
+    if topo == "star":
+        return [j for j in range(n) if j != idx] if idx == 0 else [0]
+    if topo == "tree":
+        neigh = set()
+        if idx > 0:
+            neigh.add((idx - 1) // 2)           # 親
+        for c in (2 * idx + 1, 2 * idx + 2):    # 子
+            if c < n:
+                neigh.add(c)
+        return sorted(neigh - {idx})
+    return [j for j in range(n) if j != idx]    # complete / bus
+
+
+def _expand_seats(base_roles: list) -> list:
+    """seats>1 のロールを N 個の具体席ロール（`<id>#0..#N-1`）へ展開する（G1）。
+
+    展開後は各席が通常の 1 席ロールなので、claim / roster / runner / 収束 / 統合 /
+    納品の既存機構をそのまま再利用できる（コアに手を入れない）。collaborates_with が
+    席化グループの基底 id を指す場合は、その席 id 群へ書き換える（実在ロールへの参照に保つ）。
+    """
+    group_ids: "dict[str, list]" = {}
+    for r in base_roles:
+        n = int(r.get("seats", 1))
+        group_ids[r["id"]] = ([r["id"]] if n <= 1
+                              else [f"{r['id']}#{k}" for k in range(n)])
+
+    def _remap(collabs: list) -> list:
+        out = []
+        for c in collabs:
+            out.extend(group_ids.get(c, [c]))
+        return out
+
+    expanded = []
+    for r in base_roles:
+        n = int(r.get("seats", 1))
+        if n <= 1:
+            role = dict(r)
+            role["collaborates_with"] = _remap(role.get("collaborates_with") or [])
+            role["seat_group"] = r["id"]
+            role["seat_index"] = 0
+            role["seat_count"] = 1
+            expanded.append(role)
+            continue
+        for k in range(n):
+            s = dict(r)
+            s["id"] = f"{r['id']}#{k}"
+            s["seats"] = 1
+            s["title"] = f"{r.get('title') or r['id']}（席 {k + 1}/{n}）"
+            s["seat_group"] = r["id"]
+            s["seat_index"] = k
+            s["seat_count"] = n
+            s["aggregate"] = r.get("aggregate")
+            s["aggregate_answer"] = r.get("aggregate_answer")
+            s["aggregate_score"] = r.get("aggregate_score")
+            s["collaborates_with"] = _remap(r.get("collaborates_with") or [])
+            expanded.append(s)
+    return expanded
 
 
 def _load_spec_file(path: str) -> dict:
@@ -50,6 +145,85 @@ def _load_spec_file(path: str) -> dict:
     if data is None:
         raise SystemExit(f"[agent-amigos] 役割ミッション表を読めません: {path}")
     return data
+
+
+def _build_role(r: dict) -> dict:
+    """役割ミッション表の 1 行を検証し正規化ロール dict へ（normalize_mission / restaff 共用）。"""
+    rid = str(r.get("id") or "").strip()
+    if not rid or "/" in rid or "#" in rid or rid in ("all", "owner"):
+        raise SystemExit(f"[agent-amigos] ロール id が不正です: {rid!r}"
+                         "（all / owner は予約語、/ と # は不可）")
+    seats = int(r.get("seats", 1))
+    if seats < 1:
+        raise SystemExit(f"[agent-amigos] seats は 1 以上が必要です（ロール {rid}）")
+    aggregate = r.get("aggregate")
+    if aggregate is not None:
+        aggregate = str(aggregate)
+        if aggregate not in AGGREGATE_MODES:
+            raise SystemExit(f"[agent-amigos] aggregate={aggregate!r} が不正です"
+                             f"（{' | '.join(AGGREGATE_MODES)}）")
+        if seats < 2:
+            raise SystemExit(f"[agent-amigos] aggregate は seats>=2 のロールにのみ指定できます"
+                             f"（ロール {rid}）")
+    rounds = int(r.get("rounds", 0))         # 同期討論ラウンド数（G3）。0 = 無効
+    if rounds < 0:
+        raise SystemExit(f"[agent-amigos] rounds は 0 以上が必要です（ロール {rid}）")
+    if rounds >= 1 and seats < 2:
+        raise SystemExit(f"[agent-amigos] rounds（同期討論）は seats>=2 のロールにのみ"
+                         f"指定できます（ロール {rid}）")
+    topology = r.get("topology")
+    if topology is not None:
+        topology = str(topology)
+        if topology not in TOPOLOGIES:
+            raise SystemExit(f"[agent-amigos] topology={topology!r} が不正です"
+                             f"（{' | '.join(TOPOLOGIES)}）")
+        if rounds < 1:
+            raise SystemExit(f"[agent-amigos] topology は rounds>=1（同期討論）のロールにのみ"
+                             f"指定できます（ロール {rid}）")
+    role = {"id": rid,
+            "title": str(r.get("title") or rid),
+            "mission": str(r.get("mission") or ""),
+            "deliverables": [str(d) for d in (r.get("deliverables") or [])],
+            "required": bool(r.get("required", True)),
+            "seats": seats,
+            "rounds": rounds,
+            "topology": topology,
+            "aggregate": aggregate,
+            "aggregate_answer": (str(r["aggregate_answer"])
+                                 if r.get("aggregate_answer") else None),
+            "aggregate_score": (str(r["aggregate_score"])
+                                if r.get("aggregate_score") else None),
+            "agent_cli": r.get("agent_cli"),
+            "model": r.get("model"),
+            "requires": dict(r.get("requires") or {}),
+            "collaborates_with": [str(c) for c in (r.get("collaborates_with") or [])],
+            "approver": bool(r.get("approver", False)),
+            "builtin": str(r.get("builtin") or "")}
+    if role["builtin"] == "integrator" and seats != 1:
+        raise SystemExit("[agent-amigos] integrator に seats>1 は指定できません")
+    return role
+
+
+def normalize_added_roles(roles_in: list, existing_ids: "set[str]") -> list:
+    """restaff で追加するロール列を検証・正規化・席展開する（既存 id との衝突は拒否）。"""
+    if not isinstance(roles_in, list) or not roles_in:
+        raise SystemExit("[agent-amigos] restaff add には 1 つ以上のロールが必要です")
+    seen = set(existing_ids)
+    new_base = []
+    for r in roles_in:
+        role = _build_role(r)
+        if role["builtin"] == "integrator":
+            raise SystemExit("[agent-amigos] restaff で integrator は追加できません")
+        if role["id"] in seen:
+            raise SystemExit(f"[agent-amigos] 追加ロール id が既存と衝突します: {role['id']!r}")
+        seen.add(role["id"])
+        new_base.append(role)
+    for role in new_base:
+        for c in role["collaborates_with"]:
+            if c not in seen:
+                raise SystemExit(f"[agent-amigos] 追加ロール {role['id']} の collaborates_with に"
+                                 f" 未定義ロール {c!r} があります")
+    return _expand_seats(new_base)
 
 
 def normalize_mission(spec: dict) -> "tuple[dict, list]":
@@ -74,52 +248,42 @@ def normalize_mission(spec: dict) -> "tuple[dict, list]":
         raise SystemExit(f"[agent-amigos] acceptance={mission['acceptance']!r} は未対応です"
                          "（manual | agent。codd-gate は将来拡張 — 設計書 §8.2）")
     mission["convergence"] = {**CONVERGENCE_DEFAULTS, **dict(m.get("convergence") or {})}
-    if mission["convergence"]["done_when"] not in ("all-required-done", "reviewer-approved"):
+    if mission["convergence"]["done_when"] not in DONE_WHEN_MODES:
         raise SystemExit(f"[agent-amigos] convergence.done_when が不正です: "
-                         f"{mission['convergence']['done_when']!r}")
+                         f"{mission['convergence']['done_when']!r}"
+                         f"（{' | '.join(DONE_WHEN_MODES)}）")
     mission["budget"] = {**BUDGET_DEFAULTS, **dict(m.get("budget") or {})}
     mission["workspace"] = dict(m.get("workspace") or {})
+    mission["conductor"] = {**CONDUCTOR_DEFAULTS, **dict(m.get("conductor") or {})}
+    mission["conductor"]["enabled"] = bool(mission["conductor"]["enabled"])
 
-    roles = []
+    base_roles = []
     seen = set()
     has_integrator = False
     for r in roles_in:
-        rid = str(r.get("id") or "").strip()
-        if not rid or "/" in rid or rid in ("all", "owner"):
-            raise SystemExit(f"[agent-amigos] ロール id が不正です: {rid!r}"
-                             "（all / owner は予約語）")
-        if rid in seen:
-            raise SystemExit(f"[agent-amigos] ロール id が重複しています: {rid!r}")
-        seen.add(rid)
-        role = {"id": rid,
-                "title": str(r.get("title") or rid),
-                "mission": str(r.get("mission") or ""),
-                "deliverables": [str(d) for d in (r.get("deliverables") or [])],
-                "required": bool(r.get("required", True)),
-                "seats": int(r.get("seats", 1)),
-                "agent_cli": r.get("agent_cli"),
-                "model": r.get("model"),
-                "requires": dict(r.get("requires") or {}),
-                "collaborates_with": [str(c) for c in (r.get("collaborates_with") or [])],
-                "approver": bool(r.get("approver", False)),
-                "builtin": str(r.get("builtin") or "")}
-        if role["seats"] != 1:
-            raise SystemExit(f"[agent-amigos] seats>1 は P0 未対応です（ロール {rid}）")
+        role = _build_role(r)
+        if role["id"] in seen:
+            raise SystemExit(f"[agent-amigos] ロール id が重複しています: {role['id']!r}")
+        seen.add(role["id"])
         if role["builtin"] == "integrator":
             has_integrator = True
-        roles.append(role)
-    for role in roles:
+        base_roles.append(role)
+    for role in base_roles:
         for c in role["collaborates_with"]:
             if c not in seen:
                 raise SystemExit(f"[agent-amigos] ロール {role['id']} の collaborates_with に"
                                  f" 未定義ロール {c!r} があります")
+    roles = _expand_seats(base_roles)
     if not has_integrator:
         # integrator 省略時はオーナーノードが self-staff する組み込みロールを自動追加（§8.1）
         roles.append({"id": "integrator", "title": "統合", "mission":
                       "全ロールの成果物を検証・統合し deliverable/ を組み立てる。",
-                      "deliverables": [], "required": True, "seats": 1, "agent_cli": None,
+                      "deliverables": [], "required": True, "seats": 1, "rounds": 0,
+                      "topology": None, "aggregate": None,
+                      "aggregate_answer": None, "aggregate_score": None, "agent_cli": None,
                       "model": None, "requires": {}, "collaborates_with": [],
-                      "approver": False, "builtin": "integrator"})
+                      "approver": False, "builtin": "integrator", "seat_group": "integrator",
+                      "seat_index": 0, "seat_count": 1})
     return mission, roles
 
 
@@ -215,6 +379,61 @@ def role_status(mp: MissionPaths, statuses: "dict[str, dict]", role_id: str) -> 
     return statuses.get(f"{ent['node']}--{role_id}")
 
 
+# --- 席グループの集約・合意（G1/G2） ----------------------------------------
+
+def seat_answer_file(role: dict) -> str:
+    """席の正準回答ファイル名: aggregate_answer > 単一 deliverable > 既定 ANSWER.md。"""
+    dels = role.get("deliverables") or []
+    return role.get("aggregate_answer") or (dels[0] if len(dels) == 1 else DEFAULT_ANSWER_FILE)
+
+
+def seat_groups_with_aggregate(roles: "dict[str, dict]") -> "dict[str, list]":
+    """aggregate 指定のある席グループ {基底 id: [席ロール…]} を返す。"""
+    groups: "dict[str, list]" = {}
+    for r in roles.values():
+        g = r.get("seat_group")
+        if g and int(r.get("seat_count") or 1) > 1 and r.get("aggregate"):
+            groups.setdefault(g, []).append(r)
+    return groups
+
+
+def read_seat_answer(mp: MissionPaths, seat_id: str, answer_file: str) -> "str | None":
+    path = os.path.join(mp.artifacts_dir(seat_id), answer_file)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def group_consensus(mp: MissionPaths, seat_roles: list, ratio: float, min_n: int) -> bool:
+    """席グループが合意に達したか: 回答済み席数 >= min_n かつ 最頻回答の占有率 >= ratio。"""
+    from collections import Counter
+    af = seat_answer_file(seat_roles[0])
+    answers = [a for a in (read_seat_answer(mp, r["id"], af) for r in seat_roles) if a]
+    if len(answers) < max(min_n, 1):
+        return False
+    top = Counter(answers).most_common(1)[0][1]
+    return top / len(answers) >= ratio
+
+
+# --- 動的編成（G5・restaff の剪定マーカー） ----------------------------------
+
+def pruned_roles(mp: MissionPaths) -> "set[str]":
+    """実行中に剪定（stop）されたロール id（`pruned/<id>.json` の存在から導出）。"""
+    try:
+        return {n[:-5] for n in os.listdir(mp.pruned_dir())
+                if n.endswith(".json") and ".tmp." not in n}
+    except FileNotFoundError:
+        return set()
+
+
+def active_roles(roles: "dict[str, dict]", mp: MissionPaths) -> "dict[str, dict]":
+    """剪定されていないロールだけを返す（収束・募集・ターン実行はこれを見る）。"""
+    pruned = pruned_roles(mp)
+    return {rid: r for rid, r in roles.items() if rid not in pruned}
+
+
 # --- 収束判定（設計書 §3.2） -------------------------------------------------
 
 def convergence_state(mission: dict, roles: "dict[str, dict]", mp: MissionPaths) -> dict:
@@ -226,6 +445,7 @@ def convergence_state(mission: dict, roles: "dict[str, dict]", mp: MissionPaths)
     rnd = current_round(mp)
     statuses = load_statuses(mp)
     roster = read_json(mp.roster()) or {}
+    roles = active_roles(roles, mp)             # 剪定ロールは収束計算から除外（G5）
     required = [r for r in roles.values() if r.get("required")]
     staffed = all(r["id"] in roster for r in required)
     budget = budget_state(mission, mp)
@@ -240,10 +460,27 @@ def convergence_state(mission: dict, roles: "dict[str, dict]", mp: MissionPaths)
         if st and st.get("approved_round") == rnd:
             approved_roles.append(r["id"])
     workers = [r for r in required if r.get("builtin") != "integrator"]
-    all_done = staffed and all(r["id"] in done_roles for r in workers)
-    if conv.get("done_when") == "reviewer-approved":
-        approvers = [r for r in roles.values() if r.get("approver")]
-        all_done = all_done and all(r["id"] in approved_roles for r in approvers)
+    done_when = conv.get("done_when")
+    if done_when == "consensus":
+        # 席グループが合意に達し、席以外の必須ワーカー（承認者を除く）が完了したら収束。
+        # 全席の完了は待たない（早期停止）。席グループが無ければ all-required-done に退避。
+        groups = seat_groups_with_aggregate(roles)
+        seat_ids = {r["id"] for grp in groups.values() for r in grp}
+        plain = [r for r in workers if r["id"] not in seat_ids and not r.get("approver")]
+        base_done = staffed and all(r["id"] in done_roles for r in plain)
+        if groups:
+            ratio = float(conv.get("consensus_ratio") or 0.0)
+            min_n = int(conv.get("consensus_min") or 0)
+            cons_ok = all(group_consensus(mp, sr, ratio, min_n)
+                          for sr in groups.values())
+            all_done = base_done and cons_ok
+        else:
+            all_done = staffed and all(r["id"] in done_roles for r in workers)
+    else:
+        all_done = staffed and all(r["id"] in done_roles for r in workers)
+        if done_when == "reviewer-approved":
+            approvers = [r for r in roles.values() if r.get("approver")]
+            all_done = all_done and all(r["id"] in approved_roles for r in approvers)
 
     unanswered = len(unanswered_questions(mp, roles))
     q_turns = int(conv.get("quiescence_turns") or 0)

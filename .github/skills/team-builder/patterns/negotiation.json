@@ -1,0 +1,43 @@
+{
+  "id": "negotiation",
+  "name": "Negotiation（交渉自己対戦）",
+  "category": "team-topology",
+  "tier": "medium",
+  "source": "LM Negotiation (Fu et al., 2023)",
+  "when_to_use": "対立利害の当事者を演じさせ、批評から戦略を学びつつ合意点を探るとき。",
+  "signals": [
+    "交渉/合意形成",
+    "利害が対立"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "party-a",
+        "role": "当事者 A として交渉する",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "party-b",
+        "role": "当事者 B として交渉する",
+        "required": true,
+        "approver": false,
+        "collaborates_with": [
+          "party-a"
+        ]
+      },
+      {
+        "id": "critic",
+        "role": "交渉を講評し戦略の学びを残す",
+        "required": true,
+        "approver": true
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved",
+      "quiescence_turns": 2
+    }
+  },
+  "feasibility": "partial",
+  "feasibility_note": "複数ゲーム反復の学習は差し戻しラウンドで近似。"
+}

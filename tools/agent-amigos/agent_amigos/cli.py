@@ -107,11 +107,21 @@ def _write_roles_spec(path: str, spec: dict) -> None:
 
 
 def cmd_build_team(args) -> int:
-    """チームビルディング: ミッション（ゴール/design）だけから team-building スキルで
+    """チームビルディング: ミッション（ゴール/design）だけから team-builder スキルで
     最適なロールミッション表を設計する。既定はドライラン（設計を表示）。
     --out で保存、--post で公示（従来の post 経路へ合流）まで行う。"""
     import json
     from . import teambuilding
+    if args.list_patterns:
+        rows = teambuilding.list_patterns()
+        if not rows:
+            print("パターンカタログが見つかりません（スキル未インストール？）")
+            return 0
+        print(f"オーケストレーションパターン（{len(rows)} 件。high=自動選択対象 / medium=--pattern で明示指定）:")
+        for p in sorted(rows, key=lambda r: (r.get("tier") != "high", r.get("id"))):
+            print(f"  [{p.get('tier'):<6}] {p.get('id'):<24} {p.get('name')}")
+            print(f"           {p.get('when_to_use', '')}")
+        return 0
     bus, node = _resolve(args)
     design_text = None
     if args.design:
@@ -124,9 +134,26 @@ def cmd_build_team(args) -> int:
              "capabilities": [t for t in (args.capabilities or "").split(",") if t],
              "agent_cli": args.agent_cli}
     mission_over, roles, meta = teambuilding.build_team(
-        brief, args.agent_cli or "", model=args.model)
+        brief, args.agent_cli or "", model=args.model, pattern=args.pattern)
+
+    # target=agent-flow: 探索木・動的分解は agent-flow へ委譲する（roles は出さない・G4）
+    if meta.get("target") == "agent-flow":
+        deleg = meta["delegation"]
+        log(node, f"team-builder 完了: target=agent-flow "
+                  f"pattern={meta.get('chosen_pattern') or '-'} id={deleg['id']}")
+        if args.out:
+            write_json_atomic(args.out, deleg)
+            print(f"agent-flow 委譲封筒を書き出しました: {args.out}（id={deleg['id']}）")
+        else:
+            print(json.dumps(deleg, ensure_ascii=False, indent=2))
+        print("  ※ このミッションは探索木・動的分解が本質のため agent-flow へ委譲します（役割協働ではない）。")
+        print(f"  実行: agent-flow submit {json.dumps(deleg['goal'], ensure_ascii=False)}")
+        print("  （dashboard の委譲アダプタでも投函できます — workload=flow）")
+        return 0
+
     spec = {"mission": mission_over, "roles": roles}
-    log(node, f"team-building 完了: roles={len(roles)} skill={meta.get('skill_source')}")
+    log(node, f"team-builder 完了: roles={len(roles)} "
+              f"pattern={meta.get('chosen_pattern') or '-'} skill={meta.get('skill_source')}")
 
     if args.out:
         _write_roles_spec(args.out, spec)
@@ -376,6 +403,29 @@ def cmd_assign(args) -> int:
     return 0
 
 
+def cmd_restaff(args) -> int:
+    """実行中のチーム編成を変更する（G5・オーナー）: ロールの追加 / 停止（剪定）。"""
+    from .ownerops import restaff_mission
+    from .mission import _load_spec_file
+    bus, node = _resolve(args)
+    mp, mission, _roles = _mission(bus, args.mission)
+    _require_owner(mission, node)
+    add = None
+    if args.add:
+        spec = _load_spec_file(args.add)
+        add = spec.get("roles") if isinstance(spec, dict) and "roles" in spec else spec
+        if not isinstance(add, list):
+            raise SystemExit("[agent-amigos] --add は役割ミッション表（roles 配列 / {roles:[…]}）"
+                             "のファイルを指定してください")
+    prune = [p for p in (args.prune or "").split(",") if p]
+    if not add and not prune:
+        raise SystemExit("[agent-amigos] restaff には --add か --prune が必要です")
+    result = restaff_mission(bus, mp, add=add, prune=prune, by=node)
+    print(f"チーム編成を変更しました: 追加={result['added'] or 'なし'} "
+          f"停止={result['pruned'] or 'なし'}")
+    return 0
+
+
 def cmd_budget(args) -> int:
     if args.action == "node":
         return _cmd_budget_node(args)
@@ -540,7 +590,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("build-team",
                        help="チームビルディング: ミッション（ゴール/design）だけから "
-                            "team-building スキルで最適なロール表を設計する（既定はドライラン）")
+                            "team-builder スキルで最適なロール表を設計する（既定はドライラン）")
     _bus_arg(p); _node_arg(p); _home_arg(p)
     p.add_argument("--goal", default=None, help="ミッションの目標（design が無ければ必須）")
     p.add_argument("--title", default=None, help="ミッションの短い名前")
@@ -552,6 +602,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--agent-cli", default=None,
                    help="設計に使う agent CLI（かつ各ロールの既定。stub/未指定は不可）")
     p.add_argument("--model", default=None, help="設計に使うモデル（任意）")
+    p.add_argument("--pattern", default=None,
+                   help="使うオーケストレーションパターンを id で指定（省略時は高価値パターンから"
+                        "ミッションに応じて自動選択）。一覧は --list-patterns")
+    p.add_argument("--list-patterns", action="store_true",
+                   help="利用可能なパターンの一覧を表示して終了する")
     p.add_argument("--out", default=None,
                    help="設計したロール表の書き出し先（.yaml/.json）。指定時は公示しない")
     p.add_argument("--post", action="store_true",
@@ -620,6 +675,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help="確定するノード（省略時は応募者一覧を表示）")
     p.set_defaults(fn=cmd_assign)
 
+    p = sub.add_parser("restaff",
+                       help="実行中のチーム編成を変更（オーナー）: --add <roles.json> で役割追加、"
+                            "--prune <id,...> で役割停止（剪定）")
+    _bus_arg(p); _node_arg(p)
+    p.add_argument("mission")
+    p.add_argument("--add", default=None, help="追加する役割ミッション表（YAML/JSON）")
+    p.add_argument("--prune", default="", help="停止するロール id（カンマ区切り）")
+    p.set_defaults(fn=cmd_restaff)
+
     p = sub.add_parser("budget",
                        help="予算の管理: add = ミッション予算の追加（オーナー）、"
                             "node = このノードの上限の表示・設定（請負側）")
@@ -669,8 +733,8 @@ def build_parser() -> argparse.ArgumentParser:
 # （agent-project の run --watch 既定と同じ流儀 — PC 起動時に立ち上げっぱなしにして
 # cwd のホームを面倒見る daemon 用途を一級にする）。
 _SUBCOMMANDS = {"serve", "init-bus", "post", "build-team", "join", "run", "status",
-                "collect", "accept", "reject", "assign", "budget", "say", "cancel", "gc",
-                "hub", "deliveries"}
+                "collect", "accept", "reject", "assign", "restaff", "budget", "say",
+                "cancel", "gc", "hub", "deliveries"}
 
 
 def resolve_argv(argv: "list[str] | None") -> "list[str]":

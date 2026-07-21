@@ -1,0 +1,41 @@
+{
+  "id": "self-refine",
+  "name": "Self-Refine",
+  "category": "refine-loop",
+  "tier": "high",
+  "source": "Self-Refine: Iterative Refinement with Self-Feedback (Madaan et al., 2023)",
+  "when_to_use": "単一の成果物を、批評→改稿の反復で品質基準まで磨き上げたいとき。作り手と評価者を分けたい。",
+  "signals": [
+    "明確な品質・受入基準がある",
+    "1 つの成果物を練り上げる",
+    "正誤より良し悪し"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "author",
+        "role": "成果物を作成し、レビュー指摘に応じて改稿する",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "reviewer",
+        "role": "成果物を基準と突き合わせて具体的に指摘し、満たしたら承認する",
+        "required": true,
+        "approver": true,
+        "collaborates_with": [
+          "author"
+        ]
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved",
+      "review_rounds": 3,
+      "quiescence_turns": 2
+    },
+    "budget_hint": "小〜中（例 60 分）"
+  },
+  "feasibility": "native",
+  "feasibility_note": "作り手＋承認者を reviewer-approved で締める。差し戻し（reject）ラウンドが反復に対応する。",
+  "notes": "最も汎用。迷ったらこれ。批評は具体・実行可能な指摘にするようミッションへ書く。"
+}

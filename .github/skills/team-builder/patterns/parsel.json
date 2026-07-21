@@ -1,0 +1,55 @@
+{
+  "id": "parsel",
+  "name": "Parsel（分解→並列実装→合成）",
+  "category": "software-sop",
+  "tier": "medium",
+  "source": "Parsel (Zelikman et al., 2023)",
+  "when_to_use": "機能単位に分解し、関数ごとに実装して 1 モジュールへ合成したいとき。",
+  "signals": [
+    "関数分解できる",
+    "部品ごとに実装"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "decomposer",
+        "role": "関数仕様へ分解する",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "impl-a",
+        "role": "担当関数群を実装する",
+        "required": true,
+        "approver": false,
+        "collaborates_with": [
+          "decomposer"
+        ]
+      },
+      {
+        "id": "impl-b",
+        "role": "別の関数群を実装する",
+        "required": true,
+        "approver": false,
+        "collaborates_with": [
+          "decomposer"
+        ]
+      },
+      {
+        "id": "composer",
+        "role": "各部品を 1 モジュールへ統合し検証する",
+        "required": true,
+        "approver": true,
+        "collaborates_with": [
+          "impl-a",
+          "impl-b"
+        ]
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved"
+    }
+  },
+  "feasibility": "partial",
+  "feasibility_note": "関数ごとの並列コーダーは別 id ロールで近似。合成は composer/integrator。"
+}

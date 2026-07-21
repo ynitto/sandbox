@@ -1,0 +1,40 @@
+{
+  "id": "mixture-of-agents",
+  "name": "Mixture-of-Agents（多提案→統合）",
+  "category": "ensembling",
+  "tier": "high",
+  "source": "Mixture-of-Agents / MoA (Wang et al., 2024)",
+  "when_to_use": "多様な独立提案を集めて 1 つに統合し品質を底上げしたいとき（選抜でなく合成）。",
+  "signals": [
+    "多様な視点で質を上げたい",
+    "1 つに統合したい",
+    "単一案だと偏る"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "proposer",
+        "role": "独立に案を作り ANSWER.md に書く（他案は参照しない）",
+        "required": true,
+        "approver": false,
+        "seats": 3,
+        "aggregate": "gather",
+        "count_hint": "3-4"
+      },
+      {
+        "id": "aggregator",
+        "role": "集めた全提案（deliverable の AGGREGATE）を読み、1 つの改良版へ合成する",
+        "required": true,
+        "approver": true,
+        "collaborates_with": ["proposer"]
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved"
+    },
+    "budget_hint": "中（例 90 分）"
+  },
+  "feasibility": "partial",
+  "feasibility_note": "提案は seats>1（G1）＋ aggregate: gather（G2）で N 席を集約収集できる。ただし MoA の『合成』は決定的集約では作れない（LLM 合成）ため、aggregator ロールが集めた提案を読んで統合する。",
+  "notes": "proposer は互いに参照しない（会話規約）。合成は aggregator（approver）が担い、integrator は gather で提案を束ねる。"
+}

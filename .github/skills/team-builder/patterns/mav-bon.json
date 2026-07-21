@@ -1,0 +1,30 @@
+{
+  "id": "mav-bon",
+  "name": "BoN-MAV（多観点検証×Best-of-N）",
+  "category": "verification-judging",
+  "tier": "medium",
+  "source": "BoN-MAV (Lifshitz et al., 2025)",
+  "when_to_use": "複数候補を、多観点の検証で採点して承認数（スコア）最大の候補を選ぶとき。",
+  "signals": [
+    "候補から最良選抜",
+    "多観点の合否検証"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "candidate",
+        "role": "候補解を作り ANSWER.md に書く。多観点の自己検証で通った観点数を SCORE に書く",
+        "required": true,
+        "approver": false,
+        "seats": 3,
+        "aggregate": "approval-count",
+        "count_hint": "3-5"
+      }
+    ],
+    "convergence": {
+      "done_when": "all-required-done"
+    }
+  },
+  "feasibility": "native",
+  "feasibility_note": "候補を seats>1（G1）で並べ、aggregate: approval-count（G2）で承認数（SCORE）最大の候補を integrator が決定的に選ぶ。観点検証を別 verifier ロールに分けたい場合は、その承認数を各候補の SCORE に反映する運用にする。"
+}

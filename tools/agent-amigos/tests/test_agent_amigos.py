@@ -1030,8 +1030,8 @@ class MissionSchemaTests(AmigosTestCase):
         self.assertEqual(props["staffing_policy"]["enum"], ["self-staff", "wait", "fail"])
         self.assertEqual(props["acceptance"]["enum"], ["manual", "agent"])
         conv = props["convergence"]["properties"]
-        self.assertEqual(conv["done_when"]["enum"],
-                         ["all-required-done", "reviewer-approved"])
+        from agent_amigos.mission import DONE_WHEN_MODES
+        self.assertEqual(conv["done_when"]["enum"], list(DONE_WHEN_MODES))
         budget = props["budget"]["properties"]
         self.assertEqual(budget["on_exhausted"]["enum"], ["wrap-up", "fail"])
 
@@ -1075,7 +1075,7 @@ class CommandSchemaTests(AmigosTestCase):
     def test_schema_commands_match_dispatch(self):
         schema = self._schema()
         self.assertEqual(schema["properties"]["command"]["enum"],
-                         ["post", "build-team", "claim", "assign", "accept",
+                         ["post", "build-team", "claim", "assign", "restaff", "accept",
                           "reject", "cancel", "say"])
         # oneOf の const 一覧も enum と一致する（宣言漏れ・重複なし）
         consts = [e["properties"]["command"]["const"] for e in schema["oneOf"]]
@@ -1402,7 +1402,7 @@ class NodeIdHomeMigrationTests(unittest.TestCase):
 
 
 class TeamBuildingTests(AmigosTestCase):
-    """チームビルディング（ミッションのみ → team-building スキルで役割設計 → 従来 post へ合流）。
+    """チームビルディング（ミッションのみ → team-builder スキルで役割設計 → 従来 post へ合流）。
 
     LLM は使わず agentcli.run_agent を差し替えて設計出力を注入する。
     """
@@ -1428,11 +1428,24 @@ class TeamBuildingTests(AmigosTestCase):
         agentcli.run_agent = lambda *a, **k: output
         self.addCleanup(setattr, agentcli, "run_agent", original)
 
+    def _capture_agent(self, output):
+        """run_agent を差し替え、渡されたプロンプトを self._last_prompt に記録する。"""
+        from agent_amigos import agentcli
+        original = agentcli.run_agent
+        box = {}
+
+        def _fake(prompt, *a, **k):
+            box.setdefault("prompt", prompt)   # 最初の呼び出し（設計）を記録。
+            return output                       # 後続の amigo ターンでは上書きしない
+        agentcli.run_agent = _fake
+        self.addCleanup(setattr, agentcli, "run_agent", original)
+        return box
+
     def test_skill_is_resolved_from_repo(self):
         from agent_amigos import teambuilding
         text, source = teambuilding.resolve_skill_instructions()
         self.assertTrue(source.endswith("SKILL.md") or source == "(builtin)")
-        self.assertIn("team-building", text.lower())
+        self.assertIn("team-builder", text.lower())
 
     def test_build_team_designs_and_validates(self):
         from agent_amigos import teambuilding
@@ -1514,6 +1527,124 @@ class TeamBuildingTests(AmigosTestCase):
         with open(self.bus.mission(mids[0]).design_doc(), encoding="utf-8") as f:
             self.assertIn("与えた設計", f.read())
 
+    # --- オーケストレーションパターン（カタログ・自動選択・明示指定） --------------
+
+    def test_pattern_catalog_loads_and_tiers(self):
+        from agent_amigos import teambuilding
+        high = teambuilding.list_patterns(tier="high")
+        allp = teambuilding.list_patterns()
+        self.assertGreaterEqual(len(high), 8)
+        self.assertGreater(len(allp), len(high))          # medium も存在する
+        ids = {p["id"] for p in high}
+        self.assertIn("self-refine", ids)
+        self.assertIn("metagpt-sop", ids)
+        for p in allp:                                    # 契約の必須キー
+            for k in ("id", "name", "category", "tier", "when_to_use", "feasibility"):
+                self.assertIn(k, p, p.get("id"))
+            if p.get("target") == "agent-flow":
+                self.assertIn("flow", p, p.get("id"))     # 委譲パターンは team を持たない
+            else:
+                self.assertTrue((p.get("team") or {}).get("roles"), p.get("id"))
+
+    def test_build_team_injects_high_patterns_and_records_choice(self):
+        from agent_amigos import teambuilding
+        box = self._capture_agent(json.dumps(
+            {"pattern": "self-refine", **self.DESIGN}, ensure_ascii=False))
+        _mo, _roles, meta = teambuilding.build_team({"goal": "磨き上げたい"}, "claude")
+        # 高価値パターンのカタログがプロンプトへ注入されている（自動選択）
+        self.assertIn("self-refine", box["prompt"])
+        self.assertIn("metagpt-sop", box["prompt"])
+        self.assertNotIn("reflexion", box["prompt"])       # medium は自動選択に載らない
+        self.assertEqual(meta["chosen_pattern"], "self-refine")
+
+    def test_build_team_forced_pattern_injects_only_that(self):
+        from agent_amigos import teambuilding
+        box = self._capture_agent(json.dumps(self.DESIGN, ensure_ascii=False))
+        _mo, _roles, meta = teambuilding.build_team(
+            {"goal": "g"}, "claude", pattern="reflexion")       # medium を明示指定
+        self.assertIn("reflexion", box["prompt"])
+        self.assertIn("厳守", box["prompt"])                    # forced 見出し
+        self.assertEqual(meta["chosen_pattern"], "reflexion")   # 指定が優先
+
+    def test_build_team_unknown_pattern_rejected(self):
+        from agent_amigos import teambuilding
+        self._stub_agent(json.dumps(self.DESIGN, ensure_ascii=False))
+        with self.assertRaises(RuntimeError):
+            teambuilding.build_team({"goal": "g"}, "claude", pattern="does-not-exist")
+
+    def test_build_team_pattern_none_is_normalized(self):
+        from agent_amigos import teambuilding
+        self._stub_agent(json.dumps({"pattern": "none", **self.DESIGN}, ensure_ascii=False))
+        _mo, _roles, meta = teambuilding.build_team({"goal": "g"}, "claude")
+        self.assertIsNone(meta["chosen_pattern"])
+
+    def test_build_team_command_passes_pattern(self):
+        from agent_amigos.configfile import commands_dir
+        box = self._capture_agent(json.dumps(self.DESIGN, ensure_ascii=False))
+        cdir = commands_dir(self.home)
+        os.makedirs(cdir, exist_ok=True)
+        with open(os.path.join(cdir, "bt.json"), "w", encoding="utf-8") as f:
+            json.dump({"command": "build-team", "goal": "g", "agent_cli": "claude",
+                       "pattern": "agentcoder"}, f, ensure_ascii=False)
+        NodeDaemon(self.bus, "owner-node", agent_cli="claude", interval=0,
+                   commands_home=self.home).cycle()
+        self.assertIn("agentcoder", box["prompt"])
+        self.assertEqual(len(self.bus.list_missions()), 1)
+
+    def test_cli_list_patterns(self):
+        rc = cli.main(["build-team", "--list-patterns"])
+        self.assertEqual(rc, 0)
+
+    # --- G4: agent-flow への委譲（探索木・動的分解） -------------------------
+    def _stub_flow(self):
+        self._stub_agent(json.dumps({"target": "agent-flow", "pattern": "tree-of-thoughts",
+                                     "flow": {"goal": "24 パズルを解く",
+                                              "strategy": "分岐→スコア→ビーム"}}))
+
+    def test_build_team_flow_target_returns_delegation(self):
+        from agent_amigos import teambuilding
+        self._stub_flow()
+        mo, roles, meta = teambuilding.build_team({"goal": "パズル", "title": "p"}, "claude")
+        self.assertEqual(meta["target"], "agent-flow")
+        self.assertEqual(roles, [])
+        d = meta["delegation"]
+        self.assertEqual((d["op"], d["workload"], d["version"]), ("post", "flow", 1))
+        self.assertTrue(d["id"].startswith("dg-"))
+        self.assertIn("戦略ヒント", d["goal"])              # strategy が goal に畳まれる
+        # delegation.schema.json の必須キーを満たす
+        schema = read_json(os.path.join(os.path.dirname(__file__), "..", "..", "..",
+                                        "schemas", "delegation.schema.json"))
+        for k in schema["required"]:
+            self.assertIn(k, d)
+
+    def test_build_team_flow_cli_dry_run_prints_envelope(self):
+        import io
+        import contextlib
+        self._stub_flow()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = cli.main(["build-team", "--bus", self.bus.root, "--goal", "g",
+                           "--agent-cli", "claude", "--node-id", "n1"])
+        self.assertEqual(rc, 0)
+        out = buf.getvalue()
+        self.assertIn('"workload": "flow"', out)
+        self.assertIn("agent-flow submit", out)
+        self.assertEqual(self.bus.list_missions(), [])     # amigos へは公示しない
+
+    def test_build_team_command_flow_writes_delegation_not_mission(self):
+        from agent_amigos.configfile import commands_dir, state_dir
+        self._stub_flow()
+        cdir = commands_dir(self.home)
+        os.makedirs(cdir, exist_ok=True)
+        with open(os.path.join(cdir, "bt.json"), "w", encoding="utf-8") as f:
+            json.dump({"command": "build-team", "goal": "探索する", "agent_cli": "claude"}, f,
+                      ensure_ascii=False)
+        NodeDaemon(self.bus, "owner-node", agent_cli="claude", interval=0,
+                   commands_home=self.home).cycle()
+        self.assertEqual(self.bus.list_missions(), [])     # amigos ミッションは作らない
+        designs = os.path.join(state_dir(self.home), "designs")
+        self.assertTrue(any(n.endswith("-delegation.json") for n in os.listdir(designs)))
+
     def test_build_team_cli_out_dry_run(self):
         from agent_amigos import teambuilding  # noqa: F401 (ensures import path)
         self._stub_agent(json.dumps(self.DESIGN, ensure_ascii=False))
@@ -1533,6 +1664,462 @@ class TeamBuildingTests(AmigosTestCase):
         mids = self.bus.list_missions()
         self.assertEqual(len(mids), 1)
         self.assertEqual(load_mission(self.bus.mission(mids[0]))["title"], "T")
+
+
+class SeatsAggregationTests(AmigosTestCase):
+    """G1（seats>1・並列同一シート）と G2（integrator の決定的集約）。"""
+
+    def _seats_spec(self, mode, seats=3, **extra):
+        role = {"id": "solver", "mission": "独立に解く", "seats": seats,
+                "deliverables": ["ANSWER.md"]}
+        if mode:
+            role["aggregate"] = mode
+        role.update(extra)
+        return {"mission": {"title": "t", "goal": "g", "staffing_timeout": 0,
+                            "convergence": {"done_when": "all-required-done",
+                                            "quiescence_turns": 9}},
+                "roles": [role]}
+
+    def _aggregate(self, mid, answers, scores=None):
+        """指定した席回答（と任意の SCORE）を artifacts へ書き、集約だけを走らせる。"""
+        from agent_amigos.runner import AmigoRunner
+        from agent_amigos.bus import TurnTxn
+        mp = self.bus.mission(mid)
+        for sid, ans in answers.items():
+            if ans is not None:
+                p = os.path.join(mp.artifacts_dir(sid), "ANSWER.md")
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write(ans)
+        for sid, sc in (scores or {}).items():
+            p = os.path.join(mp.artifacts_dir(sid), "SCORE")
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(str(sc))
+        runner = AmigoRunner(self.bus, mid, "integrator", "owner-node")
+        txn = TurnTxn()
+        summary = runner._aggregate_seat_groups(txn, load_roles(mp))
+        txn.apply(self.bus)
+        agg = read_json(os.path.join(mp.deliverable_dir(), "solver", "AGGREGATE.json"))
+        return summary[0], agg
+
+    # --- G1: 展開・検証 ------------------------------------------------------
+    def test_seats_expand_into_concrete_roles(self):
+        _m, roles = normalize_mission(self._seats_spec("majority", seats=3))
+        ids = {r["id"] for r in roles}
+        self.assertEqual({"solver#0", "solver#1", "solver#2", "integrator"}, ids)
+        s0 = next(r for r in roles if r["id"] == "solver#0")
+        self.assertEqual(s0["seat_group"], "solver")
+        self.assertEqual(s0["seat_count"], 3)
+        self.assertEqual(s0["aggregate"], "majority")
+
+    def test_collaborates_with_remapped_to_seats(self):
+        spec = {"mission": {"title": "t", "goal": "g"},
+                "roles": [{"id": "solver", "mission": "解く", "seats": 2},
+                          {"id": "reviewer", "mission": "見る", "approver": True,
+                           "collaborates_with": ["solver"]}]}
+        _m, roles = normalize_mission(spec)
+        rv = next(r for r in roles if r["id"] == "reviewer")
+        self.assertEqual(sorted(rv["collaborates_with"]), ["solver#0", "solver#1"])
+
+    def test_seats_validation(self):
+        with self.assertRaises(SystemExit):                     # aggregate on seats<2
+            normalize_mission({"roles": [{"id": "x", "seats": 1, "aggregate": "majority"}]})
+        with self.assertRaises(SystemExit):                     # unknown aggregate
+            normalize_mission({"roles": [{"id": "x", "seats": 2, "aggregate": "nope"}]})
+        with self.assertRaises(SystemExit):                     # seats < 1
+            normalize_mission({"roles": [{"id": "x", "seats": 0}]})
+        with self.assertRaises(SystemExit):                     # '#' reserved in id
+            normalize_mission({"roles": [{"id": "a#0"}]})
+
+    # --- G2: 集約モード ------------------------------------------------------
+    def test_aggregate_majority(self):
+        mid = self.post(self._seats_spec("majority"), mid="am-maj")
+        summary, agg = self._aggregate(mid, {"solver#0": "A", "solver#1": "A", "solver#2": "B"})
+        self.assertEqual(summary["mode"], "majority")
+        self.assertEqual(agg["winner"], "A")
+        self.assertEqual(agg["votes"], 3)
+        self.assertEqual(agg["tally"], {"A": 2, "B": 1})
+        self.assertFalse(agg["agreed"])
+        # 勝者が AGGREGATE.md に書かれる
+        md = os.path.join(self.bus.mission(mid).deliverable_dir(), "solver", "AGGREGATE.md")
+        with open(md, encoding="utf-8") as f:
+            self.assertEqual(f.read().strip(), "A")
+
+    def test_aggregate_majority_tiebreak_is_deterministic(self):
+        mid = self.post(self._seats_spec("majority", seats=2), mid="am-tie")
+        _s, agg = self._aggregate(mid, {"solver#0": "B", "solver#1": "A"})
+        self.assertEqual(agg["winner"], "A")     # 得票同数は回答昇順で決定的
+
+    def test_aggregate_consensus(self):
+        mid = self.post(self._seats_spec("consensus"), mid="am-con")
+        _s, agg = self._aggregate(mid, {"solver#0": "X", "solver#1": "X", "solver#2": "X"})
+        self.assertTrue(agg["agreed"])
+        self.assertEqual(agg["winner"], "X")
+        mid2 = self.post(self._seats_spec("consensus"), mid="am-con2")
+        _s2, agg2 = self._aggregate(mid2, {"solver#0": "X", "solver#1": "Y", "solver#2": "X"})
+        self.assertFalse(agg2["agreed"])          # 割れたら agreed=false（最頻値は X）
+        self.assertEqual(agg2["winner"], "X")
+
+    def test_aggregate_gather(self):
+        mid = self.post(self._seats_spec("gather"), mid="am-gat")
+        summary, _agg = self._aggregate(mid, {"solver#0": "one", "solver#1": "two",
+                                              "solver#2": "three"})
+        self.assertEqual(summary["mode"], "gather")
+        self.assertEqual(summary["collected"], 3)
+        md = os.path.join(self.bus.mission(mid).deliverable_dir(), "solver", "AGGREGATE.md")
+        with open(md, encoding="utf-8") as f:
+            body = f.read()
+        for token in ("solver#0", "solver#1", "solver#2", "one", "two", "three"):
+            self.assertIn(token, body)
+
+    def test_aggregate_missing_answers_are_skipped(self):
+        mid = self.post(self._seats_spec("majority"), mid="am-miss")
+        _s, agg = self._aggregate(mid, {"solver#0": "A", "solver#1": "A", "solver#2": None})
+        self.assertEqual(agg["votes"], 2)         # 未回答席は票に数えない
+        self.assertEqual(agg["winner"], "A")
+        self.assertFalse(agg["seats"]["solver#2"]["present"])
+
+    def test_aggregate_weighted_vote(self):
+        mid = self.post(self._seats_spec("weighted-vote"), mid="am-wv")
+        # A が 2 席・B が 1 席だが、B の重みが大きいので B が勝つ
+        _s, agg = self._aggregate(mid, {"solver#0": "A", "solver#1": "A", "solver#2": "B"},
+                                  scores={"solver#0": 1, "solver#1": 1, "solver#2": 5})
+        self.assertEqual(agg["winner"], "B")
+        self.assertEqual(agg["tally"], {"A": 2.0, "B": 5.0})
+
+    def test_aggregate_weighted_vote_defaults_to_one(self):
+        mid = self.post(self._seats_spec("weighted-vote"), mid="am-wv2")
+        _s, agg = self._aggregate(mid, {"solver#0": "A", "solver#1": "A", "solver#2": "B"})
+        self.assertEqual(agg["winner"], "A")     # 重み未指定は 1.0 = majority と同じ
+
+    def test_aggregate_approval_count(self):
+        mid = self.post(self._seats_spec("approval-count"), mid="am-ap")
+        # スコア最大の候補（席）が勝つ
+        _s, agg = self._aggregate(mid, {"solver#0": "X", "solver#1": "Y", "solver#2": "Z"},
+                                  scores={"solver#0": 2, "solver#1": 9, "solver#2": 3})
+        self.assertEqual(agg["winner"], "Y")
+        self.assertEqual(agg["winner_seat"], "solver#1")
+        self.assertEqual(agg["winner_score"], 9.0)
+
+    # --- done_when: consensus（早期収束） ------------------------------------
+    def _stage_consensus(self, spec, answers, mid):
+        self.post(spec, mid=mid)
+        mp = self.bus.mission(mid)
+        roles = load_roles(mp)
+        write_json_atomic(mp.roster(), {rid: {"node": "owner-node"} for rid in roles})
+        for sid, ans in answers.items():
+            p = os.path.join(mp.artifacts_dir(sid), "ANSWER.md")
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(ans)
+        return convergence_state(load_mission(mp), roles, mp)
+
+    def test_done_when_consensus_converges_when_ratio_met(self):
+        spec = self._seats_spec("majority")
+        spec["mission"]["convergence"] = {"done_when": "consensus", "consensus_ratio": 0.6,
+                                          "consensus_min": 2, "quiescence_turns": 0}
+        cs = self._stage_consensus(spec, {"solver#0": "A", "solver#1": "A",
+                                          "solver#2": "B"}, "am-cons-y")   # 2/3 = 0.66
+        self.assertTrue(cs["converged"])
+        self.assertEqual(cs["reason"], "done")
+
+    def test_done_when_consensus_waits_when_split(self):
+        spec = self._seats_spec("majority")
+        spec["mission"]["convergence"] = {"done_when": "consensus", "consensus_ratio": 0.6,
+                                          "consensus_min": 2, "quiescence_turns": 0}
+        cs = self._stage_consensus(spec, {"solver#0": "A", "solver#1": "B",
+                                          "solver#2": "C"}, "am-cons-n")   # 1/3 < 0.6
+        self.assertFalse(cs["converged"])
+
+    def test_done_when_consensus_needs_min_answers(self):
+        spec = self._seats_spec("majority", seats=5)
+        spec["mission"]["convergence"] = {"done_when": "consensus", "consensus_ratio": 0.6,
+                                          "consensus_min": 3, "quiescence_turns": 0}
+        cs = self._stage_consensus(spec, {"solver#0": "A", "solver#1": "A"},
+                                   "am-cons-min")    # 一致だが回答 2 < min 3
+        self.assertFalse(cs["converged"])
+
+    # --- E2E: stub で seats が統合まで到達し manifest に集約が載る ------------
+    def test_seats_end_to_end_stub_produces_aggregates(self):
+        mid = self.post(self._seats_spec("majority"), mid="am-e2e")
+        d = NodeDaemon(self.bus, "owner-node", agent_cli="stub", interval=0)
+        for _ in range(25):
+            d.cycle()
+            if self.phase(mid) == "reviewing":
+                break
+        self.assertEqual(self.phase(mid), "reviewing")
+        man = read_json(self.bus.mission(mid).manifest())
+        aggs = {a["group"]: a for a in man.get("aggregates") or []}
+        self.assertIn("solver", aggs)
+        self.assertEqual(aggs["solver"]["mode"], "majority")
+        self.assertEqual(aggs["solver"]["votes"], 3)   # 3 席とも ANSWER.md を書いた
+
+
+class DebateRoundsTests(AmigosTestCase):
+    """G3: 同期討論ラウンド（ラウンドバリア）。"""
+
+    def _debate_spec(self, seats=3, rounds=3, done_when="all-required-done", **conv):
+        c = {"done_when": done_when, "quiescence_turns": 99}
+        c.update(conv)
+        return {"mission": {"title": "d", "goal": "g", "staffing_timeout": 0, "convergence": c},
+                "roles": [{"id": "debater", "mission": "立場を論じる", "seats": seats,
+                           "rounds": rounds, "aggregate": "majority",
+                           "deliverables": ["ANSWER.md"]}]}
+
+    def _round_files(self, mid, seat_id):
+        mp = self.bus.mission(mid)
+        try:
+            return sorted(f for f in os.listdir(mp.artifacts_dir(seat_id))
+                          if f.startswith("round-"))
+        except FileNotFoundError:
+            return []
+
+    def test_rounds_validation(self):
+        with self.assertRaises(SystemExit):        # rounds on seats<2
+            normalize_mission({"roles": [{"id": "x", "seats": 1, "rounds": 2}]})
+        with self.assertRaises(SystemExit):        # rounds < 0
+            normalize_mission({"roles": [{"id": "x", "seats": 2, "rounds": -1}]})
+        _m, roles = normalize_mission({"roles": [{"id": "x", "seats": 2, "rounds": 3}]})
+        self.assertTrue(all(r["rounds"] == 3 for r in roles if r.get("seat_group") == "x"))
+
+    def test_round_barrier_blocks_until_peers_catch_up(self):
+        from agent_amigos.runner import AmigoRunner
+        mid = self.post(self._debate_spec(seats=3, rounds=3), mid="am-barrier")
+        mp = self.bus.mission(mid)
+        write_json_atomic(mp.roster(),
+                          {rid: {"node": "owner-node"} for rid in load_roles(mp)})
+        r0 = AmigoRunner(self.bus, mid, "debater#0", "owner-node", agent_cli="stub")
+        r0.turn_once()                             # 席0: round-0 を書く
+        self.assertEqual(self._round_files(mid, "debater#0"), ["round-0.md"])
+        r0.turn_once()                             # 他席が round-0 未 → バリアで待つ
+        self.assertEqual(self._round_files(mid, "debater#0"), ["round-0.md"])
+        # 他 2 席も round-0 を出すと、席0 が round-1 へ進める
+        AmigoRunner(self.bus, mid, "debater#1", "owner-node", agent_cli="stub").turn_once()
+        AmigoRunner(self.bus, mid, "debater#2", "owner-node", agent_cli="stub").turn_once()
+        r0.turn_once()
+        self.assertEqual(self._round_files(mid, "debater#0"), ["round-0.md", "round-1.md"])
+
+    def test_debate_e2e_reaches_reviewing_with_all_rounds(self):
+        mid = self.post(self._debate_spec(seats=3, rounds=3), mid="am-debate-e2e")
+        d = NodeDaemon(self.bus, "owner-node", agent_cli="stub", interval=0)
+        for _ in range(40):
+            d.cycle()
+            if self.phase(mid) == "reviewing":
+                break
+        self.assertEqual(self.phase(mid), "reviewing")
+        for sid in ("debater#0", "debater#1", "debater#2"):
+            self.assertEqual(self._round_files(mid, sid),
+                             ["round-0.md", "round-1.md", "round-2.md"])
+            mp = self.bus.mission(mid)
+            self.assertTrue(os.path.isfile(os.path.join(mp.artifacts_dir(sid), "ANSWER.md")))
+
+    def test_consensus_early_stop_finalizes_before_last_round(self):
+        from agent_amigos.runner import AmigoRunner
+        mid = self.post(self._debate_spec(seats=3, rounds=5, done_when="consensus",
+                                          consensus_ratio=0.6, consensus_min=2),
+                        mid="am-early")
+        mp = self.bus.mission(mid)
+        write_json_atomic(mp.roster(),
+                          {rid: {"node": "owner-node"} for rid in load_roles(mp)})
+        # 全席が round-0 を同じ主張で出したと仮定（合意）
+        for sid in ("debater#0", "debater#1", "debater#2"):
+            p = os.path.join(mp.artifacts_dir(sid), "round-0.md")
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w", encoding="utf-8") as f:
+                f.write("同じ主張")
+        # 席0 のターン: round-1 を出す前に合意を検出して早期確定（ANSWER=round-0）
+        AmigoRunner(self.bus, mid, "debater#0", "owner-node", agent_cli="stub").turn_once()
+        self.assertEqual(self._round_files(mid, "debater#0"), ["round-0.md"])  # round-1 を作らない
+        with open(os.path.join(mp.artifacts_dir("debater#0"), "ANSWER.md"), encoding="utf-8") as f:
+            self.assertEqual(f.read().strip(), "同じ主張")
+
+
+class TopologyTests(AmigosTestCase):
+    """同期討論の通信トポロジ（各席が読む相手の制限）。"""
+
+    def test_topology_neighbors(self):
+        from agent_amigos.mission import topology_neighbors
+        self.assertEqual([topology_neighbors(i, 5, "ring") for i in range(5)],
+                         [[1, 4], [0, 2], [1, 3], [2, 4], [0, 3]])
+        self.assertEqual(topology_neighbors(0, 4, "star"), [1, 2, 3])
+        self.assertEqual(topology_neighbors(2, 4, "star"), [0])
+        self.assertEqual(topology_neighbors(0, 7, "tree"), [1, 2])
+        self.assertEqual(sorted(topology_neighbors(1, 7, "tree")), [0, 3, 4])
+
+    def test_topology_requires_rounds(self):
+        with self.assertRaises(SystemExit):
+            normalize_mission({"roles": [{"id": "d", "seats": 3, "topology": "ring"}]})
+        with self.assertRaises(SystemExit):
+            normalize_mission({"roles": [{"id": "d", "seats": 3, "rounds": 2,
+                                          "topology": "mesh"}]})
+
+    def test_star_spoke_reads_only_hub(self):
+        from agent_amigos.runner import AmigoRunner
+        spec = {"mission": {"title": "d", "goal": "g"},
+                "roles": [{"id": "d", "mission": "討論", "seats": 4, "rounds": 2,
+                           "topology": "star"}]}
+        mid = self.post(spec, mid="am-star")
+        roles = load_roles(self.bus.mission(mid))
+        spoke = roles["d#2"]
+        r = AmigoRunner(self.bus, mid, "d#2", "owner-node")
+        peers = sorted(roles)
+        self.assertEqual(r._topology_readable(spoke, peers), ["d#0"])   # ハブのみ
+        hub = roles["d#0"]
+        rh = AmigoRunner(self.bus, mid, "d#0", "owner-node")
+        self.assertEqual(rh._topology_readable(hub, peers), ["d#1", "d#2", "d#3"])
+
+
+class RestaffTests(AmigosTestCase):
+    """G5: 実行中のチーム編成変更（restaff = ロール追加・剪定）。"""
+
+    def setUp(self):
+        super().setUp()
+        self.home = os.path.join(self.tmp, "home")
+
+    def _post_two(self):
+        spec = {"mission": {"title": "t", "goal": "g", "staffing_timeout": 0,
+                            "convergence": {"done_when": "all-required-done", "quiescence_turns": 99}},
+                "roles": [{"id": "worker", "mission": "作る", "deliverables": ["out.md"]},
+                          {"id": "extra", "mission": "任意", "required": False}]}
+        return self.post(spec, mid="am-restaff")
+
+    def test_restaff_add_and_prune(self):
+        from agent_amigos.ownerops import restaff_mission
+        from agent_amigos.mission import pruned_roles
+        mid = self._post_two()
+        mp = self.bus.mission(mid)
+        res = restaff_mission(self.bus, mp, add=[{"id": "reviewer", "mission": "見る",
+                                                 "approver": True}], prune=["extra"], by="owner-node")
+        self.assertEqual(res["added"], ["reviewer"])
+        self.assertEqual(res["pruned"], ["extra"])
+        self.assertIn("extra", pruned_roles(mp))
+        self.assertIn("reviewer", load_roles(mp))          # roles/reviewer.json が書かれた
+        # 剪定ロールは収束計算から外れる
+        cs = convergence_state(load_mission(mp), load_roles(mp), mp)
+        # active roles に extra は含まれない
+        from agent_amigos.mission import active_roles
+        self.assertNotIn("extra", active_roles(load_roles(mp), mp))
+
+    def test_pruned_role_runner_exits(self):
+        from agent_amigos.runner import AmigoRunner
+        from agent_amigos.ownerops import restaff_mission
+        mid = self._post_two()
+        mp = self.bus.mission(mid)
+        write_json_atomic(mp.roster(), {rid: {"node": "owner-node"} for rid in load_roles(mp)})
+        restaff_mission(self.bus, mp, prune=["extra"], by="owner-node")
+        r = AmigoRunner(self.bus, mid, "extra", "owner-node", agent_cli="stub")
+        self.assertEqual(r.turn_once(), "exit")
+
+    def test_restaff_prune_unknown_rejected(self):
+        from agent_amigos.ownerops import restaff_mission
+        mid = self._post_two()
+        with self.assertRaises(SystemExit):
+            restaff_mission(self.bus, self.bus.mission(mid), prune=["ghost"], by="owner-node")
+
+    def test_restaff_command_owner_only(self):
+        from agent_amigos.commands import ingest_commands
+        from agent_amigos.configfile import commands_dir
+        mid = self._post_two()
+        cdir = commands_dir(self.home)
+        os.makedirs(cdir, exist_ok=True)
+        with open(os.path.join(cdir, "rs.json"), "w", encoding="utf-8") as f:
+            json.dump({"command": "restaff", "mission": mid, "prune": ["extra"]}, f)
+        # 非オーナーノードは拒否 → .rejected
+        ingest_commands(self.bus, "other-node", self.home)
+        self.assertIn("rs.json.rejected", os.listdir(cdir))
+
+    def test_restaff_command_add_prune(self):
+        from agent_amigos.commands import ingest_commands
+        from agent_amigos.configfile import commands_dir
+        from agent_amigos.mission import pruned_roles
+        mid = self._post_two()
+        cdir = commands_dir(self.home)
+        os.makedirs(cdir, exist_ok=True)
+        with open(os.path.join(cdir, "rs.json"), "w", encoding="utf-8") as f:
+            json.dump({"command": "restaff", "mission": mid,
+                       "add": [{"id": "qa", "mission": "検証", "approver": True}],
+                       "prune": ["extra"]}, f, ensure_ascii=False)
+        ingest_commands(self.bus, "owner-node", self.home)
+        self.assertIn("qa", load_roles(self.bus.mission(mid)))
+        self.assertIn("extra", pruned_roles(self.bus.mission(mid)))
+
+
+class ConductorTests(AmigosTestCase):
+    """自律コンダクタ（オプトイン・G5 上位ループ）: 実行中に restaff で編成を調整する。"""
+
+    def _post(self, conductor=None, roles=None):
+        m = {"title": "t", "goal": "g", "staffing_timeout": 0,
+             "convergence": {"done_when": "all-required-done", "quiescence_turns": 99}}
+        if conductor is not None:
+            m["conductor"] = conductor
+        spec = {"mission": m, "roles": roles or
+                [{"id": "worker", "mission": "作る", "deliverables": ["out.md"]},
+                 {"id": "extra", "mission": "余剰", "required": False}]}
+        return self.post(spec, mid="am-cond")
+
+    def _mock_decision(self, decision):
+        from agent_amigos import agentcli
+        orig = agentcli.run_agent
+        calls = []
+
+        def fake(prompt, *a, **k):
+            calls.append(prompt)
+            return json.dumps(decision)
+        agentcli.run_agent = fake
+        self.addCleanup(setattr, agentcli, "run_agent", orig)
+        return calls
+
+    def test_conductor_disabled_is_skipped(self):
+        from agent_amigos.ownerops import conductor_turn
+        mid = self._post()                                  # conductor 無し
+        mp = self.bus.mission(mid)
+        self.assertEqual(conductor_turn(self.bus, mp, load_mission(mp), "owner-node", "claude"),
+                         "skipped")
+
+    def test_conductor_applies_add_and_prune_then_round_gated(self):
+        from agent_amigos.ownerops import conductor_turn
+        from agent_amigos.mission import pruned_roles
+        calls = self._mock_decision({"add": [{"id": "reviewer", "mission": "見る",
+                                             "approver": True}], "prune": ["extra"], "reason": "x"})
+        mid = self._post(conductor={"enabled": True, "cli": "claude"})
+        mp = self.bus.mission(mid)
+        mission = load_mission(mp)
+        self.assertEqual(conductor_turn(self.bus, mp, mission, "owner-node", "claude"), "acted")
+        self.assertIn("reviewer", load_roles(mp))
+        self.assertIn("extra", pruned_roles(mp))
+        n = len(calls)
+        # 同一ラウンドの再評価はしない（LLM を毎サイクル呼ばない）
+        self.assertEqual(conductor_turn(self.bus, mp, mission, "owner-node", "claude"), "idle")
+        self.assertEqual(len(calls), n)
+
+    def test_conductor_stub_is_noop(self):
+        from agent_amigos.ownerops import conductor_turn
+        mid = self._post(conductor={"enabled": True, "cli": "stub"})
+        mp = self.bus.mission(mid)
+        self.assertEqual(conductor_turn(self.bus, mp, load_mission(mp), "owner-node", "stub"),
+                         "idle")
+
+    def test_conductor_guardrails_protect_core_roles(self):
+        from agent_amigos.ownerops import conductor_turn
+        from agent_amigos.mission import pruned_roles
+        self._mock_decision({"add": [], "prune": ["integrator", "worker"], "reason": "x"})
+        mid = self._post(conductor={"enabled": True, "cli": "claude"},
+                         roles=[{"id": "worker", "mission": "w"}])   # 唯一の必須ワーカー
+        mp = self.bus.mission(mid)
+        conductor_turn(self.bus, mp, load_mission(mp), "owner-node", "claude")
+        self.assertNotIn("integrator", pruned_roles(mp))   # integrator は守る
+        self.assertNotIn("worker", pruned_roles(mp))       # 最後の必須ワーカーは守る
+
+    def test_conductor_respects_max_total_ops(self):
+        from agent_amigos.ownerops import conductor_turn
+        calls = self._mock_decision({"add": [{"id": "r", "mission": "m"}], "prune": [],
+                                     "reason": "x"})
+        mid = self._post(conductor={"enabled": True, "cli": "claude", "max_total_ops": 0})
+        mp = self.bus.mission(mid)
+        self.assertEqual(conductor_turn(self.bus, mp, load_mission(mp), "owner-node", "claude"),
+                         "idle")
+        self.assertEqual(len(calls), 0)                    # 上限で LLM を呼ぶ前に止まる
 
 
 if __name__ == "__main__":

@@ -1,0 +1,32 @@
+{
+  "id": "reconcile",
+  "name": "ReConcile（円卓合意）",
+  "category": "debate-consensus",
+  "tier": "medium",
+  "source": "ReConcile (Chen et al., 2024)",
+  "when_to_use": "異質な複数エージェントが確信度付きで見解を出し、確信度重みの合意に至りたいとき。",
+  "signals": [
+    "異質な視点の合議",
+    "確信度で重み付け"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "member",
+        "role": "毎ラウンド他席の前主張を踏まえて見解を更新し、最終主張を ANSWER.md、確信度(0-1)を SCORE に書く",
+        "required": true,
+        "approver": false,
+        "seats": 3,
+        "rounds": 2,
+        "aggregate": "weighted-vote",
+        "count_hint": "3-5"
+      }
+    ],
+    "convergence": {
+      "done_when": "consensus",
+      "consensus_ratio": 0.6
+    }
+  },
+  "feasibility": "native",
+  "feasibility_note": "member を seats>1（G1）＋ rounds:2（G3・同期ラウンド）で円卓討論させ、aggregate: weighted-vote（G2）で確信度（SCORE）重みの投票を integrator が決定的に集計する。done_when: consensus で合意到達時に早期収束する。"
+}

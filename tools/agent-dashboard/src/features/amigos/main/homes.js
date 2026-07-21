@@ -170,7 +170,7 @@ function discoverHomes(cfg) {
 // 投函できるコマンド。契約の正典は schemas/amigos-command.schema.json（取り込み側は
 // agent_amigos/commands.py の _dispatch）。両者の一致はテストで担保する。
 const ALLOWED_COMMANDS = new Set([
-  'post', 'build-team', 'claim', 'assign', 'accept', 'reject', 'cancel', 'say',
+  'post', 'build-team', 'claim', 'assign', 'restaff', 'accept', 'reject', 'cancel', 'say',
 ]);
 
 // 指示の投函: ホーム検証（発見済みのホームのみ）→ commands/ へアトミックに 1 ファイル書く。

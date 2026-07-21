@@ -1,0 +1,16 @@
+{
+  "id": "tree-of-thoughts",
+  "name": "Tree of Thoughts (ToT)",
+  "category": "search-writing",
+  "tier": "medium",
+  "target": "agent-flow",
+  "source": "Tree of Thoughts (Yao et al., 2023)",
+  "when_to_use": "解が探索木で表せる問題（分岐 → 評価 → ビーム剪定を深さ方向に繰り返す）。役割協働ではなく探索が本質。",
+  "signals": ["解を分岐で広げて絞る", "ビーム/深さ優先の探索", "途中状態の評価が要る"],
+  "flow": {
+    "strategy": "各段で候補思考を k 個生成 → 評価器でスコア → 上位 BEAM 本を残す、を深さ方向に反復（BFS+ビーム）。最終フロンティアを実行して検証。",
+    "notes": "agent-flow の動的分解・データ駆動 fan-out・再計画で表現する。"
+  },
+  "feasibility": "needs-extension",
+  "feasibility_note": "探索木は agent-amigos の役割協働では表せない（G4）。team-builder は agent-flow へ委譲する（workload=flow の委譲封筒を出力）。"
+}

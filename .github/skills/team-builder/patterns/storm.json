@@ -1,0 +1,44 @@
+{
+  "id": "storm",
+  "name": "STORM（多視点取材→執筆）",
+  "category": "search-writing",
+  "tier": "medium",
+  "source": "STORM (Shao et al., 2024)",
+  "when_to_use": "多視点の Q&A 取材で情報を集め、アウトライン→長文記事を書きたいとき。",
+  "signals": [
+    "調査記事/長文",
+    "多視点の取材"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "researcher",
+        "role": "視点ごとに質問し専門家回答から論点を集める",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "outliner",
+        "role": "論点からアウトラインを作る",
+        "required": true,
+        "approver": false,
+        "collaborates_with": [
+          "researcher"
+        ]
+      },
+      {
+        "id": "editor",
+        "role": "アウトラインから記事を執筆・統合する",
+        "required": true,
+        "approver": true,
+        "collaborates_with": [
+          "outliner"
+        ]
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved"
+    }
+  },
+  "feasibility": "partial"
+}
