@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard / kiro-loop / agent-loop: 実行状況ダイアログの送信が `[[: not found` / `python: No such file or directory` で失敗する不具合を修正
+
+- **agent-dashboard**: `src/features/kiro-loop/main/exec.js` の `shInWsl` を `sh -lc`（dash）から
+  `bash -lc` へ変更。dash だと利用者の profile / `~/.bashrc` の bash 構文 `[[ … ]]` が
+  `sh: N: [[: not found` になり、そこで止まって venv 有効化も走らず、kiro-loop の
+  `#!/usr/bin/env python` が解決できず `python: No such file or directory` になっていた。
+- **kiro-loop / agent-loop**: スクリプトの shebang を `#!/usr/bin/env python` → `#!/usr/bin/env python3`
+  へ修正（`kiro-loop.py` / `kiro-send.py` / `agent-send.py`）。インストーラの python 検出順も
+  `python python3` → `python3 python` にし、`python` 未存在（python3 のみ）の環境でも動くようにした。
+
 ### agent-dashboard: ステートマシン実行時、必要な入力パラメータを人へ質問させる
 
 `src/features/cowork/main/cowork.js`。statemachine-use で作ったステートマシンに入力パラメータが要る

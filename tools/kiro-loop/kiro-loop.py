@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """
 kiro-loop.py — tmux 分割ウィンドウで kiro-cli を起動し、
 設定ファイルに定義したプロンプトを定期的に送信するスクリプト。
