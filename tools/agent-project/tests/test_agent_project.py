@@ -2517,6 +2517,61 @@ class TestCommandsIngest(unittest.TestCase):
             self.assertEqual(sorted(p.name for p in cd.glob("*.err")),
                              ["garbage.json.err", "old2.json.err"])
 
+    def test_ingest_commands_writes_success_receipt(self):
+        # 成功した指示は processed/<name>.json に受理レシートを残す。viewer が元ファイル名で
+        # 自分の「送信済み」表示を「受理済み」へ更新でき、押しても何も起きない停滞を排除する。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="blocked", verify="true")
+            c = cfg_for(d, actor="bob")
+            km.ensure_dirs(c)
+            cd = km.commands_dir(c)
+            (cd / "viewer-approve-x.json").write_text(json.dumps(
+                {"command": "approve", "id": "T1", "reason": "直した"}), encoding="utf-8")
+            self.assertEqual(km.ingest_commands(c), ["approve:T1"])
+            self.assertEqual(list(cd.glob("*.json")), [])            # 元の指示は従来どおり消える
+            receipts = list(km.commands_receipts_dir(c).glob("*.json"))
+            self.assertEqual([p.name for p in receipts], ["viewer-approve-x.json"])
+            rec = json.loads(receipts[0].read_text(encoding="utf-8"))
+            self.assertTrue(rec["ok"])
+            self.assertEqual(rec["action"], "approve")
+            self.assertEqual(rec["id"], "T1")
+            self.assertEqual(rec["source"], "viewer-approve-x.json")
+
+    def test_ingest_commands_failure_leaves_no_receipt(self):
+        # 失敗は従来どおり .err にだけ残し、受理レシート（成功の痕跡）は書かない。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            c = cfg_for(d)
+            km.ensure_dirs(c)
+            cd = km.commands_dir(c)
+            (cd / "bad.json").write_text(json.dumps(
+                {"command": "approve", "id": "NOPE"}), encoding="utf-8")
+            self.assertEqual(km.ingest_commands(c), [])
+            self.assertEqual(len(list(cd.glob("*.json.err"))), 1)
+            rdir = km.commands_receipts_dir(c)
+            self.assertFalse(rdir.exists() and list(rdir.glob("*.json")))
+
+    def test_command_receipts_pruned_by_count(self):
+        # 受理レシートは件数上限で掃除され、commands/ 履歴が肥大しない。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            c = cfg_for(d)
+            km.ensure_dirs(c)
+            rdir = km.commands_receipts_dir(c)
+            rdir.mkdir(parents=True, exist_ok=True)
+            keep = km._RECEIPT_KEEP
+            base = time.time() - 500                          # TTL 内かつ決定的な mtime 順
+            for i in range(keep + 25):
+                p = rdir / f"r{i:04d}.json"
+                p.write_text("{}", encoding="utf-8")
+                os.utime(p, (base + i, base + i))
+            km._prune_command_receipts(c)
+            remaining = sorted(p.name for p in rdir.glob("*.json"))
+            self.assertEqual(len(remaining), keep)           # 上限まで削減
+            self.assertNotIn("r0000.json", remaining)        # 最古が消える
+            self.assertIn(f"r{keep + 24:04d}.json", remaining)  # 最新は残る
+
     def test_has_work_wakes_on_commands(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)

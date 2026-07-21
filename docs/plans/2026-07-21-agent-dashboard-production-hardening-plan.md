@@ -4,6 +4,14 @@
 > 機能や制約を削ってでも全体をシンプルにする再設計計画。
 > 全てをシステムで解決せず、負荷の低い作業は人間の運用に寄せる。
 
+> **実装状況（2026-07-21）**: Phase 1 の「操作の受理確認(ack)」を先行実装済み。
+> エンジンは commands 取り込み成功時に `commands/processed/<name>.json` へ受理レシートを
+> 残し(`agent_project/commands.py` の `_write_command_receipt`)、dashboard は
+> `listCommandReceipts` でそれを読み、要対応カードに「受理されました」を表示する
+> (`project.js` / `renderer/sections/needs.js`)。テスト: エンジン側 3 件
+> (`test_agent_project.py`)、dashboard 側 5 件(`command-receipt.test.js`)。
+> 残りの案・フェーズは未着手。
+
 ## 前提となる運用形態
 
 - agent-dashboard は Windows、agent-project などのエンジンは WSL で動作する。

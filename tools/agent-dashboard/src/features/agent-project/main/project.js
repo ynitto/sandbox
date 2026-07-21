@@ -819,6 +819,32 @@ function listCommandFailures(dir) {
   return out;
 }
 
+// commands/processed/*.json — 本体が取り込みに成功した指示の受理レシート（本体
+// _write_command_receipt と対）。中身は {ok, action, id, processed_at, source}。承認の
+// 取り込みは非同期（ドロップ→後で本体が処理）で、送信時トーストは「送信済み」までしか
+// 言えない。成功時に元ファイルが消えるだけだと「保留中（本体未取り込み）」と「処理済み」が
+// 区別できず、押しても何も起きないように見える。受理レシートを読み、送信した指示が本体に
+// 届いたことをカードで示す。タスク id ごとに最新の 1 件へまとめる。
+function listCommandReceipts(dir) {
+  const out = {};
+  const pdir = path.join(dir, 'commands', 'processed');
+  for (const f of safeList(pdir)) {
+    if (!f.endsWith('.json')) continue;
+    const rec = readJson(path.join(pdir, f));
+    if (!rec || typeof rec !== 'object' || !rec.ok) continue;
+    const tid = String(rec.id || '').trim();
+    if (!tid) continue;                       // プロジェクト単位（replan/pause 等）はカードに紐づかない
+    const entry = {
+      action: String(rec.action || ''),
+      processedAt: String(rec.processed_at || ''),
+      source: String(rec.source || ''),
+    };
+    const prev = out[tid];
+    if (!prev || String(prev.processedAt) < entry.processedAt) out[tid] = entry;
+  }
+  return out;
+}
+
 // needs/<id>.md が無い判断待ちタスク（review / blocked / proposed）を backlog status から補う。
 // 本体の ensure_needs と同じ契約: needs は status の投影で、票が失われても検収・承認導線を残す。
 // ここではファイルを書かず表示用だけを合成する（承認は commands/ 経由で needs ファイルが無くても届く）。
@@ -1749,9 +1775,14 @@ function readProject(workspaceDir, cfg) {
   );
   // 直前の指示の失敗（commands/*.err）を該当カードへ。決着済みカードには出さない。
   const commandFailures = listCommandFailures(dir);
+  // 直前の指示の受理（commands/processed/*.json）を該当カードへ＝「送信済み → 受理済み」。
+  const commandReceipts = listCommandReceipts(dir);
   for (const need of needs) {
-    const cf = commandFailures[String(need.taskId || need.id || '').trim()];
+    const tid = String(need.taskId || need.id || '').trim();
+    const cf = commandFailures[tid];
     if (cf && !need.decided) need.commandFailure = cf;
+    const cr = commandReceipts[tid];
+    if (cr && !need.decided) need.commandReceipt = cr;
   }
   // 要対応カードにも監視担当を載せる（誰がこの判断を見るかの分担を画面で示す）。
   // 併せて成果物レビューのコメント（reviews/<task-id>/）も載せる＝複数メンバーの
@@ -1895,6 +1926,7 @@ module.exports = {
   synthesizeNeedsFromBacklog,
   attachDeliveryHintsFromBacklog,
   listCommandFailures,
+  listCommandReceipts,
   _splitDiff,
   _deliveryFromDetail,
   _extractMrUrls,

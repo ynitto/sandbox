@@ -1681,6 +1681,17 @@ table.list tr.clickable:hover { background: var(--bg2); }
 }
 .need-command-failure strong { color: #ff8d88; }
 .need-command-failure span { line-height: 1.5; overflow-wrap: anywhere; }
+/* 指示が本体に届き受理された確認（緑＝正常。失敗バナーとは色で区別する） */
+.need-command-receipt {
+  margin: 10px 0 14px;
+  padding: 9px 13px;
+  border: 1px solid rgba(133, 153, 0, 0.55);
+  border-left-width: 4px;
+  border-radius: 7px;
+  background: rgba(133, 153, 0, 0.1);
+  color: var(--fg);
+}
+.need-command-receipt span { line-height: 1.5; overflow-wrap: anywhere; }
 /* verify 未定義など「失敗ではなく確認待ち」の情報バナー（赤＝エラーと誤読させない） */
 .final-verification-failure.info {
   border-color: rgba(38, 139, 210, 0.6);

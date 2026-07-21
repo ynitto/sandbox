@@ -580,6 +580,64 @@ def _clear_rejected_commands(cfg: "Config", tid: str) -> None:
             pass
 
 
+# 受理レシート（processed/<name>.json）— 指示を取り込んだ結果の痕跡。
+#   成功時にファイルを消すだけだと、リモート閲覧者からは「保留中（エンジン未取り込み）」と
+#   「処理済み」が区別できず、承認を押しても何も起きないように見える（原因不明の停滞）。
+#   成功も痕跡として残し、viewer が「送信済み → 受理済み」を表示できるようにする。失敗は従来
+#   どおり <name>.json.err に残す（.err は viewer の失敗バナーの根拠なので二重化しない）。
+#   commands/ 配下なので状態同期でそのまま全 PC へ届く。放置すると溜まるため件数/期限で掃除する。
+_RECEIPT_KEEP = 200                       # 直近この件数だけ残す
+_RECEIPT_TTL_SEC = 24 * 3600              # かつ、これより古い受理レシートは消す（同期越しの閲覧猶予）
+
+
+def commands_receipts_dir(cfg: "Config") -> Path:
+    return commands_dir(cfg) / "processed"
+
+
+def _prune_command_receipts(cfg: "Config") -> None:
+    """受理レシートを件数上限と TTL で掃除する（commands/ 履歴の肥大を防ぐ）。"""
+    rdir = commands_receipts_dir(cfg)
+    try:
+        files = sorted(rdir.glob("*.json"), key=lambda p: p.stat().st_mtime)
+    except OSError:
+        return
+    now = time.time()
+    survivors: "list[Path]" = []
+    for p in files:
+        try:
+            if now - p.stat().st_mtime > _RECEIPT_TTL_SEC:
+                p.unlink()
+            else:
+                survivors.append(p)
+        except OSError:
+            pass
+    for p in survivors[:max(0, len(survivors) - _RECEIPT_KEEP)]:
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
+
+def _write_command_receipt(cfg: "Config", f: Path, action: str, tid: str,
+                           detail: str = "") -> None:
+    """取り込みに成功した指示の受理レシートを processed/<name>.json にアトミックに残す。
+    viewer が元ファイル名（source）で自分の『送信済み』表示を『受理済み』へ更新できる。"""
+    rdir = commands_receipts_dir(cfg)
+    try:
+        rdir.mkdir(parents=True, exist_ok=True)
+        payload = {"ok": True, "action": action, "id": tid,
+                   "processed_at": _now_ts(), "source": f.name}
+        if detail:
+            payload["detail"] = detail[:500]
+        dest = rdir / f.name
+        tmp = dest.with_name(dest.name + ".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, dest)
+        _prune_command_receipts(cfg)
+    except OSError:
+        pass                                  # レシートは best-effort（本処理は既に成功している）
+
+
 def _read_command(f: Path) -> "tuple[dict | None, str]":
     """指示ファイルを読む。(rec, why) を返す。rec が None なら why が理由（未完・不正）。
 
@@ -630,6 +688,7 @@ def ingest_commands(cfg: "Config") -> "list[str]":
             # （複数 charter 運用は "charter" キーで対象を絞れる）
             rc = cmd_replan(cfg, reason, str(rec.get("charter", "") or "").strip())
             if rc == 0:
+                _write_command_receipt(cfg, f, "replan", "")
                 try:
                     f.unlink()
                 except OSError:
@@ -641,6 +700,8 @@ def ingest_commands(cfg: "Config") -> "list[str]":
             continue
         if action in ("pause", "resume", "stop"):
             # プロジェクト単位のライフサイクル指示（id 不要）。リモート viewer の停止/回復の口。
+            # stop は下で raise するため、受理レシートは unlink 前にここで残す。
+            _write_command_receipt(cfg, f, action, "")
             try:
                 f.unlink()
             except OSError:
@@ -669,6 +730,7 @@ def ingest_commands(cfg: "Config") -> "list[str]":
             # run の「続きから」再開（id + run）。viewer の再実行ボタンの正規の口。
             rc = cmd_resume_run(cfg, tid, str(rec.get("run", "") or ""), reason) if tid else 2
             if rc == 0:
+                _write_command_receipt(cfg, f, "resume-run", tid)
                 try:
                     f.unlink()
                 except OSError:
@@ -706,6 +768,7 @@ def ingest_commands(cfg: "Config") -> "list[str]":
             if errmsg:
                 sys.stderr.write(errmsg + "\n")   # 端末での従来の見え方は変えない
         if rc == 0:
+            _write_command_receipt(cfg, f, action, tid)
             try:
                 f.unlink()
             except OSError:

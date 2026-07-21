@@ -175,6 +175,19 @@ function commandFailureHtml(n) {
   </div>`;
 }
 
+// 直前の指示（承認・保留など）が本体に届き、取り込みに成功した（commands/processed/*.json）
+// ことを知らせる確認。取り込みは非同期（ドロップ→後で本体が処理）で、成功時は元ファイルが
+// 消えるだけなので、以前は「保留中（本体未取り込み）」と「受理済み」を画面で区別できず、
+// 押しても何も起きないように見えた。失敗（commandFailure）が無いときだけ出す＝失敗表示を上書きしない。
+function commandReceiptHtml(n) {
+  const cr = n && n.commandReceipt;
+  if (!cr || (n && n.commandFailure)) return '';
+  const label = COMMAND_ACTION_LABELS[cr.action] || cr.action || '指示';
+  return `<div class="need-command-receipt">
+    <span>「${esc(label)}」は本体に届き、受理されました${cr.processedAt ? `（${esc(cr.processedAt)}）` : ''}。反映まで少し待ってください。</span>
+  </div>`;
+}
+
 function needActionsHtml(n, options) {
   const inReview = Boolean(options && options.inReview);
   const kind = n.kind || 'blocked';
@@ -648,7 +661,7 @@ function deliveryReviewFooterHtml(need) {
     const label = need.taskStatus ? statusLabel(need.taskStatus) : '関連タスクなし';
     return `<h3>タスクの状態</h3><p><span class="status-chip st-${esc(need.taskStatus || '')}">${esc(label)}</span></p>`;
   }
-  return `<h3>要確認コメント・操作</h3>${commandFailureHtml(need)}${
+  return `<h3>要確認コメント・操作</h3>${commandFailureHtml(need)}${commandReceiptHtml(need)}${
     need.decided || (!need.commandFailure && isNeedSent(need))
       ? '<p class="muted">この要確認項目には回答済みです。</p>'
       : needActionsHtml(need, { inReview: true })
@@ -1563,6 +1576,7 @@ function renderNeedDetail(p, n) {
       <span class="muted">${esc(n.date || '')}</span>
     </header>
     ${commandFailureHtml(n)}
+    ${commandReceiptHtml(n)}
     ${finalVerificationFailureHtml(finalVerificationFailure)}
     <section class="need-decision">
       <h3>判断すること</h3>
