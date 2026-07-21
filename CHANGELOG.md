@@ -7,6 +7,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: 検収の成果物 diff を最新化（fetch + origin/<branch>）し、done run が無くても成果を確認できるように
+
+`src/base/main/git.js`（`diffRange`）・`src/base/main/ipc.js`・`src/renderer/sections/needs.js`。
+
+- **diff が古いまま**の不具合を修正。コメント付きで再実行して push し直した run の検収で、差分が
+  古い（前回の）内容のままだった。`diffRange` に `fetch` / `branch` を追加し、**diff を取る前に
+  `git fetch origin <branch>`** で remote-tracking を更新し、比較先（tip）は **`origin/<branch>` を
+  最優先**で使うようにした（比較元 base も fetch 後は `origin/<base>` を優先）。fetch はベスト
+  エフォート（オフラインでも既存 ref で続行）。検収を開いた最初の解決で 1 回 fetch する。
+- **done run が無くても、delivery に中身があれば「成果を確認」ボタンを表示**するようにした
+  （`hasDeliveryContent`）。コメント付き再実行などで delivery だけが記録されている票でも成果物を
+  確認できる。あわせて、作業ブランチだけで ref 未解決の検収物も `origin/<branch>` で差分を出せる
+  ようにした（従来は「ref 未解決」で差分を出さなかった）。
+
+### agent-dashboard: 状態フォルダ（<project>-agent-state）が無ければ開いたときに自動作成する
+
+`src/features/agent-project/main/project.js`。プロジェクトを開いたとき、状態 worktree
+（`<repo>-agent-state`）が無く、かつ `agent-state` ブランチが存在すれば、`git worktree add` で
+自動作成するようにした（agent-project の `_ensure_state_worktree` と同型：`--no-checkout` →
+状態ディレクトリだけ sparse checkout → checkout）。
+
+- ブランチはローカル `refs/heads/agent-state` か remote-tracking `refs/remotes/origin/agent-state` を
+  使う。どちらも無ければ作らない（クローン元が無い＝本体未セットアップ）。**fetch はしない**
+  （readProject から同期的に呼ぶため UI をネットワーク待ちで固まらせない。通常の clone は
+  `origin/agent-state` の remote-tracking ref を持つのでこれで足りる）。
+- 既存・非 git・ブランチ未存在はすべて no-op。作成失敗・再試行はセッション内で 1 回に抑制。
+
 ### agent-dashboard / kiro-loop / agent-loop: 実行状況ダイアログの送信が `[[: not found` / `python: No such file or directory` で失敗する不具合を修正
 
 - **agent-dashboard**: `src/features/kiro-loop/main/exec.js` の `shInWsl` を `sh -lc`（dash）から
