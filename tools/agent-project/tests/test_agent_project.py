@@ -8366,27 +8366,48 @@ class TestStateRepoSeparation(unittest.TestCase):
 
     def test_state_repo_redirects_to_clone_and_disables_backup(self):
         cfg = self._build(root=str(self.deliverable), state_repo=str(self.state_remote))
-        clone = self.deliverable.parent / "app-agent-state"
+        clone = self.deliverable.parent / "app-state"            # 旧 worktree(app-agent-state)と別名
         self.assertTrue((clone / ".git").exists())               # 専用リポジトリを通常 clone した
-        self.assertEqual(cfg.backlog, clone.resolve() / "backlog")  # 状態ルートは clone
+        self.assertEqual(cfg.backlog, clone.resolve() / "backlog")  # 状態ルートは clone のルート直下
         self.assertEqual(cfg.state_backup_branch, "")            # 本体 main へのミラー無効（ドリフト源を断つ）
         self.assertEqual(cfg.state_top, self.deliverable.resolve())  # 成果物 top（_source_repo 用）
         self.assertIsInstance(km.state_git_for(cfg), km.DirectStateGit)  # direct 同期が効く
 
+    def test_state_repo_clone_dir_is_distinct_from_worktree(self):
+        # 既定 clone 先 <repo>-state は旧 worktree <repo>-agent-state と衝突しない
+        # （同名だと旧 worktree を掴んで移行が効かなかった。実際に踏んだ落とし穴の回帰防止）。
+        cfg = self._build(root=str(self.deliverable), state_repo=str(self.state_remote))
+        self.assertEqual(cfg.backlog.parent, (self.deliverable.parent / "app-state").resolve())
+        self.assertNotIn("agent-state", cfg.backlog.parent.name)
+
+    def test_state_repo_rejects_dir_that_is_not_the_state_clone(self):
+        # state_repo_dir が別リポジトリ（旧 worktree 相当）を指していたら再利用せず worktree へ倒す。
+        # 別 remote の clone を用意して origin を食い違わせる。
+        other_remote = self.tmp / "other.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(other_remote)], check=True)
+        wrong = self.tmp / "wrong-clone"
+        subprocess.run(["git", "clone", "-q", str(other_remote), str(wrong)],
+                       check=True, capture_output=True)
+        cfg = self._build(root=str(self.deliverable), state_repo=str(self.state_remote),
+                          state_repo_dir=str(wrong))
+        self.assertNotEqual(cfg.backlog.parent, wrong.resolve())  # 誤ったディレクトリは状態ルートにしない
+        self.assertEqual(cfg.state_top, self.deliverable.resolve())  # worktree 方式へフォールバック
+        self.assertNotEqual(cfg.state_backup_branch, "")           # フォールバックなのでミラー既定を維持
+
     def test_state_repo_reuses_existing_clone(self):
         cfg1 = self._build(root=str(self.deliverable), state_repo=str(self.state_remote))
-        clone = self.deliverable.parent / "app-agent-state"
+        clone = self.deliverable.parent / "app-state"
         marker = clone / ".git" / "HEAD"
         stamp = marker.stat().st_mtime
         km._STATE_GITS.clear()
         cfg2 = self._build(root=str(self.deliverable), state_repo=str(self.state_remote))
-        self.assertEqual(marker.stat().st_mtime, stamp)          # 再 clone せず既存を再利用
+        self.assertEqual(marker.stat().st_mtime, stamp)          # 再 clone せず既存を再利用（origin 一致）
         self.assertEqual(cfg1.backlog, cfg2.backlog)
 
     def test_state_repo_unset_uses_worktree(self):
         cfg = self._build(root=str(self.deliverable), state_repo="")
         self.assertEqual(cfg.state_repo, "")
-        self.assertFalse((self.deliverable.parent / "app-agent-state" / ".git").exists()
+        self.assertFalse((self.deliverable.parent / "app-state" / ".git").exists()
                          and bool(cfg.state_repo))               # state_repo clone は作らない
 
     def test_state_repo_clone_failure_falls_back_to_worktree(self):

@@ -97,7 +97,7 @@ CONFIG_DEFAULTS = {
     # 状態専用リポジトリ（案1: 状態と成果物の分離）。設定すると状態を専用リポジトリの通常 clone に
     # 置き、worktree 方式と本体 main へのバックアップ（ドリフト源）を回避する。空なら従来の worktree 方式。
     "state_repo": "",                   # 専用リポジトリの URL/パス（全 PC 共有）。空で無効
-    "state_repo_dir": "",               # ローカル clone 先（空＝<成果物repo>-agent-state の隣。PC 毎に上書き可）
+    "state_repo_dir": "",               # ローカル clone 先（空＝<成果物repo>-state の隣。旧 worktree と別名。PC 毎に上書き可）
     "state_repo_branch": "main",        # 専用リポジトリ内で状態を載せるブランチ
     "state_worktree_dir": "",           # 既定: <repo>-agent-state（リポジトリの隣）
     "state_branch": "agent-state",       # 状態を載せるブランチ（無ければ作る）
@@ -441,7 +441,7 @@ def _add_common(sp):
                          "専用リポジトリの通常 clone に置き、worktree 方式と本体 main へのバックアップを"
                          "回避する。空なら従来の worktree 方式（後方互換）")
     sp.add_argument("--state-repo-dir", default=None,
-                    help="状態専用リポジトリのローカル clone 先（既定 <成果物repo>-agent-state の隣）")
+                    help="状態専用リポジトリのローカル clone 先（既定 <成果物repo>-state の隣。旧 worktree と別名）")
     sp.add_argument("--state-repo-branch", default=None,
                     help="状態専用リポジトリ内で状態を載せるブランチ（既定 main）")
     sp.add_argument("--status-interval", type=float, default=None,
