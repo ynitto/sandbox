@@ -7,6 +7,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: ステートマシン実行時、必要な入力パラメータを人へ質問させる
+
+`src/features/cowork/main/cowork.js`。statemachine-use で作ったステートマシンに入力パラメータが要る
+場合、勝手に仮の値で進めず、人へ質問してから実行させる。従来は汎用的な補助文だけだったが、
+定義（`.statemachine/<name>/workflow.yaml`）を読んで**具体的に必要な入力を洗い出す**ようにした:
+
+- action/condition が `{{input}}` を参照していて、実行時に入力が渡されていない → 実行対象の入力を要求
+- `context` の初期値が空（`""` / 空欄）のキー → その `context.<key>` を要求
+
+必要な入力があるときは、起動プロンプトに項目名を列挙し「値が不明なものを箇条書きで質問し、回答を
+得てから実行して」と明示する。定義を読めない/追加入力が不要なときは従来の汎用補助へフォールバック。
+
 ### agent-dashboard: kiro-cli の入力プレースホルダを起動検出パターンに追加
 
 `src/features/cowork/main/loopProvider.js`。kiro-cli は入力欄に `>` ではなくゴーストテキスト

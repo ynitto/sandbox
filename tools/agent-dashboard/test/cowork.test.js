@@ -329,6 +329,44 @@ test('runStateMachine は win32 ウィンドウ実行で statemachine-use スキ
   }
 });
 
+test('stateMachineInputSpec は {{input}} 参照と空 context キー（要入力）を洗い出す', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-sminput-'));
+  const dir = path.join(repo, '.statemachine', 'release');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'workflow.yaml'), [
+    'name: リリース',
+    'initial_state: start',
+    'context:',
+    '  version: ""',
+    '  ticket:',
+    '  channel: "stable"',
+    'states:',
+    '  start:',
+    '    action: |',
+    '      {{input}} をリリース（version={{context.version}}）',
+    '',
+  ].join('\n'), 'utf8');
+  const wf = cowork.stateMachineFilePath({ workflow: 'release' }, repo);
+  const spec = cowork.stateMachineInputSpec(wf);
+  assert.strictEqual(spec.usesInput, true, 'action の {{input}} 参照を拾う');
+  assert.deepStrictEqual(spec.requiredContext, ['version', 'ticket'], '空値の context キーだけを要入力にする');
+  assert.strictEqual(cowork.stateMachineInputSpec(path.join(repo, 'none.yaml')), null, '読めなければ null');
+});
+
+test('stateMachineInputAssist は必要な入力を項目名つきで人へ質問させる', () => {
+  const spec = { usesInput: true, requiredContext: ['version', 'ticket'] };
+  const noInput = cowork.stateMachineInputAssist(spec, false);
+  assert.ok(noInput.includes('入力（{{input}}'), '{{input}} 未指定なら質問対象に含める');
+  assert.ok(noInput.includes('- context.version') && noInput.includes('- context.ticket'), '空 context キーを列挙する');
+  assert.ok(noInput.includes('質問') && noInput.includes('回答を得てから'), '人へ質問してから実行するよう促す');
+  const withInput = cowork.stateMachineInputAssist(spec, true);
+  assert.ok(!withInput.includes('{{input}}'), '入力が与えられていれば {{input}} は質問しない');
+  assert.ok(withInput.includes('- context.version'), 'context キーは入力有無に関わらず質問対象');
+  // 追加入力が要らない / 定義が読めないときは従来の汎用補助（プレースホルダー文言）へフォールバック
+  assert.ok(cowork.stateMachineInputAssist({ usesInput: false, requiredContext: [] }, true).includes('プレースホルダー'));
+  assert.ok(cowork.stateMachineInputAssist(null, false).includes('プレースホルダー'));
+});
+
 test('windowStartCommand は start のタイトル・distro・スクリプトパスを cmd 規則で組み立てる', () => {
   const line = cowork_loopProvider.windowStartCommand('Ubuntu', '/mnt/c/Users/dev/Temp/agent-dashboard/run.sh');
   assert.strictEqual(

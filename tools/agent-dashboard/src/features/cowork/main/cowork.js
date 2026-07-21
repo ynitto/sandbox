@@ -369,6 +369,57 @@ function withInputAssist(prompt) {
   return p ? `${p}\n\n${INPUT_ASSIST}` : p;
 }
 
+// ステートマシン定義（.statemachine/<name>/workflow.yaml）を読み、実行に必要な入力を洗い出す。
+//   usesInput      … action/condition が {{input}} を参照している（実行対象そのものの入力が要る）
+//   requiredContext… context の初期値が空（"" / '' / 空欄）のキー = 実行時に埋める前提のパラメータ
+// 読めない・定義が無いときは null（呼び出し側は従来の汎用補助へフォールバック）。
+function stateMachineFilePath(item, cwd) {
+  const src = item && item._src;
+  if (src && src.kind === 'statemachine' && src.file) return viewerRepo(src.file) || src.file;
+  const machine = String((item && (item.workflow || item.file || item.name)) || '').trim();
+  if (!machine || /[\\/]/.test(machine)) return '';
+  const root = viewerRepo(cwd) || String(cwd || '');
+  return root ? path.join(root, '.statemachine', machine, 'workflow.yaml') : '';
+}
+
+function stateMachineInputSpec(wfPath) {
+  if (!wfPath) return null;
+  let text;
+  try { text = fs.readFileSync(wfPath, 'utf8'); } catch { return null; }
+  const usesInput = /\{\{\s*input\s*\}\}/.test(text);
+  const requiredContext = [];
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  const ctxIdx = lines.findIndex((l) => /^context\s*:\s*(#.*)?$/.test(l));
+  if (ctxIdx >= 0) {
+    for (let i = ctxIdx + 1; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (/^\s*(#.*)?$/.test(line)) continue;                 // 空行・コメントは飛ばす
+      if (/^\S/.test(line)) break;                            // インデントが戻ったら context ブロック終了
+      const m = line.match(/^\s+([A-Za-z0-9_.-]+)\s*:\s*(.*?)\s*(#.*)?$/);
+      if (!m) continue;
+      const val = (m[2] || '').trim();
+      if (val === '' || val === '""' || val === "''") requiredContext.push(m[1]);
+    }
+  }
+  return { usesInput, requiredContext };
+}
+
+// 必要な入力があれば「人へ質問してから実行」を具体的な項目名つきで促す補助文を返す。
+// 定義を読めない/追加入力が要らないときは従来の汎用補助（INPUT_ASSIST）。
+function stateMachineInputAssist(spec, hasInput) {
+  if (!spec) return INPUT_ASSIST;
+  const needs = [];
+  if (spec.usesInput && !hasInput) needs.push('入力（{{input}}: 実行対象そのもの）');
+  for (const key of spec.requiredContext) needs.push(`context.${key}`);
+  if (!needs.length) return INPUT_ASSIST;
+  return (
+    '（重要）このステートマシンの実行には、次の入力パラメータが必要です:\n'
+    + needs.map((n) => `- ${n}`).join('\n') + '\n'
+    + '勝手に仮の値で進めず、まず上記のうち値が不明なものを箇条書きで私（人間）に質問し、'
+    + '回答を得てから実行してください。すでに値が与えられているものは質問不要です。'
+  );
+}
+
 // グローバル指示（agent-instructions 契約）を起動プロンプト先頭へ前置する。
 // dashboard は指示の書き手であると同時に、自分が起動する CLI に対する読み手でもある
 // （cowork の定常業務 / 定型業務ウィンドウ）。二重注入・空・破損はすべて no-op。
@@ -476,7 +527,13 @@ function runStateMachine(config, itemIdValue, input) {
     const smPrompt = (pairedBody && !input)
       ? pairedBody
       : `statemachine-use スキルで${smName}ステートマシンを実行して${input ? `。入力: ${String(input)}` : ''}`;
-    prompt = withGlobalInstructions(config, withInputAssist(smPrompt));
+    // ステートマシン定義から必要な入力（{{input}} と 空の context キー）を洗い出し、
+    // 埋まっていなければ「人へ質問してから実行」を項目名つきで促す（勝手に仮値で進めない）。
+    const spec = stateMachineInputSpec(stateMachineFilePath(item, cwd));
+    const assist = stateMachineInputAssist(spec, Boolean(input));
+    const smPromptTrim = smPrompt.trim();
+    const withAssist = smPromptTrim ? `${smPromptTrim}\n\n${assist}` : smPromptTrim;
+    prompt = withGlobalInstructions(config, withAssist);
     // 非ウィンドウ実行（非 win32 / runWindow:false）用の従来 send 引数も併せて用意する
     const legacy = (pairedName && !input)
       ? pairedName
@@ -776,4 +833,5 @@ module.exports = {
   itemLogs, readLog, appendHistory, readHistory, historyFile,
   resolveLoopPromptText, withInputAssist, withGlobalInstructions, planSessionCommands,
   applyManagedItems, stateMachineCreationPrompt,
+  stateMachineInputSpec, stateMachineInputAssist, stateMachineFilePath,
 };
