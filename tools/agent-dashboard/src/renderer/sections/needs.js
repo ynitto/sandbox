@@ -415,9 +415,22 @@ function needApprovalReason(project, need, flowRuns, input) {
 
 // 成果（差分）を見る導線。承認できるかとは独立に、見るものがあるなら常に出す
 // （承認状態で出し分けると「成果も承認も見当たらない」状態が生まれる）。
+// delivery（検収物）に中身があるか。done run が無くても、コメント付き再実行などで
+// delivery だけが記録されている票の成果を確認できるようにする。
+function hasDeliveryContent(need) {
+  return ((need && need.delivery) || []).some(
+    (e) => e && e.role !== 'reference'
+      && ((e.files || []).length || String(e.mr_url || '').trim() || (e.path && (e.ref || e.branch)))
+  );
+}
+
 function needArtifactsButtonHtml(project, need, flowRuns) {
-  // リトライ中（最新試行が未完）でも、系統内に done 世代があれば成果への導線を残す
-  if (!completedTaskForNeed(project, need) && !artifactRunForNeed(project, need, flowRuns)) return '';
+  // リトライ中（最新試行が未完）でも、系統内に done 世代があれば成果への導線を残す。
+  // done run が無くても、delivery に中身があれば「成果を確認」を出す（検収時に成果物が
+  // 見られない、と報告された症状の対策）。
+  if (!completedTaskForNeed(project, need)
+    && !artifactRunForNeed(project, need, flowRuns)
+    && !hasDeliveryContent(need)) return '';
   return `<button type="button" class="primary-inline" data-need-artifacts="${esc(need.id)}">成果を確認</button>`;
 }
 
@@ -556,7 +569,7 @@ function deliveryReviewState(entries, mrs) {
   const fileCount = list.reduce((count, entry) => count + (entry.files || []).length, 0);
   const hasMr = Boolean((mrs || []).length || list.some((entry) => entry.mr_url));
   const canDiscover = list.some(
-    (entry) => entry.role !== 'reference' && entry.path && (entry.ref || !entry.branch)
+    (entry) => entry.role !== 'reference' && entry.path
   );
   return { fileCount, hasMr, canDiscover, hasContent: fileCount > 0 || hasMr };
 }
@@ -660,7 +673,7 @@ function renderDeliveryRepo(entry, idx) {
   // 解決済み ref、または branch 指定のない現在の作業ツリーだけをローカル表示する。
   // branch 名だけでは fetch 失敗時に誤誘導するため表示しない。
   const canDiff = Boolean(
-    entry.path && (entry.ref || !entry.branch) && entry.role !== 'reference'
+    entry.path && entry.role !== 'reference'
   );
   const unresolved = entry.role !== 'reference' && entry.branch && !entry.ref;
   const fileBtns = files
@@ -771,7 +784,7 @@ async function openDeliveryArtifactsModel(need, title) {
       ? entries.map((e, i) => renderDeliveryRepo(e, i)).join('')
       : '<p class="muted">構造化された検収物情報がありません。判断材料の本文を確認してください。</p>';
   const canShowAllDiffs = reviewState.fileCount > 0 && entries.some(
-    (entry) => entry.role !== 'reference' && entry.path && (entry.ref || !entry.branch)
+    (entry) => entry.role !== 'reference' && entry.path
   );
   const allDiffs = canShowAllDiffs
     ? `<button class="primary-inline" data-delivery-all-diff>すべての差分を表示</button>`
@@ -829,13 +842,17 @@ async function openDeliveryArtifactsModel(need, title) {
   if (firstFile) firstFile.click();
 }
 
-function deliveryDiffRequest(entry, file = '') {
+function deliveryDiffRequest(entry, file = '', opts) {
   return {
     repo: entry.path,
     base: entry.target || entry.base || 'main',
     ref: entry.ref || undefined,
+    // 作業ブランチが分かれば origin/<branch> を優先（fetch 後は今 push されている最新を検収する）。
+    branch: entry.branch || undefined,
+    fetch: Boolean(opts && opts.fetch),
     file: file || undefined,
-    workingTree: !entry.ref,
+    // ref も branch も無い＝ローカル作業ツリー比較。branch があれば origin/<branch> で range 比較。
+    workingTree: !entry.ref && !entry.branch,
   };
 }
 
@@ -847,10 +864,11 @@ async function hydrateDeliveryEntries(entries) {
   return Promise.all((entries || []).map(async (entry) => {
     const fallbackFiles = (entry.files || []).filter(isDeliveryArtifactFile);
     const fallback = { ...entry, files: fallbackFiles, files_total: fallbackFiles.length };
-    const canLoad = entry.role !== 'reference' && entry.path && (entry.ref || !entry.branch);
+    const canLoad = entry.role !== 'reference' && entry.path;
     if (!canLoad) return { ...fallback, discovery: 'unavailable' };
     try {
-      const result = await api.gitDiff(deliveryDiffRequest(entry));
+      // 検収を開いた最初の解決でリモートを取り込む（以降のファイル選択は取得済みの origin を使う）。
+      const result = await api.gitDiff(deliveryDiffRequest(entry, '', { fetch: true }));
       const files = (result.files || []).filter(isDeliveryArtifactFile);
       return { ...entry, files, files_total: files.length, discovery: 'complete' };
     } catch (err) {
@@ -919,19 +937,21 @@ function renderDeliveryDiff(diffText) {
 
 async function collectDeliveryDiffSections(need, { maxChars = 80000 } = {}) {
   const entries = (need.delivery || []).filter(
-    (entry) => entry.role !== 'reference' && entry.path && (entry.ref || !entry.branch)
+    (entry) => entry.role !== 'reference' && entry.path
   );
   const sections = await Promise.all(
     entries.map(async (entry) => {
       const compareBase = entry.target || entry.base;
       const label = entry.ref
         ? `${entry.base || 'main'}...${entry.ref}`
-        : compareBase
-          ? `${compareBase} との差分（作業ツリー）`
-          : '現在の作業ツリー（HEADとの差分）';
+        : entry.branch
+          ? `${compareBase || 'main'}...origin/${entry.branch}`
+          : compareBase
+            ? `${compareBase} との差分（作業ツリー）`
+            : '現在の作業ツリー（HEADとの差分）';
       const files = (entry.files || []).slice(0, 40);
       try {
-        const res = await api.gitDiff(deliveryDiffRequest(entry));
+        const res = await api.gitDiff(deliveryDiffRequest(entry, '', { fetch: true }));
         let text = res.text || '(差分なし)';
         if (text.length > maxChars) {
           text = `${text.slice(0, maxChars)}\n…（差分が長いため省略）`;
@@ -1115,7 +1135,6 @@ function wireDeliveryReview(root, need) {
       const idx = Number(btn.getAttribute('data-delivery-diff'));
       const entry = (need.delivery || [])[idx];
       if (!entry || !entry.path) return toast('ローカル path が無いため差分を取得できません');
-      if (!entry.ref && entry.branch) return toast('作業ブランチの ref が未解決のため差分を取得できません');
       const file = btn.getAttribute('data-file') || '';
       const view = $('delivery-diff-view');
       root.querySelectorAll('[data-delivery-file]').forEach((item) => {

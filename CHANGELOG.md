@@ -7,6 +7,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: 検収の成果物 diff を最新化（fetch + origin/<branch>）し、done run が無くても成果を確認できるように
+
+`src/base/main/git.js`（`diffRange`）・`src/base/main/ipc.js`・`src/renderer/sections/needs.js`。
+
+- **diff が古いまま**の不具合を修正。コメント付きで再実行して push し直した run の検収で、差分が
+  古い（前回の）内容のままだった。`diffRange` に `fetch` / `branch` を追加し、**diff を取る前に
+  `git fetch origin <branch>`** で remote-tracking を更新し、比較先（tip）は **`origin/<branch>` を
+  最優先**で使うようにした（比較元 base も fetch 後は `origin/<base>` を優先）。fetch はベスト
+  エフォート（オフラインでも既存 ref で続行）。検収を開いた最初の解決で 1 回 fetch する。
+- **done run が無くても、delivery に中身があれば「成果を確認」ボタンを表示**するようにした
+  （`hasDeliveryContent`）。コメント付き再実行などで delivery だけが記録されている票でも成果物を
+  確認できる。あわせて、作業ブランチだけで ref 未解決の検収物も `origin/<branch>` で差分を出せる
+  ようにした（従来は「ref 未解決」で差分を出さなかった）。
+
 ### agent-dashboard: 状態フォルダ（<project>-agent-state）が無ければ開いたときに自動作成する
 
 `src/features/agent-project/main/project.js`。プロジェクトを開いたとき、状態 worktree

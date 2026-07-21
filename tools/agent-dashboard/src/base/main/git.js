@@ -586,32 +586,66 @@ function bridgeRepoPath(repo) {
 }
 
 // 検収サブ画面用: 作業ブランチの差分（ファイル指定可）。サイズ上限付き。
-async function diffRange(repo, { base, ref, file, maxBytes = 200_000, workingTree = false } = {}) {
+//   fetch:true … 差分を取る前に git fetch origin して remote-tracking を最新化する
+//                （コメント付き再実行で push し直した run の diff が古いまま、の対策）。
+//   branch     … 作業ブランチ名。fetch 後は origin/<branch> を最優先で比較先（tip）に使う
+//                （記録済みの ref が古くても、今 push されている最新を見る）。
+async function diffRange(repo, { base, ref, file, branch, fetch = false, maxBytes = 200_000, workingTree = false } = {}) {
   const root = path.resolve(bridgeRepoPath(repo));
   if (!root || !fs.existsSync(root)) throw new Error(`リポジトリが見つかりません: ${repo}`);
-  const baseRef = String(base || 'main').trim() || 'main';
-  const tip = String(ref || '').trim();
-  if (!workingTree && !tip) throw new Error('比較先ブランチ／ref がありません');
-  if ((!workingTree && /[\s;|&`$]/.test(baseRef)) || /[\s;|&`$]/.test(tip)) {
-    throw new Error('不正な git ref です');
+  const bad = (s) => /[\s;|&`$]/.test(String(s || ''));
+  const brName = String(branch || '').trim();
+  if (brName && bad(brName)) throw new Error('不正なブランチ名です');
+
+  // fetch はベストエフォート（オフライン等で失敗しても既存のローカル/追跡 ref で続行）。
+  // branch が分かればそのブランチだけ引く（軽く速い）。
+  if (fetch) {
+    const fa = ['-C', root, 'fetch', '--quiet', 'origin'];
+    if (brName && !brName.startsWith('origin/')) fa.push(brName);
+    await gitOnce(fa, 60000);
   }
+
+  const originOf = async (name) => {
+    const n = String(name || '').trim();
+    if (!n || bad(n)) return '';
+    const rb = n.startsWith('origin/') ? n : `origin/${n}`;
+    const chk = await gitOnce(['-C', root, 'rev-parse', '--verify', '--quiet', rb], 10000);
+    return chk.code === 0 ? rb : '';
+  };
+  const exists = async (rev) => {
+    if (!rev || bad(rev)) return false;
+    return (await gitOnce(['-C', root, 'rev-parse', '--verify', '--quiet', rev], 10000)).code === 0;
+  };
+
+  // 比較先（tip）: fetch 後は origin/<branch> を最優先 → ローカル <branch> → 渡された ref。
+  let tip = brName ? (await originOf(brName)) : '';
+  if (!tip && brName && await exists(brName)) tip = brName;
+  if (!tip) tip = String(ref || '').trim();
+  if (bad(tip)) throw new Error('不正な git ref です');
+
+  const useWorkingTree = workingTree || !tip;   // tip が取れなければ作業ツリー比較へ倒す
+  const baseGiven = String(base || '').trim();
+  if (baseGiven && bad(baseGiven)) throw new Error('不正な git ref です');
+
   // 差分の左辺（比較元）を決める。
-  //   range   … 解決済みの作業 ref があるとき。target...ref（検収の標準＝GitHub PR と同じ三点比較）。
-  //   working … 作業 ref が未解決のとき。target ブランチが分かるなら、その分岐点（merge-base）から
-  //             作業ツリーまでを見せる（未コミット分も含め「target に対して何を変えたか」）。
-  //             target が渡されない/解決できないときだけ HEAD（純粋なローカル作業ツリー）へ倒す。
+  //   range   … 比較先が取れたとき。<base>...<tip>（検収の標準＝GitHub PR と同じ三点比較）。
+  //             base も fetch 後は origin/<base> を優先する。
+  //   working … 比較先が取れないとき。base（target）が分かるならその分岐点（merge-base）から
+  //             作業ツリーまでを見せる。base が渡されないときだけ HEAD（純粋なローカル作業ツリー）。
   let leftSide;
   let usedBase = '';
-  if (!workingTree) {
-    leftSide = `${baseRef}...${tip}`;
-    usedBase = baseRef;
+  if (!useWorkingTree) {
+    const b0 = baseGiven || 'main';
+    const b = (await originOf(b0)) || b0;
+    leftSide = `${b}...${tip}`;
+    usedBase = b;
   } else {
-    const target = String(base || '').trim();
-    if (target && !/[\s;|&`$]/.test(target)) {
-      const mb = await gitOnce(['-C', root, 'merge-base', target, 'HEAD'], 10000);
+    if (baseGiven) {
+      const b = (await originOf(baseGiven)) || baseGiven;
+      const mb = await gitOnce(['-C', root, 'merge-base', b, 'HEAD'], 10000);
       if (mb.code === 0 && String(mb.out || '').trim()) {
         leftSide = String(mb.out).trim();
-        usedBase = target;
+        usedBase = b;
       }
     }
     if (!leftSide) leftSide = 'HEAD';
@@ -660,7 +694,7 @@ async function diffRange(repo, { base, ref, file, maxBytes = 200_000, workingTre
     ref: tip,
     file: f,
     // working-tree でも target と比較できたら、単なるローカル差分と区別できるようにする。
-    mode: workingTree ? (usedBase ? 'working-tree-vs-target' : 'working-tree') : 'range',
+    mode: useWorkingTree ? (usedBase ? 'working-tree-vs-target' : 'working-tree') : 'range',
   };
 }
 

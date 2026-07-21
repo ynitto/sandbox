@@ -98,7 +98,7 @@ const artifactRunForNeed = new Function(
 // eslint-disable-next-line no-new-func
 const needArtifactsButtonHtml = new Function(
   'esc', 'completedTaskForNeed', 'artifactRunForNeed',
-  `${grab('needArtifactsButtonHtml')}; return needArtifactsButtonHtml;`
+  `${grab('hasDeliveryContent')}; ${grab('needArtifactsButtonHtml')}; return needArtifactsButtonHtml;`
 )(
   (value) => String(value == null ? '' : value),
   completedTaskForNeed,
@@ -723,9 +723,12 @@ assert.ok(
 );
 assert.ok(html.includes('../../node_modules/diff2html/bundles/css/diff2html.min.css'));
 assert.ok(html.includes('../../node_modules/diff2html/bundles/js/diff2html-ui-slim.min.js'));
-assert.ok(renderer.includes('workingTree: !entry.ref'));
-assert.ok(renderer.includes("entry.path && (entry.ref || !entry.branch)"), '作業ツリーもファイル別に表示する');
-assert.ok(!renderer.includes('entry.ref || entry.branch'), '未解決 ref で差分ボタンを出さない');
+assert.ok(renderer.includes('workingTree: !entry.ref && !entry.branch'),
+  'ref も branch も無いときだけ作業ツリー比較（branch があれば origin/<branch> で range 比較）');
+assert.ok(renderer.includes('branch: entry.branch') && renderer.includes('fetch: Boolean(opts && opts.fetch)'),
+  '検収差分は branch を渡し、fetch 後は origin/<branch> を優先する');
+assert.ok(renderer.includes("deliveryDiffRequest(entry, '', { fetch: true })"),
+  '検収を開いた最初の解決でリモートを取り込む（古い diff が出ない）');
 assert.match(css, /\.nav-group/);
 assert.match(css, /\.doctor-form/);
 assert.match(css, /\.delivery-dialog/);

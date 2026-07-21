@@ -61,6 +61,44 @@ const git = require('../src/main/git');
     assert.strictEqual(unknownTarget.mode, 'working-tree', 'target 未解決なら HEAD 比較へフォールバック');
     console.log('ok - target が解決できないときは HEAD 差分へフォールバックする');
 
+    // fetch + origin/<branch> 優先: コメント付き再実行で push し直した最新を検収できる。
+    {
+      const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-dashboard-origin-'));
+      const clone1 = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-dashboard-c1-'));
+      const clone2 = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-dashboard-c2-'));
+      const g = (dir, ...a) => execFileSync('git', ['-C', dir, ...a]);
+      try {
+        execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare]);
+        execFileSync('git', ['clone', '-q', bare, clone1]);
+        g(clone1, 'config', 'user.email', 't@e.com'); g(clone1, 'config', 'user.name', 't');
+        fs.writeFileSync(path.join(clone1, 'base.txt'), 'base\n');
+        g(clone1, 'add', '-A'); g(clone1, 'commit', '-qm', 'base'); g(clone1, 'push', '-q', 'origin', 'main');
+        // 作業ブランチ feat の 1 回目を push（clone1 の origin/feat = v1）
+        g(clone1, 'checkout', '-qb', 'feat');
+        fs.writeFileSync(path.join(clone1, 'app.js'), 'const v = 1;\n');
+        g(clone1, 'add', '-A'); g(clone1, 'commit', '-qm', 'feat v1'); g(clone1, 'push', '-q', 'origin', 'feat');
+        // 別クローンから feat を再 push（＝コメント付き再実行で push し直した状況。origin=v2）
+        execFileSync('git', ['clone', '-q', '-b', 'feat', bare, clone2]);
+        g(clone2, 'config', 'user.email', 't@e.com'); g(clone2, 'config', 'user.name', 't');
+        fs.writeFileSync(path.join(clone2, 'app.js'), 'const v = 2;\n');
+        g(clone2, 'add', '-A'); g(clone2, 'commit', '-qm', 'feat v2'); g(clone2, 'push', '-q', 'origin', 'feat');
+
+        // fetch なし: clone1 の origin/feat はまだ v1（古い）
+        const stale = await git.diffRange(clone1, { base: 'main', branch: 'feat', fetch: false });
+        assert.strictEqual(stale.ref, 'origin/feat', 'branch 指定時は origin/<branch> を比較先に使う');
+        assert.match(stale.text, /\+const v = 1;/, 'fetch なしは取り込み済みの古い origin/feat = v1');
+        assert.doesNotMatch(stale.text, /const v = 2;/);
+        // fetch あり: origin/feat が v2 に更新され、最新を検収できる
+        const fresh = await git.diffRange(clone1, { base: 'main', branch: 'feat', fetch: true });
+        assert.strictEqual(fresh.ref, 'origin/feat');
+        assert.strictEqual(fresh.mode, 'range');
+        assert.match(fresh.text, /\+const v = 2;/, 'fetch 後は origin/feat の最新 = v2 を検収する');
+        console.log('ok - fetch + origin/<branch> 優先で再 push された最新を検収できる');
+      } finally {
+        for (const d of [bare, clone1, clone2]) fs.rmSync(d, { recursive: true, force: true });
+      }
+    }
+
     // 検収物の path が WSL 側の POSIX パスでも、win32 では UNC へ橋渡ししてから解決する
     {
       const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
