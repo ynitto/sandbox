@@ -175,6 +175,19 @@ function commandFailureHtml(n) {
   </div>`;
 }
 
+// 直前の指示（承認・保留など）が本体に届き、取り込みに成功した（commands/processed/*.json）
+// ことを知らせる確認。取り込みは非同期（ドロップ→後で本体が処理）で、成功時は元ファイルが
+// 消えるだけなので、以前は「保留中（本体未取り込み）」と「受理済み」を画面で区別できず、
+// 押しても何も起きないように見えた。失敗（commandFailure）が無いときだけ出す＝失敗表示を上書きしない。
+function commandReceiptHtml(n) {
+  const cr = n && n.commandReceipt;
+  if (!cr || (n && n.commandFailure)) return '';
+  const label = COMMAND_ACTION_LABELS[cr.action] || cr.action || '指示';
+  return `<div class="need-command-receipt">
+    <span>「${esc(label)}」は本体に届き、受理されました${cr.processedAt ? `（${esc(cr.processedAt)}）` : ''}。反映まで少し待ってください。</span>
+  </div>`;
+}
+
 function needActionsHtml(n, options) {
   const inReview = Boolean(options && options.inReview);
   const kind = n.kind || 'blocked';
@@ -648,7 +661,7 @@ function deliveryReviewFooterHtml(need) {
     const label = need.taskStatus ? statusLabel(need.taskStatus) : '関連タスクなし';
     return `<h3>タスクの状態</h3><p><span class="status-chip st-${esc(need.taskStatus || '')}">${esc(label)}</span></p>`;
   }
-  return `<h3>要確認コメント・操作</h3>${commandFailureHtml(need)}${
+  return `<h3>要確認コメント・操作</h3>${commandFailureHtml(need)}${commandReceiptHtml(need)}${
     need.decided || (!need.commandFailure && isNeedSent(need))
       ? '<p class="muted">この要確認項目には回答済みです。</p>'
       : needActionsHtml(need, { inReview: true })
@@ -789,15 +802,12 @@ async function openDeliveryArtifactsModel(need, title) {
   const allDiffs = canShowAllDiffs
     ? `<button class="primary-inline" data-delivery-all-diff>すべての差分を表示</button>`
     : '';
-  const assistToolbar = !need.decided && !isNeedSent(need)
-    ? `<div class="delivery-review-toolbar delivery-assist-toolbar">
-        ${allDiffs}
-        <button type="button" data-delivery-rationale="${esc(need.id)}">変更理由を説明</button>
-        <button type="button" data-delivery-followup="${esc(need.id)}">フォローアップ案</button>
-      </div>`
-    : allDiffs
-      ? `<div class="delivery-review-toolbar">${allDiffs}</div>`
-      : '';
+  // 検収経路から dashboard 側の WSL ヘッドレス AI 呼び出し（変更理由の説明・フォローアップ案）を
+  // 撤去した（案3）。多段シェル越しの同期 AI 実行が「起動を待っています」で固まる停滞の元だった。
+  // AI による accept→verify 合成はエンジン側ループ内で行う。ここは差分表示のみ残す。
+  const assistToolbar = allDiffs
+    ? `<div class="delivery-review-toolbar">${allDiffs}</div>`
+    : '';
   const emptyNotice = reviewState.hasContent
     ? ''
     : `<section class="delivery-empty-state" role="status">
@@ -1099,12 +1109,7 @@ function wireDeliveryReview(root, need) {
       if (ok) $('dlg-delivery-review').close();
     });
   }
-  for (const btn of root.querySelectorAll('[data-delivery-rationale]')) {
-    btn.addEventListener('click', () => openDeliveryRationale(btn.dataset.deliveryRationale));
-  }
-  for (const btn of root.querySelectorAll('[data-delivery-followup]')) {
-    btn.addEventListener('click', () => openDeliveryFollowup(btn.dataset.deliveryFollowup));
-  }
+  // 検収経路の WSL ヘッドレス AI（変更理由の説明・フォローアップ案）は撤去した（案3）。
   const allDiffs = root.querySelector('[data-delivery-all-diff]');
   if (allDiffs) {
     allDiffs.addEventListener('click', async () => {
@@ -1255,12 +1260,13 @@ function canDiagnoseNeed(need) {
 }
 
 function needAssistActionsHtml(need, settled) {
+  // 検収（review）は accept の判断そのもの。dashboard 側の WSL ヘッドレス AI をこの経路に
+  // 置かない（案3）。「変更理由を説明」も汎用「AIに相談」も出さず、AI 支援ボタンは無しにする
+  // （accept→verify の AI 合成はエンジン側ループ内で行う）。
+  if (need && need.kind === 'review') return '';
   const specialized = [];
   if (!settled && need.kind === 'plan-review') {
     specialized.push(`<button class="primary-inline" data-plan-critique="${esc(need.id)}">AIで計画を批評</button>`);
-  }
-  if (!settled && need.kind === 'review') {
-    specialized.push(`<button type="button" data-delivery-rationale="${esc(need.id)}">変更理由を説明</button>`);
   }
   if (!settled && canDiagnoseNeed(need)) {
     specialized.push(`<button class="primary-inline" data-failure-diagnose="${esc(need.id)}">AIで失敗を診断</button>`);
@@ -1563,6 +1569,7 @@ function renderNeedDetail(p, n) {
       <span class="muted">${esc(n.date || '')}</span>
     </header>
     ${commandFailureHtml(n)}
+    ${commandReceiptHtml(n)}
     ${finalVerificationFailureHtml(finalVerificationFailure)}
     <section class="need-decision">
       <h3>判断すること</h3>
@@ -1621,9 +1628,6 @@ function bindNeedDetail(root) {
   }
   for (const btn of root.querySelectorAll('button[data-plan-critique]')) {
     btn.addEventListener('click', () => openPlanCritique(btn.dataset.planCritique));
-  }
-  for (const btn of root.querySelectorAll('button[data-delivery-rationale]')) {
-    btn.addEventListener('click', () => openDeliveryRationale(btn.dataset.deliveryRationale));
   }
   for (const btn of root.querySelectorAll('button[data-verify-revise]')) {
     btn.addEventListener('click', async () => {

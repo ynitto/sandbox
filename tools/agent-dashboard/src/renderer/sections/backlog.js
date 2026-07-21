@@ -548,6 +548,7 @@ function reviseAreaHtml(t) {
       </div>
       <div class="field"><label>系列（同種タスクのグループ名。空にすると削除）</label><input id="rv-track" value="${esc(t.extra.track || '')}" /></div>
     </div>
+    <div class="field"><label>実行ノード（このタスクを動かす PC のエンジン名。複数 PC で分担するとき指定。空にすると未割当＝既定ノードが拾う）</label><input id="rv-node" value="${esc(t.extra.node || '')}" /></div>
     <div class="field"><label>メモ（空にすると削除）</label><input id="rv-note" value="${esc(t.extra.note || '')}" /></div>
     <details class="revise-guide" ${GUIDE_KEYS.some((k) => t.extra[k]) ? 'open' : ''}>
       <summary>意図と境界（レビュー材料 兼 実行ワーカーへの誘導。空にすると削除）</summary>
@@ -730,6 +731,7 @@ function showTaskDialog(id, scope) {
         ['accept', $('rv-accept').value.trim(), String(t.extra.accept || '')],
         ['level', $('rv-level').value.trim(), String(t.extra.level || '')],
         ['track', $('rv-track').value.trim(), String(t.extra.track || '')],
+        ['node', $('rv-node').value.trim(), String(t.extra.node || '')],
         ['note', $('rv-note').value.trim(), String(t.extra.note || '')],
         ...GUIDE_KEYS.map((k) => [k, $(`rv-${k}`).value.trim(), String(t.extra[k] || '')]),
       ];
@@ -1156,6 +1158,12 @@ function openEnqueueDialog(prefill = {}) {
   $('enq-note').value = prefill.note || '';
   $('enq-id').value = prefill.id || '';
   $('enq-after').value = Array.isArray(prefill.after) ? prefill.after.join(', ') : (prefill.after || '');
+  // 構造化フォームの入力（案5・案3）。再投入では元の値を引き継ぎ、通常は空にする。
+  const setEnq = (id, v) => { const el = $(id); if (el) el.value = v || ''; };
+  setEnq('enq-verify-template', prefill.verify_template);
+  setEnq('enq-why', prefill.why);
+  setEnq('enq-scope', prefill.scope);
+  setEnq('enq-out_of_scope', prefill.out_of_scope);
   fillCharterSelect($('enq-charter'), state.project, prefill.charter || '');
   fillWorkspaceSelect($('enq-workspace'), state.project, prefill.workspace || '');
   // level / track と誘導・レビュー記述（why 等）・ルーティング/検収系（refs/paths/review/expect/
@@ -1272,6 +1280,25 @@ async function submitEnqueue() {
     workspace: $('enq-workspace') ? $('enq-workspace').value : '',
     ...Object.fromEntries(ENQUEUE_PASSTHROUGH_KEYS.map((k) => [k, extra[k] || ''])),
   };
+  // 構造化フォーム（案5・案3）。passthrough の空値を上書きするため spread の後に読む。
+  const enqField = (id) => { const el = $(id); return el ? el.value.trim() : ''; };
+  spec.verify_template = enqField('enq-verify-template') || spec.verify_template || '';
+  spec.why = enqField('enq-why') || spec.why || '';
+  spec.scope = enqField('enq-scope') || spec.scope || '';
+  spec.out_of_scope = enqField('enq-out_of_scope') || spec.out_of_scope || '';
+  // 作成時 lint（案5・非ブロック）: 情報不足・曖昧 accept を投入前に見せ、続行するか監視者が選ぶ。
+  try {
+    const warnings = await api.lintTask(spec);
+    if (Array.isArray(warnings) && warnings.length) {
+      const body = warnings.map((w) => `・${w.message}`).join('\n');
+      const proceed = await confirmDialog(
+        `このタスクは次の点で情報が不足しています:\n\n${body}\n\nこのまま追加しますか？（あとで編集もできます）`
+      );
+      if (!proceed) return; // 追加を中断してフォームに戻る（ブロックではなく監視者の選択）
+    }
+  } catch (e) {
+    uiLog('lint skipped', String((e && e.message) || e));
+  }
   const ok = await guard('タスク追加', async () => {
     const res = await api.enqueueTask(p.dir, spec);
     uiLog('enqueue', res);

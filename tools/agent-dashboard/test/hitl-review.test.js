@@ -45,6 +45,35 @@ function mkProject() {
     assert.strictEqual(rec.reason, '方針転換で不要');
   });
 
+  await test("runAction は稼働状態に依らず file 経路一本（案2後半）", async () => {
+    // actionMode 指定は無視され、常に commands ドロップ。CLI 経路・fallback は撤去。
+    const dir = mkProject();
+    const orig = project.isProjectRunning;
+    project.isProjectRunning = () => false; // 停止中でも CLI へ行かずドロップ
+    try {
+      const res = await actions.runAction(
+        { projects: { command: 'no-such-binary-xyz' } },
+        { dir, action: 'hold', id: 'T2', reason: '保留' }
+      );
+      assert.strictEqual(res.via, 'file');
+      assert.ok(!('cliError' in res));
+    } finally {
+      project.isProjectRunning = orig;
+    }
+  });
+
+  await test("runAction('approve', complete) は complete フラグをドロップに載せる", async () => {
+    // 以前の file-drop 経路は complete を落としており、稼働中に「承認して完了にする」を押すと
+    // 完了指定が失われた（承認して完了にできない不具合の一因）。ドロップに complete を通す。
+    const dir = mkProject();
+    await actions.runAction({ projects: {} },
+      { dir, action: 'approve', id: 'T3', reason: '成果を確認', complete: true });
+    const files = fs.readdirSync(path.join(dir, 'commands')).filter((f) => f.endsWith('.json'));
+    const rec = JSON.parse(fs.readFileSync(path.join(dir, 'commands', files[0]), 'utf8'));
+    assert.strictEqual(rec.command, 'approve');
+    assert.strictEqual(rec.complete, true);
+  });
+
   await test('dependentsOf は after 逆辺の推移閉包を返す', async () => {
     const tasks = [
       { id: 'A', status: 'ready', extra: {} },

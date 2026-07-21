@@ -46,6 +46,14 @@ class Config:
     # agent-project の役割なので CLI 注入し続ける。
     flow_config: "str | None" = None
     flow_max_workers: int = 4          # agent-flow daemon の worker 上限
+    # 状態専用リポジトリ（案1: 状態と成果物の分離）。設定すると状態（.agent-project 一式）を
+    # 成果物リポジトリの worktree ではなく、専用リポジトリの通常 clone に置く。worktree の
+    # 二重実装・sparse-checkout・本体 main へのバックアップ（ドリフト源）を回避する。
+    # URL は全 PC 共有（共有 yaml 可）。clone 先 dir は既定 <repo>-agent-state（PC 毎に上書き可）。
+    # 空なら従来どおり worktree 方式（後方互換）。clone 失敗時も worktree 方式へ自動フォールバック。
+    state_repo: str = ""
+    state_repo_dir: str = ""            # ローカル clone 先（空＝<成果物repo>-agent-state の隣）
+    state_repo_branch: str = "main"    # 専用リポジトリ内で状態を載せるブランチ
     # 状態 worktree（build_config が root を差し替える。下の _redirect_root_to_state_worktree 参照）
     state_worktree_dir: str = ""
     state_branch: str = "agent-state"
@@ -65,6 +73,13 @@ class Config:
                                            # ごとに 1 回だけ書き直し、state_git の commit-if-diff に乗る
     lock_dir: "str | None" = None   # agent-flow daemon ロックの置き場（外部 daemon 発見のため agent-flow と一致させる）
     agent_flow: "str | None" = None
+    # 複数 PC のノード割当（バックログ単位で実行 PC を選ぶ）。node はこの PC のエンジン名で、
+    # PC 毎に異なるため CLI --node か環境変数 AGENT_PROJECT_NODE からのみ取り（共有 yaml には
+    # 載せない＝全 PC 同名になる事故を防ぐ）。空なら無名エンジン＝従来どおり全タスクを消化する。
+    # default_node はプロジェクト共有設定で、node 未指定タスクをどの PC が拾うかの既定
+    # （空なら従来どおり誰でも拾う）。割当の一致判定は task_runnable_here。
+    node: str = ""
+    default_node: str = ""
     planner: str = "agent"         # 優先順位付け戦略: agent（エージェント委譲）/ none（priority＋古さ）
     flow_planner: str = "flow-planner"  # agent-flow run に渡す planner
     # ルーティング: タスク → ちょうど1つの書込先ワークスペースを決める自動判断。agent=曖昧時に

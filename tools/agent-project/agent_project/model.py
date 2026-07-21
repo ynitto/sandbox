@@ -149,7 +149,7 @@ TASK_GUIDE_KEYS = ("why", "desc", "scope", "out_of_scope", "constraints", "hints
 
 ENQUEUE_KNOWN_KEYS = {"id", "title", "verify", "priority", "source", "status",
                       "after", "review", "note", "accept", "verify_template", "repos",
-                      "workspace", "refs", "paths", "routed_by",
+                      "workspace", "refs", "paths", "routed_by", "node",
                       "cohort_items", "cohort", "cohort_role", *TASK_GUIDE_KEYS}
 
 
@@ -211,7 +211,7 @@ def task_from_spec(cfg: "Config", spec: dict) -> Task:
     except (TypeError, ValueError):
         t.priority = 0
     for k in ("after", "review", "note", "accept", "verify_template", "repos",   # 既知の追加フィールド
-              "workspace", "refs", "paths", "routed_by",   # ルーティング: 書込先・参照repo・触るパス・解決経路
+              "workspace", "refs", "paths", "routed_by", "node",   # ルーティング: 書込先・参照repo・触るパス・解決経路・実行ノード
               *TASK_GUIDE_KEYS):                           # 誘導・レビュー記述（why/desc/scope/…）
         v = spec.get(k)
         if v in (None, "", []):

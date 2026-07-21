@@ -100,6 +100,20 @@ def status_path(cfg: "Config") -> Path:
     return cfg.backlog.parent / "status.json"
 
 
+def status_dir(cfg: "Config") -> Path:
+    """ノード毎の生存信号 status/<node>.json の置き場（複数 PC 分散運用）。"""
+    return cfg.backlog.parent / "status"
+
+
+def node_status_path(cfg: "Config") -> "Path | None":
+    """このエンジンのノード別生存信号ファイル。node 未設定（無名エンジン）なら None。"""
+    node = str(getattr(cfg, "node", "") or "").strip()
+    if not node:
+        return None
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", node).strip("-") or "node"
+    return status_dir(cfg) / f"{safe}.json"
+
+
 def pause_path(cfg: "Config") -> Path:
     return cfg.backlog.parent / "paused.json"
 
@@ -129,16 +143,29 @@ def write_status(cfg: "Config") -> None:
     rec = {
         "host": socket.gethostname(), "watch": cfg.watch, "level": cfg.level,
         "paused": is_paused(cfg),
+        # ノード名（複数 PC 分散運用）。無名エンジンは空（従来と同じ見え方）。
+        "node": str(getattr(cfg, "node", "") or "").strip(),
         "updated_iso": _now_ts(), "fresh_after_sec": _status_fresh_after_sec(cfg),
         # Windows ビュアーが同一マシンの WSL 本体を「別マシン」と誤認しないための信号
         **detect_runtime(),
     }
+    body = json.dumps(rec, ensure_ascii=False, indent=2)
     try:
-        p = status_path(cfg)
+        p = status_path(cfg)                       # 従来の単一 status.json（後方互換）
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+        p.write_text(body, encoding="utf-8")
     except OSError:
         pass
+    # ノード名があれば status/<node>.json にも書く。複数の名前付きエンジンが同じ状態リポジトリを
+    # 共有しても、各ノードが別ファイルを持つので単一 status.json の上書き合戦にならない。
+    # viewer はこのディレクトリを読んでノード一覧（生存・実行中）を出せる。
+    np = node_status_path(cfg)
+    if np is not None:
+        try:
+            np.parent.mkdir(parents=True, exist_ok=True)
+            np.write_text(body, encoding="utf-8")
+        except OSError:
+            pass
 
 
 def maybe_heartbeat_status(cfg: "Config") -> None:
@@ -359,7 +386,8 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
             tasks = load_tasks(cfg.backlog)    # settle が状態を変えたので再読
 
         order_all = [t for t in prioritize(tasks, policy, cfg.planner, cfg.model, ranker)
-                     if t.id not in unavailable]  # 他 worker/インスタンスがクレーム済みは除外
+                     if t.id not in unavailable        # 他 worker/インスタンスがクレーム済みは除外
+                     and task_runnable_here(cfg, t)]    # 他ノード（PC）へ割当済みは消化しない
         levels = {t.id: resolve_level(t, cfg, autonomy_cache) for t in order_all}
         for t in order_all:                       # report タスクは実行せず「計画」に載せて保留（塩漬け）
             if levels[t.id] == "report" and t.id not in plan_seen:
@@ -537,7 +565,9 @@ def has_work(cfg: Config) -> bool:
     数千まで増え、journal が秒単位で埋まる）。dependents が ready でも ready_after_deps が
     空なら起こさない。"""
     tasks = load_tasks(cfg.backlog)
-    if ready_after_deps(tasks):
+    # 他ノード（PC）へ割当済みの ready では起こさない。起こすと消化対象ゼロの空パスを
+    # 毎 poll 繰り返す（cycles が増え journal が埋まる）。自ノードが消化できる ready だけで起こす。
+    if any(task_runnable_here(cfg, t) for t in ready_after_deps(tasks)):
         return True
     for t in tasks:
         st = t.norm_status()

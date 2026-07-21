@@ -20,6 +20,7 @@ function buildBaseApi() {
     gitCommitPush: (dir, message, paths) => invoke('git:commitPush', { dir, message, paths }),
     gitHealth: (dir, refreshRemote = true) => invoke('git:health', { dir, refreshRemote }),
     gitHeal: (dir) => invoke('git:heal', { dir }),
+    setupDiagnostics: () => invoke('setup:diagnostics'),
     gitDiff: (args) => invoke('git:diff', args),
 
     glEnrich: (urls) => invoke('gitlab:enrich', { urls }),

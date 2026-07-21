@@ -2517,6 +2517,140 @@ class TestCommandsIngest(unittest.TestCase):
             self.assertEqual(sorted(p.name for p in cd.glob("*.err")),
                              ["garbage.json.err", "old2.json.err"])
 
+    def test_ingest_commands_writes_success_receipt(self):
+        # 成功した指示は processed/<name>.json に受理レシートを残す。viewer が元ファイル名で
+        # 自分の「送信済み」表示を「受理済み」へ更新でき、押しても何も起きない停滞を排除する。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="blocked", verify="true")
+            c = cfg_for(d, actor="bob")
+            km.ensure_dirs(c)
+            cd = km.commands_dir(c)
+            (cd / "viewer-approve-x.json").write_text(json.dumps(
+                {"command": "approve", "id": "T1", "reason": "直した"}), encoding="utf-8")
+            self.assertEqual(km.ingest_commands(c), ["approve:T1"])
+            self.assertEqual(list(cd.glob("*.json")), [])            # 元の指示は従来どおり消える
+            receipts = list(km.commands_receipts_dir(c).glob("*.json"))
+            self.assertEqual([p.name for p in receipts], ["viewer-approve-x.json"])
+            rec = json.loads(receipts[0].read_text(encoding="utf-8"))
+            self.assertTrue(rec["ok"])
+            self.assertEqual(rec["action"], "approve")
+            self.assertEqual(rec["id"], "T1")
+            self.assertEqual(rec["source"], "viewer-approve-x.json")
+
+    def test_ingest_commands_failure_leaves_no_receipt(self):
+        # 失敗は従来どおり .err にだけ残し、受理レシート（成功の痕跡）は書かない。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            c = cfg_for(d)
+            km.ensure_dirs(c)
+            cd = km.commands_dir(c)
+            (cd / "bad.json").write_text(json.dumps(
+                {"command": "approve", "id": "NOPE"}), encoding="utf-8")
+            self.assertEqual(km.ingest_commands(c), [])
+            self.assertEqual(len(list(cd.glob("*.json.err"))), 1)
+            rdir = km.commands_receipts_dir(c)
+            self.assertFalse(rdir.exists() and list(rdir.glob("*.json")))
+
+    def test_command_receipts_pruned_by_count(self):
+        # 受理レシートは件数上限で掃除され、commands/ 履歴が肥大しない。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            c = cfg_for(d)
+            km.ensure_dirs(c)
+            rdir = km.commands_receipts_dir(c)
+            rdir.mkdir(parents=True, exist_ok=True)
+            keep = km._RECEIPT_KEEP
+            base = time.time() - 500                          # TTL 内かつ決定的な mtime 順
+            for i in range(keep + 25):
+                p = rdir / f"r{i:04d}.json"
+                p.write_text("{}", encoding="utf-8")
+                os.utime(p, (base + i, base + i))
+            km._prune_command_receipts(c)
+            remaining = sorted(p.name for p in rdir.glob("*.json"))
+            self.assertEqual(len(remaining), keep)           # 上限まで削減
+            self.assertNotIn("r0000.json", remaining)        # 最古が消える
+            self.assertIn(f"r{keep + 24:04d}.json", remaining)  # 最新は残る
+
+    def test_node_unnamed_engine_runs_everything(self):
+        # 無名エンジン（node 未設定）は従来どおり全タスクを消化する（後方互換）。
+        with tempfile.TemporaryDirectory() as d:
+            c = cfg_for(Path(d))  # node="" 既定
+            t_assigned = km.Task(id="T", title="T", status="ready", verify="true")
+            t_assigned.set("node", "pcB")
+            t_plain = km.Task(id="U", title="U", status="ready", verify="true")
+            self.assertTrue(km.task_runnable_here(c, t_assigned))
+            self.assertTrue(km.task_runnable_here(c, t_plain))
+
+    def test_node_named_engine_honors_assignment(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = cfg_for(Path(d), node="pcA")  # default_node="" 既定
+            mine = km.Task(id="T", title="T", status="ready", verify="true"); mine.set("node", "pcA")
+            others = km.Task(id="U", title="U", status="ready", verify="true"); others.set("node", "pcB")
+            plain = km.Task(id="V", title="V", status="ready", verify="true")
+            self.assertTrue(km.task_runnable_here(c, mine))      # 自ノード宛ては消化
+            self.assertFalse(km.task_runnable_here(c, others))   # 他ノード宛ては消化しない
+            self.assertTrue(km.task_runnable_here(c, plain))     # 未割当かつ default 空＝誰でも（従来）
+
+    def test_node_default_funnels_unassigned(self):
+        with tempfile.TemporaryDirectory() as d:
+            cA = cfg_for(Path(d), node="pcA", default_node="pcA")
+            cB = cfg_for(Path(d), node="pcB", default_node="pcA")
+            plain = km.Task(id="T", title="T", status="ready", verify="true")
+            self.assertTrue(km.task_runnable_here(cA, plain))    # default が未割当を拾う
+            self.assertFalse(km.task_runnable_here(cB, plain))   # 非 default は未割当を拾わない
+            assigned_b = km.Task(id="U", title="U", status="ready", verify="true"); assigned_b.set("node", "pcB")
+            self.assertTrue(km.task_runnable_here(cB, assigned_b))  # 明示割当は default に依らず優先
+
+    def test_node_has_work_skips_other_node_ready(self):
+        # pcA エンジンは pcB 宛ての ready だけでは起きない（空パスの busy-loop 防止）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T", status="ready", verify="true")
+            (d / "backlog" / "T.md").write_text(
+                "## T: T\n- status: ready\n- source: human\n- verify: `true`\n"
+                "- retries: 0\n- node: pcB\n", encoding="utf-8")
+            c = cfg_for(d, node="pcA")
+            self.assertFalse(km.has_work(c))
+            # 自ノード宛てを足すと起きる
+            mkb(d, "U", status="ready", verify="true")
+            (d / "backlog" / "U.md").write_text(
+                "## U: U\n- status: ready\n- source: human\n- verify: `true`\n"
+                "- retries: 0\n- node: pcA\n", encoding="utf-8")
+            self.assertTrue(km.has_work(c))
+
+    def test_node_status_writes_per_node_file(self):
+        # ノード名があれば status.json に加えて status/<node>.json を書く（複数 PC の生存一覧用）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            c = cfg_for(d, node="pc-A")
+            km.ensure_dirs(c)
+            km.write_status(c)
+            shared = json.loads((d / "status.json").read_text(encoding="utf-8"))
+            self.assertEqual(shared["node"], "pc-A")               # 単一 status にもノード名
+            per = json.loads((d / "status" / "pc-A.json").read_text(encoding="utf-8"))
+            self.assertEqual(per["node"], "pc-A")
+
+    def test_node_status_no_per_node_file_when_unnamed(self):
+        # 無名エンジンは従来どおり status.json のみ（status/ を作らない）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            c = cfg_for(d)  # node="" 既定
+            km.ensure_dirs(c)
+            km.write_status(c)
+            self.assertTrue((d / "status.json").exists())
+            self.assertFalse((d / "status").exists())
+
+    def test_node_revise_reassigns(self):
+        # 監視者が revise で実行 PC（node）を付け替えられる。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T", status="ready", verify="true")
+            c = cfg_for(d, actor="watcher")
+            self.assertEqual(km.cmd_revise(c, "T", {"node": "pcB"}, "", "担当変更"), 0)
+            t = next(t for t in km.load_tasks(c.backlog) if t.id == "T")
+            self.assertEqual(t.get("node"), "pcB")
+
     def test_has_work_wakes_on_commands(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
@@ -8184,6 +8318,83 @@ class TestStateGitSync(unittest.TestCase):
             reviewer=lambda ch: (True, ""), runner=km.run_loop,
             sleeper=lambda _s: None, max_passes=1)
         self.assertEqual(seen, ["B"])                        # 初回 plan は取り込み後の charter を見る
+
+
+class TestStateRepoSeparation(unittest.TestCase):
+    """案1: 状態専用リポジトリ。状態を成果物リポジトリの worktree ではなく、専用リポジトリの
+    通常 clone に置く（worktree 二重実装・本体 main へのバックアップ＝ドリフト源を回避）。
+    未設定なら従来の worktree 方式、clone 失敗時も worktree 方式へフォールバックする。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        km._STATE_GITS.clear()
+        self.env = {**os.environ, "GIT_CONFIG_COUNT": "1",
+                    "GIT_CONFIG_KEY_0": "commit.gpgsign", "GIT_CONFIG_VALUE_0": "false"}
+        # 状態専用リポジトリ（bare + main を確立）
+        self.state_remote = self.tmp / "state.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(self.state_remote)], check=True)
+        seed = self.tmp / "state-seed"
+        subprocess.run(["git", "clone", "-q", str(self.state_remote), str(seed)],
+                       check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(seed), "config", "user.email", "s@t"], check=True)
+        subprocess.run(["git", "-C", str(seed), "config", "user.name", "s"], check=True)
+        subprocess.run(["git", "-C", str(seed), "checkout", "-qb", "main"], check=True)
+        (seed / "charter.md").write_text("# Charter\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(seed), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(seed), "commit", "-qm", "init"], check=True, env=self.env)
+        subprocess.run(["git", "-C", str(seed), "push", "-q", "-u", "origin", "main"],
+                       check=True, capture_output=True)
+        # 成果物リポジトリ（状態とは別リポジトリ。初期コミットありで worktree フォールバックも効く）
+        self.deliverable = self.tmp / "app"
+        subprocess.run(["git", "init", "-q", str(self.deliverable)], check=True)
+        subprocess.run(["git", "-C", str(self.deliverable), "config", "user.email", "a@t"], check=True)
+        subprocess.run(["git", "-C", str(self.deliverable), "config", "user.name", "a"], check=True)
+        (self.deliverable / "README.md").write_text("app\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.deliverable), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(self.deliverable), "commit", "-qm", "init"],
+                       check=True, env=self.env)
+
+    def _build(self, **cli):
+        ns = types.SimpleNamespace(config=None, **cli)
+        km.resolve_config(ns)
+        orig = (km._AGENT_CLI, km._AGENT_TIMEOUT)
+        try:
+            return km.build_config(ns)
+        finally:
+            km._AGENT_CLI, km._AGENT_TIMEOUT = orig
+
+    def test_state_repo_redirects_to_clone_and_disables_backup(self):
+        cfg = self._build(root=str(self.deliverable), state_repo=str(self.state_remote))
+        clone = self.deliverable.parent / "app-agent-state"
+        self.assertTrue((clone / ".git").exists())               # 専用リポジトリを通常 clone した
+        self.assertEqual(cfg.backlog, clone.resolve() / "backlog")  # 状態ルートは clone
+        self.assertEqual(cfg.state_backup_branch, "")            # 本体 main へのミラー無効（ドリフト源を断つ）
+        self.assertEqual(cfg.state_top, self.deliverable.resolve())  # 成果物 top（_source_repo 用）
+        self.assertIsInstance(km.state_git_for(cfg), km.DirectStateGit)  # direct 同期が効く
+
+    def test_state_repo_reuses_existing_clone(self):
+        cfg1 = self._build(root=str(self.deliverable), state_repo=str(self.state_remote))
+        clone = self.deliverable.parent / "app-agent-state"
+        marker = clone / ".git" / "HEAD"
+        stamp = marker.stat().st_mtime
+        km._STATE_GITS.clear()
+        cfg2 = self._build(root=str(self.deliverable), state_repo=str(self.state_remote))
+        self.assertEqual(marker.stat().st_mtime, stamp)          # 再 clone せず既存を再利用
+        self.assertEqual(cfg1.backlog, cfg2.backlog)
+
+    def test_state_repo_unset_uses_worktree(self):
+        cfg = self._build(root=str(self.deliverable), state_repo="")
+        self.assertEqual(cfg.state_repo, "")
+        self.assertFalse((self.deliverable.parent / "app-agent-state" / ".git").exists()
+                         and bool(cfg.state_repo))               # state_repo clone は作らない
+
+    def test_state_repo_clone_failure_falls_back_to_worktree(self):
+        bad = str(self.tmp / "does-not-exist.git")
+        cfg = self._build(root=str(self.deliverable), state_repo=bad)
+        self.assertEqual(cfg.state_repo, bad)
+        self.assertNotEqual(cfg.state_backup_branch, "")         # フォールバック時はミラー既定を維持
+        self.assertEqual(cfg.state_top, self.deliverable.resolve())  # worktree 方式（成果物 top）
 
 
 class TestDirectStateGit(unittest.TestCase):

@@ -335,9 +335,29 @@
       <input id="enq-verify" class="mono" placeholder='例: grep -q "## Usage" README.md' />
     </div>
     <div class="field">
-      <label>完了条件 — 文章で（検証コマンドが書けないとき。実行時に自動でコマンド化されます）</label>
+      <label>完了条件テンプレート — よくある検証を選んで穴埋め（決定的に展開。生コマンド不要）</label>
+      <input id="enq-verify-template" class="mono" list="enq-verify-template-options"
+             placeholder="例: file-contains :: README.md :: ## Usage" />
+      <datalist id="enq-verify-template-options">
+        <option value="file-contains :: path :: needle">ファイルに文字列が含まれる</option>
+        <option value="file-exists :: path">ファイルが存在する</option>
+        <option value="cmd-succeeds :: command">コマンドが成功する（終了コード0）</option>
+        <option value="endpoint-returns :: url :: 200">URL が指定ステータスを返す</option>
+        <option value="diff-contains :: needle">変更差分に文字列が含まれる</option>
+      </datalist>
+    </div>
+    <div class="field">
+      <label>完了条件 — 文章で（検証コマンドもテンプレートも書けないとき。実行時に自動でコマンド化されます）</label>
       <input id="enq-accept" placeholder="例: README に使用例が載っている" />
     </div>
+    <details class="enq-guide-panel">
+      <summary>意図と境界（計画レビューの材料・任意だが成果のぶれを減らせます）</summary>
+      <div class="field"><label for="enq-why">なぜ（why）— この作業の目的・背景</label><input id="enq-why" /></div>
+      <div class="row2">
+        <div class="field"><label for="enq-scope">やる範囲（scope）</label><input id="enq-scope" /></div>
+        <div class="field"><label for="enq-out_of_scope">やらない範囲（out_of_scope）</label><input id="enq-out_of_scope" /></div>
+      </div>
+    </details>
     <div class="row2">
       <div class="field">
         <label>優先度（数字が大きいほど先に着手）</label>

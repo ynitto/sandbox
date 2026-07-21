@@ -37,14 +37,11 @@ module.exports = {
     // approve / hold / reprioritize（決定記録を残す人の操作）に使う
     // agent-project CLI。PATH に無い場合はフルパスや
     // "python3 /path/to/agent-project.py" 形式でも指定できる。
+    // command は本体（agent-project）の起動（start）にのみ使う。人の指示（approve / hold / pin /
+    // defer / revise / replan）は commands/<name>.json のファイルドロップ一本で届ける（案2後半で
+    // actionMode の auto/cli 分岐とサイレントフォールバックを撤去。稼働中の本体が同期越しに取り込み、
+    // 受理レシートでカードへ反映する。停止中は取り込み待ちで残り「押しても何も起きない」を排除）。
     command: 'agent-project',
-    // 人の指示（approve / hold / pin / defer）の届け方。
-    //   auto … 本体が稼働中なら commands/<name>.json のファイルドロップ
-    //          （WSL 内の本体にも届く）、稼働していなければ CLI、
-    //          CLI も使えなければファイルドロップにフォールバック
-    //   file … 常にファイルドロップ（次回の watch/起動が取り込む）
-    //   cli  … 常に CLI（従来の挙動）
-    actionMode: 'auto',
     // agent-flow の明示バス（agent-project を --bus / 設定 bus: 付きで運用している
     // 場合）のパス。空なら <root>/bus → agent-project 設定ファイル（.agent/）の bus: の
     // 順にファイルから自動発見する。

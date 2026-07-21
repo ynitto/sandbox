@@ -126,4 +126,35 @@ test('状態 worktree 構成でも instances を実効パス（backlog の親）
   }
 });
 
+// --- readNodeStatuses（案6・ノード別生存一覧） ---
+test('readNodeStatuses は status/<node>.json を新しさ付きで並べる', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-nodes-'));
+  try {
+    const sdir = path.join(tmp, 'status');
+    fs.mkdirSync(sdir, { recursive: true });
+    const now = new Date().toISOString();
+    const old = new Date(Date.now() - 9999 * 1000).toISOString();
+    fs.writeFileSync(path.join(sdir, 'pc-a.json'), JSON.stringify(
+      { node: 'pc-a', host: 'h1', updated_iso: now, fresh_after_sec: 120, watch: true, level: 'unattended' }));
+    fs.writeFileSync(path.join(sdir, 'pc-b.json'), JSON.stringify(
+      { node: 'pc-b', host: 'h2', updated_iso: old, fresh_after_sec: 120 }));
+    const nodes = project.readNodeStatuses(tmp);
+    assert.deepStrictEqual(nodes.map((n) => n.node), ['pc-a', 'pc-b']); // 名前順
+    assert.strictEqual(nodes[0].running, true);   // 新しい → 稼働中
+    assert.strictEqual(nodes[1].running, false);  // 古い → 応答なし（heartbeat 途絶）
+    assert.ok(nodes[1].ageSec > 1000);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('readNodeStatuses は status/ が無ければ空配列', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-nodes-'));
+  try {
+    assert.deepStrictEqual(project.readNodeStatuses(tmp), []);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 console.log(`\n${passed} passed`);

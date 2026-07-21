@@ -624,9 +624,49 @@ function writeProjectFile(dir, name, content) {
   return { file, name };
 }
 
+// 作成時 lint（案5・G6）: バックログの情報量不足・曖昧な完了条件を投入前に警告する。
+// 純関数（副作用なし・投入はブロックしない）。判断は監視者に委ねる＝警告のみ返す。
+// 返り値: [{ level: 'warn'|'info', field, message }]。
+const VAGUE_ACCEPT_RE =
+  /(いい感じ|良い感じ|よい感じ|ちゃんと|きちんと|しっかり|うまく|上手く|正しく|適切に|きれいに|綺麗に|なるべく|できるだけ|良く|よしなに|いい感じに)/;
+
+function lintTaskSpec(spec) {
+  const s = spec || {};
+  const val = (k) => String(s[k] == null ? '' : s[k]).trim();
+  const out = [];
+  const verify = val('verify');
+  const template = val('verify_template');
+  const accept = val('accept');
+  // 完了条件が何も無い＝自動では完了にできず、必ず人手の検収に落ちる。
+  if (!verify && !template && !accept) {
+    out.push({
+      level: 'warn',
+      field: 'accept',
+      message: '完了条件がありません。verify（検証コマンド）か verify_template、または accept（完了条件の文章）を指定してください。無いと自動で完了にできません。',
+    });
+  } else if (!verify && !template && accept && VAGUE_ACCEPT_RE.test(accept)) {
+    // 曖昧な自然文 accept は弱い verify に合成され手戻りの元（G6）。
+    out.push({
+      level: 'warn',
+      field: 'accept',
+      message: '完了条件が曖昧です（「ちゃんと」「正しく」等）。検証可能な条件に言い換えるか、verify コマンドを指定すると手戻りが減ります。',
+    });
+  }
+  // 計画レビューの判断材料（なぜ・範囲）が無いと、承認者が成果のぶれを見抜けない。
+  if (!val('why') && !val('scope')) {
+    out.push({
+      level: 'info',
+      field: 'why',
+      message: 'why（なぜ）/ scope（やる範囲）が未記入です。計画レビューの判断材料になり、成果物のぶれを減らせます。',
+    });
+  }
+  return out;
+}
+
 module.exports = {
   EDITABLE_FILES,
   POLICY_KINDS,
+  lintTaskSpec,
   isEditable,
   buildCharter,
   charterReposLines,

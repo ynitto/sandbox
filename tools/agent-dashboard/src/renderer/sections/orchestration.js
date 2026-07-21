@@ -733,6 +733,19 @@ function globalSettingsAppHtml() {
       <div class="field"><label class="check"><input type="checkbox" id="cfg-notify" /> 対応が必要になったら通知する</label></div>
       <div class="field"><label for="cfg-needs-sla">長時間未対応として知らせるまで（時間）</label><input id="cfg-needs-sla" type="number" min="1" step="1" /></div>
     </div>
+    <div class="field">
+      <label for="cfg-role">この PC の役割（案4）</label>
+      <select id="cfg-role">
+        <option value="engineer">engineer（本体も動かす・全機能）</option>
+        <option value="viewer">viewer（閲覧・レビュー専用）</option>
+      </select>
+      <p class="field-help">viewer は「状態リポジトリを clone して登録」だけで、監視・コメント・承認ができます（WSL/CLI 設定は不要）。</p>
+    </div>
+    <div class="field">
+      <label>セットアップ診断 — 登録した clone が正しく同期できるか確認します</label>
+      <div class="row"><button type="button" id="btn-setup-diagnostics">診断する</button></div>
+      <div id="setup-diagnostics-result" class="muted" aria-live="polite"></div>
+    </div>
     <div class="settings-save-actions"><button type="button" id="btn-save-app-settings" class="primary-inline">保存</button></div>
   </div>`;
 }
@@ -773,12 +786,7 @@ function globalSettingsSyncHtml() {
       <div class="field"><label for="cfg-git-pull">共有先を確認する間隔（秒・0で自動確認なし）</label><input id="cfg-git-pull" type="number" min="0" step="1" /></div>
       <div class="field"><label class="check"><input type="checkbox" id="cfg-git-autopush" /> 操作した変更を自動で共有する</label></div>
     </div>
-    <div class="row2">
-      <div class="field"><label for="cfg-action-mode">承認や優先度変更の届け方</label><select id="cfg-action-mode">
-        <option value="auto">自動</option><option value="file">共有ファイルを使用</option><option value="cli">実行コマンドを使用</option>
-      </select></div>
-      <div class="field"><label for="cfg-project-command">プロジェクト操作コマンド</label><input id="cfg-project-command" class="mono" placeholder="agent-project" /></div>
-    </div>
+    <div class="field"><label for="cfg-project-command">プロジェクト操作コマンド（本体の起動に使用）</label><input id="cfg-project-command" class="mono" placeholder="agent-project" /></div>
     <h3>実行データの共有先</h3>
     <div class="row2">
       <div class="field"><label for="cfg-flow-bus">共通の共有先</label><input id="cfg-flow-bus" class="mono" placeholder="空欄なら自動で探します" /></div>
@@ -946,6 +954,29 @@ function setupGlobalSettings(root) {
   }
   const coworkOpen = root.querySelector('#btn-settings-cowork-open');
   if (coworkOpen) coworkOpen.addEventListener('click', openCoworkFromSettings);
+  const diagBtn = root.querySelector('#btn-setup-diagnostics');
+  if (diagBtn) diagBtn.addEventListener('click', () => runSetupDiagnostics(root));
+}
+
+// セットアップ診断（案4）: 登録 clone の有効性を赤/緑で表示し、誤設定を沈黙させない。
+async function runSetupDiagnostics(root) {
+  const out = root.querySelector('#setup-diagnostics-result');
+  if (out) out.textContent = '診断中…';
+  try {
+    const res = await api.setupDiagnostics();
+    if (!out) return;
+    if (!res || !res.clones || !res.clones.length) {
+      out.innerHTML = '<p class="muted">登録された clone がありません（⚙ 設定のワークスペースに追加してください）。</p>';
+      return;
+    }
+    const rows = res.clones
+      .map((c) => `<li class="diag-row diag-${esc(c.level)}"><b>${esc(c.root)}</b><br><span class="muted">${esc(c.summary)}</span></li>`)
+      .join('');
+    const roleNote = res.role === 'viewer' ? '（役割: viewer）' : '（役割: engineer）';
+    out.innerHTML = `<ul class="diag-list">${rows}</ul><p class="muted">${esc(roleNote)}</p>`;
+  } catch (e) {
+    if (out) out.textContent = `診断できませんでした: ${String((e && e.message) || e)}`;
+  }
 }
 
 function setupOrchestration(root) {
