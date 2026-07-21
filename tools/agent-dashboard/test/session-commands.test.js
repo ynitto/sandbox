@@ -196,7 +196,7 @@ test('起動スクリプトはスキップ済みの行を差し込まない', ()
   assert.strictEqual(lines, '');
 });
 
-test('chat は paste-buffer で送り、業務プロンプトより前に置く', () => {
+test('chat は send-keys で送り、業務プロンプトより前に置く', () => {
   const entries = sc.plan(
     { commands: [{ id: 'prime', mode: 'chat', run: 'docs を読んで' }] },
     { engine: 'dashboard' }
@@ -209,7 +209,9 @@ test('chat は paste-buffer で送り、業務プロンプトより前に置く'
   const promptAt = script.indexOf('本題のプロンプト');
   assert.ok(chatAt > 0 && promptAt > 0);
   assert.ok(chatAt < promptAt, 'chat コマンドは業務プロンプトより先に送る');
-  assert.ok(script.includes('paste-buffer'), 'send-keys ではなく paste-buffer で送る');
+  // スラッシュ補完メニューでの文字化けを避けるため、一括ペーストではなく send-keys で打鍵する。
+  assert.ok(script.includes('send-keys -t "$__ses" -l --'), 'send-keys（打鍵）で送る');
+  assert.ok(!script.includes('paste-buffer'), 'paste-buffer は使わない');
 });
 
 // CLIチャット起動ボタン（プロンプトを送らない経路）との統合。両機能が同じ
