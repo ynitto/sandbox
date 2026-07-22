@@ -1292,17 +1292,25 @@ function needListItemHtml(item, selected, slaHours) {
   </button>`;
 }
 
-// gate-derived か（＝この検証失敗が一貫性ゲートの回帰検査由来か）。断定はしない——producer が
-// 既に検証失敗と判定した failure に対し、失敗した工程コマンドや文面がゲート由来かを見て
-// 表示を足すだけ。外れても「一貫性ゲート」ラベルが 1 つ増えるだけで害はない（canDiagnoseNeed と
-// 同じ「推測してよい場所」の扱い。断定側の needFailureViewModel はここに関与しない）。
-function needGateFailure(failure, n) {
-  if (!failure) return false;
-  const cmd = String((failure.context && failure.context.command) || '');
-  if (/codd-gate/.test(cmd)) return true;
-  return /(?:一貫性ゲート|回帰検知|codd[- ]?gate)/i.test(
-    `${failure.summary || ''}\n${(n && n.why) || ''}`
-  );
+// この検証失敗が一貫性ゲート由来なら、どの経路で止まったかを返す（`regression` / `verify`）。
+// 由来を返り値で分けるのは、断定してよい文面が経路ごとに違うため:
+//   - `regression`: 回帰ゲート失敗には producer が `回帰検知: グローバル検査 \`<cmd>\` 失敗`
+//     を why に書く（tools/agent-project/agent_project/mr.py:582）。ただしこのプレフィックスは
+//     codd-gate 以外の regression_cmd（yaml example の `make -s smoke` など）にも同じく付くので、
+//     `回帰検知` だけでは一貫性ゲート由来と断定できない。gate.regressionWired と併せて初めて
+//     「回帰検査が止めた」と言える。
+//   - `verify`: タスク自身の verify が codd-gate のとき（README が charter acceptance に勧める形）。
+//     context.command は _diagnoseFailure が verify 行から取る値で regression_cmd ではないので、
+//     こちらを「回帰検査が止めた」と言うと概要タブの結線表示と矛盾する。
+// どちらにも当たらなければ何も足さない。ペイロード無し（旧 main）も同様——概要タブ側の
+// consistencyGateHtml も空を返すので、存在しないセクションへ誘導しない。
+function needGateSource(failure, n, gate) {
+  if (!failure || !gate) return null;
+  if (gate.regressionWired && /回帰検知/.test(`${failure.summary || ''}\n${(n && n.why) || ''}`)) {
+    return 'regression';
+  }
+  if (/codd-gate/.test(String((failure.context && failure.context.command) || ''))) return 'verify';
+  return null;
 }
 
 function renderNeedFacts(p, n) {
@@ -1332,19 +1340,21 @@ function renderNeedFacts(p, n) {
     // （＝一貫性ゲートが完了前に止めた）と、直した後にドリフトが自動起票されるか（intake_cmd の
     // 結線）を、失敗を見ているその場で判断できるようにする。既存の検証失敗要約（見出し・要約行・
     // context）はそのまま——このブロックは後ろに足すだけで、可読性を落とさない。
-    if (needGateFailure(failure, n)) {
-      const gate = p && p.consistencyGate;
-      const intakeLine = !gate
-        ? '概要タブの「一貫性ゲート」で結線状態と有効化を確認できます。'
-        : gate.intakeWired
-          ? `検出したドリフトは <span class="badge info">結線済み</span> の <span class="mono">intake_cmd</span> で修復タスクへ起票されます。`
-          : `ドリフトの取り込み（<span class="mono">intake_cmd</span>）は <span class="badge warn">未結線</span> です。直してもドリフトは自動起票されないため、概要タブの「一貫性ゲート」で有効化してください。`;
-      const open = gate && gate.configFile && !(gate.regressionWired && gate.intakeWired)
+    const gate = p && p.consistencyGate;
+    const gateSource = needGateSource(failure, n, gate);
+    if (gateSource) {
+      const originLine = gateSource === 'regression'
+        ? `この失敗は完了前の回帰検査（<span class="mono">regression_cmd</span>）が止めたものです。`
+        : `このタスクの検証コマンドが一貫性ゲートの検査です。完了前の回帰検査（<span class="mono">regression_cmd</span>）とは別の経路です。`;
+      const intakeLine = gate.intakeWired
+        ? `検出したドリフトは <span class="badge info">結線済み</span> の <span class="mono">intake_cmd</span> で修復タスクへ起票されます。`
+        : `ドリフトの取り込み（<span class="mono">intake_cmd</span>）は <span class="badge warn">未結線</span> です。直してもドリフトは自動起票されないため、概要タブの「一貫性ゲート」で有効化してください。`;
+      const open = gate.configFile && !gate.wired
         ? `<div class="summary-actions"><button class="summary-link secondary" data-open="${esc(gate.configFile)}">設定ファイルを開く</button></div>`
         : '';
       facts.push(`<div class="need-resolution need-gate">
         <span class="label-chip">一貫性ゲート</span>
-        この失敗は完了前の回帰検査（<span class="mono">regression_cmd</span>）が止めたものです。${intakeLine}
+        ${originLine}${intakeLine}
         ${open}
       </div>`);
     }

@@ -3,7 +3,10 @@
 // 一貫性ゲート（codd-gate）の結線状態がプロジェクト情報ペイロードに載ることを検証する。
 // 追加依存なしで `node test/consistency-gate.test.js` で走る。
 //
-// 見ているのは「設定 yaml に regression_cmd / intake_cmd が書かれているか」だけ。
+// 見ているのは「設定 yaml の regression_cmd / intake_cmd が codd-gate を指しているか」。
+// 「キーが空でないか」ではない——両キーは外部ゲートを差し込む汎用フックで、
+// agent-project.yaml.example:171 は `regression_cmd: make -s smoke` を正当な例に挙げている。
+// 判定は tools/agent-project/codd_gate_wiring.py:71-72 と同じ語順マッチ。
 // コマンドは実行しないし、ここから設定を書き換えもしない（読み取り専用）。
 
 const assert = require('assert');
@@ -47,18 +50,49 @@ test('regression_cmd / intake_cmd が両方あれば結線済みとして載る'
     assert.strictEqual(gate.regressionCmd, 'codd-gate verify --base "$KIRO_BASE_REV" --repos repos.json');
     assert.strictEqual(gate.intakeCmd, 'codd-gate tasks --debt --repos repos.json');
     assert.strictEqual(gate.configFile, path.join(ws, '.agents', 'agent-project.yaml'));
+    assert.strictEqual(gate.wired, true);
   } finally {
     fs.rmSync(ws, { recursive: true, force: true });
   }
 });
 
 test('片方だけの設定は片方だけ結線済みになる', () => {
-  const ws = mkWorkspace("regression_cmd: 'codd-gate verify'\n");
+  const ws = mkWorkspace("regression_cmd: 'codd-gate verify --base \"$KIRO_BASE_REV\"'\n");
   try {
     const gate = project.readProject(ws, {}).consistencyGate;
     assert.strictEqual(gate.regressionWired, true);
     assert.strictEqual(gate.intakeWired, false);
     assert.strictEqual(gate.intakeCmd, null);
+    assert.strictEqual(gate.wired, false);
+  } finally {
+    fs.rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+// 本命。キーの有無で判定すると、この設定が「一貫性ゲート有効」と表示されてしまう。
+test('codd-gate を指していないコマンドは未結線（値は表示用に残す）', () => {
+  const ws = mkWorkspace("regression_cmd: make -s smoke\nintake_cmd: agent-project enqueue\n");
+  try {
+    const gate = project.readProject(ws, {}).consistencyGate;
+    assert.strictEqual(gate.regressionWired, false);
+    assert.strictEqual(gate.intakeWired, false);
+    // 「未結線＝何も設定されていない」ではないことを画面が言えるよう、値は落とさない
+    assert.strictEqual(gate.regressionCmd, 'make -s smoke');
+    assert.strictEqual(gate.intakeCmd, 'agent-project enqueue');
+  } finally {
+    fs.rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+// 語順は見るが --repos 等の追加引数は問わない（codd_gate_wiring.py の注記と同じ）。
+test('--repos が無い手書き設定も結線済みと判定する', () => {
+  const ws = mkWorkspace(
+    "regression_cmd: 'codd-gate verify --base \"$KIRO_BASE_REV\"'\n" +
+      "intake_cmd: 'codd-gate tasks --debt'\n"
+  );
+  try {
+    const gate = project.readProject(ws, {}).consistencyGate;
+    assert.strictEqual(gate.wired, true);
   } finally {
     fs.rmSync(ws, { recursive: true, force: true });
   }

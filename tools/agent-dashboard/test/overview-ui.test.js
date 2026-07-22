@@ -290,7 +290,7 @@ assert.match(renderer, /個別のrunを止める操作ではありません/);
 
   // ゲートバッジ: 全結線なら見出しに「有効」、未結線導線は出さない。
   const wired = gateHtml({ consistencyGate: {
-    configFile: '/ws/.agents/agent-project.yaml', regressionWired: true, intakeWired: true,
+    configFile: '/ws/.agents/agent-project.yaml', regressionWired: true, intakeWired: true, wired: true,
     regressionCmd: 'codd-gate verify', intakeCmd: 'codd-gate tasks --debt' } });
   assert.strictEqual(headBadge(wired, '有効'), 1, '全結線のゲートバッジ（有効）が出る');
   assert.ok(!wired.includes('一部のみ'));
@@ -298,7 +298,7 @@ assert.match(renderer, /個別のrunを止める操作ではありません/);
 
   // ゲートバッジ: 一部未結線なら見出しに「一部のみ」。
   const partial = gateHtml({ consistencyGate: {
-    configFile: '/ws/.agents/agent-project.yaml', regressionWired: true, intakeWired: false,
+    configFile: '/ws/.agents/agent-project.yaml', regressionWired: true, intakeWired: false, wired: false,
     regressionCmd: 'codd-gate verify', intakeCmd: null } });
   assert.strictEqual(headBadge(partial, '一部のみ'), 1, '一部未結線のゲートバッジ（一部のみ）が出る');
   assert.strictEqual(headBadge(partial, '有効'), 0);

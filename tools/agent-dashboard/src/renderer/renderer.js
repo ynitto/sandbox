@@ -1090,6 +1090,9 @@ function strategyDisplayLabel(strategy) {
 function consistencyGateHtml(p) {
   const gate = p && p.consistencyGate;
   if (!gate) return '';
+  // 未結線でも値が入っていることはある（regression_cmd は codd-gate 専用キーではなく汎用フック）。
+  // そのときバッジだけ出して値を隠すと「未結線＝何も設定されていない」と読めてしまうので、
+  // 設定されているコマンドは必ず見せたうえで「一貫性ゲートの検査ではない」と添える。
   const rows = [
     ['regression_cmd', '完了前の回帰検査', gate.regressionWired, gate.regressionCmd,
       '作業を done にする直前に全体を検査し、ドキュメントが置き去りのまま完了するのを止めます。'],
@@ -1099,7 +1102,12 @@ function consistencyGateHtml(p) {
       <dt>${esc(label)}<br><span class="mono">${key}</span></dt>
       <dd>
         <span class="badge ${wired ? 'info' : 'warn'}">${wired ? '結線済み' : '未結線'}</span>
-        ${wired ? `<code>${esc(cmd)}</code>` : `<span class="muted">${esc(note)}</span>`}
+        ${cmd ? `<code>${esc(cmd)}</code>` : ''}
+        ${wired
+          ? ''
+          : `<span class="muted">${cmd
+              ? '別のコマンドが設定されています。一貫性ゲートの検査ではありません。'
+              : esc(note)}</span>`}
       </dd>
     </div>`).join('');
 
@@ -1112,13 +1120,21 @@ function consistencyGateHtml(p) {
   //     intake_cmd に対応する注入 CLI は無いので yaml を直接編集する。
   //   - CLI の --config は**既存の**設定ファイルを指すこと（無ければエラーで止まる）。
   //     よって設定ファイル未検出のときは CLI を勧めず、作成手順だけを出す。
-  const wiredAll = gate.regressionWired && gate.intakeWired;
+  //   - `<root>/repos.json` の <root> はペイロードの p.dir（プロジェクトルート）で埋める。README は
+  //     プレースホルダのままだが、画面は貼ればそのまま動く文字列を出す（<root> を人が自力で
+  //     知る手段が概要タブに無く、埋め損ねると codd-gate が repos.json を開けず regression が
+  //     常時 FAIL する）。p.dir が無いときだけ README と同じプレースホルダに戻す。
+  const wiredAll = gate.wired;
+  const reposArg = `${p.dir ? `${p.dir}/` : '<root>/'}repos.json`;
   const lines = [
-    !gate.regressionWired && `regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV" --repos <root>/repos.json'`,
-    !gate.intakeWired && `intake_cmd: 'codd-gate tasks --debt --repos <root>/repos.json'`,
+    !gate.regressionWired && `regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV" --repos ${reposArg}'`,
+    !gate.intakeWired && `intake_cmd: 'codd-gate tasks --debt --repos ${reposArg}'`,
   ].filter(Boolean);
+  // CLI は install.sh 導入版だと単体ファイルとして置かれない（install.sh:50-52 が zipapp ルートへ
+  // 同梱するだけ）。どこで打てば動くかを書かないと、コピーして必ず No such file になる。
   const cliHint = gate.configFile && !gate.regressionWired
-    ? `<p><code>regression_cmd</code> の行は手書きの代わりに CLI で入れてもよい:
+    ? `<p><code>regression_cmd</code> の行は手書きの代わりに CLI で入れてもよい（ソースを持っているなら
+        <span class="mono">tools/agent-project/</span> で実行する）:
         <code>python3 codd_gate_regression.py --config ${esc(gate.configFile)}</code>
         （codd-gate を実測してこの 1 キーだけを冪等 upsert する。<code>--dry-run</code> なら書かずに結果だけ出す。
         codd-gate が未検出・バージョン/schema 非互換なら何も書かない）。</p>`
@@ -1143,15 +1159,22 @@ function consistencyGateHtml(p) {
           : ''}
       </div>`;
 
+  // 見出しバッジは 3 値。2 値だと「一度も有効化していない既定状態」まで『一部のみ』＝
+  // 部分的に動作中と読めてしまい、このセクションが最も助けたい相手を取り違える。
+  const wiredNone = !gate.regressionWired && !gate.intakeWired;
+  const headLabel = wiredAll ? '有効' : wiredNone ? '未結線' : '一部のみ';
+  const headNote = wiredAll
+    ? 'ドキュメントとコードのズレを自動で検知・修復する仕組みが有効です。'
+    : wiredNone
+      ? 'ドキュメントとコードのズレを自動で検知する仕組みです。まだ有効になっていないため、検査は行われません。'
+      : 'ドキュメントとコードのズレを自動で検知する仕組みです。未結線の項目は検査されません。';
   return `<section class="overview-version-section" aria-labelledby="consistency-gate-title">
     <div class="overview-version-heading">
       <div>
         <h2 id="consistency-gate-title">一貫性ゲート</h2>
-        <p>${wiredAll
-          ? 'ドキュメントとコードのズレを自動で検知・修復する仕組みが有効です。'
-          : 'ドキュメントとコードのズレを自動で検知する仕組みです。未結線の項目は検査されません。'}</p>
+        <p>${headNote}</p>
       </div>
-      <div class="summary-actions"><span class="badge ${wiredAll ? 'info' : 'warn'}">${wiredAll ? '有効' : '一部のみ'}</span></div>
+      <div class="summary-actions"><span class="badge ${wiredAll ? 'info' : 'warn'}">${headLabel}</span></div>
     </div>
     <dl class="need-failure-context">${rows}</dl>
     ${enable}
