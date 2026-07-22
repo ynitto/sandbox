@@ -59,4 +59,42 @@ test('写像に無いプロジェクトは従来どおり flowBus / 自動発見
   assert.strictEqual(r.source, 'config');
 });
 
+test('設定なしのリモート clone は <clone>/agent-flow（状態鏡写し）を自動発見する', () => {
+  // 別 PC で実行中の run は agent-flow daemon の state-git が <clone>/agent-flow に鏡写しする。
+  // 従来は flowBusByProject の手動設定が無いと見えなかった（＝リモート run が反映されない）。
+  const gammaDir = path.join(container, 'projects', 'gamma');
+  fs.mkdirSync(gammaDir, { recursive: true });
+  mkbus(path.join(gammaDir, 'agent-flow'));       // ローカル bus は無く、鏡写しだけ在る
+  const r = project.resolveBusDir(gammaDir, gammaDir, {});
+  assert.strictEqual(r.hasBus, true);
+  assert.strictEqual(r.busDir, path.resolve(path.join(gammaDir, 'agent-flow')));
+  assert.strictEqual(r.source, 'state-mirror');
+});
+
+test('ローカル bus と鏡写しが両方在るときは新しい方（実測鮮度）を採る', () => {
+  const deltaDir = path.join(container, 'projects', 'delta');
+  fs.mkdirSync(deltaDir, { recursive: true });
+  const localBus = mkbus(path.join(deltaDir, 'bus'));
+  const mirror = mkbus(path.join(deltaDir, 'agent-flow'));
+  const stamp = (dir, iso) => {
+    const t = new Date(iso);
+    for (const name of ['', ...fs.readdirSync(path.join(dir, 'runs'))]) {
+      fs.utimesSync(name ? path.join(dir, 'runs', name) : path.join(dir, 'runs'), t, t);
+    }
+  };
+  // 鏡写し側を新しく（別 PC の実行が同期で届いた状況）: 両バスの runs と全子を明示的に時刻付け。
+  fs.writeFileSync(path.join(localBus, 'runs', 'r-old'), 'x');
+  fs.mkdirSync(path.join(mirror, 'runs', 'r-new'), { recursive: true });
+  stamp(localBus, '2026-07-20T00:00:00Z');
+  stamp(mirror, '2026-07-21T00:00:00Z');
+  assert.strictEqual(project.resolveBusDir(deltaDir, deltaDir, {}).busDir,
+                     path.resolve(mirror), '新しい鏡写しを採用');
+  // 逆にローカルが新しければローカルを採る
+  fs.mkdirSync(path.join(localBus, 'runs', 'r-newer'), { recursive: true });
+  stamp(mirror, '2026-07-19T00:00:00Z');
+  stamp(localBus, '2026-07-22T00:00:00Z');
+  assert.strictEqual(project.resolveBusDir(deltaDir, deltaDir, {}).busDir,
+                     path.resolve(localBus), '新しいローカル bus を採用');
+});
+
 console.log(`\n${passed} passed`);
