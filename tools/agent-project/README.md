@@ -271,18 +271,22 @@ CLI からも付与・修正できる。
   done せず検収待ちへ。`gate` がタスク一致なのに対し `protect` は**変更されたパス**一致。
 - **一貫性ゲート（codd-gate 連携・オプション）**: ドキュメント・コード・テストの整合は**完全独立**の
   ツール [`codd-gate`](../codd-gate/README.md)（本ツールの install.sh が隣にあれば同梱インストールする）で
-  護れる。結合は共通スキーマ（`schemas/`）のみ。リポジトリ定義は本ツールが charter から自動生成する
+  護れる。結合は共通スキーマ（`schemas/`）と、人か install 手順が E1〜E3 の汎用フックに置く
+  codd-gate コマンド文字列に限る。リポジトリ定義は本ツールが charter から自動生成する
   `<root>/repos.json` を codd-gate が `--repos` で読む。**有効化は設定だけ**:
   `regression_cmd` には
   `'codd-gate verify --base "$KIRO_BASE_REV" --repos <root>/repos.json'`。各タスクの verify PASS 後・done
   確定前に差分の一貫性を検査し、NG なら done を止める。`intake_cmd` には
   `'codd-gate tasks --debt --repos <root>/repos.json'`。既存負債を JSON の修復タスクへ変換し、パス開始時と
-  watch の idle 中に backlog へ冪等に取り込む。charter acceptance には
-  `codd-gate verify --debt --max-broken N …` を置き、受入時の負債ラチェットに使う。
+  watch の idle 中に backlog へ冪等に取り込む。E1 の修復タスクでは `codd-gate check …` を task verify に置き、
+  期待状態に戻ったことを確認する。charter acceptance の `codd-gate verify --debt --max-broken N …` は、
+  受入時の負債ラチェットに使う。
+  以下は整理後の目標状態で、実装の import と自動配線を除く後続タスクが終わるまでは移行前である。
   `agent_project/*` パッケージは E1〜E6 の汎用フックだけを提供し、codd-gate を名指しせず、`codd_gate_*` を import・結合・依存しない。
-  `regression_cmd`/`intake_cmd` の有効化は、人か install 手順が yaml/CLI に書く場合に限る。永続化は sibling の
-  `codd_gate_regression.py`（`python3 codd_gate_regression.py --config .agent/agent-project.yaml`）が yaml へ
-  冪等注入する。`codd_gate_*.py` は `tools/agent-project/` 直下の任意 sibling 部品で、人か install 手順が
+  `regression_cmd`/`intake_cmd` の有効化は、人か install 手順が yaml/CLI に書く場合に限る。sibling の
+  `codd_gate_regression.py` が永続化するのは `regression_cmd` 1行だけで、`intake_cmd` は人か install 手順が設定する。
+  生成ツールはリポジトリルートで `python3 tools/agent-project/codd_gate_regression.py --config
+  .agent/agent-project.yaml` と明示実行する。`codd_gate_*.py` は `tools/agent-project/` 直下の任意 sibling 部品で、人か install 手順が
   明示起動したときだけ codd-gate の実体、バージョン、schema 互換性、対応機能を自動検出する。
   パッケージは sibling 部品を探索・import せず、`build_config` から値を差し込む自動配線も持たない。
   未設定のフック値は空のまま（＝連携なし）で通過する。`.agent/agent-project.yaml` は人専有ファイルで、
