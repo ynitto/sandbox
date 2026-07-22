@@ -1,0 +1,20 @@
+{
+  "id": "ux",
+  "who": "worker-1",
+  "status": "done",
+  "output": "## UX レビュー結果（3 観点）と反映\n\n**判別しやすさ** — 見出しバッジ 3 値（`有効`/`一部のみ`/`未結線`）、行ごとの `結線済み`/`未結線` バッジ ＋ 設定値の常時表示（`regression_cmd` は汎用フックなので値を隠すと誤読）、判定と派生 `wired` は main 1 箇所。穴なし。\n\n**有効化導線の実行可能性** — 未結線キーの行だけを出す、`<root>` は `p.dir` で実パス化、CLI 提示は `configFile あり && regression 未結線` 限定＋実行ディレクトリ明記、intake は CLI 無い旨明記、設定未検出時はボタンも CLI も出さない。`data-gate-open` は `overview.js:366` で配線済み。貼れば動く。\n\n**診断要約の可読性** — ゲート節は facts 末尾に追加のみ。`need-diag`/要約 `<strong>`/`need-failure-context`/折り畳みは無改変。由来を `regression`/`verify` に分けた判断は妥当（`回帰検知:` は非 codd-gate の regression_cmd にも付く）。\n\n指摘 3 件、すべて実装へ反映（テスト 2 ファイルのみ、ソース無改変）:\n\n- **F2** `needs-gate-integration.test.js` が旧 API 名 `needGateFailure` を grep しロード時クラッシュ。可読性ガード 8 ケースが一度も走っていなかった。→ `needGateSource(failure, n, gate)`（`'regression'|'verify'|null`）へ更新、`regressionWired` 無しで断定しないケース追加。\n- **F3** 同テストの「ペイロード無しでもゲート節を出す」が現行意図と逆（存在しない概要節へ誘導する）。→ 「出さない／失敗要約は残る」へ。\n- **F1** `overview-ui.test.js` の fixture が `wired` 欠落で、全結線が `一部のみ` 判定になりバッジテストが赤。→ fixture 更新。\n\n検証: `npm test` 全通過（exit 0）。差分は `test/needs-gate-integration.test.js` / `test/overview-ui.test.js`。詳細: `artifacts/ux/ux-review.md`\n\n**依存報告との矛盾**: t7/t8 は「detail-tabs-ui のみ FAIL、他全通過」と報告したが現物は逆（detail-tabs-ui は通り、上記 2 本が落ちていた）。報告後にソースが改稿（関数改名・`gate.wired` 追加・バッジ 3 値化）されテストが追随していなかったため。\n\n## 審判\n\n| 軸 | t4 | t6 | t7 | t8 |\n|---|---|---|---|---|\n| 要求適合（3 観点への直撃） | データ層のみ、UX には未到達 | 導線の実行可能性を直撃 | 可読性＋needs 側判別を直撃 | テスト追加のみ、UX 変化ゼロ |\n| 正確さ（報告と現物の一致） | 一致（`consistencyGate` 現存、`wired` は後から追加） | ほぼ一致（README 逐語・CLI 限定・`.agents/` すべて現存） | 乖離大（`needGateFailure` は現存せず、graceful 挙動も反転） | 乖離（両テストとも赤で残っていた） |\n| 完成度（失敗時の実害の潰し方） | 誤検出防止（`~/.agents` 混入）まで詰めた | 貼っても動かない指示 4 件を除去、README 突き合わせテストで回帰も封じた | 断定側無改変は良いが、テストが実行不能で守れていなかった | 赤いテストは守りにならない |\n\n勝者は **t6**。失敗時の実害が最も大きい軸（未結線の人に「実行できない手順」を見せる）を潰し、`intake_cmd` に注入 CLI を勧める誤り・`.agent/` の旧パスという実行不能案内を実測で除去し、README 逐語一致をテストで固定したため文言の再ドリフトにも強い。t4 は土台として正確だが UX 観点には未到達、t7 は設計判断（regression/verify の分離、断定側無改変）は最良だが現物との乖離が最も大きく検証が実行されていなかった、t8 は追加した検証自体が赤で成立していなかった。\n\n```json\n{\"winner\": \"t6\"}\n```",
+  "finished_at": "2026-07-22T12:55:37Z",
+  "data": {
+    "winner": "t6",
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox",
+      "branch": "ap/dashboard-163827",
+      "commit": "2fa9110ef3f57839d4db8dcac0fda8dda1e861aa",
+      "target": "main",
+      "path": "tools/agent-dashboard"
+    }
+  },
+  "artifacts": [
+    "artifacts/ux/ux-review.md"
+  ]
+}

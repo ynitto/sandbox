@@ -1,0 +1,182 @@
+{
+  "request": "dashboard で一貫性ゲートの状態把握と有効化を支援する\n\n背景・目的（実装の判断に迷ったらこの意図に沿うこと）:\n  パッケージ内マジック配線を外した後も、人が regression/intake の有無とゲート失敗の意味を画面から判断・対処できるようにするため。\nやらないこと（スコープ外。必要に気づいても手を出さず @followup 行で提案する）:\n  agent-project 本体のフック実装・done 不変条件を破る UI からの状態書換\n実装の手がかり（参考情報。鵜呑みにせず現物のコードで確認すること）:\n  概要またはプロジェクト情報に regression_cmd/intake_cmd（設定の有無）を可視化し、未結線時は README と同じ有効化導線（設定編集／sibling CLI）を示す。needs の codd-gate / 回帰失敗要約（needs-diagnosis）の可読性を落とさない。公式契約（needs/inbox/commands）以外へ書かない。実装後は agent-reviewer で UX レビュー。\n\nこのタスクは完了条件を満たすまで反復し、満たしたら終了すること（loop-until-done）。\n完了条件: 次のシェルコマンドが終了コード 0 で成功すること:\n  grep -nE 'regression_cmd|intake_cmd|一貫性ゲート' tools/agent-dashboard/src/renderer/renderer.js tools/agent-dashboard/src/features/agent-project/main/project.js && node tools/agent-dashboard/test/needs-diagnosis.test.js && node tools/agent-dashboard/test/overview-ui.test.js\n\nタスクID: dashboard-163827\n\n実行中に、分散した他ノードも従うべき恒常的な制約・規約を発見したら、最終成果に 機械可読な JSON `{\"constraints\": [\"…\"]}` を添えること（無ければ省略可）。これは以後の全ノードへ伝播され一貫性の基準になる。\n\nプロジェクト定義（charter・常に踏まえること。成果物が目標/制約に反しないこと）:\n目標: * agent-project の codd-gate 連携コードを整理する\n* agent-dashboard でのユーザビリティを考慮する\n対象リポジトリ（タスクは説明を見て関係するものを選び、その base/target ブランチで作業。path 指定があればそのフォルダ配下のみ変更）:\n- agent-amigos = https://github.com/ynitto/sandbox（path=tools/agent-amigos, base=main, target=main, 書込先候補（owns: tools/agent-amigos/**））\n    説明: agent-amigos\n- agent-dashboard = https://github.com/ynitto/sandbox（path=tools/agent-dashboard, base=main, target=main, 書込先候補（owns: tools/agent-dashboard/**））\n    説明: agent-dashboard\n- agent-flow = https://github.com/ynitto/sandbox（path=tools/agent-flow, base=main, target=main, 書込先候補（owns: tools/agent-flow/**））\n    説明: agent-flow\n- agent-loop = https://github.com/ynitto/sandbox（path=tools/agent-loop, base=main, target=main, 書込先候補（owns: tools/agent-loop/**））\n    説明: agent-loop\n- agent-project = https://github.com/ynitto/sandbox（path=tools/agent-project, base=main, target=main, 書込先候補（owns: tools/agent-project/**））\n    説明: agent-project\n- skills = https://github.com/ynitto/sandbox（path=.github/skills, base=main, target=main, 参照のみ・push しない）\n    説明: skills\n成果物:\n- agent-project ソースコード\n- 設計書\n\nプロジェクトルール（rules.md・全タスク共通。必ず従うこと）:\n* ドキュメントタスクには slop-police スキルを使うこと\n* レビューには agent-review スキルを使うこと\n\nこのタスクに関する過去の判断記録（needs の判断結果・必ず踏まえること）:\n## DR-0001  2026-07-18  actor: nitto\n- context : dashboard-163827（dashboard で一貫性ゲートの状態把握と有効化を支援する）の実行を承認\n- action  : plan-approve\n- reason  : agent-dashboard から操作\n- affects : dashboard-163827 → ready",
+  "finished_at": "2026-07-22T13:30:50Z",
+  "iterations": 0,
+  "strategy": {
+    "patterns": [
+      "fan-out-and-synthesize",
+      "adversarial-verification",
+      "loop-until-done"
+    ],
+    "parallelism": 3,
+    "review": true,
+    "reason": "[flow-planner] レイヤ別（main の状態供給 / renderer 表示 / テスト）に3分割できるが、順序依存（main → renderer → テスト）があるため並列度は3に抑える。完了条件が固定grep（識別子 regression_cmd/intake_cmd と『一貫性ゲート』文言が renderer.js・project.js 両方に出現）＋2テスト（needs-diagnosis.test.js / overview-ui.test.js）と機械判定可能で、既存アサーション非破壊が要るため loop-until-done で緑になるまで反復する。quality_focus=accuracy かつ done 不変条件（UI から状態書換禁止・公式契約 needs/inbox/commands 以外へ書かない・owns 境界 tools/agent-dashboard/** 逸脱禁止）の違反は統合後に発見すると手戻りが大きいので、統合前に adversarial-verification の検証gateを置く。データ量が実行時決定でない（対象ファイル・観点は静的に確定）ため map-reduce は不要。（粒度 coarse）"
+  },
+  "summary": "- t1 [done]: I've completed the investigation. Here's what I found:\n\n## (a) 成果\n\n調査のみ。作業ツリーは無変更。詳細レポート: `bus/runs/req-ef1f92c3-dashboard-163827-r0/artifacts/t1/t1-survey.md`\n\n### 設定読み取りの既存経路\n\n`toolconfig.js:46` `re\n- t2 [done]: ## 成果\n\n調査のみ。ワークツリー未変更。成果物: `bus/runs/req-ef1f92c3-dashboard-163827-r0/artifacts/t2/dom-survey.md`\n\n### 前提の訂正（重要）\n`renderer.js` は既に分割済み。概要／プロジェクト設定／needs の描画は `src/renderer/sections/*.js` にある。`renderer\n- t3 [done]: 成果物: `bus/runs/req-ef1f92c3-dashboard-163827-r0/artifacts/t3/test-inventory.md`（ワークツリー変更なし＝調査のみ）\n\n## (a) サマリー\n\n**現状**: 一貫性ゲート（regression_cmd / intake_cmd / codd-gate）関連の記述は `tools/agent-dashboard/src/\n- t4 [done]: ## (a) 成果\n\n`readProject()` の返り値に `consistencyGate` を 1 キー追加。読み取り専用。\n\n変更ファイル 3 件（すべて `tools/agent-dashboard/` 配下）:\n\n| ファイル | 変更 |\n|---|---|\n| `src/features/agent-project/main/project.js` | `_configFrom\n- t5 [done]: ## (a) 成果\n\n概要タブに「一貫性ゲート」節を追加。表示のみ、状態書換なし。\n\n| ファイル | 変更 |\n|---|---|\n| `src/renderer/renderer.js` | `consistencyGateHtml(p)`（純関数）＋ `bindConsistencyGate(root)` を追加 |\n| `src/renderer/sections/overview.js`\n- t6 [done]: ## (a) 成果\n\n未結線時の有効化導線を README `tools/agent-project/README.md:272-295`「一貫性ゲート（codd-gate 連携・オプション）」の原文と一致させた。t5 が置いた `enable` ブロックのみ差し替え（バッジ・行・セクション構造は据え置き）。\n\n| ファイル | 変更 |\n|---|---|\n| `src/renderer/ren\n- t7 [done]: ## (a) 成果\n\nneeds のゲート由来検証失敗を、概要タブ「一貫性ゲート」節（t5/t6 の `consistencyGateHtml`）と統合表示。既存要約は無改変、**後ろに足すだけ**。\n\n| ファイル | 変更 |\n|---|---|\n| `src/renderer/sections/needs.js` | `needGateFailure(failure,n)` 追加。`rend\n- t8 [done]: 完了。\n\n## (a) 成果\n\n新表示（ゲートバッジ・未結線導線・診断要約の共存）の検証を 2 テストへ追加。既存アサーションは無改変、末尾に足すだけ。\n\n| ファイル | 追加 |\n|---|---|\n| `test/needs-diagnosis.test.js` | `cardFm()` ヘルパ（frontmatter 差込用・既存 `card()` は無改変）＋ 2 ケース。11→**13\n- gate [done]: verify=pass\n\n敵対的検証4観点、全て違反なし。実物 diff・コード・テスト実行で再導出済み。\n\n**(a) UI→state 書換経路の新設: なし**\n- `project.js consistencyGateStatus()` は yaml の `regression_cmd`/`intake_cmd` を**読むだけ**。コメントも「読み取り専用: ここから設定を書き換える経路\n- ux [done]: ## UX レビュー結果（3 観点）と反映\n\n**判別しやすさ** — 見出しバッジ 3 値（`有効`/`一部のみ`/`未結線`）、行ごとの `結線済み`/`未結線` バッジ ＋ 設定値の常時表示（`regression_cmd` は汎用フックなので値を隠すと誤読）、判定と派生 `wired` は main 1 箇所。穴なし。\n\n**有効化導線の実行可能性** — 未結線キーの行だけを出す、`<r\n- synth [failed]: 実行エラー: claude 失敗 (rc=1)\nYou've hit your weekly limit · resets Jul 24 at 7am (Asia/Tokyo)",
+  "results": {
+    "t1": {
+      "id": "t1",
+      "who": "worker-1",
+      "status": "done",
+      "output": "I've completed the investigation. Here's what I found:\n\n## (a) 成果\n\n調査のみ。作業ツリーは無変更。詳細レポート: `bus/runs/req-ef1f92c3-dashboard-163827-r0/artifacts/t1/t1-survey.md`\n\n### 設定読み取りの既存経路\n\n`toolconfig.js:46` `readToolConfig(baseName, baseDirs)` がトップレベルスカラだけを拾う（`parseFlatYaml:33` ＋ `stripQuotes:24`）。実設定の\n\n```yaml\nregression_cmd: 'codd-gate verify --base \"$KIRO_BASE_REV\" --repos repos.json --repo-dir src=.'\nintake_cmd: 'codd-gate tasks --debt --repos repos.json --repo-dir src=.'\n```\n\nはこの正規表現に一致する。**パーサ追加不要、`cfg.values.regression_cmd` でそのまま取れる。**\n\n探索先は `[workspace, ...agentDirCandidates(workspace)]` = `[ws, ws/.agents, ws/.agent]`（`agent-home.js:40`）。project.js の既存呼び出しは 3 箇所: `:1248`(root/state_branch)・`:1576`(bus)・`:1612`(state_branch)。\n\n### ペイロード生成箇所\n\n`readProject()` `project.js:1596`、返り値リテラルが **`project.js:1692-1727`**。`:1612` で既に `projectCfg` を保持しているので、そこにキーを足すだけ。IPC(`ipc.js:69`)→preload(`:9`)→`renderer.js:820` はスキーマ非依存の素通しで変更不要。\n\n公式契約の所在: **needs** = `needs` キー(`:1706`、生成 `:1601-1620`)／**inbox** = `inboxFiles`(`:1697`、ファイル名配列のみ)／**commands** = 書きは `actions.js:183` `dropCommand`、読みは `needs[].commandFailure`(`:1607`) と `replanPending`(`:1698`)。\n\n### 表示側の受け皿\n\n`technicalProjectInfoHtml()` `renderer.js:1086` の `<dl class=\"developer-facts\">`(`:1116-1122`) が最小差分。有効化導線を置くなら `renderProjectSettings()` `overview.js:368`。needs 失敗は `parseNeeds:587` → `_failureFromFrontmatter:446` が producer、`needs.js:1212` は運ぶだけ（解析は producer 一本化が明文の設計規約）。\n\n**codd-gate 関連の既存参照は dashboard 内に 0 件**（grep 実測）。全面新規。\n\n## (b) 検証\n\ngrep/実ファイル突合で各主張を確認（レポート §6 に表で記載）。`npm test` は未実行 — コード変更が無く、55 本逐次で数分規模のため。後続の実装タスクで必ず 1 回通すこと。UI 文字列を断定するテストが多い（`overview-ui` / `user-centered-ui` / `needs-layout-ui` / `needs-diagnosis`）ので表示追加は既存アサーションを壊しやすい。\n\n## (c) 前提・所見\n\n**採用した前提**: ①「プロジェクト情報ペイロード」= `readProject()` の返り値と解釈（`discover()` の一覧サマリは対象外）。②結線判定は yaml 2 キーの直読みを既定（sibling `codd_gate_wiring.py` の shell out はパス依存・python3 起動コストを招くため、推奨コマンド文字列まで出す要求が確定したときのみ）。③有効化導線は外部エディタで設定ファイルを開く方式を既定。\n\n**要注意の制約 2 件**:\n- **既存の設定編集導線では `agent-project.yaml` を開けない。** `authoring.js:20-27` の allowlist に無く、`editablePath:46` が root 相対＋サブパス禁止。実在場所は `<workspace>/.agents/` で状態ルートではない。allowlist を緩めるのはスコープ外の「UI からの状態書換」に接近するため、`readToolConfig().file` / `findProjectConfig()` の実パスを外部エディタへ渡す方が安全。\n- **`readToolConfig` は末尾に `~/.agents` を足す**ので、プロジェクトに設定が無いとグローバル設定を拾う。結線判定には `resolveProjectRoot` と同じ `fromWorkspace` 検査(`project.js:1249-1251`)を必ず通すこと。通さないと未結線を「結線済み」と誤表示する。\n\n**未解決**: codd-gate 由来の失敗に固有の frontmatter キーがあるかは未確認（実 needs サンプルが worktree に無い）。実装前に実ファイルを 1 件見ること。\n\n**範囲外の所見（未修正）**: @followup `toolconfig.js:39` の行内コメント除去 `replace(/\\s+#.*$/, '')` がクォート内も切る — 値に ` #` を含む設定で dashboard だけが値を欠いて誤表示する。現行設定には該当せず実害なし。修正は `bus:`/`root:` 等にも波及するため別タスク。／`readToolConfig` が同一 yaml を `readProject()` 1 回で 3 回読む（キャッシュなし。今回のキー追加では悪化しない）。",
+      "finished_at": "2026-07-20T06:43:44Z",
+      "artifacts": [
+        "artifacts/t1/t1-survey.md"
+      ]
+    },
+    "t2": {
+      "id": "t2",
+      "who": "worker-1",
+      "status": "done",
+      "output": "## 成果\n\n調査のみ。ワークツリー未変更。成果物: `bus/runs/req-ef1f92c3-dashboard-163827-r0/artifacts/t2/dom-survey.md`\n\n### 前提の訂正（重要）\n`renderer.js` は既に分割済み。概要／プロジェクト設定／needs の描画は `src/renderer/sections/*.js` にある。`renderer.js` に残るのは共有 state と `openTechnicalInfo` 等。\n\n### 差し込み点\n\n| 対象 | 場所 |\n|---|---|\n| 概要タブ | `sections/overview.js:279 renderOverview()`。`:349 ${overviewVersionsHtml(p)}` の直前が最適。`overviewVersionsHtml`（`:207`）が「HTML返す純関数 + 末尾でバインド」の手本 |\n| プロジェクト設定 | `sections/overview.js:368 renderProjectSettings()`。`:394-404` の `.project-settings-card` / `.settings-action-grid` |\n| 詳細情報ダイアログ | `renderer.js:1112 technicalProjectInfoHtml()` の `<dl class=\"developer-facts\">`。生コマンド文字列を出すならここ |\n| needs 回帰失敗要約 | `sections/needs.js:1295 renderNeedFacts()` 冒頭。`.need-diag` / `.need-resolution` / `<dl class=\"need-failure-context\">`（`:1304-1311` の6行テーブル） |\n| needs 一覧の失敗表示 | `needListSummary()` `:1250` → `needListItemViewModel()` `:1255` → `needListItemHtml()` `:1275`（`.need-list-summary.failure`） |\n\n### 核心の発見\n\n1. **codd-gate 専用分岐はゼロ**。`src/` を `codd` で grep してヒット 0。need kind も4種（`plan-review`/`review`/`milestone`/`blocked`）のみ。codd-gate 失敗は `kind: blocked` の回帰失敗として届き、識別子は `failureContext.category` / `.command` だけ。\n2. **`regression_cmd`/`intake_cmd` は renderer に一切届いていない**。ただし `readProject`（`features/agent-project/main/project.js:1612`）が既に `readToolConfig('agent-project', …)` を呼んでいて `state_branch` しか使っていない。**戻り値（`:1692-1727`）に1フィールド足すだけ**で済む。`parseFlatYaml` はクォート剥がし済みなので `values.regression_cmd` がそのまま取れる。`projectState`（`project.json`）は `{charters, updated}` のみで無関係。\n3. **設定 yaml は内蔵エディタで開けない**（検証済み）。`authoring.js:20-27` の `EDITABLE_FILES` ハード許可リスト＋`editablePath` の `basename` 拒否＋`p.dir` join。`.agent/agent-project.yaml` は `p.workspace/.agent/` なので両方に外れる。**代替**: `api.openPath(絶対パス)` はパス制限なし（`preload.js:29`）。needs の `data-open` ボタンが既にこの形。`readToolConfig` の戻り値 `file` が絶対パス。\n4. **推測してよい場所の境界を壊さないこと**。`needFailureViewModel`（`:1211`）=断定・frontmatter のみ／`canDiagnoseNeed`（`:1227`）=推測・散文可。`:1232` の正規表現に `回帰` が含まれ、本体の `mr.py:582` が立てる「回帰検知: グローバル検査 \\`…\\` 失敗」にヒットする。\n5. **`renderNeeds` の sig**（`needs.js:1560-1567`）に参照フィールドを足さないと再描画されない。\n\n### 有効化導線の出典\n`tools/agent-project/README.md:272-295` — yaml へ2行／`codd_gate_regression.py --config`（`regression_cmd` のみ冪等 upsert、exit 0/1/2/3）／確認は `codd_gate_wiring.py --config`（`regression_wired`/`intake_wired` を JSON 返却）／`intake_cmd` 注入 CLI は存在しない。\n\n### 検証\n- `grep -c` で再利用予定 CSS クラス9種すべて `styles.css` に実在を確認。\n- 許可リスト制約・`openPath` の無制限性はソース読みで確認（実行検証はしていない）。\n- テスト実行なし（コード無変更のため）。後続実装時は `test/helpers/renderer-src.js` が renderer.js + sections/* を結合して返し、`grab('関数名')` + `new Function` で純関数を評価する流儀（`test/overview-ui.test.js:11-30`）に載せるのが最短。\n\n### 範囲外で見つけた点\n- `_diagnoseFailure`（`project.js:467`）のフォールバック category 6値に codd-gate 相当が無い。dashboard 側で新設するのは producer 契約違反なので触っていない。@followup: agent-project 側の `failure-category` に一貫性ゲート由来の値を持たせるか要検討。\n- `overview.js:349` の `.overview-grid` は3カラム前提の CSS。4枚目カード追加は崩れる可能性あり（独立 section 推奨）。",
+      "finished_at": "2026-07-20T04:38:50Z",
+      "artifacts": [
+        "artifacts/t2/dom-survey.md"
+      ]
+    },
+    "t3": {
+      "id": "t3",
+      "who": "worker-2",
+      "status": "done",
+      "output": "成果物: `bus/runs/req-ef1f92c3-dashboard-163827-r0/artifacts/t3/test-inventory.md`（ワークツリー変更なし＝調査のみ）\n\n## (a) サマリー\n\n**現状**: 一貫性ゲート（regression_cmd / intake_cmd / codd-gate）関連の記述は `tools/agent-dashboard/src/` にも `test/` にも 0 件。完全新規で、既存アサーションと衝突する語もゼロ。\n\n**ロード・スタブ方式**\n\n| | needs-diagnosis.test.js | overview-ui.test.js |\n|---|---|---|\n| ロード | `require('../src/main/project')`（4行の互換シム→`src/features/agent-project/main/project.js`） | `test/helpers/renderer-src.read()` で renderer.js + sections/*.js + bootstrap.js を**文字列連結** |\n| 検証対象 | `project.parseNeeds(text, id)` のみ | `grab(name)` で切り出し→`new Function` に依存注入して実行 ＋ 文字列/正規表現検査 |\n| スタブ | なし（fs・DOM 非依存） | `esc` / `orchBadge` / `state` などを素朴な関数リテラルで注入 |\n| ランナー | 自前 `test(name, fn)`、**同期のみ** | トップレベル `assert` 直書き |\n\n**壊してはならない主要不変条件**\n- needs 側 11 件: `failureSummary` の**完全一致**が2件（`'テストが 4 件失敗しました。'` / `'検証コマンドが失敗しました（終了コード 2）。'`）→ 接頭辞追加で落ちる。手掛かり無しは `''` を保つ契約。`diff.artifacts` は `deepStrictEqual`。\n- overview 側: `overviewSummary` は**フィールド単位 `strictEqual` のみ**（全体比較なし）→ フィールド追加が安全。一方 `appDoctorSummary` / `workspaceFeatureModel` は `deepStrictEqual` で形が凍結。index.html には**追加禁止語**（`id=\"btn-mode\"`, `id=\"btn-git-heal\"` ほか5件）とサイドバーの位置スライス検査あり。orchestration パネルは `<tr>` の**件数一致**を数えている。\n\n**差し込み点**\n1. **needs 解析層** — `parseNeeds` は既に `failure-class` / `failure-phase` / `failure-chain` / `verify-verdict` を `need.failureClass` 等に載せているが、**テストも描画も 0 件の死んだデータ**。新解析を書くよりここに接ぐのが最短。既存 `card()` を触らず `cardFm()` を足せば frontmatter 経路を安全に検証できる。\n2. **概要表示層** — `src/renderer/sections/overview.js` に `overviewVersionsHtml(p)` と同型のトップレベル `function` を新設すれば `grab()` 可能。テストの雛形は overview-ui.test.js:196〜234（orchInstructionsPanelHtml）がそのまま使える。文言はラベル存在ループ（189行）に追記。\n3. **データ源** — `readProject()` は既に `readToolConfig('agent-project', …)` を呼び、`state_branch` しか使っていない（project.js:1612）。同じ読み込み結果から regression_cmd / intake_cmd を拾うのが最小差分。\n\n## (b) 検証\n\n- ベースライン: `node test/needs-diagnosis.test.js` → `11 passed`、`node test/overview-ui.test.js` → `all tests passed`\n- grep で regression_cmd/intake_cmd/codd の不在、failureClass 等の未使用、needFailureViewModel の参照元 4 ファイルを確認\n- コード変更なしのため lint／型チェックは非該当\n\n## (c) 前提・地雷・範囲外\n\n**前提**: 本タスクは棚卸しのみと解釈（実装は後続）。手がかり文が「needs-di…」で切れていたため needs 側担当＝解析層と読み替えた。\n\n**踏みやすい地雷（対象外ファイル）**\n- `needFailureViewModel` の戻り値 `{summary, resolution, context}` は `test/detail-tabs-ui.test.js:301` の `deepStrictEqual` で**凍結**。ここにゲート情報を足すと対象外テストが落ちる。別の表示モデル関数を新設すべき。\n- `src/renderer/features/*.js` は `renderer-src.js` の結合対象外。そこに新コードを置くと `grab()` も `includes()` も見つけられない。\n- `package.json` の `test` は `&&` 直列 1 行。新規テストファイルは追記しないと CI から漏れる。\n- `parseFlatYaml` は**トップレベルのフラットキーのみ**。regression_cmd がネスト記法だと読めない。\n\n**未解決**: regression_cmd / intake_cmd の実際の設定書式は現物未確認。「README と同じ有効化導線」の README は agent-dashboard のものではない（該当記述 0 件）＝ agent-project 本体側と推定、未参照。\n\n**@followup** 2件を成果物末尾に記載（本体側が failure-class を埋める運用の有無確認／未使用フィールドの削除 or 描画の判断）。",
+      "finished_at": "2026-07-20T06:43:49Z",
+      "artifacts": [
+        "artifacts/t3/test-inventory.md"
+      ]
+    },
+    "t4": {
+      "id": "t4",
+      "who": "worker-1",
+      "status": "done",
+      "output": "## (a) 成果\n\n`readProject()` の返り値に `consistencyGate` を 1 キー追加。読み取り専用。\n\n変更ファイル 3 件（すべて `tools/agent-dashboard/` 配下）:\n\n| ファイル | 変更 |\n|---|---|\n| `src/features/agent-project/main/project.js` | `_configFromWorkspace(cfg, ws)` 抽出（`resolveProjectRoot` のインライン判定を関数化して共用）＋ `consistencyGateStatus(cfg, workspace)` 追加 ＋ 返り値に `consistencyGate:` |\n| `test/consistency-gate.test.js` | 新規 4 ケース |\n| `package.json` | `test` スクリプトへ 1 本追加 |\n\nペイロード形:\n\n```js\nconsistencyGate: {\n  configFile: '<abs path>' | null,  // 未検出なら null\n  regressionWired: bool,            // 判定はこちら\n  intakeWired: bool,\n  regressionCmd: '<cmd>' | null,    // 表示用のみ\n  intakeCmd: '<cmd>' | null,\n}\n```\n\n設定は既存の `projectCfg`（`readProject` が既に持っている）を再利用。yaml の読み直しなし、`toolconfig.js` は無改造。IPC / preload はスキーマ非依存なので `state.project.consistencyGate` でそのまま renderer に届く。\n\nUI 側への申し送り: `bus/runs/req-ef1f92c3-dashboard-163827-r0/artifacts/t4/t4-payload-contract.md`\n\n## (b) 検証\n\n- `node test/consistency-gate.test.js` → 4 passed。両方結線 / 片方のみ / キー無し / 設定ファイル自体が無い、の 4 ケース。\n- 全 58 テストを個別実行 → **`test/detail-tabs-ui.test.js` のみ FAIL**、他は全通過。\n\n失敗は既存のもので本変更と無関係。原因は `src/renderer/sections/needs.js:167` の `commandFailureHtml` が `renderNeedDetail` の自由変数として増えたのに、テスト側 `new Function(...)` の注入リスト（`detail-tabs-ui.test.js:447-453`）が追随していない:\n\n```\nReferenceError: commandFailureHtml is not defined\n```\n\n本タスクの diff は `project.js` / `package.json` / 新規テストの 3 件のみで renderer には一切触れていない（`git status --porcelain` で確認済み）。失敗テストは `project.js` を require しない（`require` は assert/fs/path/`helpers/renderer-src` の 4 つのみ）。\n\n`~/.agents` グローバル設定の混入テスト（4 件目）は、この実機では実際にグローバル設定へ `regression_cmd` が存在するため空振りではなく有効に働いている。\n\n## (c) 前提・未解決・範囲外\n\n**採用した前提**\n\n1. 「プロジェクト情報ペイロード」= `readProject()` の返り値（t1 §7-1 の判断を踏襲）。`discover()` の一覧サマリには足していない。\n2. 結線判定は yaml 2 キーの直読み。`codd_gate_wiring.py` の shell out はしない（パス依存＋python3 起動コスト。`recommended_*_cmd` を画面に出す要求が確定したら要再検討）。\n3. 表示用文字列はコマンド全文をそのまま載せた。値は codd-gate の CLI 呼び出しで、秘匿情報を含まない前提。切り詰めが要るなら renderer 側で行う。\n4. キー名は `consistencyGate`（要求文の「一貫性ゲート」に合わせた）。sibling CLI の JSON は `regression_wired` / `intake_wired` だが、dashboard 内は camelCase なので `regressionWired` / `intakeWired` に寄せた。\n\n**t1 の制約 B に対応済み**: `_configFromWorkspace` を必ず通すので、プロジェクトに設定が無いときに `~/.agents` のグローバル設定を見て「結線済み」と誤表示しない。`resolveProjectRoot` の判定と同一関数なので、片方だけ挙動がずれることもない。\n\n**範囲外で見つけた問題（未修正）**\n\n- @followup `test/detail-tabs-ui.test.js` の `new Function` 注入リストが `needs.js` の `commandFailureHtml` 追加に追随しておらず、`npm test` が本タスク以前から途中で落ちる。テストハーネスが自由変数を手で列挙する構造なので、renderer にヘルパを足すたび壊れる。修正は 1 語追加だが原因は renderer 側の変更で、本タスクの範囲外。\n- @followup t1 の所見 A（`toolconfig.js:39` の行内コメント除去がクォート内も切る）は未修正のまま。値に ` #` を含む `regression_cmd` を書かれると dashboard だけが値を欠いて誤表示する。現行設定に該当なし。\n\n**未解決**: needs 側の codd-gate 由来の失敗要約（t1 §7 の申し送り）は本タスクの範囲外で未着手。",
+      "finished_at": "2026-07-20T06:47:55Z",
+      "data": {
+        "delivery": {
+          "url": "https://github.com/ynitto/sandbox",
+          "branch": "ap/dashboard-163827",
+          "commit": "a3acdc9affa5f92d3886e2fed1f2b0f67e94169d",
+          "target": "main",
+          "path": "tools/agent-dashboard"
+        }
+      },
+      "artifacts": [
+        "artifacts/t4/t4-payload-contract.md"
+      ]
+    },
+    "t5": {
+      "id": "t5",
+      "who": "worker-1",
+      "status": "done",
+      "output": "## (a) 成果\n\n概要タブに「一貫性ゲート」節を追加。表示のみ、状態書換なし。\n\n| ファイル | 変更 |\n|---|---|\n| `src/renderer/renderer.js` | `consistencyGateHtml(p)`（純関数）＋ `bindConsistencyGate(root)` を追加 |\n| `src/renderer/sections/overview.js` | `renderOverview()` に呼び出し 2 行 |\n| `test/consistency-gate-ui.test.js` | 新規 5 ケース |\n| `package.json` | `test` に 1 本追加 |\n\nrenderer.js は分割済みだが、完了条件が「識別子と文言が renderer.js に出現すること」なので**表示ロジック本体を renderer.js に置き、overview.js からは呼ぶだけ**にした。グローバルスコープ共有・読み込み順 renderer.js → sections/* なので動く。\n\n描画は `state.project.consistencyGate`（t4 ペイロード）を読み、「計画バージョン」節の上に独立 section。`<dt>` にラベル + yaml キー名（`regression_cmd` / `intake_cmd`）、`<dd>` に `結線済み`（`.badge info` + コマンド全文）または `未結線`（`.badge warn` + 説明）。未結線が 1 つでもあれば有効化導線を出す — `configFile` あり: 編集先パス + `codd_gate_regression.py --config <path>` + `api.openPath` で開くボタン（needs の `data-open` と同じ既存経路）／null: `.agent/agent-project.yaml` 作成手順のみ。`intake_cmd` に注入 CLI が無いことも明記。\n\n**CSS 追加ゼロ。** 既存クラスのみ（`.badge.ok` は存在しないので結線済みは `.badge.info`）。詳細: `artifacts/t5/t5-ui-section.md`\n\n## (b) 検証\n\n- `node test/consistency-gate-ui.test.js` → ok。空ペイロード / 両結線 / 片方 / 設定ファイル無し / XSS（`<img src=x onerror=...>` が `&lt;img` に）。完了条件そのもの（`regression_cmd`・`intake_cmd`・`一貫性ゲート` が renderer.js に出現）もテスト内で assert。\n- `node --check` 両ファイル通過。\n- 全 56 テスト個別実行 → **55 PASS、`test/detail-tabs-ui.test.js` のみ FAIL**。`ReferenceError: commandFailureHtml is not defined` — t4 が報告した既存の失敗と同一メッセージ。本タスクの diff は renderer.js / overview.js / package.json / 新規テストの 4 件で `needs.js` に触れていない（`git status --porcelain` で確認）。\n\n## (c) 前提・未解決・範囲外\n\n**採用した前提**\n\n1. 完了条件の「renderer.js に出現」は文字列 grep と解釈し、実装本体を renderer.js に置いた。t2 は overview.js を推奨したが、完了条件の literal を優先し、呼び出し側だけ overview.js に残す折衷にした。\n2. 「バッジ表示」= 結線済み/未結線の 2 値バッジ。`.badge.ok` が CSS に無いため結線済みは `.badge.info`。\n3. 配置は `.overview-grid` の 4 枚目ではなく独立 section（グリッドが 3 カラム前提、t2 §1）。\n4. コマンド全文をそのまま表示（t4 前提 3 を踏襲。秘匿情報を含まない前提）。切り詰めなし。\n5. 有効化導線は「設定ファイルを開く」＋「人が打つコマンドの提示」に限定。内蔵エディタの allowlist（`authoring.js`）は触っていない ＝ UI からの状態書換経路なし（done 不変条件）。\n\n**範囲外で見つけた問題（未修正）**\n\n- @followup `test/detail-tabs-ui.test.js` の `new Function` 注入リストが `needs.js` の `commandFailureHtml` に追随しておらず `npm test` が途中で落ちる（t4 と同じ指摘）。テストハーネスが自由変数を手で列挙する構造が根因で、renderer にヘルパを足すたび壊れる。本タスクの `consistencyGateHtml` は自由変数を `esc` 1 つに抑えて同じ罠を避けた。\n- @followup needs 側の codd-gate 由来の失敗要約（t2 §4.2 の `renderNeedFacts`）は未着手。",
+      "finished_at": "2026-07-20T06:52:41Z",
+      "data": {
+        "delivery": {
+          "url": "https://github.com/ynitto/sandbox",
+          "branch": "ap/dashboard-163827",
+          "commit": "1e17603a5647bc735ab460c90ab3acfba4760464",
+          "target": "main",
+          "path": "tools/agent-dashboard"
+        }
+      },
+      "artifacts": [
+        "artifacts/t5/t5-ui-section.md"
+      ]
+    },
+    "t6": {
+      "id": "t6",
+      "who": "worker-1",
+      "status": "done",
+      "output": "## (a) 成果\n\n未結線時の有効化導線を README `tools/agent-project/README.md:272-295`「一貫性ゲート（codd-gate 連携・オプション）」の原文と一致させた。t5 が置いた `enable` ブロックのみ差し替え（バッジ・行・セクション構造は据え置き）。\n\n| ファイル | 変更 |\n|---|---|\n| `src/renderer/renderer.js` | `consistencyGateHtml` の `enable` ブロック |\n| `test/consistency-gate-ui.test.js` | ケース差し替え ＋ README 突き合わせ追加 |\n\n直した乖離 4 件:\n\n1. **書くべき行が画面に無かった** — 「不足している行を追加します」だけだった。README の 2 行を `<pre class=\"mono\">` にそのまま出す。**未結線のキーの行だけ**。`<root>/repos.json` は README 同様プレースホルダのまま（root は結線判定に使っておらず、埋めると嘘になる）。\n2. **`intake_cmd` 未結線時に注入 CLI を勧めていた** — `codd_gate_regression.py` は `regression_cmd` の 1 キーしか書かない。CLI 提示を `configFile あり && regression_cmd 未結線` に限定し、`intake_cmd` 未結線時は README の「対応する注入 CLI は無いので、こちらは yaml を直接編集する」を出す。\n3. **設定ファイル未検出時のパスが `.agent/`** — README は `.agents/agent-project.yaml`。`src/base/main/agent-home.js:15-16` でも `.agents` が現行・`.agent` は legacy。`.agents/` へ統一（実在の設定を検出できたときは実パスを出すので新旧どちらでも正しい）。\n4. **設定ファイル未検出時に CLI を勧めない** — README:284「`--config` は既存の設定ファイルを指すこと——無ければ…エラーで止まる」。\n\nCSS 追加ゼロ。`pre.mono` は `styles.css:1019-1026` に既存（枠・`overflow-x: auto`・`white-space: pre-wrap`）。詳細と描画実物: `artifacts/t6/t6-enable-guidance.md`\n\n## (b) 検証\n\n- `node test/consistency-gate-ui.test.js` → ok。ケース: 両結線（導線なし）／`intake_cmd` のみ未結線（CLI を出さない・結線済みの行を書けと言わない）／`regression_cmd` のみ未結線（CLI 実パス ＋ `--dry-run`）／設定ファイル無し（ボタンも CLI も出さない・`.agents/` を示す）／XSS。\n- **README 突き合わせテストを追加**。README からバッククォート内の `regression_cmd: '…'` / `intake_cmd: '…'` を正規表現で抜き、`esc()` を通した文字列が描画結果に含まれることを assert する。README の文言が変わればテストが落ちて気づける。単体配布で README が無い場合は `fs.existsSync` でスキップ。\n- 描画結果を実際にダンプして目視確認（成果物に転記）。`node --check` 通過。\n- **全 59 テスト個別実行 → 58 PASS、`test/detail-tabs-ui.test.js` のみ FAIL**。`ReferenceError: commandFailureHtml is not defined` — t4/t5 が報告した既存の失敗と同一。`git status --porcelain` で本タスクの diff は上記 2 ファイルのみ、`needs.js` に触れていないことを確認済み。\n\n## (c) 前提・未解決・範囲外\n\n**採用した前提**\n\n1. 「README」= `tools/agent-project/README.md` の一貫性ゲート節（t5 が出典として挙げた箇所）。`tools/codd-gate/README.md:196-197` にも同じ 2 行があるが、`--repos` の値が異なる（`.agent-project/projects/default/repos.json`）。有効化の主導線は agent-project 側なので前者を正典とした。\n2. 「同一文言」= 人が貼り付ける文字列（yaml 2 行・CLI コマンド）は逐語一致、説明文は README の主張を落とさない範囲で画面用に短縮。逐語一致すべき部分だけをテストで固定した。\n3. `<root>` は展開しない。ペイロードに root が無く、README も placeholder のまま提示している。\n\n**範囲外で見つけた問題（未修正）**\n\n- @followup `test/detail-tabs-ui.test.js` の `new Function` 注入リストが `needs.js` の `commandFailureHtml` に追随せず `npm test` が途中で落ちる（t4・t5 と同一指摘）。\n- @followup README `:275` は `.agents/agent-project.yaml`、GUIDE.md `:129-130` と `codd_gate_regression.py --config` の既定は `.agent/agent-project.yaml`。`.agents` が現行・`.agent` が legacy なので **README が正、GUIDE と CLI 既定が旧名のまま**。ドキュメント/CLI 側の統一は `tools/agent-project` 配下で本タスクの許可フォルダ外につき未着手。",
+      "finished_at": "2026-07-20T06:58:27Z",
+      "data": {
+        "delivery": {
+          "url": "https://github.com/ynitto/sandbox",
+          "branch": "ap/dashboard-163827",
+          "commit": "c626eccbdb6eeeb8f59133b27d833d6dc68aa517",
+          "target": "main",
+          "path": "tools/agent-dashboard"
+        }
+      },
+      "artifacts": [
+        "artifacts/t6/t6-enable-guidance.md"
+      ]
+    },
+    "t7": {
+      "id": "t7",
+      "who": "worker-2",
+      "status": "done",
+      "output": "## (a) 成果\n\nneeds のゲート由来検証失敗を、概要タブ「一貫性ゲート」節（t5/t6 の `consistencyGateHtml`）と統合表示。既存要約は無改変、**後ろに足すだけ**。\n\n| ファイル | 変更 |\n|---|---|\n| `src/renderer/sections/needs.js` | `needGateFailure(failure,n)` 追加。`renderNeedFacts(n)`→`renderNeedFacts(p,n)` でゲート統合ブロックを facts 末尾に追加。呼び出し 1 行＋再描画 sig に `p.consistencyGate` |\n| `test/needs-gate-integration.test.js` | 新規。実画面相当 DOM で 8 ケース |\n| `package.json` | `test` に 1 本 |\n\n統合: ゲート由来失敗（`failureContext.command` に `codd-gate`、または summary/why が `回帰検知`/`一貫性ゲート`/`codd-gate`）のとき、概要節と**同じ語彙・視覚言語**の `.need-resolution.need-gate` を追加 — `一貫性ゲート` ラベルチップ、`regression_cmd`/`intake_cmd` mono、intake 結線を `badge info|warn`、未結線なら「直しても自動起票されない→概要で有効化」＋既存 `data-open` で設定ファイルを開く導線。`p.consistencyGate` 無しは概要誘導のみにフォールバック。**CSS 追加ゼロ**（`.need-gate` は無 CSS のフック）。断定側 `needFailureViewModel` 無改変（推測レイヤに新設、t2 §6.3 維持）。\n\n## (b) 検証\n\n「実画面相当の DOM」= jsdom 依存が無いので、本物の `renderNeedFacts`/`renderNeedDetail`（スタブでごまかさず合成）が吐く画面 HTML を、同梱のタグスタック walker でノード木へ起こし、要素の入れ子・クラス・テキストで検証。\n\n- `node test/needs-gate-integration.test.js` → **8 passed**。統合（`need-gate` が `need-facts` 内・`一貫性ゲート` チップ・両 yaml キー・intake `badge warn`・`data-open` ボタン）／可読性（`need-diag` の `検証失敗` チップ・`<strong>` 要約行・`need-failure-context` dl 残存、`<details><summary>判断材料を見る` と `状況`/`判断すること` h3 がゲート節と共存）／分岐（結線済み・ペイロード無し・非ゲート・失敗無し）を assert。\n- walker 健全性を別途確認: 未閉じ・入れ子不整合を棄却（no-op でない）。\n- 回帰: needs-diagnosis 11 / needs-command-failure 4 / needs-layout-ui / consistency-gate-ui / consistency-gate 4 / overview-ui / needs-notify / needs-sla すべて PASS。`node --check needs.js` PASS。diff は `tools/agent-dashboard` の 3 ファイルのみ。\n\n## (c) 前提・未解決・範囲外\n\n**前提**: 「ゲート状態セクション」=概要の `consistencyGateHtml`。「統合」=語彙・視覚言語の共有＋概要への導線＋regression/intake 結線を失敗のその場で提示（概要節を `<h2>` ごと need に埋め込むのは見出し階層を崩すので不採用、可読性優先）。codd-gate 専用 kind は無く `blocked` の回帰失敗を command/文面で識別（t2 §4.4）。`p.consistencyGate` を sig に追加し結線変更に追従（t2 §6.1）。\n\n**範囲外（未修正・報告のみ）**: @followup `test/detail-tabs-ui.test.js` が `ReferenceError: commandFailureHtml is not defined` で失敗（t4/t5 と同一の既存不具合、当該テストの `renderNeedDetail` 抽出が自由変数未注入）。**本変更前後でエラー不変**（signature 変更は同テストのスタブ `() => ''` が引数無視で無影響）。`npm test` はこの地点で停止するため full green にできない。修正は 1 行だが根因はハーネスの自由変数手動列挙で別タスク相当。\n\n詳細: `artifacts/t7/t7-needs-gate-integration.md`",
+      "finished_at": "2026-07-20T21:26:10Z",
+      "data": {
+        "delivery": {
+          "url": "https://github.com/ynitto/sandbox",
+          "branch": "ap/dashboard-163827",
+          "commit": "60ba1d372856b18703f9e845d50eba310aa4edcf",
+          "target": "main",
+          "path": "tools/agent-dashboard"
+        }
+      },
+      "artifacts": [
+        "artifacts/t7/t7-needs-gate-integration.md"
+      ]
+    },
+    "t8": {
+      "id": "t8",
+      "who": "worker-2",
+      "status": "done",
+      "output": "完了。\n\n## (a) 成果\n\n新表示（ゲートバッジ・未結線導線・診断要約の共存）の検証を 2 テストへ追加。既存アサーションは無改変、末尾に足すだけ。\n\n| ファイル | 追加 |\n|---|---|\n| `test/needs-diagnosis.test.js` | `cardFm()` ヘルパ（frontmatter 差込用・既存 `card()` は無改変）＋ 2 ケース。11→**13 passed** |\n| `test/overview-ui.test.js` | ゲート節ブロック 1 つ（call-site 配線＋ゲートバッジ＋未結線導線） |\n\n**needs-diagnosis（データ層＝`parseNeeds`）— 診断要約の共存**\n- frontmatter 経路: ゲート票（`failure-summary`/`failure-command: codd-gate…`/`failure-class`/`failure-phase`/`failure-chain`/`verify-verdict`）で、診断要約（`failureSummary`/`failureResolution`）と `failureContext.command`（codd-gate 含む）と分類フィールドが**共存**（一方が他方を潰さない）ことを固定。\n- フォールバック経路: `回帰検知: 失敗した工程: \\`codd-gate verify…\\`` の散文からも `failureContext.command` に codd-gate、`failureSummary` 非空を確認。\n- これは表示側 `needGateFailure`（`needs.js:1299` — `context.command` に codd-gate、または summary/why が回帰検知/一貫性ゲート/codd-gate で判定）が食う入力そのもの。\n\n**overview-ui（表示層＝`consistencyGateHtml`）— ゲートバッジ・未結線導線**\n- 概要がゲート節を実埋込（`consistencyGateHtml(p)` の call-site）。\n- ゲートバッジ: 全結線→見出し `有効`（導線なし）／一部未結線→`一部のみ`。この見出しバッジは consistency-gate-ui.test.js が未カバー＝重複でない。\n- 未結線導線: `有効化` ラベル＋書くべき `intake_cmd` yaml 行＋`data-gate-open` ボタンの共存。\n- ペイロード無し（旧 main）は空文字。\n\n## (b) 検証\n\n- `node test/needs-diagnosis.test.js` → **13 passed / exit 0**（既存 11 全 ok）。\n- `node test/overview-ui.test.js` → **all tests passed / exit 0**。\n- ソース無改変（テストファイル 2 本のみ）ゆえ他テストへ回帰なし。`git status` は許可フォルダ `tools/agent-dashboard/test/` の 2 ファイルのみ。\n\n## (c) 前提・範囲外\n\n**採用した前提**\n1. 3 概念を層で分担: ゲートバッジ・未結線導線＝概要の仕事→overview-ui、診断要約の共存＝needs/`parseNeeds` の仕事→needs-diagnosis。各ファイルが実際に叩く層に合わせた（overview は診断要約を表示しない、needs-diagnosis は `parseNeeds` データのみ検証）。\n2. needs-diagnosis は DOM 非依存の `parseNeeds` テストなので、t7 の DOM 統合（needs-gate-integration.test.js が担当）は再検証せず、その入力データ契約の共存を固定した。\n3. overview-ui は既存の consistency-gate-ui.test.js と重複しない差分（見出しバッジ 有効/一部のみ＋概要 call-site 配線）に絞った。\n\n**範囲外（未修正・報告のみ）**\n- @followup `test/detail-tabs-ui.test.js` が `ReferenceError: commandFailureHtml is not defined` で失敗し `npm test` が途中停止する既存不具合（t4/t5/t7 と同一指摘）。本タスクの 2 ファイルには無関係、未着手。",
+      "finished_at": "2026-07-20T21:31:39Z",
+      "data": {
+        "delivery": {
+          "url": "https://github.com/ynitto/sandbox",
+          "branch": "ap/dashboard-163827",
+          "commit": "612eefc4c9423cd53a2b5ab17b1aa3fd9269b600",
+          "target": "main",
+          "path": "tools/agent-dashboard"
+        }
+      }
+    },
+    "gate": {
+      "id": "gate",
+      "who": "worker-2",
+      "status": "done",
+      "output": "verify=pass\n\n敵対的検証4観点、全て違反なし。実物 diff・コード・テスト実行で再導出済み。\n\n**(a) UI→state 書換経路の新設: なし**\n- `project.js consistencyGateStatus()` は yaml の `regression_cmd`/`intake_cmd` を**読むだけ**。コメントも「読み取り専用: ここから設定を書き換える経路は作らない」と明記、実装も一致。\n- 新規の対話要素は「設定ファイルを開く」ボタン（`renderer.js:bindConsistencyGate` の `data-gate-open`、`needs.js:1343` の `data-open`）のみ。両者とも既存の `guard(...) api.openPath()` = 既存 IPC `shell:openPath`（`ipc.js:102`、preload:29）を再利用し、OS 既定エディタで開くだけ。dashboard 自身は書かない。`data-open` は元々設定ファイル(`n.file`)を開く既存パターン(`needs.js:240,670,1461`)。\n- `preload.js`/`ipc.js` は diff に**不在** = 新 IPC 面ゼロ。\n\n**(b) 契約外への書込: なし（そもそも書込ゼロ）**\n- src diff に `writeFile/exec/spawn/invoke/ipcRenderer.send/shell:` 等の書込・実行プリミティブ**追加なし**（grep 実測）。`regression_cmd` 等はコマンドを実行せず `<code>${esc(cmd)}</code>` で表示のみ。needs/inbox/commands含め一切書かない。\n\n**(c) owns 境界 tools/agent-dashboard/**: 逸脱なし**\n- 変更 10 ファイル全て `tools/agent-dashboard/` 配下（`git diff --name-only | grep -v` 空）。\n\n**(d) 既存テストアサーションの緩和: なし**\n- main 既存のテストは `needs-diagnosis`/`overview-ui` の 2 本のみ。両方 `numstat` で **62/0・37/0**（追加のみ・削除ゼロ）。緩和・削除なし。\n- 新旧テスト HEAD 実行: consistency-gate 4 / -ui ok / needs-gate-integration 8 / needs-diagnosis 13 / overview-ui all pass、全 exit=0。\n- 唯一 fail の `detail-tabs-ui.test.js`（`ReferenceError: commandFailureHtml is not defined`）は **merge-base 66b73276 でも同一エラーで fail**（worktree 実測）。本ブランチ未改変・既存不具合で、緑化のための緩和ではない。\n\n(minor) 既存 `detail-tabs-ui` fail で `npm test` は full-green にならない。全ワーカーが @followup 済み・本ブランチ責任外。修正は当該テストの `new Function` 自由変数注入リストに `commandFailureHtml` 1 語追加。\n\n{\"ok\": true, \"issues\": [\"(minor) 既存 detail-tabs-ui.test.js が commandFailureHtml 未注入で fail し npm test が途中停止。merge-base でも同一 fail の既存不具合で本ブランチ範囲外。修正は test/detail-tabs-ui.test.js:447-453 の new Function 注入リストに commandFailureHtml を1語追加\"]}",
+      "finished_at": "2026-07-20T21:34:11Z",
+      "data": {
+        "ok": true
+      }
+    },
+    "ux": {
+      "id": "ux",
+      "who": "worker-1",
+      "status": "done",
+      "output": "## UX レビュー結果（3 観点）と反映\n\n**判別しやすさ** — 見出しバッジ 3 値（`有効`/`一部のみ`/`未結線`）、行ごとの `結線済み`/`未結線` バッジ ＋ 設定値の常時表示（`regression_cmd` は汎用フックなので値を隠すと誤読）、判定と派生 `wired` は main 1 箇所。穴なし。\n\n**有効化導線の実行可能性** — 未結線キーの行だけを出す、`<root>` は `p.dir` で実パス化、CLI 提示は `configFile あり && regression 未結線` 限定＋実行ディレクトリ明記、intake は CLI 無い旨明記、設定未検出時はボタンも CLI も出さない。`data-gate-open` は `overview.js:366` で配線済み。貼れば動く。\n\n**診断要約の可読性** — ゲート節は facts 末尾に追加のみ。`need-diag`/要約 `<strong>`/`need-failure-context`/折り畳みは無改変。由来を `regression`/`verify` に分けた判断は妥当（`回帰検知:` は非 codd-gate の regression_cmd にも付く）。\n\n指摘 3 件、すべて実装へ反映（テスト 2 ファイルのみ、ソース無改変）:\n\n- **F2** `needs-gate-integration.test.js` が旧 API 名 `needGateFailure` を grep しロード時クラッシュ。可読性ガード 8 ケースが一度も走っていなかった。→ `needGateSource(failure, n, gate)`（`'regression'|'verify'|null`）へ更新、`regressionWired` 無しで断定しないケース追加。\n- **F3** 同テストの「ペイロード無しでもゲート節を出す」が現行意図と逆（存在しない概要節へ誘導する）。→ 「出さない／失敗要約は残る」へ。\n- **F1** `overview-ui.test.js` の fixture が `wired` 欠落で、全結線が `一部のみ` 判定になりバッジテストが赤。→ fixture 更新。\n\n検証: `npm test` 全通過（exit 0）。差分は `test/needs-gate-integration.test.js` / `test/overview-ui.test.js`。詳細: `artifacts/ux/ux-review.md`\n\n**依存報告との矛盾**: t7/t8 は「detail-tabs-ui のみ FAIL、他全通過」と報告したが現物は逆（detail-tabs-ui は通り、上記 2 本が落ちていた）。報告後にソースが改稿（関数改名・`gate.wired` 追加・バッジ 3 値化）されテストが追随していなかったため。\n\n## 審判\n\n| 軸 | t4 | t6 | t7 | t8 |\n|---|---|---|---|---|\n| 要求適合（3 観点への直撃） | データ層のみ、UX には未到達 | 導線の実行可能性を直撃 | 可読性＋needs 側判別を直撃 | テスト追加のみ、UX 変化ゼロ |\n| 正確さ（報告と現物の一致） | 一致（`consistencyGate` 現存、`wired` は後から追加） | ほぼ一致（README 逐語・CLI 限定・`.agents/` すべて現存） | 乖離大（`needGateFailure` は現存せず、graceful 挙動も反転） | 乖離（両テストとも赤で残っていた） |\n| 完成度（失敗時の実害の潰し方） | 誤検出防止（`~/.agents` 混入）まで詰めた | 貼っても動かない指示 4 件を除去、README 突き合わせテストで回帰も封じた | 断定側無改変は良いが、テストが実行不能で守れていなかった | 赤いテストは守りにならない |\n\n勝者は **t6**。失敗時の実害が最も大きい軸（未結線の人に「実行できない手順」を見せる）を潰し、`intake_cmd` に注入 CLI を勧める誤り・`.agent/` の旧パスという実行不能案内を実測で除去し、README 逐語一致をテストで固定したため文言の再ドリフトにも強い。t4 は土台として正確だが UX 観点には未到達、t7 は設計判断（regression/verify の分離、断定側無改変）は最良だが現物との乖離が最も大きく検証が実行されていなかった、t8 は追加した検証自体が赤で成立していなかった。\n\n```json\n{\"winner\": \"t6\"}\n```",
+      "finished_at": "2026-07-22T12:55:37Z",
+      "data": {
+        "winner": "t6",
+        "delivery": {
+          "url": "https://github.com/ynitto/sandbox",
+          "branch": "ap/dashboard-163827",
+          "commit": "2fa9110ef3f57839d4db8dcac0fda8dda1e861aa",
+          "target": "main",
+          "path": "tools/agent-dashboard"
+        }
+      },
+      "artifacts": [
+        "artifacts/ux/ux-review.md"
+      ]
+    },
+    "synth": {
+      "id": "synth",
+      "who": "worker-2",
+      "status": "failed",
+      "output": "実行エラー: claude 失敗 (rc=1)\nYou've hit your weekly limit · resets Jul 24 at 7am (Asia/Tokyo)",
+      "finished_at": "2026-07-22T13:30:47Z",
+      "data": {
+        "error_class": "content",
+        "attempts": 1
+      }
+    }
+  },
+  "failure_reason": "評価役を呼び出せず: claude 失敗 (rc=1)\nYou've hit your weekly limit · resets Jul 24 at 7am (Asia/Tokyo)。未達ノード synth が残るため done ではなく failed で終端します（再開で続きから実行）"
+}

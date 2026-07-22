@@ -14,8 +14,9 @@
       "acceptance_total": 2,
       "cost": 0.0,
       "cycles": 54,
-      "status": "blocked"
+      "status": "blocked",
+      "human_acceptance": []
     }
   },
-  "updated": "2026-07-21T06:11:10"
+  "updated": "2026-07-22T21:32:44"
 }

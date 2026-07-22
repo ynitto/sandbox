@@ -10,3 +10,7 @@
 {"ts": "2026-07-20T06:52:41Z", "who": "worker-1", "kind": "result", "node": "t5", "status": "done"}
 {"ts": "2026-07-20T06:52:41Z", "who": "worker-1", "kind": "claimed", "node": "t6"}
 {"ts": "2026-07-20T06:58:27Z", "who": "worker-1", "kind": "result", "node": "t6", "status": "done"}
+{"ts": "2026-07-22T12:32:45Z", "who": "worker-1", "kind": "claimed", "node": "ux"}
+{"ts": "2026-07-22T12:55:37Z", "who": "worker-1", "kind": "result", "node": "ux", "status": "done"}
+{"ts": "2026-07-22T12:55:37Z", "who": "worker-1", "kind": "claimed", "node": "synth"}
+{"ts": "2026-07-22T13:30:50Z", "who": "worker-1", "kind": "result", "node": "synth", "status": "failed"}

@@ -1,9 +1,9 @@
 ## dashboard-163827: dashboard で一貫性ゲートの状態把握と有効化を支援する
-- status: doing
+- status: blocked
 - source: charter
 - priority: 0
 - verify: `grep -nE 'regression_cmd|intake_cmd|一貫性ゲート' tools/agent-dashboard/src/renderer/renderer.js tools/agent-dashboard/src/features/agent-project/main/project.js && node tools/agent-dashboard/test/needs-diagnosis.test.js && node tools/agent-dashboard/test/overview-ui.test.js`
-- retries: 3
+- retries: 4
 - workspace: agent-dashboard
 - refs: agent-project
 - why: パッケージ内マジック配線を外した後も、人が regression/intake の有無とゲート失敗の意味を画面から判断・対処できるようにするため。
@@ -12,6 +12,5 @@
 - charter: v1
 - after: codd-gate-163827, sibling-163827
 - assess: c=2 r=1 a=1
-- needs_reason: 繰り返し NG（retries=3）: agent-flow run タイムアウト（3600s）
 - last_run: req-ef1f92c3-dashboard-163827-r0
-- flow_run: req-ef1f92c3-dashboard-163827-r0
+- needs_reason: 繰り返し NG（retries=4）: ュー結果（3 観点）と反映 ⏎  ⏎ **判別しやすさ** — 見出しバッジ 3 値（`有効`/`一部のみ`/`未結線`）、行ごとの `結線済み`/`未結線` バッジ ＋ 設定値の常時表示（`regression_cmd` は汎用フックなので値を隠すと誤読）、判定と派生 `wired` は main 1 箇所。穴なし。 ⏎  ⏎ **有効化導線の実行可能性** — 未結線キーの行だけを出す、`<r ⏎ - synth [failed]: 実行エラー: claude 失敗 (rc=1) ⏎ You've hit your weekly limit · re

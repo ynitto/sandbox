@@ -588,3 +588,9 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-21 06:11:10 === agent-project 開始 tasks=2 ingested=0 planner=agent executor=agent dry_run=False ===
 - 2026-07-21 06:11:10 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
 - 2026-07-21 06:11:10 run 再開: dashboard-163827 は req-ef1f92c3-dashboard-163827-r0 の失敗ノードだけをやり直します（done は温存）
+- 2026-07-22 21:32:44 === project 開始 v1 acceptance=2 ===
+- 2026-07-22 21:32:45 doing 回復: dashboard-163827 を ready へ戻す（実行者が失踪＝結果は返らない）
+- 2026-07-22 21:32:45 === agent-project 開始 tasks=2 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-22 21:32:45 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
+- 2026-07-22 21:32:45 run 再開: dashboard-163827 は req-ef1f92c3-dashboard-163827-r0 の失敗ノードだけをやり直します（done は温存）
+- 2026-07-22 22:30:57 cycle 1: dashboard-163827 → 人の判断（繰り返し NG）

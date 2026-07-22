@@ -1,0 +1,11 @@
+{
+  "id": "synth",
+  "who": "worker-1",
+  "status": "failed",
+  "output": "実行エラー: claude 失敗 (rc=1)\nYou've hit your weekly limit · resets Jul 24 at 7am (Asia/Tokyo)",
+  "finished_at": "2026-07-22T13:30:50Z",
+  "data": {
+    "error_class": "content",
+    "attempts": 1
+  }
+}

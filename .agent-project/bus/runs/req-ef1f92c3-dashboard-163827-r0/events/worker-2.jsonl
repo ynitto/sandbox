@@ -10,3 +10,5 @@
 {"ts": "2026-07-20T21:31:39Z", "who": "worker-2", "kind": "claimed", "node": "gate"}
 {"ts": "2026-07-20T21:34:11Z", "who": "worker-2", "kind": "result", "node": "gate", "status": "done"}
 {"ts": "2026-07-20T21:34:11Z", "who": "worker-2", "kind": "claimed", "node": "ux"}
+{"ts": "2026-07-22T13:30:28Z", "who": "worker-2", "kind": "claimed", "node": "synth"}
+{"ts": "2026-07-22T13:30:47Z", "who": "worker-2", "kind": "result", "node": "synth", "status": "failed"}
