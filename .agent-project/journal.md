@@ -594,3 +594,4 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-22 21:32:45 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
 - 2026-07-22 21:32:45 run 再開: dashboard-163827 は req-ef1f92c3-dashboard-163827-r0 の失敗ノードだけをやり直します（done は温存）
 - 2026-07-22 22:30:57 cycle 1: dashboard-163827 → 人の判断（繰り返し NG）
+- 2026-07-22 22:30:59 === agent-project 停止 reason=drained cycles=1 done=0 blocked=1 notified=True promoted=0 ===
