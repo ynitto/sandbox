@@ -521,6 +521,11 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
     """act 済みタスクを検証ゲート（verify→回帰→保護→進捗→flake）に通し、done/review/retry/escalate を
     確定する。副作用（persist/journal/needs/decision/delivery/archive）は内部で行い、run_loop が集計に使う
     deltas（archived・followups）を返す。run_loop の per-task 本体を 1 か所に切り出したもの（挙動は不変）。"""
+    if not validate_distributed_claim(cfg, task):
+        refresh_distributed_task(cfg, task.id)
+        append_journal(cfg.journal,
+                       f"cycle {cycle}: {task.id} の stale 結果を破棄（claim fencing token 不一致）")
+        return {"archived": 0, "followups": []}
     # act 中に人が revise（軌道修正）していたら、この試行の結果は確定せず修正内容で積み直す。
     # verify より先に判定する（方向の変わった成果に PASS/FAIL を付けない・verify コストも省く）。
     fresh = _load_task_file(cfg, task.id)
@@ -661,10 +666,15 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
     return {"archived": 0, "followups": []}
 
 
-def _run_setup(cfg: "Config") -> tuple:
+def _run_setup(cfg: "Config", controller: bool = True) -> tuple:
     """run_loop の前処理: inbox 取り込み → 読み込み → 人のフィードバック解除 → triage/rot で
     ready/blocked を確定 → verify を用意する。(tasks, policy, reasons, ingested, inboxed, pre_blocked)。"""
     ensure_dirs(cfg)
+    if not controller:
+        tasks = load_tasks(cfg.backlog)
+        policy = load_policy(cfg.policy)
+        pre_blocked = {t.id for t in tasks if t.norm_status() in ("blocked", "review", "proposed")}
+        return tasks, policy, {}, [], [], pre_blocked
     ingest_commands(cfg)          # 人の指示（approve/hold/pin/defer/revise のファイルドロップ）を先に適用
     inboxed = run_intake(cfg) + ingest_inbox(cfg)     # 取り込みコマンド＋外部ドロップ(inbox/)を backlog へ
     tasks = load_tasks(cfg.backlog)
@@ -695,6 +705,10 @@ def _run_setup(cfg: "Config") -> tuple:
     tasks += route_spec_tasks(cfg, tasks, policy)     # spec ルーティング（opt-in・spec 前段を前置）
     tasks += expand_spec_tasks(cfg, tasks)            # 承認済み spec の tasks.md を実装タスクへ展開
     ensure_needs(cfg, tasks)                          # 判断待ち（proposed/blocked/review）の票を status から整合
+    if getattr(cfg, "coordination", "") == "git-cas" and controller:
+        state_sync(cfg, force=True)                   # allocation は remote 正本の最新 backlog を親にする
+        allocate_distributed_tasks(cfg)
+        tasks = load_tasks(cfg.backlog)
     return tasks, policy, reasons, ingested, inboxed, pre_blocked
 
 

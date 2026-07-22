@@ -45,7 +45,10 @@ STATE_ENTRIES=(
   bus inbox commands
 )
 
-STATE_DIR="" STATE_REPO="" DEST_BRANCH="main" DRY_RUN=0
+STATE_DIR=""
+STATE_REPO=""
+DEST_BRANCH="main"
+DRY_RUN=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --state-dir)     STATE_DIR="$2"; shift 2 ;;
@@ -72,11 +75,11 @@ done
 [ "${#present[@]}" -gt 0 ] || { error "$STATE_DIR に移せる状態エントリがありません"; exit 1; }
 
 info "移行元（状態フォルダ）: $STATE_DIR"
-info "専用リポジトリ: $STATE_REPO（ブランチ $DEST_BRANCH・ルート直下に状態だけを配置）"
+info "専用リポジトリ: ${STATE_REPO}（ブランチ ${DEST_BRANCH}・ルート直下に状態だけを配置）"
 info "移すエントリ: ${present[*]}"
 
 if [ "$DRY_RUN" -eq 1 ]; then
-  info "[dry-run] 上記エントリを新しい空コミットとして $STATE_REPO:$DEST_BRANCH へ push します（変更なし）。"
+  info "[dry-run] 上記エントリを新しい空コミットとして ${STATE_REPO}:${DEST_BRANCH} へ push します（変更なし）。"
   exit 0
 fi
 

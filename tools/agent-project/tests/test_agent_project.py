@@ -484,6 +484,13 @@ class TestRunlogAndThrottle(unittest.TestCase):
             for k in ("ts", "reason", "cycles", "escalations", "tokens", "cost", "duration_s"):
                 self.assertIn(k, rec)
 
+    def test_named_node_also_writes_immutable_run_record(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "run-log.jsonl"
+            km.append_runlog(path, {"run_id": "run-1", "node": "pc-a", "reason": "drained"})
+            record = Path(d) / "run-log" / "pc-a" / "run-1.json"
+            self.assertEqual(json.loads(record.read_text(encoding="utf-8"))["reason"], "drained")
+
     def test_throttle_stops_before_hard_cap(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
@@ -538,6 +545,17 @@ class TestAtomicClaim(unittest.TestCase):
             self.assertFalse(km.claim_task(cfg, t))       # 2人目は弾かれる（新鮮なクレーム）
             km.release_claim(cfg, t)
             self.assertTrue(km.claim_task(cfg, t))         # 解放後は再取得できる
+
+    def test_distributed_stale_doing_requires_human_reassignment(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="doing")
+            cfg = cfg_for(d, coordination="git-cas", node="pc-a")
+            task = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(km.recover_stale_doing(cfg, [task]), ["T1"])
+            recovered = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(recovered.status, "blocked")
+            self.assertTrue((cfg.needs / "T1.md").exists())
 
     def test_stale_claim_is_stolen(self):
         with tempfile.TemporaryDirectory() as d:
@@ -916,6 +934,15 @@ class TestDoctor(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(km.unpushed_commits(Path(d)), (0, ""))
             self.assertEqual(km.unpushed_commits(None), (0, ""))
+
+    def test_doctor_rejects_unsafe_git_cas_configuration(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d, coordination="git-cas", node="",
+                            controller_heartbeat_sec=120, controller_lease_sec=60)
+            titles = {finding["title"] for finding in km.doctor_coordination_findings(cfg)}
+            self.assertIn("git-cas には node が必要", titles)
+            self.assertIn("controller heartbeat が lease 以上", titles)
+            self.assertIn("git-cas の state root に origin が無い", titles)
 
     def test_env_findings_detect_missing_kiro_cli(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2641,6 +2668,23 @@ class TestCommandsIngest(unittest.TestCase):
             self.assertTrue((d / "status.json").exists())
             self.assertFalse((d / "status").exists())
 
+    def test_node_enters_drain_window_in_its_local_timezone(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = cfg_for(Path(d), availability={
+                "timezone": "Asia/Tokyo", "daily_stop": "23:00", "drain_before_sec": 1800,
+            })
+            at = datetime(2026, 7, 22, 13, 45, tzinfo=timezone.utc)  # JST 22:45
+            self.assertEqual(km.availability_state(c, at), "draining")
+
+    def test_night_shutdown_grace_has_a_hard_deadline(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = cfg_for(Path(d), availability={
+                "timezone": "Asia/Tokyo", "daily_stop": "23:00", "drain_before_sec": 1800,
+                "shutdown_grace_sec": 300,
+            })
+            self.assertFalse(km.shutdown_due(c, datetime(2026, 7, 22, 14, 4, 59, tzinfo=timezone.utc)))
+            self.assertTrue(km.shutdown_due(c, datetime(2026, 7, 22, 14, 5, tzinfo=timezone.utc)))
+
     def test_node_revise_reassigns(self):
         # 監視者が revise で実行 PC（node）を付け替えられる。
         with tempfile.TemporaryDirectory() as d:
@@ -4172,6 +4216,61 @@ class TestConfigFile(unittest.TestCase):
             ns = self._resolve(str(p), executor="agent")   # CLI 明示は維持される
             self.assertEqual(ns.executor, "agent")         # CLI 勝ち
             self.assertEqual(ns.planner, "none")           # config 採用
+
+    def test_profile_supplies_local_root_and_node_without_environment(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            shared = d / "shared.json"
+            shared.write_text('{"root":"wrong","default_node":"pc-b"}', encoding="utf-8")
+            profile = d / "pc-a.json"
+            profile.write_text(json.dumps({
+                "schema_version": 1,
+                "project": "demo",
+                "node": "pc-a",
+                "root": str(d / "state"),
+                "project_config": str(shared),
+            }), encoding="utf-8")
+            with mock.patch.dict(os.environ, {"AGENT_PROJECT_NODE": "wrong-env"}):
+                ns = self._resolve(None, profile=str(profile))
+                cfg = km.build_config(ns)
+            self.assertEqual(cfg.node, "pc-a")
+            self.assertEqual(cfg.source_root, (d / "state").resolve())
+            self.assertEqual(cfg.default_node, "pc-b")
+
+    def test_start_forwards_profile_to_daemon(self):
+        with mock.patch.object(km, "cmd_start", return_value=0) as start:
+            self.assertEqual(km.main(["start", "--profile", "/tmp/pc-a.yaml"]), 0)
+        self.assertEqual(start.call_args.kwargs["profile"], "/tmp/pc-a.yaml")
+
+    def test_stop_forwards_drain_deadline(self):
+        with mock.patch.object(km, "cmd_stop", return_value=0) as stop:
+            self.assertEqual(km.main(["stop", "--pid", "123", "--drain", "--deadline", "45"]), 0)
+        self.assertTrue(stop.call_args.kwargs["drain"])
+        self.assertEqual(stop.call_args.kwargs["timeout"], 45.0)
+
+    def test_profile_daemon_ignores_agent_project_registry_environment(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, profile_mode=True, project_name="demo", watch=True)
+            leaked = d / "from-env"
+            with mock.patch.object(km, "resolve_state_home", return_value=d / "local"), \
+                 mock.patch.dict(os.environ, {"AGENT_PROJECT_REGISTRY": str(leaked)}):
+                paths = km.register_instance(cfg)
+            self.assertTrue(paths)
+            self.assertFalse(leaked.exists())
+
+    def test_profile_rejects_relative_autostart_paths(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            shared = d / "shared.json"
+            shared.write_text("{}", encoding="utf-8")
+            profile = d / "bad.json"
+            profile.write_text(json.dumps({
+                "schema_version": 1, "project": "demo", "node": "pc-a",
+                "root": "relative-state", "project_config": str(shared),
+            }), encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                self._resolve(None, profile=str(profile))
 
     def test_bus_config_is_honored(self):
         # 設定ファイルの bus: が読まれ、明示バス（絶対パス）として使われること。
@@ -6568,6 +6667,20 @@ class TestCaptureInsightAndRetireBrief(unittest.TestCase):
             adoc = (cfg.archive_dir() / "T1.md").read_text(encoding="utf-8")
             self.assertNotIn("run ブリーフ", adoc)             # ブリーフ無しなら節も出ない（後方互換）
 
+    def test_delivery_can_be_rebuilt_from_archive_union(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            for tid in ("T1", "T2"):
+                task = self._task(tid)
+                km.persist_task(cfg, task)
+                km.archive_task(cfg, task, "PASS", f"ref-{tid}", "2026-07-16")
+            cfg.delivery.write_text("lost row\n", encoding="utf-8")
+            km.rebuild_delivery(cfg)
+            delivery = cfg.delivery.read_text(encoding="utf-8")
+            self.assertIn("| T1 |", delivery)
+            self.assertIn("| T2 |", delivery)
+
 
 def _drained():
     return {"reason": km.REASON_DRAINED, "cycles": 0,
@@ -8548,6 +8661,126 @@ class TestDirectStateGit(unittest.TestCase):
         cfg = self._cfg()
         self.assertIsInstance(km.state_git_for(cfg), km.DirectStateGit)   # state_git 未設定でも有効
         self.assertIn("direct モード", km.state_git_status_line(cfg))
+
+    def test_controller_lease_has_one_winner_across_clones(self):
+        first = self._cfg(coordination="git-cas", node="pc-a", controller_lease_sec=120.0)
+        other = self._other("pc-b")
+        second = cfg_for(other, coordination="git-cas", node="pc-b", controller_lease_sec=120.0)
+        at = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
+        self.assertTrue(km.renew_controller_lease(first, at=at))
+        self.assertFalse(km.renew_controller_lease(second, at=at + timedelta(seconds=30)))
+
+    def test_controller_lease_moves_after_expiry(self):
+        first = self._cfg(coordination="git-cas", node="pc-a", controller_lease_sec=60.0,
+                          clock_skew_tolerance_sec=5.0)
+        other = self._other("pc-b")
+        second = cfg_for(other, coordination="git-cas", node="pc-b", controller_lease_sec=60.0,
+                         clock_skew_tolerance_sec=5.0)
+        at = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
+        self.assertTrue(km.renew_controller_lease(first, at=at))
+        self.assertTrue(km.renew_controller_lease(second, at=at + timedelta(seconds=66)))
+        lease = json.loads((other / "coordination" / "controller.json").read_text(encoding="utf-8"))
+        self.assertEqual((lease["node"], lease["generation"]), ("pc-b", 2))
+
+    def test_worker_does_not_consume_global_inbox(self):
+        controller = self._cfg(coordination="git-cas", node="pc-a")
+        self.assertTrue(km.renew_controller_lease(controller))
+        other = self._other("pc-b-worker")
+        worker = cfg_for(other, coordination="git-cas", node="pc-b", inbox=other / "inbox")
+        worker.inbox.mkdir(parents=True, exist_ok=True)
+        dropped = worker.inbox / "job.json"
+        dropped.write_text('{"title":"global job","verify":"true"}', encoding="utf-8")
+        km.run_loop(worker)
+        self.assertTrue(dropped.exists())
+        self.assertEqual(km.load_tasks(worker.backlog), [])
+
+    def test_distributed_claim_has_one_winner_and_persists_fence(self):
+        first = self._cfg(coordination="git-cas", node="pc-a")
+        mkb(self.root, "T1")
+        km.state_sync(first, force=True)
+        other = self._other("pc-b-claim")
+        second = cfg_for(other, coordination="git-cas", node="pc-b")
+        token = km.claim_distributed_task(first, "T1")
+        self.assertTrue(token)
+        self.assertIsNone(km.claim_distributed_task(second, "T1"))
+        claimed = km.load_tasks(first.backlog)[0]
+        self.assertEqual((claimed.status, claimed.get("claim_owner")), ("doing", "pc-a"))
+        self.assertEqual(claimed.get("claim_token"), token)
+
+    def test_stale_claim_token_cannot_settle(self):
+        first = self._cfg(coordination="git-cas", node="pc-a")
+        mkb(self.root, "T1")
+        km.state_sync(first, force=True)
+        token = km.claim_distributed_task(first, "T1")
+        stale = km.load_tasks(first.backlog)[0]
+        other = self._other("pc-b-fence")
+        second = cfg_for(other, coordination="git-cas", node="pc-b")
+
+        def reassign(root):
+            path = root / "backlog" / "T1.md"
+            task = km.parse_task(path.read_text(encoding="utf-8"), "T1")
+            task.set("claim_owner", "pc-b")
+            task.set("claim_token", "new-owner-token")
+            task.set("claim_generation", "2")
+            path.write_text(km.serialize_task(task), encoding="utf-8")
+            return True
+
+        self.assertTrue(km.state_transaction(second, reassign, "test reassign"))
+        self.assertEqual(stale.get("claim_token"), token)
+        self.assertFalse(km.validate_distributed_claim(first, stale))
+
+    def test_controller_balances_unassigned_ready_tasks_across_active_nodes(self):
+        controller = self._cfg(coordination="git-cas", node="pc-a")
+        mkb(self.root, "T1")
+        mkb(self.root, "T2")
+        statuses = self.root / "status"
+        statuses.mkdir()
+        now = datetime.now(timezone.utc).isoformat()
+        for node in ("pc-a", "pc-b"):
+            (statuses / f"{node}.json").write_text(json.dumps({
+                "node": node, "availability": "active", "updated_iso": now,
+                "fresh_after_sec": 120,
+            }), encoding="utf-8")
+        km.state_sync(controller, force=True)
+        self.assertEqual(km.allocate_distributed_tasks(controller), {"T1": "pc-a", "T2": "pc-b"})
+        assigned = {task.id: task.get("node") for task in km.load_tasks(controller.backlog)}
+        self.assertEqual(assigned, {"T1": "pc-a", "T2": "pc-b"})
+
+    def test_draining_node_releases_controller_for_another_node(self):
+        first = self._cfg(coordination="git-cas", node="pc-a", availability={
+            "timezone": "Asia/Tokyo", "daily_stop": "23:00", "drain_before_sec": 1800,
+        })
+        active = datetime(2026, 7, 22, 13, 29, 50, tzinfo=timezone.utc)
+        draining = active + timedelta(seconds=20)
+        self.assertTrue(km.renew_controller_lease(first, at=active))
+        self.assertFalse(km.renew_controller_lease(first, at=draining))
+        other = self._other("pc-b-drain")
+        second = cfg_for(other, coordination="git-cas", node="pc-b")
+        self.assertTrue(km.renew_controller_lease(second, at=draining))
+
+    def test_planned_shutdown_requeues_owned_doing_without_retry_penalty(self):
+        cfg = self._cfg(coordination="git-cas", node="pc-a")
+        mkb(self.root, "T1", retries=1)
+        km.state_sync(cfg, force=True)
+        self.assertTrue(km.claim_distributed_task(cfg, "T1"))
+        self.assertEqual(km.requeue_draining_tasks(cfg), ["T1"])
+        task = km.load_tasks(cfg.backlog)[0]
+        self.assertEqual((task.status, task.retries), ("ready", 1))
+        self.assertEqual(task.get("claim_generation"), "2")
+
+    def test_controller_heartbeat_renews_lease_during_long_work(self):
+        controller = self._cfg(coordination="git-cas", node="pc-a",
+                               controller_lease_sec=0.4, controller_heartbeat_sec=0.05,
+                               clock_skew_tolerance_sec=0.0)
+        stop = km.start_controller_heartbeat(controller)
+        self.addCleanup(stop.set)
+        initial = json.loads((self.root / "coordination" / "controller.json").read_text(encoding="utf-8"))
+        deadline = time.time() + 2.0
+        renewed = initial
+        while time.time() < deadline and renewed["lease_until"] <= initial["lease_until"]:
+            time.sleep(0.05)
+            renewed = json.loads((self.root / "coordination" / "controller.json").read_text(encoding="utf-8"))
+        self.assertGreater(renewed["lease_until"], initial["lease_until"])
 
     def test_sync_survives_divergence_with_a_dirty_worktree(self):
         """リモートが進んでいて、かつ作業ツリーが汚れていても同期できること。

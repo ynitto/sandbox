@@ -87,6 +87,17 @@ def append_runlog(path: "Path | None", record: dict) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        node = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(record.get("node", "") or "")).strip("-")
+        run_id = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(record.get("run_id", "") or "")).strip("-")
+        if node and run_id:
+            immutable = path.parent / "run-log" / node / f"{run_id}.json"
+            immutable.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with immutable.open("x", encoding="utf-8") as f:
+                    json.dump(record, f, ensure_ascii=False, indent=2)
+                    f.write("\n")
+            except FileExistsError:
+                pass
     except OSError:
         pass
 
@@ -202,6 +213,8 @@ def _claim_ttl(cfg: "Config") -> float:
 
 def claim_task(cfg: "Config", task: "Task") -> bool:
     """task の実行権を原子的に取得できれば True。既に新鮮なクレームがあれば False（他者が実行中）。"""
+    if _DRAIN_REQUESTED.is_set():
+        return False
     d = _claims_dir(cfg)
     p = d / f"{task.id}.lock"
     rec = json.dumps({"host": socket.gethostname(), "pid": os.getpid(),
@@ -244,6 +257,15 @@ def claim_task(cfg: "Config", task: "Task") -> bool:
     # 人の revise・直接編集をこの試行に反映し、doing 永続化で上書き消失させない）。
     live.drop("revised")                      # これから走る試行は最新内容を含む＝マーカー消化
     _adopt_task(task, live)
+    if getattr(cfg, "coordination", "") == "git-cas":
+        if not claim_distributed_task(cfg, task.id):
+            release_claim(cfg, task)
+            return False
+        live = _load_task_file(cfg, task.id)
+        if live is None:
+            release_claim(cfg, task)
+            return False
+        _adopt_task(task, live)
     return True
 
 
@@ -271,7 +293,7 @@ def _claim_alive(cfg: "Config", tid: str) -> bool:
 
 
 def recover_stale_doing(cfg: "Config", tasks: "list[Task]") -> "list[str]":
-    """実行者が失踪した doing を ready へ戻す（自己回復）。戻した ID を返す。
+    """失踪した doing を単一ノードでは再開し、分散モードでは人の判断へ隔離する。
 
     agent-project が再起動・クラッシュ（あるいは stop）すると、実行中だったタスクは doing のまま
     残る。**doing は消化対象（CONSUMABLE = ready/todo）ではない**ので次のパスでも拾われず、
@@ -284,10 +306,21 @@ def recover_stale_doing(cfg: "Config", tasks: "list[Task]") -> "list[str]":
         if t.norm_status() != "doing" or _claim_alive(cfg, t.id):
             continue
         release_claim(cfg, t)
-        t.status = "ready"
+        distributed = getattr(cfg, "coordination", "") == "git-cas"
+        if distributed:
+            t.status = "blocked"
+            t.set("claim_owner", "")
+            t.set("claim_token", hashlib.sha256(os.urandom(32)).hexdigest()[:32])
+            t.set("claim_generation", str(int(t.get("claim_generation") or 0) + 1))
+            write_needs_file(
+                cfg, t, "実行ノードが停止しました。成果を自動採用せず、resume/revise で再割当してください")
+        else:
+            t.status = "ready"
         persist_task(cfg, t)
-        append_journal(cfg.journal,
-                       f"doing 回復: {t.id} を ready へ戻す（実行者が失踪＝結果は返らない）")
+        append_journal(
+            cfg.journal,
+            (f"doing 隔離: {t.id} を blocked 化（分散実行者が失踪）" if distributed else
+             f"doing 回復: {t.id} を ready へ戻す（実行者が失踪＝結果は返らない）"))
         revived.append(t.id)
     return revived
 

@@ -33,8 +33,11 @@ def read_update_state() -> dict:
 
 def write_update_state(state: dict) -> None:
     p = _update_state_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        pass  # 更新チェックの記録不能だけで daemon を停止しない
 
 
 def remote_branch_sha(repo: str, branch: str, runner=None) -> "str | None":
@@ -313,5 +316,4 @@ def cmd_update(cfg: "Config", now: bool = False, check: bool = False) -> int:
         return 0
     print("  更新の取り込みに失敗しました（ログを確認してください）。", file=sys.stderr)
     return 1
-
 

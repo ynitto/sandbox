@@ -221,18 +221,24 @@ def main(argv=None) -> int:
                          help="run --watch を切り離して常駐起動（detached。重複は --force）")
     sta.add_argument("--root", default=None, help="プロジェクトルート（既定 . = cwd）")
     sta.add_argument("--config", default=None, help="子プロセスへ渡す設定ファイル")
+    sta.add_argument("--profile", default=None, help="子プロセスへ渡す PC 固有 profile")
     sta.add_argument("--force", action="store_true", help="同じプロジェクトを既に監視中でも起動する")
     sta.add_argument("--registry", action="append", default=None, help=_reg_help)
     sto = sub.add_parser("stop", help="稼働インスタンスを停止（SIGTERM→必要なら SIGKILL・登録掃除）")
     sto.add_argument("--root", default=None, help="停止対象のプロジェクトルート（既定 . = cwd）")
     sto.add_argument("--config", default=None,
                      help="root の解決に使う設定ファイル（--root 未指定時。start と同じ探索既定）")
+    sto.add_argument("--profile", default=None, help="停止対象を解決する PC 固有 profile")
     sto.add_argument("--pid", type=int, default=None, help="停止対象の PID（instances で確認）")
     sto.add_argument("--all", action="store_true", help="稼働中インスタンスを全停止")
+    sto.add_argument("--drain", action="store_true", help="新規 claim を止め、実行中タスクの完了を待って停止")
+    sto.add_argument("--deadline", type=float, default=300.0,
+                     help="--drain で graceful 停止を待つ上限秒（既定 300）")
     sto.add_argument("--registry", action="append", default=None, help=_reg_help)
     res = sub.add_parser("restart", help="同じプロジェクトの監視を停止してから起動し直す")
     res.add_argument("--root", default=None, help="プロジェクトルート（既定 . = cwd）")
     res.add_argument("--config", default=None, help="子プロセスへ渡す設定ファイル")
+    res.add_argument("--profile", default=None, help="子プロセスへ渡す PC 固有 profile")
     res.add_argument("--registry", action="append", default=None, help=_reg_help)
 
     # サブコマンドを省略して呼ばれたら「常駐監視（run --watch）」を既定にする。
@@ -251,14 +257,17 @@ def main(argv=None) -> int:
         return cmd_instances(args.json, extra=_split_registry(getattr(args, "registry", None)))
     if args.cmd == "start":
         return cmd_start(args.root, args.config, args.force,
-                         extra=_split_registry(getattr(args, "registry", None)))
+                         extra=_split_registry(getattr(args, "registry", None)),
+                         profile=args.profile)
     if args.cmd == "stop":
         return cmd_stop(args.root, args.pid, args.all,
                         extra=_split_registry(getattr(args, "registry", None)),
-                        config=getattr(args, "config", None))
+                        config=getattr(args, "config", None), profile=args.profile,
+                        drain=args.drain, timeout=max(0.0, args.deadline))
     if args.cmd == "restart":
         return cmd_restart(args.root, args.config,
-                           extra=_split_registry(getattr(args, "registry", None)))
+                           extra=_split_registry(getattr(args, "registry", None)),
+                           profile=args.profile)
 
     resolve_config(args)      # CLI 未指定値を 設定ファイル → 組み込み既定 で確定
     cfg = build_config(args)

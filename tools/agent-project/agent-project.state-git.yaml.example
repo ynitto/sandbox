@@ -95,6 +95,14 @@ act_async: true            # 非ブロッキング委譲: submit して待たず
 # state_git_interval: 300            # fetch/push の最短間隔（秒）。バックアップ粒度を細かく
 #                                    #   したければ短く（GitLab への負荷と引き換え）
 
+# --- 複数 PC が同じ backlog を直接分担する場合だけ有効化 ---
+# coordination: git-cas             # controller lease と task claim を remote HEAD の CAS で確定
+# controller_heartbeat_sec: 30
+# controller_lease_sec: 120
+# coordination_retries: 3
+# 各 PC の node/root/availability は共有 YAML に書かず、agent-project.profile.yaml.example の
+# ローカル profile に置く。単一実行ノード＋複数 viewer の構成では coordination は空のままにする。
+
 # --- agent-flow daemon を agent-project に管理させる場合 ---
 # manage_flow_daemon: true                 # agent-flow daemon を自動起動・監視
 # flow_config: ~/.agents/agent-flow.yaml      # agent-flow の設定（executor/state_git_subdir/gitlab.*/defer_waits 等）

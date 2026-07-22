@@ -1,0 +1,16 @@
+# PC 固有 profile。共有リポジトリへ commit しない。
+# 推奨配置: ~/.agents/agent-project/profiles/<project>.yaml
+schema_version: 1
+project: example-project
+node: pc-a
+
+# 自動起動時の cwd に依存しないよう、パスは絶対指定が必須。
+root: /home/me/projects/example-project-state
+project_config: /home/me/projects/example-project-state/agent-project.yaml
+
+availability:
+  timezone: Asia/Tokyo
+  daily_stop: "23:00"
+  drain_before_sec: 1800
+  shutdown_grace_sec: 300
+  clock_skew_tolerance_sec: 30

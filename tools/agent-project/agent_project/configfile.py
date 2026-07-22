@@ -27,6 +27,8 @@ except ImportError:  # PyYAML 無し → JSON のみ
 
 
 DEFAULT_CONFIG_NAMES = ["agent-project.yaml", "agent-project.yml", "agent-project.json"]
+PROFILE_DIR = Path.home() / ".agents" / "agent-project" / "profiles"
+PROFILE_LOCAL_KEYS = {"root", "node", "project_config", "availability"}
 
 # 設定ファイルで上書きできるキー（snake_case）と組み込み既定。
 # CLI 引数の default は None にし、resolve_config で「設定ファイル→ここ」の順に埋める。
@@ -41,6 +43,11 @@ CONFIG_DEFAULTS = {
     # node 未指定タスクを既定でどの PC（ノード）が拾うか。プロジェクト共有設定（空＝誰でも／従来）。
     # 各 PC 固有の node 名は共有 yaml に置かず CLI --node / 環境変数 AGENT_PROJECT_NODE から取る。
     "default_node": "",
+    "coordination": "",
+    "controller_heartbeat_sec": 30.0,
+    "controller_lease_sec": 120.0,
+    "coordination_retries": 3,
+    "clock_skew_tolerance_sec": 30.0,
     "default_workspace": "",
     "location": "auto",
     "model": None,
@@ -210,14 +217,66 @@ def _find_config(explicit):
     return None
 
 
+def _find_profile(explicit):
+    """PC 固有 profile を絶対/相対パスまたは profile 名から解決する。"""
+    if not explicit:
+        return None
+    raw = Path(str(explicit)).expanduser()
+    candidates = [raw]
+    if not raw.is_absolute() and raw.parent == Path("."):
+        candidates.extend(PROFILE_DIR / f"{raw.name}{suffix}"
+                          for suffix in ("", ".yaml", ".yml", ".json"))
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate.resolve())
+    print(f"[agent-project] profile が見つかりません: {explicit}", file=sys.stderr)
+    sys.exit(1)
+
+
+def _load_profile(explicit) -> tuple["str | None", dict]:
+    path = _find_profile(explicit)
+    if not path:
+        return None, {}
+    profile = _load_config_file(path)
+    if not isinstance(profile, dict) or profile.get("schema_version") != 1:
+        print("[agent-project] profile.schema_version は 1 が必要です", file=sys.stderr)
+        sys.exit(1)
+    missing = [key for key in ("project", "node", "root", "project_config") if not profile.get(key)]
+    if missing:
+        print(f"[agent-project] profile の必須項目がありません: {', '.join(missing)}", file=sys.stderr)
+        sys.exit(1)
+    relative = [key for key in ("root", "project_config")
+                if not Path(str(profile[key])).expanduser().is_absolute()]
+    if relative:
+        print(f"[agent-project] 自動起動用 profile は絶対パスが必要です: {', '.join(relative)}",
+              file=sys.stderr)
+        sys.exit(1)
+    if not isinstance(profile.get("availability", {}), dict):
+        print("[agent-project] profile.availability は mapping が必要です", file=sys.stderr)
+        sys.exit(1)
+    return path, profile
+
+
 def resolve_config(args):
-    """CLI 未指定（None）の設定値だけを 設定ファイル→組み込み既定 で埋める（CLI > config > 既定）。"""
-    path = _find_config(getattr(args, "config", None))
+    """CLI 未指定値を local profile → 共有設定 → 組み込み既定で埋める。"""
+    profile_path, profile = _load_profile(getattr(args, "profile", None))
+    explicit_config = getattr(args, "config", None)
+    if not explicit_config and profile.get("project_config"):
+        candidate = Path(str(profile["project_config"])).expanduser()
+        explicit_config = str(candidate if candidate.is_absolute()
+                              else Path(profile_path).parent / candidate)
+    path = _find_config(explicit_config)
     cfg = _load_config_file(path) if path else {}
     args._config_path = path
+    args._profile_path = profile_path
+    args._profile_mode = bool(profile_path)
     for key, dflt in CONFIG_DEFAULTS.items():
         if getattr(args, key, None) is None:
-            setattr(args, key, cfg.get(key, dflt))
+            value = profile.get(key) if key in PROFILE_LOCAL_KEYS and key in profile else cfg.get(key, dflt)
+            setattr(args, key, value)
+    if getattr(args, "node", None) is None and "node" in profile:
+        args.node = profile["node"]
+    args.availability = profile.get("availability", {})
     return args
 
 
@@ -281,6 +340,7 @@ def build_config(args) -> Config:
     except (TypeError, ValueError):
         _JOURNAL_KEEP = 20
 
+    availability = dict(getattr(args, "availability", {}) or {})
     cfg = Config(
         backlog=under("backlog", "backlog"),
         policy=under("policy", "policy.md"),
@@ -289,6 +349,7 @@ def build_config(args) -> Config:
         needs=under("needs", "needs"),
         workdir=workdir,
         bus=under("bus", "bus"),
+        profile_mode=bool(getattr(args, "_profile_mode", False)),
         git_bus=args.git_bus, git_branch=args.git_branch, git_subdir=args.git_subdir,
         state_git=getattr(args, "state_git", None) or None,
         state_git_branch=str(getattr(args, "state_git_branch", "main") or "main"),
@@ -312,9 +373,19 @@ def build_config(args) -> Config:
         force=bool(getattr(args, "force", False)),
         lock_dir=getattr(args, "lock_dir", None),
         agent_flow=args.agent_flow, planner=args.planner, flow_planner=args.flow_planner,
-        # node はこの PC 固有なので CLI/環境変数のみ（共有 yaml からは読まない）。default_node は共有可。
-        node=str(getattr(args, "node", None) or os.environ.get("AGENT_PROJECT_NODE", "") or "").strip(),
+        # profile mode は自動起動時の環境差分を排除するため AGENT_PROJECT_NODE を参照しない。
+        node=str(getattr(args, "node", None) or
+                 ("" if getattr(args, "_profile_mode", False)
+                  else os.environ.get("AGENT_PROJECT_NODE", "")) or "").strip(),
         default_node=str(getattr(args, "default_node", "") or "").strip(),
+        availability=availability,
+        coordination=str(getattr(args, "coordination", "") or "").strip(),
+        controller_heartbeat_sec=max(1.0, float(getattr(args, "controller_heartbeat_sec", 30.0) or 30.0)),
+        controller_lease_sec=max(1.0, float(getattr(args, "controller_lease_sec", 120.0) or 120.0)),
+        coordination_retries=max(1, int(getattr(args, "coordination_retries", 3) or 3)),
+        clock_skew_tolerance_sec=max(0.0, float(
+            availability.get("clock_skew_tolerance_sec",
+                             getattr(args, "clock_skew_tolerance_sec", 30.0)) or 0.0)),
         route_planner=str(getattr(args, "route_planner", "agent") or "agent"),
         default_workspace=str(getattr(args, "default_workspace", "") or ""),
         location=args.location, executor=args.executor,
@@ -399,6 +470,8 @@ def _add_common(sp):
     # （CLI > 設定ファイル > 組み込み既定）。個別パス上書きと真偽フラグは CLI 専用。
     sp.add_argument("--config", default=None,
                     help="設定ファイル（未指定なら ./ → ./.agent → ~/.agent の agent-project.{yaml,yml,json}）")
+    sp.add_argument("--profile", default=None,
+                    help="PC 固有 profile（絶対パスまたは ~/.agents/agent-project/profiles/ 内の名前）")
     sp.add_argument("--root", default=None,
                     help="プロジェクトルート（cwd 相対、既定 . = cwd）。charter.md / backlog/ 等はこの直下。"
                          "相対パスの上書きはすべてこの root 基準で解決される")
@@ -458,6 +531,16 @@ def _add_common(sp):
                     help="この PC（エンジン）のノード名（複数 PC のバックログ分担）。指定すると "
                          "node 割当が一致するタスクと未割当タスク（default_node 規則）だけを消化する。"
                          "環境変数 AGENT_PROJECT_NODE でも指定可。未指定（無名）は従来どおり全消化")
+    sp.add_argument("--coordination", choices=["git-cas"], default=None,
+                    help="複数 PC 制御を Git CAS で有効化（共有設定 coordination と同義）")
+    sp.add_argument("--controller-heartbeat-sec", type=float, default=None,
+                    help="controller lease 更新間隔（秒・既定 30）")
+    sp.add_argument("--controller-lease-sec", type=float, default=None,
+                    help="controller lease 有効期間（秒・既定 120）")
+    sp.add_argument("--coordination-retries", type=int, default=None,
+                    help="Git CAS 競合時の再試行回数（既定 3）")
+    sp.add_argument("--clock-skew-tolerance-sec", type=float, default=None,
+                    help="ノード間の時刻ずれ許容秒（既定 30）")
     sp.add_argument("--planner", default=None, choices=["agent", "none"],
                     help="優先順位付け: agent=エージェント委譲（priority 加味）/ none=priority＋古さ（既定 agent）")
     sp.add_argument("--flow-planner", default=None,

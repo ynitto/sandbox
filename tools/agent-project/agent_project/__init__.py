@@ -15,6 +15,7 @@
 前方参照が def 時に評価されないようにするため）。
 """
 import pkgutil as _pkgutil
+import os as _os
 
 # exec する断片を依存順（＝元ファイルの記述順）に並べる。この順序を保つ限り、元ファイルが
 # top-to-bottom で NameError なく実行できた以上、import 時の前方参照はすべて満たされる。
@@ -37,6 +38,7 @@ _FRAGMENTS = (
     "batch",       # 並列消費 / claims
     "mr",          # タスク MR
     "stategit",    # 状態の git 保存・共有
+    "coordination",# multi-node controller / availability / fencing
     "loop",        # 正準ループ run / watch
     "commands",    # 人の操作 / revise / commands 取り込み / stats
     "doctor",      # audit / doctor
@@ -54,7 +56,7 @@ for _name in _FRAGMENTS:
     # pkgutil.get_data はファイルシステム配置でも zipapp（zip 内）でも断片ソースを読める。
     # open(__file__) は zipapp 内で機能しないため使わない。
     _src = _pkgutil.get_data(__name__, _name + ".py")
-    _code = compile(_src, _name + ".py", "exec")
+    _code = compile(_src, _os.path.join(_os.path.dirname(__file__), _name + ".py"), "exec")
     exec(_code, _g)
 
-del _pkgutil, _g, _name, _src, _code
+del _pkgutil, _os, _g, _name, _src, _code

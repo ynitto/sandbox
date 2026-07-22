@@ -231,6 +231,36 @@ def doctor_env_findings(cfg: "Config", which=shutil.which) -> "list[dict]":
     return findings
 
 
+def doctor_coordination_findings(cfg: "Config") -> "list[dict]":
+    """multi-node Git CAS の起動前不変条件を決定的に検査する。"""
+    if getattr(cfg, "coordination", "") != "git-cas":
+        return []
+    findings: list[dict] = []
+
+    def add(title: str, evidence: str, fix: str) -> None:
+        findings.append({"category": "config", "severity": "critical", "title": title,
+                         "evidence": evidence, "fix": fix})
+
+    if not str(getattr(cfg, "node", "") or "").strip():
+        add("git-cas には node が必要", "実行権の owner と controller 候補を識別できない",
+            "PC 固有 profile に node を設定する")
+    heartbeat = float(getattr(cfg, "controller_heartbeat_sec", 30.0) or 30.0)
+    lease = float(getattr(cfg, "controller_lease_sec", 120.0) or 120.0)
+    if heartbeat >= lease:
+        add("controller heartbeat が lease 以上", f"heartbeat={heartbeat}s lease={lease}s",
+            "controller_heartbeat_sec を controller_lease_sec より短くする")
+    root = Path(cfg.backlog).parent
+    remote = subprocess.run(["git", "-C", str(root), "remote", "get-url", "origin"],
+                            capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if remote.returncode != 0 or not remote.stdout.strip():
+        add("git-cas の state root に origin が無い", f"state root={root}",
+            "state_repo の clone を profile.root に指定し origin を設定する")
+    if availability_state(cfg) == "invalid":
+        add("availability 設定が不正", json.dumps(getattr(cfg, "availability", {}), ensure_ascii=False),
+            "timezone と daily_stop(HH:MM) を修正する")
+    return findings
+
+
 def doctor_audit_findings(cfg: "Config") -> "list[dict]":
     """compute_audit の未達チェックを config カテゴリの finding に変換（決定的）。"""
     a = compute_audit(cfg)
@@ -538,7 +568,8 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
     実行層 agent-flow の doctor も連携実行し findings を統合する（cfg.with_flow 時）。
     終了コード: 0=健康 / 1=未解決の所見あり / 2=未解決の critical あり。"""
     # 決定的所見は ensure_dirs より前に集める（create-dirs 所見を消さないため）
-    deterministic = (doctor_env_findings(cfg) + doctor_audit_findings(cfg)
+    deterministic = (doctor_env_findings(cfg) + doctor_coordination_findings(cfg)
+                     + doctor_audit_findings(cfg)
                      + doctor_flow_bus_coverage_findings(cfg) + doctor_wiring_findings(cfg))
     for f in deterministic:
         f["source"] = "check"
@@ -559,7 +590,8 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
         # 適用後に決定的チェックを取り直し、もう再現しない所見は『修正により解消』として畳む
         # （例: create-dirs は複数の監査未達を一度に解消する）。
         still = {(g["category"], re.sub(r"\s+", " ", g.get("title", "").lower()).strip())
-                 for g in doctor_env_findings(cfg) + doctor_audit_findings(cfg)}
+                 for g in doctor_env_findings(cfg) + doctor_coordination_findings(cfg)
+                 + doctor_audit_findings(cfg)}
         for f in findings:
             if f.get("source") == "check" and not f.get("resolved"):
                 key = (f["category"], re.sub(r"\s+", " ", f.get("title", "").lower()).strip())
@@ -829,10 +861,11 @@ def _run_single(cfg: Config) -> int:
 
 
 def cmd_run(cfg: Config) -> int:
+    _DRAIN_REQUESTED.clear()
     # 起動時に死んだインスタンスのゴミレコードを掃除する。前回の異常終了（kill -9 / クラッシュ /
     # マシン再起動）では finally が走らず *.json が残るため、自分を register する前に一掃して
     # instances の発見ノイズと start の偽の重複検出を防ぐ（prune は自ホストの死レコードを即削除）。
-    live = list_instances(prune=True, extra=cfg.registry)
+    live = list_instances(prune=True, extra=cfg.registry, use_env=not cfg.profile_mode)
     # 同じプロジェクトを二重に監視させない。start は弾いていたが `run --watch` の直叩きは
     # 素通りで、同じ backlog を 2 つのループが奪い合う（同じタスクを二重実行し、状態ファイルと
     # 決定記録を互いに上書きする）。start は自分を register する前にここを通るので自分自身を
@@ -864,17 +897,25 @@ def cmd_run(cfg: Config) -> int:
     # パス境界の hb だけでは心拍が TTL 切れし、外からは停止したように見えるため、実行中も
     # 打ち続ける別スレッドを立てる（単発 run は即終わるので不要）。
     hb_stop = _start_heartbeat_thread(cfg, reg) if cfg.watch else None
+    controller_stop = None
+    availability_stop = None
     try:
         # （再）起動直後は駆動より先にリモート状態を取り込む（停止中に viewer が push した
         # charter 更新/指示/フィードバックを、初回パスが古いローカル状態で読まないように）。
         state_sync(cfg)
+        if getattr(cfg, "coordination", "") == "git-cas":
+            controller_stop = start_controller_heartbeat(cfg)
         ensure_flow_daemon(cfg, cfg.flow_max_workers)   # 実行層 daemon の確保（opt-in・冪等）
         if cfg.watch:
-            _install_sigterm()                   # stop の SIGTERM を KeyboardInterrupt 化（graceful 停止）
+            _install_sigterm(cfg)                # stop の SIGTERM / drain を graceful 停止へ変換
+            if getattr(cfg, "availability", None):
+                availability_stop = start_availability_monitor(cfg)
             # マスター憲章のみ（バージョン未作成）も project_watch へ: バージョン
             # （charters/<name>.md）が置かれた瞬間に charter 駆動へ入れる（run_watch は
             # charter の追加を監視しないため、ここで振り分けを間違えると気づけない）。
-            if charter_names(cfg) or _has_master_charter(cfg):
+            if getattr(cfg, "coordination", "") == "git-cas":
+                run_watch(cfg, heartbeat=hb)      # role は各パスで lease から決め、停止後も自動昇格する
+            elif charter_names(cfg) or _has_master_charter(cfg):
                 project_watch(cfg, heartbeat=hb)  # 目標を満たすまで回り続ける常駐（全 charter）
             else:
                 run_watch(cfg, heartbeat=hb)      # backlog 監視の常駐
@@ -889,6 +930,12 @@ def cmd_run(cfg: Config) -> int:
         # 自己更新を適用済み。finally でレジストリを掃除してから新しい本体へ exec する。
         print("\n=== agent-project 自己更新を適用。graceful 再起動します ===")
     finally:
+        if controller_stop is not None:
+            controller_stop.set()
+        if availability_stop is not None:
+            availability_stop.set()
+        if getattr(cfg, "coordination", "") == "git-cas":
+            release_controller_lease(cfg)
         if hb_stop is not None:
             hb_stop.set()          # レジストリを消す前に心拍を止める（無駄打ちを避ける）
         for p in reg:
@@ -901,10 +948,12 @@ def cmd_run(cfg: Config) -> int:
     return 0
 
 
-def _install_sigterm() -> None:
+def _install_sigterm(cfg: "Config | None" = None) -> None:
     """stop からの SIGTERM を KeyboardInterrupt 化して finally で後始末させる（watch 常駐用）。"""
     try:
         signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+        if cfg is not None and hasattr(signal, "SIGUSR1"):
+            signal.signal(signal.SIGUSR1, lambda *_: request_drain(cfg))
     except (ValueError, OSError):  # メインスレッド以外/未対応では無視
         pass
 

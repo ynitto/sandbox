@@ -145,6 +145,7 @@ def write_status(cfg: "Config") -> None:
         "paused": is_paused(cfg),
         # ノード名（複数 PC 分散運用）。無名エンジンは空（従来と同じ見え方）。
         "node": str(getattr(cfg, "node", "") or "").strip(),
+        "availability": availability_state(cfg),
         "updated_iso": _now_ts(), "fresh_after_sec": _status_fresh_after_sec(cfg),
         # Windows ビュアーが同一マシンの WSL 本体を「別マシン」と誤認しないための信号
         **detect_runtime(),
@@ -325,7 +326,9 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
     sync_mirror_edits(cfg)
     commit_state(cfg, force=True)
     state_sync(cfg)                    # 状態 git: リモートの指示（commands/inbox/needs 記入）を先に取り込む
-    tasks, policy, reasons, ingested, inboxed, pre_blocked = _run_setup(cfg)
+    controller = (getattr(cfg, "coordination", "") != "git-cas"
+                  or renew_controller_lease(cfg))
+    tasks, policy, reasons, ingested, inboxed, pre_blocked = _run_setup(cfg, controller)
     append_journal(cfg.journal, f"=== agent-project 開始 tasks={len(tasks)} "
                                 f"ingested={len(ingested)} planner={cfg.planner} "
                                 f"executor={cfg.executor} dry_run={cfg.dry_run} ===")
@@ -354,6 +357,9 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
     autonomy_cache: dict = {}                  # track→自動昇格レコードの読みキャッシュ
 
     while True:                                # report タスクは actionable から除外し有限停止で収束
+        if _DRAIN_REQUESTED.is_set():
+            reason = REASON_DRAINED
+            break
         budget_stop_reason = _budget_reason(cfg, cycle, start, tokens_used, cost_used)
         if budget_stop_reason:
             reason = budget_stop_reason
@@ -495,6 +501,8 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
                                 f"done={counts['done']} blocked={counts['blocked']} "
                                 f"notified={notified} promoted={len(promoted)} ===")
     append_runlog(cfg.runlog, {                    # 構造化 run-log（機械可読・運用判断の土台）
+        "run_id": f"{int(time.time_ns())}-{os.getpid()}",
+        "node": str(getattr(cfg, "node", "") or ""),
         "ts": datetime.now().isoformat(timespec="seconds"), "reason": reason,
         "level": cfg.level, "cycles": cycle, "done": counts["done"],
         "blocked": counts["blocked"], "review": counts.get("review", 0),
@@ -564,6 +572,8 @@ def has_work(cfg: Config) -> bool:
     後ろに dep-gated ready が並ぶだけで project_watch が空パスを無限に回す（実害: cycles が
     数千まで増え、journal が秒単位で埋まる）。dependents が ready でも ready_after_deps が
     空なら起こさない。"""
+    if getattr(cfg, "coordination", "") == "git-cas" and availability_state(cfg) != "active":
+        return False
     tasks = load_tasks(cfg.backlog)
     # 他ノード（PC）へ割当済みの ready では起こさない。起こすと消化対象ゼロの空パスを
     # 毎 poll 繰り返す（cycles が増え journal が埋まる）。自ノードが消化できる ready だけで起こす。
@@ -616,12 +626,24 @@ def run_watch(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.sle
               max_passes=None, heartbeat=None) -> dict:
     passes = 0
     last: dict = {}
+    charter_seen: dict[str, float] = {}
     while True:
         if is_paused(cfg):           # pause 中はパスを起こさない（resume/stop の指示待ち）
             append_journal(cfg.journal, "=== watch: 一時停止中（resume/stop 待ち。エージェント非起動）===")
             write_status(cfg)        # paused をリモート viewer へ知らせる
         else:
-            last = run_loop(cfg, act, ranker, sleeper)
+            controller = (getattr(cfg, "coordination", "") != "git-cas"
+                          or renew_controller_lease(cfg))
+            if getattr(cfg, "coordination", "") == "git-cas" and controller \
+                    and (charter_names(cfg) or _has_master_charter(cfg)):
+                project_watch(cfg, runner=lambda c: run_loop(c, act, ranker, sleeper),
+                              sleeper=sleeper, max_passes=1, heartbeat=heartbeat)
+                tasks = load_tasks(cfg.backlog)
+                last = {"reason": "project", "cycles": 1, "counts": summarize(tasks),
+                        "tasks": tasks, "level": cfg.level}
+                charter_seen = _charter_mtimes(cfg)
+            else:
+                last = run_loop(cfg, act, ranker, sleeper)
             passes += 1
             if heartbeat:
                 heartbeat()          # 各パスで生存信号を更新（共有レジストリ越しのリモート発見用）
@@ -635,10 +657,20 @@ def run_watch(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.sle
                 write_status(cfg)    # 直近パスの生存信号は降格前の level だったため上書きしておく
             if max_passes is not None and passes >= max_passes:
                 return last
+            if _DRAIN_REQUESTED.is_set():
+                return last
             append_journal(cfg.journal, "=== watch: 監視中（新規タスク/フィードバック待ち。"
                                         "エージェントは待機しない）===")
         while is_paused(cfg) or not has_work(cfg):   # idle/pause: エージェント CLI/flow は一切起動しない
             sleeper(cfg.poll)
+            if _DRAIN_REQUESTED.is_set():
+                return last
+            if getattr(cfg, "coordination", "") == "git-cas":
+                state = availability_state(cfg)
+                if state != "active":
+                    release_controller_lease(cfg)
+                if state == "stopped":
+                    return last
             if heartbeat:
                 heartbeat()          # idle 中も heartbeat を保ち、リモートから生存が見えるようにする
             if not is_paused(cfg):
@@ -646,6 +678,11 @@ def run_watch(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.sle
             maybe_heartbeat_status(cfg)  # --status-interval のときだけ idle 中も生存信号を更新（既定は無効＝無干渉）
             commit_state(cfg)        # 状態 worktree: 溜まった変更をまとめてコミット（間隔律速）
             state_sync(cfg)          # 状態 git: リモートの指示を取り込む（間隔律速。届けば has_work が起こす）
+            if getattr(cfg, "coordination", "") == "git-cas":
+                next_controller = renew_controller_lease(cfg)
+                if next_controller and (not controller or _charter_mtimes(cfg) != charter_seen):
+                    break             # 前 controller 停止後の自動昇格／charter 更新で project パスへ
+                controller = next_controller
             if is_paused(cfg):
                 ingest_commands(cfg)  # pause 中も resume/stop（と他の指示）は受け付ける
             if maybe_self_update(cfg):   # アイドル時のみ自己更新を確認・取り込み（取り込めたら再起動）

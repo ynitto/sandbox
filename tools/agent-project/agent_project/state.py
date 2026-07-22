@@ -509,12 +509,18 @@ def commit_state(cfg: "Config", force: bool = False) -> bool:
     return True
 
 
-def _resolved_root(root: "str | None", config: "str | None" = None) -> str:
+def _resolved_root(root: "str | None", config: "str | None" = None,
+                   profile: "str | None" = None) -> str:
     """start/stop/restart 用にプロジェクトルートを絶対パス文字列で返す。
     build_config の root 計算と一致させ、稼働インスタンスの記録 root と突き合わせる。
     --root 未指定なら設定ファイルの root を読む（daemon 子プロセスは resolve_config 経由で
     設定の root に付くため、ここが cwd 固定だと重複検出・stop の照合が外れうる）。
     root は cwd 相対で解決する（workdir は root 配下の作業場所であってアンカーではない）。"""
+    if not root:
+        _, local = _load_profile(profile)
+        root = str(local.get("root") or "")
+        if not config and local.get("project_config"):
+            config = str(local["project_config"])
     if not root:
         path = _find_config(config)
         filecfg = _load_config_file(path) if path else {}
@@ -525,12 +531,13 @@ def _resolved_root(root: "str | None", config: "str | None" = None) -> str:
 
 
 def cmd_start(root: "str | None" = None, config: "str | None" = None,
-              force: bool = False, extra: "list | str | None" = None) -> int:
+              force: bool = False, extra: "list | str | None" = None,
+              profile: "str | None" = None) -> int:
     """`run --watch` を切り離して常駐起動する（detached）。重複監視は既定で拒否（--force で許可）。
     監視対象は cwd（または --root/設定ファイルの root）のプロジェクト 1 つ。"""
-    expected = _resolved_root(root, config)
+    expected = _resolved_root(root, config, profile)
     me = socket.gethostname()
-    dup = [r for r in list_instances(prune=True, extra=extra)
+    dup = [r for r in list_instances(prune=True, extra=extra, use_env=not bool(profile))
            if str(r.get("root", "")) == expected and str(r.get("host", "")) == me]
     if dup and not force:
         print(f"既に root={expected} を監視中です（pid={dup[0]['pid']}）。重複起動は --force、"
@@ -543,9 +550,11 @@ def cmd_start(root: "str | None" = None, config: "str | None" = None,
         child += ["--root", root]
     if config:
         child += ["--config", config]
+    if profile:
+        child += ["--profile", profile]
     for r in _split_registry(extra):            # 共有レジストリを子 daemon にも引き継ぐ
         child += ["--registry", r]
-    log_dir = resolve_state_home() / "logs"
+    log_dir = resolve_state_home(use_env=not bool(profile)) / "logs"
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
         log = log_dir / f"{_slug(expected)}.log"
@@ -567,7 +576,8 @@ def cmd_start(root: "str | None" = None, config: "str | None" = None,
     deadline = time.time() + 5.0                # 登録（レジストリ出現）を確認
     registered = False
     while time.time() < deadline:
-        if any(int(r.get("pid", -1)) == proc.pid for r in list_instances(prune=False, extra=extra)):
+        if any(int(r.get("pid", -1)) == proc.pid
+               for r in list_instances(prune=False, extra=extra, use_env=not bool(profile))):
             registered = True
             break
         if not _pid_alive(proc.pid):
@@ -580,12 +590,13 @@ def cmd_start(root: "str | None" = None, config: "str | None" = None,
 
 
 def cmd_restart(root: "str | None" = None, config: "str | None" = None,
-                extra: "list | str | None" = None) -> int:
+                extra: "list | str | None" = None,
+                profile: "str | None" = None) -> int:
     """同じプロジェクト root の監視を停止してから起動し直す。"""
-    proot = _resolved_root(root, config)
-    if select_instances(root=proot, extra=extra):
-        cmd_stop(root=proot, extra=extra)
-    return cmd_start(root=root, config=config, force=True, extra=extra)
+    proot = _resolved_root(root, config, profile)
+    if select_instances(root=proot, extra=extra, use_env=not bool(profile)):
+        cmd_stop(root=proot, extra=extra, profile=profile)
+    return cmd_start(root=root, config=config, force=True, extra=extra, profile=profile)
 
 
 

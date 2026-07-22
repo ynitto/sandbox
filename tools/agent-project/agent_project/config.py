@@ -26,6 +26,7 @@ class Config:
     needs: Path        # ディレクトリ（案件毎）
     workdir: Path
     bus: Path
+    profile_mode: bool = False          # True の間は AGENT_PROJECT_* 環境変数を参照しない
     git_bus: "str | None" = None
     git_branch: str = "main"
     git_subdir: "str | None" = None
@@ -81,6 +82,12 @@ class Config:
     # （空なら従来どおり誰でも拾う）。割当の一致判定は task_runnable_here。
     node: str = ""
     default_node: str = ""
+    availability: dict = field(default_factory=dict)  # PC 固有の夜間停止設定（local profile のみ）
+    coordination: str = ""             # "git-cas" で multi-node 制御を明示的に有効化
+    controller_heartbeat_sec: float = 30.0
+    controller_lease_sec: float = 120.0
+    coordination_retries: int = 3
+    clock_skew_tolerance_sec: float = 30.0
     planner: str = "agent"         # 優先順位付け戦略: agent（エージェント委譲）/ none（priority＋古さ）
     flow_planner: str = "flow-planner"  # agent-flow run に渡す planner
     # ルーティング: タスク → ちょうど1つの書込先ワークスペースを決める自動判断。agent=曖昧時に
@@ -581,6 +588,34 @@ def append_delivery(cfg: Config, task: Task, ref: str, ts: str, branch: str = ""
         f.write(f"{header}| {task.id} | {title} | PASS | {cell} | {ts} |\n")
 
 
+def rebuild_delivery(cfg: Config) -> None:
+    """archive/ の集合から DELIVERY.md を決定的・原子的に再生成する。"""
+    rows: list[tuple[str, str, str, str]] = []
+    archive = cfg.archive_dir()
+    if archive.is_dir():
+        for path in sorted(archive.glob("*.md"), key=lambda p: p.name):
+            try:
+                body = path.read_text(encoding="utf-8")
+                task = parse_task(body, path.stem)
+            except OSError:
+                continue
+            completed = re.search(r"(?m)^- 完了\s*:\s*(.+)$", body)
+            result = re.search(r"(?m)^- 成果\s*:\s*(.+)$", body)
+            rows.append((task.id, task.title, result.group(1).strip() if result else "(参照なし)",
+                         completed.group(1).strip() if completed else ""))
+    lines = ["# 納品一覧（受領書）", "",
+             "| id | タイトル | 検収 | 成果参照 | 完了 |", "|---|---|---|---|---|"]
+    for task_id, title, ref, completed in rows:
+        cells = [str(v).replace("|", "\\|").replace("\n", " ")
+                 for v in (task_id, title, ref, completed)]
+        lines.append(f"| {cells[0]} | {cells[1]} | PASS | {cells[2]} | {cells[3]} |")
+    path = cfg.delivery
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.parent / f".{path.name}.tmp.{os.getpid()}"
+    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def archive_task(cfg: Config, task: Task, vmsg: str, ref: str, ts: str, evidence: str = "") -> None:
     """done タスクを archive/<id>.md へ退避し、検収用の『納品書』を付す（backlog と1:1）。
     evidence（成果物の所在・差分・検証）を載せ、後から「どこに何が入ったか」を辿れるようにする。
@@ -602,6 +637,7 @@ def archive_task(cfg: Config, task: Task, vmsg: str, ref: str, ts: str, evidence
                  f"{brief}\n")
     _archive_write(cfg, task.id, body)
     delete_task_file(cfg, task)
+    rebuild_delivery(cfg)
 
 
 def _archive_write(cfg: "Config", tid: str, body: str) -> None:
