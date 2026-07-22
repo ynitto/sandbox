@@ -273,24 +273,21 @@ CLI からも付与・修正できる。
   ツール [`codd-gate`](../codd-gate/README.md)（本ツールの install.sh が隣にあれば同梱インストールする）で
   護れる。結合は共通スキーマ（`schemas/`）のみ。リポジトリ定義は本ツールが charter から自動生成する
   `<root>/repos.json` を codd-gate が `--repos` で読む。**有効化は設定だけ**:
-  `regression_cmd` に指定する正確なコマンドは
+  `regression_cmd` には
   `'codd-gate verify --base "$KIRO_BASE_REV" --repos <root>/repos.json'`。各タスクの verify PASS 後・done
-  確定前に差分の一貫性を検査し、NG なら done を止める。`intake_cmd` に指定する正確なコマンドは
+  確定前に差分の一貫性を検査し、NG なら done を止める。`intake_cmd` には
   `'codd-gate tasks --debt --repos <root>/repos.json'`。既存負債を JSON の修復タスクへ変換し、パス開始時と
   watch の idle 中に backlog へ冪等に取り込む。charter acceptance には
   `codd-gate verify --debt --max-broken N …` を置き、受入時の負債ラチェットに使う。
-  パッケージ（`agent_project`）の責務は E1〜E6 の汎用フックを提供するところまでで、codd-gate を名指しせず、
-  `codd_gate_*` を import・結合・依存しない。有効化は人か install 手順が `regression_cmd`/`intake_cmd` を
-  yaml/CLI に書く場合に限り、フック値を永続化するコードは sibling の
-  `codd_gate_regression.py`（`python3 codd_gate_regression.py --config .agent/agent-project.yaml`）が
-  yaml へ冪等注入する。`codd_gate_*.py` は `tools/agent-project/` 直下の任意 sibling 部品で、明示起動された
-  ときだけ codd-gate の実体・バージョン・schema 互換性・対応機能を自動検出する。パッケージはこれらの部品を
-  探索・import しない。起動時の Config 生成（`build_config`）が codd-gate を自動検出して値を差し込む
-  配線層は無い。手で書いていなければ空のまま（＝連携なし）で通過する。`.agent/agent-project.yaml` は
-  人専有ファイルなので機械が勝手に書き換えず、書き手は人か人が起動した `codd_gate_regression.py` に
-  限られる。sibling 部品を欠落・削除してもパッケージは同一挙動（依存しないため）。codd-gate 未検出・
-  非互換の環境では生成ツールが値を書かず
-  no-op に縮退する（詳細は
+  `agent_project/*` パッケージは E1〜E6 の汎用フックだけを提供し、codd-gate を名指しせず、`codd_gate_*` を import・結合・依存しない。
+  `regression_cmd`/`intake_cmd` の有効化は、人か install 手順が yaml/CLI に書く場合に限る。永続化は sibling の
+  `codd_gate_regression.py`（`python3 codd_gate_regression.py --config .agent/agent-project.yaml`）が yaml へ
+  冪等注入する。`codd_gate_*.py` は `tools/agent-project/` 直下の任意 sibling 部品で、人か install 手順が
+  明示起動したときだけ codd-gate の実体、バージョン、schema 互換性、対応機能を自動検出する。
+  パッケージは sibling 部品を探索・import せず、`build_config` から値を差し込む自動配線も持たない。
+  未設定のフック値は空のまま（＝連携なし）で通過する。`.agent/agent-project.yaml` は人専有ファイルで、
+  yaml へ書き込むのは人の手か、人が明示起動した `codd_gate_regression.py` に限る。sibling 部品を削除しても
+  パッケージの挙動は変わらない。codd-gate が未検出または非互換なら、生成ツールは値を書かず no-op に縮退する（詳細は
   [`codd-gate-design.md`](../../docs/designs/codd-gate-design.md) §4「プラグイン境界」・§4.1「任意部品」・
   §4.2「境界の完了条件」）。
 
