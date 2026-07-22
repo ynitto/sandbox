@@ -1339,6 +1339,14 @@ table.list tr.clickable:hover { background: var(--bg2); }
   min-height: 0;
 }
 .needs-layout:not(.show-detail) .detail-panel { display: none; }
+/* 一覧モードの master-list に高さを与える。needs-layout は（グリッドの .master-detail と違い）
+   display:block なので、子は高さ制約を受けず内容ぶんに伸びる。#tab-needs は overflow:hidden の
+   ため、あふれた項目はクリップされて **スクロールできない**（項目リストがスクロールできない不具合）。
+   show-detail 側の .detail-panel と同じく height:100% + overflow-y:auto で自前スクロールにする。 */
+.needs-layout:not(.show-detail) .master-list {
+  height: 100%;
+  overflow-y: auto;
+}
 .needs-layout.show-detail .master-list { display: none; }
 .needs-layout.show-detail .detail-panel {
   display: block;
@@ -1692,6 +1700,13 @@ table.list tr.clickable:hover { background: var(--bg2); }
 }
 .need-command-failure strong { color: #ff8d88; }
 .need-command-failure span { line-height: 1.5; overflow-wrap: anywhere; }
+/* 作業内容（タスクの why/desc/scope 等）— 計画レビューの判断材料 */
+.need-task-guide { margin: 10px 0 14px; }
+.task-guide { display: grid; gap: 8px; margin: 6px 0 0; }
+.task-guide-row dt { color: var(--muted); font-size: 11px; font-weight: 650; }
+.task-guide-row dd { margin: 2px 0 0; line-height: 1.6; overflow-wrap: anywhere; }
+.task-guide-row dd code { overflow-wrap: anywhere; }
+
 /* 指示が本体に届き受理された確認（緑＝正常。失敗バナーとは色で区別する） */
 .need-command-receipt {
   margin: 10px 0 14px;

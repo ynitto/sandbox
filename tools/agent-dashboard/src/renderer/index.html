@@ -350,8 +350,10 @@
       <label>完了条件 — 文章で（検証コマンドもテンプレートも書けないとき。実行時に自動でコマンド化されます）</label>
       <input id="enq-accept" placeholder="例: README に使用例が載っている" />
     </div>
-    <details class="enq-guide-panel">
+    <details class="enq-guide-panel" open>
       <summary>意図と境界（計画レビューの材料・任意だが成果のぶれを減らせます）</summary>
+      <div class="field"><label for="enq-desc">作業内容の概要（desc）— 何をどう変えるか。計画レビューはこれを見て判断します</label>
+        <textarea id="enq-desc" rows="3" placeholder="例: README の冒頭にインストール手順と使用例のセクションを追加する。既存の構成は変えない。"></textarea></div>
       <div class="field"><label for="enq-why">なぜ（why）— この作業の目的・背景</label><input id="enq-why" /></div>
       <div class="row2">
         <div class="field"><label for="enq-scope">やる範囲（scope）</label><input id="enq-scope" /></div>

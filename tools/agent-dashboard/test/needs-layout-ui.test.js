@@ -94,4 +94,13 @@ assert.match(
 );
 assert.match(css, /@media \(max-width:\s*1180px\)[\s\S]*\.need-list-item\s*\{[^}]*grid-template-columns:\s*1fr\s+auto/s);
 
+// 項目リストのスクロール: needs-layout は display:block（グリッドでない）ため、master-list に
+// 高さ制約が無いと内容ぶんに伸び、#tab-needs の overflow:hidden にクリップされてスクロール
+// できなくなる（実際に報告された不具合）。一覧モードの master-list が自前スクロールを持つこと。
+assert.match(
+  css,
+  /\.needs-layout:not\(\.show-detail\)\s+\.master-list\s*\{[^}]*height:\s*100%[^}]*overflow-y:\s*auto/s,
+  '要対応の項目リストがスクロールできること（height:100% + overflow-y:auto）'
+);
+
 console.log('needs-layout-ui: all tests passed');
