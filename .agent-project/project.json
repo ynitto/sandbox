@@ -13,10 +13,10 @@
       "planned_charter_sig": "502cc5b20d377958c2c2679ab8bcb8f4a85628d47fb5f9bfc10de92571324565",
       "acceptance_total": 2,
       "cost": 0.0,
-      "cycles": 54,
+      "cycles": 55,
       "status": "blocked",
       "human_acceptance": []
     }
   },
-  "updated": "2026-07-22T21:32:44"
+  "updated": "2026-07-22T22:31:01"
 }
