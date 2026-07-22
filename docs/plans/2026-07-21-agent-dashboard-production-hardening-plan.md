@@ -1,5 +1,10 @@
 # agent-dashboard / agent-project 本番運用ハードニング計画
 
+> **2026-07-22 追記**: 案 6 / Phase 2.5 の複数 PC 分散設計は、環境変数を使わないローカル profile、
+> 夜間 drain、Git CAS controller 自動引継ぎ、task fencing を含む
+> [`2026-07-22-agent-project-multi-node-daemon-design.md`](./2026-07-22-agent-project-multi-node-daemon-design.md)
+> で置き換える。
+
 > **目的**: 本番運用に向けて、繰り返し発生しているバグの根本原因を潰し、
 > 機能や制約を削ってでも全体をシンプルにする再設計計画。
 > 全てをシステムで解決せず、負荷の低い作業は人間の運用に寄せる。
