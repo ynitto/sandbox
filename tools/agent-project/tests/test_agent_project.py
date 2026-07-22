@@ -5244,6 +5244,11 @@ class TestProjectLayer(unittest.TestCase):
         # 接頭辞なしの散文（全角句読点）も自然言語に倒す
         self.assertEqual(km._acceptance_kind("レポートに要約が出力される。"),
                          ("accept", "レポートに要約が出力される。"))
+        # 明示の 検収:/human: 接頭辞 → 人の検収項目（機械検証しない）
+        self.assertEqual(km._acceptance_kind("検収: UI が崩れていない"),
+                         ("human", "UI が崩れていない"))
+        self.assertEqual(km._acceptance_kind("human: docs are easy to read"),
+                         ("human", "docs are easy to read"))
 
     def test_resolve_acceptance_synthesizes_natural_language(self):
         with tempfile.TemporaryDirectory() as d:
@@ -5252,14 +5257,15 @@ class TestProjectLayer(unittest.TestCase):
             ch = km.parse_charter("# Charter: x\n## goal\nやる\n## acceptance\n"
                                   "- `test -f keep`\n- accept: README に概要がある\n")
             state = {}
-            resolved, unresolved = km.resolve_charter_acceptance(
+            resolved, unresolved, human = km.resolve_charter_acceptance(
                 cfg, ch, state, agent_run=lambda p, m: "grep -q 概要 README.md")
             self.assertEqual(resolved, ["test -f keep", "grep -q 概要 README.md"])
             self.assertEqual(unresolved, [])
+            self.assertEqual(human, [])
             # 合成結果は原文キーでキャッシュされ、再実行で安定する（再合成不要）
             self.assertEqual(state["acceptance_synth"]["README に概要がある"],
                              "grep -q 概要 README.md")
-            again, _ = km.resolve_charter_acceptance(
+            again, _, _ = km.resolve_charter_acceptance(
                 cfg, ch, state, agent_run=lambda p, m: self.fail("再合成された"))
             self.assertEqual(again, ["test -f keep", "grep -q 概要 README.md"])
 
@@ -5269,10 +5275,69 @@ class TestProjectLayer(unittest.TestCase):
             cfg = cfg_for(d)
             ch = km.parse_charter("# Charter: x\n## goal\nやる\n## acceptance\n"
                                   "- accept: 曖昧で検証できない\n")
-            resolved, unresolved = km.resolve_charter_acceptance(
+            resolved, unresolved, human = km.resolve_charter_acceptance(
                 cfg, ch, {}, agent_run=lambda p, m: "やはり検証できません。")  # 散文 → 合成失敗
             self.assertEqual(resolved, [])
             self.assertEqual(unresolved, ["曖昧で検証できない"])
+            self.assertEqual(human, [])
+
+    def test_resolve_acceptance_human_items_skip_synthesis(self):
+        # 検収: 接頭辞は合成を試みず（agent_run が呼ばれたら fail）、human に積む＝ブロックしない。
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))
+            ch = km.parse_charter("# Charter: x\n## goal\nやる\n## acceptance\n"
+                                  "- `test -f keep`\n- 検収: UI が崩れていない\n")
+            resolved, unresolved, human = km.resolve_charter_acceptance(
+                cfg, ch, {}, agent_run=lambda p, m: self.fail("検収項目が合成された"))
+            self.assertEqual(resolved, ["test -f keep"])
+            self.assertEqual(unresolved, [])
+            self.assertEqual(human, ["UI が崩れていない"])
+
+    def test_human_acceptance_converges_with_checklist(self):
+        # 機械 acceptance + 検収項目 → 収束し、milestone に検収チェックリストが載る。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            flag = d / "flag"
+            flag.write_text("x")
+            write_charter(d, "# Charter: hx\n## goal\nやる\n## acceptance\n"
+                             f"- `test -f {flag}`\n- 検収: 画面が自然に見える\n")
+            code = km.cmd_project(cfg_for(d), planner=lambda ch: [],
+                                  runner=lambda c: _drained(),
+                                  agent_run=lambda p, m: self.fail("合成された"))
+            self.assertEqual(code, 1)            # converged → 人の承認待ち
+            state = km.load_project_state(cfg_for(d))
+            self.assertEqual(state["status"], km.REASON_PROJECT_CONVERGED)
+            self.assertEqual(state["human_acceptance"], ["画面が自然に見える"])
+            needs = (d / "needs" / "hx.md").read_text(encoding="utf-8")
+            self.assertIn("検収チェックリスト", needs)
+            self.assertIn("- [ ] 画面が自然に見える", needs)
+
+    def test_human_only_acceptance_does_not_dead_end(self):
+        # 全条件が人の検収でも no-acceptance で塞がず、収束して人の承認ゲートへ進む。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, "# Charter: ho\n## goal\nやる\n## acceptance\n"
+                             "- 検収: 使い勝手に問題がない\n")
+            code = km.cmd_project(cfg_for(d), planner=lambda ch: [],
+                                  runner=lambda c: _drained(),
+                                  agent_run=lambda p, m: self.fail("合成された"))
+            self.assertEqual(code, 1)
+            self.assertEqual(km.load_project_state(cfg_for(d))["status"],
+                             km.REASON_PROJECT_CONVERGED)
+
+    def test_unresolved_message_suggests_human_prefix(self):
+        # 合成失敗の milestone は「検収: を付ければ人の検収項目にできる」対処を案内する。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, "# Charter: un\n## goal\nやる\n## acceptance\n"
+                             "- accept: 曖昧な完了条件\n")
+            code = km.cmd_project(cfg_for(d), planner=lambda ch: [],
+                                  runner=lambda c: _drained(),
+                                  agent_run=lambda p, m: "")   # 合成不能
+            self.assertEqual(code, 1)
+            needs = (d / "needs" / "un.md").read_text(encoding="utf-8")
+            self.assertIn("検収:", needs)
+            self.assertIn("変換できませんでした", needs)
 
     def test_natural_language_acceptance_converges(self):
         with tempfile.TemporaryDirectory() as d:
