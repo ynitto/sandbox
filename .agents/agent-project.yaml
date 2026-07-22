@@ -1,28 +1,6 @@
-# agent-project の設定（1 root = 1 プロジェクト。相対パスはすべて root 基準）。
-# root = cwd。charter.md / backlog/ / bus/ 等はすべて root 直下に集約される。
-# workdir / bus は既定（root / <root>/bus）に任せるため指定しない。
-root: .agent-project
-
-# manage_flow_daemon は既定（false）のまま。安易に true にしないこと:
-# submit 経路は run-id を「backlog パスの hash」から作り、local 経路（run --run-id）は
-# 「task.id の hash」から作る。**同じタスクなのに id が変わる**ため、daemon を on/off した
-# 瞬間（daemon が落ちて local へフォールバックしたときも）既存 run に合流できず、
-# 進捗をゼロから作り直す。実際 true にした瞬間、実行中の 2 本（4/23・4/16）が捨てられた。
-# submit では planner/executor も制御できない。
-
-# planner: none
-# executor: stub
-# route_planner: none    # 書込先の auto-route（曖昧時の LLM 推定）を無効化。
-
-# flow_planner: flow-planner   # 既定。スキル（scripts/plan.py）は agent-flow の
-                               # agents: planner: {agent_cli, model} に従って動く（--agent-cli 伝搬）。
-                               # agent にすると スキルを使わず agent_cli で直接計画する。
-
-# auto_adjudicate: false # 人へ回す前の裁定ゲートを呼ばない（常にそのまま人へ）
-# distill_learn: false   # 人コメントの蒸留をせず生のまま learn 化
-
-# spec_track: true       # spec ルーティング（採点/policy で spec 前段を前置）。agent-project の設定
-                       # （agent-flow.yaml に書いても効かない）
+state_repo: https://github.com/ynitto/sandbox-project.git
+state_repo_branch: main
+state_repo_dir: sandbox-project
 
 # グローバル既定
 agent_cli: claude
