@@ -1749,6 +1749,11 @@ function resolveBusDir(projectDir, workspaceDir, cfg) {
   };
 
   push(fallback, path.join(projectDir, 'bus'), 'project');
+  // agent-flow daemon 自身の state-git が状態リポジトリへ鏡写しするバスの名前空間
+  // （本体の FLOW_STATE_SUBDIR="agent-flow"）。バスをルート外に置く構成では、実行中 run の
+  // ミラーはリモート clone の <clone>/agent-flow に届く。従来は flowBusByProject の手動設定が
+  // 必須で、設定漏れ＝「別 PC で実行中の run が見えない」だったため自動発見する。
+  push(fallback, path.join(projectDir, 'agent-flow'), 'state-mirror');
   // pure-remote（clone だけ・ローカル daemon 無し）では明示写像の <clone>/agent-flow を使う。
   const names = [path.basename(path.resolve(projectDir)), path.basename(workspace)];
   const byProject = cfg && cfg.projects && cfg.projects.flowBusByProject;
@@ -1767,13 +1772,44 @@ function resolveBusDir(projectDir, workspaceDir, cfg) {
   }
 
   const ordered = [...preferred, ...fallback];
-  for (const c of ordered) {
-    if (fs.existsSync(path.join(c.dir, 'runs'))) {
-      return { busDir: c.dir, hasBus: true, source: c.source, candidates: ordered };
-    }
+  // 明示設定（preferred）は従来どおり定義順の最初の実在を採る（人の指定が正）。
+  const explicitHit = preferred.find((c) => fs.existsSync(path.join(c.dir, 'runs')));
+  if (explicitHit) {
+    return { busDir: explicitHit.dir, hasBus: true, source: explicitHit.source, candidates: ordered };
+  }
+  // 自動発見（fallback）は <root>/bus と <root>/agent-flow（鏡写し）が両方在りうる。
+  // エンジン PC ではローカル bus が生きた実体、リモート clone では鏡写し側が新しいことが
+  // 多い——構成を推測せず、実測の鮮度（runs 配下の最新更新時刻）で新しい方を選ぶ。
+  const implicitHits = fallback.filter((c) => fs.existsSync(path.join(c.dir, 'runs')));
+  if (implicitHits.length) {
+    const pick = implicitHits.length === 1
+      ? implicitHits[0]
+      : implicitHits.slice().sort((a, b) => _busRecency(b.dir) - _busRecency(a.dir))[0];
+    return { busDir: pick.dir, hasBus: true, source: pick.source, candidates: ordered };
   }
   const first = ordered[0] || { dir: path.join(projectDir, 'bus'), source: 'project' };
   return { busDir: first.dir, hasBus: false, source: first.source, candidates: ordered };
+}
+
+// バス候補の鮮度: runs/ とその直下エントリ（有界サンプル）の最新 mtime。
+// run の meta/イベントはファイル置換（rename）で書かれるため run ディレクトリの mtime が動く。
+function _busRecency(busDir) {
+  const runsDir = path.join(busDir, 'runs');
+  let latest = 0;
+  try {
+    latest = fs.statSync(runsDir).mtimeMs;
+  } catch {
+    return 0;
+  }
+  for (const name of safeList(runsDir).slice(0, 50)) {
+    try {
+      const m = fs.statSync(path.join(runsDir, name)).mtimeMs;
+      if (m > latest) latest = m;
+    } catch {
+      /* 列挙後に消えた run は無視 */
+    }
+  }
+  return latest;
 }
 
 // 1 プロジェクトの完全なスナップショット。
