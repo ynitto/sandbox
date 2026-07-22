@@ -1159,8 +1159,10 @@ function openEnqueueDialog(prefill = {}) {
   $('enq-id').value = prefill.id || '';
   $('enq-after').value = Array.isArray(prefill.after) ? prefill.after.join(', ') : (prefill.after || '');
   // 構造化フォームの入力（案5・案3）。再投入では元の値を引き継ぎ、通常は空にする。
+  // desc（作業内容の概要）は複数行 textarea なので ⏎ 規約を改行へ戻して見せる。
   const setEnq = (id, v) => { const el = $(id); if (el) el.value = v || ''; };
   setEnq('enq-verify-template', prefill.verify_template);
+  setEnq('enq-desc', String(prefill.desc || '').replace(/\s*⏎\s*/g, '\n'));
   setEnq('enq-why', prefill.why);
   setEnq('enq-scope', prefill.scope);
   setEnq('enq-out_of_scope', prefill.out_of_scope);
@@ -1281,8 +1283,10 @@ async function submitEnqueue() {
     ...Object.fromEntries(ENQUEUE_PASSTHROUGH_KEYS.map((k) => [k, extra[k] || ''])),
   };
   // 構造化フォーム（案5・案3）。passthrough の空値を上書きするため spread の後に読む。
+  // desc（複数行 textarea）は md の 1 行 = 1 フィールド規約に合わせ改行を ⏎ へ畳む。
   const enqField = (id) => { const el = $(id); return el ? el.value.trim() : ''; };
   spec.verify_template = enqField('enq-verify-template') || spec.verify_template || '';
+  spec.desc = enqField('enq-desc').replace(/\r?\n/g, ' ⏎ ') || spec.desc || '';
   spec.why = enqField('enq-why') || spec.why || '';
   spec.scope = enqField('enq-scope') || spec.scope || '';
   spec.out_of_scope = enqField('enq-out_of_scope') || spec.out_of_scope || '';

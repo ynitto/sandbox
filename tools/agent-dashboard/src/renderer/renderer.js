@@ -1211,18 +1211,34 @@ function gitStateDir() {
   return (state.project && state.project.dir) || state.selectedDir;
 }
 
+// 自動 pull の対象は「選択中プロジェクト」だけでなく **発見済みの全プロジェクトの状態ルート**。
+// 以前は選択中の 1 件しか引いておらず、エンジンの動いていない閲覧専用 PC では
+//   ・別のプロジェクトを選択中 → 他プロジェクトのサイドバー件数・要対応が更新されない
+//   ・何も選択していない     → 一切 pull されず画面が止まったままになる
+// という「リモートの状況が更新されない」不具合になっていた。全件に投げても、git.pull は
+// リポジトリ toplevel 単位で gitPullSec（下限 60 秒）にスロットリングし、間隔内は
+// skipped を返すだけなのでリモート負荷は増えない（dirty な作業ツリーもスキップされる）。
 async function maybeAutoGitPull() {
   const sec = state.config && state.config.projects ? Number(state.config.projects.gitPullSec) : 0;
-  const dir = gitStateDir();
-  if (!sec || !dir) return;
-  try {
-    const res = await api.gitPull(dir, false);
-    if (res && !res.skipped) lastGitPullError = null;
-  } catch (err) {
-    const msg = err.message || String(err);
-    if (lastGitPullError !== msg) {
-      lastGitPullError = msg;
-      toast(`git pull（自動）: ${msg}`);
+  if (!sec) return;                                   // 0 = 自動 pull 無効（設定どおり）
+  const dirs = new Set();
+  const selected = gitStateDir();
+  if (selected) dirs.add(selected);
+  for (const p of (state.discovery && state.discovery.projects) || []) {
+    // root = 状態の置き場（状態 worktree / 状態 clone）。workspace（p.dir）ではなくこちらを
+    // 引かないと、worktree 構成では成果物リポジトリだけ更新され状態が古いままになる。
+    if (p && p.exists !== false && (p.root || p.dir)) dirs.add(p.root || p.dir);
+  }
+  for (const dir of dirs) {
+    try {
+      const res = await api.gitPull(dir, false);
+      if (res && !res.skipped) lastGitPullError = null;
+    } catch (err) {
+      const msg = err.message || String(err);
+      if (lastGitPullError !== msg) {
+        lastGitPullError = msg;
+        toast(`git pull（自動）: ${msg}`);
+      }
     }
   }
 }

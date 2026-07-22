@@ -451,7 +451,7 @@ const renderNeedDetailWithVerifyRevision = new Function(
   'taskForNeed', 'taskCompletionHint', 'runsForTask', 'canDiagnoseNeed',
   'state', 'needFinalVerificationFailure', 'finalVerificationFailureHtml', 'needAssistActionsHtml',
   'needArtifactsButtonHtml', 'ownerBadgeHtml', 'commandFailureHtml', 'commandReceiptHtml',
-  'reviewCommentsHtml',
+  'reviewCommentsHtml', 'taskGuideHtml',
   `${grab('renderNeedDetail')}; return renderNeedDetail;`
 )(
   () => false,
@@ -474,6 +474,7 @@ const renderNeedDetailWithVerifyRevision = new Function(
   () => '',
   needAssistActionsHtml,
   needArtifactsButtonHtml,
+  () => '',
   () => '',
   () => '',
   () => '',
@@ -889,5 +890,42 @@ assert.match(
     '成果が一度も出ていないものは完了承認を出さない（再開・指示が正しい導線）'
   );
 }
+
+// --- taskGuideHtml（計画レビューの「作業内容」セクション） ---
+{
+  // eslint-disable-next-line no-new-func
+  const taskGuideHtml = new Function(
+    'esc', 'proseHtml', 'GUIDE_KEYS', 'GUIDE_LABELS',
+    `${grab('taskGuideHtml')}; return taskGuideHtml;`
+  )(
+    (v) => String(v == null ? '' : v),
+    (v) => String(v == null ? '' : v),
+    ['why', 'desc', 'scope', 'out_of_scope', 'constraints', 'hints', 'demo'],
+    { desc: '作業内容の詳細', why: '背景・目的' }
+  );
+  const withGuide = taskGuideHtml(
+    { verify: 'npm test', extra: { desc: '冒頭に手順を追加 ⏎ 構成は変えない', why: '導入が不明' } },
+    'plan-review'
+  );
+  assert.ok(withGuide.includes('作業内容'), 'セクション見出しを出す');
+  assert.ok(withGuide.includes('冒頭に手順を追加'), 'desc を出す（⏎ は改行に戻す）');
+  assert.ok(withGuide.includes('冒頭に手順を追加\n構成は変えない'), '⏎ を改行へ復元');
+  assert.ok(withGuide.includes('導入が不明'), 'why を出す');
+  assert.ok(withGuide.includes('npm test'), '完了条件も並べる');
+  const emptyPlan = taskGuideHtml({ verify: '', extra: {} }, 'plan-review');
+  assert.ok(
+    emptyPlan.includes('記述（概要・目的・範囲）がありません'),
+    'plan-review は記述ゼロでも「情報が足りない」ことを明示する（無言で薄いカードにしない）'
+  );
+  assert.strictEqual(
+    taskGuideHtml({ verify: 'x', extra: {} }, 'blocked'),
+    '',
+    'plan-review 以外は記述が無ければ何も出さない（従来の見た目を保つ）'
+  );
+  assert.strictEqual(taskGuideHtml(null, 'blocked'), '', 'タスク未解決でも安全');
+}
+
+// renderNeedDetail が taskGuideHtml を組み込むこと（呼び出しが消えると退行）
+assert.match(renderer, /\$\{taskGuideHtml\(task, n\.kind\)\}/);
 
 console.log('detail-tabs-ui: all tests passed');

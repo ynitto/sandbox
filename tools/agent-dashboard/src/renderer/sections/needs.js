@@ -1531,6 +1531,35 @@ function bindReviewComments(root) {
   }
 }
 
+// タスクの誘導・レビュー記述（why/desc/scope 等の GUIDE_KEYS）を「作業内容」セクションとして出す。
+// 計画レビュー（plan-review）はタイトルと完了条件だけでは承認判断ができない——何をどう変えるかの
+// 概要（desc）・目的（why）・範囲（scope）がレビューの本体。plan-review では記述が無い場合も
+// セクションを出し、「情報が足りない」ことと補い方（タスク編集）を明示する（無言で薄いカードにしない）。
+// 他種別（blocked/review）では記述があるときだけ出す。⏎ は改行マーカー（1 行 = 1 フィールド規約）。
+function taskGuideHtml(task, kind) {
+  const ex = (task && task.extra) || {};
+  const rows = GUIDE_KEYS
+    .filter((k) => String(ex[k] || '').trim())
+    .map((k) => `<div class="task-guide-row"><dt>${esc(GUIDE_LABELS[k] || k)}</dt>
+      <dd>${proseHtml(String(ex[k]).replace(/\s*⏎\s*/g, '\n'))}</dd></div>`);
+  const verifyRow = task && (task.verify || ex.accept || ex.verify_template)
+    ? `<div class="task-guide-row"><dt>完了条件</dt><dd>${
+        task.verify
+          ? `<code>${esc(task.verify)}</code>`
+          : esc(ex.accept || ex.verify_template)
+      }</dd></div>`
+    : '';
+  if (!rows.length && kind !== 'plan-review') return '';
+  const body = rows.length
+    ? `<dl class="task-guide">${rows.join('')}${verifyRow}</dl>`
+    : `<p class="muted">作業内容の記述（概要・目的・範囲）がありません。タイトルと完了条件だけでは
+       レビュー判断が難しいため、下の「差し戻す」で記述を求めるか、バックログのタスク編集（修正）で
+       概要（desc）・目的（why）を追記してから承認することを推奨します。</p>${
+         verifyRow ? `<dl class="task-guide">${verifyRow}</dl>` : ''
+       }`;
+  return `<section class="need-task-guide"><h3>作業内容</h3>${body}</section>`;
+}
+
 function renderNeedDetail(p, n) {
   if (!n) return '<div class="empty need-detail-empty">この状態の項目はありません</div>';
   // 取り込み失敗（commandFailure）があるカードは送信済み扱いにしない＝操作を出し直す
@@ -1575,6 +1604,7 @@ function renderNeedDetail(p, n) {
       <h3>判断すること</h3>
       <p>${esc(ask)}</p>
     </section>
+    ${taskGuideHtml(task, n.kind)}
     <section class="need-facts">
       <div class="need-facts-heading">
         <h3>状況</h3>

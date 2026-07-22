@@ -52,12 +52,22 @@ def evaluate_acceptance(cfg: "Config", charter: "Charter") -> "tuple[int, int, l
             _prune_caches(_provisioned_urls)   # 共有 cache の worktree 登録を回収（本体は残す）
 
 
+# 人の検収項目の明示接頭辞（`検収: …` / `human: …`）。機械検証（コマンド化）を試みず、
+# 収束時のチェックリストとして人へ渡す＝タスクの「verify 未定義 → 人が確認して承認で完了」と同じ契約。
+_HUMAN_ACCEPT_PREFIX_RE = re.compile(
+    r"^(?:human|manual|検収|手動|手動確認|人手|目視)\s*[:：]\s*(?P<text>.+)$", re.I)
+
+
 def _acceptance_kind(line: str) -> "tuple[str, str]":
-    """acceptance 1 行を (kind, text) に分類する。kind は 'command'（決定的シェル・そのまま実行）
-    か 'accept'（自然言語・要合成）。明示の `accept:` 接頭辞、または『シェルに見えない散文』
-    （全角句読点を含む等）を自然言語とみなす。散文をそのまま shell に流して誤実行するのを防ぐため、
-    判定不明な行は command でなく accept（合成 → 失敗時は人へ）に倒す。"""
+    """acceptance 1 行を (kind, text) に分類する。kind は 'command'（決定的シェル・そのまま実行）、
+    'human'（人の検収項目・機械検証しない）、'accept'（自然言語・要合成）。明示の `accept:` 接頭辞、
+    または『シェルに見えない散文』（全角句読点を含む等）を自然言語とみなす。散文をそのまま shell に
+    流して誤実行するのを防ぐため、判定不明な行は command でなく accept（合成 → 失敗時は人へ）に倒す。
+    機械検証できない条件（UI の見た目・使い勝手 等）は `検収:` で人の検収項目にする。"""
     s = line.strip()
+    hm = _HUMAN_ACCEPT_PREFIX_RE.match(s)
+    if hm:
+        return "human", hm.group("text").strip()
     m = _ACCEPT_PREFIX_RE.match(s)
     if m:
         return "accept", m.group("text").strip()
@@ -67,19 +77,25 @@ def _acceptance_kind(line: str) -> "tuple[str, str]":
 
 
 def resolve_charter_acceptance(cfg: "Config", charter: "Charter", state: "dict | None" = None,
-                               agent_run=None) -> "tuple[list[str], list[str]]":
-    """charter.acceptance の各行を実行可能なシェルコマンドへ解決し (resolved, unresolved) を返す。
+                               agent_run=None) -> "tuple[list[str], list[str], list[str]]":
+    """charter.acceptance の各行を実行可能なシェルコマンドへ解決し (resolved, unresolved, human) を返す。
     決定的コマンドはそのまま、自然言語（`accept:` 接頭辞 or 散文）はエージェントが決定的 verify を合成する
     （タスクの synth_verify を流用＝偽 done 防止規則を織込）。合成結果は state['acceptance_synth'] に
     原文キーでキャッシュし、サイクル/再実行をまたいで done 基準（acceptance）を安定させる（毎回の再合成と
-    非決定的なブレを防ぐ）。合成できない自然言語は unresolved に積み、呼び出し側が done 判定不能として人へ回す。"""
+    非決定的なブレを防ぐ）。合成できない自然言語は unresolved に積み、呼び出し側が done 判定不能として人へ回す。
+    `検収:`/`human:` 接頭辞の行は人の検収項目（human）: 機械検証を試みず、収束時のチェックリストとして
+    milestone に載せる（機械 acceptance 全 PASS + 人の確認・承認で done。タスクの verify 未定義承認と同じ契約）。"""
     cache = dict((state or {}).get("acceptance_synth") or {})
     resolved: "list[str]" = []
     unresolved: "list[str]" = []
+    human: "list[str]" = []
     for line in charter.acceptance:
         kind, text = _acceptance_kind(line)
         if kind == "command":
             resolved.append(text)
+            continue
+        if kind == "human":
+            human.append(text)
             continue
         cmd = cache.get(text)
         if not cmd:
@@ -92,7 +108,7 @@ def resolve_charter_acceptance(cfg: "Config", charter: "Charter", state: "dict |
             unresolved.append(text)
     if state is not None:
         state["acceptance_synth"] = cache
-    return resolved, unresolved
+    return resolved, unresolved, human
 
 
 def _acceptance_specs(cmds: "list[str]") -> "list[dict]":
@@ -108,7 +124,8 @@ def _failing_acceptance_specs(results: "list") -> "list[dict]":
 
 
 def write_milestone(cfg: "Config", charter: "Charter", reason: str, summary: str,
-                    pid: "str | None" = None, version: str = "") -> None:
+                    pid: "str | None" = None, version: str = "",
+                    human_acceptance: "list[str] | None" = None) -> None:
     """収束候補/要対応を milestone として needs/<pid>.md に出す（検収ゲートのプロジェクト版）。
     複数 charter 運用では pid が `<project>-<charter名>` になり charter 別に分かれる。
     version（バージョン名）を渡すと見出しに使う: charter の `# Charter:` 宣言名は前バージョンの
@@ -134,6 +151,12 @@ def write_milestone(cfg: "Config", charter: "Charter", reason: str, summary: str
         f"<!-- 完了として受領するなら `agent-project approve {pid} --reason ...`（プロジェクト done）。\n"
         f"     次フェーズへ続けるなら charter.md の goal/acceptance を更新して再実行。\n"
         f"     方向修正なら下に方針を書いて [x]（または policy.md を編集）。 -->\n")
+    # 人の検収項目（`検収:` 接頭辞の acceptance）。機械検証は済んでいない＝承認前に人が確認する
+    # チェックリストとして載せる（タスクの verify 未定義承認と同じ「人の確認が done の根拠」契約）。
+    human_block = ""
+    if human_acceptance:
+        human_block = ("## 検収チェックリスト（機械検証されていません。承認前に確認してください）\n"
+                       + "\n".join(f"- [ ] {h}" for h in human_acceptance) + "\n\n")
     body = (
         f"{_madr_frontmatter(pid, 'milestone')}"
         f"# マイルストーン: {heading}\n\n"
@@ -142,6 +165,7 @@ def write_milestone(cfg: "Config", charter: "Charter", reason: str, summary: str
         f"- 状態: {reason}\n"
         f"- 概況: {summary}\n\n"
         f"## goal\n{charter.goal}\n\n"
+        f"{human_block}"
         f"{DECISION_MARKER}\n\n"
         f"<!-- 人の決定の記入欄（MADR の Decision Outcome）。方針・指示をここに書く。 -->\n"
         f"- [ ] 確定（このボックスを [x] にして保存すると取り込みます）\n\n"
@@ -367,19 +391,26 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
         return project_exit_code(REASON_PROJECT_ACCEPTED)
     # acceptance を実行可能なコマンドへ解決（自然言語は決定的 verify へ合成し、結果を state にキャッシュ）。
     # 合成できない自然言語が残れば done 判定不能＝人へ（acceptance を書けないプロジェクトは人へ回す鉄則）。
-    resolved, unresolved = resolve_charter_acceptance(cfg, charter, state, agent_run)
+    # `検収:` 接頭辞の行は人の検収項目（機械検証しない・ブロックしない）。収束時のチェックリストとして
+    # milestone に載り、人が確認して承認する＝機械化できない条件の正式な受け皿。
+    resolved, unresolved, human_items = resolve_charter_acceptance(cfg, charter, state, agent_run)
+    state["human_acceptance"] = human_items    # viewer/milestone が検収チェックリストとして読む
     if unresolved:
         state["status"] = REASON_PROJECT_NO_ACCEPTANCE          # viewer/GC が status を正に読める
         save_charter_state(cfg, state, charter_name if multi else None)   # 合成済みキャッシュも残す
-        summary = ("自然言語の acceptance を決定的 verify に合成できません（done 判定不能）: "
-                   + " / ".join(unresolved))
+        summary = ("自然文の完了条件を検証コマンドへ変換できませんでした（done 判定不能）: "
+                   + " / ".join(unresolved)
+                   + " ／ 対処: 検証コマンド・テンプレートで書き直すか、機械検証できない条件なら"
+                     "行頭に `検収:` を付けて人の検収項目にしてください（収束時に確認して承認できます）")
         write_milestone(cfg, charter, REASON_PROJECT_NO_ACCEPTANCE, summary, pid=pid,
                         version=charter_name if multi else "")
         print(f"[project] {charter.name}: acceptance を合成できず → 人へ（needs/{pid}.md）")
         for u in unresolved:
-            print(f"  - 未合成: {u}", file=sys.stderr)
+            print(f"  - 未合成: {u}（`検収:` を付ければ人の検収項目として進められます）", file=sys.stderr)
         return project_exit_code(REASON_PROJECT_NO_ACCEPTANCE)
     charter.acceptance = resolved             # 以降の評価は合成済みの決定的コマンドで行う
+    # 機械 acceptance が 0 件でも human_items があれば進める: 収束（total=0 は空虚に全 PASS）後、
+    # 人が検収チェックリストを確認して承認する。全条件が人の検収というプロジェクトを塞がない。
     # charter 変更の検知（内容署名）: backlog 分解に効く内容が前回計画時と変わっていれば、消化可能
     # タスクが残っていても再計画して差分を投入する（viewer 等で charter を編集しても backlog が
     # 変わらない問題への対処）。署名が未記録（初回/既存プロジェクト）はベースラインを張るだけで
@@ -506,7 +537,8 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
     if reason in (REASON_PROJECT_CONVERGED, REASON_PROJECT_STALL,
                   REASON_PROJECT_BUDGET, REASON_PROJECT_COST, REASON_PROJECT_BLOCKED):
         write_milestone(cfg, charter, reason, last_summary or "（評価前に停止）", pid=pid,
-                        version=charter_name if multi else "")
+                        version=charter_name if multi else "",
+                        human_acceptance=state.get("human_acceptance") or None)
     append_journal(cfg.journal, f"=== project 停止 reason={reason} cycles={cycle} "
                                 f"cost={cost_used:.4f} ===")
     print(f"\n=== agent-project run（charter 駆動: {charter.name}）===")
