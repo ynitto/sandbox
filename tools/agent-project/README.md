@@ -283,11 +283,13 @@ CLI からも付与・修正できる。
   `codd_gate_*` を import・結合・依存しない。有効化は人か install 手順が `regression_cmd`/`intake_cmd` を
   yaml/CLI に書く場合に限り、フック値を永続化するコードは sibling の
   `codd_gate_regression.py`（`python3 codd_gate_regression.py --config .agent/agent-project.yaml`）が
-  yaml へ冪等注入する。起動時の Config 生成（`build_config`）が codd-gate を自動検出して値を差し込む
+  yaml へ冪等注入する。`codd_gate_*.py` は `tools/agent-project/` 直下の任意 sibling 部品で、明示起動された
+  ときだけ codd-gate の実体・バージョン・schema 互換性・対応機能を自動検出する。パッケージはこれらの部品を
+  探索・import しない。起動時の Config 生成（`build_config`）が codd-gate を自動検出して値を差し込む
   配線層は無い。手で書いていなければ空のまま（＝連携なし）で通過する。`.agent/agent-project.yaml` は
   人専有ファイルなので機械が勝手に書き換えず、書き手は人か人が起動した `codd_gate_regression.py` に
-  限られる。`codd_gate_*.py` は `tools/agent-project/` 直下の任意 sibling 部品で、欠落・削除しても
-  パッケージは同一挙動（依存しないため）。codd-gate 未検出・非互換の環境では生成ツールが値を書かず
+  限られる。sibling 部品を欠落・削除してもパッケージは同一挙動（依存しないため）。codd-gate 未検出・
+  非互換の環境では生成ツールが値を書かず
   no-op に縮退する（詳細は
   [`codd-gate-design.md`](../../docs/designs/codd-gate-design.md) §4「プラグイン境界」・§4.1「任意部品」・
   §4.2「境界の完了条件」）。
