@@ -276,8 +276,9 @@ CLI からも付与・修正できる。
   `regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV" --repos <root>/repos.json'`（done 確定前の
   差分ゲート）＋ `intake_cmd: 'codd-gate tasks --debt --repos <root>/repos.json'`（負債を修復タスクとして
   自動返済）＋ charter acceptance に `codd-gate verify --debt --max-broken N …`（受入の負債ラチェット）。
-  パッケージ（`agent_project`）は codd_gate_* を import・結合・依存しない。値を書く主体は一つだけで、
-  有効化は人か install 手順が `regression_cmd`/`intake_cmd` を yaml/CLI に書き、永続化は sibling の
+  パッケージ（`agent_project`）の責務は E1〜E6 の汎用フックを提供するところまでで、codd-gate を名指しせず、
+  `codd_gate_*` を import・結合・依存しない。有効化は人か install 手順が `regression_cmd`/`intake_cmd` を
+  yaml/CLI に書く場合に限り、フック値を永続化するコードは sibling の
   `codd_gate_regression.py`（`python3 codd_gate_regression.py --config .agent/agent-project.yaml`）が
   yaml へ冪等注入する。起動時の Config 生成（`build_config`）が codd-gate を自動検出して値を差し込む
   配線層は無い。手で書いていなければ空のまま（＝連携なし）で通過する。`.agent/agent-project.yaml` は
