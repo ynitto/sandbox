@@ -585,3 +585,6 @@ There's an issue with the selected model (auto). It may not exist or you may not
 - 2026-07-21 05:56:05 state-git 同期: import=6 export=5
 - 2026-07-21 05:56:06 commands 取り込み: resume-run dashboard-163827（viewer-resume-run-dashboard-163827-1784532051908.json）
 - 2026-07-21 06:11:10 === project 開始 v1 acceptance=2 ===
+- 2026-07-21 06:11:10 === agent-project 開始 tasks=2 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-21 06:11:10 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
+- 2026-07-21 06:11:10 run 再開: dashboard-163827 は req-ef1f92c3-dashboard-163827-r0 の失敗ノードだけをやり直します（done は温存）

@@ -1,0 +1,16 @@
+{
+  "id": "t8",
+  "who": "worker-2",
+  "status": "done",
+  "output": "完了。\n\n## (a) 成果\n\n新表示（ゲートバッジ・未結線導線・診断要約の共存）の検証を 2 テストへ追加。既存アサーションは無改変、末尾に足すだけ。\n\n| ファイル | 追加 |\n|---|---|\n| `test/needs-diagnosis.test.js` | `cardFm()` ヘルパ（frontmatter 差込用・既存 `card()` は無改変）＋ 2 ケース。11→**13 passed** |\n| `test/overview-ui.test.js` | ゲート節ブロック 1 つ（call-site 配線＋ゲートバッジ＋未結線導線） |\n\n**needs-diagnosis（データ層＝`parseNeeds`）— 診断要約の共存**\n- frontmatter 経路: ゲート票（`failure-summary`/`failure-command: codd-gate…`/`failure-class`/`failure-phase`/`failure-chain`/`verify-verdict`）で、診断要約（`failureSummary`/`failureResolution`）と `failureContext.command`（codd-gate 含む）と分類フィールドが**共存**（一方が他方を潰さない）ことを固定。\n- フォールバック経路: `回帰検知: 失敗した工程: \\`codd-gate verify…\\`` の散文からも `failureContext.command` に codd-gate、`failureSummary` 非空を確認。\n- これは表示側 `needGateFailure`（`needs.js:1299` — `context.command` に codd-gate、または summary/why が回帰検知/一貫性ゲート/codd-gate で判定）が食う入力そのもの。\n\n**overview-ui（表示層＝`consistencyGateHtml`）— ゲートバッジ・未結線導線**\n- 概要がゲート節を実埋込（`consistencyGateHtml(p)` の call-site）。\n- ゲートバッジ: 全結線→見出し `有効`（導線なし）／一部未結線→`一部のみ`。この見出しバッジは consistency-gate-ui.test.js が未カバー＝重複でない。\n- 未結線導線: `有効化` ラベル＋書くべき `intake_cmd` yaml 行＋`data-gate-open` ボタンの共存。\n- ペイロード無し（旧 main）は空文字。\n\n## (b) 検証\n\n- `node test/needs-diagnosis.test.js` → **13 passed / exit 0**（既存 11 全 ok）。\n- `node test/overview-ui.test.js` → **all tests passed / exit 0**。\n- ソース無改変（テストファイル 2 本のみ）ゆえ他テストへ回帰なし。`git status` は許可フォルダ `tools/agent-dashboard/test/` の 2 ファイルのみ。\n\n## (c) 前提・範囲外\n\n**採用した前提**\n1. 3 概念を層で分担: ゲートバッジ・未結線導線＝概要の仕事→overview-ui、診断要約の共存＝needs/`parseNeeds` の仕事→needs-diagnosis。各ファイルが実際に叩く層に合わせた（overview は診断要約を表示しない、needs-diagnosis は `parseNeeds` データのみ検証）。\n2. needs-diagnosis は DOM 非依存の `parseNeeds` テストなので、t7 の DOM 統合（needs-gate-integration.test.js が担当）は再検証せず、その入力データ契約の共存を固定した。\n3. overview-ui は既存の consistency-gate-ui.test.js と重複しない差分（見出しバッジ 有効/一部のみ＋概要 call-site 配線）に絞った。\n\n**範囲外（未修正・報告のみ）**\n- @followup `test/detail-tabs-ui.test.js` が `ReferenceError: commandFailureHtml is not defined` で失敗し `npm test` が途中停止する既存不具合（t4/t5/t7 と同一指摘）。本タスクの 2 ファイルには無関係、未着手。",
+  "finished_at": "2026-07-20T21:31:39Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox",
+      "branch": "ap/dashboard-163827",
+      "commit": "612eefc4c9423cd53a2b5ab17b1aa3fd9269b600",
+      "target": "main",
+      "path": "tools/agent-dashboard"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "id": "t7",
+  "who": "worker-2",
+  "status": "done",
+  "output": "## (a) 成果\n\nneeds のゲート由来検証失敗を、概要タブ「一貫性ゲート」節（t5/t6 の `consistencyGateHtml`）と統合表示。既存要約は無改変、**後ろに足すだけ**。\n\n| ファイル | 変更 |\n|---|---|\n| `src/renderer/sections/needs.js` | `needGateFailure(failure,n)` 追加。`renderNeedFacts(n)`→`renderNeedFacts(p,n)` でゲート統合ブロックを facts 末尾に追加。呼び出し 1 行＋再描画 sig に `p.consistencyGate` |\n| `test/needs-gate-integration.test.js` | 新規。実画面相当 DOM で 8 ケース |\n| `package.json` | `test` に 1 本 |\n\n統合: ゲート由来失敗（`failureContext.command` に `codd-gate`、または summary/why が `回帰検知`/`一貫性ゲート`/`codd-gate`）のとき、概要節と**同じ語彙・視覚言語**の `.need-resolution.need-gate` を追加 — `一貫性ゲート` ラベルチップ、`regression_cmd`/`intake_cmd` mono、intake 結線を `badge info|warn`、未結線なら「直しても自動起票されない→概要で有効化」＋既存 `data-open` で設定ファイルを開く導線。`p.consistencyGate` 無しは概要誘導のみにフォールバック。**CSS 追加ゼロ**（`.need-gate` は無 CSS のフック）。断定側 `needFailureViewModel` 無改変（推測レイヤに新設、t2 §6.3 維持）。\n\n## (b) 検証\n\n「実画面相当の DOM」= jsdom 依存が無いので、本物の `renderNeedFacts`/`renderNeedDetail`（スタブでごまかさず合成）が吐く画面 HTML を、同梱のタグスタック walker でノード木へ起こし、要素の入れ子・クラス・テキストで検証。\n\n- `node test/needs-gate-integration.test.js` → **8 passed**。統合（`need-gate` が `need-facts` 内・`一貫性ゲート` チップ・両 yaml キー・intake `badge warn`・`data-open` ボタン）／可読性（`need-diag` の `検証失敗` チップ・`<strong>` 要約行・`need-failure-context` dl 残存、`<details><summary>判断材料を見る` と `状況`/`判断すること` h3 がゲート節と共存）／分岐（結線済み・ペイロード無し・非ゲート・失敗無し）を assert。\n- walker 健全性を別途確認: 未閉じ・入れ子不整合を棄却（no-op でない）。\n- 回帰: needs-diagnosis 11 / needs-command-failure 4 / needs-layout-ui / consistency-gate-ui / consistency-gate 4 / overview-ui / needs-notify / needs-sla すべて PASS。`node --check needs.js` PASS。diff は `tools/agent-dashboard` の 3 ファイルのみ。\n\n## (c) 前提・未解決・範囲外\n\n**前提**: 「ゲート状態セクション」=概要の `consistencyGateHtml`。「統合」=語彙・視覚言語の共有＋概要への導線＋regression/intake 結線を失敗のその場で提示（概要節を `<h2>` ごと need に埋め込むのは見出し階層を崩すので不採用、可読性優先）。codd-gate 専用 kind は無く `blocked` の回帰失敗を command/文面で識別（t2 §4.4）。`p.consistencyGate` を sig に追加し結線変更に追従（t2 §6.1）。\n\n**範囲外（未修正・報告のみ）**: @followup `test/detail-tabs-ui.test.js` が `ReferenceError: commandFailureHtml is not defined` で失敗（t4/t5 と同一の既存不具合、当該テストの `renderNeedDetail` 抽出が自由変数未注入）。**本変更前後でエラー不変**（signature 変更は同テストのスタブ `() => ''` が引数無視で無影響）。`npm test` はこの地点で停止するため full green にできない。修正は 1 行だが根因はハーネスの自由変数手動列挙で別タスク相当。\n\n詳細: `artifacts/t7/t7-needs-gate-integration.md`",
+  "finished_at": "2026-07-20T21:26:10Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox",
+      "branch": "ap/dashboard-163827",
+      "commit": "60ba1d372856b18703f9e845d50eba310aa4edcf",
+      "target": "main",
+      "path": "tools/agent-dashboard"
+    }
+  },
+  "artifacts": [
+    "artifacts/t7/t7-needs-gate-integration.md"
+  ]
+}

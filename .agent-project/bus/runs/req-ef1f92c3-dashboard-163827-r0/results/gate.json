@@ -1,0 +1,10 @@
+{
+  "id": "gate",
+  "who": "worker-2",
+  "status": "done",
+  "output": "verify=pass\n\n敵対的検証4観点、全て違反なし。実物 diff・コード・テスト実行で再導出済み。\n\n**(a) UI→state 書換経路の新設: なし**\n- `project.js consistencyGateStatus()` は yaml の `regression_cmd`/`intake_cmd` を**読むだけ**。コメントも「読み取り専用: ここから設定を書き換える経路は作らない」と明記、実装も一致。\n- 新規の対話要素は「設定ファイルを開く」ボタン（`renderer.js:bindConsistencyGate` の `data-gate-open`、`needs.js:1343` の `data-open`）のみ。両者とも既存の `guard(...) api.openPath()` = 既存 IPC `shell:openPath`（`ipc.js:102`、preload:29）を再利用し、OS 既定エディタで開くだけ。dashboard 自身は書かない。`data-open` は元々設定ファイル(`n.file`)を開く既存パターン(`needs.js:240,670,1461`)。\n- `preload.js`/`ipc.js` は diff に**不在** = 新 IPC 面ゼロ。\n\n**(b) 契約外への書込: なし（そもそも書込ゼロ）**\n- src diff に `writeFile/exec/spawn/invoke/ipcRenderer.send/shell:` 等の書込・実行プリミティブ**追加なし**（grep 実測）。`regression_cmd` 等はコマンドを実行せず `<code>${esc(cmd)}</code>` で表示のみ。needs/inbox/commands含め一切書かない。\n\n**(c) owns 境界 tools/agent-dashboard/**: 逸脱なし**\n- 変更 10 ファイル全て `tools/agent-dashboard/` 配下（`git diff --name-only | grep -v` 空）。\n\n**(d) 既存テストアサーションの緩和: なし**\n- main 既存のテストは `needs-diagnosis`/`overview-ui` の 2 本のみ。両方 `numstat` で **62/0・37/0**（追加のみ・削除ゼロ）。緩和・削除なし。\n- 新旧テスト HEAD 実行: consistency-gate 4 / -ui ok / needs-gate-integration 8 / needs-diagnosis 13 / overview-ui all pass、全 exit=0。\n- 唯一 fail の `detail-tabs-ui.test.js`（`ReferenceError: commandFailureHtml is not defined`）は **merge-base 66b73276 でも同一エラーで fail**（worktree 実測）。本ブランチ未改変・既存不具合で、緑化のための緩和ではない。\n\n(minor) 既存 `detail-tabs-ui` fail で `npm test` は full-green にならない。全ワーカーが @followup 済み・本ブランチ責任外。修正は当該テストの `new Function` 自由変数注入リストに `commandFailureHtml` 1 語追加。\n\n{\"ok\": true, \"issues\": [\"(minor) 既存 detail-tabs-ui.test.js が commandFailureHtml 未注入で fail し npm test が途中停止。merge-base でも同一 fail の既存不具合で本ブランチ範囲外。修正は test/detail-tabs-ui.test.js:447-453 の new Function 注入リストに commandFailureHtml を1語追加\"]}",
+  "finished_at": "2026-07-20T21:34:11Z",
+  "data": {
+    "ok": true
+  }
+}

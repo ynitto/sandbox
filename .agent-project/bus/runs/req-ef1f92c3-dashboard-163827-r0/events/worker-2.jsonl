@@ -3,3 +3,10 @@
 {"ts": "2026-07-20T05:58:58Z", "who": "worker-2", "kind": "claimed", "node": "t3"}
 {"ts": "2026-07-20T06:43:49Z", "who": "worker-2", "kind": "result", "node": "t3", "status": "done"}
 {"ts": "2026-07-20T06:52:43Z", "who": "worker-2", "kind": "claimed", "node": "t7"}
+{"ts": "2026-07-20T21:11:12Z", "who": "worker-2", "kind": "claimed", "node": "t7"}
+{"ts": "2026-07-20T21:26:10Z", "who": "worker-2", "kind": "result", "node": "t7", "status": "done"}
+{"ts": "2026-07-20T21:26:11Z", "who": "worker-2", "kind": "claimed", "node": "t8"}
+{"ts": "2026-07-20T21:31:39Z", "who": "worker-2", "kind": "result", "node": "t8", "status": "done"}
+{"ts": "2026-07-20T21:31:39Z", "who": "worker-2", "kind": "claimed", "node": "gate"}
+{"ts": "2026-07-20T21:34:11Z", "who": "worker-2", "kind": "result", "node": "gate", "status": "done"}
+{"ts": "2026-07-20T21:34:11Z", "who": "worker-2", "kind": "claimed", "node": "ux"}
