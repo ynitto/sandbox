@@ -273,9 +273,12 @@ CLI からも付与・修正できる。
   ツール [`codd-gate`](../codd-gate/README.md)（本ツールの install.sh が隣にあれば同梱インストールする）で
   護れる。結合は共通スキーマ（`schemas/`）のみ。リポジトリ定義は本ツールが charter から自動生成する
   `<root>/repos.json` を codd-gate が `--repos` で読む。**有効化は設定だけ**:
-  `regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV" --repos <root>/repos.json'`（done 確定前の
-  差分ゲート）＋ `intake_cmd: 'codd-gate tasks --debt --repos <root>/repos.json'`（負債を修復タスクとして
-  自動返済）＋ charter acceptance に `codd-gate verify --debt --max-broken N …`（受入の負債ラチェット）。
+  `regression_cmd` に指定する正確なコマンドは
+  `'codd-gate verify --base "$KIRO_BASE_REV" --repos <root>/repos.json'`。各タスクの verify PASS 後・done
+  確定前に差分の一貫性を検査し、NG なら done を止める。`intake_cmd` に指定する正確なコマンドは
+  `'codd-gate tasks --debt --repos <root>/repos.json'`。既存負債を JSON の修復タスクへ変換し、パス開始時と
+  watch の idle 中に backlog へ冪等に取り込む。charter acceptance には
+  `codd-gate verify --debt --max-broken N …` を置き、受入時の負債ラチェットに使う。
   パッケージ（`agent_project`）の責務は E1〜E6 の汎用フックを提供するところまでで、codd-gate を名指しせず、
   `codd_gate_*` を import・結合・依存しない。有効化は人か install 手順が `regression_cmd`/`intake_cmd` を
   yaml/CLI に書く場合に限り、フック値を永続化するコードは sibling の
