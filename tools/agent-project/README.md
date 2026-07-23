@@ -271,7 +271,8 @@ CLI からも付与・修正できる。
   done せず検収待ちへ。`gate` がタスク一致なのに対し `protect` は**変更されたパス**一致。
 - **一貫性ゲート（codd-gate 連携・オプション）**: ドキュメント・コード・テストの整合は**完全独立**の
   ツール [`codd-gate`](../codd-gate/README.md)（本ツールの install.sh が隣にあれば同梱インストールする）で
-  護れる。結合は共通スキーマ（`schemas/`）と、人か install 手順が E1〜E3 の汎用フックに置く
+  護れる。境界の不変条件として、`agent_project` パッケージは汎用フックだけを提供し、`codd_gate_*` を
+  import、直接結合、依存のいずれもしない。結合は共通スキーマ（`schemas/`）と、人か install 手順が E1〜E3 の汎用フックに置く
   codd-gate コマンド文字列に限る。リポジトリ定義は本ツールが charter から自動生成する
   `<root>/repos.json` を codd-gate が `--repos` で読む。**有効化は設定だけ**:
   `regression_cmd` には
@@ -281,8 +282,7 @@ CLI からも付与・修正できる。
   watch の idle 中に backlog へ冪等に取り込む。E1 の修復タスクでは `codd-gate check …` を task verify に置き、
   期待状態に戻ったことを確認する。charter acceptance の `codd-gate verify --debt --max-broken N …` は、
   受入時の負債ラチェットに使う。
-  境界は次のとおり固定する。`agent_project/*` パッケージは E1〜E6 の汎用フックだけを提供し、
-  codd-gate を名指しせず、`codd_gate_*` を import・結合・依存しない。`regression_cmd`/`intake_cmd` の
+  `agent_project` は codd-gate を名指ししない。`regression_cmd`/`intake_cmd` の
   有効化は、人か install 手順が YAML/CLI に書く場合に限る。sibling の
   `codd_gate_regression.py` が永続化するのは `regression_cmd` 1行だけで、`intake_cmd` は人か install 手順が設定する。
   生成ツールはリポジトリルートで `python3 tools/agent-project/codd_gate_regression.py --config
