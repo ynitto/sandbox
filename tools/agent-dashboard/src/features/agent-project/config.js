@@ -7,7 +7,8 @@ module.exports = {
   projects: {
     // 監視するワークスペースの一覧（1 行 1 プロジェクト）。
     // 成果物リポジトリを登録すると、配下の .agents/agent-project.yaml の
-    // state_repo / state_repo_dir から状態専用 clone をルートとして解決する。
+    // state_repo / state_repo_dir から状態専用 clone をルートとして解決する
+    // （git clone 自体は agent-project に任せる。dashboard はパス解決のみ）。
     // 状態 clone を直接登録してもよい（従来どおり）。
     // 例: ["C:\\clones\\payments", "/home/me/clones/webapp"]
     // プロジェクトでないフォルダを登録すると「プロジェクトを束ねる親フォルダ」と

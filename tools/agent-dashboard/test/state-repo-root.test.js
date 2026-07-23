@@ -130,14 +130,18 @@ test('state_repo_dir 絶対パスはそのまま使う', () => {
   }
 });
 
-test('clone 未作成なら従来の worktree 方式へフォールバック（-agent-state を勝手に作らない経路も維持）', () => {
+test('clone 未作成でも期待パスをルートにし、dashboard は clone / worktree を作らない', () => {
   const { deliverable, clone, base } = scaffold({ stateRepoDir: 'missing-state' });
   try {
     fs.rmSync(clone, { recursive: true, force: true });
-    // 成果物側に状態マーカーが無ければ resolve(ws) → worktree 未作成なら ws のまま
     const resolved = project.resolveProjectRoot(deliverable);
-    assert.strictEqual(path.resolve(resolved), path.resolve(deliverable));
-    assert.ok(!fs.existsSync(path.join(base, 'app-agent-state')), 'フォールバックで旧 worktree を増やさない');
+    assert.strictEqual(
+      path.resolve(resolved),
+      path.resolve(clone),
+      '未 clone でも state_repo_dir のパスをルートとして返す（agent-project の clone を待つ）'
+    );
+    assert.ok(!fs.existsSync(clone), 'dashboard は git clone しない');
+    assert.ok(!fs.existsSync(path.join(base, 'app-agent-state')), '旧 worktree も作らない');
   } finally {
     fs.rmSync(base, { recursive: true, force: true });
   }

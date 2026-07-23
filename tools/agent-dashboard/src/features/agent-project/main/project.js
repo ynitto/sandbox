@@ -1385,7 +1385,8 @@ function resolveProjectRoot(workspaceDir) {
   const values = fromWorkspace && cfg.values ? cfg.values : null;
 
   // 状態専用リポジトリ方式（案1）: yaml の state_repo から clone パスを特定してルートにする。
-  // 成果物リポジトリを登録しても、エンジンが置いた <repo>-state / state_repo_dir を開く。
+  // 成果物リポジトリを登録しても <repo>-state / state_repo_dir を開く。
+  // 実体の git clone は agent-project に任せ、dashboard はパス解決だけする。
   const stateRepoRoot = resolveStateRepoRoot(ws, values);
   if (stateRepoRoot) return stateRepoRoot;
 
@@ -1468,9 +1469,13 @@ function gitRepoTop(dir) {
 // 本体 `_redirect_root_to_state_repo` と同型:
 //   ・既定: <成果物top の親>/<repo名>-state（旧 worktree <repo>-agent-state と別名）
 //   ・state_repo_dir 相対: 成果物top の親配下 / 絶対: そのまま
-// clone が未作成・origin 不一致なら null（呼び出し側は従来の worktree 方式へ倒す）。
-// 戻り値は「ルートとして扱うパス」（存在確認済み）。workspace 自身が既にその clone なら
-// workspace を返す（状態 clone を直接登録した従来 UX も維持）。
+//
+// **clone 自体は dashboard では行わない。** 通常 clone は agent-project
+// （`_ensure_state_repo_clone`）に任せる。ここはパス解決だけし、未作成でもそのパスを
+// ルートとして返す（エンジン起動後に実体が現れる）。
+//
+// origin が state_repo と食い違う既存ディレクトリだけは使わない（旧 worktree 等を
+// 誤って開かない。本体と同じ護り）。workspace 自身が既にその clone なら workspace を返す。
 function resolveStateRepoRoot(workspaceDir, values) {
   if (!values) return null;
   const stateRepo = String(values.state_repo || '').trim();
@@ -1480,7 +1485,6 @@ function resolveStateRepoRoot(workspaceDir, values) {
   if (!ws) return null;
 
   // 登録パス自身が状態専用 clone（origin 一致）なら、そのままルート。
-  // 移行ガイドの「dashboard には状態 clone を登録」経路。
   if (fs.existsSync(path.join(ws, '.git')) && _sameGitRemote(_gitRemoteOrigin(ws), stateRepo)) {
     return ws;
   }
@@ -1507,13 +1511,13 @@ function resolveStateRepoRoot(workspaceDir, values) {
   // 自分自身へ解決された場合（上の origin チェックで既に返しているが、非 git 等の保険）
   if (pathsEqual(dst, ws)) return ws;
 
-  // clone が無ければフォールバック（エンジン未起動・別 PC で未 clone）。
-  // dashboard はネットワーク clone しない（viewer は手動 clone、エンジン PC は自動 clone）。
-  if (!fs.existsSync(path.join(dst, '.git'))) return null;
-
-  // origin が state_repo と食い違う（旧 worktree や別 repo）なら使わない。
-  // 黙って誤ディレクトリを開くと移行が効かない（本体と同じ護り）。
-  if (!_sameGitRemote(_gitRemoteOrigin(dst), stateRepo)) return null;
+  // 既存ディレクトリの origin が state_repo と食い違う（旧 worktree や別 repo）なら使わない。
+  // 黙って誤ディレクトリを開くと移行が効かない。未作成・空フォルダはパスを返して
+  // agent-project の clone を待つ（dashboard は git clone しない）。
+  if (fs.existsSync(path.join(dst, '.git'))
+      && !_sameGitRemote(_gitRemoteOrigin(dst), stateRepo)) {
+    return null;
+  }
 
   return dst;
 }
