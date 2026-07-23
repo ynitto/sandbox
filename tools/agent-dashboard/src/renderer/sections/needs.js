@@ -101,10 +101,10 @@ function milestoneVersionName(p, id) {
 
 // needs（要対応）の種別ラベル。内部の kind 名は UI に出さない
 const NEED_KIND_LABELS = {
-  'plan-review': '計画レビュー',
-  review: '検収',
-  milestone: 'マイルストーン',
-  blocked: '対応依頼',
+  'plan-review': '開始前確認',
+  review: '成果確認',
+  milestone: '完了確認',
+  blocked: '作業再開',
 };
 
 function needKindLabel(kind) {
@@ -257,10 +257,10 @@ function needActionsHtml(n, options) {
 
 // 種別ごとの「何を確認するか」。カードの先頭で確認の目的を一文で示す
 const NEED_ASK = {
-  'plan-review': 'このタスクの実行を始めてよいか確認してください。',
-  review: '成果物を確認し、完了にしてよいか判断してください。',
-  milestone: 'プロジェクトを完了にしてよいか確認してください。',
-  blocked: '作業を再開するための対応を指示してください。',
+  'plan-review': '作業を始めてよいか確認してください。',
+  review: 'できあがった内容を確認し、完了にしてよいか判断してください。',
+  milestone: 'プロジェクト全体を完了にしてよいか確認してください。',
+  blocked: '作業を再開するための追加指示を入力してください。',
 };
 
 // カード見出し用にタイトルの定型接頭辞（種別バッジと重複する）を落とす
@@ -1560,6 +1560,17 @@ function taskGuideHtml(task, kind) {
   return `<section class="need-task-guide"><h3>作業内容</h3>${body}</section>`;
 }
 
+function needNextStepHtml(n, ask, settled) {
+  const guidance = settled
+    ? '回答は送信済みです。処理結果が画面に反映されるまで待ってください。'
+    : 'まず確認事項を読み、必要なら下の回答欄から承認・差し戻し・再実行を選んでください。';
+  return `<section class="need-next-step" aria-label="次にすること">
+    <div class="need-step-kicker">次にすること</div>
+    <p>${esc(ask)}</p>
+    <span class="muted">${esc(guidance)}</span>
+  </section>`;
+}
+
 function renderNeedDetail(p, n) {
   if (!n) return '<div class="empty need-detail-empty">この状態の項目はありません</div>';
   // 取り込み失敗（commandFailure）があるカードは送信済み扱いにしない＝操作を出し直す
@@ -1572,7 +1583,7 @@ function renderNeedDetail(p, n) {
   const detail = (n.detail || '').trim();
   const detailBlock = detail
     ? `<details class="need-detail" data-ui-key="need-detail:${esc(n.id)}">
-        <summary>判断材料を見る</summary>
+        <summary>詳しい判断材料を見る</summary>
         <div class="body">${mdToHtml(detail)}</div>
       </details>`
     : '';
@@ -1600,11 +1611,15 @@ function renderNeedDetail(p, n) {
     ${commandFailureHtml(n)}
     ${commandReceiptHtml(n)}
     ${finalVerificationFailureHtml(finalVerificationFailure)}
-    <section class="need-decision">
-      <h3>判断すること</h3>
-      <p>${esc(ask)}</p>
+    ${needNextStepHtml(n, ask, settled)}
+    ${settled ? '' : `<section class="need-response need-response-primary"><h3>回答する</h3>${needActionsHtml(n)}${needVerifyRevisionHtml(p, n)}</section>`}
+    <section class="need-overview-grid">
+      <section class="need-decision">
+        <h3>確認事項</h3>
+        <p>${esc(ask)}</p>
+      </section>
+      ${taskGuideHtml(task, n.kind)}
     </section>
-    ${taskGuideHtml(task, n.kind)}
     <section class="need-facts">
       <div class="need-facts-heading">
         <h3>状況</h3>
@@ -1614,14 +1629,13 @@ function renderNeedDetail(p, n) {
       </div>
       ${renderNeedFacts(n) || '<p class="muted">追加の状況説明はありません。</p>'}
     </section>
-    ${settled ? '' : `<section class="need-response"><h3>回答</h3>${needActionsHtml(n)}${needVerifyRevisionHtml(p, n)}</section>`}
-    <section class="need-evidence">
-      <h3>成果物</h3>
+    <details class="need-evidence" data-ui-key="need-evidence:${esc(n.id)}">
+      <summary>関連する成果・詳細を確認</summary>
       ${specFilesHtml(p, n) || '<p class="muted">関連するSpecはありません。</p>'}
       ${needArtifactsButtonHtml(p, n, state.flowRuns)}
       ${detailBlock}
       <button class="need-output-button subtle-action" data-need-output="${esc(n.id)}">詳細情報を開く</button>
-    </section>
+    </details>
     ${reviewCommentsHtml(n)}
   </article>`;
 }

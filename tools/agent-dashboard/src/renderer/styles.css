@@ -1485,6 +1485,51 @@ table.list tr.clickable:hover { background: var(--bg2); }
 .need-detail-head h2 { margin: 8px 0 14px; font-size: 20px; line-height: 1.4; }
 .need-detail-badges { display: flex; flex-wrap: wrap; gap: 5px; }
 .need-detail-card section { margin-top: 18px; }
+
+.need-next-step {
+  display: grid;
+  gap: 5px;
+  margin: 0 0 14px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--accent) 58%, var(--border));
+  border-radius: 10px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 18%, var(--bg3)), var(--bg3));
+}
+.need-step-kicker {
+  color: var(--accent2);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+.need-next-step p { margin: 0; font-size: 16px; line-height: 1.55; }
+.need-response-primary {
+  margin: 0 0 14px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg3) 72%, var(--bg2));
+}
+.need-response-primary h3 { margin: 0 0 8px; color: var(--fg); font-size: 14px; }
+.need-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: 12px;
+}
+.need-evidence {
+  margin-top: 18px;
+  padding: 0 12px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg3);
+}
+.need-evidence > summary {
+  min-height: 44px;
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 650;
+}
+.need-evidence > .subtle-action,
+.need-evidence > button { margin-top: 8px; }
 .need-detail-card section h3 { margin: 0 0 7px; color: var(--muted); font-size: 13px; letter-spacing: 0.04em; }
 .need-decision { padding: 12px 14px; border-radius: 7px; background: var(--bg3); }
 .need-decision p { margin: 0; font-size: 15px; line-height: 1.55; }

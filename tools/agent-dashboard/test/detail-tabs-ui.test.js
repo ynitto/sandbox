@@ -451,7 +451,7 @@ const renderNeedDetailWithVerifyRevision = new Function(
   'taskForNeed', 'taskCompletionHint', 'runsForTask', 'canDiagnoseNeed',
   'state', 'needFinalVerificationFailure', 'finalVerificationFailureHtml', 'needAssistActionsHtml',
   'needArtifactsButtonHtml', 'ownerBadgeHtml', 'commandFailureHtml', 'commandReceiptHtml',
-  'reviewCommentsHtml', 'taskGuideHtml',
+  'reviewCommentsHtml', 'taskGuideHtml', 'needNextStepHtml',
   `${grab('renderNeedDetail')}; return renderNeedDetail;`
 )(
   () => false,
@@ -478,7 +478,8 @@ const renderNeedDetailWithVerifyRevision = new Function(
   () => '',
   () => '',
   () => '',
-  () => ''
+  () => '',
+  (_n, ask, settled) => `<section class="need-next-step">${ask}:${settled}</section>`
 );
 assert.ok(
   renderNeedDetailWithVerifyRevision(
