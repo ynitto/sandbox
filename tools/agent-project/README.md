@@ -283,8 +283,9 @@ CLI からも付与・修正できる。
   watch の idle 中に backlog へ冪等に取り込む。E1 の修復タスクでは `codd-gate check …` を task verify に置き、
   期待状態に戻ったことを確認する。charter acceptance の `codd-gate verify --debt --max-broken N …` は、
   受入時の負債ラチェットに使う。
-  `agent_project` は codd-gate を名指ししない。`regression_cmd`/`intake_cmd` の
-  有効化は、人か install 手順が YAML/CLI に書く場合に限る。sibling の
+  `agent_project` は codd-gate を名指ししない。**連携が有効になるのは、YAML の `regression_cmd` /
+  `intake_cmd` または対応 CLI の `--regression-cmd` / `--intake-cmd` にコマンドを明示設定した場合だけで、
+  自動検出だけでは有効にならない。** sibling の
   `codd_gate_regression.py` が永続化するのは `regression_cmd` 1行だけで、`intake_cmd` は人か install 手順が設定する。
   生成ツールはリポジトリルートで `python3 tools/agent-project/codd_gate_regression.py --config
   .agent/agent-project.yaml` と明示実行する。`codd_gate_*.py` は `tools/agent-project/` 直下の任意 sibling 部品で、人か install 手順が
