@@ -445,6 +445,94 @@ class BoardParticipationTests(unittest.TestCase):
         # 2 巡目: 既に inbox にあるので再取り込みしない
         self.assertEqual(kf.poll_board(self.bus, self._args(), "pc-a"), [])
 
+    def test_owner_picks_applies_without_dispatching(self):
+        # owner-picks: award.json が無い間は応募（bid）を書くだけで取り込まない。
+        d = self._post("dg-1", workspace={"url": "git@h:team/app.git"},
+                       policy={"assignment": "owner-picks"})
+        handed = kf.poll_board(self.bus, self._args(), "pc-a")
+        self.assertEqual(handed, [])
+        self.assertIsNone(self.bus.read_inbox("dg-1"))
+        self.assertTrue(os.path.exists(os.path.join(d, "bids", "pc-a.json")))
+        self.assertFalse(os.path.exists(os.path.join(d, "status", "pc-a.json")))
+
+    def test_owner_picks_dispatches_when_awarded_to_self(self):
+        d = self._post("dg-1", workspace={"url": "git@h:team/app.git"},
+                       policy={"assignment": "owner-picks"})
+        with open(os.path.join(d, "award.json"), "w", encoding="utf-8") as f:
+            json.dump({"node": "pc-a", "awarded_by": "requester"}, f)
+        handed = kf.poll_board(self.bus, self._args(), "pc-a")
+        self.assertEqual(handed, ["dg-1"])
+        self.assertIsNotNone(self.bus.read_inbox("dg-1"))
+        self.assertTrue(os.path.exists(os.path.join(d, "status", "pc-a.json")))
+
+    def test_owner_picks_skips_when_awarded_to_other_node(self):
+        d = self._post("dg-1", workspace={"url": "git@h:team/app.git"},
+                       policy={"assignment": "owner-picks"})
+        with open(os.path.join(d, "award.json"), "w", encoding="utf-8") as f:
+            json.dump({"node": "pc-b", "awarded_by": "requester"}, f)
+        handed = kf.poll_board(self.bus, self._args(), "pc-a")
+        self.assertEqual(handed, [])
+        self.assertIsNone(self.bus.read_inbox("dg-1"))
+
+    def test_owner_picks_multiple_nodes_can_apply_without_evicting(self):
+        # first-come と違い、応募段階では他ノードの bid を奪わない（両方の応募が残る）。
+        d = self._post("dg-1", workspace={"url": "git@h:team/app.git"},
+                       policy={"assignment": "owner-picks"})
+        kf.poll_board(self.bus, self._args(), "pc-a")
+        bus_b = kf.Bus(os.path.join(self.tmp, "localbus-b"), "_")
+        kf.poll_board(bus_b, self._args(), "pc-b")
+        self.assertTrue(os.path.exists(os.path.join(d, "bids", "pc-a.json")))
+        self.assertTrue(os.path.exists(os.path.join(d, "bids", "pc-b.json")))
+
+    def test_dispatched_lease_renewed_when_near_expiry(self):
+        # 長時間 run が board_lease を超えても勝者を保つには、残りが半分未満のときに延長する。
+        d = self._post("dg-1", workspace={"url": "git@h:team/app.git"})
+        args = self._args(board_lease=1000.0)
+        kf.poll_board(self.bus, args, "pc-a")   # 落札→dispatch
+        board = kf._board_bus(self.board, "pc-a", args)
+        bid_path = os.path.join(d, "bids", "pc-a.json")
+        status_path = os.path.join(d, "status", "pc-a.json")
+        orig_ts = json.load(open(bid_path))["ts"]
+        bid = json.load(open(bid_path))
+        bid["lease_until"] = time.time() + 10   # 残りわずか（lease=1000 の半分よりずっと少ない）
+        with open(bid_path, "w") as f:
+            json.dump(bid, f)
+        kf._renew_dispatched_leases(board, "pc-a", 1000.0)
+        renewed = json.load(open(bid_path))
+        self.assertGreater(renewed["lease_until"], time.time() + 500)
+        self.assertEqual(renewed["ts"], orig_ts)   # タイブレークの根拠 ts は温存する
+        self.assertGreater(json.load(open(status_path))["lease_until"], time.time() + 500)
+
+    def test_dispatched_lease_not_renewed_when_still_fresh(self):
+        # まだ十分残っているうちは書き換えない（board への無駄な push/commit を避ける）。
+        d = self._post("dg-1", workspace={"url": "git@h:team/app.git"})
+        args = self._args(board_lease=1000.0)
+        kf.poll_board(self.bus, args, "pc-a")
+        board = kf._board_bus(self.board, "pc-a", args)
+        bid_path = os.path.join(d, "bids", "pc-a.json")
+        before = json.load(open(bid_path))["lease_until"]
+        kf._renew_dispatched_leases(board, "pc-a", 1000.0)
+        after = json.load(open(bid_path))["lease_until"]
+        self.assertEqual(before, after)
+
+    def test_lease_renewal_keeps_winner_across_dispatcher_polls(self):
+        # 実運用に近い経路: poll_board 自体が毎巡 _renew_dispatched_leases を呼ぶので、
+        # 短い lease でも自分が生きている限り再入札を経ずに勝者であり続ける。
+        d = self._post("dg-1", workspace={"url": "git@h:team/app.git"})
+        args = self._args(board_lease=20.0)
+        kf.poll_board(self.bus, args, "pc-a")
+        bid_path = os.path.join(d, "bids", "pc-a.json")
+        bid = json.load(open(bid_path))
+        bid["lease_until"] = time.time() + 1   # ほぼ失効寸前まで経過したことにする
+        with open(bid_path, "w") as f:
+            json.dump(bid, f)
+        # 次の poll（自分自身）: dg-1 は既に inbox にあるので再取り込みはしないが、延長は起こる
+        kf.poll_board(self.bus, args, "pc-a")
+        self.assertGreater(json.load(open(bid_path))["lease_until"], time.time() + 15)
+        # 延長が効いているので、この時点で他ノードは勝者になれない
+        board_b = kf._board_bus(self.board, "pc-b", self._args(board_lease=20.0))
+        self.assertEqual(board_b._winner_in(os.path.join(d, "bids")), "pc-a")
+
     def test_report_results_writes_result_on_terminal_run(self):
         d = self._post("dg-1", workspace={"url": "git@h:team/app.git"})
         args = self._args()

@@ -150,6 +150,14 @@ lease: 1800                # claim のリース秒数。実タスク時間より
 # workload=flow の公示に board_repos/board_tags で照合して入札し、勝てば自分の inbox へ取り込む
 # （＝既存の inbox→orchestrator フローがそのまま拾う）。板は「リポジトリ＋契約」だけで処理を
 # 持たない（schemas/board.schema.json）。省略で無効。
+#
+# ★board 参加ノードは node_id を固定することを強く推奨する。既定（daemon --node-id 未指定）は
+# host-pid で、daemon 再起動のたび ID が変わる。board の成果報告は自分名義の
+# delegations/<id>/status/<node_id>.json を目印に「自分が落札した委譲」を見つけるため、
+# ID が変わると落札済み委譲の完了検知ができなくなり（result.json が書かれず）、依頼側
+# （agent-project 等）が結果待ちのまま止まる。CLI --node-id でも指定できるが、
+# ここに書けば daemon 再起動のたびに引数を揃える必要がない。
+# node_id: pc-a
 # board: git+ssh://git@gitea.local/team/agent-board.git
 # board_branch: main
 # board_workdir: ~/.agents/flow-board/mirror   # git+ 板のクローン作業領域（既定は自動）

@@ -177,8 +177,10 @@ def task_to_delegation(task: "Task", spec: "dict | None", workload: str = "flow"
     goal は request（build_request の全文。省略時は task.title）をそのまま使う——ローカル run /
     daemon submit と同じ文脈（charter・rules・decisions・run ブリーフ等）を board 経由でも
     欠かさない（自動配線が location を board に振り替えても、実行者が受け取る指示は変わらない）。
-    workspace の repo 名を requires.repos に載せる＝そのリポジトリを担当する board ノードだけが
-    入札する（成果物リポジトリに応じたノード選別）。"""
+    workspace.url がそのまま「そのリポジトリを担当する board ノードだけが入札する」選別条件になる
+    （board_eligible は workspace.url を URL 正規化で突き合わせる。requires.repos は追加しない —
+    spec["name"] は依頼側のローカルなルーティング名で、請負側ノードが同じリポジトリを別名で
+    宣言しているとURL一致でも入札不能になる誤検出を生むため）。"""
     did = delegation_id or _deleg_id_from_task(task.id)
     goal = request if request else (task.title or task.id)
     env: dict = {
@@ -196,8 +198,6 @@ def task_to_delegation(task: "Task", spec: "dict | None", workload: str = "flow"
             if spec.get(k):
                 ws[k] = spec[k]
         env["workspace"] = ws
-        if spec.get("name"):
-            env["requires"] = {"repos": [spec["name"]]}
     if references:
         refs = []
         for r in references:

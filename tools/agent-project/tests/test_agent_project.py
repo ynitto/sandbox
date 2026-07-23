@@ -121,8 +121,10 @@ class TestBoardOffload(unittest.TestCase):
         self.assertEqual(env["design"], "詳細な指示")
         self.assertEqual(env["workspace"], {"url": "git@h:team/app.git", "base": "main",
                                             "path": "apps/api"})
-        # workspace の repo 名を requires.repos に載せる（担当ノードだけが入札する）
-        self.assertEqual(env["requires"], {"repos": ["app"]})
+        # requires.repos は載せない: workspace.url が URL 正規化で担当ノードを選別する
+        # （spec["name"] は依頼側ローカルなルーティング名なので、請負側が同じリポジトリを
+        # 別名で宣言しているとURL一致でも入札不能になる誤検出を生むため）
+        self.assertNotIn("requires", env)
 
     def test_write_board_post_idempotent(self):
         tmp = tempfile.mkdtemp(prefix="ap-board-")
