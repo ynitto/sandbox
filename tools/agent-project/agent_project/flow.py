@@ -317,6 +317,11 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
     drainer = threading.Thread(target=_drain, daemon=True)
     drainer.start()
     deadline = (time.time() + cfg.act_timeout) if cfg.act_timeout > 0 else None
+    # 同期 run は agent-project のループを塞ぐため、従来は run 完了まで state_git が push
+    # されず、別 PC の dashboard/engine が bus/runs の graph・claims・results を見られなかった。
+    # 待機中も state_git_interval ごとに best-effort 同期して、同期 run のままでも分担/監視できる
+    # 回避路を作る（force しないのでリモート負荷は既存 interval に従う）。
+    next_progress_sync = 0.0
     try:
         while True:
             rc = proc.poll()
@@ -339,7 +344,16 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
                 # 刈り残した orch/worker は daemon を残して止める（外部 daemon 全滅を避ける）
                 reap_orphan_flow(cfg, include_daemon=False)
                 return (False, f"daemon run {rid} の結果待ちを中断（{why} を検知）")
-            if deadline is not None and time.time() >= deadline:
+            now = time.time()
+            if now >= next_progress_sync:
+                sync = globals().get("state_sync")
+                if sync is not None:
+                    try:
+                        sync(cfg, force=False)
+                    except Exception:  # noqa: BLE001 - state_sync 自体も best-effort。run は止めない。
+                        pass
+                next_progress_sync = now + max(1.0, float(getattr(cfg, "state_git_interval", 300.0) or 300.0))
+            if deadline is not None and now >= deadline:
                 try:
                     proc.terminate()
                     proc.wait(timeout=5)
