@@ -65,10 +65,17 @@ CONFIG_DEFAULTS = {
     "node_id": None,
     "agent_cli": None,
     "tags": [],
+    "repos": {},             # 担当リポジトリ（repos.schema.json 形）。ロール requires.repos の選別に使う
     "roles": [],             # 応募するロールの絞り込み（空 = 全ロール）
     "interval": 5.0,
     "resume_hours": 12.0,
     "manual_claim": False,   # true: 自動応募しない（commands/ 経由の手動引き受けのみ）
+    # 委譲公示板（agent-board）への参加（請負・入札）。board を与えると daemon が板を巡回し、
+    # workload=amigos の公示に repos/tags 照合で入札、勝てばオーナーとしてミッションを公示する。
+    # 板は「リポジトリ＋契約」だけで処理を持たない（schemas/board.schema.json）。既定 None で無効。
+    "board": None,           # 板の場所（ローカル dir / git+<url>）
+    "board_workdir": None,   # git+ 板のクローン作業領域（既定は自動）
+    "board_lease": 900.0,    # 板入札の lease（秒）
     "hub_serve": False,      # true: このホームのバスを hub として公開する（cwd を hub に）
     "hub_host": "0.0.0.0",
     "hub_port": 8765,
@@ -144,6 +151,7 @@ def load_settings(explicit: "str | None" = None, cwd: "str | None" = None) -> di
         out[key] = flat.get(key, dflt)
     out["tags"] = [str(t) for t in (out["tags"] or [])]
     out["roles"] = [str(r) for r in (out["roles"] or [])]
+    out["repos"] = out["repos"] if isinstance(out["repos"], (dict, list)) else {}
     out["_config_path"] = path
     out["_home"] = _resolve_home(path, cwd)
     return out

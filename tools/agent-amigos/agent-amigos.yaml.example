@@ -16,9 +16,20 @@ node_id: my-node          # 既定: ~/.agents/amigos/node.json に自動採番
 agent_cli: claude         # このノードの既定 agent CLI（stub = LLM なしのプロトコル検証）
 tags: []                  # 能力タグ（ロール requires.tags とのマッチング）
 roles: []                 # 応募するロールの絞り込み（空 = 全ロール）
+# repos: 担当リポジトリ（repos.schema.json 形）。ロール requires.repos の選別に使う
+#        — 成果物リポジトリに応じて応募ノードを絞る（agent-board の node と同語彙）。
+# repos:
+#   app: { url: git@gitea.local:team/app.git, base: main, owns: [src/**] }
 interval: 5               # デーモン巡回間隔（秒。無風時は自動で最大 8 倍まで伸びる）
 resume_hours: 12          # graceful offboard 時の resume_at（away 保持の期待復帰時刻）
 manual_claim: false       # true: 自動応募しない（dashboard / commands の手動引き受けのみ）
+
+# 委譲公示板（agent-board）への参加（請負・入札）。board を与えると、デーモンが板を巡回して
+# workload=amigos の公示に repos/tags 照合で入札し、勝てばオーナーとしてミッションを公示する。
+# 板は「リポジトリ＋契約」だけで処理を持たない（schemas/board.schema.json）。省略で無効。
+# board: git+ssh://git@gitea.local/team/agent-board.git
+# board_workdir: ~/.agents/amigos-board/mirror   # git+ 板のクローン作業領域（既定は自動）
+# board_lease: 900         # 板入札の lease（秒）
 
 # cwd を hub として公開する（他ノードは hub+http://<host>:<port> で参加できる）。
 # hub は「所有者上書きのファイル置き場」で調整はしない。オンプレ限定。

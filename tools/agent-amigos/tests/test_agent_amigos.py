@@ -115,6 +115,118 @@ class NormalizeTests(unittest.TestCase):
         normalize_mission(base_spec(acceptance="agent"))
 
 
+class MatchesRoleTests(unittest.TestCase):
+    """ロール要件 requires.{tags,cli,repos} とノード能力のマッチング。"""
+
+    def test_tags_and_cli(self):
+        from agent_amigos.assign import matches_role
+        role = {"id": "impl", "requires": {"tags": ["python"], "cli": "codex"}}
+        self.assertTrue(matches_role(role, ["python"], ["codex"]))
+        self.assertFalse(matches_role(role, ["rust"], ["codex"]))
+        self.assertFalse(matches_role(role, ["python"], ["claude"]))
+
+    def test_requires_repos_by_name_and_url(self):
+        from agent_amigos.assign import matches_role
+        repos = {"app": {"url": "git@h:team/app.git", "owns": ["**"]},
+                 "docs": {"url": "git@h:team/docs.git", "readonly": True}}
+        role_name = {"id": "impl", "requires": {"repos": ["app"]}}
+        role_url = {"id": "impl", "requires": {"repos": ["git@h:team/app"]}}  # .git 揺れ
+        role_miss = {"id": "impl", "requires": {"repos": ["other"]}}
+        self.assertTrue(matches_role(role_name, [], [], repos))
+        self.assertTrue(matches_role(role_url, [], [], repos))
+        self.assertFalse(matches_role(role_miss, [], [], repos))
+        # repos 宣言が無いノードは requires.repos を満たせない
+        self.assertFalse(matches_role(role_name, [], [], None))
+        # requires.repos が無いロールは repos 宣言に関係なく通る
+        self.assertTrue(matches_role({"id": "r"}, [], [], None))
+
+
+class BoardParticipationTests(AmigosTestCase):
+    """委譲公示板（agent-board）への参加（請負・入札）。板 = リポジトリ＋契約で処理を持たず、
+    入札・引き渡し（＝オーナーとしてミッション公示）は amigos デーモンが担う。"""
+
+    def _board_post(self, board, did, workload="amigos", **kw):
+        d = os.path.join(board, "delegations", did)
+        os.makedirs(d, exist_ok=True)
+        rec = {"op": "post", "version": 1, "id": did, "workload": workload,
+               "goal": "g", "title": "T",
+               "engine": {"amigos": {"roles": [{"id": "architect", "required": True}]}}}
+        rec.update(kw)
+        with open(os.path.join(d, "post.json"), "w", encoding="utf-8") as f:
+            json.dump(rec, f, ensure_ascii=False)
+        return d
+
+    def test_win_and_post_mission(self):
+        from agent_amigos import board as B
+        boarddir = os.path.join(self.tmp, "board")
+        os.makedirs(os.path.join(boarddir, "delegations"), exist_ok=True)
+        d = self._board_post(boarddir, "dg-1", workspace={"url": "git@h:team/app.git"})
+        dm = self.daemon(node="pc-a", commands_home=self.tmp, board=boarddir,
+                         repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}})
+        handed = B.poll_board(dm)
+        self.assertEqual(handed, ["dg-1"])
+        # 落札ノードがオーナーとしてミッションを公示した
+        self.assertTrue(self.bus.mission("dg-1").exists())
+        self.assertTrue(os.path.exists(os.path.join(d, "bids", "pc-a.json")))
+        self.assertTrue(os.path.exists(os.path.join(d, "status", "pc-a.json")))
+
+    def test_report_results_writes_result_on_terminal_mission(self):
+        from agent_amigos import board as B
+        boarddir = os.path.join(self.tmp, "board")
+        os.makedirs(os.path.join(boarddir, "delegations"), exist_ok=True)
+        d = self._board_post(boarddir, "dg-1", workspace={"url": "git@h:team/app.git"})
+        dm = self.daemon(node="pc-a", commands_home=self.tmp, board=boarddir,
+                         repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}})
+        B.poll_board(dm)   # 落札→ミッション公示
+        mirror = B.BoardMirror(boarddir, "pc-a")
+        # 実行中はまだ result.json を書かない
+        self.assertEqual(B.report_board_results(dm, mirror), [])
+        self.assertFalse(os.path.exists(os.path.join(d, "result.json")))
+        # ミッションが done に達したら報告する
+        mp = self.bus.mission("dg-1")
+        write_json_atomic(mp.final(), {"accepted": True})
+        reported = B.report_board_results(dm, mirror)
+        self.assertEqual(reported, ["dg-1"])
+        res = json.load(open(os.path.join(d, "result.json"), encoding="utf-8"))
+        self.assertEqual(res["status"], "done")
+        self.assertEqual(res["winner"], "pc-a")
+        # 冪等: 二重報告しない
+        self.assertEqual(B.report_board_results(dm, mirror), [])
+
+    def test_report_results_cancelled_mission(self):
+        from agent_amigos import board as B
+        boarddir = os.path.join(self.tmp, "board")
+        os.makedirs(os.path.join(boarddir, "delegations"), exist_ok=True)
+        d = self._board_post(boarddir, "dg-2", workspace={"url": "git@h:team/app.git"})
+        dm = self.daemon(node="pc-a", commands_home=self.tmp, board=boarddir,
+                         repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}})
+        B.poll_board(dm)
+        mirror = B.BoardMirror(boarddir, "pc-a")
+        mp = self.bus.mission("dg-2")
+        write_json_atomic(mp.cancelled(), {"ts": "2026-01-01T00:00:00Z"})
+        reported = B.report_board_results(dm, mirror)
+        self.assertEqual(reported, ["dg-2"])
+        res = json.load(open(os.path.join(d, "result.json"), encoding="utf-8"))
+        self.assertEqual(res["status"], "cancelled")
+
+    def test_ineligible_repo_and_wrong_workload(self):
+        from agent_amigos import board as B
+        boarddir = os.path.join(self.tmp, "board")
+        os.makedirs(os.path.join(boarddir, "delegations"), exist_ok=True)
+        self._board_post(boarddir, "dg-other", workspace={"url": "git@h:team/other.git"})
+        self._board_post(boarddir, "dg-flow", workload="flow",
+                         workspace={"url": "git@h:team/app.git"})
+        dm = self.daemon(node="pc-a", commands_home=self.tmp, board=boarddir,
+                         repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}})
+        self.assertEqual(B.poll_board(dm), [])   # 担当外・flow は対象外
+        self.assertFalse(self.bus.mission("dg-other").exists())
+
+    def test_no_board_is_noop(self):
+        from agent_amigos import board as B
+        dm = self.daemon(node="pc-a", commands_home=self.tmp)
+        self.assertEqual(B.poll_board(dm), [])
+
+
 class ClaimTests(AmigosTestCase):
     def test_deterministic_single_winner(self):
         mid = self.post()

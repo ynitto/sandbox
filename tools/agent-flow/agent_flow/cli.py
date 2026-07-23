@@ -22,6 +22,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--lock-dir", dest="lock_dir", default=None,
                    help="daemon singleton ロックの置き場（設定ファイル lock_dir と同義。"
                         "外部起動の daemon を別ツールから発見させるため起動側と一致させる）")
+    p.add_argument("--board", default=None,
+                   help="委譲公示板（agent-board）の場所（ローカル dir / git+<url>）。"
+                        "指定すると daemon が板を巡回し workload=flow の公示に入札して取り込む")
     p.add_argument("--state-git", dest="state_git", default=None,
                    help="ワーク内容（ローカルバスの runs/・inbox/）を保存・共有する git リポジトリ"
                         "（URL/パス）。リモートの agent-dashboard が進捗/結果を読める"
@@ -123,6 +126,8 @@ def build_parser() -> argparse.ArgumentParser:
     orch.add_argument("--poll", type=float, default=None)
     orch.add_argument("--inherit-from", dest="inherit_from", default=None,
                       help="リトライ: 先行 run-id から確定済みノードを引き継ぎ先行 run を掃除する")
+    orch.add_argument("--delegation", default=None,
+                      help="委譲公示板（agent-board）由来の来歴 JSON（{id, board}）を run meta へ記録する")
     orch.set_defaults(func=cmd_orchestrate)
 
     work = sub.add_parser("work", help="ワーカー役")
@@ -175,6 +180,8 @@ def build_parser() -> argparse.ArgumentParser:
     sb.add_argument("--inherit-from", dest="inherit_from", default=None,
                     help="リトライ: 先行 run-id から確定済みノードを引き継ぎ先行 run を掃除する"
                          "（daemon の orchestrate に伝搬される）")
+    sb.add_argument("--delegation", default=None,
+                    help="委譲公示板（agent-board）由来の来歴 JSON（{id, board}）。inbox 要求に載る")
     sb.set_defaults(func=cmd_submit)
 
     cn = sub.add_parser("cancel",

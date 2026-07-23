@@ -11,10 +11,17 @@ def cmd_submit(args) -> int:
     # 終了時に削除され、SIGKILL 残骸も daemon の cleanup が回収する）。
     bus = make_bus(args, f"submitter-{os.getpid()}")
     bus.sync_pull()
+    _deleg = getattr(args, "delegation", None)
+    if _deleg:
+        try:
+            _deleg = json.loads(_deleg)
+        except (ValueError, TypeError):
+            _deleg = None
     bus.submit_request(req_id, args.request, f"{socket.gethostname()}-{os.getpid()}",
                        workspace=parse_workspace(getattr(args, "workspace", None)),
                        references=parse_references(getattr(args, "references", None)),
-                       inherit_from=getattr(args, "inherit_from", None))
+                       inherit_from=getattr(args, "inherit_from", None),
+                       delegation=_deleg if isinstance(_deleg, dict) else None)
     bus.sync_push(f"submit request {req_id}")
     print(req_id)  # run-id を標準出力（スクリプトから拾える）
     print(f">>> 要求を投入しました: {req_id}（デーモンが拾います）", file=sys.stderr)

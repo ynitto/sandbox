@@ -117,6 +117,18 @@ class Bus:
         meta["executor"] = ex
         write_json_atomic(self.meta_path, meta)
 
+    def note_delegation(self, delegation: "dict | None") -> None:
+        """この run の来歴（委譲公示板 = agent-board 由来なら delegation id）を meta に記録する（冪等）。
+        board が inbox/<id>.json に載せた delegation:{id, board} を run meta へ引き回し、
+        viewer / status が「板の委譲 <id> 由来」と表示できるようにする（additive・未知でも無害）。"""
+        if not isinstance(delegation, dict) or not delegation.get("id"):
+            return
+        meta = read_json(self.meta_path) or {}
+        if meta.get("delegation") == delegation:
+            return
+        meta["delegation"] = delegation
+        write_json_atomic(self.meta_path, meta)
+
     def get_status(self):
         meta = read_json(self.meta_path)
         return meta.get("status") if meta else None
@@ -883,7 +895,8 @@ class Bus:
     def submit_request(self, req_id: str, request: str, submitter: str,
                        workspace: "dict | None" = None,
                        references: "list[dict] | None" = None,
-                       inherit_from: "str | None" = None) -> None:
+                       inherit_from: "str | None" = None,
+                       delegation: "dict | None" = None) -> None:
         rec = {
             "id": req_id,
             "request": request,
@@ -894,6 +907,9 @@ class Bus:
         }
         if inherit_from:                      # リトライ: 先行 run の引き継ぎ元を orchestrate へ伝搬
             rec["inherit_from"] = inherit_from
+        if isinstance(delegation, dict) and delegation.get("id"):
+            # 委譲公示板（agent-board）由来の来歴。daemon の orchestrate が run meta へ引き回す
+            rec["delegation"] = delegation
         write_json_atomic(os.path.join(self.inbox_dir, f"{req_id}.json"), rec)
 
     def list_inbox(self):

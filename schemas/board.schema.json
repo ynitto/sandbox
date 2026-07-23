@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "board.schema.json",
+  "title": "委譲公示板（agent-board）— 依頼の公示・入札・成果一本化のバス契約",
+  "description": "専用リポジトリ（またはローカル dir / hub）に置く『委譲公示板』のファイルレイアウト契約。エンジン（agent-flow / agent-amigos）非依存の一段下の層で、依頼を『どのノードが引き受けるか』と『成果がどれか』だけを管理する。公示本体（post.json）は delegation.schema.json の op=post 封筒そのまま。入札は agent-flow / agent-amigos と同一仕様の名前空間付き claim ＋ (ts, who) 決定的タイブレーク（『同じ仕様・別実装』）。真実は板の上のファイルにあり、中央（forge / hub）は転送のみ。書き込み所有権はパス単位で分割し git でもコンフリクトしない。検証は agent-board の stdlib パーサが行い、本スキーマは契約の文書化とテスト突き合わせに使う。正典設計: docs/plans/2026-07-23-delegation-board-distributed-bidding-design.md。結合は本契約のみ（agent-board は agent-flow / agent-amigos のコードを import しない — 引き渡しは各エンジンの入力契約＝flow inbox / amigos-command をファイルとして書く）。",
+  "type": "object",
+  "$defs": {
+    "node": {
+      "type": "object",
+      "description": "板上の nodes/<node-id>.json — 参加ノードの登録・能力宣言（各ノードが自分名義のファイルだけ書く）。入札資格の突き合わせ（delegation post の requires / workspace.url）に使う。",
+      "required": ["node"],
+      "properties": {
+        "node": {"type": "string", "description": "ノード id（who）。板全体で一意"},
+        "workloads": {
+          "type": "array",
+          "items": {"enum": ["flow", "amigos"]},
+          "description": "受けられるエンジン。空 = 全部。公示の workload がこれに含まれないと入札しない"
+        },
+        "tags": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "能力タグ（delegation requires.tags との突き合わせ）"
+        },
+        "agent_cli": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "このノードで使える agent CLI（delegation requires.agent_cli との突き合わせ・OR）"
+        },
+        "repos": {
+          "$ref": "repos.schema.json",
+          "description": "担当リポジトリのレジストリ（repos.schema.json そのまま）。公示の workspace.url / requires.repos を (url, path, base) identity で照合し、担当していれば入札対象。readonly エントリは書込先候補にしない"
+        },
+        "availability": {
+          "type": "string",
+          "description": "可用性ウィンドウ（例 '09:00-21:00 Asia/Tokyo'）。amigos の away 宣言と同語彙。任意"
+        },
+        "max_concurrent": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "同時に落札・実行してよい委譲数の上限（0/省略 = 無制限）。超過時は新規入札を控える"
+        },
+        "heartbeat": {"type": "string", "description": "最終更新時刻（ISO8601 UTC）。デーモンがサイクルごとに更新"},
+        "fresh_after_sec": {"type": "number", "description": "この秒数を超えて heartbeat が途絶えたらノード不在とみなす（読む側の生死判定。state_git status.json と同じ流儀）"}
+      },
+      "additionalProperties": true
+    },
+    "bid": {
+      "type": "object",
+      "description": "板上の delegations/<id>/bids/<who>.json — 入札（名前空間付き claim）。ファイル名＝自分なので git で衝突しない。勝者は有効（lease 内）な入札のうち (ts, who) 最小の 1 件に決定的に定まる（agent-flow / agent-amigos の claim と同一規則）。",
+      "required": ["who", "ts", "lease_until"],
+      "properties": {
+        "who": {"type": "string", "description": "入札ノード id"},
+        "ts": {"type": "number", "description": "決定的タイブレークの根拠（プロセス横断で単調増加。(ts, who) 最小が勝者）"},
+        "claimed_at": {"type": "string", "description": "入札時刻（ISO8601 UTC）"},
+        "lease_until": {"type": "number", "description": "lease 期限（epoch 秒）。ハートビートで延長。失効した入札は勝者判定から外れる（孤児回収）"},
+        "agent_cli": {"type": "string", "description": "この委譲に使う予定の agent CLI（任意・表示用）"},
+        "workload": {"enum": ["flow", "amigos"], "description": "この入札で駆動する予定のエンジン（公示の workload と一致）"}
+      },
+      "additionalProperties": true
+    },
+    "award": {
+      "type": "object",
+      "description": "板上の delegations/<id>/award.json — owner-picks の落札確定（依頼者のみ書く）。first-come では書かれない（claim 勝者＝落札）。",
+      "required": ["node"],
+      "properties": {
+        "node": {"type": "string", "description": "落札ノード id"},
+        "awarded_by": {"type": "string", "description": "落札を決めた依頼者ノード id"},
+        "awarded_at": {"type": "string", "description": "落札時刻（ISO8601 UTC）"}
+      },
+      "additionalProperties": true
+    },
+    "status": {
+      "type": "object",
+      "description": "板上の delegations/<id>/status/<who>.json — 実行ノードの状態＋ハートビート（実行ノードが自分名義のみ書く）。落札後にエンジン側の状態（flow meta.json / amigos derive_phase）を delegation_view のフェーズへ正規化して転記する。",
+      "required": ["who"],
+      "properties": {
+        "who": {"type": "string", "description": "実行ノード id"},
+        "state": {
+          "enum": ["dispatched", "working", "waiting", "reviewing", "done", "failed", "away"],
+          "description": "正規化状態。dispatched = 引き渡し済み・エンジン未起動 / away = 計画停止中（amigos away）"
+        },
+        "native_id": {"type": "string", "description": "エンジン側 id（通常は委譲 id と同一 — D1）。突き合わせの正はこちら"},
+        "phase": {"type": "string", "description": "delegation_view のフェーズ（open/working/waiting/reviewing/done/failed/cancelled）"},
+        "heartbeat": {"type": "string", "description": "最終更新時刻（ISO8601 UTC）"},
+        "lease_until": {"type": "number", "description": "実行 lease（epoch 秒）。失効＝クラッシュ検知で再入札可能に戻す"},
+        "resume_at": {"type": "string", "description": "away のときの期待復帰時刻（amigos away プロトコル流用）"}
+      },
+      "additionalProperties": true
+    },
+    "result_report": {
+      "type": "object",
+      "description": "板上の delegations/<id>/results/<who>.json — 実行ノードの成果報告（自分名義のみ）。投機同時実行（speculation）では複数ノードが名義分割で報告する。一本化前の候補。",
+      "required": ["who", "status"],
+      "properties": {
+        "who": {"type": "string", "description": "報告ノード id"},
+        "status": {"enum": ["done", "failed"], "description": "エンジンの終端状態"},
+        "native_id": {"type": "string", "description": "エンジン側 id"},
+        "completed_ts": {"type": "number", "description": "完了時刻（epoch 秒）。first-valid の (completed_ts, who) 最小採用の根拠"},
+        "verified": {"type": "boolean", "description": "受入コマンド（verify）が PASS したか（first-valid の資格）"},
+        "branch": {"type": "string", "description": "コード成果物の作業ブランチ（board/<id>/<who> 等）"},
+        "summary": {"type": "string", "description": "成果の要約（表示用）"}
+      },
+      "additionalProperties": true
+    },
+    "result": {
+      "type": "object",
+      "description": "板上の delegations/<id>/result.json — 一本化された確定成果（成果はこれ 1 つ）。書き手は 2 通り: (a) speculation 無し（既定・単一落札）— 落札ノード自身が自分の実行終端（done/failed/cancelled）を検知して直接書く（agent_flow/board.py・agent_amigos/board.py の report_results。依頼側 agent-project の自動回収先はこれ）。(b) speculation あり（複数ノード投機実行）— 依頼者が results/<who>.json を first-valid/owner-picks で一本化して書く。amigos の『done を作るのはオーナーの accept のみ』と同じ不変条件（確定点は常にこの 1 ファイル）。",
+      "required": ["winner", "resolved_at"],
+      "properties": {
+        "winner": {"type": "string", "description": "採用したノード id（speculation 無しでは自分自身。ありでは results/<winner>.json の報告が正）"},
+        "native_id": {"type": "string", "description": "採用した実行のエンジン側 id（flow run-id / amigos mission-id。通常は委譲 id と同一）"},
+        "status": {"enum": ["done", "failed", "cancelled"], "description": "終端状態。依頼側（agent-project 等）の自動回収はこれで成否を判定する（failed/cancelled は ok=False）"},
+        "resolve": {"enum": ["first-valid", "owner-picks"], "description": "一本化方式（delegation post の speculation.resolve）。speculation 無しでは省略可"},
+        "resolved_by": {"type": "string", "description": "この result.json を書いたノード id（speculation 無しでは落札ノード自身 / owner-picks は人・agent 受入）"},
+        "resolved_at": {"type": "string", "description": "確定時刻（ISO8601 UTC）"},
+        "accepted": {"type": "boolean", "description": "受入まで含めて確定したか（acceptance: manual/agent）"},
+        "branch": {"type": "string", "description": "採用成果の作業ブランチ（コード成果物）"},
+        "delivery": {"type": "string", "description": "納品棚への搬出先（delivery.schema.json）。amigos 経路のときのみ"}
+      },
+      "additionalProperties": true
+    },
+    "cancelled": {
+      "type": "object",
+      "description": "板上の delegations/<id>/cancelled.json — 中止マーカー（依頼者のみ）。以後の入札・実行を止める終端。",
+      "required": ["cancelled_at"],
+      "properties": {
+        "reason": {"type": "string"},
+        "cancelled_by": {"type": "string"},
+        "cancelled_at": {"type": "string"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

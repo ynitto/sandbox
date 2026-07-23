@@ -9,6 +9,10 @@
 module.exports = {
   delegation: {
     flowBusDirs: [],
+    // boardRepos … 委譲公示板（agent-board）のリポジトリ作業ディレクトリ。ここへ post/award/cancel を
+    //   ファイルとして投函し、一覧（delegation:list）でも走査する。落札→引き渡しは各ノードの
+    //   board デーモンが担う（dashboard は板へファイルを書くだけ・git 同期はしない）。
+    boardRepos: [],
     refreshSec: 15,
   },
 };

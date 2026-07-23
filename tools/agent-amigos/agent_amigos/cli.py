@@ -185,12 +185,13 @@ def cmd_build_team(args) -> int:
 
 def cmd_join(args) -> int:
     bus, node = _resolve(args)
+    settings = load_settings(args.config)
     roles_filter = [r for r in (args.roles or "").split(",") if r]
-    tags = [t for t in (args.tags or "").split(",") if t]
+    tags = [t for t in (args.tags or "").split(",") if t] or settings["tags"]
     NodeDaemon(bus, node, agent_cli=args.agent_cli, tags=tags,
                roles_filter=roles_filter, interval=args.interval,
                resume_hours=args.resume_hours,
-               home=_node_home(args)).run(cycles=args.cycles)
+               home=_node_home(args), repos=settings.get("repos")).run(cycles=args.cycles)
     return 0
 
 
@@ -239,6 +240,10 @@ def cmd_serve(args) -> int:
                       else float(settings["resume_hours"])),
         manual_claim=manual,
         commands_home=home,
+        repos=settings.get("repos"),
+        board=(getattr(args, "board", None) or settings.get("board")),
+        board_workdir=settings.get("board_workdir"),
+        board_lease=float(settings.get("board_lease") or 900.0),
     )
     try:
         daemon.run(cycles=args.cycles)
@@ -568,6 +573,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="バスを hub として公開する（設定 hub.serve を上書き）")
     p.add_argument("--manual-claim", action=argparse.BooleanOptionalAction, default=None,
                    help="自動応募しない（commands/ 経由の手動引き受けのみ。設定 manual_claim を上書き）")
+    p.add_argument("--board", default=None,
+                   help="委譲公示板（agent-board）の場所（ローカル dir / git+<url>）。"
+                        "指定すると板を巡回し workload=amigos の公示に入札してオーナー公示する")
     p.set_defaults(fn=cmd_serve)
 
     p = sub.add_parser("init-bus", help="バスを初期化する")

@@ -46,6 +46,7 @@ _FRAGMENTS = (
     "plan",        # repo-map / plan・review / spec 展開
     "gitcache",    # 共有 git キャッシュ + worktree
     "project",     # acceptance / milestone / finalize / cmd_project
+    "board",       # 委譲公示板（agent-board）へのタスク委譲
     "configfile",  # 設定ファイル解決 / build_config / _add_common
     "update",      # 自動アップデート
     "cli",         # main / サブコマンドのディスパッチ

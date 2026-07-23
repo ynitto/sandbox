@@ -171,8 +171,8 @@ def _escalate(cfg, task, reason, reasons, cycle, evidence: str = ""):
 #   （workdir/決定記録の競合を避け、不変条件をそのまま守る）。local act は逐次（並列化しない）。
 # ---------------------------------------------------------------------------
 def _submit_bound(location: str, cfg: "Config") -> bool:
-    """その location が daemon/remote への submit（=隔離ワーカ実行）になるか。local 実行なら False。"""
-    if location == "remote":
+    """その location が daemon/remote/board への submit（=隔離ワーカ実行）になるか。local 実行なら False。"""
+    if location in ("remote", "board"):
         return True
     if location == "daemon":
         return daemon_running(cfg, use_git=False)

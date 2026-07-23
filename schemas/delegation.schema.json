@@ -96,6 +96,46 @@
           "default": "normal",
           "description": "flow: gitlab executor の priority:* ラベル / amigos: 未解釈（将来 additive）"
         },
+        "requires": {
+          "type": "object",
+          "description": "入札資格（すべて任意・AND）。委譲公示板（agent-board）だけが解釈する additive ブロック — 直接 flow/amigos へ投函する経路（dashboard IPC v1）では無視される。ノードは自分の能力宣言（board.schema.json の node）と突き合わせ、すべて満たすときだけ入札する。省略時は workspace.url が事実上のリポジトリ資格になる。設計: docs/plans/2026-07-23-delegation-board-distributed-bidding-design.md §4.3・§5.1",
+          "properties": {
+            "tags": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "必要な能力タグ（amigos の node.yaml / roles requires.tags と同じ語彙）。ノードの tags が全て含むこと"
+            },
+            "agent_cli": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "使える agent CLI のいずれかをノードが持つこと（OR）。省略 = 不問"
+            },
+            "repos": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "担当が必要なリポジトリ（url または repos レジストリの repo 名）。ノードの repos 宣言（repos.schema.json）に (url, path, base) identity で存在すること。省略時は workspace.url を暗黙の資格とする"
+            }
+          },
+          "additionalProperties": true
+        },
+        "speculation": {
+          "type": "object",
+          "description": "投機同時実行（委譲公示板だけが解釈する additive ブロック）。省略 = off（勝者 1 ノードのみ実行）。複数ノードの並行実行を許し、成果を決定的に 1 つへ一本化する。設計 §7",
+          "properties": {
+            "max_runners": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1,
+              "description": "同時に実行してよいノード数（入札順位 1..N。1 = 投機なし）"
+            },
+            "resolve": {
+              "enum": ["first-valid", "owner-picks"],
+              "default": "first-valid",
+              "description": "一本化方式。first-valid = verify PASS 報告の (completed_ts, who) 最小を採用（決定的）/ owner-picks = 依頼者が result.json を書いて選ぶ"
+            }
+          },
+          "additionalProperties": true
+        },
         "requested_by": {
           "type": "string",
           "description": "出自（dashboard / human:<name> / スキル名）。flow: submit_request.submitter / amigos: 監査用"

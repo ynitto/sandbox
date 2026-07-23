@@ -224,6 +224,12 @@ def cmd_orchestrate(args) -> int:
     bus.ensure_run(args.request, parse_workspace(getattr(args, "workspace", None)),
                    parse_references(getattr(args, "references", None)))
     bus.note_executor(getattr(args, "executor", None) or "agent")   # viewer の表示切替用
+    _deleg_raw = getattr(args, "delegation", None)                  # 委譲公示板由来の来歴（board）
+    if _deleg_raw:
+        try:
+            bus.note_delegation(json.loads(_deleg_raw))
+        except (ValueError, TypeError):
+            pass
     # グローバル指示（agent-instructions）を投入ノードの instructions.json から meta へ固定する。
     # GitBus 同期で委譲先ワーカーへ伝播する（run 単位の一貫性基準）。--no-global-instructions /
     # 環境変数 AGENT_FLOW_NO_GLOBAL_INSTRUCTIONS=1 で無効化。

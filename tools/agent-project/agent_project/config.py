@@ -94,7 +94,14 @@ class Config:
     # エージェント委譲で推定（charter owns: と route: の決定論を先に適用）/ none=決定論のみ（推定しない）。
     route_planner: str = "agent"
     default_workspace: str = ""    # route で決まらないタスクの既定ワークスペース（charter の name/url）。空で無効
-    location: str = "auto"         # act の実行モード: auto / local / daemon / remote
+    location: str = "auto"         # act の実行モード: auto / local / daemon / remote / board
+    # 委譲公示板（agent-board）への依頼側自動配線（opt-in）。空文字で無効（従来どおり）。
+    # 設定すると `location: auto` は offload ポリシー一致タスクを板へ post し、入札・実行は
+    # 請負側（agent-flow / agent-amigos の board 参加デーモン）に委ねる。板は「リポジトリ＋契約」
+    # だけで agent-project はここへファイルを書く/読むだけ（結合はデータ契約のみ）。
+    board: str = ""                # 板の場所（ローカル dir / git+<url>）
+    board_workdir: "str | None" = None  # git+ 板のクローン作業領域（既定は自動）
+    board_workload: str = "flow"   # 板へ公示する workload（flow / amigos）
     executor: str = "agent"
     model: "str | None" = None
     agent_cli: str = "kiro"        # LLM 実行に使うエージェント CLI: kiro / claude / copilot / codex

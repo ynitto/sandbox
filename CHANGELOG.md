@@ -7,6 +7,84 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-project: 委譲公示板（agent-board）への依頼側自動配線 ＋ 請負側の成果報告を実装
+
+新 location `board`。`agent-project.yaml` に `board:`（板の場所。ローカル dir / `git+<url>`）を
+設定すると、`location: auto` は `policy.offload` 一致タスクを（remote より優先して）委譲公示板へ
+自動 post するようになる（`decide_location`・`agent_project/flow.py:_act_board`）。既存の
+非ブロッキング委譲（`_Pending`/`offloaded` ステータス）と同じ枠組みに乗せてあるため、結果は
+`_reap_offloaded` が板の `result.json` を1回ずつポーリングして回収し、done/failed/canceled の
+既存 settle 経路（canceled → retries を進めて再投函 等）へそのまま合流する。
+
+- **請負側の成果報告を新規実装**（自動配線の前提）: 従来 board 参加デーモン（agent-flow /
+  agent-amigos）は「入札→自分のエンジンへ引き渡し」までで、完了を板へ書き戻す処理が無かった。
+  依頼側の自動回収を機能させるため、`agent_flow/board.py` / `agent_amigos/board.py` に
+  `report_board_results` を追加: 落札ノードが自分の実行（flow run / amigos mission）の終端
+  （done/failed/cancelled）を検知し、板の `result.json` を直接書く（speculation 無し・単一落札の
+  簡略形。冪等・二重報告しない）。`board.schema.json` の `result` に `status` を明示追加。
+- **`agent_project/board.py` を git 対応の `BoardRepo` へ刷新**: 従来の手動 `board-offload` は
+  ローカル dir の板にしか投函できなかった（`git+<url>` 未対応）。プロセス間 flock で直列化した
+  git pull/push（間隔律速・rebase リトライ・force push 禁止・`main` ブランチ既定へのフォールバック）
+  を実装し、`git+` 板にも対応。`task_to_delegation` は `build_request` の全文を `goal` に使うよう
+  修正（従来は `task.title`/`desc` の簡易版で、charter/rules/decisions/run ブリーフ等が
+  board 経由だと欠落していた — local run / daemon submit と同じ文脈を維持する）。
+- `_submit_bound`（並列 submit 判定）・`batch.py` へ `board` を追加し、複数タスクの board 公示も
+  並行化できるようにした。
+- テスト: agent-project `TestBoardAutoWiring` 12 件（decide_location の優先順位・post→pending→
+  result 到着での確定・reap の done/failed/canceled 分岐・`git+` 板の実 push/pull 往復）、
+  agent-flow / agent-amigos に `report_board_results` のテストを追加。
+
+### agent-board: 委譲公示板（依頼の公示・入札・成果一本化の分散バックエンド）を新設
+
+契約 `schemas/board.schema.json` と、専用リポジトリ（＝板）の規約 `tools/agent-board/README.md`。
+**agent-board は実行プロセスを持たず、「リポジトリ＋契約」だけ**。エージェント処理の依頼を公示し、
+登録ノードの入札（先勝ち claim）で引き受け先を決める、エンジン非依存の一段下の層。**入札・引き渡しの
+処理は既存デーモン（agent-flow / agent-amigos）が担う**（新しいデーモン・サーバは増やさない）。
+真実は板のファイル・中央（forge）は転送のみ。結合はデータ契約のみ。正典設計:
+`docs/plans/2026-07-23-delegation-board-distributed-bidding-design.md`。
+
+- **板のレイアウト契約**: `nodes/<id>`（能力宣言）・`delegations/<id>/{post,bids,award,status,
+  results,result,cancelled}`。書き込み所有権をパス単位で分割し git でもコンフリクトしない。
+- **先勝ち入札 ＋ 決定的一本化**: agent-flow / agent-amigos と同一仕様の名前空間付き claim ＋
+  `(ts, who)` タイブレーク（同じ仕様・別実装）。2 ノードが同時入札しても落札は決定的に 1 ノード。
+  成果は `result.json` 1 つに一本化。
+
+### schemas: `board.schema.json` を新設し、`delegation.schema.json` に additive 拡張
+
+`delegation.schema.json` の post 封筒へ `requires`（入札資格 tags/agent_cli/repos）と
+`speculation`（投機同時実行）を additive で追加（委譲公示板の参加者だけが解釈・直接経路は無視）。
+`board.schema.json` は板のファイルレイアウト（node/bid/award/status/result_report/result/
+cancelled）を文書化。`schemas/README.md` に board 行を追加。
+
+### agent-flow: 委譲公示板への参加（請負・入札）と来歴の引き回し
+
+設定 `board:`（CLI `--board`）を与えると、daemon が板を巡回して `workload=flow` の公示に
+`board_repos` / `board_tags` で照合して入札（flow の claim をそのまま流用）、勝てば自分の
+`inbox/<id>.json` へ取り込む（＝既存の inbox→orchestrator フローがそのまま拾う）。`agent_flow/board.py`。
+取り込んだ run の `meta.json` には来歴 `delegation:{id, board}` が残る（`submit_request` /
+`submit --delegation` / `note_delegation`・additive）。
+
+### agent-amigos: 委譲公示板への参加（請負・入札）と `repos` 能力宣言
+
+設定 `board:`（CLI `--board`）を与えると、daemon が板を巡回して `workload=amigos` の公示に
+repos/tags 照合で入札し、勝てば**オーナーとしてミッションを公示**する（`agent_amigos/board.py`）。
+あわせて `agent-amigos.yaml` の `repos:`（`repos.schema.json` 形）を能力宣言に追加し、`matches_role`
+がロールの `requires.repos` とノードの担当リポジトリを名前 / URL（`.git`・末尾スラッシュの揺れを
+吸収）で突き合わせる。成果物リポジトリに応じて応募ノードを絞れる。
+
+### agent-project: `board-offload` — バックログのタスクを委譲公示板へ委譲
+
+`agent-project board-offload <task-id> --board <repo>`。ルーティング（`resolve_workspace`）で
+workspace を確定したうえで、タスクを `delegation.schema.json` の post 封筒へ変換して板へ投函する
+（workspace の repo 名を `requires.repos` に載せ、担当ノードだけが入札する）。
+
+### agent-dashboard: 委譲タブに公示板（board）ターゲットを追加
+
+`src/features/delegation/main/board-adapter.js` を新設し、`target: 'board'` の post/award/cancel を
+板リポジトリへファイル投函、板のファイルだけから正規化ビュー（入札の勝者判定・フェーズ・成果）を
+導出。`delegation.boardRepos` を横断一覧に含める。契約コアは `requires` / `speculation` を保持。
+テスト `test/delegation-board.test.js`。
+
 ### agent-dashboard: 検収の成果物 diff を最新化（fetch + origin/<branch>）し、done run が無くても成果を確認できるように
 
 `src/base/main/git.js`（`diffRange`）・`src/base/main/ipc.js`・`src/renderer/sections/needs.js`。

@@ -222,12 +222,19 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
     deltas（settled/archived/spawned/tokens/cost）を返す。"""
     settled = archived = spawned = tokens = 0
     cost = 0.0
+    _board = None   # 遅延・使い回し（board-loc の offloaded がある回だけ 1 回だけ構築・pull する）
     for task in [t for t in tasks if t.norm_status() == "offloaded"]:
         run_id = str(task.get("flow_run", "") or "")
         loc = str(task.get("flow_loc", "daemon") or "daemon")
         if not run_id:
             continue
-        term, ok, msg = _flow_result_once(cfg, loc == "remote", run_id)
+        if loc == "board":
+            if _board is None:
+                _board = BoardRepo(cfg.board, workdir=cfg.board_workdir)
+                _board.sync_pull()
+            term, ok, msg = _board_result_once(_board, run_id)
+        else:
+            term, ok, msg = _flow_result_once(cfg, loc == "remote", run_id)
         if not term:
             if msg.startswith("error:"):
                 # 結果の取得自体が失敗（CLI 不在・バス破損・出力化け等）。これを「まだ実行中」と
