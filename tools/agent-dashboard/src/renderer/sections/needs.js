@@ -1532,9 +1532,9 @@ function bindReviewComments(root) {
   }
 }
 
-// タスクの誘導・レビュー記述（why/desc/scope 等の GUIDE_KEYS）を「作業内容」セクションとして出す。
+// タスクの誘導・レビュー記述（GUIDE_KEYS）を「作業内容」セクションとして出す。
 // 計画レビュー（plan-review）はタイトルと完了条件だけでは承認判断ができない——何をどう変えるかの
-// 概要（desc）・目的（why）・範囲（scope）がレビューの本体。plan-review では記述が無い場合も
+// 概要・目的・範囲がレビューの本体。plan-review では記述が無い場合も
 // セクションを出し、「情報が足りない」ことと補い方（タスク編集）を明示する（無言で薄いカードにしない）。
 // 他種別（blocked/review）では記述があるときだけ出す。⏎ は改行マーカー（1 行 = 1 フィールド規約）。
 function taskGuideHtml(task, kind) {
@@ -1554,8 +1554,8 @@ function taskGuideHtml(task, kind) {
   const body = rows.length
     ? `<dl class="task-guide">${rows.join('')}${verifyRow}</dl>`
     : `<p class="muted">作業内容の記述（概要・目的・範囲）がありません。タイトルと完了条件だけでは
-       レビュー判断が難しいため、下の「差し戻す」で記述を求めるか、バックログのタスク編集（修正）で
-       概要（desc）・目的（why）を追記してから承認することを推奨します。</p>${
+       レビュー判断が難しいため、下の「差し戻す」で記述を求めるか、バックログのタスク編集で
+       概要・目的を追記してから承認することを推奨します。</p>${
          verifyRow ? `<dl class="task-guide">${verifyRow}</dl>` : ''
        }`;
   return `<section class="need-task-guide"><h3>作業内容</h3>${body}</section>`;

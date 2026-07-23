@@ -545,13 +545,13 @@ function splitRequest(request) {
 // 意味論の正典は tools/agent-project/backlog.md.example。値は 1 行・改行は ⏎）
 const GUIDE_KEYS = ['why', 'desc', 'scope', 'out_of_scope', 'constraints', 'hints', 'demo'];
 const GUIDE_LABELS = {
-  why: '背景・目的（なぜやるか。実装判断とレビューの基準）',
-  desc: '作業内容の詳細（タイトルで足りない具体の指示）',
-  scope: '変更してよい範囲（この外は変更させない）',
-  out_of_scope: 'やらないこと（スコープ外・非目標）',
-  constraints: 'タスク固有の制約（守るべき規約・禁止事項）',
-  hints: '実装の手がかり（関連ファイル・参考実装）',
-  demo: '人の確認観点（検収で何をどう確かめるか）',
+  why: '目的・背景',
+  desc: '作業内容の詳細',
+  scope: '変更してよい範囲',
+  out_of_scope: 'やらないこと',
+  constraints: 'タスク固有の制約',
+  hints: '実装の手がかり',
+  demo: '人の確認観点',
 };
 
 const PROSE_EXTRA_KEYS = new Set(['feedback', 'needs_reason', 'note', 'accept', ...GUIDE_KEYS]);
