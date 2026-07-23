@@ -660,7 +660,12 @@ def _act_board(task: Task, cfg: "Config") -> "tuple":
 def _board_result_once(board: "BoardRepo", did: str) -> "tuple[bool, bool, str]":
     """board の result.json を1回だけ読む（待たない）。(terminal, ok, msg)。
     _flow_result_once と同じ契約: terminal=確定したか・ok=成功終端（done）か・
-    canceled/failed は ok=False（未終端は毎回 sync_pull 済みの呼び出し元が次パスで再確認）。"""
+    cancelled/failed は ok=False（未終端は毎回 sync_pull 済みの呼び出し元が次パスで再確認）。
+    cancelled は 2 経路ある: cancelled.json（入札前・依頼者の中止）と result.json の
+    status（実行中に人が中止。agent_flow/agent_amigos の report_board_results が
+    自エンジンの canceled/cancelled 終端をそのまま書き戻す）— どちらもメッセージを
+    "cancelled" で終える（_reap_offloaded の人中止判定 endswith と一致させる。
+    flow 側の "canceled"（米語）とは綴りが異なる点に注意——board 語彙は "cancelled"）。"""
     if board.is_cancelled(did):
         return (True, False, f"board delegation {did} cancelled")
     res = board.read_result(did)
@@ -669,6 +674,8 @@ def _board_result_once(board: "BoardRepo", did: str) -> "tuple[bool, bool, str]"
     status = str(res.get("status") or "done")
     if status == "failed":
         return (True, False, f"board delegation {did} failed（winner={res.get('winner', '?')}）")
+    if status == "cancelled":
+        return (True, False, f"board delegation {did}（winner={res.get('winner', '?')}）cancelled")
     return (True, True, f"board delegation {did} done（winner={res.get('winner', '?')}）")
 
 

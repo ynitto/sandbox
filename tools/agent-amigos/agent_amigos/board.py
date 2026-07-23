@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import subprocess
 import time
 
-from .assign import _declared_repos, _norm_repo_url
+from .assign import _norm_repo_url
 from .commands import _do_post
 from .mission import active_roles, derive_phase, load_mission, load_roles
 from .util import log, now_iso, read_json, write_json_atomic
@@ -52,8 +53,34 @@ class BoardMirror:
         return subprocess.run(["git", "-C", self.dir, *args],
                               capture_output=True, text=True, check=check)
 
+    _STALE_GIT_LOCKS = ("index.lock", "HEAD.lock", "config.lock", "shallow.lock",
+                       "packed-refs.lock")
+    _GIT_LOCK_STALE_SEC = 30.0
+
+    def _recover(self) -> None:
+        """メンテによるプロセス強制終了（電源断・kill）で中断された git 操作の残骸を掃除する。
+        放置すると以後の pull --rebase / commit が毎回同じエラーで失敗し続け、board 参加
+        （入札・落札引き渡し・成果報告）が恒久的に止まる（agent-flow の
+        GitBus._recover_reused_clone と同じ技法・別実装）。"""
+        gitdir = os.path.join(self.dir, ".git")
+        if not os.path.isdir(gitdir):
+            return
+        now = time.time()
+        for name in self._STALE_GIT_LOCKS:
+            p = os.path.join(gitdir, name)
+            try:
+                if os.path.isfile(p) and (now - os.path.getmtime(p)) > self._GIT_LOCK_STALE_SEC:
+                    os.remove(p)
+            except OSError:
+                pass
+        if any(os.path.isdir(os.path.join(gitdir, d)) for d in ("rebase-merge", "rebase-apply")):
+            self._git("rebase", "--abort", check=False)
+            for d in ("rebase-merge", "rebase-apply"):
+                shutil.rmtree(os.path.join(gitdir, d), ignore_errors=True)
+
     def _ensure_clone(self) -> None:
         if os.path.isdir(os.path.join(self.dir, ".git")):
+            self._recover()
             return
         os.makedirs(os.path.dirname(self.dir) or ".", exist_ok=True)
         r = subprocess.run(["git", "clone", "--branch", self.branch, self.remote, self.dir],
@@ -121,6 +148,26 @@ def _try_bid(mirror: BoardMirror, bids_dir: str, did: str, who: str, lease: floa
     return False
 
 
+def _board_declared_repos(node_repos) -> "set[str]":
+    """ノードの repos レジストリから板入札に使える（＝書込先候補になれる）担当リポジトリの
+    名前と正規化 URL の集合。板の契約（agent-board README「readonly は書込先候補にしない」）に
+    合わせ、`readonly: true` のエントリと `owns` の無いエントリは除く——通常のロール応募
+    （assign.py の requires.repos 照合。読み取り専用ロールが readonly 宣言と正当にマッチしうる）
+    とは選別基準が異なるため、共有の _declared_repos は使わず板専用にここで絞り込む
+    （agent_flow/board.py:_node_repo_ids と同じ仕様・別実装）。"""
+    have: "set[str]" = set()
+    if isinstance(node_repos, dict):
+        for name, e in node_repos.items():
+            if str(name).startswith("_") or not isinstance(e, dict):
+                continue
+            if e.get("readonly") or not e.get("owns"):
+                continue
+            have.add(str(name))
+            if e.get("url"):
+                have.add(_norm_repo_url(e["url"]))
+    return have
+
+
 def board_eligible(post: dict, node_repos, node_tags) -> bool:
     """公示に入札してよいか（成果物リポジトリ・タグでの選別）。
     workspace.url と requires.repos を担当し、requires.tags を包含していれば可。"""
@@ -128,7 +175,7 @@ def board_eligible(post: dict, node_repos, node_tags) -> bool:
     need_tags = set(str(t) for t in (req.get("tags") or []))
     if need_tags and not need_tags.issubset(set(node_tags or [])):
         return False
-    have = _declared_repos(node_repos)
+    have = _board_declared_repos(node_repos)
     ws = post.get("workspace") or {}
     if ws.get("url"):
         if str(ws.get("url")) not in have and _norm_repo_url(ws["url"]) not in have:

@@ -64,15 +64,43 @@ class BoardRepo:
         return subprocess.run(["git", "-C", self.dir, *args],
                               capture_output=True, text=True, check=check)
 
+    _STALE_GIT_LOCKS = ("index.lock", "HEAD.lock", "config.lock", "shallow.lock",
+                       "packed-refs.lock")
+    _GIT_LOCK_STALE_SEC = 30.0
+
+    def _recover(self) -> None:
+        """メンテによるプロセス強制終了（電源断・kill）で中断された git 操作の残骸を掃除する
+        （呼び出しは _locked() の中から）。flock 自体は保持プロセスの死亡で自動解放されるが、
+        git が .git 直下に残す index.lock 等・中断 rebase の残骸はそれとは別物で、放置すると
+        以後の pull --rebase / commit が毎回同じエラーで失敗し続け、board 同期が恒久的に
+        止まる（agent-flow の GitBus._recover_reused_clone と同じ技法・別実装）。"""
+        gitdir = os.path.join(self.dir, ".git")
+        if not os.path.isdir(gitdir):
+            return
+        now = time.time()
+        for name in self._STALE_GIT_LOCKS:
+            p = os.path.join(gitdir, name)
+            try:
+                if os.path.isfile(p) and (now - os.path.getmtime(p)) > self._GIT_LOCK_STALE_SEC:
+                    os.remove(p)
+            except OSError:
+                pass
+        if any(os.path.isdir(os.path.join(gitdir, d)) for d in ("rebase-merge", "rebase-apply")):
+            self._git("rebase", "--abort", check=False)
+            for d in ("rebase-merge", "rebase-apply"):
+                shutil.rmtree(os.path.join(gitdir, d), ignore_errors=True)
+
     def _ensure(self) -> None:
         """dir を用意する（呼び出しは _locked() の中から）。git なら未クローン時だけ clone。
         `main` ブランチを明示指定 clone し、無ければ（空リポジトリ等）通常 clone 後に
         `checkout -B main` する（git の init.defaultBranch 設定に依存させない。
-        agent-flow の GitBus._ensure_clone と同じフォールバック）。"""
+        agent-flow の GitBus._ensure_clone と同じフォールバック）。既存クローンの再利用時は
+        中断 git 操作の残骸を毎回回復する（_recover）。"""
         if not self.git:
             os.makedirs(os.path.join(self.dir, "delegations"), exist_ok=True)
             return
         if os.path.isdir(os.path.join(self.dir, ".git")):
+            self._recover()
             return
         os.makedirs(os.path.dirname(self.dir) or ".", exist_ok=True)
         r = subprocess.run(["git", "clone", "--branch", "main", self.remote, self.dir],
