@@ -114,6 +114,11 @@ const git = require('../src/main/git');
         // /mnt/<drive>/… は UNC でなく Windows ドライブ実体へ（検収 diff が読めなかった原因）
         assert.strictEqual(git.bridgeRepoPath('/mnt/c/Users/dev/proj'), 'C:\\Users\\dev\\proj');
         assert.strictEqual(git.bridgeRepoPath('/mnt/d'), 'D:\\');
+        // delivery の Linux パスには distro 情報が無い。開いている project.dir の UNC から引き継ぐ。
+        assert.strictEqual(
+          git.bridgeRepoPath('/home/dev/proj', '\\\\wsl.localhost\\Debian\\home\\dev\\proj-agent-state\\.agent-project'),
+          '\\\\wsl.localhost\\Debian\\home\\dev\\proj'
+        );
       } finally {
         if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
         if (origDistro === undefined) delete process.env.WSL_DISTRO_NAME;

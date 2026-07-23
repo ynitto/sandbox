@@ -1395,7 +1395,10 @@ function resolveProjectRoot(workspaceDir) {
     // 「プロジェクトを探すフォルダ」へ明示登録したケース）なら、ここで完結させる。
     // resolve(ws) に流すと git 管理下かつ agent-state ブランチを持つ状態専用 clone でも
     // 「本体 repo」と誤認し、兄弟の <repo>-agent-state worktree を作ってしまう。
-    if (hasProjectStateMarkers(ws)) return ws;
+    // 一方で <repo>/.agent-project そのものを開いた場合は従来どおり状態 worktree へ
+    // 正規化する。ここで早期 return すると古い本体側バックアップを見てしまい、検収画面の
+    // delivery / diff が実体側の bus・backlog と食い違う。
+    if (hasProjectStateMarkers(ws) && path.basename(ws) !== '.agent-project') return ws;
     const nestedState = path.join(ws, '.agent-project');
     if (hasProjectStateMarkers(nestedState)) return resolve(nestedState);
     return resolve(ws);
