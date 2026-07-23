@@ -170,6 +170,90 @@ class BoardParticipationTests(AmigosTestCase):
         self.assertTrue(os.path.exists(os.path.join(d, "bids", "pc-a.json")))
         self.assertTrue(os.path.exists(os.path.join(d, "status", "pc-a.json")))
 
+    def test_owner_picks_applies_without_dispatching(self):
+        # owner-picks: award.json が無い間は応募（bid）を書くだけでミッション公示しない。
+        from agent_amigos import board as B
+        boarddir = os.path.join(self.tmp, "board")
+        os.makedirs(os.path.join(boarddir, "delegations"), exist_ok=True)
+        d = self._board_post(boarddir, "dg-1", workspace={"url": "git@h:team/app.git"},
+                             policy={"assignment": "owner-picks"})
+        dm = self.daemon(node="pc-a", commands_home=self.tmp, board=boarddir,
+                         repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}})
+        handed = B.poll_board(dm)
+        self.assertEqual(handed, [])
+        self.assertFalse(self.bus.mission("dg-1").exists())
+        self.assertTrue(os.path.exists(os.path.join(d, "bids", "pc-a.json")))
+        self.assertFalse(os.path.exists(os.path.join(d, "status", "pc-a.json")))
+
+    def test_owner_picks_dispatches_when_awarded_to_self(self):
+        from agent_amigos import board as B
+        boarddir = os.path.join(self.tmp, "board")
+        os.makedirs(os.path.join(boarddir, "delegations"), exist_ok=True)
+        d = self._board_post(boarddir, "dg-1", workspace={"url": "git@h:team/app.git"},
+                             policy={"assignment": "owner-picks"})
+        with open(os.path.join(d, "award.json"), "w", encoding="utf-8") as f:
+            json.dump({"node": "pc-a", "awarded_by": "requester"}, f)
+        dm = self.daemon(node="pc-a", commands_home=self.tmp, board=boarddir,
+                         repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}})
+        handed = B.poll_board(dm)
+        self.assertEqual(handed, ["dg-1"])
+        self.assertTrue(self.bus.mission("dg-1").exists())
+        self.assertTrue(os.path.exists(os.path.join(d, "status", "pc-a.json")))
+
+    def test_owner_picks_skips_when_awarded_to_other_node(self):
+        from agent_amigos import board as B
+        boarddir = os.path.join(self.tmp, "board")
+        os.makedirs(os.path.join(boarddir, "delegations"), exist_ok=True)
+        d = self._board_post(boarddir, "dg-1", workspace={"url": "git@h:team/app.git"},
+                             policy={"assignment": "owner-picks"})
+        with open(os.path.join(d, "award.json"), "w", encoding="utf-8") as f:
+            json.dump({"node": "pc-b", "awarded_by": "requester"}, f)
+        dm = self.daemon(node="pc-a", commands_home=self.tmp, board=boarddir,
+                         repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}})
+        self.assertEqual(B.poll_board(dm), [])
+        self.assertFalse(self.bus.mission("dg-1").exists())
+
+    def test_dispatched_lease_renewed_when_near_expiry(self):
+        # 長時間ミッションが board_lease を超えても勝者を保つには、残りが半分未満のときに延長する。
+        from agent_amigos import board as B
+        boarddir = os.path.join(self.tmp, "board")
+        os.makedirs(os.path.join(boarddir, "delegations"), exist_ok=True)
+        d = self._board_post(boarddir, "dg-1", workspace={"url": "git@h:team/app.git"})
+        dm = self.daemon(node="pc-a", commands_home=self.tmp, board=boarddir,
+                         repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}},
+                         board_lease=1000.0)
+        B.poll_board(dm)   # 落札→ミッション公示
+        mirror = B.BoardMirror(boarddir, "pc-a")
+        bid_path = os.path.join(d, "bids", "pc-a.json")
+        status_path = os.path.join(d, "status", "pc-a.json")
+        orig_ts = json.load(open(bid_path, encoding="utf-8"))["ts"]
+        bid = json.load(open(bid_path, encoding="utf-8"))
+        bid["lease_until"] = time.time() + 10   # 残りわずか
+        with open(bid_path, "w", encoding="utf-8") as f:
+            json.dump(bid, f)
+        B._renew_dispatched_leases(dm, mirror, 1000.0)
+        renewed = json.load(open(bid_path, encoding="utf-8"))
+        self.assertGreater(renewed["lease_until"], time.time() + 500)
+        self.assertEqual(renewed["ts"], orig_ts)   # タイブレークの根拠 ts は温存する
+        self.assertGreater(json.load(open(status_path, encoding="utf-8"))["lease_until"],
+                           time.time() + 500)
+
+    def test_dispatched_lease_not_renewed_when_still_fresh(self):
+        from agent_amigos import board as B
+        boarddir = os.path.join(self.tmp, "board")
+        os.makedirs(os.path.join(boarddir, "delegations"), exist_ok=True)
+        d = self._board_post(boarddir, "dg-1", workspace={"url": "git@h:team/app.git"})
+        dm = self.daemon(node="pc-a", commands_home=self.tmp, board=boarddir,
+                         repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}},
+                         board_lease=1000.0)
+        B.poll_board(dm)
+        mirror = B.BoardMirror(boarddir, "pc-a")
+        bid_path = os.path.join(d, "bids", "pc-a.json")
+        before = json.load(open(bid_path, encoding="utf-8"))["lease_until"]
+        B._renew_dispatched_leases(dm, mirror, 1000.0)
+        after = json.load(open(bid_path, encoding="utf-8"))["lease_until"]
+        self.assertEqual(before, after)
+
     def test_report_results_writes_result_on_terminal_mission(self):
         from agent_amigos import board as B
         boarddir = os.path.join(self.tmp, "board")

@@ -43,6 +43,11 @@ CONFIG_DEFAULTS = {
     "git_branch": "main",
     "git_subdir": "",
     "lock_dir": None,   # daemon singleton ロックの置き場（外部 daemon の発見性を担保。既定 tempdir 配下）
+    # daemon 識別子（既定: host-pid）。--node-id は argparse 既定が None のため、ここに無いと
+    # 設定ファイルの node_id が resolve_config でマージされず常に host-pid になっていた
+    # （board 参加ノードは再起動のたび ID が変わり、落札済み委譲の成果報告 status/<who>.json を
+    # 見失う＝board 側がスタックする。固定 ID が必須の場合はここで明示する）。
+    "node_id": None,
     # 状態の git 保存・共有（state_git）: ローカルバスのワーク内容（runs/・inbox/）を共有 git
     # リポジトリへ双方向同期し、リモートの agent-dashboard が run の進捗/結果を読めるようにする。
     # GitBus（--git）とは独立（--git 指定時はバス自体が共有 git なので state_git は無視される）。

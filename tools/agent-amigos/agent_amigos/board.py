@@ -220,10 +220,60 @@ def report_board_results(daemon, mirror: "BoardMirror") -> "list[str]":
     return reported
 
 
+def _write_or_renew_bid(bids_dir: str, who: str, lease: float, workload: str) -> bool:
+    """bids/<who>.json を書く／更新する。既存が無ければ新規（ts はいま）、あれば残 lease が
+    半分未満のときだけ lease_until を延長する（(ts, who) タイブレークの根拠 ts は温存し、
+    毎 poll 書き換えて先勝ちの意味を壊さない・push 頻度も抑える）。書いたら True。"""
+    path = os.path.join(bids_dir, f"{_safe(who)}.json")
+    cur = read_json(path)
+    now = time.time()
+    if isinstance(cur, dict):
+        if float(cur.get("lease_until", 0)) - now > lease / 2.0:
+            return False    # まだ十分残っている → 今回は延長不要
+        ts = cur.get("ts", now)
+        claimed_at = cur.get("claimed_at", now_iso())
+    else:
+        ts = now
+        claimed_at = now_iso()
+    os.makedirs(bids_dir, exist_ok=True)
+    write_json_atomic(path, {"who": who, "ts": ts, "claimed_at": claimed_at,
+                             "lease_until": now + lease, "workload": workload})
+    return True
+
+
+def _renew_dispatched_leases(daemon, mirror: "BoardMirror", lease: float) -> None:
+    """自分がオーナーとして公示済み・まだ終端していない委譲の bid lease を延長する（設計 §5.2 の
+    「status/<who>.json のハートビートで延長」）。延長しないと長時間ミッションが board_lease
+    （既定 900 秒）を超えたときに他ノードから見て勝者が失効し、再入札→二重実行が起こりうる
+    （§8「落札ノードのクラッシュ」検知はこの心拍の停止で成立する——延長を止める＝クラッシュ扱い）。"""
+    deleg_root = os.path.join(mirror.dir, "delegations")
+    if not os.path.isdir(deleg_root):
+        return
+    renewed = False
+    for did in sorted(os.listdir(deleg_root)):
+        ddir = os.path.join(deleg_root, did)
+        if not os.path.isdir(ddir) or os.path.exists(os.path.join(ddir, "result.json")) or \
+           os.path.exists(os.path.join(ddir, "cancelled.json")):
+            continue
+        status_path = os.path.join(ddir, "status", f"{_safe(daemon.node_id)}.json")
+        st = read_json(status_path)
+        if not st or st.get("state") in (None, "done", "failed", "cancelled", "away"):
+            continue    # 自分が落札した委譲ではない（または既に終端/away）
+        if _write_or_renew_bid(os.path.join(ddir, "bids"), daemon.node_id, lease, "amigos"):
+            write_json_atomic(status_path, {**st, "heartbeat": now_iso(),
+                                            "lease_until": time.time() + lease})
+            renewed = True
+    if renewed:
+        mirror.sync_push(f"lease renew by {daemon.node_id}")
+
+
 def poll_board(daemon) -> "list[str]":
-    """板を 1 巡: まず自分がオーナー公示済みの委譲の完了を board へ報告し、次に workload=amigos の
-    公示に入札して勝てばオーナーとしてミッションを公示する。公示した委譲 id の一覧を返す
-    （報告は別途 report_board_results の返り値）。board 未設定なら no-op。"""
+    """板を 1 巡: まず自分がオーナー公示済みの委譲の完了を board へ報告し、実行中のものは bid
+    lease を延長し、次に workload=amigos の公示に入札する。policy.assignment が既定の first-come
+    なら claim 勝者＝即落札（オーナーとしてミッション公示）。owner-picks なら bid（応募）を書く
+    だけに留め、依頼者が award.json で自分を指名したときだけ落札として公示する（設計 §5.2）。
+    公示した委譲 id の一覧を返す（報告は別途 report_board_results の返り値）。board 未設定
+    なら no-op。"""
     spec = getattr(daemon, "board", None)
     if not spec:
         return []
@@ -233,6 +283,7 @@ def poll_board(daemon) -> "list[str]":
     node_repos = getattr(daemon, "repos", None) or {}
     node_tags = getattr(daemon, "tags", None) or []
     lease = float(getattr(daemon, "board_lease", None) or 900.0)
+    _renew_dispatched_leases(daemon, mirror, lease)
     home = daemon.commands_home or daemon.home or os.getcwd()
     deleg_root = os.path.join(mirror.dir, "delegations")
     handed = []
@@ -254,11 +305,25 @@ def poll_board(daemon) -> "list[str]":
         if not board_eligible(post, node_repos, node_tags):
             continue
         bids_dir = os.path.join(ddir, "bids")
-        w = _winner(bids_dir)
-        if w is not None and w != daemon.node_id:
-            continue
-        if not _try_bid(mirror, bids_dir, did, daemon.node_id, lease):
-            continue
+        assignment = str((post.get("policy") or {}).get("assignment") or "first-come")
+        if assignment == "owner-picks":
+            # 先勝ちタイブレークでは決めない。bid ＝応募として書くだけで、依頼者が
+            # award.json を書いた者だけが落札する（設計 §5.2）。
+            award = read_json(os.path.join(ddir, "award.json"))
+            awarded_node = award.get("node") if isinstance(award, dict) else None
+            if awarded_node is None:
+                if _write_or_renew_bid(bids_dir, daemon.node_id, lease, "amigos"):
+                    mirror.sync_push(f"apply {did} by {daemon.node_id}")
+                continue
+            if awarded_node != daemon.node_id:
+                continue    # 他ノードが落札
+            # 自分が award された → 落札として下のミッション公示へ進む
+        else:
+            w = _winner(bids_dir)
+            if w is not None and w != daemon.node_id:
+                continue
+            if not _try_bid(mirror, bids_dir, did, daemon.node_id, lease):
+                continue
         # 落札 → オーナーとしてミッションを公示（board の落札 = ミッションオーナーの決定）
         try:
             _do_post(daemon.bus, daemon.node_id, home, _post_to_command(post))

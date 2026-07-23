@@ -110,11 +110,60 @@ def report_board_results(bus_local: "Bus", board: "Bus", node_id: str) -> "list[
     return reported
 
 
+def _write_or_renew_bid(bids_dir: str, node_id: str, lease: float, workload: str) -> bool:
+    """bids/<node_id>.json を書く／更新する。既存が無ければ新規（ts はいま）、あれば残 lease が
+    半分未満のときだけ lease_until を延長する（(ts, who) タイブレークの根拠 ts は温存し、
+    毎 poll 書き換えて先勝ちの意味を壊さない・push 頻度も抑える）。書いたら True。"""
+    path = os.path.join(bids_dir, f"{_safe(node_id)}.json")
+    cur = read_json(path)
+    now = time.time()
+    if isinstance(cur, dict):
+        if float(cur.get("lease_until", 0)) - now > lease / 2.0:
+            return False    # まだ十分残っている → 今回は延長不要
+        ts = cur.get("ts", now)
+        claimed_at = cur.get("claimed_at", now_iso())
+    else:
+        ts = now
+        claimed_at = now_iso()
+    os.makedirs(bids_dir, exist_ok=True)
+    write_json_atomic(path, {"who": node_id, "ts": ts, "claimed_at": claimed_at,
+                             "lease_until": now + lease, "workload": workload})
+    return True
+
+
+def _renew_dispatched_leases(board: "Bus", node_id: str, lease: float) -> None:
+    """自分が落札・引き渡し済みでまだ終端していない委譲の bid lease を延長する（設計 §5.2 の
+    「status/<who>.json のハートビートで延長」）。延長しないと長時間 run が board_lease
+    （既定 900 秒）を超えたときに他ノードから見て勝者が失効し、再入札→二重実行が起こりうる
+    （§8「落札ノードのクラッシュ」検知はこの心拍の停止で成立する——延長を止める＝クラッシュ扱い）。"""
+    deleg_root = os.path.join(board.root, "delegations")
+    if not os.path.isdir(deleg_root):
+        return
+    renewed = False
+    for did in sorted(os.listdir(deleg_root)):
+        ddir = os.path.join(deleg_root, did)
+        if not os.path.isdir(ddir) or os.path.exists(os.path.join(ddir, "result.json")) or \
+           os.path.exists(os.path.join(ddir, "cancelled.json")):
+            continue
+        status_path = os.path.join(ddir, "status", f"{_safe(node_id)}.json")
+        st = read_json(status_path)
+        if not st or st.get("state") in (None, "done", "failed", "cancelled", "away"):
+            continue    # 自分が落札した委譲ではない（または既に終端/away）
+        if _write_or_renew_bid(os.path.join(ddir, "bids"), node_id, lease, "flow"):
+            write_json_atomic(status_path, {**st, "heartbeat": now_iso(),
+                                            "lease_until": time.time() + lease})
+            renewed = True
+    if renewed:
+        board.sync_push(f"lease renew by {node_id}")
+
+
 def poll_board(bus_local: "Bus", args, node_id: str) -> "list[str]":
-    """板を 1 巡: まず自分が落札済みの委譲の完了を board へ報告し、次に workload=flow の公示に
-    入札して勝てば local inbox へ取り込む。取り込んだ委譲 id の一覧を返す（報告は別途
-    report_board_results の返り値・呼び出し元は必要なら両方 log できる）。board 未設定なら
-    no-op。例外は呼び出し側が握る。"""
+    """板を 1 巡: まず自分が落札済みの委譲の完了を board へ報告し、実行中のものは bid lease を
+    延長し、次に workload=flow の公示に入札する。policy.assignment が既定の first-come なら
+    claim 勝者＝即落札。owner-picks なら bid（応募）を書くだけに留め、依頼者が award.json で
+    自分を指名したときだけ落札として取り込む（設計 §5.2）。落札→取り込んだ委譲 id の一覧を返す
+    （報告は別途 report_board_results の返り値・呼び出し元は必要なら両方 log できる）。
+    board 未設定なら no-op。例外は呼び出し側が握る。"""
     spec = getattr(args, "board", None)
     if not spec:
         return []
@@ -124,6 +173,7 @@ def poll_board(bus_local: "Bus", args, node_id: str) -> "list[str]":
     node_repos = getattr(args, "board_repos", None) or {}
     node_tags = getattr(args, "board_tags", None) or []
     lease = float(getattr(args, "board_lease", None) or 900.0)
+    _renew_dispatched_leases(board, node_id, lease)
     deleg_root = os.path.join(board.root, "delegations")
     handed = []
     if not os.path.isdir(deleg_root):
@@ -143,13 +193,29 @@ def poll_board(bus_local: "Bus", args, node_id: str) -> "list[str]":
         if bus_local.read_inbox(did) is not None or bus_local.run_exists(did):
             continue
         bids_dir = os.path.join(ddir, "bids")
-        w = board._winner_in(bids_dir)
-        if w is not None and w != node_id:
-            continue      # 既に他ノードが勝者（先勝ち）
-        if not board_eligible(post, node_repos, node_tags):
-            continue
-        if not board._try_claim_in(bids_dir, node_id, lease, f"bid {did} by {node_id}"):
-            continue
+        assignment = str((post.get("policy") or {}).get("assignment") or "first-come")
+        if assignment == "owner-picks":
+            # 先勝ちタイブレークでは決めない。bid ＝応募として書くだけで、依頼者が
+            # award.json を書いた者だけが落札する（設計 §5.2）。
+            if not board_eligible(post, node_repos, node_tags):
+                continue
+            award = read_json(os.path.join(ddir, "award.json"))
+            awarded_node = award.get("node") if isinstance(award, dict) else None
+            if awarded_node is None:
+                if _write_or_renew_bid(bids_dir, node_id, lease, "flow"):
+                    board.sync_push(f"apply {did} by {node_id}")
+                continue
+            if awarded_node != node_id:
+                continue    # 他ノードが落札
+            # 自分が award された → 落札として下の取り込みへ進む
+        else:
+            w = board._winner_in(bids_dir)
+            if w is not None and w != node_id:
+                continue      # 既に他ノードが勝者（先勝ち）
+            if not board_eligible(post, node_repos, node_tags):
+                continue
+            if not board._try_claim_in(bids_dir, node_id, lease, f"bid {did} by {node_id}"):
+                continue
         # 落札 → 自分の inbox へ取り込み（下の inbox→orchestrator が拾う）
         bus_local.submit_request(
             did, _board_request(post), f"agent-board:{node_id}",
