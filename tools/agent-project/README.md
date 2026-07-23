@@ -271,11 +271,11 @@ CLI からも付与・修正できる。
   done せず検収待ちへ。`gate` がタスク一致なのに対し `protect` は**変更されたパス**一致。
 - **一貫性ゲート（codd-gate 連携・オプション）**: ドキュメント・コード・テストの整合は**完全独立**の
   ツール [`codd-gate`](../codd-gate/README.md)（本ツールの install.sh が隣にあれば同梱インストールする）で
-  護れる。境界の不変条件として、`agent_project` パッケージは汎用フックだけを提供し、`codd_gate_*` を
-  import、直接結合、依存のいずれもしない。結合は共通スキーマ（`schemas/`）と、人か install 手順が E1〜E3 の汎用フックに置く
-  codd-gate コマンド文字列に限る。リポジトリ定義は本ツールが charter から自動生成する
-  `<root>/repos.json` を codd-gate が `--repos` で読む。**連携が有効になるのは、人か install 手順が
-  YAML または CLI にコマンドを明示設定した場合だけで、自動検出だけでは有効にならない。** E2 と E3 の設定例:
+  護れる。境界の不変条件として、`agent_project` パッケージは汎用フックだけを提供し、codd-gate を
+  名指し・import・自動配線しない。結合は共通スキーマ（`schemas/`）と、人か install 手順が E1〜E3 の
+  汎用フックに設定する codd-gate コマンド文字列だけ。リポジトリ定義は本ツールが charter から自動生成する
+  `<root>/repos.json` を codd-gate が `--repos` で読む。**人か install 手順が yaml または CLI にコマンドを
+  明示設定した場合だけ連携が有効になる。自動検出だけでは有効にならない。** E2 と E3 の設定例:
 
   ```yaml
   regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV" --repos <root>/repos.json'
@@ -283,28 +283,29 @@ CLI からも付与・修正できる。
   ```
 
   CLI なら同じ値を `--regression-cmd 'codd-gate verify …'` と
-  `--intake-cmd 'codd-gate tasks --debt …'` に渡す。`regression_cmd` は毎タスクの verify PASS 後・done
-  確定前に差分の一貫性を検査し、NG なら done を止める。`intake_cmd` は既存負債を JSON の修復タスクへ変換し、
-  パス開始時と watch の idle 中に backlog へ冪等に取り込む。E1 の修復タスクでは `codd-gate check …` を
-  task verify に置き、期待状態に戻ったことを確認する。charter acceptance の
-  `codd-gate verify --debt --max-broken N …` は、受入時の負債ラチェットに使う。
+  `--intake-cmd 'codd-gate tasks --debt …'` に渡す。agent-project は `regression_cmd` を毎タスクの verify
+  PASS 後・done 確定前に実行し、NG なら done を止める。`codd-gate tasks` は既存負債を JSON の修復タスクへ
+  変換し、agent-project がパス開始時と watch の idle 中に backlog へ冪等に取り込む。`codd-gate tasks` は
+  E1 の task verify に `codd-gate check …` を置き、期待状態に戻ったことを確認する。人は charter acceptance に
+  `codd-gate verify --debt --max-broken N …` を置き、受入時の負債ラチェットに使う。
 
-  `codd_gate_*.py` は `tools/agent-project/` 直下の任意 sibling 部品で、人か install 手順が明示起動したときだけ、
-  codd-gate の実体、バージョン、repos schema 互換性、対応機能をこの順に短絡して検出し、
-  `codd_gate_routing.py` で実引数を組み立てる。`codd_gate_regression.py` の永続化責務は、
-  `.agent/agent-project.yaml` の `regression_cmd` 1行を冪等に書くことだけ。`intake_cmd` は書かず、
+  `codd_gate_*.py` は `tools/agent-project/` 直下の任意 sibling 部品で、人か install 手順が明示起動したときだけ
+  codd-gate の実体、バージョン、repos schema 互換性、対応機能をこの順に検査し、
+  `codd_gate_routing.py` が実引数を組み立てる。`codd_gate_regression.py` が永続化するのは、
+  `.agent/agent-project.yaml` の `regression_cmd` 1行だけ。`intake_cmd` は書かず、
   人か install 手順が設定する。生成ツールはリポジトリルートで
   `python3 tools/agent-project/codd_gate_regression.py --config .agent/agent-project.yaml` と明示実行する。
   パッケージは sibling 部品を探索・import せず、`build_config` から値を差し込む自動配線も持たない。
   未設定のフック値は空のまま（＝連携なし）で通過する。`.agent/agent-project.yaml` は人専有ファイルで、
-  yaml へ書き込むのは人の手か、人が明示起動した `codd_gate_regression.py` に限る。sibling 部品を削除しても
-  パッケージの挙動は変わらない。codd-gate が未検出または非互換なら、生成ツールは値を書かず no-op に縮退する（詳細は
-  [`codd-gate-design.md`](../../docs/designs/codd-gate-design.md) §4「プラグイン境界」・§4.1「任意部品」・
+  人か、人が明示起動した `codd_gate_regression.py` だけが書き込む。sibling 部品を削除してもパッケージの
+  挙動は変わらない。codd-gate が未検出または非互換なら、生成ツールは値を書かず終了する（詳細は
+  [`codd-gate-design.md`](../../docs/designs/codd-gate-design.md) §4「agent-project との結合点」・
+  §4.1「値の組み立てと永続化を担う任意部品」・
   §4.2「境界の完了条件」）。
-  整理の完了には、次の決定的ゲートが exit 0 を返すことを必須とする。
+  整理完了の条件は、次の決定的ゲートが exit 0 を返すこと。
 
   ```bash
-  ! git grep -nE '_apply_codd_gate|_codd_gate|import codd_gate' -- tools/agent-project/agent_project
+  ! git grep _apply_codd_gate -- tools/agent-project
   ```
 
 ### policy.md（人による上書き・per-project）
