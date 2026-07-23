@@ -489,7 +489,7 @@ function orchSessionRowHtml(cmd, index) {
   const list = (v) => (Array.isArray(v) ? v.join(', ') : '');
   return `<div class="orch-sess-row" data-orch-sess="${index}" data-orch-sess-mode="${mode}">
     <div class="orch-sess-head">
-      <label class="orch-sess-field orch-sess-id"><span>名前（ID）</span>
+      <label class="orch-sess-field orch-sess-id"><span>名前</span>
         <input type="text" class="orch-sess-id-input mono" placeholder="sync-repo" value="${esc(c.id || '')}" />
       </label>
       <label class="orch-sess-field"><span>実行方法</span>
@@ -734,15 +734,16 @@ function globalSettingsAppHtml() {
       <div class="field"><label for="cfg-needs-sla">長時間未対応として知らせるまで（時間）</label><input id="cfg-needs-sla" type="number" min="1" step="1" /></div>
     </div>
     <div class="field">
-      <label for="cfg-role">この PC の役割（案4）</label>
+      <label for="cfg-role">この PC の役割</label>
       <select id="cfg-role">
-        <option value="engineer">engineer（本体も動かす・全機能）</option>
-        <option value="viewer">viewer（閲覧・レビュー専用）</option>
+        <option value="engineer">実行も行う（すべての機能）</option>
+        <option value="viewer">閲覧・レビュー専用</option>
       </select>
-      <p class="field-help">viewer は「状態リポジトリを clone して登録」だけで、監視・コメント・承認ができます（WSL/CLI 設定は不要）。</p>
+      <p class="field-help">閲覧専用では、状態を共有するフォルダを登録するだけで監視・コメント・承認ができます。実行用の環境設定は不要です。</p>
     </div>
     <div class="field">
-      <label>セットアップ診断 — 登録した clone が正しく同期できるか確認します</label>
+      <label>セットアップ診断</label>
+      <p class="field-help">登録したフォルダが正しく同期できるか確認します。</p>
       <div class="row"><button type="button" id="btn-setup-diagnostics">診断する</button></div>
       <div id="setup-diagnostics-result" class="muted" aria-live="polite"></div>
     </div>
@@ -958,7 +959,7 @@ function setupGlobalSettings(root) {
   if (diagBtn) diagBtn.addEventListener('click', () => runSetupDiagnostics(root));
 }
 
-// セットアップ診断（案4）: 登録 clone の有効性を赤/緑で表示し、誤設定を沈黙させない。
+// セットアップ診断: 登録フォルダの有効性を赤/緑で表示し、誤設定を沈黙させない。
 async function runSetupDiagnostics(root) {
   const out = root.querySelector('#setup-diagnostics-result');
   if (out) out.textContent = '診断中…';
@@ -966,13 +967,13 @@ async function runSetupDiagnostics(root) {
     const res = await api.setupDiagnostics();
     if (!out) return;
     if (!res || !res.clones || !res.clones.length) {
-      out.innerHTML = '<p class="muted">登録された clone がありません（⚙ 設定のワークスペースに追加してください）。</p>';
+      out.innerHTML = '<p class="muted">登録されたフォルダがありません。⚙ 全体設定の「プロジェクトを探すフォルダ」に追加してください。</p>';
       return;
     }
     const rows = res.clones
       .map((c) => `<li class="diag-row diag-${esc(c.level)}"><b>${esc(c.root)}</b><br><span class="muted">${esc(c.summary)}</span></li>`)
       .join('');
-    const roleNote = res.role === 'viewer' ? '（役割: viewer）' : '（役割: engineer）';
+    const roleNote = res.role === 'viewer' ? '現在の役割: 閲覧・レビュー専用' : '現在の役割: 実行も行う';
     out.innerHTML = `<ul class="diag-list">${rows}</ul><p class="muted">${esc(roleNote)}</p>`;
   } catch (e) {
     if (out) out.textContent = `診断できませんでした: ${String((e && e.message) || e)}`;
@@ -1020,7 +1021,7 @@ function setupOrchestration(root) {
   const rebalanceBtn = root.querySelector('#btn-orch-rebalance');
   if (rebalanceBtn) rebalanceBtn.addEventListener('click', () => guard('再配分', async () => {
     await api.orchestrationRebalance();
-    toast('再配分しました（computed を更新）', true);
+    toast('再配分しました', true);
     await refreshOrchestration();
     renderOrchestration();
   }));

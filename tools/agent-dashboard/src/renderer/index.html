@@ -327,43 +327,48 @@
       <div class="muted">選択したバージョンの目標・制約・前提を、このタスクの実行に適用します。</div>
     </div>
     <div class="field">
-      <label>タイトル（必須）</label>
+      <label>タイトル</label>
       <input id="enq-title" placeholder="例: README に使用例を追加する" />
     </div>
     <div class="field">
-      <label>検証コマンド — 完了判定に使うコマンド（成功すれば完了。書ければ最も確実です）</label>
+      <label>検証コマンド</label>
       <input id="enq-verify" class="mono" placeholder='例: grep -q "## Usage" README.md' />
+      <p class="field-help">成功すれば完了とみなします。書ける場合はこちらが確実です。</p>
     </div>
     <div class="field">
-      <label>完了条件テンプレート — よくある検証を選んで穴埋め（決定的に展開。生コマンド不要）</label>
+      <label>完了条件テンプレート</label>
       <input id="enq-verify-template" class="mono" list="enq-verify-template-options"
              placeholder="例: file-contains :: README.md :: ## Usage" />
       <datalist id="enq-verify-template-options">
         <option value="file-contains :: path :: needle">ファイルに文字列が含まれる</option>
         <option value="file-exists :: path">ファイルが存在する</option>
-        <option value="cmd-succeeds :: command">コマンドが成功する（終了コード0）</option>
+        <option value="cmd-succeeds :: command">コマンドが成功する</option>
         <option value="endpoint-returns :: url :: 200">URL が指定ステータスを返す</option>
         <option value="diff-contains :: needle">変更差分に文字列が含まれる</option>
       </datalist>
+      <p class="field-help">よくある検証を選んで穴埋めできます。</p>
     </div>
     <div class="field">
-      <label>完了条件 — 文章で（検証コマンドもテンプレートも書けないとき。実行時に自動でコマンド化されます）</label>
+      <label>完了条件</label>
       <input id="enq-accept" placeholder="例: README に使用例が載っている" />
+      <p class="field-help">文章で書けます。検証コマンドやテンプレートが無いときに使います。</p>
     </div>
     <details class="enq-guide-panel" open>
-      <summary>意図と境界（計画レビューの材料・任意だが成果のぶれを減らせます）</summary>
-      <div class="field"><label for="enq-desc">作業内容の概要（desc）— 何をどう変えるか。計画レビューはこれを見て判断します</label>
+      <summary>意図と境界</summary>
+      <p class="field-help">計画レビューの材料になります。任意ですが、成果のぶれを減らせます。</p>
+      <div class="field"><label for="enq-desc">作業内容の概要</label>
         <textarea id="enq-desc" rows="3" placeholder="例: README の冒頭にインストール手順と使用例のセクションを追加する。既存の構成は変えない。"></textarea></div>
-      <div class="field"><label for="enq-why">なぜ（why）— この作業の目的・背景</label><input id="enq-why" /></div>
+      <div class="field"><label for="enq-why">目的・背景</label><input id="enq-why" /></div>
       <div class="row2">
-        <div class="field"><label for="enq-scope">やる範囲（scope）</label><input id="enq-scope" /></div>
-        <div class="field"><label for="enq-out_of_scope">やらない範囲（out_of_scope）</label><input id="enq-out_of_scope" /></div>
+        <div class="field"><label for="enq-scope">やる範囲</label><input id="enq-scope" /></div>
+        <div class="field"><label for="enq-out_of_scope">やらない範囲</label><input id="enq-out_of_scope" /></div>
       </div>
     </details>
     <div class="row2">
       <div class="field">
-        <label>優先度（数字が大きいほど先に着手）</label>
+        <label>優先度</label>
         <input id="enq-priority" type="number" step="1" value="0" />
+        <p class="field-help">数字が大きいほど先に着手します。</p>
       </div>
       <div class="field">
         <label>メモ</label>
@@ -372,21 +377,24 @@
     </div>
     <div class="row2">
       <div class="field">
-        <label>ID（任意・省略で自動採番。やり直しでは元の ID を引き継ぎます）</label>
+        <label>ID</label>
         <input id="enq-id" class="mono" placeholder="例: T12" />
+        <p class="field-help">省略すると自動で採番します。</p>
       </div>
       <div class="field">
-        <label for="enq-after">先行タスク（先に終えるべきタスクの ID。任意・カンマ区切り）</label>
+        <label for="enq-after">先行タスク</label>
         <input id="enq-after" class="mono" list="enq-after-options" placeholder="例: T1, T2" />
         <datalist id="enq-after-options"></datalist>
+        <p class="field-help">先に終えるタスクの ID をカンマ区切りで指定します。</p>
       </div>
     </div>
     <div class="field" id="enq-workspace-field">
-      <label for="enq-workspace">書込先リポジトリ（任意 — リポジトリ一覧の書込先から選択。省略で自動ルーティング）</label>
+      <label for="enq-workspace">書込先リポジトリ</label>
       <select id="enq-workspace"></select>
+      <p class="field-help">省略すると自動で選びます。</p>
     </div>
     <details id="enq-backlog-panel" class="enq-backlog-panel">
-      <summary>既存バックログ（依存・優先度の参考）</summary>
+      <summary>既存バックログ</summary>
       <div id="enq-backlog-summary" class="enq-backlog-summary muted"></div>
     </details>
     <div class="enq-assist-row">
@@ -444,63 +452,72 @@
     </div>
     <div class="row2">
       <div class="field">
-        <label>作成先の親フォルダ（既存を選ぶか新規パスを入力）</label>
+        <label>作成先の親フォルダ</label>
         <input id="np-root" class="mono" list="np-root-list" placeholder="例: C:\clones" />
         <datalist id="np-root-list"></datalist>
+        <p class="field-help">既存のフォルダを選ぶか、新しいパスを入力します。</p>
       </div>
       <div class="field">
-        <label>プロジェクト名（ディレクトリ名。空白・区切り文字は不可）</label>
+        <label>プロジェクト名</label>
         <input id="np-name" class="mono" placeholder="例: my-project" />
+        <p class="field-help">フォルダ名になります。空白や区切り文字は使えません。</p>
       </div>
     </div>
     <div class="row2">
       <div class="field">
-        <label>最初の計画バージョン名（任意。指定すると目標・完了条件をやるべきことにした最初のバージョンも作成します）</label>
-        <input id="np-charter" class="mono" placeholder="例: v1（空なら憲章のみ作成し、後からバージョンを追加）" />
+        <label>最初の計画バージョン名</label>
+        <input id="np-charter" class="mono" placeholder="例: v1" />
+        <p class="field-help">任意です。指定すると、目標と完了条件から最初のバージョンも作成します。空なら憲章のみ作成します。</p>
       </div>
       <div class="field"></div>
     </div>
     <div class="field">
-      <label>目標（このプロジェクトで達成したいこと）</label>
+      <label>目標</label>
       <textarea id="np-goal" rows="2" placeholder="例: ユーザーが CSV を投入すると要約レポートを生成する CLI を完成させる"></textarea>
+      <p class="field-help">このプロジェクトで達成したいことです。</p>
     </div>
     <div class="ai-assist">
       <div class="field">
-        <label>自由メモ（背景・要望。AI 下書きの材料 — charter には直接載りません）</label>
+        <label>自由メモ</label>
         <textarea id="np-memo" rows="2" placeholder="例: 社内の営業チームが月次で使う。既存の集計 Excel を置き換えたい。Python が得意な人しかいない"></textarea>
+        <p class="field-help">背景や要望。AI 下書きの材料になります（憲章には直接載りません）。</p>
       </div>
       <div class="row" style="align-items:center; gap:8px">
         <button id="btn-np-ai" type="button" class="primary-inline"
-          title="goal・自由メモ・書きかけの各欄からエージェントが constraints / assumptions / deliverables / acceptance を下書きします（既存の記入は尊重されます）">
-          ✨ AI で下書き（不足セクションを補完）</button>
+          title="目標・自由メモ・書きかけの各欄から、制約・前提・成果物・完了条件を下書きします（既存の記入は尊重されます）">
+          ✨ AI で下書き</button>
         <span id="np-ai-status" class="muted"></span>
       </div>
     </div>
     <div class="row2">
       <div class="field">
-        <label>成果物（1 行 1 つ）</label>
+        <label>成果物</label>
         <textarea id="np-deliverables" rows="3" placeholder="report.py（生成器）&#10;tests/（テスト）"></textarea>
+        <p class="field-help">1 行に 1 つ。</p>
       </div>
       <div class="field">
-        <label>制約（1 行 1 つ）</label>
+        <label>制約</label>
         <textarea id="np-constraints" rows="3" placeholder="Python 3.9 / 標準ライブラリのみ"></textarea>
+        <p class="field-help">1 行に 1 つ。</p>
       </div>
     </div>
     <div class="row2">
       <div class="field">
-        <label>前提（1 行 1 つ・任意）</label>
+        <label>前提</label>
         <textarea id="np-assumptions" rows="2" placeholder="入力 CSV は UTF-8 / 週次で 1 万行程度"></textarea>
+        <p class="field-help">1 行に 1 つ。任意です。</p>
       </div>
       <div class="field"></div>
     </div>
     <div class="field">
-      <label>完了条件（1 行 1 つ。成功で終わるコマンド、または <code class="mono">accept: 文章</code>。プロジェクト完了の判定基準になります）</label>
+      <label>完了条件</label>
       <textarea id="np-acceptance" rows="3" class="mono" placeholder="pytest -q tests/&#10;accept: README に使用例（## Usage）が載っている"></textarea>
+      <p class="field-help">1 行に 1 つ。成功で終わるコマンド、または「accept: 文章」で書けます。</p>
     </div>
     <details id="np-repos-details">
-      <summary>対象リポジトリ（任意）</summary>
+      <summary>対象リポジトリ</summary>
       <div class="muted" style="margin:6px 0">
-        owns（担当範囲）を書くと成果物の書き込み先になり、書かなければ参照のみになります。
+        担当範囲を書くと成果物の書き込み先になり、書かなければ参照のみになります。
       </div>
       <div id="np-repos"></div>
       <button id="np-add-repo" type="button" class="chip">＋ リポジトリを追加</button>
@@ -521,9 +538,9 @@
     <div class="muted" id="ef-hint"></div>
     <div id="ef-ai-row" class="row hidden" style="align-items:center; gap:8px; margin-top:6px">
       <button id="btn-ef-template" type="button" class="chip"
-        title="charter.md の雛形（## goal / constraints / assumptions / deliverables / acceptance / repos / links）を挿入します">📋 雛形を挿入</button>
+        title="憲章の雛形を挿入します">📋 雛形を挿入</button>
       <button id="btn-ef-ai" type="button" class="chip"
-        title="エージェントが書式を保ったまま不足セクションの補完・acceptance のコマンド化・曖昧な記述の明確化をします（保存するまでファイルには書き込みません）">✨ AI 補完</button>
+        title="書式を保ったまま不足箇所の補完と完了条件の明確化をします（保存するまでファイルには書き込みません）">✨ AI 補完</button>
       <button id="btn-ef-ai-undo" type="button" class="chip hidden" title="AI 補完前の内容に戻します">↩ 補完前に戻す</button>
       <span id="ef-ai-status" class="muted"></span>
     </div>
@@ -540,8 +557,9 @@
     <h2 id="nc-title">計画バージョンを追加</h2>
     <p class="muted" id="nc-desc">新しい計画バージョンを作成します。</p>
     <div class="field">
-      <label>バージョン名（空白・スラッシュ・ハイフン等は不可）</label>
+      <label>バージョン名</label>
       <input id="nc-name" class="mono" placeholder="例: v2" />
+      <p class="field-help">空白・スラッシュ・ハイフンなどは使えません。</p>
     </div>
     <div class="dialog-actions">
       <button id="btn-nc-cancel">キャンセル</button>
@@ -562,9 +580,10 @@
       <textarea id="ec-goal" rows="3" placeholder="例: CSV 取り込みのエラー処理を改善し、失敗行のレポートを出す"></textarea>
     </div>
     <div class="field" id="ec-acceptance-field">
-      <label>完了条件（成功で終わるコマンド、または「accept: 文章」。プロジェクト/バージョン完了の判定基準）</label>
+      <label>完了条件</label>
       <div id="ec-acceptance" class="list-editor"></div>
       <button type="button" class="chip" data-add-list="ec-acceptance">＋ 追加</button>
+      <p class="field-help">成功で終わるコマンド、または「accept: 文章」で書けます。</p>
     </div>
     <div class="field" id="ec-deliverables-field">
       <label>成果物</label>

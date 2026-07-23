@@ -532,28 +532,38 @@ function reviseAreaHtml(t) {
         : '<div class="muted">修正は次の実行から反映されます。依存関係を変えると作業の順序も変わります。</div>';
   return `<details class="revise-area"><summary>✎ 修正を指示</summary>
     ${doingNote}
-    <div class="field"><label>作業への指示（次の実行に必ず伝わります）</label>
-      <textarea rows="2" id="rv-feedback" placeholder="例: e2e はローカルサーバでなく実サーバに配備して実施すること"></textarea></div>
+    <div class="field"><label>作業への指示</label>
+      <textarea rows="2" id="rv-feedback" placeholder="例: e2e はローカルサーバでなく実サーバに配備して実施すること"></textarea>
+      <p class="field-help">次の実行に必ず伝わります。</p></div>
     <div class="field"><label>タイトル</label><input id="rv-title" value="${esc(t.title)}" /></div>
     <div class="row2">
-      <div class="field"><label>優先度（数字が大きいほど先に着手）</label><input id="rv-priority" type="number" step="1" value="${t.priority}" /></div>
-      <div class="field"><label>先行タスク（このタスクより先に終えるべき ID。カンマ区切り。空にすると解除）</label><input id="rv-after" class="mono" value="${esc(t.extra.after || '')}" /></div>
+      <div class="field"><label>優先度</label><input id="rv-priority" type="number" step="1" value="${t.priority}" />
+        <p class="field-help">数字が大きいほど先に着手します。</p></div>
+      <div class="field"><label>先行タスク</label><input id="rv-after" class="mono" value="${esc(t.extra.after || '')}" />
+        <p class="field-help">先に終えるタスクの ID をカンマ区切りで。空欄にすると解除します。</p></div>
     </div>
-    <div class="field"><label>検証コマンド（完了判定に使うコマンド。空にすると削除）</label><input id="rv-verify" class="mono" value="${esc(t.verify || '')}" /></div>
-    <div class="field"><label>完了条件（文章で。検証コマンドが書けないとき。空にすると削除）</label><input id="rv-accept" value="${esc(t.extra.accept || '')}" /></div>
+    <div class="field"><label>検証コマンド</label><input id="rv-verify" class="mono" value="${esc(t.verify || '')}" />
+      <p class="field-help">完了判定に使うコマンド。空欄にすると削除します。</p></div>
+    <div class="field"><label>完了条件</label><input id="rv-accept" value="${esc(t.extra.accept || '')}" />
+      <p class="field-help">文章で書けます。空欄にすると削除します。</p></div>
     <div class="row2">
-      <div class="field"><label>自動化レベル（report=報告のみ / assisted=確認しながら / unattended=全自動。空にすると削除）</label>
+      <div class="field"><label>自動化レベル</label>
         <input id="rv-level" list="rv-level-list" value="${esc(t.extra.level || '')}" />
-        <datalist id="rv-level-list"><option value="report"></option><option value="assisted"></option><option value="unattended"></option></datalist>
+        <datalist id="rv-level-list"><option value="report">報告のみ</option><option value="assisted">確認しながら</option><option value="unattended">全自動</option></datalist>
+        <p class="field-help">report / assisted / unattended。空欄にすると削除します。</p>
       </div>
-      <div class="field"><label>系列（同種タスクのグループ名。空にすると削除）</label><input id="rv-track" value="${esc(t.extra.track || '')}" /></div>
+      <div class="field"><label>系列</label><input id="rv-track" value="${esc(t.extra.track || '')}" />
+        <p class="field-help">同種タスクのグループ名。空欄にすると削除します。</p></div>
     </div>
-    <div class="field"><label>実行ノード（このタスクを動かす PC のエンジン名。複数 PC で分担するとき指定。空にすると未割当＝既定ノードが拾う）</label><input id="rv-node" value="${esc(t.extra.node || '')}" /></div>
-    <div class="field"><label>メモ（空にすると削除）</label><input id="rv-note" value="${esc(t.extra.note || '')}" /></div>
+    <div class="field"><label>実行ノード</label><input id="rv-node" value="${esc(t.extra.node || '')}" />
+      <p class="field-help">このタスクを動かす PC 名。複数 PC で分担するときに指定します。空欄なら既定の PC が拾います。</p></div>
+    <div class="field"><label>メモ</label><input id="rv-note" value="${esc(t.extra.note || '')}" />
+      <p class="field-help">空欄にすると削除します。</p></div>
     <details class="revise-guide" ${GUIDE_KEYS.some((k) => t.extra[k]) ? 'open' : ''}>
-      <summary>意図と境界（レビュー材料 兼 実行ワーカーへの誘導。空にすると削除）</summary>
+      <summary>意図と境界</summary>
+      <p class="field-help">レビュー材料と実行への手がかりです。空欄にした項目は削除します。</p>
       <div class="row need-buttons">
-        <span class="muted">改行は ⏎ で書きます。AI がタスクと憲章から下書きできます（送信前に人が確認）</span>
+        <span class="muted">改行は ⏎ で書きます。AI が下書きできます（送信前に確認してください）</span>
         <span class="spacer"></span>
         <button type="button" id="btn-guide-assist">✦ AI で補完</button>
       </div>
