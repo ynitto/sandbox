@@ -39,8 +39,18 @@
   **一本化は「受入 or 決定的 first-valid」**で行う。成果はひとつ（`result.json`）に確定する。
 - リポジトリ選別は **ノードの能力宣言に `repos.schema.json` のレジストリを載せ、
   公示の `workspace.url` と突き合わせる**だけで実現する（新概念を作らない）。
-- エンジンは **v1 無変更**。落札ノードのデーモンが、agent-dashboard の delegation アダプタと
-  同じ変換（flow: inbox 投函 / amigos: post→オーナーとして公示）をローカルで行う。
+- **agent-board は処理を持たない（リポジトリ＋契約だけ）。入札・引き渡しは請負側の既存デーモン
+  （agent-flow / agent-amigos）に畳み込む** — board 専用デーモン・専用ツールは作らない。
+  各デーモンが板を巡回し、`workload` が自分向きの公示に入札して、勝てば自分のエンジンへ取り込む
+  （flow: 自分の inbox 投函 / amigos: オーナーとして post）。dashboard の delegation アダプタと
+  同じ変換をローカルで行う。
+
+> **実装メモ（採用構成）**: 当初 §4 の図は「board デーモン」を各ノードに描いていたが、実装では
+> **板を『リポジトリ＋契約』だけにし、入札ループを agent-flow / agent-amigos の既存デーモンへ
+> 畳み込んだ**（`agent_flow/board.py` / `agent_amigos/board.py`。設定 `board:` を与えると常駐
+> デーモンの巡回に board 参加が 1 ステップ加わる）。新しいデーモン・サーバは増やさない。claim は
+> 各エンジンの既存 claim をそのまま板の `bids/` に適用する（同じ仕様・別実装）。以下の図の
+> 「board デーモン」は「agent-flow / agent-amigos デーモンの board 参加ステップ」と読み替える。
 
 外部ブローカー OSS（NATS / RabbitMQ / Temporal 等）を中核に据える案は §9 で比較の上、
 **転送層の高速化オプション以上の採用はしない**（真実の置き場が二重になり、
@@ -75,9 +85,10 @@
               pull/push│    pull/push │     webhook / long-poll │
      ┌─────────────────┴──┐  ┌────────┴─────────┐  ┌───────────┴────────┐
      │ node PC-A           │  │ node PC-B        │  │ node PC-C          │
-     │  board デーモン      │  │ board デーモン    │  │ board デーモン      │
-     │  └落札→ flow inbox  │  │  └落札→ amigos   │  │  （repo 不一致なら   │
-     │    へ投函（既存経路） │  │    post（オーナー）│  │    入札しない）      │
+     │ agent-flow デーモン  │  │ agent-amigos     │  │ flow/amigos デーモン│
+     │ の board 参加ステップ │  │ デーモンの board  │  │  （repo 不一致なら   │
+     │  └落札→ flow inbox  │  │ 参加ステップ       │  │    入札しない）      │
+     │    へ投函（既存経路） │  │  └落札→ post     │  │                    │
      └─────────────────────┘  └──────────────────┘  └────────────────────┘
 ```
 

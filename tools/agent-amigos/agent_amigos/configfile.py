@@ -70,6 +70,12 @@ CONFIG_DEFAULTS = {
     "interval": 5.0,
     "resume_hours": 12.0,
     "manual_claim": False,   # true: 自動応募しない（commands/ 経由の手動引き受けのみ）
+    # 委譲公示板（agent-board）への参加（請負・入札）。board を与えると daemon が板を巡回し、
+    # workload=amigos の公示に repos/tags 照合で入札、勝てばオーナーとしてミッションを公示する。
+    # 板は「リポジトリ＋契約」だけで処理を持たない（schemas/board.schema.json）。既定 None で無効。
+    "board": None,           # 板の場所（ローカル dir / git+<url>）
+    "board_workdir": None,   # git+ 板のクローン作業領域（既定は自動）
+    "board_lease": 900.0,    # 板入札の lease（秒）
     "hub_serve": False,      # true: このホームのバスを hub として公開する（cwd を hub に）
     "hub_host": "0.0.0.0",
     "hub_port": 8765,

@@ -38,6 +38,7 @@ _FRAGMENTS = (
     "work",          # cmd_work
     "run",           # cmd_run + child spawn
     "submit",        # cmd_submit + cmd_cancel
+    "board",         # 委譲公示板（agent-board）への参加（入札・引き渡し）
     "daemon",        # daemon lock + cmd_daemon
     "cleanup",       # sweep / cmd_gc
     "status",        # cmd_status / cmd_result

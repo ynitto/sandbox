@@ -224,6 +224,15 @@ def cmd_daemon(args) -> int:
                 log(daemon_id, f"auto-heal: {rid} → 再開"
                                f"（heal #{bus.run_meta(rid).get('heal_count', '?')}）")
 
+        # 0) 委譲公示板（agent-board）の巡回: workload=flow の公示に repos/tags 照合で入札し、
+        #    勝てば自分の inbox へ submit_request で取り込む（＝下の inbox→orchestrator が拾う）。
+        #    board 未設定なら no-op。板の巡回失敗は daemon を止めない（板が落ちても自バスは動く）。
+        if getattr(args, "board", None):
+            try:
+                poll_board(bus, args, daemon_id)
+            except Exception as e:  # noqa: BLE001 — 板の巡回失敗は daemon を止めない
+                log(daemon_id, f"board 巡回でエラー（無視して継続）: {e}")
+
         # 1) 新しい要求を受理 → orchestrator をオンデマンド起動（分散時は 1 台だけ担当）。
         #    max_runs>0 なら「実行中（全 park を除く）の run 数」で受理を律速する。超過した要求は
         #    inbox に残り、枠が空いた poll で受理される（バックログ一括投入で orchestrator と

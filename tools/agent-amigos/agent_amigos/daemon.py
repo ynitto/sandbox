@@ -63,7 +63,9 @@ class NodeDaemon:
                  tags: "list[str] | None" = None, roles_filter: "list[str] | None" = None,
                  interval: float = 5.0, resume_hours: float = 12.0,
                  manual_claim: bool = False, commands_home: "str | None" = None,
-                 home: "str | None" = None, repos=None):
+                 home: "str | None" = None, repos=None,
+                 board: "str | None" = None, board_workdir: "str | None" = None,
+                 board_lease: float = 900.0):
         self.bus = bus
         self.node_id = node_id
         self.agent_cli = agent_cli
@@ -71,6 +73,11 @@ class NodeDaemon:
         # repos: このノードが担当するリポジトリ（repos.schema.json 形）。ロール requires.repos の
         # 選別に使う — 成果物リポジトリに応じて応募ノードを絞る（設計 §5.1）。
         self.repos = repos if isinstance(repos, (dict, list)) else {}
+        # board: 委譲公示板（agent-board）の場所。与えると cycle で板を巡回し、workload=amigos の
+        # 公示に repos/tags 照合で入札し、勝てばオーナーとしてミッションを公示する（設計 (B) 構成）。
+        self.board = board
+        self.board_workdir = board_workdir
+        self.board_lease = board_lease
         self.roles_filter = list(roles_filter or [])
         self.interval = interval
         self.resume_hours = resume_hours
@@ -102,6 +109,15 @@ class NodeDaemon:
             from .commands import ingest_commands
             if ingest_commands(self.bus, self.node_id, self.commands_home, self.agent_cli):
                 self._active = True
+        # 委譲公示板（agent-board）の巡回: workload=amigos の公示に入札し、勝てばオーナーとして
+        # ミッションを公示する（板は「リポジトリ＋契約」だけで処理を持たない）。board 未設定なら no-op。
+        if self.board:
+            from .board import poll_board
+            try:
+                if poll_board(self):
+                    self._active = True
+            except Exception as e:  # noqa: BLE001 — 板の巡回失敗は daemon を止めない
+                log(self.node_id, f"board 巡回でエラー（無視して継続）: {e}")
         seen = {}
         for mid in self.bus.list_missions():
             mp = self.bus.mission(mid)

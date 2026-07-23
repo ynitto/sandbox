@@ -141,6 +141,53 @@ class MatchesRoleTests(unittest.TestCase):
         self.assertTrue(matches_role({"id": "r"}, [], [], None))
 
 
+class BoardParticipationTests(AmigosTestCase):
+    """委譲公示板（agent-board）への参加（請負・入札）。板 = リポジトリ＋契約で処理を持たず、
+    入札・引き渡し（＝オーナーとしてミッション公示）は amigos デーモンが担う。"""
+
+    def _board_post(self, board, did, workload="amigos", **kw):
+        d = os.path.join(board, "delegations", did)
+        os.makedirs(d, exist_ok=True)
+        rec = {"op": "post", "version": 1, "id": did, "workload": workload,
+               "goal": "g", "title": "T",
+               "engine": {"amigos": {"roles": [{"id": "architect", "required": True}]}}}
+        rec.update(kw)
+        with open(os.path.join(d, "post.json"), "w", encoding="utf-8") as f:
+            json.dump(rec, f, ensure_ascii=False)
+        return d
+
+    def test_win_and_post_mission(self):
+        from agent_amigos import board as B
+        boarddir = os.path.join(self.tmp, "board")
+        os.makedirs(os.path.join(boarddir, "delegations"), exist_ok=True)
+        d = self._board_post(boarddir, "dg-1", workspace={"url": "git@h:team/app.git"})
+        dm = self.daemon(node="pc-a", commands_home=self.tmp, board=boarddir,
+                         repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}})
+        handed = B.poll_board(dm)
+        self.assertEqual(handed, ["dg-1"])
+        # 落札ノードがオーナーとしてミッションを公示した
+        self.assertTrue(self.bus.mission("dg-1").exists())
+        self.assertTrue(os.path.exists(os.path.join(d, "bids", "pc-a.json")))
+        self.assertTrue(os.path.exists(os.path.join(d, "status", "pc-a.json")))
+
+    def test_ineligible_repo_and_wrong_workload(self):
+        from agent_amigos import board as B
+        boarddir = os.path.join(self.tmp, "board")
+        os.makedirs(os.path.join(boarddir, "delegations"), exist_ok=True)
+        self._board_post(boarddir, "dg-other", workspace={"url": "git@h:team/other.git"})
+        self._board_post(boarddir, "dg-flow", workload="flow",
+                         workspace={"url": "git@h:team/app.git"})
+        dm = self.daemon(node="pc-a", commands_home=self.tmp, board=boarddir,
+                         repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}})
+        self.assertEqual(B.poll_board(dm), [])   # 担当外・flow は対象外
+        self.assertFalse(self.bus.mission("dg-other").exists())
+
+    def test_no_board_is_noop(self):
+        from agent_amigos import board as B
+        dm = self.daemon(node="pc-a", commands_home=self.tmp)
+        self.assertEqual(B.poll_board(dm), [])
+
+
 class ClaimTests(AmigosTestCase):
     def test_deterministic_single_winner(self):
         mid = self.post()

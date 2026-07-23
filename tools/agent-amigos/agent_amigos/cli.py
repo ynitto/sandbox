@@ -241,6 +241,9 @@ def cmd_serve(args) -> int:
         manual_claim=manual,
         commands_home=home,
         repos=settings.get("repos"),
+        board=(getattr(args, "board", None) or settings.get("board")),
+        board_workdir=settings.get("board_workdir"),
+        board_lease=float(settings.get("board_lease") or 900.0),
     )
     try:
         daemon.run(cycles=args.cycles)
@@ -570,6 +573,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="バスを hub として公開する（設定 hub.serve を上書き）")
     p.add_argument("--manual-claim", action=argparse.BooleanOptionalAction, default=None,
                    help="自動応募しない（commands/ 経由の手動引き受けのみ。設定 manual_claim を上書き）")
+    p.add_argument("--board", default=None,
+                   help="委譲公示板（agent-board）の場所（ローカル dir / git+<url>）。"
+                        "指定すると板を巡回し workload=amigos の公示に入札してオーナー公示する")
     p.set_defaults(fn=cmd_serve)
 
     p = sub.add_parser("init-bus", help="バスを初期化する")

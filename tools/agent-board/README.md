@@ -1,24 +1,34 @@
-# agent-board — 委譲公示板（依頼の公示・入札・成果一本化の分散バックエンド）
+# agent-board — 委譲公示板（リポジトリ＋契約）
 
-専用リポジトリ（またはローカル dir）を **委譲公示板** にして、エージェント処理の依頼を公示し、
-**登録ノードの入札（先勝ち claim）** で引き受け先を決める、エンジン非依存の一段下の層です。
-[agent-flow](../agent-flow/) / [agent-amigos](../agent-amigos/) の分散処理の裏側として機能します
-（両エンジンのコードは import せず、各エンジンの入力契約＝flow inbox / amigos-command を
-ファイルとして書いて引き渡す — 結合はデータ契約のみ）。
+**agent-board は実行プロセスを持ちません。** 専用リポジトリ（＝板）と、その上のファイルレイアウト
+契約（[`schemas/board.schema.json`](../../schemas/board.schema.json)）だけです。依頼の公示・入札・
+落札・成果の一本化に必要な**処理は既存ツールが担います**（新しいデーモンやサーバは増やしません）:
+
+| 役割 | 誰がやるか |
+|------|-----------|
+| 公示（post を板へ書く） | 依頼側 — `agent-project board-offload` ／ `agent-dashboard` の委譲タブ |
+| 入札・落札・引き渡し | 請負側 — **`agent-flow` / `agent-amigos` の常駐デーモン**が板を巡回し、`workload` が自分向きの公示に入札して、勝てば自分のエンジンへ取り込む |
+| 受入・成果の一本化 | 依頼側 — dashboard / CLI が `result.json` を書く |
+
+真実は板の上のファイルにあり、中央（forge）は転送のみ。落札の決定・成果の一本化は各ノードが
+同じファイル集合から決定的に導きます（中央が落ちても壊れない）。結合はデータ契約のみ — 各ツールは
+互いのコードを import せず、板のレイアウト（この契約）を読み書きするだけです。
 
 - 正典設計: [`docs/plans/2026-07-23-delegation-board-distributed-bidding-design.md`](../../docs/plans/2026-07-23-delegation-board-distributed-bidding-design.md)
 - 契約: [`schemas/board.schema.json`](../../schemas/board.schema.json)（板のレイアウト）／
   [`schemas/delegation.schema.json`](../../schemas/delegation.schema.json)（公示封筒）／
   [`schemas/repos.schema.json`](../../schemas/repos.schema.json)（ノードの担当リポジトリ宣言）
 
-## これは何を解決するか
+## 板の作り方
 
-| 要件 | 実現 |
-|------|------|
-| 依頼の受付・管理、配信/ポーリングでの入札 | 専用 git リポジトリ（板）＋ delegation 封筒。配信はポーリング（GitBus）が既定、long-poll / forge webhook は加速オプション |
-| 先勝ち入札・投機同時実行の許容・成果はひとつ | agent-flow / agent-amigos と同一の名前空間付き claim ＋ `(ts, who)` 決定的タイブレーク。成果は `result.json` 1 つに一本化 |
-| 成果物リポジトリによるノード側の入札選別 | ノード登録 `nodes/<node-id>.json` に repos レジストリ（repos.schema.json）を載せ、公示の `workspace.url` / `requires.repos` と `(url, path, base)` identity で照合 |
-| flow / amigos の裏側・スキーマ踏襲 | 落札＝「どのノードがホストするか」だけを決める。落札ノードが flow inbox 投函 / amigos post（オーナーとして公示）へ引き渡す |
+板は「ただの git リポジトリ」です。オンプレ forge（Gitea / Forgejo / GitLab CE）や ssh bare repo に
+専用リポジトリを 1 つ切るだけ。1 マシン運用ならローカルディレクトリでも構いません。
+
+```bash
+# 例: bare リポジトリを板にする
+git init --bare /srv/git/agent-board.git
+# 各ノードはこの URL を board として設定する（agent-flow / agent-amigos の設定 board:）
+```
 
 ## 板のレイアウト（`schemas/board.schema.json`）
 
@@ -34,58 +44,19 @@ delegations/<id>/
   cancelled.json                      # 中止マーカー（依頼者のみ）
 ```
 
-書き込み所有権をパス単位で分割するため git でもコンフリクトしません。真実は板の上のファイルに
-あり、中央（forge）は転送のみ。落札の決定・成果の一本化は各ノードが同じファイル集合から
-決定的に導きます（中央が落ちても壊れない）。
+書き込み所有権をパス単位で分割するため git でもコンフリクトしません。入札は agent-flow /
+agent-amigos と同一仕様の名前空間付き claim ＋ `(ts, who)` 決定的タイブレーク（同じ仕様・別実装）。
+勝者は有効（lease 内）な入札のうち `(ts, who)` 最小の 1 件に決定的に定まります。
 
-## 使い方
+## 各ツールの結合点
 
-```bash
-# ノードを登録し、入札デーモンを回す（cwd に agent-board.yaml を置く。省略時 = serve）
-agent-board register
-agent-board                       # = serve（板を巡回 → 入札 → 落札 → ローカルエンジンへ引き渡し）
-
-# 依頼を公示する（依頼者側）
-agent-board post --workload flow --goal "X を実装" --workspace git@h:team/app.git
-agent-board post --file delegation.json          # delegation 封筒をそのまま
-
-# 一覧・落札（owner-picks）・中止・掃除
-agent-board status
-agent-board award <id> <node>
-agent-board cancel <id>
-agent-board gc
-```
-
-設定は [`agent-board.yaml.example`](agent-board.yaml.example) を参照。`board:` に
-`git+<url>` を指定すると専用リポジトリを板にします（ローカル dir なら 1 マシン運用）。
-`repos:` にこのノードが担当するリポジトリを宣言すると、そのリポジトリの公示にだけ入札します。
-
-## テスト
-
-```bash
-python3 -m unittest discover -s tools/agent-board/tests
-```
-
-LLM 不要（stub のみ）。決定的タイブレークで勝者は 1 人・lease 失効で再入札・repos 照合による
-入札選別・flow inbox / amigos-command への引き渡し・投機の first-valid 一本化・owner-picks の
-応募/落札を検証します。
-
-## インストール
-
-```bash
-bash install.sh            # ~/.local/bin/agent-board へ zipapp で配置
-```
-
-標準ライブラリのみ（pip 依存なし）。git は分散モード（`board: git+<url>`）で必要です。
-
-## 各ツールとの結合
-
-- **agent-flow**: 落札ノードが `<flow_bus>/inbox/<id>.json` を書く（`submit_request` 契約）。
-  flow は `delegation:{id, board}` を run の `meta.json` へ引き回し、来歴を表示できる。
-- **agent-amigos**: 落札ノードが `<amigos_home>/.agents/agent-amigos/commands/` へ post を投函する
-  （オーナーとして公示）。amigos のノードは `agent-amigos.yaml` の `repos:` でロール
-  `requires.repos` を選別できる（板と同語彙）。
-- **agent-project**: `agent-project board-offload <task> --board <repo>` で、ルーティングで
-  workspace を確定したバックログタスクを板へ委譲できる。
-- **agent-dashboard**: 委譲タブが `delegation.boardRepos` の板へ post/award/cancel を投函し、
-  板の入札・落札・成果を横断一覧に揃える（`src/features/delegation/main/board-adapter.js`）。
+- **agent-flow**（請負・入札）: 設定 `board:` を与えると、デーモンが板を巡回して `workload: flow` の
+  公示に repos/tags 照合で入札し、勝てば自分の `inbox/<id>.json` へ取り込む（`agent_flow/board.py`）。
+  取り込んだ run の `meta.json` には来歴 `delegation:{id, board}` が残る。
+- **agent-amigos**（請負・入札）: 設定 `board:` を与えると、デーモンが板を巡回して `workload: amigos`
+  の公示に repos/tags 照合で入札し、勝てば**オーナーとしてミッションを公示**する（`agent_amigos/board.py`）。
+  ロール `requires.repos` は `agent-amigos.yaml` の `repos:` で選別する。
+- **agent-project**（依頼・公示）: `agent-project board-offload <task> --board <repo>` で、ルーティングで
+  workspace を確定したバックログタスクを板へ委譲する。
+- **agent-dashboard**（依頼・公示・観測）: 委譲タブが `delegation.boardRepos` の板へ post/award/cancel を
+  投函し、板の入札・落札・成果を横断一覧に揃える（`src/features/delegation/main/board-adapter.js`）。

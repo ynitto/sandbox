@@ -370,6 +370,82 @@ class DelegationProvenanceTests(unittest.TestCase):
         self.assertEqual(self.bus.run_meta("run-d")["delegation"], {"id": "dg-1", "board": True})
 
 
+class BoardParticipationTests(unittest.TestCase):
+    """委譲公示板（agent-board）への参加（請負・入札）。板 = リポジトリ＋契約で処理を持たず、
+    入札・引き渡しは flow デーモンが担う。ローカル板ディレクトリでプロトコルを stub 検証する。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-board-")
+        self.local = os.path.join(self.tmp, "localbus")
+        self.board = os.path.join(self.tmp, "board")
+        self.bus = kf.Bus(self.local, "_")
+        os.makedirs(os.path.join(self.board, "delegations"), exist_ok=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _post(self, did, **kw):
+        d = os.path.join(self.board, "delegations", did)
+        os.makedirs(d, exist_ok=True)
+        rec = {"op": "post", "version": 1, "id": did, "workload": "flow", "goal": "実装", **kw}
+        with open(os.path.join(d, "post.json"), "w", encoding="utf-8") as f:
+            json.dump(rec, f)
+        return d
+
+    def _args(self, **kw):
+        base = dict(board=self.board, board_workdir=None, board_branch="main",
+                    board_repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}},
+                    board_tags=[], board_lease=900.0)
+        base.update(kw)
+        return types.SimpleNamespace(**base)
+
+    def test_eligible_by_workspace_repo(self):
+        repos = {"app": {"url": "git@h:team/app.git", "owns": ["**"]}}
+        self.assertTrue(kf.board_eligible(
+            {"workspace": {"url": "git@h:team/app.git"}}, repos, []))
+        # 担当外リポジトリの公示には入札しない
+        self.assertFalse(kf.board_eligible(
+            {"workspace": {"url": "git@h:team/other.git"}}, repos, []))
+        # requires.tags 不足は不可
+        self.assertFalse(kf.board_eligible({"requires": {"tags": ["python"]}}, repos, []))
+
+    def test_win_and_handoff_to_inbox(self):
+        d = self._post("dg-1", workspace={"url": "git@h:team/app.git", "base": "main"})
+        handed = kf.poll_board(self.bus, self._args(), "pc-a")
+        self.assertEqual(handed, ["dg-1"])
+        # local inbox へ取り込まれ、来歴が付く
+        req = self.bus.read_inbox("dg-1")
+        self.assertIsNotNone(req)
+        self.assertEqual(req["delegation"], {"id": "dg-1", "board": True})
+        self.assertEqual(req["workspace"], {"url": "git@h:team/app.git", "base": "main"})
+        # 板に入札と状態が残る
+        self.assertTrue(os.path.exists(os.path.join(d, "bids", "pc-a.json")))
+        self.assertTrue(os.path.exists(os.path.join(d, "status", "pc-a.json")))
+
+    def test_ineligible_repo_no_bid(self):
+        self._post("dg-2", workspace={"url": "git@h:team/other.git"})
+        handed = kf.poll_board(self.bus, self._args(), "pc-a")
+        self.assertEqual(handed, [])
+        self.assertIsNone(self.bus.read_inbox("dg-2"))
+
+    def test_skip_amigos_workload_and_terminal(self):
+        self._post("dg-a", workload="amigos", workspace={"url": "git@h:team/app.git"})
+        d = self._post("dg-done", workspace={"url": "git@h:team/app.git"})
+        with open(os.path.join(d, "result.json"), "w") as f:
+            json.dump({"winner": "x"}, f)
+        handed = kf.poll_board(self.bus, self._args(), "pc-a")
+        self.assertEqual(handed, [])   # amigos は対象外・result 済みは触らない
+
+    def test_no_board_is_noop(self):
+        self.assertEqual(kf.poll_board(self.bus, self._args(board=None), "pc-a"), [])
+
+    def test_already_taken_not_rehanded(self):
+        self._post("dg-1", workspace={"url": "git@h:team/app.git"})
+        kf.poll_board(self.bus, self._args(), "pc-a")
+        # 2 巡目: 既に inbox にあるので再取り込みしない
+        self.assertEqual(kf.poll_board(self.bus, self._args(), "pc-a"), [])
+
+
 class RunFailureTests(unittest.TestCase):
     """orchestrator が done を書く前に異常終了したケースの終端化（失敗終了の検知）。
     これが無いと run が非終端のまま放置され、result/status を待つ消費者

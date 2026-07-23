@@ -9,40 +9,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ### agent-board: 委譲公示板（依頼の公示・入札・成果一本化の分散バックエンド）を新設
 
-新ツール `tools/agent-board/` と契約 `schemas/board.schema.json`。専用リポジトリ（またはローカル
-dir）を「委譲公示板」にして、エージェント処理の依頼を公示し、登録ノードの入札（先勝ち claim）で
-引き受け先を決める、エンジン非依存の一段下の層。agent-flow / agent-amigos の分散処理の裏側として
-機能する（両エンジンのコードは import せず、各エンジンの入力契約＝flow inbox / amigos-command を
-ファイルとして書いて引き渡す — 結合はデータ契約のみ）。正典設計:
+契約 `schemas/board.schema.json` と、専用リポジトリ（＝板）の規約 `tools/agent-board/README.md`。
+**agent-board は実行プロセスを持たず、「リポジトリ＋契約」だけ**。エージェント処理の依頼を公示し、
+登録ノードの入札（先勝ち claim）で引き受け先を決める、エンジン非依存の一段下の層。**入札・引き渡しの
+処理は既存デーモン（agent-flow / agent-amigos）が担う**（新しいデーモン・サーバは増やさない）。
+真実は板のファイル・中央（forge）は転送のみ。結合はデータ契約のみ。正典設計:
 `docs/plans/2026-07-23-delegation-board-distributed-bidding-design.md`。
 
+- **板のレイアウト契約**: `nodes/<id>`（能力宣言）・`delegations/<id>/{post,bids,award,status,
+  results,result,cancelled}`。書き込み所有権をパス単位で分割し git でもコンフリクトしない。
 - **先勝ち入札 ＋ 決定的一本化**: agent-flow / agent-amigos と同一仕様の名前空間付き claim ＋
   `(ts, who)` タイブレーク（同じ仕様・別実装）。2 ノードが同時入札しても落札は決定的に 1 ノード。
-  投機同時実行は名義分割 `results/<who>.json` ＋ `first-valid`（verify PASS の最先着）で
-  `result.json` に一本化。`post`/`register`/`serve`/`status`/`award`/`cancel`/`gc`。
-- **成果物リポジトリでノードを選別**: ノード登録 `nodes/<node-id>.json` に repos レジストリ
-  （`repos.schema.json`）を載せ、公示の `workspace.url` / `requires.repos` を `(url, path, base)`
-  identity で照合。担当するノードだけが入札する。
-- テスト `tests/test_agent_board.py`（26 件・LLM 不要の stub のみ）。
+  成果は `result.json` 1 つに一本化。
 
 ### schemas: `board.schema.json` を新設し、`delegation.schema.json` に additive 拡張
 
 `delegation.schema.json` の post 封筒へ `requires`（入札資格 tags/agent_cli/repos）と
-`speculation`（投機同時実行）を additive で追加（委譲公示板だけが解釈・直接経路は無視）。
+`speculation`（投機同時実行）を additive で追加（委譲公示板の参加者だけが解釈・直接経路は無視）。
 `board.schema.json` は板のファイルレイアウト（node/bid/award/status/result_report/result/
 cancelled）を文書化。`schemas/README.md` に board 行を追加。
 
-### agent-amigos: ノード能力宣言に `repos` を追加し、ロール `requires.repos` で応募ノードを選別
+### agent-flow: 委譲公示板への参加（請負・入札）と来歴の引き回し
 
-`agent-amigos.yaml` の `repos:`（`repos.schema.json` 形）を能力宣言に追加し、`matches_role` が
-ロールの `requires.repos` とノードの担当リポジトリを名前 / URL（`.git`・末尾スラッシュの揺れを
-吸収）で突き合わせる。成果物リポジトリに応じて応募ノードを絞れる（board の node と同語彙）。
+設定 `board:`（CLI `--board`）を与えると、daemon が板を巡回して `workload=flow` の公示に
+`board_repos` / `board_tags` で照合して入札（flow の claim をそのまま流用）、勝てば自分の
+`inbox/<id>.json` へ取り込む（＝既存の inbox→orchestrator フローがそのまま拾う）。`agent_flow/board.py`。
+取り込んだ run の `meta.json` には来歴 `delegation:{id, board}` が残る（`submit_request` /
+`submit --delegation` / `note_delegation`・additive）。
 
-### agent-flow: 委譲公示板由来の来歴（`delegation`）を inbox 要求 → run meta へ引き回す
+### agent-amigos: 委譲公示板への参加（請負・入札）と `repos` 能力宣言
 
-`submit_request` / `submit --delegation` が inbox 要求へ `delegation:{id, board}` を載せ、daemon の
-orchestrate 起動がそれを run の `meta.json` へ記録する（`note_delegation`・additive）。board 経由で
-投函された flow run の来歴を status / viewer が辿れる。
+設定 `board:`（CLI `--board`）を与えると、daemon が板を巡回して `workload=amigos` の公示に
+repos/tags 照合で入札し、勝てば**オーナーとしてミッションを公示**する（`agent_amigos/board.py`）。
+あわせて `agent-amigos.yaml` の `repos:`（`repos.schema.json` 形）を能力宣言に追加し、`matches_role`
+がロールの `requires.repos` とノードの担当リポジトリを名前 / URL（`.git`・末尾スラッシュの揺れを
+吸収）で突き合わせる。成果物リポジトリに応じて応募ノードを絞れる。
 
 ### agent-project: `board-offload` — バックログのタスクを委譲公示板へ委譲
 

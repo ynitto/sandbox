@@ -22,6 +22,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--lock-dir", dest="lock_dir", default=None,
                    help="daemon singleton ロックの置き場（設定ファイル lock_dir と同義。"
                         "外部起動の daemon を別ツールから発見させるため起動側と一致させる）")
+    p.add_argument("--board", default=None,
+                   help="委譲公示板（agent-board）の場所（ローカル dir / git+<url>）。"
+                        "指定すると daemon が板を巡回し workload=flow の公示に入札して取り込む")
     p.add_argument("--state-git", dest="state_git", default=None,
                    help="ワーク内容（ローカルバスの runs/・inbox/）を保存・共有する git リポジトリ"
                         "（URL/パス）。リモートの agent-dashboard が進捗/結果を読める"
