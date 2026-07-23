@@ -1391,6 +1391,11 @@ function resolveProjectRoot(workspaceDir) {
   if (!raw) {
     // 設定を開発フォルダに置かず、状態だけを <workspace>/.agent-project に置く従来構成。
     // 開発フォルダを登録した場合も、稼働レコードが指す状態フォルダと同じ実体へ解決する。
+    // ただし workspace 自身が既に状態フォルダ（direct mode の状態専用 clone を
+    // 「プロジェクトを探すフォルダ」へ明示登録したケース）なら、ここで完結させる。
+    // resolve(ws) に流すと git 管理下かつ agent-state ブランチを持つ状態専用 clone でも
+    // 「本体 repo」と誤認し、兄弟の <repo>-agent-state worktree を作ってしまう。
+    if (hasProjectStateMarkers(ws)) return ws;
     const nestedState = path.join(ws, '.agent-project');
     if (hasProjectStateMarkers(nestedState)) return resolve(nestedState);
     return resolve(ws);
