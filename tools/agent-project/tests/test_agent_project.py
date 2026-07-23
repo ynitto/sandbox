@@ -12120,6 +12120,15 @@ class NodeBudgetV2AndControlTests(unittest.TestCase):
         self.assertIn("[agent-error:control]", str(ctx.exception))
         self.assertEqual(km.classify_agent_failure(str(ctx.exception))[0], "control")
 
+class TestNodeAutoConfig(unittest.TestCase):
+    def test_auto_node_name_sanitizes_hostname(self):
+        with mock.patch.object(km.socket, 'gethostname', return_value='my pc.local!'):
+            self.assertEqual(km._auto_node_name(), 'my-pc.local')
+
+    def test_auto_node_name_falls_back_when_empty_after_sanitize(self):
+        with mock.patch.object(km.socket, 'gethostname', return_value='!!!'):
+            self.assertEqual(km._auto_node_name(), 'node')
+
 
 if __name__ == "__main__":
     unittest.main()

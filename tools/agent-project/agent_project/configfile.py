@@ -30,6 +30,17 @@ DEFAULT_CONFIG_NAMES = ["agent-project.yaml", "agent-project.yml", "agent-projec
 PROFILE_DIR = Path.home() / ".agents" / "agent-project" / "profiles"
 PROFILE_LOCAL_KEYS = {"root", "node", "project_config", "availability"}
 
+
+def _auto_node_name() -> str:
+    """この PC の既定 node 名を hostname から決定する。
+
+    共有 YAML に PC 固有値を書かずに複数 PC を起動できるよう、--node /
+    AGENT_PROJECT_NODE / profile のいずれも無いときだけ使う。agent-project の
+    node フィールドで使える文字に正規化し、空なら "node" へ落とす。
+    """
+    raw = socket.gethostname() or os.environ.get("COMPUTERNAME") or os.environ.get("HOSTNAME") or "node"
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", str(raw)).strip("-._")[:60] or "node"
+
 # 設定ファイルで上書きできるキー（snake_case）と組み込み既定。
 # CLI 引数の default は None にし、resolve_config で「設定ファイル→ここ」の順に埋める。
 # 真偽フラグ（--watch / --ltm / --no-archive 等）と個別パス上書きは CLI 専用。
@@ -374,9 +385,12 @@ def build_config(args) -> Config:
         lock_dir=getattr(args, "lock_dir", None),
         agent_flow=args.agent_flow, planner=args.planner, flow_planner=args.flow_planner,
         # profile mode は自動起動時の環境差分を排除するため AGENT_PROJECT_NODE を参照しない。
+        # ただし node がどこにも無いと multi-node/git-cas で起動できないため、最後に hostname
+        # 由来の安定したローカル既定値へフォールバックする。
         node=str(getattr(args, "node", None) or
                  ("" if getattr(args, "_profile_mode", False)
-                  else os.environ.get("AGENT_PROJECT_NODE", "")) or "").strip(),
+                  else os.environ.get("AGENT_PROJECT_NODE", "")) or
+                 _auto_node_name()).strip(),
         default_node=str(getattr(args, "default_node", "") or "").strip(),
         availability=availability,
         coordination=str(getattr(args, "coordination", "") or "").strip(),
@@ -530,7 +544,7 @@ def _add_common(sp):
     sp.add_argument("--node", dest="node", default=None,
                     help="この PC（エンジン）のノード名（複数 PC のバックログ分担）。指定すると "
                          "node 割当が一致するタスクと未割当タスク（default_node 規則）だけを消化する。"
-                         "環境変数 AGENT_PROJECT_NODE でも指定可。未指定（無名）は従来どおり全消化")
+                         "環境変数 AGENT_PROJECT_NODE でも指定可。未指定時は hostname から自動決定")
     sp.add_argument("--coordination", choices=["git-cas"], default=None,
                     help="複数 PC 制御を Git CAS で有効化（共有設定 coordination と同義）")
     sp.add_argument("--controller-heartbeat-sec", type=float, default=None,
