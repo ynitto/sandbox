@@ -290,22 +290,23 @@ CLI からも付与・修正できる。
   `codd-gate verify --debt --max-broken N …` を置き、受入時の負債ラチェットに使う。
 
   `codd_gate_*.py` は `tools/agent-project/` 直下の任意 sibling 部品で、人か install 手順が明示起動したときだけ
-  codd-gate の実体、バージョン、repos schema 互換性、対応機能をこの順に検査し、
-  `codd_gate_routing.py` が実引数を組み立てる。`codd_gate_regression.py` が永続化するのは、
+  codd-gate を検出し、`codd_gate_routing.py` が実引数を組み立てる。現在の
+  `codd_gate_regression.py` が永続化前に確認するのは codd-gate の実体だけで、バージョン、
+  repos schema 互換性、対応機能は検査しない。同ツールが永続化するのは、
   `.agent/agent-project.yaml` の `regression_cmd` 1行だけ。`intake_cmd` は書かず、
   人か install 手順が設定する。生成ツールはリポジトリルートで
   `python3 tools/agent-project/codd_gate_regression.py --config .agent/agent-project.yaml` と明示実行する。
   パッケージは sibling 部品を探索・import せず、`build_config` から値を差し込む自動配線も持たない。
   未設定のフック値は空のまま（＝連携なし）で通過する。`.agent/agent-project.yaml` は人専有ファイルで、
   人か、人が明示起動した `codd_gate_regression.py` だけが書き込む。sibling 部品を削除してもパッケージの
-  挙動は変わらない。codd-gate が未検出または非互換なら、生成ツールは値を書かず終了する（詳細は
+  挙動は変わらない。codd-gate が未検出なら、生成ツールは値を書かず終了する（詳細は
   [`codd-gate-design.md`](../../docs/designs/codd-gate-design.md) §4「agent-project との結合点」・
   §4.1「値の組み立てと永続化を担う任意部品」・
   §4.2「境界の完了条件」）。
   整理完了の条件は、次の決定的ゲートが exit 0 を返すこと。
 
   ```bash
-  ! git grep _apply_codd_gate -- tools/agent-project
+  ! git grep -nE '_apply_codd_gate|_codd_gate|import codd_gate' -- tools/agent-project/agent_project
   ```
 
 ### policy.md（人による上書き・per-project）
