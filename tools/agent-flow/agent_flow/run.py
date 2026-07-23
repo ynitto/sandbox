@@ -283,6 +283,7 @@ def _spawn_orchestrator(base: list, args, req_id: str, req: dict):
     for r in (req.get("references") or []):   # 参照リポジトリも run meta へ伝搬する
         ws_args += ["--reference", json.dumps(r, ensure_ascii=False)]
     inh = req.get("inherit_from")             # リトライ: 先行 run の引き継ぎ元を orchestrate へ
+    deleg = req.get("delegation")             # 委譲公示板（agent-board）由来の来歴を meta へ引き回す
     return subprocess.Popen(base + ws_args + [
         "--granularity", str(getattr(args, "granularity", "finest") or "finest"),
         *(["--exemplar-first"] if getattr(args, "exemplar_first", False) else []),
@@ -291,6 +292,8 @@ def _spawn_orchestrator(base: list, args, req_id: str, req: dict):
         # サブコマンド名より前に置くと親 parser に拾われ usage エラーで即死するため、
         # 必ず "orchestrate" の後ろに付ける（cmd_run の起動と同じ並び）。
         *(["--inherit-from", inh] if inh else []),
+        *(["--delegation", json.dumps(deleg, ensure_ascii=False)]
+          if isinstance(deleg, dict) and deleg.get("id") else []),
         "--planner", args.planner, "--executor", args.executor,
         "--max-iterations", str(args.max_iterations),
         "--max-fanout", str(args.max_fanout),

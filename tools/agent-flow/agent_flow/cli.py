@@ -123,6 +123,8 @@ def build_parser() -> argparse.ArgumentParser:
     orch.add_argument("--poll", type=float, default=None)
     orch.add_argument("--inherit-from", dest="inherit_from", default=None,
                       help="リトライ: 先行 run-id から確定済みノードを引き継ぎ先行 run を掃除する")
+    orch.add_argument("--delegation", default=None,
+                      help="委譲公示板（agent-board）由来の来歴 JSON（{id, board}）を run meta へ記録する")
     orch.set_defaults(func=cmd_orchestrate)
 
     work = sub.add_parser("work", help="ワーカー役")
@@ -175,6 +177,8 @@ def build_parser() -> argparse.ArgumentParser:
     sb.add_argument("--inherit-from", dest="inherit_from", default=None,
                     help="リトライ: 先行 run-id から確定済みノードを引き継ぎ先行 run を掃除する"
                          "（daemon の orchestrate に伝搬される）")
+    sb.add_argument("--delegation", default=None,
+                    help="委譲公示板（agent-board）由来の来歴 JSON（{id, board}）。inbox 要求に載る")
     sb.set_defaults(func=cmd_submit)
 
     cn = sub.add_parser("cancel",

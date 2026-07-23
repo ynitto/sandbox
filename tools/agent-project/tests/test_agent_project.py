@@ -104,6 +104,45 @@ class TestPolicy(unittest.TestCase):
         self.assertTrue(km.Task(id="T9", title="deploy prod").matches("prod"))
 
 
+class TestBoardOffload(unittest.TestCase):
+    """タスク → 委譲公示板（agent-board）への委譲（delegation post 封筒の組み立てと投函）。"""
+
+    def test_task_to_delegation_envelope(self):
+        t = km.Task(id="feat/x", title="API を実装")
+        t.set("desc", "詳細な指示")
+        spec = {"url": "git@h:team/app.git", "name": "app", "base": "main", "path": "apps/api"}
+        env = km.task_to_delegation(t, spec, workload="flow")
+        self.assertEqual(env["op"], "post")
+        self.assertEqual(env["version"], 1)
+        self.assertTrue(env["id"].startswith("dg-"))
+        self.assertTrue(all(c.isalnum() or c in "_-" for c in env["id"]))  # id 規約
+        self.assertEqual(env["workload"], "flow")
+        self.assertEqual(env["goal"], "API を実装")
+        self.assertEqual(env["design"], "詳細な指示")
+        self.assertEqual(env["workspace"], {"url": "git@h:team/app.git", "base": "main",
+                                            "path": "apps/api"})
+        # workspace の repo 名を requires.repos に載せる（担当ノードだけが入札する）
+        self.assertEqual(env["requires"], {"repos": ["app"]})
+
+    def test_write_board_post_idempotent(self):
+        tmp = tempfile.mkdtemp(prefix="ap-board-")
+        try:
+            env = km.task_to_delegation(km.Task(id="t1", title="やる"), None)
+            path = km.write_board_post(tmp, env)
+            self.assertTrue(os.path.exists(path))
+            self.assertEqual(os.path.basename(path), "post.json")
+            rec = json.load(open(path, encoding="utf-8"))
+            self.assertEqual(rec["id"], env["id"])
+            # 再投函は同一公示（上書きしない）
+            with open(path, encoding="utf-8") as f:
+                before = f.read()
+            km.write_board_post(tmp, {**env, "goal": "書き換え"})
+            with open(path, encoding="utf-8") as f:
+                self.assertEqual(before, f.read())
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 class TestPrioritize(unittest.TestCase):
     def test_none_age_and_policy(self):
         tasks = [km.Task(id="T0", title="a"), km.Task(id="T1", title="cleanup logs"),

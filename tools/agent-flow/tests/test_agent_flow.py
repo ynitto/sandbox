@@ -338,6 +338,38 @@ class InheritTests(unittest.TestCase):
         self.assertEqual(new.run_workspace().get("base"), kf.run_branch_name("req-w-t-r0"))
 
 
+class DelegationProvenanceTests(unittest.TestCase):
+    """委譲公示板（agent-board）由来の来歴を inbox 要求 → run meta へ引き回す（additive）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-test-deleg-")
+        self.bus = kf.Bus(self.tmp, "run-d")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_submit_request_carries_delegation(self):
+        self.bus.submit_request("run-d", "do it", "agent-board:pc-a",
+                                delegation={"id": "dg-1", "board": True})
+        rec = self.bus.read_inbox("run-d")
+        self.assertEqual(rec["delegation"], {"id": "dg-1", "board": True})
+
+    def test_submit_request_omits_empty_delegation(self):
+        self.bus.submit_request("run-d", "do it", "s", delegation=None)
+        self.assertNotIn("delegation", self.bus.read_inbox("run-d"))
+        self.bus.submit_request("run-d", "do it", "s", delegation={"board": True})  # id 無し
+        self.assertNotIn("delegation", self.bus.read_inbox("run-d"))
+
+    def test_note_delegation_writes_meta(self):
+        self.bus.ensure_run("do it")
+        self.bus.note_delegation({"id": "dg-1", "board": True})
+        self.assertEqual(self.bus.run_meta("run-d")["delegation"], {"id": "dg-1", "board": True})
+        # id 無し / 非 dict は無視（additive・安全側）
+        self.bus.note_delegation(None)
+        self.bus.note_delegation({"board": True})
+        self.assertEqual(self.bus.run_meta("run-d")["delegation"], {"id": "dg-1", "board": True})
+
+
 class RunFailureTests(unittest.TestCase):
     """orchestrator が done を書く前に異常終了したケースの終端化（失敗終了の検知）。
     これが無いと run が非終端のまま放置され、result/status を待つ消費者

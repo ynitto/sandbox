@@ -63,11 +63,14 @@ class NodeDaemon:
                  tags: "list[str] | None" = None, roles_filter: "list[str] | None" = None,
                  interval: float = 5.0, resume_hours: float = 12.0,
                  manual_claim: bool = False, commands_home: "str | None" = None,
-                 home: "str | None" = None):
+                 home: "str | None" = None, repos=None):
         self.bus = bus
         self.node_id = node_id
         self.agent_cli = agent_cli
         self.tags = list(tags or [])
+        # repos: このノードが担当するリポジトリ（repos.schema.json 形）。ロール requires.repos の
+        # 選別に使う — 成果物リポジトリに応じて応募ノードを絞る（設計 §5.1）。
+        self.repos = repos if isinstance(repos, (dict, list)) else {}
         self.roles_filter = list(roles_filter or [])
         self.interval = interval
         self.resume_hours = resume_hours
@@ -127,7 +130,8 @@ class NodeDaemon:
                         continue
                 if role.get("builtin") == "integrator" and not i_am_owner:
                     continue    # integrator はオーナーノードの組み込み職務（§8.1）
-                if not matches_role(role, self.tags, [self.agent_cli] if self.agent_cli else []):
+                if not matches_role(role, self.tags,
+                                    [self.agent_cli] if self.agent_cli else [], self.repos):
                     continue
                 if policy == "owner-picks":
                     apply_role(self.bus, mp, rid, self.node_id, self.agent_cli)

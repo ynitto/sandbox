@@ -65,6 +65,7 @@ CONFIG_DEFAULTS = {
     "node_id": None,
     "agent_cli": None,
     "tags": [],
+    "repos": {},             # 担当リポジトリ（repos.schema.json 形）。ロール requires.repos の選別に使う
     "roles": [],             # 応募するロールの絞り込み（空 = 全ロール）
     "interval": 5.0,
     "resume_hours": 12.0,
@@ -144,6 +145,7 @@ def load_settings(explicit: "str | None" = None, cwd: "str | None" = None) -> di
         out[key] = flat.get(key, dflt)
     out["tags"] = [str(t) for t in (out["tags"] or [])]
     out["roles"] = [str(r) for r in (out["roles"] or [])]
+    out["repos"] = out["repos"] if isinstance(out["repos"], (dict, list)) else {}
     out["_config_path"] = path
     out["_home"] = _resolve_home(path, cwd)
     return out

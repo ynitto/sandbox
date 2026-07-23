@@ -10,6 +10,7 @@ const path = require('path');
 const contract = require('./contract');
 const amigosAdapter = require('./amigos-adapter');
 const flowAdapter = require('./flow-adapter');
+const boardAdapter = require('./board-adapter');
 const amigosHomes = require('../../amigos/main/homes');
 const amigosMissions = require('../../amigos/main/missions');
 
@@ -19,8 +20,20 @@ function resolveFlowBusDirs(cfg) {
   return list.map((p) => String(p || '')).filter(Boolean);
 }
 
-// 公示先の解決: workload=amigos はホーム（commands 投函先）、flow はバス（inbox 投函先）。
+function resolveBoardRepos(cfg) {
+  const d = (cfg && cfg.delegation) || {};
+  const list = Array.isArray(d.boardRepos) ? d.boardRepos : [];
+  return list.map((p) => String(p || '')).filter(Boolean);
+}
+
+// 公示先の解決:
+// - payload.target === 'board' → 委譲公示板（agent-board）へ投函（落札→引き渡しは board デーモン）
+// - workload=amigos → ホーム（commands 投函先）
+// - workload=flow   → バス（inbox 投函先）
 function routePost(cfg, env, payload) {
+  if (payload.target === 'board') {
+    return boardAdapter.submitPost(String(payload.boardRepo || ''), env);
+  }
   if (env.workload === 'amigos') {
     return amigosHomes.writeCommand(cfg, payload.home, amigosAdapter.toCommand(env));
   }
@@ -71,6 +84,18 @@ function registerIpc(ctx) {
       }
     }
 
+    // board: 委譲公示板の全委譲 → 正規化ビュー（入札状況・落札・成果込み）
+    for (const boardRepo of resolveBoardRepos(cfg)) {
+      try {
+        for (const view of boardAdapter.listViews(boardRepo, now)) {
+          view.boardRepo = boardRepo;
+          items.push(view);
+        }
+      } catch (e) {
+        errors.push(`board ${boardRepo}: ${e.message}`);
+      }
+    }
+
     items.sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
     return { items, errors };
   });
@@ -83,9 +108,17 @@ function registerIpc(ctx) {
     return { id: env.id, workload: env.workload, ...res };
   });
 
-  // 落札（award） — owner-picks の確定（amigos のみ）。
+  // 落札（award） — owner-picks の確定。
+  // board 経由は板の award.json（委譲単位・flow/amigos 双方可）。直接経路は amigos のみ（D5）。
   handle('delegation:award', (payload) => {
     const p = payload || {};
+    if (p.target === 'board') {
+      const id = String(p.id || '');
+      const node = String(p.node || '');
+      if (!contract.ID_RE.test(id)) throw new Error(`不正な id です: ${p.id}`);
+      if (!node) throw new Error('award には node（落札ノード）が必要です');
+      return { id, target: 'board', ...boardAdapter.award(String(p.boardRepo || ''), { id, node }) };
+    }
     const env = contract.buildEnvelope('award', p);
     return {
       id: env.id,
@@ -107,11 +140,14 @@ function registerIpc(ctx) {
   handle('delegation:accept', acceptReject('accept'));
   handle('delegation:reject', acceptReject('reject'));
 
-  // 中止（cancel） — 両エンジン対応。
+  // 中止（cancel） — 両エンジン対応 ＋ board 経由。
   handle('delegation:cancel', (payload) => {
     const p = payload || {};
     const env = contract.buildEnvelope('cancel', p);
     const cfg = loadConfig();
+    if (p.target === 'board') {
+      return { id: env.id, target: 'board', ...boardAdapter.cancel(String(p.boardRepo || ''), env) };
+    }
     if (env.workload === 'amigos') {
       return {
         id: env.id,
@@ -123,4 +159,4 @@ function registerIpc(ctx) {
   });
 }
 
-module.exports = { registerIpc, resolveFlowBusDirs };
+module.exports = { registerIpc, resolveFlowBusDirs, resolveBoardRepos };

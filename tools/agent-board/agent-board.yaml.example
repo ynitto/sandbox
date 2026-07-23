@@ -1,0 +1,36 @@
+# agent-board.yaml — 委譲公示板のノード設定（cwd = ホーム）
+#
+# このファイルを置いたディレクトリで `agent-board`（サブコマンド省略 = serve）を回すと、
+# 板を巡回して入札資格のある公示に入札し、落札したらローカルエンジンへ引き渡す。
+# 優先順位は CLI > このファイル > 組み込み既定。PyYAML 無しなら agent-board.json でもよい。
+
+# 板の場所: ローカル dir / git+<url>（専用リポジトリ推奨）。既定 "."（cwd 自身がローカル板）
+board: git+ssh://git@gitea.local/team/agent-board.git
+# board_workdir: ~/.agents/board/mirror   # GitBus のクローン作業領域（既定は自動）
+board_branch: main
+
+node_id: pc-a               # 既定: ホスト名 + ランダム
+workloads: [flow, amigos]   # 受けられるエンジン（空 = 全部）
+tags: [python, frontend]    # 能力タグ（公示 requires.tags との突き合わせ）
+agent_cli: [claude, codex]  # このノードで使える agent CLI
+
+# 担当リポジトリ（repos.schema.json そのまま）。公示の workspace.url / requires.repos を
+# (url, path, base) identity で照合し、担当していれば入札する（＝リポジトリでノードを選別）。
+repos:
+  app:
+    url: git@gitea.local:team/app.git
+    base: main
+    owns: [src/**]          # 書込先（owns 無し = 参照リポジトリ・入札の書込先にしない）
+    local: /srv/mirror/app  # 手元クローン（あれば worktree 切り出しが速い）
+  docs:
+    url: git@gitea.local:team/docs.git
+    readonly: true
+
+availability: "09:00-21:00 Asia/Tokyo"  # 任意（amigos away と同語彙）
+max_concurrent: 2           # 同時落札上限（0 = 無制限）
+interval: 15                # デーモン巡回間隔（秒）
+lease: 900                  # 入札 lease（秒）
+
+# 落札した委譲のローカル引き渡し先（この PC で回っているエンジンのバス／ホーム）
+flow_bus: ./bus             # flow 落札 → <flow_bus>/inbox/<id>.json を書く
+amigos_home: .              # amigos 落札 → <amigos_home>/.agents/agent-amigos/commands/ へ投函

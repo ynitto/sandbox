@@ -203,6 +203,13 @@ def main(argv=None) -> int:
     _add_common(imp); imp.add_argument("id")
     imp.add_argument("--json", action="store_true", help="JSON で出力")
 
+    bo = sub.add_parser("board-offload",
+                        help="タスクを委譲公示板（agent-board）へ委譲（ルーティングで workspace を確定）")
+    _add_common(bo); bo.add_argument("id")
+    bo.add_argument("--board", default=None, help="公示板リポジトリの作業ディレクトリ")
+    bo.add_argument("--workload", default="flow", choices=["flow", "amigos"],
+                    help="委譲先エンジン（既定 flow）")
+
     rpl = sub.add_parser("replan",
                          help="charter からバックログを再分解（エラー回復。done/既存と類似は投入しない）")
     _add_common(rpl)
@@ -246,7 +253,7 @@ def main(argv=None) -> int:
     _subcommands = {"run", "triage", "needs", "promote", "rot", "stats", "audit",
                     "runlog", "doctor", "update", "enqueue", "approve", "hold", "reprioritize",
                     "revise", "reject", "resume-run", "impact", "replan", "instances",
-                    "start", "stop", "restart"}
+                    "start", "stop", "restart", "board-offload"}
     if not argv or (argv[0] not in _subcommands and argv[0] not in ("-h", "--help")):
         argv = ["run", "--watch", *argv]
 
@@ -295,6 +302,7 @@ def main(argv=None) -> int:
         "approve": lambda: cmd_approve(cfg, args.id, args.reason,
                                        complete=bool(getattr(args, "complete", False))),
         "reject": lambda: cmd_reject(cfg, args.id, args.reason),
+        "board-offload": lambda: cmd_board_offload(cfg, args),
         "resume-run": lambda: cmd_resume_run(cfg, args.id, args.run,
                                              args.reason or "run の続きから再開"),
         "impact": lambda: cmd_impact(cfg, args.id, getattr(args, "json", False)),

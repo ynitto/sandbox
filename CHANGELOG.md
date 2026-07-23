@@ -7,6 +7,56 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-board: 委譲公示板（依頼の公示・入札・成果一本化の分散バックエンド）を新設
+
+新ツール `tools/agent-board/` と契約 `schemas/board.schema.json`。専用リポジトリ（またはローカル
+dir）を「委譲公示板」にして、エージェント処理の依頼を公示し、登録ノードの入札（先勝ち claim）で
+引き受け先を決める、エンジン非依存の一段下の層。agent-flow / agent-amigos の分散処理の裏側として
+機能する（両エンジンのコードは import せず、各エンジンの入力契約＝flow inbox / amigos-command を
+ファイルとして書いて引き渡す — 結合はデータ契約のみ）。正典設計:
+`docs/plans/2026-07-23-delegation-board-distributed-bidding-design.md`。
+
+- **先勝ち入札 ＋ 決定的一本化**: agent-flow / agent-amigos と同一仕様の名前空間付き claim ＋
+  `(ts, who)` タイブレーク（同じ仕様・別実装）。2 ノードが同時入札しても落札は決定的に 1 ノード。
+  投機同時実行は名義分割 `results/<who>.json` ＋ `first-valid`（verify PASS の最先着）で
+  `result.json` に一本化。`post`/`register`/`serve`/`status`/`award`/`cancel`/`gc`。
+- **成果物リポジトリでノードを選別**: ノード登録 `nodes/<node-id>.json` に repos レジストリ
+  （`repos.schema.json`）を載せ、公示の `workspace.url` / `requires.repos` を `(url, path, base)`
+  identity で照合。担当するノードだけが入札する。
+- テスト `tests/test_agent_board.py`（26 件・LLM 不要の stub のみ）。
+
+### schemas: `board.schema.json` を新設し、`delegation.schema.json` に additive 拡張
+
+`delegation.schema.json` の post 封筒へ `requires`（入札資格 tags/agent_cli/repos）と
+`speculation`（投機同時実行）を additive で追加（委譲公示板だけが解釈・直接経路は無視）。
+`board.schema.json` は板のファイルレイアウト（node/bid/award/status/result_report/result/
+cancelled）を文書化。`schemas/README.md` に board 行を追加。
+
+### agent-amigos: ノード能力宣言に `repos` を追加し、ロール `requires.repos` で応募ノードを選別
+
+`agent-amigos.yaml` の `repos:`（`repos.schema.json` 形）を能力宣言に追加し、`matches_role` が
+ロールの `requires.repos` とノードの担当リポジトリを名前 / URL（`.git`・末尾スラッシュの揺れを
+吸収）で突き合わせる。成果物リポジトリに応じて応募ノードを絞れる（board の node と同語彙）。
+
+### agent-flow: 委譲公示板由来の来歴（`delegation`）を inbox 要求 → run meta へ引き回す
+
+`submit_request` / `submit --delegation` が inbox 要求へ `delegation:{id, board}` を載せ、daemon の
+orchestrate 起動がそれを run の `meta.json` へ記録する（`note_delegation`・additive）。board 経由で
+投函された flow run の来歴を status / viewer が辿れる。
+
+### agent-project: `board-offload` — バックログのタスクを委譲公示板へ委譲
+
+`agent-project board-offload <task-id> --board <repo>`。ルーティング（`resolve_workspace`）で
+workspace を確定したうえで、タスクを `delegation.schema.json` の post 封筒へ変換して板へ投函する
+（workspace の repo 名を `requires.repos` に載せ、担当ノードだけが入札する）。
+
+### agent-dashboard: 委譲タブに公示板（board）ターゲットを追加
+
+`src/features/delegation/main/board-adapter.js` を新設し、`target: 'board'` の post/award/cancel を
+板リポジトリへファイル投函、板のファイルだけから正規化ビュー（入札の勝者判定・フェーズ・成果）を
+導出。`delegation.boardRepos` を横断一覧に含める。契約コアは `requires` / `speculation` を保持。
+テスト `test/delegation-board.test.js`。
+
 ### agent-dashboard: 検収の成果物 diff を最新化（fetch + origin/<branch>）し、done run が無くても成果を確認できるように
 
 `src/base/main/git.js`（`diffRange`）・`src/base/main/ipc.js`・`src/renderer/sections/needs.js`。

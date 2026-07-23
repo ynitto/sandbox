@@ -185,12 +185,13 @@ def cmd_build_team(args) -> int:
 
 def cmd_join(args) -> int:
     bus, node = _resolve(args)
+    settings = load_settings(args.config)
     roles_filter = [r for r in (args.roles or "").split(",") if r]
-    tags = [t for t in (args.tags or "").split(",") if t]
+    tags = [t for t in (args.tags or "").split(",") if t] or settings["tags"]
     NodeDaemon(bus, node, agent_cli=args.agent_cli, tags=tags,
                roles_filter=roles_filter, interval=args.interval,
                resume_hours=args.resume_hours,
-               home=_node_home(args)).run(cycles=args.cycles)
+               home=_node_home(args), repos=settings.get("repos")).run(cycles=args.cycles)
     return 0
 
 
@@ -239,6 +240,7 @@ def cmd_serve(args) -> int:
                       else float(settings["resume_hours"])),
         manual_claim=manual,
         commands_home=home,
+        repos=settings.get("repos"),
     )
     try:
         daemon.run(cycles=args.cycles)

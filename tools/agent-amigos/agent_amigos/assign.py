@@ -94,8 +94,39 @@ def renew_lease(mp: MissionPaths, role_id: str, node_id: str,
         write_json_atomic(path, data)
 
 
-def matches_role(role: dict, node_tags: "list[str]", node_clis: "list[str]") -> bool:
-    """ロール要件とノード能力のマッチング（設計書 §6.1）。"""
+def _norm_repo_url(u: str) -> str:
+    u = str(u or "").strip().rstrip("/")
+    if u.endswith(".git"):
+        u = u[:-4]
+    return u.lower()
+
+
+def _declared_repos(node_repos) -> "set[str]":
+    """ノードの repos レジストリ（repos.schema.json 形）から担当リポジトリの名前と
+    正規化 URL の集合を返す。requires.repos の突き合わせに使う。"""
+    have: "set[str]" = set()
+    if isinstance(node_repos, dict):
+        for name, e in node_repos.items():
+            if str(name).startswith("_") or not isinstance(e, dict):
+                continue
+            have.add(str(name))
+            if e.get("url"):
+                have.add(_norm_repo_url(e["url"]))
+    elif isinstance(node_repos, list):
+        for e in node_repos:
+            if isinstance(e, dict):
+                if e.get("name"):
+                    have.add(str(e["name"]))
+                if e.get("url"):
+                    have.add(_norm_repo_url(e["url"]))
+    return have
+
+
+def matches_role(role: dict, node_tags: "list[str]", node_clis: "list[str]",
+                 node_repos=None) -> bool:
+    """ロール要件とノード能力のマッチング（設計書 §6.1）。
+    requires.repos はノードが担当するリポジトリ（agent-amigos.yaml の repos:）で選別する
+    — 成果物リポジトリに応じて入札するノードを絞る機構（board.schema.json の node と同語彙）。"""
     req = role.get("requires") or {}
     need_tags = set(str(t) for t in (req.get("tags") or []))
     if need_tags and not need_tags.issubset(set(node_tags)):
@@ -103,6 +134,12 @@ def matches_role(role: dict, node_tags: "list[str]", node_clis: "list[str]") -> 
     need_cli = req.get("cli")
     if need_cli and node_clis and str(need_cli) not in node_clis:
         return False
+    need_repos = req.get("repos") or []
+    if need_repos:
+        have = _declared_repos(node_repos)
+        for r in need_repos:
+            if str(r) not in have and _norm_repo_url(r) not in have:
+                return False
     return True
 
 

@@ -16,6 +16,10 @@ node_id: my-node          # 既定: ~/.agents/amigos/node.json に自動採番
 agent_cli: claude         # このノードの既定 agent CLI（stub = LLM なしのプロトコル検証）
 tags: []                  # 能力タグ（ロール requires.tags とのマッチング）
 roles: []                 # 応募するロールの絞り込み（空 = 全ロール）
+# repos: 担当リポジトリ（repos.schema.json 形）。ロール requires.repos の選別に使う
+#        — 成果物リポジトリに応じて応募ノードを絞る（agent-board の node と同語彙）。
+# repos:
+#   app: { url: git@gitea.local:team/app.git, base: main, owns: [src/**] }
 interval: 5               # デーモン巡回間隔（秒。無風時は自動で最大 8 倍まで伸びる）
 resume_hours: 12          # graceful offboard 時の resume_at（away 保持の期待復帰時刻）
 manual_claim: false       # true: 自動応募しない（dashboard / commands の手動引き受けのみ）

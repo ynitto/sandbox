@@ -115,6 +115,32 @@ class NormalizeTests(unittest.TestCase):
         normalize_mission(base_spec(acceptance="agent"))
 
 
+class MatchesRoleTests(unittest.TestCase):
+    """ロール要件 requires.{tags,cli,repos} とノード能力のマッチング。"""
+
+    def test_tags_and_cli(self):
+        from agent_amigos.assign import matches_role
+        role = {"id": "impl", "requires": {"tags": ["python"], "cli": "codex"}}
+        self.assertTrue(matches_role(role, ["python"], ["codex"]))
+        self.assertFalse(matches_role(role, ["rust"], ["codex"]))
+        self.assertFalse(matches_role(role, ["python"], ["claude"]))
+
+    def test_requires_repos_by_name_and_url(self):
+        from agent_amigos.assign import matches_role
+        repos = {"app": {"url": "git@h:team/app.git", "owns": ["**"]},
+                 "docs": {"url": "git@h:team/docs.git", "readonly": True}}
+        role_name = {"id": "impl", "requires": {"repos": ["app"]}}
+        role_url = {"id": "impl", "requires": {"repos": ["git@h:team/app"]}}  # .git 揺れ
+        role_miss = {"id": "impl", "requires": {"repos": ["other"]}}
+        self.assertTrue(matches_role(role_name, [], [], repos))
+        self.assertTrue(matches_role(role_url, [], [], repos))
+        self.assertFalse(matches_role(role_miss, [], [], repos))
+        # repos 宣言が無いノードは requires.repos を満たせない
+        self.assertFalse(matches_role(role_name, [], [], None))
+        # requires.repos が無いロールは repos 宣言に関係なく通る
+        self.assertTrue(matches_role({"id": "r"}, [], [], None))
+
+
 class ClaimTests(AmigosTestCase):
     def test_deterministic_single_winner(self):
         mid = self.post()
