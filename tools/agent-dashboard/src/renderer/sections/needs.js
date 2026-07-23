@@ -855,6 +855,7 @@ async function openDeliveryArtifactsModel(need, title) {
 function deliveryDiffRequest(entry, file = '', opts) {
   return {
     repo: entry.path,
+    viewerRoot: typeof state !== 'undefined' && state.project ? state.project.dir : '',
     base: entry.target || entry.base || 'main',
     ref: entry.ref || undefined,
     // 作業ブランチが分かれば origin/<branch> を優先（fetch 後は今 push されている最新を検収する）。

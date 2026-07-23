@@ -70,8 +70,8 @@ function registerBaseIpcHandlers() {
 
   // 検収サブ画面: 作業ブランチの git 差分（複数リポジトリ対応）。
   // branch/fetch は「fetch 後に origin/<branch> を優先」する検収の鮮度更新に使う。
-  handle('git:diff', ({ repo, base, ref, file, branch, fetch, maxBytes, workingTree }) =>
-    git.diffRange(repo, { base, ref, file, branch, fetch: !!fetch, maxBytes, workingTree: !!workingTree })
+  handle('git:diff', ({ repo, base, ref, file, branch, fetch, maxBytes, workingTree, viewerRoot }) =>
+    git.diffRange(repo, { base, ref, file, branch, fetch: !!fetch, maxBytes, workingTree: !!workingTree, viewerRoot })
   );
 
   // GitLab イシューの最新状態を API で補完（設定が無ければ enabled:false）
