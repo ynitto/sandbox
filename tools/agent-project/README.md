@@ -274,23 +274,27 @@ CLI からも付与・修正できる。
   護れる。境界の不変条件として、`agent_project` パッケージは汎用フックだけを提供し、`codd_gate_*` を
   import、直接結合、依存のいずれもしない。結合は共通スキーマ（`schemas/`）と、人か install 手順が E1〜E3 の汎用フックに置く
   codd-gate コマンド文字列に限る。リポジトリ定義は本ツールが charter から自動生成する
-  `<root>/repos.json` を codd-gate が `--repos` で読む。**有効化は設定だけ**:
-  E2 `regression_cmd` は毎タスクの**検証ゲート**を拡張する。値には
-  `'codd-gate verify --base "$KIRO_BASE_REV" --repos <root>/repos.json'`。各タスクの verify PASS 後・done
-  確定前に差分の一貫性を検査し、NG なら done を止める。E3 `intake_cmd` は **backlog の自走**を
-  pull 型で拡張する。値には
-  `'codd-gate tasks --debt --repos <root>/repos.json'`。既存負債を JSON の修復タスクへ変換し、パス開始時と
-  watch の idle 中に backlog へ冪等に取り込む。E1 の修復タスクでは `codd-gate check …` を task verify に置き、
-  期待状態に戻ったことを確認する。charter acceptance の `codd-gate verify --debt --max-broken N …` は、
-  受入時の負債ラチェットに使う。
-  `agent_project` は codd-gate を名指ししない。**連携が有効になるのは、YAML の `regression_cmd` /
-  `intake_cmd` または対応 CLI の `--regression-cmd` / `--intake-cmd` にコマンドを明示設定した場合だけで、
-  自動検出だけでは有効にならない。** sibling の
-  `codd_gate_regression.py` が永続化するのは `regression_cmd` 1行だけで、`intake_cmd` は人か install 手順が設定する。
-  生成ツールはリポジトリルートで `python3 tools/agent-project/codd_gate_regression.py --config
-  .agent/agent-project.yaml` と明示実行する。`codd_gate_*.py` は `tools/agent-project/` 直下の任意 sibling 部品で、人か install 手順が
-  明示起動したときだけ、実体→バージョン→repos schema 互換性→対応機能の順に短絡して自動検出し、
-  `codd_gate_routing.py` で実引数を組み立てる。
+  `<root>/repos.json` を codd-gate が `--repos` で読む。**連携が有効になるのは、人か install 手順が
+  YAML または CLI にコマンドを明示設定した場合だけで、自動検出だけでは有効にならない。** E2 と E3 の設定例:
+
+  ```yaml
+  regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV" --repos <root>/repos.json'
+  intake_cmd: 'codd-gate tasks --debt --repos <root>/repos.json'
+  ```
+
+  CLI なら同じ値を `--regression-cmd 'codd-gate verify …'` と
+  `--intake-cmd 'codd-gate tasks --debt …'` に渡す。`regression_cmd` は毎タスクの verify PASS 後・done
+  確定前に差分の一貫性を検査し、NG なら done を止める。`intake_cmd` は既存負債を JSON の修復タスクへ変換し、
+  パス開始時と watch の idle 中に backlog へ冪等に取り込む。E1 の修復タスクでは `codd-gate check …` を
+  task verify に置き、期待状態に戻ったことを確認する。charter acceptance の
+  `codd-gate verify --debt --max-broken N …` は、受入時の負債ラチェットに使う。
+
+  `codd_gate_*.py` は `tools/agent-project/` 直下の任意 sibling 部品で、人か install 手順が明示起動したときだけ、
+  codd-gate の実体、バージョン、repos schema 互換性、対応機能をこの順に短絡して検出し、
+  `codd_gate_routing.py` で実引数を組み立てる。`codd_gate_regression.py` の永続化責務は、
+  `.agent/agent-project.yaml` の `regression_cmd` 1行を冪等に書くことだけ。`intake_cmd` は書かず、
+  人か install 手順が設定する。生成ツールはリポジトリルートで
+  `python3 tools/agent-project/codd_gate_regression.py --config .agent/agent-project.yaml` と明示実行する。
   パッケージは sibling 部品を探索・import せず、`build_config` から値を差し込む自動配線も持たない。
   未設定のフック値は空のまま（＝連携なし）で通過する。`.agent/agent-project.yaml` は人専有ファイルで、
   yaml へ書き込むのは人の手か、人が明示起動した `codd_gate_regression.py` に限る。sibling 部品を削除しても
