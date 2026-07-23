@@ -592,6 +592,18 @@ def session_command_matches(when: "dict | None", ctx: "dict | None") -> bool:
     return True
 
 
+def render_session_command_bundle(items: list, revision: int = 0) -> str:
+    lines = [
+        f"<!-- agent-session-command-bundle rev:{int(revision or 0)} -->",
+        "## セッション開始時アクション（agent-dashboard 管理）",
+        "次の項目は個別ペーストではなく、まとめて依頼された起動アクションです。可能なものを順に実行し、実行できない項目は理由を短く報告してください。",
+        "",
+    ]
+    for idx, item in enumerate(items, 1):
+        lines.append(f"{idx}. [{item.get('id')}] {item.get('run')}")
+    return "\n".join(lines)
+
+
 def plan_session_commands(data: "dict | None", ctx: "dict | None") -> list:
     """実行計画を組み立てる（決定的・副作用なし）。dashboard のプレビューと同一結果。"""
     out: list = []
@@ -601,6 +613,7 @@ def plan_session_commands(data: "dict | None", ctx: "dict | None") -> list:
     engine = str(c.get("engine") or "").strip()
     budget = _session_commands_clamp_total(data.get("max_total_timeout"))
     spent = 0
+    bundled = []
     for item in (data.get("commands") or []):
         if not isinstance(item, dict):
             continue
@@ -617,6 +630,8 @@ def plan_session_commands(data: "dict | None", ctx: "dict | None") -> list:
             "on_error": on_error,
             "skip": None,
         }
+        if mode == "chat":
+            entry["strategy"] = item.get("strategy") if item.get("strategy") in ("paste", "bundle") else "paste"
         if mode == "process":
             cwd = str(item.get("cwd") or "").strip()
             entry["cwd"] = expand_session_placeholders(cwd, c) if cwd else str(c.get("cwd") or "")
@@ -636,7 +651,22 @@ def plan_session_commands(data: "dict | None", ctx: "dict | None") -> list:
             else:
                 entry["timeout"] = min(entry["timeout"], budget - spent)
                 spent += entry["timeout"]
-        out.append(entry)
+        if not entry.get("skip") and mode == "chat" and entry.get("strategy") == "bundle":
+            bundled.append({"id": entry["id"], "run": entry["run"]})
+        else:
+            out.append(entry)
+    if bundled:
+        revision = (_session_commands_revision(data) if "_session_commands_revision" in globals()
+                    else session_commands_revision(data))
+        out.append({
+            "id": "agent-startup-actions",
+            "mode": "chat",
+            "strategy": "bundle",
+            "run": render_session_command_bundle(bundled, revision),
+            "on_error": "warn",
+            "skip": None,
+            "bundled_ids": [b["id"] for b in bundled],
+        })
     return out
 
 

@@ -123,6 +123,26 @@ test('plan は enabled=false を完全な no-op にする', () => {
   assert.deepStrictEqual(sc.plan(data, { engine: 'kiro-loop' }), []);
 });
 
+
+test('chat はコマンドごとに従来ペースト式とまとめ依頼式を選べる', () => {
+  const entries = sc.plan({
+    revision: 9,
+    commands: [
+      { id: 'slash', mode: 'chat', strategy: 'paste', run: '/skill skill-selector' },
+      { id: 'docs', mode: 'chat', strategy: 'bundle', run: 'docs を読む' },
+      { id: 'skill', mode: 'chat', strategy: 'bundle', run: 'skill-selector を使う' },
+    ],
+  }, { engine: 'kiro-loop' });
+  assert.strictEqual(entries.length, 2);
+  assert.strictEqual(entries[0].id, 'slash');
+  assert.strictEqual(entries[0].strategy, 'paste');
+  assert.strictEqual(entries[1].id, 'agent-startup-actions');
+  assert.strictEqual(entries[1].strategy, 'bundle');
+  assert.deepStrictEqual(entries[1].bundled_ids, ['docs', 'skill']);
+  assert.ok(entries[1].run.includes('agent-session-command-bundle rev:9'));
+  assert.ok(entries[1].run.includes('[docs] docs を読む'));
+});
+
 test('plan は chat を単発系で no-session としてスキップする', () => {
   const data = { commands: [{ id: 'c', mode: 'chat', run: 'docs を読んで' }] };
   const onLoop = sc.plan(data, { engine: 'kiro-loop' });
@@ -301,6 +321,8 @@ test('設定カードは保存・追加・プレビューの動線を持つ', ()
   assert.ok(src.includes('orchestrationSessionCommandsPreview'));
   assert.ok(src.includes('使用するコマンド'), '利用者が設定内容を見出しだけで判断できる');
   assert.ok(src.includes('通常は設定しなくても使えます'), '設定が任意であることを明示する');
+  assert.ok(src.includes('orch-sess-bundle'), 'コマンドごとにまとめ依頼を選ぶチェックボックスが無い');
+  assert.ok(src.includes('まとめて依頼'), 'まとめ依頼の表示文言が無い');
   assert.ok(/id="btn-orch-sess-save" class="primary-inline"[^>]*>保存</.test(src),
     '保存操作は共通の色と短い文言にする');
 });

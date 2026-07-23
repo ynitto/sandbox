@@ -486,6 +486,7 @@ function orchSessionRowHtml(cmd, index) {
   const c = cmd || {};
   const mode = c.mode === 'chat' ? 'chat' : 'process';
   const when = c.when || {};
+  const strategy = c.strategy === 'bundle' ? 'bundle' : 'paste';
   const list = (v) => (Array.isArray(v) ? v.join(', ') : '');
   return `<div class="orch-sess-row" data-orch-sess="${index}" data-orch-sess-mode="${mode}">
     <div class="orch-sess-head">
@@ -503,6 +504,9 @@ function orchSessionRowHtml(cmd, index) {
           <option value="warn"${c.on_error !== 'fail' ? ' selected' : ''}>続行する</option>
           <option value="fail"${c.on_error === 'fail' ? ' selected' : ''}>開始を中止する</option>
         </select>
+      </label>
+      <label class="orch-sess-field orch-sess-strategy" ${mode === 'chat' ? '' : 'hidden'} title="従来の 1 コマンド 1 ペースト式ではなく、同じ指定の行を 1 つの起動アクション束にまとめます">
+        <input type="checkbox" class="orch-sess-bundle" ${strategy === 'bundle' ? 'checked' : ''} /> まとめて依頼
       </label>
       <button type="button" class="orch-sess-remove" aria-label="${esc(c.id || `${index + 1}行目`)}を削除">削除</button>
     </div>
@@ -547,10 +551,10 @@ function orchSessionPreviewHtml() {
   };
   const rows = entries.map((e, i) => {
     const skipped = !!e.skip;
-    const label = e.mode === 'chat' ? 'エージェントに送る' : 'コマンドを実行';
+    const label = e.mode === 'chat' ? (e.strategy === 'bundle' ? 'まとめて依頼' : 'エージェントに送る') : 'コマンドを実行';
     const note = skipped
       ? `<small class="muted">${esc(reason[e.skip] || 'スキップします')}</small>`
-      : `<small class="muted">${esc(e.mode === 'chat' ? '' : `${e.cwd || '（セッションの場所）'} / 上限 ${e.timeout} 秒 / ${e.on_error === 'fail' ? '失敗したら開始を中止' : '失敗しても続行'}`)}</small>`;
+      : `<small class="muted">${esc(e.mode === 'chat' ? (e.strategy === 'bundle' ? `含む行: ${(e.bundled_ids || []).join(', ')}` : '従来式: 1 コマンド 1 ペースト') : `${e.cwd || '（セッションの場所）'} / 上限 ${e.timeout} 秒 / ${e.on_error === 'fail' ? '失敗したら開始を中止' : '失敗しても続行'}`)}</small>`;
     return `<li class="orch-sess-preview-item${skipped ? ' orch-sess-preview-skipped' : ''}">
       <div class="orch-sess-preview-head"><strong>${esc(String(i + 1))}. ${esc(e.id)}</strong> ${orchBadge(skipped ? 'muted' : 'ok', label)}</div>
       <pre class="mono">${esc(e.run)}</pre>${note}
@@ -596,6 +600,7 @@ function orchSessionCommandsPanelHtml(overview) {
     <ul class="orch-sess-notes muted">
       <li>コマンドはそのままシェルへ渡します。空白を含む場所を指す <code>{cwd}</code> などは <code>"</code> で囲んでください。</li>
       <li>「失敗したとき: 開始を中止する」を選ぶと、そのコマンドが失敗したときエージェントが起動しなくなります。</li>
+      <li>「エージェントに送る」は、行ごとに従来の 1 コマンド 1 ペースト式と、チェックした行を 1 つにまとめる依頼式を選べます。</li>
       <li>設定を変えても、すでに動いているセッションには反映されません。次に始まるセッションから有効になります。</li>
     </ul>
     <div class="settings-save-actions">
@@ -630,6 +635,9 @@ function readSessionCommandsForm(root) {
       run: row.querySelector('.orch-sess-run').value.trim(),
       on_error: row.querySelector('.orch-sess-onerror').value === 'fail' ? 'fail' : 'warn',
     };
+    if (mode === 'chat' && row.querySelector('.orch-sess-bundle') && row.querySelector('.orch-sess-bundle').checked) {
+      cmd.strategy = 'bundle';
+    }
     if (mode === 'process') {
       const cwd = row.querySelector('.orch-sess-cwd').value.trim();
       if (cwd) cmd.cwd = cwd;
@@ -1183,6 +1191,8 @@ function setupOrchestration(root) {
     row.querySelector('.orch-sess-run-label').textContent =
       mode === 'chat' ? 'エージェントへ送る内容' : '実行するコマンド';
     row.querySelector('.orch-sess-process-only').hidden = mode === 'chat';
+    const strategy = row.querySelector('.orch-sess-strategy');
+    if (strategy) strategy.hidden = mode !== 'chat';
   };
   if (sessList) {
     sessList.addEventListener('input', markSessionDirty);
