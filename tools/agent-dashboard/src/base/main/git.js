@@ -579,10 +579,20 @@ async function heal(dir) {
 // repo は WSL 側の agent-project が記録した POSIX パス（/home/...）のことがある。
 // Windows の dashboard では path.resolve が C:\home\... に化けて「リポジトリが見つかりません」
 // になるため、WSL UNC（\\wsl.localhost\<distro>\...）へ変換してから解決する。
-function bridgeRepoPath(repo) {
+function bridgeRepoPath(repo, viewerRoot = '') {
   const { _isPosixAbs, toViewerPath } = require('../../features/agent-project/main/project');
   const raw = String(repo || '');
-  return process.platform === 'win32' && _isPosixAbs(raw) ? toViewerPath(raw) : raw;
+  if (process.platform !== 'win32' || !_isPosixAbs(raw)) return raw;
+  // Windows dashboard から WSL を見る場合、delivery に残る repo は Linux パスだけで
+  // ディストロ情報を持たない。既定 distro へ丸めると、実プロジェクトが別 distro にある環境で
+  // \\wsl.localhost\<wrong>\... を開き、検収 diff が「リポジトリが見つからない」になる。
+  // 画面で開いている project.dir（通常 effective_root_windows）から distro を引き継ぐ。
+  const unc = String(viewerRoot || '').replace(/\//g, '\\');
+  const m = unc.match(/^\\\\wsl(?:\$|\.localhost)\\([^\\]+)/i);
+  if (m && m[1]) {
+    return `\\\\wsl.localhost\\${m[1]}${raw.replace(/\//g, '\\')}`;
+  }
+  return toViewerPath(raw);
 }
 
 // 検収サブ画面用: 作業ブランチの差分（ファイル指定可）。サイズ上限付き。
@@ -590,8 +600,8 @@ function bridgeRepoPath(repo) {
 //                （コメント付き再実行で push し直した run の diff が古いまま、の対策）。
 //   branch     … 作業ブランチ名。fetch 後は origin/<branch> を最優先で比較先（tip）に使う
 //                （記録済みの ref が古くても、今 push されている最新を見る）。
-async function diffRange(repo, { base, ref, file, branch, fetch = false, maxBytes = 200_000, workingTree = false } = {}) {
-  const root = path.resolve(bridgeRepoPath(repo));
+async function diffRange(repo, { base, ref, file, branch, fetch = false, maxBytes = 200_000, workingTree = false, viewerRoot = '' } = {}) {
+  const root = path.resolve(bridgeRepoPath(repo, viewerRoot));
   if (!root || !fs.existsSync(root)) throw new Error(`リポジトリが見つかりません: ${repo}`);
   const bad = (s) => /[\s;|&`$]/.test(String(s || ''));
   const brName = String(branch || '').trim();
