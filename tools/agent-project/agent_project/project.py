@@ -52,6 +52,22 @@ def evaluate_acceptance(cfg: "Config", charter: "Charter") -> "tuple[int, int, l
             _prune_caches(_provisioned_urls)   # 共有 cache の worktree 登録を回収（本体は残す）
 
 
+def _has_project_human_wait(tasks: "list[Task]", charter_name: "str | None" = None) -> bool:
+    """Return True when this project/charter is already waiting on a human decision.
+
+    Proposed plan-review tasks are not consumable until approved.  Without this guard, a
+    project pass that contains only proposed/review/blocked tasks sees "no consumable"
+    and asks the planner for another backlog before the inner loop can report the human
+    wait, which can accumulate near-duplicate plan-review tasks while the user has not
+    approved the previous plan.
+    """
+    for t in tasks:
+        if charter_name and task_charter_name(t) not in ("", charter_name):
+            continue
+        if t.norm_status() in ("proposed", "blocked", "review"):
+            return True
+    return False
+
 # 人の検収項目の明示接頭辞（`検収: …` / `human: …`）。機械検証（コマンド化）を試みず、
 # 収束時のチェックリストとして人へ渡す＝タスクの「verify 未定義 → 人が確認して承認で完了」と同じ契約。
 _HUMAN_ACCEPT_PREFIX_RE = re.compile(
@@ -460,10 +476,12 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
         replan_retry = replan_req is not None
         existing = _existing_titles(cfg, charter_name if multi else None,
                                     active_only=replan_retry)
+        current_tasks = load_tasks(cfg.backlog)
         has_consumable = any(
             t.consumable() and (not multi or task_charter_name(t) == charter_name)
-            for t in load_tasks(cfg.backlog))
-        if not has_consumable or charter_changed or replan_retry:
+            for t in current_tasks)
+        has_human_wait = _has_project_human_wait(current_tasks, charter_name if multi else None)
+        if (not has_consumable and not has_human_wait) or charter_changed or replan_retry:
             ensure_repo_maps(cfg, charter)   # リポジトリ理解の成果物化（opt-in・sha キャッシュ）
             specs = plan_fn(charter)
             if multi:
