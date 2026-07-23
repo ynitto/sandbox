@@ -1373,15 +1373,25 @@ function hasProjectManifest(dir) {
 // ~/.agent のグローバル設定にある `root:` は使わない: それを採るとすべてのワークスペースが同じ
 // 状態フォルダを指してしまう（本体は 1 プロセス 1 プロジェクトなので困らないが、ビュアーは
 // 複数プロジェクトを同時に扱う）。
+//
+// `state_repo:` がある場合は本体と同じく状態専用リポジトリの clone をルートにする
+// （`state.py` の `_redirect_root_to_state_repo` と同型。worktree リダイレクトは使わない）。
 function resolveProjectRoot(workspaceDir) {
   const ws = path.resolve(String(workspaceDir || ''));
   if (!ws) return ws;
   const cfg = readToolConfig('agent-project', [ws, ...agentDirCandidates(ws)]);
   const fromWorkspace =
     cfg && cfg.file && path.resolve(cfg.file).startsWith(ws + path.sep);
-  const raw = fromWorkspace && cfg.values ? cfg.values.root : null;
-  const branch =
-    (fromWorkspace && cfg.values && cfg.values.state_branch) || DEFAULT_STATE_BRANCH;
+  const values = fromWorkspace && cfg.values ? cfg.values : null;
+
+  // 状態専用リポジトリ方式（案1）: yaml の state_repo から clone パスを特定してルートにする。
+  // 成果物リポジトリを登録しても <repo>-state / state_repo_dir を開く。
+  // 実体の git clone は agent-project に任せ、dashboard はパス解決だけする。
+  const stateRepoRoot = resolveStateRepoRoot(ws, values);
+  if (stateRepoRoot) return stateRepoRoot;
+
+  const raw = values ? values.root : null;
+  const branch = (values && values.state_branch) || DEFAULT_STATE_BRANCH;
   // 状態 worktree（<repo>-<branch>）が無ければ agent-state ブランチから作ってから解決する
   // （プロジェクトを開いたときに自動作成する。既存・非 git・ブランチ未存在はすべて no-op）。
   const resolve = (r) => {
@@ -1415,6 +1425,101 @@ function resolveProjectRoot(workspaceDir) {
     root = path.resolve(ws, r);
   }
   return resolve(root);
+}
+
+// git リモート URL/パスの正規化比較（本体 _same_git_remote と同型）。
+function _sameGitRemote(a, b) {
+  const norm = (u) => {
+    let s = String(u || '').trim().replace(/\/+$/, '');
+    if (s.endsWith('.git')) s = s.slice(0, -4);
+    if (!s.includes('://') && !s.includes('@')) {
+      // ローカルパスらしい → 絶対化（~ 展開込み）
+      const expanded = s.replace(/^~(?=$|\/|\\)/, os.homedir());
+      try { return path.resolve(expanded); } catch { return expanded; }
+    }
+    return s;
+  };
+  const na = norm(a);
+  const nb = norm(b);
+  return Boolean(na) && Boolean(nb) && na === nb;
+}
+
+function _gitRemoteOrigin(dir) {
+  try {
+    const r = require('child_process').spawnSync(
+      'git', ['-C', dir, 'remote', 'get-url', 'origin'],
+      { encoding: 'utf8', timeout: 10000, windowsHide: true }
+    );
+    if (r.status !== 0) return '';
+    return String(r.stdout || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+// ワークスペース（成果物側）の git トップ。絶対パスは使わず prefix 深さで組み立てる
+// （Windows ビュアー＋WSL の混在でも表記を壊さない。toStateWorktree と同じ流儀）。
+function gitRepoTop(dir) {
+  const gp = gitShowPrefix(dir);
+  if (!gp.ok) return null;
+  return _repoTopPath(dir, gp.prefix) || null;
+}
+
+// agent-project.yaml の state_repo / state_repo_dir から状態専用 clone のパスを返す。
+// 本体 `_redirect_root_to_state_repo` と同型:
+//   ・既定: <成果物top の親>/<repo名>-state（旧 worktree <repo>-agent-state と別名）
+//   ・state_repo_dir 相対: 成果物top の親配下 / 絶対: そのまま
+//
+// **clone 自体は dashboard では行わない。** 通常 clone は agent-project
+// （`_ensure_state_repo_clone`）に任せる。ここはパス解決だけし、未作成でもそのパスを
+// ルートとして返す（エンジン起動後に実体が現れる）。
+//
+// origin が state_repo と食い違う既存ディレクトリだけは使わない（旧 worktree 等を
+// 誤って開かない。本体と同じ護り）。workspace 自身が既にその clone なら workspace を返す。
+function resolveStateRepoRoot(workspaceDir, values) {
+  if (!values) return null;
+  const stateRepo = String(values.state_repo || '').trim();
+  if (!stateRepo) return null;
+
+  const ws = path.resolve(String(workspaceDir || ''));
+  if (!ws) return null;
+
+  // 登録パス自身が状態専用 clone（origin 一致）なら、そのままルート。
+  if (fs.existsSync(path.join(ws, '.git')) && _sameGitRemote(_gitRemoteOrigin(ws), stateRepo)) {
+    return ws;
+  }
+
+  const deliverableTop = gitRepoTop(ws) || ws;
+  const repoDirRaw = String(values.state_repo_dir || '').trim()
+    .replace(/^~(?=$|\/|\\)/, os.homedir());
+
+  let dst;
+  if (repoDirRaw) {
+    if (_isPosixAbs(repoDirRaw)) {
+      dst = toViewerPath(repoDirRaw);
+    } else if (path.isAbsolute(repoDirRaw)) {
+      // pathlib の「親 / 絶対パス = 絶対パス」と同じく、絶対ならそのまま。
+      dst = path.resolve(repoDirRaw);
+    } else {
+      dst = path.join(path.dirname(deliverableTop), repoDirRaw);
+    }
+  } else {
+    dst = path.join(path.dirname(deliverableTop), `${path.basename(deliverableTop)}-state`);
+  }
+  dst = path.resolve(dst);
+
+  // 自分自身へ解決された場合（上の origin チェックで既に返しているが、非 git 等の保険）
+  if (pathsEqual(dst, ws)) return ws;
+
+  // 既存ディレクトリの origin が state_repo と食い違う（旧 worktree や別 repo）なら使わない。
+  // 黙って誤ディレクトリを開くと移行が効かない。未作成・空フォルダはパスを返して
+  // agent-project の clone を待つ（dashboard は git clone しない）。
+  if (fs.existsSync(path.join(dst, '.git'))
+      && !_sameGitRemote(_gitRemoteOrigin(dst), stateRepo)) {
+    return null;
+  }
+
+  return dst;
 }
 
 const DEFAULT_STATE_BRANCH = 'agent-state';
@@ -1864,10 +1969,15 @@ function readProject(workspaceDir, cfg) {
     need.comments = readReviewComments(dir, tid);
   }
   const projectCfg = readToolConfig('agent-project', [workspace, ...agentDirCandidates(workspace)]);
-  const stateBranch = (projectCfg && projectCfg.values && projectCfg.values.state_branch) || DEFAULT_STATE_BRANCH;
+  const cfgValues = projectCfg && projectCfg.values ? projectCfg.values : null;
+  const stateBranch = (cfgValues && cfgValues.state_branch) || DEFAULT_STATE_BRANCH;
   const gp = gitShowPrefix(dir);
   if (gp.ok) {
-    const sourceDir = fromStateWorktree(dir, stateBranch);
+    // state_repo 方式では状態 clone と成果物リポジトリが別物。検収 diff の「所在」補正は
+    // 登録ワークスペース（成果物側）を source にする。worktree 方式だけ fromStateWorktree。
+    const sourceDir = (cfgValues && String(cfgValues.state_repo || '').trim())
+      ? workspace
+      : fromStateWorktree(dir, stateBranch);
     for (const need of needs) {
       need.delivery = _repairStateDeliveryPaths(need.delivery, dir, sourceDir, gp.prefix);
     }
@@ -2013,12 +2123,14 @@ module.exports = {
   scanForProjects,
   readProject,
   resolveProjectRoot,
+  resolveStateRepoRoot,
   fromStateWorktree,
   ensureStateWorktree,
   resolveBusDir,
   _stateWorktreePath,
   _sourceRootPath,
   _repairStateDeliveryPaths,
+  _sameGitRemote,
   _pathKey,
   pathsEqual,
   hostsMatch,

@@ -306,4 +306,26 @@ assert.strictEqual(
 assert.strictEqual(strategyDisplayLabel('sequential'), 'sequential');
 assert.ok(!strategyDisplayLabel({ patterns: ['map-reduce'] }).includes('[object Object]'));
 
+assert.ok(!html.includes('>（案'), '案番号などの設計用語をラベルに出しません');
+assert.ok(!renderer.includes('この PC の役割（案'), '設定ラベルに設計案番号を出しません');
+assert.ok(!renderer.includes('engineer（本体も動かす'), '役割選択肢に内部ロール名を前面に出しません');
+assert.ok(!renderer.includes('viewer（閲覧・レビュー専用）'), '役割選択肢に内部ロール名を前面に出しません');
+assert.ok(renderer.includes('>実行も行う（すべての機能）</option>'), '実行ロールは平易な日本語で示します');
+assert.ok(renderer.includes('>閲覧・レビュー専用</option>'), '閲覧ロールは平易な日本語で示します');
+assert.ok(!renderer.includes('登録された clone がありません'), '診断結果に clone などの開発用語を出しません');
+assert.ok(!renderer.includes('（役割: viewer）'), '診断結果に内部ロール名を括弧付きで出しません');
+assert.ok(!renderer.includes('再配分しました（computed を更新）'), '内部実装語をトーストに出しません');
+assert.ok(!html.includes('なぜ（why）'), 'スキーマフィールド名 why をラベルに出しません');
+assert.ok(!html.includes('（scope）'), 'スキーマフィールド名 scope をラベルに出しません');
+assert.ok(!html.includes('（out_of_scope）'), 'スキーマフィールド名 out_of_scope をラベルに出しません');
+assert.ok(!html.includes('（desc）'), 'スキーマフィールド名 desc をラベルに出しません');
+assert.ok(!html.includes('決定的に展開'), '実装寄りの用語を完了条件ラベルに出しません');
+assert.ok(!html.includes('生コマンド不要'), '実装寄りの用語を完了条件ラベルに出しません');
+assert.ok(html.includes('>完了条件テンプレート</label>'), '完了条件テンプレートは短いラベルにします');
+assert.ok(html.includes('>目的・背景</label>'), 'why 欄は目的・背景と表示します');
+assert.ok(html.includes('>やる範囲</label>'), 'scope 欄はやる範囲と表示します');
+assert.ok(renderer.includes("why: '目的・背景'"), '誘導フィールド表示名から冗長な括弧説明を除きます');
+assert.ok(!renderer.includes('空にすると削除）'), '修正フォームのラベルに削除規約の括弧説明を詰め込みません');
+assert.ok(!renderer.includes('概要（desc）・目的（why）'), '要対応の案内にスキーマ名を出しません');
+
 console.log('user-centered-ui: all tests passed');

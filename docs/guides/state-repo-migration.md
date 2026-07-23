@@ -82,15 +82,21 @@ CLI/環境での個別上書きも可: `--state-repo` / `--state-repo-branch` / 
 掴んで移行が効かなかった不具合を修正済み）。既存フォルダがあっても、その `origin` が `state_repo`
 と一致しなければ再利用せず worktree 方式へフォールバックし、理由を表示する（黙って旧構成を使わない）。
 
-### 3. 各 PC を切り替える（clone は自動・dashboard には状態 clone を登録）
+### 3. 各 PC を切り替える（clone は agent-project・dashboard はパス解決のみ）
 
-- **エンジンを動かす PC**: 上記の設定＋再起動だけでよい。エンジンが専用リポジトリを
-  `<repo>-state` へ**自動 clone** する（手動 clone 不要）。
-- **dashboard には `<repo>-state`（状態 clone）を登録する**。成果物リポジトリではなく、
-  この状態 clone のフォルダを開く。エンジンと dashboard が同じ PC なら、エンジンが作った
-  `<repo>-state` をそのまま登録すればよい（別途 clone しなくてよい）。
-- **閲覧のみ（viewer）の PC**: `git clone <state_repo> app-state` して dashboard に登録するだけ。
-  WSL/CLI 設定は不要（⚙ 設定の役割を viewer にすると本体起動ボタンも隠れる）。
+- **エンジンを動かす PC**: 上記の設定＋再起動だけでよい。エンジン（agent-project）が専用
+  リポジトリを `<repo>-state` へ**自動 clone** する（手動 clone 不要）。
+- **dashboard の登録**: 成果物リポジトリを登録すればよい。dashboard は
+  `.agents/agent-project.yaml`（または直下の `agent-project.yaml`）の `state_repo` /
+  `state_repo_dir` から状態 clone パスを解決し、そこをプロジェクトルートとして開く。
+  **状態リポジトリの git clone 自体は dashboard では行わず agent-project に任せる。**
+  エンジンと同じ PC なら、作られた `<repo>-state` を自動で見つける。状態 clone を直接
+  登録する従来のやり方もそのまま使える。
+- **閲覧のみ（viewer）の PC**: 成果物リポジトリを clone して同じ `agent-project.yaml`
+  （`state_repo` / `state_repo_dir`）を置き、隣に `git clone <state_repo> …` で状態
+  clone を置く（viewer にはエンジンが居ないので手動 clone が必要）。または状態 clone
+  だけを登録してもよい。WSL/CLI 設定は不要（⚙ 設定の役割を viewer にすると本体起動
+  ボタンも隠れる）。
 
 > 成果物の diff（検収）は従来どおり成果物リポジトリの `origin/<branch>` を fetch して見るため、
 > 検収 diff 用に成果物リポジトリの clone を併存させてもよい（必須ではない）。
@@ -168,9 +174,11 @@ CLI/環境での個別上書きも可: `--state-repo` / `--state-repo-branch` / 
 - **再起動しても専用リポジトリが使われない/バージョン情報が引き継がれない** → 旧既定の
   clone 先 `<repo>-agent-state` が旧 worktree と同名で、旧 worktree を掴んでいた。現行は
   `<repo>-state` に clone する。旧構成が `app-agent-state` に残っていても衝突しない。
-- **dashboard にどのフォルダを登録する？** → 状態 clone（`<repo>-state`）。成果物リポジトリ
-  ではない。
-- **手動 clone は必要？** → エンジン PC は不要（自動 clone）。閲覧専用 PC は `git clone` 1 回。
+- **dashboard にどのフォルダを登録する？** → 成果物リポジトリ（`state_repo` 付き yaml がある方）
+  でよい。dashboard が状態 clone（`<repo>-state`）をルートとして解決する。状態 clone の
+  直接登録も可。
+- **手動 clone は必要？** → エンジン PC は不要（agent-project が自動 clone。dashboard は
+  clone しない）。閲覧専用 PC は `git clone` 1 回。
 
 ## 履歴のリセット（任意・年数回の運用）
 
