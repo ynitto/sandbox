@@ -23,6 +23,7 @@ const DEFAULT_TIMEOUT = 60;
 const DEFAULT_MAX_TOTAL_TIMEOUT = 120;
 const HARD_MAX_TOTAL_TIMEOUT = 600;
 const MODES = ['process', 'chat'];
+const CHAT_STRATEGIES = ['paste', 'bundle'];
 const ON_ERRORS = ['warn', 'fail'];
 const WHEN_KEYS = ['engines', 'workloads', 'agent_cli'];
 // chat モードを送れるのは常駐系（セッションが長寿命なエンジン）だけ。
@@ -111,6 +112,7 @@ function normalizeCommand(c) {
     }
   }
   out.on_error = ON_ERRORS.includes(c.on_error) ? c.on_error : 'warn';
+  if (mode === 'chat') out.strategy = CHAT_STRATEGIES.includes(c.strategy) ? c.strategy : 'paste';
   const when = normalizeWhen(c.when);
   if (when) out.when = when;
   return out;
@@ -173,6 +175,19 @@ function matchesWhen(when, ctx) {
   return true;
 }
 
+function renderBundlePrompt(items, revision) {
+  const lines = [
+    `<!-- agent-session-command-bundle rev:${Number(revision || 0)} -->`,
+    '## セッション開始時アクション（agent-dashboard 管理）',
+    '次の項目は個別ペーストではなく、まとめて依頼された起動アクションです。可能なものを順に実行し、実行できない項目は理由を短く報告してください。',
+    '',
+  ];
+  items.forEach((item, i) => {
+    lines.push(`${i + 1}. [${item.id}] ${item.run}`);
+  });
+  return lines.join('\n');
+}
+
 // 実行計画を組み立てる（決定的・副作用なし）。UI のプレビューとエンジンの実行が同じものを見る。
 // 返す各要素は skip の理由を持つため、UI は除外された行もグレーで残せる。
 function plan(data, ctx) {
@@ -183,6 +198,7 @@ function plan(data, ctx) {
   const commands = Array.isArray(data.commands) ? data.commands : [];
   const budget = clampMaxTotalTimeout(data.max_total_timeout);
   let spent = 0;
+  const bundled = [];
   for (const item of commands) {
     const cmd = normalizeCommand(item);
     if (!cmd) continue;
@@ -193,6 +209,7 @@ function plan(data, ctx) {
       on_error: cmd.on_error,
       skip: null,
     };
+    if (cmd.mode === 'chat') entry.strategy = cmd.strategy || 'paste';
     if (cmd.mode === 'process') {
       entry.cwd = cmd.cwd ? expandPlaceholders(cmd.cwd, c) : String(c.cwd || '');
       entry.timeout = cmd.timeout === undefined ? DEFAULT_TIMEOUT : cmd.timeout;
@@ -215,7 +232,22 @@ function plan(data, ctx) {
         spent += entry.timeout;
       }
     }
-    out.push(entry);
+    if (!entry.skip && cmd.mode === 'chat' && entry.strategy === 'bundle') {
+      bundled.push({ id: entry.id, run: entry.run });
+    } else {
+      out.push(entry);
+    }
+  }
+  if (bundled.length) {
+    out.push({
+      id: 'agent-startup-actions',
+      mode: 'chat',
+      strategy: 'bundle',
+      run: renderBundlePrompt(bundled, data.revision),
+      on_error: 'warn',
+      skip: null,
+      bundled_ids: bundled.map((b) => b.id),
+    });
   }
   return out;
 }
@@ -270,4 +302,6 @@ module.exports = {
   CHAT_CAPABLE_ENGINES,
   MODES,
   ON_ERRORS,
+  CHAT_STRATEGIES,
+  renderBundlePrompt,
 };
