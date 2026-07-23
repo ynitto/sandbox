@@ -130,6 +130,28 @@ stale lock・中断 rebase）は次回起動時に自動回収される。
 - **明示割当**: タスクの `- node: pc-b` で特定 PC に固定（重い GPU ジョブ等）。
   dashboard の revise、または人が backlog を編集して指定できる。
 
+### 分担の粒度 — 既定は「タスク単位」。ノード単位ではない
+
+`coordination: git-cas` が分散するのは **agent-project のタスク**であり、claim した PC が
+そのタスクの run（agent-flow のタスクグラフ）を**丸ごとローカルで実行し切る**。
+run 内の各ノードが PC 間に分散されないのは**バグではなく仕様**:
+
+- state_git は「実行はローカルのまま、状態の鏡だけを共有する」閲覧用ミラー
+  （agent-flow README「`--git`（GitBus）とは別物」、`agent_flow/stategit.py` 冒頭）。
+  ローカル bus の `sync_pull`/`sync_push` は no-op（`agent_flow/bus.py:37-41`）で、
+  ノード claim は書いた PC の外へ伝わらない。worker は 2 秒間隔でノードを消化する一方、
+  ミラー同期は約 300 秒間隔なので、他 PC が run を見る頃には全ノードに結果が付いている。
+
+ノード単位まで分散したい場合は、以下のどちらかへ**構成を変更**する（コード変更は不要）:
+
+| 方式 | 仕組み | 向き・不向き |
+|---|---|---|
+| `executor: gitlab`（推奨・`agent-flow.state-git.yaml.example` の想定構成） | daemon は 1 台のまま、各ノードを GitLab イシューに委譲。どの PC（人/エージェント）でも拾える | レビュー往復を挟む長期作業向き。イシュー経由なので粒度が粗くても安定 |
+| agent-flow GitBus（全 PC の daemon が同じ `--git` リモートを指す） | claim を含む bus 全体を git で共有し、claim 時に毎回 pull/push。名前空間 claim ＋決定的タイブレーク＋ lease で PC 間排他が実際に効く | ノード粒度の真の分散。ただし bus リポジトリへの push 頻度が高い |
+
+「タスク単位のベストエフォート分担で足りるか」をまず判断し、足りるなら現状の
+ミラー構成のままでよい（その場合、run のノードが 1 台で実行されるのは正常）。
+
 ### 人の判断の分担
 
 判断待ちは `needs/<id>.md`（proposed / review / blocked）に集まり、全 PC の dashboard に
@@ -169,6 +191,66 @@ stale lock・中断 rebase）は次回起動時に自動回収される。
 - **1 つの状態名前空間（subdir/リポジトリ）に複数プロジェクトの daemon を向ける**。
   「1 名前空間 = 1 backlog = 各 PC 1 daemon」を守る。
 - **worktree 方式のまま複数 PC 化**。先に専用リポジトリ方式へ移行する。
+
+## ゴースト表示（回答済みの needs・消えたはずの backlog / run が残る）の原因と対処
+
+複数 PC 運用で「PC-A で判断済みなのに PC-B に古いカードが残る」症状は、独立した
+複数の経路が重なって起きる。発生源と対処を優先度順に示す。
+
+### A. viewer clone の dirty 化で pull が恒久スキップ（最有力・PC 全体が固まる）
+
+dashboard の自動 pull は working tree が dirty だと**スキップ**する
+（`git.js` `doPull`: `--ff-only` のみ・autostash による破損の再発防止のため）。
+ところが dashboard 自身が書く `flow-archive/*.json` は同期対象外なのに **git 管理からは
+外れていない**ため、書いた瞬間からその clone は常に dirty になり、以後 pull が一切走らない。
+→ その PC は「回答前の状態」で backlog / needs / run が**全部**凍結する。
+これが「各 PC にキャッシュされる」ように見える主犯。
+
+- **運用回避**: 症状が出た PC で dashboard の 🩺（heal）を実行するか、WSL 側で
+  `git status` を確認し `flow-archive/` 等の残骸を退避（`git stash` は不可。
+  ファイルを `git rm --cached` するか一時ディレクトリへ移動）→ pull が再開する。
+- **恒久修正（小・dashboard/engine 双方の候補）**: `flow-archive/` を `.gitignore` 化
+  （エンジン側 `_EXCLUDE_PATTERNS` にも追加）し、dirty 判定から runtime パスを除外する。
+
+### B. flow-archive スナップショットは他 PC で消えない（ghost run 専用の原因)
+
+各 PC の dashboard は run のスナップショットを**ローカルの** `flow-archive/` に書き、
+表示は「live run ＋ live に無いアーカイブ」のマージ。削除はクリックした PC でしか
+起きないため、PC-A で終了/削除した run は PC-B では `archived` として残り続ける（上限 100 件で
+自然消滅）。
+
+- **運用回避**: ghost run は `archived` バッジ付きで表示されるだけで実行には無関係。
+  邪魔なら各 PC で削除する。
+- **恒久修正（中）**: アーカイブ一覧をエンジン状態（backlog/archive の run-id）と突合して
+  存在しない run を非表示にする。
+
+### C+D. 回答済み needs の復活ループ（ghost needs の原因）
+
+2 つの実装が組み合わさると、消費済みの needs が再生成される:
+
+1. 同期の競合裁定に「`needs/` はローカルに在ってリモートで削除なら**ローカル維持**」の
+   特例がある（新規票を stale な削除から守るため。`stategit.py` `_take_local_on_conflict`）。
+2. エンジンの `ensure_needs` は「status が proposed/blocked/review なのに needs が無い」と
+   **status を正として needs を再生成**する自己修復を毎パス行う。
+
+→ どこかの PC の backlog が古いまま（A や E で凍結・復活）だと、その PC の daemon が
+回答済みの needs を作り直し、特例 1 が削除への上書きを守ってしまい、全 PC に再伝播する。
+
+- **運用回避**: 根本は「backlog を古いままにしない」こと＝ A の解消が先決。復活した
+  needs は `decisions/` に DR が残っているので、同じ回答を再投入すれば再収束する（結果整合）。
+- **恒久修正（小）**: needs 特例に「対応する DR（decisions/<id>）が既に存在するなら
+  リモート削除に従う」の条件を足す。
+
+### E. backlog はローカル優先 → 触られた stale ファイルがアーカイブ済みタスクを復活
+
+done/reject 時の「backlog から削除 + archive へ作成」は、他 PC がその backlog ファイルを
+**同時に変更していた場合**に限りローカル優先で削除が巻き戻る。第二 writer を作らない
+原則（アンチパターン参照）を守っていれば発生しない。発生したら backlog 側のファイルを
+手で削除して push すれば収束する（archive 側が正）。
+
+### F. bus の「新しさ」自動選択で古いミラーの run を表示
+
+「設定」節のとおり、共有 YAML で `bus:` を明示して曖昧さ自体をなくす。
 
 ## 既知の弱点と、必要になったときだけ入れる小さな改善
 
