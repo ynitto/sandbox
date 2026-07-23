@@ -86,11 +86,15 @@ CLI/環境での個別上書きも可: `--state-repo` / `--state-repo-branch` / 
 
 - **エンジンを動かす PC**: 上記の設定＋再起動だけでよい。エンジンが専用リポジトリを
   `<repo>-state` へ**自動 clone** する（手動 clone 不要）。
-- **dashboard には `<repo>-state`（状態 clone）を登録する**。成果物リポジトリではなく、
-  この状態 clone のフォルダを開く。エンジンと dashboard が同じ PC なら、エンジンが作った
-  `<repo>-state` をそのまま登録すればよい（別途 clone しなくてよい）。
-- **閲覧のみ（viewer）の PC**: `git clone <state_repo> app-state` して dashboard に登録するだけ。
-  WSL/CLI 設定は不要（⚙ 設定の役割を viewer にすると本体起動ボタンも隠れる）。
+- **dashboard の登録**: 成果物リポジトリを登録すればよい。dashboard は
+  `.agents/agent-project.yaml`（または直下の `agent-project.yaml`）の `state_repo` /
+  `state_repo_dir` から状態 clone パスを解決し、そこをプロジェクトルートとして開く。
+  エンジンと同じ PC なら、エンジンが作った `<repo>-state` を自動で見つける（別途 clone 不要）。
+  状態 clone を直接登録する従来のやり方もそのまま使える。
+- **閲覧のみ（viewer）の PC**: `git clone <state_repo> app-state` してその clone を登録するか、
+  成果物リポジトリを clone して同じ `agent-project.yaml`（`state_repo` / `state_repo_dir`）を
+  置き、隣に状態 clone を置いて成果物側を登録する。WSL/CLI 設定は不要
+  （⚙ 設定の役割を viewer にすると本体起動ボタンも隠れる）。
 
 > 成果物の diff（検収）は従来どおり成果物リポジトリの `origin/<branch>` を fetch して見るため、
 > 検収 diff 用に成果物リポジトリの clone を併存させてもよい（必須ではない）。
