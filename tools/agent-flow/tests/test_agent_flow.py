@@ -445,6 +445,36 @@ class BoardParticipationTests(unittest.TestCase):
         # 2 巡目: 既に inbox にあるので再取り込みしない
         self.assertEqual(kf.poll_board(self.bus, self._args(), "pc-a"), [])
 
+    def test_report_results_writes_result_on_terminal_run(self):
+        d = self._post("dg-1", workspace={"url": "git@h:team/app.git"})
+        args = self._args()
+        kf.poll_board(self.bus, args, "pc-a")   # 落札→取り込み
+        board = kf._board_bus(self.board, "pc-a", args)
+        # 実行中はまだ result.json を書かない
+        self.assertEqual(kf.report_board_results(self.bus, board, "pc-a"), [])
+        self.assertFalse(os.path.exists(os.path.join(d, "result.json")))
+        # run が done に達したら報告する
+        self.bus.run_view("dg-1").set_status("done")
+        reported = kf.report_board_results(self.bus, board, "pc-a")
+        self.assertEqual(reported, ["dg-1"])
+        res = json.load(open(os.path.join(d, "result.json")))
+        self.assertEqual(res["status"], "done")
+        self.assertEqual(res["winner"], "pc-a")
+        # 冪等: 二重報告しない
+        self.assertEqual(kf.report_board_results(self.bus, board, "pc-a"), [])
+
+    def test_report_results_maps_canceled_to_cancelled(self):
+        self._post("dg-2", workspace={"url": "git@h:team/app.git"})
+        args = self._args()
+        kf.poll_board(self.bus, args, "pc-a")
+        board = kf._board_bus(self.board, "pc-a", args)
+        self.bus.run_view("dg-2").set_status("canceled")
+        reported = kf.report_board_results(self.bus, board, "pc-a")
+        self.assertEqual(reported, ["dg-2"])
+        d = os.path.join(self.board, "delegations", "dg-2")
+        res = json.load(open(os.path.join(d, "result.json")))
+        self.assertEqual(res["status"], "cancelled")   # flow の canceled → board の cancelled
+
 
 class RunFailureTests(unittest.TestCase):
     """orchestrator が done を書く前に異常終了したケースの終端化（失敗終了の検知）。

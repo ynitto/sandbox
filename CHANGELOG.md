@@ -7,6 +7,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-project: 委譲公示板（agent-board）への依頼側自動配線 ＋ 請負側の成果報告を実装
+
+新 location `board`。`agent-project.yaml` に `board:`（板の場所。ローカル dir / `git+<url>`）を
+設定すると、`location: auto` は `policy.offload` 一致タスクを（remote より優先して）委譲公示板へ
+自動 post するようになる（`decide_location`・`agent_project/flow.py:_act_board`）。既存の
+非ブロッキング委譲（`_Pending`/`offloaded` ステータス）と同じ枠組みに乗せてあるため、結果は
+`_reap_offloaded` が板の `result.json` を1回ずつポーリングして回収し、done/failed/canceled の
+既存 settle 経路（canceled → retries を進めて再投函 等）へそのまま合流する。
+
+- **請負側の成果報告を新規実装**（自動配線の前提）: 従来 board 参加デーモン（agent-flow /
+  agent-amigos）は「入札→自分のエンジンへ引き渡し」までで、完了を板へ書き戻す処理が無かった。
+  依頼側の自動回収を機能させるため、`agent_flow/board.py` / `agent_amigos/board.py` に
+  `report_board_results` を追加: 落札ノードが自分の実行（flow run / amigos mission）の終端
+  （done/failed/cancelled）を検知し、板の `result.json` を直接書く（speculation 無し・単一落札の
+  簡略形。冪等・二重報告しない）。`board.schema.json` の `result` に `status` を明示追加。
+- **`agent_project/board.py` を git 対応の `BoardRepo` へ刷新**: 従来の手動 `board-offload` は
+  ローカル dir の板にしか投函できなかった（`git+<url>` 未対応）。プロセス間 flock で直列化した
+  git pull/push（間隔律速・rebase リトライ・force push 禁止・`main` ブランチ既定へのフォールバック）
+  を実装し、`git+` 板にも対応。`task_to_delegation` は `build_request` の全文を `goal` に使うよう
+  修正（従来は `task.title`/`desc` の簡易版で、charter/rules/decisions/run ブリーフ等が
+  board 経由だと欠落していた — local run / daemon submit と同じ文脈を維持する）。
+- `_submit_bound`（並列 submit 判定）・`batch.py` へ `board` を追加し、複数タスクの board 公示も
+  並行化できるようにした。
+- テスト: agent-project `TestBoardAutoWiring` 12 件（decide_location の優先順位・post→pending→
+  result 到着での確定・reap の done/failed/canceled 分岐・`git+` 板の実 push/pull 往復）、
+  agent-flow / agent-amigos に `report_board_results` のテストを追加。
+
 ### agent-board: 委譲公示板（依頼の公示・入札・成果一本化の分散バックエンド）を新設
 
 契約 `schemas/board.schema.json` と、専用リポジトリ（＝板）の規約 `tools/agent-board/README.md`。

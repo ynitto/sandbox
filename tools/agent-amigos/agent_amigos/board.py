@@ -16,7 +16,10 @@ import time
 
 from .assign import _declared_repos, _norm_repo_url
 from .commands import _do_post
+from .mission import active_roles, derive_phase, load_mission, load_roles
 from .util import log, now_iso, read_json, write_json_atomic
+
+_AMIGOS_TERMINAL = {"done", "failed", "cancelled"}
 
 
 def _safe(s: str) -> str:
@@ -176,14 +179,57 @@ def _post_to_command(post: dict) -> dict:
     return rec
 
 
+def report_board_results(daemon, mirror: "BoardMirror") -> "list[str]":
+    """自分がオーナーとして公示済みの委譲のうち、ミッションが終端に達したものを board の
+    result.json へ書き戻す（依頼側 agent-project 等の自動回収先。board は「リポジトリ＋契約」
+    だけで処理を持たないため、この報告は請負側＝このデーモンの責務）。speculation 無し（既定・
+    単一落札）を前提に、落札ノード自身（＝ミッションオーナー）が確定点を書く。冪等
+    （result.json が既にあれば触らない）。書き戻した委譲 id の一覧を返す。"""
+    deleg_root = os.path.join(mirror.dir, "delegations")
+    reported = []
+    if not os.path.isdir(deleg_root):
+        return reported
+    for did in sorted(os.listdir(deleg_root)):
+        ddir = os.path.join(deleg_root, did)
+        if not os.path.isdir(ddir) or os.path.exists(os.path.join(ddir, "result.json")):
+            continue
+        status_path = os.path.join(ddir, "status", f"{_safe(daemon.node_id)}.json")
+        st = read_json(status_path)
+        if not st or st.get("state") != "dispatched":
+            continue    # 自分が落札した委譲ではない（または既に終端まで報告済み）
+        mp = daemon.bus.mission(did)
+        if not mp.exists():
+            continue
+        try:
+            mission = load_mission(mp)
+        except SystemExit:
+            continue
+        roles = active_roles(load_roles(mp), mp)
+        phase = derive_phase(mission, roles, mp)
+        if phase not in _AMIGOS_TERMINAL:
+            continue    # まだ working/integrating/reviewing 等
+        write_json_atomic(os.path.join(ddir, "result.json"), {
+            "winner": daemon.node_id, "native_id": did, "status": phase,
+            "resolved_by": daemon.node_id, "resolved_at": now_iso(),
+        })
+        write_json_atomic(status_path, {**st, "state": phase, "heartbeat": now_iso()})
+        reported.append(did)
+        log(daemon.node_id, f"board 成果報告 {did}: {phase}")
+    if reported:
+        mirror.sync_push(f"report {len(reported)} results")
+    return reported
+
+
 def poll_board(daemon) -> "list[str]":
-    """板を 1 巡: workload=amigos の公示に入札し、勝てばオーナーとしてミッションを公示する。
-    公示した委譲 id の一覧を返す。board 未設定なら no-op。"""
+    """板を 1 巡: まず自分がオーナー公示済みの委譲の完了を board へ報告し、次に workload=amigos の
+    公示に入札して勝てばオーナーとしてミッションを公示する。公示した委譲 id の一覧を返す
+    （報告は別途 report_board_results の返り値）。board 未設定なら no-op。"""
     spec = getattr(daemon, "board", None)
     if not spec:
         return []
     mirror = BoardMirror(spec, daemon.node_id, getattr(daemon, "board_workdir", None))
     mirror.sync_pull()
+    report_board_results(daemon, mirror)
     node_repos = getattr(daemon, "repos", None) or {}
     node_tags = getattr(daemon, "tags", None) or []
     lease = float(getattr(daemon, "board_lease", None) or 900.0)

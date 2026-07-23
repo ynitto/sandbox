@@ -73,14 +73,54 @@ def _board_request(post: dict) -> str:
     return f"## 設計\n\n{design}\n\n---\n\n{goal}" if design else goal
 
 
+_FLOW_TO_BOARD_STATUS = {"done": "done", "failed": "failed", "canceled": "cancelled"}
+
+
+def report_board_results(bus_local: "Bus", board: "Bus", node_id: str) -> "list[str]":
+    """自分が落札・引き渡し済みの委譲のうち、ローカル run が終端に達したものを board の
+    result.json へ書き戻す（依頼側 agent-project 等の自動回収先。board は「リポジトリ＋契約」
+    だけで処理を持たないため、この報告は請負側＝このデーモンの責務）。speculation 無し（既定・
+    単一落札）を前提に、落札ノード自身が確定点を書く（設計 board.schema.json §result）。
+    冪等（result.json が既にあれば触らない・二重報告しない）。書き戻した委譲 id の一覧を返す。"""
+    deleg_root = os.path.join(board.root, "delegations")
+    reported = []
+    if not os.path.isdir(deleg_root):
+        return reported
+    for did in sorted(os.listdir(deleg_root)):
+        ddir = os.path.join(deleg_root, did)
+        if not os.path.isdir(ddir) or os.path.exists(os.path.join(ddir, "result.json")):
+            continue
+        status_path = os.path.join(ddir, "status", f"{_safe(node_id)}.json")
+        st = read_json(status_path)
+        if not st or st.get("state") != "dispatched":
+            continue    # 自分が落札した委譲ではない（または既に終端まで報告済み）
+        run_status = bus_local.run_view(did).get_status()
+        board_status = _FLOW_TO_BOARD_STATUS.get(str(run_status or ""))
+        if board_status is None:
+            continue    # まだ実行中（pending/planning/running 等）
+        write_json_atomic(os.path.join(ddir, "result.json"), {
+            "winner": node_id, "native_id": did, "status": board_status,
+            "resolved_by": node_id, "resolved_at": now_iso(),
+        })
+        write_json_atomic(status_path, {**st, "state": board_status, "heartbeat": now_iso()})
+        reported.append(did)
+        log(node_id, f"board 成果報告 {did}: {board_status}")
+    if reported:
+        board.sync_push(f"report {len(reported)} results")
+    return reported
+
+
 def poll_board(bus_local: "Bus", args, node_id: str) -> "list[str]":
-    """板を 1 巡: workload=flow の公示に入札し、勝てば local inbox へ取り込む。
-    取り込んだ委譲 id の一覧を返す。board 未設定なら no-op。例外は呼び出し側が握る。"""
+    """板を 1 巡: まず自分が落札済みの委譲の完了を board へ報告し、次に workload=flow の公示に
+    入札して勝てば local inbox へ取り込む。取り込んだ委譲 id の一覧を返す（報告は別途
+    report_board_results の返り値・呼び出し元は必要なら両方 log できる）。board 未設定なら
+    no-op。例外は呼び出し側が握る。"""
     spec = getattr(args, "board", None)
     if not spec:
         return []
     board = _board_bus(spec, node_id, args)
     board.sync_pull()
+    report_board_results(bus_local, board, node_id)
     node_repos = getattr(args, "board_repos", None) or {}
     node_tags = getattr(args, "board_tags", None) or []
     lease = float(getattr(args, "board_lease", None) or 900.0)

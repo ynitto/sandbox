@@ -631,20 +631,66 @@ def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
     return (False, f"daemon run {run_id} タイムアウト")
 
 
+def _act_board(task: Task, cfg: "Config") -> "tuple":
+    """委譲公示板（agent-board）への非ブロッキング公示。post が無ければ書き、結果を1回だけ確認する。
+    終端なら (ok, msg)、未終端なら (_Pending(delegation_id), msg) を返す（待たない・常に非同期 —
+    board は「公示して請負側の入札を待つ」性質上、remote/daemon の act_async 切替とは無関係）。
+    請負側（agent-flow / agent-amigos の board 参加デーモン）が入札・実行し、完了したら board の
+    result.json へ書き戻す（agent_flow/board.py・agent_amigos/board.py の report_results）。
+    委譲 id はそのまま実行側の run-id / mission-id として使われる（共通 id は対応表を持たない —
+    delegation 契約 D1 と同じ規約）ので、last_run（delivery/branch 解決）はそのまま使える。"""
+    did = _board_delegation_id(task, cfg)
+    board = BoardRepo(cfg.board, workdir=cfg.board_workdir)
+    board.sync_pull()
+    _pin_last_run(cfg, task, did)
+    term, ok, msg = _board_result_once(board, did)
+    if not term:
+        spec = _workspace_spec_for(cfg, task)
+        refs = task_reference_specs(cfg, task)
+        env = task_to_delegation(task, spec, workload=cfg.board_workload, delegation_id=did,
+                                 request=build_request(task, cfg), references=refs)
+        if board.write_post(env):          # 新規のときだけ push（無駄な空 commit を作らない）
+            board.sync_push(f"post {did}")
+        term, ok, msg = _board_result_once(board, did)   # 直後にもう一度（同一 cycle 内解決対応）
+        if not term:
+            return (_Pending(did), f"board delegation {did} 公示（入札・実行待ち）")
+    return (ok, msg)
+
+
+def _board_result_once(board: "BoardRepo", did: str) -> "tuple[bool, bool, str]":
+    """board の result.json を1回だけ読む（待たない）。(terminal, ok, msg)。
+    _flow_result_once と同じ契約: terminal=確定したか・ok=成功終端（done）か・
+    canceled/failed は ok=False（未終端は毎回 sync_pull 済みの呼び出し元が次パスで再確認）。"""
+    if board.is_cancelled(did):
+        return (True, False, f"board delegation {did} cancelled")
+    res = board.read_result(did)
+    if not res:
+        return (False, False, "")
+    status = str(res.get("status") or "done")
+    if status == "failed":
+        return (True, False, f"board delegation {did} failed（winner={res.get('winner', '?')}）")
+    return (True, True, f"board delegation {did} done（winner={res.get('winner', '?')}）")
+
+
 def act_via_agent_flow(task: Task, cfg: "Config", location: str = "local") -> "tuple[bool, str]":
-    """location（local/daemon/remote）に応じて agent-flow へ委譲する。
+    """location（local/daemon/remote/board）に応じて agent-flow（または委譲公示板）へ委譲する。
 
       local  → run（単発）
       daemon → ローカル daemon に submit＋結果待ち（daemon が無ければ run にフォールバック）
       remote → git バスの remote daemon に submit＋結果待ち（オフロード。フォールバックしない）
+      board  → 委譲公示板へ post（非ブロッキング）。請負側の board 参加デーモンが入札・実行し、
+               結果は board の result.json をポーリングして回収する（依頼側の自動配線・opt-in）
 
     例外: resume-run / 失敗・停滞 run の「続きから」は submit では効かない
     （daemon は run_exists で無視し、retry_failed は cmd_run だけ）。再開可能な
-    last_run があるときは location によらず run（同期）へ寄せる。
+    last_run があるときは location によらず run（同期）へ寄せる。board 由来の last_run（dg-…）は
+    agent-flow の req-id 形式（req-…）と一致しないため、この特例には自然に当たらない。
     """
     last = str(task.get("last_run") or "").strip()
     if last and run_id_for(cfg, task) == last and _run_resumable(cfg, last):
         return _act_run(task, cfg, use_git=(location == "remote"))
+    if location == "board":
+        return _act_board(task, cfg)
     async_ok = bool(getattr(cfg, "act_async", False))
     if location == "remote":
         return _act_offload(task, cfg, True) if async_ok else _act_submit(task, cfg, use_git=True)

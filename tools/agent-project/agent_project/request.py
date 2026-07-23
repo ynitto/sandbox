@@ -266,13 +266,18 @@ def decide_pace(cfg: "Config", cycle_elapsed: float) -> float:
 
 
 def decide_location(task: Task, policy: Policy, cfg: "Config") -> str:
-    """act の実行モードを local / daemon / remote に決める（agent-flow の起動方法を統合）。
+    """act の実行モードを local / daemon / remote / board に決める（agent-flow の起動方法を統合）。
 
       local  : agent-flow run（単発・自己完結・daemon 不要）
       daemon : ローカルバスの daemon に submit して結果を待つ（warm worker 再利用）
       remote : 共有 git バス（別マシンの daemon）へ submit＝真のオフロード
-    `--location auto`（既定）: offload 一致かつ git-bus → remote / ローカル daemon 稼働 → daemon / それ以外 local。
-    明示指定（local/daemon/remote）はそれを優先（remote は git-bus 必須、無ければ local）。"""
+      board  : 委譲公示板（agent-board）へ post。請負側（agent-flow / agent-amigos の board 参加
+               デーモン）が入札・実行する（依頼側の自動配線・opt-in。設計:
+               docs/plans/2026-07-23-delegation-board-distributed-bidding-design.md）
+    `--location auto`（既定）: offload 一致かつ board 設定あり → board（remote より優先 — board を
+    設定するのは明示的な意図表明のため）/ offload 一致かつ git-bus → remote / ローカル daemon
+    稼働 → daemon / それ以外 local。明示指定（local/daemon/remote/board）はそれを優先
+    （remote は git-bus 必須・board は board 設定必須。無ければ local にフォールバック）。"""
     if task.get("spec_for"):
         # spec 作成タスク（§5.10）: 成果物 specs/<id>/ はプロジェクトの workdir に要る。
         # daemon/remote だと別プロセス・別マシンに生成されローカルの verify が通らないため、
@@ -281,12 +286,16 @@ def decide_location(task: Task, policy: Policy, cfg: "Config") -> str:
         return "local"
     loc = cfg.location
     if loc == "auto":
+        if getattr(cfg, "board", "") and any(task.matches(p) for p in policy.offload):
+            return "board"
         if cfg.git_bus and any(task.matches(p) for p in policy.offload):
             return "remote"
         if daemon_running(cfg, use_git=False):
             return "daemon"
         return "local"
     if loc == "remote" and not cfg.git_bus:
+        return "local"
+    if loc == "board" and not getattr(cfg, "board", ""):
         return "local"
     return loc
 

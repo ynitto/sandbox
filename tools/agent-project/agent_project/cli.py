@@ -204,11 +204,10 @@ def main(argv=None) -> int:
     imp.add_argument("--json", action="store_true", help="JSON で出力")
 
     bo = sub.add_parser("board-offload",
-                        help="タスクを委譲公示板（agent-board）へ委譲（ルーティングで workspace を確定）")
+                        help="タスクを委譲公示板（agent-board）へ委譲（ルーティングで workspace を確定）。"
+                             "--board / --board-workload は _add_common 由来（設定 board: / "
+                             "board_workload: と共通）")
     _add_common(bo); bo.add_argument("id")
-    bo.add_argument("--board", default=None, help="公示板リポジトリの作業ディレクトリ")
-    bo.add_argument("--workload", default="flow", choices=["flow", "amigos"],
-                    help="委譲先エンジン（既定 flow）")
 
     rpl = sub.add_parser("replan",
                          help="charter からバックログを再分解（エラー回復。done/既存と類似は投入しない）")

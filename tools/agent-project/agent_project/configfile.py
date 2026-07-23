@@ -61,6 +61,9 @@ CONFIG_DEFAULTS = {
     "clock_skew_tolerance_sec": 30.0,
     "default_workspace": "",
     "location": "auto",
+    "board": "",
+    "board_workdir": None,
+    "board_workload": "flow",
     "model": None,
     # LLM 実行に使うエージェント CLI: kiro（kiro-cli chat）/ claude（Claude Code `claude -p`）/
     # copilot（GitHub Copilot CLI `copilot -p`）/ codex（OpenAI Codex CLI `codex exec`）。
@@ -402,7 +405,11 @@ def build_config(args) -> Config:
                              getattr(args, "clock_skew_tolerance_sec", 30.0)) or 0.0)),
         route_planner=str(getattr(args, "route_planner", "agent") or "agent"),
         default_workspace=str(getattr(args, "default_workspace", "") or ""),
-        location=args.location, executor=args.executor,
+        location=args.location,
+        board=str(getattr(args, "board", "") or ""),
+        board_workdir=getattr(args, "board_workdir", None) or None,
+        board_workload=str(getattr(args, "board_workload", "flow") or "flow"),
+        executor=args.executor,
         model=args.model,
         agent_cli=_AGENT_CLI, agent_timeout=_AGENT_TIMEOUT,
         granularity=str(getattr(args, "granularity", "coarse") or "coarse").lower(),
@@ -560,7 +567,15 @@ def _add_common(sp):
     sp.add_argument("--flow-planner", default=None,
                     choices=["flow-planner", "agent", "stub"], help="agent-flow run に渡す planner（既定 flow-planner）")
     sp.add_argument("--location", default=None,
-                    choices=["auto", "local", "daemon", "remote"], help="act の実行モード（既定 auto）")
+                    choices=["auto", "local", "daemon", "remote", "board"],
+                    help="act の実行モード（既定 auto）")
+    sp.add_argument("--board", default=None,
+                    help="委譲公示板（agent-board）の場所（ローカル dir / git+<url>）。設定すると "
+                         "location=auto は offload ポリシー一致タスクを板へ post する（依頼側自動配線）")
+    sp.add_argument("--board-workdir", dest="board_workdir", default=None,
+                    help="git+ 板のクローン作業領域（既定は自動）")
+    sp.add_argument("--board-workload", dest="board_workload", default=None,
+                    choices=["flow", "amigos"], help="板へ公示する workload（既定 flow）")
     sp.add_argument("--executor", default=None,
                     help="act の実体（agent-flow run へ委譲）。組み込み agent / stub、または agent-flow の "
                          "executor プラグイン名（例 gitlab）/ .py パスを指定できる（既定 agent）")

@@ -170,6 +170,45 @@ class BoardParticipationTests(AmigosTestCase):
         self.assertTrue(os.path.exists(os.path.join(d, "bids", "pc-a.json")))
         self.assertTrue(os.path.exists(os.path.join(d, "status", "pc-a.json")))
 
+    def test_report_results_writes_result_on_terminal_mission(self):
+        from agent_amigos import board as B
+        boarddir = os.path.join(self.tmp, "board")
+        os.makedirs(os.path.join(boarddir, "delegations"), exist_ok=True)
+        d = self._board_post(boarddir, "dg-1", workspace={"url": "git@h:team/app.git"})
+        dm = self.daemon(node="pc-a", commands_home=self.tmp, board=boarddir,
+                         repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}})
+        B.poll_board(dm)   # 落札→ミッション公示
+        mirror = B.BoardMirror(boarddir, "pc-a")
+        # 実行中はまだ result.json を書かない
+        self.assertEqual(B.report_board_results(dm, mirror), [])
+        self.assertFalse(os.path.exists(os.path.join(d, "result.json")))
+        # ミッションが done に達したら報告する
+        mp = self.bus.mission("dg-1")
+        write_json_atomic(mp.final(), {"accepted": True})
+        reported = B.report_board_results(dm, mirror)
+        self.assertEqual(reported, ["dg-1"])
+        res = json.load(open(os.path.join(d, "result.json"), encoding="utf-8"))
+        self.assertEqual(res["status"], "done")
+        self.assertEqual(res["winner"], "pc-a")
+        # 冪等: 二重報告しない
+        self.assertEqual(B.report_board_results(dm, mirror), [])
+
+    def test_report_results_cancelled_mission(self):
+        from agent_amigos import board as B
+        boarddir = os.path.join(self.tmp, "board")
+        os.makedirs(os.path.join(boarddir, "delegations"), exist_ok=True)
+        d = self._board_post(boarddir, "dg-2", workspace={"url": "git@h:team/app.git"})
+        dm = self.daemon(node="pc-a", commands_home=self.tmp, board=boarddir,
+                         repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}})
+        B.poll_board(dm)
+        mirror = B.BoardMirror(boarddir, "pc-a")
+        mp = self.bus.mission("dg-2")
+        write_json_atomic(mp.cancelled(), {"ts": "2026-01-01T00:00:00Z"})
+        reported = B.report_board_results(dm, mirror)
+        self.assertEqual(reported, ["dg-2"])
+        res = json.load(open(os.path.join(d, "result.json"), encoding="utf-8"))
+        self.assertEqual(res["status"], "cancelled")
+
     def test_ineligible_repo_and_wrong_workload(self):
         from agent_amigos import board as B
         boarddir = os.path.join(self.tmp, "board")

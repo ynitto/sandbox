@@ -55,8 +55,19 @@ flow_planner: flow-planner  # agent-flow run に渡す planner: flow-planner / a
 # charter owns: 推定）で決まらないときの扱い:
 route_planner: agent        # agent=エージェント委譲が charter の desc/owns から1つ推定 / none=決定論のみ（推定しない）
 # default_workspace: app    # それでも決まらないタスクの既定書込先（charter の name/url）。空=無効
-location: auto              # act の実行先: auto / local / daemon / remote
-concurrency: 1             # daemon/remote へ並行 submit する独立タスク数（1=逐次。local 単発 run は常に逐次）
+location: auto              # act の実行先: auto / local / daemon / remote / board
+concurrency: 1             # daemon/remote/board へ並行 submit する独立タスク数（1=逐次。local 単発 run は常に逐次）
+
+# 委譲公示板（agent-board）への依頼側自動配線（opt-in・既定は無効）。
+# board: を設定すると、location: auto は policy.md の offload: に一致するタスクを
+# ローカル/remote ではなく委譲公示板へ post するようになる（remote より優先）。
+# 板は「リポジトリ＋契約」だけで処理を持たない — 入札・実行は請負側ノードの agent-flow /
+# agent-amigos デーモン（board: 設定で board 参加が有効化されたもの）が行う。
+# 完了は board の result.json をポーリングして自動回収する（_reap_offloaded と同じ非ブロッキング委譲）。
+# 手動投函は `agent-project board-offload <task-id>` でも可（この設定を共有）。
+# board: git+ssh://git@gitea.local/team/agent-board.git
+# board_workdir: ~/.agents/project-board/mirror   # git+ 板のクローン作業領域（既定は自動）
+# board_workload: flow        # 板へ公示する workload（flow / amigos。既定 flow）
 # agent_cli: kiro           # LLM 実行に使うエージェント CLI: kiro（kiro-cli chat・既定）/
                             #   claude（Claude Code ヘッドレス `claude -p`）/
                             #   copilot（GitHub Copilot CLI `copilot -p`）/
