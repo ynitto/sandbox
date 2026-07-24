@@ -7,6 +7,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agentcore: P0 完了確認・R9 の常設テスト化・残存重複の棚卸し
+
+P0 が完了したかの確認と、設計 §5 の事前検証（V1〜V4）を実施した。
+
+- **R9 を常設の非退行テストとして固定**（実装計画 §0-4）: `agent-flow run` が常駐体なし・
+  `--git` 未指定・ネットワークなしで完結することを明示的に名前つきテストで固定した
+  （開発木・zipapp 双方で確認）。amigos 側（`agent-amigos drive`）は P1（W1-3）の
+  新設コマンドなので、この時点では対象外。
+- **P0 完了条件「`_recover`/claim 系の実装が agentcore 以外に grep で見つからない」を
+  再監査**: 未達であることを確認・列挙した。既知の残存（`agent_flow/stategit.py`・
+  `DirectStateGit`）に加え、**今回新たに発見**: `agent_amigos/gitbus.py`
+  （amigos のミッションバス自身の git+ 実装。板の `BoardMirror` とは別物・
+  ミッション単位ブランチ分離・自身のヘッダに「P1」と明記済み）。
+  `agent_flow/gitcache.py`・`agent_project/gitcache.py`・`workspace.py`
+  （workspace/成果物クローンのキャッシュ）は設計が言う「5 実装」とは別カテゴリと判断し
+  対象外のまま。
+- **V2（agentcore の import 経路）を最終マージ後の状態で再検証**: 3 ツールの zipapp を
+  実際に `install.sh` でビルドし、`agentcore/` の同梱・`agent-flow run` のローカル/
+  `--git` 両モードでの実行を確認。
+- **V1・V3・V4（WSL/Windows 起動系の実挙動）は本セッションの Linux サンドボックスでは
+  検証不能**——実機（Windows + WSL）が必要。P1 着手前に別途実施が必要。
+- 全テスト緑を再確認: agentcore 40 / agent-flow 530 / agent-amigos 145 /
+  agent-project 918 / agent-dashboard 634 件。
+
 ### agentcore: P0 のレビュー指摘を修正 — 語彙統一の取りこぼし（dashboard）・claim 心拍の退行・転送の空 push
 
 P0（W0-6〜W0-10）のレビューで見つかった 6 件を修正した。いずれも P0 の変更が入り口で、
