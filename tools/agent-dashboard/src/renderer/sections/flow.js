@@ -19,8 +19,13 @@ const FLOW_STATE_LABEL = {
 
 const TERMINAL_NODE_STATES = new Set(['done', 'failed']);
 
-// run の終端 status（flow.js の TERMINAL と同一）。フロータブのフィルタ判定に使う
-const TERMINAL_RUN_STATES = new Set(['done', 'failed', 'canceled']);
+// run の終端 status（flow.js の TERMINAL と同一）。フロータブのフィルタ判定に使う。
+// 'canceled' は語彙統一（W0-9）前に書かれた meta.json の旧綴り — 読み取りだけ受け入れる。
+const CANCELLED_RUN_STATES = new Set(['cancelled', 'canceled']);
+const TERMINAL_RUN_STATES = new Set(['done', 'failed', ...CANCELLED_RUN_STATES]);
+
+// run が「人が中止した」状態か（新旧どちらの綴りでも真）。
+const isCancelledRun = (status) => CANCELLED_RUN_STATES.has(String(status || ''));
 
 // フロータブの run フィルタ。完了 run は agent-flow の掃除後もアーカイブ（ビュアー保管庫）から
 // 表示できるため、既定は「進行中（非終端）」に絞って一覧のノイズを抑える。
@@ -245,14 +250,14 @@ function runAdvice(run, group) {
     return { kind: 'watch', cls: 'ok', chip: '▶ 実行中',
       text: '実行エンジンが応答しています。操作は不要 — このまま見守れます。' };
   }
-  // ここから「止まっている」（failed / canceled / 非終端なのに応答なし）
+  // ここから「止まっている」（failed / cancelled / 非終端なのに応答なし）
   if (found) {
     const task = found.task;
     const lastRun = String((task.extra && task.extra.last_run) || '');
     const doneCount = (run.counts && run.counts.done) || 0;
     if (['ready', 'doing', 'offloaded', 'inbox'].includes(task.status)) {
-      // canceled は続きから再開できない（新 run 固定）。failed/stalled だけ部分やり直し。
-      const resume = st !== 'canceled' && (!lastRun || lastRun === run.runId);
+      // cancelled は続きから再開できない（新 run 固定）。failed/stalled だけ部分やり直し。
+      const resume = !isCancelledRun(st) && (!lastRun || lastRun === run.runId);
       const how = resume
         ? `失敗・未実行の工程だけをやり直します（完了済み ${doneCount} 件は温存）`
         : '新しい実行としてやり直します';
@@ -283,7 +288,7 @@ function runAdvice(run, group) {
         text: `元のタスク ${task.id} は却下されています。この run はその記録です。` };
     }
   }
-  if (st === 'canceled') {
+  if (isCancelledRun(st)) {
     return { kind: 'manual', cls: 'muted', chip: '■ 中止済み',
       text: '人が止めた実行です。やり直したいときだけ ↻ を押してください（自動では動きません）。' };
   }
@@ -297,18 +302,18 @@ function flowRetryUi(run, advice) {
   const doneCount = (run.counts && run.counts.done) || 0;
   const failedCount = (run.counts && run.counts.failed) || 0;
   const isStalled = run.alive === false && run.status !== 'done';
-  const canRetry = run.status === 'failed' || run.status === 'canceled' || isStalled;
+  const canRetry = run.status === 'failed' || isCancelledRun(run.status) || isStalled;
   const remainCount = failedCount
     + ((run.counts && run.counts.pending) || 0)
     + ((run.counts && run.counts.waiting) || 0)
     + ((run.counts && run.counts.parked) || 0);
-  const partial = canRetry && doneCount > 0 && run.status !== 'canceled';
-  const label = run.status === 'canceled'
+  const partial = canRetry && doneCount > 0 && !isCancelledRun(run.status);
+  const label = isCancelledRun(run.status)
     ? '↻ 新しくやり直す'
     : partial
       ? `↻ 失敗した工程だけやり直す（残り ${remainCount} 件）`
       : '↻ 同じ内容でやり直す';
-  const title = run.status === 'canceled'
+  const title = isCancelledRun(run.status)
     ? '中止した実行の続きからは再開できません。タスクを積み直して新しい実行を始めます'
     : partial
       ? `失敗・未実行の工程だけを実行し直します。成功した ${doneCount} 件はそのまま使います（作り直しません）`
@@ -634,7 +639,7 @@ function renderFlowDetail() {
   // アーカイブ（bus に実体が無く記録だけ残ったもの）も消せる: 消せないと一覧に永久に居座る。
   const deletable =
     archived ||
-    run.status === 'done' || run.status === 'failed' || run.status === 'canceled' || run.alive === false;
+    run.status === 'done' || run.status === 'failed' || isCancelledRun(run.status) || run.alive === false;
   const deleteBtn = deletable
     ? `<button class="chip danger" id="flow-delete" title="${
         archived
@@ -644,7 +649,7 @@ function renderFlowDetail() {
     : '';
   // run のキャンセル（人の明示アクション＝唯一の hard-stop）。まだ終端していない run に出す。
   // 承認待ちで park 中の run も暴走中の run も止められる。起票済みイシューは残す（追跡だけやめる）。
-  const cancelable = !archived && !['done', 'failed', 'canceled'].includes(run.status);
+  const cancelable = !archived && !TERMINAL_RUN_STATES.has(String(run.status || ''));
   const parkedCount = Object.values(run.nodes || {}).filter((n) => n.parked).length;
   const cancelBtn = cancelable
     ? `<button class="chip danger" id="flow-cancel" title="この実行を中止します（レビュー待ちの監視や自動再開も止まります。作成済みの GitLab イシューは残ります）">■ 中止${parkedCount ? `（レビュー待ち ${parkedCount}）` : ''}</button>`

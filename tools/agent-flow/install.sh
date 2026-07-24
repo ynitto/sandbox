@@ -164,6 +164,14 @@ mkdir -p "${BUILD_DIR}/agent_flow"
     mkdir -p "${BUILD_DIR}/agent_flow/$(dirname "$f")"
     cp "$f" "${BUILD_DIR}/agent_flow/$f"
   done )
+# agentcore（transport/protocol/vocab/heartbeat の共通ライブラリ。独立配布しない内部モジュール
+# ——設計 R10）を同じ zipapp へ同梱する。tools/ の兄弟ディレクトリなので配置は SCRIPT_DIR/../agentcore。
+AGENTCORE_PKG="${SCRIPT_DIR}/../agentcore/agentcore"
+[[ -d "${AGENTCORE_PKG}" ]] || die "agentcore パッケージが見つかりません: ${AGENTCORE_PKG}"
+( cd "${AGENTCORE_PKG}" && find . -name '*.py' -not -path './tests/*' -print0 | while IFS= read -r -d '' f; do
+    mkdir -p "${BUILD_DIR}/agentcore/$(dirname "$f")"
+    cp "$f" "${BUILD_DIR}/agentcore/$f"
+  done )
 cat > "${BUILD_DIR}/__main__.py" <<'EOF'
 from agent_flow import main
 

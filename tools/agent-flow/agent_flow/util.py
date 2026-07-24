@@ -8,21 +8,9 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-_ts_lock = threading.Lock()
-_last_ts = 0.0
-
-
-def _unique_ts() -> float:
-    """プロセス内で厳密に増加する claim 用タイムスタンプ。
-    同値 ts による「決定的タイブレークの勝者」と「先着読みの勝者」の食い違い
-    （同プロセスの並行 claim で二重勝者になりうる）を防ぐ。"""
-    global _last_ts
-    with _ts_lock:
-        t = time.time()
-        if t <= _last_ts:
-            t = _last_ts + 1e-6
-        _last_ts = t
-        return t
+# claim 用の厳密増加タイムスタンプ（旧 _unique_ts）と claim ロックのパス導出（旧
+# _claim_lock_path）は agentcore.protocol へ移った（W0-8）。ここに複製を残すと、同じ
+# claim_dir に対して 2 つのロック名前空間が並立し排他が効かなくなるため再定義しない。
 
 
 def log(node: str, msg: str) -> None:

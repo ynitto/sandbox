@@ -81,7 +81,7 @@ def cmd_daemon(args) -> int:
         bus.sync_pull()
         state_sync(args)   # 状態 git: バス状態の共有と inbox 投入の取り込み（間隔律速・ローカルバス時のみ）
         maybe_heartbeat_daemon_status(args, bus, daemon_id, orchestrators, workers)  # --status-interval のときだけ
-        # cancel 指示の受理: マーカーのある run を canceled に終端化し、その run の
+        # cancel 指示の受理: マーカーのある run を cancelled に終端化し、その run の
         # orchestrator/worker を止め、park の再ポーリングを止める（--close-issues ならイシューも
         # 後始末）。これで承認待ちで park 中の run も、暴走中の run も、run スコープで恒久停止できる。
         for rid in bus.list_cancels():
@@ -116,10 +116,10 @@ def cmd_daemon(args) -> int:
             marked = bus.mark_canceled(rid, reason)
             if marked:
                 bus.clear_cancel(rid)
-            bus.run_view(rid).event(daemon_id, "canceled", run=rid, reason=reason)
+            bus.run_view(rid).event(daemon_id, "cancelled", run=rid, reason=reason)
             bus.sync_push(f"cancel run {rid}: {reason}")
             if marked:
-                log(daemon_id, f"cancel 受理: {rid} を canceled に終端化（{reason}）")
+                log(daemon_id, f"cancel 受理: {rid} を cancelled に終端化（{reason}）")
         # park & poll: 承認待ち等で park されたノードをまとめて再確認し、決着なら終端 result を書く。
         # 監視は**自分が駆動している run だけ**を対象にする（分散時に N 台が全 park を重複ポーリング
         # しないよう、1 run の監視は駆動オーナー 1 台に分担する）。オーナー消失時は孤児 reclaim が
@@ -215,7 +215,7 @@ def cmd_daemon(args) -> int:
             for rid in orphan_failed:
                 log(daemon_id, f"孤児 run を回収: {rid} → failed（owning daemon 消失・再開不可）")
             # auto-heal（レイヤ4）: transient 起因の failed run を cooldown 後に自動再開
-            # （done 温存・進捗リセット付き max_heals・superseded/canceled は尊重）。
+            # （done 温存・進捗リセット付き max_heals・superseded/cancelled は尊重）。
             if slots is not None:
                 slots = max(0, max_runs - _busy_run_count(bus, set(orchestrators)))
             for rid, p in _heal_failed_runs(bus, daemon_id, set(orchestrators),
@@ -242,11 +242,11 @@ def cmd_daemon(args) -> int:
             if bus.run_exists(req_id) or req_id in orchestrators:
                 continue
             if bus.is_canceled_requested(req_id):
-                # run 化前に cancel された要求は起動せず canceled で終端化する（＝受理しない）。
+                # run 化前に cancel された要求は起動せず cancelled で終端化する（＝受理しない）。
                 if bus.cancel_request_run(req_id, bus.cancel_info(req_id).get("reason") or ""):
                     bus.clear_cancel(req_id)
                     bus.sync_push(f"cancel request {req_id}（run 化前）")
-                    log(daemon_id, f"cancel: 要求 {req_id} を run 化前に canceled で終端化")
+                    log(daemon_id, f"cancel: 要求 {req_id} を run 化前に cancelled で終端化")
                 continue
             if busy is not None and busy >= max_runs:
                 continue   # 受理枠なし → inbox に残す（取りこぼさない。枠が空いた poll で受理）

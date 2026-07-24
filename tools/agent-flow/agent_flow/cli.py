@@ -185,7 +185,7 @@ def build_parser() -> argparse.ArgumentParser:
     sb.set_defaults(func=cmd_submit)
 
     cn = sub.add_parser("cancel",
-                        help="run を canceled に終端化（人の明示指示による run スコープの恒久停止）。"
+                        help="run を cancelled に終端化（人の明示指示による run スコープの恒久停止）。"
                              "承認待ちで park 中の run も暴走中の run も止められる緊急回避手段")
     cn.add_argument("run_id", help="キャンセルする run-id（submit の戻り値／status --list で確認）")
     cn.add_argument("--reason", default="", help="キャンセル理由（meta / イベントに記録）")

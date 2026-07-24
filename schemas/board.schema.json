@@ -87,31 +87,15 @@
       },
       "additionalProperties": true
     },
-    "result_report": {
-      "type": "object",
-      "description": "板上の delegations/<id>/results/<who>.json — 実行ノードの成果報告（自分名義のみ）。投機同時実行（speculation）では複数ノードが名義分割で報告する。一本化前の候補。",
-      "required": ["who", "status"],
-      "properties": {
-        "who": {"type": "string", "description": "報告ノード id"},
-        "status": {"enum": ["done", "failed"], "description": "エンジンの終端状態"},
-        "native_id": {"type": "string", "description": "エンジン側 id"},
-        "completed_ts": {"type": "number", "description": "完了時刻（epoch 秒）。first-valid の (completed_ts, who) 最小採用の根拠"},
-        "verified": {"type": "boolean", "description": "受入コマンド（verify）が PASS したか（first-valid の資格）"},
-        "branch": {"type": "string", "description": "コード成果物の作業ブランチ（board/<id>/<who> 等）"},
-        "summary": {"type": "string", "description": "成果の要約（表示用）"}
-      },
-      "additionalProperties": true
-    },
     "result": {
       "type": "object",
-      "description": "板上の delegations/<id>/result.json — 一本化された確定成果（成果はこれ 1 つ）。書き手は 2 通り: (a) speculation 無し（既定・単一落札）— 落札ノード自身が自分の実行終端（done/failed/cancelled）を検知して直接書く（agent_flow/board.py・agent_amigos/board.py の report_results。依頼側 agent-project の自動回収先はこれ）。(b) speculation あり（複数ノード投機実行）— 依頼者が results/<who>.json を first-valid/owner-picks で一本化して書く。amigos の『done を作るのはオーナーの accept のみ』と同じ不変条件（確定点は常にこの 1 ファイル）。",
+      "description": "板上の delegations/<id>/result.json — 確定成果（成果はこれ 1 つ）。落札ノード自身が自分の実行終端（done/failed/cancelled）を検知して直接書く（agent_flow/board.py・agent_amigos/board.py の report_results。依頼側 agent-project の自動回収先はこれ）。amigos の『done を作るのはオーナーの accept のみ』と同じ不変条件（確定点は常にこの 1 ファイル）。投機実行（speculation・複数ノードの同時実行）は未実装。実装時に results/<who>.json・resolve フィールドを additive で追加する（常駐一本化 設計 §5・§10 C9）。",
       "required": ["winner", "resolved_at"],
       "properties": {
-        "winner": {"type": "string", "description": "採用したノード id（speculation 無しでは自分自身。ありでは results/<winner>.json の報告が正）"},
+        "winner": {"type": "string", "description": "採用したノード id（落札ノード自身）"},
         "native_id": {"type": "string", "description": "採用した実行のエンジン側 id（flow run-id / amigos mission-id。通常は委譲 id と同一）"},
         "status": {"enum": ["done", "failed", "cancelled"], "description": "終端状態。依頼側（agent-project 等）の自動回収はこれで成否を判定する（failed/cancelled は ok=False）"},
-        "resolve": {"enum": ["first-valid", "owner-picks"], "description": "一本化方式（delegation post の speculation.resolve）。speculation 無しでは省略可"},
-        "resolved_by": {"type": "string", "description": "この result.json を書いたノード id（speculation 無しでは落札ノード自身 / owner-picks は人・agent 受入）"},
+        "resolved_by": {"type": "string", "description": "この result.json を書いたノード id（落札ノード自身）"},
         "resolved_at": {"type": "string", "description": "確定時刻（ISO8601 UTC）"},
         "accepted": {"type": "boolean", "description": "受入まで含めて確定したか（acceptance: manual/agent）"},
         "branch": {"type": "string", "description": "採用成果の作業ブランチ（コード成果物）"},

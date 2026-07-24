@@ -51,8 +51,8 @@ def _apply_on_cancel(bus: Bus, args, run_id: str) -> None:
 
 
 def cmd_cancel(args) -> int:
-    """run を canceled に終端化する（人の明示指示による唯一の hard-stop）。
-    cancel マーカーを inbox に置いて全 PC / daemon へ伝え、run が存在すれば即 status=canceled を
+    """run を cancelled に終端化する（人の明示指示による唯一の hard-stop）。
+    cancel マーカーを inbox に置いて全 PC / daemon へ伝え、run が存在すれば即 status=cancelled を
     確定する（監視主体が居なくても止まる）。park 済みノードの再ポーリングを止め、--close-issues なら
     起票済みイシューも後始末する。既に終端した run でも残 waits / 残マーカーは掃除する
     （dashboard cancelRun の alreadyTerminal と同契約）。"""
@@ -84,10 +84,10 @@ def cmd_cancel(args) -> int:
     if bus.run_exists(rid):
         bus.clear_cancel(rid)
     bus.sync_push(f"cancel run {rid}: {reason}")
-    tail = "・status=canceled 確定" if marked else "（daemon が受理して終端化します）"
+    tail = "・status=cancelled 確定" if marked else "（daemon が受理して終端化します）"
     print(f">>> run {rid} をキャンセルしました{tail}。park 解除 {cleared} 件、"
           f"理由: {reason}")
     if not marked and not bus.run_exists(rid):
-        print(f">>> 注: 要求 {rid} はまだ run 化されていません。daemon が受理時に canceled で終端します。")
+        print(f">>> 注: 要求 {rid} はまだ run 化されていません。daemon が受理時に cancelled で終端します。")
     return 0
 

@@ -5,7 +5,8 @@
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.ParticipationModel = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this, () => {
-  const TERMINAL_FLOW = new Set(['done', 'failed', 'canceled']);
+  // 'canceled' は語彙統一（W0-9）前に書かれた meta.json の旧綴り。読み取りだけ受け入れる。
+  const TERMINAL_FLOW = new Set(['done', 'failed', 'cancelled', 'canceled']);
 
   function flowCandidates(runs, context = {}) {
     const out = [];

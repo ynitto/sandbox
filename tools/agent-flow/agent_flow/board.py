@@ -8,6 +8,7 @@ from __future__ import annotations
 # 取り込む（＝下の inbox→orchestrator フローがそのまま拾う）。結合はデータ契約のみ — agent-board
 # のコードは import せず、板のレイアウトを読み書きするだけ。設計:
 # docs/plans/2026-07-23-delegation-board-distributed-bidding-design.md
+from agentcore import protocol, vocab  # noqa: E402
 
 
 def _board_bus(spec: str, node_id: str, args) -> "Bus":
@@ -73,9 +74,6 @@ def _board_request(post: dict) -> str:
     return f"## 設計\n\n{design}\n\n---\n\n{goal}" if design else goal
 
 
-_FLOW_TO_BOARD_STATUS = {"done": "done", "failed": "failed", "canceled": "cancelled"}
-
-
 def report_board_results(bus_local: "Bus", board: "Bus", node_id: str) -> "list[str]":
     """自分が落札・引き渡し済みの委譲のうち、ローカル run が終端に達したものを board の
     result.json へ書き戻す（依頼側 agent-project 等の自動回収先。board は「リポジトリ＋契約」
@@ -94,8 +92,10 @@ def report_board_results(bus_local: "Bus", board: "Bus", node_id: str) -> "list[
         st = read_json(status_path)
         if not st or st.get("state") != "dispatched":
             continue    # 自分が落札した委譲ではない（または既に終端まで報告済み）
-        run_status = bus_local.run_view(did).get_status()
-        board_status = _FLOW_TO_BOARD_STATUS.get(str(run_status or ""))
+        # 常駐一本化 P0・W0-9 の語彙統一により flow の終端語彙は板と同じ "cancelled"（英式）に
+        # 揃った——翻訳マップは不要（設計 §1.1 のバグの根治）。終端でなければそのまま報告しない。
+        run_status = str(bus_local.run_view(did).get_status() or "")
+        board_status = run_status if vocab.is_terminal(run_status) else None
         if board_status is None:
             continue    # まだ実行中（pending/planning/running 等）
         write_json_atomic(os.path.join(ddir, "result.json"), {
@@ -113,22 +113,10 @@ def report_board_results(bus_local: "Bus", board: "Bus", node_id: str) -> "list[
 def _write_or_renew_bid(bids_dir: str, node_id: str, lease: float, workload: str) -> bool:
     """bids/<node_id>.json を書く／更新する。既存が無ければ新規（ts はいま）、あれば残 lease が
     半分未満のときだけ lease_until を延長する（(ts, who) タイブレークの根拠 ts は温存し、
-    毎 poll 書き換えて先勝ちの意味を壊さない・push 頻度も抑える）。書いたら True。"""
-    path = os.path.join(bids_dir, f"{_safe(node_id)}.json")
-    cur = read_json(path)
-    now = time.time()
-    if isinstance(cur, dict):
-        if float(cur.get("lease_until", 0)) - now > lease / 2.0:
-            return False    # まだ十分残っている → 今回は延長不要
-        ts = cur.get("ts", now)
-        claimed_at = cur.get("claimed_at", now_iso())
-    else:
-        ts = now
-        claimed_at = now_iso()
-    os.makedirs(bids_dir, exist_ok=True)
-    write_json_atomic(path, {"who": node_id, "ts": ts, "claimed_at": claimed_at,
-                             "lease_until": now + lease, "workload": workload})
-    return True
+    毎 poll 書き換えて先勝ちの意味を壊さない・push 頻度も抑える）。書いたら True。
+    実体は agentcore.protocol.renew_lease（amigos の板参加と共通の入札延長アルゴリズム
+    — 設計 §4.1・R1）。"""
+    return protocol.renew_lease(bids_dir, node_id, lease, extra={"workload": workload})
 
 
 def _renew_dispatched_leases(board: "Bus", node_id: str, lease: float) -> None:
@@ -147,7 +135,8 @@ def _renew_dispatched_leases(board: "Bus", node_id: str, lease: float) -> None:
             continue
         status_path = os.path.join(ddir, "status", f"{_safe(node_id)}.json")
         st = read_json(status_path)
-        if not st or st.get("state") in (None, "done", "failed", "cancelled", "away"):
+        state = st.get("state") if st else None
+        if not st or state == "away" or vocab.is_terminal(state):
             continue    # 自分が落札した委譲ではない（または既に終端/away）
         if _write_or_renew_bid(os.path.join(ddir, "bids"), node_id, lease, "flow"):
             write_json_atomic(status_path, {**st, "heartbeat": now_iso(),

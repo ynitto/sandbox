@@ -11,16 +11,14 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shutil
-import subprocess
 import time
+
+from agentcore import protocol, transport, vocab
 
 from .assign import _norm_repo_url
 from .commands import _do_post
 from .mission import active_roles, derive_phase, load_mission, load_roles
 from .util import log, now_iso, read_json, write_json_atomic
-
-_AMIGOS_TERMINAL = {"done", "failed", "cancelled"}
 
 
 def _safe(s: str) -> str:
@@ -29,8 +27,9 @@ def _safe(s: str) -> str:
 
 class BoardMirror:
     """板リポジトリのローカルミラー。git+<url> はノード専用クローン、他はローカル dir。
-    転送層（sync_pull / sync_push）は agent-project / agent-flow の state_git と同じ規律
-    （間隔なしの都度同期・pull --rebase・force push 禁止・自パスのみは所有権分割で自然に成立）。"""
+    転送の実体は `agentcore.transport.GitTransport`（agent-project / agent-flow と同じ
+    唯一の転送実装 ——stale lock 掃除・中断 rebase の abort・破損時の自己回復・
+    pull --rebase・force push 禁止。自パスのみは所有権分割で自然に成立）。"""
 
     def __init__(self, spec: str, node_id: str, workdir: "str | None" = None,
                  branch: str = "main"):
@@ -43,109 +42,45 @@ class BoardMirror:
                 os.path.expanduser("~/.agents/amigos-board"),
                 hashlib.sha1(self.remote.encode()).hexdigest()[:8])
             self.dir = os.path.join(os.path.abspath(base), _safe(node_id))
+            self._transport = transport.GitTransport(
+                self.dir, self.remote, branch=self.branch,
+                managed_flag="agent-amigos.board",
+                commit_user_name="agent-amigos", commit_user_email="agent-amigos@local")
             self._ensure_clone()
         else:
             self.git = False
             self.dir = os.path.abspath(spec)
+            self._transport = None
             os.makedirs(os.path.join(self.dir, "delegations"), exist_ok=True)
 
-    def _git(self, *args, check=True):
-        return subprocess.run(["git", "-C", self.dir, *args],
-                              capture_output=True, text=True, check=check)
-
-    _STALE_GIT_LOCKS = ("index.lock", "HEAD.lock", "config.lock", "shallow.lock",
-                       "packed-refs.lock")
-    _GIT_LOCK_STALE_SEC = 30.0
-
-    def _recover(self) -> None:
-        """メンテによるプロセス強制終了（電源断・kill）で中断された git 操作の残骸を掃除する。
-        放置すると以後の pull --rebase / commit が毎回同じエラーで失敗し続け、board 参加
-        （入札・落札引き渡し・成果報告）が恒久的に止まる（agent-flow の
-        GitBus._recover_reused_clone と同じ技法・別実装）。"""
-        gitdir = os.path.join(self.dir, ".git")
-        if not os.path.isdir(gitdir):
-            return
-        now = time.time()
-        for name in self._STALE_GIT_LOCKS:
-            p = os.path.join(gitdir, name)
-            try:
-                if os.path.isfile(p) and (now - os.path.getmtime(p)) > self._GIT_LOCK_STALE_SEC:
-                    os.remove(p)
-            except OSError:
-                pass
-        if any(os.path.isdir(os.path.join(gitdir, d)) for d in ("rebase-merge", "rebase-apply")):
-            self._git("rebase", "--abort", check=False)
-            for d in ("rebase-merge", "rebase-apply"):
-                shutil.rmtree(os.path.join(gitdir, d), ignore_errors=True)
-
     def _ensure_clone(self) -> None:
-        if os.path.isdir(os.path.join(self.dir, ".git")):
-            self._recover()
-            return
-        os.makedirs(os.path.dirname(self.dir) or ".", exist_ok=True)
-        r = subprocess.run(["git", "clone", "--branch", self.branch, self.remote, self.dir],
-                           capture_output=True, text=True)
-        if r.returncode != 0:
-            subprocess.run(["git", "clone", self.remote, self.dir],
-                           capture_output=True, text=True, check=True)
-            self._git("checkout", "-B", self.branch)
+        self._transport.ensure_clone()
         os.makedirs(os.path.join(self.dir, "delegations"), exist_ok=True)
 
     def sync_pull(self) -> None:
         if self.git:
-            self._git("pull", "--rebase", "origin", self.branch, check=False)
+            self._transport.sync_pull()
 
     def sync_push(self, msg: str) -> None:
         if not self.git:
             return
-        self._git("add", "-A", check=False)
-        if not self._git("status", "--porcelain", check=False).stdout.strip():
-            return
-        self._git("commit", "-m", msg or "board update", check=False)
-        for i in range(5):
-            if self._git("push", "origin", self.branch, check=False).returncode == 0:
-                return
-            self._git("pull", "--rebase", "origin", self.branch, check=False)
-            time.sleep(min(2 ** i, 16))
-
-
-def _list_bids(bids_dir: str) -> "dict[str, dict]":
-    out = {}
-    if os.path.isdir(bids_dir):
-        for name in os.listdir(bids_dir):
-            if name.endswith(".json"):
-                info = read_json(os.path.join(bids_dir, name))
-                if info:
-                    out[info.get("who", name[:-5])] = info
-    return out
+        self._transport.sync_push(msg or "board update")
 
 
 def _winner(bids_dir: str) -> "str | None":
-    now = time.time()
-    live = [(info.get("ts", 0.0), who) for who, info in _list_bids(bids_dir).items()
-            if info.get("lease_until", 0) >= now]
-    return min(live)[1] if live else None
+    """lease 内の bid から (ts, who) 最小の勝者を決定的に選ぶ（flow のタスク claim・amigos
+    のロール claim と同じアルゴリズム — 共通実装は agentcore.protocol）。"""
+    return protocol.winner(bids_dir)
 
 
 def _try_bid(mirror: BoardMirror, bids_dir: str, did: str, who: str, lease: float) -> bool:
     """入札して勝者になれたら True（先勝ち・(ts, who) 決定的タイブレーク）。"""
-    os.makedirs(bids_dir, exist_ok=True)
-    w = _winner(bids_dir)
-    if w is not None and w != who:
-        return False
-    write_json_atomic(os.path.join(bids_dir, f"{_safe(who)}.json"), {
-        "who": who, "ts": time.time(), "claimed_at": now_iso(),
-        "lease_until": time.time() + lease, "workload": "amigos"})
-    mirror.sync_push(f"bid {did} by {who}")
-    mirror.sync_pull()
-    if _winner(bids_dir) == who:
-        return True
-    try:
-        os.remove(os.path.join(bids_dir, f"{_safe(who)}.json"))
-        mirror.sync_push(f"bid withdraw {who}")
-    except OSError:
-        pass
-    return False
+    return protocol.try_claim(
+        bids_dir, who, lease,
+        on_write=lambda: mirror.sync_push(f"bid {did} by {who}"),
+        on_sync=mirror.sync_pull,
+        on_withdraw=lambda: mirror.sync_push(f"bid withdraw {who}"),
+        extra={"workload": "amigos"})
 
 
 def _board_declared_repos(node_repos) -> "set[str]":
@@ -253,7 +188,7 @@ def report_board_results(daemon, mirror: "BoardMirror") -> "list[str]":
             continue
         roles = active_roles(load_roles(mp), mp)
         phase = derive_phase(mission, roles, mp)
-        if phase not in _AMIGOS_TERMINAL:
+        if not vocab.is_terminal(phase):
             continue    # まだ working/integrating/reviewing 等
         write_json_atomic(os.path.join(ddir, "result.json"), {
             "winner": daemon.node_id, "native_id": did, "status": phase,
@@ -270,22 +205,9 @@ def report_board_results(daemon, mirror: "BoardMirror") -> "list[str]":
 def _write_or_renew_bid(bids_dir: str, who: str, lease: float, workload: str) -> bool:
     """bids/<who>.json を書く／更新する。既存が無ければ新規（ts はいま）、あれば残 lease が
     半分未満のときだけ lease_until を延長する（(ts, who) タイブレークの根拠 ts は温存し、
-    毎 poll 書き換えて先勝ちの意味を壊さない・push 頻度も抑える）。書いたら True。"""
-    path = os.path.join(bids_dir, f"{_safe(who)}.json")
-    cur = read_json(path)
-    now = time.time()
-    if isinstance(cur, dict):
-        if float(cur.get("lease_until", 0)) - now > lease / 2.0:
-            return False    # まだ十分残っている → 今回は延長不要
-        ts = cur.get("ts", now)
-        claimed_at = cur.get("claimed_at", now_iso())
-    else:
-        ts = now
-        claimed_at = now_iso()
-    os.makedirs(bids_dir, exist_ok=True)
-    write_json_atomic(path, {"who": who, "ts": ts, "claimed_at": claimed_at,
-                             "lease_until": now + lease, "workload": workload})
-    return True
+    毎 poll 書き換えて先勝ちの意味を壊さない・push 頻度も抑える）。書いたら True。
+    共通実装は agentcore.protocol.renew_lease（agent-project の同種心拍延長と同じ規律）。"""
+    return protocol.renew_lease(bids_dir, who, lease, extra={"workload": workload})
 
 
 def _renew_dispatched_leases(daemon, mirror: "BoardMirror", lease: float) -> None:
@@ -304,7 +226,8 @@ def _renew_dispatched_leases(daemon, mirror: "BoardMirror", lease: float) -> Non
             continue
         status_path = os.path.join(ddir, "status", f"{_safe(daemon.node_id)}.json")
         st = read_json(status_path)
-        if not st or st.get("state") in (None, "done", "failed", "cancelled", "away"):
+        state = st.get("state") if st else None
+        if not st or state == "away" or vocab.is_terminal(state):
             continue    # 自分が落札した委譲ではない（または既に終端/away）
         if _write_or_renew_bid(os.path.join(ddir, "bids"), daemon.node_id, lease, "amigos"):
             write_json_atomic(status_path, {**st, "heartbeat": now_iso(),

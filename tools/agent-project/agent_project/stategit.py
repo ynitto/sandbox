@@ -16,13 +16,17 @@ from __future__ import annotations
 #     policy/charter の編集）は中へ。前回同期スナップショット（manifest）基準の 3-way で
 #     「どちらが変えたか」を判定し、同時変更だけを「人の入力パスはリモート優先・機械状態は
 #     ローカル優先」の決定的規則で裁定する。
+from agentcore import transport as _transport  # noqa: E402
+
 STATE_GIT_MARKER = "agent-project.stateclone"   # 自前管理クローンの目印（git config）
 # これ以上古い .git ロックは残骸とみなし自己回復する閾値。30 秒では「遅いだけの生きた git」
 # （大きな bus/ の add・NFS・巨大リポジトリの checkout）のロックを削除して index を壊す
 # 事故が起きうるため、正常な git 操作がまず超えない 5 分に置く（クラッシュ残骸の回収が
 # 数分遅れる代償は許容できる。稼働中の git のロックを消す代償は index 破損）。
+# 常駐一本化 P0・W0-7 で低レベル git 実行・回復層は agentcore.transport へ委譲したが、この
+# 閾値（GitBus/BoardRepo 系の 30s）だけは意図的に据え置く——閾値統一（W0-10）は state 系の
+# 単一プロセス化（P1 の常駐体一本化）が前提になるため、それまでは変えない。
 _STATE_LOCK_STALE_SEC = 300.0
-_STATE_GIT_RETRIES = 4                          # ロック起因の git 失敗の再試行回数
 _STATE_PUSH_RETRIES = 5                         # push 競合の再試行回数（2,4,8,16s バックオフ）
 _STATE_WT_PREFIX = "agent-project-state-wt-"    # state コミット用 detached worktree の一時名 prefix
 # コンテナ相対パスの同期除外。一時/ホスト局所の状態は共有しない:
@@ -74,104 +78,23 @@ class StateGit:
         self._ready = False
         self._last_remote = 0.0     # 最後にリモートへ触れた時刻（fetch/push の間隔律速）
         self._last_attempt = 0.0    # クローン準備の失敗も間隔律速（不通のリモートを連打しない）
-
-    # --- git 低レベル（GitBus と同じ護り: ceiling / C ロケール / ロック残骸の自己回復） ---
-    def _env(self) -> dict:
-        env = dict(os.environ)
-        parent = os.path.dirname(os.path.realpath(self.clone)) or "/"
-        ceil = env.get("GIT_CEILING_DIRECTORIES")
-        env["GIT_CEILING_DIRECTORIES"] = parent + (os.pathsep + ceil if ceil else "")
-        env["GIT_DISCOVERY_ACROSS_FILESYSTEM"] = "0"
-        env["LC_ALL"] = "C"              # ロック競合の検知は英語メッセージの文字列マッチに頼る
-        env["GIT_EDITOR"] = "true"       # rebase --continue がエディタを開かないように
-        return env
-
-    _STALE_LOCKS = ("index.lock", "HEAD.lock", "config.lock", "shallow.lock", "packed-refs.lock")
-
-    def _remove_stale_locks(self) -> int:
-        removed = 0
-        gitdir = self.clone / ".git"
-        now = time.time()
-        for name in self._STALE_LOCKS:
-            p = gitdir / name
-            try:
-                if p.is_file() and now - p.stat().st_mtime >= _STATE_LOCK_STALE_SEC:
-                    p.unlink()
-                    removed += 1
-            except OSError:
-                pass
-        return removed
-
-    @staticmethod
-    def _is_lock_error(p) -> bool:
-        err = p.stderr or ""
-        return ".lock" in err and ("File exists" in err or "another git process" in err.lower())
+        # 低レベル git 実行・回復・リトライ層は agentcore.transport へ委譲（GitBus/BoardRepo と
+        # 共通の唯一の実装 — 設計 §4.1・R1）。CAS export・manifest 3-way・パス所有権裁定
+        # （_resolve_rebase・_three_way・_take_local_on_conflict 等）はこのクラスのポリシーとして残す
+        # （この時点では挙動不変。管理クローン/direct 両モードの統一は P1）。副次効果として、
+        # このクラスに無かった fsck 破損検知・durable-write・clone 指数バックオフを新たに獲得する。
+        self._transport = _transport.GitTransport(
+            str(self.clone), self.remote, branch=self.branch,
+            subdir=self.subdir, sparse_paths=([self.subdir] if self.subdir else None),
+            managed_flag=STATE_GIT_MARKER,
+            commit_user_name="agent-project", commit_user_email="agent-project@local",
+            lock_stale_sec=_STATE_LOCK_STALE_SEC)
 
     def _git(self, *args: str, check: bool = False):
-        p = None
-        for i in range(_STATE_GIT_RETRIES):
-            p = subprocess.run(["git", "-C", str(self.clone), *args],
-                               capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._env())
-            if p.returncode == 0 or not self._is_lock_error(p):
-                break
-            if self._remove_stale_locks() == 0 and i < _STATE_GIT_RETRIES - 1:
-                time.sleep(2 ** i)
-        if check and p.returncode != 0:
-            raise RuntimeError(f"git {' '.join(args)} 失敗: {(p.stderr or '').strip()[:300]}")
-        return p
-
-    # --- クローンの用意（自前管理クローンのみ再利用。他人の作業ツリーは決して触らない） ---
-    def _is_managed(self) -> bool:
-        if not (self.clone / ".git").is_dir():
-            return False
-        top = self._git("rev-parse", "--show-toplevel").stdout.strip()
-        if not top or os.path.realpath(top) != os.path.realpath(str(self.clone)):
-            return False
-        origin = self._git("remote", "get-url", "origin").stdout.strip()
-        same_origin = origin == self.remote or (
-            bool(origin) and os.path.realpath(origin) == os.path.realpath(self.remote))
-        return same_origin and self._git("config", "--get", STATE_GIT_MARKER).stdout.strip() == "1"
-
-    def _recover(self) -> None:
-        """前プロセスの異常終了が残したロック残骸・中断 rebase を自己回復する。"""
-        self._remove_stale_locks()
-        gitdir = self.clone / ".git"
-        if any((gitdir / d).is_dir() for d in ("rebase-merge", "rebase-apply")):
-            self._git("rebase", "--abort")
-            for d in ("rebase-merge", "rebase-apply"):
-                shutil.rmtree(gitdir / d, ignore_errors=True)
-
-    def _setup_worktree(self) -> None:
-        if not self._git("config", "user.email").stdout.strip():
-            self._git("config", "user.email", "agent-project@local")
-            self._git("config", "user.name", "agent-project")
-        if self.subdir:                  # 自分の名前空間だけを作業ツリーに展開（他者のパスを引かない）
-            self._git("sparse-checkout", "init", "--cone")
-            self._git("sparse-checkout", "set", self.subdir)
-        if self._git("checkout", self.branch).returncode != 0:
-            self._git("checkout", "-B", self.branch, check=True)   # 空リポジトリ初回など
+        return self._transport.git(*args, check=check)
 
     def _ensure_clone(self) -> None:
-        if self._is_managed():
-            self._recover()
-            self._setup_worktree()
-            return
-        if self.clone.is_dir() and any(self.clone.iterdir()):
-            raise RuntimeError(
-                f"state_git のクローン先 {self.clone} が管理外の非空ディレクトリです"
-                "（作業ツリーを壊さないため中断。空のパスを指定してください）")
-        self.clone.parent.mkdir(parents=True, exist_ok=True)
-        # blob:none で履歴の実体を引かない（非対応サーバはフィルタ無しへフォールバック）
-        for extra in (["--filter=blob:none"], []):
-            r = subprocess.run(["git", "clone", "--no-checkout", *extra, self.remote,
-                                str(self.clone)], capture_output=True, text=True, encoding="utf-8", errors="replace")
-            if r.returncode == 0:
-                break
-            shutil.rmtree(self.clone, ignore_errors=True)
-        if r.returncode != 0:
-            raise RuntimeError(f"state_git クローン失敗: {(r.stderr or '').strip()[:300]}")
-        self._git("config", STATE_GIT_MARKER, "1")
-        self._setup_worktree()
+        self._transport.ensure_clone()
 
     # --- 3-way 同期（manifest = 前回同期時点の path→sha256 スナップショット） ---
     @property

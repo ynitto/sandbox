@@ -212,7 +212,7 @@ def cmd_resume_run(cfg: Config, tid: str, run_id: str, reason: str) -> int:
     # 実行中（orchestrator の生存リースが有効）の run への再開指示だけは拒否する。
     # run が bus に無い場合は拒否しない: bus 掃除後でも agent-flow は作業ブランチ
     # ap/<task-id> から続きを解決できる。
-    # canceled / done は続きから再開できないので last_run を固定せず retries を進め、新 run にする。
+    # cancelled / done は続きから再開できないので last_run を固定せず retries を進め、新 run にする。
     meta_path = cfg.bus / "runs" / rid / "meta.json"
     st = ""
     if meta_path.exists():
@@ -220,7 +220,7 @@ def cmd_resume_run(cfg: Config, tid: str, run_id: str, reason: str) -> int:
             st = str(json.loads(meta_path.read_text(encoding="utf-8")).get("status") or "")
         except (OSError, ValueError):
             st = "?"
-        if st in ("canceled", "done"):
+        if st in ("cancelled", "done"):
             release_claim(cfg, t)
             t.retries += 1
             t.drop("feedback", "revised", "last_run")

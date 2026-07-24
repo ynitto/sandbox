@@ -275,12 +275,20 @@ test('flow: run ビュー — 先着は勝者1件・parked は waiting・stale �
   assert.strictEqual(view.budget, null, 'flow の予算は node-budget 契約が担う');
 });
 
-test('flow: 終端 run の phase 写像（canceled→cancelled）と stale=false', () => {
+test('flow: 終端 run の phase 写像（cancelled）と stale=false', () => {
+  const view = flowAdapter.toView({
+    runId: 'r', status: 'cancelled', nodes: {}, alive: null, final: null,
+  });
+  assert.strictEqual(view.phase, 'cancelled');
+  assert.strictEqual(view.stale, false, '終端は stale にしない');
+});
+
+test('flow: 旧綴り canceled の run も終端 cancelled として読める（語彙統一 W0-9 前のデータ）', () => {
   const view = flowAdapter.toView({
     runId: 'r', status: 'canceled', nodes: {}, alive: null, final: null,
   });
   assert.strictEqual(view.phase, 'cancelled');
-  assert.strictEqual(view.stale, false, '終端は stale にしない');
+  assert.strictEqual(view.stale, false);
 });
 
 // --- IPC 配線 ---------------------------------------------------------------

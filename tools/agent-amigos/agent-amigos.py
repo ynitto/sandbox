@@ -4,6 +4,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# agentcore（transport/protocol/vocab/heartbeat の共通ライブラリ）は tools/ の兄弟ディレクトリ。
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "agentcore"))
 
 from agent_amigos.cli import main  # noqa: E402
 

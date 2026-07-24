@@ -10,7 +10,7 @@ def _new_run_id(task: "Task", cfg: "Config") -> str:
     return _req_id_for(task, cfg, task.retries)
 
 
-_FLOW_TERMINAL = ("done", "failed", "canceled")
+_FLOW_TERMINAL = ("done", "failed", "cancelled")
 
 # リース未記録の非終端 run を「停滞」とみなすまでの猶予。agent-flow の worker は 1 ノードに
 # 数分かかるので、生きている run を誤って停滞と読まない程度に長く取る。
@@ -47,7 +47,7 @@ def _run_resumable(cfg: "Config", rid: str) -> bool:
     if st == "failed":
         return True
     if st in _FLOW_TERMINAL:
-        return False                      # done / canceled は作り直す
+        return False                      # done / cancelled は作り直す
     lease = meta.get("orch_lease_until")  # 非終端: 生存リースで実態を見る
     if isinstance(lease, (int, float)):
         return float(lease) < time.time()
@@ -201,7 +201,7 @@ def detach_flow_run(cfg: "Config", task: Task, reason: str = "",
     revise / hold / reject でタスクを別方向へ進めるとき、旧 run を放置すると
     ap/<task-id> へ二重書き込みし、reap も古結果を settle しうる。cancel マーカー＋
     waits 掃除は agent-flow cmd_cancel / dashboard cancelRun と同契約。
-    既定の終端は canceled（人の停止・軌道修正＝次 run は inherit しない）。
+    既定の終端は cancelled（人の停止・軌道修正＝次 run は inherit しない）。
     タイムアウトなど一時失敗は failed=True（failure_reason 付き）にし、次 run が
     done ノードを引き継げるようにする。戻り値は止めた run-id（無ければ None）。"""
     rid = str(task.get("flow_run") or "").strip()
@@ -214,7 +214,7 @@ def detach_flow_run(cfg: "Config", task: Task, reason: str = "",
     run_dir = bus / "runs" / rid
     meta_path = run_dir / "meta.json"
     applied = False
-    end_status = "failed" if failed else "canceled"
+    end_status = "failed" if failed else "cancelled"
 
     def _write_cancel_marker() -> None:
         try:
@@ -258,7 +258,7 @@ def detach_flow_run(cfg: "Config", task: Task, reason: str = "",
             pass
 
     # failed: 先に終端化してから cancel マーカー（daemon の mark_canceled が no-op になる）。
-    # canceled: 先にマーカー（人の停止意図を同期）してから終端化。
+    # cancelled: 先にマーカー（人の停止意図を同期）してから終端化。
     if failed:
         _apply_terminal()
         _write_cancel_marker()
@@ -363,7 +363,7 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
                     except OSError:
                         pass
                 # submit タイムアウトと同じ: 対象 run を止めて外部 daemon 採用を防ぐ。
-                # failed（canceled ではない）＝次リトライで done ノードを inherit できる。
+                # failed（cancelled ではない）＝次リトライで done ノードを inherit できる。
                 task.set("flow_run", rid)
                 detach_flow_run(cfg, task, f"agent-flow run タイムアウト（{cfg.act_timeout}s）",
                                 failed=True)
@@ -383,12 +383,12 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
                 pass
     out = "".join(out_chunks)
     task.drop("flow_run", "flow_loc")
-    # 同期 run の canceled は exit≠0 でもメッセージが日本語のため、meta で確定して
-    # 上位の canceled 特別扱い（リトライ非消費で ready）へ乗せる。
+    # 同期 run の cancelled は exit≠0 でもメッセージが日本語のため、meta で確定して
+    # 上位の cancelled 特別扱い（リトライ非消費で ready）へ乗せる。
     try:
         meta = json.loads((cfg.bus / "runs" / rid / "meta.json").read_text(encoding="utf-8"))
-        if str(meta.get("status") or "") == "canceled":
-            return (False, f"daemon run {rid} canceled")
+        if str(meta.get("status") or "") == "cancelled":
+            return (False, f"daemon run {rid} cancelled")
     except (OSError, ValueError, json.JSONDecodeError):
         pass
     return (proc.returncode == 0, out[-300:].strip())
@@ -475,7 +475,7 @@ def _inherit_from_run(task: Task, new_run_id: str, cfg: "Config | None" = None) 
 
     `_prev_req_id`（retries-1・現 rev）だと revise で rev が上がったあと、実在しない
     `…-r{N-1}-v{newRev}` を指して inherit が空振りする。last_run が実際の先行。
-    canceled の last_run は引き継がない（人の停止・軌道修正を尊重。done を蘇らせない）。
+    cancelled の last_run は引き継がない（人の停止・軌道修正を尊重。done を蘇らせない）。
     タイムアウト等の failed は引き継ぐ（agent-flow inherit_from と同じ契約）。"""
     last = str(task.get("last_run") or "").strip()
     if not last or last == str(new_run_id or "").strip():
@@ -483,7 +483,7 @@ def _inherit_from_run(task: Task, new_run_id: str, cfg: "Config | None" = None) 
     if cfg is not None:
         try:
             meta = json.loads((cfg.bus / "runs" / last / "meta.json").read_text(encoding="utf-8"))
-            if str(meta.get("status") or "") == "canceled":
+            if str(meta.get("status") or "") == "cancelled":
                 return None
         except (OSError, ValueError, json.JSONDecodeError):
             pass
@@ -509,8 +509,8 @@ class _Pending:
 
 def _flow_result_once(cfg: "Config", use_git: bool, run_id: str) -> "tuple[bool, bool, str]":
     """agent-flow result を1回だけ読む（待たない）。(terminal, ok, msg) を返す。
-    terminal=run が終端（done/failed/canceled）に達したか。
-    ok=成功終端（done）か。failed / canceled は ok=False（canceled を success と取り違えない —
+    terminal=run が終端（done/failed/cancelled）に達したか。
+    ok=成功終端（done）か。failed / cancelled は ok=False（cancelled を success と取り違えない —
     dashboard から人が中止した run を verify=true で done 確定させないため）。
     取得不能は (False, False, "error: …") で継続待ち扱いにするが、msg でエラーを区別して
     返す——CLI 不在・バス破損・出力化けを「まだ実行中」と読み続けると offloaded タスクが
@@ -530,8 +530,8 @@ def _flow_result_once(cfg: "Config", use_git: bool, run_id: str) -> "tuple[bool,
     status = str(data.get("status") or "")
     if status == "failed":
         return (True, False, f"daemon run {run_id} failed")
-    if status == "canceled":
-        return (True, False, f"daemon run {run_id} canceled")
+    if status == "cancelled":
+        return (True, False, f"daemon run {run_id} cancelled")
     return (True, True, f"daemon run {run_id} done")
 
 
@@ -543,7 +543,7 @@ def _act_offload(task: Task, cfg: "Config", use_git: bool) -> "tuple":
     run_id = _submit_req_id(task, cfg)
     prev = _inherit_from_run(task, run_id, cfg)
     if prev is None and not str(task.get("last_run") or "").strip():
-        prev = _prev_req_id(task, cfg)  # last_run 空のときだけ推定（canceled skip を踏み潰さない）
+        prev = _prev_req_id(task, cfg)  # last_run 空のときだけ推定（cancelled skip を踏み潰さない）
     _pin_last_run(cfg, task, run_id)
     term, ok, msg = _flow_result_once(cfg, use_git, run_id)
     if not term:                                  # 未作成/実行中: 未作成なら submit（作成済みは冪等 no-op）
@@ -600,16 +600,16 @@ def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
                                 cwd=str(cfg.workdir), timeout=60, capture_output=True, text=True, encoding="utf-8", errors="replace")
             data = json.loads(res.stdout)
             if data.get("done"):
-                # done=True は終端（done/failed/canceled）を意味する。failed / canceled は act
-                # 失敗として扱い（canceled を success と取り違えない）、success と区別する。
+                # done=True は終端（done/failed/cancelled）を意味する。failed / cancelled は act
+                # 失敗として扱い（cancelled を success と取り違えない）、success と区別する。
                 # orchestrator がクラッシュして daemon が failed に確定した場合もここで即検知でき、
                 # act_timeout までの永久待機を避けられる。
                 st = str(data.get("status") or "")
                 task.drop("flow_run", "flow_loc")
                 if st == "failed":
                     return (False, f"daemon run {run_id} failed")
-                if st == "canceled":
-                    return (False, f"daemon run {run_id} canceled")
+                if st == "cancelled":
+                    return (False, f"daemon run {run_id} cancelled")
                 return (True, f"daemon run {run_id} done")
         except Exception:  # noqa: BLE001 — 取得失敗は次ポーリングで再試行
             pass
@@ -663,9 +663,9 @@ def _board_result_once(board: "BoardRepo", did: str) -> "tuple[bool, bool, str]"
     cancelled/failed は ok=False（未終端は毎回 sync_pull 済みの呼び出し元が次パスで再確認）。
     cancelled は 2 経路ある: cancelled.json（入札前・依頼者の中止）と result.json の
     status（実行中に人が中止。agent_flow/agent_amigos の report_board_results が
-    自エンジンの canceled/cancelled 終端をそのまま書き戻す）— どちらもメッセージを
+    自エンジンの cancelled 終端をそのまま書き戻す）— どちらもメッセージを
     "cancelled" で終える（_reap_offloaded の人中止判定 endswith と一致させる。
-    flow 側の "canceled"（米語）とは綴りが異なる点に注意——board 語彙は "cancelled"）。"""
+    語彙統一（W0-9）以降 flow 側も "cancelled" に揃っており、翻訳は不要）。"""
     if board.is_cancelled(did):
         return (True, False, f"board delegation {did} cancelled")
     res = board.read_result(did)

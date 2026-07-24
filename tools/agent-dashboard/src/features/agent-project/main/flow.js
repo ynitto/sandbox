@@ -18,9 +18,18 @@ const os = require('os');
 const path = require('path');
 const project = require('./project');
 
-// 終端 status（agent-flow 本体と一致させる）。canceled は人の明示指示による恒久停止。
-// これに含めないと canceled run が「応答なし/実行中」に誤分類され、再投入/削除の可否もずれる。
-const TERMINAL = new Set(['done', 'failed', 'canceled']);
+// 終端 status（agent-flow 本体 = agentcore.vocab.TERMINAL_READ と一致させる）。cancelled は
+// 人の明示指示による恒久停止。これに含めないと cancelled run が「応答なし/実行中」に誤分類され、
+// 再投入/削除の可否もずれる。旧綴り 'canceled'（語彙統一 W0-9 より前に書かれた meta.json）も
+// 読み取りだけは終端として受け入れる——**書くのは正典の 'cancelled' のみ**。
+const CANCELLED = 'cancelled';
+const CANCELLED_SPELLINGS = new Set([CANCELLED, 'canceled']);
+const TERMINAL = new Set(['done', 'failed', ...CANCELLED_SPELLINGS]);
+
+// meta.status が「人が中止した」を表すか（新旧どちらの綴りでも真）。
+function isCancelled(status) {
+  return CANCELLED_SPELLINGS.has(String(status || ''));
+}
 
 // 生存リース未記録の run（heartbeat 前に owner が死んだ／古い agent-flow の run）を
 // 停止扱いにするまでの猶予秒。agent-flow の孤児回収リース（poll*10、最低 120s）より
@@ -514,7 +523,7 @@ function prepareRunDeletion(busDir, runId) {
   const status = String(meta.status || 'unknown');
   if (!TERMINAL.has(status) && runAlive(meta, Date.now() / 1000) === true) {
     throw new Error(
-      `run は実行中です（status=${status}）。終端（done/failed/canceled）または応答なしの run だけ削除できます`
+      `run は実行中です（status=${status}）。終端（done/failed/cancelled）または応答なしの run だけ削除できます`
     );
   }
   return { runDir, status };
@@ -526,9 +535,9 @@ function writeJsonAtomic(file, obj) {
   fs.renameSync(`${file}.tmp`, file);
 }
 
-// run を canceled に終端化する（人の明示指示による恒久停止）。agent-flow の cmd_cancel と同じ 3 手を
+// run を cancelled に終端化する（人の明示指示による恒久停止）。agent-flow の cmd_cancel と同じ 3 手を
 // ファイル操作で行う: (1) cancel マーカーを inbox/cancels/ に書く（git 同期で他 PC / daemon へ伝わる）、
-// (2) run が存在すれば meta を canceled に確定（daemon 不在でも即停止）、(3) park 記録を掃除して
+// (2) run が存在すれば meta を cancelled に確定（daemon 不在でも即停止）、(3) park 記録を掃除して
 // 監視の再ポーリングを止める。起票済みイシューのクローズは呼び出し側（ipc）が gitlab API で行う（任意）。
 // 返り値の issues は掃除前の park 済みイシュー座標（--close-issues 相当の後始末に使う）。
 function cancelRun(busDir, runId, { reason } = {}) {
@@ -570,10 +579,10 @@ function cancelRun(busDir, runId, { reason } = {}) {
     id, who: `viewer-${os.hostname()}`, reason: reason || '',
     close_issues: false, requested_at: new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
   });
-  // (2) run が存在すれば meta を canceled に確定（監視主体が居なくても止まる）
+  // (2) run が存在すれば meta を cancelled に確定（監視主体が居なくても止まる）
   let marked = false;
   if (meta && !TERMINAL.has(curStatus)) {
-    meta.status = 'canceled';
+    meta.status = CANCELLED;
     meta.updated_at = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
     if (reason) meta.cancel_reason = reason;
     writeJsonAtomic(path.join(runDir, 'meta.json'), meta);
@@ -591,7 +600,7 @@ function cancelRun(busDir, runId, { reason } = {}) {
     }
   }
   // (4) 適用済み cancel マーカーを消す（daemon 不在でも sticky にしない）。
-  // orch は meta=canceled で止まる。remote daemon も meta を見て終端を知る。
+  // orch は meta=cancelled で止まる。remote daemon も meta を見て終端を知る。
   if (marked) {
     try {
       fs.unlinkSync(path.join(busDir, 'inbox', 'cancels', `${id}.json`));
@@ -599,7 +608,7 @@ function cancelRun(busDir, runId, { reason } = {}) {
       /* 残っても致命ではない */
     }
   }
-  return { status: marked ? 'canceled' : curStatus, marked, cleared, issues };
+  return { status: marked ? CANCELLED : curStatus, marked, cleared, issues };
 }
 
 // ---------------------------------------------------------------------------
@@ -980,6 +989,7 @@ async function stopDaemon(busDir, lockDir, { timeoutMs = 5000 } = {}) {
 
 module.exports = {
   readRun,
+  isCancelled,
   parseRunId,
   readRunEvents,
   readNodeEvents,

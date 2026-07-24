@@ -7,6 +7,142 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agentcore: P0 完了確認・R9 の常設テスト化・残存重複の棚卸し
+
+P0 が完了したかの確認と、設計 §5 の事前検証（V1〜V4）を実施した。
+
+- **R9 を常設の非退行テストとして固定**（実装計画 §0-4）: `agent-flow run` が常駐体なし・
+  `--git` 未指定・ネットワークなしで完結することを明示的に名前つきテストで固定した
+  （開発木・zipapp 双方で確認）。amigos 側（`agent-amigos drive`）は P1（W1-3）の
+  新設コマンドなので、この時点では対象外。
+- **P0 完了条件「`_recover`/claim 系の実装が agentcore 以外に grep で見つからない」を
+  再監査**: 未達であることを確認・列挙した。既知の残存（`agent_flow/stategit.py`・
+  `DirectStateGit`）に加え、**今回新たに発見**: `agent_amigos/gitbus.py`
+  （amigos のミッションバス自身の git+ 実装。板の `BoardMirror` とは別物・
+  ミッション単位ブランチ分離・自身のヘッダに「P1」と明記済み）。
+  `agent_flow/gitcache.py`・`agent_project/gitcache.py`・`workspace.py`
+  （workspace/成果物クローンのキャッシュ）は設計が言う「5 実装」とは別カテゴリと判断し
+  対象外のまま。
+- **V2（agentcore の import 経路）を最終マージ後の状態で再検証**: 3 ツールの zipapp を
+  実際に `install.sh` でビルドし、`agentcore/` の同梱・`agent-flow run` のローカル/
+  `--git` 両モードでの実行を確認。
+- **V1・V3・V4（WSL/Windows 起動系の実挙動）は本セッションの Linux サンドボックスでは
+  検証不能**——実機（Windows + WSL）が必要。P1 着手前に別途実施が必要。
+- 全テスト緑を再確認: agentcore 40 / agent-flow 530 / agent-amigos 145 /
+  agent-project 918 / agent-dashboard 634 件。
+
+### agentcore: P0 のレビュー指摘を修正 — 語彙統一の取りこぼし（dashboard）・claim 心拍の退行・転送の空 push
+
+P0（W0-6〜W0-10）のレビューで見つかった 6 件を修正した。いずれも P0 の変更が入り口で、
+放置すると実運用で表面化する。
+
+- **語彙統一（W0-9）が agent-dashboard に届いていなかった（機能不全）**: 本体側は
+  `cancelled` を書くようになったのに、dashboard は `canceled` 決め打ちのままだった。結果、
+  (a) 中止した run が終端と認識されず「実行中／応答なし」に誤分類され、削除・再投入の可否も
+  ずれる、(b) dashboard の「中止」は `meta.status = 'canceled'` を書くため、本体の終端判定に
+  引っかからず **人の中止操作が run を止められない**。`flow.js` / `flow-adapter.js` /
+  `participation/model.js` / renderer の 4 系統を `cancelled` へ統一し、`flow-adapter.js` が
+  持っていた終端集合の複製は `flow.js` の 1 定義（`TERMINAL` / `isCancelled`）参照に置き換えた。
+- **読み取り側だけ旧綴りを受け入れる互換を追加**: 語彙統一は静止点で一斉に切り替えるが、
+  **バス上に既にある過去の run の meta.json は書き換わらない**。旧綴りを非終端と読むと、
+  改称前に人が cancel した run が `active_runs` に戻り、孤児回収で failed 化されて蘇る。
+  `agentcore.vocab.TERMINAL_READ` / `is_terminal_read()` を追加し、flow と dashboard の
+  **読み取り**だけがこれを使う（**書き込みは正典 `cancelled` のみ**・翻訳マップは持たない）。
+- **amigos のロール心拍が消えた claim を書き戻していた（退行）**: `assign.renew_lease` の
+  移植先 `protocol.renew_lease` は「無ければ新規作成」する仕様だったため、剪定・取り下げ・
+  オーナーの再編で claim が消えたあとも心拍が書き戻し、誰も動いていないロールを占有し続ける
+  zombie 勝者を作りうる（移植前は自分の claim が無ければ no-op だった）。
+  `protocol.renew_lease(..., create_if_missing=False)` を追加し、心拍からはこれで呼ぶ。
+  板の入札延長（flow / amigos）は従来どおり新規作成する側の既定を使う。
+- **`protocol.winner()` が壊れた claim 1 件で止まっていた（退行）**: 移植前の amigos
+  `live_claims` は `lease_until` / `ts` を数値化して読めないものを飛ばしていたが、共通実装は
+  素の比較だったため、壊れた 1 ファイルで `TypeError` になり **そのロール/委譲が誰にも
+  取れなくなる**。数値として読めない claim を無視するようにした。
+- **転送が「押し出すものが無くても push する」ようになっていた**: `BoardRepo` / `BoardMirror`
+  は移植前に `status --porcelain` が空なら push を省いていたが、`GitTransport.sync_push` には
+  その抑止が無く、板を巡回するたびに空 push がリモートへ飛ぶ。commit 済み未 push まで含めて
+  判定する `_ahead()` で抑止する（前回 push が落ちて commit だけ残った場合は従来どおり押す）。
+- **claim ファイル名の正規化がずれていた**: `protocol` は `safe_name(node_id)` でファイルを
+  書くのに、amigos の `MissionPaths.assignment()` は生の `node_id` でパスを組んでいた。
+  node_id に記号が混じる環境でだけ「書いたのに読めない」が起きるため、読み手側も同じ正規化を
+  通す。あわせて claim 実装の残骸（flow の `_unique_ts` / `_claim_lock_path`。同じ claim_dir に
+  対して 2 つのロック名前空間が並立する温床）を削除した。
+- 回帰テストを追加（agentcore 5 / agent-flow 1 / agent-amigos 2 / dashboard 2）。全テスト緑:
+  agentcore 40 / agent-flow 529 / agent-amigos 145 / agent-project 918 / dashboard 全件。
+
+### agentcore: P0 完了 — GitBus/StateGit の transport 委譲・flow/amigos の claim 統一・語彙統一・契約掃除
+
+[常駐一本化 実装計画](docs/plans/2026-07-24-single-resident-controller-implementation-plan.md) の
+P0（W0-6〜W0-10）を完了し、直前のコミットで着手した P0 の残りを仕上げた。
+
+- **W0-6 — `agent_flow/gitbus.py` の `GitBus` を transport 委譲へ**: 転送の実装は
+  `agentcore.transport.GitTransport` の 1 実装のみに。白箱テスト（`_is_corrupt_error` の
+  クラス参照・`_clone_with_retry` の monkey-patch・`_git`/`_probe_integrity` の直接呼び出し）
+  と互換な薄いラッパーとして GitBus を残した。移植中に `GitTransport._rebuild_clone` の
+  実バグ（存在しないメソッド名を呼んでいた——`sync_pull`/`sync_push` 経路の破損リカバリが
+  必ず `AttributeError` で落ちる潜在バグ）を発見・修正し、再現テストを追加。
+- **W0-8（残り）— flow のタスク claim・amigos のロール claim を `agentcore.protocol` へ**:
+  `agent_flow/bus.py` の `_winner_in`/`_write_claim_in`/`_try_claim_in`/`extend_claim`・
+  `agent_amigos/assign.py` の `claim_role`/`apply_role`/`live_claims`/`winner`/`renew_lease`、
+  および flow 自身の板参加（`agent_flow/board.py` の `_write_or_renew_bid`）を移植。
+  claim 3 実装 → 1 実装（設計 R1 の達成条件）。
+- **W0-9 — 完了語彙の統一（`canceled` 米式 → `cancelled` 英式・静止点で全ツール一斉）**:
+  agent-flow の内部 `TERMINAL` 定数を `agentcore.vocab.TERMINAL` の参照に置換し、run
+  status・cancel マーカー・ログメッセージの綴りを統一。`agent_flow/board.py` の
+  `_FLOW_TO_BOARD_STATUS` 翻訳マップを削除（板の語彙と一致したため翻訳不要に）。
+  `agent_project/loop.py` の `endswith(("canceled","cancelled"))` 二重判定を単一判定へ
+  縮約。Python の識別子（`mark_canceled`/`is_canceled_requested`/`_orch_check_canceled`）は
+  内部実装詳細として据え置き、対外契約となる文字列値・スキーマ・ドキュメントのみ改称。
+- **W0-10 — 契約の掃除**: `schemas/board.schema.json` から未実装の speculation
+  （`result_report`/`results/<who>.json`/`resolve`）を削除し、`agent-board/README.md` の
+  レイアウト説明も追従（実装時に additive で復活）。stale lock 閾値の 30s/300s 統一は
+  StateGit の直接（direct）モード統一が前提の P1 マターと判断し見送り（理由をコード
+  コメントに明記）。
+- **W0-7 — `agent_project/stategit.py` の `StateGit`（管理クローンモード）を transport 委譲へ**:
+  低レベルの git 実行・ロック回復・クローン/push リトライ層を `agentcore.transport` へ委譲し、
+  CAS export・manifest 3-way・パス所有権裁定（`_resolve_rebase`/`_three_way`/
+  `_take_local_on_conflict` 等）はこのクラスのポリシーとして残した（挙動不変。直接
+  （direct）モードとの統一は P1）。副次効果として fsck 破損検知・durable-write・clone
+  指数バックオフを新たに獲得。`DirectStateGit`（direct モード・実運用の既定経路）は
+  アーキテクチャが大きく異なり（クローンを持たず detached worktree + CAS で完結）
+  transport との重複が薄いため今回は対象外——フォローアップとして明記。
+- 全テスト緑を確認: agentcore 35 / agent-flow 528 / agent-amigos 143 / agent-project 918 件。
+- **未着手（フォローアップ）**: `DirectStateGit` の transport 委譲・`agent_flow/stategit.py`
+  （flow 独自の状態鏡写し。今回の移植中に発見した 6 個目の転送重複実装）・
+  `agent_flow/gitcache.py` / `workspace.py`（共有 git キャッシュ + worktree の別実装）の
+  統合。P1〜P3（常駐体本体・dashboard 縮退・パッケージ統合・実機 canary）は本計画どおり。
+
+### agentcore: 共通 git 転送層・claim/lease プロトコルを新設し BoardRepo / BoardMirror を移植（常駐一本化 P0 着手）
+
+[常駐一本化 実装計画](docs/plans/2026-07-24-single-resident-controller-implementation-plan.md) の
+P0（W0-1〜W0-5）に着手。転送・claim の重複実装を解消する共通ライブラリ `agentcore/`（3 ツールが
+`import agentcore` する通常パッケージ・独立配布はしない）を新設し、`agent-project` の
+`BoardRepo` と `agent-amigos` の `BoardMirror` をそちらへ移植した。
+
+- **`agentcore.transport.GitTransport`**: `agent_flow/gitbus.py` の `GitBus` に実証されていた
+  護り（stale lock 掃除・中断 rebase の abort・fsck プローブ・破損時の退避→再クローン→復元・
+  durable-write 設定・clone/push の指数バックオフリトライ・force push 禁止・間隔律速で
+  失敗時はクロックを進めない）を、sparse / フルチェックアウトの両方に使える汎用実装として
+  切り出した。bare repo + 故意のロック残骸/中断 rebase/オブジェクト破損を使う新規単体テスト
+  12 件。
+- **`agentcore.protocol`**: 名前空間付き claim・`(ts, who)` 決定的タイブレーク・lease の
+  書込/延長（残り半分で更新）/失効判定を共通化。`agentcore.vocab`（完了語彙
+  `done`/`failed`/`cancelled`）・`agentcore.heartbeat`（心拍/鮮度）を追加。単体テスト 20 件。
+- **`agent_project/board.py` の `BoardRepo`・`agent_amigos/board.py` の `BoardMirror`** を
+  `GitTransport` 経由へ置換（board の入札・bid 延長ロジックも `agentcore.protocol` へ移植）。
+  外部 API・既存テスト（`TestBoardAutoWiring` 12 件・`BoardParticipationTests` 等）は無改変で
+  緑のまま。副次効果として、板の 2 クローンが GitBus 相当の破損自己回復・durable-write を
+  新たに獲得した。既存クローン（マーカー導入前）を「管理外の非空ディレクトリ」として
+  拒否しないための後方互換パスと新規テストを追加。amigos に `BoardMirrorGitTests`
+  （git+ モードの 2 ノード post/bid 往復・ロック残骸回復）を新設。
+- 3 ツールの `install.sh` を拡張し、zipapp へ `agentcore/` を同梱（独立パッケージ化はしない —
+  設計 R10）。エントリスクリプト・パッケージ `__init__.py` に import 経路の path shim を追加。
+- 全テスト緑を確認: agentcore 33 / agent-flow 528 / agent-amigos 143 / agent-project 918 件。
+- **未着手（フォローアップ）**: W0-6（`GitBus` の転送委譲）・W0-7（`StateGit` 下回りの置換）・
+  W0-8 の残り（flow タスク claim・amigos ロール claim の `agentcore.protocol` 移植）・
+  W0-9（語彙統一 `canceled`→`cancelled` の全ツール一斉改称）・W0-10（契約の掃除）。
+  P1〜P3（常駐体本体・dashboard 縮退・パッケージ統合・実機 canary）は本計画どおり後続フェーズ。
+
 ### agent-project: 委譲公示板（agent-board）への依頼側自動配線 ＋ 請負側の成果報告を実装
 
 新 location `board`。`agent-project.yaml` に `board:`（板の場所。ローカル dir / `git+<url>`）を

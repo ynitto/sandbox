@@ -63,10 +63,10 @@
   絞れる。上限に達したら**起票を一時停止**する（**エラーにはしない**。人がレビューを捌いて枠が空けば自動で起票再開）。
   人のレビュー速度に発行をペーシングし、PC/GitLab サーバ負荷を抑えるための蛇口。既存の再タスク打ち切り
   （`--max-retries`）と同じく「これ以上作らない」思想の延長で、run を落とさない。
-- **`cancel`（run スコープの恒久停止）**：`agent-flow cancel <run-id>` で run を **`canceled`** に終端化する。人の明示指示に
+- **`cancel`（run スコープの恒久停止）**：`agent-flow cancel <run-id>` で run を **`cancelled`** に終端化する。人の明示指示に
   よる唯一の hard-stop で、**承認待ちで park 中の run も暴走中の run も止められる緊急回避手段**。cancel マーカーは
   inbox に置かれ git 同期で全 PC / daemon へ伝わり、監視主体が **新規起票・park の再ポーリング・孤児 resume を
-  同時に停止**する（`canceled` は終端なので `active_runs` から外れ reclaim 対象にもならない）。`--close-issues` で
+  同時に停止**する（`cancelled` は終端なので `active_runs` から外れ reclaim 対象にもならない）。`--close-issues` で
   起票済みイシューに取消コメントを付けてクローズもできる（既定はイシューを残し、追跡だけやめる）。
 - **`status`**：公式 Dynamic Workflows 風のダッシュボード（進捗バー・エージェント状態ツリー・
   アクティビティ・最終結果）。`--follow` でライブ監視。
@@ -76,7 +76,7 @@
 - **`run`**：単発実行。**既存 run-id なら再開、無ければ新規**と状態で自動判断（旧 `up`/`resume` を統合）。
   既存 run-id が **`failed`** のときは**明示 retry** として扱い、**失敗ノードだけを `pending` へ戻して
   再実行**する（確定済み `done` ノードは温存＝続きから）。これが無いと failed run は再開しても全ノードが
-  終端のまま静止し、何も再実行されない（`done`/`canceled` は終端として尊重し再実行しない）。
+  終端のまま静止し、何も再実行されない（`done`/`cancelled` は終端として尊重し再実行しない）。
 - 要求をタスクに分解し、**依存関係を尊重**しつつ複数ワーカーが**競合せず** claim して並列実行。
 - **動的な再計画**：全タスク完了後に結果を評価し、不足があればタスクを追加して反復（最大 `--max-iterations`）。
   達成不可能な完了条件で無限に再タスクを積まないよう、同一系統の作り直しは **サーキットブレーカー**（`--max-retries`、既定 3）で打ち切る。
@@ -522,7 +522,7 @@ agent-flow --bus /tmp/flowbus result                              # 最終結果
 agent-flow --bus /tmp/flowbus --run-id <run-id> result --json     # 機械可読な最終結果
 agent-flow --bus /tmp/flowbus gc --older-than 7 --keep 5 --status done --dry-run
 
-# run を止める（承認待ちで park 中でも暴走中でも効く恒久停止。canceled で終端化）
+# run を止める（承認待ちで park 中でも暴走中でも効く恒久停止。cancelled で終端化）
 agent-flow --bus /tmp/flowbus cancel <run-id>                     # イシューは残し追跡だけやめる
 agent-flow --bus /tmp/flowbus cancel <run-id> --close-issues --reason "要件変更"  # 起票済みも後始末
 ```
