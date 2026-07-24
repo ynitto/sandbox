@@ -43,6 +43,14 @@ mkdir -p "${BUILD_DIR}/agent_project"
     mkdir -p "${BUILD_DIR}/agent_project/$(dirname "$f")"
     cp "$f" "${BUILD_DIR}/agent_project/$f"
   done )
+# agentcore（transport/protocol/vocab/heartbeat の共通ライブラリ。独立配布しない内部モジュール
+# ——設計 R10）を同じ zipapp へ同梱する。tools/ の兄弟ディレクトリなので配置は SCRIPT_DIR/../agentcore。
+AGENTCORE_PKG="${SCRIPT_DIR}/../agentcore/agentcore"
+[[ -d "${AGENTCORE_PKG}" ]] || die "agentcore パッケージが見つかりません: ${AGENTCORE_PKG}"
+( cd "${AGENTCORE_PKG}" && find . -name '*.py' -not -path './tests/*' -print0 | while IFS= read -r -d '' f; do
+    mkdir -p "${BUILD_DIR}/agentcore/$(dirname "$f")"
+    cp "$f" "${BUILD_DIR}/agentcore/$f"
+  done )
 # codd-gate 自動検出・regression/intake 結線が読む sibling module（agent_project/ の外、
 # このスクリプトと同じ階層にある codd_gate_*.py）もzipapp ルートへ同梱する。無ければ
 # doctor.py/model.py/configfile.py の遅延 import が失敗し no-op 縮退するだけ（安全）だが、

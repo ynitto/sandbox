@@ -7,6 +7,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agentcore: 共通 git 転送層・claim/lease プロトコルを新設し BoardRepo / BoardMirror を移植（常駐一本化 P0 着手）
+
+[常駐一本化 実装計画](docs/plans/2026-07-24-single-resident-controller-implementation-plan.md) の
+P0（W0-1〜W0-5）に着手。転送・claim の重複実装を解消する共通ライブラリ `agentcore/`（3 ツールが
+`import agentcore` する通常パッケージ・独立配布はしない）を新設し、`agent-project` の
+`BoardRepo` と `agent-amigos` の `BoardMirror` をそちらへ移植した。
+
+- **`agentcore.transport.GitTransport`**: `agent_flow/gitbus.py` の `GitBus` に実証されていた
+  護り（stale lock 掃除・中断 rebase の abort・fsck プローブ・破損時の退避→再クローン→復元・
+  durable-write 設定・clone/push の指数バックオフリトライ・force push 禁止・間隔律速で
+  失敗時はクロックを進めない）を、sparse / フルチェックアウトの両方に使える汎用実装として
+  切り出した。bare repo + 故意のロック残骸/中断 rebase/オブジェクト破損を使う新規単体テスト
+  12 件。
+- **`agentcore.protocol`**: 名前空間付き claim・`(ts, who)` 決定的タイブレーク・lease の
+  書込/延長（残り半分で更新）/失効判定を共通化。`agentcore.vocab`（完了語彙
+  `done`/`failed`/`cancelled`）・`agentcore.heartbeat`（心拍/鮮度）を追加。単体テスト 20 件。
+- **`agent_project/board.py` の `BoardRepo`・`agent_amigos/board.py` の `BoardMirror`** を
+  `GitTransport` 経由へ置換（board の入札・bid 延長ロジックも `agentcore.protocol` へ移植）。
+  外部 API・既存テスト（`TestBoardAutoWiring` 12 件・`BoardParticipationTests` 等）は無改変で
+  緑のまま。副次効果として、板の 2 クローンが GitBus 相当の破損自己回復・durable-write を
+  新たに獲得した。既存クローン（マーカー導入前）を「管理外の非空ディレクトリ」として
+  拒否しないための後方互換パスと新規テストを追加。amigos に `BoardMirrorGitTests`
+  （git+ モードの 2 ノード post/bid 往復・ロック残骸回復）を新設。
+- 3 ツールの `install.sh` を拡張し、zipapp へ `agentcore/` を同梱（独立パッケージ化はしない —
+  設計 R10）。エントリスクリプト・パッケージ `__init__.py` に import 経路の path shim を追加。
+- 全テスト緑を確認: agentcore 33 / agent-flow 528 / agent-amigos 143 / agent-project 918 件。
+- **未着手（フォローアップ）**: W0-6（`GitBus` の転送委譲）・W0-7（`StateGit` 下回りの置換）・
+  W0-8 の残り（flow タスク claim・amigos ロール claim の `agentcore.protocol` 移植）・
+  W0-9（語彙統一 `canceled`→`cancelled` の全ツール一斉改称）・W0-10（契約の掃除）。
+  P1〜P3（常駐体本体・dashboard 縮退・パッケージ統合・実機 canary）は本計画どおり後続フェーズ。
+
 ### agent-project: 委譲公示板（agent-board）への依頼側自動配線 ＋ 請負側の成果報告を実装
 
 新 location `board`。`agent-project.yaml` に `board:`（板の場所。ローカル dir / `git+<url>`）を

@@ -1030,6 +1030,68 @@ class GitBusTests(unittest.TestCase):
         self.assertEqual(bus_c.list_missions(), [])
 
 
+@unittest.skipUnless(shutil.which("git"), "git が必要")
+class BoardMirrorGitTests(unittest.TestCase):
+    """BoardMirror の git+<url> モード（agentcore.transport 移植後）: 2 ノード間の
+    post/bid の往復が実クローンで成立し、tie-break が全ノードで同じ勝者に収束すること。"""
+
+    def setUp(self):
+        from agent_amigos import board as B
+        self.B = B
+        self.tmp = tempfile.mkdtemp(prefix="amigos-board-git-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.origin = os.path.join(self.tmp, "board.git")
+        subprocess.run(["git", "init", "--bare", "--quiet", "-b", "main", self.origin],
+                       check=True)
+        self.url = f"git+{self.origin}"
+
+    def mirror(self, node):
+        return self.B.BoardMirror(self.url, node,
+                                  workdir=os.path.join(self.tmp, f"wd-{node}"))
+
+    def test_write_post_roundtrips_across_nodes(self):
+        a = self.mirror("pc-a")
+        env = {"op": "post", "version": 1, "id": "dg-1", "workload": "amigos", "goal": "g"}
+        d = os.path.join(a.dir, "delegations", "dg-1")
+        os.makedirs(d, exist_ok=True)
+        write_json_atomic(os.path.join(d, "post.json"), env)
+        a.sync_push("post dg-1")
+
+        b = self.mirror("pc-b")
+        b.sync_pull()
+        got = read_json(os.path.join(b.dir, "delegations", "dg-1", "post.json"))
+        self.assertEqual(got, env)
+
+    def test_bid_tiebreak_converges_across_nodes(self):
+        a, b = self.mirror("pc-a"), self.mirror("pc-b")
+        bids_dir_a = os.path.join(a.dir, "delegations", "dg-1", "bids")
+        bids_dir_b = os.path.join(b.dir, "delegations", "dg-1", "bids")
+        self.assertTrue(self.B._try_bid(a, bids_dir_a, "dg-1", "pc-a", 900))
+        b.sync_pull()
+        self.assertFalse(self.B._try_bid(b, bids_dir_b, "dg-1", "pc-b", 900))
+        # 両ノードから見て同じ勝者に収束する
+        a.sync_pull()
+        self.assertEqual(self.B._winner(bids_dir_a), "pc-a")
+        self.assertEqual(self.B._winner(bids_dir_b), "pc-a")
+
+    def test_recovers_stale_lock_on_reused_clone(self):
+        a = self.mirror("pc-a")
+        with open(os.path.join(a.dir, "keep.txt"), "w") as f:
+            f.write("keep\n")
+        a.sync_push("seed")
+        lock = os.path.join(a.dir, ".git", "index.lock")
+        with open(lock, "w") as f:
+            f.write("stale")
+        old = time.time() - 3600
+        os.utime(lock, (old, old))
+
+        a2 = self.mirror("pc-a")  # 同じ workdir を再利用 → 残骸ロックを自己回復する
+        with open(os.path.join(a2.dir, "more.txt"), "w") as f:
+            f.write("more\n")
+        a2.sync_push("more")  # 残骸ロックのせいで失敗しないこと
+        self.assertFalse(os.path.exists(lock))
+
+
 class OwnerPicksTests(AmigosTestCase):
     """owner-picks（P2、設計書 §6.3）: claim は応募、確定はオーナーの assign。"""
 

@@ -15,14 +15,18 @@ try:
 except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore
 
+from agentcore import transport as _transport  # noqa: E402 — 共通 git 転送層（設計 §4.1・R1）
+
 
 class BoardRepo:
     """委譲公示板への依頼側アクセス。ローカル dir / git+<url> の両対応。
 
     agent-project の並列消費（`_act_batch` の ThreadPoolExecutor）から複数タスクが同時に board を
     叩きうるため、git 操作（clone・pull・push）はプロセス間 flock で直列化する
-    （agent-flow / agent-amigos の claim ロックと同じ技法・別実装）。転送規律も同じく
-    間隔律速 pull --rebase・force push 禁止。ブランチは board の規約どおり単一 main
+    （agent-flow / agent-amigos の claim ロックと同じ技法・別実装）。転送の実体は
+    `agentcore.transport.GitTransport`（stale lock 掃除・中断 rebase の abort・
+    fsck プローブ・破損時の退避→再クローン→復元・durable-write・push 指数バックオフ
+    ——force push はしない）。ブランチは board の規約どおり単一 main
     （設計 §4.2 — 会話が無く書き込み頻度が低いためミッション別分離は不要）。"""
 
     def __init__(self, spec: str, workdir: "str | None" = None):
@@ -34,10 +38,14 @@ class BoardRepo:
                 os.path.expanduser("~/.agents/project-board"),
                 hashlib.sha1(self.remote.encode()).hexdigest()[:8])
             self.dir = os.path.abspath(base)
+            self._transport = _transport.GitTransport(
+                self.dir, self.remote, branch="main",
+                managed_flag="agent-project.board",
+                commit_user_name="agent-project", commit_user_email="agent-project@local")
         else:
             self.remote = None
             self.dir = os.path.abspath(spec)
-        self._last_pull = 0.0
+            self._transport = None
 
     def _lock_path(self) -> str:
         h = hashlib.sha1(os.path.realpath(self.dir).encode()).hexdigest()
@@ -60,58 +68,13 @@ class BoardRepo:
         finally:
             f.close()
 
-    def _git(self, *args, check: bool = True):
-        return subprocess.run(["git", "-C", self.dir, *args],
-                              capture_output=True, text=True, check=check)
-
-    _STALE_GIT_LOCKS = ("index.lock", "HEAD.lock", "config.lock", "shallow.lock",
-                       "packed-refs.lock")
-    _GIT_LOCK_STALE_SEC = 30.0
-
-    def _recover(self) -> None:
-        """メンテによるプロセス強制終了（電源断・kill）で中断された git 操作の残骸を掃除する
-        （呼び出しは _locked() の中から）。flock 自体は保持プロセスの死亡で自動解放されるが、
-        git が .git 直下に残す index.lock 等・中断 rebase の残骸はそれとは別物で、放置すると
-        以後の pull --rebase / commit が毎回同じエラーで失敗し続け、board 同期が恒久的に
-        止まる（agent-flow の GitBus._recover_reused_clone と同じ技法・別実装）。"""
-        gitdir = os.path.join(self.dir, ".git")
-        if not os.path.isdir(gitdir):
-            return
-        now = time.time()
-        for name in self._STALE_GIT_LOCKS:
-            p = os.path.join(gitdir, name)
-            try:
-                if os.path.isfile(p) and (now - os.path.getmtime(p)) > self._GIT_LOCK_STALE_SEC:
-                    os.remove(p)
-            except OSError:
-                pass
-        if any(os.path.isdir(os.path.join(gitdir, d)) for d in ("rebase-merge", "rebase-apply")):
-            self._git("rebase", "--abort", check=False)
-            for d in ("rebase-merge", "rebase-apply"):
-                shutil.rmtree(os.path.join(gitdir, d), ignore_errors=True)
-
     def _ensure(self) -> None:
-        """dir を用意する（呼び出しは _locked() の中から）。git なら未クローン時だけ clone。
-        `main` ブランチを明示指定 clone し、無ければ（空リポジトリ等）通常 clone 後に
-        `checkout -B main` する（git の init.defaultBranch 設定に依存させない。
-        agent-flow の GitBus._ensure_clone と同じフォールバック）。既存クローンの再利用時は
-        中断 git 操作の残骸を毎回回復する（_recover）。"""
+        """dir を用意する（呼び出しは _locked() の中から）。git なら transport.ensure_clone に
+        委ねる（未クローン時は clone・再利用時は自己回復。git でなければ delegations/ だけ作る）。"""
         if not self.git:
             os.makedirs(os.path.join(self.dir, "delegations"), exist_ok=True)
             return
-        if os.path.isdir(os.path.join(self.dir, ".git")):
-            self._recover()
-            return
-        os.makedirs(os.path.dirname(self.dir) or ".", exist_ok=True)
-        r = subprocess.run(["git", "clone", "--branch", "main", self.remote, self.dir],
-                           capture_output=True, text=True)
-        if r.returncode != 0:
-            r2 = subprocess.run(["git", "clone", self.remote, self.dir],
-                                capture_output=True, text=True)
-            if r2.returncode != 0:
-                raise RuntimeError(f"board リポジトリの clone に失敗: {r2.stderr.strip()[:300]}")
-            subprocess.run(["git", "-C", self.dir, "checkout", "-B", "main"],
-                           capture_output=True, text=True)
+        self._transport.ensure_clone()
         os.makedirs(os.path.join(self.dir, "delegations"), exist_ok=True)
 
     def sync_pull(self, force: bool = False, interval: float = 20.0) -> None:
@@ -120,12 +83,8 @@ class BoardRepo:
             self._ensure()
             if not self.git:
                 return
-            now = time.time()
-            if not force and (now - self._last_pull) < interval:
-                return
-            r = self._git("pull", "--rebase", "origin", "main", check=False)
-            if r.returncode == 0:
-                self._last_pull = now
+            self._transport.interval = interval
+            self._transport.sync_pull(force=force)
 
     def sync_push(self, msg: str) -> None:
         """add -A && commit && push（push 競合は pull --rebase → 再 push の指数バックオフ。
@@ -133,16 +92,8 @@ class BoardRepo:
         with self._locked():
             if not self.git:
                 return
-            self._git("add", "-A", check=False)
-            if not self._git("status", "--porcelain", check=False).stdout.strip():
-                return
-            self._git("commit", "-m", msg or "board update", check=False)
-            for i in range(5):
-                if self._git("push", "origin", "main", check=False).returncode == 0:
-                    self._last_pull = time.time()
-                    return
-                self._git("pull", "--rebase", "origin", "main", check=False)
-                time.sleep(min(2 ** i, 16))
+            self._ensure()
+            self._transport.sync_push(msg or "board update")
 
     def delegation_dir(self, did: str) -> str:
         return os.path.join(self.dir, "delegations", str(did))
