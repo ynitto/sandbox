@@ -294,9 +294,10 @@ class TestBoardAutoWiring(unittest.TestCase):
             self.assertIsNotNone(t)
             self.assertNotEqual(t.norm_status(), "done")
 
-    def test_reap_board_cancelled_reuses_canceled_retry_path(self):
-        # board.schema.json の status:"cancelled" は agent-project 側の "canceled" 特例（人が中止
-        # → retries を進めて ready に戻す）に合流するよう、末尾を "canceled" にして報告する。
+    def test_reap_board_cancelled_reuses_cancelled_retry_path(self):
+        # board.schema.json の status:"cancelled" は agent-project 側の人中止特例（人が中止
+        # → retries を進めて ready に戻す）に合流するよう、末尾を "cancelled" にして報告する
+        # （語彙統一 W0-9 以降、flow/board とも綴りは "cancelled" で共通）。
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             self._offloaded_board(d, "T1", "dg-x1", verify="true")
@@ -304,7 +305,7 @@ class TestBoardAutoWiring(unittest.TestCase):
             km.ensure_dirs(cfg)
             tasks = km.load_tasks(cfg.backlog)
             with mock.patch.object(km, "_board_result_once",
-                                   return_value=(True, False, "board delegation dg-x1 canceled")):
+                                   return_value=(True, False, "board delegation dg-x1 cancelled")):
                 deltas = km._reap_offloaded(cfg, tasks, km.Policy(), {}, {}, 0, 20)
             self.assertEqual(deltas["settled"], 1)
             self.assertEqual(deltas["archived"], 0)
@@ -1915,11 +1916,11 @@ class TestActSubmitTerminal(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             cfg = cfg_for(Path(d), dry_run=False, act_timeout=30.0)
             with mock.patch.object(km.subprocess, "run",
-                                   self._fake_run({"done": True, "status": "canceled"})), \
+                                   self._fake_run({"done": True, "status": "cancelled"})), \
                  mock.patch.object(km.time, "sleep", lambda *_: None):
                 ok, msg = km._act_submit(self._task(), cfg, use_git=False)
             self.assertFalse(ok)
-            self.assertIn("canceled", msg)
+            self.assertIn("cancelled", msg)
 
     def test_done_run_reported_as_success(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2068,7 +2069,7 @@ class TestActRunMidRevise(unittest.TestCase):
             old = "req-ab-T1-r0"
             (cfg.bus / "runs" / old).mkdir(parents=True)
             (cfg.bus / "runs" / old / "meta.json").write_text(
-                json.dumps({"status": "canceled", "request": "x"}), encoding="utf-8")
+                json.dumps({"status": "cancelled", "request": "x"}), encoding="utf-8")
             t = km.Task(id="T1", title="x", verify="true", retries=1)
             t.extra.append(("last_run", old))
             self.assertIsNone(km._inherit_from_run(t, "req-ab-T1-r1", cfg))
@@ -2078,7 +2079,7 @@ class TestActRunMidRevise(unittest.TestCase):
             self.assertIsNone(prev)
 
     def test_timeout_detach_marks_failed_and_inherits(self):
-        # タイムアウトは canceled ではなく failed。次 run は last_run を inherit できる。
+        # タイムアウトは cancelled ではなく failed。次 run は last_run を inherit できる。
         with tempfile.TemporaryDirectory() as d:
             cfg = cfg_for(Path(d), dry_run=False)
             km.ensure_dirs(cfg)
@@ -2112,7 +2113,7 @@ class TestActRunMidRevise(unittest.TestCase):
             t.set("flow_run", old)
             km.detach_flow_run(cfg, t, "revise により委譲から切り離し")
             meta = json.loads((cfg.bus / "runs" / old / "meta.json").read_text(encoding="utf-8"))
-            self.assertEqual(meta["status"], "canceled")
+            self.assertEqual(meta["status"], "cancelled")
             t.retries = 1
             t.extra.append(("last_run", old))
             self.assertIsNone(km._inherit_from_run(t, "req-hum-T1-r1", cfg))
@@ -3311,7 +3312,7 @@ class TestRevise(unittest.TestCase):
             cancel = c.bus / "inbox" / "cancels" / "run-old.json"
             self.assertFalse(cancel.is_file(), "適用後 sticky cancel は残さない")
             meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
-            self.assertEqual(meta["status"], "canceled")
+            self.assertEqual(meta["status"], "cancelled")
             self.assertFalse((run_dir / "waits" / "n1.json").exists())
 
     def test_revise_doing_with_flow_run_detaches(self):
@@ -3339,7 +3340,7 @@ class TestRevise(unittest.TestCase):
             t = km.load_tasks(c.backlog)[0]
             self.assertIsNone(t.get("flow_run"), "flow_run を外す")
             meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
-            self.assertEqual(meta["status"], "canceled")
+            self.assertEqual(meta["status"], "cancelled")
             # fresh doing → revised 予約も残る（settle で積み直し）
             self.assertIsNotNone(t.get("revised"))
 
@@ -3365,7 +3366,7 @@ class TestRevise(unittest.TestCase):
             self.assertEqual(t.retries, 1)
             self.assertFalse((c.bus / "inbox" / "cancels" / "run-old.json").is_file())
             meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
-            self.assertEqual(meta["status"], "canceled")
+            self.assertEqual(meta["status"], "cancelled")
 
     def test_midpass_command_applies_before_next_task(self):
         # パス途中の commands/ ドロップが、後続タスクの実行前に取り込まれること
@@ -9390,13 +9391,13 @@ class TestAsyncOffload(unittest.TestCase):
             tasks = km.load_tasks(cfg.backlog)
             with mock.patch.object(
                     km, "_flow_result_once",
-                    return_value=(True, False, "daemon run run-T1 canceled")):
+                    return_value=(True, False, "daemon run run-T1 cancelled")):
                 deltas = km._reap_offloaded(cfg, tasks, km.Policy(), {}, {}, 0, 20)
             self.assertEqual(deltas["settled"], 1)
             self.assertEqual(deltas["archived"], 0)
             t = km._load_task_file(cfg, "T1")
             self.assertEqual(t.norm_status(), "ready")
-            self.assertEqual(t.retries, 1, "canceled 後は新 run-id のため retries を進める")
+            self.assertEqual(t.retries, 1, "cancelled 後は新 run-id のため retries を進める")
             self.assertFalse(t.get("flow_run"))
             self.assertEqual(t.get("last_run"), "run-T1", "回収時に last_run を残す")
 
@@ -9873,7 +9874,7 @@ class RunResumeTests(unittest.TestCase):
             cfg = self._cfg(d)
             t = km.Task(id="T1", title="x", status="ready", verify="true", retries=1)
             t.extra.append(("last_run", "req-deadbeef-T1-r0"))
-            self._run(cfg, "req-deadbeef-T1-r0", "canceled")
+            self._run(cfg, "req-deadbeef-T1-r0", "cancelled")
             self.assertNotEqual(km.run_id_for(cfg, t), "req-deadbeef-T1-r0")
 
     def test_done_run_is_not_resumed(self):

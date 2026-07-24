@@ -7,6 +7,48 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agentcore: P0 完了 — GitBus/StateGit の transport 委譲・flow/amigos の claim 統一・語彙統一・契約掃除
+
+[常駐一本化 実装計画](docs/plans/2026-07-24-single-resident-controller-implementation-plan.md) の
+P0（W0-6〜W0-10）を完了し、直前のコミットで着手した P0 の残りを仕上げた。
+
+- **W0-6 — `agent_flow/gitbus.py` の `GitBus` を transport 委譲へ**: 転送の実装は
+  `agentcore.transport.GitTransport` の 1 実装のみに。白箱テスト（`_is_corrupt_error` の
+  クラス参照・`_clone_with_retry` の monkey-patch・`_git`/`_probe_integrity` の直接呼び出し）
+  と互換な薄いラッパーとして GitBus を残した。移植中に `GitTransport._rebuild_clone` の
+  実バグ（存在しないメソッド名を呼んでいた——`sync_pull`/`sync_push` 経路の破損リカバリが
+  必ず `AttributeError` で落ちる潜在バグ）を発見・修正し、再現テストを追加。
+- **W0-8（残り）— flow のタスク claim・amigos のロール claim を `agentcore.protocol` へ**:
+  `agent_flow/bus.py` の `_winner_in`/`_write_claim_in`/`_try_claim_in`/`extend_claim`・
+  `agent_amigos/assign.py` の `claim_role`/`apply_role`/`live_claims`/`winner`/`renew_lease`、
+  および flow 自身の板参加（`agent_flow/board.py` の `_write_or_renew_bid`）を移植。
+  claim 3 実装 → 1 実装（設計 R1 の達成条件）。
+- **W0-9 — 完了語彙の統一（`canceled` 米式 → `cancelled` 英式・静止点で全ツール一斉）**:
+  agent-flow の内部 `TERMINAL` 定数を `agentcore.vocab.TERMINAL` の参照に置換し、run
+  status・cancel マーカー・ログメッセージの綴りを統一。`agent_flow/board.py` の
+  `_FLOW_TO_BOARD_STATUS` 翻訳マップを削除（板の語彙と一致したため翻訳不要に）。
+  `agent_project/loop.py` の `endswith(("canceled","cancelled"))` 二重判定を単一判定へ
+  縮約。Python の識別子（`mark_canceled`/`is_canceled_requested`/`_orch_check_canceled`）は
+  内部実装詳細として据え置き、対外契約となる文字列値・スキーマ・ドキュメントのみ改称。
+- **W0-10 — 契約の掃除**: `schemas/board.schema.json` から未実装の speculation
+  （`result_report`/`results/<who>.json`/`resolve`）を削除し、`agent-board/README.md` の
+  レイアウト説明も追従（実装時に additive で復活）。stale lock 閾値の 30s/300s 統一は
+  StateGit の直接（direct）モード統一が前提の P1 マターと判断し見送り（理由をコード
+  コメントに明記）。
+- **W0-7 — `agent_project/stategit.py` の `StateGit`（管理クローンモード）を transport 委譲へ**:
+  低レベルの git 実行・ロック回復・クローン/push リトライ層を `agentcore.transport` へ委譲し、
+  CAS export・manifest 3-way・パス所有権裁定（`_resolve_rebase`/`_three_way`/
+  `_take_local_on_conflict` 等）はこのクラスのポリシーとして残した（挙動不変。直接
+  （direct）モードとの統一は P1）。副次効果として fsck 破損検知・durable-write・clone
+  指数バックオフを新たに獲得。`DirectStateGit`（direct モード・実運用の既定経路）は
+  アーキテクチャが大きく異なり（クローンを持たず detached worktree + CAS で完結）
+  transport との重複が薄いため今回は対象外——フォローアップとして明記。
+- 全テスト緑を確認: agentcore 35 / agent-flow 528 / agent-amigos 143 / agent-project 918 件。
+- **未着手（フォローアップ）**: `DirectStateGit` の transport 委譲・`agent_flow/stategit.py`
+  （flow 独自の状態鏡写し。今回の移植中に発見した 6 個目の転送重複実装）・
+  `agent_flow/gitcache.py` / `workspace.py`（共有 git キャッシュ + worktree の別実装）の
+  統合。P1〜P3（常駐体本体・dashboard 縮退・パッケージ統合・実機 canary）は本計画どおり。
+
 ### agentcore: 共通 git 転送層・claim/lease プロトコルを新設し BoardRepo / BoardMirror を移植（常駐一本化 P0 着手）
 
 [常駐一本化 実装計画](docs/plans/2026-07-24-single-resident-controller-implementation-plan.md) の

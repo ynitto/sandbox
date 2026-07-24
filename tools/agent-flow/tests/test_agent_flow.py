@@ -162,9 +162,10 @@ class ProtocolTests(unittest.TestCase):
 
     def test_claim_lock_is_off_bus(self):
         # 排他ロックはバス（git に乗る領域）の外＝一時領域に置く
-        lp = kf._claim_lock_path(self.bus._claim_dir("t1"))
+        # （claim の実装は agentcore.protocol へ委譲済み — 設計 §4.1・R1）。
+        lp = kf.protocol._lock_path(self.bus._claim_dir("t1"))
         self.assertNotIn(self.tmp, lp)
-        self.assertIn("agent-flow-locks", lp)
+        self.assertIn("agentcore-claim-locks", lp)
 
     def test_all_terminal(self):
         self._add_task("t1")
@@ -229,7 +230,7 @@ class InheritTests(unittest.TestCase):
         self.assertFalse(info["inherited"])
         self.assertFalse(info["deleted"])
         self.assertEqual(info["seeded_nodes"], 0)
-        self.assertIn("canceled", info["reason"])
+        self.assertIn("cancelled", info["reason"])
         self.assertIn("req-cxl-t-r0", new.list_runs())  # 触らない
 
     def test_fully_done_predecessor_seeds_nothing_but_cleans_up(self):
@@ -551,17 +552,18 @@ class BoardParticipationTests(unittest.TestCase):
         # 冪等: 二重報告しない
         self.assertEqual(kf.report_board_results(self.bus, board, "pc-a"), [])
 
-    def test_report_results_maps_canceled_to_cancelled(self):
+    def test_report_results_reflects_cancelled_status(self):
+        # 語彙統一（W0-9）後は flow の終端語彙も板と同じ cancelled（英式）——翻訳不要で素通り。
         self._post("dg-2", workspace={"url": "git@h:team/app.git"})
         args = self._args()
         kf.poll_board(self.bus, args, "pc-a")
         board = kf._board_bus(self.board, "pc-a", args)
-        self.bus.run_view("dg-2").set_status("canceled")
+        self.bus.run_view("dg-2").set_status("cancelled")
         reported = kf.report_board_results(self.bus, board, "pc-a")
         self.assertEqual(reported, ["dg-2"])
         d = os.path.join(self.board, "delegations", "dg-2")
         res = json.load(open(os.path.join(d, "result.json")))
-        self.assertEqual(res["status"], "cancelled")   # flow の canceled → board の cancelled
+        self.assertEqual(res["status"], "cancelled")
 
 
 class RunFailureTests(unittest.TestCase):
@@ -5857,7 +5859,7 @@ class ServiceWaitsTests(unittest.TestCase):
 
 
 class CancelTests(unittest.TestCase):
-    """cancel: canceled 終端状態・マーカー・mark_canceled・run 化前 cancel・waits 掃除。"""
+    """cancel: cancelled 終端状態・マーカー・mark_canceled・run 化前 cancel・waits 掃除。"""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="kf-cancel-")
@@ -5867,11 +5869,11 @@ class CancelTests(unittest.TestCase):
         self.bus.set_status("running")
 
     def test_canceled_is_terminal(self):
-        self.assertIn("canceled", kf.TERMINAL)
+        self.assertIn("cancelled", kf.TERMINAL)
 
     def test_mark_canceled_sets_status_and_excludes_from_active(self):
         self.assertTrue(self.bus.mark_canceled("run1", "手動"))
-        self.assertEqual(self.bus.run_meta("run1").get("status"), "canceled")
+        self.assertEqual(self.bus.run_meta("run1").get("status"), "cancelled")
         self.assertEqual(self.bus.run_meta("run1").get("cancel_reason"), "手動")
         self.assertNotIn("run1", self.bus.active_runs())        # 終端＝孤児 reclaim もしない
 
@@ -5890,12 +5892,12 @@ class CancelTests(unittest.TestCase):
         self.assertIsNone(self.bus.read_wait("n1"))
 
     def test_cancel_request_run_before_run_exists(self):
-        # run 化前の要求を canceled で終端化（消費者が終端を観測でき、daemon が再受理しない）
+        # run 化前の要求を cancelled で終端化（消費者が終端を観測でき、daemon が再受理しない）
         b = kf.Bus(self.tmp, "req-new")
         b.submit_request("req-new", "やること", "submitter")
         self.assertFalse(b.run_exists("req-new"))
         self.assertTrue(b.cancel_request_run("req-new", "run 化前 cancel"))
-        self.assertEqual(b.run_meta("req-new").get("status"), "canceled")
+        self.assertEqual(b.run_meta("req-new").get("status"), "cancelled")
 
     def test_cmd_cancel_marks_and_clears(self):
         self.bus.write_wait("n1", {"id": "n1", "wait_lease_until": time.time() + 1000,
@@ -5906,7 +5908,7 @@ class CancelTests(unittest.TestCase):
         with mock.patch.object(kf, "make_bus", return_value=self.bus):
             rc = kf.cmd_cancel(args)
         self.assertEqual(rc, 0)
-        self.assertEqual(self.bus.run_meta("run1").get("status"), "canceled")
+        self.assertEqual(self.bus.run_meta("run1").get("status"), "cancelled")
         self.assertFalse(self.bus.is_canceled_requested("run1"), "適用後マーカーは消す")
         self.assertIsNone(self.bus.read_wait("n1"))             # park 再ポーリングを止める
 
@@ -5930,11 +5932,11 @@ class CancelTests(unittest.TestCase):
                                    "issue": {"iid": 1}})
         self.bus.cancel_request("run1", "host", "止める")
         self.assertTrue(kf._orch_check_canceled(self.bus, args, "orch"))
-        self.assertEqual(self.bus.run_meta("run1").get("status"), "canceled")
+        self.assertEqual(self.bus.run_meta("run1").get("status"), "cancelled")
         self.assertIsNone(self.bus.read_wait("n1"), "orch 終端時に waits も消す")
 
     def test_orch_stops_when_meta_already_canceled_without_marker(self):
-        # daemon が適用後にマーカーを消しても、meta=canceled なら orch は止まる
+        # daemon が適用後にマーカーを消しても、meta=cancelled なら orch は止まる
         args = argparse.Namespace(run_id="run1")
         self.bus.mark_canceled("run1", "先に終端")
         self.assertFalse(self.bus.is_canceled_requested("run1"))
@@ -5964,7 +5966,7 @@ class CancelTests(unittest.TestCase):
     def test_set_status_refuses_to_resurrect_terminal(self):
         self.bus.mark_canceled("run1", "止める")
         self.bus.set_status("running")
-        self.assertEqual(self.bus.run_meta("run1").get("status"), "canceled")
+        self.assertEqual(self.bus.run_meta("run1").get("status"), "cancelled")
 
 class GitlabDeferPollTests(unittest.TestCase):
     """gitlab executor: deferral（park）・poll・on_cancel の追加契約。"""
@@ -6569,7 +6571,7 @@ class TransientRunBreakTests(unittest.TestCase):
 
 class AutoHealTests(unittest.TestCase):
     """レイヤ4（auto-heal）: transient 起因で failed 終端した run を cooldown 後に自動再開する。
-    done は温存・進捗リセット付き max_heals・canceled/superseded は尊重。"""
+    done は温存・進捗リセット付き max_heals・cancelled/superseded は尊重。"""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="kf-heal-")
@@ -6679,7 +6681,7 @@ class AutoHealTests(unittest.TestCase):
         self.bus.submit_request("run1-r1", "req", "s", inherit_from="run1")
         healed, _ = self._heal()
         self.assertEqual(healed, {})
-        # canceled は heal_class の段階で対象外
+        # cancelled は heal_class の段階で対象外
         b2 = kf.Bus(self.tmp, "run2")
         b2.ensure_run("req")
         b2.mark_canceled("run2", "人の停止")

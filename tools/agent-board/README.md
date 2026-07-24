@@ -39,12 +39,8 @@ delegations/<id>/
   bids/<who>.json                     # 入札（名前空間付き claim・各ノードが自分名義のみ）
   award.json                          # owner-picks の落札確定（依頼者のみ）
   status/<who>.json                   # 実行ハートビート（実行ノードが自分名義のみ）
-  results/<who>.json                  # 成果報告（投機実行時のみ複数・各自名義）
-  result.json                         # 確定成果（成果はこれ 1 つ）。書き手は 2 通り:
-                                       #   speculation 無し（既定）→ 落札ノード自身が
-                                       #     自分の実行終端を検知して直接書く
-                                       #   speculation あり（将来拡張）→ 依頼者が
-                                       #     results/<who>.json を一本化して書く
+  result.json                         # 確定成果（成果はこれ 1 つ）。落札ノード自身が
+                                       #   自分の実行終端を検知して直接書く（単一落札）
   cancelled.json                      # 中止マーカー（依頼者のみ）
 ```
 
@@ -57,7 +53,7 @@ agent-amigos と同一仕様の名前空間付き claim ＋ `(ts, who)` 決定�
 - **agent-flow**（請負・入札・成果報告）: 設定 `board:` を与えると、デーモンが板を巡回して
   `workload: flow` の公示に repos/tags 照合で入札し、勝てば自分の `inbox/<id>.json` へ取り込む
   （`agent_flow/board.py:poll_board`）。取り込んだ run の `meta.json` には来歴
-  `delegation:{id, board}` が残る。自分が落札した run が終端（done/failed/canceled）に達したら
+  `delegation:{id, board}` が残る。自分が落札した run が終端（done/failed/cancelled）に達したら
   板の `result.json` へ書き戻す（`report_board_results`。冪等）。
 - **agent-amigos**（請負・入札・成果報告）: 設定 `board:` を与えると、デーモンが板を巡回して
   `workload: amigos` の公示に repos/tags 照合で入札し、勝てば**オーナーとしてミッションを公示**する

@@ -267,7 +267,7 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
         if not claim_task(cfg, task):      # 実行権を取ってから確定（他インスタンスと競合しない）
             continue
         # claim 後にディスク上で既に offloaded でなければ、他経路（revise/hold）が先に進めた。
-        # ここで settle すると canceled を確定して revise 内容を踏み潰しうる。
+        # ここで settle すると cancelled を確定して revise 内容を踏み潰しうる。
         if task.norm_status() != "offloaded":
             release_claim(cfg, task)
             continue
@@ -282,20 +282,20 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
         tokens += dtok
         cost += dusd
         # 人が dashboard 等から run を中止したとき: verify=true でも done にしない。
-        # retries を上げて次の run-id を変える（同一 id の canceled run を再開しようとして固まるのを防ぐ）。
-        # board 経由は語彙が "cancelled"（英式）— flow/daemon の "canceled"（米式）と綴りが違うため
-        # 両方を見る（さもないと board の人中止が _settle_failure の失敗経路に誤って落ちる）。
-        if not ok and msg.rstrip().endswith(("canceled", "cancelled")):
+        # retries を上げて次の run-id を変える（同一 id の cancelled run を再開しようとして固まるのを防ぐ）。
+        # 語彙統一（W0-9）により board 経由・flow/daemon 経由とも "cancelled" で揃っている
+        # （旧 "canceled"（米式）との二重判定は不要になった）。
+        if not ok and msg.rstrip().endswith("cancelled"):
             task.retries += 1
             task.status = "ready"
             persist_task(cfg, task)
             append_journal(cfg.journal,
-                           f"cycle {cycle0 + settled + 1}: {task.id} offload run が canceled → "
+                           f"cycle {cycle0 + settled + 1}: {task.id} offload run が cancelled → "
                            f"ready（人が中止・retries={task.retries} で新 run）")
             release_claim(cfg, task)
             settled += 1
             continue
-        # act/flow 失敗: verify=true で偽 done にしない（canceled 以外の not ok）。
+        # act/flow 失敗: verify=true で偽 done にしない（cancelled 以外の not ok）。
         # 上の act 失敗と同じく、検証はここまで到達していないので未実行として記録する。
         if not ok:
             ev = delivery_evidence(cfg, msg, gb, loc,
@@ -453,23 +453,23 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
                 append_journal(cfg.journal, f"cycle {cycle}: {task.id} cost tokens={dtok} usd={dusd:.4f}"
                                             f"（累計 tokens={tokens_used} usd={cost_used:.4f}）")
             # 人が run を中止したとき: verify=true でも done にしない（リトライ非消費で ready）。
-            # retries は上げる＝次の run-id を変える。上げないと canceled な同一 id を作り直し、
+            # retries は上げる＝次の run-id を変える。上げないと cancelled な同一 id を作り直し、
             # agent-flow は終端 run を再開できず永久 no-op になる。
-            # act 中の revise（軌道修正）は失敗/canceled より優先——結果を確定せず積み直す。
-            # board 経由の同一サイクル即時終端（_act_board）は語彙が "cancelled"（英式）——
-            # flow/daemon の "canceled"（米式）と綴りが違うため両方を見る。
-            if str(act_msg or "").rstrip().endswith(("canceled", "cancelled")) or act_ok is False:
+            # act 中の revise（軌道修正）は失敗/cancelled より優先——結果を確定せず積み直す。
+            # 語彙統一（W0-9）により board 経由の同一サイクル即時終端（_act_board）・flow/daemon
+            # 経由とも "cancelled" で揃っている（旧 "canceled"（米式）との二重判定は不要）。
+            if str(act_msg or "").rstrip().endswith("cancelled") or act_ok is False:
                 fresh = _load_task_file(cfg, task.id)
                 if fresh is not None and fresh.get("revised"):
                     _requeue_revised(cfg, task, fresh, cycle)
                     release_claim(cfg, task)
                     continue
-            if str(act_msg or "").rstrip().endswith(("canceled", "cancelled")):
+            if str(act_msg or "").rstrip().endswith("cancelled"):
                 task.retries += 1
                 task.status = "ready"
                 persist_task(cfg, task)
                 append_journal(cfg.journal,
-                               f"cycle {cycle}: {task.id} run が canceled → ready"
+                               f"cycle {cycle}: {task.id} run が cancelled → ready"
                                f"（人が中止・retries={task.retries} で新 run）")
                 release_claim(cfg, task)
                 continue

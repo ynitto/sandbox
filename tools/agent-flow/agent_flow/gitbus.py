@@ -1,38 +1,26 @@
 from __future__ import annotations
-# gitbus.py — 元 agent-flow.py の 1085-1496 行目（機械分割・内容無改変）。
+# gitbus.py — 元 agent-flow.py の 1085-1496 行目（機械分割・内容無改変ではなくなった。
+# 常駐一本化 P0・W0-6 で転送の実装を agentcore.transport へ委譲した — 設計 §4.1・R1）。
 # 単体 import しない。agent_flow/__init__.py が共有名前空間へ順に exec 合成する。
 # --------------------------------------------------------------------------
 # GitBus — git 共有リポジトリをバスにする（複数 PC 分散）
 # --------------------------------------------------------------------------
-# 初回クローンの最大試行回数（push/pull と同じ指数バックオフでリトライ）。
-CLONE_RETRIES = 5
-# .git 直下のロック（index.lock 等）を「異常終了の残骸」と断定する最小経過秒。
-# バスの git 操作は数 KB の JSON の add/commit で数秒あれば終わるため、これ以上
-# 更新の無いロックは SIGKILL・電源断・daemon の terminate が残した残骸とみなせる。
-# 新しいロックは（同一クローンを共有する）稼働中の git が保持している可能性があるので残す。
-GIT_LOCK_STALE_SEC = 30.0
-# ロック起因で git コマンドが失敗したときの再試行回数（合間に 1,2,4s バックオフ）。
-GIT_LOCK_RETRIES = 4
+# 実際の git 転送（clone・pull・push・ロック残骸/中断 rebase/オブジェクト破損からの自己回復・
+# durable-write）は agentcore.transport.GitTransport が唯一の実装として持つ（agent-project の
+# BoardRepo・agent-amigos の BoardMirror と共通）。GitBus はこのクラスのまま Bus のサブクラスで
+# あり続け、run のレイアウト（claims/<node>/<who>.json 等の名前空間化・disjoint 書き込みによる
+# 低コンフリクト設計）と、以下の一部メソッド（_git・_probe_integrity・_clone_with_retry・
+# _is_corrupt_error 等）はテスト（白箱テスト・monkey-patch 対象）との互換のため GitBus 自身の
+# メソッドとして残し、実体は transport インスタンスへ委譲する薄いラッパーにしてある。
+from agentcore import transport as _transport  # noqa: E402
 
-# --- 電源断によるオブジェクト破損への耐性（durable write / 自己修復） -----------------
-# git は既定で loose object を「一時ファイル→rename」で書くが *中身の fsync をしない*。
-# PC の定期シャットダウン/電源断が書き込み途中に起きると、rename のメタデータだけがジャーナル
-# で残り中身（データブロック）は未フラッシュ——再起動後に **サイズ 0 のオブジェクトファイル**
-# が残る（症状: `error: object file .git/objects/xx/yy… is empty` → 以後 add/commit/push/
-# checkout が全滅し、バスが同期不能になる）。
-#   対策 A（予防）: 管理クローンとローカルパスのリモートに core.fsync=all / fsyncMethod=batch
-#     を設定し、rename 前に中身を durable 化する（batch により tiny JSON の書き込みでも安価）。
-#   対策 B（自己修復）: それでも壊れたクローンは検知して捨て、リモート（真実）から作り直す。
-#     クローンは使い捨て設計（未 push の作業は孤児 reclaim で続きから再実行される）なので安全。
-_DURABLE_GIT_CONFIG = (("core.fsync", "all"), ("core.fsyncMethod", "batch"))
-# git がオブジェクト破損時に stderr へ出す代表的シグネチャ（LC_ALL=C 固定なので英語で判定できる）。
-# 一過性のネットワーク/権限エラー（"unable to access" 等）とは重ならない、破損に固有の語だけに絞る
-# （誤検知しても捨てて作り直すだけで情報は失われないが、無駄な再クローンは避けたい）。
-_GIT_CORRUPT_MARKERS = (
-    "object file", "loose object", "corrupt", "did not match content",
-    "bad object", "sha1 mismatch", "unable to unpack", "invalid object",
-    "unable to read tree", "unable to read sha1",
-)
+CLONE_RETRIES = _transport.CLONE_RETRIES
+GIT_LOCK_STALE_SEC = _transport.GIT_LOCK_STALE_SEC
+GIT_LOCK_RETRIES = _transport.GIT_LOCK_RETRIES
+# agent_flow/stategit.py（flow バスとは別の state_git 鏡写し実装。W0-6 の対象外）がこの共有名前空間
+# 経由でまだ参照しているため、削除せずここで再公開しておく（実体は agentcore.transport 側の唯一の定義）。
+_DURABLE_GIT_CONFIG = _transport._DURABLE_GIT_CONFIG
+_GIT_CORRUPT_MARKERS = _transport._GIT_CORRUPT_MARKERS
 
 
 class GitBus(Bus):
@@ -42,7 +30,7 @@ class GitBus(Bus):
     書き込みはノードごとに名前空間化されている（claims/<node>/<who>.json、
     results/<node>.json は勝者のみ、meta/graph/tasks は orchestrator のみ）ため、
     rebase はほぼ disjoint なファイルの取り込みで済みコンフリクトしない。
-    push 競合は pull --rebase → 再 push のリトライで吸収する。"""
+    push 競合は pull --rebase → 再 push のリトライで吸収する（実体は agentcore.transport）。"""
 
     def __init__(self, clone_dir: str, run_id: str, remote: str, branch: str = "main",
                  subdir: str = ""):
@@ -53,6 +41,12 @@ class GitBus(Bus):
         super().__init__(bus_root, run_id)
         self.remote = remote
         self.branch = branch
+        self._transport = _transport.GitTransport(
+            self.workdir, self.remote, branch=self.branch, subdir=self.subdir,
+            sparse_paths=self._sparse_paths(), managed_flag=self.MANAGED_FLAG,
+            commit_user_name="agent-flow", commit_user_email="agent-flow@local",
+            lock_stale_sec=GIT_LOCK_STALE_SEC,
+            on_log=lambda msg: log(os.path.basename(self.workdir), msg))
         self._ensure_clone()
 
     # sparse checkout で作業ツリーに展開するパス（cone モード）
@@ -61,296 +55,46 @@ class GitBus(Bus):
 
     # 自前管理のバスクローンに付ける目印（git config）。ユーザーのフルチェックアウトを
     # 誤って sparse-checkout で間引かないため、再利用は「この目印を持つ／既に sparse 済みの
-    # 自前バスクローン」に限定する。
+    # 自前バスクローン」に限定する（判定の実体は agentcore.transport._is_managed_clone）。
     MANAGED_FLAG = "agent-flow.busclone"
 
-    def _git_env(self) -> dict:
-        """`git -C workdir` が workdir の親ディレクトリへ遡ってリポジトリを探さないようにする環境。
-        GIT_CEILING_DIRECTORIES に workdir の親を指定し、workdir 直下に .git が無い場合でも
-        親リポジトリを掴んで sparse-checkout 等を波及させる事故を物理的に防ぐ（多重防御）。"""
-        env = dict(os.environ)
-        parent = os.path.dirname(os.path.realpath(self.workdir)) or "/"
-        ceil = env.get("GIT_CEILING_DIRECTORIES")
-        env["GIT_CEILING_DIRECTORIES"] = parent + (os.pathsep + ceil if ceil else "")
-        env["GIT_DISCOVERY_ACROSS_FILESYSTEM"] = "0"
-        # ロック競合の検知はエラーメッセージの文字列マッチに頼るため、翻訳されない C ロケールに固定する
-        env["LC_ALL"] = "C"
-        return env
-
-    # 異常終了した git が .git 直下に残すロックの残骸。これがあると以後の add/commit/
-    # checkout/pull が「File exists」で失敗し続け、orchestrator の run 作成（sync_push）が
-    # 恒久的に失敗する（→ daemon が同じ要求を再 claim し続ける）原因になる。
-    _STALE_GIT_LOCKS = ("index.lock", "HEAD.lock", "config.lock", "shallow.lock",
-                        "packed-refs.lock")
-
-    def _remove_stale_git_locks(self, min_age_sec: float) -> int:
-        """min_age_sec 以上更新の無いロック残骸を削除して削除数を返す。
-        新しいロックは稼働中の git が保持している可能性があるため残す。"""
-        removed = 0
-        gitdir = os.path.join(self.workdir, ".git")
-        now = time.time()
-        for name in self._STALE_GIT_LOCKS:
-            path = os.path.join(gitdir, name)
-            try:
-                if os.path.isfile(path) and now - os.path.getmtime(path) >= min_age_sec:
-                    os.remove(path)
-                    removed += 1
-            except OSError:
-                pass
-        return removed
-
-    @staticmethod
-    def _is_lock_error(p) -> bool:
-        err = p.stderr or ""
-        return ".lock" in err and ("File exists" in err or "another git process" in err.lower())
-
-    @staticmethod
-    def _is_corrupt_error(p) -> bool:
-        """git のオブジェクト破損（空/壊れた loose object 等）を示す stderr かを判定する。
-        電源断で生じるサイズ 0 のオブジェクトは `error: object file … is empty` 等で表面化する。"""
-        err = (p.stderr or "").lower()
-        return any(m in err for m in _GIT_CORRUPT_MARKERS)
-
-    def _apply_durable_writes(self, cwd: str) -> None:
-        """cwd のリポジトリに durable-write 設定（core.fsync/fsyncMethod）を冪等に適用する。
-        rename 前にオブジェクト内容を fsync させ、電源断でのサイズ 0 オブジェクト発生を防ぐ。
-        古い git が値を知らなくても無害（未知の core.fsync トークンは無視される）。設定 lock 競合等の
-        一過性失敗は無視する（次回起動で再適用される。予防設定が一度失敗しても致命ではない）。"""
-        for key, val in _DURABLE_GIT_CONFIG:
-            try:
-                cur = subprocess.run(["git", "-C", cwd, "config", "--local", "--get", key],
-                                     capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._git_env())
-                if cur.returncode == 0 and cur.stdout.strip() == val:
-                    continue  # 既に設定済み（冪等・書き込み lock を無駄に取らない）
-                subprocess.run(["git", "-C", cwd, "config", "--local", key, val],
-                               capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._git_env())
-            except OSError:
-                pass
-
-    def _harden_remote_durability(self) -> None:
-        """リモートがローカルパスの共有リポジトリなら、そちらにも durable-write 設定を適用する。
-        ローカルパスのリモートへ push すると receive-pack がリモート側にオブジェクトを書くため、
-        リモート自身が電源断で壊れる経路を塞ぐ。URL（http/ssh 等）のリモートは触れないので黙って skip。"""
-        try:
-            if not self.remote or not os.path.isdir(self.remote):
-                return
-            probe = subprocess.run(["git", "-C", self.remote, "rev-parse", "--git-dir"],
-                                   capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._git_env())
-            if probe.returncode == 0:
-                self._apply_durable_writes(self.remote)
-        except OSError:
-            pass
-
-    def _probe_integrity(self) -> bool:
-        """再利用クローンのオブジェクトが健全か軽量に確認する。破損（空オブジェクト等）なら False。
-        --connectivity-only は内容ハッシュ検証を省くが到達可能オブジェクトの読み取りは行うため、
-        サイズ 0 の loose object があれば非 0 で失敗する。バス履歴は tiny なので高速。"""
-        try:
-            p = subprocess.run(
-                ["git", "-C", self.workdir, "fsck", "--connectivity-only", "--no-dangling",
-                 "--no-reflogs"], capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._git_env())
-        except OSError:
-            return False
-        # fsck 自体が動かない（git dir 破損等）ケースも破損として扱い作り直させる。
-        return p.returncode == 0 and not self._is_corrupt_error(p)
-
-    def _rebuild_clone(self) -> None:
-        """破損したノード専用クローンを丸ごと捨て、リモート（真実）から作り直す。
-
-        丸ごと捨てると「commit 済みだが push 未達の書き込み」（result / claim / wait 等、
-        直前に書いたバスファイル）まで消え、sync_push が空 push で成功して**サイレントに
-        データが失われる**。作業ツリーのバスファイルを退避し、再クローン後に
-        「リモートに存在しないファイルだけ」を書き戻して再コミット対象に載せる
-        （既存ファイルへの変更は上書きしない＝他ノードの新しい状態を巻き戻さない）。"""
-        log(os.path.basename(self.workdir),
-            f"クローン {self.workdir} のオブジェクト破損を検知——リモートから作り直します")
-        salvage = self._salvage_bus_files()
-        self._reset_clone_dir()
-        self._ensure_clone()
-        self._restore_salvaged_files(salvage)
-
-    def _salvage_bus_files(self) -> "str | None":
-        """再クローン前に、作業ツリー上のバスファイル（sparse パス配下）を一時ディレクトリへ
-        退避する。オブジェクト DB が壊れていてもチェックアウト済みの実ファイルは大抵無事。"""
-        try:
-            dst_root = tempfile.mkdtemp(prefix="agent-flow-salvage-")
-        except OSError:
-            return None
-        copied = 0
-        for rel in self._sparse_paths():
-            src = os.path.join(self.workdir, rel) if rel else self.workdir
-            dst = os.path.join(dst_root, rel) if rel else dst_root
-            if not os.path.isdir(src):
-                continue
-            try:
-                shutil.copytree(src, dst, dirs_exist_ok=True,
-                                ignore=shutil.ignore_patterns(".git"))
-                copied += 1
-            except OSError:
-                pass
-        if not copied:
-            shutil.rmtree(dst_root, ignore_errors=True)
-            return None
-        return dst_root
-
-    def _restore_salvaged_files(self, salvage_root: "str | None") -> None:
-        """退避したバスファイルのうち、再クローン後の作業ツリーに**存在しない**ものだけを
-        書き戻す（未 push の新規ファイル＝自ノードの result/claim/wait 等の救出）。
-        既存ファイルは上書きしない: リモート側の方が新しい可能性があるため。"""
-        if not salvage_root:
-            return
-        restored = 0
-        try:
-            for dirpath, _dirs, files in os.walk(salvage_root):
-                for name in files:
-                    src = os.path.join(dirpath, name)
-                    rel = os.path.relpath(src, salvage_root)
-                    dst = os.path.join(self.workdir, rel)
-                    if os.path.exists(dst):
-                        continue
-                    try:
-                        os.makedirs(os.path.dirname(dst), exist_ok=True)
-                        shutil.copy2(src, dst)
-                        restored += 1
-                    except OSError:
-                        pass
-        finally:
-            shutil.rmtree(salvage_root, ignore_errors=True)
-        if restored:
-            log(os.path.basename(self.workdir),
-                f"再クローン後に未 push のバスファイル {restored} 件を復元しました")
+    # --- テストが直接参照/monkey-patch する薄いラッパー（実体は agentcore.transport） ---
+    _is_lock_error = staticmethod(_transport.is_lock_error)
+    _is_corrupt_error = staticmethod(_transport.is_corrupt_error)
 
     def _git(self, args, check=True):
-        p = None
-        for i in range(GIT_LOCK_RETRIES):
-            p = subprocess.run(["git", "-C", self.workdir] + args, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                               env=self._git_env())
-            if p.returncode == 0 or not self._is_lock_error(p):
-                break
-            # ロック起因の失敗: 残骸（十分古い）なら消して即再試行、稼働中の他 git が
-            # 保持する新しいロックなら短く待って再試行する。クローンはノード専有が原則
-            # なので、恒久的に残るロックはほぼ残骸＝ここで自己回復できる。
-            if self._remove_stale_git_locks(GIT_LOCK_STALE_SEC) == 0 and i < GIT_LOCK_RETRIES - 1:
-                time.sleep(2 ** i)
-        if check and p.returncode != 0:
-            raise RuntimeError(f"git {' '.join(args)} 失敗: {p.stderr.strip()[:300]}")
-        return p
+        return self._transport.git(*args, check=check)
 
-    def _is_own_repo_root(self) -> bool:
-        """workdir が「自分自身を root とする git 作業ツリー」か（親リポジトリを掴んでいない）。
-        _git_env の ceiling により、workdir 直下に .git が無ければ rev-parse は失敗するので親を拾わない。"""
-        top = self._git(["rev-parse", "--show-toplevel"], check=False).stdout.strip()
-        return bool(top) and os.path.realpath(top) == os.path.realpath(self.workdir)
-
-    def _origin_matches(self) -> bool:
-        origin = self._git(["remote", "get-url", "origin"], check=False).stdout.strip()
-        return origin == self.remote or (
-            bool(origin) and os.path.realpath(origin) == os.path.realpath(self.remote))
-
-    def _is_managed_bus_clone(self) -> bool:
-        """workdir が「agent-flow が管理する self.remote の sparse バスクローン」か。
-        これを満たすときのみ sparse-checkout/checkout を適用してよい。ユーザーのフルチェックアウト
-        （目印も sparse 設定も無い）を間引いて作業ファイルを隠す事故を防ぐためのガード。"""
-        if not self._is_own_repo_root() or not self._origin_matches():
-            return False
-        # 1) 自前で付けた目印があれば管理クローン
-        if self._git(["config", "--get", self.MANAGED_FLAG], check=False).stdout.strip() == "1":
-            return True
-        # 2) 目印が無くても、既に sparse-checkout 済みなら過去の自前バスクローンとみなし採用（後方互換）。
-        #    ユーザーのフルチェックアウトは sparseCheckout 未設定なので false になり、間引かれない。
-        sparse = self._git(["config", "--get", "core.sparseCheckout"], check=False).stdout.strip()
-        return sparse.lower() == "true"
-
-    def _reset_clone_dir(self) -> None:
-        """失敗したクローンが残した部分ディレクトリを消す（再試行が「宛先が空でない」で
-        失敗しないように）。対象はクローン専用の workdir のみ。非空の管理外ディレクトリは
-        _ensure_clone の事前ガードで既に除外済みなので、ここで消すのは自前のクローン残骸だけ。"""
-        shutil.rmtree(self.workdir, ignore_errors=True)
-
-    def _clone_once(self):
-        """blob フィルタ付き → 非対応サーバ向けフォールバックの順でクローンを 1 回試みる。"""
-        r = subprocess.run(
-            ["git", "clone", "--no-checkout", "--filter=blob:none", self.remote, self.workdir],
-            capture_output=True, text=True, encoding="utf-8", errors="replace")
-        if r.returncode != 0:
-            # blob filter 非対応サーバ向けフォールバック（フィルタ版が残した部分クローンを消してから）
-            self._reset_clone_dir()
-            r = subprocess.run(["git", "clone", "--no-checkout", self.remote, self.workdir],
-                               capture_output=True, text=True, encoding="utf-8", errors="replace")
-        return r
+    def _probe_integrity(self) -> bool:
+        return self._transport._probe_integrity()
 
     def _clone_with_retry(self):
-        """初回クローンを指数バックオフ（2,4,8,16s）でリトライする。push/pull と同じ流儀で、
-        一過性のネットワーク障害による起動失敗を吸収する。成否は CompletedProcess で返す
-        （最終的に失敗なら returncode != 0）。"""
-        r = None
-        for i in range(CLONE_RETRIES):
-            r = self._clone_once()
-            if r.returncode == 0:
-                return r
-            if i < CLONE_RETRIES - 1:
-                self._reset_clone_dir()                 # 部分クローンを消してから
-                time.sleep(2 ** i if i < 4 else 16)     # バックオフして再試行
-        return r
-
-    def _recover_reused_clone(self) -> None:
-        """再利用する管理クローンから、前プロセスの異常終了（SIGKILL・電源断・daemon の
-        terminate）が残した残骸を回復する。ロック残骸は以後の add/checkout が「File exists」
-        で失敗し続ける原因、中断 rebase の残骸は以後の pull --rebase が失敗し続ける原因になる。"""
-        self._remove_stale_git_locks(GIT_LOCK_STALE_SEC)
-        gitdir = os.path.join(self.workdir, ".git")
-        if any(os.path.isdir(os.path.join(gitdir, d)) for d in ("rebase-merge", "rebase-apply")):
-            self._git(["rebase", "--abort"], check=False)
-            for d in ("rebase-merge", "rebase-apply"):
-                shutil.rmtree(os.path.join(gitdir, d), ignore_errors=True)
-
-    def _setup_worktree(self, strict: bool = True) -> bool:
-        """コミット用 ID・sparse-checkout・対象ブランチへの checkout を整える。
-        strict=False は失敗を False で返す（呼び出し側がクローンを作り直して再試行する）。"""
-        # コミット用 ID（未設定環境向けのフォールバック）
-        if not self._git(["config", "user.email"], check=False).stdout.strip():
-            self._git(["config", "user.email", "agent-flow@local"], check=False)
-            self._git(["config", "user.name", "agent-flow"], check=False)
-        # durable write（電源断でのサイズ 0 オブジェクト対策）を毎回冪等に適用する
-        self._apply_durable_writes(self.workdir)
-        # sparse checkout（cone モード）を設定 — バスのサブツリーだけ作業ツリーに置く
-        self._git(["sparse-checkout", "init", "--cone"], check=False)
-        self._git(["sparse-checkout", "set"] + self._sparse_paths(), check=False)
-        # 対象ブランチへ。無ければ作成（空リポジトリ初回も含む）
-        if self._git(["checkout", self.branch], check=False).returncode == 0:
-            return True
-        return self._git(["checkout", "-B", self.branch], check=strict).returncode == 0
+        """初回クローンを指数バックオフでリトライする（実体は
+        agentcore.transport.GitTransport._clone_with_retry）。クラス単位で monkey-patch
+        されるテスト（破損リモートの診断メッセージ検証）のため GitBus 自身のメソッドとして残す。"""
+        return self._transport._clone_with_retry()
 
     def _ensure_clone(self) -> None:
         # workdir が自前管理の sparse バスクローンなら回復して再利用。そうでなければ新規 clone する。
-        # （ユーザーのフルチェックアウトや親/別リポジトリへ sparse-checkout を効かせて作業ツリーを
-        #   壊さないため、「自前のバスクローンである」ことを確認してからでないと sparse-checkout に進まない。）
-        self._harden_remote_durability()  # ローカルパスのリモートにも durable write を効かせる
-        if self._is_managed_bus_clone():
-            self._recover_reused_clone()
+        self._transport._harden_remote_durability()
+        if self._transport._is_managed_clone():
+            self._transport._recover_reused_clone()
             # 電源断でオブジェクトが空/破損したクローンは lock/rebase 回復では直らない。
             # 健全性を確認し、破損していれば以下の「作り直し」へ落とす（真実はリモート側）。
-            if self._probe_integrity() and self._setup_worktree(strict=False):
+            if self._transport._probe_integrity() and self._transport._setup_worktree(strict=False):
+                self._transport._ensured = True
                 return
-            # 回復しても使えない（新しいロックを他プロセスが握ったまま消えた・index 破損・
-            # 電源断でのオブジェクト破損等）。バスの真実はリモート側にあり管理クローンは使い捨てに
-            # できるため、作り直して自己回復する（作り直せないままだと orchestrator の run 作成が
-            # 失敗し続け、daemon が同じ要求を毎 poll 再 claim する無限ループの起点になる）。
             log(os.path.basename(self.workdir),
                 f"再利用クローン {self.workdir} を回復できないため作り直します")
-            self._reset_clone_dir()
+            self._transport._reset_clone_dir()
         elif os.path.isdir(self.workdir) and os.listdir(self.workdir):
             # 既存の非空ディレクトリ（ユーザーの作業チェックアウト・親/別リポジトリ等）は上書きせず中断。
-            # ここで sparse-checkout すると subdir 以外の追跡ファイルを作業ツリーから隠してしまう。
             raise RuntimeError(
                 f"クローン先 {self.workdir} が空でない既存ディレクトリ（agent-flow 管理外のクローン/作業"
                 f"ツリー）です。sparse-checkout で作業ファイルを隠す事故を防ぐため中断します"
                 f"（専用の空ディレクトリを --bus に指定してください）。")
         os.makedirs(os.path.dirname(self.workdir) or ".", exist_ok=True)
-        # sparse checkout: --no-checkout で取得し、必要なパスだけ展開する。
-        # 一過性のネットワーク障害で起動時クローンが即死しないよう、push/pull と同様に
-        # 指数バックオフでリトライする（分散・委譲構成では各ノードが起動毎に clone するため、
-        # ここがネットワーク不安定時の「起動できない」原因になりやすい）。
+        # 一過性のネットワーク障害で起動時クローンが即死しないよう、指数バックオフでリトライする。
         r = self._clone_with_retry()
         if r.returncode != 0:
             if self._is_corrupt_error(r):
@@ -364,55 +108,22 @@ class GitBus(Bus):
                     f"{r.stderr.strip()[:300]}")
             raise RuntimeError(
                 f"git clone が {CLONE_RETRIES} 回失敗しました: {r.stderr.strip()[:300]}")
-        if not self._is_own_repo_root():
+        if not self._transport._is_own_repo_root():
             # clone 後も workdir 自身がリポジトリのルートでなければ、以降の sparse-checkout が
             # 親リポジトリへ波及しうる。安全側に倒して中断する。
             raise RuntimeError(
                 f"git clone 後も {self.workdir} がクローンのルートになっていません。"
                 "親リポジトリへの sparse-checkout を防ぐため中断します。")
         self._git(["config", self.MANAGED_FLAG, "1"])   # 自前管理クローンの目印
-        self._setup_worktree(strict=True)
+        self._transport._setup_worktree(strict=True)
+        self._transport._ensured = True
 
     def sync_pull(self) -> None:
-        # リモートに当該ブランチが無い初回などは黙って無視
-        p = self._git(["pull", "--rebase", "origin", self.branch], check=False)
-        # 電源断で pull 先クローンのオブジェクトが壊れていれば、作り直してもう一度だけ引き直す。
-        if p.returncode != 0 and self._is_corrupt_error(p):
-            self._rebuild_clone()
-            self._git(["pull", "--rebase", "origin", self.branch], check=False)
-
-    def _commit_pending(self, msg: str) -> None:
-        """作業ツリーの未確定分を add + commit する（コミット対象が無ければ何もしない）。
-        add/commit がローカルオブジェクト破損で失敗したらクローンを作り直して 1 度だけ再コミットする。"""
-        p = self._git(["add", "-A"], check=False)
-        if p.returncode != 0 and self._is_corrupt_error(p):
-            self._rebuild_clone()
-            self._git(["add", "-A"], check=False)
-        # commit の失敗は「対象なし」（正常・頻出）と破損を区別する。破損時のみ作り直す。
-        c = self._git(["commit", "-m", msg], check=False)
-        if c.returncode != 0 and self._is_corrupt_error(c):
-            self._rebuild_clone()
-            self._git(["add", "-A"], check=False)
-            self._git(["commit", "-m", msg], check=False)
+        # リモートに当該ブランチが無い初回などは黙って無視（transport が破損時の作り直しも担う）。
+        self._transport.sync_pull()
 
     def sync_push(self, msg: str = "agent-flow update") -> None:
-        self._commit_pending(msg)
-        for i in range(5):
-            push = self._git(["push", "-u", "origin", self.branch], check=False)
-            if push.returncode == 0:
-                return
-            # push 中に露見したローカル破損 → 作り直して即座に再 push へ（バックオフ不要）。
-            if self._is_corrupt_error(push):
-                self._rebuild_clone()
-                self._commit_pending(msg)
-                continue
-            # 競合 → 取り込んで再試行（disjoint なので基本コンフリクトしない）。破損なら作り直す。
-            p = self._git(["pull", "--rebase", "origin", self.branch], check=False)
-            if p.returncode != 0 and self._is_corrupt_error(p):
-                self._rebuild_clone()
-                self._commit_pending(msg)
-            time.sleep(2 ** i if i < 4 else 16)
-        raise RuntimeError(f"git push が {self.branch} へ反映できませんでした")
+        self._transport.sync_push(msg)
 
     def remove_run(self, run_id: str) -> None:
         # バスサブディレクトリを考慮したリポジトリ相対パスで git rm
@@ -424,9 +135,7 @@ class GitBus(Bus):
         """作業後にこのノード専用の sparse-checkout クローンを丸ごと削除する。
         共有リポジトリ本体ではなく、ローカルの作業ツリー（.git を含むクローン）だけを
         対象にする。push 済みのデータはリモートにあるため、消しても情報は失われない。"""
-        wd = os.path.abspath(self.workdir)
-        if os.path.isdir(os.path.join(wd, ".git")):
-            shutil.rmtree(wd, ignore_errors=True)
+        self._transport.cleanup_clone()
 
 
 def _safe(name: str) -> str:
@@ -470,4 +179,3 @@ def cleanup_active_clones() -> None:
             bus.cleanup_clone()
         except Exception:  # noqa: BLE001 — 掃除失敗で終了処理を止めない
             pass
-

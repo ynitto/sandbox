@@ -621,7 +621,7 @@ Claude Code スキル `.github/skills/agent-flow/` がこの CLI の呼び出し
 | LLM 呼び出しの一時エラー（接続断・5xx・timeout） | レイヤ1: `run_agent` 内の指数バックオフ再試行（`transient_retries`）。再計画 retry の予算を焼かない |
 | LLM の出力契約違反（split の配列・decision JSON 崩れ） | レイヤ2: 契約違反を指摘した修復再呼び出し（`format_retries`）→ 残れば従来フォールバック |
 | transient が in-place 再試行でも残る | run をタグ付き failed で打ち切り（ノード単位で予算を焼かない）→ レイヤ4 へ |
-| transient 起因の failed run | レイヤ4: daemon / cmd_run の auto-heal が cooldown 後に `retry_failed`→再開（done 温存・進捗リセット付き `max_heals`・canceled/superseded は尊重） |
+| transient 起因の failed run | レイヤ4: daemon / cmd_run の auto-heal が cooldown 後に `retry_failed`→再開（done 温存・進捗リセット付き `max_heals`・cancelled/superseded は尊重） |
 | リトライ引き継ぎで差し戻し指摘が届かない | inherit の seed が新世代 request で meta.request を上書き（自己回復設計 §15.1） |
 | 失敗依存によるデッドロック | 静止判定 ＋ `replaces` による依存付け替え |
 | 無限再計画 | `--max-iterations` |

@@ -213,7 +213,7 @@ def _adopt_orphan_runs(bus: Bus, daemon_id: str, owned: set, lease_window: float
                 continue
             why = f"進捗なしの連続再開が上限超過（max_resumes={max_r}）"
         if bus.mark_run_failed(req_id, f"orphaned: owning daemon が消失（生存リース切れ・{why}）"):
-            bus.clear_waits_for_run(req_id)  # 残 park で viewer が canceled 相当を公園表示しない
+            bus.clear_waits_for_run(req_id)  # 残 park で viewer が cancelled 相当を公園表示しない
             bus.run_view(req_id).event(daemon_id, "run-orphaned", run=req_id)
             bus.sync_push(f"run {req_id} failed: orphaned（生存リース切れ・{why}）")
             failed.append(req_id)
@@ -228,7 +228,7 @@ def _heal_failed_runs(bus: Bus, daemon_id: str, owned: set, lease_window: float,
     一時不調なので、待ってから run 単位でやり直すのが正しい回復（done ノードは温存）。
     quota は heal_quota=true のときだけ・長い cooldown（quota_cooldown）で回収する。
 
-    触らないもの: canceled（人の意思）・superseded / inherit_from 予約済み（新世代が拾う）・
+    触らないもの: cancelled（人の意思）・superseded / inherit_from 予約済み（新世代が拾う）・
     heal_exhausted（進捗なし heal が max_heals 超過）・タグ無しの内容失敗・auth/env（人が直す）。
     分散時は reclaim_request の claim プロトコルで 1 daemon だけが heal する。
     戻り値: {run_id: orchestrator プロセス}。"""
@@ -443,7 +443,7 @@ def cmd_run(args) -> int:
             st = bus.get_status()
             if st in TERMINAL:
                 # auto-heal（レイヤ4・daemon 無し経路）: transient 起因の failed なら cooldown 後に
-                # 同一プロセス内で再開する（done 温存・進捗リセット付き max_heals・canceled は対象外）。
+                # 同一プロセス内で再開する（done 温存・進捗リセット付き max_heals・cancelled は対象外）。
                 healed = False
                 max_h = int(getattr(args, "max_heals", 2) or 0)
                 if (st == "failed" and getattr(args, "auto_heal", True) and max_h > 0
@@ -491,7 +491,7 @@ def cmd_run(args) -> int:
                 print(f"\n>>> run {bus.get_status()}。ワーカーを停止します。", flush=True)
                 break
             if bus.is_canceled_requested(run_id) and bus.get_status() not in TERMINAL:
-                # cancel 指示: この run を canceled に終端化し、park の再ポーリングを止め、
+                # cancel 指示: この run を cancelled に終端化し、park の再ポーリングを止め、
                 # 子（orchestrator/worker）を停止する。--close-issues は cmd_cancel 側で実施済み。
                 bus.mark_canceled(run_id, bus.cancel_info(run_id).get("reason") or "cancel 指示")
                 bus.clear_waits_for_run(run_id)
@@ -516,12 +516,12 @@ def cmd_run(args) -> int:
     if final:
         print("\n=== 最終結果 ===")
         print(final.get("summary", ""))
-    # run が failed/canceled で終端したら非 0 を返す。failed は上位＝agent-project が
-    # act 失敗として検知しリトライできるようにする。canceled も 0 だと verify=true で偽 done
+    # run が failed/cancelled で終端したら非 0 を返す。failed は上位＝agent-project が
+    # act 失敗として検知しリトライできるようにする。cancelled も 0 だと verify=true で偽 done
     # になる（agent-project は戻り値で成否を見る）。done は 0。非終端のままなら failed 扱い。
     st = bus.get_status()
     if st == "done":
         return 0
-    if st == "canceled":
+    if st == "cancelled":
         return 2
     return 1

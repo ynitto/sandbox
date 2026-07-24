@@ -107,7 +107,7 @@ def _block(cfg, task, reason, reasons, evidence: str = "", failure: "dict | None
     if task.norm_status() == "offloaded" or task.get("flow_run"):
         detached = detach_flow_run(cfg, task, reason[:120] or "hold/block により委譲から切り離し")
         if detached:
-            # canceled な同一 run-id を approve 後に作り直さない（cancel→ready と同じく retries を進める）
+            # cancelled な同一 run-id を approve 後に作り直さない（cancel→ready と同じく retries を進める）
             task.retries += 1
     task.status = "blocked"
     reasons[task.id] = reason

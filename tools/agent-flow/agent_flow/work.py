@@ -70,7 +70,7 @@ def cmd_work(args) -> int:
         bus.sync_pull()
         status = bus.get_status()
 
-        # 終端後は claim しない。canceled で waits が消えて pending に戻ったノードを
+        # 終端後は claim しない。cancelled で waits が消えて pending に戻ったノードを
         # 拾い直し、人が止めた run を進めてしまう事故を防ぐ（終端判定を「仕事が無いとき」
         # だけにすると、claim 可能な残骸があると永遠に動き続ける）。
         if status in TERMINAL:

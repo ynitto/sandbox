@@ -50,12 +50,12 @@ _GIT_CORRUPT_MARKERS = (
 )
 
 
-def _is_lock_error(p) -> bool:
+def is_lock_error(p) -> bool:
     err = p.stderr or ""
     return ".lock" in err and ("File exists" in err or "another git process" in err.lower())
 
 
-def _is_corrupt_error(p) -> bool:
+def is_corrupt_error(p) -> bool:
     """git のオブジェクト破損（空/壊れた loose object 等）を示す stderr かを判定する。"""
     err = (p.stderr or "").lower()
     return any(m in err for m in _GIT_CORRUPT_MARKERS)
@@ -175,14 +175,14 @@ class GitTransport:
                 errors="replace", env=self._git_env())
         except OSError:
             return False
-        return p.returncode == 0 and not _is_corrupt_error(p)
+        return p.returncode == 0 and not is_corrupt_error(p)
 
     def _git(self, args: "Sequence[str]", check: bool = True):
         p = None
         for i in range(GIT_LOCK_RETRIES):
             p = subprocess.run(["git", "-C", self.workdir, *args], capture_output=True,
                                text=True, encoding="utf-8", errors="replace", env=self._git_env())
-            if p.returncode == 0 or not _is_lock_error(p):
+            if p.returncode == 0 or not is_lock_error(p):
                 break
             # ロック起因の失敗: 残骸（十分古い）なら消して即再試行、稼働中の他 git が
             # 保持する新しいロックなら短く待って再試行する。
@@ -305,7 +305,7 @@ class GitTransport:
         self._log(f"クローン {self.workdir} のオブジェクト破損を検知——リモートから作り直します")
         salvage = self._salvage_files()
         self._reset_clone_dir()
-        self._ensure_clone()
+        self.ensure_clone()
         self._restore_salvaged_files(salvage)
 
     def _clone_once(self):
@@ -364,7 +364,7 @@ class GitTransport:
         os.makedirs(os.path.dirname(self.workdir) or ".", exist_ok=True)
         r = self._clone_with_retry()
         if r.returncode != 0:
-            if _is_corrupt_error(r):
+            if is_corrupt_error(r):
                 raise RuntimeError(
                     f"共有リポジトリ {self.remote} 自体のオブジェクトが破損している可能性が"
                     f"あります（clone がオブジェクト破損で失敗）: {(r.stderr or '').strip()[:300]}")
@@ -393,7 +393,7 @@ class GitTransport:
         if not force and self.interval > 0 and (now - self._last_pull) < self.interval:
             return False
         p = self._git(["pull", "--rebase", "origin", self.branch], check=False)
-        if p.returncode != 0 and _is_corrupt_error(p):
+        if p.returncode != 0 and is_corrupt_error(p):
             self._rebuild_clone()
             p = self._git(["pull", "--rebase", "origin", self.branch], check=False)
         if p.returncode == 0 or "couldn't find remote ref" in (p.stderr or "").lower():
@@ -406,11 +406,11 @@ class GitTransport:
         巻き込まない）。"""
         args = ["add", "-A", "--", self.subdir] if self.subdir else ["add", "-A"]
         p = self._git(args, check=False)
-        if p.returncode != 0 and _is_corrupt_error(p):
+        if p.returncode != 0 and is_corrupt_error(p):
             self._rebuild_clone()
             p = self._git(args, check=False)
         c = self._git(["commit", "-m", msg], check=False)
-        if c.returncode != 0 and _is_corrupt_error(c):
+        if c.returncode != 0 and is_corrupt_error(c):
             self._rebuild_clone()
             self._git(args, check=False)
             self._git(["commit", "-m", msg], check=False)
@@ -424,12 +424,12 @@ class GitTransport:
             push = self._git(["push", "-u", "origin", self.branch], check=False)
             if push.returncode == 0:
                 return
-            if _is_corrupt_error(push):
+            if is_corrupt_error(push):
                 self._rebuild_clone()
                 self._commit_pending(msg)
                 continue
             p = self._git(["pull", "--rebase", "origin", self.branch], check=False)
-            if p.returncode != 0 and _is_corrupt_error(p):
+            if p.returncode != 0 and is_corrupt_error(p):
                 self._rebuild_clone()
                 self._commit_pending(msg)
             time.sleep(2 ** i if i < 4 else 16)

@@ -30,9 +30,11 @@ except ImportError:
     msvcrt = None  # type: ignore
 
 # 終端 status（これに達した run は active_runs から外れ、孤児 reclaim も resume しない）。
-# canceled は人の明示指示（cmd_cancel）による恒久停止。done/failed と同じく終端だが、
+# cancelled は人の明示指示（cmd_cancel）による恒久停止。done/failed と同じく終端だが、
 # 「成果あり(done)」でも「異常(failed)」でもない「意図的な打ち切り」を表す。
-TERMINAL = {"done", "failed", "canceled"}
+# 常駐一本化 P0・W0-9 で語彙統一（旧 "canceled" 米式 → "cancelled" 英式。板・amigos と揃える）。
+# 実体は agentcore.vocab.TERMINAL（flow/amigos/project/板で共通の完了語彙 — 設計 §4.1・R1）。
+from agentcore.vocab import TERMINAL  # noqa: E402
 
 
 def _claim_lock_path(claim_dir: str) -> str:

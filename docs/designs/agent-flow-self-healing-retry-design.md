@@ -219,7 +219,7 @@ failed 終端した run のうち、`meta.failure_reason` のトリアージタ�
 |---|---|---|
 | `transient`（レイヤ 1 を経てなお失敗） | **回収する**（`auto_heal: true`） | `heal_backoff`（既定 300s・指数） |
 | `quota`（利用上限） | 回収しない（`heal_quota: false`・opt-in） | `quota_cooldown`（既定 3600s） |
-| `auth` / `env` / 内容失敗 / canceled / superseded | 回収しない | —（人・agent-project の責務） |
+| `auth` / `env` / 内容失敗 / cancelled / superseded | 回収しない | —（人・agent-project の責務） |
 
 ### 7.2 仕組み
 
@@ -227,7 +227,7 @@ daemon の poll ループに auto-heal ステップを足す（既存の孤児 a
 
 ```
 for run in failed runs where failure_reason タグ ∈ 回収対象:
-  1. superseded / canceled / cancel-requested → skip（新世代・人の意思を尊重）
+  1. superseded / cancelled / cancel-requested → skip（新世代・人の意思を尊重）
   2. meta.heal_next_at 未到達 → skip（cooldown 中）
   3. heal_count >= max_heals かつ前回から done ノード増加なし → skip
      （進捗があれば heal_count をリセット＝max_resumes と同じ「進捗で数え直す」思想）
@@ -334,7 +334,7 @@ CLI には `--auto-heal/--no-auto-heal` のみ出す（他は設定ファイル�
 | `agent_flow/orchestrate.py` `_env_failure_reason` | transient を打ち切り対象に追加（文言は「自動再開候補」に） |
 | `agent_flow/work.py` `cmd_work` | failed result への `data.error_class`/`attempts` 記録 |
 | `agent_flow/bus.py` | heal 簿記ヘルパ（`heal_count`/`heal_next_at`/`heal_progress` の read/write・`retry_failed` は heal 簿記を消さない） |
-| `agent_flow/run.py` / `daemon.py` | レイヤ 4: auto-heal ステップ（superseded/canceled skip・reclaim・retry_failed・再 spawn）。cmd_run 監視ループにも同等処理 |
+| `agent_flow/run.py` / `daemon.py` | レイヤ 4: auto-heal ステップ（superseded/cancelled skip・reclaim・retry_failed・再 spawn）。cmd_run 監視ループにも同等処理 |
 | `agent_flow/config.py` / `cli.py` / `agent-flow.yaml.example` | §10.1 の設定キー・`--auto-heal` |
 | `agent_flow/status.py` / `doctor.py` | §10.2 の表示・診断 |
 | `docs/designs/agent-flow-design.md` §12 | 障害対応表に本設計のレイヤを追記（実装時） |
@@ -350,7 +350,7 @@ CLI には `--auto-heal/--no-auto-heal` のみ出す（他は設定ファイル�
 - **レイヤ 3 純化**: transient failed ノードが retry ノードを生まず run failed（タグ付き）で
   終端する／内容失敗は従来どおり retry ノード＋サーキットブレーカー。
 - **レイヤ 4**: transient-failed run が cooldown 後に retry_failed→resume され done まで走る
-  （stub＋失敗注入）／superseded・canceled は触らない／`max_heals` 超過（進捗なし）で打ち切り・
+  （stub＋失敗注入）／superseded・cancelled は触らない／`max_heals` 超過（進捗なし）で打ち切り・
   進捗ありでカウントリセット／分散（GitBus）で heal の claim が 1 daemon に決まる。
 - **予算**: `max_retries × transient_retries` の経路排他（transient がレイヤ 3 の retries を
   消費しない）をカウンタで検証。

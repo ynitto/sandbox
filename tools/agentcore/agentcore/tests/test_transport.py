@@ -163,6 +163,20 @@ class TestSelfHealing(TransportTestBase):
         r = _git(wd_b, "status", "--porcelain", check=False)
         self.assertEqual(r.returncode, 0)
 
+    @staticmethod
+    def _corrupt_one_loose_object(wd) -> "str | None":
+        """到達可能な loose object を 1 つ 0 バイト化する（電源断で生じるサイズ 0 オブジェクトを模す）。
+        破壊したパスを返す（見つからなければ None）。"""
+        objects_dir = os.path.join(wd, ".git", "objects")
+        for root, _dirs, files in os.walk(objects_dir):
+            for name in files:
+                if len(os.path.basename(root)) == 2 and len(name) == 38:
+                    victim = os.path.join(root, name)
+                    with open(victim, "wb"):
+                        pass
+                    return victim
+        return None
+
     def test_corrupted_object_triggers_rebuild(self):
         wd = os.path.join(self.tmp.name, "node-a")
         t = GitTransport(wd, self.remote, branch="main")
@@ -171,19 +185,8 @@ class TestSelfHealing(TransportTestBase):
             f.write("must-survive\n")
         t.sync_push("seed keep.txt")
 
-        # 電源断で生じるサイズ 0 オブジェクトを模す: 到達可能な loose object を 1 つ 0 バイト化
-        objects_dir = os.path.join(wd, ".git", "objects")
-        victim = None
-        for root, _dirs, files in os.walk(objects_dir):
-            for name in files:
-                if len(os.path.basename(root)) == 2 and len(name) == 38:
-                    victim = os.path.join(root, name)
-                    break
-            if victim:
-                break
+        victim = self._corrupt_one_loose_object(wd)
         self.assertIsNotNone(victim, "テスト前提: loose object が見つからない")
-        with open(victim, "wb"):
-            pass  # 0 バイトに破壊
 
         self.assertFalse(t._probe_integrity())
         t2 = GitTransport(wd, self.remote, branch="main")
@@ -191,6 +194,43 @@ class TestSelfHealing(TransportTestBase):
         self.assertTrue(t2._probe_integrity())
         # 未 push だった keep.txt はリモートに push 済みなので消えていないはず
         self.assertTrue(os.path.isfile(os.path.join(wd, "keep.txt")))
+
+    def test_sync_push_rebuilds_on_corruption_discovered_mid_operation(self):
+        """ensure_clone 後、同一インスタンスで作業中に破損が露見した場合の経路
+        （_rebuild_clone 経由。ensure_clone 時点の「回復できず作り直す」経路とは別）。"""
+        wd = os.path.join(self.tmp.name, "node-a")
+        t = GitTransport(wd, self.remote, branch="main")
+        t.ensure_clone()
+        with open(os.path.join(wd, "keep.txt"), "w") as f:
+            f.write("must-survive\n")
+        t.sync_push("seed keep.txt")
+
+        self._corrupt_one_loose_object(wd)
+        with open(os.path.join(wd, "after.txt"), "w") as f:
+            f.write("after corruption\n")
+        t.sync_push("after corruption")  # _rebuild_clone を経由して自己回復し、例外を投げない
+
+        self.assertTrue(t._probe_integrity())
+        self.assertTrue(os.path.isfile(os.path.join(wd, "keep.txt")))
+
+    def test_sync_pull_rebuilds_on_corruption_discovered_mid_operation(self):
+        wd_a = os.path.join(self.tmp.name, "node-a")
+        wd_b = os.path.join(self.tmp.name, "node-b")
+        a = GitTransport(wd_a, self.remote, branch="main")
+        b = GitTransport(wd_b, self.remote, branch="main")
+        a.ensure_clone()
+        b.ensure_clone()
+        with open(os.path.join(wd_a, "keep.txt"), "w") as f:
+            f.write("must-survive\n")
+        a.sync_push("seed keep.txt")
+        with open(os.path.join(wd_b, "b-only.txt"), "w") as f:
+            f.write("b\n")
+        b.sync_push("seed b-only")
+
+        self._corrupt_one_loose_object(wd_a)
+        a.sync_pull(force=True)  # _rebuild_clone を経由して自己回復し、例外を投げない
+        self.assertTrue(a._probe_integrity())
+        self.assertTrue(os.path.isfile(os.path.join(wd_a, "b-only.txt")))
 
     def test_pre_marker_clone_is_reused_when_full_checkout(self):
         """マーカー導入前に作られた素の clone（このモジュール以前の BoardRepo/BoardMirror が

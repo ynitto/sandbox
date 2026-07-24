@@ -1,9 +1,11 @@
 """アサインプロトコル — claim → 決定的勝者 → roster 確定 → 自己補充（設計書 §6）。
 
-agent-flow の claim プロトコルの流用: 各ノードは自分名義ファイル
-`assignments/<role>/<node>.json` を書くだけ（add/add コンフリクトなし）。
-勝者は lease 内の全 claim のうち (ts, node) 昇順の先頭 seats 件に決定的に定まり、
-ローカルでも git でも全ノードが同じ勝者を導く。
+各ノードは自分名義ファイル `assignments/<role>/<node>.json` を書くだけ（add/add
+コンフリクトなし）。勝者は lease 内の全 claim のうち (ts, node) 昇順の先頭 seats 件に
+決定的に定まり、ローカルでも git でも全ノードが同じ勝者を導く。claim/lease の実体は
+agentcore.protocol（flow のタスク claim・板の入札と共通の (ts, who) タイブレーク・
+lease 延長アルゴリズム — 設計 §4.1・R1）。claim レコードは `who` だけでなく歴史的な
+`node` フィールド（roster/CLI/他モジュールが直接読む）も持たせて後方互換を保つ。
 """
 from __future__ import annotations
 
@@ -11,8 +13,10 @@ import time
 
 import os
 
-from .bus import Bus, MissionPaths, read_all_json
-from .util import now_iso, read_json, unique_ts, write_json_atomic
+from agentcore import protocol
+
+from .bus import Bus, MissionPaths
+from .util import now_iso, read_json, write_json_atomic
 
 DEFAULT_LEASE = 600.0
 
@@ -28,42 +32,41 @@ def default_lease() -> float:
 
 def claim_role(bus: Bus, mp: MissionPaths, role_id: str, node_id: str,
                agent_cli: "str | None" = None, lease: "float | None" = None) -> bool:
-    """ロールに応募し、勝者になったかを返す（agent-flow §5.1 と同じ 3 手順:
-    書く → push → pull → 決定的タイブレークで勝者確認）。
+    """ロールに応募し、勝者になったかを返す（agentcore.protocol.try_claim の 3 手順:
+    書く → push → pull → 決定的タイブレークで勝者確認。負ければ自分の claim を取り下げる）。
     claim の pull は force（間隔律速なし）: 勝者確認の鮮度はプロトコルの正しさに効く。"""
+    eff_lease = lease if lease is not None else default_lease()
+    claim_dir = mp.assignments_dir(role_id)
     bus.sync_pull(force=True)
     if winner(mp, role_id) not in (None, node_id):
         return False
-    write_json_atomic(mp.assignment(role_id, node_id),
-                      {"node": node_id, "ts": unique_ts(), "agent_cli": agent_cli,
-                       "lease_until": time.time() + (lease if lease is not None
-                                                     else default_lease()),
-                       "claimed_at": now_iso()})
-    bus.sync_push(f"claim {role_id} by {node_id}")
-    bus.sync_pull(force=True)
-    return winner(mp, role_id) == node_id
+    return protocol.try_claim(
+        claim_dir, node_id, eff_lease,
+        on_write=lambda: bus.sync_push(f"claim {role_id} by {node_id}"),
+        on_sync=lambda: bus.sync_pull(force=True),
+        on_withdraw=lambda: bus.sync_push(f"claim withdraw {role_id} by {node_id}"),
+        extra={"node": node_id, "agent_cli": agent_cli})
 
 
 def apply_role(bus: Bus, mp: MissionPaths, role_id: str, node_id: str,
                agent_cli: "str | None" = None, lease: "float | None" = None) -> None:
     """owner-picks 用の応募: 自分名義の claim を書くだけで勝者判定はしない
-    （確定はオーナーの roster 書き込み。設計書 §6.3）。既に応募済みなら lease を延長する。"""
+    （確定はオーナーの roster 書き込み。設計書 §6.3）。既に応募済みなら lease を延長する
+    （renew_lease に委ね、再応募時の agent_cli 変更は無視 — 既存応募を尊重する）。"""
     existing = read_json(mp.assignment(role_id, node_id))
     if isinstance(existing, dict) and existing.get("node") == node_id:
         renew_lease(mp, role_id, node_id, lease)
         return
-    write_json_atomic(mp.assignment(role_id, node_id),
-                      {"node": node_id, "ts": unique_ts(), "agent_cli": agent_cli,
-                       "lease_until": time.time() + (lease if lease is not None
-                                                     else default_lease()),
-                       "claimed_at": now_iso()})
+    eff_lease = lease if lease is not None else default_lease()
+    protocol.write_claim(mp.assignments_dir(role_id), node_id, eff_lease,
+                         extra={"node": node_id, "agent_cli": agent_cli})
     bus.sync_push(f"apply {role_id} by {node_id}")
 
 
 def live_claims(mp: MissionPaths, role_id: str) -> list:
     """lease 内の claim（(ts, node) 昇順）。期限切れは孤児として無視する。"""
     claims = []
-    for node, data in read_all_json(mp.assignments_dir(role_id)).items():
+    for node, data in protocol.list_claims(mp.assignments_dir(role_id)).items():
         try:
             if float(data.get("lease_until") or 0) < time.time():
                 continue
@@ -74,24 +77,24 @@ def live_claims(mp: MissionPaths, role_id: str) -> list:
 
 
 def winner(mp: MissionPaths, role_id: str) -> "str | None":
-    """決定的タイブレーク: lease 内 claim の (ts, node) 最小 1 件（seats=1、P0）。"""
-    claims = live_claims(mp, role_id)
-    return claims[0][1] if claims else None
+    """決定的タイブレーク: lease 内 claim の (ts, node) 最小 1 件（seats=1、P0）。
+    実体は agentcore.protocol.winner。"""
+    return protocol.winner(mp.assignments_dir(role_id))
 
 
 def renew_lease(mp: MissionPaths, role_id: str, node_id: str,
                 lease: "float | None" = None) -> None:
-    """ハートビート: 自分の claim の lease を延長する（自分名義ファイルの上書きのみ）。
-    残りが半分以上あるうちは書かない — git バスでの無駄なコミットを作らない
-    （state_git の「アイドル中の追加コミットはゼロ」の流儀）。"""
+    """ハートビート: 自分の claim の lease を延長する（残りが半分以上あるうちは書かない —
+    git バスでの無駄なコミットを作らない。実体は agentcore.protocol.renew_lease）。
+    既存レコードの agent_cli を読み直して引き継ぐ（protocol.renew_lease は extra 分しか
+    温存しないため、呼び出し側でフィールドを保つ必要がある）。"""
     eff = lease if lease is not None else default_lease()
-    path = mp.assignment(role_id, node_id)
-    data = read_json(path)
-    if isinstance(data, dict) and data.get("node") == node_id:
-        if float(data.get("lease_until") or 0) - time.time() > eff / 2:
-            return
-        data["lease_until"] = time.time() + eff
-        write_json_atomic(path, data)
+    claim_dir = mp.assignments_dir(role_id)
+    existing = read_json(mp.assignment(role_id, node_id))
+    extra = {"node": node_id}
+    if isinstance(existing, dict) and "agent_cli" in existing:
+        extra["agent_cli"] = existing["agent_cli"]
+    protocol.renew_lease(claim_dir, node_id, eff, extra=extra)
 
 
 def _norm_repo_url(u: str) -> str:
