@@ -58,10 +58,12 @@
 | W1-10 | node_id 統一（**静止点**） | 既定を PC 名へ。`doctor` に切替前チェック（実行中の委譲・ミッション無し / 板 `status/<who>.json`・amigos `status/<node>--<role>.json` の名義残無し）を実装し、node_id 由来クローンパスの移動を含む手順書を書く | M |
 | W1-11 | CLI とセットアップ | `agent-project serve / status / worker init / worker`・`agent-project.host.yaml`（プロジェクト宣言の単一ソース）・`install.sh` 拡張: 常駐起動の**選択式**セットアップ（systemd user unit / Windows タスクスケジューラ + wsl.exe 再起動ループ — **事前検証 V1・V3**）+ keep-alive + doctor 検査 | M |
 | W1-12 | テスト移植と新設 | daemon 前提テストの tick 前提化（project の daemon 関連 60〜100 件が最大面。flow の実常駐必須は 6 件のみ）。新設: C14 併走テスト（スキル起動 run × 常駐体の claim 排他・孤児回収）・カオステスト（親 kill / 子 kill / ハング注入 / 電源断相当のクローン破損）・§6 回復表の各行に対応するテストまたは手動手順の対応表 | L |
+| W1-13 | **セットアップガイド（ドラフト）** | 利用者向けの導入手順書を新規作成（`docs/guides/` 配下）。構成: (a) **フルノード編** — 前提（Windows + WSL・git 認証・agent CLI）→ clone + `install.sh` → 常駐起動方式の選択（systemd / Windows 起動ループ。それぞれの手順と確認コマンド）→ `agent-project.host.yaml` の書き方 → dashboard 接続 → 動作確認（status が緑になるまで）。(b) **ワーカー編** — clone + `install.sh` + `agent-project worker init` の対話例 → フォアグラウンド運用と systemd 化の選び方。(c) **トラブルシュート編** — 設計 §6 の回復表から「人の出番」がある行だけを利用者の言葉で抜粋（隔離表示・behind 表示・起動系ごと死んだ場合・旧バージョンノード）。**R10 検査対象**: ガイドに内部名（node / sync / resident）を出さない。コマンドが確定する W1-11 の後に書く | M |
 
 **完了条件**: 1 PC + ローカル板で全機能が動く / 常駐プロセスは 1 本だけ（`ps` で確認可能） /
 `agent-flow run`・`agent-amigos drive` が常駐体なしで完結（R9 緑） / 設計 §6 の回復表の
-全行に検証手段がある / 旧リビジョンへのバイナリ戻しでデータがそのまま動く。
+全行に検証手段がある / 旧リビジョンへのバイナリ戻しでデータがそのまま動く /
+セットアップガイドのドラフトが存在し、書かれた手順どおりに新規 PC を 1 台導入できる。
 
 ## 3. P2 — dashboard 縮退
 
@@ -81,8 +83,8 @@
 | # | 作業 | 対象・内容 | 規模 |
 |---|---|---|---|
 | W3-1 | 単一パッケージ統合 | 3 エンジンの exec 断片合成を解消し、配布パッケージ `agent-project` へ統合。CLI エントリは `agent-project` / `agent-flow` / `agent-amigos` の 3 本を維持（R9・R10）。インストールは install.sh の 1 本のまま | L |
-| W3-2 | テスト・文書の再編 | 巨大単一テストファイル × 3 を機能別に再編。README・GUIDE 等の全面改訂と **R10 チェック**（利用者向け文書に node / sync が現れない grep 検査を CI 化） | M |
-| W3-3 | 実機 canary（1 週間） | フル 2 台（停止時刻をずらす）+ ワーカー 1 台（POSIX 機）。チェックリスト: controller 引継ぎ / 全台停止からの復帰 / 予定 drain / 突然死と fencing 拒否 / self-watchdog 発火 / 子の隔離 / スキル起動の併走 / 板委譲の往復（result ペイロード込み）/ Windows 起動ループ方式での VM 復帰 — 各 1 回以上 | M |
+| W3-2 | テスト・文書の再編 | 巨大単一テストファイル × 3 を機能別に再編。README・GUIDE 等の全面改訂・**セットアップガイドの確定版**（W1-13 のドラフトに canary での躓きを反映）・**R10 チェック**（セットアップガイド含む利用者向け文書に node / sync が現れない grep 検査を CI 化） | M |
+| W3-3 | 実機 canary（1 週間） | フル 2 台（停止時刻をずらす）+ ワーカー 1 台（POSIX 機）。**セットアップは W1-13 のガイドだけを見て行い、ガイド外の操作が必要になったら全てガイドの欠陥として記録・反映する**（ガイドの受入試験を兼ねる）。チェックリスト: controller 引継ぎ / 全台停止からの復帰 / 予定 drain / 突然死と fencing 拒否 / self-watchdog 発火 / 子の隔離 / スキル起動の併走 / 板委譲の往復（result ペイロード込み）/ Windows 起動ループ方式での VM 復帰 — 各 1 回以上 | M |
 
 **完了条件**: canary で二重実行 0・stale done 0・状態欠損 0 / 全ノードが
 「git pull + install.sh」で更新でき、旧バージョンノードが入札しないことを確認。
