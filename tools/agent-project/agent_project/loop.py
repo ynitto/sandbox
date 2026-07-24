@@ -283,7 +283,9 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
         cost += dusd
         # 人が dashboard 等から run を中止したとき: verify=true でも done にしない。
         # retries を上げて次の run-id を変える（同一 id の canceled run を再開しようとして固まるのを防ぐ）。
-        if not ok and msg.rstrip().endswith("canceled"):
+        # board 経由は語彙が "cancelled"（英式）— flow/daemon の "canceled"（米式）と綴りが違うため
+        # 両方を見る（さもないと board の人中止が _settle_failure の失敗経路に誤って落ちる）。
+        if not ok and msg.rstrip().endswith(("canceled", "cancelled")):
             task.retries += 1
             task.status = "ready"
             persist_task(cfg, task)
@@ -313,6 +315,12 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
             spawned += len(new)
         release_claim(cfg, task)
         settled += 1
+    if _board is not None:
+        # dashboard 等がこのマシン上の同一板クローンへ直接書いた award.json / cancelled.json は
+        # agent-project 自身は post 時（新規のときだけ）しか push しない——ここで押し出さないと
+        # 依頼側の意思表示（落札確定・中止）が板の同期契機を失い、リモートの請負ノードへ永久に
+        # 届かない。post 有無に関わらず、板を触った回は必ず 1 回 push しておく（差分無しは no-op）。
+        _board.sync_push("reap sync")
     return {"settled": settled, "archived": archived, "spawned": spawned,
             "tokens": tokens, "cost": cost}
 
@@ -448,13 +456,15 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
             # retries は上げる＝次の run-id を変える。上げないと canceled な同一 id を作り直し、
             # agent-flow は終端 run を再開できず永久 no-op になる。
             # act 中の revise（軌道修正）は失敗/canceled より優先——結果を確定せず積み直す。
-            if str(act_msg or "").rstrip().endswith("canceled") or act_ok is False:
+            # board 経由の同一サイクル即時終端（_act_board）は語彙が "cancelled"（英式）——
+            # flow/daemon の "canceled"（米式）と綴りが違うため両方を見る。
+            if str(act_msg or "").rstrip().endswith(("canceled", "cancelled")) or act_ok is False:
                 fresh = _load_task_file(cfg, task.id)
                 if fresh is not None and fresh.get("revised"):
                     _requeue_revised(cfg, task, fresh, cycle)
                     release_claim(cfg, task)
                     continue
-            if str(act_msg or "").rstrip().endswith("canceled"):
+            if str(act_msg or "").rstrip().endswith(("canceled", "cancelled")):
                 task.retries += 1
                 task.status = "ready"
                 persist_task(cfg, task)
