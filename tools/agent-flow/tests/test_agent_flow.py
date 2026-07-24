@@ -5871,6 +5871,17 @@ class CancelTests(unittest.TestCase):
     def test_canceled_is_terminal(self):
         self.assertIn("cancelled", kf.TERMINAL)
 
+    def test_legacy_spelling_is_still_read_as_terminal(self):
+        """語彙統一（W0-9）前に cancel された run はバス上に旧綴りのまま残る。
+        非終端と読むと active_runs に戻り、孤児回収で failed 化されて蘇る。"""
+        self.assertIn("canceled", kf.TERMINAL)
+        meta_path = self.bus.run_view("run1").meta_path
+        meta = kf.read_json(meta_path)
+        meta["status"] = "canceled"
+        kf.write_json_atomic(meta_path, meta)
+        self.assertNotIn("run1", self.bus.active_runs())
+        self.assertFalse(self.bus.mark_canceled("run1"))     # 既に終端＝上書きしない
+
     def test_mark_canceled_sets_status_and_excludes_from_active(self):
         self.assertTrue(self.bus.mark_canceled("run1", "手動"))
         self.assertEqual(self.bus.run_meta("run1").get("status"), "cancelled")

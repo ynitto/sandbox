@@ -7,6 +7,45 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agentcore: P0 のレビュー指摘を修正 — 語彙統一の取りこぼし（dashboard）・claim 心拍の退行・転送の空 push
+
+P0（W0-6〜W0-10）のレビューで見つかった 6 件を修正した。いずれも P0 の変更が入り口で、
+放置すると実運用で表面化する。
+
+- **語彙統一（W0-9）が agent-dashboard に届いていなかった（機能不全）**: 本体側は
+  `cancelled` を書くようになったのに、dashboard は `canceled` 決め打ちのままだった。結果、
+  (a) 中止した run が終端と認識されず「実行中／応答なし」に誤分類され、削除・再投入の可否も
+  ずれる、(b) dashboard の「中止」は `meta.status = 'canceled'` を書くため、本体の終端判定に
+  引っかからず **人の中止操作が run を止められない**。`flow.js` / `flow-adapter.js` /
+  `participation/model.js` / renderer の 4 系統を `cancelled` へ統一し、`flow-adapter.js` が
+  持っていた終端集合の複製は `flow.js` の 1 定義（`TERMINAL` / `isCancelled`）参照に置き換えた。
+- **読み取り側だけ旧綴りを受け入れる互換を追加**: 語彙統一は静止点で一斉に切り替えるが、
+  **バス上に既にある過去の run の meta.json は書き換わらない**。旧綴りを非終端と読むと、
+  改称前に人が cancel した run が `active_runs` に戻り、孤児回収で failed 化されて蘇る。
+  `agentcore.vocab.TERMINAL_READ` / `is_terminal_read()` を追加し、flow と dashboard の
+  **読み取り**だけがこれを使う（**書き込みは正典 `cancelled` のみ**・翻訳マップは持たない）。
+- **amigos のロール心拍が消えた claim を書き戻していた（退行）**: `assign.renew_lease` の
+  移植先 `protocol.renew_lease` は「無ければ新規作成」する仕様だったため、剪定・取り下げ・
+  オーナーの再編で claim が消えたあとも心拍が書き戻し、誰も動いていないロールを占有し続ける
+  zombie 勝者を作りうる（移植前は自分の claim が無ければ no-op だった）。
+  `protocol.renew_lease(..., create_if_missing=False)` を追加し、心拍からはこれで呼ぶ。
+  板の入札延長（flow / amigos）は従来どおり新規作成する側の既定を使う。
+- **`protocol.winner()` が壊れた claim 1 件で止まっていた（退行）**: 移植前の amigos
+  `live_claims` は `lease_until` / `ts` を数値化して読めないものを飛ばしていたが、共通実装は
+  素の比較だったため、壊れた 1 ファイルで `TypeError` になり **そのロール/委譲が誰にも
+  取れなくなる**。数値として読めない claim を無視するようにした。
+- **転送が「押し出すものが無くても push する」ようになっていた**: `BoardRepo` / `BoardMirror`
+  は移植前に `status --porcelain` が空なら push を省いていたが、`GitTransport.sync_push` には
+  その抑止が無く、板を巡回するたびに空 push がリモートへ飛ぶ。commit 済み未 push まで含めて
+  判定する `_ahead()` で抑止する（前回 push が落ちて commit だけ残った場合は従来どおり押す）。
+- **claim ファイル名の正規化がずれていた**: `protocol` は `safe_name(node_id)` でファイルを
+  書くのに、amigos の `MissionPaths.assignment()` は生の `node_id` でパスを組んでいた。
+  node_id に記号が混じる環境でだけ「書いたのに読めない」が起きるため、読み手側も同じ正規化を
+  通す。あわせて claim 実装の残骸（flow の `_unique_ts` / `_claim_lock_path`。同じ claim_dir に
+  対して 2 つのロック名前空間が並立する温床）を削除した。
+- 回帰テストを追加（agentcore 5 / agent-flow 1 / agent-amigos 2 / dashboard 2）。全テスト緑:
+  agentcore 40 / agent-flow 529 / agent-amigos 145 / agent-project 918 / dashboard 全件。
+
 ### agentcore: P0 完了 — GitBus/StateGit の transport 委譲・flow/amigos の claim 統一・語彙統一・契約掃除
 
 [常駐一本化 実装計画](docs/plans/2026-07-24-single-resident-controller-implementation-plan.md) の

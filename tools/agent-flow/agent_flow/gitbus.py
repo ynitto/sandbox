@@ -9,9 +9,12 @@ from __future__ import annotations
 # durable-write）は agentcore.transport.GitTransport が唯一の実装として持つ（agent-project の
 # BoardRepo・agent-amigos の BoardMirror と共通）。GitBus はこのクラスのまま Bus のサブクラスで
 # あり続け、run のレイアウト（claims/<node>/<who>.json 等の名前空間化・disjoint 書き込みによる
-# 低コンフリクト設計）と、以下の一部メソッド（_git・_probe_integrity・_clone_with_retry・
-# _is_corrupt_error 等）はテスト（白箱テスト・monkey-patch 対象）との互換のため GitBus 自身の
-# メソッドとして残し、実体は transport インスタンスへ委譲する薄いラッパーにしてある。
+# 低コンフリクト設計）を持つ。以下の一部メソッド（_git・_probe_integrity・_clone_with_retry・
+# _is_corrupt_error 等）は白箱テストが直接呼ぶ／差し替えるため GitBus 自身のメソッドとして残し、
+# 実体は transport インスタンスへ委譲する薄いラッパーにしてある。
+# 注意: これらは GitBus 自身の経路（_ensure_clone）にしか効かない。transport の内部
+# （sync_pull/sync_push の破損リカバリ）はモジュール関数を直に呼ぶので、GitBus 側の
+# 差し替えでは変わらない——transport の挙動を検証したいテストは agentcore 側で書くこと。
 from agentcore import transport as _transport  # noqa: E402
 
 CLONE_RETRIES = _transport.CLONE_RETRIES

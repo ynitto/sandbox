@@ -42,6 +42,18 @@ class TestClaimTieBreak(unittest.TestCase):
             "who": "a", "ts": 2.0, "lease_until": time.time() + 60})
         self.assertEqual(protocol.winner(self.claim_dir), "z")
 
+    def test_malformed_claim_does_not_break_winner_selection(self):
+        """壊れた 1 ファイル（lease_until/ts が数値でない）が比較例外で勝者判定そのものを
+        止めると、そのロール/委譲は誰にも取れなくなる。無視して健全な claim から選ぶ。"""
+        os.makedirs(self.claim_dir, exist_ok=True)
+        protocol.write_json_atomic(os.path.join(self.claim_dir, "broken.json"), {
+            "who": "broken", "ts": None, "lease_until": None})
+        protocol.write_json_atomic(os.path.join(self.claim_dir, "junk.json"), {
+            "who": "junk", "ts": "not-a-number", "lease_until": "soon"})
+        protocol.write_json_atomic(os.path.join(self.claim_dir, "alice.json"), {
+            "who": "alice", "ts": 1.0, "lease_until": time.time() + 60})
+        self.assertEqual(protocol.winner(self.claim_dir), "alice")
+
     def test_claim_after_lease_expiry_can_be_won_by_new_claimant(self):
         os.makedirs(self.claim_dir, exist_ok=True)
         protocol.write_json_atomic(os.path.join(self.claim_dir, "alice.json"), {
@@ -152,14 +164,38 @@ class TestRenewLease(unittest.TestCase):
         self.assertGreater(rec["lease_until"], time.time() + 800)
 
 
+    def test_renew_does_not_create_when_create_if_missing_false(self):
+        """心拍用: 手放した／取り下げられた claim を書き戻さない
+        （書き戻すと誰も動いていないロールを占有し続ける zombie 勝者になる）。"""
+        self.assertFalse(protocol.renew_lease(self.claim_dir, "alice", 900,
+                                              create_if_missing=False))
+        self.assertEqual(protocol.list_claims(self.claim_dir), {})
+        # 既にある自分の claim は（半減期を過ぎていれば）延長する
+        path = os.path.join(self.claim_dir, "alice.json")
+        protocol.write_json_atomic(path, {
+            "who": "alice", "ts": 42.0, "lease_until": time.time() + 10})
+        self.assertTrue(protocol.renew_lease(self.claim_dir, "alice", 900,
+                                             create_if_missing=False))
+        self.assertEqual(protocol.list_claims(self.claim_dir)["alice"]["ts"], 42.0)
+
+
 class TestVocab(unittest.TestCase):
     def test_terminal_constants(self):
         self.assertEqual(vocab.TERMINAL, frozenset({"done", "failed", "cancelled"}))
         self.assertTrue(vocab.is_terminal("cancelled"))
         self.assertTrue(vocab.is_terminal("done"))
-        self.assertFalse(vocab.is_terminal("canceled"))  # 米式は語彙に含めない
+        self.assertFalse(vocab.is_terminal("canceled"))  # 米式は書く語彙に含めない
         self.assertFalse(vocab.is_terminal("working"))
         self.assertFalse(vocab.is_terminal(None))
+
+    def test_read_side_accepts_legacy_spelling(self):
+        """既存データの読み取りだけは旧綴りも終端と認める。認めないと、改称前に
+        cancel された run が非終端＝実行中に見え、孤児回収で蘇る。"""
+        self.assertEqual(vocab.TERMINAL_READ, frozenset({"done", "failed", "cancelled", "canceled"}))
+        self.assertTrue(vocab.is_terminal_read("canceled"))
+        self.assertTrue(vocab.is_terminal_read("cancelled"))
+        self.assertFalse(vocab.is_terminal_read("running"))
+        self.assertFalse(vocab.is_terminal_read(None))
 
 
 class TestHeartbeat(unittest.TestCase):

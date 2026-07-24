@@ -33,17 +33,12 @@ except ImportError:
 # cancelled は人の明示指示（cmd_cancel）による恒久停止。done/failed と同じく終端だが、
 # 「成果あり(done)」でも「異常(failed)」でもない「意図的な打ち切り」を表す。
 # 常駐一本化 P0・W0-9 で語彙統一（旧 "canceled" 米式 → "cancelled" 英式。板・amigos と揃える）。
-# 実体は agentcore.vocab.TERMINAL（flow/amigos/project/板で共通の完了語彙 — 設計 §4.1・R1）。
-from agentcore.vocab import TERMINAL  # noqa: E402
-
-
-def _claim_lock_path(claim_dir: str) -> str:
-    """claim 用の排他ロックファイルのパス（バス外の一時領域に置く）。
-    同一マシンの同一 claim_dir には同一パスが対応し、プロセス/スレッド間で排他になる。"""
-    h = hashlib.sha1(os.path.abspath(claim_dir).encode()).hexdigest()
-    d = os.path.join(tempfile.gettempdir(), "agent-flow-locks")
-    os.makedirs(d, exist_ok=True)
-    return os.path.join(d, f"{h}.lock")
+# 実体は agentcore.vocab（flow/amigos/project/板で共通の完了語彙 — 設計 §4.1・R1）。
+# ここで読み取り用の集合（正典 + 旧綴り）を使うのは、TERMINAL の参照がすべて
+# 「バス上の既存 meta.status が終端か」の判定だからである。改称前に cancel された run が
+# 旧綴りのままバスに残っており、それを非終端と読むと active_runs → 孤児回収で蘇る。
+# **書き込みは常に正典**（cancelled）で、旧綴りを書く箇所はもう存在しない。
+from agentcore.vocab import TERMINAL_READ as TERMINAL  # noqa: E402
 
 
 @contextlib.contextmanager

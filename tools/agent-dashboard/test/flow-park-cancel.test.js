@@ -3,8 +3,9 @@
 // park & poll と cancel の viewer 側サポートを検証する軽量テスト（追加依存なし）。
 //   - readRun: waits/<id>.json（生存 lease）を「承認待ち(parked)」ノードとして導出。
 //              lease 失効は pending へ縮退。throttled は起票見送りとして区別。
-//   - cancelRun: cancel マーカー設置＋meta を canceled に確定＋waits 掃除（agent-flow の cmd_cancel と同形）。
-//   - TERMINAL に canceled を含む（canceled run を「応答なし」に誤分類しない）。
+//   - cancelRun: cancel マーカー設置＋meta を cancelled に確定＋waits 掃除（agent-flow の cmd_cancel と同形）。
+//   - TERMINAL に cancelled を含む（cancelled run を「応答なし」に誤分類しない）。
+//     旧綴り 'canceled'（語彙統一 W0-9 前のデータ）も読み取りだけは終端として受け入れる。
 
 const assert = require('assert');
 const fs = require('fs');
@@ -82,7 +83,7 @@ test('result があれば waits より優先（決着が正）', () => {
   assert.strictEqual(run.nodes.n1.state, 'done');
 });
 
-test('cancelRun: マーカー設置＋meta canceled＋waits 掃除', () => {
+test('cancelRun: マーカー設置＋meta cancelled＋waits 掃除', () => {
   const runDir = makeRun(bus, 'run-e');
   writeJson(path.join(runDir, 'waits', 'n1.json'), {
     id: 'n1', issue: { host: 'h', project: 'p', iid: 9, url: 'u' },
@@ -92,11 +93,11 @@ test('cancelRun: マーカー設置＋meta canceled＋waits 掃除', () => {
   assert.strictEqual(res.marked, true);
   assert.strictEqual(res.cleared, 1);
   assert.deepStrictEqual(res.issues, [{ host: 'h', project: 'p', iid: 9, url: 'u' }]);
-  // 適用後は sticky cancel マーカーを残さない（meta=canceled で十分）
+  // 適用後は sticky cancel マーカーを残さない（meta=cancelled で十分）
   assert.strictEqual(fs.existsSync(path.join(bus, 'inbox', 'cancels', 'run-e.json')), false);
-  // (2) meta が canceled
+  // (2) meta が cancelled（書くのは正典綴りのみ）
   const meta = JSON.parse(fs.readFileSync(path.join(runDir, 'meta.json'), 'utf8'));
-  assert.strictEqual(meta.status, 'canceled');
+  assert.strictEqual(meta.status, 'cancelled');
   assert.strictEqual(meta.cancel_reason, 'テスト停止');
   // (3) waits 掃除
   assert.strictEqual(fs.existsSync(path.join(runDir, 'waits', 'n1.json')), false);
@@ -116,28 +117,37 @@ test('cancelRun: 既に終端した run には効かない（不可逆）が残 
   assert.strictEqual(fs.existsSync(path.join(runDir, 'waits', 'n1.json')), false);
 });
 
-test('canceled run は残 waits があっても park 表示しない', () => {
+test('cancelled run は残 waits があっても park 表示しない', () => {
   const runDir = makeRun(bus, 'run-park-term');
   writeJson(path.join(runDir, 'meta.json'), {
-    request: 'r', status: 'canceled', created_at: '2026-01-01T00:00:00Z',
+    request: 'r', status: 'cancelled', created_at: '2026-01-01T00:00:00Z',
   });
   writeJson(path.join(runDir, 'waits', 'n1.json'), {
     id: 'n1', wait_lease_until: Date.now() / 1000 + 1000,
     issue: { host: 'h', project: 'p', iid: 1, url: 'u' },
   });
   const run = flow.readRun(runDir);
-  assert.strictEqual(run.status, 'canceled');
+  assert.strictEqual(run.status, 'cancelled');
   assert.strictEqual(run.nodes.n1.state, 'pending');
   assert.strictEqual(run.nodes.n1.parked, false);
   assert.strictEqual(run.counts.parked || 0, 0);
 });
 
-test('canceled run は readRun で終端扱い（alive=null＝応答なしにしない）', () => {
+test('cancelled run は readRun で終端扱い（alive=null＝応答なしにしない）', () => {
   const runDir = makeRun(bus, 'run-g');
+  writeJson(path.join(runDir, 'meta.json'), { request: 'r', status: 'cancelled', created_at: '2026-01-01T00:00:00Z' });
+  const run = flow.readRun(runDir);
+  assert.strictEqual(run.status, 'cancelled');
+  assert.strictEqual(run.alive, null); // TERMINAL に含む＝孤児（応答なし）判定の対象外
+});
+
+test('旧綴り canceled の run も終端扱い（語彙統一 W0-9 前に書かれた meta.json）', () => {
+  const runDir = makeRun(bus, 'run-g-legacy');
   writeJson(path.join(runDir, 'meta.json'), { request: 'r', status: 'canceled', created_at: '2026-01-01T00:00:00Z' });
   const run = flow.readRun(runDir);
-  assert.strictEqual(run.status, 'canceled');
-  assert.strictEqual(run.alive, null); // TERMINAL に含む＝孤児（応答なし）判定の対象外
+  assert.strictEqual(run.alive, null); // 非終端と読むと孤児回収で蘇る
+  assert.strictEqual(flow.TERMINAL.has('canceled'), true);
+  assert.strictEqual(flow.isCancelled('canceled'), true);
 });
 
 test('resubmitRun は長い run-id でも接頭辞と系統解析（taskId/lineage）を保つ', () => {

@@ -342,6 +342,32 @@ class ClaimTests(AmigosTestCase):
         self.assertNotIn("impl", roster)            # roster からも外れ、再募集に戻る
         self.assertTrue(claim_role(self.bus, mp, "impl", "node-b"))
 
+    def test_heartbeat_does_not_resurrect_a_removed_claim(self):
+        """剪定・取り下げ・オーナーの再編で claim が消えたあと、走っているランナーの
+        心拍がそれを書き戻すと、誰も動いていないロールを占有し続ける zombie 勝者になる。"""
+        from agent_amigos.assign import renew_lease
+        mid = self.post()
+        mp = self.bus.mission(mid)
+        self.assertTrue(claim_role(self.bus, mp, "impl", "node-a"))
+        os.remove(mp.assignment("impl", "node-a"))      # claim が消えた
+        renew_lease(mp, "impl", "node-a")
+        self.assertFalse(os.path.exists(mp.assignment("impl", "node-a")))
+        self.assertIsNone(winner(mp, "impl"))           # 再募集に戻ったまま
+
+    def test_heartbeat_extends_own_claim_and_keeps_ts(self):
+        from agent_amigos.assign import renew_lease
+        mid = self.post()
+        mp = self.bus.mission(mid)
+        write_json_atomic(mp.assignment("impl", "node-a"),
+                          {"who": "node-a", "node": "node-a", "ts": 42.0,
+                           "agent_cli": "claude", "lease_until": time.time() + 1})
+        renew_lease(mp, "impl", "node-a", lease=600.0)
+        rec = read_json(mp.assignment("impl", "node-a"))
+        self.assertEqual(rec["ts"], 42.0)               # 先勝ちの根拠は動かさない
+        self.assertEqual(rec["agent_cli"], "claude")    # 既存フィールドを引き継ぐ
+        self.assertGreater(rec["lease_until"], time.time() + 500)
+        self.assertEqual(winner(mp, "impl"), "node-a")
+
 
 class EndToEndTests(AmigosTestCase):
     def run_until(self, mid, want_phase, cycles=12, nodes=None):

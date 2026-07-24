@@ -284,5 +284,36 @@ class TestIntervalThrottling(TransportTestBase):
         self.assertEqual(t._last_pull, 0.0, "失敗時は間隔クロックを進めてはいけない")
 
 
+class TestPushSkipsWhenNothingToSend(TransportTestBase):
+    """押し出すものが無ければ push しない（バスは毎パス sync_push を呼ぶため、
+    変更の無いパスでリモートを叩かない — BoardRepo/BoardMirror が持っていた
+    `status --porcelain` の空振り抑止に相当する）。"""
+
+    def test_no_push_attempt_when_nothing_committed(self):
+        wd = os.path.join(self.tmp.name, "node-a")
+        t = GitTransport(wd, self.remote, branch="main")
+        t.ensure_clone()
+        with open(os.path.join(wd, "a.txt"), "w") as f:
+            f.write("one\n")
+        t.sync_push("first")
+        # リモートを壊す: 押し出すものがあれば必ず失敗（RuntimeError）するはず
+        _git(wd, "remote", "set-url", "origin", os.path.join(self.tmp.name, "gone.git"))
+        t.sync_push("nothing to do")   # 変更なし → push を試みない＝例外にならない
+
+    def test_unpushed_local_commit_is_pushed_even_without_new_changes(self):
+        """commit 済み・push 未達（前回 push が落ちた等）は「変更なし」ではない。"""
+        wd = os.path.join(self.tmp.name, "node-a")
+        t = GitTransport(wd, self.remote, branch="main")
+        t.ensure_clone()
+        with open(os.path.join(wd, "a.txt"), "w") as f:
+            f.write("one\n")
+        t._commit_pending("committed but not pushed")   # commit だけ済ませる
+        t.sync_push("push it")
+        wd_b = os.path.join(self.tmp.name, "node-b")
+        b = GitTransport(wd_b, self.remote, branch="main")
+        b.ensure_clone()
+        self.assertTrue(os.path.isfile(os.path.join(wd_b, "a.txt")))
+
+
 if __name__ == "__main__":
     unittest.main()
