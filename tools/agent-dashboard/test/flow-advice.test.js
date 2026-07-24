@@ -44,7 +44,9 @@ function grab(name) {
 // 判定器を隔離された環境で組み立てる。state は呼び出しごとに差し替える。
 function makeAdvisor(project) {
   const code = [
-    'const TERMINAL_RUN_STATES = new Set(["done", "failed", "canceled"]);',
+    'const CANCELLED_RUN_STATES = new Set(["cancelled", "canceled"]);',
+    'const TERMINAL_RUN_STATES = new Set(["done", "failed", ...CANCELLED_RUN_STATES]);',
+    'const isCancelledRun = (s) => CANCELLED_RUN_STATES.has(String(s || ""));',
     'const statusLabel = (s) => ({ review: "検収待ち", blocked: "要対応", proposed: "計画承認待ち" }[s] || s);',
     grab('sanitizeTaskId'),
     grab('shortRunId'),
@@ -60,7 +62,9 @@ function makeAdvisor(project) {
 
 function makeNodePresenter(project) {
   const code = [
-    'const TERMINAL_RUN_STATES = new Set(["done", "failed", "canceled"]);',
+    'const CANCELLED_RUN_STATES = new Set(["cancelled", "canceled"]);',
+    'const TERMINAL_RUN_STATES = new Set(["done", "failed", ...CANCELLED_RUN_STATES]);',
+    'const isCancelledRun = (s) => CANCELLED_RUN_STATES.has(String(s || ""));',
     'const statusLabel = (s) => ({ review: "検収待ち", blocked: "要対応", proposed: "計画承認待ち" }[s] || s);',
     'const esc = (s) => String(s == null ? "" : s);',
     grab('sanitizeTaskId'),

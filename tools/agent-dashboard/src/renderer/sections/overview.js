@@ -190,7 +190,9 @@ function overviewSummary(p, flowRuns) {
   const done = (p.archive || []).length;
   const total = done + (p.backlog || []).filter((t) => t.status !== 'rejected').length;
   const progress = total ? Math.round((done / total) * 100) : 0;
-  const activeRuns = (flowRuns || []).filter((r) => !['done', 'failed', 'canceled'].includes(String(r.status))).length;
+  // 'canceled' は語彙統一（W0-9）前に書かれた meta.json の旧綴り（読み取り互換）。
+  const activeRuns = (flowRuns || []).filter(
+    (r) => !['done', 'failed', 'cancelled', 'canceled'].includes(String(r.status))).length;
 
   let headline;
   let tone;

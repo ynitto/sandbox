@@ -14,6 +14,8 @@ from __future__ import annotations
 import glob
 import os
 
+from agentcore import protocol
+
 from .util import read_json, write_json_atomic
 
 
@@ -41,7 +43,12 @@ class MissionPaths:
         return os.path.join(self.root, "roles")
 
     def assignment(self, role_id: str, node_id: str) -> str:
-        return os.path.join(self.root, "assignments", role_id, f"{node_id}.json")
+        # ファイル名は agentcore.protocol が claim を書くときと同じ正規化を通す。
+        # claim の書き手（protocol.write_claim / renew_lease / release_claim）は
+        # safe_name(node_id) でファイル名を作るので、読み手がここで生の node_id を
+        # 使うと node_id に記号が混じった環境だけ「書いたのに読めない」が起きる。
+        return os.path.join(self.root, "assignments", role_id,
+                            f"{protocol.safe_name(node_id)}.json")
 
     def assignments_dir(self, role_id: str) -> str:
         return os.path.join(self.root, "assignments", role_id)

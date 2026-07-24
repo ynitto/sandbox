@@ -415,11 +415,27 @@ class GitTransport:
             self._git(args, check=False)
             self._git(["commit", "-m", msg], check=False)
 
+    def _ahead(self) -> bool:
+        """リモート追跡ブランチより先に進んだコミットがあるか（＝push するものがあるか）。
+        リモートにまだブランチが無い初回は rev-list が失敗するので「HEAD があれば push 要」
+        と読む（BoardRepo/BoardMirror が持っていた `status --porcelain` の空振り抑止を、
+        コミット済み未 push まで含めた形で置き換えたもの）。"""
+        r = self._git(["rev-list", "--count", f"origin/{self.branch}..HEAD"], check=False)
+        if r.returncode == 0:
+            try:
+                return int(r.stdout.strip() or 0) > 0
+            except ValueError:
+                return True
+        return self._git(["rev-parse", "-q", "--verify", "HEAD"], check=False).returncode == 0
+
     def sync_push(self, msg: str = "agentcore update") -> None:
         """add -A && commit && push（push 競合は pull --rebase → 再 push の指数バックオフ。
-        force push はしない）。"""
+        force push はしない）。押し出すものが無ければ push 自体を省く——バスは毎パス
+        sync_push を呼ぶので、変更の無いパスでネットワークを叩かないため。"""
         self._ensure()
         self._commit_pending(msg)
+        if not self._ahead():
+            return
         for i in range(PUSH_RETRIES):
             push = self._git(["push", "-u", "origin", self.branch], check=False)
             if push.returncode == 0:

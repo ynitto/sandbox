@@ -42,7 +42,7 @@ const STATUS_LABELS = {
   blocked: '要対応',
   done: '完了',
   failed: '失敗',
-  canceled: '中止',
+  cancelled: '中止',
   running: '実行中',
 };
 // eslint-disable-next-line no-new-func

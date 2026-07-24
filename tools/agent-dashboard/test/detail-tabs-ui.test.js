@@ -648,7 +648,7 @@ const flowGroupBucket = new Function(
   'runAdvice',
   'TERMINAL_RUN_STATES',
   `${grab('flowGroupBucket')}; return flowGroupBucket;`
-)((latest, group) => group.advice, new Set(['done', 'failed', 'canceled']));
+)((latest, group) => group.advice, new Set(['done', 'failed', 'cancelled', 'canceled']));
 assert.strictEqual(flowGroupBucket({ advice: { kind: 'human' }, latest: { status: 'running' } }), 'action');
 assert.strictEqual(flowGroupBucket({ advice: { kind: 'manual' }, latest: { status: 'running' } }), 'action');
 assert.strictEqual(flowGroupBucket({ advice: { kind: 'restart' }, latest: { status: 'failed' } }), 'action');

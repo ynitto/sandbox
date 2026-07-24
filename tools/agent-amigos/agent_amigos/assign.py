@@ -87,14 +87,20 @@ def renew_lease(mp: MissionPaths, role_id: str, node_id: str,
     """ハートビート: 自分の claim の lease を延長する（残りが半分以上あるうちは書かない —
     git バスでの無駄なコミットを作らない。実体は agentcore.protocol.renew_lease）。
     既存レコードの agent_cli を読み直して引き継ぐ（protocol.renew_lease は extra 分しか
-    温存しないため、呼び出し側でフィールドを保つ必要がある）。"""
+    温存しないため、呼び出し側でフィールドを保つ必要がある）。
+
+    **claim が消えていたら何もしない**（`create_if_missing=False`）。剪定・取り下げ・
+    オーナーの再編で自分の claim が消えたあとに心拍が書き戻すと、誰も動いていない
+    ロールを占有し続ける zombie 勝者になる。"""
     eff = lease if lease is not None else default_lease()
     claim_dir = mp.assignments_dir(role_id)
     existing = read_json(mp.assignment(role_id, node_id))
+    if not isinstance(existing, dict):
+        return
     extra = {"node": node_id}
-    if isinstance(existing, dict) and "agent_cli" in existing:
+    if "agent_cli" in existing:
         extra["agent_cli"] = existing["agent_cli"]
-    protocol.renew_lease(claim_dir, node_id, eff, extra=extra)
+    protocol.renew_lease(claim_dir, node_id, eff, extra=extra, create_if_missing=False)
 
 
 def _norm_repo_url(u: str) -> str:

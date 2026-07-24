@@ -135,11 +135,29 @@ def list_claims(claim_dir: str) -> "dict[str, dict]":
     return out
 
 
+def _as_float(value, default: float = 0.0) -> "Optional[float]":
+    """claim レコードの数値フィールドを float へ。数値として読めなければ None。"""
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def winner(claim_dir: str, now: "Optional[float]" = None) -> "Optional[str]":
-    """lease 内の claim から `(ts, who)` 最小の勝者を決定的に選ぶ。無ければ None。"""
+    """lease 内の claim から `(ts, who)` 最小の勝者を決定的に選ぶ。無ければ None。
+
+    `ts` / `lease_until` が数値として読めない claim は無視する（壊れた 1 ファイルが
+    比較例外で勝者判定そのものを止め、そのロール/委譲が誰にも取れなくなるのを防ぐ）。"""
     now = now if now is not None else time.time()
-    live = [(info.get("ts", 0.0), who) for who, info in list_claims(claim_dir).items()
-            if info.get("lease_until", 0) >= now]
+    live = []
+    for who, info in list_claims(claim_dir).items():
+        lease_until = _as_float(info.get("lease_until"))
+        ts = _as_float(info.get("ts"))
+        if lease_until is None or ts is None or lease_until < now:
+            continue
+        live.append((ts, who))
     return min(live)[1] if live else None
 
 
@@ -207,16 +225,23 @@ def extend_claim(claim_dir: str, who: str, lease_sec: float) -> bool:
 
 
 def renew_lease(claim_dir: str, who: str, lease_sec: float,
-                 extra: "Optional[dict]" = None) -> bool:
+                 extra: "Optional[dict]" = None, create_if_missing: bool = True) -> bool:
     """`<claim_dir>/<who>.json` を書く／更新する。既存が無ければ新規（ts はいま）、あれば
     残 lease が半分未満のときだけ lease_until を延長する。(ts, who) タイブレークの根拠 ts は
     温存し、毎回書き換えて先勝ちの意味を壊さない・転送頻度も抑える。書いたら True。
     win/lose の判定は行わない（claim の存在＝応募/占有の維持だけを表す。tie-break が
-    要るケースは try_claim を使うこと）。"""
+    要るケースは try_claim を使うこと）。
+
+    `create_if_missing=False` は「既にある自分の claim の延長だけ」を行い、消えていれば
+    False を返す（心拍用）。手放した／取り下げられた claim を心拍が無条件に書き戻すと、
+    誰も動いていないのに占有され続ける zombie 勝者を作るため、実行中ワーカーの心拍からは
+    必ず False で呼ぶこと。"""
     path = os.path.join(claim_dir, f"{safe_name(who)}.json")
     with _file_lock(_lock_path(claim_dir)):
         cur = read_json(path)
         now = time.time()
+        if not isinstance(cur, dict) and not create_if_missing:
+            return False
         if isinstance(cur, dict):
             if float(cur.get("lease_until", 0) or 0) - now > lease_sec / 2.0:
                 return False  # まだ十分残っている → 今回は延長不要

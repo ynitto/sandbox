@@ -145,7 +145,8 @@ const STATUS_LABELS = {
   throttle: '予算超過（縮退）',
   // 実行（run）の状態
   failed: '失敗',
-  canceled: '中止',
+  cancelled: '中止',
+  canceled: '中止',   // 語彙統一（W0-9）前に書かれた meta.json の旧綴り
   running: '実行中',
   unknown: '不明',
   idle: '待機中',
