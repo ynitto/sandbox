@@ -3816,6 +3816,23 @@ class EndToEndTests(unittest.TestCase):
         run_id = sorted(os.listdir(os.path.join(bus, "runs")))[0]
         return kf.read_json(os.path.join(bus, "runs", run_id, "final.json"))
 
+    def test_r9_skill_invocation_standalone_completes_without_daemon_or_git(self):
+        """R9 非退行テスト（常駐一本化 実装計画 §0-4・P0 完了条件）: エージェントチャット /
+        スキルから `agent-flow run <要求>` を単発起動する経路（常駐体なし・ネットワークなし・
+        `--git` 未指定のローカル dir バス）が、この先の常駐一本化のどのフェーズが進んでも
+        壊れないことを固定する。CLI 名・サブコマンド名・引数の形も本テストが変われば
+        イコール破壊的変更——変えるときは意図して変えたことがここに現れる。"""
+        bus = tempfile.mkdtemp(prefix="kf-r9-")
+        self.addCleanup(shutil.rmtree, bus, ignore_errors=True)
+        cmd = [sys.executable, str(SCRIPT), "--bus", bus, "run", "x; y; z",
+               "--workers", "2", "--planner", "stub", "--executor", "stub", "--poll", "0.2"]
+        self.assertNotIn("--git", cmd, "R9: 単発実行は常駐体・分散同期に依存してはいけない")
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        self.assertEqual(p.returncode, 0, p.stderr[-800:])
+        final = self._final(bus)
+        self.assertIsNotNone(final)
+        self.assertTrue(all(r["status"] == "done" for r in final["results"].values()), final)
+
     def test_up_completes_all_tasks_once(self):
         bus = tempfile.mkdtemp(prefix="kf-e2e-")
         p = self._run_up(bus, "x; y; z")
