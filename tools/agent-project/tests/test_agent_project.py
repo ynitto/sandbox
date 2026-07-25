@@ -8476,263 +8476,6 @@ class SharedGitCacheTests(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(dest, "only_on_feature.txt")))
 
 
-class TestStateGitSync(unittest.TestCase):
-    """状態の git 保存・共有（state_git）: ワーク内容を共有リポジトリへ双方向同期する。
-    リモート負荷の律速（interval）・多重コミッタ（他プログラムの同一リポジトリへのコミット）・
-    3-way 裁定（人の入力はリモート優先/機械状態はローカル優先）・一時状態の除外を検証する。"""
-
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-        km._STATE_GITS.clear()
-        self.remote = self.tmp / "remote.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(self.remote)], check=True)
-        # 既定ブランチ名に依存しない: state_git_branch（main）へ HEAD を向けて clone が追従するように
-        subprocess.run(["git", "-C", str(self.remote), "symbolic-ref", "HEAD",
-                        "refs/heads/main"], check=True)
-
-    def _cfg(self, **kw):
-        proot = self.tmp / "proj"
-        base = dict(backlog=proot / "backlog", policy=proot / "policy.md",
-                    decisions=proot / "decisions", journal=proot / "journal.md",
-                    needs=proot / "needs", workdir=self.tmp, bus=proot / "bus",
-                    inbox=proot / "inbox",
-                    planner="none", flow_planner="stub", executor="stub", dry_run=True,
-                    state_git=str(self.remote), state_git_subdir="kp",
-                    state_git_interval=0.0)
-        base.update(kw)
-        cfg = km.Config(**base)
-        km.ensure_dirs(cfg)
-        return cfg
-
-    def _other(self, name="other") -> Path:
-        """「他のプログラム」役: 同一リポジトリを普通に clone して commit/push するクローン。"""
-        d = self.tmp / name
-        subprocess.run(["git", "clone", "-q", str(self.remote), str(d)],
-                       check=True, capture_output=True)
-        subprocess.run(["git", "-C", str(d), "config", "user.email", "other@test"], check=True)
-        subprocess.run(["git", "-C", str(d), "config", "user.name", "other"], check=True)
-        return d
-
-    @staticmethod
-    def _commit_push(d: Path, msg="other"):
-        subprocess.run(["git", "-C", str(d), "add", "-A"], check=True)
-        subprocess.run(["git", "-C", str(d), "commit", "-qm", msg], check=True)
-        subprocess.run(["git", "-C", str(d), "push", "-q", "-u", "origin", "main"],
-                       check=True, capture_output=True)
-
-    @staticmethod
-    def _pull(d: Path):
-        subprocess.run(["git", "-C", str(d), "pull", "-q", "--rebase", "origin", "main"],
-                       check=True, capture_output=True)
-
-    def test_export_pushes_state_under_subdir(self):
-        cfg = self._cfg()
-        mkb(cfg.backlog.parent, "T1")
-        km.state_sync(cfg, force=True)
-        got = self._other("check")
-        self.assertTrue((got / "kp" / "backlog" / "T1.md").exists())
-
-    def test_import_instruction_drop_and_consumption_propagates(self):
-        cfg = self._cfg()
-        km.state_sync(cfg, force=True)                       # 初期化（ブランチ作成）
-        other = self._other()
-        cmd = other / "kp" / "commands" / "ok.json"
-        cmd.parent.mkdir(parents=True, exist_ok=True)
-        cmd.write_text('{"command": "approve", "id": "T1"}', encoding="utf-8")
-        self._commit_push(other, "viewer: approve")
-        km.state_sync(cfg, force=True)                       # 指示が取り込まれる
-        local_cmd = km.commands_dir(cfg) / "ok.json"
-        self.assertTrue(local_cmd.exists())
-        local_cmd.unlink()                                   # 本体が消化して消した体
-        km.state_sync(cfg, force=True)                       # 消化（削除）がリモートへ伝播
-        self._pull(other)
-        self.assertFalse(cmd.exists())
-
-    def test_conflict_human_input_prefers_remote(self):
-        cfg = self._cfg()
-        nf = cfg.needs / "T1.md"
-        nf.write_text("machine\n", encoding="utf-8")
-        km.state_sync(cfg, force=True)
-        other = self._other()
-        rn = other / "kp" / "needs" / "T1.md"
-        rn.write_text("human answer\n", encoding="utf-8")    # 人がリモートで記入
-        self._commit_push(other, "human feedback")
-        nf.write_text("machine rewrite\n", encoding="utf-8")  # 同時にローカルも変更
-        km.state_sync(cfg, force=True)
-        self.assertEqual(nf.read_text(encoding="utf-8"), "human answer\n")
-
-    def test_conflict_remote_needs_deletion_does_not_erase_machine_replacement(self):
-        """needs の本文は人の編集を優先するが、削除は機械の lifecycle 入力ではない。
-
-        古い plan-review 票を viewer 側が消した直後に、実行側が blocked 票へ置き換えた場合、
-        stale な削除で新しい票を消してはならない。backlog が blocked のまま needs だけ失われると
-        要対応画面と実状態が分裂するため、同時競合では実行側の置換を保持する。
-        """
-        cfg = self._cfg()
-        nf = cfg.needs / "T1.md"
-        nf.write_text("plan-review\n", encoding="utf-8")
-        km.state_sync(cfg, force=True)
-        other = self._other()
-        rn = other / "kp" / "needs" / "T1.md"
-        rn.unlink()
-        self._commit_push(other, "viewer: remove stale plan review")
-        nf.write_text("blocked with delivery\n", encoding="utf-8")
-        km.state_sync(cfg, force=True)
-        self.assertEqual(nf.read_text(encoding="utf-8"), "blocked with delivery\n")
-
-    def test_conflict_repos_registry_prefers_remote(self):
-        # repos.{json,yaml,yml} は人が書くレジストリ（charter ## repos の互換入力）なので
-        # policy.md / charter.md と同じくリモート優先（viewer 側の編集を取りこぼさない）。
-        cfg = self._cfg()
-        rf = cfg.backlog.parent / "repos.json"
-        rf.write_text('{"app": {"url": "git@h:t/a.git"}}\n', encoding="utf-8")
-        km.state_sync(cfg, force=True)
-        other = self._other()
-        rr = other / "kp" / "repos.json"
-        rr.write_text('{"app": {"url": "git@h:t/a.git", "base": "main"}}\n', encoding="utf-8")
-        self._commit_push(other, "viewer: edit repos")
-        rf.write_text('{"app": {"url": "git@h:t/a.git", "base": "dev"}}\n', encoding="utf-8")
-        km.state_sync(cfg, force=True)
-        self.assertIn('"base": "main"', rf.read_text(encoding="utf-8"))
-
-    def test_conflict_machine_state_prefers_local(self):
-        cfg = self._cfg()
-        mkb(cfg.backlog.parent, "T1")
-        km.state_sync(cfg, force=True)
-        other = self._other()
-        rb = other / "kp" / "backlog" / "T1.md"
-        rb.write_text("remote edit\n", encoding="utf-8")
-        self._commit_push(other, "remote edit")
-        local = cfg.backlog / "T1.md"
-        local.write_text("local truth\n", encoding="utf-8")
-        km.state_sync(cfg, force=True)
-        self.assertEqual(local.read_text(encoding="utf-8"), "local truth\n")
-        self._pull(other)
-        self.assertEqual(rb.read_text(encoding="utf-8"), "local truth\n")
-
-    def test_concurrent_committer_is_not_clobbered(self):
-        # 他プログラムが（我々の pull の後に）同一リポジトリへ push しても、push 競合を
-        # pull --rebase で吸収して自分の変更を反映し、相手のコミットも壊さない。
-        cfg = self._cfg(state_git_interval=3600.0)
-        mkb(cfg.backlog.parent, "T1")
-        km.state_sync(cfg, force=True)
-        other = self._other()
-        (other / "unrelated.txt").write_text("theirs\n", encoding="utf-8")
-        self._commit_push(other, "other program commit")
-        (cfg.backlog / "T2.md").write_text("## T2: x\n- status: ready\n", encoding="utf-8")
-        km.state_sync(cfg, force=True)   # interval 内 → pull せず push → 非 FF → rebase 再試行
-        self._pull(other)
-        self.assertTrue((other / "unrelated.txt").exists())
-        self.assertTrue((other / "kp" / "backlog" / "T2.md").exists())
-
-    def test_bus_is_synced_but_transient_state_is_excluded(self):
-        """bus は同期する（別 PC の viewer が run を見る唯一の経路）。claims / flow-archive は除外。
-
-        agent-project は WSL、viewer は Windows と別 PC で動くため、ファイルシステムを共有しない。
-        bus を除外すると viewer にはバックログしか見えず、実行中の run が一切見えない。
-        一方 claims は「同期遅延越しでは排他の意味を持たない」ので載せない（bus/runs/<id>/claims/
-        の形でも segment 判定で除外される）。flow-archive は bus の派生で肥大するので載せない。"""
-        cfg = self._cfg()
-        mkb(cfg.backlog.parent, "T1")
-        (cfg.bus / "runs").mkdir(parents=True, exist_ok=True)
-        (cfg.bus / "runs" / "r1.json").write_text("{}", encoding="utf-8")
-        nested = cfg.bus / "runs" / "r1" / "claims" / "t1"
-        nested.mkdir(parents=True, exist_ok=True)
-        (nested / "worker-1.json").write_text("{}", encoding="utf-8")
-        claims = cfg.backlog.parent / "claims"
-        claims.mkdir(parents=True, exist_ok=True)
-        (claims / "T1.lock").write_text("pid", encoding="utf-8")
-        arch = cfg.backlog.parent / "flow-archive"
-        arch.mkdir(parents=True, exist_ok=True)
-        (arch / "run-1.json").write_text('{"run": {}}', encoding="utf-8")
-        km.state_sync(cfg, force=True)
-        got = self._other("check")
-        proot = got / "kp"
-        self.assertTrue((proot / "backlog" / "T1.md").exists())
-        self.assertTrue((proot / "bus" / "runs" / "r1.json").exists(), "run は viewer へ届く")
-        self.assertFalse((proot / "bus" / "runs" / "r1" / "claims").exists(),
-                         "bus 配下の claims は載せない（遅延越しの排他は意味を持たない）")
-        self.assertFalse((proot / "claims").exists())
-        self.assertFalse((proot / "flow-archive").exists())
-
-    def test_interval_rate_limits_remote_fetch(self):
-        cfg = self._cfg(state_git_interval=3600.0)
-        km.state_sync(cfg, force=True)                       # 初回は必ず同期（ブランチ作成）
-        other = self._other()
-        drop = other / "kp" / "inbox" / "task.json"
-        drop.parent.mkdir(parents=True, exist_ok=True)
-        drop.write_text('{"title": "x", "verify": "true"}', encoding="utf-8")
-        self._commit_push(other, "drop")
-        km.state_sync(cfg)                                   # interval 内 → fetch しない（負荷律速）
-        self.assertFalse((cfg.inbox / "task.json").exists())
-        sg = km.state_git_for(cfg)
-        sg._last_remote = 0.0                                # interval 経過を模擬
-        km.state_sync(cfg)
-        self.assertTrue((cfg.inbox / "task.json").exists())
-
-    def test_run_loop_syncs_state(self):
-        # run_loop の入口で指示を取り込み、出口でパスの結果（journal 等）を共有側へ押し出す。
-        cfg = self._cfg()
-        result = km.run_loop(cfg)
-        self.assertEqual(result["reason"], km.REASON_DRAINED)
-        got = self._other("check")
-        self.assertTrue((got / "kp" / "journal.md").exists())
-
-    def test_disabled_without_state_git(self):
-        cfg = self._cfg(state_git=None)
-        km.state_sync(cfg, force=True)                       # 何もしない（クローンも作らない）
-        self.assertFalse((self.tmp / "proj" / ".state-git").exists())
-
-    def test_sync_failure_does_not_kill_loop(self):
-        cfg = self._cfg(state_git=str(self.tmp / "no-such-remote.git"))
-        km.state_sync(cfg, force=True)                       # 不通でも例外を漏らさない
-        self.assertIn("state-git 同期失敗", cfg.journal.read_text(encoding="utf-8"))
-
-    def test_dot_prefixed_subdir_works(self):
-        # state_git_subdir はドット始まり（.agent-project 等）でも同期できる（推奨は非ドットだが、
-        # 他プロセスの成果物と同居するリポジトリで隠したい構成をサポートする）。
-        cfg = self._cfg(state_git_subdir=".agent-project")
-        mkb(cfg.backlog.parent, "T1")
-        km.state_sync(cfg, force=True)
-        got = self._other("check")
-        self.assertTrue(
-            (got / ".agent-project" / "backlog" / "T1.md").exists())
-
-    def test_clone_is_reused_across_syncs(self):
-        cfg = self._cfg()
-        mkb(cfg.backlog.parent, "T1")
-        km.state_sync(cfg, force=True)
-        clone = self.tmp / "proj" / ".state-git"
-        marker = subprocess.run(["git", "-C", str(clone), "config", "--get",
-                                 km.STATE_GIT_MARKER], capture_output=True, text=True)
-        self.assertEqual(marker.stdout.strip(), "1")
-        km._STATE_GITS.clear()                               # プロセス再起動を模擬 → 再クローンせず再利用
-        (cfg.backlog / "T2.md").write_text("## T2: y\n- status: ready\n", encoding="utf-8")
-        km.state_sync(cfg, force=True)
-        got = self._other("check")
-        self.assertTrue((got / "kp" / "backlog" / "T2.md").exists())
-
-    def test_project_watch_imports_before_first_plan_on_restart(self):
-        # 自己更新の graceful 再起動を模擬（_STATE_GITS クリア）。停止中に viewer が push した
-        # charter 更新を、初回 plan より先に取り込むこと（古い charter で計画しない）。
-        cfg = self._cfg()
-        cfg.charter.write_text("# Charter\n## 目標\nGOAL-A\n## acceptance\n- true\n",
-                               encoding="utf-8")
-        km.state_sync(cfg, force=True)                       # 初期 export（GOAL-A をリモートへ）
-        other = self._other()
-        rc = other / "kp" / "charter.md"
-        rc.write_text("# Charter\n## 目標\nGOAL-B\n## acceptance\n- true\n", encoding="utf-8")
-        self._commit_push(other, "viewer: charter 更新")     # 停止中に GOAL-B を push
-        km._STATE_GITS.clear()                               # 再起動を模擬
-        seen = []
-        km.project_watch(cfg, planner=lambda ch: seen.append(
-            "B" if "GOAL-B" in cfg.charter.read_text(encoding="utf-8") else "A") or [],
-            reviewer=lambda ch: (True, ""), runner=km.run_loop,
-            sleeper=lambda _s: None, max_passes=1)
-        self.assertEqual(seen, ["B"])                        # 初回 plan は取り込み後の charter を見る
-
-
 class TestStateRepoSeparation(unittest.TestCase):
     """案1: 状態専用リポジトリ。状態を成果物リポジトリの worktree ではなく、専用リポジトリの
     通常 clone に置く（worktree 二重実装・本体 main へのバックアップ＝ドリフト源を回避）。
@@ -9191,6 +8934,211 @@ class TestDirectStateGit(unittest.TestCase):
                        check=True, capture_output=True)
         km.state_sync(cfg, force=True)
         self.assertTrue((km.commands_dir(cfg) / "ok.json").exists())
+
+    # --- 状態共有 direct 一本化（実装計画 W1-7）で管理クローン（旧 TestStateGitSync）から
+    # 移植したコントラクトテスト。裏付けるバックエンドが変わっただけで、検証したい規則
+    # （人の入力はリモート優先・機械状態はローカル優先・interval 律速・障害耐性・
+    # 再起動時の取り込み順序）はそのまま。
+
+    def test_conflict_human_input_prefers_remote(self):
+        cfg = self._cfg()
+        nf = cfg.needs / "T1.md"
+        nf.write_text("machine\n", encoding="utf-8")
+        km.state_sync(cfg, force=True)
+        other = self._other()
+        rn = other / "needs" / "T1.md"
+        rn.write_text("human answer\n", encoding="utf-8")    # 人がリモートで記入
+        subprocess.run(["git", "-C", str(other), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(other), "commit", "-qm", "human feedback"], check=True)
+        subprocess.run(["git", "-C", str(other), "push", "-q", "origin", "main"],
+                       check=True, capture_output=True)
+        nf.write_text("machine rewrite\n", encoding="utf-8")  # 同時にローカルも変更
+        km.state_sync(cfg, force=True)
+        self.assertEqual(nf.read_text(encoding="utf-8"), "human answer\n")
+
+    def test_conflict_repos_registry_prefers_remote(self):
+        # repos.{json,yaml,yml} は人が書くレジストリ（charter ## repos の互換入力）なので
+        # policy.md / charter.md と同じくリモート優先（viewer 側の編集を取りこぼさない）。
+        cfg = self._cfg()
+        rf = self.root / "repos.json"
+        rf.write_text('{"app": {"url": "git@h:t/a.git"}}\n', encoding="utf-8")
+        km.state_sync(cfg, force=True)
+        other = self._other()
+        rr = other / "repos.json"
+        rr.write_text('{"app": {"url": "git@h:t/a.git", "base": "main"}}\n', encoding="utf-8")
+        subprocess.run(["git", "-C", str(other), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(other), "commit", "-qm", "viewer: edit repos"], check=True)
+        subprocess.run(["git", "-C", str(other), "push", "-q", "origin", "main"],
+                       check=True, capture_output=True)
+        rf.write_text('{"app": {"url": "git@h:t/a.git", "base": "dev"}}\n', encoding="utf-8")
+        km.state_sync(cfg, force=True)
+        self.assertIn('"base": "main"', rf.read_text(encoding="utf-8"))
+
+    def test_conflict_machine_state_prefers_local(self):
+        cfg = self._cfg()
+        mkb(self.root, "T1")
+        km.state_sync(cfg, force=True)
+        other = self._other()
+        rb = other / "backlog" / "T1.md"
+        rb.write_text("remote edit\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(other), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(other), "commit", "-qm", "remote edit"], check=True)
+        subprocess.run(["git", "-C", str(other), "push", "-q", "origin", "main"],
+                       check=True, capture_output=True)
+        local = self.root / "backlog" / "T1.md"
+        local.write_text("local truth\n", encoding="utf-8")
+        km.state_sync(cfg, force=True)
+        self.assertEqual(local.read_text(encoding="utf-8"), "local truth\n")
+
+    def test_concurrent_committer_is_not_clobbered(self):
+        # 他プログラムが（我々の pull の後に）同一リポジトリへ push しても、push 競合を
+        # rebase + CAS 再試行で吸収して自分の変更を反映し、相手のコミットも壊さない。
+        cfg = self._cfg(state_git_interval=3600.0)
+        mkb(self.root, "T1")
+        km.state_sync(cfg, force=True)
+        other = self._other()
+        (other / "unrelated.txt").write_text("theirs\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(other), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(other), "commit", "-qm", "other program commit"], check=True)
+        subprocess.run(["git", "-C", str(other), "push", "-q", "origin", "main"],
+                       check=True, capture_output=True)
+        (self.root / "backlog" / "T2.md").write_text("## T2: x\n- status: ready\n", encoding="utf-8")
+        km.state_sync(cfg, force=True)   # interval 内 → fetch せず push → 非 FF → 取り込んで再試行
+        got = self._other("check")
+        self.assertTrue((got / "unrelated.txt").exists())
+        self.assertTrue((got / "backlog" / "T2.md").exists())
+
+    def test_interval_rate_limits_remote_fetch(self):
+        cfg = self._cfg(state_git_interval=3600.0)
+        km.state_sync(cfg, force=True)                       # 初回は必ず同期
+        other = self._other()
+        drop = other / "inbox" / "task.json"
+        drop.parent.mkdir(parents=True, exist_ok=True)
+        drop.write_text('{"title": "x", "verify": "true"}', encoding="utf-8")
+        subprocess.run(["git", "-C", str(other), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(other), "commit", "-qm", "drop"], check=True)
+        subprocess.run(["git", "-C", str(other), "push", "-q", "origin", "main"],
+                       check=True, capture_output=True)
+        km.state_sync(cfg)                                   # interval 内 → fetch しない（負荷律速）
+        self.assertFalse((cfg.inbox / "task.json").exists())
+        sg = km.state_git_for(cfg)
+        sg._last_remote = 0.0                                # interval 経過を模擬
+        km.state_sync(cfg)
+        self.assertTrue((cfg.inbox / "task.json").exists())
+
+    def test_run_loop_syncs_state(self):
+        # run_loop の入口で指示を取り込み、出口でパスの結果（journal 等）を共有側へ押し出す。
+        cfg = self._cfg()
+        result = km.run_loop(cfg)
+        self.assertEqual(result["reason"], km.REASON_DRAINED)
+        got = self._other("check")
+        self.assertTrue((got / "journal.md").exists())
+
+    def test_sync_failure_does_not_kill_loop(self):
+        # state_sync は「push が反映できませんでした」（DirectStateGit.sync が push リトライ
+        # 尽きて raise する唯一の失敗経路 — 詳細は stategit.py の RuntimeError 箇所）を
+        # 握り潰さず journal に残して続行する契約を持つ。実際に push リトライ（最大 15s の
+        # バックオフ）を待つと遅いので、契約だけを sync() の差し替えで軽く確認する。
+        cfg = self._cfg()
+        with mock.patch.object(km, "state_git_for") as m:
+            sg = mock.Mock()
+            sg.sync.side_effect = RuntimeError("push が main へ反映できませんでした")
+            m.return_value = sg
+            km.state_sync(cfg, force=True)                   # 不通でも例外を漏らさない
+        self.assertIn("state-git 同期失敗", cfg.journal.read_text(encoding="utf-8"))
+
+    def test_project_watch_imports_before_first_plan_on_restart(self):
+        # 自己更新の graceful 再起動を模擬（_STATE_GITS クリア）。停止中に viewer が push した
+        # charter 更新を、初回 plan より先に取り込むこと（古い charter で計画しない）。
+        cfg = self._cfg()
+        cfg.charter.write_text("# Charter\n## 目標\nGOAL-A\n## acceptance\n- true\n",
+                               encoding="utf-8")
+        km.state_sync(cfg, force=True)                       # 初期 export（GOAL-A をリモートへ）
+        other = self._other()
+        rc = other / "charter.md"
+        rc.write_text("# Charter\n## 目標\nGOAL-B\n## acceptance\n- true\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(other), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(other), "commit", "-qm", "viewer: charter 更新"],
+                       check=True)
+        subprocess.run(["git", "-C", str(other), "push", "-q", "origin", "main"],
+                       check=True, capture_output=True)       # 停止中に GOAL-B を push
+        km._STATE_GITS.clear()                               # 再起動を模擬
+        seen = []
+        km.project_watch(cfg, planner=lambda ch: seen.append(
+            "B" if "GOAL-B" in cfg.charter.read_text(encoding="utf-8") else "A") or [],
+            reviewer=lambda ch: (True, ""), runner=km.run_loop,
+            sleeper=lambda _s: None, max_passes=1)
+        self.assertEqual(seen, ["B"])                        # 初回 plan は取り込み後の charter を見る
+
+    def test_uninitialized_root_auto_git_inits_and_syncs_locally(self):
+        # 状態共有は direct 一本（実装計画 W1-7）: root が未初期化でも state_git_for がその場で
+        # git init し、remote 未設定ならコミットのみのローカル縮退として動く（例外にならない）。
+        proot = Path(tempfile.mkdtemp(prefix="uninit-root-")) / "proj"
+        cfg = km.Config(backlog=proot / "backlog", policy=proot / "policy.md",
+                        decisions=proot / "decisions", journal=proot / "journal.md",
+                        needs=proot / "needs", workdir=self.tmp, bus=proot / "bus",
+                        inbox=proot / "inbox",
+                        planner="none", flow_planner="stub", executor="stub", dry_run=True,
+                        state_git_interval=0.0)
+        km.ensure_dirs(cfg)
+        self.assertFalse((proot / ".git").exists(), "前提: 未初期化")
+        mkb(proot, "T1")
+        km.state_sync(cfg, force=True)
+        self.assertTrue((proot / ".git").exists(), "state_git_for が git init するはず")
+        self.assertIsInstance(km.state_git_for(cfg), km.DirectStateGit)
+
+    def test_state_git_config_bootstraps_origin_when_missing(self):
+        # state_git: <url> 設定は「管理クローンの同期先」の意味を失ったが、root に origin が
+        # 無ければそれを origin として設定する（設定がサイレントに意味を失わないように）。
+        proot = Path(tempfile.mkdtemp(prefix="bootstrap-origin-")) / "proj"
+        cfg = km.Config(backlog=proot / "backlog", policy=proot / "policy.md",
+                        decisions=proot / "decisions", journal=proot / "journal.md",
+                        needs=proot / "needs", workdir=self.tmp, bus=proot / "bus",
+                        inbox=proot / "inbox",
+                        planner="none", flow_planner="stub", executor="stub", dry_run=True,
+                        state_git=str(self.remote), state_git_interval=0.0)
+        km.ensure_dirs(cfg)
+        km.state_sync(cfg, force=True)
+        r = subprocess.run(["git", "-C", str(proot), "remote", "get-url", "origin"],
+                           capture_output=True, text=True)
+        self.assertEqual(r.stdout.strip(), str(self.remote))
+
+    def _cfg_under_existing_repo(self):
+        """root が既存リポジトリの内側（トップレベルではない）という構成を作る。"""
+        outer = Path(tempfile.mkdtemp(prefix="outer-repo-"))
+        subprocess.run(["git", "init", "-q", str(outer)], check=True,
+                       capture_output=True, text=True)
+        proot = outer / "sub" / ".agent-project"
+        return outer, proot, km.Config(
+            backlog=proot / "backlog", policy=proot / "policy.md",
+            decisions=proot / "decisions", journal=proot / "journal.md",
+            needs=proot / "needs", workdir=self.tmp, bus=proot / "bus",
+            inbox=proot / "inbox",
+            planner="none", flow_planner="stub", executor="stub", dry_run=True,
+            state_git_interval=0.0)
+
+    def test_root_inside_existing_repo_does_not_create_nested_repo(self):
+        # root が無関係な既存リポジトリの内側にあるとき git init してはいけない。nested repo は
+        # 外側の `git add -A` を「does not have a commit checked out」で失敗させ、commit を積むと
+        # gitlink 化して意図しない submodule 相当のエントリを持ち込む。
+        outer, proot, cfg = self._cfg_under_existing_repo()
+        km.ensure_dirs(cfg)
+        km.state_sync(cfg, force=True)
+        self.assertFalse((proot / ".git").exists(), "既存リポジトリの内側に nested repo を作らない")
+        self.assertIsNone(km.state_git_for(cfg))         # 同期は諦める（毎周期の失敗を出さない）
+        self.assertIsNone(km.project_flow_remote(cfg))   # flow へ渡す remote もでっち上げない
+        # 外側リポジトリの通常操作が壊れていないこと（nested repo があるとここが fatal になる）
+        r = subprocess.run(["git", "-C", str(outer), "add", "-A"],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_status_line_explains_inside_existing_repo(self):
+        # 起動時の一行は切り分け用。ここで「未初期化 → 次回 init する」と出すと実態と食い違う。
+        _outer, _proot, cfg = self._cfg_under_existing_repo()
+        km.ensure_dirs(cfg)
+        line = km.state_git_status_line(cfg)
+        self.assertIn("既存 git リポジトリの内側", line)
+        self.assertNotIn("git init する", line)
 
 
 class TestJournalRotation(unittest.TestCase):
@@ -12008,12 +11956,10 @@ class ProjectRulesTests(unittest.TestCase):
         # assignments.json（dashboard の監視担当メタ）も人が書くサイドカー。
         # 複数メンバーの同時編集はリモート＝人の割り当てを優先し取りこぼさない。
         self.assertIn("assignments.json", km._STATE_REMOTE_WINS_FILES)
-        # 除外・機械状態ではないこと（同期対象＝チームへ配られる）
-        self.assertFalse(km.StateGit._excluded(Path("assignments.json")))
-        self.assertTrue(km.StateGit._remote_wins("assignments.json"))
+        self.assertTrue(km._remote_wins("assignments.json"))
         # 同時競合ではローカルを勝たせない（リモートの人の編集を優先）
         self.assertFalse(
-            km.StateGit._take_local_on_conflict("assignments.json", True, True))
+            km._take_local_on_conflict("assignments.json", True, True))
 
 
 class AgentOverrideTests(unittest.TestCase):

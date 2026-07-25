@@ -25,19 +25,20 @@ def project_flow_remote(cfg: "Config") -> "tuple[str, str, float] | None":
     if _bus_inside_state(cfg):
         return None
     root = cfg.backlog.parent
-    if _direct_state_git_ok(cfg):
-        r = subprocess.run(["git", "-C", str(root), "remote", "get-url", "origin"],
-                           capture_output=True, text=True, encoding="utf-8", errors="replace")
-        remote = r.stdout.strip() if r.returncode == 0 else ""
-        if not remote:
-            return None
-        b = subprocess.run(["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"],
-                           capture_output=True, text=True, encoding="utf-8", errors="replace")
-        branch = b.stdout.strip() or "main"
-        return remote, branch, cfg.state_git_interval
-    if getattr(cfg, "state_git", None):
-        return cfg.state_git, cfg.state_git_branch, cfg.state_git_interval
-    return None
+    # 状態共有は direct 一本（実装計画 W1-7）: 未初期化なら git init してから remote を見る。
+    # direct にできない構成（既存リポジトリの内側等）では state_git_for も None を返すため、
+    # ここも「共有先なし」に倒す（agent-flow へ渡す remote を でっち上げない）。
+    if not _ensure_direct_state_git(cfg):
+        return None
+    r = subprocess.run(["git", "-C", str(root), "remote", "get-url", "origin"],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    remote = r.stdout.strip() if r.returncode == 0 else ""
+    if not remote:
+        return None
+    b = subprocess.run(["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    branch = b.stdout.strip() or "main"
+    return remote, branch, cfg.state_git_interval
 
 
 def flow_daemon_cmd(cfg: "Config", budget: int) -> "list[str]":

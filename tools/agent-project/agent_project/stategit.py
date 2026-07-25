@@ -5,20 +5,13 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 # ワークの内容（<root> コンテナ配下の状態ファイル＝backlog/needs/decisions/journal/…）を共有 git
 # リポジトリへ保存し、リモートの agent-dashboard と「結果を見せる／指示を受け取る」を往復する。
-#   ・リモート負荷を抑える: 専用の管理クローン（subdir だけの sparse・blob:none）を 1 本再利用し、
-#     fetch/push は state_git_interval（既定 300 秒）で律速。push は「共有すべきローカルコミットが
-#     あるとき」だけ行い、idle 中は間隔ごとの pull 1 本に収まる。
-#   ・多重コミッタ前提: 同一リポジトリには他プログラム（viewer 側の git-file-sync・agent-flow の
-#     git バス・別ホストの agent-project 等）もコミットする。ステージは自 subdir のみ
-#     （`add -A -- <subdir>`）、push 競合は pull --rebase → 再 push の指数バックオフで吸収し、
-#     force push は決してしない（他者のコミットを壊さない）。
+# 状態共有は direct 一本（実装計画 W1-7・設計 §4.1）: プロジェクトルート自体を git 作業ツリーの
+# トップレベルとして扱い（未初期化なら state_git_for が git init する）、管理クローン（.state-git
+# サブディレクトリへ別クローンを持ち 3-way 同期する旧モード）と非 git モードは廃止した。
+# remote 未設定はコミットのみでローカル完結する縮退として同じ DirectStateGit が動く。
 #   ・双方向: 機械の状態は外へ、人の指示（commands/ ドロップ・inbox/ 投入・needs の記入・
-#     policy/charter の編集）は中へ。前回同期スナップショット（manifest）基準の 3-way で
-#     「どちらが変えたか」を判定し、同時変更だけを「人の入力パスはリモート優先・機械状態は
-#     ローカル優先」の決定的規則で裁定する。
-from agentcore import transport as _transport  # noqa: E402
-
-STATE_GIT_MARKER = "agent-project.stateclone"   # 自前管理クローンの目印（git config）
+#     policy/charter の編集）は中へ。同時変更は「人の入力パスはリモート優先・機械状態は
+#     ローカル優先」の決定的規則で裁定する（_take_local_on_conflict）。
 # これ以上古い .git ロックは残骸とみなし自己回復する閾値。30 秒では「遅いだけの生きた git」
 # （大きな bus/ の add・NFS・巨大リポジトリの checkout）のロックを削除して index を壊す
 # 事故が起きうるため、正常な git 操作がまず超えない 5 分に置く（クラッシュ残骸の回収が
@@ -58,240 +51,25 @@ _STATE_REMOTE_WINS_FILES = {"policy.md", "charter.md", "rules.md",
                             "assignments.json"}
 
 
-class StateGit:
-    """プロジェクト状態 ⇔ 共有 git リポジトリの双方向同期（agent-flow GitBus と同じ管理クローン流儀）。
-    プロジェクトルート自体が git 作業ツリーでない場合のフォールバック（git のルートなら DirectStateGit）。
+def _remote_wins(rel: str) -> bool:
+    parts = Path(rel).parts
+    return any(s in _STATE_REMOTE_WINS_DIRS for s in parts[:-1]) or (
+        parts and parts[-1] in _STATE_REMOTE_WINS_FILES)
 
-    真実は常にファイル側（ローカルはプロジェクトルート・リモートは共有リポジトリ）にあり、このクラスは
-    「前回同期時点のスナップショット（manifest）」を基準に差分の発生源を判定して橋渡しするだけ。
-    クローンや manifest を失っても、次の同期が裁定規則で決定的に再収束させる。"""
 
-    def __init__(self, container: Path, remote: str, branch: str = "main",
-                 subdir: str = "agent-project", interval: float = 300.0,
-                 clone_dir: "Path | None" = None):
-        self.container = Path(container)
-        self.remote = remote
-        self.branch = branch or "main"
-        self.subdir = (subdir or "").strip("/")
-        self.interval = max(0.0, interval)
-        self.clone = Path(clone_dir) if clone_dir else (self.container / ".state-git")
-        self._ready = False
-        self._last_remote = 0.0     # 最後にリモートへ触れた時刻（fetch/push の間隔律速）
-        self._last_attempt = 0.0    # クローン準備の失敗も間隔律速（不通のリモートを連打しない）
-        # 低レベル git 実行・回復・リトライ層は agentcore.transport へ委譲（GitBus/BoardRepo と
-        # 共通の唯一の実装 — 設計 §4.1・R1）。CAS export・manifest 3-way・パス所有権裁定
-        # （_resolve_rebase・_three_way・_take_local_on_conflict 等）はこのクラスのポリシーとして残す
-        # （この時点では挙動不変。管理クローン/direct 両モードの統一は P1）。副次効果として、
-        # このクラスに無かった fsck 破損検知・durable-write・clone 指数バックオフを新たに獲得する。
-        self._transport = _transport.GitTransport(
-            str(self.clone), self.remote, branch=self.branch,
-            subdir=self.subdir, sparse_paths=([self.subdir] if self.subdir else None),
-            managed_flag=STATE_GIT_MARKER,
-            commit_user_name="agent-project", commit_user_email="agent-project@local",
-            lock_stale_sec=_STATE_LOCK_STALE_SEC)
+def _take_local_on_conflict(rel: str, local_present: bool, remote_present: bool) -> bool:
+    """同時変更の所有権を返す。
 
-    def _git(self, *args: str, check: bool = False):
-        return self._transport.git(*args, check=check)
-
-    def _ensure_clone(self) -> None:
-        self._transport.ensure_clone()
-
-    # --- 3-way 同期（manifest = 前回同期時点の path→sha256 スナップショット） ---
-    @property
-    def _manifest_path(self) -> Path:
-        return self.clone / ".git" / "agent-project-state.json"
-
-    def _load_manifest(self) -> dict:
-        try:
-            return json.loads(self._manifest_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {}
-
-    def _save_manifest(self, manifest: dict) -> None:
-        tmp = self._manifest_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True), encoding="utf-8")
-        os.replace(tmp, self._manifest_path)
-
-    @staticmethod
-    def _excluded(rel: Path) -> bool:
-        parts = rel.parts
-        return any(s.startswith(".") for s in parts) or any(
-            s in _STATE_EXCLUDE_DIRS for s in parts[:-1])
-
-    @staticmethod
-    def _remote_wins(rel: str) -> bool:
-        parts = Path(rel).parts
-        return any(s in _STATE_REMOTE_WINS_DIRS for s in parts[:-1]) or (
-            parts and parts[-1] in _STATE_REMOTE_WINS_FILES)
-
-    @staticmethod
-    def _take_local_on_conflict(rel: str, local_present: bool, remote_present: bool) -> bool:
-        """同時変更の所有権を返す。
-
-        needs の *本文編集* は人（remote）を正とする一方、needs の生成・削除は backlog lifecycle の
-        投影なので機械（local）が所有する。したがって remote の削除と local の新規生成・置換が
-        競合した場合だけ local を保持する。これにより人のフィードバックは従来どおり優先しつつ、
-        stale な票の削除で新しい blocked/review 票が失われることを防ぐ。
-        """
-        parts = Path(rel).parts
-        is_need = "needs" in parts[:-1]
-        if is_need and local_present and not remote_present:
-            return True
-        return not StateGit._remote_wins(rel)
-
-    @staticmethod
-    def _scan(root: Path) -> "dict[str, str]":
-        """root 配下の同期対象ファイルを {相対パス: sha256} で返す（除外規則は両側で同一）。"""
-        out: dict[str, str] = {}
-        if not root.is_dir():
-            return out
-        for base, dirs, files in os.walk(root):
-            rel_base = Path(base).relative_to(root)
-            dirs[:] = [d for d in dirs
-                       if not d.startswith(".") and d not in _STATE_EXCLUDE_DIRS]
-            for name in files:
-                rel = rel_base / name
-                if StateGit._excluded(rel):
-                    continue
-                p = Path(base) / name
-                if p.is_symlink() or not p.is_file():
-                    continue
-                try:
-                    out[rel.as_posix()] = hashlib.sha256(p.read_bytes()).hexdigest()
-                except OSError:
-                    pass
-        return out
-
-    def _remote_root(self) -> Path:
-        return self.clone / self.subdir if self.subdir else self.clone
-
-    def _three_way(self) -> "tuple[int, int]":
-        """manifest 基準の 3-way でローカル⇔クローンを橋渡しする。(imported, exported) を返す。"""
-        base = self._load_manifest()
-        lroot, rroot = self.container, self._remote_root()
-        local, remote = self._scan(lroot), self._scan(rroot)
-        manifest: dict[str, str] = {}
-        imported = exported = 0
-        for rel in sorted(set(base) | set(local) | set(remote)):
-            lh, rh, bh = local.get(rel), remote.get(rel), base.get(rel)
-            if lh == rh:                      # 一致（双方無し含む）→ そのまま
-                if lh is not None:
-                    manifest[rel] = lh
-                continue
-            if rh == bh:                      # ローカルだけが変えた（or 消した）→ export
-                take_local = True
-            elif lh == bh:                    # リモートだけが変えた → import
-                take_local = False
-            else:                             # 同時変更 → 決定的裁定
-                take_local = self._take_local_on_conflict(
-                    rel, local_present=lh is not None, remote_present=rh is not None)
-            src, dst, h = (lroot, rroot, lh) if take_local else (rroot, lroot, rh)
-            try:
-                if h is None:                 # 片側の削除を伝播
-                    (dst / rel).unlink(missing_ok=True)
-                else:
-                    d = dst / rel
-                    d.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(src / rel, d)
-                    manifest[rel] = h
-                imported, exported = (imported, exported + 1) if take_local \
-                    else (imported + 1, exported)
-            except OSError:
-                if bh is not None:            # 反映できなかった分は次回また差分として現れるように
-                    manifest[rel] = bh
-        self._save_manifest(manifest)
-        return imported, exported
-
-    # --- push（多重コミッタ吸収: rebase 再試行・コンフリクトは裁定規則で決着・force しない） ---
-    def _resolve_rebase(self) -> None:
-        """pull --rebase が同一ファイルの同時変更で止まったら、パス種別の裁定で決着して続行する。
-        rebase 中は --ours=リモート（upstream）/ --theirs=ローカルのコミット側。"""
-        gitdir = self.clone / ".git"
-        for _ in range(50):                   # 有限（1 コミットずつしか進まない）
-            if not any((gitdir / d).is_dir() for d in ("rebase-merge", "rebase-apply")):
-                return
-            conflicted = [ln for ln in self._git(
-                "diff", "--name-only", "--diff-filter=U").stdout.splitlines() if ln.strip()]
-            for path in conflicted:
-                rel = path[len(self.subdir) + 1:] if self.subdir and \
-                    path.startswith(self.subdir + "/") else path
-                stages = self._git("ls-files", "-u", "--", path).stdout
-                remote_present = bool(re.search(r"\s2\t", stages))  # rebase ours = remote/upstream
-                local_present = bool(re.search(r"\s3\t", stages))   # rebase theirs = local commit
-                take_local = self._take_local_on_conflict(
-                    rel, local_present=local_present, remote_present=remote_present)
-                side = "--theirs" if take_local else "--ours"
-                if self._git("checkout", side, "--", path).returncode != 0:
-                    # checkout 失敗＝選んだ側にステージが無い add/delete 衝突とは限らない
-                    # （権限・sparse 等でも失敗する）。本当に無いときだけ削除に合わせる。
-                    # 無条件に rm すると backlog/needs がサイレントに消えて同期で伝播する。
-                    stage = "2" if side == "--ours" else "3"
-                    if not re.search(rf"\s{stage}\t", stages):
-                        self._git("rm", "-q", "--", path)   # add/delete 衝突: 消えた側に合わせる
-                self._git("add", "--", path)
-            if self._git("rebase", "--continue").returncode != 0 and \
-                    self._git("rebase", "--skip").returncode != 0:
-                self._git("rebase", "--abort")          # 進められない → 次回の 3-way で再収束
-                return
-
-    def _ahead(self) -> int:
-        r = self._git("rev-list", "--count", f"origin/{self.branch}..HEAD")
-        if r.returncode == 0:
-            try:
-                return int(r.stdout.strip() or 0)
-            except ValueError:
-                return 0
-        # リモートにブランチが無い（初回）→ ローカルにコミットがあれば push が必要
-        return 1 if self._git("rev-parse", "-q", "--verify", "HEAD").returncode == 0 else 0
-
-    def _push(self) -> None:
-        for i in range(_STATE_PUSH_RETRIES):
-            if self._git("push", "-u", "origin", self.branch).returncode == 0:
-                self._last_remote = time.time()
-                return
-            self._git("pull", "--rebase", "origin", self.branch)   # 競合 → 取り込んで再試行
-            self._resolve_rebase()
-            self._last_remote = time.time()
-            if i < _STATE_PUSH_RETRIES - 1:
-                time.sleep(2 ** i if i < 4 else 16)
-        raise RuntimeError(f"state_git push が {self.branch} へ反映できませんでした")
-
-    def sync(self, force: bool = False) -> "tuple[int, int]":
-        """双方向同期を 1 回行い (imported, exported) を返す。リモート操作は interval で律速し、
-        force=True は「push すべきものがあれば間隔を待たず押し出す」（run 直後の結果共有用）。"""
-        now = time.time()
-        if not self._ready:
-            if not force and self.interval > 0 and now - self._last_attempt < self.interval:
-                return (0, 0)                 # 不通のリモートへの再クローン連打を防ぐ
-            self._last_attempt = now
-            self._ensure_clone()
-            self._ready = True
-            self._last_remote = 0.0           # 初回は必ず pull する（停止中の指示を取りこぼさない）
-        with _file_lock(str(self.clone) + ".lock"):   # 同一ホストの多重プロセスを直列化
-            due = self.interval <= 0 or (now - self._last_remote) >= self.interval
-            if due:                           # 取り込み方向の fetch は間隔でのみ（負荷を一定に保つ）
-                p = self._git("pull", "--rebase", "origin", self.branch)
-                self._resolve_rebase()
-                # pull 失敗（ネットワーク断・認証等）で間隔クロックを進めると、次の interval まで
-                # リモートの指示（commands/needs）を取りこぼした上、古いリモート観のまま
-                # --amend して push と争う。失敗時は進めず、次パスで即再試行する。
-                # リモートにブランチがまだ無い初回（couldn't find remote ref）は正常系として進める。
-                if p.returncode == 0 or "couldn't find remote ref" in (p.stderr or "").lower():
-                    self._last_remote = now
-            imported, exported = self._three_way()
-            pathspec = self.subdir or "."
-            self._git("add", "-A", "--", pathspec)               # 自分の名前空間だけをステージ
-            # 空コミットを試みない: unborn ブランチでの失敗 commit は index を汚し以後の pull を壊す
-            if self._git("status", "--porcelain", "--", pathspec).stdout.strip():
-                # 未 push の連続 state sync は --amend で 1 コミットに束ねる（DirectStateGit と同じ）
-                amend = ["--amend"] if (self._ahead() > 0 and self._git(
-                    "log", "-1", "--format=%s").stdout.strip().startswith(
-                        "agent-project: state sync")) else []
-                self._git("commit", "-q", *amend, "-m",
-                          f"agent-project: state sync {datetime.now().isoformat(timespec='seconds')}")
-            if (due or force) and self._ahead() > 0:
-                self._push()
-        return imported, exported
+    needs の *本文編集* は人（remote）を正とする一方、needs の生成・削除は backlog lifecycle の
+    投影なので機械（local）が所有する。したがって remote の削除と local の新規生成・置換が
+    競合した場合だけ local を保持する。これにより人のフィードバックは従来どおり優先しつつ、
+    stale な票の削除で新しい blocked/review 票が失われることを防ぐ。
+    """
+    parts = Path(rel).parts
+    is_need = "needs" in parts[:-1]
+    if is_need and local_present and not remote_present:
+        return True
+    return not _remote_wins(rel)
 
 
 class DirectStateGit:
@@ -712,7 +490,7 @@ class DirectStateGit:
                              f"{mode},{union_sha},{path}").returncode != 0:
                         return None
                     continue
-                take_local = StateGit._take_local_on_conflict(
+                take_local = _take_local_on_conflict(
                     rel, local_present=2 in stages, remote_present=3 in stages)
                 want = 2 if take_local else 3
                 if want in stages:            # 選んだ側が「削除」なら消えたままにする
@@ -788,7 +566,7 @@ class DirectStateGit:
             else:
                 h = self._top_git("hash-object", "--", str(f)).stdout.strip()
                 dirty = h != oldsha
-            overwrite = StateGit._remote_wins(rel) or not dirty
+            overwrite = _remote_wins(rel) or not dirty
             if status == "D":
                 if overwrite and path not in skip:
                     with contextlib.suppress(OSError):
@@ -1033,53 +811,106 @@ def _git_toplevel(root: Path) -> bool:
     return r.returncode == 0 and os.path.realpath(r.stdout.strip()) == os.path.realpath(str(root))
 
 
+def _inside_other_git_repo(root: Path) -> bool:
+    """root が「自分がトップレベルではない」既存 git リポジトリの内側にあるか。
+    `_git_toplevel(root)` が False のときだけ意味を持つ照会（True なら祖先がトップレベル）。"""
+    r = subprocess.run(["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    return r.returncode == 0
+
+
 def _direct_state_git_ok(cfg: "Config") -> bool:
-    """direct モード（root のリポジトリへ直接同期）を使ってよいか。
+    """direct モード（root のリポジトリへ直接同期）が今すぐ使える状態か（副作用なしの照会）。
+    表示・診断用（`state_git_status_line`）。実際に使う側（`state_git_for`・
+    `project_flow_remote`）は未初期化なら git init する副作用を持つ `_ensure_direct_state_git`
+    を使う（実装計画 W1-7 — 状態共有は direct 一本。管理クローン・非 git モードは廃止済み）。
 
-    root 自体が git のトップレベルか、状態 worktree へ逃がしている場合。後者では root は
+    root 自体が git のトップレベルか、状態 worktree へ逃がしている場合（後者では root は
     worktree 内のサブディレクトリ（<repo>-agent-state/.agent-project）になるため _git_toplevel は
-    False を返す。それだけを条件にすると **状態 worktree を使った瞬間に分散同期が丸ごと無効化
-    される**: state_git_for も project_flow_remote も None になり、origin へ何も push されず、
-    別 PC の viewer が状態と run を読む唯一の経路が消える（実際そうなっていた。journal に
-    「state-git: 無効（未設定・ルートも git リポジトリでない）」と出続ける）。
-
-    この worktree は agent-project 専用なので、そこへ自動コミット・push しても
+    False を返す）。この worktree は agent-project 専用なので、そこへ自動コミット・push しても
     「無関係なリポジトリを勝手に触らない」という _git_toplevel の防御意図には反しない。"""
     return cfg.state_top is not None or _git_toplevel(cfg.backlog.parent)
 
 
+def _ensure_direct_state_git(cfg: "Config") -> bool:
+    """direct モードを使えるようにする（実装計画 W1-7）。
+
+    - root が git のトップレベルでも状態 worktree（cfg.state_top）でもなければ、その場で
+      `git init` する（設計 §4.1「状態ルートは常に git リポジトリとし（未初期化なら常駐体が
+      init）」）。**ただし root が既存リポジトリの内側にある場合は init しない**（下記）。
+    - origin が未設定で `cfg.state_git`（旧: 管理クローンの同期先 URL）があれば origin として
+      設定する。管理クローンの廃止で「別クローンへ持つ remote」の意味は無くなったが、
+      `state_git:` 設定キー自体は「共有先の URL」を表す語彙として使い続ける——設定が
+      サイレントに意味を失って新規プロジェクトが同期先を持てなくなる事故を防ぐ。
+
+    「direct モードにできなかった」ときは False を返す（呼び出し側は同期を諦める）。
+    init/remote 設定が権限等で失敗した異常系のほか、**root が無関係な既存リポジトリの内側**
+    という構成がこれに当たる。"""
+    if cfg.state_top is not None:
+        return True
+    root = cfg.backlog.parent
+    if not _git_toplevel(root):
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return False
+        # 既存リポジトリの内側（自分はトップレベルでない）なら init しない。ここで git init すると
+        # 無関係なリポジトリの中に nested repo ができ、外側の `git add -A` が
+        # 「does not have a commit checked out」で失敗する（commit を積むと今度は gitlink 化し、
+        # 意図しない submodule 相当のエントリが現れる）。`_git_toplevel` が深いサブディレクトリを
+        # 弾いているのはまさにこれを防ぐためで、その防御をここで裏返してはいけない。
+        # この構成で状態を共有したいなら root をリポジトリの外へ置くか、agent-project 専用の
+        # 状態 worktree（cfg.state_top）へ逃がす。
+        if _inside_other_git_repo(root):
+            return False
+        try:
+            r = subprocess.run(["git", "init", "-q", str(root)],
+                               capture_output=True, text=True, encoding="utf-8", errors="replace")
+        except OSError:
+            return False
+        if r.returncode != 0 or not _git_toplevel(root):
+            return False
+    remote_url = getattr(cfg, "state_git", None)
+    if remote_url:
+        has_origin = subprocess.run(
+            ["git", "-C", str(root), "remote", "get-url", "origin"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace").returncode == 0
+        if not has_origin:
+            subprocess.run(["git", "-C", str(root), "remote", "add", "origin", str(remote_url)],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+    return True
+
+
 def state_git_status_line(cfg: "Config") -> str:
-    """起動時に「state_git が有効か・何を鏡写しするか」を一行で示す（silent な設定ミスの切り分け用）。
+    """起動時に「state_git が何を鏡写しするか」を一行で示す（silent な設定ミスの切り分け用）。
     注意: これはプロジェクト状態（backlog/needs/…）の鏡写し。agent-flow のバス（フロータブの run 表示）
     は別途 agent-flow 側の state_git が担う（本ツールはバスを同期しない）。"""
     root = cfg.backlog.parent
     if _direct_state_git_ok(cfg):
         return (f"state-git: direct モード → {root} 自体の git リポジトリへ直接コミット/push "
                 f"interval={cfg.state_git_interval}s")
-    if not getattr(cfg, "state_git", None):
-        return "state-git: 無効（未設定・ルートも git リポジトリでない）"
-    return (f"state-git: 有効 → {cfg.state_git} subdir={cfg.state_git_subdir} "
-            f"interval={cfg.state_git_interval}s（プロジェクト状態を鏡写し。agent-flow のバスは "
-            f"agent-flow 側 state_git が別途担当）")
+    if _inside_other_git_repo(root):
+        return (f"state-git: 無効（{root} が既存 git リポジトリの内側 — nested repo を作らないため "
+                f"git init しない）。共有するにはルートをリポジトリの外へ置くか、状態 worktree を使う")
+    return (f"state-git: direct モード（未初期化 → 次回同期時に {root} を git init）"
+            f" interval={cfg.state_git_interval}s")
 
 
-def state_git_for(cfg: "Config") -> "StateGit | DirectStateGit | None":
+def state_git_for(cfg: "Config") -> "DirectStateGit | None":
+    """状態共有は direct 一本（実装計画 W1-7）。管理クローン（.state-git）は廃止した——
+    root が未初期化ならその場で git init する（`_ensure_direct_state_git`）。
+    remote 未設定は `DirectStateGit` がコミットのみのローカル縮退として同じコードで動く
+    （`DirectStateGit._has_remote()` 参照）。
+
+    direct モードにできなかったとき（root が既存リポジトリの内側・init が権限等で失敗）は
+    None を返し、呼び出し側は同期しない。非 git の root へ `DirectStateGit` を被せると
+    毎周期 git が失敗して journal が失敗行で埋まるだけで、何も共有できないため。"""
     root = cfg.backlog.parent
-    # direct モード（既定）: ルート自体が git クローン、または状態 worktree の中なら、そのリポジトリへ
-    # 直接コミット・push する（_direct_state_git_ok 参照）。
-    if _direct_state_git_ok(cfg):
-        key = ("direct", str(root))
-        if key not in _STATE_GITS:
-            _STATE_GITS[key] = DirectStateGit(root, cfg.state_git_interval)
-        return _STATE_GITS[key]
-    # フォールバック: ルートが git でないときは管理クローン（.state-git）で共有リポジトリへ鏡写しする。
-    if not getattr(cfg, "state_git", None):
+    if not _ensure_direct_state_git(cfg):
         return None
-    key = (str(root), cfg.state_git, cfg.state_git_branch, cfg.state_git_subdir)
+    key = ("direct", str(root))
     if key not in _STATE_GITS:
-        _STATE_GITS[key] = StateGit(root, cfg.state_git, cfg.state_git_branch,
-                                    cfg.state_git_subdir, cfg.state_git_interval,
-                                    clone_dir=root / ".state-git")
+        _STATE_GITS[key] = DirectStateGit(root, cfg.state_git_interval)
     return _STATE_GITS[key]
 
 
