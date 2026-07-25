@@ -501,8 +501,12 @@ class TestLoopEngineering(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             self._mk(d, "T1", "## T1: x\n- status: ready\n- verify: `true`\n")
-            res = km.run_loop(cfg_for(d, learn=False, auto_adjudicate=False,
-                                      regression_cmd="false", max_cycles=3))
+            cfg = cfg_for(d, learn=False, auto_adjudicate=False,
+                          regression_cmd="external-regression-hook", max_cycles=3)
+            with mock.patch.object(km, "run_verify_stable", return_value=(True, False, "ok")), \
+                    mock.patch.object(km, "run_verify", return_value=(False, "hook failed")) as hook:
+                res = km.run_loop(cfg)
+            hook.assert_called_once_with("external-regression-hook", d, cfg.verify_timeout, mock.ANY)
             self.assertEqual(res["counts"]["done"], 0)
             self.assertEqual(res["counts"]["blocked"], 1)
 
@@ -510,12 +514,17 @@ class TestLoopEngineering(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             self._mk(d, "T1", "## T1: x\n- status: ready\n- verify: `true`\n")
-            res = km.run_loop(cfg_for(d, learn=False, auto_adjudicate=False, regression_cmd="true"))
+            cfg = cfg_for(d, learn=False, auto_adjudicate=False,
+                          regression_cmd="external-regression-hook")
+            with mock.patch.object(km, "run_verify_stable", return_value=(True, False, "ok")), \
+                    mock.patch.object(km, "run_verify", return_value=(True, "ok")) as hook:
+                res = km.run_loop(cfg)
+            hook.assert_called_once_with("external-regression-hook", d, cfg.verify_timeout, mock.ANY)
             self.assertEqual(res["counts"]["done"], 1)
 
     def test_regression_gate_runs_in_workdir_not_workspace_clone(self):
         # workspace 指定タスクは verify を該当 repo の一時 clone（vcwd）で走らせるが、
-        # グローバル回帰ゲート（codd-gate 等）はパスも差分基準も git-bus ルート（workdir）前提。
+        # 外部のグローバル回帰フックはパスも差分基準も git-bus ルート（workdir）前提。
         # clone 内で走らせると `--repos <root>/repos.json` を解決できず壊れる。回帰 cmd の cwd が
         # 常に workdir であることを固定する（vcwd=clone を返しても workdir で走る）。
         with tempfile.TemporaryDirectory() as d:

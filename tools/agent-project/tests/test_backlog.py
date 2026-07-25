@@ -178,7 +178,7 @@ class TestEnqueue(unittest.TestCase):
 
 
 class TestIntake(unittest.TestCase):
-    """取り込みコマンド（intake_cmd）。外部の決定的ゲート/検出器（codd-gate 等）から修復タスクを
+    """取り込みコマンド（intake_cmd）。外部の決定的検出器から修復タスクを
     watch の周期で汲み上げる。冪等（id が現役 backlog に居れば飛ばす）・有限・無害。"""
 
     def setUp(self):
@@ -218,7 +218,7 @@ class TestIntake(unittest.TestCase):
             self.assertEqual(list(cfg.backlog.glob("*.md")), [])
 
     def test_run_intake_one_bad_record_does_not_block_the_rest(self):
-        # codd-gate tasks --debt 想定: 1件が title 欠落でも、残りは取り込まれる
+        # 汎用 intake フック: 1件が title 欠落でも、残りは取り込まれる
         # （model 本体同梱の _parse_intake_records によるレコード単位検証。検出器非依存）。
         with tempfile.TemporaryDirectory() as d:
             cmd = ("printf '%s' '[{\"id\":\"OK1\",\"title\":\"ok\",\"verify\":\"true\"},"
