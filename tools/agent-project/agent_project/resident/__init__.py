@@ -7,5 +7,8 @@ agent_project の他の断片（fragment-exec 合成の 30 ファイル）とは
 from __future__ import annotations
 
 from .scheduler import Scheduler, Tick, TickTimeout
+from .supervisor import ChildSpec, Supervisor, graceful_shutdown
+from .worker import NodeWorkerPool, WorkItem
 
-__all__ = ["Scheduler", "Tick", "TickTimeout"]
+__all__ = ["Scheduler", "Tick", "TickTimeout", "ChildSpec", "Supervisor", "graceful_shutdown",
+          "NodeWorkerPool", "WorkItem"]
