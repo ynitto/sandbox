@@ -36,8 +36,27 @@ amigos_config: null
 # ノード全体の同時実行数上限（amigos 手番の NodeWorkerPool 投入を律速する。板落札の実行は
 # 未配線——上の板参加と同じ理由）。0 は「明示未設定」— この場合 agent-flow daemon の
 # 既定 --max-workers に合わせて 4 になる（NodeWorkerPool は 0 を無制限にはできない）。
+#
+# 上限は **PC 単位**。常駐体が起こした手番だけでなく、人が直接叩いた単発実行
+# （agent-amigos run --once など。設計 §1.3 C14 が明示的に許す併走）も同じ枠で数える
+# ——実行中の手番は ~/.agents/amigos/turns/*.json に印が出て、常駐体がそれを読む。
 budget:
   max_concurrent: 0   # 0 = 既定（4）
+
+# 稼働時間帯（夜間停止）。PC 単位の性質なのでここが単一ソース。省略すると常時稼働。
+# 時間の進み方は 3 段:
+#   daily_stop - drain_before_sec … drain 開始（新規 claim を止め controller を譲る。
+#                                   走っているタスクはそのまま完走させる）
+#   daily_stop                    … 停止時間帯に入る
+#   daily_stop + shutdown_grace_sec … 常駐体が子を止める（pause。SIGTERM → 猶予 → SIGKILL）
+# 止めるのは常に親（常駐体）で、時間帯が戻れば同じ親が resume する。計画停止は死亡回数に
+# 数えないので、毎晩止めても隔離（quarantine）には達しない。書式が不正なときは
+# **止めたまま**にする（止めたい時間帯に動く方が害が大きい）— status のエラー欄に出る。
+# availability:
+#   timezone: Asia/Tokyo
+#   daily_stop: "23:30"
+#   drain_before_sec: 1800
+#   shutdown_grace_sec: 300
 
 # 常駐化（PC 起動時に上がる・死んだら上げ直される）をどちらの方式で構成したか（設計 §7）。
 # doctor が検査できるのは systemd 側だけで、Windows タスクスケジューラ側は WSL の外から

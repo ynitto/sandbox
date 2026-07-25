@@ -67,9 +67,9 @@ for f in findings:
 ### 2. 対象ノードを止める
 
 ```bash
-# 対象 PC で
-agent-flow daemon が動いていれば停止（Ctrl-C または SIGTERM）
-agent-amigos serve が動いていれば停止（away 宣言が入る）
+# 対象 PC で常駐体を止める（away 宣言が入る）
+systemctl --user stop agent-project.service   # systemd 構成の場合
+# フォアグラウンド起動なら Ctrl-C。agent-flow daemon を別に回していれば同様に止める
 ```
 
 停止すると、板・amigos バスへの新規入札は止まる。既存の bid/status は旧名義のまま残るが、

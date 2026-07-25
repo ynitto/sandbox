@@ -159,7 +159,7 @@ CONFIG_DEFAULTS = {
     "update_check_interval": 21600.0,    # 更新チェック間隔（秒）。既定 6 時間。0 以下で自動チェック無効
     "update_repo": DEFAULT_UPDATE_REPO,  # スキルリポジトリ（git URL/パス）。空なら skill-registry.json から自動解決
     "update_branch": "main",             # 追従するブランチ
-    "update_subdir": TOOL_SUBDIR,        # リポジトリ内のこのツールのサブディレクトリ
+    "update_subdir": TOOL_SUBDIR,        # 取得対象パス（カンマ/空白区切りで複数。既定は本体+agentcore）
     "update_installer": "install.sh",    # サブディレクトリ内で実行するインストーラ
     # 実行前レビュー（plan review）: 新規タスクは proposed で入り、人の承認（approve）で実行可能になる。
     # false で従来の自動投入（verify ありは即 ready）へ戻す。
@@ -482,7 +482,6 @@ def build_config(args) -> Config:
         task_branch=bool(getattr(args, "task_branch", True)),
         task_branch_prefix=str(getattr(args, "task_branch_prefix", "ap/") or "ap/"),
         delivery_review=bool(getattr(args, "delivery_review", True)),
-        registry=_split_registry(getattr(args, "registry", None)),
         dry_run=bool(getattr(args, "dry_run", False)), once=bool(getattr(args, "once", False)),
         project_name=root.name,
         charter=under("charter", "charter.md"),

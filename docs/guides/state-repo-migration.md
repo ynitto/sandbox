@@ -133,18 +133,20 @@ CLI/環境での個別上書きも可: `--state-repo` / `--state-repo-branch` / 
 
   ```bash
   cd /path/to/app            # 成果物リポジトリ
-  agent-project start        # ここを cwd に。状態は自動で app-state に clone される
+  agent-project run          # ここを cwd に。状態は自動で app-state に clone される
   ```
 
-- **cwd に依存させたくないデーモン**（systemd / Windows Task Scheduler / wsl-launcher 等）では、
-  cwd を当てにせず**絶対パスで明示**する:
+- **常駐させる場合**は cwd を当てにせず、`agent-project.host.yaml` に**絶対パスで宣言**する
+  （宣言の単一ソース。常駐体が子として起動する）:
 
+  ```yaml
+  # ~/.agents/agent-project.host.yaml
+  projects:
+    - root: /home/me/src/app
+      config: /home/me/src/app/agent-project.yaml   # state_repo 等はこちらに書く
+  ```
   ```bash
-  agent-project start \
-    --root /home/me/src/app \
-    --state-repo https://gitea.example/you/app-state.git \
-    --state-repo-branch main
-  # あるいは --config /home/me/src/app/agent-project.yaml を渡す
+  agent-project serve
   ```
 
   `--state-repo` を CLI で渡せば設定ファイルの発見に一切依存しない。`--root` は成果物

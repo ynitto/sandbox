@@ -12,7 +12,7 @@ import os
 import shutil
 import time
 
-from . import agentcli, control, nodebudget
+from . import agentcli, control, nodebudget, turnmark
 from .bus import Bus, MissionPaths, TurnTxn
 from .mission import (DEFAULT_ANSWER_FILE, DEFAULT_SCORE_FILE, convergence_state,
                       current_round, load_mission, load_roles, pruned_roles,
@@ -59,7 +59,16 @@ class AmigoRunner:
     # --- ターン --------------------------------------------------------------
     def turn_once(self) -> str:
         """1 ターン実行して結果種別を返す:
-        exit | idle | acted | integrated | paused | error"""
+        exit | idle | acted | integrated | paused | error
+
+        実行中は**ノード内**に手番マーカーを置く（`turnmark`）。PC 単位の同時実行上限
+        （agent-project 常駐体の `max_concurrent`）は、スキル起動の単発実行との併走
+        （設計 §1.3 C14）も数えないと守れず、バスの `status/<who>.json` は在籍状態で
+        ターンの走行を表さない（終了後も `working` のまま）ため観測に使えない。"""
+        with turnmark.held(self.mp.mission_id, self.role_id):
+            return self._turn_once()
+
+    def _turn_once(self) -> str:
         self.bus.sync_pull()
         mission = load_mission(self.mp)
         roles = load_roles(self.mp)

@@ -35,9 +35,6 @@ def main(argv=None) -> int:
     run.add_argument("--concurrency", type=int, default=None,
                      help="1サイクルで daemon/remote へ並行 submit する独立タスク数（既定 1=逐次。"
                           "agent-flow の worker 並列に委ねる。local 実行は逐次のまま）")
-    run.add_argument("--registry", action="append", default=None,
-                     help="共有レジストリへも自分を登録（別ホスト発見。os.pathsep 区切り可・"
-                          "環境変数 AGENT_PROJECTS_REGISTRY でも指定可）")
     run.add_argument("--no-archive", dest="do_archive", action="store_const", const=False,
                      default=None, help="done を archive/ へ退避せず削除（既定は退避。config: do_archive）")
     run.add_argument("--rot", action=argparse.BooleanOptionalAction, default=None,
@@ -220,37 +217,6 @@ def main(argv=None) -> int:
     rpl.add_argument("--charter", default=None,
                      help="対象 charter 名（charters/ 複数運用時。未指定は全 charter で消化可能）")
 
-    _reg_help = ("共有レジストリ（os.pathsep 区切り可）。NFS/同期フォルダ/git バスのチェックアウト等を"
-                 "指すと別ホストを相互発見。環境変数 AGENT_PROJECT_REGISTRY でも指定可")
-    inst = sub.add_parser("instances",
-                          help="稼働中の agent-project（監視中プロジェクトルート）を一覧（外部操作者の発見口）")
-    inst.add_argument("--json", action="store_true", help="JSON で出力（スキル等が機械処理する用）")
-    inst.add_argument("--registry", action="append", default=None, help=_reg_help)
-
-    sta = sub.add_parser("start",
-                         help="run --watch を切り離して常駐起動（detached。重複は --force）")
-    sta.add_argument("--root", default=None, help="プロジェクトルート（既定 . = cwd）")
-    sta.add_argument("--config", default=None, help="子プロセスへ渡す設定ファイル")
-    sta.add_argument("--profile", default=None, help="子プロセスへ渡す PC 固有 profile")
-    sta.add_argument("--force", action="store_true", help="同じプロジェクトを既に監視中でも起動する")
-    sta.add_argument("--registry", action="append", default=None, help=_reg_help)
-    sto = sub.add_parser("stop", help="稼働インスタンスを停止（SIGTERM→必要なら SIGKILL・登録掃除）")
-    sto.add_argument("--root", default=None, help="停止対象のプロジェクトルート（既定 . = cwd）")
-    sto.add_argument("--config", default=None,
-                     help="root の解決に使う設定ファイル（--root 未指定時。start と同じ探索既定）")
-    sto.add_argument("--profile", default=None, help="停止対象を解決する PC 固有 profile")
-    sto.add_argument("--pid", type=int, default=None, help="停止対象の PID（instances で確認）")
-    sto.add_argument("--all", action="store_true", help="稼働中インスタンスを全停止")
-    sto.add_argument("--drain", action="store_true", help="新規 claim を止め、実行中タスクの完了を待って停止")
-    sto.add_argument("--deadline", type=float, default=300.0,
-                     help="--drain で graceful 停止を待つ上限秒（既定 300）")
-    sto.add_argument("--registry", action="append", default=None, help=_reg_help)
-    res = sub.add_parser("restart", help="同じプロジェクトの監視を停止してから起動し直す")
-    res.add_argument("--root", default=None, help="プロジェクトルート（既定 . = cwd）")
-    res.add_argument("--config", default=None, help="子プロセスへ渡す設定ファイル")
-    res.add_argument("--profile", default=None, help="子プロセスへ渡す PC 固有 profile")
-    res.add_argument("--registry", action="append", default=None, help=_reg_help)
-
     _host_help = "agent-project.host.yaml の場所（既定: cwd → ~/.agents の順に探索）"
     srv = sub.add_parser("serve",
                          help="常駐体（resident）を起動: host.yaml のプロジェクトを監督し、"
@@ -276,30 +242,14 @@ def main(argv=None) -> int:
     # PC 起動時に立ち上げっぱなしにして cwd のプロジェクトを面倒見る daemon 用途を一級にするため。
     _subcommands = {"run", "triage", "needs", "promote", "rot", "stats", "audit",
                     "runlog", "doctor", "update", "enqueue", "approve", "hold", "reprioritize",
-                    "revise", "reject", "resume-run", "impact", "replan", "instances",
-                    "start", "stop", "restart", "board-offload", "gc",
+                    "revise", "reject", "resume-run", "impact", "replan",
+                    "board-offload", "gc",
                     "serve", "status", "worker"}
     if not argv or (argv[0] not in _subcommands and argv[0] not in ("-h", "--help")):
         argv = ["run", "--watch", *argv]
 
     args = p.parse_args(argv)
 
-    # instances / start / stop / restart は共通設定（backlog 等）を必要としない操作コマンド。
-    if args.cmd == "instances":
-        return cmd_instances(args.json, extra=_split_registry(getattr(args, "registry", None)))
-    if args.cmd == "start":
-        return cmd_start(args.root, args.config, args.force,
-                         extra=_split_registry(getattr(args, "registry", None)),
-                         profile=args.profile)
-    if args.cmd == "stop":
-        return cmd_stop(args.root, args.pid, args.all,
-                        extra=_split_registry(getattr(args, "registry", None)),
-                        config=getattr(args, "config", None), profile=args.profile,
-                        drain=args.drain, timeout=max(0.0, args.deadline))
-    if args.cmd == "restart":
-        return cmd_restart(args.root, args.config,
-                           extra=_split_registry(getattr(args, "registry", None)),
-                           profile=args.profile)
     if args.cmd == "serve":
         return cmd_serve(args)
     if args.cmd == "status":

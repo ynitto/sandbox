@@ -23,11 +23,11 @@ from .util import log, now_iso, read_json, write_json_atomic
 
 def _bus_arg(p: argparse.ArgumentParser) -> None:
     p.add_argument("--bus", required=False, default="",
-                   help="バス指定: ローカル dir / git+<url> / hub+<url>。"
+                   help="バス指定: ローカル dir / git+<url>。"
                         "省略時は 環境変数 AGENT_AMIGOS_BUS → 設定 .agent/agent-amigos.yaml の bus"
                         "（既定 . = ホーム自身）の順に解決")
     p.add_argument("--bus-workdir", default=None,
-                   help="GitBus / HubBus のミラー作業領域（既定: ~/.agent/amigos/…）")
+                   help="GitBus のミラー作業領域（既定: ~/.agent/amigos/…）")
     p.add_argument("--config", default=None,
                    help="設定ファイル（既定: ./ → ./.agent/ → ~/.agent/ の "
                         "agent-amigos.{yaml,yml,json} を自動探索）")
@@ -88,10 +88,13 @@ def cmd_post(args) -> int:
     bus, node = _resolve(args)
     mid = post_mission(bus, args.design, args.roles, node, args.mission_id)
     print(f"ミッションを公示しました: {mid}（owner={node}）")
-    if args.serve:
+    if args.drive:
+        # 公示したミッションをその場で回して終端まで進める（旧 --serve の常駐は廃止——
+        # 常駐は agent-project serve の 1 本。実装計画 W1-9）。単発なので呼び出し元の
+        # 寿命に束縛され、終端で戻る。
         NodeDaemon(bus, node, agent_cli=args.agent_cli, interval=args.interval,
-                   resume_hours=args.resume_hours,
-                   home=_node_home(args)).run(cycles=args.cycles)
+                   home=_node_home(args)).run(cycles=args.cycles, until_terminal=True,
+                                              mission_id=mid, install_signals=False)
     return 0
 
 
@@ -179,10 +182,13 @@ def cmd_build_team(args) -> int:
     write_json_atomic(roles_path, spec)
     mid = post_mission(bus, design_path, roles_path, node, args.mission_id)
     print(f"チームを設計し公示しました: {mid}（owner={node}, roles={len(roles)}）")
-    if args.serve:
+    if args.drive:
+        # 公示したミッションをその場で回して終端まで進める（旧 --serve の常駐は廃止——
+        # 常駐は agent-project serve の 1 本。実装計画 W1-9）。単発なので呼び出し元の
+        # 寿命に束縛され、終端で戻る。
         NodeDaemon(bus, node, agent_cli=args.agent_cli, interval=args.interval,
-                   resume_hours=args.resume_hours,
-                   home=_node_home(args)).run(cycles=args.cycles)
+                   home=_node_home(args)).run(cycles=args.cycles, until_terminal=True,
+                                              mission_id=mid, install_signals=False)
     return 0
 
 
@@ -198,64 +204,6 @@ def cmd_join(args) -> int:
     return 0
 
 
-def cmd_serve(args) -> int:
-    """常駐起動（サブコマンド省略時の既定 — agent-project の run --watch と同じ位置づけ）。
-
-    cwd（またはその `.agent/agent-amigos.yaml`）をホームとして:
-    - ホームのバス（既定: cwd 自身のローカルバス）でノードデーモンを回す
-    - `hub.serve: true` なら同じバスを hub として公開（cwd-as-hub。他ノードは
-      hub+http://<host>:<port> で参加できる）
-    - `<home>/.agent/agent-amigos/commands/*.json` の指示（依頼 post・手動引き受け claim・
-      assign / accept / reject / cancel / say）を毎サイクル取り込む
-    """
-    settings = load_settings(args.config)
-    home = settings["_home"]
-    spec = resolve_bus_spec(settings, args.bus or None)
-    bus = make_bus(spec, workdir=args.bus_workdir or settings.get("bus_workdir"))
-    node = args.node_id or settings.get("node_id") or default_node_id()
-
-    hub_server = None
-    hub_serve = settings["hub_serve"] if args.hub is None else bool(args.hub)
-    if hub_serve:
-        if bus.kind != "local":
-            raise SystemExit("[agent-amigos] hub.serve はローカルバス（cwd-as-hub）のみ"
-                             f"対応です（現在のバス: {bus.kind}）")
-        from . import hub as hubmod
-        import threading
-        hub_server = hubmod.serve(bus.root, str(settings["hub_host"]),
-                                  int(settings["hub_port"]), settings["hub_token"])
-        threading.Thread(target=hub_server.serve_forever, daemon=True).start()
-        log(node, f"hub を公開しました: http://{settings['hub_host']}:"
-                  f"{hub_server.server_port}（data={bus.root}）")
-
-    manual = settings["manual_claim"] if args.manual_claim is None else bool(args.manual_claim)
-    log(node, f"常駐開始: home={home} bus={bus.root if bus.kind == 'local' else spec} "
-              f"agent_cli={args.agent_cli or settings.get('agent_cli') or 'stub'} "
-              f"manual_claim={manual}"
-              + (f" config={settings['_config_path']}" if settings["_config_path"] else "（設定なし）"))
-    daemon = NodeDaemon(
-        bus, node,
-        agent_cli=args.agent_cli or settings.get("agent_cli"),
-        tags=[t for t in (args.tags or "").split(",") if t] or settings["tags"],
-        roles_filter=[r for r in (args.roles or "").split(",") if r] or settings["roles"],
-        interval=args.interval if args.interval is not None else float(settings["interval"]),
-        resume_hours=(args.resume_hours if args.resume_hours is not None
-                      else float(settings["resume_hours"])),
-        manual_claim=manual,
-        commands_home=home,
-        repos=settings.get("repos"),
-        board=(getattr(args, "board", None) or settings.get("board")),
-        board_workdir=settings.get("board_workdir"),
-        board_lease=float(settings.get("board_lease") or 900.0),
-    )
-    try:
-        daemon.run(cycles=args.cycles)
-    finally:
-        if hub_server is not None:
-            hub_server.shutdown()
-    return 0
-
-
 def cmd_drive(args) -> int:
     """単発駆動（実装計画 W1-3・設計 §4.5）: cycle() をその場で回し、--mission-id 指定時は
     そのミッションが、未指定時はその巡で観測した全ミッションが終端（done/cancelled/failed）
@@ -263,9 +211,14 @@ def cmd_drive(args) -> int:
     ハングしないよう --mission-id の指定を推奨する。常駐化（デーモンロック・シグナル常駐）
     はしない — 呼び出し元（スキル・チャット・人）の寿命に束縛されるフォアグラウンド実行。
     板・他 PC には触らない（ローカルミッション。R9）。"""
+    settings = load_settings(args.config)
     bus, node = _resolve(args)
+    # commands/ の取り込みは drive も担う。旧 `serve` の廃止（実装計画 W1-9）でこのツールを
+    # 常駐させる経路が無くなったため、投函（post / claim / accept …）を読む入口が drive しか
+    # 残っていない——渡さないと commands/ に置かれた依頼が永久に取り込まれない。
     daemon = NodeDaemon(bus, node, agent_cli=args.agent_cli,
-                        interval=args.interval, home=_node_home(args))
+                        interval=args.interval, home=_node_home(args),
+                        commands_home=settings["_home"])
     daemon.run(cycles=args.cycles, until_terminal=True, install_signals=False,
               mission_id=args.mission_id)
     return 0
@@ -613,28 +566,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="agent-amigos",
         description="役割駆動マルチエージェント協働ツール（設計書: docs/designs/agent-amigos-design.md）。"
-                    "サブコマンドを省略すると常駐起動（serve）になり、cwd の "
-                    ".agent/agent-amigos.yaml を設定として cwd をホーム（バス・hub）に使う")
+                    "常駐は agent-project serve が担う（PC に 1 本）。本コマンドは単発実行"
+                    "（drive / participate / run）と依頼・確認の操作を提供する")
     sub = ap.add_subparsers(dest="cmd", required=True)
-
-    p = sub.add_parser("serve",
-                       help="常駐起動（省略時の既定）: ノードデーモン + commands/ 取り込み + "
-                            "hub 公開（設定 hub.serve）")
-    _bus_arg(p); _node_arg(p)
-    p.add_argument("--agent-cli", default=None)
-    p.add_argument("--tags", default="", help="ノードの能力タグ（カンマ区切り。設定 tags を上書き）")
-    p.add_argument("--roles", default="", help="応募ロールの絞り込み（カンマ区切り。設定 roles を上書き）")
-    p.add_argument("--interval", type=float, default=None)
-    p.add_argument("--cycles", type=int, default=0, help="巡回数（0=無限。テスト用）")
-    p.add_argument("--resume-hours", type=float, default=None)
-    p.add_argument("--hub", action=argparse.BooleanOptionalAction, default=None,
-                   help="バスを hub として公開する（設定 hub.serve を上書き）")
-    p.add_argument("--manual-claim", action=argparse.BooleanOptionalAction, default=None,
-                   help="自動応募しない（commands/ 経由の手動引き受けのみ。設定 manual_claim を上書き）")
-    p.add_argument("--board", default=None,
-                   help="委譲公示板（agent-board）の場所（ローカル dir / git+<url>）。"
-                        "指定すると板を巡回し workload=amigos の公示に入札してオーナー公示する")
-    p.set_defaults(fn=cmd_serve)
 
     p = sub.add_parser("init-bus", help="バスを初期化する")
     _bus_arg(p); _node_arg(p)
@@ -645,13 +579,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--design", required=True, help="design doc（Markdown）")
     p.add_argument("--roles", required=True, help="役割ミッション表（YAML/JSON）")
     p.add_argument("--mission-id", default=None)
-    p.add_argument("--serve", action="store_true",
-                   help="公示後そのままオーナーノードのデーモンとして常駐する")
+    p.add_argument("--drive", action="store_true",
+                   help="公示後そのままミッションを回して終端まで進める（単発。常駐はしない）")
     p.add_argument("--agent-cli", default=None)
     p.add_argument("--interval", type=float, default=5.0)
-    p.add_argument("--cycles", type=int, default=0, help="デーモン巡回数（0=無限。テスト用）")
-    p.add_argument("--resume-hours", type=float, default=12.0,
-                   help="graceful offboard 時の resume_at（時間後。away 保持の期待復帰時刻）")
+    p.add_argument("--cycles", type=int, default=0, help="巡回数の上限（0=無限。--drive 用）")
+    # --resume-hours は置かない。away 宣言（graceful offboard）は常駐が抜けるときの作法で、
+    # --drive は終端まで回して戻る単発。受け取っても使い道が無く、渡せるのに効かない
+    # フラグは「効いたつもり」を生む。
     p.set_defaults(fn=cmd_post)
 
     p = sub.add_parser("build-team",
@@ -677,12 +612,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="設計したロール表の書き出し先（.yaml/.json）。指定時は公示しない")
     p.add_argument("--post", action="store_true",
                    help="設計後そのまま公示する（従来の post 経路へ合流）")
-    p.add_argument("--serve", action="store_true",
-                   help="--post と併用: 公示後そのままオーナーノードのデーモンとして常駐する")
+    p.add_argument("--drive", action="store_true",
+                   help="--post と併用: 公示後そのままミッションを回して終端まで進める（単発）")
     p.add_argument("--mission-id", default=None)
     p.add_argument("--interval", type=float, default=5.0)
-    p.add_argument("--cycles", type=int, default=0, help="デーモン巡回数（0=無限。テスト用）")
-    p.add_argument("--resume-hours", type=float, default=12.0)
+    p.add_argument("--cycles", type=int, default=0, help="巡回数の上限（0=無限。--drive 用）")
     p.set_defaults(fn=cmd_build_team)
 
     p = sub.add_parser("join", help="参加ノードのデーモンを起動する")
@@ -822,24 +756,22 @@ def build_parser() -> argparse.ArgumentParser:
                         "納品棚は受け取った成果物の唯一の置き場になるため自動では消さない")
     p.set_defaults(fn=cmd_gc)
 
-    from . import hub
-    hub.add_parser(sub)
     return ap
 
 
-# 既知のサブコマンド。省略して呼ばれたら「常駐起動（serve）」を既定にする
-# （agent-project の run --watch 既定と同じ流儀 — PC 起動時に立ち上げっぱなしにして
-# cwd のホームを面倒見る daemon 用途を一級にする）。
-_SUBCOMMANDS = {"serve", "init-bus", "post", "build-team", "join", "drive", "participate", "run",
-                "status", "collect", "accept", "reject", "assign", "restaff", "budget", "say",
-                "cancel", "gc", "hub", "deliveries"}
-
-
 def resolve_argv(argv: "list[str] | None") -> "list[str]":
-    """サブコマンド省略時に serve を補う（-h/--help は素通し）。"""
+    """サブコマンド省略時の既定は無い（-h/--help は素通し）。
+
+    以前は `serve`（常駐）を補っていたが、常駐は `agent-project serve` の 1 本に集約した
+    （実装計画 W1-9）。裸起動を黙って常駐にすると、常駐体と二重に回って claim を奪い合う。
+    案内だけ出して終える——単発で回すなら `drive`、参加だけなら `participate`。"""
     argv = list(sys.argv[1:] if argv is None else argv)
-    if not argv or (argv[0] not in _SUBCOMMANDS and argv[0] not in ("-h", "--help")):
-        return ["serve", *argv]
+    if not argv:
+        print("[agent-amigos] 常駐は `agent-project serve`（PC に 1 本）が担います。\n"
+              "  単発で回す   : agent-amigos drive --mission-id <id>\n"
+              "  参加だけ 1 巡: agent-amigos participate\n"
+              "  一覧         : agent-amigos --help", file=sys.stderr)
+        raise SystemExit(2)
     return argv
 
 

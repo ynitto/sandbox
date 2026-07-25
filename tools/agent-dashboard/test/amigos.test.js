@@ -253,7 +253,9 @@ test('クロス検証: agent-amigos stub の実バスを dashboard リーダー�
                 AGENT_BUDGET_DIR: path.join(work, 'nb') };
   let r = spawnSync('python3', [entry, 'post', '--bus', bus, '--design',
     path.join(work, 'design.md'), '--roles', path.join(work, 'roles.json'),
-    '--mission-id', 'am-x', '--serve', '--agent-cli', 'stub', '--cycles', '10',
+    // --drive: 公示後そのまま終端まで回す単発（旧 --serve の常駐は廃止。常駐は
+    // agent-project serve の 1 本 — 実装計画 W1-9）
+    '--mission-id', 'am-x', '--drive', '--agent-cli', 'stub', '--cycles', '10',
     '--interval', '0'], { encoding: 'utf8', env, cwd: work });
   assert.strictEqual(r.status, 0, r.stderr);
   const ov = missions.overview(cfgFor(path.join(work, 'nb'), { busDirs: [bus] }));
@@ -391,12 +393,13 @@ test('クロス検証: dashboard の投函 → Python 常駐デーモンが取�
     design: '# design\n', mission: { staffing_timeout: 0 },
     roles: [{ id: 'impl', mission: '実装', deliverables: ['main.py'] }],
   });
-  // 常駐デーモン（serve --cycles）が取り込む
+  // 単発駆動（drive）が commands/ を取り込む。常駐（旧 serve）は agent-project serve の
+  // 1 本に集約したので、このツールを常駐させる経路はもう無い（実装計画 W1-9）。
   const entry = path.join(__dirname, '..', '..', 'agent-amigos', 'agent-amigos.py');
   const env = { ...process.env, AGENT_AMIGOS_STUB_COST: '0.01',
                 AGENT_BUDGET_DIR: path.join(root, 'nb') };
   const r = spawnSync('python3',
-    [entry, 'serve', '--agent-cli', 'stub', '--cycles', '10', '--interval', '0'],
+    [entry, 'drive', '--agent-cli', 'stub', '--cycles', '10', '--interval', '0'],
     { encoding: 'utf8', env, cwd: home });
   assert.strictEqual(r.status, 0, r.stderr);
   // dashboard 側のビューでミッションが見え、home が対応付く
@@ -551,9 +554,10 @@ test('クロス検証: accept 投函 → デーモンが納品棚へ搬出し da
   const entry = path.join(__dirname, '..', '..', 'agent-amigos', 'agent-amigos.py');
   const env = { ...process.env, AGENT_AMIGOS_STUB_COST: '0.01',
                 AGENT_BUDGET_DIR: path.join(root, 'nb') };
+  // 旧 serve（常駐）は廃止。単発駆動 drive が commands/ 取り込みも担う（実装計画 W1-9）。
   const serve = (cycles) => {
     const r = spawnSync('python3',
-      [entry, 'serve', '--agent-cli', 'stub', '--cycles', String(cycles), '--interval', '0'],
+      [entry, 'drive', '--agent-cli', 'stub', '--cycles', String(cycles), '--interval', '0'],
       { encoding: 'utf8', env, cwd: home });
     assert.strictEqual(r.status, 0, r.stderr);
   };

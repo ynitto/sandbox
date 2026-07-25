@@ -1227,37 +1227,48 @@ function readNodeStatuses(dir) {
   return out.sort((a, b) => String(a.node).localeCompare(String(b.node)));
 }
 
-// プロジェクトの agent-projects の稼働判定。判定根拠と経過時間も返す（UI 表示用）:
-//   'instances'   … 同一ホストの instances（heartbeat 鮮度）から確定判定（従来どおり。CLI 不要）
-//   'status-sync' … リモート本体（state_git 越し）は同期されてきた status.json の新しさで近似判定
+// この PC の実行エンジンが監督している子のうち、状態の置き場が dir と同じものを返す。
+// 突き合わせは viewerRoot（実行側の POSIX パスを画面から開ける形に寄せたもの）を
+// resolveProjectRoot で状態の置き場へ寄せてから _pathKey で行う——実行側は素の root を
+// 書くが、状態を worktree へ逃がしている構成では dir が実体（<repo>-agent-state/...）に
+// なるため、素の文字列比較では取りこぼす。
+function engineChildFor(dir, cfg) {
+  if (!dir || !cfg) return null;
+  try {
+    const engine = require('./engine');
+    const key = _pathKey(dir);
+    for (const c of engine.readStatus(cfg).children) {
+      const viewer = String(c.viewerRoot || '').trim();
+      if (!viewer) continue;
+      if (_pathKey(resolveProjectRoot(viewer)) === key) return c;
+    }
+  } catch {
+    return null;   // 設定が読めない等（単体テストの部分 cfg）は判定材料なしに倒す
+  }
+  return null;
+}
+
+
+// プロジェクトの稼働判定。判定根拠と経過時間も返す（UI 表示用）:
+//   'engine'      … この PC の実行エンジンが監督している子の実測（children[].alive）。確定判定
+//   'status-sync' … 別 PC の本体（state_git 越し）は同期されてきた status.json の新しさで近似判定
 //                    （同期遅延ぶんの誤差を許容する。running:false でも「最終確認 N 分前」は分かる）
-//   'none'        … 判定材料が無い（instances も status.json も無い）
-// WSL 内の本体が登録する root_windows / effective_root_windows（\\wsl.localhost\...）にも
-// 一致させる（Windows のビュアーから WSL 内の稼働を発見するため）。
-function projectLiveness(dir) {
+//   'none'        … 判定材料が無い
+//
+// 根拠を instances レジストリ（各プロセスの自己申告 + heartbeat 鮮度）から
+// `engine/status.json` の `children[].alive` へ移した（実装計画 W1-9）。後者は**親が
+// Popen で見た実測**なので心拍窓を持たない——レジストリの鮮度窓は長い作業（LLM 実行）中に
+// 切れて status.json の推定へ落ち、稼働中を「停止中」と誤表示していた（実際に起きた）。
+// child は discover が engine/status.json から取ってくる同じプロジェクトの子エントリ。
+// 省略時（単体呼び出し）は engine から引き当てる。
+function projectLiveness(dir, child, cfg) {
   const status = readStatus(dir);
   const paused = !!(status && status.paused);
-  if (dir) {
-    for (const inst of listInstances()) {
-      if (!inst.fresh) continue;
-      // レコードの root は「リダイレクト前の素の root」（本体の設計）。状態を worktree へ
-      // 逃がしている構成では、viewer の登録パスは実体（<repo>-agent-state/.agent-project）へ
-      // 正規化されるため root とは一致しない。実効パス（backlog の親 = 実書き込み先）でも
-      // 照合しないと、稼働中なのに instances を取りこぼして status.json の鮮度判定へ落ち、
-      // 長い作業（LLM 実行）中に「本体が停止中」と誤表示する（実際に起きた）。
-      // Windows ビュアーは UNC、本体レコードは Linux パスなので pathsEqual で規約差を吸収する。
-      const candidates = [
-        inst.root,
-        inst.root_windows,
-        inst.effective_root,
-        inst.effective_root_windows,
-        inst.backlog ? path.dirname(String(inst.backlog).replace(/\\/g, '/')) : '',
-        inst.backlog_windows ? path.dirname(String(inst.backlog_windows)) : '',
-      ];
-      if (candidates.some((r) => r && pathsEqual(r, dir))) {
-        return { running: true, via: 'instances', ageSec: 0, paused };
-      }
-    }
+  const c = child === undefined ? engineChildFor(dir, cfg) : child;
+  if (c) {
+    // この PC が監督している＝生死は実測で分かる。paused（稼働時間外）は running:false だが
+    // 「壊れて止まった」ではないので、呼び出し側が別の印で出す（discover の offHours）。
+    return { running: !!c.alive, via: 'engine', ageSec: 0, paused: paused || !!c.paused };
   }
   if (status) {
     // 同一ホストが書いた status.json なら「別マシン」ではない。instances の生存窓（ttl×3＝
@@ -1700,10 +1711,13 @@ function discover(cfg) {
     // instances（同一ホスト・確定）を先に見て、無ければ status.json（リモート・同期経由の推定）
     // にフォールバックする（projectLiveness が両方を見る）。突き合わせは本体が記録する
     // root＝プロジェクトルートで行う。
-    const liveness = projectLiveness(dir);
+    const liveness = projectLiveness(dir, child);
     // 実行エンジンが「繰り返し失敗したので一時的に切り離した」プロジェクトは、稼働中と
     // 区別して出す（人が気づかないと、そのプロジェクトだけ永久に止まったままになる）。
     const quarantined = !!(child && child.quarantined);
+    // 稼働時間外の計画停止。切り離しと違って時間が来れば自動で戻るので、別の印にする
+    // （同じ「停止中」に見えると、直す必要が無いものを人が直しに行く）。
+    const offHours = !!(child && child.paused);
     // 表示名: charter.md の `# Charter: <name>` があればそれを一覧にも出す（既定はワークスペース名。
     // charter を編集するだけでサイドバーに任意の名前を出せる。charter.md はサイドバーからも既存の
     // 「✎ charter.md」で編集できるため、ここでは discover 側の表示だけ揃える）。
@@ -1727,6 +1741,7 @@ function discover(cfg) {
       running: liveness.running,
       paused: liveness.paused,
       quarantined,
+      offHours,
       liveness,
     });
   }
@@ -1981,7 +1996,7 @@ function readProject(workspaceDir, cfg) {
     reposFile,
     repos: reposFile === 'repos.json' ? readJson(path.join(dir, 'repos.json')) : null,
     autonomy,
-    liveness: projectLiveness(dir),
+    liveness: projectLiveness(dir, undefined, cfg),
     nodes: readNodeStatuses(dir),   // 複数 PC 分散運用のノード別生存一覧（無ければ空）
     busDir: bus.busDir,
     hasBus: bus.hasBus,

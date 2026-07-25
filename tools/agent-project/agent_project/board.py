@@ -128,6 +128,59 @@ class BoardRepo:
     def is_cancelled(self, did: str) -> bool:
         return os.path.exists(os.path.join(self.delegation_dir(did), "cancelled.json"))
 
+    def drop_delegation(self, did: str) -> bool:
+        """終端を回収し終えた公示を板から消す（消せたら True）。
+
+        **消してよいと知っているのは依頼側だけ**なので、依頼側が settle した直後に呼ぶ。
+        時間ベースの一括掃除だと、その期間オフラインだった依頼側が結果を読む前に消えて
+        `read_result` が None を返し、offloaded タスクが未終端のまま永久に固まる
+        （タイムアウトが無い）。読んだ後にしか消えない形にすれば取りこぼしが原理的に起きない。
+
+        板は調整用のバスで履歴の置き場ではない（run 履歴は flow 側が持つ）。settle 後の
+        delegation を参照する経路はコードベースに無い。"""
+        with self._locked():
+            self._ensure()
+            d = self.delegation_dir(did)
+            if not os.path.isdir(d):
+                return False
+            shutil.rmtree(d, ignore_errors=True)
+            return not os.path.isdir(d)
+
+    def sweep_terminal_delegations(self, older_than_sec: float) -> int:
+        """終端して `older_than_sec` 以上経った公示を掃除して件数を返す（孤児の保険）。
+
+        通常の削除は依頼側が結果を読んだ直後の `drop_delegation`。ここが拾うのは、
+        依頼側の PC ごと消えた等で誰も回収しなくなった孤児だけなので、マージンは長く取る
+        ——**読む前に消すと offloaded が未終端のまま永久に固まる**（回収にタイムアウトが
+        無い）ので、まだ結果を読んでいない依頼側を巻き込まないことが最優先。
+
+        板の層に置くのは、レイアウト（`delegations/<id>/result.json`）と flock を
+        既に持っているのはここだけだから。呼び出し側（常駐体の gc tick）が同じ知識を
+        持つと、git+ 板では clone を見に行けず掃除が黙って no-op になる。"""
+        with self._locked():
+            self._ensure()
+            root = os.path.join(self.dir, "delegations")
+            if not os.path.isdir(root):
+                return 0
+            cutoff = time.time() - max(0.0, float(older_than_sec))
+            removed = 0
+            for did in sorted(os.listdir(root)):
+                d = os.path.join(root, did)
+                if not os.path.isdir(d):
+                    continue
+                stamps = []
+                for mark in ("result.json", "cancelled.json"):
+                    with contextlib.suppress(OSError):
+                        stamps.append(os.stat(os.path.join(d, mark)).st_mtime)
+                if not stamps or max(stamps) > cutoff:
+                    continue    # 未終端、または終端したばかり（依頼側がまだ読むかもしれない）
+                shutil.rmtree(d, ignore_errors=True)
+                if not os.path.isdir(d):
+                    removed += 1
+            if removed and self.git:
+                self._transport.sync_push(f"gc: 孤児の公示 {removed} 件を掃除")
+            return removed
+
 
 def _deleg_id_from_task(tid: str) -> str:
     """タスク id だけから委譲 id を作る（[A-Za-z0-9_-]{1,64}）。delegation_id 未指定時のフォールバック。

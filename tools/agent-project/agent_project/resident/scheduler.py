@@ -95,7 +95,12 @@ class Scheduler:
             self._run_tick_once(tick)
             self._stop.wait(tick.period)
 
-    def _notify_systemd(self) -> None:
+    def notify_systemd(self, payload: bytes = b"WATCHDOG=1") -> None:
+        """sd_notify。`NOTIFY_SOCKET` が無ければ（systemd 配下でなければ）no-op。
+
+        `Type=notify` の unit では **`READY=1` を送るまで systemd が起動完了と見なさない**
+        ——送らないと起動がタイムアウトし、`Restart=always` と組み合わさって延々と
+        再起動を繰り返す。`start()` が自動で送るので、呼び出し側が忘れて事故る余地を残さない。"""
         sock_path = os.environ.get("NOTIFY_SOCKET")
         if not sock_path:
             return
@@ -103,12 +108,28 @@ class Scheduler:
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
                 s.connect(addr)
-                s.sendall(b"WATCHDOG=1")
+                s.sendall(payload)
         except OSError:
             pass
 
+    def _notify_systemd(self) -> None:
+        self.notify_systemd()
+
+    def watchdog_interval(self) -> float:
+        """WATCHDOG=1 を打つ間隔。`WatchdogSec`（systemd が `WATCHDOG_USEC` で渡す）が
+        あればその半分に合わせる——unit 側の設定とこちらの周期が食い違うと、健全なのに
+        systemd から「応答なし」と判定されて殺される。無ければ従来どおり
+        `watchdog_timeout/3`（上限 30s）。"""
+        usec = os.environ.get("WATCHDOG_USEC")
+        if usec:
+            try:
+                return max(1.0, float(usec) / 1_000_000.0 / 2.0)
+            except ValueError:
+                pass
+        return max(1.0, min(self._watchdog_timeout / 3, 30.0))
+
     def _watchdog_loop(self) -> None:
-        interval = max(1.0, min(self._watchdog_timeout / 3, 30.0))
+        interval = self.watchdog_interval()
         while not self._stop.is_set():
             if self._stop.wait(interval):
                 return
@@ -134,9 +155,14 @@ class Scheduler:
         wd = threading.Thread(target=self._watchdog_loop, name="resident-watchdog", daemon=True)
         wd.start()
         self._threads.append(wd)
+        # 全 tick が上がってから起動完了を通知する。`Type=notify` の unit ではこれが
+        # 届くまで systemd が起動中と見なし、タイムアウトすると `Restart=always` と
+        # 相まって延々と再起動する。ここで送るので呼び出し側は意識しなくてよい。
+        self.notify_systemd(b"READY=1")
 
     def stop(self) -> None:
         self._stop.set()
+        self.notify_systemd(b"STOPPING=1")
 
     def join(self, timeout: "float | None" = None) -> None:
         """全スレッドの終了を待つ。`timeout` は呼び出し全体の予算（各スレッドへの

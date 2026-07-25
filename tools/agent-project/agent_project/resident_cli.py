@@ -16,6 +16,8 @@ from __future__ import annotations
 # 契約側実行はまだ設計が固まっていない。中途半端に実装すると二重落札・二重実行のリスクが
 # あるため、ここでは意図的に手を付けない）。
 
+from types import SimpleNamespace
+
 from agentcore.nodeid import normalize_node_id
 from agentcore.protocol import write_json_atomic
 from agent_project.resident import (ChildSpec, ChildStatus, EngineStatus,
@@ -80,6 +82,9 @@ class HostConfig:
         # 同じ流儀 — host.yaml に無い機能を強制起動しない）。
         self.amigos_bus = str(data.get("amigos_bus") or "")
         self.amigos_config = data.get("amigos_config")
+        # 稼働時間帯（夜間停止）。PC 単位の性質なので host.yaml が単一ソース
+        # （実装計画 W1-4）。子は自分で止まらない——親がこの宣言で pause/resume する。
+        self.availability = dict(data.get("availability") or {})
         # 常駐化の方式（設計 §7 の 2 案のどちらを選んだか）。doctor はこの宣言に従う——
         # systemd 側しか検査できないので、windows-task を選んだ PC で「常駐化が未構成」を
         # 出し続けると、正しく構成した利用者に恒久的な誤警告を浴びせることになる。
@@ -105,6 +110,111 @@ def _project_name(project: dict) -> str:
     2 件に見せる。"""
     resolved = _resolved_root(str(project.get("root") or "").strip(), project.get("config"))
     return str(project.get("name") or "").strip() or _slug(resolved)
+
+
+def _availability_tick(host: "HostConfig", sup: "Supervisor",
+                       status: "EngineStatus") -> None:
+    """稼働時間帯の外では子を計画停止し、戻ったら再開する（実装計画 W1-4・設計 §6「PC の
+    計画停止」）。**停止を決めるのは常に親**——子が自分に SIGTERM を送る旧経路では、
+    Supervisor がそれをクラッシュと読んで再起動し、繰り返しで隔離に達していた。
+
+    `pause` は死亡回数に数えないので、毎晩の停止を繰り返しても隔離されない。
+    availability 未宣言なら何もしない（時間帯の概念が無い＝常時稼働）。
+
+    **止めるのは `shutdown_due`（daily_stop + shutdown_grace_sec）に達してから**。
+    `draining` で止めると `drain_before_sec` と `shutdown_grace_sec` が死に設定になり、
+    走っているタスクを完走させずに SIGTERM することになる——drain は「新規 claim を
+    止めて走っているものを終わらせる」ための時間帯で、その扱いは子側の
+    `start_availability_monitor` が既に担っている。"""
+    if not host.availability:
+        return
+    # availability_state / shutdown_due は cfg の `availability` 属性しか見ない。
+    # host.yaml の宣言をそのまま渡すための最小の器（Config を組み立てる必要は無い）。
+    cfg = SimpleNamespace(availability=host.availability)
+    state = availability_state(cfg)
+    if state == "invalid":
+        # 不正設定では時間帯を判定できない。**止める側に倒す**（動かし続けると、止めたい
+        # 時間帯に動く方が害が大きい）。同じ文言を tick ごとに積むと recent_errors が
+        # 埋まって他のエラーが押し出されるので、内容が変わるまでは 1 度だけ記録する。
+        msg = f"availability 設定が不正です（子を停止したままにします）: {host.availability}"
+        if msg not in status.recent_errors:
+            status.record_error(msg)
+        for name in sup.names():
+            sup.pause(name)
+        return
+    off = shutdown_due(cfg)
+    for name in sup.names():
+        if off:
+            sup.pause(name)
+        else:
+            sup.resume(name)
+
+
+def _amigos_turns_dir() -> Path:
+    """agent-amigos が置く手番マーカーの場所（`agent_amigos.turnmark.turns_dir` と同じ解決）。
+    ツールを跨ぐのはこのデータ契約だけで、実装は import しない（R1）。"""
+    return agent_home_subdir("AGENT_AMIGOS_TURNS_DIR", "amigos", "turns")
+
+
+def _external_amigos_inflight(host: "HostConfig") -> set:
+    """この PC で**いま走っている** amigos 手番を観測する
+    （実装計画 W1-5「計数は status/run ファイルから導出」）。
+
+    常駐体はノード唯一の実行主体ではない——設計 §1.3 C14 はスキル起動の単発実行
+    （人が `agent-amigos run --once` / `agent-amigos drive` を直接叩く）との併走を明示的に
+    許す。プロセス内カウンタだけで数えると、その分がノード全体の `max_concurrent` を
+    素通りして超過する。
+
+    根拠は `agent_amigos.turnmark` が手番の実行中だけ置く pid ファイル
+    （`~/.agents/amigos/turns/*.json`）。**バスの `status/<node>--<role>.json` は使えない**
+    ——あれはロールの在籍状態で、ターンが終わっても `state` は `working` のまま残るため、
+    観測に流用すると終わった手番を走行中と誤読して、自分が回したロールの次の手番を
+    自分で永久に弾いてしまう（`NodeWorkerPool.submit` が二重実行回避で捨てる）。
+
+    生存は pid で判定するので、落ちたプロセスの書き残しは数えない（鮮度の当て推量は不要）。
+    返す id は `NodeWorkerPool` への投入 id と同じ空間（`amigos/<mission>/<role>`）で、
+    自分が起こした手番も同じ印を置くため集合演算で二重計上されない。"""
+    out: set = set()
+    d = _amigos_turns_dir()
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        return out
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        try:
+            mark = json.loads((d / name).read_text(encoding="utf-8"))
+            pid = int((mark or {}).get("pid") or 0)
+        except (OSError, ValueError, TypeError):
+            continue
+        mission, role = str(mark.get("mission") or ""), str(mark.get("role") or "")
+        if mission and role and _pid_alive(pid):
+            out.add(f"amigos/{mission}/{role}")
+    return out
+
+
+# 依頼側が消し損ねた公示を掃く保険のマージン。通常の削除は依頼側が settle 直後に行う
+# （`_reap_offloaded`）ので、ここに残るのは依頼側が永久に消えた孤児だけ。長めに取るのは
+# 「まだ結果を読んでいない依頼側」を巻き込まないため——読む前に消すと offloaded が
+# 未終端のまま固まる（タイムアウトが無い）。
+_BOARD_ORPHAN_DAYS = 30.0
+
+
+def _sweep_terminal_delegations(host: "HostConfig") -> dict:
+    """終端して久しい公示を板から掃除する（設計 §4.2 gc tick「終端した公示」の保険側）。
+
+    通常の削除は依頼側が結果を読んだ直後に行う（`_reap_offloaded` → `drop_delegation`）。
+    ここが拾うのは、依頼側の PC ごと消えた等で誰も回収しなくなった孤児だけ。
+
+    掃除の実体は `BoardRepo.sweep_terminal_delegations`——板のレイアウトと flock、
+    git+ 板の clone 解決を持つのはあの層だけで、ここで `Path(host.board)` を直接
+    見に行くと git+ 板では黙って no-op になる。"""
+    if not host.board:
+        return {}
+    board = BoardRepo(host.board, workdir=host.board_workdir)
+    removed = board.sweep_terminal_delegations(_BOARD_ORPHAN_DAYS * 86400.0)
+    return {"delegations": removed} if removed else {}
 
 
 def _observe_sync_health(roots_by_name: dict) -> "list[SyncHealth]":
@@ -295,7 +405,8 @@ def _build_resident(host: "HostConfig", *, start_children: bool = True):
         status.heartbeat = datetime.now(timezone.utc).isoformat()
         status.children = [
             ChildStatus(name=name, alive=info["alive"], quarantined=info["quarantined"],
-                       deaths=info["deaths"], root=roots_by_name.get(name))
+                       deaths=info["deaths"], root=roots_by_name.get(name),
+                       paused=bool(info.get("paused")))
             for name, info in sup.status().items()]
         status.sync_health = _observe_sync_health(roots_by_name)
         status.running_runs = list(pool.status().get("inflight") or [])
@@ -307,10 +418,16 @@ def _build_resident(host: "HostConfig", *, start_children: bool = True):
     # 「既定 4」に合わせて更新済み）。
     pool = NodeWorkerPool(
         host.max_concurrent if host.max_concurrent > 0 else 4,
+        # スキル起動の単発実行（C14 併走）も同じ枠で律速する。プロセス内だけで数えると
+        # 人が直接叩いた手番が max_concurrent を素通りする（実装計画 W1-5）。
+        external_inflight=lambda: _external_amigos_inflight(host),
         on_event=lambda item_id, ev, exc: (status.record_error(f"worker {item_id}: {exc}")
                                            if ev == "failed" else None))
 
     def tick_supervise() -> None:
+        # 時間帯の判定は check_health より先に。逆順だと、停止時間帯に入った直後の 1 巡で
+        # check_health が「止まっている子」を死亡とみなして起こしてしまう。
+        _availability_tick(host, sup, status)
         sup.check_health()
         pool.drain()   # 専用 tick を新設せず、既存の短周期 tick に相乗りさせる（設計に無い tick を増やさない）
         status.tick_counts["supervise"] = status.tick_counts.get("supervise", 0) + 1
@@ -324,7 +441,7 @@ def _build_resident(host: "HostConfig", *, start_children: bool = True):
         write_status()
 
     def tick_gc() -> None:
-        run_gc(_project_gc_sweepers(host),
+        run_gc(_project_gc_sweepers(host) + [("board", lambda: _sweep_terminal_delegations(host))],
               on_event=lambda name, ev, exc: (status.record_error(f"gc {name}: {exc}")
                                               if ev == "failed" else None))
         status.tick_counts["gc"] = status.tick_counts.get("gc", 0) + 1

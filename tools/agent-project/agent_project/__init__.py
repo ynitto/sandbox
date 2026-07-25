@@ -37,7 +37,8 @@ _FRAGMENTS = (
     "model",       # Task / enqueue / cohort / intake
     "policy",      # Policy / 自律レベル / パス保護ゲート
     "decisions",   # 決定記録 / DR 学習 / ltm 昇格
-    "instances",   # 稼働レジストリ / start・stop・restart
+    "instances",   # watch ロック / ランタイム検出 / 孤児 flow の回収
+    #                （稼働レジストリと start・stop・restart は W1-9 で削除済み）
     "state",       # 状態 worktree
     "rules",       # rules.md（恒常ルール）
     "brief",       # run ブリーフ（run/branch スコープ・差し戻し意図とノード発見制約の蓄積・伝播）

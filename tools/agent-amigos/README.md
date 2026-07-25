@@ -19,8 +19,8 @@
   `stub` は LLM なしのプロトコル検証用。
 
 設計正典: [`docs/designs/agent-amigos-design.md`](../../docs/designs/agent-amigos-design.md)
-（本実装は **P0（MVP）＋ P1（GitBus 分散・away プロトコル）＋ P2（hub・owner-picks・
-acceptance: agent）**。agent-dashboard 連携は `tools/agent-dashboard/src/features/amigos/`）。
+（本実装は **P0（MVP）＋ P1（GitBus 分散・away プロトコル）＋ P2（owner-picks・
+acceptance: agent）**。hub 中継サーバ（旧 P2）は常駐一本化で廃止。agent-dashboard 連携は `tools/agent-dashboard/src/features/amigos/`）。
 
 ## インストール
 
@@ -28,33 +28,41 @@ agent-project / agent-flow と同じく、標準ライブラリのみ（pip 依�
 `agent_amigos/` パッケージを **zipapp 単一実行ファイル**にまとめて配置する。
 
 ```bash
-bash tools/agent-amigos/install.sh              # ~/.local/bin/agent-amigos へ
-bash tools/agent-amigos/install.sh --prefix /usr/local/bin
+bash tools/install.sh                        # agent-project / agent-flow / agent-amigos を
+                                             # まとめて ~/.local/bin へ（推奨。3 本は同じ
+                                             # agentcore と契約バージョンを共有する）
+bash tools/install.sh --only agent-amigos    # このツールだけ
+bash tools/install.sh --prefix /usr/local/bin
 ```
 
 インストール後は `agent-amigos <サブコマンド>` で使える（以下の例はインストール後の形）。
 リポジトリから直接動かす場合は `python3 tools/agent-amigos/agent-amigos.py <...>` でも同じ。
 
-## 常駐運用（推奨 — agent-project と同じ実施方法）
+## 常駐運用（PC に 1 本 — `agent-project serve` が担う）
 
-**サブコマンドを省略すると常駐起動（`serve`）**になる。PC 起動時に立ち上げっぱなしにして
-cwd の「ホーム」を面倒見る daemon 用途が一級市民（agent-project の `run --watch` 既定と同じ）。
+**agent-amigos 自身は常駐しない**。PC 単位の常駐体は `agent-project serve` の 1 本で、
+そこから amigos の参加 tick（`participate`）と手番（`run --once`）が起動される。
+本コマンドが提供するのは単発実行（`drive` / `participate` / `run`）と依頼・確認の操作。
+サブコマンド無しの裸起動は案内を出して終わる（黙って常駐すると常駐体と二重に回って
+claim を奪い合う）。常駐体の構成は [単一常駐体セットアップ](../../docs/guides/single-resident-setup.md)。
 
 ```bash
 mkdir team-amigos && cd team-amigos
 mkdir -p .agents
 cp <repo>/tools/agent-amigos/agent-amigos.yaml.example .agents/agent-amigos.yaml   # 設定（任意）
-agent-amigos          # 常駐開始。cwd がホーム = 既定のローカルバス（missions/ がここに生える）
+agent-amigos participate     # 参加だけ 1 巡（常駐体の tick が都度これを叩く）
+agent-amigos drive --mission-id <id>   # 手元で終端まで回す（単発。常駐はしない）
 ```
 
 - **設定は `.agents/agent-amigos.yaml`**（cwd。`.yml` / `.json` 可・無くても動く）。
   探索順は `./agent-amigos.*` → `./.agents/agent-amigos.*` → `~/.agents/agent-amigos.*`。
   優先順位は CLI > 設定 > 既定。雛形: [`agent-amigos.yaml.example`](agent-amigos.yaml.example)。
-- **cwd は hub として利用可能**: 設定 `hub.serve: true`（または `serve --hub`）で
-  同じバスを hub として公開し、他ノードは `--bus hub+http://<host>:<port>` で参加できる
-  （ローカル直接書き込みと hub 公開は共存する — hub が再走査で索引へ反映）。
+- **バスはローカル dir か `git+<url>`**。共有は git バスに一本化した（`hub+<url>` の中継
+  サーバは廃止 — 公開元だった `serve` が無くなり、対向だけ残しても繋ぐ先が無い）。
+- **同時実行の上限は PC 単位**。実行中の手番は `~/.agents/amigos/turns/*.json` に印が
+  出るので、常駐体が起こした手番と手元の単発実行が同じ枠で律速される。
 - **指示のファイル取り込み**: `<home>/.agents/agent-amigos/commands/*.json` に JSON を
-  1 ファイル置くと常駐デーモンが次サイクルで取り込む（agent-project の commands/ と同じ
+  1 ファイル置くと次の参加 tick が取り込む（agent-project の commands/ と同じ
   結合方式）。コマンド: `post`（タスク依頼）/ `build-team`（チームビルディング依頼）/
   `claim`（手動引き受け）/ `assign` / `restaff`（実行中の編成変更）/ `accept` / `reject` /
   `cancel` / `say`。処理済みは削除・失敗は `.rejected` へ改名。
@@ -82,9 +90,9 @@ EOF
 ```bash
 agent-amigos init-bus --bus /tmp/amigos-bus
 
-# 公示してそのままオーナーノードとして常駐（staffing_timeout 後に自己補充）
+# 公示してそのまま終端まで回す（単発。staffing_timeout 後に自己補充）
 agent-amigos post --bus /tmp/amigos-bus \
-  --design design-doc.md --roles roles.yaml.example --serve --agent-cli stub
+  --design design-doc.md --roles roles.yaml.example --drive --agent-cli stub
 
 # 別端末から状態確認・受入（accept でホームの納品棚へ搬出される）
 agent-amigos status --bus /tmp/amigos-bus
@@ -110,17 +118,17 @@ agent-amigos build-team --goal "社内 FAQ ボットの MVP を納品する" \
 # 2) 保存して調整してから従来経路で公示
 agent-amigos build-team --goal "..." --agent-cli claude --out roles.yaml
 #   （roles.yaml を確認・編集して）
-agent-amigos post --design design-doc.md --roles roles.yaml --serve
+agent-amigos post --design design-doc.md --roles roles.yaml --drive
 
 # 3) 設計してそのまま公示（design 省略時はゴールから最小 design doc を自動生成）
-agent-amigos build-team --goal "..." --title "FAQ ボット" --agent-cli claude --post --serve
+agent-amigos build-team --goal "..." --title "FAQ ボット" --agent-cli claude --post --drive
 ```
 
 - 設計には実際の agent CLI が要る（`--agent-cli claude/codex/…`。`stub` / 未指定は不可）。
 - `--design <md>` を渡すと、それを正典として設計へ反映し公示にも使う。無ければゴールから
   最小の design doc を自動生成する。
 - `--capabilities python,frontend` は使えるノード能力のヒント（`requires.tags` の候補）。
-- dashboard / 常駐デーモン経由では `build-team` コマンドを投函する（下記「指示のファイル取り込み」）。
+- dashboard / 常駐体経由では `build-team` コマンドを投函する（下記「指示のファイル取り込み」）。
 
 ### オーケストレーションパターン
 
@@ -162,7 +170,7 @@ git init --bare /srv/git/amigos-bus.git
 
 # オーナーノード（PC-A）
 agent-amigos post --bus git+ssh://git@gitlab.local/team/amigos-bus.git \
-  --design design-doc.md --roles roles.yaml --serve --agent-cli claude
+  --design design-doc.md --roles roles.yaml --drive --agent-cli claude
 
 # 参加ノード（PC-B）
 agent-amigos join --bus git+ssh://git@gitlab.local/team/amigos-bus.git \
@@ -173,20 +181,12 @@ agent-amigos join --bus git+ssh://git@gitlab.local/team/amigos-bus.git \
 pull は間隔律速（claim の勝者確認だけは常に最新化）・push 競合は `pull --rebase` →
 再 push の指数バックオフ・**force push しない**・1 ターン = 1 コミット（原子性）。
 
-## hub サーバ（git が使えない環境・低レイテンシ向け、任意）
+## hub サーバ（廃止）
 
-```bash
-# オンプレに hub を立てる（データディレクトリはミッションレイアウトそのまま）
-AGENT_AMIGOS_HUB_TOKEN=secret agent-amigos hub --data /srv/amigos --port 8765
-
-# 各ノードは hub+<url> で参加（トークンは同じ環境変数）
-AGENT_AMIGOS_HUB_TOKEN=secret agent-amigos join --bus hub+http://hub.local:8765 --agent-cli codex
-```
-
-hub は「所有者上書きのファイル置き場」で調整はしない（中央が落ちても壊れず、復帰後に
-同期が追いつく）。差分はリビジョン付き list（long-poll 可）で取る。hub ホストの
-agent-dashboard は `amigos.busDirs` にデータディレクトリを指すだけで全ミッションを読める。
-オンプレ限定（TLS はリバースプロキシに委譲・クライアントはプロキシ設定を迂回して直接接続）。
+中継サーバ（`agent-amigos hub` と `--bus hub+<url>`）は廃止した。公開元だった常駐
+（`agent-amigos serve`）が `agent-project serve` へ一本化されて無くなり、対向だけ残しても
+繋ぐ先が無いため。共有は git バス（`git+<url>`）に一本化する。`hub+<url>` を渡すと
+移行先を案内して終了する。
 
 ## owner-picks（オーナーがアサインを確定する募集方式）
 
@@ -284,9 +284,10 @@ lease が切れても **`resume_at` + grace（既定 2 時間）までロール�
 
 | コマンド | 説明 |
 |---|---|
-| `serve`（省略時の既定） | 常駐起動: ノードデーモン + commands/ 取り込み + hub 公開（設定 hub.serve） |
 | `init-bus --bus <dir>` | バスを初期化 |
-| `post --design <md> --roles <yaml> [--serve]` | ミッション公示（オーナー）。`--serve` で常駐 |
+| `participate` | 参加のみ 1 巡（応募・オーナー職務・板巡回。担当ロールを JSON で返す。常駐体の tick が叩く） |
+| `drive [--mission-id <id>]` | 単発駆動: そのミッション（未指定はその巡の全ミッション）が終端するまで回して戻る |
+| `post --design <md> --roles <yaml> [--drive]` | ミッション公示（オーナー）。`--drive` で終端まで回す（単発） |
 | `build-team --goal "..." [--design <md>] --agent-cli <cli> [--pattern <id>] [--out <f>\|--post]` | チームビルディング: ミッションから最適な役割表を設計（パターン自動選択。`--list-patterns` で一覧、`--pattern` で明示指定。既定はドライラン、`--out` 保存 / `--post` 公示） |
 | `join [--roles ...] [--tags ...] [--agent-cli ...]` | 参加ノードのデーモン |
 | `run --mission <mid> --role <role> [--once]` | 単発 amigo（デバッグ用） |
@@ -296,7 +297,6 @@ lease が切れても **`resume_at` + grace（既定 2 時間）までロール�
 | `deliveries [-v]` | 納品棚（受領済みの成果物）の一覧 |
 | `assign <mid> <role> [<node>]` | owner-picks の確定（省略時は応募者一覧。オーナー） |
 | `restaff <mid> [--add <roles>] [--prune <id,...>]` | 実行中のチーム編成変更（G5・オーナー）: ロール追加 / 停止 |
-| `hub --data <dir> [--port N] [--token T]` | 中継サーバの起動（オンプレ・任意） |
 | `budget add <mid> --minutes N` | ミッション予算の追加（オーナー） |
 | `budget node [--limit-minutes N] [--period day\|month\|total]` | このノードの上限の表示・設定（請負側。0 = 無制限） |
 | `say <mid> --to <role\|all\|owner> --body "..."` | 人の介入発言 |
@@ -353,8 +353,8 @@ LLM 不要（stub のみ・stdlib unittest）。claim の決定的タイブレ�
 | `AGENT_AMIGOS_NODE` | ノード ID（既定: `~/.agents/amigos/node.json` に自動採番） |
 | `AGENT_AMIGOS_LEASE` | claim lease 秒（既定 600） |
 | `AGENT_AMIGOS_AWAY_GRACE` | away の resume_at からの猶予秒（既定 7200） |
-| `AGENT_AMIGOS_PULL_INTERVAL` | GitBus / HubBus の pull 間隔律速秒（既定 15 / 5） |
-| `AGENT_AMIGOS_HUB_TOKEN` | hub の Bearer トークン（サーバ・クライアント共通） |
+| `AGENT_AMIGOS_PULL_INTERVAL` | GitBus の pull 間隔律速秒（既定 15） |
+| `AGENT_AMIGOS_TURNS_DIR` | 実行中の手番マーカーの置き場（既定 `~/.agents/amigos/turns`。PC 単位の同時実行上限の根拠） |
 | `AGENT_BUDGET_DIR` | ノード予算の設定・台帳の置き場所（既定 `~/.agents/budget`。ツール横断契約） |
 | `AGENT_AMIGOS_STUB_COST` | stub の 1 ターン消費秒（予算テスト用、既定 0.01） |
 | `KIRO_AGENTS_DIR` | agent CLI プラグイン定義の探索先（agent-flow と共通） |

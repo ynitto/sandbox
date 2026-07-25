@@ -722,7 +722,7 @@ done 判定不能＝必ず人へ。**検証コマンドを書けない条件は�
 | `` ```bash\n検証コマンド: codd-gate verify --base "$KIRO_BASE_REV"\n``` ``（コードフェンス内） | 同上 |
 | `git commit -m "note: fix bug"`（コマンド内にコロンを含むが行頭ラベルではない） | 変化なし（誤剥離しない） |
 
-テストは `tools/agent-project/tests/test_agent_project.py` の `test_first_command_line_strips_japanese_label_*`
+テストは `tools/agent-project/tests/` の `test_first_command_line_strips_japanese_label_*`
 （同一行・全角コロン・引用符内コロン非分割・二重ラベル・散文前置き）に対応するケースを持つ。
 
 **acceptance の実行ディレクトリ**（`evaluate_acceptance`／`_acceptance_cwd`）: 既定は `workdir` だが、offload（git-bus/remote）で

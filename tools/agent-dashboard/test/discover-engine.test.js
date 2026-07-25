@@ -100,6 +100,23 @@ function writeStatus(home, status) {
     assert.strictEqual(projects[0].quarantined, true);
   });
 
+  await test('計画停止（稼働時間外）は切り離しと別の状態として出す', async () => {
+    // 切り離し＝人が原因を直すまで戻らない / 計画停止＝時間が来れば自動で戻る。
+    // 同じ「停止中」に見せると、直す必要が無いものを人が直しに行く。
+    const root = mkRoot();
+    const night = mkdirp(root, 'night');
+    mkdirp(night, 'backlog');
+    const cfg = writeStatus(mkRoot(), {
+      children: [{ name: 'night', alive: false, quarantined: false, paused: true, root: night }],
+    });
+    const { projects } = project.discover(cfg);
+    assert.strictEqual(projects[0].offHours, true);
+    assert.strictEqual(projects[0].quarantined, false);
+    const s = engine.summarize(engine.readStatus(cfg));
+    assert.strictEqual(s.level, 'ok');            // 異常ではない（色を付けない）
+    assert.match(s.summary, /稼働時間外/);
+  });
+
   await test('状況ファイルが無ければプロジェクトは 0 件（案内表示へ倒す）', async () => {
     const cfg = { engine: { home: path.join(mkRoot(), '.agents') }, projects: {} };
     const res = project.discover(cfg);

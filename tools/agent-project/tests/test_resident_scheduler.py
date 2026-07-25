@@ -1,7 +1,10 @@
 """resident.scheduler の単体テスト（実装計画 W1-1）。"""
 from __future__ import annotations
 
+import os
+import shutil
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -104,6 +107,51 @@ def test_declared_tick_timeout_extends_watchdog_grace():
     assert not aborted.is_set(), "timeout を宣言した tick を watchdog が誤って abort した"
 
 
+def test_notifies_systemd_ready_on_start():
+    # Type=notify の unit では READY=1 が届くまで systemd が起動中と見なす。送らないと
+    # 起動がタイムアウトし、Restart=always と相まって延々と再起動する。
+    import socket as _socket
+    tmp = tempfile.mkdtemp()
+    sock_path = os.path.join(tmp, "notify.sock")
+    srv = _socket.socket(_socket.AF_UNIX, _socket.SOCK_DGRAM)
+    srv.bind(sock_path)
+    srv.settimeout(5)
+    old = os.environ.get("NOTIFY_SOCKET")
+    os.environ["NOTIFY_SOCKET"] = sock_path
+    try:
+        sched = Scheduler([Tick("noop", period=10, fn=lambda: None)], watchdog_timeout=10)
+        sched.start()
+        assert srv.recv(64) == b"READY=1"
+        sched.stop()
+        assert srv.recv(64) == b"STOPPING=1"   # 意図した停止であることも伝える
+        sched.join(timeout=2)
+    finally:
+        srv.close()
+        if old is None:
+            os.environ.pop("NOTIFY_SOCKET", None)
+        else:
+            os.environ["NOTIFY_SOCKET"] = old
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_watchdog_interval_follows_systemd_watchdog_usec():
+    # unit の WatchdogSec とこちらの周期が食い違うと、健全なのに systemd から
+    # 「応答なし」と判定されて殺される。WATCHDOG_USEC の半分に合わせる。
+    old = os.environ.get("WATCHDOG_USEC")
+    os.environ["WATCHDOG_USEC"] = str(90 * 1_000_000)     # WatchdogSec=90
+    try:
+        sched = Scheduler([Tick("noop", period=10, fn=lambda: None)], watchdog_timeout=300)
+        assert sched.watchdog_interval() == 45.0
+    finally:
+        if old is None:
+            os.environ.pop("WATCHDOG_USEC", None)
+        else:
+            os.environ["WATCHDOG_USEC"] = old
+    # 未設定なら従来どおり watchdog_timeout/3（上限 30s）
+    sched = Scheduler([Tick("noop", period=10, fn=lambda: None)], watchdog_timeout=60)
+    assert sched.watchdog_interval() == 20.0
+
+
 def test_duplicate_tick_names_rejected():
     try:
         Scheduler([Tick("x", period=1, fn=lambda: None), Tick("x", period=1, fn=lambda: None)])
@@ -159,6 +207,8 @@ if __name__ == "__main__":
     test_single_flight_never_overlaps()
     test_exception_isolated_other_ticks_keep_running()
     test_long_period_healthy_tick_not_aborted()
+    test_notifies_systemd_ready_on_start()
+    test_watchdog_interval_follows_systemd_watchdog_usec()
     test_declared_tick_timeout_extends_watchdog_grace()
     test_duplicate_tick_names_rejected()
     test_join_timeout_is_a_total_budget_not_per_thread()

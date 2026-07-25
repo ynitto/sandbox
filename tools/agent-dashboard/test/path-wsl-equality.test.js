@@ -87,35 +87,16 @@ test('sameMachineStatus: runtime=wsl は win32 で同一マシン', () => {
   assert.ok(sameMachineStatus({ host: os.hostname(), runtime: 'linux' }));
 });
 
-test('projectLiveness: effective_root_windows（状態 worktree UNC）で instances 一致', () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-wsl-live-'));
-  const idir = path.join(os.homedir(), '.agent-project', 'instances');
-  fs.mkdirSync(idir, { recursive: true });
-  const file = path.join(idir, `kpv-wsl-eq-${process.pid}.json`);
+test('projectLiveness: 監督下の子は UNC / POSIX どちらの表記でも確定判定になる', () => {
+  // Windows のビュアーは UNC、実行側（WSL）は POSIX を書く。根拠を engine の
+  // children[].alive へ移した後も、表記差で確定判定を取りこぼさないこと（実装計画 W1-9）。
   const uncState = '\\\\wsl.localhost\\Ubuntu\\home\\me\\webapp-agent-state\\.agent-project';
-  fs.writeFileSync(file, JSON.stringify({
-    pid: process.pid,
-    root: '/home/me/webapp/.agent-project',
-    root_windows: '\\\\wsl.localhost\\Ubuntu\\home\\me\\webapp\\.agent-project',
-    effective_root: '/home/me/webapp-agent-state/.agent-project',
-    effective_root_windows: uncState,
-    backlog: '/home/me/webapp-agent-state/.agent-project/backlog',
-    heartbeat: Date.now() / 1000,
-    ttl: 90,
-    host: 'wsl-host',
-    runtime: 'wsl',
-  }));
-  try {
-    // ビュアーが状態 worktree の UNC を開いている想定
-    const live = projectLiveness(uncState);
-    assert.strictEqual(live.running, true, JSON.stringify(live));
-    assert.strictEqual(live.via, 'instances');
-    // Linux 表記で照合しても同じ
-    assert.strictEqual(projectLiveness('/home/me/webapp-agent-state/.agent-project').via, 'instances');
-  } finally {
-    fs.unlinkSync(file);
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
+  const child = { name: 'webapp', alive: true, quarantined: false, paused: false,
+                  root: '/home/me/webapp-agent-state/.agent-project' };
+  assert.strictEqual(projectLiveness(uncState, child).via, 'engine');
+  assert.strictEqual(projectLiveness(uncState, child).running, true);
+  assert.strictEqual(
+    projectLiveness('/home/me/webapp-agent-state/.agent-project', child).via, 'engine');
 });
 
 test('projectLiveness: status.json の runtime=wsl は win32 で status-local', () => {

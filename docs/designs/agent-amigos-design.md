@@ -4,7 +4,7 @@
 > acceptance: agent・スキーマ正典化）実装済み**（残: acceptance: codd-gate = 将来拡張）
 > 対象ブランチ: `claude/agent-amigos-design-u1gy34`
 > 実装: `tools/agent-amigos/`（`agent-amigos.py` ＋ `agent_amigos/` パッケージ・
-> `tests/test_agent_amigos.py`）。正典スキーマ: `schemas/mission.schema.json`。
+> `tests/test_<機能>.py`）。正典スキーマ: `schemas/mission.schema.json`。
 >
 > **実装メモ（設計との差分）**:
 > - バス上の公示は正規化 **JSON**（`mission.json` / `roles/<id>.json`）で置く —

@@ -95,6 +95,9 @@ class ChildStatus:
     quarantined: bool = False
     deaths: int = 0
     root: "str | None" = None
+    # 計画停止中（稼働時間帯の外）。隔離（quarantined）と区別する——前者は「時間が来れば
+    # 自動で戻る」、後者は「人が原因を直すまで戻らない」で、利用者に見せる文言が変わる。
+    paused: bool = False
 
 
 @dataclass
@@ -146,7 +149,7 @@ class EngineStatus:
             "recent_errors": list(self.recent_errors),
             "children": [
                 {"name": c.name, "alive": c.alive, "quarantined": c.quarantined,
-                 "deaths": c.deaths, "root": c.root}
+                 "deaths": c.deaths, "root": c.root, "paused": c.paused}
                 for c in self.children],
             "running_runs": list(self.running_runs),
         }

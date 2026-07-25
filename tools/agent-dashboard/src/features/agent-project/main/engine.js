@@ -107,6 +107,8 @@ function readStatus(cfg) {
       name: String((c && c.name) || ''),
       alive: !!(c && c.alive),
       quarantined: !!(c && c.quarantined),
+      // 計画停止（稼働時間帯の外）。隔離と混ぜない——こちらは時間が来れば自動で戻る。
+      paused: !!(c && c.paused),
       deaths: Number((c && c.deaths) || 0),
       root,
       // 実行側（WSL）が書いた POSIX パスを、この画面から開ける形へ寄せる
@@ -181,6 +183,15 @@ function summarize(status) {
     return {
       level: 'warn',
       summary: `繰り返し失敗したため一時的に切り離したプロジェクトがあります: ${quarantined.join('・')}`,
+    };
+  }
+  // 計画停止は異常ではない（時間が来れば自動で戻る）。異常として色を付けず、
+  // 「なぜ進んでいないのか」だけが分かるように書く。
+  const paused = status.children.filter((c) => c.paused).map((c) => c.name);
+  if (paused.length) {
+    return {
+      level: 'ok',
+      summary: `稼働時間外のため休止中です（時間になると自動で再開します）: ${paused.join('・')}`,
     };
   }
   return { level: 'ok', summary: '共有先と揃っています' };

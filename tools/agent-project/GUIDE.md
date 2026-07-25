@@ -173,13 +173,13 @@ rot: true               # 古い/重複/実行不能タスクを triage で掃�
 agent-project audit --strict      # L0–L3 基準を満たさなければ非0で落とす（CI の1ステップに）
 ```
 
-**OS 起動時から常駐**（lifecycle）:
+**OS 起動時から常駐**（PC に 1 本）:
 ```bash
-agent-project start               # cwd のプロジェクトを常駐起動（重複は拒否）
-agent-project instances           # いまどのプロジェクトを監視中か発見（all＋各プロジェクト）
-agent-project stop                # cwd のプロジェクトの daemon を停止（--all で全部）
-# systemd は ExecStart を `agent-project run --watch` にし、調整は .yaml で完結
+agent-project serve               # host.yaml のプロジェクトをまとめて監督する常駐体
+agent-project status              # いまどのプロジェクトが動いているか（心拍・休止/切り離し）
+# 常駐化（起動時に上がる・死んだら上がり直す）は tools/install.sh --service が構成する
 ```
+構成の手順は [常駐一本化セットアップガイド](../../docs/guides/single-resident-setup.md)。
 
 **監視**: `runlog --json` を集計、`stats` で自動化率/コストを定点観測、`notify_cmd` で判断待ちを push。
 
@@ -222,8 +222,8 @@ agent-project run --location daemon --concurrency 3
 # 分散（remote）: git バス経由で別ホストの worker に委譲
 agent-project run --location remote
 
-# 複数ホストを横断発見（共有レジストリ＝NFS/同期/git チェックアウト）
-agent-project instances --registry /shared/agent-registry
+# どのプロジェクトが動いているかは常駐体の状況表示から見る
+agent-project status --json
 ```
 
 **原子的クレーム**で二重実行を防ぐので、同じ backlog を複数インスタンスが見ても安全。
@@ -284,11 +284,11 @@ agent-project approve <project> --reason "受領"   # 収束候補を完了確�
 cd ~/projects/payments && agent-project enqueue --title "…" --verify '…'   # 別プロジェクトへ積む
 cd ~/projects/payments && agent-project run                                 # そのプロジェクトを消化（charter あれば目標駆動）
 cd ~/projects/payments && agent-project needs                               # そのプロジェクトの判断待ち
-cd ~/projects/payments && agent-project start                               # そのプロジェクトを常駐監視
 ```
 
-複数プロジェクトはディレクトリを並べ、`instances` で複数プロジェクト・複数ホストを横断発見できる。
-束ねた可視化・操作は agent-dashboard が各ルートの clone を登録して行う。
+複数プロジェクトはディレクトリを並べ、**PC 単位の常駐体 1 本**（`agent-project serve`）に
+まとめて監督させる。どれを持つかは `agent-project.host.yaml` が単一ソースで、稼働状況は
+`agent-project status` に集約される。束ねた可視化・操作は agent-dashboard が行う。
 
 ---
 
@@ -444,7 +444,7 @@ loginctl enable-linger "$USER"     # ログアウト/再起動後も常駐させ
 
 ```bash
 agent-project doctor          # 実行層 agent-flow daemon との連携まで含めて健康診断（[flow] 印で統合）
-agent-project instances       # いまどのプロジェクトを監視中か（all＋各プロジェクト）
+agent-project status          # いまどのプロジェクトが動いているか（心拍・休止/切り離し）
 agent-project stats           # 自動化率・コストを定点観測
 agent-project needs           # 人の判断待ち（承認は GitLab の status:approved 側で進む）
 ```
@@ -590,7 +590,7 @@ policy には影響しない）。
 | 人対応待ちが詰まる | ゲート過剰 / verify 欠落 | `needs` を捌く。`auto_adjudicate`・`learn` を有効化 |
 | いつまでも止まらない不安 | 有限性の確認不足 | `max_cycles`/`max_seconds`/`max_cost` と `throttle` を設定 |
 | 無人運用してよいか不安 | 適性が未採点 | `audit`（CI は `audit --strict`）で L レベルを上げてから進む |
-| 二重に実行されそう | 複数インスタンス | 原子的クレームで安全。`instances` で監視先を確認 |
+| 二重に実行されそう | 複数インスタンス | 原子的クレームで安全。`status` で稼働中のプロジェクトを確認 |
 
 ---
 

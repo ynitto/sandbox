@@ -3,7 +3,7 @@
 > 作成日: 2026-07-05 ／ 改称クローン日: 2026-07-14
 > 対象ブランチ: `claude/agent-flow-req-run-difference-hxpe4a`
 > 関連ファイル: `tools/agent-flow/agent-flow.py`,
-> `tools/agent-flow/tests/test_agent_flow.py`,
+> `tools/agent-flow/tests/`,
 > `tools/agent-project/agent-project.py`,
 > `tools/agent-project/agent-project.yaml.example`
 >

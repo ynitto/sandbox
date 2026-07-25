@@ -42,6 +42,10 @@ class _ChildState:
     deaths: "list[float]" = field(default_factory=list)
     quarantined: bool = False
     next_restart_at: float = 0.0
+    # 計画停止中（親が意図して止めている）。`check_health` は再起動しない。
+    # 隔離（quarantined）と分けるのが要点——隔離は「壊れているので触らない」、こちらは
+    # 「今は動かさないと決めた」で、条件が戻れば親がそのまま再開する。
+    paused: bool = False
 
 
 class Supervisor:
@@ -103,7 +107,7 @@ class Supervisor:
         ハング検知の粒度になる）。"""
         now = self._now()
         for name, st in self._children.items():
-            if st.quarantined:
+            if st.quarantined or st.paused:
                 continue
             dead = st.proc is None or st.proc.poll() is not None
             if not dead and st.spec.is_healthy is not None and not st.spec.is_healthy():
@@ -128,6 +132,31 @@ class Supervisor:
         for name in list(self._children):
             self.stop(name)
 
+    def pause(self, name: str) -> None:
+        """計画停止: 止めたうえで `check_health` の再起動対象から外す（夜間停止など）。
+
+        `stop()` だけでは止まらない——`check_health` は「proc が無い＝死んだ」と読んで
+        即座に再起動するため、止めた側が意図を残さないと止め続けられない。
+        **死亡回数には数えない**（計画停止を繰り返すと隔離に達してしまう）。"""
+        st = self._children[name]
+        if not st.paused:
+            st.paused = True
+            self._on_event(name, "paused")
+        self._kill(st, escalate=True)
+        st.proc = None
+
+    def resume(self, name: str) -> None:
+        """計画停止の解除。次の `check_health` が通常どおり起動する（backoff も待たない
+        ——計画停止は失敗ではないので、再開を遅らせる理由が無い）。"""
+        st = self._children[name]
+        if st.paused:
+            st.paused = False
+            st.next_restart_at = 0.0
+            self._on_event(name, "resumed")
+
+    def paused_names(self) -> "list[str]":
+        return [n for n, st in self._children.items() if st.paused]
+
     def unquarantine(self, name: str) -> None:
         """隔離解除（原因修正後に人/doctor が呼ぶ）。"""
         st = self._children[name]
@@ -136,7 +165,8 @@ class Supervisor:
 
     def status(self) -> dict:
         return {name: {"alive": st.proc is not None and st.proc.poll() is None,
-                       "quarantined": st.quarantined, "deaths": len(st.deaths)}
+                       "quarantined": st.quarantined, "deaths": len(st.deaths),
+                       "paused": st.paused}
                for name, st in self._children.items()}
 
 

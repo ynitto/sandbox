@@ -3,7 +3,7 @@
 > 作成日: 2026-06-13 ／ 改称クローン日: 2026-07-14
 > 対象ブランチ: `claude/kiro-cli-dynamic-workflow-90ezwe`
 > 関連ファイル: `tools/agent-flow/agent-flow.py`, `tools/agent-flow/install.sh`,
-> `tools/agent-flow/tests/test_agent_flow.py`, `tools/agent-flow/README.md`
+> `tools/agent-flow/tests/`, `tools/agent-flow/README.md`
 >
 > **由来**: 旧 `kiro-flow` 系統から移行し、名称を `agent-flow` へ改称した設計。
 > 旧実装と旧設計書は移行完了後に削除済み。
@@ -635,7 +635,8 @@ Claude Code スキル `.github/skills/agent-flow/` がこの CLI の呼び出し
 
 ## 13. テスト
 
-`tools/agent-flow/tests/test_agent_flow.py`（kiro-cli 不要・標準ライブラリのみ）。
+`tools/agent-flow/tests/test_<機能>.py`（kiro-cli 不要・標準ライブラリのみ。共有の前置きは
+`tests/_shared.py`）。
 
 - **プロトコル/障害注入**: 決定的タイブレーク、lease 切れ claim の回収（死んだワーカー）、
   同時 claim でも勝者は 1 人、状態遷移。
@@ -653,7 +654,7 @@ Claude Code スキル `.github/skills/agent-flow/` がこの CLI の呼び出し
   - `--git-subdir` ＋ sparse checkout で無関係ディレクトリを作業ツリーに展開しない
 
 ```bash
-python3 tools/agent-flow/tests/test_agent_flow.py
+python3 -m unittest discover -s tools/agent-flow/tests
 ```
 
 ---

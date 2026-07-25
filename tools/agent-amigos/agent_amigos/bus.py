@@ -158,15 +158,18 @@ def make_bus(spec: str, workdir: "str | None" = None) -> Bus:
     """バス指定からバス実装を作る。
     - ローカルディレクトリ: そのままパス
     - `git+<url>`: 専用バスリポジトリ（ミッション別ブランチ、設計書 §5.1）
-    - `hub+<url>`: hub サーバ経由（`agent-amigos hub` の対向、設計書 §5.2）
+
+    `hub+<url>`（hub サーバ経由）は廃止した（実装計画 W1-9）。常駐一本化で
+    `agent-amigos serve`（hub の公開元）が無くなり、対向だけ残しても繋ぐ先が無い。
+    共有は git バス（`git+<url>`）に一本化する。
     """
     s = str(spec or "").strip()
     if s.startswith("git+"):
         from .gitbus import GitBus
         return GitBus(s[4:], workdir=workdir)
     if s.startswith("hub+"):
-        from .hubbus import HubBus
-        return HubBus(s[4:], workdir=workdir)
+        raise SystemExit("[agent-amigos] hub バス（hub+<url>）は廃止されました。"
+                         "git バス（git+<url>）かローカルディレクトリを指定してください")
     if not s:
         raise SystemExit("[agent-amigos] バスのパスを指定してください（--bus <dir>）")
     return Bus(s)

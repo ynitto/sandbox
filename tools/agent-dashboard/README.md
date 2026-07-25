@@ -72,7 +72,7 @@ agent-amigos ミッションとノード予算（`src/features/amigos/`）を同
 
 | タブ | データソース |
 |------|-------------|
-| 概要 | `charter.md`（goal / deliverables / acceptance）・`project.json`（acceptance PASS 履歴）・`backlog/` 集計・`policy.md`・`claims/`・`run-log.jsonl`・`DELIVERY.md`・`status.json`（daemon の生存信号。instances に無ければこちらへフォールバック） |
+| 概要 | `charter.md`（goal / deliverables / acceptance）・`project.json`（acceptance PASS 履歴）・`backlog/` 集計・`policy.md`・`claims/`・`run-log.jsonl`・`DELIVERY.md`・`status.json`（daemon の生存信号。`engine/status.json` で分からないときのフォールバック） |
 | バックログ | `backlog/<id>.md`（1 ファイル = 1 タスク。status / priority / verify / after 等）・`archive/<id>.md`（done） |
 | 要対応 | `needs/<id>.md`（MADR 形式。blocked / review / milestone。「ファイルを開いて回答」でエディタへ） |
 | フロー | `<bus>/runs/<run-id>/`（`graph.json` + `results/` + `claims/` + `waits/` からノード状態を導出し DAG を描画。`events/*.jsonl` のアクティビティ付き）。run のスナップショットはポーリングのたびに**プロジェクト配下の `flow-archive/<run-id>.json`** へ写し取り、掃除で bus から消えた run も「アーカイブ」として一覧・閲覧できる（プロジェクトのデータなのでリセットで一緒に消える。state_git の同期対象からは bus と同様に外れる）。gitlab executor の **park & poll**（承認待ちで worker スロットを解放し保留）に対応し、生存 lease を持つ `waits/<node>.json` を「**承認待ち（parked）**」ノード（オレンジ・レビュー中アイコン）として、同時イシュー上限での「起票見送り（throttle）」も区別して表示する（lease 失効は pending へ縮退＝本体と同じ）。`cancelled` run も終端として正しく扱う（応答なしに誤分類しない）。バスは `<root>/bus` → `<root>/bus` → ⚙ 設定 → agent-project 設定ファイル（`.agents/`）の `bus:` の順に自動発見。run の生存（orchestrator 応答なし）は `meta.json` の生存リース（`orch_lease_until`）から、daemon の稼働はロックファイル（`$TMPDIR/agent-flow-locks/daemon-<sha1>.lock` の pid。同一ホストのみ）から、無ければ `<bus>/status.json`（生存信号。state_git 同期経由の推定）から判定 — **agent-flow CLI には一切聞かない**。ノード詳細では進捗（開始・経過・worker heartbeat/lease・所要・作り直し回数・claimed/result のタイムライン）と、gitlab executor の**関連イシュー**（承認は `data`、却下は output の URL、実行中は決定的タスクトークンの GitLab 検索）を表示し「レビューで開く」で gitlab-review-viewer へ引き継ぐ。run 表示ペインは**概要 / タスクグラフ / ノード情報**の縦 3 段に分かれ、各段が独立して縦スクロールする（グラフが縦に長くても概要・ノード詳細を見失わない） |
@@ -102,8 +102,8 @@ agent-amigos ミッションとノード予算（`src/features/amigos/`）を同
 
 ビュアーはそこから設定の `root:`（相対はワークスペース基準）を読み、**プロジェクトルート** — 状態の
 置き場 — を導く。`charter.md` / `backlog/` / `needs/` / `bus/` / `flow-archive/` はすべてこの直下で、
-CLI の `--root`・`~/.agent-project/instances/*.json` の `root` と同じものを指す。承認・投入・リセット
-などの操作はすべてプロジェクトルートを基準に行う。
+CLI の `--root` と同じものを指す。承認・投入・リセットなどの操作はすべてプロジェクト
+ルートを基準に行う。
 
 ```
 /home/me/src/webapp           ← ワークスペース（これを登録する）
@@ -113,19 +113,14 @@ CLI の `--root`・`~/.agent-project/instances/*.json` の `root` と同じも�
     └── bus/  flow-archive/
 ```
 
-`root:` が無ければ登録したフォルダ自体がプロジェクトルート＝**状態フォルダを直接登録する従来の
-使い方もそのまま動く**（instances 由来の自動発見もこの経路）。表示名はワークスペース名になるので、
-`.agent-project` のような技術的なフォルダ名が一覧に出ることはない。
+`root:` が無ければフォルダ自体がプロジェクトルート＝状態フォルダを直接指す形にもなる。
+表示名はワークスペース名になるので、`.agent-project` のような技術的なフォルダ名が一覧に
+出ることはない。
 
-プロジェクトの発見は次の 2 系統:
-
-1. **設定の roots** — ⚙ 設定「ワークスペース」に 1 行 1 つを登録。**ワークスペースでもプロジェクト
-   でもないフォルダを登録すると「束ねる親フォルダ」とみなし、配下から `agent-project.yaml`（ルート
-   直下 / `.agents/`。または charter.md / backlog/ 等のマーカー）を持つディレクトリを自動発見**して、
-   それぞれ 1 件として一括追加する（探索の深さは設定 `projects.scanDepth`・既定 2 階層。プロジェクトと
-   判定したディレクトリの配下はそれ以上掘らない）
-2. **自動発見** — `~/.agent-project/instances/*.json`（稼働発見レコード）から稼働中プロジェクトを
-   検出。heartbeat が新鮮なプロジェクトには ● 稼働中マークが付く（一時停止中は ⏸）
+**プロジェクトの発見は実行側の状況ファイル 1 本**（`engine/status.json` の `children[].root`）。
+どのプロジェクトを持つかを決めるのは実行側の `agent-project.host.yaml` で、この画面はそれを
+映すだけ——**画面からの登録・登録解除は無い**（一覧に出すには host.yaml へ追記する）。
+設定に残るのは「どこの状況ファイルを読むか」（ディストロ / ベースパス）と表示の好みだけ。
 
 レイアウトはプロジェクトルート直下フラット（charter.md / backlog/ / needs/ … が直下）のみ。
 
@@ -201,13 +196,11 @@ clone へコミット／push され、そのプロジェクトを回している
 
 #### daemon の稼働判定（同期経由の推定）
 
-本体が別ホストの場合、従来はサイドバーの ● 稼働中バッジも概要タブの実行状況も出せなかった
-（`~/.agent-project/instances/` はローカルの生存レジストリで、同期対象に含まれないため）。
-本体が `<root>/status.json`（生存信号。本体側 README「daemon の生存信号」参照）を書くように
-なったため、これも state_git で同期されてくる。viewer は次の順で稼働を判定する:
+本体が別ホストの場合でも、`<root>/status.json`（生存信号。本体側 README「daemon の生存信号」
+参照）が state_git で同期されてくるので稼働を判定できる。判定は次の順:
 
-1. **instances**（同一ホスト・heartbeat 鮮度）— 確定判定。従来どおり
-2. **status.json**（同期経由）— instances に無ければこちらにフォールバックし、
+1. **`engine/status.json`**（実行側の常駐体が書く。子の生死・休止中・切り離しを含む）— 確定判定
+2. **`<root>/status.json`**（同期経由）— 1 で分からないときのフォールバック。
    `updated_iso` が本体自身の計算した鮮度窓（`fresh_after_sec`）以内なら「稼働中」とみなす
 
 サイドバーの ● は判定根拠を区別して表示する（同期経由の推定は輪郭のみの◯＋プロジェクト名に
@@ -297,7 +290,7 @@ agent-project の人間ループはこのアプリ内で完結できる。いず
 | ■ run キャンセル | フロータブの run 詳細 | run を **cancelled** に終端化する唯一の hard-stop。`inbox/cancels/<run-id>.json` に cancel マーカーを置き（git 同期で他 PC / daemon へ伝わる）、`meta.json` を cancelled に確定し、`waits/`（承認待ち）を掃除して監視の再ポーリングを止める。**承認待ちで park 中の run も暴走中の run も止められる**。起票済みの GitLab イシューは残す（追跡だけやめる＝agent-flow の既定。イシュークローズは daemon の `cancel --close-issues` か gitlab-review-viewer に任せる — この viewer の GitLab クライアントは読み取り専用）。終端済み run には効かない（不可逆） |
 | 🗑 run 削除 | フロータブの run 詳細 | 同上のファイル操作。確認のうえ `<bus>/runs/<run-id>/` をゴミ箱へ移動。終端（done/failed/cancelled）と応答なし（孤児）のみ — orchestrator が生存している実行中 run は拒否 |
 | ⏸ 一時停止 / ▶ 再開 | 概要タブ「稼働操作」 | `commands/<name>.json` ドロップ（`{"command":"pause"/"resume"}`・プロジェクト単位＝id 無し）。本体は `paused.json` を立てて watch の消化を止める（idle 監視・指示の取り込みは継続）。status.json の `paused` がサイドバー ⏸ とヘッダのバッジに出る |
-| ⏹ 停止 | 概要タブ「稼働操作」 | 同上（`{"command":"stop"}`）。本体は状態を push してから graceful 停止する。**再開はプロジェクトのマシン（WSL 等）で `agent-project start`**（プロセス起動はファイル契約の外） |
+| ⏹ 停止 | 概要タブ「稼働操作」 | 同上（`{"command":"stop"}`）。本体は状態を push してから graceful 停止する。**再開はプロジェクトのマシン（WSL 等）の常駐体が次の監視巡で子を起こす**（常駐体ごと落ちている場合だけ `agent-project serve` を人が上げる — プロセス起動はファイル契約の外） |
 | ⚠ リセット（charter 以外を全消去 + agent-flow 停止） | 概要タブ「危険な操作」 | プロジェクトを **charter からゼロにやり直す**危険操作。①バスの agent-flow daemon を停止（同一ホストのロック pid へ SIGTERM。別ホスト稼働は停止できない旨を報告）→ ②`charter.md` **以外**の全データ（backlog / archive / needs / decisions / journal / run-log / DELIVERY / inbox / commands / bus 直下 / flow-archive 等）をゴミ箱へ移動。charter が残るため、本体（agent-project）が稼働中なら次パスで charter から再分解して最初からやり直す。ドット始まりの同期内部（プロジェクトの `.state-git` と **バスの `bus/.state-git`**）は温存 — 管理クローンの manifest が残ることで削除が state_git 同期で「ローカルの削除」としてリモートへ伝播する（クローンごと消すと次の同期でリモートから旧データ・旧 run が**復活**してしまう）。charter.md が無いプロジェクトでは出さない（残すものが無く、プロジェクト削除になるため）。共有バス構成では daemon 停止が他プロジェクトにも影響する旨を確認ダイアログで警告する |
 
 - 理由・方針の記入はすべて決定記録（`decisions/` の DR）や次 act への feedback として
@@ -325,8 +318,7 @@ agent-project の人間ループはこのアプリ内で完結できる。いず
   `{ "members": [...], "tasks": { "<task-id>": "<名前>" } }`）。agent-project の契約ファイル
   ではないため本体の動作・done の不変条件には一切影響せず、state_git 同期の対象なので
   （ドット始まり・`flow-archive`/`claims` 以外は全て同期される）**チームの clone 全員に共有**
-  される。「操作を都度コミットしてプッシュ」（gitAutoPush）が有効なら割り当ての保存で
-  即 push される。
+  される（push は実行側の常駐体が状態同期で行う——この画面は git へ書き込まない）。
 - **手書きも可**: backlog の md に `- owner: <名前>` と書いてもよい（本体は未知キーを
   保持する契約）。`assignments.json` の割り当てがあればそちらが優先。タスク追加時に
   inbox JSON へ `owner` を含めても同様に保持される。
@@ -358,7 +350,7 @@ agent-project の人間ループはこのアプリ内で完結できる。いず
   タスク状態・done の不変条件には触れない。1 コメント 1 ファイルなので、**複数メンバーが
   別 PC から同時にコメントしてもファイル名が衝突せず state_git 同期で自然にマージ**される
   （全体 JSON の last-write-wins で消えない。バスの `runs/` と同じ流儀）。同期対象なので
-  チームの clone 全員に配られ、gitAutoPush 有効なら投稿で即 push。
+  チームの clone 全員に配られる（push は実行側の常駐体が状態同期で行う）。
 - **UI**（要対応カードの「レビューコメント」セクション・review / blocked でだけ出す）:
   - 各メンバーは名前（localStorage に記憶）とコメントを入れて「コメントを追加」
   - 一覧で全員のコメント（投稿者・時刻・本文）を確認。**監視担当者は各コメントを編集・

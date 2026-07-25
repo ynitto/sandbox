@@ -113,11 +113,13 @@ profile が絶対パス必須なのは自動起動の cwd 非依存のため。�
 ログオン時）:
 
 ```
-wsl.exe -d <distro> -u <user> -- agent-project start --profile myproj
+wsl.exe -d <distro> -u <user> -- agent-project serve
 ```
 
-`start` は常駐（`run --watch`）を detached 起動し、多重起動はインスタンスレジストリ
-（`~/.agent-project/instances/`）で抑止される。クラッシュ残骸（孤児 agent-flow・
+`serve` は PC 単位の常駐体で、`agent-project.host.yaml` に宣言したプロジェクトを子として
+起動・監視する（**PC に 1 本**。多重起動はしない）。systemd がある環境なら
+`bash tools/install.sh --service` で user unit を構成する方が確実
+（[セットアップガイド](single-resident-setup.md) §4）。クラッシュ残骸（孤児 agent-flow・
 stale lock・中断 rebase）は次回起動時に自動回収される。
 
 ## 分担のしかた
@@ -176,9 +178,9 @@ run 内の各ノードが PC 間に分散されないのは**バグではなく�
 | 同じタスクを 2 台が同時に取りに行く | CAS push は片方しか成功しない。負けた側は remote truth に巻き戻す | 不要 |
 | dashboard を閉じている | 影響なし。dashboard は純粋な viewer + ファイルドロップ。起動時に現状を再読取 | 不要 |
 | commands ドロップが不正/適用失敗 | `commands/<name>.json.err` に理由、成功は `commands/processed/` にレシート。dashboard がカード上に「送信→受理/失敗」を表示 | 失敗理由を見て再操作 |
-| daemon 停止中に dashboard から操作 | ドロップはファイルとして残り、daemon 再開時に取り込まれる（結果整合） | 急ぐなら該当 PC で `agent-project start` |
+| 常駐体の停止中に dashboard から操作 | ドロップはファイルとして残り、再開時に取り込まれる（結果整合） | 急ぐなら該当 PC で `agent-project serve` |
 | 時計ずれ | lease / availability に `clock_skew_tolerance_sec` を考慮 | NTP を有効に。許容を超えるずれだけ直す |
-| 状態の破損・誤操作 | 全変更が状態リポジトリのコミット履歴に残る | `git log` で特定 → clone し直し or revert → `start` |
+| 状態の破損・誤操作 | 全変更が状態リポジトリのコミット履歴に残る | `git log` で特定 → clone し直し or revert → `serve` を上げ直す |
 
 ## やってはいけないこと（アンチパターン）
 
@@ -274,7 +276,7 @@ done/reject 時の「backlog から削除 + archive へ作成」は、他 PC が
 # 状態リポジトリが詰まった/壊れた疑い → 作り直しが最速（状態repo＝バックアップ）
 mv ~/projects/myproj-state ~/projects/myproj-state.bak
 git clone git@gitea:team/myproj-state.git ~/projects/myproj-state
-agent-project start --profile myproj
+agent-project serve
 
 # ある PC の doing が固まった → needs に出る「ready へ戻す」を dashboard で承認するだけ
 # （承認 = commands/ ドロップ → controller が CAS で status を戻す）

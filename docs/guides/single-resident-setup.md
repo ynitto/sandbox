@@ -6,11 +6,25 @@
 1 PC = 1 常駐体（`agent-project serve`）。PC ごとに宣言する `agent-project.host.yaml` を
 唯一のソースとして、登録したプロジェクトを監督し、amigos の参加・gc を周期実行する。
 
-## 1. 前提
+## 1. インストール
 
-- `agent-project`（本ガイド）・`agent-flow`・`agent-amigos` を同じ PATH prefix へ
-  インストール済み（各ツールの `install.sh` を実行済み）。
+クローンして `tools/install.sh` を 1 回叩く。`agent-project` / `agent-flow` / `agent-amigos` の
+3 コマンドが同じ場所（既定 `~/.local/bin`）へ入る。
+
+```bash
+git clone <このリポジトリ> && cd <クローン先>
+bash tools/install.sh
+```
+
+**3 つを別々に入れない。** 同じ共通ライブラリと契約バージョンを共有しているので、片方だけ
+古いと状態の読み書きや仕事の受け渡しが噛み合わなくなる。更新も同じコマンドでまとめて行う
+（`git pull && bash tools/install.sh`）。
+
+- 入れる先を変える: `bash tools/install.sh --prefix /usr/local/bin`
+- 1 本だけ入れ直す: `bash tools/install.sh --only agent-project`
 - Windows/WSL 配置の場合はクローンを WSL 側の ext4 に置く（`/mnt/c` は使わない — 設計 §7）。
+- python 3.9 以上が要る。git・エージェント CLI（claude / codex 等）・PyYAML の有無は
+  インストーラが確認して、足りないものだけ教える。
 
 ## 2. host.yaml を書く
 
@@ -29,10 +43,33 @@ board: ""                    # 委譲公示板（未使用ならそのまま）
 amigos_bus: ""                # amigos 参加 tick の対象バス（未使用ならそのまま — tick 自体を skip）
 budget:
   max_concurrent: 0           # 0 = 既定（4）
+availability:                 # 稼働時間帯（省略 = 常時稼働）
+  timezone: Asia/Tokyo
+  daily_stop: "23:30"         # この時刻で停止時間帯に入る
+  drain_before_sec: 1800      # 停止の 30 分前から新規 claim を止める（走っているものは続行）
+  shutdown_grace_sec: 300     # daily_stop からこの猶予を使い切ったら子を止める
 ```
 
 `projects` が空なら**ワーカーノード（lite）プロファイル**（§4.3）になる。導入は
 `agent-project worker init` が対話でこの yaml を生成する（最小手順）。
+
+`availability` の時間の進み方は 3 段:
+
+1. `daily_stop - drain_before_sec` — **drain 開始**。新規 claim を止め、controller を他ノードへ
+   譲る。走っているタスクはそのまま完走させる。
+2. `daily_stop` — 停止時間帯。
+3. `daily_stop + shutdown_grace_sec` — **子を止める**（常駐体が `pause`。SIGTERM → 猶予 →
+   SIGKILL）。時間帯が戻れば常駐体がそのまま `resume` する。
+
+停止を決めるのは**常に親（常駐体）**。計画停止は死亡回数に数えないので、毎晩止めても
+隔離（quarantine）には達しない。`agent-project status` では休止中と隔離が別に出る。
+`availability` の書式が不正なときは**止めたまま**にする（止めたい時間帯に動く方が害が
+大きい）ので、`status` のエラー欄を確認する。
+
+`max_concurrent` は **PC 単位**の上限。常駐体が起こした仕事だけでなく、人が直接叩いた
+単発実行（`agent-amigos run --once` など）も同じ枠で数える——実行中の手番は
+`~/.agents/amigos/turns/*.json` に印が出るので、常駐体がそれを読んで律速する
+（置き場は `AGENT_AMIGOS_TURNS_DIR` で変更可）。
 
 ## 3. 起動して確かめる
 
@@ -65,21 +102,26 @@ residency: systemd        # 4a を選んだ（既定 auto も systemd がある�
 ### 4a. systemd user unit（WSL / Linux）
 
 ```bash
-bash install.sh --service                       # 既定の host.yaml 探索
-bash install.sh --service --host-config /path/to/agent-project.host.yaml
+bash tools/install.sh --service                       # 既定の host.yaml 探索
+bash tools/install.sh --service --host-config /path/to/agent-project.host.yaml
 ```
 
 `~/.config/systemd/user/agent-project.service` を生成し、`systemctl --user enable --now`・
-`loginctl enable-linger` まで一括で行う。`Restart=always` が死んだら上げ直す側を担い、
-ハングは常駐体内蔵の self-watchdog が自ら abort して同じ経路に乗る（`Type=notify` +
-`WatchdogSec` による外部監視の二重化は今回のスコープでは見送った — 4.1 節参照）。
+`loginctl enable-linger` まで一括で行う。止まったときの復帰は 3 段構え:
 
-手動で構成する場合の unit は上記コマンドが書き出す内容を参照。要点は
-`ExecStart=agent-project serve` と `Restart=always` の 2 行。
+1. `Restart=always` — 落ちたら上げ直す。
+2. 内蔵 self-watchdog — 周期処理が固まったら自分で abort し、1 の経路に乗る。
+3. `WatchdogSec=90` — 2 すら打てないほど固まった場合に systemd が殺して上げ直す
+   （常駐体は `WatchdogSec` の半分の間隔で生存を通知する）。
+
+`Type=notify` なので、全ての周期処理が上がってから起動完了として扱われる
+（起動途中の異常を「上がった」と誤認しない）。
+
+手動で構成する場合の unit は上記コマンドが書き出す内容を参照。
 
 ### 4b. Windows タスクスケジューラ（WSL VM の keep-alive を兼ねる）
 
-WSL の外側（Windows 側）の操作なので `install.sh` からは実行できない。ログオン時トリガーで
+WSL の外側（Windows 側）の操作なので `tools/install.sh` からは実行できない。ログオン時トリガーで
 次を実行するタスクを手動登録する（PowerShell 管理者権限）:
 
 ```powershell
@@ -130,12 +172,10 @@ systemd 環境（かつ `residency` が `windows-task`/`none` でない）なら
 - **板の請負 tick**（node 名義での `nodes/<pc>.json` 能力宣言・workload=flow/amigos への
   入札・ワーカー経由の実行）。既存の flow/amigos の板参加はいずれも「委譲側の bus」を
   前提にしており、ノード直轄の契約側実行はまだ設計が固まっていない。
-- **systemd `Type=notify` + `WatchdogSec`** の sd_notify 連携（内蔵 self-watchdog による
-  自己 abort が主経路のため、無くても設計の 2 要件は満たされる）。
-- **旧経路の削除**（`agent-flow daemon`/`submit`、`agent-amigos serve`/`hub`、
-  `agent-project` の `instances`/`start`/`stop`/`restart`）。設計は P1 で削除する計画だが、
-  常駐体側の置き換え（今回の `serve`/`status`/`worker`/amigos 参加 tick/gc tick）が
-  実地で安定してから、テスト資産ごと計画的に削るべき規模の変更のため別作業とする。
+- **旧経路の削除の残り**（`agent-flow daemon`/`submit`）。`agent-amigos serve`/`hub` と
+  `agent-project` の `instances`/`start`/`stop`/`restart` は削除済み。agent-flow 側は、
+  常駐体（`serve`/`status`/`worker`/amigos 参加 tick/gc tick）が実地で安定してから、
+  テスト資産ごと計画的に削る。それまでは退避先として残す。
 
 ## 7. トラブルシュート
 

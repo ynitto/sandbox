@@ -1010,20 +1010,23 @@ def cmd_run(cfg: Config) -> int:
     # 起動時に死んだインスタンスのゴミレコードを掃除する。前回の異常終了（kill -9 / クラッシュ /
     # マシン再起動）では finally が走らず *.json が残るため、自分を register する前に一掃して
     # instances の発見ノイズと start の偽の重複検出を防ぐ（prune は自ホストの死レコードを即削除）。
-    live = list_instances(prune=True, extra=cfg.registry, use_env=not cfg.profile_mode)
     # 同じプロジェクトを二重に監視させない。start は弾いていたが `run --watch` の直叩きは
     # 素通りで、同じ backlog を 2 つのループが奪い合う（同じタスクを二重実行し、状態ファイルと
     # 決定記録を互いに上書きする）。start は自分を register する前にここを通るので自分自身を
     # 重複とは見ない。--force は start から伝搬する。
+    watch_lock = None
     if cfg.watch and not cfg.force:
-        me = socket.gethostname()
-        mine = str((cfg.source_root or cfg.backlog.parent).resolve())
-        dup = [r for r in live
-               if str(r.get("root", "")) == mine and str(r.get("host", "")) == me
-               and r.get("watch")]
-        if dup:
-            print(f"既に root={mine} を監視中です（pid={dup[0].get('pid')}）。"
-                  f"重複起動は --force、再起動は restart を使ってください。", file=sys.stderr)
+        # 同じ backlog を 2 ループが奪い合うと、同じタスクを二重実行して状態ファイルと
+        # 決定記録を互いに上書きする。判定は OS の排他ロック——以前の「レジストリの心拍が
+        # 新しいレコードがあるか」は推定なので、心拍 ttl が長い LLM 実行中に切れる窓で
+        # 二重起動が通っていた（実装計画 W1-9）。
+        watch_lock = acquire_watch_lock(cfg)
+        if watch_lock is None:
+            mine = str((cfg.source_root or cfg.backlog.parent).resolve())
+            holder = watch_lock_holder(cfg)
+            print(f"既に root={mine} を監視中です"
+                  + (f"（pid={holder}）" if holder else "")
+                  + "。重複起動は --force を使ってください。", file=sys.stderr)
             return 1
     ensure_dirs(cfg)
     # 前世代の agent-flow（クラッシュ・電源断で stop を通らず居残ったもの）を刈る。ここを通らないと
@@ -1036,12 +1039,10 @@ def cmd_run(cfg: Config) -> int:
         append_journal(cfg.journal,
                        f"前世代の agent-flow を {reaped} プロセス停止（クラッシュの残骸）。"
                        f"run のリースを失効させ、続きから再開できる状態に戻した")
-    reg = register_instance(cfg, cfg.registry)   # ローカル＋共有レジストリへ登録（リモート発見）
-    hb = lambda: refresh_instance(reg)
-    # watch はタスク実行中（エージェント CLI・agent-flow run）に数分〜数十分ブロックする。
-    # パス境界の hb だけでは心拍が TTL 切れし、外からは停止したように見えるため、実行中も
-    # 打ち続ける別スレッドを立てる（単発 run は即終わるので不要）。
-    hb_stop = _start_heartbeat_thread(cfg, reg) if cfg.watch else None
+    # インスタンスレジストリ（自己申告 + 心拍）は廃止した（実装計画 W1-9）。稼働の可視化は
+    # 常駐体が書く `engine/status.json` の children[].alive（親が Popen で見た実測）へ移り、
+    # 二重監視の防止は OS の排他ロック（acquire_watch_lock）へ移った——どちらも心拍窓を
+    # 持たないので、長い作業中に窓が切れて「停止中」に見える問題が構造的に消える。
     controller_stop = None
     availability_stop = None
     try:
@@ -1059,11 +1060,11 @@ def cmd_run(cfg: Config) -> int:
             # （charters/<name>.md）が置かれた瞬間に charter 駆動へ入れる（run_watch は
             # charter の追加を監視しないため、ここで振り分けを間違えると気づけない）。
             if _coordination_active(cfg):
-                run_watch(cfg, heartbeat=hb)      # role は各パスで lease から決め、停止後も自動昇格する
+                run_watch(cfg)      # role は各パスで lease から決め、停止後も自動昇格する
             elif charter_names(cfg) or _has_master_charter(cfg):
-                project_watch(cfg, heartbeat=hb)  # 目標を満たすまで回り続ける常駐（全 charter）
+                project_watch(cfg)  # 目標を満たすまで回り続ける常駐（全 charter）
             else:
-                run_watch(cfg, heartbeat=hb)      # backlog 監視の常駐
+                run_watch(cfg)      # backlog 監視の常駐
             return 0
         return _run_single(cfg)
     except (KeyboardInterrupt, _StopRequested):
@@ -1081,13 +1082,9 @@ def cmd_run(cfg: Config) -> int:
             availability_stop.set()
         if _coordination_active(cfg):
             release_controller_lease(cfg)
-        if hb_stop is not None:
-            hb_stop.set()          # レジストリを消す前に心拍を止める（無駄打ちを避ける）
-        for p in reg:
-            try:
-                p.unlink()
-            except OSError:
-                pass
+        # 監視ロックは最後に解放する。flock は fd に紐づくので、下の execv 再起動より
+        # 前に手放さないと、再起動後の自分自身が「既に監視中」と判定して起動できない。
+        release_watch_lock(watch_lock)
     # _RestartRequested 経由でここに到達（return 済みの正常/停止系は通らない）。後始末後に再起動。
     restart_self(_START_CWD)
     return 0

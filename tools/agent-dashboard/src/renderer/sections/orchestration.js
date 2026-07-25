@@ -1318,8 +1318,12 @@ function coworkRepoLabel(repo) {
   return parts.length ? parts[parts.length - 1] : s;
 }
 
-// リポジトリパスの比較キー。WSL UNC（\\wsl.localhost\<distro>\...）と POSIX、
-// /mnt/<drive> と Windows ドライブ表記を同一視する（main 側 _pathKey の縮約版）。
+// cowork のリポジトリパス比較キー。WSL UNC（\\wsl.localhost\<distro>\...）と POSIX、
+// /mnt/<drive> と Windows ドライブ表記を同一視する。
+// **main 側 _pathKey とは別物**（あちらは W2-4 で /mnt 折り畳みを廃止した）。cowork は
+// Windows ドライブ上のリポジトリを wsl.exe 経由で回すので、この機能では /mnt 表記と
+// ドライブ表記が同じ実体を指す——ここを main 側に合わせると、同じリポジトリの作業が
+// 別プロジェクト扱いになって一覧から消える。
 function coworkPathKey(p) {
   let s = String(p || '').trim().replace(/\\/g, '/');
   if (!s) return '';

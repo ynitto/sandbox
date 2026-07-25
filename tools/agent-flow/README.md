@@ -409,8 +409,11 @@ loose object を「一時ファイル→ rename」で書くが *中身の fsync 
 ## インストール
 
 ```bash
-bash tools/agent-flow/install.sh          # ~/.local/bin/agent-flow にインストール
-bash tools/agent-flow/install.sh --prefix /usr/local/bin   # 任意の場所へ
+bash tools/install.sh                     # agent-project / agent-flow / agent-amigos を
+                                          # まとめて ~/.local/bin へ（推奨。3 本は同じ
+                                          # agentcore と契約バージョンを共有する）
+bash tools/install.sh --only agent-flow   # このツールだけ
+bash tools/install.sh --prefix /usr/local/bin   # 任意の場所へ
 ```
 
 標準ライブラリのみで動作（pip 依存なし）。git は分散モードで必要、kiro-cli は実運用で必要
@@ -433,7 +436,8 @@ tools/agent-flow/
   agent-flow.py          # 薄いエントリ（後方互換・テスト e2e）
   agent_flow/            # 実体（断片 *.py。__init__.py が共有名前空間へ exec）
   executors/            # executor プラグイン（install 時に prefix 隣へ）
-  install.sh            # zipapp 化して ~/.local/bin/agent-flow へ
+  install.sh            # tools/install.sh --only agent-flow へ委譲する薄いシム
+tools/install.sh        # 3 エンジン共通のインストーラ（zipapp 化・agentcore 同梱・環境チェック）
 ```
 
 編集は `agent_flow/<断片>.py` を触る。配布後も `--help` / `run` / `daemon` は従来どおり。
@@ -716,9 +720,11 @@ update_installer: install.sh    # サブディレクトリ内で実行するイ�
 kiro-cli 不要（stub のみ）。プロトコル・障害注入・依存分解・再計画・end-to-end を検証する。
 
 ```bash
-python3 tools/agent-flow/tests/test_agent_flow.py
-# または: python3 -m unittest discover -s tools/agent-flow/tests
+python3 -m unittest discover -s tools/agent-flow/tests   # 全部
+python3 -m unittest tests.test_planner                  # 1 機能だけ（tools/agent-flow で実行）
 ```
+
+テストは機能別のファイルに分かれている（`tests/test_<機能>.py`。共有の前置きは `tests/_shared.py`）。
 
 主なケース: 決定的タイブレーク、**lease 切れ claim の回収（死んだワーカー）**、
 **同時 claim でも勝者は 1 人**、逐次依存の分解、失敗 → 再計画 → retry 成功（end-to-end）、

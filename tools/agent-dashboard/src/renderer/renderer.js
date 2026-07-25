@@ -750,7 +750,9 @@ function renderTree() {
         // そのまま忘れられる。行そのものに印を出す（詳しい説明はヘッダの状況表示が担う）。
         const held = p.quarantined
           ? '<span class="badge warn" title="繰り返し失敗したため一時的に切り離されています">停止中</span>'
-          : '';
+          : p.offHours
+            ? '<span class="badge" title="稼働時間外のため休止中です（時間になると自動で再開します）">休止中</span>'
+            : '';
         return `<div class="project-item ${state.selectedDir === p.dir ? 'selected' : ''}" data-dir="${esc(p.dir)}" title="${esc(p.dir)}">
           <span class="dot ${p.running ? 'running' : ''} ${remoteGuess ? 'synced' : ''} ${p.paused ? 'paused' : ''}" title="${esc(dotTitle)}"></span>
           <span class="name">${esc(displayName)}</span>${badges.join('')}${held}

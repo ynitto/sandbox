@@ -224,6 +224,7 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
     settled = archived = spawned = tokens = 0
     cost = 0.0
     _board = None   # 遅延・使い回し（board-loc の offloaded がある回だけ 1 回だけ構築・pull する）
+    collected: "list[str]" = []   # 回収し終えた公示（パス末尾でまとめて板から消す）
     for task in [t for t in tasks if t.norm_status() == "offloaded"]:
         run_id = str(task.get("flow_run", "") or "")
         loc = str(task.get("flow_loc", "daemon") or "daemon")
@@ -279,6 +280,17 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
         task.drop("flow_run", "flow_loc")
         task.status = "doing"
         persist_task(cfg, task)
+        if loc == "board":
+            # 終端を読み終えた公示は板から消す（設計 §4.2 gc tick「終端した公示」の実体）。
+            # **消してよいと知っているのは依頼側だけ**なので、時間ベースの一括掃除にはしない
+            # ——その期間オフラインだった依頼側が結果を読む前に消えると `read_result` が
+            # None を返し、offloaded が未終端のまま永久に固まる（タイムアウトが無い）。
+            #
+            # **消すのは「タスクが offloaded を抜けた後」**。上の persist_task より前に消すと、
+            # そこでクラッシュしたときタスクは offloaded のまま公示だけ消え、次パスで結果が
+            # 読めず永久に固まる——まさに時間ベース掃除で避けたかった状態になる。
+            # 実際の削除はパス末尾で 1 回にまとめる（board への push を run ごとに撃たない）。
+            collected.append(run_id)
         dtok, dusd = parse_cost(msg)
         tokens += dtok
         cost += dusd
@@ -317,6 +329,11 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
         release_claim(cfg, task)
         settled += 1
     if _board is not None:
+        # 回収し終えた公示を消す。失敗しても実害は無い（次パスで同じ run_id を通らないだけ。
+        # 孤児は gc tick の長期マージン掃除が拾う）ので、板の不調で reap を止めない。
+        for did in collected:
+            with contextlib.suppress(Exception):   # noqa: BLE001 — git 転送は OSError に限らない
+                _board.drop_delegation(did)
         # dashboard 等がこのマシン上の同一板クローンへ直接書いた award.json / cancelled.json は
         # agent-project 自身は post 時（新規のときだけ）しか push しない——ここで押し出さないと
         # 依頼側の意思表示（落札確定・中止）が板の同期契機を失い、リモートの請負ノードへ永久に

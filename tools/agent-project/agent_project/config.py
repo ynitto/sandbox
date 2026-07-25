@@ -6,7 +6,14 @@ from __future__ import annotations
 # このツールがスキルリポジトリ内に置かれているサブディレクトリ（自動アップデートの参照先）。
 # 自動アップデートは update_repo のこのパス以下だけを temp 領域へ sparse-checkout して
 # install.sh を実行する（doctor と同じ流儀で、操作は決定的・無関係ファイルは取得しない）。
-TOOL_SUBDIR = "tools/agent-project"
+#
+# **依存パッケージのパスも並べる**（カンマ/空白区切り。`update.split_subdirs`）。cone mode の
+# sparse-checkout は指定ディレクトリの**兄弟を含まない**ため、本体だけ取ると installer が
+# zipapp へ同梱する `tools/agentcore` が無く、`agentcore パッケージが見つかりません` で
+# 必ず失敗する（自己更新が毎回サイレントに見送られる）。先頭が installer とダイジェストの
+# 基準ディレクトリ。統合インストーラ `tools/install.sh` は cone mode が親ディレクトリの
+# ファイルを含めるので、`tools/<engine>` を 1 つ指定すれば一緒に落ちてくる。
+TOOL_SUBDIR = "tools/agent-project tools/agentcore"
 # スキルリポジトリ（git URL/パス）の既定。空なら install.py が生成する skill-registry.json から
 # 自動解決する（repositories.origin.url → install_dir）。設定ファイルの update_repo で明示も可。
 DEFAULT_UPDATE_REPO = ""
@@ -202,7 +209,6 @@ class Config:
     delivery_review: bool = True
     throttle: float = 0.0   # ソフト予算比率(0=off)。max_tokens/max_cost のこの割合で run を打ち切り watch は report 降格
     runlog: "Path | None" = None    # 構造化 run-log（JSONL・run 毎に1行追記）。既定 <root>/run-log.jsonl
-    registry: "list" = field(default_factory=list)  # 共有レジストリ（別ホスト発見用。NFS/同期/git バス）
     dry_run: bool = False
     once: bool = False
     project_name: str = ""               # プロジェクト名（ルートのディレクトリ名。milestone id の一次ソース）

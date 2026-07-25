@@ -1,15 +1,15 @@
 # 常駐一本化 実装計画
 
-- 日付: 2026-07-24
-- 状態: 提案
+- 日付: 2026-07-24（最終更新 2026-07-26）
+- 状態: **P0〜P2 完了 / P3 進行中**。残作業は §7 に集約してある（消化済みの項目は落とした）。
 - 対応設計: [`2026-07-24-single-resident-controller-design.md`](./2026-07-24-single-resident-controller-design.md)（改訂 6）。
   本書は設計 §8 の 4 フェーズを、対象ファイル・作業項目・完了条件つきの作業計画に分解する。
 - 規模の目安: S = 半日〜1 日 / M = 2〜4 日 / L = 1 週間級（1 人での目安）
 
 ## 0. 進め方の原則
 
-1. **フェーズ末ごとに全テスト緑**を回復してから次へ進む（現状: flow 528 / amigos 140 /
-   project 801 件。移植に伴い数は増減する）。
+1. **フェーズ末ごとに全テスト緑**を回復してから次へ進む（2026-07-26 時点:
+   agent-project 966 / agent-flow 561 / agent-amigos 158 / agentcore 8 / dashboard 緑）。
 2. **P0 は撤退線**: ここで止めても「転送 5 実装 → 1・claim 3 実装 → 1・語彙バグ根治」の
    価値が単体で成立する。
 3. **契約変更は静止点で全 PC 一斉**（語彙統一・板 result 拡張・speculation 削除・
@@ -21,6 +21,8 @@
    刻み**、切替済みバイナリを旧リビジョンに戻せばデータはそのまま動く状態を P1 完了まで保つ。
 
 ## 1. P0 — 共通ライブラリ抽出（transport / protocol）
+
+> **状態: 完了**
 
 目標: 転送・claim・語彙の重複を消す。語彙統一以外は**挙動不変**（既存テストが担保）。
 
@@ -42,6 +44,8 @@
 
 ## 2. P1 — 常駐体（resident）の実装と旧常駐の削除
 
+> **状態: 完了**（W1-9 の旧経路削除のうち agent-flow 側だけ §7 へ繰り越し）
+
 目標: 常駐を 1 本にし、旧常駐・location・instances 等を一括削除する。最大のフェーズ。
 
 | # | 作業 | 対象・内容 | 規模 |
@@ -50,7 +54,7 @@
 | W1-2 | flow の tick 抽出 | `agent_flow/daemon.py` のループ本体を cancel / orphan-adopt / auto-heal / board / heartbeat の tick 関数群へ分解（primitives は既に独立関数。ordering 制約 — cancel 受理 → 孤児回収 — をテストで固定） | M |
 | W1-3 | amigos の tick 化と drive 新設 | `cycle()` から手番実行を分離（claim/心拍/away tick + 手番のワーカー投入）。**単発駆動 `agent-amigos drive`** を新設（現 `serve --cycles` の骨格から常駐化 — デーモンロック・シグナル常駐 — を除去。インライン実行のまま） | M |
 | W1-4 | スーパーバイザ | 子（プロジェクトループ）の起動・心拍鮮度によるハング検知・再起動・指数バックオフ + 隔離（quarantine）・graceful 停止の一括処理（claims 解放 → controller lease 解放 → away 宣言 → 板 status away → 最終 push）。既存の自殺型停止経路（availability の自 SIGTERM・self-update execv・グローバル drain フラグ）を「親 → 子への指示」へ置換 | L |
-| W1-5 | ノード直轄ワーカー | 板落札の実行をロール共通のワーカー実行へ（プロジェクト子へ渡さない）。ノード全体 `max_concurrent` セマフォ（計数は status/run ファイルから導出） | M |
+| W1-5 | ノード直轄ワーカー | 板落札の実行をロール共通のワーカー実行へ（プロジェクト子へ渡さない）。ノード全体 `max_concurrent` セマフォ（計数は**実行中を表すファイル**から導出 — 在籍状態を表すファイルは流用しない） | M |
 | W1-6 | ノード契約の実装 | `nodes/<pc>.json`（能力宣言 + **契約バージョン**）・`engine/status.json`（心拍・tick 実績・同期健康・エラーリングバッファ・子状態・実行中 run）・gc tick（バス残骸・終端公示・クローン世代・tmp worktree） | M |
 | W1-7 | 状態共有の一本化 | StateGit の管理クローン（`.state-git`）モードと非 git モードを削除し direct 一本へ。未初期化ルートは常駐体が git init。remote 無しはローカル縮退（同一コード） | M |
 | W1-8 | coordination 常時化 | `coordination:` 設定キーを削除し「remote あり = 常時有効」へ。controller lease 配下の制御面ゲーティングを子ループに統合 | M |
@@ -65,7 +69,24 @@
 全行に検証手段がある / 旧リビジョンへのバイナリ戻しでデータがそのまま動く /
 セットアップガイドのドラフトが存在し、書かれた手順どおりに新規 PC を 1 台導入できる。
 
+### P1 実施結果
+
+W1-1〜W1-13 完了。旧経路の削除（W1-9）だけ agent-flow 側が §7 R3 へ残る。
+
+レビューで作業項目と実装を突き合わせて見つかった未達分も後から埋めた。**判断の根拠は
+実装側の docstring に書いてある**ので、ここでは何を直したかだけ:
+
+| 項目 | 直したこと | 根拠の在処 |
+|---|---|---|
+| W1-1 | systemd `Type=notify` + `WatchdogSec`（`READY=1` / `STOPPING=1` / `WATCHDOG_USEC` の半分で心拍）。復帰が 3 段構えになる | `resident/scheduler.py`・`tools/install.sh` |
+| W1-4 | 自殺型停止経路を親 → 子の指示へ。`Supervisor.pause()` / `resume()` を新設し、計画停止を死亡回数に数えない。止めるのは `shutdown_due` に達してから（`draining` で止めると猶予設定が死ぬ） | `coordination.py`・`resident_cli._availability_tick`・`resident/supervisor.py` |
+| W1-5 | `max_concurrent` の計数を**実行中を表すファイル**から導出。在籍状態（バスの `status/<who>.json`）は流用しない——終わった手番を走行中と誤読して自分の次の手番を弾く | `agent_amigos/turnmark.py`・`resident/worker.py`・`resident_cli._external_amigos_inflight` |
+| W1-6 | 板の終端公示の gc。削除の主体は依頼側、**タスクが offloaded を抜けた後**に消す。孤児だけ gc tick が長期マージンで掃く | `board.py`（`drop_delegation` / `sweep_terminal_delegations`）・`loop.py` |
+| W1-12 | C14 併走テストと親 kill のカオステストを新設。後者は「孤児の掃除は起動系に委ねる」前提を事実として固定する | agent-amigos `test_cli.py::DriveTests`・agent-project `test_resident.py::ResidentCliTests` |
+
 ## 3. P2 — dashboard 縮退
+
+> **状態: 完了**
 
 | # | 作業 | 対象・内容 | 規模 |
 |---|---|---|---|
@@ -80,7 +101,7 @@
 
 ### P2 実施結果（2026-07-25）
 
-W2-1〜W2-5 は実装・テストとも完了（agent-dashboard の全テスト緑 / agent-project 958 緑）。
+W2-1〜W2-5 は実装・テストとも完了（agent-dashboard の全テスト緑 / agent-project 983 緑）。
 非退行は `test/no-git-writes.test.js` に構造として固定した（git 書き込みサブコマンドの起動・
 `git:pull`/`git:commitPush`/`git:heal`・`dashboard:start`/`runProjectCli`・
 `daemonLockPath`/`flowLockDir`・列挙設定・R10 の語彙）。
@@ -113,33 +134,130 @@ W2-1〜W2-5 は実装・テストとも完了（agent-dashboard の全テスト�
 - **同期の状況表示は `engine/status.json` の `sync_health` が根拠**になり、ローカル git への
   fetch（`refreshRemote`）は廃止。`git.js` に残るのは `health` / `diagnostics` / `diffRange` /
   `bridgeRepoPath` の 4 つだけ。
+- **計画停止（`children[].paused`）を隔離とは別の印で出す**。W1-4 の availability tick が
+  親主導の pause を入れたことで、engine/status.json に「時間が来れば自動で戻る停止」と
+  「人が直すまで戻らない切り離し」の 2 種が並ぶようになった。同じ「停止中」に見せると、
+  直す必要が無いものを人が直しに行く——サイドバーは「休止中」バッジ、状況表示は
+  `level: ok` の一文（稼働時間外）にした。
 
-未着手（P2 の範囲外として残したもの）:
+作業項目の記述との差分:
 
-- **README / GUIDE の設定項目記述**は旧設定（`projects.roots` / `gitAutoPush` / `flowLockDir` /
-  `projects.command`）のまま。文書の全面改訂は W3-2 に集約する。
-- **R10 の grep 検査の CI 化**も W3-2。現状は dashboard 側の単体テストで
-  `engine.summarize()` と設定ペインの語彙だけを固定している。
+- **W2-1 の「読み取り専用モジュールへ分離」は、別ファイルへ切り出さず `base/main/git.js` を
+  その場で読み取り専用へ縮退させた**（571 行削除）。分離の目的（書き込み経路をこの層から
+  無くす）は満たしており、参照元（`src/main/git.js` の再輸出・テスト）を丸ごと張り替える
+  価値が無いと判断した。`module.exports` を 4 つに固定するテストで「増えたら落ちる」側で担保する。
+- **W2-4 の「`/mnt/c` 経路サポート削除」はプロジェクトのパス解決に限った**
+  （`_pathKey` / `toViewerPath`）。cowork / kiro-loop / participation は Windows ドライブ上の
+  リポジトリを `wsl.exe` 経由で回す機能で、`C:\…` ↔ `/mnt/c/…` の変換はその実行経路の一部。
+  ここまで消すとそれらの機能自体が壊れるため残し、renderer 側の `coworkPathKey` には
+  「main 側とは別物」と根拠を書いた。
 
 ## 4. P3 — パッケージ統合と実機 canary
 
+> **状態: W3-1 完了 / W3-2 は文書とテスト分割まで完了・R10 検査が残り / W3-3 は
+> ランブックのみ（実施は実機待ち）**。残りは §7。
+
 | # | 作業 | 対象・内容 | 規模 |
 |---|---|---|---|
-| W3-1 | 単一パッケージ統合 | 3 エンジンの exec 断片合成を解消し、配布パッケージ `agent-project` へ統合。CLI エントリは `agent-project` / `agent-flow` / `agent-amigos` の 3 本を維持（R9・R10）。インストールは install.sh の 1 本のまま | L |
+| W3-1 | 単一パッケージ統合 | 配布パッケージを 1 本へ統合（インストールは `tools/install.sh` の 1 本・環境チェックも 1 回）。CLI エントリは `agent-project` / `agent-flow` / `agent-amigos` の 3 本を維持（R9・R10）。**exec 断片合成の解消は見送り**（下記実施結果） | L |
 | W3-2 | テスト・文書の再編 | 巨大単一テストファイル × 3 を機能別に再編。README・GUIDE 等の全面改訂・**セットアップガイドの確定版**（W1-13 のドラフトに canary での躓きを反映）・**R10 チェック**（セットアップガイド含む利用者向け文書に node / sync が現れない grep 検査を CI 化） | M |
-| W3-3 | 実機 canary（1 週間） | フル 2 台（停止時刻をずらす）+ ワーカー 1 台（POSIX 機）。**セットアップは W1-13 のガイドだけを見て行い、ガイド外の操作が必要になったら全てガイドの欠陥として記録・反映する**（ガイドの受入試験を兼ねる）。チェックリスト: controller 引継ぎ / 全台停止からの復帰 / 予定 drain / 突然死と fencing 拒否 / self-watchdog 発火 / 子の隔離 / スキル起動の併走 / 板委譲の往復（result ペイロード込み）/ Windows 起動ループ方式での VM 復帰 — 各 1 回以上 | M |
+| W3-3 | 実機 canary（1 週間） | **ランブック: [`docs/guides/single-resident-canary.md`](../guides/single-resident-canary.md)**（C1〜C10 + 日次観測 + ガイド欠陥記録）。フル 2 台（停止時刻をずらす）+ ワーカー 1 台（POSIX 機）。**セットアップは W1-13 のガイドだけを見て行い、ガイド外の操作が必要になったら全てガイドの欠陥として記録・反映する**（ガイドの受入試験を兼ねる）。チェックリスト: controller 引継ぎ / 全台停止からの復帰 / 予定 drain / 突然死と fencing 拒否 / self-watchdog 発火 / 子の隔離 / スキル起動の併走 / 板委譲の往復（result ペイロード込み）/ Windows 起動ループ方式での VM 復帰 — 各 1 回以上 | M |
 
 **完了条件**: canary で二重実行 0・stale done 0・状態欠損 0 / 全ノードが
 「git pull + install.sh」で更新でき、旧バージョンノードが入札しないことを確認。
 
-## 5. 事前検証（P1 着手前に潰す）
+### W3-1 実施結果（2026-07-25）
 
-| # | 検証 | 判定への影響 |
-|---|---|---|
-| V1 | `\\wsl.localhost` への UNC アクセスがディストロを起動し続けるか | keep-alive を保険に格下げできるか（設計 §7） |
-| V2 | agentcore の import 経路（install.sh 配置先での解決方式） | W0-1 の実装方式 |
-| V3 | Windows 起動ループ方式の挙動（`wsl.exe` の終了コード伝播・VM 生存・再起動間隔） | W1-11 の選択式セットアップの実装 |
-| V4 | systemd user unit + linger が WSL 起動時に自動で常駐体を上げるか | 起動系 2 案の推奨順 |
+**スコープを「配布の統合」に絞った。** exec 断片合成の解消は見送り——あの方式は
+「テストが `km.<name>` をモンキーパッチできる単一名前空間」を意図して選ばれたもので
+（`agent_project/__init__.py` に根拠を明記）、解消するとテスト 25,704 行の参照モデルごと
+張り替えになる。一方 W3-1 の目的（配布パッケージ 1 本・install.sh 1 本）は合成方式に
+触らずに達成でき、そこに回帰リスクを積む理由が無い。
+
+- **`tools/install.sh` を新設**し、3 エンジンの installer に散っていた環境チェック・zipapp
+  ビルド・agentcore 同梱を 1 本へ集約した。環境チェックは**1 回だけ**走る（従来は同じ警告を
+  3 度読ませていた）。engine 固有の付帯物は保持: `codd_gate_*.py` の zipapp 同梱と codd-gate
+  同梱インストール（agent-project）・`executors/` の prefix 隣配置（agent-flow）・
+  `--service` の systemd unit 生成（agent-project）。`--only <engine>` で 1 本だけも入る
+  （ワーカーノードと canary の入れ直しで使う）。
+- **各エンジンの `install.sh` はシムへ縮退**（19 行）。既存の手順書・`setup.sh`・自己更新の
+  呼び出しパスを壊さないため残し、`tools/install.sh --only <engine>` へ委譲する。
+- **agentcore は各 zipapp へ同梱したまま**。3 本は別実行ファイルなので、それぞれが
+  自己完結していないと片方だけ動く状態になる（確認: 各 zipapp に agentcore 7 ファイル）。
+
+**着手時に見つけて直した既存不具合（実測で確認）**:
+
+- **自己更新が毎回失敗していた。** `update.py` の sparse-checkout は cone mode で
+  `tools/agent-project` だけを取るため `tools/agentcore` が入らず、installer が
+  `agentcore パッケージが見つかりません` で die する。失敗は「次回再試行」に落ちるので
+  **サイレントに永久に更新されない**——完了条件の「git pull + install.sh で更新でき」が
+  そもそも成立していなかった。`update_subdir` をカンマ/空白区切りの複数パス対応にし
+  （`split_subdirs`）、既定を `tools/agent-project tools/agentcore` へ。統合インストーラは
+  親ディレクトリのファイルなので cone mode で一緒に落ちてくる（テストで固定）。
+- **ダイジェストの範囲。** 先頭 subdir だけだと agentcore だけの更新を「変更なし」と読んで
+  見送り続ける（契約バージョンを共有する相手だけ古いまま回る）。逆にチェックアウト全体に
+  すると、cone mode が拾うリポジトリ直下のファイルで自己増殖ループ（direct state-git 構成では
+  自分の state push が update_repo の新コミットになる）が戻る。**宣言した subdir すべて**が
+  正しい範囲で、両方をテストで固定した。
+
+### W3-2 実施結果（2026-07-26・文書の改訂とテスト分割）
+
+**利用者向け文書から「存在しないコマンド」を一掃した。** W1-9 で消えた
+`agent-project instances` / `start` / `stop` / `restart`、W1-9 で消えた `agent-amigos serve` /
+`hub`、W2-1 で消えた `gitAutoPush`、W2-4 で消えたルート列挙設定が、手順書にそのまま
+残っていた——読んだ人が最初のコマンドで詰まる状態だった。
+
+| 文書 | 直したもの |
+|---|---|
+| `tools/agent-project/README.md` | 複数プロジェクトの回し方（プロジェクト毎 daemon → host.yaml + 常駐体 1 本）・lifecycle 節・systemd 節・サブコマンド表・`--location` の選択肢 |
+| `tools/agent-project/GUIDE.md` | 常駐の起動/確認・複数プロジェクト・稼働確認・トラブルシュート表 |
+| `tools/agent-dashboard/README.md` | プロジェクト発見（列挙設定 + instances → `engine/status.json` 1 本・画面からの登録は無い）・稼働判定の順序・`gitAutoPush`（この画面は git へ書かない） |
+| `docs/guides/multi-pc-operations.md` | PC 起動時の自動起動・障害対応表・復旧手順 |
+| `docs/guides/state-repo-migration.md` | 常駐させる場合の宣言を host.yaml へ |
+| `docs/guides/node-id-cutover.md` | 切替前に止めるプロセス |
+| `tools/wsl-launcher/README.md` | 起動コマンドと推奨理由（cwd 非依存・PC に 1 本・systemd 案との使い分け） |
+| `tools/agent-amigos/README.md`・`install.sh`・`agent-amigos.yaml.example` | 常駐節・hub 節・コマンド表・環境変数表（前段の hub 撤去で実施済み） |
+
+日付入りの設計・計画文書（`docs/plans/2026-07-22-*` 等）は**当時の記録なので直していない**。
+
+**巨大テストファイルを機能別へ分割した。**
+
+| 元ファイル | 行数 | 分割後 | 最大ファイル |
+|---|---|---|---|
+| `test_agent_project.py` | 13,394 | `_shared.py` + 16 ファイル | `test_project_layer.py` 1,910 行 |
+| `test_agent_flow.py` | 7,484 | `_shared.py` + 10 ファイル | `test_executor.py` 1,371 行 |
+| `test_agent_amigos.py` | 2,572 | `_shared.py` + 9 ファイル | `test_turns.py` 530 行 |
+
+- **`_shared.py` が共有の前置き**（環境隔離・モジュールのロード・共通ヘルパ・ヘルパ基底クラス）。
+  各シャードは先頭 3 行でこれを取り込む。相対 import にしないのは、`discover -s tests` が
+  `tests/` 自体を top-level にする＝パッケージとして読まれないため——`sys.path` へ自分の
+  ディレクトリを入れてから素の `import` にすれば、`discover -s tests` でも
+  `python -m unittest tests.test_<機能>` でも同じに解決する。
+- `import *` は `_` 始まりを持ってこないので、使っている private ヘルパだけ明示 import する
+  （どのシャードが何を使うかは AST で機械的に求めた）。
+- **exec 断片合成には触っていない。** `km` は分割後も 1 つなので、テストの
+  `km.<name> = ...` モンキーパッチは分割前と同じに効く（これが W3-1 で合成の解消を
+  見送った理由でもある）。
+- **分割は行スライスで機械的に行い、等価性を検証した**（`ast` の unparse は書式・コメントを
+  落とすので使わない）。`<クラス>.<メソッド>` の集合を分割前後で突き合わせ、3 ファイルとも
+  **欠落 0・増加 0**（agent-project 849 / agent-flow 547 / agent-amigos 158）。実行件数も
+  分割前と一致（966 / 561 / 158・全て緑）。
+
+> **注意（作業ツリーの同時編集）**: 分割の前段で `test_agent_project.py` から 372 行が
+> 別経路で削除されていた（W1-9 の instances レジストリのテスト。実装側 `instances.py` からも
+> 該当関数は消えており整合はしている。テスト件数 983 → 966）。分割はこの状態を起点にした。
+
+## 5. 事前検証
+
+| # | 検証 | 判定への影響 | 状態 |
+|---|---|---|---|
+| V1 | `\\wsl.localhost` への UNC アクセスがディストロを起動し続けるか | keep-alive を保険に格下げできるか（設計 §7） | **未**（実機・canary C9） |
+| V2 | agentcore の import 経路（install.sh 配置先での解決方式） | W0-1 の実装方式 | 済（zipapp へ同梱。W3-1 で 1 本のインストーラに集約） |
+| V3 | Windows 起動ループ方式の挙動（`wsl.exe` の終了コード伝播・VM 生存・再起動間隔） | W1-11 の選択式セットアップの実装 | **未**（実機・canary C9） |
+| V4 | systemd user unit + linger が WSL 起動時に自動で常駐体を上げるか | 起動系 2 案の推奨順 | **未**（実機・canary C9） |
+
+未検証の 3 つはいずれも実機（WSL / Windows / systemd）が要る。
+[canary ランブック](../guides/single-resident-canary.md) C9 の記録欄がそのまま検証結果になる。
 
 ## 6. 順序の根拠とリスク対応
 
@@ -153,106 +271,109 @@ W2-1〜W2-5 は実装・テストとも完了（agent-dashboard の全テスト�
 - **node_id 統一と語彙統一は静止点イベント**として運用カレンダーに載せ、doctor の
   切替前チェックが通らない限り実施しない。
 
-## 7. P1 進捗と残作業（2026-07-25 時点）
+## 7. 残作業（2026-07-26 時点）
 
-W1-1〜W1-13 は主要部の実装・テストとも完了（agent-project 956 / agent-flow 547 /
-agent-amigos 159 / agentcore 48 が全て green・fail/error ゼロ）。ただし
-**W1-4・W1-5・W1-12 に未達項目が残る**（下記「未実装」の該当行。W1-4 の自殺型停止経路は
-実害あり）。
-以下は完了スコープの内側で見送った・未実装の項目。
-利用者向けの詳細は [`docs/guides/single-resident-setup.md`](../guides/single-resident-setup.md) §6 も参照。
+P0〜P2 は完了。P3 は W3-1 完了・W3-2 が R10 検査を残す・W3-3 は実施待ち。
+**消化済みの項目はこの節から落としてある**（実施の記録と設計判断は各フェーズの
+「実施結果」節と、実装側の docstring にある）。残っているのは次の 5 つだけ。
 
-### 未実装（次の作業）
+| # | 残作業 | 由来 | 規模 | 前提 |
+|---|---|---|---|---|
+| R1 | 実機 canary の実施 | W3-3 | M | 実機 3 台 |
+| R2 | 板の請負 tick | 設計 §4.2 | M | 契約側実行の設計を固める |
+| R3 | 旧経路の削除（agent-flow 側） | W1-9 残 | L | R1 で常駐体が安定してから |
+| R4 | R10 の grep 検査と CI | W3-2 残 | S | CI 基盤が無い（新規） |
+| R5 | 事前検証 V1 / V3 / V4 | §5 | S | R1 に内包 |
 
-- **【W1-4 の未達・実害あり】自殺型停止経路が「親 → 子への指示」へ置換されていない。**
-  W1-4 の作業項目に明記されているが未実施で、`availability` を設定した PC で
-  **計画停止が隔離（quarantine）に化ける**。経路: 子（`run --watch`）の
-  `start_availability_monitor` が `shutdown_due` で **自分に SIGTERM を送る**
-  （`coordination.py` の `os.kill(os.getpid(), signal.SIGTERM)`）→ Supervisor は終了コードを
-  見ずに死亡と判定（`check_health`）→ backoff 後に再起動 → 新しい子が 1 秒以内に同じ
-  `shutdown_due` を検知して再び自殺 → `quarantine_after`（既定 5・window 600s）に到達して
-  隔離。隔離の自動解除は無いので、夜間停止のたびに人が `serve` を上げ直すまでその
-  プロジェクトが止まる。W1-4 の設計どおり「止めるかどうかは常に親が決める」形
-  （`Supervisor.stop` の docstring が既にそう宣言している）へ寄せる必要がある。
-  最小の直し方は、子の availability 監視を常駐体側の tick に移し、`shutdown_due` を
-  親が判定して `Supervisor.stop(name)` を呼ぶこと。`update.py` の `os.execv` による
-  自己再起動は PID が変わらないため Supervisor からは死に見えず、こちらは実害なし。
-- **板の請負 tick**（node 名義での `nodes/<pc>.json` 能力宣言・workload=flow/amigos への
-  入札・落札した仕事のノード直轄ワーカー実行）。設計 §4.2 で「現状未実装、ここで初めて
-  実装する」と明記された機能。既存の flow/amigos の板参加（`poll_board`）はいずれも
-  「委譲側の bus へ取り込む」形で実装されており、ノード直轄の契約側実行（bus を持たない
-  ノードが落札 → NodeWorkerPool で実行 → board へ結果報告）はまだ設計が固まっていない。
-  中途半端に実装すると二重落札・二重実行のリスクがあるため意図的に手を付けていない。
-- **旧経路の削除**（設計 P1 行に明記済み）: `agent-flow` の `daemon`/`submit`/`location`/
-  `act_async`、`agent-amigos` の `serve`/`hub`、`agent-project` の
-  `instances`/`start`/`stop`/`restart`。resident（`serve`/`status`/`worker` + amigos 参加
-  tick + gc tick）が実地で安定してから、3 パッケージのテスト資産（daemon 前提テストが
-  project 側だけで数十件規模）ごと計画的に削るべき規模の変更のため、今回のスコープでは
-  見送った。W1-2 で tick 関数へ抽出した `_tick_cancel` 等（flow daemon 内蔵）は、
-  daemon 削除後に呼び手が無くなるため同時に整理する。
-- **板の終端公示の gc**（設計 §4.2 gc tick の対象に「終端した公示」が明記されているが未実装）。
-  `board/delegations/<id>/` は `result.json`/`cancelled.json` が付いても誰も削除しない
-  ため無限に積み上がる。現状の gc tick（今回追加）はプロジェクトの flow バス掃除
-  （`agent-flow cleanup`/`gc`）のみで、板そのものの掃除は範囲外。板の請負 tick と同様、
-  誰が・いつ・どの安全マージンで消すか（他ノードが遅延同期中に消すと結果を取りこぼす）が
-  未検討のため見送った。
-- **systemd `Type=notify` + `WatchdogSec`**（sd_notify によるハング監視の外部二重化）。
-  常駐体内蔵の self-watchdog による自己 abort が主経路のため、無くても設計 §7 の
-  「(a) 起動時に上がる (b) 死んだら上げ直される」は満たされる。
-- **§5 事前検証 V1・V3・V4 が未検証のまま**（実機 WSL/Windows/systemd 環境が要る）。
-  `install.sh --service` は書いたが `loginctl enable-linger` 込みで実機通しの確認はして
-  いない（V4）。Windows タスクスケジューラの `wsl.exe` 終了コード伝播・再起動間隔（V3）、
-  UNC アクセスがディストロを起動し続けるか（V1）も未検証——ガイドにはその旨明記済み
-  （`docs/guides/single-resident-setup.md` §4b の「要検証」）。W3-3 の実機 canary で
-  初めて検証される。
-- **【W1-12 の未達】C14 併走テストとカオステストが未新設。** W1-12 の作業項目は
-  「C14 併走テスト（スキル起動 run × 常駐体の claim 排他・孤児回収）」と
-  「カオステスト（親 kill / 子 kill / ハング注入 / 電源断相当のクローン破損）」の新設を
-  挙げているが、実際に足したのは §6 回復表の対応付け（既存資産の棚卸し）まで。
-  現状の充足は部分的で、子 kill は `test_resident_supervisor.py`、ハング注入は同
-  `test_hang_detected_via_is_healthy_and_restarted`、クローン破損は
-  `test_transport.py::test_corrupted_object_triggers_rebuild` が押さえるが、
-  **親 kill（常駐体を落として子が孤児化しないか）と C14 併走は対応テストが無い**。
-  併走は `agent-amigos drive`（W1-3 で新設）と常駐体の amigos 参加 tick が同じ bus を
-  同時に触る経路で、claim の排他が効くかを検証していない。
-- **【W1-5 の設計差異】NodeWorkerPool の同時実行計数がプロセス内カウンタ。**
-  W1-5 は「計数は status/run ファイルから導出」と規定するが、実装はプロセス内の
-  in-flight dict（`resident/worker.py` の docstring に明記済み）。常駐体が唯一の実行主体で
-  ある限り正確だが、**スキル起動の単発実行（`drive` / `run --once` を人が直接叩く）は
-  この計数に入らない**ため、C14 の併走時にノード全体の `max_concurrent` を超えうる。
-  上の C14 併走テストと同じ経路の話なので、併せて検討する。
+### R1. 実機 canary の実施（W3-3）
 
-### 実装済み（W1-11 残作業として今回追加）
+**ランブックは用意済み**: [`docs/guides/single-resident-canary.md`](../guides/single-resident-canary.md)。
+C1〜C10 を再現操作・確認コマンド・期待値・記録欄の形に落としてある。残っているのは実施そのもの
+——フル 2 台（停止時刻をずらす）+ ワーカー 1 台（POSIX 機）を 1 週間回す。
 
-amigos 参加/手番分離（`agent-amigos participate` + 既存 `run --once` へのワーカー投入）・
-`agent-flow cleanup`/`agent-project gc`（新設 CLI・resident gc tick から利用）・doctor の
-常駐化構成検査・`install.sh --service`（systemd user unit 生成）・セットアップガイド。
-詳細は各コミットの docstring・`docs/guides/single-resident-setup.md` を参照。
+**これが他の残作業の前提になる**。完了条件（二重実行 0・stale done 0・状態欠損 0）を実機で
+確認するまで R3（旧経路の削除）に進めない——退避先を消してから問題が出ると戻せない。
 
-### §6 障害と回復表 ×既存テストの対応（W1-12）
+canary は**セットアップガイドの受入試験も兼ねる**。ガイド外の操作が要ったら全て
+ランブック §5 に記録し、[`single-resident-setup.md`](../guides/single-resident-setup.md) へ反映する。
+
+### R2. 板の請負 tick（設計 §4.2）
+
+node 名義での `nodes/<pc>.json` 能力宣言・workload=flow/amigos への入札・落札した仕事の
+ノード直轄ワーカー実行。設計 §4.2 が「現状未実装、ここで初めて実装する」と明記した機能。
+
+**設計が固まっていないので意図的に手を付けていない。** 既存の flow/amigos の板参加
+（`poll_board`）はいずれも「委譲側の bus へ取り込む」形で、ノード直轄の契約側実行
+（bus を持たないノードが落札 → `NodeWorkerPool` で実行 → board へ結果報告）は別物。
+中途半端に実装すると二重落札・二重実行になる。
+
+依存: これが入るまで**「旧バージョンノードが入札しない」（設計 §6 最終行）を実機で
+確認できない**。現状で確かめられるのは `contract_compatible` の判定と既存の板参加までで、
+canary ランブック C10 にその旨を明記してある。
+
+### R3. 旧経路の削除（W1-9 の残り）
+
+agent-amigos（`serve` / `hub` / `hubbus`）と agent-project（`instances` / `start` / `stop` /
+`restart`）は削除済み。**残っているのは agent-flow 側**:
+
+- `agent-flow daemon` / `submit`
+- agent-project の `location{daemon,remote}`・`act_async`・`manage_flow_daemon`
+- W1-2 で tick 関数へ抽出した `_tick_cancel` 等（flow daemon 内蔵）——daemon 削除後は
+  呼び手が無くなるので同時に整理する
+
+規模が L なのはテスト資産のため（daemon 前提テストが project 側だけで数十件規模）。
+**R1 の後に着手する**——常駐体が実地で安定する前に退避先を消さない（設計 C6）。
+
+順序の固定（設計 §4.4）: 板 `result.json` の `result_notes` / `discoveries` /
+`reject_guidance` は追加済みなので、submit 削除の前提は満たしている。
+
+### R4. R10 の grep 検査と CI（W3-2 の残り）
+
+利用者向け文書に内部名（node / sync / resident）が現れないことを機械で検査する。
+
+**この repo には CI 設定が存在しない**（`.github/workflows` も `.gitlab-ci.yml` も
+Makefile も無い）ので、検査スクリプトと CI 自体の新規作成になる。forge は GitHub なので
+GitHub Actions が素直。同じ CI で 4 パッケージのテスト（agent-project / agent-flow /
+agent-amigos / agentcore）と agent-dashboard の `npm test` も回す。
+
+現状の担保は dashboard 側の単体テストだけ（`engine.summarize()` と設定ペインの語彙を固定。
+画面全体・文書全体の grep は未）。検査対象にはセットアップガイドと canary ランブックを含める。
+
+### R5. 事前検証 V1 / V3 / V4（§5）
+
+R1 に内包される（canary ランブック C9 の記録欄がそのまま検証結果になる）。単独では動かさない。
+
+### 着手しないと決めたもの
+
+- **exec 断片合成の解消**（W3-1 の原文）。あの方式は「テストが `km.<name>` を
+  モンキーパッチできる単一名前空間」を意図して選ばれたもので、解消するとテスト資産の
+  参照モデルごと張り替えになる。W3-1 の目的（配布 1 本）は合成に触らず達成できたので、
+  そこに回帰リスクを積む理由が無い（判断の詳細は §4 W3-1 実施結果）。
+
+## 8. 設計 §6 障害と回復表 ×既存テストの対応（W1-12）
 
 設計 §6 の各行に対応する既存テストを列挙する（新規追加ではなく、既存資産の棚卸し）。
 一部は正確なテスト名確認までで、内容までは今回精査していない。
 
 | 事象 | テスト |
 |---|---|
-| 常駐体のクラッシュ | 無し（起動系＝OS 責務。doctor 構成検査のみ: `test_agent_project.py::test_residency_findings_flags_missing_unit`） |
+| 常駐体のクラッシュ | 回復は起動系＝OS 責務。doctor 構成検査 `test_residency_findings_flags_missing_unit` と、孤児化の事実を固定する `ResidentCliTests.test_parent_kill_leaves_child_orphaned_and_next_start_recovers` |
 | 常駐体のハング（self-watchdog） | `test_resident_scheduler.py::test_self_watchdog_aborts_on_stall` |
 | プロジェクト子のクラッシュ | `test_resident_supervisor.py::test_start_and_crash_is_restarted` |
 | プロジェクト子のハング | `test_resident_supervisor.py::test_hang_detected_via_is_healthy_and_restarted` |
 | 子の連続クラッシュ→隔離 | `test_resident_supervisor.py::test_quarantine_after_repeated_deaths` |
-| 実行中 run の孤児化 | `tools/agent-flow/tests/test_agent_flow.py::OrphanRecoveryTests.test_orphan_inbox_run_is_resumed_not_failed`（関連多数） |
+| 実行中 run の孤児化 | `test_daemon.py::OrphanRecoveryTests.test_orphan_inbox_run_is_resumed_not_failed`（関連多数） |
 | git ロック残骸・中断 rebase | `tools/agentcore/agentcore/tests/test_transport.py::TestSelfHealing.test_stale_lock_is_removed_and_recovered` / `.test_interrupted_rebase_is_aborted_on_reuse` |
 | クローン破損 | `test_transport.py::TestSelfHealing.test_corrupted_object_triggers_rebuild` |
 | push 競合 | `test_transport.py::TestCloneAndSync.test_concurrent_push_resolves_via_rebase_no_force` |
-| リモート不通（fail-close） | `test_agent_project.py::TestAtomicClaim.test_peer_present_with_unreachable_origin_fails_closed` |
-| PC の計画停止（drain/away） | `test_agent_project.py::TestDirectStateGit.test_draining_node_releases_controller_for_another_node` / `test_resident_supervisor.py::test_graceful_shutdown_sequences_all_steps_after_stopping_children` |
-| PC の突然死（lease 失効・fencing） | `test_agent_project.py::TestDirectStateGit.test_controller_lease_moves_after_expiry` / `.test_distributed_claim_has_one_winner_and_persists_fence` / `.test_stale_claim_token_cannot_settle` |
+| リモート不通（fail-close） | `test_coordination.py::TestAtomicClaim.test_peer_present_with_unreachable_origin_fails_closed` |
+| PC の計画停止（drain/away） | `test_state_git.py::TestDirectStateGit.test_draining_node_releases_controller_for_another_node` / `test_resident_supervisor.py::test_graceful_shutdown_sequences_all_steps_after_stopping_children` / `ResidentCliTests.test_planned_stop_pauses_child_instead_of_counting_deaths`（親が止める・隔離に化けない） |
+| PC の突然死（lease 失効・fencing） | `test_state_git.py::TestDirectStateGit.test_controller_lease_moves_after_expiry` / `.test_distributed_claim_has_one_winner_and_persists_fence` / `.test_stale_claim_token_cannot_settle` |
 | 全 PC 停止 | 専用テスト無し（ローカル滞留は各所の意図しない push 抑止テストで間接カバー） |
-| forge 停止 | `test_agent_project.py::TestDirectStateGit.test_unreachable_remote_is_unknown_not_lost` / `.test_settle_with_unreachable_remote_preserves_work_for_human` |
+| forge 停止 | `test_state_git.py::TestDirectStateGit.test_unreachable_remote_is_unknown_not_lost` / `.test_settle_with_unreachable_remote_preserves_work_for_human` |
 | WSL VM 停止 | 無し（実機 canary 待ち。上記 V1 未検証と同根） |
-| ディスク肥大→gc | `test_agent_project.py::ResidentCliTests.test_gc_tick_isolates_project_sweeper_failure` / `test_resident_status.py::test_run_gc_aggregates_and_isolates_failures` |
-| 時計ずれ | `test_agent_project.py::TestDirectStateGit.test_controller_lease_tolerates_clock_skew_before_reclaiming` |
+| ディスク肥大→gc | `test_resident.py::ResidentCliTests.test_gc_tick_isolates_project_sweeper_failure` / `test_resident_status.py::test_run_gc_aggregates_and_isolates_failures` |
+| 時計ずれ | `test_state_git.py::TestDirectStateGit.test_controller_lease_tolerates_clock_skew_before_reclaiming` |
 | 更新漏れの古いノード（契約バージョン） | `test_resident_status.py::test_contract_compatible` |
 
 **回復そのものを検証するテストが無い行**: 「常駐体のクラッシュ」「全 PC 停止」「WSL VM 停止」

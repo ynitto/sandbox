@@ -439,7 +439,20 @@ def shutdown_due(cfg: "Config", at: "datetime | None" = None) -> bool:
 
 
 def start_availability_monitor(cfg: "Config") -> threading.Event:
-    """drain開始とshutdown grace超過をact中にも監視する。"""
+    """drain 開始を act 中にも監視する（新規 claim を止め、controller を解放する）。
+
+    **プロセスの停止そのものはここで決めない**（実装計画 W1-4「自殺型停止経路を
+    親 → 子への指示へ置換」）。以前は `shutdown_due` で自分に SIGTERM を送っていたが、
+    常駐体（`agent-project serve`）が子を監督する構成では、それが**クラッシュとしか
+    読めない**——Supervisor は終了コードを見ずに死亡と判定して再起動し、上がった子が
+    1 秒以内に同じ条件で再び自殺して、`quarantine_after` に達したところで隔離される。
+    夜間の計画停止のたびにプロジェクトが隔離され、人が上げ直すまで止まる。
+
+    停止は親の責務: 常駐体の availability tick が `shutdown_due` を評価して
+    `Supervisor.pause()` を呼び、時間帯が戻れば `resume()` する
+    （`resident_cli._availability_tick`）。常駐体を介さない単体起動
+    （`agent-project run --watch` を人が直接叩く）では止め手が居ないので、
+    drain（新規 claim の停止）までは従来どおりここで行い、プロセスは人が止める。"""
     stop = threading.Event()
 
     def monitor() -> None:
@@ -447,11 +460,7 @@ def start_availability_monitor(cfg: "Config") -> threading.Event:
             state = availability_state(cfg)
             if state in ("draining", "stopped") and not _DRAIN_REQUESTED.is_set():
                 request_drain(cfg)
-            if shutdown_due(cfg):
-                requeue_draining_tasks(cfg)
-                with contextlib.suppress(OSError):
-                    os.kill(os.getpid(), signal.SIGTERM)
-                return
+                requeue_draining_tasks(cfg)   # 実行中の取り置きを戻す（停止を待たずに）
 
     threading.Thread(target=monitor, name="agent-project-availability", daemon=True).start()
     return stop

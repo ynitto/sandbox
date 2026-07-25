@@ -54,7 +54,11 @@
   - モデルは設定 `model:` で指定（省略時は各 CLI の既定。実行層 agent-flow 側は agent-flow.yaml の `agent_cli` / `model` で揃える）
 
 ```bash
-bash tools/agent-project/install.sh           # ~/.local/bin/agent-project
+bash tools/install.sh                         # agent-project / agent-flow / agent-amigos を
+                                              # まとめて ~/.local/bin へ（推奨。3 本は同じ
+                                              # agentcore と契約バージョンを共有するので
+                                              # 別々に入れない）
+bash tools/install.sh --only agent-project    # このツールだけ入れ直す
 ```
 未インストールでも `python3 tools/agent-project/agent-project.py ...` で代用可。
 
@@ -111,9 +115,10 @@ agent-project run --planner none --flow-planner stub --executor stub
   .state-git/          状態 git 同期の管理クローン（ルートが git でなく state_git 設定時のみ）
 ```
 
-複数プロジェクトはこのディレクトリを並べ、それぞれで `agent-project start` する。稼働インスタンスの
-レジストリ（`~/.agent-project/instances/`・`logs/`）は**グローバル**で、各プロジェクト root を監視先として
-登録する＝`instances` で複数プロジェクト・複数ホストを横断発見できる（後述）。
+複数プロジェクトはこのディレクトリを並べ、**PC 単位の常駐体 1 本**（`agent-project serve`）に
+まとめて監督させる。どのプロジェクトを持つかは `agent-project.host.yaml` が単一ソースで、
+稼働状況は `~/.agents/engine/status.json`（`agent-project status` で読む）に集約される。
+導入手順は [常駐一本化セットアップガイド](../../docs/guides/single-resident-setup.md)。
 
 ## 実行の委譲（`--location`）
 
@@ -604,10 +609,15 @@ agent-project approve <project> --reason "受領"   # 完了確定（最終納�
 操作（検収・指示・停止/再開）は [agent-dashboard](../agent-dashboard/) が各ルートの clone を
 登録して git 越しに行う。
 
+```yaml
+# ~/.agents/agent-project.host.yaml — この PC が持つプロジェクトの単一ソース
+projects:
+  - root: /home/me/projects/payments
+  - root: /home/me/projects/webapp
+```
 ```bash
-cd ~/projects/payments && agent-project start        # payments プロジェクトの常駐
-cd ~/projects/webapp   && agent-project start        # webapp プロジェクトの常駐（別プロセス）
-agent-project instances                          # 稼働中の全プロジェクト root を横断一覧
+agent-project serve      # 1 本の常駐体が両方を子プロセスとして監督する
+agent-project status     # 心拍・子の生死・休止/切り離しを横断一覧
 ```
 
 別プロジェクトの定義・判断を参照したいときは charter の `## links` にパス（兄弟ディレクトリ名や
@@ -629,7 +639,9 @@ update-ref の CAS でブランチを進めるため、人の `git add`/`git com
 
 ```bash
 git clone git@example.com:team/proj-state.git ~/projects/proj
-cd ~/projects/proj && vi charter.md && agent-project start
+vi ~/projects/proj/charter.md
+# host.yaml の projects に root を足して常駐体を起動（または再起動）する
+agent-project serve
 ```
 
 - リモートの取り込みは fetch → ff-only 優先・分岐時のみ rebase（--autostash 不使用＝未コミット変更と
@@ -699,9 +711,11 @@ PC固有値は共有設定や環境変数へ置かず、各PCのローカルprof
 
 ```bash
 agent-project doctor --profile /home/me/.agents/agent-project/profiles/proj.yaml
-agent-project start --profile /home/me/.agents/agent-project/profiles/proj.yaml
-agent-project stop --profile /home/me/.agents/agent-project/profiles/proj.yaml --drain --deadline 300
+agent-project serve   # 常駐体が host.yaml のプロジェクトを監督する（停止は Ctrl-C / systemd stop）
 ```
+
+計画停止（毎晩の drain → 猶予 → 停止）は host.yaml の `availability` で宣言する。
+子が自分で止まるのではなく常駐体が止める（[セットアップガイド](../../docs/guides/single-resident-setup.md) §2）。
 
 - controllerはremote HEADへのfast-forward CASで1ノードだけが保持し、停止・drain・lease失効後は別ノードが自動取得する。
 - controllerだけがcharter計画・inbox/commands/feedback・triage・自動割当を行う。workerは割当済みtaskだけを実行する。
@@ -728,15 +742,15 @@ viewer（または任意の外部ツール）は `commands/<name>.json` のド�
 |------|------|
 | `{"command": "pause", "reason": "..."}` | watch の消化を一時停止（`paused.json` を生成。idle 監視・指示の取り込みは継続し、status.json に `paused: true` が載る） |
 | `{"command": "resume"}` | 一時停止を解除して消化を再開 |
-| `{"command": "stop"}` | プロセスを graceful 停止（停止前に状態を push。再開は本体側で `agent-project start`） |
+| `{"command": "stop"}` | プロセスを graceful 停止（停止前に状態を push。再開は常駐体が次の監視巡で子を起こす） |
 | `{"command": "replan"}` | charter からのバックログ再分解を次パスに要求（エラー回復） |
 
 pause 中も commands/ は取り込まれるため、リモートから resume / stop を届けられる。
 
 ### daemon の生存信号（status.json）— リモート viewer の稼働判定
 
-リモート（別ホスト・state_git 越し）の viewer からは、本体のローカル生存レジストリ
-（`~/.agent-project/instances/`）が見えないため、従来「稼働中」バッジが出せなかった。
+リモート（別ホスト・state_git 越し）の viewer からは、本体のプロセスが直接見えないため、
+従来「稼働中」バッジが出せなかった。
 `<root>/status.json` に最小の生存スナップショット（`watch` / `level` / `updated_iso` /
 `fresh_after_sec`）を書き、これも state_git で同期することで、リモートの viewer が
 「同期経由の推定」として稼働判定・最終確認時刻を出せるようにしている。
@@ -766,41 +780,31 @@ pause 中も commands/ は取り込まれるため、リモートから resume /
 - **watch**: 1 パスが終わってもプロセスを残し backlog を監視。idle 中は エージェント CLI/agent-flow を起動せず（安価な FS
   ポーリングのみ）、`--poll` 間隔で「消化可能タスク or 新規 inbox or フィードバック」を検知して次パスを起こす。
   予算は 1 パス毎に与え直す。サブコマンド省略（`agent-project`）は `run --watch` と同義（cwd のプロジェクトを常駐監視）。
-- **lifecycle（start / stop / restart）**: 常駐の明示操作。`start` は cwd（または `--root`/設定/profile の root）の
-  プロジェクトの `run --watch` を detached 起動（ログは `~/.agent-project/logs/`・重複監視は拒否・`--force`）。
-  `stop` は graceful（SIGTERM→居残りのみ SIGKILL・自分は止めない）。`stop --drain --deadline 300` は
-  新規claimを止め、実行中taskを期限まで待ってから停止する。実行時設定は設定ファイルに寄せる思想で
-  `start` は個別 run フラグを取らない。リモートからの停止/一時停止は commands/ の
+- **常駐（serve / status）**: PC 単位の常駐体を 1 本立てる。`serve` は
+  `agent-project.host.yaml` に宣言したプロジェクトを子プロセスとして起動・監視し、落ちたら
+  再起動・繰り返し落ちたら切り離す。稼働時間帯（`availability`）の外では子を止め、時間が
+  戻れば起こす。`status [--json]` が `~/.agents/engine/status.json` を読んで、心拍・tick 実績・
+  同期の健康・子の生死（休止中／切り離しを別に）・実行中の仕事を出す。
+  プロジェクト単位の一時停止・停止は commands/ の
   [ライフサイクル指示](#リモート操作commands-のライフサイクル指示)を使う。
-- **稼働発見（instances）**: `run` 中は監視中の root と OS/WSL 情報を `~/.agent-project/instances/` に登録し
-  終了で消す。`instances [--json]` で外部操作者（スキル）が「いまどのプロジェクト root を見ているか」を発見し、WSL/Windows を
-  またいで読み書きできる（`runtime`/`wsl_distro`/`root_windows` を best-effort 併記）。**別ホスト発見**は共有レジストリ
-  （`--registry`/`AGENT_PROJECT_REGISTRY`・NFS/同期/git）へも書き、自ホスト=PID・別ホスト=heartbeat 鮮度で生死判定。
+  （プロジェクトごとに daemon を立てる `start` / `stop` / `restart` と稼働レジストリ
+  `instances` は廃止した——常駐は PC に 1 本で、宣言の単一ソースは host.yaml。）
 
 ```bash
-agent-project start                          # cwd のプロジェクトを detached 常駐起動
-agent-project start --profile /abs/proj.yaml # PC固有profileで起動（AGENT_PROJECT_* を参照しない）
-agent-project instances                      # 稼働中の全プロジェクト root を横断一覧
-agent-project stop                           # cwd のプロジェクトを停止（--root / --pid / --all も可）
+agent-project serve                  # 常駐体を起動（host.yaml のプロジェクトを監督）
+agent-project status                 # 心拍・子の生死・休止/切り離し
+agent-project status --json          # 機械可読
+agent-project worker init            # プロジェクトを持たないワーカーノードの host.yaml を対話生成
 ```
 
-**OS 自動起動（Linux systemd ユーザーユニット）** — `~/.config/systemd/user/agent-project-<name>.service`:
+**OS 自動起動**: `bash tools/install.sh --service` が systemd user unit を生成・有効化する
+（`Type=notify` + `WatchdogSec` + `Restart=always` + `loginctl enable-linger`）。
+Windows タスクスケジューラ方式との選択と手順は
+[セットアップガイド](../../docs/guides/single-resident-setup.md) §4。
 
-```ini
-[Service]
-ExecStart=%h/.local/bin/agent-project run --watch --profile %h/.agents/agent-project/profiles/proj.yaml
-ExecStop=%h/.local/bin/agent-project stop --profile %h/.agents/agent-project/profiles/proj.yaml --drain --deadline 300
-TimeoutStopSec=330
-Restart=on-failure
-```
-```bash
-systemctl --user enable --now agent-project-proj   # 起動＋ログイン時自動起動／ loginctl enable-linger "$USER"
-```
-macOS は launchd（`ProgramArguments` に `run --watch --profile /絶対パス`・`RunAtLoad`/`KeepAlive`）、
-Windows はタスクスケジューラの「ログオン時」トリガで同等に登録する。
-
-夜間停止時刻そのものはOS側のshutdown/sleepスケジュールで管理する。agent-projectはprofileの
-`daily_stop` と `drain_before_sec` から先行drainするが、PCの電源管理は行わない。
+夜間停止は host.yaml の `availability` で宣言する（`daily_stop` / `drain_before_sec` /
+`shutdown_grace_sec`）。drain 開始 → 停止時刻 → 猶予満了で子を止める、の 3 段で、止めるのは
+常に常駐体。PC の電源管理は行わない（OS 側の shutdown/sleep スケジュールで管理する）。
 
 ## 設定ファイル
 
@@ -887,7 +891,7 @@ update_enabled: true                  # 自動アップデートの ON/OFF（fal
 update_check_interval: 21600          # 更新チェック間隔（秒）。既定 6 時間。0 以下で自動チェック無効
 update_repo: ""                       # 空なら skill-registry.json から自動解決。別 repo を使うときだけ指定
 update_branch: main                   # 追従するブランチ（空/既定なら registry の branch を採用）
-update_subdir: tools/agent-project  # リポジトリ内のこのツールのサブディレクトリ
+update_subdir: tools/agent-project tools/agentcore  # 取得対象パス（カンマ/空白区切りで複数）
 update_installer: install.sh          # サブディレクトリ内で実行するインストーラ
 ```
 
@@ -908,10 +912,11 @@ update_installer: install.sh          # サブディレクトリ内で実行す�
 | `doctor` [`--fix --json`] | 稼働診断（エージェント CLI）。env/config は修正・program は gitlab-idd で起票 |
 | `update` [`--check --now`] | スキルリポジトリ(main)の更新を確認・取り込み再起動（[自動アップデート](#自動アップデートopt-in)） |
 | `promote` | 効いた学習を ltm-use へ昇格（手動） |
-| `instances` [`--json --registry`] | 稼働中プロジェクトを横断一覧 |
-| `start` / `stop` / `restart` [`--root --force`／`--pid --all`] | 常駐の起動/停止/再起動 |
+| `serve` [`--host-config`] | PC 単位の常駐体を起動（host.yaml のプロジェクトを監督） |
+| `status` [`--json`] | 常駐体の心拍・子の生死（休止中／切り離し）・同期の健康・実行中の仕事 |
+| `worker` [`init`] | プロジェクトを持たないワーカーノードの起動 / host.yaml の対話生成 |
 
-主なフラグ（抜粋）: `--root` `--planner{agent,none}` `--flow-planner` `--location{auto,local,daemon,remote}`
+主なフラグ（抜粋）: `--root` `--planner{agent,none}` `--flow-planner` `--location{auto,local,daemon,remote,board}`
 `--executor{agent,stub}` `--level` `--auto-level[-max]` `--max-cycles/-seconds/-tokens/-cost` `--throttle` `--pace`
 `--concurrency` `--verify-confirm` `--require-progress` `--regression-cmd[-revert]` `--intake-cmd[-interval]`
 `--auto-adjudicate` `--learn[-threshold]` `--learn-capture` `--intake-recall`

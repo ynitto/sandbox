@@ -8,69 +8,97 @@ from __future__ import annotations
 # 読み書きできる。プロセスは WSL で動き操作側は Windows/WSL という構成を想定し、
 # 可能なら Windows パス（wslpath -w）も併記する。
 # ---------------------------------------------------------------------------
+def watch_lock_path(cfg: "Config") -> Path:
+    """プロジェクトの監視ロック（1 root = 1 監視ループ）の置き場。
+
+    鍵は**実効 root の realpath**（`--root` の綴り・symlink・相対パスの違いを吸収する）。
+    ロック置き場は状態ホーム配下で、同じ PC の全プロセスが同じファイルを掴む。"""
+    root = str((getattr(cfg, "source_root", None) or cfg.backlog.parent).resolve())
+    key = hashlib.sha1(os.path.realpath(root).encode("utf-8")).hexdigest()[:16]
+    d = resolve_state_home(use_env=not getattr(cfg, "profile_mode", False)) / "locks"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"watch-{key}.lock"
+
+
+def acquire_watch_lock(cfg: "Config"):
+    """同一プロジェクトの二重監視を OS の排他で防ぐ（取れたら lock file、取れなければ None）。
+
+    以前は instances レジストリの「心拍が新しいレコードがあるか」で判定していたが、それは
+    **推定**なので窓の隙間（心拍 ttl は長い LLM 実行中に切れる）で二重起動が通る。同じ
+    backlog を 2 ループが奪い合うと、同じタスクを二重実行して状態ファイルと決定記録を
+    互いに上書きする。OS のロックなら隙間が無い（実装計画 W1-9）。
+
+    実装は `agent-flow` の daemon singleton ロックと同じ 3 段（R1: 同じ仕事の実装を 1 つの
+    流儀に揃える）——flock → msvcrt → PID 生存フォールバック。**ロックは fd に紐づく**ので、
+    返した file を掴んだまま監視ループを回し、終了時に `release_watch_lock` で解放する。"""
+    lock_path = watch_lock_path(cfg)
+    # 既存ホルダの pid を消さないよう truncate せず開く（ロック取得後にだけ書く）
+    lock_file = os.fdopen(os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644), "r+")
+    if fcntl is not None:
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            lock_file.close()
+            return None
+    elif msvcrt is not None:
+        try:
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            lock_file.close()
+            return None
+    else:  # pragma: no cover — fcntl も msvcrt も無い環境のみ
+        # PID 生存フォールバック。TOCTOU（2 プロセスが同時に判定を通過する）が残るが、
+        # OS のロックが無い環境では他に手が無い（agent-flow と同じ割り切り）。
+        try:
+            lock_file.seek(0)
+            raw = (lock_file.read() or "").strip()
+            if raw:
+                old = int(raw)
+                if old != os.getpid() and _pid_alive(old):
+                    lock_file.close()
+                    return None
+        except (ValueError, OSError):
+            pass
+    lock_file.seek(0)
+    lock_file.truncate()
+    lock_file.write(str(os.getpid()))
+    lock_file.flush()
+    return lock_file
+
+
+def watch_lock_holder(cfg: "Config") -> int:
+    """監視ロックを保持しているプロセスの pid（不明・未保持は 0）。案内文に載せる用。"""
+    try:
+        raw = watch_lock_path(cfg).read_text(encoding="utf-8").strip()
+        pid = int(raw)
+    except (OSError, ValueError):
+        return 0
+    return pid if pid != os.getpid() and _pid_alive(pid) else 0
+
+
+def release_watch_lock(lock_file) -> None:
+    """監視ロックを解放して fd を閉じる（自己更新の execv 前にも呼ぶ——flock は fd に
+    紐づくため、解放しないと再起動後の再取得が自分自身と衝突して二重起動扱いになる）。"""
+    # 二重解放は無害に済ませる（正常終了の finally と execv 前の明示解放が重なりうる）。
+    if lock_file is None or lock_file.closed:
+        return
+    try:
+        if fcntl is not None:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+        elif msvcrt is not None:
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+    except (OSError, ValueError):
+        pass
+    with contextlib.suppress(OSError, ValueError):
+        lock_file.close()
+
+
 def resolve_state_home(use_env: bool = True) -> Path:
     """インスタンス・レジストリ等の置き場: 環境変数 AGENT_PROJECT_HOME → ~/.agent-project。"""
     raw = (os.environ.get("AGENT_PROJECT_HOME") if use_env else None) or "~/.agent-project"
     return Path(raw).expanduser()
-
-
-def instances_dir(use_env: bool = True) -> Path:
-    return resolve_state_home(use_env) / "instances"
-
-
-# リモート（別ホスト）レコードは PID が当てにならないので heartbeat の鮮度で生死を見る。
-INSTANCE_TTL = 90.0           # heartbeat からこの秒数を超えたリモートレコードは「停止」とみなす
-REMOTE_PRUNE_GRACE = 86400.0  # これより古い（=長期間死んでいる）リモートレコードは誰が掃除してもよい
-
-
-def resolve_registry_dirs(extra: "list | str | None" = None, use_env: bool = True) -> "list[Path]":
-    """レコードを書く/読むディレクトリ群。先頭が自分の書き込み先（ローカル home）。
-    AGENT_PROJECT_REGISTRY（os.pathsep 区切り）と extra（--registry）を共有レジストリとして加える。
-    共有先を NFS / 同期フォルダ / git バスのチェックアウト等にすると、別ホスト同士が相互発見できる
-    （core は決定的なファイル操作のみ。ネットワークは共有先の仕組みが担うので不変条件④⑤を保つ）。"""
-    dirs = [instances_dir(use_env)]
-    seen = {dirs[0]}
-    sources: list[str] = []
-    env = os.environ.get("AGENT_PROJECT_REGISTRY") if use_env else None
-    if env:
-        sources += env.split(os.pathsep)
-    if extra:
-        sources += extra if isinstance(extra, list) else [extra]
-    for s in sources:
-        s = (s or "").strip()
-        if not s:
-            continue
-        p = Path(s).expanduser()
-        if p not in seen:
-            dirs.append(p)
-            seen.add(p)
-    return dirs
-
-
-def _split_registry(arg: "list | str | None") -> "list[str]":
-    """--registry の値（os.pathsep 区切り文字列 / 繰り返しリスト）を正規化した list にする。"""
-    if not arg:
-        return []
-    items = arg if isinstance(arg, list) else [arg]
-    out: list[str] = []
-    for it in items:
-        out += [s for s in str(it).split(os.pathsep) if s.strip()]
-    return out
-
-
-def _instance_filename(rec: dict) -> str:
-    """ホスト修飾のレコードファイル名（共有レジストリで別ホストの同一 PID と衝突しないように）。"""
-    host = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(rec.get("host", "host")) or "host")
-    return f"{host}-{rec.get('pid', 0)}.json"
-
-
-def _record_alive(rec: dict) -> bool:
-    """レコードの生死。ローカルホストは PID で、別ホストは heartbeat の鮮度（TTL）で判定する。"""
-    if str(rec.get("host", "")) == socket.gethostname():
-        return _pid_alive(int(rec.get("pid", -1)))
-    hb = float(rec.get("heartbeat", rec.get("started_at", 0)) or 0)
-    ttl = float(rec.get("ttl", INSTANCE_TTL) or INSTANCE_TTL)
-    return (time.time() - hb) <= max(ttl, INSTANCE_TTL)
 
 
 def detect_runtime() -> dict:
@@ -104,178 +132,6 @@ def to_windows_path(p: "str | Path") -> "str | None":
         return None
 
 
-def instance_record(cfg: "Config") -> dict:
-    """このプロセスの監視対象（プロジェクトルートと主要パス・OS/WSL 情報）を表す発見用レコード。
-    外部操作者が CLI を組むときは `root` を `--root` に渡す（1 プロジェクト = 1 ルート）。
-
-    root は **リダイレクト前の素の root**（source_root）。実書き込み先（backlog.parent）は状態
-    worktree 側を指すので、それを root として記録すると 2 つ壊れる: start/stop が照合に使う
-    _resolved_root（リダイレクトしない）と一致せず重複検出・停止が空振りし、この root を
-    --root に渡した外部操作者は worktree をさらに worktree へ逃がす二重リダイレクトに落ちる。
-    各パス（backlog / needs / commands …）は実体を指したままなので、読み書きには影響しない。"""
-    root = (cfg.source_root or cfg.backlog.parent).resolve()
-    rt = detect_runtime()
-    rec = {
-        "pid": os.getpid(),
-        "root": str(root),
-        "project": cfg.project_name or root.name,
-        "backlog": str(cfg.backlog.resolve()),
-        "needs": str(cfg.needs.resolve()),
-        "commands": str(commands_dir(cfg).resolve()),
-        "decisions": str(cfg.decisions.resolve()),
-        "archive": str(cfg.archive_dir().resolve()),
-        "policy": str(cfg.policy.resolve()),
-        "delivery": str(Path(cfg.delivery).resolve()),
-        "journal": str(cfg.journal.resolve()),
-        "workdir": str(cfg.workdir.resolve()),
-        "watch": cfg.watch,
-        "started_at": time.time(),
-        "started_iso": datetime.now().isoformat(timespec="seconds"),
-        "heartbeat": time.time(),                               # 生存信号（リモート発見の鮮度判定に使う）
-        "heartbeat_iso": datetime.now().isoformat(timespec="seconds"),
-        "ttl": max(INSTANCE_TTL, cfg.poll * 3),                 # poll より十分長くしてフラッピングを防ぐ
-        "host": socket.gethostname(),
-        "python": sys.executable,
-        **rt,
-    }
-    if rt["runtime"] == "wsl":
-        rec["root_windows"] = to_windows_path(root)  # \\wsl.localhost\<distro>\... 等。無ければ None
-        # 状態 worktree へ逃がしているとき viewer の登録パスは実体（backlog の親）を指す。
-        # root_windows だけでは一致しないので、実効パスの Windows 表記も併記する。
-        effective = cfg.backlog.parent.resolve()
-        rec["effective_root"] = str(effective)
-        rec["effective_root_windows"] = to_windows_path(effective)
-        rec["backlog_windows"] = to_windows_path(cfg.backlog.resolve())
-    return rec
-
-
-def register_instance(cfg: "Config", extra: "list | str | None" = None) -> "list[Path]":
-    """全レジストリ（ローカル home＋共有先）に自分を登録し、書けたファイルパス一覧を返す。
-    共有先にも書くことで別ホストから発見される（失敗しても run は止めない）。"""
-    rec = instance_record(cfg)
-    blob = json.dumps(rec, ensure_ascii=False, indent=2)
-    fname = _instance_filename(rec)
-    written: list[Path] = []
-    for d in resolve_registry_dirs(extra, use_env=not getattr(cfg, "profile_mode", False)):
-        try:
-            d.mkdir(parents=True, exist_ok=True)
-            p = d / fname
-            p.write_text(blob, encoding="utf-8")
-            written.append(p)
-        except OSError:
-            continue
-    return written
-
-
-def refresh_instance(paths: "list[Path]") -> None:
-    """登録済みレコードの heartbeat を更新する（watch の各パス/idle で呼ぶ＝リモートに生存を示す）。"""
-    now = time.time()
-    iso = datetime.now().isoformat(timespec="seconds")
-    for p in paths:
-        try:
-            rec = json.loads(p.read_text(encoding="utf-8"))
-            rec["heartbeat"], rec["heartbeat_iso"] = now, iso
-            p.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
-        except (OSError, ValueError):
-            continue
-
-
-def _start_heartbeat_thread(cfg: "Config", paths: "list[Path]",
-                            interval: "float | None" = None) -> "threading.Event":
-    """watch 中、本体が長い処理でブロックしている間も心拍を打ち続けるデーモンスレッドを起動し、
-    停止用の Event を返す（set() で次のティックに終わる。プロセス終了は待たせない＝daemon）。
-
-    従来 heartbeat は watch の各パスと idle でしか打てなかった。1 タスクの実行（エージェント
-    CLI の呼び出しや agent-flow run）は数分〜数十分ブロックするため、その間に INSTANCE_TTL
-    （90 秒）を大きく超えて心拍が途切れる。外から見ると死んだように見え、agent-dashboard
-    では稼働中のプロジェクトが「停止中」や「別マシンで稼働中」と誤表示されていた
-    （viewer は鮮度切れの instances レコードを捨て、status.json の鮮度判定へ落ちるため）。
-
-    status.json は state_git のコミット対象なので、ここでは既存のポリシー
-    （maybe_heartbeat_status＝設定 status_interval。既定 0＝無効）にそのまま従う。
-    無効なら触らない＝idle の git 負荷は従来と変わらない。"""
-    stop = threading.Event()
-    if interval is None:
-        interval = max(5.0, INSTANCE_TTL / 3.0)   # ttl の 1/3。切れる前に必ず 1 回は打つ
-
-    def _beat() -> None:
-        while not stop.wait(interval):
-            with contextlib.suppress(Exception):   # 心拍の失敗で run を巻き込まない
-                refresh_instance(paths)
-            with contextlib.suppress(Exception):
-                maybe_heartbeat_status(cfg)
-
-    threading.Thread(target=_beat, name="agent-project-heartbeat", daemon=True).start()
-    return stop
-
-
-def _maybe_prune(rec: dict, f: Path) -> None:
-    """死んだレコードの掃除。自ホストのものは即削除、リモートは長期（grace 超）に限り削除。
-    他ホストの最近のレコードは（共有先での競合を避け）触らない。"""
-    try:
-        if str(rec.get("host", "")) == socket.gethostname():
-            f.unlink()
-        else:
-            hb = float(rec.get("heartbeat", rec.get("started_at", 0)) or 0)
-            if (time.time() - hb) > REMOTE_PRUNE_GRACE:
-                f.unlink()
-    except OSError:
-        pass
-
-
-def list_instances(prune: bool = True, extra: "list | str | None" = None,
-                   use_env: bool = True) -> list:
-    """生存中のインスタンス一覧（ローカル＋共有レジストリを横断）。同一インスタンスが複数ディレクトリに
-    現れたら heartbeat が新しい方を採用。死んだレコードは _maybe_prune で掃除する。"""
-    best: dict = {}                          # (host,pid,root) -> (rec, heartbeat)
-    for d in resolve_registry_dirs(extra, use_env=use_env):
-        if not d.exists():
-            continue
-        for f in sorted(d.glob("*.json")):
-            try:
-                rec = json.loads(f.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            if not _record_alive(rec):
-                if prune:
-                    _maybe_prune(rec, f)
-                continue
-            key = (str(rec.get("host", "")), int(rec.get("pid", -1)), str(rec.get("root", "")))
-            hb = float(rec.get("heartbeat", rec.get("started_at", 0)) or 0)
-            cur = best.get(key)
-            if cur is None or hb > cur[1]:
-                best[key] = (rec, hb)
-    return [v[0] for v in best.values()]
-
-
-def cmd_instances(as_json: bool = False, extra: "list | str | None" = None) -> int:
-    """稼働中の agent-project（監視中プロジェクトルート）を一覧。外部操作者の発見口。
-    共有レジストリを併用すると別ホストのインスタンスも横断表示する。"""
-    recs = list_instances(prune=True, extra=extra)
-    recs.sort(key=lambda r: (str(r.get("host", "")), int(r.get("pid", 0))))
-    if as_json:
-        print(json.dumps(recs, ensure_ascii=False, indent=2))
-        return 0
-    if not recs:
-        print("稼働中の agent-project はありません（run/--watch 起動時に登録されます）。")
-        return 0
-    me = socket.gethostname()
-    for r in recs:
-        rt = r.get("runtime", "?")
-        if r.get("wsl_distro"):
-            rt += f":{r['wsl_distro']}"
-        flags = "watch" if r.get("watch") else "run"
-        host = str(r.get("host", "?"))
-        where = "" if host == me else f" @{host}(remote)"
-        print(f"pid={r['pid']} [{rt}] {flags}{where}  root={r['root']}")
-        if r.get("root_windows"):
-            print(f"    Windows: {r['root_windows']}")
-    return 0
-
-
-# ---------------------------------------------------------------------------
-# 常駐ライフサイクル（start / stop / restart）— レジストリ(§4)の上に起動・停止操作を一級化
-# ---------------------------------------------------------------------------
 def _self_script() -> str:
     """この CLI を再実行できる実体の絶対パス（子プロセス起動・graceful 再起動に使う）。
 
@@ -295,47 +151,6 @@ def _self_script() -> str:
 
 def _norm_root(root: str) -> str:
     return str(Path(root).expanduser().resolve())
-
-
-def _drop_instance_record(rec: dict, extra: "list | str | None" = None) -> None:
-    """このレコードのファイルを全レジストリから消す（ホスト修飾名＋旧 `<pid>.json` 形式の両方）。"""
-    fname = _instance_filename(rec)
-    pid = rec.get("pid")
-    for d in resolve_registry_dirs(extra):
-        for name in (fname, f"{pid}.json"):
-            try:
-                (d / name).unlink()
-            except OSError:
-                pass
-
-
-def _reap(pid: int) -> None:
-    """対象が自分の子なら回収してゾンビ化を防ぐ（他人の子・未対応は無視）。"""
-    try:
-        os.waitpid(pid, os.WNOHANG)
-    except (OSError, ChildProcessError, AttributeError):
-        pass
-
-
-def select_instances(root: "str | None" = None, pid: "int | None" = None,
-                     want_all: bool = False, extra: "list | str | None" = None,
-                     use_env: bool = True) -> list:
-    """稼働インスタンスを root / pid / 全件 で選ぶ。
-    停止対象に使うため自ホストのレコードのみを返す（別ホストの PID へはシグナルを送れない）。"""
-    me = socket.gethostname()
-    recs = [r for r in list_instances(prune=True, extra=extra, use_env=use_env)
-            if str(r.get("host", "")) == me]
-    if want_all:
-        return recs
-    nr = _norm_root(root) if root else None
-    out = []
-    for r in recs:
-        if pid is not None and int(r.get("pid", -1)) == pid:
-            out.append(r)
-            continue
-        if nr is not None and str(r.get("root", "")) == nr:
-            out.append(r)
-    return out
 
 
 def _signal_tree(pid: int, sig) -> None:
@@ -458,60 +273,3 @@ def reap_orphan_flow(cfg: "Config", *, include_daemon: "bool | None" = None) -> 
                 pass
     _expire_run_leases(cfg)
     return len(pids)
-
-
-def cmd_stop(root: "str | None" = None, pid: "int | None" = None,
-             want_all: bool = False, timeout: float = 5.0,
-             extra: "list | str | None" = None,
-             config: "str | None" = None,
-             profile: "str | None" = None,
-             drain: bool = False) -> int:
-    """稼働インスタンスへ SIGTERM（必要なら SIGKILL）を送り、レジストリも掃除する（自ホストのみ）。
-    agent-flow の子プロセスも道連れにする（_signal_tree 参照）。"""
-    if not pid and not want_all:                  # 既定は cwd（または --root/設定）のプロジェクトを止める
-        root = _resolved_root(root, config, profile)
-    targets = select_instances(root, pid, want_all, extra=extra, use_env=not bool(profile))
-    if not targets:
-        print("停止対象の稼働インスタンスが見つかりません（instances で確認できます）。", file=sys.stderr)
-        return 1
-    all_ok = True
-    for r in targets:
-        p = int(r["pid"])
-        if p == os.getpid():                  # 自分自身は決して止めない（安全ガード）
-            continue
-        try:
-            if drain and hasattr(signal, "SIGUSR1"):
-                # ドレイン開始は親 daemon だけへ通知する。プロセスグループへ送ると、
-                # 実行中の agent-flow 子プロセスが SIGUSR1 の既定動作で終了してしまう。
-                os.kill(p, signal.SIGUSR1)
-            else:
-                # 通常停止、または SIGUSR1 非対応環境では子孫も含めて停止する。
-                _signal_tree(p, signal.SIGTERM)
-        except OSError as e:
-            print(f"pid={p}: 停止シグナル失敗（{e}）", file=sys.stderr)
-            all_ok = False
-            continue
-        deadline = time.time() + timeout
-        while time.time() < deadline and _pid_alive(p):
-            _reap(p)
-            time.sleep(0.1)
-        if drain and _pid_alive(p):
-            with contextlib.suppress(OSError):
-                _signal_tree(p, signal.SIGTERM)
-            time.sleep(0.2)
-            _reap(p)
-        if _pid_alive(p) and hasattr(signal, "SIGKILL"):  # 居残りは強制終了（POSIX のみ）
-            try:
-                _signal_tree(p, signal.SIGKILL)
-            except OSError:
-                pass
-            time.sleep(0.2)
-            _reap(p)
-        _drop_instance_record(r)
-        ok = not _pid_alive(p)
-        all_ok = all_ok and ok
-        print(f"pid={p} {'停止しました' if ok else '停止できませんでした'}  root={r.get('root')}")
-    return 0 if all_ok else 1
-
-
-# ---------------------------------------------------------------------------
