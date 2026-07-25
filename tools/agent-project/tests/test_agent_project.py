@@ -66,6 +66,26 @@ def mkb(d: Path, tid: str, status="ready", verify="true", source="human", title=
         f"- verify: {v}\n- retries: {retries}\n", encoding="utf-8")
 
 
+def mk_peer(d: Path, node: str = "pc-peer", availability: str = "draining",
+            fresh_after_sec: float = 120.0):
+    """他ノードの生存信号 status/<node>.json を置く。
+
+    複数 PC 制御（CAS）は「origin があり、かつ自分以外の生存ノードが観測されている」ときだけ
+    有効になる（実装計画 W1-8・`_coordination_active`）。origin を設定しただけでは単独 PC 扱い
+    なので、分散モードを模すテストはピアも宣言する。
+
+    既定を availability="draining" にしてあるのは、「排他が要るか」の判定（鮮度だけを見る）と
+    「配布先に選ぶか」の判定（active も要求する）の違いを利用するため——ピアとしては数えつつ
+    `allocate_distributed_tasks` の配布先には入らないので、既存の配布アサーションを乱さない。"""
+    sd = d / "status"
+    sd.mkdir(parents=True, exist_ok=True)
+    (sd / f"{node}.json").write_text(json.dumps({
+        "node": node, "availability": availability,
+        "updated_iso": datetime.now(timezone.utc).isoformat(),
+        "fresh_after_sec": fresh_after_sec,
+    }, ensure_ascii=False), encoding="utf-8")
+
+
 def cfg_for(d: Path, **kw):
     # 既定 plan_review=False / delivery_review=False（従来動作を検証する既存テスト用）。
     # 実行前レビュー（proposed ゲート）の挙動は TestPlanReview が plan_review=True で検証する。
@@ -782,15 +802,64 @@ class TestAtomicClaim(unittest.TestCase):
             self.assertTrue(km.claim_task(cfg, t))         # 解放後は再取得できる
 
     def test_distributed_stale_doing_requires_human_reassignment(self):
+        # coordination（複数 PC 制御）は設定キーでなく観測で決まる（実装計画 W1-8。
+        # 設定キー "coordination: git-cas" は廃止）。「分散モード」を模すには origin を持つ
+        # git リポジトリにした上で、取り合う相手（ピア）も宣言する——origin だけでは
+        # 単独 PC 扱いで CAS を通さない。remote は reachable でなくてよい。
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             mkb(d, "T1", status="doing")
-            cfg = cfg_for(d, coordination="git-cas", node="pc-a")
+            subprocess.run(["git", "init", "-q", str(d)], check=True)
+            subprocess.run(["git", "-C", str(d), "remote", "add", "origin",
+                            "file:///no-such-remote.git"], check=True)
+            mk_peer(d)
+            cfg = cfg_for(d, node="pc-a")
             task = km.load_tasks(cfg.backlog)[0]
             self.assertEqual(km.recover_stale_doing(cfg, [task]), ["T1"])
             recovered = km.load_tasks(cfg.backlog)[0]
             self.assertEqual(recovered.status, "blocked")
             self.assertTrue((cfg.needs / "T1.md").exists())
+
+    def _origin_only_project(self, d: Path):
+        """origin はあるが到達できない（オフライン）プロジェクト。"""
+        mkb(d, "T1")
+        subprocess.run(["git", "init", "-q", str(d)], check=True)
+        subprocess.run(["git", "-C", str(d), "remote", "add", "origin",
+                        "file:///no-such-remote.git"], check=True)
+        return cfg_for(d, node="pc-a")
+
+    def test_single_node_with_unreachable_origin_still_claims(self):
+        # W1-8 は coordination を「origin があるか」で判定していたが、W1-7 で state_git: から
+        # origin が自動設定されるようになったため、単独 PC のプロジェクトまで分散モードに入り、
+        # リモートが落ちているだけで CAS が全て失敗して 1 件も claim できなくなっていた。
+        # 取り合う相手がいなければ CAS を通す意味は無いので、ローカル claim を通す。
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._origin_only_project(Path(d))
+            self.assertFalse(km._coordination_active(cfg))
+            self.assertTrue(km.claim_task(cfg, km.load_tasks(cfg.backlog)[0]))
+
+    def test_peer_present_with_unreachable_origin_fails_closed(self):
+        # 逆にピアがいるなら CAS を迂回してはいけない（同じタスクの二重取得を防ぐ）。
+        # リモートに触れない以上、claim は成立させず fail closed のままにする。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._origin_only_project(d)
+            mk_peer(d)
+            self.assertTrue(km._coordination_active(cfg))
+            self.assertFalse(km.claim_task(cfg, km.load_tasks(cfg.backlog)[0]))
+
+    def test_peer_liveness_uses_freshness_not_availability(self):
+        # 「排他が要るか」は鮮度だけで見る（drain 中のピアもまだ claim を握っているため）。
+        # 期限切れの status は数えない（消えた PC でロックし続けない）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._origin_only_project(d)
+            mk_peer(d, "pc-draining", availability="draining")
+            self.assertEqual(km._peer_nodes(cfg), {"pc-draining"})
+            mk_peer(d, "pc-stale", fresh_after_sec=-1.0)
+            self.assertNotIn("pc-stale", km._peer_nodes(cfg))
+            mk_peer(d, "pc-a")                      # 自分自身はピアに数えない
+            self.assertNotIn("pc-a", km._peer_nodes(cfg))
 
     def test_stale_claim_is_stolen(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1171,13 +1240,20 @@ class TestDoctor(unittest.TestCase):
             self.assertEqual(km.unpushed_commits(None), (0, ""))
 
     def test_doctor_rejects_unsafe_git_cas_configuration(self):
+        # coordination は設定キーでなく観測で決まる（実装計画 W1-8）。doctor_coordination_findings
+        # は _coordination_active が True でないと即 [] を返すため、検査対象にするには origin と
+        # ピアの両方が要る（origin が無い場合の検査は、それ自体が _coordination_active の判定と
+        # 同じことをするだけの到達不能コードだったため削除済み）。
         with tempfile.TemporaryDirectory() as d:
-            cfg = self._cfg(d, coordination="git-cas", node="",
+            subprocess.run(["git", "init", "-q", str(d)], check=True)
+            subprocess.run(["git", "-C", str(d), "remote", "add", "origin",
+                            "file:///no-such-remote.git"], check=True)
+            mk_peer(Path(d))
+            cfg = self._cfg(d, node="",
                             controller_heartbeat_sec=120, controller_lease_sec=60)
             titles = {finding["title"] for finding in km.doctor_coordination_findings(cfg)}
             self.assertIn("git-cas には node が必要", titles)
             self.assertIn("controller heartbeat が lease 以上", titles)
-            self.assertIn("git-cas の state root に origin が無い", titles)
 
     def test_env_findings_detect_missing_kiro_cli(self):
         with tempfile.TemporaryDirectory() as d:
@@ -8625,6 +8701,9 @@ class TestDirectStateGit(unittest.TestCase):
         base.update(kw)
         cfg = km.Config(**base)
         km.ensure_dirs(cfg)
+        # このクラスは「共有リポジトリを複数 PC が clone している」構成を検証する。CAS は
+        # ピアが観測されて初めて有効なので（W1-8）、その前提をフィクスチャで宣言する。
+        mk_peer(self.root)
         return cfg
 
     def _other(self, name="other") -> Path:
@@ -8633,6 +8712,7 @@ class TestDirectStateGit(unittest.TestCase):
                        check=True, capture_output=True)
         subprocess.run(["git", "-C", str(d), "config", "user.email", "other@test"], check=True)
         subprocess.run(["git", "-C", str(d), "config", "user.name", "other"], check=True)
+        mk_peer(d)
         return d
 
     def test_root_clone_selects_direct_mode(self):
@@ -8641,18 +8721,18 @@ class TestDirectStateGit(unittest.TestCase):
         self.assertIn("direct モード", km.state_git_status_line(cfg))
 
     def test_controller_lease_has_one_winner_across_clones(self):
-        first = self._cfg(coordination="git-cas", node="pc-a", controller_lease_sec=120.0)
+        first = self._cfg(node="pc-a", controller_lease_sec=120.0)
         other = self._other("pc-b")
-        second = cfg_for(other, coordination="git-cas", node="pc-b", controller_lease_sec=120.0)
+        second = cfg_for(other, node="pc-b", controller_lease_sec=120.0)
         at = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
         self.assertTrue(km.renew_controller_lease(first, at=at))
         self.assertFalse(km.renew_controller_lease(second, at=at + timedelta(seconds=30)))
 
     def test_controller_lease_moves_after_expiry(self):
-        first = self._cfg(coordination="git-cas", node="pc-a", controller_lease_sec=60.0,
+        first = self._cfg(node="pc-a", controller_lease_sec=60.0,
                           clock_skew_tolerance_sec=5.0)
         other = self._other("pc-b")
-        second = cfg_for(other, coordination="git-cas", node="pc-b", controller_lease_sec=60.0,
+        second = cfg_for(other, node="pc-b", controller_lease_sec=60.0,
                          clock_skew_tolerance_sec=5.0)
         at = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
         self.assertTrue(km.renew_controller_lease(first, at=at))
@@ -8661,10 +8741,10 @@ class TestDirectStateGit(unittest.TestCase):
         self.assertEqual((lease["node"], lease["generation"]), ("pc-b", 2))
 
     def test_worker_does_not_consume_global_inbox(self):
-        controller = self._cfg(coordination="git-cas", node="pc-a")
+        controller = self._cfg(node="pc-a")
         self.assertTrue(km.renew_controller_lease(controller))
         other = self._other("pc-b-worker")
-        worker = cfg_for(other, coordination="git-cas", node="pc-b", inbox=other / "inbox")
+        worker = cfg_for(other, node="pc-b", inbox=other / "inbox")
         worker.inbox.mkdir(parents=True, exist_ok=True)
         dropped = worker.inbox / "job.json"
         dropped.write_text('{"title":"global job","verify":"true"}', encoding="utf-8")
@@ -8673,11 +8753,11 @@ class TestDirectStateGit(unittest.TestCase):
         self.assertEqual(km.load_tasks(worker.backlog), [])
 
     def test_distributed_claim_has_one_winner_and_persists_fence(self):
-        first = self._cfg(coordination="git-cas", node="pc-a")
+        first = self._cfg(node="pc-a")
         mkb(self.root, "T1")
         km.state_sync(first, force=True)
         other = self._other("pc-b-claim")
-        second = cfg_for(other, coordination="git-cas", node="pc-b")
+        second = cfg_for(other, node="pc-b")
         token = km.claim_distributed_task(first, "T1")
         self.assertTrue(token)
         self.assertIsNone(km.claim_distributed_task(second, "T1"))
@@ -8686,13 +8766,13 @@ class TestDirectStateGit(unittest.TestCase):
         self.assertEqual(claimed.get("claim_token"), token)
 
     def test_stale_claim_token_cannot_settle(self):
-        first = self._cfg(coordination="git-cas", node="pc-a")
+        first = self._cfg(node="pc-a")
         mkb(self.root, "T1")
         km.state_sync(first, force=True)
         token = km.claim_distributed_task(first, "T1")
         stale = km.load_tasks(first.backlog)[0]
         other = self._other("pc-b-fence")
-        second = cfg_for(other, coordination="git-cas", node="pc-b")
+        second = cfg_for(other, node="pc-b")
 
         def reassign(root):
             path = root / "backlog" / "T1.md"
@@ -8706,13 +8786,48 @@ class TestDirectStateGit(unittest.TestCase):
         self.assertTrue(km.state_transaction(second, reassign, "test reassign"))
         self.assertEqual(stale.get("claim_token"), token)
         self.assertFalse(km.validate_distributed_claim(first, stale))
+        self.assertEqual(km.claim_fence_state(first, stale), "lost")   # 取り直された＝真の不一致
+
+    def test_unreachable_remote_is_unknown_not_lost(self):
+        # リモートに触れないことを「fence 喪失」と同一視しない。同一視すると、一過性の通信断で
+        # 完成した成果が settle 時に破棄される。
+        cfg = self._cfg(node="pc-a", coordination_retries=1)
+        mkb(self.root, "T1")
+        km.state_sync(cfg, force=True)
+        km.claim_distributed_task(cfg, "T1")
+        task = km.load_tasks(cfg.backlog)[0]
+        self.assertEqual(km.claim_fence_state(cfg, task), "ok")
+        subprocess.run(["git", "-C", str(self.root), "remote", "set-url", "origin",
+                        "file:///no-such-remote.git"], check=True)
+        self.assertEqual(km.claim_fence_state(cfg, task), "unknown")
+        # 旧ゲート（bool）はここで False を返す＝"lost" と区別が付かず破棄側へ落ちていた。
+        # 破棄するかどうかは 3 値を見る側の責務であることをここで固定する。
+        self.assertFalse(km.validate_distributed_claim(cfg, task))
+
+    def test_settle_with_unreachable_remote_preserves_work_for_human(self):
+        # unknown は破棄でも自動採用でもなく、人の判断へ隔離する（実行ノード消失時と同形）。
+        cfg = self._cfg(node="pc-a", coordination_retries=1)
+        mkb(self.root, "T1")
+        km.state_sync(cfg, force=True)
+        km.claim_distributed_task(cfg, "T1")
+        task = km.load_tasks(cfg.backlog)[0]
+        subprocess.run(["git", "-C", str(self.root), "remote", "set-url", "origin",
+                        "file:///no-such-remote.git"], check=True)
+        deltas = km._settle_task(cfg, task, "local", "done", 1, 0, 0.0, None, {},
+                                 km.load_policy(cfg.policy), {}, {})
+        self.assertEqual(deltas, {"archived": 0, "followups": []})
+        settled = km.load_tasks(cfg.backlog)[0]
+        self.assertEqual(settled.status, "blocked")             # 自動採用しない
+        self.assertTrue((cfg.needs / "T1.md").exists())         # 人の判断へ回す
+        self.assertIn("リモート不通", (cfg.needs / "T1.md").read_text(encoding="utf-8"))
+        self.assertNotIn("破棄", cfg.journal.read_text(encoding="utf-8"))
 
     def test_controller_balances_unassigned_ready_tasks_across_active_nodes(self):
-        controller = self._cfg(coordination="git-cas", node="pc-a")
+        controller = self._cfg(node="pc-a")
         mkb(self.root, "T1")
         mkb(self.root, "T2")
         statuses = self.root / "status"
-        statuses.mkdir()
+        statuses.mkdir(exist_ok=True)     # フィクスチャの mk_peer が先に作っている
         now = datetime.now(timezone.utc).isoformat()
         for node in ("pc-a", "pc-b"):
             (statuses / f"{node}.json").write_text(json.dumps({
@@ -8725,7 +8840,7 @@ class TestDirectStateGit(unittest.TestCase):
         self.assertEqual(assigned, {"T1": "pc-a", "T2": "pc-b"})
 
     def test_draining_node_releases_controller_for_another_node(self):
-        first = self._cfg(coordination="git-cas", node="pc-a", availability={
+        first = self._cfg(node="pc-a", availability={
             "timezone": "Asia/Tokyo", "daily_stop": "23:00", "drain_before_sec": 1800,
         })
         active = datetime(2026, 7, 22, 13, 29, 50, tzinfo=timezone.utc)
@@ -8733,11 +8848,11 @@ class TestDirectStateGit(unittest.TestCase):
         self.assertTrue(km.renew_controller_lease(first, at=active))
         self.assertFalse(km.renew_controller_lease(first, at=draining))
         other = self._other("pc-b-drain")
-        second = cfg_for(other, coordination="git-cas", node="pc-b")
+        second = cfg_for(other, node="pc-b")
         self.assertTrue(km.renew_controller_lease(second, at=draining))
 
     def test_planned_shutdown_requeues_owned_doing_without_retry_penalty(self):
-        cfg = self._cfg(coordination="git-cas", node="pc-a")
+        cfg = self._cfg(node="pc-a")
         mkb(self.root, "T1", retries=1)
         km.state_sync(cfg, force=True)
         self.assertTrue(km.claim_distributed_task(cfg, "T1"))
@@ -8747,7 +8862,7 @@ class TestDirectStateGit(unittest.TestCase):
         self.assertEqual(task.get("claim_generation"), "2")
 
     def test_controller_heartbeat_renews_lease_during_long_work(self):
-        controller = self._cfg(coordination="git-cas", node="pc-a",
+        controller = self._cfg(node="pc-a",
                                controller_lease_sec=0.4, controller_heartbeat_sec=0.05,
                                clock_skew_tolerance_sec=0.0)
         stop = km.start_controller_heartbeat(controller)

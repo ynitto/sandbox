@@ -232,8 +232,13 @@ def doctor_env_findings(cfg: "Config", which=shutil.which) -> "list[dict]":
 
 
 def doctor_coordination_findings(cfg: "Config") -> "list[dict]":
-    """multi-node Git CAS の起動前不変条件を決定的に検査する。"""
-    if getattr(cfg, "coordination", "") != "git-cas":
+    """multi-node Git CAS の起動前不変条件を決定的に検査する。
+
+    coordination は設定キーでなく観測で決まる（実装計画 W1-8）ため、`_coordination_active` が
+    False の間はこの検査自体が無関係（origin が無い／取り合うピアがいなければ以下は起こり得ない）。
+    「origin が無い」チェックは旧版にあったが、外側のゲートと同じ条件を二重に見るだけの
+    到達不能コードになったため削除した。"""
+    if not _coordination_active(cfg):
         return []
     findings: list[dict] = []
 
@@ -249,12 +254,6 @@ def doctor_coordination_findings(cfg: "Config") -> "list[dict]":
     if heartbeat >= lease:
         add("controller heartbeat が lease 以上", f"heartbeat={heartbeat}s lease={lease}s",
             "controller_heartbeat_sec を controller_lease_sec より短くする")
-    root = Path(cfg.backlog).parent
-    remote = subprocess.run(["git", "-C", str(root), "remote", "get-url", "origin"],
-                            capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if remote.returncode != 0 or not remote.stdout.strip():
-        add("git-cas の state root に origin が無い", f"state root={root}",
-            "state_repo の clone を profile.root に指定し origin を設定する")
     if availability_state(cfg) == "invalid":
         add("availability 設定が不正", json.dumps(getattr(cfg, "availability", {}), ensure_ascii=False),
             "timezone と daily_stop(HH:MM) を修正する")
@@ -903,7 +902,7 @@ def cmd_run(cfg: Config) -> int:
         # （再）起動直後は駆動より先にリモート状態を取り込む（停止中に viewer が push した
         # charter 更新/指示/フィードバックを、初回パスが古いローカル状態で読まないように）。
         state_sync(cfg)
-        if getattr(cfg, "coordination", "") == "git-cas":
+        if _coordination_active(cfg):
             controller_stop = start_controller_heartbeat(cfg)
         ensure_flow_daemon(cfg, cfg.flow_max_workers)   # 実行層 daemon の確保（opt-in・冪等）
         if cfg.watch:
@@ -913,7 +912,7 @@ def cmd_run(cfg: Config) -> int:
             # マスター憲章のみ（バージョン未作成）も project_watch へ: バージョン
             # （charters/<name>.md）が置かれた瞬間に charter 駆動へ入れる（run_watch は
             # charter の追加を監視しないため、ここで振り分けを間違えると気づけない）。
-            if getattr(cfg, "coordination", "") == "git-cas":
+            if _coordination_active(cfg):
                 run_watch(cfg, heartbeat=hb)      # role は各パスで lease から決め、停止後も自動昇格する
             elif charter_names(cfg) or _has_master_charter(cfg):
                 project_watch(cfg, heartbeat=hb)  # 目標を満たすまで回り続ける常駐（全 charter）
@@ -934,7 +933,7 @@ def cmd_run(cfg: Config) -> int:
             controller_stop.set()
         if availability_stop is not None:
             availability_stop.set()
-        if getattr(cfg, "coordination", "") == "git-cas":
+        if _coordination_active(cfg):
             release_controller_lease(cfg)
         if hb_stop is not None:
             hb_stop.set()          # レジストリを消す前に心拍を止める（無駄打ちを避ける）

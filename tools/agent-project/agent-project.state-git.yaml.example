@@ -95,8 +95,10 @@ act_async: true            # 非ブロッキング委譲: submit して待たず
 # state_git_interval: 300            # fetch/push の最短間隔（秒）。バックアップ粒度を細かく
 #                                    #   したければ短く（GitLab への負荷と引き換え）
 
-# --- 複数 PC が同じ backlog を直接分担する場合だけ有効化 ---
-# coordination: git-cas             # controller lease と task claim を remote HEAD の CAS で確定
+# --- 複数 PC が同じ backlog を直接分担する場合の調整値（有効化の設定は不要） ---
+# controller lease と task claim を remote HEAD の CAS で確定する動作は、origin があり
+# status/<node>.json に自分以外の生存ノードが観測されたときだけ自動で有効になる。
+# （旧 coordination: git-cas キーは廃止。残っていても無視され起動時に警告が出る）
 # controller_heartbeat_sec: 30
 # controller_lease_sec: 120
 # coordination_retries: 3

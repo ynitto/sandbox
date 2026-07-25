@@ -7,10 +7,72 @@ from zoneinfo import ZoneInfo
 _DRAIN_REQUESTED = threading.Event()
 
 
+_ORIGIN_PROBE_TTL_SEC = 30.0
+_ORIGIN_PROBE: "dict[str, tuple[float, bool]]" = {}
+
+
+def _has_origin(root: Path) -> bool:
+    """状態ルートに origin があるか。`git remote get-url` はサブプロセスなので短命キャッシュを
+    挟む——判定はタスクごと・poll ごとのホットパスから呼ばれる（`claim_task`・`has_work`）。
+    origin は実行中にほぼ変わらないが、W1-7 の `_ensure_direct_state_git` が後から付けうるので
+    恒久キャッシュにはしない。"""
+    key = str(root)
+    cached = _ORIGIN_PROBE.get(key)
+    now = time.monotonic()
+    if cached is not None and now - cached[0] < _ORIGIN_PROBE_TTL_SEC:
+        return cached[1]
+    value = (root / ".git").exists() and DirectStateGit(root, interval=0.0)._has_remote()
+    _ORIGIN_PROBE[key] = (now, value)
+    return value
+
+
+def _peer_nodes(cfg: "Config", at: "datetime | None" = None) -> "set[str]":
+    """自分以外に生存が観測されているノード名。
+
+    `status/<node>.json` は同期対象の状態ファイルなので、**リモートが落ちていても
+    「最後に同期できた時点のピア集合」がローカルに残る**。これが「今この状態を取り合う
+    相手がいるか」を offline でも判定できる根拠になる。
+
+    生存判定は鮮度（`updated_iso` + `fresh_after_sec`）だけで見る。`allocate_distributed_tasks`
+    は配布先を選ぶために `availability == "active"` も要求するが、こちらは「排他が要るか」の
+    判定なので、drain 中のノードも**まだ claim を握っている**以上ピアとして数える。"""
+    root = Path(cfg.backlog).parent
+    now = (at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    own = str(getattr(cfg, "node", "") or "").strip()
+    peers: set[str] = set()
+    status_dir = root / "status"
+    for path in sorted(status_dir.glob("*.json")) if status_dir.is_dir() else []:
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+            updated = datetime.fromisoformat(str(record["updated_iso"]).replace("Z", "+00:00"))
+            fresh = float(record.get("fresh_after_sec", 120.0) or 120.0)
+            node = str(record.get("node", "") or "").strip()
+        except (KeyError, OSError, TypeError, ValueError):
+            continue
+        if node and node != own \
+                and (now - updated.astimezone(timezone.utc)).total_seconds() <= fresh:
+            peers.add(node)
+    return peers
+
+
+def _coordination_active(cfg: "Config") -> bool:
+    """複数 PC の CAS 制御を通すべきか（実装計画 W1-8。`coordination:` 設定キーは廃止）。
+
+    判定は「origin があるか」ではなく **CAS が守るべき不変条件が今そこにあるか** で決める。
+    CAS が防ぐのは「他ノードが同じタスクを同時に取ること」なので、取り合う相手がいなければ
+    通す意味が無い。origin の有無を代理指標にすると、W1-7 で `state_git:` から origin が
+    自動設定されるようになった以降は**単独 PC のプロジェクトまで分散モードに入り**、
+    リモートが落ちているだけで CAS が全て失敗して 1 件も claim できなくなる（実害）。
+
+    したがって: origin があり、かつ自分以外の生存ノードが観測されているときだけ True。
+    ピアが現れれば次のパスから自動で CAS に入るので「設定より規約」の狙いは保たれる。"""
+    return _has_origin(Path(cfg.backlog).parent) and bool(_peer_nodes(cfg))
+
+
 def request_drain(cfg: "Config") -> None:
     """新規 claim を止め、controller を即時解放する。"""
     _DRAIN_REQUESTED.set()
-    if getattr(cfg, "coordination", "") == "git-cas":
+    if _coordination_active(cfg):
         release_controller_lease(cfg)
 
 
@@ -30,15 +92,15 @@ def state_transaction(cfg: "Config", mutate, message: str = "coordination update
     """remote HEAD を親に変更を作り、fast-forward push を CAS として使う。
 
     mutate は一時 worktree を受け取り、変更を採用するなら truthy、競合で中止するなら falsy を返す。
-    push 競合時だけ最新 HEAD から作り直す。Git が使えない場合は fail closed で False。
+    push 競合時だけ最新 HEAD から作り直す。CAS を通す状況でなければ（`_coordination_active`
+    が False＝origin が無い／取り合うピアがいない）fail closed で False
+    （実装計画 W1-8: coordination は設定キーでなく観測で決まる）。
     """
-    if getattr(cfg, "coordination", "") != "git-cas":
+    if not _coordination_active(cfg):
         return False
     root = Path(cfg.backlog).parent
     git = DirectStateGit(root, interval=0.0)
     branch = str(getattr(cfg, "state_repo_branch", "main") or "main")
-    if not (root / ".git").exists() or not git._has_remote():
-        return False
     with _file_lock(git._sync_lock_path()):
         git._ensure_identity()
         for _ in range(max(1, int(getattr(cfg, "coordination_retries", 3) or 3))):
@@ -198,26 +260,57 @@ def claim_distributed_task(cfg: "Config", task_id: str,
     return claimed.get("token")
 
 
-def _remote_task(cfg: "Config", task_id: str) -> "Task | None":
+def _fetch_remote_task(cfg: "Config", task_id: str) -> "tuple[Task | None, bool]":
+    """remote 正本のタスクを (task, reachable) で返す。
+
+    「リモートに触れなかった」と「触れたがタスクが無い」を**呼び出し側が区別できる**ことが要点。
+    両方を None に潰すと、一過性の通信断が fence 喪失と同じ扱いになり、完成した成果が
+    破棄される（`_settle_task`）。一過性のブリップはここで吸収する——`coordination_retries`
+    回まで指数バックオフで fetch を再試行してから不通と判定する。"""
     root = Path(cfg.backlog).parent
     git = DirectStateGit(root, interval=0.0)
     branch = str(getattr(cfg, "state_repo_branch", "main") or "main")
-    if git._git("fetch", "-q", "origin", branch).returncode != 0:
-        return None
+    attempts = max(1, int(getattr(cfg, "coordination_retries", 3) or 3))
+    for i in range(attempts):
+        if git._git("fetch", "-q", "origin", branch).returncode == 0:
+            break
+        if i < attempts - 1:
+            time.sleep(2 ** i)
+    else:
+        return None, False
     spec = f"refs/remotes/origin/{branch}:backlog/{task_id}.md"
     result = git._git("show", spec)
-    return parse_task(result.stdout, task_id) if result.returncode == 0 else None
+    return (parse_task(result.stdout, task_id) if result.returncode == 0 else None), True
+
+
+def _remote_task(cfg: "Config", task_id: str) -> "Task | None":
+    return _fetch_remote_task(cfg, task_id)[0]
+
+
+def claim_fence_state(cfg: "Config", task: "Task") -> str:
+    """settle 前の claim 検証結果を 3 値で返す: "ok" | "lost" | "unknown"。
+
+    - "ok"      … remote 正本が同じ owner/token/generation の doing（＝この試行が正当）
+    - "lost"    … remote 正本が別物（他ノードが取り直した・状態が変わった）＝ fence 喪失
+    - "unknown" … リモートに触れず検証できない。**"lost" と同一視してはいけない**——
+                  通信断で完成した成果を捨てることになる（`_settle_task` が保留へ回す）。
+    """
+    if not _coordination_active(cfg):
+        return "ok"
+    current, reachable = _fetch_remote_task(cfg, task.id)
+    if not reachable:
+        return "unknown"
+    if current is None or current.norm_status() != "doing":
+        return "lost"
+    return "ok" if all(str(current.get(key) or "") == str(task.get(key) or "")
+                       for key in ("claim_owner", "claim_token", "claim_generation")) else "lost"
 
 
 def validate_distributed_claim(cfg: "Config", task: "Task") -> bool:
-    """remote 正本が同じ owner/token/generation の doing である場合だけ settle を許可する。"""
-    if getattr(cfg, "coordination", "") != "git-cas":
-        return True
-    current = _remote_task(cfg, task.id)
-    if current is None or current.norm_status() != "doing":
-        return False
-    return all(str(current.get(key) or "") == str(task.get(key) or "")
-               for key in ("claim_owner", "claim_token", "claim_generation"))
+    """remote 正本が同じ owner/token/generation の doing である場合だけ settle を許可する。
+    検証できなかった場合（リモート不通）も False になるため、成果の採否を分けたい
+    呼び出し側は `claim_fence_state` の 3 値を直接見る。"""
+    return claim_fence_state(cfg, task) == "ok"
 
 
 def refresh_distributed_task(cfg: "Config", task_id: str) -> bool:

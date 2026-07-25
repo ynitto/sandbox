@@ -54,7 +54,6 @@ CONFIG_DEFAULTS = {
     # node 未指定タスクを既定でどの PC（ノード）が拾うか。プロジェクト共有設定（空＝誰でも／従来）。
     # 各 PC 固有の node 名は共有 yaml に置かず CLI --node / 環境変数 AGENT_PROJECT_NODE から取る。
     "default_node": "",
-    "coordination": "",
     "controller_heartbeat_sec": 30.0,
     "controller_lease_sec": 120.0,
     "coordination_retries": 3,
@@ -291,7 +290,24 @@ def resolve_config(args):
     if getattr(args, "node", None) is None and "node" in profile:
         args.node = profile["node"]
     args.availability = profile.get("availability", {})
+    _warn_deprecated_coordination(args, cfg, path)
     return args
+
+
+def _warn_deprecated_coordination(args, cfg: dict, path) -> None:
+    """廃止した `coordination` 指定（yaml キー・CLI フラグ）を黙って捨てない（実装計画 W1-8）。
+
+    設定読み込みは CONFIG_DEFAULTS のキーだけを走査するため、既存 yaml に残った
+    `coordination: git-cas` はエラーにも警告にもならず消える。挙動が変わったのに設定は
+    残っている状態は原因を追えないので、一度だけ stderr へ出して移行先を示す。"""
+    used = [src for src, hit in (
+        (f"設定ファイル {path}" if path else "設定ファイル", "coordination" in (cfg or {})),
+        ("--coordination", getattr(args, "_deprecated_coordination", None) is not None),
+    ) if hit]
+    if used:
+        print(f">>> 警告: {' と '.join(used)} の coordination 指定は廃止されました（無視します）。"
+              "複数 PC 制御は origin と status/ に観測される他ノードの有無で自動判定します",
+              file=sys.stderr)
 
 
 def build_config(args) -> Config:
@@ -396,7 +412,6 @@ def build_config(args) -> Config:
                  _auto_node_name()).strip(),
         default_node=str(getattr(args, "default_node", "") or "").strip(),
         availability=availability,
-        coordination=str(getattr(args, "coordination", "") or "").strip(),
         controller_heartbeat_sec=max(1.0, float(getattr(args, "controller_heartbeat_sec", 30.0) or 30.0)),
         controller_lease_sec=max(1.0, float(getattr(args, "controller_lease_sec", 120.0) or 120.0)),
         coordination_retries=max(1, int(getattr(args, "coordination_retries", 3) or 3)),
@@ -552,14 +567,18 @@ def _add_common(sp):
                     help="この PC（エンジン）のノード名（複数 PC のバックログ分担）。指定すると "
                          "node 割当が一致するタスクと未割当タスク（default_node 規則）だけを消化する。"
                          "環境変数 AGENT_PROJECT_NODE でも指定可。未指定時は hostname から自動決定")
-    sp.add_argument("--coordination", choices=["git-cas"], default=None,
-                    help="複数 PC 制御を Git CAS で有効化（共有設定 coordination と同義）")
     sp.add_argument("--controller-heartbeat-sec", type=float, default=None,
                     help="controller lease 更新間隔（秒・既定 30）")
     sp.add_argument("--controller-lease-sec", type=float, default=None,
                     help="controller lease 有効期間（秒・既定 120）")
     sp.add_argument("--coordination-retries", type=int, default=None,
                     help="Git CAS 競合時の再試行回数（既定 3）")
+    # 廃止済み（実装計画 W1-8）。**受け口だけ残す**のは argparse の前方一致対策——消すと
+    # 旧 `--coordination git-cas` が `--coordination-retries` に解決され、
+    # 「invalid int value: 'git-cas'」という無関係なフラグ名のエラーになる（さらに
+    # `--coordination 3` はエラーにすらならず retries=3 として通ってしまう）。
+    sp.add_argument("--coordination", dest="_deprecated_coordination", default=None,
+                    help=argparse.SUPPRESS)
     sp.add_argument("--clock-skew-tolerance-sec", type=float, default=None,
                     help="ノード間の時刻ずれ許容秒（既定 30）")
     sp.add_argument("--planner", default=None, choices=["agent", "none"],

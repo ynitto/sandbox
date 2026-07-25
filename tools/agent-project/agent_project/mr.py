@@ -515,16 +515,43 @@ def _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location="local",
                                     f"({task.retries}/{cfg.max_retries}) — {vmsg}")
 
 
+def _requeue_for_human(cfg: "Config", task: "Task", cycle: int, need: str, log: str) -> None:
+    """成果を捨てず・自動採用もせず、人の判断へ隔離する（`recover_stale_doing` の分散モードと同形）。
+
+    claim を解放して blocked にし、fencing token を進めてから needs 票を書く。token を進めるのは
+    「この試行の claim はもう有効でない」と確定させるため——進めないまま放置すると、後から
+    復帰したノードが古い token で settle を通してしまう。"""
+    release_claim(cfg, task)
+    task.status = "blocked"
+    task.set("claim_owner", "")
+    task.set("claim_token", hashlib.sha256(os.urandom(32)).hexdigest()[:32])
+    task.set("claim_generation", str(int(task.get("claim_generation") or 0) + 1))
+    write_needs_file(cfg, task, need)
+    persist_task(cfg, task)
+    append_journal(cfg.journal, log)
+
+
 def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle: int,
                  dtok: int, dusd: float, git_base, verify_env, policy: "Policy",
                  autonomy_cache: dict, reasons: dict) -> dict:
     """act 済みタスクを検証ゲート（verify→回帰→保護→進捗→flake）に通し、done/review/retry/escalate を
     確定する。副作用（persist/journal/needs/decision/delivery/archive）は内部で行い、run_loop が集計に使う
     deltas（archived・followups）を返す。run_loop の per-task 本体を 1 か所に切り出したもの（挙動は不変）。"""
-    if not validate_distributed_claim(cfg, task):
+    fence = claim_fence_state(cfg, task)
+    if fence == "lost":
         refresh_distributed_task(cfg, task.id)
         append_journal(cfg.journal,
                        f"cycle {cycle}: {task.id} の stale 結果を破棄（claim fencing token 不一致）")
+        return {"archived": 0, "followups": []}
+    if fence == "unknown":
+        # リモートに触れず claim を検証できなかった。fence を失った証拠は無いので破棄しない
+        # （一過性の通信断で完成した成果が消える）。かといって他ノードが取り直していない保証も
+        # 無いので自動採用もしない。実行ノード消失時（recover_stale_doing）と同じ扱いで人へ回す。
+        _requeue_for_human(cfg, task, cycle,
+                           "リモート不通で claim を検証できませんでした。成果は保持しています。"
+                           "resume/revise で採否を決めてください",
+                           f"cycle {cycle}: {task.id} の claim をリモート不通で検証できず保留"
+                           f"（成果は保持。人の判断へ）")
         return {"archived": 0, "followups": []}
     # act 中に人が revise（軌道修正）していたら、この試行の結果は確定せず修正内容で積み直す。
     # verify より先に判定する（方向の変わった成果に PASS/FAIL を付けない・verify コストも省く）。
@@ -705,7 +732,7 @@ def _run_setup(cfg: "Config", controller: bool = True) -> tuple:
     tasks += route_spec_tasks(cfg, tasks, policy)     # spec ルーティング（opt-in・spec 前段を前置）
     tasks += expand_spec_tasks(cfg, tasks)            # 承認済み spec の tasks.md を実装タスクへ展開
     ensure_needs(cfg, tasks)                          # 判断待ち（proposed/blocked/review）の票を status から整合
-    if getattr(cfg, "coordination", "") == "git-cas" and controller:
+    if _coordination_active(cfg) and controller:
         state_sync(cfg, force=True)                   # allocation は remote 正本の最新 backlog を親にする
         allocate_distributed_tasks(cfg)
         tasks = load_tasks(cfg.backlog)

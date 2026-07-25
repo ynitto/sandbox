@@ -342,7 +342,7 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
     sync_mirror_edits(cfg)
     commit_state(cfg, force=True)
     state_sync(cfg)                    # 状態 git: リモートの指示（commands/inbox/needs 記入）を先に取り込む
-    controller = (getattr(cfg, "coordination", "") != "git-cas"
+    controller = (not _coordination_active(cfg)
                   or renew_controller_lease(cfg))
     tasks, policy, reasons, ingested, inboxed, pre_blocked = _run_setup(cfg, controller)
     append_journal(cfg.journal, f"=== agent-project 開始 tasks={len(tasks)} "
@@ -590,7 +590,7 @@ def has_work(cfg: Config) -> bool:
     後ろに dep-gated ready が並ぶだけで project_watch が空パスを無限に回す（実害: cycles が
     数千まで増え、journal が秒単位で埋まる）。dependents が ready でも ready_after_deps が
     空なら起こさない。"""
-    if getattr(cfg, "coordination", "") == "git-cas" and availability_state(cfg) != "active":
+    if _coordination_active(cfg) and availability_state(cfg) != "active":
         return False
     tasks = load_tasks(cfg.backlog)
     # 他ノード（PC）へ割当済みの ready では起こさない。起こすと消化対象ゼロの空パスを
@@ -650,9 +650,9 @@ def run_watch(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.sle
             append_journal(cfg.journal, "=== watch: 一時停止中（resume/stop 待ち。エージェント非起動）===")
             write_status(cfg)        # paused をリモート viewer へ知らせる
         else:
-            controller = (getattr(cfg, "coordination", "") != "git-cas"
+            controller = (not _coordination_active(cfg)
                           or renew_controller_lease(cfg))
-            if getattr(cfg, "coordination", "") == "git-cas" and controller \
+            if _coordination_active(cfg) and controller \
                     and (charter_names(cfg) or _has_master_charter(cfg)):
                 project_watch(cfg, runner=lambda c: run_loop(c, act, ranker, sleeper),
                               sleeper=sleeper, max_passes=1, heartbeat=heartbeat)
@@ -683,7 +683,7 @@ def run_watch(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.sle
             sleeper(cfg.poll)
             if _DRAIN_REQUESTED.is_set():
                 return last
-            if getattr(cfg, "coordination", "") == "git-cas":
+            if _coordination_active(cfg):
                 state = availability_state(cfg)
                 if state != "active":
                     release_controller_lease(cfg)
@@ -696,7 +696,7 @@ def run_watch(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.sle
             maybe_heartbeat_status(cfg)  # --status-interval のときだけ idle 中も生存信号を更新（既定は無効＝無干渉）
             commit_state(cfg)        # 状態 worktree: 溜まった変更をまとめてコミット（間隔律速）
             state_sync(cfg)          # 状態 git: リモートの指示を取り込む（間隔律速。届けば has_work が起こす）
-            if getattr(cfg, "coordination", "") == "git-cas":
+            if _coordination_active(cfg):
                 next_controller = renew_controller_lease(cfg)
                 if next_controller and (not controller or _charter_mtimes(cfg) != charter_seen):
                     break             # 前 controller 停止後の自動昇格／charter 更新で project パスへ

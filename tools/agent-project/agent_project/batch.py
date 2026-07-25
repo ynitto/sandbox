@@ -257,7 +257,7 @@ def claim_task(cfg: "Config", task: "Task") -> bool:
     # 人の revise・直接編集をこの試行に反映し、doing 永続化で上書き消失させない）。
     live.drop("revised")                      # これから走る試行は最新内容を含む＝マーカー消化
     _adopt_task(task, live)
-    if getattr(cfg, "coordination", "") == "git-cas":
+    if _coordination_active(cfg):
         if not claim_distributed_task(cfg, task.id):
             release_claim(cfg, task)
             return False
@@ -306,7 +306,7 @@ def recover_stale_doing(cfg: "Config", tasks: "list[Task]") -> "list[str]":
         if t.norm_status() != "doing" or _claim_alive(cfg, t.id):
             continue
         release_claim(cfg, t)
-        distributed = getattr(cfg, "coordination", "") == "git-cas"
+        distributed = _coordination_active(cfg)
         if distributed:
             t.status = "blocked"
             t.set("claim_owner", "")

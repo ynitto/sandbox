@@ -672,15 +672,23 @@ state_git_interval: 300                          # fetch/push の最短間隔（
 3. viewer の操作（needs 記入・commands/ ドロップ・inbox/ 投入）はファイルとして書かれ commit/push される →
    サーバ側の agent-project が idle の pull で取り込み、watch が次パスを起こす
 
-`coordination` 未設定では、従来どおり `claims/` は同一ホスト/共有FSだけの排他であり、Git越しの
-多重実行防止にはならない。複数PCが同じbacklogを直接消化する場合だけ、次の `git-cas` モードを明示する。
+1台だけで動かしている間は、`claims/` は同一ホスト/共有FSだけの排他であり、Git越しの
+多重実行防止にはならない。複数PCが同じbacklogを直接消化する場合は、次の Git CAS が自動で効く。
 
 ### 複数PCで1プロジェクトを分担（Git CAS）
 
-全PCで同じ状態リポジトリを通常cloneし、共有 `agent-project.yaml` に以下を置く。
+全PCで同じ状態リポジトリを通常cloneする。**設定は要らない** — 状態ルートに origin があり、かつ
+`status/<node>.json` に自分以外の生存ノードが観測されたときだけ Git CAS が自動で有効になる。
+1台だけのうちは（origin があっても）取り合う相手がいないのでローカル実行のまま動き、
+2台目が生存信号を書いた次のパスから CAS に入る。
+
+> 以前あった `coordination: git-cas` 設定キーと `--coordination` フラグは廃止した。残っていても
+> 無視され、起動時に警告が出る。「origin があるか」で判定していた頃は、単独PCでもリモートが
+> 落ちているだけでタスクを1件も取得できなくなる問題があった。
+
+調整したい場合のみ、共有 `agent-project.yaml` に以下を置く。
 
 ```yaml
-coordination: git-cas
 controller_heartbeat_sec: 30
 controller_lease_sec: 120
 coordination_retries: 3

@@ -83,7 +83,9 @@ class Config:
     node: str = ""
     default_node: str = ""
     availability: dict = field(default_factory=dict)  # PC 固有の夜間停止設定（local profile のみ）
-    coordination: str = ""             # "git-cas" で multi-node 制御を明示的に有効化
+    # coordination（複数 PC 制御）の設定キーは廃止した（実装計画 W1-8）。
+    # _coordination_active(cfg) が「origin があり、かつ自分以外の生存ノードが status/ に
+    # 観測されているか」を都度見る（単独 PC は origin があっても CAS を通さない）。
     controller_heartbeat_sec: float = 30.0
     controller_lease_sec: float = 120.0
     coordination_retries: int = 3
