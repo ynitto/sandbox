@@ -39,6 +39,9 @@ except ImportError:
 # 旧綴りのままバスに残っており、それを非終端と読むと active_runs → 孤児回収で蘇る。
 # **書き込みは常に正典**（cancelled）で、旧綴りを書く箇所はもう存在しない。
 from agentcore.vocab import TERMINAL_READ as TERMINAL  # noqa: E402
+# node_id（PC の身元）の正規化は 3 ツール共通の 1 実装に寄せる（実装計画 W1-10）。
+# エンジンごとの綴り替えは同じ PC を板に 2 ノードとして登録してしまう。
+from agentcore.nodeid import normalize_node_id  # noqa: E402
 
 
 @contextlib.contextmanager

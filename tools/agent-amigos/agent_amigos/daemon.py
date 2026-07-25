@@ -17,6 +17,8 @@ import signal
 import socket
 import time
 
+from agentcore.nodeid import normalize_node_id
+
 from .assign import (apply_role, claim_role, confirm_assignment, matches_role,
                      mirror_roster, staffing_expired, unfilled_required, winner)
 from .bus import Bus
@@ -41,7 +43,16 @@ def _node_id_paths() -> "list[str]":
 
 
 def default_node_id() -> str:
-    """ノード ID: 環境変数 → node.json（新旧ホームの順に探索。無ければ採番）→ ホスト名。"""
+    """ノード ID: 環境変数 → node.json（新旧ホームの順に探索。無ければ採番）→ ホスト名。
+
+    新規採番は PC 名そのもの（実装計画 W1-10・設計 §3.1「名義は node_id = PC 名」）。
+    以前は衝突回避のためホスト名+乱数接尾辞を採番していたが、板上の身元は PC 単位で
+    1 つであるべきなので接尾辞は付けない。既に採番済みの node.json（旧形式含む）は
+    そのまま読み続ける——同一性の断絶（claim/assign の宛先が変わる）を避けるため、
+    既存ノードの自動移行はしない（切替は明示的な node_id 指定 + 手順書に従う静止点）。
+
+    正規化は `agentcore.nodeid` の共通実装に委ねる。エンジンごとに独自の綴り替えを持つと
+    同じ PC が flow で `Mac`・amigos で `mac` になり、板に 2 ノードとして現れる。"""
     env = os.environ.get("AGENT_AMIGOS_NODE")
     if env:
         return env
@@ -50,7 +61,7 @@ def default_node_id() -> str:
         data = read_json(path)
         if isinstance(data, dict) and data.get("id"):
             return str(data["id"])
-    nid = f"{socket.gethostname()}-{os.urandom(2).hex()}".lower().replace(" ", "-")
+    nid = normalize_node_id(socket.gethostname())
     try:
         write_json_atomic(paths[0], {"id": nid})   # 新規採番は新ホームへ
     except OSError:

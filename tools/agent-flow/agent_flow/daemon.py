@@ -135,6 +135,17 @@ def _tick_auto_heal(bus, daemon_id, orchestrators, lease_window, args, base,
     return healed
 
 
+def _default_daemon_id(args) -> str:
+    """node_id は PC 名で安定させる（実装計画 W1-10・設計 §3.1「名義は node_id = PC 名」）。
+    以前は hostname-pid で daemon 再起動ごとに変わり、板の bid/status がその都度別名義になって
+    残骸が積もっていた（同一 PC の板上の身元は 1 つであるべき）。
+
+    正規化は `agentcore.nodeid` の共通実装に委ねる（`_safe` ではない）。`_safe` は不正文字を
+    `_` に倒し大小文字も保つため、同じ PC が flow で `Mac`・amigos で `mac` になり、板に
+    2 ノードとして現れていた（大小文字を区別しないファイルシステムでは互いを上書きする）。"""
+    return args.node_id or normalize_node_id(socket.gethostname())
+
+
 def cmd_daemon(args) -> int:
     # 冪等化: 同一バスのデーモンが既に稼働していれば何もしない（多重起動しない）
     lock_file = _acquire_daemon_lock(args)
@@ -143,7 +154,7 @@ def cmd_daemon(args) -> int:
               "起動をスキップします。", flush=True)
         return 0
 
-    daemon_id = args.node_id or f"{socket.gethostname()}-{os.getpid()}"
+    daemon_id = _default_daemon_id(args)
     bus = make_bus(args, f"daemon-{_safe(daemon_id)}")
     base = _child_base(args, os.path.abspath(args.bus))
     mode = _mode_string(args, os.path.abspath(args.bus))

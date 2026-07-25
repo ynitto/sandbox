@@ -5,6 +5,11 @@ from __future__ import annotations
 #   Quick Red Flags を決定的に採点する。L0–L3 のレベルと 0–100 スコア・赤旗・提案を出し、
 #   「いまどの自律度で無人運用してよいか」を機械判定する。stdlib のみ・エージェント不要。
 # ---------------------------------------------------------------------------
+# node_id（PC の身元）の正規化は 3 ツール共通の 1 実装を使う（実装計画 W1-10）。
+# doctor が独自に綴り替えると板のファイルを書く側と食い違い、切替前チェックが空振りする。
+from agentcore.nodeid import normalize_node_id  # noqa: E402
+
+
 def compute_audit(cfg: Config) -> dict:
     """backlog/policy/config/state を走査して Loop Readiness を採点する（決定的）。"""
     tasks = load_tasks(cfg.backlog)
@@ -258,6 +263,92 @@ def doctor_coordination_findings(cfg: "Config") -> "list[dict]":
         add("availability 設定が不正", json.dumps(getattr(cfg, "availability", {}), ensure_ascii=False),
             "timezone と daily_stop(HH:MM) を修正する")
     return findings
+
+
+def doctor_node_id_cutover_findings(board_root: "str | None", old_node_id: str,
+                                    new_node_id: str,
+                                    amigos_bus_root: "str | None" = None) -> "list[dict]":
+    """node_id 切替（実装計画 W1-10・静止点）の事前チェック。旧名義に実行中の委譲・
+    ミッションが残っていないかを決定的に検査する（設計 §9 C13 の一環 — 更新は
+    「git pull + install.sh」で足りるが node_id はデータの名義そのものを変えるため、
+    残骸を残したまま切り替えると旧名義の bid/status が孤立し二重入札の温床になる）。
+
+    - 板 `delegations/<id>/status/<old_node_id>.json` が存在するのに `result.json` が
+      無い委譲は「旧名義でまだ引き受けている」ため未決着（実行中の委譲あり）。
+    - amigos_bus_root を渡した場合、`status/<old_node_id>--*.json`（ロール別状態ファイル）が
+      1 つでも見つかれば要確認として挙げる（terminal 判定にはミッション文脈が要るため、
+      ここでは「見つかったら人が見る」に倒す——doctor は誤動作より過検知を選ぶ）。
+    - 新名義が板に**別 PC の生存ノードとして既に登録済み**なら衝突として挙げる。W1-10 で
+      既定採番を PC 名にしたため、ホスト名の重複（`localhost`・コンテナ既定名）が
+      現実に起こりうる。気づかず切り替えると 2 台が同じ名義で入札し、bid/status を
+      互いに上書きする。
+
+    名義の綴りは `agentcore.nodeid.normalize_node_id` で揃える。ここで独自に綴り替えると、
+    板のファイルを書く側（各エンジンの `_safe`）と食い違い、実行中の委譲を見落として
+    「切替してよい」と誤報告する——所見ゼロを切替の許可条件にしている手順書の前提が壊れる。"""
+    findings: list[dict] = []
+
+    def add(title: str, evidence: str, fix: str) -> None:
+        findings.append({"category": "config", "severity": "critical", "title": title,
+                         "evidence": evidence, "fix": fix})
+
+    old_safe = normalize_node_id(old_node_id)
+    new_safe = normalize_node_id(new_node_id)
+    if board_root and os.path.isdir(os.path.join(board_root, "delegations")):
+        deleg_root = os.path.join(board_root, "delegations")
+        active = []
+        for did in sorted(os.listdir(deleg_root)):
+            status_path = os.path.join(deleg_root, did, "status", f"{old_safe}.json")
+            result_path = os.path.join(deleg_root, did, "result.json")
+            if os.path.exists(status_path) and not os.path.exists(result_path):
+                active.append(did)
+        if active:
+            add("旧 node_id 名義の委譲が実行中",
+                f"board={board_root} old={old_node_id} delegations={active[:8]}",
+                "対象の委譲が終端（result.json 生成）するまで node_id 切替を待つ")
+    if amigos_bus_root and os.path.isdir(os.path.join(amigos_bus_root, "missions")):
+        stale = []
+        missions_root = os.path.join(amigos_bus_root, "missions")
+        for mid in sorted(os.listdir(missions_root)):
+            status_dir = os.path.join(missions_root, mid, "status")
+            if not os.path.isdir(status_dir):
+                continue
+            for name in os.listdir(status_dir):
+                if name.startswith(f"{old_safe}--") and name.endswith(".json"):
+                    stale.append(f"{mid}/{name}")
+        if stale:
+            add("旧 node_id 名義の amigos ロール状態が残存",
+                f"amigos_bus={amigos_bus_root} old={old_node_id} entries={stale[:8]}",
+                "ミッションが終端しているか確認してから node_id 切替を行う（人の目視確認が必要）")
+    if board_root and new_safe != old_safe:
+        node_path = os.path.join(board_root, "nodes", f"{new_safe}.json")
+        try:
+            with open(node_path, encoding="utf-8") as f:
+                rec = json.loads(f.read())
+        except (OSError, ValueError):
+            rec = None
+        if isinstance(rec, dict) and _node_record_is_fresh(rec):
+            add("新 node_id が板で使用中",
+                f"board={board_root} new={new_node_id} heartbeat={rec.get('heartbeat')}",
+                "別 PC が同じ名義で稼働している。ホスト名が重複していないか確認し、"
+                "重複するなら一意な node_id を明示指定する")
+    return findings
+
+
+def _node_record_is_fresh(rec: dict) -> bool:
+    """板の `nodes/<id>.json` が「今も生きているノード」を指すか（board.schema.json の
+    heartbeat + fresh_after_sec 流儀）。heartbeat を持たない登録は生死を判定できないので
+    生存扱いにする——切替前チェックは見落とし（誤って許可）より過検知に倒す。"""
+    stamp = str(rec.get("heartbeat") or "").strip()
+    if not stamp:
+        return True
+    try:
+        seen = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    fresh = float(rec.get("fresh_after_sec", 120.0) or 120.0)
+    age = (datetime.now(timezone.utc) - seen.astimezone(timezone.utc)).total_seconds()
+    return age <= fresh
 
 
 def doctor_audit_findings(cfg: "Config") -> "list[dict]":

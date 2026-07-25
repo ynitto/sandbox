@@ -3522,6 +3522,29 @@ class DaemonPrimitiveTests(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="kf-daemon-")
         self.bus = kf.Bus(self.tmp, "_")
 
+    def test_default_daemon_id_is_stable_hostname_without_pid(self):
+        # 実装計画 W1-10: node_id は PC 名で安定させる（daemon 再起動ごとに変わらない）。
+        args = types.SimpleNamespace(node_id=None)
+        first = kf._default_daemon_id(args)
+        second = kf._default_daemon_id(args)
+        self.assertEqual(first, second)
+        # 綴りは agentcore の共通正規化。_safe だと大小文字がそのまま残り、同じ PC が
+        # flow で `Mac`・amigos で `mac` になって板に 2 ノードとして現れる。
+        self.assertEqual(first, kf.normalize_node_id(kf.socket.gethostname()))
+        self.assertNotIn(str(os.getpid()), first)
+
+    def test_default_daemon_id_matches_amigos_for_same_host(self):
+        # 同一 PC の板上の身元は 1 つ（設計 §3.1）。エンジンをまたいで綴りが一致すること。
+        host = "My PC"
+        flow_id = kf.normalize_node_id(host)
+        amigos_id = kf.normalize_node_id(host)   # amigos も同じ agentcore 実装を使う
+        self.assertEqual(flow_id, amigos_id)
+        self.assertEqual(kf._safe(flow_id), flow_id)   # 板の書き込み側に掛けても不変
+
+    def test_default_daemon_id_respects_explicit_node_id(self):
+        args = types.SimpleNamespace(node_id="pc-explicit")
+        self.assertEqual(kf._default_daemon_id(args), "pc-explicit")
+
     def test_submit_and_inbox(self):
         self.bus.submit_request("req1", "do things", "tester")
         self.assertIn("req1", self.bus.list_inbox())

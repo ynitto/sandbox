@@ -1806,6 +1806,17 @@ class NodeIdHomeMigrationTests(unittest.TestCase):
             os.path.join(self.home, ".agents", "amigos", "node.json")))
         self.assertEqual(self.daemon.default_node_id(), nid, "採番後は同じ ID を返す")
 
+    def test_fresh_id_is_bare_hostname_without_random_suffix(self):
+        # 実装計画 W1-10: 新規採番は PC 名そのもの（板上の身元は PC 単位で 1 つ）。
+        # 以前の乱数接尾辞付き採番と違い、同じホストなら毎回同じ ID になる。
+        import socket
+
+        from agentcore.nodeid import normalize_node_id
+        # 綴りは agentcore の共通正規化。エンジンごとに持つと同じ PC が flow で `Mac`・
+        # amigos で `mac` になり、板に 2 ノードとして現れる（W1-10 レビュー指摘）。
+        self.assertEqual(self.daemon.default_node_id(),
+                         normalize_node_id(socket.gethostname()))
+
 
 class TeamBuildingTests(AmigosTestCase):
     """チームビルディング（ミッションのみ → team-builder スキルで役割設計 → 従来 post へ合流）。

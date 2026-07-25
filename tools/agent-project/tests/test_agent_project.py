@@ -1255,6 +1255,85 @@ class TestDoctor(unittest.TestCase):
             self.assertIn("git-cas には node が必要", titles)
             self.assertIn("controller heartbeat が lease 以上", titles)
 
+    def test_node_id_cutover_blocks_on_active_board_delegation(self):
+        # 実装計画 W1-10: 旧 node_id 名義の委譲がまだ未決着（result.json 無し）なら
+        # node_id 切替を止める。
+        with tempfile.TemporaryDirectory() as d:
+            board = os.path.join(d, "board")
+            ddir = os.path.join(board, "delegations", "dg-1", "status")
+            os.makedirs(ddir, exist_ok=True)
+            with open(os.path.join(ddir, "pc-old.json"), "w", encoding="utf-8") as f:
+                json.dump({"who": "pc-old", "state": "working"}, f)
+            findings = km.doctor_node_id_cutover_findings(board, "pc-old", "pc-new")
+            titles = {f["title"] for f in findings}
+            self.assertIn("旧 node_id 名義の委譲が実行中", titles)
+
+    def test_node_id_cutover_allows_when_delegation_resolved(self):
+        with tempfile.TemporaryDirectory() as d:
+            board = os.path.join(d, "board")
+            ddir = os.path.join(board, "delegations", "dg-1")
+            os.makedirs(os.path.join(ddir, "status"), exist_ok=True)
+            with open(os.path.join(ddir, "status", "pc-old.json"), "w", encoding="utf-8") as f:
+                json.dump({"who": "pc-old", "state": "done"}, f)
+            with open(os.path.join(ddir, "result.json"), "w", encoding="utf-8") as f:
+                json.dump({"winner": "pc-old", "resolved_at": "2026-01-01T00:00:00Z"}, f)
+            findings = km.doctor_node_id_cutover_findings(board, "pc-old", "pc-new")
+            self.assertEqual(findings, [])
+
+    def test_node_id_cutover_flags_stale_amigos_role_status(self):
+        with tempfile.TemporaryDirectory() as d:
+            bus = os.path.join(d, "amigos-bus")
+            status_dir = os.path.join(bus, "missions", "m1", "status")
+            os.makedirs(status_dir, exist_ok=True)
+            with open(os.path.join(status_dir, "pc-old--architect.json"), "w",
+                     encoding="utf-8") as f:
+                json.dump({"state": "working"}, f)
+            findings = km.doctor_node_id_cutover_findings(
+                None, "pc-old", "pc-new", amigos_bus_root=bus)
+            titles = {f["title"] for f in findings}
+            self.assertIn("旧 node_id 名義の amigos ロール状態が残存", titles)
+
+    def test_node_id_cutover_noop_without_board_or_amigos(self):
+        self.assertEqual(km.doctor_node_id_cutover_findings(None, "pc-old", "pc-new"), [])
+
+    def test_node_id_cutover_matches_engine_written_filenames(self):
+        # 板の status ファイル名は各エンジンの _safe が決める。doctor が独自に綴り替えると
+        # 実行中の委譲を見落として「切替してよい」と誤報告する（所見ゼロを許可条件に
+        # している手順書の前提が壊れる）。共通の normalize_node_id で揃っていることを固定。
+        with tempfile.TemporaryDirectory() as d:
+            board = os.path.join(d, "board")
+            ddir = os.path.join(board, "delegations", "dg-1", "status")
+            os.makedirs(ddir, exist_ok=True)
+            written = km.normalize_node_id("My PC")      # エンジンが書くのと同じ綴り
+            with open(os.path.join(ddir, f"{written}.json"), "w", encoding="utf-8") as f:
+                json.dump({"who": written, "state": "working"}, f)
+            findings = km.doctor_node_id_cutover_findings(board, "My PC", "pc-new")
+            self.assertIn("旧 node_id 名義の委譲が実行中", {f["title"] for f in findings})
+
+    def test_node_id_cutover_flags_new_id_already_live_on_board(self):
+        # W1-10 で既定採番を PC 名にしたため、ホスト名重複（localhost・コンテナ既定名）で
+        # 別 PC と名義が衝突しうる。気づかず切り替えると 2 台が同じ名義で入札する。
+        with tempfile.TemporaryDirectory() as d:
+            board = os.path.join(d, "board")
+            os.makedirs(os.path.join(board, "nodes"), exist_ok=True)
+            with open(os.path.join(board, "nodes", "pc-new.json"), "w", encoding="utf-8") as f:
+                json.dump({"node": "pc-new",
+                           "heartbeat": datetime.now(timezone.utc).isoformat(),
+                           "fresh_after_sec": 120}, f)
+            findings = km.doctor_node_id_cutover_findings(board, "pc-old", "pc-new")
+            self.assertIn("新 node_id が板で使用中", {f["title"] for f in findings})
+
+    def test_node_id_cutover_ignores_stale_new_id_registration(self):
+        # heartbeat が古い登録は「もう居ない PC の残骸」。切替を止める理由にしない。
+        with tempfile.TemporaryDirectory() as d:
+            board = os.path.join(d, "board")
+            os.makedirs(os.path.join(board, "nodes"), exist_ok=True)
+            old = datetime.now(timezone.utc) - timedelta(seconds=3600)
+            with open(os.path.join(board, "nodes", "pc-new.json"), "w", encoding="utf-8") as f:
+                json.dump({"node": "pc-new", "heartbeat": old.isoformat(),
+                           "fresh_after_sec": 120}, f)
+            self.assertEqual(km.doctor_node_id_cutover_findings(board, "pc-old", "pc-new"), [])
+
     def test_env_findings_detect_missing_kiro_cli(self):
         with tempfile.TemporaryDirectory() as d:
             cfg = self._cfg(d, planner="agent")            # planner=agent はエージェント CLI を要求
