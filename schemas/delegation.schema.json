@@ -114,6 +114,11 @@
               "type": "array",
               "items": {"type": "string"},
               "description": "担当が必要なリポジトリ（url または repos レジストリの repo 名）。ノードの repos 宣言（repos.schema.json）に (url, path, base) identity で存在すること。省略時は workspace.url を暗黙の資格とする"
+            },
+            "contract_version": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "この公示を引き受けるのに必要な常駐一本化のノード契約バージョン（常駐一本化設計 §9 C13）。ノードは自分の宣言（board.schema.json の node.contract_version）と突き合わせ、一致するときだけ入札する。未宣言のノードは非互換扱い（fail-close — 更新漏れの古いノードを誤動作でなく不参加に倒す）。省略 = 不問（バージョンを問わず入札可）"
             }
           },
           "additionalProperties": true

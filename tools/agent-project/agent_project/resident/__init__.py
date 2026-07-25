@@ -9,6 +9,10 @@ from __future__ import annotations
 from .scheduler import Scheduler, Tick, TickTimeout
 from .supervisor import ChildSpec, Supervisor, graceful_shutdown
 from .worker import NodeWorkerPool, WorkItem
+from .status import (CONTRACT_VERSION, ChildStatus, EngineStatus, NodeCapability,
+                     SyncHealth, contract_compatible)
+from .gc import run_gc
 
 __all__ = ["Scheduler", "Tick", "TickTimeout", "ChildSpec", "Supervisor", "graceful_shutdown",
-          "NodeWorkerPool", "WorkItem"]
+          "NodeWorkerPool", "WorkItem", "CONTRACT_VERSION", "ChildStatus", "EngineStatus",
+          "NodeCapability", "SyncHealth", "contract_compatible", "run_gc"]

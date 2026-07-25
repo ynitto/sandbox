@@ -40,7 +40,8 @@
           "description": "同時に落札・実行してよい委譲数の上限（0/省略 = 無制限）。超過時は新規入札を控える"
         },
         "heartbeat": {"type": "string", "description": "最終更新時刻（ISO8601 UTC）。デーモンがサイクルごとに更新"},
-        "fresh_after_sec": {"type": "number", "description": "この秒数を超えて heartbeat が途絶えたらノード不在とみなす（読む側の生死判定。state_git status.json と同じ流儀）"}
+        "fresh_after_sec": {"type": "number", "description": "この秒数を超えて heartbeat が途絶えたらノード不在とみなす（読む側の生死判定。state_git status.json と同じ流儀）"},
+        "contract_version": {"type": "integer", "minimum": 1, "description": "このノードが実装している常駐一本化のノード契約バージョン（常駐一本化設計 §9 C13）。公示（post.json）の requires.contract_version と不一致なら入札しない — 更新漏れの古いノードを誤動作でなく不参加に倒す。requires.contract_version を持たない公示は不問（バージョンを問わず入札可）"}
       },
       "additionalProperties": true
     },
@@ -54,7 +55,8 @@
         "claimed_at": {"type": "string", "description": "入札時刻（ISO8601 UTC）"},
         "lease_until": {"type": "number", "description": "lease 期限（epoch 秒）。ハートビートで延長。失効した入札は勝者判定から外れる（孤児回収）"},
         "agent_cli": {"type": "string", "description": "この委譲に使う予定の agent CLI（任意・表示用）"},
-        "workload": {"enum": ["flow", "amigos"], "description": "この入札で駆動する予定のエンジン（公示の workload と一致）"}
+        "workload": {"enum": ["flow", "amigos"], "description": "この入札で駆動する予定のエンジン（公示の workload と一致）"},
+        "contract_version": {"type": "integer", "minimum": 1, "description": "入札ノードが実装しているノード契約バージョン（node の contract_version と同語彙）。観測用 — 不一致判定はノードが自分の入札可否を決める側（入札前）で行う"}
       },
       "additionalProperties": true
     },
