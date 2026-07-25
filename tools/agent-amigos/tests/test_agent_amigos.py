@@ -595,6 +595,49 @@ class CliTests(AmigosTestCase):
         self.assertEqual(runner.turn_once(), "exit")
 
 
+class DriveTests(AmigosTestCase):
+    """単発駆動 `agent-amigos drive`（実装計画 W1-3・設計 §4.5）: 常駐せず cycle() をその場で
+    回し、ミッション終端（または --cycles 上限）で戻る。"""
+
+    def setUp(self):
+        super().setUp()
+        self.home = os.path.join(self.tmp, "home")
+
+    def test_drive_completes_agent_acceptance_mission_and_stops(self):
+        roles_path = os.path.join(self.tmp, "roles.json")
+        with open(roles_path, "w", encoding="utf-8") as f:
+            json.dump(base_spec(acceptance="agent"), f)
+        rc = cli.main(["post", "--bus", self.bus.root, "--node-id", "owner-node",
+                       "--design", self.design, "--roles", roles_path,
+                       "--mission-id", "am-drive"])
+        self.assertEqual(rc, 0)
+        rc = cli.main(["drive", "--bus", self.bus.root, "--node-id", "owner-node",
+                       "--agent-cli", "stub", "--interval", "0", "--cycles", "20",
+                       "--home", self.home])
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.phase("am-drive"), "done")   # cycles 上限を待たず終端で戻った
+
+    def test_run_until_terminal_stops_without_offboard(self):
+        # cycle() を差し替えて「1 回目は未終端・2 回目で全終端」を模擬し、until_terminal が
+        # cycles 上限を待たずに戻ること・offboard（away 宣言）を呼ばないことを固定する
+        # （drive は install_signals=False なので通常経路では offboard に到達しない —
+        # ここでは差し替えた cycle() の返り値だけで停止条件を確認する）。
+        d = self.daemon()
+        calls = [{"m1": "working"}, {"m1": "done"}]
+        d.cycle = lambda: calls.pop(0)
+        offboarded = {"called": False}
+        d.offboard = lambda *a, **k: offboarded.__setitem__("called", True)
+        d.run(cycles=0, until_terminal=True, install_signals=False)
+        self.assertEqual(calls, [])   # 2 回とも消費 = 2 回目で終端検知して戻った
+        self.assertFalse(offboarded["called"])
+
+    def test_run_until_terminal_ignores_empty_missions(self):
+        # ミッション未投函（seen 空）の巡は「終端」に数えない。--cycles の安全上限だけが効く。
+        d = self.daemon()
+        d.cycle = lambda: {}
+        d.run(cycles=3, until_terminal=True, install_signals=False)  # cycles 上限で戻る（ハングしない）
+
+
 class DeliveryTests(AmigosTestCase):
     """納品棚（accept 時の push 型搬出）。
     設計: docs/plans/2026-07-19-agent-amigos-deliverable-delivery-design.md"""

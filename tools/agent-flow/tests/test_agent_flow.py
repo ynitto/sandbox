@@ -969,6 +969,61 @@ class OrphanRecoveryTests(unittest.TestCase):
         self.assertEqual(failed, [])
 
 
+class DaemonTickOrderingTests(unittest.TestCase):
+    """cmd_daemon から抽出した tick 関数群（実装計画 W1-2）の順序制約:
+    `_tick_cancel` は必ず `_tick_orphan_adopt` より先に呼ぶ。
+
+    `_adopt_orphan_runs` 自体は cancel マーカーを見ない（`run_is_orphaned` が
+    status in TERMINAL で弾くだけ）。cancel と孤児化が同時に成立した run で
+    正しい順序（cancel が先）なら再開されず、逆順なら誤って resume されることを
+    往復で固定する。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-daemon-order-")
+        self.bus = kf.Bus(self.tmp, "run1")
+        self.bus.submit_request("run1", "req", "submitter")
+        self.bus.ensure_run("test request")
+        self.bus.set_status("running")
+        meta = kf.read_json(self.bus.meta_path) or {}
+        meta["orch_lease_until"] = time.time() - 1.0   # owning daemon 消失（孤児条件）
+        kf.write_json_atomic(self.bus.meta_path, meta)
+        self.bus.cancel_request("run1", "tester", "テスト都合")   # cancel 条件も同時に成立
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _args(self):
+        return types.SimpleNamespace(max_resumes=3, lease=1800.0)
+
+    def _fake_spawn(self):
+        spawned = []
+
+        def spawn(base, args, req_id, req):
+            spawned.append(req_id)
+            return types.SimpleNamespace(poll=lambda: None, terminate=lambda: None)
+        return spawn, spawned
+
+    def test_cancel_before_orphan_adopt_does_not_resume(self):
+        orchestrators = {}
+        kf._tick_cancel(self.bus, self._args(), "d1", orchestrators, [])
+        self.assertEqual(self.bus.run_meta("run1")["status"], "cancelled")
+
+        spawn, spawned = self._fake_spawn()
+        adopted, failed = kf._adopt_orphan_runs(
+            self.bus, "d1", set(orchestrators), 120.0, self._args(), [], spawn=spawn)
+        self.assertEqual(adopted, {})
+        self.assertEqual(spawned, [])   # cancel 済み run を resume しない
+
+    def test_orphan_adopt_before_cancel_wrongly_resumes(self):
+        # 逆順で呼ぶと _adopt_orphan_runs は cancel マーカーを見ないため resume してしまう
+        # （このテストは順序制約の理由そのものを固定する — 正しい呼び出し順は上のテスト）。
+        spawn, spawned = self._fake_spawn()
+        adopted, failed = kf._adopt_orphan_runs(
+            self.bus, "d1", set(), 120.0, self._args(), [], spawn=spawn)
+        self.assertEqual(list(adopted), ["run1"])
+        self.assertEqual(spawned, ["run1"])   # 誤って resume された
+
+
 class RunSlotTests(unittest.TestCase):
     """max_runs（同時実行 run の上限）: バックログ一括投入・再起動直後の孤児一斉再開で
     orchestrator（＋計画エージェント）が run 数ぶん同時に立ち上がるのを防ぐ。
