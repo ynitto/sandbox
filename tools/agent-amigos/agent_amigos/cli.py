@@ -254,14 +254,17 @@ def cmd_serve(args) -> int:
 
 
 def cmd_drive(args) -> int:
-    """単発駆動（実装計画 W1-3・設計 §4.5）: cycle() をその場で回し、その巡で観測した
-    全ミッションが終端（done/cancelled/failed）に達するか --cycles 上限で戻る。
-    常駐化（デーモンロック・シグナル常駐）はしない — 呼び出し元（スキル・チャット・人）の
-    寿命に束縛されるフォアグラウンド実行。板・他 PC には触らない（ローカルミッション。R9）。"""
+    """単発駆動（実装計画 W1-3・設計 §4.5）: cycle() をその場で回し、--mission-id 指定時は
+    そのミッションが、未指定時はその巡で観測した全ミッションが終端（done/cancelled/failed）
+    に達するか --cycles 上限で戻る。共有バスでは無関係な未終端ミッションに巻き込まれて
+    ハングしないよう --mission-id の指定を推奨する。常駐化（デーモンロック・シグナル常駐）
+    はしない — 呼び出し元（スキル・チャット・人）の寿命に束縛されるフォアグラウンド実行。
+    板・他 PC には触らない（ローカルミッション。R9）。"""
     bus, node = _resolve(args)
     daemon = NodeDaemon(bus, node, agent_cli=args.agent_cli,
                         interval=args.interval, home=_node_home(args))
-    daemon.run(cycles=args.cycles, until_terminal=True, install_signals=False)
+    daemon.run(cycles=args.cycles, until_terminal=True, install_signals=False,
+              mission_id=args.mission_id)
     return 0
 
 
@@ -662,6 +665,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="巡回数の安全上限（既定 10000。0=無限。ミッション終端で先に戻る）。"
                         "終端に達し得ないミッション（充足不能な必須ロール・受入が解決しない等）で"
                         "フォアグラウンド呼び出しを無限ハングさせないための保険")
+    p.add_argument("--mission-id", default=None,
+                   help="終端判定をこのミッションだけに絞る（省略時はその巡で観測した"
+                        "全ミッションの終端を待つ。共有バスでは無関係な未終端ミッションに"
+                        "巻き込まれてハングし得るため指定を推奨）")
     p.set_defaults(fn=cmd_drive)
 
     p = sub.add_parser("run", help="単発 amigo（デバッグ用）")

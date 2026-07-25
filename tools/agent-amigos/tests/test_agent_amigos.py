@@ -637,6 +637,28 @@ class DriveTests(AmigosTestCase):
         d.cycle = lambda: {}
         d.run(cycles=3, until_terminal=True, install_signals=False)  # cycles 上限で戻る（ハングしない）
 
+    def test_run_until_terminal_with_mission_id_ignores_other_missions(self):
+        # mission_id 指定時は他ミッション（共有バス上の無関係な未終端ミッション）を無視し、
+        # 対象ミッションだけの終端で戻る（無ければ全ミッション終端待ちになり無限ハングし得る）。
+        d = self.daemon()
+        d.cycle = lambda: {"m1": "done", "m2": "working"}
+        n = {"count": 0}
+
+        def counting_cycle():
+            n["count"] += 1
+            return {"m1": "done", "m2": "working"}
+
+        d.cycle = counting_cycle
+        d.run(cycles=3, until_terminal=True, install_signals=False, mission_id="m1")
+        self.assertEqual(n["count"], 1)   # m2 が未終端でも m1 だけを見て 1 巡で戻った
+
+    def test_run_until_terminal_with_mission_id_waits_for_that_mission(self):
+        d = self.daemon()
+        calls = [{"m1": "working", "m2": "done"}, {"m1": "done", "m2": "done"}]
+        d.cycle = lambda: calls.pop(0)
+        d.run(cycles=0, until_terminal=True, install_signals=False, mission_id="m1")
+        self.assertEqual(calls, [])   # m2 は先に終端していたが、m1 が終端するまで待った
+
 
 class DeliveryTests(AmigosTestCase):
     """納品棚（accept 時の push 型搬出）。

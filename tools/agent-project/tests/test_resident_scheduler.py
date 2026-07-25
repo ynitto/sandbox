@@ -88,6 +88,29 @@ def test_duplicate_tick_names_rejected():
     raise AssertionError("重複 tick 名を拒否するべき")
 
 
+def test_join_timeout_is_a_total_budget_not_per_thread():
+    # join(timeout=T) は「全スレッド合計で T 秒待つ」予算であるべき。各スレッドへ順に T を
+    # 渡すと、stop() 後も実行中の tick.fn() が終わるまで各スレッドが居座るケースで、
+    # 合計待ち時間がスレッド数倍に膨らんでしまう。
+    def slow_tick():
+        time.sleep(0.4)
+
+    sched = Scheduler(
+        [Tick("slow1", period=0.01, fn=slow_tick),
+         Tick("slow2", period=0.01, fn=slow_tick),
+         Tick("slow3", period=0.01, fn=slow_tick)],
+        watchdog_timeout=10,
+    )
+    sched.start()
+    time.sleep(0.05)   # 各 tick が slow_tick 実行中になるのを待つ
+    sched.stop()
+    started = time.monotonic()
+    sched.join(timeout=0.3)
+    elapsed = time.monotonic() - started
+    # 3 スレッド × 0.3s を単純合計すれば 0.9s 近くになる。予算 0.3s に収まっていることを確認。
+    assert elapsed < 0.6, f"join(timeout=0.3) が全体予算ではなく毎スレッドに適用された（{elapsed:.2f}s）"
+
+
 def test_self_watchdog_aborts_on_stall():
     aborted = threading.Event()
 
@@ -109,5 +132,6 @@ if __name__ == "__main__":
     test_exception_isolated_other_ticks_keep_running()
     test_long_period_healthy_tick_not_aborted()
     test_duplicate_tick_names_rejected()
+    test_join_timeout_is_a_total_budget_not_per_thread()
     test_self_watchdog_aborts_on_stall()
     print("ok")

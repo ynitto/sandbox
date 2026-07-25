@@ -234,16 +234,18 @@ class NodeDaemon:
                 pass    # メインスレッド以外（テスト等）では設定できない
 
     def run(self, cycles: int = 0, until_terminal: bool = False,
-           install_signals: bool = True) -> None:
+           install_signals: bool = True, mission_id: "str | None" = None) -> None:
         """常駐ループ。cycles>0 ならその回数で終了（テスト・デバッグ用。offboard はしない
         — テストの後始末を汚さない）。SIGTERM / SIGINT で graceful offboard（away 宣言）
         してから終了する（install_signals=False なら設定しない — 単発駆動 `drive` 用。
         実装計画 W1-3）。無風時はインターバルを伸ばす（adaptive interval の簡略採用、上限 8 倍）。
 
-        until_terminal=True なら、その巡で観測した全ミッションが終端（done/cancelled/failed）
+        until_terminal=True なら、その巡で観測したミッションが終端（done/cancelled/failed）
         に達した時点でも終了する（`drive` 用 — 設計 §4.5「ミッション終端（または --cycles
-        上限）で戻る」）。ミッションが 1 つも無い巡は「終端」に数えない（投函前の空振りで
-        即終了しない）。"""
+        上限）で戻る」）。mission_id を渡すと「そのミッションだけ」の終端で戻る（共有バス上の
+        無関係な未終端ミッションに巻き込まれてハングしないため）。省略時は従来どおり、
+        その巡で観測した全ミッションが終端した時点で戻る。ミッションが 1 つも無い巡（対象
+        mission_id が観測されない巡を含む）は「終端」に数えない（投函前の空振りで即終了しない）。"""
         if install_signals:
             self._install_signal_handlers()
         n = 0
@@ -256,9 +258,13 @@ class NodeDaemon:
                 log(self.node_id, f"cycle 失敗: {e}")
                 seen = {}
             n += 1
-            if until_terminal and seen and all(
-                    p in ("done", "cancelled", "failed") for p in seen.values()):
-                return
+            if until_terminal:
+                if mission_id is not None:
+                    if seen.get(mission_id) in ("done", "cancelled", "failed"):
+                        return
+                elif seen and all(
+                        p in ("done", "cancelled", "failed") for p in seen.values()):
+                    return
             if cycles and n >= cycles:
                 return
             sleep = self.interval if self._active else min(sleep * 2, self.interval * 8)
