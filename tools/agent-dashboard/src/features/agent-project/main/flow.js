@@ -874,118 +874,13 @@ function listRuns(busDir, limit = 30) {
 }
 
 // ---------------------------------------------------------------------------
-// agent-flow daemon の稼働検知（CLI 不要・ロックファイルだけで判定）
+// 稼働の判定はこのモジュールが持たない（実装計画 W2-3）
 // ---------------------------------------------------------------------------
-
-// agent-flow / agent-project と完全に同じ導出でロックパスを組む:
-//   sha1("local::" + realpath(bus)) → <lock_dir>/daemon-<hash>.lock
-// lock_dir 未指定時の既定も両ツールと同じ tempdir 配下。
-function daemonLockPath(busDir, lockDir) {
-  let real;
-  try {
-    real = fs.realpathSync(busDir);
-  } catch {
-    real = path.resolve(busDir); // バス未作成でも Python の realpath と同じ値になる
-  }
-  const h = crypto.createHash('sha1').update(`local::${real}`).digest('hex');
-  const base = lockDir || path.join(os.tmpdir(), 'agent-flow-locks');
-  return path.join(base, `daemon-${h}.lock`);
-}
-
-function pidAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return err.code === 'EPERM'; // 別ユーザの生存プロセス（シグナルを送れないだけ）
-  }
-}
-
-// <busDir>/status.json — agent-flow の生存信号（write_daemon_status が書く）。本体が state_git
-// （鏡）越しにバス状態を同期する別ホスト構成のとき、ロックファイルは本体側の一時領域にあって
-// ここには絶対に無い（sha1 の元になる bus パス自体が別ホストの --bus 値で、このクローンの
-// busDir とは無関係）。その場合の唯一の生存根拠がこれ。agent-project の readStatus と同じ考え方。
-function readDaemonStatus(busDir) {
-  const rec = readJson(path.join(busDir, 'status.json'));
-  if (!rec || typeof rec !== 'object') return null;
-  const updatedMs = Date.parse(rec.updated_iso || '');
-  if (isNaN(updatedMs)) return null;
-  const ageSec = (Date.now() - updatedMs) / 1000;
-  const freshSec = Number(rec.fresh_after_sec) || 120;
-  return { ...rec, ageSec, fresh: ageSec >= 0 && ageSec <= freshSec };
-}
-
-// 対象バスの agent-flow daemon が稼働中か。
-//  1. 同一ホストのロックファイル（pid 生存）で確定判定（従来どおり。agent-project の
-//     daemon_running と同じく pid のみ判定＝fcntl 不在時フォールバックと同じ根拠）
-//  2. ロックが無ければ status.json（state_git 越しの同期・同期遅延を許容した推定）へ
-//     フォールバック（GitBus 分散実行のバスは対象外＝write_daemon_status が書かないため
-//     status.json 自体が存在せず、自然に判定不能へ落ちる）
-// running: true=稼働中 / false=停止 / null=判定不能（ロックはあるが pid を読めない等）
-// via: 'lock'（確定）／'status-local'（同一マシン・WSL含む）／'status-sync'（別ホスト推定）／'none'
-function daemonStatus(busDir, lockDir) {
-  const lockPath = daemonLockPath(busDir, lockDir);
-  let raw;
-  try {
-    raw = fs.readFileSync(lockPath, 'utf8');
-  } catch {
-    const status = readDaemonStatus(busDir);
-    if (status) {
-      const sameHost = project.sameMachineStatus(status);
-      return {
-        running: status.fresh, pid: status.pid || 0, lockPath,
-        via: sameHost ? 'status-local' : 'status-sync',
-        ageSec: Math.round(status.ageSec), nodeId: status.node_id,
-        orchestrators: status.orchestrators, workers: status.workers,
-      };
-    }
-    return { running: false, pid: 0, lockPath, via: 'none' };
-  }
-  const pid = parseInt(raw.trim().split('\n')[0], 10) || 0;
-  if (!pid) return { running: null, pid: 0, lockPath, via: 'lock' };
-  const alive = pidAlive(pid);
-  const out = { running: alive, pid, lockPath, via: 'lock' };
-  // 生存判定はロック（pid）が正。加えて daemon がローカルにも書く status.json が新しければ、
-  // orchestrator/worker 数をベストエフォートで添える（同一ホストでも「何基動いているか」を可視化する）。
-  // status.json が無い/古い場合は数を付けない＝生存判定・従来挙動には一切影響しない。
-  if (alive) {
-    const status = readDaemonStatus(busDir);
-    if (status && status.fresh) {
-      if (Number.isFinite(status.orchestrators)) out.orchestrators = status.orchestrators;
-      if (Number.isFinite(status.workers)) out.workers = status.workers;
-      if (status.node_id) out.nodeId = status.node_id;
-    }
-  }
-  return out;
-}
-
-// 対象バスの agent-flow daemon を停止する（人の明示アクション。プロジェクトのリセットで使う）。
-// agent-flow に stop コマンドは無く、daemon は SIGTERM で graceful に終了する
-// （子 orchestrator/worker を terminate してから抜ける）設計なので、同一ホストの
-// ロックファイルから pid を取り SIGTERM を送って終了を待つ。
-//   ・稼働していない → {running:false, stopped:true}（何もしない・冪等）
-//   ・同一ホスト（via=lock）→ SIGTERM 送信 → timeoutMs まで生存確認 → {stopped}
-//   ・別ホスト（via=status-sync）→ このプロセスからは止められない → {remote:true, stopped:false}
-async function stopDaemon(busDir, lockDir, { timeoutMs = 5000 } = {}) {
-  const st = daemonStatus(busDir, lockDir);
-  if (!st.running) return { running: false, stopped: true, via: st.via, pid: st.pid || 0 };
-  if (st.via !== 'lock' || !st.pid) {
-    return { running: true, stopped: false, remote: true, via: st.via, pid: st.pid || 0 };
-  }
-  try {
-    process.kill(st.pid, 'SIGTERM');
-  } catch (err) {
-    if (err.code === 'ESRCH') return { running: false, stopped: true, via: 'lock', pid: st.pid };
-    throw new Error(`agent-flow daemon（pid=${st.pid}）へ SIGTERM を送れません: ${err.message}`);
-  }
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (!pidAlive(st.pid)) return { running: true, stopped: true, via: 'lock', pid: st.pid };
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  return { running: true, stopped: !pidAlive(st.pid), via: 'lock', pid: st.pid };
-}
+// 以前はここで agent-flow のロックパス（sha1("local::" + realpath(bus))）を本体と同じ式で
+// 手写しし、pid の生存でエンジンの稼働を判定していた。常駐一本化で実行主体は常駐体だけに
+// なり、稼働表示は engine/status.json（features/agent-project/main/engine.js）へ一本化した。
+// ロック鍵の導出をここへ複製し直さないこと——本体の式が変わった瞬間に、稼働中のエンジンを
+// 「停止」と表示する（実際に起きた）。
 
 module.exports = {
   readRun,
@@ -1003,9 +898,6 @@ module.exports = {
   readArchivedRun,
   flowArchiveDir,
   ARCHIVE_DIRNAME,
-  daemonStatus,
-  stopDaemon,
-  readDaemonStatus,
   runAlive,
   resubmitRun,
   readRunMeta,

@@ -5,7 +5,7 @@
 // - ホーム = `agent-amigos.{yaml,yml,json}` または `.agent/agent-amigos.*` を持つ
 //   ディレクトリ（設定ファイルが dashboard の自動発見マーカーを兼ねる —
 //   agent-project と同じ流儀）。`amigos.homeDirs` の明示指定 + 全体設定
-//   `projects.roots` 配下の走査で見つける。
+//   実行エンジンが担当するプロジェクト（engine/status.json）配下の走査で見つける。
 // - タスク依頼（post）・手動引き受け（claim）は、ホームの
 //   `.agent/agent-amigos/commands/*.json` へ JSON を 1 ファイル置くだけ（agent-project の
 //   commands/ と同じ結合方式）。常駐デーモンが次のサイクルで取り込む。
@@ -123,8 +123,9 @@ function discoverHomes(cfg) {
   const explicit = (Array.isArray(a.homeDirs) ? a.homeDirs : [])
     .map((d) => path.resolve(expandHome(String(d || ''))))
     .filter(Boolean);
-  const roots = (cfg && cfg.projects && cfg.projects.roots) || [];
-  const depth = Math.max(1, Number((cfg && cfg.projects && cfg.projects.scanDepth) || 2));
+  // 走査対象は実行エンジンが担当しているプロジェクト（実装計画 W2-4 で設定 roots は廃止）。
+  const roots = require('../../agent-project/main/engine').projectRoots(cfg);
+  const depth = Math.max(1, Number(a.scanDepth || 2));
   const dirs = [...new Set([...explicit, ...scanRoots(roots, depth)])];
   const homes = [];
   for (const dir of dirs) {

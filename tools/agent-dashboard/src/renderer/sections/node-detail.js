@@ -259,7 +259,6 @@ async function _resubmitFlowRun() {
     api.flowResubmit(projectDir, state.project.busDir, run.runId)
   );
   if (res) {
-    const d = state.flowDaemon;
     uiLog('resubmit', res);
     if (res.viaTask) {
       const live = (state.project && state.project.liveness) || {};
@@ -276,16 +275,9 @@ async function _resubmitFlowRun() {
       );
     } else {
       toast(
-        `新しい実行として開始を依頼しました${d && d.running === false ? '（実行エンジンが停止中のため、起動後に始まります）' : ''}`,
+        `新しい実行として開始を依頼しました${state.engine && !state.engine.running ? '（実行エンジンが動いていないため、起動後に始まります）' : ''}`,
         true
       );
-    }
-    if (res.viaTask) {
-      // resume-run の指示ファイルはプロジェクト側（commands/）に落ちる。bus は触っていない
-      await gitPushAfterWrite(`agent-dashboard: resume run ${run.runId}`, projectDir);
-    } else {
-      // bus/inbox への再投入ファイルだけを反映（bus 全体のスナップショットは撮らない）
-      await gitPushBusOp(`agent-dashboard: resubmit run ${run.runId}`, ['inbox']);
     }
     await reloadProject();
   }
@@ -303,7 +295,6 @@ async function cancelFlowRun() {
     `この実行（${run.runId}）を中止します。\n以後の作業・レビュー待ちの監視・自動再開をすべて止めます。${note}\nよろしいですか？`
   );
   if (!yes) return;
-  let cancelRes = null;
   const ok = await guard('実行の中止', async () => {
     const res = await api.flowCancel(
       state.project.dir,
@@ -311,7 +302,6 @@ async function cancelFlowRun() {
       run.runId,
       'agent-dashboard から手動キャンセル'
     );
-    cancelRes = res;
     uiLog('cancel', run.runId, res);
     if (res && res.alreadyTerminal) {
       toast(`この実行は既に終了していました（${statusLabel(res.status)}）。中止は不要です。`, true);
@@ -321,15 +311,6 @@ async function cancelFlowRun() {
     return true;
   });
   if (ok) {
-    // cancel マーカー・meta・waits/ 削除を反映。waits を落とすと、git 同期後に
-    // リモート側で park 済みノードが復活して見える瞬間を防げる。
-    await gitPushBusOp(`agent-dashboard: cancel run ${run.runId}`,
-      ['inbox/cancels', `runs/${run.runId}/meta.json`, `runs/${run.runId}/waits`]);
-    // revise（detach）コマンドも state 側へ送る。bus だけ push すると remote project が
-    // cancel を刈って新 act を始めたあとに revise が遅れ、すぐまた切り離される。
-    if (state.project && state.project.dir && !(cancelRes && cancelRes.alreadyTerminal)) {
-      await gitPushAfterWrite(`agent-dashboard: cancel detach ${run.runId}`, state.project.dir);
-    }
     await reloadProject();
   }
 }
@@ -359,8 +340,6 @@ async function deleteFlowRun() {
     return true;
   });
   if (ok) {
-    // 消した run のディレクトリだけを反映（他 run の揮発ファイルを巻き込まない）
-    await gitPushBusOp(`agent-dashboard: delete run ${run.runId}`, [`runs/${run.runId}`]);
     state.flowRunId = null;
     state.flowRun = null;
     state.flowNodeId = null;
@@ -550,12 +529,6 @@ function bindFlowDetail(root) {
       gotoRun(btn.dataset.gotoRun);
     });
   }
-  for (const btn of root.querySelectorAll('button[data-start-kiro]')) {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      startAgentProject();
-    });
-  }
   for (const btn of root.querySelectorAll('button[data-resume-kiro]')) {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
@@ -568,7 +541,6 @@ function bindFlowDetail(root) {
         return true;
       });
       if (ok) {
-        gitPushAfterWrite('agent-dashboard: resume', p.dir);
         await reloadProject();
       }
     });

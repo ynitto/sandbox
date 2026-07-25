@@ -13,7 +13,7 @@ async function init() {
   setupKiroLoopDialog();
   state.config = await guard('設定読込', () => api.getConfig());
   initTabs();
-  $('btn-refresh').addEventListener('click', () => refreshAll({ sync: false }));
+  $('btn-refresh').addEventListener('click', () => refreshAll());
   $('btn-cli-chat').addEventListener('click', openCliChat);
   $('btn-doctor').addEventListener('click', openDoctor);
   $('btn-doctor-submit').addEventListener('click', askDoctor);

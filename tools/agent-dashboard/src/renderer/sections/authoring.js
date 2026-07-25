@@ -8,14 +8,11 @@
 // オーサリング: 新規プロジェクト作成・プロジェクトファイル編集
 // ---------------------------------------------------------------------------
 
-// 既知プロジェクトの親フォルダ ＋ 設定 roots の親（新規作成先の候補）
+// 既知プロジェクトの親フォルダ（新規作成先の候補）
 function knownRoots() {
   const roots = new Set();
   for (const p of state.discovery.projects || []) {
     if (p.dir) roots.add(p.dir.replace(/[\\/][^\\/]+$/, ''));
-  }
-  for (const r of (state.config && state.config.projects && state.config.projects.roots) || []) {
-    if (r) roots.add(String(r).replace(/[\\/][^\\/]+$/, ''));
   }
   return [...roots].filter(Boolean);
 }
@@ -128,22 +125,21 @@ async function submitNewProject() {
     return r;
   });
   if (!res) return;
-  // 発見対象に入るよう、作成したプロジェクトルートを設定 roots に追加する
-  // （discovery は config roots を resolve して並べるため、生パスの追加で表示される）
-  const known = (state.discovery.projects || []).some((p) => p.dir === res.dir);
-  if (!known) {
-    const cfg = state.config;
-    cfg.projects = cfg.projects || {};
-    cfg.projects.roots = cfg.projects.roots || [];
-    if (!cfg.projects.roots.includes(res.dir)) {
-      cfg.projects.roots.push(res.dir);
-      state.config = await api.saveConfig(cfg);
-    }
-  }
-  gitPushAfterWrite(`agent-dashboard: create project ${spec.name}`, res.dir);
   $('dlg-new-project').close();
   await refreshDiscovery();
-  await selectProject(res.dir);
+  const known = (state.discovery.projects || []).some((p) => p.dir === res.dir);
+  if (known) {
+    await selectProject(res.dir);
+    return;
+  }
+  // 一覧に出るのは実行エンジンが担当しているプロジェクトだけ（実装計画 W2-4）。
+  // 作ったフォルダを実行側へ登録するまでは現れないので、次にすることをそのまま伝える。
+  await confirmDialog(
+    `プロジェクトを作成しました: ${res.dir}\n\n` +
+      'この一覧に出すには、実行する PC の agent-project.host.yaml の projects に\n' +
+      `  - root: ${res.dir}\n` +
+      'を追加して、実行エンジンを再起動してください。'
+  );
 }
 
 // charter.md / policy.md / repos.json の直接編集ダイアログを開く。

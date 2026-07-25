@@ -1018,15 +1018,10 @@ function _wslUncMatch(p) {
   return s.match(/^\\\\wsl(?:\$|\.localhost)\\[^\\]+(.*)$/i);
 }
 
-// POSIX 形のキーへ正規化: /mnt/<drive>/… は Windows ドライブ表記（c:/…）へ寄せる。
-// これが無いと、WSL 側インスタンスが記録した /mnt/c/Users/... と Windows 側の
-// C:\Users\... が別プロジェクト扱いになり「稼働していない」と誤判定される。
+// POSIX 形の比較キー。実行側（WSL）が書くパスと画面側の UNC を突き合わせるためだけに使う。
+// Windows ドライブを WSL から見た /mnt/<drive>/… は扱わない（設計 §4.6 で経路ごと廃止）。
 function _posixKey(rest) {
   const r = String(rest || '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, '') || '/';
-  const mnt = r.match(/^\/mnt\/([a-z])(\/.*)?$/i);
-  if (mnt) {
-    return `${mnt[1]}:${mnt[2] || '/'}`.toLowerCase();
-  }
   return r.toLowerCase();
 }
 
@@ -1091,19 +1086,16 @@ function sameMachineStatus(status) {
 }
 
 // POSIX 絶対パスを Windows から読める WSL UNC へ（distro が取れなければそのまま）。
-// /mnt/<drive>/… は Windows ドライブの実体なので UNC ではなく C:\… へ直接変換する。
-// これが無いと、WSL 側が記録した /mnt/c/… の検収リポジトリを Windows の dashboard が
-// \\wsl.localhost\<distro>\mnt\c\…（または C:\mnt\c\…）として解決し
-// 「リポジトリが見つかりません: /mnt/c/…」で diff が読めない。
-function toViewerPath(p) {
+// distro を明示できる: 実行側の状況ファイル（engine/status.json）が持つパスは、⚙ 設定で
+// 選んだディストロのものとして解決する。既定ディストロへ丸めると、別ディストロに
+// プロジェクトを置いた環境で存在しないフォルダを指す。
+function toViewerPath(p, distro = '') {
   const s = String(p || '');
   if (process.platform !== 'win32' || !_isPosixAbs(s)) return s;
-  const mnt = s.match(/^\/mnt\/([a-z])(\/.*)?$/i);
-  if (mnt) return `${mnt[1].toUpperCase()}:${(mnt[2] || '/').replace(/\//g, '\\')}`;
-  const distro = _defaultWslDistro();
-  if (!distro) return s;
+  const name = String(distro || '').trim() || _defaultWslDistro();
+  if (!name) return s;
   const rest = s.replace(/\//g, '\\');
-  return `\\\\wsl.localhost\\${distro}${rest}`;
+  return `\\\\wsl.localhost\\${name}${rest}`;
 }
 
 let _wslDistroCache = { at: 0, name: '' };
@@ -1191,47 +1183,6 @@ function listInstances() {
     }
   }
   return out;
-}
-
-// プロジェクトの「登録」を実体に即して直接消す（discover が発見する経路をそのまま辿るだけで、
-// 除外リストのような別レイヤーは作らない。ファイル・ディレクトリ本体には一切触れない）:
-//   - config.projects.roots に直接登録（source: 'config'）→ その要素を roots から取り除く
-//   - ~/.agent-project/instances/*.json 経由の自動発見（source: 'instance'）→ 該当レコードの
-//     ファイルを削除する（稼働中プロセスが生きていれば次のハートビートで自然に書き直されるが、
-//     それはそのプロセス自身が再登録するのであって、ビュアー側の設定ではない）
-//   - 親フォルダ登録（scan）配下で見つかった子は、個別の登録が無い（親フォルダの登録そのものが
-//     「設定」）ため対象外＝呼び出し側でエラーにする
-// 戻り値: { removedFrom: 'roots', roots: string[] } | { removedFrom: 'instance', file: string }
-//        | { removedFrom: null }
-function removeProjectRegistration(cfg, dir) {
-  const resolved = path.resolve(dir);
-  const rootsList = (cfg.projects && cfg.projects.roots) || [];
-  // 登録が /home/... で UI からは UNC（またはその逆）で来ても同一視できるよう pathsEqual で照合
-  const idx = rootsList.findIndex((r) => {
-    const expanded = String(r).replace(/^~(?=$|\/|\\)/, os.homedir());
-    return path.resolve(expanded) === resolved || pathsEqual(expanded, dir) || pathsEqual(expanded, resolved);
-  });
-  if (idx !== -1) {
-    const nextRoots = rootsList.slice();
-    nextRoots.splice(idx, 1);
-    return { removedFrom: 'roots', roots: nextRoots };
-  }
-  for (const idir of instanceDirs()) {
-    for (const f of safeList(idir)) {
-      if (!f.endsWith('.json')) continue;
-      const file = path.join(idir, f);
-      const rec = readJson(file);
-      if (!rec) continue;
-      const candidates = [rec.root, rec.root_windows, rec.effective_root, rec.effective_root_windows]
-        .filter(Boolean)
-        .flatMap((r) => [r, projectWorkspaceDir(r)]);
-      if (candidates.some((r) => r && (pathsEqual(r, dir) || pathsEqual(r, resolved)))) {
-        fs.unlinkSync(file);
-        return { removedFrom: 'instance', file };
-      }
-    }
-  }
-  return { removedFrom: null };
 }
 
 // <root>/status.json — 生存信号（agent-project.py の write_status が書く。paused も載る）。
@@ -1710,89 +1661,31 @@ function projectWorkspaceDir(projectRoot) {
   return path.basename(resolved) === '.agent-project' ? path.dirname(resolved) : resolved;
 }
 
-// 登録ルートがプロジェクトそのものでないとき、配下からプロジェクト
-// （agent-project.yaml マニフェスト、または charter.md / backlog/ 等のマーカーを持つ
-// ディレクトリ）を探す。1 root = 1 プロジェクトなので、プロジェクトと判定した
-// ディレクトリの配下はそれ以上掘らない。プロジェクト内部の既知ディレクトリと
-// 隠しディレクトリはスキップして走査を軽く保つ。
-const SCAN_SKIP = new Set([
-  'node_modules', 'bus', 'work', 'archive', 'flow-archive', 'backlog', 'needs', 'decisions',
-  'commands', 'inbox', 'claims', 'autonomy', 'charters', 'runs', 'dist', 'release',
-]);
-
-function scanForProjects(rootDir, maxDepth) {
-  const found = [];
-  const walk = (dir, depth) => {
-    for (const name of safeList(dir)) {
-      if (name.startsWith('.') || SCAN_SKIP.has(name)) continue;
-      const child = path.join(dir, name);
-      let st;
-      try {
-        st = fs.statSync(child);
-      } catch {
-        continue;
-      }
-      if (!st.isDirectory()) continue;
-      if (isProjectDir(child)) {
-        found.push(child);
-        continue;
-      }
-      if (depth < maxDepth) walk(child, depth + 1);
-    }
-  };
-  walk(rootDir, 1);
-  return found.sort();
-}
-
-// 設定 roots ＋ instances 自動発見からプロジェクト一覧を作る。
-// 登録パス 1 件 = 1 ワークスペース（.agent/agent-project.yaml を持つ開発フォルダ。状態フォルダを
-// 直接登録する従来の使い方や、instances 由来の自動発見＝プロジェクトルート直指定も
-// resolveProjectRoot が「設定が無ければ自分自身」に倒すのでそのまま乗る）。
-// 登録パスがワークスペースでもプロジェクトでもない場合は「束ねる親フォルダ」とみなし、
-// 配下（既定 2 階層・設定 projects.scanDepth）から agent-project.yaml 等を自動発見して
-// 見つかったものをそれぞれ 1 件として追加する。
+// プロジェクト一覧は **実行エンジンの状況ファイル**（engine/status.json の children）から作る
+// （実装計画 W2-4）。フォルダを列挙する設定・親フォルダの自動スキャン・稼働レコードからの
+// 自動追加はすべて廃止した——プロジェクトを宣言する場所は実行側の host.yaml 1 か所で、
+// この画面はそれを映すだけ（設計 §4.6・R10）。
+// children[].root は実行側が `run --watch --root` に渡している値そのものなので、
+// resolveProjectRoot（設定が無ければ自分自身に倒す）で状態の置き場へ寄せられる。
 function discover(cfg) {
-  const roots = new Map(); // resolved root -> {root, source}
-  const scanDepth = Math.max(1, Number((cfg.projects && cfg.projects.scanDepth) || 2));
-  for (const r of (cfg.projects && cfg.projects.roots) || []) {
-    if (!r) continue;
-    // Windows のビュアーから WSL の POSIX パス（/home/...）を登録すると、path.resolve は
-    // C:\home\... の幽霊エントリに化け、exists:false になってプロジェクト一覧にも
-    // Cowork のリポジトリ選択（exists で絞る）にも出てこない。instances 経路（下）と同じく、
-    // POSIX 絶対パスは WSL UNC（\\wsl.localhost\<distro>\...）へ寄せてから解決する。
-    const raw = String(r).replace(/^~(?=$|\/|\\)/, os.homedir());
-    const resolved = _isPosixAbs(raw) ? toViewerPath(raw) : path.resolve(raw);
-    if (fs.existsSync(resolved) && !isProjectDir(resolved)) {
-      const children = scanForProjects(resolved, scanDepth);
-      if (children.length) {
-        for (const d of children) {
-          if (!roots.has(d)) roots.set(d, { root: d, source: 'scan' });
-        }
-        continue;
-      }
-    }
-    roots.set(resolved, { root: resolved, source: 'config' });
-  }
-  const instances = cfg.projects && cfg.projects.autoDiscover === false ? [] : listInstances();
-  for (const inst of instances) {
-    // Windows では root_windows（UNC）を優先。Linux パスを path.resolve すると
-    // C:\home\... の幽霊エントリになる。
-    const preferred =
-      (process.platform === 'win32' && (inst.root_windows || inst.effective_root_windows)) ||
-      inst.root_windows ||
-      inst.root;
-    if (!preferred) continue;
-    const resolved = _isPosixAbs(preferred) ? toViewerPath(preferred) : path.resolve(String(preferred));
-    const workspace = projectWorkspaceDir(resolved);
-    if (![...roots.keys()].some((k) => pathsEqual(k, workspace) || pathsEqual(k, resolved))) {
-      roots.set(workspace, { root: workspace, source: 'instance' });
-    }
+  const engine = require('./engine');
+  const status = engine.readStatus(cfg);
+  const roots = new Map(); // resolved root -> {root, source, child}
+  for (const child of status.children) {
+    const viewer = String(child.viewerRoot || '').trim();
+    if (!viewer) continue;
+    // 絶対パス（POSIX / ドライブ / UNC）はそのまま使う。UNC を path.resolve に通すと、
+    // 実行ホストによっては cwd を前置されて存在しないパスに化ける。
+    const resolved = _isPosixAbs(viewer) || path.isAbsolute(viewer) || viewer.startsWith('\\\\')
+      ? viewer
+      : path.resolve(viewer);
+    if (!roots.has(resolved)) roots.set(resolved, { root: resolved, source: 'engine', child });
   }
 
   const projects = [];
   const seenDirs = new Set();                     // 実体（状態の置き場）で重複排除する
-  for (const { root, source } of roots.values()) {
-    const workspace = root;                       // 登録パス（＝選択の識別子。config.roots と一致）
+  for (const { root, source, child } of roots.values()) {
+    const workspace = root;                       // 選択の識別子（readProject の入力もこれ）
     const dir = resolveProjectRoot(workspace);    // 状態の置き場（backlog/needs/charter はこの下）
     // 本体（<repo>/.agent-project）と状態 worktree（<repo>-agent-state/.agent-project）は
     // どちらも登録・スキャンで挙がるが、正規化すると同じ実体を指す。両方を並べると同じ run が
@@ -1808,6 +1701,9 @@ function discover(cfg) {
     // にフォールバックする（projectLiveness が両方を見る）。突き合わせは本体が記録する
     // root＝プロジェクトルートで行う。
     const liveness = projectLiveness(dir);
+    // 実行エンジンが「繰り返し失敗したので一時的に切り離した」プロジェクトは、稼働中と
+    // 区別して出す（人が気づかないと、そのプロジェクトだけ永久に止まったままになる）。
+    const quarantined = !!(child && child.quarantined);
     // 表示名: charter.md の `# Charter: <name>` があればそれを一覧にも出す（既定はワークスペース名。
     // charter を編集するだけでサイドバーに任意の名前を出せる。charter.md はサイドバーからも既存の
     // 「✎ charter.md」で編集できるため、ここでは discover 側の表示だけ揃える）。
@@ -1819,7 +1715,7 @@ function discover(cfg) {
     projects.push({
       name: path.basename(projectWorkspaceDir(workspace)),
       charterName,
-      dir: workspace,        // 選択・登録解除はワークスペース基準（readProject の入力もこれ）
+      dir: workspace,
       root: dir,             // プロジェクトルート（状態の置き場。readProject が操作の基準にする）
       source,
       exists: fs.existsSync(workspace),
@@ -1830,10 +1726,11 @@ function discover(cfg) {
       needsCount: needs,
       running: liveness.running,
       paused: liveness.paused,
+      quarantined,
       liveness,
     });
   }
-  return { projects, instances };
+  return { projects, engine: status };
 }
 
 // ---------------------------------------------------------------------------
@@ -2114,13 +2011,11 @@ module.exports = {
   _extractMrUrls,
   parseDecisions,
   listInstances,
-  removeProjectRegistration,
   isProjectRunning,
   replanRequestPending,
   readStatus,
   projectLiveness,
   discover,
-  scanForProjects,
   readProject,
   resolveProjectRoot,
   resolveStateRepoRoot,

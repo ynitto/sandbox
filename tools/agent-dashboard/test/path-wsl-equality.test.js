@@ -48,14 +48,12 @@ test('スラッシュ混在 UNC も正規化できる', () => {
   ));
 });
 
-test('/mnt/<drive> と Windows ドライブ表記が同じキーになる', () => {
-  assert.strictEqual(_pathKey('/mnt/c/Users/me/proj/.agent-project'), 'c:/users/me/proj/.agent-project');
+test('/mnt/<drive> は Windows ドライブへ寄せない（経路ごと廃止・W2-4）', () => {
+  // 以前は /mnt/c/... を C:\... と同一視していた。dashboard が Windows 側のパスで
+  // プロジェクトを掴む経路が無くなったので、POSIX パスは POSIX のまま比較する。
+  assert.strictEqual(_pathKey('/mnt/c/Users/me/proj/.agent-project'), '/mnt/c/users/me/proj/.agent-project');
   assert.ok(pathsEqual('/mnt/c/Users/me/proj', '/mnt/C/users/ME/proj'));
-  // UNC 経由の /mnt/c/... も同じキーに寄る
-  assert.ok(pathsEqual(
-    '\\\\wsl.localhost\\Ubuntu\\mnt\\c\\Users\\me\\proj',
-    '/mnt/c/Users/me/proj'
-  ));
+  assert.ok(!pathsEqual('/mnt/c/Users/me/proj', 'C:\\Users\\me\\proj'));
 });
 
 test('異なるディストロの同名パスは同一視しない', () => {

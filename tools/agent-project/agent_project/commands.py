@@ -698,6 +698,20 @@ def ingest_commands(cfg: "Config") -> "list[str]":
             else:
                 _reject_command(cfg, f, f"replan が失敗 (exit {rc})")
             continue
+        if action == "heal":
+            # 「今すぐ強制同期」（設計 §5 の commands/heal・実装計画 W2-5）。自動回復が既定で、
+            # これはその前倒しの逃げ道——dashboard の 🩺 が投函し、常駐体がこの場で押し出す。
+            # 失敗しても state_sync が journal に残して続行する（ここで指示を .err へ落とすと、
+            # ネットワーク断のたびに人が消す残骸が積む）。
+            state_sync(cfg, force=True)
+            _write_command_receipt(cfg, f, "heal", "")
+            try:
+                f.unlink()
+            except OSError:
+                pass
+            append_journal(cfg.journal, f"commands 取り込み: heal（{f.name}・理由: {reason}）")
+            done.append("heal:project")
+            continue
         if action in ("pause", "resume", "stop"):
             # プロジェクト単位のライフサイクル指示（id 不要）。リモート viewer の停止/回復の口。
             # stop は下で raise するため、受理レシートは unlink 前にここで残す。

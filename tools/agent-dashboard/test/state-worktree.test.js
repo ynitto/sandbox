@@ -18,6 +18,7 @@ const os = require('os');
 const path = require('path');
 
 const project = require('../src/main/project');
+const { engineConfig } = require('./helpers/engine-status');
 
 let passed = 0;
 function test(name, fn) {
@@ -141,9 +142,7 @@ test('git 管理外のフォルダはそのまま（従来どおり）', () => {
 test('本体と worktree の両方が登録されても、実体で 1 件に畳まれる', () => {
   const { mainSide, wt } = scaffold();
   const real = path.join(wt, '.agent-project');
-  const projects = project.discover({
-    projects: { roots: [mainSide, real], autoDiscover: false },
-  }).projects || [];
+  const projects = project.discover(engineConfig([mainSide, real])).projects || [];
   const roots = projects.map((p) => path.resolve(p.root));
   assert.strictEqual(projects.length, 1, `同じ run が二重に並ばない（実際: ${roots.join(', ')}）`);
   assert.strictEqual(roots[0], path.resolve(real), '状態の置き場は実体を指す');

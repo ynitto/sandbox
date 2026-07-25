@@ -21,9 +21,9 @@ const DISCOVER_TTL_MS = 30000;
 let _discoverCache = { key: '', at: 0, items: null };
 
 function discoverCacheKey(config) {
-  const roots = ((config && config.projects && config.projects.roots) || []).map(String).join('\0');
+  const roots = require('../../agent-project/main/engine').projectRoots(config).map(String).join('\0');
   const cw = (config && config.cowork) || {};
-  const depth = cw.scanDepth || (config && config.projects && config.projects.scanDepth) || 2;
+  const depth = cw.scanDepth || 2;
   return `${roots}|${depth}|${cw.discover === false ? '0' : '1'}`;
 }
 

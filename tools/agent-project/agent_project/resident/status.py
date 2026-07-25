@@ -85,11 +85,16 @@ class NodeCapability:
 @dataclass
 class ChildStatus:
     """子プロセス 1 件分の観測（`resident.supervisor.Supervisor.status()` の 1 エントリを
-    そのまま載せられる形）。"""
+    そのまま載せられる形）。
+
+    `root` は host.yaml のプロジェクト宣言そのまま（`run --watch --root` に渡す値）。
+    dashboard のプロジェクト発見はこのフィールドが唯一の入口——ここが空だと、dashboard は
+    「常駐体は動いているのにプロジェクトが 1 件も無い」画面になる（設計 §5・実装計画 W2-4）。"""
     name: str
     alive: bool
     quarantined: bool = False
     deaths: int = 0
+    root: "str | None" = None
 
 
 @dataclass
@@ -112,6 +117,10 @@ class EngineStatus:
     recent_errors: "list[str]" = field(default_factory=list)
     children: "list[ChildStatus]" = field(default_factory=list)
     running_runs: "list[str]" = field(default_factory=list)
+    # ノード契約のバージョン。dashboard はこれを見て「更新漏れの古いノード」を表示する
+    # （設計 §6・実装計画 W2-5）。載せないと、古い常駐体が新しい dashboard に対して
+    # 静かに一部の情報を欠いたまま「正常」に見える。
+    contract_version: int = CONTRACT_VERSION
     # 直近エラーのリングバッファ上限（設計 §5「直近エラーのリングバッファ」）。
     max_recent_errors: int = 50
 
@@ -128,6 +137,7 @@ class EngineStatus:
     def to_dict(self) -> dict:
         return {
             "node": self.node,
+            "contract_version": self.contract_version,
             "heartbeat": self.heartbeat,
             "tick_counts": dict(self.tick_counts),
             "sync_health": [
@@ -136,7 +146,7 @@ class EngineStatus:
             "recent_errors": list(self.recent_errors),
             "children": [
                 {"name": c.name, "alive": c.alive, "quarantined": c.quarantined,
-                 "deaths": c.deaths}
+                 "deaths": c.deaths, "root": c.root}
                 for c in self.children],
             "running_runs": list(self.running_runs),
         }

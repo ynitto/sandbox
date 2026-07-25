@@ -6,7 +6,7 @@ agent-amigos（役割駆動マルチエージェント協働）の独立した�
 
 - **ホーム** = `agent-amigos.{yaml,yml,json}` または `.agents/agent-amigos.*` を持つ
   ディレクトリ（設定ファイルが自動発見マーカーを兼ねる — agent-project と同じ流儀）。
-  `amigos.homeDirs` の明示指定 + 全体設定 `projects.roots` 配下の走査で見つけ、
+  `amigos.homeDirs` の明示指定 + 実行エンジンが担当するプロジェクト配下の走査で見つけ、
   ホームのバス（設定 `bus`、既定はホーム自身）をミッション一覧に含める。
 - **タスク依頼（post / build-team）**: 「ミッションを依頼」フォームは 2 モード。
   - **チームビルディング（既定）**: タイトル・goal・進め方（design doc 本文）・使える環境

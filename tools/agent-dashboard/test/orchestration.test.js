@@ -11,6 +11,7 @@ const os = require('os');
 const path = require('path');
 
 const budget = require('../src/features/orchestration/main/budget');
+const { engineConfig } = require('./helpers/engine-status');
 const control = require('../src/features/orchestration/main/control');
 const agents = require('../src/features/orchestration/main/agents');
 const instructions = require('../src/features/orchestration/main/instructions');
@@ -331,7 +332,7 @@ test('エージェント: list は first-wins で同名を陰らせ、契約違�
   fs.writeFileSync(path.join(dir1, 'kiro.json'), JSON.stringify({ command: ['kiro'] }));
   try {
     process.env.KIRO_AGENTS_DIR = dir1;
-    const cfg = { projects: { roots: [root2] }, orchestration: {} };
+    const cfg = { ...engineConfig([root2]), orchestration: {} };
     const res = agents.list(cfg);
     assert.deepStrictEqual(res.builtins, ['kiro', 'claude', 'copilot', 'codex']);
     const byPath = Object.fromEntries(res.dropins.map((d) => [d.path, d]));

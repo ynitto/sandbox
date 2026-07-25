@@ -33,40 +33,9 @@ function registerBaseIpcHandlers() {
   handle('config:get', () => loadConfig());
   handle('config:save', ({ config }) => saveConfig(config));
 
-  // 選択中プロジェクトのリポジトリを git pull で最新化する。
-  // 自動（force=false）は設定間隔・下限 60 秒のスロットリングでリモート負荷を抑える。
-  // 都度プッシュ（gitAutoPush）が有効なときはローカルコミットと共存できる --rebase で取り込む
-  handle('git:pull', ({ dir, force }) => {
-    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
-    const cfg = loadConfig();
-    const intervalSec = (cfg.projects && Number(cfg.projects.gitPullSec)) || 300;
-    const rebase = !!(cfg.projects && cfg.projects.gitAutoPush);
-    return git.pull(dir, { intervalSec, force: !!force, rebase });
-  });
-
-  // ユーザー操作（指示・投入・記入・削除）の書き込みをコミットして push する
-  // （状態共有 git への都度反映）。設定 gitAutoPush が無効なら何もしない
-  handle('git:commitPush', ({ dir, message, paths }) => {
-    if (!dir) throw new Error('対象ディレクトリが指定されていません');
-    const cfg = loadConfig();
-    if (!(cfg.projects && cfg.projects.gitAutoPush)) return { skipped: true, disabled: true };
-    return git.commitPush(dir, { message, paths });
-  });
-
-  // 同期の健康状態（ローカル参照のみ）と、一発修復（🩺 ボタン）
-  handle('git:health', ({ dir, refreshRemote }) => {
-    if (!dir) throw new Error('対象ディレクトリが指定されていません');
-    // 状態確認の fetch は作業ツリーを変更しない。自動 pull が無効でも最低60秒間隔で
-    // 追跡情報を更新し、「同期は正常」という古い判定を表示し続けない。
-    // ただし明示的な「表示を更新」はローカル再読込だけ、というUI契約を守る。
-    return git.health(dir, { refreshRemote: !!refreshRemote, intervalSec: 60 });
-  });
-  handle('git:heal', ({ dir }) => {
-    if (!dir) throw new Error('対象ディレクトリが指定されていません');
-    return git.heal(dir);
-  });
-  // セットアップ診断（案4）: 登録 clone の有効性・追跡ブランチを役割つきで返す。
-  handle('setup:diagnostics', () => git.diagnostics(loadConfig()));
+  // 状態を共有するリポジトリへの書き込み（pull / commitPush / 修復）は削除済み（W2-1）。
+  // 書き手は常駐体（agent-project serve）だけで、dashboard は契約ファイルの投函と読み取りしか
+  // 行わない。ここに git 書き込みの口を戻さないこと（設計 §4.6）。
 
   // 検収サブ画面: 作業ブランチの git 差分（複数リポジトリ対応）。
   // branch/fetch は「fetch 後に origin/<branch> を優先」する検収の鮮度更新に使う。

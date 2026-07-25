@@ -187,7 +187,6 @@ async function saveCharterForm() {
   });
   if (ok) {
     toast(`${cf.isVersion ? '計画バージョン' : '憲章'}を保存しました`, true);
-    gitPushAfterWrite(`agent-dashboard: edit ${cf.name}`, cf.dir);
     $('dlg-edit-charter').close();
     await reloadProject();
   }
@@ -258,7 +257,6 @@ async function savePolicyForm() {
   });
   if (ok) {
     toast('運用ルールを保存しました', true);
-    gitPushAfterWrite('agent-dashboard: edit policy.md', pf.dir);
     $('dlg-edit-policy').close();
     await reloadProject();
   }
@@ -347,7 +345,6 @@ async function saveReposForm() {
   });
   if (ok) {
     toast('リポジトリ一覧を保存しました', true);
-    gitPushAfterWrite('agent-dashboard: edit repos.json', rf.dir);
     $('dlg-edit-repos').close();
     await reloadProject();
   }
@@ -530,7 +527,6 @@ async function saveEditFile() {
     return true;
   });
   if (ok) {
-    gitPushAfterWrite(`agent-dashboard: edit ${ef.name}`, ef.dir);
     $('dlg-edit-file').close();
     await reloadProject();
   }

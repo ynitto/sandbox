@@ -10,7 +10,7 @@ const state = {
   selectedDir: null, // 選択中プロジェクトのディレクトリ
   project: null, // readProject のスナップショット
   flowRuns: [],
-  flowDaemon: null, // {running, pid, lockPath}（ロックファイルからの判定）
+  engine: null, // engine/status.json のスナップショット（稼働・共有の状況・切り離し）
   flowRunId: null,
   flowRun: null, // {run, events, nodeEvents}
   flowNodeId: null,
@@ -625,6 +625,8 @@ document.addEventListener(
 // ---------------------------------------------------------------------------
 
 async function refreshDiscovery() {
+  // 稼働状況（engine/status.json）が発見の根拠でもあるので、一覧より先に取る。
+  state.engine = await api.engineStatus().catch(() => null);
   state.discovery = await api.discover();
   renderTree();
   checkNeedsNotifications();
@@ -706,52 +708,17 @@ function checkNeedsNotifications() {
   }
 }
 
-// プロジェクトの登録を実体に即して直接消す（config.roots のエントリ削除、または
-// ~/.agent-project/instances/*.json の該当レコード削除。main/project.js の
-// removeProjectRegistration 参照）。ファイル・ディレクトリ本体は一切削除しない。
-// 親フォルダのスキャンで見つかった子は個別の登録が無いため、guard がエラーを表示する。
-async function removeProject(dir) {
-  const p = (state.discovery.projects || []).find((x) => x.dir === dir);
-  const label = (p && (p.charterName || p.name)) || dir;
-  const yes = await confirmDialog(
-    `${label} の登録をこのビュアーから削除します。\n` +
-      'プロジェクトのファイル・ディレクトリは一切削除しません。\n' +
-      'よろしいですか？'
-  );
-  if (!yes) return;
-  const res = await guard('プロジェクトの削除', () => api.removeProject(dir));
-  if (!res) return;
-  // config.roots が変わった可能性があるので設定キャッシュも同期しておく
-  // （そのままだと後で設定ダイアログを保存したときに古い roots で上書きしてしまう）。
-  state.config = await guard('設定読込', () => api.getConfig());
-  toast(`${label} の登録を削除しました`, true);
-  await refreshDiscovery();
-  await refreshCowork();
-  if (state.selectedDir === dir) {
-    const next = (state.discovery.projects || []).find((x) => x.exists);
-    if (next) {
-      await selectProject(next.dir);
-    } else {
-      state.selectedDir = null;
-      state.project = null;
-      localStorage.removeItem('kpv:selected');
-      renderAllTabs();
-    }
-  }
-}
-
 function renderTree() {
   const navigation = $('tree');
   const tree = $('project-list');
   const prevScroll = navigation.scrollTop; // 再描画（ポーリング）でサイドバーのスクロールを失わない
-  const { instances } = state.discovery;
-  // 実体が無い登録（exists:false）はここで弾く。過去に登録した config.roots のゴーストパスや、
-  // 稼働していない/実在しないホストの instances/*.json（自動発見）が典型で、直せる見込みが無い
-  // ままサイドバーに残り続けるだけなので、手動で消させるより最初から出さない方が親切。
+  // 実体が無いもの（exists:false）はここで弾く。実行エンジンが宣言していても、この PC からは
+  // そのフォルダに届かない構成（別ディストロを指しているなど）が典型で、直せる見込みが無い
+  // ままサイドバーに残るだけなので最初から出さない。
   const projects = (state.discovery.projects || []).filter((p) => p.exists);
   if (!projects.length) {
     tree.innerHTML =
-      '<div class="empty">プロジェクトが見つかりません。<br>⚙ 設定でワークスペース（.agent/agent-project.yaml のある開発フォルダ）を追加するか、<br>agent-project を稼働させてください。<br><br><button id="btn-empty-new" class="primary-inline">＋ 新規プロジェクトを作成</button></div>';
+      `<div class="empty">${esc(engineEmptyMessage())}<br><br><button id="btn-empty-new" class="primary-inline">＋ 新規プロジェクトを作成</button></div>`;
     const nb = $('btn-empty-new');
     if (nb) nb.addEventListener('click', openNewProject);
   } else {
@@ -779,35 +746,38 @@ function renderTree() {
         // サイドバーに任意の名前を出せる（✎ charter.md から編集）。フォルダ名は行の
         // title 属性（フルパス）で見られるので、括弧併記はしない。
         const displayName = p.charterName || p.name;
-        // 削除ボタンは config.roots に直接登録されたプロジェクト（source: 'config'）だけに出す。
-        // scan（親フォルダ配下の自動発見）はそのプロジェクト個別の登録が無く、instance
-        // （~/.agent-project/instances/ 自動発見）は稼働中プロセスが自分で書き直す一時的な
-        // レコードなので、どちらも「消す」という操作の対象として筋が悪い（scan は親フォルダの
-        // 登録ごと削除することになり、instance は生きていれば次のハートビートで復活する）。
-        const removeBtn = p.source === 'config'
-          ? `<button class="project-item-remove" data-remove-dir="${esc(p.dir)}" title="プロジェクトの登録をこのビュアーから削除する（ファイルは削除しません）">×</button>`
+        // 繰り返し失敗して切り離されたプロジェクトは、止まっていることが人に見えないと
+        // そのまま忘れられる。行そのものに印を出す（詳しい説明はヘッダの状況表示が担う）。
+        const held = p.quarantined
+          ? '<span class="badge warn" title="繰り返し失敗したため一時的に切り離されています">停止中</span>'
           : '';
         return `<div class="project-item ${state.selectedDir === p.dir ? 'selected' : ''}" data-dir="${esc(p.dir)}" title="${esc(p.dir)}">
           <span class="dot ${p.running ? 'running' : ''} ${remoteGuess ? 'synced' : ''} ${p.paused ? 'paused' : ''}" title="${esc(dotTitle)}"></span>
-          <span class="name">${esc(displayName)}</span>${badges.join('')}
-          ${removeBtn}
+          <span class="name">${esc(displayName)}</span>${badges.join('')}${held}
         </div>`;
       })
       .join('');
   }
   navigation.scrollTop = prevScroll;
-  const live = instances.filter((i) => i.fresh).length;
-  $('sidebar-footer').textContent = `稼働中 ${live} ／ 更新 ${new Date().toLocaleTimeString('ja-JP')}`;
+  const running = projects.filter((p) => p.running).length;
+  $('sidebar-footer').textContent = `稼働中 ${running} ／ 更新 ${new Date().toLocaleTimeString('ja-JP')}`;
 
   for (const el of tree.querySelectorAll('.project-item[data-dir]')) {
     el.addEventListener('click', () => selectProject(el.dataset.dir));
   }
-  for (const btn of tree.querySelectorAll('button[data-remove-dir]')) {
-    btn.addEventListener('click', (ev) => {
-      ev.stopPropagation();   // 親の project-item クリック（選択）を発火させない
-      removeProject(btn.dataset.removeDir);
-    });
+}
+
+// プロジェクトが 1 件も無いときの案内。原因（エンジンが動いていない / 動いてはいるが
+// プロジェクトを持っていない）で次にすることが違うので、言い分けて次の一手だけを示す。
+function engineEmptyMessage() {
+  const e = state.engine;
+  if (!e || !e.exists) {
+    return '実行エンジンが動いていません。実行する PC で「agent-project serve」を起動してください。';
   }
+  if (!e.running) {
+    return '実行エンジンの応答が止まっています。実行する PC で「agent-project serve」が動いているか確認してください。';
+  }
+  return 'このエンジンにはプロジェクトが登録されていません。実行する PC の agent-project.host.yaml にプロジェクトを追加してください。';
 }
 
 async function selectProject(dir) {
@@ -817,22 +787,17 @@ async function selectProject(dir) {
   await reloadProject();
 }
 
-async function reloadProject({ refreshRemoteHealth = true } = {}) {
+async function reloadProject() {
   if (!state.selectedDir) return;
   const project = await guard('プロジェクト読込', () => api.readProject(state.selectedDir));
   if (!project) return;
   project.needs = stabilizeMilestoneNeeds(state.project, project);
-  // 同期の健康状態（ローカル参照のみ・リモートへは触らない）。失敗しても表示を欠くだけ。
-  const gitHealth = await api.gitHealth(project.dir, refreshRemoteHealth).catch(() => null);
-  // バスが未作成でも daemon の稼働はロックファイルから判定できるため常に読む。
   // project.dir は run アーカイブ（<dir>/flow-archive/）の置き場として渡す。
   const fr = (await guard('フロー読込', () => api.flowRuns(project.dir, project.busDir))) || {};
   // project だけ先に差し替えると、flowRuns が前プロジェクト分または空の短い時間が生じ、
   // 完了runを根拠にする承認ボタンが消える。両方を読み終えてから表示状態へ反映する。
   state.flowRuns = fr.runs || [];
   state.project = project;
-  state.gitHealth = gitHealth;
-  state.flowDaemon = fr.daemon || null;
   if (state.flowRunId && !state.flowRuns.some((r) => r.runId === state.flowRunId)) {
     state.flowRunId = null;
     state.flowRun = null;
@@ -872,34 +837,28 @@ function renderHeader() {
   const lastLog = p.runLog.length ? p.runLog[p.runLog.length - 1] : null;
   const metaBits = [];
   if (lastLog) metaBits.push(`最終更新: ${esc(statusLabel(lastLog.reason))}・${fmtAgo(lastLog.ts)}`);
-  // 同期の健康状態を平易な一文で常時表示する。異常（error）は要対応として目立たせ、
-  // 「なぜ画面が最新でないのか」「次に何を押せばよいのか」を人が推測しなくて済むようにする。
-  const gh = state.gitHealth;
-  if (gh && !gh.notRepo) {
-    const cls = gh.level === 'error' ? 'sync-error' : gh.level === 'warn' ? 'sync-warn' : 'sync-ok';
-    const checkedAgo = gh.remoteCheckedAt
-      ? fmtAgo(new Date(gh.remoteCheckedAt).toISOString())
+  // 実行エンジンが自動で保つ「共有の状況」を平易な一文で常時表示する。取り込みも送信も
+  // エンジンが行うので、ここに出るのは結果であって操作ではない。ボタンはその自動回復を
+  // 待たずに前倒しする「今すぐ同期」だけ（実装計画 W2-5）。
+  const eng = state.engine;
+  if (eng) {
+    const cls = eng.level === 'error' ? 'sync-error' : eng.level === 'warn' ? 'sync-warn' : 'sync-ok';
+    const checkedLabel = eng.exists && eng.ageSec !== null && eng.ageSec !== undefined
+      ? `最終確認: ${eng.ageSec} 秒前`
       : '';
-    const checkedLabel = gh.remoteCheckError
-      ? `共有先確認: ${checkedAgo ? `${checkedAgo}（再確認失敗）` : '失敗'}`
-      : checkedAgo
-        ? `共有先確認: ${checkedAgo}`
-        : '';
-    let action = '';
-    if (gh.level === 'error') {
-      action = '<button id="btn-sync-now" class="sync-action">同期を修復</button>';
-    } else if (gh.level === 'warn' && !(gh.behind > 0 && gh.dirty > 0)) {
-      action = '<button id="btn-sync-now" class="sync-action">共有先と同期</button>';
-    }
+    // 停止中は投函しても誰も読まない。押せるのは「動いてはいるが揃っていない」ときだけ。
+    const action = eng.running && eng.level !== 'ok'
+      ? '<button id="btn-sync-now" class="sync-action">今すぐ同期</button>'
+      : '';
     metaBits.push(
-      `<span class="sync-status ${cls}" title="${esc(gh.summary)}">` +
-        `<span class="status-dot" aria-hidden="true"></span> 同期: ${esc(gh.summary)} ` +
+      `<span class="sync-status ${cls}" title="${esc(eng.summary)}">` +
+        `<span class="status-dot" aria-hidden="true"></span> ${esc(eng.summary)} ` +
         `${checkedLabel ? `<small class="sync-checked">${esc(checkedLabel)}</small>` : ''} ${action}</span>`
     );
   }
   $('project-meta').innerHTML = metaBits.join(' ｜ ');
   const syncButton = $('btn-sync-now');
-  if (syncButton) syncButton.addEventListener('click', manualGitHeal);
+  if (syncButton) syncButton.addEventListener('click', requestHealNow);
   const needsBadge = $('needs-badge');
   const undecided = p.needs.filter((n) => !n.decided).length;
   needsBadge.textContent = undecided;
@@ -1026,17 +985,13 @@ function initTabs() {
 
 function populateSettingsFields() {
   const cfg = state.config;
-  $('cfg-roots').value = ((cfg.projects && cfg.projects.roots) || []).join('\n');
-  $('cfg-autodiscover').checked = !cfg.projects || cfg.projects.autoDiscover !== false;
   $('cfg-refresh').value = cfg.projects ? cfg.projects.refreshSec : 5;
-  $('cfg-git-pull').value = cfg.projects && cfg.projects.gitPullSec !== undefined ? cfg.projects.gitPullSec : 300;
-  $('cfg-git-autopush').checked = !!(cfg.projects && cfg.projects.gitAutoPush);
+  $('cfg-engine-distro').value = (cfg.engine && cfg.engine.distro) || '';
+  $('cfg-engine-home').value = (cfg.engine && cfg.engine.home) || '';
   $('cfg-notify').checked = !(cfg.notifications && cfg.notifications.enabled === false);
   $('cfg-needs-sla').value = cfg.projects && cfg.projects.needsSlaHours !== undefined ? cfg.projects.needsSlaHours : 24;
   if ($('cfg-role')) $('cfg-role').value = cfg.role === 'viewer' ? 'viewer' : 'engineer';
-  $('cfg-project-command').value = (cfg.projects && cfg.projects.command) || 'agent-project';
   $('cfg-flow-bus').value = (cfg.projects && cfg.projects.flowBus) || '';
-  $('cfg-flow-lockdir').value = (cfg.projects && cfg.projects.flowLockDir) || '';
   $('cfg-flow-bus-by-project').value = Object.entries(
     (cfg.projects && cfg.projects.flowBusByProject) || {}
   )
@@ -1147,8 +1102,6 @@ async function saveGlobalSettingsSection(section) {
   const cfg = state.config;
   if (section === 'app') {
     cfg.projects = cfg.projects || {};
-    cfg.projects.roots = $('cfg-roots').value.split('\n').map((s) => s.trim()).filter(Boolean);
-    cfg.projects.autoDiscover = $('cfg-autodiscover').checked;
     cfg.projects.refreshSec = Math.max(0, parseInt($('cfg-refresh').value, 10) || 0);
     cfg.notifications = cfg.notifications || {};
     cfg.notifications.enabled = $('cfg-notify').checked;
@@ -1161,11 +1114,10 @@ async function saveGlobalSettingsSection(section) {
     cfg.agent.timeoutSec = Math.max(30, parseInt($('cfg-agent-timeout').value, 10) || 180);
   } else if (section === 'sync') {
     cfg.projects = cfg.projects || {};
-    cfg.projects.gitPullSec = Math.max(0, parseInt($('cfg-git-pull').value, 10) || 0);
-    cfg.projects.gitAutoPush = $('cfg-git-autopush').checked;
-    cfg.projects.command = $('cfg-project-command').value.trim() || 'agent-project';
+    cfg.engine = cfg.engine || {};
+    cfg.engine.distro = $('cfg-engine-distro').value.trim();
+    cfg.engine.home = $('cfg-engine-home').value.trim();
     cfg.projects.flowBus = $('cfg-flow-bus').value.trim();
-    cfg.projects.flowLockDir = $('cfg-flow-lockdir').value.trim();
     cfg.projects.flowBusByProject = $('cfg-flow-bus-by-project').value.split('\n').map((line) => {
       const i = line.indexOf('=');
       if (i < 0) return null;
@@ -1198,127 +1150,28 @@ async function saveGlobalSettingsSection(section) {
 }
 
 // ---------------------------------------------------------------------------
-// git pull（選択中プロジェクトのリポジトリ最新化）
+// 同期の状況表示と「今すぐ同期」（実装計画 W2-1・W2-5）
 // ---------------------------------------------------------------------------
-// 自動: ポーリングのたびに呼ぶが、実際の pull は main 側が設定間隔（下限 60 秒）で
-// スロットリングする（リモートサーバへ負荷をかけない）。git リポジトリでない
-// プロジェクトは黙ってスキップされる。エラーは同じ内容を繰り返しトーストしない。
-let lastGitPullError = null;
+// この画面は状態を共有するリポジトリへ **書かない**。取り込み（pull）も送信（push）も
+// 修復も、常駐体（agent-project serve）が自動で行う。ここに残るのは
+//   ・その結果を見せること（engine/status.json の sync_health）
+//   ・自動回復を待たずに前倒しする「今すぐ同期」を commands/heal として投函すること
+// の 2 つだけ。git を直接叩く経路を戻さないこと（過去に、本体の書き込みと衝突して
+// 状態ファイルへコンフリクトマーカーが書き込まれ、プロジェクトが状態を失った）。
 
-// 状態同期の pull 先は project.dir（状態 worktree）。selectedDir＝登録ワークスペースだけ
-// 引くと、agent-state 側の backlog/commands/bus が更新されず、リモートの指示・進捗が
-// 画面に反映されない。
 function gitStateDir() {
   return (state.project && state.project.dir) || state.selectedDir;
 }
 
-// 自動 pull の対象は「選択中プロジェクト」だけでなく **発見済みの全プロジェクトの状態ルート**。
-// 以前は選択中の 1 件しか引いておらず、エンジンの動いていない閲覧専用 PC では
-//   ・別のプロジェクトを選択中 → 他プロジェクトのサイドバー件数・要対応が更新されない
-//   ・何も選択していない     → 一切 pull されず画面が止まったままになる
-// という「リモートの状況が更新されない」不具合になっていた。全件に投げても、git.pull は
-// リポジトリ toplevel 単位で gitPullSec（下限 60 秒）にスロットリングし、間隔内は
-// skipped を返すだけなのでリモート負荷は増えない（dirty な作業ツリーもスキップされる）。
-async function maybeAutoGitPull() {
-  const sec = state.config && state.config.projects ? Number(state.config.projects.gitPullSec) : 0;
-  if (!sec) return;                                   // 0 = 自動 pull 無効（設定どおり）
-  const dirs = new Set();
-  const selected = gitStateDir();
-  if (selected) dirs.add(selected);
-  for (const p of (state.discovery && state.discovery.projects) || []) {
-    // root = 状態の置き場（状態 worktree / 状態 clone）。workspace（p.dir）ではなくこちらを
-    // 引かないと、worktree 構成では成果物リポジトリだけ更新され状態が古いままになる。
-    if (p && p.exists !== false && (p.root || p.dir)) dirs.add(p.root || p.dir);
-  }
-  for (const dir of dirs) {
-    try {
-      const res = await api.gitPull(dir, false);
-      if (res && !res.skipped) lastGitPullError = null;
-    } catch (err) {
-      const msg = err.message || String(err);
-      if (lastGitPullError !== msg) {
-        lastGitPullError = msg;
-        toast(`git pull（自動）: ${msg}`);
-      }
-    }
-  }
-}
-
-// commitPush が notRepo（＝そのディレクトリが git 作業ツリーでない）で「黙ってスキップ」した
-// ことを、ディレクトリごとに一度だけ知らせる（操作のたびに出すと煩いのでセッション内で重複排除）。
-// バックログ修正・タスク操作・needs 記入・run 削除など、gitAutoPush 有効なのに反映されない全操作が
-// 対象。ローカル daemon バス（<project>/bus）や、本体の state_git が「作業ディレクトリ→別クローン」
-// 方式で同期する構成では作業ディレクトリ自体が git リポジトリでないため、viewer からは直接 push
-// できず daemon 側の state_git 同期に委ねられる。git クローン上で viewer を動かせば直接反映される。
-const _pushSkipWarned = new Set();
-function warnPushSkipped(dir, kind) {
-  if (!dir || _pushSkipWarned.has(dir)) return;
-  _pushSkipWarned.add(dir);
-  // 仕組みの詳細（git 作業ツリーでない・state_git 同期・設定の対処法）はログへ
-  uiLog('pushSkipped', {
-    dir,
-    kind,
-    reason: 'git 作業ツリーでないため viewer から直接 push できない（本体の state_git 同期に委ねる）',
-    hint:
-      kind === 'bus'
-        ? '⚙ 設定 flowBusByProject でバスの git クローンを登録すると直接反映できます'
-        : '状態共有リポジトリの git クローン上でプロジェクトを開くと直接反映できます',
-  });
-  toast(
-    '変更は保存しましたが、この画面から共有先へは直接反映できないため、本体の同期に任せます。' +
-      '（詳細は開発者ログを参照。この通知はプロジェクトごとに一度だけ出ます）'
-  );
-}
-
-// 管理ファイルを書き換えた操作（指示ドロップ・inbox 投入・needs 記入・削除など）の後に呼ぶ。
-// 設定 gitAutoPush が有効なら、操作したディレクトリの変更をコミットして push する
-// （状態共有 git への都度反映）。書き込み本体は成功済みなので待たずに走らせ、失敗（push 不可）や
-// notRepo による「黙ってスキップ」だけトーストで知らせる（後者はディレクトリごとに一度だけ）。
-// 戻り値は commitPush の結果 Promise（gitAutoPush 無効/対象なしのときは null）。
-// opts.kind は notRepo 通知の対処ヒント切り替え用（'bus'（バス）／既定 'project'）。
-// opts.paths は「操作が触ったパス（dir 相対）」の限定コミット（bus 操作で必須 —
-// 全体スナップショットを commit すると本体の state 同期と同じファイルを取り合う）。
-function gitPushAfterWrite(message, dir, opts) {
-  const cfg = state.config;
-  if (!cfg || !cfg.projects || !cfg.projects.gitAutoPush) return null;
-  const target = dir || state.selectedDir;
-  if (!target) return null;
-  const kind = (opts && opts.kind) || 'project';
-  return api
-    .gitCommitPush(target, message, (opts && opts.paths) || null)
-    .then((res) => {
-      if (res && res.skipped && res.notRepo) warnPushSkipped(target, kind);
-      return res;
-    })
-    .catch((err) => {
-      toast(`git 同期（プッシュ）: ${err.message || err}`);
-      return null;
-    });
-}
-
-// バス操作（run の削除・再投入・中止）の git 反映。バスは agent-project の state 同期が
-// 鏡写しする（bus は同期対象・claims だけ除外）ため、busDir が git 作業ツリーでなければ
-// notRepo で黙ってスキップして本体の同期に委ねる。notRepo 通知は gitPushAfterWrite が
-// バス向けのヒント付きで出す（ここは busDir を対象にするだけ）。
-// paths（busDir 相対）で「操作が触った場所」だけを反映する。省略すると bus 全体の
-// スナップショットがコミットされ、本体が鏡写しする run の揮発ファイル（meta / claims /
-// events）を取り合って履歴の食い違いを量産する（実運用で発生した）。
-function gitPushBusOp(message, paths) {
-  const busDir = state.project && state.project.busDir;
-  return gitPushAfterWrite(message, busDir, { kind: 'bus', paths });
-}
-
-// 同期状態の横に必要な場合だけ出す操作。取り込み・履歴修復・送信を一つにまとめる。
-// まとめて自動修復し、やったことを平易な文で知らせる。force push はせず人の作業は壊さない
-async function manualGitHeal() {
-  const healDir = gitStateDir();
-  if (!healDir) return toast('プロジェクトを選択してください');
-  const res = await guard('共有先との同期', () => api.gitHeal(healDir));
+// 「今すぐ同期」。投函するだけで、実際の取り込み・送信は常駐体が行う。
+async function requestHealNow() {
+  const dir = gitStateDir();
+  if (!dir) return toast('プロジェクトを選択してください');
+  const res = await guard('今すぐ同期', () => api.requestHeal(dir));
   if (!res) return;
-  uiLog('gitHeal', res);
-  const steps = (res.steps || []).join(' → ');
-  toast(`${res.summary}${steps ? `（${steps}）` : ''}`, res.level !== 'error');
-  await refreshAll({ sync: false });
+  uiLog('heal', res);
+  toast('今すぐ同期するよう依頼しました（反映まで少し時間がかかることがあります）', true);
+  await refreshAll();
 }
 
 function activeTabName() {
@@ -1621,17 +1474,16 @@ async function askDoctor() {
   }
 }
 
-async function refreshAll({ sync = true } = {}) {
+async function refreshAll() {
   if (state.busy) return;
   state.busy = true;
   try {
-    if (sync) await maybeAutoGitPull();
     await refreshDiscovery();
     // Cowork は軽量 overview（ログ推定のみ・発見キャッシュ利用）。重いプロセス探査は実行直後/手動更新のみ。
     await refreshCowork();
     await refreshAmigos();
     await refreshOrchestration();
-    if (state.selectedDir) await reloadProject({ refreshRemoteHealth: sync });
+    if (state.selectedDir) await reloadProject();
     if (activeTab() === 'cowork') renderCowork();
     if (activeTab() === 'amigos') renderAmigos();
     if (activeTab() === 'orchestration' && !state.globalSettingsDirty && !state.orchInstructionsDirty && !state.orchSessionDirty) renderOrchestration();

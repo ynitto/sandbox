@@ -93,10 +93,15 @@ for (const id of ['dlg-settings', 'dlg-advanced-settings', 'btn-open-advanced-se
 }
 
 const technicalInfo = html.slice(html.indexOf('<dialog id="dlg-technical-info"'), html.indexOf('<dialog id="dlg-need-output"'));
-for (const id of ['cfg-roots', 'cfg-refresh', 'cfg-notify', 'cfg-flow-bus', 'cfg-flow-lockdir',
-  'cfg-project-command', 'cfg-agent-cli', 'cfg-cowork-loop-provider', 'cfg-gl-url']) {
+for (const id of ['cfg-refresh', 'cfg-notify', 'cfg-flow-bus', 'cfg-engine-distro', 'cfg-engine-home',
+  'cfg-agent-cli', 'cfg-cowork-loop-provider', 'cfg-gl-url']) {
   assert.ok(renderer.includes(`id="${id}"`), `全体設定ページに ${id} が必要です`);
   assert.ok(!technicalInfo.includes(`id="${id}"`), `詳細情報に ${id} を出しません`);
+}
+// プロジェクトの登録・本体起動・ロックの置き場は設定から消えた（W2-2〜W2-4）
+for (const id of ['cfg-roots', 'cfg-autodiscover', 'cfg-project-command', 'cfg-flow-lockdir',
+  'cfg-git-pull', 'cfg-git-autopush']) {
+  assert.ok(!renderer.includes(`id="${id}"`), `${id} は削除済みのはず`);
 }
 for (const section of ['app', 'agents', 'sync', 'routine', 'integrations']) {
   assert.ok(renderer.includes(`id: '${section}'`), `全体設定に ${section} 分類が必要です`);

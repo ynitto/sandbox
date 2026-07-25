@@ -10,6 +10,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const discover = require('../src/features/cowork/main/discover');
+const { engineConfig } = require('./helpers/engine-status');
 const wb = require('../src/features/cowork/main/writeback');
 const cowork = require('../src/features/cowork/main/cowork');
 
@@ -99,7 +100,7 @@ test('discoverCoworkItems は prompts を per-job の loop 項目にする', () 
   const root = mkRoot();
   const proj = path.join(root, 'projA');
   writeKiro(proj, SAMPLE_YAML);
-  const items = discover.discoverCoworkItems({ projects: { roots: [root] }, cowork: {} });
+  const items = discover.discoverCoworkItems({ ...engineConfig([root]), cowork: {} });
   const loops = items.filter((i) => i.type === 'loop');
   assert.strictEqual(loops.length, 3);
   assert.strictEqual(loops[0].schedule, '60m');
@@ -115,7 +116,7 @@ test('discoverCoworkItems は prompts を per-job の loop 項目にする', () 
 test('discoverCoworkItems はkiro-loop公式のルート直下設定ファイルも発見する', () => {
   const root = mkRoot();
   fs.writeFileSync(path.join(root, 'kiro-loop.yaml'), SAMPLE_YAML, 'utf8');
-  const loops = discover.discoverCoworkItems({ projects: { roots: [root] }, cowork: {} })
+  const loops = discover.discoverCoworkItems({ ...engineConfig([root]), cowork: {} })
     .filter((item) => item.type === 'loop');
   assert.strictEqual(loops.length, 3);
   assert.strictEqual(loops[0].repo, root);
@@ -127,7 +128,7 @@ test('discoverCoworkItems は .statemachine/<name>/workflow.yaml を per-folder 
   const proj = path.join(root, 'projB');
   writeSm(proj, 'release', 'name: "リリース"\ndescription: "デプロイ"\nstates:\n  s:\n    description: "内側"\n');
   writeSm(proj, 'triage', 'states:\n  s: {}\n');   // name 無し → フォルダ名
-  const items = discover.discoverCoworkItems({ projects: { roots: [root] }, cowork: {} });
+  const items = discover.discoverCoworkItems({ ...engineConfig([root]), cowork: {} });
   const sms = items.filter((i) => i.type === 'state-machine');
   assert.strictEqual(sms.length, 2);
   const rel = sms.find((s) => s.workflow === 'release');
@@ -154,7 +155,7 @@ test('「xxx ステートマシンを実行して」の対エントリはステ�
   const proj = path.join(root, 'projP');
   writeKiro(proj, PAIRED_YAML);
   writeSm(proj, 'release', 'name: "リリース"\ndescription: "デプロイ"\nstates:\n  s: {}\n');
-  const items = discover.discoverCoworkItems({ projects: { roots: [root] }, cowork: {} });
+  const items = discover.discoverCoworkItems({ ...engineConfig([root]), cowork: {} });
   // 対エントリは loop 項目として出さない（other のみ）
   const loops = items.filter((i) => i.type === 'loop');
   assert.deepStrictEqual(loops.map((l) => l.name), ['other']);
@@ -173,7 +174,7 @@ test('対エントリは workflow.yaml の表示名（name:）でも照合でき
   const proj = path.join(root, 'projQ');
   writeKiro(proj, 'prompts:\n  - name: run-release\n    prompt: リリース ステートマシンを実行して\n    cron: "0 9 * * *"\n');
   writeSm(proj, 'release', 'name: "リリース"\nstates:\n  s: {}\n');
-  const items = discover.discoverCoworkItems({ projects: { roots: [root] }, cowork: {} });
+  const items = discover.discoverCoworkItems({ ...engineConfig([root]), cowork: {} });
   assert.strictEqual(items.filter((i) => i.type === 'loop').length, 0);
   const sm = items.find((i) => i.type === 'state-machine');
   assert.strictEqual(sm.schedule, '0 9 * * *');
@@ -185,7 +186,7 @@ test('ステートマシンに言及しない prompt は統合されない', () 
   const proj = path.join(root, 'projR');
   writeKiro(proj, 'prompts:\n  - name: mention\n    prompt: release を確認して\n    interval_minutes: 5\n');
   writeSm(proj, 'release', 'states:\n  s: {}\n');
-  const items = discover.discoverCoworkItems({ projects: { roots: [root] }, cowork: {} });
+  const items = discover.discoverCoworkItems({ ...engineConfig([root]), cowork: {} });
   assert.strictEqual(items.filter((i) => i.type === 'loop').length, 1);
   const sm = items.find((i) => i.type === 'state-machine');
   assert.ok(!sm._src.loop);
@@ -197,7 +198,7 @@ test('統合ステートマシンの実行は対プロンプト名を kiro-loop 
   const proj = path.join(root, 'projS');
   writeKiro(proj, PAIRED_YAML);
   writeSm(proj, 'release', 'name: "リリース"\nstates:\n  s: {}\n');
-  const config = { projects: { roots: [root] }, cowork: { loopCommand: 'echo', items: [] } };
+  const config = { ...engineConfig([root]), cowork: { loopCommand: 'echo', items: [] } };
   const sm = cowork.overview(config).items.find((i) => i.type === 'state-machine');
   const r = cowork.runStateMachine(config, sm.id, '');
   assert.ok(r.ok, `echo が成功する: ${r.error || r.stderr}`);
@@ -211,7 +212,7 @@ test('discoverCoworkItems は .json 形式も同じ項目にする', () => {
     { name: 'j1', interval_minutes: 30, enabled: true },
     { name: 'j2', cron: '* * * * *', enabled: false },
   ] }), 'json');
-  const loops = discover.discoverCoworkItems({ projects: { roots: [root] }, cowork: {} }).filter((i) => i.type === 'loop');
+  const loops = discover.discoverCoworkItems({ ...engineConfig([root]), cowork: {} }).filter((i) => i.type === 'loop');
   assert.strictEqual(loops.length, 2);
   assert.strictEqual(loops[0].schedule, '30m');
   assert.strictEqual(loops[1].schedule, '* * * * *');
@@ -234,12 +235,12 @@ test('discover は id が安定し、手動登録と重複する発見項目は 
   const root = mkRoot();
   const proj = path.join(root, 'projC');
   writeKiro(proj, SAMPLE_YAML);
-  const cfg = { projects: { roots: [root] }, cowork: {} };
+  const cfg = { ...engineConfig([root]), cowork: {} };
   const a = discover.discoverCoworkItems(cfg).map((x) => x.id);
   const b = discover.discoverCoworkItems(cfg).map((x) => x.id);
   assert.deepStrictEqual(a, b);                       // id 安定
   // 手動 config が同じ (type, repo, name) を持つと発見側を抑止
-  const ov = cowork.overview({ projects: { roots: [root] }, cowork: { items: [
+  const ov = cowork.overview({ ...engineConfig([root]), cowork: { items: [
     { id: 'manual', type: 'loop', name: 'issue-worker', repo: proj },
   ] } });
   const issueItems = ov.items.filter((i) => i.name === 'issue-worker' && i.type === 'loop');
@@ -252,7 +253,7 @@ test('dashboard が作成した定型業務は workflow 識別名で発見項目
   const repo = mkRoot();
   writeSm(repo, 'release-check', 'name: "リリース確認"\nstates:\n  done:\n    terminal: true\n');
   const config = {
-    projects: { roots: [repo] },
+    ...engineConfig([repo]),
     cowork: { items: [{
       id: 'managed-release', type: 'state-machine', name: 'リリース確認',
       repo, workflow: 'release-check', managed: true,
@@ -266,7 +267,7 @@ test('dashboard が作成した定型業務は workflow 識別名で発見項目
 test('overview は config + discovered をマージし source と state を付ける', () => {
   const root = mkRoot();
   writeKiro(path.join(root, 'projD'), SAMPLE_YAML);
-  const ov = cowork.overview({ projects: { roots: [root] }, cowork: { items: [] } });
+  const ov = cowork.overview({ ...engineConfig([root]), cowork: { items: [] } });
   assert.strictEqual(ov.items.length, 3);
   assert.ok(ov.items.every((i) => i.source === 'discovered' && i.state));
   assert.deepStrictEqual(ov.discoveredRepos, [path.join(root, 'projD')]);
@@ -352,7 +353,7 @@ test('saveWork は発見項目の編集を実体へ書き戻し、当該ファ�
   spawnSync('git', ['add', '-A'], { cwd: repo, encoding: 'utf8' });
   spawnSync('git', ['commit', '-m', 'init'], { cwd: repo, encoding: 'utf8' });
 
-  const config = { projects: { roots: [repo] }, cowork: { items: [] } };
+  const config = { ...engineConfig([repo]), cowork: { items: [] } };
   const ov = cowork.overview(config);
   const item = ov.items.find((i) => i._src && i._src.promptName === 'issue-worker');
   item.enabled = true;                                 // false → true に編集
@@ -379,7 +380,7 @@ test('saveWork は統合ステートマシンの schedule/enabled を kiro-loop 
   spawnSync('git', ['add', '-A'], { cwd: repo, encoding: 'utf8' });
   spawnSync('git', ['commit', '-m', 'init'], { cwd: repo, encoding: 'utf8' });
 
-  const config = { projects: { roots: [repo] }, cowork: { items: [] } };
+  const config = { ...engineConfig([repo]), cowork: { items: [] } };
   const ov = cowork.overview(config);
   const sm = ov.items.find((i) => i.type === 'state-machine');
   sm.name = 'リリース v2';
@@ -401,7 +402,7 @@ test('saveWork は編集が無ければ実体を触らず commit を skip する
   writeKiro(repo, SAMPLE_YAML);
   spawnSync('git', ['add', '-A'], { cwd: repo, encoding: 'utf8' });
   spawnSync('git', ['commit', '-m', 'init'], { cwd: repo, encoding: 'utf8' });
-  const config = { projects: { roots: [repo] }, cowork: { items: [] } };
+  const config = { ...engineConfig([repo]), cowork: { items: [] } };
   const ov = cowork.overview(config);
   const before = fs.readFileSync(path.join(repo, '.kiro', 'kiro-loop.yml'), 'utf8');
   const res = cowork.saveWork(config, (c) => c, { items: ov.items, push: false });

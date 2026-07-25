@@ -118,13 +118,15 @@ test('応答なし + タスク ready + 本体稼働中 → 自動でやり直さ
   assert.match(a.text, /操作は不要/);
 });
 
-test('応答なし + タスク ready + 本体停止中 → 起動ボタンでその場で解決できる（restart）', () => {
+test('応答なし + タスク ready + 実行エンジン停止中 → 起動コマンドを案内する（restart）', () => {
+  // この画面からはエンジンを起こせない（実装計画 W2-2）。押せないボタンを出す代わりに、
+  // 実行する PC で打つコマンドをそのまま文中に出す。
   const advise = makeAdvisor(project({ running: false }));
   const r = baseRun({ alive: false });
   const a = advise(r, group(r));
   assert.strictEqual(a.kind, 'restart');
-  assert.strictEqual(a.stopped, true);           // バナーに「自動実行を開始」が出る
-  assert.match(a.text, /自動実行を開始/);
+  assert.strictEqual(a.stopped, true);
+  assert.match(a.text, /agent-project serve/);
 });
 
 test('一時停止中 → 再開ボタンでその場で解決できる', () => {
@@ -338,7 +340,7 @@ test('失敗トリアージ: node-budget → 外部 AI ではなくノード予�
     failureReason: '[agent-error:quota] [node-budget] このノードのトークン予算を超過しています',
   });
   const a = advise(r, group(r));
-  assert.match(a.chip, /ノード予算/);
+  assert.match(a.chip, /この PC の予算上限/);
   assert.match(a.text, /AI サービス側の利用上限ではありません/);
   assert.match(a.text, /オーケストレーション/);
 });

@@ -9,17 +9,14 @@
 //      → ingest_commands が CLI と同一ロジック・同一の決定記録（DR）で実行する。
 //      revise は人の即時フィードバック: タスクの内容・依存（after）・優先度の修正と
 //      feedback（次の act に必ず届く指示）を、ループがブロックする前に能動的に届ける。
-//      ファイルだけで届くため、本体が WSL 内で稼働していても操作できる。
-//      本体が稼働していないときは agent-project CLI に委譲し、CLI も使えなければ
-//      指示ファイルを置いて次回起動時の取り込みに委ねる（ロジックの二重実装はしない）。
+//      ファイルだけで届くため、本体が WSL 内で稼働していても操作できる。実行エンジンが
+//      止まっていれば取り込み待ちのまま残る（サイレントに失敗しない）。
 // done の確定・状態遷移そのものをこのアプリが直接書き換えることはしない
 // （「done は verify のみが根拠」の不変条件を壊さない）。
 
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
 const project = require('./project');
-const { agentDirCandidates } = require('../../../base/main/agent-home');
 
 const DECISION_MARKER = '## Decision Outcome';
 
@@ -263,11 +260,11 @@ function revisePayload({ fields, feedback }) {
 
 // commands/<name>.json のドロップ（agent-project の ingest_commands が拾う）。
 // 書きかけを watch に読ませないよう .tmp に書いてから rename する。
-// replan / pause / resume / stop はプロジェクト単位（id 不要）なので id を載せない。
+// replan / pause / resume / stop / heal はプロジェクト単位（id 不要）なので id を載せない。
 function dropCommand(projectDir, { action, id, reason, fields, feedback, run, charter, complete }) {
   const dir = path.join(projectDir, 'commands');
   fs.mkdirSync(dir, { recursive: true });
-  const projectScoped = action === 'replan' || LIFECYCLE_ACTIONS.has(action);
+  const projectScoped = action === 'replan' || action === 'heal' || LIFECYCLE_ACTIONS.has(action);
   const rec = {
     command: action,
     ...(projectScoped ? {} : { id: String(id) }),
@@ -287,122 +284,9 @@ function dropCommand(projectDir, { action, id, reason, fields, feedback, run, ch
   return { file, rec };
 }
 
-// プロジェクトルートから --root を導く（1 プロジェクト = 1 ディレクトリ）
-function cliScope(projectDir) {
-  return { root: path.resolve(projectDir) };
-}
-
-function quote(arg) {
-  const s = String(arg);
-  if (/^[\w@%+=:,./-]+$/.test(s)) return s;
-  return process.platform === 'win32' ? `"${s.replace(/"/g, '""')}"` : `'${s.replace(/'/g, "'\\''")}'`;
-}
-
-function findProjectConfig(...dirs) {
-  // agent-project の _find_config と同じ名前を、本体／状態 worktree の候補から探す。
-  // cwd 依存を避け、dashboard CLI 委譲が設定を拾えるようにする。
-  // `dir`（状態ルート）と `fromStateWorktree(dir)`（本体）の両方を見る——yaml が
-  // 状態 worktree 側だけにある構成でも --config を落とさない。
-  const bases = [];
-  const add = (d) => {
-    if (!d) return;
-    const resolved = path.resolve(d);
-    for (const base of [
-      resolved,
-      ...agentDirCandidates(resolved),
-      path.dirname(resolved),
-      ...agentDirCandidates(path.dirname(resolved)),
-    ]) {
-      if (!bases.includes(base)) bases.push(base);
-    }
-  };
-  for (const d of dirs) add(d);
-  for (const base of bases) {
-    for (const name of ['agent-project.yaml', 'agent-project.yml']) {
-      const p = path.join(base, name);
-      if (fs.existsSync(p)) return p;
-    }
-  }
-  return null;
-}
-
-// ⚙ 設定の CLI コマンド（例 `python3 /path/to/agent-project.py`）を argv 配列へ分解する。
-// クォート（"…" / '…'）で空白入りパスも表せる。
-function splitCommand(command) {
-  const out = [];
-  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
-  let m;
-  while ((m = re.exec(String(command || '').trim()))) {
-    out.push(m[1] != null ? m[1] : m[2] != null ? m[2] : m[3]);
-  }
-  return out;
-}
-
-// タイムアウト時にプロセスツリーごと止める。Windows の child.kill() はトップ（多くは
-// シェル）しか殺さず、agent-project 本体や WSL 側の子が生き残って再実行と多重化する。
-function killTree(child) {
-  if (!child || child.pid == null) return;
-  try {
-    if (process.platform === 'win32') {
-      spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
-    } else {
-      try {
-        process.kill(-child.pid, 'SIGTERM'); // detached 起動によるプロセスグループごと
-      } catch {
-        child.kill();
-      }
-    }
-  } catch {
-    try {
-      child.kill();
-    } catch {
-      /* 既に終了 */
-    }
-  }
-}
-
-function runProjectCli(command, args, timeoutMs = 60000, cwd) {
-  // shell:true + 文字列連結は、空白入りコマンドパスで壊れ、cmd.exe の %VAR% 展開で
-  // --reason / feedback の日本語文が変質し、メタ文字がインジェクションになる。
-  // argv 配列 + shell:false で渡す（PATHEXT で .exe/.cmd は解決される）。
-  const tokens = splitCommand(command);
-  const file = tokens[0] || 'agent-project';
-  const argv = [...tokens.slice(1), ...args.map(String)];
-  const cmdline = `${command} ${args.map(quote).join(' ')}`; // 表示・手動再実行用
-  return new Promise((resolve, reject) => {
-    let child;
-    try {
-      child = spawn(file, argv, {
-        shell: false,
-        windowsHide: true,
-        cwd: cwd || undefined,
-        detached: process.platform !== 'win32', // POSIX: グループ kill を可能にする
-      });
-    } catch (e) {
-      reject(new Error(`agent-project を起動できません（⚙ 設定の CLI コマンドを確認）: ${e.message}`));
-      return;
-    }
-    let out = '';
-    let err = '';
-    const timer = setTimeout(() => {
-      killTree(child);
-      reject(new Error(`agent-project がタイムアウトしました: ${cmdline}`));
-    }, timeoutMs);
-    child.stdout.on('data', (d) => (out += d));
-    child.stderr.on('data', (d) => (err += d));
-    child.stdin.on('error', () => {});
-    child.stdin.end();
-    child.on('error', (e) => {
-      clearTimeout(timer);
-      reject(new Error(`agent-project を起動できません（⚙ 設定の CLI コマンドを確認）: ${e.message}`));
-    });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      if (code === 0) resolve({ output: out.trim(), command: cmdline });
-      else reject(new Error(`agent-project が失敗しました (exit ${code}): ${(err || out).trim().slice(-400)}`));
-    });
-  });
-}
+// 本体（agent-project）を CLI で起こす経路は削除した（実装計画 W2-2）。CLI 引数の組み立て・
+// プロセスツリーの kill・設定ファイルの探索もその経路のためだけの道具だったので一緒に消す。
+// 人の操作は commands/ の投函だけで届き、実行エンジンの起動・再起動は OS の起動系が担う。
 
 // action: approve | hold | pin | defer | revise
 //   revise は fields（title/priority/verify/accept/after/note/level/track の置換）と
@@ -465,42 +349,6 @@ function requestLifecycle(cfg, { dir, action, reason }) {
   };
 }
 
-// 本体（agent-project）の起動。stop/pause と違い、停止中の本体は commands/ を読めないため
-// ファイルドロップでは届かない — この PC の CLI で `agent-project start --root <dir>` を実行する
-// （start は常駐を detach して即座に戻る）。本体が別マシンの構成では、この PC で起動すると
-// 「この PC が実行役」になる（クレームにより同一タスクの二重実行は起きないが、エージェント
-// CLI の有無等は環境依存）。その判断は呼び出し側（renderer の確認ダイアログ）が人に委ねる。
-async function startProject(cfg, { dir }) {
-  const command = (cfg.projects && cfg.projects.command) || 'agent-project';
-  const root = project.fromStateWorktree(path.resolve(dir));
-  // runAction / requestReplan と同じガード: Windows ビュアーが WSL UNC を開いているとき、
-  // Windows 側 CLI で start すると UNC/Linux パスの --root で失敗するか、最悪 WSL 内の
-  // 本体とは別に Windows 側で二重起動する。停止中の本体はファイルドロップでは起こせない
-  // ため、人が WSL 内で打つべきコマンドを返して手動起動に委ねる。
-  const unc = process.platform === 'win32' &&
-    String(root || '').replace(/\//g, '\\').match(/^\\\\wsl(?:\$|\.localhost)\\[^\\]+(.*)$/i);
-  if (unc) {
-    const linuxRoot = (unc[1] || '/').replace(/\\/g, '/') || '/';
-    const err = new Error(
-      'WSL 内のプロジェクトは Windows 側の CLI からは起動できません。WSL のターミナルで起動してください。'
-    );
-    err.manualCommand = `${command} start --root ${linuxRoot}`;
-    throw err;
-  }
-  const cfgPath = findProjectConfig(root, dir);
-  const args = ['start', '--root', root];
-  if (cfgPath) args.push('--config', cfgPath);
-  const cwd = cfgPath ? path.dirname(cfgPath) : root;
-  try {
-    const res = await runProjectCli(command, args, 120000, cwd);
-    return { ...res, via: 'cli' };
-  } catch (err) {
-    // CLI が無い/失敗 → 人が本体マシンで打つべきコマンドをそのまま返す（コピーして実行できる）
-    err.manualCommand = `${command} ${args.map(quote).join(' ')}`;
-    throw err;
-  }
-}
-
 module.exports = {
   submitFeedback,
   buildNeedsStub,
@@ -514,9 +362,5 @@ module.exports = {
   runAction,
   requestReplan,
   requestLifecycle,
-  startProject,
-  findProjectConfig,
-  splitCommand,
-  runProjectCli,
   DECISION_MARKER,
 };

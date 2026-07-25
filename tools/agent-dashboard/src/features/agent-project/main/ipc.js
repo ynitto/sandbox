@@ -6,21 +6,14 @@
 const fs = require('fs');
 const path = require('path');
 const project = require('./project');
+const engine = require('./engine');
 const flow = require('./flow');
-const { lookupScalar } = require('./toolconfig');
+const git = require('../../../base/main/git');
 const { openInReviewViewer } = require('./review');
 const actions = require('./actions');
 const authoring = require('./authoring');
 const agent = require('./agent');
 const reset = require('./reset');
-
-// agent-flow daemon ロックの置き場。⚙ 設定 > ~/.agent の agent-project/agent-flow 設定の
-// lock_dir > 両ツール共通の既定（tempdir 配下。daemonStatus 側で導出）。
-function flowLockDir(cfg) {
-  if (cfg.projects && cfg.projects.flowLockDir) return cfg.projects.flowLockDir;
-  const found = lookupScalar('lock_dir');
-  return found ? found.value : null;
-}
 
 // ゴミ箱へ移動（可能な環境ではリカバリできる）。ゴミ箱が無い環境では完全削除
 async function removeToTrash(shell, target) {
@@ -34,33 +27,30 @@ async function removeToTrash(shell, target) {
 }
 
 function registerIpc(ctx) {
-  const { handle, loadConfig, saveConfig, shell, client } = ctx;
+  const { handle, loadConfig, shell, client } = ctx;
   const trash = (target) => removeToTrash(shell, target);
 
-  // 発見: 設定 roots + instances 自動発見 → コンテナ→プロジェクトのツリー
+  // 発見: 実行エンジンの状況ファイル（engine/status.json）に載っているプロジェクト
   handle('dashboard:discover', () => project.discover(loadConfig()));
 
-  // プロジェクトの登録を実体に即して直接消す（config.roots のエントリ削除、または
-  // ~/.agent-project/instances/*.json の該当レコード削除）。ファイル・ディレクトリ本体は
-  // 一切触らない。親フォルダのスキャンで見つかった子は個別の登録が無いためエラーにする
-  // （親フォルダの登録自体を ⚙ 設定のプロジェクトルートから編集してもらう）。
-  handle('dashboard:removeProject', ({ dir }) => {
+  // 実行エンジンの状況（稼働・共有の進み具合・直近のエラー・切り離したプロジェクト）。
+  // 画面の稼働表示・同期表示はすべてこの 1 枚が根拠（実装計画 W2-3・W2-5）。
+  handle('engine:status', () => {
+    const status = engine.readStatus(loadConfig());
+    return { ...status, ...engine.summarize(status) };
+  });
+
+  // 「今すぐ同期」。自動回復が既定で、これはその前倒し——投函するだけで実行は常駐体が行う。
+  handle('engine:heal', ({ dir }) => {
     if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    const { file } = actions.dropCommand(dir, { action: 'heal', reason: 'agent-dashboard から今すぐ同期' });
+    return { file, via: 'file' };
+  });
+
+  // セットアップ診断: 発見したプロジェクトの置き場が共有できる状態かを赤/緑で返す。
+  handle('setup:diagnostics', () => {
     const cfg = loadConfig();
-    const result = project.removeProjectRegistration(cfg, dir);
-    if (result.removedFrom === 'roots') {
-      cfg.projects = cfg.projects || {};
-      cfg.projects.roots = result.roots;
-      saveConfig(cfg);
-      return { removedFrom: 'roots' };
-    }
-    if (result.removedFrom === 'instance') {
-      return { removedFrom: 'instance', file: result.file };
-    }
-    throw new Error(
-      '登録元が見つかりません（親フォルダ登録の配下で自動発見されたプロジェクトは個別に削除できません。' +
-        '⚙ 設定のプロジェクトルートから親フォルダの登録を編集してください）'
-    );
+    return git.diagnostics(cfg.role, engine.projectRoots(cfg));
   });
 
   // 1 プロジェクトの完全スナップショット（バスの発見に設定 projects.flowBus も使う）
@@ -115,10 +105,7 @@ function registerIpc(ctx) {
     const merged = [...runs, ...archived].sort((a, b) =>
       String(b.createdAt || '').localeCompare(String(a.createdAt || ''))
     );
-    return {
-      runs: merged,
-      daemon: flow.daemonStatus(busDir, flowLockDir(loadConfig())),
-    };
+    return { runs: merged };
   });
   handle('flow:run', ({ dir, busDir, runId }) => {
     const runDir = path.join(busDir, 'runs', runId);
@@ -270,7 +257,6 @@ function registerIpc(ctx) {
     const cfg = loadConfig();
     const plan = reset.planReset(dir);
     const bus = project.resolveBusDir(dir, workspace || dir, cfg);
-    const daemon = await flow.stopDaemon(bus.busDir, flowLockDir(cfg));
     let masterized = false;
     try {
       const info = authoring.readProjectFile(dir, 'charter.md');
@@ -286,7 +272,7 @@ function registerIpc(ctx) {
       /* マスター化に失敗してもリセット自体は続行する */
     }
     const res = await reset.executeReset(plan, trash);
-    return { ...res, daemon, masterized, busDir: bus.busDir, busSource: bus.source };
+    return { ...res, masterized, busDir: bus.busDir, busSource: bus.source };
   });
 
   // 実行中ノードの関連イシューを決定的タスクトークンで検索（gitlab executor 連動）
@@ -392,12 +378,9 @@ function registerIpc(ctx) {
     return actions.requestLifecycle(loadConfig(), { dir, action, reason });
   });
 
-  // 本体（agent-project）の起動。停止中の本体は commands/ を読めないため、ファイルドロップ
-  // でなくこの PC の CLI で `agent-project start` を実行する（detach され即座に戻る）。
-  handle('dashboard:start', ({ dir }) => {
-    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
-    return actions.startProject(loadConfig(), { dir });
-  });
+  // 本体を CLI で起こす経路（旧 dashboard:start）は削除した（実装計画 W2-2）。
+  // 実行エンジンの起動・再起動は OS の起動系（systemd 等）の管轄で、この画面は
+  // 止まっていることを案内表示するところまでを担う。
 
   // オーサリング（作成・編集）。人が書く上位入力ファイル（charter/policy/repos）だけを
   // 対象にし、タスク状態は触らない（done は verify のみが根拠の不変条件を壊さない）。
@@ -524,4 +507,4 @@ function registerIpc(ctx) {
 
 }
 
-module.exports = { registerIpc, flowLockDir };
+module.exports = { registerIpc };

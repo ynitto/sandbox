@@ -700,7 +700,6 @@ function showTaskDialog(id, scope) {
         return true;
       });
       if (ok) {
-        gitPushAfterWrite(`agent-dashboard: ${btn.dataset.taskact} ${t.id}`, p.dir);
         $('dlg-task').close();
         await reloadProject();
       }
@@ -722,7 +721,6 @@ function showTaskDialog(id, scope) {
         return true;
       });
       if (ok) {
-        gitPushAfterWrite(`agent-dashboard: 監視担当 ${t.id} → ${owner || '（解除）'}`, p.dir);
         $('dlg-task').close();
         await reloadProject();
       }
@@ -762,7 +760,6 @@ function showTaskDialog(id, scope) {
         return true;
       });
       if (ok) {
-        gitPushAfterWrite(`agent-dashboard: revise ${t.id}`, p.dir);
         $('dlg-task').close();
         await reloadProject();
       }
@@ -837,7 +834,6 @@ function showTaskDialog(id, scope) {
         return true;
       });
       if (ok) {
-        gitPushAfterWrite(`agent-dashboard: delete task ${t.id}`, p.dir);
         $('dlg-task').close();
         await reloadProject();
       }
@@ -926,7 +922,6 @@ async function requestReplan(charter = '') {
     return true;
   });
   if (ok) {
-    gitPushAfterWrite('agent-dashboard: replan request', p.dir);
     await reloadProject();
   }
 }
@@ -1122,7 +1117,6 @@ async function applySelectedEnqueueAdjustments(applyList) {
       }
     }
     if (sent.length) {
-      gitPushAfterWrite(`agent-dashboard: revise deps/priority ${sent.join(',')}`, p.dir);
       state.enqueueAdjustments = (state.enqueueAdjustments || []).filter((a) => !sent.includes(a.id));
       await reloadProject();
       fillEnqueueAfterOptions(state.project);
@@ -1326,7 +1320,6 @@ async function submitEnqueue() {
     return true;
   });
   if (ok) {
-    gitPushAfterWrite(`agent-dashboard: enqueue ${spec.title || ''}`.trim(), p.dir);
     $('dlg-enqueue').close();
     await reloadProject();
   }

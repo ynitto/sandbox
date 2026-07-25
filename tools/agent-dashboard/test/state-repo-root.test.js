@@ -11,6 +11,7 @@ const os = require('os');
 const path = require('path');
 
 const project = require('../src/main/project');
+const { engineConfig } = require('./helpers/engine-status');
 
 let passed = 0;
 function test(name, fn) {
@@ -209,9 +210,7 @@ test('readProject は成果物ワークスペース登録でも状態 clone か�
 test('discover は成果物登録でも root を状態 clone にする', () => {
   const { deliverable, clone, base } = scaffold({ stateRepoDir: 'sandbox-project' });
   try {
-    const { projects } = project.discover({
-      projects: { roots: [deliverable], autoDiscover: false },
-    });
+    const { projects } = project.discover(engineConfig([deliverable]));
     const p = projects.find((x) => x.dir === path.resolve(deliverable));
     assert.ok(p, '登録した成果物ワークスペースが 1 件');
     assert.strictEqual(p.root, path.resolve(clone));

@@ -1472,7 +1472,6 @@ function bindReviewComments(root) {
         return true;
       });
       if (ok) {
-        gitPushAfterWrite(`agent-dashboard: review comment ${taskId}`, p.dir);
         await reloadProject();
       }
     });
@@ -1488,7 +1487,6 @@ function bindReviewComments(root) {
         return true;
       });
       if (ok) {
-        gitPushAfterWrite(`agent-dashboard: delete comment ${taskId}`, p.dir);
         await reloadProject();
       }
     });
@@ -1524,7 +1522,6 @@ function bindReviewComments(root) {
           return true;
         });
         if (ok) {
-          gitPushAfterWrite(`agent-dashboard: edit comment ${taskId}`, p.dir);
           await reloadProject();
         }
       });
@@ -1700,7 +1697,6 @@ function bindNeedDetail(root) {
         return true;
       });
       if (ok) {
-        gitPushAfterWrite(`agent-dashboard: revise verify ${task.id}`, p.dir);
         await reloadProject();
       } else {
         btn.disabled = false;
@@ -1915,7 +1911,6 @@ async function handleNeedAction(btn) {
     return true;
   });
   if (ok) {
-    gitPushAfterWrite(`agent-dashboard: ${act} ${id}`, p.dir);
     await reloadProject();
   }
   return ok;

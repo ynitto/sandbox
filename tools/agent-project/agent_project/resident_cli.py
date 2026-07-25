@@ -19,8 +19,8 @@ from __future__ import annotations
 from agentcore.nodeid import normalize_node_id
 from agentcore.protocol import write_json_atomic
 from agent_project.resident import (ChildSpec, ChildStatus, EngineStatus,
-                                    NodeWorkerPool, Scheduler, Supervisor, Tick,
-                                    WorkItem, graceful_shutdown, run_gc)
+                                    NodeWorkerPool, Scheduler, Supervisor, SyncHealth,
+                                    Tick, WorkItem, graceful_shutdown, run_gc)
 
 HOST_CONFIG_NAMES = ("agent-project.host.yaml", "agent-project.host.yml",
                      "agent-project.host.json")
@@ -98,6 +98,41 @@ def load_host_config(explicit: "str | None" = None) -> HostConfig:
     return HostConfig(_load_config_file(path), path=path)
 
 
+def _project_name(project: dict) -> str:
+    """host.yaml の 1 プロジェクト宣言の識別名（宣言があればそれ、無ければ実効 root の slug）。
+    子プロセス名・gc sweeper 名・`engine/status.json` の children[].name はすべてこれ——
+    導出が割れると status の子と gc の集計が別名で並び、dashboard が同じプロジェクトを
+    2 件に見せる。"""
+    resolved = _resolved_root(str(project.get("root") or "").strip(), project.get("config"))
+    return str(project.get("name") or "").strip() or _slug(resolved)
+
+
+def _observe_sync_health(roots_by_name: dict) -> "list[SyncHealth]":
+    """登録プロジェクトごとの同期健康を観測する（設計 §5・実装計画 W2-5）。
+
+    **dashboard の同期表示はこれが唯一の根拠**（`engine.summarize` は `sync_health` の
+    `last_error` と ahead/behind しか見ない）。空のまま出すと、リモートが落ちていても
+    未 push が溜まっていても「共有先と揃っています」と緑で出る——W2-1 で dashboard 側の
+    fetch（`refreshRemote`）を廃止した以上、ここが埋まっていないと同期の異常を知る手段が
+    どこにも無くなる。
+
+    観測は副作用なし（`DirectStateGit.observe_sync` は fetch しない）。remote 未設定の
+    プロジェクトは同期の概念が無いので載せない。"""
+    out: "list[SyncHealth]" = []
+    for name, root in sorted(roots_by_name.items()):
+        try:
+            obs = DirectStateGit(Path(root), interval=0.0).observe_sync()
+        except OSError as e:
+            out.append(SyncHealth(name=name, last_error=str(e)[:300]))
+            continue
+        if not obs:
+            continue    # remote 無し＝ローカル完結の縮退
+        out.append(SyncHealth(name=name, ahead=int(obs.get("ahead") or 0),
+                              behind=int(obs.get("behind") or 0),
+                              last_error=obs.get("last_error")))
+    return out
+
+
 def _project_child_spec(project: dict) -> "ChildSpec | None":
     """host.yaml の 1 プロジェクト宣言から Supervisor.ChildSpec を組み立てる。
     `agent-project run --watch` を Popen する——cmd_start と同じ argv 構築だが、
@@ -105,12 +140,10 @@ def _project_child_spec(project: dict) -> "ChildSpec | None":
     root = str(project.get("root") or "").strip()
     if not root:
         return None
-    resolved = _resolved_root(root, project.get("config"))
     child = [sys.executable, _self_script(), "run", "--watch", "--root", root]
     if project.get("config"):
         child += ["--config", str(project["config"])]
-    name = str(project.get("name") or "").strip() or _slug(resolved)
-    return ChildSpec(name=name, argv=child)
+    return ChildSpec(name=_project_name(project), argv=child)
 
 
 def _project_children(host: HostConfig) -> "list[ChildSpec]":
@@ -210,8 +243,7 @@ def _project_gc_sweeper(project: dict) -> "tuple[str, object] | None":
     root = str(project.get("root") or "").strip()
     if not root:
         return None
-    resolved = _resolved_root(root, project.get("config"))
-    name = str(project.get("name") or "").strip() or _slug(resolved)
+    name = _project_name(project)
     cmd = [sys.executable, _self_script(), "gc", "--root", root, "--json"]
     if project.get("config"):
         cmd += ["--config", str(project["config"])]
@@ -251,6 +283,10 @@ def _build_resident(host: "HostConfig", *, start_children: bool = True):
 
     status = EngineStatus(host.node_id)
     status_path = _agents_home() / "engine" / "status.json"
+    # 子の名前 → host.yaml の root 宣言。dashboard のプロジェクト発見はこれを辿る（W2-4）ので、
+    # 子状態と同じ 1 件として載せる（Supervisor は root を知らない＝名前で突き合わせる）。
+    roots_by_name = {_project_name(p): str(p.get("root") or "").strip()
+                     for p in host.projects if str(p.get("root") or "").strip()}
 
     def write_status() -> None:
         # EngineStatus.write(state_home) は <state_home>/.agents/engine/status.json へ書く
@@ -259,8 +295,10 @@ def _build_resident(host: "HostConfig", *, start_children: bool = True):
         status.heartbeat = datetime.now(timezone.utc).isoformat()
         status.children = [
             ChildStatus(name=name, alive=info["alive"], quarantined=info["quarantined"],
-                       deaths=info["deaths"])
+                       deaths=info["deaths"], root=roots_by_name.get(name))
             for name, info in sup.status().items()]
+        status.sync_health = _observe_sync_health(roots_by_name)
+        status.running_runs = list(pool.status().get("inflight") or [])
         write_json_atomic(str(status_path), status.to_dict())
 
     # ノード直轄ワーカー（設計 §4.2・実装計画 W1-5/W1-11）。max_concurrent: 0 は「明示未設定」

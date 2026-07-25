@@ -78,6 +78,49 @@
 **完了条件**: dashboard のコードから git 書き込み・本体起動・ロック複製が消滅 /
 利用者向け表示に内部名（node / sync / resident）が出ない（R10） / dashboard テスト緑。
 
+### P2 実施結果（2026-07-25）
+
+W2-1〜W2-5 は実装・テストとも完了（agent-dashboard の全テスト緑 / agent-project 958 緑）。
+非退行は `test/no-git-writes.test.js` に構造として固定した（git 書き込みサブコマンドの起動・
+`git:pull`/`git:commitPush`/`git:heal`・`dashboard:start`/`runProjectCli`・
+`daemonLockPath`/`flowLockDir`・列挙設定・R10 の語彙）。
+
+着手時に判明して合わせて実装したもの:
+
+- **`engine/status.json` に `children[].root` と `contract_version` を追加**（`resident/status.py`）。
+  前者が無いと dashboard はプロジェクトを 1 件も発見できず（W2-4 の唯一の入口）、後者が無いと
+  古い常駐体が「正常」に見えたまま情報を欠く（W2-5 の旧バージョン表示）。
+- **`commands/heal` をエンジン側に実装**（`commands.py` の `ingest_commands`）。設計 §5 に契約は
+  あったが未実装で、dashboard が投函しても `.err` へ落ちるだけだった。受理で `state_sync(force=True)`。
+- **`engine/status.json` の `sync_health` / `running_runs` に書き手を実装**（`resident_cli.py` の
+  `_observe_sync_health` と `DirectStateGit.observe_sync`）。型と直列化だけがあって値を設定する
+  コードが無く、dashboard の `summarize()` は空配列を全分岐素通りして**常に「共有先と揃って
+  います」を緑で表示**していた（W2-1 でローカル fetch を廃止したため、他に異常を知る経路が
+  無い状態だった）。観測は fetch せず最後に取り込んだ `origin/<branch>` と比較する——毎 tick
+  リモートを叩くと dashboard から取り除いたリモート負荷を常駐体側で復活させてしまうため。
+  同期失敗は `DirectStateGit._last_sync_error` に残す（`state_sync` が握り潰すので、
+  残さないとどこにも記録が無い）。
+
+縮退に伴う挙動の変更（意図した非互換）:
+
+- **プロジェクトの登録・登録解除の口が dashboard から消えた**。宣言の単一ソースは実行側の
+  `agent-project.host.yaml` で、この画面はそれを映すだけ（`dashboard:removeProject` と
+  サイドバーの × を削除）。新規プロジェクト作成は charter を書くところまでで、一覧に出すには
+  host.yaml への追記が要る旨をダイアログで案内する。
+- **`projects.roots` に相乗りしていた他機能（cowork / amigos / orchestration の自動発見）を
+  `engine.projectRoots()` へ付け替えた**。走査深さは各機能のローカル設定（`cowork.scanDepth` /
+  `amigos.scanDepth`）へ移した。
+- **同期の状況表示は `engine/status.json` の `sync_health` が根拠**になり、ローカル git への
+  fetch（`refreshRemote`）は廃止。`git.js` に残るのは `health` / `diagnostics` / `diffRange` /
+  `bridgeRepoPath` の 4 つだけ。
+
+未着手（P2 の範囲外として残したもの）:
+
+- **README / GUIDE の設定項目記述**は旧設定（`projects.roots` / `gitAutoPush` / `flowLockDir` /
+  `projects.command`）のまま。文書の全面改訂は W3-2 に集約する。
+- **R10 の grep 検査の CI 化**も W3-2。現状は dashboard 側の単体テストで
+  `engine.summarize()` と設定ペインの語彙だけを固定している。
+
 ## 4. P3 — パッケージ統合と実機 canary
 
 | # | 作業 | 対象・内容 | 規模 |

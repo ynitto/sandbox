@@ -1,6 +1,6 @@
 'use strict';
 
-// Cowork の自動発見。全体設定の `projects.roots` 配下を走査し、kiro-loop の定期処理
+// Cowork の自動発見。実行エンジンが担当するプロジェクト配下を走査し、kiro-loop の定期処理
 // （.kiro/kiro-loop.{yaml,yml,json} の prompts[]）とステートマシン（.statemachine/<name>/
 // workflow.yaml）を **ジョブ単位** で抽出して Cowork 項目にする。
 //
@@ -270,11 +270,9 @@ function resolveRoot(r) {
 function discoverCoworkItems(config) {
   const cfg = (config && config.cowork) || {};
   if (cfg.discover === false) return [];
-  const roots = (config && config.projects && config.projects.roots) || [];
-  const scanDepth = Math.max(
-    1,
-    Number(cfg.scanDepth || (config && config.projects && config.projects.scanDepth) || 2)
-  );
+  // 実行エンジンが担当しているプロジェクト配下を走査する（設定 roots は W2-4 で廃止）
+  const roots = require('../../agent-project/main/engine').projectRoots(config);
+  const scanDepth = Math.max(1, Number(cfg.scanDepth || 2));
 
   const items = [];
   const seenRoots = new Set();

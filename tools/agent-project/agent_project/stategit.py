@@ -100,6 +100,10 @@ class DirectStateGit:
         self.root = Path(root)
         self.interval = max(0.0, interval)
         self._last_remote = 0.0
+        # 直近の同期失敗（`observe_sync` が dashboard へ渡す。成功したら消す）。
+        # 同期は best-effort で例外を握り潰す呼び出し側（`state_sync`）が多いため、
+        # 「失敗したこと」がどこにも残らないと dashboard が緑のままになる。
+        self._last_sync_error: str = ""
 
     def _env(self) -> dict:
         env = dict(os.environ)
@@ -740,6 +744,38 @@ class DirectStateGit:
                              + ", ".join(dirty[:5]))
         return "; ".join(parts)
 
+    def observe_sync(self) -> dict:
+        """同期の健康を**副作用なしで**観測する（設計 §5「同期健康（ahead/behind・エラー）」）。
+
+        `{"ahead": int, "behind": int, "last_error": str | None}` を返す。常駐体の tick が
+        `engine/status.json` の `sync_health` へ載せ、dashboard がそれだけを根拠に
+        「共有の途中です」「共有先とやり取りできていません」を表示する（実装計画 W2-5）。
+
+        **fetch はしない。** 観測のために毎 tick リモートを叩くと、W2-1 で dashboard から
+        取り除いたリモート負荷を常駐体側で復活させることになる。比較対象は最後に取り込んだ
+        `origin/<branch>`（同期 tick が更新する）で、鮮度はその周期に従う。
+        remote 未設定はローカル完結の縮退なので同期の概念が無く、None を返す。"""
+        if not self._has_remote():
+            return {}
+        branch = self._branch()
+
+        def _count(*rev: str) -> int:
+            r = self._git("rev-list", "--count", *rev)
+            try:
+                return int(r.stdout.strip() or 0) if r.returncode == 0 else 0
+            except ValueError:
+                return 0
+
+        if self._git("rev-parse", "-q", "--verify",
+                     f"refs/remotes/origin/{branch}").returncode != 0:
+            # まだ一度も取り込めていない（初回・不通）。未取得件数は数えられないので
+            # 0 のまま error だけ立てる——「揃っている」と誤って緑にしないため。
+            return {"ahead": 0, "behind": 0,
+                    "last_error": f"origin/{branch} をまだ取り込めていません"}
+        return {"ahead": _count(f"origin/{branch}..HEAD"),
+                "behind": _count(f"HEAD..origin/{branch}"),
+                "last_error": self._last_sync_error or None}
+
     def sync(self, force: bool = False) -> "tuple[int, int]":
         """双方向同期を 1 回行い (imported, exported) を返す。リモート操作は interval で律速し、
         force=True は「push すべきものがあれば間隔を待たず押し出す」（run 直後の結果共有用）。"""
@@ -760,6 +796,10 @@ class DirectStateGit:
                 # リモートにブランチがまだ無い初回は正常系として進める。
                 if f.returncode == 0 or "couldn't find remote ref" in (f.stderr or "").lower():
                     self._last_remote = now
+                    self._last_sync_error = ""      # 取り込めた＝直近の不通は解消
+                else:
+                    # 握り潰さず残す（observe_sync 経由で dashboard が「やり取りできていません」を出す）
+                    self._last_sync_error = (f.stderr or "").strip()[-300:] or "fetch に失敗しました"
             targets = self._changed_targets()
             exported = 0
             if targets:
@@ -782,6 +822,7 @@ class DirectStateGit:
                         r = self._git("push", "-u", "origin", f"HEAD:{branch}")
                         if r.returncode == 0:
                             self._last_remote = time.time()
+                            self._last_sync_error = ""
                             break
                         self._git("fetch", "-q", "origin", branch)
                         imported += self._integrate(branch)
@@ -791,9 +832,9 @@ class DirectStateGit:
                         # 「反映できませんでした」だけでは何が詰まっているのか分からず、毎パス
                         # 同じ一行が journal に出続ける。詰まりの正体（取り込めていない／作業ツリーが
                         # 汚れている）を出して、人が最初の一手を打てるようにする。
-                        raise RuntimeError(
-                            f"state_git push が {branch} へ反映できませんでした: "
-                            f"{self._wedge_reason(branch)}")
+                        self._last_sync_error = (
+                            f"push が {branch} へ反映できませんでした: {self._wedge_reason(branch)}")
+                        raise RuntimeError(f"state_git {self._last_sync_error}")
         return imported, exported
 
 

@@ -36,7 +36,8 @@ function isPlainObject(v) {
 function searchDirs(cfg) {
   const dirs = [];
   if (process.env.KIRO_AGENTS_DIR) dirs.push(expandHome(process.env.KIRO_AGENTS_DIR));
-  const roots = (cfg && cfg.projects && Array.isArray(cfg.projects.roots)) ? cfg.projects.roots : [];
+  // 実行エンジンが担当しているプロジェクト配下の agents/（設定 roots は W2-4 で廃止）
+  const roots = require('../../agent-project/main/engine').projectRoots(cfg);
   for (const root of roots) {
     if (root) dirs.push(path.join(expandHome(String(root)), 'agents'));
   }

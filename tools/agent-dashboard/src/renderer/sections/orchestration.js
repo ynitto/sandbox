@@ -726,32 +726,25 @@ function globalSettingsAppHtml() {
     <header class="global-settings-card-heading">
       <span class="summary-kicker">アプリ</span>
       <h2>表示と通知</h2>
-      <p class="muted">プロジェクトの探し方と、画面更新・通知の動作を設定します。</p>
+      <p class="muted">画面更新と通知の動作を設定します。</p>
     </header>
-    <div class="field">
-      <label for="cfg-roots">プロジェクトを探すフォルダ（1行に1つ）</label>
-      <textarea id="cfg-roots" rows="4" placeholder="例: C:\src\payments&#10;/home/me/src/webapp"></textarea>
-      <p class="field-help">親フォルダを登録すると、その中のプロジェクトも自動で見つけます。</p>
-    </div>
+    <p class="field-help">プロジェクトの一覧は実行エンジンから自動で受け取ります（この画面での登録は不要です）。</p>
     <div class="row2">
-      <div class="field"><label class="check"><input type="checkbox" id="cfg-autodiscover" /> 稼働中のプロジェクトを自動で追加</label></div>
       <div class="field"><label for="cfg-refresh">表示の更新間隔（秒）</label><input id="cfg-refresh" type="number" min="0" step="1" /></div>
-    </div>
-    <div class="row2">
-      <div class="field"><label class="check"><input type="checkbox" id="cfg-notify" /> 対応が必要になったら通知する</label></div>
       <div class="field"><label for="cfg-needs-sla">長時間未対応として知らせるまで（時間）</label><input id="cfg-needs-sla" type="number" min="1" step="1" /></div>
     </div>
+    <div class="field"><label class="check"><input type="checkbox" id="cfg-notify" /> 対応が必要になったら通知する</label></div>
     <div class="field">
       <label for="cfg-role">この PC の役割</label>
       <select id="cfg-role">
         <option value="engineer">実行も行う（すべての機能）</option>
         <option value="viewer">閲覧・レビュー専用</option>
       </select>
-      <p class="field-help">閲覧専用では、状態を共有するフォルダを登録するだけで監視・コメント・承認ができます。実行用の環境設定は不要です。</p>
+      <p class="field-help">閲覧専用では、監視・コメント・承認だけを行います。実行用の環境設定は不要です。</p>
     </div>
     <div class="field">
       <label>セットアップ診断</label>
-      <p class="field-help">登録したフォルダが正しく同期できるか確認します。</p>
+      <p class="field-help">受け取ったプロジェクトのフォルダが正しく共有できるか確認します。</p>
       <div class="row"><button type="button" id="btn-setup-diagnostics">診断する</button></div>
       <div id="setup-diagnostics-result" class="muted" aria-live="polite"></div>
     </div>
@@ -790,17 +783,14 @@ function globalSettingsSyncHtml() {
       <h2>変更の共有と実行場所</h2>
       <p class="muted">複数の環境で状態を共有する場合の動作を設定します。</p>
     </header>
-    <h3>変更の共有</h3>
+    <h3>実行エンジンの場所</h3>
+    <p class="field-help">プロジェクトの一覧・稼働状況・共有の進み具合は、ここから受け取ります。変更の取り込みと送信は実行エンジンが自動で行うため、この画面から共有先へ書き込むことはありません。</p>
     <div class="row2">
-      <div class="field"><label for="cfg-git-pull">共有先を確認する間隔（秒・0で自動確認なし）</label><input id="cfg-git-pull" type="number" min="0" step="1" /></div>
-      <div class="field"><label class="check"><input type="checkbox" id="cfg-git-autopush" /> 操作した変更を自動で共有する</label></div>
+      <div class="field"><label for="cfg-engine-distro">Linux 環境（WSL）の名前</label><input id="cfg-engine-distro" class="mono" placeholder="空欄なら既定の環境" /></div>
+      <div class="field"><label for="cfg-engine-home">状況の保存先</label><input id="cfg-engine-home" class="mono" placeholder="空欄なら自動で探します" /></div>
     </div>
-    <div class="field"><label for="cfg-project-command">プロジェクト操作コマンド（本体の起動に使用）</label><input id="cfg-project-command" class="mono" placeholder="agent-project" /></div>
     <h3>実行データの共有先</h3>
-    <div class="row2">
-      <div class="field"><label for="cfg-flow-bus">共通の共有先</label><input id="cfg-flow-bus" class="mono" placeholder="空欄なら自動で探します" /></div>
-      <div class="field"><label for="cfg-flow-lockdir">実行状態の保存先</label><input id="cfg-flow-lockdir" class="mono" placeholder="空欄なら既定の場所を使用" /></div>
-    </div>
+    <div class="field"><label for="cfg-flow-bus">共通の共有先</label><input id="cfg-flow-bus" class="mono" placeholder="空欄なら自動で探します" /></div>
     <div class="field"><label for="cfg-flow-bus-by-project">プロジェクトごとの共有先（1行に1つ）</label>
       <textarea id="cfg-flow-bus-by-project" class="mono" rows="4" placeholder="alpha = /home/me/clones/alpha/agent-flow"></textarea></div>
     <div class="settings-save-actions"><button type="button" id="btn-save-sync-settings" class="primary-inline">保存</button></div>

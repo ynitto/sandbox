@@ -5,7 +5,10 @@
 
 module.exports = {
   discover: (invoke) => () => invoke('dashboard:discover'),
-  removeProject: (invoke) => (dir) => invoke('dashboard:removeProject', { dir }),
+  // 稼働状況（engine/status.json）。プロジェクト発見・同期の状況表示の唯一の根拠
+  engineStatus: (invoke) => () => invoke('engine:status'),
+  requestHeal: (invoke) => (dir) => invoke('engine:heal', { dir }),
+  setupDiagnostics: (invoke) => () => invoke('setup:diagnostics'),
   readProject: (invoke) => (dir) => invoke('dashboard:project', { dir }),
   deleteTask: (invoke) => (dir, id) => invoke('dashboard:deleteTask', { dir, id }),
 
@@ -36,7 +39,6 @@ module.exports = {
   requestReplan: (invoke) => (dir, reason, charter) => invoke('dashboard:replan', { dir, reason, charter }),
   requestLifecycle: (invoke) => (dir, action, reason) =>
     invoke('dashboard:lifecycle', { dir, action, reason }),
-  startProject: (invoke) => (dir) => invoke('dashboard:start', { dir }),
   // dir = プロジェクトルート（消す対象）、workspace = 登録フォルダ（バスの解決に使う）
   resetProject: (invoke) => (dir, workspace) => invoke('dashboard:reset', { dir, workspace }),
 

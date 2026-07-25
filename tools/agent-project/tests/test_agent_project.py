@@ -8937,6 +8937,42 @@ class TestDirectStateGit(unittest.TestCase):
         self.assertFalse(km.validate_distributed_claim(first, stale))
         self.assertEqual(km.claim_fence_state(first, stale), "lost")   # 取り直された＝真の不一致
 
+    def test_observe_sync_counts_ahead_without_fetching(self):
+        # dashboard の同期表示の材料（実装計画 W2-5）。**fetch はしない**——観測のために
+        # 毎 tick リモートを叩くと、W2-1 で dashboard から取り除いたリモート負荷を
+        # 常駐体側で復活させることになる。
+        cfg = self._cfg(node="pc-a")
+        mkb(self.root, "T1")
+        km.state_sync(cfg, force=True)             # 一度 push して origin/<branch> を作る
+        git = km.state_git_for(cfg)
+        self.assertEqual(git.observe_sync()["ahead"], 0)
+        (self.root / "backlog" / "T2.md").write_text("## T2: x\n- status: ready\n",
+                                                     encoding="utf-8")
+        km.state_sync(cfg, force=True)
+        obs = git.observe_sync()
+        self.assertEqual((obs["ahead"], obs["behind"]), (0, 0))   # push 済みなら揃う
+        self.assertIsNone(obs["last_error"])
+
+    def test_observe_sync_reports_error_when_push_wedged(self):
+        # 同期の失敗は best-effort で握り潰される（state_sync）。どこにも残らないと
+        # dashboard が緑のままになるので、直近の失敗を観測結果に残す。
+        cfg = self._cfg(node="pc-a")
+        mkb(self.root, "T1")
+        km.state_sync(cfg, force=True)
+        git = km.state_git_for(cfg)
+        subprocess.run(["git", "-C", str(self.root), "remote", "set-url", "origin",
+                        "file:///no-such-remote.git"], check=True)
+        (self.root / "backlog" / "T3.md").write_text("## T3: x\n- status: ready\n",
+                                                     encoding="utf-8")
+        km.state_sync(cfg, force=True)             # 失敗は journal 行になって握り潰される
+        self.assertTrue(git.observe_sync()["last_error"])
+
+    def test_observe_sync_is_empty_without_remote(self):
+        proot = Path(tempfile.mkdtemp(prefix="obs-local-")) / "proj"
+        proot.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(proot)], check=True)
+        self.assertEqual(km.DirectStateGit(proot, interval=0.0).observe_sync(), {})
+
     def test_unreachable_remote_is_unknown_not_lost(self):
         # リモートに触れないことを「fence 喪失」と同一視しない。同一視すると、一過性の通信断で
         # 完成した成果が settle 時に破棄される。
@@ -9496,6 +9532,30 @@ class TestPauseResumeStop(unittest.TestCase):
             self.assertFalse(km.is_paused(cfg))
             st = json.loads((d / "status.json").read_text(encoding="utf-8"))
             self.assertFalse(st["paused"])
+
+    def test_ingest_heal_forces_state_sync_and_leaves_receipt(self):
+        # commands/heal（設計 §5・実装計画 W2-5）: dashboard の 🩺 が投函する「今すぐ強制同期」。
+        # 未知の指示のまま .err へ落ちると、押すたびに人が消す残骸が積む。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            km.ensure_dirs(cfg)
+            cdir = km.commands_dir(cfg)
+            cdir.mkdir(parents=True, exist_ok=True)
+            (cdir / "viewer-heal-project.json").write_text(
+                '{"command": "heal", "reason": "画面から強制同期"}', encoding="utf-8")
+            forced = []
+            orig = km.state_sync
+            km.state_sync = lambda c, force=False: forced.append(force)
+            try:
+                done = km.ingest_commands(cfg)
+            finally:
+                km.state_sync = orig
+            self.assertEqual(done, ["heal:project"])
+            self.assertEqual(forced, [True])                       # force=True で押し出す
+            self.assertFalse((cdir / "viewer-heal-project.json").exists())
+            receipts = [p.name for p in km.commands_receipts_dir(cfg).glob("*.json")]
+            self.assertEqual(receipts, ["viewer-heal-project.json"])
 
     def test_ingest_stop_raises_graceful(self):
         with tempfile.TemporaryDirectory() as d:
@@ -12661,6 +12721,77 @@ class ResidentCliTests(unittest.TestCase):
         self.assertEqual(len(data["children"]), 1)
         self.assertEqual(data["children"][0]["name"], "fake")
         sup.stop_all()
+
+    def _project_repo(self, name: str, *, with_remote: bool = True) -> Path:
+        """host.yaml に載せる体裁のプロジェクトルート（git 済み・任意で origin 付き）。"""
+        root = self.tmp / name
+        (root / "backlog").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        subprocess.run(["git", "-C", str(root), "config", "user.email", "t@t"], check=True)
+        subprocess.run(["git", "-C", str(root), "config", "user.name", "t"], check=True)
+        (root / "seed.md").write_text("x", encoding="utf-8")
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(root), "commit", "-qm", "seed"], check=True)
+        if with_remote:
+            subprocess.run(["git", "-C", str(root), "remote", "add", "origin",
+                            "file:///no-such-remote.git"], check=True)
+        return root
+
+    def test_status_reports_sync_health_so_dashboard_is_not_falsely_green(self):
+        # dashboard の同期表示は sync_health だけが根拠（engine.summarize）。空のまま出すと
+        # リモートが落ちていても未 push が溜まっていても「共有先と揃っています」と緑になる
+        # ——W2-1 で dashboard 側の fetch を廃止した以上、ここが唯一の異常検知経路。
+        root = self._project_repo("p-remote")
+        host = km.HostConfig({"node_id": "pc-test",
+                              "projects": [{"name": "p1", "root": str(root)}]})
+        _sup, _sched, _st, write_status, _pool = km._build_resident(host, start_children=False)
+        write_status()
+        data = json.loads((self.agents_home / "engine" / "status.json").read_text(encoding="utf-8"))
+        entries = {s["name"]: s for s in data["sync_health"]}
+        self.assertIn("p1", entries)
+        # origin を一度も取り込めていない＝「揃っている」と誤って緑にしない
+        self.assertTrue(entries["p1"]["last_error"])
+
+    def test_sync_health_omits_projects_without_remote(self):
+        # remote 未設定はローカル完結の縮退で同期の概念が無い。載せると dashboard が
+        # 「共有の途中です」と言い出す（共有先が無いのに）。
+        root = self._project_repo("p-local", with_remote=False)
+        host = km.HostConfig({"node_id": "pc-test",
+                              "projects": [{"name": "p1", "root": str(root)}]})
+        _sup, _sched, _st, write_status, _pool = km._build_resident(host, start_children=False)
+        write_status()
+        data = json.loads((self.agents_home / "engine" / "status.json").read_text(encoding="utf-8"))
+        self.assertEqual(data["sync_health"], [])
+
+    def test_status_reports_running_runs_from_worker_pool(self):
+        # dashboard の実行中件数（renderer/sections/flow.js）はこれを数える。
+        host = km.HostConfig({"node_id": "pc-test"})
+        _sup, _sched, _st, write_status, pool = km._build_resident(host, start_children=False)
+        started = threading.Event()
+        release = threading.Event()
+        pool.submit(km.WorkItem(id="amigos/m1/architect",
+                                run=lambda: (started.set(), release.wait(5))))
+        self.assertTrue(started.wait(5), "ワーカーが起動しなかった")
+        try:
+            write_status()
+            data = json.loads(
+                (self.agents_home / "engine" / "status.json").read_text(encoding="utf-8"))
+            self.assertEqual(data["running_runs"], ["amigos/m1/architect"])
+        finally:
+            release.set()
+
+    def test_status_children_carry_declared_root_for_project_discovery(self):
+        # dashboard のプロジェクト発見は children[].root だけを辿る（実装計画 W2-4）。
+        # ここが欠けると「常駐体は動いているのにプロジェクトが 0 件」の画面になる。
+        proj = self.tmp / "proj-a"
+        proj.mkdir()
+        host = km.HostConfig({"node_id": "pc-test",
+                              "projects": [{"name": "alpha", "root": str(proj)}]})
+        _sup, _sched, _st, write_status, _pool = km._build_resident(host, start_children=False)
+        write_status()
+        data = json.loads((self.agents_home / "engine" / "status.json").read_text(encoding="utf-8"))
+        self.assertEqual([c["name"] for c in data["children"]], ["alpha"])
+        self.assertEqual(data["children"][0]["root"], str(proj))
 
     def test_cmd_status_reports_missing_when_never_served(self):
         rc = km.cmd_status(types.SimpleNamespace(json=False))

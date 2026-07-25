@@ -13,6 +13,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const project = require('../src/main/project');
+const { engineConfig } = require('./helpers/engine-status');
 
 let passed = 0;
 function test(name, fn) {
@@ -107,7 +108,7 @@ test('readProject はワークスペースを受け、状態はプロジェク�
 test('discover はワークスペースを 1 件として並べ、状態はプロジェクトルートから数える', () => {
   const { ws, state } = mkWorkspace();
   try {
-    const { projects } = project.discover({ projects: { roots: [ws], autoDiscover: false } });
+    const { projects } = project.discover(engineConfig([ws]));
     const p = projects.find((x) => x.dir === path.resolve(ws));
     assert.ok(p, '登録したワークスペースが 1 件として出る');
     assert.strictEqual(p.root, path.resolve(state), 'root は状態の置き場');

@@ -54,42 +54,22 @@ function recToIssue(rec) {
   };
 }
 
-// agent-flow daemon の稼働バッジ。
-//   via='lock'          … 同一ホストのロックファイル（pid 生存）で確定判定
-//   via='status-local'  … 同一マシン（ホスト一致 or Windows×WSL）の status.json
-//   via='status-sync'   … state_git（鏡）越しに同期された status.json による推定（同期遅延を許容）
-//   via='none'          … 判定材料なし
+// 実行エンジンの稼働バッジ（実装計画 W2-3）。根拠は engine/status.json の心拍ひとつだけ——
+// ロックファイルの覗き見・鍵の手写しは廃止した（本体の導出が変わった瞬間に、稼働中の
+// エンジンを「停止」と表示してしまうため）。
 function daemonBadge() {
-  const d = state.flowDaemon;
-  if (!d) return '';
-  // 判定根拠（ロックファイル・pid・同期経由の生存信号）は内部情報なのでログへ
-  uiLogOnChange('flowDaemon', d);
-  const synced = d.via === 'status-sync';
-  if (d.running === true) {
-    // 稼働中は「別マシンか」「orchestrator/worker が何基か」を1つの括弧にまとめて添える
-    // （数は status.json 由来のベストエフォート。取れないときは従来どおり別マシン表記のみ）。
-    const bits = [];
-    if (synced) bits.push('別マシン');
-    if (Number.isFinite(d.orchestrators)) bits.push(`orchestrator ${d.orchestrators}`);
-    if (Number.isFinite(d.workers)) bits.push(`worker ${d.workers}`);
-    const suffix = bits.length ? `（${bits.join('・')}）` : '';
-    const title = synced
-      ? `別マシンで稼働（最終確認 ${fmtAgoSec(d.ageSec)}）`
-      : d.via === 'status-local'
-        ? `このマシンで稼働（最終確認 ${fmtAgoSec(d.ageSec)}）`
-        : 'このマシンで稼働中';
-    return `<span class="status-chip st-running" title="${title}">実行エンジン: 稼働中${suffix}</span>`;
+  const e = state.engine;
+  if (!e) return '';
+  uiLogOnChange('engine', { exists: e.exists, running: e.running, ageSec: e.ageSec });
+  if (!e.exists) {
+    return '<span class="status-chip st-closed" title="起動コマンド: agent-project serve">実行エンジン: 停止</span>';
   }
-  if (d.running === false) {
-    if (synced) {
-      return `<span class="status-chip" title="最終確認 ${fmtAgoSec(d.ageSec)}・最近の稼働を確認できません">実行エンジン: 不明</span>`;
-    }
-    if (d.via === 'none') {
-      return `<span class="status-chip" title="このマシンでは稼働を確認できません">実行エンジン: 停止中か不明</span>`;
-    }
-    return `<span class="status-chip st-closed">実行エンジン: 停止</span>`;
+  if (e.running) {
+    const runs = (e.runningRuns || []).length;
+    const suffix = runs ? `（実行中 ${runs} 件）` : '';
+    return `<span class="status-chip st-running" title="最終確認 ${fmtAgoSec(e.ageSec)}">実行エンジン: 稼働中${suffix}</span>`;
   }
-  return `<span class="status-chip" title="稼働状態を読み取れませんでした">実行エンジン: 不明</span>`;
+  return `<span class="status-chip st-closed" title="最終確認 ${fmtAgoSec(e.ageSec)}・起動コマンド: agent-project serve">実行エンジン: 応答なし</span>`;
 }
 
 // run に対応するバックログ／アーカイブのタスク（{ task, scope } か null）。
@@ -169,7 +149,7 @@ function agentErrorAdvice(run, found) {
     return {
       kind: 'human',
       cls: 'act',
-      chip: '⏲ ノード予算上限',
+      chip: '⏲ この PC の予算上限',
       text:
         'AI サービス側の利用上限ではありません。このマシンに設定した実行時間またはトークン予算に達しました。' +
         '全体設定の「エージェント」にあるオーケストレーション予算を確認し、上限を変更するか期間更新後に再開してください。',
@@ -274,14 +254,14 @@ function runAdvice(run, group) {
       if (live.via === 'status-sync') {
         // 別マシンの本体は、長い作業（LLM 実行）中は status.json を更新できない＝
         // 「停止」と言い切れない。予約（↻）は本体が生きていれば拾われる。
-        return { kind: 'restart', cls: 'warn', chip: '📡 本体（別マシン）の応答が途絶えています',
+        return { kind: 'restart', cls: 'warn', chip: '📡 実行エンジン（別マシン）の応答が途絶えています',
           stopped: true,
           text: `${ago}長い作業の途中か、停止しています。↻ を押すと予約として受け付けられ、` +
-            `本体が動いていれば順番に${how}。動いていなければ本体のマシンで agent-project start を` +
-            '実行してください（「▶ 本体を起動」はこの PC で起動します）。' };
+            `実行エンジンが動いていれば順番に${how}。動いていなければ、その PC で ` +
+            'agent-project serve を起動してください。' };
       }
       return { kind: 'restart', cls: 'warn', chip: '自動実行は停止中', stopped: true,
-        text: `${ago}「自動実行を開始」を押すと、${how}。` };
+        text: `${ago}実行する PC で agent-project serve を起動すると、${how}。` };
     }
     if (task.status === 'rejected') {
       return { kind: 'none', cls: 'muted', chip: '✋ 却下済み',
@@ -602,10 +582,8 @@ function renderFlowDetail() {
     advice.kind === 'old' && advice.latestId
       ? `<button class="chip" data-goto-run="${esc(advice.latestId)}">最新の試行を開く</button>`
       : '',
-    // 「本体が停止中/一時停止中」は、その場で解決する操作を出す（概要タブへ探しに行かせない）
-    advice.kind === 'restart' && advice.stopped
-      ? '<button class="chip primary-inline" data-start-kiro>自動実行を開始</button>'
-      : '',
+    // 一時停止はその場で解除できる。停止（エンジンが動いていない）はこの画面からは
+    // 起こせないので、助言文（advice.text）が起動コマンドを案内する。
     advice.kind === 'restart' && advice.stopped === false
       ? '<button class="chip primary-inline" data-resume-kiro>再開</button>'
       : '',
