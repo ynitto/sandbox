@@ -90,24 +90,28 @@ def test_duplicate_tick_names_rejected():
 
 def test_join_timeout_is_a_total_budget_not_per_thread():
     # join(timeout=T) は「全スレッド合計で T 秒待つ」予算であるべき。各スレッドへ順に T を
-    # 渡すと、stop() 後も実行中の tick.fn() が終わるまで各スレッドが居座るケースで、
-    # 合計待ち時間がスレッド数倍に膨らんでしまう。
-    def slow_tick():
-        time.sleep(0.4)
+    # 渡すと、stop() を無視して tick.fn() 実行中のまま居座るスレッドが複数あるとき、合計の
+    # 待ち時間がスレッド数倍に膨らむ。各 tick を join の予算より十分長く居座らせ、per-thread
+    # 実装なら 3 スレッド×0.3s≈0.9s、締切共有なら≈0.3s になる差で両者を区別する。
+    release = threading.Event()
+
+    def clinging_tick():
+        release.wait(5.0)   # join の予算(0.3s)より十分長く実行中のまま居座る
 
     sched = Scheduler(
-        [Tick("slow1", period=0.01, fn=slow_tick),
-         Tick("slow2", period=0.01, fn=slow_tick),
-         Tick("slow3", period=0.01, fn=slow_tick)],
+        [Tick("cling1", period=0.01, fn=clinging_tick),
+         Tick("cling2", period=0.01, fn=clinging_tick),
+         Tick("cling3", period=0.01, fn=clinging_tick)],
         watchdog_timeout=10,
     )
     sched.start()
-    time.sleep(0.05)   # 各 tick が slow_tick 実行中になるのを待つ
+    time.sleep(0.1)   # 各 tick が clinging_tick 実行中になるのを待つ
     sched.stop()
     started = time.monotonic()
     sched.join(timeout=0.3)
     elapsed = time.monotonic() - started
-    # 3 スレッド × 0.3s を単純合計すれば 0.9s 近くになる。予算 0.3s に収まっていることを確認。
+    release.set()   # 居座らせたスレッドを解放（daemon だが後始末として明示的に畳む）
+    # per-thread なら 3 スレッド×0.3s≈0.9s。全体予算 0.3s に収まっていることを確認。
     assert elapsed < 0.6, f"join(timeout=0.3) が全体予算ではなく毎スレッドに適用された（{elapsed:.2f}s）"
 
 
