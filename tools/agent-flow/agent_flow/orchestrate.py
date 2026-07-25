@@ -6,7 +6,7 @@ from __future__ import annotations
 # --------------------------------------------------------------------------
 def _plan_strategy(args):
     review = getattr(args, "review", "auto")  # 'auto'/True/False の三値
-    gran = getattr(args, "granularity", "finest")
+    gran = getattr(args, "granularity", "auto") or "auto"
     if args.planner == "flow-planner":
         return plan_strategy_flow_planner(args.request, args.model, review, gran)
     if args.planner == "agent":

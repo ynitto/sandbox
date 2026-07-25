@@ -18,6 +18,7 @@ from agentcore import protocol, transport, vocab
 from .assign import _norm_repo_url
 from .commands import _do_post
 from .mission import active_roles, derive_phase, load_mission, load_roles
+from .ownerops import _latest_reject_feedback
 from .util import log, now_iso, read_json, write_json_atomic
 
 
@@ -161,6 +162,23 @@ def _post_to_command(post: dict) -> dict:
     return rec
 
 
+def _delegation_result_extras(mp: "MissionPaths", phase: str) -> dict:
+    """完了ミッションから板 result.json への追加ペイロードを組み立てる（実装計画 W1-9:
+    板 result.json に result_notes / discoveries / reject_guidance を追加してから submit を
+    消す——順序固定。設計 §4.4）。amigos には result_notes/discoveries に対応する概念が無い
+    （ロール協働の成果はミッション自体・納品棚が正）——reject_guidance だけ、直近の差し戻し
+    フィードバック（reject_mission が書く rejections/<round>.json の feedback）から載せる。
+
+    **done には載せない。** `rejections/` は round ごとの履歴なので、round 0 で差し戻し →
+    round 1 で accept というミッションでも最新 feedback が残る。契約上 reject_guidance は
+    「却下時のやり直し指示」（board.schema.json）なので、受入済みの成果に付けると
+    消費側（依頼元の自動回収）が「やり直しが要る」と読み違える。"""
+    if phase == "done":
+        return {}
+    guidance = _latest_reject_feedback(mp)
+    return {"reject_guidance": guidance} if guidance else {}
+
+
 def report_board_results(daemon, mirror: "BoardMirror") -> "list[str]":
     """自分がオーナーとして公示済みの委譲のうち、ミッションが終端に達したものを board の
     result.json へ書き戻す（依頼側 agent-project 等の自動回収先。board は「リポジトリ＋契約」
@@ -190,10 +208,10 @@ def report_board_results(daemon, mirror: "BoardMirror") -> "list[str]":
         phase = derive_phase(mission, roles, mp)
         if not vocab.is_terminal(phase):
             continue    # まだ working/integrating/reviewing 等
-        write_json_atomic(os.path.join(ddir, "result.json"), {
-            "winner": daemon.node_id, "native_id": did, "status": phase,
-            "resolved_by": daemon.node_id, "resolved_at": now_iso(),
-        })
+        payload = {"winner": daemon.node_id, "native_id": did, "status": phase,
+                  "resolved_by": daemon.node_id, "resolved_at": now_iso()}
+        payload.update(_delegation_result_extras(mp, phase))
+        write_json_atomic(os.path.join(ddir, "result.json"), payload)
         write_json_atomic(status_path, {**st, "state": phase, "heartbeat": now_iso()})
         reported.append(did)
         log(daemon.node_id, f"board 成果報告 {did}: {phase}")

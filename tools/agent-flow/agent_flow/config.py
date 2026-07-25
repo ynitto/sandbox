@@ -82,7 +82,7 @@ CONFIG_DEFAULTS = {
     # flow-planner と同じ検索順で自動発見し、見つからなければ組み込みプロンプトに
     # フォールバックする。none/builtin/空 で常に組み込みを使う（yaml 専用）。
     "worker_skill": "flow-worker",
-    "granularity": "finest",   # 分解の細かさ: coarse(現状)/fine(1段細)/finest(2段細・既定)
+    "granularity": "auto",     # 分解の細かさ: auto(complexity導出・既定)/coarse/fine/finest(明示)
     "exemplar_first": False,   # map-reduce で「1件先行→検証ゲート→残り展開」の見本先行分解にする
     "max_workers": 4,
     # daemon が同時に実行する run（orchestrator プロセス）の上限。バックログ一括投入

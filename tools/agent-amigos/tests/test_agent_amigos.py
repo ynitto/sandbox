@@ -30,7 +30,7 @@ from agent_amigos.bus import Bus  # noqa: E402
 from agent_amigos.daemon import NodeDaemon  # noqa: E402
 from agent_amigos import delivery  # noqa: E402
 from agent_amigos.delivery import deliveries_dir, delivery_json  # noqa: E402
-from agent_amigos.ownerops import accept_mission  # noqa: E402
+from agent_amigos.ownerops import accept_mission, reject_mission  # noqa: E402
 from agent_amigos.mission import (convergence_state, derive_phase, load_mission,  # noqa: E402
                                   load_roles, normalize_mission, post_mission)
 from agent_amigos.messages import read_inbox, unanswered_questions  # noqa: E402
@@ -292,6 +292,63 @@ class BoardParticipationTests(AmigosTestCase):
         self.assertEqual(reported, ["dg-2"])
         res = json.load(open(os.path.join(d, "result.json"), encoding="utf-8"))
         self.assertEqual(res["status"], "cancelled")
+
+    def test_report_results_includes_latest_reject_guidance(self):
+        # 実装計画 W1-9: submit の結果読み戻し（reject 時のガイダンス）と等価にするため、
+        # 板 result.json に直近の差し戻しフィードバックを reject_guidance として載せる。
+        # 未受入のまま終端（ここでは cancelled）＝やり直し指示が意味を持つケース。
+        from agent_amigos import board as B
+        boarddir = os.path.join(self.tmp, "board")
+        os.makedirs(os.path.join(boarddir, "delegations"), exist_ok=True)
+        d = self._board_post(boarddir, "dg-3", workspace={"url": "git@h:team/app.git"})
+        dm = self.daemon(node="pc-a", commands_home=self.tmp, board=boarddir,
+                         repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}})
+        B.poll_board(dm)
+        mirror = B.BoardMirror(boarddir, "pc-a")
+        mp = self.bus.mission("dg-3")
+        reject_mission(self.bus, mp, "テストを追加してください", "owner")
+        write_json_atomic(mp.cancelled(), {"cancelled_at": "2026-07-25T00:00:00Z",
+                                           "reason": "打ち切り"})
+        reported = B.report_board_results(dm, mirror)
+        self.assertEqual(reported, ["dg-3"])
+        res = json.load(open(os.path.join(d, "result.json"), encoding="utf-8"))
+        self.assertEqual(res["reject_guidance"], "テストを追加してください")
+
+    def test_report_results_omits_reject_guidance_when_accepted(self):
+        # rejections/ は round ごとの履歴なので、round 0 で差し戻し → round 1 で accept という
+        # ミッションでも最新 feedback が残る。契約上 reject_guidance は「却下時のやり直し指示」
+        # （board.schema.json）なので、受入済み（done）の成果に載せると消費側が
+        # 「やり直しが要る」と読み違える。
+        from agent_amigos import board as B
+        boarddir = os.path.join(self.tmp, "board")
+        os.makedirs(os.path.join(boarddir, "delegations"), exist_ok=True)
+        d = self._board_post(boarddir, "dg-5", workspace={"url": "git@h:team/app.git"})
+        dm = self.daemon(node="pc-a", commands_home=self.tmp, board=boarddir,
+                         repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}})
+        B.poll_board(dm)
+        mirror = B.BoardMirror(boarddir, "pc-a")
+        mp = self.bus.mission("dg-5")
+        reject_mission(self.bus, mp, "テストを追加してください", "owner")
+        write_json_atomic(mp.final(), {"accepted": True})
+        self.assertEqual(B.report_board_results(dm, mirror), ["dg-5"])
+        res = json.load(open(os.path.join(d, "result.json"), encoding="utf-8"))
+        self.assertEqual(res["status"], "done")
+        self.assertNotIn("reject_guidance", res)
+
+    def test_report_results_omits_reject_guidance_when_never_rejected(self):
+        from agent_amigos import board as B
+        boarddir = os.path.join(self.tmp, "board")
+        os.makedirs(os.path.join(boarddir, "delegations"), exist_ok=True)
+        d = self._board_post(boarddir, "dg-4", workspace={"url": "git@h:team/app.git"})
+        dm = self.daemon(node="pc-a", commands_home=self.tmp, board=boarddir,
+                         repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}})
+        B.poll_board(dm)
+        mirror = B.BoardMirror(boarddir, "pc-a")
+        mp = self.bus.mission("dg-4")
+        write_json_atomic(mp.final(), {"accepted": True})
+        B.report_board_results(dm, mirror)
+        res = json.load(open(os.path.join(d, "result.json"), encoding="utf-8"))
+        self.assertNotIn("reject_guidance", res)
 
     def test_ineligible_repo_and_wrong_workload(self):
         from agent_amigos import board as B

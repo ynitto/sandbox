@@ -552,6 +552,64 @@ class BoardParticipationTests(unittest.TestCase):
         # 冪等: 二重報告しない
         self.assertEqual(kf.report_board_results(self.bus, board, "pc-a"), [])
 
+    def test_report_results_includes_notes_discoveries_and_reject_guidance(self):
+        # 実装計画 W1-9: submit の結果読み戻し（reject 時のガイダンス・発見事項）と等価にする
+        # ため、板 result.json に result_notes / discoveries / reject_guidance を載せる。
+        self._post("dg-3", workspace={"url": "git@h:team/app.git"})
+        args = self._args()
+        kf.poll_board(self.bus, args, "pc-a")
+        board = kf._board_bus(self.board, "pc-a", args)
+        run = self.bus.run_view("dg-3")
+        run.write_graph({"nodes": {"sink": {"kind": "synthesize", "deps": []}}})
+        run.write_result("sink", "pc-a", "done", "output text", data={
+            "decision": "rejected", "guidance": "テストを追加してください",
+            "notes": [{"note_id": "n1", "body": "レビューコメント"}],
+            "constraints": [{"text": "DB マイグレーションは要レビュー"}, "第二の発見"],
+        })
+        run.set_status("done")
+        reported = kf.report_board_results(self.bus, board, "pc-a")
+        self.assertEqual(reported, ["dg-3"])
+        res = json.load(open(os.path.join(self.board, "delegations", "dg-3", "result.json")))
+        self.assertEqual(res["reject_guidance"], "テストを追加してください")
+        self.assertEqual(res["result_notes"], [{"note_id": "n1", "body": "レビューコメント"}])
+        self.assertEqual(res["discoveries"],
+                         ["DB マイグレーションは要レビュー", "第二の発見"])
+
+    def test_reject_guidance_falls_back_to_output_marker(self):
+        # gitlab executor は「イシュー削除」「人コメント無しの差し戻し」で
+        # decision=rejected かつ guidance="" を書き、やり直し指示は output の
+        # [gitlab-reject] 以降にしか無い。構造化だけを見ると submit 経路
+        # （read_reject_guidance の第 2 パス）と非等価になる。
+        self._post("dg-5", workspace={"url": "git@h:team/app.git"})
+        args = self._args()
+        kf.poll_board(self.bus, args, "pc-a")
+        board = kf._board_bus(self.board, "pc-a", args)
+        run = self.bus.run_view("dg-5")
+        run.write_graph({"nodes": {"sink": {"kind": "synthesize", "deps": []}}})
+        # ノード status は実運用どおり failed（却下は park の決着として failed になる）。
+        run.write_result("sink", "pc-a", "failed",
+                         "[gitlab-reject] 却下されました（イシューが削除された＝取り下げ）。"
+                         "人コメントは読めないため自動で原因を判断してやり直してください。",
+                         data={"decision": "rejected", "guidance": ""})
+        run.set_status("failed")
+        self.assertEqual(kf.report_board_results(self.bus, board, "pc-a"), ["dg-5"])
+        res = json.load(open(os.path.join(self.board, "delegations", "dg-5", "result.json")))
+        self.assertTrue(res["reject_guidance"].startswith("却下されました"))
+        self.assertNotIn("[gitlab-reject]", res["reject_guidance"])
+
+    def test_report_results_omits_extras_when_nothing_to_report(self):
+        # 何も無ければ result_notes/discoveries/reject_guidance を空で埋めない（省略）。
+        self._post("dg-4", workspace={"url": "git@h:team/app.git"})
+        args = self._args()
+        kf.poll_board(self.bus, args, "pc-a")
+        board = kf._board_bus(self.board, "pc-a", args)
+        self.bus.run_view("dg-4").set_status("done")
+        kf.report_board_results(self.bus, board, "pc-a")
+        res = json.load(open(os.path.join(self.board, "delegations", "dg-4", "result.json")))
+        self.assertNotIn("reject_guidance", res)
+        self.assertNotIn("result_notes", res)
+        self.assertNotIn("discoveries", res)
+
     def test_report_results_reflects_cancelled_status(self):
         # 語彙統一（W0-9）後は flow の終端語彙も板と同じ cancelled（英式）——翻訳不要で素通り。
         self._post("dg-2", workspace={"url": "git@h:team/app.git"})
@@ -3404,16 +3462,19 @@ class PatternStrategyTests(unittest.TestCase):
 
 class GranularityTests(unittest.TestCase):
     def test_factor_levels(self):
+        self.assertEqual(kf.granularity_factor("auto"), 1)
         self.assertEqual(kf.granularity_factor("coarse"), 1)
         self.assertEqual(kf.granularity_factor("fine"), 2)
         self.assertEqual(kf.granularity_factor("finest"), 3)
-        self.assertEqual(kf.granularity_factor(None), 3)        # 既定は最も細かい
-        self.assertEqual(kf.granularity_factor("unknown"), 3)
+        self.assertEqual(kf.granularity_factor(None), 1)         # 既定は auto（倍率1）
+        self.assertEqual(kf.granularity_factor("unknown"), 1)
 
-    def test_directive_empty_for_coarse(self):
-        self.assertEqual(kf.granularity_directive("coarse"), "")
-        self.assertIn("細か", kf.granularity_directive("fine"))
-        self.assertIn("細か", kf.granularity_directive("finest"))
+    def test_directive_auto_empty_others_scope(self):
+        self.assertEqual(kf.granularity_directive("auto"), "")
+        self.assertEqual(kf.granularity_directive(None), "")
+        self.assertIn("scope", kf.granularity_directive("coarse"))
+        self.assertIn("30", kf.granularity_directive("fine"))
+        self.assertIn("30", kf.granularity_directive("finest"))
 
     def test_stub_scales_node_count_by_granularity(self):
         # 同じ要求でも粒度が細かいほど並列ノードが増える（明示並列が無い場合）。
@@ -3435,6 +3496,15 @@ class GranularityTests(unittest.TestCase):
         gens = lambda ts: len([t for t in ts if t["kind"] == "generate"])
         self.assertGreater(gens(ftasks), gens(ctasks))           # 細かいほどノードが多い
 
+    def test_auto_matches_coarse_scale(self):
+        import random
+        req = "最良案を選ぶ tournament"
+        random.seed(0)
+        auto, _ = kf.plan_strategy_stub(req, granularity="auto")
+        random.seed(0)
+        coarse, _ = kf.plan_strategy_stub(req, granularity="coarse")
+        self.assertEqual(auto["parallelism"], coarse["parallelism"])
+
     def test_explicit_parallelism_not_scaled(self):
         # 要求に "x3" 等の明示があれば粒度倍率は効かせない（ユーザ指定を尊重）
         strat, _ = kf.plan_strategy_stub("案を出して選ぶ tournament x3", granularity="finest")
@@ -3442,6 +3512,9 @@ class GranularityTests(unittest.TestCase):
 
     def test_scale_parallelism_caps_at_16(self):
         self.assertEqual(kf.scale_parallelism(6, "finest"), 16)   # 6*3=18 → 16 にクランプ
+
+    def test_default_config_granularity_is_auto(self):
+        self.assertEqual(kf.CONFIG_DEFAULTS.get("granularity"), "auto")
 
 
 class DaemonPrimitiveTests(unittest.TestCase):
@@ -3942,6 +4015,36 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(out["status"], "done")
         self.assertEqual([n["id"] for n in out["final_nodes"]], ["synth"])
         self.assertTrue(out["final_nodes"][0]["output"])
+
+
+class FinalResultNodesTests(unittest.TestCase):
+    """`_final_result_nodes` の選択規則。
+
+    以前は done のノードだけを集めていたため、全ノードが失敗した run で空リストを返していた。
+    委譲 executor の却下は park の決着として failed ノードになるので、却下 run では
+    `result --json` の final_nodes が常に空になり、そこから読む reject_guidance /
+    result_notes / discoveries が submit 経路でも板経路でも一切拾えなかった。"""
+
+    def _nodes(self):
+        return {"t1": {"kind": "work", "deps": []},
+                "synth": {"kind": "synthesize", "deps": ["t1"]}}
+
+    def test_successful_run_is_unchanged(self):
+        results = {"t1": {"status": "done"}, "synth": {"status": "done"}}
+        self.assertEqual(kf._final_result_nodes(self._nodes(), results), ["synth"])
+
+    def test_all_failed_run_returns_failed_sink(self):
+        results = {"t1": {"status": "failed"}, "synth": {"status": "failed"}}
+        self.assertEqual(kf._final_result_nodes(self._nodes(), results), ["synth"])
+
+    def test_done_is_preferred_over_failed(self):
+        # 一部成功した run では従来どおり done 側が最終成果（見え方を変えない）。
+        results = {"t1": {"status": "done"}, "synth": {"status": "failed"}}
+        self.assertEqual(kf._final_result_nodes(self._nodes(), results), ["t1"])
+
+    def test_unfinished_run_returns_empty(self):
+        results = {"t1": {"status": "running"}, "synth": {}}
+        self.assertEqual(kf._final_result_nodes(self._nodes(), results), [])
 
 
 class DaemonE2ETests(unittest.TestCase):

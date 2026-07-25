@@ -44,17 +44,29 @@ _AGG_KINDS = ("synthesize", "reduce", "judge", "filter")
 def _final_result_nodes(nodes: dict, results: dict) -> list:
     """ワークフローの最終成果に当たるノード id を返す。
 
-    sink（他ノードの deps に現れない末端）かつ done のものを集め、集約 kind
-    （synthesize/reduce/judge/filter）があればそれを優先する。末端が無い／done で
-    ないときは done ノード全体へフォールバックする（最終結果を必ず何か返すため）。"""
+    sink（他ノードの deps に現れない末端）かつ**終端（done/failed）**のものを集め、集約 kind
+    （synthesize/reduce/judge/filter）があればそれを優先する。末端が無いときは終端ノード全体へ
+    フォールバックする（最終結果を必ず何か返すため）。
+
+    **failed を含めるのが要点**。以前は done だけを集めていたため、全ノードが失敗した run で
+    空リストを返し「最終結果を必ず何か返す」という自分の意図を裏切っていた。実害は却下連携:
+    委譲 executor の却下は park の決着として **failed** ノードになる（`_finish_wait` 参照）ので、
+    却下 run では常に空になり、`result --json` の final_nodes 経由で読む
+    やり直し指示（reject_guidance）・人コメント（result_notes）・発見事項（discoveries）が
+    submit 経路でも板経路でも一切拾えなかった。
+
+    done が 1 つでもあれば従来どおり done の sink が選ばれる（成功 run の見え方は不変）。
+    変わるのは「done が無い run が空ではなく failed の sink を返す」点だけ。"""
     if not nodes:
         return []
-    done = [nid for nid in nodes if (results.get(nid) or {}).get("status") == "done"]
-    if not done:
+    terminal = [nid for nid in nodes if (results.get(nid) or {}).get("status") in TERMINAL]
+    done = [nid for nid in terminal if (results.get(nid) or {}).get("status") == "done"]
+    pool_all = done or terminal        # 成功があればそれを優先（従来の見え方を保つ）
+    if not pool_all:
         return []
     depended = {d for n in nodes.values() for d in n.get("deps", [])}
-    sinks = [nid for nid in done if nid not in depended]
-    pool = sinks or done
+    sinks = [nid for nid in pool_all if nid not in depended]
+    pool = sinks or pool_all
     agg = [nid for nid in pool if nodes[nid].get("kind") in _AGG_KINDS]
     return agg or pool
 

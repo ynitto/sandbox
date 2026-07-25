@@ -110,11 +110,12 @@
   **gitlab イシュー本文の『## 参照リポジトリ』節**に描画する（要求本文へ畳むと分解後のノード/イシューに届かないため）。
   未注釈のノードは worker 側で全 repo にフォールバックする（取りこぼし防止）。これにより fan-out で多数のノードに
   分解されても、各ノードは自分に必要な repo だけを clone する（URL 単位の重複排除と併せて無駄 clone を最小化）。
-- **分解の粒度（`granularity` / `--granularity`）**：タスク分解の細かさを設定ファイルで調整できる。`coarse`（現状）/
-  `fine`（1段細かい）/ `finest`（2段細かい・**既定**）の3段。細かいほどプランナーへ「原子的に分解せよ」と指示し、
-  並列ノード数を 1/2/3 倍にスケールする（上限 16・全 planner 共通／flow-planner にも `--granularity` で伝搬）。
-  要求に `x3`・`並列3` の明示があればそれを尊重し倍率を効かせない。agent-project から呼ぶ場合も `agent-flow.yaml` の
-  `granularity` がそのまま効く。
+- **分解の粒度（`granularity` / `--granularity`）**：`auto`（**既定**・complexity から導出）/
+  `coarse` / `fine` / `finest`（明示優先）。flow-planner は絶対レンジ（simple→1–3 / moderate→3–8 /
+  complex→6–12）とスコープ契約（`[scope]` / `[out_of_scope]`、想定≤30行）で分解し、決定的ゲートで再生成する。
+  stub/agent planner では明示時のみ並列ノード倍率（×1/×2/×3、上限16）が効く。要求に `x3`・`並列3` の明示が
+  あればそれを尊重。agent-project から呼ぶ場合も `agent-flow.yaml` の `granularity` がそのまま効く
+  （外側 backlog の INVEST 粒度とは別レイヤ）。
 - **見本先行分解（`exemplar_first` / `--exemplar-first`）**：map-reduce の fan-out を「1件先行 → 自動検証ゲート →
   残り展開」にする（既定 off）。split 完了直後は **先頭1件(pilot map)とその verify ゲートだけ**を出し、ゲート通過後に
   残りの map（pilot に依存＝見本を範に取る）と reduce を展開する。同様手順の繰り返しを 1 件で固めてから一気に流せる。

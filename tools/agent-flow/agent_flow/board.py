@@ -74,6 +74,69 @@ def _board_request(post: dict) -> str:
     return f"## 設計\n\n{design}\n\n---\n\n{goal}" if design else goal
 
 
+_REJECT_MARK = "[gitlab-reject]"    # gitlab executor が却下テキストに付ける印（agent-project と同じ語彙）
+
+
+def _delegation_result_extras(bus_run: "Bus") -> dict:
+    """完了 run の最終ノードから板 result.json への追加ペイロードを組み立てる（実装計画 W1-9:
+    板 result.json に result_notes / discoveries / reject_guidance を追加してから submit を
+    消す——順序固定。設計 §4.4）。agent-project 側の submit 結果読み戻し
+    （read_reject_guidance / read_result_notes / read_brief_discoveries、flow.py 参照）と
+    同じ抽出規則を、`agent-flow result --json` を介さず bus から直接読む（落札ノード自身が
+    既に bus を開いているため、自プロセスへの CLI 往復は要らない）。"""
+    graph = bus_run.read_graph() or {}
+    nodes = graph.get("nodes", {})
+    results = {nid: (bus_run.read_result(nid) or {}) for nid in nodes}
+    sink_ids = _final_result_nodes(nodes, results)
+    reject_guidance = ""
+    notes: "list[dict]" = []
+    seen_notes: set = set()
+    discoveries: "list[str]" = []
+    seen_disc: "set[str]" = set()
+    for nid in sink_ids:
+        d = (results.get(nid) or {}).get("data")
+        if not isinstance(d, dict):
+            continue
+        if not reject_guidance and d.get("decision") == "rejected":
+            g = str(d.get("guidance") or "").strip()
+            if g:
+                reject_guidance = g[:1500]
+        for note in (d.get("notes") or []) if isinstance(d.get("notes"), list) else []:
+            if not isinstance(note, dict):
+                continue
+            key = note.get("note_id")
+            key = key if key is not None else str(note.get("body", ""))[:80]
+            if key in seen_notes:
+                continue
+            seen_notes.add(key)
+            notes.append(note)
+        for c in (d.get("constraints") or []) if isinstance(d.get("constraints"), list) else []:
+            s = (str(c.get("text") or c.get("constraint") or c.get("rule") or "").strip()
+                if isinstance(c, dict) else str(c or "").strip())
+            if s and s not in seen_disc:
+                seen_disc.add(s)
+                discoveries.append(s)
+    if not reject_guidance:
+        # 後方互換の第 2 パス（submit 経路の read_reject_guidance と同じ順序）。gitlab executor は
+        # 「イシュー削除」「人コメント無しの差し戻し」で decision=rejected かつ guidance="" を書き、
+        # やり直し指示は output の [gitlab-reject] 以降にしか無い。構造化だけを見ると、この 2 経路で
+        # 板 result.json に reject_guidance が載らず submit 経路と非等価になる。
+        for nid in sink_ids:
+            out = str((results.get(nid) or {}).get("output", ""))
+            i = out.find(_REJECT_MARK)
+            if i >= 0:
+                reject_guidance = out[i + len(_REJECT_MARK):].strip()[:1500]
+                break
+    extras: dict = {}
+    if reject_guidance:
+        extras["reject_guidance"] = reject_guidance
+    if notes:
+        extras["result_notes"] = notes
+    if discoveries:
+        extras["discoveries"] = discoveries
+    return extras
+
+
 def report_board_results(bus_local: "Bus", board: "Bus", node_id: str) -> "list[str]":
     """自分が落札・引き渡し済みの委譲のうち、ローカル run が終端に達したものを board の
     result.json へ書き戻す（依頼側 agent-project 等の自動回収先。board は「リポジトリ＋契約」
@@ -98,10 +161,10 @@ def report_board_results(bus_local: "Bus", board: "Bus", node_id: str) -> "list[
         board_status = run_status if vocab.is_terminal(run_status) else None
         if board_status is None:
             continue    # まだ実行中（pending/planning/running 等）
-        write_json_atomic(os.path.join(ddir, "result.json"), {
-            "winner": node_id, "native_id": did, "status": board_status,
-            "resolved_by": node_id, "resolved_at": now_iso(),
-        })
+        payload = {"winner": node_id, "native_id": did, "status": board_status,
+                  "resolved_by": node_id, "resolved_at": now_iso()}
+        payload.update(_delegation_result_extras(bus_local.run_view(did)))
+        write_json_atomic(os.path.join(ddir, "result.json"), payload)
         write_json_atomic(status_path, {**st, "state": board_status, "heartbeat": now_iso()})
         reported.append(did)
         log(node_id, f"board 成果報告 {did}: {board_status}")

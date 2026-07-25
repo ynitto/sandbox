@@ -285,7 +285,7 @@ def _spawn_orchestrator(base: list, args, req_id: str, req: dict):
     inh = req.get("inherit_from")             # リトライ: 先行 run の引き継ぎ元を orchestrate へ
     deleg = req.get("delegation")             # 委譲公示板（agent-board）由来の来歴を meta へ引き回す
     return subprocess.Popen(base + ws_args + [
-        "--granularity", str(getattr(args, "granularity", "finest") or "finest"),
+        "--granularity", str(getattr(args, "granularity", "auto") or "auto"),
         *(["--exemplar-first"] if getattr(args, "exemplar_first", False) else []),
         "--run-id", req_id, "orchestrate", "--request", req["request"],
         # --inherit-from は orchestrate サブコマンドの引数（グローバルではない）。
@@ -371,7 +371,7 @@ def cmd_run(args) -> int:
         base += ["--workspace", args.workspace]   # 唯一の書込先を orchestrator/worker へ伝搬
     for r in (getattr(args, "references", None) or []):
         base += ["--reference", r]                # 参照リポジトリを orchestrator/worker へ伝搬
-    base += ["--granularity", str(getattr(args, "granularity", "finest") or "finest")]  # 分解粒度
+    base += ["--granularity", str(getattr(args, "granularity", "auto") or "auto")]  # 分解粒度
     if getattr(args, "exemplar_first", False):
         base += ["--exemplar-first"]   # 見本先行分解を orchestrator へ伝搬
     mode = _mode_string(args, bus_root)

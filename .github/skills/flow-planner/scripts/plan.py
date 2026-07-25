@@ -6,9 +6,9 @@ agent-flow の --planner flow-planner で呼び出される。
 
 Usage:
     python3 plan.py "<要求>" [--model <model>] [--review auto|true|false]
-                    [--granularity coarse|fine|finest]
+                    [--granularity auto|coarse|fine|finest]
     → JSON を stdout に出力: {"strategy": {...}, "tasks": [...]}
-    granularity は分解の細かさ（coarse=現状/fine=1段細/finest=2段細）。agent-flow は finest を渡す。
+    granularity: auto=complexity から導出（既定）/ coarse|fine|finest=明示指定が優先。
 """
 from __future__ import annotations
 
@@ -159,6 +159,19 @@ BUILD_PROMPT = """\
 テンプレート: {composite_template}
 検証gate: {review}
 
+## 粒度（厳守）
+
+目標粒度: {granularity_target}
+成果ノード（kind が work/generate/map）の数: {work_lo}–{work_hi} 個（上限16）
+各成果ノードのスコープ上限:
+- 1 モジュール相当（または明示された単一結合点）
+- 想定変更は約 30 行以内
+- goal 先頭に必ず次の2行を付ける:
+  [scope] 触ってよいパスまたは記号
+  [out_of_scope] このノードでやらないこと
+verify/synthesize/reduce/filter/judge/classify/split は上記の個数・スコープ上限の対象外。
+map-reduce は split を1つだけ（map は実行時展開）。classify-and-act は classify のみでよい。
+
 ## グラフ設計ルール
 
 1. 各ノードには kind を付ける: work/generate/classify/synthesize/verify/filter/judge/reduce/split/map
@@ -169,7 +182,7 @@ BUILD_PROMPT = """\
 6. 依存は既存タスク id のみ、循環は作らない
 7. id は短く（t1, t2, ... / classify, filter, synth, gate 等）
 
-## サブタスク（Phase 1 で特定済み）
+## サブタスク（Phase 1 で特定済み・骨格）
 
 {subtasks}
 
@@ -178,7 +191,7 @@ BUILD_PROMPT = """\
 JSON 配列のみ:
 ```json
 [
-  {{"id": "t1", "goal": "具体的な目標", "deps": [], "kind": "work"}},
+  {{"id": "t1", "goal": "[scope] path\\n[out_of_scope] ...\\n具体的な目標", "deps": [], "kind": "work"}},
   ...
 ]
 ```
@@ -407,65 +420,130 @@ def phase2_select(request: str, analysis: dict, catalog: dict,
     return strategy
 
 
-GRANULARITY_FACTORS = {"coarse": 1, "fine": 2, "finest": 3}
+# --------------------------------------------------------------------------
+# 粒度（複雑度連動 + スコープ契約）
+# --------------------------------------------------------------------------
+WORK_KINDS = frozenset({"work", "generate", "map"})
+COMPLEXITY_TO_GRANULARITY = {
+    "simple": "coarse",
+    "moderate": "fine",
+    "complex": "finest",
+}
+WORK_NODE_RANGES = {
+    "coarse": (1, 3),
+    "fine": (3, 8),
+    "finest": (6, 12),
+}
+_SCOPE_MARKER_RE = re.compile(r"\[scope\]", re.I)
+_SCOPE_PATH_RE = re.compile(
+    r"`[^`]+`"
+    r"|\b[\w./+-]+\.(?:py|ts|tsx|js|jsx|go|rs|java|kt|rb|md|yaml|yml|json|toml)\b"
+    r"|/(?:[\w.-]+/)*[\w.-]+",
+)
+_NORM_RE = re.compile(r"\s+")
 
 
-def granularity_directive(level: str) -> str:
-    """分解の細かさ指示。coarse は空（現状どおり）。fine/finest で原子的な細分化を促す。"""
-    f = GRANULARITY_FACTORS.get((level or "coarse").lower(), 1)
-    if f <= 1:
-        return ""
-    unit = "1ファイル/1関数/1観点" if f >= 3 else "意味のある最小単位"
-    return (f"分解の粒度: 通常より細かく、各タスクを{unit}まで原子的に分解すること。"
-            f"目安は通常の約{f}倍の数の小さなタスク（ただし無意味な細分化・重複は避け、"
-            "各タスクは独立に検証可能に保つこと）。")
+def resolve_granularity(level: str | None, complexity: str | None) -> str:
+    """明示 coarse/fine/finest を優先。auto/未指定は complexity から導出。"""
+    lv = (level or "auto").lower()
+    if lv in WORK_NODE_RANGES:
+        return lv
+    return COMPLEXITY_TO_GRANULARITY.get((complexity or "moderate").lower(), "fine")
+
+
+def work_node_range(target: str) -> tuple[int, int]:
+    lo, hi = WORK_NODE_RANGES.get(target, WORK_NODE_RANGES["fine"])
+    return lo, min(hi, 16)
+
+
+def has_scope(goal: str) -> bool:
+    """goal に scope 相当の記述があるか（マーカー or パス/記号ヒューリスティック）。"""
+    text = goal or ""
+    if _SCOPE_MARKER_RE.search(text):
+        return True
+    return bool(_SCOPE_PATH_RE.search(text))
+
+
+def _normalize_goal(goal: str) -> str:
+    g = (goal or "").lower()
+    g = _SCOPE_MARKER_RE.sub("", g)
+    g = re.sub(r"\[out_of_scope\]", "", g, flags=re.I)
+    return _NORM_RE.sub(" ", g).strip()
+
+
+def gate_tasks(tasks: list[dict], target: str) -> list[str]:
+    """決定的ゲート。不合格理由のリスト（空なら合格）。
+
+    work 系が無いグラフ（split のみ / classify のみ等の実行時展開）は個数・scope を検査しない。
+    """
+    work = [t for t in tasks if isinstance(t, dict) and t.get("kind") in WORK_KINDS]
+    if not work:
+        return []
+    issues: list[str] = []
+    lo, hi = work_node_range(target)
+    n = len(work)
+    if n < lo or n > hi:
+        issues.append(f"work系ノード数 {n} がレンジ [{lo},{hi}] 外（粒度 {target}）")
+    for t in work:
+        if not has_scope(str(t.get("goal", ""))):
+            issues.append(f"{t.get('id')}: scope 欠落（[scope] またはパス/モジュール名が必要）")
+    norms = [_normalize_goal(str(t.get("goal", ""))) for t in work]
+    for i in range(len(norms)):
+        if not norms[i]:
+            continue
+        for j in range(i + 1, len(norms)):
+            if norms[i] == norms[j]:
+                issues.append(
+                    f"重複 goal: {work[i].get('id')} と {work[j].get('id')}")
+    return issues
 
 
 def phase3_build(request: str, analysis: dict, strategy: dict,
-                 model: str | None, granularity: str = "coarse") -> list[dict]:
-    """Phase 3: グラフ生成。"""
+                 model: str | None, granularity_target: str) -> list[dict]:
+    """Phase 3: グラフ生成。ゲート不合格なら指示を強めて最大1回再生成。"""
     subtasks = "\n".join(
         f"- {s}" for s in analysis.get("subtasks", [])
     )
-    prompt = BUILD_PROMPT.format(
-        patterns=strategy.get("patterns", []),
-        parallelism=strategy.get("parallelism", 3),
-        reason=strategy.get("reason", ""),
-        composite_template=strategy.get("composite_template"),
-        review=strategy.get("review", False),
-        subtasks=subtasks or "(Phase 1 で特定されず)",
-        request=request,
-    )
-    note = granularity_directive(granularity)
-    if note:
-        prompt = note + "\n\n" + prompt
-    raw = run_agent(prompt, model)
-    tasks = extract_json(raw)
-    if not isinstance(tasks, list):
-        if isinstance(tasks, dict) and "tasks" in tasks:
-            tasks = tasks["tasks"]
-        else:
-            raise ValueError("Phase 3: tasks is not a list")
+    lo, hi = work_node_range(granularity_target)
+
+    def _build(extra: str = "") -> list[dict]:
+        prompt = BUILD_PROMPT.format(
+            patterns=strategy.get("patterns", []),
+            parallelism=strategy.get("parallelism", 3),
+            reason=strategy.get("reason", ""),
+            composite_template=strategy.get("composite_template"),
+            review=strategy.get("review", False),
+            granularity_target=granularity_target,
+            work_lo=lo,
+            work_hi=hi,
+            subtasks=subtasks or "(Phase 1 で特定されず)",
+            request=request,
+        )
+        if extra:
+            prompt = extra + "\n\n" + prompt
+        raw = run_agent(prompt, model)
+        tasks = extract_json(raw)
+        if not isinstance(tasks, list):
+            if isinstance(tasks, dict) and "tasks" in tasks:
+                tasks = tasks["tasks"]
+            else:
+                raise ValueError("Phase 3: tasks is not a list")
+        return tasks
+
+    tasks = _build()
+    issues = gate_tasks(tasks, granularity_target)
+    if issues:
+        retry_note = (
+            "直前のグラフは粒度ゲート不合格。次を必ず守って作り直すこと:\n- "
+            + "\n- ".join(issues)
+        )
+        tasks = _build(retry_note)
+        # 再生成後も不合格ならそのまま返す（呼び出し側で使える最小成果を落とさない）
     return tasks
 
 
-def plan(request: str, model: str | None = None, review="auto",
-         granularity: str = "coarse") -> tuple[dict, list[dict]]:
-    """3段パイプラインを実行し (strategy, tasks) を返す。"""
-    catalog = load_catalog()
-    if catalog is None:
-        raise FileNotFoundError("patterns-catalog.yaml not found")
-
-    # Phase 1
-    analysis = phase1_analyze(request, model)
-
-    # Phase 2
-    strategy = phase2_select(request, analysis, catalog, model, review)
-
-    # Phase 3（granularity で分解の細かさを指示）
-    tasks = phase3_build(request, analysis, strategy, model, granularity)
-
-    # 正規化（agent-flow 互換）
+def normalize_tasks(tasks: list) -> list[dict]:
+    """agent-flow 互換に正規化。"""
     valid_kinds = {"work", "generate", "classify", "synthesize", "verify",
                    "filter", "judge", "reduce", "split", "map"}
     seen_ids = set()
@@ -486,16 +564,32 @@ def plan(request: str, model: str | None = None, review="auto",
             "deps": [str(d) for d in (t.get("deps") or [])],
             "kind": kind,
         })
-
     if not normalized:
         raise ValueError("No valid tasks generated")
+    return normalized
 
-    # strategy を agent-flow 互換形式に整形
+
+def plan(request: str, model: str | None = None, review="auto",
+         granularity: str = "auto") -> tuple[dict, list[dict]]:
+    """3段パイプラインを実行し (strategy, tasks) を返す。"""
+    catalog = load_catalog()
+    if catalog is None:
+        raise FileNotFoundError("patterns-catalog.yaml not found")
+
+    analysis = phase1_analyze(request, model)
+    target = resolve_granularity(granularity, analysis.get("complexity"))
+    analysis["granularity_target"] = target
+
+    strategy = phase2_select(request, analysis, catalog, model, review)
+    tasks = phase3_build(request, analysis, strategy, model, target)
+    normalized = normalize_tasks(tasks)
+
     final_strategy = {
         "patterns": strategy.get("patterns", ["fan-out-and-synthesize"]),
         "parallelism": int(strategy.get("parallelism", 3)),
         "review": bool(strategy.get("review", False)),
         "reason": str(strategy.get("reason", "")),
+        "granularity": target,
     }
 
     return final_strategy, normalized
@@ -515,9 +609,9 @@ def main():
     parser.add_argument("--model", default=None, help="エージェント CLI に渡すモデル")
     parser.add_argument("--review", default="auto",
                         help="検証gate: auto/true/false")
-    parser.add_argument("--granularity", default="coarse",
-                        choices=["coarse", "fine", "finest"],
-                        help="分解の細かさ: coarse(現状)/fine(1段細)/finest(2段細)")
+    parser.add_argument("--granularity", default="auto",
+                        choices=["auto", "coarse", "fine", "finest"],
+                        help="分解の細かさ: auto(complexity導出・既定)/coarse/fine/finest(明示優先)")
     args = parser.parse_args()
 
     global AGENT_CLI

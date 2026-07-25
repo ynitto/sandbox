@@ -53,9 +53,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="LLM 実行に使うエージェント CLI（設定 agent_cli と同義）。kiro=kiro-cli chat（既定）/ "
                         "claude=Claude Code ヘッドレス（claude -p）/ copilot=GitHub Copilot CLI（copilot -p）/ "
                         "codex=OpenAI Codex CLI（codex exec）")
-    p.add_argument("--granularity", default=None, choices=["coarse", "fine", "finest"],
-                   help="タスク分解の細かさ（設定 granularity と同義）。coarse=現状 / fine=1段細かい / "
-                        "finest=2段細かい（既定）。細かいほど小さなタスクに多く分解する")
+    p.add_argument("--granularity", default=None, choices=["auto", "coarse", "fine", "finest"],
+                   help="タスク分解の細かさ（設定 granularity と同義）。auto=complexityから導出（既定）/ "
+                        "coarse|fine|finest=明示優先。細かいほど小さなタスクに多く分解する")
     p.add_argument("--exemplar-first", dest="exemplar_first", action="store_const", const=True,
                    default=None,
                    help="map-reduce の fan-out を見本先行にする（設定 exemplar_first と同義）。"

@@ -53,7 +53,8 @@ agent-flow run "<要求>" --planner flow-planner
 
 ```bash
 # 全段パイプライン（agent-flow が内部で呼ぶ）
-python3 .github/skills/flow-planner/scripts/plan.py "<要求>" [--model <model>] [--review auto|true|false]
+python3 .github/skills/flow-planner/scripts/plan.py "<要求>" \
+  [--model <model>] [--review auto|true|false] [--granularity auto|coarse|fine|finest]
 ```
 
 ## 3段階パイプライン
@@ -72,6 +73,7 @@ python3 .github/skills/flow-planner/scripts/plan.py "<要求>" [--model <model>]
   "data_flow": "static|dynamic|unknown",
   "quality_focus": "speed|accuracy|coverage|exploration",
   "complexity": "simple|moderate|complex",
+  "granularity_target": "fine",
   "constraints": ["制約1"],
   "domain_hints": ["ヒント1"]
 }
@@ -80,6 +82,7 @@ python3 .github/skills/flow-planner/scripts/plan.py "<要求>" [--model <model>]
 - `data_flow`: 入力データが事前確定（static）か実行時に判明（dynamic）か
 - `quality_focus`: 速度重視か精度重視か網羅性重視か探索重視か
 - `decomposition_axes`: WBS的に分割する観点（機能別、フェーズ別、データ別等）
+- `granularity_target`: complexity（または明示 `--granularity`）から決定的に導出
 
 ### Phase 2: 戦略選定（Strategy Selection）
 
@@ -181,6 +184,32 @@ Decision Matrix（`data_flow` / `quality_focus` / `complexity` のスコアリ�
 （fan-out-and-synthesize / map-reduce）を含む場合は、統合前に検証 gate
 （adversarial-verification）を挟むかどうかを `review` で判断する。
 
+## タスク粒度（内側 DAG）
+
+自律開発では二層で粒度を分ける（設計: `docs/plans/2026-07-25-flow-planner-granularity-design.md`）:
+
+| 層 | ツール | 粒度 | 本スキル |
+|----|--------|------|----------|
+| 外側 | agent-project backlog | INVEST + verify | 改修しない |
+| 内側 | agent-flow / flow-planner | スコープ上限 | **本スキルが制御** |
+
+### 操作定義（成果ノード: work / generate / map）
+
+- 1 モジュール相当（または明示された単一結合点）
+- 想定変更 ≤ 約 30 行
+- goal 先頭に `[scope]` と `[out_of_scope]` を付ける
+
+### complexity → 目標粒度（`granularity: auto` 時）
+
+| complexity | target | work 系ノード数 |
+|------------|--------|-----------------|
+| simple | coarse | 1–3 |
+| moderate | fine | 3–8 |
+| complex | finest | 6–12（上限16） |
+
+`--granularity coarse|fine|finest` の明示指定が優先。Phase 3 後に決定的ゲート（個数・scope・重複）で
+不合格なら最大1回再生成する。verify コマンドの有無は検査しない。
+
 ## decomposition スキルとの統合
 
 本スキルは `decomposition` スキルの以下の能力を Phase 1 に統合している:
@@ -191,7 +220,7 @@ Decision Matrix（`data_flow` / `quality_focus` / `complexity` のスコアリ�
 
 違い:
 - `decomposition`: 人間が実行する ToDo リストを生成（20-60分粒度）
-- `flow-planner`: agent-flow worker が実行するタスクグラフを生成（LLM実行粒度）
+- `flow-planner`: agent-flow worker が実行するタスクグラフを生成（上記スコープ上限）
 
 ## 設定
 
@@ -199,12 +228,14 @@ agent-flow の設定ファイル（`agent-flow.yaml`）で planner を指定:
 
 ```yaml
 planner: flow-planner   # flow-planner | agent | stub
+granularity: auto       # auto | coarse | fine | finest
 ```
 
-または CLI で `--planner flow-planner`。
+または CLI で `--planner flow-planner` / `--granularity auto`。
 
 ## 注意事項
 
 - エージェント CLI（既定 kiro-cli）が必要（LLM呼び出しに使用）
-- 3段パイプラインのため、現行 `agent` planner より LLM 呼び出し回数が多い（2-3回）
+- 3段パイプラインのため、現行 `agent` planner より LLM 呼び出し回数が多い（2-3回、ゲート再生成で+1）
 - フォールバック: いずれかの段で失敗した場合は現行 `plan_strategy_agent` に倒す
+- 非目標: 内側 verify 必須化、分解批評 Phase 3.5、失敗時自動細分化（将来フック）
