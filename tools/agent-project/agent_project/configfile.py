@@ -144,7 +144,7 @@ CONFIG_DEFAULTS = {
     "max_spawn": 20,            # 1 run の派生タスク生成上限（0 で無効）
     "regression_cmd": None,     # done 確定前のグローバル回帰検査コマンド（巻き込み事故の検知）
     "regression_revert": False,
-    "intake_cmd": None,         # 外部ゲート/検出器から修復タスクを汲み上げるコマンド（例: codd-gate tasks --debt）
+    "intake_cmd": None,         # JSON を返す外部の決定的検出器から修復タスクを汲み上げるコマンド
     "hooks": {},                # 任意フックのプロバイダ指定（能力キー -> module 名）。既定は sibling 自動検出
     "intake_interval": 600.0,   # intake の実行間隔（秒）。0 以下で毎パス/毎 poll
     "auto_level_max": "assisted",   # 自動昇格の ceiling（unattended への自動到達は明示時のみ）
@@ -654,8 +654,8 @@ def _add_common(sp):
     sp.add_argument("--regression-revert", action=argparse.BooleanOptionalAction, default=None,
                     help="回帰検知時に作業ツリーの未コミット変更を巻き戻す（best-effort・既定 off）")
     sp.add_argument("--intake-cmd", default=None,
-                    help="外部の決定的ゲート/検出器から修復タスクを汲み上げるコマンド（stdout の "
-                         "enqueue --json 形式を冪等取り込み。例: codd-gate tasks --debt。"
+                    help="外部の決定的検出器から修復タスクを汲み上げるコマンド（stdout の "
+                         "enqueue --json 形式を冪等取り込み。"
                          "単発・有界なコマンドであること＝常駐はこちらが持つ）")
     sp.add_argument("--intake-interval", type=float, default=None,
                     help="intake の実行間隔（秒。既定 600。0 以下で毎パス/毎 poll）")
