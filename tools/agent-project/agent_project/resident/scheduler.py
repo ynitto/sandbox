@@ -131,5 +131,10 @@ class Scheduler:
         self._stop.set()
 
     def join(self, timeout: "float | None" = None) -> None:
+        """全スレッドの終了を待つ。`timeout` は呼び出し全体の予算（各スレッドへの
+        個別の値ではない）— 単純に毎スレッドへ同じ timeout を渡すと合計の待ち時間が
+        スレッド数倍に膨らむため、締切を共有して残り時間を配分する。"""
+        deadline = None if timeout is None else time.monotonic() + timeout
         for th in self._threads:
-            th.join(timeout)
+            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            th.join(remaining)
