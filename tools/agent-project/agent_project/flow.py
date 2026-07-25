@@ -106,6 +106,35 @@ def build_agent_flow_cmd(task: Task, cfg: "Config", use_git: bool = False,
     return cmd
 
 
+def cmd_gc(cfg: "Config", json_out: bool = False) -> int:
+    """agent-flow バスの一時ファイル・古い run アーカイブを掃除する（実装計画 W1-11 残・
+    設計 §4.2 node 層 gc tick の実体）。掃除の実装は持たない（R1）——既存 agent-flow の
+    `run_cleanup`/`cmd_gc` を `agent-flow cleanup`/`agent-flow gc` として単発起動するだけ。
+
+    `_cleanup_bus`（loop.py）は git_bus/state_git 構成のバスをあえて素通りする
+    （「agent-flow 側の state_git がバスの寿命を管理する＝gc に委ねる」と明記済み）ため、
+    その委譲先はここ。ロック/tmp/孤立クローン/共有キャッシュの掃除は git_bus の有無に
+    関わらず常に必要（旧 flow daemon の cleanup_interval が担っていたが、常駐一本化で
+    flow daemon 自体が無くなるため呼び手が居なくなっていた）。"""
+    use_git = bool(cfg.git_bus)
+    base = _kf_base(cfg, use_git)
+    totals: dict = {}
+    proc = subprocess.run(base + ["cleanup", "--json"], capture_output=True, text=True)
+    try:
+        totals.update({f"cleanup.{k}": v for k, v in json.loads(proc.stdout or "{}").items()})
+    except ValueError:
+        pass   # 掃除の失敗は gc tick 全体を止めない（呼び出し元 resident.gc.run_gc が隔離）
+    if use_git or cfg.state_git:   # _cleanup_bus が素通りする構成だけ archive gc も担う
+        proc2 = subprocess.run(base + ["gc", "--older-than", "7", "--keep",
+                                       str(cfg.bus_keep_runs)], capture_output=True, text=True)
+        totals["gc.deleted"] = proc2.stdout.count("削除: ")
+    if json_out:
+        print(json.dumps(totals, ensure_ascii=False))
+    else:
+        print(f"[agent-project] gc: {totals}")
+    return 0
+
+
 def daemon_lock_path(cfg: "Config", use_git: bool) -> Path:
     """agent-flow daemon の singleton ロックパス（agent-flow と同一規則）。
 

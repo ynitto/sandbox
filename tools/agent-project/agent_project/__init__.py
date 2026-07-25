@@ -61,6 +61,7 @@ _FRAGMENTS = (
     "board",       # 委譲公示板（agent-board）へのタスク委譲
     "configfile",  # 設定ファイル解決 / build_config / _add_common
     "update",      # 自動アップデート
+    "resident_cli",# 常駐体 CLI: serve / status / worker init / worker（実装計画 W1-11）
     "cli",         # main / サブコマンドのディスパッチ
 )
 

@@ -14,6 +14,8 @@
 #   - 未回答質問の owner エスカレーション
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -715,6 +717,68 @@ class DriveTests(AmigosTestCase):
         d.cycle = lambda: calls.pop(0)
         d.run(cycles=0, until_terminal=True, install_signals=False, mission_id="m1")
         self.assertEqual(calls, [])   # m2 は先に終端していたが、m1 が終端するまで待った
+
+
+class ParticipateTests(AmigosTestCase):
+    """参加のみ tick `participate_only` / `agent-amigos participate`（実装計画 W1-11 残・
+    設計 §4.2「amigos 参加（claim・心拍・away）」）: 応募・オーナー職務は行うが手番は
+    実行しない（ノード常駐体の短周期 tick 用。実行は別プロセスの `run --once` へ委ねる）。"""
+
+    def test_participate_only_claims_without_running_turns(self):
+        self.post()
+        d = self.daemon()
+        turns_called = []
+        d._run_turns = lambda mid, roster: turns_called.append(mid)
+        owned = d.participate_only()
+        self.assertTrue(owned)               # first-come 単独ノード＝全ロール自己充足
+        self.assertEqual(turns_called, [])   # 手番は実行しない
+        roster = read_json(self.bus.mission("am-test").roster()) or {}
+        for mid, rid in owned:
+            self.assertEqual(roster.get(rid, {}).get("node"), d.node_id)
+
+    def test_cycle_dispatch_turns_override(self):
+        # dispatch_turns を渡すと既定の _run_turns の代わりに呼ばれる（participate_only の実体）。
+        self.post()
+        d = self.daemon()
+        seen = []
+        d.cycle(dispatch_turns=lambda mid, roster: seen.append(mid))
+        self.assertEqual(seen, ["am-test"])
+
+    def test_cycle_without_dispatch_turns_still_runs_turns(self):
+        # 後方互換: dispatch_turns 省略時は従来どおり _run_turns がインライン実行される。
+        self.post()
+        d = self.daemon()
+        turns_called = []
+        d._run_turns = lambda mid, roster: turns_called.append(mid)
+        d.cycle()
+        self.assertEqual(turns_called, ["am-test"])
+
+    def test_cli_participate_claims_roles_without_progressing_mission(self):
+        self.post(mid="am-participate")
+        rc = cli.main(["participate", "--bus", self.bus.root, "--node-id", "owner-node",
+                       "--agent-cli", "stub", "--json"])
+        self.assertEqual(rc, 0)
+        roster = read_json(self.bus.mission("am-participate").roster()) or {}
+        self.assertTrue(roster)              # 応募が roster に反映されている
+        self.assertTrue(all(ent.get("node") == "owner-node" for ent in roster.values()))
+        # 手番は実行していない: どのロールの status も未着手のまま
+        for rid in roster:
+            st = read_json(self.bus.mission("am-participate").status(rid)) or {}
+            self.assertNotEqual(st.get("state"), "acted")
+
+    def test_cli_participate_json_stdout_has_no_log_noise(self):
+        # 呼び出し側（resident の amigos tick）は stdout を json.loads する。log()（claim 等の
+        # 逐次ログ）が stdout に混ざると必ずパース失敗するため、stdout は結果 JSON のみで
+        # ログは stderr へ回っていることを固定する（実際に混入していた回帰）。
+        self.post(mid="am-stdout")
+        buf_out, buf_err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
+            rc = cli.main(["participate", "--bus", self.bus.root, "--node-id", "owner-node",
+                           "--agent-cli", "stub", "--json"])
+        self.assertEqual(rc, 0)
+        owned = json.loads(buf_out.getvalue())   # 例外を投げないこと自体が検証
+        self.assertTrue(owned)
+        self.assertIn("ロール", buf_err.getvalue())   # ログは捨てず stderr に残る
 
 
 class DeliveryTests(AmigosTestCase):

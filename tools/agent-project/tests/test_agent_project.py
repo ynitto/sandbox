@@ -46,6 +46,14 @@ os.environ["KIRO_SKILL_REGISTRY"] = os.path.join(
 # cwd に依存しない。
 os.chdir(tempfile.mkdtemp(prefix="kp-tests-cwd-"))
 
+# 開発者の実 agent-control（`~/.agents/control/control.json`）がテストへ漏れるのを防ぐ。
+# control は agent_cli / model を**全レイヤより優先して**上書きする（`_control_override`）ため、
+# 実ファイルを読むと「既定は kiro のはず」といったテストが開発者の設定次第で落ちる
+# （実際に `flow.agent_cli: codex` を設定した環境で AgentCli 系が一斉に落ちていた）。
+# 個別に上書きするテストは各自 addCleanup で戻す（ここは既定の隔離先）。
+os.environ.setdefault("AGENT_CONTROL_DIR",
+                      os.path.join(tempfile.gettempdir(), "kp-tests-no-such-control"))
+
 _PKG = Path(__file__).resolve().parent.parent / "agent_project"
 _spec = importlib.util.spec_from_file_location(
     "agent_project", _PKG / "__init__.py", submodule_search_locations=[str(_PKG)])
@@ -1293,6 +1301,18 @@ class TestDoctor(unittest.TestCase):
             titles = {f["title"] for f in findings}
             self.assertIn("旧 node_id 名義の amigos ロール状態が残存", titles)
 
+    def test_residency_findings_skip_declared_windows_task(self):
+        # doctor が検査できるのは systemd 側だけ。Windows タスクスケジューラ案を正しく
+        # 構成した PC に「常駐化が未構成」を出し続けると恒久的な誤警告になる。
+        for declared in ("windows-task", "windows", "none", "manual"):
+            self.assertEqual(km.doctor_residency_findings(declared), [], declared)
+
+    def test_residency_findings_noop_without_systemd(self):
+        # systemd 非対象環境（この開発機の macOS 含む）では所見を出さない。
+        if os.path.isdir("/run/systemd/system") and shutil.which("systemctl"):
+            self.skipTest("systemd 環境では別経路を通る")
+        self.assertEqual(km.doctor_residency_findings("auto"), [])
+
     def test_node_id_cutover_noop_without_board_or_amigos(self):
         self.assertEqual(km.doctor_node_id_cutover_findings(None, "pc-old", "pc-new"), [])
 
@@ -1333,6 +1353,36 @@ class TestDoctor(unittest.TestCase):
                 json.dump({"node": "pc-new", "heartbeat": old.isoformat(),
                            "fresh_after_sec": 120}, f)
             self.assertEqual(km.doctor_node_id_cutover_findings(board, "pc-old", "pc-new"), [])
+
+    def test_residency_findings_noop_without_systemd(self):
+        # systemd 非対象環境（この開発機の macOS 含む）では所見を出さない——ノイズ優先。
+        with mock.patch.object(km.os.path, "isdir", return_value=False):
+            self.assertEqual(km.doctor_residency_findings(), [])
+
+    def test_residency_findings_flags_missing_unit(self):
+        with mock.patch.object(km.os.path, "isdir", side_effect=lambda p: p == "/run/systemd/system"), \
+             mock.patch.object(km.shutil, "which", return_value="/usr/bin/systemctl"), \
+             mock.patch.object(km.os.path, "isfile", return_value=False):
+            findings = km.doctor_residency_findings()
+        self.assertEqual([f["title"] for f in findings], ["常駐化が未構成"])
+        self.assertEqual(findings[0]["severity"], "warn")
+
+    def test_residency_findings_flags_disabled_unit(self):
+        fake_proc = types.SimpleNamespace(stdout="disabled\n")
+        with mock.patch.object(km.os.path, "isdir", side_effect=lambda p: p == "/run/systemd/system"), \
+             mock.patch.object(km.shutil, "which", return_value="/usr/bin/systemctl"), \
+             mock.patch.object(km.os.path, "isfile", return_value=True), \
+             mock.patch.object(km.subprocess, "run", return_value=fake_proc):
+            findings = km.doctor_residency_findings()
+        self.assertEqual([f["title"] for f in findings], ["常駐 unit が未有効化"])
+
+    def test_residency_findings_clean_when_enabled(self):
+        fake_proc = types.SimpleNamespace(stdout="enabled\n")
+        with mock.patch.object(km.os.path, "isdir", side_effect=lambda p: p == "/run/systemd/system"), \
+             mock.patch.object(km.shutil, "which", return_value="/usr/bin/systemctl"), \
+             mock.patch.object(km.os.path, "isfile", return_value=True), \
+             mock.patch.object(km.subprocess, "run", return_value=fake_proc):
+            self.assertEqual(km.doctor_residency_findings(), [])
 
     def test_env_findings_detect_missing_kiro_cli(self):
         with tempfile.TemporaryDirectory() as d:
@@ -8819,6 +8869,26 @@ class TestDirectStateGit(unittest.TestCase):
         lease = json.loads((other / "coordination" / "controller.json").read_text(encoding="utf-8"))
         self.assertEqual((lease["node"], lease["generation"]), ("pc-b", 2))
 
+    def test_controller_lease_tolerates_clock_skew_before_reclaiming(self):
+        # 設計 §6「時計ずれ」行: lease は clock_skew_tolerance_sec の許容幅で吸収する。
+        # pc-a の時計が pc-b よりわずかに遅れている想定 —— pc-b から見て名目上の
+        # lease_until を過ぎていても、許容幅（tolerance）以内ならまだ横取りしない
+        # （↑ test_controller_lease_moves_after_expiry は許容幅を過ぎた後の横取りは
+        # 確認済みだが、許容幅の内側で横取りしないこと自体は未検証だった）。
+        first = self._cfg(node="pc-a", controller_lease_sec=60.0,
+                          clock_skew_tolerance_sec=5.0)
+        other = self._other("pc-b")
+        second = cfg_for(other, node="pc-b", controller_lease_sec=60.0,
+                         clock_skew_tolerance_sec=5.0)
+        at = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
+        self.assertTrue(km.renew_controller_lease(first, at=at))
+        # lease_sec(60) は過ぎたが tolerance(5) の内側（+63s）→ pc-b はまだ横取りしない。
+        # False 自体が横取りしなかったことの検証（second 側は書き込みを行わないため
+        # other のローカルには何も同期されない——読むなら書いた側 self.root を読む）。
+        self.assertFalse(km.renew_controller_lease(second, at=at + timedelta(seconds=63)))
+        lease = json.loads((self.root / "coordination" / "controller.json").read_text(encoding="utf-8"))
+        self.assertEqual(lease["node"], "pc-a")   # pc-a が持ったまま
+
     def test_worker_does_not_consume_global_inbox(self):
         controller = self._cfg(node="pc-a")
         self.assertTrue(km.renew_controller_lease(controller))
@@ -12452,10 +12522,13 @@ class NodeBudgetV2AndControlTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="kp-nbv2-")
         self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        _prev_control = os.environ["AGENT_CONTROL_DIR"]
         os.environ["AGENT_BUDGET_DIR"] = self.dir
         os.environ["AGENT_CONTROL_DIR"] = self.dir
         self.addCleanup(os.environ.pop, "AGENT_BUDGET_DIR", None)
-        self.addCleanup(os.environ.pop, "AGENT_CONTROL_DIR", None)
+        # pop すると**モジュール既定の隔離先ごと消え**、以降のテストが開発者の実
+        # `~/.agents/control` を読む（テスト順で agent_cli 系が落ちる原因だった）。
+        self.addCleanup(os.environ.__setitem__, "AGENT_CONTROL_DIR", _prev_control)
         km._CONTROL_CACHE["mtime"] = None
 
     def _budget(self, cfg):
@@ -12503,6 +12576,337 @@ class TestNodeAutoConfig(unittest.TestCase):
     def test_auto_node_name_falls_back_when_empty_after_sanitize(self):
         with mock.patch.object(km.socket, 'gethostname', return_value='!!!'):
             self.assertEqual(km._auto_node_name(), 'node')
+
+
+class ResidentCliTests(unittest.TestCase):
+    """常駐体 CLI: serve / status / worker init / worker（実装計画 W1-11）。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="resident-cli-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.agents_home = self.tmp / "agents-home"
+        os.environ["AGENT_PROJECT_AGENTS_HOME"] = str(self.agents_home)
+        self.addCleanup(os.environ.pop, "AGENT_PROJECT_AGENTS_HOME", None)
+
+    def test_load_host_config_defaults_to_hostname_worker_profile(self):
+        host = km.load_host_config(str(self.tmp / "no-such-file.yaml"))
+        self.assertTrue(host.is_worker)
+        self.assertIsNone(host.path)
+        self.assertTrue(host.node_id)  # 正規化済みホスト名
+
+    def test_load_host_config_reads_declared_projects(self):
+        proj_root = self.tmp / "proj-a"
+        proj_root.mkdir()
+        host_path = self.tmp / "agent-project.host.json"
+        host_path.write_text(json.dumps({
+            "schema_version": 1, "node_id": "PC-A", "projects": [{"root": str(proj_root)}],
+            "tags": ["gpu"], "budget": {"max_concurrent": 2},
+        }), encoding="utf-8")
+        host = km.load_host_config(str(host_path))
+        self.assertEqual(host.node_id, "pc-a")   # normalize_node_id で正規化
+        self.assertFalse(host.is_worker)
+        self.assertEqual(len(host.projects), 1)
+        self.assertEqual(host.tags, ["gpu"])
+        self.assertEqual(host.max_concurrent, 2)
+
+    def test_project_children_skips_entries_without_root(self):
+        host = km.HostConfig({"projects": [{"name": "no-root"}, {"root": str(self.tmp)}]})
+        specs = km._project_children(host)
+        self.assertEqual(len(specs), 1)
+        self.assertIn("run", specs[0].argv)
+        self.assertIn("--watch", specs[0].argv)
+        self.assertIn(str(self.tmp), specs[0].argv)
+
+    def test_project_children_drops_duplicate_names(self):
+        # 重複名を specs に残すと Supervisor.add が同名キーを差し替えて 1 本目の Popen
+        # ハンドルを失い、続く start が 2 本目を起こす。1 本目は監視されず
+        # graceful_shutdown でも止まらない孤児になる。
+        other = self.tmp / "other"
+        other.mkdir(exist_ok=True)
+        host = km.HostConfig({"projects": [
+            {"name": "dup", "root": str(self.tmp)},
+            {"name": "dup", "root": str(other)},
+        ]})
+        specs = km._project_children(host)
+        self.assertEqual([s.name for s in specs], ["dup"])
+        self.assertIn(str(self.tmp), specs[0].argv)   # 先勝ち（後続を無視）
+
+    def test_gc_tick_declares_timeout_so_watchdog_does_not_abort(self):
+        # gc はプロジェクトごとに外部コマンドを逐次起動するので正当に長くなる。
+        # Tick.timeout を宣言しないと self-watchdog（既定 300s）の猶予を超え、
+        # 健全な常駐体を abort する。猶予に織り込まれていることを固定する。
+        host = km.HostConfig({"node_id": "pc-test", "projects": [
+            {"name": f"p{i}", "root": str(self.tmp / f"p{i}")} for i in range(3)]})
+        for i in range(3):
+            (self.tmp / f"p{i}").mkdir(exist_ok=True)
+        _sup, sched, _st, _ws, _pool = km._build_resident(host, start_children=False)
+        gc_tick = next(t for t in sched._ticks if t.name == "gc")
+        self.assertEqual(gc_tick.timeout, km._GC_PROJECT_TIMEOUT_SEC * 3)
+        # 猶予 = period + timeout + watchdog_timeout。3 プロジェクトが全て
+        # タイムアウトしても（360s）猶予内に収まる。
+        self.assertGreater(sched._grace["gc"], gc_tick.period + km._GC_PROJECT_TIMEOUT_SEC * 3 - 1)
+
+    def test_build_resident_starts_children_and_writes_status(self):
+        # 実プロジェクト起動の代わりに、確実にすぐ終了する軽いコマンドを子として登録する
+        # （Supervisor 自体は実プロセスを見る——テストは argv を差し替えるだけ）。
+        host = km.HostConfig({"node_id": "pc-test"})
+        sup, sched, status, write_status, pool = km._build_resident(host, start_children=False)
+        sup.add(km.ChildSpec("fake", [sys.executable, "-c", "import time; time.sleep(0.05)"]))
+        sup.start("fake")
+        write_status()
+        path = self.agents_home / "engine" / "status.json"
+        self.assertTrue(path.is_file())
+        data = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(data["node"], "pc-test")
+        self.assertEqual(len(data["children"]), 1)
+        self.assertEqual(data["children"][0]["name"], "fake")
+        sup.stop_all()
+
+    def test_cmd_status_reports_missing_when_never_served(self):
+        rc = km.cmd_status(types.SimpleNamespace(json=False))
+        self.assertEqual(rc, 1)
+
+    def test_cmd_status_json_reflects_written_status(self):
+        host = km.HostConfig({"node_id": "pc-test"})
+        sup, sched, status, write_status, pool = km._build_resident(host)
+        write_status()
+        sup.stop_all()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = km.cmd_status(types.SimpleNamespace(json=True))
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(buf.getvalue())["node"], "pc-test")
+
+    def test_cmd_worker_init_writes_host_yaml(self):
+        out = self.tmp / "worker-host.yaml"
+        args = types.SimpleNamespace(node_id="worker-1", tags="gpu,docker", agent_cli="claude",
+                                     board=str(self.tmp / "board"), max_concurrent=3,
+                                     out=str(out), force=False)
+        rc = km.cmd_worker_init(args)
+        self.assertEqual(rc, 0)
+        self.assertTrue(out.is_file())
+        host = km.load_host_config(str(out))
+        self.assertEqual(host.node_id, "worker-1")
+        self.assertTrue(host.is_worker)
+        self.assertEqual(host.tags, ["gpu", "docker"])
+        self.assertEqual(host.max_concurrent, 3)
+
+    def test_cmd_worker_init_refuses_overwrite_without_force(self):
+        out = self.tmp / "worker-host.yaml"
+        out.write_text("existing", encoding="utf-8")
+        args = types.SimpleNamespace(node_id=None, tags=None, agent_cli=None, board=None,
+                                     max_concurrent=0, out=str(out), force=False)
+        rc = km.cmd_worker_init(args)
+        self.assertEqual(rc, 1)
+        self.assertEqual(out.read_text(encoding="utf-8"), "existing")
+
+    def test_serve_exits_cleanly_on_sigterm(self):
+        # systemd の stop/restart は SIGTERM。既定ハンドラは即死（終了コード -15）なので
+        # finally の graceful_shutdown が走らず、`run --watch` の子が監督者不在で生き残る
+        # （次の起動で Supervisor が新しい子を起こし、同一プロジェクトにループが 2 本並ぶ）。
+        # ハンドラが効いていれば finally を通って 0 で終わる——この差が決定的。
+        root = Path(__file__).resolve().parents[2]
+        code = ("import sys, types;"
+                f"sys.path.insert(0, {str(root / 'agent-project')!r});"
+                f"sys.path.insert(0, {str(root / 'agentcore')!r});"
+                "import agent_project as km;"
+                "sys.exit(km.cmd_serve(types.SimpleNamespace(host_config=None)))")
+        serve = subprocess.Popen(
+            [sys.executable, "-c", code],
+            cwd=str(self.tmp),   # host.yaml を置いていない＝projects 空（ワーカー profile）
+            env={**os.environ, "AGENT_PROJECT_AGENTS_HOME": str(self.tmp / "agents")},
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            status_path = self.tmp / "agents" / "engine" / "status.json"
+            deadline = time.time() + 30
+            while time.time() < deadline and not status_path.exists():
+                if serve.poll() is not None:
+                    self.fail(f"serve が早期終了した rc={serve.returncode}")
+                time.sleep(0.2)
+            self.assertTrue(status_path.exists(), "serve が status.json を書かなかった")
+            serve.send_signal(signal.SIGTERM)
+            rc = serve.wait(timeout=30)
+            self.assertEqual(rc, 0, f"SIGTERM で graceful 終了しなかった rc={rc}"
+                                    "（-15 は既定ハンドラによる即死＝finally が走っていない）")
+        finally:
+            if serve.poll() is None:
+                serve.kill()
+                serve.wait(timeout=10)
+
+    def test_cmd_worker_delegates_to_serve_for_worker_profile(self):
+        # worker は serve と同一実装（C12）。projects 無しなら警告を出さず serve と同じ結果になる
+        # ことだけを確認する（無限ループを避けるため _build_resident 経路を直接検証済みなので
+        # ここは cmd_worker が cmd_serve を呼ぶ配線だけを軽く確認する）。
+        called = {"n": 0}
+        with mock.patch.object(km, "cmd_serve", side_effect=lambda a: called.__setitem__("n", called["n"] + 1) or 0):
+            rc = km.cmd_worker(types.SimpleNamespace(host_config=str(self.tmp / "missing.yaml")))
+        self.assertEqual(rc, 0)
+        self.assertEqual(called["n"], 1)
+
+    def test_project_gc_sweeper_skips_missing_root(self):
+        self.assertIsNone(km._project_gc_sweeper({"name": "no-root"}))
+
+    def test_project_gc_sweeper_runs_real_gc_subcommand(self):
+        # フェイク agent-flow を project 設定（agent_flow:）経由で差し込み、実サブプロセスで
+        # `agent-project gc` → `agent-flow cleanup` の委譲まで通しで検証する。
+        root = self.tmp / "proj"
+        root.mkdir()
+        fake_flow = self.tmp / "fake_flow.py"
+        fake_flow.write_text(
+            "import sys, json\n"
+            "if 'cleanup' in sys.argv:\n"
+            "    print(json.dumps({'locks': 0, 'tmp': 0, 'clones': 0, 'work_repos': 0, 'cache': 0}))\n",
+            encoding="utf-8")
+        cfg_path = root / "agent-project.yaml"
+        cfg_path.write_text(json.dumps({"agent_flow": str(fake_flow)}), encoding="utf-8")
+        name, sweep = km._project_gc_sweeper({"root": str(root), "config": str(cfg_path)})
+        self.assertTrue(name)
+        result = sweep()
+        self.assertEqual(result.get("cleanup.locks"), 0)
+
+    def test_project_gc_sweepers_wired_into_run_gc(self):
+        root = self.tmp / "proj2"
+        root.mkdir()
+        host = km.HostConfig({"projects": [{"name": "p2", "root": str(root)}]})
+        sweepers = km._project_gc_sweepers(host)
+        self.assertEqual([n for n, _ in sweepers], ["p2"])
+        # run_gc は sweeper 例外を隔離するだけの orchestration（実行結果まで検証済みなのは
+        # 上のテスト）。ここでは配線（host.projects → sweepers）だけを確認する。
+
+    def test_amigos_participate_tick_dispatches_owned_roles_to_pool(self):
+        log = self.tmp / "amigos-argv.log"
+        fake_amigos = self.tmp / "fake_amigos.py"
+        fake_amigos.write_text(
+            "import sys\n"
+            f"open(r'{log}', 'a').write(' '.join(sys.argv[1:]) + chr(10))\n"
+            "if 'participate' in sys.argv:\n"
+            "    print('[{\"mission_id\": \"m1\", \"role_id\": \"architect\"}]')\n",
+            encoding="utf-8")
+        host = km.HostConfig({"node_id": "pc-a", "amigos_bus": str(self.tmp / "amigos-bus")})
+        status = km.EngineStatus("pc-a")
+        pool = km.NodeWorkerPool(4)
+        with mock.patch.object(km, "_resolve_agent_amigos",
+                               return_value=[sys.executable, str(fake_amigos)]):
+            km._amigos_participate_tick(host, pool, status)
+            for _ in range(50):        # プールの投入スレッドが argv を書くまで軽く待つ
+                if log.exists() and len(log.read_text().splitlines()) >= 2:
+                    break
+                time.sleep(0.02)
+        calls = log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(calls), 2)
+        self.assertIn("participate", calls[0])
+        self.assertTrue(any("run" in c and "m1" in c and "architect" in c for c in calls[1:]))
+        self.assertEqual(status.recent_errors, [])
+
+    def test_amigos_participate_tick_skips_when_bus_unset(self):
+        # host.yaml に amigos_bus が無ければ tick 自体を skip する（board 未設定時と同じ流儀）。
+        host = km.HostConfig({"node_id": "pc-a"})
+        self.assertEqual(host.amigos_bus, "")
+        sup, sched, status, write_status, pool = km._build_resident(host, start_children=False)
+        with mock.patch.object(km, "_amigos_participate_tick") as spy:
+            [t for t in sched._ticks if t.name == "amigos"][0].fn()
+        spy.assert_not_called()
+
+    def test_amigos_tick_isolates_participate_subprocess_failure(self):
+        # 設計 §4.2 の実行規約「例外は tick 内に隔離しループを殺さない」——amigos 側が
+        # 存在しない/クラッシュしても常駐体本体は止めず、status のエラーリングバッファに
+        # 記録するだけに留める（障害と回復表, 実装計画 W1-12 のカオステスト観点）。
+        host = km.HostConfig({"node_id": "pc-a", "amigos_bus": str(self.tmp / "amigos-bus")})
+        sup, sched, status, write_status, pool = km._build_resident(host, start_children=False)
+        missing = str(self.tmp / "no-such-agent-amigos")
+        with mock.patch.object(km, "_resolve_agent_amigos", return_value=[missing]):
+            [t for t in sched._ticks if t.name == "amigos"][0].fn()   # 例外を投げないこと自体が検証
+        self.assertTrue(status.recent_errors)
+        self.assertIn("amigos participate", status.recent_errors[-1])
+
+    def test_gc_tick_isolates_project_sweeper_failure(self):
+        # 1 プロジェクトの gc 失敗が他プロジェクトの gc・常駐体本体を止めないこと
+        # （run_gc の隔離契約・実装計画 W1-12 のカオステスト観点）。
+        broken = self.tmp / "broken-proj"
+        broken.mkdir()
+        cfg_path = broken / "agent-project.yaml"
+        cfg_path.write_text(json.dumps({"agent_flow": str(self.tmp / "no-such-agent-flow")}),
+                            encoding="utf-8")
+        host = km.HostConfig({"node_id": "pc-a",
+                             "projects": [{"name": "broken", "root": str(broken),
+                                          "config": str(cfg_path)}]})
+        sup, sched, status, write_status, pool = km._build_resident(host, start_children=False)
+        [t for t in sched._ticks if t.name == "gc"][0].fn()   # 例外を投げないこと自体が検証
+        self.assertTrue(status.recent_errors)
+        self.assertIn("gc broken", status.recent_errors[-1])
+
+
+class GcCommandTests(unittest.TestCase):
+    """`agent-project gc`（実装計画 W1-11 残・設計 §4.2 node 層 gc tick の実体）: 掃除の実装は
+    持たず、`agent-flow cleanup`/`agent-flow gc` を単発起動するだけ（R1）。委譲先の実引数は
+    フェイク agent-flow（argv を記録するだけのスタブ）で検証する——実バイナリは要らない。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.log = self.tmp / "argv.log"
+
+    def _fake_flow(self, gc_marker_count: int = 2) -> str:
+        # cleanup --json には掃除件数の JSON を、gc には "削除: " 行を marker 件数だけ返す。
+        wrapper = self.tmp / "fake_agent_flow.py"
+        wrapper.write_text(
+            "import sys, json\n"
+            "argv = sys.argv[1:]\n"
+            f"open(r'{self.log}', 'a').write(' '.join(argv) + chr(10))\n"
+            "if 'cleanup' in argv:\n"
+            "    print(json.dumps({'locks': 1, 'tmp': 2, 'clones': 0, 'work_repos': 0, 'cache': 0}))\n"
+            "elif 'gc' in argv:\n"
+            f"    print('削除: r1\\n' * {gc_marker_count}, end='')\n",
+            encoding="utf-8")
+        return str(wrapper)
+
+    def _cfg(self, **kw):
+        return cfg_for(self.tmp, agent_flow=self._fake_flow(), **kw)
+
+    def test_local_bus_runs_cleanup_only(self):
+        # git_bus/state_git 無し = _cleanup_bus（loop.py）が自前で archive を掃除する構成 →
+        # gc は cleanup（ロック/tmp/クローン）だけ呼び、archive gc は呼ばない（二重掃除しない）。
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = km.cmd_gc(self._cfg(), json_out=True)
+        self.assertEqual(rc, 0)
+        totals = json.loads(buf.getvalue())
+        self.assertEqual(totals["cleanup.locks"], 1)
+        self.assertNotIn("gc.deleted", totals)
+        calls = self.log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(calls), 1)
+        self.assertIn("cleanup", calls[0])
+
+    def test_git_bus_also_runs_archive_gc(self):
+        # git_bus 構成では _cleanup_bus が触らない分、archive gc もここで担う。
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = km.cmd_gc(self._cfg(git_bus="https://example.invalid/bus.git"), json_out=True)
+        self.assertEqual(rc, 0)
+        totals = json.loads(buf.getvalue())
+        self.assertEqual(totals["cleanup.locks"], 1)
+        self.assertEqual(totals["gc.deleted"], 2)
+        calls = self.log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(any("cleanup" in c for c in calls))
+        self.assertTrue(any(" gc " in f" {c} " for c in calls))
+
+    def test_state_git_without_git_bus_also_runs_archive_gc(self):
+        # state_git だけの構成でも _cleanup_bus は素通りする（同条件）→ archive gc を担う。
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = km.cmd_gc(self._cfg(state_git="https://example.invalid/state.git"), json_out=True)
+        self.assertEqual(rc, 0)
+        totals = json.loads(buf.getvalue())
+        self.assertEqual(totals["gc.deleted"], 2)
+
+    def test_cli_gc_subcommand_dispatches(self):
+        wrapper = self._fake_flow()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = km.main(["gc", "--root", str(self.tmp), "--agent-flow", wrapper, "--json"])
+        self.assertEqual(rc, 0)
+        self.assertIn("cleanup.locks", buf.getvalue())
 
 
 if __name__ == "__main__":

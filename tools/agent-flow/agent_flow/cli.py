@@ -216,6 +216,11 @@ def build_parser() -> argparse.ArgumentParser:
     gc.add_argument("--dry-run", action="store_true", help="削除せず対象だけ表示")
     gc.set_defaults(func=cmd_gc)
 
+    cl = sub.add_parser("cleanup", help="一時ファイル（ロック/tmp/孤立クローン/共有キャッシュ）を"
+                                        "単発掃除する（daemon 内蔵掃除の単体版。実装計画 W1-11 残）")
+    cl.add_argument("--json", action="store_true", help="機械可読な JSON で出力")
+    cl.set_defaults(func=cmd_cleanup)
+
     dr = sub.add_parser("doctor", help="ログ/状態/環境から稼働を診断（kiro-cli）。env/config は "
                                        "--fix で修正・program は gitlab-idd でイシュー起票")
     dr.add_argument("--json", action="store_true", help="JSON で出力（連携呼び出し用の findings を含む）")

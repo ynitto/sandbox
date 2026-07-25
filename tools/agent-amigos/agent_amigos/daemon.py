@@ -182,9 +182,15 @@ class NodeDaemon:
                 self._active = True
                 log(self.node_id, f"{mid}/{rid}: {result}")
 
-    def cycle(self) -> dict:
+    def cycle(self, dispatch_turns=None) -> dict:
         """1 巡: 指示の取り込み → 全ミッションを見て応募・オーナー職務・自 amigo のターン。
-        返り値は観測サマリ {mission_id: phase}（テスト・status 表示用）。"""
+        返り値は観測サマリ {mission_id: phase}（テスト・status 表示用）。
+
+        `dispatch_turns(mid, roster)` を渡すと手番の実行差し替えができる（既定は
+        `self._run_turns` — インライン実行。常駐体の常駐ノード tick は代わりに
+        roster 収集だけの callable を渡す — `participate_only` 参照。実装計画 W1-11 残・
+        設計 §4.2「手番の実行は tick 内で走らせない」）。"""
+        dispatch_turns = dispatch_turns or self._run_turns
         self.bus.sync_pull()
         if self.commands_home:
             from .commands import ingest_commands
@@ -215,8 +221,24 @@ class NodeDaemon:
             policy = str(mission.get("assignment_policy") or "first-come")
             roster = read_json(mp.roster()) or {}
             roster = self._participate(mid, mp, mission, roles, phase, i_am_owner, policy, roster)
-            self._run_turns(mid, roster)
+            dispatch_turns(mid, roster)
         return seen
+
+    def participate_only(self) -> "list[tuple[str, str]]":
+        """参加のみ tick: 応募・オーナー職務は行うが手番は実行しない（実装計画 W1-11 残・
+        設計 §4.2「amigos 参加（claim・心拍・away）」の実体）。ノード常駐体の短周期 tick から
+        呼ぶ想定 — 手番の実行は別プロセス（`agent-amigos run --once`）へ委ねる。
+        自分が roster 上で担当する (mission_id, role_id) の一覧を返す（呼び出し側の
+        実行ディスパッチ用。R1: `cycle` の分岐先を再利用するだけで手番実行の分岐は複製しない）。"""
+        owned: "list[tuple[str, str]]" = []
+
+        def _collect(mid: str, roster: dict) -> None:
+            for rid, ent in roster.items():
+                if ent.get("node") == self.node_id:
+                    owned.append((mid, rid))
+
+        self.cycle(dispatch_turns=_collect)
+        return owned
 
     # --- graceful offboard（away プロトコル、設計書 §6.6） ------------------
     def offboard(self, resume_hours: "float | None" = None) -> None:

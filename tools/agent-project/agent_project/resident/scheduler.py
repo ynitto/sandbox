@@ -31,7 +31,11 @@ class Tick:
     name: str
     period: float
     fn: "Callable[[], None]"
-    timeout: "float | None" = None   # 観測用の超過検知のみ（強制打ち切りはしない）
+    # 1 回の呼び出しに掛かってよい想定時間の上限。超過は観測（ログ・callback）に留め、強制
+    # 打ち切りはしない。**self-watchdog の猶予にも足す**——正当に長い tick（例: gc が
+    # プロジェクトごとに外部コマンドを逐次起動する）を「ハング」と誤判定して健全な
+    # 常駐体を abort させないため。未指定は 0 として扱う。
+    timeout: "float | None" = None
 
 
 class TickTimeout(Exception):
@@ -51,7 +55,9 @@ class Scheduler:
         if len(names) != len(set(names)):
             raise ValueError(f"tick 名が重複しています: {names}")
         self._ticks = list(ticks)
-        self._period = {t.name: t.period for t in ticks}
+        # 猶予 = period（次の再点火まで正当に静止する時間）+ timeout（1 回の呼び出しに
+        # 掛かってよい時間）+ watchdog_timeout（そこからさらに遅れたら死とみなす余裕）。
+        self._grace = {t.name: t.period + float(t.timeout or 0.0) for t in ticks}
         self._watchdog_timeout = watchdog_timeout
         self._on_tick_error = on_tick_error
         self._abort_fn = abort_fn or (lambda: os._exit(1))  # noqa: SLF001 — 意図的（§4.2）
@@ -108,10 +114,12 @@ class Scheduler:
                 return
             with self._lock:
                 now = time.monotonic()
-                # 猶予は tick ごとに period を上乗せする。健全でも次巡まで period 分は静止する
-                # ため、固定 watchdog_timeout だと周期の長い tick を誤ってハング判定する。
+                # 猶予は tick ごとに period + timeout を上乗せする。健全でも「次巡までの
+                # 静止（period）」と「1 回の呼び出しに掛かる時間（timeout）」の分は心拍が
+                # 更新されないため、固定 watchdog_timeout だと周期の長い tick・正当に重い
+                # tick を誤ってハング判定して健全な常駐体を abort させる。
                 stalled = [name for name, ts in self._last_alive.items()
-                          if now - ts > self._period[name] + self._watchdog_timeout]
+                          if now - ts > self._grace[name] + self._watchdog_timeout]
             if stalled:
                 self._abort_fn()
                 return

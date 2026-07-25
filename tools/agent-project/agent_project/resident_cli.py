@@ -1,0 +1,418 @@
+from __future__ import annotations
+# resident_cli.py — 常駐体 CLI: agent-project serve / status / worker init / worker
+# （実装計画 W1-11、設計 §4.2・§4.3）。
+# 単体 import しない。agent_project/__init__.py が共有名前空間へ順に exec 合成する。
+#
+# 本フラグメントの範囲（このパスで配線するもの）:
+#   - host.yaml の読み込み（PC 宣言の単一ソース）
+#   - Supervisor によるプロジェクト子（`run --watch`）の起動・監視・隔離・graceful 停止
+#     （旧 cmd_start の detach & 放置に代わる、実際に生死を見る親）
+#   - 心拍・子状態を `.agents/engine/status.json` へ書き出す tick
+#   - amigos 参加 tick（claim・心拍・板巡回のみ。手番実行は NodeWorkerPool へ委ねる）
+#   - gc tick（登録プロジェクトの agent-flow バス掃除。掃除の実装は持たない — R1）
+# 板の請負 tick（node 名義での workload=flow/amigos 入札・nodes/<pc>.json 能力宣言）は
+# 別パスで足す（実装計画 W1-11 残・設計 §4.2「現状未実装、ここで初めて実装する」——
+# 既存の flow/amigos の板参加はいずれも「委譲側の bus」を前提にしており、ノード直轄の
+# 契約側実行はまだ設計が固まっていない。中途半端に実装すると二重落札・二重実行のリスクが
+# あるため、ここでは意図的に手を付けない）。
+
+from agentcore.nodeid import normalize_node_id
+from agentcore.protocol import write_json_atomic
+from agent_project.resident import (ChildSpec, ChildStatus, EngineStatus,
+                                    NodeWorkerPool, Scheduler, Supervisor, Tick,
+                                    WorkItem, graceful_shutdown, run_gc)
+
+HOST_CONFIG_NAMES = ("agent-project.host.yaml", "agent-project.host.yml",
+                     "agent-project.host.json")
+
+# tick が起動する外部コマンドの打ち切り時間。**同じ値を Tick.timeout にも渡す**
+# （self-watchdog の猶予に入る）——ここと Scheduler で別々の数字を持つと、正当に長い tick が
+# ハング扱いされて健全な常駐体が abort する。
+_GC_PROJECT_TIMEOUT_SEC = 120.0
+_AMIGOS_TICK_TIMEOUT_SEC = 60.0
+
+
+def _agents_home() -> Path:
+    """PC 単位の状態置き場（既定 `~/.agents`）。flow-board/amigos の node.json と同じ流儀
+    （実装計画 P0〜W1-10 を通して既にこの下に各種状態が置かれている）。
+    `AGENT_PROJECT_AGENTS_HOME` で上書き可（テストが実ホームを汚さないため。
+    `resolve_state_home` の `AGENT_PROJECT_HOME` と同じ流儀の別変数——インスタンス
+    レジストリの置き場 `~/.agent-project` とは意味が違うので混ぜない）。"""
+    override = os.environ.get("AGENT_PROJECT_AGENTS_HOME")
+    if override:
+        return Path(override)
+    return Path.home() / AGENT_HOME
+
+
+def _find_host_config(explicit: "str | None" = None) -> "str | None":
+    """agent-project.host.yaml の探索: 明示指定 > cwd > ~/.agents。"""
+    if explicit:
+        return explicit if os.path.isfile(explicit) else None
+    for base in (Path.cwd(), _agents_home()):
+        for name in HOST_CONFIG_NAMES:
+            p = base / name
+            if p.is_file():
+                return str(p)
+    return None
+
+
+class HostConfig:
+    """agent-project.host.yaml の内容（PC 宣言の単一ソース。設計 §4.2）。
+
+    `projects` が空ならワーカーノード（lite）プロファイル（設計 §4.3）——別プログラムには
+    せず、ロール分岐は「projects が空か」の 1 点だけに保つ（C12: フォークは重複実装の
+    再演になる）。"""
+
+    def __init__(self, data: dict, path: "str | None" = None):
+        self.path = path
+        declared = str(data.get("node_id") or "").strip()
+        self.node_id = normalize_node_id(declared) if declared \
+            else normalize_node_id(socket.gethostname())
+        self.projects = [dict(p) for p in (data.get("projects") or []) if isinstance(p, dict)]
+        self.tags = [str(t) for t in (data.get("tags") or [])]
+        self.agent_cli = [str(a) for a in (data.get("agent_cli") or [])]
+        self.repos = data.get("repos") or {}
+        self.board = str(data.get("board") or "")
+        self.board_workdir = data.get("board_workdir")
+        self.max_concurrent = int((data.get("budget") or {}).get("max_concurrent", 0) or 0)
+        # amigos 参加 tick（設計 §4.2「amigos 参加（claim・心拍・away）」）の対象バス。
+        # 未設定なら amigos 参加 tick 自体を skip する（board 未設定で板 tick が no-op になるのと
+        # 同じ流儀 — host.yaml に無い機能を強制起動しない）。
+        self.amigos_bus = str(data.get("amigos_bus") or "")
+        self.amigos_config = data.get("amigos_config")
+        # 常駐化の方式（設計 §7 の 2 案のどちらを選んだか）。doctor はこの宣言に従う——
+        # systemd 側しか検査できないので、windows-task を選んだ PC で「常駐化が未構成」を
+        # 出し続けると、正しく構成した利用者に恒久的な誤警告を浴びせることになる。
+        # 既定 auto は「systemd がある環境なら systemd 案とみなす」（従来の挙動）。
+        self.residency = str(data.get("residency") or "auto").strip().lower()
+
+    @property
+    def is_worker(self) -> bool:
+        return not self.projects
+
+
+def load_host_config(explicit: "str | None" = None) -> HostConfig:
+    path = _find_host_config(explicit)
+    if not path:
+        return HostConfig({})
+    return HostConfig(_load_config_file(path), path=path)
+
+
+def _project_child_spec(project: dict) -> "ChildSpec | None":
+    """host.yaml の 1 プロジェクト宣言から Supervisor.ChildSpec を組み立てる。
+    `agent-project run --watch` を Popen する——cmd_start と同じ argv 構築だが、
+    detach せず Supervisor が Popen ハンドルを保持・監視する。"""
+    root = str(project.get("root") or "").strip()
+    if not root:
+        return None
+    resolved = _resolved_root(root, project.get("config"))
+    child = [sys.executable, _self_script(), "run", "--watch", "--root", root]
+    if project.get("config"):
+        child += ["--config", str(project["config"])]
+    name = str(project.get("name") or "").strip() or _slug(resolved)
+    return ChildSpec(name=name, argv=child)
+
+
+def _project_children(host: HostConfig) -> "list[ChildSpec]":
+    specs: "list[ChildSpec]" = []
+    seen: "set[str]" = set()
+    for project in host.projects:
+        spec = _project_child_spec(project)
+        if spec is None:
+            print(f"[agent-project] serve: host.yaml の project に root が無いエントリを"
+                 f"無視しました: {project}", file=sys.stderr)
+            continue
+        if spec.name in seen:
+            # ここで落とさず両方 specs に残すと、`Supervisor.add` が同名キーを辞書ごと
+            # 差し替えて 1 本目の Popen ハンドルを失い、続く `start` が 2 本目を起こす。
+            # 1 本目は誰にも監視されず graceful_shutdown でも止まらない孤児になる。
+            print(f"[agent-project] serve: host.yaml に重複したプロジェクト名 "
+                 f"{spec.name} — 2 件目以降を無視します（root を確認してください）",
+                 file=sys.stderr)
+            continue
+        seen.add(spec.name)
+        specs.append(spec)
+    return specs
+
+
+def _resolve_agent_amigos() -> "list[str]":
+    """agent-amigos 実行コマンド（PATH → tools/ 隣接配置の順）。`request.py` の
+    `resolve_agent_flow` と同じ導出（R1: 探索アルゴリズムは 1 つ）——ただし host.yaml に
+    override フィールドは持たない（amigos はプロジェクト設定を経由しないため明示指定の
+    出番が無い。要れば host.yaml へ後で足せる）。"""
+    found = shutil.which("agent-amigos")
+    if found:
+        return [found]
+    here = Path(__file__).resolve()
+    tools_sibling = here.parents[2] / "agent-amigos" / "agent-amigos.py"
+    if tools_sibling.is_file():
+        return [sys.executable, str(tools_sibling)]
+    legacy = here.parents[1] / "agent-amigos" / "agent-amigos.py"
+    return [sys.executable, str(legacy)]
+
+
+def _amigos_participate_tick(host: "HostConfig", pool: "NodeWorkerPool",
+                             status: "EngineStatus") -> None:
+    """amigos 参加 tick（設計 §4.2「amigos 参加（claim・心拍・away）」の実体・実装計画 W1-11 残）。
+    `agent-amigos participate`（claim・オーナー職務・板巡回のみ）を都度起動し、自分が roster 上で
+    担当することになった (mission,role) を `agent-amigos run --once` として NodeWorkerPool へ
+    投入する——手番の実行は周期を超えうるため tick 内では絶対に実行しない（設計の実行規約）。
+    プロセス境界を跨ぐが、調停はすべて bus（ファイル）越しなので安全（R9 の帰結でもある:
+    amigos 自体が常駐なしで成立する設計だからこそ、この分離が素直に実装できる）。"""
+    amigos = _resolve_agent_amigos()
+    cmd = amigos + ["participate", "--node-id", host.node_id, "--json"]
+    if host.amigos_bus:
+        cmd += ["--bus", host.amigos_bus]
+    if host.amigos_config:
+        cmd += ["--config", str(host.amigos_config)]
+    if host.tags:
+        cmd += ["--tags", ",".join(host.tags)]
+    if host.agent_cli:
+        cmd += ["--agent-cli", host.agent_cli[0]]   # 複数宣言時は先頭を既定として使う
+    if host.board:
+        cmd += ["--board", host.board]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=_AMIGOS_TICK_TIMEOUT_SEC)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        status.record_error(f"amigos participate 起動失敗: {e}")
+        return
+    if proc.returncode != 0:
+        status.record_error(f"amigos participate 失敗（rc={proc.returncode}）: "
+                            f"{proc.stderr.strip()[-300:]}")
+        return
+    try:
+        owned = json.loads(proc.stdout or "[]")
+    except ValueError:
+        return
+    for item in owned:
+        mid = str((item or {}).get("mission_id") or "").strip()
+        rid = str((item or {}).get("role_id") or "").strip()
+        if not mid or not rid:
+            continue
+        run_cmd = amigos + ["run", "--mission", mid, "--role", rid, "--once",
+                            "--node-id", host.node_id]
+        if host.amigos_bus:
+            run_cmd += ["--bus", host.amigos_bus]
+        if host.amigos_config:
+            run_cmd += ["--config", str(host.amigos_config)]
+        if host.agent_cli:
+            run_cmd += ["--agent-cli", host.agent_cli[0]]
+        pool.submit(WorkItem(id=f"amigos/{mid}/{rid}",
+                             run=lambda c=run_cmd: subprocess.run(
+                                 c, capture_output=True, text=True, timeout=1800)))
+
+
+def _project_gc_sweeper(project: dict) -> "tuple[str, object] | None":
+    """host.yaml の 1 プロジェクト宣言から gc sweeper（`resident.gc.run_gc` が食べる
+    `(名前, 引数無し callable)` の組）を組み立てる。掃除の実装は持たない（R1）——
+    `agent-project gc` を単発起動して集計 dict をそのまま返すだけ。"""
+    root = str(project.get("root") or "").strip()
+    if not root:
+        return None
+    resolved = _resolved_root(root, project.get("config"))
+    name = str(project.get("name") or "").strip() or _slug(resolved)
+    cmd = [sys.executable, _self_script(), "gc", "--root", root, "--json"]
+    if project.get("config"):
+        cmd += ["--config", str(project["config"])]
+
+    def sweep() -> dict:
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=_GC_PROJECT_TIMEOUT_SEC)
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.strip()[-300:] or f"exit {proc.returncode}")
+        try:
+            return json.loads(proc.stdout or "{}")
+        except ValueError:
+            return {}
+
+    return (name, sweep)
+
+
+def _project_gc_sweepers(host: "HostConfig") -> "list[tuple[str, object]]":
+    sweepers = []
+    for project in host.projects:
+        s = _project_gc_sweeper(project)
+        if s:
+            sweepers.append(s)
+    return sweepers
+
+
+def _build_resident(host: "HostConfig", *, start_children: bool = True):
+    """host.yaml から Supervisor・Scheduler・EngineStatus を組み立てる（未 start）。
+    セットアップだけを切り出してあるのは単体テストのため——`cmd_serve` はこれに
+    `Scheduler.start()`/ブロッキングループ/graceful 停止を足すだけの薄い皮。"""
+    specs = _project_children(host)
+    sup = Supervisor()
+    for spec in specs:
+        sup.add(spec)
+        if start_children:
+            sup.start(spec.name)
+
+    status = EngineStatus(host.node_id)
+    status_path = _agents_home() / "engine" / "status.json"
+
+    def write_status() -> None:
+        # EngineStatus.write(state_home) は <state_home>/.agents/engine/status.json へ書く
+        # （プロジェクト workdir を渡す想定の API）。ここでは _agents_home() が既に
+        # `.agents` 自身なので、二重に .agents が付かないよう write_json_atomic を直接使う。
+        status.heartbeat = datetime.now(timezone.utc).isoformat()
+        status.children = [
+            ChildStatus(name=name, alive=info["alive"], quarantined=info["quarantined"],
+                       deaths=info["deaths"])
+            for name, info in sup.status().items()]
+        write_json_atomic(str(status_path), status.to_dict())
+
+    # ノード直轄ワーカー（設計 §4.2・実装計画 W1-5/W1-11）。max_concurrent: 0 は「明示未設定」
+    # として flow daemon 既定の --max-workers（4）に合わせる（NodeWorkerPool 自体は
+    # max(1, n) を強制するため 0 を「無制限」にはできない。host.yaml.example の記載も
+    # 「既定 4」に合わせて更新済み）。
+    pool = NodeWorkerPool(
+        host.max_concurrent if host.max_concurrent > 0 else 4,
+        on_event=lambda item_id, ev, exc: (status.record_error(f"worker {item_id}: {exc}")
+                                           if ev == "failed" else None))
+
+    def tick_supervise() -> None:
+        sup.check_health()
+        pool.drain()   # 専用 tick を新設せず、既存の短周期 tick に相乗りさせる（設計に無い tick を増やさない）
+        status.tick_counts["supervise"] = status.tick_counts.get("supervise", 0) + 1
+        write_status()
+
+    def tick_amigos() -> None:
+        if not host.amigos_bus:
+            return   # board 未設定で板 tick が no-op になるのと同じ流儀
+        _amigos_participate_tick(host, pool, status)
+        status.tick_counts["amigos"] = status.tick_counts.get("amigos", 0) + 1
+        write_status()
+
+    def tick_gc() -> None:
+        run_gc(_project_gc_sweepers(host),
+              on_event=lambda name, ev, exc: (status.record_error(f"gc {name}: {exc}")
+                                              if ev == "failed" else None))
+        status.tick_counts["gc"] = status.tick_counts.get("gc", 0) + 1
+        write_status()
+
+    # 周期は設計 §4.2 の周期表のコード定数（yaml では変えない — 設定より規約）。
+    # timeout は「1 回の呼び出しに掛かってよい想定時間」で、self-watchdog の猶予にも入る。
+    # gc はプロジェクトごとに `agent-project gc`（各 timeout=120s）を**逐次**起動するので、
+    # プロジェクト数に比例して正当に長くなる。宣言しないと 3 プロジェクト以上で猶予
+    # （既定 watchdog_timeout=300s）を超え、健全な常駐体を abort してしまう。
+    gc_budget = _GC_PROJECT_TIMEOUT_SEC * max(1, len(host.projects))
+    sched = Scheduler([Tick("supervise", 5.0, tick_supervise),
+                       Tick("amigos", 5.0, tick_amigos, timeout=_AMIGOS_TICK_TIMEOUT_SEC),
+                       Tick("gc", 600.0, tick_gc, timeout=gc_budget)],
+                      on_tick_error=lambda name, exc: status.record_error(f"{name}: {exc}"))
+    return sup, sched, status, write_status, pool
+
+
+def cmd_serve(args) -> int:
+    """常駐体のエントリポイント（設計 §4.2・実装計画 W1-11）。フォアグラウンド実行——
+    常駐化（起動時に上がる・死んだら上げ直す）は起動系（systemd 等）の役目で、このコマンド
+    自体は「起動されたら動き続ける」だけを担う（設計 §7）。"""
+    host = load_host_config(getattr(args, "host_config", None))
+    print(f"[agent-project] serve: node_id={host.node_id}"
+         + (f" host_config={host.path}" if host.path else "（host.yaml 未検出・既定ノード）"))
+    if host.is_worker:
+        print("[agent-project] serve: projects 未宣言 — ワーカーノード（lite）として動作します")
+
+    sup, sched, status, write_status, pool = _build_resident(host)
+    write_status()
+    sched.start()
+    print(f"[agent-project] serve: 起動しました（projects={len(sup.names())} pid={os.getpid()}）")
+    # SIGTERM を必ず拾う。既定ハンドラは即死なので下の finally（子の graceful 停止）が
+    # 走らず、`run --watch` の子が監督者不在のまま生き残る——次の起動で Supervisor が
+    # 新しい子を起こすので同一プロジェクトにループが 2 本並ぶ。systemd の stop/restart は
+    # SIGTERM なので、`install.sh --service` が勧める経路がそのままこれを踏む。
+    stopping = threading.Event()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, lambda *_: stopping.set())
+        except (ValueError, OSError):
+            pass    # メインスレッド以外（テスト等）では設定できない
+    try:
+        while not stopping.wait(1.0):
+            pass
+    except KeyboardInterrupt:
+        pass        # ハンドラ設定前に届いた場合の保険
+    finally:
+        print("[agent-project] serve: 停止します（子の graceful 停止）", file=sys.stderr)
+        sched.stop()
+        graceful_shutdown(sup)
+        sched.join(timeout=5.0)
+    return 0
+
+
+def cmd_status(args) -> int:
+    """`.agents/engine/status.json`（常駐体が書く心拍・子状態）を表示する（実装計画 W1-11）。"""
+    path = _agents_home() / "engine" / "status.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = None
+    if not data:
+        print(f"エンジン状態が見つかりません: {path}（agent-project serve が起動していないか、"
+             f"まだ 1 tick も回っていません）", file=sys.stderr)
+        return 1
+    if getattr(args, "json", False):
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return 0
+    print(f"node_id     : {data.get('node')}")
+    print(f"heartbeat   : {data.get('heartbeat')}")
+    print(f"tick_counts : {data.get('tick_counts')}")
+    children = data.get("children") or []
+    if children:
+        print("children:")
+        for c in children:
+            mark = "!" if c.get("quarantined") else ("+" if c.get("alive") else "-")
+            print(f"  [{mark}] {c.get('name')} deaths={c.get('deaths')}")
+    else:
+        print("children    : (なし・ワーカーノード)")
+    errors = data.get("recent_errors") or []
+    if errors:
+        print(f"recent_errors ({len(errors)}):")
+        for e in errors[-5:]:
+            print(f"  - {e}")
+    return 0
+
+
+def cmd_worker_init(args) -> int:
+    """ワーカーノード（lite）の host.yaml を生成する（実装計画 W1-11・設計 §4.3）。
+    projects を持たない host.yaml を書く——導入は clone + install.sh + このコマンドの
+    最小手順（設計の要件 R6）。"""
+    node_id = normalize_node_id(getattr(args, "node_id", None) or socket.gethostname())
+    data = {
+        "schema_version": 1,
+        "node_id": node_id,
+        "projects": [],
+        "tags": [t for t in (getattr(args, "tags", None) or "").split(",") if t],
+        "agent_cli": [a for a in (getattr(args, "agent_cli", None) or "").split(",") if a],
+        "board": getattr(args, "board", None) or "",
+        "budget": {"max_concurrent": int(getattr(args, "max_concurrent", 0) or 0)},
+    }
+    out = getattr(args, "out", None) or str(_agents_home() / HOST_CONFIG_NAMES[0])
+    if os.path.isfile(out) and not getattr(args, "force", False):
+        print(f"既に存在します: {out}（上書きするには --force）", file=sys.stderr)
+        return 1
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    if yaml is not None:
+        with open(out, "w", encoding="utf-8") as f:
+            yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+    else:
+        write_json_atomic(out, data)
+    print(f"ワーカーノード設定を書き出しました: {out}（node_id={node_id}）")
+    print(f"起動: agent-project worker" + (f" --host-config {out}" if getattr(args, "out", None) else ""))
+    return 0
+
+
+def cmd_worker(args) -> int:
+    """ワーカーノード（lite）の起動（実装計画 W1-11・設計 §4.3）。
+
+    別プログラムではない——`agent-project serve` と同一実装（C12: プロファイル分岐は
+    「projects が空か」の 1 点のみ）。projects が宣言されていれば警告するだけで動作は
+    変えない（host.yaml の内容が正——このサブコマンド名はオペレータへの案内でしかない）。"""
+    host = load_host_config(getattr(args, "host_config", None))
+    if not host.is_worker:
+        print(f"[agent-project] worker: host.yaml に projects が {len(host.projects)} 件"
+             f"宣言されています。フルノードとして動作します"
+             f"（ワーカー専用にするなら projects を空にしてください）。", file=sys.stderr)
+    return cmd_serve(args)

@@ -80,6 +80,30 @@ def test_long_period_healthy_tick_not_aborted():
     assert ran["n"] > 0
 
 
+def test_declared_tick_timeout_extends_watchdog_grace():
+    # 正当に長い tick（外部コマンドを逐次起動する gc 等）を宣言した timeout の分だけ
+    # 見逃す。宣言しないと watchdog が健全な常駐体を abort する。
+    aborted = threading.Event()
+    started = threading.Event()
+
+    def slow_tick():
+        started.set()
+        time.sleep(0.5)      # watchdog_timeout(0.05) より十分長いが timeout 宣言内
+
+    sched = Scheduler(
+        [Tick("slow", period=0.01, fn=slow_tick, timeout=2.0)],
+        watchdog_timeout=0.05,
+        abort_fn=aborted.set,
+    )
+    sched.start()
+    assert started.wait(timeout=2), "tick が起動していない"
+    time.sleep(0.4)
+    sched.stop()
+    sched.join(timeout=3)
+
+    assert not aborted.is_set(), "timeout を宣言した tick を watchdog が誤って abort した"
+
+
 def test_duplicate_tick_names_rejected():
     try:
         Scheduler([Tick("x", period=1, fn=lambda: None), Tick("x", period=1, fn=lambda: None)])
@@ -135,6 +159,7 @@ if __name__ == "__main__":
     test_single_flight_never_overlaps()
     test_exception_isolated_other_ticks_keep_running()
     test_long_period_healthy_tick_not_aborted()
+    test_declared_tick_timeout_extends_watchdog_grace()
     test_duplicate_tick_names_rejected()
     test_join_timeout_is_a_total_budget_not_per_thread()
     test_self_watchdog_aborts_on_stall()

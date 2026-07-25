@@ -46,6 +46,14 @@ os.environ["KIRO_SKILL_REGISTRY"] = os.path.join(
 # テストと同じ護り。テストは絶対パスだけを使うので cwd に依存しない）。
 os.chdir(tempfile.mkdtemp(prefix="kf-tests-cwd-"))
 
+# 開発者の実 agent-control（`~/.agents/control/control.json`）がテストへ漏れるのを防ぐ。
+# control は agent_cli / model を**全レイヤより優先して**上書きする（`_control_override`）ため、
+# 実ファイルを読むと「既定は kiro-cli のはず」といったテストが開発者の設定次第で落ちる
+# （実際に `flow.agent_cli: codex` を設定した環境で AgentCliTests が一斉に落ちていた）。
+# 個別に上書きするテストは各自 addCleanup で戻す（ここは既定の隔離先）。
+os.environ.setdefault("AGENT_CONTROL_DIR",
+                      os.path.join(tempfile.gettempdir(), "kf-tests-no-such-control"))
+
 # 実体は agent_flow/ パッケージ（断片の共有名前空間合成）。単一ファイル時代と同じく
 # kf.<name> へのモンキーパッチがそのまま効く。
 _PKG = HERE.parent / "agent_flow"
@@ -4792,6 +4800,42 @@ class CleanupTests(unittest.TestCase):
         self.assertIn("tmp", res)
 
 
+class CleanupCommandTests(unittest.TestCase):
+    """`agent-flow cleanup`（実装計画 W1-11 残・設計 §4.2 node 層 gc tick の実体）:
+    run_cleanup を daemon 常駐なしで単発起動できる入口。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-cleanup-cmd-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _args(self, **kw):
+        base = dict(bus=self.tmp, lease=1800.0, git=None, run_id=None, cleanup_age=24.0,
+                   json=False)
+        base.update(kw)
+        return types.SimpleNamespace(**base)
+
+    def test_cmd_cleanup_prints_human_summary(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = kf.cmd_cleanup(self._args())
+        self.assertEqual(rc, 0)
+        self.assertIn("cleanup: locks=", buf.getvalue())
+
+    def test_cmd_cleanup_json_output_is_parseable(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            kf.cmd_cleanup(self._args(json=True))
+        result = json.loads(buf.getvalue())
+        self.assertIn("locks", result)
+        self.assertIn("tmp", result)
+        self.assertIn("clones", result)
+
+    def test_cleanup_subcommand_registered_in_parser(self):
+        args = kf.build_parser().parse_args(["--bus", self.tmp, "cleanup", "--json"])
+        self.assertIs(args.func, kf.cmd_cleanup)
+        self.assertTrue(args.json)
+
+
 class ArtifactProtocolTests(unittest.TestCase):
     """中間成果物のファイル参照プロトコル（依存タスクの成果物を決定的パスで受け渡す）。"""
 
@@ -7098,8 +7142,11 @@ class NodeBudgetV2Tests(unittest.TestCase):
         self._config({"version": 2, "tokens": 100,
                       "allocation": {"workloads": {"flow": {"on_exhausted": "degrade"}}}})
         self._ledger([{"workload": "flow", "seconds": 1, "tokens_in": 200, "tokens_out": 0}])
+        _prev_control = os.environ["AGENT_CONTROL_DIR"]
         os.environ["AGENT_CONTROL_DIR"] = self.dir
-        self.addCleanup(os.environ.pop, "AGENT_CONTROL_DIR", None)
+        # pop すると**モジュール既定の隔離先ごと消え**、以降のテストが開発者の実
+        # `~/.agents/control` を読む（テスト順で agent_cli 系が落ちる原因だった）。
+        self.addCleanup(os.environ.__setitem__, "AGENT_CONTROL_DIR", _prev_control)
         with open(os.path.join(self.dir, "control.json"), "w", encoding="utf-8") as f:
             json.dump({"version": 1, "revision": 1,
                        "workloads": {"flow": {"degraded": {"model": "haiku"}}}}, f)
@@ -7114,8 +7161,11 @@ class AgentControlTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="kf-control-")
         self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        _prev_control = os.environ["AGENT_CONTROL_DIR"]
         os.environ["AGENT_CONTROL_DIR"] = self.dir
-        self.addCleanup(os.environ.pop, "AGENT_CONTROL_DIR", None)
+        # pop すると**モジュール既定の隔離先ごと消え**、以降のテストが開発者の実
+        # `~/.agents/control` を読む（テスト順で agent_cli 系が落ちる原因だった）。
+        self.addCleanup(os.environ.__setitem__, "AGENT_CONTROL_DIR", _prev_control)
         os.environ["AGENT_BUDGET_DIR"] = self.dir       # 予算は無設定（None）
         self.addCleanup(os.environ.pop, "AGENT_BUDGET_DIR", None)
         kf._CONTROL_CACHE["mtime"] = None               # mtime キャッシュを毎テストで無効化
@@ -7261,8 +7311,11 @@ class GlobalInstructionsTests(unittest.TestCase):
         self.assertEqual(captured["prompt"].count("agent-instructions"), 1)
 
     def test_status_carries_instructions_revision_applied(self):
+        _prev_control = os.environ["AGENT_CONTROL_DIR"]
         os.environ["AGENT_CONTROL_DIR"] = self.dir
-        self.addCleanup(os.environ.pop, "AGENT_CONTROL_DIR", None)
+        # pop すると**モジュール既定の隔離先ごと消え**、以降のテストが開発者の実
+        # `~/.agents/control` を読む（テスト順で agent_cli 系が落ちる原因だった）。
+        self.addCleanup(os.environ.__setitem__, "AGENT_CONTROL_DIR", _prev_control)
         kf._CONTROL_CACHE["mtime"] = None
         kf._note_instructions_applied(3)
         with mock.patch.object(kf, "_run_agent_once", return_value="ok"):
@@ -7410,8 +7463,11 @@ class SessionCommandsTests(unittest.TestCase):
         self.assertNotIn("session.json", src)
 
     def test_status_carries_session_commands_revision_applied(self):
+        _prev_control = os.environ["AGENT_CONTROL_DIR"]
         os.environ["AGENT_CONTROL_DIR"] = self.dir
-        self.addCleanup(os.environ.pop, "AGENT_CONTROL_DIR", None)
+        # pop すると**モジュール既定の隔離先ごと消え**、以降のテストが開発者の実
+        # `~/.agents/control` を読む（テスト順で agent_cli 系が落ちる原因だった）。
+        self.addCleanup(os.environ.__setitem__, "AGENT_CONTROL_DIR", _prev_control)
         kf._CONTROL_CACHE["mtime"] = None
         self._write({"revision": 7, "commands": [{"id": "a", "run": "true"}]})
         kf.run_session_commands("w1", {"engine": "agent-flow"})

@@ -165,17 +165,27 @@ class TestSelfHealing(TransportTestBase):
 
     @staticmethod
     def _corrupt_one_loose_object(wd) -> "str | None":
-        """到達可能な loose object を 1 つ 0 バイト化する（電源断で生じるサイズ 0 オブジェクトを模す）。
-        破壊したパスを返す（見つからなければ None）。"""
-        objects_dir = os.path.join(wd, ".git", "objects")
-        for root, _dirs, files in os.walk(objects_dir):
-            for name in files:
-                if len(os.path.basename(root)) == 2 and len(name) == 38:
-                    victim = os.path.join(root, name)
-                    with open(victim, "wb"):
-                        pass
-                    return victim
-        return None
+        """**HEAD コミットの** loose object を 0 バイト化する（電源断で生じるサイズ 0
+        オブジェクトを模す）。破壊したパスを返す（見つからなければ None）。
+
+        対象を HEAD に固定するのが要点。`_probe_integrity` は
+        `git fsck --connectivity-only` なので**到達グラフの走査に必要なオブジェクト**しか
+        読まない。以前は os.walk が最初に見つけた任意の loose object を壊していたため、
+        それが走査対象外（別途 pack 済み・到達不能）だと fsck が通ってしまい、
+        「破損を検知する」という検証そのものが成立していなかった。"""
+        head = subprocess.run(["git", "-C", wd, "rev-parse", "HEAD"],
+                              capture_output=True, text=True).stdout.strip()
+        if not head:
+            return None
+        victim = os.path.join(wd, ".git", "objects", head[:2], head[2:])
+        if not os.path.isfile(victim):
+            return None   # pack 済み（このテストの前提＝直後の push で loose のはず）
+        # git は loose object を読み取り専用（0444）で作るため、書き込み権限を与えてから
+        # truncate する。付けずに open すると PermissionError でテスト自体が error になる。
+        os.chmod(victim, 0o644)
+        with open(victim, "wb"):
+            pass
+        return victim
 
     def test_corrupted_object_triggers_rebuild(self):
         wd = os.path.join(self.tmp.name, "node-a")

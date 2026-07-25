@@ -80,6 +80,10 @@ def main(argv=None) -> int:
     au.add_argument("--strict", action="store_true",
                     help="スコア<40 か critical 赤旗があれば exit 2（CI ゲート用）")
 
+    gc = sub.add_parser("gc", help="agent-flow バスの一時ファイル・古い run アーカイブを掃除する"
+                                   "（実装計画 W1-11 残・ノード常駐体 gc tick 用の単発版）")
+    _add_common(gc); gc.add_argument("--json", action="store_true", help="JSON で出力")
+
     rl = sub.add_parser("runlog", help="構造化 run-log（run-log.jsonl）の末尾を表示")
     _add_common(rl); rl.add_argument("--json", action="store_true", help="JSON で出力")
     rl.add_argument("--tail", type=int, default=10, help="表示する直近の件数（既定 10・0 で全件）")
@@ -247,12 +251,34 @@ def main(argv=None) -> int:
     res.add_argument("--profile", default=None, help="子プロセスへ渡す PC 固有 profile")
     res.add_argument("--registry", action="append", default=None, help=_reg_help)
 
+    _host_help = "agent-project.host.yaml の場所（既定: cwd → ~/.agents の順に探索）"
+    srv = sub.add_parser("serve",
+                         help="常駐体（resident）を起動: host.yaml のプロジェクトを監督し、"
+                              "心拍・子状態を .agents/engine/status.json へ書く（実装計画 W1-11）")
+    srv.add_argument("--host-config", default=None, help=_host_help)
+    sts = sub.add_parser("status", help="常駐体の心拍・子状態（.agents/engine/status.json）を表示")
+    sts.add_argument("--json", action="store_true", help="JSON で出力")
+    wkr = sub.add_parser("worker",
+                         help="ワーカーノード（lite）: 常駐体の起動、または init で host.yaml 生成"
+                              "（serve と同一実装 — host.yaml の projects を空にして使う。設計 §4.3）")
+    wkr.add_argument("--host-config", default=None, help=_host_help)
+    wksub = wkr.add_subparsers(dest="worker_cmd")
+    wki = wksub.add_parser("init", help="ワーカーノード用 host.yaml を生成する")
+    wki.add_argument("--node-id", default=None, help="ノード ID（既定: ホスト名）")
+    wki.add_argument("--tags", default=None, help="能力タグ（カンマ区切り）")
+    wki.add_argument("--agent-cli", default=None, help="使える agent CLI（カンマ区切り）")
+    wki.add_argument("--board", default=None, help="板（agent-board）の場所")
+    wki.add_argument("--max-concurrent", type=int, default=0, help="同時実行数の上限（0=無制限）")
+    wki.add_argument("--out", default=None, help="書き出し先（既定: ~/.agents/agent-project.host.yaml）")
+    wki.add_argument("--force", action="store_true", help="既存ファイルを上書きする")
+
     # サブコマンドを省略して呼ばれたら「常駐監視（run --watch）」を既定にする。
     # PC 起動時に立ち上げっぱなしにして cwd のプロジェクトを面倒見る daemon 用途を一級にするため。
     _subcommands = {"run", "triage", "needs", "promote", "rot", "stats", "audit",
                     "runlog", "doctor", "update", "enqueue", "approve", "hold", "reprioritize",
                     "revise", "reject", "resume-run", "impact", "replan", "instances",
-                    "start", "stop", "restart", "board-offload"}
+                    "start", "stop", "restart", "board-offload", "gc",
+                    "serve", "status", "worker"}
     if not argv or (argv[0] not in _subcommands and argv[0] not in ("-h", "--help")):
         argv = ["run", "--watch", *argv]
 
@@ -274,6 +300,13 @@ def main(argv=None) -> int:
         return cmd_restart(args.root, args.config,
                            extra=_split_registry(getattr(args, "registry", None)),
                            profile=args.profile)
+    if args.cmd == "serve":
+        return cmd_serve(args)
+    if args.cmd == "status":
+        return cmd_status(args)
+    if args.cmd == "worker":
+        return cmd_worker_init(args) if getattr(args, "worker_cmd", None) == "init" \
+            else cmd_worker(args)
 
     resolve_config(args)      # CLI 未指定値を 設定ファイル → 組み込み既定 で確定
     cfg = build_config(args)
@@ -284,6 +317,7 @@ def main(argv=None) -> int:
 
     return {
         "run": lambda: cmd_run(cfg),
+        "gc": lambda: cmd_gc(cfg, getattr(args, "json", False)),
         "triage": lambda: cmd_triage(cfg),
         "needs": lambda: cmd_needs(cfg),
         "enqueue": lambda: cmd_enqueue(cfg, args),

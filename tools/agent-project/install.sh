@@ -16,10 +16,18 @@ error() { echo -e "${RED}[ERROR]${RESET} $*" >&2; }
 die()   { error "$*"; exit 1; }
 
 INSTALL_PREFIX="${HOME}/.local/bin"
+WITH_SERVICE=0
+HOST_CONFIG=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --prefix) INSTALL_PREFIX="$2"; shift 2 ;;
-    -h|--help) echo "使い方: bash install.sh [--prefix <dir>]"; exit 0 ;;
+    --service) WITH_SERVICE=1; shift ;;
+    --host-config) HOST_CONFIG="$2"; shift 2 ;;
+    -h|--help) echo "使い方: bash install.sh [--prefix <dir>] [--service [--host-config <path>]]
+  --service       systemd --user unit（agent-project.service）を生成・有効化する
+                  （WSL/Linux のみ。設計 §7 の常駐化 2 案のうち systemd 案。
+                  Windows タスクスケジューラ案は docs/guides/ 参照 — 二重構成しない）"
+      exit 0 ;;
     *) die "不明な引数: $1" ;;
   esac
 done
@@ -91,3 +99,48 @@ case ":${PATH}:" in
   *":${INSTALL_PREFIX}:"*) : ;;
   *) warn "${INSTALL_PREFIX} が PATH にありません。シェル設定に追加してください" ;;
 esac
+
+# 常駐化（設計 §4.2・§7）: PC 起動/ログオン時に常駐体が上がり、死んだら上げ直される
+# ようにする 2 案のうち systemd user unit（WSL/Linux）を --service で選択式に構成する。
+# Windows タスクスケジューラ案（wsl.exe -d <distro> -- agent-project serve をログオン時に
+# 再起動ループ付きで常駐させる）は WSL の外側（Windows 側）の操作なのでこのスクリプトからは
+# 実行できない——手順は docs/guides/single-resident-setup.md を参照。二重構成しないのは人の
+# 責任（doctor が検査できるのは systemd 側だけで、Windows 側は WSL の外から見えないため
+# 二重構成は検出できない）。タスクスケジューラ案を選んだら host.yaml に
+# `residency: windows-task` を宣言する——doctor の誤警告（常駐化が未構成）を止めるため。
+if [[ "${WITH_SERVICE}" -eq 1 ]]; then
+  if ! command -v systemctl >/dev/null 2>&1 || [[ ! -d /run/systemd/system ]]; then
+    warn "systemd が見つかりません。--service は WSL/Linux 専用です（スキップ）"
+  else
+    UNIT_DIR="${HOME}/.config/systemd/user"
+    UNIT_PATH="${UNIT_DIR}/agent-project.service"
+    mkdir -p "${UNIT_DIR}"
+    EXEC_START="${DEST} serve"
+    [[ -n "${HOST_CONFIG}" ]] && EXEC_START="${EXEC_START} --host-config ${HOST_CONFIG}"
+    cat > "${UNIT_PATH}" <<EOF
+[Unit]
+Description=agent-project resident (単一常駐コントローラ)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${EXEC_START}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+    ok "systemd unit を書き出しました: ${UNIT_PATH}"
+    systemctl --user daemon-reload
+    systemctl --user enable --now agent-project.service \
+      && ok "agent-project.service を有効化・起動しました" \
+      || warn "systemctl --user enable --now に失敗しました（unit は書き出し済み。手動で確認してください）"
+    if command -v loginctl >/dev/null 2>&1; then
+      loginctl enable-linger "$(whoami)" 2>/dev/null \
+        && ok "loginctl enable-linger を設定しました（ログアウト後もサービスを維持）" \
+        || warn "loginctl enable-linger に失敗しました（ログアウトで停止する可能性があります）"
+    fi
+  fi
+fi

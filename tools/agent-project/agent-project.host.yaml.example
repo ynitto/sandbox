@@ -1,0 +1,50 @@
+# PC 単位の宣言（host.yaml）。プロジェクト宣言の単一ソース（実装計画 W1-11・設計 §4.2）。
+# 推奨配置: ~/.agents/agent-project.host.yaml（cwd に置いてもよい。探索順は cwd → ~/.agents）。
+# 起動: agent-project serve（フルノード）/ agent-project worker（projects が空ならワーカー
+# ノード lite——別コマンドだが実装は serve と同一。設計 §4.3・C12）。
+schema_version: 1
+
+# このノード（PC）の身元。省略時はホスト名を正規化（agentcore.nodeid.normalize_node_id）
+# して使う——複数 PC で同じ yaml を共有配布する運用なら省略が既定（PC 毎に自動で変わる）。
+node_id: pc-a
+
+# このノードが監督するプロジェクト（agent-project run --watch を Supervisor が起動・監視・
+# 隔離・再起動する）。空なら「ワーカーノード（lite）」——プロジェクトを持たず、余った計算力を
+# 板（agent-board）経由の仕事だけに挿す（設計 §4.3。導入は clone + install.sh +
+# `agent-project worker init` の最小手順）。
+projects:
+  - name: example-project          # 省略可（省略時は root から自動生成）
+    root: /home/me/projects/example-project-state
+    config: /home/me/projects/example-project-state/agent-project.yaml  # 省略可（root 配下の既定探索）
+
+# 板（agent-board）参加の設定（板を持たないローカル運用なら board を省略してよい）。
+# amigos 参加 tick（下記 amigos_bus）の板巡回にも使う。node 名義での「板の請負」
+# （nodes/<pc>.json 能力宣言・workload=flow/amigos への入札）自体はまだ未実装
+# （実装計画 W1-11 残・設計 §4.2「現状未実装」——中途半端な実装は二重落札のリスクがあるため
+# 意図的に見送っている。現状ここで動くのは amigos 参加 tick の板巡回だけ）。
+tags: []
+agent_cli: []
+board: ""
+board_workdir: null
+
+# amigos 参加 tick（claim・心拍・オーナー職務・板巡回。手番は NodeWorkerPool へ委ねる）の
+# 対象バス。未設定なら amigos 参加 tick 自体を skip する（board 未設定時と同じ流儀）。
+# amigos_config は agent-amigos の設定ファイル（省略時は agent-amigos 自身の探索順）。
+amigos_bus: ""
+amigos_config: null
+
+# ノード全体の同時実行数上限（amigos 手番の NodeWorkerPool 投入を律速する。板落札の実行は
+# 未配線——上の板参加と同じ理由）。0 は「明示未設定」— この場合 agent-flow daemon の
+# 既定 --max-workers に合わせて 4 になる（NodeWorkerPool は 0 を無制限にはできない）。
+budget:
+  max_concurrent: 0   # 0 = 既定（4）
+
+# 常駐化（PC 起動時に上がる・死んだら上げ直される）をどちらの方式で構成したか（設計 §7）。
+# doctor が検査できるのは systemd 側だけで、Windows タスクスケジューラ側は WSL の外から
+# 見えない。タスクスケジューラ案を選んだ PC でこれを宣言しないと、doctor が
+# 「常駐化が未構成」を出し続ける（正しく構成しているのに誤警告）。
+#   auto（既定） … systemd がある環境なら systemd 案とみなして検査する
+#   systemd      … install.sh --service で構成した
+#   windows-task … Windows タスクスケジューラで構成した（doctor は検査せず人が確認する）
+#   none         … 常駐化しない（手動起動のみ）
+residency: auto

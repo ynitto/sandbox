@@ -109,3 +109,113 @@
   揃うまで削除を完了扱いにしない）。
 - **node_id 統一と語彙統一は静止点イベント**として運用カレンダーに載せ、doctor の
   切替前チェックが通らない限り実施しない。
+
+## 7. P1 進捗と残作業（2026-07-25 時点）
+
+W1-1〜W1-13 は主要部の実装・テストとも完了（agent-project 956 / agent-flow 547 /
+agent-amigos 159 / agentcore 48 が全て green・fail/error ゼロ）。ただし
+**W1-4・W1-5・W1-12 に未達項目が残る**（下記「未実装」の該当行。W1-4 の自殺型停止経路は
+実害あり）。
+以下は完了スコープの内側で見送った・未実装の項目。
+利用者向けの詳細は [`docs/guides/single-resident-setup.md`](../guides/single-resident-setup.md) §6 も参照。
+
+### 未実装（次の作業）
+
+- **【W1-4 の未達・実害あり】自殺型停止経路が「親 → 子への指示」へ置換されていない。**
+  W1-4 の作業項目に明記されているが未実施で、`availability` を設定した PC で
+  **計画停止が隔離（quarantine）に化ける**。経路: 子（`run --watch`）の
+  `start_availability_monitor` が `shutdown_due` で **自分に SIGTERM を送る**
+  （`coordination.py` の `os.kill(os.getpid(), signal.SIGTERM)`）→ Supervisor は終了コードを
+  見ずに死亡と判定（`check_health`）→ backoff 後に再起動 → 新しい子が 1 秒以内に同じ
+  `shutdown_due` を検知して再び自殺 → `quarantine_after`（既定 5・window 600s）に到達して
+  隔離。隔離の自動解除は無いので、夜間停止のたびに人が `serve` を上げ直すまでその
+  プロジェクトが止まる。W1-4 の設計どおり「止めるかどうかは常に親が決める」形
+  （`Supervisor.stop` の docstring が既にそう宣言している）へ寄せる必要がある。
+  最小の直し方は、子の availability 監視を常駐体側の tick に移し、`shutdown_due` を
+  親が判定して `Supervisor.stop(name)` を呼ぶこと。`update.py` の `os.execv` による
+  自己再起動は PID が変わらないため Supervisor からは死に見えず、こちらは実害なし。
+- **板の請負 tick**（node 名義での `nodes/<pc>.json` 能力宣言・workload=flow/amigos への
+  入札・落札した仕事のノード直轄ワーカー実行）。設計 §4.2 で「現状未実装、ここで初めて
+  実装する」と明記された機能。既存の flow/amigos の板参加（`poll_board`）はいずれも
+  「委譲側の bus へ取り込む」形で実装されており、ノード直轄の契約側実行（bus を持たない
+  ノードが落札 → NodeWorkerPool で実行 → board へ結果報告）はまだ設計が固まっていない。
+  中途半端に実装すると二重落札・二重実行のリスクがあるため意図的に手を付けていない。
+- **旧経路の削除**（設計 P1 行に明記済み）: `agent-flow` の `daemon`/`submit`/`location`/
+  `act_async`、`agent-amigos` の `serve`/`hub`、`agent-project` の
+  `instances`/`start`/`stop`/`restart`。resident（`serve`/`status`/`worker` + amigos 参加
+  tick + gc tick）が実地で安定してから、3 パッケージのテスト資産（daemon 前提テストが
+  project 側だけで数十件規模）ごと計画的に削るべき規模の変更のため、今回のスコープでは
+  見送った。W1-2 で tick 関数へ抽出した `_tick_cancel` 等（flow daemon 内蔵）は、
+  daemon 削除後に呼び手が無くなるため同時に整理する。
+- **板の終端公示の gc**（設計 §4.2 gc tick の対象に「終端した公示」が明記されているが未実装）。
+  `board/delegations/<id>/` は `result.json`/`cancelled.json` が付いても誰も削除しない
+  ため無限に積み上がる。現状の gc tick（今回追加）はプロジェクトの flow バス掃除
+  （`agent-flow cleanup`/`gc`）のみで、板そのものの掃除は範囲外。板の請負 tick と同様、
+  誰が・いつ・どの安全マージンで消すか（他ノードが遅延同期中に消すと結果を取りこぼす）が
+  未検討のため見送った。
+- **systemd `Type=notify` + `WatchdogSec`**（sd_notify によるハング監視の外部二重化）。
+  常駐体内蔵の self-watchdog による自己 abort が主経路のため、無くても設計 §7 の
+  「(a) 起動時に上がる (b) 死んだら上げ直される」は満たされる。
+- **§5 事前検証 V1・V3・V4 が未検証のまま**（実機 WSL/Windows/systemd 環境が要る）。
+  `install.sh --service` は書いたが `loginctl enable-linger` 込みで実機通しの確認はして
+  いない（V4）。Windows タスクスケジューラの `wsl.exe` 終了コード伝播・再起動間隔（V3）、
+  UNC アクセスがディストロを起動し続けるか（V1）も未検証——ガイドにはその旨明記済み
+  （`docs/guides/single-resident-setup.md` §4b の「要検証」）。W3-3 の実機 canary で
+  初めて検証される。
+- **【W1-12 の未達】C14 併走テストとカオステストが未新設。** W1-12 の作業項目は
+  「C14 併走テスト（スキル起動 run × 常駐体の claim 排他・孤児回収）」と
+  「カオステスト（親 kill / 子 kill / ハング注入 / 電源断相当のクローン破損）」の新設を
+  挙げているが、実際に足したのは §6 回復表の対応付け（既存資産の棚卸し）まで。
+  現状の充足は部分的で、子 kill は `test_resident_supervisor.py`、ハング注入は同
+  `test_hang_detected_via_is_healthy_and_restarted`、クローン破損は
+  `test_transport.py::test_corrupted_object_triggers_rebuild` が押さえるが、
+  **親 kill（常駐体を落として子が孤児化しないか）と C14 併走は対応テストが無い**。
+  併走は `agent-amigos drive`（W1-3 で新設）と常駐体の amigos 参加 tick が同じ bus を
+  同時に触る経路で、claim の排他が効くかを検証していない。
+- **【W1-5 の設計差異】NodeWorkerPool の同時実行計数がプロセス内カウンタ。**
+  W1-5 は「計数は status/run ファイルから導出」と規定するが、実装はプロセス内の
+  in-flight dict（`resident/worker.py` の docstring に明記済み）。常駐体が唯一の実行主体で
+  ある限り正確だが、**スキル起動の単発実行（`drive` / `run --once` を人が直接叩く）は
+  この計数に入らない**ため、C14 の併走時にノード全体の `max_concurrent` を超えうる。
+  上の C14 併走テストと同じ経路の話なので、併せて検討する。
+
+### 実装済み（W1-11 残作業として今回追加）
+
+amigos 参加/手番分離（`agent-amigos participate` + 既存 `run --once` へのワーカー投入）・
+`agent-flow cleanup`/`agent-project gc`（新設 CLI・resident gc tick から利用）・doctor の
+常駐化構成検査・`install.sh --service`（systemd user unit 生成）・セットアップガイド。
+詳細は各コミットの docstring・`docs/guides/single-resident-setup.md` を参照。
+
+### §6 障害と回復表 ×既存テストの対応（W1-12）
+
+設計 §6 の各行に対応する既存テストを列挙する（新規追加ではなく、既存資産の棚卸し）。
+一部は正確なテスト名確認までで、内容までは今回精査していない。
+
+| 事象 | テスト |
+|---|---|
+| 常駐体のクラッシュ | 無し（起動系＝OS 責務。doctor 構成検査のみ: `test_agent_project.py::test_residency_findings_flags_missing_unit`） |
+| 常駐体のハング（self-watchdog） | `test_resident_scheduler.py::test_self_watchdog_aborts_on_stall` |
+| プロジェクト子のクラッシュ | `test_resident_supervisor.py::test_start_and_crash_is_restarted` |
+| プロジェクト子のハング | `test_resident_supervisor.py::test_hang_detected_via_is_healthy_and_restarted` |
+| 子の連続クラッシュ→隔離 | `test_resident_supervisor.py::test_quarantine_after_repeated_deaths` |
+| 実行中 run の孤児化 | `tools/agent-flow/tests/test_agent_flow.py::OrphanRecoveryTests.test_orphan_inbox_run_is_resumed_not_failed`（関連多数） |
+| git ロック残骸・中断 rebase | `tools/agentcore/agentcore/tests/test_transport.py::TestSelfHealing.test_stale_lock_is_removed_and_recovered` / `.test_interrupted_rebase_is_aborted_on_reuse` |
+| クローン破損 | `test_transport.py::TestSelfHealing.test_corrupted_object_triggers_rebuild` |
+| push 競合 | `test_transport.py::TestCloneAndSync.test_concurrent_push_resolves_via_rebase_no_force` |
+| リモート不通（fail-close） | `test_agent_project.py::TestAtomicClaim.test_peer_present_with_unreachable_origin_fails_closed` |
+| PC の計画停止（drain/away） | `test_agent_project.py::TestDirectStateGit.test_draining_node_releases_controller_for_another_node` / `test_resident_supervisor.py::test_graceful_shutdown_sequences_all_steps_after_stopping_children` |
+| PC の突然死（lease 失効・fencing） | `test_agent_project.py::TestDirectStateGit.test_controller_lease_moves_after_expiry` / `.test_distributed_claim_has_one_winner_and_persists_fence` / `.test_stale_claim_token_cannot_settle` |
+| 全 PC 停止 | 専用テスト無し（ローカル滞留は各所の意図しない push 抑止テストで間接カバー） |
+| forge 停止 | `test_agent_project.py::TestDirectStateGit.test_unreachable_remote_is_unknown_not_lost` / `.test_settle_with_unreachable_remote_preserves_work_for_human` |
+| WSL VM 停止 | 無し（実機 canary 待ち。上記 V1 未検証と同根） |
+| ディスク肥大→gc | `test_agent_project.py::ResidentCliTests.test_gc_tick_isolates_project_sweeper_failure` / `test_resident_status.py::test_run_gc_aggregates_and_isolates_failures` |
+| 時計ずれ | `test_agent_project.py::TestDirectStateGit.test_controller_lease_tolerates_clock_skew_before_reclaiming` |
+| 更新漏れの古いノード（契約バージョン） | `test_resident_status.py::test_contract_compatible` |
+
+**回復そのものを検証するテストが無い行**: 「常駐体のクラッシュ」「全 PC 停止」「WSL VM 停止」
+の 3 行。実機/OS 領域で単体テスト化が原理的に困難（W3-3 の canary が受け皿）。うち
+「常駐体のクラッシュ」だけは**構成の事前検査**（起動系が上げ直す設定になっているか）を
+`test_residency_findings_flags_missing_unit` が押さえており、回復動作そのものが未検証。
+
+「時計ずれ」は穴を確認後にテストを追加済み（許容幅の内側では横取りしないことを固定——
+従来は許容幅を過ぎた後の横取りしか検証していなかった）。

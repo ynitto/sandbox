@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
+import json
 import os
 import shutil
 import sys
@@ -265,6 +268,46 @@ def cmd_drive(args) -> int:
                         interval=args.interval, home=_node_home(args))
     daemon.run(cycles=args.cycles, until_terminal=True, install_signals=False,
               mission_id=args.mission_id)
+    return 0
+
+
+def cmd_participate(args) -> int:
+    """参加のみ 1 巡（実装計画 W1-11 残・設計 §4.2「amigos 参加（claim・心拍・away）」）:
+    応募・オーナー職務・板巡回のみ行い、手番は実行しない。ノード常駐体（agent-project
+    resident）の短周期 tick から都度起動される想定 — bus が調停役なのでプロセス境界を
+    跨いでも roster は安全に進む。自分が roster 上で担当する (mission_id, role_id) を
+    出力する（呼び出し側が `agent-amigos run --once` をディスパッチする材料。R9: 常駐なしの
+    単発 CLI として amigos 単体でも成立する）。"""
+    settings = load_settings(args.config)
+    spec = resolve_bus_spec(settings, args.bus or None)
+    bus = make_bus(spec, workdir=args.bus_workdir or settings.get("bus_workdir"))
+    node = args.node_id or settings.get("node_id") or default_node_id()
+    manual = settings["manual_claim"] if args.manual_claim is None else bool(args.manual_claim)
+    daemon = NodeDaemon(
+        bus, node,
+        agent_cli=args.agent_cli or settings.get("agent_cli"),
+        tags=[t for t in (args.tags or "").split(",") if t] or settings["tags"],
+        roles_filter=[r for r in (args.roles or "").split(",") if r] or settings["roles"],
+        manual_claim=manual,
+        commands_home=settings["_home"],
+        repos=settings.get("repos"),
+        board=(getattr(args, "board", None) or settings.get("board")),
+        board_workdir=settings.get("board_workdir"),
+        board_lease=float(settings.get("board_lease") or 900.0),
+    )
+    # log()（claim 等の逐次ログ）は素の print で stdout に出る。呼び出し側（resident の
+    # amigos tick）は stdout を機械可読な結果として json.loads するため、ログが先頭に
+    # 混ざると必ずパース失敗する。このコマンドの間だけ stdout を奪って stderr へ転送し、
+    # 結果（JSON / 平文一覧）だけを最後に本来の stdout へ書く。
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        owned = daemon.participate_only()
+    sys.stderr.write(buf.getvalue())
+    if args.json:
+        print(json.dumps([{"mission_id": m, "role_id": r} for m, r in owned], ensure_ascii=False))
+    else:
+        for mid, rid in owned:
+            print(f"{mid} {rid}")
     return 0
 
 
@@ -671,6 +714,21 @@ def build_parser() -> argparse.ArgumentParser:
                         "巻き込まれてハングし得るため指定を推奨）")
     p.set_defaults(fn=cmd_drive)
 
+    p = sub.add_parser("participate",
+                       help="参加のみ 1 巡（実装計画 W1-11 残）: 応募・オーナー職務・板巡回のみ行い、"
+                            "手番は実行しない。ノード常駐体の短周期 tick 用 — 担当 "
+                            "(mission,role) を出力する（実行は `run --once` へ委ねる）")
+    _bus_arg(p); _node_arg(p)
+    p.add_argument("--agent-cli", default=None)
+    p.add_argument("--tags", default="", help="ノードの能力タグ（カンマ区切り。設定 tags を上書き）")
+    p.add_argument("--roles", default="", help="応募ロールの絞り込み（カンマ区切り。設定 roles を上書き）")
+    p.add_argument("--manual-claim", action=argparse.BooleanOptionalAction, default=None,
+                   help="自動応募しない（commands/ 経由の手動引き受けのみ。設定 manual_claim を上書き）")
+    p.add_argument("--board", default=None,
+                   help="委譲公示板（agent-board）の場所（ローカル dir / git+<url>）")
+    p.add_argument("--json", action="store_true", help="機械可読な JSON で出力")
+    p.set_defaults(fn=cmd_participate)
+
     p = sub.add_parser("run", help="単発 amigo（デバッグ用）")
     _bus_arg(p); _node_arg(p)
     p.add_argument("--mission", required=True)
@@ -772,8 +830,8 @@ def build_parser() -> argparse.ArgumentParser:
 # 既知のサブコマンド。省略して呼ばれたら「常駐起動（serve）」を既定にする
 # （agent-project の run --watch 既定と同じ流儀 — PC 起動時に立ち上げっぱなしにして
 # cwd のホームを面倒見る daemon 用途を一級にする）。
-_SUBCOMMANDS = {"serve", "init-bus", "post", "build-team", "join", "drive", "run", "status",
-                "collect", "accept", "reject", "assign", "restaff", "budget", "say",
+_SUBCOMMANDS = {"serve", "init-bus", "post", "build-team", "join", "drive", "participate", "run",
+                "status", "collect", "accept", "reject", "assign", "restaff", "budget", "say",
                 "cancel", "gc", "hub", "deliveries"}
 
 

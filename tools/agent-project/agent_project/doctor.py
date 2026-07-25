@@ -335,6 +335,60 @@ def doctor_node_id_cutover_findings(board_root: "str | None", old_node_id: str,
     return findings
 
 
+def _declared_residency() -> str:
+    """host.yaml が宣言する常駐化方式（設計 §7）。未検出・未宣言は "auto"。
+
+    doctor はプロジェクト単位で動くが常駐化は PC 単位なので、cfg ではなく host.yaml を見る。
+    `load_host_config` は resident_cli フラグメント（doctor より後に exec される）にあるが、
+    名前解決は呼び出し時なので参照して問題ない。host.yaml が無い PC でも doctor は動くため、
+    未定義・読み取り失敗は "auto" に倒す。"""
+    try:
+        return load_host_config().residency
+    except Exception:  # noqa: BLE001 — doctor は host.yaml の不備で落ちない
+        return "auto"
+
+
+def doctor_residency_findings(residency: "str | None" = None) -> "list[dict]":
+    """常駐化（起動系）の構成検査（実装計画 W1-11 残・設計 §7）。要件は 2 つだけ:
+    (a) PC 起動/ログオン時に常駐体が上がる、(b) 死んだら上げ直される。実現方式は
+    systemd user unit（WSL/Linux）と Windows タスクスケジューラの 2 案があり選択式。
+
+    **検査できるのは systemd 側だけ。** Windows タスクスケジューラの構成有無は WSL の
+    外側（schtasks.exe）を要するのでここからは見えず、したがって「両方構成されている」
+    という二重構成の検出もできない。`residency` はどちらを選んだかの宣言
+    （host.yaml の `residency`）で、`windows-task` / `none` なら検査しない——
+    タスクスケジューラ案を正しく構成した PC に「常駐化が未構成」を出し続けると、
+    正しい構成の利用者へ恒久的な誤警告を浴びせることになる。
+
+    systemd が無い環境（この macOS 開発機を含む）でも所見を出さない——本節の要件は
+    フルノード（Windows/WSL 配置）のものであり、非対象環境での「未設定」警告は
+    ノイズにしかならない（doctor は誤検知よりノイズの少なさを優先する）。
+
+    systemd 側の不備も `warn` に留める（未構成を critical にすると、方式を宣言し忘れた
+    PC で運用を止めてしまう）。"""
+    if str(residency or "auto").lower() in ("windows-task", "windows", "none", "manual"):
+        return []   # 検査対象外の方式を明示宣言している（誤警告を出さない）
+    if not os.path.isdir("/run/systemd/system") or not shutil.which("systemctl"):
+        return []   # systemd 非対象環境（このリポジトリの開発機である macOS 含む）
+    unit_path = os.path.expanduser("~/.config/systemd/user/agent-project.service")
+    if not os.path.isfile(unit_path):
+        return [{"category": "config", "severity": "warn", "title": "常駐化が未構成",
+                "evidence": f"{unit_path} が無い（systemd user unit 未生成）",
+                "fix": "bash install.sh --service を実行するか、Windows タスクスケジューラ側の"
+                       "常駐起動を構成する（設計 §7・二重構成はしない）"}]
+    try:
+        enabled = subprocess.run(["systemctl", "--user", "is-enabled", "agent-project.service"],
+                                 capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return []   # systemctl 呼び出し自体に失敗（サンドボックス等）——判定不能として静かに諦める
+    if enabled not in ("enabled", "enabled-runtime", "static"):
+        return [{"category": "config", "severity": "warn", "title": "常駐 unit が未有効化",
+                "evidence": f"systemctl --user is-enabled agent-project.service = {enabled!r}",
+                "fix": "systemctl --user enable --now agent-project.service && "
+                       "loginctl enable-linger $USER"}]
+    return []
+
+
 def _node_record_is_fresh(rec: dict) -> bool:
     """板の `nodes/<id>.json` が「今も生きているノード」を指すか（board.schema.json の
     heartbeat + fresh_after_sec 流儀）。heartbeat を持たない登録は生死を判定できないので
@@ -660,7 +714,8 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
     # 決定的所見は ensure_dirs より前に集める（create-dirs 所見を消さないため）
     deterministic = (doctor_env_findings(cfg) + doctor_coordination_findings(cfg)
                      + doctor_audit_findings(cfg)
-                     + doctor_flow_bus_coverage_findings(cfg) + doctor_wiring_findings(cfg))
+                     + doctor_flow_bus_coverage_findings(cfg) + doctor_wiring_findings(cfg)
+                     + doctor_residency_findings(_declared_residency()))
     for f in deterministic:
         f["source"] = "check"
     signals = collect_doctor_signals(cfg)
@@ -681,7 +736,7 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
         # （例: create-dirs は複数の監査未達を一度に解消する）。
         still = {(g["category"], re.sub(r"\s+", " ", g.get("title", "").lower()).strip())
                  for g in doctor_env_findings(cfg) + doctor_coordination_findings(cfg)
-                 + doctor_audit_findings(cfg)}
+                 + doctor_audit_findings(cfg) + doctor_residency_findings(_declared_residency())}
         for f in findings:
             if f.get("source") == "check" and not f.get("resolved"):
                 key = (f["category"], re.sub(r"\s+", " ", f.get("title", "").lower()).strip())
