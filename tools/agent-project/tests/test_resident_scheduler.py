@@ -61,6 +61,25 @@ def test_exception_isolated_other_ticks_keep_running():
     assert any(name == "bad" and "boom" in msg for name, msg in errors)
 
 
+def test_long_period_healthy_tick_not_aborted():
+    # period が watchdog_timeout より長い健全な tick を誤って殺さない（猶予に period を上乗せ）。
+    aborted = threading.Event()
+    ran = {"n": 0}
+
+    sched = Scheduler(
+        [Tick("slow-period", period=0.3, fn=lambda: ran.__setitem__("n", ran["n"] + 1))],
+        watchdog_timeout=0.05,   # period(0.3) より短い — 上乗せしないと即 abort
+        abort_fn=aborted.set,
+    )
+    sched.start()
+    time.sleep(0.5)
+    sched.stop()
+    sched.join(timeout=2)
+
+    assert not aborted.is_set(), "健全な長周期 tick を watchdog が誤って abort した"
+    assert ran["n"] > 0
+
+
 def test_duplicate_tick_names_rejected():
     try:
         Scheduler([Tick("x", period=1, fn=lambda: None), Tick("x", period=1, fn=lambda: None)])
@@ -88,6 +107,7 @@ def test_self_watchdog_aborts_on_stall():
 if __name__ == "__main__":
     test_single_flight_never_overlaps()
     test_exception_isolated_other_ticks_keep_running()
+    test_long_period_healthy_tick_not_aborted()
     test_duplicate_tick_names_rejected()
     test_self_watchdog_aborts_on_stall()
     print("ok")

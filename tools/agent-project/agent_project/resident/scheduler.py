@@ -8,9 +8,13 @@
 安全に kill できないため（設計 §4.2「git はサブプロセスなので kill で確実に打ち切れる」）。
 
 self-watchdog: 各 tick の直近の呼び出し開始時刻を心拍として扱い、いずれかが
-`watchdog_timeout` 秒を超えて更新されなければスケジューラ自身がハングしたとみなし、
-自プロセスを abort する（起動系の再起動に乗る。設計 §4.2）。systemd 配下では
-`NOTIFY_SOCKET` があれば毎 watchdog 周期で `WATCHDOG=1` も送る（二重の保険）。
+`period + watchdog_timeout` 秒を超えて更新されなければスケジューラ自身がハングしたとみなし、
+自プロセスを abort する（起動系の再起動に乗る。設計 §4.2）。心拍は各巡の**開始時**にだけ
+更新するため、健全な tick でも次巡までの静止時間は `period + fn 実行時間` になる。周期を
+無視して固定 `watchdog_timeout` と比べると、周期の長い tick（gc・cleanup 等）を静止＝ハングと
+誤検知して健全なプロセスを殺す。よって tick ごとに `period` を加えた猶予で判定する
+（`watchdog_timeout` は「その周期で再点火すべき時刻からさらにこれだけ遅れたら死」の意味）。
+systemd 配下では `NOTIFY_SOCKET` があれば毎 watchdog 周期で `WATCHDOG=1` も送る（二重の保険）。
 """
 from __future__ import annotations
 
@@ -47,6 +51,7 @@ class Scheduler:
         if len(names) != len(set(names)):
             raise ValueError(f"tick 名が重複しています: {names}")
         self._ticks = list(ticks)
+        self._period = {t.name: t.period for t in ticks}
         self._watchdog_timeout = watchdog_timeout
         self._on_tick_error = on_tick_error
         self._abort_fn = abort_fn or (lambda: os._exit(1))  # noqa: SLF001 — 意図的（§4.2）
@@ -103,8 +108,10 @@ class Scheduler:
                 return
             with self._lock:
                 now = time.monotonic()
+                # 猶予は tick ごとに period を上乗せする。健全でも次巡まで period 分は静止する
+                # ため、固定 watchdog_timeout だと周期の長い tick を誤ってハング判定する。
                 stalled = [name for name, ts in self._last_alive.items()
-                          if now - ts > self._watchdog_timeout]
+                          if now - ts > self._period[name] + self._watchdog_timeout]
             if stalled:
                 self._abort_fn()
                 return

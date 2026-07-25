@@ -658,8 +658,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--agent-cli", default=None)
     p.add_argument("--interval", type=float, default=0.5,
                    help="ミッション未終端時の巡回間隔秒（既定 0.5。呼び出し元が待つので短め）")
-    p.add_argument("--cycles", type=int, default=0,
-                   help="巡回数の安全上限（0=無限。ミッション終端で先に戻る）")
+    p.add_argument("--cycles", type=int, default=10000,
+                   help="巡回数の安全上限（既定 10000。0=無限。ミッション終端で先に戻る）。"
+                        "終端に達し得ないミッション（充足不能な必須ロール・受入が解決しない等）で"
+                        "フォアグラウンド呼び出しを無限ハングさせないための保険")
     p.set_defaults(fn=cmd_drive)
 
     p = sub.add_parser("run", help="単発 amigo（デバッグ用）")
