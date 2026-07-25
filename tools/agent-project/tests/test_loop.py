@@ -271,111 +271,21 @@ class TestRunLoop(unittest.TestCase):
             self.assertEqual(res["counts"]["done"], 1)
 
 
-class TestActSubmitTerminal(unittest.TestCase):
-    """daemon/remote submit 待ちが agent-flow run の終端 status を正しく解釈する。
-    failed を success と取り違えず、orchestrator 異常終了（daemon が failed に確定）でも
-    execute フェーズが永久待機せず即座に失敗として返ることを検証する。"""
+class TestRunIdDeterminism(unittest.TestCase):
+    """リブート跨ぎの再接続の前提: 同一試行は同じ run-id（決定的）、
+    リトライ・別プロジェクトは別 id。"""
 
-    def _fake_run(self, result_payload, advance=None):
-        """submit は run-id を返し、result --json は result_payload を返す擬似 subprocess.run。"""
-        def fake(cmd, *a, **kw):
-            if "submit" in cmd:
-                return subprocess.CompletedProcess(cmd, 0, stdout="run-XYZ\n", stderr="")
-            if "result" in cmd:
-                if advance is not None:
-                    advance()
-                return subprocess.CompletedProcess(
-                    cmd, 0, stdout=json.dumps(result_payload), stderr="")
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        return fake
-
-    def _task(self):
-        return km.Task(id="T1", title="x", verify="true")
-
-    def test_failed_run_reported_as_failure(self):
+    def test_run_id_deterministic(self):
         with tempfile.TemporaryDirectory() as d:
             cfg = cfg_for(Path(d), dry_run=False, act_timeout=30.0)
-            with mock.patch.object(km.subprocess, "run",
-                                   self._fake_run({"done": True, "status": "failed"})), \
-                 mock.patch.object(km.time, "sleep", lambda *_: None):
-                ok, msg = km._act_submit(self._task(), cfg, use_git=False)
-            self.assertFalse(ok)              # failed を success と取り違えない
-            self.assertIn("failed", msg)
-
-    def test_canceled_run_reported_as_failure(self):
-        # dashboard からの手動キャンセルを done（成功）と取り違えない
-        with tempfile.TemporaryDirectory() as d:
-            cfg = cfg_for(Path(d), dry_run=False, act_timeout=30.0)
-            with mock.patch.object(km.subprocess, "run",
-                                   self._fake_run({"done": True, "status": "cancelled"})), \
-                 mock.patch.object(km.time, "sleep", lambda *_: None):
-                ok, msg = km._act_submit(self._task(), cfg, use_git=False)
-            self.assertFalse(ok)
-            self.assertIn("cancelled", msg)
-
-    def test_done_run_reported_as_success(self):
-        with tempfile.TemporaryDirectory() as d:
-            cfg = cfg_for(Path(d), dry_run=False, act_timeout=30.0)
-            with mock.patch.object(km.subprocess, "run",
-                                   self._fake_run({"done": True, "status": "done"})), \
-                 mock.patch.object(km.time, "sleep", lambda *_: None):
-                ok, msg = km._act_submit(self._task(), cfg, use_git=False)
-            self.assertTrue(ok)
-            self.assertIn("done", msg)
-
-    def test_submit_req_id_deterministic_and_passed_to_submit(self):
-        # リブート跨ぎの再接続の前提: 同一試行は同じ req_id（決定的）、リトライ・別プロジェクトは別 id
-        with tempfile.TemporaryDirectory() as d:
-            cfg = cfg_for(Path(d), dry_run=False, act_timeout=30.0)
-            t = self._task()
-            rid = km._submit_req_id(t, cfg)
-            self.assertEqual(rid, km._submit_req_id(t, cfg))                  # 決定的
-            self.assertNotEqual(rid, km._submit_req_id(
+            t = km.Task(id="T1", title="x", verify="true")
+            rid = km._new_run_id(t, cfg)
+            self.assertEqual(rid, km._new_run_id(t, cfg))                     # 決定的
+            self.assertNotEqual(rid, km._new_run_id(
                 km.Task(id="T1", title="x", verify="true", retries=1), cfg))  # リトライは新 run
             cfg2 = cfg_for(Path(d) / "other", dry_run=False)
-            self.assertNotEqual(rid, km._submit_req_id(t, cfg2))              # 別 backlog と衝突しない
+            self.assertNotEqual(rid, km._new_run_id(t, cfg2))                 # 別 backlog と衝突しない
             self.assertNotIn("/", rid)                                        # run ディレクトリ名に安全
-
-            seen = []
-
-            def fake(cmd, *a, **kw):
-                seen.append(list(cmd))
-                if "submit" in cmd:
-                    return subprocess.CompletedProcess(cmd, 0, stdout=f"{rid}\n", stderr="")
-                return subprocess.CompletedProcess(
-                    cmd, 0, stdout=json.dumps({"done": True, "status": "done"}), stderr="")
-
-            with mock.patch.object(km.subprocess, "run", fake), \
-                 mock.patch.object(km.time, "sleep", lambda *_: None):
-                ok, _ = km._act_submit(t, cfg, use_git=False)
-            self.assertTrue(ok)
-            sub_cmd = next(c for c in seen if "submit" in c)
-            self.assertIn("--run-id", sub_cmd)                                # 再接続の入口
-            self.assertEqual(sub_cmd[sub_cmd.index("--run-id") + 1], rid)
-
-    def test_nonterminal_run_times_out_without_hanging(self):
-        # done=False のまま（orchestrator 失踪を daemon が終端化できていない最悪ケース）でも、
-        # act_timeout を境に必ず返る（永久待機しない）ことを擬似クロックで確認する。
-        clock = [1000.0]
-        with tempfile.TemporaryDirectory() as d:
-            cfg = cfg_for(Path(d), dry_run=False, act_timeout=10.0)
-            fake = self._fake_run({"done": False, "status": "running"})
-            reaped = []
-            detached = []
-            with mock.patch.object(km.subprocess, "run", fake), \
-                 mock.patch.object(km.time, "time", lambda: clock[0]), \
-                 mock.patch.object(km.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s)), \
-                 mock.patch.object(km, "reap_orphan_flow",
-                                   side_effect=lambda *a, **k: reaped.append(True) or 0), \
-                 mock.patch.object(km, "detach_flow_run",
-                                   side_effect=lambda cfg, task, reason="", **kw: (
-                                       detached.append(reason) or "run-XYZ")):
-                ok, msg = km._act_submit(self._task(), cfg, use_git=False)
-            self.assertFalse(ok)
-            self.assertIn("タイムアウト", msg)
-            self.assertEqual(reaped, [], "submit タイムアウトは daemon 全滅 reap せず cancel する")
-            self.assertEqual(len(detached), 1, "対象 run だけ detach（cancel）する")
-            self.assertIn("タイムアウト", detached[0])
 
 
 class TestActRunMidRevise(unittest.TestCase):
@@ -464,10 +374,6 @@ class TestActRunMidRevise(unittest.TestCase):
             t = km.Task(id="T1", title="x", verify="true", retries=1)
             t.extra.append(("last_run", old))
             self.assertIsNone(km._inherit_from_run(t, "req-ab-T1-r1", cfg))
-            prev = km._inherit_from_run(t, "req-ab-T1-r1", cfg)
-            if prev is None and not str(t.get("last_run") or "").strip():
-                prev = km._prev_req_id(t, cfg)
-            self.assertIsNone(prev)
 
     def test_timeout_detach_marks_failed_and_inherits(self):
         # タイムアウトは cancelled ではなく failed。次 run は last_run を inherit できる。
@@ -510,12 +416,9 @@ class TestActRunMidRevise(unittest.TestCase):
             self.assertIsNone(km._inherit_from_run(t, "req-hum-T1-r1", cfg))
 
 
-class TestActTimeoutZeroAndInherit(unittest.TestCase):
-    """act_timeout=0（無制限待ち）と、リトライ時の先行 run 引き継ぎ（--inherit-from）の配線。
-    gitlab 等の長時間委譲で待ち切れず retry を空増やしする事故を防ぐための変更。"""
-
-    def _task(self, retries=0):
-        return km.Task(id="T1", title="x", verify="true", retries=retries)
+class TestActTimeoutZero(unittest.TestCase):
+    """act_timeout=0（無制限待ち）の claim 保持。gitlab 等の長時間委譲で
+    待っているあいだに claim を奪われないための配線。"""
 
     def test_claim_ttl_infinite_when_act_timeout_zero(self):
         with tempfile.TemporaryDirectory() as d:
@@ -524,59 +427,12 @@ class TestActTimeoutZeroAndInherit(unittest.TestCase):
             cfg30 = cfg_for(Path(d), dry_run=False, act_timeout=30.0)
             self.assertTrue(km._claim_ttl(cfg30) < float("inf"))
 
-    def test_act_timeout_zero_waits_until_done(self):
-        # act_timeout=0 は無制限。擬似クロックが大きく進んでもタイムアウトせず、done で success。
-        clock = [1000.0]
-        state = {"polls": 0}
-
-        def fake(cmd, *a, **kw):
-            if "submit" in cmd:
-                return subprocess.CompletedProcess(cmd, 0, stdout="run-XYZ\n", stderr="")
-            if "result" in cmd:
-                state["polls"] += 1
-                done = state["polls"] >= 5
-                payload = {"done": done, "status": "done" if done else "running"}
-                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(payload), stderr="")
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-        with tempfile.TemporaryDirectory() as d:
-            cfg = cfg_for(Path(d), dry_run=False, act_timeout=0.0)
-            with mock.patch.object(km.subprocess, "run", fake), \
-                 mock.patch.object(km.time, "time", lambda: clock[0]), \
-                 mock.patch.object(km.time, "sleep",
-                                   lambda s: clock.__setitem__(0, clock[0] + 100000)):
-                ok, msg = km._act_submit(self._task(), cfg, use_git=False)
-            self.assertTrue(ok)                          # 巨大なクロック前進でもタイムアウトしない
-            self.assertIn("done", msg)
-            self.assertGreaterEqual(state["polls"], 5)
-
-    def test_inherit_from_passed_on_retry_only(self):
+    def test_req_id_for_generation(self):
         with tempfile.TemporaryDirectory() as d:
             cfg = cfg_for(Path(d), dry_run=False, act_timeout=30.0)
-            self.assertIsNone(km._prev_req_id(self._task(0), cfg))          # 初回は先行 run なし
-            self.assertEqual(km._prev_req_id(self._task(2), cfg),
-                             km._req_id_for(self._task(2), cfg, 1))         # retries-1 世代
-
-            def capture(retries):
-                seen = []
-
-                def fake(cmd, *a, **kw):
-                    seen.append(list(cmd))
-                    if "submit" in cmd:
-                        return subprocess.CompletedProcess(cmd, 0, stdout="rid\n", stderr="")
-                    return subprocess.CompletedProcess(
-                        cmd, 0, stdout=json.dumps({"done": True, "status": "done"}), stderr="")
-
-                with mock.patch.object(km.subprocess, "run", fake), \
-                     mock.patch.object(km.time, "sleep", lambda *_: None):
-                    km._act_submit(self._task(retries), cfg, use_git=False)
-                return next(c for c in seen if "submit" in c)
-
-            self.assertNotIn("--inherit-from", capture(0))                  # 初回は引き継ぎなし
-            retry = capture(3)
-            self.assertIn("--inherit-from", retry)                         # リトライは引き継ぐ
-            self.assertEqual(retry[retry.index("--inherit-from") + 1],
-                             km._req_id_for(self._task(3), cfg, 2))
+            t = km.Task(id="T1", title="x", verify="true", retries=2)
+            self.assertEqual(km._new_run_id(t, cfg), km._req_id_for(t, cfg, 2))
+            self.assertNotEqual(km._req_id_for(t, cfg, 2), km._req_id_for(t, cfg, 1))
 
 
 class TestPace(unittest.TestCase):

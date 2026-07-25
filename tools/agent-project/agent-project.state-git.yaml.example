@@ -21,23 +21,20 @@
 #   設定ファイルは <root>/agent-project.yaml（ルート直下＝プロジェクトのマニフェスト。推奨）
 #   か <root>/.agents/agent-project.yaml か ~/.agents/ に置く。
 #
-# ── 起動（WSL・プロジェクトルートで）──
-#   agent-flow daemon &        # 実行層（同じバスで常駐。agent-flow.state-git.yaml.example を読む）
-#   agent-project start        # 制御層（run --watch を detached 起動）
+# ── 起動（WSL）──
+#   agent-project serve        # この PC の常駐体（host.yaml のプロジェクトを監督する）
 #   認証: WSL 側ユーザーの SSH 鍵で GitLab へ `git push` が通ること。
 #
-#   ※ agent-flow daemon を agent-project に管理させる構成もある。その場合は
-#     manage_flow_daemon: true と flow_config: <agent-flow.yaml のパス> を設定する。
-#     agent-flow の設定値（executor / state_git_subdir / gitlab.* / defer_waits 等）は
-#     agent-project 側に増やさず、その flow_config（agent-flow.yaml）へ集約して agent-flow に読ませる。
-#     agent-project が CLI 注入するのは routing（--state-git の remote/branch/interval）だけで、
-#     direct モードならルートの origin が自動で使われる。
+#   実行層 agent-flow は常駐させない。act のたびに `agent-flow run` を単発起動し、
+#   その run が自分で生存リースと park の面倒を見る。agent-flow の設定値
+#   （executor / state_git_subdir / gitlab.* / defer_waits 等）は agent-project 側に
+#   増やさず、flow_config（agent-flow.yaml）へ集約して agent-flow に読ませる。
 
 # --- 置き場（相対パスはすべて root 基準）---
 root: .                              # プロジェクトルート = cwd（状態リポジトリの clone）
 workdir: work                        # act / verify の作業ディレクトリ（root 相対 = <root>/work）
-# bus: bus                           # 既定は <root>/bus。agent-flow daemon をプロジェクトルートで
-#                                    #   起動すれば既定同士（./bus）で一致する（明示は共有バス時のみ）
+# bus: bus                           # 既定は <root>/bus（agent-flow の既定 ./bus と一致）。
+#                                    #   明示は共有バス時のみ
 
 # --- 実行（作業そのものは GitLab イシューで各 PC へ分散）---
 executor: gitlab
@@ -45,8 +42,6 @@ watch: true
 act_timeout: 0             # 委譲はレビュー往復で数日かかりうる。0=無制限で完了まで待つ。
                            #   短いタイムアウトだと待ち切れずに retry を空増やし＆イシューを
                            #   二重起票する（この構成では 0 を強く推奨）。
-act_async: true            # 非ブロッキング委譲: submit して待たず offloaded にし、次パスでポーリングして
-                           #   回収する。長期委譲でループを塞がず、複数タスクを並行に進める。
                            #   併せて agent-flow 側 gitlab: の timeout/approved_timeout を 0（無限）にすると
                            #   誤タイムアウト由来の retry ループが完全に消える（agent-flow.state-git.yaml 参照）。
 
@@ -105,11 +100,9 @@ act_async: true            # 非ブロッキング委譲: submit して待たず
 # 各 PC の node/root/availability は共有 YAML に書かず、agent-project.profile.yaml.example の
 # ローカル profile に置く。単一実行ノード＋複数 viewer の構成では coordination は空のままにする。
 
-# --- agent-flow daemon を agent-project に管理させる場合 ---
-# manage_flow_daemon: true                 # agent-flow daemon を自動起動・監視
-# flow_config: ~/.agents/agent-flow.yaml      # agent-flow の設定（executor/state_git_subdir/gitlab.*/defer_waits 等）
+# --- agent-flow へ渡す設定 ---
+# flow_config: ~/.agents/agent-flow.yaml   # agent-flow の設定（executor/state_git_subdir/gitlab.*/defer_waits 等）
 #                                          #   はこのファイルに集約
-# flow_max_workers: 6                      # daemon の worker 上限
 
 # ── バックアップと復元 ──
 #   バックアップ = 状態リポジトリそのもの（全変更がコミット履歴で残る）。

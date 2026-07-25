@@ -34,7 +34,7 @@ amigos_bus: ""
 amigos_config: null
 
 # ノード全体の同時実行数上限（amigos 手番の NodeWorkerPool 投入を律速する。板落札の実行は
-# 未配線——上の板参加と同じ理由）。0 は「明示未設定」— この場合 agent-flow daemon の
+# 未配線——上の板参加と同じ理由）。0 は「明示未設定」— この場合は旧 agent-flow daemon の
 # 既定 --max-workers に合わせて 4 になる（NodeWorkerPool は 0 を無制限にはできない）。
 #
 # 上限は **PC 単位**。常駐体が起こした手番だけでなく、人が直接叩いた単発実行

@@ -6,11 +6,10 @@
 //   claims/<id>/ に lease 内の claim があれば claimed
 //   tasks/<id>.json（または graph.json のノード）だけなら pending
 // 依存未達の pending は表示上 waiting として区別する（agent-flow に明示状態は無い）。
-// run の生存（orchestrator が駆動中か）も meta.json の生存リース
-// （orch_lease_until / heartbeat_at）から、daemon の稼働はロックファイル
-// （$TMPDIR/agent-flow-locks/daemon-<sha1>.lock。同一ホストのみ）から、無ければ
-// <bus>/status.json（state_git 越しに同期された生存信号。別ホスト構成のフォールバック）
-// から、いずれもファイルだけで判定する。
+// run の生存（orchestrator が駆動中か）は meta.json の生存リース
+// （orch_lease_until / heartbeat_at）から、ファイルだけで判定する。エンジンそのものの
+// 稼働判定はこのモジュールが持たない（常駐一本化で engine/status.json へ一本化した。
+// 末尾の注記を参照）。
 
 const crypto = require('crypto');
 const fs = require('fs');
@@ -105,7 +104,7 @@ function nodeTaskToken(runId, nodeId) {
 // gitlab executor の決着（承認/却下）をビュアー側で「先読み」する（クローズ済みイシューの反映）
 // ---------------------------------------------------------------------------
 // gitlab executor は「関連イシューがクローズされた」ことを result で bus に書くが、それは
-// worker が決着ループでクローズを検知したときだけ。非ブロッキング委譲（act_async）＋PC の
+// worker が決着ループでクローズを検知したときだけ。非ブロッキング委譲（板）＋PC の
 // 日次停止などで worker が止まっている間に人がイシューを承認クローズすると、bus には result が
 // 無いままなので、ビュアーのタスクグラフはノードを「実行中」のまま表示してしまう（＝完了に
 // できない）。そこで、executor が result を書くのと同じ信号（関連 MR の状態 → status ラベル →
@@ -202,7 +201,7 @@ function readRunMeta(busDir, runId) {
 // 拾わない無反応ボタン）へ落ちる。
 // 旧データ互換で kp/<task-id>（kiro 改名前）も受ける。
 // task_branch_prefix が設定で ap/ 以外のときも、単一段の prefix/<task-id> を受け取る
-// （取れないと flow:resubmit が inbox 投入＝daemon 無し既定では無反応ボタンになる）。
+// （取れないと flow:resubmit が inbox 投入＝誰も拾わない無反応ボタンになる）。
 function taskIdOfRun(runId, meta) {
   const fromId = parseRunId(runId).taskId;
   if (fromId) return fromId;
@@ -394,7 +393,7 @@ function readRun(runDir) {
     // owner が消えた」孤児の可能性を示す（agent-flow が回収するまでの間の表示）
     alive: TERMINAL.has(status) ? null : runAlive(meta, now),
     heartbeatAt: meta.heartbeat_at || null,
-    resumeCount: Number(meta.resume_count || 0), // daemon が孤児を自動再開した回数（進捗でリセット）
+    resumeCount: Number(meta.resume_count || 0), // 孤児を自動再開した回数（進捗でリセット）
     workspace: meta.workspace || null, // 唯一の書込先（gitlab executor の起票先解決に使う）
     references: Array.isArray(meta.references) ? meta.references : [],
     executor: meta.executor || null, // この run を駆動した executor（orchestrator が記録）
@@ -469,7 +468,7 @@ function readNodeEvents(runDir, perNode = 10) {
 
 // 失敗した run を「同じ要求の新しい run」として inbox へ再投入する（人の明示アクション）。
 // agent-flow の公式な入力契約（inbox/<req-id>.json = submit_request と同形）だけを使い、
-// 稼働中の daemon が新規要求として拾う。結果の再利用はしない（新しい run として最初から）。
+// 常駐体の flow tick が新規要求として拾う。結果の再利用はしない（新しい run として最初から）。
 function resubmitRun(busDir, runId) {
   const runDir = path.join(busDir, 'runs', runId);
   const meta = readJson(path.join(runDir, 'meta.json'));
@@ -536,8 +535,8 @@ function writeJsonAtomic(file, obj) {
 }
 
 // run を cancelled に終端化する（人の明示指示による恒久停止）。agent-flow の cmd_cancel と同じ 3 手を
-// ファイル操作で行う: (1) cancel マーカーを inbox/cancels/ に書く（git 同期で他 PC / daemon へ伝わる）、
-// (2) run が存在すれば meta を cancelled に確定（daemon 不在でも即停止）、(3) park 記録を掃除して
+// ファイル操作で行う: (1) cancel マーカーを inbox/cancels/ に書く（git 同期で他 PC へ伝わる）、
+// (2) run が存在すれば meta を cancelled に確定（実行中でなくても即停止）、(3) park 記録を掃除して
 // 監視の再ポーリングを止める。起票済みイシューのクローズは呼び出し側（ipc）が gitlab API で行う（任意）。
 // 返り値の issues は掃除前の park 済みイシュー座標（--close-issues 相当の後始末に使う）。
 function cancelRun(busDir, runId, { reason } = {}) {
@@ -574,7 +573,7 @@ function cancelRun(busDir, runId, { reason } = {}) {
     }
     return { status: curStatus, alreadyTerminal: true, marked: false, cleared, issues };
   }
-  // (1) cancel マーカー（close_issues は viewer 側で閉じるため false で置く＝daemon の二重クローズを避ける）
+  // (1) cancel マーカー（close_issues は viewer 側で閉じるため false で置く＝二重クローズを避ける）
   writeJsonAtomic(path.join(busDir, 'inbox', 'cancels', `${id}.json`), {
     id, who: `viewer-${os.hostname()}`, reason: reason || '',
     close_issues: false, requested_at: new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
@@ -599,8 +598,8 @@ function cancelRun(busDir, runId, { reason } = {}) {
       /* 消せなくても致命的でない */
     }
   }
-  // (4) 適用済み cancel マーカーを消す（daemon 不在でも sticky にしない）。
-  // orch は meta=cancelled で止まる。remote daemon も meta を見て終端を知る。
+  // (4) 適用済み cancel マーカーを消す（実行中でなくても sticky にしない）。
+  // orch は meta=cancelled で止まる。他ノードも meta を見て終端を知る。
   if (marked) {
     try {
       fs.unlinkSync(path.join(busDir, 'inbox', 'cancels', `${id}.json`));

@@ -311,21 +311,67 @@ node 名義での `nodes/<pc>.json` 能力宣言・workload=flow/amigos への�
 確認できない**。現状で確かめられるのは `contract_compatible` の判定と既存の板参加までで、
 canary ランブック C10 にその旨を明記してある。
 
-### R3. 旧経路の削除（W1-9 の残り）
+### R3. 旧経路の削除（W1-9）— 完了
 
-agent-amigos（`serve` / `hub` / `hubbus`）と agent-project（`instances` / `start` / `stop` /
-`restart`）は削除済み。**残っているのは agent-flow 側**:
+削除済み: agent-amigos（`serve` / `hub` / `hubbus`）、agent-project（`instances` / `start` /
+`stop` / `restart` / `location{daemon,remote}` / `act_async` / `manage_flow_daemon` /
+`flow_max_workers` / `lock_dir` / `ensure_flow_daemon`）、agent-flow（`submit` / `daemon` /
+daemon singleton ロック / `write_daemon_status` / 裸起動の既定）。
 
-- `agent-flow daemon` / `submit`
-- agent-project の `location{daemon,remote}`・`act_async`・`manage_flow_daemon`
-- W1-2 で tick 関数へ抽出した `_tick_cancel` 等（flow daemon 内蔵）——daemon 削除後は
-  呼び手が無くなるので同時に整理する
+#### 調査で覆った前提
 
-規模が L なのはテスト資産のため（daemon 前提テストが project 側だけで数十件規模）。
-**R1 の後に着手する**——常駐体が実地で安定する前に退避先を消さない（設計 C6）。
+**1. agent-project は agent-flow を import していない。** `resolve_agent_flow` で外部コマンド
+として起動する（別 venv・別バージョンでも動く）。flow の駆動ループを常駐体やプロジェクト子の
+**プロセス内へ移すことはできない**——「常駐体がバス毎の実行コンテキストを持つ」案も「子の中に
+駆動スレッドを立てる」案も、この境界で成立しない。
 
-順序の固定（設計 §4.4）: 板 `result.json` の `result_notes` / `discoveries` /
-`reject_guidance` は追加済みなので、submit 削除の前提は満たしている。
+**2. daemon の 5 tick のうち 3 つは、既に別の場所に実装がある。**
+
+| tick | 実体のある場所 |
+|---|---|
+| heartbeat | `orchestrate.py` の `heartbeat()` — orchestrator が自分でリースを張る |
+| park 監視 | `run.py` の `cmd_run` が `service_waits(only_runs=[run_id])` を回す |
+| 停滞 run 回収 | `cmd_run` の入口が `run_is_orphaned` → `retry_failed()` |
+
+`local`（＝`agent-flow run` 単発）は**自己完結**であって daemon を必要としない。daemon は
+暖機ワーカー再利用の最適化だった。
+
+#### 実測（`run --watch` の 1 パス長）
+
+`sandbox-agent-state/.agent-project/journal.md` の `project 開始`→`project 停止` 56 件:
+
+```
+min=2s  median=9s  p90=4451s  max=12141s   （>120s が 12/56 = 21%）
+```
+
+完全な二峰性（11 秒以下 43 件 / 120 秒以上 12 件 / 中間 1 件）。`_run_lease_window` は
+`max(poll*10, 120.0)` ＝ **最低 120 秒**なので、watch ループ本体に tick を差し込むと長い
+パスの実行中に必ずリースが切れ、他ノードが孤児と誤判定して run を奪う（二重実行）。
+**駆動と待機を同じ制御フローに置けない**。
+
+#### 採った形
+
+受理と実行を別プロセスに分け、周期駆動だけを常駐体が持つ（amigos 参加 tick と同型）:
+
+```
+常駐体 flow tick（5s）
+  → agent-project flow-participate --root R --running <ids>
+      → agent-flow participate --json     … cancel 受理 / park 再確認 / 孤児・auto-heal の
+                                            引き継ぎ判断 / 板巡回 / inbox 受理（run は実行しない）
+  → 受理された run-id を NodeWorkerPool へ投入
+      → agent-project flow-run --root R --run-id X
+          → agent-flow --run-id X run --from-inbox   … 完了まで走る（自分でリースと park を持つ）
+```
+
+- `--running` に「走っている＋起動待ち」の run-id を渡す（`NodeWorkerPool.busy_ids`）。
+  渡さないと、枠が空くのを待っている run を毎周『駆動者が居ない孤児』と読んで
+  `max_resumes` を焼き切り failed に確定する。
+- `--from-inbox` は要求文・書込先ワークスペース・参照リポジトリ・引き継ぎ元を inbox 要求から
+  読む。argv へ転記させると、項目が増えるたびに転記漏れが静かな機能欠落になる。
+- `flow-participate` / `flow-run` は常駐体の内部配線なので `help` から隠す（利用者向けの
+  語彙を増やさない）。プロジェクト設定の解決を agent-project 本体に閉じるための薄い層。
+- `bus/inbox` は agent-dashboard の委譲アダプタが公式契約として書き込む先でもある。この
+  配線が入ったことで消費者が復活した（daemon 削除の前提条件だった）。
 
 ### R4. R10 の grep 検査と CI（W3-2 の残り）
 

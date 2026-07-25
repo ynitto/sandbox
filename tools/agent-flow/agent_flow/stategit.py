@@ -439,55 +439,6 @@ def _status_runtime() -> dict:
     return info
 
 
-def write_daemon_status(args, bus: Bus, daemon_id: str, orchestrators: dict, workers: list) -> None:
-    """status.json（生存信号）を書く。state_git（鏡）越しにリモートの agent-dashboard が
-    『daemon が今も生きているか』を判定するための最小スナップショット（bus.root 直下）。
-    _scan() はバスのツリー全体を走査するため、ここに置くだけで既存の StateGit がそのまま
-    同期対象に含める（GitBus 側のような sparse-checkout の追加設定は不要）。
-    実イベント（run 終端・生存リース push）のタイミングで呼べば、そのイベントで既に走る
-    state_sync/push に相乗りする＝これ単体で追加の push を生まない。
-
-    GitBus（--git）モードでは書かない: GitBus の sparse-checkout は `runs/`/`inbox/`（or
-    --git-subdir）しか作業ツリーに展開しないため、bus_root 直下のファイルは対象外の
-    パスになり、GitBus.sync_push() の `git add -A` を壊しかねない（state_git と --git は
-    元々ここでも相互排他 — state_git_for() と同じ前提）。"""
-    if getattr(args, "git", None):
-        return
-    rec = {
-        "host": socket.gethostname(), "pid": os.getpid(), "node_id": daemon_id,
-        "orchestrators": len(orchestrators), "workers": len(workers),
-        "updated_iso": now_iso(), "fresh_after_sec": _daemon_status_fresh_after_sec(args),
-        **_status_runtime(),
-    }
-    try:
-        p = daemon_status_path(bus)
-        os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
-        with open(p, "w", encoding="utf-8") as f:
-            json.dump(rec, f, ensure_ascii=False, indent=2)
-    except OSError:
-        pass
-
-
-def maybe_heartbeat_daemon_status(args, bus: Bus, daemon_id: str, orchestrators: dict,
-                                  workers: list) -> None:
-    """daemon アイドル中の任意の生存信号更新（`--status-interval`。既定 0＝無効）。
-    無効時は status.json に一切触れない＝state_git の commit-if-diff で追加コミットを
-    作らない（idle の git 負荷は今日と同じゼロ）。有効時も前回書き込みから
-    status_interval 秒経つまでは触らず、書き込み頻度を利用者の指定した間隔に抑える。
-    GitBus（--git）モードでは何もしない（write_daemon_status 側の理由と同じ）。"""
-    if getattr(args, "git", None):
-        return
-    interval = float(getattr(args, "status_interval", 0.0) or 0.0)
-    if interval <= 0:
-        return
-    try:
-        age = time.time() - os.path.getmtime(daemon_status_path(bus))
-    except OSError:
-        age = float("inf")     # 未作成 → 書く
-    if age >= interval:
-        write_daemon_status(args, bus, daemon_id, orchestrators, workers)
-
-
 def state_git_status_line(args) -> str:
     """起動時に「state_git が有効か・どこへ鏡写しするか」を一行で示す。無効時は理由も出す
     （silent な設定ミス＝バスが見えない原因の切り分けを容易にする）。"""

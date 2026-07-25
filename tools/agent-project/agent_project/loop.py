@@ -41,62 +41,6 @@ def project_flow_remote(cfg: "Config") -> "tuple[str, str, float] | None":
     return remote, branch, cfg.state_git_interval
 
 
-def flow_daemon_cmd(cfg: "Config", budget: int) -> "list[str]":
-    """このプロジェクトの agent-flow daemon 起動コマンド。CLI で注入するのは agent-project の役割である
-    per-project routing（どのバスをどのリポジトリへ鏡写しするか＝`--state-git` remote/branch/interval）
-    と、バス・executor・予算・ロック置き場だけ。state_git サブディレクトリを含む agent-flow の設定値は
-    個別注入せず flow_config（--config）に集約して agent-flow に読ませる（未指定なら agent-flow の既定
-    ＝subdir は "agent-flow"）。これで agent-project 側に agent-flow 設定を増やさずに済む。"""
-    base = resolve_agent_flow(cfg.agent_flow) + ["--bus", str(cfg.bus)]
-    rf = project_flow_remote(cfg)
-    if rf is not None:
-        remote, branch, interval = rf
-        base += ["--state-git", remote, "--state-git-branch", branch,
-                 "--state-git-interval", str(interval)]
-    fc = getattr(cfg, "flow_config", None)
-    if fc:
-        base += ["--config", os.path.abspath(os.path.expanduser(str(fc)))]
-    if cfg.lock_dir:
-        base += ["--lock-dir", str(cfg.lock_dir)]   # agent-flow と同じロック置き場（検知の一致）
-    base += ["daemon", "--max-workers", str(max(1, int(budget))), "--executor", cfg.executor]
-    return base
-
-
-def ensure_flow_daemon(cfg: "Config", budget: int) -> bool:
-    """このプロジェクトの agent-flow daemon を（無ければ）detached で起動する。起動したら True。
-    manage_flow_daemon が off・per-project 対象でない・既に稼働中、のときは何もしない（冪等）。
-    agent-project 停止後も残す（start_new_session）＝in-flight run を跨いで維持する。"""
-    if not getattr(cfg, "manage_flow_daemon", False):
-        return False
-    # バスが root 配下なら agent-project の state 同期が鏡写しするので、daemon に state_git は
-    # 要らない（注入しない）。root の外のバスは従来どおり注入先が無ければ対象外。
-    if not _bus_inside_state(cfg) and project_flow_remote(cfg) is None:
-        return False
-    if daemon_running(cfg, use_git=False):      # 既にこのバスの daemon が稼働（ロック保持）→ 冪等スキップ
-        return False
-    cmd = flow_daemon_cmd(cfg, budget)
-    try:
-        cfg.bus.mkdir(parents=True, exist_ok=True)
-        logp = cfg.backlog.parent / "flow-daemon.log"
-        try:
-            logf = open(logp, "a", encoding="utf-8")
-        except OSError:
-            logf = subprocess.DEVNULL
-        try:
-            subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT,
-                             stdin=subprocess.DEVNULL, start_new_session=True,
-                             cwd=str(cfg.workdir))
-        finally:
-            if hasattr(logf, "close"):
-                logf.close()
-        append_journal(cfg.journal,
-                       f"agent-flow daemon 起動: bus={cfg.bus} max_workers={max(1, int(budget))}")
-        return True
-    except OSError as e:
-        append_journal(cfg.journal, f"agent-flow daemon 起動失敗（続行）: {e}")
-        return False
-
-
 def status_path(cfg: "Config") -> Path:
     return cfg.backlog.parent / "status.json"
 
@@ -219,7 +163,7 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
                     autonomy_cache: dict, reasons: dict, cycle0: int,
                     spawn_budget: int) -> dict:
     """offloaded タスク（非ブロッキング委譲・結果待ち）を1回ずつポーリングし、終端した run だけ
-    settle する（未終端はそのまま次パスへ）。専用 daemon が run を保持するので、ここでは待たない。
+    settle する（未終端はそのまま次パスへ）。請負側が run を保持するので、ここでは待たない。
     deltas（settled/archived/spawned/tokens/cost）を返す。"""
     settled = archived = spawned = tokens = 0
     cost = 0.0
@@ -227,7 +171,7 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
     collected: "list[str]" = []   # 回収し終えた公示（パス末尾でまとめて板から消す）
     for task in [t for t in tasks if t.norm_status() == "offloaded"]:
         run_id = str(task.get("flow_run", "") or "")
-        loc = str(task.get("flow_loc", "daemon") or "daemon")
+        loc = str(task.get("flow_loc", "local") or "local")
         if not run_id:
             continue
         if loc == "board":
@@ -236,7 +180,9 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
                 _board.sync_pull()
             term, ok, msg = _board_result_once(_board, run_id)
         else:
-            term, ok, msg = _flow_result_once(cfg, loc == "remote", run_id)
+            # 旧 daemon/remote 経路で offloaded になったまま残っているタスクの回収路
+            # （新規に board 以外の offloaded は作られない）。
+            term, ok, msg = _flow_result_once(cfg, False, run_id)
         if not term:
             if msg.startswith("error:"):
                 # 結果の取得自体が失敗（CLI 不在・バス破損・出力化け等）。これを「まだ実行中」と
@@ -411,7 +357,7 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
                 policy = load_policy(cfg.policy)
                 ingested += ingest_feedback(cfg, tasks)
 
-        # 非ブロッキング委譲（act_async）の回収: offloaded タスクの run を1回ずつポーリングし、
+        # 非ブロッキング委譲（board）の回収: offloaded タスクの run を1回ずつポーリングし、
         # 終端したものだけ settle する（待たない）。専用 daemon が run を保持するので、gitlab の
         # 長期委譲でもループを塞がず、完了したものから順に消化できる。
         reaped = _reap_offloaded(cfg, tasks, policy, autonomy_cache, reasons, cycle,
@@ -566,8 +512,7 @@ def _cleanup_bus(cfg: Config) -> None:
     その最終状態（全ノード done）を観測する前にディレクトリごと消え、最後に撮れた
     スナップショット（最終ノードが実行中）のままフローが固まって見えていた。掃除は
     「古い run を捨てる」ためのものであって「いま終わった run を人の目から隠す」ためのものではない。"""
-    if (not cfg.cleanup or cfg.git_bus or cfg.state_git
-            or daemon_running(cfg, use_git=False)):
+    if not cfg.cleanup or cfg.git_bus or cfg.state_git:
         return
     shutil.rmtree(cfg.bus / "inbox", ignore_errors=True)   # local run では使わない submit キュー
     runs = cfg.bus / "runs"

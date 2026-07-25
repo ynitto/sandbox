@@ -1139,7 +1139,7 @@ table.list tr.clickable:hover { background: var(--bg2); }
 }
 .status-chip.st-ready { color: var(--blue); border-color: var(--blue); }
 .status-chip.st-doing { color: var(--accent2); border-color: var(--accent2); }
-/* offloaded = 委譲実行中（agent-flow daemon で結果待ち）。機械稼働中なので doing と同系にする */
+/* offloaded = 委譲実行中（板の請負側で結果待ち）。機械稼働中なので doing と同系にする */
 .status-chip.st-offloaded { color: var(--accent2); border-color: var(--accent2); }
 .status-chip.st-blocked { color: var(--red); border-color: var(--red); }
 .status-chip.st-review { color: var(--yellow); border-color: var(--yellow); }

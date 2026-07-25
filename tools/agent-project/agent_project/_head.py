@@ -69,7 +69,7 @@ CONSUMABLE = ("ready", "todo")  # 実行待ち。todo は ready の後方互換�
 # proposed: 実行前レビュー待ち（plan_review・既定 on）。人の承認（approve）で初めて ready になり、
 #   差し戻し（needs feedback）は agent-project がタスクを修正して再提案、却下（reject）は廃止＋再計画。
 # rejected: 却下済み（archive へ退避される終端。DELIVERY には載せない）。
-# offloaded: 実行層 daemon へ非ブロッキングで submit 済み・結果待ち（act_async）。CONSUMABLE ではない
+# offloaded: 委譲公示板へ公示済み・請負側の実行結果待ち。CONSUMABLE ではない
 #   （再 submit しない）が「機械が実行中」＝人待ちでもない。次パスでポーリングして終端したら settle する。
 TASK_HEADER_RE = re.compile(r"^##\s+(?P<id>\S+?):\s*(?P<title>.*)$")
 FIELD_RE = re.compile(r"^-\s+(?P<key>\w+):\s*(?P<val>.*)$")

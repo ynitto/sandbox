@@ -1,6 +1,6 @@
 'use strict';
 
-// project.js parseTask が offloaded ステータス（非ブロッキング委譲・act_async）を正しく解釈し、
+// project.js parseTask が offloaded ステータス（非ブロッキング委譲・板）を正しく解釈し、
 // flow_run / flow_loc を extra に保持することを検証する軽量テスト。追加依存なし。
 
 const assert = require('assert');

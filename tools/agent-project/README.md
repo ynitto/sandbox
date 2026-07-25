@@ -124,47 +124,40 @@ agent-project run --planner none --flow-planner stub --executor stub
 
 「どこで・どう動かすか」は `--location`（既定 `auto`）に集約。
 
-| location | 委譲方法 | daemon | 用途 |
-|----------|---------|--------|------|
-| `local` | `agent-flow run`（単発・同期） | 不要 | 既定の実体。逐次処理はこれで十分 |
-| `daemon` | `submit` → `result` で done 待ち | ローカル daemon（無ければ local にフォールバック） | warm worker 再利用 |
-| `remote` | `submit`（`--git`）→ `result` で done 待ち | 共有 git バスの remote daemon が必須 | 別マシンへオフロード |
+| location | 委譲方法 | 用途 |
+|----------|---------|------|
+| `local` | `agent-flow run`（単発・同期） | 既定の実体。この PC で最後まで回す |
+| `board` | 委譲公示板へ post（非ブロッキング） | 別ノードへオフロード |
 
-**非ブロッキング委譲（`act_async`）**: `daemon`/`remote` は既定では結果を待つ（ブロック）。`act_async: true` に
-すると **submit して待たず**タスクを `offloaded` に退避し、次パスで `result` を1回だけポーリングして
-**終端した run だけ**を消化する。`executor: gitlab` のように MR 承認まで数日かかる委譲でループを塞がず、
-同じプロジェクトの他タスク・他プロジェクトを並行に進められる。専用 daemon が run を保持するので待たなくても
-結果は取りこぼさず、submit は決定的 run_id なので agent-project が再起動しても同じ run に再合流する。
-`act_timeout: 0`（＋ agent-flow `gitlab.timeout/approved_timeout: 0`）と併用すると、誤タイムアウト由来の
-retry ループが完全に消える。既定 off＝従来どおり同期で待つ（完全後方互換）。
-
-`auto` = offload 一致＋`--git-bus` → remote ／ ローカル daemon 稼働 → daemon ／ 他 → local。daemon 検知は
-agent-flow と同じロックで行う：バスを `realpath` で正規化したキーで `flock` を見て、`flock` が使えない環境
-（Windows・一部の異種FS）では daemon が記録した PID の生存で補完する。**外部で起動した daemon を取りこぼさない
-ため、起動側とこちらでロック置き場を一致させること**——既定は `$TMPDIR/agent-flow-locks/` だが、`TMPDIR` が
-食い違う場合は両者の設定ファイルで `lock_dir`（CLI `--lock-dir`）に同じ絶対パスを指定する。どちらの経路でも
+`auto` = offload ポリシー一致 ＋ `board:` 設定あり → board ／ 他は local。どちらの経路でも
 verify は act 完了後に走る。
 
-> **外部常駐の agent-flow daemon を使うには**：既定のバスは agent-project が `<root>/bus`、agent-flow が `./bus` で、
-> **プロジェクトルートで `agent-flow daemon` を起動すれば設定なしで同じバスに一致**し、`location=auto/daemon` が
-> daemon を検知して warm worker を再利用できる。プロジェクト外の共有バスを使うときだけ両者の `bus:` を同じ値に
-> 明示する。TMPDIR が食い違う構成では併せて `lock_dir` も一致させる。
+単発 run は自己完結する——orchestrator が自分で生存リースを張り、park（承認待ち）も自分で
+面倒を見るので、駆動を代行する常駐プロセスは要らない。PC の電源が落ちて run が非終端のまま
+残っても、次に同じ run-id で起動したときリースの失効を見て「停滞」と判定し、失敗ノードだけを
+戻して続きから走る（done は温存）。
 
-**並列消費（`--concurrency N`、既定 1）**: 依存解決済みの独立タスクを先頭から最大 N 件 daemon/remote へ並行
-submit し、実体の並列は agent-flow の worker に委ねる。**実行の重い部分だけ並列化し、verify・done/archive・
+**非ブロッキング委譲（`board`）**: 板へ公示したタスクは `offloaded` に退避し、次パスで
+`result.json` を1回だけポーリングして**終端した委譲だけ**を消化する。`executor: gitlab` のように
+MR 承認まで数日かかる委譲でループを塞がず、同じプロジェクトの他タスク・他プロジェクトを並行に
+進められる。委譲 id は決定的なので agent-project が再起動しても同じ委譲に再合流する。
+`act_timeout: 0`（＋ agent-flow `gitlab.timeout/approved_timeout: 0`）と併用すると、誤タイムアウト
+由来の retry ループが完全に消える。
+
+**並列消費（`--concurrency N`、既定 1）**: 依存解決済みの独立タスクを先頭から最大 N 件 板へ並行
+post し、実体の並列は請負側ノードの worker に委ねる。**実行の重い部分だけ並列化し、verify・done/archive・
 決定記録・派生生成は逐次のまま**（競合回避）。local 単発 run は逐次。1 サイクル=1 タスクの計上・予算は不変。
 
 **原子的クレーム（二重実行防止）**: 各タスクは実行前に `claims/<id>.lock` を `O_CREAT|O_EXCL` で確保した者だけが
 回す。**同じ backlog を複数プロセス/ホストで回しても同一タスクは二度実行されない**。取得後に disk を再検証し、
 owner 失踪は TTL 超で奪取、終了で解放。
 
-**分散移譲（remote）**: `--git-bus <共有 git リポジトリ>`＋`policy.md` の `offload: <パターン>` 一致タスクは
-`remote` に解決され、agent-flow の `--git` 分散バス越しに別マシンの daemon へ submit する（完了を待って verify）。
+**分散移譲（board）**: `board: <委譲公示板>`＋`policy.md` の `offload: <パターン>` 一致タスクは
+`board` に解決され、板へ公示する。請負側ノードの常駐体が入札・実行し、結果は次パスで回収する。
 
 ```bash
-agent-project run --executor agent                              # 既定 local（単発 run）
-agent-flow --bus .agent-project-bus daemon --workers 3 &       # warm worker
-agent-project run --location daemon --concurrency 3 --executor agent
+agent-project run --executor agent                    # 既定 local（単発 run）
+agent-project run --location board --concurrency 3    # 一致タスクを板へ並行 post
 ```
 
 **executor プラグイン**: `--executor`（設定 `executor`）には組み込みの `agent` / `stub` に加えて、
@@ -725,13 +718,11 @@ agent-project serve   # 常駐体が host.yaml のプロジェクトを監督す
 - Gitが取得不能ならcontroller取得・新規claimはfail closedする。`doctor` はnode、origin、heartbeat/leaseを検査する。
 - `run-log/<node>/<run-id>.json` は不変レコード、`DELIVERY.md` はarchive集合から再構築可能。
 
-**実行層 agent-flow のバス（run）も同じリポジトリへ**: agent-project に agent-flow daemon を管理させる
-（`manage_flow_daemon: true`）と、「このバス（`<root>/bus`）を状態リポジトリの `agent-flow` 名前空間へ
-鏡写しせよ」という routing（`--state-git` の remote/branch/interval。direct モードならルートの origin）を
-daemon 起動時に注入する。agent-flow の設定値（executor / state_git_subdir / gitlab.* / defer_waits 等）は
-`flow_config` で渡す agent-flow.yaml に集約する。agent-project を止めても daemon は detached で残り、
-in-flight run（gitlab の長期委譲・夜間停止からの孤児再開）は daemon 側でそのまま継続する。daemon 不在の
-バスは `agent-project doctor` が warn で知らせる。
+**実行層 agent-flow のバス（run）も同じリポジトリへ**: バスの既定は `<root>/bus`＝状態の同期領域の内側
+なので、agent-project 自身の状態同期がバスごと鏡写しする（agent-flow に第二の書き手を持たせない）。
+バスを root の外に置いた構成でだけ、`--state-git` の routing を agent-flow へ注入する。agent-flow の
+設定値（executor / state_git_subdir / gitlab.* / defer_waits 等）は `flow_config` で渡す
+agent-flow.yaml に集約する。
 
 ## リモート操作（commands/ のライフサイクル指示）
 

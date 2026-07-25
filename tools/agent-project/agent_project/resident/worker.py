@@ -115,6 +115,17 @@ class NodeWorkerPool:
             return {"inflight": sorted(self._inflight), "queued": len(self._queue),
                    "max_concurrent": self._max, "used": self._used()}
 
+    def busy_ids(self) -> "set[str]":
+        """走っている ＋ 起動待ちの仕事 id。「この常駐体が面倒を見ている」集合であって、
+        `status()["inflight"]`（走っている分だけ）とは違う。
+
+        投入元へ「もう見ているので二重に寄越すな」と伝えるための集合。キューで待っている
+        分を落とすと、投入元は毎周それを『誰も見ていない』と読んで再投入・再判断を繰り返す
+        ——flow の受理では、待機中の run が孤児と誤判定されて再開回数を焼き切る。"""
+        with self._lock:
+            self._reap()
+            return set(self._inflight) | {q.id for q in self._queue}
+
     def _reap(self) -> None:
         # 呼び出し元は _lock 保持済み前提（private）
         for item_id, th in list(self._inflight.items()):

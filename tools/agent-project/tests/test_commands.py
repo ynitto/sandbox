@@ -614,15 +614,15 @@ class TestRevise(unittest.TestCase):
             self.assertEqual(stale.priority, 7)                      # ディスク内容を採用
             self.assertIn("最新の指示", stale.feedback())
 
-    def test_submit_req_id_changes_with_rev(self):
+    def test_run_id_changes_with_rev(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             c = cfg_for(d)
             t = km.Task(id="T1", title="x")
-            base = km._submit_req_id(t, c)
+            base = km._new_run_id(t, c)
             t.set("rev", "1")
-            self.assertNotEqual(base, km._submit_req_id(t, c))       # 世代が上がれば新しい run
-            self.assertTrue(km._submit_req_id(t, c).endswith("-v1"))
+            self.assertNotEqual(base, km._new_run_id(t, c))       # 世代が上がれば新しい run
+            self.assertTrue(km._new_run_id(t, c).endswith("-v1"))
 
     def test_revise_during_act_requeues_without_settling(self):
         # 実行中の revise: 現在の試行は verify=PASS 相当でも確定せず、修正内容で再実行される

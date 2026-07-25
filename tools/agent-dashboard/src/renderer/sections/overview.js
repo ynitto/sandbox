@@ -407,8 +407,8 @@ function renderProjectSettings() {
   if (technicalInfo) technicalInfo.addEventListener('click', () => openTechnicalInfo());
 }
 
-// プロジェクトのリセット（危険操作）。charter.md 以外の全データを削除し、バスの
-// agent-flow daemon を停止する。charter が残るので、稼働中の agent-project は次パスで
+// プロジェクトのリセット（危険操作）。charter.md 以外の全データを削除する。
+// charter が残るので、稼働中の agent-project は次パスで
 // charter から再分解して最初からやり直す（done の記録・needs・決定記録もすべて消える）。
 async function resetProject() {
   const p = state.project;

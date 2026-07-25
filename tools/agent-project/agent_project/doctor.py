@@ -433,31 +433,6 @@ def doctor_audit_findings(cfg: "Config") -> "list[dict]":
     return out
 
 
-def doctor_flow_bus_coverage_findings(cfg: "Config") -> "list[dict]":
-    """このプロジェクトのバスに稼働中の agent-flow daemon がいるかを確認し、不在を warn にする
-    （未担当だと run が local 実行に落ち、夜間停止からの自動再開・gitlab 長期委譲の継続が効かない）。
-    manage_flow_daemon が on なら agent-project が自動起動するので通常は満たされ、
-    起動失敗や off での起動忘れのときに気づける。鏡写しの落とし先があるバスだけ確認する。"""
-    # 対象は「root 配下のバス（agent-project の state 同期が鏡写しする）」か
-    # 「root 外でも鏡写しの落とし先があるバス」。どちらでもなければ確認しない。
-    if not _bus_inside_state(cfg) and project_flow_remote(cfg) is None:
-        return []
-    managed = bool(getattr(cfg, "manage_flow_daemon", False))
-    if daemon_running(cfg, use_git=False):
-        return []
-    fix = ("manage_flow_daemon: true を設定（agent-project が自動起動）"
-           if not managed else
-           f"起動失敗の可能性。手動確認: agent-flow --bus {cfg.bus} daemon"
-           "（バスが root 配下なら state-git は不要＝agent-project が鏡写しする）")
-    return [{
-        "category": "config", "severity": "warn",
-        "title": "agent-flow daemon 不在",
-        "evidence": f"{cfg.bus} を担当する agent-flow daemon が見つかりません"
-                    "（run が local 実行に落ち、夜間停止からの自動再開・gitlab 長期委譲の継続が効きません）",
-        "fix": fix,
-    }]
-
-
 def _hook_misconfig_findings(cfg: "Config") -> "list[dict]":
     """フックの設定ミスだけを所見にする。未指定での不在は任意機能が無いだけなので無言（空）。
 
@@ -714,7 +689,7 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
     # 決定的所見は ensure_dirs より前に集める（create-dirs 所見を消さないため）
     deterministic = (doctor_env_findings(cfg) + doctor_coordination_findings(cfg)
                      + doctor_audit_findings(cfg)
-                     + doctor_flow_bus_coverage_findings(cfg) + doctor_wiring_findings(cfg)
+                     + doctor_wiring_findings(cfg)
                      + doctor_residency_findings(_declared_residency()))
     for f in deterministic:
         f["source"] = "check"
@@ -1032,8 +1007,6 @@ def cmd_run(cfg: Config) -> int:
     # 前世代の agent-flow（クラッシュ・電源断で stop を通らず居残ったもの）を刈る。ここを通らないと
     # 残った orchestrator がリースを更新し続け、この後の run_id_for が「まだ実行中」と読んで
     # **続きから再開せず新しい run を作り**、同じタスクを二重実行する（reap_orphan_flow 参照）。
-    # manage_flow_daemon=on なら daemon も含めて刈り（ensure_flow_daemon が立て直す）。
-    # 既定 off では外部 daemon を残し、orch/worker/都度 run だけ刈る。
     reaped = reap_orphan_flow(cfg)
     if reaped:
         append_journal(cfg.journal,
@@ -1051,7 +1024,6 @@ def cmd_run(cfg: Config) -> int:
         state_sync(cfg)
         if _coordination_active(cfg):
             controller_stop = start_controller_heartbeat(cfg)
-        ensure_flow_daemon(cfg, cfg.flow_max_workers)   # 実行層 daemon の確保（opt-in・冪等）
         if cfg.watch:
             _install_sigterm(cfg)                # stop の SIGTERM / drain を graceful 停止へ変換
             if getattr(cfg, "availability", None):

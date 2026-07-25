@@ -215,12 +215,8 @@ promote_threshold: 2    # learn ルールがこの回数効いたら横断記憶
 
 **動かし方**:
 ```bash
-# ローカル daemon を立て、独立タスクを並行消化
-agent-flow daemon &      # warm worker
-agent-project run --location daemon --concurrency 3
-
-# 分散（remote）: git バス経由で別ホストの worker に委譲
-agent-project run --location remote
+# 独立タスクを板へ並行公示し、請負ノードで消化する
+agent-project run --location board --concurrency 3
 
 # どのプロジェクトが動いているかは常駐体の状況表示から見る
 agent-project status --json
@@ -341,25 +337,24 @@ L0–L4 を一通り通したら、最終的にはこの構成に落ち着くの
   なし）。マシンが落ちても状態は git に残るので復帰が容易。
 - **executor=gitlab**: 各タスクを GitLab イシュー化し、レビュアーが `status:approved` を付けるまで待って完了とみなす。
   **ローカルに エージェント CLI が無くても**作業を委譲でき、人手の承認が自然なゲートになる。
-- **常駐 daemon**: 投入即実行・warm worker 再利用。`agent-project`（生産者＝backlog/charter を回す）と
-  `agent-flow daemon`（消費者＝バスを拾って実行）を分けて常駐させる。
+- **委譲公示板**: 重いタスクを板へ公示し、余力のあるノードの常駐体が入札して実行する。依頼側は待たずに
+  次のタスクへ進み、結果は次パスで回収する。
 
 ```
- agent-project run --watch        共有 git バス          agent-flow daemon            GitLab
- （charter/backlog を回す）  ──submit──▶  (git repo)  ──claim──▶ （orchestrator/worker）──issue──▶ レビュー承認
-   location: remote                                          executor: gitlab          status:approved → done
+ agent-project run --watch      委譲公示板         請負ノードの常駐体            GitLab
+ （charter/backlog を回す）  ──post──▶ (git repo) ──入札/実行──▶ （agent-flow run）──issue──▶ レビュー承認
+   location: auto + board:                                executor: gitlab      status:approved → done
 ```
 
 ### 1) 設定ファイル
 
-**`~/.agents/agent-flow.yaml`**（消費側 daemon。バスと実行委譲を定義）:
+**`~/.agents/agent-flow.yaml`**（請負側。バスと実行委譲を定義）:
 ```yaml
 git: git@example.com:team/flow-bus.git   # ← バスを共有 git リポジトリに（bus=git）
 git_branch: main
 # git_subdir: flow                       # 1 リポジトリを他用途と共有するならサブディレクトリに隔離
 executor: gitlab                         # ← 実行を GitLab イシューへ委譲（executor=gitlab）
 poll: 5.0                                # git バスはやや大きめが目安
-lock_dir: /tmp/agent-flow-locks           # ← daemon ロックの置き場（autonomous 側と一致させる・後述）
 gitlab:                                  # executor: gitlab のときだけ使う委譲設定
   conn_label: default                    # gitlab-idd の connections.yaml の接続ラベル
   repo_url: "https://gitlab.com/group/repo"
@@ -377,18 +372,17 @@ gitlab:                                  # executor: gitlab のときだけ使�
 level: unattended          # 無人運用（承認ゲートは GitLab 側の status:approved が担う）
 watch: true                # 常駐。idle 中はエージェント非起動
 executor: gitlab           # agent-flow へそのまま委譲（実行層と揃える）
-location: remote           # ← 一致タスクを git バスへ submit（別ホスト/別daemonの worker が拾う）
+location: auto            # ← offload ポリシー一致タスクを委譲公示板へ post（他は local 単発 run）
+board: git@example.com:team/agent-board.git  # ← 委譲公示板（請負側ノードが入札・実行）
 git_bus: git@example.com:team/flow-bus.git   # ← agent-flow.yaml の git: と同一リポジトリ
 git_branch: main
 # git_subdir: flow                            #   agent-flow.yaml と揃える
-lock_dir: /tmp/agent-flow-locks                # ← agent-flow 側 lock_dir と一致（外部 daemon を検知するため）
 max_cost: 5.0              # 無人運用は必ず予算上限を入れる（必ず有限停止）
 throttle: 0.8             # 上限の手前で減速
 auto_adjudicate: true     # needs に落とす前に積み直し可否を裁定（人の判断を減らす）
 ```
 
-> **`lock_dir` を両者で一致**させるのが要点。これで `agent-project` が外部起動の `agent-flow daemon` を
-> 検知し、二重起動を避けつつ warm worker を再利用できる（既定は `$TMPDIR/agent-flow-locks` でプロセス毎にズレうる）。
+> **`board` を両者で一致**させるのが要点。依頼側がここへ公示し、請負側ノードの常駐体が入札・実行する。
 
 ### 2) PC 起動時から常駐（systemd / Linux）
 
@@ -397,32 +391,20 @@ auto_adjudicate: true     # needs に落とす前に積み直し可否を裁定�
 設定は上記のとおり `~/.agents/` に置けば**両ツールとも自動で読み込まれる**（検索順 `./.agents/` → `~/.agents/`）ので、
 ExecStart に `--config` は不要。
 
-**`agent-flow-daemon.service`**（消費側）:
+常駐は PC に 1 本（`agent-project serve`）。実行層は常駐させない——act のたびに
+`agent-flow run` を単発起動し、その run が自分で生存リースと park の面倒を見る。
+
+**`agent-project.service`**（この PC の常駐体。host.yaml の全プロジェクトを監督）:
 ```ini
 [Unit]
-Description=agent-flow daemon (git bus / gitlab executor)
+Description=agent-project serve (this PC)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=%h/.local/bin/agent-flow daemon
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=default.target
-```
-
-**`agent-project.service`**（生産側。全プロジェクトを 1 プロセスで監視）:
-```ini
-[Unit]
-Description=agent-project watch (all projects)
-After=agent-flow-daemon.service
-Wants=agent-flow-daemon.service
-
-[Service]
-WorkingDirectory=%h/work/my-repo
-ExecStart=%h/.local/bin/agent-project run --watch
+Type=notify
+WatchdogSec=90
+ExecStart=%h/.local/bin/agent-project serve
 Restart=on-failure
 RestartSec=10
 
@@ -432,18 +414,19 @@ WantedBy=default.target
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable --now agent-flow-daemon agent-project
+systemctl --user enable --now agent-project
 loginctl enable-linger "$USER"     # ログアウト/再起動後も常駐させる
 ```
 
+> ユニットは `agent-project install.sh --service` が生成する（手書きは上を参照）。
 > **macOS** は launchd を使う（`~/Library/LaunchAgents/<label>.plist` に `RunAtLoad=true` /
-> `KeepAlive=true`、`ProgramArguments` に上記 `ExecStart` 相当を並べる）。手元で単発に常駐させるだけなら
-> `agent-flow daemon &` ＋ `agent-project run --watch &` でも可（ただし再起動で消える）。
+> `KeepAlive=true`、`ProgramArguments` に上記 `ExecStart` 相当を並べる）。手元で単発に常駐させる
+> だけなら `agent-project serve &` でも可（ただし再起動で消える）。
 
 ### 3) 稼働確認
 
 ```bash
-agent-project doctor          # 実行層 agent-flow daemon との連携まで含めて健康診断（[flow] 印で統合）
+agent-project doctor          # 実行層 agent-flow との連携まで含めて健康診断（[flow] 印で統合）
 agent-project status          # いまどのプロジェクトが動いているか（心拍・休止/切り離し）
 agent-project stats           # 自動化率・コストを定点観測
 agent-project needs           # 人の判断待ち（承認は GitLab の status:approved 側で進む）

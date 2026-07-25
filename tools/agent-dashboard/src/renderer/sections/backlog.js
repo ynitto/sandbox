@@ -26,7 +26,7 @@ const BACKLOG_FILTERS = [
 //   その agent-flow run（リトライ系統）を結ぶ。リトライは「意味的に同一」なので系統でまとめる。
 // ---------------------------------------------------------------------------
 
-// agent-project の run-id 生成（_submit_req_id）と同じ task.id 正規化。バックログの task.id を
+// agent-project の run-id 生成（_req_id_for）と同じ task.id 正規化。バックログの task.id を
 // run-id 内の taskId 断片へ合わせるために使う。
 // tid に依存するタスク（after 逆辺・推移）。却下・修正の影響一覧に使う
 function dependentsOf(tasks, tid) {

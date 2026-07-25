@@ -9,12 +9,16 @@ from __future__ import annotations
 #     （旧 cmd_start の detach & 放置に代わる、実際に生死を見る親）
 #   - 心拍・子状態を `.agents/engine/status.json` へ書き出す tick
 #   - amigos 参加 tick（claim・心拍・板巡回のみ。手番実行は NodeWorkerPool へ委ねる）
+#   - flow 参加 tick（cancel 受理・孤児回収・板巡回・inbox 受理のみ。run の実行は
+#     NodeWorkerPool へ委ねる。旧 `agent-flow daemon` の置き換え — 実装計画 W1-9）
 #   - gc tick（登録プロジェクトの agent-flow バス掃除。掃除の実装は持たない — R1）
-# 板の請負 tick（node 名義での workload=flow/amigos 入札・nodes/<pc>.json 能力宣言）は
-# 別パスで足す（実装計画 W1-11 残・設計 §4.2「現状未実装、ここで初めて実装する」——
-# 既存の flow/amigos の板参加はいずれも「委譲側の bus」を前提にしており、ノード直轄の
-# 契約側実行はまだ設計が固まっていない。中途半端に実装すると二重落札・二重実行のリスクが
-# あるため、ここでは意図的に手を付けない）。
+# 参加 tick はどちらも「調停は都度起動の CLI・実行はプール」に揃えてある。周期を超えうる
+# 仕事（run・手番）を tick 内で実行すると、self-watchdog がハングと読んで健全な常駐体を
+# abort する。
+#
+# nodes/<pc>.json のノード能力宣言（node 名義で板へ「何ができる PC か」を出す）はまだ無い。
+# 板の請負自体は各ツールの `participate` が委譲側 bus 経由で行っており、ノード直轄の能力
+# 宣言はそれとは別の設計判断が要るため、ここでは手を付けない（実装計画 W1-11 残）。
 
 from types import SimpleNamespace
 
@@ -113,7 +117,7 @@ def _project_name(project: dict) -> str:
 
 
 def _availability_tick(host: "HostConfig", sup: "Supervisor",
-                       status: "EngineStatus") -> None:
+                       status: "EngineStatus", at: "datetime | None" = None) -> None:
     """稼働時間帯の外では子を計画停止し、戻ったら再開する（実装計画 W1-4・設計 §6「PC の
     計画停止」）。**停止を決めるのは常に親**——子が自分に SIGTERM を送る旧経路では、
     Supervisor がそれをクラッシュと読んで再起動し、繰り返しで隔離に達していた。
@@ -125,13 +129,19 @@ def _availability_tick(host: "HostConfig", sup: "Supervisor",
     `draining` で止めると `drain_before_sec` と `shutdown_grace_sec` が死に設定になり、
     走っているタスクを完走させずに SIGTERM することになる——drain は「新規 claim を
     止めて走っているものを終わらせる」ための時間帯で、その扱いは子側の
-    `start_availability_monitor` が既に担っている。"""
+    `start_availability_monitor` が既に担っている。
+
+    `at` は判定時刻の明示（既定は現在時刻）。`availability_state` / `shutdown_due` が
+    元から持っている seam をここまで通す——時間帯の判定を実時計に委ねたままだと、
+    テストが「いまから 1 時間後に停止」のような相対時刻でしか書けず、その 1 時間が
+    日付を跨ぐ時間帯（daily_stop は時刻の概念なので跨ぎを持たない）に走ったときだけ
+    落ちる。"""
     if not host.availability:
         return
     # availability_state / shutdown_due は cfg の `availability` 属性しか見ない。
     # host.yaml の宣言をそのまま渡すための最小の器（Config を組み立てる必要は無い）。
     cfg = SimpleNamespace(availability=host.availability)
-    state = availability_state(cfg)
+    state = availability_state(cfg, at)
     if state == "invalid":
         # 不正設定では時間帯を判定できない。**止める側に倒す**（動かし続けると、止めたい
         # 時間帯に動く方が害が大きい）。同じ文言を tick ごとに積むと recent_errors が
@@ -142,7 +152,7 @@ def _availability_tick(host: "HostConfig", sup: "Supervisor",
         for name in sup.names():
             sup.pause(name)
         return
-    off = shutdown_due(cfg)
+    off = shutdown_due(cfg, at)
     for name in sup.names():
         if off:
             sup.pause(name)
@@ -346,6 +356,61 @@ def _amigos_participate_tick(host: "HostConfig", pool: "NodeWorkerPool",
                                  c, capture_output=True, text=True, timeout=1800)))
 
 
+def _project_cmd(project: dict, *argv: str) -> "list[str]":
+    """host.yaml の 1 プロジェクト宣言に対する `agent-project <argv…>` の起動 argv。
+    プロジェクト設定の解決は agent-project 本体に任せる（常駐体は root/config を渡すだけ）。"""
+    cmd = [sys.executable, _self_script(), *argv, "--root", str(project.get("root") or "").strip()]
+    if project.get("config"):
+        cmd += ["--config", str(project["config"])]
+    return cmd
+
+
+def _flow_participate_tick(host: "HostConfig", pool: "NodeWorkerPool",
+                           status: "EngineStatus") -> None:
+    """flow 参加 tick（設計 §4.2 node 層・実装計画 W1-9）。登録プロジェクトのバスごとに
+    `agent-project flow-participate` を都度起動し、受理された run を
+    `agent-project flow-run` として NodeWorkerPool へ投入する——run の実行は周期を
+    超えうるため tick 内では絶対に実行しない（amigos 参加 tick と同じ実行規約）。
+
+    旧 `agent-flow daemon` が担っていた責務のうち、生存リース・park 監視・停滞回収は
+    `agent-flow run` 自身が持つ（run 単発は自己完結する）。ここに残るのは「誰が何を
+    実行するか」の調停だけ——cancel の受理・孤児の引き継ぎ判断・板の巡回・inbox の受理。
+
+    走っている / 起動待ちの run-id は `--running` で渡す。渡さないと、枠が空くのを待って
+    いる run を毎周『駆動者が居ない孤児』と読んで再開回数を焼き、上限で failed に確定する。"""
+    busy = pool.busy_ids()
+    for project in host.projects:
+        if not str(project.get("root") or "").strip():
+            continue
+        name = _project_name(project)
+        running = sorted(r[len(f"flow/{name}/"):] for r in busy
+                         if r.startswith(f"flow/{name}/"))
+        cmd = _project_cmd(project, "flow-participate", "--json")
+        if running:
+            cmd += ["--running", ",".join(running)]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  timeout=_FLOW_TICK_TIMEOUT_SEC)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            status.record_error(f"flow participate {name}: {e}")
+            continue
+        if proc.returncode != 0:
+            status.record_error(f"flow participate {name} 失敗（rc={proc.returncode}）: "
+                                f"{proc.stderr.strip()[-300:]}")
+            continue
+        try:
+            items = json.loads(proc.stdout or "[]")
+        except ValueError:
+            continue
+        for item in items:
+            rid = str((item or {}).get("run_id") or "").strip()
+            if not rid:
+                continue
+            run_cmd = _project_cmd(project, "flow-run", "--run-id", rid)
+            pool.submit(WorkItem(id=f"flow/{name}/{rid}",
+                                 run=lambda c=run_cmd: subprocess.run(c)))
+
+
 def _project_gc_sweeper(project: dict) -> "tuple[str, object] | None":
     """host.yaml の 1 プロジェクト宣言から gc sweeper（`resident.gc.run_gc` が食べる
     `(名前, 引数無し callable)` の組）を組み立てる。掃除の実装は持たない（R1）——
@@ -354,9 +419,7 @@ def _project_gc_sweeper(project: dict) -> "tuple[str, object] | None":
     if not root:
         return None
     name = _project_name(project)
-    cmd = [sys.executable, _self_script(), "gc", "--root", root, "--json"]
-    if project.get("config"):
-        cmd += ["--config", str(project["config"])]
+    cmd = _project_cmd(project, "gc", "--json")
 
     def sweep() -> dict:
         proc = subprocess.run(cmd, capture_output=True, text=True,
@@ -413,7 +476,7 @@ def _build_resident(host: "HostConfig", *, start_children: bool = True):
         write_json_atomic(str(status_path), status.to_dict())
 
     # ノード直轄ワーカー（設計 §4.2・実装計画 W1-5/W1-11）。max_concurrent: 0 は「明示未設定」
-    # として flow daemon 既定の --max-workers（4）に合わせる（NodeWorkerPool 自体は
+    # として旧 flow daemon 既定の --max-workers（4）に合わせる（NodeWorkerPool 自体は
     # max(1, n) を強制するため 0 を「無制限」にはできない。host.yaml.example の記載も
     # 「既定 4」に合わせて更新済み）。
     pool = NodeWorkerPool(
@@ -440,6 +503,11 @@ def _build_resident(host: "HostConfig", *, start_children: bool = True):
         status.tick_counts["amigos"] = status.tick_counts.get("amigos", 0) + 1
         write_status()
 
+    def tick_flow() -> None:
+        _flow_participate_tick(host, pool, status)
+        status.tick_counts["flow"] = status.tick_counts.get("flow", 0) + 1
+        write_status()
+
     def tick_gc() -> None:
         run_gc(_project_gc_sweepers(host) + [("board", lambda: _sweep_terminal_delegations(host))],
               on_event=lambda name, ev, exc: (status.record_error(f"gc {name}: {exc}")
@@ -453,8 +521,12 @@ def _build_resident(host: "HostConfig", *, start_children: bool = True):
     # プロジェクト数に比例して正当に長くなる。宣言しないと 3 プロジェクト以上で猶予
     # （既定 watchdog_timeout=300s）を超え、健全な常駐体を abort してしまう。
     gc_budget = _GC_PROJECT_TIMEOUT_SEC * max(1, len(host.projects))
+    # flow tick はプロジェクトごとに `agent-project flow-participate` を**逐次**起動するので、
+    # プロジェクト数に比例して正当に長くなる（gc と同じ理由で timeout を宣言する）。
+    flow_budget = _FLOW_TICK_TIMEOUT_SEC * max(1, len(host.projects))
     sched = Scheduler([Tick("supervise", 5.0, tick_supervise),
                        Tick("amigos", 5.0, tick_amigos, timeout=_AMIGOS_TICK_TIMEOUT_SEC),
+                       Tick("flow", 5.0, tick_flow, timeout=flow_budget),
                        Tick("gc", 600.0, tick_gc, timeout=gc_budget)],
                       on_tick_error=lambda name, exc: status.record_error(f"{name}: {exc}"))
     return sup, sched, status, write_status, pool

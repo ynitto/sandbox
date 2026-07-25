@@ -319,46 +319,28 @@ class TestInstances(unittest.TestCase):
                 pids = km._flow_pids_for_bus(cfg.bus)
             self.assertEqual(pids, [222], "自分の bus の agent-flow だけを対象にする")
 
-    def test_reap_spares_external_daemon_by_default(self):
-        """manage_flow_daemon=false では外部 daemon を殺さない（timeout/起動時の全滅防止）。"""
+    def test_reap_covers_every_flow_process_on_the_bus(self):
+        """自分の bus を回している agent-flow は種類を問わず前世代の残骸として刈る
+        （同じ bus を回す agent-project は 1 つだけなので、他人のものは混ざらない）。"""
         with tempfile.TemporaryDirectory() as d:
-            cfg = cfg_for(Path(d))  # manage_flow_daemon 既定 False
+            cfg = cfg_for(Path(d))
             bus = str(cfg.bus.resolve())
             ps_out = (
-                f"111 python /x/agent-flow --bus {bus} daemon --max-workers 2\n"
                 f"222 python /x/agent-flow --bus {bus} run --run-id R1\n"
                 f"333 python /x/agent-flow --bus {bus} orchestrate --run-id R1\n"
+                f"444 python /x/agent-flow --bus {bus} work --run-id R1\n"
             )
             fake = types.SimpleNamespace(returncode=0, stdout=ps_out)
             with mock.patch.object(km.subprocess, "run", return_value=fake):
-                all_pids = km._flow_pids_for_bus(cfg.bus, include_daemon=True)
-                spare = km._flow_pids_for_bus(cfg.bus, include_daemon=False)
-            self.assertEqual(sorted(all_pids), [111, 222, 333])
-            self.assertEqual(sorted(spare), [222, 333], "daemon を除外")
+                self.assertEqual(sorted(km._flow_pids_for_bus(cfg.bus)), [222, 333, 444])
 
             killed = []
-            with mock.patch.object(km, "_flow_pids_for_bus",
-                                   side_effect=lambda bus, include_daemon=True: (
-                                       [111, 222, 333] if include_daemon else [222, 333])), \
+            with mock.patch.object(km, "_flow_pids_for_bus", return_value=[222, 333, 444]), \
                  mock.patch.object(km.os, "kill", side_effect=lambda pid, sig: killed.append(pid)), \
                  mock.patch.object(km, "_pid_alive", return_value=False):
                 n = km.reap_orphan_flow(cfg)
-            self.assertEqual(n, 2)
-            self.assertEqual(sorted(set(killed)), [222, 333])
-            self.assertNotIn(111, killed)
-
-    def test_reap_kills_daemon_when_managed(self):
-        with tempfile.TemporaryDirectory() as d:
-            cfg = cfg_for(Path(d), manage_flow_daemon=True)
-            killed = []
-            with mock.patch.object(km, "_flow_pids_for_bus",
-                                   side_effect=lambda bus, include_daemon=True: (
-                                       [10, 20] if include_daemon else [20])), \
-                 mock.patch.object(km.os, "kill", side_effect=lambda pid, sig: killed.append(pid)), \
-                 mock.patch.object(km, "_pid_alive", return_value=False):
-                n = km.reap_orphan_flow(cfg)
-            self.assertEqual(n, 2)
-            self.assertEqual(sorted(set(killed)), [10, 20])
+            self.assertEqual(n, 3)
+            self.assertEqual(sorted(set(killed)), [222, 333, 444])
 
     def test_stop_takes_the_agent_flow_children_with_it(self):
         """停止は agent-flow の子孫まで届くこと（本人だけ殺すと残骸が走り続ける）。
@@ -492,7 +474,7 @@ class TestConfigFile(unittest.TestCase):
 
     def test_bus_config_is_honored(self):
         # 設定ファイルの bus: が読まれ、明示バス（絶対パス）として使われること。
-        # これが読まれないと既定バスに落ち、外部 agent-flow daemon が非検知になる。
+        # これが読まれないと既定バスに落ち、agent-flow が別のバスを見てしまう。
         with tempfile.TemporaryDirectory() as d:
             shared = str(Path(d) / "shared-bus")
             p = Path(d) / "agent-project.json"

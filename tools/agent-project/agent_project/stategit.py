@@ -958,7 +958,7 @@ def state_git_for(cfg: "Config") -> "DirectStateGit | None":
 # 実行層 agent-flow を「プロジェクト単位で agent-project が起動・監視」する。
 # agent-flow は project の概念を持たず素の単一バス daemon のまま。プロジェクトとリポジトリの対応
 # （＝どのバスがどこへ鏡写しするか）は制御層 agent-project が握り、daemon 起動時に CLI で注入する:
-#   agent-flow --bus <project>/bus --state-git <repo> --state-git-subdir agent-flow ... daemon ...
+#   agent-flow --bus <project>/bus --state-git <repo> --state-git-subdir agent-flow ... run ...
 # 起動はバスロックで冪等（既に稼働なら二重起動しない）。agent-project 停止時も detached で残すため、
 # in-flight run（gitlab 長期委譲・夜間停止からの孤児再開）は daemon 側でそのまま継続する。
 FLOW_STATE_SUBDIR = "agent-flow"   # プロジェクト固有リポジトリ内の agent-flow 名前空間（viewer は <clone>/agent-flow）

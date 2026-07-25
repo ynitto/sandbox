@@ -71,10 +71,11 @@ Anthropic の *Building Effective Agents* では、固定経路の **Workflow** 
 
 | 役割 | 起動 | 仕事 |
 |------|------|------|
-| **daemon** | `agent-flow daemon` | inbox 監視→orchestrator 起動 / タスク量に応じ worker 起動 |
-| **orchestrator** | `run` / daemon が起動 | 戦略決定→グラフ生成→静止待ち→評価/再計画→統合 |
-| **worker** | `run` / daemon が起動 | claim→kiro-cli 実行→result 書き込み |
-| **submit / status / gc** | CLI | 要求投入 / 状態表示 / 古い run 掃除 |
+| **participate** | `agent-flow participate` | cancel 受理 / park 再確認 / 孤児回収 / 板巡回 / inbox 受理（実行はしない） |
+| **run** | `agent-flow run` | orchestrator + worker を起こし、生存リースと park を自分で面倒見る |
+| **orchestrator** | `run` が起動 | 戦略決定→グラフ生成→静止待ち→評価/再計画→統合 |
+| **worker** | `run` が起動 | claim→エージェント CLI 実行→result 書き込み |
+| **status / gc** | CLI | 状態表示 / 古い run 掃除 |
 
 データの真実は常に **バス上のファイル**（`graph.json` と結果ファイル群）にあり、プロセスはステートレス。
 
@@ -543,13 +544,13 @@ while 常駐:
 ```
 
 - **要求 claim**: `inbox/claims/<req>/<who>` に対し claim プロトコルを適用し、分散時も**1 台の
-  デーモンだけ**がその要求を orchestrate する。
+  ノードだけ**がその要求を orchestrate する。
 - **オンデマンド worker**: claim 可能タスク量に応じて起動。仕事が尽きれば worker は自然終了し、
   新たな仕事が来れば再び起動される。
-- **冪等な起動**: デーモンはバス単位の singleton。起動時に `_daemon_lock_path`（バス外の一時領域、
-  ローカルは bus 絶対パス / git は remote@branch/subdir をキーに）へ `fcntl` 非ブロッキング排他ロックを
-  取り、既に稼働中なら何もせず終了する。`agent-flow daemon` の重複呼び出しは安全（多重起動しない）。
-- 分散は各 PC で `agent-flow --git <repo> daemon` を動かすだけ。要求はどの PC から `submit` してもよい。
+- **常駐しない**: 受理（`participate`）と実行（`run`）は別プロセスで、どちらも 1 巡で終わる。
+  周期駆動は PC の常駐体（`agent-project serve`）が持ち、重複実行は claim プロトコルが防ぐ。
+  `participate` の重複呼び出しは安全（claim を取れなかった側が何もしない）。
+- 分散は各 PC で `agent-flow --git <repo> participate` を回すだけ。要求はどの PC から投函してもよい。
 
 ---
 

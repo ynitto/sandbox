@@ -478,23 +478,23 @@ viewer 監視＋GitLab バックアップは [`agent-flow.state-git.yaml.example
 
 ## 使い方
 
-### デーモン（推奨・オンデマンド起動）
+### 参加（inbox に積まれた要求を拾う）
+
+常駐はしない。PC の常駐体（`agent-project serve`）が短周期で `participate` を回し、受理された
+run を `run --from-inbox` として起こす。手で 1 巡させることもできる。
 
 ```bash
-# 1) デーモンを常駐起動（このマシンのワーカー上限は --max-workers）
-agent-flow --bus /tmp/flowbus daemon --max-workers 4 &
-# サブコマンドを省略すると daemon として起動する（値は設定ファイル/既定から）
-agent-flow &
+# 1) 受理だけ 1 巡（cancel 受理・park 再確認・孤児回収・板巡回・inbox 受理）。
+#    実行すべき run-id を出力するだけで、run は実行しない。
+agent-flow --bus /tmp/flowbus participate --json
 
-# 2) 要求を投入（run-id が標準出力に返る）。デーモンが拾って自動実行する
-#    submit の前に daemon を確保すること（daemon は冪等なので、そのまま起動コマンドを実行してよい）
-RID=$(agent-flow --bus /tmp/flowbus submit "要件整理; API設計; テスト")
+# 2) 受理された run を実行する（要求文・書込先・引き継ぎ元は inbox 要求から読む）
+agent-flow --bus /tmp/flowbus --run-id "$RID" run --from-inbox
 agent-flow --bus /tmp/flowbus --run-id "$RID" status --follow --until-done
 
-# 分散: 各 PC で同じ --git を指すデーモンを起動するだけ。要求はどの PC から submit してもよい。
+# 分散: 各 PC で同じ --git を指す participate を回すだけ（claim プロトコルで 1 台に決まる）。
 # 既存リポジトリ（GitHub 等）を間借りするなら専用ブランチ（例 agent-flow-bus）を使うと main を汚さない
-agent-flow --git git@example.com:team/repo.git --git-branch agent-flow-bus daemon --max-workers 4 &   # PC ごとに
-agent-flow --git git@example.com:team/repo.git --git-branch agent-flow-bus submit "<要求>"
+agent-flow --git git@example.com:team/repo.git --git-branch agent-flow-bus participate --json
 ```
 
 ### ワンショット（単発実行・既存 run-id なら自動で再開）

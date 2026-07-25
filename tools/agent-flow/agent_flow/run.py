@@ -29,65 +29,6 @@ def _child_base(args, bus_abs: str) -> list:
     return base
 
 
-def _acquire_daemon_lock(args):
-    """daemon singleton ロックを取得して pid を記録し、lock_file を返す。既に保持中なら None。
-    pid は flock の有無に関わらず記録する（flock 非対応環境でも pid 生存で発見できるように）。"""
-    lock_path = _daemon_lock_path(args)
-    # 既存ホルダの pid を消さないよう truncate せず開く（ロック取得後にだけ書く）
-    lock_file = os.fdopen(os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644), "r+")
-    if fcntl is not None:
-        try:
-            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            lock_file.close()
-            return None
-    elif msvcrt is not None:
-        # Windows: msvcrt.locking の非ブロッキング領域ロックで排他する。
-        # 以前の「PID を読んで生死判定→書き込み」は TOCTOU（2 プロセスが同時に判定を通過し
-        # 両方 daemon になる）だったため、OS のロックに置き換える。
-        try:
-            lock_file.seek(0)
-            msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
-        except OSError:
-            lock_file.close()
-            return None
-    else:  # pragma: no cover — fcntl も msvcrt も無い環境のみ（従来の PID フォールバック）
-        try:
-            lock_file.seek(0)
-            raw = (lock_file.read() or "").strip()
-            if raw:
-                old = int(raw)
-                if old != os.getpid() and _pid_alive(old):
-                    lock_file.close()
-                    return None
-        except (ValueError, OSError):
-            pass
-    lock_file.seek(0)
-    lock_file.truncate()
-    lock_file.write(str(os.getpid()))
-    lock_file.flush()
-    return lock_file
-
-
-def _release_daemon_lock(lock_file) -> None:
-    """daemon singleton ロックを解放して fd を閉じる（自己更新の再起動前に呼ぶ）。
-    flock は fd に紐づくため、execv で再起動する前に解放しないと再取得で多重起動扱いになる。"""
-    if lock_file is None:
-        return
-    try:
-        if fcntl is not None:
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
-        elif msvcrt is not None:
-            lock_file.seek(0)
-            msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
-    except OSError:
-        pass
-    try:
-        lock_file.close()
-    except OSError:
-        pass
-
-
 def _run_lease_window(args) -> float:
     """run 生存リース（heartbeat）の猶予秒。健康な daemon は poll 毎に更新するので、
     poll の十数倍を確保すれば一過性の遅延（GC/ネットワーク）で誤回収しない。一方 act_timeout
@@ -324,6 +265,31 @@ def _spawn_worker(base: list, args, rid: str, wid: str):
     ], env=env)
 
 
+def _apply_inbox_request(bus: Bus, args) -> None:
+    """inbox 要求（`inbox/<run-id>.json`）の内容を run の引数へ流し込む（`--from-inbox`）。
+
+    受理の判断（板の落札・claim）と実行は別プロセスに分かれる（`participate` が受理し、
+    ノード常駐体が `run --from-inbox` を起こす）。要求文・書込先ワークスペース・参照リポジトリ・
+    引き継ぎ元は inbox 要求が唯一の権威なので、呼び出し側に argv で転記させず**ここで読む**
+    ——転記させると項目が増えるたびに常駐体側の組み立てを直す必要が出て、抜けたぶんだけ
+    静かに機能が落ちる（workspace が落ちれば成果が別の場所に書かれる）。
+    要求が無ければ何もしない（run_id 指定の通常の再開として続行する）。"""
+    rec = bus.read_inbox(str(args.run_id or "").strip()) if getattr(args, "run_id", None) else None
+    if not rec:
+        return
+    if not getattr(args, "request", ""):
+        args.request = rec.get("request", "")
+    ws = rec.get("workspace")
+    if ws and not getattr(args, "workspace", None):
+        args.workspace = json.dumps(ws, ensure_ascii=False)
+    refs = rec.get("references") or []
+    if refs and not getattr(args, "references", None):
+        args.references = [json.dumps(r, ensure_ascii=False) for r in refs]
+    inh = rec.get("inherit_from")
+    if inh and not getattr(args, "inherit_from", None):
+        args.inherit_from = inh
+
+
 def cmd_run(args) -> int:
     # グローバル指示の無効化を子プロセス（orchestrate / work）へ環境変数で伝搬する
     # （子は argv を組み立て直すため、フラグは env で確実に届ける）。
@@ -334,6 +300,8 @@ def cmd_run(args) -> int:
         os.environ["AGENT_FLOW_NO_SESSION_COMMANDS"] = "1"
     probe = make_bus(args, "run")
     probe.sync_pull()
+    if getattr(args, "from_inbox", False):
+        _apply_inbox_request(probe, args)
     resuming = bool(args.run_id) and probe.run_exists(args.run_id)
     if resuming:
         meta = probe.run_meta(args.run_id)

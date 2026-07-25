@@ -755,48 +755,6 @@ class DaemonPrimitiveTests(unittest.TestCase):
         # 消えた後は再 claim 可能にならない（要求自体が無い）
         self.assertEqual(self.bus.list_inbox(), [])
 
-    def test_lock_path_canonical_and_config_dir(self):
-        import argparse
-        # local キーは realpath で canonical 化 → symlink 経由でも同一ロックパス
-        real = os.path.join(self.tmp, "real_bus")
-        os.makedirs(real)
-        link = os.path.join(self.tmp, "link_bus")
-        try:
-            os.symlink(real, link)
-        except (OSError, NotImplementedError):
-            self.skipTest("symlink 不可")
-        a_real = argparse.Namespace(bus=real, git=None, git_branch="main", git_subdir=None, lock_dir=None)
-        a_link = argparse.Namespace(bus=link, git=None, git_branch="main", git_subdir=None, lock_dir=None)
-        self.assertEqual(kf._daemon_lock_path(a_real), kf._daemon_lock_path(a_link))
-        # 設定 lock_dir でロック置き場を共有できる（TMPDIR 差の吸収）
-        lockdir = os.path.join(self.tmp, "locks")
-        a_cfg = argparse.Namespace(bus=real, git=None, git_branch="main", git_subdir=None, lock_dir=lockdir)
-        self.assertEqual(os.path.dirname(kf._daemon_lock_path(a_cfg)), lockdir)
-
-    def test_daemon_lock_pid_fallback_without_fcntl(self):
-        # flock 非対応環境では既存 PID の生存で singleton を守る（README 契約）。
-        import argparse
-        args = argparse.Namespace(bus=self.tmp, git=None, git_branch="main",
-                                  git_subdir=None, lock_dir=None)
-        path = kf._daemon_lock_path(args)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        live = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
-        self.addCleanup(lambda: live.poll() is None and live.kill())
-        with open(path, "w") as f:
-            f.write(str(live.pid))
-        real_fcntl = kf.fcntl
-        try:
-            kf.fcntl = None
-            held = kf._acquire_daemon_lock(args)
-            self.assertIsNone(held)                      # 生きた PID → 取得拒否
-            live.kill()
-            live.wait(timeout=5)
-            got = kf._acquire_daemon_lock(args)
-            self.assertIsNotNone(got)                    # 死んだ PID → 引き継ぎ可
-            kf._release_daemon_lock(got)
-        finally:
-            kf.fcntl = real_fcntl
-
     def test_active_runs_and_claimable_count(self):
         v = kf.Bus(self.tmp, "runA")
         v.ensure_run("req")
@@ -817,217 +775,75 @@ class DaemonPrimitiveTests(unittest.TestCase):
         self.assertNotIn("runA", self.bus.active_runs())
 
 
-class DaemonE2ETests(unittest.TestCase):
-    """実 daemon プロセスが submit を拾い、orchestrator/worker をオンデマンド起動して run を完走させる黒箱 e2e。
+class ParticipateE2ETests(unittest.TestCase):
+    """inbox 投函 → `participate` が受理 → `run --from-inbox` が完走、の黒箱 e2e。
 
     DaemonPrimitiveTests が bus プリミティブ（submit/claim/inbox）を in-process で検証するのに対し、
-    こちらは `daemon` を実プロセスとして常駐させ、`submit` 投入 → final.json 生成まで通す。"""
+    こちらは実プロセスとして 2 コマンドを繋ぎ、final.json 生成まで通す。常駐一本化後の実配線
+    （ノード常駐体が participate の出力を run へディスパッチする）と同じ順序を再現している。"""
 
     def setUp(self):
-        self.bus = tempfile.mkdtemp(prefix="kf-daemon-e2e-")
-        self.daemon = None
+        self.bus = tempfile.mkdtemp(prefix="kf-participate-e2e-")
+        self._submitted = 0
 
     def tearDown(self):
-        if self.daemon and self.daemon.poll() is None:
-            self.daemon.terminate()
-            try:
-                self.daemon.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self.daemon.kill()
-                self.daemon.wait(timeout=5)
-        if self.daemon:
-            for s in (self.daemon.stdout, self.daemon.stderr):
-                if s:
-                    s.close()
         shutil.rmtree(self.bus, ignore_errors=True)
 
-    def _start_daemon(self):
-        self.daemon = subprocess.Popen(
-            [sys.executable, str(SCRIPT), "--bus", self.bus, "daemon",
-             "--max-workers", "3", "--planner", "stub", "--executor", "stub",
-             "--poll", "0.2", "--no-cleanup"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
     def _submit(self, request):
-        p = subprocess.run([sys.executable, str(SCRIPT), "--bus", self.bus, "submit", request],
-                           capture_output=True, text=True, timeout=30)
+        """公式の入力契約（inbox/<req-id>.json）へ直接投函する。
+        agent-dashboard の委譲アダプタもこの契約で投函する（CLI は経由しない）。"""
+        self._submitted += 1
+        run_id = f"run-e2e-{self._submitted}"
+        kf.Bus(self.bus, "test-submitter").submit_request(run_id, request, "test")
+        return run_id
+
+    def _participate(self, running=()):
+        cmd = [sys.executable, str(SCRIPT), "--bus", self.bus, "participate",
+               "--json", "--executor", "stub"]
+        if running:
+            cmd += ["--running", ",".join(running)]
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         self.assertEqual(p.returncode, 0, p.stderr[-800:])
-        return p.stdout.strip().splitlines()[0]   # submit は run-id を標準出力の先頭に出す
+        return [it["run_id"] for it in json.loads(p.stdout or "[]")]
 
-    def _wait_final(self, run_id, timeout=90):
+    def _run(self, run_id):
+        p = subprocess.run(
+            [sys.executable, str(SCRIPT), "--bus", self.bus, "--run-id", run_id,
+             "run", "--from-inbox", "--planner", "stub", "--executor", "stub",
+             "--workers", "3", "--poll", "0.2"],
+            capture_output=True, text=True, timeout=180)
         final = os.path.join(self.bus, "runs", run_id, "final.json")
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if self.daemon.poll() is not None:    # daemon が落ちたら即座に失敗（無駄に待たない）
-                _, err = self.daemon.communicate()
-                self.fail(f"daemon が早期終了 rc={self.daemon.returncode}\n{(err or b'').decode()[-800:]}")
-            data = kf.read_json(final) if os.path.exists(final) else None
-            if data:                              # final.json は atomic write なので存在＝完成
-                return data
-            time.sleep(0.3)
-        self.fail(f"final.json がタイムアウト({timeout}s)内に現れず: {run_id}")
+        data = kf.read_json(final) if os.path.exists(final) else None
+        self.assertIsNotNone(data, f"final.json が現れず: {run_id}\n{p.stdout[-800:]}\n{p.stderr[-800:]}")
+        return data
 
-    def test_daemon_picks_up_submit_and_completes(self):
-        self._start_daemon()
+    def test_participate_accepts_inbox_and_run_completes(self):
         run_id = self._submit("x; y; z")
-        final = self._wait_final(run_id)
+        self.assertEqual(self._participate(), [run_id])   # 受理して実行を呼び出し側へ引き渡す
+        final = self._run(run_id)
         results = final["results"]
-        # daemon → orchestrator → worker で fan-out-and-synthesize が完走（並列ノード + 統合）
+        # orchestrator → worker で fan-out-and-synthesize が完走（並列ノード + 統合）
         self.assertGreaterEqual(len(results), 4)
         self.assertIn("synth", results)
         for nid, r in results.items():
             self.assertEqual(r["status"], "done", f"{nid}: {r}")
             self.assertTrue(r["who"])             # worker が実行した
 
-    def test_daemon_completes_multiple_submits(self):
-        # 1 デーモンが複数要求を並行に受理し、それぞれ独立 run として完走させる
-        self._start_daemon()
+    def test_participate_accepts_multiple_requests(self):
         r1 = self._submit("a; b")
         r2 = self._submit("c; d")
+        self.assertEqual(sorted(self._participate()), sorted([r1, r2]))
         for run_id in (r1, r2):
-            final = self._wait_final(run_id)
+            final = self._run(run_id)
             self.assertIn("synth", final["results"])
             for nid, r in final["results"].items():
                 self.assertEqual(r["status"], "done", f"{run_id}/{nid}: {r}")
 
-    def test_daemon_writes_status_json_on_startup(self):
-        # cmd_daemon の起動直後の write_daemon_status 呼び出しが実際に配線されていることを、
-        # サブプロセスとして起動した実 daemon で確認する（state_git 無しでもローカルに書く）。
-        self._start_daemon()
-        status = os.path.join(self.bus, "status.json")
-        deadline = time.time() + 15
-        rec = None
-        while time.time() < deadline and rec is None:
-            rec = kf.read_json(status) if os.path.exists(status) else None
-            if rec is None:
-                time.sleep(0.2)
-        self.assertIsNotNone(rec, "status.json が起動後に現れませんでした")
-        self.assertIn("pid", rec)
-        self.assertIn("updated_iso", rec)
-
-
-class DaemonStatusHeartbeatTests(unittest.TestCase):
-    """daemon の生存信号（status.json）。agent-project の write_status/--status-interval と
-    同じ考え方: 実イベント（run 終端・生存リース push）時は既存の state_sync/push に相乗り
-    （追加 push 無し）、アイドル中の更新は --status-interval（既定 0=無効）が opt-in。
-    GitBus（--git）モードでは書かない（sparse-checkout が対象外パスのため）。"""
-
-    def setUp(self):
-        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="kf-status-"))
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-        self.bus_root = self.tmp / "bus"
-
-    def _args(self, **kw):
-        base = dict(bus=str(self.bus_root), git=None, state_git_interval=300.0,
-                    status_interval=0.0)
-        base.update(kw)
-        return types.SimpleNamespace(**base)
-
-    def _bus(self):
-        return kf.Bus(str(self.bus_root), "_")
-
-    def _status_path(self):
-        return self.bus_root / "status.json"
-
-    def test_write_daemon_status_content(self):
-        bus = self._bus()
-        kf.write_daemon_status(self._args(status_interval=60.0), bus, "host-1", {"r1": None}, [1, 2])
-        rec = json.loads(self._status_path().read_text(encoding="utf-8"))
-        self.assertEqual(rec["node_id"], "host-1")
-        self.assertEqual(rec["orchestrators"], 1)
-        self.assertEqual(rec["workers"], 2)
-        self.assertIn("updated_iso", rec)
-        self.assertEqual(rec["fresh_after_sec"], 600.0)   # 2 * state_git_interval
-        self.assertIn("runtime", rec)
-        self.assertIn(rec["runtime"], ("linux", "wsl", "windows", "darwin"))
-
-    def test_fresh_after_sec_floor_and_larger_wins(self):
-        self.assertEqual(kf._daemon_status_fresh_after_sec(
-            self._args(state_git_interval=0.0, status_interval=0.0)), 120.0)   # フロア
-        self.assertEqual(kf._daemon_status_fresh_after_sec(
-            self._args(state_git_interval=300.0, status_interval=1000.0)), 2000.0)  # 大きい方
-
-    def test_write_daemon_status_noop_in_gitbus_mode(self):
-        bus = self._bus()
-        kf.write_daemon_status(self._args(git="https://example/bus.git"), bus, "host-1", {}, [])
-        self.assertFalse(self._status_path().exists())
-
-    def test_maybe_heartbeat_disabled_by_default_touches_nothing(self):
-        bus = self._bus()
-        kf.maybe_heartbeat_daemon_status(self._args(status_interval=0.0), bus, "host-1", {}, [])
-        self.assertFalse(self._status_path().exists())
-
-    def test_maybe_heartbeat_enabled_throttles_to_interval(self):
-        bus = self._bus()
-        args = self._args(status_interval=100.0)
-        kf.maybe_heartbeat_daemon_status(args, bus, "host-1", {}, [])   # 未作成 → 書く
-        self.assertTrue(self._status_path().exists())
-        first_mtime = self._status_path().stat().st_mtime
-        kf.maybe_heartbeat_daemon_status(args, bus, "host-1", {}, [])   # 直後の再呼び出しは間隔未満
-        self.assertEqual(self._status_path().stat().st_mtime, first_mtime)
-        old = time.time() - 101.0
-        os.utime(self._status_path(), (old, old))                       # 間隔経過を模擬
-        kf.maybe_heartbeat_daemon_status(args, bus, "host-1", {}, [])
-        self.assertGreater(self._status_path().stat().st_mtime, old)
-
-    def test_maybe_heartbeat_noop_in_gitbus_mode(self):
-        bus = self._bus()
-        kf.maybe_heartbeat_daemon_status(
-            self._args(git="https://example/bus.git", status_interval=1.0), bus, "host-1", {}, [])
-        self.assertFalse(self._status_path().exists())
-
-
-class DaemonStatusStateGitSyncTests(unittest.TestCase):
-    """status.json は StateGit._scan() がバス全体を走査するため、既存の state_git 機構へ
-    追加設定なしで乗る（GitBus 側のような sparse-checkout の拡張は不要）ことを確認する。
-    StateGitSyncTests と同じ道具立て（bare remote + 別クローンで検証）。"""
-
-    def setUp(self):
-        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="kf-status-sg-"))
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-        kf._STATE_GITS.clear()
-        self.remote = self.tmp / "remote.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(self.remote)], check=True)
-        subprocess.run(["git", "-C", str(self.remote), "symbolic-ref", "HEAD",
-                        "refs/heads/main"], check=True)
-        self.bus_root = self.tmp / "bus"
-
-    def _args(self, **kw):
-        base = dict(bus=str(self.bus_root), git=None, run_id=None,
-                    state_git=str(self.remote), state_git_branch="main",
-                    state_git_subdir="kf", state_git_interval=0.0)
-        base.update(kw)
-        return types.SimpleNamespace(**base)
-
-    def _other(self, name="other") -> pathlib.Path:
-        d = self.tmp / name
-        subprocess.run(["git", "clone", "-q", str(self.remote), str(d)],
-                       check=True, capture_output=True)
-        return d
-
-    def test_status_json_mirrors_via_existing_state_sync(self):
-        bus = kf.Bus(str(self.bus_root), "_")
-        kf.write_daemon_status(self._args(), bus, "host-1", {}, [])
-        kf.state_sync(self._args(), force=True)
-        got = self._other()
-        rec = json.loads((got / "kf" / "status.json").read_text(encoding="utf-8"))
-        self.assertEqual(rec["node_id"], "host-1")
-
-    def test_idle_heartbeat_disabled_produces_no_extra_commit_beyond_status_write(self):
-        # --status-interval 無効時、アイドル中に status.json を書き直さなければ、2 回目の
-        # sync（interval 経過を模擬）は新しいコミットを作らない（＝追加の push が無い）。
-        bus = kf.Bus(str(self.bus_root), "_")
-        args = self._args(state_git_interval=3600.0)
-        kf.write_daemon_status(args, bus, "host-1", {}, [])
-        kf.state_sync(args, force=True)
-        sg = kf.state_git_for(args)
-        before = subprocess.run(["git", "-C", str(sg.clone), "rev-parse", "HEAD"],
-                                capture_output=True, text=True, check=True).stdout.strip()
-        sg._last_remote = 0.0                     # interval 経過を模擬（次回は "due" になる）
-        kf.state_sync(args)                        # status.json を書き直していないので差分なし
-        after = subprocess.run(["git", "-C", str(sg.clone), "rev-parse", "HEAD"],
-                               capture_output=True, text=True, check=True).stdout.strip()
-        self.assertEqual(before, after)
+    def test_participate_skips_runs_the_caller_is_already_driving(self):
+        """`--running` の run は再受理しない。渡さないと、起動待ちの run を毎周
+        『駆動者が居ない』と読んで再開回数を焼き切り failed に確定してしまう。"""
+        run_id = self._submit("a; b")
+        self.assertEqual(self._participate(running=[run_id]), [])
 
 
 class AutoHealTests(unittest.TestCase):

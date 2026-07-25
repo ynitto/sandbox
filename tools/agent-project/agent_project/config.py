@@ -45,15 +45,12 @@ class Config:
     state_git_branch: str = "main"        # 同期先ブランチ
     state_git_subdir: str = "agent-project"  # リポジトリ内の保存先サブディレクトリ（多重コミッタとの名前空間分離）
     state_git_interval: float = 300.0     # fetch/push の最短間隔（秒）。0 で毎同期（リモート負荷は増える）
-    # 実行層 agent-flow daemon をこのプロジェクト用に agent-project が起動・監視する（opt-in）。
-    manage_flow_daemon: bool = False
-    # daemon に --config で渡す共有 agent-flow.yaml（任意。未指定は agent-flow の既定発見に委ねる）。
+    # agent-flow へ --config で渡す共有 agent-flow.yaml（任意。未指定は agent-flow の既定発見に委ねる）。
     # agent-flow の設定値（executor / state_git_subdir / gitlab.* / defer_waits 等）は個別に CLI 注入
     # せず、この設定ファイルに集約して agent-flow に読ませる（agent-project 側に agent-flow 設定を増やさない）。
     # 例外は「バスをどのリポジトリへ鏡写しするか」の routing（--state-git 等）のみで、これは
     # agent-project の役割なので CLI 注入し続ける。
     flow_config: "str | None" = None
-    flow_max_workers: int = 4          # agent-flow daemon の worker 上限
     # 状態専用リポジトリ（案1: 状態と成果物の分離）。設定すると状態（.agent-project 一式）を
     # 成果物リポジトリの worktree ではなく、専用リポジトリの通常 clone に置く。worktree の
     # 二重実装・sparse-checkout・本体 main へのバックアップ（ドリフト源）を回避する。
@@ -80,7 +77,6 @@ class Config:
     status_interval: float = 0.0          # watch アイドル中に status.json の生存信号を更新する間隔（秒）。
                                            # 既定 0=無効（idle 中は追加コミットを一切生まない）。>0 でこの間隔
                                            # ごとに 1 回だけ書き直し、state_git の commit-if-diff に乗る
-    lock_dir: "str | None" = None   # agent-flow daemon ロックの置き場（外部 daemon 発見のため agent-flow と一致させる）
     agent_flow: "str | None" = None
     # 複数 PC のノード割当（バックログ単位で実行 PC を選ぶ）。node はこの PC のエンジン名で、
     # PC 毎に異なるため CLI --node か環境変数 AGENT_PROJECT_NODE からのみ取り（共有 yaml には
@@ -140,9 +136,6 @@ class Config:
     level_window: int = 10           # 手戻り率の評価窓（直近 N 件の完了）
     level_rework_max: float = 0.0    # 昇格を許す最大 rework_rate（既定 0＝手戻りゼロ）
     act_timeout: float = 1800.0
-    # 非ブロッキング委譲: daemon/remote への submit で結果を待たず次のタスクへ進み、offloaded にして
-    # 次パスでポーリングして回収する。gitlab 等の長期委譲でループを塞がない（専用 daemon が run を保持）。
-    act_async: bool = False
     notify_cmd: "str | None" = None
     actor: str = "user"
     archive: "Path | None" = None   # done の退避先ディレクトリ（既定 archive/）

@@ -55,14 +55,14 @@ flow_planner: flow-planner  # agent-flow run に渡す planner: flow-planner / a
 # charter owns: 推定）で決まらないときの扱い:
 route_planner: agent        # agent=エージェント委譲が charter の desc/owns から1つ推定 / none=決定論のみ（推定しない）
 # default_workspace: app    # それでも決まらないタスクの既定書込先（charter の name/url）。空=無効
-location: auto              # act の実行先: auto / local / daemon / remote / board
-concurrency: 1             # daemon/remote/board へ並行 submit する独立タスク数（1=逐次。local 単発 run は常に逐次）
+location: auto              # act の実行先: auto / local / board
+concurrency: 1             # 板へ並行 post する独立タスク数（1=逐次。local 単発 run は常に逐次）
 
 # 委譲公示板（agent-board）への依頼側自動配線（opt-in・既定は無効）。
 # board: を設定すると、location: auto は policy.md の offload: に一致するタスクを
-# ローカル/remote ではなく委譲公示板へ post するようになる（remote より優先）。
-# 板は「リポジトリ＋契約」だけで処理を持たない — 入札・実行は請負側ノードの agent-flow /
-# agent-amigos デーモン（board: 設定で board 参加が有効化されたもの）が行う。
+# ローカル実行ではなく委譲公示板へ post するようになる。
+# 板は「リポジトリ＋契約」だけで処理を持たない — 入札・実行は請負側ノードの常駐体
+# （board: 設定で board 参加が有効化されたもの）が行う。
 # 完了は board の result.json をポーリングして自動回収する（_reap_offloaded と同じ非ブロッキング委譲）。
 # 手動投函は `agent-project board-offload <task-id>` でも可（この設定を共有）。
 # board: git+ssh://git@gitea.local/team/agent-board.git
@@ -97,8 +97,7 @@ concurrency: 1             # daemon/remote/board へ並行 submit する独立�
 # agent_flow: /path/to/agent-flow.py   # agent-flow の明示パス（省略時は PATH→リポジトリ内を自動解決）
 
 # bus: bus                  # agent-flow バスの置き場（root 相対、既定: <root>/bus）。
-#   agent-flow の既定バス（./bus）と同じ場所を指すので、プロジェクトルートで `agent-flow daemon` を
-#   常駐させれば設定なしで検知される。プロジェクト外の共有バスを使うときだけ明示する。
+#   agent-flow の既定バス（./bus）と同じ場所を指す。プロジェクト外の共有バスを使うときだけ明示する。
 
 # ---------------------------------------------------------------------------
 # 自律度（信頼を段階的に明け渡す。タスク毎は - level: / - track: で上書き）
@@ -132,10 +131,6 @@ act_timeout: 1800.0        # act（agent-flow 実行）の結果待ちタイム�
                            #   executor: gitlab など人のレビュー往復で数日かかる長時間委譲では、
                            #   短いタイムアウトだと待ち切れずに retry を空増やし＆イシュー二重起票を
                            #   起こす。委譲運用では 0（無制限）を推奨。下の「gitlab 委譲」欄も参照。
-# act_async: false         # 非ブロッキング委譲。true にすると daemon/remote へ submit して結果を待たず、
-                           #   タスクを offloaded にして次パスでポーリングして回収する。gitlab 等の長期委譲で
-                           #   ループを塞がず、他タスクを並行して進められる（専用 daemon が run を保持）。
-                           #   併せて act_timeout: 0 と agent-flow gitlab.timeout: 0 を推奨（誤タイムアウト防止）。
 # throttle: 0.0            # ソフト予算比率（例 0.8）。上限の手前で打ち切り、watch は report 降格（0=off）
 
 # ---------------------------------------------------------------------------
@@ -227,10 +222,6 @@ watch: true                # 既定で常駐監視（systemd の ExecStart を `
 git_branch: main            # バスに使う git ブランチ
 # git_subdir: flow           # リポジトリ内でバスにするサブディレクトリ
 
-# lock_dir: /var/run/agent-flow   # agent-flow daemon ロックの置き場（既定: $TMPDIR/agent-flow-locks）。
-#                            # 外部起動の agent-flow daemon を発見するため agent-flow 側の lock_dir と一致させる。
-#                            # TMPDIR が食い違う構成で明示すると確実。
-
 # ---------------------------------------------------------------------------
 # 状態の git 保存・共有（state_git）— リモートの agent-dashboard と結果/指示を往復
 # ---------------------------------------------------------------------------
@@ -264,15 +255,9 @@ git_branch: main            # バスに使う git ブランチ
 # journal_max_bytes: 262144             # ローテーション閾値バイト（既定 256KB）。0 以下で無効
 # journal_keep: 20                      # journal-archive/ の保持世代数。0 以下で無制限
 #
-# 実行層 agent-flow の run（バス）も同じリポジトリで共有するには、agent-project に agent-flow daemon を
-# 起動・監視させる（opt-in）。daemon 起動時に CLI で注入するのは「このバス→このリポジトリへ鏡写し」
-# という routing（--state-git の remote/branch/interval。direct モードならルートの origin）だけ。
-# agent-flow の設定値（executor / state_git_subdir / gitlab.* / defer_waits 等）は個別に増やさず、
-# flow_config で渡す agent-flow.yaml に集約して agent-flow に読ませる。
-# agent-project を止めても daemon は残り、in-flight run（gitlab 長期委譲・夜間停止からの再開）を継続。
-# manage_flow_daemon: true               # agent-flow daemon を自動起動・監視
-# flow_config: ~/.agents/agent-flow.yaml    # daemon に --config で渡す agent-flow.yaml（agent-flow の設定はここに集約）
-# flow_max_workers: 6                    # agent-flow daemon の worker 上限
+# agent-flow の設定値（executor / state_git_subdir / gitlab.* / defer_waits 等）は agent-project 側に
+# 個別のキーを増やさず、flow_config で渡す agent-flow.yaml に集約して agent-flow に読ませる。
+# flow_config: ~/.agents/agent-flow.yaml    # agent-flow へ --config で渡す agent-flow.yaml
 #   ※ state_git サブディレクトリを変えたいときは agent-flow.yaml の state_git_subdir を設定する
 #     （既定 agent-flow。CLI 注入しないので上書きされない）。viewer の flowBusByProject も合わせる。
 

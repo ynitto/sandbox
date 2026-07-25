@@ -10,7 +10,11 @@ def main(argv=None) -> int:
         prog="agent-project",
         description="backlog/ を優先順位付け・検証・収束させる制御層（Loop Engineering MVP）。"
                     "サブコマンドを省略すると常駐監視（run --watch）で起動し backlog 投入を待ち続ける")
-    sub = p.add_subparsers(dest="cmd", required=False)
+    # metavar を置くと usage 行が `<command>` に畳まれ、各コマンドは本文に説明付きで並ぶ。
+    # help=SUPPRESS の内部配線（flow-participate / flow-run）は本文からは消えるが、
+    # metavar が無いと usage 行の選択肢一覧には名前だけ残る（R10: 利用者向けの表示に
+    # 内部の語彙を出さない）。
+    sub = p.add_subparsers(dest="cmd", required=False, metavar="<command>")
 
     run = sub.add_parser("run", help="正準ループ（優先順位付け→実行→検証→積み直し→収束）。"
                                      "<project>/charter.md があれば自動で目標駆動（plan→execute→evaluate）")
@@ -80,6 +84,20 @@ def main(argv=None) -> int:
     gc = sub.add_parser("gc", help="agent-flow バスの一時ファイル・古い run アーカイブを掃除する"
                                    "（実装計画 W1-11 残・ノード常駐体 gc tick 用の単発版）")
     _add_common(gc); gc.add_argument("--json", action="store_true", help="JSON で出力")
+
+    # 常駐体（serve）の内部配線。人が直接叩くコマンドではないので help から隠す
+    # （利用者向けの語彙を増やさない）。flow tick の 1 巡と、その受理分の実行。
+    # help を渡さない（help=SUPPRESS ではない）。argparse は 'help' が kwargs にあるだけで
+    # 選択肢の疑似アクションを作るため、SUPPRESS でも一覧に名前が残る（3.9 では
+    # `==SUPPRESS==` がそのまま印字される）。渡さなければ一覧に載らない。
+    fp = sub.add_parser("flow-participate")
+    _add_common(fp); fp.add_argument("--json", action="store_true", help="JSON で出力")
+    fp.add_argument("--running", default="",
+                    help="常駐体が今走らせている / これから走らせる run-id（カンマ区切り）")
+
+    fr = sub.add_parser("flow-run")
+    _add_common(fr); fr.add_argument("--run-id", dest="run_id", required=True,
+                                     help="実行する run-id（flow-participate が出したもの）")
 
     rl = sub.add_parser("runlog", help="構造化 run-log（run-log.jsonl）の末尾を表示")
     _add_common(rl); rl.add_argument("--json", action="store_true", help="JSON で出力")
@@ -244,6 +262,9 @@ def main(argv=None) -> int:
                     "runlog", "doctor", "update", "enqueue", "approve", "hold", "reprioritize",
                     "revise", "reject", "resume-run", "impact", "replan",
                     "board-offload", "gc",
+                    # 常駐体の内部配線（help からは隠すが、ここに載せないと
+                    # 「サブコマンド無し＝run --watch」の既定に飲まれて別物が起動する）
+                    "flow-participate", "flow-run",
                     "serve", "status", "worker"}
     if not argv or (argv[0] not in _subcommands and argv[0] not in ("-h", "--help")):
         argv = ["run", "--watch", *argv]
@@ -268,6 +289,9 @@ def main(argv=None) -> int:
     return {
         "run": lambda: cmd_run(cfg),
         "gc": lambda: cmd_gc(cfg, getattr(args, "json", False)),
+        "flow-participate": lambda: cmd_flow_participate(
+            cfg, getattr(args, "running", "") or "", getattr(args, "json", False)),
+        "flow-run": lambda: cmd_flow_run(cfg, getattr(args, "run_id", "")),
         "triage": lambda: cmd_triage(cfg),
         "needs": lambda: cmd_needs(cfg),
         "enqueue": lambda: cmd_enqueue(cfg, args),

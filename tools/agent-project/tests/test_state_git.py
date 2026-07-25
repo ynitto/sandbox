@@ -352,8 +352,8 @@ class TestStateSyncBatching(unittest.TestCase):
                             "https://example.invalid/r.git"], check=True)
             cfg = cfg_for(d, bus=d / "bus")                      # 既定の <root>/bus 相当
             self.assertIsNone(km.project_flow_remote(cfg))
-            cmd = km.flow_daemon_cmd(cfg, budget=2)
-            self.assertNotIn("--state-git", cmd)
+            t = km.Task(id="T1", title="x", verify="true")
+            self.assertNotIn("--state-git", km.build_agent_flow_cmd(t, cfg))
 
     def test_state_sync_journals_imports_only(self):
         # journal へ残すのは import（リモート指示の取り込み）のみ。export を記録すると

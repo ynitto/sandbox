@@ -164,23 +164,19 @@ def _escalate(cfg, task, reason, reasons, cycle, evidence: str = ""):
 
 
 # ---------------------------------------------------------------------------
-# 並列消費（§11）— agent-flow の worker 並列へ寄せる。
-#   prioritize が返す order は依存(after)解決済み＝互いに独立。daemon/remote へ submit する
-#   タスクは実行が daemon 側の隔離ワーカで走るので、最大 concurrency 個まで並行 submit して
+# 並列消費（§11）— 委譲公示板の請負側 worker 並列へ寄せる。
+#   prioritize が返す order は依存(after)解決済み＝互いに独立。板へ post するタスクは実行が
+#   請負ノードの隔離ワーカで走るので、最大 concurrency 個まで並行 post して
 #   一括で待つ。verify と done/archive/decisions/派生など「ローカル状態の変更」は逐次のまま
 #   （workdir/決定記録の競合を避け、不変条件をそのまま守る）。local act は逐次（並列化しない）。
 # ---------------------------------------------------------------------------
 def _submit_bound(location: str, cfg: "Config") -> bool:
-    """その location が daemon/remote/board への submit（=隔離ワーカ実行）になるか。local 実行なら False。"""
-    if location in ("remote", "board"):
-        return True
-    if location == "daemon":
-        return daemon_running(cfg, use_git=False)
-    return False
+    """その location が委譲公示板への post（=別ノードの隔離ワーカ実行）になるか。local 実行なら False。"""
+    return location == "board"
 
 
 def _select_batch(order: "list[Task]", cfg: "Config", policy, remaining: int) -> "list[Task]":
-    """先頭から、並行 submit 可能（daemon/remote）なタスクを最大 width 個まとめる。
+    """先頭から、並行 post 可能（board）なタスクを最大 width 個まとめる。
     先頭が local 実行なら従来どおり1件だけ（逐次）。残サイクル予算 remaining も超えない。"""
     width = cfg.concurrency if (cfg.concurrency > 1 and not cfg.once) else 1
     width = max(1, min(width, remaining))

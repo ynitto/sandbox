@@ -15,7 +15,7 @@
 ## 1. 背景と問題
 
 agent-project は 1 タスクの各試行を agent-flow の run として投入する。run-id は決定的で
-`req-<backlogハッシュ>-<task.id>-r<retries>`（`_submit_req_id`）。verify=NG や act の
+`req-<backlogハッシュ>-<task.id>-r<retries>`（`_new_run_id` / `_req_id_for`）。verify=NG や act の
 失敗ごとに `task.retries` が +1 され、**次の試行は別 run-id（`…-r1`, `…-r2` …）で新規に投入**
 される（`_settle_failure`）。
 
@@ -117,28 +117,29 @@ done だったノードの commit が新ブランチから消える**。
 ### 4.3 配線（どこから run-id が流れるか）
 
 ```
-agent-project _act_submit
-  └ retries>0 のとき prev = _prev_req_id(task,cfg)  (= …-r<retries-1>)
-     agent-flow submit --run-id …-r<retries> --inherit-from <prev>
-        └ submit_request が inbox/<new>.json に inherit_from を記録
-           └ daemon が accept → _spawn_orchestrator が
-              orchestrate … --inherit-from <prev> を起動
-                 └ cmd_orchestrate 冒頭（ensure_run より前）で
-                    bus.inherit_from(<prev>)  ← ここで引き継ぎ＆掃除
+agent-project _act_run
+  └ 先行 run があれば prev = _inherit_from_run(task, 新 run-id, cfg)  (= last_run)
+     agent-flow run --run-id …-r<retries> --inherit-from <prev>
+        └ cmd_run が orchestrate … --inherit-from <prev> を起動
+           └ cmd_orchestrate 冒頭（ensure_run より前）で
+              bus.inherit_from(<prev>)  ← ここで引き継ぎ＆掃除
 ```
+
+板経由（`_act_board`）でも同じ契約が流れる: 委譲 id がそのまま実行側の run-id になり、
+請負ノードの `agent-flow run` が同じ `--inherit-from` を受ける。
 
 引き継ぎを **`ensure_run` より前** に置くのが重要:
 
-- 早すぎ（submit 時点で新 run dir を作る）ると `run_exists(new)` が真になり、daemon が
-  「もう run がある」と判断して orchestrator を起動しない（＝走らない）。だから submit では
-  inbox に印を書くだけにして、**実際の seed は orchestrate が run dir を作る瞬間**に行う。
+- 早すぎ（run 起動前に新 run dir を作る）ると `run_exists(new)` が真になり、
+  「もう run がある」と判断して orchestrator を起動しない（＝走らない）。だから
+  **実際の seed は orchestrate が run dir を作る瞬間**に行う。
 - `inherit_from` が meta を seed した後は、`ensure_run` は「meta 有り」を見て上書きしない。
   `graph.json` があるので orchestrate は**再計画せず resume 動作**に入り、done ノードを
   スキップして未完だけ回す。
 
 ### 4.4 呼び出し側の責務は最小
 
-agent-project は「直前試行の run-id（`_prev_req_id`＝retries-1・同 rev）」を
+agent-project は「直前試行の run-id（`_inherit_from_run`＝`last_run`。cancelled は引き継がない）」を
 `--inherit-from` で渡すだけ。done/failed/実行中/未存在の判断・seed 可否・削除可否は
 **すべて agent-flow の `inherit_from` が持つ**ので、呼び出し側が誤っても安全側に倒れる。
 
@@ -166,7 +167,7 @@ agent-project 側（`TestActTimeoutZeroAndInherit`）: `--inherit-from` はリ�
 ## 7. 関連: act_timeout=0（無制限待ち）
 
 本設計と対になる別変更として、agent-project の `act_timeout=0` を「タイムアウト無効＝完了まで
-待つ」とした（`_act_submit` / `_act_run` / `_claim_ttl`）。gitlab 委譲のように人のレビュー往復で
+待つ」とした（`_act_run` / `_claim_ttl`）。gitlab 委譲のように人のレビュー往復で
 数日かかる run を待ち切れずに空リトライするのを根治する。設定例は
 `agent-project.yaml.example` / `agent-project.state-git.yaml.example` の gitLab 委譲欄参照。
 

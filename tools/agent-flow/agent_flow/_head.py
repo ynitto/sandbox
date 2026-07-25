@@ -6,6 +6,7 @@ import atexit
 import contextlib
 import hashlib
 import inspect
+import io
 import json
 import os
 import random

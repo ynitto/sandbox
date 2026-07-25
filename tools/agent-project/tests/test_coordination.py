@@ -206,14 +206,14 @@ class TestAtomicClaim(unittest.TestCase):
 
 
 class TestParallelConsumption(unittest.TestCase):
-    """並列消費（§11）— daemon/remote へ独立タスクを並行 submit。worker 並列へ寄せる。"""
+    """並列消費（§11）— 委譲公示板へ独立タスクを並行 post。請負側の worker 並列へ寄せる。"""
 
     def _tasks(self, n):
         return [km.Task(id=f"T{i}", title=f"t{i}", status="ready", verify="true")
                 for i in range(n)]
 
     def _cfg(self, d, **kw):
-        base = dict(location="remote", git_bus="bus", concurrency=3, dry_run=False,
+        base = dict(location="board", board="board-repo", concurrency=3, dry_run=False,
                     learn=False, auto_adjudicate=False, max_cycles=50)
         base.update(kw)
         return cfg_for(Path(d), **base)
@@ -221,10 +221,8 @@ class TestParallelConsumption(unittest.TestCase):
     def test_submit_bound(self):
         with tempfile.TemporaryDirectory() as d:
             cfg = self._cfg(d)
-            self.assertTrue(km._submit_bound("remote", cfg))
+            self.assertTrue(km._submit_bound("board", cfg))
             self.assertFalse(km._submit_bound("local", cfg))
-            # daemon は実際に稼働中のときだけ並行対象（テスト環境では未稼働）
-            self.assertEqual(km._submit_bound("daemon", cfg), km.daemon_running(cfg, use_git=False))
 
     def test_select_batch_width_and_caps(self):
         with tempfile.TemporaryDirectory() as d:
@@ -235,7 +233,7 @@ class TestParallelConsumption(unittest.TestCase):
             self.assertEqual(len(km._select_batch(order, self._cfg(d, concurrency=1), pol, 10)), 1)
             self.assertEqual(len(km._select_batch(order, self._cfg(d, once=True), pol, 10)), 1)
             # 先頭が local 実行なら逐次（1件）に落とす
-            local = self._cfg(d, location="local", git_bus=None)
+            local = self._cfg(d, location="local", board="")
             self.assertEqual(len(km._select_batch(order, local, pol, 10)), 1)
 
     def test_acts_run_concurrently(self):
@@ -274,7 +272,7 @@ class TestParallelConsumption(unittest.TestCase):
                 return (True, "ok")
 
             km.run_loop(self._cfg(d), act=act)
-            self.assertEqual(set(seen), {"remote"})          # remote へ submit された
+            self.assertEqual(set(seen), {"board"})           # 板へ公示された
 
     def test_dry_run_parallel_skips_act(self):
         with tempfile.TemporaryDirectory() as d:
@@ -303,15 +301,16 @@ class TestLocation(unittest.TestCase):
             d = Path(d)
             t = km.Task(id="T1", title="heavy batch", verify="true")
             pol = km.Policy(offload=["heavy"])
-            # auto: git-bus 無し → local
+            # auto: board 未設定 → local
             self.assertEqual(km.decide_location(t, pol, cfg_for(d)), "local")
-            # auto: offload 一致＋git-bus → remote
-            c = cfg_for(d, git_bus="git@x:team/bus.git")
-            self.assertEqual(km.decide_location(t, pol, c), "remote")
+            # auto: offload 一致＋board 設定あり → board
+            c = cfg_for(d, board="board-repo", git_bus="git@x:team/bus.git")
+            self.assertEqual(km.decide_location(t, pol, c), "board")
             # 明示 location
-            self.assertEqual(km.decide_location(t, km.Policy(), cfg_for(d, location="daemon")), "daemon")
-            # remote 指定だが git-bus 無し → local
-            self.assertEqual(km.decide_location(t, km.Policy(), cfg_for(d, location="remote")), "local")
+            self.assertEqual(km.decide_location(t, km.Policy(), cfg_for(d, location="board",
+                                                                       board="board-repo")), "board")
+            # board 指定だが board 未設定 → local
+            self.assertEqual(km.decide_location(t, km.Policy(), cfg_for(d, location="board")), "local")
             self.assertIn("--git", km.build_agent_flow_cmd(t, c, use_git=True))
             self.assertNotIn("--git", km.build_agent_flow_cmd(t, c, use_git=False))
 
@@ -327,12 +326,12 @@ class TestLocation(unittest.TestCase):
                 seen[task.id] = location
                 return True, "ok"
 
-            km.run_loop(cfg_for(d, dry_run=False, git_bus="git@x:team/bus.git"), act=fake_act)
-            self.assertEqual(seen["T1"], "remote")
+            km.run_loop(cfg_for(d, dry_run=False, board="board-repo"), act=fake_act)
+            self.assertEqual(seen["T1"], "board")
             self.assertEqual(seen["T2"], "local")
 
 
-class TestDaemonRouting(unittest.TestCase):
+class TestFlowCliRouting(unittest.TestCase):
     def test_kf_base_git_flag(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
@@ -341,83 +340,20 @@ class TestDaemonRouting(unittest.TestCase):
             self.assertIn("--git", km._kf_base(c, True))
 
     def test_kf_base_passes_flow_config(self):
-        """sync run / submit / doctor も daemon と同じ flow_config（--config）を渡す。"""
+        """run / result / doctor のどの起動にも flow_config（--config）を渡す。"""
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             yaml = d / "agent-flow.yaml"
             yaml.write_text("executor: stub\n", encoding="utf-8")
             c = cfg_for(d, flow_config=str(yaml))
             base = km._kf_base(c, False)
-            daemon = km.flow_daemon_cmd(c, 2)
             self.assertIn("--config", base)
-            self.assertIn("--config", daemon)
-            got_base = base[base.index("--config") + 1]
-            got_daemon = daemon[daemon.index("--config") + 1]
-            # 主経路と daemon 経路が同じ設定ファイルを指すことが本題（片方だけ付けると設定が割れる）。
+            got = base[base.index("--config") + 1]
             # 突き合わせは「同じファイルか」で行う。文字列一致にすると macOS の
             # /var → /private/var のような symlink 表記の違いだけで落ちる——本体は
             # abspath 止まりで symlink を解決しない（人が設定したパスの形を保つ）。
-            self.assertEqual(got_base, got_daemon)
-            self.assertTrue(os.path.isabs(got_base))
-            self.assertTrue(os.path.samefile(got_base, yaml))
-
-    def test_daemon_detection(self):
-        if km.fcntl is None:
-            self.skipTest("fcntl 無し")
-        with tempfile.TemporaryDirectory() as d:
-            d = Path(d)
-            cfg = cfg_for(d)
-            lp = km.daemon_lock_path(cfg, False)
-            self.addCleanup(lambda: lp.exists() and lp.unlink())
-            self.assertFalse(km.daemon_running(cfg))      # ロックファイル無し
-            lp.parent.mkdir(parents=True, exist_ok=True)
-            lp.write_text("")
-            self.assertFalse(km.daemon_running(cfg))      # 在るが保持されていない
-            f = open(lp, "r+")
-            km.fcntl.flock(f, km.fcntl.LOCK_EX | km.fcntl.LOCK_NB)
-            try:
-                self.assertTrue(km.daemon_running(cfg))   # 保持中 = daemon 稼働
-            finally:
-                km.fcntl.flock(f, km.fcntl.LOCK_UN)
-                f.close()
-
-    def test_lock_path_canonical_across_symlink(self):
-        # symlink 経由で起動した外部 daemon でも、同じ実バスなら同じロックパスになる
-        with tempfile.TemporaryDirectory() as d:
-            d = Path(d)
-            real = d / "real_bus"
-            real.mkdir()
-            link = d / "link_bus"
-            try:
-                link.symlink_to(real)
-            except (OSError, NotImplementedError):
-                self.skipTest("symlink 不可")
-            p_real = km.daemon_lock_path(cfg_for(d, bus=real), False)
-            p_link = km.daemon_lock_path(cfg_for(d, bus=link), False)
-            self.assertEqual(p_real, p_link)
-
-    def test_lock_dir_config_override(self):
-        # 設定 lock_dir を起動側・プローブ側で共有すれば TMPDIR 差を吸収できる
-        with tempfile.TemporaryDirectory() as d:
-            d = Path(d)
-            p = km.daemon_lock_path(cfg_for(d, lock_dir=str(d / "locks")), False)
-            self.assertEqual(p.parent, d / "locks")
-
-    def test_pid_liveness_fallback_when_flock_unavailable(self):
-        # fcntl 無し（Windows 等）でも、daemon が記録した pid の生存で発見できる
-        with tempfile.TemporaryDirectory() as d:
-            d = Path(d)
-            cfg = cfg_for(d)
-            lp = km.daemon_lock_path(cfg, False)
-            lp.parent.mkdir(parents=True, exist_ok=True)
-            with mock.patch.object(km, "fcntl", None):
-                lp.write_text(str(os.getpid()))          # 自分（生存）= daemon 稼働とみなす
-                self.assertTrue(km.daemon_running(cfg))
-                lp.write_text("999999999")               # 不在 pid = daemon 無し
-                self.assertFalse(km.daemon_running(cfg))
-                lp.write_text("")                        # pid 不明 = daemon 無し
-                self.assertFalse(km.daemon_running(cfg))
-            self.addCleanup(lambda: lp.exists() and lp.unlink())
+            self.assertTrue(os.path.isabs(got))
+            self.assertTrue(os.path.samefile(got, yaml))
 
 
 class RecoverStaleDoingTests(unittest.TestCase):

@@ -213,22 +213,15 @@ status.json は本体側の実パス完了時にのみ更新されるため、**
 より新鮮な生存表示が要る場合は本体側で `--status-interval`（例 `3600`）を指定してもらう
 （idle 中もその間隔で status.json だけ更新され、その分だけ state_git のコミットが増える）。
 
-#### フロータブの daemon 稼働判定（agent-flow・同期経由の推定）
+#### フロータブの run 稼働判定（agent-flow）
 
-agent-flow の daemon 稼働もロックファイル（`$TMPDIR/agent-flow-locks/`）判定は同一ホスト限定
-——state_git（鏡）越しにバスを見ているときは daemon の一時領域に届かず、常に判定不能だった。
-agent-flow 本体が `<bus>/status.json`（生存信号。agent-flow README「daemon の生存信号」参照）を
-書くようになったため、フロータブの daemon バッジも同じ二段判定に対応する:
+エンジンそのものの稼働判定はフロータブが持たない。常駐一本化で実行主体は PC の常駐体
+（`agent-project serve`）だけになり、稼働表示は `engine/status.json`（`children[].alive` ＝
+親が Popen で見た実測）へ一本化した。
 
-1. **ロックファイル**（同一ホスト・pid 生存）— 確定判定。従来どおり
-2. **status.json**（同期経由）— ロックが無ければこちらにフォールバックし、`updated_iso` が
-   `fresh_after_sec` 以内なら「稼働中（推定）」、超過なら「不明（同期経由）」と表示する
-   （実行中の run 数・worker 数もツールチップに出す）
-
-agent-project 側と同じトレードオフ: 既定はアイドル中の追加 git 負荷ゼロで、鮮度が要るなら
-agent-flow daemon 側で `--status-interval` を指定する。GitBus（`--git`。バス自体を共有 git に
-して実行を分散するモード）はこの機能の対象外（sparse-checkout が対象外パスになるため
-daemon 側が書かない）——今のところ state_git（鏡）でリモートから run を眺める構成のみが対象。
+run 単位の駆動状況は `runs/<id>/meta.json` の生存リース（`orch_lease_until` /
+`heartbeat_at`）で判定する。orchestrator が自分で張るリースなので、同期経由（state_git の鏡）
+で別ホストの run を見ているときも同じ判定がそのまま効く。
 
 ### 気づく — 要対応の OS 通知（張り付き監視の解消）
 
@@ -291,7 +284,7 @@ agent-project の人間ループはこのアプリ内で完結できる。いず
 | 🗑 run 削除 | フロータブの run 詳細 | 同上のファイル操作。確認のうえ `<bus>/runs/<run-id>/` をゴミ箱へ移動。終端（done/failed/cancelled）と応答なし（孤児）のみ — orchestrator が生存している実行中 run は拒否 |
 | ⏸ 一時停止 / ▶ 再開 | 概要タブ「稼働操作」 | `commands/<name>.json` ドロップ（`{"command":"pause"/"resume"}`・プロジェクト単位＝id 無し）。本体は `paused.json` を立てて watch の消化を止める（idle 監視・指示の取り込みは継続）。status.json の `paused` がサイドバー ⏸ とヘッダのバッジに出る |
 | ⏹ 停止 | 概要タブ「稼働操作」 | 同上（`{"command":"stop"}`）。本体は状態を push してから graceful 停止する。**再開はプロジェクトのマシン（WSL 等）の常駐体が次の監視巡で子を起こす**（常駐体ごと落ちている場合だけ `agent-project serve` を人が上げる — プロセス起動はファイル契約の外） |
-| ⚠ リセット（charter 以外を全消去 + agent-flow 停止） | 概要タブ「危険な操作」 | プロジェクトを **charter からゼロにやり直す**危険操作。①バスの agent-flow daemon を停止（同一ホストのロック pid へ SIGTERM。別ホスト稼働は停止できない旨を報告）→ ②`charter.md` **以外**の全データ（backlog / archive / needs / decisions / journal / run-log / DELIVERY / inbox / commands / bus 直下 / flow-archive 等）をゴミ箱へ移動。charter が残るため、本体（agent-project）が稼働中なら次パスで charter から再分解して最初からやり直す。ドット始まりの同期内部（プロジェクトの `.state-git` と **バスの `bus/.state-git`**）は温存 — 管理クローンの manifest が残ることで削除が state_git 同期で「ローカルの削除」としてリモートへ伝播する（クローンごと消すと次の同期でリモートから旧データ・旧 run が**復活**してしまう）。charter.md が無いプロジェクトでは出さない（残すものが無く、プロジェクト削除になるため）。共有バス構成では daemon 停止が他プロジェクトにも影響する旨を確認ダイアログで警告する |
+| ⚠ リセット（charter 以外を全消去） | 概要タブ「危険な操作」 | プロジェクトを **charter からゼロにやり直す**危険操作。`charter.md` **以外**の全データ（backlog / archive / needs / decisions / journal / run-log / DELIVERY / inbox / commands / bus 直下 / flow-archive 等）をゴミ箱へ移動。charter が残るため、本体（agent-project）が稼働中なら次パスで charter から再分解して最初からやり直す。ドット始まりの同期内部（プロジェクトの `.state-git` と **バスの `bus/.state-git`**）は温存 — 管理クローンの manifest が残ることで削除が state_git 同期で「ローカルの削除」としてリモートへ伝播する（クローンごと消すと次の同期でリモートから旧データ・旧 run が**復活**してしまう）。charter.md が無いプロジェクトでは出さない（残すものが無く、プロジェクト削除になるため）。共有バス構成では削除が他プロジェクトにも影響する旨を確認ダイアログで警告する |
 
 - 理由・方針の記入はすべて決定記録（`decisions/` の DR）や次 act への feedback として
   agent-project 側に残る
@@ -474,7 +467,7 @@ task の retries 上限 → blocked ＋ needs/<id>.md 生成 ＝ ここで初め
 
 gitlab executor は「関連イシューがクローズされた（承認/却下で決着した）」ことを result で bus に
 書くが、それを検知するのは worker が決着ループを回しているとき **だけ**。非ブロッキング委譲
-（act_async）＋PC の日次停止などで worker が止まっている間に人がイシューを承認クローズすると、
+（板）＋PC の日次停止などで worker が止まっている間に人がイシューを承認クローズすると、
 bus に result が無いまま残り、タスクグラフはノードを「実行中」のまま表示してしまう（完了に
 できない）。
 

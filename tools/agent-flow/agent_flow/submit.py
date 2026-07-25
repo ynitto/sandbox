@@ -1,33 +1,6 @@
 from __future__ import annotations
-# submit.py — 元 agent-flow.py の 5100-5172 行目（機械分割・内容無改変）。
+# submit.py — 元 agent-flow.py の 5100-5172 行目（機械分割）。
 # 単体 import しない。agent_flow/__init__.py が共有名前空間へ順に exec 合成する。
-# --------------------------------------------------------------------------
-# submit — 要求を inbox に投入（デーモンが拾って orchestrator を起動する）
-# --------------------------------------------------------------------------
-def cmd_submit(args) -> int:
-    req_id = args.run_id or f"run-{datetime.now():%Y%m%d-%H%M%S}-{random.randint(1000,9999)}"
-    # ノード ID に pid を含め、並行 submit（agent-project の一括 offload 等）が同じ
-    # クローン作業ツリーを共有して index.lock を取り合う事故を避ける（クローンは
-    # 終了時に削除され、SIGKILL 残骸も daemon の cleanup が回収する）。
-    bus = make_bus(args, f"submitter-{os.getpid()}")
-    bus.sync_pull()
-    _deleg = getattr(args, "delegation", None)
-    if _deleg:
-        try:
-            _deleg = json.loads(_deleg)
-        except (ValueError, TypeError):
-            _deleg = None
-    bus.submit_request(req_id, args.request, f"{socket.gethostname()}-{os.getpid()}",
-                       workspace=parse_workspace(getattr(args, "workspace", None)),
-                       references=parse_references(getattr(args, "references", None)),
-                       inherit_from=getattr(args, "inherit_from", None),
-                       delegation=_deleg if isinstance(_deleg, dict) else None)
-    bus.sync_push(f"submit request {req_id}")
-    print(req_id)  # run-id を標準出力（スクリプトから拾える）
-    print(f">>> 要求を投入しました: {req_id}（デーモンが拾います）", file=sys.stderr)
-    return 0
-
-
 # --------------------------------------------------------------------------
 # cancel — run スコープの恒久停止（人の明示指示による緊急回避手段）
 # --------------------------------------------------------------------------

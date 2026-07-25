@@ -1,12 +1,18 @@
 from __future__ import annotations
 # flow.py — 元 agent-project.py の 4100-4640 行目（機械分割・内容無改変）。
 # 単体 import しない。agent_project/__init__.py が共有名前空間へ順に exec 合成する。
+
+# flow tick（`agent-flow participate` 1 巡）に掛かってよい時間。cancel 受理・板巡回・
+# inbox 受理はどれも短いが、git バスでは sync_pull/push の転送が入る。
+_FLOW_TICK_TIMEOUT_SEC = 120.0
+
+
 def _new_run_id(task: "Task", cfg: "Config") -> str:
     """この試行の run-id。viewer が run ↔ タスクを突き合わせられる形にする
     （req-<hash>-<task-id>-r<retries>[-v<rev>]。dashboard の parseRunId / lineage もこの形を前提）。
 
-    daemon submit（_req_id_for）と同一導出にする。かつては hash(task.id) だったため、
-    同期 run と daemon/offload で同じタスクが別 lineage に割れて UI の系統まとめが壊れていた。"""
+    導出は `_req_id_for` に一本化する。かつては hash(task.id) だったため、
+    同じタスクが経路ごとに別 lineage へ割れて UI の系統まとめが壊れていた。"""
     return _req_id_for(task, cfg, task.retries)
 
 
@@ -115,7 +121,7 @@ def cmd_gc(cfg: "Config", json_out: bool = False) -> int:
     （「agent-flow 側の state_git がバスの寿命を管理する＝gc に委ねる」と明記済み）ため、
     その委譲先はここ。ロック/tmp/孤立クローン/共有キャッシュの掃除は git_bus の有無に
     関わらず常に必要（旧 flow daemon の cleanup_interval が担っていたが、常駐一本化で
-    flow daemon 自体が無くなるため呼び手が居なくなっていた）。"""
+    flow daemon 自体を廃止したため呼び手が居なくなっていた）。"""
     use_git = bool(cfg.git_bus)
     base = _kf_base(cfg, use_git)
     totals: dict = {}
@@ -135,19 +141,55 @@ def cmd_gc(cfg: "Config", json_out: bool = False) -> int:
     return 0
 
 
-def daemon_lock_path(cfg: "Config", use_git: bool) -> Path:
-    """agent-flow daemon の singleton ロックパス（agent-flow と同一規則）。
+def cmd_flow_participate(cfg: "Config", running: str = "", json_out: bool = False) -> int:
+    """このプロジェクトのバスで `agent-flow participate` を 1 巡させる（設計 §4.2 node 層
+    flow tick の実体）。cancel 受理・park 再確認・孤児回収・板巡回・inbox 受理を agent-flow に
+    行わせ、**実行すべき run-id をそのまま中継する**（実行は呼び出し側＝常駐体の
+    NodeWorkerPool が `flow-run` で起こす）。
 
-    外部起動の daemon を取りこぼさないため、agent-flow と完全に同じ導出をする:
-      - ロック置き場は設定 `lock_dir`（無ければ tempdir 配下）
-      - local キーは realpath で canonical 化（symlink/相対パスのズレを吸収）"""
-    if use_git and cfg.git_bus:
-        key = f"git::{cfg.git_bus}@{cfg.git_branch}/{cfg.git_subdir or ''}"
+    参加の実装は持たない（R1）。ここが担うのは agent-project の設定（バス・git バス・
+    flow_config・executor）から agent-flow の argv を組み立てることだけ——常駐体に
+    プロジェクト設定を解決させると `resolve_config` が 2 箇所になる。"""
+    base = _kf_base(cfg, bool(cfg.git_bus)) + ["participate", "--json",
+                                               "--executor", cfg.executor]
+    if running:
+        base += ["--running", running]
+    proc = subprocess.run(base, cwd=str(cfg.workdir), capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", timeout=_FLOW_TICK_TIMEOUT_SEC)
+    if proc.returncode != 0:
+        print(f"[agent-project] flow participate 失敗 (exit {proc.returncode}): "
+              f"{(proc.stderr or '').strip()[-300:]}", file=sys.stderr)
+        return 1
+    try:
+        items = json.loads(proc.stdout or "[]")
+    except ValueError:
+        items = []
+    run_ids = [str((it or {}).get("run_id") or "").strip() for it in items]
+    run_ids = [r for r in run_ids if r]
+    if json_out:
+        print(json.dumps([{"run_id": r} for r in run_ids], ensure_ascii=False))
     else:
-        key = "local::" + os.path.realpath(str(cfg.bus))
-    h = hashlib.sha1(key.encode()).hexdigest()
-    base = cfg.lock_dir or str(Path(tempfile.gettempdir()) / "agent-flow-locks")
-    return Path(base) / f"daemon-{h}.lock"
+        for r in run_ids:
+            print(r)
+    return 0
+
+
+def cmd_flow_run(cfg: "Config", run_id: str) -> int:
+    """`participate` が受理した run を実行する（完了まで待つ）。要求文・書込先ワークスペース・
+    参照リポジトリ・引き継ぎ元は `--from-inbox` が inbox 要求から読む——ここで argv へ転記すると
+    項目が増えるたびに転記漏れが静かな機能欠落になる。
+
+    常駐体はこれを `NodeWorkerPool` の 1 仕事として起こす。run 自身が生存リースを張り park も
+    面倒を見るので、駆動を代行する常駐プロセスは要らない。"""
+    rid = str(run_id or "").strip()
+    if not rid:
+        print("エラー: --run-id が必要です", file=sys.stderr)
+        return 2
+    cmd = _kf_base(cfg, bool(cfg.git_bus)) + ["--run-id", rid, "run", "--from-inbox",
+                                              "--planner", cfg.flow_planner,
+                                              "--executor", cfg.executor,
+                                              "--max-iterations", str(cfg.max_iterations)]
+    return subprocess.run(cmd, cwd=str(cfg.workdir)).returncode
 
 
 def _pid_alive(pid: int) -> bool:
@@ -163,51 +205,6 @@ def _pid_alive(pid: int) -> bool:
     except OSError:
         return False
     return True
-
-
-def _lock_pid(p: Path) -> int:
-    """ロックファイル先頭行の pid を読む（agent-flow daemon が記録）。読めなければ 0。"""
-    try:
-        lines = p.read_text(encoding="utf-8").strip().splitlines()
-    except OSError:
-        return 0
-    try:
-        return int(lines[0]) if lines else 0
-    except ValueError:
-        return 0
-
-
-def _flock_held(p: Path) -> "bool | None":
-    """flock の保持状況。True=保持中 / False=未保持 / None=判定不能（fcntl 無し・非対応FS 等）。"""
-    if fcntl is None:
-        return None
-    try:
-        f = open(p, "r+")
-    except OSError:
-        return None
-    try:
-        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        fcntl.flock(f, fcntl.LOCK_UN)
-        return False           # 取得できた = 誰も保持していない
-    except BlockingIOError:
-        return True            # 保持されている = daemon 稼働中
-    except OSError:
-        return None            # flock 非対応FS 等 → pid で判定へ
-    finally:
-        f.close()
-
-
-def daemon_running(cfg: "Config", use_git: bool = False) -> bool:
-    """対象バスの agent-flow daemon が稼働中かを判定する。
-    flock を第一の根拠とし、判定不能（fcntl 無し / 異種FS）なら daemon が記録した
-    pid の生存で補完する。これで外部起動・Windows・NFS 上の daemon も発見できる。"""
-    p = daemon_lock_path(cfg, use_git)
-    if not p.exists():
-        return False
-    held = _flock_held(p)
-    if held is not None:
-        return held
-    return _pid_alive(_lock_pid(p))
 
 
 def _pin_last_run(cfg: "Config", task: Task, run_id: str) -> None:
@@ -371,7 +368,7 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
                     except OSError:
                         pass
                 # 刈り残した orch/worker は daemon を残して止める（外部 daemon 全滅を避ける）
-                reap_orphan_flow(cfg, include_daemon=False)
+                reap_orphan_flow(cfg)
                 return (False, f"daemon run {rid} の結果待ちを中断（{why} を検知）")
             now = time.time()
             if now >= next_progress_sync:
@@ -396,7 +393,7 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
                 task.set("flow_run", rid)
                 detach_flow_run(cfg, task, f"agent-flow run タイムアウト（{cfg.act_timeout}s）",
                                 failed=True)
-                reap_orphan_flow(cfg, include_daemon=False)
+                reap_orphan_flow(cfg)
                 return (False, f"agent-flow run タイムアウト（{cfg.act_timeout}s）")
             time.sleep(1.0)
     finally:
@@ -479,20 +476,12 @@ def _requeue_revised(cfg: "Config", task: Task, fresh: Task, cycle: int) -> None
                                 "（この試行の結果は確定しない）")
 
 
-def _submit_req_id(task: Task, cfg: "Config") -> str:
-    """リブート跨ぎで同じ act 試行へ再接続するための決定的 req_id。
-
-    （backlog パス, task.id, retries）で一意にする——PC のシャットダウン等で submit の
-    待機ごと消えても、再起動後の同じ試行は同じ req_id を再 submit するため、agent-flow 側の
-    既存 run（daemon が孤児を自動再開する）に合流して結果を受け取れる＝二重実行しない。
-    リトライ（retries+1）は新しい試行＝新しい run。backlog パスの hash は共有バスに
-    複数プロジェクトが乗るときの衝突を防ぐ。人の revise（rev 世代）も新しい試行＝
-    新しい run にする（軌道修正後の act が修正前の古い run に合流しないように）。"""
-    return _req_id_for(task, cfg, task.retries)
-
-
 def _req_id_for(task: Task, cfg: "Config", retries: int) -> str:
-    """指定 retries 世代の決定的 req_id（_submit_req_id の一般化）。"""
+    """指定 retries 世代の決定的 req_id。
+
+    （backlog パス, task.id, retries, rev）で一意にする。backlog パスの hash は共有バスに
+    複数プロジェクトが乗るときの衝突を防ぐ。リトライ（retries+1）と人の revise（rev 世代）は
+    新しい試行＝新しい run にする（軌道修正後の act が修正前の古い run に合流しないように）。"""
     h = hashlib.sha1(str(cfg.backlog.resolve()).encode()).hexdigest()[:8]
     tid = re.sub(r"[^\w.-]+", "_", str(task.id))[:60]
     rev = str(task.get("rev", "") or "").strip()
@@ -502,7 +491,7 @@ def _req_id_for(task: Task, cfg: "Config", retries: int) -> str:
 def _inherit_from_run(task: Task, new_run_id: str, cfg: "Config | None" = None) -> "str | None":
     """新 run へ引き継ぐ先行 run-id。`last_run` が新 id と違えばそれを使う。
 
-    `_prev_req_id`（retries-1・現 rev）だと revise で rev が上がったあと、実在しない
+    retries-1・現 rev から推定すると、revise で rev が上がったあと実在しない
     `…-r{N-1}-v{newRev}` を指して inherit が空振りする。last_run が実際の先行。
     cancelled の last_run は引き継がない（人の停止・軌道修正を尊重。done を蘇らせない）。
     タイムアウト等の failed は引き継ぐ（agent-flow inherit_from と同じ契約）。"""
@@ -519,16 +508,8 @@ def _inherit_from_run(task: Task, new_run_id: str, cfg: "Config | None" = None) 
     return last
 
 
-def _prev_req_id(task: Task, cfg: "Config") -> "str | None":
-    """直前の試行の run-id（互換フォールバック）。
-
-    呼び出し側は `_inherit_from_run` を優先すること。ここは last_run が空のときの
-    retries-1 推定（同 rev）に留める。"""
-    return _req_id_for(task, cfg, task.retries - 1) if task.retries > 0 else None
-
-
 class _Pending:
-    """act の第3の結果＝『実行層 daemon へ非ブロッキング submit 済み・まだ終端していない』。
+    """act の第3の結果＝『委譲公示板へ公示済み・まだ終端していない』。
     run_loop はこれを受けたらタスクを offloaded にして settle をスキップし、次パスでポーリングする。"""
     __slots__ = ("run_id",)
 
@@ -564,106 +545,10 @@ def _flow_result_once(cfg: "Config", use_git: bool, run_id: str) -> "tuple[bool,
     return (True, True, f"daemon run {run_id} done")
 
 
-def _act_offload(task: Task, cfg: "Config", use_git: bool) -> "tuple":
-    """非ブロッキング委譲: run が無ければ submit し、結果を1回だけ確認する。終端なら (ok, msg)、
-    未終端なら (_Pending(run_id), msg) を返す（待たない）。専用 daemon が run を保持するので、
-    gitlab の長期委譲でもループをブロックせず次のタスクへ進める（結果は次パスで回収する）。"""
-    base = _kf_base(cfg, use_git) + _workspace_cmd_args(cfg, task) + _reference_cmd_args(cfg, task)
-    run_id = _submit_req_id(task, cfg)
-    prev = _inherit_from_run(task, run_id, cfg)
-    if prev is None and not str(task.get("last_run") or "").strip():
-        prev = _prev_req_id(task, cfg)  # last_run 空のときだけ推定（cancelled skip を踏み潰さない）
-    _pin_last_run(cfg, task, run_id)
-    term, ok, msg = _flow_result_once(cfg, use_git, run_id)
-    if not term:                                  # 未作成/実行中: 未作成なら submit（作成済みは冪等 no-op）
-        inherit = ["--inherit-from", prev] if prev else []
-        try:
-            sub = subprocess.run(base + ["--run-id", run_id, "submit", build_request(task, cfg)]
-                                 + inherit, cwd=str(cfg.workdir),
-                                 timeout=60, capture_output=True, text=True, encoding="utf-8", errors="replace")
-        except (subprocess.SubprocessError, FileNotFoundError) as e:
-            return (False, f"submit 失敗: {e}")
-        if sub.returncode != 0:
-            return (False, f"submit rc={sub.returncode}: {sub.stderr.strip()[:200]}")
-        term, ok, msg = _flow_result_once(cfg, use_git, run_id)   # submit 直後に一応もう一度
-        if not term:
-            return (_Pending(run_id), f"daemon run {run_id} 実行中（offload・非ブロッキング）")
-    return (ok, msg)
-
-
-def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
-    """daemon があるとき: submit して、その run が終端に達するまで待つ（verify は待機後）。
-    req_id は決定的（_submit_req_id）——リブート後の再実行は既存 run に合流する。"""
-    base = _kf_base(cfg, use_git) + _workspace_cmd_args(cfg, task) + _reference_cmd_args(cfg, task)
-    run_id = _submit_req_id(task, cfg)
-    # pin する前に先行 run を決める（pin 後は last_run が新 id になる）
-    prev = _inherit_from_run(task, run_id, cfg)
-    if prev is None and not str(task.get("last_run") or "").strip():
-        prev = _prev_req_id(task, cfg)
-    _pin_last_run(cfg, task, run_id)
-    inherit = ["--inherit-from", prev] if prev else []
-    try:
-        sub = subprocess.run(base + ["--run-id", run_id, "submit", build_request(task, cfg)] + inherit,
-                             cwd=str(cfg.workdir),
-                             timeout=60, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        return (False, f"submit 失敗: {e}")
-    if sub.returncode != 0:
-        return (False, f"submit rc={sub.returncode}: {sub.stderr.strip()[:200]}")
-    out = (sub.stdout or "").strip().splitlines()
-    got = out[0].strip() if out else ""
-    if not got:
-        return (False, "run-id を取得できません")
-    if got != run_id:
-        _pin_last_run(cfg, task, got)
-        run_id = got
-    # 待ちのあいだ approve/hold が detach できるよう flow_run をピン（offloaded と同じ契約）。
-    task.set("flow_run", run_id)
-    persist_task(cfg, task)
-    # act_timeout=0（以下）はタイムアウト無効＝終端に達するまで待つ。gitlab 等の長時間委譲
-    # （人のレビュー往復で数日かかりうる）で、待ち切れずに retry を空増やしする事故を防ぐ。
-    deadline = (time.time() + cfg.act_timeout) if cfg.act_timeout > 0 else None
-    while deadline is None or time.time() < deadline:
-        try:
-            res = subprocess.run(base + ["result", "--run-id", run_id, "--json"],
-                                cwd=str(cfg.workdir), timeout=60, capture_output=True, text=True, encoding="utf-8", errors="replace")
-            data = json.loads(res.stdout)
-            if data.get("done"):
-                # done=True は終端（done/failed/cancelled）を意味する。failed / cancelled は act
-                # 失敗として扱い（cancelled を success と取り違えない）、success と区別する。
-                # orchestrator がクラッシュして daemon が failed に確定した場合もここで即検知でき、
-                # act_timeout までの永久待機を避けられる。
-                st = str(data.get("status") or "")
-                task.drop("flow_run", "flow_loc")
-                if st == "failed":
-                    return (False, f"daemon run {run_id} failed")
-                if st == "cancelled":
-                    return (False, f"daemon run {run_id} cancelled")
-                return (True, f"daemon run {run_id} done")
-        except Exception:  # noqa: BLE001 — 取得失敗は次ポーリングで再試行
-            pass
-        abort = _wait_abort_reason(cfg, task, run_id)
-        if abort:
-            # 人が既に detach 済み（flow_run 無し）なら二重 cancel しない。revise はこちらで止める。
-            fresh = _load_task_file(cfg, task.id)
-            still = fresh is not None and str(fresh.get("flow_run") or "").strip() == run_id
-            if still or abort == "revise":
-                task.set("flow_run", run_id)
-                detach_flow_run(cfg, task, f"{abort} により結果待ちを中断")
-            else:
-                task.drop("flow_run", "flow_loc")
-            return (False, f"daemon run {run_id} の結果待ちを中断（{abort} を検知）")
-        time.sleep(2.0)
-    # daemon 自体は他 run / park 監視のオーナーなので殺さない。この run だけ cancel して止める。
-    task.set("flow_run", run_id)
-    detach_flow_run(cfg, task, f"daemon run タイムアウト（{cfg.act_timeout}s）", failed=True)
-    return (False, f"daemon run {run_id} タイムアウト")
-
-
 def _act_board(task: Task, cfg: "Config") -> "tuple":
     """委譲公示板（agent-board）への非ブロッキング公示。post が無ければ書き、結果を1回だけ確認する。
     終端なら (ok, msg)、未終端なら (_Pending(delegation_id), msg) を返す（待たない・常に非同期 —
-    board は「公示して請負側の入札を待つ」性質上、remote/daemon の act_async 切替とは無関係）。
+    board は「公示して請負側の入札を待つ」性質上、常に非同期）。
     請負側（agent-flow / agent-amigos の board 参加デーモン）が入札・実行し、完了したら board の
     result.json へ書き戻す（agent_flow/board.py・agent_amigos/board.py の report_results）。
     委譲 id はそのまま実行側の run-id / mission-id として使われる（共通 id は対応表を持たない —
@@ -709,33 +594,22 @@ def _board_result_once(board: "BoardRepo", did: str) -> "tuple[bool, bool, str]"
 
 
 def act_via_agent_flow(task: Task, cfg: "Config", location: str = "local") -> "tuple[bool, str]":
-    """location（local/daemon/remote/board）に応じて agent-flow（または委譲公示板）へ委譲する。
+    """location（local/board）に応じて agent-flow（または委譲公示板）へ委譲する。
 
-      local  → run（単発）
-      daemon → ローカル daemon に submit＋結果待ち（daemon が無ければ run にフォールバック）
-      remote → git バスの remote daemon に submit＋結果待ち（オフロード。フォールバックしない）
-      board  → 委譲公示板へ post（非ブロッキング）。請負側の board 参加デーモンが入札・実行し、
+      local  → run（単発・自己完結）。orchestrator が自分で生存リースを張り park も面倒見るので、
+               駆動を代行する常駐プロセスは要らない。
+      board  → 委譲公示板へ post（非ブロッキング）。請負側の board 参加者が入札・実行し、
                結果は board の result.json をポーリングして回収する（依頼側の自動配線・opt-in）
 
-    例外: resume-run / 失敗・停滞 run の「続きから」は submit では効かない
-    （daemon は run_exists で無視し、retry_failed は cmd_run だけ）。再開可能な
-    last_run があるときは location によらず run（同期）へ寄せる。board 由来の last_run（dg-…）は
-    agent-flow の req-id 形式（req-…）と一致しないため、この特例には自然に当たらない。
+    例外: 再開可能な last_run（＝この PC で途中まで進んだ run）があるときは location に依らず
+    run（同期）へ寄せて続きから進める。board 由来の last_run（dg-…）は agent-flow の req-id 形式
+    （req-…）と一致しないため、この特例には自然に当たらない。
     """
     last = str(task.get("last_run") or "").strip()
     if last and run_id_for(cfg, task) == last and _run_resumable(cfg, last):
-        return _act_run(task, cfg, use_git=(location == "remote"))
+        return _act_run(task, cfg, use_git=False)
     if location == "board":
         return _act_board(task, cfg)
-    async_ok = bool(getattr(cfg, "act_async", False))
-    if location == "remote":
-        return _act_offload(task, cfg, True) if async_ok else _act_submit(task, cfg, use_git=True)
-    if location == "daemon":
-        if daemon_running(cfg, use_git=False):
-            # 非ブロッキング（act_async）: submit して待たず次へ。専用 daemon が run を保持し、
-            # 結果は次パスのポーリングで回収する（gitlab 等の長期委譲でループを塞がない）。
-            return _act_offload(task, cfg, False) if async_ok else _act_submit(task, cfg, use_git=False)
-        return _act_run(task, cfg, use_git=False)  # daemon 不在 → run（同期・待つ）
     return _act_run(task, cfg, use_git=False)
 
 

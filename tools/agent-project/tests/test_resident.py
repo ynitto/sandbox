@@ -478,14 +478,16 @@ class ResidentCliTests(unittest.TestCase):
         ものを終わらせる」時間帯で、そこで SIGTERM すると `drain_before_sec` も
         `shutdown_grace_sec` も死に設定になる。新規 claim の停止は子側の
         `start_availability_monitor` が担う。"""
-        # 現在時刻の 1 時間後に停止・drain 幅 2 時間 → いま drain 中（stopped ではない）
-        stop = (datetime.now(timezone.utc) + timedelta(hours=1)).strftime("%H:%M")
+        # 判定時刻を固定する（実時計に依らない）: 12:00 に停止・drain 幅 2 時間で、
+        # いま 11:00 → drain 中（stopped ではない）。相対時刻で書くと、日付を跨ぐ
+        # 時間帯に走ったとき daily_stop が「その日の早い時刻」になって stopped と読まれる。
+        now = datetime(2026, 7, 25, 11, 0, tzinfo=timezone.utc)
         host = km.HostConfig({"node_id": "pc-test",
-                              "availability": self._availability(stop, drain_before_sec=7200)})
+                              "availability": self._availability("12:00", drain_before_sec=7200)})
         self.assertEqual(km.availability_state(types.SimpleNamespace(
-            availability=host.availability)), "draining")   # 前提の確認
+            availability=host.availability), now), "draining")   # 前提の確認
         sup, status = self._sup_with_fake_child(host)
-        km._availability_tick(host, sup, status)
+        km._availability_tick(host, sup, status, now)
         sup.check_health()
         info = sup.status()["p1"]
         self.assertFalse(info["paused"], "drain 開始で子を殺している（猶予が効かない）")
@@ -777,6 +779,83 @@ class ResidentCliTests(unittest.TestCase):
             [t for t in sched._ticks if t.name == "amigos"][0].fn()   # 例外を投げないこと自体が検証
         self.assertTrue(status.recent_errors)
         self.assertIn("amigos participate", status.recent_errors[-1])
+
+    def test_flow_participate_tick_dispatches_accepted_runs_to_pool(self):
+        # 受理（participate）と実行（run）を分ける配線: tick は受理された run-id を
+        # NodeWorkerPool へ投入するだけで、run 自体は tick 内で実行しない。
+        log = self.tmp / "flow-argv.log"
+        fake_ap = self.tmp / "fake_agent_project.py"
+        fake_ap.write_text(
+            "import sys\n"
+            f"open(r'{log}', 'a').write(' '.join(sys.argv[1:]) + chr(10))\n"
+            "if 'flow-participate' in sys.argv:\n"
+            "    print('[{\"run_id\": \"req-1\"}]')\n",
+            encoding="utf-8")
+        root = self.tmp / "flowproj"
+        root.mkdir()
+        host = km.HostConfig({"node_id": "pc-a",
+                              "projects": [{"name": "fp", "root": str(root)}]})
+        status = km.EngineStatus("pc-a")
+        pool = km.NodeWorkerPool(4)
+        with mock.patch.object(km, "_self_script", return_value=str(fake_ap)):
+            km._flow_participate_tick(host, pool, status)
+            for _ in range(50):        # プールの投入スレッドが argv を書くまで軽く待つ
+                if log.exists() and len(log.read_text().splitlines()) >= 2:
+                    break
+                time.sleep(0.02)
+        calls = log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(calls), 2)
+        self.assertIn("flow-participate", calls[0])
+        self.assertIn("flow-run", calls[1])
+        self.assertIn("req-1", calls[1])
+        self.assertEqual(status.recent_errors, [])
+
+    def test_flow_participate_tick_reports_runs_it_already_drives(self):
+        """走っている / 起動待ちの run は `--running` で申告する。申告しないと participate 側が
+        毎周それを『駆動者が居ない孤児』と読んで再開回数を焼き、上限で failed に確定する。"""
+        log = self.tmp / "flow-running.log"
+        fake_ap = self.tmp / "fake_agent_project2.py"
+        fake_ap.write_text(
+            "import sys\n"
+            f"open(r'{log}', 'a').write(' '.join(sys.argv[1:]) + chr(10))\n"
+            "print('[]')\n",
+            encoding="utf-8")
+        root = self.tmp / "flowproj2"
+        root.mkdir()
+        host = km.HostConfig({"node_id": "pc-a",
+                              "projects": [{"name": "fp", "root": str(root)}]})
+        status = km.EngineStatus("pc-a")
+        pool = km.NodeWorkerPool(1)
+        started = threading.Event()
+        release = threading.Event()
+        pool.submit(km.WorkItem(id="flow/fp/req-A",
+                                run=lambda: (started.set(), release.wait(5))))
+        pool.submit(km.WorkItem(id="flow/fp/req-B", run=lambda: None))   # 枠が無いのでキュー
+        self.assertTrue(started.wait(5))
+        try:
+            with mock.patch.object(km, "_self_script", return_value=str(fake_ap)):
+                km._flow_participate_tick(host, pool, status)
+        finally:
+            release.set()
+        argv = log.read_text(encoding="utf-8").splitlines()[0]
+        self.assertIn("--running", argv)
+        # 実行中（req-A）だけでなく起動待ち（req-B）も申告する
+        self.assertIn("req-A,req-B", argv)
+        # 投入 id の接頭辞（flow/<project>/）は剥がして run-id だけを渡す
+        self.assertNotIn("flow/fp/", argv)
+
+    def test_flow_tick_isolates_participate_subprocess_failure(self):
+        # 設計 §4.2 の実行規約「例外は tick 内に隔離しループを殺さない」。
+        root = self.tmp / "flowproj3"
+        root.mkdir()
+        host = km.HostConfig({"node_id": "pc-a",
+                              "projects": [{"name": "fp3", "root": str(root)}]})
+        sup, sched, status, write_status, pool = km._build_resident(host, start_children=False)
+        missing = str(self.tmp / "no-such-agent-project")
+        with mock.patch.object(km, "_self_script", return_value=missing):
+            [t for t in sched._ticks if t.name == "flow"][0].fn()   # 例外を投げないこと自体が検証
+        self.assertTrue(status.recent_errors)
+        self.assertIn("flow participate", status.recent_errors[-1])
 
     def test_gc_tick_isolates_project_sweeper_failure(self):
         # 1 プロジェクトの gc 失敗が他プロジェクトの gc・常駐体本体を止めないこと

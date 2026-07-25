@@ -98,7 +98,7 @@ granularity: auto          # タスク分解の細かさ: auto(complexity導出�
 # ---------------------------------------------------------------------------
 max_workers: 4             # daemon が同時に走らせる worker の上限（このマシンのキャパ）
 max_runs: 8                # daemon が同時に実行する run（orchestrator プロセス）の上限。
-                           #   バックログ一括投入（agent-projects の act_async）や再起動直後の孤児
+                           #   バックログ一括投入（板からの委譲の受理）や再起動直後の孤児
                            #   一斉再開で「run 数ぶんの orchestrator ＋計画エージェント」が同時に
                            #   立ち上がるのを防ぐ。全ノードが park（承認待ち）の run は枠に数えない
                            #   （gitlab 長期委譲は上限で詰まらない）。超過要求は inbox に残り、
@@ -237,7 +237,7 @@ cleanup_per_node: false
 #   # レビューの往復は時間がかかるため待機は長め・設定可能（いずれも 0/負で無限）。
 #   # ★誤タイムアウト由来の retry ループ／イシュー二重起票を完全に避けたいなら 0（無限）にする。
 #   #   run の本当の失敗（却下・orchestrator 異常）は終端ステータスで検知されるので、待ち上限を
-#   #   安全網にする必要はない（agent-project 側 act_timeout: 0 / act_async: true と併用推奨）。
+#   #   安全網にする必要はない（agent-project 側 act_timeout: 0 と併用推奨）。
 #   timeout: 604800                      # クローズに達するまでの全体上限（秒・既定 7 日。0=無限）
 #   approved_timeout: 1209600            # approved/done 検知後のレビュー決着猶予（秒・既定 14 日。0=無限）
 #   approved_label: "status:approved"    # このラベルで自動マージ判定に入る（= 受け入れ承認）

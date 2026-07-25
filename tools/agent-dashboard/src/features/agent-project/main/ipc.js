@@ -130,14 +130,14 @@ function registerIpc(ctx) {
   // 失敗した run の「やり直し」。
   //
   // agent-project 配下の run なら、bus へ投げ直すのではなく **タスクを積み直す**。
-  // bus/inbox は agent-flow の daemon が拾う契約だが、agent-project は daemon を使わず run を
-  // 都度起動する（manage_flow_daemon の既定は false）。そこへ投入しても誰も拾わない＝押しても
+  // bus/inbox は板から受けた委譲を拾う契約で、agent-project 自身は run を都度起動する。
+  // そこへ投入しても誰も拾わない＝押しても
   // 何も起きないボタンになる。しかも inbox 投入は agent-project のタスク状態に触らないため、
   // 仮に走っても結果が settle されず、タスクは doing のまま取り残される。
   // タスクを ready へ戻せば agent-project が新しい run を起こし、結果も正しく回収する。
   // （run-id にはタスク ID が埋まっている: req-<hash>-<task-id>-r<n>）
   //
-  // agent-flow を単体で使っている run（タスクに紐づかない・daemon 運用）は従来どおり inbox へ。
+  // agent-flow を単体で使っている run（タスクに紐づかない）は従来どおり inbox へ。
   handle('flow:resubmit', async ({ dir, busDir, runId }) => {
     const meta = flow.readRunMeta(busDir, runId);
     // run-id にタスクが埋まっていない旧形式（run-<ts>-<rand>）でも、作業ブランチ ap/<task-id>
@@ -241,11 +241,10 @@ function registerIpc(ctx) {
   });
 
   // プロジェクトのリセット（人の明示アクション・危険操作）。charter.md 以外の全データを
-  // ゴミ箱へ移動し、バスの agent-flow daemon を停止する。charter は「プロジェクト全体の前提
+  // ゴミ箱へ移動する。charter は「プロジェクト全体の前提
   // （マスター）」として残す＝分解されないので、リセット後は待機状態になり作業は計画バージョンの
   // 追加で再開する（初版 charter からマイルストーンが出てこない）。
-  // 順序は「daemon 停止 → charter をマスター化 → 削除」:
-  //   - 先に daemon を止めないと worker が消したバスへ結果を書き戻す。
+  // 順序は「charter をマスター化 → 削除」:
   //   - 削除の前に charter をマスター化しておくと、削除中に本体が非マスター charter を分解して
   //     マイルストーンを作る取りこぼしを防げる（削除がその残骸も一緒に片付ける）。
   // ドット始まりの同期内部（.state-git 等）は温存する — 管理クローンの manifest が残る

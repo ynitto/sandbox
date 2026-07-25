@@ -60,7 +60,7 @@ test('写像に無いプロジェクトは従来どおり flowBus / 自動発見
 });
 
 test('設定なしのリモート clone は <clone>/agent-flow（状態鏡写し）を自動発見する', () => {
-  // 別 PC で実行中の run は agent-flow daemon の state-git が <clone>/agent-flow に鏡写しする。
+  // 別 PC で実行中の run は agent-flow の state-git が <clone>/agent-flow に鏡写しする。
   // 従来は flowBusByProject の手動設定が無いと見えなかった（＝リモート run が反映されない）。
   const gammaDir = path.join(container, 'projects', 'gamma');
   fs.mkdirSync(gammaDir, { recursive: true });

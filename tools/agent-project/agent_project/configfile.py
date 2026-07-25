@@ -90,7 +90,6 @@ CONFIG_DEFAULTS = {
     "verify_confirm": 1,
     "verify_cwd": None,
     "act_timeout": 1800.0,
-    "act_async": False,   # 非ブロッキング委譲（daemon/remote へ submit して待たず offloaded で回収）
     # agent-flow バスの置き場（絶対パスで明示すると外部 daemon を検知できる）。None なら <root>/bus。
     # 設定ファイルの bus: をここに載せておかないと resolve_config が読まず黙って既定バスに落ちる
     # （daemon 非検知の原因になる）。CLI --bus と同義。
@@ -106,10 +105,7 @@ CONFIG_DEFAULTS = {
     # 追記専用ファイルの肥大と、direct 同期での EOF 追記マージ衝突の温床を抑える。
     "journal_max_bytes": 262144,        # 閾値バイト（既定 256KB）。0 以下でローテーション無効
     "journal_keep": 20,                 # journal-archive/ の保持世代数。0 以下で無制限
-    # 実行層 agent-flow daemon をこのプロジェクト用に agent-project が起動・監視する（opt-in）。
-    "manage_flow_daemon": False,
-    "flow_config": None,        # daemon に --config で渡す共有 agent-flow.yaml（任意。agent-flow の設定はここに集約）
-    "flow_max_workers": 4,      # agent-flow daemon の worker 上限
+    "flow_config": None,        # agent-flow へ --config で渡す共有 agent-flow.yaml（任意。agent-flow の設定はここに集約）
     # 状態 worktree: root が git の作業ツリー内にあるとき、状態の読み書きを専用ブランチの
     # worktree（切りっぱなし）へ逃がす。設定の root は本体のまま書ける（人が書く自然な形）。
     # 本体の作業ツリー・index を一切汚さず、状態の履歴は同じリポジトリの別ブランチに残る。
@@ -126,7 +122,6 @@ CONFIG_DEFAULTS = {
     "state_push": False,                # コミットを origin へ push する（共有運用）
     "state_backup_branch": "main",      # 状態のバックアップ先（正本ブランチ）。空で無効
     "status_interval": 0.0,             # watch アイドル中の status.json 生存信号更新間隔（秒）。既定 0=無効
-    "lock_dir": None,   # agent-flow daemon ロックの置き場（外部 daemon 発見のため agent-flow と一致させる）
     "agent_flow": None,
     "notify_cmd": None,
     "actor": os.environ.get("USER", "user"),
@@ -385,9 +380,7 @@ def build_config(args) -> Config:
         state_git_branch=str(getattr(args, "state_git_branch", "main") or "main"),
         state_git_subdir=str(getattr(args, "state_git_subdir", "agent-project") or "").strip("/"),
         state_git_interval=max(0.0, float(getattr(args, "state_git_interval", 300.0) or 0.0)),
-        manage_flow_daemon=bool(getattr(args, "manage_flow_daemon", False)),
         flow_config=getattr(args, "flow_config", None) or None,
-        flow_max_workers=max(1, int(getattr(args, "flow_max_workers", 4) or 4)),
         status_interval=max(0.0, float(getattr(args, "status_interval", 0.0) or 0.0)),
         state_repo=state_repo,
         state_repo_dir=str(getattr(args, "state_repo_dir", "") or ""),
@@ -401,7 +394,6 @@ def build_config(args) -> Config:
         state_top=state_top,
         source_root=source_root,
         force=bool(getattr(args, "force", False)),
-        lock_dir=getattr(args, "lock_dir", None),
         agent_flow=args.agent_flow, planner=args.planner, flow_planner=args.flow_planner,
         # profile mode は自動起動時の環境差分を排除するため AGENT_PROJECT_NODE を参照しない。
         # ただし node がどこにも無いと multi-node/git-cas で起動できないため、最後に hostname
@@ -435,7 +427,7 @@ def build_config(args) -> Config:
         max_retries=args.max_retries, pace=args.pace, verify_timeout=args.verify_timeout,
         verify_confirm=max(1, int(getattr(args, "verify_confirm", 1) or 1)),
         verify_cwd=getattr(args, "verify_cwd", None),
-        act_timeout=args.act_timeout, act_async=bool(getattr(args, "act_async", False)),
+        act_timeout=args.act_timeout,
         notify_cmd=args.notify_cmd, actor=args.actor,
         archive=under("archive", "archive"), do_archive=bool(getattr(args, "do_archive", True)),
         learn=bool(getattr(args, "learn", True)),
@@ -558,9 +550,6 @@ def _add_common(sp):
                          "state_git への追加コミットは生まない（実パスの完了時にのみ書く＝相乗り）。"
                          ">0 にすると idle でもこの間隔で 1 回だけ書き直し、その分だけ state_git の"
                          "コミットが増える（負荷とリモートでの生存判定の鮮度のトレードオフ）")
-    sp.add_argument("--lock-dir", dest="lock_dir", default=None,
-                    help="agent-flow daemon ロックの置き場（設定ファイル lock_dir と同義）。"
-                         "外部起動の daemon を発見するため agent-flow 側と一致させる")
     sp.add_argument("--agent-flow", default=None)
     sp.add_argument("--node", dest="node", default=None,
                     help="この PC（エンジン）のノード名（複数 PC のバックログ分担）。指定すると "
@@ -585,7 +574,7 @@ def _add_common(sp):
     sp.add_argument("--flow-planner", default=None,
                     choices=["flow-planner", "agent", "stub"], help="agent-flow run に渡す planner（既定 flow-planner）")
     sp.add_argument("--location", default=None,
-                    choices=["auto", "local", "daemon", "remote", "board"],
+                    choices=["auto", "local", "board"],
                     help="act の実行モード（既定 auto）")
     sp.add_argument("--board", default=None,
                     help="委譲公示板（agent-board）の場所（ローカル dir / git+<url>）。設定すると "
@@ -616,9 +605,6 @@ def _add_common(sp):
                          "成果が無いとき、対象 repo のクローン先を指す。未指定でも charter に単一 repo があれば"
                          "acceptance はその repo を一時 clone して実行する")
     sp.add_argument("--act-timeout", type=float, default=None)
-    sp.add_argument("--act-async", dest="act_async", action="store_true", default=None,
-                    help="非ブロッキング委譲: daemon/remote へ submit して待たず offloaded にし、"
-                         "次パスでポーリングして回収する（gitlab 等の長期委譲でループを塞がない）")
     sp.add_argument("--notify-cmd", default=None, help="要対応ダイジェストを渡す通知コマンド")
     sp.add_argument("--actor", default=None)
     sp.add_argument("--learn", action=argparse.BooleanOptionalAction, default=None,

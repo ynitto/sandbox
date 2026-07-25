@@ -42,7 +42,6 @@ CONFIG_DEFAULTS = {
     "git": None,
     "git_branch": "main",
     "git_subdir": "",
-    "lock_dir": None,   # daemon singleton ロックの置き場（外部 daemon の発見性を担保。既定 tempdir 配下）
     # daemon 識別子（既定: host-pid）。--node-id は argparse 既定が None のため、ここに無いと
     # 設定ファイルの node_id が resolve_config でマージされず常に host-pid になっていた
     # （board 参加ノードは再起動のたび ID が変わり、落札済み委譲の成果報告 status/<who>.json を
@@ -86,7 +85,7 @@ CONFIG_DEFAULTS = {
     "exemplar_first": False,   # map-reduce で「1件先行→検証ゲート→残り展開」の見本先行分解にする
     "max_workers": 4,
     # daemon が同時に実行する run（orchestrator プロセス）の上限。バックログ一括投入
-    # （agent-project の act_async 等）や再起動直後の孤児一斉再開で「run 数ぶんの orchestrator
+    # （板からの委譲の受理等）や再起動直後の孤児一斉再開で「run 数ぶんの orchestrator
     # ＋計画エージェント」が同時に立ち上がるのを防ぐ。全ノードが park（承認待ち等）の run は
     # worker も計画エージェントも使わないため枠に数えない（gitlab 長期委譲は上限で詰まらない）。
     # 超過した要求は inbox に残り、枠が空いた poll で受理される（取りこぼさない）。

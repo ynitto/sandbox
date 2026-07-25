@@ -169,13 +169,9 @@ systemd 環境（かつ `residency` が `windows-task`/`none` でない）なら
 以下は設計上は P1 の範囲だが、実装を急ぐと二重実行・不整合のリスクがあるため見送った。
 利用には影響しない（未構成のまま no-op）:
 
-- **板の請負 tick**（node 名義での `nodes/<pc>.json` 能力宣言・workload=flow/amigos への
-  入札・ワーカー経由の実行）。既存の flow/amigos の板参加はいずれも「委譲側の bus」を
-  前提にしており、ノード直轄の契約側実行はまだ設計が固まっていない。
-- **旧経路の削除の残り**（`agent-flow daemon`/`submit`）。`agent-amigos serve`/`hub` と
-  `agent-project` の `instances`/`start`/`stop`/`restart` は削除済み。agent-flow 側は、
-  常駐体（`serve`/`status`/`worker`/amigos 参加 tick/gc tick）が実地で安定してから、
-  テスト資産ごと計画的に削る。それまでは退避先として残す。
+- **ノード能力宣言**（node 名義で板へ `nodes/<pc>.json` として「何ができる PC か」を出す）。
+  板の請負自体は各ツールの `participate` が委譲側 bus 経由で行っており、ノード直轄の
+  能力宣言はそれとは別の設計判断が要る。
 
 ## 7. トラブルシュート
 

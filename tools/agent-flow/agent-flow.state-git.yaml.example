@@ -12,7 +12,7 @@
 #   WSL:     ln -s /mnt/c/work/ops/.agents/agent-flow.yaml ~/.agents/agent-flow.yaml
 #   読むのは WSL のプロセスなので【パス類は WSL 側のパスで書く】。バスと .state-git クローンは
 #   WSL 側ファイルシステム（ext4）に置く（/mnt/c は遅く flock 系ロックも不安定）。
-#   起動（WSL）: agent-flow daemon
+#   起動（WSL）: agent-project serve（この PC の常駐体。agent-flow は単発起動される）
 
 # --- バス（agent-project 側と同じバスを 1 本に共有。必須）---
 # バスが複数あると、複数のバスが同じ state_git_subdir へ同期して互いの run を取り込み合う（混線）。
@@ -28,7 +28,7 @@ gitlab:
   timeout: 0            # 全体タイムアウト無効（0=無限）。人のレビュー往復が数日でも run を失敗にしない。
   approved_timeout: 0   # 承認/決着待ちの猶予も無限。誤タイムアウト由来の retry ループを消す
                         #   （run の本当の失敗は終端ステータスで検知される＝待ち上限は安全網に不要）。
-                        #   agent-project 側は act_timeout: 0 ＋ act_async: true と併用する。
+                        #   agent-project 側は act_timeout: 0 と併用する。
   # park & poll（承認待ちを worker スロットから切り離す。既定 有効）。承認待ちのイシューが
   # max_workers を占有せず、監視は daemon が watch_interval 毎にまとめて再確認する。承認待ちが
   # 溜まって発行が止まる問題と多重ポーリングを同時に抑える。従来モード（1 worker=1 イシューで
@@ -43,7 +43,7 @@ gitlab:
 
 # --- 状態の git 保存・共有（GitLab バックアップ 兼 別 PC からの監視）---
 # agent-project 側と同じリポジトリ・別 subdir。viewer は <clone>/agent-flow をバスとして登録する。
-# ★この state_git_subdir が唯一の権威。agent-project に管理させる構成（manage_flow_daemon）でも、
+# ★この state_git_subdir が唯一の権威。agent-project から起動される単発 run でも、
 #   この値はこの agent-flow.yaml のパスを flow_config で渡して反映される（agent-project が
 #   --state-git-subdir を個別 CLI 注入して上書きすることは無くなった）。変えるなら viewer の
 #   flowBusByProject（<clone>/<subdir>）も同じ値に合わせる。
@@ -54,10 +54,10 @@ state_git_subdir: agent-flow
 #                                     #   （run の終端時だけは間隔を待たず即 push）
 
 # ── バスが同期されない/viewer で見えないときの切り分け ──
-# バスを鏡写しするのは【agent-flow daemon の state_sync ループだけ】（agent-project 側の
+# バスを鏡写しするのは【agent-flow 側の state_sync だけ】（agent-project 側の
 # state_git はコンテナ状態のみで、バスは同期しない）。上から順に確認する:
-#   1. daemon がこの設定を読めているか
-#      → daemon 起動ログの2行目に `state-git: 有効 → …（バス … をリモートへ鏡写し）` が出るか。
+#   1. agent-flow がこの設定を読めているか
+#      → run 起動ログの2行目に `state-git: 有効 → …（バス … をリモートへ鏡写し）` が出るか。
 #        `無効（未設定）` なら agent-flow.yaml が読めていない（--config か 起動 cwd 直下 / .agents/ を確認）。
 #        cwd 直下や .agents/ に別の agent-flow.yaml があるとそちらが勝つ点に注意（直下が最優先）。
 #   2. クローンとコミットができているか

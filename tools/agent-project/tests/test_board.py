@@ -308,18 +308,18 @@ class TestBoardAutoWiring(unittest.TestCase):
 
 
 class TestAsyncOffload(unittest.TestCase):
-    """非ブロッキング委譲（act_async）: daemon/remote への submit で待たず offloaded にし、次パスで
-    ポーリングして終端した run だけ settle する（gitlab 等の長期委譲でループを塞がない）。"""
+    """非ブロッキング委譲: 公示して待たず offloaded にし、次パスでポーリングして
+    終端した run だけ settle する（gitlab 等の長期委譲でループを塞がない）。"""
 
     def _cfg(self, d, **kw):
-        return cfg_for(d, dry_run=False, act_async=True, executor="gitlab", **kw)
+        return cfg_for(d, dry_run=False, executor="gitlab", **kw)
 
     def _offloaded(self, d, tid, run_id, verify="true"):
         bd = d / "backlog"
         bd.mkdir(parents=True, exist_ok=True)
         (bd / f"{tid}.md").write_text(
             f"## {tid}: {tid}\n- status: offloaded\n- source: human\n- verify: `{verify}`\n"
-            f"- retries: 0\n- flow_run: {run_id}\n- flow_loc: daemon\n", encoding="utf-8")
+            f"- retries: 0\n- flow_run: {run_id}\n- flow_loc: local\n", encoding="utf-8")
 
     def test_pending_act_marks_task_offloaded(self):
         with tempfile.TemporaryDirectory() as d:
@@ -366,7 +366,7 @@ class TestAsyncOffload(unittest.TestCase):
             km.ensure_dirs(cfg)
             tasks = km.load_tasks(cfg.backlog)
             with mock.patch.object(km, "_flow_result_once",
-                                   return_value=(True, False, "daemon run run-T1 failed")):
+                                   return_value=(True, False, "run run-T1 failed")):
                 km._reap_offloaded(cfg, tasks, km.Policy(), {}, {}, 0, 20)
             t = km._load_task_file(cfg, "T1")
             self.assertIsNotNone(t)
@@ -383,7 +383,7 @@ class TestAsyncOffload(unittest.TestCase):
             tasks = km.load_tasks(cfg.backlog)
             with mock.patch.object(
                     km, "_flow_result_once",
-                    return_value=(True, False, "daemon run run-T1 cancelled")):
+                    return_value=(True, False, "run run-T1 cancelled")):
                 deltas = km._reap_offloaded(cfg, tasks, km.Policy(), {}, {}, 0, 20)
             self.assertEqual(deltas["settled"], 1)
             self.assertEqual(deltas["archived"], 0)
@@ -393,17 +393,19 @@ class TestAsyncOffload(unittest.TestCase):
             self.assertFalse(t.get("flow_run"))
             self.assertEqual(t.get("last_run"), "run-T1", "回収時に last_run を残す")
 
-    def test_offload_pins_last_run(self):
+    def test_board_post_pins_last_run(self):
+        """公示した委譲 id を last_run に刻む。刻んでいないと回収後に delivery/protect/resume が
+        状態 worktree のノイズ差分を見てしまう。"""
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             mkb(d, "T1")
-            cfg = self._cfg(d)
+            cfg = self._cfg(d, board=str(d / "board"), board_workdir=str(d / "bw"))
             t = km._load_task_file(cfg, "T1")
-            with mock.patch.object(km, "_flow_result_once", return_value=(False, False, "")):
-                with mock.patch.object(km.subprocess, "run",
-                                       return_value=subprocess.CompletedProcess(
-                                           ["x"], 0, stdout="", stderr="")):
-                    pend, msg = km._act_offload(t, cfg, use_git=False)
+            with mock.patch.object(km, "BoardRepo") as BR:
+                BR.return_value.write_post.return_value = True
+                with mock.patch.object(km, "_board_result_once",
+                                       return_value=(False, False, "")):
+                    pend, msg = km._act_board(t, cfg)
             self.assertIsInstance(pend, km._Pending)
             fresh = km._load_task_file(cfg, "T1")
             self.assertEqual(fresh.get("last_run"), pend.run_id)
@@ -440,26 +442,25 @@ class TestAsyncOffload(unittest.TestCase):
             # claim 無し＝実行者不明＝stale
             self.assertTrue(km.has_work(cfg))
 
-    def test_act_via_agent_flow_offloads_when_async(self):
+    def test_act_via_agent_flow_offloads_on_board(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             mkb(d, "T1")
-            cfg = self._cfg(d)
+            cfg = self._cfg(d, board=str(d / "board"), board_workdir=str(d / "bw"))
             km.ensure_dirs(cfg)
             t = km.load_tasks(cfg.backlog)[0]
-            with mock.patch.object(km, "daemon_running", return_value=True), \
-                 mock.patch.object(km, "_flow_result_once", return_value=(False, False, "")), \
-                 mock.patch.object(km.subprocess, "run", return_value=types.SimpleNamespace(
-                     returncode=0, stdout="run-T1\n", stderr="")):
-                status, _ = km.act_via_agent_flow(t, cfg, "daemon")
+            with mock.patch.object(km, "BoardRepo") as BR, \
+                 mock.patch.object(km, "_board_result_once", return_value=(False, False, "")):
+                BR.return_value.write_post.return_value = True
+                status, _ = km.act_via_agent_flow(t, cfg, "board")
             self.assertIsInstance(status, km._Pending)
 
-    def test_sync_path_unaffected_when_async_off(self):
-        # act_async 未指定なら従来どおり待つ（_act_submit）。daemon_running False → _act_run（同期）。
+    def test_sync_path_is_the_default(self):
+        # 既定（board 未設定）は同期の単発 run（_act_run）。
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             mkb(d, "T1")
-            cfg = cfg_for(d, dry_run=False, executor="stub")   # act_async=False（既定）
+            cfg = cfg_for(d, dry_run=False, executor="stub")   # board 未設定＝local 単発 run
             res = km.run_loop(cfg, act=lambda t, c, loc: (True, "ok"))
             self.assertEqual(res["reason"], km.REASON_DRAINED)
             self.assertGreaterEqual(res["archived"], 1)        # done → archive（従来どおり同期で確定）

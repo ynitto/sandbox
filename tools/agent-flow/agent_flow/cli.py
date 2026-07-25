@@ -19,12 +19,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--git-branch", default=None, help="バスに使う git ブランチ（既定 main）")
     p.add_argument("--git-subdir", default=None,
                    help="リポジトリ内のバスにするサブディレクトリ（既定: リポジトリ直下）")
-    p.add_argument("--lock-dir", dest="lock_dir", default=None,
-                   help="daemon singleton ロックの置き場（設定ファイル lock_dir と同義。"
-                        "外部起動の daemon を別ツールから発見させるため起動側と一致させる）")
     p.add_argument("--board", default=None,
                    help="委譲公示板（agent-board）の場所（ローカル dir / git+<url>）。"
-                        "指定すると daemon が板を巡回し workload=flow の公示に入札して取り込む")
+                        "指定すると participate が板を巡回し workload=flow の公示に入札して取り込む")
     p.add_argument("--state-git", dest="state_git", default=None,
                    help="ワーク内容（ローカルバスの runs/・inbox/）を保存・共有する git リポジトリ"
                         "（URL/パス）。リモートの agent-dashboard が進捗/結果を読める"
@@ -80,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
                    action="store_true", default=False,
                    help="セッション開始コマンド（agent-session-commands）の実行を無効化する"
                         "（既定: ~/.agents/session/session.json があればワーカー起動時に実行）")
-    # サブコマンド未指定なら daemon として扱う（required=False）
+    # サブコマンド未指定時の既定は無い（常駐は agent-project serve に集約した）
     sub = p.add_subparsers(dest="cmd")
 
     run = sub.add_parser("run", help="単発実行。既存 --run-id なら再開、無ければ新規（状態で自動判断）")
@@ -108,6 +105,9 @@ def build_parser() -> argparse.ArgumentParser:
                      help="リトライ: 指定した先行 run-id から確定済み（done）ノードの結果・計画・"
                           "中間成果物を引き継ぎ、先行 run を掃除する（新規時のみ有効）。先行 run が"
                           "完全 done なら状態は引き継がず掃除だけ行う（feedback 付きで新規にやり直す）")
+    run.add_argument("--from-inbox", dest="from_inbox", action="store_true",
+                     help="要求文・書込先ワークスペース・参照リポジトリ・引き継ぎ元を "
+                          "inbox/<run-id>.json から読む（participate が受理した要求を実行するとき）")
     run.set_defaults(func=cmd_run)
 
     orch = sub.add_parser("orchestrate", help="計画役")
@@ -141,48 +141,23 @@ def build_parser() -> argparse.ArgumentParser:
                       help="claim 可能タスクが無くなったら終了（デーモンのオンデマンド起動用）")
     work.set_defaults(func=cmd_work)
 
-    dm = sub.add_parser("daemon", help="常駐し、要求に応じ orchestrator/worker をオンデマンド起動")
-    dm.add_argument("--node-id", default=None, help="デーモン識別子（既定: host-pid）")
-    dm.add_argument("--max-workers", type=int, default=None,
-                    help="このデーモンが同時に走らせる worker 上限（既定 4）")
-    dm.add_argument("--max-runs", dest="max_runs", type=int, default=None,
-                    help="同時に実行する run（orchestrator）の上限（既定 8）。全 park（承認待ち）の "
+    pt = sub.add_parser("participate",
+                        help="参加のみ 1 巡（cancel 受理・park 再確認・孤児回収・板巡回・"
+                             "inbox 受理）。run は実行せず、実行すべき run-id を出力する")
+    pt.add_argument("--node-id", default=None, help="ノード識別子（既定: PC 名）")
+    pt.add_argument("--running", default=None,
+                    help="呼び出し側が今走らせている / これから走らせる run-id（カンマ区切り）。"
+                         "渡さないと起動待ちの run を孤児と誤判定して再開回数を焼く")
+    pt.add_argument("--max-runs", dest="max_runs", type=int, default=None,
+                    help="このノードが同時に実行する run の上限（既定 8）。全 park（承認待ち）の "
                          "run は数えない。超過要求は inbox に残り枠が空き次第受理。0 以下で無制限")
-    dm.add_argument("--planner", choices=["agent", "stub", "flow-planner"], default=None)
-    dm.add_argument("--executor", default=None,
-                    help="ワーカーバス（agent/stub/プラグイン名/.py パス）")
-    dm.add_argument("--max-iterations", type=int, default=None)
-    dm.add_argument("--max-fanout", type=int, default=None)
-    dm.add_argument("--max-retries", type=int, default=None)
-    dm.add_argument("--max-resumes", dest="max_resumes", type=int, default=None,
-                    help="孤児 run（owning daemon 消失）の自動再開の上限（進捗なしの連続回数, "
-                         "既定 3）。進捗があれば数え直す。0 以下で無効（孤児は即 failed）")
-    dm.add_argument("--review", dest="review", action="store_const", const=True, default=None)
-    dm.add_argument("--no-review", dest="review", action="store_const", const=False)
-    dm.add_argument("--model", default=None)
-    dm.add_argument("--poll", type=float, default=None)
-    dm.add_argument("--cleanup-interval", dest="cleanup_interval", type=float, default=None,
-                    help="一時ファイル自動掃除の実行間隔（秒, 既定 3600）。0 以下で無効化")
-    dm.add_argument("--cleanup-age", dest="cleanup_age", type=float, default=None,
-                    help="孤立クローンを掃除するまでのアイドル時間（時間, 既定 24）")
-    dm.add_argument("--no-cleanup", dest="cleanup_interval", action="store_const", const=0.0,
-                    help="一時ファイルの自動掃除を無効化する")
-    dm.add_argument("--status-interval", dest="status_interval", type=float, default=None,
-                    help="state_git（鏡）越しにリモートの agent-dashboard が daemon の生存を"
-                         "判定するための status.json を、アイドル中もこの間隔（秒）で更新する"
-                         "（既定 0＝無効。無効時はアイドル中 status.json に一切触れず、state_git の"
-                         "commit-if-diff で追加コミットを作らない）。real な run イベント時は"
-                         "この設定に関わらず既存の sync に相乗りして常に最新化される")
-    dm.set_defaults(func=cmd_daemon)
-
-    sb = sub.add_parser("submit", help="要求を inbox に投入（デーモンが拾う）")
-    sb.add_argument("request", help="ワークフローへの要求")
-    sb.add_argument("--inherit-from", dest="inherit_from", default=None,
-                    help="リトライ: 先行 run-id から確定済みノードを引き継ぎ先行 run を掃除する"
-                         "（daemon の orchestrate に伝搬される）")
-    sb.add_argument("--delegation", default=None,
-                    help="委譲公示板（agent-board）由来の来歴 JSON（{id, board}）。inbox 要求に載る")
-    sb.set_defaults(func=cmd_submit)
+    pt.add_argument("--max-resumes", dest="max_resumes", type=int, default=None,
+                    help="孤児 run の自動再開の上限（進捗なしの連続回数, 既定 3）")
+    pt.add_argument("--executor", default=None,
+                    help="ワーカーバス（agent/stub/プラグイン名/.py パス）。park の決着判定に使う")
+    pt.add_argument("--poll", type=float, default=None)
+    pt.add_argument("--json", action="store_true", help="結果を JSON で出力する")
+    pt.set_defaults(func=cmd_participate)
 
     cn = sub.add_parser("cancel",
                         help="run を cancelled に終端化（人の明示指示による run スコープの恒久停止）。"
@@ -262,13 +237,18 @@ def main() -> int:
     # 起動初回にバスフォルダが無ければ作成する（git バスでは .gitkeep も置く）。
     # 診断/読み取り専用コマンドは副作用を持たせない（doctor の「未作成」所見を潰さない）。
     if getattr(args, "func", None) in (
-            cmd_run, cmd_daemon, cmd_orchestrate, cmd_work, cmd_submit, cmd_cancel, None):
+            cmd_run, cmd_participate, cmd_orchestrate, cmd_work, cmd_cancel, None):
         ensure_bus_root(args)
-    # サブコマンド未指定 → daemon として処理
+    # サブコマンド未指定: 既定は無い。以前は `daemon`（常駐）を補っていたが、常駐は
+    # `agent-project serve` の 1 本に集約した（実装計画 W1-9）。裸起動を黙って常駐にすると、
+    # 常駐体と二重に回って inbox の要求を奪い合う。案内だけ出して終える。
     try:
         if getattr(args, "func", None) is None:
-            args.node_id = getattr(args, "node_id", None)
-            return cmd_daemon(args)
+            print("[agent-flow] 常駐は `agent-project serve`（PC に 1 本）が担います。\n"
+                  "  単発で回す   : agent-flow run \"<要求>\"\n"
+                  "  参加だけ 1 巡: agent-flow participate\n"
+                  "  一覧         : agent-flow --help", file=sys.stderr)
+            return 2
         return args.func(args)
     finally:
         # 作業後に sparse-checkout クローンを削除する（--keep-clone で抑止可）

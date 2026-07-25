@@ -106,12 +106,12 @@ class ConfigStateGitSubdirTests(unittest.TestCase):
         return args
 
     def test_subdir_comes_from_config_when_cli_absent(self):
-        # flow_daemon_cmd と同じ argv（--config あり・--state-git-subdir 無し）で config 値が効く
+        # agent-project が渡すのと同じ argv（--config あり・--state-git-subdir 無し）で config 値が効く
         d, cfg = self._write_cfg({"state_git_subdir": "custom-flow-ns"})
         args = self._resolve(["--bus", os.path.join(d, "bus"),
                               "--state-git", "git@x:team/s.git", "--state-git-branch", "main",
                               "--state-git-interval", "300", "--config", cfg,
-                              "daemon", "--executor", "stub"])
+                              "participate", "--executor", "stub"])
         self.assertEqual(args.state_git_subdir, "custom-flow-ns")
         sg = kf.state_git_for(args)                      # 実際に使われる StateGit が同じ subdir を持つ
         self.assertIsNotNone(sg)
@@ -122,7 +122,7 @@ class ConfigStateGitSubdirTests(unittest.TestCase):
         d, cfg = self._write_cfg({})
         args = self._resolve(["--bus", os.path.join(d, "bus"),
                               "--state-git", "git@x:team/s.git", "--config", cfg,
-                              "daemon", "--executor", "stub"])
+                              "participate", "--executor", "stub"])
         self.assertEqual(args.state_git_subdir, "agent-flow")
 
     def test_cli_still_overrides_config(self):
@@ -131,7 +131,7 @@ class ConfigStateGitSubdirTests(unittest.TestCase):
         args = self._resolve(["--bus", os.path.join(d, "bus"),
                               "--state-git", "git@x:team/s.git",
                               "--state-git-subdir", "from-cli", "--config", cfg,
-                              "daemon", "--executor", "stub"])
+                              "participate", "--executor", "stub"])
         self.assertEqual(args.state_git_subdir, "from-cli")
 
 

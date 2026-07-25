@@ -20,7 +20,7 @@ const FIELD_RE = /^-\s+(\w+):\s*(.*)$/;
 const POLICY_RE = /^(deny|pin|defer|offload|gate|protect|route):\s*(.+)$/;
 const DR_HEAD_RE = /^##\s+(DR-\d+)\s+(\S+)\s+actor:\s*(.*)$/;
 
-// offloaded: 非ブロッキング委譲（act_async）で agent-flow daemon へ submit 済み・結果待ち。
+// offloaded: 委譲公示板へ公示済み・請負側の実行結果待ち。
 //   flow_run（run-id）を extra に持ち、フロータブの該当 run へ辿れる。
 // proposed: 実行前レビュー待ち（承認されるまで実行しない）／rejected: 却下済み（archive に退避）
 const TASK_STATUSES = ['inbox', 'draft', 'proposed', 'ready', 'doing', 'done', 'blocked', 'review', 'offloaded', 'rejected'];
@@ -1774,7 +1774,7 @@ function resolveBusDir(projectDir, workspaceDir, cfg) {
   };
 
   push(fallback, path.join(projectDir, 'bus'), 'project');
-  // agent-flow daemon 自身の state-git が状態リポジトリへ鏡写しするバスの名前空間
+  // agent-flow 自身の state-git が状態リポジトリへ鏡写しするバスの名前空間
   // （本体の FLOW_STATE_SUBDIR="agent-flow"）。バスをルート外に置く構成では、実行中 run の
   // ミラーはリモート clone の <clone>/agent-flow に届く。従来は flowBusByProject の手動設定が
   // 必須で、設定漏れ＝「別 PC で実行中の run が見えない」だったため自動発見する。
