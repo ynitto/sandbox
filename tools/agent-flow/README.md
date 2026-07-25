@@ -409,11 +409,11 @@ loose object を「一時ファイル→ rename」で書くが *中身の fsync 
 ## インストール
 
 ```bash
-bash tools/install.sh                     # agent-project / agent-flow / agent-amigos を
+bash tools/agent-tools/install.sh                     # agent-project / agent-flow / agent-amigos を
                                           # まとめて ~/.local/bin へ（推奨。3 本は同じ
                                           # agentcore と契約バージョンを共有する）
-bash tools/install.sh --only agent-flow   # このツールだけ
-bash tools/install.sh --prefix /usr/local/bin   # 任意の場所へ
+bash tools/agent-tools/install.sh --only agent-flow   # このツールだけ
+bash tools/agent-tools/install.sh --prefix /usr/local/bin   # 任意の場所へ
 ```
 
 標準ライブラリのみで動作（pip 依存なし）。git は分散モードで必要、kiro-cli は実運用で必要
@@ -436,8 +436,8 @@ tools/agent-flow/
   agent-flow.py          # 薄いエントリ（後方互換・テスト e2e）
   agent_flow/            # 実体（断片 *.py。__init__.py が共有名前空間へ exec）
   executors/            # executor プラグイン（install 時に prefix 隣へ）
-  install.sh            # tools/install.sh --only agent-flow へ委譲する薄いシム
-tools/install.sh        # 3 エンジン共通のインストーラ（zipapp 化・agentcore 同梱・環境チェック）
+  install.sh            # tools/agent-tools/install.sh --only agent-flow へ委譲する薄いシム
+tools/agent-tools/install.sh        # 3 エンジン共通のインストーラ（zipapp 化・agentcore 同梱・環境チェック）
 ```
 
 編集は `agent_flow/<断片>.py` を触る。配布後も `--help` / `run` / `daemon` は従来どおり。
@@ -656,7 +656,7 @@ update_enabled: true            # 自動アップデートの ON/OFF（false で
 update_check_interval: 21600    # 更新チェック間隔（秒）。既定 6 時間。0 以下で自動チェック無効
 update_repo: ""                 # 空なら skill-registry.json から自動解決。別 repo を使うときだけ指定
 update_branch: main             # 追従するブランチ（空/既定なら registry の branch を採用）
-update_subdir: tools/agent-flow  # リポジトリ内のこのツールのサブディレクトリ
+update_subdir: tools/agent-flow tools/agent-tools  # 取得対象パス（カンマ/空白区切りで複数）
 update_installer: install.sh    # サブディレクトリ内で実行するインストーラ
 ```
 

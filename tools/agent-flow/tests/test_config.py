@@ -385,6 +385,19 @@ class DoctorTests(unittest.TestCase):
 
 
 class SelfUpdateTests(unittest.TestCase):
+    def test_split_subdirs_and_default_carries_shared(self):
+        """既定の `update_subdir` が共有物（tools/agent-tools）を含むこと。
+
+        cone mode の sparse-checkout は指定ディレクトリの**兄弟を含まない**。本体だけ取ると
+        installer が zipapp へ同梱する agentcore が無く必ず失敗する——自己更新が毎回
+        サイレントに見送られる（agent-project 側で実測した既存不具合と同じ形）。"""
+        self.assertEqual(kf.split_subdirs("a/b c/d"), ["a/b", "c/d"])
+        self.assertEqual(kf.split_subdirs("a/b, c/d"), ["a/b", "c/d"])
+        fallback = kf.split_subdirs("")
+        self.assertEqual(fallback, kf.TOOL_SUBDIR.split())
+        self.assertTrue(all(" " not in p for p in fallback))
+        self.assertIn("tools/agent-tools", fallback)
+
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="kf-update-")
         self.state = os.path.join(self.tmp, "state")
@@ -439,6 +452,16 @@ class SelfUpdateTests(unittest.TestCase):
         tool_dir = kf.sparse_checkout_tool(self.repo, "main", "tools/agent-flow", dest)
         self.assertTrue(os.path.isfile(os.path.join(tool_dir, "install.sh")))
         # sparse: 無関係な tools/agent-project は作業ツリーに展開されない
+        self.assertFalse(os.path.isdir(os.path.join(dest, "tools", "agent-project")))
+
+    def test_sparse_checkout_includes_shared_dir(self):
+        # 共有物（tools/agent-tools）を並べれば一緒に落ちてくること。取れないと installer が
+        # agentcore を同梱できず、自己更新がサイレントに見送られ続ける。
+        dest = os.path.join(self.tmp, "co2", "repo")
+        tool_dir = kf.sparse_checkout_tool(
+            self.repo, "main", "tools/agent-flow tools/agent-tools", dest)
+        self.assertEqual(tool_dir, os.path.join(dest, "tools", "agent-flow"))
+        self.assertTrue(os.path.isdir(os.path.join(dest, "tools", "agent-tools", "agentcore")))
         self.assertFalse(os.path.isdir(os.path.join(dest, "tools", "agent-project")))
 
     def test_run_installer(self):

@@ -2,10 +2,10 @@
 # install.sh — 単一常駐コントローラ一式のインストーラ（実装計画 W3-1）。
 #
 # 使い方:
-#   bash tools/install.sh                                  # 3 本すべて（既定）
-#   bash tools/install.sh --only agent-project             # 1 本だけ
-#   bash tools/install.sh --prefix /usr/local/bin
-#   bash tools/install.sh --service --host-config <path>   # 常駐化（systemd）も構成する
+#   bash tools/agent-tools/install.sh                                # 3 本すべて（既定）
+#   bash tools/agent-tools/install.sh --only agent-project           # 1 本だけ
+#   bash tools/agent-tools/install.sh --prefix /usr/local/bin
+#   bash tools/agent-tools/install.sh --service --host-config <path> # 常駐化（systemd）も構成
 #
 # **配布は 1 パッケージ・CLI エントリは 3 本**（設計 R9・R10）。agent-project /
 # agent-flow / agent-amigos は同じ agentcore（transport・protocol・vocab・heartbeat）を
@@ -39,7 +39,7 @@ HOST_CONFIG=""
 
 usage() {
   cat <<'USAGE'
-使い方: bash tools/install.sh [オプション]
+使い方: bash tools/agent-tools/install.sh [オプション]
 
   --prefix <dir>          インストール先（既定 ~/.local/bin）
   --only <a>[,<b>]        入れるエンジンを絞る（agent-project / agent-flow / agent-amigos）
@@ -70,8 +70,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AGENTCORE_PKG="${TOOLS_DIR}/agentcore/agentcore"
+# このスクリプトが居る tools/agent-tools/（3 エンジンで共有するものの置き場）と、
+# その親 tools/（各エンジンのディレクトリが並ぶ）。
+SHARED_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TOOLS_DIR="$(cd "${SHARED_DIR}/.." && pwd)"
+AGENTCORE_PKG="${SHARED_DIR}/agentcore/agentcore"
 
 echo ""
 echo "========================================"
@@ -154,7 +157,8 @@ mkdir -p "${INSTALL_PREFIX}"
 # 2. zipapp ビルド（3 エンジン共通の手順を 1 か所に）
 # ---------------------------------------------------------------------------
 # 単一ファイル配布は維持しつつ、実体はパッケージ（LLM が編集できる大きさの断片へ分割済み）。
-# agentcore は**各 zipapp へ同梱する**（独立配布しない内部モジュール — 設計 R10）。
+# agentcore は**各 zipapp へ同梱する**（独立配布しない内部モジュール — 設計 R10。
+# 置き場は tools/agent-tools/agentcore＝3 エンジンで共有するものの置き場）。
 # 3 本が別実行ファイルである以上、それぞれが自己完結していないと片方だけ動く状態になる。
 build_engine() {
   local engine="$1" pkg_name="$2"
@@ -164,7 +168,7 @@ build_engine() {
 
   [[ -d "${pkg_dir}" ]] || die "${pkg_name} パッケージが見つかりません: ${pkg_dir}"
   [[ -d "${AGENTCORE_PKG}" ]] || die "agentcore パッケージが見つかりません: ${AGENTCORE_PKG}
-  （自己更新の sparse-checkout なら update_subdir に tools/agentcore が含まれているか確認）"
+  （自己更新の sparse-checkout なら update_subdir に tools/agent-tools が含まれているか確認）"
 
   info "${engine} を zipapp にまとめています..."
   local build_dir

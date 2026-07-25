@@ -177,7 +177,7 @@ agent-project audit --strict      # L0–L3 基準を満たさなければ非0�
 ```bash
 agent-project serve               # host.yaml のプロジェクトをまとめて監督する常駐体
 agent-project status              # いまどのプロジェクトが動いているか（心拍・休止/切り離し）
-# 常駐化（起動時に上がる・死んだら上がり直す）は tools/install.sh --service が構成する
+# 常駐化（起動時に上がる・死んだら上がり直す）は tools/agent-tools/install.sh --service が構成する
 ```
 構成の手順は [常駐一本化セットアップガイド](../../docs/guides/single-resident-setup.md)。
 

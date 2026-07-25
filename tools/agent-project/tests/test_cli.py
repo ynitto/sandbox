@@ -197,24 +197,24 @@ class SelfUpdateTests(unittest.TestCase):
         self.assertTrue(all(" " not in p for p in fallback))
 
     def test_sparse_checkout_includes_dependency_package(self):
-        """依存パッケージ（実物では tools/agentcore）も取れること。
+        """共有物（実物では tools/agent-tools＝統合インストーラ + agentcore）も取れること。
 
         cone mode の sparse-checkout は指定ディレクトリの**兄弟を含まない**。本体だけ取ると
         installer が zipapp へ同梱する agentcore が無く `agentcore パッケージが見つかりません`
         で必ず失敗する——自己更新が毎回サイレントに見送られる（実測で確認した既存不具合）。"""
         dest = str(self.tmp / "co2" / "repo")
         tool_dir = km.sparse_checkout_tool(str(self.repo), "main",
-                                           "tools/agent-project tools/agentcore", dest)
+                                           "tools/agent-project tools/agent-tools", dest)
         self.assertEqual(tool_dir, os.path.join(dest, "tools", "agent-project"))
-        self.assertTrue(os.path.isdir(os.path.join(dest, "tools", "agentcore", "agentcore")))
+        self.assertTrue(os.path.isdir(os.path.join(dest, "tools", "agent-tools", "agentcore")))
         # 統合インストーラ（親ディレクトリのファイル）も cone mode で落ちてくる——
         # 各エンジンの install.sh はそこへ委譲するシムなので、無いと自己更新が動かない。
-        self.assertTrue(os.path.isfile(os.path.join(dest, "tools", "install.sh")))
+        self.assertTrue(os.path.isfile(os.path.join(dest, "tools", "agent-tools", "install.sh")))
         self.assertFalse(os.path.isdir(os.path.join(dest, "tools", "agent-flow")))
 
     def test_default_subdir_carries_dependency(self):
         # 既定が本体だけだと、既定のまま運用している全ノードで自己更新が失敗する。
-        self.assertIn("tools/agentcore", km.split_subdirs(km.TOOL_SUBDIR))
+        self.assertIn("tools/agent-tools", km.split_subdirs(km.TOOL_SUBDIR))
 
     def test_apply_update_triggers_on_dependency_only_change(self):
         """依存パッケージだけの変更でも適用されること。
@@ -222,7 +222,7 @@ class SelfUpdateTests(unittest.TestCase):
         ダイジェストを先頭 subdir だけで取ると agentcore だけの更新を「変更なし」と読んで
         見送り続ける——本体は agentcore と契約バージョンを共有しているので、そこだけ古い
         まま回るのが一番まずい。"""
-        cfg = self._cfg(update_subdir="tools/agent-project tools/agentcore")
+        cfg = self._cfg(update_subdir="tools/agent-project tools/agent-tools")
         km.check_update(cfg)                    # baseline
         prefix = str(self.tmp / "prefix-dep")
 
@@ -230,7 +230,7 @@ class SelfUpdateTests(unittest.TestCase):
             cmd = c + ["--prefix", prefix] if c[:1] == ["bash"] else c
             return subprocess.run(cmd, capture_output=True, text=True, **k)
 
-        _commit_change(self.repo, "tools/agentcore/agentcore/protocol.py", "# bumped\n")
+        _commit_change(self.repo, "tools/agent-tools/agentcore/protocol.py", "# bumped\n")
         info = km.check_update(cfg)
         self.assertTrue(info["available"])
         self.assertTrue(km.apply_update(cfg, info, runner=runner),
@@ -294,7 +294,7 @@ class SelfUpdateTests(unittest.TestCase):
         ダイジェストをチェックアウト全体で取ると、cone mode が落とすリポジトリ直下の
         ファイル（direct state-git 構成では自分の state push がそこを動かす）で毎回
         差分になり、「push → 更新検出 → 再起動 → また push」に戻る。"""
-        cfg = self._cfg(update_subdir="tools/agent-project tools/agentcore")
+        cfg = self._cfg(update_subdir="tools/agent-project tools/agent-tools")
         km.check_update(cfg)
         prefix = str(self.tmp / "prefix-multi")
 

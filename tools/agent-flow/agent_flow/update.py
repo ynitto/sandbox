@@ -143,9 +143,25 @@ def check_update(args, runner=None) -> dict:
     return info
 
 
+def split_subdirs(subdir: str) -> "list[str]":
+    """`update_subdir` を取得対象パスの並びへ。カンマ/空白区切りで**複数指定できる**。
+
+    本体は自分のディレクトリだけでは組み立てられない——installer は zipapp へ
+    `tools/agent-tools/agentcore` を同梱するので、それが取れていないと必ず失敗する
+    （cone mode の sparse-checkout は指定ディレクトリの兄弟を含まない）。
+    先頭のパスが installer とダイジェストの基準ディレクトリ。"""
+    parts = [p for p in re.split(r"[,\s]+", str(subdir or "").strip()) if p]
+    if parts:
+        return parts
+    return [p for p in re.split(r"[,\s]+", TOOL_SUBDIR) if p]
+
+
 def sparse_checkout_tool(repo: str, branch: str, subdir: str, dest: str, runner=None) -> str:
-    """repo の branch から subdir 以下だけを dest へ sparse-checkout し dest/subdir のパスを返す。
-    無関係ファイルを取得しないため --no-checkout + blob フィルタ + sparse-checkout を使う。"""
+    """repo の branch から subdir 以下だけを dest へ sparse-checkout し dest/<先頭 subdir> を返す。
+    無関係ファイルを取得しないため --no-checkout + blob フィルタ + sparse-checkout を使う。
+
+    `subdir` はカンマ/空白区切りで複数指定できる（`split_subdirs`）。**共有物を含めないと
+    installer が組み立てに失敗する**ので、既定は本体 + `tools/agent-tools`。"""
     run = runner or (lambda c, **k: subprocess.run(c, capture_output=True, text=True, encoding="utf-8", errors="replace",
                                                    timeout=600, **k))
     os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
@@ -158,14 +174,16 @@ def sparse_checkout_tool(repo: str, branch: str, subdir: str, dest: str, runner=
 
     def g(cmd):
         return run(["git", "-C", dest] + cmd)
+    subdirs = split_subdirs(subdir)
     g(["sparse-checkout", "init", "--cone"])
-    g(["sparse-checkout", "set", subdir])
+    g(["sparse-checkout", "set"] + subdirs)
     co = g(["checkout", branch])
     if getattr(co, "returncode", 1) != 0:
         raise RuntimeError(f"git checkout 失敗: {(getattr(co, 'stderr', '') or '').strip()[:300]}")
-    tool_dir = os.path.join(dest, subdir)
-    if not os.path.isdir(tool_dir):
-        raise RuntimeError(f"sparse-checkout 後に {subdir} が見つかりません（リポジトリ構成を確認）")
+    for part in subdirs:
+        if not os.path.isdir(os.path.join(dest, part)):
+            raise RuntimeError(f"sparse-checkout 後に {part} が見つかりません（リポジトリ構成を確認）")
+    tool_dir = os.path.join(dest, subdirs[0])
     return tool_dir
 
 
@@ -184,22 +202,30 @@ def run_installer(tool_dir: str, installer: str = "install.sh", runner=None) -> 
     return getattr(r, "returncode", 1) == 0, out[-2000:]
 
 
-def _tree_digest(root: str) -> str:
+def _tree_digest(root: str, subdirs: "list[str] | None" = None) -> str:
     """ツールディレクトリの内容ダイジェスト（.git を除く、相対パス＋内容の sha256）。
     「リポジトリの HEAD は進んだが本体（update_subdir）は変わっていない」を判定する
-    （コミット SHA の比較では判別できない）。"""
+    （コミット SHA の比較では判別できない）。
+
+    `subdirs` を渡すと `root` 配下のそのパスだけを対象にする。**チェックアウト全体を
+    対象にしてはいけない**——cone mode は親ディレクトリのファイルも落とすので、
+    リポジトリ直下のファイルで毎回ダイジェストが変わり自己増殖ループに戻る。逆に先頭
+    1 パスだけでも足りない（共有物だけの更新を「変更なし」と読んで見送り続ける）。"""
     h = hashlib.sha256()
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d != ".git")
-        for name in sorted(filenames):
-            p = os.path.join(dirpath, name)
-            h.update(os.path.relpath(p, root).encode("utf-8"))
-            try:
-                with open(p, "rb") as f:
-                    for chunk in iter(lambda: f.read(65536), b""):
-                        h.update(chunk)
-            except OSError:
-                continue
+    for base in (subdirs or [""]):
+        top = os.path.join(root, base) if base else root
+        h.update(f"\0{base}\0".encode("utf-8"))
+        for dirpath, dirnames, filenames in os.walk(top):
+            dirnames[:] = sorted(d for d in dirnames if d != ".git")
+            for name in sorted(filenames):
+                p = os.path.join(dirpath, name)
+                h.update(os.path.relpath(p, top).encode("utf-8"))
+                try:
+                    with open(p, "rb") as f:
+                        for chunk in iter(lambda: f.read(65536), b""):
+                            h.update(chunk)
+                except OSError:
+                    continue
     return h.hexdigest()
 
 
@@ -214,7 +240,7 @@ def apply_update(args, info: dict, runner=None) -> bool:
     dest = os.path.join(tmp, "repo")
     try:
         tool_dir = sparse_checkout_tool(info["repo"], info["branch"], subdir, dest, runner=runner)
-        digest = _tree_digest(tool_dir)
+        digest = _tree_digest(dest, split_subdirs(subdir))
         state = read_update_state()
         if digest == state.get("applied_digest"):
             state["applied_sha"] = info["remote_sha"]

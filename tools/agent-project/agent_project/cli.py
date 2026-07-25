@@ -9,7 +9,8 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(
         prog="agent-project",
         description="backlog/ を優先順位付け・検証・収束させる制御層（Loop Engineering MVP）。"
-                    "サブコマンドを省略すると常駐監視（run --watch）で起動し backlog 投入を待ち続ける")
+                    "サブコマンドを省略すると常駐体（serve）で起動し、host.yaml に宣言した"
+                    "プロジェクトをまとめて面倒見る")
     # metavar を置くと usage 行が `<command>` に畳まれ、各コマンドは本文に説明付きで並ぶ。
     # help=SUPPRESS の内部配線（flow-participate / flow-run）は本文からは消えるが、
     # metavar が無いと usage 行の選択肢一覧には名前だけ残る（R10: 利用者向けの表示に
@@ -256,18 +257,20 @@ def main(argv=None) -> int:
     wki.add_argument("--out", default=None, help="書き出し先（既定: ~/.agents/agent-project.host.yaml）")
     wki.add_argument("--force", action="store_true", help="既存ファイルを上書きする")
 
-    # サブコマンドを省略して呼ばれたら「常駐監視（run --watch）」を既定にする。
-    # PC 起動時に立ち上げっぱなしにして cwd のプロジェクトを面倒見る daemon 用途を一級にするため。
+    # サブコマンドを省略して呼ばれたら「常駐体（serve）」を既定にする。
+    # 常駐は PC に 1 本で、持つプロジェクトの宣言は host.yaml が単一ソース——裸起動が
+    # cwd 1 件の `run --watch` に化けると、常駐体が監督している子と二重に回って
+    # claim を奪い合う。`run` は常駐体が子として起動する経路なので、明示したときだけ動く。
     _subcommands = {"run", "triage", "needs", "promote", "rot", "stats", "audit",
                     "runlog", "doctor", "update", "enqueue", "approve", "hold", "reprioritize",
                     "revise", "reject", "resume-run", "impact", "replan",
                     "board-offload", "gc",
                     # 常駐体の内部配線（help からは隠すが、ここに載せないと
-                    # 「サブコマンド無し＝run --watch」の既定に飲まれて別物が起動する）
+                    # 「サブコマンド無し＝serve」の既定に飲まれて別物が起動する）
                     "flow-participate", "flow-run",
                     "serve", "status", "worker"}
     if not argv or (argv[0] not in _subcommands and argv[0] not in ("-h", "--help")):
-        argv = ["run", "--watch", *argv]
+        argv = ["serve", *argv]
 
     args = p.parse_args(argv)
 

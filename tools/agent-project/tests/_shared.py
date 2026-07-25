@@ -181,15 +181,15 @@ def _make_skill_repo(root: Path, tool_subdir: str = "tools/agent-project") -> Pa
     other = repo / "tools" / "agent-flow"           # sparse 除外の確認用
     other.mkdir(parents=True, exist_ok=True)
     (other / "FILE.txt").write_text("unrelated\n")
-    # 本体だけでは zipapp を組み立てられない依存パッケージ（実物では tools/agentcore）。
+    # 本体だけでは zipapp を組み立てられない共有物（実物では tools/agent-tools）。
     # cone mode の sparse-checkout は兄弟ディレクトリを含まないので、取れているかを
     # テストで見る対象そのもの。
-    core = repo / "tools" / "agentcore" / "agentcore"
+    core = repo / "tools" / "agent-tools" / "agentcore"
     core.mkdir(parents=True, exist_ok=True)
     (core / "protocol.py").write_text("# shared lib\n")
-    # 統合インストーラ（実物では tools/install.sh）。cone mode は親ディレクトリの
-    # **ファイル**を含めるので、tools/<engine> を指定すればこれも落ちてくる。
-    (repo / "tools" / "install.sh").write_text("#!/usr/bin/env bash\nexit 0\n")
+    # 統合インストーラ（実物では tools/agent-tools/install.sh）。共有物と同じ
+    # ディレクトリに置くので、tools/agent-tools を指定すれば一緒に落ちてくる。
+    (repo / "tools" / "agent-tools" / "install.sh").write_text("#!/usr/bin/env bash\nexit 0\n")
     (td / "install.sh").write_text(
         "#!/usr/bin/env bash\nset -e\nPREFIX=\"$HOME/.local/bin\"\n"
         "[ \"$1\" = --prefix ] && PREFIX=\"$2\"\nmkdir -p \"$PREFIX\"\n"

@@ -8,20 +8,20 @@
 
 ## 1. インストール
 
-クローンして `tools/install.sh` を 1 回叩く。`agent-project` / `agent-flow` / `agent-amigos` の
+クローンして `tools/agent-tools/install.sh` を 1 回叩く。`agent-project` / `agent-flow` / `agent-amigos` の
 3 コマンドが同じ場所（既定 `~/.local/bin`）へ入る。
 
 ```bash
 git clone <このリポジトリ> && cd <クローン先>
-bash tools/install.sh
+bash tools/agent-tools/install.sh
 ```
 
 **3 つを別々に入れない。** 同じ共通ライブラリと契約バージョンを共有しているので、片方だけ
 古いと状態の読み書きや仕事の受け渡しが噛み合わなくなる。更新も同じコマンドでまとめて行う
-（`git pull && bash tools/install.sh`）。
+（`git pull && bash tools/agent-tools/install.sh`）。
 
-- 入れる先を変える: `bash tools/install.sh --prefix /usr/local/bin`
-- 1 本だけ入れ直す: `bash tools/install.sh --only agent-project`
+- 入れる先を変える: `bash tools/agent-tools/install.sh --prefix /usr/local/bin`
+- 1 本だけ入れ直す: `bash tools/agent-tools/install.sh --only agent-project`
 - Windows/WSL 配置の場合はクローンを WSL 側の ext4 に置く（`/mnt/c` は使わない — 設計 §7）。
 - python 3.9 以上が要る。git・エージェント CLI（claude / codex 等）・PyYAML の有無は
   インストーラが確認して、足りないものだけ教える。
@@ -102,8 +102,8 @@ residency: systemd        # 4a を選んだ（既定 auto も systemd がある�
 ### 4a. systemd user unit（WSL / Linux）
 
 ```bash
-bash tools/install.sh --service                       # 既定の host.yaml 探索
-bash tools/install.sh --service --host-config /path/to/agent-project.host.yaml
+bash tools/agent-tools/install.sh --service                       # 既定の host.yaml 探索
+bash tools/agent-tools/install.sh --service --host-config /path/to/agent-project.host.yaml
 ```
 
 `~/.config/systemd/user/agent-project.service` を生成し、`systemctl --user enable --now`・
@@ -121,7 +121,7 @@ bash tools/install.sh --service --host-config /path/to/agent-project.host.yaml
 
 ### 4b. Windows タスクスケジューラ（WSL VM の keep-alive を兼ねる）
 
-WSL の外側（Windows 側）の操作なので `tools/install.sh` からは実行できない。ログオン時トリガーで
+WSL の外側（Windows 側）の操作なので `tools/agent-tools/install.sh` からは実行できない。ログオン時トリガーで
 次を実行するタスクを手動登録する（PowerShell 管理者権限）:
 
 ```powershell

@@ -16,12 +16,12 @@ from typing import Any
 
 # agentcore への import 経路（agent_project/__init__.py と同じ流儀）。このファイルは
 # agent_project/resident/ 配下＝`__init__.py` より 1 階層深いので、tools/ まで 4 段上がる
-# （tools/agent-project/agent_project/resident/status.py → tools/agentcore）。親パッケージ
-# 経由で import すれば `agent_project/__init__.py` が先に同じパスを入れるが、resident は
-# 単体 import できる通常パッケージとして書く方針（§4.7）なので自前でも解決する。
+# （tools/agent-project/agent_project/resident/status.py → tools/agent-tools/agentcore）。
+# 親パッケージ経由で import すれば `agent_project/__init__.py` が先に同じパスを入れるが、
+# resident は単体 import できる通常パッケージとして書く方針（§4.7）なので自前でも解決する。
 _tools_dir = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))))
-_agentcore_dir = os.path.join(_tools_dir, "agentcore")
+_agentcore_dir = os.path.join(_tools_dir, "agent-tools", "agentcore")
 if _agentcore_dir not in sys.path:
     sys.path.insert(0, _agentcore_dir)
 

@@ -27,7 +27,11 @@ DEFAULT_CONFIG_NAMES = ["agent-flow.yaml", "agent-flow.yml", "agent-flow.json"]
 # このツールがスキルリポジトリ内に置かれているサブディレクトリ（自動アップデートの参照先）。
 # 自動アップデートは update_repo のこのパス以下だけを temp 領域へ sparse-checkout して
 # install.sh を実行する（doctor と同じ流儀で、操作は決定的・無関係ファイルは取得しない）。
-TOOL_SUBDIR = "tools/agent-flow"
+# 取得対象パス（カンマ/空白区切りで複数）。**共有物 tools/agent-tools（統合インストーラ +
+# agentcore）も並べる**——cone mode の sparse-checkout は兄弟を含まないので、本体だけ取ると
+# installer が agentcore を同梱できず必ず失敗する（自己更新がサイレントに見送られ続ける）。
+# 先頭が installer とダイジェストの基準ディレクトリ。
+TOOL_SUBDIR = "tools/agent-flow tools/agent-tools"
 # スキルリポジトリ（git URL/パス）の既定。空なら install.py が生成する skill-registry.json から
 # 自動解決する（repositories.origin.url → install_dir）。設定ファイルの update_repo で明示も可。
 DEFAULT_UPDATE_REPO = ""

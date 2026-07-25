@@ -78,7 +78,7 @@ W1-1〜W1-13 完了。旧経路の削除（W1-9）だけ agent-flow 側が §7 R
 
 | 項目 | 直したこと | 根拠の在処 |
 |---|---|---|
-| W1-1 | systemd `Type=notify` + `WatchdogSec`（`READY=1` / `STOPPING=1` / `WATCHDOG_USEC` の半分で心拍）。復帰が 3 段構えになる | `resident/scheduler.py`・`tools/install.sh` |
+| W1-1 | systemd `Type=notify` + `WatchdogSec`（`READY=1` / `STOPPING=1` / `WATCHDOG_USEC` の半分で心拍）。復帰が 3 段構えになる | `resident/scheduler.py`・`tools/agent-tools/install.sh` |
 | W1-4 | 自殺型停止経路を親 → 子の指示へ。`Supervisor.pause()` / `resume()` を新設し、計画停止を死亡回数に数えない。止めるのは `shutdown_due` に達してから（`draining` で止めると猶予設定が死ぬ） | `coordination.py`・`resident_cli._availability_tick`・`resident/supervisor.py` |
 | W1-5 | `max_concurrent` の計数を**実行中を表すファイル**から導出。在籍状態（バスの `status/<who>.json`）は流用しない——終わった手番を走行中と誤読して自分の次の手番を弾く | `agent_amigos/turnmark.py`・`resident/worker.py`・`resident_cli._external_amigos_inflight` |
 | W1-6 | 板の終端公示の gc。削除の主体は依頼側、**タスクが offloaded を抜けた後**に消す。孤児だけ gc tick が長期マージンで掃く | `board.py`（`drop_delegation` / `sweep_terminal_delegations`）・`loop.py` |
@@ -159,7 +159,7 @@ W2-1〜W2-5 は実装・テストとも完了（agent-dashboard の全テスト�
 
 | # | 作業 | 対象・内容 | 規模 |
 |---|---|---|---|
-| W3-1 | 単一パッケージ統合 | 配布パッケージを 1 本へ統合（インストールは `tools/install.sh` の 1 本・環境チェックも 1 回）。CLI エントリは `agent-project` / `agent-flow` / `agent-amigos` の 3 本を維持（R9・R10）。**exec 断片合成の解消は見送り**（下記実施結果） | L |
+| W3-1 | 単一パッケージ統合 | 配布パッケージを 1 本へ統合（インストールは `tools/agent-tools/install.sh` の 1 本・環境チェックも 1 回）。CLI エントリは `agent-project` / `agent-flow` / `agent-amigos` の 3 本を維持（R9・R10）。**exec 断片合成の解消は見送り**（下記実施結果） | L |
 | W3-2 | テスト・文書の再編 | 巨大単一テストファイル × 3 を機能別に再編。README・GUIDE 等の全面改訂・**セットアップガイドの確定版**（W1-13 のドラフトに canary での躓きを反映）・**R10 チェック**（セットアップガイド含む利用者向け文書に node / sync が現れない grep 検査を CI 化） | M |
 | W3-3 | 実機 canary（1 週間） | **ランブック: [`docs/guides/single-resident-canary.md`](../guides/single-resident-canary.md)**（C1〜C10 + 日次観測 + ガイド欠陥記録）。フル 2 台（停止時刻をずらす）+ ワーカー 1 台（POSIX 機）。**セットアップは W1-13 のガイドだけを見て行い、ガイド外の操作が必要になったら全てガイドの欠陥として記録・反映する**（ガイドの受入試験を兼ねる）。チェックリスト: controller 引継ぎ / 全台停止からの復帰 / 予定 drain / 突然死と fencing 拒否 / self-watchdog 発火 / 子の隔離 / スキル起動の併走 / 板委譲の往復（result ペイロード込み）/ Windows 起動ループ方式での VM 復帰 — 各 1 回以上 | M |
 
@@ -174,14 +174,14 @@ W2-1〜W2-5 は実装・テストとも完了（agent-dashboard の全テスト�
 張り替えになる。一方 W3-1 の目的（配布パッケージ 1 本・install.sh 1 本）は合成方式に
 触らずに達成でき、そこに回帰リスクを積む理由が無い。
 
-- **`tools/install.sh` を新設**し、3 エンジンの installer に散っていた環境チェック・zipapp
+- **`tools/agent-tools/install.sh` を新設**し、3 エンジンの installer に散っていた環境チェック・zipapp
   ビルド・agentcore 同梱を 1 本へ集約した。環境チェックは**1 回だけ**走る（従来は同じ警告を
   3 度読ませていた）。engine 固有の付帯物は保持: `codd_gate_*.py` の zipapp 同梱と codd-gate
   同梱インストール（agent-project）・`executors/` の prefix 隣配置（agent-flow）・
   `--service` の systemd unit 生成（agent-project）。`--only <engine>` で 1 本だけも入る
   （ワーカーノードと canary の入れ直しで使う）。
 - **各エンジンの `install.sh` はシムへ縮退**（19 行）。既存の手順書・`setup.sh`・自己更新の
-  呼び出しパスを壊さないため残し、`tools/install.sh --only <engine>` へ委譲する。
+  呼び出しパスを壊さないため残し、`tools/agent-tools/install.sh --only <engine>` へ委譲する。
 - **agentcore は各 zipapp へ同梱したまま**。3 本は別実行ファイルなので、それぞれが
   自己完結していないと片方だけ動く状態になる（確認: 各 zipapp に agentcore 7 ファイル）。
 
@@ -199,6 +199,38 @@ W2-1〜W2-5 は実装・テストとも完了（agent-dashboard の全テスト�
   すると、cone mode が拾うリポジトリ直下のファイルで自己増殖ループ（direct state-git 構成では
   自分の state push が update_repo の新コミットになる）が戻る。**宣言した subdir すべて**が
   正しい範囲で、両方をテストで固定した。
+
+### W3-1 追補（2026-07-26）— 共有物を `tools/agent-tools/` へ集約
+
+3 エンジンで共有するものを 1 か所へ寄せた。エンジン固有のものは各エンジンの
+ディレクトリに残す（境界を置き場で表す）。
+
+```
+tools/agent-tools/
+  install.sh      # 3 エンジンをまとめて入れる唯一のインストーラ
+  agentcore/      # 共通ライブラリ（transport / protocol / vocab / heartbeat）
+  README.md       # 何をここに置くか・自己更新との関係
+```
+
+- 各エンジンの `install.sh` シムは `../agent-tools/install.sh` へ委譲する。
+- 各エンジンの `__init__.py`（と `resident/status.py`）の path shim は
+  `../../agent-tools/agentcore` を見る。zipapp では同梱物が先に解決されるので変化なし。
+- **自己更新の `update_subdir` を `tools/<engine> tools/agent-tools` へ**。共有物が
+  1 ディレクトリに収まったので、ancestor-file の挙動に頼らず明示的に取れる。
+- **agent-flow の自己更新にも同じ修正を入れた**。あちらは `update_subdir` が単一パスのままで、
+  agent-project と同じ理由（cone mode は兄弟を含まない → agentcore が取れず installer が die）で
+  **毎回サイレントに失敗していた**。`split_subdirs`・複数パスの sparse-checkout・宣言 subdir
+  全体のダイジェストを移植し、テストで固定した。
+
+### W3-1 追補（2026-07-26）— `agent-project` の裸起動を `serve` へ
+
+サブコマンド省略時の既定を `run --watch`（cwd 1 件のプロジェクトループ）から
+**`serve`（PC 単位の常駐体）**へ変えた。常駐は PC に 1 本で、持つプロジェクトの宣言は
+host.yaml が単一ソース——裸起動が cwd 1 件の watch に化けると、常駐体が監督している子と
+二重に回って claim を奪い合う。`run` は常駐体が子として起動する経路なので、明示したときだけ動く。
+
+`agent-project --host-config <path>` のようにサブコマンドを省いても `serve` のフラグは
+そのまま届く（`TestBareDefault` で固定）。
 
 ### W3-2 実施結果（2026-07-26・文書の改訂とテスト分割）
 

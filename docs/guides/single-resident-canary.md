@@ -29,7 +29,7 @@
 ```bash
 # 3 台すべてで（ガイド §1 の手順そのまま）
 git clone <このリポジトリ> && cd <クローン先>
-bash tools/install.sh
+bash tools/agent-tools/install.sh
 ```
 
 開始条件を 3 台で確認し、記録する:
@@ -258,7 +258,7 @@ agent-project status --json | python3 -c 'import json,sys; d=json.load(sys.stdin
 - **再現**: リポジトリに 1 コミット入れて、3 台で更新する。1 台だけ**あえて更新しない**。
 
   ```bash
-  git pull && bash tools/install.sh     # 更新する台
+  git pull && bash tools/agent-tools/install.sh     # 更新する台
   agent-project update --now            # 自己更新経路を使う台（1 台はこちらで試す）
   ```
 

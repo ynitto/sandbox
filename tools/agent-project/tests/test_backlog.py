@@ -436,35 +436,41 @@ class TestLayout(unittest.TestCase):
 
 
 class TestBareDefault(unittest.TestCase):
-    """サブコマンド省略時は常駐監視（run --watch）を既定にする。"""
+    """サブコマンド省略時は常駐体（serve）を既定にする。
+
+    常駐は PC に 1 本で、持つプロジェクトの宣言は host.yaml が単一ソース。裸起動が
+    cwd 1 件の `run --watch` に化けると、常駐体が監督している子と二重に回って claim を
+    奪い合う——`run` は常駐体が子として起動する経路なので、明示したときだけ動かす。"""
 
     def _route(self, argv):
         captured = {}
-        orig = km.cmd_run
+        orig_serve, orig_run = km.cmd_serve, km.cmd_run
+        km.cmd_serve = lambda args: (captured.update(
+            cmd="serve", host_config=getattr(args, "host_config", None)), 0)[1]
         km.cmd_run = lambda cfg: (captured.update(cmd="run", watch=cfg.watch), 0)[1]
         try:
             rc = km.main(argv)
         finally:
-            km.cmd_run = orig
+            km.cmd_serve, km.cmd_run = orig_serve, orig_run
         return rc, captured
 
-    def test_no_args_defaults_to_run_watch(self):
+    def test_no_args_defaults_to_serve(self):
         rc, cap = self._route([])
         self.assertEqual(rc, 0)
-        self.assertEqual(cap, {"cmd": "run", "watch": True})
+        self.assertEqual(cap, {"cmd": "serve", "host_config": None})
 
-    def test_bare_flags_route_to_run_watch(self):
-        # サブコマンド無しで run 用フラグだけ渡しても watch 常駐になる
-        _, cap = self._route(["--poll", "10"])
-        self.assertEqual(cap, {"cmd": "run", "watch": True})
+    def test_bare_flags_route_to_serve(self):
+        # サブコマンド無しでも serve のフラグはそのまま届く
+        _, cap = self._route(["--host-config", "/tmp/h.yaml"])
+        self.assertEqual(cap, {"cmd": "serve", "host_config": "/tmp/h.yaml"})
 
     def test_explicit_run_does_not_force_watch(self):
-        # 明示 run はこれまで通り（--watch を勝手に付けない）
+        # 明示 run はこれまで通り（--watch を勝手に付けない・serve にすり替えない）
         _, cap = self._route(["run"])
         self.assertEqual(cap, {"cmd": "run", "watch": False})
 
     def test_other_subcommands_unaffected(self):
-        # needs はバックログ未作成なら従来通り 2 を返す（run にすり替えない）
+        # needs はバックログ未作成なら従来通り 2 を返す（serve にすり替えない）
         with tempfile.TemporaryDirectory() as d:
             rc = km.main(["needs", "--workdir", d, "--root", str(Path(d) / ".ka")])
             self.assertEqual(rc, 2)

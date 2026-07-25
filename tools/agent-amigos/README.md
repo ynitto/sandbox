@@ -28,11 +28,11 @@ agent-project / agent-flow と同じく、標準ライブラリのみ（pip 依�
 `agent_amigos/` パッケージを **zipapp 単一実行ファイル**にまとめて配置する。
 
 ```bash
-bash tools/install.sh                        # agent-project / agent-flow / agent-amigos を
+bash tools/agent-tools/install.sh                        # agent-project / agent-flow / agent-amigos を
                                              # まとめて ~/.local/bin へ（推奨。3 本は同じ
                                              # agentcore と契約バージョンを共有する）
-bash tools/install.sh --only agent-amigos    # このツールだけ
-bash tools/install.sh --prefix /usr/local/bin
+bash tools/agent-tools/install.sh --only agent-amigos    # このツールだけ
+bash tools/agent-tools/install.sh --prefix /usr/local/bin
 ```
 
 インストール後は `agent-amigos <サブコマンド>` で使える（以下の例はインストール後の形）。

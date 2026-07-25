@@ -51,7 +51,7 @@ python setup.py --unregister :: 自動起動の解除
   合わせる必要はない）。
 - **落ちても上がる**: 子がクラッシュすれば常駐体が再起動し、繰り返し落ちるものだけを切り離す。
   常駐体自身の再起動は起動系の担当——**systemd がある環境なら
-  `bash tools/install.sh --service` の方が確実**（`Restart=always` + `WatchdogSec` +
+  `bash tools/agent-tools/install.sh --service` の方が確実**（`Restart=always` + `WatchdogSec` +
   `loginctl enable-linger`）。このランチャは Windows タスクスケジューラ方式の代わりに使う。
   二重構成しないこと（[セットアップガイド](../../docs/guides/single-resident-setup.md) §4）。
 - **孤児 run の回収**: シャットダウンで消えた run は次の起動で同一 run-id のまま reclaim され、

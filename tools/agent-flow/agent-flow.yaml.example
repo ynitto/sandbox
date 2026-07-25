@@ -295,5 +295,6 @@ cleanup_per_node: false
 # update_check_interval: 21600    # 更新チェック間隔（秒）。既定 6 時間。0 以下で自動チェック無効
 # update_repo: ""                 # スキルリポジトリ（git URL/パス）。空なら skill-registry.json から自動解決
 # update_branch: main             # 追従するブランチ（空/既定なら registry の branch を採用）
-# update_subdir: tools/agent-flow  # リポジトリ内のこのツールのサブディレクトリ
+# update_subdir: tools/agent-flow tools/agent-tools  # 取得対象パス（カンマ/空白区切りで複数）
+#   共有物 tools/agent-tools（統合インストーラ + agentcore）を外すと installer が必ず失敗する
 # update_installer: install.sh    # サブディレクトリ内で実行するインストーラ

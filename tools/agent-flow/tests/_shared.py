@@ -133,6 +133,14 @@ def _make_skill_repo(root: str, tool_subdir: str = "tools/agent-flow",
     other = os.path.join(repo, "tools", "agent-project")   # sparse 除外の確認用
     os.makedirs(other, exist_ok=True)
     pathlib.Path(other, "FILE.txt").write_text("unrelated\n")
+    # 本体だけでは zipapp を組み立てられない共有物（実物では tools/agent-tools＝統合
+    # インストーラ + agentcore）。cone mode の sparse-checkout は兄弟を含まないので、
+    # 取れているかをテストで見る対象そのもの。
+    shared = os.path.join(repo, "tools", "agent-tools", "agentcore")
+    os.makedirs(shared, exist_ok=True)
+    pathlib.Path(shared, "protocol.py").write_text("# shared lib\n")
+    pathlib.Path(repo, "tools", "agent-tools", "install.sh").write_text(
+        "#!/usr/bin/env bash\nexit 0\n")
     body = installer_body or (
         "#!/usr/bin/env bash\nset -e\nPREFIX=\"$HOME/.local/bin\"\n"
         "[ \"$1\" = --prefix ] && PREFIX=\"$2\"\nmkdir -p \"$PREFIX\"\n"

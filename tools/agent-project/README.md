@@ -54,11 +54,11 @@
   - モデルは設定 `model:` で指定（省略時は各 CLI の既定。実行層 agent-flow 側は agent-flow.yaml の `agent_cli` / `model` で揃える）
 
 ```bash
-bash tools/install.sh                         # agent-project / agent-flow / agent-amigos を
+bash tools/agent-tools/install.sh                         # agent-project / agent-flow / agent-amigos を
                                               # まとめて ~/.local/bin へ（推奨。3 本は同じ
                                               # agentcore と契約バージョンを共有するので
                                               # 別々に入れない）
-bash tools/install.sh --only agent-project    # このツールだけ入れ直す
+bash tools/agent-tools/install.sh --only agent-project    # このツールだけ入れ直す
 ```
 未インストールでも `python3 tools/agent-project/agent-project.py ...` で代用可。
 
@@ -788,7 +788,7 @@ agent-project status --json          # 機械可読
 agent-project worker init            # プロジェクトを持たないワーカーノードの host.yaml を対話生成
 ```
 
-**OS 自動起動**: `bash tools/install.sh --service` が systemd user unit を生成・有効化する
+**OS 自動起動**: `bash tools/agent-tools/install.sh --service` が systemd user unit を生成・有効化する
 （`Type=notify` + `WatchdogSec` + `Restart=always` + `loginctl enable-linger`）。
 Windows タスクスケジューラ方式との選択と手順は
 [セットアップガイド](../../docs/guides/single-resident-setup.md) §4。
@@ -882,7 +882,7 @@ update_enabled: true                  # 自動アップデートの ON/OFF（fal
 update_check_interval: 21600          # 更新チェック間隔（秒）。既定 6 時間。0 以下で自動チェック無効
 update_repo: ""                       # 空なら skill-registry.json から自動解決。別 repo を使うときだけ指定
 update_branch: main                   # 追従するブランチ（空/既定なら registry の branch を採用）
-update_subdir: tools/agent-project tools/agentcore  # 取得対象パス（カンマ/空白区切りで複数）
+update_subdir: tools/agent-project tools/agent-tools  # 取得対象パス（カンマ/空白区切りで複数）
 update_installer: install.sh          # サブディレクトリ内で実行するインストーラ
 ```
 

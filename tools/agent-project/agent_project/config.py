@@ -7,13 +7,12 @@ from __future__ import annotations
 # 自動アップデートは update_repo のこのパス以下だけを temp 領域へ sparse-checkout して
 # install.sh を実行する（doctor と同じ流儀で、操作は決定的・無関係ファイルは取得しない）。
 #
-# **依存パッケージのパスも並べる**（カンマ/空白区切り。`update.split_subdirs`）。cone mode の
-# sparse-checkout は指定ディレクトリの**兄弟を含まない**ため、本体だけ取ると installer が
-# zipapp へ同梱する `tools/agentcore` が無く、`agentcore パッケージが見つかりません` で
-# 必ず失敗する（自己更新が毎回サイレントに見送られる）。先頭が installer とダイジェストの
-# 基準ディレクトリ。統合インストーラ `tools/install.sh` は cone mode が親ディレクトリの
-# ファイルを含めるので、`tools/<engine>` を 1 つ指定すれば一緒に落ちてくる。
-TOOL_SUBDIR = "tools/agent-project tools/agentcore"
+# **共有物のパスも並べる**（カンマ/空白区切り。`update.split_subdirs`）。cone mode の
+# sparse-checkout は指定ディレクトリの**兄弟を含まない**ため、本体だけ取ると
+# `tools/agent-tools`（統合インストーラ + agentcore＝3 エンジンで共有するものの置き場）が
+# 無く、installer が `agentcore パッケージが見つかりません` で必ず失敗する
+# （自己更新が毎回サイレントに見送られる）。先頭が installer とダイジェストの基準ディレクトリ。
+TOOL_SUBDIR = "tools/agent-project tools/agent-tools"
 # スキルリポジトリ（git URL/パス）の既定。空なら install.py が生成する skill-registry.json から
 # 自動解決する（repositories.origin.url → install_dir）。設定ファイルの update_repo で明示も可。
 DEFAULT_UPDATE_REPO = ""

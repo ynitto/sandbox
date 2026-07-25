@@ -144,7 +144,7 @@ def split_subdirs(subdir: str) -> "list[str]":
     """`update_subdir` を取得対象パスの並びへ。カンマ/空白区切りで**複数指定できる**。
 
     本体は自分のディレクトリだけでは組み立てられない——installer は zipapp へ
-    `tools/agentcore` を同梱するので、それが取れていないと必ず失敗する
+    `tools/agent-tools/agentcore` を同梱するので、それが取れていないと必ず失敗する
     （cone mode の sparse-checkout は指定ディレクトリの兄弟を含まない）。
     先頭のパスが installer とダイジェストの基準ディレクトリ。"""
     parts = [p for p in re.split(r"[,\s]+", str(subdir or "").strip()) if p]
@@ -160,7 +160,7 @@ def sparse_checkout_tool(repo: str, branch: str, subdir: str, dest: str, runner=
     無関係ファイルを取得しないため --no-checkout + blob フィルタ + sparse-checkout を使う。
 
     `subdir` はカンマ/空白区切りで複数指定できる（`split_subdirs`）。**依存パッケージを
-    含めないと installer が組み立てに失敗する**ので、既定は本体 + `tools/agentcore`。"""
+    含めないと installer が組み立てに失敗する**ので、既定は本体 + `tools/agent-tools`。"""
     run = runner or (lambda c, **k: subprocess.run(c, capture_output=True, text=True, encoding="utf-8", errors="replace",
                                                    timeout=600, **k))
     subdirs = split_subdirs(subdir)
@@ -210,7 +210,7 @@ def _tree_digest(root: str, subdirs: "list[str] | None" = None) -> str:
     ディレクトリのファイルも落とすので、リポジトリ直下のファイル（direct state-git 構成では
     自分の state push がそこを動かす）で毎回ダイジェストが変わり、「push → 更新検出 →
     再起動 → また push」の自己増殖ループに戻る。逆に先頭 1 パスだけでも足りない
-    ——依存パッケージ（tools/agentcore）だけの更新を「変更なし」と読んで見送り続ける。"""
+    ——共有物（tools/agent-tools）だけの更新を「変更なし」と読んで見送り続ける。"""
     h = hashlib.sha256()
     for base in (subdirs or [""]):
         top = os.path.join(root, base) if base else root
@@ -242,7 +242,7 @@ def apply_update(cfg: "Config", info: dict, runner=None) -> bool:
     try:
         tool_dir = sparse_checkout_tool(info["repo"], info["branch"], subdir, dest, runner=runner)
         # ダイジェストは**宣言した subdir すべて**を対象にする。先頭だけだと依存パッケージ
-        # （tools/agentcore）だけの更新を「変更なし」と読んで見送り続け、契約バージョンを
+        # （tools/agent-tools）だけの更新を「変更なし」と読んで見送り続け、契約バージョンを
         # 共有する相手だけ古いまま回る。逆にチェックアウト全体にすると、cone mode が拾う
         # リポジトリ直下のファイルで自己増殖ループが戻る（`_tree_digest` の docstring）。
         digest = _tree_digest(dest, split_subdirs(subdir))

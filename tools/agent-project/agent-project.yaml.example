@@ -293,9 +293,8 @@ rot_age_days: 14.0          # rot の stale 判定（経過日数）
 # update_check_interval: 21600          # 更新チェック間隔（秒）。既定 6 時間。0 以下で自動チェック無効
 # update_repo: ""                       # スキルリポジトリ（git URL/パス）。空なら skill-registry.json から自動解決
 # update_branch: main                   # 追従するブランチ（空/既定なら registry の branch を採用）
-# update_subdir: tools/agent-project tools/agentcore  # 取得対象パス（カンマ/空白区切りで複数）
-#   本体だけを指定すると installer が zipapp へ同梱する agentcore が取れず必ず失敗する
-#   （cone mode の sparse-checkout は指定ディレクトリの兄弟を含まない）。先頭が installer の
-#   実行ディレクトリ。統合インストーラ tools/install.sh は親ディレクトリのファイルなので
-#   tools/<engine> を 1 つ指定すれば一緒に落ちてくる。
+# update_subdir: tools/agent-project tools/agent-tools  # 取得対象パス（カンマ/空白区切りで複数）
+#   本体だけを指定すると tools/agent-tools（統合インストーラ + agentcore）が取れず、
+#   installer が必ず失敗する（cone mode の sparse-checkout は指定ディレクトリの兄弟を
+#   含まない）。先頭が installer の実行ディレクトリ。
 # update_installer: install.sh          # サブディレクトリ内で実行するインストーラ

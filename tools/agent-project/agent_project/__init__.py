@@ -19,13 +19,14 @@ import os as _os
 import sys as _sys
 
 # agentcore（transport / protocol / vocab / heartbeat の共通ライブラリ）への import 経路。
-# 開発木・リポジトリ内直接実行では tools/agentcore が兄弟ディレクトリにある
-# （tools/agent-project/agent_project/__init__.py から見て ../../agentcore）。zipapp 配布では
-# install.sh が agentcore/ を同じアーカイブへ同梱するため、zip 自身が sys.path に載って
-# いれば下記の追加パスは（存在しなくても無害に）素通りし、素の `import agentcore` が
-# アーカイブ内の agentcore/ を解決する（事前検証 V2）。
+# 開発木・リポジトリ内直接実行では tools/agent-tools/agentcore にある（3 エンジンで共有する
+# ものの置き場。tools/agent-project/agent_project/__init__.py から見て ../../agent-tools/agentcore）。
+# zipapp 配布では install.sh が agentcore/ を同じアーカイブへ同梱するため、zip 自身が
+# sys.path に載っていれば下記の追加パスは（存在しなくても無害に）素通りし、素の
+# `import agentcore` がアーカイブ内の agentcore/ を解決する（事前検証 V2）。
 _agentcore_dir = _os.path.join(
-    _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))), "agentcore")
+    _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))),
+    "agent-tools", "agentcore")
 if _agentcore_dir not in _sys.path:
     _sys.path.insert(0, _agentcore_dir)
 
