@@ -28,6 +28,113 @@ def _daemon_lock_path(args) -> str:
     return os.path.join(daemon_lock_dir(getattr(args, "lock_dir", None)), f"daemon-{h}.lock")
 
 
+# --------------------------------------------------------------------------
+# tick 関数群（実装計画 W1-2）: cmd_daemon のループ本体から挙動不変で抽出。
+# 常駐一本化（P1）で resident/scheduler が周期表として個別に駆動できるよう、
+# 各 tick を単体呼び出し・単体テスト可能な関数にする。
+# --------------------------------------------------------------------------
+def _tick_cancel(bus, args, daemon_id, orchestrators, workers) -> None:
+    """cancel 指示の受理: マーカーのある run を cancelled に終端化し、その run の
+    orchestrator/worker を止め、park の再ポーリングを止める（--close-issues ならイシューも
+    後始末）。承認待ちで park 中の run も、暴走中の run も、run スコープで恒久停止できる。
+
+    **順序制約**: `_tick_orphan_adopt` より必ず先に呼ぶこと。cancel 済み（TERMINAL）の run は
+    `run_is_orphaned` が False を返すため孤児回収の対象から自然に外れるが、逆順で呼ぶと
+    cancel 予定の run を無駄に resume（再起動）してしまう。"""
+    for rid in bus.list_cancels():
+        meta = bus.run_meta(rid)
+        info = bus.cancel_info(rid)
+        reason = info.get("reason") or "cancel 指示"
+        # run 化前: マーカーを残し、下の inbox ループの cancel_request_run に任せる。
+        # ここで clear すると受理前にマーカーが消え、要求がそのまま起動してしまう。
+        if not bus.run_exists(rid):
+            continue
+        # 既に終端でも waits 掃除は行う（orchestrator が先に mark_canceled した場合、
+        # ここをスキップすると park が残り service_waits が動き続ける）。
+        if meta.get("status") in TERMINAL:
+            # close_issues 要求があるのに orch が先に終端＋waits を消す前にここに来た場合、
+            # waits が残っていれば先に on_cancel してから掃除する。
+            if info.get("close_issues"):
+                _apply_on_cancel(bus, args, rid)
+            cleared = bus.clear_waits_for_run(rid)
+            bus.clear_cancel(rid)  # 適用済みマーカーを残さない（再 cancel / 無限 poll 防止）
+            if cleared or info.get("close_issues"):
+                bus.sync_push(f"cancel cleanup waits {rid}")
+            continue
+        if info.get("close_issues"):
+            _apply_on_cancel(bus, args, rid)      # waits を消す前にイシューを後始末
+        bus.clear_waits_for_run(rid)
+        # この daemon が駆動中の子を止める（run スコープ）
+        if rid in orchestrators and orchestrators[rid].poll() is None:
+            orchestrators[rid].terminate()
+        for _, wp in [(r, p) for r, p in workers if r == rid]:
+            if wp.poll() is None:
+                wp.terminate()
+        marked = bus.mark_canceled(rid, reason)
+        if marked:
+            bus.clear_cancel(rid)
+        bus.run_view(rid).event(daemon_id, "cancelled", run=rid, reason=reason)
+        bus.sync_push(f"cancel run {rid}: {reason}")
+        if marked:
+            log(daemon_id, f"cancel 受理: {rid} を cancelled に終端化（{reason}）")
+
+
+def _tick_board(bus, args, daemon_id) -> None:
+    """委譲公示板（agent-board）の巡回: workload=flow の公示に repos/tags 照合で入札し、
+    勝てば自分の inbox へ submit_request で取り込む。板未設定なら no-op。
+    板の巡回失敗は daemon を止めない（板が落ちても自バスは動く）。"""
+    if getattr(args, "board", None):
+        try:
+            poll_board(bus, args, daemon_id)
+        except Exception as e:  # noqa: BLE001 — 板の巡回失敗は daemon を止めない
+            log(daemon_id, f"board 巡回でエラー（無視して継続）: {e}")
+
+
+def _tick_heartbeat(bus, args, daemon_id, orchestrators, workers, lease_window,
+                    next_heartbeat_push: float) -> float:
+    """自分が回している run の生存リースを更新する（再起動後の自分・別デーモンへ「駆動中」を
+    示す）。ローカル meta は毎回更新し、git バスへの push は lease_window/3 毎に間引く。
+    次回 push 予定の unix 時刻（呼び出し側が次回このまま渡す）を返す。"""
+    for rid in orchestrators:
+        bus.touch_run(rid, lease_window)
+    if orchestrators and time.time() >= next_heartbeat_push:
+        write_daemon_status(args, bus, daemon_id, orchestrators, workers)  # 相乗り（追加 push 無し）
+        bus.sync_push("heartbeat: 駆動中の run の生存リースを更新")
+        return time.time() + lease_window / 3.0
+    return next_heartbeat_push
+
+
+def _tick_orphan_adopt(bus, daemon_id, orchestrators, lease_window, args, base,
+                       max_runs: int) -> "tuple[dict, list]":
+    """孤児 run の引き継ぎ: owning daemon が消失した（生存リース失効）非終端 run を
+    同じ run-id で再開する。`orchestrators` dict を直接更新する（呼び出し側は
+    再開した run の Popen をそのまま監督に使える）。**必ず `_tick_cancel` の後に呼ぶこと**
+    （このモジュールの説明を参照）。"""
+    slots = None
+    if max_runs > 0:   # 実行枠の残り（全 park の run は消費しない）。孤児の一斉再開を律速する
+        slots = max(0, max_runs - _busy_run_count(bus, set(orchestrators)))
+    adopted, orphan_failed = _adopt_orphan_runs(
+        bus, daemon_id, set(orchestrators), lease_window, args, base, slots=slots)
+    for rid, p in adopted.items():
+        orchestrators[rid] = p
+    return adopted, orphan_failed
+
+
+def _tick_auto_heal(bus, daemon_id, orchestrators, lease_window, args, base,
+                    max_runs: int) -> dict:
+    """auto-heal（レイヤ4）: transient 起因で failed 終端した run を cooldown 後に自動再開する
+    （done 温存・進捗リセット付き max_heals・superseded/cancelled は尊重）。`orchestrators` dict を
+    直接更新する。"""
+    slots = None
+    if max_runs > 0:
+        slots = max(0, max_runs - _busy_run_count(bus, set(orchestrators)))
+    healed = _heal_failed_runs(bus, daemon_id, set(orchestrators), lease_window, args, base,
+                               slots=slots)
+    for rid, p in healed.items():
+        orchestrators[rid] = p
+    return healed
+
+
 def cmd_daemon(args) -> int:
     # 冪等化: 同一バスのデーモンが既に稼働していれば何もしない（多重起動しない）
     lock_file = _acquire_daemon_lock(args)
@@ -81,45 +188,8 @@ def cmd_daemon(args) -> int:
         bus.sync_pull()
         state_sync(args)   # 状態 git: バス状態の共有と inbox 投入の取り込み（間隔律速・ローカルバス時のみ）
         maybe_heartbeat_daemon_status(args, bus, daemon_id, orchestrators, workers)  # --status-interval のときだけ
-        # cancel 指示の受理: マーカーのある run を cancelled に終端化し、その run の
-        # orchestrator/worker を止め、park の再ポーリングを止める（--close-issues ならイシューも
-        # 後始末）。これで承認待ちで park 中の run も、暴走中の run も、run スコープで恒久停止できる。
-        for rid in bus.list_cancels():
-            meta = bus.run_meta(rid)
-            info = bus.cancel_info(rid)
-            reason = info.get("reason") or "cancel 指示"
-            # run 化前: マーカーを残し、下の inbox ループの cancel_request_run に任せる。
-            # ここで clear すると受理前にマーカーが消え、要求がそのまま起動してしまう。
-            if not bus.run_exists(rid):
-                continue
-            # 既に終端でも waits 掃除は行う（orchestrator が先に mark_canceled した場合、
-            # ここをスキップすると park が残り service_waits が動き続ける）。
-            if meta.get("status") in TERMINAL:
-                # close_issues 要求があるのに orch が先に終端＋waits を消す前にここに来た場合、
-                # waits が残っていれば先に on_cancel してから掃除する。
-                if info.get("close_issues"):
-                    _apply_on_cancel(bus, args, rid)
-                cleared = bus.clear_waits_for_run(rid)
-                bus.clear_cancel(rid)  # 適用済みマーカーを残さない（再 cancel / 無限 poll 防止）
-                if cleared or info.get("close_issues"):
-                    bus.sync_push(f"cancel cleanup waits {rid}")
-                continue
-            if info.get("close_issues"):
-                _apply_on_cancel(bus, args, rid)      # waits を消す前にイシューを後始末
-            bus.clear_waits_for_run(rid)
-            # この daemon が駆動中の子を止める（run スコープ）
-            if rid in orchestrators and orchestrators[rid].poll() is None:
-                orchestrators[rid].terminate()
-            for _, wp in [(r, p) for r, p in workers if r == rid]:
-                if wp.poll() is None:
-                    wp.terminate()
-            marked = bus.mark_canceled(rid, reason)
-            if marked:
-                bus.clear_cancel(rid)
-            bus.run_view(rid).event(daemon_id, "cancelled", run=rid, reason=reason)
-            bus.sync_push(f"cancel run {rid}: {reason}")
-            if marked:
-                log(daemon_id, f"cancel 受理: {rid} を cancelled に終端化（{reason}）")
+        # cancel 受理は孤児回収（下の _tick_orphan_adopt）より必ず先に呼ぶ（W1-2 順序制約）。
+        _tick_cancel(bus, args, daemon_id, orchestrators, workers)
         # park & poll: 承認待ち等で park されたノードをまとめて再確認し、決着なら終端 result を書く。
         # 監視は**自分が駆動している run だけ**を対象にする（分散時に N 台が全 park を重複ポーリング
         # しないよう、1 run の監視は駆動オーナー 1 台に分担する）。オーナー消失時は孤児 reclaim が
@@ -191,47 +261,30 @@ def cmd_daemon(args) -> int:
             state_sync(args, force=True)   # 状態 git: 終端した run の結果を間隔を待たず共有側へ
 
         # 自分が回している run の生存リースを更新（再起動後の自分・別デーモンへ「駆動中」を示す）。
-        # ローカル meta は毎 poll 更新し、git バスへの伝搬は間引いて push する。
-        for rid in orchestrators:
-            bus.touch_run(rid, lease_window)
-        if orchestrators and time.time() >= next_heartbeat_push:
-            write_daemon_status(args, bus, daemon_id, orchestrators, workers)  # 相乗り（追加 push 無し）
-            bus.sync_push("heartbeat: 駆動中の run の生存リースを更新")
-            next_heartbeat_push = time.time() + lease_window / 3.0
+        next_heartbeat_push = _tick_heartbeat(bus, args, daemon_id, orchestrators, workers,
+                                              lease_window, next_heartbeat_push)
 
         # 孤児 run の引き継ぎ: owning daemon が消失した非終端 run（PC シャットダウン・クラッシュ等）
         # を同じ run-id で再開する（続きから）。再開できないものだけ failed に確定する（再起動した
         # 新プロセスが status:running を放置せず、消費者が act_timeout まで待たずに復旧できるように）。
         if not stop["v"]:
-            slots = None
-            if max_runs > 0:   # 実行枠の残り（全 park の run は消費しない）。孤児の一斉再開を律速する
-                slots = max(0, max_runs - _busy_run_count(bus, set(orchestrators)))
-            adopted, orphan_failed = _adopt_orphan_runs(
-                bus, daemon_id, set(orchestrators), lease_window, args, base, slots=slots)
+            adopted, orphan_failed = _tick_orphan_adopt(
+                bus, daemon_id, orchestrators, lease_window, args, base, max_runs)
             for rid, p in adopted.items():
-                orchestrators[rid] = p
                 log(daemon_id, f"孤児 run を引き継ぎ: {rid} → 再開"
                                f"（resume #{bus.run_meta(rid).get('resume_count', '?')}）")
             for rid in orphan_failed:
                 log(daemon_id, f"孤児 run を回収: {rid} → failed（owning daemon 消失・再開不可）")
             # auto-heal（レイヤ4）: transient 起因の failed run を cooldown 後に自動再開
             # （done 温存・進捗リセット付き max_heals・superseded/cancelled は尊重）。
-            if slots is not None:
-                slots = max(0, max_runs - _busy_run_count(bus, set(orchestrators)))
-            for rid, p in _heal_failed_runs(bus, daemon_id, set(orchestrators),
-                                            lease_window, args, base, slots=slots).items():
-                orchestrators[rid] = p
+            for rid, p in _tick_auto_heal(bus, daemon_id, orchestrators, lease_window, args,
+                                         base, max_runs).items():
                 log(daemon_id, f"auto-heal: {rid} → 再開"
                                f"（heal #{bus.run_meta(rid).get('heal_count', '?')}）")
 
         # 0) 委譲公示板（agent-board）の巡回: workload=flow の公示に repos/tags 照合で入札し、
         #    勝てば自分の inbox へ submit_request で取り込む（＝下の inbox→orchestrator が拾う）。
-        #    board 未設定なら no-op。板の巡回失敗は daemon を止めない（板が落ちても自バスは動く）。
-        if getattr(args, "board", None):
-            try:
-                poll_board(bus, args, daemon_id)
-            except Exception as e:  # noqa: BLE001 — 板の巡回失敗は daemon を止めない
-                log(daemon_id, f"board 巡回でエラー（無視して継続）: {e}")
+        _tick_board(bus, args, daemon_id)
 
         # 1) 新しい要求を受理 → orchestrator をオンデマンド起動（分散時は 1 台だけ担当）。
         #    max_runs>0 なら「実行中（全 park を除く）の run 数」で受理を律速する。超過した要求は

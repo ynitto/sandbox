@@ -253,6 +253,18 @@ def cmd_serve(args) -> int:
     return 0
 
 
+def cmd_drive(args) -> int:
+    """単発駆動（実装計画 W1-3・設計 §4.5）: cycle() をその場で回し、その巡で観測した
+    全ミッションが終端（done/cancelled/failed）に達するか --cycles 上限で戻る。
+    常駐化（デーモンロック・シグナル常駐）はしない — 呼び出し元（スキル・チャット・人）の
+    寿命に束縛されるフォアグラウンド実行。板・他 PC には触らない（ローカルミッション。R9）。"""
+    bus, node = _resolve(args)
+    daemon = NodeDaemon(bus, node, agent_cli=args.agent_cli,
+                        interval=args.interval, home=_node_home(args))
+    daemon.run(cycles=args.cycles, until_terminal=True, install_signals=False)
+    return 0
+
+
 def cmd_run(args) -> int:
     from .runner import AmigoRunner
     bus, node = _resolve(args)
@@ -639,6 +651,17 @@ def build_parser() -> argparse.ArgumentParser:
                    help="graceful offboard 時の resume_at（時間後。away 保持の期待復帰時刻）")
     p.set_defaults(fn=cmd_join)
 
+    p = sub.add_parser("drive",
+                       help="単発駆動: 常駐せず cycle() をその場で回し、ミッション終端"
+                            "（または --cycles 上限）で戻る（スキル呼び出し用・R9）")
+    _bus_arg(p); _node_arg(p); _home_arg(p)
+    p.add_argument("--agent-cli", default=None)
+    p.add_argument("--interval", type=float, default=0.5,
+                   help="ミッション未終端時の巡回間隔秒（既定 0.5。呼び出し元が待つので短め）")
+    p.add_argument("--cycles", type=int, default=0,
+                   help="巡回数の安全上限（0=無限。ミッション終端で先に戻る）")
+    p.set_defaults(fn=cmd_drive)
+
     p = sub.add_parser("run", help="単発 amigo（デバッグ用）")
     _bus_arg(p); _node_arg(p)
     p.add_argument("--mission", required=True)
@@ -740,7 +763,7 @@ def build_parser() -> argparse.ArgumentParser:
 # 既知のサブコマンド。省略して呼ばれたら「常駐起動（serve）」を既定にする
 # （agent-project の run --watch 既定と同じ流儀 — PC 起動時に立ち上げっぱなしにして
 # cwd のホームを面倒見る daemon 用途を一級にする）。
-_SUBCOMMANDS = {"serve", "init-bus", "post", "build-team", "join", "run", "status",
+_SUBCOMMANDS = {"serve", "init-bus", "post", "build-team", "join", "drive", "run", "status",
                 "collect", "accept", "reject", "assign", "restaff", "budget", "say",
                 "cancel", "gc", "hub", "deliveries"}
 

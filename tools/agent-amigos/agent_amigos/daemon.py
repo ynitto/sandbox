@@ -101,6 +101,76 @@ class NodeDaemon:
                                              self.node_id, self.agent_cli)
         return self._runners[key]
 
+    def _participate(self, mid: str, mp, mission: dict, roles: dict, phase: str,
+                     i_am_owner: bool, policy: str, roster: dict) -> dict:
+        """参加 tick: 応募（claim）とオーナー職務（roster 維持・自己補充・受入判定・
+        conductor）。手番の実行は含まない（`_run_turns` へ分離 — 実装計画 W1-3）。
+        常駐体側の周期表ではこのメソッドだけを短周期で回し、手番はワーカーへ委ねる想定
+        （設計 §4.2「amigos 参加（claim・心拍・away）」の実体）。更新済み roster を返す。"""
+        # 応募: 未充足ロールのうち能力が合うものへ。
+        # first-come は claim（勝者＝確定）、owner-picks は応募のみ（確定はオーナー）。
+        # manual_claim では自動応募しない（commands/ の手動引き受けのみ）。
+        for role in [] if self.manual_claim else list(roles.values()):
+            rid = role["id"]
+            if rid in roster:
+                continue
+            if self.roles_filter and rid not in self.roles_filter:
+                if not (i_am_owner and role.get("builtin") == "integrator"):
+                    continue
+            if role.get("builtin") == "integrator" and not i_am_owner:
+                continue    # integrator はオーナーノードの組み込み職務（§8.1）
+            if not matches_role(role, self.tags,
+                                [self.agent_cli] if self.agent_cli else [], self.repos):
+                continue
+            if policy == "owner-picks":
+                apply_role(self.bus, mp, rid, self.node_id, self.agent_cli)
+                continue
+            if winner(mp, rid) == self.node_id:
+                continue    # claim 済み（roster への鏡写しはオーナー待ち）
+            if claim_role(self.bus, mp, rid, self.node_id, self.agent_cli):
+                log(self.node_id, f"{mid}: ロール {rid} を獲得しました")
+
+        # オーナー職務: roster 維持・自己補充・受入の自動判定
+        if i_am_owner:
+            roster = mirror_roster(self.bus, mp, roles, self.node_id, policy=policy)
+            unfilled = unfilled_required(roles, roster)
+            if unfilled and str(mission.get("staffing_policy")) == "self-staff" \
+                    and staffing_expired(mission):
+                for rid in unfilled:
+                    if policy == "owner-picks":
+                        apply_role(self.bus, mp, rid, self.node_id, self.agent_cli)
+                        confirm_assignment(self.bus, mp, rid, self.node_id)
+                        log(self.node_id, f"{mid}: 未充足ロール {rid} を自己補充します")
+                    elif claim_role(self.bus, mp, rid, self.node_id, self.agent_cli):
+                        log(self.node_id, f"{mid}: 未充足ロール {rid} を自己補充します")
+                roster = mirror_roster(self.bus, mp, roles, self.node_id, policy=policy)
+            if str(mission.get("acceptance")) == "agent" and phase == "reviewing":
+                from .ownerops import acceptance_turn
+                result = acceptance_turn(self.bus, mp, mission, self.node_id,
+                                         self.agent_cli, home=self.home)
+                if result in ("accepted", "rejected"):
+                    self._active = True
+            # 自律コンダクタ（オプトイン・G5 上位ループ）: 実行中に restaff で編成を調整
+            if (mission.get("conductor") or {}).get("enabled") and phase in ("working", "open"):
+                from .ownerops import conductor_turn
+                if conductor_turn(self.bus, mp, mission, self.node_id,
+                                  self.agent_cli) == "acted":
+                    self._active = True
+        return roster
+
+    def _run_turns(self, mid: str, roster: dict) -> None:
+        """手番 tick: 自分が担当する roster エントリのターンを実行する（実装計画 W1-3）。
+        常駐体側ではここをワーカーへの投入に差し替える想定（5s の参加 tick を手番実行で
+        塞がないため）。単発駆動 `drive` は逆にインライン実行でよい — 呼び出し元が
+        待っているのだから（設計 §4.5）。"""
+        for rid, ent in sorted(roster.items()):
+            if ent.get("node") != self.node_id:
+                continue
+            result = self._runner(mid, rid).turn_once()
+            if result in ("acted", "integrated"):
+                self._active = True
+                log(self.node_id, f"{mid}/{rid}: {result}")
+
     def cycle(self) -> dict:
         """1 巡: 指示の取り込み → 全ミッションを見て応募・オーナー職務・自 amigo のターン。
         返り値は観測サマリ {mission_id: phase}（テスト・status 表示用）。"""
@@ -133,65 +203,8 @@ class NodeDaemon:
             i_am_owner = mission.get("owner_node") == self.node_id
             policy = str(mission.get("assignment_policy") or "first-come")
             roster = read_json(mp.roster()) or {}
-
-            # 応募: 未充足ロールのうち能力が合うものへ。
-            # first-come は claim（勝者＝確定）、owner-picks は応募のみ（確定はオーナー）。
-            # manual_claim では自動応募しない（commands/ の手動引き受けのみ）。
-            for role in [] if self.manual_claim else list(roles.values()):
-                rid = role["id"]
-                if rid in roster:
-                    continue
-                if self.roles_filter and rid not in self.roles_filter:
-                    if not (i_am_owner and role.get("builtin") == "integrator"):
-                        continue
-                if role.get("builtin") == "integrator" and not i_am_owner:
-                    continue    # integrator はオーナーノードの組み込み職務（§8.1）
-                if not matches_role(role, self.tags,
-                                    [self.agent_cli] if self.agent_cli else [], self.repos):
-                    continue
-                if policy == "owner-picks":
-                    apply_role(self.bus, mp, rid, self.node_id, self.agent_cli)
-                    continue
-                if winner(mp, rid) == self.node_id:
-                    continue    # claim 済み（roster への鏡写しはオーナー待ち）
-                if claim_role(self.bus, mp, rid, self.node_id, self.agent_cli):
-                    log(self.node_id, f"{mid}: ロール {rid} を獲得しました")
-
-            # オーナー職務: roster 維持・自己補充・受入の自動判定
-            if i_am_owner:
-                roster = mirror_roster(self.bus, mp, roles, self.node_id, policy=policy)
-                unfilled = unfilled_required(roles, roster)
-                if unfilled and str(mission.get("staffing_policy")) == "self-staff" \
-                        and staffing_expired(mission):
-                    for rid in unfilled:
-                        if policy == "owner-picks":
-                            apply_role(self.bus, mp, rid, self.node_id, self.agent_cli)
-                            confirm_assignment(self.bus, mp, rid, self.node_id)
-                            log(self.node_id, f"{mid}: 未充足ロール {rid} を自己補充します")
-                        elif claim_role(self.bus, mp, rid, self.node_id, self.agent_cli):
-                            log(self.node_id, f"{mid}: 未充足ロール {rid} を自己補充します")
-                    roster = mirror_roster(self.bus, mp, roles, self.node_id, policy=policy)
-                if str(mission.get("acceptance")) == "agent" and phase == "reviewing":
-                    from .ownerops import acceptance_turn
-                    result = acceptance_turn(self.bus, mp, mission, self.node_id,
-                                             self.agent_cli, home=self.home)
-                    if result in ("accepted", "rejected"):
-                        self._active = True
-                # 自律コンダクタ（オプトイン・G5 上位ループ）: 実行中に restaff で編成を調整
-                if (mission.get("conductor") or {}).get("enabled") and phase in ("working", "open"):
-                    from .ownerops import conductor_turn
-                    if conductor_turn(self.bus, mp, mission, self.node_id,
-                                      self.agent_cli) == "acted":
-                        self._active = True
-
-            # 自分の amigo のターン
-            for rid, ent in sorted(roster.items()):
-                if ent.get("node") != self.node_id:
-                    continue
-                result = self._runner(mid, rid).turn_once()
-                if result in ("acted", "integrated"):
-                    self._active = True
-                    log(self.node_id, f"{mid}/{rid}: {result}")
+            roster = self._participate(mid, mp, mission, roles, phase, i_am_owner, policy, roster)
+            self._run_turns(mid, roster)
         return seen
 
     # --- graceful offboard（away プロトコル、設計書 §6.6） ------------------
@@ -220,20 +233,32 @@ class NodeDaemon:
             except (ValueError, OSError):
                 pass    # メインスレッド以外（テスト等）では設定できない
 
-    def run(self, cycles: int = 0) -> None:
-        """常駐ループ。cycles>0 ならその回数で終了（テスト・デバッグ用）。
-        SIGTERM / SIGINT で graceful offboard（away 宣言）してから終了する。
-        無風時はインターバルを伸ばす（adaptive interval の簡略採用、上限 8 倍）。"""
-        self._install_signal_handlers()
+    def run(self, cycles: int = 0, until_terminal: bool = False,
+           install_signals: bool = True) -> None:
+        """常駐ループ。cycles>0 ならその回数で終了（テスト・デバッグ用。offboard はしない
+        — テストの後始末を汚さない）。SIGTERM / SIGINT で graceful offboard（away 宣言）
+        してから終了する（install_signals=False なら設定しない — 単発駆動 `drive` 用。
+        実装計画 W1-3）。無風時はインターバルを伸ばす（adaptive interval の簡略採用、上限 8 倍）。
+
+        until_terminal=True なら、その巡で観測した全ミッションが終端（done/cancelled/failed）
+        に達した時点でも終了する（`drive` 用 — 設計 §4.5「ミッション終端（または --cycles
+        上限）で戻る」）。ミッションが 1 つも無い巡は「終端」に数えない（投函前の空振りで
+        即終了しない）。"""
+        if install_signals:
+            self._install_signal_handlers()
         n = 0
         sleep = self.interval
         while not self._stopping:
             self._active = False
             try:
-                self.cycle()
+                seen = self.cycle()
             except Exception as e:  # noqa: BLE001 — デーモンは 1 巡の失敗で死なない
                 log(self.node_id, f"cycle 失敗: {e}")
+                seen = {}
             n += 1
+            if until_terminal and seen and all(
+                    p in ("done", "cancelled", "failed") for p in seen.values()):
+                return
             if cycles and n >= cycles:
                 return
             sleep = self.interval if self._active else min(sleep * 2, self.interval * 8)
