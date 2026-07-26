@@ -37,7 +37,26 @@ agent-project 連携の改善案 188 行）を **`docs/designs/agent-dashboard-d
   「制御面をそのディレクトリに閉じられることが README で追える」という受け入れ条件を
   4/7 の feature しか満たしていなかった。amigos feature README の壊れた相対リンクも修正。
 - `docs/designs/README.md` の索引を 24 件へ更新。
-- テストは `npm test` 全緑のまま（ドキュメントのみの変更）。
+
+### agent-dashboard: 護りの検査範囲を全制御面へ広げ、配布物の取りこぼしを塞ぐ
+
+設計書の照合で見つかった構造の穴 2 件を直した。どちらも**壊れても気づけない**性質のもの。
+
+- **`no-git-writes.test.js` の検査範囲が 3 層だけだった**（`base/main`・`features/agent-project`・
+  `renderer`）。制御面が 2 つから 7 つへ増えた結果、後から足した `amigos` / `delegation` /
+  `orchestration` / `participation` には護りが掛かっていなかった。範囲を `src/` 全体へ広げ、
+  除外は `cowork`（人の成果物リポジトリでブランチを切って push する機能）1 つだけにした。
+  あわせて**範囲そのものを検査するテスト**を追加 — 新しい feature は自動でこの護りの下に入り、
+  外すには除外リストを触るしかない。護りの中身より先に「掛かっている範囲」が縮むほうが
+  起きやすく、しかもテストは緑のままなので気づけない。
+- **配布物に `diff2html` が入る保証が無かった**。`index.html` は `../../node_modules/diff2html/…` を
+  相対参照する一方、`package.json` の `build.files` は `src/**/*` と `package.json` しか
+  列挙していなかった。electron-builder が本番依存を暗黙に含めるかどうかに配布物を賭けず、
+  `node_modules/diff2html/bundles/**` を明示。開発起動では node_modules がそこに在るため
+  気づけず、漏れていれば**パッケージ版だけ差分ビューが白紙**になる壊れ方だった。
+  `test/packaging-assets.test.js` を新設し、`index.html` の相対参照と `build.files` の対応・
+  参照先の実在・glob 判定そのものの健全性を検査する（依存未インストール環境でも走る）。
+- テストは 60 → 61 ファイル、`npm test` 全緑。
 
 ### agent-amigos: 設計書との照合で見つかった 4 件を修正（設定の読み落とし・沈黙する stub・staffing fail・deadline）
 

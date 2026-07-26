@@ -1,7 +1,7 @@
 # agent-dashboard — 複数エージェントを束ねる操作面 設計書
 
 > 作成 2026-07-14 ／ 最終照合 2026-07-26（実装 `tools/agent-dashboard/` と突き合わせ済み）
-> 実装: `tools/agent-dashboard/`（Electron・ランタイム依存なし。テスト 62 ファイル・`npm test`）
+> 実装: `tools/agent-dashboard/`（Electron・ランタイム依存なし。テスト 61 ファイル・`npm test`）
 > 読む契約: [`schemas/node-budget.schema.json`](../../schemas/node-budget.schema.json) /
 > [`schemas/agent-control.schema.json`](../../schemas/agent-control.schema.json) /
 > [`schemas/agent-cli.schema.json`](../../schemas/agent-cli.schema.json) /
@@ -94,9 +94,11 @@ GUI はその規律の外側から、人の気まぐれなタイミングで書�
 この判断は `test/no-git-writes.test.js` が構造として固定している（`pull` / `push` / `commit` /
 `checkout` などのサブコマンド文字列を、状態を扱う層のソースから機械的に落とす）。
 コードを足せば簡単に戻せてしまう類の護りなので、レビューではなくテストで縛る。
-ただし検査範囲は `base/main`・`features/agent-project`・`renderer` の 3 つで、他の feature は
-入っていない（成果物リポジトリを扱う `cowork` を意図的に外した副作用）。他の feature も
-規律自体は守っているが、それは今のところ人が見ているだけだ（§8）。
+検査は `src/` 全体に掛かり、除外は `cowork` の 1 つだけ（定常業務は**人の成果物リポジトリ**で
+ブランチを切って push する機能で、状態リポジトリには触らない）。同じテストが**範囲そのもの**も
+検査する — 新しい feature は自動でこの護りの下に入り、外すには除外リストを触るしかない。
+護りの中身より先に掛かっている範囲が縮むほうが起きやすく、しかもテストが緑のままなので
+気づきにくい。
 
 **確信度**: 高い。実障害が根拠。
 
@@ -336,7 +338,7 @@ revise（doing 中も）、replan、inbox 追加、pause / stop、reset、run �
 
 **動いているもの**: §4 の 7 制御面すべて、§6 の人のアクション一式、§7 の通知・SLA・AI 補助・
 投入時リンティング、kiro-loop の構造化状態と復旧送信、この PC の役割切り替え
-（`engineer` / `viewer`）。テストは `npm test` で 62 ファイル・全緑。
+（`engineer` / `viewer`）。テストは `npm test` で 61 ファイル・全緑。
 
 **未実装の改善余地**（元の改善提案から、実装が無いものだけ残した）:
 
@@ -355,17 +357,12 @@ revise（doing 中も）、replan、inbox 追加、pause / stop、reset、run �
 
 自動承認・決定メモリ・クラスタリングは、AI のリスク評価とメトリクスが土台になるので後段に置く。
 
-**構造の穴**:
-
-- **`no-git-writes` の検査範囲が 3 層だけ**（§3.1）。`amigos` / `delegation` / `orchestration` /
-  `participation` は範囲外なので、そこへ git 書き込みを足しても機械的には落ちない。いまは
-  どの feature も契約ファイルの投函に留まっているが、それを保証しているのは人の目だけだ。
-  範囲を広げるなら、成果物リポジトリを正当に扱う `cowork` の除外だけを明示する形になる。
-- **配布物に `diff2html` が入るかを検証していない**（未確認のリスク）。`index.html` は
-  `../../node_modules/diff2html/…` を相対参照する一方、`package.json` の `build.files` は
-  `src/**/*` と `package.json` しか列挙していない。electron-builder は本番依存の node_modules を
-  `files` とは別に解決するため入る可能性が高いが、外れていれば**パッケージ版だけ差分ビューが
-  白紙**になる。ビルドして確認するか、依存をアプリ内へ同梱する形にすると確実になる。
+**壊れ方が配布後にしか出ない箇所への護り**: `index.html` はバンドラを使わないので CSS / JS を
+相対パスで直接読み、中にはアプリのソースツリーの外（`node_modules/diff2html/…`）を指すものがある。
+開発起動では node_modules がそこに在るため気づけず、`build.files` から漏れていると**パッケージ版
+だけ差分ビューが白紙**になる。electron-builder が本番依存を暗黙に含めるかどうかに配布物を賭けず、
+`build.files` へ明示したうえで、`test/packaging-assets.test.js` が `index.html` の参照と同梱指定の
+対応を機械的に突き合わせる。
 
 ---
 
@@ -389,7 +386,8 @@ revise（doing 中も）、replan、inbox 追加、pause / stop、reset、run �
 
 **構造を固定しているテスト**（設計判断の実体）:
 `test/no-git-writes.test.js`（§3.1）／ `test/feature-split.test.js`（§3.2）／
-`test/discover-engine.test.js`（§3.3）／ `test/needs-notify.test.js`・`test/needs-sla.test.js`（§7）。
+`test/discover-engine.test.js`（§3.3）／ `test/needs-notify.test.js`・`test/needs-sla.test.js`（§7）／
+`test/packaging-assets.test.js`（配布物の取りこぼし、§8）。
 
 本書は 2026-07-26 に、次の 3 本を統合して作った。旧ファイルは削除済み。
 
