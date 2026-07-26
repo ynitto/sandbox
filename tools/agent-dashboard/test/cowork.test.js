@@ -227,6 +227,36 @@ test('CLIチャット用セッションはプロジェクトとCLIごとに安�
   assert.ok(!script.includes('tmux set-buffer -b agentdash --'), '空プロンプトを送信しない');
 });
 
+test('診断セッションは接頭辞で名前空間を分ける（作業用セッションと混ざらない）', () => {
+  // 読み取り専用のつもりの窓が作業セッションに合流すると、そこから書き込みができてしまう
+  // （S9 §6-2 の決着）。名前を分けるのがその実体。
+  const work = cowork_loopProvider.chatSessionName('/home/me/app', 'kiro');
+  const doctor = cowork_loopProvider.chatSessionName('/home/me/app', 'doctor:kiro:T-1', 'agent-doctor');
+  assert.match(doctor, /^agent-doctor-/);
+  assert.notStrictEqual(work, doctor);
+  assert.strictEqual(doctor,
+    cowork_loopProvider.chatSessionName('/home/me/app', 'doctor:kiro:T-1', 'agent-doctor'),
+    '同じ need の再診断は同じセッションへ attach する');
+  assert.notStrictEqual(doctor,
+    cowork_loopProvider.chatSessionName('/home/me/app', 'doctor:kiro:T-2', 'agent-doctor'),
+    'need が違えば別セッション');
+});
+
+test('promptOnNewOnly は既存セッションへブリーフを送り直さない', () => {
+  // 会話が続いているところへ同じブリーフを再投入すると文脈が二重になる（S9-4）。
+  const once = cowork_loopProvider.chatWindowScript({
+    chatCommand: ['claude'], cwd: '/home/me/app', session: 'agent-doctor-x',
+    prompt: 'ブリーフ', promptOnNewOnly: true,
+  });
+  assert.match(once, /if \[ \$__new -eq 1 \]; then tmux send-keys/,
+    '新規作成時だけ送る');
+  const always = cowork_loopProvider.chatWindowScript({
+    chatCommand: ['claude'], cwd: '/home/me/app', session: 'agent-chat-x', prompt: '業務プロンプト',
+  });
+  assert.ok(always.includes('tmux send-keys -t "$__ses" -- '), '既定は毎回送る（従来動作）');
+  assert.ok(!/if \[ \$__new -eq 1 \]; then tmux send-keys/.test(always));
+});
+
 test('terminalLaunchSpec は macOS のTerminalとLinuxの利用可能な端末を選ぶ', () => {
   const mac = cowork_loopProvider.terminalLaunchSpec('darwin', '/tmp/chat.command');
   assert.deepStrictEqual(mac, {

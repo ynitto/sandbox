@@ -794,7 +794,45 @@ function globalSettingsSyncHtml() {
     <div class="field"><label for="cfg-flow-bus-by-project">プロジェクトごとの共有先（1行に1つ）</label>
       <textarea id="cfg-flow-bus-by-project" class="mono" rows="4" placeholder="alpha = /home/me/clones/alpha/agent-flow"></textarea></div>
     <div class="settings-save-actions"><button type="button" id="btn-save-sync-settings" class="primary-inline">保存</button></div>
+    ${boardParticipationHtml()}
   </div>`;
+}
+
+// 「この端末は、ほかの端末と仕事をやり取りできているか」（S8-1）。
+// 設定画面に置くのは**構成の確認**だから——動く公示の一覧はタスク画面（委任先）と
+// 参加画面（引き受ける）に置く。ここは「参加できているか」だけを言う。
+function boardParticipationHtml() {
+  const board = state.boardStatus;
+  if (!board || !board.configured) {
+    return `<h3>ほかの端末との仕事のやり取り</h3>
+      <p class="field-help">この端末は仕事のやり取り（委譲公示板）に参加していません。
+      参加するには、実行エンジンの設定でやり取り先を宣言してください。</p>`;
+  }
+  const nodes = state.boardNodes || [];
+  const rows = nodes.length
+    ? nodes.map((n) => `<tr class="${n.stale ? 'is-stale' : ''}">
+        <td class="mono">${esc(n.name)}</td>
+        <td>${n.stale ? '<span class="muted">応答なし</span>' : '稼働中'}</td>
+        <td>${esc([...(n.workloads || []), ...(n.tags || []), ...(n.agentCli || [])].join('・') || '—')}</td>
+        <td>${esc((n.repos || []).join('・') || '—')}</td>
+        <td>${n.contractVersion ? esc(String(n.contractVersion)) : '<span class="muted">未宣言</span>'}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="5" class="muted">まだどの端末も参加を宣言していません</td></tr>';
+  const intake = (board.intakeProjects || []).length
+    ? `落札した仕事は ${esc((board.intakeProjects || []).join('・'))} で実行します`
+    : 'この端末はまだ仕事を引き受けても実行できません（プロジェクトを 1 つも持っていません）';
+  const err = board.lastError
+    ? `<p class="need-error">やり取り先に接続できていません: ${esc(board.lastError)}</p>` : '';
+  return `<h3>ほかの端末との仕事のやり取り</h3>
+    <p class="field-help">この端末の名前は <span class="mono">${esc(board.selfName || '')}</span>、
+    やり取り先は <span class="mono">${esc(board.location || '')}</span> です。${esc(intake)}。
+    募集中の依頼は ${board.openDelegations} 件、この端末が引き受けを申し出ているのは
+    ${(board.myBids || []).length} 件です。</p>
+    ${err}
+    <div class="table-scroll"><table class="board-nodes">
+      <thead><tr><th>端末</th><th>状態</th><th>引き受けられるもの</th>
+        <th>手元にあるリポジトリ</th><th>版</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
 }
 
 function globalSettingsRoutineHtml() {

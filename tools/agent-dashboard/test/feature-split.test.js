@@ -229,10 +229,12 @@ test('delegation は共通封筒の投函・一覧 API を登録する', () => {
   });
   assert.deepStrictEqual(registered.sort(),
     ['delegation:accept', 'delegation:award', 'delegation:cancel', 'delegation:list',
+     'delegation:nodeCommand', 'delegation:nodes',
      'delegation:post', 'delegation:reject'].sort());
   const api = del.preloadApi();
   for (const name of ['delegationList', 'delegationPost', 'delegationAward',
-    'delegationAccept', 'delegationReject', 'delegationCancel']) {
+    'delegationAccept', 'delegationReject', 'delegationCancel',
+    'delegationNodes', 'delegationNodeCommand']) {
     assert.strictEqual(typeof api[name], 'function', name);
   }
   const calls = [];

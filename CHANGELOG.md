@@ -7,6 +7,81 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard / agent-project / agent-flow / agentcore: 板の観測・操作 UI と診断の対話化（S8・S9-4）
+
+詳細設計は [`docs/plans/2026-07-26-s8-s9-4-board-ui-and-doctor-chat-detailed-design.md`](docs/plans/2026-07-26-s8-s9-4-board-ui-and-doctor-chat-detailed-design.md)。
+
+**まず直したもの: `git+` 板では dashboard のボタンが誰にも届いていなかった**
+
+板への `cancel` / `award` は板の作業ディレクトリへファイルを置くだけで、push する主体が居ない。
+ローカル dir の板でしか成立しておらず、**`git+` 板では押しても何も起きないボタン**だった。
+新しい操作（手動入札）を足す前にここを直した。
+
+- 板への書き込み（`board-cancel` / `board-award` / `board-bid`）を**ノード宛て指示ドロップ**へ
+  一本化した。新契約 [`agent-node-command.schema.json`](schemas/agent-node-command.schema.json)、
+  置き場は `$AGENT_COMMANDS_DIR`（既定 `~/.agents/commands/`）。**板へ書くのは常駐体だけ**
+- プロジェクト配下の `commands/` ではなく**ノードスコープ**に置いた——板はプロジェクトに属さず、
+  プロジェクトを 1 つも持たない PC からも板を操作できる必要がある
+- 形（`<name>.json` / `processed/` / `.err`）と述語は `agentcore.commands` で共有する。
+  利用者から見える「送信済み → 受理済み → 失敗バナー」を 2 種類作らない
+
+**同一ノードで 2 プロジェクトが同じ板を巡回すると、同じ公示を二重に取り込んでいた**
+
+`poll_board` の「取り込み済みか」の判定が**自分のバスだけ**を見ていたため、A のバスへ取り込んだ
+直後の公示を B のバスがもう一度取り込む（同一ノードでの二重実行）。判定を板の
+`status/<who>.json`（自分が落札・引き渡し済みの印）へ移した——板が真実という原則にも合う。
+
+**R2a: 常駐体の board tick（30 秒）**
+
+- `nodes/<node-id>.json`（能力宣言）の**書き手ができた**。host.yaml の `tags` / `agent_cli` /
+  `repos[]`（`local` 込み）/ `budget.max_concurrent` がそのまま載る（積み残し P1-a の決着）
+- **心拍だけの更新は 5 分に 1 回**に律速する。30 秒ごとに書き換えると板に無意味なコミットが積む
+  （宣言の内容が変わったときは間隔に関わらず即書く）
+- ノード宛て指示を取り込み、板へ書いて push する。終端済み公示・別の板宛て・未知の指示は
+  理由つきで `.err` へ退避する（黙って無視しない）
+- `engine/status.json` に `board` ブロックを足した。**dashboard が「参加しているか・手動入札
+  できるか」を判断する唯一の根拠**——host.yaml と agent-flow 設定を dashboard が自前で読み解くと
+  宣言の解釈が 2 実装になる
+- **入札の自動判断は tick に置かない**。自動入札は従来どおり各プロジェクトの `participate` が担う
+  （同じノードに 2 つ目の入札主体を置くと二重落札になる）
+
+**入札選別規則を `agentcore.board` へ 1 本化**
+
+agent-flow と agent-amigos が「同じ仕様・別実装」で持っていた `board_eligible` を集約した
+（`agentcore.repolocal` が解決したのと同型の問題）。契約にあって両方が見ていなかった
+`requires.agent_cli` と `requires.contract_version` の判定も入れた（どちらも fail-close）。
+判定材料の正典は host.yaml で、agent-flow 設定の `board_repos` / `board_tags` /
+`board_agent_cli` は**明示上書きへ降格**した（S1 の取りこぼしだった二重宣言の解消）。
+
+**S8: 板の観測と操作（委譲の独立タブは作らない）**
+
+置き場は人の問いごとに 3 か所へ割った——orchestration タブは全体設定になったので、
+そこに動く一覧は置けない:
+
+- **タスク画面**: 委任（offloaded）タスクに「委任先: pc-b — 実行中」の 1 行と、
+  詳細の「委任」行（中止ボタン付き）。データ源は板のファイルだけ
+- **参加タブ**: 募集中の公示を「引き受ける」候補として出す（手動入札）。**引き受けても実行
+  できない端末ではボタンを理由付きで非活性**にする——プロジェクトを 1 つも持たない端末の
+  落札実行は未対応（Phase 5 / R2b）。「操作だけ増えて実行できない」状態を構造的に防ぐ
+- **全体設定 → 同期**: この端末の参加状況と参加ノード一覧（心拍・引き受けられるもの・
+  手元にあるリポジトリ・契約の版）。他 PC の絶対パス（`local`）は出さない
+- **手動入札は「自己抑制の上書き」**。自分名義の有効な入札がある公示は、`poll_board` が
+  repos/tags 照合を問わずに取り込む——人が押した意思がここで通る
+
+**S9-4: 失敗診断の対話化**
+
+- 失敗診断のボタンを「AIと対話で診断」（既定）と「文面を生成」（従来のヘッドレス 1 発）に
+  分けた。原因究明は 1 往復では終わらない
+- **120,000 字のスナップショットは対話セッションへ持ち込めない**（tmux への注入は改行を
+  含められない 1 行、全文をファイルで渡す前提は読み取り専用でファイル読み取りごと落とす
+  CLI で成立しない）。送るのは**ブリーフ 1 行（2,000 字上限）＋ 全文ファイルのパス**で、
+  全文は「読めるなら読め」の追加資料に留める——S9 のスキーマを触らずに済む
+- 診断は**使い捨て**（`readonly_args` + `no_session_args`）。セッション名も `agent-doctor-` と
+  別系統にする（読み取り専用のつもりの窓が作業セッションに合流すると書き込みができてしまう）
+- 同一の要対応の再診断は既存セッションへ attach し、**ブリーフは送り直さない**
+- 読み取り専用を保証できない CLI（`readonly: best-effort`）では、その旨を画面に出す
+- cwd はタスクの書込先リポジトリ（このノードの宣言から解決）→ プロジェクトの順
+
 ### agent-project / agent-dashboard / agent-flow: 「エージェントが書き、人が直す」バックログと spec の 3 段（S6・S7）
 
 詳細設計は [`docs/plans/2026-07-26-s6-s7-backlog-planning-detailed-design.md`](docs/plans/2026-07-26-s6-s7-backlog-planning-detailed-design.md)。

@@ -13,9 +13,8 @@ import hashlib
 import os
 import time
 
-from agentcore import protocol, transport, vocab
+from agentcore import board as _boardrules, protocol, transport, vocab
 
-from .assign import _norm_repo_url
 from .commands import _do_post
 from .mission import active_roles, derive_phase, load_mission, load_roles
 from .ownerops import _latest_reject_feedback
@@ -85,41 +84,21 @@ def _try_bid(mirror: BoardMirror, bids_dir: str, did: str, who: str, lease: floa
 
 
 def _board_declared_repos(node_repos) -> "set[str]":
-    """ノードの repos レジストリから板入札に使える（＝書込先候補になれる）担当リポジトリの
-    名前と正規化 URL の集合。板の契約（agent-board README「readonly は書込先候補にしない」）に
-    合わせ、`readonly: true` のエントリと `owns` の無いエントリは除く——通常のロール応募
-    （assign.py の requires.repos 照合。読み取り専用ロールが readonly 宣言と正当にマッチしうる）
-    とは選別基準が異なるため、共有の _declared_repos は使わず板専用にここで絞り込む
-    （agent_flow/board.py:_node_repo_ids と同じ仕様・別実装）。"""
-    have: "set[str]" = set()
-    if isinstance(node_repos, dict):
-        for name, e in node_repos.items():
-            if str(name).startswith("_") or not isinstance(e, dict):
-                continue
-            if e.get("readonly") or not e.get("owns"):
-                continue
-            have.add(str(name))
-            if e.get("url"):
-                have.add(_norm_repo_url(e["url"]))
-    return have
+    """ノードの担当リポジトリ宣言 → 板入札の照合に使う識別子集合。実装は `agentcore.board`。
+
+    通常のロール応募（assign.py の requires.repos 照合。読み取り専用ロールが readonly 宣言と
+    正当にマッチしうる）とは選別基準が違うので、共有の `_declared_repos` ではなくこちらを使う。"""
+    return _boardrules.declared_repo_ids(node_repos)
 
 
-def board_eligible(post: dict, node_repos, node_tags) -> bool:
-    """公示に入札してよいか（成果物リポジトリ・タグでの選別）。
-    workspace.url と requires.repos を担当し、requires.tags を包含していれば可。"""
-    req = post.get("requires") or {}
-    need_tags = set(str(t) for t in (req.get("tags") or []))
-    if need_tags and not need_tags.issubset(set(node_tags or [])):
-        return False
-    have = _board_declared_repos(node_repos)
-    ws = post.get("workspace") or {}
-    if ws.get("url"):
-        if str(ws.get("url")) not in have and _norm_repo_url(ws["url"]) not in have:
-            return False
-    for ref in (req.get("repos") or []):
-        if str(ref) not in have and _norm_repo_url(ref) not in have:
-            return False
-    return True
+def board_eligible(post: dict, node_repos, node_tags, node_agent_cli=None) -> bool:
+    """公示に入札してよいか（成果物リポジトリ・タグ・CLI・契約バージョンでの選別）。
+
+    判定規則は `agentcore.board.eligible` に一本化した——agent-flow が「同じ仕様・別実装」で
+    持っていたもので、片方だけ育つと**同じ公示が経路によって拾えたり拾えなかったりする**
+    （`agentcore.repolocal` が解決したのと同型の問題）。"""
+    return _boardrules.eligible(post, repos=node_repos, tags=node_tags,
+                                agent_cli=node_agent_cli or [])
 
 
 def _synth_design(post: dict) -> str:

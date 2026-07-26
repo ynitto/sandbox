@@ -490,6 +490,14 @@ function registerIpc(ctx) {
     return agent.completeDoctor(loadConfig(), { dir: dir || null, context, userPrompt, mode });
   });
 
+  // 失敗診断を tmux の対話セッションで開く（S9-4）。ヘッドレスの agent:doctor と**同じ文脈**を
+  // 受け取り、渡し方だけを変える（ブリーフ 1 行 ＋ 全文ファイルのパス）。読み取り専用・
+  // セッション永続化なしで起動し、セッション名も作業用と別系統にする。
+  handle('agent:doctorChat', ({ dir, context, needId, userPrompt }) => {
+    if (!context || typeof context !== 'object') throw new Error('画面の状態が指定されていません');
+    return agent.openDoctorChat(loadConfig(), { dir: dir || null, context, needId, userPrompt });
+  });
+
   // フォローアップ案・依存/優先度提案。JSON を返すだけで inbox / backlog には書かない。
   handle('agent:taskAssist', ({ dir, mode, context, userPrompt }) => {
     if (!context || typeof context !== 'object') throw new Error('補助コンテキストが指定されていません');

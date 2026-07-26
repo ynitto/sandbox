@@ -953,3 +953,207 @@ class GcCommandTests(unittest.TestCase):
             rc = km.main(["gc", "--root", str(self.tmp), "--agent-flow", wrapper, "--json"])
         self.assertEqual(rc, 0)
         self.assertIn("cleanup.locks", buf.getvalue())
+
+
+class ResidentBoardTickTests(unittest.TestCase):
+    """板 tick（R2a・S8）: 板の同期・ノード能力宣言の書き出し・ノード宛て指示の取り込み。
+
+    **入札の自動判断はここでは行わない**（自動入札は各ツールの participate が担う）。
+    ここが書く入札は「人が押した」分だけ——同じノードに 2 つ目の入札主体を置くと
+    二重落札を防ぐ規則が 2 実装になる。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="resident-board-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.agents_home = self.tmp / "agents-home"
+        os.environ["AGENT_PROJECT_AGENTS_HOME"] = str(self.agents_home)
+        self.addCleanup(os.environ.pop, "AGENT_PROJECT_AGENTS_HOME", None)
+        self.commands = self.tmp / "node-commands"
+        os.environ["AGENT_COMMANDS_DIR"] = str(self.commands)
+        self.addCleanup(os.environ.pop, "AGENT_COMMANDS_DIR", None)
+        self.board = self.tmp / "board"
+        (self.board / "delegations").mkdir(parents=True)
+
+    def _host(self, **kw):
+        data = {"node_id": "pc-a", "board": str(self.board), "tags": ["python"],
+                "agent_cli": ["codex"],
+                "repos": [{"url": "https://git.example.com/team/app.git",
+                           "local": "/home/me/mirrors/app"}]}
+        data.update(kw)
+        return km.HostConfig(data)
+
+    def _post(self, did, **kw):
+        d = self.board / "delegations" / did
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "post.json").write_text(json.dumps(
+            {"op": "post", "version": 1, "id": did, "workload": "flow", "goal": "実装", **kw}),
+            encoding="utf-8")
+        return d
+
+    def _drop(self, name, rec):
+        self.commands.mkdir(parents=True, exist_ok=True)
+        (self.commands / name).write_text(json.dumps(rec), encoding="utf-8")
+        return self.commands / name
+
+    def _tick(self, host=None):
+        status = km.EngineStatus("pc-a")
+        km._board_participate_tick(host or self._host(), status)
+        return status
+
+    # --- ノード能力宣言（P1-a / S3-5） ---------------------------------------
+
+    def test_writes_node_capability_with_local_clone_declaration(self):
+        self._tick()
+        rec = json.loads((self.board / "nodes" / "pc-a.json").read_text(encoding="utf-8"))
+        self.assertEqual(rec["node"], "pc-a")
+        self.assertEqual(rec["tags"], ["python"])
+        self.assertEqual(rec["agent_cli"], ["codex"])
+        self.assertEqual(rec["repos"], [{"url": "https://git.example.com/team/app.git",
+                                         "local": "/home/me/mirrors/app"}])
+        self.assertEqual(rec["contract_version"], km.CONTRACT_VERSION)
+        self.assertTrue(rec["heartbeat"])
+        self.assertGreater(rec["fresh_after_sec"], 0)
+
+    def test_heartbeat_only_updates_are_rate_limited(self):
+        # 30 秒 tick のたびに心拍を書き換えると板に無意味なコミットが積む。
+        self._tick()
+        path = self.board / "nodes" / "pc-a.json"
+        first = path.read_text(encoding="utf-8")
+        for _ in range(5):
+            self._tick()
+        self.assertEqual(path.read_text(encoding="utf-8"), first)
+
+    def test_declaration_change_is_written_immediately(self):
+        # 内容が変わったときは間隔に関わらず書く（宣言の変更が反映されない方が害が大きい）。
+        self._tick()
+        self._tick(self._host(tags=["python", "gpu"]))
+        rec = json.loads((self.board / "nodes" / "pc-a.json").read_text(encoding="utf-8"))
+        self.assertEqual(rec["tags"], ["python", "gpu"])
+
+    def test_worker_node_declares_no_intake_projects(self):
+        status = self._tick()
+        self.assertEqual(status.board["intake_projects"], [],
+                         "プロジェクトを持たないノードは落札しても行き先が無い")
+        self.assertTrue(status.board["configured"])
+
+    def test_full_node_declares_intake_projects(self):
+        root = self.tmp / "proj"
+        root.mkdir()
+        status = self._tick(self._host(projects=[{"name": "proj-a", "root": str(root)}]))
+        self.assertEqual(status.board["intake_projects"], ["proj-a"])
+
+    def test_no_board_configured_is_reported_not_crashed(self):
+        status = km.EngineStatus("pc-a")
+        km._board_participate_tick(km.HostConfig({"node_id": "pc-a"}), status)
+        self.assertEqual(status.board, {"configured": False})
+
+    def test_status_counts_open_delegations_and_own_bids(self):
+        self._post("dg-1")
+        self._post("dg-2")
+        self._drop("01-bid.json", {"command": "board-bid", "id": "dg-2"})
+        status = self._tick()
+        self.assertEqual(status.board["open_delegations"], 2)
+        self.assertEqual(status.board["my_bids"], ["dg-2"])
+
+    # --- ノード宛て指示の取り込み（S8-2 / S8-3） -----------------------------
+
+    def test_board_bid_writes_claim_and_receipt(self):
+        self._post("dg-1")
+        f = self._drop("01-bid.json", {"command": "board-bid", "id": "dg-1",
+                                       "issued_by": "agent-dashboard"})
+        self._tick()
+        bid = json.loads((self.board / "delegations" / "dg-1" / "bids" / "pc-a.json")
+                         .read_text(encoding="utf-8"))
+        self.assertEqual(bid["who"], "pc-a")
+        self.assertGreater(bid["lease_until"], time.time())
+        self.assertFalse(f.exists(), "取り込んだ指示は消える")
+        receipt = json.loads((self.commands / "processed" / "01-bid.json")
+                             .read_text(encoding="utf-8"))
+        self.assertTrue(receipt["ok"])
+        self.assertEqual(receipt["action"], "board-bid")
+        self.assertEqual(receipt["id"], "dg-1")
+
+    def test_board_cancel_writes_marker_with_author(self):
+        self._post("dg-1")
+        self._drop("01-cancel.json", {"command": "board-cancel", "id": "dg-1",
+                                      "reason": "不要になった"})
+        self._tick()
+        rec = json.loads((self.board / "delegations" / "dg-1" / "cancelled.json")
+                         .read_text(encoding="utf-8"))
+        self.assertEqual(rec["reason"], "不要になった")
+        self.assertEqual(rec["cancelled_by"], "pc-a")
+
+    def test_board_award_requires_node(self):
+        self._post("dg-1")
+        self._drop("01-award.json", {"command": "board-award", "id": "dg-1"})
+        self._tick()
+        err = json.loads((self.commands / "01-award.json.err").read_text(encoding="utf-8"))
+        self.assertIn("node", err["error"])
+
+    def test_board_award_writes_award(self):
+        self._post("dg-1")
+        self._drop("01-award.json", {"command": "board-award", "id": "dg-1", "node": "pc-b"})
+        self._tick()
+        rec = json.loads((self.board / "delegations" / "dg-1" / "award.json")
+                         .read_text(encoding="utf-8"))
+        self.assertEqual(rec["node"], "pc-b")
+
+    def test_terminal_delegation_is_rejected_with_reason(self):
+        d = self._post("dg-1")
+        (d / "result.json").write_text(json.dumps({"winner": "pc-b"}), encoding="utf-8")
+        self._drop("01-bid.json", {"command": "board-bid", "id": "dg-1"})
+        self._tick()
+        err = json.loads((self.commands / "01-bid.json.err").read_text(encoding="utf-8"))
+        self.assertIn("終端", err["error"])
+        self.assertEqual(err["command"]["id"], "dg-1")
+
+    def test_unknown_delegation_is_rejected(self):
+        self._drop("01-bid.json", {"command": "board-bid", "id": "dg-nope"})
+        self._tick()
+        err = json.loads((self.commands / "01-bid.json.err").read_text(encoding="utf-8"))
+        self.assertIn("公示がありません", err["error"])
+
+    def test_unknown_command_is_rejected(self):
+        self._drop("01-x.json", {"command": "board-explode", "id": "dg-1"})
+        self._tick()
+        self.assertTrue((self.commands / "01-x.json.err").exists())
+
+    def test_command_for_another_board_is_not_applied_here(self):
+        # 別の板宛ての指示を、このノードが宣言している板へ黙って適用しない。
+        self._post("dg-1")
+        self._drop("01-bid.json", {"command": "board-bid", "id": "dg-1",
+                                   "board": "git+ssh://elsewhere/board.git"})
+        self._tick()
+        self.assertFalse((self.board / "delegations" / "dg-1" / "bids").exists())
+        err = json.loads((self.commands / "01-bid.json.err").read_text(encoding="utf-8"))
+        self.assertIn("一致しません", err["error"])
+
+    def test_broken_command_file_is_quarantined_not_retried_forever(self):
+        self.commands.mkdir(parents=True, exist_ok=True)
+        (self.commands / "01-broken.json").write_text('{"command": "board-', encoding="utf-8")
+        status = self._tick()
+        self.assertTrue((self.commands / "01-broken.json.err").exists())
+        self.assertTrue(any("node command" in e for e in status.recent_errors))
+
+    def test_commands_are_processed_in_name_order(self):
+        # 同じ公示への「入札 → 中止」が入れ替わると、中止済みの板へ入札を書くことになる。
+        self._post("dg-1")
+        self._drop("01-bid.json", {"command": "board-bid", "id": "dg-1"})
+        self._drop("02-cancel.json", {"command": "board-cancel", "id": "dg-1"})
+        self._tick()
+        self.assertTrue((self.board / "delegations" / "dg-1" / "bids" / "pc-a.json").exists())
+        self.assertTrue((self.board / "delegations" / "dg-1" / "cancelled.json").exists())
+
+    def test_board_failure_is_recorded_not_raised(self):
+        # 板が壊れていても tick を落とさない（Scheduler が隔離すると復帰しても治らない）。
+        host = self._host(board=str(self.tmp / "nope") + "/x")
+        status = km.EngineStatus("pc-a")
+        with mock.patch.object(km, "BoardRepo", side_effect=OSError("板に到達できません")):
+            km._board_participate_tick(host, status)
+        self.assertTrue(status.board["configured"])
+        self.assertIn("板に到達できません", status.board["last_error"])
+
+    def test_engine_status_carries_board_block(self):
+        status = self._tick()
+        self.assertIn("board", status.to_dict())
+        self.assertEqual(status.to_dict()["board"]["location"], str(self.board))

@@ -339,6 +339,52 @@ function ownerBadgeHtml(owner) {
   return `<span class="owner-badge" title="監視担当（このタスクの進捗・要対応を見る人）">👤 ${esc(name)}</span>`;
 }
 
+// 委任（offloaded）タスクの「いま誰が持っているか」を板から読む（S8-1）。
+//
+// 委譲 id はタスクの `last_run` に入る（実行側の run-id / mission-id と同一——共通 id に
+// 対応表を持たない delegation 契約 D1 の帰結）。板の正規化ビューを id で引くだけで、
+// dashboard は板へ何も書かない。板を使っていなければ null（画面には何も足さない）。
+function boardDelegationView(task) {
+  const did = String((task && task.extra && task.extra.last_run) || '').trim();
+  if (!did) return null;
+  return (state.boardViews || []).find((v) => String(v.id) === did) || null;
+}
+
+function boardDelegationSummary(task) {
+  const view = boardDelegationView(task);
+  if (!view) return '';
+  const assignee = (view.units && view.units[0] && view.units[0].assignee) || '';
+  const bids = ((view.units && view.units[0] && view.units[0].bids) || [])
+    .filter((b) => b.state !== 'expired').length;
+  if (view.phase === 'open') {
+    return bids ? `委任先: 未定（入札 ${bids} 件）` : '委任先: 未定（入札を待っています）';
+  }
+  if (view.phase === 'done') return `委任先: ${assignee || '不明'} — 完了`;
+  if (view.phase === 'failed') return `委任先: ${assignee || '不明'} — 失敗`;
+  if (view.phase === 'cancelled') return '委任: 中止されました';
+  if (view.phase === 'waiting') return `委任先: ${assignee || '不明'} — 待機中`;
+  return `委任先: ${assignee || '不明'} — 実行中`;
+}
+
+// タスク詳細の「委任」行。中止は板へ直接書かず、この端末の常駐体へ指示を投函する（S8-2）。
+function boardDelegationRowHtml(task) {
+  const view = boardDelegationView(task);
+  if (!view) return '';
+  const sent = (state.boardCommands || {})[String(view.id)];
+  const note = sent && sent.state === 'pending' ? '<span class="muted">（指示を送信済み）</span>'
+    : sent && sent.state === 'done' ? '<span class="muted">（指示は受理されました）</span>'
+    : sent && sent.state === 'error'
+      ? `<span class="need-error">（指示が通りませんでした: ${esc(sent.error || '')}）</span>`
+      : '';
+  const canCancel = !['done', 'failed', 'cancelled'].includes(String(view.phase));
+  const cancel = canCancel
+    ? `<button type="button" data-board-cancel="${esc(view.id)}"
+        title="この委任を板の上で中止します（実行中なら次の巡回で止まります）">委任を中止</button>`
+    : '';
+  return `<tr><th>委任</th><td>${esc(boardDelegationSummary(task))}
+    <span class="mono muted">${esc(view.id)}</span> ${cancel} ${note}</td></tr>`;
+}
+
 function taskListItemViewModel(task, hint) {
   const priority = Number(task.priority) || 0;
   const priorityLevel = priority >= 8 ? '高' : priority >= 4 ? '中' : '低';
@@ -350,7 +396,9 @@ function taskListItemViewModel(task, hint) {
     priority,
     priorityText: `${priorityLevel} ${priority}`,
     owner: String(task.owner || '').trim(),
-    nextAction: String((hint && hint.completeHow) || '詳細を確認してください'),
+    // 委任中のタスクは「次の行動」より「いま誰が持っているか」が知りたい情報になる。
+    nextAction: (task.status === 'offloaded' && boardDelegationSummary(task))
+      || String((hint && hint.completeHow) || '詳細を確認してください'),
   };
 }
 
@@ -671,6 +719,7 @@ function showTaskDialog(id, scope) {
             <span class="muted">エージェントの実作業とは別軸の、人の監視・検収の分担です</span>`
       }</td></tr>
       <tr><th>再試行</th><td>${t.retries}</td></tr>
+      ${boardDelegationRowHtml(t)}
       <tr><th>検証コマンド</th><td>${t.verify ? `<pre class="mono">${esc(t.verify)}</pre>` : '<span class="muted">（未定義）</span>'}</td></tr>
       ${depRow}
       ${extraRows}
@@ -685,6 +734,26 @@ function showTaskDialog(id, scope) {
     e.preventDefault();
     guard('ファイルを開く', () => api.openPath(t.file));
   });
+  for (const btn of document.querySelectorAll('#dlg-task-body button[data-board-cancel]')) {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.boardCancel;
+      const view = (state.boardViews || []).find((v) => String(v.id) === id);
+      const yes = await confirmDialog(
+        `この委任（${id}）を中止しますか？\n実行中の端末があれば、次の巡回で止まります。`);
+      if (!yes) return;
+      await guard('委任の中止', async () => {
+        await api.delegationCancel({
+          target: 'board', id, boardRepo: (view && view.boardRepo) || '',
+          workload: (view && view.workload) || 'flow',
+          reason: 'agent-dashboard から中止',
+        });
+        toast('中止を依頼しました（板への反映はこの端末の実行エンジンが行います）', true);
+        return true;
+      });
+      await refreshBoard();
+      renderBacklog();
+    });
+  }
   const TASK_ACT_DONE = {
     approve: '承認を送信しました',
     reject: '却下を送信しました',

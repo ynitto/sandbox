@@ -11,22 +11,27 @@ from __future__ import annotations
 #   - amigos 参加 tick（claim・心拍・板巡回のみ。手番実行は NodeWorkerPool へ委ねる）
 #   - flow 参加 tick（cancel 受理・孤児回収・板巡回・inbox 受理のみ。run の実行は
 #     NodeWorkerPool へ委ねる。旧 `agent-flow daemon` の置き換え — 実装計画 W1-9）
+#   - board tick（板の同期・ノード能力宣言 `nodes/<pc>.json` の書き出し・ノード宛て指示の
+#     取り込み。実装計画 §7 R2a）
 #   - gc tick（登録プロジェクトの agent-flow バス掃除。掃除の実装は持たない — R1）
 # 参加 tick はどちらも「調停は都度起動の CLI・実行はプール」に揃えてある。周期を超えうる
 # 仕事（run・手番）を tick 内で実行すると、self-watchdog がハングと読んで健全な常駐体を
 # abort する。
 #
-# nodes/<pc>.json のノード能力宣言（node 名義で板へ「何ができる PC か」を出す）はまだ無い。
-# 板の請負自体は各ツールの `participate` が委譲側 bus 経由で行っており、ノード直轄の能力
-# 宣言はそれとは別の設計判断が要るため、ここでは手を付けない（実装計画 W1-11 残）。
+# **落札した仕事のノード直轄実行（R2b）はまだ無い。** 板の請負は各ツールの `participate` が
+# 委譲側 bus 経由で行っており、フルノード（プロジェクトを 1 つ以上持つ PC）ではそれで
+# 落札→取り込み→実行まで通る。プロジェクトを 1 つも持たないワーカーノードだけが
+# 取り込み先を持たない——board tick はその事実を `engine/status.json` の
+# `board.intake_projects` に出し、dashboard が手動入札のボタンを出すかどうかの根拠にする
+# （操作だけ増えて実行できない状態を構造的に防ぐ）。
 
 from types import SimpleNamespace
 
 from agentcore.nodeid import normalize_node_id
 from agentcore.protocol import write_json_atomic
-from agent_project.resident import (ChildSpec, ChildStatus, EngineStatus,
-                                    NodeWorkerPool, Scheduler, Supervisor, SyncHealth,
-                                    Tick, WorkItem, graceful_shutdown, run_gc)
+from agent_project.resident import (CONTRACT_VERSION, ChildSpec, ChildStatus, EngineStatus,
+                                    NodeCapability, NodeWorkerPool, Scheduler, Supervisor,
+                                    SyncHealth, Tick, WorkItem, graceful_shutdown, run_gc)
 
 HOST_CONFIG_NAMES = ("agent-project.host.yaml", "agent-project.host.yml",
                      "agent-project.host.json")
@@ -36,6 +41,16 @@ HOST_CONFIG_NAMES = ("agent-project.host.yaml", "agent-project.host.yml",
 # ハング扱いされて健全な常駐体が abort する。
 _GC_PROJECT_TIMEOUT_SEC = 120.0
 _AMIGOS_TICK_TIMEOUT_SEC = 60.0
+_BOARD_TICK_TIMEOUT_SEC = 60.0
+# 板の入札 lease（秒）。手動入札はこの猶予のあいだだけ「人が選別を上書きした」印として効く。
+# agent-flow の board_lease 既定と同じ値にする——別の数字にすると、常駐体が書いた入札を
+# 請負側が延長する前に失効させてしまう。
+_BOARD_BID_LEASE_SEC = 900.0
+# 心拍だけの `nodes/<pc>.json` 更新の律速（秒）。板は git リポジトリなので、30 秒 tick の
+# たびに心拍を書き換えるとコミットが積み上がる。読む側は fresh_after_sec との比較で
+# 生死を見るので、その猶予（下の係数）を割らない範囲で書かなければよい。
+_NODE_HEARTBEAT_INTERVAL_SEC = 300.0
+_NODE_FRESH_FACTOR = 4.0     # fresh_after_sec = 心拍間隔 × これ
 
 
 def _agents_home() -> Path:
@@ -265,6 +280,170 @@ def _sweep_terminal_delegations(host: "HostConfig") -> dict:
     return {"delegations": removed} if removed else {}
 
 
+def node_commands_dir() -> Path:
+    """ノード宛て指示ドロップの置き場（`schemas/agent-node-command.schema.json`）。
+
+    `$AGENT_COMMANDS_DIR` > `~/.agents/commands`。`$AGENT_CONTROL_DIR`（望ましい状態）・
+    `$AGENT_BUDGET_DIR`（予算）と同じノードスコープの並びで、**プロジェクトの `commands/` とは
+    別物**——板はプロジェクトに属さないので、プロジェクト経由の口しか無いとプロジェクトを
+    1 つも持たない PC（ワーカーノード）から板を操作できない。"""
+    override = os.environ.get("AGENT_COMMANDS_DIR")
+    return Path(override) if override else (_agents_home() / "commands")
+
+
+def _node_capability(host: "HostConfig") -> dict:
+    """host.yaml の宣言 → 板の `nodes/<node-id>.json`（`board.schema.json` の `$defs.node`）。
+
+    **`repos` に host.yaml の `repos[]`（url + local）をそのまま載せる**のが S3-5 / 積み残し
+    P1-a の実体。`local` は他ノードにとっては意味を持たない絶対パスだが、板の契約が
+    「速度最適化のヒント」として持つと決めた項目で、入札可否は url ベースで決める
+    （`local` の有無で入札を変えない）。
+    """
+    workloads = ["flow"] + (["amigos"] if host.amigos_bus else [])
+    cap = NodeCapability(
+        node=host.node_id,
+        workloads=workloads,
+        tags=list(host.tags),
+        agent_cli=list(host.agent_cli),
+        repos=[dict(r) for r in host.repos] or None,
+        availability=_availability_declaration(host),
+        max_concurrent=host.max_concurrent,
+        heartbeat=datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        fresh_after_sec=_NODE_HEARTBEAT_INTERVAL_SEC * _NODE_FRESH_FACTOR,
+    )
+    return cap.to_dict()
+
+
+def _availability_declaration(host: "HostConfig") -> "str | None":
+    """稼働時間帯の宣言を板の語彙（`"HH:MM-HH:MM TZ"`）へ。宣言が無ければ None（常時稼働）。
+
+    host.yaml が持つのは停止時刻（`daily_stop`）だけで開始時刻は無い——「止まる時刻」しか
+    宣言していないものを勝手に区間へ広げると、読む側に無い情報を作ることになる。
+    停止時刻からその直前までを 1 日の稼働と読める形にして、時刻の解釈は読む側に委ねる。"""
+    av = host.availability or {}
+    stop = str(av.get("daily_stop") or "").strip()
+    if not stop:
+        return None
+    tz = str(av.get("timezone") or "").strip()
+    return f"-{stop} {tz}".strip() if tz else f"-{stop}"
+
+
+def _board_intake_projects(host: "HostConfig") -> "list[str]":
+    """落札した仕事を**実際に取り込めて実行できる**プロジェクト経路の名前一覧。
+
+    板の請負は `agent-flow participate`（プロジェクトのバス経由）が担うので、
+    バスを持つプロジェクトが 1 つも無いノード（＝ワーカーノード）は落札しても行き先が無い。
+    dashboard の手動入札ボタンはこの一覧が空かどうかで可否を決める——空のノードで
+    ボタンを出すと「押せるのに何も起きない」になる（ノード直轄実行 R2b が入るまでの事実）。"""
+    return [_project_name(p) for p in host.projects if str(p.get("root") or "").strip()]
+
+
+def _ingest_node_commands(host: "HostConfig", board: "BoardRepo",
+                          status: "EngineStatus") -> "list[str]":
+    """ノード宛て指示（`~/.agents/commands/*.json`）を取り込む。実行した指示の一覧を返す。
+
+    形（`<name>.json` / `processed/` / `.err`）と述語は `agentcore.commands` と共有する
+    ——プロジェクト配下の `commands/` と 2 種類の挙動を作らない（利用者から見えるのは
+    「送信済み → 受理済み → 失敗バナー」の同じ 1 つの流れ）。
+    """
+    cdir = node_commands_dir()
+    done: "list[str]" = []
+    for path in _cmddrop.pending(cdir):
+        name = os.path.basename(path)
+        rec, why = _cmddrop.read_command(path)
+        if rec is None:
+            _cmddrop.reject(path, why)
+            status.record_error(f"node command {name}: {why}")
+            continue
+        action = str(rec.get("command") or "").strip()
+        did = str(rec.get("id") or "").strip()
+        reason = str(rec.get("reason") or "").strip()
+        target = str(rec.get("board") or "").strip()
+        if target and target != host.board:
+            # 別の板宛ての指示を、宣言している板へ黙って適用しない。
+            _cmddrop.reject(path, f"このノードの板と一致しません（宣言: {host.board or '未設定'}）")
+            continue
+        if action not in ("board-bid", "board-cancel", "board-award"):
+            _cmddrop.reject(path, f"未知の指示です: {action or '(空)'}")
+            continue
+        if not did:
+            _cmddrop.reject(path, f"{action} には id（委譲 id）が必要です")
+            continue
+        if board.read_post(did) is None:
+            _cmddrop.reject(path, f"板に公示がありません: {did}")
+            continue
+        if board.is_terminal(did):
+            _cmddrop.reject(path, f"終端済みの公示です（成果確定または中止済み）: {did}")
+            continue
+        detail = ""
+        if action == "board-bid":
+            board.write_bid(did, host.node_id, _BOARD_BID_LEASE_SEC,
+                            workload=str(board.read_post(did).get("workload") or "flow"))
+            detail = f"{host.node_id} が入札しました"
+        elif action == "board-cancel":
+            board.write_cancelled(did, reason, host.node_id)
+            detail = "中止しました"
+        else:
+            node = str(rec.get("node") or "").strip()
+            if not node:
+                _cmddrop.reject(path, "board-award には node（落札ノード）が必要です")
+                continue
+            board.write_award(did, node, host.node_id)
+            detail = f"{node} に落札しました"
+        board.sync_push(f"{action} {did} by {host.node_id}")
+        _cmddrop.write_receipt(cdir, name, {"action": action, "id": did, "detail": detail})
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        done.append(f"{action}:{did}")
+    return done
+
+
+def _board_participate_tick(host: "HostConfig", status: "EngineStatus") -> None:
+    """板 tick（30s・設計 §4.2 の周期表「板（入札・依頼）」／実装計画 §7 R2a）。
+
+    やること: 板の同期 → ノード能力宣言の書き出し → ノード宛て指示の取り込み →
+    `engine/status.json` の `board` ブロック更新。**入札の自動判断はここでは行わない**——
+    自動入札は各ツールの `participate`（プロジェクトのバス経由）が担っており、ここに 2 つ目の
+    入札主体を置くと同じノードが二重に落札しにいく。ここが書く入札は「人が押した」分だけ。
+    """
+    if not host.board:
+        status.board = {"configured": False}
+        return
+    board_state = {
+        "configured": True,
+        "location": host.board,
+        "node_id": host.node_id,
+        "contract_version": CONTRACT_VERSION,
+        "intake_projects": _board_intake_projects(host),
+        "last_tick": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "last_error": None,
+    }
+    try:
+        board = BoardRepo(host.board, workdir=host.board_workdir)
+        board.sync_pull()
+        if board.write_node(_node_capability(host),
+                            heartbeat_interval=_NODE_HEARTBEAT_INTERVAL_SEC):
+            board.sync_push(f"node {host.node_id}")
+        _ingest_node_commands(host, board, status)
+        open_ids, my_bids = [], []
+        for did in board.list_delegations():
+            if board.is_terminal(did) or board.read_post(did) is None:
+                continue
+            open_ids.append(did)
+            if board.has_live_bid(did, host.node_id):
+                my_bids.append(did)
+        board_state["open_delegations"] = len(open_ids)
+        board_state["my_bids"] = my_bids
+    except (OSError, RuntimeError, ValueError) as e:
+        # 板が落ちている・クローンが壊れている等。tick を落とさず状態に残す——ここで例外を
+        # 上げると Scheduler が隔離し、板が復帰しても次の周期で自然に治らない。
+        board_state["last_error"] = str(e)[:300]
+        status.record_error(f"board tick: {e}")
+    status.board = board_state
+
+
 def _observe_sync_health(roots_by_name: dict) -> "list[SyncHealth]":
     """登録プロジェクトごとの同期健康を観測する（設計 §5・実装計画 W2-5）。
 
@@ -427,6 +606,11 @@ def _flow_participate_tick(host: "HostConfig", pool: "NodeWorkerPool",
         cmd = _project_cmd(project, "flow-participate", "--json")
         if running:
             cmd += ["--running", ",".join(running)]
+        # 板の入札選別に使うノード宣言（repos / tags / agent_cli）の在処を子へ渡す。
+        # 常駐体が非既定の host.yaml（`--host-config`）で動いているとき、子だけが
+        # 既定の探索順で別の宣言を読むと、入札の可否が親子で食い違う。
+        if host.path:
+            cmd += ["--node-declaration", str(host.path)]
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True,
                                   timeout=_FLOW_TICK_TIMEOUT_SEC)
@@ -546,6 +730,11 @@ def _build_resident(host: "HostConfig", *, start_children: bool = True):
         status.tick_counts["flow"] = status.tick_counts.get("flow", 0) + 1
         write_status()
 
+    def tick_board() -> None:
+        _board_participate_tick(host, status)
+        status.tick_counts["board"] = status.tick_counts.get("board", 0) + 1
+        write_status()
+
     def tick_gc() -> None:
         run_gc(_project_gc_sweepers(host) + [("board", lambda: _sweep_terminal_delegations(host))],
               on_event=lambda name, ev, exc: (status.record_error(f"gc {name}: {exc}")
@@ -565,6 +754,9 @@ def _build_resident(host: "HostConfig", *, start_children: bool = True):
     sched = Scheduler([Tick("supervise", 5.0, tick_supervise),
                        Tick("amigos", 5.0, tick_amigos, timeout=_AMIGOS_TICK_TIMEOUT_SEC),
                        Tick("flow", 5.0, tick_flow, timeout=flow_budget),
+                       # 板 tick は 30s（設計 §4.2 の周期表）。short-lived——入札の意思を
+                       # 板へ書くだけで、落札した仕事の実行は flow tick 側の経路に任せる。
+                       Tick("board", 30.0, tick_board, timeout=_BOARD_TICK_TIMEOUT_SEC),
                        Tick("gc", 600.0, tick_gc, timeout=gc_budget)],
                       on_tick_error=lambda name, exc: status.record_error(f"{name}: {exc}"))
     return sup, sched, status, write_status, pool

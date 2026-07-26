@@ -679,25 +679,12 @@ def _reject_command(cfg: "Config", f: Path, why: str) -> None:
     退避先には失敗理由も書く。以前は元の JSON をそのまま改名するだけだったので、
     「なぜ通らなかったか」は journal を grep しないと分からず、画面には成功トーストだけが
     出ていた（承認を押しても何も起きない、と繰り返し報告された不具合の一因）。
-    元の指示は `command` として保持し、消費側が理由と一緒に読めるようにする。"""
+    元の指示は `command` として保持し、消費側が理由と一緒に読めるようにする。
+
+    退避そのものは `agentcore.commands.reject`（ノードスコープの指示ドロップと共有する土台）。
+    journal への記録だけがプロジェクト固有なのでここに残す。"""
     append_journal(cfg.journal, f"commands 取り込み失敗: {f.name}: {why}")
-    dest = f.with_name(f.name + ".err")
-    try:
-        try:
-            rec = json.loads(f.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            rec = None
-        payload = {"error": why, "failed_at": _now_ts(), "command": rec}
-        dest.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        f.unlink()
-    except OSError:
-        try:
-            f.rename(dest)
-        except OSError:
-            try:
-                f.unlink()
-            except OSError:
-                pass
+    _cmddrop.reject(f, why, now=_now_ts())
 
 
 def _clear_rejected_commands(cfg: "Config", tid: str) -> None:
@@ -739,51 +726,25 @@ _RECEIPT_TTL_SEC = 24 * 3600              # かつ、これより古い受理レ
 
 
 def commands_receipts_dir(cfg: "Config") -> Path:
-    return commands_dir(cfg) / "processed"
+    return Path(_cmddrop.receipts_dir(commands_dir(cfg)))
 
 
 def _prune_command_receipts(cfg: "Config") -> None:
     """受理レシートを件数上限と TTL で掃除する（commands/ 履歴の肥大を防ぐ）。"""
-    rdir = commands_receipts_dir(cfg)
-    try:
-        files = sorted(rdir.glob("*.json"), key=lambda p: p.stat().st_mtime)
-    except OSError:
-        return
-    now = time.time()
-    survivors: "list[Path]" = []
-    for p in files:
-        try:
-            if now - p.stat().st_mtime > _RECEIPT_TTL_SEC:
-                p.unlink()
-            else:
-                survivors.append(p)
-        except OSError:
-            pass
-    for p in survivors[:max(0, len(survivors) - _RECEIPT_KEEP)]:
-        try:
-            p.unlink()
-        except OSError:
-            pass
+    _cmddrop.prune_receipts(commands_dir(cfg), keep=_RECEIPT_KEEP, ttl_sec=_RECEIPT_TTL_SEC)
 
 
 def _write_command_receipt(cfg: "Config", f: Path, action: str, tid: str,
                            detail: str = "") -> None:
     """取り込みに成功した指示の受理レシートを processed/<name>.json にアトミックに残す。
     viewer が元ファイル名（source）で自分の『送信済み』表示を『受理済み』へ更新できる。"""
-    rdir = commands_receipts_dir(cfg)
-    try:
-        rdir.mkdir(parents=True, exist_ok=True)
-        payload = {"ok": True, "action": action, "id": tid,
-                   "processed_at": _now_ts(), "source": f.name}
-        if detail:
-            payload["detail"] = detail[:500]
-        dest = rdir / f.name
-        tmp = dest.with_name(dest.name + ".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, dest)
-        _prune_command_receipts(cfg)
-    except OSError:
-        pass                                  # レシートは best-effort（本処理は既に成功している）
+    payload = {"action": action, "id": tid}
+    if detail:
+        payload["detail"] = detail[:500]
+    # 時刻はプロジェクト側の共通形式（人間可読のローカル時刻）を保つ——dashboard は
+    # レシートの processed_at を文字列比較で「最新の 1 件」に畳むので、書式を混ぜない。
+    _cmddrop.write_receipt(commands_dir(cfg), f.name, payload, now=_now_ts(),
+                           keep=_RECEIPT_KEEP, ttl_sec=_RECEIPT_TTL_SEC)
 
 
 def _read_command(f: Path) -> "tuple[dict | None, str]":
@@ -791,14 +752,9 @@ def _read_command(f: Path) -> "tuple[dict | None, str]":
 
     「取り込めるか」の唯一の判定点。has_work（起床するか）と ingest_commands（処理するか）が
     同じ述語を共有するために切り出してある。両者が食い違うと、起床したのに取り込めないパスが
-    生まれ、そのパスが charter を再評価して承認済みマイルストーンを書き直してしまう。"""
-    try:
-        rec = json.loads(f.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as e:
-        return None, f"JSON 解析失敗: {e}"
-    if not isinstance(rec, dict):
-        return None, "オブジェクトではない"
-    return rec, ""
+    生まれ、そのパスが charter を再評価して承認済みマイルストーンを書き直してしまう。
+    実体は `agentcore.commands.read_command`——ノードスコープの指示ドロップと同じ述語を使う。"""
+    return _cmddrop.read_command(f)
 
 
 def ingest_commands(cfg: "Config") -> "list[str]":

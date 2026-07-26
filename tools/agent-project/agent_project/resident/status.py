@@ -124,6 +124,11 @@ class EngineStatus:
     # （設計 §6・実装計画 W2-5）。載せないと、古い常駐体が新しい dashboard に対して
     # 静かに一部の情報を欠いたまま「正常」に見える。
     contract_version: int = CONTRACT_VERSION
+    # 板（agent-board）への参加状況（R2a）。dashboard が「この端末は板に参加しているか・
+    # 手動入札できるか」を判断する**唯一の根拠**——dashboard が host.yaml と agent-flow の
+    # 設定を自前で読み解いて判定すると、宣言の解釈が 2 実装になる（S1 で畳んだはずの
+    # 二重宣言が別の場所に戻る）。板未設定なら {"configured": false}。
+    board: "dict | None" = None
     # 直近エラーのリングバッファ上限（設計 §5「直近エラーのリングバッファ」）。
     max_recent_errors: int = 50
 
@@ -141,6 +146,7 @@ class EngineStatus:
         return {
             "node": self.node,
             "contract_version": self.contract_version,
+            "board": dict(self.board) if isinstance(self.board, dict) else None,
             "heartbeat": self.heartbeat,
             "tick_counts": dict(self.tick_counts),
             "sync_health": [

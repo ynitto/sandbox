@@ -41,6 +41,9 @@ from agentcore import transport as _transport  # noqa: E402
 # 素の write_text を使うと読み手（別プロセスの agent-flow / dashboard）が途中書きを掴み、
 # JSON パースに失敗して「run が存在しない」と誤読する。
 from agentcore.protocol import write_json_atomic  # noqa: E402
+# 名前空間付き claim（lease 付き入札・(ts, who) タイブレーク）。板への手動入札は
+# 自動入札とまったく同じアルゴリズムで書く——UI 側にも常駐体側にも 2 つ目の実装を作らない。
+from agentcore import protocol as _protocol  # noqa: E402
 # git URL の正規化一致と「このノードのローカルクローン」解決（S3）。同じ判定を
 # agent-project / agent-flow(gitcache・board) が別々に実装していて吸収規則が食い違い、
 # 同じ 2 つの URL が経路によって一致したりしなかったりしていた（agentcore.nodeid と同型の問題）。
@@ -50,6 +53,13 @@ from agentcore import repolocal as _repolocal  # noqa: E402
 # agent-project / agent-flow / agent-amigos / dashboard の 4 か所に重複しており、
 # 同じ CLI でもツールによってフラグが違う状態になっていた（repolocal と同型の問題）。
 from agentcore import agentcli as _agentcli  # noqa: E402
+# 指示ドロップ（commands/<name>.json ＋ processed/ ＋ .err）の取り込み規約。プロジェクト配下と
+# ノードスコープ（~/.agents/commands/・板の操作）で同じ形を使う——2 実装にすると、利用者から
+# 見える挙動（送信済み → 受理済み → 失敗バナー）が 2 種類になる。
+from agentcore import commands as _cmddrop  # noqa: E402
+# 板（agent-board）の入札選別規則とノード契約バージョン。agent-flow / agent-amigos が
+# 「同じ仕様・別実装」で持っていたものの集約先（repolocal と同型の問題）。
+from agentcore import board as _boardrules  # noqa: E402
 # リトライのバックオフ待ちの唯一の seam（agentcore.transport.backoff_sleep）。素の time.sleep を
 # 差し替えると stdlib の subprocess 内部（プロセス終了の 0.001s 倍々ポーリング）にも効いてしまい、
 # 高負荷時だけテストが壊れる。リトライ経路はこの名前を通す。

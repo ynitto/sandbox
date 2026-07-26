@@ -95,6 +95,9 @@ def main(argv=None) -> int:
     _add_common(fp); fp.add_argument("--json", action="store_true", help="JSON で出力")
     fp.add_argument("--running", default="",
                     help="常駐体が今走らせている / これから走らせる run-id（カンマ区切り）")
+    fp.add_argument("--node-declaration", dest="node_declaration", default="",
+                    help="このノードの宣言（agent-project.host.yaml）のパス。板の入札選別に使う "
+                         "repos / tags / agent_cli の供給元として agent-flow へ渡す")
 
     fr = sub.add_parser("flow-run")
     _add_common(fr); fr.add_argument("--run-id", dest="run_id", required=True,
@@ -318,7 +321,8 @@ def main(argv=None) -> int:
         "run": lambda: cmd_run(cfg),
         "gc": lambda: cmd_gc(cfg, getattr(args, "json", False)),
         "flow-participate": lambda: cmd_flow_participate(
-            cfg, getattr(args, "running", "") or "", getattr(args, "json", False)),
+            cfg, getattr(args, "running", "") or "", getattr(args, "json", False),
+            getattr(args, "node_declaration", "") or ""),
         "flow-run": lambda: cmd_flow_run(cfg, getattr(args, "run_id", "")),
         "triage": lambda: cmd_triage(cfg),
         "needs": lambda: cmd_needs(cfg),

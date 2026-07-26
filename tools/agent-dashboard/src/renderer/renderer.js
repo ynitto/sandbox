@@ -43,6 +43,11 @@ const state = {
   coworkSelections: {}, // project path → selected routine id
   coworkSearches: { cowork: '' },
   coworkHistoryCache: RoutineUiCache.createBoundedAsyncCache({ max: 12, ttlMs: 60000 }),
+  // 委譲公示板（agent-board）の観測（S8-1）。板は端末単位なのでプロジェクト選択と独立。
+  boardStatus: null,   // engine/status.json の board ブロック（参加状況・手動入札の可否）
+  boardViews: [],      // 板の公示（正規化ビュー）
+  boardNodes: [],      // 板の参加ノード（nodes/<id>.json）
+  boardCommands: {},   // 投函したノード宛て指示の状況（送信済み → 受理済み / 失敗）
   amigos: null, // amigos:overview のスナップショット { missions, budget, errors }
   amigosBudgetSaving: false,
   amigosReject: null, // 修正依頼ダイアログの対象 { home, missionId }
@@ -639,8 +644,26 @@ async function refreshDiscovery() {
   // 稼働状況（engine/status.json）が発見の根拠でもあるので、一覧より先に取る。
   state.engine = await api.engineStatus().catch(() => null);
   state.discovery = await api.discover();
+  await refreshBoard();
   renderTree();
   checkNeedsNotifications();
+}
+
+// 委譲公示板の観測（S8-1）。参加できるか・出した仕事が誰に拾われたかを、
+// 板のファイルだけから読む（dashboard は板へ書かない）。板未設定なら空で通す。
+async function refreshBoard() {
+  state.boardStatus = (state.engine && state.engine.board) || null;
+  if (!state.boardStatus || !state.boardStatus.configured) {
+    state.boardViews = [];
+    state.boardCommands = {};
+    state.boardNodes = [];
+    return;
+  }
+  const list = await api.delegationList({ only: 'board' }).catch(() => null);
+  state.boardViews = (list && list.items) || [];
+  state.boardCommands = (list && list.commands) || {};
+  const nodes = await api.delegationNodes().catch(() => null);
+  state.boardNodes = (nodes && nodes.nodes) || [];
 }
 
 // 要対応カウントの増分を計算する純関数（副作用なし・テスト対象）。
@@ -1438,6 +1461,38 @@ async function openFailureDiagnosis(needId) {
   if (!$('dlg-doctor').open) $('dlg-doctor').showModal();
   await askDoctor();
   $('doctor-prompt').focus();
+}
+
+// 失敗診断を対話セッションで開く（S9-4）。ヘッドレスの openFailureDiagnosis と**同じ文脈**を
+// 使う（buildDoctorContext の 1 実装）。違うのは渡し方だけ——ブリーフ 1 行 ＋ 全文ファイルの
+// パスを tmux セッションへ送り、以後は人がその窓で会話する。
+async function openFailureDiagnosisChat(needId) {
+  if (state.doctorBusy) return;
+  const need = state.project && state.project.needs.find((item) => item.id === needId);
+  if (!need || !canDiagnoseNeed(need)) return toast('診断できる失敗情報が見つかりません');
+  const prevMode = state.doctorMode;
+  const prevNeed = state.doctorNeedId;
+  state.doctorBusy = true;
+  state.doctorMode = 'failure-diagnosis';
+  state.doctorNeedId = need.id;
+  try {
+    const context = await buildDoctorContext();
+    const res = await api.agentDoctorChat({
+      dir: state.project ? state.project.dir : null,
+      context,
+      needId: need.id,
+    });
+    // 読み取り専用を「保証できない」CLI では、その事実を人に見せる（S9 §6-1 の決着）。
+    // 防御は持たない代わりに、判断材料は渡す。
+    if (res.readonlyWarning) toast(`${res.readonlyWarning}。開いた窓の操作にご注意ください`);
+    toast(res.message || `${res.cli} で対話診断を開きました`, !res.readonlyWarning);
+  } catch (err) {
+    toast(`対話診断を開けませんでした: ${err.message || err}`);
+  } finally {
+    state.doctorBusy = false;
+    state.doctorMode = prevMode;
+    state.doctorNeedId = prevNeed;
+  }
 }
 
 async function openPlanCritique(needId) {

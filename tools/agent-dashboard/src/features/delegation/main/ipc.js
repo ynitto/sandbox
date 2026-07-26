@@ -11,6 +11,7 @@ const contract = require('./contract');
 const amigosAdapter = require('./amigos-adapter');
 const flowAdapter = require('./flow-adapter');
 const boardAdapter = require('./board-adapter');
+const nodeCommands = require('./node-commands');
 const amigosHomes = require('../../amigos/main/homes');
 const amigosMissions = require('../../amigos/main/missions');
 
@@ -45,14 +46,19 @@ function registerIpc(ctx) {
 
   // 一覧: 両エンジンのライフサイクルを正規化ビューに揃えて返す（入札状況込み）。
   // amigos は発見済みホームのバス、flow は設定 delegation.flowBusDirs のバスから読む。
-  handle('delegation:list', () => {
+  //
+  // `{ only: 'board' }` は板だけを読む（S8-1）。タスク画面の「委任先」1 行や参加タブの候補は
+  // 板の情報しか要らないのに、amigos ホームの探索と flow バスの走査まで毎回引き連れると
+  // 画面の更新が重くなる。
+  handle('delegation:list', (payload) => {
     const cfg = loadConfig();
     const items = [];
     const errors = [];
     const now = Date.now() / 1000;
+    const only = String((payload || {}).only || '');
 
     // amigos: ミッション近似ビュー → 正規化ビュー（assignments/ から入札も読む）
-    try {
+    if (only !== 'board') try {
       const homeList = amigosHomes.discoverHomes(cfg);
       const ov = amigosMissions.overview(cfg, homeList.map((h) => h.busDir));
       const byBus = new Map(
@@ -73,7 +79,7 @@ function registerIpc(ctx) {
     }
 
     // flow: 設定されたバスの run → 正規化ビュー
-    for (const busDir of resolveFlowBusDirs(cfg)) {
+    for (const busDir of (only === 'board' ? [] : resolveFlowBusDirs(cfg))) {
       try {
         for (const view of flowAdapter.listViews(busDir)) {
           view.busDir = busDir;
@@ -97,7 +103,42 @@ function registerIpc(ctx) {
     }
 
     items.sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
-    return { items, errors };
+    return { items, errors, commands: nodeCommands.nodeCommandStatus(cfg) };
+  });
+
+  // 板の参加ノード一覧（`nodes/<node-id>.json`）。書き手は各 PC の常駐体（board tick）で、
+  // ここは読むだけ。全体設定の「板への参加」表が使う（S8-1）。
+  handle('delegation:nodes', () => {
+    const cfg = loadConfig();
+    const nodes = [];
+    const errors = [];
+    for (const boardRepo of resolveBoardRepos(cfg)) {
+      try {
+        for (const rec of boardAdapter.listNodes(boardRepo)) {
+          nodes.push({ ...rec, boardRepo });
+        }
+      } catch (e) {
+        errors.push(`board ${boardRepo}: ${e.message}`);
+      }
+    }
+    nodes.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    return { nodes, errors };
+  });
+
+  // ノード宛て指示の投函（S8-2 / S8-3）。板へ直接書かず、この PC の常駐体へ渡す——
+  // `git+` 板では dashboard の直接書き込みが誰にも届かないうえ、入札の claim 規則を
+  // UI 側に複製しないため（board-adapter の award/cancel 直書きはここへ移した）。
+  handle('delegation:nodeCommand', (payload) => {
+    const p = payload || {};
+    if (!contract.ID_RE.test(String(p.id || ''))) throw new Error(`不正な id です: ${p.id}`);
+    const res = nodeCommands.dropNodeCommand(loadConfig(), {
+      action: String(p.action || ''),
+      id: String(p.id || ''),
+      board: String(p.boardRepo || ''),
+      node: String(p.node || ''),
+      reason: String(p.reason || ''),
+    });
+    return { id: p.id, action: p.action, file: res.file };
   });
 
   // 公示（post）: renderer の部分ペイロード → 封筒化・検証 → workload でルーティング。
@@ -117,7 +158,12 @@ function registerIpc(ctx) {
       const node = String(p.node || '');
       if (!contract.ID_RE.test(id)) throw new Error(`不正な id です: ${p.id}`);
       if (!node) throw new Error('award には node（落札ノード）が必要です');
-      return { id, target: 'board', ...boardAdapter.award(String(p.boardRepo || ''), { id, node }) };
+      // 板へは常駐体が書く（直接書き込みは `git+` 板で誰にも届かない）。
+      const res = nodeCommands.dropNodeCommand(loadConfig(), {
+        action: 'board-award', id, node, board: String(p.boardRepo || ''),
+        reason: String(p.reason || ''),
+      });
+      return { id, target: 'board', file: res.file };
     }
     const env = contract.buildEnvelope('award', p);
     return {
@@ -146,7 +192,13 @@ function registerIpc(ctx) {
     const env = contract.buildEnvelope('cancel', p);
     const cfg = loadConfig();
     if (p.target === 'board') {
-      return { id: env.id, target: 'board', ...boardAdapter.cancel(String(p.boardRepo || ''), env) };
+      // 板の cancelled.json を書くのは常駐体（S8-2）。dashboard が板の作業クローンへ
+      // 直接書いても push する主体が居らず、`git+` 板では黙って効かないボタンだった。
+      const res = nodeCommands.dropNodeCommand(cfg, {
+        action: 'board-cancel', id: env.id, board: String(p.boardRepo || ''),
+        reason: String(env.reason || ''),
+      });
+      return { id: env.id, target: 'board', file: res.file };
     }
     if (env.workload === 'amigos') {
       return {

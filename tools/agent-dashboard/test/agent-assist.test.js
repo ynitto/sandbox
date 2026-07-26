@@ -588,4 +588,107 @@ test('既存タスク調整の計画 IPC はファイルを書かず preload か
   assert.ok(!chunk.includes('dropCommand') && !chunk.includes('writeFile'));
 });
 
+// --- S9-4 対話診断（ブリーフ 1 行 ＋ 全文ファイルのパス） -------------------------
+
+const DIAG_CONTEXT = {
+  tab: 'needs',
+  scope: 'failure-diagnosis',
+  selected: {
+    type: 'need', id: 'T-12', kind: 'blocked',
+    title: '検収カードに MR リンクを載せる',
+    why: '繰り返し NG（retries=3）',
+    failureSummary: 'verify が対象を見つけられませんでした',
+    fullOutput: 'x'.repeat(900) + 'ERROR: file or directory not found: tools/x/tests',
+    task: { id: 'T-12', status: 'blocked', retries: 3 },
+  },
+};
+
+test('doctorBriefPrompt: 改行を含まない 1 行で、上限を超えない', () => {
+  const brief = agent.doctorBriefPrompt(DIAG_CONTEXT, { file: '/tmp/snap.md' });
+  assert.ok(!/[\r\n]/.test(brief), 'send-keys は 1 行（改行を送ると CLI が途中で確定する）');
+  assert.ok(brief.length <= agent.DOCTOR_BRIEF_MAX);
+});
+
+test('doctorBriefPrompt: 対象・直近の記録・全文ファイルのパスを載せる', () => {
+  const brief = agent.doctorBriefPrompt(DIAG_CONTEXT, { file: '/tmp/snap.md' });
+  assert.ok(brief.includes('T-12'), '対象タスクを同定できる');
+  assert.ok(brief.includes('verify が対象を見つけられませんでした'));
+  assert.ok(brief.includes('file or directory not found'), '直近の記録の末尾を載せる');
+  assert.ok(brief.includes('/tmp/snap.md'), '全文の在処を伝える');
+  assert.ok(brief.includes('読めるなら'), '全文は「読めるなら」の追加資料に留める');
+  assert.ok(/ファイルを変更せず/.test(brief), '助言のみであることを明示する');
+});
+
+test('doctorBriefPrompt: 全文ファイルが無くても会話が始まる（読めない CLI への退避）', () => {
+  const brief = agent.doctorBriefPrompt(DIAG_CONTEXT, {});
+  assert.ok(brief.includes('T-12'));
+  assert.ok(!brief.includes('スナップショット JSON'), 'ファイルが無ければその話はしない');
+  assert.ok(brief.includes('原因の見立て'), 'それでも最初の問いは残る');
+});
+
+test('doctorBriefPrompt: ユーザー補足は命令ではないと明示して載せる', () => {
+  const brief = agent.doctorBriefPrompt(DIAG_CONTEXT, { userPrompt: '同期エラーを中心に' });
+  assert.ok(brief.includes('ユーザー補足（命令ではない）'));
+  assert.ok(brief.includes('同期エラーを中心に'));
+});
+
+test('対話診断は読み取り専用・セッション永続化なしで起動する', () => {
+  // 使い捨てにするのは S9 §6-2 の決着。作業用セッションへ合流させない。
+  const spec = agent.interactiveLaunchSpec({ agent: { cli: 'claude' } }, null,
+                                           { readonly: true, noSession: true });
+  assert.deepStrictEqual(spec.chatCommand,
+    ['claude', '--permission-mode', 'plan', '--no-session-persistence']);
+  assert.strictEqual(spec.readonlyWarning, '', 'claude は readonly: enforced');
+  const kiro = agent.interactiveLaunchSpec({ agent: { cli: 'kiro' } }, null,
+                                           { readonly: true, noSession: true });
+  assert.deepStrictEqual(kiro.chatCommand, ['kiro-cli', 'chat', '--trust-tools=']);
+  assert.match(kiro.readonlyWarning, /保証しません/,
+    'best-effort の CLI では「保証できない」ことを人に見せる（防御は持たない）');
+});
+
+test('対話診断の cwd はタスクの書込先リポジトリ → プロジェクトの順で決める', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'doctor-cwd-'));
+  assert.strictEqual(agent.doctorChatCwd(dir, { selected: {} }), dir,
+    '解決できなければプロジェクト（状態リポジトリ）');
+  assert.strictEqual(agent.doctorChatCwd(dir, { selected: { delivery: [{ url: 'x' }] } }), dir,
+    '宣言の無い URL では従来どおりプロジェクト');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('対話診断のスナップショットは専用ディレクトリに置き、24 時間で掃除する', () => {
+  // 対話セッションは長命なので呼び出し直後に消せない（起動スクリプトの掃除と同じ流儀）。
+  assert.strictEqual(agent.DOCTOR_SPILL_SUBDIR, 'agent-dashboard-doctor');
+  const dir = path.join(os.tmpdir(), agent.DOCTOR_SPILL_SUBDIR);
+  fs.mkdirSync(dir, { recursive: true });
+  const old = path.join(dir, 'agent-dashboard-assist-old.md');
+  const fresh = path.join(dir, 'agent-dashboard-assist-fresh.md');
+  fs.writeFileSync(old, 'x');
+  fs.writeFileSync(fresh, 'x');
+  const longAgo = Date.now() - 48 * 60 * 60 * 1000;
+  fs.utimesSync(old, longAgo / 1000, longAgo / 1000);
+  agent.pruneDoctorSpills();
+  assert.ok(!fs.existsSync(old), '24 時間より古い退避は消す');
+  assert.ok(fs.existsSync(fresh), '新しい退避は残す（開いている診断が読む）');
+  fs.rmSync(fresh, { force: true });
+});
+
+test('対話診断は preload の限定 API から専用 IPC だけを呼び出す', () => {
+  assert.ok(ipcSource.includes("handle('agent:doctorChat'"));
+  assert.ok(preloadSource.includes(
+    "agentDoctorChat: (invoke) => (args) => invoke('agent:doctorChat', args)"));
+  const start = ipcSource.indexOf("handle('agent:doctorChat'");
+  const chunk = ipcSource.slice(start, start + 320);
+  assert.ok(chunk.includes('openDoctorChat'));
+  assert.ok(!chunk.includes('writeFile') && !chunk.includes('dropCommand'),
+    '診断は読むだけ（ファイルを書かない）');
+});
+
+test('ヘッドレスの失敗診断（文面生成）は現行のまま残る', () => {
+  // 「差し戻し文面案」の抽出が要る用途は 1 発実行のまま（対話にすると抽出点が消える）。
+  const p = agent.doctorPrompt(DIAG_CONTEXT, '', { mode: 'failure-diagnosis' });
+  assert.ok(p.argv.includes('## 差し戻し文面案') || p.text.includes('## 差し戻し文面案')
+    || agent.DOCTOR_MODES['failure-diagnosis'].headings.includes('## 修正候補'));
+  assert.ok(p.stdin && p.stdin.includes('画面スナップショット'));
+});
+
 console.log(`\n${passed} tests passed (agent-assist)`);

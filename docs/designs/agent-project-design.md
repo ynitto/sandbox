@@ -77,7 +77,7 @@ agent-project は、バックログを優先順位付けして実行へ委譲し
 
 ### 3. 常駐は PC に 1 本だけ持ち、プロジェクトループはその子にする
 
-**判断**: `agent-project serve` が host.yaml に宣言されたプロジェクトを読み、それぞれに `run --watch` を子プロセスとして起こして監督する。子の起動・再起動・隔離・計画停止はすべて親が決める。周期仕事（amigos 参加、flow 参加、gc）も親の tick 表が持つ。
+**判断**: `agent-project serve` が host.yaml に宣言されたプロジェクトを読み、それぞれに `run --watch` を子プロセスとして起こして監督する。子の起動・再起動・隔離・計画停止はすべて親が決める。周期仕事（amigos 参加、flow 参加、板、gc）も親の tick 表が持つ。
 
 **文脈**: 以前は agent-project・agent-flow・agent-amigos がそれぞれ常駐しており、同じ PC に 3 つのループが回っていました。設定も生存監視も自動更新も三重で、どれが動いているのか運用者が把握できなくなっていました。
 
@@ -206,7 +206,20 @@ node_id は PC の身元で、板（agent-board）とプロトコル上の名義
 
 **その他の取り残し。** `location` の説明に残っていた `daemon` / `remote`（いまは `local` / `board` の 2 つ）、それに対応する納品書の分岐、旧停止経路のプロセスグループ送信、`capture_insight` に置き換わった一括追記、重複したフィールド定義を削除しました。
 
-残した既知の窓が 1 つあります。板の `nodes/<pc>.json`（ノード能力宣言）を書く実装がありません（契約の型と互換判定はあります）。いまの入札選別は各エンジンの設定（agent-flow の `board_repos` / `board_tags`）が担っており、ノード単位の宣言はまだノードの持ち物になっていません。
+~~残した既知の窓が 1 つあります。板の `nodes/<pc>.json`（ノード能力宣言）を書く実装がありません。~~
+→ **塞ぎました（2026-07-26・下記「板の請負」）。**
+
+## 板の請負 — ノードの持ち物になった宣言（2026-07-26）
+
+詳細は [S8/S9-4 詳細設計](../plans/2026-07-26-s8-s9-4-board-ui-and-doctor-chat-detailed-design.md)。設計上の位置づけだけをここに残します。
+
+**板 tick（30 秒）を親の周期表に足しました。** やることは 3 つ——板の同期、ノード能力宣言 `nodes/<pc>.json` の書き出し、ノード宛て指示（`~/.agents/commands/`）の取り込みです。**入札の自動判断はここに置きません。** 自動入札は従来どおり各プロジェクトの `participate`（agent-flow / agent-amigos）が担います。同じノードに 2 つ目の入札主体を置くと、二重落札を防ぐ規則が 2 実装になるからです。ここが書く入札は「人が押した」分だけ。
+
+**入札選別の宣言はノードの持ち物になりました。** host.yaml の `repos` / `tags` / `agent_cli` が正典で、agent-flow 設定の `board_repos` / `board_tags` / `board_agent_cli` は明示上書きへ降格しました（S1 が host.yaml 専有と決めた群が、agent-flow 側に残っていた取りこぼしの解消）。判定規則そのものは `agentcore.board.eligible` の 1 実装です——agent-flow と agent-amigos が「同じ仕様・別実装」で持っていて、片方だけ育つと同じ公示が経路によって拾えたり拾えなかったりします。
+
+**dashboard は板へ書きません。** 中止・落札・手動入札はノード宛て指示ドロップ（`schemas/agent-node-command.schema.json`）として投函され、板へ書いて push するのは常駐体だけです。プロジェクト配下の `commands/` ではなくノードスコープに置くのは、**板がプロジェクトに属さない**ため——プロジェクトを 1 つも持たない PC からも板を操作できる必要があります。
+
+**残る窓は「ノード直轄実行」です。** 落札した仕事を実行するのは、いまも各プロジェクトのバス経由（`poll_board` → inbox → `NodeWorkerPool`）です。プロジェクトを 1 つも持たないワーカーノードは落札しても行き先がありません。この事実は `engine/status.json` の `board.intake_projects` に出しており、dashboard はそれを見て手動入札のボタンを理由付きで非活性にします（操作だけ増えて実行できない状態を作らない）。実装は[実装計画 §7 R2b](../plans/2026-07-24-single-resident-controller-implementation-plan.md)。
 
 ## 付録
 

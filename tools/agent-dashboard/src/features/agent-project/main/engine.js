@@ -134,6 +134,31 @@ function readStatus(cfg) {
     recentErrors: (Array.isArray(data.recent_errors) ? data.recent_errors : []).slice(-20),
     children,
     runningRuns: Array.isArray(data.running_runs) ? data.running_runs : [],
+    // 委譲公示板への参加状況（R2a）。**この端末が板に参加しているか・手動入札できるかの
+    // 唯一の根拠**——dashboard が host.yaml と agent-flow の設定を自前で読み解くと、
+    // 宣言の解釈が 2 実装になる（S1 で畳んだ二重宣言が別の場所に戻る）。
+    board: normalizeBoardStatus(data.board, data.heartbeat),
+  };
+}
+
+// engine/status.json の board ブロック → 画面が読む形。板を宣言していない常駐体
+// （board 無し）と、board ブロックを載せる前の古い常駐体は、どちらも configured=false。
+function normalizeBoardStatus(raw, heartbeat) {
+  if (!raw || typeof raw !== 'object' || !raw.configured) {
+    return { configured: false, intakeProjects: [], myBids: [], openDelegations: 0 };
+  }
+  return {
+    configured: true,
+    location: String(raw.location || ''),
+    selfName: String(raw.node_id || ''),
+    contractVersion: Number(raw.contract_version || 0),
+    // 板 tick が 1 度も回っていなければ常駐体は動いていない（手動入札を届けられない）。
+    lastTick: String(raw.last_tick || ''),
+    lastError: raw.last_error || null,
+    intakeProjects: (Array.isArray(raw.intake_projects) ? raw.intake_projects : []).map(String),
+    openDelegations: Number(raw.open_delegations || 0),
+    myBids: (Array.isArray(raw.my_bids) ? raw.my_bids : []).map(String),
+    heartbeat: heartbeat || null,
   };
 }
 

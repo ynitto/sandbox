@@ -162,6 +162,14 @@ owner 失踪は TTL 超で奪取、終了で解放。
 **分散移譲（board）**: `board: <委譲公示板>`＋`policy.md` の `offload: <パターン>` 一致タスクは
 `board` に解決され、板へ公示する。請負側ノードの常駐体が入札・実行し、結果は次パスで回収する。
 
+請負側（板から仕事を受ける側）は `agent-project.host.yaml` の `board:` で参加を宣言する。
+常駐体の board tick（30 秒）が能力宣言 `nodes/<node-id>.json` を書き、dashboard から届いた
+指示（引き受け・中止・落札）を板へ反映する——**板へ書くのは常駐体だけ**で、dashboard は
+`~/.agents/commands/` へ指示を投函するだけ（[`agent-node-command`](../../schemas/agent-node-command.schema.json)）。
+入札の選別（担当リポジトリ・タグ・CLI）は host.yaml の `repos` / `tags` / `agent_cli` が正典。
+**プロジェクトを 1 つも持たないワーカーノードはまだ落札した仕事を実行できない**
+（取り込み先が無い。ノード直轄実行は実装計画 §7 R2b）。
+
 ```bash
 agent-project run --executor agent                    # 既定 local（単発 run）
 agent-project run --location board --concurrency 3    # 一致タスクを板へ並行 post
