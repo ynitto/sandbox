@@ -47,10 +47,13 @@
 - `python3`（標準ライブラリのみ。pip 依存なし）
 - `agent-flow`（act の委譲先。PATH か `tools/agent-flow/agent-flow.py` を自動解決。`--dry-run` なら不要）
 - エージェント CLI（LLM 呼び出し＝分解・優先順位・裁定・ルーティングに使用。設定 `agent_cli` / CLI `--agent-cli` で切替）
-  - `kiro`（既定）… `kiro-cli chat`。`--planner none` なら不要
-  - `claude` … Claude Code ヘッドレス（`claude -p`・プロンプトは stdin 渡し）
-  - `copilot` … GitHub Copilot CLI（`copilot -p`・standalone 版）
-  - `codex` … OpenAI Codex CLI（`codex exec`・最終応答は `--output-last-message` 経由で取得）
+  - **どの CLI をどう起動するかは、すべて定義ファイル `agents/<name>.json` にある**（S9。契約は
+    [`schemas/agent-cli.schema.json`](../../schemas/agent-cli.schema.json)）。同梱は
+    `kiro`（既定・`kiro-cli chat`）/ `claude` / `copilot` / `codex` / `cursor` / `ollama`。
+    コード側に CLI 分岐は無く、**作法が変わったときの修正は JSON 1 ファイルで完結する**
+  - 上位のディレクトリ（`$KIRO_AGENTS_DIR` → `<プロジェクト>/agents/` → `~/.agents/agents/`）に
+    同名の定義を置けば同梱定義を上書きできる。新しい CLI もファイルを 1 枚足すだけで使える
+  - 定義を解決できない `agent_cli` は明示エラー（黙って別の CLI へ倒さない）
   - モデルは設定 `model:` で指定（省略時は各 CLI の既定。実行層 agent-flow 側は agent-flow.yaml の `agent_cli` / `model` で揃える）
 
 ```bash
@@ -173,24 +176,63 @@ agent-project run --executor /path/to/my_exec.py  # 任意の executor プラグ
 
 verify は done 確定の唯一の根拠だが機械的合否でしかない。以下のゲートが多層で守る（既定はいずれも最小限）。
 
-### verify を人が書かなくてよくする（accept / verify_template）
+### verify を人が書かなくてよくする（acceptance / verify_template）
 
-完了条件の決定的シェルは人には書きにくい。タスクは `verify` の代わりに次を持てる（最終的に concrete な `verify` に
-materialize され、「done は verify のみが根拠」の鉄則は不変）:
+完了条件の決定的シェルは人には書きにくい。タスクは `verify` の代わりに次を持てる
+（「done は機械検証の PASS のみが根拠」の鉄則は不変）:
 
 - **`- verify_template: <名前> :: <引数…>`** … 決定的に展開（**エージェント不要**）。`file-contains :: <path> :: <文字列>` /
   `file-exists :: <path>` / `defines :: <symbol> :: <path>` / `diff-contains :: <文字列>`（act 後の差分・`$KIRO_BASE_REV`）/
   `cmd-succeeds :: <コマンド>`。enqueue 時に即展開。
-- **`- accept: <自然言語の完了条件>`** … 実行時にエージェントが**偽 done 防止規則を織り込んで決定的 verify を合成**し、
-  タスクへ書き戻す（`verify_source: synth`）。合成できなければ verify 空のまま＝従来どおり人へ。
+- **`- acceptance: <受入基準>`（複数行可）** … settle 時に**検証エージェント**が基準ごとに実際にコマンドを
+  試行錯誤して充足を確かめ、**判定 + 証跡**を返す（S5）。`- accept:`（自然文 1 行）は 1 項目の
+  acceptance として扱う（後方互換）。
 
 ```bash
 agent-project enqueue --title "規約に最終更新日を表示" --verify-template 'file-contains :: web/terms.html :: 最終更新'
 agent-project enqueue --title "概要見出しを追加"       --accept "README に ## 概要 の見出しがある"
 ```
 
-> verify を自分で書ければそれが最良（最も確実）。accept/template は「書けない人」の入口で、生成物はレビューできる
-> （タスクに残る）。シェルで検証できないものは auto-done させず検収ゲート（`- review: human`）で人承認に回すとよい。
+**なぜ「基準」で、「合成したコマンド」ではないのか**: 以前は自然文の完了条件から決定的シェルコマンドを
+LLM が 1 回で合成し、その exit 0 を done の唯一の根拠にしていた。環境差で大半が失敗して人へ倒れるうえ、
+合成されたコマンドが「たまたま通る劣化した検証」だったとしても、**人にはそれを見抜く材料が無い**。
+人がレビューできるのは基準と証跡であって、コマンドの良し悪しではない。そこで検収票には
+「基準 × 証跡（実行したコマンド・出力の要約・参照したファイル）」の表を載せる。
+
+機械的な護り（LLM の善意に依存しない）:
+
+- **フェイルクローズ** — 明示の pass 表明が無い基準は fail
+- **証跡必須** — pass なのに実行コマンドも参照ファイルも無い基準は fail へ落とす
+- **差分の常設基準** — 「差分が基準の対象範囲に実在すること」が必ず 1 項目入る（何も変えずに全 pass を返せない）
+- **「検証不能」はリトライを焼かない** — 環境にツールが無い等は失敗ではなく、理由付きで人へ回す
+
+検証プロンプトと出力契約はスキル `.github/skills/backlog-verifier/` にあり、上位（プロジェクトの
+`.github/skills/`）へ置けば全面的に差し替えられる（設定 `verifier_skill` で名前も変えられる）。
+検証レポートは `verifications/<task-id>/<rev>.md` に残る。副作用の範囲は `verify_side_effects`
+（既定 `workspace`＝作業ツリー内のみ。DB・外部サービスへの書き込みはどの設定でも不可）。
+
+> verify を自分で書ければそれが最良（最も確実・最速の fast path で、検証エージェントを呼ばない）。
+> シェルで検証できないものは `acceptance` に書く。
+
+### 成果物レビューは MR/PR が正（remote_review）
+
+`task_branch`（既定 on）のタスクは review 到達時に `ap/<task-id>` → target の MR を自動作成する
+（GitLab のみ。トークンは環境変数 `GITLAB_TOKEN` / `GL_TOKEN`）。**検収の正は MR 一本**で、
+dashboard の検収カードは「受入基準 × 証跡 + MR リンク」になる。
+
+フォージ側の**決定的シグナル**が決着になる（`remote_review: settle`・既定）:
+
+| フォージ側の事象 | 決着 |
+|---|---|
+| MR がマージされた | approve（done 確定） |
+| MR が未マージでクローズされた | reject |
+| `status:changes-requested` ラベル / Changes Requested レビュー | revise（未解決コメントを feedback へ注入） |
+| 上記以外（コメントのみ等） | 何もしない（人の明示操作を待つ） |
+
+コメント本文のキーワード推定は使わない——書き手の言い回し 1 つで判定が変わり、変わったことに
+気づけないため。差し戻しは「人がラベル / レビュー状態を明示したとき」と定める。
+`remote_review: observe` にすると照会結果を journal に残すだけで決着させない（移行用）。
+フォージが無い運用では従来どおり dashboard のボタン（または `approve` / `reject`）で決着する。
 
 ### タスクに意図と境界を書く（why / desc / scope / out_of_scope / constraints / hints / demo）
 

@@ -725,40 +725,11 @@ def read_brief_discoveries(cfg: "Config", use_git: bool, run_id: str = "") -> "l
     return out
 
 
-def verify_lib_path(cfg: "Config") -> Path:
-    """検証済み verify（procedural memory）の格納先。DR を汚さない専用ファイル。"""
-    return cfg.decisions / ".verifylib.md"
-
-
-def save_validated_verify(cfg: "Config", task: "Task") -> None:
-    """done 確定した**自動生成 verify**（synth/template/reused）を、タイトル付きで再利用ライブラリへ保存する。
-    人が書いた verify は元から良質＝ライブラリ経由を要さない。同一 (title, cmd) は重複保存しない。"""
-    if not cfg.learn_capture or not task.verify:
-        return
-    src = dict(task.extra).get("verify_source", "")
-    if src not in ("synth", "template", "reused"):
-        return
-    line = f"- verifycmd: {task.title.replace(chr(10), ' ')} :: {task.verify.replace(chr(10), ' ')}\n"
-    p = verify_lib_path(cfg)
-    if p.exists() and line in p.read_text(encoding="utf-8"):
-        return
-    cfg.decisions.mkdir(parents=True, exist_ok=True)
-    with p.open("a", encoding="utf-8") as f:
-        f.write(line)
-
-
-_VERIFYCMD_RE = re.compile(r"^- verifycmd:\s*(?P<title>.+?)\s*::\s*(?P<guide>.+)$")
-
-
-def find_learned_verify(cfg: "Config", task: "Task") -> "str | None":
-    """検証済み verify ライブラリから、タイトルが十分似た過去の verify コマンドを返す（決定的・Jaccard）。
-    毎回ゼロから合成せず、実績のある検査を再利用する（red-green が別途、変更を弁別するか実行で確かめる）。"""
-    p = verify_lib_path(cfg)
-    if not p.exists():
-        return None
-    m = _best_learn_match(task, cfg.learn_threshold, [p], label=lambda f: f.stem,
-                          pattern=_VERIFYCMD_RE)
-    return m[1] if m else None
+# 検証済み verify ライブラリ（`verify_lib_path` / `save_validated_verify` /
+# `find_learned_verify`）は S5 で廃止した。「実績のあるコマンドを再利用する」発想は、
+# **昇格したコマンドが劣化した検証でも人には見抜けない**という根本問題を解決しないため。
+# 置き換えは `verify-recipes/`（verify.py の `find_verify_recipes` / `save_verify_recipes`）で、
+# あちらは次回 verifier への **参考情報**であって独立した決定的ゲートには昇格させない。
 
 
 def capture_approve_learn(cfg: "Config", task: "Task", location: str) -> None:

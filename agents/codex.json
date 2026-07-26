@@ -1,0 +1,20 @@
+{
+  "name": "codex",
+  "command": ["codex", "exec", "--skip-git-repo-check", "--color", "never",
+              "--output-last-message", "{output_file}"],
+  "command_suffix": ["-"],
+  "prompt_via": "stdin",
+  "model_flag": "--model",
+  "output": "file",
+  "empty_output_is_error": true,
+  "write_args": ["--dangerously-bypass-approvals-and-sandbox"],
+  "readonly_args": ["--sandbox", "read-only"],
+  "readonly": "enforced",
+  "no_session_args": ["--ephemeral"],
+  "interactive": {
+    "command": ["codex"],
+    "readonly_args": ["--sandbox", "read-only"],
+    "no_session_args": ["--ephemeral"],
+    "prompt_inject": "send-keys"
+  }
+}

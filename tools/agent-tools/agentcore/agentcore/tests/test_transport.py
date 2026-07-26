@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -392,3 +393,30 @@ class TestHangGuards(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBackoffSeam(unittest.TestCase):
+    """リトライのバックオフは `backoff_sleep` を通す（素の time.sleep を直接呼ばない）。
+
+    なぜ固定するか: リトライ回数を検証するテストは待ち時間を差し替えて記録する。`time` は
+    stdlib の共有モジュールなので `time.sleep` を差し替えると **CPython の subprocess 内部**
+    （プロセス終了を 0.001 秒から倍々・上限 0.05 でポーリングする）にも効いてしまい、CPU 高負荷で
+    git が長引くとその sleep が記録へ混入する。実際に「高負荷のときだけ落ちるテスト」として
+    表面化した。差し替えられる名前を 1 つに保つことがその再発防止になる。
+    """
+
+    def test_only_the_seam_calls_time_sleep(self):
+        import inspect
+        src = inspect.getsource(transport)
+        self.assertEqual(src.count("time.sleep("), 1,
+                         "待ちは backoff_sleep 1 か所に集約すること"
+                         "（time.sleep を直接呼ぶとテストの差し替えが stdlib 全体へ漏れる）")
+        self.assertIn("def backoff_sleep(", src)
+        seam = src[src.index("def backoff_sleep("):]
+        self.assertIn("time.sleep(", seam.split("\n\n\n")[0], "その 1 か所は seam 自身であること")
+
+    def test_seam_is_patchable(self):
+        seen = []
+        with mock.patch.object(transport, "backoff_sleep", side_effect=seen.append):
+            transport.backoff_sleep(1)
+        self.assertEqual(seen, [1])

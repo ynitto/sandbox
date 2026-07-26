@@ -7,6 +7,111 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agentcore / agent-project / agent-flow: リトライのバックオフ待ちを 1 つの seam に集約
+
+リトライ回数を検証するテストが **CPU 高負荷のときだけ落ちる**問題を直した。
+
+原因はテスト側にあった: リトライの検証は `time.sleep` を差し替えて呼び出しを記録するが、
+`time` は stdlib の共有モジュールなので、その差し替えは **CPython の `subprocess` 内部**にも効く。
+`subprocess.run(timeout=…)` はプロセス終了を 0.001 秒から倍々（上限 0.05）でポーリングしており、
+負荷で `git clone` が長引くとその sleep が記録へ混入して「バックオフ 1 回」の検証が壊れていた。
+
+- `agentcore.transport.backoff_sleep` を追加し、**リトライの待ちはすべてここを通す**
+  （transport の clone / git ロック / push 競合、agent-flow の gitcache・workspace・stategit・
+  transient リトライ、agent-project の gitcache・stategit・coordination）
+- 差し替えの対象が自分たちの関数 1 つになったので、stdlib の内部ポーリングは巻き込まれない
+- `time.sleep` の直接呼び出しが seam 1 か所に限られることをテストで固定した
+  （増やすと同じ壊れ方が戻るため）
+
+
+### agent-project / agent-dashboard: 検収の MR/PR 一本化と、証跡ベースの検証（S4・S5）
+
+**S4: 検収を MR/PR へ寄せ、決着を決定的シグナルで定義する**
+
+- **フォージ側の人の操作が決着になる**。`poll_task_mrs` が検収待ちタスクの MR を照会し、
+  マージ=承認 / 未マージクローズ=却下 / `status:changes-requested` ラベル・レビュー=差し戻し
+  として決着させる（常駐体の sync 周期）。**コメント本文のキーワード推定は使わない**——
+  書き手の言い回し 1 つで判定が変わり、変わったことに気づけないため。差し戻しに注入するのは
+  **未解決**の discussion だけ（解決済みまで流すと、一度直した指摘が毎回積み直されて収束しない）。
+- 到達不能（ネットワーク断・トークン失効）は決着しない。「未マージ＝却下」と読むと、回線が
+  切れただけで成果が却下される。
+- `remote_review: settle | observe`（既定 settle）。observe は表示のみ（移行用）。
+- **フォージ境界**を切り、実装は GitLab のみ。GitHub / Gitea は未対応として「フォージ無し運用」
+  へ倒す（1 回だけ警告）。動作確認できる環境が無いまま書いた API クライアントは、動くかどうか
+  分からないコードが増えるだけ。認証情報は環境変数 / rc ファイルのままで、**設定 2 層のどちらにも
+  置かない**（host.yaml は平文で PC に残り、プロジェクト yaml は全 PC へ配られる）。
+- **検収カード**: MR があるあいだはカード内で差分を開かせない（レビューの正は MR 一本）。
+  MR を持たないタスクだけ、S3 のノード宣言（host.yaml `repos[]`）から解決したクローンで差分を出す。
+  worker の作業ツリーは `/tmp` で消えるため、`delivery.path` 前提の経路は別マシンの dashboard では
+  そもそも動いていなかった（これが C5 の実体）。解決できないときは理由と宣言のしかたを表示する。
+
+**S5: 「コマンドの exit 0」から「基準 × 証跡」へ**
+
+- バックログに **`- acceptance:`（複数行可）** を追加した。`Task.extra` が (key, value) のリストなので
+  同名キーの複数行はそのまま往復する——スキーマもパーサも変えずに済んだ。`accept`（自然文 1 行）は
+  1 項目の acceptance として扱う（後方互換）。
+- settle で決定的 `verify:` が無いタスクは、**検証エージェント**が基準ごとに実際にコマンドを
+  試行錯誤して充足を確かめ、**判定 + 証跡**を返す。プロンプトと出力契約は
+  `.github/skills/backlog-verifier/`（上位に置けば差し替え可・`verifier_skill` で名前も変更可）。
+- 機械的な護りは 4 つ: **フェイルクローズ**（明示 pass が無ければ fail）/ **証跡必須**
+  （pass なのに実行コマンドも参照ファイルも無ければ fail へ落とす）/ **差分の常設基準**
+  （何も変えずに全 pass を返す道を塞ぐ・red-green の代替）/ **検収カードでの抜き取り監査**
+  （証跡の薄い判定を警告表示。監査を別機能にせず人が毎回見る 1 枚に載せる）。
+- **「検証不能」はリトライを焼かない**。環境にツールが無い等は失敗ではなく、直す先がタスクの中に
+  無い。環境要因失敗と同じ扱いで理由付きで人へ回す（直して approve すれば同じ run の続きから）。
+- 検証レポートを `verifications/<task-id>/<rev>.md` に保存し、needs 票に要約（基準 × 証跡の表）を
+  載せる。**人検収で人が読むのはこの表**——コマンドの良し悪しは人には判断できないが、基準と証跡なら
+  判断できる、というのが S5 のコンセプト変更そのもの。
+- `verify_side_effects: workspace | network`（既定 workspace）。DB・外部サービスへの**書き込み**は
+  どちらでも不可（検証は失敗するとリトライで何度も走るので副作用が累積する）。
+- **廃止**: `accept` からの LLM 一発合成（`ensure_verify` の synth 経路）と、検証済み verify
+  ライブラリ（`verify_lib_path` / `save_validated_verify` / `find_learned_verify`）。後者の
+  置き換えは `verify-recipes/` で、**次回 verifier への参考情報**であって決定的ゲートには昇格させない。
+
+詳細設計: [`docs/plans/2026-07-26-s4-s5-review-and-verification-detailed-design.md`](docs/plans/2026-07-26-s4-s5-review-and-verification-detailed-design.md)
+
+
+### 全ツール: エージェント CLI 差分吸収レイヤ（S9-1〜3）
+
+「この CLI をどう起動するか」の知識が **8 か所・4 実装**（agent-project / agent-flow /
+agent-amigos / agent-dashboard）に散っていた。CLI の作法が変わるたび複数箇所の修正が要り、
+実際に**同じ CLI でもツールによってフラグが違う**状態になっていた（claude が agent-project
+では `--dangerously-skip-permissions` 付き・dashboard では無し、cursor は同梱定義と dashboard
+の組み込み分岐で argv 自体が別物）。定義ファイル 1 枚に集約する。
+
+- **組み込み CLI（kiro / claude / copilot / codex）も `agents/<name>.json` へ移した**。
+  コード側に CLI 分岐は無い。組み込み名の予約も解除したので、上位ディレクトリ（`$KIRO_AGENTS_DIR`
+  → プロジェクトの `agents/` → `~/.agents/agents/`）に置けば同梱定義を上書きできる——
+  これが無いと「CLI の作法変更が JSON 1 ファイルで完結する」が成り立たない。
+- **フォールバックの組み込みテーブルは持たない**。定義を解決できない `agent_cli` は明示エラー
+  にする（インストール破損として読めるメッセージ）。テーブルを残すと「JSON を直したのに
+  古い挙動のまま」という、いま消した二重管理が別の形で戻る。
+- **契約の拡張**（`schemas/agent-cli.schema.json`）:
+  `interactive`（対話 argv・`ready_pattern`・`ready_timeout_sec`・`prompt_inject`）/
+  `readonly_args` + `readonly`（強制力の宣言）/ `write_args` / `no_session_args` /
+  `command_suffix`（位置引数の末尾固定）/ `spill`（長大プロンプトの一時ファイル退避）。
+  既存の定義（`cursor.json` / `ollama.json`）はそのまま有効。
+- **Python ローダを `agentcore.agentcli` へ 1 本化**（agent-project / agent-flow / agent-amigos
+  が共有）。`agentcore.repolocal` で URL 正規化を寄せたのと同じ判断で、解釈のズレが
+  「同じ定義ファイルがツールによって別の argv になる」形で出るため。
+  agent-dashboard だけは UI の応答性のため JS の自前ローダを持ち、**同じ定義から同じ argv が
+  出ることをゴールデンテストで固定**した（`test/agent-cli-golden.test.js`）。
+- **tmux 経由の起動がすべてこのレイヤを通る**（S9-3）。入力受付の検出パターン・タイムアウトは
+  定義から来るようになり、定常業務（cowork）の tmux 実行も `agent_cli` 設定に従う——
+  従来は `cowork.chatCommand` の**文字列固定**で、定常業務だけが常に kiro を起動していた
+  （`cowork.chatCommand` は明示上書きとして残る）。
+- **挙動が変わる点**: dashboard のヘッドレス LLM 呼び出し（charter 補完・Doctor・構造化
+  Assist）は**すべて読み取り専用モード**で起動するようになった。「ファイルへの書き込みは
+  ビュアー側が行う」という元々の護りの意図に argv を合わせたもので、移行前は charter 補完
+  だけが権限フラグ無しだった。読み取り専用を保証しない CLI（`readonly: best-effort`）では
+  警告を返す——このレイヤは argv を組み立てるだけで、フラグを無視する CLI への防御は持たない。
+- **副産物の修正**: 失敗トリアージのヒントを「クラス一致」で引いていたため、読み込み済みの
+  別 CLI 定義に同クラスの規則があるとその文言が出ていた（codex の usage limit に kiro の
+  月間上限の案内が付く）。実際に一致した規則からヒントを採るようにした。
+
+詳細設計: [`docs/plans/2026-07-26-s9-agent-cli-layer-detailed-design.md`](docs/plans/2026-07-26-s9-agent-cli-layer-detailed-design.md)
+
+
 ### agent-project / agent-flow / agent-dashboard: ノード固有ローカルクローン層と定常業務フォルダの登録（S3・S2）
 
 Phase 1 の残り。どちらも「宣言は実行側が持つ」という同じ原則の適用。

@@ -46,6 +46,14 @@ from agentcore.nodeid import normalize_node_id  # noqa: E402
 # git URL の正規化一致と「このノードのローカルクローン」解決（S3）。gitcache の `_same_repo` と
 # board の `_norm_repo_url` は同じ判定の別実装で、agent-project 側とも吸収規則が食い違っていた。
 from agentcore import repolocal as _repolocal  # noqa: E402
+# エージェント CLI 定義（agents/<name>.json）の読み込みと argv 組み立て（S9）。組み込み
+# （kiro/claude/copilot/codex）を含む全 CLI がこの定義で動く。以前は同じ argv 知識が
+# agent-project / agent-flow / agent-amigos / dashboard に重複していた（repolocal と同型）。
+from agentcore import agentcli as _agentcli  # noqa: E402
+# リトライのバックオフ待ちの唯一の seam（agentcore.transport.backoff_sleep）。素の time.sleep を
+# 差し替えると stdlib の subprocess 内部（プロセス終了の 0.001s 倍々ポーリング）にも効いてしまい、
+# 高負荷時だけテストが壊れる。リトライ経路はこの名前を通す。
+from agentcore.transport import backoff_sleep  # noqa: E402
 
 
 @contextlib.contextmanager

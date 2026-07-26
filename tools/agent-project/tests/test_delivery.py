@@ -405,6 +405,155 @@ class TestTaskBranchAndDeliveryReview(unittest.TestCase):
         km.persist_task(cfg, t)
         return t
 
+    # --- フォージ側シグナルからの決着（S4-3・S4-4） -------------------------------------
+
+    def _poll(self, cfg, t, mr, *, reviewers=None, discussions=None, remote_review="settle"):
+        """poll_task_mrs を GitLab API モックで 1 回まわす。"""
+        cfg.remote_review = remote_review
+
+        def api(host, token, method, path, data=None, params=None):
+            if path.endswith("/merge_requests/7"):
+                return mr
+            if path.endswith("/reviewers"):
+                return reviewers or []
+            if path.endswith("/discussions"):
+                return discussions or []
+            if path.endswith("/changes"):
+                return {"changes": [{"new_path": "a.py"}]}
+            return {}
+
+        with mock.patch.object(km, "_gl_token", return_value="tok"), \
+             mock.patch.object(km, "_gl_api", side_effect=api):
+            return km.poll_task_mrs(cfg, [t])
+
+    def test_merged_mr_settles_as_approve(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = self._review_task_with_mr(cfg, d)
+            self.assertEqual(self._poll(cfg, t, {"state": "merged"}), [t.id])
+            self.assertEqual(km._load_task_file(cfg, t.id), None)   # done＝backlog から消える
+
+    def test_closed_unmerged_mr_settles_as_reject(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = self._review_task_with_mr(cfg, d)
+            self.assertEqual(self._poll(cfg, t, {"state": "closed"}), [t.id])
+            # reject は backlog から外し archive へ退避する（cmd_reject と同じ経路）
+            self.assertIsNone(km._load_task_file(cfg, t.id))
+            self.assertIn("reject", cfg.journal.read_text(encoding="utf-8"))
+
+    def test_changes_requested_label_settles_as_revise_with_unresolved_notes(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = self._review_task_with_mr(cfg, d)
+            discussions = [{"notes": [
+                {"body": "ここは null チェックが要ります", "resolvable": True, "resolved": False},
+                {"body": "解決済みの指摘", "resolvable": True, "resolved": True},
+                {"body": "システム通知", "system": True, "resolvable": False},
+                {"body": "agent-project: 自動コメント", "resolvable": True, "resolved": False},
+            ]}]
+            before = t.retries
+            got = self._poll(cfg, t, {"state": "opened", "labels": ["status:changes-requested"]},
+                             discussions=discussions)
+            self.assertEqual(got, [t.id])
+            fresh = km._load_task_file(cfg, t.id)
+            fb = fresh.get("feedback")
+            self.assertIn("null チェック", fb)
+            # 解決済み・system・自分のコメントは注入しない（毎回積み直して収束しなくなる）
+            self.assertNotIn("解決済みの指摘", fb)
+            self.assertNotIn("システム通知", fb)
+            self.assertNotIn("自動コメント", fb)
+            self.assertEqual(fresh.norm_status(), "ready")
+            self.assertEqual(fresh.retries, before + 1, "差し戻しは新しい run（同 run 再開にしない）")
+
+    def test_changes_requested_review_state_also_settles_as_revise(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = self._review_task_with_mr(cfg, d)
+            got = self._poll(cfg, t, {"state": "opened"},
+                             reviewers=[{"state": "requested_changes"}],
+                             discussions=[{"notes": [{"body": "直して", "resolvable": True,
+                                                      "resolved": False}]}])
+            self.assertEqual(got, [t.id])
+
+    def test_comments_only_do_not_settle(self):
+        # キーワード推定は使わない: 「やり直し」と書かれていてもラベル/レビュー状態が無ければ
+        # 決着しない（書き手の言い回し 1 つで判定が変わる状態をやめる、が S4-3 の趣旨）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = self._review_task_with_mr(cfg, d)
+            got = self._poll(cfg, t, {"state": "opened", "labels": ["discussion"]},
+                             discussions=[{"notes": [{"body": "やり直しかも？", "resolvable": True,
+                                                      "resolved": False}]}])
+            self.assertEqual(got, [])
+            self.assertEqual(km._load_task_file(cfg, t.id).norm_status(), "review")
+
+    def test_forge_unreachable_does_not_settle(self):
+        # 到達不能を「未マージ＝却下」と読むと、回線が切れただけで成果が却下される
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = self._review_task_with_mr(cfg, d)
+            with mock.patch.object(km, "_gl_token", return_value="tok"), \
+                 mock.patch.object(km, "_gl_api", side_effect=RuntimeError("接続できません")):
+                self.assertEqual(km.poll_task_mrs(cfg, [t]), [])
+            self.assertEqual(km._load_task_file(cfg, t.id).norm_status(), "review")
+
+    def test_observe_mode_reports_but_does_not_settle(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = self._review_task_with_mr(cfg, d)
+            self.assertEqual(self._poll(cfg, t, {"state": "merged"}, remote_review="observe"), [])
+            self.assertEqual(km._load_task_file(cfg, t.id).norm_status(), "review")
+            self.assertIn("remote_review(observe)", cfg.journal.read_text(encoding="utf-8"))
+
+    def test_poll_skips_tasks_without_mr_or_not_in_review(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = self._review_task_with_mr(cfg, d)
+            t.status = "ready"
+            with mock.patch.object(km, "_gl_api", side_effect=AssertionError("照会しない")):
+                self.assertEqual(km.poll_task_mrs(cfg, [t]), [])
+            plain = self._mr_task(cfg, d)
+            plain.status = "review"
+            with mock.patch.object(km, "_gl_api", side_effect=AssertionError("照会しない")):
+                self.assertEqual(km.poll_task_mrs(cfg, [plain]), [])
+
+    # --- フォージ境界（S4-1.7） ---------------------------------------------------------
+
+    def test_forge_available_only_gitlab(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))
+            with mock.patch.object(km, "_gl_token", return_value="tok"):
+                self.assertEqual(km.forge_available(cfg, "https://gitlab.example.com/g/a.git"),
+                                 "gitlab")
+                # 自己ホスト GitLab（ホスト名で判別できない）はトークンの有無で決める
+                self.assertEqual(km.forge_available(cfg, "https://git.example.com/g/a.git"),
+                                 "gitlab")
+                # GitHub / Gitea は境界だけ切って未対応 → フォージ無し運用へ倒す
+                self.assertEqual(km.forge_available(cfg, "https://github.com/o/r.git"), "")
+                self.assertEqual(km.forge_available(cfg, "https://gitea.example.com/o/r.git"), "")
+            with mock.patch.object(km, "_gl_token", return_value=""):
+                self.assertEqual(km.forge_available(cfg, "https://git.example.com/g/a.git"), "")
+
+    def test_ensure_task_mr_skips_unsupported_forge(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, task_branch=True)
+            t = self._mr_task(cfg, d)
+            t.drop("workspace")
+            t.extra.append(("workspace", "https://github.com/o/r.git"))
+            with mock.patch.object(km, "_gl_token", return_value="tok"), \
+                 mock.patch.object(km, "_gl_api", side_effect=AssertionError("叩かない")):
+                self.assertEqual(km.ensure_task_mr(cfg, t), "")
+
     def test_approve_merges_clean_mr_and_finalizes(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)

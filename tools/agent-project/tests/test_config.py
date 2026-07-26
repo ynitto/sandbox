@@ -716,10 +716,53 @@ class TestAgentPlugin(unittest.TestCase):
             km._agent_cmd("nosuchcli", None, "x")
         self.assertIn("agents/nosuchcli.json", str(cm.exception))
 
-    def test_builtins_do_not_consult_plugins(self):
-        self._write("claude", {"command": ["evil"]})   # 組み込み名は上書きできない
+    def test_builtin_definition_can_be_overridden(self):
+        # S9: 組み込み名の予約を解除した。「CLI の作法変更が JSON 1 ファイルで完結する」ため
+        # には、同梱定義を上位ディレクトリで差し替えられる必要がある（first-wins）。
         cmd, _, _ = km._agent_cmd("claude", None, "x")
-        self.assertEqual(cmd[0], "claude")
+        self.assertEqual(cmd[0], "claude")             # 同梱定義（agents/claude.json）
+        km._AGENT_PLUGIN_CACHE.clear()
+        self._write("claude", {"command": ["my-claude"]})
+        cmd, _, _ = km._agent_cmd("claude", None, "x")
+        self.assertEqual(cmd[0], "my-claude")          # 上位の定義が勝つ
+
+    def test_builtin_headless_argv_matches_pre_migration(self):
+        """組み込み 4 CLI のヘッドレス argv が S9 移行前と一致する（回帰）。"""
+        km._AGENT_PLUGIN_CACHE.clear()
+        os.environ.pop("KIRO_AGENTS_DIR", None)        # 同梱定義を見る
+        try:
+            cmd, stdin_text, _ = km._agent_cmd("kiro", "m", "P")
+            self.assertEqual(cmd, ["kiro-cli", "chat", "--no-interactive",
+                                   "--trust-all-tools", "--model", "m", "P"])
+            self.assertIsNone(stdin_text)
+            cmd, stdin_text, _ = km._agent_cmd("claude", "m", "P")
+            self.assertEqual(cmd, ["claude", "-p", "--output-format", "text",
+                                   "--dangerously-skip-permissions", "--model", "m"])
+            self.assertEqual(stdin_text, "P")
+            cmd, _, _ = km._agent_cmd("copilot", "m", "P")
+            self.assertEqual(cmd, ["copilot", "-s", "--allow-all-tools", "--no-color",
+                                   "--allow-all-paths", "--model", "m", "-p", "P"])
+            cmd, stdin_text, out_file = km._agent_cmd("codex", "m", "P")
+            self.assertEqual(stdin_text, "P")
+            self.assertIsNotNone(out_file)
+            self.assertEqual(cmd[-1], "-")             # 位置引数は末尾のまま
+            self.assertIn("--dangerously-bypass-approvals-and-sandbox", cmd)
+            os.remove(out_file)
+        finally:
+            os.environ["KIRO_AGENTS_DIR"] = str(self.tmp)
+            km._AGENT_PLUGIN_CACHE.clear()
+
+    def test_agent_cli_binary_comes_from_definition(self):
+        """doctor が PATH 確認する実行ファイル名も定義ファイル由来（対応表の二重管理を消した）。"""
+        km._AGENT_PLUGIN_CACHE.clear()
+        os.environ.pop("KIRO_AGENTS_DIR", None)
+        try:
+            self.assertEqual(km.agent_cli_binary("kiro"), "kiro-cli")
+            self.assertEqual(km.agent_cli_binary("codex"), "codex")
+            self.assertEqual(km.agent_cli_binary("nosuchcli"), "nosuchcli")
+        finally:
+            os.environ["KIRO_AGENTS_DIR"] = str(self.tmp)
+            km._AGENT_PLUGIN_CACHE.clear()
 
     def test_broken_plugin_is_loud(self):
         (self.tmp / "broken.json").write_text("{not json", encoding="utf-8")

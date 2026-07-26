@@ -383,6 +383,43 @@ function _extractMrUrls(...sources) {
   return out;
 }
 
+// 検証レポートの要約（S5）。人が検収で読むのは「コマンド」ではなく **基準と証跡**。
+// 壊れていれば null（＝要約を出さない）。表示できないことより、誤った要約を出す方が悪い。
+function _parseVerification(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  let data;
+  try {
+    data = JSON.parse(s);
+  } catch {
+    return null;
+  }
+  if (!data || typeof data !== 'object' || !Array.isArray(data.criteria)) return null;
+  const criteria = data.criteria
+    .filter((c) => c && typeof c === 'object')
+    .map((c, i) => {
+      const ev = (c.evidence && typeof c.evidence === 'object') ? c.evidence : {};
+      return {
+        id: Number(c.id) || i + 1,
+        text: String(c.text || ''),
+        verdict: ['pass', 'fail', 'unverifiable'].includes(String(c.verdict))
+          ? String(c.verdict) : 'fail',   // 読めない判定は fail（フェイルクローズ）
+        evidence: {
+          commands: (Array.isArray(ev.commands) ? ev.commands : []).map(String),
+          output: String(ev.output || ''),
+          files: (Array.isArray(ev.files) ? ev.files : []).map(String),
+        },
+        note: String(c.note || ''),
+      };
+    });
+  if (!criteria.length) return null;
+  return {
+    criteria,
+    report: String(data.report || ''),
+    pass: criteria.filter((c) => c.verdict === 'pass').length,
+  };
+}
+
 function _parseDeliveryJson(raw) {
   const s = String(raw || '').trim();
   if (!s) return [];
@@ -680,11 +717,13 @@ function parseNeeds(text, id) {
     mrUrl: '', // 代表 MR URL（frontmatter mr-url / 判断材料）。GitLab ならこれを開く
     mrUrls: [], // 複数リポジトリ分の MR URL
     delivery: [], // 検収サブ画面用のリポジトリ単位エントリ
+    verification: null, // 検証レポートの要約（S5）: { criteria: [{id,text,verdict,evidence,note}], report, pass }
   };
   const s = String(text || '').replace(/\r\n/g, '\n');
   const fm = s.match(/^---\n([\s\S]*?)\n---\n?/);
   let body = s;
   let deliveryRaw = '';
+  let verificationRaw = '';
   const fmFields = {};          // frontmatter の生キー（失敗の構造化フィールドを読むのに使う）
   if (fm) {
     body = s.slice(fm[0].length);
@@ -701,6 +740,7 @@ function parseNeeds(text, id) {
       else if (key === 'risk') need.risk = val;
       else if (key === 'mr-url') need.mrUrl = val;
       else if (key === 'delivery') deliveryRaw = val;
+      else if (key === 'verification') verificationRaw = val;
     }
   }
   const title = body.match(/^#\s+(.+)$/m);
@@ -772,6 +812,7 @@ function parseNeeds(text, id) {
   }
   // 検収サブ画面: frontmatter delivery を優先し、無ければ判断材料から復元する
   need.delivery = _normalizeDelivery(_parseDeliveryJson(deliveryRaw));
+  need.verification = _parseVerification(verificationRaw);
   if (!need.delivery.length) need.delivery = _normalizeDelivery(_deliveryFromDetail(need.detail));
   need.mrUrls = _extractMrUrls(need.mrUrl, need.delivery.map((e) => e.mr_url).join(' '), need.detail);
   if (!need.mrUrl && need.mrUrls.length) need.mrUrl = need.mrUrls[0];

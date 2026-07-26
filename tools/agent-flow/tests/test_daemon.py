@@ -482,8 +482,10 @@ class DaemonPrimitiveTests(unittest.TestCase):
             return real_run(cmd, *a, **kw)
 
         slept = []
+        # 差し替えるのはリトライのバックオフ seam。素の time.sleep は stdlib の共有モジュールで、
+        # 差し替えると subprocess の内部ポーリング（0.001s 倍々）の sleep まで記録に混入する。
         with mock.patch.object(kf.subprocess, "run", side_effect=flaky), \
-             mock.patch.object(kf.time, "sleep", side_effect=lambda s: slept.append(s)):
+             mock.patch.object(kf, "backoff_sleep", side_effect=lambda s: slept.append(s)):
             out = kf._clone_repo(remote, "main", dest)
         self.assertEqual(out, dest)                       # 最終的に成功
         self.assertTrue(os.path.isdir(os.path.join(dest, ".git")))
@@ -495,7 +497,7 @@ class DaemonPrimitiveTests(unittest.TestCase):
             return subprocess.CompletedProcess(cmd, 128, "", "fatal: unable to access")
 
         with mock.patch.object(kf.subprocess, "run", side_effect=always_fail), \
-             mock.patch.object(kf.time, "sleep", side_effect=lambda s: None):
+             mock.patch.object(kf, "backoff_sleep", side_effect=lambda s: None):
             out = kf._clone_repo("https://x/y.git", "main", os.path.join(tempfile.mkdtemp(), "d"))
         self.assertEqual(out, "")
 

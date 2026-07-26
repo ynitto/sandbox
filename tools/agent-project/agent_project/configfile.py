@@ -169,6 +169,22 @@ CONFIG_DEFAULTS = {
     # 自動作成し、承認時にクリーン（コンフリクト無し・未解決ディスカッション無し）なら自動マージする。
     # false で従来の unattended 自動 done。
     "delivery_review": True,
+    # フォージ（MR/PR）側の決定的シグナルからの決着（S4）。
+    #   settle  … マージ=承認 / 未マージクローズ=却下 / changes-requested=差し戻し として決着する
+    #   observe … 照会結果を journal に残すだけ（移行用）
+    # コメント本文のキーワード推定は使わない——書き手の言い回し 1 つで判定が変わり、
+    # 変わったことに気づけない。差し戻しは「人がラベル／レビュー状態を明示したとき」。
+    "remote_review": "settle",
+    # 証跡ベースの検証（S5）。受入基準チェックリスト（`- acceptance:` 複数行）に対して
+    # 検証エージェントが実行時にコマンドを試行錯誤し、基準ごとの判定＋証跡を返す。
+    #   verifier          … false で従来どおり決定的 verify のみ（acceptance は表示だけ・移行用）
+    #   verifier_skill    … プロンプト・出力契約を供給するスキル名（上位に置けば差し替え可）
+    #   verify_side_effects … workspace=作業ツリー内のみ / network=読み取りの HTTP 到達まで許す
+    #     （DB・外部サービスへの書き込みはどちらでも不可。検証は失敗するとリトライで何度も
+    #      走るので副作用が累積する。そこまで要る検証は人が verify: に明示的に書く）
+    "verifier": True,
+    "verifier_skill": "backlog-verifier",
+    "verify_side_effects": "workspace",
     # 真偽フラグ（CLI > 設定ファイル > 既定）。CLI 未指定（None）なら設定ファイル→この既定で確定
     "watch": False, "once": False, "dry_run": False, "rot": False, "ltm": False,
     "require_progress": False, "auto_level": False, "review_project": False,

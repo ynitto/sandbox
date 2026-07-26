@@ -1042,58 +1042,53 @@ class FeedbackReductionTests(unittest.TestCase):
             self.assertIn("smoke", ctx)
             self.assertIn("pytest", ctx)
 
-    def test_synth_injects_hint_and_repo_context(self):
+    def test_verifier_prompt_injects_repo_context_rules_and_recipes(self):
+        """S5: verifier へ渡す入力に、リポジトリ文脈・恒常ルール・過去のレシピが載る。
+
+        合成 verify の grep 退化を防ぐために注入していた材料は、そのまま検証エージェントの
+        判断材料として要る（「このリポジトリではどうテストを走らせるか」を知らないと、
+        基準を確かめるコマンドを試行錯誤できない）。
+        """
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             (d / "backlog").mkdir()
-            (d / "decisions").mkdir()
-            # 過去の類似タスクの learn（find_learned_resolution が拾う）
-            (d / "decisions" / "old.md").write_text(
-                "## DR1  2026-01-01  actor: u\n- learn: ログイン e2e :: 実サーバ配備で検証すること\n\n",
-                encoding="utf-8")
             (d / "package.json").write_text('{"scripts": {"e2e": "playwright test"}}')
-            mkb(d, "T1", status="ready", verify="", title="ログイン e2e", source="human")
-            # accept を付けて合成経路に入れる
-            (d / "backlog" / "T1.md").write_text(
-                "## T1: ログイン e2e\n- status: ready\n- source: human\n- verify: \n"
-                "- accept: ログインの e2e が通る\n", encoding="utf-8")
             cfg = cfg_for(d, workdir=d)
+            (d / "rules.md").write_text("- テストは npm run e2e で走らせる\n", encoding="utf-8")
+            (d / "backlog" / "T1.md").write_text(
+                "## T1: ログイン e2e\n- status: ready\n- acceptance: ログインの e2e が通る\n",
+                encoding="utf-8")
             task = km.load_tasks(d / "backlog")[0]
-            seen = {}
-            def fake_kiro(prompt, model):
-                seen["prompt"] = prompt
-                return "npx playwright test"
-            km.ensure_verify(cfg, task, agent_run=fake_kiro)
-            self.assertIn("実サーバ配備で検証すること", seen["prompt"])   # learn ヒント注入
-            self.assertIn("package.json", seen["prompt"])                # リポジトリ文脈注入
-            self.assertEqual(task.verify, "npx playwright test")
+            km.save_verify_recipes(cfg, task, {"criteria": [
+                {"verdict": "pass", "evidence": {"commands": ["npm run e2e"], "files": []}}]})
+            spec = km.verifier_input(cfg, task, d)
+            self.assertEqual(spec["acceptance"], ["ログインの e2e が通る"])
+            self.assertIn("package.json", spec["repo_context"])
+            self.assertIn("npm run e2e", spec["recipes"])
+            self.assertEqual(spec["side_effects"], "workspace")
+            prompt = km.build_verifier_prompt(cfg, spec)
+            self.assertIn("ログインの e2e が通る", prompt)
+            self.assertIn(km.DIFF_CRITERION, prompt, "差分の常設基準が必ず入る")
 
-    def test_verify_reuse_saved_and_recalled(self):
+    def test_recipes_are_reference_not_a_gate(self):
+        """S5: 効いたコマンドはレシピとして残すが、決定的 verify へは昇格させない。
+
+        「実績のあるコマンドを再利用する」だけでは、昇格したコマンドが劣化した検証でも
+        人には見抜けない、という根本問題が残る（それが S5 のコンセプト変更の理由）。
+        """
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             cfg = cfg_for(d)
-            done = km.Task(id="A", title="ログイン e2e A", verify="npx playwright test")
-            done.extra.append(("verify_source", "synth"))
-            km.save_validated_verify(cfg, done)
-            # 類似タイトルの新タスクは合成前に検証済み verify を再利用する
-            new = km.Task(id="B", title="ログイン e2e B")
-            new.extra.append(("accept", "e2e が通る"))
-            km.ensure_verify(cfg, new, agent_run=lambda p, m: self.fail("再合成された"))
-            self.assertEqual(new.verify, "npx playwright test")
-            self.assertEqual(dict(new.extra).get("verify_source"), "reused")
-
-    def test_verify_reuse_skips_human_and_dedupes(self):
-        with tempfile.TemporaryDirectory() as d:
-            d = Path(d)
-            cfg = cfg_for(d)
-            human = km.Task(id="H", title="t", verify="pytest -q")  # verify_source 無し=人が書いた
-            km.save_validated_verify(cfg, human)
-            self.assertFalse(km.verify_lib_path(cfg).exists())      # 人の verify は保存しない
-            auto = km.Task(id="A", title="t", verify="pytest -q")
-            auto.extra.append(("verify_source", "template"))
-            km.save_validated_verify(cfg, auto)
-            km.save_validated_verify(cfg, auto)                     # 二度目は重複保存しない
-            self.assertEqual(km.verify_lib_path(cfg).read_text().count("verifycmd"), 1)
+            done = km.Task(id="A", title="ログイン e2e A")
+            km.save_verify_recipes(cfg, done, {"criteria": [
+                {"verdict": "pass", "evidence": {"commands": ["npx playwright test"], "files": []}},
+                {"verdict": "fail", "evidence": {"commands": ["これは残さない"], "files": []}}]})
+            same = km.Task(id="B", title="ログイン e2e A")
+            self.assertEqual(km.find_verify_recipes(cfg, same), ["npx playwright test"])
+            # レシピがあっても verify（決定的ゲート）は埋まらない
+            same.extra.append(("accept", "e2e が通る"))
+            self.assertFalse(km.ensure_verify(cfg, same))
+            self.assertEqual(same.verify, "")
 
     def test_build_request_injects_similar_learn(self):
         with tempfile.TemporaryDirectory() as d:

@@ -1,20 +1,47 @@
 # agents/ — エージェント CLI プラグイン定義
 
-agent-project / agent-flow の `agent_cli` に、組み込み（`kiro` / `claude` / `copilot` / `codex`）
-以外の CLI を**コードを触らずに**追加する置き場。1 CLI = 1 ファイル（`<name>.json`）で、
-`agent_cli: <name>`（または `agents:` の役割毎上書き）と書けばそのまま使える。
+`agent_cli` に指定できる CLI を**コードを触らずに**定義する置き場。1 CLI = 1 ファイル
+（`<name>.json`）で、`agent_cli: <name>`（または `agents:` の役割毎上書き）と書けば使える。
+
+**組み込み CLI（kiro / claude / copilot / codex）もここにある**（S9）。ツールのコード側に
+CLI 分岐は無く、`agent-cli.schema.json` の定義がすべて。**CLI の挙動・作法が変わったときの
+修正が JSON 1 ファイルで完結すること**がこの契約の受入条件。
 
 契約の正典は [`schemas/agent-cli.schema.json`](../schemas/agent-cli.schema.json)。
-ツール間の結合はこのデータ契約のみ（agent-project / agent-flow がそれぞれ自前の小さな
-ローダで解釈する。互いにコードは共有しない）。
 
 ## 探索順
 
 1. `$KIRO_AGENTS_DIR`（環境変数）
 2. `<プロジェクトルート>/agents/`（= agent-project 実行時の cwd。プロジェクト固有の定義）
-3. `~/.kiro/agents/`（ユーザー共通）
+3. `~/.agents/agents/`（ユーザー共通）
+4. `~/.kiro/agents/`（旧ユーザー共通）
 
-同名は先勝ち。組み込み名（kiro/claude/copilot/codex/stub）は上書きできない。
+同名は先勝ち（first-wins）。**上位に置けば同梱定義を上書きできる**——組み込み名の予約は
+S9 で解除した。定義を 1 つも解決できない `agent_cli` は明示エラーになる（黙って別の CLI へ
+倒さない。インストール破損を静かに握り潰さないため）。
+
+## モードと権限
+
+同じ CLI でも「何をさせるか」で必要なフラグが違うので、定義は 1 本の argv ではなく
+**モード（ヘッドレス / 対話）× 権限（書き込み可 / 読み取り専用）** で組み立てる。
+
+```
+argv = command + (write_args | readonly_args) + no_session_args? + spill.args?
+       + model_flag + model + command_suffix + argv 渡しのプロンプト
+```
+
+| フィールド | いつ付くか |
+|---|---|
+| `write_args` | 既定モード（act・plan・charter 生成など書き込みを伴う実行） |
+| `readonly_args` | 読み取り専用モード（Doctor・構造化 Assist・対話診断） |
+| `no_session_args` | 使い捨て実行（診断）。セッション永続化を切る |
+| `spill.args` / `spill.instruction` | 長大プロンプトを一時ファイルへ退避したとき |
+| `command_suffix` | 位置引数を末尾に固定したい CLI（codex の `-`） |
+| `interactive.*` | tmux で人が直接操作する対話起動 |
+
+`readonly` は**強制力の宣言**（`enforced` / `best-effort`）。このレイヤは宣言どおりの argv を
+組み立てるだけで、フラグを無視する CLI への防御は持たない。`best-effort` の CLI に読み取り
+専用を要求した呼び出しには警告が返り、画面は「助言のみを保証できません」と出す。
 
 ## 書き方（最小）
 
@@ -32,13 +59,24 @@ agent-project / agent-flow の `agent_cli` に、組み込み（`kiro` / `claude
 - `errors` に CLI 固有の失敗パターンを書くと、**失敗トリアージ**（quota=時間をおけば回復 /
   auth・env=人が環境を直す / transient=自動リトライ）に反映され、agent-project は
   リトライを無駄に焼かず・viewer は「誰が何を直せばよいか」を表示できる。
+- `interactive` が無い定義は対話起動（CLIチャット・定常業務の tmux 実行）を提供しない。
 
 ## 同梱の定義
 
-| ファイル | CLI | 備考 |
+| ファイル | CLI | 読み取り専用の強制力 |
 |---|---|---|
-| `ollama.json` | `ollama run <model>` | ローカル LLM。`default_model` を環境に合わせて変更 |
-| `cursor.json` | `cursor-agent` | Cursor CLI（要ログイン） |
+| `kiro.json` | `kiro-cli chat` | best-effort（`--trust-tools=` は信頼するツールを絞るだけ） |
+| `claude.json` | `claude` | enforced（`--permission-mode plan`） |
+| `copilot.json` | `copilot` | best-effort |
+| `codex.json` | `codex exec` | enforced（`--sandbox read-only`） |
+| `cursor.json` | `cursor-agent` | best-effort（`--mode ask`） |
+| `ollama.json` | `ollama run <model>` | enforced（ツールを持たない） |
 
 hermes（tools/hermes-kiro-acp）のような自作ブリッジも、stdin でプロンプトを受けて
 stdout に本文だけを返す薄い CLI を用意すれば同じ契約で差し込める。
+
+## ローダ
+
+- **Python**: `agentcore.agentcli` の 1 実装を agent-project / agent-flow / agent-amigos が共有する
+- **agent-dashboard**: UI の応答性のため JS の自前ローダ（Python プロセスを起こさない）。
+  Python 実装とはゴールデンテストで揃える（同じ定義から同じ argv が出ることを固定する）

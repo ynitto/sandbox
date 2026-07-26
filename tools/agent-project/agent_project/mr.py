@@ -67,6 +67,55 @@ def _gl_quote(project: str) -> str:
     return urllib.parse.quote(project, safe="")
 
 
+# ---------------------------------------------------------------------------
+# フォージ境界（S4-1.7）
+# ---------------------------------------------------------------------------
+# 成果物レビューの正は MR/PR 一本にする、という仕様（S4）は「どのフォージか」に依存しない。
+# 実装は **GitLab のみ**で、GitHub / Gitea は境界だけ切って未対応にしてある——動作確認できる
+# 環境が無いまま書いた API クライアントは「動くかどうか分からないコード」が増えるだけだから。
+# 未対応フォージは「フォージ無し」として扱い、従来の dashboard ボタン決着へ倒す（S4-6）。
+#
+# 認証情報は **設定 2 層のどちらにも置かない**（host.yaml は共有しないが平文で PC に残り、
+# プロジェクト yaml は state repo 経由で全 PC へ配られる）。環境変数か rc ファイルのまま。
+_FORGE_UNSUPPORTED_WARNED: "set[str]" = set()
+
+
+def _forge_kind(url: str) -> str:
+    """リポジトリ URL からフォージ種別を返す。'gitlab' / 'github' / 'gitea' / ''（不明）。
+
+    自己ホストの GitLab はホスト名に gitlab を含まないことが多い（git.example.com 等）ので、
+    ホスト名で判別できないときは **GitLab トークンの有無**で決める（移行前の挙動そのまま:
+    `_gl_parse_repo` が通り、かつトークンがあれば GitLab として叩いていた）。
+    """
+    parsed = _gl_parse_repo(url)
+    if not parsed:
+        return ""
+    host = parsed[0].lower()
+    if "gitlab" in host:
+        return "gitlab"
+    if "github" in host:
+        return "github"
+    if "gitea" in host or "codeberg" in host:
+        return "gitea"
+    return "gitlab" if _gl_token() else ""
+
+
+def forge_available(cfg: "Config", url: str) -> str:
+    """この URL に対して決着まで扱えるフォージ種別（扱えなければ ""）。
+
+    未対応フォージは 1 回だけ警告して "" を返す——黙って無視すると「MR ができない理由」が
+    どこにも出ず、検収カードに MR が載らない原因を人が追えない。
+    """
+    kind = _forge_kind(url)
+    if kind == "gitlab":
+        return "gitlab" if _gl_token() else ""
+    if kind and kind not in _FORGE_UNSUPPORTED_WARNED:
+        _FORGE_UNSUPPORTED_WARNED.add(kind)
+        print(f">>> 注意: {kind} は未対応のフォージです（MR/PR の自動作成・決着は行いません）。"
+              "検収は dashboard のボタンで行ってください", file=sys.stderr)
+    return ""
+
+
 def _task_mr_coords(task: "Task") -> "tuple[str, str, str] | None":
     """タスクに記録済みの MR 座標 (host, project, iid)。無ければ None。"""
     iid = str(task.get("mr_iid") or "").strip()
@@ -88,9 +137,9 @@ def ensure_task_mr(cfg: "Config", task: "Task") -> str:
     if not spec or not spec.get("url"):
         return ""
     parsed = _gl_parse_repo(spec["url"])
+    if not parsed or not forge_available(cfg, spec["url"]):
+        return ""                       # フォージ無し運用（S4-6）＝従来どおり記録のみで続行
     token = _gl_token()
-    if not parsed or not token:
-        return ""
     host, proj = parsed
     source = task_branch_name(cfg, task)
     target = spec.get("target") or spec.get("base") or "main"
@@ -248,6 +297,133 @@ def finalize_task_delivery(cfg: "Config", task: "Task") -> "tuple[bool, str]":
     return True, f"作業ブランチ {branch} を {target} へ {mode}"
 
 
+# ---------------------------------------------------------------------------
+# フォージ側シグナルからの決着（S4-3・S4-4）
+# ---------------------------------------------------------------------------
+# 「人のレビューコメントをいつ差し戻しに変えるか」を、キーワード推定ではなく **決定的な
+# シグナル**で決める。コメント本文の語（「やり直し」「LGTM」等）は書き手の言い回し 1 つで
+# 判定が変わり、しかも変わったことに気づけない。
+#
+#   MR がマージされた                        → approve（done 確定）
+#   MR が未マージでクローズされた            → reject
+#   changes-requested ラベル / レビュー      → revise（未解決コメントを feedback に注入）
+#   それ以外（コメントのみ・承認だけ等）      → 何もしない（人の明示操作を待つ）
+#
+# 照会と書き込みは常駐体の sync 周期が担う（dashboard は表示に徹する）。
+_CHANGES_REQUESTED_LABELS = ("status:changes-requested", "changes-requested")
+
+
+def _mr_changes_requested(mr: dict, reviews) -> bool:
+    """フォージ側で「修正を求める」が明示されたか（ラベル or Changes Requested レビュー）。"""
+    labels = [str(x).lower() for x in (mr.get("labels") or [])]
+    if any(lbl in labels for lbl in _CHANGES_REQUESTED_LABELS):
+        return True
+    for r in (reviews if isinstance(reviews, list) else []):
+        # GitLab は reviewer の state（reviewed / requested_changes）を持つ
+        if str((r or {}).get("state") or "").lower() in ("requested_changes", "changes_requested"):
+            return True
+    return False
+
+
+def _unresolved_notes(host: str, token: str, ep: str, iid: str) -> "list[str]":
+    """未解決のレビューコメント本文（解決済み・system note は除く）。
+
+    解決済みまで流すと、一度直した指摘が毎回 feedback へ積み直されて収束しない。
+    """
+    out: "list[str]" = []
+    discussions = _gl_api(host, token, "GET",
+                          f"/projects/{ep}/merge_requests/{iid}/discussions",
+                          params={"per_page": 100})
+    for d in (discussions if isinstance(discussions, list) else []):
+        for n in (d.get("notes") or []):
+            if n.get("system") or not n.get("resolvable") or n.get("resolved"):
+                continue
+            body = str(n.get("body") or "").strip()
+            if body and not body.startswith("agent-project:"):   # 自分が書いたコメントは拾わない
+                out.append(body)
+    return out
+
+
+def _settle_from_forge(cfg: "Config", task: "Task") -> "tuple[str, str]":
+    """1 タスクぶんのフォージ照会。(決着, 理由) を返す。決着は
+    approve / reject / revise / ""（何もしない）。到達不能も ""——フォージが見えないことを
+    「未マージ＝reject」と読むと、回線が切れただけで成果が却下される。"""
+    coords = _task_mr_coords(task)
+    token = _gl_token()
+    if coords is None or not token:
+        return "", ""
+    host, proj, iid = coords
+    ep = _gl_quote(proj)
+    try:
+        mr = _gl_api(host, token, "GET", f"/projects/{ep}/merge_requests/{iid}")
+        state = str(mr.get("state") or "")
+        if state == "merged":
+            return "approve", "MR がマージされた"
+        if state == "closed":
+            return "reject", "MR が未マージでクローズされた"
+        reviews = _gl_api(host, token, "GET", f"/projects/{ep}/merge_requests/{iid}/reviewers")
+        if not _mr_changes_requested(mr, reviews):
+            return "", ""
+        notes = _unresolved_notes(host, token, ep, iid)
+        return "revise", ("\n".join(notes)[:1500] or "フォージで修正が要求されました（コメント無し）")
+    except RuntimeError:
+        return "", ""                    # 到達不能は決着しない（現状維持）
+
+
+def _apply_revise(cfg: "Config", task: "Task", guidance: str) -> None:
+    """フォージの changes-requested を差し戻しへ変換する（needs の [x] 差し戻しと同じ形）。"""
+    task.status = "ready"
+    task.drop("feedback")
+    task.extra.append(("feedback", guidance.replace("\n", " ⏎ ")))
+    task.retries += 1                    # 計画変更＝新しい run（同 run 再開にしない）
+    append_brief_item(cfg, task, guidance, source="forge-changes-requested")
+    autonomy_record(cfg, task, clean=False)
+    persist_task(cfg, task)
+    clear_needs_file(cfg, task.id)
+    append_decision(cfg, task.id, "forge",
+                    context=f"{task.id}（{task.title}）にフォージで修正要求",
+                    action="forge-revise", reason=guidance[:300],
+                    affects=f"{task.id} → ready（次 act に反映）")
+
+
+def poll_task_mrs(cfg: "Config", tasks: "list[Task]") -> "list[str]":
+    """検収待ち（review）タスクの MR を照会し、決定的シグナルを決着へ変換する（S4-3/S4-4）。
+
+    対象は `mr_iid` を持つ review 状態のタスクだけなので、API 呼び出し数は検収待ち件数に
+    比例して有界。`remote_review: observe` では照会結果を journal に残すだけで決着させない
+    （移行用）。決着の口は「フォージのシグナル」と「dashboard のボタン」の 2 つで、どちらも
+    同じ approve / reject / revise の契約へ合流する。
+    """
+    mode = str(getattr(cfg, "remote_review", "settle") or "settle").lower()
+    if mode not in ("settle", "observe"):
+        mode = "settle"
+    settled: "list[str]" = []
+    for t in tasks:
+        if t.norm_status() != "review" or not t.get("mr_iid"):
+            continue
+        decision, why = _settle_from_forge(cfg, t)
+        if not decision:
+            continue
+        if mode == "observe":
+            append_journal(cfg.journal,
+                           f"remote_review(observe): {t.id} のフォージ決着は {decision}（{why[:120]}）"
+                           "— 表示のみで決着させません")
+            continue
+        if decision == "approve":
+            release_claim(cfg, t)
+            ok, msg = approve_review_done(cfg, t, f"フォージの決着: {why}")
+            append_journal(cfg.journal, f"remote_review: {t.id} を承認（{why}）"
+                                        + ("" if ok else f" — 保留: {msg[:120]}"))
+        elif decision == "reject":
+            cmd_reject(cfg, t.id, why)
+            append_journal(cfg.journal, f"remote_review: {t.id} を却下（{why}）")
+        else:
+            _apply_revise(cfg, t, why)
+            append_journal(cfg.journal, f"remote_review: {t.id} を差し戻し（未解決コメントを注入）")
+        settled.append(t.id)
+    return settled
+
+
 def close_task_mr(cfg: "Config", task: "Task", reason: str) -> None:
     """却下（reject）時: タスク MR をクローズしソースブランチを削除する（best-effort・
     gitlab-review-viewer の却下と同じ規則）。GitLab 未設定なら何もしない。"""
@@ -315,8 +491,35 @@ def risk_digest(cfg: "Config", task: "Task", changed: "set[str]", protect_hits: 
     return level, "\n".join([header] + lines)
 
 
+def _run_task_verifier(cfg: "Config", task: "Task",
+                       vcwd: "Path") -> "tuple[bool, bool, str, dict | None]":
+    """決定的 verify を持たないタスクを、受入基準 × 証跡で検証する（S5）。
+
+    戻り値は既存の settle と同じ形 (ok, flaky, vmsg) に検証レコードを足したもの。
+    verifier を無効化（`verifier: false`）した場合と、受入基準が 1 つも無い場合は
+    従来どおり「verify 未定義 → 人の判断」へ倒す（自己申告で done にしない不変条件）。
+    """
+    if not getattr(cfg, "verifier", True) or not task_acceptance(task):
+        return False, False, "verify 未定義（自己申告では done にできない → 人の判断へ）", None
+    result, body = run_verifier(cfg, task, vcwd)
+    rev = _git_out(vcwd, "rev-parse", "HEAD").strip() if (vcwd / ".git").exists() else ""
+    report = save_verification_report(cfg, task, result, rev, body)
+    if result["ok"]:
+        save_verify_recipes(cfg, task, result)     # 効いたコマンドは次回の参考にする（ゲートにはしない）
+    result["report"] = report
+    result["rev"] = rev
+    task.drop("verification")
+    task.extra.append(("verification", json.dumps(
+        {"pass": result["pass"], "fail": result["fail"],
+         "unverifiable": result["unverifiable"], "report": report}, ensure_ascii=False)))
+    append_journal(cfg.journal, f"検証: {task.id} — {verification_message(result)}"
+                                + (f"（{report}）" if report else ""))
+    return result["ok"], False, verification_message(result), result
+
+
 def _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits, assisted,
-                   policy, reasons, cycle, risk: "tuple[str, str] | None" = None):
+                   policy, reasons, cycle, risk: "tuple[str, str] | None" = None,
+                   verification: "dict | None" = None):
     """verify は通ったが承認ゲート対象（review/gate/protect/assisted）→ done せず人の承認(review)へ。
     所在（ref/ブランチ）を gate_* に保持し、approve 時の受領書へ引き継ぐ。"""
     ts = _now_ts()
@@ -357,7 +560,8 @@ def _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits,
     write_needs_file(cfg, task,
                      f"検証は通っている（verify=PASS）。人の検収を待っている理由: {gate_why}。"
                      f"内容が良ければ approve で done 確定、直したいことがあれば下に書いて差し戻す",
-                     review=True, evidence=ev, risk=risk, mr_url=mr_url, delivery=delivery)
+                     review=True, evidence=ev, risk=risk, mr_url=mr_url, delivery=delivery,
+                     verification=verification)
     append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 検収待ち{disp} — {ref}")
 
 
@@ -586,6 +790,7 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
     branch = _current_branch(cfg)
     regressed = False
     vtmp = None
+    verification: "dict | None" = None      # 証跡ベース検証の判定レコード（S5）
     try:
         # workspace 指定タスクは git-bus ルート（workdir）でなく該当 repo のクローン内（指定 branch・
         # クローンのルート）で検証する。verify はリポジトリ直下からの相対で書かれる規約なので path
@@ -595,8 +800,15 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
         if vtmp and (vcwd / ".git").exists():          # 一時 clone は差分基準を clone の HEAD に取り直す
             head = _git_out(vcwd, "rev-parse", "HEAD").strip()
             venv = {"KIRO_BASE_REV": head} if head else None
-        ok, flaky, vmsg = run_verify_stable(task.verify, vcwd, cfg.verify_timeout,
-                                            cfg.verify_confirm, venv)
+        # 検証は 2 経路（S5）。決定的 `verify:` があればそれが最速・最優先の fast path で、
+        # 無ければ受入基準チェックリストを検証エージェントが証跡付きで判定する。
+        # flake 判定（verify_confirm の複数回実行）は fast path にだけ適用する——
+        # verifier 側の揺れは同一レポート内の再試行として verifier 自身に扱わせる。
+        if task.verify:
+            ok, flaky, vmsg = run_verify_stable(task.verify, vcwd, cfg.verify_timeout,
+                                                cfg.verify_confirm, venv)
+        else:
+            ok, flaky, vmsg, verification = _run_task_verifier(cfg, task, vcwd)
         ev = delivery_evidence(cfg, act_msg, git_base, location,
                                verify=task.verify, vmsg=vmsg, ok=ok,
                                phase=PHASE_VERIFY, task=task)
@@ -618,6 +830,7 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
                                + ("・revert 済" if cfg.regression_revert else ""))
     except RuntimeError as e:      # workspace clone 失敗等は黙って workdir に倒さず NG（成果の無い場所で誤判定しない）
         ok, flaky, vmsg = False, False, str(e)[:500]
+        verification = None
         ev = delivery_evidence(cfg, act_msg, git_base, location,
                                verify=task.verify, vmsg=vmsg, ok=ok,
                                phase=PHASE_VERIFY, task=task)
@@ -654,6 +867,24 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
     # 実効自律レベル（明示 - level: > track 自動昇格 > グローバル）。report は選択時に除外済み
     assisted = resolve_level(task, cfg, autonomy_cache) == "assisted"
 
+    # 「検証不能」（環境にツールが無い等）は **失敗ではない**。fail と混ぜてリトライを焼くと、
+    # 直す先がタスクの中に無いのに何度も作り直させることになる。環境要因失敗と同じ扱いで、
+    # リトライを消費せず理由付きで人へ回す（環境を直して approve すれば同じ run の続きから）。
+    unverifiable = (verification is not None and not verification["ok"]
+                    and verification["unverifiable"] > 0 and verification["fail"] == 0)
+    if unverifiable and not regressed:
+        task.set("env_resume", "1")
+        blocked_reasons = " ／ ".join(
+            f"{c['text'][:60]} — {c['note'][:100]}"
+            for c in verification["criteria"] if c["verdict"] == "unverifiable")[:400]
+        _block(cfg, task, f"[agent-error:env] 検証不能: このノードでは確かめられない基準があります"
+                          f"（{blocked_reasons}）。タスクの内容の問題ではないため、リトライ回数は"
+                          "消費していません。環境を直してから approve すると、同じ run の続きから"
+                          "再開します。", reasons, evidence=ev)
+        append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（検証不能・"
+                                    "リトライは消費しない）")
+        return {"archived": 0, "followups": []}
+
     if flaky:
         # verify が不安定（flake）→ 自動修正せず人へ隔離（NG churn / flaky PASS の done を防ぐ）
         task.set("flake", "1")
@@ -682,10 +913,10 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
         # delivery_review（既定 on）: verify PASS 後は level に依らず常に人の検収（review）へ
         _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits, assisted,
                        policy, reasons, cycle,
-                       risk=risk_digest(cfg, task, changed, protect_hits, dtok, dusd))
+                       risk=risk_digest(cfg, task, changed, protect_hits, dtok, dusd),
+                       verification=verification)
     elif ok:
         capture_approve_learn(cfg, task, location)   # 承認時の人コメント（正例）を横断 learn 化
-        save_validated_verify(cfg, task)             # 通った自動生成 verify を再利用ライブラリへ
         return _settle_done(cfg, task, act_msg, git_base, branch, ev, vmsg, dtok, dusd, cycle,
                             autonomy_cache)
     else:

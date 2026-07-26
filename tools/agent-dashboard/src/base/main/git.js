@@ -216,15 +216,45 @@ function bridgeRepoPath(repo, viewerRoot = '') {
   return toViewerPath(raw);
 }
 
+// 検収サブ画面の差分を取るリポジトリを決める（S4-e）。
+//
+// delivery の `path` は **agent-project が動いたノードで解決したパス**で、worker の作業ツリーは
+// /tmp の一時 worktree（実行後に必ず消える）。dashboard が別マシンなら当然存在しない——
+// 「ローカルパス前提で検収 diff が出せない」という C5 の実体がこれ。
+//
+// そこで、そのパスがこの PC に無ければ **S3 のノード固有宣言**（host.yaml `repos[]`）から
+// 同じリポジトリのローカルクローンを引き直す。宣言が無ければ解決しない（空を返す）＝
+// 呼び出し側が「なぜ差分を出せないか」を人に見せる。
+function resolveDiffRoot(repo, viewerRoot = '', repoUrl = '') {
+  const given = String(repo || '');
+  if (given) {
+    const root = path.resolve(bridgeRepoPath(given, viewerRoot));
+    if (root && fs.existsSync(root)) return root;
+  }
+  const url = String(repoUrl || '');
+  if (!url) return '';
+  try {
+    const local = require('../../features/agent-project/main/nodeRepos').resolveLocalRepo(url);
+    return local ? path.resolve(local) : '';
+  } catch {
+    return '';
+  }
+}
+
 // 検収サブ画面用: 作業ブランチの差分（ファイル指定可）。サイズ上限付き。
 //   fetch:true … 差分を取る前に git fetch origin して remote-tracking を最新化する
 //                （コメント付き再実行で push し直した run の diff が古いまま、の対策）。
 //                対象は成果物リポジトリ＝常駐体が同期する状態リポジトリではない。
 //   branch     … 作業ブランチ名。fetch 後は origin/<branch> を最優先で比較先（tip）に使う
 //                （記録済みの ref が古くても、今 push されている最新を見る）。
-async function diffRange(repo, { base, ref, file, branch, fetch = false, maxBytes = 200_000, workingTree = false, viewerRoot = '' } = {}) {
-  const root = path.resolve(bridgeRepoPath(repo, viewerRoot));
-  if (!root || !fs.existsSync(root)) throw new Error(`リポジトリが見つかりません: ${repo}`);
+async function diffRange(repo, { base, ref, file, branch, fetch = false, maxBytes = 200_000, workingTree = false, viewerRoot = '', repoUrl = '' } = {}) {
+  const root = resolveDiffRoot(repo, viewerRoot, repoUrl);
+  if (!root) {
+    throw new Error(repoUrl
+      ? `この PC に ${repoUrl} のローカルクローンがありません`
+        + '（~/.agents/agent-project.host.yaml の repos[] に url と local を書くと差分を見られます）'
+      : `リポジトリが見つかりません: ${repo}`);
+  }
   const bad = (s) => /[\s;|&`$]/.test(String(s || ''));
   const brName = String(branch || '').trim();
   if (brName && bad(brName)) throw new Error('不正なブランチ名です');
@@ -330,4 +360,4 @@ async function diffRange(repo, { base, ref, file, branch, fetch = false, maxByte
   };
 }
 
-module.exports = { health, diffRange, bridgeRepoPath, diagnostics };
+module.exports = { health, diffRange, bridgeRepoPath, resolveDiffRoot, diagnostics };

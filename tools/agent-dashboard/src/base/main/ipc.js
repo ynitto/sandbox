@@ -39,8 +39,12 @@ function registerBaseIpcHandlers() {
 
   // 検収サブ画面: 作業ブランチの git 差分（複数リポジトリ対応）。
   // branch/fetch は「fetch 後に origin/<branch> を優先」する検収の鮮度更新に使う。
-  handle('git:diff', ({ repo, base, ref, file, branch, fetch, maxBytes, workingTree, viewerRoot }) =>
-    git.diffRange(repo, { base, ref, file, branch, fetch: !!fetch, maxBytes, workingTree: !!workingTree, viewerRoot })
+  // repoUrl は「delivery の path がこの PC に無いとき、host.yaml repos[] からクローンを
+  // 引き直す」ための手掛かり（S4-e）。worker の作業ツリーは /tmp で消えるので、別マシンの
+  // dashboard では path 単独では解決できない。
+  handle('git:diff', ({ repo, base, ref, file, branch, fetch, maxBytes, workingTree, viewerRoot, repoUrl }) =>
+    git.diffRange(repo, { base, ref, file, branch, fetch: !!fetch, maxBytes,
+                          workingTree: !!workingTree, viewerRoot, repoUrl })
   );
 
   // GitLab イシューの最新状態を API で補完（設定が無ければ enabled:false）

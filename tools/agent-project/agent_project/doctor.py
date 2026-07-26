@@ -202,7 +202,7 @@ def doctor_env_findings(cfg: "Config", which=shutil.which) -> "list[dict]":
                          "「ローカルでは通るのに verify は落ち続ける」状態になる"),
             "fix": f"git -C {cfg.backlog.parent} push origin {branch}"})
     needs_cli = cfg.planner == "agent" or cfg.executor == "agent" or cfg.auto_adjudicate
-    agent_bin = _AGENT_CLI_BINARIES.get(cfg.agent_cli, cfg.agent_cli)
+    agent_bin = agent_cli_binary(cfg.agent_cli)
     if needs_cli and not which(agent_bin):
         findings.append({
             "category": "env", "severity": "critical",

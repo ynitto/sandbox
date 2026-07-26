@@ -275,7 +275,7 @@ def _fetch_remote_task(cfg: "Config", task_id: str) -> "tuple[Task | None, bool]
         if git._git("fetch", "-q", "origin", branch).returncode == 0:
             break
         if i < attempts - 1:
-            time.sleep(2 ** i)
+            backoff_sleep(2 ** i)
     else:
         return None, False
     spec = f"refs/remotes/origin/{branch}:backlog/{task_id}.md"
