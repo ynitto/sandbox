@@ -1,6 +1,6 @@
 # S4 + S5 詳細設計: 検収の MR/PR 一本化と、証跡ベースの検証
 
-ステータス: 詳細設計（実装前）
+ステータス: 実装済み（詳細設計 + 実装で確定した差分を反映）
 入力: [`2026-07-25-agent-improvement-spec.md`](2026-07-25-agent-improvement-spec.md) §3 S4（C5）/ S5（C12）
 前提: [`2026-07-26-s3-s2-node-repos-and-cowork-roots-design.md`](2026-07-26-s3-s2-node-repos-and-cowork-roots-design.md)（ノード固有ローカルクローンの解決器）
 実装フェーズ: Phase 2（S4 → S5 の順）
@@ -353,9 +353,25 @@ verifier に成果物のコミット権は与えない（クローンの作業�
 
 ---
 
-## 6. 積み残し
+## 6. 実装で確定した差分
+
+| 項目 | 実装 |
+|---|---|
+| **`acceptance:` はスキーマ変更が要らなかった** | `Task.extra` が `list[tuple[str, str]]` で、同名キーの複数行はそのまま保持され `- {k}: {v}` で書き戻される。設計では「`schemas/task.schema.json` の拡張」を想定していたが、パーサもシリアライザも触らずに済んだ |
+| **`synth_verify` は charter acceptance 用に残した** | §2.9 は「`synth_verify` とその静的スクリーニング群（約 280 行）を削除」だったが、`project.py:resolve_charter_acceptance`（charter の acceptance をマイルストーン収束判定へ変換する経路）が同じ関数を使っていた。**タスク検証経路からは外した**が、charter acceptance は検証対象（タスク単位・成果ブランチ上ではない）も出口（milestone）も違うので、変換には別の設計が要る。積み残し 5 へ |
+| **red-green を fast path 専用として残した** | §2.9 は `verify_validate` / `run_verify_at_rev` / `verify_undiscriminating` を廃止としたが、常設基準（`DIFF_CRITERION`）が効くのは **verifier 経路だけ**。`verify_template` 由来の機械生成コマンドが done の唯一の根拠になる fast path には、実行で弁別を確かめる価値が残る。廃止すると護りの範囲が狭まるので残した |
+| **MR を誰が作るか（§1.2 の比較検討）** | agent-project 常駐体を採用。実装は既存 `ensure_task_mr` の延長で、フォージ境界（`forge_available`）を挟んだだけで済んだ |
+| **`flow.js` のキーワード推定は触らない** | §1.4 の整理どおり。agent-flow の gitlab executor（イシュー駆動委譲）の先読みで、`executors/gitlab.py` と一致させる約束がある別系統。検収決着では使わない |
+| **既存バグの発見**: `git.js` の検収 diff | `delivery.path` を使う経路は、dashboard が agent-project と別マシンなら**そもそも動いていなかった**（worker の作業ツリーは `/tmp` で消える）。設計では「撤去すべき壊れた経路」と書いたが、実際には「壊れたまま動いているように見えていた経路」だった。`repoUrl` を渡してノード宣言から引き直すようにし、解決できないときは理由を表示する |
+| **needs 票への受け渡し** | 検証要約は frontmatter の `verification:` 1 行 JSON（`delivery:` と同じ流儀）。dashboard 側は壊れていれば `null`（要約を出さない）——表示できないことより、誤った要約を出す方が悪い |
+
+**実績**: agent-project 971 件 / agent-dashboard 全スイート green。
+
+## 7. 積み残し
 
 1. **`unverifiable` の板への検証委譲**（仕様 S5-2 の (a)）— 板の請負実行が W1-11 待ち。判定結果に理由コードだけ残して S8 と同時に接続する
 2. **GitHub / Gitea の forge 実装** — 境界だけ切って未実装（§1.7）
 3. **S6 との接続** — `acceptance:` を**生成する**のは S6 の `backlog-planner`。本設計では書式を確定し、既存タスク（`accept:` のみ）を後方互換で吸収するところまで
 4. **`diff2html` 依存** — MR 無し運用のフォールバックとして残る（§1.3）。フォージ無し運用が消えたら撤去できる
+5. **charter acceptance の LLM 合成** — `resolve_charter_acceptance` は今も自然文 → コマンドの一発合成に依存している（§6）。S5 と同じ問題（合成されたコマンドの良し悪しを人が判断できない）を抱えるが、検証対象も出口も違うので別設計。ここが残るあいだ `synth_verify` とその静的スクリーニング群も残る
+6. **`verifier` の実行環境** — verifier は agent-project が動くノードのワークスペースで走る。「このノードでは確かめられない」基準は `unverifiable` として人へ回るが、**他ノードへ検証を委譲する経路**は板の請負実行（W1-11）待ちで未接続（積み残し 1 と同じ待ち先）
