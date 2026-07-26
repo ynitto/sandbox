@@ -19,26 +19,29 @@ function test(name, fn) {
 
 const SRC = path.join(__dirname, '..', 'src');
 
-// 検査対象は「プロジェクトの状態を扱う層」だけ。cowork（定常業務）は人の成果物リポジトリで
-// ブランチを切って push する別機能で、常駐体が持つ状態リポジトリには触らない。
-const SCOPE = [
-  path.join(SRC, 'base', 'main'),
-  path.join(SRC, 'features', 'agent-project'),
-  path.join(SRC, 'renderer'),
-];
+// 検査対象は `src/` 全体。以前は「プロジェクトの状態を扱う層」（base/main・
+// features/agent-project・renderer）だけを見ていたが、制御面が 2 つから 7 つへ増えた結果、
+// **後から足した feature には護りが掛かっていない**状態になっていた。どの feature も
+// 規律自体は守っているものの、それを保証しているのが人の目だけ、という穴を塞ぐ。
+//
+// 除外は cowork だけ。定常業務は**人の成果物リポジトリ**でブランチを切って push する機能で、
+// 常駐体が持つ状態リポジトリには触らない（除外の理由が 1 つに絞られていることが大事で、
+// 「範囲外だから」という理由で例外が増えないようにする）。
+const EXCLUDED = [path.join(SRC, 'features', 'cowork')];
 
 function sourceFiles(dir) {
   const out = [];
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     if (e.name === 'node_modules') continue;
     const p = path.join(dir, e.name);
+    if (EXCLUDED.some((x) => p === x || p.startsWith(`${x}${path.sep}`))) continue;
     if (e.isDirectory()) out.push(...sourceFiles(p));
     else if (e.name.endsWith('.js')) out.push(p);
   }
   return out;
 }
 
-const files = [...SCOPE.flatMap(sourceFiles), path.join(SRC, 'preload.js')];
+const files = sourceFiles(SRC);
 const rel = (p) => path.relative(path.join(__dirname, '..'), p);
 
 // コメントは対象外（「なぜ消したか」を書き残すのが目的なので、語そのものは残ってよい）
@@ -49,6 +52,27 @@ function codeOf(file) {
     .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
     .join('\n');
 }
+
+test('検査範囲が全制御面を覆う（cowork のみ除外）', () => {
+  // 範囲そのものを検査する。護りの中身より先に**掛かっている範囲**が縮むほうが起きやすく、
+  // しかも気づきにくい（テストは緑のまま、見ていない場所が増える）。新しい feature を
+  // 足したら自動的にこの護りの下に入り、外したいなら EXCLUDED を触るしかない形にする。
+  const featureDirs = fs
+    .readdirSync(path.join(SRC, 'features'), { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name);
+  assert.ok(featureDirs.length >= 7, `制御面が見つからない: ${featureDirs}`);
+  for (const name of featureDirs) {
+    const prefix = path.join(SRC, 'features', name) + path.sep;
+    const covered = files.some((f) => f.startsWith(prefix));
+    if (name === 'cowork') {
+      assert.ok(!covered, 'cowork は成果物リポジトリを扱うので除外されているはず');
+    } else {
+      assert.ok(covered, `${name} が検査範囲から外れている`);
+    }
+  }
+  assert.ok(files.includes(path.join(SRC, 'preload.js')), 'preload も範囲に入るはず');
+});
 
 test('状態リポジトリを書き換える git サブコマンドを起動しない', () => {
   // 読み取り（rev-parse / status / diff / rev-list / merge-base）と、成果物リポジトリの

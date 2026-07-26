@@ -11,7 +11,7 @@ agent-amigos（役割駆動マルチエージェント協働）の独立した�
 - **タスク依頼（post / build-team）**: 「ミッションを依頼」フォームは 2 モード。
   - **チームビルディング（既定）**: タイトル・goal・進め方（design doc 本文）・使える環境
     （任意タグ）だけを入力 → `build-team` 指示を投函。常駐デーモンが
-    [team-builder スキル](../../../../.github/skills/team-builder/)で役割を設計してから公示する。
+    [team-builder スキル](../../../../../.github/skills/team-builder/)で役割を設計してから公示する。
   - **役割を自分で指定**: 従来どおり役割ミッション表 JSON も入力 → `post` 指示を投函。
   どちらもホームの `.agents/agent-amigos/commands/*.json` へ 1 ファイル投函する（IPC は
   `amigos:buildTeam` / `amigos:request`）。
