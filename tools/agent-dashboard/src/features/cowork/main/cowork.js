@@ -577,7 +577,7 @@ function generateStateMachine(config, payload = {}) {
   const cfg = config.cowork || {};
   const prompt = withGlobalInstructions(config, stateMachineCreationPrompt(name, machine, instruction));
   return runChatWindow({
-    chatCommand: cfg.chatCommand || 'kiro-cli chat --trust-all-tools',
+    ...coworkChatLaunch(config, repo),
     prompt,
     cwd: repo,
     sessionCommands: planSessionCommands(config, repo),
@@ -585,6 +585,28 @@ function generateStateMachine(config, payload = {}) {
     title: '定型業務を作成',
     message: '外部ターミナルで定型業務の作成を開始しました',
   });
+}
+
+// 定常業務の tmux 実行で使う対話 CLI の一式（S9-3）。
+//
+// 以前は `cowork.chatCommand` の**文字列固定**（既定 'kiro-cli chat --trust-all-tools'）で、
+// 定常業務だけが `agent_cli` 設定を無視して常に kiro を起動していた。CLI 定義から解決し、
+// `cowork.chatCommand` は明示上書き（空なら解決結果）に降格する。
+// 解決できないとき（定義が見つからない等）は従来の文字列へ落として、定常業務を止めない。
+function coworkChatLaunch(config, repo) {
+  const explicit = String(((config || {}).cowork || {}).chatCommand || '').trim();
+  if (explicit) return { chatCommand: explicit };
+  try {
+    const { interactiveLaunchSpec } = require('../../agent-project/main/agent');
+    const launch = interactiveLaunchSpec(config, repo);
+    return {
+      chatCommand: launch.chatCommand,
+      readyPattern: launch.readyPattern,
+      readyTimeoutSec: launch.readyTimeoutSec,
+    };
+  } catch {
+    return { chatCommand: 'kiro-cli chat --trust-all-tools' };
+  }
 }
 
 function gitInRepo(repo, args, timeoutMs) {
@@ -891,6 +913,7 @@ module.exports = {
   invalidateDiscoverCache, decodeCliOutput, viewerRepo,
   itemLogs, readLog, appendHistory, readHistory, historyFile,
   resolveLoopPromptText, withInputAssist, withGlobalInstructions, planSessionCommands,
+  coworkChatLaunch,
   applyManagedItems, stateMachineCreationPrompt,
   inspectCoworkRoot, setCoworkRoot,
   stateMachineInputSpec, stateMachineInputAssist, stateMachineFilePath,

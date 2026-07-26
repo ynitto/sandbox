@@ -7,6 +7,47 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### 全ツール: エージェント CLI 差分吸収レイヤ（S9-1〜3）
+
+「この CLI をどう起動するか」の知識が **8 か所・4 実装**（agent-project / agent-flow /
+agent-amigos / agent-dashboard）に散っていた。CLI の作法が変わるたび複数箇所の修正が要り、
+実際に**同じ CLI でもツールによってフラグが違う**状態になっていた（claude が agent-project
+では `--dangerously-skip-permissions` 付き・dashboard では無し、cursor は同梱定義と dashboard
+の組み込み分岐で argv 自体が別物）。定義ファイル 1 枚に集約する。
+
+- **組み込み CLI（kiro / claude / copilot / codex）も `agents/<name>.json` へ移した**。
+  コード側に CLI 分岐は無い。組み込み名の予約も解除したので、上位ディレクトリ（`$KIRO_AGENTS_DIR`
+  → プロジェクトの `agents/` → `~/.agents/agents/`）に置けば同梱定義を上書きできる——
+  これが無いと「CLI の作法変更が JSON 1 ファイルで完結する」が成り立たない。
+- **フォールバックの組み込みテーブルは持たない**。定義を解決できない `agent_cli` は明示エラー
+  にする（インストール破損として読めるメッセージ）。テーブルを残すと「JSON を直したのに
+  古い挙動のまま」という、いま消した二重管理が別の形で戻る。
+- **契約の拡張**（`schemas/agent-cli.schema.json`）:
+  `interactive`（対話 argv・`ready_pattern`・`ready_timeout_sec`・`prompt_inject`）/
+  `readonly_args` + `readonly`（強制力の宣言）/ `write_args` / `no_session_args` /
+  `command_suffix`（位置引数の末尾固定）/ `spill`（長大プロンプトの一時ファイル退避）。
+  既存の定義（`cursor.json` / `ollama.json`）はそのまま有効。
+- **Python ローダを `agentcore.agentcli` へ 1 本化**（agent-project / agent-flow / agent-amigos
+  が共有）。`agentcore.repolocal` で URL 正規化を寄せたのと同じ判断で、解釈のズレが
+  「同じ定義ファイルがツールによって別の argv になる」形で出るため。
+  agent-dashboard だけは UI の応答性のため JS の自前ローダを持ち、**同じ定義から同じ argv が
+  出ることをゴールデンテストで固定**した（`test/agent-cli-golden.test.js`）。
+- **tmux 経由の起動がすべてこのレイヤを通る**（S9-3）。入力受付の検出パターン・タイムアウトは
+  定義から来るようになり、定常業務（cowork）の tmux 実行も `agent_cli` 設定に従う——
+  従来は `cowork.chatCommand` の**文字列固定**で、定常業務だけが常に kiro を起動していた
+  （`cowork.chatCommand` は明示上書きとして残る）。
+- **挙動が変わる点**: dashboard のヘッドレス LLM 呼び出し（charter 補完・Doctor・構造化
+  Assist）は**すべて読み取り専用モード**で起動するようになった。「ファイルへの書き込みは
+  ビュアー側が行う」という元々の護りの意図に argv を合わせたもので、移行前は charter 補完
+  だけが権限フラグ無しだった。読み取り専用を保証しない CLI（`readonly: best-effort`）では
+  警告を返す——このレイヤは argv を組み立てるだけで、フラグを無視する CLI への防御は持たない。
+- **副産物の修正**: 失敗トリアージのヒントを「クラス一致」で引いていたため、読み込み済みの
+  別 CLI 定義に同クラスの規則があるとその文言が出ていた（codex の usage limit に kiro の
+  月間上限の案内が付く）。実際に一致した規則からヒントを採るようにした。
+
+詳細設計: [`docs/plans/2026-07-26-s9-agent-cli-layer-detailed-design.md`](docs/plans/2026-07-26-s9-agent-cli-layer-detailed-design.md)
+
+
 ### agent-project / agent-flow / agent-dashboard: ノード固有ローカルクローン層と定常業務フォルダの登録（S3・S2）
 
 Phase 1 の残り。どちらも「宣言は実行側が持つ」という同じ原則の適用。

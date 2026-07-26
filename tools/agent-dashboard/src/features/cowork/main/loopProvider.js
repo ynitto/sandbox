@@ -341,7 +341,18 @@ function sessionChatLines(entries) {
   )).join('');
 }
 
-function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands }) {
+// 入力受付の既定パターン（定義に interactive.ready_pattern が無い CLI 用）。
+//   ・行全体が素のプロンプト（`>` `❯` `›` `?`）だけ／`!>`／枠付き入力欄（`│ > │`）
+//   ・kiro-cli の入力プレースホルダ「Ask a question or describe a task」
+//     （kiro-cli は入力欄に `>` ではなくゴーストテキストを出すため、素のプロンプト判定に
+//      当たらない。入力受付中にだけ出るので準備完了の合図として最適）
+// CLI ごとの差分は agents/<name>.json の interactive.ready_pattern で宣言する（S9）。
+const DEFAULT_READY_PATTERN =
+  '^[[:space:]]*[>?❯›][[:space:]]*$|!>|│[[:space:]]*[>❯›]|ask a question|describe a task';
+const DEFAULT_READY_TIMEOUT_SEC = 60;
+
+function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands,
+                            readyPattern, readyTimeoutSec }) {
   const chatTokens = Array.isArray(chatCommand)
     ? chatCommand.map(String)
     : splitCommand(chatCommand || 'kiro-cli chat --trust-all-tools');
@@ -351,6 +362,10 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands }
   const cd = cwd ? `cd ${shellQuote(cwd)} || { echo "[agent-dashboard] cd 失敗: ${cwd}"; read _; exit 1; }; ` : '';
   const preLines = sessionProcessLines(sessionCommands);
   const chatLines = sessionChatLines(sessionCommands);
+  // 検出は 0.5 秒間隔。画面全体を見る（末尾数行に絞ると、入力欄の下にステータス行や
+  // ヒントを出す CLI で取りこぼし、送信されなくなる）。
+  const pattern = String(readyPattern || DEFAULT_READY_PATTERN);
+  const waitTicks = Math.max(1, Math.round(Number(readyTimeoutSec || DEFAULT_READY_TIMEOUT_SEC) * 2));
   const create = `tmux new-session -s "$__ses" ${cwd ? `-c ${shellQuote(cwd)} ` : ''}${shellQuote(`exec ${chat}`)}`;
   if (!sendPrompt && !chatLines) {
     return (
@@ -377,18 +392,12 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands }
     // 送るものがあるときは、プロンプト検出＋送信を **バックグラウンド**に回し、前面はすぐ
     // アタッチして「起動の様子」を見せる。従来は検出が終わるまで最大 60 秒 "起動を待っています"
     // で固まって見えた（CLI の起動自体が遅いと、その間ずっと真っ黒な待ち画面だった）。
-    // プロンプト検出は画面全体を 0.5 秒間隔で見る。末尾数行に絞ると、kiro-cli のように
-    // 入力欄の下にステータス行/ヒントを出す CLI で取りこぼし、送信されなくなる。
-    // 判定パターン:
-    //   ・行全体が素のプロンプト（`>` `❯` `›` `?`）だけ／`!>`／枠付き入力欄（`│ > │`）
-    //   ・kiro-cli の入力プレースホルダ「Ask a question or describe a task」
-    //     （kiro-cli は入力欄に `>` ではなくこのゴーストテキストを出すため、素のプロンプト判定に
-    //      当たらず検出できていなかった。入力受付中にだけ出るので、準備完了の合図として最適）。
-    // 大文字小文字は問わない（-i）。
+    // 判定パターンとタイムアウトは CLI 定義（interactive.ready_pattern /
+    // ready_timeout_sec）から来る。大文字小文字は問わない（-i）。
     (sendPrompt || chatLines
-      ? `( __i=0; while [ $__i -lt 120 ]; do ` +
+      ? `( __i=0; while [ $__i -lt ${waitTicks} ]; do ` +
         `if tmux capture-pane -p -t "$__ses" 2>/dev/null | ` +
-        `grep -qiE "^[[:space:]]*[>?❯›][[:space:]]*$|!>|│[[:space:]]*[>❯›]|ask a question|describe a task"; then ` +
+        `grep -qiE ${shellQuote(pattern)}; then ` +
         // 「エージェントに送る」開始コマンドの送信タイミング:
         //   ・業務プロンプトを送る定常ループ … 前準備の二重送信を避け、新規セッション時だけ送る。
         //   ・CLIチャットの手動オープン（業務プロンプト無し）… 開くたびに毎回送る（常駐セッションへ
@@ -409,12 +418,14 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands }
 }
 
 // プロンプトを新しいウィンドウの tmux + kiro-cli セッションへ直接送る実行経路。
-function runChatWindow({ chatCommand, prompt, cwd, sessionCommands, sessionKey, title, message }) {
+function runChatWindow({ chatCommand, prompt, cwd, sessionCommands, sessionKey, title, message,
+                        readyPattern, readyTimeoutSec }) {
   const linuxCwd = toWslCwd(cwd);
   const session = chatSessionName(linuxCwd || cwd, sessionKey);
   const script = chatWindowScript({
     chatCommand, cwd: linuxCwd, session,
     prompt: prompt === null || prompt === undefined ? null : String(prompt), sessionCommands,
+    readyPattern, readyTimeoutSec,
   });
   const res = launchWindowScript(script, {
     cwd,
@@ -454,8 +465,11 @@ function makeLoopProvider(cfg) {
         // プロンプトを直接送る。呼び出し側（cowork.runLoop / runStateMachine）が
         // kiro-loop.yml の本文やステートマシン実行文を解決して渡してくる。
         if (job.prompt) {
+          // 起動する対話 CLI は agent_cli 設定（＝CLI 定義）から解決する。
+          // cfg.chatCommand は明示上書きとして残る（S9-3）。
+          const { coworkChatLaunch } = require('./cowork');
           return runChatWindow({
-            chatCommand: cfg.chatCommand || 'kiro-cli chat --trust-all-tools',
+            ...coworkChatLaunch({ cowork: cfg }, job.cwd || job.repo),
             prompt: job.prompt,
             cwd: job.cwd || job.repo,
             sessionCommands: job.sessionCommands,
@@ -473,6 +487,7 @@ function makeLoopProvider(cfg) {
 }
 
 module.exports = {
+  DEFAULT_READY_PATTERN, DEFAULT_READY_TIMEOUT_SEC,
   makeLoopProvider, isWslPath, wslPath, wslDistro, winDriveToWsl, toWslCwd, shellQuote, sh,
   decodeCliOutput, windowScript, windowStartCommand, writeWindowScript, runInWindow,
   chatWindowScript, chatSessionName, runChatWindow, launchWindowScript,

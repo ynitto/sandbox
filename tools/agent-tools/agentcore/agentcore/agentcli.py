@@ -239,8 +239,9 @@ def headless_cmd(spec: dict, model: "str | None", prompt: str, *,
     """ヘッドレス 1 回分を組み立てる（実行はしない・決定的）。
 
     戻り値: {argv, stdin, output_file, env, empty_output_is_error, timeout, readonly_warning}
-    spill_path を渡すと、プロンプト本文の代わりに spill.instruction（{file} 置換済み）を渡し
-    spill.args を足す（kiro-cli が positional プロンプト併用時に stdin を読まない癖への対処）。
+    spill_path を渡すと、渡された prompt の末尾へ spill.instruction（{file} 置換済み）を足し、
+    権限フラグを spill.args で置き換える（kiro-cli が positional プロンプト併用時に stdin を
+    読まない癖への対処）。本文はファイル側にある前提で、prompt には短い指示だけを渡す。
     """
     m = str(model or spec.get("default_model") or "")
     holder: dict = {}
@@ -258,8 +259,12 @@ def headless_cmd(spec: dict, model: "str | None", prompt: str, *,
         argv += [str(spec["model_flag"]), m]
     argv += _expand(spec["command_suffix"], m, holder)
 
-    text = spec["spill"]["instruction"].replace("{file}", str(spill_path)) if use_spill \
-        else str(prompt if prompt is not None else "")
+    text = str(prompt if prompt is not None else "")
+    if use_spill:
+        # 指示は **置き換えず付け足す**。呼び出し側の指示（役割・出力書式）はプロンプト本文とは
+        # 別に argv へ載っていることがあり（Doctor がまさにそれ）、置き換えると役割ごと消える。
+        text = (text + " " if text else "") + \
+            spec["spill"]["instruction"].replace("{file}", str(spill_path))
     stdin = None
     if spec["prompt_via"] == "argv":
         if spec["prompt_flag"]:

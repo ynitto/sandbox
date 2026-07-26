@@ -124,7 +124,7 @@
     "spill": {
       "type": "object",
       "additionalProperties": false,
-      "description": "長大なプロンプトを一時ファイルへ退避（spill）し、CLI には短い指示だけを渡す方式。prompt_via では表せない CLI 固有の癖のためにある（kiro-cli は positional プロンプトを渡すと stdin を読まないので、スナップショットをファイルへ逃がして『fs_read で読め』と指示する必要がある）。instruction が空なら退避しない。",
+      "description": "長大なプロンプト本文を一時ファイルへ退避（spill）し、CLI には短い指示だけを渡す方式。prompt_via では表せない CLI 固有の癖のためにある（kiro-cli は positional プロンプトを渡すと stdin を読まないので、本文をファイルへ逃がして『fs_read で読め』と指示する必要がある）。instruction が空なら退避しない。",
       "properties": {
         "args": {
           "type": "array",
@@ -137,7 +137,7 @@
         "instruction": {
           "type": "string",
           "default": "",
-          "description": "退避したときに argv で渡す短い指示文。{file} が退避先パスへ置換される。CLI のツール名（fs_read 等）に依存するため CLI 固有知識としてここに置く。"
+          "description": "退避したときに、呼び出し側が渡した短い指示の **末尾へ付け足す** 一文。{file} が退避先パスへ置換される。置き換えではない——呼び出し側の指示（役割・出力書式）は残す必要があり、ここが担うのは「本文はこのファイルにある・こう読め」という CLI 固有の伝え方だけ。CLI のツール名（fs_read 等）に依存するためここに置く。"
         }
       }
     },

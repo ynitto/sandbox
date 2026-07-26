@@ -154,12 +154,12 @@ class TestHeadless(_Isolated):
         self.assertEqual(agentcli.headless_cmd(s, "m", "P")["argv"],
                          ["cli", "run", "--w", "--model", "m", "-"])
 
-    def test_spill_replaces_permission_args_and_passes_instruction(self):
+    def test_spill_replaces_permission_args_and_appends_instruction(self):
         s = self.spec(prompt_via="argv", readonly_args=["--r"],
                       spill={"args": ["--read-only-fs"], "instruction": "read {file}"})
-        r = agentcli.headless_cmd(s, "", "LONG", readonly=True, spill_path="/tmp/x.md")
-        self.assertEqual(r["argv"], ["cli", "run", "--read-only-fs", "read /tmp/x.md"])
-        self.assertNotIn("LONG", r["argv"])
+        r = agentcli.headless_cmd(s, "", "SHORT", readonly=True, spill_path="/tmp/x.md")
+        # 権限フラグは置き換え、指示は呼び出し側のものへ **付け足す**（役割を消さない）
+        self.assertEqual(r["argv"], ["cli", "run", "--read-only-fs", "SHORT read /tmp/x.md"])
 
     def test_spill_ignored_without_instruction(self):
         s = self.spec(prompt_via="argv", spill={"args": ["--x"]})
