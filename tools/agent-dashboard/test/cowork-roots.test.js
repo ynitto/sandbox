@@ -201,6 +201,29 @@ test('parseHostRepos は repos: の後の別トップレベルキーで止まる
   assert.deepStrictEqual(got, [{ url: 'u', local: '/l' }]);
 });
 
+test('parseHostRepos は repos: 行と値のインラインコメントを読み飛ばす', () => {
+  // 移行前は `repos:` 行の照合が `^repos:\s*$` だったため、インラインコメント 1 つで
+  // 宣言が丸ごと無いことにされ、CLIチャットの起動先候補が静かに消えていた。
+  const got = nodeRepos.parseHostRepos([
+    'repos:  # この PC のクローン',
+    '  - url: https://h/t/app.git  # 本体',
+    '    local: /m/app   # ミラー',
+    'residency: auto',
+  ].join('\n'));
+  assert.deepStrictEqual(got, [{ url: 'https://h/t/app.git', local: '/m/app' }]);
+});
+
+test('parseHostRepos は url をキーにしたマップ記法も読む（JSON 側と同じ規則）', () => {
+  assert.deepStrictEqual(
+    nodeRepos.parseHostRepos('repos:\n  https://h/t/a.git: /m/a\n'),
+    [{ url: 'https://h/t/a.git', local: '/m/a' }]
+  );
+});
+
+test('parseHostRepos は壊れた YAML を「宣言なし」に倒す', () => {
+  assert.deepStrictEqual(nodeRepos.parseHostRepos('repos: [壊れた\n'), []);
+});
+
 test('normalizeRepoUrl は Python 側と同じ規則で揃える', () => {
   assert.ok(nodeRepos.sameRepo('https://H/a/B.git', 'https://h/a/b/'));
   assert.ok(!nodeRepos.sameRepo('https://h/a/b.git', 'https://h/a/c.git'));
@@ -235,6 +258,33 @@ test('chatCwdChoices はプロジェクトと、この PC にクローンがあ�
     const other = got.find((c) => c.label === 'other');
     assert.ok(other && !other.enabled, '宣言が無いリポジトリは消さずに非活性で見せる');
     assert.match(other.reason, /host\.yaml/, 'なぜ選べないかと直し方を書く');
+  } finally {
+    if (old === undefined) delete process.env.AGENT_PROJECT_AGENTS_HOME;
+    else process.env.AGENT_PROJECT_AGENTS_HOME = old;
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('レジストリが repos.yaml のプロジェクトでも宣言し忘れを可視化する', () => {
+  // json だけを見ていた頃は、yaml レジストリのプロジェクトで「この PC に宣言が無い」行が
+  // 丸ごと出ず、宣言し忘れに気づけなかった。
+  const base = tmp('kpv-chatcwd-yaml-');
+  const old = process.env.AGENT_PROJECT_AGENTS_HOME;
+  try {
+    const proj = path.join(base, 'proj-state');
+    fs.mkdirSync(proj, { recursive: true });
+    fs.writeFileSync(path.join(proj, 'repos.yaml'), [
+      'app:                      # 本体',
+      '  url: https://h/t/app.git',
+      'other:',
+      '  url: https://h/t/other.git',
+    ].join('\n'), 'utf8');
+    const home = path.join(base, 'agents-home');
+    fs.mkdirSync(home, { recursive: true });
+    process.env.AGENT_PROJECT_AGENTS_HOME = home;
+
+    const labels = agent.chatCwdChoices({}, proj).map((c) => c.label);
+    assert.ok(labels.includes('app') && labels.includes('other'));
   } finally {
     if (old === undefined) delete process.env.AGENT_PROJECT_AGENTS_HOME;
     else process.env.AGENT_PROJECT_AGENTS_HOME = old;

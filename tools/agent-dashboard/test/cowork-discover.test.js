@@ -439,6 +439,70 @@ test('dashboard 管理項目はプロンプトと予約済み定型業務を kir
   assert.ok(texts.some((text) => text.includes('statemachine-use スキルでreleaseステートマシンを実行して')));
 });
 
+// --- YAML のコメント（値パーサとアンカーパーサの整合） ---
+const COMMENTED_LOOP = [
+  'prompts:  # 定期実行',
+  '  # ---- 一つ目 ----',
+  '  - name: one   # 名前',
+  '    prompt: |',
+  '      手順:',
+  '        1. A する',
+  '    interval_minutes: 60   # 1 時間ごと',
+  '    enabled: true  # 有効',
+  '# ==== 列 0 の区切りコメント ====',
+  '  - name: "two # ハッシュ入り"',
+  '    prompt: B',
+  '    cron: "0 * * * *"  # 毎時',
+  '',
+  'kiro_options: --trust-all-tools',
+  '',
+].join('\n');
+
+test('列 0 のコメント行で prompts リストを打ち切らない', () => {
+  // 打ち切ると 2 件目以降が発見から消える（.kiro/kiro-loop.yml があるのに画面に出ない）。
+  const values = discover.parseKiroLoopPrompts(COMMENTED_LOOP);
+  assert.strictEqual(values.length, 2);
+  assert.deepStrictEqual(values[0], { name: 'one', interval_minutes: 60, enabled: true });
+  assert.strictEqual(values[1].name, 'two # ハッシュ入り', '引用値の中の # は値の一部');
+  assert.strictEqual(values[1].cron, '0 * * * *');
+});
+
+test('値パーサと書き戻しアンカーは prompts の並びが一致する', () => {
+  // ずれると別のエントリへ書き戻す。writeback は promptIndex で両者を突き合わせる。
+  const values = discover.parseKiroLoopPrompts(COMMENTED_LOOP);
+  const anchors = discover.parseKiroLoopPromptsWithLines(COMMENTED_LOOP);
+  assert.strictEqual(anchors.length, values.length);
+  anchors.forEach((a, i) => {
+    assert.strictEqual(discover.scalarValue(a.fields.name.rawVal), values[i].name);
+  });
+});
+
+test('ブロックスカラの本文は相対インデントを保つ', () => {
+  const texts = discover.kiroLoopPromptTexts(COMMENTED_LOOP);
+  assert.strictEqual(texts[0], '手順:\n  1. A する');
+  assert.strictEqual(texts[1], 'B');
+});
+
+test('コメントだらけのファイルでも 2 件目を正しく書き戻す', () => {
+  const values = discover.parseKiroLoopPrompts(COMMENTED_LOOP);
+  const idx = values.findIndex((v) => v.name === 'two # ハッシュ入り');
+  const { text, errors } = wb.applyKiroLoopEdits(COMMENTED_LOOP, [{
+    promptIndex: idx, promptName: values[idx].name, enabled: false,
+  }]);
+  assert.deepStrictEqual(errors, []);
+  assert.ok(text.includes('# ---- 一つ目 ----'), 'コメントを消さない');
+  assert.ok(text.includes('# ==== 列 0 の区切りコメント ===='), '列 0 のコメントを消さない');
+  assert.ok(text.includes('interval_minutes: 60   # 1 時間ごと'), '別エントリを触らない');
+  const after = discover.parseKiroLoopPrompts(text);
+  assert.strictEqual(after[0].enabled, true, '1 件目は変わらない');
+  assert.strictEqual(after[idx].enabled, false);
+});
+
+test('prompts の後の別トップレベルキーではリストを閉じる', () => {
+  const anchors = discover.parseKiroLoopPromptsWithLines(COMMENTED_LOOP);
+  assert.strictEqual(anchors.length, 2, 'kiro_options 以降を巻き込まない');
+});
+
 // --- WSL パス ---
 test('resolveRoot は win32 で WSL の POSIX パスを UNC へ寄せる', () => {
   const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
