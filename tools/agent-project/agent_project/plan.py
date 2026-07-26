@@ -53,7 +53,12 @@ def ensure_repo_maps(cfg: "Config", charter: "Charter | None", force: bool = Fal
     force=True は `repo_map` 設定に関わらず生成する。plan と spec の経路がこれを使う:
     S6 の必須セクション（作業概要の「変更対象」）も S7 のライト spec（影響範囲）も、
     **既存コードの文脈が無いと書けない**。opt-in のままだと決定的ゲートが恒常的に発火し、
-    設定 1 つで機能全体が空回りする。コストは有界（sha キャッシュ済み・変化が無ければ 0 回）。
+    設定 1 つで機能全体が空回りする。
+
+    **コスト**: 生成（clone + LLM）は HEAD sha が変わらない限り走らない。ただし
+    **sha の取得（`git ls-remote`）は毎回走る**——非 readonly repo 1 件につき 1 往復で、
+    到達不能なら `_repo_head_sha` のタイムアウト（60 秒）まで待つ。plan の前置を無条件に
+    した分、オフラインのノードではここが plan の待ち時間になる（積み残し: 設計 §7-6）。
     """
     if not charter or cfg.executor == "stub" or not (force or cfg.repo_map):
         return
