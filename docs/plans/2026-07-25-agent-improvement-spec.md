@@ -5,6 +5,7 @@
 参照した既存設計: `2026-07-24-single-resident-controller-design.md` / `2026-07-23-delegation-board-distributed-bidding-design.md` / `2026-07-12-agent-spec-flow-integration.md` / `2026-07-25-flow-planner-granularity-design.md`
 
 改訂履歴:
+- 第 3 版: Phase 1(S1 + S3 + S2)の実装完了を反映。§4 に状態列・詳細設計へのリンク・積み残し表を追加、§5 の未決 1・2 を決着済みに、§2 の記述に「Phase 1 で解消」の印を付けた
 - 第 2 版: レビュー反映。S1 = 設定 2 層の専有項目を明確化 / S2 = dashboard 管理へ変更 / S4 = MR/PR 一本化 / S5 = 証跡ベース検証へコンセプト変更 / S6 = 「人は charter・メモ、エージェントがバックログ記述」のフローと作業概要・スキル化 / S9 = エージェント CLI 差分吸収レイヤの新設
 
 ---
@@ -55,12 +56,16 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
 
 仕様の前提となる事実のみ列挙する(詳細な行番号は各仕様の節に記載)。
 
-- **agent-project**: 状態専用リポジトリ(`state_repo`)は opt-in。未設定なら旧 worktree 方式にフォールバック(`configfile.py:340-344`)。設定時は `state_backup_branch` 無効化・誤ディレクトリ拒否・専用 clone へのリダイレクトが強制される。プロジェクト宣言の単一ソースは `~/.agents/agent-project.host.yaml`。設定キーは約 110 個が単一ファイルに平置きされている(`CONFIG_DEFAULTS`)。
-- **repos.json**: charter から自動生成され(`charter.py:370-397`)、状態同期の対象(`state.py:203-207`、リモート優先ファイル)。スキーマにはホスト固有の `local`/`dir` キーが存在するが、自動生成では書き出されず、書けば全 PC に伝播する。
-- **agent-flow**: 1 run = 1 ワークスペース。作業ツリーは `/tmp` の mkdtemp 配下で、終了時に必ず消える(`workspace.py:145`, `:203-213`)。共有 bare ミラーから detached worktree を切る 3 段フォールバックが実装済み。板(agent-board)経由の請負では公示の workspace をそのまま使い、自ノードの `local` をマージしない(`agent_flow/board.py:272-277`)。
+> **この節は仕様策定時点(2026-07-25)のスナップショット**。Phase 1(S1・S3・S2)で解消したものには
+> 「→ Phase 1 で解消」と印を付けた。**現在の実装を知りたい場合は §4 の詳細設計を見ること**
+> ——ここを書き換えると「なぜこの仕様を書いたか」の記録が消えるので、印だけを足してある。
+
+- **agent-project**: 状態専用リポジトリ(`state_repo`)は opt-in。未設定なら旧 worktree 方式にフォールバック(`configfile.py:340-344`)。設定時は `state_backup_branch` 無効化・誤ディレクトリ拒否・専用 clone へのリダイレクトが強制される。プロジェクト宣言の単一ソースは `~/.agents/agent-project.host.yaml`。設定キーは約 110 個が単一ファイルに平置きされている(`CONFIG_DEFAULTS`)。**→ Phase 1 で解消**(S1: 状態専用リポジトリの唯一化・設定 2 層・profile 廃止)。
+- **repos.json**: charter から自動生成され(`charter.py:370-397`)、状態同期の対象(`state.py:203-207`、リモート優先ファイル)。スキーマにはホスト固有の `local`/`dir` キーが存在するが、自動生成では書き出されず、書けば全 PC に伝播する。**→ Phase 1 で解消**(S3: 宣言は host.yaml `repos[]` へ。repos.json の `local` は警告して無視)。
+- **agent-flow**: 1 run = 1 ワークスペース。作業ツリーは `/tmp` の mkdtemp 配下で、終了時に必ず消える(`workspace.py:145`, `:203-213`)。共有 bare ミラーから detached worktree を切る 3 段フォールバックが実装済み。板(agent-board)経由の請負では公示の workspace をそのまま使い、自ノードの `local` をマージしない(`agent_flow/board.py:272-277`)。**→ Phase 1 で解消**(S3: `poll_board` が submit 前に自ノードの `local` を載せる)。
 - **verify(agent-project)**: 人の `verify:` / 決定的 `verify_template` / 自然文 `accept` からのエージェント合成の 3 系統。合成は 1 回の LLM 呼び出し + 静的スクリーニングのみで、実行して直すループを持たない(`verify.py:491-521`)。失敗はリトライ消費 → `_escalate` で人へ。agent-flow 側の `verify` ノードは別物で、「エージェントが依存成果を独立に検算し `verify=pass|fail` + JSON を返す」フェイルクローズ方式(`agent.py:910-915`, `waits.py:271-285`)であり、こちらは機能している。
 - **計画パイプライン**: charter → backlog の分解プロンプトはハードコード(`plan.py:101-125`)。重複照合はタイトルの Jaccard 類似(閾値 0.5)のみ。削除タスクの墓標は無く、drained/charter 変更/replan で同種タスクが再生成されうる。内側 flow-planner はスキルとして分離済み(`.github/skills/flow-planner/`)だが名前固定・`--granularity` 非伝播。
-- **agent-dashboard**: Electron。プロジェクト一覧は常駐体が書く `engine/status.json` の `children[]` のみ(登録 UI は廃止済み)。表示側は非プロジェクトフォルダの分岐(`renderer.js:1605-1618`)を既に持つ。CLI チャットの cwd は選択中プロジェクトのフォルダ 1 択。検収 diff はローカルパス前提(`git.js:226-227`)で、MR は外部ブラウザに開くだけ。GitLab コメント/ラベルからの決着推定はフロー画面の表示先読み専用。board の IPC(list/post/award/cancel)はあるが UI ゼロ、bid の IPC は無い。診断(doctor)はヘッドレス 1 発実行で、対話コマンド・読み取り専用フラグは CLI ごとにハードコード(`agent.js:218-247`, `:277-330`)。
+- **agent-dashboard**: Electron。プロジェクト一覧は常駐体が書く `engine/status.json` の `children[]` のみ(登録 UI は廃止済み)。**→ Phase 1 で一部解消**(S2: 定常業務専用フォルダだけ `cowork.roots` で登録可。agent-project プロジェクト一覧は engine/status.json のまま)。表示側は非プロジェクトフォルダの分岐(`renderer.js:1605-1618`)を既に持つ。CLI チャットの cwd は選択中プロジェクトのフォルダ 1 択。**→ Phase 1 で解消**(S3-4: 起動先ドロップダウン)。検収 diff はローカルパス前提(`git.js:226-227`)で、MR は外部ブラウザに開くだけ。GitLab コメント/ラベルからの決着推定はフロー画面の表示先読み専用。board の IPC(list/post/award/cancel)はあるが UI ゼロ、bid の IPC は無い。診断(doctor)はヘッドレス 1 発実行で、対話コマンド・読み取り専用フラグは CLI ごとにハードコード(`agent.js:218-247`, `:277-330`)。
 - **エージェント CLI プラグイン**: `schemas/agent-cli.schema.json` + `agents/<name>.json` という宣言的差し込み口が既にあるが、**ヘッドレス片道実行(prompt 渡し・出力取り出し・エラー分類)のみ**を契約化しており、対話モードの情報(対話 argv・読み取り専用フラグ・入力受付検出)を持たない。
 - **agent-board**: 実行プロセスを持たない git リポジトリ + ファイル契約。常駐一本化設計で「板が必須・PC 内 1 クローン・push は常駐体のみ・落札はノード直轄ワーカーで実行」に移行予定。board tick(W1-11)は二重落札リスクを理由に意図的に未実装。
 - **kiro-loop / ステートマシン**: dashboard の cowork(定常業務)機能が `.kiro/kiro-loop.yaml` と `.statemachine/*/workflow.yaml` を自動発見して tmux で実行する仕組みは実装済み。走査対象が engine/status.json の children に限られることだけが制約。これらのエンジンは agent-project の常駐体・状態管理と無関係に動く。
@@ -338,18 +343,40 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
 
 ## 4. 段階導入計画
 
-| フェーズ | 仕様 | 主な変更先 | 備考 |
-|---|---|---|---|
-| 1 | S1 + S3 | agent-project(configfile/state/host)、agentcore(リゾルバ)、agent-flow(board マージ)、schemas | host.yaml 拡張(projects/repos/overrides)を 1 回で行う |
-| 1' | S2、S9-1〜3 | agent-dashboard(cowork)、schemas(agent-cli)、agents/ | いずれも独立。S9 のレイヤは 4 の診断より先に整備 |
-| 2 | S4 → S5 | agent-project(mr/verify/needs)、agent-dashboard(needs) | S5 の acceptance チェックリスト書式は S6 と同時に確定させる |
-| 3 | S6 → S7 | agent-project(plan/charter/prioritize)、.github/skills(backlog-planner)、agent-flow(planner_skill)、agent-dashboard(plan-review/notes UI) | S9-4(対話診断)と並行可 |
-| 4 | S8、S9-4 | agent-dashboard、agent-project(常駐体) | S8-2/3 は W1-11(board tick)後 |
+| フェーズ | 仕様 | 状態 | 主な変更先 | 備考 |
+|---|---|---|---|---|
+| 1 | S1 + S3 | **実装済み** | agent-project(configfile/state/host)、agentcore(リゾルバ)、agent-flow(board マージ)、schemas | host.yaml 拡張(projects/repos/overrides)を 1 回で行う |
+| 1' | S2 | **実装済み** | agent-dashboard(cowork) | 独立 |
+| 1' | S9-1〜3 | 未着手 | schemas(agent-cli)、agents/ | 独立。S9 のレイヤは 4 の診断より先に整備 |
+| 2 | S4 → S5 | 未着手 | agent-project(mr/verify/needs)、agent-dashboard(needs) | S5 の acceptance チェックリスト書式は S6 と同時に確定させる |
+| 3 | S6 → S7 | 未着手 | agent-project(plan/charter/prioritize)、.github/skills(backlog-planner)、agent-flow(planner_skill)、agent-dashboard(plan-review/notes UI) | S9-4(対話診断)と並行可 |
+| 4 | S8、S9-4 | 未着手 | agent-dashboard、agent-project(常駐体) | S8-2/3 は W1-11(board tick)後 |
+
+### 詳細設計と実装の所在
+
+| 仕様 | 詳細設計 | 実装 |
+|---|---|---|
+| S1 | [`2026-07-26-s1-config-two-layer-detailed-design.md`](2026-07-26-s1-config-two-layer-detailed-design.md) | 実装済み(移行手順: `docs/guides/state-repo-migration.md`) |
+| S3 / S2 | [`2026-07-26-s3-s2-node-repos-and-cowork-roots-design.md`](2026-07-26-s3-s2-node-repos-and-cowork-roots-design.md) | 実装済み |
+
+### Phase 1 の積み残し(次フェーズ以降へ持ち越し)
+
+| # | 内容 | 待ち先 |
+|---|---|---|
+| P1-a | **S3-5: 板の `nodes/<node-id>.json` への `repos[].local` 転記** — その JSON を書く実装自体が無い(W1-11 残)ため、書き手ができるまで転記先が無い | S8 / W1-11 |
+| P1-b | **S3-4 のパス手入力 UI** — main 側は任意パスを受けて実在検査までするが、画面はドロップダウンのみ。入口を足すだけで有効になる | 必要が出たとき |
+| P1-c | **dashboard の repos.yaml/yml 読み取り** — CLIチャット候補の「宣言し忘れ」行は repos.json からのみ作る(このアプリは YAML パーサを持たない)。候補が減るだけで害は無い | 必要が出たとき |
+| P1-d | **`cowork.roots` の掃除の口** — project になったフォルダの登録解除の動線が無い(表示は自動で正しくなる) | 必要が出たとき |
+| P1-e | **`_source_repo` の共有 bare ミラーは blobless** — フォージ無し運用の自動マージで blob の遅延取得にネットワークが要る。確実にしたいノードは `repos[].local` にフルクローンを宣言する | S4(レビューと決着が MR/PR へ寄れば出番が縮む) |
+
+いずれも「動作は正しいが最適でない / 別の実装待ち」で、Phase 2 以降を止めるものは無い。
 
 ## 5. 未決事項
 
-1. **S1**: ワーカーノード(lite)の `worker init` と host.yaml 専有項目の整合。`projects[].overrides` に許すキーの最終リスト。
-2. **S3**: `local` の鮮度責務(worker が毎回 `fetch` する現行方式を維持するか、ノード側で定期 fetch するか)。
+~~1. **S1**: ワーカーノード(lite)の `worker init` と host.yaml 専有項目の整合。`projects[].overrides` に許すキーの最終リスト。~~
+   → **決着**(S1 詳細設計 §7): worker init も同一スキーマを書き検証コードを共通化。overrides は SHARED 群 12 キー。
+~~2. **S3**: `local` の鮮度責務(worker が毎回 `fetch` する現行方式を維持するか、ノード側で定期 fetch するか)。~~
+   → **決着**(S3/S2 詳細設計 §6-2): 現行方式を維持(鮮度不変条件 INV-1)。ノード側の定期 fetch は非目標に触れるため見送り。
 3. **S4**: MR/PR 自動作成のフォージ別対応順序(GitLab 先行、GitHub/Gitea の扱い)。フォージ書き込み API の認証情報の置き場。
 4. **S5**: verifier の副作用の許容範囲(テスト実行は作業ツリー内に限定できるが、DB・外部サービスに触る検証の扱い)。verifier 自体の暴走・自己欺瞞への防御(検証レポートの抜き取り監査を人検収に組み込むか)。
 5. **S6**: 人編集タスクの保護と charter 大改訂の衝突(charter が根本から変わったとき人編集タスクをどう扱うか。`--revive` 同様の明示操作とするか)。墓標の指紋衝突で「作りたい新タスク」まで抑止しないか。
