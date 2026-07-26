@@ -19,8 +19,8 @@
   `stub` は LLM なしのプロトコル検証用。
 
 設計正典: [`docs/designs/agent-amigos-design.md`](../../docs/designs/agent-amigos-design.md)
-（本実装は **P0（MVP）＋ P1（GitBus 分散・away プロトコル）＋ P2（owner-picks・
-acceptance: agent）**。hub 中継サーバ（旧 P2）は常駐一本化で廃止。agent-dashboard 連携は `tools/agent-dashboard/src/features/amigos/`）。
+（実装済みの範囲と既知の欠落は同書 §9。hub 中継サーバは常駐一本化で廃止。
+agent-dashboard 連携は `tools/agent-dashboard/src/features/amigos/`）。
 
 ## インストール
 
@@ -56,7 +56,11 @@ agent-amigos drive --mission-id <id>   # 手元で終端まで回す（単発。
 
 - **設定は `.agents/agent-amigos.yaml`**（cwd。`.yml` / `.json` 可・無くても動く）。
   探索順は `./agent-amigos.*` → `./.agents/agent-amigos.*` → `~/.agents/agent-amigos.*`。
-  優先順位は CLI > 設定 > 既定。雛形: [`agent-amigos.yaml.example`](agent-amigos.yaml.example)。
+  優先順位は CLI > 設定 > 既定で、解決は全サブコマンド共通（`agent_cli` / `tags` / `roles` /
+  `interval` / `manual_claim` / `board` も同じ順序で効く）。雛形:
+  [`agent-amigos.yaml.example`](agent-amigos.yaml.example)。使う agent CLI が設定・CLI 引数・
+  ロール指定のどこからも決まらない場合は `stub` へ落とさず paused にする（ダミー成果物が
+  納品まで進まないように）。
 - **バスはローカル dir か `git+<url>`**。共有は git バスに一本化した（`hub+<url>` の中継
   サーバは廃止 — 公開元だった `serve` が無くなり、対向だけ残しても繋ぐ先が無い）。
 - **同時実行の上限は PC 単位**。実行中の手番は `~/.agents/amigos/turns/*.json` に印が
@@ -70,7 +74,8 @@ agent-amigos drive --mission-id <id>   # 手元で終端まで回す（単発。
   Amigos タブから**タスク依頼**（ミッション画面。「チームビルディング（役割を自動設計）」/
   「役割を自分で指定」のどちらのモードでも投函できる）と**手動引き受け**（募集中ロールの
   「引き受け」ボタン）を commands 投函で行える。`manual_claim: true` にすると自動応募を
-  止めて手動引き受けだけで回せる。
+  止めて手動引き受けだけで回せる（`participate` / `join` / `drive` のいずれでも効き、
+  `--manual-claim` / `--no-manual-claim` で上書きできる）。
 
 ```bash
 # 手動引き受けの例（dashboard を使わない場合）
@@ -143,10 +148,11 @@ agent-amigos build-team --list-patterns                 # 利用可能なパタ�
 agent-amigos build-team --goal "..." --agent-cli claude --pattern metagpt-sop   # 明示指定
 ```
 
-- **high**（8 種）は自動選択の対象。**medium**（25 種）は `--pattern <id>` / commands の
+- **high**（8 種）は自動選択の対象。**medium**（29 種）は `--pattern <id>` / commands の
   `"pattern"` で明示指定したときだけ使う。
-- 現実装（seats>1・投票・同期ラウンド・探索木・動的編成が無い）では写せないパターンと拡張提案は
-  [`docs/designs/agent-amigos-teambuilder-patterns.md`](../../docs/designs/agent-amigos-teambuilder-patterns.md)。
+- カタログ 37 種と、カタログを持たず自律コンダクタで表現する 3 種（DyLAN / AgentVerse /
+  meta-prompting）で論文由来 40 パターンを覆う。写像の方針は
+  [`docs/designs/agent-amigos-design.md`](../../docs/designs/agent-amigos-design.md) §7。
 
 ## 参加ノード
 
@@ -261,7 +267,7 @@ roles:
   **agent-flow へ委譲**する。team-builder は探索が本質のミッションを見分けて `target: agent-flow` の
   委譲封筒（`delegation.schema.json` の workload=flow）を出力する（`build-team` が表示・保存し
   `agent-flow submit` を提示）。詳細:
-  [`docs/designs/agent-amigos-teambuilder-patterns.md`](../../docs/designs/agent-amigos-teambuilder-patterns.md)。
+  [`docs/designs/agent-amigos-design.md`](../../docs/designs/agent-amigos-design.md) §7.2。
 
 ## acceptance: agent（受入の自動判定）
 

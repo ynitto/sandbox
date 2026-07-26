@@ -24,7 +24,7 @@ agent-amigos（役割駆動マルチエージェント協働）の独立した�
 ## ミッション一覧（読み取り専用）
 
 - バス上のファイル（真実）だけを読む。**dashboard からバスへは一切書かない**
-  （書き込み所有権はオーナー / amigo のもの — agent-amigos 設計書 §4.2）。
+  （書き込み所有権はオーナー / amigo のもの — agent-amigos 設計書 §4.3）。
 - バスの形は 2 種類を受ける: ローカルバス（`<busDir>/missions/<mid>/`）と
   GitBus のクローン作業領域（`<busDir>/mission__<mid>/`）。`amigos.busDirs` 未設定時は
   `~/.agents/amigos/bus/*`（GitBus 既定 workdir）を自動発見する。

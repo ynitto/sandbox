@@ -7,6 +7,79 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-amigos: 設計書との照合で見つかった 4 件を修正（設定の読み落とし・沈黙する stub・staffing fail・deadline）
+
+設計書の統合（下記）で洗い出した実装漏れを直した。いずれも**沈黙して壊れる**性質のもの。
+
+- **設定ファイルの読み落とし（最も実害が大きい）**: `agent_cli` / `tags` / `roles` /
+  `interval` / `resume_hours` / `manual_claim` / `board` を読むのは `participate` だけで、
+  `join` / `drive` / `run` は CLI 引数しか見ていなかった。設定に `agent_cli: claude` と
+  書いたノードが黙って `stub` で走り、`tags` が空になるので `requires.tags` 付きロールへ
+  応募もできなかった。**解決を `cli._resolve_ctx` へ一本化**し、全サブコマンドが同じ
+  CLI > 環境変数 > 設定 > 既定 の順を通るようにした。`join` / `drive` に
+  `--manual-claim` / `--no-manual-claim`、`join` に `--board`、`drive` に `--tags` /
+  `--roles` を追加。`join` も commands/ を取り込むようになった。
+  - 応募ロールの絞り込み `--roles` は dest を `role_filter` に分けた。`post --roles` は
+    役割ミッション表の**ファイルパス**で、dest を共有すると公示のたびに
+    「roles.yaml という名前のロールだけに応募する」絞り込みが生えていた。
+  - `drive` は設定に `board` があっても板には触らない（R9: ローカルミッション）。
+- **決まらない agent CLI が黙って stub へ落ちていた**: `stub` は LLM なしのダミー応答なので、
+  ダミー成果物がそのまま統合・納品まで進み得た。解決できない場合は
+  `[agent-error:env]` を投げ、既存の環境要因トリアージに乗せて **paused ＋ owner へ通知**
+  にした（ミッションは殺さない）。stub は明示指定のときだけ使う。
+  あわせて 3 か所に写経されていた paused 遷移を `AmigoRunner._pause` へ集約し、
+  **遷移時だけ通知**（環境が直るまで owner の inbox を埋めない）に揃えた。
+- **`staffing_policy: fail` が `wait` と同じ挙動だった**: 値は受け付けるのに誰も見ておらず、
+  open のまま滞留していた。`derive_phase` が「`staffing_timeout` 超過かつ必須ロール未充足」を
+  **ファイルから導出**して failed を返すようにした（新しい終端ファイルも書き手も増やさない）。
+  効くのは**まだ誰も手番を取っていないミッションだけ**——走り出した後にノードが落ちて空いた席は
+  再募集の領分で、区別しないと夜中の 1 台のクラッシュが進行中のミッションを巻き添えにする。
+  `normalize_mission` で値の検証も追加した（`self_staff` のようなタイポが黙って通っていた）。
+- **`mission.deadline` の超過が通知されなかった**: 正規化して保存するだけで誰も見ていなかった。
+  オーナー巡回が `inbox/owner` へ **1 度だけ**通知する（`ownerops.owner_notices`）。自動 fail は
+  しない——予算追加・収束条件の見直し・cancel のどれを選ぶかは人の判断に残す。
+  `staffing_policy: fail` での終端理由も同じ経路で届く。
+- **away 中も `question_timeout` が進んでいた**: 宛先ノードが夜に落ちているだけで質問が
+  期限切れになり、翌朝の owner の inbox が裁定要求で埋まっていた。宛先が away（grace 内）の
+  間は**時計を止め**、代わりに送信側へ不在を 1 度だけ知らせる。`open_questions` に宛先を
+  記録するようにした（旧形式の int も読める）。
+- 時刻パースの写経（`calendar.timegm(time.strptime(...))`）を `util.iso_to_epoch` へ寄せた。
+- テストを 17 件追加（158 → 176）: 設定解決の全項目、CLI 未解決の paused、ロール側 CLI だけで
+  足りること、通知が 1 度だけであること、staffing fail の終端と進行中ミッションの非巻き添え、
+  deadline 通知、away 中のエスカレーション抑止と復帰後の再開。
+
+### docs: agent-amigos の設計書を 1 本へ統合し、実装と再照合
+
+`agent-amigos-design.md` と `agent-amigos-teambuilder-patterns.md` の 2 本を
+**`docs/designs/agent-amigos-design.md` の 1 本へ統合**し、実装（`tools/agent-amigos/`）と
+突き合わせて書き直した。
+
+- **構成を抽象から具体への段階的開示に組み替えた**: TL;DR → 背景と目標/非目標 →
+  主要な設計判断（ADR 5 件・却下案つき）→ 全体像 → 協働プロトコル → 予算 →
+  チーム設計の自動化 → 運用 → 実装状況、＋付録（ロールミッション表 / CLI / 旧 § 番号の対応）。
+  文字数は 2 本合計 75.8k → 54.3k。
+- **実装と食い違っていた記述を訂正**: hub 中継サーバ（旧 §5.2・P2）と常駐 `serve`（旧 §11.1）は
+  撤去済みなのに実装済みと書かれていた。`GlobalSemaphore（~/.kiro/slots/）`は turnmark
+  （`~/.agents/amigos/turns/`）へ、`content_file` は `content` へ、`mission.yaml` /
+  `roles/*.yaml` は正規化 JSON へ。未記載だった `drive` / `participate` / `deliveries` /
+  `restaff` / `budget node`、agent-control 連携、agent-board への入札参加、`repos` 能力宣言、
+  `done_when: consensus`、席・討論・コンダクタのプリミティブを反映。
+- **既知の欠落を §9 に明記**: `staffing_policy: fail` 未実装、`mission.deadline` の超過通知
+  未実装、away 中の `question_timeout` 抑止 未実装、可用性ウィンドウ宣言 未実装、
+  設定ファイルの `agent_cli` / `tags` / `roles` / `manual_claim` / `board` を読むのが
+  `participate` だけという読み落とし。
+- **旧 § 番号を参照していた箇所を新番号へ追随**（`agent_amigos/` 各モジュール・テスト・
+  `schemas/mission.schema.json` / `schemas/README.md`・dashboard の amigos feature・
+  team-builder スキル）。対応表は設計書 付録 C。
+- **設定ファイル例・README を見直し**: `agent-amigos.yaml.example` の「サブコマンド省略 =
+  serve」を削除、`roles.yaml.example` に `done_when: consensus` / `review_rounds` /
+  `consensus_*` を追加し未実装項目を注記。`tools/agent-amigos/README.md` の
+  「現実装では seats>1・投票・同期ラウンド・動的編成が無い」という自己矛盾した記述を訂正
+  （いずれも実装済み。medium は 25 → 29 種）。`schemas/mission.schema.json` に
+  `requires.repos`（実装済みだが未文書化）を追加。
+- `docs/designs/README.md` の索引を 26 件へ更新（未掲載だった agent-dashboard の設計 2 件を追加）。
+- テストは 158 件緑のまま（コメントのみの変更）。
+
 ### agentcore: P0 完了確認・R9 の常設テスト化・残存重複の棚卸し
 
 P0 が完了したかの確認と、設計 §5 の事前検証（V1〜V4）を実施した。

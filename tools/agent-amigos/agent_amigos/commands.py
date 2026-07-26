@@ -1,4 +1,4 @@
-"""指示のファイル取り込み — `<home>/.agent/agent-amigos/commands/*.json`。
+"""指示のファイル取り込み — `<home>/.agents/agent-amigos/commands/*.json`。
 
 agent-project の `commands/` と同じ結合方式: 外部操作者（agent-dashboard・人・スキル）は
 JSON を 1 ファイル置くだけで、常駐デーモンが次のサイクルで取り込む。プロセス間 API を

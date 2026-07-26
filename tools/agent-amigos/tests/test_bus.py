@@ -238,7 +238,7 @@ class BoardParticipationTests(AmigosTestCase):
 
 @unittest.skipUnless(shutil.which("git"), "git が必要")
 class GitBusTests(unittest.TestCase):
-    """GitBus（P1、設計書 §5.1）: 専用バスリポジトリ + ミッション別ブランチ。"""
+    """GitBus（P1、設計書 §4.4）: 専用バスリポジトリ + ミッション別ブランチ。"""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="amigos-git-")
@@ -335,7 +335,7 @@ class GitBusTests(unittest.TestCase):
         before = count()
         runner = AmigoRunner(bus_a, mid, "architect", "node-a", "stub")
         self.assertEqual(runner.turn_once(), "acted")
-        # 1 ターン（成果物 + status + events）= origin 上の 1 コミット（原子性 §6.6）
+        # 1 ターン（成果物 + status + events）= origin 上の 1 コミット（原子性 §5.3）
         self.assertEqual(count(), before + 1)
 
     def test_gc_removes_branch_and_index(self):

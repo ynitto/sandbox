@@ -1,4 +1,4 @@
-"""アサインプロトコル — claim → 決定的勝者 → roster 確定 → 自己補充（設計書 §6）。
+"""アサインプロトコル — claim → 決定的勝者 → roster 確定 → 自己補充（設計書 §5.1）。
 
 各ノードは自分名義ファイル `assignments/<role>/<node>.json` を書くだけ（add/add
 コンフリクトなし）。勝者は lease 内の全 claim のうち (ts, node) 昇順の先頭 seats 件に
@@ -16,14 +16,14 @@ import os
 from agentcore import protocol
 
 from .bus import Bus, MissionPaths
-from .util import now_iso, read_json, write_json_atomic
+from .util import iso_to_epoch, now_iso, read_json, write_json_atomic
 
 DEFAULT_LEASE = 600.0
 
 
 def default_lease() -> float:
     """claim の lease 秒。環境変数 AGENT_AMIGOS_LEASE で上書き可能
-    （テスト・短周期運用向け。lease は liveness の信号、§6.5）。"""
+    （テスト・短周期運用向け。lease は liveness の信号、§5.3）。"""
     try:
         return float(os.environ.get("AGENT_AMIGOS_LEASE", DEFAULT_LEASE))
     except ValueError:
@@ -51,7 +51,7 @@ def claim_role(bus: Bus, mp: MissionPaths, role_id: str, node_id: str,
 def apply_role(bus: Bus, mp: MissionPaths, role_id: str, node_id: str,
                agent_cli: "str | None" = None, lease: "float | None" = None) -> None:
     """owner-picks 用の応募: 自分名義の claim を書くだけで勝者判定はしない
-    （確定はオーナーの roster 書き込み。設計書 §6.3）。既に応募済みなら lease を延長する
+    （確定はオーナーの roster 書き込み。設計書 §5.1）。既に応募済みなら lease を延長する
     （renew_lease に委ね、再応募時の agent_cli 変更は無視 — 既存応募を尊重する）。"""
     existing = read_json(mp.assignment(role_id, node_id))
     if isinstance(existing, dict) and existing.get("node") == node_id:
@@ -133,7 +133,7 @@ def _declared_repos(node_repos) -> "set[str]":
 
 def matches_role(role: dict, node_tags: "list[str]", node_clis: "list[str]",
                  node_repos=None) -> bool:
-    """ロール要件とノード能力のマッチング（設計書 §6.1）。
+    """ロール要件とノード能力のマッチング（設計書 §5.1）。
     requires.repos はノードが担当するリポジトリ（agent-amigos.yaml の repos:）で選別する
     — 成果物リポジトリに応じて入札するノードを絞る機構（board.schema.json の node と同語彙）。"""
     req = role.get("requires") or {}
@@ -156,40 +156,32 @@ DEFAULT_AWAY_GRACE = 7200.0
 
 
 def away_grace() -> float:
-    """away の resume_at からの猶予秒（設計書 §6.6。既定 2 時間）。"""
+    """away の resume_at からの猶予秒（設計書 §5.3。既定 2 時間）。"""
     try:
         return float(os.environ.get("AGENT_AMIGOS_AWAY_GRACE", DEFAULT_AWAY_GRACE))
     except ValueError:
         return DEFAULT_AWAY_GRACE
 
 
-def _iso_to_epoch(iso: str) -> float:
-    import calendar
-    try:
-        return calendar.timegm(time.strptime(str(iso or ""), "%Y-%m-%dT%H:%M:%SZ"))
-    except (ValueError, TypeError):
-        return 0.0
-
-
 def is_away_within_grace(mp: MissionPaths, role_id: str, node_id: str) -> bool:
-    """担当が計画停止（away）中で、まだ待つべきか（設計書 §6.6:
+    """担当が計画停止（away）中で、まだ待つべきか（設計書 §5.3:
     計画停止ではロールを奪わない。resume_at + grace までは本人の復帰を待つ）。"""
     st = read_json(mp.status(f"{node_id}--{role_id}")) or {}
     if st.get("state") != "away":
         return False
-    resume = _iso_to_epoch(st.get("resume_at"))
+    resume = iso_to_epoch(st.get("resume_at"))
     return time.time() < resume + away_grace()
 
 
 def mirror_roster(bus: Bus, mp: MissionPaths, roles: "dict[str, dict]",
                   owner_node: str, policy: str = "first-come") -> dict:
-    """roster の維持（オーナーのみ書く。設計書 §6.3）。
+    """roster の維持（オーナーのみ書く。設計書 §5.1）。
 
     - first-come: claim 勝者＝確定。導出結果を roster.json に鏡写しする（表示・監査用）。
     - owner-picks: claim は「応募」。自動確定はせず、オーナーの明示アサイン
       （confirm_assignment）だけが roster を埋める。ここでは離脱の掃除のみ行う。
 
-    away 保持（§6.6）: 担当の lease が切れていても `state: away` かつ
+    away 保持（§5.3）: 担当の lease が切れていても `state: away` かつ
     resume_at + grace 内なら roster から外さない（再募集しない）。
     grace 超過またはクラッシュ（away 宣言なし）は通常の再募集に戻る。"""
     roster = read_json(mp.roster()) or {}
@@ -220,7 +212,7 @@ def mirror_roster(bus: Bus, mp: MissionPaths, roles: "dict[str, dict]",
 
 
 def confirm_assignment(bus: Bus, mp: MissionPaths, role_id: str, node_id: str) -> dict:
-    """owner-picks: オーナーが応募者を確定する（roster への明示書き込み。設計書 §6.3）。
+    """owner-picks: オーナーが応募者を確定する（roster への明示書き込み。設計書 §5.1）。
     応募（claim）が実在することを検証する。"""
     claim = read_json(mp.assignment(role_id, node_id))
     if not isinstance(claim, dict) or claim.get("node") != node_id:
@@ -246,7 +238,7 @@ def unfilled_required(roles: "dict[str, dict]", roster: dict) -> list:
 
 
 def staffing_expired(mission: dict) -> bool:
-    """公示から staffing_timeout 経過したか（自己補充の発動条件、設計書 §6.4）。"""
+    """公示から staffing_timeout 経過したか（自己補充の発動条件、設計書 §5.2）。"""
     posted = mission.get("posted_at") or ""
     try:
         import calendar

@@ -1,6 +1,6 @@
 # docs/designs 設計書 索引
 
-`docs/designs/` 配下の設計書 25 件をカテゴリ別に整理し、読む順序を示す索引。
+`docs/designs/` 配下の設計書 26 件をカテゴリ別に整理し、読む順序を示す索引。
 
 ## まず読むもの — 主要 4 設計
 
@@ -15,7 +15,7 @@
 
 ---
 
-## カテゴリ別索引（全 25 件）
+## カテゴリ別索引（全 26 件）
 
 ### 1. 主要 4 設計
 
@@ -41,8 +41,10 @@
 
 | ファイル | 要旨 |
 |---|---|
-| [`agent-amigos-design.md`](./agent-amigos-design.md) | 役割ミッション表と design doc で公示したミッションに分散ノードがロールを claim して参加し、オーナーが指示した収束条件・予算（実質実行時間）の範囲で型付きメッセージで相互協働しながら 1 つの成果物をオーナーへ納品する協働基盤の設計。P0（MVP）・P1（GitBus 分散・away プロトコル）・P2（hub サーバ・owner-picks・acceptance: agent・スキーマ正典化）を `tools/agent-amigos/` に実装済み。1 ノードでも自己補充で完結し、中央は専用バスリポジトリ（ミッション別ブランチ、state_git の同期規律を流用）または任意の hub（転送のみ、P1/P2）。定時シャットダウンには away プロトコルとターン原子性で耐える。 |
+| [`agent-amigos-design.md`](./agent-amigos-design.md) | 役割ミッション表と design doc で公示したミッションに分散ノードがロールを claim して参加し、オーナーが指示した収束条件と予算（実質実行時間）の範囲で型付きメッセージをやり取りしながら 1 つの成果物をオーナーへ納品する協働基盤の設計正典。`tools/agent-amigos/` に実装済みで、残る欠落は同書 §9 に明記。中央は専用バスリポジトリ（ミッション別ブランチ、state_git の同期規律を流用）で、転送だけを担い調整はしない。1 ノードでも自己補充で完結し、定時シャットダウンには away プロトコルとターン原子性で耐える。チーム設計の自動化（team-builder）とオーケストレーションパターンの写像（旧 `agent-amigos-teambuilder-patterns.md`）も統合済み。 |
 | [`agent-dashboard-feature-split-design.md`](./agent-dashboard-feature-split-design.md) | agent-dashboard を base / agent-project / kiro-loop にソース分離し、フルプラグインなしで他グループが kiro-loop 制御面を差し込めるようにする設計。 |
+| [`agent-dashboard-kiro-loop-terminal-design.md`](./agent-dashboard-kiro-loop-terminal-design.md) | kiro-loop の監視・介入を tmux から dashboard へ引き上げる設計（監視・復旧レイヤと端末ビュー）。上記の制御面分離の上に載る画面設計。 |
+| [`agent-dashboard-project-ux-improvements.md`](./agent-dashboard-project-ux-improvements.md) | agent-dashboard × agent-project 連携の改善案（一覧・実行・介入まわりの UX）。 |
 | [`agent-cli-plugin-design.md`](./agent-cli-plugin-design.md) | agent-project/agent-flow の LLM 実行 CLI をプラグイン化しデータ契約のみで拡張可能にし、失敗を quota/auth/env/transient で決定的にトリアージする設計。 |
 | [`git-gitlab-circuit-breaker-pattern.md`](./git-gitlab-circuit-breaker-pattern.md) | git/GitLab へアクセスする任意ツール向けの汎用サーキットブレーカー＋監視パターン。 |
 | [`git-worktree-cache-pattern.md`](./git-worktree-cache-pattern.md) | 同一 remote を繰り返し clone するツール向けに共有 bare ミラー＋使い捨て worktree へ置換する汎用パターン。 |
@@ -63,4 +65,4 @@
 
 ## 前提・スコープ外の事項
 
-本 README は `docs/designs/` 配下の実ファイル一覧（25件、実在確認・漏れ/幽霊ファイルなしを確認済み）を基準に作成した。
+本 README は `docs/designs/` 配下の実ファイル一覧（26 件、2026-07-26 に実在確認済み）を基準に作成した。

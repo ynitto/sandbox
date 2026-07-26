@@ -60,7 +60,7 @@ def write_json_atomic(path: str, data) -> None:
 
 
 def append_jsonl(path: str, record: dict) -> None:
-    """追記専用ログへ 1 行足す。書くのは自分名義のファイルだけ（§4.2 の所有権規律）。"""
+    """追記専用ログへ 1 行足す。書くのは自分名義のファイルだけ（§4.3 の所有権規律）。"""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -107,7 +107,7 @@ def strip_ansi(text: str) -> str:
 
 
 def safe_relpath(path: str) -> str:
-    """アクション封筒のパスを検証する: 相対・`..` なし・絶対パス禁止（§4.2 の代書規律）。"""
+    """アクション封筒のパスを検証する: 相対・`..` なし・絶対パス禁止（§4.3 の代書規律）。"""
     p = str(path or "").replace("\\", "/").strip()
     if not p or p.startswith("/") or p.startswith("~"):
         raise ValueError(f"不正なパスです（相対パスのみ許可）: {path!r}")
@@ -117,3 +117,17 @@ def safe_relpath(path: str) -> str:
     if not parts:
         raise ValueError(f"不正なパスです: {path!r}")
     return "/".join(parts)
+
+
+def iso_to_epoch(iso: str) -> float:
+    """ISO8601 UTC（`YYYY-MM-DDTHH:MM:SSZ`）を epoch 秒へ。読めなければ 0.0。
+
+    バス上の時刻はすべてこの綴りで書かれる（`now_iso`）。読み側が各所で
+    `calendar.timegm(time.strptime(...))` を書き写すと、片方だけ綴りを直したときに
+    「書けているのに読めない」がその箇所だけ起きる。導出は 1 つに寄せる。"""
+    import calendar
+    import time as _time
+    try:
+        return calendar.timegm(_time.strptime(str(iso or ""), "%Y-%m-%dT%H:%M:%SZ"))
+    except (ValueError, TypeError):
+        return 0.0
