@@ -8,7 +8,7 @@ Windows の agent-dashboard から、WSL 上の kiro-loop **tmux セッション
 - Phase C の構造化状態（最終実行時刻・alive/busy）と `kiro-loop send` 経由の復旧送信は実装済み
   （busy 拒否は renderer が「送信待機」に変換して自動再送する）
 
-設計: [`docs/designs/agent-dashboard-kiro-loop-terminal-design.md`](../../../../../docs/designs/agent-dashboard-kiro-loop-terminal-design.md)
+設計: [`docs/designs/agent-dashboard-design.md`](../../../../../docs/designs/agent-dashboard-design.md) §5.1
 
 ## セッションの発見
 

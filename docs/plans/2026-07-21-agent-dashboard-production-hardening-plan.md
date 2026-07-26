@@ -76,7 +76,7 @@
 ## 問題と根本原因
 
 調査は実装 (`tools/agent-project/agent_project/`, `tools/agent-dashboard/src/`)、
-設計文書 (`docs/designs/agent-project-design.md`, `docs/designs/agent-dashboard-project-ux-improvements.md`)、
+設計文書 (`docs/designs/agent-project-design.md`, `docs/designs/agent-dashboard-design.md`)、
 および CHANGELOG / 直近 300 コミットのバグ修正履歴に基づく。
 
 ### P1. `-agent-state` worktree の作成エラー

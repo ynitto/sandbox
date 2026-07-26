@@ -7,6 +7,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### docs: agent-dashboard の設計書を 1 本へ統合し、実装と再照合
+
+`docs/designs/agent-dashboard-*.md` の 3 本（制御面分離 77 行 ＋ kiro-loop 端末ビュー 125 行 ＋
+agent-project 連携の改善案 188 行）を **`docs/designs/agent-dashboard-design.md` の 1 本へ統合**し、
+実装（`tools/agent-dashboard/`）と突き合わせて書き直した。agent-amigos の設計書統合と同じ流儀。
+
+- **構成を抽象から具体への段階的開示に組み替えた**: TL;DR → 背景と目標/非目標 →
+  主要な設計判断（ADR 5 件・却下案つき）→ 全体像と合成契約 → 制御面ごとの責務 →
+  人のアクションと不変条件 → 気づく/下ごしらえする → 実装状況、＋付録（関連文書）。
+- **実装と食い違っていた記述を訂正**: 旧「制御面分離」は feature を 2 つ（agent-project /
+  kiro-loop）としていたが実際は 7 つ。renderer も「単一スクリプトのまま」ではなく
+  core → sections → features → bootstrap の読み込み順契約へ分割済み。旧「改善案」の
+  現状把握にあった「state_git 経由の pull/push」は撤去済みで、いまは常駐体が唯一の書き手。
+- **改善案の実装状況を実測で洗い直した**: 通知・SLA バッジ・plan 批評・検収の変更理由説明・
+  フォローアップ案・**投入時の acceptance リンティング**は実装済み（旧文書は最後の 1 つを
+  未実装として「次アクション候補」に挙げたままだった）。未実装だけを §8 の表に残した。
+- **README の陳腐化を修正**（`tools/agent-dashboard/README.md`）:
+  - 「リモートで稼働する agent-project を見る（git 経由・一次経路）」節が、撤去済みの
+    viewer 側 pull / push（⇣ ボタン・自動 pull 間隔・操作を都度コミットしてプッシュ・
+    多重コミッタ対策）を現行手順として説明していた。実際の経路（常駐体が唯一の書き手）へ書き換え。
+  - 「ワークスペースとプロジェクトルート」節が「登録するのはワークスペース」と書きつつ、
+    同じ節の末尾で「画面からの登録・登録解除は無い」と自己矛盾していた。
+  - 「セットアップ」がプロジェクトルートの登録手順を案内していた（登録機能は無い）。
+    実際に設定する 4 項目へ差し替え、**未文書だった「この PC の役割」（engineer / viewer）**を追記。
+  - 「制限事項」と操作表の「稼働していなければ CLI にフォールバック」（削除済み経路）を訂正。
+  - 「実装メモ」が互換シム（`src/main/*.js`）のパスで実装を説明していたので実体パスへ。
+- **feature README を 3 つ新設**（`orchestration` / `delegation` / `participation`）。
+  「制御面をそのディレクトリに閉じられることが README で追える」という受け入れ条件を
+  4/7 の feature しか満たしていなかった。amigos feature README の壊れた相対リンクも修正。
+- `docs/designs/README.md` の索引を 24 件へ更新。
+- テストは `npm test` 全緑のまま（ドキュメントのみの変更）。
+
 ### agent-amigos: 設計書との照合で見つかった 4 件を修正（設定の読み落とし・沈黙する stub・staffing fail・deadline）
 
 設計書の統合（下記）で洗い出した実装漏れを直した。いずれも**沈黙して壊れる**性質のもの。

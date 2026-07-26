@@ -1,6 +1,6 @@
 # docs/designs 設計書 索引
 
-`docs/designs/` 配下の設計書 26 件をカテゴリ別に整理し、読む順序を示す索引。
+`docs/designs/` 配下の設計書 24 件をカテゴリ別に整理し、読む順序を示す索引。
 
 ## まず読むもの — 主要 4 設計
 
@@ -11,11 +11,11 @@
 3. [`codd-gate-design.md`](./codd-gate-design.md) — ドキュメント・コード・テストの一貫性を「受け入れ前ゲート」と「負債棚卸し→タスク化」で維持する決定的ツールの設計正典。agent-project 本体は無改造のまま、`schemas/` の共通データ契約と agent-project 側の汎用フック契約（E1〜E3）の2点で連携する独立ツール。
 4. [`agent-tools-rename-design.md`](./agent-tools-rename-design.md) — 旧 `kiro-*` 系統を `agent-*` へクローン移行・改称する方針と新旧名称対応表。agent-project/agent-flow/agent-dashboard の移行は完了、`kiro-loop → agent-loop` の移行のみ未了で、現行の指針であり続けている（詳細は次節「ループ拡張」の注記）。
 
-> **補足**: agent-dashboard の画面設計は主に `docs/plans/2026-07-14-agent-dashboard-*-design.md` 等に分散。本ディレクトリには制御面分離の正典 [`agent-dashboard-feature-split-design.md`](./agent-dashboard-feature-split-design.md) を置く。
+> **補足**: agent-dashboard の画面ごとの詳細設計は `docs/plans/2026-07-1x-agent-dashboard-*-design.md` に日付つきで分散している。本ディレクトリには骨格の正典 [`agent-dashboard-design.md`](./agent-dashboard-design.md) を置く。
 
 ---
 
-## カテゴリ別索引（全 26 件）
+## カテゴリ別索引（全 24 件）
 
 ### 1. 主要 4 設計
 
@@ -42,9 +42,7 @@
 | ファイル | 要旨 |
 |---|---|
 | [`agent-amigos-design.md`](./agent-amigos-design.md) | 役割ミッション表と design doc で公示したミッションに分散ノードがロールを claim して参加し、オーナーが指示した収束条件と予算（実質実行時間）の範囲で型付きメッセージをやり取りしながら 1 つの成果物をオーナーへ納品する協働基盤の設計正典。`tools/agent-amigos/` に実装済みで、残る欠落は同書 §9 に明記。中央は専用バスリポジトリ（ミッション別ブランチ、state_git の同期規律を流用）で、転送だけを担い調整はしない。1 ノードでも自己補充で完結し、定時シャットダウンには away プロトコルとターン原子性で耐える。チーム設計の自動化（team-builder）とオーケストレーションパターンの写像（旧 `agent-amigos-teambuilder-patterns.md`）も統合済み。 |
-| [`agent-dashboard-feature-split-design.md`](./agent-dashboard-feature-split-design.md) | agent-dashboard を base / agent-project / kiro-loop にソース分離し、フルプラグインなしで他グループが kiro-loop 制御面を差し込めるようにする設計。 |
-| [`agent-dashboard-kiro-loop-terminal-design.md`](./agent-dashboard-kiro-loop-terminal-design.md) | kiro-loop の監視・介入を tmux から dashboard へ引き上げる設計（監視・復旧レイヤと端末ビュー）。上記の制御面分離の上に載る画面設計。 |
-| [`agent-dashboard-project-ux-improvements.md`](./agent-dashboard-project-ux-improvements.md) | agent-dashboard × agent-project 連携の改善案（一覧・実行・介入まわりの UX）。 |
+| [`agent-dashboard-design.md`](./agent-dashboard-design.md) | 別ホストで動く agent-project / agent-flow / agent-amigos / 定常業務を 1 つの Windows GUI から見渡し、人の判断だけを公式契約で返す操作面の設計正典。dashboard は状態の書き手にならない（読むのはファイル、書くのは `commands/` 等の投函だけ）・制御面はソースツリー分離と列挙合成・プロジェクトの発見は実行側の `engine/status.json` 1 枚、の 3 点が骨格。旧 `agent-dashboard-{feature-split,kiro-loop-terminal,project-ux-improvements}` を統合済み。 |
 | [`agent-cli-plugin-design.md`](./agent-cli-plugin-design.md) | agent-project/agent-flow の LLM 実行 CLI をプラグイン化しデータ契約のみで拡張可能にし、失敗を quota/auth/env/transient で決定的にトリアージする設計。 |
 | [`git-gitlab-circuit-breaker-pattern.md`](./git-gitlab-circuit-breaker-pattern.md) | git/GitLab へアクセスする任意ツール向けの汎用サーキットブレーカー＋監視パターン。 |
 | [`git-worktree-cache-pattern.md`](./git-worktree-cache-pattern.md) | 同一 remote を繰り返し clone するツール向けに共有 bare ミラー＋使い捨て worktree へ置換する汎用パターン。 |
@@ -65,4 +63,4 @@
 
 ## 前提・スコープ外の事項
 
-本 README は `docs/designs/` 配下の実ファイル一覧（26 件、2026-07-26 に実在確認済み）を基準に作成した。
+本 README は `docs/designs/` 配下の実ファイル一覧（24 件、2026-07-26 に実在確認済み）を基準に作成した。
