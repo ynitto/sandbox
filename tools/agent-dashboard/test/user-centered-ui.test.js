@@ -26,7 +26,12 @@ const projectHeader = html.slice(html.indexOf('<header id="project-header">'), h
 assert.match(projectHeader, /id="btn-cli-chat"[^>]*disabled/);
 assert.ok(projectHeader.includes('CLIチャットを開く'), 'CLIチャットは対象が分かるプロジェクトヘッダーに置きます');
 assert.ok(renderer.includes('function openCliChat('));
-assert.ok(renderer.includes('api.agentOpenChat({ dir })'), '選択中ワークスペースをCLIチャット起動へ渡します');
+assert.ok(renderer.includes('api.agentOpenChat({ dir, cwd })'),
+  '選択中ワークスペースと起動先フォルダをCLIチャット起動へ渡します');
+// 起動先（cwd）の選択（S3）。プロジェクトのフォルダは S1 以降「状態リポジトリの clone」なので、
+// コードを触りたくて CLI を開いてもそこには 1 行もコードが無い。成果物リポジトリを選べること。
+assert.ok(projectHeader.includes('id="cli-chat-cwd"'), 'CLIチャットの起動先を選べます');
+assert.ok(renderer.includes('function refreshCliChatCwdChoices('));
 assert.match(css, /\.project-cli-chat\s*\{[^}]*min-height:\s*36px/s);
 assert.match(css, /@media \(pointer:\s*coarse\)[\s\S]*?\.project-cli-chat\s*\{[^}]*min-height:\s*44px/s);
 assert.ok(

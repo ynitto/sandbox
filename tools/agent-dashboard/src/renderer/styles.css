@@ -401,11 +401,16 @@ button:disabled { opacity: 0.4; cursor: default; }
 #project-title { display: flex; align-items: baseline; gap: 10px; }
 #project-name { font-size: 18px; font-weight: 650; }
 #project-meta { font-size: 11px; margin-top: 3px; }
+.project-cli-chat-group { display: inline-flex; align-items: center; gap: 6px; }
+/* 起動先（cwd）の選択。長い URL 由来の名前でヘッダを押し広げないよう幅を締める。 */
+.project-cli-chat-cwd { max-width: 220px; min-height: 36px; }
+.project-cli-chat-cwd:disabled { opacity: .6; }
 .project-cli-chat { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 5px 10px; }
 .project-cli-chat svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
 @media (pointer: coarse) {
   .project-cli-chat { min-height: 44px; }
+  .project-cli-chat-cwd { min-height: 44px; }
 }
 
 #tabs {
@@ -2411,6 +2416,7 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   .cowork-routine-tools { justify-content: space-between; width: 100%; }
   .cowork-routine-search { width: 100%; }
   .project-header-main { align-items: stretch; flex-direction: column; }
+  .project-cli-chat-group { align-self: flex-start; flex-wrap: wrap; }
   .project-cli-chat { align-self: flex-start; }
   #project-title { flex-wrap: wrap; }
   dialog, dialog.wide { min-width: 0; width: calc(100vw - 24px); max-width: calc(100vw - 24px); }
@@ -2904,3 +2910,8 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   .orch-sess-head, .orch-sess-process-only, .orch-sess-when-grid { flex-direction: column; align-items: stretch; }
   .orch-sess-narrow { flex: 1 1 auto; }
 }
+
+/* 定常業務タブ: この画面に登録したフォルダであることの印と解除動線（S2）。 */
+.cowork-root-badge { margin-left: 10px; display: inline-flex; align-items: center; gap: 6px; }
+.cowork-root-badge .linklike { background: none; border: 0; padding: 0; color: inherit;
+  text-decoration: underline; cursor: pointer; font: inherit; min-height: 0; }

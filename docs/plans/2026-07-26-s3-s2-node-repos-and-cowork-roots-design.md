@@ -1,6 +1,6 @@
 # S3 + S2 詳細設計: ノード固有ローカルリポジトリ層 / 定常業務フォルダの dashboard 管理
 
-ステータス: ドラフト(詳細設計)
+ステータス: 実装済み(詳細設計 + 実装で確定した差分を反映)
 入力: [`2026-07-25-agent-improvement-spec.md`](2026-07-25-agent-improvement-spec.md) §3 S3(C3・C4) / S2(C2)
 前提: [`2026-07-26-s1-config-two-layer-detailed-design.md`](2026-07-26-s1-config-two-layer-detailed-design.md)(実装済み。host.yaml `repos[]` と `resolve_local_repo` の入口が既にある)
 実装フェーズ: Phase 1 の残り
@@ -157,7 +157,20 @@ S2:
 11. routine エントリは `isProject=false` で出る(cowork タブのみ)
 12. 登録・解除 IPC の往復
 
-## 5. 未決事項
+## 5. 実装で確定した差分
+
+| 項目 | 実装 |
+|---|---|
+| S3 の `local` 撤去 | repos.json の `local` は**警告して無視**(`charter.py:_warn_registry_local`。レジストリはルーティングのたびに読まれるので警告は 1 回だけ)。`dir` は元から `path` の別名として吸収されており、`local` と違って伝搬経路が無いのでコード変更は不要——スキーマの deprecated 記載だけにした |
+| S3-4 の候補一覧 | プロジェクト + host.yaml 宣言 + **プロジェクトの repos.json にあるがこのノードに宣言が無いもの**(非活性・理由付き)。3 つ目は設計に無かったが、無いと「宣言し忘れ」が候補欄から見えない |
+| CLI チャットの tmux セッション名 | `<cli>:<cwd>` にした(従来は `<cli>`)。起動先を選べるようにした以上、同名で再 attach すると**別リポジトリの作業中セッションに合流する** |
+| S2 のマーカー無しフォルダ | 設計は「ステートマシン新規作成へ誘導」だったが、**登録は許して案内を出す**形にした。既存の作成ダイアログは「選択中プロジェクト」を対象に動くので、登録しないと選択できず最初の 1 件も作れない(誘導先が行き止まりになる) |
+| dashboard の host.yaml 読み取り | JS 側に `nodeRepos.js` を置いた(Python を起動すると候補一覧の描画がプロセス起動待ちになる)。YAML パーサを持たないアプリなので `repos:` ブロックだけを読む小さなパーサ——読めなければ「宣言なし」に倒れ、ミラー取得へ落ちるだけで動作は正しい |
+| テスト環境 | agent-flow の `tests/_shared.py` にも host.yaml の隔離漏れがあった(S1 で agent-project 側は修正済みの同種の穴)。塞がないと開発者のローカルクローン宣言が provision 経路に効き、「ミラーから取るはず」のテストが手元のクローンから取って通る |
+
+**実績**: agentcore 27 件 / agent-flow 564 件 / agent-project 951 件 / agent-dashboard 全スイート green。
+
+## 6. 未決事項
 
 1. **S3**: `local` の鮮度責務(worker が毎回 `fetch` する現行方式を維持するか、ノード側で定期 fetch するか)。本設計は現行維持(INV-1)。
 2. **S3**: `nodes/<node-id>.json` への転記は W1-11 待ち(§1.2(5))。

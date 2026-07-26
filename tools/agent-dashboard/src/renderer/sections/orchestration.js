@@ -1620,6 +1620,56 @@ function bindCoworkDetailActions(root, folder) {
   }));
 }
 
+// 定常業務フォルダの登録（S2）。agent-project 管理外のフォルダ（kiro-loop 設定や
+// .statemachine/ を持つだけ）をこの画面で扱えるようにする。宣言は dashboard 設定
+// `cowork.roots` が持つ——定常業務の実行側はこの dashboard 自身だから（「宣言は実行側が
+// 持つ」の原則。agent-project の host.yaml に載せると、常駐体が管理しないものを常駐体の
+// 宣言ファイルに書くねじれになる）。
+function coworkRootBadgeHtml(folder) {
+  const p = (state.discovery && state.discovery.projects) || [];
+  const sel = p.find((x) => x && x.dir === folder);
+  if (!sel || sel.kind !== 'routine') return '';
+  return '<span class="cowork-root-badge">この画面に登録したフォルダ'
+    + '<button id="btn-cowork-drop-root" type="button" class="linklike">登録を解除</button></span>';
+}
+
+async function addCoworkRoot() {
+  const picked = await guard('フォルダを登録できません', () => api.coworkPickRoot());
+  if (!picked || picked.canceled) return;
+  if (picked.registered) return toast('このフォルダは既に登録されています');
+  if (picked.managedByEngine) {
+    return toast('このフォルダは実行エンジンが担当しているので、登録しなくても表示されます');
+  }
+  // マーカーが無い＝まだ定常業務が無いフォルダ。登録は許す（登録しないと選択できず、
+  // 「追加」で最初の 1 件を作ることもできない）が、次に何をすればよいかを明示する。
+  const summary = picked.markers
+    .map((m) => [m.loop, ...(m.stateMachines || [])].filter(Boolean).join(' / '))
+    .filter(Boolean)
+    .join('、');
+  const body = summary
+    ? `見つかった定常業務: ${summary}`
+    : '定常業務の設定（kiro-loop / .statemachine）はまだありません。'
+      + '\n登録後、このフォルダを選んで「追加」から作成できます。';
+  if (!confirm(`${picked.folder}\n\n${body}\n\nこのフォルダを登録しますか？`)) return;
+  const res = await guard('フォルダを登録できません', () => api.coworkSetRoot(picked.folder, false));
+  if (!res) return;
+  toast(summary ? 'フォルダを登録しました' : 'フォルダを登録しました（「追加」から作業を作成できます）', true);
+  await refreshDiscovery();
+  await refreshCowork({ forceDiscover: true });
+  renderCowork();
+}
+
+async function dropCoworkRoot(folder) {
+  if (!folder) return;
+  if (!confirm(`${folder}\n\nこのフォルダの登録を解除しますか？（フォルダの中身は消えません）`)) return;
+  const res = await guard('登録を解除できません', () => api.coworkSetRoot(folder, true));
+  if (!res) return;
+  toast('登録を解除しました', true);
+  await refreshDiscovery();
+  await refreshCowork({ forceDiscover: true });
+  renderCowork();
+}
+
 function renderCowork() {
   const ui = captureUiState();
   const el = $('tab-cowork');
@@ -1651,12 +1701,14 @@ function renderCowork() {
         </div>
         <div class="row">
           <button id="btn-cowork-add">追加</button>
+          <button id="btn-cowork-add-root" title="定常業務のフォルダをこの画面に登録します">フォルダを登録</button>
           <button id="btn-cowork-save">保存</button>
           <button id="btn-cowork-refresh" title="最新の状態を確認">更新</button>
         </div>
       </header>
       <div class="cowork-scope muted">
         <span>${esc(scopeLabel)}</span>
+        ${coworkRootBadgeHtml(folder)}
       </div>
       ${coworkRunBannerHtml()}
       ${entries.length ? `<div class="cowork-split-view">
@@ -1668,6 +1720,10 @@ function renderCowork() {
   bindCoworkRoutineSelector(el);
   const addBtn = $('btn-cowork-add');
   if (addBtn) addBtn.addEventListener('click', () => openCoworkWorkDialog(-1));
+  const addRootBtn = $('btn-cowork-add-root');
+  if (addRootBtn) addRootBtn.addEventListener('click', addCoworkRoot);
+  const dropRootBtn = $('btn-cowork-drop-root');
+  if (dropRootBtn) dropRootBtn.addEventListener('click', () => dropCoworkRoot(folder));
   const saveBtn = $('btn-cowork-save');
   if (saveBtn) saveBtn.addEventListener('click', openCoworkSaveDialog);
   const refreshBtn = $('btn-cowork-refresh');

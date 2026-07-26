@@ -267,11 +267,25 @@ function resolveRoot(r) {
 // ---------------------------------------------------------------------------
 // 発見項目の生成
 // ---------------------------------------------------------------------------
+// 定常業務の走査ルート = 実行エンジンが担当しているプロジェクト + 設定の cowork.roots（S2）。
+//
+// engine 側は agent-project が管理するプロジェクト（宣言は host.yaml）。cowork.roots は
+// agent-project 管理外の定常業務専用フォルダで、宣言も実行も dashboard が持つ。
+// W2-4 で廃止したのは「agent-project プロジェクト一覧の二重管理」であって、
+// dashboard 自身が実行するものの宣言まで持てなくする趣旨ではない。
+function coworkRoots(config) {
+  const cfg = (config && config.cowork) || {};
+  const declared = Array.isArray(cfg.roots) ? cfg.roots : [];
+  return [
+    ...require('../../agent-project/main/engine').projectRoots(config),
+    ...declared.map((r) => String(r || '').trim()).filter(Boolean),
+  ];
+}
+
 function discoverCoworkItems(config) {
   const cfg = (config && config.cowork) || {};
   if (cfg.discover === false) return [];
-  // 実行エンジンが担当しているプロジェクト配下を走査する（設定 roots は W2-4 で廃止）
-  const roots = require('../../agent-project/main/engine').projectRoots(config);
+  const roots = coworkRoots(config);
   const scanDepth = Math.max(1, Number(cfg.scanDepth || 2));
 
   const items = [];
@@ -356,6 +370,8 @@ function discoverCoworkItems(config) {
 }
 
 module.exports = {
+  isDir,
+  coworkRoots,
   discoverCoworkItems,
   scanForCoworkConfigs,
   detectMarkers,

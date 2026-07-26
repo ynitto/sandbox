@@ -1543,9 +1543,26 @@ function discover(cfg) {
       : path.resolve(viewer);
     if (!roots.has(resolved)) roots.set(resolved, { root: resolved, source: 'engine', child });
   }
+  // 定常業務専用フォルダ（S2）。agent-project の管理外なので engine/status.json には出ない
+  // が、セレクタには並べて定常業務タブを開けるようにする。**engine 由来が既に居る実体には
+  // 足さない**——project エントリは backlog / charter / needs / 検収を持ち、routine エントリは
+  // cowork タブしか持たないので、routine で上書きすると機能が消える。
+  for (const raw of (((cfg && cfg.cowork) || {}).roots || [])) {
+    const declared = String(raw || '').trim();
+    if (!declared) continue;
+    const expanded = declared.replace(/^~(?=$|\/|\\)/, os.homedir());
+    const resolved = _isPosixAbs(expanded) ? toViewerPath(expanded)
+      : path.isAbsolute(expanded) || expanded.startsWith('\\\\') ? expanded
+        : path.resolve(expanded);
+    if (![...roots.keys()].some((k) => pathsEqual(k, resolved))) {
+      roots.set(resolved, { root: resolved, source: 'cowork', child: null });
+    }
+  }
 
   const projects = [];
   const seenDirs = new Set();                     // 実体（状態の置き場）で重複排除する
+  // engine 由来を先に処理する（同じ実体に解決される cowork.roots のエントリを後から
+  // 落とすため。Map は挿入順で回るので engine → cowork の順になる）。
   for (const { root, source, child } of roots.values()) {
     const workspace = root;                       // 選択の識別子（readProject の入力もこれ）
     const dir = resolveProjectRoot(workspace);    // 状態の置き場（backlog/needs/charter はこの下）
@@ -1583,6 +1600,9 @@ function discover(cfg) {
       dir: workspace,
       root: dir,             // プロジェクトルート（状態の置き場。readProject が操作の基準にする）
       source,
+      // kind: project = agent-project が回すプロジェクト / routine = 定常業務専用フォルダ（S2）。
+      // 表示側は既存の isProject 分岐（cowork タブのみ・既定タブ cowork）へ流す。
+      kind: source === 'cowork' ? 'routine' : 'project',
       exists: fs.existsSync(workspace),
       isProject: isProjectDir(workspace) || isProjectDir(dir),
       hasCharter,

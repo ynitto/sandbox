@@ -246,23 +246,110 @@ function buildInteractiveCommand(resolved) {
   throw new Error(`CLIチャットに対応していないエージェントです: ${cli}`);
 }
 
-function openInteractiveChat(cfg, projectDir) {
+// CLIチャットの起動先（cwd）候補（S3-4）。
+//
+// 従来は「選択中プロジェクトのフォルダ」1 択だった。S1 以降そのフォルダは**状態リポジトリの
+// clone**（backlog / needs / charter の置き場）なので、成果物のコードを触りたくて CLI を
+// 開いても、そこには 1 行もコードが無い。成果物リポジトリで開けるようにする。
+//
+// 候補は、このノードの host.yaml `repos[]` 宣言（S3）から作る。プロジェクトの repos.json に
+// 載っていてもこのノードにクローンが無いものは **非活性で理由付きで見せる**——一覧から消すと
+// 「なぜ選べないのか」が分からず、宣言し忘れに気付けない。
+function chatCwdChoices(cfg, projectDir) {
+  const nodeRepos = require('./nodeRepos');
+  const declared = nodeRepos.loadNodeRepos();
+  const choices = [];
+  const seen = new Set();
+  const push = (c) => {
+    const key = String(c.path || c.url || c.label).toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    choices.push(c);
+  };
+  if (projectDir) {
+    push({ label: 'プロジェクト（状態リポジトリ）', path: String(projectDir), enabled: true,
+           kind: 'project' });
+  }
+  for (const e of declared) {
+    const url = String((e && e.url) || '').trim();
+    if (!url) continue;
+    const local = nodeRepos.resolveLocalRepo(url, declared);
+    push({
+      label: repoLabel(url),
+      url,
+      path: local,
+      enabled: !!local,
+      kind: 'repo',
+      reason: local ? '' : `宣言された local が見つかりません: ${(e && e.local) || '(未指定)'}`,
+    });
+  }
+  // プロジェクトのレジストリにあるが、このノードには宣言が無いリポジトリ（非活性で見せる）。
+  for (const url of projectRepoUrls(projectDir)) {
+    if (declared.some((e) => nodeRepos.sameRepo(e && e.url, url))) continue;
+    push({
+      label: repoLabel(url),
+      url,
+      path: '',
+      enabled: false,
+      kind: 'repo',
+      reason: 'この PC にローカルクローンの宣言がありません'
+        + '（~/.agents/agent-project.host.yaml の repos[] に url と local を書くと選べます）',
+    });
+  }
+  return choices;
+}
+
+function repoLabel(url) {
+  const s = String(url || '').replace(/\/+$/, '').replace(/\.git$/, '');
+  return s.includes('/') ? s.split('/').pop() : s || 'repo';
+}
+
+// プロジェクトの repos レジストリ（repos.json）にある URL 一覧。読めなければ空。
+// repos.yaml/yml はこのアプリに YAML パーサが無いので読まない（候補が減るだけで害は無い）。
+function projectRepoUrls(projectDir) {
+  if (!projectDir) return [];
+  try {
+    const data = JSON.parse(fs.readFileSync(path.join(String(projectDir), 'repos.json'), 'utf8'));
+    if (!data || typeof data !== 'object') return [];
+    return Object.entries(data)
+      .filter(([name, e]) => !name.startsWith('_') && e && typeof e === 'object' && e.url)
+      .map(([, e]) => String(e.url));
+  } catch {
+    return [];
+  }
+}
+
+function openInteractiveChat(cfg, projectDir, cwdOverride) {
   const resolved = resolveAgent(cfg, projectDir);
   const { runChatWindow } = require('../../cowork/main/loopProvider');
   // セッション開始コマンド（agent-session-commands）。このボタンも新しい tmux セッションを
   // 起こす経路なので、定常業務ウィンドウと同じ前準備を通す（cowork と同じ計画関数を使う）。
   const { planSessionCommands } = require('../../cowork/main/cowork');
+  // cwd は「プロジェクト（既定）」か、このノードにクローンがある成果物リポジトリ、
+  // またはその場限りの手入力パス。実在しないパスで開くと端末が即死するので先に弾く。
+  const cwd = String(cwdOverride || '').trim() || String(projectDir || '');
+  if (cwd && !isExistingDir(cwd)) throw new Error(`フォルダがありません: ${cwd}`);
   const result = runChatWindow({
     chatCommand: buildInteractiveCommand(resolved),
     prompt: null,
-    cwd: projectDir,
+    cwd,
     sessionCommands: planSessionCommands(cfg, projectDir),
-    sessionKey: resolved.cli,
+    // 同じ CLI でも起動先が違えば別セッション（同名で再 attach すると別リポジトリの
+    // 作業中セッションに合流してしまう）。
+    sessionKey: `${resolved.cli}:${cwd}`,
     title: `CLIチャット (${resolved.cli})`,
     message: `${resolved.cli} のCLIチャットを別ウィンドウで開きました`,
   });
   if (!result.ok) throw new Error(result.error || '外部ターミナルを起動できませんでした');
-  return { ...result, cli: resolved.cli, model: resolved.model };
+  return { ...result, cli: resolved.cli, model: resolved.model, cwd };
+}
+
+function isExistingDir(p) {
+  try {
+    return fs.statSync(String(p)).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 // Doctor は画面から渡された文脈だけを説明する。通常の charter 補完とは分け、
@@ -1012,6 +1099,7 @@ module.exports = {
   buildCommand,
   buildInteractiveCommand,
   openInteractiveChat,
+  chatCwdChoices,
   buildDoctorCommand,
   runAgent,
   spillTarget,

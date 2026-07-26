@@ -855,6 +855,33 @@ gitlab executor 分散＋viewer 監視＋GitLab バックアップは
 スカラ＋真偽フラグ（三値 `--flag`/`--no-flag`）が対象で、
 個別パス上書き（`--backlog` 等）・実行限定フラグ（`--json`/`--fix`/`--pin`）は CLI 専用。
 
+### ノード固有のローカルクローン（`repos[]`・S3）
+
+手元にある成果物リポジトリのクローンを host.yaml で宣言すると、ネットワーク越しのミラー
+取り直しを省いてそこから worktree を切る（速い・オフラインでも動く）。
+
+```yaml
+# ~/.agents/agent-project.host.yaml
+repos:
+  - url: https://gitea.example/you/app.git
+    local: /home/me/mirrors/app
+```
+
+**共有 repos.json には書けない**。あのファイルは charter から自動生成され、状態リポジトリ経由で
+全 PC へ配られる——1 台で書いた絶対パスが全ノードへ伝播する。`local:` を書いても無視され、
+起動時に移行先を示す警告が出る（`schemas/repos.schema.json` でも deprecated）。
+
+宣言すると次のすべてに効く（読み手は `agentcore.repolocal` の 1 実装）:
+
+- agent-project → agent-flow の run（`--workspace` に載せて渡す）
+- 板（agent-board）で落札した仕事（請負ノードが自分の `local` を載せる）
+- 検収差分の解決（成果物リポジトリのローカル解決）
+- dashboard の CLIチャット起動先（そのフォルダを選んで開ける）
+
+URL の一致は正規化して判定する（末尾 `.git`・スラッシュ・大小文字を吸収し、ローカルパス表記は
+絶対化）。鮮度は従来どおり worker が毎回 `fetch` する（`local` は「どこから取るか」を変えるだけで
+「取るかどうか」は変えない）。
+
 ### 状態ルートの起動契約
 
 状態ルートは**常に状態専用リポジトリの clone**。旧 worktree 方式（`state_worktree_dir` /

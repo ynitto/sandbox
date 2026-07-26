@@ -7,6 +7,51 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-project / agent-flow / agent-dashboard: ノード固有ローカルクローン層と定常業務フォルダの登録（S3・S2）
+
+Phase 1 の残り。どちらも「宣言は実行側が持つ」という同じ原則の適用。
+
+**S3: ノード固有ローカルリポジトリ層**
+
+- **`agentcore.repolocal`（新規）**: git URL の正規化一致を 1 実装に集約した。従来は
+  agent-project の `_same_git_remote`・agent-flow の `_same_repo`・board の `_norm_repo_url` が
+  別実装で、末尾 `.git` とスラッシュは 3 者とも吸収する一方 **小文字化は agent-flow だけ・
+  ローカルパスの絶対化は agent-project だけ**という食い違いがあり、同じ 2 つの URL が経路に
+  よって一致したりしなかったりしていた（`agentcore.nodeid` が解決したのと同型の問題）。
+  host.yaml `repos[]` の読み取りと workspace spec への `local` マージもここに置く。
+- **`local` の宣言場所を host.yaml `repos[]` に一本化**。共有 repos.json は charter から自動
+  生成され状態リポジトリ経由で全 PC へ配られるため、1 台で書いた絶対パスが全ノードへ伝播して
+  いた（C3/C4 の元凶）。repos.json の `local` は警告して無視する（移行先を示す・1 回だけ）。
+  `schemas/repos.schema.json` の `local` / `dir` を deprecated と明記。
+- **板の請負側の欠落を修正**: `poll_board` が落札した公示 workspace に自ノードの `local` を
+  載せてから submit するようになった。公示に載るのは依頼側が見た URL だけで、請負側が自分の
+  クローンを載せる実装が無かったため、板経由の仕事は手元に同じリポジトリがあっても毎回
+  ネットワーク越しにミラーを取り直していた。
+- agent-flow の provision は spec に `local` が無くてもノード宣言から解決する。
+- **dashboard の CLIチャットに起動先（cwd）の選択**を追加。S1 以降プロジェクトのフォルダは
+  状態リポジトリの clone なので、コードを触りたくて CLI を開いてもそこには 1 行もコードが
+  無い。この PC にクローンがある成果物リポジトリを選べる。宣言が無いものは消さずに非活性で
+  理由付きで並べる（一覧から消えると宣言し忘れに気付けない）。
+
+**S2: 定常業務フォルダの dashboard 管理**
+
+- dashboard 設定に **`cowork.roots[]`** を追加。agent-project 管理外のフォルダ（kiro-loop 設定や
+  `.statemachine/` を持つだけ）を定常業務画面で扱えるようにする。W2-4 で一覧の唯一の源を
+  `engine/status.json` にした結果、この経路が消えていた。
+- 宣言を dashboard に置くのは、定常業務のエンジン（kiro-loop / statemachine-use）が
+  agent-project の常駐体・状態リポジトリと無関係に動き、起動・tmux 管理・履歴記録をすべて
+  dashboard が担っているため。host.yaml に載せると、常駐体が管理しないものを常駐体の宣言
+  ファイルに書くねじれになる。
+- 定常業務タブに登録・解除の UI（フォルダ選択 → マーカー検出 → プレビュー → 登録）。
+- セレクタには **kind=routine** として合流し、既存の `isProject=false` 分岐（定常業務タブのみ）
+  へ流す。project root と同じパスは **project 側を正**として畳む（routine で上書きすると
+  backlog / charter / needs / 検収が画面から消えるため）。
+- **agent-project のプロジェクト一覧は従来どおり `engine/status.json` のみ**（W2-4 維持）。
+
+agent-flow のテスト環境にも host.yaml の隔離漏れがあったので塞いだ（agent-project では S1 で
+修正済みの同種の穴）。
+
+
 ### agent-project: 状態専用リポジトリの唯一化と設定 2 層の責務分離（S1・**破壊的変更**）
 
 設定の置き場が「成果物側 yaml・状態側 yaml・profile・host.yaml」の 4 か所に散り、状態ルートも

@@ -63,6 +63,7 @@ module.exports = {
   agentPlanAdjustments: (invoke) => (args) => invoke('agent:planAdjustments', args),
   agentResolve: (invoke) => (dir) => invoke('agent:resolve', { dir }),
   agentOpenChat: (invoke) => (args) => invoke('agent:openChat', args || {}),
+  agentChatCwdChoices: (invoke) => (dir) => invoke('agent:chatCwdChoices', { dir }),
 
   glReconcileRun: (invoke) => (args) => invoke('gitlab:reconcileRun', args),
 

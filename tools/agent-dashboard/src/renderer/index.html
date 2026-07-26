@@ -60,13 +60,20 @@
             <span id="project-name" class="muted">プロジェクトを選択してください</span>
             <span id="project-badges"></span>
           </div>
-          <button id="btn-cli-chat" class="project-cli-chat" type="button" disabled
-            title="選択中プロジェクトで、全体設定のエージェントを使って開きます">
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path d="M4 5h16v14H4z"/><path d="m8 9 3 3-3 3M13 15h3"/>
-            </svg>
-            <span>CLIチャットを開く</span>
-          </button>
+          <div class="project-cli-chat-group">
+            <!-- 起動先（cwd）の選択。既定はプロジェクト（状態リポジトリ）で、この PC に
+                 クローンがある成果物リポジトリも選べる（S3）。宣言が無いものは選べない
+                 理由付きで並ぶ。 -->
+            <select id="cli-chat-cwd" class="project-cli-chat-cwd"
+              title="CLIチャットを開くフォルダ" aria-label="CLIチャットを開くフォルダ"></select>
+            <button id="btn-cli-chat" class="project-cli-chat" type="button" disabled
+              title="選んだフォルダで、全体設定のエージェントを使って開きます">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M4 5h16v14H4z"/><path d="m8 9 3 3-3 3M13 15h3"/>
+              </svg>
+              <span>CLIチャットを開く</span>
+            </button>
+          </div>
         </div>
         <div id="project-meta" class="muted" aria-live="polite"></div>
       </header>

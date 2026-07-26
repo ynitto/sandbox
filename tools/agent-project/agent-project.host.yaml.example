@@ -44,9 +44,16 @@ projects:
       model: gpt-5.6-sol
 
 # ── ノード固有のローカルクローン宣言（S3）──
-# 手元にある成果物リポジトリのクローン。検収差分の解決と worker の worktree 切り出しに使い、
-# ネットワーク越しのミラー取り直しを省く。**共有 repos.json には置けない**——ホスト固有の
-# 絶対パスが state repo 経由で全 PC へ配られてしまうため。URL は正規化して一致判定する。
+# 手元にある成果物リポジトリのクローン。**共有 repos.json には置けない**——ホスト固有の絶対
+# パスが state repo 経由で全 PC へ配られてしまうため（repos.json に local: を書いても無視され、
+# 起動時に警告が出る）。URL は正規化して一致判定する（末尾 .git・スラッシュ・大小文字を吸収）。
+#
+# ここに宣言すると、次のすべてがネットワーク越しのミラー取り直しを省いて手元から worktree を
+# 切る（読み手は agentcore.repolocal の 1 実装）:
+#   ・agent-project → agent-flow の run（--workspace に載せて渡す）
+#   ・板（agent-board）で落札した仕事（請負ノードが自分の local を載せる）
+#   ・検収差分の解決（成果物リポジトリのローカル解決）
+#   ・dashboard の CLIチャット起動先（このフォルダを選んで開ける）
 repos:
   - url: https://gitea.example/you/app.git
     local: /home/me/mirrors/app
