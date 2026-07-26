@@ -40,6 +40,10 @@ from agentcore import transport as _transport  # noqa: E402
 # 素の write_text を使うと読み手（別プロセスの agent-flow / dashboard）が途中書きを掴み、
 # JSON パースに失敗して「run が存在しない」と誤読する。
 from agentcore.protocol import write_json_atomic  # noqa: E402
+# git URL の正規化一致と「このノードのローカルクローン」解決（S3）。同じ判定を
+# agent-project / agent-flow(gitcache・board) が別々に実装していて吸収規則が食い違い、
+# 同じ 2 つの URL が経路によって一致したりしなかったりしていた（agentcore.nodeid と同型の問題）。
+from agentcore import repolocal as _repolocal  # noqa: E402
 
 # エージェント共通ホームのディレクトリ名。`.agent` から `.agents` へ改名した
 # （複数のエージェントが相乗りする持ち物であることを名前で示す）。

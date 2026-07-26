@@ -27,19 +27,13 @@ def _git_toplevel_of(p: Path) -> "Path | None":
 
 
 def _same_git_remote(a: str, b: str) -> bool:
-    """2 つの git リモート指定（URL/パス）が同じリポジトリを指すか（末尾 .git・スラッシュ・
-    ローカルパスの絶対化を吸収して比較）。移行が効いているかの確認に使う。"""
-    def norm(u: str) -> str:
-        s = str(u or "").strip().rstrip("/")
-        if s.endswith(".git"):
-            s = s[:-4]
-        if "://" not in s and "@" not in s:            # ローカルパスらしい → 絶対化
-            try:
-                return str(Path(s).expanduser().resolve())
-            except (OSError, RuntimeError):
-                return s
-        return s
-    return bool(a) and bool(b) and norm(a) == norm(b)
+    """2 つの git リモート指定（URL/パス）が同じリポジトリを指すか。
+
+    実装は `agentcore.repolocal.same_repo` に一本化した（S3）。以前は agent-project・
+    agent-flow の gitcache・board が別々に持っていて、末尾 .git とスラッシュは 3 者とも
+    吸収する一方、**ローカルパスの絶対化は agent-project だけ・小文字化は agent-flow だけ**
+    という食い違いがあり、同じ 2 つの URL が経路によって一致したりしなかったりしていた。"""
+    return _repolocal.same_repo(a, b)
 
 
 def _ensure_state_repo_clone(state_repo: str, dst: Path, branch: str) -> bool:

@@ -264,25 +264,11 @@ def _current_branch(cfg: "Config") -> str:
 def resolve_local_repo(url: str) -> "Path | None":
     """URL に対応する **このノードのローカルクローン** を host.yaml の `repos[]` から引く（S3）。
 
-    ノード固有の絶対パスをここ（host.yaml）だけに置くのが S3 の要点——共有 repos.json に
-    書くと、その PC にしか存在しないパスが state repo 経由で全 PC へ配られる。
-    比較は URL 正規化一致（`_same_git_remote`。末尾 .git・スラッシュ・ローカルパスの絶対化を
-    吸収）で、宣言の綴り違いで黙って外れないようにする。"""
-    if not str(url or "").strip():
-        return None
-    try:
-        host = load_host_config()
-    except (OSError, ValueError, SystemExit):
-        return None
-    for entry in getattr(host, "repos", None) or []:
-        if not isinstance(entry, dict):
-            continue
-        local = str(entry.get("local") or "").strip()
-        if local and _same_git_remote(str(entry.get("url") or ""), url):
-            p = Path(local).expanduser()
-            if p.is_dir():
-                return p
-    return None
+    ノード固有の絶対パスを host.yaml だけに置くのが S3 の要点——共有 repos.json に書くと、
+    その PC にしか存在しないパスが state repo 経由で全 PC へ配られる。解決の実装は
+    `agentcore.repolocal` に一本化してある（agent-flow・dashboard と同じ規則で引くため）。"""
+    local = _repolocal.resolve_local(url)
+    return Path(local) if local else None
 
 
 def _task_repo_url(cfg: "Config", task: "Task | None") -> str:

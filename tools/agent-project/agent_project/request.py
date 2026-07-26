@@ -484,9 +484,11 @@ def _workspace_token(spec: dict) -> str:
     url/path/base/target/desc/branch/local を伝搬。worker（作業ツリーの用意・作業ブランチ）と
     gitlab の起票先解決の双方で使われる。
 
-    local（手元にある同じリポジトリのクローン）を落とすと、worker は目の前に同じリポジトリが
-    あってもネットワーク越しにミラーを取り直す。ここで伝搬させることで worker はローカルから
-    worktree を切れる（速い・オフラインでも動く）。"""
+    `local`（手元にある同じリポジトリのクローン）はこのノードの host.yaml `repos[]` から埋める
+    （S3）。落とすと worker は目の前に同じリポジトリがあってもネットワーク越しにミラーを
+    取り直す。共有レジストリ（repos.json）には置けない——ホスト固有の絶対パスが状態リポジトリ
+    経由で全 PC へ配られるため。"""
+    spec = _repolocal.merge_local(spec) or spec
     meta = {k: spec[k] for k in ("path", "base", "target", "desc", "branch", "local")
             if spec.get(k)}
     if meta.get("desc") and len(meta["desc"]) > 300:

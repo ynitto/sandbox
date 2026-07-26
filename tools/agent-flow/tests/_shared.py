@@ -55,6 +55,13 @@ os.chdir(tempfile.mkdtemp(prefix="kf-tests-cwd-"))
 # 実ファイルを読むと「既定は kiro-cli のはず」といったテストが開発者の設定次第で落ちる
 # （実際に `flow.agent_cli: codex` を設定した環境で AgentCliTests が一斉に落ちていた）。
 # 個別に上書きするテストは各自 addCleanup で戻す（ここは既定の隔離先）。
+# 開発者の実 host.yaml（`~/.agents/agent-project.host.yaml`）がテストへ漏れるのを防ぐ。
+# S3 で workspace 解決（`agentcore.repolocal`）が host.yaml の `repos[]` を読むようになったため、
+# 隔離しないと開発者のローカルクローン宣言が provision 経路に効く（「ミラーから取るはず」の
+# テストが手元のクローンから取って通る／逆に壊れる）。AGENT_CONTROL_DIR と同じ流儀。
+os.environ.setdefault("AGENT_PROJECT_AGENTS_HOME",
+                      os.path.join(tempfile.gettempdir(), "kf-tests-no-such-agents-home"))
+
 os.environ.setdefault("AGENT_CONTROL_DIR",
                       os.path.join(tempfile.gettempdir(), "kf-tests-no-such-control"))
 

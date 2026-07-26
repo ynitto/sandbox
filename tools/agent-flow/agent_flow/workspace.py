@@ -151,11 +151,15 @@ def ensure_workspace_clone(spec: "dict | None", run_id: str) -> "dict | None":
         n += 1
     base = spec.get("base") or ""
     # 作業起点の優先順: 既存の run ブランチ → base → 既定（detached worktree で作り、push 時に作業ブランチ化）。
-    # repos に local（手元の同じリポジトリのクローン）があれば、そこから worktree を切る。
-    # 目の前に同じリポジトリがあるのに毎回ネットワーク越しにミラーを取り直すのは無駄で、
-    # オフラインでも動かない。local の作業ツリー・index には触らない（別 worktree なので）。
-    path = provision_tree(spec["url"], [branch, base], dest,
-                          local=str(spec.get("local") or "")) or ""
+    # local（手元の同じリポジトリのクローン）があれば、そこから worktree を切る。目の前に同じ
+    # リポジトリがあるのに毎回ネットワーク越しにミラーを取り直すのは無駄で、オフラインでも
+    # 動かない。local の作業ツリー・index には触らない（別 worktree なので）。
+    #
+    # spec に載っていなければ **このノードの host.yaml `repos[]` から解決する**（S3）。
+    # 依頼元（agent-project / 板）が載せてこない経路——板の公示・古い形の run——でも、
+    # 手元にクローンがあるノードではそれを使えるようにする。
+    local = str((_repolocal.merge_local(spec) or spec).get("local") or "")
+    path = provision_tree(spec["url"], [branch, base], dest, local=local) or ""
     if path:
         _prepare_run_branch(path, branch, base)
     _workspace_clone[key] = path

@@ -299,8 +299,31 @@ def _read_structured(path: Path):
     return json.loads(text)
 
 
+# repos.json に残った `local` を報せるのは 1 回だけ（レジストリはルーティングのたびに読まれる）。
+_warned_registry_local = False
+
+
+def _warn_registry_local(name: str) -> None:
+    """共有レジストリの `local` は無視することを 1 度だけ報せる（S3）。
+
+    `local` は「この PC のどこにクローンがあるか」で、repos.json は charter から自動生成され
+    状態リポジトリ経由で全 PC へ配られる——書くと 1 台のパスが全ノードへ伝播する（C3/C4 の
+    元凶）。黙って無視すると「速くなっていたはずの経路が静かに遅くなる」ので移行先を示す。"""
+    global _warned_registry_local
+    if _warned_registry_local:
+        return
+    _warned_registry_local = True
+    print(f">>> 警告: repos レジストリの local: は無視します（{name} 他）。ホスト固有の絶対パスは"
+          f"共有レジストリに置けません（全 PC へ配られるため）。"
+          f"~/.agents/agent-project.host.yaml の repos[] へ移してください:\n"
+          f"    repos:\n      - url: <リポジトリ URL>\n        local: /path/to/clone",
+          file=sys.stderr)
+
+
 def _registry_entry(name: str, e: dict) -> dict:
     """repos スキーマの 1 エントリを内部の repo_spec 形へ正規化する（charter パースと同じ形）。"""
+    if str(e.get("local") or "").strip():
+        _warn_registry_local(name)
     owns = e.get("owns") or []
     if isinstance(owns, str):
         owns = [g for g in re.split(r"[,\s]+", owns) if g]
@@ -309,9 +332,6 @@ def _registry_entry(name: str, e: dict) -> dict:
             "desc": str(e.get("desc", "") or ""), "base": base,
             "target": str(e.get("target", "") or "") or base,
             "path": str(e.get("path", "") or "").strip("/"),
-            # local: 手元にある同じリポジトリのクローン。worker はここから worktree を切れる
-            # （ネットワーク越しのミラー取得が要らない）。agent-flow へは _workspace_token で伝搬。
-            "local": str(e.get("local", "") or "").strip(),
             "readonly": bool(e.get("readonly")) or not owns,
             "owns": [str(g) for g in owns]}
     for k in ("docs", "tests", "code"):   # 分類グロブ（repos スキーマの拡張キー）も引き回す

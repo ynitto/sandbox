@@ -160,13 +160,11 @@ def _local_remote_url(local: str) -> str:
 
 
 def _same_repo(a: str, b: str) -> bool:
-    """git URL が同じリポジトリを指すか（末尾の .git / スラッシュ / 大小文字の揺れを吸収）。"""
-    def norm(u: str) -> str:
-        u = str(u or "").strip().rstrip("/")
-        if u.endswith(".git"):
-            u = u[:-4]
-        return u.lower()
-    return bool(norm(a)) and norm(a) == norm(b)
+    """git URL が同じリポジトリを指すか。実装は `agentcore.repolocal.same_repo` に一本化した
+    （S3）。以前は agent-project・board と 3 者が別実装で、末尾 .git とスラッシュは共通だが
+    **小文字化は agent-flow だけ・ローカルパスの絶対化は agent-project だけ**という食い違いが
+    あり、同じ 2 つの URL が経路によって一致したりしなかったりしていた。"""
+    return _repolocal.same_repo(a, b)
 
 
 def provision_from_local(local: str, url: str, refs: "list[str]", dest: str) -> "str | None":

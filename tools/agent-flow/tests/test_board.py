@@ -292,3 +292,67 @@ class BoardParticipationTests(unittest.TestCase):
         d = os.path.join(self.board, "delegations", "dg-2")
         res = json.load(open(os.path.join(d, "result.json")))
         self.assertEqual(res["status"], "cancelled")
+
+
+class BoardLocalCloneTests(unittest.TestCase):
+    """S3: 板の請負側が公示 workspace に **自ノードの** ローカルクローンを載せる。
+
+    公示に載るのは依頼側が見た URL だけで、依頼側の local は請負ノードに存在しないので
+    正しく落とされている。だが請負側が自分の local を載せる実装が無かったため、板経由の仕事は
+    手元に同じリポジトリがあっても毎回ネットワーク越しにミラーを取り直していた
+    （C3「flow/amigos の git clone のリモート負荷」そのもの）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-board-local-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.board = os.path.join(self.tmp, "board")
+        os.makedirs(os.path.join(self.board, "delegations"), exist_ok=True)
+        self.bus = kf.Bus(os.path.join(self.tmp, "bus"), "run-bl")
+        self.clone = os.path.join(self.tmp, "mirrors", "app")
+        os.makedirs(self.clone, exist_ok=True)
+
+    def _use_host(self, repos):
+        home = os.path.join(self.tmp, "agents-home")
+        os.makedirs(home, exist_ok=True)
+        with open(os.path.join(home, "agent-project.host.json"), "w", encoding="utf-8") as f:
+            json.dump({"schema_version": 1, "repos": repos}, f)
+        old = os.environ.get("AGENT_PROJECT_AGENTS_HOME")
+        os.environ["AGENT_PROJECT_AGENTS_HOME"] = home
+        self.addCleanup(lambda: os.environ.__setitem__("AGENT_PROJECT_AGENTS_HOME", old)
+                        if old is not None else os.environ.pop("AGENT_PROJECT_AGENTS_HOME", None))
+
+    def _post(self, did, **kw):
+        d = os.path.join(self.board, "delegations", did)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "post.json"), "w", encoding="utf-8") as f:
+            json.dump({"op": "post", "version": 1, "id": did, "workload": "flow",
+                       "goal": "実装", **kw}, f)
+        return d
+
+    def _args(self):
+        return types.SimpleNamespace(
+            board=self.board, board_workdir=None, board_branch="main",
+            board_repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}},
+            board_tags=[], board_lease=900.0)
+
+    def test_won_delegation_carries_this_nodes_local_clone(self):
+        self._use_host([{"url": "git@h:team/app.git", "local": self.clone}])
+        self._post("dg-l1", workspace={"url": "git@h:team/app.git", "base": "main"})
+        self.assertEqual(kf.poll_board(self.bus, self._args(), "pc-a"), ["dg-l1"])
+        ws = self.bus.read_inbox("dg-l1")["workspace"]
+        self.assertEqual(ws["local"], self.clone, "手元のクローンから worktree を切れる")
+        self.assertEqual(ws["base"], "main", "公示の内容は保つ")
+
+    def test_undeclared_repo_leaves_workspace_untouched(self):
+        self._use_host([{"url": "git@h:team/other.git", "local": self.clone}])
+        self._post("dg-l2", workspace={"url": "git@h:team/app.git", "base": "main"})
+        self.assertEqual(kf.poll_board(self.bus, self._args(), "pc-a"), ["dg-l2"])
+        ws = self.bus.read_inbox("dg-l2")["workspace"]
+        self.assertNotIn("local", ws, "宣言が無ければ従来どおりミラーから取る")
+
+    def test_eligibility_is_unchanged_by_url_normalisation(self):
+        # 正規化を agentcore へ統一しても入札判定は変わらない（末尾 .git・大小文字の吸収）。
+        repos = {"app": {"url": "git@h:team/app.git", "owns": ["**"]}}
+        self.assertTrue(kf.board_eligible({"workspace": {"url": "git@h:team/app"}}, repos, []))
+        self.assertTrue(kf.board_eligible({"workspace": {"url": "git@H:team/App.git"}}, repos, []))
+        self.assertFalse(kf.board_eligible({"workspace": {"url": "git@h:team/apps.git"}}, repos, []))

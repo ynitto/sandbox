@@ -63,11 +63,13 @@
         },
         "dir": {
           "type": "string",
-          "description": "ローカル checkout のパス（ローカル運用ヒント。codd-gate が読む。CLI --repo-dir が常に優先）"
+          "description": "【非推奨・S3】ローカル checkout のパス。ホスト固有の絶対パスなので共有レジストリには置けない（このファイルは charter から自動生成され、状態リポジトリ経由で全 PC へ配られる）。各 PC の ~/.agents/agent-project.host.yaml の repos[].local へ移すこと。codd-gate は CLI --repo-dir を常に優先する。",
+          "deprecated": true
         },
         "local": {
           "type": "string",
-          "description": "手元にある同じリポジトリのクローンの絶対パス（任意）。あれば worker はここから detached worktree を切り出す（ネットワーク越しのミラー取得が不要＝速い・オフラインでも動く）。origin URL が url と一致するときだけ使う。ローカルの作業ツリー・index には触らない。"
+          "description": "【非推奨・S3】手元にある同じリポジトリのクローンの絶対パス。ホスト固有なので共有レジストリには置けない（1 台で書いた値が全 PC へ配られる）。各 PC の ~/.agents/agent-project.host.yaml の repos[] で宣言する:\n    repos:\n      - url: <このエントリの url>\n        local: /path/to/clone\n読み手（agent-project / agent-flow / dashboard）は agentcore.repolocal がその宣言から解決する。ここに書いても無視され、起動時に警告が出る。",
+          "deprecated": true
         }
       },
       "additionalProperties": true
