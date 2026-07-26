@@ -171,6 +171,9 @@ agent-dashboard の `npm test` も回すのが素直。
    書き込まない）が載らない。**安全設定がスキル未導入ノードで黙って落ち**、検証は失敗時に
    リトライで何度も走るので副作用が累積しうる。`rules` / `repo_context` / `recipes` /
    `feedback` も同じ経路で落ちるが、そちらは品質劣化に留まる。
+  **追記（P1 詳細設計 §7-I）**: この組み込み経路は**どのテストも通っていない**——
+  `find_skill_script` がリポジトリの `.github/skills/` を必ず見つけるため、既存の
+  `build_verifier_prompt` テストはスキル経路しか検査していない。
 6. **agent-project にだけ argv 長制限の退避（spill）が無い**（中）。
    agent-flow / agent-amigos は `prompt_via: argv` の CLI でプロンプトが上限を超えると
    一時ファイルへ退避するが、agent-project の `_agent_cmd` は無防備。S5/S6 で
@@ -178,6 +181,12 @@ agent-dashboard の `npm test` も回すのが素直。
    planner 入力 = charter 全文 + 既存タスク + 墓標）。既定 CLI の kiro は argv 渡しなので、
    超過すると verifier は全基準 unverifiable、plan は空振りで人へ倒れる。スキーマの
    「argv 長制限を超えると自動で退避に切り替わる」という説明とも矛盾する。
+   **追記（P1 詳細設計 §7-A・§7-F）**: 退避の実体は flow / amigos が持つ ad-hoc 版
+   （本文をファイルへ出しプロンプトだけ差し替える）で、`headless_cmd` の `spill_path`
+   経路とは**別物**。後者は権限フラグを `spill.args`（kiro では `--trust-tools=fs_read`）へ
+   置き換えるので、実行して確かめる verifier に使うと全基準 unverifiable に倒れる。
+   また E2BIG（`Argument list too long`）は失敗トリアージの env パターンに掛からず
+   「内容の問題」に分類され、タスクのリトライ予算を焼く。
 7. **`revive` が charter スコープを無視して墓標を消す**（低）。墓標の追記は
    `(指紋, charter)` 単位なのに、削除は指紋一致行を charter 無関係に全部消す。
    複数 charter 運用で意図しない解除が起きる。
@@ -206,6 +215,13 @@ agent-dashboard の `npm test` も回すのが素直。
   トップレベルに `plan_review: false` を書いても、`node_id` を `nodeid` と綴り間違えても、
   警告ゼロで黙って無視される。S1 の E2 契約（defaults/overrides の検査）自体は満たすが、
   「設定したのに効かないことに気付けない」という S1 の設計動機が host.yaml 側だけ抜けている。
+  **追記（P1 詳細設計 §7-C・§7-J）**: 無検査なのは綴りと層だけではない。`tags:` /
+  `agent_cli:` に**スカラを書くと 1 文字ずつの配列になる**（`[str(a) for a in "codex"]`）。
+  板の `nodes/<id>.json` へ `["c","o","d","e","x"]` が publish され、`requires.agent_cli` を
+  持つ公示に**永久に入札しない**——入札選別は fail-close なので、誤動作ではなく
+  「なぜかこの PC だけ仕事を取らない」という無言の形で出る。`defaults.agent_cli`（スカラ）と
+  紛らわしいキーなので誤記は起きやすい。あわせて S1 §3.3 の E6（`projects[].config` は
+  エラー）も未実装で、`projects[]` の要素キーには検査自体が無い。
 - **`BoardRepo` の請負側書き込みだけ排他を通らない**（要確認）: `write_bid` /
   `write_cancelled` / `write_award`（S8 で追加）だけ flock と `_ensure()` を通らず直接
   書く。transport の破損時再クローン（`rmtree`）や `pull --rebase` と競合すると
@@ -213,7 +229,12 @@ agent-dashboard の `npm test` も回すのが素直。
 - **ノード宛て指示に debounce と `.err` 掃除が無い**: プロジェクト側 `ingest_commands` に
   ある「書きかけ猶予」と「成功時の古い `.err` 掃除」が、ノードスコープ側に無い。
   スキーマは書き手として人を認めているのに手置きは即 `.err` 行きで、`.err` は無限に
-  溜まり gc tick も見ない。
+  溜まり gc tick も見ない。**追記（P1 詳細設計 §7-D・§7-E）**: 受理レシートは
+  `write_receipt` の中で prune されるので溜まるのは `.err` だけ。また debounce は
+  素朴に「読めないファイルを飛ばす」形にすると**指示の順序が壊れる**（同じ公示への
+  「入札 → 中止」が入れ替わり、中止済みの板へ入札を書く）。ノード側の reject は
+  JSON 不正のときしか `engine/status.json` に載らず、板不一致・未知指示・公示不在で
+  `.err` に落ちた指示は横断ビューに現れない。
 - **`DIFF_CRITERION` の文字列が本体とスキルの 2 箇所**: 片方だけ直すと、検証レポートに
   出る基準文とエージェントが見た基準文が黙ってずれる（判定は番号で突き合わせるため）。
 - **`repolocal` の Python / JS で吸収規則がずれる**（低・要確認）: symlink 解決の有無が
@@ -289,6 +310,12 @@ agent-dashboard の `npm test` も回すのが素直。
 その後 R1（実機 canary・§1.1）を実施する。
 
 ### 7.2 P1 — 効かない設定・安全性（canary と並行可。実機を要さない）
+
+> 詳細設計: [`2026-07-26-p1-config-and-safety-detailed-design.md`](2026-07-26-p1-config-and-safety-detailed-design.md)。
+> 同設計 §7 に、実装との照合で新たに見つけた 11 件（うち 6 件は P1 の中で直す）を載せてある。
+> **P1-2 は総覧の記述（`headless_cmd` の spill 経路）とは別の方式を採る**——定義側の spill は
+> 退避時に権限フラグを `--trust-tools=fs_read` へ置き換えるため、そのまま配線すると
+> verifier が実行権限を失って全基準 unverifiable に倒れる（同設計 §7-A）。
 
 | # | 対象 | 修正 | 規模 |
 |---|---|---|---|
