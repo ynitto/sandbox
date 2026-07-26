@@ -126,7 +126,7 @@ def export_delivery(mp: MissionPaths, mission: dict, home: str, by: str) -> "dic
     }
     repo = (mission.get("workspace") or {}).get("repo")
     if repo:
-        # コードは repo が正本（設計書 §8.3）。納品棚には参照だけを置く。
+        # コードは repo が正本（設計書 §5.8）。納品棚には参照だけを置く。
         record["code"] = {"repo": str(repo),
                           "branch": f"amigos/{mp.mission_id}/integration"}
     write_json_atomic(delivery_json(home, mp.mission_id), record)

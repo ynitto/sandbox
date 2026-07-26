@@ -1,4 +1,4 @@
-"""ノードループ — `join` / `drive` が回す 1 巡（設計書 §6.1・§6.4）。
+"""ノードループ — `join` / `drive` が回す 1 巡（設計書 §5.1・§5.2）。
 
 常駐一本化（実装計画 W1-9）で常駐主体はノード常駐体（agent-project `serve`）に移り、
 `serve` / `hub` / `hubbus` は削除済み。ここに残るのは**巡回そのもの**で、
@@ -135,7 +135,7 @@ class NodeDaemon:
                 if not (i_am_owner and role.get("builtin") == "integrator"):
                     continue
             if role.get("builtin") == "integrator" and not i_am_owner:
-                continue    # integrator はオーナーノードの組み込み職務（§8.1）
+                continue    # integrator はオーナーノードの組み込み職務（§5.7）
             if not matches_role(role, self.tags,
                                 [self.agent_cli] if self.agent_cli else [], self.repos):
                 continue
@@ -246,7 +246,7 @@ class NodeDaemon:
         self.cycle(dispatch_turns=_collect)
         return owned
 
-    # --- graceful offboard（away プロトコル、設計書 §6.6） ------------------
+    # --- graceful offboard（away プロトコル、設計書 §5.3） ------------------
     def offboard(self, resume_hours: "float | None" = None) -> None:
         """計画停止: 自分の全 amigo を `state: away`（resume_at 付き）にして
         最後の push をする。引き継ぎメモは毎ターン更新済みなので、ここでは

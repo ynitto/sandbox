@@ -1,8 +1,8 @@
 """ミッション — 公示（post）・正規化・状態導出・収束条件と予算会計。
 
-状態は専用フィールドを持たず**ファイルの存在から導出**する（設計書 §3.1・§4.3 の継承）。
+状態は専用フィールドを持たず**ファイルの存在から導出**する（設計書 §4.1 の継承）。
 予算は wall-clock でなく**実質実行時間**（events の cli_seconds 総和）で、
-どのノードが計算しても同じ値になる（設計書 §3.2）。
+どのノードが計算しても同じ値になる（設計書 §5.6）。
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ CONVERGENCE_DEFAULTS = {
     "done_when": "all-required-done",   # all-required-done | reviewer-approved | consensus
     "quiescence_turns": 3,
     "review_rounds": 2,
-    "question_timeout": 2,              # 未回答質問を owner へ昇格するまでの自ターン数（§7.3）
+    "question_timeout": 2,              # 未回答質問を owner へ昇格するまでの自ターン数（§5.4）
     "consensus_ratio": 0.6,            # done_when=consensus: 席グループの最頻回答の占有率しきい値
     "consensus_min": 2,                # done_when=consensus: 合意判定に要る最小回答席数
 }
@@ -246,7 +246,7 @@ def normalize_mission(spec: dict) -> "tuple[dict, list]":
                          "不正です（first-come | owner-picks）")
     if mission["acceptance"] not in ("manual", "agent"):
         raise SystemExit(f"[agent-amigos] acceptance={mission['acceptance']!r} は未対応です"
-                         "（manual | agent。codd-gate は将来拡張 — 設計書 §8.2）")
+                         "（manual | agent。codd-gate は将来拡張 — 設計書 §5.8）")
     mission["convergence"] = {**CONVERGENCE_DEFAULTS, **dict(m.get("convergence") or {})}
     if mission["convergence"]["done_when"] not in DONE_WHEN_MODES:
         raise SystemExit(f"[agent-amigos] convergence.done_when が不正です: "
@@ -275,7 +275,7 @@ def normalize_mission(spec: dict) -> "tuple[dict, list]":
                                  f" 未定義ロール {c!r} があります")
     roles = _expand_seats(base_roles)
     if not has_integrator:
-        # integrator 省略時はオーナーノードが self-staff する組み込みロールを自動追加（§8.1）
+        # integrator 省略時はオーナーノードが self-staff する組み込みロールを自動追加（§5.7）
         roles.append({"id": "integrator", "title": "統合", "mission":
                       "全ロールの成果物を検証・統合し deliverable/ を組み立てる。",
                       "deliverables": [], "required": True, "seats": 1, "rounds": 0,
@@ -338,7 +338,7 @@ def is_owner(mission: dict, node_id: str) -> bool:
 # --- 予算会計（決定的） ------------------------------------------------------
 
 def budget_spent_seconds(mp: MissionPaths) -> float:
-    """消費 = バス上の全 events の cli_seconds 総和（設計書 §3.2）。"""
+    """消費 = バス上の全 events の cli_seconds 総和（設計書 §5.6）。"""
     total = 0.0
     try:
         names = sorted(os.listdir(mp.events_dir()))
@@ -444,7 +444,7 @@ def active_roles(roles: "dict[str, dict]", mp: MissionPaths) -> "dict[str, dict]
     return {rid: r for rid, r in roles.items() if rid not in pruned}
 
 
-# --- 収束判定（設計書 §3.2） -------------------------------------------------
+# --- 収束判定（設計書 §5.6） -------------------------------------------------
 
 def convergence_state(mission: dict, roles: "dict[str, dict]", mp: MissionPaths) -> dict:
     """収束状況を導出する。returns:
@@ -515,7 +515,7 @@ def convergence_state(mission: dict, roles: "dict[str, dict]", mp: MissionPaths)
 
 
 def derive_phase(mission: dict, roles: "dict[str, dict]", mp: MissionPaths) -> str:
-    """ミッションの状態をファイルの存在から導出する（設計書 §3.1）。"""
+    """ミッションの状態をファイルの存在から導出する（設計書 §4.1）。"""
     if os.path.isfile(mp.cancelled()):
         return "cancelled"
     final = read_json(mp.final())

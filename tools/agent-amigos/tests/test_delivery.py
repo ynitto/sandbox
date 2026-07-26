@@ -151,7 +151,7 @@ class DeliveryTests(AmigosTestCase):
 
 
 class NodeBudgetTests(AmigosTestCase):
-    """ノード予算（P1 拡張、設計書 §3.3）: 請負側の上限。共有台帳で全ワークロード合計を管理。"""
+    """ノード予算（P1 拡張、設計書 §6.2）: 請負側の上限。共有台帳で全ワークロード合計を管理。"""
 
     def test_zero_config_is_unlimited(self):
         from agent_amigos import nodebudget
@@ -173,7 +173,7 @@ class NodeBudgetTests(AmigosTestCase):
         for _ in range(6):
             d.cycle()
         mp = self.bus.mission(mid)
-        # ミッションは failed にならない（ノード予算はノードの都合 — §3.3）
+        # ミッションは failed にならない（ノード予算はノードの都合 — §6.2）
         self.assertNotEqual(self.phase(mid), "failed")
         statuses = [read_json(mp.status(n)) for n in
                     (f"owner-node--{r}" for r in ("architect", "impl", "reviewer"))]

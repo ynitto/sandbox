@@ -1,10 +1,10 @@
-"""GitBus — 専用バスリポジトリ ＋ ミッション別ブランチ（設計書 §5.1、P1）。
+"""GitBus — 専用バスリポジトリ ＋ ミッション別ブランチ（設計書 §4.4、P1）。
 
 - オンプレ git remote に**専用のバスリポジトリ**（例 amigos-bus.git）を切る。
   既存リポジトリの subdir 間借りはしない。
 - **ミッション（タスク）単位でブランチ分離**:
     main            … 公示インデックスのみ（index/<mid>.json、オーナーが書く）
-    mission/<mid>   … そのミッションの §4 レイアウト一式（リポジトリ直下が内容ルート）
+    mission/<mid>   … そのミッションの §4.2 レイアウト一式（リポジトリ直下が内容ルート）
   参加ノードは main を軽く poll して募集を発見し、join したミッションの
   ブランチだけを clone する。gc はブランチ削除。
 - **同期の作法は agent-project / agent-flow の state_git の規律を流用**:
@@ -13,9 +13,9 @@
 - 各ノードは**自分専用のクローン**を持つため、ローカルの変更はすべて自プロセス
   由来 = `add -A` でステージしても他者の書き込みを巻き込まない（state_git の
   「自 subdir のみステージ」と同じ安全性が、クローン分離によって成立する）。
-- 所有権分割（§4.2）により同一ファイルの双方向変更は起きないので 3-way 裁定は
+- 所有権分割（§4.3）により同一ファイルの双方向変更は起きないので 3-way 裁定は
   不要。万一 rebase が衝突したら abort → origin へリセットし、そのターンは
-  「なかったこと」になる（ターン原子性 §6.6: バスには全部か無かしか残らない）。
+  「なかったこと」になる（ターン原子性 §5.3: バスには全部か無かしか残らない）。
 """
 from __future__ import annotations
 
@@ -123,7 +123,7 @@ class GitBus(Bus):
         proc = self._git(d, "pull", "--rebase", "--quiet", "origin", branch, check=False)
         if proc.returncode != 0:
             # 所有権分割により本来起きない。起きたら abort → origin に合わせる
-            # （ローカルの未 push ターンは失われるが、やり直すだけで整合は壊れない §6.6）
+            # （ローカルの未 push ターンは失われるが、やり直すだけで整合は壊れない §5.3）
             self._git(d, "rebase", "--abort", check=False)
             self._git(d, "fetch", "--quiet", "origin", branch, check=False)
             self._git(d, "reset", "--hard", f"origin/{branch}", "--quiet", check=False)

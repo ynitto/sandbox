@@ -1,9 +1,9 @@
-"""amigo ランナー — ロールを演じるターンループ（設計書 §7.4）。
+"""amigo ランナー — ロールを演じるターンループ（設計書 §5.5）。
 
-- LLM はバスに直接書かない。ランナーがアクション封筒を検証して代書する（§7.2）。
-- 1 ターンの成果は TurnTxn で一括適用する（ターン原子性のローカル近似、§6.6）。
+- LLM はバスに直接書かない。ランナーがアクション封筒を検証して代書する（§5.4）。
+- 1 ターンの成果は TurnTxn で一括適用する（ターン原子性のローカル近似、§5.3）。
 - agent_cli=stub は LLM を使わず決定的に封筒を組み立てる（プロトコル検証用）。
-- integrator ロールは LLM を使わず、収束後に artifacts を deliverable/ へ統合する（§8.1）。
+- integrator ロールは LLM を使わず、収束後に artifacts を deliverable/ へ統合する（§5.7）。
 """
 from __future__ import annotations
 
@@ -85,7 +85,7 @@ class AmigoRunner:
 
         renew_lease(self.mp, self.role_id, self.node_id)
         st = self._load_status()
-        if st.get("state") == "away":        # 計画停止からの復帰（§6.6）— 続きから再開
+        if st.get("state") == "away":        # 計画停止からの復帰（§5.3）— 続きから再開
             st["state"] = "working"
             st.pop("resume_at", None)
             log(self.who, "away から復帰しました（続きから再開）")
@@ -256,7 +256,7 @@ class AmigoRunner:
         txn.apply(self.bus, f"{self.who} idle")
         return "idle"
 
-    # --- integrator（LLM 不使用・決定的、§8.1） ------------------------------
+    # --- integrator（LLM 不使用・決定的、§5.7） ------------------------------
     def _integrator_turn(self, mission: dict, roles: dict, st: dict, cs: dict) -> str:
         manifest = read_json(self.mp.manifest())
         current = bool(manifest and int(manifest.get("round", -1)) == cs["round"])
@@ -556,7 +556,7 @@ class AmigoRunner:
                           node=self.node_id)
         return "acted" if applied else "idle"
 
-    # --- アクション封筒の検証・適用（§7.2） ----------------------------------
+    # --- アクション封筒の検証・適用（§5.4） ----------------------------------
     def _queue_message(self, txn: TurnTxn, to: str, mtype: str, subject: str = "",
                        body: str = "", reply_to: "str | None" = None) -> dict:
         mid, msg = build_message(self.role_id, to, mtype, subject, body, reply_to)
@@ -599,7 +599,7 @@ class AmigoRunner:
                 log(self.who, f"アクションを棄却: {e}")
         return applied, rejected
 
-    # --- 質問の自動エスカレーション（§7.3） ----------------------------------
+    # --- 質問の自動エスカレーション（§5.4） ----------------------------------
     def _escalate_stale_questions(self, txn: TurnTxn, mission: dict, st: dict) -> None:
         timeout = int((mission.get("convergence") or {}).get("question_timeout") or 2)
         turn = int(st.get("turn") or 0)
@@ -619,17 +619,17 @@ class AmigoRunner:
                    for m in read_channel_all(self.mp))
 
     def _handover_note(self, st: dict, rnd: int) -> str:
-        """引き継ぎメモ（毎ターン更新 — 強制電源断でも前ターン分がバスに残る、§6.6）。"""
+        """引き継ぎメモ（毎ターン更新 — 強制電源断でも前ターン分がバスに残る、§5.3）。"""
         qs = ", ".join((st.get("open_questions") or {}).keys()) or "なし"
         done = "済" if st.get("done_round") == rnd else "未"
         return (f"turn={st.get('turn')} round={rnd} 完了宣言={done} "
                 f"未回答の自質問={qs} note={st.get('note') or ''}")
 
-    # --- stub（LLM なしの決定的プロトコル検証、§16 テスト方針） --------------
+    # --- stub（LLM なしの決定的プロトコル検証、§9 テスト方針） --------------
     def _stub_actions(self, mission: dict, roles: dict, role: dict, st: dict,
                       fresh: list, rnd: int, wrap_up: bool) -> list:
         actions = []
-        # 1) 自ロール宛の question には必ず answer で応じる（§7.3 の会話規約）
+        # 1) 自ロール宛の question には必ず answer で応じる（§5.4 の会話規約）
         for m in fresh:
             if m.get("type") == "question" and m.get("to") == self.role_id:
                 actions.append({"kind": "send", "to": m["from"], "type": "answer",

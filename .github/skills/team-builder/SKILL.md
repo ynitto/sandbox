@@ -100,8 +100,8 @@ agent-amigos の従来入力（design doc ＋ ロールミッション表）は�
 > `rounds` ＋ 通信 `topology`（G3）／実行中の動的編成 `restaff`（G5）は**実装済み**。
 > **探索木・動的分解（Tree/Graph-of-Thoughts・LATS・G4）は agent-flow へ委譲**する
 > （target=agent-flow）。まだ無いのは pairwise-rank（ranker ロールで代替）等。各 JSON の
-> `feasibility_note` と、全体の対応状況・拡張提案は
-> [`docs/designs/agent-amigos-teambuilder-patterns.md`](../../../docs/designs/agent-amigos-teambuilder-patterns.md)。
+> `feasibility_note` と、全体の対応状況は
+> [`docs/designs/agent-amigos-design.md`](../../../docs/designs/agent-amigos-design.md) §7。
 
 ---
 

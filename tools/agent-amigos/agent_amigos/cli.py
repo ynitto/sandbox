@@ -1,4 +1,4 @@
-"""CLI — サブコマンド体系（設計書 §11）。"""
+"""CLI — サブコマンド体系（設計書 付録 B）。"""
 from __future__ import annotations
 
 import argparse
@@ -399,7 +399,7 @@ def cmd_reject(args) -> int:
 
 
 def cmd_assign(args) -> int:
-    """owner-picks: 応募者をロールへ確定する（オーナー。設計書 §6.3）。"""
+    """owner-picks: 応募者をロールへ確定する（オーナー。設計書 §5.1）。"""
     from .assign import applicants, confirm_assignment
     bus, node = _resolve(args)
     mp, mission, roles = _mission(bus, args.mission)
@@ -467,7 +467,7 @@ def cmd_budget(args) -> int:
 
 
 def _cmd_budget_node(args) -> int:
-    """ノード予算（請負側の上限、§3.3）の表示・設定。台帳・設定は
+    """ノード予算（請負側の上限、§6.2）の表示・設定。台帳・設定は
     $AGENT_BUDGET_DIR（既定 ~/.agents/budget/）のツール横断契約
     （schemas/node-budget.schema.json）。agent-dashboard も同じファイルを管理する。"""
     from . import nodebudget

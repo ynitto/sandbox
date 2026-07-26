@@ -7,6 +7,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### docs: agent-amigos の設計書を 1 本へ統合し、実装と再照合
+
+`agent-amigos-design.md` と `agent-amigos-teambuilder-patterns.md` の 2 本を
+**`docs/designs/agent-amigos-design.md` の 1 本へ統合**し、実装（`tools/agent-amigos/`）と
+突き合わせて書き直した。
+
+- **構成を抽象から具体への段階的開示に組み替えた**: TL;DR → 背景と目標/非目標 →
+  主要な設計判断（ADR 5 件・却下案つき）→ 全体像 → 協働プロトコル → 予算 →
+  チーム設計の自動化 → 運用 → 実装状況、＋付録（ロールミッション表 / CLI / 旧 § 番号の対応）。
+  文字数は 2 本合計 75.8k → 54.3k。
+- **実装と食い違っていた記述を訂正**: hub 中継サーバ（旧 §5.2・P2）と常駐 `serve`（旧 §11.1）は
+  撤去済みなのに実装済みと書かれていた。`GlobalSemaphore（~/.kiro/slots/）`は turnmark
+  （`~/.agents/amigos/turns/`）へ、`content_file` は `content` へ、`mission.yaml` /
+  `roles/*.yaml` は正規化 JSON へ。未記載だった `drive` / `participate` / `deliveries` /
+  `restaff` / `budget node`、agent-control 連携、agent-board への入札参加、`repos` 能力宣言、
+  `done_when: consensus`、席・討論・コンダクタのプリミティブを反映。
+- **既知の欠落を §9 に明記**: `staffing_policy: fail` 未実装、`mission.deadline` の超過通知
+  未実装、away 中の `question_timeout` 抑止 未実装、可用性ウィンドウ宣言 未実装、
+  設定ファイルの `agent_cli` / `tags` / `roles` / `manual_claim` / `board` を読むのが
+  `participate` だけという読み落とし。
+- **旧 § 番号を参照していた箇所を新番号へ追随**（`agent_amigos/` 各モジュール・テスト・
+  `schemas/mission.schema.json` / `schemas/README.md`・dashboard の amigos feature・
+  team-builder スキル）。対応表は設計書 付録 C。
+- **設定ファイル例・README を見直し**: `agent-amigos.yaml.example` の「サブコマンド省略 =
+  serve」を削除、`roles.yaml.example` に `done_when: consensus` / `review_rounds` /
+  `consensus_*` を追加し未実装項目を注記。`tools/agent-amigos/README.md` の
+  「現実装では seats>1・投票・同期ラウンド・動的編成が無い」という自己矛盾した記述を訂正
+  （いずれも実装済み。medium は 25 → 29 種）。`schemas/mission.schema.json` に
+  `requires.repos`（実装済みだが未文書化）を追加。
+- `docs/designs/README.md` の索引を 26 件へ更新（未掲載だった agent-dashboard の設計 2 件を追加）。
+- テストは 158 件緑のまま（コメントのみの変更）。
+
 ### agentcore: P0 完了確認・R9 の常設テスト化・残存重複の棚卸し
 
 P0 が完了したかの確認と、設計 §5 の事前検証（V1〜V4）を実施した。

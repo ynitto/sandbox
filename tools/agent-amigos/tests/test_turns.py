@@ -101,7 +101,7 @@ class EscalationTests(AmigosTestCase):
 
 
 class AcceptanceAgentTests(AmigosTestCase):
-    """acceptance: agent（P2、設計書 §8.2）: オーナーノードの自動受入判定。
+    """acceptance: agent（P2、設計書 §5.8）: オーナーノードの自動受入判定。
     stub 判定は決定的（partial → 差し戻し、完全 → 受入）。"""
 
     def test_auto_accept_full_delivery(self):

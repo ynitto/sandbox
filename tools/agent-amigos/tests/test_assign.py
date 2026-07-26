@@ -68,7 +68,7 @@ class ClaimTests(AmigosTestCase):
 
 
 class AwayProtocolTests(AmigosTestCase):
-    """away プロトコル（P1、設計書 §6.6）: 計画停止ではロールを奪わない。"""
+    """away プロトコル（P1、設計書 §5.3）: 計画停止ではロールを奪わない。"""
 
     def _stage_away(self, mid, resume_at_epoch):
         mp = self.bus.mission(mid)
@@ -131,7 +131,7 @@ class AwayProtocolTests(AmigosTestCase):
 
 
 class OwnerPicksTests(AmigosTestCase):
-    """owner-picks（P2、設計書 §6.3）: claim は応募、確定はオーナーの assign。"""
+    """owner-picks（P2、設計書 §5.1）: claim は応募、確定はオーナーの assign。"""
 
     def post_op(self, mid="am-op"):
         spec = base_spec(assignment_policy="owner-picks", staffing_timeout=9999)

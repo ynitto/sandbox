@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "mission.schema.json",
   "title": "協働ミッション公示（design doc と併せて post するミッション + 役割ミッション表）",
-  "description": "オーナーが `agent-amigos post --roles <file>` へ渡す入力（YAML/JSON）の契約。post 時に正規化 JSON としてバスへ置かれる（mission.json / roles/<id>.json）。検証は agent-amigos の stdlib パーサ（normalize_mission）が行い、本スキーマは契約の文書化とテスト突き合わせに使う。バスへ書かれる読取契約（外部ビュアー = agent-dashboard 等が読む正規化出力）は $defs.posted_mission / $defs.manifest / $defs.final / $defs.cancelled を参照。正典設計: docs/designs/agent-amigos-design.md §10。",
+  "description": "オーナーが `agent-amigos post --roles <file>` へ渡す入力（YAML/JSON）の契約。post 時に正規化 JSON としてバスへ置かれる（mission.json / roles/<id>.json）。検証は agent-amigos の stdlib パーサ（normalize_mission）が行い、本スキーマは契約の文書化とテスト突き合わせに使う。バスへ書かれる読取契約（外部ビュアー = agent-dashboard 等が読む正規化出力）は $defs.posted_mission / $defs.manifest / $defs.final / $defs.cancelled を参照。正典設計: docs/designs/agent-amigos-design.md 付録 A。",
   "$defs": {
     "posted_mission": {
       "type": "object",
@@ -81,14 +81,14 @@
       "properties": {
         "title": {"type": "string"},
         "goal": {"type": "string", "description": "ミッション全体の目標（全 amigo のプロンプトに載る）"},
-        "deadline": {"type": "string", "description": "wall-clock の締切（ISO8601）。超過はオーナー通知のみ（自動 fail しない）"},
+        "deadline": {"type": "string", "description": "wall-clock の締切（ISO8601）。自動 fail はしない。**現状は保存するだけで超過通知は未実装**（設計書 §9）"},
         "assignment_policy": {
           "enum": ["first-come", "owner-picks"], "default": "first-come",
           "description": "first-come: claim 勝者＝確定（決定的タイブレーク）。owner-picks: claim は応募、確定は agent-amigos assign"
         },
         "staffing_policy": {
           "enum": ["self-staff", "wait", "fail"], "default": "self-staff",
-          "description": "staffing_timeout 経過後の未充足必須ロールの扱い。self-staff = オーナーノードが自己補充（1 ノード完結の保証）"
+          "description": "staffing_timeout 経過後の未充足必須ロールの扱い。self-staff = オーナーノードが自己補充（1 ノード完結の保証）。wait = 充足まで open のまま待つ。**fail は未実装で wait と同じ挙動**（設計書 §9）"
         },
         "staffing_timeout": {"type": "number", "minimum": 0, "default": 600},
         "acceptance": {
@@ -97,7 +97,7 @@
         },
         "convergence": {
           "type": "object",
-          "description": "収束条件（設計書 §3.2）",
+          "description": "収束条件（設計書 §5.6）",
           "properties": {
             "done_when": {"enum": ["all-required-done", "reviewer-approved", "consensus"], "default": "all-required-done",
               "description": "収束条件。all-required-done=全必須ロール完了、reviewer-approved=承認者の approve も要る、consensus=席グループ（seats+aggregate）が合意に達したら早期収束（全席の完了は待たない）"},
@@ -116,7 +116,7 @@
         },
         "budget": {
           "type": "object",
-          "description": "ミッション予算 = 全 amigo の agent CLI 実質実行時間の合計（設計書 §3.2。ノード予算 = node-budget.schema.json とは独立の依頼側上限）",
+          "description": "ミッション予算 = 全 amigo の agent CLI 実質実行時間の合計（設計書 §5.6。ノード予算 = node-budget.schema.json とは独立の依頼側上限）",
           "properties": {
             "execution_minutes": {"type": "number", "minimum": 0, "default": 0, "description": "0 = 無制限"},
             "per_role_turns": {"type": "integer", "minimum": 0, "default": 30},
@@ -127,7 +127,7 @@
         },
         "workspace": {
           "type": "object",
-          "description": "コード成果物用の対象リポジトリ（設計書 §8.3。バスに巨大ファイルを積まない）。現状は opaque passthrough（checkout 実装なし）。将来 checkout を実装する場合は repos.schema.json のエントリ形（url/base/path/owns）または repos レジストリのエントリ名参照に揃えること（リポジトリ定義のスキーマを増やさない）",
+          "description": "コード成果物用の対象リポジトリ（設計書 §5.8。バスに巨大ファイルを積まない）。現状は opaque passthrough（checkout 実装なし）。将来 checkout を実装する場合は repos.schema.json のエントリ形（url/base/path/owns）または repos レジストリのエントリ名参照に揃えること（リポジトリ定義のスキーマを増やさない）",
           "properties": {"repo": {"type": "string"}},
           "additionalProperties": true
         },
@@ -173,10 +173,12 @@
           "model": {"type": "string"},
           "requires": {
             "type": "object",
-            "description": "ノード能力とのマッチング条件（join --tags / --agent-cli と突き合わせ）",
+            "description": "ノード能力とのマッチング条件（設定 tags / repos・--tags / --agent-cli と突き合わせ）",
             "properties": {
               "tags": {"type": "array", "items": {"type": "string"}},
-              "cli": {"type": "string"}
+              "cli": {"type": "string"},
+              "repos": {"type": "array", "items": {"type": "string"},
+                        "description": "担当を要求するリポジトリ（agent-amigos.yaml の repos: のエントリ名、または URL。末尾 .git と大小文字は正規化して比較する）。成果物リポジトリに応じて応募ノードを絞る"}
             },
             "additionalProperties": true
           },
