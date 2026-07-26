@@ -224,6 +224,11 @@ agent-dashboard の `npm test` も回すのが素直。
   agent_cli / contract_version / repos しか見ない。忙しいノードが板の仕事を掴んだまま
   枠待ちで塞ぎ、空きノードが拾えない。`max_concurrent: 0` の意味もスキーマ（無制限）と
   実装（既定 4）で真逆。
+  **追記（P2 詳細設計 §7-A）**: 読まれていないのは宣言だけではない。**agent-amigos は
+  `board_eligible` に `agent_cli` を渡していない**（`agent_amigos/board.py:272`）。
+  `eligible` の CLI 判定は fail-close なので、`requires.agent_cli` を持つ公示に
+  **amigos ノードは永久に入札しない**——`daemon.agent_cli` は存在し、同じ値を
+  `assign.py` は畳んで使っているので単なる渡し忘れ。症状は「無言の不参加」で同型。
 - **host.yaml のトップレベルキーは無検査**: `PROJECT_ONLY_KEYS` は定義とテストにしか
   使われず、`_validate_layers` は `defaults` / `overrides` しか見ない。host.yaml の
   トップレベルに `plan_review: false` を書いても、`node_id` を `nodeid` と綴り間違えても、
@@ -254,10 +259,22 @@ agent-dashboard の `npm test` も回すのが素直。
 - **`repolocal` の Python / JS で吸収規則がずれる**（低・要確認）: symlink 解決の有無が
   違い、JS 側は `repos:` の行末コメントで 0 件に読める。どちらも「読めなければミラー
   取得へ落ちる」だけだが、1 実装へ集約した動機に照らすと再発の芽。
+  **追記（P2 詳細設計 §2.5・§7-B）**: 行末コメントの件は**既に解消済み**（JS の読みは
+  `base/main/yaml.js` の本物のパーサへ移設された）。残るのは symlink 解決の有無だけ。
+  一方で**同じ規則の 2 実装がもう 1 組見つかった**——`agentcore.repolocal.normalize_repos`
+  と `resident_cli._normalize_host_repos` で、mapping+dict 形の `local: null` が
+  後者では `"None"` という**文字列のパス**になる。
 - **識別子レベルの `canceled`（米式）残存**（低）: 語彙統一（W0-9）の対象はデータ値で、
   `mark_canceled` 等の関数名・コメントには米式が残る。書き込む値は `cancelled` で正しく
   実害は無いが、grep のノイズになる。`NodeCapability.write` のパス導出が
   `_safe_node` を通らない件（現経路では実害なし）も同類。
+  **追記（P2 詳細設計 §7-C・§7-D）**: 名義まわりの取りこぼしが 2 件ある。
+  (a) **明示指定の node_id が `normalize_node_id` を通らない**（agent-flow / agent-amigos の
+  `--node-id` と設定値。P0-3 が 1 本にしたのは未宣言時の導出だけ）。
+  (b) **板レイアウトの名義綴りが flow だけ別実装**——入札を `protocol.safe_name`（`-`）で
+  書き、`_has_own_live_bid` は `gitbus._safe`（`_`）で読む。単独では無害だが (a) と
+  重なると**手動入札の受け皿が永久に効かない**（「押しても何も起きない」の 3 度目の形）。
+  (b) は P2-5 で塞ぎ、(a) は名義変更を伴うので次の静止点へ（P2 詳細設計 §8-1）。
 
 ### 6.3 文書の綻び
 
@@ -343,6 +360,13 @@ agent-dashboard の `npm test` も回すのが素直。
 | P1-5 | `revive` の charter スコープ無視（§6.1-7） | `remove_tombstone` に charter 引数を通し、CLI に `--charter` を追加。既定は「指定 charter の墓標 + タグ無し墓標」のみ削除 | S |
 
 ### 7.3 P2 — 契約の一本化（静止点で・R2b 設計の前までに）
+
+> 詳細設計: [`2026-07-26-p2-contract-consolidation-detailed-design.md`](2026-07-26-p2-contract-consolidation-detailed-design.md)。
+> 同設計 §7 に、実装との照合で新たに見つけた 9 件（うち 6 件は P2 の中で直す）を載せてある。
+> **P2-2 の「決め」は publish をやめる側で決着**（板の `local` は読み手が 1 人も居ないことを
+> 実測で確認した——入札判定も画面も url しか見ず、手元クローンの解決は請負ノードが
+> 自分の host.yaml から行っている）。**P2-3 の `workloads` は「明示宣言だけを正とする」**——
+> 現在の `amigos_bus` からの導出値を判定に使うと、宣言していない PC が黙って入札をやめる。
 
 R2b（ノード直轄実行）は板の契約を最後に固める機会なので、契約に触る修正はそこまでに済ませ、
 R2b 設計と衝突させない。
