@@ -1094,22 +1094,25 @@ function consistencyGateHtml(p) {
   // そのときバッジだけ出して値を隠すと「未結線＝何も設定されていない」と読めてしまうので、
   // 設定されているコマンドは必ず見せたうえで「一貫性ゲートの検査ではない」と添える。
   const rows = [
-    ['regression_cmd', '完了前の回帰検査', gate.regressionWired, gate.regressionCmd,
-      '作業を done にする直前に全体を検査し、ドキュメントが置き去りのまま完了するのを止めます。'],
-    ['intake_cmd', 'ドリフトの取り込み', gate.intakeWired, gate.intakeCmd,
+    ['regression_cmd', '完了前の回帰検査', gate.regressionConfigured, gate.regressionWired, gate.regressionCmd,
+      '失敗は、作業を done にする前に解消すべきドキュメントとコードの不整合が残っていることを意味します。'],
+    ['intake_cmd', 'ドリフトの取り込み', gate.intakeConfigured, gate.intakeWired, gate.intakeCmd,
       '検出したドキュメントとコードのズレを、修復タスクとしてバックログへ積みます。'],
-  ].map(([key, label, wired, cmd, note]) => `<div>
+  ].map(([key, label, configuredFlag, wired, cmd, note]) => {
+    // 古い main と組み合わせた場合だけコマンド値へフォールバックする。
+    const configured = configuredFlag ?? Boolean(cmd && String(cmd).trim());
+    return `<div>
       <dt>${esc(label)}<br><span class="mono">${key}</span></dt>
       <dd>
         <span class="badge ${wired ? 'info' : 'warn'}">${wired ? '結線済み' : '未結線'}</span>
+        <span class="muted">設定: ${configured ? 'あり' : 'なし'}</span>
         ${cmd ? `<code>${esc(cmd)}</code>` : ''}
-        ${wired
-          ? ''
-          : `<span class="muted">${cmd
-              ? '別のコマンドが設定されています。一貫性ゲートの検査ではありません。'
-              : esc(note)}</span>`}
+        <span class="muted">${!wired && configured
+          ? '別のコマンドが設定されています。一貫性ゲートの検査ではありません。'
+          : esc(note)}</span>
       </dd>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 
   // 未結線が 1 つでもあれば有効化導線を出す。書く行・CLI・注意書きは
   // tools/agent-project/README.md「一貫性ゲート（codd-gate 連携・オプション）」の原文に合わせる

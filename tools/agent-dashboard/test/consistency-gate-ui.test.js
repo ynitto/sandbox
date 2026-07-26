@@ -44,6 +44,8 @@ const both = consistencyGateHtml({
   dir: '/ws/.agent-project',
   consistencyGate: {
     configFile: '/ws/.agent/agent-project.yaml',
+    regressionConfigured: true,
+    intakeConfigured: true,
     regressionWired: true,
     intakeWired: true,
     wired: true,
@@ -58,6 +60,8 @@ assert.strictEqual(badges(both, '有効'), 1, '全結線の見出しバッジは
 assert.ok(!both.includes('未結線'));
 assert.ok(both.includes('codd-gate verify --repos repos.json'));
 assert.ok(both.includes('codd-gate tasks --debt'));
+assert.strictEqual((both.match(/設定: あり/g) || []).length, 2);
+assert.ok(both.includes('失敗は、作業を done にする前に解消すべき'));
 assert.ok(!both.includes('有効化'), '全結線なら有効化導線は不要');
 assert.ok(!both.includes('data-gate-open'));
 
@@ -92,6 +96,8 @@ const regressionOnly = consistencyGateHtml({
   dir: '/ws/.agent-project',
   consistencyGate: {
     configFile: '/ws/.agents/agent-project.yaml',
+    regressionConfigured: false,
+    intakeConfigured: true,
     regressionWired: false,
     intakeWired: true,
     wired: false,
@@ -112,6 +118,8 @@ const otherCmd = consistencyGateHtml({
   dir: '/ws/.agent-project',
   consistencyGate: {
     configFile: '/ws/.agents/agent-project.yaml',
+    regressionConfigured: true,
+    intakeConfigured: false,
     regressionWired: false,
     intakeWired: false,
     wired: false,
@@ -121,6 +129,8 @@ const otherCmd = consistencyGateHtml({
 });
 assert.strictEqual(badges(otherCmd, '結線済み'), 0, 'codd-gate を指さないコマンドを結線済みと言わない');
 assert.ok(otherCmd.includes('make -s smoke'), '設定されているコマンドを隠している');
+assert.ok(otherCmd.includes('設定: あり'), '別コマンドが設定済みであることを明示していない');
+assert.ok(otherCmd.includes('設定: なし'), '未設定であることを明示していない');
 assert.ok(otherCmd.includes('一貫性ゲートの検査ではありません'),
   '別コマンドが入っていることを説明していない');
 
@@ -130,6 +140,8 @@ const noneWired = consistencyGateHtml({
   dir: '/ws/.agent-project',
   consistencyGate: {
     configFile: '/ws/.agents/agent-project.yaml',
+    regressionConfigured: false,
+    intakeConfigured: false,
     regressionWired: false,
     intakeWired: false,
     wired: false,
@@ -140,6 +152,7 @@ const noneWired = consistencyGateHtml({
 assert.strictEqual(badges(noneWired, '未結線'), 3, '行 2 つ + 見出しバッジ');
 assert.ok(!noneWired.includes('一部のみ'), '一度も有効化していない状態を「一部のみ」と言わない');
 assert.ok(noneWired.includes('まだ有効になっていない'));
+assert.strictEqual((noneWired.match(/設定: なし/g) || []).length, 2);
 assert.ok(/<pre[^>]*>[^]*regression_cmd:[^]*intake_cmd:/.test(noneWired), '貼る 2 行が揃っていない');
 assert.ok(noneWired.includes('codd_gate_regression.py'));
 assert.ok(noneWired.includes('注入 CLI は無い'));
