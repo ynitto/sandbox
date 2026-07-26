@@ -295,12 +295,31 @@ class TestHookResolution(unittest.TestCase):
     def tearDown(self):
         self.hooks._HOOK_CACHE.clear()
 
-    def test_explicit_hooks_setting_selects_this_module(self):
+    def test_explicit_hooks_setting_uses_configured_provider_only(self):
         cfg = _Cfg({"wiring": "codd_gate_wiring"})
-        for capability in ("wiring.detect", "wiring.findings"):
-            with self.subTest(capability=capability):
-                self.hooks._HOOK_CACHE.clear()
-                self.assertIs(self.hooks._hook_provider(capability, cfg), wiring)
+        required = self.hooks.HOOK_CAPABILITIES["wiring.detect"]
+        with (
+            mock.patch.object(self.hooks, "_hook_import", return_value=wiring) as import_provider,
+            mock.patch.object(self.hooks, "_hook_scan_siblings") as scan_siblings,
+        ):
+            provider = self.hooks._hook_provider("wiring.detect", cfg)
+        self.assertIs(provider, wiring)
+        import_provider.assert_called_once_with("codd_gate_wiring", required)
+        scan_siblings.assert_not_called()
+
+    def test_absent_hooks_setting_uses_sibling_provider_only(self):
+        provider = mock.sentinel.sibling_provider
+        required = self.hooks.HOOK_CAPABILITIES["wiring.detect"]
+        with (
+            mock.patch.object(self.hooks, "_hook_import") as import_provider,
+            mock.patch.object(
+                self.hooks, "_hook_scan_siblings", return_value=provider
+            ) as scan_siblings,
+        ):
+            resolved = self.hooks._hook_provider("wiring.detect", _Cfg(None))
+        self.assertIs(resolved, provider)
+        scan_siblings.assert_called_once_with(required)
+        import_provider.assert_not_called()
 
     def test_full_capability_key_overrides_prefix_key(self):
         # 系統キー（wiring）でまとめつつ、片方の能力だけフルキーで振り替えられる。

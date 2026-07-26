@@ -540,13 +540,8 @@ class TestConfigFile(unittest.TestCase):
                          (False, True, True, True))                    # 組み込み既定
 
 
-class TestCoddGateNoAutoWiring(unittest.TestCase):
-    """build_config は codd-gate 固有の実行時自動配線を持たない（configfile は差し込み点のみ）。
-
-    有効化は「設定だけ」——regression_cmd/intake_cmd を agent-project.yaml へ明示するか、
-    sibling CLI（codd_gate_regression.py）でファイルへ恒久注入する。repos.json が実在しても
-    build_config はバイナリへ probe せず、メモリ上の cfg を勝手に埋めない。
-    """
+class TestGenericHookConfig(unittest.TestCase):
+    """build_config は provider 固有の配線を持たず、汎用フック設定をそのまま渡す。"""
 
     @staticmethod
     def _build(root, **cli):
@@ -554,9 +549,18 @@ class TestCoddGateNoAutoWiring(unittest.TestCase):
         km.resolve_config(ns)
         return km.build_config(ns)
 
-    def test_configfile_has_no_codd_gate_auto_wiring_hook(self):
-        # 除去済みの自動配線関数が再導入されていないことを固定する（設計の回帰ガード）。
-        self.assertFalse(hasattr(km, "_apply_codd_gate_auto_wiring"))
+    def test_explicit_hooks_pass_through(self):
+        with tempfile.TemporaryDirectory() as d:
+            expected = {
+                "wiring": "project_wiring",
+                "wiring.detect": "custom_detector",
+            }
+            path = Path(d) / "agent-project.json"
+            path.write_text(json.dumps({"root": d, "hooks": expected}), encoding="utf-8")
+            ns = types.SimpleNamespace(config=str(path))
+            km.resolve_config(ns)
+            cfg = km.build_config(ns)
+        self.assertEqual(cfg.hooks, expected)
 
     def test_repos_json_present_does_not_auto_wire(self):
         # repos.json があっても build_config は regression_cmd/intake_cmd を補わない。
