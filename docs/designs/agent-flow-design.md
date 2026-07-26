@@ -1,7 +1,7 @@
 # agent-flow 設計書
 
 > 最終更新: 2026-07-26（実装 `tools/agent-flow/agent_flow/` と突き合わせ済み）
-> 実装: `tools/agent-flow/`（本体 24 断片・約 7,000 行）、テスト `tools/agent-flow/tests/`（557 件）
+> 実装: `tools/agent-flow/`（本体 24 断片・約 7,000 行）、テスト `tools/agent-flow/tests/`（571 件）
 > 関連: [agent-project 設計書](./agent-project-design.md) ／ [git worktree キャッシュ](./git-worktree-cache-pattern.md)
 >
 > 旧 `agent-flow-self-healing-retry-design.md`（自己回復リトライ）と
@@ -163,7 +163,9 @@ claim は §3 のとおりです。park は claim と同じリース意味論に
 
 orchestrator は 7 つのパターンをカタログとして持ちます。最初の 6 つは Claude Dynamic Workflows の記事に載っていたもので、`map-reduce` は agent-flow が足した 7 つ目です。パターンは組み合わせられます。詳細は付録 D にまとめました。
 
-計画役は 3 系統あります。既定の `flow-planner` はスキル側の 3 段パイプラインを呼び、複雑さから分解の粒度を導出します。スキルが見つからなければ `agent`（エージェント CLI に 1 回問い合わせる）へ、それも解釈できなければ `stub`（キーワード判定と正規表現）へ落ちます。落ちる先があるので、スキル未導入のノードが混ざっても run は成立します。
+計画役は 3 系統あります。既定の `flow-planner` はスキル側の 3 段パイプライン（分析 → 戦略選定 → グラフ構築）を呼びます。スキル名は設定 `planner_skill`（既定 `flow-planner`）で差し替えられます。スキルが見つからなければ `agent`（エージェント CLI に 1 回問い合わせる）へ、それも解釈できなければ `stub`（キーワード判定と正規表現）へ落ちます。落ちる先があるので、スキル未導入のノードが混ざっても run は成立します。
+
+ノードの粒度は運任せにしません。`granularity` の既定は `auto` で、分析段の複雑さ判定から目標粒度を決定的に導出します（simple → coarse・work 系 1〜3 ノード / moderate → fine・3〜8 / complex → finest・6〜12、ハード上限 16）。`--granularity` の明示指定だけが導出に勝ちます。成果を生むノードの goal には、触ってよい範囲（`[scope]`）とやらないこと（`[out_of_scope]`）を先頭の構造化ブロックで書かせるスコープ契約を課し、生成後は LLM を使わない決定的ゲートで検査します——work 系ノード数が目標レンジ外、goal にスコープ相当が無い、goal 同士が似すぎている、のいずれかに当たれば指示を強めて 1 回だけ再生成します。検証・統合・ルーティング役（verify / synthesize / reduce / filter / judge / classify / split）はスコープ上限の対象外です。粒度の判断根拠は[粒度制御設計](../plans/2026-07-25-flow-planner-granularity-design.md)にあります。
 
 ### executor プラグイン
 
@@ -177,7 +179,7 @@ executor はタスクを実際に実行するバックエンドです。組み�
 
 1 つの run が書き込んでよいリポジトリはちょうど 1 つです。worker は temp 領域に作業ツリーを用意し、作業ブランチ（既定 `af/<run-id>`、spec で `branch` を明示すればそちら）を base から作ってエージェントに渡します。エージェントは編集だけを行い、commit と push は agent-flow が行います。変更がなければ何も push しません。調査だけのグラフでブランチを作らないためです。
 
-作業ツリーは、URL 単位のホスト共有 bare ミラーから detached worktree を生やして用意します。フルクローンを初回 1 回と増分 fetch に圧縮し、GitLab 側の pack 生成負荷を抑えるためです。手元に同じリポジトリのクローンがあればそこから worktree を切り、ネットワークすら使いません。どちらも失敗したら従来の direct clone に落ちます。
+作業ツリーは、URL 単位のホスト共有 bare ミラーから detached worktree を生やして用意します。フルクローンを初回 1 回と増分 fetch に圧縮し、GitLab 側の pack 生成負荷を抑えるためです。手元に同じリポジトリのクローンがあればそこから worktree を切り、ネットワークすら使いません。どちらも失敗したら従来の direct clone に落ちます。「手元のクローン」の宣言は各 PC の `agent-project.host.yaml` の `repos[]`（URL とローカルパスの対）が正典です。共有レジストリ repos.json にホスト固有の絶対パスを書くと状態同期で全 PC へ配られてしまうため、そこには書けません（残っていれば警告して無視）。URL の同一性判定は `agentcore.repolocal` の 1 実装に揃えてあり、板経由で請け負った仕事も submit 前に自ノードの宣言をマージするので、同じ最適化が効きます。
 
 書込先を決めるのは agent-flow ではなく agent-project です。agent-flow は渡されたワークスペースを厳格に守る側に徹します。読むだけのリポジトリは `--reference` で渡し、clone せずプロンプトとイシュー本文に参照節として描画します。
 
@@ -332,7 +334,7 @@ kind は `work` / `generate` / `classify` / `synthesize` / `verify` / `filter` /
 
 ### F. テスト
 
-`tools/agent-flow/tests/` に 557 件。共有の前置きは `_shared.py` にあり、エージェント CLI なしで全件が通ります。
+`tools/agent-flow/tests/` に 571 件（機能別に分割済み）。共有の前置きは `_shared.py` にあり、エージェント CLI なしで全件が通ります。
 
 ```bash
 AGENT_FLOW_STUB_SLEEP_MAX=0 python3 -m pytest tools/agent-flow/tests -q

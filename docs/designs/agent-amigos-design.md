@@ -408,9 +408,10 @@ status の書き込み自体も止める（心拍の鮮度維持だけ 60 秒お
 積まないためだ。
 
 LLM 実行は [`schemas/agent-cli.schema.json`](../../schemas/agent-cli.schema.json) のプラグイン契約
-（`agents/<name>.json`）をそのまま使う。kiro / claude / copilot / codex は組み込み、
-cursor / ollama は定義ファイル同梱。amigos 側に CLI 分岐コードは書かない。`stub` は LLM を
-使わず決定的に封筒を組み立てる検証用の実装で、プロトコル層のテストはすべてこれで回る。
+（`agents/<name>.json`）をそのまま使う。kiro / claude / copilot / codex / cursor / ollama の
+6 定義が同梱で、解釈は `agentcore.agentcli` の 1 実装（amigos 側の `agentcli.py` は薄い再輸出）。
+amigos 側に CLI 分岐コードは書かない。`stub` は LLM を使わず決定的に封筒を組み立てる検証用の
+実装で、プロトコル層のテストはすべてこれで回る。
 
 ロールごとに CLI を選べるので、レビュアーは claude、実装は codex、QA は kiro という混成が組める。
 さらに管理面（`schemas/agent-control.schema.json`、`~/.agents/control/control.json`）から
