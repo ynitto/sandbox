@@ -688,7 +688,7 @@ update_installer: install.sh    # サブディレクトリ内で実行するイ�
 
 ## 依存
 
-- Python 3.9+（標準ライブラリのみ）
+- Python 3.11+（標準ライブラリのみ）
 - git モードでは `git` コマンド（共有リポジトリは初期化済みであること）
 - 実運用では `--planner agent` / `--executor agent` が要求するエージェント CLI
   （既定 `kiro-cli`。設定 `agent_cli` で `claude` / `copilot` / `codex` にも切替可）

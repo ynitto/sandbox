@@ -487,3 +487,173 @@ class TestDoctor(unittest.TestCase):
             # 不正 JSON は空で無害にスキップ
             self.assertEqual(km.collect_flow_findings(
                 cfg, fix=False, runner=lambda cmd: type("P", (), {"stdout": "boom"})()), [])
+
+
+class TestDoctorHostProjects(unittest.TestCase):
+    """host.yaml `projects[]` の起動前チェック（S1 設計 §3.6・修正計画 P3-3）。
+
+    ここが無かった間、`root` の綴り間違い・origin の取り違え・層契約違反は
+    「子の起動失敗 → 隔離表示」という最も遠い症状でしか観測できなかった。
+    """
+
+    def _host(self, projects, defaults=None):
+        return km.HostConfig({"schema_version": 1, "node_id": "pc-a",
+                              "projects": projects, "defaults": defaults or {}})
+
+    def _git_root(self, path: Path, origin: str = "", branch: str = "main") -> Path:
+        path.mkdir(parents=True, exist_ok=True)
+        g = lambda *a: subprocess.run(["git", "-C", str(path), *a], capture_output=True)
+        subprocess.run(["git", "init", "-q", "-b", branch, str(path)], check=True)
+        g("config", "user.email", "t@e.com")
+        g("config", "user.name", "t")
+        if origin:
+            g("remote", "add", "origin", origin)
+        (path / "backlog").mkdir(exist_ok=True)          # 状態ルートのマーカー
+        (path / "charter.md").write_text("# c\n", encoding="utf-8")
+        g("add", "-A")
+        g("commit", "-q", "-m", "init")
+        return path
+
+    def _titles(self, findings):
+        return [f["title"] for f in findings]
+
+    def test_worker_node_without_projects_is_silent(self):
+        # プロジェクトを 1 つも宣言していない PC（ワーカー構成）では検査対象が無い。
+        self.assertEqual(km.doctor_host_projects_findings(self._host([])), [])
+
+    def test_missing_root_without_state_repo_is_critical(self):
+        with tempfile.TemporaryDirectory() as d:
+            host = self._host([{"name": "p1", "root": os.path.join(d, "typo-root")}])
+            findings = km.doctor_host_projects_findings(host)
+            self.assertEqual(self._titles(findings), ["宣言された root がありません"])
+            self.assertEqual(findings[0]["severity"], "critical")
+            self.assertIn("p1", findings[0]["evidence"])
+
+    def test_missing_root_with_state_repo_is_silent(self):
+        # state_repo を宣言していれば起動時に clone される＝正常な初回起動。誤警告を出さない。
+        with tempfile.TemporaryDirectory() as d:
+            host = self._host([{"name": "p1", "root": os.path.join(d, "not-yet"),
+                                "state_repo": "git@example.com:t/p1-state.git"}])
+            self.assertEqual(km.doctor_host_projects_findings(host), [])
+
+    def test_root_without_declaration_is_reported(self):
+        host = self._host([{"name": "p1"}])
+        self.assertEqual(self._titles(km.doctor_host_projects_findings(host)),
+                         ["projects[].root が未宣言"])
+
+    def test_origin_mismatch_is_critical(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = self._git_root(Path(d) / "state", origin="git@example.com:t/other.git")
+            host = self._host([{"name": "p1", "root": str(root),
+                                "state_repo": "git@example.com:t/p1-state.git"}])
+            findings = km.doctor_host_projects_findings(host)
+            self.assertIn("E3: root の origin が宣言と違う", self._titles(findings))
+            hit = next(f for f in findings if f["title"].startswith("E3"))
+            self.assertIn("other.git", hit["evidence"])
+
+    def test_origin_match_is_clean(self):
+        with tempfile.TemporaryDirectory() as d:
+            url = "git@example.com:t/p1-state.git"
+            root = self._git_root(Path(d) / "state", origin=url)
+            host = self._host([{"name": "p1", "root": str(root), "state_repo": url}])
+            self.assertEqual(km.doctor_host_projects_findings(host), [])
+
+    def test_branch_mismatch_is_warned(self):
+        with tempfile.TemporaryDirectory() as d:
+            url = "git@example.com:t/p1-state.git"
+            root = self._git_root(Path(d) / "state", origin=url, branch="work")
+            host = self._host([{"name": "p1", "root": str(root), "state_repo": url,
+                                "branch": "main"}])
+            findings = km.doctor_host_projects_findings(host)
+            hit = next(f for f in findings if f["title"] == "チェックアウトが宣言ブランチと違う")
+            self.assertEqual(hit["severity"], "warn")     # 同期先は宣言ブランチ＝表示で足りる
+
+    def test_root_inside_another_repository_is_critical(self):
+        with tempfile.TemporaryDirectory() as d:
+            outer = self._git_root(Path(d) / "outer")
+            nested = outer / "state"
+            nested.mkdir()
+            (nested / "backlog").mkdir()
+            host = self._host([{"name": "p1", "root": str(nested)}])
+            self.assertIn("root が別リポジトリの内側",
+                          self._titles(km.doctor_host_projects_findings(host)))
+
+    def test_source_repository_declared_as_root_is_critical(self):
+        # E5: 成果物リポジトリを登録すると、そこへ backlog/ や journal.md が生える。
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "app"
+            root.mkdir()
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            (root / "main.py").write_text("print(1)\n", encoding="utf-8")
+            host = self._host([{"name": "p1", "root": str(root)}])
+            self.assertIn("E5: root が状態ルートに見えない",
+                          self._titles(km.doctor_host_projects_findings(host)))
+
+    def test_project_yaml_layer_violation_is_reported_without_exiting(self):
+        """E1 をエラー終了ではなく所見として出す（doctor は診断コマンドなので落ちない）。"""
+        with tempfile.TemporaryDirectory() as d:
+            url = "git@example.com:t/p1-state.git"
+            root = self._git_root(Path(d) / "state", origin=url)
+            (root / "agent-project.json").write_text(
+                json.dumps({"node_id": "pc-a", "planner": "agent"}), encoding="utf-8")
+            host = self._host([{"name": "p1", "root": str(root), "state_repo": url}])
+            findings = km.doctor_host_projects_findings(host)     # SystemExit しない
+            hit = next(f for f in findings if f["title"].startswith("E1"))
+            self.assertEqual(hit["severity"], "critical")
+            self.assertIn("node_id", hit["evidence"])
+
+    def test_host_defaults_violation_is_reported(self):
+        with tempfile.TemporaryDirectory() as d:
+            url = "git@example.com:t/p1-state.git"
+            root = self._git_root(Path(d) / "state", origin=url)
+            host = self._host([{"name": "p1", "root": str(root), "state_repo": url}],
+                              defaults={"plan_review": False})
+            findings = km.doctor_host_projects_findings(host)
+            self.assertIn("E2", " ".join(self._titles(findings)))
+
+    def test_unknown_project_key_is_warned(self):
+        with tempfile.TemporaryDirectory() as d:
+            url = "git@example.com:t/p1-state.git"
+            root = self._git_root(Path(d) / "state", origin=url)
+            (root / "agent-project.json").write_text(
+                json.dumps({"plan_reviw": True}), encoding="utf-8")   # 綴り間違い
+            host = self._host([{"name": "p1", "root": str(root), "state_repo": url}])
+            findings = km.doctor_host_projects_findings(host)
+            hit = next(f for f in findings if f["title"].startswith("W-UNKNOWN"))
+            self.assertEqual(hit["severity"], "warn")
+            self.assertIn("plan_reviw", hit["evidence"])
+
+    def test_config_key_project_config_is_reported(self):
+        with tempfile.TemporaryDirectory() as d:
+            url = "git@example.com:t/p1-state.git"
+            root = self._git_root(Path(d) / "state", origin=url)
+            host = self._host([{"name": "p1", "root": str(root), "state_repo": url,
+                                "config": "/tmp/other.yaml"}])
+            self.assertIn("E6: projects[].config は廃止",
+                          self._titles(km.doctor_host_projects_findings(host)))
+
+    def test_missing_host_config_is_silent(self):
+        # host.yaml が無い PC（単発 run だけの環境）でも doctor は走り切る。
+        with tempfile.TemporaryDirectory() as home:
+            with mock.patch.dict(os.environ, {"AGENT_PROJECT_AGENTS_HOME": home}):
+                self.assertEqual(km.doctor_host_projects_findings(), [])
+
+    def test_cmd_doctor_includes_host_project_findings(self):
+        """`agent-project doctor` から到達できること（呼び出し元の無い検査を作らない）。"""
+        with tempfile.TemporaryDirectory() as d:
+            home = Path(d) / "agents-home"
+            home.mkdir()
+            (home / "agent-project.host.json").write_text(
+                json.dumps({"schema_version": 1, "node_id": "pc-a",
+                            "projects": [{"name": "p1", "root": os.path.join(d, "typo")}]}),
+                encoding="utf-8")
+            cfg = cfg_for(Path(d) / "proj", planner="none", executor="stub")
+            km.ensure_dirs(cfg)
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, {"AGENT_PROJECT_AGENTS_HOME": str(home)}), \
+                 contextlib.redirect_stdout(buf):
+                rc = km.cmd_doctor(cfg, fix=False, as_json=True, agent_run=lambda p, m: "[]",
+                                   flow_finder=lambda c, fix: [])
+            titles = {f["title"] for f in json.loads(buf.getvalue())["findings"]}
+            self.assertIn("宣言された root がありません", titles)
+            self.assertEqual(rc, 2)                      # 未解決の critical → 2

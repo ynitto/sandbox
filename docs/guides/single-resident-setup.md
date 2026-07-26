@@ -23,8 +23,10 @@ bash tools/agent-tools/install.sh
 - 入れる先を変える: `bash tools/agent-tools/install.sh --prefix /usr/local/bin`
 - 1 本だけ入れ直す: `bash tools/agent-tools/install.sh --only agent-project`
 - Windows/WSL 配置の場合はクローンを WSL 側の ext4 に置く（`/mnt/c` は使わない — 設計 §7）。
-- python 3.9 以上が要る。git・エージェント CLI（claude / codex 等）・PyYAML の有無は
-  インストーラが確認して、足りないものだけ教える。
+- python 3.11 以上が要る（CI が実際に回している版と同じ下限）。Ubuntu 22.04 の既定は
+  3.10 なので、その系では `python3.11` を別途入れる（24.04 以降は既定で足りる）。
+  git・エージェント CLI（claude / codex 等）・PyYAML の有無はインストーラが確認して、
+  足りないものだけ教える。
 
 ## 2. host.yaml を書く
 
@@ -166,12 +168,18 @@ systemd 環境（かつ `residency` が `windows-task`/`none` でない）なら
 
 ## 6. 現時点で未実装のもの（意図的な見送り）
 
-以下は設計上は P1 の範囲だが、実装を急ぐと二重実行・不整合のリスクがあるため見送った。
-利用には影響しない（未構成のまま no-op）:
+能力宣言（この PC で何ができるかを委譲板へ出す）は実装済み——`board:` を宣言していれば、
+常駐体が板の `nodes/<pc>.json` を周期的に更新する（宣言の中身は `tags` / `agent_cli` /
+`repos` / `availability` / `budget.max_concurrent`）。板を使わない PC では `board:` が空の
+ままなので何も起きない。
 
-- **ノード能力宣言**（node 名義で板へ `nodes/<pc>.json` として「何ができる PC か」を出す）。
-  板の請負自体は各ツールの `participate` が委譲側 bus 経由で行っており、ノード直轄の
-  能力宣言はそれとは別の設計判断が要る。
+残っているのは次の 1 つで、実装を急ぐと二重実行・不整合のリスクがあるため見送っている:
+
+- **プロジェクトを持たない PC が板の仕事を直接請ける経路**。落札した仕事の取り込みは
+  プロジェクトのバス経由なので、`projects:` が空のワーカーノードは板の仕事を請けられない
+  （落札しても行き先が無い）。dashboard はこの事実を見て、その PC では手動入札のボタンを
+  理由付きで非活性にする。フルノード（`projects:` を 1 つ以上宣言した PC）は既存の経路で
+  請けられるので、板の運用自体は成立する。
 
 ## 7. トラブルシュート
 

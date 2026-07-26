@@ -48,7 +48,7 @@ agent-project status --json | python3 -c 'import json,sys; d=json.load(sys.stdin
         "children:", [(c["name"], c["alive"]) for c in d["children"]])'
 ```
 
-| 台 | node | contract_version | children | doctor 指摘 | 記録 |
+| 台 | `node` | `contract_version` | `children` | doctor 指摘 | 記録 |
 |---|---|---|---|---|---|
 | フル A | | | | | |
 | フル B | | | | | |
@@ -329,7 +329,7 @@ agent-project status --json > canary-$(date +%F)-$(hostname).json
 - コマンドが違った / オプションが足りなかった
 - 前提（git 認証・PATH・python の版・WSL の配置）に書いていない条件があった
 - 表示の意味が分からず、コードを読んで初めて理解した（**利用者向け表示の欠陥**）
-- 内部名（node / sync / resident）がそのまま出ていて意味が伝わらなかった
+- 内部名（node / sync / resident）がそのまま出ていて意味が伝わらなかった <!-- r10-allow: R10 の観点そのものを説明する行 -->
 
 ## 6. 終了判定
 
