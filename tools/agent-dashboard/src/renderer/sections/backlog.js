@@ -448,6 +448,7 @@ function renderBacklog() {
         ${ownerChips ? `<div class="filters task-owner-filters" aria-label="監視担当で絞り込む">${ownerChips}</div>` : ''}
       </div>
       <div class="task-toolbar-actions">
+        <button id="btn-notes" title="気になったことをメモに書き溜めます（計画は勝手に動きません）">メモ</button>
         <button id="btn-replan"${replanPending ? ' disabled' : ''} title="プロジェクト憲章からタスクを作り直します">計画を作り直す</button>
         <button id="btn-enqueue" class="primary-inline" title="タスクを1件追加します">タスクを追加</button>
       </div>
@@ -466,6 +467,8 @@ function renderBacklog() {
   $('btn-enqueue').addEventListener('click', () => openEnqueueDialog());
   const replanBtn = $('btn-replan');
   if (replanBtn && !replanPending) replanBtn.addEventListener('click', openReplanDialog);
+  const notesBtn = $('btn-notes');
+  if (notesBtn) notesBtn.addEventListener('click', openNotesDialog);
 
   for (const chip of el.querySelectorAll('.chip[data-filter]')) {
     chip.addEventListener('click', () => {
@@ -544,8 +547,12 @@ function reviseAreaHtml(t) {
     </div>
     <div class="field"><label>検証コマンド</label><input id="rv-verify" class="mono" value="${esc(t.verify || '')}" />
       <p class="field-help">完了判定に使うコマンド。空欄にすると削除します。</p></div>
-    <div class="field"><label>完了条件</label><input id="rv-accept" value="${esc(t.extra.accept || '')}" />
-      <p class="field-help">文章で書けます。空欄にすると削除します。</p></div>
+    <div class="field"><label>受入基準</label>
+      <textarea rows="4" id="rv-acceptance" placeholder="1 行 1 基準で書きます">${esc(
+        acceptanceList(t).join('\n')
+      )}</textarea>
+      <p class="field-help">1 行 1 基準。完了時に検証エージェントがこの順に実行して証跡付きで判定し、
+        全部 pass したときだけ完了になります。空欄にすると削除します（3〜7 項目が目安）。</p></div>
     <div class="row2">
       <div class="field"><label>自動化レベル</label>
         <input id="rv-level" list="rv-level-list" value="${esc(t.extra.level || '')}" />
@@ -736,7 +743,6 @@ function showTaskDialog(id, scope) {
         ['priority', $('rv-priority').value.trim(), String(t.priority)],
         ['after', $('rv-after').value.trim(), String(t.extra.after || '')],
         ['verify', $('rv-verify').value.trim(), String(t.verify || '')],
-        ['accept', $('rv-accept').value.trim(), String(t.extra.accept || '')],
         ['level', $('rv-level').value.trim(), String(t.extra.level || '')],
         ['track', $('rv-track').value.trim(), String(t.extra.track || '')],
         ['node', $('rv-node').value.trim(), String(t.extra.node || '')],
@@ -746,6 +752,16 @@ function showTaskDialog(id, scope) {
       for (const [key, cur, orig] of cmp) {
         if (key === 'priority' && cur === '') continue; // 空欄は「変更なし」（priority に削除は無い）
         if (cur !== orig.trim()) fields[key] = cur;
+      }
+      // 受入基準は複数行フィールド＝**行の集合を丸ごと**送る（本体側も全行置換）。
+      // 単値と同じ扱いにすると "a,b" の 1 行に潰れる。空なら [] を送って削除。
+      const acceptanceNow = $('rv-acceptance')
+        .value.split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const acceptanceWas = acceptanceList(t);
+      if (acceptanceNow.join('\n') !== acceptanceWas.join('\n')) {
+        fields.acceptance = acceptanceNow.length ? acceptanceNow : [''];
       }
       const feedback = $('rv-feedback').value.trim();
       if (!Object.keys(fields).length && !feedback) {
@@ -788,7 +804,10 @@ function showTaskDialog(id, scope) {
               id: t.id,
               title: $('rv-title').value.trim() || t.title,
               verify: $('rv-verify').value.trim() || t.verify || '',
-              accept: $('rv-accept').value.trim(),
+              acceptance: $('rv-acceptance')
+                .value.split('\n')
+                .map((s) => s.trim())
+                .filter(Boolean),
               note: $('rv-note').value.trim(),
               ...current,
             },
@@ -922,6 +941,77 @@ async function requestReplan(charter = '') {
     return true;
   });
   if (ok) {
+    await reloadProject();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 観点メモ（notes/）。書いても計画は動かない——分解は人が押したときだけ（S6-7）。
+// ---------------------------------------------------------------------------
+async function openNotesDialog() {
+  const p = state.project;
+  if (!p) return toast('プロジェクトを選択してください');
+  fillCharterSelect($('notes-charter'), p, state.backlogCharter || '');
+  $('note-body').value = '';
+  await renderNotesList();
+  $('dlg-notes').showModal();
+}
+
+async function renderNotesList() {
+  const p = state.project;
+  const el = $('notes-list');
+  if (!p || !el) return;
+  let notes = [];
+  try {
+    notes = await api.listNotes(p.dir);
+  } catch (err) {
+    el.innerHTML = `<div class="muted">メモを読めませんでした: ${esc(String(err.message || err))}</div>`;
+    return;
+  }
+  el.innerHTML = notes.length
+    ? `<h3>書き溜めたメモ（${notes.length} 件）</h3>${notes
+        .map(
+          (n) => `<details class="note-item"><summary>${esc(n.name)}</summary>
+            <div class="task-prose">${proseHtml(String(n.body || ''))}</div></details>`
+        )
+        .join('')}`
+    : '<div class="muted">まだメモはありません。</div>';
+}
+
+async function addNote() {
+  const p = state.project;
+  if (!p) return toast('プロジェクトを選択してください');
+  const body = $('note-body').value.trim();
+  if (!body) return toast('メモの内容を入力してください');
+  const ok = await guard('メモの保存', async () => {
+    const res = await api.writeNote(p.dir, '', body);
+    uiLog('writeNote', res);
+    toast(`メモを保存しました（${res.name}）`, true);
+    return true;
+  });
+  if (ok) {
+    $('note-body').value = '';
+    await renderNotesList();
+  }
+}
+
+async function distillNotes(charter = '') {
+  const p = state.project;
+  if (!p) return toast('プロジェクトを選択してください');
+  const yes = await confirmDialog(
+    `${p.name}: 書き溜めたメモからタスク候補を起こします。\n` +
+      '既存タスクと重複するものは追加されません。追加されたタスクは承認するまで実行されません。\n' +
+      '取り込めたメモは notes/archive/ へ移ります。反映は次の実行サイクルです。よろしいですか？'
+  );
+  if (!yes) return;
+  const ok = await guard('メモの分解', async () => {
+    const res = await api.distillNotes(p.dir, charter);
+    uiLog('distillNotes', res);
+    toast('メモの分解を依頼しました（次の実行で反映されます）', true);
+    return true;
+  });
+  if (ok) {
+    $('dlg-notes').close();
     await reloadProject();
   }
 }

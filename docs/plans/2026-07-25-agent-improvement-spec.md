@@ -5,6 +5,9 @@
 参照した既存設計: `2026-07-24-single-resident-controller-design.md` / `2026-07-23-delegation-board-distributed-bidding-design.md` / `2026-07-12-agent-spec-flow-integration.md` / `2026-07-25-flow-planner-granularity-design.md`
 
 改訂履歴:
+- 第 7 版: Phase 3(S6・S7)の実装完了を反映。§4 の積み残し表に Phase 3 分(P3-a〜i)を追加
+  (うち P3-f〜i は**実装後に見つけた分**。詳細設計 §7-6〜9 と対応する)
+- 第 6 版: Phase 3(S6 → S7)の詳細設計を追加。§4 の表と詳細設計の所在にリンクを足し、§5 の未決 5 を決着済みにした
 - 第 5 版: Phase 1'・Phase 2 の実装完了を反映。§4 の積み残し表を全フェーズ横断へ拡張(P1'-a〜c / P2-a〜f を追加)
 - 第 4 版: Phase 1'(S9-1〜3)と Phase 2(S4 → S5)の詳細設計を追加。§4 の表に詳細設計へのリンクを足し、§5 の未決 3・4・7 を決着済みにした
 - 第 3 版: Phase 1(S1 + S3 + S2)の実装完了を反映。§4 に状態列・詳細設計へのリンク・積み残し表を追加、§5 の未決 1・2 を決着済みに、§2 の記述に「Phase 1 で解消」の印を付けた
@@ -291,7 +294,9 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
 
 **仕様**
 1. **spec を 2 段階にする**: フル spec(現行)に加えて**ライト spec** = `design.md` 相当 1 枚(変更方針・影響範囲・受入条件の差分記述)のみを導入する。
-2. **3 段ルーティング**: 既存の assess 採点(c/r/a)で スキップ / ライト / フル を選ぶ。`spec_threshold` を `spec_threshold_light` / `spec_threshold_full` の 2 閾値に拡張(既定: light=2, full=4 相当。既存設定は full に読み替え)。`policy.md` の `spec:` ルールで強制も可能(現行踏襲)。
+2. **3 段ルーティング**: 既存の assess 採点(c/r/a)で スキップ / ライト / フル を選ぶ。`spec_threshold` を `spec_threshold_light` / `spec_threshold_full` の 2 閾値に拡張(既定: light=2, full=4 相当。既存設定は full に読み替え)。
+   > **訂正**: 採点は各軸 1〜3 で上限 3 のため **full=4 には到達しない。既定は full=3 / light=2**
+   > ([S6/S7 詳細設計 §2.1](2026-07-26-s6-s7-backlog-planning-detailed-design.md))`policy.md` の `spec:` ルールで強制も可能(現行踏襲)。
 3. **既存コード文脈の前置**: ライト/フル spec タスクの前に、対象リポジトリの `context/<repo>.md`(repo-map)が無い・古い場合は read-only の調査 run を自動前置して更新する(S6-2 の作業概要生成と共通機構)。ブラウンフィールドで spec と計画の質を担保する supply 側の仕組み。
 4. ライト spec の tasks 展開は行わない(元タスクをそのまま実行し、design.md を act の文脈注入に使う)。展開が要る規模ならフル spec に採点で寄る、という整理。
 
@@ -353,7 +358,7 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
 | 1' | S2 | **実装済み** | agent-dashboard(cowork) | 独立 |
 | 1' | S9-1〜3 | **実装済み** | schemas(agent-cli)、agents/、agentcore(ローダ)、agent-project / agent-flow / agent-amigos / agent-dashboard | 独立。S9 のレイヤは 4 の診断より先に整備 |
 | 2 | S4 → S5 | **実装済み** | agent-project(mr/verify/needs)、.github/skills(backlog-verifier)、agent-dashboard(needs) | acceptance チェックリスト書式は **S5 側で確定させ S6 が従う**（詳細設計 §2.3） |
-| 3 | S6 → S7 | 未着手 | agent-project(plan/charter/prioritize)、.github/skills(backlog-planner)、agent-flow(planner_skill)、agent-dashboard(plan-review/notes UI) | S9-4(対話診断)と並行可 |
+| 3 | S6 → S7 | **実装済み** | agent-project(plan/charter/prioritize/model/needs)、.github/skills(backlog-planner)、agent-flow(planner_skill)、agent-dashboard(plan-review/notes UI) | S9-4(対話診断)と並行可 |
 | 4 | S8、S9-4 | 未着手 | agent-dashboard、agent-project(常駐体) | S8-2/3 は W1-11(board tick)後 |
 
 ### 詳細設計と実装の所在
@@ -364,6 +369,7 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
 | S3 / S2 | [`2026-07-26-s3-s2-node-repos-and-cowork-roots-design.md`](2026-07-26-s3-s2-node-repos-and-cowork-roots-design.md) | 実装済み |
 | S9-1〜3 | [`2026-07-26-s9-agent-cli-layer-detailed-design.md`](2026-07-26-s9-agent-cli-layer-detailed-design.md) | 実装済み |
 | S4 / S5 | [`2026-07-26-s4-s5-review-and-verification-detailed-design.md`](2026-07-26-s4-s5-review-and-verification-detailed-design.md) | 実装済み |
+| S6 / S7 | [`2026-07-26-s6-s7-backlog-planning-detailed-design.md`](2026-07-26-s6-s7-backlog-planning-detailed-design.md) | 実装済み |
 
 ### 積み残し(次フェーズ以降へ持ち越し)
 
@@ -400,6 +406,20 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
 | P2-e | **fast path の red-green(`verify_validate`)** — 常設基準(差分の実在)が効くのは verifier 経路だけなので、`verify_template` 由来の機械生成コマンドが done の唯一の根拠になる経路には残した。廃止ではなく**適用範囲を狭めた**という整理 | 意図的に残す(P2-d と同時に見直す) |
 | P2-f | **S6 との接続** — `acceptance:` を**生成する**のは S6 の `backlog-planner`。Phase 2 では書式を確定し、既存タスク(`accept:` のみ)を後方互換で吸収するところまで | Phase 3 |
 
+#### Phase 3(S6・S7)
+
+| # | 内容 | 待ち先 |
+|---|---|---|
+| P3-a | **md 直接編集の検出** — `- edited: human` は revise とレビュー票の確定でだけ付く。エディタで md を直接書き換えた分は検出しない(内容署名の維持コストに見合わない)。実害は `planned_title` で塞いである | 必要が出たとき |
+| P3-b | **墓標の自動失効** — 古い墓標が残り続ける害は完全一致に限った時点で小さいが、ゼロではない。日付は行に持たせてあるので、要るときに一括 `revive` を足せる | 必要が出たとき |
+| P3-c | **`size` の活用** — 分解の妥当性判断用に出させるが、今は**表示するだけ**。「L ばかりなら granularity を上げて再分解」のような自動調整は入れない(自動で計画を作り直す経路を増やすと、人が直した計画が動く理由が増える) | 意図的に残す |
+| P3-d | **charter acceptance の LLM 合成**(P2-d) — S6 で「基準を書くのはエージェント、直すのは人」の経路ができたので、charter acceptance を同じ形(基準リスト + 証跡)へ寄せる下地は揃った。ただし検証対象(マイルストーン)も出口も違うので別設計が要る | 別途 |
+| P3-e | **dashboard の notes UI の同期** — `notes/` は状態リポジトリ配下なので state 同期で全 PC へ届くが、同時編集の衝突解決は既存規則に委ねている。メモの粒度で衝突が問題になったら、ファイル名にノード id を入れる | 必要が出たとき |
+| P3-f | **`ensure_repo_maps` の plan 前置が毎回 `git ls-remote` する** — 生成はキャッシュされるが sha 取得はされない。非 readonly repo 1 件につき 1 往復で、到達不能なら 60 秒待つ。前置を無条件にした結果、**オフラインのノードでは plan の頭に repo 数 × 最大 60 秒が乗る** | 実際に遅いという申告が出たとき(先回りして sha キャッシュを足すと「古い sha で再生成を見送る」別の壊れ方を作る) |
+| P3-g | **日本語タイトルの Jaccard 照合が分かち書きに依存する** — `_title_overlap` の `\w+` トークン化では、空白を入れない日本語タイトルは全体が 1 トークンになり実質「完全一致か 0 か」。墓標の抑止は `_norm_title` を通すので効くが、**Jaccard を使う経路(重複照合・avoid リコール・learn 照合)は日本語で弱いまま**。S6 でプランナー入力に既存タスクを載せた分、実害は下がっている | 重複が実際にすり抜けたとき(そのとき N-gram 等の決定的な代替を検討する) |
+| P3-h | **dashboard から墓標を見る・解除する口が無い** — 却下は墓標を**生む**のに解除は CLI(`revive`)だけで非対称。`tombstones.md` の一覧表示 + `commands/` ドロップで揃う | 必要が出たとき(却下の取り消しは頻度が低い) |
+| P3-i | **`draft` の昇格導線が dashboard に無い** — `plan_review: off` で必須項目が埋まらなかったタスクは draft に入るが、dashboard に draft → ready の操作が無い(`revise` は status を変えない) | `plan_review: off` の運用が出てきたとき(既定 on は proposed ＝票が立つので導線がある) |
+
 いずれも「動作は正しいが最適でない / 別の実装待ち」。**P2-d だけは性質が違い**、S5 のコンセプト変更が
 charter 側に及んでいないという設計上の非対称なので、Phase 3(S6・S7)で計画側を触るときに
 一緒に見直す価値がある。
@@ -419,7 +439,15 @@ charter 側に及んでいないという設計上の非対称なので、Phase 
    → **決着**(S4/S5 詳細設計 §4): 既定は作業ツリー内のみ(`verify_side_effects`)。DB・外部サービスへの書き込みは
    どの設定でも不可(要るなら人が `verify:` に書く)。自己欺瞞への防御は 4 段(証跡必須・フェイルクローズ・
    差分の常設基準・検収カードでの抜き取り監査)。監査は別機能にせず人が毎回見る 1 枚に載せる。
-5. **S6**: 人編集タスクの保護と charter 大改訂の衝突(charter が根本から変わったとき人編集タスクをどう扱うか。`--revive` 同様の明示操作とするか)。墓標の指紋衝突で「作りたい新タスク」まで抑止しないか。
+~~5. **S6**: 人編集タスクの保護と charter 大改訂の衝突(charter が根本から変わったとき人編集タスクをどう扱うか。`--revive` 同様の明示操作とするか)。墓標の指紋衝突で「作りたい新タスク」まで抑止しないか。~~
+   → **決着**(S6/S7 詳細設計 §4): 大改訂でも人編集タスクは自動で消さず、charter 変更検知時に
+   **棚卸し票 1 枚**にまとめて人へ返す(放置が既定＝何もしなければ何も失われない)。
+   墓標の抑止は**正規化タイトルの完全一致のみ**で、類似(Jaccard)はプランナー入力と needs 注記への
+   提示に留める——抑止は取り返しがつかず、提示は取り返しがつくため。指紋に workspace は含めない
+   (推定で決まるフィールドなので不安定)。
+   あわせて **`acceptance:` の受け渡しが 4 か所で切れている**ことが判明し(同 §1.2)、S6 の実装は
+   その修理から入る順序に固定した。台帳は `backlog-ledger.jsonl` を新設せず、
+   人編集＝タスク md の `- edited: human` / 墓標＝`tombstones.md` に分ける(同 §1.3)。
 6. **S8**: 手動入札の「ノード直轄ワーカーで実行」への接続(落札後の実行系が W1-11 に含まれるため、単独では操作だけ増えて実行できない状態になり得る)。
 ~~7. **S9**: `readonly_args` の強制力は CLI の実装依存(フラグを無視する CLI への防御は持たない)。対話セッションの副作用は人が見ている前提で許容するか。~~
    → **決着**(S9 詳細設計 §6): 防御は持たない。代わりに定義へ `readonly: enforced | best-effort` を持たせ、

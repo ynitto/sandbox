@@ -106,6 +106,10 @@ agent-project run --planner none --flow-planner stub --executor stub
   decisions/<id>.md    人の判断・承認・フィードバックの決定記録（learn＝学習材料。append-only）
   archive/<id>.md      完了タスクの保全先（検収用「納品書」付き。backlog と 1:1）
   DELIVERY.md          納品一覧（受領書）。done を1行ずつ追記
+  tombstones.md        墓標（却下・削除したタスク。同じタイトルは再提案しない。人が手で書き足せる。
+                       解除は `agent-project revive <タイトル>`）
+  notes/*.md           観点メモ（人が書き溜める。plan は自動では消費せず、`distill-notes` のときだけ
+                       バックログ候補になる。取り込めたメモは notes/archive/ へ移る）
   journal.md           機械のサイクルログ（人間可読・閾値超過で journal-archive/ へ自動ローテーション。
                        設定 journal_max_bytes（既定 256KB・0 で無効）/ journal_keep（保持世代・既定 20））
                        ／ run-log.jsonl  構造化 run-log（JSON）
@@ -113,8 +117,8 @@ agent-project run --planner none --flow-planner stub --executor stub
                        viewer の稼働判定に使う（[daemon の生存信号](#daemon-の生存信号statusjson--リモート-viewer-の稼働判定)）
   paused.json          一時停止マーカー（commands の pause で生成・resume で削除）
   inbox/  claims/  autonomy/  bus/   取り込み口 / 原子的クレーム / track 状態 / agent-flow 一時バス
-  commands/<name>.json 人の指示（approve/hold/pin/defer/revise/replan/pause/resume/stop）の
-                       ドロップ口（CLI 不要。run/watch が取り込む）
+  commands/<name>.json 人の指示（approve/hold/pin/defer/revise/reject/replan/distill-notes/
+                       heal/pause/resume/stop）のドロップ口（CLI 不要。run/watch が取り込む）
   .state-git/          状態 git 同期の管理クローン（ルートが git でなく state_git 設定時のみ）
 ```
 
@@ -191,7 +195,16 @@ verify は done 確定の唯一の根拠だが機械的合否でしかない。�
 ```bash
 agent-project enqueue --title "規約に最終更新日を表示" --verify-template 'file-contains :: web/terms.html :: 最終更新'
 agent-project enqueue --title "概要見出しを追加"       --accept "README に ## 概要 の見出しがある"
+# 受入基準は複数書ける（1 つ 1 基準。JSON 表現では配列）
+agent-project enqueue --title "起動先を選べるようにする" \
+  --acceptance "起動先に宣言済みリポジトリが並ぶ" \
+  --acceptance "宣言が無いリポジトリは非活性で理由付きで表示される"
+# 人が直す（指定した分で全行を置換。`--acceptance ''` 1 つで全削除）
+agent-project revise T1 --acceptance "直した基準A" --acceptance "直した基準B" --reason "レビュー"
 ```
+
+**誰が書くか**: 通常はバックログ生成時に `backlog-planner`（S6）が書き、計画レビューで人が直す。
+人が直したタスクには `- edited: human` が付き、以後の replan で作り直されない。
 
 **なぜ「基準」で、「合成したコマンド」ではないのか**: 以前は自然文の完了条件から決定的シェルコマンドを
 LLM が 1 回で合成し、その exit 0 を done の唯一の根拠にしていた。環境差で大半が失敗して人へ倒れるうえ、
@@ -624,6 +637,80 @@ agent-project run --review-project         # acceptance 全 PASS でも短絡的
 agent-project approve <project> --reason "受領"   # 完了確定（最終納品書）／続行は charter を更新して再実行
 ```
 
+### バックログは「エージェントが書き、人が直す」（backlog-planner・S6）
+
+分解は `.github/skills/backlog-planner/` のスキルが担う（設定 `planner_skill` で名前を変えられる。
+見つからなければ組み込みプロンプトへ落ちる＝**計画は止めない**）。人の入力は charter とメモ書き程度で足りる。
+
+```
+人: charter を書く / notes/ にメモを書き溜める
+  ↓  backlog-planner: バックログを全文記述（why / 作業概要 / 受入基準 / 規模感）
+  ↓  proposed（計画レビュー）
+人: レビュー票で直して承認 — 直したタスクは以後 replan で作り直されない
+```
+
+**必須項目**（`plan_sections: required`・既定）: `why`（なぜ）/ `desc`（作業概要＝変更対象・手順・影響範囲）/
+`acceptance`（受入基準 3〜7 項目）/ `size`（S/M/L）。欠落は**機械で見て 1 回だけ再要求**し、
+それでも欠けるタスクは**捨てずに人の目へ回す**（`plan_review` on なら proposed で票に欠落を書き、
+off なら draft）。捨てると「プランナーが何も出さなかった」としか見えず、charter の書き方が悪いのか
+スキルが壊れたのかを切り分ける材料が消える。`plan_sections: warn` で注記だけにもできる。
+
+**重複を出させない**: プランナーの入力に既存タスク一覧と墓標を載せる。投入側の Jaccard 照合は
+最終防衛線として残す（スキルは差し替え可能なので、投入側の護りは外さない）。
+
+**墓標（`tombstones.md`）**: `reject` したタスクは 1 行ずつここに残り、**同じタイトルは再提案されない**。
+人が手で書き足してもよい。
+
+```bash
+agent-project revive "board の UI を作る"   # 墓標を解除（再び提案されうる状態へ戻す）
+agent-project replan --revive               # 今回の再分解だけ墓標を無視する（行は消さない）
+```
+
+**抑止は正規化タイトルの完全一致のみ**。類似（Jaccard）は投入を止めず、票に
+「却下済みの『〜』に似ています（理由: 〜）」と注記するだけにする——抑止は取り返しがつかない
+（黙って消えるので人は気づけない）が、提示は取り返しがつく（人が見て却下すればよい）。
+
+**人が直した印**: `revise` かレビュー票の確定で `- edited: human` が付く。プランナーには
+「人が確定済み・作り直すな」として届く。題を直しても原題（`- planned_title:`）が指紋として残るので、
+次の replan で元の題のタスクが復活することはない。
+
+**随時入力の整合パス**: `enqueue` / `inbox/` / `intake_cmd` から入るタスクは、既存タスクとの重複照合と
+charter タグの付与を通ってから投入される。重複は新規作成せず「既存タスクに feedback を書いてください」を返す。
+
+### 観点メモ（notes/）— 書いても計画は動かない
+
+```bash
+mkdir -p notes && $EDITOR notes/2026-07-26.md    # 気になったことを書き溜める
+agent-project distill-notes                       # ← 押したときだけタスク候補になる
+```
+
+`plan` は `notes/` を**自動では消費しない**。メモは「まだ決めていないこと」の置き場で、勝手に
+タスク化されると人はメモを書けなくなる。`distill-notes` は notes をプランナー入力に載せ、
+整合パス経由で proposed 投入し、取り込めたメモを `notes/archive/` へ移す（投入ゼロならメモは残す）。
+dashboard のバックログタブ「メモ」ボタンからも同じことができる。
+
+> CLI 名が `distill` でないのは、`distill_learn`（人コメント → 一般化ルールの蒸留）が既にその語彙を
+> 使っているため（`agents:` の purpose キーにもある）。同名にすると設定でどちらか区別できない。
+
+### spec は 3 段（スキップ / ライト / フル・S7）
+
+`spec_track`（既定 off）を有効にすると、投入時採点 `max(c,r,a)`（各軸 1〜3）で spec 前段の要否を決める。
+
+| 採点 | ルート | 成果物 | 展開 |
+|---|---|---|---|
+| `>= spec_threshold_full`（既定 3） | フル spec | `specs/<id>/` の spec.md / design.md / tasks.md | tasks.md を実装タスク群へ |
+| `>= spec_threshold_light`（既定 2） | **ライト spec** | `specs/<id>/design.md` 1 枚 | しない（元タスクをそのまま実行し design.md を act の文脈へ注入） |
+| それ未満 | スキップ | — | — |
+
+ブラウンフィールドでは 3 点セットのオーバーヘッドが大きい。要求は charter とタスクの `why`/`desc` に
+既にあり、分解は元タスクの粒度で足りる——ライト spec は「既存コードのどこをどう変えるか（変更方針・
+影響範囲・受入条件の差分）」だけを書かせる。`policy.md` の `spec:` による強制はフルのまま。
+旧 `spec_threshold` は `spec_threshold_full` の別名として読むので、既存設定はそのまま効く。
+
+**既存コード文脈の前置**: 作業概要の「変更対象」もライト spec の「影響範囲」も、既存コードの文脈が
+無ければ書けない。そこで plan と spec ルーティングの直前では `repo_map` 設定に関わらず
+`context/<repo>.md` を用意する（HEAD sha キャッシュ済み・変化が無ければ 0 回。生成に失敗しても計画は進む）。
+
 ### 横展開リンク（charter.md の `## links`）
 
 ```markdown
@@ -1031,9 +1118,12 @@ update_installer: install.sh          # サブディレクトリ内で実行す�
 |----------|------|
 | （省略）/ `run` [`--watch`] | 正準ループ（省略時は `run --watch`）。**charter.md があれば自動で目標駆動** |
 | `triage` / `needs` / `rot` [`--fix`] | 優先順位付けのみ / 判断待ち表示 / rot 検出 |
-| `enqueue` [`--title --verify\|--accept\|--verify-template …`\|`--json`] | 取り込み口 |
+| `enqueue` [`--title --verify\|--acceptance\|--verify-template …`\|`--json`] | 取り込み口（整合パスを通る: 重複照合・charter 帰属・墓標） |
 | `approve <id>` / `hold <id>` / `reprioritize <id> --pin\|--defer` | 決定記録を残す人の操作 |
-| `reject <id> --reason` | 却下（廃止・依存先を再審査へ・charter があれば再計画要求） |
+| `reject <id> --reason` | 却下（廃止・依存先を再審査へ・**墓標を残す**・charter があれば再計画要求） |
+| `revive <タイトル>` | 墓標を解除（却下したタスクを再び提案されうる状態へ戻す） |
+| `replan` [`--charter --revive`] | charter からバックログを再分解（`--revive` は今回だけ墓標を無視） |
+| `distill-notes` [`--charter`] | 観点メモ（notes/*.md）をバックログ候補へ分解（plan は自動では消費しない） |
 | `impact <id>` [`--json`] | 依存関係（前提／依存先・推移）の一覧 |
 | `stats` / `runlog` / `audit` [`--strict`] | 計測 / 構造化ログ / Loop Readiness 採点 |
 | `doctor` [`--fix --json`] | 稼働診断（エージェント CLI）。env/config は修正・program は gitlab-idd で起票 |
@@ -1049,7 +1139,8 @@ update_installer: install.sh          # サブディレクトリ内で実行す�
 `--auto-adjudicate` `--learn[-threshold]` `--learn-capture` `--intake-recall`
 `--ltm[-home]` `--promote-threshold` `--rot[-age-days]` `--max-spawn` `--watch` `--poll` `--debounce` `--notify-cmd`
 `--git-bus/-branch/-subdir` `--state-git[-branch/-subdir/-interval]` `--charter` `--review-project`
-`--max-project-cycles/-cost` `--project-stall` `--dry-run` `--once`。
+`--max-project-cycles/-cost` `--project-stall` `--dry-run` `--once`
+`--planner-skill` `--plan-sections{required,warn}` `--spec-threshold-full/-light`。
 
 ## テスト
 

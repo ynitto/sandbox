@@ -7,6 +7,78 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-project / agent-dashboard / agent-flow: 「エージェントが書き、人が直す」バックログと spec の 3 段（S6・S7）
+
+詳細設計は [`docs/plans/2026-07-26-s6-s7-backlog-planning-detailed-design.md`](docs/plans/2026-07-26-s6-s7-backlog-planning-detailed-design.md)。
+
+**まず直したもの: `acceptance` の受け渡しが 4 か所で切れていた**
+
+S5 は受入基準を「done の根拠」に据えたのに、**それを生む側・人が直す側のどこにも通っていなかった**。
+新機能より先にここを直した（通っていない表現の上に生成側を乗せても、人には見えないまま回る）。
+
+- `task_from_spec` が `acceptance` を既知キーとして扱うようにした。従来は「未知キー保持」の枝に落ち、
+  配列が **`- acceptance: ['A', 'B']` という Python の repr 1 行**になっていた
+- 投入時の「検証の材料があるか」の判定を `has_verify_plan` と同義に揃えた。従来は acceptance を
+  数えておらず、**受入基準しか持たないタスクが inbox（人の triage）へ落ちていた**
+- 計画レビュー票に受入基準を箇条書きで載せた（人が読んで直す一次表現が票に無ければ、直す機会は無い）
+- `revise` で受入基準を編集できるようにした（`--acceptance` 複数指定＝全行置換）。dashboard の
+  タスク編集にも「受入基準」欄を追加
+
+**S6: バックログの生成・レビュー・整合**
+
+- **`backlog-planner` スキル**（`.github/skills/backlog-planner/`）が charter を分解する。設定
+  `planner_skill` で差し替え可。**見つからなければ組み込みプロンプトへ落ちる**——計画が止まると
+  プロジェクトが 1 歩も進まないので、スキルは必須にしない
+- **必須項目の決定的ゲート**（`plan_sections: required`・既定）: `why` / `desc`（作業概要）/
+  `acceptance` / `size` の欠落は機械で見て**1 回だけ再要求**し、それでも欠けるタスクは**捨てずに
+  人の目へ回す**（`plan_review` on なら proposed で票に欠落を書き、off なら draft）。捨てると
+  「プランナーが何も出さなかった」としか見えず、charter が悪いのかスキルが壊れたのか切り分けられない
+- **重複はプランナーに出させない**: 既存タスク一覧と墓標を入力に載せる。投入側の Jaccard 照合は
+  最終防衛線として残す（スキルは差し替え可能なので、投入側の護りは外さない）
+- **墓標（`tombstones.md`）**: `reject` が 1 行残し、同じタイトルは再提案されない。人が手で書ける。
+  `agent-project revive <タイトル>` で解除、`replan --revive` は今回だけ無視（行は消さない）
+- **抑止は正規化タイトルの完全一致のみ**。類似（Jaccard）は投入を止めず票に注記するだけにした——
+  抑止は取り返しがつかない（黙って消えるので人は気づけない）が、提示は取り返しがつく
+- **人が直した印**（`- edited: human`）を `revise` とレビュー票の確定で付け、プランナーへ
+  「作り直すな」として届ける。題を直しても原題（`- planned_title:`）が指紋として残るので、
+  次の replan で元の題のタスクが復活しない
+- **随時入力の整合パス**: `enqueue` / `inbox/` / `intake_cmd` は重複照合・charter タグ付与・墓標照合を
+  通ってから投入される。重複は新規作成せず理由を返す
+- **観点メモ（`notes/`）**: 書き溜めても plan は**自動では消費しない**（メモは「まだ決めていないこと」の
+  置き場で、勝手にタスク化されると人はメモを書けなくなる）。`agent-project distill-notes` か
+  dashboard の「メモ」ボタンを押したときだけバックログ候補になり、取り込めたメモは `notes/archive/` へ
+
+**S7: spec を 3 段にする（ブラウンフィールド適合）**
+
+- 投入時採点 `max(c,r,a)` で スキップ / **ライト spec**（`design.md` 1 枚・展開なし）/ フル spec を選ぶ。
+  `spec_threshold_full`（既定 3）/ `spec_threshold_light`（既定 2）。旧 `spec_threshold` は full の
+  別名として読むので既存設定はそのまま効く
+- ライト spec は「既存コードのどこをどう変えるか（変更方針・影響範囲・受入条件の差分）」だけを書かせる。
+  要求は charter とタスクの `why`/`desc` に既にあり、分解は元タスクの粒度で足りる——3 点セットの
+  オーバーヘッドの正体はこの 2 枚だった
+- plan と spec ルーティングの直前では `repo_map` 設定に関わらず `context/<repo>.md` を用意する。
+  作業概要の「変更対象」も影響範囲も既存コードの文脈が無ければ書けず、opt-in のままだと決定的ゲートが
+  恒常的に発火して**設定 1 つで機能全体が空回りする**
+
+**あわせて直した不具合**
+
+- **S5 の設定キーが Config に届いていなかった** — `verifier` / `verifier_skill` /
+  `verify_side_effects` は `CONFIG_DEFAULTS` にあるだけで `Config` へ渡されておらず、読み出しは
+  `getattr` の既定に落ちていた。つまり `verifier: false` も `verifier_skill:` も**設定しても効かなかった**
+- **`has_consumable` がタグ無しタスクを数えていなかった** — スコープ判定が完全一致を要求し、
+  `_existing_titles` の述語（タグ無しはどの charter にも属しうる）と食い違っていた。結果、消化可能な
+  タスクがあっても**再分解が誤発火**していた。`_has_project_human_wait` も同じ穴で人待ちを見落として
+  いた（`task_charter_name` の戻り「default」を "" と比べていた）。述語を
+  `task_belongs_to_charter` 1 つに寄せた
+- **`--granularity` が agent-flow へ渡っていなかった** — 外側の backlog だけが設定に従い、内側の
+  タスクグラフは常に auto で分解されていた（agent-flow 側の受け口は存在した）
+- **flow-planner のスキル名がハードコードだった** — agent-flow に `planner_skill`（既定
+  `flow-planner`）を足し、`worker_skill` と対称にした
+- **組み込みプロンプトが既存タスク・墓標・メモ・再要求を落としていた** — スキル未導入の環境では
+  再要求が同じプロンプトの繰り返しになり（欠落が直らない）、`distill-notes` がメモを読まないまま
+  分解していた
+
+
 ### agentcore / agent-project / agent-flow: リトライのバックオフ待ちを 1 つの seam に集約
 
 リトライ回数を検証するテストが **CPU 高負荷のときだけ落ちる**問題を直した。

@@ -44,6 +44,9 @@ AGENT_ROLES = ("planner", "evaluator", "worker")
 # executor=agent の実行系プロンプトを供給するスキル名（設定 worker_skill）。
 # none/builtin/空 で無効＝常に組み込みプロンプト。
 _WORKER_SKILL: str = str(CONFIG_DEFAULTS["worker_skill"])
+# 計画（3 段パイプライン）のプロンプトを供給するスキル名（設定 planner_skill）。
+# 名前を固定していると、プロジェクト独自のプランナーを別名で置けない（worker_skill と対称）。
+_PLANNER_SKILL: str = str(CONFIG_DEFAULTS["planner_skill"])
 
 
 def agent_cli_binary(cli: str) -> str:
@@ -107,7 +110,7 @@ def _configure_thresholds(args) -> None:
     """設定ファイル/CLI（resolve_config 済み）の閾値をモジュール変数へ確定させる。
     run_agent / executor 解決は args を受け取らないため、プロセス起動時に一度だけ値を固定する。"""
     global _ARGV_LIMIT, _EXECUTOR_DIR, _AGENT_TIMEOUT, _STUB_SLEEP_MAX, _AGENT_CLI, _AGENT_OVERRIDES
-    global _WORKER_SKILL, _TRANSIENT_RETRIES, _TRANSIENT_BACKOFF, _FORMAT_RETRIES
+    global _WORKER_SKILL, _PLANNER_SKILL, _TRANSIENT_RETRIES, _TRANSIENT_BACKOFF, _FORMAT_RETRIES
     for name, attr, cast in (("_TRANSIENT_RETRIES", "transient_retries", int),
                              ("_TRANSIENT_BACKOFF", "transient_backoff", float),
                              ("_FORMAT_RETRIES", "format_retries", int)):
@@ -124,6 +127,9 @@ def _configure_thresholds(args) -> None:
     wsk = getattr(args, "worker_skill", None)
     if wsk is not None:
         _WORKER_SKILL = str(wsk).strip()
+    psk = getattr(args, "planner_skill", None)
+    if psk is not None:
+        _PLANNER_SKILL = str(psk).strip()
     v = getattr(args, "argv_limit", None)
     if v:
         try:

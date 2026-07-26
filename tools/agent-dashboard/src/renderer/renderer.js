@@ -557,6 +557,17 @@ const GUIDE_LABELS = {
 
 const PROSE_EXTRA_KEYS = new Set(['feedback', 'needs_reason', 'note', 'accept', ...GUIDE_KEYS]);
 
+// 受入基準（agent-project の acceptance:）。**複数行フィールド**なので md パーサが `\n` で
+// 連結した文字列として届く（project.js の extra 連結）。1 行 1 基準へ戻して扱う。
+// これが S5 で done の根拠になった一次表現であり、計画レビューで人が読んで直す対象。
+function acceptanceList(task) {
+  const ex = (task && task.extra) || {};
+  const raw = String(ex.acceptance || '').trim() || String(ex.accept || '').trim();
+  return raw
+    ? raw.split('\n').map((s) => s.trim()).filter(Boolean)
+    : [];
+}
+
 // タスク追加・再投入でフォームに出さずに引き継ぐフィールド（task.schema.json の人が書ける
 // フィールドのうち、専用入力欄が無いもの。system 管理の routed_by/cohort* は引き継がない）
 const ENQUEUE_PASSTHROUGH_KEYS = [

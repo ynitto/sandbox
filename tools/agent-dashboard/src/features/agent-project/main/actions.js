@@ -240,10 +240,13 @@ const LIFECYCLE_ACTIONS = new Set(['pause', 'resume', 'stop']);
 
 // revise が受けるフィールド編集キー（agent-project の REVISE_FIELDS と同じ）。
 // 値は「置換」規約: '' / '-' / 'none' はフィールド削除、未指定（undefined/null）は触らない。
-// why 以降は誘導・レビュー記述（backlog.md.example 参照）。編集 UI は未対応だが、
-// ペイロード契約は本体と揃えておく（AI 補助・将来の UI がそのまま通せる）。
+// why 以降は誘導・レビュー記述（backlog.md.example 参照）。
 const REVISE_KEYS = ['title', 'priority', 'verify', 'accept', 'after', 'note', 'level', 'track',
   'node', 'why', 'desc', 'scope', 'out_of_scope', 'constraints', 'hints', 'demo'];
+
+// 複数行フィールド（agent-project の MULTILINE_KEYS）。配列で送り、**全行を置換**する。
+// 単値キーと同じ String() を通すと ['a','b'] が "a,b" の 1 行に潰れるので経路を分ける。
+const REVISE_LIST_KEYS = ['acceptance'];
 
 // revise ペイロード（フィールド編集 + feedback）を commands/CLI 両経路の形へ正規化する。
 // undefined/null は「触らない」の意味なので落とす（'' は削除の明示指定として残す）
@@ -252,6 +255,11 @@ function revisePayload({ fields, feedback }) {
   for (const key of REVISE_KEYS) {
     const v = fields && fields[key];
     if (v !== undefined && v !== null) out[key] = String(v);
+  }
+  for (const key of REVISE_LIST_KEYS) {
+    const v = fields && fields[key];
+    if (v === undefined || v === null) continue;
+    out[key] = (Array.isArray(v) ? v : [v]).map((x) => String(x));
   }
   const fb = String(feedback || '').trim();
   if (fb) out.feedback = fb;
@@ -264,7 +272,9 @@ function revisePayload({ fields, feedback }) {
 function dropCommand(projectDir, { action, id, reason, fields, feedback, run, charter, complete }) {
   const dir = path.join(projectDir, 'commands');
   fs.mkdirSync(dir, { recursive: true });
-  const projectScoped = action === 'replan' || action === 'heal' || LIFECYCLE_ACTIONS.has(action);
+  const projectScoped =
+    action === 'replan' || action === 'heal' || action === 'distill-notes' ||
+    LIFECYCLE_ACTIONS.has(action);
   const rec = {
     command: action,
     ...(projectScoped ? {} : { id: String(id) }),
@@ -273,7 +283,9 @@ function dropCommand(projectDir, { action, id, reason, fields, feedback, run, ch
     ts: new Date().toISOString(),
     ...(action === 'revise' ? revisePayload({ fields, feedback }) : {}),
     ...(action === 'resume-run' && run ? { run: String(run) } : {}),
-    ...(action === 'replan' && charter ? { charter: String(charter) } : {}),
+    ...((action === 'replan' || action === 'distill-notes') && charter
+      ? { charter: String(charter) }
+      : {}),
     // 承認 = 完了か積み直しかは呼び出し側が明示する（本体は文面から推定しない）
     ...(action === 'approve' && complete ? { complete: true } : {}),
   };
@@ -330,6 +342,75 @@ async function requestReplan(cfg, { dir, reason, charter }) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// 観点メモ（notes/）— 人が気になったことを書き溜める場所（S6-7）。
+// plan はメモを**自動では消費しない**ので、書いたままにしておいても計画は動かない。
+// 人が「メモを分解」を押したときだけ、本体（agent-project distill-notes）がバックログ候補を起こす。
+// ---------------------------------------------------------------------------
+const NOTE_NAME_RE = /^[A-Za-z0-9_.-]+$/;
+
+function notesDir(dir) {
+  return path.join(dir, 'notes');
+}
+
+// メモ一覧（archive/ は除く＝消費済みは出さない）。新しい順。
+function listNotes(dir) {
+  const d = notesDir(dir);
+  let names = [];
+  try {
+    names = fs.readdirSync(d).filter((n) => n.toLowerCase().endsWith('.md'));
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const name of names) {
+    const p = path.join(d, name);
+    try {
+      const st = fs.statSync(p);
+      if (!st.isFile()) continue;
+      out.push({ name, mtime: st.mtimeMs, body: fs.readFileSync(p, 'utf8') });
+    } catch {
+      /* 読めないメモは黙って飛ばす（一覧を壊さない） */
+    }
+  }
+  return out.sort((a, b) => b.mtime - a.mtime);
+}
+
+// メモを 1 件書く。**git には触らない**（この機能の書き込みはすべて状態ルート配下のファイルで、
+// commit/push は本体の状態同期が行う＝no-git-writes の約束を守る）。
+function writeNote(dir, { name, body }) {
+  const text = String(body || '').trim();
+  if (!text) throw new Error('メモが空です');
+  const d = notesDir(dir);
+  fs.mkdirSync(d, { recursive: true });
+  let base = String(name || '').trim().replace(/\.md$/i, '');
+  if (!base || !NOTE_NAME_RE.test(base)) {
+    base = `note-${new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14)}`;
+  }
+  let file = path.join(d, `${base}.md`);
+  for (let i = 2; fs.existsSync(file); i += 1) file = path.join(d, `${base}-${i}.md`);
+  fs.writeFileSync(`${file}.tmp`, `${text}\n`, 'utf8');
+  fs.renameSync(`${file}.tmp`, file);
+  return { file, name: path.basename(file) };
+}
+
+// メモをバックログ候補へ分解するよう本体へ依頼する（commands/ ドロップの一本。replan と同じ流儀）。
+async function requestDistillNotes(cfg, { dir, charter }) {
+  const notes = listNotes(dir);
+  if (!notes.length) throw new Error('分解できるメモがありません（先にメモを書いてください）');
+  const charterName = validateCharterVersion(dir, charter);
+  const { file } = dropCommand(dir, {
+    action: 'distill-notes',
+    reason: `agent-dashboard からメモ ${notes.length} 件の分解を要求`,
+    charter: charterName,
+  });
+  return {
+    output: `メモ ${notes.length} 件の分解を要求しました（稼働中の agent-project が次パスで取り込みます）`,
+    file,
+    via: 'file',
+  };
+}
+
 // プロジェクト単位のライフサイクル操作（pause / resume / stop）。
 // 常に commands/ ドロップ（＋git push）で届ける — リモート本体（WSL・別ホスト）の watch が
 // 同期間隔内に取り込む契約（agent-project の ingest_commands）。CLI は使わない
@@ -362,5 +443,8 @@ module.exports = {
   runAction,
   requestReplan,
   requestLifecycle,
+  listNotes,
+  writeNote,
+  requestDistillNotes,
   DECISION_MARKER,
 };

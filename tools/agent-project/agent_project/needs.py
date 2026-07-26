@@ -142,11 +142,24 @@ def write_needs_file(cfg: "Config", task: Task, reason: str, review: bool = Fals
 
 
 def _task_definition_block(task: Task) -> str:
-    """実行前レビュー票に載せるタスク定義（人がレビューする対象そのもの）。"""
+    """実行前レビュー票に載せるタスク定義（人がレビューする対象そのもの）。
+
+    **受入基準（acceptance）は箇条書きで先に出す。**S5 で done の根拠が「1 行のコマンド」から
+    「基準 × 証跡」に変わった以上、実行前に人が読んで直すべき一次表現はこれである
+    （ここに出ていないものは、結局レビューされない）。
+    """
     lines = [f"- title  : {task.title}",
              f"- verify : `{task.verify}`" if task.verify else "- verify : （未定義）"]
+    crit = task_acceptance(task)
+    if crit:
+        lines.append("- acceptance（受入基準・検証エージェントがこれを証跡付きで判定します）:")
+        lines += [f"    {i}. {c}" for i, c in enumerate(crit, 1)]
+        if len(crit) > 7:
+            lines.append(f"    ※ 基準が {len(crit)} 件あります（目安は 3〜7 件）。"
+                         "多すぎる場合はタスクの分割を検討してください")
     for k in (*TASK_GUIDE_KEYS,   # 誘導・レビュー記述（why/desc/scope/…＝人がレビューする判断材料）
-              "accept", "verify_template", "after", "note", "workspace", "charter",
+              # accept は task_acceptance が上の箇条書きへ畳むので、ここでは出さない（二重表示を避ける）
+              "size", "verify_template", "after", "note", "workspace", "charter",
               "assess", "route"):   # assess=投入時採点（c/r/a）・route=spec ルーティングの決定
         v = task.get(k)
         if v:
@@ -286,6 +299,10 @@ def ingest_feedback(cfg: "Config", tasks: "list[Task]") -> "list[str]":
             continue
         fb = read_feedback(nf)
         if t.norm_status() == "proposed":            # 実行前レビューの決着（承認 or 差し戻し）
+            # 票を読んで確定した＝人がこの計画を引き受けた。以後 backlog-planner には
+            # 「人が確定済み・作り直すな」として届く（S6-3。revise と同じ印）。
+            t.set("edited", "human")
+            persist_task(cfg, t)
             if fb:                                   # 差し戻し: agent-project がタスクを修正して再提案
                 plan_rework(cfg, t, fb)              # （新しいレビュー票を needs に書き直す）
             else:                                    # 空のまま [x] = 承認（実行を許可）
@@ -545,6 +562,12 @@ def cmd_reject(cfg: Config, tid: str, reason: str) -> int:
     delete_task_file(cfg, t)
     clear_needs_file(cfg, tid)
     affected = ", ".join(d.id for d in downs) or "（なし）"
+    # 墓標を残す（S6-4）。archive の rejected も `_existing_titles` に効くが、それだけだと
+    # (a) プランナーは毎回同じものを出し続けて投入側で黙って落とされる（＝人には「再分解しても
+    # 何も起きない」に見える）(b) 却下理由がプランナーに届かない (c) 人が手で墓標を足せない。
+    # 人が直した題ではなく**原題も**残す——プランナーは原題で出し直してくるため。
+    for title in dict.fromkeys(x for x in (t.title, str(t.get("planned_title") or "").strip()) if x):
+        append_tombstone(cfg, title, reason, charter=(t.get("charter") or "").strip())
     dr = append_decision(cfg, tid, cfg.actor, context=f"{tid}（{t.title}）を却下（廃止）",
                          action="reject", reason=reason,
                          affects=f"{tid} → rejected ／ 依存先を再審査へ: {affected}",

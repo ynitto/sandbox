@@ -366,8 +366,9 @@ def _find_skill_script(skill: str, script: str):
 
 
 def _find_flow_planner_script():
-    """flow-planner スキルの plan.py を探す。"""
-    return _find_skill_script("flow-planner", "plan.py")
+    """計画スキルの plan.py を探す（スキル名は設定 planner_skill。既定 flow-planner）。"""
+    skill = str(_PLANNER_SKILL or "").strip() or "flow-planner"
+    return _find_skill_script(skill, "plan.py")
 
 
 def plan_strategy_flow_planner(request: str, model: str | None, review="auto", granularity="auto"):

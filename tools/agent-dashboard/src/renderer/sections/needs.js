@@ -1612,20 +1612,39 @@ function taskGuideHtml(task, kind) {
     .filter((k) => String(ex[k] || '').trim())
     .map((k) => `<div class="task-guide-row"><dt>${esc(GUIDE_LABELS[k] || k)}</dt>
       <dd>${proseHtml(String(ex[k]).replace(/\s*⏎\s*/g, '\n'))}</dd></div>`);
-  const verifyRow = task && (task.verify || ex.accept || ex.verify_template)
-    ? `<div class="task-guide-row"><dt>完了条件</dt><dd>${
-        task.verify
-          ? `<code>${esc(task.verify)}</code>`
-          : esc(ex.accept || ex.verify_template)
+  // 受入基準は「完了条件」の一部ではなく**レビューの本体**。settle 時に検証エージェントが
+  // 1 項目ずつ実行して証跡付きで判定し、全 pass だけが done の根拠になるので、人がここで
+  // 直しておかないと後から効かない。だから箇条書きで先に出す。
+  const criteria = acceptanceList(task);
+  const acceptanceRow = criteria.length
+    ? `<div class="task-guide-row"><dt>受入基準</dt><dd><ol class="acceptance-list">${
+        criteria.map((c) => `<li>${esc(c)}</li>`).join('')
+      }</ol><span class="muted">検証エージェントがこの順に実行して証跡付きで判定します</span>${
+        criteria.length > 7
+          ? `<span class="badge warn">基準 ${criteria.length} 件（目安は 3〜7 件）</span>`
+          : ''
       }</dd></div>`
     : '';
+  const verifyRow = task && (task.verify || ex.verify_template)
+    ? `<div class="task-guide-row"><dt>完了条件（決定的コマンド）</dt><dd>${
+        task.verify
+          ? `<code>${esc(task.verify)}</code>`
+          : esc(ex.verify_template)
+      }</dd></div>`
+    : '';
+  const sizeRow = ex.size
+    ? `<div class="task-guide-row"><dt>規模感</dt><dd>${esc(ex.size)}</dd></div>`
+    : '';
+  const tail = `${acceptanceRow}${verifyRow}${sizeRow}`;
+  // 他種別（blocked/review）は「記述があるときだけ出す」の従来の見た目を保つ。
+  // 受入基準や完了条件だけを理由にセクションを増やさない（plan-review が対象）。
   if (!rows.length && kind !== 'plan-review') return '';
   const body = rows.length
-    ? `<dl class="task-guide">${rows.join('')}${verifyRow}</dl>`
+    ? `<dl class="task-guide">${rows.join('')}${tail}</dl>`
     : `<p class="muted">作業内容の記述（概要・目的・範囲）がありません。タイトルと完了条件だけでは
        レビュー判断が難しいため、下の「差し戻す」で記述を求めるか、バックログのタスク編集で
        概要・目的を追記してから承認することを推奨します。</p>${
-         verifyRow ? `<dl class="task-guide">${verifyRow}</dl>` : ''
+         tail ? `<dl class="task-guide">${tail}</dl>` : ''
        }`;
   return `<section class="need-task-guide"><h3>作業内容</h3>${body}</section>`;
 }

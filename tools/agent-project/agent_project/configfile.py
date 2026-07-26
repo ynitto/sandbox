@@ -152,7 +152,12 @@ CONFIG_DEFAULTS = {
     # spec ルーティング: 採点 max(c,r,a) >= spec_threshold のタスクに spec 前段タスクを前置
     # （specs/<id>/ の spec/design/tasks を人が承認してから実装へ）。opt-in。
     "spec_track": False,
+    # 3 段ルーティング（S7）: full 以上=フル spec / light 以上=ライト spec（design.md 1 枚）/
+    # それ未満=スキップ。full は未設定（None）なら旧 `spec_threshold` を読む＝既存設定は
+    # そのままフル spec の閾値として効く。採点は各軸 1〜3 なので上限 3。
     "spec_threshold": 3,
+    "spec_threshold_full": None,
+    "spec_threshold_light": 2,
     # リポジトリ理解の成果物化: plan 前に context/<repo名>.md を生成（sha キャッシュ）。読み出しは常時。
     "repo_map": False,
     # 効いた learn を rules.md（全タスク常時注入のプロジェクトルール）へ自動昇格。読み出しは常時。
@@ -185,6 +190,14 @@ CONFIG_DEFAULTS = {
     "verifier": True,
     "verifier_skill": "backlog-verifier",
     "verify_side_effects": "workspace",
+    # バックログ分解（S6）。charter → タスクの分解を backlog-planner スキルへ出す。
+    #   planner_skill … プロンプト・出力契約を供給するスキル名（上位に置けば差し替え可。
+    #     見つからなければ組み込みプロンプトへ落ちる＝計画は止めない）
+    #   plan_sections … required=必須項目（why/desc/acceptance/size）の欠落を 1 回再要求し、
+    #     なお欠けるタスクは proposed（plan_review off なら draft）で人の目へ回す /
+    #     warn=注記だけ付けてそのまま投入
+    "planner_skill": "backlog-planner",
+    "plan_sections": "required",
     # 真偽フラグ（CLI > 設定ファイル > 既定）。CLI 未指定（None）なら設定ファイル→この既定で確定
     "watch": False, "once": False, "dry_run": False, "rot": False, "ltm": False,
     "require_progress": False, "auto_level": False, "review_project": False,
@@ -628,6 +641,27 @@ def _warn_deprecated_coordination(args, cfg: dict, path) -> None:
               file=sys.stderr)
 
 
+def _spec_thresholds(args) -> dict:
+    """spec ルーティングの 2 閾値を確定する（S7）。
+
+    後方互換: `spec_threshold_full` の明示が無ければ旧 `spec_threshold` を full として読む。
+    採点は各軸 1〜3（`_assess_max` は最大値）なので上限は 3 にクランプする——仕様の草案は
+    「full=4 相当」としていたが、4 には決して到達しないので **full=3 / light=2** が既定。
+    light > full の設定は意味を成さない（ライトの窓が消える）ので light を full に丸める。
+    """
+    def _clamp(v, dflt):
+        try:
+            return min(3, max(1, int(v if v is not None else dflt)))
+        except (TypeError, ValueError):
+            return dflt
+
+    legacy = _clamp(getattr(args, "spec_threshold", None), 3)
+    full = _clamp(getattr(args, "spec_threshold_full", None), legacy)
+    light = min(_clamp(getattr(args, "spec_threshold_light", None), 2), full)
+    return {"spec_threshold": legacy, "spec_threshold_full": full,
+            "spec_threshold_light": light}
+
+
 def build_config(args) -> Config:
     # プロジェクトルート = 状態専用リポジトリの clone（`resolve_config` が確定済み・S1）。
     # charter.md / repos.json / backlog/ 等はすべてこの直下（1 プロジェクト = 1 状態リポジトリ =
@@ -754,7 +788,20 @@ def build_config(args) -> Config:
         plan_review=bool(getattr(args, "plan_review", True)),
         assess=bool(getattr(args, "assess", True)),
         spec_track=bool(getattr(args, "spec_track", False)),
-        spec_threshold=min(3, max(1, int(getattr(args, "spec_threshold", 3) or 3))),
+        **_spec_thresholds(args),
+        # S5 の検証設定は CONFIG_DEFAULTS にあるだけで Config へ渡されておらず、
+        # `verifier: false` も `verifier_skill:` も**設定しても効かなかった**（読み出しは
+        # getattr の既定に落ちていた）。プロジェクト yaml の合意事項が黙って無視される類の
+        # 欠落なので、S6 の設定追加と同時に配線する。
+        verifier=bool(getattr(args, "verifier", True)),
+        verifier_skill=str(getattr(args, "verifier_skill", "") or "backlog-verifier"),
+        verify_side_effects=(str(getattr(args, "verify_side_effects", "") or "workspace")
+                             if str(getattr(args, "verify_side_effects", "")) in
+                             ("workspace", "network") else "workspace"),
+        planner_skill=str(getattr(args, "planner_skill", "") or "backlog-planner"),
+        plan_sections=(str(getattr(args, "plan_sections", "") or "required")
+                       if str(getattr(args, "plan_sections", "")) in ("required", "warn")
+                       else "required"),
         repo_map=bool(getattr(args, "repo_map", False)),
         rules_capture=bool(getattr(args, "rules_capture", True)),
         agents=_AGENT_OVERRIDES,
@@ -952,7 +999,19 @@ def _add_common(sp):
                     help="spec ルーティング: 採点が --spec-threshold に達したタスクに spec 前段タスク"
                          "（specs/<id>/ の spec/design/tasks 作成→人の承認→実装タスク展開）を前置（既定 off）")
     sp.add_argument("--spec-threshold", type=int, default=None,
-                    help="spec ルートに乗せる採点しきい値（max(c,r,a) がこの値以上。1-3・既定 3）")
+                    help="フル spec の採点しきい値の別名（--spec-threshold-full の旧名。1-3）")
+    sp.add_argument("--spec-threshold-full", dest="spec_threshold_full", type=int, default=None,
+                    help="フル spec（spec/design/tasks の 3 点セット + 展開）に乗せる採点しきい値"
+                         "（max(c,r,a) がこの値以上。1-3・既定 3）")
+    sp.add_argument("--spec-threshold-light", dest="spec_threshold_light", type=int, default=None,
+                    help="ライト spec（design.md 1 枚・展開なし）に乗せる採点しきい値"
+                         "（1-3・既定 2。full 未満のときだけライトになる）")
+    sp.add_argument("--planner-skill", dest="planner_skill", default=None,
+                    help="バックログ分解のプロンプト・出力契約を供給するスキル名（既定 backlog-planner）")
+    sp.add_argument("--plan-sections", dest="plan_sections", default=None,
+                    choices=["required", "warn"],
+                    help="バックログの必須項目（why/desc/acceptance/size）の扱い。"
+                         "required=欠落を 1 回再要求し、なお欠ければ人の目へ回す（既定）/ warn=注記のみ")
     sp.add_argument("--repo-map", action=argparse.BooleanOptionalAction, default=None,
                     help="リポジトリ理解の成果物化: plan 前に書込先 repo ごとに context/<repo名>.md を"
                          "生成（HEAD sha キャッシュ・変化時のみ再生成）。読み出しは常時（既定 off）")

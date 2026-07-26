@@ -131,8 +131,11 @@ def main(argv=None) -> int:
     _add_common(enq)
     enq.add_argument("--title", default=None, help="タスクのタイトル（必須・--json 時は不要）")
     enq.add_argument("--verify", default=None, help="done 確定の verify コマンド（書ければこれが最良）")
+    enq.add_argument("--acceptance", action="append", default=None,
+                     help="受入基準（自然文・複数指定可）。settle 時に検証エージェントが基準ごとに"
+                          "証跡付きで判定する。verify が書けないときの一次表現")
     enq.add_argument("--accept", default=None,
-                     help="完了条件を自然言語で（verify が書けない人向け。実行時にエージェントが決定的 verify を合成）")
+                     help="完了条件を自然言語で 1 行（--acceptance 1 件と同じ扱い・後方互換）")
     enq.add_argument("--verify-template", default=None,
                      help="決定的テンプレで verify を生成（例 'file-contains :: path :: 文字列'。エージェント不要）")
     enq.add_argument("--priority", type=int, default=0, help="優先度（大きいほど高優先・既定 0）")
@@ -187,6 +190,9 @@ def main(argv=None) -> int:
                     help="verify コマンドを置換（'' / none で削除）")
     rv.add_argument("--accept", dest="rv_accept", default=None,
                     help="自然言語の完了条件を置換（'' / none で削除）")
+    rv.add_argument("--acceptance", dest="rv_acceptance", action="append", default=None,
+                    help="受入基準を置換（複数指定可＝指定した分で全行を差し替え。"
+                         "1 つだけ '' / none を渡すと全削除）")
     rv.add_argument("--after", dest="rv_after", default=None,
                     help="依存タスク ID を置換（カンマ区切り。'' / none で解除。循環は拒否）")
     rv.add_argument("--note", dest="rv_note", default=None, help="メモを置換（'' / none で削除）")
@@ -239,6 +245,21 @@ def main(argv=None) -> int:
     rpl.add_argument("--reason", default=None, help="決定記録に残す理由")
     rpl.add_argument("--charter", default=None,
                      help="対象 charter 名（charters/ 複数運用時。未指定は全 charter で消化可能）")
+    rpl.add_argument("--revive", action="store_true",
+                     help="墓標（却下済みタスク）を今回の再分解だけ無視する。"
+                          "墓標そのものを消すには `agent-project revive <タイトル>`")
+
+    dn = sub.add_parser("distill-notes",
+                        help="観点メモ（notes/*.md）をバックログ候補へ分解する"
+                             "（plan は notes を自動では消費しない。ここだけが入口）")
+    _add_common(dn)
+    dn.add_argument("--charter", default=None,
+                    help="対象 charter 名（charters/ 複数運用時）")
+
+    rvv = sub.add_parser("revive",
+                         help="墓標を解除する（却下したタスクを再び提案されうる状態へ戻す）")
+    _add_common(rvv)
+    rvv.add_argument("title", help="解除するタスクのタイトル（正規化して照合する）")
 
     _host_help = "agent-project.host.yaml の場所（既定: cwd → ~/.agents の順に探索）"
     srv = sub.add_parser("serve",
@@ -267,8 +288,8 @@ def main(argv=None) -> int:
     # claim を奪い合う。`run` は常駐体が子として起動する経路なので、明示したときだけ動く。
     _subcommands = {"run", "triage", "needs", "promote", "rot", "stats", "audit",
                     "runlog", "doctor", "update", "enqueue", "approve", "hold", "reprioritize",
-                    "revise", "reject", "resume-run", "impact", "replan",
-                    "board-offload", "gc",
+                    "revise", "reject", "resume-run", "impact", "replan", "revive",
+                    "distill-notes", "board-offload", "gc",
                     # 常駐体の内部配線（help からは隠すが、ここに載せないと
                     # 「サブコマンド無し＝serve」の既定に飲まれて別物が起動する）
                     "flow-participate", "flow-run",
@@ -328,7 +349,10 @@ def main(argv=None) -> int:
             cfg, args.id, {k: getattr(args, f"rv_{k}") for k in REVISE_FIELDS},
             args.rv_feedback or "", args.reason or ""),
         "replan": lambda: cmd_replan(cfg, args.reason or "charter からのバックログ再分解",
-                                     getattr(args, "charter", None) or ""),
+                                     getattr(args, "charter", None) or "",
+                                     revive=bool(getattr(args, "revive", False))),
+        "revive": lambda: cmd_revive(cfg, args.title),
+        "distill-notes": lambda: cmd_distill_notes(cfg, getattr(args, "charter", None) or ""),
     }[args.cmd]()
 
 
