@@ -192,6 +192,12 @@ class Config:
     # 成果物レビュー（既定 on）: verify PASS 後、level に依らず常に review（検収待ち）へ。
     # 人の承認で done 確定（GitLab 設定があれば MR を自動マージ規則で決着）。false で従来の自動 done。
     delivery_review: bool = True
+    # フォージ（MR/PR）側の決定的シグナルからの決着（S4-5）。
+    #   settle  … マージ=承認 / 未マージクローズ=却下 / changes-requested=差し戻し として決着する
+    #   observe … 照会結果を journal に残すだけ（移行用）
+    # 値域の正規化は build_config で済ませる——読み手（mr.py）が getattr の既定で庇うと、
+    # 配線が落ちても「常に settle」で静かに動き続けて誰も気付けない（P0-4 で実際に踏んだ）。
+    remote_review: str = "settle"
     throttle: float = 0.0   # ソフト予算比率(0=off)。max_tokens/max_cost のこの割合で run を打ち切り watch は report 降格
     runlog: "Path | None" = None    # 構造化 run-log（JSONL・run 毎に1行追記）。既定 <root>/run-log.jsonl
     dry_run: bool = False

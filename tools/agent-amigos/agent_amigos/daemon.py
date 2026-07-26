@@ -23,6 +23,7 @@ import socket
 import time
 
 from agentcore import vocab
+from agentcore import nodeid as _nodeid
 from agentcore.nodeid import normalize_node_id
 
 from .assign import (apply_role, claim_role, confirm_assignment, matches_role,
@@ -67,7 +68,7 @@ def default_node_id() -> str:
         data = read_json(path)
         if isinstance(data, dict) and data.get("id"):
             return str(data["id"])
-    nid = normalize_node_id(socket.gethostname())
+    nid = _nodeid.default_node_id()   # ホスト名の取り方まで agentcore の 1 実装へ（P0-3）
     try:
         write_json_atomic(paths[0], {"id": nid})   # 新規採番は新ホームへ
     except OSError:

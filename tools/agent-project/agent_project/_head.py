@@ -64,6 +64,10 @@ from agentcore import board as _boardrules  # noqa: E402
 # 差し替えると stdlib の subprocess 内部（プロセス終了の 0.001s 倍々ポーリング）にも効いてしまい、
 # 高負荷時だけテストが壊れる。リトライ経路はこの名前を通す。
 from agentcore.transport import backoff_sleep  # noqa: E402
+# node_id（PC の身元）の正規化と既定採番。板・プロジェクト状態・engine のどこから見ても
+# 同じ綴りが出ることが不変条件なので、導出はこの 1 実装を通す（P0-3）。設定層（configfile）・
+# 常駐体（resident_cli）・doctor が同じ名前を使うため、共有 import のここで束ねる。
+from agentcore.nodeid import normalize_node_id, default_node_id  # noqa: E402
 
 # エージェント共通ホームのディレクトリ名。`.agent` から `.agents` へ改名した
 # （複数のエージェントが相乗りする持ち物であることを名前で示す）。

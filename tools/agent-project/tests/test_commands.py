@@ -277,7 +277,11 @@ class TestCommandsIngest(unittest.TestCase):
             km.write_status(c)
             shared = json.loads((d / "status.json").read_text(encoding="utf-8"))
             self.assertEqual(shared["node"], "pc-A")               # 単一 status にもノード名
-            per = json.loads((d / "status" / "pc-A.json").read_text(encoding="utf-8"))
+            # ファイル名は板と同じ正規形（小文字・`normalize_node_id`）。ここに独自の
+            # サニタイズを持っていたのが `status/DESKTOP-X.json` と `nodes/desktop-x.json` の
+            # 2 名義の原因だった（P0-3）。実運用では build_config が cfg.node 自体を正規形へ
+            # 倒すので、内容とファイル名の綴りは一致する。
+            per = json.loads((d / "status" / "pc-a.json").read_text(encoding="utf-8"))
             self.assertEqual(per["node"], "pc-A")
 
     def test_node_status_no_per_node_file_when_unnamed(self):

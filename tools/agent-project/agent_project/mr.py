@@ -394,9 +394,10 @@ def poll_task_mrs(cfg: "Config", tasks: "list[Task]") -> "list[str]":
     （移行用）。決着の口は「フォージのシグナル」と「dashboard のボタン」の 2 つで、どちらも
     同じ approve / reject / revise の契約へ合流する。
     """
-    mode = str(getattr(cfg, "remote_review", "settle") or "settle").lower()
-    if mode not in ("settle", "observe"):
-        mode = "settle"
+    # 値域の正規化は build_config（`_one_of`）が済ませている。ここで getattr の既定や
+    # 値域クランプを持つと、Config への配線が落ちても「常に settle」で静かに動き続ける
+    # ——実際にそれで observe 分岐が到達不能の死んだコードになっていた。
+    mode = cfg.remote_review
     settled: "list[str]" = []
     for t in tasks:
         if t.norm_status() != "review" or not t.get("mr_iid"):

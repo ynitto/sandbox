@@ -10,7 +10,8 @@
 // 2. 入札は lease と `(ts, who)` タイブレークを持つ claim プロトコル。UI 側に 2 つ目の実装を
 //    作れば必ずずれる（二重落札を防ぐ判断を複製しない — S8-3）。
 //
-// 置き場は `$AGENT_COMMANDS_DIR`（既定 `~/.agents/commands/`）。`control/`（望ましい状態）や
+// 置き場は `$AGENT_COMMANDS_DIR`（既定 = 実行エンジンのホーム配下 `.agents/commands/`。
+// Windows の画面 + WSL の実行エンジンでは WSL 側のホームを指す）。`control/`（望ましい状態）や
 // `budget/` と同じ**ノードスコープ**の並びで、プロジェクト配下の `commands/` とは別物——
 // 板はプロジェクトに属さないので、プロジェクト経由の口しか無いとプロジェクトを 1 つも
 // 持たない PC（ワーカーノード）から板を操作できない。
@@ -22,20 +23,27 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { agentHomeSubdir } = require('../../../base/main/agent-home');
+
+// 投函先は「実行エンジンが読む場所」でなければ意味がない。ホームの解決は engine.js が
+// 1 つ持っている（Windows なら wslpath で WSL 側 $HOME/.agents を引く・60 秒キャッシュ）
+// ので、そこを通す。ここで os.homedir() を使うと、正典構成（Windows の画面 + WSL の
+// 実行エンジン）で投函先と取り込み先が別ファイルシステムになり、押しても何も起きない。
+const engine = require('../../agent-project/main/engine');
 
 const ACTIONS = new Set(['board-bid', 'board-cancel', 'board-award']);
 
 function expandHome(p) {
-  const s = String(p || '');
-  return s.startsWith('~') ? path.join(os.homedir(), s.slice(1)) : s;
+  return String(p || '').replace(/^~(?=$|\/|\\)/, os.homedir());
 }
 
 function resolveCommandsDir(cfg) {
   const d = (cfg && cfg.delegation) || {};
-  return expandHome(
-    d.nodeCommandsDir || process.env.AGENT_COMMANDS_DIR || agentHomeSubdir('commands')
-  );
+  const declared = String(d.nodeCommandsDir || process.env.AGENT_COMMANDS_DIR || '').trim();
+  if (declared) return expandHome(declared);
+  // 旧ホーム（~/.agent）へは落とさない。実行エンジン側にそのフォールバックが無いので、
+  // 落とすと「書けるのに誰も読まない場所」が増えるだけになる。旧ホームしか無い環境は
+  // delegation.nodeCommandsDir で明示する（設定画面から辿れる）。
+  return path.join(engine.agentsHome(cfg), 'commands');
 }
 
 function slugify(value) {

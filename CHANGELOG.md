@@ -7,6 +7,70 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-project / agent-dashboard / agentcore: 実機 canary の前に直す 4 件（P0）
+
+詳細設計は [`docs/plans/2026-07-26-p0-pre-canary-fixes-detailed-design.md`](docs/plans/2026-07-26-p0-pre-canary-fixes-detailed-design.md)。
+いずれも canary（複数 PC で 1 週間）で観測したい異常と同じ症状を出す不具合で、直さずに入ると
+「設計の問題か既知バグか」を切り分けられない。
+
+**起動直後の SIGTERM で子だけが生き残っていた（P0-1）**
+
+`serve` はシグナルハンドラを子の起動・`write_status()`（git 観測を含む）・tick 開始の**後**に
+設置していた。この窓で SIGTERM が届くと既定ハンドラで即死し、`graceful_shutdown` が走らずに
+`run --watch` の子が監督者不在で残る——次の起動で同一プロジェクトにループが 2 本並ぶ。
+`systemctl restart` がそのまま踏む経路。
+
+- ハンドラ設置を**起動バナーより前**へ移した。バナーは「以降は取りこぼさない」境界で、
+  テストの待ち合わせ点にもなる。停止要求が入っていれば tick を始めず子を畳んで 0 で返る
+- 2 度目のシグナルは握らず既定ハンドラへ戻す（停止処理が詰まったときの逃げ道を残す）
+- **子（`run --watch`）にも同型の窓があった**: `_install_sigterm` が `state_sync`（git）と
+  controller lease の取得より後で、その窓で死ぬと lease を握ったまま `finally` を通らない
+  （次の子が最大 120 秒 controller へ昇格できない）。設置を先頭へ移した
+- 間欠失敗していた `test_serve_exits_cleanly_on_sigterm`（5 回中 1 回）が決定的に緑になった
+
+**dashboard のボタンが常駐体に届いていなかった（P0-2）**
+
+正典構成（Windows の画面 + WSL の実行エンジン）で、指示の投函先と取り込み先が**別ファイル
+システム**だった。同じ dashboard の `engine.js` は `wslpath` で WSL 側 home を解決して
+`engine/status.json` を読んでいるのに、この経路だけ `os.homedir()` に落ちていた。
+
+- 投函先の解決を `engine.agentsHome()` の 1 実装へ寄せた。旧ホーム（`~/.agent`）への
+  フォールバックは**持たない**——実行エンジン側に無いので、書けるのに誰も読まない場所が増える
+- **置き場を直しても届かなかった**: 指示の `board:` は板の**所在**（`host.board`）なのに、
+  dashboard は板の**作業フォルダ**（`delegation.boardRepos`）を載せており、常駐体の
+  完全一致検査に必ず引っかかっていた。常駐体が `engine/status.json` の `board` へ
+  `workdir` を載せ（additive・契約版据え置き）、画面はそれと突き合わせて所在へ翻訳する
+- 参加していない板への指示は投函せず**その場で理由を返す**（`.err` で後から知るより短い）
+- `delegation.nodeCommandsDir` を既定と設定画面（「この端末への指示の受け渡し先」）に出した
+- 実行エンジンと共有する置き場を `os.homedir()` で決めないことを構造テストで固定
+
+**大文字ホスト名の PC が 2 名義になっていた（P0-3）**
+
+`Config.node` だけが独自のサニタイズ（**小文字化しない**）で導出されており、`DESKTOP-X` の
+ような PC はプロジェクト状態側 `status/DESKTOP-X.json` と板側 `nodes/desktop-x.json` に
+割れていた。人が板の端末一覧（小文字）を見て書いた `- node:` を**どのノードも拾わないまま
+ready で固まる**。
+
+- `agentcore.nodeid.default_node_id()` を新設し、ホスト名の取り方まで含めて 1 実装に。
+  agent-project / agent-flow / agent-amigos が同じ関数を使う
+- `AGENT_PROJECT_NODE` と `--node` も正規化する（host.yaml 宣言だけが正規化されていた非対称）。
+  綴りを変えたときは 1 行知らせる——黙って変えると「指定した名前で動いていない」ことに気付けない
+- `- node:` の照合も正規形で行う。正規化前に書かれたタスクも同じ PC のものなら拾える
+- `doctor --node-id-cutover` がプロジェクト状態側の残骸（`status/` の旧名義・旧名義の
+  `claim_owner`・手で割り当てた `- node:`）も見る。切替手順書に読み方を追記
+
+**`remote_review: observe` が到達不能の死んだコードだった（P0-4）**
+
+`CONFIG_DEFAULTS` にキーはあり層検査も通るのに `Config` へ渡しておらず、読み出しは
+`getattr(cfg, …, "settle")` だったので**プロジェクト yaml に `observe` と書いても常に
+`settle`**。S5 の verifier キーと同型の 2 度目。
+
+- `Config` へ配線し、値域外は警告して既定へ倒す。`mr.py` の `getattr` フォールバックは削除
+  （読み手が庇うと、配線が落ちても静かに動き続ける）
+- **設定キーの構造テストを新設**（`tests/test_config_keys.py`）: `CONFIG_DEFAULTS` の全キーが
+  ①`Config` のフィールドを持ち ②設定ファイルから宣言すると実際に値が変わる、を検査する。
+  除外は理由の記入を必須にし、番兵も除外も無いキーはテストが落ちる
+
 ### agent-dashboard / agent-project / agent-flow / agentcore: 板の観測・操作 UI と診断の対話化（S8・S9-4）
 
 詳細設計は [`docs/plans/2026-07-26-s8-s9-4-board-ui-and-doctor-chat-detailed-design.md`](docs/plans/2026-07-26-s8-s9-4-board-ui-and-doctor-chat-detailed-design.md)。

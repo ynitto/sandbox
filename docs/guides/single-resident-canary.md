@@ -32,6 +32,13 @@ git clone <このリポジトリ> && cd <クローン先>
 bash tools/agent-tools/install.sh
 ```
 
+**P0 修正の適用が前提**（[積み残し総覧 §7.1](../plans/2026-07-26-open-items-and-concerns.md) /
+[P0 詳細設計](../plans/2026-07-26-p0-pre-canary-fixes-detailed-design.md)）。
+canary で観測したい異常（孤児化・別名義・届かない指示）と同じ症状を出す既知の不具合なので、
+直さずに入ると「設計の問題か既知バグか」を切り分けられない。3 台とも、上記の修正を含む
+コミットを clone していることを確認する。ホスト名に大文字を含む PC は、P0-3 が名義変更に
+当たるので[node_id 切替手順](node-id-cutover.md)を先に通す。
+
 開始条件を 3 台で確認し、記録する:
 
 ```bash

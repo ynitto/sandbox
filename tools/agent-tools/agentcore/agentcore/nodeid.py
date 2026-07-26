@@ -22,6 +22,9 @@ Linux では別ノードとして残る——プラットフォームで壊れ�
 """
 from __future__ import annotations
 
+import os
+import socket
+
 # 板のファイル名にそのまま使える文字集合（flow / amigos 双方の既存 `_safe` が
 # 「安全」と認める文字の共通部分。ここを通した id は各エンジンの `_safe` に
 # 掛けても不変＝二重正規化で綴りが変わらない）。
@@ -44,3 +47,21 @@ def normalize_node_id(name: "str | None") -> str:
     # 先頭・末尾の区切りは落とす（`-mac-` のような綴りゆれを作らない）
     normalized = "".join(out).strip("-").lower()
     return normalized or _FALLBACK
+
+
+def default_node_id() -> str:
+    """宣言が無いときの既定 node_id（= この PC の名前を正規形にしたもの）。
+
+    **正規化だけでなく「どこから PC 名を取るか」もここに 1 つ持つ**（P0-3）。
+    以前は agent-project の設定層（`_auto_node_name`）が独自のサニタイズ
+    （小文字化しない・60 文字で切る）で別に導出しており、大文字を含むホスト名の PC が
+    プロジェクト状態側 `status/DESKTOP-X.json` と板側 `nodes/desktop-x.json` の
+    2 名義になっていた。人が板の端末一覧（小文字）を見て書いた `- node:` を
+    どのノードも拾わない、という形で表に出る。
+
+    `socket.gethostname()` が空になる環境（一部のコンテナ）に備えて
+    `COMPUTERNAME`（Windows）・`HOSTNAME` も見る。どれも空なら `normalize_node_id` の
+    フォールバック（`"node"`）へ落ちる。"""
+    raw = (socket.gethostname() or os.environ.get("COMPUTERNAME")
+           or os.environ.get("HOSTNAME") or "")
+    return normalize_node_id(raw)

@@ -789,6 +789,9 @@ function globalSettingsSyncHtml() {
       <div class="field"><label for="cfg-engine-distro">Linux 環境（WSL）の名前</label><input id="cfg-engine-distro" class="mono" placeholder="空欄なら既定の環境" /></div>
       <div class="field"><label for="cfg-engine-home">状況の保存先</label><input id="cfg-engine-home" class="mono" placeholder="空欄なら自動で探します" /></div>
     </div>
+    <div class="field"><label for="cfg-node-commands-dir">この端末への指示の受け渡し先</label>
+      <input id="cfg-node-commands-dir" class="mono" placeholder="空欄なら実行エンジンと同じ場所" /></div>
+    <p class="field-help">画面のボタン（引き受ける・取りやめる・引き渡し先を決める）は、この場所へ依頼を置いて実行エンジンに取り込んでもらいます。</p>
     <h3>実行データの共有先</h3>
     <div class="field"><label for="cfg-flow-bus">共通の共有先</label><input id="cfg-flow-bus" class="mono" placeholder="空欄なら自動で探します" /></div>
     <div class="field"><label for="cfg-flow-bus-by-project">プロジェクトごとの共有先（1行に1つ）</label>

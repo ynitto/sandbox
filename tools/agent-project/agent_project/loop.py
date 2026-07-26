@@ -21,12 +21,15 @@ def status_dir(cfg: "Config") -> Path:
 
 
 def node_status_path(cfg: "Config") -> "Path | None":
-    """このエンジンのノード別生存信号ファイル。node 未設定（無名エンジン）なら None。"""
+    """このエンジンのノード別生存信号ファイル。node 未設定（無名エンジン）なら None。
+
+    ファイル名のサニタイズは板側と同じ `normalize_node_id` を通す。ここに独自の規則を
+    持っていたのが `status/DESKTOP-X.json` と `nodes/desktop-x.json` の 2 名義の原因だった
+    （P0-3）。`Config.node` は既に正規形なので結果は同値だが、**規則を 2 つ持たない**。"""
     node = str(getattr(cfg, "node", "") or "").strip()
     if not node:
         return None
-    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", node).strip("-") or "node"
-    return status_dir(cfg) / f"{safe}.json"
+    return status_dir(cfg) / f"{normalize_node_id(node)}.json"
 
 
 def pause_path(cfg: "Config") -> Path:
