@@ -879,7 +879,8 @@ def append_tombstone(cfg: "Config", title: str, reason: str, charter: str = "") 
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text("# 墓標（このタスクは作り直さない）\n"
                      "<!-- 1 行 1 墓標: `- <タイトル> :: <理由> :: <日付> :: charter=<名前>`\n"
-                     "     解除は `agent-project revive <タイトル>`。人が手で書き足してもよい。 -->\n\n",
+                     "     解除は `agent-project revive <タイトル>`（複数 charter 運用では\n"
+                     "     `--charter <名前>` で対象を絞る／`--all` で全部）。人が手で書き足してもよい。 -->\n\n",
                      encoding="utf-8")
     cells = [title.replace("\n", " "), str(reason or "").replace("\n", " ")[:200],
              datetime.now().strftime("%Y-%m-%d")]

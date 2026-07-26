@@ -118,8 +118,12 @@ def _str_list(raw, key: str, findings: "list[str] | None" = None) -> "list[str]"
         return []
     if isinstance(raw, str):
         if findings is not None:
+            # `agent_cli` はトップレベル（能力宣言の配列）と `defaults`（既定 CLI のスカラ）で
+            # 意味が違う。スカラを書いた人は後者のつもりのことが多いので、行き先も示す。
+            hint = ("（このノードの既定 CLI を指定したいなら `defaults.agent_cli:` です）"
+                    if key == "agent_cli" else "")
             findings.append(f"{key}: は配列です（`{key}: [{raw}]` と書いてください）— "
-                            f"1 要素の配列として読みます")
+                            f"1 要素の配列として読みます{hint}")
         return [raw.strip()] if raw.strip() else []
     if isinstance(raw, (list, tuple)):
         return [str(a) for a in raw]

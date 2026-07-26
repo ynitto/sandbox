@@ -519,6 +519,9 @@ CLI: `revive` へ `--charter` と `--all` を足す（`cli.py:262-265`）。
 | P1-3 | `tools/agent-project/agent_project/resident_cli.py` | `HOST_TOP_KEYS` / `HOST_PROJECT_KEYS` / `host_config_findings()` 新設・`HostConfig` のスカラ救済・`load_host_config` の 1 度きり警告 |
 | P1-3 | `docs/plans/2026-07-26-s1-config-two-layer-detailed-design.md` | 文言カタログへ W5 / W6 / W7 を追記（既存の「実装で確定した差分」節の流儀） |
 | P1-2 | `tools/agent-project/README.md` | 両方に書けるキーの一覧へ `argv_limit` |
+| P1-1/3/4/5 | `docs/designs/agent-project-design.md` | 設計正典への反映: 組み込みとスキルが同じ入力で組まれること・host.yaml トップレベルの警告と型の救済・指示ドロップの猶予と `.err` の寿命・墓標解除の charter スコープ |
+| P1-2 | `docs/designs/agent-cli-plugin-design.md` | 「退避」が 2 つある（定義の `spill` = 権限フラグ置き換えを伴う読み取り専用向け / `spill_prompt` = OS の `ARG_MAX` 向けで権限に触らない）ことを spill の項へ明記 |
+| P1-4 | `schemas/agent-node-command.schema.json` | 取り込みの猶予・順序の規約・`.err` が消える 2 つの場合を記述へ（**契約の形は変えない**。スキーマが書き手として認めている「人の手置き」に効く振る舞いなので、書き手が読む場所に置く） |
 | P1-4 | `tools/agent-tools/agentcore/agentcore/commands.py` | `pending` の debounce / `stop_at_deferred`・`clear_rejected` / `prune_rejected` 新設 |
 | P1-4 | `tools/agent-project/agent_project/resident_cli.py` | `_ingest_node_commands` の debounce・`.err` 掃除・全 reject の status 記録・`_sweep_node_commands` と gc 登録 |
 | P1-4 | `tools/agent-project/agent_project/commands.py` | `_clear_rejected_commands` を agentcore へ委譲（薄い皮に） |

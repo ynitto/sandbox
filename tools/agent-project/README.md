@@ -671,6 +671,7 @@ off なら draft）。捨てると「プランナーが何も出さなかった�
 
 ```bash
 agent-project revive "board の UI を作る"   # 墓標を解除（再び提案されうる状態へ戻す）
+agent-project revive "board の UI を作る" --charter v1   # 複数 charter 運用では対象を絞る
 agent-project replan --revive               # 今回の再分解だけ墓標を無視する（行は消さない）
 ```
 
@@ -1129,7 +1130,7 @@ update_installer: install.sh          # サブディレクトリ内で実行す�
 | `enqueue` [`--title --verify\|--acceptance\|--verify-template …`\|`--json`] | 取り込み口（整合パスを通る: 重複照合・charter 帰属・墓標） |
 | `approve <id>` / `hold <id>` / `reprioritize <id> --pin\|--defer` | 決定記録を残す人の操作 |
 | `reject <id> --reason` | 却下（廃止・依存先を再審査へ・**墓標を残す**・charter があれば再計画要求） |
-| `revive <タイトル>` | 墓標を解除（却下したタスクを再び提案されうる状態へ戻す） |
+| `revive <タイトル>` [`--charter`/`--all`] | 墓標を解除（却下したタスクを再び提案されうる状態へ戻す）。墓標は `(指紋, charter)` 単位なので、`--charter <名前>` はその charter とタグ無しだけ、`--all` は全部を消す。未指定で対象が複数 charter に割れているときは、消さずに一覧を出す |
 | `replan` [`--charter --revive`] | charter からバックログを再分解（`--revive` は今回だけ墓標を無視） |
 | `distill-notes` [`--charter`] | 観点メモ（notes/*.md）をバックログ候補へ分解（plan は自動では消費しない） |
 | `impact <id>` [`--json`] | 依存関係（前提／依存先・推移）の一覧 |

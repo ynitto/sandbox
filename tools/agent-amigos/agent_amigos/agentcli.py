@@ -16,7 +16,6 @@ import contextlib
 import os
 import re
 import subprocess
-import tempfile
 
 from agentcore import agentcli
 
