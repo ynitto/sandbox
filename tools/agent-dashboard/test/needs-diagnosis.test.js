@@ -232,7 +232,8 @@ test('回帰検知の散文からもゲート判定用の command と診断要�
     'T-1'
   );
   assert.match(n.failureContext.command, /codd-gate verify/);
-  assert.ok(n.failureSummary.length > 0, '診断要約が空でない（ゲート表示と共存できる）');
+  assert.match(n.failureSummary, /codd-gate verify --repos repos\.json/);
+  assert.match(n.failureSummary, /それより前の工程は成功/);
 });
 
 console.log(`\n${passed} passed`);
