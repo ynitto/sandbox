@@ -1,33 +1,20 @@
 #!/usr/bin/env python3
-"""codd_gate_routing — repos.json パスと --repo-dir マッピングの引数ビルダ（tools/agent-project 配下）。
+"""codd-gate の明示設定に使う推奨文字列と routing 引数を組み立てる純粋関数。
 
-d2（.agent-project/bus/runs/run-20260712-213419-5922/artifacts/d2/
-codd-gate-status-interface-design.md）2節は「repos.json のパスや --repo-dir の実引数は
-CoddGateStatus が持たず、各フックが自分の文脈から組み立てる」ことを明記し、その生成方法の仕様を
-s6（同 run の artifacts/s6/repos-json-owns-and-repo-dir.md 2・3節）が確定している。本モジュールは
-その仕様をそのまま実装する、regression/acceptance/enqueue の3フック（b3/c1/e1）が共通で使う
-**純粋関数**。
+この sibling モジュールは、利用者または install 手順が ``regression_cmd`` /
+``intake_cmd`` を明示設定するための文字列と、``--repos`` / ``--repo-dir`` の値だけを
+提供する。codd-gate の検出、yaml への書き込み、doctor 所見、agent_project パッケージへの
+結線は行わない。
 
-agent-project.py 側の型（Config/Charter/Task）には依存しない（codd_gate_base.py と同じ設計判断:
-呼び出し側が `cfg.backlog.parent`（repos.json の既定置き場）や `_task_verify_cwd(cfg, task)`
-（verify 実行時の cwd）、ワークスペース spec の `name` から取り出した値を渡す。最小依存・単体
-テスト容易性を優先する）。
-
-このモジュールが意図的に含めないもの（同一 run の別タスクの責務）:
-  - `cfg.regression_cmd`/`cfg.intake_cmd` への自動配線・`CoddGateStatus.command()` との合成
-    （b3/c1/e1）
-  - repos.json 自体の読み書き・既定パス解決（`repo_registry_path`/`export_repo_registry`、
-    agent-project.py 既存）
-  - ワークスペース spec の解決（`resolve_workspace` 等、agent-project.py 既存）— `name`/`vcwd` は
-    呼び出し側が spec から取り出して渡す
-
-依存は標準ライブラリのみ。
+呼び出し側が repos.json のパス、実行 cwd、ワークスペース名を解決して渡す。依存は標準
+ライブラリのみ。
 """
 from __future__ import annotations
 
 from pathlib import Path
 
 DEFAULT_REPO_DIR = "."
+DEFAULT_BASE_PLACEHOLDER = '"$KIRO_BASE_REV"'
 
 
 def resolve_repos_arg(repos_path: "str | Path", vcwd: "str | Path | None" = None) -> str:
@@ -80,3 +67,20 @@ def build_routing_args(
         "--repos", resolve_repos_arg(repos_path, vcwd),
         "--repo-dir", resolve_repo_dir_arg(name, dir),
     ]
+
+
+def recommend_regression_cmd(
+    repos_path: "str | Path",
+    vcwd: "str | Path | None" = None,
+    base: str = DEFAULT_BASE_PLACEHOLDER,
+) -> str:
+    """明示設定する ``regression_cmd`` の推奨値を返す。"""
+    return f"codd-gate verify --base {base} --repos {resolve_repos_arg(repos_path, vcwd)}"
+
+
+def recommend_intake_cmd(
+    repos_path: "str | Path",
+    vcwd: "str | Path | None" = None,
+) -> str:
+    """明示設定する ``intake_cmd`` の推奨値を返す。"""
+    return f"codd-gate tasks --debt --repos {resolve_repos_arg(repos_path, vcwd)}"

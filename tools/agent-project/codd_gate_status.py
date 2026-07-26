@@ -1,23 +1,12 @@
 #!/usr/bin/env python3
-"""codd_gate_status — codd-gate 検出結果の値オブジェクトと no-op 縮退（tools/agent-project 配下）。
+"""codd_gate_status — codd-gate CLI の検出結果と所見（tools/agent-project 配下の sibling 部品）。
 
-d2（.agent-project/bus/runs/run-20260712-213419-5922/artifacts/d2/
-codd-gate-status-interface-design.md）の CoddGateStatus データ構造・アクセサをそのまま実装し、
-d1（同 run の artifacts/d1/codd-gate-autodetect-judgment-design.md）3節のフォールバック方針表を
-finding 生成ロジックへ落とす。
+生の検出値を、CLI で表示できる finding と no-op 縮退済みの ``CoddGateStatus`` にまとめる。
+実測は ``codd_gate_detect``、結線状況の表示は ``codd_gate_wiring``、YAML の更新は
+``codd_gate_regression`` が担う。
 
-責務は「codd-gate が未検出・非互換のいずれであっても、例外を外へ漏らさず usable=False の
-CoddGateStatus を返す（no-op 縮退）」の1点に絞る。usable が False のとき command() は None を
-返すため、呼び出し側（regression/acceptance/enqueue の3フック、b1-b3/c1-c2/e1-e2）は
-`if status.command(...):` の1行だけで済み、codd-gate が使えない・非互換な環境でも自動配線せず
-既存挙動のまま通過する。
-
-このモジュールが意図的に含めないもの（同一 run の別タスクの責務）:
-  - バージョン取得・schemas 互換判定の実測（subprocess 呼び出し・regex パース）（a2）
-  - プロセス内キャッシュ（a3）
-  - agent-project.py 本体（cfg.codd_gate フィールド新設・3フックへの結線）（b1-b3/c1-c2/e1-e2）
-
-依存は標準ライブラリと同梱の codd_gate_detect（a1）のみ。
+このモジュールは ``agent_project`` パッケージを import せず、自動配線・設定書き込み・package
+doctor への登録も行わない。依存は標準ライブラリと同梱の ``codd_gate_detect`` のみ。
 """
 from __future__ import annotations
 
@@ -31,11 +20,10 @@ MIN_SUPPORTED_VERSION = (1, 0, 0)
 
 @dataclass(frozen=True)
 class CoddGateStatus:
-    """codd-gate 検出結果のプロセス内一過性の値オブジェクト（d2 2節）。
+    """codd-gate CLI 検出結果の一過性の値オブジェクト。
 
     ディスクにも schemas/ にも乗らない。findings が1件でもあれば usable は自動的に False になる
-    ——failure の種類（未インストール・バージョン不明・バージョン下限未満・schema 不適合）を
-    呼び出し側が区別する必要はなく、これが no-op 縮退の中核をなす不変条件。
+    ため、CLI 呼び出し側は failure の種類を区別せず no-op にできる。
     """
     binary: "list[str] | None"
     version: "tuple[int, int, int] | None" = None
@@ -46,12 +34,12 @@ class CoddGateStatus:
         return self.binary is not None and not self.findings
 
     def command(self, *args: str) -> "list[str] | None":
-        """引数を付けた argv を返す。usable でなければ None（呼び出し側の if 分岐を1行にする）。"""
+        """引数を付けた argv を返す。usable でなければ None。"""
         return [*self.binary, *args] if self.usable else None
 
     @property
     def reason(self) -> str:
-        """スキップ理由の一文（journal 等、doctor 以外のログ向け）。usable なら空文字列。"""
+        """CLI に表示するスキップ理由の一文。usable なら空文字列。"""
         return self.findings[0]["title"] if self.findings else ""
 
 
@@ -95,13 +83,11 @@ def build_status(
     schema_ok: bool = True,
     schema_detail: str = "",
 ) -> CoddGateStatus:
-    """生の判定結果を d1 3節の短絡順（実在 → バージョン → schema）で finding 化し、
+    """生の判定結果を実在 → バージョン → schema の短絡順で finding 化し、
     no-op 縮退済みの CoddGateStatus を組み立てる。純粋関数で例外は投げない。
 
-    前段が失敗していれば後段は評価しない（d1 の「不明・不足はすべて連携しない側に倒す」方針）。
-    どの経路で失敗しても findings が1件積まれ usable=False → command() は None になるため、
-    呼び出し側（a2 のバージョン/schema 実測、b 系のフック配線）は失敗理由を区別せず
-    同じ no-op 経路へ合流できる。
+    前段が失敗していれば後段は評価しない。不明・不足はすべて利用不可側に倒し、CLI は
+    ``findings`` をそのまま表示できる。
     """
     if binary is None:
         return CoddGateStatus(binary=None, version=None, findings=[_finding_not_found()])
@@ -117,19 +103,17 @@ def build_status(
 
 
 def detect_status(explicit: "str | None" = None, which=shutil.which) -> CoddGateStatus:
-    """codd-gate の実在（a1 の resolve_codd_gate）のみを根拠に CoddGateStatus を返す。
+    """codd-gate の実在（resolve_codd_gate）のみを根拠に CoddGateStatus を返す。
 
-    バージョン取得・schemas 互換判定（a2）はまだ合流していないため、実在さえ確認できれば
+    バージョン取得・schemas 互換判定は行わないため、実在さえ確認できれば
     version_known=True・schema_ok=True の既定で build_status に渡す（usable=True になる）。
-    a2/b 系が実測したバージョン・schema 適合を得たら、この関数を経由せず
+    実測済みのバージョン・schema 適合がある呼び出し側は、この関数を経由せず
     build_status(binary, version=..., version_known=..., schema_ok=...) を直接呼べば
-    同じ no-op 縮退へ合流できる——このモジュールが提供するのは「合流点」であって
-    「唯一の入口」ではない。
+    同じ no-op 縮退へ合流できる。
 
     resolve_codd_gate 自体は例外を投げない設計（a1）だが、環境依存の I/O
     （shutil.which / Path.exists）が予期しない例外を出す可能性に備えてここでも捕捉し、
-    検出のどの段階で失敗しても「未検出」へ縮退させる。これにより agent-project 本体は
-    codd-gate 連携の失敗を一切意識せず、既存挙動のまま動き続けられる。
+    検出に失敗しても「未検出」の CLI 所見へ縮退させる。
     """
     try:
         binary = resolve_codd_gate(explicit, which=which)

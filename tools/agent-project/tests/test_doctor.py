@@ -259,6 +259,31 @@ class TestDoctor(unittest.TestCase):
             titles = [f["title"] for f in fs]
             self.assertTrue(any("copilot" in t for t in titles))
 
+    def test_wiring_findings_preserve_provider_output(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d, regression_cmd="verify", intake_cmd="intake")
+            finding = {"category": "config", "severity": "info", "title": "配線済み"}
+            judgment = object()
+            detect = types.SimpleNamespace(detect_wiring=mock.Mock(return_value=judgment))
+            render = types.SimpleNamespace(doctor_findings=mock.Mock(return_value=[finding]))
+            providers = {"wiring.detect": detect, "wiring.findings": render}
+            which, run = mock.Mock(), mock.Mock()
+
+            with mock.patch.object(
+                    km, "_hook_provider", side_effect=lambda capability, _cfg: providers[capability]):
+                findings = km.doctor_wiring_findings(cfg, which=which, run=run)
+
+            self.assertEqual(findings, [finding])
+            detect.detect_wiring.assert_called_once_with(
+                regression_cmd="verify", intake_cmd="intake",
+                repos_path=km.repo_registry_path(cfg), which=which, run=run)
+            render.doctor_findings.assert_called_once_with(judgment)
+
+    def test_wiring_findings_noop_without_provider(self):
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(km, "_hook_provider", return_value=None):
+            self.assertEqual(km.doctor_wiring_findings(self._cfg(d)), [])
+
     def test_parse_findings_filters_unknown_categories(self):
         out = ('説明文… [{"category":"program","severity":"critical","title":"NPE",'
                '"evidence":"journal","fix":"バグ"},'

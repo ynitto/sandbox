@@ -494,7 +494,7 @@ _INTAKE_LAST: "dict[str, float]" = {}
 def _parse_intake_records(text: str) -> "tuple[list[dict], list[str]]":
     """intake_cmd の stdout（`enqueue --json` と同形式＝1件の object か配列）を spec dict のリストへ
     正規化する汎用パーサ。**どの検出器の出力かを問わず**レコード単位に検証するだけで、外部の
-    決定的ゲート/検出器（codd-gate 等）の実装には一切依存しない——intake_cmd 自体が差し込み点で
+    決定的な外部検出器の実装には一切依存しない——intake_cmd 自体が差し込み点で
     あり、本体（この関数）はそこへ流れ込む JSON レコードを汎用に受けるフックに徹する。
 
     トップレベルは object（1件）でも array（複数件）でもよい（`run_intake` の従来挙動と対称）。
@@ -539,8 +539,8 @@ def _parse_intake_records(text: str) -> "tuple[list[dict], list[str]]":
 
 def run_intake(cfg: "Config") -> "list[Task]":
     """取り込みコマンド（intake_cmd）を実行し、stdout の JSON（spec オブジェクト/配列＝
-    `enqueue --json` と同形式）を backlog へ**冪等に**取り込む。外部の決定的ゲート/検出器
-    （例: `codd-gate tasks --debt`）を watch の周期で汲み上げる汎用フック。
+    `enqueue --json` と同形式）を backlog へ**冪等に**取り込む。外部の決定的検出器を
+    watch の周期で汲み上げる汎用フック。
 
     - **冪等**: spec の `id` が現役 backlog（blocked/review 含む）に居れば飛ばす。定期実行しても
       同じ発見が重複投入されない（done→archive 後に同じ発見が再発したら新タスクとして積み直せる）。
