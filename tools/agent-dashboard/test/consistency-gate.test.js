@@ -133,6 +133,49 @@ test('空白だけのコマンドは未設定として扱う', () => {
   }
 });
 
+test('YAML の folded scalar と null を実効値として扱う', () => {
+  const ws = mkWorkspace(
+    'regression_cmd: >-\n' +
+      '  codd-gate verify\n' +
+      '  --base "$KIRO_BASE_REV"\n' +
+      'intake_cmd: null\n'
+  );
+  try {
+    const gate = project.readProject(ws, {}).consistencyGate;
+    assert.strictEqual(gate.regressionCmd, 'codd-gate verify --base "$KIRO_BASE_REV"');
+    assert.strictEqual(gate.regressionConfigured, true);
+    assert.strictEqual(gate.regressionWired, true);
+    assert.strictEqual(gate.intakeCmd, null);
+    assert.strictEqual(gate.intakeConfigured, false);
+  } finally {
+    fs.rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test('引用された null は文字列のコマンドとして残す', () => {
+  const ws = mkWorkspace("intake_cmd: 'null'\n");
+  try {
+    const gate = project.readProject(ws, {}).consistencyGate;
+    assert.strictEqual(gate.intakeCmd, 'null');
+    assert.strictEqual(gate.intakeConfigured, true);
+    assert.strictEqual(gate.intakeWired, false);
+  } finally {
+    fs.rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test('YAML の literal scalar を実効値として扱う', () => {
+  const ws = mkWorkspace('intake_cmd: |-\n  codd-gate tasks --debt\n');
+  try {
+    const gate = project.readProject(ws, {}).consistencyGate;
+    assert.strictEqual(gate.intakeCmd, 'codd-gate tasks --debt');
+    assert.strictEqual(gate.intakeConfigured, true);
+    assert.strictEqual(gate.intakeWired, true);
+  } finally {
+    fs.rmSync(ws, { recursive: true, force: true });
+  }
+});
+
 test('~/.agents の実効設定を採り、ワークスペース設定を優先する', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-gate-home-'));
   const ws = mkWorkspace(null);

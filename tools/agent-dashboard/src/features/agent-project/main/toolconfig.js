@@ -32,12 +32,26 @@ function stripQuotes(s) {
 // トップレベルの `key: value` 行だけを拾う（インデント行＝ネストは無視）
 function parseFlatYaml(text) {
   const out = {};
-  for (const line of String(text || '').split('\n')) {
+  const lines = String(text || '').split('\n');
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
     if (!line || line[0] === ' ' || line[0] === '\t' || line[0] === '#') continue;
     const m = line.match(/^([A-Za-z_][\w-]*):\s*(.*)$/);
     if (!m) continue;
-    const val = stripQuotes(m[2].replace(/\s+#.*$/, ''));
-    if (val !== '') out[m[1]] = val;
+    const raw = m[2].replace(/\s+#.*$/, '');
+    const block = raw.match(/^([>|])[-+]?$/);
+    if (block) {
+      const body = [];
+      while (i + 1 < lines.length && (!lines[i + 1].trim() || /^[ \t]/.test(lines[i + 1]))) {
+        i += 1;
+        body.push(lines[i].replace(/^[ \t]+/, ''));
+      }
+      const val = block[1] === '>' ? body.join(' ').trim() : body.join('\n').trim();
+      if (val) out[m[1]] = val;
+      continue;
+    }
+    const val = stripQuotes(raw);
+    if (val !== '' && !/^(?:null|~)$/i.test(raw.trim())) out[m[1]] = val;
   }
   return out;
 }
