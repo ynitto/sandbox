@@ -261,34 +261,137 @@ class TestVerifyAssist(unittest.TestCase):
             self.assertEqual(t.norm_status(), "ready")
             self.assertIn(("verify_source", "template"), t.extra)
 
-    def test_accept_task_is_ready_and_synthesized_in_loop(self):
+    def test_accept_becomes_acceptance_criterion_not_a_synthesized_command(self):
+        """S5: `accept:` は 1 項目の受入基準として扱い、コマンドへ合成しない。
+
+        自然文を LLM が 1 発でコマンド化する方式は、環境差で大半が失敗して人へ倒れるうえ、
+        合成されたコマンドが「たまたま通る劣化した検証」でも人には見抜けなかった。
+        """
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             cfg = cfg_for(d)
-            # accept だけ（verify 無し）でも ready になる
             t = km.enqueue_task(cfg, {"title": "概要を書く", "accept": "README に ## 概要 がある"})
             self.assertEqual(t.norm_status(), "ready")
             self.assertEqual(t.verify, "")
-            # run_loop の S0 で synth_verify（agent_run を差し替え）により verify が用意される
-            orig = km._run_agent_cli
-            km._run_agent_cli = lambda prompt, model, purpose="": "grep -q '## 概要' README.md"
-            try:
-                km.run_loop(cfg_for(d, dry_run=True, max_cycles=1))
-            finally:
-                km._run_agent_cli = orig
-            reloaded = km.parse_task((cfg.backlog / f"{t.id}.md").read_text(), t.id)
-            self.assertEqual(reloaded.verify, "grep -q '## 概要' README.md")
-            self.assertEqual(dict(reloaded.extra).get("verify_source"), "synth")
+            self.assertEqual(km.task_acceptance(t), ["README に ## 概要 がある"])
+            # ensure_verify はもう合成しない（verify_template の決定的展開だけが残る）
+            self.assertFalse(km.ensure_verify(cfg, t, agent_run=lambda p, m: self.fail("合成しない")))
+            self.assertEqual(t.verify, "")
 
-    def test_synth_failure_leaves_unverified(self):
+    def test_acceptance_lines_round_trip_and_take_priority(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             cfg = cfg_for(d)
-            t = km.Task(id="T1", title="x", verify="", extra=[("accept", "曖昧な条件")])
+            (cfg.backlog).mkdir(parents=True, exist_ok=True)
+            (cfg.backlog / "T9.md").write_text(
+                "## T9: x\n- status: ready\n- acceptance: 候補が並ぶ\n"
+                "- acceptance: 理由が出る\n- accept: 旧形式\n", encoding="utf-8")
+            t = km.load_tasks(cfg.backlog)[0]
+            # Task.extra は (key, value) のリストなので、同名キーの複数行がそのまま往復する
+            self.assertEqual(km.task_acceptance(t), ["候補が並ぶ", "理由が出る"])
+            km.persist_task(cfg, t)
+            self.assertEqual(km.task_acceptance(km.load_tasks(cfg.backlog)[0]),
+                             ["候補が並ぶ", "理由が出る"])
+
+    def test_has_verify_plan_counts_acceptance(self):
+        mk = lambda **kw: km.Task(id="T", title="t", **kw)
+        self.assertTrue(mk(verify="true").__class__ and km.has_verify_plan(mk(verify="true")))
+        self.assertTrue(km.has_verify_plan(mk(extra=[("acceptance", "a")])))
+        self.assertTrue(km.has_verify_plan(mk(extra=[("accept", "a")])))
+        self.assertTrue(km.has_verify_plan(mk(extra=[("verify_template", "file-exists :: x")])))
+        self.assertFalse(km.has_verify_plan(mk()))
+
+    # --- S5: 証跡ベースの検証（verifier） ------------------------------------------------
+
+    def _report(self, criteria):
+        return "本文\n\n```json\n" + json.dumps({"criteria": criteria}, ensure_ascii=False) + "\n```"
+
+    def test_normalize_fails_closed_without_explicit_pass(self):
+        # 明示の pass が無い出力を pass 扱いすると、壊れた検証がゲートを素通りする
+        for body in ("LGTM 問題ありません", "", "{}", self._report([{"id": 1, "verdict": "maybe"}])):
+            r = km.normalize_verification(body, ["基準A"])
+            self.assertEqual(r["criteria"][0]["verdict"], "fail", body[:20])
+            self.assertFalse(r["ok"])
+
+    def test_normalize_rejects_pass_without_evidence(self):
+        # 「確認しました」だけで pass にできる穴を塞ぐ（verifier の自己欺瞞への防御）
+        r = km.normalize_verification(
+            self._report([{"id": 1, "verdict": "pass", "note": "確認しました"}]), ["基準A"])
+        self.assertEqual(r["criteria"][0]["verdict"], "fail")
+        self.assertIn("証跡", r["criteria"][0]["note"])
+
+    def test_normalize_accepts_pass_with_command_or_file_evidence(self):
+        for ev in ({"commands": ["pytest -q"]}, {"files": ["src/a.py:12"]}):
+            r = km.normalize_verification(
+                self._report([{"id": 1, "verdict": "pass", "evidence": ev}]), ["基準A"])
+            self.assertTrue(r["ok"], ev)
+            self.assertEqual(r["pass"], 1)
+
+    def test_normalize_counts_and_orders_by_criteria(self):
+        r = km.normalize_verification(self._report([
+            {"id": 2, "verdict": "fail", "note": "落ちた"},
+            {"id": 1, "verdict": "pass", "evidence": {"commands": ["c"]}},
+        ]), ["A", "B", "C"])
+        self.assertEqual([c["text"] for c in r["criteria"]], ["A", "B", "C"])
+        self.assertEqual((r["pass"], r["fail"]), (1, 2))   # 応答に無い 3 番目も fail（欠落＝閉じる）
+
+    def test_unverifiable_is_not_a_failure(self):
+        r = km.normalize_verification(self._report([
+            {"id": 1, "verdict": "unverifiable", "note": "docker が無い"}]), ["A"])
+        self.assertEqual((r["fail"], r["unverifiable"], r["ok"]), (0, 1, False))
+
+    def test_run_verifier_falls_back_to_unverifiable_when_cli_dies(self):
+        # 「検証できなかった」を fail と混同するとリトライを焼く（直す先がタスクの中に無い）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = km.Task(id="T1", title="x", extra=[("acceptance", "A")])
             def boom(prompt, model):
-                raise RuntimeError("no kiro-cli")
-            self.assertFalse(km.ensure_verify(cfg, t, agent_run=boom))   # 合成不能→verify 空のまま
-            self.assertEqual(t.verify, "")
+                raise RuntimeError("no agent cli")
+            result, _ = km.run_verifier(cfg, t, d, agent_run=boom)
+            self.assertEqual(result["unverifiable"], 2)   # 受入基準 + 差分の常設基準
+            self.assertEqual(result["fail"], 0)
+
+    def test_verifier_saves_report_and_summary_goes_to_needs(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = km.Task(id="T1", title="x", extra=[("acceptance", "候補が並ぶ")])
+            body = self._report([
+                {"id": 1, "verdict": "pass", "evidence": {"commands": ["npm test"],
+                                                          "output": "24 passing"}},
+                {"id": 2, "verdict": "pass", "evidence": {"files": ["a.js:1"]}}])
+            result, _ = km.run_verifier(cfg, t, d, agent_run=lambda p, m: body)
+            self.assertTrue(result["ok"])
+            rel = km.save_verification_report(cfg, t, result, "9f3a1c2", body)
+            self.assertEqual(rel, "verifications/T1/9f3a1c2.md")
+            report = (cfg.backlog.parent / rel).read_text(encoding="utf-8")
+            self.assertIn("候補が並ぶ", report)
+            self.assertIn("npm test", report, "証跡がレポートに残る（人が読む一次資料）")
+            km.write_needs_file(cfg, t, "検収待ち", review=True, verification=result)
+            票 = (cfg.needs / "T1.md").read_text(encoding="utf-8")
+            self.assertIn("verification:", 票)
+
+    def test_settle_treats_unverifiable_without_burning_retries(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, dry_run=True, max_cycles=1)
+            (d / "backlog").mkdir(parents=True, exist_ok=True)
+            (d / "backlog" / "T1.md").write_text(
+                "## T1: T1\n- status: ready\n- source: human\n- verify: \n- retries: 0\n"
+                "- acceptance: 何かが動く\n", encoding="utf-8")
+            orig = km._run_agent_cli
+            km._run_agent_cli = lambda prompt, model, purpose="": self._report(
+                [{"id": 1, "verdict": "unverifiable", "note": "docker がありません"},
+                 {"id": 2, "verdict": "pass", "evidence": {"files": ["a"]}}])
+            try:
+                km.run_loop(cfg)
+            finally:
+                km._run_agent_cli = orig
+            t = km.parse_task((cfg.backlog / "T1.md").read_text(encoding="utf-8"), "T1")
+            self.assertEqual(t.retries, 0, "検証不能はリトライを消費しない")
+            self.assertEqual(t.get("env_resume"), "1", "環境を直して approve すれば続きから")
+            self.assertIn("検証不能", (cfg.needs / "T1.md").read_text(encoding="utf-8"))
 
     def test_strip_ansi_removes_escapes(self):
         raw = "\x1b[38;5;141m> \x1b[0mgrep -q foo bar.txt\x1b[0m"

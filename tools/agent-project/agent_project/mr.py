@@ -491,8 +491,35 @@ def risk_digest(cfg: "Config", task: "Task", changed: "set[str]", protect_hits: 
     return level, "\n".join([header] + lines)
 
 
+def _run_task_verifier(cfg: "Config", task: "Task",
+                       vcwd: "Path") -> "tuple[bool, bool, str, dict | None]":
+    """決定的 verify を持たないタスクを、受入基準 × 証跡で検証する（S5）。
+
+    戻り値は既存の settle と同じ形 (ok, flaky, vmsg) に検証レコードを足したもの。
+    verifier を無効化（`verifier: false`）した場合と、受入基準が 1 つも無い場合は
+    従来どおり「verify 未定義 → 人の判断」へ倒す（自己申告で done にしない不変条件）。
+    """
+    if not getattr(cfg, "verifier", True) or not task_acceptance(task):
+        return False, False, "verify 未定義（自己申告では done にできない → 人の判断へ）", None
+    result, body = run_verifier(cfg, task, vcwd)
+    rev = _git_out(vcwd, "rev-parse", "HEAD").strip() if (vcwd / ".git").exists() else ""
+    report = save_verification_report(cfg, task, result, rev, body)
+    if result["ok"]:
+        save_verify_recipes(cfg, task, result)     # 効いたコマンドは次回の参考にする（ゲートにはしない）
+    result["report"] = report
+    result["rev"] = rev
+    task.drop("verification")
+    task.extra.append(("verification", json.dumps(
+        {"pass": result["pass"], "fail": result["fail"],
+         "unverifiable": result["unverifiable"], "report": report}, ensure_ascii=False)))
+    append_journal(cfg.journal, f"検証: {task.id} — {verification_message(result)}"
+                                + (f"（{report}）" if report else ""))
+    return result["ok"], False, verification_message(result), result
+
+
 def _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits, assisted,
-                   policy, reasons, cycle, risk: "tuple[str, str] | None" = None):
+                   policy, reasons, cycle, risk: "tuple[str, str] | None" = None,
+                   verification: "dict | None" = None):
     """verify は通ったが承認ゲート対象（review/gate/protect/assisted）→ done せず人の承認(review)へ。
     所在（ref/ブランチ）を gate_* に保持し、approve 時の受領書へ引き継ぐ。"""
     ts = _now_ts()
@@ -533,7 +560,8 @@ def _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits,
     write_needs_file(cfg, task,
                      f"検証は通っている（verify=PASS）。人の検収を待っている理由: {gate_why}。"
                      f"内容が良ければ approve で done 確定、直したいことがあれば下に書いて差し戻す",
-                     review=True, evidence=ev, risk=risk, mr_url=mr_url, delivery=delivery)
+                     review=True, evidence=ev, risk=risk, mr_url=mr_url, delivery=delivery,
+                     verification=verification)
     append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 検収待ち{disp} — {ref}")
 
 
@@ -762,6 +790,7 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
     branch = _current_branch(cfg)
     regressed = False
     vtmp = None
+    verification: "dict | None" = None      # 証跡ベース検証の判定レコード（S5）
     try:
         # workspace 指定タスクは git-bus ルート（workdir）でなく該当 repo のクローン内（指定 branch・
         # クローンのルート）で検証する。verify はリポジトリ直下からの相対で書かれる規約なので path
@@ -771,8 +800,15 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
         if vtmp and (vcwd / ".git").exists():          # 一時 clone は差分基準を clone の HEAD に取り直す
             head = _git_out(vcwd, "rev-parse", "HEAD").strip()
             venv = {"KIRO_BASE_REV": head} if head else None
-        ok, flaky, vmsg = run_verify_stable(task.verify, vcwd, cfg.verify_timeout,
-                                            cfg.verify_confirm, venv)
+        # 検証は 2 経路（S5）。決定的 `verify:` があればそれが最速・最優先の fast path で、
+        # 無ければ受入基準チェックリストを検証エージェントが証跡付きで判定する。
+        # flake 判定（verify_confirm の複数回実行）は fast path にだけ適用する——
+        # verifier 側の揺れは同一レポート内の再試行として verifier 自身に扱わせる。
+        if task.verify:
+            ok, flaky, vmsg = run_verify_stable(task.verify, vcwd, cfg.verify_timeout,
+                                                cfg.verify_confirm, venv)
+        else:
+            ok, flaky, vmsg, verification = _run_task_verifier(cfg, task, vcwd)
         ev = delivery_evidence(cfg, act_msg, git_base, location,
                                verify=task.verify, vmsg=vmsg, ok=ok,
                                phase=PHASE_VERIFY, task=task)
@@ -794,6 +830,7 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
                                + ("・revert 済" if cfg.regression_revert else ""))
     except RuntimeError as e:      # workspace clone 失敗等は黙って workdir に倒さず NG（成果の無い場所で誤判定しない）
         ok, flaky, vmsg = False, False, str(e)[:500]
+        verification = None
         ev = delivery_evidence(cfg, act_msg, git_base, location,
                                verify=task.verify, vmsg=vmsg, ok=ok,
                                phase=PHASE_VERIFY, task=task)
@@ -830,6 +867,24 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
     # 実効自律レベル（明示 - level: > track 自動昇格 > グローバル）。report は選択時に除外済み
     assisted = resolve_level(task, cfg, autonomy_cache) == "assisted"
 
+    # 「検証不能」（環境にツールが無い等）は **失敗ではない**。fail と混ぜてリトライを焼くと、
+    # 直す先がタスクの中に無いのに何度も作り直させることになる。環境要因失敗と同じ扱いで、
+    # リトライを消費せず理由付きで人へ回す（環境を直して approve すれば同じ run の続きから）。
+    unverifiable = (verification is not None and not verification["ok"]
+                    and verification["unverifiable"] > 0 and verification["fail"] == 0)
+    if unverifiable and not regressed:
+        task.set("env_resume", "1")
+        blocked_reasons = " ／ ".join(
+            f"{c['text'][:60]} — {c['note'][:100]}"
+            for c in verification["criteria"] if c["verdict"] == "unverifiable")[:400]
+        _block(cfg, task, f"[agent-error:env] 検証不能: このノードでは確かめられない基準があります"
+                          f"（{blocked_reasons}）。タスクの内容の問題ではないため、リトライ回数は"
+                          "消費していません。環境を直してから approve すると、同じ run の続きから"
+                          "再開します。", reasons, evidence=ev)
+        append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（検証不能・"
+                                    "リトライは消費しない）")
+        return {"archived": 0, "followups": []}
+
     if flaky:
         # verify が不安定（flake）→ 自動修正せず人へ隔離（NG churn / flaky PASS の done を防ぐ）
         task.set("flake", "1")
@@ -858,10 +913,10 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
         # delivery_review（既定 on）: verify PASS 後は level に依らず常に人の検収（review）へ
         _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits, assisted,
                        policy, reasons, cycle,
-                       risk=risk_digest(cfg, task, changed, protect_hits, dtok, dusd))
+                       risk=risk_digest(cfg, task, changed, protect_hits, dtok, dusd),
+                       verification=verification)
     elif ok:
         capture_approve_learn(cfg, task, location)   # 承認時の人コメント（正例）を横断 learn 化
-        save_validated_verify(cfg, task)             # 通った自動生成 verify を再利用ライブラリへ
         return _settle_done(cfg, task, act_msg, git_base, branch, ev, vmsg, dtok, dusd, cycle,
                             autonomy_cache)
     else:

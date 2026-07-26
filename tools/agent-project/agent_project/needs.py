@@ -43,7 +43,8 @@ def _failure_frontmatter(failure: "dict | None") -> str:
 
 def _madr_frontmatter(rec_id: str, kind: str, risk: str = "",
                       mr_url: str = "", delivery: "list | None" = None,
-                      failure: "dict | None" = None) -> str:
+                      failure: "dict | None" = None,
+                      verification: "dict | None" = None) -> str:
     """needs/<id>.md の MADR（Markdown Any Decision Records）互換 frontmatter。
     status は常に proposed で生成し、人の確定（[x]）＝決定。ファイル自体は取り込み時に
     消費され、恒久の決定記録は decisions/<id>.md（DR）に残る。
@@ -58,6 +59,14 @@ def _madr_frontmatter(rec_id: str, kind: str, risk: str = "",
     if delivery:
         # JSON 1 行（viewer がパース）。複数リポジトリの書込/参照を構造化する。
         extra += f"delivery: {json.dumps(delivery, ensure_ascii=False, separators=(',', ':'))}\n"
+    if verification and (verification.get("criteria") or []):
+        # 検証レポートの要約（S5）。人が検収で読むのは「コマンド」ではなく **基準と証跡**——
+        # コマンドの良し悪しは判断できないが、基準と証跡なら判断できる。
+        extra += ("verification: "
+                  + json.dumps({"criteria": verification["criteria"],
+                                "report": verification.get("report", ""),
+                                "pass": verification.get("pass", 0)},
+                               ensure_ascii=False, separators=(",", ":")) + "\n")
     extra += _failure_frontmatter(failure)
     return (
         "---\n"
@@ -75,7 +84,8 @@ def write_needs_file(cfg: "Config", task: Task, reason: str, review: bool = Fals
                      evidence: str = "", kind: str = "",
                      risk: "tuple[str, str] | None" = None,
                      mr_url: str = "", delivery: "list | None" = None,
-                     failure: "dict | None" = None) -> None:
+                     failure: "dict | None" = None,
+                     verification: "dict | None" = None) -> None:
     cfg.needs.mkdir(parents=True, exist_ok=True)
     if kind == "plan-review":   # 実行前レビュー（proposed。承認されるまで実行しない）
         state = "proposed（実行前レビュー待ち・未実行）"
@@ -116,7 +126,7 @@ def write_needs_file(cfg: "Config", task: Task, reason: str, review: bool = Fals
     fm_mr = str(mr_url or (task.get("mr_url") if review else "") or "").strip()
     fm_delivery = delivery if delivery is not None else None
     body = (
-        f"{_madr_frontmatter(task.id, kind, risk=risk[0] if risk else '', mr_url=fm_mr if review else '', delivery=fm_delivery, failure=failure)}"
+        f"{_madr_frontmatter(task.id, kind, risk=risk[0] if risk else '', mr_url=fm_mr if review else '', delivery=fm_delivery, failure=failure, verification=verification)}"
         f"# 要対応: {task.id} — {task.title}\n\n"
         f"## Context and Problem Statement\n\n"
         f"- なぜ: {reason}\n"

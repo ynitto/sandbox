@@ -7,6 +7,53 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-project / agent-dashboard: 検収の MR/PR 一本化と、証跡ベースの検証（S4・S5）
+
+**S4: 検収を MR/PR へ寄せ、決着を決定的シグナルで定義する**
+
+- **フォージ側の人の操作が決着になる**。`poll_task_mrs` が検収待ちタスクの MR を照会し、
+  マージ=承認 / 未マージクローズ=却下 / `status:changes-requested` ラベル・レビュー=差し戻し
+  として決着させる（常駐体の sync 周期）。**コメント本文のキーワード推定は使わない**——
+  書き手の言い回し 1 つで判定が変わり、変わったことに気づけないため。差し戻しに注入するのは
+  **未解決**の discussion だけ（解決済みまで流すと、一度直した指摘が毎回積み直されて収束しない）。
+- 到達不能（ネットワーク断・トークン失効）は決着しない。「未マージ＝却下」と読むと、回線が
+  切れただけで成果が却下される。
+- `remote_review: settle | observe`（既定 settle）。observe は表示のみ（移行用）。
+- **フォージ境界**を切り、実装は GitLab のみ。GitHub / Gitea は未対応として「フォージ無し運用」
+  へ倒す（1 回だけ警告）。動作確認できる環境が無いまま書いた API クライアントは、動くかどうか
+  分からないコードが増えるだけ。認証情報は環境変数 / rc ファイルのままで、**設定 2 層のどちらにも
+  置かない**（host.yaml は平文で PC に残り、プロジェクト yaml は全 PC へ配られる）。
+- **検収カード**: MR があるあいだはカード内で差分を開かせない（レビューの正は MR 一本）。
+  MR を持たないタスクだけ、S3 のノード宣言（host.yaml `repos[]`）から解決したクローンで差分を出す。
+  worker の作業ツリーは `/tmp` で消えるため、`delivery.path` 前提の経路は別マシンの dashboard では
+  そもそも動いていなかった（これが C5 の実体）。解決できないときは理由と宣言のしかたを表示する。
+
+**S5: 「コマンドの exit 0」から「基準 × 証跡」へ**
+
+- バックログに **`- acceptance:`（複数行可）** を追加した。`Task.extra` が (key, value) のリストなので
+  同名キーの複数行はそのまま往復する——スキーマもパーサも変えずに済んだ。`accept`（自然文 1 行）は
+  1 項目の acceptance として扱う（後方互換）。
+- settle で決定的 `verify:` が無いタスクは、**検証エージェント**が基準ごとに実際にコマンドを
+  試行錯誤して充足を確かめ、**判定 + 証跡**を返す。プロンプトと出力契約は
+  `.github/skills/backlog-verifier/`（上位に置けば差し替え可・`verifier_skill` で名前も変更可）。
+- 機械的な護りは 4 つ: **フェイルクローズ**（明示 pass が無ければ fail）/ **証跡必須**
+  （pass なのに実行コマンドも参照ファイルも無ければ fail へ落とす）/ **差分の常設基準**
+  （何も変えずに全 pass を返す道を塞ぐ・red-green の代替）/ **検収カードでの抜き取り監査**
+  （証跡の薄い判定を警告表示。監査を別機能にせず人が毎回見る 1 枚に載せる）。
+- **「検証不能」はリトライを焼かない**。環境にツールが無い等は失敗ではなく、直す先がタスクの中に
+  無い。環境要因失敗と同じ扱いで理由付きで人へ回す（直して approve すれば同じ run の続きから）。
+- 検証レポートを `verifications/<task-id>/<rev>.md` に保存し、needs 票に要約（基準 × 証跡の表）を
+  載せる。**人検収で人が読むのはこの表**——コマンドの良し悪しは人には判断できないが、基準と証跡なら
+  判断できる、というのが S5 のコンセプト変更そのもの。
+- `verify_side_effects: workspace | network`（既定 workspace）。DB・外部サービスへの**書き込み**は
+  どちらでも不可（検証は失敗するとリトライで何度も走るので副作用が累積する）。
+- **廃止**: `accept` からの LLM 一発合成（`ensure_verify` の synth 経路）と、検証済み verify
+  ライブラリ（`verify_lib_path` / `save_validated_verify` / `find_learned_verify`）。後者の
+  置き換えは `verify-recipes/` で、**次回 verifier への参考情報**であって決定的ゲートには昇格させない。
+
+詳細設計: [`docs/plans/2026-07-26-s4-s5-review-and-verification-detailed-design.md`](docs/plans/2026-07-26-s4-s5-review-and-verification-detailed-design.md)
+
+
 ### 全ツール: エージェント CLI 差分吸収レイヤ（S9-1〜3）
 
 「この CLI をどう起動するか」の知識が **8 か所・4 実装**（agent-project / agent-flow /

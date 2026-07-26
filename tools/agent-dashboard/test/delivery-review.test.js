@@ -277,4 +277,38 @@ test('検証要約は基準×証跡を出し、証跡の無い pass を警告す
   assert.ok(src.includes('証跡の無い判定が'), '抜き取り監査は人が毎回見る 1 枚に載せる');
 });
 
+test('frontmatter の verification を構造化する（S5）', () => {
+  const verification = {
+    criteria: [
+      { id: 1, text: '候補が並ぶ', verdict: 'pass',
+        evidence: { commands: ['npm test'], output: '24 passing', files: [] }, note: '' },
+      { id: 2, text: '理由が出る', verdict: 'fail',
+        evidence: { commands: [], output: '', files: [] }, note: '未実装' },
+      { id: 3, text: '読めない判定', verdict: 'maybe', evidence: {}, note: '' },
+    ],
+    report: 'verifications/T1/9f3a.md',
+  };
+  const md = `---
+kind: review
+task-id: T1
+verification: ${JSON.stringify(verification)}
+---
+
+# 要対応: T1
+`;
+  const v = project.parseNeeds(md, 'T1').verification;
+  assert.strictEqual(v.criteria.length, 3);
+  assert.strictEqual(v.pass, 1);
+  assert.deepStrictEqual(v.criteria[0].evidence.commands, ['npm test']);
+  assert.strictEqual(v.criteria[2].verdict, 'fail', '読めない判定は fail（フェイルクローズ）');
+  assert.strictEqual(v.report, 'verifications/T1/9f3a.md');
+});
+
+test('verification が壊れていれば要約を出さない（誤った要約より無い方がよい）', () => {
+  for (const raw of ['{ not json', '{}', '{"criteria": []}', '']) {
+    const md = `---\nkind: review\ntask-id: T1\nverification: ${raw}\n---\n\n# 要対応: T1\n`;
+    assert.strictEqual(project.parseNeeds(md, 'T1').verification, null, raw);
+  }
+});
+
 console.log(`\n${passed} passed`);
