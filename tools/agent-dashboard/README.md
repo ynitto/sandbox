@@ -79,6 +79,34 @@ agent-amigos ミッションとノード予算（`src/features/amigos/`）を同
 | レビュー待ち | `repos.json` の GitLab リポジトリのオープンイシュー＋関連 MR（API 設定時）。プロジェクトが扱うリポジトリの「いまレビュー待ち・作業中」を横断一覧し gitlab-review-viewer へ引き継ぐ。既定では **agent-flow 由来のイシュー**（gitlab executor が起票 = 本文の `task-token` マーカー）だけに絞る（「agent-flow 由来のみ」チップで解除可）。各行の **「関連 run」列**は、イシュー本文の `task-token` をロード済み run 一覧の各ノードの決定的トークンと突き合わせて起票元の run/ノードを特定し、クリックでフロー画面のその run・ノードを直接開く（イシュー URL は承認/却下まで bus に現れないため、レビュー待ち中の対応付けはこのトークン一致で行う。追加の API/走査コストは無し）。run/ノード単位の委譲イシューの決着（承認/却下）はフロータブのノード詳細が担当 |
 | 履歴 | `run-log.jsonl`・`decisions/<id>.md`（DR）・`DELIVERY.md`・`journal.md` |
 
+### 一貫性ゲート
+
+概要には、codd-gate の状態を「有効」「一部のみ」「未結線」で表示する。併せて
+`regression_cmd` と `intake_cmd` ごとに、設定の有無、codd-gate への結線、現在のコマンドを出す。
+別の回帰コマンドが設定されている場合は「設定あり、未結線」となる。要対応に codd-gate 由来の
+失敗が出たときは、概要と同じキー名で原因と不足している結線を示す。`regression_cmd` の失敗は、
+ドキュメントとコードの不整合が残っているため agent-project が done を確定しなかった、という意味だ。
+
+判定に使う公式契約は agent-project の汎用フック `regression_cmd` と `intake_cmd` だけで、
+dashboard 専用のフックは設けない。dashboard はワークスペースの agent-project 設定を読み、
+`readProject()` のスナップショットとして renderer へ渡す。コマンドの実行、設定の書き換え、
+done の確定は行わない。「設定ファイルを開く」も OS のエディタを開くだけである。
+
+未結線なら、画面に出る設定ファイルへ次の 2 行を書く。
+
+```yaml
+regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV" --repos <root>/repos.json'
+intake_cmd: 'codd-gate tasks --debt --repos <root>/repos.json'
+```
+
+`regression_cmd` は、`tools/agent-project/` で sibling CLI を実行して既存の設定へ追加してもよい。
+
+```bash
+python3 codd_gate_regression.py --config /path/to/.agents/agent-project.yaml
+```
+
+この CLI は `regression_cmd` だけを扱う。`intake_cmd` は設定ファイルへ直接書く。
+
 ### 関係性のたどり（charter → backlog → run → issue）
 
 タブ構成はそのままに、**どのタスクがどの run（GitLab イシュー）につながっているか**を可視化し、
