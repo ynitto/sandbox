@@ -263,6 +263,11 @@ def main(argv=None) -> int:
                          help="墓標を解除する（却下したタスクを再び提案されうる状態へ戻す）")
     _add_common(rvv)
     rvv.add_argument("title", help="解除するタスクのタイトル（正規化して照合する）")
+    rvv.add_argument("--charter", default=None,
+                     help="対象 charter 名（その charter 向けとタグ無しの墓標だけを解除）。"
+                          "未指定で charter が複数あり対象が割れているときは、消さずに一覧を出す")
+    rvv.add_argument("--all", dest="all_charters", action="store_true",
+                     help="charter を問わず指紋一致の墓標をすべて解除する")
 
     _host_help = "agent-project.host.yaml の場所（既定: cwd → ~/.agents の順に探索）"
     srv = sub.add_parser("serve",
@@ -355,7 +360,9 @@ def main(argv=None) -> int:
         "replan": lambda: cmd_replan(cfg, args.reason or "charter からのバックログ再分解",
                                      getattr(args, "charter", None) or "",
                                      revive=bool(getattr(args, "revive", False))),
-        "revive": lambda: cmd_revive(cfg, args.title),
+        "revive": lambda: cmd_revive(cfg, args.title,
+                                     getattr(args, "charter", None) or "",
+                                     bool(getattr(args, "all_charters", False))),
         "distill-notes": lambda: cmd_distill_notes(cfg, getattr(args, "charter", None) or ""),
     }[args.cmd]()
 

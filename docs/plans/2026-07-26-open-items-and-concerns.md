@@ -171,9 +171,11 @@ agent-dashboard の `npm test` も回すのが素直。
    書き込まない）が載らない。**安全設定がスキル未導入ノードで黙って落ち**、検証は失敗時に
    リトライで何度も走るので副作用が累積しうる。`rules` / `repo_context` / `recipes` /
    `feedback` も同じ経路で落ちるが、そちらは品質劣化に留まる。
-  **追記（P1 詳細設計 §7-I）**: この組み込み経路は**どのテストも通っていない**——
-  `find_skill_script` がリポジトリの `.github/skills/` を必ず見つけるため、既存の
-  `build_verifier_prompt` テストはスキル経路しか検査していない。
+  **追記（P1 詳細設計 §7-I）**: 検証プロンプトの 2 経路のうち、**テストが見ているのは
+  組み込みだけ**。テストは中立な一時 cwd で走りエージェントホームも隔離されるため
+  `find_skill_script` がリポジトリのスキルを見つけず、既存の `build_verifier_prompt`
+  テストは**スキル経路を一度も通っていない**（組み込みが acceptance と DIFF_CRITERION を
+  持っていたので緑だった）。どちらの経路も明示的な seam なしには検査できない。
 6. **agent-project にだけ argv 長制限の退避（spill）が無い**（中）。
    agent-flow / agent-amigos は `prompt_via: argv` の CLI でプロンプトが上限を超えると
    一時ファイルへ退避するが、agent-project の `_agent_cmd` は無防備。S5/S6 で

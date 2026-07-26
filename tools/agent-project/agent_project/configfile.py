@@ -87,6 +87,10 @@ CONFIG_DEFAULTS = {
     # agent-flow 側の設定（flow_config / agent-flow.yaml の agent_cli）で揃える。
     "agent_cli": "kiro",
     "agent_timeout": 300.0,   # エージェント CLI 1 呼び出しのタイムアウト秒（0 以下で無効）
+    # argv でプロンプトを渡す CLI（kiro / copilot）へ渡せる最大バイト数。超える分は一時ファイルへ
+    # 退避し「そのファイルを読んで実行」の短い指示に置き換える（ARG_MAX 由来の E2BIG 回避）。
+    # agent-flow の同名設定と語彙・既定を揃えてある。0 以下で組み込み既定へ戻る。
+    "argv_limit": 100000,
     # バックログ分解の粒度: coarse（ストーリー相当・既定）/ fine（単機能）/ finest（1ファイル/1関数）。
     # agent-flow の同名設定と語彙を揃えている（あちらは実行時 DAG、こちらは backlog の分解に効く）。
     "granularity": "coarse",
@@ -245,6 +249,9 @@ SHARED_KEYS = frozenset({
     "agent_cli", "model", "act_timeout", "verify_timeout", "location", "concurrency",
     # ノードごとに CLI 性能・操作者名義・通知手段が異なる
     "agent_timeout", "actor", "notify_cmd",
+    # argv 長の上限は OS とシェルの事情（ARG_MAX）。ノードごとに違ってよく、違っても
+    # 実行の意味は変わらない（退避されるかどうかだけが変わる）
+    "argv_limit",
     # ノード局所のパスを指しうるキー。共有 yaml に絶対パスが載ると他 PC で壊れるため、
     # プロジェクト共通の既定を置きつつノードで差し替えられるようにする
     "ltm_home", "flow_config", "verify_cwd",
@@ -716,10 +723,14 @@ def build_config(args) -> Config:
         return root / sub
 
     # エージェント CLI（分解・優先順位・裁定等の free 関数が参照）をここで確定する。
-    global _AGENT_CLI, _AGENT_TIMEOUT, _AGENT_OVERRIDES
+    global _AGENT_CLI, _AGENT_TIMEOUT, _AGENT_OVERRIDES, _ARGV_LIMIT
     _AGENT_CLI = str(getattr(args, "agent_cli", "kiro") or "kiro").lower()
     _AGENT_TIMEOUT = float(getattr(args, "agent_timeout", 300.0) or 0.0)
     _AGENT_OVERRIDES = _normalize_agent_overrides(getattr(args, "agents", None))
+    try:
+        _ARGV_LIMIT = int(getattr(args, "argv_limit", None) or 0)
+    except (TypeError, ValueError):
+        _ARGV_LIMIT = 0                     # 不正値は組み込み既定へ（_agent_argv_limit が吸収）
     # journal ローテーション（append_journal が参照する free 関数向け設定）も同時に確定する。
     global _JOURNAL_MAX_BYTES, _JOURNAL_KEEP
     try:
@@ -768,7 +779,7 @@ def build_config(args) -> Config:
         board_workload=str(getattr(args, "board_workload", "flow") or "flow"),
         executor=args.executor,
         model=args.model,
-        agent_cli=_AGENT_CLI, agent_timeout=_AGENT_TIMEOUT,
+        agent_cli=_AGENT_CLI, agent_timeout=_AGENT_TIMEOUT, argv_limit=_ARGV_LIMIT,
         granularity=str(getattr(args, "granularity", "coarse") or "coarse").lower(),
         max_iterations=args.max_iterations,
         max_cycles=args.max_cycles, max_seconds=args.max_seconds,

@@ -1,6 +1,6 @@
 # P1 詳細設計: 効かない設定・安全性の 5 件
 
-ステータス: 詳細設計（未実装）
+ステータス: 実装済み（詳細設計 + 実装で確定した差分を §9 に反映）
 入力: [`2026-07-26-open-items-and-concerns.md`](2026-07-26-open-items-and-concerns.md) §7.2 /
 §6.1-5・§6.1-6・§6.1-7 / §6.2
 参照: [P0 詳細設計](2026-07-26-p0-pre-canary-fixes-detailed-design.md)（構造テストの流儀・除外リストの作法） /
@@ -67,12 +67,15 @@
 
 スキルの解決は `find_skill_script`（`verify.py:226-254`）で、プロジェクト →
 git root → `~/.agents/skills` → `~/.kiro/skills` → `skill-registry.json`。
-**このリポジトリで動かす限り必ず見つかる**ため、組み込み経路を通るのは
+実運用（リポジトリ内で動かす）ではまず見つかるので、組み込み経路を通るのは
 「配布先ノードにスキルを入れ忘れた」「上位に置いた差し替えスキルが落ちた」ときだけ
 ——つまり**壊れているのに気づきにくい経路**に安全制約が乗っていない。
 
-既存テスト `test_commands.py:1049` も `build_verifier_prompt` をリポジトリ内で呼ぶので
-スキル経路しか通っておらず、組み込みプロンプトは**どのテストも通っていない**（§7-I）。
+**テストは逆**（§7-I・実測で確認）: `_shared.py` が中立な一時 cwd へ `chdir` し
+エージェントホームも隔離するため、`find_skill_script` は**リポジトリのスキルを
+見つけない**。既存テスト `test_commands.py:1049` が実際に見ていたのは組み込み側で、
+「スキルと同じ制約が載るか」を確かめるにはスキルの `prompt.py` を**パス直指定**で
+走らせる必要がある。
 
 ### 2.2 P1-2: argv 退避の有無
 
@@ -536,9 +539,10 @@ CLI: `revive` へ `--charter` と `--all` を足す（`cli.py:262-265`）。
 | `test_builtin_prompt_reaches_every_spec_key`（新規・構造） | `verifier_input` の全キーに番兵を入れた spec → 組み込みプロンプトに全番兵が現れる。除外は理由付きリスト（現在 `side_effects` の 1 件） | 入力を足して組み込みに載せ忘れると落ちる（P0-4 と同じ型） |
 | `test_verifier_prompt_injects_repo_context_rules_and_recipes`（既存） | 変更しない | スキル経路の回帰 |
 
-**組み込み経路を強制する手段を最初に用意する**（`cfg.verifier_skill = "no-such-skill"`）。
-現状はリポジトリ内で必ずスキルが見つかるため、この seam が無いと新テストが
-組み込みを検査しているつもりでスキルを検査する（§7-I）。
+**どちらの経路も明示的な seam なしには検査できない**（§7-I）。組み込みは
+`cfg.verifier_skill = "no-such-skill"` で強制し、スキルは `.github/skills/…/prompt.py` を
+**パス直指定**で走らせる——テストは中立な一時 cwd で走るので `find_skill_script` は
+リポジトリのスキルを見つけない（実測）。
 
 ### 5.2 P1-2
 
@@ -631,7 +635,7 @@ cd tools/agent-dashboard && npm test
 | F | **argv 長超過（E2BIG）が「内容の問題」に分類される**。`OSError: [Errno 7] Argument list too long` は env パターン（`command not found` / `No such file or directory`）に掛からず、タスクのリトライ予算を焼く。退避が入っても Windows 系の低い上限では残る | 中 | P1-2 §3.2.5 |
 | G | **agent-project には `argv_limit` 設定自体が無い**（flow は設定 + CLI + doctor 検査、amigos は定数）。同じ「OS の事情」を 3 ツールで別々に持っている | 低 | P1-2 §3.2.4 で設定キーを追加。層は SHARED（ノード差を許す） |
 | H | **`revive` の既定を狭めると挙動が変わる**。単一 charter 運用では同じだが、複数 charter でタグの違う一致行があると exit 2 で止まる（従来は黙って両方削除） | 低（移行の注記） | P1-5 §3.5.2。`--all` を逃げ道として用意 |
-| I | **組み込み検証プロンプトはどのテストも通っていない**。`find_skill_script` がリポジトリの `.github/skills/` を必ず見つけるため、既存の `build_verifier_prompt` テストはスキル経路しか検査していない | 中 | P1-1 §5.1。`verifier_skill` を存在しない名前にする seam を先に用意する |
+| I | **検証プロンプトの 2 経路のうち、テストが見ているのは組み込みだけ**（当初は逆に書いていた——実装時の実測で**訂正**）。`_shared.py` が中立な一時 cwd へ `chdir` しエージェントホームも隔離するため、`find_skill_script` はリポジトリのスキルを見つけない。つまり既存の `build_verifier_prompt` テストは**スキル経路を一度も通っていない**（組み込みが acceptance と DIFF_CRITERION を持っていたので緑だった）。どちらの経路も明示的な seam なしには検査できない | 中 | P1-1 §5.1。組み込みは `verifier_skill` を存在しない名前にして強制し、スキルは `prompt.py` をパス直指定で走らせる |
 | J | **S1 §3.3 の E6（`projects[].config` はエラー）が未実装**。host.yaml の `projects[]` にはキー検査自体が無いので、`config:` を書いても無言で無視される。設計書の文言カタログには載っている | 低 | P1-3 §3.3.2 の W7 として**警告**で拾う（E への昇格は canary 明けの判断に含める） |
 | K | **`schema_version` は例示ファイルにあるが誰も読んでいない**。値の検査も、将来のバージョン差の分岐も無い | 低 | P1-3 では既知キーとして受けるだけ（読まないことを明示）。バージョニングの要否は契約の話なので P2 以降 |
 
@@ -652,3 +656,34 @@ cd tools/agent-dashboard && npm test
   変えるなら割り切りの再決定が先（総覧 §4）。
 - **`spill_prompt` の指示文をどこの正典にするか**（§7-B）。P2-5 で `DIFF_CRITERION` と
   まとめて決める。
+
+---
+
+## 9. 実装で確定した差分
+
+設計と実装がずれたところ。**本文は書き換えず、ここに理由付きで残す**（P0 詳細設計と同じ流儀）。
+
+| # | 設計 | 実装 | 理由 |
+|---|---|---|---|
+| P1-1 | 組み込みプロンプトへ入力を載せる | それに加えて `verifier_input` の**全キーに番兵を入れて突き合わせる**構造テストを置いた（除外は `side_effects` の 1 件・理由付き） | 個別に直すだけでは、次に入力を足したときにまた黙って落ちる。P0-4 の「CONFIG_DEFAULTS ⊆ Config」と同じ型の護り |
+| P1-1 | スキル経路と組み込み経路の同値をテストで固定 | スキル側は `prompt.py` を**パス直指定**で走らせる | テストは中立な一時 cwd で走るので `find_skill_script` がリポジトリのスキルを見つけない（§7-I の訂正）。`build_verifier_prompt` 経由では組み込みしか通らない |
+| P1-2 | `_run_agent_cli` で退避 → `finally` で掃除 | あわせて `_agent_cmd` の呼び出しも `try:` の**内側**へ移し、`out_file` を `None` で先に束縛した | 組み立てが例外で落ちたときに `finally` が `NameError` を投げて本当の原因を隠す（P0-1 で踏んだ形）。ついでに退避ファイルの取りこぼしも消える |
+| P1-2 | `spill_prompt(prompt, limit, …)` を agentcore へ | `prompt_via` も引数に取り、**stdin 渡しなら何もしない**判定まで helper に入れた | 「stdin は ARG_MAX に当たらない」は OS の事実で、呼び出し側 3 者が同じ `if` を書くと、また 3 者でずれる |
+| P1-3 | 未知キー・層違い・型違いを警告 | `tags` / `agent_cli` のスカラは**畳んで救済**し、その旨も所見に出す | 無視（空配列）でも文字分解よりましだが、書き手の意図は明白。ただし黙って直すと「配列で書かなくても動く」という別の思い込みを作る |
+| P1-4 | `pending(debounce_sec=…)` を agentcore へ | プロジェクト側 `ingest_commands` は**呼び出しを変えていない**（従来どおり自前で mtime を見る） | プロジェクト側の猶予は `cfg.watch` と `cfg.debounce` に依存する（watch 中だけ・設定値可変）。土台に寄せると引数が 3 つ増えるだけで、規約は共有できていない。共有したのは `.err` の読み分け（`clear_rejected`）と掃除で、そちらは規約そのもの |
+| P1-4 | `.err` の TTL 掃除を gc へ | 受理レシートの prune も同じスイーパーに入れた | ノードスコープのレシート prune は `write_receipt` の内側でしか走らない＝**指示が来なくなったら止まる**。gc から呼べば止まらない |
+| P1-5 | 既定は「指定 charter + タグ無し」 | charter が 2 個以上あって一致行のタグが**割れているときだけ** exit 2 で止める | タグが 1 種類以下なら曖昧でない（止める理由が無い）。単一 charter 運用では従来と同結果になることをテストで固定した |
+
+### 9.1 実測（実装後）
+
+| 対象 | 結果 |
+|---|---|
+| agent-project | 1,112 件 緑（新規 30 件・修正前は 1,082 件） |
+| agent-flow / agent-amigos | 571 / 176 件 緑（自前退避を共有ヘルパへ移設・テスト無改変） |
+| agentcore（テストルート 2 つ） | 80 / 66 件 緑（新規 19 件） |
+| agent-dashboard `npm test` | 緑（失敗 0） |
+
+既存テストで**書き換えたのは 1 件だけ**:
+`test_broken_command_file_is_quarantined_not_retried_forever` は「壊れたファイルは即 `.err`」を
+固定していたので、新しい契約（猶予の内側では `.err` にしない → 猶予を過ぎたら `.err`）の
+両方を確かめる形へ広げた。

@@ -19,6 +19,11 @@ import sys
 # 副作用の許容範囲（設定 verify_side_effects）。DB・外部サービスへの **書き込み**は
 # どちらでも禁止する: 検証が失敗すると何が壊れたか分からなくなるうえ、リトライで
 # 何度も走るので副作用が累積する。そこまで要る検証は人が verify: に明示的に書く。
+#
+# **正典は呼び出し側（agent-project の `VERIFY_SIDE_EFFECT_RULES`）**で、入力 JSON に
+# `side_effects_text`（解決済みの文）があればそちらを使う。この表は、入力にその文が
+# 無いとき（スキルを単体で使う・呼び出し側が古い）の受け皿として残す——同じ文言を
+# 2 か所で育てると、経路によって安全制約が変わる。
 _SIDE_EFFECTS = {
     "workspace": (
         "作業ツリーの中だけで完結させてください。ビルド・テスト・grep・ローカル起動は可。"
@@ -47,7 +52,8 @@ def build_prompt(spec: dict) -> str:
     task = spec.get("task") or {}
     acceptance = [str(a).strip() for a in (spec.get("acceptance") or []) if str(a).strip()]
     ws = spec.get("workspace") or {}
-    side = _SIDE_EFFECTS.get(str(spec.get("side_effects") or "workspace"),
+    side = str(spec.get("side_effects_text") or "").strip() \
+        or _SIDE_EFFECTS.get(str(spec.get("side_effects") or "workspace"),
                              _SIDE_EFFECTS["workspace"])
     criteria = acceptance + [DIFF_CRITERION]
     numbered = "\n".join(f"{i + 1}. {c}" for i, c in enumerate(criteria))

@@ -98,14 +98,15 @@ def _failure_message(cli: str, rc: int, out: str, err: str) -> str:
     return f"{head}\n{tail[-500:]}" if tail else head
 
 
-def _spill_prompt(prompt: str) -> "tuple[str, str]":
-    """argv 長制限に当たるプロンプトを一時ファイルへ退避し、参照渡しの短い指示に置き換える。"""
-    fd, spill = tempfile.mkstemp(prefix="agent-amigos-prompt-", suffix=".txt")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(prompt)
-    return (spill,
-            "以下のファイルにこのターンの全文（役割・ミッション・新着メッセージを含む）があります。"
-            f"必ずファイルの内容を読み込み、その指示に従ってください: {spill}")
+def _spill_prompt(prompt: str, prompt_via: str = "argv") -> "tuple[str | None, str]":
+    """argv 長制限に当たるプロンプトを一時ファイルへ退避し、参照渡しの短い指示に置き換える。
+
+    退避そのものは `agentcore.agentcli.spill_prompt` の 1 実装（agent-project /
+    agent-flow と共有）。ここに残すのは agent-amigos 固有の「何の全文か」だけ。"""
+    return agentcli.spill_prompt(
+        prompt, DEFAULT_ARGV_LIMIT, prompt_via=prompt_via, prefix="agent-amigos-prompt-",
+        instruction="以下のファイルにこのターンの全文（役割・ミッション・新着メッセージを含む）"
+                    "があります。必ずファイルの内容を読み込み、その指示に従ってください: {file}")
 
 
 def run_agent(prompt: str, cli: str, model: "str | None" = None,
@@ -113,13 +114,11 @@ def run_agent(prompt: str, cli: str, model: "str | None" = None,
     """agent CLI を 1 回呼び出してテキスト応答を返す。失敗は RuntimeError
     （トリアージタグ付き文言）。stub はここに来ない（runner が横取りする）。"""
     cli = (cli or "kiro").strip().lower()
-    spill = None
     plug = load_agent_plugin(cli)
     # argv 渡しで長すぎるプロンプトは一時ファイルへ退避し、参照渡しの短い指示に置き換える。
     # argv 長制限は OS の事情なので定義ではなくここで見る（定義側の spill は「stdin を読まない
-    # CLI の癖」への対処で別物）。
-    if plug["prompt_via"] == "argv" and len(prompt.encode("utf-8")) > DEFAULT_ARGV_LIMIT:
-        spill, prompt = _spill_prompt(prompt)
+    # CLI の癖」への対処で別物——権限フラグを fs_read へ置き換えるので用途が違う）。
+    spill, prompt = _spill_prompt(prompt, plug["prompt_via"])
     built = agentcli.headless_cmd(plug, model, prompt)
     cmd, stdin_text, out_file = built["argv"], built["stdin"], built["output_file"]
     # 発生源で色を抑止（NO_COLOR/TERM=dumb）。残った ANSI は strip_ansi で除去する二段構え

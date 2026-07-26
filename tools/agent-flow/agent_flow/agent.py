@@ -598,14 +598,14 @@ def _run_agent_once(prompt: str, model: str | None, purpose: str = "") -> str:
     plug = load_agent_plugin(cli)
     # プロンプトが argv 渡しで長すぎるときは一時ファイルへ退避し、「そのファイルを読んで実行」の
     # 短い指示に置き換える（成果物の受け渡しを参照渡しにする）。argv 長制限は OS の事情なので
-    # CLI 定義ではなくここで見る——定義側の spill は「stdin を読まない CLI の癖」への対処で別物。
-    spill = None
-    if plug["prompt_via"] == "argv" and len(prompt.encode("utf-8")) > _agent_argv_limit():
-        fd, spill = tempfile.mkstemp(prefix="agent-flow-prompt-", suffix=".txt")
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(prompt)
-        prompt = ("以下のファイルにこのタスクの全文（依存タスクの成果物を含む）があります。"
-                  f"必ずファイルの内容を読み込み、その指示に従ってタスクを実行してください: {spill}")
+    # CLI 定義ではなくここで見る——定義側の spill は「stdin を読まない CLI の癖」への対処で別物
+    # （権限フラグを fs_read へ置き換えるため、実行して確かめる呼び出しには使えない）。
+    # 退避そのものは agentcore.agentcli の 1 実装（agent-project / agent-amigos と共有）。
+    spill, prompt = _agentcli.spill_prompt(
+        prompt, _agent_argv_limit(), prompt_via=plug["prompt_via"],
+        prefix="agent-flow-prompt-",
+        instruction="以下のファイルにこのタスクの全文（依存タスクの成果物を含む）があります。"
+                    "必ずファイルの内容を読み込み、その指示に従ってタスクを実行してください: {file}")
     built = _agentcli.headless_cmd(plug, model, prompt)
     cmd, stdin_text, out_file = built["argv"], built["stdin"], built["output_file"]
     # 発生源で色を抑止（NO_COLOR/TERM=dumb）。残った ANSI は strip_ansi で除去する二段構え

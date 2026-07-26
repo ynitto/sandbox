@@ -187,6 +187,60 @@ class TombstoneTests(unittest.TestCase):
             self.assertEqual(len(created), 1)
             self.assertEqual(len(km.load_tombstones(cfg)), 1, "墓標は残る")
 
+    def _two_charters(self, d: Path):
+        """charters/ を 2 つ持つプロジェクト（`charter_names` が 2 件を返す状態）。"""
+        (d / "charters").mkdir(parents=True, exist_ok=True)
+        for name in ("v1", "v2"):
+            (d / "charters" / f"{name}.md").write_text(f"# {name}\n", encoding="utf-8")
+
+    def test_revive_scoped_to_a_charter(self):
+        # 追記は (指紋, charter) 単位なのに削除が指紋だけだと、片方を revive したつもりで
+        # 両方が復活する（次の plan が黙って作り直す＝人は気づけない）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            self._two_charters(d)
+            km.append_tombstone(cfg, "X をやる", "v1 でやめた", charter="v1")
+            km.append_tombstone(cfg, "X をやる", "v2 でもやめた", charter="v2")
+            km.append_tombstone(cfg, "X をやる", "どこでもやめた")
+            self.assertEqual(km.cmd_revive(cfg, "X をやる", charter="v1"), 0)
+            rest = [(g["title"], g["charter"]) for g in km.load_tombstones(cfg)]
+            self.assertEqual(rest, [("X をやる", "v2")], "v1 とタグ無しだけが消える")
+
+    def test_revive_stops_when_the_scope_is_ambiguous(self):
+        # 「消しすぎ」は人が気づけないので、曖昧なら消さずに聞く。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            self._two_charters(d)
+            km.append_tombstone(cfg, "X をやる", "v1", charter="v1")
+            km.append_tombstone(cfg, "X をやる", "v2", charter="v2")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(km.cmd_revive(cfg, "X をやる"), 2)
+            self.assertEqual(len(km.load_tombstones(cfg)), 2, "1 行も消していない")
+            self.assertIn("--charter", err.getvalue())
+
+    def test_revive_all_removes_every_charter(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            self._two_charters(d)
+            km.append_tombstone(cfg, "X をやる", "v1", charter="v1")
+            km.append_tombstone(cfg, "X をやる", "v2", charter="v2")
+            self.assertEqual(km.cmd_revive(cfg, "X をやる", all_charters=True), 0)
+            self.assertEqual(km.load_tombstones(cfg), [])
+
+    def test_revive_default_is_unchanged_for_a_single_charter(self):
+        # 単一 charter 運用（大多数）では従来と同じ結果になること。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            (d / "charter.md").write_text("# 目標\n", encoding="utf-8")
+            km.append_tombstone(cfg, "X をやる", "やめた", charter="default")
+            self.assertEqual(km.cmd_revive(cfg, "X をやる"), 0)
+            self.assertEqual(km.load_tombstones(cfg), [])
+
     def test_human_written_tombstone_is_read(self):
         # 人が手で書き足せることが `tombstones.md`（イベント台帳ではない）を選んだ理由の 1 つ
         with tempfile.TemporaryDirectory() as d:

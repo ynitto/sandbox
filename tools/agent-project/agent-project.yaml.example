@@ -17,7 +17,7 @@
 #   逆に、次のキーだけは **両方に書ける**（ノード事情による上書きを許す群）。
 #   優先順位: CLI > host.yaml projects[].overrides > host.yaml defaults > このファイル > 既定
 #     agent_cli / model / act_timeout / verify_timeout / location / concurrency /
-#     agent_timeout / actor / notify_cmd / ltm_home / flow_config / verify_cwd
+#     agent_timeout / argv_limit / actor / notify_cmd / ltm_home / flow_config / verify_cwd
 #
 #   それ以外（計画・ゲート・予算・収束・検証・学習・タスク運用）はこのファイル専有。
 #   ノードごとに食い違うと実行が非決定になるため、host.yaml に書くとエラーで止まる。
@@ -85,6 +85,9 @@ concurrency: 1             # 板へ並行 post する独立タスク数（1=逐�
                             #   プラグイン定義で追加できる（契約: schemas/agent-cli.schema.json・
                             #   探索順: $KIRO_AGENTS_DIR → <root>/agents → ~/.agents/agents → ~/.kiro/agents）。
 # agent_timeout: 300        # エージェント CLI 1 呼び出しのタイムアウト秒（0 以下で無効）
+# argv_limit: 100000        # argv 渡しの CLI（kiro / copilot）へ渡せるプロンプトの最大バイト数。
+                            #   超える分は一時ファイルへ退避し「そのファイルを読んで実行」の短い
+                            #   指示に置き換える（ARG_MAX 由来の起動失敗を避ける）。0 以下で既定へ
 # model: claude-sonnet      # エージェント CLI に渡すモデル（省略可）。
                             #   kiro: kiro-cli のモデル名 / claude: sonnet・opus 等 /
                             #   copilot: claude-sonnet-4.5・gpt-5 等（copilot /model の一覧に従う）

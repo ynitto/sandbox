@@ -88,6 +88,10 @@ class Config:
     model: "str | None" = None
     agent_cli: str = "kiro"        # LLM 実行に使うエージェント CLI: kiro / claude / copilot / codex
     agent_timeout: float = 300.0   # エージェント CLI 1 呼び出しのタイムアウト秒（0 以下で無効）
+    # argv 渡しの CLI へ渡せる最大バイト数（超過分は一時ファイルへ退避して参照渡し）。
+    # 実際に読むのは free 関数（`_run_agent_cli`）なので `_ARGV_LIMIT` へも確定するが、
+    # フィールドとしても持つ（doctor / status が「いまいくつで動いているか」を示せる）。
+    argv_limit: int = 100000
     # バックログ分解の粒度: coarse（ストーリー相当・既定）/ fine（単機能）/ finest（1ファイル/1関数）
     granularity: str = "coarse"
     max_iterations: int = 3

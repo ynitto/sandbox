@@ -196,6 +196,33 @@ DIFF_CRITERION = ("このタスクの差分が、上の基準の対象範囲に�
 
 VERDICTS = ("pass", "fail", "unverifiable")
 
+# 副作用の許容範囲（設定 verify_side_effects）の**正典**。DB・外部サービスへの書き込みは
+# どちらでも禁じる: 検証が失敗すると何が壊れたか分からなくなるうえ、リトライで何度も走るので
+# 副作用が累積する。そこまで要る検証は人が verify: に明示的に書く。
+#
+# スキル（backlog-verifier）へは `spec["side_effects_text"]` として**解決済みの文**を渡す。
+# スキル側にも同じ表があるが、受け取った文があればそちらを優先する——本文が正典で、
+# スキルは受け取る（同じ文言を 2 か所で育てると、経路によって制約が変わる）。
+VERIFY_SIDE_EFFECT_RULES = {
+    "workspace": (
+        "作業ツリーの中だけで完結させてください。ビルド・テスト・grep・ローカル起動は可。"
+        "ネットワーク到達（HTTP 取得・外部 API）と、作業ツリー外への書き込みはしないでください。"
+        "それが必要な基準は verdict=unverifiable として理由を書いてください。"
+    ),
+    "network": (
+        "作業ツリーの中の変更と、読み取りのためのネットワーク到達（HTTP 取得・疎通確認）まで可。"
+        "DB や外部サービスへの **書き込み** はしないでください"
+        "（失敗時に何が壊れたか分からなくなり、リトライで副作用が累積します）。"
+        "それが必要な基準は verdict=unverifiable として理由を書いてください。"
+    ),
+}
+
+
+def verify_side_effect_rule(value: "str | None") -> str:
+    """設定 `verify_side_effects` の値 → 検証エージェントへ渡す制約文（未知の値は workspace）。"""
+    return VERIFY_SIDE_EFFECT_RULES.get(str(value or "workspace"),
+                                        VERIFY_SIDE_EFFECT_RULES["workspace"])
+
 
 def task_acceptance(task: "Task") -> "list[str]":
     """このタスクの受入基準チェックリスト（自然文）。
@@ -272,28 +299,83 @@ def verifier_input(cfg: "Config", task: "Task", vcwd: "Path") -> dict:
         "recipes": find_verify_recipes(cfg, task),
         "feedback": str(ex.get("feedback", "") or ""),
         "side_effects": str(getattr(cfg, "verify_side_effects", "workspace") or "workspace"),
+        # 解決済みの制約文も渡す（本文が正典・スキルは受け取る）。旧版のスキルはこのキーを
+        # 読まず自前の表へ落ちるので、追加しても壊れない。
+        "side_effects_text": verify_side_effect_rule(
+            getattr(cfg, "verify_side_effects", "workspace")),
     }
 
 
-def _builtin_verifier_prompt(spec: dict) -> str:
-    """スキルが見つからないときの組み込みプロンプト（スキルと同じ出力契約）。
+def _prompt_block(title: str, body: str) -> str:
+    """空でなければ `## <見出し>` の節にする（スキル側 `_block` と同じ）。"""
+    body = str(body or "").strip()
+    return f"\n## {title}\n{body}\n" if body else ""
 
-    スキルを必須にしないのは、検証が止まると全タスクが人へ倒れるから。ただし内容は
-    最小限で、育てる場所はスキル側（`.github/skills/backlog-verifier/`）。
+
+def _builtin_verifier_prompt(spec: dict) -> str:
+    """スキルが見つからないときの組み込みプロンプト（スキルと同じ入力・同じ出力契約）。
+
+    スキルを必須にしないのは、検証が止まると全タスクが人へ倒れるから。育てる場所は
+    スキル側（`.github/skills/backlog-verifier/`）だが、**入力は取りこぼさない**——
+    以前はタイトルと受入基準しか使わず、副作用制約（`verify_side_effects`）が
+    スキル未導入のノードで黙って落ちていた。検証は失敗するとリトライで何度も走るので、
+    制約が落ちた回数だけ副作用が累積する。品質材料（rules / repo_context / recipes /
+    feedback）も `verifier_input` が既に組んでいるので、載せない理由が無い。
+
+    節の見出しと順序はスキルと揃える——検証レポートに出る本文を人が読み比べるとき、
+    経路によって見出しが違うと「別の検証をした」ように見える。
     """
+    task = spec.get("task") or {}
+    ws = spec.get("workspace") or {}
     criteria = list(spec.get("acceptance") or []) + [DIFF_CRITERION]
     numbered = "\n".join(f"{i + 1}. {c}" for i, c in enumerate(criteria))
-    return (
-        "あなたは成果物の検証エージェントです。下の受入基準それぞれについて、実際にコマンドを"
-        "実行して充足を確かめ、証跡付きで判定してください。成果物は直さないでください。\n"
-        f"タスク: {spec.get('task', {}).get('title', '')}\n"
-        f"\n受入基準:\n{numbered}\n"
-        "\n本文（何を実行して何が分かったか）を書いたあと、末尾に次の JSON を添えてください:\n"
+    side = str(spec.get("side_effects_text") or "").strip() \
+        or verify_side_effect_rule(spec.get("side_effects"))
+    recipes = "\n".join(f"- `{r}`" for r in (spec.get("recipes") or [])[:10])
+
+    head = (
+        "あなたは成果物の検証エージェントです。下の受入基準それぞれについて、"
+        "**実際にコマンドを実行して**充足を確かめ、証跡付きで判定してください。\n\n"
+        "重要な原則:\n"
+        "- 判定の根拠は **実行した結果**です。コードを読んだ印象や「妥当に見える」は根拠になりません。\n"
+        "- 確かめられなかった基準は正直に fail か unverifiable にしてください。\n"
+        "- **成果物を直さないでください。**（作業ツリーへの変更は破棄されます）\n"
+        f"- {side}\n"
+    )
+    body = (
+        "\n## タスク\n"
+        f"- id: {task.get('id', '')}\n"
+        f"- title: {task.get('title', '')}\n"
+        + (f"- why: {task['why']}\n" if task.get("why") else "")
+        + (f"- 作業概要: {task['desc']}\n" if task.get("desc") else "")
+        + (f"- 変更してよい範囲: {task['scope']}\n" if task.get("scope") else "")
+        + (f"- やらないこと: {task['out_of_scope']}\n" if task.get("out_of_scope") else "")
+        + "\n## 検証する場所\n"
+        f"- リポジトリ: {ws.get('url') or '(ワークスペース)'}\n"
+        f"- 成果ブランチ: {ws.get('branch', '')}（比較元: {ws.get('base', '')}）\n"
+        + (f"- 対象パス: {ws['path']}\n" if ws.get("path") else "")
+        + f"\n## 受入基準（この順に判定する）\n{numbered}\n"
+    )
+    extras = (
+        _prompt_block("参考: 過去に有効だった検証コマンド"
+                      "（まずこれを試す。環境が違えば通らないので鵜呑みにしない）", recipes)
+        + _prompt_block("前回の失敗", spec.get("feedback"))
+        + _prompt_block("リポジトリの文脈", spec.get("repo_context"))
+        + _prompt_block("プロジェクトの恒常ルール", spec.get("rules"))
+    )
+    tail = (
+        "\n## 出力\n"
+        "まず人が読むための本文を Markdown で書いてください（基準ごとに、何を実行して何が"
+        "分かったか）。**そのあと、末尾に次の形の JSON を必ず 1 つ添えてください。**\n"
         '{"criteria": [{"id": 1, "verdict": "pass|fail|unverifiable", '
         '"evidence": {"commands": [], "output": "", "files": []}, "note": ""}]}\n'
-        f"criteria は上の順で {len(criteria)} 件すべて。verdict=pass には必ず commands か files の"
-        "証跡を入れてください（証跡の無い pass は fail に落とされます）。"
+        f"- criteria は上の基準と同じ順で {len(criteria)} 件すべて含めてください。\n"
+        "- verdict=pass には **必ず** commands か files の証跡を入れてください"
+        "（証跡の無い pass は機械的に fail へ落とされます）。\n"
+        "- 環境にツールが無い等で確かめられない基準は unverifiable にし、"
+        "note に何が足りないかを書いてください（リトライは消費されません）。\n"
     )
+    return head + body + extras + tail
 
 
 def build_verifier_prompt(cfg: "Config", spec: dict) -> str:
