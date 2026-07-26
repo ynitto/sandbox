@@ -14,9 +14,10 @@
 - 統合ロール（integrator）が 1 つの deliverable にまとめ、**オーナーに返却**・受入判定。
 - オーナーは**収束条件と予算（実質実行時間）**を指示でき、amigo はその範囲内で自律的に収束する。
 - **1 ノードでも完結**（未充足ロールの自己補充 self-staff）。
-- LLM 実行は agent CLI プラグイン契約（`agents/<name>.json`）を利用:
-  kiro / claude / copilot / codex は組み込み、cursor / ollama 等は定義ファイルで追加。
-  `stub` は LLM なしのプロトコル検証用。
+- LLM 実行は agent CLI 定義（`agents/<name>.json`）を利用: **kiro / claude / copilot / codex を含む
+  全 CLI が定義ファイルで動く**（S9。読み込みと argv 組み立ては agent-project / agent-flow と共有の
+  `agentcore.agentcli`）。上位ディレクトリに置けば同梱定義を上書きできる。
+  `stub` は LLM なしのプロトコル検証用（runner が横取りするのでこの層には来ない）。
 
 設計正典: [`docs/designs/agent-amigos-design.md`](../../docs/designs/agent-amigos-design.md)
 （実装済みの範囲と既知の欠落は同書 §9。hub 中継サーバは常駐一本化で廃止。
