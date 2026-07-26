@@ -41,7 +41,7 @@ function mkWorkspace({ root = '.agent-project', configDir = '.agents' } = {}) {
   return { ws, state };
 }
 
-test('resolveProjectRoot は .agent/agent-project.yaml の root: を解決する', () => {
+test('旧レイアウト（状態が <ws>/.agent-project にネスト）を読み替える', () => {
   const { ws, state } = mkWorkspace();
   try {
     assert.strictEqual(project.resolveProjectRoot(ws), path.resolve(state));
@@ -50,7 +50,7 @@ test('resolveProjectRoot は .agent/agent-project.yaml の root: を解決する
   }
 });
 
-test('resolveProjectRoot はワークスペース直下の agent-project.yaml も見る（本体の探索順と同じ）', () => {
+test('設定が直下にある旧レイアウトでも同じく状態フォルダを開く', () => {
   const { ws, state } = mkWorkspace({ configDir: '.' });
   try {
     assert.strictEqual(project.resolveProjectRoot(ws), path.resolve(state));
@@ -59,7 +59,7 @@ test('resolveProjectRoot はワークスペース直下の agent-project.yaml �
   }
 });
 
-test('root: が無ければワークスペース自身がプロジェクトルート（状態フォルダ直指定の従来構成）', () => {
+test('登録パス自身が状態フォルダならそれがプロジェクトルート（S1 の推奨形）', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-ws-'));
   try {
     fs.mkdirSync(path.join(dir, 'backlog'), { recursive: true });
@@ -69,7 +69,7 @@ test('root: が無ければワークスペース自身がプロジェクトル�
   }
 });
 
-test('状態専用 git clone を明示登録しても兄弟の -agent-state worktree を作らない', () => {
+test('状態専用 clone を登録しても兄弟の -agent-state worktree を作らない（方式ごと廃止）', () => {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-direct-'));
   const dir = path.join(parent, 'state-repo');
   const sibling = path.join(parent, 'state-repo-agent-state');
@@ -89,7 +89,7 @@ test('状態専用 git clone を明示登録しても兄弟の -agent-state work
   }
 });
 
-test('readProject はワークスペースを受け、状態はプロジェクトルートから読む', () => {
+test('readProject は登録パスを受け、状態はプロジェクトルートから読む', () => {
   const { ws, state } = mkWorkspace();
   try {
     const p = project.readProject(ws, { projects: {} });
@@ -105,7 +105,7 @@ test('readProject はワークスペースを受け、状態はプロジェク�
   }
 });
 
-test('discover はワークスペースを 1 件として並べ、状態はプロジェクトルートから数える', () => {
+test('discover は登録パスを 1 件として並べ、状態はプロジェクトルートから数える', () => {
   const { ws, state } = mkWorkspace();
   try {
     const { projects } = project.discover(engineConfig([ws]));
@@ -120,8 +120,8 @@ test('discover はワークスペースを 1 件として並べ、状態はプ�
   }
 });
 
-test('~/.agent のグローバル設定の root: は使わない（全ワークスペースが同じ状態を指してしまう）', () => {
-  // ワークスペース側に設定が無ければ、~/.kiro に root: があっても自分自身を返す。
+test('~/.agent のグローバル設定は使わない（全ワークスペースが同じ状態を指してしまう）', () => {
+  // 登録パス側に設定が無ければ、~/.kiro に設定があっても自分自身を返す。
   // readToolConfig は ~/.kiro をフォールバックに含むため、明示的に守る必要がある。
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-ws-'));
   try {

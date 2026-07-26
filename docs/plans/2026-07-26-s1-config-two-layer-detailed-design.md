@@ -1,6 +1,6 @@
 # S1 詳細設計: 状態専用リポジトリの唯一化と設定 2 層の責務分離
 
-ステータス: ドラフト(詳細設計)
+ステータス: 実装済み(詳細設計 + 実装で確定した差分を反映)
 入力: [`2026-07-25-agent-improvement-spec.md`](2026-07-25-agent-improvement-spec.md) §3 S1(C1)
 参照: [`2026-07-24-single-resident-controller-design.md`](2026-07-24-single-resident-controller-design.md) §4.1 / [`docs/guides/state-repo-migration.md`](../guides/state-repo-migration.md)
 実装フェーズ: Phase 1(S3 と同時。host.yaml 拡張は 1 回で行う)
@@ -20,7 +20,12 @@
 
 - repos.json からの `local` 撤去と共通リゾルバ(S3。ただし本設計の `state_top` 廃止は S3 リゾルバを前提に置くため、境界を §3.5 に明記する)
 - 検収 UI・MR 一本化(S4)、検証(S5)
-- dashboard 側の変更(プロジェクト一覧は engine/status.json 経由のままで、host.yaml の変更に追従不要。ドキュメント修正のみ)
+- dashboard のプロジェクト一覧(engine/status.json 経由のままで、host.yaml の変更に追従不要)
+
+**実装で分かった追加スコープ**: dashboard の `resolveProjectRoot` は状態 worktree
+(`<repo>-agent-state`)へのリダイレクトと**自動作成**を持っていた。エンジンがそこへ書かなく
+なる以上、放置すると「更新が止まった状態」を実体と信じて見せる(読みが古いだけでなく、指示・
+タスク編集の書き込み先まで死んだ worktree へ落ちる)。同フェーズで除去した — §3.7。
 
 ---
 
@@ -82,11 +87,11 @@
    - root が存在しない/空       → git clone --branch <branch> <state_repo> <root>
    - root/.git の origin 検査    → state_repo と不一致なら fail-fast(E3。暗黙フォールバック廃止)
 3. ad-hoc 検査(state_repo 不明のとき。単発 run の cwd 契約)
-   - root が git toplevel であること(worktree 内サブディレクトリ・管理外は fail-fast E4)
-   - 「状態ルートらしさ」: 直下に agent-project.yaml / project.json / backlog/ / charter.md の
-     いずれかがある、または空リポジトリ(コミット 0 or 状態エントリ 0 = 新規プロジェクト初期化)
-   - 不合格(成果物リポジトリらしい)→ fail-fast E5。root/agent-project.yaml に state_repo: が
-     残っていれば(旧ブートストラップ)、その URL から推定した clone 先を誘導文に含める
+   - git 管理外 → **許す**(ローカル縮退。次の同期で git init される)
+   - 他リポジトリの内側(自分はトップレベルでない) → fail-fast E4
+   - トップレベルだが状態マーカーが無く中身がある → fail-fast E5。root の
+     agent-project.{yaml,json} に state_repo: が残っていれば(旧ブートストラップ)その URL を
+     誘導文に含める
 4. プロジェクト yaml = <root>/agent-project.{yaml,yml,json} 固定(--config 明示は残す。
    ./.agents → ./.agent → ~/.agents の探索チェーンは廃止)
 ```
@@ -94,7 +99,17 @@
 決定事項:
 
 - **`state_top`/`source_root` は Config から削除する。** 実効 root は常に状態 clone であり、リダイレクトという概念が消えるため。成果物リポジトリの解決は §3.5。
-- **clone の確保は build_config が行い、常駐体は argv を渡すだけ**にする。serve の子 argv は `run --watch --root <projects[].root> --state-repo <url> --state-repo-branch <branch>` となり、単発起動と同じ検査・確保コードを通る(1 実装)。
+- **clone の確保は resolve_config が行い、常駐体は argv を渡すだけ**にする。serve の子 argv は
+  `run --watch --project <name>` だけ(実装で確定)。当初案は root/state_repo/branch を argv に
+  展開する形だったが、それだと宣言の解釈が親子 2 実装になり、片方だけ直したときに黙って
+  食い違う。子が host.yaml を読み直す形なら `overrides` も自然に効く。
+- **E4/E5 の判定基準は「git 管理下かどうか」で切る**(実装で確定)。当初案は「root が git
+  toplevel であること」を要求していたが、それだと状態リポジトリを持たないローカル縮退運用
+  (§7 が明示的に許すもの)まで弾いてしまう。守りたいのは *人の git リポジトリに状態を
+  書き込む事故* だけなので、git 管理外の普通のディレクトリは許してよい。
+- **`agent-project.{yaml,yml,json}` は状態ルートのマーカーに数えない**(実装で確定)。移行前の
+  構成ではまさにそれが成果物リポジトリ直下に置かれていた(ブートストラップ)ため、マーカーに
+  数えると E5 で弾きたい相手が全員すり抜ける。
 - 新規プロジェクトの初期化は「空の state repo を作り `--state-repo` で起動」または「`git init` した空ディレクトリで起動」(リモート無しのローカル縮退は `DirectStateGit._has_remote()` の既存挙動どおりコミットのみ)。
 - `--state-repo-dir` は廃止(root がその役割を担う)。`--state-repo-branch` は host.yaml `projects[].branch` の CLI 同義語として残す。
 
@@ -178,9 +193,13 @@ update: {...}                        # 移設: 自動アップデート系(§ �
 **SHARED — 重複許可(両方に書ける。優先順位: CLI > overrides > defaults > プロジェクト yaml > 既定)**
 
 `agent_cli`(scalar) / `model` / `act_timeout` / `verify_timeout` / `location` / `concurrency`
-(仕様指定の 6 キー)+ 次の 3 キーを追加提案する(仕様の未決 1 への決着案):
-`agent_timeout`(CLI 性能差) / `actor`(PC ごとの操作者名義) / `notify_cmd`(通知はノードのデスクトップ環境依存)。
-`ltm_home` はノード局所パスだが ltm-use 側の既定解決があるため追加しない(必要になったら足す。SHARED への追加は非破壊)。
+(仕様指定の 6 キー)+ `agent_timeout`(CLI 性能差) / `actor`(PC ごとの操作者名義) /
+`notify_cmd`(通知はノードのデスクトップ環境依存)。
+
+**実装で追加した 3 キー**: `ltm_home` / `flow_config` / `verify_cwd`。いずれも値がノード局所の
+絶対パスになりうる(`flow_config` の実例が `~/.agents/agent-flow.yaml`)。共有 yaml だけに置くと
+他 PC で存在しないパスを指すことになり、S3 が repos.json の `local` で解こうとしている問題と
+同種なので、同じ扱い(共有既定 + ノード上書き)に揃えた。SHARED への追加は非破壊。
 
 **CLI_ONLY — 設定ファイルに書けない実行時フラグ(現行どおり)**
 
@@ -189,8 +208,15 @@ update: {...}                        # 移設: 自動アップデート系(§ �
 **REMOVED — 廃止(検出時の挙動は §3.3)**
 
 `state_worktree_dir` `state_branch` `state_commit` `state_push` `state_backup_branch`(fail-fast E7)/
-`state_commit_interval`(警告のみ・無視)/ `state_git`(警告のみ・無視。origin は clone が必ず持つため役目が無い。URL 設定の受け皿は host.yaml `projects[].state_repo`)/
-`state_repo` `state_repo_dir` `state_repo_branch`(プロジェクト yaml に書いたら E1。CLI は §3.1 のとおり存続)
+`root` `state_repo` `state_repo_dir` `state_repo_branch` `state_git` `state_commit_interval`
+(**警告して無視** = `_INERT_PROJECT_KEYS`)。
+
+**実装で変えた判断**: 当初は state_repo 族もプロジェクト yaml にあれば E1(fail-fast)とする案
+だったが、警告+無視に緩めた。基準を「honoring it would change behavior wrongly なら止める /
+structurally inert なら警告」に統一したため——プロジェクト yaml は状態リポジトリの中にあり、
+読まれる時点で clone は既に済んでいる。つまりこれらの値は構造上ただの無効値で、honoring の
+余地が無い。共有ファイル 1 行の残骸で全ノードを同時に落とす方が害が大きい。`root` も同様
+(ファイルの置き場所そのものが root なので、書いても指す先は変わらない)。
 
 #### resolve_config v2(マージの実装)
 
@@ -267,6 +293,22 @@ def resolve_config(args):
 シグネチャは `_source_repo(cfg, task)`(task の workspace が要るため)。S1+S3 を同一フェーズで実装する根拠がこれで、リゾルバ関数のインターフェース
 `resolve_local_repo(host: HostConfig, url: str) -> Path | None` だけを本設計の前提として固定する。
 
+### 3.7 dashboard の追従(実装で追加)
+
+`state_top` 相当の概念は dashboard 側にも二重実装されていた。エンジンが worktree へ書かなく
+なるので、次を除去した(`tools/agent-dashboard/src/features/agent-project/main/project.js`):
+
+- `ensureStateWorktree` / `toStateWorktree` / `fromStateWorktree` / `_stateWorktreePath` /
+  `_sourceRootPath` / `DEFAULT_STATE_BRANCH` — worktree の作成・正規化・逆変換
+- `state_repo_dir` の解釈(clone 先は `<repo>-state` 固定に)
+
+残したのは**移行途中の 2 形の読み替え**だけ: ①成果物リポジトリを登録したまま(直下に旧
+`state_repo:` が残っている)→ 隣の `<repo>-state`、②状態が `<ws>/.agent-project` にネストして
+いる旧レイアウト → その下。①②とも「登録するのは状態 clone」が正で、これは互換経路。
+
+`readProject` の検収 diff パス補正(`_repairStateDeliveryPaths`)は、worktree 逆変換ではなく
+「状態 clone と登録パスが別なら登録パス側へ読み替える」に一本化した。
+
 ### 3.6 doctor の拡張
 
 - 新検査: E1〜E7 相当の設定検査を warn でなく起動前チェックとして再掲(起動できないプロジェクトの原因を serve 側からも診断できるように)
@@ -313,18 +355,35 @@ def resolve_config(args):
 8. CONFIG_DEFAULTS 全キーが分類 frozenset のいずれか 1 つに属する(契約の CI 固定)
 9. `_source_repo(cfg, task)`: resolver ヒット/ミス(管理 clone フォールバック)
 
-改修: worktree 前提のテスト(test_state_git.py の大半・test_config.py の profile 系)は削除または state repo 前提へ書き換え。
+改修: worktree 前提のテスト(test_state_git.py の `StateWorktreeTests` / `StateCommitTests` /
+`StateBackupTests`・test_config.py の profile 系)は削除または state repo 前提へ書き換え。
+dashboard 側は `state-worktree.test.js` / `state-worktree-wsl.test.js` を削除し、
+`state-repo-root.test.js` / `workspace-root.test.js` を新契約へ書き換え。
+
+**実績**: agent-project 946 件 / agent-dashboard 全スイート green。
+
+**実装中に見つけて直した別件**: テストの共有前置き(`tests/_shared.py`)が
+`AGENT_PROJECT_AGENTS_HOME` を隔離しておらず、`resolve_config` が常に host.yaml を読むように
+なった時点で開発者の実 `~/.agents/agent-project.host.yaml` が全テストに漏れる状態だった
+(`AGENT_CONTROL_DIR` は既に隔離済みだったのに、こちらは抜けていた)。存在しないパスを既定に
+向けて塞いだ。
 
 ---
 
-## 6. 実装ステップ(PR 分割)
+## 6. 実装(実績)
 
-1. **PR-1**: キー分類 frozenset + `_validate_layers` + E1/E2/E7/W3(検証のみ先行。既存動作は不変で警告が出るだけの段階)
-2. **PR-2**: host.yaml 拡張(defaults/projects[].state_repo/branch/root/overrides/repos, update 移設)+ resolve_config v2 + profile 廃止(W1)
-3. **PR-3**: build_config の root 決定一本化(E3〜E5)+ worktree 機構削除 + DirectStateGit 一本化 + `_source_repo` 置き換え(S3 リゾルバと接続)
-4. **PR-4**: serve/worker init 追従 + doctor 拡張 + example/ドキュメント/CHANGELOG
+設計時は 4 PR に分ける想定だったが、`state_top` の削除が resolve_config / build_config /
+state.py / stategit.py / 検収 diff にまたがり、途中段階で全テスト green を保てないため
+1 コミットにまとめた(分割しても各段階が壊れているなら分割の意味が無い)。
 
-各 PR 完結で全テスト green を維持する。PR-3 が破壊的変更の本体。
+含まれるもの:
+
+1. キー分類 frozenset + `_validate_layers`(E1/E2/E7 + inert/未知キー警告)
+2. host.yaml 拡張(`defaults` / `projects[].state_repo|branch|root|overrides` / `repos` / `update`)
+   + resolve_config v2 + profile 廃止
+3. root 決定の一本化(E3〜E6)+ worktree 機構削除 + DirectStateGit 一本化 +
+   `_source_repo` 置き換え
+4. serve / worker init / doctor / dashboard(§3.7)/ example / ガイド / README / CHANGELOG
 
 ---
 
@@ -335,8 +394,17 @@ def resolve_config(args):
 | worker init と専有項目の整合 | worker init も同一スキーマ(additive v1)を書き、検証コードを共通化(§3.4) |
 | overrides に許すキーの最終リスト | 仕様の 6 キー + `agent_timeout`/`actor`/`notify_cmd`(§3.2 SHARED)。追加は非破壊なので最小から始める |
 
+**実装で決着した項目**:
+
+| 項目 | 決着 |
+|---|---|
+| `node` の解決順 | 宣言(host.yaml `node_id`)> 環境変数 `AGENT_PROJECT_NODE` > hostname。宣言を環境変数に負けさせると、host.yaml に書いた PC が起動元シェル次第で別名になり、板の名義と claim の持ち主が食い違う。`HostConfig.node_id_declared` で「宣言されたか」を保つ |
+| `_cleanup_bus` / `cmd_gc` の `state_git` 条件 | 条件を `git_bus` のみへ縮小。旧条件は S1 後に「常に真」となり、バス掃除が永久に走らなくなる。状態リポジトリは bus/ も同期するが、削除は keep 件数を超えた分だけなので意図どおり |
+| `projects[].root` の必須性 | **必須**。root 未宣言だと clone 先が cwd 依存になり、常駐体の子は cwd を当てにできない。宣言を促して停止する |
+
 残課題(本設計では保留):
 
 - `agents:`(処理毎の agent_cli/model 上書き)と SHARED 群の合成順(overrides.model と agents.plan.model の優先)。現行の「agents が処理単位で最終勝ち」を維持し、変更しない。
 - 状態リポジトリを持たない完全ローカル運用の公式サポート範囲(git init 縮退は動くが、ドキュメントでは非推奨と明記するに留める)。
 - `~/.agents` 配下の host.yaml を複数ノードで共有配布する運用(node_id 省略 + hostname 自動)における `projects[].root` のパス差異。当面「共有配布するなら root をノード間で同一パスに揃える」を運用規約とする。
+- `_source_repo` の共有 bare ミラー経路(§3.5 の 3)は blobless(`--filter=blob:none`)なので、フォージ無し運用の自動マージ(`_merge_task_branch`)は blob の遅延取得にネットワークを要する。確実にしたいノードは host.yaml `repos[].local` にフルクローンを宣言する。S4 でレビューと決着が MR/PR へ寄るため出番は縮む見込み。

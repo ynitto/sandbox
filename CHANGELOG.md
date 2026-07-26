@@ -7,6 +7,45 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-project: 状態専用リポジトリの唯一化と設定 2 層の責務分離（S1・**破壊的変更**）
+
+設定の置き場が「成果物側 yaml・状態側 yaml・profile・host.yaml」の 4 か所に散り、状態ルートも
+worktree 方式と専用リポジトリ方式の 2 系統が併存していた。宣言の場所と実行の場所が食い違う
+ことが、移行が効かない・設定が効かない・ノード固有パスが全 PC へ配られる、の共通原因だった
+（設計: `docs/plans/2026-07-26-s1-config-two-layer-detailed-design.md`）。
+
+- **状態ルートは常に状態専用リポジトリの clone**。worktree 方式（`state_worktree_dir` /
+  `state_branch` / `state_commit` / `state_push` / `state_backup_branch`）を廃止し、これらの
+  キーを検出したら移行手順を示して**起動を止める**。黙って無視すると「バックアップされている
+  つもりの未バックアップ状態」が続くため。
+- **暗黙フォールバックの廃止**。宣言した `state_repo` と root の `origin` が食い違う・clone に
+  失敗する構成は起動を止める。旧実装はここで黙って worktree 方式へ倒れ、移行が効いていない
+  ことに誰も気付けないまま状態が旧構成へ書かれ続けていた。
+- **成果物リポジトリを状態ルートにする事故を起動時に検出**。他リポジトリの内側・状態マーカーの
+  無い git リポジトリを root にすると停止し、移行前の `state_repo:` 入り yaml が残っていれば
+  その URL を案内に含める。
+- **設定は 2 ファイル**: `~/.agents/agent-project.host.yaml`（ノード固有）と状態リポジトリ直下の
+  `agent-project.yaml`（プロジェクト共有）。キーの帰属は起動時に検査し、違反は移行先を示して
+  止める。両方に書けるのは `agent_cli` / `model` / `act_timeout` / `verify_timeout` /
+  `location` / `concurrency` / `agent_timeout` / `actor` / `notify_cmd` / `ltm_home` /
+  `flow_config` / `verify_cwd` の 12 キーだけで、優先順位は
+  CLI > `projects[].overrides` > `defaults` > プロジェクト yaml > 既定。
+- **profile（`~/.agents/agent-project/profiles/`）を廃止**。`root` / `node` / `availability` は
+  host.yaml へ吸収した（`--profile` は移行先を示して停止する）。
+- **設定ファイルの探索チェーンを廃止**（`cwd → ./.agents → ./.agent → ~/.agents`）。状態ルート
+  直下のみを読む。旧探索先にファイルが残っていれば名指しで警告する（移行時に成果物側の古い
+  yaml が黙って優先される事故を防ぐ）。
+- **`update_*` と `board_workdir` をノード側へ移設**。ツールの自動更新はノードのインストール
+  管理で、共有設定に置くと更新の停止・更新元の差し替えが全 PC へ一斉に飛ぶ。
+- **状態のコミッタを `DirectStateGit` ただ 1 つに統合**（`commit_state` / `backup_state` /
+  本体側ミラーの取り込みを削除）。ローカルのコミットは毎同期で行い、`state_git_interval` が
+  律速するのは fetch/push だけ。
+- **`state_top` / `source_root` を削除**。成果物リポジトリの解決は
+  host.yaml `repos[].local` → ローカルパス → 共有 bare ミラーの順に置き換えた（S3 リゾルバの入口）。
+- 常駐体は子へ `--project <名前>` だけを渡すようになった（宣言の解釈を親子で二重化しない）。
+- 移行手順: `docs/guides/state-repo-migration.md`（廃止キーと移行先の対応表を追加）。
+
+
 ### agent-amigos: 設計書との照合で見つかった 4 件を修正（設定の読み落とし・沈黙する stub・staffing fail・deadline）
 
 設計書の統合（下記）で洗い出した実装漏れを直した。いずれも**沈黙して壊れる**性質のもの。

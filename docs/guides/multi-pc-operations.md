@@ -2,8 +2,8 @@
 
 > 対象構成: 「各 PC = Windows で agent-dashboard ＋ WSL で agent-project daemon」を
 > 複数台並べ、1 つのプロジェクト（backlog）を分担して進める。
-> **方針: 新しい同期機構は作らない。** 必要な仕組み（state-git 同期・`coordination: git-cas`・
-> `commands/` / `needs/` メールボックス・PC 固有 profile）は既に実装済みであり、
+> **方針: 新しい同期機構は作らない。** 必要な仕組み（state-git 同期・Git CAS・
+> `commands/` / `needs/` メールボックス・PC 固有の host.yaml 宣言）は既に実装済みであり、
 > 本ガイドは「壊れやすい経路を避け、堅牢な経路だけを使う組み合わせ」を定義する。
 
 ## 前提（要件）
@@ -43,58 +43,63 @@
    `agent-project`（サブディレクトリ or 専用リポジトリ）へ書くのは各 PC の agent-project 本体のみ。
    dashboard・人手の編集は「リモート優先で取り込まれる入力パス」
    （`commands/` `inbox/` `needs/` `policy.md` `charter.md` `rules.md`）に限定する。
-2. **PC 固有情報は共有 YAML に書かない**。`node` / `root` / `availability` は各 PC の
-   local profile（`~/.agents/agent-project/profiles/<project>.yaml`、
-   `agent-project.profile.yaml.example` 参照）に置く。共有 `agent-project.yaml` は全 PC で同一。
+2. **PC 固有情報は共有 YAML に書かない**。`node_id` / clone 先 `root` / `availability` /
+   ローカルクローン `repos[]` は各 PC の `~/.agents/agent-project.host.yaml`
+   （`agent-project.host.yaml.example` 参照）に置く。共有 `agent-project.yaml` は全 PC で同一。
+   帰属は起動時に検査され、取り違えるとエラーで止まる（S1）。
 3. **状態は WSL 側 ext4 に置く**。`/mnt/c`（DrvFS）は flock が不安定で claim ロック・
    state 同期の前提が崩れる。dashboard からは `\\wsl.localhost\<distro>\...` 越しに読める。
 4. **共有ブランチへの force push は全員禁止**（サーバ側の保護ブランチで強制推奨）。
    エンジンは絶対に force push しない設計（push 競合は fetch → 3-way merge → 再 push、
    指数バックオフ 5 回。失敗しても次の同期間隔で再試行）なので、これを人が壊さないこと。
-5. **状態は専用リポジトリ方式（案1）を使う**（`docs/guides/state-repo-migration.md`）。
-   worktree（`<repo>-agent-state`）方式は Python/JS の二重実装によるパス解決が残る
-   壊れやすい経路のため、複数 PC 運用では専用リポジトリに寄せる。
+5. **状態は専用リポジトリ方式**（`docs/guides/state-repo-migration.md`）。
+   これが唯一の方式で、worktree（`<repo>-agent-state`）方式は S1 で廃止した
+   （Python/JS の二重実装によるパス解決が壊れやすく、正本ブランチへのミラーがドリフト源
+   だったため）。旧キーが残っていると起動時に移行手順を示して止まる。
 
 ## 設定
 
 ### 共有設定 `agent-project.yaml`（状態リポジトリ直下・全 PC 同一）
 
-`agent-project.state-git.yaml.example` をベースに、複数 PC 直接分担なので
-`coordination` を有効化する:
+`agent-project.state-git.yaml.example` をベースにする。**複数 PC 分担のための設定は要らない**
+——状態ルートに origin があり、`status/<node>.json` に自分以外の生存ノードが観測された
+ときだけ Git CAS が自動で有効になる（旧 `coordination: git-cas` キーは廃止）。
 
 ```yaml
-root: .
 workdir: work
 watch: true
 
-# 複数 PC が同じ backlog を直接分担する場合の必須設定
-coordination: git-cas          # controller lease と task claim を remote HEAD の CAS で確定
+# 調整したいときだけ（既定のままで動く）
 controller_heartbeat_sec: 30
 controller_lease_sec: 120
 coordination_retries: 3
 
-state_git_interval: 300        # 同期の最短間隔（秒）。反映を速めたければ短く
+state_git_interval: 300        # fetch/push の最短間隔（秒）。反映を速めたければ短く
 # default_node: pc-a           # node 未指定タスクの既定実行ノード。空だと「どの PC も拾える」
-                               #   （git-cas があるので二重実行はしないが、拾わせたくない PC が
+                               #   （CAS があるので二重実行はしないが、拾わせたくない PC が
                                #    あるなら明示する）
 ```
 
 ポイント:
 
-- `coordination: git-cas` が **二重実行防止の本体**。`claims/` のローカルロックは
-  PC を跨いだ排他にならない（同期対象外）ため、複数 daemon 構成では必須。
+- **二重実行防止の本体は Git CAS**。`claims/` のローカルロックは PC を跨いだ排他に
+  ならない（同期対象外）ため、複数 daemon 構成ではこれが効く。
 - controller lease により planner（charter 計画・triage・inbox 取り込み・自動割当）は
   常に 1 台だけ。lease はハートビートで維持され、切れれば他 PC が自動で引き継ぐ。
   **controller が落ちても実行中タスクは止まらない**（planner 機能だけが移る）。
 
-### PC 固有 profile（各 PC の `~/.agents/agent-project/profiles/<project>.yaml`）
+### PC 固有の宣言（各 PC の `~/.agents/agent-project.host.yaml`）
 
 ```yaml
 schema_version: 1
-project: myproj
-node: pc-a                    # PC ごとに一意。タスクの `- node:` 割当・status/<node>.json に使う
-root: /home/me/projects/myproj-state
-project_config: /home/me/projects/myproj-state/agent-project.yaml
+node_id: pc-a                 # PC ごとに一意。タスクの `- node:` 割当・status/<node>.json に使う
+projects:
+  - name: myproj
+    state_repo: git@gitlab.example.com:team/myproj-state.git
+    root: /home/me/agents/myproj-state    # このノードでの clone 先（無ければ自動 clone）
+repos:                        # 手元の成果物クローン（検収差分・worker の高速化に使う）
+  - url: git@gitlab.example.com:team/app.git
+    local: /home/me/mirrors/app
 availability:                 # この PC の稼働スケジュール（他 PC に影響しない）
   timezone: Asia/Tokyo
   daily_stop: "23:00"
@@ -109,8 +114,8 @@ availability:                 # この PC の稼働スケジュール（他 PC �
 
 ### PC 起動時の自動起動（WSL）
 
-profile が絶対パス必須なのは自動起動の cwd 非依存のため。例（Windows タスクスケジューラ、
-ログオン時）:
+host.yaml の `projects[].root` が絶対パス必須なのは自動起動の cwd 非依存のため。
+例（Windows タスクスケジューラ、ログオン時）:
 
 ```
 wsl.exe -d <distro> -u <user> -- agent-project serve
@@ -134,7 +139,7 @@ stale lock・中断 rebase）は次回起動時に自動回収される。
 
 ### 分担の粒度 — 既定は「タスク単位」。ノード単位ではない
 
-`coordination: git-cas` が分散するのは **agent-project のタスク**であり、claim した PC が
+Git CAS が分散するのは **agent-project のタスク**であり、claim した PC が
 そのタスクの run（agent-flow のタスクグラフ）を**丸ごとローカルで実行し切る**。
 run 内の各ノードが PC 間に分散されないのは**バグではなく仕様**:
 
@@ -188,7 +193,7 @@ run 内の各ノードが PC 間に分散されないのは**バグではなく�
   第二の writer はコミット競合と done 不変条件の破壊の源。操作は必ず `commands/` 経由。
 - **共有ブランチへの force push / 履歴書き換え**。エンジンの CAS・フェンシングの前提が崩れる。
 - **共有 `agent-project.yaml` に node や availability を書く**。全 PC が同じ node を名乗り、
-  claim・割当・死活判定が全部壊れる。PC 固有値は profile へ。
+  claim・割当・死活判定が全部壊れる。PC 固有値は host.yaml へ。
 - **状態を `/mnt/c` に置く**。flock・rename の原子性が保証されない。
 - **1 つの状態名前空間（subdir/リポジトリ）に複数プロジェクトの daemon を向ける**。
   「1 名前空間 = 1 backlog = 各 PC 1 daemon」を守る。

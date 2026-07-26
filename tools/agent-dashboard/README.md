@@ -94,28 +94,31 @@ agent-amigos ミッションとノード予算（`src/features/amigos/`）を同
   タスクリンク `🗒 <taskid>`（クリックでバックログのタスクダイアログへ）、タスクダイアログに
   「関連する agent-flow run（リトライ系統）」一覧。
 
-### ワークスペースとプロジェクトルート
+### プロジェクトルート（状態専用リポジトリの clone）
 
-登録するのは**ワークスペース** — `.agents/agent-project.yaml`（または直下の `agent-project.yaml`）を持つ
-開発フォルダで、agent-project CLI を起動する場所（CLI から見た cwd）。人が普段開いているフォルダを
-そのまま登録すればよい。
-
-ビュアーはそこから設定の `root:`（相対はワークスペース基準）を読み、**プロジェクトルート** — 状態の
-置き場 — を導く。`charter.md` / `backlog/` / `needs/` / `bus/` / `flow-archive/` はすべてこの直下で、
-CLI の `--root` と同じものを指す。承認・投入・リセットなどの操作はすべてプロジェクト
-ルートを基準に行う。
+登録するのは**状態専用リポジトリの clone**。agent-project の状態ルートはこれ 1 つで
+（S1）、`charter.md` / `backlog/` / `needs/` / `bus/` / `flow-archive/` はすべてその直下、
+CLI の `--root`（= host.yaml の `projects[].root`）と同じものを指す。承認・投入・リセットなどの
+操作はすべてここを基準に行う。
 
 ```
-/home/me/src/webapp           ← ワークスペース（これを登録する）
-├── .agents/agent-project.yaml   ← root: .agent-project
-└── .agent-project/            ← プロジェクトルート（状態の置き場）
-    ├── charter.md  charters/  backlog/  needs/  decisions/
-    └── bus/  flow-archive/
+/home/me/agents/webapp-state   ← 状態リポジトリの clone（これを登録する）
+├── agent-project.yaml         ← プロジェクトの合意（全 PC 共有）
+├── charter.md  charters/  backlog/  needs/  decisions/
+└── bus/  flow-archive/
 ```
 
-`root:` が無ければフォルダ自体がプロジェクトルート＝状態フォルダを直接指す形にもなる。
-表示名はワークスペース名になるので、`.agent-project` のような技術的なフォルダ名が一覧に
-出ることはない。
+**clone は dashboard では行わない**（agent-project が host.yaml の宣言に従って作る）。
+エンジンが居ない閲覧専用 PC だけ `git clone` を 1 回して、その clone を登録する。
+
+移行途中の 2 つの形も読める（どちらも旧レイアウトの互換で、正は上の形）:
+
+- 成果物リポジトリを登録したまま・直下に旧ブートストラップ `state_repo:` が残っている
+  → 隣の `<repo>-state` を開く
+- 状態が `<ws>/.agent-project` にネストしている → その下を開く
+
+状態 worktree（`<repo>-agent-state`）への正規化と自動作成は**廃止した**。エンジンがそこへ
+書かなくなった以上、開くと「更新が止まった状態」を実体と信じて見せることになるため。
 
 **プロジェクトの発見は実行側の状況ファイル 1 本**（`engine/status.json` の `children[].root`）。
 どのプロジェクトを持つかを決めるのは実行側の `agent-project.host.yaml` で、この画面はそれを
@@ -126,18 +129,16 @@ CLI の `--root` と同じものを指す。承認・投入・リセットなど
 
 ### リモートで稼働する agent-project を見る（git 経由・一次経路）
 
-本体（agent-project）は**プロジェクトルート自体を状態共有リポジトリの clone**として動かすのが
-推奨構成（direct モード。本体側 README「状態の git 保存・共有」参照）。本体が状態を直接
-コミット・push するので、viewer 側は:
+本体（agent-project）は**状態ルート自体が状態専用リポジトリの clone**（direct モード。本体側
+README「状態の git 保存・共有」参照）。本体が状態を直接コミット・push するので、viewer 側は:
 
 1. 同じリポジトリを clone する
-2. ⚙ 設定「ワークスペース」にその clone を登録する（clone 自体がプロジェクトルート＝状態フォルダ直指定。複数プロジェクト = 複数 clone を 1 行ずつ）
+2. ⚙ 設定「ワークスペース」にその clone を登録する（複数プロジェクト = 複数 clone を 1 行ずつ）
 
 viewer の操作（needs 記入・commands/ ドロップ・inbox/ 投入・一時停止/停止）はファイルとして
 書かれてコミット・push され（既定で「操作を都度コミットしてプッシュ」が有効）、本体側が idle の
 pull で取り込んで次パスを起こす。指示の反映は同期間隔（本体側 `state_git_interval`・既定 300 秒）
-ぶん遅れる。ルートが git でない構成（本体の管理クローン方式）でも、`state_git_subdir` の clone を
-登録すれば同じように見える。
+ぶん遅れる。
 
 同期は viewer 自身でもできる（git-file-sync なしで完結する）:
 

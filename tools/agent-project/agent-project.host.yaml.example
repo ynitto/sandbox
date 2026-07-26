@@ -1,12 +1,30 @@
-# PC 単位の宣言（host.yaml）。プロジェクト宣言の単一ソース（実装計画 W1-11・設計 §4.2）。
+# PC 単位の宣言（host.yaml）— **このノードの宣言**（何を動かすか・資源・ローカル環境）。
 # 推奨配置: ~/.agents/agent-project.host.yaml（cwd に置いてもよい。探索順は cwd → ~/.agents）。
 # 起動: agent-project serve（フルノード）/ agent-project worker（projects が空ならワーカー
 # ノード lite——別コマンドだが実装は serve と同一。設計 §4.3・C12）。
+#
+# ── 設定は 2 ファイル（S1）──
+#   このファイル（各 PC・共有しない）  … このノードの宣言: 何を動かすか・資源・ローカル環境
+#   状態リポジトリ直下 agent-project.yaml（全 PC 共有） … プロジェクトの合意: どう動かすか
+#
+#   帰属は起動時に検査する。ノード固有のキー（下記の専有項目）をプロジェクト yaml に書くと、
+#   state repo 経由で全 PC へ配られて壊れるのでエラーで止まる。逆に「プロジェクトとして
+#   どう進めるか」（計画・ゲート・予算・収束・検証・学習・タスク運用）を defaults/overrides に
+#   書くと、ノードごとに食い違って実行が非決定になるのでこれもエラーで止まる。
 schema_version: 1
 
 # このノード（PC）の身元。省略時はホスト名を正規化（agentcore.nodeid.normalize_node_id）
 # して使う——複数 PC で同じ yaml を共有配布する運用なら省略が既定（PC 毎に自動で変わる）。
+# 宣言すると環境変数 AGENT_PROJECT_NODE より優先される（宣言が正）。
 node_id: pc-a
+
+# ── ノード全体の既定（共有キーの上書き・S1）──
+# ここに書けるのは「ノードごとに違ってよい」群だけ:
+#   agent_cli / model / act_timeout / verify_timeout / location / concurrency /
+#   agent_timeout / actor / notify_cmd / ltm_home / flow_config / verify_cwd
+# 優先順位: CLI > projects[].overrides > defaults > プロジェクト yaml > 組み込み既定。
+defaults:
+  agent_cli: codex          # この PC に入れてある CLI（全プロジェクト共通の既定）
 
 # このノードが監督するプロジェクト（agent-project run --watch を Supervisor が起動・監視・
 # 隔離・再起動する）。空なら「ワーカーノード（lite）」——プロジェクトを持たず、余った計算力を
@@ -14,18 +32,38 @@ node_id: pc-a
 # `agent-project worker init` の最小手順）。
 projects:
   - name: example-project          # 省略可（省略時は root から自動生成）
-    root: /home/me/projects/example-project-state
-    config: /home/me/projects/example-project-state/agent-project.yaml  # 省略可（root 配下の既定探索）
+    # 状態専用リポジトリ。**ここが唯一の置き場**——clone を作る前に読める場所が要るため、
+    # 状態リポジトリの中（agent-project.yaml）に書いても意味を持てない。
+    state_repo: https://gitea.example/you/example-state.git
+    branch: main                   # 状態を載せるブランチ（省略時 main）
+    # このノードでの clone 先（**絶対パス必須**）。無ければ agent-project が clone する。
+    # 既にあるディレクトリを指す場合は origin の一致を検査し、食い違えば起動を止める
+    # （黙って旧構成へ書き続ける事故を防ぐ）。
+    root: /home/me/agents/example-project-state
+    overrides:                     # このノード × このプロジェクトだけの上書き（共有キーのみ）
+      model: gpt-5.6-sol
 
-# 板（agent-board）参加の設定（板を持たないローカル運用なら board を省略してよい）。
-# amigos 参加 tick（下記 amigos_bus）の板巡回にも使う。node 名義での「板の請負」
-# （nodes/<pc>.json 能力宣言・workload=flow/amigos への入札）自体はまだ未実装
-# （実装計画 W1-11 残・設計 §4.2「現状未実装」——中途半端な実装は二重落札のリスクがあるため
-# 意図的に見送っている。現状ここで動くのは amigos 参加 tick の板巡回だけ）。
+# ── ノード固有のローカルクローン宣言（S3）──
+# 手元にある成果物リポジトリのクローン。検収差分の解決と worker の worktree 切り出しに使い、
+# ネットワーク越しのミラー取り直しを省く。**共有 repos.json には置けない**——ホスト固有の
+# 絶対パスが state repo 経由で全 PC へ配られてしまうため。URL は正規化して一致判定する。
+repos:
+  - url: https://gitea.example/you/app.git
+    local: /home/me/mirrors/app
+
+# ── 板（agent-board）参加の宣言 ──
+# 板を持たないローカル運用なら board を省略してよい。amigos 参加 tick（下記 amigos_bus）の
+# 板巡回にも使う。node 名義での「板の請負」（nodes/<pc>.json 能力宣言・workload=flow/amigos
+# への入札）自体はまだ未実装（実装計画 W1-11 残・設計 §4.2「現状未実装」——中途半端な実装は
+# 二重落札のリスクがあるため意図的に見送っている。現状ここで動くのは amigos 参加 tick の
+# 板巡回だけ）。
+#
+# 注: ここの `agent_cli` は **このノードで使える CLI の一覧**（板への入札判定に使う能力宣言）で、
+# 上の `defaults.agent_cli`（このノードの既定 CLI・スカラ）とは別のキー。
 tags: []
 agent_cli: []
 board: ""
-board_workdir: null
+board_workdir: null       # git+ 板の clone 作業領域（ノード局所パスなのでここが置き場）
 
 # amigos 参加 tick（claim・心拍・オーナー職務・板巡回。手番は NodeWorkerPool へ委ねる）の
 # 対象バス。未設定なら amigos 参加 tick 自体を skip する（board 未設定時と同じ流儀）。
@@ -42,6 +80,17 @@ amigos_config: null
 # ——実行中の手番は ~/.agents/amigos/turns/*.json に印が出て、常駐体がそれを読む。
 budget:
   max_concurrent: 0   # 0 = 既定（4）
+
+# ── ツールの自動アップデート（S1 でノード側へ移設）──
+# 「このノードのインストール管理」なのでプロジェクト共有設定には置かない（置くと更新の停止・
+# 更新元の差し替えが全 PC へ一斉に飛び、あるノードだけ版を固定する運用ができない）。
+# 省略時は組み込み既定（有効・6 時間ごと・更新元は skill-registry.json から自動解決）。
+# update:
+#   enabled: true
+#   check_interval: 21600
+#   repo: ""            # スキルリポジトリ（空なら skill-registry.json から自動解決）
+#   branch: main
+#   installer: install.sh
 
 # 稼働時間帯（夜間停止）。PC 単位の性質なのでここが単一ソース。省略すると常時稼働。
 # 時間の進み方は 3 段:
