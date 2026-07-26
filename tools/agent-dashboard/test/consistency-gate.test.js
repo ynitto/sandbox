@@ -62,6 +62,8 @@ test('片方だけの設定は片方だけ結線済みになる', () => {
   const ws = mkWorkspace("regression_cmd: 'codd-gate verify --base \"$KIRO_BASE_REV\"'\n");
   try {
     const gate = project.readProject(ws, {}).consistencyGate;
+    assert.strictEqual(gate.regressionConfigured, true);
+    assert.strictEqual(gate.intakeConfigured, false);
     assert.strictEqual(gate.regressionWired, true);
     assert.strictEqual(gate.intakeWired, false);
     assert.strictEqual(gate.intakeCmd, null);
@@ -111,6 +113,21 @@ test('設定はあるがキーが無ければ未結線', () => {
     assert.strictEqual(gate.regressionWired, false);
     assert.strictEqual(gate.intakeWired, false);
     assert.strictEqual(gate.regressionCmd, null);
+  } finally {
+    fs.rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test('空白だけのコマンドは未設定として扱う', () => {
+  const ws = mkWorkspace("regression_cmd: '   '\nintake_cmd: '   '\n");
+  try {
+    const gate = project.readProject(ws, {}).consistencyGate;
+    assert.strictEqual(gate.regressionConfigured, false);
+    assert.strictEqual(gate.intakeConfigured, false);
+    assert.strictEqual(gate.regressionWired, false);
+    assert.strictEqual(gate.intakeWired, false);
+    assert.strictEqual(gate.regressionCmd, null);
+    assert.strictEqual(gate.intakeCmd, null);
   } finally {
     fs.rmSync(ws, { recursive: true, force: true });
   }
