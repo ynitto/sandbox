@@ -263,6 +263,9 @@ def resolve_config(args):
 | W2 | 成果物リポジトリ側 agent-project.yaml の存在(serve 経路で projects[].root と別の場所に state_repo: 入り yaml を検知した場合を含め、積極探索はしない) | 起動時警告のみ(読まない)。E5 の誘導文で言及する |
 | W3 | `state_commit_interval` / `state_git` | 警告のみ・無視 |
 | W4 | 旧 `~/.agents/agent-project.yaml` 等、探索チェーンでしか見つからなかった設定 | 検出時に警告 1 回(「探索チェーンは廃止・<root>/ 直下のみ」)。実装は _find_config 削除時に「旧探索先にファイルが在るのに新契約で見つからない」場合のみ通知 |
+| W5 | **host.yaml トップレベルの未知キー**(P1-3 で追加) | 警告のみ・無視。キーが `CONFIG_DEFAULTS` にあるときは行き先を名指しする(SHARED → `defaults:` / プロジェクト専有 → 状態リポジトリ直下の agent-project.yaml / `update_*` → `update:` 配下 / `state_repo` 系 → `projects[]`)。どれでもなければ近い既知キーを提示。**E にしない**のは、既存 host.yaml に残る未知キーでフリート全台を一斉に起動不能にする方が害が大きいため——昇格は canary 明けに判断する |
+| W6 | **host.yaml の型が宣言と違う**(P1-3 で追加) | 警告のみ。`tags` / `agent_cli` のスカラは **1 要素の配列へ畳んで救済**する(素朴な列挙は文字列を 1 文字ずつに分解し、板へ `["c","o","d","e","x"]` が publish されて**永久に入札しない**——fail-close なので無言の不参加になる)。`defaults` / `budget` / `update` / `availability` / `projects` / `repos` の形違いは無視 |
+| W7 | **`projects[]` の要素に未知キー**(P1-3 で追加) | 警告のみ・無視。`config:` は **E6 の誘導文**(設定は状態リポジトリ直下へ)を出す——E6 は fail-fast として設計したが実装されておらず、`projects[]` にはキー検査自体が無かった |
 
 #### 削除するコード
 

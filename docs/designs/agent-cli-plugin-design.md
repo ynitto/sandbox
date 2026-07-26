@@ -63,6 +63,13 @@
   - **spill**: 長大プロンプトを一時ファイルへ退避し、短い指示（`{file}` 置換）と専用の権限
     フラグで読ませる方式。kiro-cli の「positional プロンプトを渡すと stdin を読まない」癖の
     データ化で、指示文が依存するツール名（`fs_read`）ごと JSON に移した。
+    **「退避」には別物が 2 つある**（混ぜると壊れる）。定義の `spill`（この項）は退避時に
+    権限フラグを `spill.args` で**置き換える**——「本文を読ませるためにファイル読み取りだけ
+    許す」読み取り専用の用途に閉じた振る舞いで、dashboard の診断がこれを使う。もう 1 つは
+    **argv 長制限（OS の `ARG_MAX`）の退避**で、`agentcore.agentcli.spill_prompt` が担い
+    **権限フラグには触らない**。ヘッドレス実行（検証エージェント・分解・裁定）に前者を
+    掛けると、退避したときだけコマンドを 1 つも実行できなくなり、検証は全基準
+    「検証不能」に倒れる。見ているものが CLI の癖か OS の上限かで、層が違う。
   - **対話モード（`interactive`）**: 対話起動 argv・対話専用の `write_args` / `readonly_args`・
     入力受付を検出する正規表現（`ready_pattern` / `ready_timeout_sec`）・初回プロンプトの
     注入方法（`prompt_inject: send-keys | file`）。dashboard の CLI チャット・cowork の

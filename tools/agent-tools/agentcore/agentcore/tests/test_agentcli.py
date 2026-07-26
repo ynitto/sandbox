@@ -304,5 +304,66 @@ class TestBundledGolden(_Isolated):
             agentcli.load_cli(p.stem, use_cache=False)
 
 
+class TestSpillPrompt(_Isolated):
+    """argv 長制限の退避（P1-2）。3 ツール（agent-project / agent-flow / agent-amigos）が
+    同じ 12 行を別々に持っていたものの集約先。"""
+
+    def spec(self, **over):
+        base = {"command": ["cli", "run"], "prompt_via": "stdin", "model_flag": "--model"}
+        base.update(over)
+        self.write_def("proj/agents", "t", base)
+        return agentcli.load_cli("t", project_dir=str(self.tmp / "proj"), use_cache=False)
+
+    def test_short_prompt_is_untouched(self):
+        path, text = agentcli.spill_prompt("short", 100, prompt_via="argv",
+                                           prefix="t-", instruction="read {file}")
+        self.assertIsNone(path)
+        self.assertEqual(text, "short")
+
+    def test_stdin_is_never_spilled(self):
+        # stdin 渡しは ARG_MAX に当たらない（退避すると本文を無駄に往復させるだけ）。
+        path, text = agentcli.spill_prompt("x" * 500, 10, prompt_via="stdin",
+                                           prefix="t-", instruction="read {file}")
+        self.assertIsNone(path)
+        self.assertEqual(len(text), 500)
+
+    def test_large_prompt_is_written_and_referenced(self):
+        big = "x" * 500
+        path, text = agentcli.spill_prompt(big, 10, prompt_via="argv",
+                                           prefix="t-", instruction="read {file} first")
+        self.addCleanup(os.remove, path)
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(f.read(), big)
+        self.assertEqual(text, f"read {path} first")
+        self.assertNotIn(big, text)
+
+    def test_limit_falls_back_to_the_builtin_default(self):
+        path, _text = agentcli.spill_prompt("x" * 500, 0, prompt_via="argv",
+                                            prefix="t-", instruction="read {file}")
+        self.assertIsNone(path, "0 以下は既定（100000）へ戻す")
+
+    def test_measured_in_bytes_not_characters(self):
+        # 日本語は 1 文字 3 バイト。文字数で測ると ARG_MAX の手前で見逃す。
+        path, _text = agentcli.spill_prompt("あ" * 20, 30, prompt_via="argv",
+                                            prefix="t-", instruction="read {file}")
+        self.assertIsNotNone(path)
+        os.remove(path)
+
+    def test_permission_flags_are_untouched(self):
+        """退避しても権限フラグを落とさない——`headless_cmd(spill_path=…)` との違い。
+
+        定義側の spill は権限フラグを spill.args（kiro では `--trust-tools=fs_read`）へ
+        置き換える読み取り専用向けの機構で、実行して確かめる呼び出しに掛けると
+        1 つもコマンドを実行できなくなる。"""
+        spec = self.spec(prompt_via="argv", write_args=["--trust-all-tools"],
+                         spill={"args": ["--trust-tools=fs_read"], "instruction": "read {file}"})
+        path, text = agentcli.spill_prompt("x" * 500, 10, prompt_via="argv",
+                                           prefix="t-", instruction="read {file}")
+        self.addCleanup(os.remove, path)
+        argv = agentcli.headless_cmd(spec, "", text)["argv"]      # spill_path は渡さない
+        self.assertIn("--trust-all-tools", argv)
+        self.assertNotIn("--trust-tools=fs_read", argv)
+
+
 if __name__ == "__main__":
     unittest.main()

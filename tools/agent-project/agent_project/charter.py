@@ -879,7 +879,8 @@ def append_tombstone(cfg: "Config", title: str, reason: str, charter: str = "") 
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text("# 墓標（このタスクは作り直さない）\n"
                      "<!-- 1 行 1 墓標: `- <タイトル> :: <理由> :: <日付> :: charter=<名前>`\n"
-                     "     解除は `agent-project revive <タイトル>`。人が手で書き足してもよい。 -->\n\n",
+                     "     解除は `agent-project revive <タイトル>`（複数 charter 運用では\n"
+                     "     `--charter <名前>` で対象を絞る／`--all` で全部）。人が手で書き足してもよい。 -->\n\n",
                      encoding="utf-8")
     cells = [title.replace("\n", " "), str(reason or "").replace("\n", " ")[:200],
              datetime.now().strftime("%Y-%m-%d")]
@@ -890,8 +891,21 @@ def append_tombstone(cfg: "Config", title: str, reason: str, charter: str = "") 
     return True
 
 
-def remove_tombstone(cfg: "Config", title: str) -> int:
-    """指紋が一致する墓標行を削除する（`revive`）。削除件数を返す。"""
+def _tombstone_charter(body: str) -> str:
+    """墓標行の本体から `charter=<名前>` タグを取り出す（無ければ空）。`load_tombstones` と同じ規則。"""
+    for extra in [x.strip() for x in body.split("::")][3:4]:
+        if extra.startswith("charter="):
+            return extra[len("charter="):].strip()
+    return ""
+
+
+def remove_tombstone(cfg: "Config", title: str, charter: "str | None" = None) -> int:
+    """指紋が一致する墓標行を削除する（`revive`）。削除件数を返す。
+
+    `charter` を渡すと「その charter 向け + タグ無し」だけを消す——読み
+    （`load_tombstones`）と同じ絞り方にする。`None` は全 charter（明示の `--all`）。
+    追記が `(指紋, charter)` 単位なのに削除が指紋だけだと、複数 charter 運用で片方を
+    revive したつもりで**両方が復活**する（次の plan が黙って作り直す）。"""
     p = tombstones_path(cfg)
     try:
         lines = p.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -902,8 +916,11 @@ def remove_tombstone(cfg: "Config", title: str) -> int:
     for line in lines:
         m = _TOMBSTONE_RE.match(line)
         if m and not line.lstrip().startswith("-->"):
-            head = m.group("body").split("::")[0].strip()
-            if head and _norm_title(head) == fp:
+            body = m.group("body")
+            head = body.split("::")[0].strip()
+            tag = _tombstone_charter(body)
+            in_scope = charter is None or not tag or tag == charter
+            if head and _norm_title(head) == fp and in_scope:
                 removed += 1
                 continue
         kept.append(line)

@@ -762,3 +762,133 @@ class TestVerifyFailingStep(unittest.TestCase):
             ok, msg = km.run_verify("false", Path(d), 30)
         self.assertFalse(ok)
         self.assertIn("失敗した工程: `false`", msg)
+
+
+class BuiltinVerifierPromptTests(unittest.TestCase):
+    """組み込み検証プロンプト（スキル未導入ノードの経路・P1-1）。
+
+    以前はタイトルと受入基準しか使わず、副作用制約（設定 `verify_side_effects`）が
+    **スキル未導入ノードで黙って落ちて**いた。検証は失敗するとリトライで何度も走るので、
+    制約が落ちた回数だけ副作用が累積する。
+
+    この経路はどのテストも通っていなかった——`find_skill_script` がリポジトリの
+    `.github/skills/` を必ず見つけるため、既存テストはスキル経路しか見ていない。
+    ここでは `verifier_skill` に存在しない名前を与えて組み込みを強制する。
+    """
+
+    # 組み込みプロンプトに現れなくてよい入力（**理由の無い除外は書けない**）。
+    SPEC_EXEMPT = {
+        "side_effects": "値そのもの（workspace / network）ではなく、"
+                        "解決済みの制約文 side_effects_text が本文に載る",
+    }
+
+    def _cfg(self, d: Path, **kw):
+        return cfg_for(d, verifier_skill="no-such-verifier-skill", **kw)
+
+    def _spec(self, d: Path, **kw):
+        (d / "backlog").mkdir(parents=True, exist_ok=True)
+        (d / "backlog" / "T1.md").write_text(
+            "## T1: ログイン e2e\n- status: ready\n- acceptance: ログインの e2e が通る\n",
+            encoding="utf-8")
+        cfg = self._cfg(d, **kw)
+        task = km.load_tasks(cfg.backlog)[0]
+        return cfg, km.verifier_input(cfg, task, d)
+
+    def test_side_effect_rule_is_carried(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg, spec = self._spec(d)
+            prompt = km.build_verifier_prompt(cfg, spec)
+            self.assertIn(km.VERIFY_SIDE_EFFECT_RULES["workspace"], prompt)
+
+    def test_network_setting_changes_the_rule(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg, spec = self._spec(d, verify_side_effects="network")
+            prompt = km.build_verifier_prompt(cfg, spec)
+            self.assertIn(km.VERIFY_SIDE_EFFECT_RULES["network"], prompt)
+
+    def test_skill_and_builtin_share_the_rule(self):
+        """スキルの有無で安全制約が変わらない。文言の正典は本体（スキルは受け取る）。
+
+        テストは中立な一時 cwd で走る（`_shared.py`）ので `find_skill_script` は
+        リポジトリのスキルを見つけない——ここではスキルの `prompt.py` を**パス直指定**で
+        走らせ、2 つの経路が同じ制約文を載せることを突き合わせる。"""
+        script = (Path(__file__).resolve().parents[3]
+                  / ".github" / "skills" / "backlog-verifier" / "scripts" / "prompt.py")
+        self.assertTrue(script.is_file(), f"スキルが見つかりません: {script}")
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            _cfg, spec = self._spec(d)
+            proc = subprocess.run([sys.executable, str(script)],
+                                  input=json.dumps(spec, ensure_ascii=False),
+                                  capture_output=True, text=True, encoding="utf-8")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            rule = km.VERIFY_SIDE_EFFECT_RULES["workspace"]
+            self.assertIn(rule, km._builtin_verifier_prompt(spec))
+            self.assertIn(rule, proc.stdout)
+
+    def test_skill_prefers_the_rule_from_the_caller(self):
+        """スキルは受け取った制約文を使う（自前の表より優先）。
+
+        同じ文言を 2 か所で育てると、経路によって安全制約が変わる。入力に無いとき
+        （スキル単体利用・呼び出し側が古い）だけスキル側の表へ落ちる。"""
+        script = (Path(__file__).resolve().parents[3]
+                  / ".github" / "skills" / "backlog-verifier" / "scripts" / "prompt.py")
+        spec = {"task": {"id": "T1", "title": "x"}, "acceptance": ["a"],
+                "side_effects": "workspace", "side_effects_text": "SENTINEL-RULE"}
+        proc = subprocess.run([sys.executable, str(script)],
+                              input=json.dumps(spec, ensure_ascii=False),
+                              capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("SENTINEL-RULE", proc.stdout)
+        del spec["side_effects_text"]
+        legacy = subprocess.run([sys.executable, str(script)],
+                                input=json.dumps(spec, ensure_ascii=False),
+                                capture_output=True, text=True, encoding="utf-8")
+        self.assertIn("作業ツリーの中だけで完結", legacy.stdout, "受け皿の表が消えている")
+
+    def test_every_spec_key_reaches_the_builtin_prompt(self):
+        """構造検査: `verifier_input` の項目を足して組み込みへ載せ忘れたら落ちる。
+
+        P0-4 の「CONFIG_DEFAULTS ⊆ Config」と同じ型の護り——個別に直すだけでは、
+        次に入力を足したときにまた黙って落ちる。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg, spec = self._spec(d)
+            self.assertEqual(set(self.SPEC_EXEMPT) - set(spec), set(),
+                             "SPEC_EXEMPT に spec へ無いキーが残っている（消し忘れ）")
+            for key, why in self.SPEC_EXEMPT.items():
+                self.assertTrue(str(why).strip(), f"SPEC_EXEMPT[{key}] に理由がありません")
+            sentinels = {}
+            probe = {}
+            for key, value in spec.items():
+                if key in self.SPEC_EXEMPT:
+                    probe[key] = value
+                    continue
+                if isinstance(value, dict):
+                    probe[key] = {k: f"sentinel-{key}-{k}" for k in value}
+                    sentinels.update({f"sentinel-{key}-{k}": f"{key}.{k}" for k in value})
+                elif isinstance(value, list):
+                    probe[key] = [f"sentinel-{key}"]
+                    sentinels[f"sentinel-{key}"] = key
+                else:
+                    probe[key] = f"sentinel-{key}"
+                    sentinels[f"sentinel-{key}"] = key
+            prompt = km._builtin_verifier_prompt(probe)
+            missing = sorted(where for sentinel, where in sentinels.items()
+                             if sentinel not in prompt)
+            self.assertEqual(missing, [],
+                             f"組み込みプロンプトに載っていない入力: {missing}。"
+                             "プロンプトへ足すか、SPEC_EXEMPT へ理由付きで登録すること")
+
+    def test_output_contract_matches_the_skill(self):
+        # 件数・証跡必須・unverifiable の扱いは正規化（フェイルクローズ）の前提。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg, spec = self._spec(d)
+            prompt = km._builtin_verifier_prompt(spec)
+            self.assertIn(km.DIFF_CRITERION, prompt)
+            self.assertIn("2 件すべて", prompt)          # acceptance 1 件 + 差分の常設基準
+            self.assertIn("証跡", prompt)
+            self.assertIn("unverifiable", prompt)

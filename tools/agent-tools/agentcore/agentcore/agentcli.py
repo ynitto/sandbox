@@ -236,6 +236,39 @@ def _expand(tokens, model: str, output_file_holder: dict) -> "list[str]":
     return out
 
 
+DEFAULT_ARGV_LIMIT = 100000
+"""argv でプロンプトを渡すときの既定の上限バイト数（`spill_prompt`）。
+
+OS の `ARG_MAX`（Linux で概ね 2MB・環境変数と共有）より十分小さく取る。超えると
+`execve` が E2BIG で失敗し、プロセス起動そのものが立たない。"""
+
+
+def spill_prompt(prompt: str, limit: "int | None" = None, *, prompt_via: str,
+                 prefix: str, instruction: str) -> "tuple[str | None, str]":
+    """argv 長制限を超えるプロンプトを一時ファイルへ退避し、`(退避先, 短い指示)` を返す。
+
+    退避が要らなければ `(None, prompt)`。退避先の削除は呼び出し側の責務
+    （`subprocess.run` を囲む `finally`）——ここは実行しないので寿命を知らない。
+
+    **`headless_cmd(spill_path=…)` とは別物**。あちらは定義の `spill.args` で
+    **権限フラグを置き換える**（kiro-cli では `--trust-all-tools` → `--trust-tools=fs_read`）
+    ので、コマンドを実行して確かめる用途のヘッドレス呼び出し（検証エージェント等）に
+    使うと実行権限ごと失われる。ここが見ているのは OS の `ARG_MAX` であって CLI の癖では
+    ないので、**権限フラグには触らない**。
+
+    `instruction` は `{file}` を含む呼び出し側の文（「何の全文か」は役割ごとに違う）。
+    """
+    if str(prompt_via) != "argv":
+        return None, prompt                  # stdin 渡しは ARG_MAX に当たらない
+    cap = int(limit) if limit and int(limit) > 0 else DEFAULT_ARGV_LIMIT
+    if len(str(prompt).encode("utf-8")) <= cap:
+        return None, prompt
+    fd, path = tempfile.mkstemp(prefix=prefix, suffix=".txt")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(str(prompt))
+    return path, str(instruction).replace("{file}", path)
+
+
 def headless_cmd(spec: dict, model: "str | None", prompt: str, *,
                  readonly: bool = False, no_session: bool = False,
                  spill_path: "str | None" = None) -> dict:
@@ -245,6 +278,10 @@ def headless_cmd(spec: dict, model: "str | None", prompt: str, *,
     spill_path を渡すと、渡された prompt の末尾へ spill.instruction（{file} 置換済み）を足し、
     権限フラグを spill.args で置き換える（kiro-cli が positional プロンプト併用時に stdin を
     読まない癖への対処）。本文はファイル側にある前提で、prompt には短い指示だけを渡す。
+
+    **argv 長制限の退避には使わない**（`spill_prompt` を使う）。権限フラグの置き換えは
+    「本文を読ませるために読み取りだけ許す」読み取り専用の用途に閉じた振る舞いで、
+    実行して確かめる呼び出しに掛けると、退避したときだけ何も実行できなくなる。
     """
     m = str(model or spec.get("default_model") or "")
     holder: dict = {}

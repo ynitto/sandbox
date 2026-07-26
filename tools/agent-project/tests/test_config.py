@@ -778,6 +778,86 @@ class TestAgentPlugin(unittest.TestCase):
         self.assertIn("モデルが大きすぎます", hint)
 
 
+class AgentPromptSpillTests(unittest.TestCase):
+    """argv 長制限の退避（P1-2）。
+
+    agent-project だけ退避が無く、プロンプトが `ARG_MAX` を超えると `execve` が E2BIG で
+    落ちていた（verifier は全基準 unverifiable、plan は空振りで人へ倒れる）。S5/S6 で
+    verifier 入力（repo 文脈 + rules + レシピ + feedback）と planner 入力（charter 全文 +
+    既存タスク + 墓標）が肥大したので、既定 CLI の kiro（argv 渡し）で現実に当たる。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="spill-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self._old_limit = km._ARGV_LIMIT
+        self.addCleanup(setattr, km, "_ARGV_LIMIT", self._old_limit)
+        km._ARGV_LIMIT = 200
+        km._AGENT_PLUGIN_CACHE.clear()
+        self.addCleanup(km._AGENT_PLUGIN_CACHE.clear)
+        self._old_dir = os.environ.pop("KIRO_AGENTS_DIR", None)
+        self.addCleanup(lambda: os.environ.__setitem__("KIRO_AGENTS_DIR", self._old_dir)
+                        if self._old_dir is not None else None)
+
+    def _run(self, cli: str, prompt: str) -> dict:
+        """`_run_agent_cli` を 1 回通し、実際に渡された argv / stdin を捕まえる。"""
+        seen: dict = {}
+
+        def fake_run(cmd, **kw):
+            seen["argv"], seen["stdin"] = list(cmd), kw.get("input")
+            # 退避先は CLI が読む時点で実在している必要がある（掃除は実行後）。
+            m = re.search(r"\S*agent-project-prompt-\S*\.txt",
+                          " ".join(str(t) for t in cmd) + " " + str(kw.get("input") or ""))
+            if m:
+                seen["spill"] = m.group(0)
+                seen["body"] = Path(m.group(0)).read_text(encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, 0, "OK", "")
+
+        with mock.patch.object(km, "_AGENT_CLI", cli), \
+                mock.patch.object(km.subprocess, "run", side_effect=fake_run):
+            seen["text"] = km._run_agent_cli(prompt, None)
+        return seen
+
+    def test_large_prompt_spills_for_argv_cli(self):
+        big = "x" * 500
+        seen = self._run("kiro", big)
+        self.assertNotIn(big, " ".join(seen["argv"]), "本文が argv に載ったまま")
+        spill = seen.get("spill")
+        self.assertTrue(spill, "退避先が argv に載っていない")
+        self.assertEqual(seen["body"], big, "退避先に本文が全部ある")
+        self.assertFalse(os.path.exists(spill), "退避先が実行後に残っている")
+
+    def test_spill_keeps_the_write_permission_flags(self):
+        """退避しても権限フラグを落とさない（P1-2 の要）。
+
+        定義側の `spill`（`headless_cmd(spill_path=…)`）は退避時に権限フラグを
+        `--trust-tools=fs_read` へ**置き換える**。読み取り専用の診断向けの機構なので、
+        コマンドを実行して確かめる検証エージェントに掛けると 1 つも実行できなくなる。"""
+        seen = self._run("kiro", "y" * 500)
+        self.assertIn("--trust-all-tools", seen["argv"])
+        self.assertNotIn("--trust-tools=fs_read", seen["argv"])
+
+    def test_stdin_cli_is_not_spilled(self):
+        # stdin 渡しは ARG_MAX に当たらない（退避すると本文を無駄に往復させるだけ）。
+        big = "z" * 500
+        seen = self._run("claude", big)
+        self.assertEqual(seen["stdin"], big)
+
+    def test_short_prompt_is_passed_through(self):
+        seen = self._run("kiro", "みじかい")
+        self.assertIn("みじかい", seen["argv"])
+
+    def test_argv_limit_falls_back_when_unset(self):
+        km._ARGV_LIMIT = 0
+        self.assertEqual(km._agent_argv_limit(), km._agentcli.DEFAULT_ARGV_LIMIT)
+
+    def test_e2big_is_classified_as_env(self):
+        """退避の閾値より OS の上限が小さい環境では E2BIG が残る。内容の問題として扱うと
+        タスクのリトライ予算を焼くので env（人が環境を直す）に倒す。"""
+        cls, _hint = km.classify_agent_failure(
+            "[Errno 7] Argument list too long: 'kiro-cli'")
+        self.assertEqual(cls, "env")
+
+
 class TestAgentHome(unittest.TestCase):
     """エージェント共通ホームの解決（`.agent` → `.agents` 改名の後方互換）。
 

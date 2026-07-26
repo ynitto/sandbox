@@ -365,31 +365,56 @@ def cmd_distill_notes(cfg: Config, charter_name: str = "") -> int:
     return 0
 
 
-def cmd_revive(cfg: Config, title: str) -> int:
+def cmd_revive(cfg: Config, title: str, charter: str = "", all_charters: bool = False) -> int:
     """墓標を解除する（`tombstones.md` から指紋一致の行を消す）。
 
     `replan --revive`（今回だけ無視する）と分けているのは、再分解の結果を見てから
     消すかどうかを決められるようにするため。消すのは取り返しがつく操作なので、
     こちらは明示のサブコマンドに置く。
+
+    スコープ（P1-5）: 追記は `(指紋, charter)` 単位なので、削除も charter で絞る。
+      --charter X … X 向け + タグ無しを削除
+      --all       … 指紋一致を全削除（従来の挙動。**明示のときだけ**）
+      未指定      … charter が 0〜1 個ならその範囲。2 個以上あって一致行のタグが
+                    割れているときは**消さずに聞く**——「消しすぎ」は人が気づけない
+                    （次の plan が黙って作り直す）ので、止める側に倒す。
     """
     title = str(title or "").strip()
     if not title:
         print("エラー: 解除するタスクのタイトルを指定してください", file=sys.stderr)
         return 2
-    n = remove_tombstone(cfg, title)
+    charter = str(charter or "").strip()
+    scope: "str | None" = None if all_charters else charter or None
+    hits = [g for g in load_tombstones(cfg) if g["fingerprint"] == _norm_title(title)]
+    if not all_charters and not charter:
+        names = charter_names(cfg)
+        tags = {g["charter"] for g in hits if g["charter"]}
+        if len(names) > 1 and len(tags) > 1:
+            print(f"複数の charter に同じ墓標があります: {title}", file=sys.stderr)
+            for g in hits:
+                print(f"    - {g['title']}（charter={g['charter'] or '(タグ無し)'}）", file=sys.stderr)
+            print("  --charter <名前> で対象を指定するか、--all で全部解除してください",
+                  file=sys.stderr)
+            return 2
+        scope = names[0] if len(names) == 1 else None
+    n = remove_tombstone(cfg, title, scope)
     if not n:
         graves = load_tombstones(cfg)
-        print(f"該当する墓標がありません: {title}", file=sys.stderr)
+        print(f"該当する墓標がありません: {title}"
+              + (f"（charter={scope}）" if scope else ""), file=sys.stderr)
         if graves:
             print("  現在の墓標:", file=sys.stderr)
             for g in graves[:10]:
-                print(f"    - {g['title']}", file=sys.stderr)
+                print(f"    - {g['title']}"
+                      + (f"（charter={g['charter']}）" if g["charter"] else ""), file=sys.stderr)
         return 1
+    where = f"charter={scope} とタグ無し" if scope else "全 charter"
     dr = append_decision(cfg, _slug_id(title) or "tombstone", cfg.actor,
                          context=f"墓標を解除: {title}", action="revive",
-                         reason="人の明示操作", affects=f"{n} 件の墓標行を削除")
-    append_journal(cfg.journal, f"revive: 墓標を解除（{n} 件）: {title}")
-    print(f"{dr}: 墓標を解除しました（{n} 件）。次の再分解から再提案されうる状態になります。")
+                         reason="人の明示操作", affects=f"{n} 件の墓標行を削除（{where}）")
+    append_journal(cfg.journal, f"revive: 墓標を解除（{n} 件・{where}）: {title}")
+    print(f"{dr}: 墓標を解除しました（{n} 件・{where}）。"
+          "次の再分解から再提案されうる状態になります。")
     return 0
 
 
@@ -692,27 +717,11 @@ def _clear_rejected_commands(cfg: "Config", tid: str) -> None:
 
     .err は viewer が「直前の指示は失敗した」バナーを出す根拠になる。成功後も残すと、
     解決済みの失敗が同じタスクの次の要対応カードに出続ける（直ったのに失敗表示）。
-    掃除は成功時だけ——失敗の履歴を先に消すと、失敗が誰にも見えない元の不具合に戻る。"""
-    if not tid:
-        return
-    for e in commands_dir(cfg).glob("*.err"):
-        try:
-            payload = json.loads(e.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if not isinstance(payload, dict):
-            continue
-        cmd = payload.get("command")
-        # 新形式は {"command": {..., "id": ...}}、旧 _reject_command は元の指示 JSON を
-        # そのまま改名したので {"command": "approve", "id": ...}（command が文字列, id は最上位）。
-        # 両形式から task id を取り出す（旧 .err を str.get で踏むと AttributeError で落ちていた）。
-        err_tid = cmd.get("id") if isinstance(cmd, dict) else payload.get("id")
-        if str(err_tid or "") != tid:
-            continue
-        try:
-            e.unlink()
-        except OSError:
-            pass
+    掃除は成功時だけ——失敗の履歴を先に消すと、失敗が誰にも見えない元の不具合に戻る。
+
+    実体は `agentcore.commands.clear_rejected`（ノードスコープの指示ドロップと共有する
+    土台）。新旧 2 形式の `.err` からの id 取り出しもあちらが持つ。"""
+    _cmddrop.clear_rejected(commands_dir(cfg), tid)
 
 
 # 受理レシート（processed/<name>.json）— 指示を取り込んだ結果の痕跡。

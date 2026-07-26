@@ -81,6 +81,8 @@ def _extract_json_obj(text: str) -> "dict | None":
 # （agent-flow の _configure_thresholds と同じ流儀）。
 _AGENT_CLI: str = "kiro"
 _AGENT_TIMEOUT: float = 300.0
+# argv 渡しのプロンプト上限（設定 argv_limit）。0 以下なら組み込み既定。
+_ARGV_LIMIT: int = 0
 # 処理（purpose）毎の上書き（設定 agents: の正規化済みマップ。build_config が確定する）。
 # 例: {"plan": {"agent_cli": "claude", "model": "opus"}, "assess": {"model": "haiku"}}
 _AGENT_OVERRIDES: "dict[str, dict]" = {}
@@ -140,6 +142,23 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
         if d_model:
             model = d_model
     return cli, model
+
+
+def _agent_argv_limit() -> int:
+    """argv 渡しのプロンプト上限（バイト）。設定 `argv_limit`（0 以下なら組み込み既定）。
+
+    上限を超えると `execve` が E2BIG で落ち、**プロセス起動そのものが立たない**——
+    verifier は全基準 unverifiable、plan は空振りで人へ倒れる。agent-flow の
+    `_agent_argv_limit` と同じ規則（0 以下は既定へフォールバック）。"""
+    return _ARGV_LIMIT if _ARGV_LIMIT > 0 else _agentcli.DEFAULT_ARGV_LIMIT
+
+
+# 退避したときに argv へ載せる短い指示。`{file}` は退避先に置換される。
+# **定義ファイルの `spill.instruction` は使わない**——あれは権限フラグの置き換え
+# （`--trust-tools=fs_read`）とセットの機構で、実行して確かめる呼び出しに掛けると
+# 検証がコマンドを 1 つも走らせられなくなる（P1-2）。
+_SPILL_INSTRUCTION = ("この処理の入力の全文は一時ファイル {file} にあります。"
+                      "まずこのファイルの内容を読み込み、その内容を対象にしてください。")
 
 
 def _agent_cmd(cli: str, model: "str | None",
@@ -209,10 +228,14 @@ _AGENT_ERROR_PATTERNS = (
     ("auth", re.compile(r"AccessDenied|Unauthorized|authentication failed|not authenticated"
                         r"|SendMessageError|please (re)?login", re.I),
      "認証に失敗しています（再ログインが必要です）"),
+    # 「Argument list too long」（E2BIG）は退避（spill）で防ぐが、退避の閾値より OS の上限が
+    # 小さい環境では残る。内容の問題として扱うとタスクのリトライ予算を焼くので env に倒す
+    # （設定 argv_limit を下げれば直る＝人が環境を直す類）。
     ("env", re.compile(r"issue with the selected model|invalid model"
                        r"|model .{0,40}(not found|does not exist)|may not have access to it"
-                       r"|command not found|No such file or directory", re.I),
-     "実行環境の問題です（モデル名・CLI の導入・PATH を確認してください）"),
+                       r"|command not found|No such file or directory"
+                       r"|Argument list too long|E2BIG", re.I),
+     "実行環境の問題です（モデル名・CLI の導入・PATH・argv_limit を確認してください）"),
     ("transient", re.compile(r"timed? ?out|connection (reset|refused|closed)|ECONNRESET"
                              r"|ETIMEDOUT|temporarily unavailable|service unavailable|overloaded",
                              re.I),
@@ -558,12 +581,22 @@ def _run_agent_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
     cli, model_ov = _agent_for(purpose)
     _write_status(effective_cli=cli, effective_model=(model_ov or model or ""),
                   lifecycle=lifecycle, budget=nb)
-    cmd, stdin_text, out_file = _agent_cmd(cli, model_ov or model, prompt)
-    plug = _AGENT_PLUGIN_CACHE.get(cli) or {}   # _agent_cmd がロード済み（定義ファイルが正典）
-    # 発生源で色を抑止（NO_COLOR/TERM=dumb）。残った ANSI は strip_ansi で除去する二段構え。
-    env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", **(plug.get("env") or {})}
-    timeout = plug.get("timeout") or (_AGENT_TIMEOUT if _AGENT_TIMEOUT > 0 else None)
+    plug = load_agent_plugin(cli)               # 定義ファイルが正典（_agent_cmd も同じキャッシュ）
+    # argv 渡しで長すぎるプロンプトは一時ファイルへ退避し、参照渡しの短い指示に置き換える
+    # （agent-flow / agent-amigos と同じ土台 = agentcore.agentcli.spill_prompt）。S5/S6 で
+    # verifier 入力（repo 文脈 + rules + レシピ + feedback）と planner 入力（charter 全文 +
+    # 既存タスク + 墓標）が肥大したため、既定 CLI の kiro（argv 渡し）で現実に当たる。
+    spill, prompt = _agentcli.spill_prompt(
+        prompt, _agent_argv_limit(), prompt_via=plug["prompt_via"],
+        prefix="agent-project-prompt-", instruction=_SPILL_INSTRUCTION)
+    # 一時ファイルの掃除は 1 つの finally にまとめる。out_file を try の外で束縛すると、
+    # 組み立てが例外で落ちたときに finally が NameError を投げて本当の原因を隠す。
+    out_file = None
     try:
+        cmd, stdin_text, out_file = _agent_cmd(cli, model_ov or model, prompt)
+        # 発生源で色を抑止（NO_COLOR/TERM=dumb）。残った ANSI は strip_ansi で除去する二段構え。
+        env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", **(plug.get("env") or {})}
+        timeout = plug.get("timeout") or (_AGENT_TIMEOUT if _AGENT_TIMEOUT > 0 else None)
         t0 = time.monotonic()
         proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", input=stdin_text,
                               timeout=timeout, env=env)
@@ -590,9 +623,14 @@ def _run_agent_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
                                .replace("失敗 (rc=0)", "が空の応答を返しました (rc=0)"))
         return text
     finally:
+        # 一時ファイルは 2 つあり、寿命が違う。退避（spill）は CLI の起動が終われば
+        # 用済みだが、最終応答ファイル（out_file）は上の読み出しが終わるまで要る。
         if out_file:
             with contextlib.suppress(OSError):
                 os.remove(out_file)
+        if spill:
+            with contextlib.suppress(OSError):
+                os.remove(spill)
 
 
 def rank_agent(ready: "list[Task]", model: "str | None", agent_run=None) -> "list[Task] | None":

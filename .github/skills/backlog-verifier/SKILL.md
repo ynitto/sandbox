@@ -46,6 +46,7 @@ echo '<入力 JSON>' | python3 scripts/prompt.py
 | `recipes` | 過去に有効だった検証コマンド列（**参考**。決定的ゲートではない） |
 | `feedback` | 前回失敗した基準と理由 |
 | `side_effects` | `workspace`（既定・作業ツリー内のみ） / `network`（HTTP 到達も許す） |
+| `side_effects_text` | 上を解決済みの制約文（任意）。**あればこれを使う**——文言の正典は呼び出し側で、スキル側の表は入力に無いときの受け皿（同じ文言を 2 か所で育てると経路によって安全制約が変わる） |
 
 出力（検証エージェントが返すもの）: Markdown 本文 + 末尾に JSON。
 

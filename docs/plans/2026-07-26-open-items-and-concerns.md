@@ -81,6 +81,9 @@ agent-dashboard の `npm test` も回すのが素直。
 | P4-f | `consultation` / `plan-critique` / `delivery-rationale` の対話化 — 構造化見出しの抽出に依存するため対話にすると抽出点が消える | 抽出をやめてよいと判断できたとき | S8 §10 |
 | P4-g | 対話診断 tmux セッションの一括掃除（使い捨てなので状態は残らないがセッションは溜まる） | セッションが溜まって困ったとき | S8 §10 |
 | — | dashboard の未実装改善（外部通知ルーティング・横断要対応キュー・条件付き自動承認・決定メモリ・メトリクス等） | — | [dashboard 設計書 §8](../designs/agent-dashboard-design.md) |
+| — | **host.yaml 検査（W5/W6/W7）を E（fail-fast）へ昇格するか**。P1-3 は警告で入れた——既存 host.yaml に残る未知キーでフリート全台を一斉に起動不能にする方が害が大きいため。S1 §3.3 の E6（`projects[].config`）を宣言どおり fail-fast へ戻すかも同じ判断に含む | canary（§1.1）で警告の発生件数と内容を見てから | P1 詳細設計 §3.3・§8 |
+| — | **プロジェクト側 `commands/*.err` の期限掃除**。土台（`agentcore.commands.prune_rejected`）は P1-4 で用意済みで、配線するだけ。状態リポジトリ配下なので古い失敗が全 PC へ配られ、要対応カードのノイズになる | `.err` の残骸が実際に邪魔になったとき（消える条件を増やす前に dashboard の失敗バナー表示規約との突き合わせが要る） | P1 詳細設計 §8 |
+| — | **doctor に設定値の検査を足す**（`argv_limit ≤ 0` 等）。agent-flow の doctor は持っているが agent-project には無い。P1-2 で `argv_limit` を足したので対象が 1 つ増えた | doctor へ検査をまとめて足す P3-3 のとき | P1 詳細設計 §8 |
 
 ---
 
@@ -114,6 +117,10 @@ agent-dashboard の `npm test` も回すのが素直。
 - **フリート更新の規律**（同 C13）: 契約変更は静止点で全ノード一斉・スキーマと実装は
   同一コミット。更新漏れノードは「入札しない」に倒す実装は済んでいるが、実機確認は
   R2b 待ち（§2）。
+- **host.yaml 検査（P1-3）の警告が実機で何を拾うか**: 未知キー・層違い・型違いを
+  警告として入れた。canary の 3 台で「実際に出た警告」を数え、**出ないなら E へ昇格**
+  （設定ミスを起動時に止める）、**出るなら文言と救済の妥当性**を見直す。スカラの
+  `tags:` / `agent_cli:` は畳んで救済しているので、救済が働いた回数も観測点になる。
 
 ## 6. 今回の棚卸しで新たに見つけたもの
 
@@ -171,6 +178,11 @@ agent-dashboard の `npm test` も回すのが素直。
    書き込まない）が載らない。**安全設定がスキル未導入ノードで黙って落ち**、検証は失敗時に
    リトライで何度も走るので副作用が累積しうる。`rules` / `repo_context` / `recipes` /
    `feedback` も同じ経路で落ちるが、そちらは品質劣化に留まる。
+  **追記（P1 詳細設計 §7-I）**: 検証プロンプトの 2 経路のうち、**テストが見ているのは
+  組み込みだけ**。テストは中立な一時 cwd で走りエージェントホームも隔離されるため
+  `find_skill_script` がリポジトリのスキルを見つけず、既存の `build_verifier_prompt`
+  テストは**スキル経路を一度も通っていない**（組み込みが acceptance と DIFF_CRITERION を
+  持っていたので緑だった）。どちらの経路も明示的な seam なしには検査できない。
 6. **agent-project にだけ argv 長制限の退避（spill）が無い**（中）。
    agent-flow / agent-amigos は `prompt_via: argv` の CLI でプロンプトが上限を超えると
    一時ファイルへ退避するが、agent-project の `_agent_cmd` は無防備。S5/S6 で
@@ -178,6 +190,12 @@ agent-dashboard の `npm test` も回すのが素直。
    planner 入力 = charter 全文 + 既存タスク + 墓標）。既定 CLI の kiro は argv 渡しなので、
    超過すると verifier は全基準 unverifiable、plan は空振りで人へ倒れる。スキーマの
    「argv 長制限を超えると自動で退避に切り替わる」という説明とも矛盾する。
+   **追記（P1 詳細設計 §7-A・§7-F）**: 退避の実体は flow / amigos が持つ ad-hoc 版
+   （本文をファイルへ出しプロンプトだけ差し替える）で、`headless_cmd` の `spill_path`
+   経路とは**別物**。後者は権限フラグを `spill.args`（kiro では `--trust-tools=fs_read`）へ
+   置き換えるので、実行して確かめる verifier に使うと全基準 unverifiable に倒れる。
+   また E2BIG（`Argument list too long`）は失敗トリアージの env パターンに掛からず
+   「内容の問題」に分類され、タスクのリトライ予算を焼く。
 7. **`revive` が charter スコープを無視して墓標を消す**（低）。墓標の追記は
    `(指紋, charter)` 単位なのに、削除は指紋一致行を charter 無関係に全部消す。
    複数 charter 運用で意図しない解除が起きる。
@@ -206,6 +224,13 @@ agent-dashboard の `npm test` も回すのが素直。
   トップレベルに `plan_review: false` を書いても、`node_id` を `nodeid` と綴り間違えても、
   警告ゼロで黙って無視される。S1 の E2 契約（defaults/overrides の検査）自体は満たすが、
   「設定したのに効かないことに気付けない」という S1 の設計動機が host.yaml 側だけ抜けている。
+  **追記（P1 詳細設計 §7-C・§7-J）**: 無検査なのは綴りと層だけではない。`tags:` /
+  `agent_cli:` に**スカラを書くと 1 文字ずつの配列になる**（`[str(a) for a in "codex"]`）。
+  板の `nodes/<id>.json` へ `["c","o","d","e","x"]` が publish され、`requires.agent_cli` を
+  持つ公示に**永久に入札しない**——入札選別は fail-close なので、誤動作ではなく
+  「なぜかこの PC だけ仕事を取らない」という無言の形で出る。`defaults.agent_cli`（スカラ）と
+  紛らわしいキーなので誤記は起きやすい。あわせて S1 §3.3 の E6（`projects[].config` は
+  エラー）も未実装で、`projects[]` の要素キーには検査自体が無い。
 - **`BoardRepo` の請負側書き込みだけ排他を通らない**（要確認）: `write_bid` /
   `write_cancelled` / `write_award`（S8 で追加）だけ flock と `_ensure()` を通らず直接
   書く。transport の破損時再クローン（`rmtree`）や `pull --rebase` と競合すると
@@ -213,7 +238,12 @@ agent-dashboard の `npm test` も回すのが素直。
 - **ノード宛て指示に debounce と `.err` 掃除が無い**: プロジェクト側 `ingest_commands` に
   ある「書きかけ猶予」と「成功時の古い `.err` 掃除」が、ノードスコープ側に無い。
   スキーマは書き手として人を認めているのに手置きは即 `.err` 行きで、`.err` は無限に
-  溜まり gc tick も見ない。
+  溜まり gc tick も見ない。**追記（P1 詳細設計 §7-D・§7-E）**: 受理レシートは
+  `write_receipt` の中で prune されるので溜まるのは `.err` だけ。また debounce は
+  素朴に「読めないファイルを飛ばす」形にすると**指示の順序が壊れる**（同じ公示への
+  「入札 → 中止」が入れ替わり、中止済みの板へ入札を書く）。ノード側の reject は
+  JSON 不正のときしか `engine/status.json` に載らず、板不一致・未知指示・公示不在で
+  `.err` に落ちた指示は横断ビューに現れない。
 - **`DIFF_CRITERION` の文字列が本体とスキルの 2 箇所**: 片方だけ直すと、検証レポートに
   出る基準文とエージェントが見た基準文が黙ってずれる（判定は番号で突き合わせるため）。
 - **`repolocal` の Python / JS で吸収規則がずれる**（低・要確認）: symlink 解決の有無が
@@ -290,6 +320,15 @@ agent-dashboard の `npm test` も回すのが素直。
 
 ### 7.2 P1 — 効かない設定・安全性（canary と並行可。実機を要さない）
 
+> **実装済み**（2026-07-26）。詳細設計:
+> [`2026-07-26-p1-config-and-safety-detailed-design.md`](2026-07-26-p1-config-and-safety-detailed-design.md)
+> （§7 に実装との照合で新たに見つけた 11 件・§9 に実装で確定した差分）。
+> **P1-2 は総覧の記述（`headless_cmd` の spill 経路）とは別の方式を採った**——定義側の spill は
+> 退避時に権限フラグを `--trust-tools=fs_read` へ置き換えるため、そのまま配線すると
+> verifier が実行権限を失って全基準 unverifiable に倒れる（同設計 §7-A）。
+> **P1 から出た積み残しは §3 の末尾 3 行と §5 の最終項**（警告を E へ昇格するかの判断・
+> プロジェクト側 `.err` の期限掃除・doctor の設定値検査）で、いずれも契機待ち。
+
 | # | 対象 | 修正 | 規模 |
 |---|---|---|---|
 | P1-1 | 組み込み検証プロンプトの `verify_side_effects` 無視（§6.1-5） | `_builtin_verifier_prompt` をスキル側 `prompt.py` と同じ入力（side_effects・rules・repo_context・recipes・feedback）で組む。**スキル有無で安全制約が変わらない**ことをテストで固定（両者のプロンプトに同じ制約文が載る） | S |
@@ -309,7 +348,7 @@ R2b 設計と衝突させない。
 | P2-2 | 板への `local` publish とスキーマの矛盾（§6.2） | **決めが要る。推奨: publish をやめる**——入札可否は url ベースで足り（S3-5 の設計どおり local はヒント）、落札後の worktree 切り出しは自ノードの host.yaml から解決できるので、他 PC の絶対パスを共有リポジトリへ配る必然性が無い。維持する判断なら `repos.schema.json` の deprecated 文言を「共有レジストリ不可・板のノード宣言は可」へ改訂する。どちらでも `$defs.node.repos` の形（レジストリ形 → url/local 配列）は実装へ合わせる | S |
 | P2-3 | `workloads` / `max_concurrent` を入札判定が読まない（§6.2） | `eligible()` に workload 照合を追加。`max_concurrent` は「板上の自分名義の非終端 `status/` 件数が上限以上なら入札しない」の自己抑制として実装（枠の真実は板にあるので二重管理しない）。`0` の意味は**スキーマ側（0 = 無制限）へ実装を寄せ**、ワーカープールの既定 4 は「未指定時の既定」へ移す。二重落札の轍（S8 §6.5）を踏まないよう R2b 設計と同時に入れる | M |
 | P2-4 | `BoardRepo` 請負側書き込みの排他漏れ（§6.2） | `write_bid` / `write_cancelled` / `write_award` を `with self._locked(): self._ensure()` で他のメソッドと揃える | S |
-| P2-5 | 文字列・小物の一本化（§6.2 低群） | `DIFF_CRITERION` を本体定数の 1 か所へ（スキルは生成時に受け取る）。`repolocal` の JS 側 symlink 解決と `repos:` 行末コメント対応。`NodeCapability.write` のパス導出を `_safe_node` へ。`canceled` 識別子の改名は**触るファイルの修正時に限る**（改名だけのコミットは履歴のノイズ） | S |
+| P2-5 | 文字列・小物の一本化（§6.2 低群） | `DIFF_CRITERION` を本体定数の 1 か所へ（スキルは生成時に受け取る）。**手は P1-1 で実証済み**——副作用制約は `side_effects_text` として解決済みの文を渡し、スキル側の表は「入力に無いときの受け皿」に降格した。同じ形にすればよい。あわせて `spill_prompt` の指示文（本体側 3 者が自前の文を持ち、定義の `spill.instruction` は Python から使われていない・P1 詳細設計 §7-B）の正典もここで決める。`repolocal` の JS 側 symlink 解決と `repos:` 行末コメント対応。`NodeCapability.write` のパス導出を `_safe_node` へ。`canceled` 識別子の改名は**触るファイルの修正時に限る**（改名だけのコミットは履歴のノイズ） | S |
 
 ### 7.4 P3 — 文書と CI（独立・随時。P0〜P2 と並行してよい）
 
@@ -317,7 +356,7 @@ R2b 設計と衝突させない。
 |---|---|---|---|
 | P3-1 | CI の新設（§1.2 R4 と統合） | GitHub Actions で 5 系統を回す: 4 パッケージのテスト（**agentcore は 2 テストルートを明示**・§6.3）+ dashboard `npm test` + R10 grep 検査 + P0-4 の設定キー構造テスト。R10 検査は**本文のみ対象**（ファイルパス・スキーマ名・コードブロックを除外）の規則で書く（§1.2） | M |
 | P3-2 | `multi-pc-operations.md` の全面改訂（§6.3） | 常駐一本化後のモデル（PC に 1 本の serve + 子の分担・controller リース）で書き直す。存在しないコマンド（`start` / `stop` / `status --root`）を一掃し、W3-2 でやり残した分を完了させる | M |
-| P3-3 | doctor の S1 §3.6 検査（§6.3） | host.yaml `projects[]` の root 存在・origin 一致・branch 一致と、E1〜E7 相当の起動前チェックを doctor へ。設定ミスの原因究明を「子の起動失敗 → 隔離表示」から「doctor 一発」へ引き上げる | M |
+| P3-3 | doctor の S1 §3.6 検査（§6.3） | host.yaml `projects[]` の root 存在・origin 一致・branch 一致と、E1〜E7 相当の起動前チェックを doctor へ。設定ミスの原因究明を「子の起動失敗 → 隔離表示」から「doctor 一発」へ引き上げる。**キー・型の検査は P1-3 で純関数 `host_config_findings()` になっている**ので、doctor はそれを呼ぶだけ（同じ規則を 2 実装にすると「doctor は緑なのに起動時は警告」になる）。設定値の検査（`argv_limit ≤ 0` 等・agent-flow の doctor にはある）もここで足す | M |
 | P3-4 | S1 詳細設計の記述訂正（§6.3） | 現存しないシンボル（`_validate_layers` の引数形・`_STATE_SIGNIFICANT`）へ訂正注記を追記（既存の「実装で確定した差分」節の流儀。本文は書き換えない） | S |
 
 ### 7.5 この計画に含めないもの

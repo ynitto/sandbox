@@ -51,6 +51,10 @@ _BOARD_BID_LEASE_SEC = 900.0
 # 生死を見るので、その猶予（下の係数）を割らない範囲で書かなければよい。
 _NODE_HEARTBEAT_INTERVAL_SEC = 300.0
 _NODE_FRESH_FACTOR = 4.0     # fresh_after_sec = 心拍間隔 × これ
+# ノード宛て指示の「書きかけ猶予」（秒）。プロジェクト側 `debounce` の既定と同値にする
+# ——利用者から見えるのは同じ 1 つの流れなので、猶予の長さも揃える。板 tick は 30 秒周期
+# なので、猶予に掛かった指示は最悪 30 秒後の巡回で取り込まれる。
+_NODE_COMMAND_DEBOUNCE_SEC = 3.0
 
 
 def _agents_home() -> Path:
@@ -99,6 +103,115 @@ def _normalize_host_repos(raw) -> "list[dict]":
     return out
 
 
+def _str_list(raw, key: str, findings: "list[str] | None" = None) -> "list[str]":
+    """`tags:` / `agent_cli:` を文字列の列へ。**スカラは 1 要素へ畳む**（P1-3）。
+
+    素朴な `[str(a) for a in raw]` は文字列を**文字へ分解する**——`agent_cli: codex` が
+    `["c","o","d","e","x"]` になり、板の `nodes/<id>.json` にその形で publish される。
+    入札選別は fail-close（`agentcore.board.eligible`）なので、症状は誤動作ではなく
+    「なぜかこの PC だけ仕事を取らない」という無言の不参加になり、いちばん追いにくい。
+    `defaults.agent_cli`（このノードの既定 CLI・スカラ）と紛らわしいキーなので誤記は起きる。
+
+    畳んだことは**必ず所見に残す**——黙って直すと「配列で書かなくても動く」という
+    別の思い込みを作る（`_normalize_host_repos` が旧形式を受けるのと同じ流儀）。"""
+    if raw is None or raw == "":
+        return []
+    if isinstance(raw, str):
+        if findings is not None:
+            # `agent_cli` はトップレベル（能力宣言の配列）と `defaults`（既定 CLI のスカラ）で
+            # 意味が違う。スカラを書いた人は後者のつもりのことが多いので、行き先も示す。
+            hint = ("（このノードの既定 CLI を指定したいなら `defaults.agent_cli:` です）"
+                    if key == "agent_cli" else "")
+            findings.append(f"{key}: は配列です（`{key}: [{raw}]` と書いてください）— "
+                            f"1 要素の配列として読みます{hint}")
+        return [raw.strip()] if raw.strip() else []
+    if isinstance(raw, (list, tuple)):
+        return [str(a) for a in raw]
+    if findings is not None:
+        findings.append(f"{key}: が配列ではありません（{type(raw).__name__}）— 無視します")
+    return []
+
+
+# host.yaml のトップレベルで意味を持つキー（このノードの宣言）。ここに無いキーは
+# 読まれないので、書いた本人が「効いていない」ことに気付けるよう所見にする（S1 の設計動機）。
+HOST_TOP_KEYS = frozenset({
+    "schema_version",       # 受けるだけ（現在は読まない。契約のバージョニングは P2 以降）
+    "node_id", "defaults", "projects", "repos", "tags", "agent_cli",
+    "board", "board_workdir", "amigos_bus", "amigos_config", "budget", "update",
+    "availability", "residency",
+})
+
+# `projects[]` の 1 要素で意味を持つキー。
+HOST_PROJECT_KEYS = frozenset({"name", "state_repo", "branch", "root", "overrides",
+                               "board_workdir"})
+
+# 形が宣言と違うと黙って壊れるキー → 期待する型。
+_HOST_MAPPING_KEYS = ("defaults", "budget", "update", "availability")
+
+
+def host_config_findings(data: dict) -> "list[str]":
+    """host.yaml の綻びを人が読む文の列にする（**判定だけ・出力はしない**）。
+
+    純関数にするのは読み手が 2 人いるため——起動時の警告（`load_host_config`）と doctor。
+    同じ規則を 2 実装にすると「doctor は緑なのに起動時は警告」という、いちばん人を
+    混乱させる形になる（`agentcore.repolocal` に集約したのと同型の理由）。
+
+    **警告どまりで起動は止めない**（S1 の E1/E2 とは強度が違う）。既存運用の host.yaml に
+    残っている未知キーで、フリート全台を一斉に起動不能にする方が害が大きい。
+    E への昇格は canary 明けの判断に回す。"""
+    findings: "list[str]" = []
+    if not isinstance(data, dict):
+        return ["host.yaml の中身がマッピングではありません（無視します）"]
+    for key in sorted(k for k in data if str(k) not in HOST_TOP_KEYS
+                      and not str(k).startswith("_")):
+        findings.append(f"{key}: は host.yaml では読まれません（無視します）— "
+                        + _host_key_hint(str(key)))
+    for key in _HOST_MAPPING_KEYS:
+        if key in data and data[key] is not None and not isinstance(data[key], dict):
+            findings.append(f"{key}: はマッピングです（{type(data[key]).__name__} を無視します）")
+    for key in ("tags", "agent_cli"):
+        _str_list(data.get(key), key, findings)
+    if data.get("projects") is not None and not isinstance(data.get("projects"), list):
+        findings.append("projects: は配列です（無視します）")
+    if data.get("repos") is not None and not isinstance(data.get("repos"), (list, dict)):
+        findings.append("repos: は配列です（無視します）")
+    for i, entry in enumerate(data.get("projects") or []
+                              if isinstance(data.get("projects"), list) else []):
+        if not isinstance(entry, dict):
+            findings.append(f"projects[{i}]: はマッピングです（無視します）")
+            continue
+        for key in sorted(k for k in entry if str(k) not in HOST_PROJECT_KEYS):
+            hint = ("設定は状態リポジトリ直下の agent-project.yaml が置き場です（S1）"
+                    if str(key) == "config" else "無視します")
+            findings.append(f"projects[{i}].{key}: は読まれません — {hint}")
+    return findings
+
+
+def _host_key_hint(key: str) -> str:
+    """未知のトップレベルキーへの案内。**層違いは行き先を名指しする**——「未知のキー」
+    だけだと、正しい置き場が分からないまま消すか放置するかになる。"""
+    if key in _REMOVED_WORKTREE_KEYS:
+        return ("廃止した状態 worktree 方式のキーです（状態ルートは状態専用リポジトリの "
+                "clone に一本化しました・S1）")
+    if key in SHARED_KEYS:
+        return ("`defaults:` の下（このノード × このプロジェクトなら "
+                "`projects[].overrides:`）へ書いてください")
+    if key.startswith("update_"):
+        return f"`update:` マッピング配下の `{key[len('update_'):]}:` が置き場です"
+    if key in ("state_repo", "state_repo_branch"):
+        return "`projects[].state_repo` / `projects[].branch` が置き場です"
+    if key in CONFIG_DEFAULTS:
+        return ("プロジェクトの合意なので、状態リポジトリ直下の agent-project.yaml へ"
+                "書いてください")
+    near = difflib.get_close_matches(key, sorted(HOST_TOP_KEYS), n=1, cutoff=0.7)
+    return (f"`{near[0]}:` の綴り間違いではありませんか" if near else "綴りを確認してください")
+
+
+# 同じ host.yaml について警告を出したパス（プロセス内で 1 度きり。`load_host_config` は
+# CLI の実行と子プロセスのたびに呼ばれるので、毎回出すとログが埋まる）。
+_HOST_WARNED: "set[str]" = set()
+
+
 class HostConfig:
     """agent-project.host.yaml の内容（PC 宣言の単一ソース。設計 §4.2）。
 
@@ -115,12 +228,12 @@ class HostConfig:
         self.node_id_declared = bool(declared)
         self.node_id = normalize_node_id(declared) if declared else default_node_id()
         self.projects = [dict(p) for p in (data.get("projects") or []) if isinstance(p, dict)]
-        self.tags = [str(t) for t in (data.get("tags") or [])]
+        self.tags = _str_list(data.get("tags"), "tags")
         # 能力宣言の `agent_cli:`（このノードで使える CLI の一覧・板への入札判定に使う）と、
         # `defaults.agent_cli`（このノードの既定 CLI・スカラ）は **別のキー**。前者は板の語彙、
         # 後者は設定の層（S1 の SHARED 群）で、混ぜると「1 つしか宣言していない PC の既定が
         # 勝手に変わる」ことになる。
-        self.agent_cli = [str(a) for a in (data.get("agent_cli") or [])]
+        self.agent_cli = _str_list(data.get("agent_cli"), "agent_cli")
         # S1: ノード全体の共有キー既定。projects[].overrides と合わせて resolve_config が読む。
         self.defaults = dict(data.get("defaults") or {})
         # S3: ノード固有のローカルクローン宣言（url/local の列）。共有 repos.json には置けない
@@ -156,7 +269,23 @@ def load_host_config(explicit: "str | None" = None) -> HostConfig:
     path = _find_host_config(explicit)
     if not path:
         return HostConfig({})
-    return HostConfig(_load_config_file(path), path=path)
+    data = _load_config_file(path)
+    _warn_host_config(data, path)
+    return HostConfig(data, path=path)
+
+
+def _warn_host_config(data, path: str) -> None:
+    """host.yaml の綻びを 1 度だけ報せる（P1-3）。
+
+    プロジェクト yaml 側には層検査（S1 の E1/E2）と未知キー警告があるのに、host.yaml の
+    トップレベルは誰も見ていなかった——`plan_review: false` を書いても `node_id` を
+    `nodeid` と綴り間違えても、警告ゼロで黙って無視される。「設定したのに効かないことに
+    気付けない」という S1 の設計動機が、host.yaml 側だけ抜けていた。"""
+    if path in _HOST_WARNED:
+        return
+    _HOST_WARNED.add(path)
+    for line in host_config_findings(data if isinstance(data, dict) else {}):
+        print(f">>> 警告: host.yaml（{path}）: {line}", file=sys.stderr)
 
 
 def _project_name(project: dict) -> str:
@@ -337,6 +466,16 @@ def _board_intake_projects(host: "HostConfig") -> "list[str]":
     return [_project_name(p) for p in host.projects if str(p.get("root") or "").strip()]
 
 
+def _reject_node_command(path: str, why: str, status: "EngineStatus") -> None:
+    """ノード宛て指示を `.err` へ退避し、**必ず** status にも残す。
+
+    `engine/status.json` の `recent_errors` は画面の唯一の横断ビュー。ここに出ないと、
+    板不一致・未知指示・公示不在で落ちた指示は `.err` を直接開くまで誰にも見えない
+    （プロジェクト側は journal に残るので、ここだけ痕跡が薄かった）。"""
+    _cmddrop.reject(path, why)
+    status.record_error(f"node command {os.path.basename(path)}: {why}")
+
+
 def _ingest_node_commands(host: "HostConfig", board: "BoardRepo",
                           status: "EngineStatus") -> "list[str]":
     """ノード宛て指示（`~/.agents/commands/*.json`）を取り込む。実行した指示の一覧を返す。
@@ -344,15 +483,20 @@ def _ingest_node_commands(host: "HostConfig", board: "BoardRepo",
     形（`<name>.json` / `processed/` / `.err`）と述語は `agentcore.commands` と共有する
     ——プロジェクト配下の `commands/` と 2 種類の挙動を作らない（利用者から見えるのは
     「送信済み → 受理済み → 失敗バナー」の同じ 1 つの流れ）。
+
+    書きかけには猶予を与える（スキーマは書き手として人を認めており、手置きは原子的とは
+    限らない）。**猶予したら後続も処理しない**——指示はファイル名の時刻順＝処理順が規約で、
+    同じ公示への「入札 → 中止」を飛び越えると中止済みの板へ入札を書くことになる。
     """
     cdir = node_commands_dir()
     done: "list[str]" = []
-    for path in _cmddrop.pending(cdir):
+    for path in _cmddrop.pending(cdir, debounce_sec=_NODE_COMMAND_DEBOUNCE_SEC,
+                                 stop_at_deferred=True):
         name = os.path.basename(path)
         rec, why = _cmddrop.read_command(path)
         if rec is None:
-            _cmddrop.reject(path, why)
-            status.record_error(f"node command {name}: {why}")
+            # 猶予を過ぎても読めない＝書きかけではなく壊れている（再試行ループにしない）。
+            _reject_node_command(path, why, status)
             continue
         action = str(rec.get("command") or "").strip()
         did = str(rec.get("id") or "").strip()
@@ -360,19 +504,20 @@ def _ingest_node_commands(host: "HostConfig", board: "BoardRepo",
         target = str(rec.get("board") or "").strip()
         if target and target != host.board:
             # 別の板宛ての指示を、宣言している板へ黙って適用しない。
-            _cmddrop.reject(path, f"このノードの板と一致しません（宣言: {host.board or '未設定'}）")
+            _reject_node_command(
+                path, f"このノードの板と一致しません（宣言: {host.board or '未設定'}）", status)
             continue
         if action not in ("board-bid", "board-cancel", "board-award"):
-            _cmddrop.reject(path, f"未知の指示です: {action or '(空)'}")
+            _reject_node_command(path, f"未知の指示です: {action or '(空)'}", status)
             continue
         if not did:
-            _cmddrop.reject(path, f"{action} には id（委譲 id）が必要です")
+            _reject_node_command(path, f"{action} には id（委譲 id）が必要です", status)
             continue
         if board.read_post(did) is None:
-            _cmddrop.reject(path, f"板に公示がありません: {did}")
+            _reject_node_command(path, f"板に公示がありません: {did}", status)
             continue
         if board.is_terminal(did):
-            _cmddrop.reject(path, f"終端済みの公示です（成果確定または中止済み）: {did}")
+            _reject_node_command(path, f"終端済みの公示です（成果確定または中止済み）: {did}", status)
             continue
         detail = ""
         if action == "board-bid":
@@ -385,7 +530,7 @@ def _ingest_node_commands(host: "HostConfig", board: "BoardRepo",
         else:
             node = str(rec.get("node") or "").strip()
             if not node:
-                _cmddrop.reject(path, "board-award には node（落札ノード）が必要です")
+                _reject_node_command(path, "board-award には node（落札ノード）が必要です", status)
                 continue
             board.write_award(did, node, host.node_id)
             detail = f"{node} に落札しました"
@@ -395,6 +540,9 @@ def _ingest_node_commands(host: "HostConfig", board: "BoardRepo",
             os.unlink(path)
         except OSError:
             pass
+        # 同じ委譲 id の古い失敗退避を消す（画面の失敗バナーは id 単位。直ったのに
+        # 失敗表示が残り続けるのを防ぐ。掃除は成功時だけ——プロジェクト側と同じ規則）。
+        _cmddrop.clear_rejected(cdir, did)
         done.append(f"{action}:{did}")
     return done
 
@@ -662,6 +810,18 @@ def _project_gc_sweeper(project: dict) -> "tuple[str, object] | None":
     return (name, sweep)
 
 
+def _sweep_node_commands() -> dict:
+    """ノード宛て指示の残骸掃除（gc tick）。
+
+    受理レシートは書き込みのたびに prune されるが、**失敗退避（`.err`）を消す口が
+    無かった**——`clear_rejected` は「同じ委譲 id の指示が次に通ったとき」しか消せず、
+    板の公示は終端すると消えるので、その id の指示は二度と来ない＝残り続ける。"""
+    d = node_commands_dir()
+    out = {"commands.err": _cmddrop.prune_rejected(d),
+           "commands.receipts": _cmddrop.prune_receipts(d)}
+    return {k: v for k, v in out.items() if v}
+
+
 def _project_gc_sweepers(host: "HostConfig") -> "list[tuple[str, object]]":
     sweepers = []
     for project in host.projects:
@@ -742,7 +902,8 @@ def _build_resident(host: "HostConfig", *, start_children: bool = True):
         write_status()
 
     def tick_gc() -> None:
-        run_gc(_project_gc_sweepers(host) + [("board", lambda: _sweep_terminal_delegations(host))],
+        run_gc(_project_gc_sweepers(host) + [("board", lambda: _sweep_terminal_delegations(host)),
+                                            ("commands", _sweep_node_commands)],
               on_event=lambda name, ev, exc: (status.record_error(f"gc {name}: {exc}")
                                               if ev == "failed" else None))
         status.tick_counts["gc"] = status.tick_counts.get("gc", 0) + 1

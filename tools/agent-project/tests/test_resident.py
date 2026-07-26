@@ -1246,12 +1246,88 @@ class ResidentBoardTickTests(unittest.TestCase):
         err = json.loads((self.commands / "01-bid.json.err").read_text(encoding="utf-8"))
         self.assertIn("一致しません", err["error"])
 
+    def _age(self, name: str, seconds: float) -> None:
+        """ファイルの mtime を過去へずらす（書きかけ猶予を過ぎた状態を作る）。"""
+        p = self.commands / name
+        old = time.time() - seconds
+        os.utime(p, (old, old))
+
     def test_broken_command_file_is_quarantined_not_retried_forever(self):
         self.commands.mkdir(parents=True, exist_ok=True)
         (self.commands / "01-broken.json").write_text('{"command": "board-', encoding="utf-8")
+        # 書きかけかもしれないので、猶予のあいだは .err にしない（P1-4）。
+        self._tick()
+        self.assertFalse((self.commands / "01-broken.json.err").exists(),
+                         "書きかけ猶予の内側で .err へ飛ばしている")
+        self._age("01-broken.json", km._NODE_COMMAND_DEBOUNCE_SEC + 1)
         status = self._tick()
         self.assertTrue((self.commands / "01-broken.json.err").exists())
         self.assertTrue(any("node command" in e for e in status.recent_errors))
+
+    def test_deferred_command_holds_back_the_ones_behind_it(self):
+        """書きかけを飛ばして後続を処理しない（P1-4）。
+
+        指示はファイル名の時刻順＝処理順が規約。同じ公示への「入札 → 中止」を飛び越えると
+        中止済みの板へ入札を書くことになる（順序が壊れると板の状態が巻き戻って見える）。"""
+        self._post("dg-1")
+        self.commands.mkdir(parents=True, exist_ok=True)
+        (self.commands / "01-bid.json").write_text('{"command": "board-', encoding="utf-8")
+        self._drop("02-cancel.json", {"command": "board-cancel", "id": "dg-1"})
+        self._tick()
+        self.assertFalse((self.board / "delegations" / "dg-1" / "cancelled.json").exists(),
+                         "前の指示を待たずに後続を実行している")
+        self._age("01-bid.json", km._NODE_COMMAND_DEBOUNCE_SEC + 1)
+        self._tick()
+        self.assertTrue((self.commands / "01-bid.json.err").exists())
+        self.assertTrue((self.board / "delegations" / "dg-1" / "cancelled.json").exists())
+
+    def test_rejects_are_recorded_in_engine_status(self):
+        """`.err` に落ちた指示は必ず状況にも残る（P1-4）。
+
+        `engine/status.json` の recent_errors は画面の唯一の横断ビュー。ここに出ないと、
+        板不一致・未知指示・公示不在で落ちた指示は .err を直接開くまで誰にも見えない。"""
+        for name, rec in (("01-x.json", {"command": "board-explode", "id": "dg-1"}),
+                          ("02-bid.json", {"command": "board-bid", "id": "dg-nope"}),
+                          ("03-bid.json", {"command": "board-bid", "id": "dg-1",
+                                           "board": "git+ssh://elsewhere/board.git"})):
+            self._drop(name, rec)
+        status = self._tick()
+        self.assertEqual(sum(1 for e in status.recent_errors if "node command" in e), 3)
+
+    def test_success_clears_the_previous_error_for_the_same_delegation(self):
+        """同じ委譲 id で通ったら古い `.err` を消す（P1-4）。
+
+        画面の失敗バナーは id 単位なので、残すと「直ったのに失敗表示」が出続ける。"""
+        self._drop("01-bid.json", {"command": "board-bid", "id": "dg-1"})   # 公示がまだ無い
+        self._tick()
+        self.assertTrue((self.commands / "01-bid.json.err").exists())
+        self._post("dg-1")
+        self._drop("02-bid.json", {"command": "board-bid", "id": "dg-1"})
+        self._tick()
+        self.assertFalse((self.commands / "01-bid.json.err").exists())
+
+    def test_other_delegations_errors_survive(self):
+        # 掃除は id 単位。別の公示の失敗まで消すと、失敗が誰にも見えない元の不具合に戻る。
+        self._drop("01-bid.json", {"command": "board-bid", "id": "dg-other"})
+        self._tick()
+        self._post("dg-1")
+        self._drop("02-bid.json", {"command": "board-bid", "id": "dg-1"})
+        self._tick()
+        self.assertTrue((self.commands / "01-bid.json.err").exists())
+
+    def test_gc_prunes_stale_error_files(self):
+        """`.err` の期限切れ掃除（P1-4）。公示が終端すると同じ id の指示は二度と来ない＝
+        `clear_rejected` では消えないので、gc が期限で掃く。"""
+        self._drop("01-bid.json", {"command": "board-bid", "id": "dg-nope"})
+        self._tick()
+        err = self.commands / "01-bid.json.err"
+        self.assertTrue(err.exists())
+        old = time.time() - (km._cmddrop.REJECTED_TTL_SEC + 60)
+        os.utime(err, (old, old))
+        with mock.patch.object(km, "node_commands_dir", return_value=self.commands):
+            swept = km._sweep_node_commands()
+        self.assertEqual(swept.get("commands.err"), 1)
+        self.assertFalse(err.exists())
 
     def test_commands_are_processed_in_name_order(self):
         # 同じ公示への「入札 → 中止」が入れ替わると、中止済みの板へ入札を書くことになる。
@@ -1275,3 +1351,95 @@ class ResidentBoardTickTests(unittest.TestCase):
         status = self._tick()
         self.assertIn("board", status.to_dict())
         self.assertEqual(status.to_dict()["board"]["location"], str(self.board))
+
+
+class HostConfigValidationTests(unittest.TestCase):
+    """host.yaml トップレベルの検査（P1-3）。
+
+    プロジェクト yaml 側には層検査（S1 の E1/E2）と未知キー警告があるのに、host.yaml の
+    トップレベルは誰も見ていなかった——`plan_review: false` を書いても `node_id` を
+    `nodeid` と綴り間違えても、警告ゼロで黙って無視される。「設定したのに効かないことに
+    気付けない」という S1 の設計動機が、host.yaml 側だけ抜けていた。
+
+    **警告どまりで起動は止めない**（既存の host.yaml でフリート全台を落とさない）。
+    """
+
+    def _findings(self, data: dict) -> "list[str]":
+        return km.host_config_findings(data)
+
+    def test_clean_example_has_no_findings(self):
+        """同梱の host.yaml.example の全キーで所見ゼロ（既知キー表の取りこぼし検出）。"""
+        data = {"schema_version": 1, "node_id": "pc-a", "defaults": {"agent_cli": "codex"},
+                "projects": [{"name": "p", "state_repo": "https://x/y.git", "branch": "main",
+                              "root": "/tmp/p", "overrides": {"model": "m"}}],
+                "repos": [{"url": "https://x/app.git", "local": "/tmp/app"}],
+                "tags": [], "agent_cli": [], "board": "", "board_workdir": None,
+                "amigos_bus": "", "amigos_config": None, "budget": {"max_concurrent": 0},
+                "update": {"enabled": True}, "availability": {"daily_stop": "23:30"},
+                "residency": "auto"}
+        self.assertEqual(self._findings(data), [])
+
+    def test_typo_is_reported_with_a_suggestion(self):
+        got = self._findings({"nodeid": "pc-a"})
+        self.assertEqual(len(got), 1)
+        self.assertIn("nodeid", got[0])
+        self.assertIn("node_id", got[0], "近い既知キーを示さないと直しようがない")
+
+    def test_project_key_at_the_top_level_points_to_its_home(self):
+        # 「未知のキー」だけだと、正しい置き場が分からないまま消すか放置するかになる。
+        got = self._findings({"plan_review": False})
+        self.assertIn("agent-project.yaml", got[0])
+        got = self._findings({"model": "opus"})
+        self.assertIn("defaults", got[0], "共有キーは defaults: の下")
+        got = self._findings({"update_enabled": False})
+        self.assertIn("update", got[0])
+        got = self._findings({"state_repo": "https://x/y.git"})
+        self.assertIn("projects[]", got[0])
+
+    def test_removed_worktree_key_is_named(self):
+        got = self._findings({"state_worktree_dir": "/tmp/x"})
+        self.assertIn("廃止", got[0])
+
+    def test_scalar_agent_cli_is_folded_not_exploded(self):
+        """`agent_cli: codex`（スカラ）が 1 文字ずつの配列にならないこと（P1-3）。
+
+        素朴な `[str(a) for a in raw]` は文字列を文字へ分解する。板の `nodes/<id>.json` に
+        `["c","o","d","e","x"]` が publish され、`requires.agent_cli` を持つ公示に永久に
+        入札しない——入札選別は fail-close なので、誤動作ではなく無言の不参加になる。"""
+        host = km.HostConfig({"agent_cli": "codex", "tags": "urgent"})
+        self.assertEqual(host.agent_cli, ["codex"])
+        self.assertEqual(host.tags, ["urgent"])
+        got = self._findings({"agent_cli": "codex", "tags": "urgent"})
+        self.assertEqual(len(got), 2, "黙って直すと「配列で書かなくても動く」と思い込ませる")
+
+    def test_scalar_agent_cli_still_matches_a_post(self):
+        # 板への波及（回帰）: 修正前は eligible が False になっていた。
+        host = km.HostConfig({"node_id": "pc-a", "agent_cli": "codex", "tags": "urgent"})
+        cap = km._node_capability(host)
+        self.assertEqual(cap["agent_cli"], ["codex"])
+        post = {"requires": {"agent_cli": ["codex"], "tags": ["urgent"]}}
+        self.assertTrue(km._boardrules.eligible(post, repos=None, tags=cap["tags"],
+                                                agent_cli=cap["agent_cli"]))
+
+    def test_wrong_shapes_are_reported(self):
+        self.assertTrue(any("defaults" in f for f in self._findings({"defaults": ["a"]})))
+        self.assertTrue(any("projects" in f for f in self._findings({"projects": {"a": 1}})))
+
+    def test_unknown_project_entry_key(self):
+        got = self._findings({"projects": [{"root": "/tmp/p", "config": "x.yaml"}]})
+        self.assertEqual(len(got), 1)
+        self.assertIn("agent-project.yaml", got[0], "S1 の E6（設定は状態リポジトリ直下）")
+
+    def test_warning_is_emitted_once_per_path(self):
+        tmp = Path(tempfile.mkdtemp(prefix="host-warn-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        path = tmp / "agent-project.host.json"
+        path.write_text(json.dumps({"nodeid": "pc-a"}), encoding="utf-8")
+        km._HOST_WARNED.discard(str(path))
+        self.addCleanup(km._HOST_WARNED.discard, str(path))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            km.load_host_config(str(path))
+            km.load_host_config(str(path))
+        self.assertEqual(err.getvalue().count("nodeid"), 1,
+                         "CLI 実行と子プロセスのたびに出るとログが埋まる")
