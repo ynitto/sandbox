@@ -8,9 +8,8 @@
 > [`schemas/delegation.schema.json`](../../schemas/delegation.schema.json) /
 > [`schemas/amigos-command.schema.json`](../../schemas/amigos-command.schema.json) /
 > [`schemas/agent-session-commands.schema.json`](../../schemas/agent-session-commands.schema.json)
-> 前提とする設計: [`agent-project-design.md`](./agent-project-design.md) /
-> [`agent-flow-design.md`](./agent-flow-design.md) / [`agent-amigos-design.md`](./agent-amigos-design.md) /
-> [`2026-07-24-single-resident-controller-design.md`](../plans/2026-07-24-single-resident-controller-design.md)
+> 前提とする設計: [`agent-project-design.md`](./agent-project-design.md)（常駐一本化・板の請負を含む）/
+> [`agent-flow-design.md`](./agent-flow-design.md) / [`agent-amigos-design.md`](./agent-amigos-design.md)
 
 ---
 
@@ -140,7 +139,6 @@ kiro-loop 設定や `.statemachine/` を持つだけの**定常業務専用フ�
 逆に host.yaml へ載せると、常駐体が管理しないものを常駐体の宣言ファイルに書くねじれになる。
 両者が同じパスを指した場合は project 側を正として畳む（routine エントリは定常業務タブしか
 持たないので、上書きすると backlog / 検収が画面から消える）。
-設計: [`docs/plans/2026-07-26-s3-s2-node-repos-and-cowork-roots-design.md`](../plans/2026-07-26-s3-s2-node-repos-and-cowork-roots-design.md) §2。
 
 設定に残るのはこのほか「どこの状況ファイルを読むか」（WSL ディストロ・ベースパス）と
 表示の好みだけ。
@@ -261,7 +259,7 @@ IPC は全チャネルが `{ok, data|error}` に揃う（`base/main/handle.js` �
 
 ## 5. 制御面ごとの責務
 
-この節はコンポーネントの粒度。画面の詳細は README と `docs/plans/` の各設計へ委ねる。
+この節はコンポーネントの粒度。画面の詳細は README に、画面ごとの設計判断の要点は付録 A に置く。
 
 | feature | 見せるもの | 書くもの |
 |---|---|---|
@@ -311,8 +309,6 @@ IPC は 4 本（`kiroLoop:listSessions` / `capture` / `state` / `send`）。
 
 ### 5.2 委譲公示板 — 独立タブを作らず、人の問いごとに置く
 
-詳細は [S8/S9-4 詳細設計](../plans/2026-07-26-s8-s9-4-board-ui-and-doctor-chat-detailed-design.md)。
-
 **板の状況は 3 か所に割った。** 「委譲」という内部概念を利用者の語彙にしないため独立タブは作らず、
 人が実際に持つ問いの場所へ置く:
 
@@ -321,6 +317,11 @@ IPC は 4 本（`kiroLoop:listSessions` / `capture` / `state` / `send`）。
 | 出したこの仕事、誰か拾った？ | タスク画面 | 委任中タスクの「委任先: pc-b — 実行中」1 行と、詳細の「委任」行（中止ボタン） |
 | この端末で引き受けられる仕事は？ | 参加タブ | 募集中の公示（flow の作業・amigos のロールに続く 3 つ目の候補源） |
 | この端末は板に参加できてる？ | 全体設定 → 同期 | この端末の参加状況と、参加している端末の一覧 |
+
+板専用のセクションを全体設定に置く案は捨てた。設定画面は端末の構成を決める場所で、刻々と
+動く公示の一覧を混ぜると、どちらの目的でも探しにくくなる。全体設定に残るのは参加状況の
+確認だけだ。参加ノード表は板の `nodes/*.json` を読み、心拍が鮮度しきい値（`fresh_after_sec`）を
+割ったノードは灰色に、契約バージョンが古いノードは「更新漏れ」として見せる。
 
 **書き込みは常駐体へ渡す。** 中止・落札・手動入札は板へ直接書かず、ノード宛て指示
 （[`agent-node-command`](../../schemas/agent-node-command.schema.json)・`~/.agents/commands/`）として
@@ -331,6 +332,12 @@ IPC は 4 本（`kiroLoop:listSessions` / `capture` / `state` / `send`）。
   §3.1 の「書き手を常駐体 1 つに固定」がここだけ徹底されていなかった。
 - **claim 規則を UI に複製しない。** 入札は lease と `(ts, who)` タイブレークを持つプロトコルで、
   2 つ目の実装を作れば必ずずれる（二重落札）。
+
+中止だけは所有権の割り切りがある。板の契約上 `cancelled.json` は依頼者が書くパスだが、
+dashboard を動かしている PC が依頼者とは限らない。パス単位の書き込み所有権は git で
+コンフリクトさせないための規約であって認可ではないので、誰が書いても板は終端として扱う。
+止める判断は人にあり、どの PC の前に座っているかで可否が変わるのは筋が悪い。誰が止めたかは
+`cancelled_by` に残す。
 
 **引き受けられない端末ではボタンを出さない。** 落札した仕事を実行できるのはプロジェクトを持つ
 端末だけ（ノード直轄実行は未実装）。可否の根拠は `engine/status.json` の `board.intake_projects`
@@ -362,7 +369,7 @@ dashboard から返せる判断は、plan-review / delivery-review の承認・�
 （host.yaml `repos[]`）で解決できたローカルクローンから差分を出し、解決できなければ理由を
 表示する。フォージ側の決着（マージ = 承認・未マージのクローズ = 却下・changes-requested =
 差し戻し）は常駐体が拾い、画面の承認・差し戻しボタンは「フォージを使わない判断」の口として
-同じ契約へ合流する（[S4/S5 詳細設計](../plans/2026-07-26-s4-s5-review-and-verification-detailed-design.md)）。
+同じ契約へ合流する。
 
 例外は 2 つある。ひとつは 🗑 削除（タスク / run）で、削除の公式契約が無いためゴミ箱への移動として
 行う。もうひとつは viewer 管理のサイドカー（監視担当の割り当て `assignments.json` と
@@ -397,8 +404,8 @@ dashboard から返せる判断は、plan-review / delivery-review の承認・�
 持ち込めない——tmux への注入は改行を含められない 1 行で、「全文をファイルで読ませる」前提は
 読み取り専用モードでファイル読み取りごと落とす CLI に破られる。送るのは**ブリーフ 1 行 +
 全文ファイルのパス**で、全文は「読めるなら読め」の追加資料に留める。読み取り専用を保証できない
-CLI では「このCLIでは助言のみを保証できません」を先に出す。残る 3 モードは構造化見出しの
-抽出に依存するため対話化しない（[S8/S9-4 詳細設計](../plans/2026-07-26-s8-s9-4-board-ui-and-doctor-chat-detailed-design.md)）。
+CLI では「このCLIでは助言のみを保証できません」を先に出す。残る 3 モードは、回答から構造化見出しを抽出して回答欄へ流し込む仕組みに
+依存するため対話化しない。対話にすると抽出点が消える。
 
 **上流で潰す**: タスク投入フォームは、完了条件が無い・自然文の accept が曖昧（「ちゃんと」
 「正しく」等）を投入前に警告する。曖昧な accept は弱い verify に合成され、「PASS したはずが
@@ -443,18 +450,43 @@ CLI では「このCLIでは助言のみを保証できません」を先に出�
 **使い方の正典**: [`tools/agent-dashboard/README.md`](../../tools/agent-dashboard/README.md)。
 画面ごとのデータソース・操作・セットアップはこちら。
 
-**画面ごとの詳細設計**は `docs/plans/` に日付つきで置かれている。主なもの:
-[概要優先 UI](../plans/2026-07-14-agent-dashboard-overview-first-ui-design.md) ／
-[詳細タブ UI](../plans/2026-07-14-agent-dashboard-detail-tabs-ui-design.md) ／
-[Doctor](../plans/2026-07-14-agent-dashboard-doctor-design.md) ／
-[失敗診断](../plans/2026-07-16-agent-dashboard-failure-diagnosis-design.md) ／
-[利用者中心 UI](../plans/2026-07-16-agent-dashboard-user-centered-ui-design.md) ／
-[ミッション詳細 UI](../plans/2026-07-18-agent-dashboard-mission-detail-ui-design.md) ／
-[全体設定ページ](../plans/2026-07-19-agent-dashboard-global-settings-page-design.md) ／
-[オーケストレーションとトークン予算](../plans/2026-07-19-agent-dashboard-orchestration-token-budget-design.md) ／
-[セッション開始コマンド](../plans/2026-07-20-agent-dashboard-session-commands-design.md) ／
-[参加 UI](../plans/2026-07-20-agent-dashboard-participation-ui-design.md) ／
-[本番化計画](../plans/2026-07-21-agent-dashboard-production-hardening-plan.md)。
+**画面ごとの設計判断の要点**。個別に検討した各画面の設計から、判断の核心だけをここに残す。
+
+- **概要ハブ + 詳細タブ**: 「かんたん / メンテナンス」の表示モード切替を廃し、常に概要
+  （現在の状態 / あなたの対応 / 進捗 / 成果の 4 段）を入口にする。定義編集と危険操作は概要から
+  外してプロジェクト設定へ隔離した。全折りたたみ案（情報量が残る）とウィザード案（横断閲覧を
+  妨げる）は却下。
+- **詳細タブ**: 要対応・実行タブも概要と同じ認知モデル（件数サマリー + フィルター +
+  左一覧・右詳細 1 件）に統一。選択中 ID と入力中の回答はポーリングをまたいで保持し、
+  表示モデルは純関数に分離してテストできるようにした。
+- **Doctor**: 要約 200 文字への圧縮をやめ、押したときだけ関連 run の全工程出力を取得する。
+  AI 相談は専用タブではなく画面単位の共通操作としてサイドバーに置き、回答は
+  「現在起きていること / 次にすること / 根拠」の 3 構造に固定する。
+- **失敗診断**: 専用画面も専用 IPC も新設せず、Doctor の `mode: failure-diagnosis` として
+  実装。ログに根拠のない断定を禁じ、設定変更と再実行は提案止まり。
+- **利用者中心の二層化**: run ID・heartbeat・lease・bus のような実装概念は日常画面から外し、
+  プロジェクト設定配下の開発者ツールへ段階的開示で移す（削除はしない）。
+- **ミッション詳細**: バスのメッセージを生で見せず表示専用モデルへ変換する。内部語彙
+  （owner / role / round）は一覧に出さず、「担当者を募集中」「確認待ち」のような次の展開が
+  読める日本語へ翻訳する。
+- **全体設定ページ**: 端末全体に効く設定をフルページ 5 分類へ統合。歯車はダイアログを開かず
+  全体設定へ遷移し、ダイアログは確認と小規模操作に限定する。
+- **ノード予算とエージェント制御**: 予算の一次単位を実行時間からトークンへ移す。台帳には常に
+  計測できる秒と実測トークンだけを書き、未報告 CLI 分は読み出し時にレート換算で推定する
+  （実測のみに絞る案・USD を一次にする案・時間のままの案は却下）。配分はエンジンに分散協調
+  させず、管理面が実効上限を再計算して書き、エンジン側の判定は従来の単純比較のまま。稼働中の
+  CLI / モデル変更・縮退・停止は pull 型の agent-control 契約（`control.json`）に統一する。
+- **セッション開始コマンド**: 前準備コマンドは agent-instructions に相乗りさせず独立契約
+  （`~/.agents/session/session.json`）にした。instructions は agent-flow の meta.json で
+  他ノードへ伝播するので、相乗りすると任意シェルコマンドがリモートへ配られてしまう。
+  この契約だけは非伝播とし、実行は逐次・1 セッション 1 回・二段 timeout で有界にする。
+- **参加 UI**: flow と amigos の募集を同一カードへ正規化した「参加」タブ。UI から工程を直接
+  予約せず、run 限定ワーカーを 1 つ起動して既存の決定的 claim に任せる。予約だけ作ると、
+  実行主体のない claim が工程を止める。
+- **本番化**: バグを修正で塗り重ねず、住処ごと撤去する。状態は専用状態リポジトリの通常
+  clone へ分離、操作は `commands/` の file-drop 一本へ統一して受理レシートで「押しても何も
+  起きない」を可視化、検収の AI 実行はエンジン側に限定、複数 PC 分散は静的割当 +
+  git push 調停で自動奪取を持たない。
 
 **構造を固定しているテスト**（設計判断の実体）:
 `test/no-git-writes.test.js`（§3.1）／ `test/feature-split.test.js`（§3.2）／

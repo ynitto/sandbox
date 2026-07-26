@@ -7,7 +7,7 @@
 > [`schemas/amigos-command.schema.json`](../../schemas/amigos-command.schema.json)
 > 前提とする設計: [`agent-flow-design.md`](./agent-flow-design.md)（バス抽象・claim プロトコル）,
 > [`agent-cli-plugin-design.md`](./agent-cli-plugin-design.md)（LLM 実行 CLI の共通契約）,
-> [`2026-07-24-single-resident-controller-design.md`](../plans/2026-07-24-single-resident-controller-design.md)（常駐体）
+> [`agent-project-design.md`](./agent-project-design.md)（PC 1 本の常駐体と板の請負）
 
 ---
 
@@ -463,7 +463,11 @@ integrator の完了で reviewing に入る。`acceptance` が `manual` なら�
 そこにしか成果物が無い状態を残さない。accept が成立した時点でオーナーホームの
 `<home>/deliveries/<mission-id>/` へ搬出し、納品書 `delivery.json`
 （正典: [`schemas/delivery.schema.json`](../../schemas/delivery.schema.json)）と受領一覧
-`<home>/DELIVERY.md` を書く。納品棚は gc の既定では消さない。
+`<home>/DELIVERY.md` を書く。push 型（accept の副作用として搬出）にしたのは、依頼者が取りに行く
+pull 型だと取り忘れがそのまま成果物の喪失になるからだ。`collect` コマンドは残っているが、
+納品棚以外へ改めて取り出す補助に降格した。納品書には受入結果（partial とその理由を含む）と
+消費予算（events 集計の実行秒）も載り、依頼者は後から「いくらかかったか」を追える。
+納品棚は gc の既定では消さない。消すのは人の判断（`gc --deliveries-keep-days`）に限る。
 
 正本の置き場は種別で分ける。文書・調査結果・小さい画像は本体を納品棚へ。**コードは
 `workspace.repo` の統合ブランチが正本**で、納品棚には参照だけを残す。10MB を超えるファイルも
@@ -624,15 +628,23 @@ agent-dashboard の自動発見マーカーも兼ねる。
 改名する。壊れた指示を無限に噛み続けないためだ。
 
 委譲公示板（agent-board）に参加する設定（`board:`）を与えると、巡回して `workload: amigos` の
-公示に入札し、勝てば**自分がオーナーとして**ミッションを公示する。板は「リポジトリ＋契約」
-だけで処理を持たない（`schemas/board.schema.json`）。詳細は
-[`2026-07-23-delegation-board-distributed-bidding-design.md`](../plans/2026-07-23-delegation-board-distributed-bidding-design.md)。
+公示に入札し、勝てば**自分がオーナーとして**ミッションを公示する。板は専用 git リポジトリ 1 本と
+JSON 契約（正典: `schemas/board.schema.json`）だけで成立し、処理を持たない。板専用のデーモンは
+作らず、入札は各エンジンの既存の巡回へ 1 ステップ足す形に畳んである。落札後の引き渡し先は
+結局そのエンジンなので、分離する意味が無いからだ。入札はタスク claim と同一仕様
+（lease 付き・`(ts, who)` の決定的タイブレーク）で、板上の書き込みもパス単位の名義分割
+（公示と成果の確定は依頼者、bid / status / results は各ノードが自分名義のみ）だから
+コンフリクトしない。公示の id はミッション id を貫く冪等キーで、再投函は同一公示に落ちる。
+落札した公示は commands 契約の post へ変換して通常どおり公示し直すだけで、以降のロール募集から
+受入までにエンジン側の特例は無い。forge の issue を板にする案や外部ブローカー
+（NATS / RabbitMQ 等）は、「バス上のファイルが真実・中央は転送のみ」の原則と衝突するので
+採らなかった。
 
 入札の可否（担当リポジトリ・タグ・CLI・契約バージョンの照合）は `agentcore.board.eligible` の
 1 実装で、agent-flow の板参加と共有する——以前は「同じ仕様・別実装」で 2 つあり、片方だけ育つと
 同じ公示が経路によって拾えたり拾えなかったりした（`agentcore.protocol` の claim と同じ理由で
-集約した）。判定材料の正典は各 PC の `agent-project.host.yaml`
-（[S8/S9-4 詳細設計](../plans/2026-07-26-s8-s9-4-board-ui-and-doctor-chat-detailed-design.md) §6.4）。
+集約した）。判定材料の正典は各 PC の `agent-project.host.yaml` で、板参加の宣言はノードの
+持ち物として一元化している（[agent-project 設計書](./agent-project-design.md) の「板の請負」）。
 
 ### 8.2 障害と回復
 
@@ -797,9 +809,8 @@ agent-amigos cancel       <mid>  /  gc [--keep-days N] [--deliveries-keep-days N
 
 **関連文書**: [`tools/agent-amigos/README.md`](../../tools/agent-amigos/README.md)（使い方）／
 [`.github/skills/team-builder/SKILL.md`](../../.github/skills/team-builder/SKILL.md)（役割設計手順の正典）／
-[`2026-07-19-agent-amigos-deliverable-delivery-design.md`](../plans/2026-07-19-agent-amigos-deliverable-delivery-design.md)（納品棚の設計判断）／
-[`2026-07-23-delegation-board-distributed-bidding-design.md`](../plans/2026-07-23-delegation-board-distributed-bidding-design.md)（委譲公示板）／
-[`2026-07-24-single-resident-controller-design.md`](../plans/2026-07-24-single-resident-controller-design.md)（常駐一本化）。
+[`agent-project-design.md`](./agent-project-design.md)（常駐一本化と板の請負）。
+納品棚の設計判断は §5.8 に、委譲公示板の要点は §8.1 に転記済み。
 
 本書は 2026-07-26 に再構成した。旧 `agent-amigos-teambuilder-patterns.md` は §7 へ統合して削除。
 旧番号を参照している外部文書のための対応表:

@@ -5,8 +5,8 @@
 > [`agent-tools-rename-design.md`](agent-tools-rename-design.md)）。
 
 > 最終更新: 2026-07-26 ／ 関連: `schemas/agent-cli.schema.json`（契約の正典）,
-> `agents/`（同梱定義）, `tools/agent-tools/agentcore/agentcore/agentcli.py`（Python ローダの 1 実装）,
-> [S9 詳細設計](../plans/2026-07-26-s9-agent-cli-layer-detailed-design.md)（対話モード拡張の判断記録）
+> `agents/`（同梱定義）, `tools/agent-tools/agentcore/agentcore/agentcli.py`（Python ローダの 1 実装）。
+> 対話モード拡張の判断記録は §2.1 に転記した。
 
 エージェント CLI の呼び出しを**リポジトリ内で共通化したデータ契約**で差し替え可能にし、
 あわせて失敗を**決定的にトリアージ**（誰が直すか分類）する仕組み。契約が覆う軸は
@@ -79,6 +79,34 @@
 | dashboard の charter 補完・Doctor・構造化 Assist | headless | ✓ | ✓ |
 | dashboard の CLI チャット・cowork の tmux 実行 | interactive | ✗ | ✗ |
 | 対話診断（失敗診断の既定） | interactive | ✓ | ✓ |
+
+### 2.1 対話モード拡張の判断記録
+
+契約の形に痕跡だけが残っている判断を書き残す。
+
+- **`ready_pattern` は正規表現の文字列**。既存実装が `grep -qiE` でそのまま使えるので、新しい
+  検出機構を作らない。未指定の定義は組み込みの既定パターンで動く（知らない CLI でも従来どおり）。
+- **`prompt_inject` という名前**。当初案は `interactive.prompt_via` だったが、トップレベルに
+  既にある `prompt_via: stdin|argv` と同名で enum だけ違う入れ子になり、誤設定が静かに
+  効かないだけで気づけないので改名した。`file` 方式は当時どこにも実装が無かったが、対話診断が
+  スナップショットを渡す経路として必須になるのが分かっていたので、後追いにせず先に契約へ入れた。
+- **既定側をわざわざ `write_args` として分離した**。「`readonly_args` を足すだけ」で済まなかった
+  のは、kiro の `--trust-all-tools`（書き込み可）と `--trust-tools=`（読み取り専用）が追加では
+  なく排他で、両方並べると「後勝ち」に賭けることになるからだ。
+- **`readonly_args` / `no_session_args` はトップレベルに置き、対話側は任意の上書き**。読み取り
+  専用はヘッドレスの Doctor や構造化 Assist でも要るので、対話の中だけに置くと同じ知識を
+  二度書くことになる。逆に `interactive.write_args` は継承しない。ヘッドレス用の強い権限フラグ
+  （claude の `--dangerously-skip-permissions` 等）を対話へ黙って持ち込まないため、対話で要る
+  ものは明示させる。
+- **`command_suffix`**。codex の `-`（stdin から読む位置引数）は必ず末尾でなければならず、
+  `command` に書くとモード別フラグとモデル指定が後ろへ回ってしまう。
+- **spill の指示文は本文の置き換えではなく付け足し**。Doctor は役割と出力書式を argv 側に
+  載せて本文だけファイルへ逃がすので、置き換えると役割ごと消える。
+- **対話セッションの副作用は許容する**。対話は人が画面を見ながら操作するもので、副作用は
+  人の責任範囲。制限すると CLI チャットや定常業務の現行用途が壊れる。例外は診断だけで、
+  `readonly_args` + `no_session_args` で開き、tmux セッション名も `agent-doctor-` 接頭辞の
+  別系統に分ける。読み取り専用のつもりの窓が作業セッションへ合流すると、そこから書き込みが
+  できてしまうからだ。
 
 ## 3. 失敗トリアージ（決定的・LLM 不使用）
 
