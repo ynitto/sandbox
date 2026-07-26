@@ -5,6 +5,7 @@
 参照した既存設計: `2026-07-24-single-resident-controller-design.md` / `2026-07-23-delegation-board-distributed-bidding-design.md` / `2026-07-12-agent-spec-flow-integration.md` / `2026-07-25-flow-planner-granularity-design.md`
 
 改訂履歴:
+- 第 4 版: Phase 1'(S9-1〜3)と Phase 2(S4 → S5)の詳細設計を追加。§4 の表に詳細設計へのリンクを足し、§5 の未決 3・4・7 を決着済みにした
 - 第 3 版: Phase 1(S1 + S3 + S2)の実装完了を反映。§4 に状態列・詳細設計へのリンク・積み残し表を追加、§5 の未決 1・2 を決着済みに、§2 の記述に「Phase 1 で解消」の印を付けた
 - 第 2 版: レビュー反映。S1 = 設定 2 層の専有項目を明確化 / S2 = dashboard 管理へ変更 / S4 = MR/PR 一本化 / S5 = 証跡ベース検証へコンセプト変更 / S6 = 「人は charter・メモ、エージェントがバックログ記述」のフローと作業概要・スキル化 / S9 = エージェント CLI 差分吸収レイヤの新設
 
@@ -332,6 +333,8 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
    }
    ```
    - `ready_pattern` / `prompt_via` は現在 loopProvider がハードコードしている待ち受け・注入ロジックのデータ化。`file` は長大プロンプトを一時ファイルに書き「このファイルを読んで」を send-keys する方式(doctor のコンテキスト spill と同型)。
+   > 上の jsonc は草案。**確定した契約は [S9 詳細設計 §2](2026-07-26-s9-agent-cli-layer-detailed-design.md) を見ること**
+   > (`interactive.prompt_via` → `interactive.prompt_inject` へ改名、`readonly_args` / `no_session_args` をトップレベルへ、`spill` ブロックを追加)。
 2. **組み込み CLI(kiro/claude/copilot/codex)も同梱の `agents/<name>.json` に移す**。dashboard の `buildInteractiveCommand` / `buildDoctorCommand` の CLI 分岐、および各ツールの対話起動箇所は、この定義を読むローダ 1 本(dashboard 側は JS、Python 側は agentcore)に集約する。**CLI の挙動・作法の変更は JSON 1 ファイルの修正で完結する**ことが受入条件。
 3. **適用範囲**: dashboard の CLI チャット(`openInteractiveChat`)、cowork の tmux 実行、S9 の対話診断、kiro-loop の chat 起動 — tmux 経由の全エージェント起動がこのレイヤを通る。
 4. **診断の 2 モード化**(このレイヤの最初の利用者):
@@ -347,8 +350,8 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
 |---|---|---|---|---|
 | 1 | S1 + S3 | **実装済み** | agent-project(configfile/state/host)、agentcore(リゾルバ)、agent-flow(board マージ)、schemas | host.yaml 拡張(projects/repos/overrides)を 1 回で行う |
 | 1' | S2 | **実装済み** | agent-dashboard(cowork) | 独立 |
-| 1' | S9-1〜3 | 未着手 | schemas(agent-cli)、agents/ | 独立。S9 のレイヤは 4 の診断より先に整備 |
-| 2 | S4 → S5 | 未着手 | agent-project(mr/verify/needs)、agent-dashboard(needs) | S5 の acceptance チェックリスト書式は S6 と同時に確定させる |
+| 1' | S9-1〜3 | **詳細設計済み** | schemas(agent-cli)、agents/、agentcore(ローダ)、agent-project / agent-flow / agent-amigos / agent-dashboard | 独立。S9 のレイヤは 4 の診断より先に整備 |
+| 2 | S4 → S5 | **詳細設計済み** | agent-project(mr/verify/needs)、.github/skills(backlog-verifier)、agent-dashboard(needs) | acceptance チェックリスト書式は **S5 側で確定させ S6 が従う**（詳細設計 §2.3） |
 | 3 | S6 → S7 | 未着手 | agent-project(plan/charter/prioritize)、.github/skills(backlog-planner)、agent-flow(planner_skill)、agent-dashboard(plan-review/notes UI) | S9-4(対話診断)と並行可 |
 | 4 | S8、S9-4 | 未着手 | agent-dashboard、agent-project(常駐体) | S8-2/3 は W1-11(board tick)後 |
 
@@ -358,6 +361,8 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
 |---|---|---|
 | S1 | [`2026-07-26-s1-config-two-layer-detailed-design.md`](2026-07-26-s1-config-two-layer-detailed-design.md) | 実装済み(移行手順: `docs/guides/state-repo-migration.md`) |
 | S3 / S2 | [`2026-07-26-s3-s2-node-repos-and-cowork-roots-design.md`](2026-07-26-s3-s2-node-repos-and-cowork-roots-design.md) | 実装済み |
+| S9-1〜3 | [`2026-07-26-s9-agent-cli-layer-detailed-design.md`](2026-07-26-s9-agent-cli-layer-detailed-design.md) | 未着手 |
+| S4 / S5 | [`2026-07-26-s4-s5-review-and-verification-detailed-design.md`](2026-07-26-s4-s5-review-and-verification-detailed-design.md) | 未着手 |
 
 ### Phase 1 の積み残し(次フェーズ以降へ持ち越し)
 
@@ -377,8 +382,18 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
    → **決着**(S1 詳細設計 §7): worker init も同一スキーマを書き検証コードを共通化。overrides は SHARED 群 12 キー。
 ~~2. **S3**: `local` の鮮度責務(worker が毎回 `fetch` する現行方式を維持するか、ノード側で定期 fetch するか)。~~
    → **決着**(S3/S2 詳細設計 §6-2): 現行方式を維持(鮮度不変条件 INV-1)。ノード側の定期 fetch は非目標に触れるため見送り。
-3. **S4**: MR/PR 自動作成のフォージ別対応順序(GitLab 先行、GitHub/Gitea の扱い)。フォージ書き込み API の認証情報の置き場。
-4. **S5**: verifier の副作用の許容範囲(テスト実行は作業ツリー内に限定できるが、DB・外部サービスに触る検証の扱い)。verifier 自体の暴走・自己欺瞞への防御(検証レポートの抜き取り監査を人検収に組み込むか)。
+~~3. **S4**: MR/PR 自動作成のフォージ別対応順序(GitLab 先行、GitHub/Gitea の扱い)。フォージ書き込み API の認証情報の置き場。~~
+   → **決着**(S4/S5 詳細設計 §1.7): GitLab 先行。GitHub/Gitea は `forge` アダプタ境界だけ切って未実装。
+   認証情報は既存の環境変数/rc ファイル方式を踏襲し、host.yaml にもプロジェクト yaml にも置かない。
+   あわせて **MR を誰が作るか**を比較検討し(同 §1.2)、agent-project 常駐体を採用。
+   その帰結としてローカル diff は「MR が無いタスクに限り、S3 のノード宣言から解決したクローンで表示」とした(同 §1.3)。
+~~4. **S5**: verifier の副作用の許容範囲(テスト実行は作業ツリー内に限定できるが、DB・外部サービスに触る検証の扱い)。verifier 自体の暴走・自己欺瞞への防御(検証レポートの抜き取り監査を人検収に組み込むか)。~~
+   → **決着**(S4/S5 詳細設計 §4): 既定は作業ツリー内のみ(`verify_side_effects`)。DB・外部サービスへの書き込みは
+   どの設定でも不可(要るなら人が `verify:` に書く)。自己欺瞞への防御は 4 段(証跡必須・フェイルクローズ・
+   差分の常設基準・検収カードでの抜き取り監査)。監査は別機能にせず人が毎回見る 1 枚に載せる。
 5. **S6**: 人編集タスクの保護と charter 大改訂の衝突(charter が根本から変わったとき人編集タスクをどう扱うか。`--revive` 同様の明示操作とするか)。墓標の指紋衝突で「作りたい新タスク」まで抑止しないか。
 6. **S8**: 手動入札の「ノード直轄ワーカーで実行」への接続(落札後の実行系が W1-11 に含まれるため、単独では操作だけ増えて実行できない状態になり得る)。
-7. **S9**: `readonly_args` の強制力は CLI の実装依存(フラグを無視する CLI への防御は持たない)。対話セッションの副作用は人が見ている前提で許容するか。
+~~7. **S9**: `readonly_args` の強制力は CLI の実装依存(フラグを無視する CLI への防御は持たない)。対話セッションの副作用は人が見ている前提で許容するか。~~
+   → **決着**(S9 詳細設計 §6): 防御は持たない。代わりに定義へ `readonly: enforced | best-effort` を持たせ、
+   保証できない CLI で読み取り専用を要求したときは画面に明示する。対話セッションの副作用は許容し、
+   診断だけ `no_session_args` + 別セッション名で使い捨てにする。
