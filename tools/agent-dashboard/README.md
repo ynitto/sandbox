@@ -89,9 +89,10 @@ agent-project が done の確定を止めたことを意味し、具体的な原
 dashboard は設定文字列だけを読み、codd-gate の実在・互換性・実行成功までは確認しない。
 
 判定に使う公式契約は agent-project の汎用フック `regression_cmd` と `intake_cmd` だけで、
-dashboard 専用のフックは設けない。dashboard はワークスペースの agent-project 設定を読み、
-`readProject()` のスナップショットとして renderer へ渡す。コマンドの実行、設定の書き換え、
-done の確定は行わない。「設定ファイルを開く」も OS のエディタを開くだけである。
+dashboard 専用のフックは設けない。dashboard は agent-project 本体と同じ探索順でワークスペース
+設定を優先し、無ければ `~/.agents` の実効設定を読み、`readProject()` のスナップショットとして
+renderer へ渡す。コマンドの実行、設定の書き換え、done の確定は行わない。
+「設定ファイルを開く」も OS のエディタを開くだけである。
 
 未結線なら、画面に出る設定ファイルへ次の 2 行を書く。
 

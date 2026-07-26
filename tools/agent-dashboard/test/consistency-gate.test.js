@@ -133,16 +133,38 @@ test('空白だけのコマンドは未設定として扱う', () => {
   }
 });
 
-// readToolConfig は最後に ~/.agents を探すので、この検査が無いと他プロジェクトの
-// グローバル設定を見て「結線済み」と誤表示する。
-test('ワークスペースに設定が無ければ ~/.agents のグローバル設定は採らない', () => {
+test('~/.agents の実効設定を採り、ワークスペース設定を優先する', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-gate-home-'));
   const ws = mkWorkspace(null);
+  const originalHomedir = os.homedir;
   try {
+    os.homedir = () => home;
+    fs.mkdirSync(path.join(home, '.agents'), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, '.agents', 'agent-project.yaml'),
+      "regression_cmd: 'codd-gate verify --base \"$KIRO_BASE_REV\"'\n" +
+        "intake_cmd: 'codd-gate tasks --debt'\n",
+      'utf8'
+    );
     const gate = project.readProject(ws, {}).consistencyGate;
-    assert.strictEqual(gate.configFile, null);
-    assert.strictEqual(gate.regressionWired, false);
-    assert.strictEqual(gate.intakeWired, false);
+    assert.strictEqual(gate.configFile, path.join(home, '.agents', 'agent-project.yaml'));
+    assert.strictEqual(gate.regressionWired, true);
+    assert.strictEqual(gate.intakeWired, true);
+    fs.mkdirSync(path.join(ws, '.agents'), { recursive: true });
+    fs.writeFileSync(
+      path.join(ws, '.agents', 'agent-project.yaml'),
+      "regression_cmd: make -s smoke\nintake_cmd: agent-project enqueue\n",
+      'utf8'
+    );
+    const localGate = project.readProject(ws, {}).consistencyGate;
+    assert.strictEqual(localGate.configFile, path.join(ws, '.agents', 'agent-project.yaml'));
+    assert.strictEqual(localGate.regressionConfigured, true);
+    assert.strictEqual(localGate.intakeConfigured, true);
+    assert.strictEqual(localGate.regressionWired, false);
+    assert.strictEqual(localGate.intakeWired, false);
   } finally {
+    os.homedir = originalHomedir;
+    fs.rmSync(home, { recursive: true, force: true });
     fs.rmSync(ws, { recursive: true, force: true });
   }
 });

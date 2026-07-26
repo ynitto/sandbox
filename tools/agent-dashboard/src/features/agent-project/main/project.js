@@ -1605,10 +1605,10 @@ const GATE_INTAKE_RE = /\bcodd-gate\b[^\n]*\btasks\b[^\n]*--debt\b/;
 
 // 一貫性ゲート（codd-gate）の結線状態。設定 yaml の regression_cmd / intake_cmd を読むだけで、
 // コマンドは実行しない。読み取り専用: ここから設定を書き換える経路は作らない。有効化は
-// README の手順（設定編集 / codd_gate_regression.py）に人が従う。
-function consistencyGateStatus(cfg, workspace) {
-  const fromWs = _configFromWorkspace(cfg, workspace);
-  const values = (fromWs && cfg.values) || {};
+// README の手順（設定編集 / codd_gate_regression.py）に人が従う。root 解決と違い、本体が
+// fallback する ~/.agents の実効設定もそのまま表示する。
+function consistencyGateStatus(cfg) {
+  const values = (cfg && cfg.values) || {};
   const pick = (key) => String(values[key] || '').trim() || null;
   const regressionCmd = pick('regression_cmd');
   const intakeCmd = pick('intake_cmd');
@@ -1618,7 +1618,7 @@ function consistencyGateStatus(cfg, workspace) {
   const intakeWired = !!intakeCmd && GATE_INTAKE_RE.test(intakeCmd);
   return {
     // 有効化の導線で「どのファイルを編集するか」を示すための実パス。未検出なら null。
-    configFile: fromWs ? cfg.file : null,
+    configFile: (cfg && cfg.file) || null,
     regressionConfigured,
     intakeConfigured,
     regressionWired,
@@ -1764,7 +1764,7 @@ function readProject(workspaceDir, cfg) {
     repos: reposFile === 'repos.json' ? readJson(path.join(dir, 'repos.json')) : null,
     autonomy,
     // 一貫性ゲート（codd-gate）が設定 yaml に結線されているか。読み取り専用の事実。
-    consistencyGate: consistencyGateStatus(projectCfg, workspace),
+    consistencyGate: consistencyGateStatus(projectCfg),
     liveness: projectLiveness(dir),
     busDir: bus.busDir,
     hasBus: bus.hasBus,

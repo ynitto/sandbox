@@ -281,7 +281,9 @@ assert.match(renderer, /個別のrunを止める操作ではありません/);
 // ここは「概要がゲート節を実際に埋め込み、見出しのゲートバッジと未結線導線を出す」ことだけを見る。
 {
   // 概要セクションがゲート節を実際に差し込んでいる（結線の call-site）。
-  assert.match(renderer, /consistencyGateHtml\(p\)/, '概要にゲート節を差し込んでいない');
+  const renderOverview = grab('renderOverview');
+  assert.match(renderOverview, /\$\{consistencyGateHtml\(p\)\}/, '概要にゲート節を差し込んでいない');
+  assert.match(renderOverview, /bindConsistencyGate\(el\)/, '概要の有効化ボタンを結線していない');
   const escStub = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   // eslint-disable-next-line no-new-func
@@ -325,6 +327,34 @@ assert.match(renderer, /個別のrunを止める操作ではありません/);
 
   // ペイロード無し（旧 main と組み合わせた場合）は概要へ何も足さない。
   assert.strictEqual(gateHtml({}), '');
+
+  let click;
+  const opened = [];
+  const button = {
+    dataset: { gateOpen: '/ws/.agents/agent-project.yaml' },
+    addEventListener(event, handler) {
+      assert.strictEqual(event, 'click');
+      click = handler;
+    },
+  };
+  const root = {
+    querySelectorAll(selector) {
+      assert.strictEqual(selector, 'button[data-gate-open]');
+      return [button];
+    },
+  };
+  const guardStub = (label, fn) => {
+    assert.strictEqual(label, '設定ファイルを開く');
+    return fn();
+  };
+  const apiStub = { openPath: (file) => opened.push(file) };
+  // eslint-disable-next-line no-new-func
+  const bindGate = new Function('guard', 'api',
+    `${grab('bindConsistencyGate')}; return bindConsistencyGate;`)(guardStub, apiStub);
+  bindGate(root);
+  click();
+  assert.deepStrictEqual(opened, ['/ws/.agents/agent-project.yaml'],
+    '有効化ボタンは表示した設定ファイルを一度だけ開く');
 }
 
 console.log('overview-ui: all tests passed');
