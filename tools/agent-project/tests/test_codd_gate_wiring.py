@@ -104,6 +104,32 @@ class TestRecommendedCommands(unittest.TestCase):
         self.assertTrue(wiring.intake_wired(cmd))
 
 
+class TestYamlInjection(unittest.TestCase):
+    def test_upserts_both_commands_and_is_idempotent(self):
+        text = "# keep\nroot: .agent-project\nregression_cmd: 'old'\n"
+        once, changed = wiring.upsert_yaml_text(text, "verify 'quoted'", "tasks")
+        twice, changed_again = wiring.upsert_yaml_text(once, "verify 'quoted'", "tasks")
+        self.assertTrue(changed)
+        self.assertFalse(changed_again)
+        self.assertEqual(once, twice)
+        self.assertIn("# keep\nroot: .agent-project\n", once)
+        self.assertIn("regression_cmd: 'verify ''quoted'''", once)
+        self.assertIn("intake_cmd: 'tasks'", once)
+
+    def test_none_preserves_existing_value(self):
+        text = "regression_cmd: 'custom'\n"
+        self.assertEqual(wiring.upsert_yaml_text(text), (text, False))
+
+    def test_apply_file_skips_second_write(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "agent-project.yaml"
+            path.write_text("root: .agent-project\n", encoding="utf-8")
+            self.assertTrue(wiring.apply_yaml_file(path, regression_cmd="verify"))
+            before = path.stat().st_mtime_ns
+            self.assertFalse(wiring.apply_yaml_file(path, regression_cmd="verify"))
+            self.assertEqual(path.stat().st_mtime_ns, before)
+
+
 class TestJudgeWiringPure(unittest.TestCase):
     """judge_wiring — I/O なしの純粋関数として、実測値を渡すだけで判定できることを検証する。"""
 

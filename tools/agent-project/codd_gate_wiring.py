@@ -10,8 +10,9 @@
 `regression_cmd`/`intake_cmd`（手書き文字列）が既に codd-gate を指しているか＝**結線の有無**を
 判定し（`regression_wired`/`intake_wired`）、未結線かつ codd-gate が使える状態なら実際に注入
 できる推奨コマンド文字列を組み立て（`recommend_regression_cmd`/`recommend_intake_cmd`）、
-その判定を所見の一覧へ整形する（`render_findings`）。CLI（末尾の `main`）は同じ所見を JSON で
-標準出力へ出すだけで、どこへも書かない。
+その判定を所見の一覧へ整形する（`render_findings`）。永続化が必要な呼び出し元には
+`upsert_yaml_text` / `apply_yaml_file` を提供し、明示されたコマンドだけを設定ファイルへ冪等に
+注入する。CLI（末尾の `main`）は同じ所見を JSON で標準出力へ出すだけで、どこへも書かない。
 
 **本モジュールは自分を agent_project パッケージへ結線しない。** 本体（`agent_project/hooks.py`）は
 能力キー -> 必須属性名の表だけを持ち、(1) 設定 `hooks:` の明示指定、(2) 未指定時の sibling 走査、
@@ -25,9 +26,8 @@
 `tests/test_codd_gate_wiring.py` の TestHookResolution が両方向で固定している。
 
 このモジュールが意図的に含めないもの:
-  - `.agent/agent-project.yaml` / `cfg.regression_cmd`・`cfg.intake_cmd` への実書き込み・永続化
-    （`codd_gate_regression.py` の冪等 upsert が唯一の書き込み経路。本モジュールは推奨文字列を
-    返すだけで、どこへも書かない）
+  - `build_config` や `cfg.regression_cmd`・`cfg.intake_cmd` のインメモリ書き換え
+    （結線は `upsert_yaml_text` / `apply_yaml_file` による設定ファイルへの明示的な注入だけ）
   - `codd-gate tasks --debt` 出力の enqueue 経路統合（`agent_project/model.py` の `run_intake` が
     検出器非依存のパースで担う。本体は `intake_cmd` という差し込み点のみを持ち、codd-gate 固有の
     実装へは依存しない）
@@ -70,6 +70,7 @@ from codd_gate_status import CoddGateStatus, build_status  # noqa: E402
 # 語順だけを見て `--repos` 等の追加引数の有無は問わない（手書き設定・自動生成のどちらでも一致させる）。
 _REGRESSION_WIRED_RE = re.compile(r"\bcodd-gate\b[^\n]*\bverify\b[^\n]*--base\b")
 _INTAKE_WIRED_RE = re.compile(r"\bcodd-gate\b[^\n]*\btasks\b[^\n]*--debt\b")
+_YAML_COMMAND_KEYS = ("regression_cmd", "intake_cmd")
 
 
 def regression_wired(regression_cmd: "str | None") -> bool:
@@ -94,6 +95,49 @@ def recommend_regression_cmd(repos_path: "str | Path", vcwd: "str | Path | None"
 def recommend_intake_cmd(repos_path: "str | Path", vcwd: "str | Path | None" = None) -> str:
     """未結線時に cfg.intake_cmd へ注入できる推奨コマンド文字列。"""
     return f'codd-gate tasks --debt --repos {resolve_repos_arg(repos_path, vcwd)}'
+
+
+def upsert_yaml_text(
+    text: str,
+    regression_cmd: "str | None" = None,
+    intake_cmd: "str | None" = None,
+) -> "tuple[str, bool]":
+    """トップレベルの command 2項目だけを YAML 生テキストへ冪等に upsert する。
+
+    None の項目は既存値を保持する。load/dump は使わないため、コメントや未知の設定を失わない。
+    """
+    changed = False
+    for key, cmd in zip(_YAML_COMMAND_KEYS, (regression_cmd, intake_cmd)):
+        if cmd is None:
+            continue
+        escaped = cmd.replace("'", "''")
+        line = f"{key}: '{escaped}'"
+        pattern = re.compile(rf"^{re.escape(key)}:[^\n]*(?:\n|$)", re.MULTILINE)
+        match = pattern.search(text)
+        if match:
+            ending = "\n" if match.group(0).endswith("\n") else ""
+            replacement = line + ending
+            if match.group(0) != replacement:
+                text = text[:match.start()] + replacement + text[match.end():]
+                changed = True
+        else:
+            text += ("" if not text or text.endswith("\n") else "\n") + line + "\n"
+            changed = True
+    return text, changed
+
+
+def apply_yaml_file(
+    yaml_path: "str | Path",
+    regression_cmd: "str | None" = None,
+    intake_cmd: "str | None" = None,
+) -> bool:
+    """既存 YAML へ command を反映し、差分がない再実行では書き込まない。"""
+    path = Path(yaml_path)
+    text = path.read_text(encoding="utf-8")
+    new_text, changed = upsert_yaml_text(text, regression_cmd, intake_cmd)
+    if changed:
+        path.write_text(new_text, encoding="utf-8")
+    return changed
 
 
 @dataclass(frozen=True)
