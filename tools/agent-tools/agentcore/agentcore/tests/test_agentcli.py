@@ -342,6 +342,28 @@ class TestSpillPrompt(_Isolated):
                                             prefix="t-", instruction="read {file}")
         self.assertIsNone(path, "0 以下は既定（100000）へ戻す")
 
+    def test_instruction_frame_is_shared(self):
+        """退避の指示文は「何の全文か」だけが呼び出し側の裁量で、枠は共通（P2-5）。
+
+        「必ずファイルの内容を読み込ませる」という**効き目に関わる部分**を 3 者が別々に
+        持つと、言い回しの改善が 1 か所にしか入らない（入っていない方は誰も気付かない）。"""
+        text = agentcli.spill_instruction("このタスクの全文")
+        self.assertIn("{file}", text)
+        self.assertIn("このタスクの全文", text)
+        self.assertIn("必ずファイルの内容を読み込み", text)
+        self.assertTrue(text.endswith(": {file}"))
+        # 読んだあと何をするかも呼び出し側が決められる（役割ごとに違う）
+        self.assertIn("その内容を対象にしてください",
+                      agentcli.spill_instruction("入力の全文", then="その内容を対象にしてください"))
+
+    def test_instruction_frame_is_used_by_spill_prompt(self):
+        path, text = agentcli.spill_prompt(
+            "x" * 500, 10, prompt_via="argv", prefix="t-",
+            instruction=agentcli.spill_instruction("このターンの全文"))
+        self.addCleanup(os.remove, path)
+        self.assertIn(path, text)
+        self.assertNotIn("{file}", text)
+
     def test_measured_in_bytes_not_characters(self):
         # 日本語は 1 文字 3 バイト。文字数で測ると ARG_MAX の手前で見逃す。
         path, _text = agentcli.spill_prompt("あ" * 20, 30, prompt_via="argv",

@@ -104,6 +104,39 @@ def test_failed_item_reported_via_on_event_without_killing_pool():
     assert done.wait(timeout=2)
 
 
+def test_zero_and_none_mean_unlimited():
+    """`max_concurrent` の 0 は板の語彙で**無制限**（`board.schema.json` `$defs.node`）。
+
+    以前は `max(1, int(...))` で 0 を 1 に潰しており、契約（0 = 無制限）と実装
+    （0 = 既定 4 に読み替え）が真逆だった。「未宣言なら 4」は呼び出し側の既定で、
+    プールの仕事ではない（P2-3）。"""
+    for cap in (0, None):
+        pool = NodeWorkerPool(max_concurrent=cap)
+        gates = []
+        for i in range(8):
+            run, gate, started = _blocker()
+            gates.append(gate)
+            assert pool.submit(WorkItem(f"w{i}", run)), f"{cap!r} で {i} 件目が積まれた"
+        st = pool.status()
+        assert st["queued"] == 0
+        assert st["max_concurrent"] == 0, "板と同じ語彙（0 = 無制限）で報告する"
+        for g in gates:
+            g.set()
+
+
+def test_negative_is_treated_as_unlimited():
+    # 壊れた宣言で 1 に潰れる（＝全部直列になる）より、宣言の検査に任せて素通しにする
+    pool = NodeWorkerPool(max_concurrent=-3)
+    assert pool.status()["max_concurrent"] == 0
+
+
+# モジュール直下の `def test_*` を `unittest discover` に拾わせる（既定の収集は
+# `unittest.TestCase` のサブクラスだけで、関数形式は黙って無視される）。
+from _functest import module_load_tests  # noqa: E402
+
+load_tests = module_load_tests(globals())
+
+
 if __name__ == "__main__":
     test_submit_within_capacity_runs_immediately()
     test_submit_over_capacity_queues_and_drain_starts_it()

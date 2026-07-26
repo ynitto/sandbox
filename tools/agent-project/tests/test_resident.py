@@ -1110,17 +1110,69 @@ class ResidentBoardTickTests(unittest.TestCase):
 
     # --- ノード能力宣言（P1-a / S3-5） ---------------------------------------
 
-    def test_writes_node_capability_with_local_clone_declaration(self):
+    def test_writes_node_capability_with_repo_urls(self):
         self._tick()
         rec = json.loads((self.board / "nodes" / "pc-a.json").read_text(encoding="utf-8"))
         self.assertEqual(rec["node"], "pc-a")
         self.assertEqual(rec["tags"], ["python"])
         self.assertEqual(rec["agent_cli"], ["codex"])
-        self.assertEqual(rec["repos"], [{"url": "https://git.example.com/team/app.git",
-                                         "local": "/home/me/mirrors/app"}])
+        self.assertEqual(rec["repos"], [{"url": "https://git.example.com/team/app.git"}])
         self.assertEqual(rec["contract_version"], km.CONTRACT_VERSION)
         self.assertTrue(rec["heartbeat"])
         self.assertGreater(rec["fresh_after_sec"], 0)
+
+    def test_local_clone_paths_are_not_published_to_the_board(self):
+        """板は共有リポジトリ＝置いた値は全 PC へ配られる。`local` はホスト固有の絶対パスで、
+        `repos.schema.json` が「共有レジストリには置けない」と宣言しているもの（P2-2）。"""
+        self._tick()
+        raw = (self.board / "nodes" / "pc-a.json").read_text(encoding="utf-8")
+        self.assertNotIn("local", raw)
+        self.assertNotIn("/home/me/mirrors/app", raw)
+
+    def test_local_declaration_still_reaches_the_workspace(self):
+        """板から落としても速度最適化は効く（＝落としてよい根拠）。請負ノードは**自分の**
+        host.yaml から解決する（`agentcore.repolocal.merge_local`）ので、板は経路に無い。"""
+        host = self._host()
+        merged = km._repolocal.merge_local({"url": "https://git.example.com/team/app.git"},
+                                           host.repos)
+        self.assertEqual(merged.get("local", ""), "")   # 実体が無いので解決はしない
+        # 宣言そのものは残っている（require_dir=False なら宣言だけを引ける）
+        self.assertEqual(
+            km._repolocal.resolve_local("https://git.example.com/team/app.git", host.repos,
+                                        require_dir=False),
+            "/home/me/mirrors/app")
+
+    def test_repo_url_declaration_still_matches_a_post(self):
+        """`local` を落としても入札の照合は変わらない（照合は url ベース）。"""
+        cap = km._node_capability(self._host())
+        post = {"workspace": {"url": "https://git.example.com/team/app"}}
+        self.assertTrue(km._boardrules.eligible(post, repos=cap["repos"], tags=cap["tags"],
+                                                agent_cli=cap["agent_cli"]))
+
+    # --- 引き受けるエンジンと枠（P2-3） --------------------------------------
+
+    def test_workloads_are_not_published_when_undeclared(self):
+        """宣言していないものを宣言として配らない。板の語彙では「空 = 全部」で、
+        キーが無いことと同義（導出値を載せると owner-picks の判断が嘘を読む）。"""
+        self._tick()
+        rec = json.loads((self.board / "nodes" / "pc-a.json").read_text(encoding="utf-8"))
+        self.assertNotIn("workloads", rec)
+
+    def test_declared_workloads_are_published(self):
+        self._tick(self._host(workloads=["flow"]))
+        rec = json.loads((self.board / "nodes" / "pc-a.json").read_text(encoding="utf-8"))
+        self.assertEqual(rec["workloads"], ["flow"])
+
+    def test_max_concurrent_declaration_reaches_the_board(self):
+        """未宣言 = 既定 4 / 明示 0 = 無制限（スキーマの語彙）/ n = n（P2-3）。"""
+        self.assertEqual(km._effective_max_concurrent(self._host()), 4)
+        self.assertEqual(
+            km._effective_max_concurrent(self._host(budget={"max_concurrent": 0})), 0)
+        self.assertEqual(
+            km._effective_max_concurrent(self._host(budget={"max_concurrent": 2})), 2)
+        self._tick(self._host(budget={"max_concurrent": 0}))
+        rec = json.loads((self.board / "nodes" / "pc-a.json").read_text(encoding="utf-8"))
+        self.assertEqual(rec["max_concurrent"], 0, "0 は無制限としてそのまま宣言する")
 
     def test_heartbeat_only_updates_are_rate_limited(self):
         # 30 秒 tick のたびに心拍を書き換えると板に無意味なコミットが積む。

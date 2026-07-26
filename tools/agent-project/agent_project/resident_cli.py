@@ -84,23 +84,15 @@ def _find_host_config(explicit: "str | None" = None) -> "str | None":
 def _normalize_host_repos(raw) -> "list[dict]":
     """host.yaml の `repos:` を [{url, local}, …] へ正規化する（S3）。
 
+    **実装は `agentcore.repolocal.normalize_repos` の 1 つ**（P2-5）。ここに写しを持っていた
+    ため、mapping 形の `local: null` が片方では `"None"` という**文字列のパス**になっていた
+    ——`agentcore.repolocal` は「同じ宣言が経路によって違って読める」を潰すために作った
+    モジュールなので、その宣言の読み方をここで持ち直すのは動機に反する。
+
     人が手で書くので型は保証されない。list（正）のほか、旧 mapping 形式（url -> local）と
     素の文字列列も受ける。壊れていても例外にせず落とせる分だけ拾う——設定ミスでノードが
     起動しない方が、ローカル最適化が効かないことより高くつく（`_normalize_hooks` と同じ流儀）。"""
-    out: "list[dict]" = []
-    if isinstance(raw, dict):
-        for url, local in raw.items():
-            if isinstance(local, dict):
-                out.append({"url": str(url), **{k: str(v) for k, v in local.items()}})
-            elif local:
-                out.append({"url": str(url), "local": str(local)})
-    elif isinstance(raw, list):
-        for item in raw:
-            if isinstance(item, dict) and item.get("url"):
-                out.append({str(k): (str(v) if v is not None else "") for k, v in item.items()})
-            elif isinstance(item, str) and item.strip():
-                out.append({"url": item.strip()})
-    return out
+    return _repolocal.normalize_repos(raw)
 
 
 def _str_list(raw, key: str, findings: "list[str] | None" = None) -> "list[str]":
@@ -139,6 +131,7 @@ HOST_TOP_KEYS = frozenset({
     "node_id", "defaults", "projects", "repos", "tags", "agent_cli",
     "board", "board_workdir", "amigos_bus", "amigos_config", "budget", "update",
     "availability", "residency",
+    "workloads",            # 引き受けるエンジン（板の入札選別・P2-3）。省略 = 制限しない
 })
 
 # `projects[]` の 1 要素で意味を持つキー。
@@ -169,8 +162,18 @@ def host_config_findings(data: dict) -> "list[str]":
     for key in _HOST_MAPPING_KEYS:
         if key in data and data[key] is not None and not isinstance(data[key], dict):
             findings.append(f"{key}: はマッピングです（{type(data[key]).__name__} を無視します）")
-    for key in ("tags", "agent_cli"):
+    for key in ("tags", "agent_cli", "workloads"):
         _str_list(data.get(key), key, findings)
+    for w in _str_list(data.get("workloads"), "workloads"):
+        if w not in ("flow", "amigos"):
+            findings.append(f"workloads: の `{w}` は板の語彙にありません"
+                            "（flow / amigos）— この宣言では板の仕事を 1 つも受けません")
+    raw_budget = data.get("budget")
+    raw_max = raw_budget.get("max_concurrent") if isinstance(raw_budget, dict) else None
+    if raw_max is not None and (not isinstance(raw_max, (int, float))
+                                or isinstance(raw_max, bool) or int(raw_max) < 0):
+        findings.append(f"budget.max_concurrent: は 0 以上の整数です（{raw_max!r} を無視して"
+                        "既定に戻します）— 0 は「無制限」の意味です")
     if data.get("projects") is not None and not isinstance(data.get("projects"), list):
         findings.append("projects: は配列です（無視します）")
     if data.get("repos") is not None and not isinstance(data.get("repos"), (list, dict)):
@@ -234,6 +237,10 @@ class HostConfig:
         # 後者は設定の層（S1 の SHARED 群）で、混ぜると「1 つしか宣言していない PC の既定が
         # 勝手に変わる」ことになる。
         self.agent_cli = _str_list(data.get("agent_cli"), "agent_cli")
+        # 板で引き受けるエンジン（P2-3）。**明示宣言だけを正**とし、`amigos_bus` の有無から
+        # 導出しない——導出値を判定に使うと、宣言せずに amigos の板参加を起こしている PC が
+        # 黙って入札をやめる。空 = 制限しない（板の語彙では「空 = 全部」）。
+        self.workloads = _boardrules.declared_workloads(data if isinstance(data, dict) else {})
         # S1: ノード全体の共有キー既定。projects[].overrides と合わせて resolve_config が読む。
         self.defaults = dict(data.get("defaults") or {})
         # S3: ノード固有のローカルクローン宣言（url/local の列）。共有 repos.json には置けない
@@ -245,7 +252,15 @@ class HostConfig:
         self.update = dict(data.get("update") or {})
         self.board = str(data.get("board") or "")
         self.board_workdir = data.get("board_workdir")
-        self.max_concurrent = int((data.get("budget") or {}).get("max_concurrent", 0) or 0)
+        # ノード全体の同時実行上限。**未宣言（None）と明示の 0 を区別する**（P2-3）。
+        # 板の契約（`board.schema.json` の `$defs.node.max_concurrent`）では 0 = 無制限で、
+        # 未宣言は「既定に従う」。以前は両方を 0 に潰しており、無制限を書く手段が無く、
+        # しかも契約（0 = 無制限）と実装（0 = 既定 4）が真逆になっていた。
+        budget = data.get("budget")
+        raw_max = budget.get("max_concurrent") if isinstance(budget, dict) else None
+        self.max_concurrent: "int | None" = (
+            int(raw_max) if isinstance(raw_max, (int, float)) and not isinstance(raw_max, bool)
+            and int(raw_max) >= 0 else None)
         # amigos 参加 tick（設計 §4.2「amigos 参加（claim・心拍・away）」）の対象バス。
         # 未設定なら amigos 参加 tick 自体を skip する（board 未設定で板 tick が no-op になるのと
         # 同じ流儀 — host.yaml に無い機能を強制起動しない）。
@@ -419,23 +434,61 @@ def node_commands_dir() -> Path:
     return Path(override) if override else (_agents_home() / "commands")
 
 
+# 同時実行上限を宣言していないノードの既定（旧 agent-flow daemon の `--max-workers`）。
+# **「未宣言なら 4」は設定を読む側の既定**で、`NodeWorkerPool` の仕事ではない——プールが
+# 既定を持つと、宣言を読む場所が 2 つになる（P2-3）。
+_DEFAULT_MAX_CONCURRENT = 4
+
+
+def _effective_max_concurrent(host: "HostConfig") -> int:
+    """このノードの実効同時実行上限（板の語彙: 0 = 無制限）。
+
+    | host.yaml | 実効値 |
+    |---|---|
+    | 未宣言 | 4（既定） |
+    | `0` | 0（無制限・スキーマの語彙どおり） |
+    | `n > 0` | n |
+    """
+    return _DEFAULT_MAX_CONCURRENT if host.max_concurrent is None else int(host.max_concurrent)
+
+
+def _board_repo_declaration(repos: "list[dict]") -> "list[dict] | None":
+    """host.yaml の `repos[]` → 板の `nodes/<id>.json` に載せる形（P2-2）。
+
+    **`local` は落とす。** あれはこの PC にしか存在しない絶対パスで、板は共有リポジトリ
+    ＝置いた瞬間に全 PC へ配られる。`repos.schema.json` が `local` を「ホスト固有なので
+    共有レジストリには置けない」と宣言しているのと同じ理由がそのまま当たる（S3）。
+
+    速度最適化のヒントとしての `local` は、**請負ノードが自分の host.yaml から**解決する
+    （`agentcore.repolocal.merge_local`）ので板を経由する必要がそもそも無い。実測でも
+    板の `local` を読む消費者はゼロだった——入札判定（`agentcore.board.declared_repo_ids`）は
+    name と正規化 url しか見ず、画面（`board-adapter.listNodes`）は url からラベルを作るだけ、
+    doctor は心拍しか見ない。
+
+    `url` を持たないエントリは落とす（照合に使えず、読み手に空のラベルを出させるだけ）。
+    """
+    out = [{k: v for k, v in r.items() if k != "local"} for r in repos]
+    return [r for r in out if str(r.get("url") or "").strip()] or None
+
+
 def _node_capability(host: "HostConfig") -> dict:
     """host.yaml の宣言 → 板の `nodes/<node-id>.json`（`board.schema.json` の `$defs.node`）。
 
-    **`repos` に host.yaml の `repos[]`（url + local）をそのまま載せる**のが S3-5 / 積み残し
-    P1-a の実体。`local` は他ノードにとっては意味を持たない絶対パスだが、板の契約が
-    「速度最適化のヒント」として持つと決めた項目で、入札可否は url ベースで決める
-    （`local` の有無で入札を変えない）。
+    載せるのは**他のノードが読んで意味を持つものだけ**: 担当リポジトリの url（入札の照合）・
+    タグ・使える CLI・稼働時間帯・同時実行上限・契約バージョン・心拍。`local`（P2-2）は
+    落とし、`workloads` は宣言があるときだけ載せる（P2-3）——導出値を宣言として配ると、
+    owner-picks の落札判断と端末一覧が「host.yaml が言っていないこと」を読むことになる。
     """
-    workloads = ["flow"] + (["amigos"] if host.amigos_bus else [])
     cap = NodeCapability(
         node=host.node_id,
-        workloads=workloads,
+        workloads=list(host.workloads),
         tags=list(host.tags),
         agent_cli=list(host.agent_cli),
-        repos=[dict(r) for r in host.repos] or None,
+        repos=_board_repo_declaration(host.repos),
         availability=_availability_declaration(host),
-        max_concurrent=host.max_concurrent,
+        # 未宣言のノードは「既定に従う」＝板から見れば無制限ではなく既定枠。板の語彙には
+        # 「既定」が無いので、実効値（`_effective_max_concurrent`）を宣言する。
+        max_concurrent=_effective_max_concurrent(host),
         heartbeat=datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         fresh_after_sec=_NODE_HEARTBEAT_INTERVAL_SEC * _NODE_FRESH_FACTOR,
     )
@@ -521,9 +574,12 @@ def _ingest_node_commands(host: "HostConfig", board: "BoardRepo",
             continue
         detail = ""
         if action == "board-bid":
-            board.write_bid(did, host.node_id, _BOARD_BID_LEASE_SEC,
-                            workload=str(board.read_post(did).get("workload") or "flow"))
-            detail = f"{host.node_id} が入札しました"
+            wrote = board.write_bid(did, host.node_id, _BOARD_BID_LEASE_SEC,
+                                    workload=str(board.read_post(did).get("workload") or "flow"))
+            # 二度押しは失敗ではない（入札は冪等）が、**何も書かなかったことは残す**——
+            # 常に「入札しました」と返すと、押したのに板へ届いていない場合と区別が付かない。
+            detail = (f"{host.node_id} が入札しました" if wrote
+                      else f"{host.node_id} の入札は既に有効です（延長は不要）")
         elif action == "board-cancel":
             board.write_cancelled(did, reason, host.node_id)
             detail = "中止しました"
@@ -863,12 +919,11 @@ def _build_resident(host: "HostConfig", *, start_children: bool = True):
         status.running_runs = list(pool.status().get("inflight") or [])
         write_json_atomic(str(status_path), status.to_dict())
 
-    # ノード直轄ワーカー（設計 §4.2・実装計画 W1-5/W1-11）。max_concurrent: 0 は「明示未設定」
-    # として旧 flow daemon 既定の --max-workers（4）に合わせる（NodeWorkerPool 自体は
-    # max(1, n) を強制するため 0 を「無制限」にはできない。host.yaml.example の記載も
-    # 「既定 4」に合わせて更新済み）。
+    # ノード直轄ワーカー（設計 §4.2・実装計画 W1-5/W1-11）。上限は板と同じ語彙で解決する
+    # （未宣言 = 既定 4 / `0` = 無制限 / `n` = n・P2-3）。板の `nodes/<id>.json` に宣言する
+    # 値と同じ関数から出すので、「板には 4 と言っておいて手元は無制限」が作れない。
     pool = NodeWorkerPool(
-        host.max_concurrent if host.max_concurrent > 0 else 4,
+        _effective_max_concurrent(host),
         # スキル起動の単発実行（C14 併走）も同じ枠で律速する。プロセス内だけで数えると
         # 人が直接叩いた手番が max_concurrent を素通りする（実装計画 W1-5）。
         external_inflight=lambda: _external_amigos_inflight(host),

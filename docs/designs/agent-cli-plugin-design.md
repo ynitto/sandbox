@@ -70,6 +70,11 @@
     **権限フラグには触らない**。ヘッドレス実行（検証エージェント・分解・裁定）に前者を
     掛けると、退避したときだけコマンドを 1 つも実行できなくなり、検証は全基準
     「検証不能」に倒れる。見ているものが CLI の癖か OS の上限かで、層が違う。
+    **2 つを寄せる案は採らない**（P2-5 の決着）——定義の `spill.instruction` は
+    権限置換とセットの機構で、`spill_prompt` から使うと同じ穴を踏む。代わりに
+    `spill_prompt` 側の指示文は `agentcore.agentcli.spill_instruction` が枠だけを持ち、
+    呼び出し側は「何の全文か」だけを渡す（3 者が全文を自前で持つと、言い回しの改善が
+    1 か所にしか入らず、入っていない方は誰も気付かない）。
   - **対話モード（`interactive`）**: 対話起動 argv・対話専用の `write_args` / `readonly_args`・
     入力受付を検出する正規表現（`ready_pattern` / `ready_timeout_sec`）・初回プロンプトの
     注入方法（`prompt_inject: send-keys | file`）。dashboard の CLI チャット・cowork の

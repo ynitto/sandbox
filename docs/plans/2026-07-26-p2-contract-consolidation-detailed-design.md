@@ -1,6 +1,6 @@
 # P2 詳細設計: 契約の一本化 5 件
 
-ステータス: 詳細設計（未実装）
+ステータス: 実装済み（詳細設計 + 実装で確定した差分を §9 に反映）
 入力: [`2026-07-26-open-items-and-concerns.md`](2026-07-26-open-items-and-concerns.md) §7.3 / §6.2
 参照: [P0 詳細設計](2026-07-26-p0-pre-canary-fixes-detailed-design.md)（構造テストの流儀・除外リストの作法） /
 [P1 詳細設計](2026-07-26-p1-config-and-safety-detailed-design.md) §3.1.2（**解決済みの文を入力で渡し、受け側の表は受け皿へ降格**する手） /
@@ -776,3 +776,49 @@ cd tools/agent-dashboard && npm test
 | 5 | **`agent_flow/gitbus.py:_safe` の置換文字**（§7-D）。板レイアウト側は P2-5 で `safe_name` へ寄せるが、バス全体のパス綴りは残る。揃えると既存 run のディレクトリ名が変わる | バス側で綴りの割れが実害を出したとき（現状は同一プロセスが書いて読むので割れない） |
 | 6 | **`results/<who>.json` と `speculation`**（総覧 §3 P4-d）。本設計は `result.json` の単一確定点を前提にしたままで、投機同時実行が入るときに `node_inflight` の数え方（1 委譲 = 1 枠）を見直す必要がある | speculation を実装するとき |
 | 7 | **板の `local` を消した後の速度**（P2-2）。請負ノードが自分の host.yaml に宣言していなければ、従来どおりミラー取得へ落ちる（板の `local` は元々使われていないので変化は無いはずだが、canary で「板経由の仕事が遅くなった」という申告が出たら実際の解決経路を確かめる） | canary（総覧 §1.1）で申告が出たとき |
+
+---
+
+## 9. 実装で確定した差分
+
+設計と実装がずれたところ。**本文は書き換えず、ここに理由付きで残す**（P0 / P1 詳細設計と同じ流儀）。
+
+| # | 設計 | 実装 | 理由 |
+|---|---|---|---|
+| 全体 | §5 のテストを足す | **その前に、テストが 1 件も走っていないファイルが 4 つあることが分かった**（§9.2）。`unittest discover` は `TestCase` サブクラスしか集めないので、関数形式で書かれた `resident` の単体テスト 31 件が CI で緑とも赤とも報告されていなかった。`_functest.module_load_tests`（`load_tests` プロトコル + `FunctionTestCase`）で拾うようにした | P2-1 / P2-3 の新規テストがまさにこの 4 ファイルへ入る。**測れない場所に護りを置いても護りにならない**ので、先に収集を直した。pytest は足さない（stdlib だけで走るのがこのリポジトリのテストの規約で、CI もそれ前提） |
+| P2-1 | `resident/status.py` は import に落とす | 構造テストは**値の一致ではなく同一オブジェクト**（`is`）で見る | 値の一致だと「たまたま同じ数を 2 か所に書いた」状態が緑のまま残る。写しを作った瞬間に落ちてほしい |
+| P2-2 | `local` を落とす | あわせて **url を持たないエントリも落とす** | `local` を落とすと url 無しのエントリは空の `{}` になる。照合に使えず、画面に空のラベルを出させるだけ |
+| P2-3 | `NodeCapability.max_concurrent` は宣言値 | **実効値**（未宣言なら 4）を宣言する | 板の語彙に「未宣言」が無い（0 = 無制限 / n = n）。生の `None` を板へ出すと読み手が「無制限」と読むので、既定を解決してから宣言する。解決は `_effective_max_concurrent` の 1 か所で、ワーカープールへ渡す値と同じ——「板には 4 と言っておいて手元は無制限」が作れない |
+| P2-3 | `workloads` は宣言があるときだけ載せる | `NodeCapability.to_dict` 側で「空なら出さない」ようにした（`tags` / `agent_cli` は従来どおり常に出す） | 非対称に見えるが理由がある。`tags` / `agent_cli` は**公示の要求と突き合わせる材料**で、空であることが fail-close の判断に効く。`workloads` は**ノードが自分に課す制限**なので、空とキー無しが同義（「宣言していない」を空配列として配ると、読み手には「宣言したうえで空」と区別が付かない） |
+| P2-3 | `_node_declaration`（flow）に workloads / max_concurrent を足す | 明示上書きが揃っているときの**早期 return を外した**（常に host.yaml を読む） | `board_repos` / `board_tags` / `board_agent_cli` が全部指定されていると host.yaml を読まずに返していたが、新しい 2 つはそこに無い。CLI 側の上書きは足さない——どちらもノードの性質で、「このプロジェクトのときだけ違う」が起こらない |
+| P2-3 | amigos に `agent_cli` を渡す（§7-A） | `workloads` / `max_concurrent` も **host.yaml から**読む `_node_board_declaration` にまとめた | amigos は自分の設定（`daemon.repos` / `tags`）を使うが、この 2 つはノードの宣言なので正典は host.yaml（flow と同じ判断）。`daemon.node_declaration` で明示でき、無ければ通常の探索順 |
+| P2-3 | `host_config_findings` に `workloads` の型検査 | **語彙の検査も足した**（`flow` / `amigos` 以外は所見）+ `budget.max_concurrent` の型検査 | `workloads: [flwo]` は綴り間違いでも型は正しく、結果は「板の仕事を 1 つも受けない」——W6 の「無言の不参加」と同じ形なので、書いた時点で気付ける方に倒す |
+| P2-4 | 3 メソッドを `_locked()` + `_ensure()` へ | ロック保持の構造テストは `_locked` を**差し替えて深さを数える**形にした | 「ロックを取ったか」だけでなく「入れ子になっていないか」も同時に固定できる（同一プロセスの flock 再入は自分自身と競合して止まる） |
+| P2-5 | `spill_instruction(what, then)` を新設 | flow / amigos / project の文言が**わずかに変わった**（枠が統一されたため） | 既存テストは文言を固定していない（実測）。変わったのは語順だけで、「必ず読み込ませる」という効き目に関わる部分は同じ |
+| P2-5 | JS の symlink 解決を Python と揃える | `fs.realpathSync.native` → 失敗したら `path.resolve` の 2 段。ゴールデン表は **fs に依存しない項目だけ**にした | 一時パスは決定的でないので表に載せられない。symlink 解決そのものは両言語の個別テストで確かめる |
+| P2-5 | `gitbus._safe` は触らない | flow の**板レイアウトに使う 3 箇所だけ** `protocol.safe_name` へ寄せた（クローン先ディレクトリ名は `_safe` のまま） | 置換文字を変えると既存 run のディレクトリ名が変わる＝静止点の意味が変わる。板の名義は板の規則で綴る、が今回の線引き |
+| P2-5 | — | **`verify.py` / スキルの `workspace.url` 空値の描画も揃えた**（§7-F） | `diff_criterion` と同じファイルの同じ関数なので、別コミットに割ると読み手が 2 度同じ場所を読むことになる |
+
+### 9.1 実測（実装後）
+
+| 対象 | 結果 |
+|---|---|
+| agent-project | 1,174 件 緑（修正前は 1,127 件。うち 31 件は「今まで走っていなかった分」の回収） |
+| agent-flow | 577 件 緑（新規 6 件） |
+| agent-amigos | 180 件 緑（新規 4 件） |
+| agentcore（テストルート 2 つ） | 82 / 82 件 緑（新規 18 件） |
+| agent-dashboard `npm test` | 緑（新規 2 ファイル: 契約バージョンと URL 正規形のゴールデン） |
+| R10 検査 | 違反なし |
+
+既存テストで**書き換えたのは 1 件だけ**:
+`test_writes_node_capability_with_local_clone_declaration` は「板に `local` が載る」ことを
+固定していたので、新しい契約（url だけを配る）へ寄せて `..._with_repo_urls` へ改名し、
+「`local` を落としても手元クローンの解決は効く」を別テストで足した。
+
+### 9.2 実装中に見つけたもの（§7 に無いもの）
+
+| # | 内容 | 重要度 | 扱い |
+|---|---|---|---|
+| L | **`unittest discover` が集めないテストファイルが 4 つあった**。`tests/test_resident_{scheduler,status,supervisor,worker}.py` はモジュール直下の `def test_*` で書かれており、`discover` は `TestCase` サブクラスしか集めない。**31 件が CI で緑とも赤とも報告されていなかった**（`if __name__` の手動実行でしか走らない）。P3-1 で CI を入れたとき「4 パッケージの単体テスト」と書いたが、実際にはこの 4 ファイルが素通りしていた。しかも中身は `resident` の中核（scheduler / supervisor / worker / status）で、P0-1（SIGTERM 窓）と P2-3（ワーカープール）がまさに触る場所 | 高 | **本設計の中で直した**（`tests/_functest.py` の `load_tests` フック）。P2 のテストがこの 4 ファイルへ入るので、直さないと新しい護りも走らない |
+| M | **`declared_workloads` の綴り間違いは型検査を通る**。`workloads: [flwo]` は配列で文字列なので W6 に掛からず、結果は「板の仕事を 1 つも受けない」——`agent_cli` のスカラ分解（P1 §7-C）と同じ無言の不参加 | 中 | P2-3 の `host_config_findings` へ語彙の検査を追加（§9 の表） |
+| N | **dashboard のテストは `yaml` の実体を要求する**。`nodeRepos.js` が `base/main/yaml.js` 経由で `yaml` を require するため、依存を入れずに `npm test` を叩くと `MODULE_NOT_FOUND` で落ちる。CI は `npm install --omit=dev` を先に走らせるので緑だが、手元の手順（README / P1 §5.6 の 6 コマンド）にはその一行が無い | 低 | 本設計では手順に触れていない。手元で回すときは `npm install --omit=dev` を先に打つ（CI と同じ）。README への追記は次に手順を触るときに |

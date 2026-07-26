@@ -14,6 +14,32 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from agentcore import repolocal  # noqa: E402
 
 
+# URL 正規形のゴールデン表（P2-5）。dashboard 側にも同じ表があり
+# （`tools/agent-dashboard/test/repo-url-golden.test.js`）、**片方を直したらもう片方が落ちる**。
+# UI の応答性のために JS が同じ規則を独自実装している以上、その代償はここで払う——
+# 同じ URL が Python と画面で違って読めると、「宣言したのにローカルクローンが使われない」が
+# 理由の分からない形で出る。
+#
+# fs に依存する項目（symlink 解決）は表に載せない（一時パスは決定的でないため。
+# それぞれの言語の個別テストで確かめる）。
+NORMALIZE_GOLDEN = [
+    ("https://h/a/b.git", "https://h/a/b"),
+    ("https://h/a/b/", "https://h/a/b"),
+    ("https://Example.com/A/B.git", "https://example.com/a/b"),
+    ("git@h:t/app.git", "git@h:t/app"),
+    ("git@H:T/App", "git@h:t/app"),
+    ("ssh://git@h:22/t/app.git", "ssh://git@h:22/t/app"),
+    ("", ""),
+    ("   ", ""),
+]
+
+
+class NormalizeGoldenTests(unittest.TestCase):
+    def test_golden_table(self):
+        for raw, want in NORMALIZE_GOLDEN:
+            self.assertEqual(repolocal.normalize_repo_url(raw), want, raw)
+
+
 class NormalizeTests(unittest.TestCase):
     """3 者（agent-project / agent-flow gitcache / agent-flow board）で食い違っていた
     吸収規則を 1 つに揃える。同じ 2 つの URL が経路によって一致したりしなかったりしないこと。"""
@@ -135,6 +161,32 @@ class MergeLocalTests(unittest.TestCase):
         spec = {"url": "https://h/t/app.git"}
         repolocal.merge_local(spec, self.repos)
         self.assertNotIn("local", spec)
+
+
+class HostReposNormalizationIsSharedTests(unittest.TestCase):
+    """host.yaml の `repos:` を読む規則は 1 実装（P2-5）。
+
+    agent-project 側（`resident_cli._normalize_host_repos`）が写しを持っており、mapping 形の
+    `local: null` が片方では `"None"` という**文字列のパス**になっていた。`agentcore.repolocal`
+    は「同じ宣言が経路によって違って読める」を潰すためのモジュールなので、宣言の読み方を
+    別に持つのは動機に反する。"""
+
+    def test_null_local_is_dropped_not_stringified(self):
+        got = repolocal.normalize_repos({"https://h/a.git": {"local": None}})
+        self.assertEqual(got, [{"url": "https://h/a.git"}])
+        self.assertNotIn("None", json.dumps(got))
+
+    def test_shapes(self):
+        self.assertEqual(repolocal.normalize_repos({"https://h/a.git": "/m/a"}),
+                         [{"url": "https://h/a.git", "local": "/m/a"}])
+        self.assertEqual(repolocal.normalize_repos([{"url": "https://h/a.git"}]),
+                         [{"url": "https://h/a.git"}])
+        self.assertEqual(repolocal.normalize_repos(["https://h/a.git"]),
+                         [{"url": "https://h/a.git"}])
+        self.assertEqual(repolocal.normalize_repos([{"local": "/m/a"}]), [],
+                         "url の無いエントリは照合に使えない")
+        self.assertEqual(repolocal.normalize_repos(None), [])
+        self.assertEqual(repolocal.normalize_repos("こわれている"), [])
 
 
 if __name__ == "__main__":

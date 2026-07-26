@@ -147,6 +147,17 @@ class BoardRepo:
     # 直接ファイルを置いていたが、それを push する主体が居ないので `git+` 板では誰にも
     # 届いていなかった（S8-2 の本当の理由）。書き込みの入口をこの層に集約し、呼び出し元は
     # ノード宛て指示ドロップ（`~/.agents/commands/`）経由にする。
+    #
+    # **書き込みは全て `with self._locked(): self._ensure()` を通す**（P2-4）。競合相手は
+    # 実在する: 転送層の破損時再クローン（`transport._reset_clone_dir` の `rmtree`）と
+    # `sync_push` の `pull --rebase` はどちらも作業ツリーを動かし、どちらも `_locked()` の
+    # 内側で走る。ロックを取らずに書くと、入札や中止マーカーが再クローンごと消えうる。
+    # 読みは取らない（壊れて読めなければ None に倒れるだけ）。
+    #
+    # **この中から `BoardRepo.sync_push` を呼んではいけない。** `_locked()` は `fcntl.flock`
+    # で、同一プロセスが別の fd で同じロックを取ると自分自身と競合して止まる。push は
+    # 呼び出し側（常駐体の指示取り込み）が外側で 1 回だけ行う。ロックの入れ子は
+    # **板 → claim（`agentcore-claim-locks`）の一方向だけ**——逆順に取る経路を作らないこと。
     # ------------------------------------------------------------------
 
     def list_delegations(self) -> "list[str]":
@@ -208,14 +219,20 @@ class BoardRepo:
 
     def write_bid(self, did: str, node_id: str, lease: float,
                   workload: str = "flow") -> bool:
-        """自ノード名義の入札を書く／延長する（手動入札の実体・S8-3）。書いたら True。
+        """自ノード名義の入札を書く／延長する（手動入札の実体・S8-3）。
+
+        戻り値は「実際に書いたか」——`renew_lease` は残 lease が半分以上あれば書かずに
+        False を返す（冪等）。呼び出し側はこれを使って「入札しました」と「既に有効です」を
+        区別する（捨てると、押したのに何も書かれていない場合が観測できない）。
 
         アルゴリズムは `agentcore.protocol.renew_lease`——自動入札（agent-flow / agent-amigos）と
         **同一実装**にする。二重落札を防ぐ規則（lease と `(ts, who)` タイブレーク）の 2 つ目の
         実装を作らないのが手動入札の設計要件（S8-3）。
         """
-        bids = os.path.join(self.delegation_dir(did), "bids")
-        return _protocol.renew_lease(bids, node_id, lease, extra={"workload": workload})
+        with self._locked():
+            self._ensure()
+            bids = os.path.join(self.delegation_dir(did), "bids")
+            return _protocol.renew_lease(bids, node_id, lease, extra={"workload": workload})
 
     def has_live_bid(self, did: str, node_id: str) -> bool:
         rec = self.read_delegation_json(did, "bids", f"{_safe_node(node_id)}.json")
@@ -231,17 +248,21 @@ class BoardRepo:
         コンフリクトさせないための規約であって認可ではない**。止める判断は人にあり、
         人がどの PC の前に座っているかで可否が変わるのは筋が悪い。誰が止めたかは残す。
         """
-        path = os.path.join(self.delegation_dir(did), "cancelled.json")
-        write_json_atomic(path, {"reason": str(reason or ""), "cancelled_by": str(by or ""),
-                                 "cancelled_at": _now_iso_utc()})
-        return path
+        with self._locked():
+            self._ensure()
+            path = os.path.join(self.delegation_dir(did), "cancelled.json")
+            write_json_atomic(path, {"reason": str(reason or ""), "cancelled_by": str(by or ""),
+                                     "cancelled_at": _now_iso_utc()})
+            return path
 
     def write_award(self, did: str, node: str, by: str) -> str:
         """owner-picks の落札を確定する。"""
-        path = os.path.join(self.delegation_dir(did), "award.json")
-        write_json_atomic(path, {"node": str(node), "awarded_by": str(by or ""),
-                                 "awarded_at": _now_iso_utc()})
-        return path
+        with self._locked():
+            self._ensure()
+            path = os.path.join(self.delegation_dir(did), "award.json")
+            write_json_atomic(path, {"node": str(node), "awarded_by": str(by or ""),
+                                     "awarded_at": _now_iso_utc()})
+            return path
 
     def read_result(self, did: str) -> "dict | None":
         path = os.path.join(self.delegation_dir(did), "result.json")

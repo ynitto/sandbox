@@ -38,14 +38,18 @@ def _node_repo_ids(node_repos) -> "set[str]":
     return _boardrules.declared_repo_ids(node_repos)
 
 
-def board_eligible(post: dict, node_repos, node_tags, node_agent_cli=None) -> bool:
-    """このノードが公示に入札してよいか（成果物リポジトリ・タグ・CLI・契約バージョンでの選別）。
+def board_eligible(post: dict, node_repos, node_tags, node_agent_cli=None, *,
+                   node_workloads=None, max_concurrent=None, inflight=0) -> bool:
+    """このノードが公示に入札してよいか（成果物リポジトリ・タグ・CLI・契約バージョン・
+    引き受けるエンジン・枠での選別）。
 
     判定規則は `agentcore.board.eligible` に一本化した——同じ規則を agent-amigos も
     「同じ仕様・別実装」で持っていて、片方だけ育つと**同じ公示が経路によって拾えたり
     拾えなかったりする**（`agentcore.repolocal` が解決したのと同型の問題）。"""
     return _boardrules.eligible(post, repos=node_repos, tags=node_tags,
-                                agent_cli=node_agent_cli or [])
+                                agent_cli=node_agent_cli or [],
+                                workloads=node_workloads or [],
+                                max_concurrent=max_concurrent, inflight=inflight)
 
 
 def _board_request(post: dict) -> str:
@@ -131,7 +135,7 @@ def report_board_results(bus_local: "Bus", board: "Bus", node_id: str) -> "list[
         ddir = os.path.join(deleg_root, did)
         if not os.path.isdir(ddir) or os.path.exists(os.path.join(ddir, "result.json")):
             continue
-        status_path = os.path.join(ddir, "status", f"{_safe(node_id)}.json")
+        status_path = os.path.join(ddir, "status", f"{protocol.safe_name(node_id)}.json")
         st = read_json(status_path)
         if not st or st.get("state") != "dispatched":
             continue    # 自分が落札した委譲ではない（または既に終端まで報告済み）
@@ -153,8 +157,8 @@ def report_board_results(bus_local: "Bus", board: "Bus", node_id: str) -> "list[
     return reported
 
 
-def _node_declaration(args) -> "tuple[object, list, list]":
-    """入札選別に使うノード宣言 `(repos, tags, agent_cli)` を解決する。
+def _node_declaration(args) -> "tuple[object, list, list, list, int | None]":
+    """入札選別に使うノード宣言 `(repos, tags, agent_cli, workloads, max_concurrent)` を解決する。
 
     **正典は各 PC の `agent-project.host.yaml`**（S1 が「ノード固有宣言は host.yaml 専有」と
     決めた群そのもの）。ここの `board_repos` / `board_tags` / `board_agent_cli` は
@@ -168,8 +172,6 @@ def _node_declaration(args) -> "tuple[object, list, list]":
     declared_repos = getattr(args, "board_repos", None) or {}
     declared_tags = getattr(args, "board_tags", None) or []
     declared_cli = getattr(args, "board_agent_cli", None) or []
-    if declared_repos and declared_tags and declared_cli:
-        return declared_repos, list(declared_tags), list(declared_cli)
     host = _repolocal.load_host_declaration(getattr(args, "node_declaration", None) or None)
     repos = declared_repos or _repolocal.normalize_repos(host.get("repos"))
     tags = list(declared_tags) or [str(t) for t in (host.get("tags") or [])]
@@ -177,7 +179,14 @@ def _node_declaration(args) -> "tuple[object, list, list]":
     # `defaults.agent_cli` のスカラ（このノードの既定 CLI）とは別のキーなので混ぜない。
     raw_cli = host.get("agent_cli")
     cli = list(declared_cli) or ([str(c) for c in raw_cli] if isinstance(raw_cli, list) else [])
-    return repos, tags, cli
+    # 引き受けるエンジンと枠（P2-3）。CLI 側の明示上書きは無い——どちらもノードの性質で、
+    # 「このプロジェクトのときだけ違う」ということが起こらない。
+    workloads = _boardrules.declared_workloads(host)
+    budget = host.get("budget")
+    raw_max = budget.get("max_concurrent") if isinstance(budget, dict) else None
+    max_concurrent = (int(raw_max) if isinstance(raw_max, (int, float))
+                      and not isinstance(raw_max, bool) and int(raw_max) >= 0 else None)
+    return repos, tags, cli, workloads, max_concurrent
 
 
 def _dispatched_by(ddir: str, node_id: str) -> bool:
@@ -185,11 +194,14 @@ def _dispatched_by(ddir: str, node_id: str) -> bool:
 
     終端済み（done/failed/cancelled）の印は「引き受けていない」と同じに扱う——終端は
     `result.json` の有無で上位が先に弾いており、ここに残るのは報告済みで公示だけ残った
-    ケースなので、拾い直す理由が無いのは同じ。"""
-    st = read_json(os.path.join(ddir, "status", f"{_safe(node_id)}.json"))
-    if not isinstance(st, dict):
-        return False
-    return not vocab.is_terminal(str(st.get("state") or ""))
+    ケースなので、拾い直す理由が無いのは同じ。
+
+    判定は `agentcore.board.holds_delegation` の 1 実装（P2-5）。同じ述語を amigos も
+    「同じ仕様・別実装」で持っており、`max_concurrent` の自己抑制（`node_inflight`）も
+    同じものを数える——3 実装に割れると「入札は控えるのに取り込みはする」が作れる。
+    """
+    return _boardrules.holds_delegation(os.path.dirname(os.path.dirname(ddir)),
+                                        os.path.basename(ddir), node_id)
 
 
 def _has_own_live_bid(bids_dir: str, node_id: str) -> bool:
@@ -197,7 +209,11 @@ def _has_own_live_bid(bids_dir: str, node_id: str) -> bool:
 
     lease 切れの入札を「ある」と読むと、人の意思が失効した後も選別を素通りし続ける。
     勝者判定（`_winner_in`）と同じ lease の見方に揃える。"""
-    rec = read_json(os.path.join(bids_dir, f"{_safe(node_id)}.json"))
+    # 名義は**板の規則**（`protocol.safe_name`）で綴る。入札を書くのは `renew_lease` で、
+    # あちらは `safe_name`（不正文字を `-` へ）を使う。ここが `_safe`（`_` へ）のままだと、
+    # 正規化されていない node_id で **書いたファイルと読むファイルが別名**になり、
+    # 手動入札の受け皿（forced）が永久に効かない（P2-5）。
+    rec = read_json(os.path.join(bids_dir, f"{protocol.safe_name(node_id)}.json"))
     if not isinstance(rec, dict):
         return False
     try:
@@ -229,10 +245,12 @@ def _renew_dispatched_leases(board: "Bus", node_id: str, lease: float) -> None:
         if not os.path.isdir(ddir) or os.path.exists(os.path.join(ddir, "result.json")) or \
            os.path.exists(os.path.join(ddir, "cancelled.json")):
             continue
-        status_path = os.path.join(ddir, "status", f"{_safe(node_id)}.json")
+        status_path = os.path.join(ddir, "status", f"{protocol.safe_name(node_id)}.json")
         st = read_json(status_path)
         state = st.get("state") if st else None
-        if not st or state == "away" or vocab.is_terminal(state):
+        # 板の上の値を**読む**ので `is_terminal_read`（旧綴り `canceled` も終端）。板には
+        # 語彙統一（W0-9）より前のノードが書いた値が残りうる——読みは寛容・書きは正典のみ。
+        if not st or state == "away" or vocab.is_terminal_read(state):
             continue    # 自分が落札した委譲ではない（または既に終端/away）
         if _write_or_renew_bid(os.path.join(ddir, "bids"), node_id, lease, "flow"):
             write_json_atomic(status_path, {**st, "heartbeat": now_iso(),
@@ -255,13 +273,18 @@ def poll_board(bus_local: "Bus", args, node_id: str) -> "list[str]":
     board = _board_bus(spec, node_id, args)
     board.sync_pull()
     report_board_results(bus_local, board, node_id)
-    node_repos, node_tags, node_agent_cli = _node_declaration(args)
+    node_repos, node_tags, node_agent_cli, node_workloads, max_concurrent = \
+        _node_declaration(args)
     lease = float(getattr(args, "board_lease", None) or 900.0)
     _renew_dispatched_leases(board, node_id, lease)
     deleg_root = os.path.join(board.root, "delegations")
     handed = []
     if not os.path.isdir(deleg_root):
         return handed
+    # 板上で自分がいま預かっている件数（`max_concurrent` の自己抑制・P2-3）。**ループの外で
+    # 1 度だけ数える**——委譲ごとに板を走査すると O(n²) になる。この 1 巡で落札するたびに
+    # +1 して、同じ巡回の中で上限を超えて拾わないようにする。
+    inflight = _boardrules.node_inflight(board.root, node_id) if max_concurrent else 0
     for did in sorted(os.listdir(deleg_root)):
         ddir = os.path.join(deleg_root, did)
         if not os.path.isdir(ddir):
@@ -284,15 +307,19 @@ def poll_board(bus_local: "Bus", args, node_id: str) -> "list[str]":
             continue
         bids_dir = os.path.join(ddir, "bids")
         assignment = str((post.get("policy") or {}).get("assignment") or "first-come")
-        # **自分名義の有効な入札が既にあるなら選別を問わない**。自動入札は repos/tags 照合で
-        # 自分を抑えるが、人が「このノードで請け負う」を押したとき（S8-3 の手動入札。常駐体が
-        # 先に bids/<node-id>.json を書く）は、その自己抑制を人が上書きしたということ。
-        # ここで eligible を問い直すと、書かれた入札が永遠に取り込まれない宙ぶらりんになる。
+        # **自分名義の有効な入札が既にあるなら選別を問わない**。自動入札は repos/tags 照合や
+        # 枠（max_concurrent）で自分を抑えるが、人が「このノードで請け負う」を押したとき
+        # （S8-3 の手動入札。常駐体が先に bids/<node-id>.json を書く）は、その自己抑制を
+        # 人が上書きしたということ。ここで eligible を問い直すと、書かれた入札が永遠に
+        # 取り込まれない宙ぶらりんになる（枠の抑制も同じ扱い・P2-3）。
         forced = _has_own_live_bid(bids_dir, node_id)
         if assignment == "owner-picks":
             # 先勝ちタイブレークでは決めない。bid ＝応募として書くだけで、依頼者が
             # award.json を書いた者だけが落札する（設計 §5.2）。
-            if not forced and not board_eligible(post, node_repos, node_tags, node_agent_cli):
+            if not forced and not board_eligible(
+                    post, node_repos, node_tags, node_agent_cli,
+                    node_workloads=node_workloads, max_concurrent=max_concurrent,
+                    inflight=inflight):
                 continue
             award = read_json(os.path.join(ddir, "award.json"))
             awarded_node = award.get("node") if isinstance(award, dict) else None
@@ -307,7 +334,10 @@ def poll_board(bus_local: "Bus", args, node_id: str) -> "list[str]":
             w = board._winner_in(bids_dir)
             if w is not None and w != node_id:
                 continue      # 既に他ノードが勝者（先勝ち）
-            if not forced and not board_eligible(post, node_repos, node_tags, node_agent_cli):
+            if not forced and not board_eligible(
+                    post, node_repos, node_tags, node_agent_cli,
+                    node_workloads=node_workloads, max_concurrent=max_concurrent,
+                    inflight=inflight):
                 continue
             if not board._try_claim_in(bids_dir, node_id, lease, f"bid {did} by {node_id}"):
                 continue
@@ -325,10 +355,11 @@ def poll_board(bus_local: "Bus", args, node_id: str) -> "list[str]":
             delegation={"id": did, "board": True})
         bus_local.sync_push(f"board handoff {did} -> inbox")
         # 板へ実行状態を残す（依頼側の観測用）
-        write_json_atomic(os.path.join(ddir, "status", f"{_safe(node_id)}.json"), {
+        write_json_atomic(os.path.join(ddir, "status", f"{protocol.safe_name(node_id)}.json"), {
             "who": node_id, "state": "dispatched", "native_id": did,
             "heartbeat": now_iso(), "lease_until": time.time() + lease})
         board.sync_push(f"won+dispatch {did} by {node_id}")
         handed.append(did)
+        inflight += 1      # この 1 巡の中で枠を超えて拾わない（次の判定に効かせる）
         log(node_id, f"board 落札→取り込み {did}: {str(post.get('goal',''))[:50]}")
     return handed

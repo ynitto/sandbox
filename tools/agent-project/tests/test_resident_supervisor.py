@@ -138,6 +138,13 @@ def test_graceful_shutdown_skips_none_steps():
     graceful_shutdown(sup)   # 全ステップ省略でも例外にならない
 
 
+# モジュール直下の `def test_*` を `unittest discover` に拾わせる（既定の収集は
+# `unittest.TestCase` のサブクラスだけで、関数形式は黙って無視される）。
+from _functest import module_load_tests  # noqa: E402
+
+load_tests = module_load_tests(globals())
+
+
 if __name__ == "__main__":
     test_start_and_crash_is_restarted()
     test_hang_detected_via_is_healthy_and_restarted()

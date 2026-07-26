@@ -465,3 +465,65 @@ class TestAsyncOffload(unittest.TestCase):
             self.assertEqual(res["reason"], km.REASON_DRAINED)
             self.assertGreaterEqual(res["archived"], 1)        # done → archive（従来どおり同期で確定）
             self.assertIsNone(km._load_task_file(cfg, "T1"))   # backlog から消えた（archive 済み）
+
+
+class BoardWriteExclusionTests(unittest.TestCase):
+    """請負側の書き込み（S8 で足した入札・中止・落札）が、他の書き込みと同じ排他規律を
+    通ること（P2-4）。
+
+    競合相手は実在する: 転送層の破損時再クローン（`rmtree` → clone）と `sync_push` の
+    `pull --rebase` はどちらも作業ツリーを動かし、どちらも `_locked()` の内側で走る。
+    ロックを取らずに書くと、入札や中止マーカーが再クローンごと消えうる。
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="board-lock-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.repo = km.BoardRepo(str(self.tmp / "board"))
+
+    def _traced(self):
+        """`_locked()` の保持状況を記録する BoardRepo（held を見れば入れ子も分かる）。"""
+        seen = {"depth": 0, "max": 0, "while_writing": []}
+        real = km.BoardRepo._locked
+
+        @contextlib.contextmanager
+        def traced(inner_self):
+            with real(inner_self):
+                seen["depth"] += 1
+                seen["max"] = max(seen["max"], seen["depth"])
+                try:
+                    yield
+                finally:
+                    seen["depth"] -= 1
+        return seen, mock.patch.object(km.BoardRepo, "_locked", traced)
+
+    def test_contract_writes_take_the_board_lock(self):
+        for name, call in (
+                ("write_bid", lambda r: r.write_bid("dg-1", "pc-a", 900.0)),
+                ("write_cancelled", lambda r: r.write_cancelled("dg-1", "止める", "pc-a")),
+                ("write_award", lambda r: r.write_award("dg-1", "pc-b", "pc-a"))):
+            seen, patcher = self._traced()
+            with patcher:
+                call(self.repo)
+            self.assertEqual(seen["max"], 1, f"{name} が板のロックを取っていない（または入れ子）")
+
+    def test_contract_writes_do_not_push_inside_the_lock(self):
+        """`_locked()` は flock。中から `BoardRepo.sync_push`（これも `_locked()`）を呼ぶと
+        同一プロセスが自分自身と競合して止まる。push は呼び出し側が外で 1 回だけ行う。"""
+        with mock.patch.object(km.BoardRepo, "sync_push",
+                               side_effect=AssertionError("ロックの中で push を呼んでいる")):
+            self.repo.write_bid("dg-1", "pc-a", 900.0)
+            self.repo.write_cancelled("dg-1", "止める", "pc-a")
+            self.repo.write_award("dg-1", "pc-b", "pc-a")
+
+    def test_bid_is_idempotent_and_reports_whether_it_wrote(self):
+        self.assertTrue(self.repo.write_bid("dg-1", "pc-a", 900.0))
+        self.assertFalse(self.repo.write_bid("dg-1", "pc-a", 900.0),
+                         "残 lease が十分なら書かない（冪等）——呼び出し側はこれで文言を分ける")
+        self.assertTrue(self.repo.has_live_bid("dg-1", "pc-a"))
+
+    def test_write_creates_the_layout_even_on_a_fresh_board(self):
+        # `_ensure()` を通るので、板の dir がまだ無くても落ちない
+        fresh = km.BoardRepo(str(self.tmp / "fresh"))
+        self.assertTrue(os.path.exists(fresh.write_cancelled("dg-9", "r", "pc-a")))
+        self.assertTrue(os.path.isdir(os.path.join(fresh.dir, "delegations")))

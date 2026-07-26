@@ -40,6 +40,11 @@ _SIDE_EFFECTS = {
 
 # 差分の常設基準（red-green の代替）。act 前ツリーで別実行する代わりに、
 # 「変更が無い / 無関係な場所にしかない」を検証エージェント自身に fail と言わせる。
+#
+# **正典は呼び出し側**（agent-project の `DIFF_CRITERION`）で、入力 JSON に `diff_criterion`
+# があればそちらを使う。この表は、入力にその文が無いとき（スキルを単体で使う・呼び出し側が
+# 古い）の受け皿——同じ文言を 2 か所で育てると、**検証レポートに出る基準文とエージェントが
+# 見た基準文が黙ってずれる**（判定は番号で突き合わせるので機械は気付かない）。
 DIFF_CRITERION = "このタスクの差分が、上の基準の対象範囲に実在すること（変更が無い・無関係な場所にしか無いなら fail）"
 
 
@@ -55,7 +60,8 @@ def build_prompt(spec: dict) -> str:
     side = str(spec.get("side_effects_text") or "").strip() \
         or _SIDE_EFFECTS.get(str(spec.get("side_effects") or "workspace"),
                              _SIDE_EFFECTS["workspace"])
-    criteria = acceptance + [DIFF_CRITERION]
+    criteria = acceptance + [
+        str(spec.get("diff_criterion") or "").strip() or DIFF_CRITERION]
     numbered = "\n".join(f"{i + 1}. {c}" for i, c in enumerate(criteria))
 
     recipes = spec.get("recipes") or []
@@ -82,7 +88,7 @@ def build_prompt(spec: dict) -> str:
         + (f"- 変更してよい範囲: {task['scope']}\n" if task.get("scope") else "")
         + (f"- やらないこと: {task['out_of_scope']}\n" if task.get("out_of_scope") else "")
         + f"\n## 検証する場所\n"
-        f"- リポジトリ: {ws.get('url', '(ワークスペース)')}\n"
+        f"- リポジトリ: {ws.get('url') or '(ワークスペース)'}\n"
         f"- 成果ブランチ: {ws.get('branch', '')}（比較元: {ws.get('base', '')}）\n"
         + (f"- 対象パス: {ws['path']}\n" if ws.get("path") else "")
         + f"\n## 受入基準（この順に判定する）\n{numbered}\n"
