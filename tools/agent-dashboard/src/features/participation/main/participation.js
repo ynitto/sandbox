@@ -109,6 +109,8 @@ function startFlowWorker(payload = {}, deps = {}) {
 module.exports = {
   flowCandidates: model.flowCandidates,
   amigosCandidates: model.amigosCandidates,
+  boardCandidates: model.boardCandidates,
+  boardReason: model.boardReason,
   buildFlowWorkerLaunch,
   startFlowWorker,
   toWslPath,

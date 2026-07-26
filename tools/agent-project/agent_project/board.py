@@ -18,6 +18,29 @@ except ImportError:  # pragma: no cover
 # `_transport`（共通 git 転送層）は _head.py が共有名前空間へ入れている。
 
 
+def _safe_node(who: str) -> str:
+    """ノード id → ファイル名。板の他の実装（agent-flow / agent-amigos の `_safe`）と同じ規則。"""
+    return "".join(c if (c.isalnum() or c in "._-") else "-" for c in str(who)) or "x"
+
+
+def _now_iso_utc() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _iso_age_base(ts: "str | None") -> float:
+    """ISO8601 の時刻を epoch 秒にする（読めなければ 0＝「とても古い」）。
+    心拍の鮮度判定にだけ使うので、読めない値は「書き直すべき」に倒す。"""
+    if not ts:
+        return 0.0
+    try:
+        parsed = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return 0.0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
 class BoardRepo:
     """委譲公示板への依頼側アクセス。ローカル dir / git+<url> の両対応。
 
@@ -116,6 +139,109 @@ class BoardRepo:
                 json.dump(env, f, ensure_ascii=False, indent=2)
             os.replace(tmp, path)
             return True
+
+    # ------------------------------------------------------------------
+    # 請負側（ノード名義）の書き込み — 常駐体の board tick だけが呼ぶ（R2a）
+    #
+    # 板へ書けるのは常駐体だけ、という規律をここで担保する。dashboard は板の作業クローンへ
+    # 直接ファイルを置いていたが、それを push する主体が居ないので `git+` 板では誰にも
+    # 届いていなかった（S8-2 の本当の理由）。書き込みの入口をこの層に集約し、呼び出し元は
+    # ノード宛て指示ドロップ（`~/.agents/commands/`）経由にする。
+    # ------------------------------------------------------------------
+
+    def list_delegations(self) -> "list[str]":
+        root = os.path.join(self.dir, "delegations")
+        try:
+            return sorted(d for d in os.listdir(root)
+                          if os.path.isdir(os.path.join(root, d)))
+        except OSError:
+            return []
+
+    def read_delegation_json(self, did: str, *parts: str) -> "dict | None":
+        path = os.path.join(self.delegation_dir(did), *parts)
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def read_post(self, did: str) -> "dict | None":
+        return self.read_delegation_json(did, "post.json")
+
+    def is_terminal(self, did: str) -> bool:
+        """終端（成果が確定した / 中止された）公示か。入札も落札もしてはいけない。"""
+        d = self.delegation_dir(did)
+        return os.path.exists(os.path.join(d, "result.json")) or \
+            os.path.exists(os.path.join(d, "cancelled.json"))
+
+    def node_path(self, node_id: str) -> str:
+        return os.path.join(self.dir, "nodes", f"{_safe_node(node_id)}.json")
+
+    def write_node(self, cap: dict, *, heartbeat_interval: float = 300.0) -> bool:
+        """ノードの能力宣言 `nodes/<node-id>.json` を書く（書いたら True・S3-5 / P1-a）。
+
+        **心拍だけの更新は `heartbeat_interval` に律速する。** 30 秒ごとに心拍を書き換えると
+        板に無意味なコミットが積み上がる——読む側は `fresh_after_sec` との比較で生死を見るので、
+        その猶予を割らない範囲で書かなければよい。内容（能力・担当リポジトリ）が変わったときは
+        間隔に関わらず即座に書く（宣言の変更が反映されない方が害が大きい）。
+        """
+        with self._locked():
+            self._ensure()
+            path = self.node_path(str(cap.get("node") or ""))
+            cur = None
+            try:
+                with open(path, encoding="utf-8") as f:
+                    cur = json.load(f)
+            except (OSError, ValueError):
+                cur = None
+            if isinstance(cur, dict):
+                same = {k: v for k, v in cur.items() if k != "heartbeat"} == \
+                    {k: v for k, v in cap.items() if k != "heartbeat"}
+                if same:
+                    age = time.time() - _iso_age_base(cur.get("heartbeat"))
+                    if age < max(0.0, float(heartbeat_interval)):
+                        return False
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            write_json_atomic(path, cap)
+            return True
+
+    def write_bid(self, did: str, node_id: str, lease: float,
+                  workload: str = "flow") -> bool:
+        """自ノード名義の入札を書く／延長する（手動入札の実体・S8-3）。書いたら True。
+
+        アルゴリズムは `agentcore.protocol.renew_lease`——自動入札（agent-flow / agent-amigos）と
+        **同一実装**にする。二重落札を防ぐ規則（lease と `(ts, who)` タイブレーク）の 2 つ目の
+        実装を作らないのが手動入札の設計要件（S8-3）。
+        """
+        bids = os.path.join(self.delegation_dir(did), "bids")
+        return _protocol.renew_lease(bids, node_id, lease, extra={"workload": workload})
+
+    def has_live_bid(self, did: str, node_id: str) -> bool:
+        rec = self.read_delegation_json(did, "bids", f"{_safe_node(node_id)}.json")
+        try:
+            return bool(rec) and float(rec.get("lease_until") or 0) >= time.time()
+        except (TypeError, ValueError):
+            return False
+
+    def write_cancelled(self, did: str, reason: str, by: str) -> str:
+        """中止マーカーを書く（S8-2）。
+
+        板の契約ではこのパスの書き手は「依頼者」だが、**パス単位の書き込み所有権は git で
+        コンフリクトさせないための規約であって認可ではない**。止める判断は人にあり、
+        人がどの PC の前に座っているかで可否が変わるのは筋が悪い。誰が止めたかは残す。
+        """
+        path = os.path.join(self.delegation_dir(did), "cancelled.json")
+        write_json_atomic(path, {"reason": str(reason or ""), "cancelled_by": str(by or ""),
+                                 "cancelled_at": _now_iso_utc()})
+        return path
+
+    def write_award(self, did: str, node: str, by: str) -> str:
+        """owner-picks の落札を確定する。"""
+        path = os.path.join(self.delegation_dir(did), "award.json")
+        write_json_atomic(path, {"node": str(node), "awarded_by": str(by or ""),
+                                 "awarded_at": _now_iso_utc()})
+        return path
 
     def read_result(self, did: str) -> "dict | None":
         path = os.path.join(self.delegation_dir(did), "result.json")

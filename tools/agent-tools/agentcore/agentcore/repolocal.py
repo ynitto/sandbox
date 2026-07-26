@@ -138,10 +138,21 @@ def normalize_repos(raw) -> "list[dict]":
     return out
 
 
+def load_host_declaration(path: "str | None" = None) -> dict:
+    """このノードの宣言（host.yaml）をそのまま読む。見つからない・壊れていれば空 dict。
+
+    `repos[]` 以外（`tags` / `agent_cli` / `board` …）も読み手が居るので、探索と読み取りを
+    ここで 1 本にしておく——探索順が実装ごとに増えると、「どの host.yaml が効いているのか」が
+    ツールによって変わる。**正規化はしない**（キーごとに意味が違うため。repos だけは
+    `normalize_repos` を通す `load_node_repos` を使う）。
+    """
+    found = _find_host_config(path)
+    return _read_config(found) if found else {}
+
+
 def load_node_repos(path: "str | None" = None) -> "list[dict]":
     """このノードの `repos[]` 宣言（host.yaml）を読む。無ければ空リスト。"""
-    found = _find_host_config(path)
-    return normalize_repos(_read_config(found).get("repos")) if found else []
+    return normalize_repos(load_host_declaration(path).get("repos"))
 
 
 def resolve_local(url: str, repos=None, *, require_dir: bool = True) -> str:

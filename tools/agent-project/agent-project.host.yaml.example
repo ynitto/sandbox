@@ -59,14 +59,24 @@ repos:
     local: /home/me/mirrors/app
 
 # ── 板（agent-board）参加の宣言 ──
-# 板を持たないローカル運用なら board を省略してよい。amigos 参加 tick（下記 amigos_bus）の
-# 板巡回にも使う。node 名義での「板の請負」（nodes/<pc>.json 能力宣言・workload=flow/amigos
-# への入札）自体はまだ未実装（実装計画 W1-11 残・設計 §4.2「現状未実装」——中途半端な実装は
-# 二重落札のリスクがあるため意図的に見送っている。現状ここで動くのは amigos 参加 tick の
-# 板巡回だけ）。
+# 板を持たないローカル運用なら board を省略してよい。board を宣言すると、常駐体の board tick
+# （30 秒周期）が次を行う:
+#   ・板の同期と、このノードの能力宣言 `nodes/<node_id>.json` の書き出し（下の tags /
+#     agent_cli / repos / budget.max_concurrent がそのまま載る。心拍は 5 分に 1 回）
+#   ・ノード宛て指示の取り込み（`~/.agents/commands/` — dashboard の「引き受ける」「委任を
+#     中止」がここへ投函する。板へ書くのは常駐体だけ）
+#   ・入札の**自動**判断はここでは行わない。自動入札は各プロジェクトの `participate`
+#     （agent-flow / agent-amigos）が担い、落札した仕事はそのプロジェクトのバス経由で実行される
+#
+# **プロジェクトを 1 つも持たないワーカーノードは、まだ板の仕事を実行できない**
+# （落札の取り込み先が無い。ノード直轄実行は Phase 5 / 実装計画 §7 R2b）。dashboard は
+# `engine/status.json` の `board.intake_projects` を見て、その端末では「引き受ける」ボタンを
+# 理由付きで非活性にする。
 #
 # 注: ここの `agent_cli` は **このノードで使える CLI の一覧**（板への入札判定に使う能力宣言）で、
 # 上の `defaults.agent_cli`（このノードの既定 CLI・スカラ）とは別のキー。
+# tags / agent_cli / repos は **入札選別（board_eligible）の正典**でもある——agent-flow 設定の
+# `board_repos` / `board_tags` / `board_agent_cli` は明示上書きに降格した（空ならここを読む）。
 tags: []
 agent_cli: []
 board: ""
@@ -78,8 +88,9 @@ board_workdir: null       # git+ 板の clone 作業領域（ノード局所パ�
 amigos_bus: ""
 amigos_config: null
 
-# ノード全体の同時実行数上限（amigos 手番の NodeWorkerPool 投入を律速する。板落札の実行は
-# 未配線——上の板参加と同じ理由）。0 は「明示未設定」— この場合は旧 agent-flow daemon の
+# ノード全体の同時実行数上限（amigos 手番・flow run の NodeWorkerPool 投入を律速する）。
+# 板の能力宣言 `nodes/<node_id>.json` にもそのまま載る（依頼側が見る）。
+# 0 は「明示未設定」— この場合は旧 agent-flow daemon の
 # 既定 --max-workers に合わせて 4 になる（NodeWorkerPool は 0 を無制限にはできない）。
 #
 # 上限は **PC 単位**。常駐体が起こした手番だけでなく、人が直接叩いた単発実行

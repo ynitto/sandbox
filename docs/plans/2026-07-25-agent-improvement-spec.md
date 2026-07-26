@@ -5,6 +5,8 @@
 参照した既存設計: `2026-07-24-single-resident-controller-design.md` / `2026-07-23-delegation-board-distributed-bidding-design.md` / `2026-07-12-agent-spec-flow-integration.md` / `2026-07-25-flow-planner-granularity-design.md`
 
 改訂履歴:
+- 第 9 版: Phase 4(S8・S9-4)の実装完了を反映。§4 の状態を実装済みにし、積み残しを実装後の
+  見立てへ更新した（R2a まで実装。ノード直轄実行 R2b は Phase 5）
 - 第 8 版: Phase 4(S8・S9-4)の詳細設計を追加。§4 の表と詳細設計の所在にリンクを足し、§5 の未決 6 を
   決着済みにした。あわせて **S8-1 の「orchestration タブ内に board セクション」を撤回**
   （同タブは全体設定になったため。置き場は詳細設計 §4）、**S8-4 の「W1-11 後」を「R2 後」に読み替え**
@@ -374,7 +376,7 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
 | 1' | S9-1〜3 | **実装済み** | schemas(agent-cli)、agents/、agentcore(ローダ)、agent-project / agent-flow / agent-amigos / agent-dashboard | 独立。S9 のレイヤは 4 の診断より先に整備 |
 | 2 | S4 → S5 | **実装済み** | agent-project(mr/verify/needs)、.github/skills(backlog-verifier)、agent-dashboard(needs) | acceptance チェックリスト書式は **S5 側で確定させ S6 が従う**（詳細設計 §2.3） |
 | 3 | S6 → S7 | **実装済み** | agent-project(plan/charter/prioritize/model/needs)、.github/skills(backlog-planner)、agent-flow(planner_skill)、agent-dashboard(plan-review/notes UI) | S9-4(対話診断)と並行可 |
-| 4 | S8、S9-4 | **詳細設計済み**(実装未着手) | agent-dashboard、agent-project(常駐体 board tick)、agent-flow(board)、agentcore、schemas | S8-2/3 は R2a(板の請負 tick 前半)を同時に実装する。R2b(ノード直轄実行)は Phase 5 |
+| 4 | S8、S9-4 | **実装済み** | agent-dashboard、agent-project(常駐体 board tick)、agent-flow(board)、agentcore、schemas | S8-2/3 は R2a(板の請負 tick 前半)を同時に実装する。R2b(ノード直轄実行)は Phase 5 |
 
 ### 詳細設計と実装の所在
 
@@ -385,7 +387,7 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
 | S9-1〜3 | [`2026-07-26-s9-agent-cli-layer-detailed-design.md`](2026-07-26-s9-agent-cli-layer-detailed-design.md) | 実装済み |
 | S4 / S5 | [`2026-07-26-s4-s5-review-and-verification-detailed-design.md`](2026-07-26-s4-s5-review-and-verification-detailed-design.md) | 実装済み |
 | S6 / S7 | [`2026-07-26-s6-s7-backlog-planning-detailed-design.md`](2026-07-26-s6-s7-backlog-planning-detailed-design.md) | 実装済み |
-| S8 / S9-4 | [`2026-07-26-s8-s9-4-board-ui-and-doctor-chat-detailed-design.md`](2026-07-26-s8-s9-4-board-ui-and-doctor-chat-detailed-design.md) | 未実装（実装単位は同 §7、テスト計画は §8） |
+| S8 / S9-4 | [`2026-07-26-s8-s9-4-board-ui-and-doctor-chat-detailed-design.md`](2026-07-26-s8-s9-4-board-ui-and-doctor-chat-detailed-design.md) | 実装済み（R2a 込み。実装で確定した差分は同 §11） |
 
 ### 積み残し(次フェーズ以降へ持ち越し)
 
@@ -436,7 +438,7 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
 | P3-h | **dashboard から墓標を見る・解除する口が無い** — 却下は墓標を**生む**のに解除は CLI(`revive`)だけで非対称。`tombstones.md` の一覧表示 + `commands/` ドロップで揃う | 必要が出たとき(却下の取り消しは頻度が低い) |
 | P3-i | **`draft` の昇格導線が dashboard に無い** — `plan_review: off` で必須項目が埋まらなかったタスクは draft に入るが、dashboard に draft → ready の操作が無い(`revise` は status を変えない) | `plan_review: off` の運用が出てきたとき(既定 on は proposed ＝票が立つので導線がある) |
 
-#### Phase 4(S8・S9-4)— **詳細設計時点の見込み**（実装後に見直す）
+#### Phase 4(S8・S9-4)
 
 | # | 内容 | 待ち先 |
 |---|---|---|

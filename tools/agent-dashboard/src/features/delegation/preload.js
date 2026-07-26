@@ -7,8 +7,12 @@
 // - accept: { workload:'amigos', id, home }
 // - reject: { workload:'amigos', id, feedback, home }
 // - cancel: { workload, id, reason?, home?（amigos）, busDir?（flow） }
+// - nodeCommand: { action:'board-bid'|'board-cancel'|'board-award', id, boardRepo?, node?, reason? }
+//   板へ直接書かず、この PC の常駐体へ指示を投函する（S8-2/8-3）。
 module.exports = {
-  delegationList: (invoke) => () => invoke('delegation:list', {}),
+  delegationList: (invoke) => (payload) => invoke('delegation:list', payload || {}),
+  delegationNodes: (invoke) => () => invoke('delegation:nodes', {}),
+  delegationNodeCommand: (invoke) => (payload) => invoke('delegation:nodeCommand', payload || {}),
   delegationPost: (invoke) => (payload) => invoke('delegation:post', payload || {}),
   delegationAward: (invoke) => (payload) => invoke('delegation:award', payload || {}),
   delegationAccept: (invoke) => (payload) => invoke('delegation:accept', payload || {}),

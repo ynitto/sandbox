@@ -62,6 +62,7 @@ module.exports = {
   writeRepos: (invoke) => (dir, rows) => invoke('dashboard:writeRepos', { dir, rows }),
   agentCharter: (invoke) => (args) => invoke('agent:charter', args),
   agentDoctor: (invoke) => (args) => invoke('agent:doctor', args),
+  agentDoctorChat: (invoke) => (args) => invoke('agent:doctorChat', args),
   agentTaskAssist: (invoke) => (args) => invoke('agent:taskAssist', args),
   agentPlanAdjustments: (invoke) => (args) => invoke('agent:planAdjustments', args),
   agentResolve: (invoke) => (dir) => invoke('agent:resolve', { dir }),

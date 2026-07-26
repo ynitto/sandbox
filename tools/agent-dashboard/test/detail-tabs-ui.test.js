@@ -492,8 +492,12 @@ const failureDiagnosisHtml = renderNeedDetailWithVerifyRevision(
   { backlog: [{ id: 'T1', verify: 'npm test' }] },
   { id: 'T1', title: '検証失敗', kind: 'blocked', decided: false, failureSummary: 'テスト失敗' }
 );
-assert.ok(failureDiagnosisHtml.includes('data-failure-diagnose="T1"'));
-assert.ok(failureDiagnosisHtml.includes('AIで失敗を診断'));
+// 失敗診断は 2 本立て（S9-4）: 既定は対話診断（追加で質問できる窓）、ヘッドレスの 1 発実行は
+// 「差し戻し文面案」の抽出が要る用途として併設する。
+assert.ok(failureDiagnosisHtml.includes('data-failure-chat="T1"'), '対話診断を既定で出す');
+assert.ok(failureDiagnosisHtml.includes('AIと対話で診断'));
+assert.ok(failureDiagnosisHtml.includes('data-failure-diagnose="T1"'), '文面生成も併設する');
+assert.ok(failureDiagnosisHtml.includes('文面を生成'));
 assert.ok(!failureDiagnosisHtml.includes('data-need-consult="T1"'), '専用の失敗診断がある場合は汎用AI相談を重複表示しない');
 assert.ok(!failureDiagnosisHtml.includes('>AIに相談<'));
 assert.match(

@@ -5,6 +5,10 @@
 //   （封筒はそのまま。板が真実・claim プロトコルはエンジンと同一仕様）。落札した各ノードの
 //   board デーモンがローカルエンジン（flow inbox / amigos commands）へ引き渡す。
 // - award/cancel: delegations/<id>/{award,cancelled}.json を書く（依頼者の書き込み所有パス）。
+//   **IPC はこの経路を使わなくなった**（S8-2）——板の作業ディレクトリへ書くだけでは push する
+//   主体が居らず、`git+` 板では届かない。いまは常駐体への指示投函（node-commands.js）を通る。
+//   関数自体はローカル dir 板の直接操作とテストのために残してある。
+// - listNodes(boardRepoDir): nodes/<node-id>.json（参加ノードの能力宣言）を読む。
 // - toView(delegationDir): 板のファイルだけから正規化ビュー（delegation_view）を導出する。
 //   入札の勝者は (ts, who) 最小の決定的タイブレーク（board.schema.json の bid / エンジンと同一規則）。
 //
@@ -165,6 +169,62 @@ function toView(dir, nowSec) {
   return view;
 }
 
+// 板の参加ノード（`nodes/<node-id>.json`＝board.schema.json の $defs.node）。
+// 書き手は各 PC の常駐体（board tick）で、ここは読むだけ。**`local`（他 PC の絶対パス）は
+// 返さない**——読み手に意味が無い値で、宣言の有無だけが判断材料になる（S8-1）。
+function listNodes(boardRepoDir, nowSec) {
+  const now = nowSec == null ? Date.now() / 1000 : nowSec;
+  const root = path.join(boardRepoDir, 'nodes');
+  let names;
+  try {
+    names = fs.readdirSync(root).filter((n) => n.endsWith('.json'));
+  } catch (e) {
+    return [];
+  }
+  const out = [];
+  for (const n of names) {
+    const rec = readJson(path.join(root, n));
+    if (!rec || !rec.node) continue;
+    const beat = Date.parse(String(rec.heartbeat || '')) / 1000;
+    const freshAfter = Number(rec.fresh_after_sec) || 0;
+    out.push({
+      // 表示側（全体設定）は「端末」という語彙で書く（R10: 利用者向けの文に内部名を出さない）。
+      name: String(rec.node),
+      workloads: (rec.workloads || []).map(String),
+      tags: (rec.tags || []).map(String),
+      agentCli: (rec.agent_cli || []).map(String),
+      repos: repoLabels(rec.repos),
+      availability: String(rec.availability || ''),
+      maxConcurrent: Number(rec.max_concurrent) || 0,
+      contractVersion: Number(rec.contract_version) || 0,
+      heartbeat: String(rec.heartbeat || ''),
+      // 鮮度の宣言が無いノードは古さを判定できない。stale と言い切らずに未知として扱う
+      // （「宣言していない」を「死んでいる」と表示すると誤解を招く）。
+      stale: Number.isFinite(beat) && freshAfter > 0 ? (now - beat) > freshAfter : false,
+    });
+  }
+  return out;
+}
+
+// ノードの repos 宣言 → 表示用のリポジトリ名。mapping 形（repos.schema.json）でも
+// list 形（host.yaml の repos[]）でも読めるようにする。
+function repoLabels(repos) {
+  const label = (url) => {
+    const s = String(url || '').replace(/\/+$/, '').replace(/\.git$/, '');
+    return s.includes('/') ? s.split('/').pop() : s;
+  };
+  if (Array.isArray(repos)) {
+    return repos.map((e) => label(e && e.url)).filter(Boolean);
+  }
+  if (repos && typeof repos === 'object') {
+    return Object.entries(repos)
+      .filter(([name, e]) => !name.startsWith('_') && e && typeof e === 'object')
+      .map(([name, e]) => String(name || label(e.url)))
+      .filter(Boolean);
+  }
+  return [];
+}
+
 // board リポジトリ配下の全委譲を正規化ビューにして返す。
 function listViews(boardRepoDir, nowSec) {
   const root = path.join(boardRepoDir, 'delegations');
@@ -177,4 +237,5 @@ function listViews(boardRepoDir, nowSec) {
   return names.map((n) => toView(path.join(root, n), nowSec));
 }
 
-module.exports = { submitPost, award, cancel, toView, listViews, readBids };
+module.exports = { submitPost, award, cancel, toView, listViews, listNodes, readBids,
+                   repoLabels };

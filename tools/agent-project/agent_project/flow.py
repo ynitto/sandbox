@@ -150,7 +150,8 @@ def cmd_gc(cfg: "Config", json_out: bool = False) -> int:
     return 0
 
 
-def cmd_flow_participate(cfg: "Config", running: str = "", json_out: bool = False) -> int:
+def cmd_flow_participate(cfg: "Config", running: str = "", json_out: bool = False,
+                         node_declaration: str = "") -> int:
     """このプロジェクトのバスで `agent-flow participate` を 1 巡させる（設計 §4.2 node 層
     flow tick の実体）。cancel 受理・park 再確認・孤児回収・板巡回・inbox 受理を agent-flow に
     行わせ、**実行すべき run-id をそのまま中継する**（実行は呼び出し側＝常駐体の
@@ -159,8 +160,14 @@ def cmd_flow_participate(cfg: "Config", running: str = "", json_out: bool = Fals
     参加の実装は持たない（R1）。ここが担うのは agent-project の設定（バス・git バス・
     flow_config・executor）から agent-flow の argv を組み立てることだけ——常駐体に
     プロジェクト設定を解決させると `resolve_config` が 2 箇所になる。"""
-    base = _kf_base(cfg, bool(cfg.git_bus)) + ["participate", "--json",
-                                               "--executor", cfg.executor]
+    base = _kf_base(cfg, bool(cfg.git_bus))
+    # 板の入札選別に使うノード宣言（host.yaml の repos / tags / agent_cli）の在処。
+    # agent-flow の**グローバル引数**なのでサブコマンドより前に置く（--bus / --git と同じ）。
+    # 渡さなければ agent-flow が既定の探索順（cwd → ~/.agents）で自分で見つける——
+    # 常駐体が非既定の host.yaml で動いているときだけ、この明示が要る。
+    if node_declaration:
+        base += ["--node-declaration", node_declaration]
+    base += ["participate", "--json", "--executor", cfg.executor]
     if running:
         base += ["--running", running]
     proc = subprocess.run(base, cwd=str(cfg.workdir), capture_output=True, text=True,

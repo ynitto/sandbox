@@ -8,7 +8,7 @@ from __future__ import annotations
 # 取り込む（＝下の inbox→orchestrator フローがそのまま拾う）。結合はデータ契約のみ — agent-board
 # のコードは import せず、板のレイアウトを読み書きするだけ。設計:
 # docs/plans/2026-07-23-delegation-board-distributed-bidding-design.md
-from agentcore import protocol, vocab  # noqa: E402
+from agentcore import board as _boardrules, protocol, vocab  # noqa: E402
 
 
 def _board_bus(spec: str, node_id: str, args) -> "Bus":
@@ -33,37 +33,19 @@ def _norm_repo_url(u: str) -> str:
 
 
 def _node_repo_ids(node_repos) -> "set[str]":
-    """ノードの repos レジストリ（repos.schema.json 形）から担当リポジトリの名前と正規化 URL の集合。
-    参照（owns 無し / readonly）は書込先候補にしないため除く。"""
-    have: "set[str]" = set()
-    items = node_repos.items() if isinstance(node_repos, dict) else []
-    for name, e in items:
-        if str(name).startswith("_") or not isinstance(e, dict):
-            continue
-        if e.get("readonly") or not (e.get("owns")):
-            continue
-        have.add(str(name))
-        if e.get("url"):
-            have.add(_norm_repo_url(e["url"]))
-    return have
+    """ノードの担当リポジトリ宣言 → 照合用の識別子集合。実装は `agentcore.board` に一本化。
+    レジストリ形（repos.schema.json）と host.yaml の `repos[]` の両方を受ける。"""
+    return _boardrules.declared_repo_ids(node_repos)
 
 
-def board_eligible(post: dict, node_repos, node_tags) -> bool:
-    """このノードが公示に入札してよいか（成果物リポジトリ・タグでの選別）。
-    workspace.url と requires.repos を担当し、requires.tags を包含していれば可。"""
-    req = post.get("requires") or {}
-    need_tags = set(str(t) for t in (req.get("tags") or []))
-    if need_tags and not need_tags.issubset(set(node_tags or [])):
-        return False
-    have = _node_repo_ids(node_repos)
-    ws = post.get("workspace") or {}
-    if ws.get("url"):
-        if _norm_repo_url(ws["url"]) not in have:
-            return False
-    for ref in (req.get("repos") or []):
-        if str(ref) not in have and _norm_repo_url(ref) not in have:
-            return False
-    return True
+def board_eligible(post: dict, node_repos, node_tags, node_agent_cli=None) -> bool:
+    """このノードが公示に入札してよいか（成果物リポジトリ・タグ・CLI・契約バージョンでの選別）。
+
+    判定規則は `agentcore.board.eligible` に一本化した——同じ規則を agent-amigos も
+    「同じ仕様・別実装」で持っていて、片方だけ育つと**同じ公示が経路によって拾えたり
+    拾えなかったりする**（`agentcore.repolocal` が解決したのと同型の問題）。"""
+    return _boardrules.eligible(post, repos=node_repos, tags=node_tags,
+                                agent_cli=node_agent_cli or [])
 
 
 def _board_request(post: dict) -> str:
@@ -171,6 +153,59 @@ def report_board_results(bus_local: "Bus", board: "Bus", node_id: str) -> "list[
     return reported
 
 
+def _node_declaration(args) -> "tuple[object, list, list]":
+    """入札選別に使うノード宣言 `(repos, tags, agent_cli)` を解決する。
+
+    **正典は各 PC の `agent-project.host.yaml`**（S1 が「ノード固有宣言は host.yaml 専有」と
+    決めた群そのもの）。ここの `board_repos` / `board_tags` / `board_agent_cli` は
+    **明示上書き**に降格する——値があればそれ、無ければ host.yaml。S9-3 で
+    `cowork.chatCommand` に対して採ったのと同じ降格の形で、既存設定の口は残る。
+
+    host.yaml の場所は `--node-declaration` で明示できる（常駐体が `--host-config` で
+    非既定の宣言を使っているときに、子プロセスだけ別の宣言を読まないため）。
+    指定が無ければ agentcore の通常の探索順（cwd → ~/.agents）。
+    """
+    declared_repos = getattr(args, "board_repos", None) or {}
+    declared_tags = getattr(args, "board_tags", None) or []
+    declared_cli = getattr(args, "board_agent_cli", None) or []
+    if declared_repos and declared_tags and declared_cli:
+        return declared_repos, list(declared_tags), list(declared_cli)
+    host = _repolocal.load_host_declaration(getattr(args, "node_declaration", None) or None)
+    repos = declared_repos or _repolocal.normalize_repos(host.get("repos"))
+    tags = list(declared_tags) or [str(t) for t in (host.get("tags") or [])]
+    # host.yaml の `agent_cli:` は**能力宣言の配列**（このノードで使える CLI の一覧）。
+    # `defaults.agent_cli` のスカラ（このノードの既定 CLI）とは別のキーなので混ぜない。
+    raw_cli = host.get("agent_cli")
+    cli = list(declared_cli) or ([str(c) for c in raw_cli] if isinstance(raw_cli, list) else [])
+    return repos, tags, cli
+
+
+def _dispatched_by(ddir: str, node_id: str) -> bool:
+    """このノードが既にこの公示を落札・引き渡し済みか（板の `status/<who>.json` が根拠）。
+
+    終端済み（done/failed/cancelled）の印は「引き受けていない」と同じに扱う——終端は
+    `result.json` の有無で上位が先に弾いており、ここに残るのは報告済みで公示だけ残った
+    ケースなので、拾い直す理由が無いのは同じ。"""
+    st = read_json(os.path.join(ddir, "status", f"{_safe(node_id)}.json"))
+    if not isinstance(st, dict):
+        return False
+    return not vocab.is_terminal(str(st.get("state") or ""))
+
+
+def _has_own_live_bid(bids_dir: str, node_id: str) -> bool:
+    """自分名義の**失効していない**入札が板にあるか（手動入札の受け皿）。
+
+    lease 切れの入札を「ある」と読むと、人の意思が失効した後も選別を素通りし続ける。
+    勝者判定（`_winner_in`）と同じ lease の見方に揃える。"""
+    rec = read_json(os.path.join(bids_dir, f"{_safe(node_id)}.json"))
+    if not isinstance(rec, dict):
+        return False
+    try:
+        return float(rec.get("lease_until") or 0) >= time.time()
+    except (TypeError, ValueError):
+        return False
+
+
 def _write_or_renew_bid(bids_dir: str, node_id: str, lease: float, workload: str) -> bool:
     """bids/<node_id>.json を書く／更新する。既存が無ければ新規（ts はいま）、あれば残 lease が
     半分未満のときだけ lease_until を延長する（(ts, who) タイブレークの根拠 ts は温存し、
@@ -220,8 +255,7 @@ def poll_board(bus_local: "Bus", args, node_id: str) -> "list[str]":
     board = _board_bus(spec, node_id, args)
     board.sync_pull()
     report_board_results(bus_local, board, node_id)
-    node_repos = getattr(args, "board_repos", None) or {}
-    node_tags = getattr(args, "board_tags", None) or []
+    node_repos, node_tags, node_agent_cli = _node_declaration(args)
     lease = float(getattr(args, "board_lease", None) or 900.0)
     _renew_dispatched_leases(board, node_id, lease)
     deleg_root = os.path.join(board.root, "delegations")
@@ -239,15 +273,26 @@ def poll_board(bus_local: "Bus", args, node_id: str) -> "list[str]":
         post = read_json(os.path.join(ddir, "post.json"))
         if not isinstance(post, dict) or post.get("workload") != "flow" or post.get("op") != "post":
             continue
-        # 既に自分が取り込み済み（inbox / run 生成済み）ならスキップ
+        # 既に自分が取り込み済みならスキップ。判定の根拠は **板の status/<who>.json**
+        # （自分が落札・引き渡し済みであることの印）で、自分のバスではない——バスだけを見ると、
+        # 同じノードで 2 つのプロジェクトが同じ板を巡回したときに、A のバスへ取り込んだ直後の
+        # 公示を B のバスへもう一度取り込む（同一ノードでの二重実行）。板が真実という原則に
+        # 合わせ、まず板を見る。自分のバス側の判定も残す（板由来でない run との衝突を避ける）。
+        if _dispatched_by(ddir, node_id):
+            continue
         if bus_local.read_inbox(did) is not None or bus_local.run_exists(did):
             continue
         bids_dir = os.path.join(ddir, "bids")
         assignment = str((post.get("policy") or {}).get("assignment") or "first-come")
+        # **自分名義の有効な入札が既にあるなら選別を問わない**。自動入札は repos/tags 照合で
+        # 自分を抑えるが、人が「このノードで請け負う」を押したとき（S8-3 の手動入札。常駐体が
+        # 先に bids/<node-id>.json を書く）は、その自己抑制を人が上書きしたということ。
+        # ここで eligible を問い直すと、書かれた入札が永遠に取り込まれない宙ぶらりんになる。
+        forced = _has_own_live_bid(bids_dir, node_id)
         if assignment == "owner-picks":
             # 先勝ちタイブレークでは決めない。bid ＝応募として書くだけで、依頼者が
             # award.json を書いた者だけが落札する（設計 §5.2）。
-            if not board_eligible(post, node_repos, node_tags):
+            if not forced and not board_eligible(post, node_repos, node_tags, node_agent_cli):
                 continue
             award = read_json(os.path.join(ddir, "award.json"))
             awarded_node = award.get("node") if isinstance(award, dict) else None
@@ -262,7 +307,7 @@ def poll_board(bus_local: "Bus", args, node_id: str) -> "list[str]":
             w = board._winner_in(bids_dir)
             if w is not None and w != node_id:
                 continue      # 既に他ノードが勝者（先勝ち）
-            if not board_eligible(post, node_repos, node_tags):
+            if not forced and not board_eligible(post, node_repos, node_tags, node_agent_cli):
                 continue
             if not board._try_claim_in(bids_dir, node_id, lease, f"bid {did} by {node_id}"):
                 continue

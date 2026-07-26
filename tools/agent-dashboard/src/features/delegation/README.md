@@ -18,5 +18,21 @@
 | agent-flow | バスの `inbox/` ドロップ | `main/flow-adapter.js` |
 | 委譲公示板（agent-board） | 板リポジトリの `delegations/` | `main/board-adapter.js` |
 
-IPC は `delegation:list` / `post` / `accept` / `reject` / `award` / `cancel`。
+IPC は `delegation:list` / `nodes` / `nodeCommand` / `post` / `accept` / `reject` / `award` / `cancel`。
 どれも**契約ファイルの投函か読み取り**で、エンジンのプロセスには触れない。
+
+## 板（agent-board）への書き込みは常駐体が行う（S8-2 / S8-3）
+
+`cancel` / `award` / 手動入札（`board-bid`）は、板へ直接書かずに
+**この PC の常駐体（`agent-project serve`）へ指示を投函**する
+（[`agent-node-command`](../../../../../schemas/agent-node-command.schema.json)・
+置き場は `$AGENT_COMMANDS_DIR`、既定 `~/.agents/commands/`）。理由は 2 つ:
+
+1. **`git+` 板では直接書き込みが誰にも届かない。** アダプタは板の作業ディレクトリへ
+   ファイルを置くだけで push しない——ローカル dir の板でしか成立しておらず、
+   押しても効かないボタンだった。
+2. **claim 規則を UI に複製しない。** 入札は lease と `(ts, who)` タイブレークを持つ
+   プロトコルで、2 つ目の実装を作れば必ずずれる（二重落札）。
+
+`post`（公示）だけは今も直接書き込みのまま。dashboard に手動 post の UI が無いので
+触っていない——`git+` 板で使い始めるときに `board-award` と同じ経路へ寄せる。

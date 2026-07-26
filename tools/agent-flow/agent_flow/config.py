@@ -61,14 +61,20 @@ CONFIG_DEFAULTS = {
     "lease": 1800.0,
     "poll": 2.0,
     # 委譲公示板（agent-board）への参加（請負・入札）。board を与えると participate が板を巡回し、
-    # workload=flow の公示に board_repos/board_tags で照合して入札、勝てば自分の inbox へ取り込む。
+    # workload=flow の公示に repos/tags/agent_cli で照合して入札、勝てば自分の inbox へ取り込む。
     # 板は「リポジトリ＋契約」だけで処理を持たない（schemas/board.schema.json）。既定 None で無効。
+    #
+    # **入札選別に使うノード宣言の正典は各 PC の `agent-project.host.yaml`**（S1 の host.yaml
+    # 専有項目）。下の board_repos / board_tags / board_agent_cli は**明示上書き**で、空なら
+    # host.yaml の repos / tags / agent_cli を読む（node_declaration でその場所を明示できる）。
     "board": None,                      # 板の場所（ローカル dir / git+<url>）。None で board 参加なし
     "board_workdir": None,              # git+ 板のクローン作業領域（既定は自動）
     "board_branch": "main",             # 板ブランチ
-    "board_repos": {},                  # このノードの担当リポジトリ（repos.schema.json 形）。入札選別に使う
-    "board_tags": [],                   # このノードの能力タグ（公示 requires.tags との突き合わせ）
+    "board_repos": {},                  # 明示上書き: 担当リポジトリ（repos.schema.json 形 / [{url,local}]）
+    "board_tags": [],                   # 明示上書き: 能力タグ（公示 requires.tags との突き合わせ）
+    "board_agent_cli": [],              # 明示上書き: 使える CLI（公示 requires.agent_cli との OR）
     "board_lease": 900.0,               # 板入札の lease（秒）
+    "node_declaration": None,           # host.yaml のパス（未指定なら cwd → ~/.agents の順で探索）
     "model": None,
     # LLM 実行に使うエージェント CLI: kiro（kiro-cli chat）/ claude（Claude Code `claude -p`）/
     # copilot（GitHub Copilot CLI `copilot -p`）/ codex（OpenAI Codex CLI `codex exec`）。

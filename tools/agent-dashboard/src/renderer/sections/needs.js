@@ -1342,7 +1342,11 @@ function needAssistActionsHtml(need, settled) {
     specialized.push(`<button class="primary-inline" data-plan-critique="${esc(need.id)}">AIで計画を批評</button>`);
   }
   if (!settled && canDiagnoseNeed(need)) {
-    specialized.push(`<button class="primary-inline" data-failure-diagnose="${esc(need.id)}">AIで失敗を診断</button>`);
+    // 対話診断が既定（S9-4）。原因究明は 1 往復では終わらない——エージェントに追加で
+    // 質問でき、ログの周辺を自分で読ませられる窓を既定にする。ヘッドレスの 1 発実行は
+    // 「差し戻し文面案」の抽出が要る用途として併設する。
+    specialized.push(`<button class="primary-inline" data-failure-chat="${esc(need.id)}">AIと対話で診断</button>`);
+    specialized.push(`<button type="button" data-failure-diagnose="${esc(need.id)}">文面を生成</button>`);
   }
   if (specialized.length) return specialized.join('');
   return `<button type="button" data-need-consult="${esc(need.id)}">AIに相談</button>`;
@@ -1758,6 +1762,9 @@ function bindNeedDetail(root) {
   }
   for (const btn of root.querySelectorAll('button[data-failure-diagnose]')) {
     btn.addEventListener('click', () => openFailureDiagnosis(btn.dataset.failureDiagnose));
+  }
+  for (const btn of root.querySelectorAll('button[data-failure-chat]')) {
+    btn.addEventListener('click', () => openFailureDiagnosisChat(btn.dataset.failureChat));
   }
   for (const btn of root.querySelectorAll('button[data-plan-critique]')) {
     btn.addEventListener('click', () => openPlanCritique(btn.dataset.planCritique));

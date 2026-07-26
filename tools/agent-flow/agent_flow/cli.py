@@ -22,6 +22,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--board", default=None,
                    help="委譲公示板（agent-board）の場所（ローカル dir / git+<url>）。"
                         "指定すると participate が板を巡回し workload=flow の公示に入札して取り込む")
+    p.add_argument("--node-declaration", dest="node_declaration", default=None,
+                   help="このノードの宣言（agent-project.host.yaml）のパス。板の入札選別に使う"
+                        "repos / tags / agent_cli の供給元（未指定なら cwd → ~/.agents の順で探索）")
     p.add_argument("--state-git", dest="state_git", default=None,
                    help="ワーク内容（ローカルバスの runs/・inbox/）を保存・共有する git リポジトリ"
                         "（URL/パス）。リモートの agent-dashboard が進捗/結果を読める"

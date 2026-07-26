@@ -135,3 +135,73 @@ test('amigosCandidates は未充足の役割を参加候補にし応募方式の
     actionLabel: '参加を申し込む',
   }]);
 });
+
+// --- 板（agent-board）の公示を「引き受ける」候補にする（S8-3） --------------------
+//
+// 手動入札は**自己抑制の上書き**。自動入札は担当リポジトリ・タグの照合で自分を抑えるので、
+// 人が押す意味があるのは条件を満たさないが引き受けたいときと owner-picks の応募。
+// ただし**押しても実行できない端末ではボタンを出さない**——「操作だけ増えて実行できない」
+// 状態を構造的に防ぐのが、この画面に板を載せる条件だった。
+
+const READY_BOARD = {
+  configured: true, lastTick: '2026-07-26T10:00:00Z', intakeProjects: ['alpha'], myBids: [],
+};
+
+function boardView(id, extra = {}) {
+  return {
+    id, target: 'board', phase: 'open', workload: 'flow', title: `T ${id}`, goal: 'g',
+    boardRepo: '/board', bids_open: false,
+    units: [{ unit: id, kind: 'flow', state: 'open', bids: [] }],
+    ...extra,
+  };
+}
+
+test('boardCandidates は募集中の公示だけを候補にする', () => {
+  const out = participation.boardCandidates([
+    boardView('dg-1'),
+    boardView('dg-2', { phase: 'working' }),
+    boardView('dg-3', { phase: 'done' }),
+    { id: 'x', target: 'flow', phase: 'open' },
+  ], { board: READY_BOARD });
+  assert.deepEqual(out.map((c) => c.id), ['dg-1']);
+  assert.equal(out[0].workload, 'board');
+  assert.equal(out[0].disabled, false);
+  assert.equal(out[0].actionLabel, '引き受ける');
+});
+
+test('boardCandidates: owner-picks は「申し込む」', () => {
+  const out = participation.boardCandidates([boardView('dg-1', { bids_open: true })],
+                                            { board: READY_BOARD });
+  assert.equal(out[0].actionLabel, '引き受けを申し込む');
+});
+
+test('boardCandidates: 既に入札済み / 指示を投函済みなら押させない', () => {
+  const mine = participation.boardCandidates([boardView('dg-1')],
+    { board: { ...READY_BOARD, myBids: ['dg-1'] } });
+  assert.equal(mine[0].joined, true);
+  const sent = participation.boardCandidates([boardView('dg-2')],
+    { board: READY_BOARD, commands: { 'dg-2': { state: 'pending' } } });
+  assert.equal(sent[0].joined, true);
+  // 失敗した指示は「まだ何もしていない」——押し直せる。
+  const failed = participation.boardCandidates([boardView('dg-3')],
+    { board: READY_BOARD, commands: { 'dg-3': { state: 'error', error: '終端済み' } } });
+  assert.equal(failed[0].joined, false);
+});
+
+test('boardReason: 実行できない端末では理由を添えて押させない', () => {
+  assert.match(participation.boardReason(null), /参加していません/);
+  assert.match(participation.boardReason({ configured: true, intakeProjects: ['a'] }),
+    /動いていない/, '常駐体が動いていなければ指示は届かない');
+  assert.match(
+    participation.boardReason({ ...READY_BOARD, intakeProjects: [] }),
+    /まだ板の仕事を実行できません/,
+    'プロジェクトを持たない端末の落札実行は未対応（R2b）');
+  assert.equal(participation.boardReason(READY_BOARD), '');
+});
+
+test('boardCandidates: 引き受けられない端末の候補は disabled + 理由つき', () => {
+  const out = participation.boardCandidates([boardView('dg-1')],
+    { board: { ...READY_BOARD, intakeProjects: [] } });
+  assert.equal(out[0].disabled, true);
+  assert.match(out[0].reason, /実行できません/);
+});

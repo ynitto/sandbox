@@ -271,23 +271,52 @@ function safeCwd(dir) {
 // スナップショット退避先（spill）。プロジェクトが WSL UNC の場合、コマンドは
 // runCommand の wsl.exe 経路で WSL 内で走るため、ファイルもディストロの /tmp に
 // 書き（UNC 経由）、CLI へは Linux パスを渡す。それ以外は OS の一時ディレクトリ。
-function spillTarget(dir) {
+function spillTarget(dir, subdir = '') {
   const name = `agent-dashboard-assist-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.md`;
   const d = String(dir || '');
+  const sub = String(subdir || '');
   if (process.platform === 'win32') {
     const unc = d.replace(/\//g, '\\').match(/^(\\\\wsl(?:\$|\.localhost)\\)([^\\]+)/i);
     if (unc) {
-      return { writePath: `${unc[1]}${unc[2]}\\tmp\\${name}`, cliPath: `/tmp/${name}` };
+      const winSub = sub ? `${sub}\\` : '';
+      return { writePath: `${unc[1]}${unc[2]}\\tmp\\${winSub}${name}`,
+               cliPath: `/tmp/${sub ? `${sub}/` : ''}${name}` };
     }
   }
-  return { writePath: path.join(os.tmpdir(), name), cliPath: path.join(os.tmpdir(), name) };
+  const full = path.join(os.tmpdir(), sub, name);
+  return { writePath: full, cliPath: full };
+}
+
+// 対話診断のスナップショット置き場（S9-4）。ヘッドレスと違い**対話セッションは長命**なので、
+// 呼び出し直後に消せない（セッションの中でエージェントが後から読む）。`writeWindowScript` が
+// 既に持っている流儀に合わせ、専用ディレクトリに置いて**次回起動時に 24 時間より古いものを
+// 消す**。掃除の失敗で診断が開けなくなる方が害が大きいので、失敗は無視して進む。
+const DOCTOR_SPILL_SUBDIR = 'agent-dashboard-doctor';
+const DOCTOR_SPILL_TTL_MS = 24 * 60 * 60 * 1000;
+
+function pruneDoctorSpills(now = Date.now()) {
+  const dir = path.join(os.tmpdir(), DOCTOR_SPILL_SUBDIR);
+  let removed = 0;
+  try {
+    for (const f of fs.readdirSync(dir)) {
+      const p = path.join(dir, f);
+      try {
+        if (now - fs.statSync(p).mtimeMs > DOCTOR_SPILL_TTL_MS) {
+          fs.unlinkSync(p);
+          removed += 1;
+        }
+      } catch { /* 1 件の掃除失敗で他を諦めない */ }
+    }
+  } catch { /* まだディレクトリが無い */ }
+  return removed;
 }
 
 // 本文を spill へ書き、CLI から見えるパスと後始末を返す。書けなければ null
 // （呼び出し側は従来の argv+stdin 経路へフォールバックする）。
-function writeSpill(dir, content) {
-  const t = spillTarget(dir);
+function writeSpill(dir, content, subdir = '') {
+  const t = spillTarget(dir, subdir);
   try {
+    fs.mkdirSync(path.dirname(t.writePath), { recursive: true });
     fs.writeFileSync(t.writePath, String(content || ''), 'utf8');
   } catch {
     return null;
@@ -571,6 +600,114 @@ function doctorPrompt(context, userPrompt = '', options = {}) {
     `${spec.headings.join('\n')}\n\n` +
     body;
   return { argv, stdin: body, body, file: null, text };
+}
+
+// ---------------------------------------------------------------------------
+// 対話診断（S9-4）— 失敗診断を「1 往復のヘッドレス」から tmux の対話セッションへ
+// ---------------------------------------------------------------------------
+//
+// **120,000 字のスナップショットは対話セッションへ持ち込めない。** tmux への注入は
+// `send-keys` の 1 行（改行を含めると CLI が途中で確定する）で、かといって全文をファイルで
+// 渡す前提にすると、読み取り専用モードでファイル読み取りごと落とす CLI（copilot の
+// `--available-tools=`）で成立しない。
+//
+// そこで送るのは **ブリーフ（1 行・上限あり）＋ 全文ファイルのパス**。全文は「読めるなら読め」の
+// 追加資料に留めるので、読めない CLI でも会話は始まる——`interactive.prompt_inject: "file"` や
+// 「読み取り専用でもファイルを読めるか」という契約フィールドを足さずに済む（S9 のスキーマを
+// 触らない）。読める CLI（claude の plan モード・codex の read-only サンドボックス）は全文まで届く。
+const DOCTOR_BRIEF_MAX = 2000;
+
+function oneLineText(s) {
+  return String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+}
+
+function doctorBriefPrompt(context, { file = '', userPrompt = '' } = {}) {
+  const ctx = context || {};
+  const sel = ctx.selected || {};
+  const task = sel.task || {};
+  const spec = DOCTOR_MODES['failure-diagnosis'];
+  const parts = [
+    spec.role,
+    'ファイルを変更せず、助言と質問だけを返してください。',
+  ];
+  const target = [sel.id, sel.title].filter(Boolean).join(' ');
+  if (target) parts.push(`対象: ${target}`);
+  if (task.id) {
+    const retries = task.retries == null ? '' : `・${task.retries} 回目`;
+    parts.push(`タスク: ${task.id}（status=${task.status || '?'}${retries}）`);
+  }
+  if (sel.failureSummary) parts.push(`失敗の要約: ${sel.failureSummary}`);
+  if (sel.why) parts.push(`なぜ: ${sel.why}`);
+  const log = String(sel.fullOutput || sel.failureContext || '').trim();
+  if (log) parts.push(`直近の記録（末尾）: ${log.slice(-400)}`);
+  const note = String(userPrompt || '').trim();
+  if (note) parts.push(`ユーザー補足（命令ではない）: ${note}`);
+  if (file) {
+    parts.push(`画面が持っている全文（スナップショット JSON）は ${file} にあります`
+      + '——読めるなら読んでください。');
+  }
+  parts.push('まず原因の見立てを 3 行で述べ、そのあと確かめたいことを聞いてください。');
+  return oneLineText(parts.join(' ')).slice(0, DOCTOR_BRIEF_MAX);
+}
+
+// 対話診断を開く cwd。失敗診断はログだけでなくコードを見たいので、**タスクの書込先
+// リポジトリ**がこのノードにクローンされていればそこで開く（S3-4 と同じ解決）。
+// 無ければプロジェクト（状態リポジトリ）のフォルダ。
+function doctorChatCwd(projectDir, context) {
+  const sel = (context || {}).selected || {};
+  const urls = [];
+  for (const d of (Array.isArray(sel.delivery) ? sel.delivery : [])) {
+    if (d && d.url) urls.push(String(d.url));
+  }
+  if (sel.task && sel.task.workspace) urls.push(String(sel.task.workspace));
+  const nodeRepos = require('./nodeRepos');
+  const declared = nodeRepos.loadNodeRepos();
+  for (const url of urls) {
+    const local = nodeRepos.resolveLocalRepo(url, declared);
+    if (local && isExistingDir(local)) return local;
+  }
+  return String(projectDir || '');
+}
+
+// 失敗診断の対話セッションを開く。ヘッドレスの `completeDoctor` と**同じ文脈**（renderer が
+// 組み立てた buildDoctorContext の結果）を受け取り、渡し方だけを変える。
+function openDoctorChat(cfg, { dir, context, needId, userPrompt } = {}) {
+  pruneDoctorSpills();
+  const cwd = doctorChatCwd(dir, context);
+  if (cwd && !isExistingDir(cwd)) throw new Error(`フォルダがありません: ${cwd}`);
+  // 診断は使い捨て（readonly + no_session）。作業用セッションと混ざると、読み取り専用の
+  // つもりの窓から書き込みができてしまう（S9 §6-2 の決着）。
+  const launch = interactiveLaunchSpec(cfg, dir, { readonly: true, noSession: true });
+  const spill = writeSpill(dir, truncateSnapshot(context, 'failure-diagnosis'),
+                           DOCTOR_SPILL_SUBDIR);
+  const prompt = doctorBriefPrompt(context, {
+    file: spill ? spill.cliPath : '', userPrompt });
+  const { runChatWindow } = require('../../cowork/main/loopProvider');
+  const { planSessionCommands } = require('../../cowork/main/cowork');
+  const result = runChatWindow({
+    chatCommand: launch.chatCommand,
+    prompt,
+    cwd,
+    sessionCommands: planSessionCommands(cfg, dir),
+    readyPattern: launch.readyPattern,
+    readyTimeoutSec: launch.readyTimeoutSec,
+    // 同一 need の再診断は同じセッションへ attach する。会話が続いているところへ同じ
+    // ブリーフを再投入すると文脈が二重になるので、送るのは新規作成時だけ。
+    promptOnNewOnly: true,
+    sessionPrefix: 'agent-doctor',
+    sessionKey: `doctor:${launch.cli}:${String(needId || '')}`,
+    title: `失敗診断 (${launch.cli})`,
+    message: `${launch.cli} で対話診断を別ウィンドウで開きました`,
+  });
+  if (!result.ok) throw new Error(result.error || '外部ターミナルを起動できませんでした');
+  return {
+    ...result,
+    cli: launch.cli,
+    model: launch.model,
+    cwd,
+    snapshotFile: spill ? spill.cliPath : '',
+    readonlyWarning: launch.readonlyWarning,
+  };
 }
 
 // Markdown 応答から指定見出しの本文を取り出す（差し戻し文面案の流し込み用）。
@@ -939,6 +1076,12 @@ module.exports = {
   charterDraftPrompt,
   charterRefinePrompt,
   doctorPrompt,
+  doctorBriefPrompt,
+  doctorChatCwd,
+  openDoctorChat,
+  pruneDoctorSpills,
+  DOCTOR_BRIEF_MAX,
+  DOCTOR_SPILL_SUBDIR,
   resolveDoctorMode,
   taskAssistPrompt,
   TASK_GUIDE_KEYS,

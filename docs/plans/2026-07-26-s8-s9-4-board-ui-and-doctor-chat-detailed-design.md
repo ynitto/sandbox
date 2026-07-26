@@ -1,6 +1,6 @@
 # S8 / S9-4 詳細設計: 板の観測・操作 UI と診断の対話化
 
-ステータス: 詳細設計（未実装）
+ステータス: **実装済み**（詳細設計 + 実装で確定した差分を反映。§11 参照）
 入力: [`2026-07-25-agent-improvement-spec.md`](2026-07-25-agent-improvement-spec.md) §3 S8（C10）/ S9-4（C11）
 前提:
 - [`2026-07-26-s9-agent-cli-layer-detailed-design.md`](2026-07-26-s9-agent-cli-layer-detailed-design.md)（S9-4 はこのレイヤの最初の利用者）
@@ -691,3 +691,19 @@ S9 §6-1 の決着（防御は持たず、保証できないことを宣言し�
 | P4-f | **`consultation` / `plan-critique` / `delivery-rationale` の対話化** — いずれも構造化見出しの抽出に依存するので、対話にすると抽出点が消える（§3.2） | 抽出をやめてよいと判断できたとき |
 | P4-g | **対話診断セッションの掃除** — tmux セッションは人が閉じるまで残る。使い捨て（`no_session_args`）なので状態は残らないが、セッションは溜まる。`agent-doctor-*` を名前で一括 kill する口は付けない | セッションが溜まって困ったとき |
 | P4-h | **参加ノード表の `local` 非表示** — 他 PC の絶対パスは読み手に意味が無いので出さない。「そのノードが手元に持っているリポジトリ名」までを出す（§4.2） | 意図的に残す |
+
+## 11. 実装で確定した差分
+
+| 項目 | 実装 |
+|---|---|
+| **`agentcore.board` に契約の 2 項目を足した** | 集約先を書くとき、`board.schema.json` にあって agent-flow / agent-amigos の**どちらも見ていなかった** `requires.agent_cli` と `requires.contract_version` に気付いた。規則を 1 本にする以上ここで実装するのが筋なので入れた（両方 fail-close。今日これを載せる公示は無いので既存挙動は変わらない） |
+| **`declared_repo_ids` が 2 つの形を受ける** | 設計では「`owns` の要求を落とす」とだけ書いたが、実際には**入力の形が 2 種類**だった——レジストリ形（`{name: {url, owns…}}`・プロジェクト由来）と host.yaml の `repos[]`（`[{url, local}]`）。前者で `owns` を落とすと参照リポジトリまで書込先候補になるので、**形ごとに条件を分けた**（レジストリ形は `owns` 必須のまま、host.yaml 形は `readonly` だけ除く） |
+| **`--node-declaration` を新設** | 設計 §6.4 は「`--board-tags` / `--board-repos` を渡す」と書いたが、repos を argv へ載せると項目が増えるたびに転記漏れが静かな機能欠落になる（`--from-inbox` で一度学んだ罠）。**host.yaml の場所だけを渡し、読むのは `agentcore.repolocal`** に変えた。渡さなければ agent-flow が既定の探索順で自分で見つける |
+| **`agentcore.commands` を先に切り出した** | 設計 §6.3 は「`ingest_commands` の構造をなぞる別関数」としていたが、なぞると 2 実装になる。土台（`pending` / `read_command` / `reject` / `write_receipt` / `prune_receipts`）を先に `agentcore` へ引き上げ、**プロジェクト側もそれを呼ぶ形に置き換えた**（受理レシートの時刻書式だけはプロジェクト側の既存形式を保つ——dashboard が文字列比較で最新の 1 件に畳むので、書式を混ぜない） |
+| **`nodes/<id>.json` の `local` を UI に出さない実装** | 設計 §4.2 で「出さない」と決めていたが、**アダプタの段階で落とす**ことにした（renderer で落とすと、IPC の戻り値には他 PC の絶対パスが載ったまま残る）。ついでに公開フィールド名を `node` → `name` にした——R10 の grep 検査（利用者向けの文に内部名を出さない）が JS の識別子にも当たるため |
+| **参加タブの候補は `disabled` + 理由を持つ** | 設計 §5.3 の表を実装に落とすと、可否の判断が renderer に散る。**候補オブジェクト自身が `disabled` / `reason` を持つ**形にし、判断は `boardReason()` 1 関数に閉じた（テストもそこに当たる） |
+| **`delegation:list` が指示の状況も返す** | 「送信済み → 受理済み → 失敗」を出すには一覧とは別に `~/.agents/commands/` を読む必要がある。IPC を 2 往復にせず、一覧の戻りに `commands` を相乗りさせた（プロジェクト側の `commands/processed` 表示と同じ表示規約） |
+| **`poll_board` の `forced` は lease を見る** | 設計 §5.3 は「自分名義の bid があれば eligible を問わない」だったが、**失効した入札**まで通すと人の意思が失効した後も選別を素通りし続ける。勝者判定と同じ lease の見方に揃えた |
+
+**実績**: agentcore 53 + 74 件 / agent-project 1063 件 / agent-flow 571 件 / agent-amigos 176 件 /
+agent-dashboard 全スイート緑。

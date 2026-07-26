@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-node-command.schema.json",
+  "title": "ノード宛て指示ドロップ — 管理面→常駐体（agent-project serve）のファイル契約",
+  "description": "agent-dashboard / 人 が置き、各 PC の常駐体（agent-project serve）が取り込む『この PC への指示』。置き場所は $AGENT_COMMANDS_DIR（既定 ~/.agents/commands/）で、$AGENT_CONTROL_DIR（望ましい状態・宣言的）や $AGENT_BUDGET_DIR と同じノードスコープの並び。agent-project のプロジェクト配下 commands/ と**同じ形**（<name>.json ＝指示 / processed/<name>.json ＝受理レシート / <name>.json.err ＝失敗）だが、スコープが違う——委譲公示板（agent-board）はプロジェクトに属さないので、プロジェクト経由の口しか無いとプロジェクトを 1 つも持たない PC（ワーカーノード）から板を操作できない。指示は宣言的な control.json と違い**一度きりの行為**で、取り込まれたらファイルは消える。書き手は板へ直接書かない — 板への書き込みと push は常駐体だけが行う（single-resident 設計『板への push は常駐体のみ』）。設計: docs/plans/2026-07-26-s8-s9-4-board-ui-and-doctor-chat-detailed-design.md §5.2",
+  "type": "object",
+  "required": ["command"],
+  "properties": {
+    "command": {
+      "enum": ["board-bid", "board-cancel", "board-award"],
+      "description": "board-bid = この公示をこのノードで請け負う（常駐体が bids/<node-id>.json を claim 規則で書く。自動入札の自己抑制＝repos/tags 照合を人が上書きする操作）/ board-cancel = 公示を中止する（cancelled.json）/ board-award = owner-picks の落札を確定する（award.json）"
+    },
+    "id": {
+      "type": "string",
+      "description": "対象の委譲 id（delegations/<id>）。board-* では必須"
+    },
+    "board": {
+      "type": "string",
+      "description": "対象の板（ローカル dir / git+<url>）。省略時は host.yaml の board。宣言と食い違う板を指定した指示は取り込まず .err へ退避する（別の板を黙って操作しない）"
+    },
+    "node": {
+      "type": "string",
+      "description": "board-award で落札させるノード id。board-award では必須"
+    },
+    "reason": {
+      "type": "string",
+      "description": "人が書いた理由。journal と受理レシートに残る（任意）"
+    },
+    "issued_by": {
+      "type": "string",
+      "description": "投函した主体（agent-dashboard / cli / 人）"
+    },
+    "issued_at": {
+      "type": "string",
+      "description": "投函時刻（ISO8601 UTC）"
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "receipt": {
+      "type": "object",
+      "description": "processed/<name>.json — 取り込みに成功した指示の受理レシート（常駐体が書く）。成功時にファイルを消すだけだと、書き手からは『保留中（未取り込み）』と『処理済み』が区別できず、押しても何も起きないように見える。書き手は source（元のファイル名）で自分の『送信済み』表示を『受理済み』へ更新する。件数上限と TTL で掃除される。",
+      "required": ["ok", "source"],
+      "properties": {
+        "ok": {"const": true},
+        "source": {"type": "string", "description": "元の指示ファイル名"},
+        "action": {"type": "string", "description": "実行した command"},
+        "id": {"type": "string", "description": "対象の委譲 id"},
+        "detail": {"type": "string", "description": "結果の要約（任意）"},
+        "processed_at": {"type": "string", "description": "ISO8601 UTC"}
+      },
+      "additionalProperties": true
+    },
+    "error": {
+      "type": "object",
+      "description": "<name>.json.err — 取り込めなかった指示（常駐体が書く）。理由をファイルに残さないと、画面には成功トーストだけが出て『押しても何も起きない』に見える。元の指示は command として保つ。",
+      "required": ["error"],
+      "properties": {
+        "error": {"type": "string", "description": "取り込めなかった理由（人が読む文）"},
+        "failed_at": {"type": "string", "description": "ISO8601 UTC"},
+        "command": {"type": ["object", "null"], "description": "元の指示（読めなかった場合 null）"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

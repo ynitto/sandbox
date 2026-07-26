@@ -356,3 +356,116 @@ class BoardLocalCloneTests(unittest.TestCase):
         self.assertTrue(kf.board_eligible({"workspace": {"url": "git@h:team/app"}}, repos, []))
         self.assertTrue(kf.board_eligible({"workspace": {"url": "git@H:team/App.git"}}, repos, []))
         self.assertFalse(kf.board_eligible({"workspace": {"url": "git@h:team/apps.git"}}, repos, []))
+
+
+class BoardManualBidTests(unittest.TestCase):
+    """S8-3: 手動入札（人が「このノードで請け負う」を押し、常駐体が先に bid を書く）。
+
+    自動入札は repos/tags 照合で自分を抑えるが、人がボタンを押したときはその自己抑制を
+    人が上書きしたということ。ここで選別を問い直すと、書かれた入札は永遠に取り込まれない。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-board-manual-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.board = os.path.join(self.tmp, "board")
+        os.makedirs(os.path.join(self.board, "delegations"), exist_ok=True)
+        self.bus = kf.Bus(os.path.join(self.tmp, "bus"), "_")
+
+    def _post(self, did, **kw):
+        d = os.path.join(self.board, "delegations", did)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "post.json"), "w", encoding="utf-8") as f:
+            json.dump({"op": "post", "version": 1, "id": did, "workload": "flow",
+                       "goal": "実装", **kw}, f)
+        return d
+
+    def _args(self, **kw):
+        base = dict(board=self.board, board_workdir=None, board_branch="main",
+                    board_repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}},
+                    board_tags=["python"], board_agent_cli=["codex"], board_lease=900.0,
+                    node_declaration=os.path.join(self.tmp, "no-such-host.yaml"))
+        base.update(kw)
+        return types.SimpleNamespace(**base)
+
+    def _write_bid(self, ddir, node_id, lease_until):
+        bids = os.path.join(ddir, "bids")
+        os.makedirs(bids, exist_ok=True)
+        with open(os.path.join(bids, f"{node_id}.json"), "w", encoding="utf-8") as f:
+            json.dump({"who": node_id, "ts": 1.0, "lease_until": lease_until,
+                       "workload": "flow"}, f)
+
+    def test_own_live_bid_overrides_repo_selection(self):
+        # 担当外のリポジトリ（自動入札なら見送る公示）でも、自分名義の入札があれば取り込む。
+        d = self._post("dg-m1", workspace={"url": "git@h:team/other.git"})
+        self.assertEqual(kf.poll_board(self.bus, self._args(), "pc-a"), [],
+                         "前提: 自動入札はこの公示を拾わない")
+        self._write_bid(d, "pc-a", time.time() + 900)
+        self.assertEqual(kf.poll_board(self.bus, self._args(), "pc-a"), ["dg-m1"])
+        self.assertIsNotNone(self.bus.read_inbox("dg-m1"))
+
+    def test_own_live_bid_overrides_tag_selection(self):
+        d = self._post("dg-m2", requires={"tags": ["gpu"]},
+                       workspace={"url": "git@h:team/app.git"})
+        self.assertEqual(kf.poll_board(self.bus, self._args(), "pc-a"), [])
+        self._write_bid(d, "pc-a", time.time() + 900)
+        self.assertEqual(kf.poll_board(self.bus, self._args(), "pc-a"), ["dg-m2"])
+
+    def test_expired_own_bid_does_not_override(self):
+        # 人の意思も lease と一緒に失効する。切れた入札で選別を素通りし続けない。
+        d = self._post("dg-m3", workspace={"url": "git@h:team/other.git"})
+        self._write_bid(d, "pc-a", time.time() - 10)
+        self.assertEqual(kf.poll_board(self.bus, self._args(), "pc-a"), [])
+
+    def test_other_nodes_bid_does_not_override(self):
+        d = self._post("dg-m4", workspace={"url": "git@h:team/other.git"})
+        self._write_bid(d, "pc-b", time.time() + 900)
+        self.assertEqual(kf.poll_board(self.bus, self._args(), "pc-a"), [])
+
+    def test_owner_picks_manual_bid_still_waits_for_award(self):
+        # 手動入札は「応募してよい」までで、落札を勝手に決めはしない（依頼者の award が要る）。
+        d = self._post("dg-m5", workspace={"url": "git@h:team/other.git"},
+                       policy={"assignment": "owner-picks"})
+        self._write_bid(d, "pc-a", time.time() + 900)
+        self.assertEqual(kf.poll_board(self.bus, self._args(), "pc-a"), [])
+        with open(os.path.join(d, "award.json"), "w", encoding="utf-8") as f:
+            json.dump({"node": "pc-a"}, f)
+        self.assertEqual(kf.poll_board(self.bus, self._args(), "pc-a"), ["dg-m5"])
+
+
+class BoardDoubleIntakeTests(unittest.TestCase):
+    """同一ノードで 2 つのプロジェクトが同じ板を巡回したときの二重取り込み。
+
+    取り込み済みの判定を「自分のバス」でしていたため、A のバスへ取り込んだ直後の公示を
+    B のバスへもう一度取り込んでいた（同一ノードでの二重実行）。判定は板の
+    `status/<who>.json`（自分が落札・引き渡し済みの印）を先に見る。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-board-dup-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.board = os.path.join(self.tmp, "board")
+        os.makedirs(os.path.join(self.board, "delegations"), exist_ok=True)
+        self.bus_a = kf.Bus(os.path.join(self.tmp, "bus-a"), "_")
+        self.bus_b = kf.Bus(os.path.join(self.tmp, "bus-b"), "_")
+        d = os.path.join(self.board, "delegations", "dg-x")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "post.json"), "w", encoding="utf-8") as f:
+            json.dump({"op": "post", "version": 1, "id": "dg-x", "workload": "flow",
+                       "goal": "実装", "workspace": {"url": "git@h:team/app.git"}}, f)
+
+    def _args(self):
+        return types.SimpleNamespace(
+            board=self.board, board_workdir=None, board_branch="main",
+            board_repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}},
+            board_tags=[], board_agent_cli=[], board_lease=900.0,
+            node_declaration=os.path.join(self.tmp, "no-such-host.yaml"))
+
+    def test_second_bus_on_same_node_does_not_take_it_again(self):
+        self.assertEqual(kf.poll_board(self.bus_a, self._args(), "pc-a"), ["dg-x"])
+        self.assertEqual(kf.poll_board(self.bus_b, self._args(), "pc-a"), [],
+                         "同じノードの別プロジェクトが同じ公示を取り込まない")
+        self.assertIsNone(self.bus_b.read_inbox("dg-x"))
+
+    def test_other_node_still_blocked_by_first_come_winner(self):
+        self.assertEqual(kf.poll_board(self.bus_a, self._args(), "pc-a"), ["dg-x"])
+        bus_c = kf.Bus(os.path.join(self.tmp, "bus-c"), "_")
+        self.assertEqual(kf.poll_board(bus_c, self._args(), "pc-b"), [])

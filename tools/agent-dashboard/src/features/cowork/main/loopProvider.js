@@ -293,14 +293,19 @@ function runInWindow(command, args, options = {}) {
 
 // リポジトリごとに安定した tmux セッション名。'kiro' 接頭辞なので端末タブの
 // 既定発見（sessionPrefix: 'kiro'）にもそのまま載る。
-function chatSessionName(linuxCwd, cli = '') {
+// prefix は用途の名前空間。作業用（`agent-chat-`）と診断（`agent-doctor-`）を分けるのは
+// S9 §6-2 の決着——診断で開いた読み取り専用の窓が作業セッションに合流すると、そこから
+// 書き込みができてしまう。
+function chatSessionName(linuxCwd, cli = '', prefix = 'agent-chat') {
   const key = String(cli || '');
   const digest = require('crypto').createHash('sha1')
     .update(key ? `${key}\0${String(linuxCwd || '')}` : String(linuxCwd || ''))
     .digest('hex').slice(0, 8);
   if (!key) return `kiro-dash-${digest}`;
   const safeCli = key.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').slice(0, 20) || 'agent';
-  return `agent-chat-${safeCli}-${digest}`;
+  const safePrefix = String(prefix || 'agent-chat').toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-') || 'agent-chat';
+  return `${safePrefix}-${safeCli}-${digest}`;
 }
 
 // kiro-cli をインタラクティブ起動した tmux セッションへプロンプトを直接送るスクリプト。
@@ -352,7 +357,7 @@ const DEFAULT_READY_PATTERN =
 const DEFAULT_READY_TIMEOUT_SEC = 60;
 
 function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands,
-                            readyPattern, readyTimeoutSec }) {
+                            readyPattern, readyTimeoutSec, promptOnNewOnly = false }) {
   const chatTokens = Array.isArray(chatCommand)
     ? chatCommand.map(String)
     : splitCommand(chatCommand || 'kiro-cli chat --trust-all-tools');
@@ -406,8 +411,12 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands,
           ? (sendPrompt ? `if [ $__new -eq 1 ]; then ${chatLines}fi; ` : chatLines)
           : '') +
         // 業務プロンプトも kiro-loop と同じ send-keys（1 コールでテキスト＋Enter）で送る。
+        // promptOnNewOnly は「既存セッションへは送らない」（S9-4 の対話診断）——会話が
+        // 続いているところへ同じブリーフを再投入すると文脈が二重になる。
         (sendPrompt
-          ? `tmux send-keys -t "$__ses" -- ${shellQuote(oneLine(prompt))} Enter; `
+          ? (promptOnNewOnly
+            ? `if [ $__new -eq 1 ]; then tmux send-keys -t "$__ses" -- ${shellQuote(oneLine(prompt))} Enter; fi; `
+            : `tmux send-keys -t "$__ses" -- ${shellQuote(oneLine(prompt))} Enter; `)
           : '') +
         `break; fi; sleep 0.5; __i=$((__i+1)); done ) & ` +
         `echo "[agent-dashboard] エージェントCLIに接続します（起動後に自動で送信します・Ctrl+b d で離脱）"; ` +
@@ -419,13 +428,13 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands,
 
 // プロンプトを新しいウィンドウの tmux + kiro-cli セッションへ直接送る実行経路。
 function runChatWindow({ chatCommand, prompt, cwd, sessionCommands, sessionKey, title, message,
-                        readyPattern, readyTimeoutSec }) {
+                        readyPattern, readyTimeoutSec, promptOnNewOnly, sessionPrefix }) {
   const linuxCwd = toWslCwd(cwd);
-  const session = chatSessionName(linuxCwd || cwd, sessionKey);
+  const session = chatSessionName(linuxCwd || cwd, sessionKey, sessionPrefix);
   const script = chatWindowScript({
     chatCommand, cwd: linuxCwd, session,
     prompt: prompt === null || prompt === undefined ? null : String(prompt), sessionCommands,
-    readyPattern, readyTimeoutSec,
+    readyPattern, readyTimeoutSec, promptOnNewOnly,
   });
   const res = launchWindowScript(script, {
     cwd,
