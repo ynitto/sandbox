@@ -370,6 +370,21 @@ function registerIpc(ctx) {
     return actions.requestReplan(loadConfig(), { dir, reason, charter });
   });
 
+  // 観点メモ（notes/）。plan は自動では消費しないので、書いても計画は勝手に動かない。
+  // 分解は人が明示的に押したときだけ（commands/distill-notes ドロップ）。
+  handle('dashboard:listNotes', ({ dir }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    return actions.listNotes(dir);
+  });
+  handle('dashboard:writeNote', ({ dir, name, body }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    return actions.writeNote(dir, { name, body });
+  });
+  handle('dashboard:distillNotes', ({ dir, charter }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    return actions.requestDistillNotes(loadConfig(), { dir, charter });
+  });
+
   // プロジェクト単位のライフサイクル操作（pause / resume / stop）。commands/ ドロップ
   // （＋都度 push）で届け、リモート本体（WSL・別ホスト）の watch が同期間隔内に取り込む。
   handle('dashboard:lifecycle', ({ dir, action, reason }) => {

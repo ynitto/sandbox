@@ -33,6 +33,9 @@ schemas/task.schema.json（本ファイルが Markdown 形の正典・未知キ�
   - constraints : <タスク固有の制約>             # 任意。守るべき規約・禁止事項（rules/charter に上乗せ）
   - hints  : <実装の手がかり>                    # 任意。関連ファイル・参考実装・調査済み情報
   - demo   : <人の確認観点>                      # 任意。検収で人が何をどう確かめるか（ワーカーにも伝わる）
+  - size   : S | M | L                          # 任意。規模感（分解の妥当性を人が判断する材料。実行には効かない）
+  - planned_title: <プランナーが付けた原題>      # system 管理。人が題を直しても重複照合が効き続ける指紋
+  - edited : human                              # system 管理。人が revise / レビュー票で確定した印（replan が作り直さない）
   - note   : 任意（保持される）
 
 フィールドの意味:
@@ -65,6 +68,12 @@ schemas/task.schema.json（本ファイルが Markdown 形の正典・未知キ�
            「差分が基準の対象範囲に実在すること」が常設基準として必ず 1 項目入る（何も変えずに全 pass を
            返す道を塞ぐ）／環境にツールが無い等の「検証不能」は**リトライを焼かずに**人へ回す。
            `accept`（自然文 1 行）は 1 項目の acceptance として扱う（後方互換）。
+           **JSON 表現では配列**（`"acceptance": ["基準A", "基準B"]`）。文字列 1 本も 1 項目として
+           受け付ける。カンマや ⏎ で 1 行に畳んではいけない（基準にカンマは普通に出る）。
+           人が直す口: `agent-project revise <id> --acceptance A --acceptance B`（指定した分で全行を
+           置換。`--acceptance ''` 1 つで全削除）／dashboard のタスク編集の「受入基準」欄。
+           **誰が書くか**: バックログ生成時に `backlog-planner` スキルが書き、計画レビューで人が直す。
+           人が直したタスクには `- edited: human` が付き、以後の replan では作り直されない。
 - verify_template : **決定的に verify を展開する入口**（エージェント不要）。テンプレ名:
            file-contains :: path :: 文字列／file-exists :: path／defines :: symbol :: path／
            diff-contains :: 文字列（$KIRO_BASE_REV 差分）／cmd-succeeds :: コマンド。

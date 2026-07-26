@@ -431,6 +431,29 @@
     </div>
   </dialog>
 
+  <!-- ======== 観点メモ（notes/） ========
+       気になったことを書き溜める場所。計画は**自動では消費しない**ので、メモを書いても
+       勝手にタスクが増えることはない。分解は「メモをタスクにする」を押したときだけ。 -->
+  <dialog id="dlg-notes">
+    <h2>メモ</h2>
+    <p class="muted">気になったこと・後で考えたいことを書き溜めます。書いただけでは計画は動きません。
+      まとまったら「メモをタスクにする」で、既存の計画と重ね合わせてタスク候補にします。</p>
+    <div class="field">
+      <label for="note-body">新しいメモ</label>
+      <textarea id="note-body" rows="4" placeholder="例: 検収カードの証跡が薄いときに気づける仕組みが要りそう"></textarea>
+    </div>
+    <div class="field">
+      <label for="notes-charter">計画バージョン</label>
+      <select id="notes-charter"></select>
+    </div>
+    <div id="notes-list" class="notes-list"></div>
+    <div class="dialog-actions">
+      <button id="btn-notes-close">閉じる</button>
+      <button id="btn-notes-distill">メモをタスクにする</button>
+      <button id="btn-note-add" class="primary-inline">メモを追加</button>
+    </div>
+  </dialog>
+
   <!-- ======== 確認ダイアログ（削除など破壊的操作の前に出す） ======== -->
   <dialog id="dlg-confirm">
     <h2>確認</h2>

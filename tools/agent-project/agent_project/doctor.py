@@ -940,6 +940,7 @@ def cmd_enqueue(cfg: Config, args) -> int:
                   "accept": args.accept, "verify_template": args.verify_template,
                   "repos": _coerce_repos(getattr(args, "repos", None)),
                   "cohort_items": _coerce_repos(getattr(args, "cohort_items", None)),
+                  "acceptance": getattr(args, "acceptance", None),
                   **{k: getattr(args, k, None) for k in TASK_GUIDE_KEYS}}]
     created = []
     for sp in specs:
@@ -947,10 +948,14 @@ def cmd_enqueue(cfg: Config, args) -> int:
             print(f"enqueue 失敗: オブジェクトでない要素: {sp!r}", file=sys.stderr)
             return 2
         try:
-            created.append(enqueue_task(cfg, sp))
+            t, msg = enqueue_reconciled(cfg, sp)   # 整合パス（重複照合・charter 帰属・墓標）
         except ValueError as e:
             print(f"enqueue 失敗: {e}", file=sys.stderr)
             return 2
+        if t is None:
+            print(f"enqueue 見送り: {msg}", file=sys.stderr)
+            continue
+        created.append(t)
     for t in created:
         recalled = apply_intake_recall(cfg, t)   # 過去の hold に類似すれば実行前に人の判断へ
         if recalled:

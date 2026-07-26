@@ -15,9 +15,23 @@
       "type": "string",
       "description": "done 確定の唯一の根拠となるシェルコマンド（exit 0=PASS）。履歴でなく最終状態/差分を見ること（$KIRO_BASE_REV=act 前 HEAD が使える）"
     },
+    "acceptance": {
+      "type": ["array", "string"],
+      "items": { "type": "string" },
+      "description": "受入基準チェックリスト（自然文 3〜7 項目）。settle 時に検証エージェントが基準ごとに証跡付きで判定し、全 pass のみ機械 done 候補。**配列で渡すこと**（md 側は `- acceptance: <基準>` を要素数だけ並べる。文字列 1 本は 1 項目として扱う）"
+    },
     "accept": {
       "type": "string",
-      "description": "自然言語の完了条件（verify を書けないとき。実行時にエージェントが決定的 verify を合成）"
+      "description": "自然言語の完了条件（後方互換。acceptance が無いときに限り 1 項目の受入基準として扱う）"
+    },
+    "size": {
+      "type": "string",
+      "enum": ["S", "M", "L"],
+      "description": "規模感（分解の妥当性判断用。計画レビュー票に出るだけで実行には効かない）"
+    },
+    "planned_title": {
+      "type": "string",
+      "description": "プランナーが付けた原題（人が title を直しても重複照合の指紋として残る。人は書かない）"
     },
     "verify_template": {
       "type": "string",

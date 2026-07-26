@@ -42,6 +42,9 @@ async function init() {
   $('btn-enq-ai').addEventListener('click', aiEnqueueAssist);
   $('btn-replan-cancel').addEventListener('click', () => $('dlg-replan').close());
   $('btn-replan-submit').addEventListener('click', () => requestReplan($('replan-charter').value));
+  $('btn-notes-close').addEventListener('click', () => $('dlg-notes').close());
+  $('btn-note-add').addEventListener('click', () => addNote());
+  $('btn-notes-distill').addEventListener('click', () => distillNotes($('notes-charter').value));
   // 新規プロジェクト作成
   $('btn-new-project').addEventListener('click', openNewProject);
   $('btn-np-cancel').addEventListener('click', () => $('dlg-new-project').close());

@@ -84,6 +84,10 @@ CONFIG_DEFAULTS = {
     # flow-planner と同じ検索順で自動発見し、見つからなければ組み込みプロンプトに
     # フォールバックする。none/builtin/空 で常に組み込みを使う（yaml 専用）。
     "worker_skill": "flow-worker",
+    # 計画（3 段パイプライン）のプロンプトを供給するスキル（planner=flow-planner のとき）。
+    # worker_skill と同じ検索順で自動発見し、見つからなければエージェント planner へ
+    # フォールバックする。上位に同名スキルを置けば全面差し替えできる（yaml 専用）。
+    "planner_skill": "flow-planner",
     "granularity": "auto",     # 分解の細かさ: auto(complexity導出・既定)/coarse/fine/finest(明示)
     "exemplar_first": False,   # map-reduce で「1件先行→検証ゲート→残り展開」の見本先行分解にする
     # 1 ノードが同時に実行する run（orchestrator プロセス）の上限。バックログ一括投入

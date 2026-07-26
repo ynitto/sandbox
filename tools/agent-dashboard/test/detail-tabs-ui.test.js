@@ -895,13 +895,19 @@ assert.match(
 {
   // eslint-disable-next-line no-new-func
   const taskGuideHtml = new Function(
-    'esc', 'proseHtml', 'GUIDE_KEYS', 'GUIDE_LABELS',
+    'esc', 'proseHtml', 'GUIDE_KEYS', 'GUIDE_LABELS', 'acceptanceList',
     `${grab('taskGuideHtml')}; return taskGuideHtml;`
   )(
     (v) => String(v == null ? '' : v),
     (v) => String(v == null ? '' : v),
     ['why', 'desc', 'scope', 'out_of_scope', 'constraints', 'hints', 'demo'],
-    { desc: '作業内容の詳細', why: '背景・目的' }
+    { desc: '作業内容の詳細', why: '背景・目的' },
+    // 本物と同じ規則（複数行フィールドは \n 連結で届く。acceptance が無ければ accept へ）
+    (t) => {
+      const ex = (t && t.extra) || {};
+      const raw = String(ex.acceptance || '').trim() || String(ex.accept || '').trim();
+      return raw ? raw.split('\n').map((s) => s.trim()).filter(Boolean) : [];
+    }
   );
   const withGuide = taskGuideHtml(
     { verify: 'npm test', extra: { desc: '冒頭に手順を追加 ⏎ 構成は変えない', why: '導入が不明' } },
@@ -912,6 +918,24 @@ assert.match(
   assert.ok(withGuide.includes('冒頭に手順を追加\n構成は変えない'), '⏎ を改行へ復元');
   assert.ok(withGuide.includes('導入が不明'), 'why を出す');
   assert.ok(withGuide.includes('npm test'), '完了条件も並べる');
+  // 受入基準（S5 で done の根拠になった一次表現）は、計画レビューで人が読んで直す対象。
+  // ここに出ていなければ、後から直す機会は無い。
+  const withCriteria = taskGuideHtml(
+    { verify: '', extra: { desc: 'x', acceptance: '基準A\n基準B\n基準C' } },
+    'plan-review'
+  );
+  assert.ok(withCriteria.includes('受入基準'), '受入基準の見出しを出す');
+  assert.ok(
+    withCriteria.includes('基準A') && withCriteria.includes('基準C'),
+    '受入基準は 1 行 1 項目で全部出す（最後の 1 行だけにならない）'
+  );
+  const manyCriteria = taskGuideHtml(
+    { verify: '', extra: { desc: 'x', acceptance: 'a\nb\nc\nd\ne\nf\ng\nh' } },
+    'plan-review'
+  );
+  assert.ok(manyCriteria.includes('目安は 3〜7 件'), '多すぎる基準は注意を出す');
+  const legacyAccept = taskGuideHtml({ verify: '', extra: { accept: '昔の 1 行' } }, 'plan-review');
+  assert.ok(legacyAccept.includes('昔の 1 行'), '旧 accept も 1 項目の受入基準として出す');
   const emptyPlan = taskGuideHtml({ verify: '', extra: {} }, 'plan-review');
   assert.ok(
     emptyPlan.includes('記述（概要・目的・範囲）がありません'),

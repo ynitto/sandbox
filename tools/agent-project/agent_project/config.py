@@ -158,7 +158,22 @@ class Config:
     # spec ルーティング（既定 off）: 採点 max(c,r,a) が spec_threshold に達したタスクに spec 前段
     # タスク（specs/<id>/ の spec.md/design.md/tasks.md 作成・人の承認で実装タスクへ展開）を前置する。
     spec_track: bool = False
+    # 3 段ルーティング（S7）: 採点 max(c,r,a) が full 以上ならフル spec（spec/design/tasks の
+    # 3 点セット + tasks.md 展開）、light 以上ならライト spec（design.md 1 枚・展開なし）、
+    # それ未満はスキップ。旧 `spec_threshold` は full の別名として読む（既存設定を壊さない）。
+    # 採点は各軸 1〜3 なので上限は 3（4 以上を書いても到達しない）。
     spec_threshold: int = 3
+    spec_threshold_full: int = 3
+    spec_threshold_light: int = 2
+    # 証跡ベースの検証（S5）。false で従来どおり決定的 verify のみ（acceptance は表示だけ＝移行用）。
+    verifier: bool = True
+    verifier_skill: str = "backlog-verifier"
+    verify_side_effects: str = "workspace"    # workspace=作業ツリー内のみ / network=読み取りの HTTP 到達まで
+    # バックログ分解（S6）。planner_skill=分解のプロンプト・出力契約を供給するスキル名。
+    # plan_sections=required で必須項目（why/desc/acceptance/size）の欠落を 1 回再要求し、
+    # なお欠けるタスクは人の目に入る場所（proposed / draft）へ回す。warn は注記のみ。
+    planner_skill: str = "backlog-planner"
+    plan_sections: str = "required"
     # リポジトリ理解の成果物化（既定 off）: plan の直前に charter の書込先 repo ごとに
     # context/<repo名>.md を生成（HEAD sha キャッシュ・変化時のみ再生成）。読み出しは常時
     # （人が手書きした context/*.md も plan / act / verify 合成へ有界注入される）。

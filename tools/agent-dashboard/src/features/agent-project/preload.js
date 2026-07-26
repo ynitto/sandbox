@@ -37,6 +37,9 @@ module.exports = {
   lintTask: (invoke) => (spec) => invoke('dashboard:lintTask', { spec }),
   runAction: (invoke) => (args) => invoke('dashboard:action', args),
   requestReplan: (invoke) => (dir, reason, charter) => invoke('dashboard:replan', { dir, reason, charter }),
+  listNotes: (invoke) => (dir) => invoke('dashboard:listNotes', { dir }),
+  writeNote: (invoke) => (dir, name, body) => invoke('dashboard:writeNote', { dir, name, body }),
+  distillNotes: (invoke) => (dir, charter) => invoke('dashboard:distillNotes', { dir, charter }),
   requestLifecycle: (invoke) => (dir, action, reason) =>
     invoke('dashboard:lifecycle', { dir, action, reason }),
   // dir = プロジェクトルート（消す対象）、workspace = 登録フォルダ（バスの解決に使う）

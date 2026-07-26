@@ -5,6 +5,7 @@
 参照した既存設計: `2026-07-24-single-resident-controller-design.md` / `2026-07-23-delegation-board-distributed-bidding-design.md` / `2026-07-12-agent-spec-flow-integration.md` / `2026-07-25-flow-planner-granularity-design.md`
 
 改訂履歴:
+- 第 7 版: Phase 3(S6・S7)の実装完了を反映。§4 の積み残し表に Phase 3 分(P3-a〜d)を追加
 - 第 6 版: Phase 3(S6 → S7)の詳細設計を追加。§4 の表と詳細設計の所在にリンクを足し、§5 の未決 5 を決着済みにした
 - 第 5 版: Phase 1'・Phase 2 の実装完了を反映。§4 の積み残し表を全フェーズ横断へ拡張(P1'-a〜c / P2-a〜f を追加)
 - 第 4 版: Phase 1'(S9-1〜3)と Phase 2(S4 → S5)の詳細設計を追加。§4 の表に詳細設計へのリンクを足し、§5 の未決 3・4・7 を決着済みにした
@@ -356,7 +357,7 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
 | 1' | S2 | **実装済み** | agent-dashboard(cowork) | 独立 |
 | 1' | S9-1〜3 | **実装済み** | schemas(agent-cli)、agents/、agentcore(ローダ)、agent-project / agent-flow / agent-amigos / agent-dashboard | 独立。S9 のレイヤは 4 の診断より先に整備 |
 | 2 | S4 → S5 | **実装済み** | agent-project(mr/verify/needs)、.github/skills(backlog-verifier)、agent-dashboard(needs) | acceptance チェックリスト書式は **S5 側で確定させ S6 が従う**（詳細設計 §2.3） |
-| 3 | S6 → S7 | **詳細設計済み**(実装未着手) | agent-project(plan/charter/prioritize/model/needs)、.github/skills(backlog-planner)、agent-flow(planner_skill)、agent-dashboard(plan-review/notes UI) | S9-4(対話診断)と並行可 |
+| 3 | S6 → S7 | **実装済み** | agent-project(plan/charter/prioritize/model/needs)、.github/skills(backlog-planner)、agent-flow(planner_skill)、agent-dashboard(plan-review/notes UI) | S9-4(対話診断)と並行可 |
 | 4 | S8、S9-4 | 未着手 | agent-dashboard、agent-project(常駐体) | S8-2/3 は W1-11(board tick)後 |
 
 ### 詳細設計と実装の所在
@@ -367,7 +368,7 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
 | S3 / S2 | [`2026-07-26-s3-s2-node-repos-and-cowork-roots-design.md`](2026-07-26-s3-s2-node-repos-and-cowork-roots-design.md) | 実装済み |
 | S9-1〜3 | [`2026-07-26-s9-agent-cli-layer-detailed-design.md`](2026-07-26-s9-agent-cli-layer-detailed-design.md) | 実装済み |
 | S4 / S5 | [`2026-07-26-s4-s5-review-and-verification-detailed-design.md`](2026-07-26-s4-s5-review-and-verification-detailed-design.md) | 実装済み |
-| S6 / S7 | [`2026-07-26-s6-s7-backlog-planning-detailed-design.md`](2026-07-26-s6-s7-backlog-planning-detailed-design.md) | 未着手（実装単位は同 §3） |
+| S6 / S7 | [`2026-07-26-s6-s7-backlog-planning-detailed-design.md`](2026-07-26-s6-s7-backlog-planning-detailed-design.md) | 実装済み |
 
 ### 積み残し(次フェーズ以降へ持ち越し)
 
@@ -401,6 +402,15 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
 | P2-d | **charter acceptance の LLM 一発合成** — `resolve_charter_acceptance`(マイルストーン収束判定)は今も自然文 → コマンドの合成に依存する。S5 と同じ問題(合成されたコマンドの良し悪しを人が判断できない)を抱えるが、検証対象(タスク単位・成果ブランチ上ではない)も出口(milestone)も違うので別設計が要る。**ここが残るあいだ `synth_verify` と静的スクリーニング群も残る** | 別途(S5 の考え方を charter へ広げるとき) |
 | P2-e | **fast path の red-green(`verify_validate`)** — 常設基準(差分の実在)が効くのは verifier 経路だけなので、`verify_template` 由来の機械生成コマンドが done の唯一の根拠になる経路には残した。廃止ではなく**適用範囲を狭めた**という整理 | 意図的に残す(P2-d と同時に見直す) |
 | P2-f | **S6 との接続** — `acceptance:` を**生成する**のは S6 の `backlog-planner`。Phase 2 では書式を確定し、既存タスク(`accept:` のみ)を後方互換で吸収するところまで | Phase 3 |
+
+#### Phase 3(S6・S7)
+
+| # | 内容 | 待ち先 |
+|---|---|---|
+| P3-a | **md 直接編集の検出** — `- edited: human` は revise とレビュー票の確定でだけ付く。エディタで md を直接書き換えた分は検出しない(内容署名の維持コストに見合わない)。実害は `planned_title` で塞いである | 必要が出たとき |
+| P3-b | **墓標の自動失効** — 古い墓標が残り続ける害は完全一致に限った時点で小さいが、ゼロではない。日付は行に持たせてあるので、要るときに一括 `revive` を足せる | 必要が出たとき |
+| P3-c | **`size` の活用** — 分解の妥当性判断用に出させるが、今は**表示するだけ**。「L ばかりなら granularity を上げて再分解」のような自動調整は入れない(自動で計画を作り直す経路を増やすと、人が直した計画が動く理由が増える) | 意図的に残す |
+| P3-d | **charter acceptance の LLM 合成**(P2-d) — S6 で「基準を書くのはエージェント、直すのは人」の経路ができたので、charter acceptance を同じ形(基準リスト + 証跡)へ寄せる下地は揃った。ただし検証対象(マイルストーン)も出口も違うので別設計が要る | 別途 |
 
 いずれも「動作は正しいが最適でない / 別の実装待ち」。**P2-d だけは性質が違い**、S5 のコンセプト変更が
 charter 側に及んでいないという設計上の非対称なので、Phase 3(S6・S7)で計画側を触るときに

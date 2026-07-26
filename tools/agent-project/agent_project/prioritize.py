@@ -685,10 +685,10 @@ def adjudicate_escalation(cfg: "Config", task: Task, reason: str,
 def _assess_heuristic(cfg: "Config", task: Task) -> dict:
     """エージェント不在・失敗・stub 時の決定的採点。材料はタスク定義と decisions/ の走査のみ。
     c: cohort（同種の繰り返し）は多対象＝3。r: 過去の回避判断（avoid）に類似＝3。
-    a: 決定的 verify あり=1 / accept（自然言語）のみ=2 / どちらも無し=3。"""
+    a: 決定的 verify あり=1 / 受入基準（自然言語）のみ=2 / どちらも無し=3。"""
     c = 3 if (task.get("cohort_items") or task.get("cohort")) else 1
     r = 3 if find_avoidance(cfg, task) else 1
-    a = 1 if (task.verify or task.get("verify_template")) else (2 if task.get("accept") else 3)
+    a = 1 if (task.verify or task.get("verify_template")) else (2 if task_acceptance(task) else 3)
     return {"c": c, "r": r, "a": a}
 
 
@@ -700,7 +700,7 @@ def _assess_prompt(task: Task) -> str:
         "- a=曖昧さ: 完了条件・やり方の不確かさ（verify が具体的なら 1）\n\n"
         f"タイトル: {task.title}\n"
         f"verify: {task.verify or '（未定義）'}\n"
-        f"accept: {task.get('accept') or '（なし）'}\n"
+        f"受入基準: {' / '.join(task_acceptance(task)) or '（なし）'}\n"
         f"note: {task.get('note') or '（なし）'}\n"
         + "".join(f"{k}: {task.get(k)}\n"       # 誘導・レビュー記述があれば採点材料に足す（有るものだけ）
                   for k in ("why", "desc", "scope", "constraints") if task.get(k))
@@ -751,10 +751,35 @@ def _assess_max(task: Task) -> int:
     return max((int(v) for v in vals), default=0)
 
 
-def _spec_verify(cfg: "Config", tid: str) -> str:
-    """spec 作成タスクの決定的 verify: 3 ファイルが非空で、tasks.md が JSON タスク分解を含む。
-    workdir 相対（specs_root と同じ基準）。"""
+def spec_kind_for(task: Task) -> str:
+    """この spec タスクの段（`full` / `light`）。マーカーが無い既存タスクは full（後方互換）。"""
+    return "light" if str(task.get("spec_kind") or "").strip() == "light" else "full"
+
+
+def _spec_route_kind(cfg: "Config", task: Task, forced: bool) -> str:
+    """このタスクを spec ルートに乗せるか、乗せるならどの段か（`full` / `light` / ""）。
+
+    ブラウンフィールドではフル spec（spec/design/tasks の 3 点セット）のオーバーヘッドが
+    大きく、「書くか書かないか」の二択だと結局書かれない。要求は charter とタスクの
+    why/desc に既にあり、分解は元タスクの粒度で足りるので、中間段は **design.md 1 枚**
+    （変更方針・影響範囲・受入条件の差分）にする。
+    """
+    if forced:
+        return "full"          # policy `spec:` の明示強制はフル（語彙を増やさない）
+    score = _assess_max(task)
+    if score >= cfg.spec_threshold_full:
+        return "full"
+    if score >= cfg.spec_threshold_light:
+        return "light"
+    return ""
+
+
+def _spec_verify(cfg: "Config", tid: str, kind: str = "full") -> str:
+    """spec 作成タスクの決定的 verify（workdir 相対・specs_root と同じ基準）。
+    full: 3 ファイルが非空で tasks.md が JSON タスク分解を含む / light: design.md 1 枚。"""
     rel = f"specs/{tid}"
+    if kind == "light":
+        return f"test -s {rel}/design.md"
     return (f"test -s {rel}/spec.md -a -s {rel}/design.md -a -s {rel}/tasks.md"
             f" && grep -q '\"title\"' {rel}/tasks.md")
 
@@ -763,6 +788,17 @@ def _spec_instructions(cfg: "Config", task: Task) -> str:
     """spec 作成タスク（`- spec_for:` 持ち）の act 要求文に足す作成指示。実装はさせない。"""
     tid = task.get("spec_for", "")
     rel = f"specs/{tid}"
+    if spec_kind_for(task) == "light":
+        return (
+            f"これは実装前の **ライト Spec** 作成タスクです。{task.get('note') or ''}\n"
+            f"作業ディレクトリ直下に {rel}/design.md を 1 枚だけ作成すること"
+            f"（コードの実装はしない。要求仕様書もタスク分解も書かない）:\n"
+            f"- 変更方針 … 既存コードのどこをどう変えるか（現状の構造を読んだ上で）\n"
+            f"- 影響範囲 … 巻き込むモジュール・呼び出し元・壊れうる既存の振る舞い\n"
+            f"- 受入条件の差分 … 元タスクの受入基準のうち、設計判断で具体化された点\n"
+            f"- 検討した代替案と選ばなかった理由（あれば）\n"
+            f"既存コードベースへの変更なので、**現物を読んで書くこと**。"
+            f"一般論や、確かめていない構造の推測は書かないでください。")
     return (
         f"これは実装前の Spec 作成タスクです。{task.get('note') or ''}\n"
         f"作業ディレクトリ直下の {rel}/ に次の 3 ファイルを作成すること（コードの実装はしない）:\n"
@@ -789,11 +825,15 @@ def route_spec_tasks(cfg: "Config", tasks: "list[Task]", policy: "Policy") -> "l
         if t.get("route") or t.get("spec_for") or t.get("spec"):   # 決定済み・spec 系タスクは対象外
             continue
         forced = any(t.matches(p) for p in policy.spec)
-        if not forced and _assess_max(t) < cfg.spec_threshold:
+        kind = _spec_route_kind(cfg, t, forced)
+        if not kind:
             continue
-        spec_dict = {"id": f"{t.id}-spec", "title": f"Spec 作成: {t.title}",
-                     "verify": _spec_verify(cfg, t.id), "review": "human",
-                     "spec_for": t.id, "route": "direct", "source": "spec",
+        # 既存コード文脈が無いと「影響範囲」を書けない（S7-3。plan 経路と同じ共通機構）
+        ensure_repo_maps(cfg, charter_for_task(cfg, t), force=True)
+        label = "Spec 作成" if kind == "full" else "設計メモ作成（ライト Spec）"
+        spec_dict = {"id": f"{t.id}-spec", "title": f"{label}: {t.title}",
+                     "verify": _spec_verify(cfg, t.id, kind), "review": "human",
+                     "spec_for": t.id, "spec_kind": kind, "route": "direct", "source": "spec",
                      "priority": t.priority + 1,
                      "note": f"対象タスク {t.id}: {t.title}"
                              + (f"（最終 verify: {t.verify}）" if t.verify else "")}
@@ -806,13 +846,15 @@ def route_spec_tasks(cfg: "Config", tasks: "list[Task]", policy: "Policy") -> "l
         t.set("after", ", ".join(deps))
         persist_task(cfg, t)
         created.append(s)
+        thr = cfg.spec_threshold_full if kind == "full" else cfg.spec_threshold_light
         why = "policy spec 一致" if forced else \
-            f"採点 {t.get('assess')} が spec_threshold({cfg.spec_threshold}) 以上"
+            f"採点 {t.get('assess')} が {kind} のしきい値({thr}) 以上"
+        affects = (f"{s.id} を前置（承認後 tasks.md を実装タスクへ展開）" if kind == "full"
+                   else f"{s.id} を前置（design.md を文脈に元タスクをそのまま実行）")
         append_decision(cfg, t.id, "auto",
-                        context=f"{t.id}（{t.title}）を spec ルートへ",
-                        action="spec-route", reason=why,
-                        affects=f"{s.id} を前置（承認後 tasks.md を実装タスクへ展開）")
-        append_journal(cfg.journal, f"spec ルート: {t.id} に {s.id} を前置（{why}）")
+                        context=f"{t.id}（{t.title}）を spec ルート（{kind}）へ",
+                        action="spec-route", reason=why, affects=affects)
+        append_journal(cfg.journal, f"spec ルート（{kind}）: {t.id} に {s.id} を前置（{why}）")
     return created
 
 
@@ -839,6 +881,15 @@ def expand_spec_tasks(cfg: "Config", tasks: "list[Task]") -> "list[Task]":
             adone = False
         if not adone:
             continue                                   # 却下等は展開しない（再審査は既存機構が担う）
+        if str(t.get("spec_kind") or "") == "light":
+            # ライト spec は tasks.md を作らせない＝展開しない。元タスクをそのまま実行し、
+            # design.md は act の文脈として注入される。`none`（フルなのに tasks.md が壊れて
+            # いた）とは別の事象なので、印も journal の文言も分ける。
+            t.set("spec_expanded", "light")
+            persist_task(cfg, t)
+            append_journal(cfg.journal,
+                           f"ライト spec: {t.id} は展開せず design.md を文脈に実行する")
+            continue
         tmd = specs_root(cfg) / t.id / "tasks.md"
         try:
             items = _extract_json_array(tmd.read_text(encoding="utf-8")) if tmd.exists() else None
@@ -858,7 +909,8 @@ def expand_spec_tasks(cfg: "Config", tasks: "list[Task]") -> "list[Task]":
                   "verify": _strip_code(str(it.get("verify", "") or "").strip()),
                   "source": "spec", "spec": t.id, "route": "direct"}
             # tasks.md は「enqueue --json 互換」の契約なので、誘導・レビュー記述（why 等）も落とさない
-            for k in ("accept", "verify_template", "note", "priority", *TASK_GUIDE_KEYS):
+            for k in ("accept", "verify_template", "note", "priority",
+                      *MULTILINE_KEYS, *TASK_GUIDE_KEYS):
                 if it.get(k) not in (None, "", []):
                     sp[k] = it[k]
             for k in ("charter", "workspace"):         # 成果の行き先・スコープは元タスクを引き継ぐ

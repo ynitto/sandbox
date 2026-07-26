@@ -62,7 +62,10 @@ def _has_project_human_wait(tasks: "list[Task]", charter_name: "str | None" = No
     approved the previous plan.
     """
     for t in tasks:
-        if charter_name and task_charter_name(t) not in ("", charter_name):
+        # スコープ判定は task_belongs_to_charter に寄せる（タグ無しはどの charter にも属しうる）。
+        # ここは task_charter_name の戻り（タグ無し = "default"）を "" と比べていたため、
+        # **タグ無しタスクが常にスコープ外**になり、人待ちを見落としていた。
+        if not task_belongs_to_charter(t, charter_name):
             continue
         if t.norm_status() in ("proposed", "blocked", "review"):
             return True
@@ -385,8 +388,11 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
     # 分解・レビューもここで揃える（さもないと --planner none / --executor stub を設定しても
     # plan_via_agent/review_via_agent が黙ってエージェントを呼んでしまう）。
     stub_mode = cfg.executor == "stub"
+    # charter_tag をプランナーへ渡す: 既存タスク一覧・墓標をその charter のスコープに閉じる
+    # （複数 charter 運用で、別バージョンのタスクを「既存」として見せない）。
     plan_fn = planner or ((lambda ch: plan_via_stub(cfg, ch)) if stub_mode
-                          else (lambda ch: plan_via_agent(cfg, ch)))
+                          else (lambda ch: plan_via_agent(
+                              cfg, ch, charter_name if multi else None)))
     review_fn = reviewer or ((lambda ch: review_via_stub(cfg, ch)) if stub_mode
                              else (lambda ch: review_via_agent(cfg, ch)))
     # このパス開始時点で「人が承認済み・charter も承認時から無変更」だったか。
@@ -478,11 +484,13 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
                                     active_only=replan_retry)
         current_tasks = load_tasks(cfg.backlog)
         has_consumable = any(
-            t.consumable() and (not multi or task_charter_name(t) == charter_name)
+            t.consumable() and task_belongs_to_charter(t, charter_name if multi else None)
             for t in current_tasks)
         has_human_wait = _has_project_human_wait(current_tasks, charter_name if multi else None)
         if (not has_consumable and not has_human_wait) or charter_changed or replan_retry:
-            ensure_repo_maps(cfg, charter)   # リポジトリ理解の成果物化（opt-in・sha キャッシュ）
+            # リポジトリ理解の成果物化（plan 経路は無条件・sha キャッシュ）。プランナーは
+            # タスクの「変更対象」をこの文脈を根拠に書く（S6-2 の必須セクション）。
+            ensure_repo_maps(cfg, charter, force=True)
             specs = plan_fn(charter)
             if multi:
                 for sp in specs:                 # この charter のタスクとしてタグ付け（スコープの正）
@@ -490,7 +498,10 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
                         sp.setdefault("charter", charter_name)
             planned = _enqueue_specs(cfg, specs, existing, cfg.learn_threshold,
                                      charter=charter_name if multi else None,
-                                     active_only=replan_retry)
+                                     active_only=replan_retry,
+                                     # `replan --revive`: この 1 回だけ墓標を無視する
+                                     ignore_tombstones=bool(
+                                         replan_retry and (replan_req or {}).get("revive")))
             trig = ("再分解要求（エラー回復）" if replan_retry
                     else "charter 変更検知" if charter_changed else f"plan cycle {cycle}")
             if planned:

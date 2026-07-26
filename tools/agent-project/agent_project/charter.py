@@ -612,6 +612,21 @@ def task_charter_name(task: "Task") -> str:
     return (task.get("charter") or "").strip() or "default"
 
 
+def task_belongs_to_charter(task: "Task", charter: "str | None") -> bool:
+    """このタスクを `charter` のスコープに数えるか。**タグ無しはどの charter にも属しうる。**
+
+    `charter=None`（単一 charter 運用）は常に True。
+
+    この述語が 1 つに寄っていないと壊れる: `_existing_titles` は `tag in ("", charter)` で
+    タグ無しを数えるのに、`_project_pass` の消化可能判定は完全一致を要求していた。結果、
+    タグ無しの消化可能タスクがあっても `has_consumable=False` になり、**バックログが空でも
+    ないのに再分解が誤発火**していた（タグ無しタスクは intake/inbox 経由で普通に生まれる）。
+    """
+    if not charter:
+        return True
+    return (task.get("charter") or "").strip() in ("", charter)
+
+
 def charter_for_task(cfg: "Config", task: "Task | None" = None) -> "Charter | None":
     """タスクの `charter:` タグから該当 charter を選ぶ（無ければ先頭/従来の charter.md）。
     ルーティング・文脈注入など「タスク単位で charter を引く」箇所の共通入口。"""
@@ -677,15 +692,19 @@ def replan_request_path(cfg: "Config") -> Path:
     return cfg.backlog.parent / ".replan.request"
 
 
-def write_replan_request(cfg: "Config", reason: str, charter: str = "") -> None:
+def write_replan_request(cfg: "Config", reason: str, charter: str = "",
+                         revive: bool = False) -> None:
     """次パスの再分解要求マーカーを置く（人の明示アクション。冪等＝上書き）。
-    charter を渡すとその charter だけを再計画対象にする（複数 charter 運用）。"""
+    charter を渡すとその charter だけを再計画対象にする（複数 charter 運用）。
+    revive=True はこの 1 回だけ墓標を無視する（行は消さない。消すのは `revive` サブコマンド）。"""
     p = replan_request_path(cfg)
     p.parent.mkdir(parents=True, exist_ok=True)
     payload = {"reason": reason or "", "actor": getattr(cfg, "actor", "") or "",
                "ts": datetime.now().isoformat(timespec="seconds")}
     if charter:
         payload["charter"] = charter
+    if revive:
+        payload["revive"] = True
     p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -749,18 +768,21 @@ def _existing_titles(cfg: "Config", charter: "str | None" = None,
     active_only は照合を「done 以外」に絞る: 現行処理中の backlog に加え、archive の rejected
     （人の明示的な却下）だけは残す。再分解（replan）のエラー回復で、過去に done した同種タスクの
     再作成（やり直し）は許しつつ、却下済みタスクの復活は防ぐための口。"""
-    def _match(t: "Task") -> bool:
-        if not charter:
-            return True
-        tag = (t.get("charter") or "").strip()
-        return tag in ("", charter)
+    def _titles_of(t: "Task") -> "list[str]":
+        """照合に使う題。**人が直す前の原題（planned_title）も含める。**
+
+        プランナーは charter から毎回同じものを出すので、人が題を直したタスクは
+        原題を持っていないと「新規」として毎 replan で復活する（人の編集が実質無効になる）。
+        """
+        return [t.title, str(t.get("planned_title") or "").strip()]
 
     tasks = load_tasks(cfg.backlog)
     if active_only:
-        titles = [t.title for t in tasks
-                  if _match(t) and t.norm_status() != "done"]
+        titles = [x for t in tasks if task_belongs_to_charter(t, charter)
+                  and t.norm_status() != "done" for x in _titles_of(t)]
     else:
-        titles = [t.title for t in tasks if _match(t)]
+        titles = [x for t in tasks if task_belongs_to_charter(t, charter)
+                  for x in _titles_of(t)]
     adir = cfg.archive_dir()
     if adir.exists():
         for p in adir.glob("*.md"):
@@ -768,14 +790,149 @@ def _existing_titles(cfg: "Config", charter: "str | None" = None,
                 t = parse_task(p.read_text(encoding="utf-8"), p.stem)
             except (OSError, ValueError):
                 continue
-            if _match(t) and (not active_only or t.norm_status() == "rejected"):
-                titles.append(t.title)
+            if task_belongs_to_charter(t, charter) and (
+                    not active_only or t.norm_status() == "rejected"):
+                titles += _titles_of(t)
     return [t for t in titles if t]
 
 
 def _is_duplicate(title: str, verify: str, existing: "list[str]", threshold: float) -> bool:
     """タイトルが既存と十分類似（Jaccard ≥ threshold）なら重複とみなす（plan/evaluate の冪等性）。"""
     return any(_title_overlap(title, e) >= threshold for e in existing)
+
+
+# ---------------------------------------------------------------------------
+# 墓標（tombstones.md）— 人が却下・削除したタスクを作り直さないための記録（S6-4）
+#
+# **台帳（イベントログ）にはしない。**生成・承認・却下の履歴は journal と decisions/ が
+# 既に持っており、ここで要るのは「今の墓標の集合」だけ。イベント型にすると同じ事実が
+# 3 系統に重複し、集合を得るのに全行の畳み込みが要る。
+#
+# 1 行 1 墓標。`::` 区切りは followup:/learn:/avoid: と同じ既存の語彙で、人が手で書き足せる。
+#   - <タイトル> :: <理由> :: <日付> :: charter=<名前>
+# ---------------------------------------------------------------------------
+_TOMBSTONE_RE = re.compile(r"^\s*-\s+(?P<body>.+?)\s*$")
+
+
+def tombstones_path(cfg: "Config") -> Path:
+    """墓標の置き場（状態リポジトリ直下）。root は backlog の親（verifications/ と同じ導出）。"""
+    return cfg.backlog.parent / "tombstones.md"
+
+
+def _norm_title(title: str) -> str:
+    """重複照合・墓標照合で使うタイトルの正規化指紋。
+
+    `_title_overlap` と同じトークン化（\\w+ の小文字化）を土台に、NFKC で全角半角を畳み、
+    語を**区切り無しで**連結する。区切りを残さないのは、日本語のタイトルは分かち書きの
+    有無が書き手次第だから——「X をやる」と「X を やる」は同じタスクであって別物ではない。
+
+    **語順は保つ**（集合にしない）。語順まで捨てると「A を B にする」と「B を A にする」が
+    同一指紋になり、逆向きのタスクを潰す。
+    """
+    s = unicodedata.normalize("NFKC", str(title or "")).lower()
+    return "".join(re.findall(r"\w+", s))
+
+
+def load_tombstones(cfg: "Config", charter: "str | None" = None) -> "list[dict]":
+    """墓標を読む。charter を渡すと、その charter 向け（`charter=` タグ一致）とタグ無しに絞る。
+
+    タグ無しが全 charter に効くのは、人が手で書いた墓標の既定を「どこでも作り直すな」に
+    するため（`_existing_titles` の `_match` と同じ規則）。
+    """
+    p = tombstones_path(cfg)
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    out: "list[dict]" = []
+    for line in text.splitlines():
+        m = _TOMBSTONE_RE.match(line)
+        if not m or line.lstrip().startswith("-->"):
+            continue
+        parts = [x.strip() for x in m.group("body").split("::")]
+        title = parts[0] if parts else ""
+        if not title:
+            continue
+        tag = ""
+        for extra in parts[3:4]:
+            if extra.startswith("charter="):
+                tag = extra[len("charter="):].strip()
+        if charter is not None and tag and tag != charter:
+            continue
+        out.append({"title": title, "reason": parts[1] if len(parts) > 1 else "",
+                    "date": parts[2] if len(parts) > 2 else "", "charter": tag,
+                    "fingerprint": _norm_title(title)})
+    return out
+
+
+def append_tombstone(cfg: "Config", title: str, reason: str, charter: str = "") -> bool:
+    """墓標を 1 行追記する（同じ指紋が既にあれば何もしない）。追記したら True。"""
+    title = str(title or "").strip()
+    if not title:
+        return False
+    fp = _norm_title(title)
+    if any(t["fingerprint"] == fp and (t["charter"] or "") == (charter or "")
+           for t in load_tombstones(cfg)):
+        return False
+    p = tombstones_path(cfg)
+    if not p.exists():
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("# 墓標（このタスクは作り直さない）\n"
+                     "<!-- 1 行 1 墓標: `- <タイトル> :: <理由> :: <日付> :: charter=<名前>`\n"
+                     "     解除は `agent-project revive <タイトル>`。人が手で書き足してもよい。 -->\n\n",
+                     encoding="utf-8")
+    cells = [title.replace("\n", " "), str(reason or "").replace("\n", " ")[:200],
+             datetime.now().strftime("%Y-%m-%d")]
+    if charter:
+        cells.append(f"charter={charter}")
+    with p.open("a", encoding="utf-8") as f:
+        f.write("- " + " :: ".join(cells) + "\n")
+    return True
+
+
+def remove_tombstone(cfg: "Config", title: str) -> int:
+    """指紋が一致する墓標行を削除する（`revive`）。削除件数を返す。"""
+    p = tombstones_path(cfg)
+    try:
+        lines = p.read_text(encoding="utf-8").splitlines(keepends=True)
+    except OSError:
+        return 0
+    fp = _norm_title(title)
+    kept, removed = [], 0
+    for line in lines:
+        m = _TOMBSTONE_RE.match(line)
+        if m and not line.lstrip().startswith("-->"):
+            head = m.group("body").split("::")[0].strip()
+            if head and _norm_title(head) == fp:
+                removed += 1
+                continue
+        kept.append(line)
+    if removed:
+        p.write_text("".join(kept), encoding="utf-8")
+    return removed
+
+
+def tombstone_hit(title: str, tombstones: "list[dict]") -> "dict | None":
+    """**完全一致**の墓標だけを返す（投入を止める判断に使う唯一の材料）。
+
+    類似（Jaccard）を抑止に使わないのは、抑止が取り返しのつかない操作だから——
+    プランナーが出したものが黙って消えるので、人はそれが起きたことに気づけない。
+    Jaccard 0.5 は「board UI を作る」と「board 観測 UI を作る」を同一視する強さがあり、
+    恒久抑止に使うと後から本当に要るタスクが起票できなくなる。類似は
+    `similar_tombstones` で **提示**に回す（人が見て却下すればよい＝取り返しがつく）。
+    """
+    fp = _norm_title(title)
+    if not fp:
+        return None
+    return next((t for t in tombstones if t["fingerprint"] == fp), None)
+
+
+def similar_tombstones(title: str, tombstones: "list[dict]",
+                       threshold: float) -> "list[dict]":
+    """類似（Jaccard ≥ threshold）だが完全一致ではない墓標。投入は止めず注記に使う。"""
+    fp = _norm_title(title)
+    return [t for t in tombstones
+            if t["fingerprint"] != fp and _title_overlap(title, t["title"]) >= threshold]
 
 
 def _extract_json_array(text: str) -> "list | None":
