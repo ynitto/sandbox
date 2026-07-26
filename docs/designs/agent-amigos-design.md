@@ -627,6 +627,12 @@ agent-dashboard の自動発見マーカーも兼ねる。
 だけで処理を持たない（`schemas/board.schema.json`）。詳細は
 [`2026-07-23-delegation-board-distributed-bidding-design.md`](../plans/2026-07-23-delegation-board-distributed-bidding-design.md)。
 
+入札の可否（担当リポジトリ・タグ・CLI・契約バージョンの照合）は `agentcore.board.eligible` の
+1 実装で、agent-flow の板参加と共有する——以前は「同じ仕様・別実装」で 2 つあり、片方だけ育つと
+同じ公示が経路によって拾えたり拾えなかったりした（`agentcore.protocol` の claim と同じ理由で
+集約した）。判定材料の正典は各 PC の `agent-project.host.yaml`
+（[S8/S9-4 詳細設計](../plans/2026-07-26-s8-s9-4-board-ui-and-doctor-chat-detailed-design.md) §6.4）。
+
 ### 8.2 障害と回復
 
 | 障害 | 検知 | 回復 |
