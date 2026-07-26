@@ -5,6 +5,10 @@
 参照した既存設計: `2026-07-24-single-resident-controller-design.md` / `2026-07-23-delegation-board-distributed-bidding-design.md` / `2026-07-12-agent-spec-flow-integration.md` / `2026-07-25-flow-planner-granularity-design.md`
 
 改訂履歴:
+- 第 8 版: Phase 4(S8・S9-4)の詳細設計を追加。§4 の表と詳細設計の所在にリンクを足し、§5 の未決 6 を
+  決着済みにした。あわせて **S8-1 の「orchestration タブ内に board セクション」を撤回**
+  （同タブは全体設定になったため。置き場は詳細設計 §4）、**S8-4 の「W1-11 後」を「R2 後」に読み替え**
+  （W1-11 は完了済み・待ち先は実装計画 §7 R2）
 - 第 7 版: Phase 3(S6・S7)の実装完了を反映。§4 の積み残し表に Phase 3 分(P3-a〜i)を追加
   (うち P3-f〜i は**実装後に見つけた分**。詳細設計 §7-6〜9 と対応する)
 - 第 6 版: Phase 3(S6 → S7)の詳細設計を追加。§4 の表と詳細設計の所在にリンクを足し、§5 の未決 5 を決着済みにした
@@ -50,7 +54,7 @@
 Phase 1(基盤・宣言層):  S1      S3          S2(独立・dashboard のみ)
 Phase 2(検収と検証):    S4 → S5             S9(独立・S5 の checker とは無関係)
 Phase 3(計画):          S6 → S7   (S6 の受入基準チェックリストは S5 と接続)
-Phase 4(UI):            S8(常駐体 board tick に依存)
+Phase 4(UI):            S8(板の請負 tick R2a を同時に実装)  S9-4(独立・S9-1〜3 の上に載る)
 ```
 
 S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 は「受入基準チェックリスト」を共有する(S6 が生成・人が修正、S5 が検証に使う)。
@@ -310,9 +314,15 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
 
 **仕様**
 1. **観測 UI(先行)**: orchestration(全体)タブ内に board セクションを追加し、`delegation:list` のビュー(phase / bids / status / result)を表示する。委譲の独立タブは設けない(既存方針維持)。`delegation-ui.test.js` は「独立タブを置かない」の検証に緩める。
+   > **撤回**: orchestration タブは**全体設定**になった(2026-07-19 全体設定ページ設計)ので、設定画面に動く一覧は置けない。置き場は「出した仕事＝タスクカード / 引き受ける＝参加タブ / 参加構成＝全体設定」の 3 分割へ変更
+   > ([S8/S9-4 詳細設計 §4](2026-07-26-s8-s9-4-board-ui-and-doctor-chat-detailed-design.md))。委譲の独立タブを作らない方針は維持。
 2. **キャンセル**: 既存 `delegation:cancel` をカードの操作に接続する。ただし書き込み経路は single-resident 設計に合わせ、**dashboard は常駐体への指示ファイル投函に変更**し、板への `cancelled.json` 書き込みと push は常駐体が行う(board-adapter の直接書き込みは移行期のみ)。
+   > **訂正**: 「移行期のみ」は不要だった。**現行の直接書き込みは `git+` 板では誰にも届いていない**(push する主体が居ない)ので、互換対象が無く一度で切り替える(同 §1.7・§9-3)。
 3. **手動入札**: 「このノードで請け負う」操作を追加する。実装は bid ファイルの直接書き込みではなく、**常駐体の board tick への指示投函**(`commands/` 契約)とし、bid の名義・lease 管理は常駐体に一元化する。二重落札防止の判断(claim 規則)を UI 側に複製しない。
+   投函先は**ノードスコープ**の `~/.agents/commands/`(新契約 `schemas/agent-node-command.schema.json`)——板はプロジェクトに属さないため、プロジェクトの `commands/` は使えない(同 §5.2)。
 4. **前提**: 本仕様の 2・3 は常駐体の board tick(W1-11)実装後に着手する。観測 UI(1)は現行の board-adapter 読み取りだけで先行実装できる。
+   > **読み替え**: W1-11 は完了済み。待ち先は[実装計画 §7 R2](2026-07-24-single-resident-controller-implementation-plan.md)(板の請負 tick)。
+   > その R2 を **R2a(宣言・入札・指示の取り込み)** と **R2b(ノード直轄実行)** に割り、Phase 4 は R2a まで(同 §2)。
 
 ---
 
@@ -345,6 +355,11 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
 3. **適用範囲**: dashboard の CLI チャット(`openInteractiveChat`)、cowork の tmux 実行、S9 の対話診断、kiro-loop の chat 起動 — tmux 経由の全エージェント起動がこのレイヤを通る。
 4. **診断の 2 モード化**(このレイヤの最初の利用者):
    - **対話診断(新設・既定)**: doctor のコンテキスト(`buildDoctorContext` + spill ファイル)を初回プロンプトとして `runChatWindow` で tmux セッションを開く。起動 argv は `interactive.command + readonly_args + no_session_args` で組む。セッション名は `agent-doctor-<digest>` とし、同一 need の再診断は既存セッションへ attach する。
+     > **訂正**: 文脈(最大 120,000 字)をそのまま初回プロンプトにはできない——tmux への注入は改行を含められない 1 行(`send-keys`)で、
+     > 全文をファイルで渡す案は**読み取り専用モードでファイル読み取りごと落とす CLI**(copilot)で成立しない。
+     > 送るのは**ブリーフ(1 行・2,000 字上限)＋ 全文ファイルのパス**とし、全文は「読めるなら読め」の追加資料に留める
+     > ([S8/S9-4 詳細設計 §3.4](2026-07-26-s8-s9-4-board-ui-and-doctor-chat-detailed-design.md))。これで S9 のスキーマを触らずに済む。
+     > 再診断時は**ブリーフを送り直さない**(会話が続いているところへ再投入すると文脈が二重になる)。
    - **文面生成(現行維持)**: 「差し戻し文面案」など構造化出力の抽出が要る用途はヘッドレス 1 発実行(既存契約)を残す。
    - 失敗診断ボタンは対話診断を開き、「文面を生成」ボタンを併設する。開いた診断セッションは kiro-loop feature の tmux 視聴(`kiroLoop:capture`)で dashboard 内からも覗ける。
 
@@ -359,7 +374,7 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
 | 1' | S9-1〜3 | **実装済み** | schemas(agent-cli)、agents/、agentcore(ローダ)、agent-project / agent-flow / agent-amigos / agent-dashboard | 独立。S9 のレイヤは 4 の診断より先に整備 |
 | 2 | S4 → S5 | **実装済み** | agent-project(mr/verify/needs)、.github/skills(backlog-verifier)、agent-dashboard(needs) | acceptance チェックリスト書式は **S5 側で確定させ S6 が従う**（詳細設計 §2.3） |
 | 3 | S6 → S7 | **実装済み** | agent-project(plan/charter/prioritize/model/needs)、.github/skills(backlog-planner)、agent-flow(planner_skill)、agent-dashboard(plan-review/notes UI) | S9-4(対話診断)と並行可 |
-| 4 | S8、S9-4 | 未着手 | agent-dashboard、agent-project(常駐体) | S8-2/3 は W1-11(board tick)後 |
+| 4 | S8、S9-4 | **詳細設計済み**(実装未着手) | agent-dashboard、agent-project(常駐体 board tick)、agent-flow(board)、agentcore、schemas | S8-2/3 は R2a(板の請負 tick 前半)を同時に実装する。R2b(ノード直轄実行)は Phase 5 |
 
 ### 詳細設計と実装の所在
 
@@ -370,6 +385,7 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
 | S9-1〜3 | [`2026-07-26-s9-agent-cli-layer-detailed-design.md`](2026-07-26-s9-agent-cli-layer-detailed-design.md) | 実装済み |
 | S4 / S5 | [`2026-07-26-s4-s5-review-and-verification-detailed-design.md`](2026-07-26-s4-s5-review-and-verification-detailed-design.md) | 実装済み |
 | S6 / S7 | [`2026-07-26-s6-s7-backlog-planning-detailed-design.md`](2026-07-26-s6-s7-backlog-planning-detailed-design.md) | 実装済み |
+| S8 / S9-4 | [`2026-07-26-s8-s9-4-board-ui-and-doctor-chat-detailed-design.md`](2026-07-26-s8-s9-4-board-ui-and-doctor-chat-detailed-design.md) | 未実装（実装単位は同 §7、テスト計画は §8） |
 
 ### 積み残し(次フェーズ以降へ持ち越し)
 
@@ -381,7 +397,7 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
 
 | # | 内容 | 待ち先 |
 |---|---|---|
-| P1-a | **S3-5: 板の `nodes/<node-id>.json` への `repos[].local` 転記** — その JSON を書く実装自体が無い(W1-11 残)ため、書き手ができるまで転記先が無い | S8 / W1-11(実装計画 §7 R2) |
+| P1-a | **S3-5: 板の `nodes/<node-id>.json` への `repos[].local` 転記** — その JSON を書く実装自体が無い(W1-11 残)ため、書き手ができるまで転記先が無い | **Phase 4 の R2a で解ける**（[S8/S9-4 詳細設計 §6.2](2026-07-26-s8-s9-4-board-ui-and-doctor-chat-detailed-design.md)。常駐体の board tick が書き手になる） |
 | P1-b | **S3-4 のパス手入力 UI** — main 側は任意パスを受けて実在検査までするが、画面はドロップダウンのみ。入口を足すだけで有効になる | 必要が出たとき |
 | P1-c | **dashboard の repos.yaml/yml 読み取り** — CLIチャット候補の「宣言し忘れ」行は repos.json からのみ作る(このアプリは YAML パーサを持たない)。候補が減るだけで害は無い | 必要が出たとき |
 | P1-d | **`cowork.roots` の掃除の口** — project になったフォルダの登録解除の動線が無い(表示は自動で正しくなる) | 必要が出たとき |
@@ -399,7 +415,7 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
 
 | # | 内容 | 待ち先 |
 |---|---|---|
-| P2-a | **`unverifiable` の板への検証委譲** — 「このノードでは確かめられない」基準を他ノードへ回す経路。判定結果に理由コードは残してあるが、板の請負実行が無いので接続先が無い | S8 / W1-11(実装計画 §7 R2。P1-a と同じ) |
+| P2-a | **`unverifiable` の板への検証委譲** — 「このノードでは確かめられない」基準を他ノードへ回す経路。判定結果に理由コードは残してあるが、板の請負実行が無いので接続先が無い | **半分は Phase 4 の R2a**（公示を出す口は開く）。請け負えるのはフルノードだけなので残りは R2b＝Phase 5 |
 | P2-b | **GitHub / Gitea の forge 実装** — 境界(`forge_available`)だけ切って未実装。未対応リモートは「フォージ無し運用」へ倒れる。動作確認できる環境が無いまま書いた API クライアントは、動くか分からないコードが増えるだけなので、必要になったノードで足す | 必要が出たとき |
 | P2-c | **`diff2html` 依存** — MR を持たないタスク向けのフォールバックとして残る。フォージ無し運用が消えたら撤去できる | フォージ無し運用が無くなったとき |
 | P2-d | **charter acceptance の LLM 一発合成** — `resolve_charter_acceptance`(マイルストーン収束判定)は今も自然文 → コマンドの合成に依存する。S5 と同じ問題(合成されたコマンドの良し悪しを人が判断できない)を抱えるが、検証対象(タスク単位・成果ブランチ上ではない)も出口(milestone)も違うので別設計が要る。**ここが残るあいだ `synth_verify` と静的スクリーニング群も残る** | 別途(S5 の考え方を charter へ広げるとき) |
@@ -419,6 +435,19 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
 | P3-g | **日本語タイトルの Jaccard 照合が分かち書きに依存する** — `_title_overlap` の `\w+` トークン化では、空白を入れない日本語タイトルは全体が 1 トークンになり実質「完全一致か 0 か」。墓標の抑止は `_norm_title` を通すので効くが、**Jaccard を使う経路(重複照合・avoid リコール・learn 照合)は日本語で弱いまま**。S6 でプランナー入力に既存タスクを載せた分、実害は下がっている | 重複が実際にすり抜けたとき(そのとき N-gram 等の決定的な代替を検討する) |
 | P3-h | **dashboard から墓標を見る・解除する口が無い** — 却下は墓標を**生む**のに解除は CLI(`revive`)だけで非対称。`tombstones.md` の一覧表示 + `commands/` ドロップで揃う | 必要が出たとき(却下の取り消しは頻度が低い) |
 | P3-i | **`draft` の昇格導線が dashboard に無い** — `plan_review: off` で必須項目が埋まらなかったタスクは draft に入るが、dashboard に draft → ready の操作が無い(`revise` は status を変えない) | `plan_review: off` の運用が出てきたとき(既定 on は proposed ＝票が立つので導線がある) |
+
+#### Phase 4(S8・S9-4)— **詳細設計時点の見込み**（実装後に見直す）
+
+| # | 内容 | 待ち先 |
+|---|---|---|
+| P4-a | **R2b: ノード直轄実行** — プロジェクトを 1 つも持たないワーカーノードが落札して `NodeWorkerPool` で実行する経路。これが無くても手動入札は成立する(未決 6 の決着)が、ワーカーノードは板の仕事を請けられないままになる | Phase 5(実機 canary R1 の後) |
+| P4-b | **P2-a の後半** — 「検証不能」基準の板への検証委譲。公示を出す口は R2a で開くが、請け負えるのはフルノードだけ | R2b |
+| P4-c | **`submitPost` / `award` の `git+` 板対応** — dashboard に手動 post の UI が無いので今回触らない。`board-award` 指示の契約だけ用意しておく | owner-picks を使い始めたとき |
+| P4-d | **投機同時実行(speculation)** — 契約からは W0-10 で削除済み。板設計の P2 のまま | 必要が出たとき |
+| P4-e | **push 配信(webhook / long-poll)** — 30s ポーリングで足りている。板設計 §5.3 の「加速装置」 | 遅いという申告が出たとき |
+| P4-f | **`consultation` / `plan-critique` / `delivery-rationale` の対話化** — いずれも構造化見出しの抽出に依存するので、対話にすると抽出点が消える | 抽出をやめてよいと判断できたとき |
+| P4-g | **対話診断セッションの掃除** — 使い捨て(`no_session_args`)なので状態は残らないが tmux セッションは溜まる。名前での一括 kill は付けない | セッションが溜まって困ったとき |
+| P4-h | **参加ノード表に `local` を出さない** — 他 PC の絶対パスは読み手に意味が無い。「そのノードが手元に持っているリポジトリ名」までを出す | 意図的に残す |
 
 いずれも「動作は正しいが最適でない / 別の実装待ち」。**P2-d だけは性質が違い**、S5 のコンセプト変更が
 charter 側に及んでいないという設計上の非対称なので、Phase 3(S6・S7)で計画側を触るときに
@@ -448,7 +477,18 @@ charter 側に及んでいないという設計上の非対称なので、Phase 
    あわせて **`acceptance:` の受け渡しが 4 か所で切れている**ことが判明し(同 §1.2)、S6 の実装は
    その修理から入る順序に固定した。台帳は `backlog-ledger.jsonl` を新設せず、
    人編集＝タスク md の `- edited: human` / 墓標＝`tombstones.md` に分ける(同 §1.3)。
-6. **S8**: 手動入札の「ノード直轄ワーカーで実行」への接続(落札後の実行系が W1-11 に含まれるため、単独では操作だけ増えて実行できない状態になり得る)。
+~~6. **S8**: 手動入札の「ノード直轄ワーカーで実行」への接続(落札後の実行系が W1-11 に含まれるため、単独では操作だけ増えて実行できない状態になり得る)。~~
+   → **決着**(S8/S9-4 詳細設計 §9-1): 前提の読み替えが要った。**フルノードには既に落札→実行の経路がある**
+   (`poll_board` → プロジェクトのバス → `NodeWorkerPool`)ので、手動入札に足りないのは
+   「bid を人の意思で書くこと」だけ。手動入札は入札の意思表示までを常駐体へ渡し、実行は既存経路へ合流させる。
+   取り込み先を持たないノード(プロジェクト 0 個のワーカーノード)では**ボタンを理由付きで非活性にする**
+   ——「操作だけ増えて実行できない」状態を構造的に防ぐ。可否の根拠は `engine/status.json` の
+   `board.intake_projects` 1 か所に集約する(dashboard が host.yaml と agent-flow 設定を自前で読み解くと
+   宣言の解釈が 2 実装になる)。
+   あわせて調査で 4 件が判明し、同 §9 で決着させた: **`git+` 板では dashboard の板への書き込みが
+   誰にも届いていない**(§9-3。押しても効かないキャンセルボタンだった) / **板の所有権規約は認可ではない**
+   (§9-4。cancel は依頼者でなくても書ける) / **板参加の宣言が host.yaml と agent-flow 設定に割れている**
+   (§9-5。S1 の取りこぼし) / **対話診断へ 120KB の文脈は持ち込めない**(§9-6。ブリーフ 1 行 + 全文ファイル)。
 ~~7. **S9**: `readonly_args` の強制力は CLI の実装依存(フラグを無視する CLI への防御は持たない)。対話セッションの副作用は人が見ている前提で許容するか。~~
    → **決着**(S9 詳細設計 §6): 防御は持たない。代わりに定義へ `readonly: enforced | best-effort` を持たせ、
    保証できない CLI で読み取り専用を要求したときは画面に明示する。対話セッションの副作用は許容し、

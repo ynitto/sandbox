@@ -353,6 +353,17 @@ canary ランブック C10 にその旨を明記してある。
 
 R2 を実装するときは、この 2 つを同時に繋ぐと board 側の契約を 1 度で固められる。
 
+**設計は固まった（2026-07-26）**: [`2026-07-26-s8-s9-4-board-ui-and-doctor-chat-detailed-design.md`](2026-07-26-s8-s9-4-board-ui-and-doctor-chat-detailed-design.md)（S8 / S9-4 詳細設計）で R2 を 2 つに割った:
+
+| | 内容 | 実施 |
+|---|---|---|
+| **R2a** | 常駐体の board tick（30s）: 板の同期・`nodes/<pc>.json` の書き出し（能力宣言・心拍）・ノード宛て指示の取り込み（入札 / キャンセル）・入札選別規則の agentcore 一本化 | agent シリーズ改良の Phase 4 と同時 |
+| **R2b** | ノード直轄実行: プロジェクト 0 個のワーカーノードが落札して `NodeWorkerPool` で実行する経路 | R1（実機 canary）の後 |
+
+「中途半端に実装すると二重落札・二重実行になる」への答えは同設計 §6.5——**取り込み済みの判定を
+自分のバスから板の `status/<who>.json` へ移す**。現行 `poll_board` は自分のバスしか見ないため、
+同一ノードで 2 プロジェクトが同じ板を巡回すると同じ公示を二重に取り込む（既に壊れている）。
+
 ### R3. 旧経路の削除（W1-9）— 完了
 
 削除済み: agent-amigos（`serve` / `hub` / `hubbus`）、agent-project（`instances` / `start` /
