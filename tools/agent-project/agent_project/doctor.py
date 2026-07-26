@@ -192,7 +192,7 @@ def doctor_env_findings(cfg: "Config", which=shutil.which) -> "list[dict]":
     """環境/設定の決定的チェック（LLM 不要）。fix_action を持つものは --fix で修正できる。"""
     findings: list[dict] = []
     # 未 push のローカルコミット（unpushed_commits の docstring 参照）
-    n, branch = unpushed_commits(cfg.state_top)
+    n, branch = unpushed_commits(cfg.backlog.parent)
     if n:
         findings.append({
             "category": "git", "severity": "warn",
@@ -200,7 +200,7 @@ def doctor_env_findings(cfg: "Config", which=shutil.which) -> "list[dict]":
             "evidence": ("worker と verify は origin から clone して実行するため、ローカルにだけある "
                          "コミットは彼らからは見えない。手元で直した成果は verify に届かず、"
                          "「ローカルでは通るのに verify は落ち続ける」状態になる"),
-            "fix": f"git -C {cfg.state_top} push origin {branch}"})
+            "fix": f"git -C {cfg.backlog.parent} push origin {branch}"})
     needs_cli = cfg.planner == "agent" or cfg.executor == "agent" or cfg.auto_adjudicate
     agent_bin = _AGENT_CLI_BINARIES.get(cfg.agent_cli, cfg.agent_cli)
     if needs_cli and not which(agent_bin):
@@ -1041,7 +1041,7 @@ def cmd_run(cfg: Config) -> int:
         # 二重起動が通っていた（実装計画 W1-9）。
         watch_lock = acquire_watch_lock(cfg)
         if watch_lock is None:
-            mine = str((cfg.source_root or cfg.backlog.parent).resolve())
+            mine = str(cfg.backlog.parent.resolve())
             holder = watch_lock_holder(cfg)
             print(f"既に root={mine} を監視中です"
                   + (f"（pid={holder}）" if holder else "")

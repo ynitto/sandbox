@@ -62,6 +62,28 @@ def _find_host_config(explicit: "str | None" = None) -> "str | None":
     return None
 
 
+def _normalize_host_repos(raw) -> "list[dict]":
+    """host.yaml の `repos:` を [{url, local}, …] へ正規化する（S3）。
+
+    人が手で書くので型は保証されない。list（正）のほか、旧 mapping 形式（url -> local）と
+    素の文字列列も受ける。壊れていても例外にせず落とせる分だけ拾う——設定ミスでノードが
+    起動しない方が、ローカル最適化が効かないことより高くつく（`_normalize_hooks` と同じ流儀）。"""
+    out: "list[dict]" = []
+    if isinstance(raw, dict):
+        for url, local in raw.items():
+            if isinstance(local, dict):
+                out.append({"url": str(url), **{k: str(v) for k, v in local.items()}})
+            elif local:
+                out.append({"url": str(url), "local": str(local)})
+    elif isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict) and item.get("url"):
+                out.append({str(k): (str(v) if v is not None else "") for k, v in item.items()})
+            elif isinstance(item, str) and item.strip():
+                out.append({"url": item.strip()})
+    return out
+
+
 class HostConfig:
     """agent-project.host.yaml の内容（PC 宣言の単一ソース。設計 §4.2）。
 
@@ -72,12 +94,28 @@ class HostConfig:
     def __init__(self, data: dict, path: "str | None" = None):
         self.path = path
         declared = str(data.get("node_id") or "").strip()
+        # 「宣言されたか」を保つ: `resolve_config` は宣言 > 環境変数 > ホスト名の順に採る
+        # （宣言があるのに AGENT_PROJECT_NODE で黙って別名になると、板の名義と claim の
+        # 持ち主が食い違う）。node_id 自体は常に値を持つので、この旗が無いと区別できない。
+        self.node_id_declared = bool(declared)
         self.node_id = normalize_node_id(declared) if declared \
             else normalize_node_id(socket.gethostname())
         self.projects = [dict(p) for p in (data.get("projects") or []) if isinstance(p, dict)]
         self.tags = [str(t) for t in (data.get("tags") or [])]
+        # 能力宣言の `agent_cli:`（このノードで使える CLI の一覧・板への入札判定に使う）と、
+        # `defaults.agent_cli`（このノードの既定 CLI・スカラ）は **別のキー**。前者は板の語彙、
+        # 後者は設定の層（S1 の SHARED 群）で、混ぜると「1 つしか宣言していない PC の既定が
+        # 勝手に変わる」ことになる。
         self.agent_cli = [str(a) for a in (data.get("agent_cli") or [])]
-        self.repos = data.get("repos") or {}
+        # S1: ノード全体の共有キー既定。projects[].overrides と合わせて resolve_config が読む。
+        self.defaults = dict(data.get("defaults") or {})
+        # S3: ノード固有のローカルクローン宣言（url/local の列）。共有 repos.json には置けない
+        # （ホスト固有の絶対パスが state repo 経由で全 PC へ配られてしまうため）。
+        # 旧形式（mapping）も読めるようにしておく——能力宣言への転記しかしていなかった頃の
+        # host.yaml がそのまま残っていても落とさない。
+        self.repos = _normalize_host_repos(data.get("repos"))
+        # S1: ツールの自動アップデートはノードのインストール管理（`update.*` → update_* キー）。
+        self.update = dict(data.get("update") or {})
         self.board = str(data.get("board") or "")
         self.board_workdir = data.get("board_workdir")
         self.max_concurrent = int((data.get("budget") or {}).get("max_concurrent", 0) or 0)
@@ -112,8 +150,8 @@ def _project_name(project: dict) -> str:
     子プロセス名・gc sweeper 名・`engine/status.json` の children[].name はすべてこれ——
     導出が割れると status の子と gc の集計が別名で並び、dashboard が同じプロジェクトを
     2 件に見せる。"""
-    resolved = _resolved_root(str(project.get("root") or "").strip(), project.get("config"))
-    return str(project.get("name") or "").strip() or _slug(resolved)
+    return str(project.get("name") or "").strip() \
+        or _slug(_resolved_root(str(project.get("root") or "").strip()))
 
 
 def _availability_tick(host: "HostConfig", sup: "Supervisor",
@@ -255,15 +293,18 @@ def _observe_sync_health(roots_by_name: dict) -> "list[SyncHealth]":
 
 def _project_child_spec(project: dict) -> "ChildSpec | None":
     """host.yaml の 1 プロジェクト宣言から Supervisor.ChildSpec を組み立てる。
-    `agent-project run --watch` を Popen する——cmd_start と同じ argv 構築だが、
-    detach せず Supervisor が Popen ハンドルを保持・監視する。"""
-    root = str(project.get("root") or "").strip()
-    if not root:
+    `agent-project run --watch` を Popen する（detach せず Supervisor が Popen ハンドルを
+    保持・監視する）。
+
+    渡すのは `--project <name>` だけ——root / state_repo / branch / overrides の解釈は子の
+    `resolve_config` が host.yaml を読み直して行う（S1）。宣言の解釈が親子で 2 実装になると、
+    片方だけ直したときに黙って食い違う。clone の確保も子が行うので、常駐体は git を触らない
+    （失敗は子の起動失敗として Supervisor の隔離と status.json の recent_errors に載る）。"""
+    if not str(project.get("root") or "").strip():
         return None
-    child = [sys.executable, _self_script(), "run", "--watch", "--root", root]
-    if project.get("config"):
-        child += ["--config", str(project["config"])]
-    return ChildSpec(name=_project_name(project), argv=child)
+    name = _project_name(project)
+    return ChildSpec(name=name,
+                     argv=[sys.executable, _self_script(), "run", "--watch", "--project", name])
 
 
 def _project_children(host: HostConfig) -> "list[ChildSpec]":
@@ -273,7 +314,8 @@ def _project_children(host: HostConfig) -> "list[ChildSpec]":
         spec = _project_child_spec(project)
         if spec is None:
             print(f"[agent-project] serve: host.yaml の project に root が無いエントリを"
-                 f"無視しました: {project}", file=sys.stderr)
+                 f"無視しました（root には状態リポジトリの clone 先を絶対パスで宣言します）: "
+                 f"{project}", file=sys.stderr)
             continue
         if spec.name in seen:
             # ここで落とさず両方 specs に残すと、`Supervisor.add` が同名キーを辞書ごと
@@ -358,11 +400,8 @@ def _amigos_participate_tick(host: "HostConfig", pool: "NodeWorkerPool",
 
 def _project_cmd(project: dict, *argv: str) -> "list[str]":
     """host.yaml の 1 プロジェクト宣言に対する `agent-project <argv…>` の起動 argv。
-    プロジェクト設定の解決は agent-project 本体に任せる（常駐体は root/config を渡すだけ）。"""
-    cmd = [sys.executable, _self_script(), *argv, "--root", str(project.get("root") or "").strip()]
-    if project.get("config"):
-        cmd += ["--config", str(project["config"])]
-    return cmd
+    プロジェクト設定の解決は agent-project 本体に任せる（常駐体は名前を渡すだけ・S1）。"""
+    return [sys.executable, _self_script(), *argv, "--project", _project_name(project)]
 
 
 def _flow_participate_tick(host: "HostConfig", pool: "NodeWorkerPool",
@@ -415,8 +454,7 @@ def _project_gc_sweeper(project: dict) -> "tuple[str, object] | None":
     """host.yaml の 1 プロジェクト宣言から gc sweeper（`resident.gc.run_gc` が食べる
     `(名前, 引数無し callable)` の組）を組み立てる。掃除の実装は持たない（R1）——
     `agent-project gc` を単発起動して集計 dict をそのまま返すだけ。"""
-    root = str(project.get("root") or "").strip()
-    if not root:
+    if not str(project.get("root") or "").strip():
         return None
     name = _project_name(project)
     cmd = _project_cmd(project, "gc", "--json")
@@ -607,10 +645,15 @@ def cmd_worker_init(args) -> int:
     projects を持たない host.yaml を書く——導入は clone + install.sh + このコマンドの
     最小手順（設計の要件 R6）。"""
     node_id = normalize_node_id(getattr(args, "node_id", None) or socket.gethostname())
+    # 専有項目の契約はワーカーノードでもフルノードと同一（S1）。生成物にも同じ骨格
+    # （defaults / projects / repos）を出しておく——空の器があるだけで「ここに書く」が伝わり、
+    # プロジェクト yaml 側へ書いてしまう事故（E1/E2）を減らせる。
     data = {
         "schema_version": 1,
         "node_id": node_id,
         "projects": [],
+        "defaults": {},
+        "repos": [],
         "tags": [t for t in (getattr(args, "tags", None) or "").split(",") if t],
         "agent_cli": [a for a in (getattr(args, "agent_cli", None) or "").split(",") if a],
         "board": getattr(args, "board", None) or "",

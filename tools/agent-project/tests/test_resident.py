@@ -255,7 +255,10 @@ class ResidentCliTests(unittest.TestCase):
         self.assertEqual(len(specs), 1)
         self.assertIn("run", specs[0].argv)
         self.assertIn("--watch", specs[0].argv)
-        self.assertIn(str(self.tmp), specs[0].argv)
+        # 子へ渡すのは名前だけ（S1）。root / state_repo / overrides の解釈は子の
+        # resolve_config が host.yaml を読み直して行う（宣言の解釈を 2 実装にしない）。
+        self.assertEqual(specs[0].argv[-2:], ["--project", specs[0].name])
+        self.assertEqual(specs[0].name, km._project_name({"root": str(self.tmp)}))
 
     def test_project_children_drops_duplicate_names(self):
         # 重複名を specs に残すと Supervisor.add が同名キーを差し替えて 1 本目の Popen
@@ -269,7 +272,7 @@ class ResidentCliTests(unittest.TestCase):
         ]})
         specs = km._project_children(host)
         self.assertEqual([s.name for s in specs], ["dup"])
-        self.assertIn(str(self.tmp), specs[0].argv)   # 先勝ち（後続を無視）
+        self.assertEqual(specs[0].argv[-2:], ["--project", "dup"])   # 先勝ち（後続を無視）
 
     def test_gc_tick_declares_timeout_so_watchdog_does_not_abort(self):
         # gc はプロジェクトごとに外部コマンドを逐次起動するので正当に長くなる。
@@ -718,10 +721,14 @@ class ResidentCliTests(unittest.TestCase):
             "if 'cleanup' in sys.argv:\n"
             "    print(json.dumps({'locks': 0, 'tmp': 0, 'clones': 0, 'work_repos': 0, 'cache': 0}))\n",
             encoding="utf-8")
-        cfg_path = root / "agent-project.yaml"
-        cfg_path.write_text(json.dumps({"agent_flow": str(fake_flow)}), encoding="utf-8")
-        name, sweep = km._project_gc_sweeper({"root": str(root), "config": str(cfg_path)})
-        self.assertTrue(name)
+        # 設定は状態ルート直下が唯一の置き場（S1）。sweeper は --project 名義で起動するので
+        # host.yaml にその宣言が要る。
+        (root / "agent-project.json").write_text(
+            json.dumps({"agent_flow": str(fake_flow)}), encoding="utf-8")
+        entry = {"name": "gc-proj", "root": str(root)}
+        use_host_config(self, {"projects": [entry]}, home=self.agents_home)
+        name, sweep = km._project_gc_sweeper(entry)
+        self.assertEqual(name, "gc-proj")
         result = sweep()
         self.assertEqual(result.get("cleanup.locks"), 0)
 
@@ -902,7 +909,7 @@ class GcCommandTests(unittest.TestCase):
         return cfg_for(self.tmp, agent_flow=self._fake_flow(), **kw)
 
     def test_local_bus_runs_cleanup_only(self):
-        # git_bus/state_git 無し = _cleanup_bus（loop.py）が自前で archive を掃除する構成 →
+        # git_bus 無し = _cleanup_bus（loop.py）が自前で archive を掃除する構成 →
         # gc は cleanup（ロック/tmp/クローン）だけ呼び、archive gc は呼ばない（二重掃除しない）。
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
@@ -929,14 +936,15 @@ class GcCommandTests(unittest.TestCase):
         self.assertTrue(any("cleanup" in c for c in calls))
         self.assertTrue(any(" gc " in f" {c} " for c in calls))
 
-    def test_state_git_without_git_bus_also_runs_archive_gc(self):
-        # state_git だけの構成でも _cleanup_bus は素通りする（同条件）→ archive gc を担う。
+    def test_state_repo_alone_does_not_run_archive_gc(self):
+        # 旧 `state_git` 構成の素通り（→ ここで archive gc を担う）は S1 で廃止した。
+        # 状態ルートは常に状態リポジトリの clone なので、その条件は「常に真」＝ _cleanup_bus が
+        # 永久に走らなくなる。掃除は _cleanup_bus が keep 件数を守って行い、gc は二重に消さない。
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            rc = km.cmd_gc(self._cfg(state_git="https://example.invalid/state.git"), json_out=True)
+            rc = km.cmd_gc(self._cfg(state_repo="https://example.invalid/state.git"), json_out=True)
         self.assertEqual(rc, 0)
-        totals = json.loads(buf.getvalue())
-        self.assertEqual(totals["gc.deleted"], 2)
+        self.assertNotIn("gc.deleted", json.loads(buf.getvalue()))
 
     def test_cli_gc_subcommand_dispatches(self):
         wrapper = self._fake_flow()

@@ -63,6 +63,14 @@ os.chdir(tempfile.mkdtemp(prefix="kp-tests-cwd-"))
 os.environ.setdefault("AGENT_CONTROL_DIR",
                       os.path.join(tempfile.gettempdir(), "kp-tests-no-such-control"))
 
+# 開発者の実 host.yaml（`~/.agents/agent-project.host.yaml`）がテストへ漏れるのを防ぐ。
+# S1 で `resolve_config` が **常に** host.yaml を読むようになったため、隔離しないと開発者の
+# projects[] / defaults / repos が全テストに効く（root の付け替え・agent_cli の上書き・
+# 「project '' が見つからない」での異常終了）。AGENT_CONTROL_DIR と同じ流儀で既定を
+# 存在しないパスへ向ける。個別に上書きするテストは各自 addCleanup で戻す。
+os.environ.setdefault("AGENT_PROJECT_AGENTS_HOME",
+                      os.path.join(tempfile.gettempdir(), "kp-tests-no-such-agents-home"))
+
 _PKG = Path(__file__).resolve().parent.parent / "agent_project"
 _spec = importlib.util.spec_from_file_location(
     "agent_project", _PKG / "__init__.py", submodule_search_locations=[str(_PKG)])
@@ -101,6 +109,47 @@ def mk_peer(d: Path, node: str = "pc-peer", availability: str = "draining",
         "updated_iso": datetime.now(timezone.utc).isoformat(),
         "fresh_after_sec": fresh_after_sec,
     }, ensure_ascii=False), encoding="utf-8")
+
+
+def use_host_config(test, data: dict, home: "Path | None" = None) -> Path:
+    """テスト用の host.yaml を書き、`AGENT_PROJECT_AGENTS_HOME` をそこへ向ける。
+
+    S1 で `resolve_config` は **常に** host.yaml を読む（ノード宣言の単一ソース）。設定 2 層の
+    優先順位・`repos[]` のローカル解決・`projects[]` の宣言を検証するテストはこれで差し込む。
+    書き出しは JSON 形式（`agent-project.host.json`）——`_load_config_file` は .yaml だけ
+    PyYAML を要求するので、JSON なら PyYAML 非依存で同じ経路を通せる。"""
+    home = Path(home or tempfile.mkdtemp(prefix="kp-agents-home-"))
+    home.mkdir(parents=True, exist_ok=True)
+    path = home / "agent-project.host.json"
+    path.write_text(json.dumps({"schema_version": 1, **data}, ensure_ascii=False),
+                    encoding="utf-8")
+    old = os.environ.get("AGENT_PROJECT_AGENTS_HOME")
+    os.environ["AGENT_PROJECT_AGENTS_HOME"] = str(home)
+    test.addCleanup(lambda: os.environ.__setitem__("AGENT_PROJECT_AGENTS_HOME", old)
+                    if old is not None else os.environ.pop("AGENT_PROJECT_AGENTS_HOME", None))
+    return path
+
+
+def git_init(d: Path, branch: str = "main") -> Path:
+    """テスト用の git リポジトリを作る（署名・identity をテスト環境から切り離す）。"""
+    d.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", "-b", branch, str(d)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(d), "config", "user.email", "t@test"], check=True)
+    subprocess.run(["git", "-C", str(d), "config", "user.name", "t"], check=True)
+    return d
+
+
+def mk_state_repo(d: Path, branch: str = "main") -> Path:
+    """状態ルートとして通る git リポジトリ（状態マーカー付き）を作る。
+
+    S1 以降 `resolve_config` は「root が成果物リポジトリではないこと」を起動時に確かめる
+    （`_check_adhoc_state_root`）。build_config を通すテストはこれで状態ルートを用意する。"""
+    git_init(d, branch)
+    (d / "backlog").mkdir(exist_ok=True)
+    subprocess.run(["git", "-C", str(d), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(d), "commit", "-qm", "state root", "--allow-empty"],
+                   check=True, capture_output=True)
+    return d
 
 
 def cfg_for(d: Path, **kw):

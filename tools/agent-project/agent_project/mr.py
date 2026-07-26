@@ -184,7 +184,7 @@ def finalize_task_delivery(cfg: "Config", task: "Task") -> "tuple[bool, str]":
     if work is None:
         return True, ""  # 書込 workspace を持たない読み取り専用・旧形式タスク
     target, branch = work
-    repo = _source_repo(cfg)
+    repo = _source_repo(cfg, task)
     ref, files = work_branch_changes(cfg, target, branch, repo=repo)
     if not ref:
         return False, f"作業ブランチ {branch} を解決できないため、{target} へマージできません"
@@ -634,7 +634,7 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
         # リスク判定（大差分＝med）も実体と無関係な数字で動いてしまう。
         wb = _task_work_branch(cfg, task)
         if wb:
-            _ref, _files = work_branch_changes(cfg, wb[0], wb[1])
+            _ref, _files = work_branch_changes(cfg, wb[0], wb[1], task=task)
             changed = set(_files)
         if not changed:                               # 作業ブランチが無い（単発実行等）は従来どおり
             changed = meaningful_changes(cfg, git_base)

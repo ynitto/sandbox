@@ -876,29 +876,24 @@ def _direct_state_git_ok(cfg: "Config") -> bool:
     `project_flow_remote`）は未初期化なら git init する副作用を持つ `_ensure_direct_state_git`
     を使う（実装計画 W1-7 — 状態共有は direct 一本。管理クローン・非 git モードは廃止済み）。
 
-    root 自体が git のトップレベルか、状態 worktree へ逃がしている場合（後者では root は
-    worktree 内のサブディレクトリ（<repo>-agent-state/.agent-project）になるため _git_toplevel は
-    False を返す）。この worktree は agent-project 専用なので、そこへ自動コミット・push しても
-    「無関係なリポジトリを勝手に触らない」という _git_toplevel の防御意図には反しない。"""
-    return cfg.state_top is not None or _git_toplevel(cfg.backlog.parent)
+    S1 以降 root は常に状態専用リポジトリの clone なので、判定は「root 自体が git の
+    トップレベルか」の 1 点だけ（状態 worktree の特例は方式ごと廃止した）。"""
+    return _git_toplevel(cfg.backlog.parent)
 
 
 def _ensure_direct_state_git(cfg: "Config") -> bool:
     """direct モードを使えるようにする（実装計画 W1-7）。
 
-    - root が git のトップレベルでも状態 worktree（cfg.state_top）でもなければ、その場で
-      `git init` する（設計 §4.1「状態ルートは常に git リポジトリとし（未初期化なら常駐体が
-      init）」）。**ただし root が既存リポジトリの内側にある場合は init しない**（下記）。
-    - origin が未設定で `cfg.state_git`（旧: 管理クローンの同期先 URL）があれば origin として
-      設定する。管理クローンの廃止で「別クローンへ持つ remote」の意味は無くなったが、
-      `state_git:` 設定キー自体は「共有先の URL」を表す語彙として使い続ける——設定が
-      サイレントに意味を失って新規プロジェクトが同期先を持てなくなる事故を防ぐ。
+    - root が git のトップレベルでなければ、その場で `git init` する（設計 §4.1「状態ルートは
+      常に git リポジトリとし（未初期化なら常駐体が init）」）。通常 root は状態専用リポジトリの
+      clone として `resolve_config` が確保済みなので、ここが効くのは状態リポジトリを持たない
+      ローカル縮退運用だけ。**ただし root が既存リポジトリの内側にある場合は init しない**（下記）。
+    - origin が未設定で `cfg.state_repo`（host.yaml projects[].state_repo）があれば origin として
+      設定する。clone 経由なら既に origin があるので、これが効くのは `git init` 直後だけ。
 
     「direct モードにできなかった」ときは False を返す（呼び出し側は同期を諦める）。
     init/remote 設定が権限等で失敗した異常系のほか、**root が無関係な既存リポジトリの内側**
     という構成がこれに当たる。"""
-    if cfg.state_top is not None:
-        return True
     root = cfg.backlog.parent
     if not _git_toplevel(root):
         try:
@@ -910,8 +905,7 @@ def _ensure_direct_state_git(cfg: "Config") -> bool:
         # 「does not have a commit checked out」で失敗する（commit を積むと今度は gitlink 化し、
         # 意図しない submodule 相当のエントリが現れる）。`_git_toplevel` が深いサブディレクトリを
         # 弾いているのはまさにこれを防ぐためで、その防御をここで裏返してはいけない。
-        # この構成で状態を共有したいなら root をリポジトリの外へ置くか、agent-project 専用の
-        # 状態 worktree（cfg.state_top）へ逃がす。
+        # この構成で状態を共有したいなら、root を（成果物などの）既存リポジトリの外へ置く。
         if _inside_other_git_repo(root):
             return False
         try:
@@ -920,7 +914,7 @@ def _ensure_direct_state_git(cfg: "Config") -> bool:
             return False
         if r.returncode != 0 or not _git_toplevel(root):
             return False
-    remote_url = getattr(cfg, "state_git", None)
+    remote_url = getattr(cfg, "state_repo", "") or None
     if remote_url:
         has_origin = _git_run(["git", "-C", str(root), "remote", "get-url", "origin"], _transport.harden_git_env(dict(os.environ))).returncode == 0
         if not has_origin:
@@ -938,7 +932,7 @@ def state_git_status_line(cfg: "Config") -> str:
                 f"interval={cfg.state_git_interval}s")
     if _inside_other_git_repo(root):
         return (f"state-git: 無効（{root} が既存 git リポジトリの内側 — nested repo を作らないため "
-                f"git init しない）。共有するにはルートをリポジトリの外へ置くか、状態 worktree を使う")
+                f"git init しない）。共有するにはルートを状態専用リポジトリの clone にする")
     return (f"state-git: direct モード（未初期化 → 次回同期時に {root} を git init）"
             f" interval={cfg.state_git_interval}s")
 
