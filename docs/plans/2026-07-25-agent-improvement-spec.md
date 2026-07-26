@@ -350,7 +350,7 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
 |---|---|---|---|---|
 | 1 | S1 + S3 | **実装済み** | agent-project(configfile/state/host)、agentcore(リゾルバ)、agent-flow(board マージ)、schemas | host.yaml 拡張(projects/repos/overrides)を 1 回で行う |
 | 1' | S2 | **実装済み** | agent-dashboard(cowork) | 独立 |
-| 1' | S9-1〜3 | **詳細設計済み** | schemas(agent-cli)、agents/、agentcore(ローダ)、agent-project / agent-flow / agent-amigos / agent-dashboard | 独立。S9 のレイヤは 4 の診断より先に整備 |
+| 1' | S9-1〜3 | **実装済み** | schemas(agent-cli)、agents/、agentcore(ローダ)、agent-project / agent-flow / agent-amigos / agent-dashboard | 独立。S9 のレイヤは 4 の診断より先に整備 |
 | 2 | S4 → S5 | **詳細設計済み** | agent-project(mr/verify/needs)、.github/skills(backlog-verifier)、agent-dashboard(needs) | acceptance チェックリスト書式は **S5 側で確定させ S6 が従う**（詳細設計 §2.3） |
 | 3 | S6 → S7 | 未着手 | agent-project(plan/charter/prioritize)、.github/skills(backlog-planner)、agent-flow(planner_skill)、agent-dashboard(plan-review/notes UI) | S9-4(対話診断)と並行可 |
 | 4 | S8、S9-4 | 未着手 | agent-dashboard、agent-project(常駐体) | S8-2/3 は W1-11(board tick)後 |
@@ -361,7 +361,7 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
 |---|---|---|
 | S1 | [`2026-07-26-s1-config-two-layer-detailed-design.md`](2026-07-26-s1-config-two-layer-detailed-design.md) | 実装済み(移行手順: `docs/guides/state-repo-migration.md`) |
 | S3 / S2 | [`2026-07-26-s3-s2-node-repos-and-cowork-roots-design.md`](2026-07-26-s3-s2-node-repos-and-cowork-roots-design.md) | 実装済み |
-| S9-1〜3 | [`2026-07-26-s9-agent-cli-layer-detailed-design.md`](2026-07-26-s9-agent-cli-layer-detailed-design.md) | 未着手 |
+| S9-1〜3 | [`2026-07-26-s9-agent-cli-layer-detailed-design.md`](2026-07-26-s9-agent-cli-layer-detailed-design.md) | 実装済み |
 | S4 / S5 | [`2026-07-26-s4-s5-review-and-verification-detailed-design.md`](2026-07-26-s4-s5-review-and-verification-detailed-design.md) | 未着手 |
 
 ### Phase 1 の積み残し(次フェーズ以降へ持ち越し)

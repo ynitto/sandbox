@@ -1,6 +1,6 @@
 # S9 詳細設計: エージェント CLI 差分吸収レイヤ
 
-ステータス: 詳細設計（実装前）
+ステータス: 実装済み（詳細設計 + 実装で確定した差分を反映）
 入力: [`2026-07-25-agent-improvement-spec.md`](2026-07-25-agent-improvement-spec.md) §3 S9（C11）
 前提: [`2026-07-26-s1-config-two-layer-detailed-design.md`](2026-07-26-s1-config-two-layer-detailed-design.md) / [`2026-07-26-s3-s2-node-repos-and-cowork-roots-design.md`](2026-07-26-s3-s2-node-repos-and-cowork-roots-design.md)（agentcore を共有実装の置き場とする前例）
 実装フェーズ: Phase 1'（S9-1〜3）。S9-4（対話診断）は Phase 4 で、このレイヤの最初の利用者になる
@@ -235,7 +235,22 @@ tmux 経由のエージェント起動を全部このレイヤに通す。現在
 
 ---
 
-## 7. 積み残し（この設計に含めないもの）
+## 7. 実装で確定した差分
+
+| 項目 | 実装 |
+|---|---|
+| **`write_args` の追加** | 設計では「`readonly_args` を足す / 足さない」で足りると考えていたが、kiro は既定が `--trust-all-tools`・読み取り専用が `--trust-tools=` で、**追加ではなく排他**だった（並べると後勝ちに賭けることになる）。既定モードのフラグを `write_args` として分離し、両モードが対になる形にした |
+| **`command_suffix` の追加** | codex の `-`（プロンプトを stdin から読む位置引数）は必ず末尾でなければならない。`command` に書くとモード別フラグとモデル指定がその後ろへ回る |
+| **`interactive.write_args`** | 対話の既定でも kiro は `--trust-all-tools` が要る一方、トップレベルの `write_args`（claude の `--dangerously-skip-permissions` 等）を対話へ持ち込むのは危険。継承せず、対話で要るものは明示する形にした |
+| **`spill.instruction` は「置き換え」ではなく「付け足し」** | 当初は本文の代わりに instruction を渡す設計にしたが、Doctor は**役割・出力書式を argv 側**に載せていて本文（スナップショット）だけをファイルへ逃がす。置き換えると役割ごと消える。呼び出し側の短い指示の末尾へ足す形にした（`spill.args` の方は設計どおり権限フラグを置き換える） |
+| **dashboard のヘッドレスは全て読み取り専用へ** | 移行前は charter 補完だけが権限フラグ無しで、Doctor だけが読み取り専用だった。`agent.js` 冒頭が謳う「書き込みはビュアー側が行う」という護りに argv を合わせ、3 経路（charter 補完・Doctor・構造化 Assist）を同じモードに揃えた。結果 `buildCommand` と `buildDoctorCommand` はほぼ同じものになった |
+| **同梱定義のパッケージ同梱** | `agents/` はアプリのソースツリーの外にあるので `build.files` では入らない。フォールバックの組み込みテーブルを持たない設計なので、入っていないと `~/.agents/agents/` が無い端末で AI 機能が全滅する。`extraResources` で同梱し、packaging テストで固定した |
+| **`cowork.chatCommand` の降格** | 設計では「cowork も `resolveAgent` 経由にする」とだけ書いたが、既存設定を無視すると上書きの口が消える。空なら解決結果・値があれば明示上書き、という降格にした |
+| **失敗トリアージの副産物修正** | `classify_agent_failure` がヒントを**クラス一致**で引いていたため、kiro 定義に quota 規則を足した途端 codex の usage limit に kiro の月間上限の案内が付いた。実際に一致した規則からヒントを採るよう直した（既存の潜在バグ） |
+
+**実績**: agentcore 72 件 / agent-project 953 件 / agent-flow 564 件 / agent-amigos 176 件 / agent-dashboard 全スイート green。
+
+## 8. 積み残し（この設計に含めないもの）
 
 1. **S9-4（対話診断）** — Phase 4。本設計のレイヤが前提なので順序は S9-1〜3 → S9-4 で固定。
 2. **dashboard の YAML 定義読み取り** — 定義ファイルは JSON のみ（このアプリは YAML パーサを持たない。S3-4 の `nodeRepos.js` と同じ制約）。
