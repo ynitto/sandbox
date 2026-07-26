@@ -5,6 +5,7 @@
 参照した既存設計: `2026-07-24-single-resident-controller-design.md` / `2026-07-23-delegation-board-distributed-bidding-design.md` / `2026-07-12-agent-spec-flow-integration.md` / `2026-07-25-flow-planner-granularity-design.md`
 
 改訂履歴:
+- 第 6 版: Phase 3(S6 → S7)の詳細設計を追加。§4 の表と詳細設計の所在にリンクを足し、§5 の未決 5 を決着済みにした
 - 第 5 版: Phase 1'・Phase 2 の実装完了を反映。§4 の積み残し表を全フェーズ横断へ拡張(P1'-a〜c / P2-a〜f を追加)
 - 第 4 版: Phase 1'(S9-1〜3)と Phase 2(S4 → S5)の詳細設計を追加。§4 の表に詳細設計へのリンクを足し、§5 の未決 3・4・7 を決着済みにした
 - 第 3 版: Phase 1(S1 + S3 + S2)の実装完了を反映。§4 に状態列・詳細設計へのリンク・積み残し表を追加、§5 の未決 1・2 を決着済みに、§2 の記述に「Phase 1 で解消」の印を付けた
@@ -291,7 +292,9 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
 
 **仕様**
 1. **spec を 2 段階にする**: フル spec(現行)に加えて**ライト spec** = `design.md` 相当 1 枚(変更方針・影響範囲・受入条件の差分記述)のみを導入する。
-2. **3 段ルーティング**: 既存の assess 採点(c/r/a)で スキップ / ライト / フル を選ぶ。`spec_threshold` を `spec_threshold_light` / `spec_threshold_full` の 2 閾値に拡張(既定: light=2, full=4 相当。既存設定は full に読み替え)。`policy.md` の `spec:` ルールで強制も可能(現行踏襲)。
+2. **3 段ルーティング**: 既存の assess 採点(c/r/a)で スキップ / ライト / フル を選ぶ。`spec_threshold` を `spec_threshold_light` / `spec_threshold_full` の 2 閾値に拡張(既定: light=2, full=4 相当。既存設定は full に読み替え)。
+   > **訂正**: 採点は各軸 1〜3 で上限 3 のため **full=4 には到達しない。既定は full=3 / light=2**
+   > ([S6/S7 詳細設計 §2.1](2026-07-26-s6-s7-backlog-planning-detailed-design.md))`policy.md` の `spec:` ルールで強制も可能(現行踏襲)。
 3. **既存コード文脈の前置**: ライト/フル spec タスクの前に、対象リポジトリの `context/<repo>.md`(repo-map)が無い・古い場合は read-only の調査 run を自動前置して更新する(S6-2 の作業概要生成と共通機構)。ブラウンフィールドで spec と計画の質を担保する supply 側の仕組み。
 4. ライト spec の tasks 展開は行わない(元タスクをそのまま実行し、design.md を act の文脈注入に使う)。展開が要る規模ならフル spec に採点で寄る、という整理。
 
@@ -353,7 +356,7 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
 | 1' | S2 | **実装済み** | agent-dashboard(cowork) | 独立 |
 | 1' | S9-1〜3 | **実装済み** | schemas(agent-cli)、agents/、agentcore(ローダ)、agent-project / agent-flow / agent-amigos / agent-dashboard | 独立。S9 のレイヤは 4 の診断より先に整備 |
 | 2 | S4 → S5 | **実装済み** | agent-project(mr/verify/needs)、.github/skills(backlog-verifier)、agent-dashboard(needs) | acceptance チェックリスト書式は **S5 側で確定させ S6 が従う**（詳細設計 §2.3） |
-| 3 | S6 → S7 | 未着手 | agent-project(plan/charter/prioritize)、.github/skills(backlog-planner)、agent-flow(planner_skill)、agent-dashboard(plan-review/notes UI) | S9-4(対話診断)と並行可 |
+| 3 | S6 → S7 | **詳細設計済み**(実装未着手) | agent-project(plan/charter/prioritize/model/needs)、.github/skills(backlog-planner)、agent-flow(planner_skill)、agent-dashboard(plan-review/notes UI) | S9-4(対話診断)と並行可 |
 | 4 | S8、S9-4 | 未着手 | agent-dashboard、agent-project(常駐体) | S8-2/3 は W1-11(board tick)後 |
 
 ### 詳細設計と実装の所在
@@ -364,6 +367,7 @@ S1/S3 が実行系の足場。S2・S9 は独立に着手できる。S5 と S6 �
 | S3 / S2 | [`2026-07-26-s3-s2-node-repos-and-cowork-roots-design.md`](2026-07-26-s3-s2-node-repos-and-cowork-roots-design.md) | 実装済み |
 | S9-1〜3 | [`2026-07-26-s9-agent-cli-layer-detailed-design.md`](2026-07-26-s9-agent-cli-layer-detailed-design.md) | 実装済み |
 | S4 / S5 | [`2026-07-26-s4-s5-review-and-verification-detailed-design.md`](2026-07-26-s4-s5-review-and-verification-detailed-design.md) | 実装済み |
+| S6 / S7 | [`2026-07-26-s6-s7-backlog-planning-detailed-design.md`](2026-07-26-s6-s7-backlog-planning-detailed-design.md) | 未着手（実装単位は同 §3） |
 
 ### 積み残し(次フェーズ以降へ持ち越し)
 
@@ -417,7 +421,15 @@ charter 側に及んでいないという設計上の非対称なので、Phase 
    → **決着**(S4/S5 詳細設計 §4): 既定は作業ツリー内のみ(`verify_side_effects`)。DB・外部サービスへの書き込みは
    どの設定でも不可(要るなら人が `verify:` に書く)。自己欺瞞への防御は 4 段(証跡必須・フェイルクローズ・
    差分の常設基準・検収カードでの抜き取り監査)。監査は別機能にせず人が毎回見る 1 枚に載せる。
-5. **S6**: 人編集タスクの保護と charter 大改訂の衝突(charter が根本から変わったとき人編集タスクをどう扱うか。`--revive` 同様の明示操作とするか)。墓標の指紋衝突で「作りたい新タスク」まで抑止しないか。
+~~5. **S6**: 人編集タスクの保護と charter 大改訂の衝突(charter が根本から変わったとき人編集タスクをどう扱うか。`--revive` 同様の明示操作とするか)。墓標の指紋衝突で「作りたい新タスク」まで抑止しないか。~~
+   → **決着**(S6/S7 詳細設計 §4): 大改訂でも人編集タスクは自動で消さず、charter 変更検知時に
+   **棚卸し票 1 枚**にまとめて人へ返す(放置が既定＝何もしなければ何も失われない)。
+   墓標の抑止は**正規化タイトルの完全一致のみ**で、類似(Jaccard)はプランナー入力と needs 注記への
+   提示に留める——抑止は取り返しがつかず、提示は取り返しがつくため。指紋に workspace は含めない
+   (推定で決まるフィールドなので不安定)。
+   あわせて **`acceptance:` の受け渡しが 4 か所で切れている**ことが判明し(同 §1.2)、S6 の実装は
+   その修理から入る順序に固定した。台帳は `backlog-ledger.jsonl` を新設せず、
+   人編集＝タスク md の `- edited: human` / 墓標＝`tombstones.md` に分ける(同 §1.3)。
 6. **S8**: 手動入札の「ノード直轄ワーカーで実行」への接続(落札後の実行系が W1-11 に含まれるため、単独では操作だけ増えて実行できない状態になり得る)。
 ~~7. **S9**: `readonly_args` の強制力は CLI の実装依存(フラグを無視する CLI への防御は持たない)。対話セッションの副作用は人が見ている前提で許容するか。~~
    → **決着**(S9 詳細設計 §6): 防御は持たない。代わりに定義へ `readonly: enforced | best-effort` を持たせ、
