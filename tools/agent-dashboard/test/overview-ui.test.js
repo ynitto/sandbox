@@ -291,23 +291,38 @@ assert.match(renderer, /個別のrunを止める操作ではありません/);
   // ゲートバッジ: 全結線なら見出しに「有効」、未結線導線は出さない。
   const wired = gateHtml({ consistencyGate: {
     configFile: '/ws/.agents/agent-project.yaml', regressionWired: true, intakeWired: true, wired: true,
+    regressionConfigured: true, intakeConfigured: true,
     regressionCmd: 'codd-gate verify', intakeCmd: 'codd-gate tasks --debt' } });
   assert.strictEqual(headBadge(wired, '有効'), 1, '全結線のゲートバッジ（有効）が出る');
+  assert.strictEqual((wired.match(/設定: あり/g) || []).length, 2, '両コマンドの設定済み状態が出る');
   assert.ok(!wired.includes('一部のみ'));
   assert.ok(!wired.includes('有効化'), '全結線なら未結線導線を出さない');
 
   // ゲートバッジ: 一部未結線なら見出しに「一部のみ」。
   const partial = gateHtml({ consistencyGate: {
     configFile: '/ws/.agents/agent-project.yaml', regressionWired: true, intakeWired: false, wired: false,
+    regressionConfigured: true, intakeConfigured: false,
     regressionCmd: 'codd-gate verify', intakeCmd: null } });
   assert.strictEqual(headBadge(partial, '一部のみ'), 1, '一部未結線のゲートバッジ（一部のみ）が出る');
   assert.strictEqual(headBadge(partial, '有効'), 0);
+  assert.ok(partial.includes('設定: あり') && partial.includes('設定: なし'),
+    'regression_cmd と intake_cmd の設定状態が区別できない');
 
   // 未結線導線: 有効化ラベル・書くべき yaml 行・設定ファイルを開くボタンが共存する。
   assert.ok(partial.includes('有効化'), '未結線時の有効化導線が出ない');
   assert.match(partial, /intake_cmd: 'codd-gate tasks --debt/);
   assert.ok(partial.includes('data-gate-open="/ws/.agents/agent-project.yaml"'),
     '設定ファイルを開く導線が出ない');
+
+  // regression_cmd 未結線時は README と同じ sibling CLI 導線を出す。
+  const regressionUnwired = gateHtml({ consistencyGate: {
+    configFile: '/ws/.agents/agent-project.yaml', regressionWired: false, intakeWired: true, wired: false,
+    regressionConfigured: false, intakeConfigured: true,
+    regressionCmd: null, intakeCmd: 'codd-gate tasks --debt' } });
+  assert.ok(regressionUnwired.includes('tools/agent-project/'), 'sibling CLI の実行場所が出ない');
+  assert.ok(regressionUnwired.includes(
+    'codd_gate_regression.py --config /ws/.agents/agent-project.yaml'
+  ), 'regression_cmd の sibling CLI 導線が出ない');
 
   // ペイロード無し（旧 main と組み合わせた場合）は概要へ何も足さない。
   assert.strictEqual(gateHtml({}), '');
