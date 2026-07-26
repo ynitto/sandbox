@@ -517,17 +517,26 @@ class DeliveryEvidenceTests(unittest.TestCase):
         run("git", "checkout", "-q", "main")
         return top
 
+    _URL = "https://gitlab.example.com/g/app.git"
+
     def _cfg_with_run(self, top, d):
-        """状態 worktree 側に root を置き（＝本番と同じ形）、run メタに作業ブランチを記録する。"""
+        """本番と同じ形（状態ルートと成果物リポジトリは別物）で cfg と run メタを組む。
+
+        S1 で状態ルートは状態専用リポジトリの clone になり、「リダイレクト前の root＝成果物
+        リポジトリ」という暗黙のアンカー（旧 `cfg.state_top`）は無くなった。成果物の所在は
+        **タスクの書込先 URL → host.yaml `repos[].local`** で解決する（`_source_repo`）ので、
+        テストもその宣言を置く。"""
+        use_host_config(self, {"repos": [{"url": self._URL, "local": str(top)}]},
+                        home=Path(d) / "agents-home")
         cfg = cfg_for(d)
-        cfg.state_top = top                      # 成果物のあるリポジトリは本体側
         t = km.Task(id="T1", title="直す", status="doing", verify="true")
         t.extra.append(("last_run", "req-abc-T1-r0"))
         p = cfg.bus / "runs" / "req-abc-T1-r0"
         p.mkdir(parents=True, exist_ok=True)
         (p / "meta.json").write_text(json.dumps({
             "status": "done",
-            "workspace": {"base": "main", "branch": "ap/T1"}}), encoding="utf-8")
+            "workspace": {"url": self._URL, "base": "main", "branch": "ap/T1"}}),
+            encoding="utf-8")
         return cfg, t
 
     def test_evidence_lists_the_real_code_files(self):
@@ -550,7 +559,7 @@ class DeliveryEvidenceTests(unittest.TestCase):
             cfg, t = self._cfg_with_run(top, Path(d))
             wb = km._task_work_branch(cfg, t)
             self.assertEqual(wb, ("main", "ap/T1"))
-            _ref, files = km.work_branch_changes(cfg, *wb)
+            _ref, files = km.work_branch_changes(cfg, *wb, task=t)
             self.assertEqual(sorted(files), ["src.py", "test_src.py"])
 
     def test_work_branch_is_recovered_after_run_metadata_is_cleaned(self):
@@ -558,8 +567,9 @@ class DeliveryEvidenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             top = self._repo()
             cfg = cfg_for(Path(d), task_branch=True, task_branch_prefix="ap/")
-            cfg.state_top = top
             t = km.Task(id="T1", title="直す", status="blocked", verify="true")
+            # workspace がローカルパスそのものの形（`_raw_url_spec`）。この場合は宣言も
+            # ミラーも要らず、そのディレクトリが成果物リポジトリとして解決される。
             t.extra.append(("workspace", str(top)))
             self.assertEqual(km._task_work_branch(cfg, t), ("main", "ap/T1"))
             entries = km.delivery_entries(cfg, t)
@@ -582,7 +592,6 @@ class DeliveryEvidenceTests(unittest.TestCase):
             # 参照リポジトリを run メタへ追記（agent-flow が書く形）
             meta_path = cfg.bus / "runs" / "req-abc-T1-r0" / "meta.json"
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            meta["workspace"]["url"] = "https://gitlab.example.com/g/app.git"
             meta["references"] = [{"url": "https://gitlab.example.com/g/spec.git", "branch": "main"}]
             meta_path.write_text(json.dumps(meta), encoding="utf-8")
             mr = "https://gitlab.example.com/g/app/-/merge_requests/42"

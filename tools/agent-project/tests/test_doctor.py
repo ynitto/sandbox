@@ -46,8 +46,9 @@ class TestDoctor(unittest.TestCase):
             self.assertEqual(n, 1, "未 push を数える")
             self.assertTrue(branch)
 
+            # 未 push を見る対象は状態ルート自身（S1: 状態リポジトリの clone）。
             cfg = self._cfg(d)
-            cfg.state_top = repo
+            cfg.backlog = repo / "backlog"
             fs = km.doctor_env_findings(cfg)
             hit = next((f for f in fs if f["category"] == "git"), None)
             self.assertIsNotNone(hit, "doctor が未 push を報告する")

@@ -493,3 +493,59 @@ class RepoMapTests(unittest.TestCase):
         self.assertIn("リポジトリ理解", p)
         self.assertIn("src/ 配下が本体", p)
         self.assertNotIn("リポジトリ理解", km._plan_decompose_prompt(charter))
+
+
+class NodeLocalRepoTests(unittest.TestCase):
+    """S3: ノード固有のローカルクローン宣言（host.yaml `repos[]`）。
+
+    `local` は「この PC のどこにクローンがあるか」で、共有 repos.json は charter から
+    自動生成され状態リポジトリ経由で全 PC へ配られる——書くと 1 台のパスが全ノードへ伝播する
+    （C3/C4 の元凶）。宣言は host.yaml だけに置き、伝搬はそこからの解決で行う。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="kp-nodelocal-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.clone = self.tmp / "mirrors" / "app"
+        self.clone.mkdir(parents=True)
+        km._warned_registry_local = False
+        self.addCleanup(setattr, km, "_warned_registry_local", False)
+
+    def test_registry_local_is_ignored_with_a_warning(self):
+        # 共有レジストリの local は spec に載せない（載せると全 PC へ配られる）。
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            spec = km._registry_entry("app", {"url": "https://h/t/app.git",
+                                              "local": "/somebody-elses/path",
+                                              "owns": ["**"]})
+        self.assertNotIn("local", spec)
+        msg = err.getvalue()
+        self.assertIn("local", msg)
+        self.assertIn("host.yaml", msg, "移行先を示す")
+
+    def test_registry_local_warning_is_emitted_once(self):
+        # レジストリはルーティングのたびに読まれるので、毎回警告すると出力が埋まる。
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            for _ in range(3):
+                km._registry_entry("app", {"url": "https://h/t/app.git", "local": "/x"})
+        self.assertEqual(err.getvalue().count(">>> 警告"), 1)
+
+    def test_workspace_token_fills_local_from_node_declaration(self):
+        use_host_config(self, {"repos": [{"url": "https://h/t/app.git",
+                                          "local": str(self.clone)}]},
+                        home=self.tmp / "agents-home")
+        token = json.loads(km._workspace_token({"url": "https://h/t/app.git", "base": "main"}))
+        self.assertEqual(token["local"], str(self.clone))
+        self.assertEqual(token["base"], "main")
+
+    def test_workspace_token_omits_local_when_not_declared(self):
+        use_host_config(self, {"repos": []}, home=self.tmp / "agents-home")
+        token = json.loads(km._workspace_token({"url": "https://h/t/other.git"}))
+        self.assertNotIn("local", token)
+
+    def test_resolve_local_repo_uses_the_shared_resolver(self):
+        use_host_config(self, {"repos": [{"url": "https://h/t/app", "local": str(self.clone)}]},
+                        home=self.tmp / "agents-home")
+        # 末尾 .git の揺れを吸収して同じ実体に解決する（agentcore.repolocal の正規化）。
+        self.assertEqual(km.resolve_local_repo("https://h/t/app.git"), self.clone)
+        self.assertIsNone(km.resolve_local_repo("https://h/t/nope.git"))

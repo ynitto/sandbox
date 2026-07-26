@@ -13,9 +13,9 @@ def watch_lock_path(cfg: "Config") -> Path:
 
     鍵は**実効 root の realpath**（`--root` の綴り・symlink・相対パスの違いを吸収する）。
     ロック置き場は状態ホーム配下で、同じ PC の全プロセスが同じファイルを掴む。"""
-    root = str((getattr(cfg, "source_root", None) or cfg.backlog.parent).resolve())
+    root = str(cfg.backlog.parent.resolve())
     key = hashlib.sha1(os.path.realpath(root).encode("utf-8")).hexdigest()[:16]
-    d = resolve_state_home(use_env=not getattr(cfg, "profile_mode", False)) / "locks"
+    d = resolve_state_home() / "locks"
     d.mkdir(parents=True, exist_ok=True)
     return d / f"watch-{key}.lock"
 
@@ -95,10 +95,13 @@ def release_watch_lock(lock_file) -> None:
         lock_file.close()
 
 
-def resolve_state_home(use_env: bool = True) -> Path:
-    """インスタンス・レジストリ等の置き場: 環境変数 AGENT_PROJECT_HOME → ~/.agent-project。"""
-    raw = (os.environ.get("AGENT_PROJECT_HOME") if use_env else None) or "~/.agent-project"
-    return Path(raw).expanduser()
+def resolve_state_home() -> Path:
+    """インスタンス・レジストリ等の置き場: 環境変数 AGENT_PROJECT_HOME → ~/.agent-project。
+
+    旧 profile モード（`use_env=False`）は廃止した（S1）。自動起動時に環境変数を無視する
+    ための分岐だったが、宣言の単一ソースが host.yaml になり profile 自体が無くなったため、
+    「同じ PC なら常に同じ置き場」の 1 通りで足りる。"""
+    return Path(os.environ.get("AGENT_PROJECT_HOME") or "~/.agent-project").expanduser()
 
 
 def detect_runtime() -> dict:

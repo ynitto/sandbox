@@ -11,10 +11,19 @@ const { _pathKey, _isPosixAbs, toViewerPath } = require('../../agent-project/mai
 const { parseFlatYaml } = require('../../agent-project/main/toolconfig');
 const {
   discoverCoworkItems, parseKiroLoopPrompts, scheduleOf, detectMarkers, kiroLoopPromptTexts,
+  scanForCoworkConfigs, isDir,
 } = require('./discover');
 const { applyKiroLoopEdits, applyStatemachineEdits, upsertManagedKiroPrompt } = require('./writeback');
 const globalInstructions = require('../../orchestration/main/instructions');
 const sessionCommands = require('../../orchestration/main/sessionCommands');
+
+// 設定に書かれたフォルダ表記を、このビュアーで開けるパスへ揃える（discover と同じ規則）。
+// WSL の Linux 絶対パスは Windows ビュアーでは UNC へ翻訳する（そうしないと C:\home\… に化ける）。
+function _resolveRoot(raw) {
+  const s = String(raw || '').replace(/^~(?=$|\/|\\)/, os.homedir());
+  if (!s) return '';
+  return _isPosixAbs(s) ? toViewerPath(s) : path.resolve(s);
+}
 
 // 発見結果キャッシュ。overview のポーリングごとに roots を再走査しない。
 const DISCOVER_TTL_MS = 30000;
@@ -784,6 +793,56 @@ function applyManagedItems(items) {
   return { touched, errors };
 }
 
+// ---------------------------------------------------------------------------
+// 定常業務ワークスペースの登録（S2）
+// ---------------------------------------------------------------------------
+
+// フォルダを見て「定常業務として登録する価値があるか」を返す（登録前のプレビュー用）。
+// マーカーが無ければ registered=false で返し、画面は「ステートマシン新規作成」へ誘導する。
+function inspectCoworkRoot(config, dir) {
+  const raw = String(dir || '').trim();
+  if (!raw) throw new Error('フォルダを選択してください');
+  const folder = _resolveRoot(raw);
+  if (!isDir(folder)) throw new Error(`フォルダがありません: ${folder}`);
+  const roots = ((config && config.cowork) || {}).roots || [];
+  const registered = roots.some((r) => _pathKey(_resolveRoot(String(r || ''))) === _pathKey(folder));
+  // 直下だけでなく既定の走査深さまで見る（登録するのは親フォルダで、実体は 1 段下、という
+  // 置き方が普通にある。ここで「マーカー無し」と言い切ると登録できるのに拒否してしまう）。
+  const depth = Math.max(1, Number(((config && config.cowork) || {}).scanDepth || 2));
+  const found = scanForCoworkConfigs(folder, depth);
+  return {
+    folder,
+    registered,
+    // 実行エンジンが既に担当しているプロジェクトなら、登録しなくても定常業務は見えている。
+    managedByEngine: require('../../agent-project/main/engine')
+      .projectRoots(config)
+      .some((r) => _pathKey(_resolveRoot(String(r || ''))) === _pathKey(folder)),
+    markers: found.map((m) => ({
+      folder: m.folder,
+      loop: m.kiroFile ? path.basename(m.kiroFile) : '',
+      stateMachines: m.smNames || [],
+    })),
+  };
+}
+
+// 登録 / 登録解除。設定 `cowork.roots` だけを触る（実体ファイルには何も書かない）。
+function setCoworkRoot(config, saveConfig, { dir, remove } = {}) {
+  const folder = _resolveRoot(String(dir || '').trim());
+  if (!folder) throw new Error('フォルダを選択してください');
+  const cfg = { ...(config || {}) };
+  const cur = ((cfg.cowork || {}).roots || []).map((r) => String(r || '').trim()).filter(Boolean);
+  const key = _pathKey(folder);
+  const kept = cur.filter((r) => _pathKey(_resolveRoot(r)) !== key);
+  if (!remove) {
+    if (!isDir(folder)) throw new Error(`フォルダがありません: ${folder}`);
+    kept.push(folder);
+  }
+  cfg.cowork = { ...(cfg.cowork || {}), roots: kept };
+  saveConfig(cfg);
+  return { ok: true, roots: kept, folder, removed: !!remove };
+}
+
+
 function saveWork(config, saveConfig, { items, branch, createBranch, push } = {}) {
   const all = Array.isArray(items) ? items : [];
   const configItems = all.filter((it) => it.source !== 'discovered');
@@ -833,5 +892,6 @@ module.exports = {
   itemLogs, readLog, appendHistory, readHistory, historyFile,
   resolveLoopPromptText, withInputAssist, withGlobalInstructions, planSessionCommands,
   applyManagedItems, stateMachineCreationPrompt,
+  inspectCoworkRoot, setCoworkRoot,
   stateMachineInputSpec, stateMachineInputAssist, stateMachineFilePath,
 };

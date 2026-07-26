@@ -1,9 +1,11 @@
-# 状態専用リポジトリへの移行手順（案1）
+# 状態専用リポジトリへの移行手順
 
-> 参照設計: [`docs/plans/2026-07-21-agent-dashboard-production-hardening-plan.md`](../plans/2026-07-21-agent-dashboard-production-hardening-plan.md) 案1。
-> **本手順は「コードと手順は用意・適用は保留」の段階。** 既存プロジェクトへの適用は
-> 監視者がプロジェクトのアイドル時に、下記に従って明示的に実施する。旧構成の削除は
-> 安定を確認してから手動で行う（自動削除はしない）。
+> 参照設計: [`docs/plans/2026-07-21-agent-dashboard-production-hardening-plan.md`](../plans/2026-07-21-agent-dashboard-production-hardening-plan.md) 案1 /
+> [`docs/plans/2026-07-26-s1-config-two-layer-detailed-design.md`](../plans/2026-07-26-s1-config-two-layer-detailed-design.md)（S1）。
+>
+> **状態専用リポジトリは唯一の方式になった（S1）。** 旧 worktree 方式のキーが残っていると
+> 起動時に本手順を案内して停止する。適用は監視者がプロジェクトのアイドル時に行い、旧構成の
+> 削除は安定を確認してから手動で行う（自動削除はしない）。
 
 ## 何を変えるのか
 
@@ -62,44 +64,69 @@ bash tools/agent-project/migrate-state-repo.sh \
 > エンジン（clone のルートを状態ルートとして読む）と場所が食い違う。結果、**バージョン情報
 > などが引き継がれない**。状態エントリだけをルート直下に並べれば確実に読める。
 
-### 2. エンジン設定を切り替える
+### 2. host.yaml に宣言する（設定の 2 層・S1）
 
-`agent-project.yaml`（全 PC 共有）に次を追加する:
+状態リポジトリの URL と **このノードでの clone 先** は、各 PC の
+`~/.agents/agent-project.host.yaml` が唯一の置き場。`state_repo:` は状態 clone を作る**前**に
+読める必要があるので、状態リポジトリの中に書いても意味を持てない。
 
 ```yaml
-state_repo: https://gitea.example/you/app-state.git   # 専用リポジトリ URL（全 PC 共有）
-state_repo_branch: main                                # --dest-branch と一致させる
+# ~/.agents/agent-project.host.yaml（この PC の宣言。共有しない）
+schema_version: 1
+node_id: pc-a
+projects:
+  - name: app
+    state_repo: https://gitea.example/you/app-state.git   # --dest-branch と一致させる
+    branch: main
+    root: /home/me/agents/app-state    # このノードでの clone 先（絶対パス・無ければ自動 clone）
 ```
 
-CLI/環境での個別上書きも可: `--state-repo` / `--state-repo-branch` / `--state-repo-dir`。
-`--state-repo-dir` は**成果物top の親を基準**に解決する（相対なら親配下、絶対ならそのまま）。
-例: 成果物が `/home/me/src/app` で `state_repo_dir: mystate` → `/home/me/src/mystate`。既定は
-`<repo>-state`（この例では `/home/me/src/app-state`）。
+運用設定（`planner` / `level` / `plan_review` / 予算など「プロジェクトとしてどう進めるか」）は
+**状態リポジトリの clone 直下** `agent-project.yaml` に移す。ここに置いたものが全 PC で共有される。
 
-エンジンを再起動すると、状態は専用リポジトリの通常 clone に置かれ、`backup_state`（成果物 main
-へのミラー）は自動的に無効になる。**clone 先は既定で `<repo>-state`**（例: `app` → `app-state`）。
-これは**旧 worktree `<repo>-agent-state` とは別フォルダ**で、衝突しない（同名だと旧 worktree を
-掴んで移行が効かなかった不具合を修正済み）。既存フォルダがあっても、その `origin` が `state_repo`
-と一致しなければ再利用せず worktree 方式へフォールバックし、理由を表示する（黙って旧構成を使わない）。
+```yaml
+# <状態 clone>/agent-project.yaml（全 PC 共有）
+workdir: work
+watch: true
+plan_review: true
+```
+
+`agent-project serve`（または `agent-project run --project app`）を起動すると、宣言した
+`root` に状態リポジトリが無ければ自動 clone され、あれば `origin` の一致を検査してから使う。
+
+> **移行の取り違えはすべて起動時に止まる。** 旧 root（成果物リポジトリ）をそのまま宣言すると
+> 「状態ルートに見えません」で停止し、そこに残った `state_repo:` 入り yaml を見つけたら
+> その URL を案内に含める。origin が食い違うディレクトリを指した場合も停止する
+> （旧実装はここで黙って worktree 方式へ倒れ、移行が効いていないことに気付けなかった）。
+
+**書いてはいけない場所**（起動時にエラーで止まる）:
+
+- 共有 `agent-project.yaml` に `node_id` / `projects` / `repos` / `availability` / `budget` /
+  `board_workdir` / `update_*` などノード固有のキー — state repo 経由で全 PC へ配られて壊れる
+- host.yaml の `defaults:` / `projects[].overrides:` に計画・予算・収束・検証系のキー —
+  ノードごとに食い違うと実行が非決定になる
+
+両方に書けるのは `agent_cli` / `model` / `act_timeout` / `verify_timeout` / `location` /
+`concurrency` / `agent_timeout` / `actor` / `notify_cmd` / `ltm_home` / `flow_config` /
+`verify_cwd` だけ（優先順位: CLI > `overrides` > `defaults` > プロジェクト yaml > 既定）。
 
 ### 3. 各 PC を切り替える（clone は agent-project・dashboard はパス解決のみ）
 
-- **エンジンを動かす PC**: 上記の設定＋再起動だけでよい。エンジン（agent-project）が専用
-  リポジトリを `<repo>-state` へ**自動 clone** する（手動 clone 不要）。
-- **dashboard の登録**: 成果物リポジトリを登録すればよい。dashboard は
-  `.agents/agent-project.yaml`（または直下の `agent-project.yaml`）の `state_repo` /
-  `state_repo_dir` から状態 clone パスを解決し、そこをプロジェクトルートとして開く。
-  **状態リポジトリの git clone 自体は dashboard では行わず agent-project に任せる。**
-  エンジンと同じ PC なら、作られた `<repo>-state` を自動で見つける。状態 clone を直接
-  登録する従来のやり方もそのまま使える。
-- **閲覧のみ（viewer）の PC**: 成果物リポジトリを clone して同じ `agent-project.yaml`
-  （`state_repo` / `state_repo_dir`）を置き、隣に `git clone <state_repo> …` で状態
-  clone を置く（viewer にはエンジンが居ないので手動 clone が必要）。または状態 clone
-  だけを登録してもよい。WSL/CLI 設定は不要（⚙ 設定の役割を viewer にすると本体起動
-  ボタンも隠れる）。
+- **エンジンを動かす PC**: 上記の host.yaml 宣言＋再起動だけでよい。エンジン（agent-project）が
+  `projects[].root` へ**自動 clone** する（手動 clone 不要）。
+- **dashboard の登録**: 状態 clone（`projects[].root`）を登録する。**状態リポジトリの git clone
+  自体は dashboard では行わず agent-project に任せる。**
+- **閲覧のみ（viewer）の PC**: `git clone <state_repo> …` で状態 clone を置き、それを登録する
+  （viewer にはエンジンが居ないので手動 clone が必要）。WSL/CLI 設定は不要
+  （⚙ 設定の役割を viewer にすると本体起動ボタンも隠れる）。
 
-> 成果物の diff（検収）は従来どおり成果物リポジトリの `origin/<branch>` を fetch して見るため、
-> 検収 diff 用に成果物リポジトリの clone を併存させてもよい（必須ではない）。
+> 成果物の diff（検収）は成果物リポジトリの `origin/<branch>` を fetch して見る。手元にクローンが
+> あるなら host.yaml の `repos[]` に宣言しておくと、ミラーを取り直さずそれを使う（S3）:
+> ```yaml
+> repos:
+>   - url: https://gitea.example/you/app.git
+>     local: /home/me/mirrors/app
+> ```
 
 ### 4. 安定を確認してから旧構成を削除（手動）
 
@@ -108,65 +135,20 @@ CLI/環境での個別上書きも可: `--state-repo` / `--state-repo-branch` / 
 
 - 成果物リポジトリの `agent-state` ブランチ
 - 旧 `<repo>-agent-state` worktree フォルダ（`git worktree remove` → フォルダ削除）
+- 成果物リポジトリ直下の旧ブートストラップ `agent-project.yaml`（もう読まれない）
 
-新 clone は `<repo>-state`、旧 worktree は `<repo>-agent-state` と**名前が別**なので、旧構成を
-残したまま新構成へ切り替えられる（ロールバックの保険になる）。
+### 廃止したキーと移行先
 
-## デーモン起動時のカレントパス（cwd）
-
-エンジンは起動時に **cwd → `cwd/.agent/` → `~/.agent/`** の順で `agent-project.yaml` を探す
-（`--config` 明示が最優先）。`state_repo:` はこの設定から読むので、**状態リポジトリを clone する
-前に読める場所**に無いといけない（状態 clone の中だけに置くと、clone する前に読めず起動できない）。
-
-したがって:
-
-- **cwd = 成果物（deliverable）リポジトリ**にして起動するのが基本。そこに最小の
-  `agent-project.yaml` を置く:
-
-  ```yaml
-  # <成果物repo>/agent-project.yaml（起動のブートストラップ。state_repo はここで読む）
-  root: .                       # cwd（成果物repo）を root に。source_root として state_top に使う
-  state_repo: https://gitea.example/you/app-state.git
-  state_repo_branch: main
-  # 他の運用設定（planner / level / gitlab 等）もここに書いてよい
-  ```
-
-  ```bash
-  cd /path/to/app            # 成果物リポジトリ
-  agent-project run          # ここを cwd に。状態は自動で app-state に clone される
-  ```
-
-- **常駐させる場合**は cwd を当てにせず、`agent-project.host.yaml` に**絶対パスで宣言**する
-  （宣言の単一ソース。常駐体が子として起動する）:
-
-  ```yaml
-  # ~/.agents/agent-project.host.yaml
-  projects:
-    - root: /home/me/src/app
-      config: /home/me/src/app/agent-project.yaml   # state_repo 等はこちらに書く
-  ```
-  ```bash
-  agent-project serve
-  ```
-
-  `--state-repo` を CLI で渡せば設定ファイルの発見に一切依存しない。`--root` は成果物
-  リポジトリの絶対パス（`state_top` に使われ、検収 diff の解決に必要）。
-
-> 補足: `charter.md` / `repos.json` / `backlog/` などの状態本体は状態リポジトリ（`app-state`）側に
-> あり、clone 後にそこから読まれる。cwd の `agent-project.yaml` は「どの状態リポジトリを使うか」を
-> 伝えるブートストラップとして必要（状態 clone の中の設定は起動時には読まれない）。
-
-### `agent-project.yaml` は両方に置くのか？ → いいえ
-
-エンジンが実際に読む `agent-project.yaml` は **cwd（成果物リポジトリ or `~/.agent`）の 1 つだけ**。
-これを正として編集する。状態リポジトリ側に同名ファイルを置いても**起動時には読まれない**
-（設定は状態 clone より前に読むため）。したがって:
-
-- 設定は cwd 側（成果物repo の `agent-project.yaml`、または `~/.agent/agent-project.yaml`）に置く。
-- 移行スクリプトは `agent-project.yaml` / `agent-flow.yaml` を状態リポジトリへ**コピーしない**
-  （混乱を避けるため）。`state_repo:` を含むこのブートストラップ設定は、移行時に人が cwd 側へ
-  用意する（旧設定に `state_repo:` を足すだけ）。
-- `agent-flow.yaml`（agent-flow デーモンの設定）も同様に cwd 側／`--config` で渡す。
+| 旧キー / フラグ | 挙動 | 移行先 |
+|---|---|---|
+| `state_worktree_dir` / `state_branch` / `state_commit` / `state_push` / `state_backup_branch` | **起動を止める** | 状態専用リポジトリ方式へ移行（本手順） |
+| `state_repo` / `state_repo_branch` | 警告して無視 | host.yaml `projects[].state_repo` / `.branch` |
+| `state_repo_dir` / `--state-repo-dir` | 警告して無視 / **止める** | host.yaml `projects[].root` |
+| `root:`（プロジェクト yaml） | 警告して無視 | ファイルの置き場所そのものが root |
+| `state_git` | 警告して無視 | 状態 clone の origin（設定不要） |
+| `state_commit_interval` | 警告して無視 | `state_git_interval` に一本化 |
+| `--profile` / `~/.agents/agent-project/profiles/` | **止める** | host.yaml（`root`→`projects[].root` / `node`→`node_id` / `availability`→`availability` / `project_config`→廃止） |
+| `.agents/` `.agent/` `~/.agents/` の設定探索 | 読まずに警告 | 状態ルート直下のみ（`--config` 明示は可） |
 
 ## よくある質問（移行でつまずいた点）
 
@@ -176,11 +158,15 @@ CLI/環境での個別上書きも可: `--state-repo` / `--state-repo-branch` / 
 - **再起動しても専用リポジトリが使われない/バージョン情報が引き継がれない** → 旧既定の
   clone 先 `<repo>-agent-state` が旧 worktree と同名で、旧 worktree を掴んでいた。現行は
   `<repo>-state` に clone する。旧構成が `app-agent-state` に残っていても衝突しない。
-- **dashboard にどのフォルダを登録する？** → 成果物リポジトリ（`state_repo` 付き yaml がある方）
-  でよい。dashboard が状態 clone（`<repo>-state`）をルートとして解決する。状態 clone の
-  直接登録も可。
-- **手動 clone は必要？** → エンジン PC は不要（agent-project が自動 clone。dashboard は
-  clone しない）。閲覧専用 PC は `git clone` 1 回。
+- **dashboard にどのフォルダを登録する？** → 状態 clone（host.yaml の `projects[].root`）を
+  登録する。dashboard は clone しない。
+- **手動 clone は必要？** → エンジン PC は不要（agent-project が `projects[].root` へ自動 clone）。
+  閲覧専用 PC は `git clone` 1 回。
+- **設定を書いたのに効かない** → 置き場所を確認する。プロジェクトの合意は**状態 clone 直下**の
+  `agent-project.yaml`、ノード固有の宣言は `~/.agents/agent-project.host.yaml`。旧探索先
+  （`./.agents/` `./.agent/` `~/.agents/agent-project.yaml`）は読まれず、起動時に名指しで警告する。
+- **起動が「状態ルートに見えません」で止まる** → 成果物リポジトリを root に宣言している。
+  `projects[].root` を状態 clone のパス（例 `<repo>-state`）へ直す。
 
 ## 履歴のリセット（任意・年数回の運用）
 
@@ -199,6 +185,7 @@ git push -f origin main
 
 ## ロールバック
 
-`agent-project.yaml` から `state_repo` を消してエンジンを再起動すれば、従来の worktree 方式に
-戻る（旧 `agent-state` ブランチと `<repo>-agent-state` を削除していなければそのまま復帰できる。
-これが「安定を確認してから削除」を推奨する理由）。
+worktree 方式へは戻せない（S1 で廃止した）。移行中に問題が出たときは、**旧 `agent-state`
+ブランチと `<repo>-agent-state` を消さずに残しておき**、状態リポジトリを作り直して手順 1 から
+やり直す（旧構成には状態のスナップショットがそのまま残っているので、そこから再度移行できる）。
+これが「安定を確認してから削除」を推奨する理由。

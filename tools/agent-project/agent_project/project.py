@@ -641,7 +641,6 @@ def project_watch(cfg: "Config", planner=None, reviewer=None, runner=run_loop,
                 pids[name] = _project_id(cfg, ch) + (
                     f"-{name}" if _is_multi_charter(cfg, name) else "")
         mtimes0 = _charter_mtimes(cfg)
-        commit_state(cfg)   # パスの区切りで状態をコミット（人の判断が動いたら即・副産物はまとめて）
         append_journal(cfg.journal, "=== project watch: 監視中（charter 更新/フィードバック待ち）===")
         while True:                  # idle: charter が変わるか、人のフィードバックが来たら再開
             sleeper(cfg.poll)

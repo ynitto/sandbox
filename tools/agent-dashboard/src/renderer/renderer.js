@@ -785,8 +785,10 @@ function engineEmptyMessage() {
 async function selectProject(dir) {
   state.selectedDir = dir;
   localStorage.setItem('kpv:selected', dir);
+  // 起動先候補はプロジェクトごとに違う（レジストリとノード宣言の交差）。選択のたびに引き直す。
+  state.cliChatCwdChoices = [];
   renderTree();
-  await reloadProject();
+  await Promise.all([reloadProject(), refreshCliChatCwdChoices()]);
 }
 
 async function reloadProject() {
@@ -929,18 +931,63 @@ function renderCliChatButton() {
   const button = $('btn-cli-chat');
   if (!button) return;
   button.disabled = !selectedProjectFolder() || button.dataset.busy === 'true';
+  renderCliChatCwdOptions();
+}
+
+// 起動先（cwd）の候補。既定はプロジェクト（状態リポジトリ）で、この PC にクローンがある
+// 成果物リポジトリも選べる（S3-4）。S1 以降プロジェクトのフォルダは状態リポジトリの clone
+// なので、コードを触りたくて CLI を開いてもそこには 1 行もコードが無い。
+//
+// 宣言が無い／実体が見つからないリポジトリは **消さずに非活性で並べる**——一覧から消えると
+// 「なぜ選べないのか」が分からず、host.yaml への宣言し忘れに気付けない。
+function renderCliChatCwdOptions() {
+  const sel = $('cli-chat-cwd');
+  if (!sel) return;
+  const dir = selectedProjectFolder();
+  const choices = state.cliChatCwdChoices || [];
+  sel.disabled = !dir || choices.length <= 1;
+  const keep = sel.value;
+  sel.innerHTML = '';
+  for (const c of choices) {
+    const opt = document.createElement('option');
+    opt.value = c.path || '';
+    opt.textContent = c.enabled ? c.label : `${c.label}（選べません）`;
+    opt.disabled = !c.enabled;
+    if (c.reason) opt.title = c.reason;
+    sel.appendChild(opt);
+  }
+  if (keep && choices.some((c) => c.enabled && c.path === keep)) sel.value = keep;
+}
+
+async function refreshCliChatCwdChoices() {
+  const dir = selectedProjectFolder();
+  if (!dir) {
+    state.cliChatCwdChoices = [];
+    return renderCliChatCwdOptions();
+  }
+  try {
+    state.cliChatCwdChoices = (await api.agentChatCwdChoices(dir)) || [];
+  } catch {
+    state.cliChatCwdChoices = [];   // 候補が出せなくても既定（プロジェクト）で開ける
+  }
+  renderCliChatCwdOptions();
 }
 
 async function openCliChat() {
   const dir = selectedProjectFolder();
   if (!dir) return toast('CLIチャットを開くプロジェクトを選択してください');
   const button = $('btn-cli-chat');
+  const sel = $('cli-chat-cwd');
+  const cwd = sel && sel.value && sel.value !== dir ? sel.value : '';
   button.dataset.busy = 'true';
   button.setAttribute('aria-busy', 'true');
   renderCliChatButton();
   try {
-    const result = await guard('CLIチャットを開けません', () => api.agentOpenChat({ dir }));
-    if (result) toast(`${result.cli}${result.model ? ` / ${result.model}` : ''} のCLIチャットを開きました`, true);
+    const result = await guard('CLIチャットを開けません', () => api.agentOpenChat({ dir, cwd }));
+    if (result) {
+      const where = result.cwd && result.cwd !== dir ? `（${result.cwd}）` : '';
+      toast(`${result.cli}${result.model ? ` / ${result.model}` : ''} のCLIチャットを開きました${where}`, true);
+    }
   } finally {
     delete button.dataset.busy;
     button.removeAttribute('aria-busy');

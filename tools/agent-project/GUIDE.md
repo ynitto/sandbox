@@ -126,10 +126,10 @@ agent-project runlog --tail 20    # 何が起きたかを構造化ログで確�
 
 **一貫性ゲート（opt-in）**: ドキュメントだけが置き去りになる事故は上の5つでは止まらない。別ツール
 `codd-gate` を `regression_cmd`（done 前の差分ゲート）と `intake_cmd`（負債を修復タスク化）に結線すると
-塞げる。**人か install 手順が `.agent/agent-project.yaml` にコマンドを書くか、CLI の
+塞げる。**人か install 手順が `<状態 clone>/agent-project.yaml` にコマンドを書くか、CLI の
 `--regression-cmd` / `--intake-cmd` に渡したときだけ有効になる。自動検出だけでは有効にならない。**
 `regression_cmd` の1行は、リポジトリルートで
-`python3 tools/agent-project/codd_gate_regression.py --config .agent/agent-project.yaml` を明示実行しても
+`python3 tools/agent-project/codd_gate_regression.py --config <状態 clone>/agent-project.yaml` を明示実行しても
 冪等に追加できる。`intake_cmd` は人か install 手順が設定する。貼る値と
 `--repos` の既定・`--dry-run` の挙動は README「フレーク耐性 / 回帰 / 検収 / パス保護」の一貫性ゲート項が正本
 （ここには複製しない）。
@@ -195,7 +195,7 @@ agent-project doctor --fix        # env/config を自動修正し、program の�
 ログ・稼働シグナルから診断する。環境/設定の問題は直し、コードの不具合だけイシューに切り出す。既定では
 実行層 `agent-flow doctor` も連携実行して所見を統合する（`[flow]` 印・`--no-flow` で本体のみ）。
 一貫性ゲートの結線診断は、リポジトリルートで
-`python3 tools/agent-project/codd_gate_wiring.py --config .agent/agent-project.yaml` を実行する。
+`python3 tools/agent-project/codd_gate_wiring.py --config <状態 clone>/agent-project.yaml` を実行する。
 これが唯一の正準入口である。CLI は `codd-gate` の検出結果と未結線時の推奨コマンドを JSON で出し、
 設定ファイルには書き込まない。有効化手順の正本は README。
 

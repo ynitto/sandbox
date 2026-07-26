@@ -20,10 +20,14 @@
 #   <repo>/.agent-project か <repo> 直下。迷ったら backlog/ が直下にあるフォルダを指定する。
 #
 # 前提: 専用リポジトリ（--state-repo）は事前に作成しておく（Gitea/GitLab の空リポジトリで可）。
-# 移行後の設定（agent-project.yaml）:
-#   state_repo: <専用リポジトリURL>
-#   state_repo_branch: main        # --dest-branch と一致させる
-# を書いてエンジンを再起動すると、状態は専用リポジトリの通常 clone（既定 <repo>-state）に置かれる。
+# 移行後の宣言は **各 PC の ~/.agents/agent-project.host.yaml**（S1。clone を作る前に読める
+# 場所が要るため、状態リポジトリの中には置けない）:
+#   projects:
+#     - name: <プロジェクト名>
+#       state_repo: <専用リポジトリURL>
+#       branch: main                        # --dest-branch と一致させる
+#       root: /abs/path/<repo>-state        # このノードでの clone 先（無ければ自動 clone）
+# を書いてエンジンを再起動すると、状態はその clone に置かれる。
 
 set -euo pipefail
 
@@ -34,9 +38,10 @@ warn()  { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
 error() { echo -e "${RED}[ERROR]${RESET} $*" >&2; }
 
 # 状態エントリ（_STATE_SIGNIFICANT + _STATE_NOISE と対応。これだけを専用リポジトリへ移す）。
-# agent-project.yaml / agent-flow.yaml は **含めない**: これらは起動のブートストラップ設定で、
-# エンジンは状態リポジトリを clone する前に cwd（成果物repo or ~/.agent）から読む。状態リポジトリ側に
-# 置いても起動時には読まれず、「どちらを編集するのか」の混乱を生むだけ。設定は cwd 側を正とする。
+# agent-project.yaml / agent-flow.yaml は **含めない**: 移行前のそれは「どの状態リポジトリを
+# 使うか」を伝える旧ブートストラップ設定で、S1 ではもう読まれない（宣言は host.yaml が唯一の
+# 置き場）。運用設定（planner / level / 予算など）は移行後に人が状態リポジトリ直下へ書き写す
+# ——機械的にコピーすると廃止キーごと持ち込むことになるため、あえて自動化しない。
 STATE_ENTRIES=(
   charter.md charters backlog needs decisions repos.json policy.md rules.md
   archive DELIVERY.md specs cohorts autonomy project.json
@@ -115,15 +120,20 @@ if git -C "$TMP" push "$STATE_REPO" "HEAD:refs/heads/$DEST_BRANCH"; then
   fi
   echo
   info "次の手順:"
-  echo "  1. agent-project.yaml に以下を設定:"
-  echo "       state_repo: $STATE_REPO"
-  echo "       state_repo_branch: $DEST_BRANCH"
-  echo "  2. エンジンを再起動すると <repo>-state に専用リポジトリを clone して状態ルートにする"
-  echo "     （旧 worktree <repo>-agent-state とは別フォルダ。衝突しない）。"
-  echo "  3. エンジンと dashboard が同じ PC なら、dashboard には <repo>-state（clone）を登録する"
-  echo "     （成果物リポジトリではなく、この状態 clone を開く）。手動 clone は不要。"
-  echo "  4. 別 PC は <repo>-state を各自 clone して dashboard に登録。"
-  echo "  5. 安定を確認後、旧 agent-state ブランチと <repo>-agent-state worktree を手動削除。"
+  echo "  1. ~/.agents/agent-project.host.yaml に宣言する（各 PC・共有しない）:"
+  echo "       projects:"
+  echo "         - name: <プロジェクト名>"
+  echo "             state_repo: $STATE_REPO"
+  echo "             branch: $DEST_BRANCH"
+  echo "             root: /abs/path/<repo>-state   # このノードでの clone 先（絶対パス）"
+  echo "  2. 運用設定（planner / level / 予算など）を <repo>-state/agent-project.yaml へ移す。"
+  echo "     旧設定の state_worktree_dir / state_branch / state_commit / state_push /"
+  echo "     state_backup_branch は廃止（残っていると起動時にエラーで止まる）。"
+  echo "  3. エンジンを再起動する。root に無ければ自動 clone、あれば origin の一致を検査する。"
+  echo "  4. dashboard には <repo>-state（状態 clone）を登録する。手動 clone は不要"
+  echo "     （別 PC の閲覧専用なら各自 git clone して登録）。"
+  echo "  5. 安定を確認後、旧 agent-state ブランチ・<repo>-agent-state worktree・"
+  echo "     成果物リポジトリ直下の旧 agent-project.yaml を手動削除。"
 else
   error "push に失敗しました（専用リポジトリに既存内容がある/権限/ネットワーク）。"
   error "専用リポジトリの $DEST_BRANCH の中身を確認してから再実行してください。"

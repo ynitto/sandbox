@@ -94,42 +94,67 @@ agent-amigos ミッションとノード予算（`src/features/amigos/`）を同
   タスクリンク `🗒 <taskid>`（クリックでバックログのタスクダイアログへ）、タスクダイアログに
   「関連する agent-flow run（リトライ系統）」一覧。
 
-### ワークスペースとプロジェクトルート
+### CLIチャットの起動先（S3）
 
-**ワークスペース**は `.agents/agent-project.yaml`（または直下の `agent-project.yaml`）を持つ
-開発フォルダで、agent-project CLI を起動する場所（CLI から見た cwd）。人が普段開いているフォルダが
-そのままこれにあたる。
+ヘッダの「CLIチャットを開く」は、隣のドロップダウンで**開くフォルダ**を選べる。
 
-ビュアーは設定の `root:`（相対はワークスペース基準）から **プロジェクトルート** — 状態の
-置き場 — を導く。`charter.md` / `backlog/` / `needs/` / `bus/` / `flow-archive/` はすべてこの直下で、
-CLI の `--root` と同じものを指す。承認・投入・リセットなどの操作はすべてプロジェクト
-ルートを基準に行う。
+- 既定は **プロジェクト（状態リポジトリの clone）**（従来動作）
+- この PC にクローンがある**成果物リポジトリ**も選べる。候補は各 PC の
+  `~/.agents/agent-project.host.yaml` の `repos[]` 宣言（url と local）から作る
+
+S1 以降プロジェクトのフォルダは状態リポジトリの clone（backlog / needs / charter の置き場）
+なので、コードを触りたくて CLI を開いてもそこには 1 行もコードが無い。宣言が無い／実体が
+見つからないリポジトリは**消さずに非活性で理由付きで並べる**——一覧から消えると「なぜ選べないか」
+が分からず、宣言し忘れに気付けない。
+
+### プロジェクトルート（状態専用リポジトリの clone）
+
+登録するのは**状態専用リポジトリの clone**。agent-project の状態ルートはこれ 1 つで
+（S1）、`charter.md` / `backlog/` / `needs/` / `bus/` / `flow-archive/` はすべてその直下、
+CLI の `--root`（= host.yaml の `projects[].root`）と同じものを指す。承認・投入・リセットなどの
+操作はすべてここを基準に行う。
 
 ```
-/home/me/src/webapp           ← ワークスペース（host.yaml が持つのはこれ）
-├── .agents/agent-project.yaml   ← root: .agent-project
-└── .agent-project/            ← プロジェクトルート（状態の置き場）
-    ├── charter.md  charters/  backlog/  needs/  decisions/
-    └── bus/  flow-archive/
+/home/me/agents/webapp-state   ← 状態リポジトリの clone（これを登録する）
+├── agent-project.yaml         ← プロジェクトの合意（全 PC 共有）
+├── charter.md  charters/  backlog/  needs/  decisions/
+└── bus/  flow-archive/
 ```
 
-`root:` が無ければフォルダ自体がプロジェクトルート＝状態フォルダを直接指す形にもなる。
-表示名はワークスペース名になるので、`.agent-project` のような技術的なフォルダ名が一覧に
-出ることはない。
+**clone は dashboard では行わない**（agent-project が host.yaml の宣言に従って作る）。
+エンジンが居ない閲覧専用 PC だけ `git clone` を 1 回して、その clone を登録する。
 
-**プロジェクトの発見は実行側の状況ファイル 1 本**（`engine/status.json` の `children[].root`）。
-どのプロジェクトを持つかを決めるのは実行側の `agent-project.host.yaml` で、この画面はそれを
-映すだけ——**画面からの登録・登録解除は無い**（一覧に出すには host.yaml へ追記する）。
-設定に残るのは「どこの状況ファイルを読むか」（ディストロ / ベースパス）と表示の好みだけ。
+移行途中の 2 つの形も読める（どちらも旧レイアウトの互換で、正は上の形）:
+
+- 成果物リポジトリを登録したまま・直下に旧ブートストラップ `state_repo:` が残っている
+  → 隣の `<repo>-state` を開く
+- 状態が `<ws>/.agent-project` にネストしている → その下を開く
+
+状態 worktree（`<repo>-agent-state`）への正規化と自動作成は**廃止した**。エンジンがそこへ
+書かなくなった以上、開くと「更新が止まった状態」を実体と信じて見せることになるため。
+
+**agent-project プロジェクトの発見は実行側の状況ファイル 1 本**（`engine/status.json` の
+`children[].root`）。どのプロジェクトを持つかを決めるのは実行側の `agent-project.host.yaml` で、
+この画面はそれを映すだけ——**画面からの登録・登録解除は無い**（一覧に出すには host.yaml へ
+追記する）。設定に残るのは「どこの状況ファイルを読むか」（ディストロ / ベースパス）と表示の
+好みだけ。
+
+**定常業務だけのフォルダは別**（S2）。kiro-loop 設定や `.statemachine/` を持つだけで
+agent-project の管理外というフォルダは、**定常業務タブの「フォルダを登録」から登録する**
+（設定 `cowork.roots`）。宣言をここに置くのは、定常業務のエンジン（kiro-loop /
+statemachine-use）が agent-project の常駐体・状態リポジトリと無関係に動き、起動・tmux 管理・
+履歴記録をすべてこの dashboard が担っているため——「宣言は実行側が持つ」の原則どおり。
+登録したフォルダは一覧に **kind=routine** として並び、定常業務タブだけを出す。
+agent-project のプロジェクトと同じパスを登録した場合は project 側を正として畳む。
 
 レイアウトはプロジェクトルート直下フラット（charter.md / backlog/ / needs/ … が直下）のみ。
 
 ### リモートで稼働する agent-project を見る（状態共有リポジトリ経由）
 
-本体（agent-project）は**プロジェクトルート自体を状態共有リポジトリの clone**として動かすのが
-推奨構成（direct モード。本体側 README「状態の git 保存・共有」参照）。本体が状態を直接
-コミット・push するので、同じリポジトリを clone してある PC からは、常駐体
-（`agent-project serve`）がその clone を子として持つだけで一覧に出る。
+本体（agent-project）の**状態ルートは常に状態専用リポジトリの clone**（direct モード・S1。
+本体側 README「状態の git 保存・共有」参照）。本体が状態を直接コミット・push するので、同じ
+リポジトリを clone してある PC からは、常駐体（`agent-project serve`）がその clone を子として
+持つだけで一覧に出る。
 
 **同期の書き手は常駐体だけ**で、この画面は pull も push もしない。以前は viewer 側にも
 ⇣ ボタン・自動 pull 間隔・「操作を都度コミットしてプッシュ」があったが、viewer の push が

@@ -269,11 +269,6 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
     # 取り込めなければ push も non-fast-forward で永久に通らず、リモートとの乖離が広がり続ける
     # （実際 viewer が同じ agent-state ブランチへ push した途端に詰まり、分散構成で状態が共有
     # されなくなった）。同期の直前にコミットしておけば rebase は素直に通る。
-    # 人が本体側 <repo>/.agent-project を編集していたら、コミットする前に取り込む。人にとっての
-    # 正本はそこ（リポジトリを開けばある）だが、実書き込み先は状態 worktree なので、取り込まないと
-    # 編集は効かないまま鏡の同期で消える（実際 agent-flow.yaml の evaluator 切替が無視され続けた）。
-    sync_mirror_edits(cfg)
-    commit_state(cfg, force=True)
     state_sync(cfg)                    # 状態 git: リモートの指示（commands/inbox/needs 記入）を先に取り込む
     controller = (not _coordination_active(cfg)
                   or renew_controller_lease(cfg))
@@ -285,13 +280,13 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
     # 未 push のローカルコミットを起動時に必ず警告する。doctor は人が叩かないと動かないが、
     # これは黙って詰まる（worker と verify は origin から clone するので、ローカルにだけある
     # コミットは彼らからは存在しない）。原因に辿り着くのが難しい詰まり方なので、先に言う。
-    _unpushed, _branch = unpushed_commits(cfg.state_top)
+    _unpushed, _branch = unpushed_commits(cfg.backlog.parent)
     if _unpushed:
         append_journal(cfg.journal,
                        f"警告: origin へ未 push のコミットが {_unpushed} 件ある（{_branch}）。"
                        f"worker と verify は origin から clone するため、これらの成果は彼らから "
                        f"見えない（ローカルでは通るのに verify が落ち続ける）。"
-                       f"`git -C {cfg.state_top} push origin {_branch}` を検討すること")
+                       f"`git -C {cfg.backlog.parent} push origin {_branch}` を検討すること")
     start = time.time()
     cycle = 0
     archived = 0
@@ -472,17 +467,18 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
 
 def _cleanup_bus(cfg: Config) -> None:
     """local run 後に不要となる agent-flow バスの一時状態を掃除する。
-    daemon 稼働中や git バス（remote）は作業中のため触らない。また state_git でバスを
-    リモート viewer へ鏡写ししている構成では、ここで runs/ を消すと『フロータブに見せたい
-    run 状態』を破壊し、削除が次の同期でリモートへ伝播してしまうため触らない
-    （agent-flow 側の state_git がバスの寿命を管理する＝gc に委ねる）。
+    daemon 稼働中や git バス（remote）は作業中のため触らない。
 
     runs/<id>/ は viewer のフロータブが読む一次ソースなので、直近 bus_keep_runs 件は残す。
+    状態リポジトリは bus/ も同期するので削除は次の同期でリモートへ伝播するが、それは
+    「古い run を捨てる」意図どおり——だから消すのは keep 件数を超えた分だけに限る。
     かつては act のたびに runs/ を丸ごと消していたため、run は完了しているのに viewer が
     その最終状態（全ノード done）を観測する前にディレクトリごと消え、最後に撮れた
     スナップショット（最終ノードが実行中）のままフローが固まって見えていた。掃除は
     「古い run を捨てる」ためのものであって「いま終わった run を人の目から隠す」ためのものではない。"""
-    if not cfg.cleanup or cfg.git_bus or cfg.state_git:
+    # 旧 `cfg.state_git`（明示 URL 指定）での素通りは廃止した（S1）。状態ルートは常に状態
+    # 専用リポジトリの clone になり、その条件は「常に真」＝ 掃除が永久に走らなくなるため。
+    if not cfg.cleanup or cfg.git_bus:
         return
     shutil.rmtree(cfg.bus / "inbox", ignore_errors=True)   # local run では使わない submit キュー
     runs = cfg.bus / "runs"
@@ -626,8 +622,8 @@ def run_watch(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.sle
             if not is_paused(cfg):
                 run_intake(cfg)      # 外部ゲートからの汲み上げ（間隔律速。積まれれば has_work が起こす）
             maybe_heartbeat_status(cfg)  # --status-interval のときだけ idle 中も生存信号を更新（既定は無効＝無干渉）
-            commit_state(cfg)        # 状態 worktree: 溜まった変更をまとめてコミット（間隔律速）
-            state_sync(cfg)          # 状態 git: リモートの指示を取り込む（間隔律速。届けば has_work が起こす）
+            state_sync(cfg)          # 状態 git: 溜まった変更をコミットし、リモートの指示を取り込む
+            #                          （コミットは毎回・fetch/push だけ間隔律速。届けば has_work が起こす）
             if _coordination_active(cfg):
                 next_controller = renew_controller_lease(cfg)
                 if next_controller and (not controller or _charter_mtimes(cfg) != charter_seen):

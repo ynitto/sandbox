@@ -288,7 +288,7 @@ CLI からも付与・修正できる。
 
   ```bash
   python3 tools/agent-project/codd_gate_regression.py \
-    --config .agent/agent-project.yaml
+    --config <状態 clone>/agent-project.yaml
   ```
 
   生成ツールは `regression_cmd` だけを冪等に更新する。`intake_cmd` は設定ファイルへ直接書く。
@@ -300,7 +300,7 @@ CLI からも付与・修正できる。
 
   ```bash
   python3 tools/agent-project/codd_gate_wiring.py \
-    --config .agent/agent-project.yaml
+    --config <状態 clone>/agent-project.yaml
   ```
 
   JSON の `regression_wired` と `intake_wired` が現在の結線状態、`findings` が未結線時の設定例を示す。
@@ -603,8 +603,12 @@ agent-project approve <project> --reason "受領"   # 完了確定（最終納�
 ```yaml
 # ~/.agents/agent-project.host.yaml — この PC が持つプロジェクトの単一ソース
 projects:
-  - root: /home/me/projects/payments
-  - root: /home/me/projects/webapp
+  - name: payments
+    state_repo: git@gitlab.example.com:team/payments-state.git
+    root: /home/me/agents/payments-state    # このノードでの clone 先（無ければ自動 clone）
+  - name: webapp
+    state_repo: git@gitlab.example.com:team/webapp-state.git
+    root: /home/me/agents/webapp-state
 ```
 ```bash
 agent-project serve      # 1 本の常駐体が両方を子プロセスとして監督する
@@ -644,21 +648,21 @@ agent-project serve
   （run のパス直後は間隔を待たずに押し出す）。
 - リモート（origin）が無いローカルだけの git リポジトリでも、コミット履歴として状態が残る（push はスキップ）。
 
-### 共有先の指定（`state_git`）
+### 共有先の指定
 
-同期先は**ルート自身のリポジトリの `origin`**。`state_git` を書いておくと、origin が未設定の
-ルートに対してその URL を origin として設定する（既に origin があれば触らない）。
+同期先は**状態ルート自身のリポジトリの `origin`**。状態ルートは常に状態専用リポジトリの
+clone なので origin は必ずあり、**設定は要らない**。URL の宣言は host.yaml の
+`projects[].state_repo` が唯一の置き場（clone を作る前に読める場所が要るため）。
 
 ```yaml
-# .agents/agent-project.yaml（サーバ側）
-state_git: git@example.com:team/agent-state.git   # origin 未設定なら origin として設定する URL
-state_git_interval: 300                          # fetch/push の最短間隔（秒）
+# 状態リポジトリ直下の agent-project.yaml（全 PC 共有）
+state_git_interval: 300      # fetch/push の最短間隔（秒）。ローカルのコミットは毎同期で行う
 ```
 
 同期先ブランチはルートが開いているブランチで、リポジトリ内のサブディレクトリ分離は使わない
-（1 プロジェクト = 1 リポジトリ）。**ルートが無関係な既存リポジトリの内側にある構成では同期しない**
-——そこで `git init` すると nested repo になり、外側の `git add -A` が壊れる。共有したいなら
-ルートをリポジトリの外へ置くか、agent-project 専用の状態 worktree へ逃がす。
+（1 プロジェクト = 1 状態リポジトリ）。**ルートが無関係な既存リポジトリの内側にある構成では
+同期しない**——そこで `git init` すると nested repo になり、外側の `git add -A` が壊れる。
+その構成は起動時にエラーで止まる（状態が成果物リポジトリへ書き込まれる事故を防ぐ）。
 
 - **双方向で、衝突は決定的に裁定**: 同時変更だけを **人の入力パス（`commands/`・`inbox/`・`needs/`・
   `policy.md`・`charter.md`・`repos.{json,yaml,yml}`）はリモート優先／機械状態（backlog・journal・
@@ -697,11 +701,13 @@ controller_lease_sec: 120
 coordination_retries: 3
 ```
 
-PC固有値は共有設定や環境変数へ置かず、各PCのローカルprofileへ置く。サンプル:
-[`agent-project.profile.yaml.example`](agent-project.profile.yaml.example)。
+PC 固有値（`node_id` / clone 先 `root` / `availability` / ローカルクローン `repos[]` など）は
+共有設定や環境変数へ置かず、各 PC の `~/.agents/agent-project.host.yaml` へ置く。サンプル:
+[`agent-project.host.yaml.example`](agent-project.host.yaml.example)。共有設定へ書くと
+起動時にエラーで止まる（→ [設定の 2 層](#設定の-2-層ノード固有-vs-プロジェクト共有)）。
 
 ```bash
-agent-project doctor --profile /home/me/.agents/agent-project/profiles/proj.yaml
+agent-project doctor --project proj   # host.yaml の宣言から root/state_repo を解決する
 agent-project serve   # 常駐体が host.yaml のプロジェクトを監督する（停止は Ctrl-C / systemd stop）
 ```
 
@@ -797,13 +803,103 @@ Windows タスクスケジューラ方式との選択と手順は
 
 ## 設定ファイル
 
-共有値を `agent-project.{yaml,yml,json}`、PC固有値をprofileに書ける
-（**CLI > ローカルprofile > 共有設定 > 既定**）。profileでは `AGENT_PROJECT_*` を参照しない。
-探索順: `--config` 明示 → `./.agents/` → `~/.agents/`。YAML は PyYAML 任意・無ければ JSON フォールバック。サンプルは
-[`agent-project.yaml.example`](agent-project.yaml.example)（実運用の組み方＝WSL 常駐＋gitlab executor 分散＋
-viewer 監視＋GitLab バックアップは [`agent-project.state-git.yaml.example`](agent-project.state-git.yaml.example)）。
+### 設定の 2 層（ノード固有 vs プロジェクト共有）
+
+設定は 2 ファイルだけで、責務は「何を動かすか」と「どう動かすか」で分かれる。
+
+| ファイル | 置き場所 | 責務 | 共有範囲 |
+|---|---|---|---|
+| `agent-project.host.yaml` | 各 PC の `~/.agents/` | **このノードの宣言**: 何を動かすか・資源・ローカル環境 | 共有しない |
+| `agent-project.yaml` | **状態リポジトリの clone 直下** | **プロジェクトの合意**: どう動かすか | state repo で全 PC 共有 |
+
+帰属は起動時に検査し、違反は理由と移行先を示して止める。黙って読み替えると、設定した本人が
+「効いていない」ことに気付けないため。
+
+- **host.yaml 専有**（プロジェクト yaml に書くとエラー）:
+  `node_id` / `projects[]`（`name`・`state_repo`・`branch`・`root`・`overrides`）/ `repos[]` /
+  `availability` / `budget` / `tags` / `board_workdir` / `amigos_bus` / `amigos_config` /
+  `residency` / `defaults` / `update`。ノードごとに違う宣言なので、state repo 経由で全 PC へ
+  配ると壊れる。
+- **プロジェクト yaml 専有**（host.yaml の `defaults`/`overrides` に書くとエラー）:
+  計画・ゲート系（`planner` / `flow_planner` / `granularity` / `plan_review` / `spec_track` …）、
+  予算・収束系（`max_cycles` / `max_retries` / `level` …）、検証・学習・タスク運用系。
+  ノードごとに食い違うと実行が非決定になる。
+- **両方に書ける**（優先順位: **CLI > `projects[].overrides` > `defaults` > プロジェクト yaml > 既定**）:
+  `agent_cli` / `model` / `act_timeout` / `verify_timeout` / `location` / `concurrency` /
+  `agent_timeout` / `actor` / `notify_cmd` / `ltm_home` / `flow_config` / `verify_cwd`。
+  導入済み CLI・マシン性能・ノード局所パスはノードごとに違ってよい。
+
+```yaml
+# ~/.agents/agent-project.host.yaml
+node_id: pc-a
+defaults:
+  agent_cli: codex          # このノードの既定 CLI（全プロジェクト）
+projects:
+  - name: example
+    state_repo: https://gitea.example/you/example-state.git
+    root: /home/me/agents/example-state
+    overrides:
+      model: gpt-5.6-sol    # このノード × このプロジェクトだけの上書き
+```
+
+プロジェクト設定の探索は **状態ルート直下のみ**（`--config` 明示が最優先）。旧実装の
+`cwd → ./.agents → ./.agent → ~/.agents` というチェーンは廃止した——移行時に成果物リポジトリ側の
+古い yaml が黙って優先される事故が起きたため。旧探索先にファイルが残っていると起動時に
+「読まれません」と名指しで警告する。
+
+YAML は PyYAML 任意・無ければ JSON フォールバック（キーは同じ）。サンプルは
+[`agent-project.yaml.example`](agent-project.yaml.example) と
+[`agent-project.host.yaml.example`](agent-project.host.yaml.example)（実運用の組み方＝WSL 常駐＋
+gitlab executor 分散＋viewer 監視＋GitLab バックアップは
+[`agent-project.state-git.yaml.example`](agent-project.state-git.yaml.example)）。
 スカラ＋真偽フラグ（三値 `--flag`/`--no-flag`）が対象で、
 個別パス上書き（`--backlog` 等）・実行限定フラグ（`--json`/`--fix`/`--pin`）は CLI 専用。
+
+### ノード固有のローカルクローン（`repos[]`・S3）
+
+手元にある成果物リポジトリのクローンを host.yaml で宣言すると、ネットワーク越しのミラー
+取り直しを省いてそこから worktree を切る（速い・オフラインでも動く）。
+
+```yaml
+# ~/.agents/agent-project.host.yaml
+repos:
+  - url: https://gitea.example/you/app.git
+    local: /home/me/mirrors/app
+```
+
+**共有 repos.json には書けない**。あのファイルは charter から自動生成され、状態リポジトリ経由で
+全 PC へ配られる——1 台で書いた絶対パスが全ノードへ伝播する。`local:` を書いても無視され、
+起動時に移行先を示す警告が出る（`schemas/repos.schema.json` でも deprecated）。
+
+宣言すると次のすべてに効く（読み手は `agentcore.repolocal` の 1 実装）:
+
+- agent-project → agent-flow の run（`--workspace` に載せて渡す）
+- 板（agent-board）で落札した仕事（請負ノードが自分の `local` を載せる）
+- 検収差分の解決（成果物リポジトリのローカル解決）
+- dashboard の CLIチャット起動先（そのフォルダを選んで開ける）
+
+URL の一致は正規化して判定する（末尾 `.git`・スラッシュ・大小文字を吸収し、ローカルパス表記は
+絶対化）。鮮度は従来どおり worker が毎回 `fetch` する（`local` は「どこから取るか」を変えるだけで
+「取るかどうか」は変えない）。
+
+### 状態ルートの起動契約
+
+状態ルートは**常に状態専用リポジトリの clone**。旧 worktree 方式（`state_worktree_dir` /
+`state_branch` / `state_commit` / `state_push` / `state_backup_branch`）は廃止し、これらのキーを
+検出したら移行手順を示して止める。root の決め方は 3 通り:
+
+```bash
+agent-project run --project example        # host.yaml の projects[] から（常駐体の子もこれ）
+agent-project run --state-repo <URL>       # 単発。root 未指定なら <cwd>/<リポジトリ名> へ clone
+agent-project run --root <状態 clone>       # 手で clone 済みの状態リポジトリで直接
+```
+
+次の構成は起動時に止める（黙って旧構成・誤った場所へ書き続けないため）:
+
+- 宣言した `state_repo` と root の `origin` が食い違う（旧 worktree への暗黙フォールバックは廃止）
+- root が他の git リポジトリの内側（nested repo になり同期もできない）
+- root が状態マーカーを持たない git リポジトリ＝成果物リポジトリらしい
+  （移行前の `state_repo:` 入り yaml が残っていれば、その URL を案内に含める）
 
 ## 計測（stats / runlog）
 

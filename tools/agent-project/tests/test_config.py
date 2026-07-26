@@ -210,20 +210,24 @@ class TestAgentCliAndGranularity(unittest.TestCase):
         self.assertEqual(km.plan_granularity_directive("xxl"),
                          km.plan_granularity_directive("coarse"))
 
-    def test_find_config_prefers_root_level_manifest(self):
-        # ルート直下の agent-project.yaml（マニフェスト）が .agent/ より優先される
+    def test_project_config_is_read_from_the_state_root_only(self):
+        """プロジェクト設定は状態ルート直下のみ（S1）。旧探索先は読まずに警告する。
+
+        旧実装は cwd → ./.agents → ./.agent → ~/.agents と辿っていたため、移行時に成果物
+        リポジトリ側の古い yaml が黙って優先される事故が起きた。読まないだけだと今度は
+        「設定したのに効かない」が無言になるので、見つけた場所を名指しする。"""
         with tempfile.TemporaryDirectory() as d:
-            old = os.getcwd()
-            try:
-                os.chdir(d)
-                (Path(d) / ".agent").mkdir()
-                (Path(d) / ".agent" / "agent-project.yaml").write_text("root: .\n", encoding="utf-8")
-                (Path(d) / "agent-project.yaml").write_text("root: .\n", encoding="utf-8")
-                found = km._find_config(None)
-                self.assertEqual(Path(found).resolve(),
-                                 (Path(d) / "agent-project.yaml").resolve())
-            finally:
-                os.chdir(old)
+            root = Path(d)
+            (root / ".agent").mkdir()
+            (root / ".agent" / "agent-project.yaml").write_text("executor: stub\n", encoding="utf-8")
+            (root / "agent-project.json").write_text('{"executor":"stub"}', encoding="utf-8")
+            self.assertEqual(Path(km._project_config_path(None, root)).resolve(),
+                             (root / "agent-project.json").resolve())
+            (root / "agent-project.json").unlink()
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertIsNone(km._project_config_path(None, root))
+            self.assertIn(".agent/agent-project.yaml", err.getvalue())
 
 
 class TestInstances(unittest.TestCase):
@@ -414,38 +418,136 @@ class TestConfigFile(unittest.TestCase):
             self.assertEqual(ns.executor, "agent")         # CLI 勝ち
             self.assertEqual(ns.planner, "none")           # config 採用
 
-    def test_profile_supplies_local_root_and_node_without_environment(self):
+    def test_host_yaml_supplies_node_and_root_without_environment(self):
+        """host.yaml が「このノードの宣言」の単一ソース（旧 profile の置き換え・S1）。
+
+        node_id は環境変数 AGENT_PROJECT_NODE より優先し（宣言が正）、root は projects[] から
+        取る。プロジェクト yaml 側の合意事項（default_node）はそのまま効く。"""
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            shared = d / "shared.json"
-            shared.write_text('{"root":"wrong","default_node":"pc-b"}', encoding="utf-8")
-            profile = d / "pc-a.json"
-            profile.write_text(json.dumps({
-                "schema_version": 1,
-                "project": "demo",
-                "node": "pc-a",
-                "root": str(d / "state"),
-                "project_config": str(shared),
-            }), encoding="utf-8")
+            state = mk_state_repo(d / "state")
+            (state / "agent-project.json").write_text('{"default_node":"pc-b"}', encoding="utf-8")
+            use_host_config(self, {
+                "node_id": "pc-a",
+                "projects": [{"name": "demo", "root": str(state)}],
+            }, home=d / "agents-home")
             with mock.patch.dict(os.environ, {"AGENT_PROJECT_NODE": "wrong-env"}):
-                ns = self._resolve(None, profile=str(profile))
+                ns = self._resolve(None, project="demo")
                 cfg = km.build_config(ns)
             self.assertEqual(cfg.node, "pc-a")
-            self.assertEqual(cfg.source_root, (d / "state").resolve())
+            self.assertEqual(cfg.backlog.parent, state.resolve())
             self.assertEqual(cfg.default_node, "pc-b")
 
-    def test_profile_rejects_relative_autostart_paths(self):
+    def test_unknown_project_name_stops(self):
+        with tempfile.TemporaryDirectory() as d:
+            use_host_config(self, {"projects": [{"name": "demo", "root": d}]},
+                            home=Path(d) / "agents-home")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+                self._resolve(None, project="typo")
+            self.assertIn("demo", err.getvalue())        # 宣言済みの名前を示して直せるようにする
+
+    def test_layer_precedence_cli_over_overrides_over_defaults_over_project(self):
+        """CLI > projects[].overrides > defaults > プロジェクト yaml > 組み込み既定（S1）。"""
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            shared = d / "shared.json"
-            shared.write_text("{}", encoding="utf-8")
-            profile = d / "bad.json"
-            profile.write_text(json.dumps({
-                "schema_version": 1, "project": "demo", "node": "pc-a",
-                "root": "relative-state", "project_config": str(shared),
-            }), encoding="utf-8")
-            with self.assertRaises(SystemExit):
-                self._resolve(None, profile=str(profile))
+            state = mk_state_repo(d / "state")
+            (state / "agent-project.json").write_text(
+                '{"agent_cli":"kiro","model":"from-project","location":"local"}', encoding="utf-8")
+            use_host_config(self, {
+                "defaults": {"agent_cli": "codex", "model": "from-defaults"},
+                "projects": [{"name": "demo", "root": str(state),
+                              "overrides": {"model": "from-overrides"}}],
+            }, home=d / "agents-home")
+            ns = self._resolve(None, project="demo", verify_timeout=99.0)
+            self.assertEqual(ns.model, "from-overrides")   # overrides が defaults に勝つ
+            self.assertEqual(ns.agent_cli, "codex")        # defaults がプロジェクト yaml に勝つ
+            self.assertEqual(ns.location, "local")         # 上書きが無ければプロジェクト yaml
+            self.assertEqual(ns.verify_timeout, 99.0)      # CLI が最優先
+            self.assertEqual(ns.max_retries, km.CONFIG_DEFAULTS["max_retries"])
+
+    def test_host_only_key_in_project_yaml_stops(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            state = mk_state_repo(d / "state")
+            (state / "agent-project.json").write_text(
+                '{"node_id":"pc-x","update_repo":"https://x/y.git"}', encoding="utf-8")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+                self._resolve(None, root=str(state))
+            msg = err.getvalue()
+            self.assertIn("node_id", msg)
+            self.assertIn("update_repo", msg)
+            self.assertIn("host.yaml", msg)
+
+    def test_project_only_key_in_host_overrides_stops(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            state = mk_state_repo(d / "state")
+            use_host_config(self, {
+                "projects": [{"name": "demo", "root": str(state),
+                              "overrides": {"max_retries": 9}}],
+            }, home=d / "agents-home")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+                self._resolve(None, project="demo")
+            self.assertIn("max_retries", err.getvalue())
+
+    def test_removed_worktree_keys_stop_with_migration_hint(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            state = mk_state_repo(d / "state")
+            (state / "agent-project.json").write_text(
+                '{"state_backup_branch":"main","state_push":true}', encoding="utf-8")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+                self._resolve(None, root=str(state))
+            msg = err.getvalue()
+            self.assertIn("state_backup_branch", msg)
+            self.assertIn("migrate-state-repo.sh", msg)
+
+    def test_inert_and_unknown_project_keys_only_warn(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            state = mk_state_repo(d / "state")
+            (state / "agent-project.json").write_text(
+                '{"root":".","state_repo":"https://x/y.git","planer":"none","executor":"stub"}',
+                encoding="utf-8")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                ns = self._resolve(None, root=str(state))
+            msg = err.getvalue()
+            self.assertIn("root", msg)
+            self.assertIn("planer", msg)                   # 綴り違いを見逃さない
+            self.assertEqual(ns.executor, "stub")          # 正しいキーは効いたまま
+            self.assertEqual(ns.state_repo, "")            # 無効なので採用しない
+
+    def test_removed_flags_explain_the_migration(self):
+        for kwargs, needle in (({"_removed_profile": "x"}, "--profile"),
+                               ({"_removed_state_repo_dir": "x"}, "--state-repo-dir")):
+            with tempfile.TemporaryDirectory() as d:
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+                    self._resolve(None, root=d, **kwargs)
+                self.assertIn(needle, err.getvalue())
+
+    def test_key_classification_partitions_config_defaults(self):
+        """CONFIG_DEFAULTS の全キーがちょうど 1 つの分類に属する（契約の CI 固定）。
+
+        分類漏れがあると、そのキーは黙ってプロジェクト共有側に落ちる。差集合で定義した
+        PROJECT_ONLY_KEYS がその安全側の受け皿なので、ここでは **重複が無いこと** と
+        **分類の語彙が CONFIG_DEFAULTS に実在すること** を固定する。"""
+        groups = {"SHARED": km.SHARED_KEYS, "HOST_SOURCED": km.HOST_SOURCED_KEYS,
+                  "PROJECT_ONLY": km.PROJECT_ONLY_KEYS}
+        seen = {}
+        for name, keys in groups.items():
+            for k in keys:
+                self.assertNotIn(k, seen, f"{k} が {seen.get(k)} と {name} に重複")
+                seen[k] = name
+        self.assertEqual(set(seen) | set(km._INERT_PROJECT_KEYS), set(km.CONFIG_DEFAULTS)
+                         | set(km._INERT_PROJECT_KEYS))
+        for k in km._REMOVED_WORKTREE_KEYS:
+            self.assertNotIn(k, km.CONFIG_DEFAULTS, "廃止キーは既定表に残さない")
 
     def test_bus_config_is_honored(self):
         # 設定ファイルの bus: が読まれ、明示バス（絶対パス）として使われること。

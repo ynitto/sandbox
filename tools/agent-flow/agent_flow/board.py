@@ -28,10 +28,8 @@ def _board_bus(spec: str, node_id: str, args) -> "Bus":
 
 
 def _norm_repo_url(u: str) -> str:
-    u = str(u or "").strip().rstrip("/")
-    if u.endswith(".git"):
-        u = u[:-4]
-    return u.lower()
+    """入札選別の URL 正規形。実装は `agentcore.repolocal` に一本化（S3）。"""
+    return _repolocal.normalize_repo_url(u)
 
 
 def _node_repo_ids(node_repos) -> "set[str]":
@@ -268,10 +266,16 @@ def poll_board(bus_local: "Bus", args, node_id: str) -> "list[str]":
                 continue
             if not board._try_claim_in(bids_dir, node_id, lease, f"bid {did} by {node_id}"):
                 continue
-        # 落札 → 自分の inbox へ取り込み（下の inbox→orchestrator が拾う）
+        # 落札 → 自分の inbox へ取り込み（下の inbox→orchestrator が拾う）。
+        # **公示の workspace に「このノードの」ローカルクローンを載せてから渡す**（S3）。
+        # 公示に載っているのは依頼側が見た URL だけで、依頼側の local は請負ノードに存在しない
+        # ので正しく落とされている。だが請負側が自分の local を載せる実装が無かったため、板
+        # 経由の仕事は手元に同じリポジトリがあっても毎回ネットワーク越しにミラーを取り直して
+        # いた（C3「flow/amigos の git clone のリモート負荷」そのもの）。
+        ws = _repolocal.merge_local(post.get("workspace") or None)
         bus_local.submit_request(
             did, _board_request(post), f"agent-board:{node_id}",
-            workspace=post.get("workspace") or None,
+            workspace=ws or None,
             references=post.get("references") or [],
             delegation={"id": did, "board": True})
         bus_local.sync_push(f"board handoff {did} -> inbox")

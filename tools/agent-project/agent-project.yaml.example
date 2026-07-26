@@ -1,21 +1,29 @@
-# agent-project の設定ファイルサンプル
-# ファイル名: agent-project.yaml
+# agent-project の設定ファイルサンプル — **プロジェクトの合意事項**（どう動かすか）
+# ファイル名: agent-project.yaml / .yml / .json（PyYAML が無い環境は JSON。キーは同じ）
 #
-# このファイルをどこかに置いて --config で指定するか、
-# カレントディレクトリ（=プロジェクトルート）直下・./.agents/・~/.agents/ に置くと自動検出されます。
+# ── 置き場所は 1 か所だけ（S1）──
+#   **状態専用リポジトリの clone の直下**（= 状態ルート直下）。ここに置いたものが全 PC で
+#   共有される（状態リポジトリの同期に乗る）。--config で明示指定もできるが、探索はしない
+#   ——旧実装の cwd → ./.agents → ./.agent → ~/.agents というチェーンは廃止した。移行時に
+#   成果物リポジトリ側の古い yaml が黙って優先される事故が起きたため。
 #
-# 検索順序（フォールバック）:
-#   1. --config オプションで明示指定したパス
-#   2. カレントディレクトリの agent-project.yaml / .yml / .json（1 root = 1 プロジェクトの
-#      マニフェスト。agent-dashboard の自動発見マーカーも兼ねる）
-#   3. カレントディレクトリの .agents/agent-project.yaml / .yml / .json（agent-flow と同じ .agents ディレクトリ）
-#   4. ~/.agents/agent-project.yaml / .yml / .json
+# ── ノード固有の設定はここに書かない ──
+#   「何を動かすか・このノードの資源・ローカル環境」は各 PC の
+#   ~/.agents/agent-project.host.yaml が唯一の置き場（agent-project.host.yaml.example 参照）。
+#   このファイルに書くと起動時にエラーで止まる（state repo 経由で全 PC へ配られてしまうため）:
+#     node_id / projects / repos / availability / budget / tags / board_workdir /
+#     amigos_bus / amigos_config / residency / defaults / update（update_* キー）
+#
+#   逆に、次のキーだけは **両方に書ける**（ノード事情による上書きを許す群）。
+#   優先順位: CLI > host.yaml projects[].overrides > host.yaml defaults > このファイル > 既定
+#     agent_cli / model / act_timeout / verify_timeout / location / concurrency /
+#     agent_timeout / actor / notify_cmd / ltm_home / flow_config / verify_cwd
+#
+#   それ以外（計画・ゲート・予算・収束・検証・学習・タスク運用）はこのファイル専有。
+#   ノードごとに食い違うと実行が非決定になるため、host.yaml に書くとエラーで止まる。
 #
 # 値の優先順位: コマンドライン引数 > この設定ファイル > 組み込み既定。
-# つまり「環境ごと・常駐ごとに決まる値」をここに書き、その場限りの上書きだけ CLI で渡せます。
-# 例: 常駐は systemd の ExecStart を `agent-project` だけにし、調整はこのファイルで行う。
-#
-# PyYAML が無い環境では JSON 形式（agent-project.json）にしてください（キーは同じ）。
+# つまり「プロジェクトとして決まる値」をここに書き、その場限りの上書きだけ CLI で渡せます。
 #
 # 真偽フラグもこのファイルで指定できます（CLI > config > 既定。CLI の --flag/--no-flag が常に勝つ）:
 #   watch / once / dry_run / rot / ltm / regression_revert / require_progress / auto_level /
@@ -26,13 +34,12 @@
 #   個別パス上書き（--backlog 等）・--json/--fix/--pin のような実行限定フラグは CLI 専用です。
 
 # ---------------------------------------------------------------------------
-# プロジェクトルート（1 root = 1 プロジェクト = 1 プロセス）
+# 状態ルート（1 状態リポジトリ = 1 プロジェクト = 1 プロセス）
 # ---------------------------------------------------------------------------
-# root が唯一のアンカー。charter.md / repos.json / backlog/ / needs/ decisions/ archive/
-# policy.md / bus などはすべて root 直下に集約され、**相対パスの上書きはすべて root 基準**で
-# 解決される（絶対パスの明示は不要）。このファイル自体を root 直下（agent-project.yaml）に
-# 置くとプロジェクトのマニフェストを兼ね、agent-dashboard の自動発見マーカーになる。
-root: .                     # プロジェクトルート（cwd 相対、既定 . = cwd）
+# root はこのファイルの置き場所そのもの（状態リポジトリの clone）で、設定では変えられない
+# ——`root:` を書いても警告して無視される。clone 先の宣言は host.yaml の projects[].root。
+# charter.md / repos.json / backlog/ / needs/ decisions/ archive/ policy.md / bus は
+# すべて root 直下に集約され、**相対パスの上書きはすべて root 基準**で解決される。
 # workdir: .                # act / verify の作業ディレクトリ（root 相対、既定 . = root）
 
 # ---------------------------------------------------------------------------
@@ -223,29 +230,23 @@ git_branch: main            # バスに使う git ブランチ
 # git_subdir: flow           # リポジトリ内でバスにするサブディレクトリ
 
 # ---------------------------------------------------------------------------
-# 状態の git 保存・共有（state_git）— リモートの agent-dashboard と結果/指示を往復
+# 状態の git 同期 — リモートの agent-dashboard と結果/指示を往復
 # ---------------------------------------------------------------------------
-# ワークの内容（プロジェクトルート直下の backlog/needs/decisions/journal/… の状態）を共有 git
-# リポジトリへ双方向同期する。機械の状態は外へ、人の指示（commands/ ドロップ・inbox/ 投入・
-# needs の記入・policy/charter の編集）は中へ。
+# ワークの内容（状態ルート直下の backlog/needs/decisions/journal/… の状態）を、状態専用
+# リポジトリの origin へ双方向同期する。機械の状態は外へ、人の指示（commands/ ドロップ・
+# inbox/ 投入・needs の記入・policy/charter の編集）は中へ。同期先は **設定しない**
+# ——状態ルートは常に状態専用リポジトリの clone なので、その origin が唯一の同期先（S1）。
+# URL の宣言は host.yaml の projects[].state_repo（clone 前に読む必要があるため）。
 #
-# ★ direct モード（推奨・設定不要）: プロジェクトルート自体を共有リポジトリの clone にして
-#   おけば、state_git を設定しなくてもそのリポジトリのブランチへ state コミットを積んで push
-#   する（管理クローン .state-git を作らない）。コミットは detached worktree（専用 index）で
-#   組み立て、ブランチは update-ref の CAS で進めるため、人の並行 git 操作（add/commit）と
-#   衝突しない。取り込みは ff-only 優先・--autostash 不使用（未コミット変更と衝突するなら
-#   見送る）。viewer 側は同じリポジトリを clone して編集・検収するだけでよい。
-#
-# 共有先はルート自身のリポジトリの origin。state_git は「origin が未設定のルートに設定する URL」
-# として使う（既に origin があれば触らない）。同期先ブランチはルートが開いているブランチで、
-# リポジトリ内のサブディレクトリ分離は使わない（1 プロジェクト = 1 リポジトリ）。
-# fetch/push は state_git_interval で律速され、push は共有すべきローカルコミットがあるときだけ
-# 行う（リモートサーバの負荷を一定に保つ）。push 競合は fetch + rebase → 再 push で吸収し
-# force push はしない。一時状態（bus/・claims/）とルート内側のドット始まり（.swp 等）は同期しない。
+# コミットは detached worktree（専用 index）で組み立て、ブランチは update-ref の CAS で
+# 進めるため、人の並行 git 操作（add/commit）と衝突しない。取り込みは一時 index 上の 3-way
+# マージで決定的に合流する（rebase は使わない・作業ツリーの汚れに依存しない）。
+# **ローカルのコミットは毎同期で行い、fetch/push だけが state_git_interval で律速される。**
+# push 競合は fetch + 統合 → 再 push で吸収し force push はしない。一時状態（bus/・claims/）と
+# ルート内側のドット始まり（.swp 等）は同期しない。
 #
 # ★実運用の組み方（WSL 常駐＋gitlab executor 分散＋別 PC の viewer 監視）は
 #   agent-project.state-git.yaml.example 参照。
-# state_git: git@example.com:team/agent-state.git   # origin 未設定なら origin にする URL（未指定で無効）
 # state_git_interval: 300               # fetch/push の最短間隔（秒）。0 で毎同期（負荷は増える）
 #
 # journal のローテーション: journal.md が閾値を超えたら journal-archive/ へ退避して新しい

@@ -257,7 +257,7 @@ def main(argv=None) -> int:
     wki.add_argument("--tags", default=None, help="能力タグ（カンマ区切り）")
     wki.add_argument("--agent-cli", default=None, help="使える agent CLI（カンマ区切り）")
     wki.add_argument("--board", default=None, help="板（agent-board）の場所")
-    wki.add_argument("--max-concurrent", type=int, default=0, help="同時実行数の上限（0=無制限）")
+    wki.add_argument("--max-concurrent", type=int, default=0, help="同時実行数の上限（0=既定 4）")
     wki.add_argument("--out", default=None, help="書き出し先（既定: ~/.agents/agent-project.host.yaml）")
     wki.add_argument("--force", action="store_true", help="既存ファイルを上書きする")
 

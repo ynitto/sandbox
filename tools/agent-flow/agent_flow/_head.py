@@ -43,6 +43,9 @@ from agentcore.vocab import TERMINAL_READ as TERMINAL  # noqa: E402
 # node_id（PC の身元）の正規化は 3 ツール共通の 1 実装に寄せる（実装計画 W1-10）。
 # エンジンごとの綴り替えは同じ PC を板に 2 ノードとして登録してしまう。
 from agentcore.nodeid import normalize_node_id  # noqa: E402
+# git URL の正規化一致と「このノードのローカルクローン」解決（S3）。gitcache の `_same_repo` と
+# board の `_norm_repo_url` は同じ判定の別実装で、agent-project 側とも吸収規則が食い違っていた。
+from agentcore import repolocal as _repolocal  # noqa: E402
 
 
 @contextlib.contextmanager

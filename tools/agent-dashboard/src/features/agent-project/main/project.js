@@ -1321,23 +1321,23 @@ function hasProjectManifest(dir) {
   );
 }
 
-// ワークスペース（このビュアーに登録するフォルダ）から、agent-project が状態を書く
-// **プロジェクトルート**を解決する。
+// 登録フォルダから agent-project の **プロジェクトルート**（状態の置き場）を解決する。
 //
-//   ワークスペース  … .agent/agent-project.yaml を持つ開発フォルダ。agent-project CLI を起動する場所
-//                    （CLI から見た cwd）。人が普段開いているフォルダ＝登録するのはこれ。
-//   プロジェクトルート … 設定の `root:` が指す状態の置き場（例 <ws>/.agent-project）。backlog /
-//                    needs / charter / bus はすべてこの直下。CLI の --root・instances の root と同じ。
+// S1 以降、状態ルートは常に**状態専用リポジトリの clone**で、リダイレクトは無い。
+// dashboard に登録するのもその clone なので、通常はここは恒等写像に近い。
+// 残る仕事は移行途中の 2 つの形を読めるようにすることだけ:
 //
-// 設定の探索順は本体の _find_config と同じ（<ws>/ → <ws>/.agent/）。`root:` が無ければワークスペース
-// 自身がプロジェクトルート＝状態フォルダを直接登録する従来の使い方（instances 由来の自動発見も
-// root を直接指すのでこの経路に乗る）。
-// ~/.agent のグローバル設定にある `root:` は使わない: それを採るとすべてのワークスペースが同じ
+//   ・成果物リポジトリを登録したまま（直下に旧ブートストラップ `state_repo:` が残っている）
+//     → 隣の `<repo>-state` を開く（`resolveStateRepoRoot`）
+//   ・状態が `<ws>/.agent-project` にネストしている旧レイアウト → その下を開く
+//
+// **状態 worktree（`<repo>-agent-state`）へのリダイレクトと自動作成は廃止した。** エンジンが
+// そこへ書かなくなった以上、開くと「更新が止まった状態」を実体と信じて見せることになる
+// （読みが古いだけでなく、指示・タスク編集の書き込み先まで死んだ worktree へ落ちる）。
+//
+// ~/.agent のグローバル設定にある値は使わない: それを採るとすべてのワークスペースが同じ
 // 状態フォルダを指してしまう（本体は 1 プロセス 1 プロジェクトなので困らないが、ビュアーは
 // 複数プロジェクトを同時に扱う）。
-//
-// `state_repo:` がある場合は本体と同じく状態専用リポジトリの clone をルートにする
-// （`state.py` の `_redirect_root_to_state_repo` と同型。worktree リダイレクトは使わない）。
 function resolveProjectRoot(workspaceDir) {
   const ws = path.resolve(String(workspaceDir || ''));
   if (!ws) return ws;
@@ -1346,47 +1346,19 @@ function resolveProjectRoot(workspaceDir) {
     cfg && cfg.file && path.resolve(cfg.file).startsWith(ws + path.sep);
   const values = fromWorkspace && cfg.values ? cfg.values : null;
 
-  // 状態専用リポジトリ方式（案1）: yaml の state_repo から clone パスを特定してルートにする。
-  // 成果物リポジトリを登録しても <repo>-state / state_repo_dir を開く。
+  // 移行途中の互換: 成果物リポジトリを登録したままでも隣の状態 clone を開く。
   // 実体の git clone は agent-project に任せ、dashboard はパス解決だけする。
   const stateRepoRoot = resolveStateRepoRoot(ws, values);
   if (stateRepoRoot) return stateRepoRoot;
 
-  const raw = values ? values.root : null;
-  const branch = (values && values.state_branch) || DEFAULT_STATE_BRANCH;
-  // 状態 worktree（<repo>-<branch>）が無ければ agent-state ブランチから作ってから解決する
-  // （プロジェクトを開いたときに自動作成する。既存・非 git・ブランチ未存在はすべて no-op）。
-  const resolve = (r) => {
-    try { ensureStateWorktree(r, branch); } catch { /* 作成失敗で読込は止めない */ }
-    return toStateWorktree(r, branch);
-  };
-  if (!raw) {
-    // 設定を開発フォルダに置かず、状態だけを <workspace>/.agent-project に置く従来構成。
-    // 開発フォルダを登録した場合も、稼働レコードが指す状態フォルダと同じ実体へ解決する。
-    // ただし workspace 自身が既に状態フォルダ（direct mode の状態専用 clone を
-    // 「プロジェクトを探すフォルダ」へ明示登録したケース）なら、ここで完結させる。
-    // resolve(ws) に流すと git 管理下かつ agent-state ブランチを持つ状態専用 clone でも
-    // 「本体 repo」と誤認し、兄弟の <repo>-agent-state worktree を作ってしまう。
-    // 一方で <repo>/.agent-project そのものを開いた場合は従来どおり状態 worktree へ
-    // 正規化する。ここで早期 return すると古い本体側バックアップを見てしまい、検収画面の
-    // delivery / diff が実体側の bus・backlog と食い違う。
-    if (hasProjectStateMarkers(ws) && path.basename(ws) !== '.agent-project') return ws;
-    const nestedState = path.join(ws, '.agent-project');
-    if (hasProjectStateMarkers(nestedState)) return resolve(nestedState);
-    return resolve(ws);
+  // 旧レイアウト（状態が <ws>/.agent-project にネストしている）だけ読み替える。**登録パス自身に
+  // マニフェストがあっても優先しない**——設定ファイルだけがあって実体は下、という形がまさに
+  // この旧レイアウトで、先に ws を返すと backlog が 1 件も見えない空プロジェクトとして出る。
+  const nestedState = path.join(ws, '.agent-project');
+  if (path.basename(ws) !== '.agent-project' && hasProjectStateMarkers(nestedState)) {
+    return nestedState;
   }
-  const r = String(raw).replace(/^~(?=$|\/|\\)/, os.homedir());
-  // yaml に Linux 絶対パス（/home/...）が書いてあると、win32 の path.resolve は
-  // C:\home\... に化けて実在しない。Windows ビュアーでは WSL UNC へ翻訳する。
-  let root;
-  if (_isPosixAbs(r)) {
-    root = toViewerPath(r);
-  } else if (path.isAbsolute(r)) {
-    root = path.resolve(r);
-  } else {
-    root = path.resolve(ws, r);
-  }
-  return resolve(root);
+  return ws;
 }
 
 // git リモート URL/パスの正規化比較（本体 _same_git_remote と同型）。
@@ -1420,21 +1392,22 @@ function _gitRemoteOrigin(dir) {
 }
 
 // ワークスペース（成果物側）の git トップ。絶対パスは使わず prefix 深さで組み立てる
-// （Windows ビュアー＋WSL の混在でも表記を壊さない。toStateWorktree と同じ流儀）。
+// （Windows ビュアー＋WSL の混在でも表記を壊さない）。
 function gitRepoTop(dir) {
   const gp = gitShowPrefix(dir);
   if (!gp.ok) return null;
   return _repoTopPath(dir, gp.prefix) || null;
 }
 
-// agent-project.yaml の state_repo / state_repo_dir から状態専用 clone のパスを返す。
-// 本体 `_redirect_root_to_state_repo` と同型:
-//   ・既定: <成果物top の親>/<repo名>-state（旧 worktree <repo>-agent-state と別名）
-//   ・state_repo_dir 相対: 成果物top の親配下 / 絶対: そのまま
+// 旧ブートストラップ `agent-project.yaml` の `state_repo:` から状態 clone のパスを返す
+// （**移行途中の互換経路**）。S1 以降 clone 先の宣言は各 PC の host.yaml `projects[].root` で、
+// dashboard はそれを読まない（登録するのは状態 clone そのもの）。ここが効くのは
+// 「成果物リポジトリを登録したまま・直下に旧 yaml が残っている」形だけ。
+//   ・clone 先は <成果物top の親>/<repo名>-state（旧 `state_repo_dir` は廃止した——
+//     ノード固有パスを共有 yaml に書く経路そのものが S1 で無くなったため）
 //
-// **clone 自体は dashboard では行わない。** 通常 clone は agent-project
-// （`_ensure_state_repo_clone`）に任せる。ここはパス解決だけし、未作成でもそのパスを
-// ルートとして返す（エンジン起動後に実体が現れる）。
+// **clone 自体は dashboard では行わない。** 通常 clone は agent-project に任せる。ここは
+// パス解決だけし、未作成でもそのパスを返す（エンジン起動後に実体が現れる）。
 //
 // origin が state_repo と食い違う既存ディレクトリだけは使わない（旧 worktree 等を
 // 誤って開かない。本体と同じ護り）。workspace 自身が既にその clone なら workspace を返す。
@@ -1452,23 +1425,8 @@ function resolveStateRepoRoot(workspaceDir, values) {
   }
 
   const deliverableTop = gitRepoTop(ws) || ws;
-  const repoDirRaw = String(values.state_repo_dir || '').trim()
-    .replace(/^~(?=$|\/|\\)/, os.homedir());
-
-  let dst;
-  if (repoDirRaw) {
-    if (_isPosixAbs(repoDirRaw)) {
-      dst = toViewerPath(repoDirRaw);
-    } else if (path.isAbsolute(repoDirRaw)) {
-      // pathlib の「親 / 絶対パス = 絶対パス」と同じく、絶対ならそのまま。
-      dst = path.resolve(repoDirRaw);
-    } else {
-      dst = path.join(path.dirname(deliverableTop), repoDirRaw);
-    }
-  } else {
-    dst = path.join(path.dirname(deliverableTop), `${path.basename(deliverableTop)}-state`);
-  }
-  dst = path.resolve(dst);
+  const dst = path.resolve(
+    path.join(path.dirname(deliverableTop), `${path.basename(deliverableTop)}-state`));
 
   // 自分自身へ解決された場合（上の origin チェックで既に返しているが、非 git 等の保険）
   if (pathsEqual(dst, ws)) return ws;
@@ -1483,8 +1441,6 @@ function resolveStateRepoRoot(workspaceDir, values) {
 
   return dst;
 }
-
-const DEFAULT_STATE_BRANCH = 'agent-state';
 
 // git 管理下か + repo トップから dir までの相対パス（区切りは常に "/"、非 git なら ok:false）。
 // あえて --show-toplevel（絶対パス）ではなく --show-prefix（相対パス）を使う: 絶対パスは
@@ -1526,44 +1482,14 @@ function _splitTail(p, depth) {
   return { sep, head: segs, tail };
 }
 
-// 本体 root → 状態 worktree の実体パス（文字列のみ・fs 非依存の純関数＝テスト可能）。
-// 既に状態 worktree を指している（repo トップの basename が -<branch>）なら null を返し、
-// 呼び出し側は二重リダイレクトを避けて root をそのまま使う。
-function _stateWorktreePath(root, prefixRel, branch) {
-  const { sep, head, tail } = _splitTail(root, _prefixDepth(prefixRel));
-  if (head.length === 0) return null;
-  const base = head[head.length - 1];
-  if (base.endsWith(`-${branch}`)) return null;
-  return head
-    .slice(0, -1)
-    .concat(`${base}-${branch}`)
-    .concat(tail)
-    .join(sep);
-}
-
-// 状態 worktree → 本体 root（_stateWorktreePath の逆・純関数）。
-// 状態 worktree でない（basename が -<branch> でない）なら null。
-function _sourceRootPath(stateDir, prefixRel, branch) {
-  const { sep, head, tail } = _splitTail(stateDir, _prefixDepth(prefixRel));
-  if (head.length === 0) return null;
-  const base = head[head.length - 1];
-  const suffix = `-${branch}`;
-  if (!base.endsWith(suffix)) return null;
-  return head
-    .slice(0, -1)
-    .concat(base.slice(0, -suffix.length))
-    .concat(tail)
-    .join(sep);
-}
-
+// dir（repo トップより下でもよい）から repo トップのパス。git の絶対パス出力は使わず、
+// prefix の深さぶんだけ dir 自身の表記から削る（WSL/Windows 混在でも表記を壊さない）。
 function _repoTopPath(dir, prefixRel) {
   const { sep, head } = _splitTail(dir, _prefixDepth(prefixRel));
   return head.join(sep);
 }
 
-// 旧 blocked 票は cfg.workdir（状態 worktree の repo top）を「所在」として記録していた。
-// その path のまま git diff すると変更は全て .agent-project/** で、成果物フィルタ後に空になる。
-// state/source の project dir と git prefix が分かる場合だけ、完全一致する誤った repo top を補正する。
+
 function _repairStateDeliveryPaths(entries, stateProjectDir, sourceProjectDir, prefixRel) {
   if (!sourceProjectDir || pathsEqual(stateProjectDir, sourceProjectDir)) return entries || [];
   const stateTop = _repoTopPath(stateProjectDir, prefixRel);
@@ -1573,81 +1499,6 @@ function _repairStateDeliveryPaths(entries, stateProjectDir, sourceProjectDir, p
       ? { ...entry, path: sourceTop }
       : entry
   );
-}
-
-function fromStateWorktree(stateDir, branch = DEFAULT_STATE_BRANCH) {
-  // toStateWorktree の逆: 状態 worktree 側のパスを本体側（CLI --root が取る値）へ戻す。
-  // worktree を --root に渡すと agent-project が二重リダイレクトする。
-  const gp = gitShowPrefix(stateDir);
-  if (!gp.ok) return stateDir;                       // git 管理外
-  return _sourceRootPath(stateDir, gp.prefix, branch) || stateDir;
-}
-
-// 状態の実体は「状態 worktree」にある。agent-project は root（例 <repo>/.agent-project）の読み書きを
-// <repo>-<state_branch>/.agent-project へ逃がすので、本体側に残る .agent-project は **main に載る
-// バックアップ**であって実体ではない（significant だけが載り、bus＝run の進捗は載らない）。
-//
-// 本体側を開くと 3 つ壊れる:
-//   ・読み  … 古いバックアップを見る。実行中の run が一切見えない（bus が無い）
-//   ・書き  … 指示・タスク編集が本体へ落ち、人の作業ツリーを汚す
-//   ・git   … gitAutoPush が main へ commit/push してしまう（main はバックアップ専用にしたい）
-// 実体へ正規化してから開く。worktree が無ければ（agent-project 未起動・非 git）そのまま返す。
-function toStateWorktree(root, branch) {
-  const gp = gitShowPrefix(root);
-  if (!gp.ok) return root;                            // git 管理外 → 本体がそのまま実体
-  const candidate = _stateWorktreePath(root, gp.prefix, branch);
-  if (!candidate) return root;                        // 既に状態 worktree の中にいる
-  return isProjectDir(candidate) ? candidate : root;  // 未作成なら本体のまま（従来動作）
-}
-
-// 同一 worktree への作成再試行を 1 セッション 1 回に抑える（ブランチ未存在・作成失敗時に
-// ポーリングのたびに git を叩かないため）。
-const _stateWorktreeAttempts = new Set();
-
-// 状態 worktree（<repo>-<branch>）が未作成なら、agent-state ブランチから git worktree add で作る。
-// agent-project の _ensure_state_worktree と同型: --no-checkout で骨だけ作り、状態ディレクトリだけを
-// sparse checkout してから中身を出す（リポジトリ全体を複製しない）。
-//   ・ブランチはローカル refs/heads/<branch> か remote-tracking refs/remotes/origin/<branch> を使う。
-//     どちらも無ければ作らない（本体が未セットアップ＝クローン元が無い）。fetch はしない
-//     （UI（readProject）から同期的に呼ぶため、ネットワーク待ちで固まらせない。通常の clone は
-//      origin/<branch> の remote-tracking ref を持つので、これだけで足りる）。
-//   ・失敗・非 git・既存はすべて no-op。戻り値は情報用（created/reason）。
-function ensureStateWorktree(root, branch = DEFAULT_STATE_BRANCH) {
-  const gp = gitShowPrefix(root);
-  if (!gp.ok) return { ok: false, created: false, reason: 'non-git' };
-  const stateDir = _stateWorktreePath(root, gp.prefix, branch);
-  if (!stateDir) return { ok: true, created: false, reason: 'already-state' };
-  const worktreeTop = _repoTopPath(stateDir, gp.prefix);
-  if (!worktreeTop) return { ok: false, created: false, reason: 'no-path' };
-  if (fs.existsSync(path.join(worktreeTop, '.git'))) {
-    return { ok: true, created: false, reason: 'exists', path: worktreeTop };
-  }
-  const key = _pathKey(worktreeTop);
-  if (_stateWorktreeAttempts.has(key)) return { ok: false, created: false, reason: 'attempted', path: worktreeTop };
-  _stateWorktreeAttempts.add(key);
-  const top = _repoTopPath(root, gp.prefix);
-  const rel = String(gp.prefix || '').replace(/\/+$/, '');
-  const git = (cwd, args, timeout = 60000) =>
-    require('child_process').spawnSync('git', ['-C', cwd, ...args],
-      { encoding: 'utf8', timeout, windowsHide: true });
-  const hasLocal = git(top, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).status === 0;
-  const hasRemote = !hasLocal
-    && git(top, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`]).status === 0;
-  if (!hasLocal && !hasRemote) return { ok: false, created: false, reason: 'no-branch', path: worktreeTop };
-  const addArgs = hasLocal
-    ? ['worktree', 'add', '--no-checkout', worktreeTop, branch]
-    : ['worktree', 'add', '--no-checkout', '--track', '-b', branch, worktreeTop, `origin/${branch}`];
-  const add = git(top, addArgs, 60000);
-  if (add.status !== 0) {
-    const err = String((add.stderr || '') || (add.error && add.error.message) || '').trim().slice(0, 200);
-    return { ok: false, created: false, reason: 'worktree-add-failed', error: err, path: worktreeTop };
-  }
-  if (rel) {
-    git(worktreeTop, ['sparse-checkout', 'init', '--cone'], 30000);
-    git(worktreeTop, ['sparse-checkout', 'set', rel], 30000);
-  }
-  git(worktreeTop, ['checkout'], 120000);
-  return { ok: true, created: true, path: worktreeTop };
 }
 
 function hasProjectStateMarkers(dir) {
@@ -1692,9 +1543,26 @@ function discover(cfg) {
       : path.resolve(viewer);
     if (!roots.has(resolved)) roots.set(resolved, { root: resolved, source: 'engine', child });
   }
+  // 定常業務専用フォルダ（S2）。agent-project の管理外なので engine/status.json には出ない
+  // が、セレクタには並べて定常業務タブを開けるようにする。**engine 由来が既に居る実体には
+  // 足さない**——project エントリは backlog / charter / needs / 検収を持ち、routine エントリは
+  // cowork タブしか持たないので、routine で上書きすると機能が消える。
+  for (const raw of (((cfg && cfg.cowork) || {}).roots || [])) {
+    const declared = String(raw || '').trim();
+    if (!declared) continue;
+    const expanded = declared.replace(/^~(?=$|\/|\\)/, os.homedir());
+    const resolved = _isPosixAbs(expanded) ? toViewerPath(expanded)
+      : path.isAbsolute(expanded) || expanded.startsWith('\\\\') ? expanded
+        : path.resolve(expanded);
+    if (![...roots.keys()].some((k) => pathsEqual(k, resolved))) {
+      roots.set(resolved, { root: resolved, source: 'cowork', child: null });
+    }
+  }
 
   const projects = [];
   const seenDirs = new Set();                     // 実体（状態の置き場）で重複排除する
+  // engine 由来を先に処理する（同じ実体に解決される cowork.roots のエントリを後から
+  // 落とすため。Map は挿入順で回るので engine → cowork の順になる）。
   for (const { root, source, child } of roots.values()) {
     const workspace = root;                       // 選択の識別子（readProject の入力もこれ）
     const dir = resolveProjectRoot(workspace);    // 状態の置き場（backlog/needs/charter はこの下）
@@ -1732,6 +1600,9 @@ function discover(cfg) {
       dir: workspace,
       root: dir,             // プロジェクトルート（状態の置き場。readProject が操作の基準にする）
       source,
+      // kind: project = agent-project が回すプロジェクト / routine = 定常業務専用フォルダ（S2）。
+      // 表示側は既存の isProject 分岐（cowork タブのみ・既定タブ cowork）へ流す。
+      kind: source === 'cowork' ? 'routine' : 'project',
       exists: fs.existsSync(workspace),
       isProject: isProjectDir(workspace) || isProjectDir(dir),
       hasCharter,
@@ -1880,18 +1751,13 @@ function readProject(workspaceDir, cfg) {
     need.owner = ownerByTask.get(tid) || '';
     need.comments = readReviewComments(dir, tid);
   }
-  const projectCfg = readToolConfig('agent-project', [workspace, ...agentDirCandidates(workspace)]);
-  const cfgValues = projectCfg && projectCfg.values ? projectCfg.values : null;
-  const stateBranch = (cfgValues && cfgValues.state_branch) || DEFAULT_STATE_BRANCH;
   const gp = gitShowPrefix(dir);
-  if (gp.ok) {
-    // state_repo 方式では状態 clone と成果物リポジトリが別物。検収 diff の「所在」補正は
-    // 登録ワークスペース（成果物側）を source にする。worktree 方式だけ fromStateWorktree。
-    const sourceDir = (cfgValues && String(cfgValues.state_repo || '').trim())
-      ? workspace
-      : fromStateWorktree(dir, stateBranch);
+  if (gp.ok && !pathsEqual(dir, workspace)) {
+    // 状態 clone と成果物リポジトリは別物なので、needs に載った検収 diff の「所在」は
+    // 状態側のパスのままだとこのビュアーから開けない。登録ワークスペース側へ読み替える。
+    // （worktree 方式の逆変換 fromStateWorktree は方式ごと廃止した — S1）
     for (const need of needs) {
-      need.delivery = _repairStateDeliveryPaths(need.delivery, dir, sourceDir, gp.prefix);
+      need.delivery = _repairStateDeliveryPaths(need.delivery, dir, workspace, gp.prefix);
     }
   }
   const decisionsAll = [];
@@ -2034,11 +1900,7 @@ module.exports = {
   readProject,
   resolveProjectRoot,
   resolveStateRepoRoot,
-  fromStateWorktree,
-  ensureStateWorktree,
   resolveBusDir,
-  _stateWorktreePath,
-  _sourceRootPath,
   _repairStateDeliveryPaths,
   _sameGitRemote,
   _pathKey,

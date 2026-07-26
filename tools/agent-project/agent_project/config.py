@@ -32,15 +32,12 @@ class Config:
     needs: Path        # ディレクトリ（案件毎）
     workdir: Path
     bus: Path
-    profile_mode: bool = False          # True の間は AGENT_PROJECT_* 環境変数を参照しない
     git_bus: "str | None" = None
     git_branch: str = "main"
     git_subdir: "str | None" = None
-    # 状態の git 保存・共有（state_git）: ワーク内容（プロジェクトルートの状態）を共有 git リポジトリへ
-    # 双方向同期し、リモートの agent-dashboard と結果/指示を往復する。fetch/push は
-    # state_git_interval で律速。ルート自体が git クローンなら管理クローンを介さず直接コミット・push
-    # する（direct モード。state_git 未設定でも有効）。
-    state_git: "str | None" = None        # 共有リポジトリ（URL/パス）。None で無効（direct モードを除く）
+    # 状態の git 同期: root（= 状態専用リポジトリの clone）自身の origin へ双方向同期し、
+    # リモートの agent-dashboard と結果/指示を往復する（DirectStateGit）。ローカルのコミットは
+    # 毎同期で行い、fetch/push だけを state_git_interval で律速する。
     state_git_interval: float = 300.0     # fetch/push の最短間隔（秒）。0 で毎同期（リモート負荷は増える）
     # agent-flow へ --config で渡す共有 agent-flow.yaml（任意。未指定は agent-flow の既定発見に委ねる）。
     # agent-flow の設定値（executor / state_git_subdir / gitlab.* / defer_waits 等）は個別に CLI 注入
@@ -48,28 +45,11 @@ class Config:
     # 例外は「バスをどのリポジトリへ鏡写しするか」の routing（--state-git 等）のみで、これは
     # agent-project の役割なので CLI 注入し続ける。
     flow_config: "str | None" = None
-    # 状態専用リポジトリ（案1: 状態と成果物の分離）。設定すると状態（.agent-project 一式）を
-    # 成果物リポジトリの worktree ではなく、専用リポジトリの通常 clone に置く。worktree の
-    # 二重実装・sparse-checkout・本体 main へのバックアップ（ドリフト源）を回避する。
-    # URL は全 PC 共有（共有 yaml 可）。clone 先 dir は既定 <repo>-state（旧 worktree <repo>-agent-state と別名。PC 毎に上書き可）。
-    # 空なら従来どおり worktree 方式（後方互換）。clone 失敗時も worktree 方式へ自動フォールバック。
+    # 状態専用リポジトリ（S1）。root は常にこのリポジトリの通常 clone で、リダイレクトは無い。
+    # 宣言の唯一の置き場は host.yaml の projects[]（clone 前に読める場所が要るため）で、
+    # ここに入るのは「いま何で動いているか」の導出値（doctor・status の表示と origin 検査）。
     state_repo: str = ""
-    state_repo_dir: str = ""            # ローカル clone 先（成果物top の親を基準に解決。相対なら親配下、
-    #                                      絶対ならそのまま。空＝<成果物repo>-state。旧 worktree と別名）
-    state_repo_branch: str = "main"    # 専用リポジトリ内で状態を載せるブランチ
-    # 状態 worktree（build_config が root を差し替える。下の _redirect_root_to_state_worktree 参照）
-    state_worktree_dir: str = ""
-    state_branch: str = "agent-state"
-    state_commit: bool = True
-    state_commit_interval: float = 300.0
-    state_push: bool = False
-    state_backup_branch: str = "main"  # 状態のバックアップ先（正本ブランチ）。空で無効
-    state_top: "Path | None" = None    # 本体リポジトリのトップ（状態を worktree へ逃がしたときだけ入る）
-    # 設定・CLI で指定された素の root（worktree へリダイレクトする前）。プロジェクトの同一性は
-    # これで判定する: 実書き込み先（backlog.parent）は worktree 側を指すので、start/stop が照合に
-    # 使う root（_resolved_root＝リダイレクトしない）と食い違い、重複検出が空振りする。
-    # 外部操作者が --root に渡すのもこの値（worktree 側を渡すと二重リダイレクトになる）。
-    source_root: "Path | None" = None
+    state_repo_branch: str = "main"    # 状態を載せるブランチ
     force: bool = False                # 同じプロジェクトを監視中でも起動する（watch の重複を許す）
     status_interval: float = 0.0          # watch アイドル中に status.json の生存信号を更新する間隔（秒）。
                                            # 既定 0=無効（idle 中は追加コミットを一切生まない）。>0 でこの間隔
@@ -281,13 +261,63 @@ def _current_branch(cfg: "Config") -> str:
     return _git_out(cfg.workdir, "rev-parse", "--abbrev-ref", "HEAD").strip()
 
 
-def _source_repo(cfg: "Config") -> Path:
-    """成果物（worker が書いたコード）が置かれるリポジトリ。
+def resolve_local_repo(url: str) -> "Path | None":
+    """URL に対応する **このノードのローカルクローン** を host.yaml の `repos[]` から引く（S3）。
 
-    cfg.workdir は状態 worktree（<repo>-agent-state/.agent-project）を指すので、そこの git を見ても
-    出てくるのは bus/ の claims や events ばかりで、レビューしたいコードは 1 行も出てこない。
-    コードは本体リポジトリの作業ブランチ ap/<task-id> にある。"""
-    return cfg.state_top or cfg.workdir
+    ノード固有の絶対パスを host.yaml だけに置くのが S3 の要点——共有 repos.json に書くと、
+    その PC にしか存在しないパスが state repo 経由で全 PC へ配られる。解決の実装は
+    `agentcore.repolocal` に一本化してある（agent-flow・dashboard と同じ規則で引くため）。"""
+    local = _repolocal.resolve_local(url)
+    return Path(local) if local else None
+
+
+def _task_repo_url(cfg: "Config", task: "Task | None") -> str:
+    """タスクの書込先リポジトリ URL（run メタ → 永続化済み workspace spec → 生トークン）。
+
+    生の `- workspace:` トークンまで落ちるのは、charter のレジストリに載っていないローカル
+    パスをそのまま書込先にした単一リポジトリ運用のため。`_raw_url_spec` は URL らしくない
+    トークンを spec 化しない（正しい——ルーティングの推測はしない）ので、ここで拾わないと
+    その構成では成果物の所在が永久に解決できない。"""
+    if task is None:
+        return ""
+    url = str((_task_run_meta(cfg, task).get("workspace") or {}).get("url") or "").strip()
+    if url:
+        return url
+    url = str((_workspace_spec_for(cfg, task) or {}).get("url") or "").strip()
+    return url or _strip_code(str(task.get("workspace") or "").strip())
+
+
+def _source_repo(cfg: "Config", task: "Task | None" = None) -> Path:
+    """成果物（worker が書いたコード）が置かれるリポジトリのローカル解決（S1 §3.5）。
+
+    S1 以前は「リダイレクト前の root（成果物リポジトリ）」= `cfg.state_top` を暗黙のアンカーに
+    していた。状態ルートを状態専用リポジトリ一本にした結果その手掛かりが無くなるので、
+    タスクの書込先 URL から解決し直す:
+
+      1. host.yaml `repos[].local`（S3 のノード固有宣言。フルクローンなのでマージまでできる）
+      2. workspace がローカルパスそのもの（`_raw_url_spec` が許す形）ならそのディレクトリ
+      3. 共有 bare ミラー（`ensure_cache`。agent-flow と同じキャッシュ・毎回 fetch＝INV-1 鮮度）
+      4. どれも解決できなければ workdir（従来のフォールバック。差分は空になる）
+
+    3 は blobless ミラーなので、フォージ無し運用の自動マージ（`_merge_task_branch`）では
+    blob の遅延取得にネットワークが要る。**そこまで含めて確実にしたいノードは 1 を宣言する**
+    ——S4 でレビューと決着が MR/PR へ寄るため、3 の出番は縮む見込み。"""
+    url = _task_repo_url(cfg, task)
+    if url:
+        local = resolve_local_repo(url)
+        if local is not None:
+            return local
+        if "://" not in url:
+            p = Path(url).expanduser()
+            if p.is_dir():
+                return p
+        try:
+            cache = ensure_cache(url)
+        except (OSError, subprocess.SubprocessError):
+            cache = None
+        if cache:
+            return Path(cache)
+    return cfg.workdir
 
 
 def _task_run_meta(cfg: "Config", task: "Task") -> dict:
@@ -321,11 +351,13 @@ def _task_work_branch(cfg: "Config", task: "Task") -> "tuple[str, str] | None":
 
 
 def work_branch_changes(cfg: "Config", base: str, branch: str,
-                        repo: "Path | None" = None) -> "tuple[str, list[str]]":
+                        repo: "Path | None" = None,
+                        task: "Task | None" = None) -> "tuple[str, list[str]]":
     """作業ブランチの成果 (ref, 変更ファイル一覧)。無ければ ("", [])。
 
-    worker は成果を origin へ push するので、ローカルに無ければ取り込んでから差分を取る。"""
-    repo = Path(repo) if repo is not None else _source_repo(cfg)
+    worker は成果を origin へ push するので、ローカルに無ければ取り込んでから差分を取る。
+    repo 未指定なら task の書込先 URL からローカルクローンを解決する（`_source_repo`）。"""
+    repo = Path(repo) if repo is not None else _source_repo(cfg, task)
 
     def _has(ref: str) -> bool:
         return bool(_git_out(repo, "rev-parse", "--verify", "--quiet", ref).strip())
@@ -369,7 +401,7 @@ def delivery_entries(cfg: "Config", task: "Task | None" = None,
     persisted_ws = _workspace_spec_for(cfg, task) or {}
     entries: "list[dict]" = []
     if branch:
-        repo = _source_repo(cfg)
+        repo = _source_repo(cfg, task)
         ref, files = work_branch_changes(cfg, target, branch, repo=repo)
         url = str(ws.get("url") or persisted_ws.get("url") or "")
         name = _repo_label(url, fallback=repo.name)
