@@ -234,8 +234,14 @@ class TestCliMain(unittest.TestCase):
             self.assertEqual(                            # 推奨文字列の生成（README 正準値）
                 payload["cmd"],
                 'codd-gate verify --base "$KIRO_BASE_REV" --repos .agent-project/repos.json')
+            self.assertEqual(payload["regression_cmd"], payload["cmd"])
+            self.assertEqual(
+                payload["intake_cmd"],
+                "codd-gate tasks --debt --repos .agent-project/repos.json")
             self.assertTrue(payload["changed"])          # yaml 注入
-            self.assertRegex(cfg.read_text(encoding="utf-8"), COMPLETION_RE)
+            written = cfg.read_text(encoding="utf-8")
+            self.assertRegex(written, COMPLETION_RE)
+            self.assertNotIn("intake_cmd:", written)     # intake は案内のみ
 
     def test_repos_path_inferred_from_root_key_without_explicit_flag(self):
         # --repos 省略時は設定の root: から <root>/repos.json を推定する（README の規約）。
@@ -355,6 +361,8 @@ class TestCliMain(unittest.TestCase):
 
             self.assertFalse(payload["usable"])
             self.assertIsNone(payload["cmd"])
+            self.assertIsNone(payload["regression_cmd"])
+            self.assertIsNone(payload["intake_cmd"])
             self.assertFalse(payload["changed"])
             self.assertEqual(cfg.read_text(encoding="utf-8"), before)
 

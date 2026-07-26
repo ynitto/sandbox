@@ -9,7 +9,7 @@ agent-project.yaml に書けば足りる。本モジュールはこの1行を人
 （README が yaml 直書きと並べて案内する、もう一方の有効化経路）。
 
 責務は2つ:
-  - build_regression_cmd: CoddGateStatus と --repos（codd_gate_routing.resolve_repos_arg、b2）
+  - build_regression_cmd: CoddGateStatus と --repos（codd_gate_routing.recommend_regression_cmd）
     を合成し regression_cmd の値そのものを組み立てる。status.usable が False（未検出・バージョン
     不適合・schema 不適合のいずれか）なら None を返し、壊れたコマンドを書き込まない
     （他 codd_gate_* モジュールと同じ no-op 縮退）。
@@ -20,17 +20,19 @@ agent-project.yaml に書けば足りる。本モジュールはこの1行を人
 
 このモジュールが意図的に含めないもの（他タスクの責務）:
   - repos.json 自体の生成（agent-project.py 本体・charter からの自動生成）
-  - intake_cmd の生成・注入（対称の関数だが対象キーが異なる。intake/enqueue 結線の担当タスク）
+  - intake_cmd の注入（成功時 JSON に codd_gate_routing の推奨値は出すが、設定するのは利用者）
   - cfg.regression_cmd の実行時の組み立て（README.md の有効化手順どおり、静的な設定ファイルへの
     注入だけで完結させる）
 
 依存は標準ライブラリと同梱の codd_gate_status／codd_gate_routing のみ。
 
 CLI:
-    python3 codd_gate_regression.py --config .agent/agent-project.yaml [--repos <path>] [--dry-run]
+    python3 tools/agent-project/codd_gate_regression.py \
+      --config .agent/agent-project.yaml [--repos <path>] [--dry-run]
 
 `--config` は自動配線に頼らずこの3機能（検出・推奨文字列の生成・yaml 冪等注入）へ到達する
-唯一の入口。終了コードは `EXIT_*` 定数を参照（呼び出し側が「未導入だから飛ばす」と
+唯一の入口。成功時 JSON は regression_cmd と intake_cmd の推奨値を併記するが、書き込むのは
+regression_cmd の1行だけ。終了コードは `EXIT_*` 定数を参照（呼び出し側が「未導入だから飛ばす」と
 「パスを間違えている」を区別できるよう別の値にしてある）。
 """
 from __future__ import annotations
@@ -41,8 +43,7 @@ import re
 import sys
 from pathlib import Path
 
-from codd_gate_detect import BINARY_NAME
-from codd_gate_routing import resolve_repos_arg
+from codd_gate_routing import recommend_intake_cmd, recommend_regression_cmd
 from codd_gate_status import CoddGateStatus, detect_status
 
 KEY = "regression_cmd"
@@ -89,7 +90,7 @@ def build_regression_cmd(
     """
     if not status.usable:
         return None
-    return " ".join([BINARY_NAME, "verify", "--base", base, "--repos", resolve_repos_arg(repos_path)])
+    return recommend_regression_cmd(repos_path, base=base)
 
 
 def _yaml_single_quote(value: str) -> str:
@@ -176,15 +177,19 @@ _EPILOG = f"""\
   {EXIT_UNUSABLE}  codd-gate が使えず regression_cmd を組み立てられない（何も書いていない）
 
 例:
-  python3 codd_gate_regression.py --config .agent/agent-project.yaml --dry-run
-  python3 codd_gate_regression.py --config .agent/agent-project.yaml
+  python3 tools/agent-project/codd_gate_regression.py --config .agent/agent-project.yaml --dry-run
+  python3 tools/agent-project/codd_gate_regression.py --config .agent/agent-project.yaml
+
+成功時 JSON の regression_cmd がこの CLI の注入値。intake_cmd は案内のみで、設定ファイルへは
+書き込まないため、人か install 手順が同じ YAML または --intake-cmd へ設定する。
 """
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="codd_gate_regression.py",
-        description="codd-gate を実測し、regression_cmd の1行だけを agent-project.yaml へ冪等注入する",
+        description=("codd-gate を実測し、regression_cmd の1行だけを agent-project.yaml へ"
+                     "冪等注入する（intake_cmd は成功時 JSON で案内）"),
         epilog=_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", default=".agent/agent-project.yaml",
@@ -227,13 +232,16 @@ def main(argv: "list[str] | None" = None) -> int:
 
     status = detect_status(args.codd_gate)
     cmd = build_regression_cmd(status, repos_path, base=args.base)
+    intake_cmd = recommend_intake_cmd(repos_path) if status.usable else None
     new_text, changed = upsert_config_text(text, cmd)
     if changed and not args.dry_run:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(new_text, encoding="utf-8")
 
     print(json.dumps({
-        "usable": status.usable, "reason": status.reason, "cmd": cmd,
+        "usable": status.usable, "reason": status.reason,
+        "cmd": cmd,  # 後方互換: regression_cmd の旧フィールド名
+        "regression_cmd": cmd, "intake_cmd": intake_cmd,
         "changed": changed, "config": str(path), "dry_run": bool(args.dry_run),
     }, ensure_ascii=False))
     if cmd is None:
