@@ -9,8 +9,10 @@
 
 **読み方**: §1 が次の一手（着手可能・他の前提になるもの）。§2 はその完了を待つ連鎖。
 §3 は「必要が出たときに拾う」の一覧で、急ぎのものは無い。§4 は意図して残した割り切り
-（やらないと決めたことの記録）。§5 は運用で観測すべき懸念、§6 は今回の棚卸しで新たに
-気づいた事項。全体を掴むには §1〜§2 で足りる。
+（やらないと決めたことの記録）。§5 は運用で観測すべき懸念。§6 は**今回の棚卸しで新たに
+見つけたもの**で、§6.1 の不具合 3 件（`remote_review` が効かない・serve 起動直後の停止で
+子が孤児化・ノード宛て指示が正典構成で届かない）だけは §1 と同格に扱ってよい。
+全体を掴むには §1〜§2 と §6.1 で足りる。
 
 ---
 
@@ -112,15 +114,133 @@ agent-dashboard の `npm test` も回すのが素直。
   同一コミット。更新漏れノードは「入札しない」に倒す実装は済んでいるが、実機確認は
   R2b 待ち（§2）。
 
-## 6. 今回の棚卸しで新たに気づいた事項
+## 6. 今回の棚卸しで新たに見つけたもの
 
-1. **R10 検査は素朴な grep では成立しない**（§1.2 に詳述）。ガイドのファイル名・スキーマ名が
-   内部名を正当に含むため、検査規則に除外の設計が要る。
-2. **識別子レベルの `canceled`（米式）が残っている**: 語彙統一（W0-9）はデータ値
-   （status の `cancelled`）を対象にしており、`mark_canceled` / `is_canceled_requested` 等の
-   関数名・コメントには米式が残る。書き込む値は `cancelled` で正しく、実害は無いが、
-   grep で語彙バグを探すときのノイズになる。低優先。
-3. **agentcore のテストルートが 2 つある**: `agentcore/tests`（protocol / transport /
-   agentcli の 74 件）と `tests/`（board / commands / nodeid / repolocal の 53 件）。
-   片方だけ `discover` すると残りが黙ってスキップされる。R4 の CI を書くときに両方を
-   明示するか、1 ディレクトリへ寄せる。
+07-26 時点の実装を横断調査した結果。既知の積み残し（§1〜§4）に無いものだけを載せる。
+テストは実測済み（agent-project 1,063 件中 §6.1-2 の 1 件だけが間欠失敗。他は全緑）。
+
+### 6.1 不具合（直すべきもの・重要度順）
+
+1. **`remote_review` が Config へ配線されておらず、`observe` が効かない**（高）。
+   `CONFIG_DEFAULTS` にキーはあり層検査も通るのに、`Config` dataclass にフィールドが無く
+   `build_config` も渡していない。読み出し（`mr.py:397`）は `getattr(cfg, "remote_review",
+   "settle")` なので、**プロジェクト yaml に `observe` と書いても常に `settle`** になり、
+   S4 の移行用スイッチ（フォージ決着を表示だけに留める）が機能しない。observe 分岐は
+   到達不能の死んだコード。S5 の verifier キーで踏んだ「CONFIG_DEFAULTS にあるだけで
+   届いていない」欠落（S6/S7 詳細設計 §6 で自省済み）と同型の再発で、機械的に差分を
+   取ると Config へ届いていないのはこのキーだけ。設定キー追加時に
+   「CONFIG_DEFAULTS ⊆ Config フィールド」を CI で固定する再発防止まで含めて直したい。
+2. **`serve` の SIGTERM ハンドラ設置が子プロセスの起動より後**（高）。
+   `resident_cli.py` の `cmd_serve` は `_build_resident`（この中で子を start 済み）→
+   `write_status()`（git 観測を含み数秒かかりうる）→ シグナルハンドラ設置、の順。
+   この窓で SIGTERM が届くと既定ハンドラで即死して `graceful_shutdown` が走らず、
+   **子だけが監督者不在で生き残る**（次回起動の子と同一プロジェクトでループが 2 本並ぶ——
+   コード自身のコメントが警告している事故そのもの）。
+   `tests/test_resident.py::test_serve_exits_cleanly_on_sigterm` が実際に間欠失敗する
+   （3 回連続実行で 1 回、`-15 != 0`）。`systemctl restart` の連打や起動直後の
+   シャットダウンで踏む。修正はハンドラ設置を `_build_resident` の前へ動かすだけ。
+3. **ノード宛て指示ドロップの置き場が、書き手（dashboard）と読み手（常駐体）で別**（高）。
+   常駐体は `$AGENT_COMMANDS_DIR` → WSL 側 `~/.agents/commands` を読むが、dashboard の
+   `node-commands.js` は Windows 側 `os.homedir()` 基準で書く（同じ dashboard の
+   `engine.js` は `wslpath` で WSL 側 home を解決して `engine/status.json` を読んで
+   いるのに、この経路だけ通っていない）。正典構成（Windows で dashboard + WSL で
+   常駐体）では投函先と取り込み先が別ファイルシステムになり、**手動入札・委任中止・
+   落札が押しても何も起きない**（`.err` も出ず pending のまま）——S8-2 が直したはずの
+   「押しても効かないボタン」が置き場所を変えて残った形。逃げ道の設定
+   `delegation.nodeCommandsDir` は config.js の既定に載っておらず、画面から辿れない。
+   旧 `~/.agent` フォールバックの有無も両者で食い違う。
+4. **`Config.node` だけが `normalize_node_id` を通らない**（中〜高）。
+   `node_id` 未宣言・環境変数無し（host.yaml を複数 PC へ共有配布する場合の推奨構成）の
+   とき、`Config.node` は大文字を保持し、常駐体・板・agent-flow は小文字化する。
+   ホスト名に大文字が入る（Windows/WSL では普通）PC は `status/DESKTOP-X.json` と
+   `nodes/desktop-x.json` の 2 名義になる。`- node:` の完全一致で判定する
+   `task_runnable_here` は、人が板の端末一覧（小文字）を見て書いた `- node:` を
+   **どのノードも拾わないまま ready で固める**。`doctor --node-id-cutover` も status 側の
+   残骸を見つけられない。`agentcore.nodeid` を 1 実装にした動機の取りこぼし。
+5. **組み込み検証プロンプトが `verify_side_effects` を無視する**（中）。
+   スキル（backlog-verifier）が見つからない／実行失敗時のフォールバックプロンプトは
+   `acceptance` とタイトルしか使わず、副作用制約（作業ツリー外に書かない・外部へ
+   書き込まない）が載らない。**安全設定がスキル未導入ノードで黙って落ち**、検証は失敗時に
+   リトライで何度も走るので副作用が累積しうる。`rules` / `repo_context` / `recipes` /
+   `feedback` も同じ経路で落ちるが、そちらは品質劣化に留まる。
+6. **agent-project にだけ argv 長制限の退避（spill）が無い**（中）。
+   agent-flow / agent-amigos は `prompt_via: argv` の CLI でプロンプトが上限を超えると
+   一時ファイルへ退避するが、agent-project の `_agent_cmd` は無防備。S5/S6 で
+   プロンプトは明確に肥大した（verifier 入力 = repo 文脈 + rules + レシピ + feedback、
+   planner 入力 = charter 全文 + 既存タスク + 墓標）。既定 CLI の kiro は argv 渡しなので、
+   超過すると verifier は全基準 unverifiable、plan は空振りで人へ倒れる。スキーマの
+   「argv 長制限を超えると自動で退避に切り替わる」という説明とも矛盾する。
+7. **`revive` が charter スコープを無視して墓標を消す**（低）。墓標の追記は
+   `(指紋, charter)` 単位なのに、削除は指紋一致行を charter 無関係に全部消す。
+   複数 charter 運用で意図しない解除が起きる。
+
+### 6.2 実装と契約のずれ・二重実装（懸念）
+
+- **`CONTRACT_VERSION` が 3 箇所に重複定義**: `agentcore/board.py`（入札判定が使う）・
+  `resident/status.py`（板へ宣言する値。`contract_compatible` も docstring ごと重複）・
+  dashboard `engine.js`。片方だけ上げると「版 2 と宣言しつつ版 1 で判定」になり、
+  fail-close の設計ゆえ**誤動作ではなく無言の不参加**に倒れて誰も気付かない。
+  「規則が片方だけ育つ」ことを潰すために agentcore へ集約した、その定数が割れている。
+- **板の `nodes/<id>.json` に deprecated の `local`（他 PC の絶対パス）を publish している**:
+  `repos.schema.json` は `local` を「ホスト固有なので共有レジストリに置けない」と
+  deprecated 宣言しているのに、常駐体は host.yaml の `repos[]` を `local` ごと共有 git の
+  板へ書く（S8 §6.2 の「速度最適化のヒント」として意図的）。表示では落としているが
+  データは配られており、S3 の動機と正面から矛盾する。意図を維持するならスキーマ側の
+  文言の決着が要る。あわせて `$defs.node.repos` の宣言（レジストリ形）と実装
+  （host.yaml 配列形）も食い違い、スキーマ検証すると落ちる。
+- **`nodes/<id>.json` の `workloads` / `max_concurrent` を入札判定が読まない**: スキーマは
+  「workload 不一致・上限超過時は入札しない」と宣言するが、`eligible()` は tags /
+  agent_cli / contract_version / repos しか見ない。忙しいノードが板の仕事を掴んだまま
+  枠待ちで塞ぎ、空きノードが拾えない。`max_concurrent: 0` の意味もスキーマ（無制限）と
+  実装（既定 4）で真逆。
+- **host.yaml のトップレベルキーは無検査**: `PROJECT_ONLY_KEYS` は定義とテストにしか
+  使われず、`_validate_layers` は `defaults` / `overrides` しか見ない。host.yaml の
+  トップレベルに `plan_review: false` を書いても、`node_id` を `nodeid` と綴り間違えても、
+  警告ゼロで黙って無視される。S1 の E2 契約（defaults/overrides の検査）自体は満たすが、
+  「設定したのに効かないことに気付けない」という S1 の設計動機が host.yaml 側だけ抜けている。
+- **`BoardRepo` の請負側書き込みだけ排他を通らない**（要確認）: `write_bid` /
+  `write_cancelled` / `write_award`（S8 で追加）だけ flock と `_ensure()` を通らず直接
+  書く。transport の破損時再クローン（`rmtree`）や `pull --rebase` と競合すると
+  入札・中止が消えうる。
+- **ノード宛て指示に debounce と `.err` 掃除が無い**: プロジェクト側 `ingest_commands` に
+  ある「書きかけ猶予」と「成功時の古い `.err` 掃除」が、ノードスコープ側に無い。
+  スキーマは書き手として人を認めているのに手置きは即 `.err` 行きで、`.err` は無限に
+  溜まり gc tick も見ない。
+- **`DIFF_CRITERION` の文字列が本体とスキルの 2 箇所**: 片方だけ直すと、検証レポートに
+  出る基準文とエージェントが見た基準文が黙ってずれる（判定は番号で突き合わせるため）。
+- **`repolocal` の Python / JS で吸収規則がずれる**（低・要確認）: symlink 解決の有無が
+  違い、JS 側は `repos:` の行末コメントで 0 件に読める。どちらも「読めなければミラー
+  取得へ落ちる」だけだが、1 実装へ集約した動機に照らすと再発の芽。
+- **識別子レベルの `canceled`（米式）残存**（低）: 語彙統一（W0-9）の対象はデータ値で、
+  `mark_canceled` 等の関数名・コメントには米式が残る。書き込む値は `cancelled` で正しく
+  実害は無いが、grep のノイズになる。`NodeCapability.write` のパス導出が
+  `_safe_node` を通らない件（現経路では実害なし）も同類。
+
+### 6.3 文書の綻び
+
+- **`docs/guides/multi-pc-operations.md` が常駐一本化前の記述と混在**: 廃止済みの
+  `start` / `stop`、通らない `status --root`、旧モデルの「各 PC 1 daemon」が 10 箇所超
+  残る一方、一部だけ `serve` へ更新済み。W3-2 の実施結果は本ガイドを「直した」と
+  記録しているが、直り切っていない。複数 PC 分担は今回の改修の中心で、最初に読まれる
+  ガイドなので優先度は高め。
+- **S1 詳細設計が現存しないシンボルを参照**: `_validate_layers` の引数形が実装と違い、
+  `_STATE_SIGNIFICANT` は存在しない（同期は除外方式）。結論は正しいが、設計書を根拠に
+  読むと存在しない機構を探すことになる。
+- **doctor に S1 設計 §3.6 の新検査が入っていない**: E1〜E7 相当の起動前チェック再掲と
+  host.yaml `projects[]` の root 存在・origin 一致検査が未実装（設計書の実績節は実装済みと
+  記す）。root の綴り間違いが「子の起動失敗 → 隔離」という最も遠い症状でしか見えない。
+- **R10 検査は素朴な grep では成立しない**（§1.2 に詳述）: ガイドのファイル名・スキーマ名が
+  内部名を正当に含むため、検査規則に除外の設計が要る。
+- **agentcore のテストルートが 2 つ**: `agentcore/tests`（74 件）と `tests/`（53 件）。
+  片方だけ `discover` すると残りが黙ってスキップされる。R4 の CI では両方を明示するか
+  1 ディレクトリへ寄せる。
+
+### 6.4 確認して問題なしだったもの（記録）
+
+- `tombstones.md` / `notes/` / `verifications/` / `verify-recipes/` / `context/` は
+  すべて状態同期の対象（同期は除外方式で、これらは除外されない）。複数 PC で墓標や
+  検証レポートが共有されない懸念は当たらない。
+- `task.schema.json` の status enum・`acceptance` の配列 ↔ 複数行往復は実装と整合。
+- `agent-cli.schema.json` の `interactive` 継承規則は Python / JS で一致。
+- 旧キー（`state_worktree_dir` / `--profile` 等）のガイド残存は移行対照表としての
+  意図的な記載のみ。`gitAutoPush` / `location: daemon|remote` は残存ゼロ。
