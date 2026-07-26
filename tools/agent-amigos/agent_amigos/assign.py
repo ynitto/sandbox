@@ -16,7 +16,7 @@ import os
 from agentcore import protocol
 
 from .bus import Bus, MissionPaths
-from .util import now_iso, read_json, write_json_atomic
+from .util import iso_to_epoch, now_iso, read_json, write_json_atomic
 
 DEFAULT_LEASE = 600.0
 
@@ -163,21 +163,13 @@ def away_grace() -> float:
         return DEFAULT_AWAY_GRACE
 
 
-def _iso_to_epoch(iso: str) -> float:
-    import calendar
-    try:
-        return calendar.timegm(time.strptime(str(iso or ""), "%Y-%m-%dT%H:%M:%SZ"))
-    except (ValueError, TypeError):
-        return 0.0
-
-
 def is_away_within_grace(mp: MissionPaths, role_id: str, node_id: str) -> bool:
     """担当が計画停止（away）中で、まだ待つべきか（設計書 §5.3:
     計画停止ではロールを奪わない。resume_at + grace までは本人の復帰を待つ）。"""
     st = read_json(mp.status(f"{node_id}--{role_id}")) or {}
     if st.get("state") != "away":
         return False
-    resume = _iso_to_epoch(st.get("resume_at"))
+    resume = iso_to_epoch(st.get("resume_at"))
     return time.time() < resume + away_grace()
 
 

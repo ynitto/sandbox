@@ -16,7 +16,8 @@ from .bus import Bus, MissionPaths
 from .messages import build_message, message_path, read_inbox
 from .mission import (active_roles, current_round, load_mission, load_roles,
                       load_statuses, normalize_added_roles, role_status)
-from .util import append_jsonl, extract_json, log, now_iso, read_json, write_json_atomic
+from .util import (append_jsonl, extract_json, iso_to_epoch, log, now_iso,
+                   read_json, write_json_atomic)
 
 
 def restaff_mission(bus: Bus, mp: MissionPaths, add: "list | None" = None,
@@ -51,6 +52,47 @@ def restaff_mission(bus: Bus, mp: MissionPaths, add: "list | None" = None,
         write_json_atomic(message_path(mp, msg), msg)
     bus.sync_push(f"restaff {mp.mission_id}")
     return {"added": added_ids, "pruned": pruned_ids}
+
+
+def _notify_owner_once(bus: Bus, mp: MissionPaths, subject: str, body: str) -> bool:
+    """`inbox/owner` へ同じ subject の通知が無いときだけ 1 通書く（重複して鳴らさない）。
+    既読フラグをバスに置かない規律（§4.3）のまま冪等にするため、判定は inbox の走査で行う。"""
+    if _escalated(mp, subject):
+        return False
+    _mid, msg = build_message("system", "owner", "decision-request",
+                              subject=subject, body=body)
+    write_json_atomic(message_path(mp, msg), msg)
+    bus.sync_push(f"notice {mp.mission_id}")
+    return True
+
+
+def owner_notices(bus: Bus, mp: MissionPaths, mission: dict, phase: str) -> "list[str]":
+    """オーナーが気づくべき事象を `inbox/owner` へ 1 度だけ届ける（設計書 §8.2）。
+
+    どちらも**判断はオーナーに残す**通知で、ツールが勝手に終端させたり予算を伸ばしたり
+    はしない。届いた通知の一覧（種別）を返す。
+    """
+    sent = []
+    if phase in ("done", "cancelled"):
+        return sent
+    # wall-clock の締切超過。自動 fail はしない（予算・収束条件の見直しか cancel かは人が決める）
+    deadline = iso_to_epoch(mission.get("deadline"))
+    if deadline and time.time() > deadline and phase != "failed":
+        if _notify_owner_once(bus, mp, f"締切を超過しました deadline={mission.get('deadline')}",
+                              f"ミッション {mp.mission_id} が wall-clock の締切を過ぎました"
+                              f"（現在の状態: {phase}）。予算の追加・収束条件の見直し・"
+                              "cancel のいずれかを判断してください。自動 fail はしません。"):
+            sent.append("deadline")
+    # staffing_policy: fail での終端（誰も引き受けないまま staffing_timeout を過ぎた）
+    if phase == "failed" and str(mission.get("staffing_policy")) == "fail":
+        if _notify_owner_once(bus, mp, "必須ロールが充足せず failed で終端しました",
+                              f"ミッション {mp.mission_id} は staffing_timeout"
+                              f"（{mission.get('staffing_timeout')} 秒）を過ぎても必須ロールが"
+                              "埋まらず、staffing_policy: fail により終端しました。"
+                              "ロール要件の緩和・参加ノードの追加・self-staff への変更を"
+                              "検討してください。"):
+            sent.append("staffing")
+    return sent
 
 
 def _save_conductor(bus: Bus, mp: MissionPaths, state: dict) -> None:

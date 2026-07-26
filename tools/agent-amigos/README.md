@@ -56,10 +56,11 @@ agent-amigos drive --mission-id <id>   # 手元で終端まで回す（単発。
 
 - **設定は `.agents/agent-amigos.yaml`**（cwd。`.yml` / `.json` 可・無くても動く）。
   探索順は `./agent-amigos.*` → `./.agents/agent-amigos.*` → `~/.agents/agent-amigos.*`。
-  優先順位は CLI > 設定 > 既定。雛形: [`agent-amigos.yaml.example`](agent-amigos.yaml.example)。
-  **注意**: 設定の `agent_cli` / `tags` / `roles` / `manual_claim` / `board` を読むのは
-  `participate` だけ。`join` / `drive` / `run` は CLI 引数しか見ず、`agent_cli` がどこからも
-  決まらないと `stub`（LLM なしのダミー）で走るので、手で叩くときは `--agent-cli` を明示する。
+  優先順位は CLI > 設定 > 既定で、解決は全サブコマンド共通（`agent_cli` / `tags` / `roles` /
+  `interval` / `manual_claim` / `board` も同じ順序で効く）。雛形:
+  [`agent-amigos.yaml.example`](agent-amigos.yaml.example)。使う agent CLI が設定・CLI 引数・
+  ロール指定のどこからも決まらない場合は `stub` へ落とさず paused にする（ダミー成果物が
+  納品まで進まないように）。
 - **バスはローカル dir か `git+<url>`**。共有は git バスに一本化した（`hub+<url>` の中継
   サーバは廃止 — 公開元だった `serve` が無くなり、対向だけ残しても繋ぐ先が無い）。
 - **同時実行の上限は PC 単位**。実行中の手番は `~/.agents/amigos/turns/*.json` に印が
@@ -73,8 +74,8 @@ agent-amigos drive --mission-id <id>   # 手元で終端まで回す（単発。
   Amigos タブから**タスク依頼**（ミッション画面。「チームビルディング（役割を自動設計）」/
   「役割を自分で指定」のどちらのモードでも投函できる）と**手動引き受け**（募集中ロールの
   「引き受け」ボタン）を commands 投函で行える。`manual_claim: true` にすると自動応募を
-  止めて手動引き受けだけで回せる（**現状この設定を読むのは `participate` だけ**。
-  `join` / `drive` は `--manual-claim` 相当の引数を持たず自動応募する）。
+  止めて手動引き受けだけで回せる（`participate` / `join` / `drive` のいずれでも効き、
+  `--manual-claim` / `--no-manual-claim` で上書きできる）。
 
 ```bash
 # 手動引き受けの例（dashboard を使わない場合）

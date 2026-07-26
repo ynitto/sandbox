@@ -3,9 +3,9 @@
 mission:
   title: 社内 FAQ ボットの MVP
   goal: design-doc.md の受入基準をすべて満たす FAQ ボットを納品する
-  # deadline: 2026-07-24T09:00:00Z    # 任意（wall-clock）。現状は保存するだけで通知は未実装
+  # deadline: 2026-07-24T09:00:00Z    # 任意（wall-clock）。超過は owner へ通知のみ（自動 fail しない）
   assignment_policy: first-come        # first-come（claim 勝者＝確定）| owner-picks（assign で確定）
-  staffing_policy: self-staff          # self-staff | wait | fail（fail は未実装。wait と同じ挙動）
+  staffing_policy: self-staff          # self-staff | wait | fail（fail は募集失敗で終端）
   staffing_timeout: 600                # 秒。経過後に未充足の必須ロールをオーナーが自己補充
   acceptance: manual                   # manual | agent（オーナー CLI が自動判定・上限超で人へ）
   convergence:

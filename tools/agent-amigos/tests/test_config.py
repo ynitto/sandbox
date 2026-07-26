@@ -174,3 +174,65 @@ class NodeIdHomeMigrationTests(unittest.TestCase):
         # amigos で `mac` になり、板に 2 ノードとして現れる（W1-10 レビュー指摘）。
         self.assertEqual(self.daemon.default_node_id(),
                          normalize_node_id(socket.gethostname()))
+
+
+class SettingsResolutionTests(unittest.TestCase):
+    """設定の解決は `_resolve_ctx` 1 本（CLI > 設定 > 既定）。
+
+    以前は bus と node_id しかここで解決せず、agent_cli / tags / roles / manual_claim /
+    board は `participate` だけが設定を読んでいた。`join` / `drive` / `run` は CLI 引数
+    しか見ず、設定した agent_cli が効かないまま stub へ落ちる沈黙した失敗になっていた。
+    サブコマンドが増えても同じ穴が空かないよう、解決経路そのものを固定する。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="amigos-resolve-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        os.makedirs(os.path.join(self.tmp, ".agents"), exist_ok=True)
+        self.config = os.path.join(self.tmp, ".agents", "agent-amigos.json")
+        with open(self.config, "w", encoding="utf-8") as f:
+            json.dump({"node_id": "cfg-node", "agent_cli": "claude",
+                       "tags": ["python"], "roles": ["impl"], "interval": 7,
+                       "resume_hours": 3, "manual_claim": True,
+                       "board": "/tmp/board", "bus": "bus"}, f)
+
+    def _ctx(self, argv, interval_default=5.0, config=True):
+        argv = argv + (["--config", self.config] if config else [])
+        args = cli.build_parser().parse_args(argv)
+        return cli._resolve_ctx(args, interval_default=interval_default)
+
+    def test_join_reads_every_knob_from_config(self):
+        ctx = self._ctx(["join"])
+        self.assertEqual(ctx.node_id, "cfg-node")
+        self.assertEqual(ctx.agent_cli, "claude")
+        self.assertEqual(ctx.tags, ["python"])
+        self.assertEqual(ctx.roles, ["impl"])
+        self.assertEqual(ctx.interval, 7.0)
+        self.assertEqual(ctx.resume_hours, 3.0)
+        self.assertTrue(ctx.manual_claim)
+        self.assertEqual(ctx.board, "/tmp/board")
+
+    def test_run_and_drive_read_agent_cli_from_config(self):
+        for argv in (["run", "--mission", "m", "--role", "r"], ["drive"]):
+            with self.subTest(cmd=argv[0]):
+                self.assertEqual(self._ctx(argv).agent_cli, "claude")
+
+    def test_cli_args_win_over_config(self):
+        ctx = self._ctx(["join", "--agent-cli", "codex", "--tags", "go,rust",
+                         "--roles", "reviewer", "--interval", "1",
+                         "--no-manual-claim", "--node-id", "arg-node"])
+        self.assertEqual((ctx.agent_cli, ctx.node_id), ("codex", "arg-node"))
+        self.assertEqual((ctx.tags, ctx.roles), (["go", "rust"], ["reviewer"]))
+        self.assertEqual(ctx.interval, 1.0)
+        self.assertFalse(ctx.manual_claim)
+
+    def test_config_interval_wins_over_command_default(self):
+        # 設定 > 既定。設定に interval があれば drive の既定 0.5 には落ちない
+        self.assertEqual(self._ctx(["drive"], interval_default=0.5).interval, 7.0)
+
+    def test_post_roles_file_is_not_a_role_filter(self):
+        """`post --roles` は役割ミッション表のファイルパス。応募ロールの絞り込み
+        （`join --roles`）と dest を共有すると、公示のたびに roles.yaml という名前の
+        ロールだけに応募する絞り込みが生えてしまう。"""
+        ctx = self._ctx(["post", "--design", "d.md", "--roles", "roles.yaml"])
+        self.assertEqual(ctx.roles, ["impl"])     # 設定の絞り込みがそのまま残る

@@ -528,3 +528,110 @@ class ConductorTests(AmigosTestCase):
         self.assertEqual(conductor_turn(self.bus, mp, load_mission(mp), "owner-node", "claude"),
                          "idle")
         self.assertEqual(len(calls), 0)                    # 上限で LLM を呼ぶ前に止まる
+
+
+class AgentCliResolutionTests(AmigosTestCase):
+    """使う agent CLI が決まらないときは stub へ落とさず paused にする（設計書 §5.5）。
+
+    stub は LLM なしのダミー応答なので、黙って既定にすると「# ANSWER.md / role: … 」
+    のようなダミー成果物が統合・納品まで進む。壊れるなら観測できる形で壊す。
+    """
+
+    def _mid_without_role_cli(self):
+        spec = base_spec()
+        for r in spec["roles"]:
+            r.pop("agent_cli", None)
+        return self.post(spec)
+
+    def test_missing_agent_cli_pauses_instead_of_stubbing(self):
+        mid = self._mid_without_role_cli()
+        mp = self.bus.mission(mid)
+        write_json_atomic(mp.roster(), {"impl": {"node": "owner-node"}})
+        r = AmigoRunner(self.bus, mid, "impl", "owner-node", agent_cli=None)
+        self.assertEqual(r.turn_once(), "paused")
+        st = read_json(mp.status("owner-node--impl"))
+        self.assertEqual(st["state"], "paused")
+        self.assertIn("agent-error:env", st["note"])
+        # 成果物は 1 つも書かれない（ダミーが納品まで進まない）
+        self.assertFalse(os.path.isdir(mp.artifacts_dir("impl")))
+        # owner へ理由が届く
+        self.assertTrue(any(m.get("subject") == "amigo paused"
+                            for m in read_inbox(mp, "owner")))
+
+    def test_role_agent_cli_is_enough(self):
+        spec = base_spec()
+        spec["roles"][1]["agent_cli"] = "stub"     # ロール側だけで決まればターンは走る
+        mid = self.post(spec)
+        mp = self.bus.mission(mid)
+        write_json_atomic(mp.roster(), {"impl": {"node": "owner-node"}})
+        self.assertEqual(
+            AmigoRunner(self.bus, mid, "impl", "owner-node", agent_cli=None).turn_once(),
+            "acted")
+
+    def test_owner_is_notified_once_not_every_turn(self):
+        mid = self._mid_without_role_cli()
+        mp = self.bus.mission(mid)
+        write_json_atomic(mp.roster(), {"impl": {"node": "owner-node"}})
+        r = AmigoRunner(self.bus, mid, "impl", "owner-node", agent_cli=None)
+        for _ in range(3):
+            r.turn_once()
+        notices = [m for m in read_inbox(mp, "owner") if m.get("subject") == "amigo paused"]
+        self.assertEqual(len(notices), 1)
+
+
+class AwayQuestionTimeoutTests(AmigosTestCase):
+    """宛先が計画停止（away）中は question_timeout の時計を止める（設計書 §5.3・§5.4）。
+
+    止めないと、相手の PC が夜に落ちているだけで質問が期限切れになり、翌朝の owner の
+    inbox が裁定要求で埋まる。相手は戻ると分かっているので待つのが正しい。
+    """
+
+    def _ask(self, mid, to="architect"):
+        mp = self.bus.mission(mid)
+        write_json_atomic(mp.roster(), {"impl": {"node": "owner-node"},
+                                        to: {"node": "node-a"}})
+        r = AmigoRunner(self.bus, mid, "impl", "owner-node", agent_cli="stub")
+        r.turn_once()                       # stub は collaborates_with の先へ 1 度質問する
+        st = read_json(mp.status("owner-node--impl"))
+        self.assertTrue(st["open_questions"], "stub が質問を送っているはず")
+        return mp, r, st
+
+    def _make_away(self, mp, role, node, resume_in_sec):
+        write_json_atomic(mp.status(f"{node}--{role}"),
+                          {"node": node, "role": role, "state": "away",
+                           "resume_at": time.strftime(
+                               "%Y-%m-%dT%H:%M:%SZ",
+                               time.gmtime(time.time() + resume_in_sec))})
+
+    def test_open_question_records_addressee(self):
+        mid = self.post()
+        mp, _r, st = self._ask(mid)
+        rec = next(iter(st["open_questions"].values()))
+        self.assertEqual(rec["to"], "architect")
+
+    def test_away_addressee_suppresses_escalation_and_informs_sender(self):
+        mid = self.post()
+        mp, r, _st = self._ask(mid)
+        self._make_away(mp, "architect", "node-a", 3600)
+        for _ in range(5):                  # question_timeout（既定 2）を十分に超えるまで
+            r.turn_once()
+        self.assertFalse([m for m in read_inbox(mp, "owner")
+                          if str(m.get("subject", "")).startswith("未回答の質問")],
+                         "away 中は owner へ昇格しない")
+        # 送信側へ不在を 1 度だけ知らせる（毎ターン鳴らさない）
+        notices = [m for m in read_inbox(mp, "impl")
+                   if str(m.get("subject", "")).startswith("宛先 architect は不在")]
+        self.assertEqual(len(notices), 1)
+
+    def test_escalates_once_addressee_is_back(self):
+        mid = self.post()
+        mp, r, _st = self._ask(mid)
+        self._make_away(mp, "architect", "node-a", 3600)
+        for _ in range(3):
+            r.turn_once()
+        write_json_atomic(mp.status("node-a--architect"),
+                          {"node": "node-a", "role": "architect", "state": "working"})
+        for _ in range(4):                  # 復帰後はふつうに時計が進む
+            r.turn_once()
+        self.assertTrue([m for m in read_inbox(mp, "owner")
+                         if str(m.get("subject", "")).startswith("未回答の質問")])

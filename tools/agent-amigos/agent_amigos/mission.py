@@ -32,6 +32,7 @@ CONVERGENCE_DEFAULTS = {
     "consensus_min": 2,                # done_when=consensus: 合意判定に要る最小回答席数
 }
 DONE_WHEN_MODES = ("all-required-done", "reviewer-approved", "consensus")
+STAFFING_POLICIES = ("self-staff", "wait", "fail")
 BUDGET_DEFAULTS = {
     "execution_minutes": 0,             # 0 = 無制限
     "per_role_turns": 30,
@@ -244,6 +245,11 @@ def normalize_mission(spec: dict) -> "tuple[dict, list]":
     if mission["assignment_policy"] not in ("first-come", "owner-picks"):
         raise SystemExit(f"[agent-amigos] assignment_policy={mission['assignment_policy']!r} が"
                          "不正です（first-come | owner-picks）")
+    # staffing_policy も値を検証する。以前は素通しで、`self_staff` のようなタイポが
+    # 黙って wait 相当（誰も自己補充せず open のまま滞留）に落ちていた。
+    if mission["staffing_policy"] not in STAFFING_POLICIES:
+        raise SystemExit(f"[agent-amigos] staffing_policy={mission['staffing_policy']!r} が"
+                         f"不正です（{' | '.join(STAFFING_POLICIES)}）")
     if mission["acceptance"] not in ("manual", "agent"):
         raise SystemExit(f"[agent-amigos] acceptance={mission['acceptance']!r} は未対応です"
                          "（manual | agent。codd-gate は将来拡張 — 設計書 §5.8）")
@@ -514,6 +520,16 @@ def convergence_state(mission: dict, roles: "dict[str, dict]", mp: MissionPaths)
             "unanswered": unanswered}
 
 
+def _work_started(mp: MissionPaths) -> bool:
+    """このミッションで誰かが 1 度でも手番を取ったか（`status/<who>.json` の存在から導出）。
+    誰も引き受けないまま失効した募集と、走り出してから席が空いた状態を区別する。"""
+    try:
+        return any(n.endswith(".json") and ".tmp." not in n
+                   for n in os.listdir(mp.status_dir()))
+    except FileNotFoundError:
+        return False
+
+
 def derive_phase(mission: dict, roles: "dict[str, dict]", mp: MissionPaths) -> str:
     """ミッションの状態をファイルの存在から導出する（設計書 §4.1）。"""
     if os.path.isfile(mp.cancelled()):
@@ -525,6 +541,19 @@ def derive_phase(mission: dict, roles: "dict[str, dict]", mp: MissionPaths) -> s
     if cs["budget"]["hard"] and (mission.get("budget") or {}).get("on_exhausted") == "fail":
         return "failed"
     if not cs["staffed"]:
+        # staffing_policy: fail — 募集が staffing_timeout を過ぎても必須ロールが埋まらない
+        # なら失敗として終端する。self-staff / wait と同じ「open のまま滞留」に落ちていた
+        # のが以前の挙動で、fail を指定した意味が無かった。終端は予算枯渇の fail と同じく
+        # **ファイルからの導出**で作る（新しい終端ファイルも書き手も増やさない）。
+        #
+        # ただし効くのは**まだ誰も手番を取っていないミッションだけ**。fail は「募集に
+        # 失敗した」の意味で、走り出した後にノードが落ちて一時的に空いた席は再募集
+        # （§5.3）の領分だ。区別しないと、夜中の 1 台のクラッシュが進行中のミッションを
+        # 巻き添えで終端させる。
+        from .assign import staffing_expired   # 循環回避の遅延 import
+        if (str(mission.get("staffing_policy")) == "fail" and staffing_expired(mission)
+                and not _work_started(mp)):
+            return "failed"
         return "open"
     if not cs["converged"]:
         return "working"

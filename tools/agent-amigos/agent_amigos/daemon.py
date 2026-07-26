@@ -101,7 +101,7 @@ class NodeDaemon:
         # manual_claim: 自動応募しない（commands/ 経由の手動引き受けのみ。
         # 引き受け済みロールのターン実行・オーナー職務は従来どおり動く）
         self.manual_claim = manual_claim
-        # commands_home: 指示のファイル取り込み（<home>/.agent/agent-amigos/commands/）を
+        # commands_home: 指示のファイル取り込み（<home>/.agents/agent-amigos/commands/）を
         # 有効にするホームディレクトリ。None = 取り込まない
         self.commands_home = commands_home
         # home: 納品棚（<home>/deliveries/）の置き場。既定は commands_home と同じ
@@ -221,9 +221,15 @@ class NodeDaemon:
             roles = active_roles(load_roles(mp), mp)   # 剪定ロールは募集・実行から外す（G5）
             phase = derive_phase(mission, roles, mp)
             seen[mid] = phase
+            i_am_owner = mission.get("owner_node") == self.node_id
+            if i_am_owner:
+                # 締切超過・staffing 失敗の通知は**終端判定より前**に出す。failed は終端なので
+                # 下の continue の後ろに置くと、いちばん知らせたい終端理由だけが届かない。
+                from .ownerops import owner_notices
+                if owner_notices(self.bus, mp, mission, phase):
+                    self._active = True
             if vocab.is_terminal(phase):
                 continue
-            i_am_owner = mission.get("owner_node") == self.node_id
             policy = str(mission.get("assignment_policy") or "first-come")
             roster = read_json(mp.roster()) or {}
             roster = self._participate(mid, mp, mission, roles, phase, i_am_owner, policy, roster)

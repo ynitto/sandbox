@@ -1,7 +1,7 @@
 # agent-amigos — 役割駆動マルチエージェント協働ツール 設計書
 
 > 作成 2026-07-17 ／ 最終照合 2026-07-26（実装 `tools/agent-amigos/` と突き合わせ済み）
-> 実装: `tools/agent-amigos/`（`agent-amigos.py` ＋ `agent_amigos/` パッケージ、テスト 158 件）
+> 実装: `tools/agent-amigos/`（`agent-amigos.py` ＋ `agent_amigos/` パッケージ、テスト 176 件）
 > 正典スキーマ: [`schemas/mission.schema.json`](../../schemas/mission.schema.json) /
 > [`schemas/delivery.schema.json`](../../schemas/delivery.schema.json) /
 > [`schemas/amigos-command.schema.json`](../../schemas/amigos-command.schema.json)
@@ -158,7 +158,7 @@ agent-project・agent-flow が同じ CLI 資源を奪い合う。
 **選択肢と却下理由**:
 
 - *wall-clock の締切だけ*: 却下。不在時間が予算になる。ただし wall-clock の締切が要る場面も
-  あるので `deadline` を併記できる（**注: 現状は未実装。§9 参照**）。
+  あるので `deadline` を併記でき、超過はオーナーへの通知になる（自動 fail はしない。§8.2）。
 - *中央の課金台帳*: 却下。集計プロセスが単一障害点になる。各 amigo がターンごとに
   `events/<who>.jsonl` へ `cli_seconds` を追記すれば、消費合計は「バス上の全 events の総和」で、
   誰が計算しても同じ値になる。
@@ -334,7 +334,11 @@ push 競合は `pull --rebase` からの指数バックオフで、force push �
 `staffing_timeout`（既定 600 秒）を過ぎても必須ロールが埋まらない場合、`staffing_policy` に従う。
 既定の `self-staff` では、**オーナーノードが未充足ロールの amigo をローカルに立てて claim する**。
 参加ノードが 0 でもミッションは必ず進む。これが「1 ノードでも完結する」の実体だ。
-`wait` は充足まで open のまま待ち、`fail` は失敗として終端する（**未実装。§9**）。
+`wait` は充足まで open のまま待つ。`fail` は failed として終端し、オーナーへ理由を 1 通届ける。
+ただし `fail` が効くのは**まだ誰も手番を取っていないミッションだけ**で、走り出した後に
+ノードが落ちて空いた席は再募集（§5.3）の領分だ。区別しないと、夜中の 1 台のクラッシュが
+進行中のミッションを巻き添えにする。終端は予算枯渇の `fail` と同じくファイルからの導出で、
+新しい終端ファイルも書き手も増やさない。
 
 1 台に複数 amigo が同居するときの同時実行数は、PC 単位のマーカー
 （`~/.agents/amigos/turns/*.json`、pid 入り）で律速する。常駐体が起こした手番と、人が手元で
@@ -376,7 +380,9 @@ lease は liveness の信号であって progress ではない。ハングはエ
 
 会話の規約は 2 つだけ。**question には answer か owner へのエスカレーションで必ず応じる**
 （`question_timeout`、既定 2 ターンを過ぎた未回答はランナーが自動で `decision-request` へ
-昇格する）。**設計を左右する合意はオーナーが `decisions.jsonl` に書いて確定する**
+昇格する。ただし**宛先が away の間は時計を止め**、代わりに送信側へ不在を 1 度だけ知らせる。
+止めないと、相手の PC が夜に落ちているだけで全員の質問が期限切れになり、翌朝のオーナーの
+inbox が裁定要求で埋まる）。**設計を左右する合意はオーナーが `decisions.jsonl` に書いて確定する**
 （amigo は次ターンから全員これを読む）。design doc の改訂もオーナーのみで、amigo は
 `request` で提案するに留める。何が正かを常に 1 箇所に保つ。
 
@@ -408,7 +414,10 @@ cursor / ollama は定義ファイル同梱。amigos 側に CLI 分岐コード�
 
 ロールごとに CLI を選べるので、レビュアーは claude、実装は codex、QA は kiro という混成が組める。
 さらに管理面（`schemas/agent-control.schema.json`、`~/.agents/control/control.json`）から
-ロール別に CLI とモデルを横断上書きできる。優先順位は 管理面 > ロール指定 > ノード既定。
+ロール別に CLI とモデルを横断上書きできる。優先順位は 管理面 > ノード既定 > ロール指定。
+**どこからも決まらない場合は `stub` へ落とさず環境エラーにする**。既定を stub にすると、
+設定を読み落とした経路でダミー応答の成果物がそのまま統合・納品まで進む。沈黙して壊れるより、
+`[agent-error:env]` として paused になりオーナーへ理由が届くほうがいい。
 
 失敗は [`agent-cli-plugin-design.md`](./agent-cli-plugin-design.md) の決定的トリアージ
 （`[agent-error:quota|auth|env|transient]`）で読み分ける。`transient` はそのターンをリトライ。
@@ -630,7 +639,10 @@ agent-dashboard の自動発見マーカーも兼ねる。
 | 会話の空転 | `quiescence_turns` の静穏化 | 現状で統合し、良し悪しは受入判定に委ねる |
 | エージェント CLI のハング | プラグイン timeout | ターン失敗 → リトライ、繰り返せば paused ＋ 通知 |
 | quota / auth / env | `[agent-error:*]` タグ | amigo paused。環境修復後に続きから（§5.5） |
-| 質問の放置 | `question_timeout` | ランナーが owner へ自動エスカレーション |
+| 使う CLI が決まらない | ターン先頭の解決（§5.5） | `[agent-error:env]` として paused。stub のダミー成果物を作らない |
+| 質問の放置 | `question_timeout` | ランナーが owner へ自動エスカレーション。宛先が away の間は時計を止める |
+| 募集の失敗 | `staffing_timeout` 超過かつ必須ロール未充足 | `staffing_policy: fail` なら failed で終端し、オーナーへ理由を通知。走り出した後の欠員は再募集 |
+| 締切（wall-clock）超過 | `mission.deadline` | オーナーへ 1 度だけ通知。自動 fail はせず、予算追加か cancel かの判断は人に残す |
 | push 競合（GitBus） | git | 名義分割で原理的に稀。`pull --rebase` リトライで吸収 |
 | オーナーノードの停止 | roster / decisions が進まない | ミッションは自然停止（amigo は idle で待機）。復帰で再開 |
 
@@ -652,24 +664,21 @@ agent-dashboard の自動発見マーカーも兼ねる。
 away プロトコル、封筒ランナー、二層の予算会計、integrator と納品棚、owner-picks、
 `acceptance: agent`、build-team とパターンカタログ、seats / aggregate / rounds / topology /
 restaff / conductor、agent-board への入札参加、agent-dashboard の Amigos タブ。
-テストは stub エージェント（LLM 不要）で 158 件。
+テストは stub エージェント（LLM 不要）で 176 件。
 
-**既知の欠落**（2026-07-26 時点で設計が約束していて実装が無いもの）:
+**残っている欠落**:
 
 | 項目 | 状態 |
 |---|---|
-| `staffing_policy: fail` | 値は受け付けるが誰も見ていない。`wait` と同じ挙動（open のまま滞留）になる |
-| `mission.deadline` | 正規化して保存するだけ。超過してもオーナーへ通知しない |
-| away 中の `question_timeout` 抑止 | 宛先が away でも通常どおりエスカレーションが走る。不在中の owner 宛通知が増える |
-| ノードの可用性ウィンドウ宣言 | 未実装。`owner-picks` の判断材料にできない |
+| ノードの可用性ウィンドウ宣言 | 未実装。`owner-picks` の判断材料にできない。away プロトコル（§5.3）が事後の耐性は担保しているので、事前の宣言が無くても運用は回る |
 | `acceptance: codd-gate` | 将来拡張。現状は `manual` / `agent` のみ受け付ける |
 | `pairwise-rank` パターン | 設計方針として ranker ロールに委ねる（プリミティブは足さない） |
 
-**設定の読み落とし**（実装の不具合）: 設定ファイルの `agent_cli` / `tags` / `roles` /
-`interval` / `manual_claim` / `board` を読むのは `participate` だけで、`join` / `drive` /
-`run` は CLI 引数しか見ない。`agent_cli` がどこからも解決できないと `stub` へ落ちるため、
-ダミーの成果物が統合・納品まで進み得る。設定を効かせたいなら、いまは CLI 引数で明示的に
-渡すか `participate` 経由（常駐体の既定）で回す。
+**2026-07-26 に直したもの**: 設定ファイルの `agent_cli` / `tags` / `roles` / `interval` /
+`manual_claim` / `board` を `participate` しか読まなかった件（解決を `_resolve_ctx` へ一本化）、
+決まらない agent CLI が黙って `stub` へ落ちていた件（`[agent-error:env]` で paused）、
+`staffing_policy: fail` が `wait` と同じ挙動だった件、`deadline` 超過が通知されなかった件、
+away 中も `question_timeout` が進んでいた件。
 
 ---
 
@@ -683,9 +692,9 @@ restaff / conductor、agent-board への入札参加、agent-dashboard の Amigo
 mission:
   title: 社内 FAQ ボットの MVP
   goal: design-doc.md の受入基準をすべて満たす FAQ ボットを納品する
-  deadline: 2026-07-24T09:00:00Z     # 任意（未実装。§9）
+  deadline: 2026-07-24T09:00:00Z     # 任意。超過は owner へ通知のみ（自動 fail しない）
   assignment_policy: first-come      # first-come | owner-picks
-  staffing_policy: self-staff        # self-staff | wait | fail（fail は未実装）
+  staffing_policy: self-staff        # self-staff | wait | fail
   staffing_timeout: 600
   acceptance: manual                 # manual | agent
   convergence:

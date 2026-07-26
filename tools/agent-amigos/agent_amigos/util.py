@@ -117,3 +117,17 @@ def safe_relpath(path: str) -> str:
     if not parts:
         raise ValueError(f"不正なパスです: {path!r}")
     return "/".join(parts)
+
+
+def iso_to_epoch(iso: str) -> float:
+    """ISO8601 UTC（`YYYY-MM-DDTHH:MM:SSZ`）を epoch 秒へ。読めなければ 0.0。
+
+    バス上の時刻はすべてこの綴りで書かれる（`now_iso`）。読み側が各所で
+    `calendar.timegm(time.strptime(...))` を書き写すと、片方だけ綴りを直したときに
+    「書けているのに読めない」がその箇所だけ起きる。導出は 1 つに寄せる。"""
+    import calendar
+    import time as _time
+    try:
+        return calendar.timegm(_time.strptime(str(iso or ""), "%Y-%m-%dT%H:%M:%SZ"))
+    except (ValueError, TypeError):
+        return 0.0

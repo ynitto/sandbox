@@ -20,7 +20,7 @@ from .mission import (DEFAULT_ANSWER_FILE, DEFAULT_SCORE_FILE, convergence_state
 from .messages import (build_message, message_path, new_messages, read_channel_all,
                        valid_target)
 from .util import extract_json, log, now_iso, read_json, safe_relpath
-from .assign import renew_lease
+from .assign import is_away_within_grace, renew_lease
 
 STUB_COST_ENV = "AGENT_AMIGOS_STUB_COST"
 
@@ -45,6 +45,60 @@ class AmigoRunner:
         self.who = f"{node_id}--{role_id}"
         self.agent_cli = agent_cli
         self.model = model
+
+    # --- paused（この amigo だけ止める・ミッションは殺さない、§5.5） ---------
+    def _pause(self, st: dict, note: str, txn: "TurnTxn | None" = None,
+               body: "str | None" = None, commit: str = "") -> str:
+        """この amigo を paused にし、owner へ理由を 1 度だけ届ける。
+
+        **遷移したときだけ書く**（既に paused なら何もしない）。毎ターン鳴らすと、
+        環境が直るまで owner の inbox が同じ通知で埋まる。理由（quota / auth / env /
+        ノード予算 / 管理面）が違っても、止め方と伝え方は 1 つでいい。"""
+        if st.get("state") == "paused":
+            return "paused"
+        txn = txn if txn is not None else TurnTxn()
+        st["state"] = "paused"
+        st["note"] = str(note)[:500]
+        st["heartbeat"] = now_iso()
+        self._queue_message(txn, "owner", "status", subject="amigo paused",
+                            body=body or f"{self.who}: {str(note)[:500]}")
+        txn.write_json(self.mp.status(self.who), st)
+        txn.apply(self.bus, commit or f"{self.who} paused")
+        log(self.who, f"paused: {str(note)[:120]}")
+        return "paused"
+
+    # --- 使う agent CLI の解決 -----------------------------------------------
+    NO_CLI_ERROR = (
+        "[agent-error:env] 使う agent CLI が決まりません。ノード既定（--agent-cli / "
+        "設定 agent-amigos.yaml の agent_cli）か、ロールの agent_cli を指定してください。"
+        "LLM なしで動かしたい場合だけ stub を明示指定します（--agent-cli stub）。")
+
+    def _resolve_cli(self, role: dict, nb: dict) -> "tuple[str, str | None]":
+        """このターンで使う (agent CLI, モデル)。優先順位は
+        agent-control（管理面の横断上書き）> ノード既定 > ロール指定。
+        soft / 縮退中は degraded を重ねる。
+
+        **どこからも決まらない場合は stub へ落とさず環境エラーにする。** 以前は既定が
+        `stub`（LLM なしのダミー応答）だったため、設定を読み落とした経路（旧 `join` /
+        `drive` / `run`）ではダミーの成果物がそのまま統合・納品まで進んだ。沈黙して
+        壊れるより、`[agent-error:env]` として paused になり owner へ理由が届くほうがいい。
+        """
+        cli = self.agent_cli or role.get("agent_cli") or ""
+        model = self.model or role.get("model") or None
+        c_cli, c_model = control.override(self.role_id)
+        if c_cli:
+            cli = c_cli
+        if c_model:
+            model = c_model
+        if nb.get("soft") or (nb.get("exceeded") and nb.get("on_exhausted") == "degrade"):
+            d_cli, d_model = control.degraded()
+            if d_cli:
+                cli = d_cli
+            if d_model:
+                model = d_model
+        if not cli:
+            raise RuntimeError(self.NO_CLI_ERROR)
+        return cli, model
 
     # --- 状態（status/<who>.json = 自分名義） --------------------------------
     def _load_status(self) -> dict:
@@ -125,17 +179,10 @@ class AmigoRunner:
         # ミッションは殺さず paused に留める（他ノード・上限緩和で再開）。owner へ一度だけ通知。
         life = control.lifecycle()
         if life in ("pause", "stop"):
-            if st.get("state") != "paused":
-                txn = TurnTxn()
-                st["state"] = "paused"
-                st["note"] = f"[agent-control] 管理面により lifecycle={life} 指定"
-                st["heartbeat"] = now_iso()
-                self._queue_message(txn, "owner", "status", subject="amigo paused",
-                                    body=f"[agent-control] {self.who}: lifecycle={life}（管理面指定）。"
-                                         "dashboard のオーケストレーションタブで run に戻してください。")
-                txn.write_json(self.mp.status(self.who), st)
-                txn.apply(self.bus, f"{self.who} paused (agent-control {life})")
-                log(self.who, f"paused: agent-control lifecycle={life}")
+            self._pause(st, f"[agent-control] 管理面により lifecycle={life} 指定",
+                        body=f"[agent-control] {self.who}: lifecycle={life}（管理面指定）。"
+                             "dashboard のオーケストレーションタブで run に戻してください。",
+                        commit=f"{self.who} paused (agent-control {life})")
             control.write_status(life=life)
             return "paused"
 
@@ -146,20 +193,12 @@ class AmigoRunner:
         nb = nodebudget.state()
         control.write_status(life=life, budget=nb)
         if nb["exceeded"] and nb.get("on_exhausted") != "degrade":
-            if st.get("state") != "paused":       # 遷移時だけ owner へ通知（毎ターン鳴らさない）
-                txn = TurnTxn()
-                st["state"] = "paused"
-                st["note"] = "[node-budget] ノード予算超過（このノードの上限に到達）"
-                st["heartbeat"] = now_iso()
-                self._queue_message(txn, "owner", "status", subject="amigo paused",
-                                    body=f"[node-budget] {self.who}: ノード予算超過 "
-                                         f"({nb['spent_s'] / 60:.1f}m/"
-                                         f"{nb['limit_s'] / 60:.0f}m {nb['period']})。"
-                                         "請負ノード側で上限を上げるか期間の更新を待ってください。")
-                txn.write_json(self.mp.status(self.who), st)
-                txn.apply(self.bus, f"{self.who} paused (node-budget)")
-                log(self.who, "paused: ノード予算超過")
-            return "paused"
+            return self._pause(st, "[node-budget] ノード予算超過（このノードの上限に到達）",
+                               body=f"[node-budget] {self.who}: ノード予算超過 "
+                                    f"({nb['spent_s'] / 60:.1f}m/"
+                                    f"{nb['limit_s'] / 60:.0f}m {nb['period']})。"
+                                    "請負ノード側で上限を上げるか期間の更新を待ってください。",
+                               commit=f"{self.who} paused (node-budget)")
 
         txn = TurnTxn()
         # wrap-up 宣言（このラウンドで未宣言なら最初に気づいた者が流す。重複は無害）
@@ -169,21 +208,8 @@ class AmigoRunner:
                                body="予算のしきい値に達しました。新規の論点を開かず、"
                                     "現状を納品可能な形に整えてください。")
 
-        cli = (self.agent_cli or role.get("agent_cli") or "stub")
-        model = self.model or role.get("model") or None
-        # agent-control（管理面の横断上書き）が最優先。soft/縮退中は degraded を重ねる。
-        c_cli, c_model = control.override(self.role_id)
-        if c_cli:
-            cli = c_cli
-        if c_model:
-            model = c_model
-        if nb.get("soft") or (nb.get("exceeded") and nb.get("on_exhausted") == "degrade"):
-            d_cli, d_model = control.degraded()
-            if d_cli:
-                cli = d_cli
-            if d_model:
-                model = d_model
         try:
+            cli, model = self._resolve_cli(role, nb)
             if cli == "stub":
                 actions, cli_seconds = self._stub_actions(mission, roles, role, st, fresh,
                                                           rnd, wrap_up), _stub_cost()
@@ -193,16 +219,8 @@ class AmigoRunner:
         except RuntimeError as e:
             triage = agentcli.classify_agent_failure(str(e))
             if triage and triage[0] in agentcli.AGENT_ERROR_ENV_CLASSES:
-                # 環境要因 → paused。owner へタグ付き理由を届け、他ロールは進行継続（§9）
-                st["state"] = "paused"
-                st["note"] = str(e)[:500]
-                self._queue_message(txn, "owner", "status", subject="amigo paused",
-                                   body=f"{self.who}: {str(e)[:500]}")
-                st["heartbeat"] = now_iso()
-                txn.write_json(self.mp.status(self.who), st)
-                txn.apply(self.bus, f"{self.who} paused")
-                log(self.who, f"paused: {str(e)[:120]}")
-                return "paused"
+                # 環境要因 → paused。owner へタグ付き理由を届け、他ロールは進行継続（§5.5）
+                return self._pause(st, str(e), txn=txn)
             log(self.who, f"ターン失敗（次ターンで再試行）: {str(e)[:200]}")
             return "error"
 
@@ -473,20 +491,22 @@ class AmigoRunner:
             return self._idle_turn(st, st.get("cursor") or "", [])   # バリア: 他席待ち
         if r >= 1 and conv.get("done_when") == "consensus" and self._peers_agree(peers, r - 1, conv):
             return self._finish_debate(roles, role, st, rnd, r - 1)  # 合意で早期確定
-        cli = (self.agent_cli or role.get("agent_cli") or "stub")
-        model = self.model or role.get("model") or None
         # 通信トポロジ: 各席が読む相手を制限する（バリアは全席同期のまま）
         readable = self._topology_readable(role, peers)
         peer_pos = ({p: self._read_round(p, r - 1) for p in readable}
                     if r >= 1 else {})
-        if cli == "stub":
-            content, secs = self._stub_debate(role, r), _stub_cost()
-        else:
-            try:
+        try:
+            cli, model = self._resolve_cli(role, nodebudget.state())
+            if cli == "stub":
+                content, secs = self._stub_debate(role, r), _stub_cost()
+            else:
                 content, secs = self._llm_debate(mission, role, r, peer_pos, cli, model)
-            except RuntimeError as e:
-                log(self.who, f"討論ターン失敗（次ターンで再試行）: {str(e)[:200]}")
-                return "error"
+        except RuntimeError as e:
+            triage = agentcli.classify_agent_failure(str(e))
+            if triage and triage[0] in agentcli.AGENT_ERROR_ENV_CLASSES:
+                return self._pause(st, str(e))   # 環境要因はリトライで直らない（§5.5）
+            log(self.who, f"討論ターン失敗（次ターンで再試行）: {str(e)[:200]}")
+            return "error"
         actions = [{"kind": "write_artifact", "path": f"round-{r}.md", "content": content}]
         if r == n_rounds - 1:
             actions += [{"kind": "write_artifact", "path": "ANSWER.md", "content": content},
@@ -578,7 +598,10 @@ class AmigoRunner:
                                               str(act.get("body") or ""),
                                               act.get("reply_to"))
                     if msg["type"] == "question":
-                        st.setdefault("open_questions", {})[msg["id"]] = int(st.get("turn") or 0) + 1
+                        # 宛先も残す: away 中はタイムアウトを止めるので、後から
+                        # 「誰に聞いたか」を引ける必要がある（_escalate_stale_questions）
+                        st.setdefault("open_questions", {})[msg["id"]] = {
+                            "turn": int(st.get("turn") or 0) + 1, "to": to}
                 elif kind == "write_artifact":
                     rel = safe_relpath(str(act.get("path") or ""))
                     dst = os.path.join(self.mp.artifacts_dir(self.role_id), rel)
@@ -600,19 +623,66 @@ class AmigoRunner:
         return applied, rejected
 
     # --- 質問の自動エスカレーション（§5.4） ----------------------------------
+    @staticmethod
+    def _open_question(rec) -> "tuple[int, str]":
+        """open_questions の 1 件を (質問したターン, 宛先ロール) で読む。
+        旧形式（ターン番号だけの int）も読めるようにする——バス上の status は
+        更新前のノードが書いたものが残り得るため。"""
+        if isinstance(rec, dict):
+            return int(rec.get("turn") or 0), str(rec.get("to") or "")
+        try:
+            return int(rec), ""
+        except (TypeError, ValueError):
+            return 0, ""
+
+    def _addressee_away(self, to: str) -> "str | None":
+        """宛先ロールの担当が計画停止（away）中なら、その復帰予定時刻を返す（§5.3）。
+        all / owner 宛と未確定ロールは対象外（待つべき相手が特定できない）。"""
+        if not to or to in ("all", "owner"):
+            return None
+        node = ((read_json(self.mp.roster()) or {}).get(to) or {}).get("node")
+        if not node or not is_away_within_grace(self.mp, to, node):
+            return None
+        return str((read_json(self.mp.status(f"{node}--{to}")) or {}).get("resume_at") or "")
+
     def _escalate_stale_questions(self, txn: TurnTxn, mission: dict, st: dict) -> None:
+        """未回答の質問を owner へ昇格する。ただし**宛先が away の間は時計を止める**。
+
+        止めないと、夜間に相手の PC が落ちているだけで全員の質問が期限切れになり、
+        翌朝の owner の inbox が裁定要求で埋まる。相手は戻ってくると分かっているので、
+        待つのが正しい。代わりに、送信側へ不在を 1 度だけ知らせる（次ターンの
+        プロンプトに新着として載り、別の作業へ回れる）。"""
         timeout = int((mission.get("convergence") or {}).get("question_timeout") or 2)
         turn = int(st.get("turn") or 0)
         escalated = set(st.get("escalated") or [])
-        for qid, asked_turn in (st.get("open_questions") or {}).items():
-            if qid in escalated or turn - int(asked_turn) < timeout:
+        informed = set(st.get("away_informed") or [])
+        open_qs = dict(st.get("open_questions") or {})
+        for qid, rec in list(open_qs.items()):
+            asked_turn, to = self._open_question(rec)
+            if qid in escalated:
+                continue
+            resume_at = self._addressee_away(to)
+            if resume_at is not None:
+                open_qs[qid] = {"turn": turn, "to": to}     # 不在の間は時計を進めない
+                if qid not in informed:
+                    self._queue_message(
+                        txn, self.role_id, "info", reply_to=qid,
+                        subject=f"宛先 {to} は不在です",
+                        body=f"{to} の担当ノードは計画停止（away）中です"
+                             f"（復帰予定 {resume_at or '未定'}）。この質問の回答は復帰後に"
+                             "なります。待たずに進められる作業があれば先に進めてください。")
+                    informed.add(qid)
+                continue
+            if turn - asked_turn < timeout:
                 continue
             self._queue_message(txn, "owner", "decision-request",
                                 subject=f"未回答の質問 {qid}",
                                 body=f"{self.role_id} の質問 {qid} が {timeout} ターン以上"
                                      "未回答です。裁定してください。")
             escalated.add(qid)
+        st["open_questions"] = open_qs
         st["escalated"] = sorted(escalated)
+        st["away_informed"] = sorted(informed)
 
     def _wrap_up_announced(self, rnd: int) -> bool:
         return any(m.get("type") == "wrap-up" and m.get("subject") == f"wrap-up round={rnd}"

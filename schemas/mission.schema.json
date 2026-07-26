@@ -81,14 +81,14 @@
       "properties": {
         "title": {"type": "string"},
         "goal": {"type": "string", "description": "ミッション全体の目標（全 amigo のプロンプトに載る）"},
-        "deadline": {"type": "string", "description": "wall-clock の締切（ISO8601）。自動 fail はしない。**現状は保存するだけで超過通知は未実装**（設計書 §9）"},
+        "deadline": {"type": "string", "description": "wall-clock の締切（ISO8601）。超過はオーナーへ 1 度だけ通知するのみで、自動 fail はしない（設計書 §8.2）"},
         "assignment_policy": {
           "enum": ["first-come", "owner-picks"], "default": "first-come",
           "description": "first-come: claim 勝者＝確定（決定的タイブレーク）。owner-picks: claim は応募、確定は agent-amigos assign"
         },
         "staffing_policy": {
           "enum": ["self-staff", "wait", "fail"], "default": "self-staff",
-          "description": "staffing_timeout 経過後の未充足必須ロールの扱い。self-staff = オーナーノードが自己補充（1 ノード完結の保証）。wait = 充足まで open のまま待つ。**fail は未実装で wait と同じ挙動**（設計書 §9）"
+          "description": "staffing_timeout 経過後の未充足必須ロールの扱い。self-staff = オーナーノードが自己補充（1 ノード完結の保証）。wait = 充足まで open のまま待つ。fail = failed で終端しオーナーへ通知（効くのはまだ誰も手番を取っていないミッションだけ。走り出した後の欠員は再募集の領分）"
         },
         "staffing_timeout": {"type": "number", "minimum": 0, "default": 600},
         "acceptance": {

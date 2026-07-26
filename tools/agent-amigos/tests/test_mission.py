@@ -259,3 +259,80 @@ class TopologyTests(AmigosTestCase):
         hub = roles["d#0"]
         rh = AmigoRunner(self.bus, mid, "d#0", "owner-node")
         self.assertEqual(rh._topology_readable(hub, peers), ["d#1", "d#2", "d#3"])
+
+
+class StaffingPolicyTests(AmigosTestCase):
+    """staffing_policy の検証と `fail` の終端（設計書 §5.2・§8.2）。
+
+    以前は値が素通しで、`fail` を指定しても誰も見ていなかった（`wait` と同じく open の
+    まま滞留）。タイポも黙って通り、指定した意味が無かった。
+    """
+
+    def _spec(self, policy):
+        spec = base_spec(staffing_policy=policy, staffing_timeout=0)
+        spec["roles"].append({"id": "specialist", "mission": "誰も持てない専門",
+                              "required": True, "requires": {"tags": ["no-such-tag"]}})
+        return spec
+
+    def test_unknown_policy_is_rejected(self):
+        with self.assertRaises(SystemExit) as cm:
+            normalize_mission(base_spec(staffing_policy="self_staff"))
+        self.assertIn("staffing_policy", str(cm.exception))
+
+    def test_fail_terminates_when_required_role_stays_unfilled(self):
+        mid = self.post(self._spec("fail"), mid="am-fail")
+        # 能力の合わないノードは specialist を埋められない → 充足しないまま失効
+        self.daemon(tags=[]).cycle()
+        self.assertEqual(self.phase(mid), "failed")
+
+    def test_wait_keeps_the_mission_open(self):
+        mid = self.post(self._spec("wait"), mid="am-wait")
+        self.daemon(tags=[]).cycle()
+        self.assertEqual(self.phase(mid), "open")
+
+    def test_fail_does_not_kill_a_mission_that_already_started(self):
+        """走り出した後にノードが落ちて席が空くのは再募集の領分（§5.3）。
+        区別しないと、夜中の 1 台のクラッシュが進行中のミッションを巻き添えにする。"""
+        mid = self.post(base_spec(staffing_policy="fail", staffing_timeout=3600),
+                        mid="am-fail-running")
+        self.daemon().cycle()                          # 全ロールが埋まり手番が進む
+        mp = self.bus.mission(mid)
+        self.assertTrue(read_json(mp.roster()))
+        mission = load_mission(mp)
+        mission["staffing_timeout"] = 0                # 募集期限が切れた状況にする
+        write_json_atomic(mp.mission_json(), mission)
+        write_json_atomic(mp.roster(), {})             # 担当が消えた（クラッシュ相当）
+        self.assertEqual(self.phase(mid), "open")      # failed ではなく再募集へ戻る
+
+    def test_owner_is_told_why_it_failed(self):
+        mid = self.post(self._spec("fail"), mid="am-fail-notice")
+        d = self.daemon(tags=[])
+        d.cycle()
+        d.cycle()                                    # 2 巡目でも重ねて鳴らさない
+        mp = self.bus.mission(mid)
+        notices = [m for m in read_inbox(mp, "owner")
+                   if "failed で終端" in str(m.get("subject", ""))]
+        self.assertEqual(len(notices), 1)
+
+
+class DeadlineNoticeTests(AmigosTestCase):
+    """wall-clock の締切超過はオーナーへ通知するだけ（自動 fail はしない、設計書 §8.2）。"""
+
+    def test_overrun_notifies_owner_once_without_failing(self):
+        past = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 60))
+        mid = self.post(base_spec(deadline=past), mid="am-deadline")
+        d = self.daemon()
+        d.cycle()
+        d.cycle()
+        mp = self.bus.mission(mid)
+        notices = [m for m in read_inbox(mp, "owner")
+                   if "締切を超過" in str(m.get("subject", ""))]
+        self.assertEqual(len(notices), 1)
+        self.assertNotEqual(self.phase(mid), "failed")   # 締切超過では終端しない
+
+    def test_no_notice_before_the_deadline(self):
+        future = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 3600))
+        mid = self.post(base_spec(deadline=future), mid="am-deadline-ok")
+        self.daemon().cycle()
+        self.assertFalse([m for m in read_inbox(self.bus.mission(mid), "owner")
+                          if "締切を超過" in str(m.get("subject", ""))])
