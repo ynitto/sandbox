@@ -129,7 +129,10 @@ agent-dashboard の `npm test` も回すのが素直。
    S4 の移行用スイッチ（フォージ決着を表示だけに留める）が機能しない。observe 分岐は
    到達不能の死んだコード。S5 の verifier キーで踏んだ「CONFIG_DEFAULTS にあるだけで
    届いていない」欠落（S6/S7 詳細設計 §6 で自省済み）と同型の再発で、機械的に差分を
-   取ると Config へ届いていないのはこのキーだけ。設定キー追加時に
+   取ると Config へ届いていないのはこのキーだけ（**訂正**: `journal_max_bytes` /
+   `journal_keep` / `root` にも Config フィールドは無い。ただしこの 3 つはモジュール大域・
+   パス起点として別経路で正しく届いており、死んでいるのは `remote_review` だけ——
+   P0 詳細設計 §2.4）。設定キー追加時に
    「CONFIG_DEFAULTS ⊆ Config フィールド」を CI で固定する再発防止まで含めて直したい。
 2. **`serve` の SIGTERM ハンドラ設置が子プロセスの起動より後**（高）。
    `resident_cli.py` の `cmd_serve` は `_build_resident`（この中で子を start 済み）→
@@ -150,6 +153,10 @@ agent-dashboard の `npm test` も回すのが素直。
    「押しても効かないボタン」が置き場所を変えて残った形。逃げ道の設定
    `delegation.nodeCommandsDir` は config.js の既定に載っておらず、画面から辿れない。
    旧 `~/.agent` フォールバックの有無も両者で食い違う。
+   **追記（P0 詳細設計 §7-A）**: 置き場を揃えても届かない。dashboard は指示レコードの
+   `board` に板の**作業ディレクトリ**（`delegation.boardRepos[i]`）を入れるが、常駐体は
+   板の**所在**（`host.board`）と完全一致で照合する（`resident_cli.py:362`）ため、
+   正典構成（UNC パス 対 `git+<url>`）では必ず不一致で全指示が `.err` へ落ちる。
 4. **`Config.node` だけが `normalize_node_id` を通らない**（中〜高）。
    `node_id` 未宣言・環境変数無し（host.yaml を複数 PC へ共有配布する場合の推奨構成）の
    とき、`Config.node` は大文字を保持し、常駐体・板・agent-flow は小文字化する。
@@ -267,6 +274,9 @@ agent-dashboard の `npm test` も回すのが素直。
    （実機 3 台の手配）と並行して終わる分量。
 
 ### 7.1 P0 — canary の前に直す（canary の結果を汚すもの）
+
+> 詳細設計: [`2026-07-26-p0-pre-canary-fixes-detailed-design.md`](2026-07-26-p0-pre-canary-fixes-detailed-design.md)。
+> 同設計 §7 に、実装との照合で新たに見つけた 8 件（うち 2 件は P0 の中で直す）を載せてある。
 
 | # | 対象 | 修正 | 検証 | 規模 |
 |---|---|---|---|---|
