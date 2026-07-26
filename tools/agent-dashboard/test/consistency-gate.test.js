@@ -44,6 +44,8 @@ test('regression_cmd / intake_cmd が両方あれば結線済みとして載る'
   );
   try {
     const gate = project.readProject(ws, {}).consistencyGate;
+    assert.strictEqual(gate.regressionConfigured, true);
+    assert.strictEqual(gate.intakeConfigured, true);
     assert.strictEqual(gate.regressionWired, true);
     assert.strictEqual(gate.intakeWired, true);
     // 表示用の文字列はクォートを剥がした素の値
@@ -74,6 +76,8 @@ test('codd-gate を指していないコマンドは未結線（値は表示用�
   const ws = mkWorkspace("regression_cmd: make -s smoke\nintake_cmd: agent-project enqueue\n");
   try {
     const gate = project.readProject(ws, {}).consistencyGate;
+    assert.strictEqual(gate.regressionConfigured, true);
+    assert.strictEqual(gate.intakeConfigured, true);
     assert.strictEqual(gate.regressionWired, false);
     assert.strictEqual(gate.intakeWired, false);
     // 「未結線＝何も設定されていない」ではないことを画面が言えるよう、値は落とさない
@@ -102,6 +106,8 @@ test('設定はあるがキーが無ければ未結線', () => {
   const ws = mkWorkspace('planner: none\n');
   try {
     const gate = project.readProject(ws, {}).consistencyGate;
+    assert.strictEqual(gate.regressionConfigured, false);
+    assert.strictEqual(gate.intakeConfigured, false);
     assert.strictEqual(gate.regressionWired, false);
     assert.strictEqual(gate.intakeWired, false);
     assert.strictEqual(gate.regressionCmd, null);

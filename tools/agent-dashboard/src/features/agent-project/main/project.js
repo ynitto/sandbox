@@ -1612,11 +1612,15 @@ function consistencyGateStatus(cfg, workspace) {
   const pick = (key) => String(values[key] || '').trim() || null;
   const regressionCmd = pick('regression_cmd');
   const intakeCmd = pick('intake_cmd');
+  const regressionConfigured = regressionCmd !== null;
+  const intakeConfigured = intakeCmd !== null;
   const regressionWired = !!regressionCmd && GATE_REGRESSION_RE.test(regressionCmd);
   const intakeWired = !!intakeCmd && GATE_INTAKE_RE.test(intakeCmd);
   return {
     // 有効化の導線で「どのファイルを編集するか」を示すための実パス。未検出なら null。
     configFile: fromWs ? cfg.file : null,
+    regressionConfigured,
+    intakeConfigured,
     regressionWired,
     intakeWired,
     // 全結線かの派生述語。renderer の 2 箇所（概要セクションと needs）が各自で
