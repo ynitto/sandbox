@@ -16,6 +16,11 @@ CLI 分岐は無く、`agent-cli.schema.json` の定義がすべて。**CLI の�
 3. `~/.agents/agents/`（ユーザー共通）
 4. `~/.kiro/agents/`（旧ユーザー共通）
 
+`tools/agent-tools/install.sh` が 3 を配布先として、このディレクトリの `*.json` を配る
+（`$AGENT_PROJECT_AGENTS_HOME` を設定していればその下）。zipapp はリポジトリの `agents/` を
+持ち出せないので、配らないと配布インストールでは組み込み CLI すら「未知の agent_cli」になる。
+3 は同梱定義の更新で上書きするので、独自定義は 1 か 2 に置く。
+
 同名は先勝ち（first-wins）。**上位に置けば同梱定義を上書きできる**——組み込み名の予約は
 S9 で解除した。定義を 1 つも解決できない `agent_cli` は明示エラーになる（黙って別の CLI へ
 倒さない。インストール破損を静かに握り潰さないため）。
@@ -38,6 +43,12 @@ argv = command + (write_args | readonly_args) + no_session_args? + spill.args?
 | `spill.args` / `spill.instruction` | 長大プロンプトを一時ファイルへ退避したとき |
 | `command_suffix` | 位置引数を末尾に固定したい CLI（codex の `-`） |
 | `interactive.*` | tmux で人が直接操作する対話起動 |
+
+argv とは別に、**セッションへ送るテキストの作法**も CLI で違う。`skill_command_prefix` は
+スキル起動コマンドの行頭記号で、既定は `/`（`/skill-name`）。codex は `$skill-name` でしか
+スキルが起動しないので `"$"` を宣言する。セッション開始コマンド（agent-session-commands）の
+chat モードのように、人が `/skill-name` と書いたテキストを送る経路がこの宣言を見て行頭の `/`
+を差し替える（対象は行頭の `/` + 英数字トークンだけ。`/home/…` のようなパスは変えない）。
 
 `readonly` は**強制力の宣言**（`enforced` / `best-effort`）。このレイヤは宣言どおりの argv を
 組み立てるだけで、フラグを無視する CLI への防御は持たない。`best-effort` の CLI に読み取り
@@ -68,7 +79,7 @@ argv = command + (write_args | readonly_args) + no_session_args? + spill.args?
 | `kiro.json` | `kiro-cli chat` | best-effort（`--trust-tools=` は信頼するツールを絞るだけ） |
 | `claude.json` | `claude` | enforced（`--permission-mode plan`） |
 | `copilot.json` | `copilot` | best-effort |
-| `codex.json` | `codex exec` | enforced（`--sandbox read-only`） |
+| `codex.json` | `codex exec` | enforced（`--sandbox read-only`）。スキル起動は `$name` |
 | `cursor.json` | `cursor-agent` | best-effort（`--mode ask`） |
 | `ollama.json` | `ollama run <model>` | enforced（ツールを持たない） |
 

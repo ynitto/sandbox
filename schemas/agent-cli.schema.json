@@ -89,6 +89,11 @@
       "default": [],
       "description": "全フラグの **後ろ**（プロンプトの argv 渡しよりは前）に必ず置くトークン。位置引数を末尾に固定したい CLI 向け（codex の `-`＝プロンプトを stdin から読む指定）。command に書くとモード別フラグやモデル指定がその後ろに回ってしまう。"
     },
+    "skill_command_prefix": {
+      "type": "string",
+      "default": "/",
+      "description": "対話セッションへ送るテキストのうち、**スキル起動コマンドの行頭に付ける記号**。既定は `/`（`/skill-name` 形式）。codex はスキルを `$skill-name` で起動するため `$` を宣言する。セッション開始コマンド（agent-session-commands）の chat モードなど、人が `/skill-name` と書いたテキストを CLI へ送る経路が、この宣言を見て行頭の `/` を差し替える。`/` 以外を宣言した CLI でだけ書き換えが起き、既定のままなら何も変えない。"
+    },
     "write_args": {
       "type": "array",
       "items": {

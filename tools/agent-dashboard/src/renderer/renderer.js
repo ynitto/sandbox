@@ -1685,11 +1685,12 @@ function configuredCoworkItems() {
 
 function coworkDraft() {
   // 発見項目（source:'discovered'）も編集できるよう、overview のマージ済み一覧を種にする。
-  // overview 未取得時のみ設定の手動項目にフォールバック。
-  if (!state.coworkDraft) {
-    const merged = (state.cowork && Array.isArray(state.cowork.items)) ? state.cowork.items : null;
-    state.coworkDraft = (merged || configuredCoworkItems()).map((x) => ({ ...x }));
-  }
+  // **overview 未取得のうちは種を確定させない**——初回描画は refreshCowork より先に走るので、
+  // ここで空配列をキャッシュすると、あとから発見項目が届いても画面が空のまま固まる
+  // （.kiro/kiro-loop.yml があるのに定常業務が出ない、の正体）。
+  const merged = (state.cowork && Array.isArray(state.cowork.items)) ? state.cowork.items : null;
+  if (!merged) return configuredCoworkItems();
+  if (!state.coworkDraft) state.coworkDraft = merged.map((x) => ({ ...x }));
   return state.coworkDraft;
 }
 

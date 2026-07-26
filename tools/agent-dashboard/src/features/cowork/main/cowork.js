@@ -11,7 +11,7 @@ const { _pathKey, _isPosixAbs, toViewerPath } = require('../../agent-project/mai
 const { parseFlatYaml } = require('../../agent-project/main/toolconfig');
 const {
   discoverCoworkItems, parseKiroLoopPrompts, scheduleOf, detectMarkers, kiroLoopPromptTexts,
-  scanForCoworkConfigs, isDir,
+  scanForCoworkConfigs, isDir, coworkRoots,
 } = require('./discover');
 const { applyKiroLoopEdits, applyStatemachineEdits, upsertManagedKiroPrompt } = require('./writeback');
 const globalInstructions = require('../../orchestration/main/instructions');
@@ -30,7 +30,10 @@ const DISCOVER_TTL_MS = 30000;
 let _discoverCache = { key: '', at: 0, items: null };
 
 function discoverCacheKey(config) {
-  const roots = require('../../agent-project/main/engine').projectRoots(config).map(String).join('\0');
+  // 走査ルートは discover.coworkRoots と同じもの（エンジン担当 + cowork.roots）を使う。
+  // engine 側だけを鍵にすると、フォルダを登録／解除しても鍵が変わらず、TTL が切れるまで
+  // 古い発見結果を返し続ける。
+  const roots = coworkRoots(config).map(String).join('\0');
   const cw = (config && config.cowork) || {};
   const depth = cw.scanDepth || 2;
   return `${roots}|${depth}|${cw.discover === false ? '0' : '1'}`;
@@ -448,14 +451,21 @@ function withGlobalInstructions(config, prompt) {
 // セッション開始コマンド（agent-session-commands 契約）の実行計画。tmux セッションを新しく
 // 作るときだけ走るシェル片へ落とすため、ここで when 判定とプレースホルダ展開まで済ませる。
 // 不在・破損・無効はすべて空配列（＝何も差し込まない）。
-function planSessionCommands(config, cwd) {
+// agentCli は「どの CLI へ送るか」で決まる。定常業務ウィンドウは chatCommand（既定 kiro-cli）
+// で起動するので既定は kiro、CLIチャット・対話診断は解決済みの CLI を呼び出し側が渡す。
+function planSessionCommands(config, cwd, { agentCli = 'kiro', skillCommandPrefix = '/' } = {}) {
   try {
     const dir = sessionCommands.resolveSessionDir(config || {});
     // コマンドは WSL 側のシェルで走るため、{cwd} / {workspace} は Linux パスへ揃える
     // （Windows パスのまま渡すと cd も git -C も刺さらない）。
     const linuxCwd = toWslCwd(cwd) || String(cwd || '');
     return sessionCommands.plan(sessionCommands.loadSessionCommands(dir), {
-      engine: 'dashboard', workload: 'routine', cwd: linuxCwd, workspace: linuxCwd, agent_cli: 'kiro',
+      engine: 'dashboard',
+      workload: 'routine',
+      cwd: linuxCwd,
+      workspace: linuxCwd,
+      agent_cli: agentCli,
+      skill_command_prefix: skillCommandPrefix,
     });
   } catch {
     return []; // フェイルセーフ: 計画の失敗で起動を止めない

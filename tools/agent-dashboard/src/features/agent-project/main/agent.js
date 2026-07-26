@@ -190,6 +190,7 @@ function interactiveLaunchSpec(cfg, projectDir, { readonly = false, noSession = 
     readyPattern: agentCli.readyPattern(resolved.spec),
     readyTimeoutSec: agentCli.readyTimeoutSec(resolved.spec),
     promptInject: agentCli.promptInject(resolved.spec),
+    skillCommandPrefix: agentCli.skillCommandPrefix(resolved.spec),
     spillInstruction: resolved.spec.spill.instruction,
     readonlyWarning: agentCli.readonlyWarning(resolved.spec, readonly),
   };
@@ -209,7 +210,8 @@ function openInteractiveChat(cfg, projectDir, cwdOverride) {
     chatCommand: launch.chatCommand,
     prompt: null,
     cwd,
-    sessionCommands: planSessionCommands(cfg, projectDir),
+    sessionCommands: planSessionCommands(cfg, projectDir,
+      { agentCli: launch.cli, skillCommandPrefix: launch.skillCommandPrefix }),
     readyPattern: launch.readyPattern,
     readyTimeoutSec: launch.readyTimeoutSec,
     // 同じ CLI でも起動先が違えば別セッション（同名で再 attach すると別リポジトリの
@@ -688,7 +690,8 @@ function openDoctorChat(cfg, { dir, context, needId, userPrompt } = {}) {
     chatCommand: launch.chatCommand,
     prompt,
     cwd,
-    sessionCommands: planSessionCommands(cfg, dir),
+    sessionCommands: planSessionCommands(cfg, dir,
+      { agentCli: launch.cli, skillCommandPrefix: launch.skillCommandPrefix }),
     readyPattern: launch.readyPattern,
     readyTimeoutSec: launch.readyTimeoutSec,
     // 同一 need の再診断は同じセッションへ attach する。会話が続いているところへ同じ

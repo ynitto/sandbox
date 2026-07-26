@@ -238,6 +238,39 @@ installed() {
   case " ${ENGINES[*]} " in *" $1 "*) return 0 ;; *) return 1 ;; esac
 }
 
+# エージェント CLI 定義（agents/<name>.json）をユーザー共通の置き場へ配る。
+# zipapp はリポジトリの agents/ を持ち出せない（同梱定義の解決は「リポジトリから直接動かす
+# 開発環境」でしか効かない）ので、配布インストールではここで配らないと組み込み CLI すら
+# 「未知の agent_cli」になる。探索順（agentcore.agentcli.plugin_dirs）の 3 番目に置くので、
+# $KIRO_AGENTS_DIR とプロジェクトの agents/ に置いた定義が引き続き優先される。
+AGENTS_SRC_DIR="$(cd "${TOOLS_DIR}/.." && pwd)/agents"
+if [[ -d "${AGENTS_SRC_DIR}" ]]; then
+  # ~/.agents（新）と ~/.agent（旧）の使い分けは agentcore._agents_home と同じ規則:
+  # 新が無く旧だけあるときは旧を使う（既存インストールの置き場を割らない）。
+  AGENTS_HOME="${AGENT_PROJECT_AGENTS_HOME:-}"
+  if [[ -z "${AGENTS_HOME}" ]]; then
+    if [[ ! -d "${HOME}/.agents" && -d "${HOME}/.agent" ]]; then
+      AGENTS_HOME="${HOME}/.agent"
+    else
+      AGENTS_HOME="${HOME}/.agents"
+    fi
+  fi
+  AGENTS_DEST_DIR="${AGENTS_HOME}/agents"
+  mkdir -p "${AGENTS_DEST_DIR}"
+  n=0
+  for f in "${AGENTS_SRC_DIR}"/*.json; do
+    [[ -e "$f" ]] || continue
+    cp "$f" "${AGENTS_DEST_DIR}/"; n=$((n + 1))
+  done
+  if [[ "$n" -gt 0 ]]; then
+    ok "エージェント CLI 定義を ${n} 件配置しました: ${AGENTS_DEST_DIR}"
+    info "  この置き場は同梱定義の更新で上書きします。独自定義はプロジェクトの agents/ か \$KIRO_AGENTS_DIR へ置いてください。"
+  fi
+else
+  warn "エージェント CLI 定義（agents/）が見つかりません: ${AGENTS_SRC_DIR}
+  自己更新の sparse-checkout なら update_subdir に agents が含まれているか確認してください。"
+fi
+
 # agent-flow の executor プラグイン: 本体は zipapp 単一ファイルなので、同梱プラグインは
 # 「本体と同じフォルダ」（<prefix>/executors/）に置く。agent-flow の検索順 #1
 # 「スクリプト同階層の executors/」がインストール後も名前で解決できるようにするため。

@@ -3,6 +3,7 @@
   "command": ["codex", "exec", "--skip-git-repo-check", "--color", "never",
               "--output-last-message", "{output_file}"],
   "command_suffix": ["-"],
+  "skill_command_prefix": "$",
   "prompt_via": "stdin",
   "model_flag": "--model",
   "output": "file",

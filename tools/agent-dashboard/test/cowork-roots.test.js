@@ -63,12 +63,16 @@ test('cowork.roots は走査ルートに合流する', () => {
 
 test('cowork.roots が空でも従来どおり engine のプロジェクトだけを走査する', () => {
   // W2-4（プロジェクト一覧の単一ソース化）を壊さないこと。
-  assert.deepStrictEqual(discover.coworkRoots({ cowork: {} }), []);
-  assert.deepStrictEqual(discover.coworkRoots({}), []);
+  // engine 側の宣言は実行エンジンの状況ファイルなので、テスト用の空ホームを指す設定で見る
+  // （隔離しないと、この PC で実際に動いているエンジンの宣言が混ざり結果が環境依存になる）。
+  const empty = engineConfig([]);
+  assert.deepStrictEqual(discover.coworkRoots({ ...empty, cowork: {} }), []);
+  assert.deepStrictEqual(discover.coworkRoots(empty), []);
 });
 
 test('空文字・空白だけのエントリは無視する', () => {
-  assert.deepStrictEqual(discover.coworkRoots({ cowork: { roots: ['', '   '] } }), []);
+  assert.deepStrictEqual(
+    discover.coworkRoots({ ...engineConfig([]), cowork: { roots: ['', '   '] } }), []);
 });
 
 // ---------------------------------------------------------------------------
@@ -256,6 +260,53 @@ test('宣言された local が実在しなければ理由付きで非活性', (
   } finally {
     if (old === undefined) delete process.env.AGENT_PROJECT_AGENTS_HOME;
     else process.env.AGENT_PROJECT_AGENTS_HOME = old;
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 登録の入口は全体設定（プロジェクト未選択でも登録できる）
+// ---------------------------------------------------------------------------
+
+test('フォルダの登録は全体設定「定常業務」から行える', () => {
+  const src = require('./helpers/renderer-src').read();
+  // 定常業務画面はプロジェクトを選んでから開く画面なので、実行エンジンが動いていない
+  // 初期状態ではそこからは 1 件目を登録できない。全体設定に入口を置く。
+  assert.ok(src.includes('globalSettingsCoworkRootsHtml'), '全体設定に登録フォルダの一覧が無い');
+  assert.ok(/globalSettingsRoutineHtml\(\)[\s\S]{0,600}globalSettingsCoworkRootsHtml\(\)/.test(src),
+    '登録の入口が全体設定「定常業務」に置かれていない');
+  assert.ok(src.includes('btn-settings-cowork-add-root'), '全体設定に登録ボタンが無い');
+  assert.ok(src.includes('data-drop-cowork-root'), '全体設定から登録を解除できない');
+});
+
+test('登録・解除のあとは編集中の下書きを捨てる', () => {
+  const src = require('./helpers/renderer-src').read();
+  // 下書きは前回の overview を種に固定されるので、捨てないと新しく登録したフォルダの
+  // 定常業務が一覧に出てこない。
+  assert.ok(/function afterCoworkRootChange[\s\S]{0,500}state\.coworkDraft = null/.test(src),
+    '登録・解除後に下書きを捨てていない');
+});
+
+test('overview 未取得のうちは下書きを確定させない', () => {
+  const src = require('./helpers/renderer-src').read();
+  // 初回描画は refreshCowork より先に走る。ここで空配列をキャッシュすると、あとから
+  // 発見項目が届いても画面が空のまま固まる。
+  assert.ok(/function coworkDraft\(\)[\s\S]{0,600}if \(!merged\) return configuredCoworkItems\(\);/
+    .test(src), 'overview 未取得時に空の下書きをキャッシュしている');
+});
+
+test('発見キャッシュの鍵は cowork.roots も含む', () => {
+  const base = tmp('kpv-croots-cache-');
+  try {
+    const folder = mkRoutineFolder(base, 'routine-only');
+    // 登録前は 0 件。同じ config オブジェクトの roots だけを足したとき、鍵が変わらないと
+    // TTL（30 秒）が切れるまで 0 件を返し続ける。
+    const cfg = { ...engineConfig([]), cowork: { roots: [] } };
+    assert.strictEqual(cowork.overview(cfg, {}).items.length, 0);
+    cfg.cowork.roots = [folder];
+    assert.ok(cowork.overview(cfg, {}).items.length >= 1,
+      '登録直後の再取得が古い発見結果を返している');
+  } finally {
     fs.rmSync(base, { recursive: true, force: true });
   }
 });

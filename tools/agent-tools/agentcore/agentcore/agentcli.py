@@ -118,6 +118,9 @@ def normalize(name: str, raw: dict, path) -> dict:
         "path": str(path),
         "command": command,
         "command_suffix": _strs(raw.get("command_suffix"), "command_suffix", path),
+        # スキル起動の行頭記号（既定 `/`。codex は `$skill-name`）。対話セッションへ
+        # テキストを送る経路が skill_command_prefix() 経由で参照する。
+        "skill_command_prefix": str(raw.get("skill_command_prefix") or "/"),
         "prompt_via": str(raw.get("prompt_via", "stdin")),
         "prompt_flag": raw.get("prompt_flag"),
         "model_flag": raw.get("model_flag"),
@@ -340,3 +343,23 @@ def classify_error(spec: dict, blob: str) -> "tuple[str, str] | None":
         if pattern.search(text):
             return cls, hint
     return None
+
+
+def skill_command_prefix(spec: dict) -> str:
+    """スキル起動コマンドの行頭記号（既定 `/`。codex は `$`）。"""
+    return str(spec.get("skill_command_prefix") or "/")
+
+
+_SKILL_CMD_RE = re.compile(r"^/(?=[A-Za-z0-9_-]+(?:[\s:]|$))", re.M)
+
+
+def rewrite_skill_commands(text: str, prefix: str) -> str:
+    """セッションへ送るテキストの行頭 `/` を、その CLI のスキル起動記号へ差し替える。
+
+    人は `/skill-name` と書くが、codex は `$skill-name` でないとスキルが起動しない。
+    既定 `/` の CLI では何も変えない。行頭が `/` + 英数字トークンのときだけ対象にするので、
+    パス（`/home/...`）は 2 つ目の `/` があるため書き換わらない。
+    """
+    p = str(prefix or "/")
+    s = "" if text is None else str(text)
+    return s if p == "/" else _SKILL_CMD_RE.sub(p, s)

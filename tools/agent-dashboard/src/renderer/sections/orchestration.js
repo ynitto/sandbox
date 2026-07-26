@@ -835,13 +835,35 @@ function boardParticipationHtml() {
       <tbody>${rows}</tbody></table></div>`;
 }
 
+// 登録済みの定常業務フォルダ（cowork.roots）。**定常業務画面ではなくここに置く**——
+// 定常業務画面はプロジェクトを 1 つ選んでから開く画面なので、実行エンジンがまだ動いて
+// いない初期状態（選べるプロジェクトが 1 つも無い）では最初の 1 件を登録できなかった。
+// 全体設定はプロジェクト選択に依存しないので、そこからなら初期状態でも登録できる。
+function globalSettingsCoworkRootsHtml() {
+  const roots = ((state.config && state.config.cowork) || {}).roots || [];
+  const rows = roots.map((r) => `<li>
+    <code class="mono">${esc(String(r))}</code>
+    <button type="button" class="linklike" data-drop-cowork-root="${esc(String(r))}">登録を解除</button>
+  </li>`).join('');
+  return `<div class="field">
+    <label>定常業務のフォルダ</label>
+    <p class="field-help">実行エンジンが担当していないフォルダ（kiro-loop の設定や .statemachine/ を
+      持つだけのフォルダ）を、定常業務画面で扱えるようにします。実行エンジンが担当している
+      プロジェクトは登録不要です。</p>
+    ${rows ? `<ul class="settings-root-list">${rows}</ul>`
+      : '<p class="muted">登録されたフォルダはありません。</p>'}
+    <div class="row"><button type="button" id="btn-settings-cowork-add-root">フォルダを登録</button></div>
+  </div>`;
+}
+
 function globalSettingsRoutineHtml() {
   return `<div class="global-settings-card">
     <header class="global-settings-card-heading">
       <span class="summary-kicker">定常業務</span>
       <h2>定期実行と定型処理</h2>
-      <p class="muted">定常業務を動かすコマンドを設定します。通常は変更不要です。</p>
+      <p class="muted">定常業務を動かすフォルダとコマンドを設定します。コマンドは通常は変更不要です。</p>
     </header>
+    ${globalSettingsCoworkRootsHtml()}
     <div class="row2">
       <div class="field"><label for="cfg-cowork-loop-provider">定期実行の種類</label><input id="cfg-cowork-loop-provider" class="mono" placeholder="kiro-loop" /></div>
       <div class="field"><label for="cfg-cowork-loop-command">定期実行コマンド</label><input id="cfg-cowork-loop-command" class="mono" placeholder="kiro-loop" /></div>
@@ -991,6 +1013,11 @@ function setupGlobalSettings(root) {
   }
   const coworkOpen = root.querySelector('#btn-settings-cowork-open');
   if (coworkOpen) coworkOpen.addEventListener('click', openCoworkFromSettings);
+  const coworkAddRoot = root.querySelector('#btn-settings-cowork-add-root');
+  if (coworkAddRoot) coworkAddRoot.addEventListener('click', addCoworkRoot);
+  for (const btn of root.querySelectorAll('[data-drop-cowork-root]')) {
+    btn.addEventListener('click', () => dropCoworkRoot(btn.dataset.dropCoworkRoot));
+  }
   const diagBtn = root.querySelector('#btn-setup-diagnostics');
   if (diagBtn) diagBtn.addEventListener('click', () => runSetupDiagnostics(root));
 }
@@ -1692,9 +1719,7 @@ async function addCoworkRoot() {
   const res = await guard('フォルダを登録できません', () => api.coworkSetRoot(picked.folder, false));
   if (!res) return;
   toast(summary ? 'フォルダを登録しました' : 'フォルダを登録しました（「追加」から作業を作成できます）', true);
-  await refreshDiscovery();
-  await refreshCowork({ forceDiscover: true });
-  renderCowork();
+  await afterCoworkRootChange(res);
 }
 
 async function dropCoworkRoot(folder) {
@@ -1703,9 +1728,20 @@ async function dropCoworkRoot(folder) {
   const res = await guard('登録を解除できません', () => api.coworkSetRoot(folder, true));
   if (!res) return;
   toast('登録を解除しました', true);
+  await afterCoworkRootChange(res);
+}
+
+// 登録・解除のあと片付け。**編集中の下書きを捨てる**のが要点——下書きは前回の overview を
+// 種に固定されるので、捨てないと新しく登録したフォルダの定常業務が一覧に出てこない。
+async function afterCoworkRootChange(res) {
+  if (res && Array.isArray(res.roots) && state.config) {
+    state.config.cowork = { ...(state.config.cowork || {}), roots: res.roots };
+  }
   await refreshDiscovery();
   await refreshCowork({ forceDiscover: true });
+  state.coworkDraft = null;
   renderCowork();
+  if ($('tab-orchestration') && state.orchestration) renderOrchestration();
 }
 
 function renderCowork() {

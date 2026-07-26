@@ -288,8 +288,12 @@ test('CLIチャット起動ボタンの経路が開始コマンドを渡す', ()
   const src = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'features', 'agent-project', 'main', 'agent.js'), 'utf8'
   );
-  assert.ok(/sessionCommands:\s*planSessionCommands\(cfg, projectDir\)/.test(src),
+  assert.ok(/sessionCommands:\s*planSessionCommands\(cfg, projectDir[,)]/.test(src),
     'openInteractiveChat が計画を渡していない（新規セッションなのに前準備が走らなくなる）');
+  // 起動する CLI のスキル起動記号（codex は `$`）を計画へ渡す。渡さないと `/skill-name` が
+  // そのまま送られ、codex ではスキルが起動しない。
+  assert.ok(/skillCommandPrefix:\s*launch\.skillCommandPrefix/.test(src),
+    'CLIチャット・対話診断が解決済みのスキル起動記号を渡していない');
 });
 
 test('コマンドが無ければ起動スクリプトは従来と同じ形のままになる', () => {
@@ -339,6 +343,41 @@ test('画面は反映状況と注意書き（引用・中止・反映点）を�
   assert.ok(src.includes('で囲んでください'), 'シェル引用は利用者の責任だと明示する');
   assert.ok(src.includes('起動しなくなります'), 'fail の副作用を明示する');
   assert.ok(src.includes('次に始まるセッションから'), '反映点を明示する');
+});
+
+// ---------------------------------------------------------------------------
+// スキル起動記号（agents/<name>.json の skill_command_prefix）
+// ---------------------------------------------------------------------------
+
+test('chat モードは CLI のスキル起動記号で行頭 / を差し替える（codex は $）', () => {
+  const data = { commands: [{ id: 'skill', mode: 'chat', run: '/graphify を実行して' }] };
+  const asCodex = sc.plan(data, { engine: 'dashboard', skill_command_prefix: '$' });
+  assert.strictEqual(asCodex[0].run, '$graphify を実行して');
+  // 既定 `/` の CLI では何も変えない（claude / kiro は `/skill-name` のまま）。
+  assert.strictEqual(sc.plan(data, { engine: 'dashboard' })[0].run, '/graphify を実行して');
+});
+
+test('パスの / は書き換えない（スキル起動だけを対象にする）', () => {
+  const entries = sc.plan(
+    { commands: [{ id: 'p', mode: 'chat', run: '/home/user/docs を読んで' }] },
+    { engine: 'dashboard', skill_command_prefix: '$' }
+  );
+  assert.strictEqual(entries[0].run, '/home/user/docs を読んで');
+});
+
+test('process モードは書き換えない（シェルコマンドは CLI の作法と無関係）', () => {
+  const entries = sc.plan(
+    { commands: [{ id: 'sh', mode: 'process', run: '/usr/bin/git fetch' }] },
+    { engine: 'dashboard', skill_command_prefix: '$' }
+  );
+  assert.strictEqual(entries[0].run, '/usr/bin/git fetch');
+});
+
+test('codex の定義が $ を宣言している', () => {
+  const agentCli = require('../src/features/agent-project/main/agentCli');
+  const repoRoot = path.join(__dirname, '..', '..', '..');
+  assert.strictEqual(agentCli.skillCommandPrefix(agentCli.loadCli('codex', repoRoot)), '$');
+  assert.strictEqual(agentCli.skillCommandPrefix(agentCli.loadCli('claude', repoRoot)), '/');
 });
 
 console.log(`\n${passed} session-commands tests passed`);

@@ -18,6 +18,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { agentHomeSubdir } = require('../../../base/main/agent-home');
+const { rewriteSkillCommands } = require('../../agent-project/main/agentCli');
 
 const DEFAULT_TIMEOUT = 60;
 const DEFAULT_MAX_TOTAL_TIMEOUT = 120;
@@ -209,7 +210,13 @@ function plan(data, ctx) {
       on_error: cmd.on_error,
       skip: null,
     };
-    if (cmd.mode === 'chat') entry.strategy = cmd.strategy || 'paste';
+    if (cmd.mode === 'chat') {
+      entry.strategy = cmd.strategy || 'paste';
+      // スキル起動の行頭記号は CLI ごとに違う（codex は `/` ではなく `$`）。契約は
+      // agents/<name>.json の skill_command_prefix で、呼び出し側が解決済みの記号を
+      // ctx で渡す。プレビューと実際に送る内容が同じものを見るよう、ここで書き換える。
+      entry.run = rewriteSkillCommands(entry.run, c.skill_command_prefix);
+    }
     if (cmd.mode === 'process') {
       entry.cwd = cmd.cwd ? expandPlaceholders(cmd.cwd, c) : String(c.cwd || '');
       entry.timeout = cmd.timeout === undefined ? DEFAULT_TIMEOUT : cmd.timeout;
