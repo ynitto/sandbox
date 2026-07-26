@@ -25,7 +25,7 @@ def doctor_env_findings(args, which=shutil.which) -> "list[dict]":
     needs_cli = (getattr(args, "executor", "agent") == "agent"
                  or getattr(args, "planner", "") == "agent")
     agent_cli = str(getattr(args, "agent_cli", "kiro") or "kiro")
-    agent_bin = _AGENT_CLI_BINARIES.get(agent_cli, agent_cli)
+    agent_bin = agent_cli_binary(agent_cli)
     if needs_cli and not which(agent_bin):
         findings.append({
             "category": "env", "severity": "critical",

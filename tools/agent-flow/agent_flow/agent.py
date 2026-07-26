@@ -44,9 +44,15 @@ AGENT_ROLES = ("planner", "evaluator", "worker")
 # executor=agent の実行系プロンプトを供給するスキル名（設定 worker_skill）。
 # none/builtin/空 で無効＝常に組み込みプロンプト。
 _WORKER_SKILL: str = str(CONFIG_DEFAULTS["worker_skill"])
-# agent_cli の設定値 → doctor が PATH 確認すべき実行ファイル名（未知の agent_cli はそのまま使う）。
-_AGENT_CLI_BINARIES = {"kiro": "kiro-cli", "claude": "claude", "copilot": "copilot",
-                       "codex": "codex"}
+
+
+def agent_cli_binary(cli: str) -> str:
+    """doctor が PATH 確認すべき実行ファイル名。定義ファイルの command[0] から導く（S9）。
+    対応表を残すと「JSON を直したのに doctor だけ古い名前を探す」二重管理になる。"""
+    try:
+        return str(load_agent_plugin(cli)["command"][0])
+    except RuntimeError:
+        return str(cli)
 
 
 def _normalize_agent_overrides(raw) -> "dict[str, dict]":
@@ -149,111 +155,32 @@ def _agent_argv_limit() -> int:
     return _ARGV_LIMIT if _ARGV_LIMIT > 0 else CONFIG_DEFAULTS["argv_limit"]
 
 
-# --- エージェント CLI プラグイン（データ契約: schemas/agent-cli.schema.json） -----------------
-# 組み込み（kiro/claude/copilot/codex）以外の CLI（cursor / ollama / hermes …）を、
-# 定義ファイル agents/<name>.json だけで差し込む公式の口。agent-project も同じ契約を読む
-# （結合はデータ契約のみ・ローダは各ツールが自前で持つ = ツール間のコード依存を作らない）。
-_AGENT_PLUGIN_CACHE: "dict[str, dict | None]" = {}
+# --- エージェント CLI 定義（データ契約: schemas/agent-cli.schema.json） -----------------------
+# 読み込みと argv 組み立ては agentcore.agentcli の 1 実装（agent-project / agent-amigos と共有）。
+# **組み込み（kiro/claude/copilot/codex）もここでは特別扱いしない**（S9）——以前は同じ argv 知識が
+# 4 ツールに重複し、同じ CLI でもツールによってフラグが違う状態になっていた。
+# ここに残すのは「読み込んだ定義を覚えておき、失敗トリアージの errors[] を集める」ところだけ。
+_AGENT_PLUGIN_CACHE: "dict[str, dict]" = {}
 
 
-def _agent_plugin_dirs() -> list:
-    dirs = []
-    envd = os.environ.get("KIRO_AGENTS_DIR")
-    if envd:
-        dirs.append(os.path.expanduser(envd))
-    dirs.append(os.path.join(os.getcwd(), "agents"))
-    dirs.append(agent_home_subdir("", "agents"))
-    dirs.append(os.path.expanduser("~/.kiro/agents"))
-    return dirs
-
-
-def _normalize_agent_plugin(name: str, raw: dict, path: str) -> dict:
-    cmd = raw.get("command")
-    if not isinstance(cmd, list) or not cmd or not all(isinstance(c, str) for c in cmd):
-        raise RuntimeError(f"エージェント定義 {path}: command は文字列配列が必須です")
-    output = str(raw.get("output", "stdout"))
-    if output == "file" and not any("{output_file}" in c for c in cmd):
-        raise RuntimeError(f"エージェント定義 {path}: output=file には command 中の "
-                           "{output_file} プレースホルダが必要です")
-    errors = []
-    for e in (raw.get("errors") or []):
-        try:
-            errors.append((str(e.get("class", "env")),
-                           re.compile(str(e.get("match", "")), re.I),
-                           str(e.get("hint", ""))))
-        except re.error as ex:
-            raise RuntimeError(f"エージェント定義 {path}: errors.match が正規表現として不正です: {ex}")
-    return {"name": name, "command": list(cmd),
-            "prompt_via": str(raw.get("prompt_via", "stdin")),
-            "prompt_flag": raw.get("prompt_flag"),
-            "model_flag": raw.get("model_flag"),
-            "default_model": raw.get("default_model"),
-            "output": output, "env": dict(raw.get("env") or {}),
-            "timeout": raw.get("timeout"),
-            "empty_output_is_error": bool(raw.get("empty_output_is_error", True)),
-            "errors": errors, "path": str(path)}
-
-
-def load_agent_plugin(name: str) -> "dict | None":
-    """agents/<name>.json を探索順（$KIRO_AGENTS_DIR → <cwd>/agents → ~/.agents/agents → ~/.kiro/agents）に読む。
-    無ければ None（プロセス内キャッシュ）。壊れた定義は黙って無視せず RuntimeError。"""
+def load_agent_plugin(name: str) -> dict:
+    """agents/<name>.json を読む（agentcore へ委譲）。見つからない・壊れているは RuntimeError。"""
     key = str(name or "").strip().lower()
-    if not key:
-        return None
     if key in _AGENT_PLUGIN_CACHE:
         return _AGENT_PLUGIN_CACHE[key]
-    spec = None
-    for d in _agent_plugin_dirs():
-        p = os.path.join(d, f"{key}.json")
-        try:
-            if not os.path.isfile(p):
-                continue
-            with open(p, encoding="utf-8") as f:
-                raw = json.load(f)
-        except ValueError as e:
-            raise RuntimeError(f"エージェント定義 {p} を JSON として読めません: {e}")
-        except OSError:
-            continue
-        spec = _normalize_agent_plugin(key, raw, p)
-        break
+    try:
+        # キャッシュはここで持つ（二重キャッシュにすると定義の差し替えが効かなくなる）
+        spec = _agentcli.load_cli(key, use_cache=False)
+    except _agentcli.AgentCliError as e:
+        raise RuntimeError(str(e)) from e
     _AGENT_PLUGIN_CACHE[key] = spec
     return spec
-
-
-def _plugin_agent_cmd(plug: dict, model: "str | None", prompt: str):
-    """プラグイン定義から (argv, stdin テキスト, 最終応答ファイル) を組み立てる（決定的）。"""
-    model = model or plug.get("default_model") or None
-    out_file = None
-    cmd = []
-    used_model = False
-    for part in plug["command"]:
-        if "{output_file}" in part:
-            if out_file is None:
-                fd, out_file = tempfile.mkstemp(prefix=f"agent-flow-agent-{plug['name']}-", suffix=".txt")
-                os.close(fd)
-            part = part.replace("{output_file}", out_file)
-        if "{model}" in part:
-            if not model:
-                continue                          # モデル未指定 → トークンごと省く
-            part = part.replace("{model}", model)
-            used_model = True
-        cmd.append(part)
-    if model and not used_model and plug.get("model_flag"):
-        cmd += [str(plug["model_flag"]), model]
-    if plug["prompt_via"] == "argv":
-        if plug.get("prompt_flag"):
-            cmd += [str(plug["prompt_flag"]), prompt]
-        else:
-            cmd.append(prompt)
-        return cmd, None, out_file
-    return cmd, prompt, out_file
 
 
 def _plugin_error_patterns() -> tuple:
     out = []
     for spec in _AGENT_PLUGIN_CACHE.values():
-        if spec:
-            out.extend(spec.get("errors") or [])
+        out.extend(spec.get("errors") or [])
     return tuple(out)
 
 
@@ -572,7 +499,15 @@ def classify_agent_failure(blob: str) -> "tuple[str, str] | None":
     if not chain:
         return None
     cls = chain[0]
-    hint = next((h for c, _, h in _plugin_error_patterns() + _AGENT_ERROR_PATTERNS if c == cls), "")
+    text = str(blob or "")
+    # ヒントは「**実際に一致した規則**」から採る。クラスだけで引くと、読み込み済みの別 CLI 定義に
+    # 同じクラスの規則があるとその文言が出る（codex の usage limit に kiro の月間上限の案内が
+    # 付く、という取り違えが実際に起きた）。一致する規則が無いクラス（[agent-error:] タグや
+    # 発生源マーカー由来）だけ、従来どおりクラス一致の汎用ヒントへ落とす。
+    rules = _plugin_error_patterns() + _AGENT_ERROR_PATTERNS
+    hint = next((h for c, pat, h in rules if c == cls and pat.search(text)), "")
+    if not hint:
+        hint = next((h for c, _, h in _AGENT_ERROR_PATTERNS if c == cls), "")
     return cls, hint
 
 
@@ -654,70 +589,25 @@ def _run_agent_once(prompt: str, model: str | None, purpose: str = "") -> str:
     （kind は agents["worker"] へフォールバック）。model は 上書き ＞ 呼び出し値。"""
     cli, model_ov = _agent_for(purpose)
     model = model_ov or model
-    stdin_text = None
+    plug = load_agent_plugin(cli)
+    # プロンプトが argv 渡しで長すぎるときは一時ファイルへ退避し、「そのファイルを読んで実行」の
+    # 短い指示に置き換える（成果物の受け渡しを参照渡しにする）。argv 長制限は OS の事情なので
+    # CLI 定義ではなくここで見る——定義側の spill は「stdin を読まない CLI の癖」への対処で別物。
     spill = None
-    out_file = None
-    if cli == "claude":
-        # Claude Code ヘッドレス。プロンプトは stdin 渡し（ARG_MAX に当たらないためスピル不要）。
-        cmd = ["claude", "-p", "--output-format", "text", "--dangerously-skip-permissions"]
-        if model:
-            cmd += ["--model", model]
-        stdin_text = prompt
-    elif cli == "codex":
-        # OpenAI Codex CLI ヘッドレス（codex exec）。プロンプトは stdin 渡し（"-"）。
-        # stdout には実行イベントログが混ざるため、最終応答は --output-last-message の
-        # ファイルから読む。--skip-git-repo-check は git リポジトリ外でも動かすため。
-        fd, out_file = tempfile.mkstemp(prefix="agent-flow-codex-", suffix=".txt")
-        os.close(fd)
-        cmd = ["codex", "exec", "--skip-git-repo-check",
-               "--dangerously-bypass-approvals-and-sandbox", "--color", "never",
-               "--output-last-message", out_file]
-        if model:
-            cmd += ["--model", model]
-        cmd.append("-")
-        stdin_text = prompt
-    elif cli in ("copilot", "kiro", ""):
-        if cli == "copilot":
-            # GitHub Copilot CLI ヘッドレス。-s で応答本文のみ、--allow-all-tools は
-            # 非対話モードの必須フラグ（--allow-all-paths はファイル読み書きの許可）。
-            # プロンプトは -p の引数（argv）なので argv 渡しと同じスピル退避を適用する。
-            cmd = ["copilot", "-s", "--allow-all-tools", "--allow-all-paths", "--no-color"]
-        else:
-            cmd = ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"]
-        if model:
-            cmd += ["--model", model]
-        # プロンプトが大きすぎて argv 長制限に達する恐れがあれば、一時ファイルへ退避して
-        # 「そのファイルを読んで実行」する短い指示に置き換える（成果物の受け渡しを参照渡しに）。
-        if len(prompt.encode("utf-8")) > _agent_argv_limit():
-            fd, spill = tempfile.mkstemp(prefix="agent-flow-prompt-", suffix=".txt")
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(prompt)
-            prompt = ("以下のファイルにこのタスクの全文（依存タスクの成果物を含む）があります。"
-                      f"必ずファイルの内容を読み込み、その指示に従ってタスクを実行してください: {spill}")
-        cmd += (["-p", prompt] if cli == "copilot" else [prompt])
-    else:
-        # 組み込み以外 → プラグイン定義（agents/<name>.json・契約は schemas/agent-cli.schema.json）。
-        # 以前は未知の agent_cli が黙って kiro-cli に落ちていた（設定ミスに気づけない罠）。
-        plug = load_agent_plugin(cli)
-        if plug is None:
-            raise RuntimeError(
-                f"未知の agent_cli です: {cli!r}（組み込みは kiro/claude/copilot/codex。"
-                f"それ以外は agents/{cli}.json 定義が必要です — 契約: schemas/agent-cli.schema.json・"
-                f"探索順: $KIRO_AGENTS_DIR → <cwd>/agents → ~/.agents/agents → ~/.kiro/agents）")
-        if plug["prompt_via"] == "argv" and len(prompt.encode("utf-8")) > _agent_argv_limit():
-            fd, spill = tempfile.mkstemp(prefix="agent-flow-prompt-", suffix=".txt")
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(prompt)
-            prompt = ("以下のファイルにこのタスクの全文（依存タスクの成果物を含む）があります。"
-                      f"必ずファイルの内容を読み込み、その指示に従ってタスクを実行してください: {spill}")
-        cmd, stdin_text, out_file = _plugin_agent_cmd(plug, model, prompt)
-    plug = _AGENT_PLUGIN_CACHE.get(cli)   # プラグインなら env/timeout の上書きが効く
+    if plug["prompt_via"] == "argv" and len(prompt.encode("utf-8")) > _agent_argv_limit():
+        fd, spill = tempfile.mkstemp(prefix="agent-flow-prompt-", suffix=".txt")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(prompt)
+        prompt = ("以下のファイルにこのタスクの全文（依存タスクの成果物を含む）があります。"
+                  f"必ずファイルの内容を読み込み、その指示に従ってタスクを実行してください: {spill}")
+    built = _agentcli.headless_cmd(plug, model, prompt)
+    cmd, stdin_text, out_file = built["argv"], built["stdin"], built["output_file"]
     # 発生源で色を抑止（NO_COLOR/TERM=dumb）。残った ANSI は strip_ansi で除去する二段構え
-    # （agent-project と同じ扱い）。プラグイン定義の env は最後に載せるので上書きできる。
-    env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", **((plug or {}).get("env") or {})}
+    # （agent-project と同じ扱い）。定義の env は最後に載せるので上書きできる。
+    env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", **(plug.get("env") or {})}
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", input=stdin_text,
-                              timeout=(plug or {}).get("timeout") or _agent_timeout(), env=env)
+                              timeout=plug.get("timeout") or _agent_timeout(), env=env)
     except subprocess.TimeoutExpired:
         # 失敗として上位へ。ハングは一時的な公算が高いので transient タグを明示付与し、
         # レイヤ1（in-place 再試行）の対象にする（従来は日本語文言が英語の transient パターンに
@@ -739,7 +629,7 @@ def _run_agent_once(prompt: str, model: str | None, purpose: str = "") -> str:
             with contextlib.suppress(OSError):
                 with open(out_file, encoding="utf-8") as f:
                     text = f.read().strip() or text
-        if not text and plug is not None and not plug.get("empty_output_is_error", True):
+        if not text and not plug.get("empty_output_is_error", True):
             return ""
         if not text:
             # rc=0 でも本文が空で返る CLI がある（kiro-cli は AWS 認証が切れるとバナーだけ出して

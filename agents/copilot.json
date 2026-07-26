@@ -1,0 +1,17 @@
+{
+  "name": "copilot",
+  "command": ["copilot", "-s", "--allow-all-tools", "--no-color"],
+  "prompt_via": "argv",
+  "prompt_flag": "-p",
+  "model_flag": "--model",
+  "output": "stdout",
+  "empty_output_is_error": true,
+  "write_args": ["--allow-all-paths"],
+  "readonly_args": ["--available-tools=", "--disable-builtin-mcps", "--no-custom-instructions"],
+  "readonly": "best-effort",
+  "no_session_args": [],
+  "interactive": {
+    "command": ["copilot"],
+    "prompt_inject": "send-keys"
+  }
+}

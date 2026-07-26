@@ -2,9 +2,11 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "kiro/agent-cli.schema.json",
   "title": "エージェント CLI プラグイン定義",
-  "description": "agent-project / agent-flow / agent-amigos / agent-dashboard が共有する、エージェント CLI の宣言的な差し込み口。組み込み（kiro/claude/copilot/codex）以外の CLI（cursor / ollama / hermes …）は、この契約に従う agents/<name>.json を置くだけで agent_cli: <name> として使える。結合はこのデータ契約のみで、各ツールが自前の小さなローダで解釈する（ツール間のコード依存は作らない）。探索順: $KIRO_AGENTS_DIR → <プロジェクトルート>/agents/ → ~/.agents/agents/ → ~/.kiro/agents/（共通ホームはサブディレクトリ単位で新旧を判定し、~/.agents/agents/ が無く旧 ~/.agent/agents/ が実在するときだけ後者を使う）。同名は先に見つかった定義が勝つ（first-wins）。",
+  "description": "agent-project / agent-flow / agent-amigos / agent-dashboard が共有する、エージェント CLI の宣言的な差し込み口。**組み込み（kiro/claude/copilot/codex）を含む全 CLI** がこの契約で定義され、同梱定義は agents/<name>.json にある（S9）。CLI の挙動・作法が変わったときの修正が JSON 1 ファイルで完結することが、この契約の受入条件。探索順: $KIRO_AGENTS_DIR → <プロジェクトルート>/agents/ → ~/.agents/agents/ → ~/.kiro/agents/（共通ホームはサブディレクトリ単位で新旧を判定し、~/.agents/agents/ が無く旧 ~/.agent/agents/ が実在するときだけ後者を使う）。同名は先に見つかった定義が勝つ（first-wins）ので、上位に置けば同梱定義を上書きできる。定義を解決できない agent_cli は明示エラー（黙って別 CLI へ倒さない）。\n\nローダ: Python 側は agentcore.agentcli の 1 実装を agent-project / agent-flow / agent-amigos が共有する（S9-2。以前は 3 者が自前ローダを持っており、S3 の URL 正規化と同じく実装ごとの解釈のズレが起きうる形だった）。agent-dashboard は UI の応答性のため JS の自前ローダを持ち、Python 実装とはゴールデンテストで揃える。",
   "type": "object",
-  "required": ["command"],
+  "required": [
+    "command"
+  ],
   "additionalProperties": false,
   "properties": {
     "name": {
@@ -13,42 +15,64 @@
     },
     "command": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "minItems": 1,
       "description": "実行 argv。プレースホルダ {model}（モデル名。未指定ならそのトークンごと省く）と {output_file}（output=file のとき最終応答を書かせる一時ファイル）を使える。例: [\"ollama\", \"run\", \"{model}\"]"
     },
     "prompt_via": {
-      "enum": ["stdin", "argv"],
+      "enum": [
+        "stdin",
+        "argv"
+      ],
       "default": "stdin",
       "description": "プロンプトの渡し方。stdin 推奨（ARG_MAX に当たらない）。argv は末尾引数（prompt_flag 指定時はフラグの値）として渡し、argv 長制限を超えるプロンプトは一時ファイル退避（参照渡し）に自動で切り替わる。"
     },
     "prompt_flag": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "default": null,
       "description": "prompt_via=argv のときのフラグ名（例 \"-p\"）。null なら素の末尾引数。"
     },
     "model_flag": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "default": null,
       "description": "モデル指定のフラグ名（例 \"--model\"）。command に {model} が無く、モデルが指定されたときだけ argv 末尾に付く。"
     },
     "default_model": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "default": null,
       "description": "モデル未指定時の既定（{model} が command に必須の CLI で使う。例 ollama）。"
     },
     "output": {
-      "enum": ["stdout", "file"],
+      "enum": [
+        "stdout",
+        "file"
+      ],
       "default": "stdout",
       "description": "最終応答の取り出し方。stdout=標準出力全文。file=command 中の {output_file} に CLI 自身が書く（stdout がイベントログで汚れる CLI 向け。codex の --output-last-message と同型）。"
     },
     "env": {
       "type": "object",
-      "additionalProperties": { "type": "string" },
+      "additionalProperties": {
+        "type": "string"
+      },
       "description": "追加の環境変数（os.environ に上書きマージ）。"
     },
     "timeout": {
-      "type": ["number", "null"],
+      "type": [
+        "number",
+        "null"
+      ],
       "default": null,
       "description": "この CLI 専用のタイムアウト秒（null ならツール側の設定値）。"
     },
@@ -57,20 +81,148 @@
       "default": true,
       "description": "rc=0 でも本文が空なら失敗として扱う（認証切れで空応答を返す CLI の静かな失敗を防ぐ）。"
     },
+    "command_suffix": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "全フラグの **後ろ**（プロンプトの argv 渡しよりは前）に必ず置くトークン。位置引数を末尾に固定したい CLI 向け（codex の `-`＝プロンプトを stdin から読む指定）。command に書くとモード別フラグやモデル指定がその後ろに回ってしまう。"
+    },
+    "write_args": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "既定モード（書き込みを許す実行）でだけ付ける追加フラグ。readonly_args と対で、『同じ CLI でも用途で権限が違う』を 1 定義に収めるためにある（claude の --dangerously-skip-permissions、codex の --dangerously-bypass-approvals-and-sandbox 等）。読み取り専用モードでは付かない。"
+    },
+    "readonly_args": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "読み取り専用（助言のみ・ファイルを書かない・コマンドを実行しない）にする追加フラグ。ヘッドレス・対話の両方に効く（対話だけ違うフラグが要る CLI は interactive.readonly_args で上書きする）。Doctor・構造化 Assist・対話診断が使う。"
+    },
+    "readonly": {
+      "enum": [
+        "enforced",
+        "best-effort"
+      ],
+      "default": "best-effort",
+      "description": "readonly_args の強制力。enforced=CLI が読み取り専用を保証する（claude の --permission-mode plan、codex の --sandbox read-only 等） / best-effort=CLI 依存で保証しない。best-effort の CLI で読み取り専用を要求した呼び出しには警告が返り、画面は「助言のみを保証できません」と出す。このレイヤは argv を組み立てるだけで、フラグを無視する CLI への防御は持たない（S9 未決 7 の決着）。"
+    },
+    "no_session_args": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "セッション永続化を切るフラグ（使い捨ての診断向け）。対話診断は readonly_args と併用して起動する。"
+    },
+    "spill": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "長大なプロンプトを一時ファイルへ退避（spill）し、CLI には短い指示だけを渡す方式。prompt_via では表せない CLI 固有の癖のためにある（kiro-cli は positional プロンプトを渡すと stdin を読まないので、スナップショットをファイルへ逃がして『fs_read で読め』と指示する必要がある）。instruction が空なら退避しない。",
+      "properties": {
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "退避したときの権限フラグ（例: kiro の --trust-tools=fs_read。ファイル読み取りだけを信頼する）。非空なら、そのモードの write_args / readonly_args を **置き換える**（退避は『本文を読ませるためにファイル読み取りだけ許す』固有のモード。追加にすると --trust-tools= と --trust-tools=fs_read が並んで後勝ちに賭けることになる）。no_session_args は置き換えない。"
+        },
+        "instruction": {
+          "type": "string",
+          "default": "",
+          "description": "退避したときに argv で渡す短い指示文。{file} が退避先パスへ置換される。CLI のツール名（fs_read 等）に依存するため CLI 固有知識としてここに置く。"
+        }
+      }
+    },
+    "interactive": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "対話モード（tmux で人が直接操作する起動）。ヘッドレス片道実行しか表せなかった契約の空白を埋める（S9-1）。このセクションが無い定義は対話起動を提供しない。",
+      "properties": {
+        "command": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "description": "対話起動 argv。{model} はモデル名に置換（未指定ならそのトークンごと省く）。トップレベルの model_flag は、ここに {model} が無くモデル指定があるときだけ末尾に付く。"
+        },
+        "write_args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "対話モードの既定（書き込みを許す）で付ける追加フラグ（kiro の --trust-all-tools 等）。トップレベルの write_args はヘッドレス専用の危険フラグを含むので**継承しない**——対話で要るものはここに明示する。"
+        },
+        "readonly_args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "対話モードでの読み取り専用フラグ。省略時はトップレベルの readonly_args を継承する。"
+        },
+        "no_session_args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "対話モードでのセッション永続化オフ。省略時はトップレベルの no_session_args を継承する。"
+        },
+        "ready_pattern": {
+          "type": "string",
+          "description": "tmux capture-pane の出力から「入力を受け付けた」を検出する ERE（grep -qiE にそのまま渡す）。省略時は組み込みの既定パターン（素のプロンプト記号・枠付き入力欄・kiro の入力プレースホルダ）。"
+        },
+        "ready_timeout_sec": {
+          "type": "number",
+          "default": 60,
+          "description": "入力受付の検出を諦めるまでの秒数。"
+        },
+        "prompt_inject": {
+          "enum": [
+            "send-keys",
+            "file"
+          ],
+          "default": "send-keys",
+          "description": "初回プロンプトの注入方法。send-keys=1 行へ畳んで tmux send-keys で送る / file=一時ファイルへ書き spill.instruction の {file} を置換した 1 行だけを送る（長大プロンプト向け）。トップレベルの prompt_via（stdin|argv）はヘッドレスの話で、こちらとは層が違う。"
+        }
+      }
+    },
     "errors": {
       "type": "array",
       "description": "エラー本文（stdout+stderr）の分類規則。失敗トリアージ（どの層が直すか）の CLI 固有知識をここへ書く。組み込みの汎用パターン（quota/auth/env/transient）より先に評価される。",
       "items": {
         "type": "object",
-        "required": ["match", "class"],
+        "required": [
+          "match",
+          "class"
+        ],
         "additionalProperties": false,
         "properties": {
-          "match": { "type": "string", "description": "正規表現（大文字小文字無視）" },
+          "match": {
+            "type": "string",
+            "description": "正規表現（大文字小文字無視）"
+          },
           "class": {
-            "enum": ["quota", "auth", "env", "transient"],
+            "enum": [
+              "quota",
+              "auth",
+              "env",
+              "transient"
+            ],
             "description": "quota=利用上限（時間をおけば回復・リトライを焼かない） / auth=認証切れ（人が環境を直す） / env=実行環境の問題（CLI不在・モデル不正など。人が環境を直す） / transient=一時的（通常リトライで解ける）"
           },
-          "hint": { "type": "string", "description": "人向けの対処ヒント（1 文）" }
+          "hint": {
+            "type": "string",
+            "description": "人向けの対処ヒント（1 文）"
+          }
         }
       }
     }

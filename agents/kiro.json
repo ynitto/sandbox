@@ -1,0 +1,28 @@
+{
+  "name": "kiro",
+  "command": ["kiro-cli", "chat", "--no-interactive"],
+  "prompt_via": "argv",
+  "model_flag": "--model",
+  "output": "stdout",
+  "empty_output_is_error": true,
+  "write_args": ["--trust-all-tools"],
+  "readonly_args": ["--trust-tools="],
+  "readonly": "best-effort",
+  "no_session_args": [],
+  "spill": {
+    "args": ["--trust-tools=fs_read"],
+    "instruction": "指示の全文は一時ファイル {file} にあります。まず fs_read でこのファイル全体を読み込み、その内容だけを対象に回答してください。"
+  },
+  "interactive": {
+    "command": ["kiro-cli", "chat"],
+    "write_args": ["--trust-all-tools"],
+    "readonly_args": ["--trust-tools="],
+    "ready_pattern": "^[[:space:]]*[>?❯›][[:space:]]*$|!>|│[[:space:]]*[>❯›]|ask a question|describe a task",
+    "ready_timeout_sec": 60,
+    "prompt_inject": "send-keys"
+  },
+  "errors": [
+    { "match": "Monthly request limit reached",
+      "class": "quota", "hint": "Kiro CLI の月間リクエスト上限に達しています（上限のリセットを待つか別の CLI へ切り替えてください）" }
+  ]
+}
