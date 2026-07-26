@@ -882,6 +882,66 @@ class BuiltinVerifierPromptTests(unittest.TestCase):
                              f"組み込みプロンプトに載っていない入力: {missing}。"
                              "プロンプトへ足すか、SPEC_EXEMPT へ理由付きで登録すること")
 
+    def test_skill_and_builtin_share_the_diff_criterion(self):
+        """差分の常設基準も文言の正典は本体（スキルは受け取る・P2-5）。
+
+        2 か所で育てると、**検証レポートに出る基準文とエージェントが見た基準文**が黙って
+        ずれる——判定は番号で突き合わせるので、ずれても機械は気付かない。"""
+        script = (Path(__file__).resolve().parents[3]
+                  / ".github" / "skills" / "backlog-verifier" / "scripts" / "prompt.py")
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            _cfg, spec = self._spec(d)
+            self.assertEqual(spec["diff_criterion"], km.DIFF_CRITERION,
+                             "入力に解決済みの基準文を載せる（受け側が自前の表を使わない）")
+            proc = subprocess.run([sys.executable, str(script)],
+                                  input=json.dumps(spec, ensure_ascii=False),
+                                  capture_output=True, text=True, encoding="utf-8")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn(km.DIFF_CRITERION, km._builtin_verifier_prompt(spec))
+            self.assertIn(km.DIFF_CRITERION, proc.stdout)
+
+    def test_skill_prefers_the_diff_criterion_from_the_caller(self):
+        script = (Path(__file__).resolve().parents[3]
+                  / ".github" / "skills" / "backlog-verifier" / "scripts" / "prompt.py")
+        spec = {"task": {"id": "T1", "title": "x"}, "acceptance": ["a"],
+                "diff_criterion": "SENTINEL-DIFF"}
+        proc = subprocess.run([sys.executable, str(script)],
+                              input=json.dumps(spec, ensure_ascii=False),
+                              capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("SENTINEL-DIFF", proc.stdout)
+        # 入力に無ければスキル側の受け皿へ落ちる（スキルは単体でも動く契約）
+        del spec["diff_criterion"]
+        legacy = subprocess.run([sys.executable, str(script)],
+                                input=json.dumps(spec, ensure_ascii=False),
+                                capture_output=True, text=True, encoding="utf-8")
+        self.assertIn("差分が、上の基準の対象範囲に実在", legacy.stdout)
+
+    def test_report_and_prompt_use_the_same_criteria(self):
+        """検証レポートの基準列と、エージェントが見た基準列が同じ文字列から組まれること。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg, spec = self._spec(d)
+            prompt = km._builtin_verifier_prompt(spec)
+            for c in list(spec["acceptance"]) + [spec["diff_criterion"]]:
+                self.assertIn(c, prompt)
+
+    def test_empty_workspace_url_renders_the_same_in_both_paths(self):
+        """`verifier_input` は `url` キーを常に（空文字でも）入れるので、スキル側の
+        `get(k, 既定)` では既定が効かず空欄になっていた（P2-5）。"""
+        script = (Path(__file__).resolve().parents[3]
+                  / ".github" / "skills" / "backlog-verifier" / "scripts" / "prompt.py")
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            _cfg, spec = self._spec(d)
+            self.assertEqual(spec["workspace"]["url"], "", "この構成では url は空のはず")
+            proc = subprocess.run([sys.executable, str(script)],
+                                  input=json.dumps(spec, ensure_ascii=False),
+                                  capture_output=True, text=True, encoding="utf-8")
+            self.assertIn("リポジトリ: (ワークスペース)", km._builtin_verifier_prompt(spec))
+            self.assertIn("リポジトリ: (ワークスペース)", proc.stdout)
+
     def test_output_contract_matches_the_skill(self):
         # 件数・証跡必須・unverifiable の扱いは正規化（フェイルクローズ）の前提。
         with tempfile.TemporaryDirectory() as d:

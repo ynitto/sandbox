@@ -7,6 +7,79 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-project / agentcore / agent-flow / agent-amigos: 契約の一本化（P2）
+
+修正計画は [`docs/plans/2026-07-26-open-items-and-concerns.md`](docs/plans/2026-07-26-open-items-and-concerns.md) §7.3、
+詳細設計は [`docs/plans/2026-07-26-p2-contract-consolidation-detailed-design.md`](docs/plans/2026-07-26-p2-contract-consolidation-detailed-design.md)。
+**同じ規則が複数実装に割れている**ものを畳む段。片方だけ育つと、板の入札選別は fail-close
+なので**誤動作ではなく無言の不参加**（「なぜかこの PC だけ仕事が来ない」）として出る。
+
+**ノード契約バージョンの定義を 1 か所にした（P2-1）**
+
+`CONTRACT_VERSION` が 3 箇所（`agentcore/board.py` の判定・`resident/status.py` の宣言・
+dashboard `engine.js` の期待値）にあり、片方だけ上げると「版 2 と宣言しつつ版 1 で判定」に
+なっていた。正典を `agentcore.board` にし、`resident/status.py` は import（`contract_compatible`
+の重複本体ごと削除）。dashboard の定数は残るが、**Python の正典を実際に読んで**突き合わせる
+ゴールデンテストで縛った（写しそのものが問題なので、写しを機械に突き合わせさせる）。
+
+**板へ他 PC の絶対パスを配るのをやめた（P2-2）**
+
+`nodes/<id>.json` に host.yaml の `repos[].local`（手元クローンの絶対パス）を載せていたが、
+`repos.schema.json` は同じ値を「ホスト固有なので共有レジストリには置けない」と宣言しており、
+S3 の動機と正面から矛盾していた。**読み手を全部数えたところ 1 人も居なかった**——入札判定は
+name と正規化 url、画面は url からラベルを作るだけ、doctor は心拍だけ。速度最適化としての
+`local` は請負ノードが自分の host.yaml から解決する（板は経路に無い）。publish をやめ、
+`board.schema.json` の `$defs.node.repos` を実装の形（2 形を受ける・`local` 禁止）へ直した。
+
+**宣言していたのに読まれていなかった 2 つを入札判定へ繋いだ（P2-3）**
+
+- `workloads`（引き受けるエンジン）。スキーマは「公示の workload がこれに含まれないと入札
+  しない」と宣言していたが、`eligible()` に引数自体が無かった。**明示宣言だけを正**とし、
+  設定から導出しない——`amigos_bus` の有無などから推測すると、宣言していない PC が黙って
+  入札をやめる。宣言が無ければ板にも出さない（宣言していないことを宣言しない）
+- `budget.max_concurrent`。「超過時は新規入札を控える」という契約に実装が無く、忙しいノードが
+  仕事を掴んだまま枠待ちで塞いでいた。板上の自分名義の非終端 `status/` 件数で自己抑制する
+  （枠の真実は板にあるので、常駐体のワーカープールと二重管理しない）
+- **`0` の意味を契約側（無制限）へ揃えた**。実装は「0 = 未設定 → 既定 4」と真逆に読んでいた。
+  「未宣言なら 4」は設定を読む側の既定へ移し、`NodeWorkerPool` は上限なしを表現できるように
+  した。**`max_concurrent: 0` を「既定 4 のつもり」で書いている PC は更新前に書き直すこと**
+  （キーごと省略すれば従来どおり 4）
+- あわせて **agent-amigos が `agent_cli` を渡し忘れていた**のを直した。判定は fail-close なので、
+  `requires.agent_cli` を持つ公示に amigos ノードは**永久に入札していなかった**
+
+**板への書き込みが排他を通るようにした（P2-4）**
+
+S8 で足した `write_bid` / `write_cancelled` / `write_award` だけが flock と `_ensure()` を
+通らず直接書いていた。転送層の破損時再クローン（`rmtree`）や `pull --rebase` と並走すると
+入札・中止マーカーが消えうる。あわせて `write_bid` の戻り値（冪等で書かなかった場合）を
+受理レシートの文言に出すようにした——常に「入札しました」と返すと、押したのに板へ
+届いていない場合と区別が付かない。
+
+**同じ文字列・同じ規則の写しを畳んだ（P2-5）**
+
+- `DIFF_CRITERION`（差分の常設基準）を本体の 1 か所へ。スキルへは解決済みの文を入力で渡す
+  （P1-1 の `side_effects_text` と同じ手）。2 か所で育てると、検証レポートに出る基準文と
+  エージェントが見た基準文が黙ってずれる（判定は番号で突き合わせるので機械は気付かない）
+- 退避の指示文の**枠**を `agentcore.agentcli.spill_instruction` へ。呼び出し側が決めるのは
+  「何の全文か」だけ（定義側の `spill.instruction` へは寄せない——あちらは権限フラグ置換と
+  セットの別機構）
+- host.yaml の `repos:` 正規化を `agentcore.repolocal.normalize_repos` の 1 実装へ
+  （写しの側では `local: null` が `"None"` という文字列のパスになっていた）
+- JS の URL 正規化に **symlink 解決**を足して Python と揃え、両言語をゴールデン表で縛った
+- 板レイアウトの名義綴りを `protocol.safe_name` へ（flow だけ置換文字が `_` で、正規化されて
+  いない node_id では**書いたファイルと読むファイルが別名**になり、手動入札の受け皿が
+  効かなくなる）
+
+**CI が 31 件のテストを黙って素通りしていた**
+
+`unittest discover` は `unittest.TestCase` のサブクラスしか集めない。`resident` の単体テスト
+4 ファイル（scheduler / supervisor / worker / status）はモジュール直下の `def test_*` で
+書かれており、**CI で緑とも赤とも報告されていなかった**（`if __name__` の手動実行でしか
+走らない）。P3-1 で CI を入れたとき「4 パッケージの単体テスト」と書いたが、実際にはここが
+抜けていた。標準の `load_tests` プロトコルで拾うようにした（`tools/agent-project/tests/_functest.py`。
+pytest は足さない——stdlib だけで走るのがこのリポジトリの規約で、CI もそれ前提）。
+
+
 ### 破壊的変更: agent シリーズの python 下限を 3.11 へ
 
 インストーラの版検査（`tools/agent-tools/install.sh`）と文書の要求が **3.9** だったが、

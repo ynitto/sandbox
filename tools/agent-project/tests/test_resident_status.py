@@ -48,6 +48,35 @@ def test_node_capability_omits_none_optional_fields():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_contract_version_has_a_single_definition():
+    """ノード契約バージョンと互換判定の正典は `agentcore.board` の 1 箇所（P2-1）。
+
+    以前は板の判定（agentcore）・板への宣言（resident.status）・画面の期待値（dashboard）の
+    3 箇所に同じ数が居た。片方だけ上げると「版 2 と宣言しつつ版 1 で判定する」が作れ、
+    入札選別は fail-close なので**誤動作ではなく無言の不参加**として出る。写しを作ったら
+    ここが落ちる（値の一致ではなく**同一オブジェクト**を見る）。"""
+    from agentcore import board as boardrules
+
+    assert CONTRACT_VERSION is boardrules.CONTRACT_VERSION
+    assert contract_compatible is boardrules.contract_compatible
+    # 宣言（NodeCapability / EngineStatus）も同じ数から出ていること
+    assert NodeCapability("pc-a").contract_version is boardrules.CONTRACT_VERSION
+    assert EngineStatus("pc-a").contract_version is boardrules.CONTRACT_VERSION
+
+
+def test_node_capability_path_matches_the_board_naming_rule():
+    """`nodes/<id>.json` の綴りは読む側（`BoardRepo.node_path`）と同じ規則（P2-5）。"""
+    from agentcore.protocol import safe_name
+
+    tmp = tempfile.mkdtemp(prefix="resident-status-")
+    try:
+        path = NodeCapability("pc a/b").write(tmp)
+        assert os.path.basename(path) == f"{safe_name('pc a/b')}.json"
+        assert os.path.isfile(path)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_contract_compatible():
     assert contract_compatible(CONTRACT_VERSION)
     assert not contract_compatible(CONTRACT_VERSION + 1)
@@ -117,6 +146,13 @@ def test_run_gc_keeps_lambda_sweepers_distinct():
 def test_run_gc_handles_none_and_empty_sweepers():
     assert run_gc([("a", lambda: None), ("b", lambda: {})]) == {}
     assert run_gc([]) == {}
+
+
+# モジュール直下の `def test_*` を `unittest discover` に拾わせる（既定の収集は
+# `unittest.TestCase` のサブクラスだけで、関数形式は黙って無視される）。
+from _functest import module_load_tests  # noqa: E402
+
+load_tests = module_load_tests(globals())
 
 
 if __name__ == "__main__":

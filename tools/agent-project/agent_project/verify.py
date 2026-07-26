@@ -189,8 +189,13 @@ def _task_verify_cwd(cfg: "Config", task: "Task") -> "tuple[Path, str | None]":
 # 不変条件は変えない: done は機械検証の PASS のみが根拠 / 必ず有限回で止まる。
 # 変わるのは検証の**表現**（コマンド 1 行 → 基準リスト）と**実行者**（シェル → エージェント）。
 
-# 差分の常設基準（red-green の代替）。スキルの DIFF_CRITERION と同じ文言を持つ——
-# レポートの件数照合に使うため、ここでも件数を数えられる必要がある。
+# 差分の常設基準（red-green の代替）の**正典**。スキルへは `spec["diff_criterion"]` として
+# この文をそのまま渡す（P2-5。副作用制約 `side_effects_text` と同じ手）。
+#
+# 2 箇所で育てると、**検証レポートに出る基準文とエージェントが見た基準文が黙ってずれる**
+# ——判定は番号で突き合わせるので、ずれても機械は気付かない。スキル側にも同じ表が残るが、
+# 入力にこの文があればそちらが勝つので、実害のある重複ではなくなる（スキルは単体でも
+# 動く契約なので、受け皿としての定数は要る）。
 DIFF_CRITERION = ("このタスクの差分が、上の基準の対象範囲に実在すること"
                   "（変更が無い・無関係な場所にしか無いなら fail）")
 
@@ -303,6 +308,9 @@ def verifier_input(cfg: "Config", task: "Task", vcwd: "Path") -> dict:
         # 読まず自前の表へ落ちるので、追加しても壊れない。
         "side_effects_text": verify_side_effect_rule(
             getattr(cfg, "verify_side_effects", "workspace")),
+        # 差分の常設基準も同じ扱い（P2-5）。レポートの基準列（`verification_report_md`）と
+        # エージェントが見る基準列が**同じ文字列から**組まれることを、入力で保証する。
+        "diff_criterion": DIFF_CRITERION,
     }
 
 
@@ -327,7 +335,8 @@ def _builtin_verifier_prompt(spec: dict) -> str:
     """
     task = spec.get("task") or {}
     ws = spec.get("workspace") or {}
-    criteria = list(spec.get("acceptance") or []) + [DIFF_CRITERION]
+    criteria = list(spec.get("acceptance") or []) + [
+        str(spec.get("diff_criterion") or "").strip() or DIFF_CRITERION]
     numbered = "\n".join(f"{i + 1}. {c}" for i, c in enumerate(criteria))
     side = str(spec.get("side_effects_text") or "").strip() \
         or verify_side_effect_rule(spec.get("side_effects"))

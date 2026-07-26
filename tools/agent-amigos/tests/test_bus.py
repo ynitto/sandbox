@@ -38,6 +38,64 @@ class BoardParticipationTests(AmigosTestCase):
         self.assertTrue(os.path.exists(os.path.join(d, "bids", "pc-a.json")))
         self.assertTrue(os.path.exists(os.path.join(d, "status", "pc-a.json")))
 
+    def test_requires_agent_cli_is_matched(self):
+        """公示の `requires.agent_cli` に、このノードが使える CLI を突き合わせる（P2-3）。
+
+        **以前は `board_eligible` へ agent_cli を渡しておらず**、判定は fail-close なので
+        `requires.agent_cli` を持つ公示に amigos ノードは**永久に入札しなかった**
+        （誤動作ではなく無言の不参加として出るので、誰も例外を見ない）。"""
+        from agent_amigos import board as B
+        boarddir = os.path.join(self.tmp, "board")
+        os.makedirs(os.path.join(boarddir, "delegations"), exist_ok=True)
+        self._board_post(boarddir, "dg-1", workspace={"url": "git@h:team/app.git"},
+                         requires={"agent_cli": ["stub"]})
+        dm = self.daemon(node="pc-a", commands_home=self.tmp, board=boarddir,
+                         repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}})
+        self.assertEqual(B.poll_board(dm), ["dg-1"])
+
+    def test_requires_agent_cli_not_available_does_not_bid(self):
+        from agent_amigos import board as B
+        boarddir = os.path.join(self.tmp, "board")
+        os.makedirs(os.path.join(boarddir, "delegations"), exist_ok=True)
+        d = self._board_post(boarddir, "dg-1", workspace={"url": "git@h:team/app.git"},
+                             requires={"agent_cli": ["kiro"]})
+        dm = self.daemon(node="pc-a", commands_home=self.tmp, board=boarddir,
+                         repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}})
+        self.assertEqual(B.poll_board(dm), [])
+        self.assertFalse(os.path.exists(os.path.join(d, "bids", "pc-a.json")))
+
+    def test_declared_workloads_restrict_bidding(self):
+        """引き受けるエンジンの宣言（host.yaml の `workloads:`）で入札を絞る（P2-3）。"""
+        from agent_amigos import board as B
+        boarddir = os.path.join(self.tmp, "board")
+        os.makedirs(os.path.join(boarddir, "delegations"), exist_ok=True)
+        host = os.path.join(self.tmp, "host.json")
+        with open(host, "w", encoding="utf-8") as f:
+            json.dump({"workloads": ["flow"]}, f)
+        self._board_post(boarddir, "dg-1", workspace={"url": "git@h:team/app.git"})
+        dm = self.daemon(node="pc-a", commands_home=self.tmp, board=boarddir,
+                         repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}})
+        dm.node_declaration = host
+        self.assertEqual(B.poll_board(dm), [])
+
+    def test_busy_node_stops_bidding(self):
+        """板の契約「超過時は新規入札を控える」。件数の根拠は板の `status/<who>.json`。"""
+        from agent_amigos import board as B
+        boarddir = os.path.join(self.tmp, "board")
+        os.makedirs(os.path.join(boarddir, "delegations"), exist_ok=True)
+        host = os.path.join(self.tmp, "host.json")
+        with open(host, "w", encoding="utf-8") as f:
+            json.dump({"budget": {"max_concurrent": 1}}, f)
+        d0 = self._board_post(boarddir, "dg-0", workspace={"url": "git@h:team/app.git"})
+        os.makedirs(os.path.join(d0, "status"), exist_ok=True)
+        with open(os.path.join(d0, "status", "pc-a.json"), "w", encoding="utf-8") as f:
+            json.dump({"who": "pc-a", "state": "dispatched"}, f)
+        self._board_post(boarddir, "dg-1", workspace={"url": "git@h:team/app.git"})
+        dm = self.daemon(node="pc-a", commands_home=self.tmp, board=boarddir,
+                         repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}})
+        dm.node_declaration = host
+        self.assertEqual(B.poll_board(dm), [])
+
     def test_owner_picks_applies_without_dispatching(self):
         # owner-picks: award.json が無い間は応募（bid）を書くだけでミッション公示しない。
         from agent_amigos import board as B

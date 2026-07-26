@@ -243,6 +243,22 @@ OS の `ARG_MAX`（Linux で概ね 2MB・環境変数と共有）より十分小
 `execve` が E2BIG で失敗し、プロセス起動そのものが立たない。"""
 
 
+def spill_instruction(what: str, *, then: str = "その指示に従ってください") -> str:
+    """argv 退避時に本文の代わりに渡す短い指示（`{file}` を含む・P2-5）。
+
+    **枠だけをここに置く。** 呼び出し側が決めるのは `what`（何の全文か）と `then`（読んだ
+    あと何をするか）で、役割ごとに違うのはそこだけ。「必ず読み込ませる」という**効き目に
+    関わる部分は共通**なので、3 者が全文を自前で持つと、言い回しの改善が 1 か所にしか
+    入らない（そして入っていない方は誰も気付かない）。
+
+    **定義側の `spill.instruction`（`agents/<cli>.json`）とは別物**。あちらは権限フラグの
+    置き換えを伴う読み取り専用の退避モード用で、`headless_cmd(spill_path=…)` が使う
+    （Python からの消費者は無く、dashboard の診断だけ）。混同しないよう、こちらを使うのは
+    `spill_prompt` 経由に限る。
+    """
+    return f"以下のファイルに{what}があります。必ずファイルの内容を読み込み、{then}: {{file}}"
+
+
 def spill_prompt(prompt: str, limit: "int | None" = None, *, prompt_via: str,
                  prefix: str, instruction: str) -> "tuple[str | None, str]":
     """argv 長制限を超えるプロンプトを一時ファイルへ退避し、`(退避先, 短い指示)` を返す。

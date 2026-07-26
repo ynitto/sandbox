@@ -157,8 +157,10 @@ def _agent_argv_limit() -> int:
 # **定義ファイルの `spill.instruction` は使わない**——あれは権限フラグの置き換え
 # （`--trust-tools=fs_read`）とセットの機構で、実行して確かめる呼び出しに掛けると
 # 検証がコマンドを 1 つも走らせられなくなる（P1-2）。
-_SPILL_INSTRUCTION = ("この処理の入力の全文は一時ファイル {file} にあります。"
-                      "まずこのファイルの内容を読み込み、その内容を対象にしてください。")
+# 枠は `agentcore.agentcli.spill_instruction`（3 者共通・P2-5）。ここが決めるのは
+# 「何の全文か」と「読んだあと何をするか」だけ。
+_SPILL_INSTRUCTION = _agentcli.spill_instruction(
+    "この処理の入力の全文", then="その内容を対象にしてください")
 
 
 def _agent_cmd(cli: str, model: "str | None",

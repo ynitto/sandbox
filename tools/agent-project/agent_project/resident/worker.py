@@ -39,7 +39,7 @@ class WorkItem:
 class NodeWorkerPool:
     """ノード全体の `max_concurrent` セマフォで律速するワーカープール。"""
 
-    def __init__(self, max_concurrent: int, *, thread_factory=threading.Thread,
+    def __init__(self, max_concurrent: "int | None", *, thread_factory=threading.Thread,
                  on_event: "Callable[[str, str, BaseException | None], None] | None" = None,
                  external_inflight: "Callable[[], set] | None" = None):
         """`external_inflight` は「このプールが起こしたのではないが、同じノードで走っている
@@ -48,8 +48,14 @@ class NodeWorkerPool:
         プロセス内カウンタだけだと、スキル起動の単発実行（人が `agent-amigos run --once` や
         `agent-flow run` を直接叩く。設計 §1.3 C14 が明示的に許す併走）が計数に入らず、
         ノード全体の `max_concurrent` を超える。id 空間は投入側と揃える（重複は自分の分と
-        みなして二重計上しない）。"""
-        self._max = max(1, int(max_concurrent))
+        みなして二重計上しない）。
+
+        `max_concurrent` は **0 / None で「上限なし」**（板の語彙・P2-3）。以前は
+        `max(1, int(...))` で 0 を 1 に潰しており、`board.schema.json` が
+        「0/省略 = 無制限」と宣言しているのと真逆だった。**「未宣言なら 4」は呼び出し側の
+        既定**で、ここの仕事ではない——プールが既定を持つと宣言を読む場所が 2 つになる。"""
+        n = None if max_concurrent is None else int(max_concurrent)
+        self._max = None if (n is None or n <= 0) else n
         self._thread_factory = thread_factory
         self._on_event = on_event or (lambda item_id, event, exc: None)
         self._external_inflight = external_inflight
@@ -91,7 +97,7 @@ class NodeWorkerPool:
                 # 積むと外部の完了後に二重実行になるので、キューにも入れず捨てる
                 # ——次の tick で外部が終わっていれば、そのとき改めて投入される。
                 return False
-            if self._used(external) >= self._max:
+            if self._max is not None and self._used(external) >= self._max:
                 self._queue.append(item)
                 return False
             self._start(item)
@@ -104,7 +110,7 @@ class NodeWorkerPool:
         with self._lock:
             self._reap()
             external = self._external_ids()      # ループ内で走査を繰り返さない
-            while self._queue and self._used(external) < self._max:
+            while self._queue and (self._max is None or self._used(external) < self._max):
                 self._start(self._queue.pop(0))
                 started += 1
         return started
@@ -112,8 +118,10 @@ class NodeWorkerPool:
     def status(self) -> dict:
         with self._lock:
             self._reap()
+            # `max_concurrent` は**板と同じ語彙で出す**（0 = 無制限）。engine/status.json を
+            # 読む dashboard に、この画面だけの別語彙を覚えさせない。
             return {"inflight": sorted(self._inflight), "queued": len(self._queue),
-                   "max_concurrent": self._max, "used": self._used()}
+                   "max_concurrent": self._max or 0, "used": self._used()}
 
     def busy_ids(self) -> "set[str]":
         """走っている ＋ 起動待ちの仕事 id。「この常駐体が面倒を見ている」集合であって、

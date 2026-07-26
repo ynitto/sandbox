@@ -52,9 +52,18 @@ function normalizeRepoUrl(url) {
   if (!s.includes('://') && !/^[^/\\]+@[^/\\]+:/.test(s)) {
     const expanded = s.replace(/^~(?=$|\/|\\)/, os.homedir());
     try {
-      return path.resolve(expanded).toLowerCase();
+      // Python 側は `Path.resolve()`＝**symlink も解決する**。ここが `path.resolve` だけだと、
+      // 同じクローンを symlink 経由で宣言した PC で「同じリポジトリ」と読めない——症状は
+      // 「なぜかローカルクローンが使われない（＝速度が出ない）」で、理由が画面から分からない。
+      return fs.realpathSync.native(expanded).toLowerCase();
     } catch {
-      return expanded.toLowerCase();
+      // 実体が無いパスは解決できない。Python の `resolve(strict=False)` と同じく、
+      // 絶対化だけして返す。
+      try {
+        return path.resolve(expanded).toLowerCase();
+      } catch {
+        return expanded.toLowerCase();
+      }
     }
   }
   return s.toLowerCase();

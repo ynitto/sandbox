@@ -104,8 +104,9 @@ def _spill_prompt(prompt: str, prompt_via: str = "argv") -> "tuple[str | None, s
     agent-flow と共有）。ここに残すのは agent-amigos 固有の「何の全文か」だけ。"""
     return agentcli.spill_prompt(
         prompt, DEFAULT_ARGV_LIMIT, prompt_via=prompt_via, prefix="agent-amigos-prompt-",
-        instruction="以下のファイルにこのターンの全文（役割・ミッション・新着メッセージを含む）"
-                    "があります。必ずファイルの内容を読み込み、その指示に従ってください: {file}")
+        # 枠は agentcore の 1 実装（P2-5）。ここが決めるのは「何の全文か」だけ。
+        instruction=agentcli.spill_instruction(
+            "このターンの全文（役割・ミッション・新着メッセージを含む）"))
 
 
 def run_agent(prompt: str, cli: str, model: "str | None" = None,

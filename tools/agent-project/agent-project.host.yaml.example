@@ -77,8 +77,20 @@ repos:
 # 上の `defaults.agent_cli`（このノードの既定 CLI・スカラ）とは別のキー。
 # tags / agent_cli / repos は **入札選別（board_eligible）の正典**でもある——agent-flow 設定の
 # `board_repos` / `board_tags` / `board_agent_cli` は明示上書きに降格した（空ならここを読む）。
+#
+# **板へ配られるのは url だけ**（`repos[].local` は載せない）。あれはこの PC にしかない
+# 絶対パスで、板は共有リポジトリ＝置いた値が全 PC へ配られる。手元クローンの利用は各ノードが
+# 自分のこのファイルから解決するので、板を経由する必要が無い。
 tags: []
 agent_cli: []
+
+# このノードが引き受けるエンジン（板の入札選別）。**省略 = 制限しない**（何でも引き受ける）。
+# 宣言すると、ここに無い workload の公示には入札しなくなる。設定から推測はしない——
+# 「amigos_bus を書いていないから amigos はやらない」と自動で決めると、amigos の板参加を
+# 直接起こしている PC が黙って仕事を取らなくなる（入札選別は fail-close なので、
+# 誤動作ではなく「なぜかこの PC だけ仕事が来ない」という形で出る）。
+# workloads: [flow, amigos]
+
 board: ""
 board_workdir: null       # git+ 板の clone 作業領域（ノード局所パスなのでここが置き場）
 
@@ -88,16 +100,25 @@ board_workdir: null       # git+ 板の clone 作業領域（ノード局所パ�
 amigos_bus: ""
 amigos_config: null
 
-# ノード全体の同時実行数上限（amigos 手番・flow run の NodeWorkerPool 投入を律速する）。
-# 板の能力宣言 `nodes/<node_id>.json` にもそのまま載る（依頼側が見る）。
-# 0 は「明示未設定」— この場合は旧 agent-flow daemon の
-# 既定 --max-workers に合わせて 4 になる（NodeWorkerPool は 0 を無制限にはできない）。
+# ノード全体の同時実行数上限（amigos 手番・flow run の NodeWorkerPool 投入を律速し、
+# 板では「これ以上は新しく引き受けない」の自己抑制になる）。板の能力宣言
+# `nodes/<node_id>.json` にもそのまま載る（依頼側が見る）。
+#
+#   キーごと省略 … 既定 4（旧 agent-flow daemon の --max-workers に合わせた値）
+#   0            … **無制限**（板の契約どおり。上限を掛けない）
+#   n            … n 件まで
+#
+# **0 は無制限**であって「既定に戻す」ではない（板の契約 board.schema.json に合わせた・P2-3）。
+# 既定に戻したいならキーごと省略する。無制限は PC の資源を使い切りうるので、意図して
+# 選ぶとき以外は書かないこと。
 #
 # 上限は **PC 単位**。常駐体が起こした手番だけでなく、人が直接叩いた単発実行
 # （agent-amigos run --once など。設計 §1.3 C14 が明示的に許す併走）も同じ枠で数える
 # ——実行中の手番は ~/.agents/amigos/turns/*.json に印が出て、常駐体がそれを読む。
+# 板側の数え方は別（板の上の自分名義の非終端 status/ 件数）——枠の真実は板にあるので
+# 二重管理しない。
 budget:
-  max_concurrent: 0   # 0 = 既定（4）
+  max_concurrent: 4
 
 # ── ツールの自動アップデート（S1 でノード側へ移設）──
 # 「このノードのインストール管理」なのでプロジェクト共有設定には置かない（置くと更新の停止・

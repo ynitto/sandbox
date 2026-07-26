@@ -13,7 +13,8 @@ import hashlib
 import os
 import time
 
-from agentcore import board as _boardrules, protocol, transport, vocab
+from agentcore import (board as _boardrules, protocol, repolocal as _repolocal, transport,
+                       vocab)
 
 from .commands import _do_post
 from .mission import active_roles, derive_phase, load_mission, load_roles
@@ -22,6 +23,9 @@ from .util import log, now_iso, read_json, write_json_atomic
 
 
 def _safe(s: str) -> str:
+    """ミラーのクローン先ディレクトリ名。**板のレイアウト（`status/<who>.json` 等）には
+    使わない**——あちらは `agentcore.protocol.safe_name` が正典で、入札を書く `renew_lease`
+    と同じ規則で綴る必要がある（P2-5）。実装は同一だが、規則の出どころを 1 つにしておく。"""
     return "".join(c if (c.isalnum() or c in "._-") else "-" for c in str(s)) or "x"
 
 
@@ -91,14 +95,38 @@ def _board_declared_repos(node_repos) -> "set[str]":
     return _boardrules.declared_repo_ids(node_repos)
 
 
-def board_eligible(post: dict, node_repos, node_tags, node_agent_cli=None) -> bool:
-    """公示に入札してよいか（成果物リポジトリ・タグ・CLI・契約バージョンでの選別）。
+def board_eligible(post: dict, node_repos, node_tags, node_agent_cli=None, *,
+                   node_workloads=None, max_concurrent=None, inflight=0) -> bool:
+    """公示に入札してよいか（成果物リポジトリ・タグ・CLI・契約バージョン・引き受ける
+    エンジン・枠での選別）。
 
     判定規則は `agentcore.board.eligible` に一本化した——agent-flow が「同じ仕様・別実装」で
     持っていたもので、片方だけ育つと**同じ公示が経路によって拾えたり拾えなかったりする**
     （`agentcore.repolocal` が解決したのと同型の問題）。"""
     return _boardrules.eligible(post, repos=node_repos, tags=node_tags,
-                                agent_cli=node_agent_cli or [])
+                                agent_cli=node_agent_cli or [],
+                                workloads=node_workloads or [],
+                                max_concurrent=max_concurrent, inflight=inflight)
+
+
+def _node_board_declaration(daemon) -> "tuple[list, list, int | None]":
+    """入札選別に使う `(agent_cli, workloads, max_concurrent)` を解決する（P2-3）。
+
+    `daemon.agent_cli` は**スカラ 1 件**（`--agent-cli` / 設定）で、板の語彙は「使える CLI の
+    一覧」。粒度が違うので畳んで渡す（`assign.py` のロール応募と同じ流儀）。
+    **以前はこれを渡しておらず**、`eligible` の CLI 判定は fail-close なので
+    `requires.agent_cli` を持つ公示に amigos ノードは永久に入札しなかった。
+
+    `workloads` / `max_concurrent` は**このノードの宣言**なので正典は host.yaml
+    （agent-flow の `_node_declaration` と同じ判断）。読めなければ制限しない。
+    """
+    cli = [str(daemon.agent_cli)] if getattr(daemon, "agent_cli", None) else []
+    host = _repolocal.load_host_declaration(getattr(daemon, "node_declaration", None) or None)
+    budget = host.get("budget")
+    raw_max = budget.get("max_concurrent") if isinstance(budget, dict) else None
+    max_concurrent = (int(raw_max) if isinstance(raw_max, (int, float))
+                      and not isinstance(raw_max, bool) and int(raw_max) >= 0 else None)
+    return cli, _boardrules.declared_workloads(host), max_concurrent
 
 
 def _synth_design(post: dict) -> str:
@@ -172,7 +200,7 @@ def report_board_results(daemon, mirror: "BoardMirror") -> "list[str]":
         ddir = os.path.join(deleg_root, did)
         if not os.path.isdir(ddir) or os.path.exists(os.path.join(ddir, "result.json")):
             continue
-        status_path = os.path.join(ddir, "status", f"{_safe(daemon.node_id)}.json")
+        status_path = os.path.join(ddir, "status", f"{protocol.safe_name(daemon.node_id)}.json")
         st = read_json(status_path)
         if not st or st.get("state") != "dispatched":
             continue    # 自分が落札した委譲ではない（または既に終端まで報告済み）
@@ -221,10 +249,11 @@ def _renew_dispatched_leases(daemon, mirror: "BoardMirror", lease: float) -> Non
         if not os.path.isdir(ddir) or os.path.exists(os.path.join(ddir, "result.json")) or \
            os.path.exists(os.path.join(ddir, "cancelled.json")):
             continue
-        status_path = os.path.join(ddir, "status", f"{_safe(daemon.node_id)}.json")
+        status_path = os.path.join(ddir, "status", f"{protocol.safe_name(daemon.node_id)}.json")
         st = read_json(status_path)
         state = st.get("state") if st else None
-        if not st or state == "away" or vocab.is_terminal(state):
+        # 板の上の値を**読む**ので `is_terminal_read`（旧綴り `canceled` も終端）。
+        if not st or state == "away" or vocab.is_terminal_read(state):
             continue    # 自分が落札した委譲ではない（または既に終端/away）
         if _write_or_renew_bid(os.path.join(ddir, "bids"), daemon.node_id, lease, "amigos"):
             write_json_atomic(status_path, {**st, "heartbeat": now_iso(),
@@ -249,6 +278,7 @@ def poll_board(daemon) -> "list[str]":
     report_board_results(daemon, mirror)
     node_repos = getattr(daemon, "repos", None) or {}
     node_tags = getattr(daemon, "tags", None) or []
+    node_cli, node_workloads, max_concurrent = _node_board_declaration(daemon)
     lease = float(getattr(daemon, "board_lease", None) or 900.0)
     _renew_dispatched_leases(daemon, mirror, lease)
     home = daemon.commands_home or daemon.home or os.getcwd()
@@ -256,6 +286,9 @@ def poll_board(daemon) -> "list[str]":
     handed = []
     if not os.path.isdir(deleg_root):
         return handed
+    # 板上で自分がいま預かっている件数（枠の自己抑制・P2-3）。**ループの外で 1 度だけ**
+    # 数え、この 1 巡で落札するたびに +1 する（委譲ごとに走査すると O(n²) になる）。
+    inflight = _boardrules.node_inflight(mirror.dir, daemon.node_id) if max_concurrent else 0
     for did in sorted(os.listdir(deleg_root)):
         ddir = os.path.join(deleg_root, did)
         if not os.path.isdir(ddir):
@@ -269,7 +302,9 @@ def poll_board(daemon) -> "list[str]":
         # 既にこのミッションを公示済み（自分の bus にある）ならスキップ
         if daemon.bus.mission(did).exists():
             continue
-        if not board_eligible(post, node_repos, node_tags):
+        if not board_eligible(post, node_repos, node_tags, node_cli,
+                              node_workloads=node_workloads,
+                              max_concurrent=max_concurrent, inflight=inflight):
             continue
         bids_dir = os.path.join(ddir, "bids")
         assignment = str((post.get("policy") or {}).get("assignment") or "first-come")
@@ -295,12 +330,12 @@ def poll_board(daemon) -> "list[str]":
         try:
             _do_post(daemon.bus, daemon.node_id, home, _post_to_command(post))
         except (ValueError, RuntimeError, OSError, SystemExit, KeyError) as e:
-            write_json_atomic(os.path.join(ddir, "status", f"{_safe(daemon.node_id)}.json"), {
+            write_json_atomic(os.path.join(ddir, "status", f"{protocol.safe_name(daemon.node_id)}.json"), {
                 "who": daemon.node_id, "state": "failed", "error": str(e),
                 "heartbeat": now_iso()})
             mirror.sync_push(f"handoff-failed {did}")
             continue
-        write_json_atomic(os.path.join(ddir, "status", f"{_safe(daemon.node_id)}.json"), {
+        write_json_atomic(os.path.join(ddir, "status", f"{protocol.safe_name(daemon.node_id)}.json"), {
             "who": daemon.node_id, "state": "dispatched", "native_id": did,
             "heartbeat": now_iso(), "lease_until": time.time() + lease})
         mirror.sync_push(f"won+dispatch {did} by {daemon.node_id}")

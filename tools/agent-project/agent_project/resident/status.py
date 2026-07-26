@@ -25,26 +25,14 @@ _agentcore_dir = os.path.join(_tools_dir, "agent-tools", "agentcore")
 if _agentcore_dir not in sys.path:
     sys.path.insert(0, _agentcore_dir)
 
-from agentcore.protocol import write_json_atomic  # noqa: E402
+from agentcore.protocol import safe_name, write_json_atomic  # noqa: E402
 
-# 常駐一本化のノード契約バージョン（設計 §9 C13）。互換性の無い変更をする時だけ上げる。
-# 公示側が要求するバージョンと不一致のノードは「入札しない」（誤動作でなく不参加に倒す）。
-CONTRACT_VERSION = 1
-
-
-def contract_compatible(required_by_post: "int | None", *,
-                        declared: "int | None" = CONTRACT_VERSION) -> bool:
-    """公示（post.json）の `requires.contract_version` と、ノードの宣言
-    （`nodes/<pc>.json` の `contract_version`）が噛み合うか（設計 §9 C13
-    「公示の要求と不一致のノードは入札しない」）。
-
-    - 要求の無い公示（None）は不問 — True。契約バージョンを載せる前から板にある公示を
-      この項目の追加だけで一斉に入札不能にしない。
-    - 要求のある公示に対して未宣言のノード（declared=None）は非互換 — False
-      （fail-close。更新漏れの古いノードを誤動作でなく不参加に倒す）。"""
-    if required_by_post is None:
-        return True
-    return declared == required_by_post
+# ノード契約バージョンと互換判定の**正典は `agentcore.board`**（P2-1）。ここは名前を
+# 通すだけで、値も判定も持たない——以前はこのファイルに同じ定数と同じ関数本体（docstring
+# ごと）があり、板の判定（`agentcore.board.eligible`）とは別の実装だった。片方だけ上げると
+# 「版 2 と宣言しつつ版 1 で判定する」が作れてしまい、入札選別は fail-close なので
+# 誤動作ではなく**無言の不参加**として出る（設計 §9 C13）。
+from agentcore.board import CONTRACT_VERSION, contract_compatible  # noqa: E402,F401
 
 
 @dataclass
@@ -56,15 +44,23 @@ class NodeCapability:
     agent_cli: "list[str]" = field(default_factory=list)
     repos: "Any" = None
     availability: "str | None" = None
+    # 同時に落札・実行してよい委譲数の上限。**0 = 無制限**（スキーマの語彙）で、
+    # 「未宣言」は呼び出し側が既定を当ててから渡す（P2-3）。
     max_concurrent: int = 0
     heartbeat: "str | None" = None
     fresh_after_sec: "float | None" = None
     contract_version: int = CONTRACT_VERSION
 
     def to_dict(self) -> dict:
-        d = {"node": self.node, "workloads": list(self.workloads), "tags": list(self.tags),
+        d = {"node": self.node, "tags": list(self.tags),
             "agent_cli": list(self.agent_cli), "max_concurrent": self.max_concurrent,
             "contract_version": self.contract_version}
+        # `workloads` は**空なら出さない**（P2-3）。スキーマの語彙では「空 = 全部」で、
+        # キーが無いことと同義。宣言していないものを空配列として配ると、読み手には
+        # 「宣言したうえで空」と区別が付かない。tags / agent_cli は「要求との突き合わせ」で
+        # 空が意味を持つ（fail-close の材料）ので、そちらは常に出す。
+        if self.workloads:
+            d["workloads"] = list(self.workloads)
         if self.repos is not None:
             d["repos"] = self.repos
         if self.availability is not None:
@@ -76,8 +72,13 @@ class NodeCapability:
         return d
 
     def write(self, board_root: str) -> str:
-        """`<board_root>/nodes/<node>.json` へ原子的に書く。書いたパスを返す。"""
-        path = os.path.join(board_root, "nodes", f"{self.node}.json")
+        """`<board_root>/nodes/<node>.json` へ原子的に書く。書いたパスを返す。
+
+        ファイル名は `agentcore.protocol.safe_name` を通す（P2-5）——読む側の
+        `BoardRepo.node_path` が同じ規則で綴るので、ここだけ素通しにすると
+        「書いたのに読めない」名義が理屈の上で作れる（`node` は正規化済みなので
+        現経路では同値だが、同値であることを規則ではなく偶然に依存させない）。"""
+        path = os.path.join(board_root, "nodes", f"{safe_name(self.node)}.json")
         write_json_atomic(path, self.to_dict())
         return path
 

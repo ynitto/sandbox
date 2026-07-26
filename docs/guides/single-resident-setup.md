@@ -41,10 +41,11 @@ projects:
     root: /home/me/projects/example-project-state
 tags: []
 agent_cli: []
+# workloads: [flow, amigos]   # 引き受ける仕事の種類（省略 = 何でも引き受ける）
 board: ""                    # 委譲公示板（未使用ならそのまま）
 amigos_bus: ""                # amigos 参加 tick の対象バス（未使用ならそのまま — tick 自体を skip）
 budget:
-  max_concurrent: 0           # 0 = 既定（4）
+  max_concurrent: 4           # 省略 = 4 / 0 = 無制限
 availability:                 # 稼働時間帯（省略 = 常時稼働）
   timezone: Asia/Tokyo
   daily_stop: "23:30"         # この時刻で停止時間帯に入る
@@ -71,7 +72,11 @@ availability:                 # 稼働時間帯（省略 = 常時稼働）
 `max_concurrent` は **PC 単位**の上限。常駐体が起こした仕事だけでなく、人が直接叩いた
 単発実行（`agent-amigos run --once` など）も同じ枠で数える——実行中の手番は
 `~/.agents/amigos/turns/*.json` に印が出るので、常駐体がそれを読んで律速する
-（置き場は `AGENT_AMIGOS_TURNS_DIR` で変更可）。
+（置き場は `AGENT_AMIGOS_TURNS_DIR` で変更可）。あわせて、委譲板では「この PC が
+いま預かっている件数が上限に達していたら新しく引き受けない」の自己抑制にもなる。
+
+**`0` は「無制限」**であって「既定に戻す」ではない。既定（4）にしたいならキーごと省略する。
+無制限は PC の資源を使い切りうるので、意図して選ぶとき以外は書かない。
 
 ## 3. 起動して確かめる
 
@@ -170,8 +175,14 @@ systemd 環境（かつ `residency` が `windows-task`/`none` でない）なら
 
 能力宣言（この PC で何ができるかを委譲板へ出す）は実装済み——`board:` を宣言していれば、
 常駐体が板の `nodes/<pc>.json` を周期的に更新する（宣言の中身は `tags` / `agent_cli` /
-`repos` / `availability` / `budget.max_concurrent`）。板を使わない PC では `board:` が空の
-ままなので何も起きない。
+`repos` の url / `workloads` / `availability` / `budget.max_concurrent`）。板を使わない PC では
+`board:` が空のままなので何も起きない。
+
+宣言のうち **`workloads` は書いたときだけ効く**（省略 = 何でも引き受ける）。書いていない
+ものを「引き受けない」と読み替えることはしない——設定から推測すると、宣言していない PC が
+黙って仕事を取らなくなり、しかもその症状は「なぜかこの PC だけ仕事が来ない」という
+いちばん追いにくい形で出る。`repos` は **url だけ**が配られる（手元クローンのパスは
+この PC にしか意味が無く、板は共有リポジトリなので置かない）。
 
 残っているのは次の 1 つで、実装を急ぐと二重実行・不整合のリスクがあるため見送っている:
 

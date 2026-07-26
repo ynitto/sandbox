@@ -155,6 +155,71 @@ class BoardParticipationTests(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(d, "bids", "pc-a.json")))
         self.assertTrue(os.path.exists(os.path.join(d, "bids", "pc-b.json")))
 
+    # --- 引き受けるエンジンと枠での自己抑制（P2-3） --------------------------
+
+    def _host_yaml(self, **decl):
+        """このノードの宣言（host.yaml）を `--node-declaration` で明示する。
+
+        入札選別の正典は host.yaml（S1）。テストは中立な一時 cwd で走るので、明示しないと
+        宣言なし（＝制限なし）になる。"""
+        path = os.path.join(self.tmp, "host.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(decl, f)
+        return path
+
+    def test_declared_workloads_restrict_bidding(self):
+        self._post("dg-1", workspace={"url": "git@h:team/app.git"})
+        args = self._args(node_declaration=self._host_yaml(workloads=["amigos"]))
+        self.assertEqual(kf.poll_board(self.bus, args, "pc-a"), [],
+                         "amigos しか引き受けないと宣言したノードは flow の公示を拾わない")
+
+    def test_undeclared_workloads_do_not_restrict_bidding(self):
+        """**宣言していない PC の挙動は変わらない。** 導出値（amigos_bus の有無など）を
+        判定に使うとここが黙って壊れる——P2-3 が明示宣言だけを正とした理由。"""
+        self._post("dg-1", workspace={"url": "git@h:team/app.git"})
+        args = self._args(node_declaration=self._host_yaml(amigos_bus="/tmp/bus"))
+        self.assertEqual(kf.poll_board(self.bus, args, "pc-a"), ["dg-1"])
+
+    def test_busy_node_stops_bidding(self):
+        """板の契約「超過時は新規入札を控える」（`$defs.node.max_concurrent`）。"""
+        # 1 件目は預かり済み（board の status/<who>.json が根拠）
+        d0 = self._post("dg-0", workspace={"url": "git@h:team/app.git"})
+        os.makedirs(os.path.join(d0, "status"), exist_ok=True)
+        with open(os.path.join(d0, "status", "pc-a.json"), "w", encoding="utf-8") as f:
+            json.dump({"who": "pc-a", "state": "dispatched"}, f)
+        self._post("dg-1", workspace={"url": "git@h:team/app.git"})
+        args = self._args(node_declaration=self._host_yaml(budget={"max_concurrent": 1}))
+        self.assertEqual(kf.poll_board(self.bus, args, "pc-a"), [])
+        self.assertFalse(os.path.exists(
+            os.path.join(self.board, "delegations", "dg-1", "bids", "pc-a.json")))
+
+    def test_zero_max_concurrent_is_unlimited(self):
+        # スキーマの語彙（0 = 無制限）。実装が「既定 4」に読んでいたのを揃えた（P2-3）
+        self._post("dg-1", workspace={"url": "git@h:team/app.git"})
+        args = self._args(node_declaration=self._host_yaml(budget={"max_concurrent": 0}))
+        self.assertEqual(kf.poll_board(self.bus, args, "pc-a"), ["dg-1"])
+
+    def test_one_poll_does_not_exceed_the_limit(self):
+        # 同じ 1 巡で 2 件拾うと上限を超える。落札のたびに枠を減らす
+        for did in ("dg-1", "dg-2"):
+            self._post(did, workspace={"url": "git@h:team/app.git"})
+        args = self._args(node_declaration=self._host_yaml(budget={"max_concurrent": 1}))
+        self.assertEqual(kf.poll_board(self.bus, args, "pc-a"), ["dg-1"])
+
+    def test_manual_bid_overrides_the_self_throttle(self):
+        """人が「このノードで請け負う」を押した分は自己抑制を飛ばす（S8-3 の forced と同じ）。
+        ここで抑制を効かせると、書かれた入札が永遠に取り込まれない宙ぶらりんになる。"""
+        d0 = self._post("dg-0", workspace={"url": "git@h:team/app.git"})
+        os.makedirs(os.path.join(d0, "status"), exist_ok=True)
+        with open(os.path.join(d0, "status", "pc-a.json"), "w", encoding="utf-8") as f:
+            json.dump({"who": "pc-a", "state": "dispatched"}, f)
+        d1 = self._post("dg-1", workspace={"url": "git@h:team/app.git"})
+        # 常駐体が先に入札を書いた状態（手動入札）
+        protocol = __import__("agentcore.protocol", fromlist=["protocol"])
+        protocol.renew_lease(os.path.join(d1, "bids"), "pc-a", 900.0)
+        args = self._args(node_declaration=self._host_yaml(budget={"max_concurrent": 1}))
+        self.assertEqual(kf.poll_board(self.bus, args, "pc-a"), ["dg-1"])
+
     def test_dispatched_lease_renewed_when_near_expiry(self):
         # 長時間 run が board_lease を超えても勝者を保つには、残りが半分未満のときに延長する。
         d = self._post("dg-1", workspace={"url": "git@h:team/app.git"})

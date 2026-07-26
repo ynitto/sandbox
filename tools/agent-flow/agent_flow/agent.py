@@ -604,8 +604,10 @@ def _run_agent_once(prompt: str, model: str | None, purpose: str = "") -> str:
     spill, prompt = _agentcli.spill_prompt(
         prompt, _agent_argv_limit(), prompt_via=plug["prompt_via"],
         prefix="agent-flow-prompt-",
-        instruction="以下のファイルにこのタスクの全文（依存タスクの成果物を含む）があります。"
-                    "必ずファイルの内容を読み込み、その指示に従ってタスクを実行してください: {file}")
+        # 枠は agentcore の 1 実装（P2-5）。ここが決めるのは「何の全文か」だけ。
+        instruction=_agentcli.spill_instruction(
+            "このタスクの全文（依存タスクの成果物を含む）",
+            then="その指示に従ってタスクを実行してください"))
     built = _agentcli.headless_cmd(plug, model, prompt)
     cmd, stdin_text, out_file = built["argv"], built["stdin"], built["output_file"]
     # 発生源で色を抑止（NO_COLOR/TERM=dumb）。残った ANSI は strip_ansi で除去する二段構え

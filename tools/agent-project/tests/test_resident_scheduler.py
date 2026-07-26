@@ -203,6 +203,13 @@ def test_self_watchdog_aborts_on_stall():
     sched.stop()
 
 
+# モジュール直下の `def test_*` を `unittest discover` に拾わせる（既定の収集は
+# `unittest.TestCase` のサブクラスだけで、関数形式は黙って無視される）。
+from _functest import module_load_tests  # noqa: E402
+
+load_tests = module_load_tests(globals())
+
+
 if __name__ == "__main__":
     test_single_flight_never_overlaps()
     test_exception_isolated_other_ticks_keep_running()

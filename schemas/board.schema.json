@@ -14,7 +14,7 @@
         "workloads": {
           "type": "array",
           "items": {"enum": ["flow", "amigos"]},
-          "description": "受けられるエンジン。空 = 全部。公示の workload がこれに含まれないと入札しない"
+          "description": "受けられるエンジン。空（またはキー自体が無い）= 全部。公示の workload がこれに含まれないと入札しない。**書き手は明示宣言だけを載せる**（host.yaml の workloads:）— 設定から導出した値を載せると、宣言していない PC が「引き受けない」と宣言したことになり、owner-picks の落札判断と端末一覧が嘘を読む"
         },
         "tags": {
           "type": "array",
@@ -27,8 +27,20 @@
           "description": "このノードで使える agent CLI（delegation requires.agent_cli との突き合わせ・OR）"
         },
         "repos": {
-          "$ref": "repos.schema.json",
-          "description": "担当リポジトリのレジストリ（repos.schema.json そのまま）。公示の workspace.url / requires.repos を (url, path, base) identity で照合し、担当していれば入札対象。readonly エントリは書込先候補にしない"
+          "description": "担当リポジトリの宣言。2 形を受ける: repos.schema.json のレジストリ mapping（agent-amigos の設定由来）と、host.yaml の repos[] 由来の配列。公示の workspace.url / requires.repos を (url, path, base) identity で照合し、担当していれば入札対象。readonly エントリは書込先候補にしない。**local は載せない** — ホスト固有の絶対パスは共有リポジトリである板に置けない（repos.schema.json の local と同じ理由・S3）。手元クローンの解決は各ノードが自分の host.yaml から行う（agentcore.repolocal）ので、板を経由する必要が無い",
+          "oneOf": [
+            {"$ref": "repos.schema.json"},
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["url"],
+                "properties": {"url": {"type": "string"}},
+                "not": {"required": ["local"]},
+                "additionalProperties": true
+              }
+            }
+          ]
         },
         "availability": {
           "type": "string",
