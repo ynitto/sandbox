@@ -7,6 +7,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### 破壊的変更: agent シリーズの python 下限を 3.11 へ
+
+インストーラの版検査（`tools/agent-tools/install.sh`）と文書の要求が **3.9** だったが、
+新設した CI が回すのは **3.11** だけで、宣言と検査が食い違っていた（積み残し §7.7 C-1）。
+**検査に宣言を合わせる**方向で解消する——誰も動かしていない版を CI で支え続けても、
+その版で動く保証は「たぶん」以上にはならない。
+
+- `install.sh` は 3.11 未満の python を除外する。案内に **Ubuntu 22.04 の既定は 3.10**
+  であることと、その系での入れ方（deadsnakes / 24.04 以降は既定で足りる）を書いた
+- 反映先: セットアップガイド §1 / agent-flow の README・SKILL
+- **既存ノードへの影響**: 3.10 以下で動かしている PC は、更新前に python を上げる必要がある
+  （自己更新は `install.sh` を叩くので、上げていないノードはそこで止まって理由を表示する）
+
 ### リポジトリ / agent-project: 文書と CI（P3）
 
 修正計画は [`docs/plans/2026-07-26-open-items-and-concerns.md`](docs/plans/2026-07-26-open-items-and-concerns.md) §7.4。

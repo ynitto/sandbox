@@ -23,8 +23,10 @@ bash tools/agent-tools/install.sh
 - 入れる先を変える: `bash tools/agent-tools/install.sh --prefix /usr/local/bin`
 - 1 本だけ入れ直す: `bash tools/agent-tools/install.sh --only agent-project`
 - Windows/WSL 配置の場合はクローンを WSL 側の ext4 に置く（`/mnt/c` は使わない — 設計 §7）。
-- python 3.9 以上が要る。git・エージェント CLI（claude / codex 等）・PyYAML の有無は
-  インストーラが確認して、足りないものだけ教える。
+- python 3.11 以上が要る（CI が実際に回している版と同じ下限）。Ubuntu 22.04 の既定は
+  3.10 なので、その系では `python3.11` を別途入れる（24.04 以降は既定で足りる）。
+  git・エージェント CLI（claude / codex 等）・PyYAML の有無はインストーラが確認して、
+  足りないものだけ教える。
 
 ## 2. host.yaml を書く
 

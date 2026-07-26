@@ -15,7 +15,7 @@
 # 各エンジンの install.sh は本スクリプトへ委譲する薄いシムとして残してある
 # （既存の手順書・setup.sh・自己更新の呼び出しパスを壊さないため）。
 #
-# 前提: 標準ライブラリのみ（pip 依存なし）。python3.9+ が要る。
+# 前提: 標準ライブラリのみ（pip 依存なし）。python3.11+ が要る（CI が回すのと同じ下限）。
 #   - git       … 複数 PC 分散（状態共有・git バス）で必要。単機なら任意。
 #   - PyYAML    … YAML 設定を使う場合のみ。JSON 設定なら不要。
 #   - agent CLI … 実運用に必要（kiro / claude / copilot / codex / cursor）。
@@ -104,17 +104,20 @@ PYTHON_CMD=""
 for cmd in python3 python; do
   if command -v "$cmd" &>/dev/null; then
     PY_VER="$("$cmd" --version 2>&1)"
-    if "$cmd" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)'; then
+    if "$cmd" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'; then
       PYTHON_CMD="$cmd"
       ok "$PY_VER が見つかりました: $(command -v "$cmd")"
       break
     fi
-    warn "$PY_VER は 3.9 未満のため除外します。"
+    warn "$PY_VER は 3.11 未満のため除外します。"
   fi
 done
-[[ -n "$PYTHON_CMD" ]] || die "Python 3.9 以上が見つかりません。手動でインストールしてください。
-  macOS:      brew install python3
-  WSL/Ubuntu: sudo apt install python3
+# 下限は CI が実際に回している版に揃えてある（宣言だけ低くしても誰も確かめていない状態になる）。
+[[ -n "$PYTHON_CMD" ]] || die "Python 3.11 以上が見つかりません。手動でインストールしてください。
+  macOS:      brew install python@3.11
+  WSL/Ubuntu: sudo apt install python3.11
+              （Ubuntu 22.04 の既定は 3.10 なので、必要なら
+                sudo add-apt-repository ppa:deadsnakes/ppa を足す。24.04 以降は既定で 3.12）
   参考: https://www.python.org/downloads/"
 
 info "git を確認しています..."
