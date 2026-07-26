@@ -2,9 +2,8 @@
 
 import unittest
 
-from tests.test_autonomy import TestLoopEngineering
-from tests.test_backlog import TestIntake
-
-
 if __name__ == "__main__":
+    from test_autonomy import TestLoopEngineering
+    from test_backlog import TestIntake
+
     unittest.main()
