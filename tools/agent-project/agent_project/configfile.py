@@ -302,47 +302,80 @@ def _layer_error(lines: "list[str]") -> "None":
     sys.exit(2)
 
 
-def _validate_layers(project: dict, cfg_path, defaults: dict, overrides: dict) -> None:
-    """設定 2 層の帰属契約を検査する（S1）。
+def layer_findings(project: dict, defaults: dict, overrides: dict,
+                   cfg_path=None) -> "list[dict]":
+    """設定 2 層の帰属違反を **判定だけ** して返す（起動は止めない）。
 
     プロジェクト yaml 側 = 「全 PC へ配られてしまうと困るもの」を弾く。
     host.yaml の defaults/overrides 側 = 「ノードごとに食い違うと実行が非決定になるもの」を弾く。
-    どちらにも属さない未知キーは警告のみ（typo の検出。既存の黙殺をやめる）。"""
+    どちらにも属さない未知キーは警告のみ（typo の検出。既存の黙殺をやめる）。
+
+    起動経路（`_validate_layers`・fail-fast）と doctor（診断・止めない）が**同じ 1 つの規則**を
+    使うための分離（S1 §3.6）。判定と出口を分けないと、doctor 側に「起動時と少しだけ違う
+    判定」が生えて、doctor が緑なのに起動が止まる（あるいはその逆）ようになる。
+
+    返す各要素: `{"id", "severity"("error"|"warn"), "keys", "title", "lines"}`。
+    `lines` は起動時の案内文そのもの（doctor は `title` と `keys` を使う）。"""
     where = f"（{cfg_path}）" if cfg_path else ""
+    out: "list[dict]" = []
     bad = sorted(k for k in project if k in _REMOVED_WORKTREE_KEYS)
     if bad:
-        _layer_error([
-            f"  廃止した状態 worktree 方式のキーが残っています{where}: {', '.join(bad)}",
-            "  状態ルートは状態専用リポジトリの clone に一本化しました（S1）。",
-            "  移行: bash tools/agent-project/migrate-state-repo.sh --state-dir <状態フォルダ> "
-            "--state-repo <URL>",
-            "  手順: docs/guides/state-repo-migration.md",
-        ])
+        out.append({"id": "E7", "severity": "error", "keys": bad,
+                    "title": "廃止した状態 worktree 方式のキーがプロジェクト yaml に残っている",
+                    "lines": [
+                        f"  廃止した状態 worktree 方式のキーが残っています{where}: {', '.join(bad)}",
+                        "  状態ルートは状態専用リポジトリの clone に一本化しました（S1）。",
+                        "  移行: bash tools/agent-project/migrate-state-repo.sh "
+                        "--state-dir <状態フォルダ> --state-repo <URL>",
+                        "  手順: docs/guides/state-repo-migration.md",
+                    ]})
     bad = sorted(k for k in project if k in HOST_ONLY_KEYS)
     if bad:
-        _layer_error([
-            f"  ノード固有のキーがプロジェクト yaml にあります{where}: {', '.join(bad)}",
-            "  これらは PC ごとに違う宣言なので、state repo 経由で全 PC へ配ると壊れます。",
-            "  ~/.agents/agent-project.host.yaml へ移してください。",
-        ])
+        out.append({"id": "E1", "severity": "error", "keys": bad,
+                    "title": "ノード固有のキーがプロジェクト yaml にある",
+                    "lines": [
+                        f"  ノード固有のキーがプロジェクト yaml にあります{where}: {', '.join(bad)}",
+                        "  これらは PC ごとに違う宣言なので、state repo 経由で全 PC へ配ると壊れます。",
+                        "  ~/.agents/agent-project.host.yaml へ移してください。",
+                    ]})
     for key in sorted(k for k in project if k in _INERT_PROJECT_KEYS):
-        print(f">>> 警告: {key} はプロジェクト yaml では効きません{where}（無視します）— "
-              f"{_INERT_PROJECT_KEYS[key]}", file=sys.stderr)
+        out.append({"id": "W-INERT", "severity": "warn", "keys": [key],
+                    "title": f"{key} はプロジェクト yaml では効かない",
+                    "lines": [f">>> 警告: {key} はプロジェクト yaml では効きません{where}"
+                              f"（無視します）— {_INERT_PROJECT_KEYS[key]}"]})
     for layer, label in ((overrides, "projects[].overrides"), (defaults, "defaults")):
         bad = sorted(k for k in layer if k not in SHARED_KEYS)
         if bad:
-            _layer_error([
-                f"  host.yaml の {label}: に上書きできないキーがあります: {', '.join(bad)}",
-                "  『プロジェクトとしてどう進めるか』の合意はノードごとに食い違うと実行が"
-                "非決定になるため、状態リポジトリ直下の agent-project.yaml へ書いてください。",
-                f"  上書きできるのは次のキーだけです: {', '.join(sorted(SHARED_KEYS))}",
-            ])
+            out.append({"id": "E2", "severity": "error", "keys": bad,
+                        "title": f"host.yaml の {label}: に上書きできないキーがある",
+                        "lines": [
+                            f"  host.yaml の {label}: に上書きできないキーがあります: "
+                            f"{', '.join(bad)}",
+                            "  『プロジェクトとしてどう進めるか』の合意はノードごとに食い違うと"
+                            "実行が非決定になるため、状態リポジトリ直下の agent-project.yaml へ"
+                            "書いてください。",
+                            f"  上書きできるのは次のキーだけです: {', '.join(sorted(SHARED_KEYS))}",
+                        ]})
     unknown = sorted(k for k in project
                      if k not in CONFIG_DEFAULTS and k not in _INERT_PROJECT_KEYS
                      and not str(k).startswith("_"))
     if unknown:
-        print(f">>> 警告: 未知の設定キー{where}: {', '.join(unknown)}（無視します。"
-              f"綴りを確認してください）", file=sys.stderr)
+        out.append({"id": "W-UNKNOWN", "severity": "warn", "keys": unknown,
+                    "title": "未知の設定キー（綴り間違いの疑い）",
+                    "lines": [f">>> 警告: 未知の設定キー{where}: {', '.join(unknown)}"
+                              f"（無視します。綴りを確認してください）"]})
+    return out
+
+
+def _validate_layers(project: dict, cfg_path, defaults: dict, overrides: dict) -> None:
+    """設定 2 層の帰属契約を検査する（S1）。違反は fail-fast、警告は 1 回だけ出す。
+
+    判定そのものは `layer_findings` が持つ（doctor と共有）。ここは出口だけを担う。"""
+    for finding in layer_findings(project, defaults, overrides, cfg_path):
+        if finding["severity"] == "error":
+            _layer_error(finding["lines"])          # 起動を止める（戻らない）
+        for line in finding["lines"]:
+            print(line, file=sys.stderr)
 
 
 def _normalize_hooks(raw) -> dict:

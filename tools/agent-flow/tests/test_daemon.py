@@ -208,11 +208,26 @@ class OrphanRecoveryTests(unittest.TestCase):
         self.assertEqual((adopted, failed), ({}, []))
         self.assertEqual(self.bus.run_meta("run1")["status"], "running")
 
+    def _expire_inbox_claim(self, req_id: str, who: str) -> None:
+        """inbox claim の lease を過去へ倒す（＝旧 owner が消えた状態を作る）。
+
+        **極端に短い lease を張って sleep で失効させない。** `try_claim` は「自分の claim を
+        書く → 勝者判定」の順で動くので、lease がその往復より短いと *claim した瞬間に自分の
+        lease が切れて* 勝者判定に負け、`reclaim_request` 自体が偶発的に False を返す
+        （0.01 秒 lease + 0.05 秒 sleep の旧実装は、この機構で 40 回中 3 回落ちていた）。
+        リースの失効は時間ではなく値で作る——他のリース系テスト（`_set_meta` で
+        `orch_lease_until` を過去にする）と同じ流儀。"""
+        path = os.path.join(self.bus.inbox_claims_dir, req_id,
+                            f"{kf.protocol.safe_name(who)}.json")
+        rec = kf.read_json(path)
+        rec["lease_until"] = time.time() - 1.0
+        kf.write_json_atomic(path, rec)
+
     def test_reclaim_after_owner_lease_expiry(self):
         # 旧 owner の claim が lease 切れなら reclaim できる（run が存在していても）
         self.bus.submit_request("run1", "req", "submitter")
-        self.assertTrue(self.bus.reclaim_request("run1", "dead-daemon", 0.01))
-        time.sleep(0.05)
+        self.assertTrue(self.bus.reclaim_request("run1", "dead-daemon", 120.0))
+        self._expire_inbox_claim("run1", "dead-daemon")
         self.assertFalse(self.bus.claim_request("run1", "d2", 120.0))   # 従来 API は run 存在で拒否
         self.assertTrue(self.bus.reclaim_request("run1", "d2", 120.0))  # 引き継ぎ用は claim できる
 

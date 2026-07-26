@@ -385,6 +385,19 @@ state.py / stategit.py / 検収 diff にまたがり、途中段階で全テス�
    `_source_repo` 置き換え
 4. serve / worker init / doctor / dashboard(§3.7)/ example / ガイド / README / CHANGELOG
 
+### 6.1 本文の記述訂正(2026-07-26 追記)
+
+[積み残し総覧 §6.3](2026-07-26-open-items-and-concerns.md) の棚卸しで、**本文が現存しない
+シンボルを参照している**ことが分かった。結論は正しいので本文は書き換えず、ここに訂正だけを
+置く(この設計書を根拠に実装を読む人が、存在しない機構を探さずに済むように)。
+
+| 本文の記述 | 実装 | 補足 |
+|---|---|---|
+| §3.2 の擬似コード `_validate_layers(project, host, entry, cfg_path)` | `_validate_layers(project, cfg_path, defaults, overrides)` | 検査に渡すのは `host`/`entry` そのものではなく、そこから取り出した 2 つの層(`host.defaults` と `entry.overrides`)。判定は同名の擬似コードと同じ |
+| §3.2 の擬似コード全体(層の走査ループ) | `resolve_config` の実装は `HOST_SOURCED_KEYS` を先に分岐する | 擬似コードには無い分岐。host.yaml が単一ソースのキー(`update_*` `board_workdir` `state_repo*`)はプロジェクト yaml を読まない |
+| §4.1-2 「state repo は `_STATE_SIGNIFICANT` に `agent-project.yaml` を含むため、既に同期対象」 | `_STATE_SIGNIFICANT` は存在しない。同期は**除外方式**(`_STATE_EXCLUDE_DIRS` = `flow-archive` / `claims` とドット始まり、`DirectStateGit._EXCLUDE_PATTERNS`) | 「除外されないので同期対象」という結論は変わらない。列挙方式を探すと見つからない |
+| §3.6 の doctor 拡張 | 2026-07-26 の修正計画 P3-3 で実装(`doctor_host_projects_findings`) | §6 の実績一覧はこれを「4.」に含めて書かれていたが、実際に入ったのは後日。判定は起動経路と同じ `configfile.layer_findings` を共有する |
+
 ---
 
 ## 7. 未決事項の決着(仕様書 §5-1 への回答)と残課題

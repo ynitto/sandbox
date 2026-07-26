@@ -7,6 +7,68 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### リポジトリ / agent-project: 文書と CI（P3）
+
+修正計画は [`docs/plans/2026-07-26-open-items-and-concerns.md`](docs/plans/2026-07-26-open-items-and-concerns.md) §7.4。
+実機 canary（R1）と独立に進められる 4 件。
+
+**CI を新設した（P3-1）**
+
+このリポジトリには CI 設定が 1 つも無く（`.github/workflows` も `.gitlab-ci.yml` も
+Makefile も無い）、全緑の担保は人が手元で回すことに依存していた。
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) で 3 系統を回す:
+
+- 4 パッケージの単体テスト（agent-project / agent-flow / agent-amigos / agentcore）。
+  **agentcore はテストルートが 2 つある**（`agentcore/tests` 58 件 と
+  `agentcore/agentcore/tests` 74 件）ので両方を明示する——片方だけ `discover` すると
+  残りが黙ってスキップされる。設定キーの構造テスト（P0-4）は agent-project 側に含まれる
+- agent-dashboard の `npm test`
+- 利用者向け文書の内部名検査（R10）
+
+**CI を入れる前に間欠失敗を 1 件潰した（P3-1）**
+
+`test_daemon.OrphanRecoveryTests.test_reclaim_after_owner_lease_expiry` が 40 回中 3 回失敗して
+いた。`reclaim_request(..., lease_sec=0.01)` は「自分の claim を書く → 勝者判定」の往復より
+lease が短く、**claim した瞬間に自分の lease が切れて自分で勝者判定に負ける**。実装ではなく
+テストの作りの問題（0.01 秒 lease が非現実的）で、失効を時間ではなく値（`lease_until` を
+過去へ）で作る形に直した。CI は手元より遅いランナーで回るので、時間依存はここで潰しておく
+（間欠的に赤い CI は無い CI より悪い）。
+
+**R10 検査を機械化した（P3-1）**
+
+素朴な `grep` では成立しない: 利用者向け文書にはガイドのファイル名や契約のスキーマ名が
+正当に含まれ、それらは内部名を含む（隠すのは製品名としての内部名であって契約の語彙ではない）。
+[`tools/ci/check_user_docs.py`](tools/ci/check_user_docs.py) は**本文だけ**を見る——
+コードブロック・インラインコード・リンク先・パス・ファイル名を落としてから検査する。
+どうしても本文で言及する行は `<!-- r10-allow: 理由 -->` で免除し、理由が行に残る。
+検査自身の単体テスト（`tools/ci/tests/`）で「何を落として何を見るか」を固定した。
+
+**`docs/guides/multi-pc-operations.md` を全面改訂した（P3-2）**
+
+常駐一本化の前に書かれた記述（廃止済みの `start` / `stop`、通らない `status --root`、
+旧モデルの「各 PC 1 daemon」）が 10 箇所以上残り、一部だけ新しいという最も読み違えやすい
+状態だった。「PC に 1 本の常駐体 + プロジェクトごとの子」「git を触るのは常駐体だけ」の
+現行モデルで書き直し、dashboard の自動 pull を前提にした障害説明（凍結した clone が
+ゴースト表示の主犯という記述）も、pull 経路が消えた現行に合わせて畳んだ。
+
+**doctor に host.yaml の起動前チェックを足した（P3-3）**
+
+`projects[].root` の綴り間違い・origin の取り違え・設定 2 層の帰属違反は、これまで
+「子の起動失敗 → 隔離表示」という最も遠い症状でしか観測できなかった。
+`doctor_host_projects_findings` が root の存在・git トップレベル・origin 一致・
+チェックアウトのブランチ・E1〜E7 相当の設定検査を宣言ごとに見る。
+
+- 層契約の判定は起動経路と**同じ関数**（`configfile.layer_findings`）を呼ぶ。doctor 用に
+  別判定を書くと「doctor は緑なのに起動が止まる」が生まれる。fail-fast の出口だけを
+  `_validate_layers` に残し、判定は共有した
+- `state_repo` を宣言していて root が無いだけの状態は**所見にしない**（初回起動で clone
+  される正常な形。ここを警告にすると新規プロジェクトの度に赤が出る）
+
+**S1 詳細設計に記述訂正を追記した（P3-4）**
+
+本文が現存しないシンボル（`_validate_layers` の引数形・`_STATE_SIGNIFICANT`）を参照して
+いた。結論は正しいので本文は書き換えず、§6.1 に訂正表だけを足した。
+
 ### agent-project / agent-dashboard / agentcore: 実機 canary の前に直す 4 件（P0）
 
 詳細設計は [`docs/plans/2026-07-26-p0-pre-canary-fixes-detailed-design.md`](docs/plans/2026-07-26-p0-pre-canary-fixes-detailed-design.md)。

@@ -854,9 +854,9 @@ agent-project serve   # 常駐体が host.yaml のプロジェクトを監督す
 - controllerはremote HEADへのfast-forward CASで1ノードだけが保持し、停止・drain・lease失効後は別ノードが自動取得する。
 - controllerだけがcharter計画・inbox/commands/feedback・triage・自動割当を行う。workerは割当済みtaskだけを実行する。
 - taskは `ready → doing` のCAS時に `claim_owner/token/generation` を確定する。古いtokenの結果は採用しない。
-- 未割当readyはactiveノードのready+doing件数が最小になるよう配る。同数はnode名順。手動割当とdoingは動かさない。
+- 未割当readyはactiveノードのready+doing件数が最小になるよう配る。同数はノード名順。手動割当とdoingは動かさない。
 - `daily_stop - drain_before_sec` で新規claimを止めcontrollerを解放する。異常停止したdoingは自動盗取せずblockedへ隔離する。
-- Gitが取得不能ならcontroller取得・新規claimはfail closedする。`doctor` はnode、origin、heartbeat/leaseを検査する。
+- Gitが取得不能ならcontroller取得・新規claimはfail closedする。`doctor` はノード名義、origin、heartbeat/leaseを検査する。
 - `run-log/<node>/<run-id>.json` は不変レコード、`DELIVERY.md` はarchive集合から再構築可能。
 
 **実行層 agent-flow のバス（run）も同じリポジトリへ**: バスの既定は `<root>/bus`＝状態の同期領域の内側
@@ -1088,7 +1088,7 @@ env/config 修正と program 起票を担う**（本体は agent-flow 由来の�
 2. 適用済み SHA（`~/.agents/agent-project.update.json`）と違えば「更新候補」
 3. **アイドル時（消化待ち/フィードバックが無いとき）だけ**、temp 領域へ `tools/agent-project/` だけを **sparse-checkout**（無関係ファイルは取得しない）
 4. **取得した本体の内容ダイジェストが前回適用時と同一なら適用せず、ベースライン SHA だけ進める**。
-   direct state-git 構成では自分の state sync push でリポジトリの SHA が進むため、SHA だけで
+   direct state-git 構成では自分の状態同期の push でリポジトリの SHA が進むため、SHA だけで
    判定すると「自分の push → 更新検出 → 再起動 → また push」の自己増殖ループになる
 5. その中の `install.sh` を実行して `~/.local/bin` の本体を更新する
 6. **動いていたカレントディレクトリのまま** `os.execv` で新しい本体へ **graceful 再起動**する（レジストリ登録は再起動前に後始末）

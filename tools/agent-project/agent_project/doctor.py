@@ -489,6 +489,123 @@ def doctor_residency_findings(residency: "str | None" = None) -> "list[dict]":
     return []
 
 
+def _host_project_config_findings(entry: dict, root: "Path", host, name: str,
+                                  add) -> None:
+    """状態ルート直下のプロジェクト yaml と host.yaml の層契約（E1/E2/E7 + 警告）を再掲する。
+
+    判定は起動経路と同じ `configfile.layer_findings` を呼ぶ——doctor 用に別の判定を書くと、
+    「doctor は緑なのに起動が止まる」が起きる。"""
+    try:
+        cfg_path = _project_config_path(None, root)
+        project = _load_config_file(cfg_path) if cfg_path else {}
+    except SystemExit:
+        # PyYAML 不在で yaml 設定を読めない等。doctor は診断コマンドなので落ちない。
+        add("プロジェクト設定を読めない", f"{name}: {root} 直下の設定ファイルが読めません",
+            "PyYAML を入れる（pip install pyyaml）か JSON 設定にする", "critical")
+        return
+    except (OSError, ValueError) as exc:
+        add("プロジェクト設定を読めない", f"{name}: {exc}", "設定ファイルの書式を直す", "critical")
+        return
+    if not isinstance(project, dict):
+        project = {}
+    for f in layer_findings(project, dict(getattr(host, "defaults", None) or {}),
+                            dict(entry.get("overrides") or {}), cfg_path):
+        add(f"{f['id']}: {f['title']}", f"{name}: {', '.join(f['keys'])}",
+            "\n            ".join(line.strip() for line in f["lines"][1:]) or
+            "設定の置き場所を契約どおりに直す",
+            "critical" if f["severity"] == "error" else "warn")
+
+
+def doctor_host_projects_findings(host=None) -> "list[dict]":
+    """host.yaml の `projects[]` が**起動できる形か**を起動前に検査する（S1 設計 §3.6）。
+
+    ここが無いと、`root` の綴り間違い・origin の取り違え・層契約違反は「子の起動失敗 →
+    隔離表示」という最も遠い症状でしか観測できない（常駐体は子を exec するだけで、
+    止まった理由は子の stderr に出て親のログには要約しか残らない）。検査の中身は
+    起動経路（`_resolve_state_root` / `_ensure_state_clone` / `_validate_layers`）が
+    fail-fast する条件の再掲で、**判定は同じ関数を呼ぶ**（二重実装しない）。
+
+    プロジェクトを 1 つも宣言していない PC（ワーカーノード）では空を返す。host.yaml が
+    無い・読めない環境でも doctor は走り切る（residency 検査と同じ流儀）。"""
+    if host is None:
+        try:
+            host = load_host_config()
+        except Exception:  # noqa: BLE001 — doctor は host.yaml の不備で落ちない
+            return []
+    out: "list[dict]" = []
+
+    def add(title: str, evidence: str, fix: str, severity: str = "critical") -> None:
+        out.append({"category": "config", "severity": severity, "title": title,
+                    "evidence": evidence, "fix": fix})
+
+    for entry in getattr(host, "projects", None) or []:
+        if not isinstance(entry, dict):
+            continue
+        name = _project_name(entry) or "(名前なし)"
+        state_repo = str(entry.get("state_repo") or "").strip()
+        branch = str(entry.get("branch") or "").strip() or "main"
+        if entry.get("config"):
+            add("E6: projects[].config は廃止", f"{name}: config={entry['config']}",
+                "設定は状態リポジトリ直下の agent-project.yaml へ移す")
+        raw = str(entry.get("root") or "").strip()
+        if not raw:
+            add("projects[].root が未宣言", f"{name}: root がありません",
+                "状態リポジトリの clone 先を絶対パスで宣言する"
+                "（常駐体の子は cwd を当てにできない）")
+            continue
+        root = Path(raw).expanduser()
+        if not root.is_absolute():
+            add("projects[].root が相対パス", f"{name}: root={raw}",
+                "絶対パスで宣言する（起動元の cwd で clone 先が変わる）", "warn")
+            root = (Path.cwd() / root)
+        root = root.resolve()
+        if not root.exists():
+            if not state_repo:
+                add("宣言された root がありません", f"{name}: {root} が存在しません",
+                    "パスの綴りを直すか、projects[].state_repo を宣言して自動 clone させる")
+            continue                    # state_repo 宣言済み＝起動時に clone される（正常）
+        if not root.is_dir():
+            add("root がディレクトリではありません", f"{name}: {root}",
+                "root には状態リポジトリの clone 先ディレクトリを宣言する")
+            continue
+        top = _git_toplevel_of(root)
+        if top is None:
+            if state_repo and not _looks_like_fresh_root(root):
+                add("E4: root が git リポジトリでない", f"{name}: {root}",
+                    "空のディレクトリを root にするか、その場所を退避してから clone させる")
+        elif _norm_path_key(top) != _norm_path_key(root):
+            add("root が別リポジトリの内側", f"{name}: {root} は {top} の内側です",
+                "状態ルートは状態専用リポジトリの clone（そのトップレベル）にする")
+        else:
+            origin = _git_line(root, "remote", "get-url", "origin") or ""
+            if state_repo and origin and not _same_git_remote(origin, state_repo):
+                add("E3: root の origin が宣言と違う",
+                    f"{name}: 宣言 {state_repo} / 実際 {origin}",
+                    "root を退避するか、state_repo / root の宣言を直す"
+                    "（worktree への暗黙フォールバックは廃止）")
+            elif state_repo and not origin:
+                add("root に origin が無い", f"{name}: {root}",
+                    "状態リポジトリを clone し直す（このままでは他の PC と共有されない）",
+                    "warn")
+            # E5 の判定は起動経路と同じ条件でだけ行う（`_check_adhoc_state_root` は
+            # state_repo 未宣言のときにしか走らない）。宣言があるときは origin の一致が
+            # 根拠になるので、マーカーの有無で critical を出すと「状態ファイルがまだ 1 つも
+            # 無い正しい clone」を誤って弾く。
+            if not state_repo and not _state_root_markers(root) \
+                    and not _looks_like_fresh_root(root):
+                add("E5: root が状態ルートに見えない",
+                    f"{name}: {root} に状態マーカー（backlog/ charter.md 等）がありません",
+                    "成果物リポジトリを登録していないか確認する"
+                    "（登録するのは状態専用リポジトリの clone）")
+            head = _git_line(root, "rev-parse", "--abbrev-ref", "HEAD") or ""
+            if head and head != "HEAD" and head != branch:
+                add("チェックアウトが宣言ブランチと違う",
+                    f"{name}: 宣言 {branch} / 実際 {head}",
+                    f"git -C {root} switch {branch}（同期は宣言ブランチへ行う）", "warn")
+        _host_project_config_findings(entry, root, host, name, add)
+    return out
+
+
 def _node_record_is_fresh(rec: dict) -> bool:
     """板の `nodes/<id>.json` が「今も生きているノード」を指すか（board.schema.json の
     heartbeat + fresh_after_sec 流儀）。heartbeat を持たない登録は生死を判定できないので
@@ -793,6 +910,7 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
                      + doctor_audit_findings(cfg)
                      + doctor_wiring_findings(cfg)
                      + doctor_residency_findings(_declared_residency())
+                     + doctor_host_projects_findings()
                      + node_id_cutover_findings(cfg, cutover_from or ""))
     for f in deterministic:
         f["source"] = "check"
@@ -818,6 +936,7 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
         still = {(g["category"], re.sub(r"\s+", " ", g.get("title", "").lower()).strip())
                  for g in doctor_env_findings(cfg) + doctor_coordination_findings(cfg)
                  + doctor_audit_findings(cfg) + doctor_residency_findings(_declared_residency())
+                 + doctor_host_projects_findings()
                  + node_id_cutover_findings(cfg, cutover_from or "")}
         for f in findings:
             if f.get("source") == "check" and not f.get("resolved"):
