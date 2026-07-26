@@ -208,10 +208,8 @@ test('ゲート由来の検証失敗は診断要約とゲート分類フィー�
     'failure-category': '一貫性ゲート',
     'failure-owner': '成果物',
     'failure-exit': '2',
-    'failure-class': 'regression',
-    'failure-phase': 'codd-gate',
-    'failure-chain': 'act,verify',
-    'verify-verdict': 'fail',
+    'failure-phase': 'regression',
+    'verify-verdict': 'failed',
   }, '回帰検知: 一貫性ゲートが完了を止めた', '- 所在: /ws/.agents'), 'T-1');
   // 診断要約はそのまま出る（ゲート表示が要約を潰さない）
   assert.strictEqual(n.failureSummary, '完了前の回帰検査で一貫性ゲートが停止しました。');
@@ -219,10 +217,8 @@ test('ゲート由来の検証失敗は診断要約とゲート分類フィー�
   // 表示側（needGateFailure）がゲート判定に使う command に codd-gate が載る
   assert.match(n.failureContext.command, /codd-gate/);
   // 分類フィールドが要約と共存する
-  assert.strictEqual(n.failureClass, 'regression');
-  assert.strictEqual(n.failurePhase, 'codd-gate');
-  assert.deepStrictEqual(n.failureChain, ['act', 'verify']);
-  assert.strictEqual(n.verifyVerdict, 'fail');
+  assert.strictEqual(n.failurePhase, 'regression');
+  assert.strictEqual(n.verifyVerdict, 'failed');
 });
 
 test('回帰検知の散文からもゲート判定用の command と診断要約が両立する（フォールバック経路）', () => {

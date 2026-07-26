@@ -1095,9 +1095,9 @@ function consistencyGateHtml(p) {
   // 設定されているコマンドは必ず見せたうえで「一貫性ゲートの検査ではない」と添える。
   const rows = [
     ['regression_cmd', '完了前の回帰検査', gate.regressionConfigured, gate.regressionWired, gate.regressionCmd,
-      '失敗は、作業を done にする前に解消すべきドキュメントとコードの不整合が残っていることを意味します。'],
+      'このコマンドが失敗すると done の確定を止めます。原因は要対応の失敗要約を確認してください。'],
     ['intake_cmd', 'ドリフトの取り込み', gate.intakeConfigured, gate.intakeWired, gate.intakeCmd,
-      '検出したドキュメントとコードのズレを、修復タスクとしてバックログへ積みます。'],
+      'このコマンドが正常に実行された場合、検出したズレを修復タスクとしてバックログへ積みます。'],
   ].map(([key, label, configuredFlag, wired, cmd, note]) => {
     // 古い main と組み合わせた場合だけコマンド値へフォールバックする。
     const configured = configuredFlag ?? Boolean(cmd && String(cmd).trim());
@@ -1123,12 +1123,11 @@ function consistencyGateHtml(p) {
   //     intake_cmd に対応する注入 CLI は無いので yaml を直接編集する。
   //   - CLI の --config は**既存の**設定ファイルを指すこと（無ければエラーで止まる）。
   //     よって設定ファイル未検出のときは CLI を勧めず、作成手順だけを出す。
-  //   - `<root>/repos.json` の <root> はペイロードの p.dir（プロジェクトルート）で埋める。README は
-  //     プレースホルダのままだが、画面は貼ればそのまま動く文字列を出す（<root> を人が自力で
-  //     知る手段が概要タブに無く、埋め損ねると codd-gate が repos.json を開けず regression が
-  //     常時 FAIL する）。p.dir が無いときだけ README と同じプレースホルダに戻す。
+  //   - viewer の p.dir/configFile は Windows では WSL UNC になることがあるため、実行環境の
+  //     シェルへそのまま貼れるとは限らない。README と同じプレースホルダを示し、実パスは
+  //     画面に表示済みの設定ファイルを開いて人が実行環境に合わせて決める。
   const wiredAll = gate.wired;
-  const reposArg = `${p.dir ? `${p.dir}/` : '<root>/'}repos.json`;
+  const reposArg = '<root>/repos.json';
   const lines = [
     !gate.regressionWired && `regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV" --repos ${reposArg}'`,
     !gate.intakeWired && `intake_cmd: 'codd-gate tasks --debt --repos ${reposArg}'`,
@@ -1138,7 +1137,7 @@ function consistencyGateHtml(p) {
   const cliHint = gate.configFile && !gate.regressionWired
     ? `<p><code>regression_cmd</code> の行は手書きの代わりに CLI で入れてもよい（ソースを持っているなら
         <span class="mono">tools/agent-project/</span> で実行する）:
-        <code>python3 codd_gate_regression.py --config ${esc(gate.configFile)}</code>
+        <code>python3 codd_gate_regression.py --config /path/to/.agents/agent-project.yaml</code>
         （codd-gate を実測してこの 1 キーだけを冪等 upsert する。<code>--dry-run</code> なら書かずに結果だけ出す。
         codd-gate が未検出・バージョン/schema 非互換なら何も書かない）。</p>`
     : '';
@@ -1165,12 +1164,12 @@ function consistencyGateHtml(p) {
   // 見出しバッジは 3 値。2 値だと「一度も有効化していない既定状態」まで『一部のみ』＝
   // 部分的に動作中と読めてしまい、このセクションが最も助けたい相手を取り違える。
   const wiredNone = !gate.regressionWired && !gate.intakeWired;
-  const headLabel = wiredAll ? '有効' : wiredNone ? '未結線' : '一部のみ';
+  const headLabel = wiredAll ? '結線済み' : wiredNone ? '未結線' : '一部結線';
   const headNote = wiredAll
-    ? 'ドキュメントとコードのズレを自動で検知・修復する仕組みが有効です。'
+    ? '設定上は両方のフックへ結線済みです。codd-gate の実行可否や成功はこの画面では確認していません。'
     : wiredNone
-      ? 'ドキュメントとコードのズレを自動で検知する仕組みです。まだ有効になっていないため、検査は行われません。'
-      : 'ドキュメントとコードのズレを自動で検知する仕組みです。未結線の項目は検査されません。';
+      ? 'codd-gate は両方のフックに未結線です。これらのフックからは実行されません。'
+      : 'codd-gate は一方のフックだけに結線済みです。実行可否や成功はこの画面では確認していません。';
   return `<section class="overview-version-section" aria-labelledby="consistency-gate-title">
     <div class="overview-version-heading">
       <div>

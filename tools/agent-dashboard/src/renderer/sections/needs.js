@@ -1297,8 +1297,8 @@ function needListItemHtml(item, selected, slaHours) {
 //   - `regression`: 回帰ゲート失敗には producer が `回帰検知: グローバル検査 \`<cmd>\` 失敗`
 //     を why に書く（tools/agent-project/agent_project/mr.py:582）。ただしこのプレフィックスは
 //     codd-gate 以外の regression_cmd（yaml example の `make -s smoke` など）にも同じく付くので、
-//     `回帰検知` だけでは一貫性ゲート由来と断定できない。gate.regressionWired と併せて初めて
-//     「回帰検査が止めた」と言える。
+//     `回帰検知` だけでは一貫性ゲート由来と断定できない。記録中の codd-gate コマンドと
+//     併せて、実行時に「回帰検査が止めた」と判断する（現在の結線状態には依存させない）。
 //   - `verify`: タスク自身の verify が codd-gate のとき（README が charter acceptance に勧める形）。
 //     context.command は _diagnoseFailure が verify 行から取る値で regression_cmd ではないので、
 //     こちらを「回帰検査が止めた」と言うと概要タブの結線表示と矛盾する。
@@ -1306,10 +1306,14 @@ function needListItemHtml(item, selected, slaHours) {
 // consistencyGateHtml も空を返すので、存在しないセクションへ誘導しない。
 function needGateSource(failure, n, gate) {
   if (!failure || !gate) return null;
-  if (gate.regressionWired && /回帰検知/.test(`${failure.summary || ''}\n${(n && n.why) || ''}`)) {
+  const regressionText = `${failure.summary || ''}\n${(n && n.why) || ''}`;
+  const command = String((failure.context && failure.context.command) || '');
+  const coddGate = /\bcodd-gate\b/.test(`${regressionText}\n${command}`);
+  if ((n && n.failurePhase === 'regression' && coddGate)
+      || (/回帰検知/.test(regressionText) && coddGate)) {
     return 'regression';
   }
-  if (/codd-gate/.test(String((failure.context && failure.context.command) || ''))) return 'verify';
+  if (/\bcodd-gate\b/.test(command)) return 'verify';
   return null;
 }
 
@@ -1347,7 +1351,7 @@ function renderNeedFacts(p, n) {
         ? `この失敗は完了前の回帰検査（<span class="mono">regression_cmd</span>）が止めたものです。`
         : `このタスクの検証コマンドが一貫性ゲートの検査です。完了前の回帰検査（<span class="mono">regression_cmd</span>）とは別の経路です。`;
       const intakeLine = gate.intakeWired
-        ? `検出したドリフトは <span class="badge info">結線済み</span> の <span class="mono">intake_cmd</span> で修復タスクへ起票されます。`
+        ? `<span class="badge info">結線済み</span> の <span class="mono">intake_cmd</span> が正常に実行された場合、検出したドリフトを修復タスクへ起票します。`
         : `ドリフトの取り込み（<span class="mono">intake_cmd</span>）は <span class="badge warn">未結線</span> です。直してもドリフトは自動起票されないため、概要タブの「一貫性ゲート」で有効化してください。`;
       const open = gate.configFile && !gate.wired
         ? `<div class="summary-actions"><button class="summary-link secondary" data-open="${esc(gate.configFile)}">設定ファイルを開く</button></div>`

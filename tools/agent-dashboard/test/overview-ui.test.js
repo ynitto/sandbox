@@ -288,23 +288,22 @@ assert.match(renderer, /個別のrunを止める操作ではありません/);
   const gateHtml = new Function('esc', `${grab('consistencyGateHtml')}; return consistencyGateHtml;`)(escStub);
   const headBadge = (html, text) => (html.match(new RegExp(`class="badge (?:info|warn)">${text}<`, 'g')) || []).length;
 
-  // ゲートバッジ: 全結線なら見出しに「有効」、未結線導線は出さない。
+  // ゲートバッジ: 全結線なら見出しに「結線済み」、未結線導線は出さない。
   const wired = gateHtml({ consistencyGate: {
     configFile: '/ws/.agents/agent-project.yaml', regressionWired: true, intakeWired: true, wired: true,
     regressionConfigured: true, intakeConfigured: true,
     regressionCmd: 'codd-gate verify', intakeCmd: 'codd-gate tasks --debt' } });
-  assert.strictEqual(headBadge(wired, '有効'), 1, '全結線のゲートバッジ（有効）が出る');
+  assert.strictEqual(headBadge(wired, '結線済み'), 3, '全結線のゲートバッジ（見出し＋2行）が出る');
   assert.strictEqual((wired.match(/設定: あり/g) || []).length, 2, '両コマンドの設定済み状態が出る');
-  assert.ok(!wired.includes('一部のみ'));
+  assert.ok(!wired.includes('一部結線'));
   assert.ok(!wired.includes('有効化'), '全結線なら未結線導線を出さない');
 
-  // ゲートバッジ: 一部未結線なら見出しに「一部のみ」。
+  // ゲートバッジ: 一部未結線なら見出しに「一部結線」。
   const partial = gateHtml({ consistencyGate: {
     configFile: '/ws/.agents/agent-project.yaml', regressionWired: true, intakeWired: false, wired: false,
     regressionConfigured: true, intakeConfigured: false,
     regressionCmd: 'codd-gate verify', intakeCmd: null } });
-  assert.strictEqual(headBadge(partial, '一部のみ'), 1, '一部未結線のゲートバッジ（一部のみ）が出る');
-  assert.strictEqual(headBadge(partial, '有効'), 0);
+  assert.strictEqual(headBadge(partial, '一部結線'), 1, '一部未結線のゲートバッジ（一部結線）が出る');
   assert.ok(partial.includes('設定: あり') && partial.includes('設定: なし'),
     'regression_cmd と intake_cmd の設定状態が区別できない');
 
@@ -321,7 +320,7 @@ assert.match(renderer, /個別のrunを止める操作ではありません/);
     regressionCmd: null, intakeCmd: 'codd-gate tasks --debt' } });
   assert.ok(regressionUnwired.includes('tools/agent-project/'), 'sibling CLI の実行場所が出ない');
   assert.ok(regressionUnwired.includes(
-    'codd_gate_regression.py --config /ws/.agents/agent-project.yaml'
+    'codd_gate_regression.py --config /path/to/.agents/agent-project.yaml'
   ), 'regression_cmd の sibling CLI 導線が出ない');
 
   // ペイロード無し（旧 main と組み合わせた場合）は概要へ何も足さない。

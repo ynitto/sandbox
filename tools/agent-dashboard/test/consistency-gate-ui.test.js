@@ -39,7 +39,7 @@ for (const token of ['regression_cmd', 'intake_cmd', '一貫性ゲート']) {
 assert.strictEqual(consistencyGateHtml(null), '');
 assert.strictEqual(consistencyGateHtml({}), '');
 
-// 両方結線: 結線済みバッジ 2 つ、コマンド表示あり、有効化導線は出さない。
+// 両方結線: 行と見出しが結線済み、コマンド表示あり、有効化導線は出さない。
 const both = consistencyGateHtml({
   dir: '/ws/.agent-project',
   consistencyGate: {
@@ -55,13 +55,13 @@ const both = consistencyGateHtml({
 });
 assert.ok(both.includes('一貫性ゲート'));
 assert.ok(both.includes('regression_cmd') && both.includes('intake_cmd'));
-assert.strictEqual(badges(both, '結線済み'), 2);
-assert.strictEqual(badges(both, '有効'), 1, '全結線の見出しバッジは 有効');
+assert.strictEqual(badges(both, '結線済み'), 3);
 assert.ok(!both.includes('未結線'));
 assert.ok(both.includes('codd-gate verify --repos repos.json'));
 assert.ok(both.includes('codd-gate tasks --debt'));
 assert.strictEqual((both.match(/設定: あり/g) || []).length, 2);
-assert.ok(both.includes('失敗は、作業を done にする前に解消すべき'));
+assert.ok(both.includes('失敗すると done の確定を止めます'));
+assert.ok(both.includes('実行可否や成功はこの画面では確認していません'));
 assert.ok(!both.includes('有効化'), '全結線なら有効化導線は不要');
 assert.ok(!both.includes('data-gate-open'));
 
@@ -80,13 +80,11 @@ const partial = consistencyGateHtml({
 });
 assert.strictEqual(badges(partial, '結線済み'), 1);
 assert.strictEqual(badges(partial, '未結線'), 1);
-assert.strictEqual(badges(partial, '一部のみ'), 1, '片方だけ結線の見出しバッジは 一部のみ');
+assert.strictEqual(badges(partial, '一部結線'), 1, '片方だけ結線の見出しバッジは 一部結線');
 assert.ok(partial.includes('有効化'));
 assert.ok(partial.includes('data-gate-open="/ws/.agents/agent-project.yaml"'));
-// <root> は p.dir で埋める。埋めないまま貼ると codd-gate が repos.json を開けず regression が常時 FAIL する。
-assert.ok(partial.includes("intake_cmd: 'codd-gate tasks --debt --repos /ws/.agent-project/repos.json'"),
-  '未結線の intake_cmd の行が実パス付きで提示されていない');
-assert.ok(!partial.includes('&lt;root&gt;'), 'p.dir があるのにプレースホルダのまま出している');
+assert.ok(partial.includes("intake_cmd: 'codd-gate tasks --debt --repos &lt;root&gt;/repos.json'"),
+  '未結線の intake_cmd の行が README と同じ形式で提示されていない');
 assert.ok(!partial.includes('codd_gate_regression.py'),
   'regression_cmd は結線済みなのに注入 CLI を勧めている');
 assert.ok(!/<pre[^>]*>[^]*regression_cmd:/.test(partial), '結線済みの行まで書けと言っている');
@@ -105,7 +103,7 @@ const regressionOnly = consistencyGateHtml({
     intakeCmd: 'codd-gate tasks --debt',
   },
 });
-assert.ok(regressionOnly.includes('codd_gate_regression.py --config /ws/.agents/agent-project.yaml'));
+assert.ok(regressionOnly.includes('codd_gate_regression.py --config /path/to/.agents/agent-project.yaml'));
 assert.ok(regressionOnly.includes('--dry-run'), '書かずに試す --dry-run を案内していない');
 // install.sh は codd_gate_*.py を zipapp 内へ同梱するだけなので、どこで打てば動くかを書かないと
 // コピーしても No such file になる。
@@ -150,8 +148,8 @@ const noneWired = consistencyGateHtml({
   },
 });
 assert.strictEqual(badges(noneWired, '未結線'), 3, '行 2 つ + 見出しバッジ');
-assert.ok(!noneWired.includes('一部のみ'), '一度も有効化していない状態を「一部のみ」と言わない');
-assert.ok(noneWired.includes('まだ有効になっていない'));
+assert.ok(!noneWired.includes('一部結線'), '一度も結線していない状態を「一部結線」と言わない');
+assert.ok(noneWired.includes('これらのフックからは実行されません'));
 assert.strictEqual((noneWired.match(/設定: なし/g) || []).length, 2);
 assert.ok(/<pre[^>]*>[^]*regression_cmd:[^]*intake_cmd:/.test(noneWired), '貼る 2 行が揃っていない');
 assert.ok(noneWired.includes('codd_gate_regression.py'));
@@ -171,8 +169,22 @@ assert.ok(!noConfig.includes('data-gate-open'), '設定ファイルが無いの�
 assert.ok(!noConfig.includes('codd_gate_regression.py'),
   '設定ファイルが無いのに注入 CLI を勧めている（--config は既存ファイルを指す必要がある）');
 assert.ok(noConfig.includes('.agents/agent-project.yaml'));
-// p.dir が無ければ README と同じプレースホルダに戻す（嘘のパスを出さない）。
+// README と同じプレースホルダを使い、viewer 側パスを実行環境へ誤って持ち込まない。
 assert.ok(noConfig.includes('&lt;root&gt;/repos.json'));
+
+// Windows 側で見える WSL UNC は WSL シェルのパスではないため、コマンドへ直挿ししない。
+const crossRuntimePath = consistencyGateHtml({
+  dir: '\\\\wsl.localhost\\Ubuntu\\home\\Alice Smith\\app',
+  consistencyGate: {
+    configFile: '\\\\wsl.localhost\\Ubuntu\\home\\Alice Smith\\app\\.agents\\agent-project.yaml',
+    regressionWired: false, intakeWired: false, wired: false,
+    regressionCmd: null, intakeCmd: null,
+  },
+});
+assert.ok(!crossRuntimePath.includes('--repos \\\\wsl.localhost'));
+assert.ok(!crossRuntimePath.includes('--config \\\\wsl.localhost'));
+assert.ok(crossRuntimePath.includes('&lt;root&gt;/repos.json'));
+assert.ok(crossRuntimePath.includes('/path/to/.agents/agent-project.yaml'));
 
 // README との文言一致。ここがズレると画面と README でどちらが正か判断できなくなる。
 // 単体配布（agent-dashboard だけを取り出した場合）では README が無いのでスキップする。

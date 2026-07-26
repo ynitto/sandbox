@@ -135,12 +135,28 @@ const projectIntakeUnwired = {
 };
 
 // 由来は経路ごとに分かれる（regression = 完了前の回帰検査 / verify = タスク自身の検証）。
-// `回帰検知` は codd-gate 以外の regression_cmd にも付くので、regressionWired と併せて初めて
-// 「回帰検査が止めた」と言える——結線していないプロジェクトで断定しないことを固定する。
+// `回帰検知` は codd-gate 以外の regression_cmd にも付くため、記録中の実コマンドと併せて
+// 「回帰検査が止めた」と判断する。現在の結線状態は失敗時点の実行経路を上書きしない。
 const gateBoth = { regressionWired: true, intakeWired: true, wired: true };
 test('needGateSource は経路を分けて codd-gate 由来だけを拾う（断定側は触らない）', () => {
-  assert.strictEqual(needGateSource({ summary: '回帰検知: グローバル検査 失敗' }, {}, gateBoth), 'regression');
+  assert.strictEqual(
+    needGateSource(
+      { summary: '完了前の回帰検査で一貫性ゲートが停止しました。',
+        context: { command: 'codd-gate verify --base abc123' } },
+      { failurePhase: 'regression', why: '回帰検査が失敗しました' },
+      gateBoth),
+    'regression', '構造化された failure-phase をタスク自身の verify より優先する');
+  assert.strictEqual(
+    needGateSource({ summary: '回帰検知: グローバル検査 `codd-gate verify` 失敗' }, {}, gateBoth),
+    'regression');
+  assert.strictEqual(
+    needGateSource({ summary: '回帰検知: グローバル検査 `codd-gate verify` 失敗' }, {},
+      { regressionWired: false, intakeWired: false, wired: false }),
+    'regression', '失敗後に未結線となっても記録中の実コマンドを根拠に回帰経路を示す');
   assert.strictEqual(needGateSource({ context: { command: 'codd-gate verify' } }, {}, gateBoth), 'verify');
+  assert.strictEqual(
+    needGateSource({ summary: '回帰検知: グローバル検査 `make smoke` 失敗' }, {}, gateBoth),
+    null, '現在は結線済みでも過去の別 regression_cmd 失敗を codd-gate と断定しない');
   assert.strictEqual(
     needGateSource({ summary: '回帰検知: グローバル検査 失敗' }, {},
       { regressionWired: false, intakeWired: false, wired: false }),
@@ -205,7 +221,8 @@ test('intake 結線済みなら起票される旨を出し、開くボタンは�
   const wired = { consistencyGate: { configFile: '/ws/.agents/agent-project.yaml', regressionWired: true, intakeWired: true, wired: true, regressionCmd: 'x', intakeCmd: 'y' } };
   const d = dom(renderNeedFacts(wired, gateNeed));
   const gate = d.one('need-gate');
-  assert.ok(gate && /起票されます/.test(gate.text + d.byClass('badge').map((e) => e.text).join('')), '結線済みは自動起票される旨');
+  assert.ok(gate && /正常に実行された場合.*起票します/.test(gate.text + d.byClass('badge').map((e) => e.text).join('')),
+    '結線済みでも正常実行時だけ起票すると示す');
   const open = d.byTag('button').find((e) => hasAncestor(e, 'need-gate'));
   assert.ok(!open, '両方結線済みなら開くボタンは出さない');
 });

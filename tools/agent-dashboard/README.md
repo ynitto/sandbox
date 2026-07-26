@@ -81,11 +81,12 @@ agent-amigos ミッションとノード予算（`src/features/amigos/`）を同
 
 ### 一貫性ゲート
 
-概要には、codd-gate の状態を「有効」「一部のみ」「未結線」で表示する。併せて
+概要には、codd-gate の設定上の状態を「結線済み」「一部結線」「未結線」で表示する。併せて
 `regression_cmd` と `intake_cmd` ごとに、設定の有無、codd-gate への結線、現在のコマンドを出す。
 別の回帰コマンドが設定されている場合は「設定あり、未結線」となる。要対応に codd-gate 由来の
-失敗が出たときは、概要と同じキー名で原因と不足している結線を示す。`regression_cmd` の失敗は、
-ドキュメントとコードの不整合が残っているため agent-project が done を確定しなかった、という意味だ。
+失敗が出たときは、概要と同じキー名で原因と不足している結線を示す。`regression_cmd` の失敗は
+agent-project が done の確定を止めたことを意味し、具体的な原因は要対応の失敗要約で確認する。
+dashboard は設定文字列だけを読み、codd-gate の実在・互換性・実行成功までは確認しない。
 
 判定に使う公式契約は agent-project の汎用フック `regression_cmd` と `intake_cmd` だけで、
 dashboard 専用のフックは設けない。dashboard はワークスペースの agent-project 設定を読み、
