@@ -1,7 +1,7 @@
 # agent-project 設計書
 
 > 最終更新: 2026-07-26（実装 `tools/agent-project/agent_project/` と突き合わせ済み）
-> 実装: `tools/agent-project/`（本体 33 断片 + `resident/` 5 モジュール・約 15,000 行）、テスト 988 件
+> 実装: `tools/agent-project/`（本体 33 断片 + `resident/` 5 モジュール・約 18,000 行）、テスト 1,063 件
 > 関連: [agent-flow 設計書](./agent-flow-design.md) ／ [codd-gate 設計書](./codd-gate-design.md) ／ [単一常駐コントローラ設計](../plans/2026-07-24-single-resident-controller-design.md)
 >
 > 旧 `docs/plans/2026-07-22-agent-project-multi-node-daemon-design.md`（複数ノード分担実行）は
@@ -11,9 +11,9 @@
 
 agent-project は、バックログを優先順位付けして実行へ委譲し、検証に通ったものだけを done に確定し、通らなかったものを積み直す制御層です。人がプロンプトを毎回投げなくても回り続け、人の判断が要るところだけを差し戻します。
 
-主要な決定は 3 つです。第一に、done を確定できる根拠は verify コマンドの終了コード 0 だけで、エージェントの自己申告も設定もこれを迂回できません。第二に、状態はすべてプロジェクトルート直下のファイルに置き、複数 PC への共有は git そのものを同期路として使います。第三に、実行は agent-flow へ丸ごと委譲し、この層はルーティングとゲートと記録に徹します。
+主要な決定は 3 つです。第一に、done を確定できる根拠は機械検証の PASS だけです。決定的な verify コマンドの終了コード 0 か、受入基準チェックリストに対する検証エージェントの証跡付き判定かのどちらかで、エージェントの自己申告も設定もこれを迂回できません。第二に、状態はすべてプロジェクトルート直下のファイルに置き、複数 PC への共有は git そのものを同期路として使います。第三に、実行は agent-flow へ丸ごと委譲し、この層はルーティングとゲートと記録に徹します。
 
-却下した主要案は、タスク状態を持つ中央サーバ（1 プロジェクト = 1 ディレクトリの可搬性が失われる）と、LLM に done を判定させる設計（検証の意味が消える）です。
+却下した主要案は、タスク状態を持つ中央サーバ（1 プロジェクト = 1 ディレクトリの可搬性が失われる）と、LLM の合否の言葉だけで done を判定させる設計（証跡も機械チェックも無い判定は検証の意味が消える）です。
 
 読むべき人は、agent-project を運用する人、charter を書く人、agent-dashboard や agent-flow 側から連携する人です。日々の操作手順だけなら `tools/agent-project/README.md` と `GUIDE.md` で足ります。
 
@@ -51,17 +51,17 @@ agent-project は、バックログを優先順位付けして実行へ委譲し
 
 ## 主要な設計判断
 
-### 1. done を確定できるのは verify の終了コードだけにする
+### 1. done を確定できるのは機械検証の PASS だけにする
 
-**判断**: タスクは `- verify:` にシェルコマンドを持ち、その終了コード 0 だけが done の根拠になる。verify を書けない人のために `- accept:`（自然言語）からエージェントに合成させる経路と、`- verify_template:`（決定的テンプレ）を用意するが、合成されたものも最終的には同じ終了コードで判定される。
+**判断**: done の根拠は機械検証の PASS に限る。表現は 2 つある。人が `- verify:`（決定的シェルコマンド）か `- verify_template:` を書けるなら、その終了コード 0 が最速の根拠になる（fast path）。書けないタスクは `- acceptance:`（受入基準チェックリスト。自然文の基準を 1 行 1 項目）を持ち、検証エージェント（verifier）が成果ブランチのワークスペース上でコマンドを試行錯誤しながら基準ごとに pass / fail / 検証不能を判定し、実行したコマンド・出力・参照ファイルを証跡として残す。全基準 pass だけが done 候補になる。旧 `- accept:`（自然文 1 行）は 1 項目のチェックリストとして読む。
 
-**文脈**: エージェントは成果物を出しつつ「完了しました」と言う。その言葉を信じると、動かないコードが done になって archive に積まれ、後続タスクがそれを前提にして連鎖的に壊れる。
+**文脈**: エージェントは成果物を出しつつ「完了しました」と言う。その言葉を信じると、動かないコードが done になって archive に積まれ、後続タスクがそれを前提にして連鎖的に壊れる。一方で、自然文からエージェントに verify コマンドを一発合成させる旧経路は、ノードの環境差でほとんど失敗して人検収へ倒れていた。根本問題は、合成されたコマンドの良し悪しを人が判断できないことにある——たまたま通る劣化した検証でも、人にはそれを見抜く材料が無い。
 
-**選択肢と却下理由**: LLM に成果物を読ませて合否を判定させる案は、判定者が生成者と同じ弱点を持つので、間違いが相関する。人が毎回目視する案は、そもそも自動化の目的を潰す。終了コードなら、後から誰でも同じコマンドを叩いて再現できる。
+**選択肢と却下理由**: LLM に成果物を読ませて合否だけを判定させる案は、判定者が生成者と同じ弱点を持つので間違いが相関する。人が毎回目視する案は、そもそも自動化の目的を潰す。verifier も LLM だが、合否の言葉ではなく「基準と証跡」を出させることで、人が後から検算できる対象を変える。防御は決定的な機械チェックで重ねる: 証跡（コマンドもファイルも）の無い pass は機械的に fail へ落とす、明示の pass 表明が無ければ fail（フェイルクローズ）、「このタスクの差分が基準の対象範囲に実在すること」を常設基準に入れて何も変えずに全 pass する道を塞ぐ。
 
-**トレードオフ**: verify が書けないタスクは done にできず、人の検収（review）へ回ります。合成 verify が `grep` 一発のような退化した検査になる危険もあるので、恒真式の決定的スクリーン、act 前のツリーでも PASS するかの red-green 検査、確認回数を増やす flake 判定を重ねています。
+**トレードオフ**: verifier は 1 settle につき LLM run 1 回のコストが乗ります。決定的 verify を持つタスクは verifier を呼ばず従来どおり直接実行し、red-green 検査（act 前のツリーでも PASS してしまう弁別力の無い verify の検出）と flake 判定はこの fast path 専用に残しています。環境にツールが無い等の「検証不能」は、リトライを焼かずに理由付きで人検収へ直行します（他ノードへの検証委譲は板の請負実行が入るまで未接続）。verifier が見つけた有効なコマンド列は検証レシピとして保存しますが、次回 verifier への参考情報止まりで、決定的ゲートには昇格させません——環境が変われば壊れるものを done の唯一の根拠にしないためです。検証レポートは状態リポジトリ（`verifications/<task-id>/<rev>.md`）に残り、検収カードには基準×証跡の要約が載ります。人検収の材料が「差分 + 基準 + 証跡」に揃うのがこの置き換えの実利です。詳細は [S4/S5 詳細設計](../plans/2026-07-26-s4-s5-review-and-verification-detailed-design.md)。
 
-**確信度**: 高い。この判断がこの設計の存在理由そのものです。
+**確信度**: 高い。この判断がこの設計の存在理由そのものです。ただし charter の acceptance（マイルストーン収束判定）だけは今も自然文からのコマンド一発合成に依存しており、同じ証跡ベースへ寄せるのは別設計の課題として残っています。
 
 ### 2. 状態はプロジェクトルート直下のファイルに置き、git を同期路にする
 
@@ -71,7 +71,7 @@ agent-project は、バックログを優先順位付けして実行へ委譲し
 
 **選択肢と却下理由**: 中央にタスク DB を置く案は、サーバの運用コストに加えて「プロジェクトを丸ごと持ち歩く・複製する・アーカイブする」が難しくなる。専用の管理クローン（`<root>/.state-git`）を経由して subdir だけを鏡写しする案は実装して運用しましたが、書き手が増えたぶんだけ除外規則が食い違い、tracked なのに commit されないファイルが生まれて同期が復旧不能に詰まりました。いまは direct 一本で、ルート自身のリポジトリへ直接コミットして push します。
 
-**トレードオフ**: ルートが無関係な既存リポジトリの内側にある構成では同期できません（そこで `git init` すると nested repo になり、外側の `git add -A` が壊れる）。その場合は同期を諦めるか、agent-project 専用の状態 worktree へ逃がします。
+**トレードオフ**: 状態ルートに使えるのは状態専用リポジトリの clone（remote 無しなら `git init` したローカル縮退）だけで、成果物リポジトリや他リポジトリの内側を状態ルートにする構成は起動時に fail-fast で拒否します。かつては成果物リポジトリの専用ブランチへ逃がす状態 worktree 方式が併存していましたが、方式が 2 つあるぶんだけ分岐・テスト・移行手順が複雑化するので廃止し、`migrate-state-repo.sh` での移行に一本化しました（[S1 詳細設計](../plans/2026-07-26-s1-config-two-layer-detailed-design.md)）。
 
 **確信度**: 高い。管理クローン方式は実際に壊れて撤去した経緯があります。
 
@@ -130,12 +130,13 @@ agent-project は、バックログを優先順位付けして実行へ委譲し
 ```
  ── サイクル予算が残る間くり返す ──────────────────────────────────
  S7 収束判定   予算（サイクル数・実時間・トークン・コスト・ソフト上限）超過なら停止
- S0 取り込み   needs の返事・commands の指示・inbox のドロップ・外部 intake を取り込み、
-               triage で inbox を ready へ昇格し、verify を用意し、spec 前段を前置する
+ S0 取り込み   needs の返事・commands の指示・inbox のドロップ・外部 intake を、
+               重複照合と charter 帰属の整合を通して取り込み、triage で inbox を ready へ
+               昇格し、検証手段を用意し、spec 前段を前置する
  S1 選択       優先順位付け（planner）→ policy で上書き → 依存未達と report を除外
                → 先頭から concurrency 件を原子的に claim
  S2 実行       要求文を組み立てて agent-flow へ委譲（local か board）
- S3 検証       verify → 回帰 → パス保護 → 進捗 → flake の各ゲートを通す
+ S3 検証       検証（決定的 verify か verifier）→ 回帰 → パス保護 → 進捗の各ゲートを通す
  S4 判定       done（archive + 納品書）／ review（人の検収待ち）／ retry（積み直し）
  S5 送出       人へ送る前に learn 適用 → 裁定ゲート → needs/<id>.md 生成
  S6 自走       完了タスクから派生タスクを backlog へ
@@ -146,13 +147,23 @@ agent-project は、バックログを優先順位付けして実行へ委譲し
 
 `--watch` はパス終了後もプロセスを残しますが、idle 中にエージェントは起動しません。消化できるタスク、新しい inbox、人の指示、確定したフィードバックのいずれかを FS ポーリングで検知したときだけ次のパスを起こします。ここで「起こす条件」と「取り込む条件」を同じ述語にしてあるのが要点で、ずれていると何も処理しない空パスを無限に回します。
 
+review（人の検収）の正はフォージの MR/PR です。書込先を持つタスクは review 到達時に MR を冪等作成し、検収カードには MR リンクと検証レポートの要約が載ります。worker の作業ツリーは `/tmp` で push 後に消えるため、常に存在する差分のビューはリモートだけだからです。決着は決定的シグナルに限ります——マージは approve、未マージのクローズは reject、changes-requested のラベルまたはレビュー状態は未解決コメントを feedback に注入した revise、コメントのみは何もしない（コメント本文のキーワード推定は検収の決着に使いません）。フォージの照会と決着の書き込みは常駐体の sync 周期が担い、dashboard の承認・差し戻しボタンは「フォージを使わない判断」の口として同じ revise / approve 契約へ合流します。フォージ実装は GitLab のみで、未対応リモートはボタン決着だけの従来運用に倒れます（[S4/S5 詳細設計](../plans/2026-07-26-s4-s5-review-and-verification-detailed-design.md)）。
+
 ## プロジェクト層（charter からバックログを作る）
 
 この節の抽象度は概要です。
 
 `<root>/charter.md` があると、`run` は目標駆動のモードに入ります。charter が持つのは目標、制約、前提、成果物、そして `## acceptance`（受入 verify）です。1 パスは分解（plan）、消化（execute = 正準ループ）、評価（evaluate）の 3 段で、acceptance が全通するまで改善タスクを生成して反復します。
 
-acceptance がプロジェクト done の唯一の根拠であるのは、タスクの verify と同じ理屈です。未達の acceptance は、それ自体を verify とする改善タスクへ機械的に変換します。的が外れないのは、生成された verify が未達の acceptance そのものだからです。
+分解は「エージェントが書き、人が直す」役割分担です。charter・rules・repo 文脈・既存タスク一覧・墓標一覧を入力に、`backlog-planner` スキル（`planner_skill` で差し替え可。未導入なら組み込みプロンプトが同じ入力で動く）がタスク spec を生成します。生成物には受入基準（`acceptance`）・作業概要（`desc`）・規模感（`size`）・`why` が必須で、欠落は決定的なゲートが 1 回だけ再要求し、なお欠ければ捨てずに人の目へ届く場所に置きます（計画レビューが on なら proposed、off なら draft）。変更対象の見込みを書くには repo 文脈が要るため、plan の直前には対象リポジトリの repo-map（`context/<repo>.md`）を必ず更新します。
+
+人の記述はエージェントの提案に勝ちます。人が revise やレビュー票の承認で直したタスクには `edited: human` が付き、以後の再分解で再提案されません。人がタイトルを書き換えても、生成時の原題（`planned_title`）が指紋として残るので、元の題のタスクが「新規」として復活しません。人が却下したタスクは墓標（`tombstones.md`）になり、正規化タイトルの完全一致で再投入を抑止します。類似どまりの候補は抑止せず、プランナー入力への提示と needs への注記に留めます——抑止は取り返しがつかず、提示は取り返しがつくからです。墓標の解除は `revive`、再分解の 1 回だけ無視するのは `replan --revive` です。
+
+突発の要求は `inbox/` / `enqueue` / 外部 intake のどの経路でも、投入前に整合ステップを通ります。既存タスクと重複するなら新規を作らず、既存タスクへ追記する案を needs で人に提示し、charter タグの無いタスクには現行 charter への帰属を付けます。「気になること」の書き溜め口は `notes/` で、plan は自動では消費しません。人の `distill-notes` 操作でだけバックログ候補になり、消費済みメモは `notes/archive/` へ移ります。詳細は [S6/S7 詳細設計](../plans/2026-07-26-s6-s7-backlog-planning-detailed-design.md)。
+
+spec 前段は 2 段です。タスクの採点（複雑さ・リスク・曖昧さ、各 1〜3 の最大値）が `spec_threshold_full`（既定 3）以上なら 3 点セット（spec / design / tasks）のフル spec、`spec_threshold_light`（既定 2）以上なら `design.md` 1 枚のライト spec を前置し、それ未満は直接実行します。ライト spec は tasks 展開をせず、design.md を実行時の文脈へ注入するだけです。ブラウンフィールドで 3 点セットが重い正体は要求仕様と実装分解の 2 枚（要求は charter と `why`/`desc` に、分解は元タスクの粒度に既にある）なので、そこだけを書かせません。
+
+acceptance がプロジェクト done の唯一の根拠であるのは、タスクの検証と同じ理屈です。未達の acceptance は、それ自体を verify とする改善タスクへ機械的に変換します。的が外れないのは、生成された verify が未達の acceptance そのものだからです。この変換だけは今も自然文からのコマンド一発合成に依存しており、タスク検証と同じ「基準 + 証跡」の形へ寄せるのは残課題です（設計判断 1 の末尾）。
 
 収束したら `needs/<pid>.md` に milestone を書いて人の検収に出します。プロジェクトの done は人が確定します。反復は改善サイクル上限、累計コスト上限、そして「acceptance の PASS 数が増えない連続回数」（停滞）で必ず止まります。
 
@@ -181,7 +192,7 @@ node_id は PC の身元で、板（agent-board）とプロトコル上の名義
 | 断片 | 責務 |
 |---|---|
 | `model` / `policy` / `decisions` | Task の読み書き、cohort、policy と自律度、決定記録と learn |
-| `state` / `rules` / `brief` | 状態 worktree、`rules.md` への昇格、run ブリーフの蓄積と退役 |
+| `state` / `rules` / `brief` | 状態リポジトリの解決とリダイレクト、`rules.md` への昇格、run ブリーフの蓄積と退役 |
 | `needs` / `prioritize` / `verify` | 人への差し戻しと取り込み、優先順位付けと裁定、検証ゲート |
 | `request` / `flow` / `board` | 要求文の組み立てとルーティング、agent-flow 連携、委譲公示板への post |
 | `config` / `batch` / `mr` | 納品書と証跡、並列消費と claim、タスク MR と settle の分岐 |
@@ -230,7 +241,8 @@ node_id は PC の身元で、板（agent-board）とプロトコル上の名義
 ```
 <root>/
   charter.md            人   目標・制約・受入 verify・links
-  repos.yaml|json       人＋系 リポジトリレジストリ（手書きが正・無ければ charter から生成）
+  repos.yaml|json       人＋系 リポジトリレジストリ（手書きが正・無ければ charter から生成。
+                             ホスト固有の local はここに書かず host.yaml の repos[] へ）
   policy.md             人   順位・実行先・安全ゲートの上書き
   backlog/<id>.md       人＋系 タスク本体（1 ファイル = 1 タスク）
   inbox/                外部  取り込み待ちドロップ口（.json / .md）
@@ -240,9 +252,13 @@ node_id は PC の身元で、板（agent-board）とプロトコル上の名義
   decisions/<id>.md     系   決定記録（append-only。learn / avoid の材料）
   brief/<id>.md         系   run ブリーフ（タスク内で蓄積し、完了時に納品書へ退役）
   rules.md              人＋系 プロジェクトルール（全タスクへ常時注入）
+  tombstones.md         人＋系 墓標（却下タスクの再生成抑止。1 行 1 墓標・revive で解除）
+  notes/*.md            人   観点メモ（distill-notes の指示があるまで plan は消費しない）
   archive/<id>.md       系   done の保全と納品書
   DELIVERY.md           系   納品一覧（受領書）
-  specs/<id>/           系   spec 前段の成果（spec.md / design.md / tasks.md）
+  specs/<id>/           系   spec 前段の成果（フル: spec/design/tasks・ライト: design.md のみ）
+  verifications/<id>/   系   検証レポート（基準×証跡。<rev>.md = 検証した成果コミット）
+  verify-recipes/       系   検証レシピ（次回 verifier への参考。ゲートには昇格しない）
   context/<repo>.md     系＋人 リポジトリ理解（repo-map）
   autonomy/<track>.json 系   track の自動昇格状態
   project.json          系   プロジェクト層の収束状態
@@ -252,8 +268,9 @@ node_id は PC の身元で、板（agent-board）とプロトコル上の名義
   paused.json           系   一時停止マーカー
   bus/                  系   agent-flow の run 状態
 ~/.agents/
-  engine/status.json    系   常駐体の心拍・子状態・同期健康（dashboard が読む唯一の入口）
-  agent-project.host.yaml 人 この PC が持つプロジェクトの宣言（単一ソース）
+  engine/status.json    系   常駐体の心拍・子状態・同期健康・板参加（dashboard が読む唯一の入口）
+  agent-project.host.yaml 人 このノードの宣言（projects・repos・availability・板参加の単一ソース）
+  commands/<name>.json  外部  ノード宛て指示のドロップ口（板の bid / cancel / award。§板の請負）
 ```
 
 ### B. タスクと決定記録の書式
@@ -262,15 +279,19 @@ node_id は PC の身元で、板（agent-board）とプロトコル上の名義
 
 ```markdown
 ## <id>: <タイトル>
-- status: inbox | proposed | ready | doing | offloaded | review | blocked | done
-- verify: <終了コード 0 で PASS のシェルコマンド>
-- accept: <自然言語の完了条件（verify が書けないとき）>
+- status: inbox | proposed | draft | ready | doing | offloaded | review | blocked | done
+- verify: <終了コード 0 で PASS のシェルコマンド（決定的 fast path）>
+- acceptance: <受入基準。1 行 1 基準で複数行可（verifier が証跡付きで判定する）>
+- accept: <自然言語の完了条件 1 行（後方互換。1 項目の acceptance として読む）>
 - priority: <整数・大きいほど高>
 - after: <依存タスク id（カンマ区切り）>
 - review: human            <検収を要する>
 - level: report | assisted | unattended
+- size: S | M | L          <規模感（分解の妥当性判断用。表示のみ）>
 - why / desc / scope / out_of_scope / constraints / hints / demo   <誘導記述>
 ```
+
+`- planned_title:`（生成時の原題）と `- edited: human`（人が直した印）は系が書く保護マーカーで、再分解時の重複照合と再提案の抑止に使われます（プロジェクト層の節）。
 
 決定記録は append-only で、`- learn:` 行が横断学習の材料になります。同じ種類の詰まりに二度目からは自動で効き、効いた回数が閾値を超えると `rules.md` へ、さらに ltm-use へ昇格します。
 
@@ -281,19 +302,19 @@ node_id は PC の身元で、板（agent-board）とプロトコル上の名義
 | `serve` / `status` / `worker` | 常駐体の起動・状態表示・ワーカーノード（サブコマンド省略時は `serve`） |
 | `run` | 正準ループ。charter があれば目標駆動へ入る。`--watch` で常駐 |
 | `enqueue` / `triage` / `needs` / `impact` | 投入、優先順位付けのみ、判断待ちの表示、依存の影響範囲 |
-| `approve` / `hold` / `reprioritize` / `revise` / `reject` / `resume-run` | 人の操作（すべて決定記録に残る） |
-| `replan` / `board-offload` | charter からの再分解、委譲公示板への手動委譲 |
+| `approve` / `hold` / `reprioritize` / `revise` / `reject` / `revive` / `resume-run` | 人の操作（すべて決定記録に残る。reject は墓標を生み、revive が解除する） |
+| `replan` / `distill-notes` / `board-offload` | charter からの再分解（`--revive` で墓標を 1 回だけ無視）、観点メモのバックログ化、委譲公示板への手動委譲 |
 | `stats` / `audit` / `runlog` / `doctor` / `gc` / `update` | 計測、Loop Readiness 採点、ログ、診断、掃除、自己更新 |
 | `promote` / `rot` | learn の長期記憶への昇格、腐ったタスクの検出 |
 | `flow-participate` / `flow-run` | 常駐体の内部配線（help には出さない） |
 
-設定は 3 層です。PC 固有の値は `agent-project.profile.yaml`、プロジェクト共有の値は `agent-project.yaml`、この PC が持つプロジェクトの宣言は `agent-project.host.yaml`。優先順位は CLI 引数、profile（PC 固有キーのみ）、共有設定、組み込み既定の順です。キーの一覧と既定値は `CONFIG_DEFAULTS`（`agent_project/configfile.py`）が正典で、注釈つきの実例は `tools/agent-project/agent-project.yaml.example` にあります。
+設定は 2 ファイルです。このノードの宣言（node_id・projects・repos・availability・板参加・資源上限・自動更新）は `~/.agents/agent-project.host.yaml`、プロジェクトの合意（計画・ゲート・予算・検証・タスク運用——全ノードで同一であるべき動作）は状態リポジトリ直下の `agent-project.yaml` に置きます。キーは原則どちらか一方の専有で、置き間違いはキー名を列挙する fail-fast のエラーになります。ノード事情で変えてよい少数のキー（agent_cli / model / タイムアウト / location / concurrency 等）だけが両方に書け、優先順位は CLI 引数、host.yaml の `projects[].overrides` / `defaults`、プロジェクト yaml、組み込み既定の順です。旧 profile と成果物リポジトリ側のブートストラップ yaml は host.yaml へ吸収して廃止しました（[S1 詳細設計](../plans/2026-07-26-s1-config-two-layer-detailed-design.md)）。キーの一覧と既定値は `CONFIG_DEFAULTS`（`agent_project/configfile.py`）が正典で、注釈つきの実例は `tools/agent-project/agent-project.yaml.example` と `agent-project.host.yaml.example` にあります。
 
 実行の委譲先は `--location`（既定 `auto`）で決まります。`local` は agent-flow の単発 run、`board` は委譲公示板への post（非ブロッキング）。`auto` は offload ポリシーに一致しかつ板が設定されていれば `board`、それ以外は `local` です。
 
 ### D. テスト
 
-`tools/agent-project/tests/` に 988 件。共有の前置きは `_shared.py` にあり、エージェント CLI なしで全件が通ります。
+`tools/agent-project/tests/` に 1,063 件（機能別に分割済み）。共有の前置きは `_shared.py` にあり、エージェント CLI なしで全件が通ります。
 
 ```bash
 python3 -m pytest tools/agent-project/tests -q

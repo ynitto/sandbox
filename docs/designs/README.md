@@ -43,7 +43,7 @@
 |---|---|
 | [`agent-amigos-design.md`](./agent-amigos-design.md) | 役割ミッション表と design doc で公示したミッションに分散ノードがロールを claim して参加し、オーナーが指示した収束条件と予算（実質実行時間）の範囲で型付きメッセージをやり取りしながら 1 つの成果物をオーナーへ納品する協働基盤の設計正典。`tools/agent-amigos/` に実装済みで、残る欠落は同書 §9 に明記。中央は専用バスリポジトリ（ミッション別ブランチ、state_git の同期規律を流用）で、転送だけを担い調整はしない。1 ノードでも自己補充で完結し、定時シャットダウンには away プロトコルとターン原子性で耐える。チーム設計の自動化（team-builder）とオーケストレーションパターンの写像（旧 `agent-amigos-teambuilder-patterns.md`）も統合済み。 |
 | [`agent-dashboard-design.md`](./agent-dashboard-design.md) | 別ホストで動く agent-project / agent-flow / agent-amigos / 定常業務を 1 つの Windows GUI から見渡し、人の判断だけを公式契約で返す操作面の設計正典。dashboard は状態の書き手にならない（読むのはファイル、書くのは `commands/` 等の投函だけ）・制御面はソースツリー分離と列挙合成・プロジェクトの発見は実行側の `engine/status.json` 1 枚、の 3 点が骨格。旧 `agent-dashboard-{feature-split,kiro-loop-terminal,project-ux-improvements}` を統合済み。 |
-| [`agent-cli-plugin-design.md`](./agent-cli-plugin-design.md) | agent-project/agent-flow の LLM 実行 CLI をプラグイン化しデータ契約のみで拡張可能にし、失敗を quota/auth/env/transient で決定的にトリアージする設計。 |
+| [`agent-cli-plugin-design.md`](./agent-cli-plugin-design.md) | エージェント CLI の呼び出しを「CLI × モード（ヘッドレス/対話）× 権限（書き込み可/読み取り専用）」のデータ契約 `agents/<name>.json` で差し替え可能にし（組み込み 4 CLI も定義ファイル化・Python ローダは agentcore に 1 実装）、失敗を quota/auth/env/transient で決定的にトリアージする設計。agent-project / agent-flow / agent-amigos / agent-dashboard が共通で使う。 |
 | [`git-gitlab-circuit-breaker-pattern.md`](./git-gitlab-circuit-breaker-pattern.md) | git/GitLab へアクセスする任意ツール向けの汎用サーキットブレーカー＋監視パターン。 |
 | [`git-worktree-cache-pattern.md`](./git-worktree-cache-pattern.md) | 同一 remote を繰り返し clone するツール向けに共有 bare ミラー＋使い捨て worktree へ置換する汎用パターン。 |
 | [`gitlab-agent-sns-design.md`](./gitlab-agent-sns-design.md) | GitLab Issue＋Moltbook リポジトリでエージェント向け SNS を構築する moltbook-use の確定版設計。 |

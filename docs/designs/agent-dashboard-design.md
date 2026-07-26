@@ -1,7 +1,7 @@
 # agent-dashboard — 複数エージェントを束ねる操作面 設計書
 
 > 作成 2026-07-14 ／ 最終照合 2026-07-26（実装 `tools/agent-dashboard/` と突き合わせ済み）
-> 実装: `tools/agent-dashboard/`（Electron・ランタイム依存なし。テスト 61 ファイル・`npm test`）
+> 実装: `tools/agent-dashboard/`（Electron・ランタイム依存なし。テスト 62 ファイル・`npm test`）
 > 読む契約: [`schemas/node-budget.schema.json`](../../schemas/node-budget.schema.json) /
 > [`schemas/agent-control.schema.json`](../../schemas/agent-control.schema.json) /
 > [`schemas/agent-cli.schema.json`](../../schemas/agent-cli.schema.json) /
@@ -273,6 +273,15 @@ IPC は全チャネルが `{ok, data|error}` に揃う（`base/main/handle.js` �
 | `delegation` | 独立画面なし（タスク・参加・全体設定へ溶かす・§5.2） | 委譲封筒をネイティブ形式へ変換して投函。**板への書き込みはノード宛て指示ドロップ経由** |
 | `participation` | 募集中の仕事とこの端末の参加操作（板の公示を含む） | 人が押したときだけ agent-flow ワーカーを 1 つ起動（唯一のプロセス起動経路）／板は指示の投函だけ |
 
+CLI チャット（tmux でエージェント CLI を対話起動する窓）は起動先 cwd を選べる。候補は選択中
+プロジェクトのフォルダ（既定）と、プロジェクトの repos.json にあるリポジトリのうちこのノードの
+宣言（host.yaml `repos[]`）でローカルクローンを解決できたパスで、解決できないリポジトリは
+理由付きの非活性で見せる（一覧から消えるより「なぜ選べないか」が分かる方がよい）。起動 argv は
+CLI 定義の対話モード（[`agent-cli-plugin-design.md`](./agent-cli-plugin-design.md)）から組み、
+cowork の tmux 実行も同じ定義を通る（`chatCommand` 設定は明示上書きへ降格）。tmux セッション名は
+`<cli>:<cwd>` ——起動先を選べるようにした以上、同名で再 attach して別リポジトリの作業中
+セッションへ合流しないためだ。
+
 ### 5.1 kiro-loop 連携 — 監視と復旧を tmux から引き上げる
 
 定期実行ループ（kiro-loop / agent-loop）は tmux の上で動き、監視は `tmux attach`、復旧は
@@ -332,9 +341,11 @@ IPC は 4 本（`kiroLoop:listSessions` / `capture` / `state` / `send`）。
 
 ## 6. 人のアクションと護るべき不変条件
 
-dashboard から返せる判断は、plan-review / delivery-review の承認・差し戻し・却下、feedback 再開、
-revise（doing 中も）、replan、inbox 追加、pause / stop、reset、run の cancel と削除。
-どれも次の護りを破らない。
+dashboard から返せる判断は、plan-review / delivery-review の承認・差し戻し・却下（却下は
+墓標 `tombstones.md` に載り、同種タスクの再生成を抑止する）、feedback 再開、revise
+（doing 中も。受入基準 `acceptance` の項目編集を含む）、replan、inbox 追加、観点メモの追加と
+「メモを分解」（distill-notes）、pause / stop、reset、run の cancel と削除、板への手動入札と
+中止（§5.2）。どれも次の護りを破らない。
 
 - **done は verify のみが根拠**。状態遷移を画面から直接書き換えない。revise も状態を書かず、
   本体側の同一ロジックが遷移を決める。
@@ -342,6 +353,16 @@ revise（doing 中も）、replan、inbox 追加、pause / stop、reset、run �
 - **AI はファイルを書かない**（§3.4）。
 - **GitLab は読み取り専用**。
 - **タスク状態ファイルは書き換えない**（`backlog/*.md` の status、`archive/`、`project.json`）。
+
+検収カードの正はフォージの MR/PR で、差分レビューへの動線は MR リンクだけを出す。カードには
+検証レポートの要約（基準×証跡の表。証跡が空のまま pass にされた基準は警告として目立たせる）が
+載り、人検収の材料が「差分 + 基準 + 証跡」に揃う。worker の一時 worktree パス（`delivery.path`）を
+前提にした旧 diff 経路は撤去した——dashboard が本体と別マシンなら、worker の作業ツリーは `/tmp` で
+消えるので、そもそも動いていなかった。MR を持たないタスクに限り、このノードの宣言
+（host.yaml `repos[]`）で解決できたローカルクローンから差分を出し、解決できなければ理由を
+表示する。フォージ側の決着（マージ = 承認・未マージのクローズ = 却下・changes-requested =
+差し戻し）は常駐体が拾い、画面の承認・差し戻しボタンは「フォージを使わない判断」の口として
+同じ契約へ合流する（[S4/S5 詳細設計](../plans/2026-07-26-s4-s5-review-and-verification-detailed-design.md)）。
 
 例外は 2 つある。ひとつは 🗑 削除（タスク / run）で、削除の公式契約が無いためゴミ箱への移動として
 行う。もうひとつは viewer 管理のサイドカー（監視担当の割り当て `assignments.json` と
@@ -369,6 +390,16 @@ revise（doing 中も）、replan、inbox 追加、pause / stop、reset、run �
 加えて構造化アシスト（フォローアップ案・投入補助・タスク記述の誘導）が JSON を返し、
 フォームへ流し込める。
 
+失敗診断だけは 1 往復で終わらないので、既定を**対話診断**にした（従来のヘッドレスは
+「文面を生成」ボタンとして併設）。CLI 定義（`agents/<name>.json`）の対話モードを
+読み取り専用 + セッション永続化なしで開き、`agent-doctor-` 接頭辞の使い捨て tmux セッションに
+して作業用セッションと名前空間を分ける。画面が持つ 120KB 級のスナップショットは対話へ
+持ち込めない——tmux への注入は改行を含められない 1 行で、「全文をファイルで読ませる」前提は
+読み取り専用モードでファイル読み取りごと落とす CLI に破られる。送るのは**ブリーフ 1 行 +
+全文ファイルのパス**で、全文は「読めるなら読め」の追加資料に留める。読み取り専用を保証できない
+CLI では「このCLIでは助言のみを保証できません」を先に出す。残る 3 モードは構造化見出しの
+抽出に依存するため対話化しない（[S8/S9-4 詳細設計](../plans/2026-07-26-s8-s9-4-board-ui-and-doctor-chat-detailed-design.md)）。
+
 **上流で潰す**: タスク投入フォームは、完了条件が無い・自然文の accept が曖昧（「ちゃんと」
 「正しく」等）を投入前に警告する。曖昧な accept は弱い verify に合成され、「PASS したはずが
 人の期待と違う」手戻りの根本原因になる。非ブロックの警告で、続行するかは人が決める。
@@ -379,7 +410,7 @@ revise（doing 中も）、replan、inbox 追加、pause / stop、reset、run �
 
 **動いているもの**: §4 の 7 制御面すべて、§6 の人のアクション一式、§7 の通知・SLA・AI 補助・
 投入時リンティング、kiro-loop の構造化状態と復旧送信、この PC の役割切り替え
-（`engineer` / `viewer`）。テストは `npm test` で 61 ファイル・全緑。
+（`engineer` / `viewer`）。テストは `npm test` で 62 ファイル・全緑。
 
 **未実装の改善余地**（元の改善提案から、実装が無いものだけ残した）:
 

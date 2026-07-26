@@ -45,6 +45,7 @@
 | Electron 製品名 | Kiro Projects Viewer | Agent Dashboard |
 | 設定キー / IPC | `config.kiro` / `kiro:*` | `config.projects` / `dashboard:*` |
 | スキル | `.github/skills/kiro-*` | `.github/skills/agent-*` |
+| 共有ライブラリ | （なし） | `tools/agent-tools/agentcore`（transport / protocol / vocab / agentcli ほか。3 エンジンの zipapp へ同梱） |
 
 **維持するもの**（製品・共有インフラ）:
 
@@ -68,9 +69,12 @@
 
 ## 5. インストール
 
+3 エンジン（agent-project / agent-flow / agent-amigos）は統合インストーラ 1 本でまとめて入る。
+共有ライブラリ agentcore と環境チェックもここに集約されている（各エンジンの `install.sh` は
+`tools/agent-tools/install.sh --only <engine>` へ委譲するシムとして残る）。
+
 ```bash
-bash tools/agent-flow/install.sh
-bash tools/agent-project/install.sh
+bash tools/agent-tools/install.sh          # 3 エンジン + agentcore 一括
 bash tools/agent-loop/install.sh
 # GUI
 cd tools/agent-dashboard && npm start
