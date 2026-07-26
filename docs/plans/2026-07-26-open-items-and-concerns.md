@@ -12,7 +12,8 @@
 （やらないと決めたことの記録）。§5 は運用で観測すべき懸念。§6 は**今回の棚卸しで新たに
 見つけたもの**で、§6.1 の不具合 3 件（`remote_review` が効かない・serve 起動直後の停止で
 子が孤児化・ノード宛て指示が正典構成で届かない）だけは §1 と同格に扱ってよい。
-全体を掴むには §1〜§2 と §6.1 で足りる。
+**§7 が修正計画**——§1・§6 をどの順で消化するかを P0〜P3 の 4 段に落としてある。
+全体を掴むには §1〜§2 と §6.1、動くなら §7 から。
 
 ---
 
@@ -244,3 +245,75 @@ agent-dashboard の `npm test` も回すのが素直。
 - `agent-cli.schema.json` の `interactive` 継承規則は Python / JS で一致。
 - 旧キー（`state_worktree_dir` / `--profile` 等）のガイド残存は移行対照表としての
   意図的な記載のみ。`gitAutoPush` / `location: daemon|remote` は残存ゼロ。
+
+---
+
+## 7. 修正計画
+
+### 7.0 方針
+
+1. **実機 canary（R1）を段の区切りにする。** canary は「複数 PC + Windows/WSL で 1 週間、
+   二重実行 0・stale done 0・状態欠損 0」を確かめる受入試験で、§6.1 の上位 4 件は
+   まさにその構成で発現する（孤児化・別名義・届かない指示）。直さずに canary へ入ると、
+   起きた異常が設計の問題か既知バグかを切り分けられず、1 週間が無駄になる。
+   よって **P0（canary 前）→ R1 実施 → P1（canary と並行可）→ P2（R2b の前まで）→
+   P3（文書と CI・随時）** の順に置く。
+2. **同型の欠落は再発防止までをセットで直す。** `remote_review` は verifier キーと同じ
+   「CONFIG_DEFAULTS にあるのに Config へ届かない」の 2 度目なので、個別修正で終わらせず
+   構造をテストで固定する。定数の重複（CONTRACT_VERSION / DIFF_CRITERION）も同じ扱い。
+3. **契約に触る修正（P2）は静止点で全ノード一斉**（常駐一本化の規律を踏襲）。
+   スキーマと実装は同一コミットで更新する。
+4. 規模の目安: S = 半日以内 / M = 1〜2 日。P0 合計でも 2〜3 日で、canary の準備
+   （実機 3 台の手配）と並行して終わる分量。
+
+### 7.1 P0 — canary の前に直す（canary の結果を汚すもの）
+
+| # | 対象 | 修正 | 検証 | 規模 |
+|---|---|---|---|---|
+| P0-1 | serve の SIGTERM 窓（§6.1-2） | `stopping` イベントの用意とシグナルハンドラ設置を `_build_resident`（子の起動）より**前**へ移す。`write_status()` の git 観測はハンドラ設置後に | 間欠失敗している `test_serve_exits_cleanly_on_sigterm` が**順序修正によって**決定的に緑になること（リトライで誤魔化さない）。起動直後 SIGTERM の注入テストを追加 | S |
+| P0-2 | ノード宛て指示の置き場ずれ（§6.1-3） | dashboard の `resolveCommandsDir` を `engine.js` と同じ home 解決（`engine.home` 設定 → `wslpath -w "$HOME/.agents"`）に揃える。`delegation.nodeCommandsDir` を `config.js` の既定へ載せ、設定画面から辿れるようにする。旧 `~/.agent` フォールバックは**新ホームのみに統一**（常駐体側が見ない場所へ書ける状態を残さない） | 投函 → 受理レシート（`processed/`）の往復テストを Windows/WSL パス変換込みで固定。`no-git-writes` と同じ流儀で「Windows home 直書きしない」を構造テスト化 | M |
+| P0-3 | `Config.node` の正規化漏れ（§6.1-4） | `_auto_node_name` と `loop.py` の status 名義を `agentcore.nodeid.normalize_node_id` へ寄せ、導出を 1 実装にする。**大文字ホスト名の PC では名義変更になる**ので、node-id 切替と同じ静止点扱い: `doctor --node-id-cutover` の検査対象に「正規化前の名義の `status/` 残骸」を加え、[node-id-cutover ガイド](../guides/node-id-cutover.md)に 1 段追記 | 大文字ホスト名での `Config.node` = `HostConfig.node_id` = 板名義の一致テスト。`task_runnable_here` が小文字 `- node:` を拾う回帰テスト | M |
+| P0-4 | `remote_review` の未配線（§6.1-1）+ 再発防止 | `Config` へフィールド追加・`build_config` で配線。あわせて**「CONFIG_DEFAULTS の全キーが Config へ届く」構造テスト**を新設する（`root` 等の意図的除外は明示リストにし、リストへ足すときに理由を書かせる）。verifier キー・remote_review と 2 度踏んだ穴を型として塞ぐ | `remote_review: observe` がフォージ決着を journal 記録だけに留める既存想定のテストを、実際の Config 経由で通す（getattr フォールバックでは通らない形に） | S |
+
+**P0 の完了条件**: 上記 4 件のテストが緑 / canary ランブックの前提欄に「P0 済み」を記録。
+その後 R1（実機 canary・§1.1）を実施する。
+
+### 7.2 P1 — 効かない設定・安全性（canary と並行可。実機を要さない）
+
+| # | 対象 | 修正 | 規模 |
+|---|---|---|---|
+| P1-1 | 組み込み検証プロンプトの `verify_side_effects` 無視（§6.1-5） | `_builtin_verifier_prompt` をスキル側 `prompt.py` と同じ入力（side_effects・rules・repo_context・recipes・feedback）で組む。**スキル有無で安全制約が変わらない**ことをテストで固定（両者のプロンプトに同じ制約文が載る） | S |
+| P1-2 | agent-project の argv spill 欠落（§6.1-6） | `_agent_cmd` に flow / amigos と同じ退避（`headless_cmd` の spill 経路）を配線。閾値・退避先の掃除も揃える | S |
+| P1-3 | host.yaml トップレベルの無検査（§6.2） | `HostConfig` 読み込みに未知キー警告と PROJECT_ONLY キー検出を追加。既存運用を壊さないため**警告から始め**、canary 明けに E 系へ昇格するか判断（S1 の E1/E2 と同じ文言カタログに W5 として登録） | S |
+| P1-4 | ノード宛て指示の debounce / `.err` 掃除（§6.2） | `agentcore.commands` に debounce と「成功時に同一 id の古い `.err` を消す」を持たせ、プロジェクト側・ノード側の両方が同じ土台を使う形に寄せる。gc tick の対象に `~/.agents/commands/` を追加 | S |
+| P1-5 | `revive` の charter スコープ無視（§6.1-7） | `remove_tombstone` に charter 引数を通し、CLI に `--charter` を追加。既定は「指定 charter の墓標 + タグ無し墓標」のみ削除 | S |
+
+### 7.3 P2 — 契約の一本化（静止点で・R2b 設計の前までに）
+
+R2b（ノード直轄実行）は板の契約を最後に固める機会なので、契約に触る修正はそこまでに済ませ、
+R2b 設計と衝突させない。
+
+| # | 対象 | 修正 | 規模 |
+|---|---|---|---|
+| P2-1 | `CONTRACT_VERSION` の 3 重定義（§6.2） | 正典を `agentcore.board` の 1 か所にし、`resident/status.py` は import（`contract_compatible` の重複実装ごと削除）。dashboard（JS）は定数が残るなら Python とのゴールデンテストで同値を固定する | S |
+| P2-2 | 板への `local` publish とスキーマの矛盾（§6.2） | **決めが要る。推奨: publish をやめる**——入札可否は url ベースで足り（S3-5 の設計どおり local はヒント）、落札後の worktree 切り出しは自ノードの host.yaml から解決できるので、他 PC の絶対パスを共有リポジトリへ配る必然性が無い。維持する判断なら `repos.schema.json` の deprecated 文言を「共有レジストリ不可・板のノード宣言は可」へ改訂する。どちらでも `$defs.node.repos` の形（レジストリ形 → url/local 配列）は実装へ合わせる | S |
+| P2-3 | `workloads` / `max_concurrent` を入札判定が読まない（§6.2） | `eligible()` に workload 照合を追加。`max_concurrent` は「板上の自分名義の非終端 `status/` 件数が上限以上なら入札しない」の自己抑制として実装（枠の真実は板にあるので二重管理しない）。`0` の意味は**スキーマ側（0 = 無制限）へ実装を寄せ**、ワーカープールの既定 4 は「未指定時の既定」へ移す。二重落札の轍（S8 §6.5）を踏まないよう R2b 設計と同時に入れる | M |
+| P2-4 | `BoardRepo` 請負側書き込みの排他漏れ（§6.2） | `write_bid` / `write_cancelled` / `write_award` を `with self._locked(): self._ensure()` で他のメソッドと揃える | S |
+| P2-5 | 文字列・小物の一本化（§6.2 低群） | `DIFF_CRITERION` を本体定数の 1 か所へ（スキルは生成時に受け取る）。`repolocal` の JS 側 symlink 解決と `repos:` 行末コメント対応。`NodeCapability.write` のパス導出を `_safe_node` へ。`canceled` 識別子の改名は**触るファイルの修正時に限る**（改名だけのコミットは履歴のノイズ） | S |
+
+### 7.4 P3 — 文書と CI（独立・随時。P0〜P2 と並行してよい）
+
+| # | 対象 | 修正 | 規模 |
+|---|---|---|---|
+| P3-1 | CI の新設（§1.2 R4 と統合） | GitHub Actions で 5 系統を回す: 4 パッケージのテスト（**agentcore は 2 テストルートを明示**・§6.3）+ dashboard `npm test` + R10 grep 検査 + P0-4 の設定キー構造テスト。R10 検査は**本文のみ対象**（ファイルパス・スキーマ名・コードブロックを除外）の規則で書く（§1.2） | M |
+| P3-2 | `multi-pc-operations.md` の全面改訂（§6.3） | 常駐一本化後のモデル（PC に 1 本の serve + 子の分担・controller リース）で書き直す。存在しないコマンド（`start` / `stop` / `status --root`）を一掃し、W3-2 でやり残した分を完了させる | M |
+| P3-3 | doctor の S1 §3.6 検査（§6.3） | host.yaml `projects[]` の root 存在・origin 一致・branch 一致と、E1〜E7 相当の起動前チェックを doctor へ。設定ミスの原因究明を「子の起動失敗 → 隔離表示」から「doctor 一発」へ引き上げる | M |
+| P3-4 | S1 詳細設計の記述訂正（§6.3） | 現存しないシンボル（`_validate_layers` の引数形・`_STATE_SIGNIFICANT`）へ訂正注記を追記（既存の「実装で確定した差分」節の流儀。本文は書き換えない） | S |
+
+### 7.5 この計画に含めないもの
+
+- §2（R2b・検証委譲・旧バージョンノードの実機確認）は canary（R1）後の実装フェーズで、
+  修正ではなく機能追加。P2-3 だけは R2b 設計と同時に入れる接点として明記した。
+- §3 の「必要が出たときに拾う」群は契機が来るまで着手しない（先回りしない理由が
+  各行に書いてある）。
+- §4 の割り切りは修正対象ではない（変えるなら割り切りの再決定が先）。
