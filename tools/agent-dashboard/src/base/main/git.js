@@ -22,7 +22,7 @@ const path = require('path');
 // ここでは待つだけ——読み取りが数秒遅れても表示が古くなるだけで、実害は無い。
 const LOCK_RETRIES = 4;
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms) => new Promise((r) => { setTimeout(r, ms); });
 
 function gitOnce(args, timeoutMs) {
   return new Promise((resolve) => {
@@ -159,7 +159,7 @@ async function diagnostics(role, roots) {
   for (const root of roots || []) {
     const r = String(root || '').trim();
     if (!r) continue;
-    let exists = false;
+    let exists;
     try {
       exists = fs.existsSync(r);
     } catch {

@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, shell } = require('electron');
+const { app, BrowserWindow } = require('electron');
 const path = require('path');
 const { registerIpcHandlers } = require('./ipc');
 
@@ -14,7 +14,7 @@ function applyProxyFromEnv() {
   const allProxy = env.ALL_PROXY || env.all_proxy || '';
   const noProxy = env.NO_PROXY || env.no_proxy || '';
 
-  let server = '';
+  let server;
   if (httpProxy && httpsProxy && httpProxy !== httpsProxy) {
     server = `http=${httpProxy};https=${httpsProxy}`;
   } else {

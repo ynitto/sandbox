@@ -244,25 +244,10 @@ def _spawn_orchestrator(base: list, args, req_id: str, req: dict):
     ])
 
 
-def _spawn_worker(base: list, args, rid: str, wid: str):
-    """run rid のワーカーを1つ base argv から起動する（idle-exit のオンデマンド worker）。
-    親（daemon）で解決した executor プラグイン設定（例 gitlab: の repo_url/conn_label）を
-    `AGENT_FLOW_EXECUTOR_CONFIG` として worker の環境に明示的に渡す。worker が `--config` を
-    再解決できない/別の設定を拾う場合でも、親の設定が確実に届くようにする。"""
-    env = os.environ.copy()
-    cfgjson = resolve_executor_config_json(args)
-    if cfgjson is not None:
-        env["AGENT_FLOW_EXECUTOR_CONFIG"] = cfgjson
-    # park & poll: daemon は service_waits で park を面倒見るので worker の deferral を有効化する
-    # （承認待ちで worker スロットをブロックさせず、承認待ちは waits/ へ退避させる）。
-    # 設定 defer_waits=false のときは有効化せず、従来モード（worker がブロック待機）に戻す。
-    if _defer_enabled(args):
-        env["AGENT_FLOW_DEFER_WAITS"] = "1"
-    return subprocess.Popen(base + [
-        "--run-id", rid, "work", "--node-id", wid,
-        "--executor", args.executor, "--model_opt", args.model or "",
-        "--poll", str(args.poll), "--idle-exit",
-    ], env=env)
+# run とは独立に短命ワーカーを湧かせる `_spawn_worker`（`--idle-exit` のオンデマンド worker）は
+# ここにあったが、常駐一本化で呼び手（daemon ループ）が無くなったため削除した。ワーカーは
+# `cmd_run` が run ごとに `--workers` 個だけ起こす。executor 設定の子への伝搬は
+# `resolve_executor_config_json` に残っており、`make_executor` が同じ値を使う。
 
 
 def _apply_inbox_request(bus: Bus, args) -> None:
@@ -442,6 +427,10 @@ def cmd_run(args) -> int:
                                 "--max-iterations", str(args.max_iterations),
                                 "--max-fanout", str(args.max_fanout),
                                 "--max-retries", str(args.max_retries),
+                                # 初回起動と同じ検証 gate 設定で起こす。落とすと、CLI で
+                                # --no-review を明示した run が heal 後だけ gate 付きに戻る。
+                                *(["--review"] if args.review is True
+                                  else ["--no-review"] if args.review is False else []),
                                 "--model_opt", args.model or "",
                                 "--poll", str(args.poll), "--node-id", "orchestrator",
                             ])

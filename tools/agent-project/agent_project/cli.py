@@ -114,6 +114,10 @@ def main(argv=None) -> int:
                     help="実行層 agent-flow の doctor も連携実行して所見を統合（既定 on）")
     dr.add_argument("--no-flow", dest="with_flow", action="store_false",
                     help="agent-flow との連携を無効化し本体のみ診断する")
+    dr.add_argument("--node-id-cutover", dest="node_id_cutover", default=None, metavar="OLD",
+                    help="node_id 切替の事前チェック（旧 node_id を渡す）。旧名義に未決着の委譲・"
+                         "amigos ロール状態が残っていないか、新名義が板で使用中でないかを見る。"
+                         "手順は docs/guides/node-id-cutover.md")
 
     up = sub.add_parser("update",
                         help="スキルリポジトリ(main)の更新を確認。--now で temp に sparse-checkout "
@@ -304,7 +308,8 @@ def main(argv=None) -> int:
         "runlog": lambda: cmd_runlog(cfg, getattr(args, "json", False),
                                      getattr(args, "tail", 10)),
         "doctor": lambda: cmd_doctor(cfg, getattr(args, "fix", False),
-                                     getattr(args, "json", False)),
+                                     getattr(args, "json", False),
+                                     cutover_from=getattr(args, "node_id_cutover", None)),
         "update": lambda: cmd_update(cfg, getattr(args, "now", False),
                                      getattr(args, "check", False)),
         "promote": lambda: cmd_promote(cfg),

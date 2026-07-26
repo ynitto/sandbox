@@ -15,7 +15,7 @@ try:
 except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore
 
-from agentcore import transport as _transport  # noqa: E402 — 共通 git 転送層（設計 §4.1・R1）
+# `_transport`（共通 git 転送層）は _head.py が共有名前空間へ入れている。
 
 
 class BoardRepo:

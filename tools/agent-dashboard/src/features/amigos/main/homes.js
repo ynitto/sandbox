@@ -133,7 +133,7 @@ function discoverHomes(cfg) {
     if (!conf && !explicit.includes(dir)) continue;
     const values = (conf && conf.values) || {};
     const busSpec = String(values.bus || '.');
-    let busDir = null;
+    let busDir;
     if (busSpec.startsWith('git+') || busSpec.startsWith('hub+')) {
       // GitBus / HubBus はローカルミラー（workdir）がバスの実体。agent-amigos と同じ導出:
       // 設定 bus_workdir、無ければ ~/.agent/amigos/{bus|hub}/<sha1(url)[:8]>（gitbus.py / hubbus.py）。

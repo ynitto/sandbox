@@ -15,7 +15,6 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const project = require('./project');
 
 // 終端 status（agent-flow 本体 = agentcore.vocab.TERMINAL_READ と一致させる）。cancelled は
 // 人の明示指示による恒久停止。これに含めないと cancelled run が「応答なし/実行中」に誤分類され、
@@ -424,7 +423,7 @@ function readRunEvents(runDir, limit = 50) {
   const events = [];
   for (const f of safeList(dir)) {
     if (!f.endsWith('.jsonl')) continue;
-    let raw = '';
+    let raw;
     try {
       raw = fs.readFileSync(path.join(dir, f), 'utf8');
     } catch {

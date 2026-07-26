@@ -294,14 +294,6 @@ class SpawnArgvTests(unittest.TestCase):
         self.assertEqual(parsed.inherit_from, "run-prev")
         self.assertEqual(parsed.run_id, "run-43")
 
-    def test_spawn_worker_argv_parses(self):
-        args = self._args()
-        cmd = self._capture(kf._spawn_worker, self._base(), args, "run-44", "worker-1")
-        parsed = self._parse_child(cmd)
-        self.assertEqual(parsed.cmd, "work")
-        self.assertEqual(parsed.run_id, "run-44")
-        self.assertEqual(parsed.node_id, "worker-1")
-
 
 class StalledRunRetryTests(unittest.TestCase):
     """停滞した run（orchestrator が消えて非終端のまま止まったもの）も、失敗ノードを戻して再開する。

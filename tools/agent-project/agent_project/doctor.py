@@ -335,6 +335,43 @@ def doctor_node_id_cutover_findings(board_root: "str | None", old_node_id: str,
     return findings
 
 
+def node_id_cutover_findings(cfg: "Config", old_node_id: str) -> "list[dict]":
+    """`doctor --node-id-cutover <旧 node_id>` の入口（実装計画 W1-10「doctor に切替前チェック」）。
+
+    検査そのものは `doctor_node_id_cutover_findings` が持つ。ここが足すのは板と amigos バスの
+    場所、そして新名義（このノードのいまの node_id）の解決だけ——どちらも host.yaml が
+    単一ソースなので、人に同じ値を打ち直させない。
+
+    以前はこの検査に呼び出し元が無く、手順書（docs/guides/node-id-cutover.md）が
+    `from agent_project.doctor import …` を案内していた。agent_project の断片は共有名前空間へ
+    exec して合成する前提で、単体 import すると即 NameError になる——手順どおりに叩いても
+    動かない検査だった。"""
+    old = str(old_node_id or "").strip()
+    if not old:
+        return []
+    try:
+        host = load_host_config()
+    except Exception:  # noqa: BLE001 — host.yaml の不備で doctor を落とさない
+        return []
+    board_root = _board_local_root(host.board, host.board_workdir)
+    amigos_root = str(host.amigos_bus or "") or None
+    return doctor_node_id_cutover_findings(board_root, old, host.node_id,
+                                           amigos_bus_root=amigos_root)
+
+
+def _board_local_root(board: str, workdir: "str | None" = None) -> "str | None":
+    """板のローカルディレクトリ。`git+<url>` はクローン済みの作業領域を指す
+    （未クローンなら None＝板の検査は飛ばす。切替チェックのために clone しに行かない）。"""
+    spec = str(board or "").strip()
+    if not spec:
+        return None
+    try:
+        d = BoardRepo(spec, workdir=workdir).dir
+    except Exception:  # noqa: BLE001 — 板の解決失敗は「検査対象なし」に倒す
+        return None
+    return d if os.path.isdir(d) else None
+
+
 def _declared_residency() -> str:
     """host.yaml が宣言する常駐化方式（設計 §7）。未検出・未宣言は "auto"。
 
@@ -682,15 +719,18 @@ def collect_flow_findings(cfg: "Config", fix: bool, runner=None) -> "list[dict]"
 
 
 def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
-               agent_run=None, skill_finder=find_skill, flow_finder=collect_flow_findings) -> int:
+               agent_run=None, skill_finder=find_skill, flow_finder=collect_flow_findings,
+               cutover_from: "str | None" = None) -> int:
     """稼働を診断し env/config を（--fix で）修正、program は gitlab-idd で起票する。
     実行層 agent-flow の doctor も連携実行し findings を統合する（cfg.with_flow 時）。
+    `cutover_from` を渡すと node_id 切替の事前チェックも足す（`--node-id-cutover`）。
     終了コード: 0=健康 / 1=未解決の所見あり / 2=未解決の critical あり。"""
     # 決定的所見は ensure_dirs より前に集める（create-dirs 所見を消さないため）
     deterministic = (doctor_env_findings(cfg) + doctor_coordination_findings(cfg)
                      + doctor_audit_findings(cfg)
                      + doctor_wiring_findings(cfg)
-                     + doctor_residency_findings(_declared_residency()))
+                     + doctor_residency_findings(_declared_residency())
+                     + node_id_cutover_findings(cfg, cutover_from or ""))
     for f in deterministic:
         f["source"] = "check"
     signals = collect_doctor_signals(cfg)
@@ -709,9 +749,13 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
                     applied.append((f, msg))
         # 適用後に決定的チェックを取り直し、もう再現しない所見は『修正により解消』として畳む
         # （例: create-dirs は複数の監査未達を一度に解消する）。
+        # 取り直す集合は上の deterministic と同じ構成にする。片方だけに載っている検査は
+        # 「再現しなかった」と読まれて『修正により解消』に畳まれる（切替チェックは --fix で
+        # 直せる類ではないので、黙って消えると人は解決したと誤解する）。
         still = {(g["category"], re.sub(r"\s+", " ", g.get("title", "").lower()).strip())
                  for g in doctor_env_findings(cfg) + doctor_coordination_findings(cfg)
-                 + doctor_audit_findings(cfg) + doctor_residency_findings(_declared_residency())}
+                 + doctor_audit_findings(cfg) + doctor_residency_findings(_declared_residency())
+                 + node_id_cutover_findings(cfg, cutover_from or "")}
         for f in findings:
             if f.get("source") == "check" and not f.get("resolved"):
                 key = (f["category"], re.sub(r"\s+", " ", f.get("title", "").lower()).strip())

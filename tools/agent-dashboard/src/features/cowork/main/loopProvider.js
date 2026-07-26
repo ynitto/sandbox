@@ -230,7 +230,7 @@ function launchWindowScript(script, options = {}) {
   let command;
   let args;
   let windowCommand;
-  let terminal = '';
+  let terminal;
   let spawnOptions = { stdio: 'ignore', detached: true };
   if (platform === 'win32') {
     const distro = wslDistro(options.cwd);
@@ -430,7 +430,7 @@ function sendArgsFor(job) {
   if (Array.isArray(job.args)) return job.args;
   const name = job.id || job.name;
   if (!name) return ['send'];
-  let pane = '';
+  let pane;
   try {
     pane = require('../../kiro-loop/main/tmux').findPane({ repo: job.cwd || job.repo, name });
   } catch {

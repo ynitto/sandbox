@@ -13,8 +13,6 @@
 // ソースから抽出して隔離実行する（判定は state と引数のみに依存する純関数）。
 
 const assert = require('assert');
-const fs = require('fs');
-const path = require('path');
 
 let passed = 0;
 function test(name, fn) {

@@ -54,9 +54,9 @@ class TestRunBrief(unittest.TestCase):
             # 正規化（改行畳み・箇条書き記号除去）後は同一 → 重複は追記しない（冪等）
             self.assertFalse(km.append_brief_item(cfg, t, "API は snake_case で統一 ⏎ する",
                                                   source="revise"))
-            added = km.add_brief_items(cfg, t, ["配置は src/ 配下", "API は snake_case で統一 ⏎ する"],
-                                       source="node")
-            self.assertEqual(added, 1)     # 既出 1 件は弾かれ、新規 1 件だけ追記
+            # 既出は弾かれ、新規だけ追記される（回収経路は capture_insight が 1 件ずつ呼ぶ）
+            self.assertFalse(km.capture_insight(cfg, t, "API は snake_case で統一 ⏎ する", source="node"))
+            self.assertTrue(km.capture_insight(cfg, t, "配置は src/ 配下", source="node"))
             self.assertEqual(km._brief_items(cfg, t),
                              ["API は snake_case で統一 ⏎ する", "配置は src/ 配下"])
 

@@ -120,17 +120,6 @@ def detect_runtime() -> dict:
     return info
 
 
-def to_windows_path(p: "str | Path") -> "str | None":
-    """WSL パス → Windows パス（`wslpath -w`）。wslpath が無ければ None。"""
-    if not shutil.which("wslpath"):
-        return None
-    try:
-        out = subprocess.run(["wslpath", "-w", str(p)], capture_output=True,
-                             text=True, encoding="utf-8", errors="replace", timeout=5)
-        return out.stdout.strip() or None if out.returncode == 0 else None
-    except (OSError, subprocess.SubprocessError):
-        return None
-
 
 def _self_script() -> str:
     """この CLI を再実行できる実体の絶対パス（子プロセス起動・graceful 再起動に使う）。
@@ -149,28 +138,6 @@ def _self_script() -> str:
     return str(Path(__file__).resolve())
 
 
-def _norm_root(root: str) -> str:
-    return str(Path(root).expanduser().resolve())
-
-
-def _signal_tree(pid: int, sig) -> None:
-    """インスタンスとその子孫（agent-flow の orchestrator / worker）へシグナルを送る。
-
-    本人にだけ送ると agent-flow が生き残る。すると残った orchestrator が run の生存リースを
-    更新し続け、次に起動した agent-project はそれを「まだ実行中」と読んで **続きから再開せず
-    新しい run を作り直す**（実際 17/23 まで進んだ run を捨てて 1/20 からやり直した）。さらに
-    同じタスクを二重に実行し、同じ作業ブランチへ両方が push しあう。
-
-    start（detached）で起動したインスタンスは自分がプロセスグループのリーダーなので、グループへ
-    送れば子孫まで届く。そうでない（端末から run --watch を直叩きした）場合はグループに無関係の
-    プロセス（人のシェルや他のジョブ）が混ざるため、本人にだけ送る。"""
-    try:
-        if os.getpgid(pid) == pid:            # detached 起動＝自分がグループリーダー
-            os.killpg(pid, sig)
-            return
-    except OSError:
-        pass
-    os.kill(pid, sig)
 
 
 def _flow_pids_for_bus(bus: Path) -> "list[int]":
@@ -221,7 +188,7 @@ def _expire_run_leases(cfg: "Config") -> int:
             continue
         meta["orch_lease_until"] = 0.0        # 失効＝以後は age ではなくリースで「停滞」と判定される
         try:
-            f.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+            write_json_atomic(str(f), meta)
             n += 1
         except OSError:
             continue

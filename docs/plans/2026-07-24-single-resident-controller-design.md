@@ -5,7 +5,7 @@
   ブートストラップ集約、(b) flow / amigos の単体実行（スキル呼び出し）の堅持、を
   反映。改訂履歴は付録 A）
 - 関連: [`2026-07-23-delegation-board-distributed-bidding-design.md`](./2026-07-23-delegation-board-distributed-bidding-design.md)（板の契約）、
-  [`2026-07-22-agent-project-multi-node-daemon-design.md`](./2026-07-22-agent-project-multi-node-daemon-design.md)（coordination / controller lease）、
+  [`agent-project-design.md`](../designs/agent-project-design.md)（coordination / controller lease。旧 multi-node daemon 設計を統合済み）、
   [`schemas/board.schema.json`](../../schemas/board.schema.json)、
   [`schemas/delegation.schema.json`](../../schemas/delegation.schema.json)
 

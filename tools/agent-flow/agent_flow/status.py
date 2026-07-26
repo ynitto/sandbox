@@ -4,7 +4,11 @@ from __future__ import annotations
 # --------------------------------------------------------------------------
 # status — 状態表示。既定は 1 回表示、--follow でライブ監視（tmux ペイン向け）
 # --------------------------------------------------------------------------
-_STATE_GLYPH = {"done": "✓", "failed": "✗", "claimed": "▶", "pending": "○", "unknown": "·"}
+# waiting は park（承認待ち等で claim を解放し、監視主体が決着を待っている）状態。これを
+# 落とすと、全ノードが承認待ちの run が「進捗 0/N・実行中ゼロ」としか見えず、止まっているのか
+# 待っているのかを画面から判別できない（park & poll の運用で実際に困った）。
+_STATE_GLYPH = {"done": "✓", "failed": "✗", "claimed": "▶", "waiting": "⏸",
+                "pending": "○", "unknown": "·"}
 
 
 def _progress_bar(done: int, total: int, width: int = 24) -> str:
@@ -97,7 +101,7 @@ def _render_status(bus, run_id, events):
                  f"   iter={graph.get('iteration', 0)}")
     if total:
         L.append(f"│  progress: {_progress_bar(done, total)}")
-        order = ("done", "claimed", "pending", "failed", "unknown")
+        order = ("done", "claimed", "waiting", "pending", "failed", "unknown")
         agentline = "  ".join(f"{_STATE_GLYPH[k]}{k}={counts[k]}" for k in order if counts.get(k))
         L.append(f"│  agents  : {total}   {agentline}")
         L.append("├─ tasks")

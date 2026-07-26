@@ -69,11 +69,33 @@ def read_json(path: str):
 
 
 def write_json_atomic(path: str, data) -> None:
+    """JSON を「tmp へ書く → fsync → rename」で置き換える。
+
+    rename だけでは**電源断でサイズ 0 のファイルが残る**: rename のメタデータが先に永続化され、
+    中身がまだフラッシュされていない状態があるため。git のオブジェクトに対しては同じ問題を
+    `core.fsync=all`（`transport._DURABLE_GIT_CONFIG`）で塞いでいるのに、こちらの契約ファイル
+    （`engine/status.json`・claim・lease・run の meta.json）は素通しだった——読み手はどれも
+    「読めなければ存在しない」と解釈するので、空ファイルは黙って状態の欠損になる。
+    ディレクトリの fsync まで行い、rename そのものも永続化させる。"""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = f"{path}.tmp.{os.getpid()}"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp, path)
+    # ディレクトリエントリ（rename）の永続化。Windows は O_RDONLY でディレクトリを開けず、
+    # そもそも rename のジャーナリング挙動が異なるので失敗は黙って許容する。
+    try:
+        dfd = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dfd)
+    except OSError:
+        pass
+    finally:
+        os.close(dfd)
 
 
 def safe_name(who: str) -> str:

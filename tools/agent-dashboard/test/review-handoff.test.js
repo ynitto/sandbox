@@ -30,7 +30,7 @@ function test(name, fn) {
     });
     try {
       // listen が確立するまで少し待つ
-      await new Promise((r) => setTimeout(r, 100));
+      await new Promise((r) => { setTimeout(r, 100); });
       const url = 'gitlab-review-viewer://open?url=https%3A%2F%2Fgl.example%2Fg%2Fp%2F-%2Fissues%2F7';
       const ok = await client.tryHandoff(url, 800);
       assert.strictEqual(ok, true, 'ハンドオフは成功する');

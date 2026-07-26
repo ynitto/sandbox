@@ -186,9 +186,20 @@ def _participate_once(args) -> "list[str]":
         if not bus.read_inbox(req_id):
             continue
         if bus.claim_request(req_id, node, args.lease):
-            bus.touch_run(req_id, lease_window)   # 受理直後に生存リースを張る（孤児誤判定を防ぐ）
+            # ここで生存リース（touch_run）は張れない: run はまだ作られておらず meta.json が
+            # 無いためである。孤児回収は `run_exists` で先に弾くので誤判定は起きないが、受理
+            # から `run --from-inbox` の起動までに呼び出し側が落ちると、その要求は inbox claim の
+            # lease（`--lease`・既定 1800 秒）が失効するまで誰も拾い直さない。短くすると、
+            # ワーカープールで起動待ちの run を別ノードが二重に拾うので、この窓は縮めない。
             dispatch.append(req_id)
             if busy is not None:
                 busy += 1
             log(node, f"要求 {req_id} を受理（実行は呼び出し側へ引き渡す）")
+    # アイドル（受理も引き継ぎも無い巡回）なら自己更新を確認する。取り込み自体は切り離した
+    # 子プロセスへ渡すので、この巡回が呼び出し側のタイムアウトで殺されても中断されない。
+    if not dispatch:
+        try:
+            maybe_self_update(args, idle=True, state={"last": 0.0})
+        except Exception as e:  # noqa: BLE001 — 更新確認の失敗は巡回を止めない
+            log(node, f"自己更新の確認でエラー（無視して継続）: {e}")
     return dispatch

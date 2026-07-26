@@ -26,6 +26,8 @@ import shutil
 import subprocess
 import time
 
+from agentcore import transport as _transport
+
 from .bus import Bus, MissionPaths
 from .util import log, write_json_atomic
 
@@ -55,9 +57,18 @@ class GitBus(Bus):
 
     # --- git 低レベル -------------------------------------------------------
     def _git(self, cwd: "str | None", *args: str, check: bool = True):
+        """バスリポジトリへの git。**必ず timeout を切り、資格情報を対話で聞かせない**——
+        ノードは端末を持たないまま常駐するので、聞かれた git は誰も答えられないまま待ち続け、
+        ターンごと固まる（agentcore.transport と同じ規律。設計 §4.1・R1）。"""
         cmd = ["git"] + (["-C", cwd] if cwd else []) + list(args)
-        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
-                              errors="replace")
+        limit = _transport.git_timeout_for(cmd)
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                                  errors="replace",
+                                  env=_transport.harden_git_env(dict(os.environ)),
+                                  timeout=limit)
+        except subprocess.TimeoutExpired:
+            proc = _transport.timed_out_result(cmd, limit)
         if check and proc.returncode != 0:
             raise RuntimeError(f"git {' '.join(args)} 失敗 (rc={proc.returncode}): "
                                f"{(proc.stderr or proc.stdout).strip()[-500:]}")

@@ -846,6 +846,47 @@ class ParticipateE2ETests(unittest.TestCase):
         self.assertEqual(self._participate(running=[run_id]), [])
 
 
+class ParticipateSelfUpdateTests(unittest.TestCase):
+    """自己更新の確認は「受理も引き継ぎも無い巡回」でだけ走る（常駐廃止で失われた配線の復帰）。
+
+    仕事のある巡回で ls-remote を挟むと受理が遅れるうえ、呼び出し側（常駐体の flow tick）は
+    120 秒で kill するため、更新の取り込みが巡回の中に居座ってはいけない。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-pupd-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _args(self, **kw):
+        base = dict(bus=self.tmp, git=None, run_id=None, lease=60.0, poll=1.0,
+                    node_id="pc-a", running="", max_runs=0, max_resumes=3,
+                    executor="stub", board=None, state_git=None, auto_heal=False,
+                    json=False)
+        base.update(kw)
+        return types.SimpleNamespace(**base)
+
+    def _participate(self):
+        calls = []
+        with mock.patch.object(kf, "maybe_self_update",
+                               side_effect=lambda *a, **k: calls.append(k.get("idle"))):
+            dispatched = kf._participate_once(self._args())
+        return dispatched, calls
+
+    def test_checks_update_when_idle(self):
+        dispatched, calls = self._participate()
+        self.assertEqual(dispatched, [])
+        self.assertEqual(calls, [True])
+
+    def test_skips_update_check_when_work_was_accepted(self):
+        kf.Bus(self.tmp, "_").submit_request("run-upd-1", "a; b", "test")
+        dispatched, calls = self._participate()
+        self.assertEqual(dispatched, ["run-upd-1"])
+        self.assertEqual(calls, [])
+
+    def test_update_failure_does_not_break_the_tick(self):
+        with mock.patch.object(kf, "maybe_self_update", side_effect=RuntimeError("boom")):
+            self.assertEqual(kf._participate_once(self._args()), [])
+
+
 class AutoHealTests(unittest.TestCase):
     """レイヤ4（auto-heal）: transient 起因で failed 終端した run を cooldown 後に自動再開する。
     done は温存・進捗リセット付き max_heals・cancelled/superseded は尊重。"""

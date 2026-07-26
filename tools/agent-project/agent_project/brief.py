@@ -88,14 +88,6 @@ def append_brief_item(cfg: "Config", task: "Task", text, source: str = "") -> bo
     return True
 
 
-def add_brief_items(cfg: "Config", task: "Task", texts, source: str = "") -> int:
-    """複数の項目をまとめて追記する（ノード発見制約の回収経路用）。実際に追記できた件数を返す。"""
-    n = 0
-    for t in (texts or []):
-        if append_brief_item(cfg, task, t, source=source):
-            n += 1
-    return n
-
 
 def brief_context(cfg: "Config", task: "Task", limit: int = 1200) -> str:
     """build_request 注入用の run ブリーフ本文（末尾 _BRIEF_MAX_ITEMS 件を有界に）。無ければ空（後方互換）。

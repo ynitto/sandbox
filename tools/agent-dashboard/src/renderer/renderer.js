@@ -1048,7 +1048,7 @@ function technicalProjectInfoHtml() {
     return '<div class="empty compact">プロジェクトを選ぶと、実行状態とログをここで確認できます。</div>';
   }
   const run = state.flowRun && state.flowRun.run;
-  const journal = (p.journal || []).slice(-80).reverse().map((line) => `<div>${linkify(line.replace(/^\-\s*/, ''))}</div>`).join('');
+  const journal = (p.journal || []).slice(-80).reverse().map((line) => `<div>${linkify(line.replace(/^-\s*/, ''))}</div>`).join('');
   const runRows = [...(p.runLog || [])].reverse().slice(0, 40).map((entry) => `<tr>
     <td>${fmtTime(entry.ts)}</td><td>${esc(statusLabel(entry.reason))}</td><td>${esc(entry.level || '')}</td>
     <td>${entry.cycles ?? ''}</td><td>${entry.tokens ?? ''}</td><td>${entry.cost ?? ''}</td>

@@ -41,8 +41,6 @@ class Config:
     # state_git_interval で律速。ルート自体が git クローンなら管理クローンを介さず直接コミット・push
     # する（direct モード。state_git 未設定でも有効）。
     state_git: "str | None" = None        # 共有リポジトリ（URL/パス）。None で無効（direct モードを除く）
-    state_git_branch: str = "main"        # 同期先ブランチ
-    state_git_subdir: str = "agent-project"  # リポジトリ内の保存先サブディレクトリ（多重コミッタとの名前空間分離）
     state_git_interval: float = 300.0     # fetch/push の最短間隔（秒）。0 で毎同期（リモート負荷は増える）
     # agent-flow へ --config で渡す共有 agent-flow.yaml（任意。未指定は agent-flow の既定発見に委ねる）。
     # agent-flow の設定値（executor / state_git_subdir / gitlab.* / defer_waits 等）は個別に CLI 注入
@@ -98,7 +96,7 @@ class Config:
     # エージェント委譲で推定（charter owns: と route: の決定論を先に適用）/ none=決定論のみ（推定しない）。
     route_planner: str = "agent"
     default_workspace: str = ""    # route で決まらないタスクの既定ワークスペース（charter の name/url）。空で無効
-    location: str = "auto"         # act の実行モード: auto / local / daemon / remote / board
+    location: str = "auto"         # act の実行モード: auto / local / board
     # 委譲公示板（agent-board）への依頼側自動配線（opt-in）。空文字で無効（従来どおり）。
     # 設定すると `location: auto` は offload ポリシー一致タスクを板へ post し、入札・実行は
     # 請負側（agent-flow / agent-amigos の board 参加デーモン）に委ねる。板は「リポジトリ＋契約」
@@ -481,7 +479,7 @@ def delivery_evidence(cfg: "Config", act_msg: str, git_base, location: str = "lo
     branch = _current_branch(cfg)
     changed = sorted(meaningful_changes(cfg, git_base)) if git_base is not None else []
     where = str(cfg.workdir)
-    if location == "remote" and cfg.git_bus:
+    if cfg.git_bus:
         where += f"（git-bus: {cfg.git_bus}@{cfg.git_branch}）"
     lines = [f"- 成果物: {ref}",
              f"- 所在: {where}" + (f" / ブランチ {branch}" if branch else ""),

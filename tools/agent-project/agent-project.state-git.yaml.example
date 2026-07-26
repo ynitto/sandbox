@@ -82,11 +82,9 @@ act_timeout: 0             # 委譲はレビュー往復で数日かかりうる
 # state_repo_dir: ""                  # ローカル clone 先（成果物top の親を基準に解決。相対=親配下/絶対=そのまま。既定 <成果物repo>-state）
 
 # --- 状態の git 保存・共有 ---
-# direct モード（ルートが clone）なら設定不要。ルートが git でない場合のみ管理クローン方式:
+# 同期先はルート自身のリポジトリの origin。ルートを clone して置いたなら設定不要。
+# state_git は「origin が未設定のルートに設定する URL」としてだけ使う:
 # state_git: git@gitlab.example.com:team/agent-state.git
-# state_git_subdir: agent-project     # agent-project 自身の名前空間（既定 agent-project）。
-#                                    #   agent-flow 側の subdir は agent-flow.yaml の state_git_subdir
-#                                    #   （既定 agent-flow）で別に決まる
 # state_git_interval: 300            # fetch/push の最短間隔（秒）。バックアップ粒度を細かく
 #                                    #   したければ短く（GitLab への負荷と引き換え）
 

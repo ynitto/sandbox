@@ -76,6 +76,14 @@ class WaitingStateTests(unittest.TestCase):
         # run_claimable_count からも除外される（daemon が worker を起こさない）
         self.assertEqual(self.bus.run_claimable_count("run1"), 0)
 
+    def test_status_render_shows_waiting(self):
+        # 回帰: park 中のノードが status に出ないと、全ノード承認待ちの run が「進捗 0/N・
+        # 実行中ゼロ」としか見えず、止まっているのか待っているのか画面から区別できない。
+        self.bus.write_wait("n1", self._rec())
+        _, text = kf._render_status(self.bus, "run1", 0)
+        self.assertIn("waiting=1", text)
+        self.assertIn(kf._STATE_GLYPH["waiting"], text)
+
     def test_expired_wait_falls_back_to_pending(self):
         # wait_lease 失効＝監視主体が居ない → pending へ縮退（full worker が再アタッチで拾える）
         self.bus.write_wait("n1", self._rec(wait_lease_until=time.time() - 1))

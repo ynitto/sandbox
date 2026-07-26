@@ -20,7 +20,9 @@ import tempfile
 import time
 from typing import Optional, Sequence
 
-__all__ = ["GitTransport", "GIT_LOCK_STALE_SEC", "GIT_LOCK_RETRIES", "CLONE_RETRIES"]
+__all__ = ["GitTransport", "GIT_LOCK_STALE_SEC", "GIT_LOCK_RETRIES", "CLONE_RETRIES",
+           "GIT_LOCAL_TIMEOUT_SEC", "GIT_NET_TIMEOUT_SEC", "GIT_TIMEOUT_RC",
+           "git_timeout_for", "timed_out_result", "harden_git_env"]
 
 # 初回クローンの最大試行回数（push/pull と同じ指数バックオフでリトライ）。
 CLONE_RETRIES = 5
@@ -31,6 +33,62 @@ GIT_LOCK_STALE_SEC = 30.0
 GIT_LOCK_RETRIES = 4
 # push 競合時の再試行回数（2,4,8,16s バックオフ）。
 PUSH_RETRIES = 5
+
+# --- git の強制打ち切り（常駐体のハング防止） -----------------------------------------
+# 常駐体のスケジューラ（agent-project `resident/scheduler.py`）は tick を専用スレッドで回し、
+# 「強制打ち切りは tick 側が持つサブプロセスの timeout に委ねる」設計になっている（Python
+# スレッドは安全に kill できない）。よってここで timeout を切らないと、その前提が成立しない
+# ——ネットワーク停止や資格情報待ちで git が固まると tick スレッドが永久にブロックし、
+# self-watchdog が常駐体ごと abort → 起動系が再起動 → 同じ所で再び固まる（自己回復しない）。
+# ローカル操作（config/rev-parse/add/commit）とネットワーク操作（clone/fetch/pull/push）で
+# 正当な所要時間が桁違いなので、上限を分ける。
+GIT_LOCAL_TIMEOUT_SEC = 60.0
+GIT_NET_TIMEOUT_SEC = 600.0
+# timeout で打ち切ったときの returncode（GNU timeout(1) の慣習に合わせる）。
+GIT_TIMEOUT_RC = 124
+# `remote get-url` / `remote add` はローカル操作なのでここには入れない（短い上限のままにして
+# ハング検知を早める）。
+_GIT_NET_SUBCOMMANDS = frozenset({"clone", "fetch", "pull", "push", "ls-remote"})
+
+
+def git_timeout_for(args: "Sequence[str]") -> float:
+    """この git 呼び出しに掛けてよい上限秒。ネットワークを触るサブコマンドが含まれていれば
+    長い方を返す。
+
+    「先頭がサブコマンド」と決め打たないのは、呼び出し側が `git -C <path> push …` の形で
+    渡してくるため——`-C` の**値**（パス）は `-` で始まらないので、先頭走査だと常にパスを
+    サブコマンドと読んで push/fetch にローカル上限を掛けてしまう。含有判定にすると
+    `log --grep=push` のような偽陽性で上限が伸びるが、伸びる側の誤りは害が無い。"""
+    return (GIT_NET_TIMEOUT_SEC if any(a in _GIT_NET_SUBCOMMANDS for a in args)
+            else GIT_LOCAL_TIMEOUT_SEC)
+
+
+def harden_git_env(env: dict) -> dict:
+    """常駐体から git を呼ぶときの共通環境を env へ足して返す（破壊的・同じ dict を返す）。
+
+    資格情報を対話で聞かせない。常駐体には端末が無く、聞かれた git は誰も答えられないまま
+    待ち続ける——timeout で打ち切れるとはいえ、毎 tick を上限まで浪費するので「失敗して次へ」
+    に倒す。ssh も BatchMode で即座に諦めさせる。LC_ALL=C はロック競合・破損検知の文字列
+    マッチが英語メッセージ前提であるため、GIT_EDITOR は rebase --continue がエディタを
+    開かないため。転送層以外（agent-project の StateGit・agent-flow / agent-amigos の
+    gitbus）も同じ護りが要るので、ここを唯一の定義にする。"""
+    env["LC_ALL"] = "C"
+    env["GIT_EDITOR"] = "true"
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_ASKPASS"] = ""        # 空 = ヘルパを起動しない（GUI プロンプトも出さない）
+    env["SSH_ASKPASS"] = ""
+    env.setdefault("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
+    return env
+
+
+def timed_out_result(cmd: "Sequence[str]", limit: float):
+    """timeout で打ち切った git を、成功/失敗を見る既存コードがそのまま扱える形に包む。
+    例外で貫通させると `check=False` の呼び出し（存在確認・冪等な config 適用など）まで
+    巻き添えで落ちるため、返り値の形を揃える。"""
+    return subprocess.CompletedProcess(
+        list(cmd), GIT_TIMEOUT_RC, "",
+        f"git timeout: {limit:.0f}s を超えたため打ち切りました")
+
 
 _STALE_GIT_LOCKS = ("index.lock", "HEAD.lock", "config.lock", "shallow.lock",
                      "packed-refs.lock")
@@ -115,9 +173,7 @@ class GitTransport:
         ceil = env.get("GIT_CEILING_DIRECTORIES")
         env["GIT_CEILING_DIRECTORIES"] = parent + (os.pathsep + ceil if ceil else "")
         env["GIT_DISCOVERY_ACROSS_FILESYSTEM"] = "0"
-        env["LC_ALL"] = "C"  # ロック競合・破損検知は英語メッセージの文字列マッチに頼る
-        env["GIT_EDITOR"] = "true"  # rebase --continue がエディタを開かないように
-        return env
+        return harden_git_env(env)
 
     def _remove_stale_git_locks(self, min_age_sec: "Optional[float]" = None) -> int:
         """min_age_sec 以上更新の無いロック残骸を削除して削除数を返す。新しいロックは
@@ -143,13 +199,15 @@ class GitTransport:
             try:
                 cur = subprocess.run(["git", "-C", cwd, "config", "--local", "--get", key],
                                      capture_output=True, text=True, encoding="utf-8",
-                                     errors="replace", env=self._git_env())
+                                     errors="replace", env=self._git_env(),
+                                     timeout=GIT_LOCAL_TIMEOUT_SEC)
                 if cur.returncode == 0 and cur.stdout.strip() == val:
                     continue  # 既に設定済み（冪等）
                 subprocess.run(["git", "-C", cwd, "config", "--local", key, val],
                                capture_output=True, text=True, encoding="utf-8",
-                               errors="replace", env=self._git_env())
-            except OSError:
+                               errors="replace", env=self._git_env(),
+                               timeout=GIT_LOCAL_TIMEOUT_SEC)
+            except (OSError, subprocess.TimeoutExpired):
                 pass
 
     def _harden_remote_durability(self) -> None:
@@ -160,10 +218,11 @@ class GitTransport:
                 return
             probe = subprocess.run(["git", "-C", self.remote, "rev-parse", "--git-dir"],
                                    capture_output=True, text=True, encoding="utf-8",
-                                   errors="replace", env=self._git_env())
+                                   errors="replace", env=self._git_env(),
+                                   timeout=GIT_LOCAL_TIMEOUT_SEC)
             if probe.returncode == 0:
                 self._apply_durable_writes(self.remote)
-        except OSError:
+        except (OSError, subprocess.TimeoutExpired):
             pass
 
     def _probe_integrity(self) -> bool:
@@ -172,16 +231,22 @@ class GitTransport:
             p = subprocess.run(
                 ["git", "-C", self.workdir, "fsck", "--connectivity-only", "--no-dangling",
                  "--no-reflogs"], capture_output=True, text=True, encoding="utf-8",
-                errors="replace", env=self._git_env())
-        except OSError:
+                errors="replace", env=self._git_env(), timeout=GIT_LOCAL_TIMEOUT_SEC)
+        except (OSError, subprocess.TimeoutExpired):
             return False
         return p.returncode == 0 and not is_corrupt_error(p)
 
     def _git(self, args: "Sequence[str]", check: bool = True):
         p = None
+        limit = git_timeout_for(args)
+        cmd = ["git", "-C", self.workdir, *args]
         for i in range(GIT_LOCK_RETRIES):
-            p = subprocess.run(["git", "-C", self.workdir, *args], capture_output=True,
-                               text=True, encoding="utf-8", errors="replace", env=self._git_env())
+            try:
+                p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                                   errors="replace", env=self._git_env(), timeout=limit)
+            except subprocess.TimeoutExpired:
+                p = timed_out_result(cmd, limit)
+                break  # 打ち切りはロック競合ではない——再試行しても同じだけ待つ
             if p.returncode == 0 or not is_lock_error(p):
                 break
             # ロック起因の失敗: 残骸（十分古い）なら消して即再試行、稼働中の他 git が
@@ -309,14 +374,22 @@ class GitTransport:
         self._restore_salvaged_files(salvage)
 
     def _clone_once(self):
-        r = subprocess.run(
-            ["git", "clone", "--no-checkout", "--filter=blob:none", self.remote, self.workdir],
-            capture_output=True, text=True, encoding="utf-8", errors="replace")
+        # env は `_git` と同じものを使う——資格情報プロンプト抑止（GIT_TERMINAL_PROMPT=0 /
+        # BatchMode）は clone でこそ効く必要があり、LC_ALL=C は失敗理由の文字列判定の前提。
+        def _clone(*extra: str):
+            cmd = ["git", "clone", "--no-checkout", *extra, self.remote, self.workdir]
+            try:
+                return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                                      errors="replace", env=self._git_env(),
+                                      timeout=GIT_NET_TIMEOUT_SEC)
+            except subprocess.TimeoutExpired:
+                return timed_out_result(cmd, GIT_NET_TIMEOUT_SEC)
+
+        r = _clone("--filter=blob:none")
         if r.returncode != 0:
             # blob filter 非対応サーバ向けフォールバック
             self._reset_clone_dir()
-            r = subprocess.run(["git", "clone", "--no-checkout", self.remote, self.workdir],
-                               capture_output=True, text=True, encoding="utf-8", errors="replace")
+            r = _clone()
         return r
 
     def _clone_with_retry(self):

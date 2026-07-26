@@ -365,10 +365,6 @@ def _plan_approve(cfg: "Config", t: Task, reason: str) -> None:
     append_journal(cfg.journal, f"plan-review 承認: {t.id} → {t.status}")
 
 
-_PLAN_REWORK_FIELDS = ("title", "verify", "accept", "after", "priority", "note",
-                       *TASK_GUIDE_KEYS)
-
-
 def _plan_rework_prompt(t: Task, feedback: str) -> str:
     return (
         "あなたはバックログタスクの定義を人のレビュー指摘に沿って修正する編集者です。\n"

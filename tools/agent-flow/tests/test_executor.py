@@ -1024,40 +1024,6 @@ class ExecutorResolutionTests(unittest.TestCase):
         self.assertIsNone(kf.resolve_executor_config_json(self._args(executor="gitlab", gitlab=None)))
         self.assertIsNone(kf.resolve_executor_config_json(self._args(executor="gitlab", gitlab={})))
 
-    def test_spawn_worker_passes_executor_config_env(self):
-        # daemon が解決した gitlab ブロックが worker 起動 env に AGENT_FLOW_EXECUTOR_CONFIG として載る
-        args = self._args(executor="gitlab", model=None, poll=1.0,
-                          gitlab={"repo_url": "https://gitlab.example/group/repo"})
-        captured = {}
-
-        def fake_popen(cmd, *a, **kw):
-            captured["cmd"] = cmd
-            captured["env"] = kw.get("env")
-            return object()
-
-        with mock.patch.object(kf.subprocess, "Popen", side_effect=fake_popen):
-            kf._spawn_worker(["agent-flow", "--bus", "b"], args, "run-1", "worker-1")
-        self.assertEqual(json.loads(captured["env"]["AGENT_FLOW_EXECUTOR_CONFIG"]),
-                         {"repo_url": "https://gitlab.example/group/repo"})
-        self.assertIn("work", captured["cmd"])
-
-    def test_spawn_worker_builtin_executor_no_config_env(self):
-        # 組み込み executor では設定 env を上書きしない（既存 env をそのまま継承）
-        args = self._args(executor="agent", model=None, poll=1.0)
-        captured = {}
-
-        def fake_popen(cmd, *a, **kw):
-            captured["env"] = kw.get("env")
-            return object()
-
-        prev = os.environ.get("AGENT_FLOW_EXECUTOR_CONFIG")
-        os.environ.pop("AGENT_FLOW_EXECUTOR_CONFIG", None)
-        self.addCleanup(lambda: os.environ.__setitem__("AGENT_FLOW_EXECUTOR_CONFIG", prev)
-                        if prev is not None else os.environ.pop("AGENT_FLOW_EXECUTOR_CONFIG", None))
-        with mock.patch.object(kf.subprocess, "Popen", side_effect=fake_popen):
-            kf._spawn_worker(["agent-flow"], args, "run-1", "worker-1")
-        self.assertNotIn("AGENT_FLOW_EXECUTOR_CONFIG", captured["env"])
-
     def test_unresolvable_executor_exits(self):
         with self.assertRaises(SystemExit):
             kf.make_executor(self._args(executor="does-not-exist-xyz"))

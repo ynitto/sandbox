@@ -1820,7 +1820,7 @@ function resolveBusDir(projectDir, workspaceDir, cfg) {
 // run の meta/イベントはファイル置換（rename）で書かれるため run ディレクトリの mtime が動く。
 function _busRecency(busDir) {
   const runsDir = path.join(busDir, 'runs');
-  let latest = 0;
+  let latest;
   try {
     latest = fs.statSync(runsDir).mtimeMs;
   } catch {
@@ -1934,7 +1934,7 @@ function readProject(workspaceDir, cfg) {
   const specs = [];
   for (const sub of safeList(path.join(dir, 'specs'))) {
     const sdir = path.join(dir, 'specs', sub);
-    let isDir = false;
+    let isDir;
     try {
       isDir = fs.statSync(sdir).isDirectory();
     } catch {

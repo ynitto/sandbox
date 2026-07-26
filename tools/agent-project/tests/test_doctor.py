@@ -126,6 +126,29 @@ class TestDoctor(unittest.TestCase):
             self.skipTest("systemd 環境では別経路を通る")
         self.assertEqual(km.doctor_residency_findings("auto"), [])
 
+    def test_node_id_cutover_entry_point_reads_host_yaml(self):
+        """`doctor --node-id-cutover <旧>` から検査に到達できること（実装計画 W1-10）。
+
+        以前はこの検査に呼び出し元が無く、手順書は `from agent_project.doctor import …` を
+        案内していた。agent_project の断片は共有名前空間へ exec して合成する前提なので、
+        単体 import すると即 NameError になる——手順どおり叩いても動かない検査だった。
+        板と amigos バスの場所・新名義は host.yaml から引く（人に打ち直させない）。"""
+        with tempfile.TemporaryDirectory() as d:
+            board = os.path.join(d, "board")
+            sdir = os.path.join(board, "delegations", "dg-1", "status")
+            os.makedirs(sdir, exist_ok=True)
+            old = km.normalize_node_id("pc-old")
+            with open(os.path.join(sdir, f"{old}.json"), "w", encoding="utf-8") as f:
+                json.dump({"who": old, "state": "working"}, f)
+            host = types.SimpleNamespace(board=board, board_workdir=None, amigos_bus="",
+                                         node_id="pc-new")
+            with mock.patch.object(km, "load_host_config", return_value=host):
+                cfg = self._cfg(d)
+                titles = {f["title"] for f in km.node_id_cutover_findings(cfg, "pc-old")}
+                self.assertIn("旧 node_id 名義の委譲が実行中", titles)
+                # 旧 node_id を渡さなければ何も検査しない（通常の doctor を重くしない）
+                self.assertEqual(km.node_id_cutover_findings(cfg, ""), [])
+
     def test_node_id_cutover_noop_without_board_or_amigos(self):
         self.assertEqual(km.doctor_node_id_cutover_findings(None, "pc-old", "pc-new"), [])
 

@@ -351,7 +351,6 @@ class TestStateSyncBatching(unittest.TestCase):
             subprocess.run(["git", "-C", str(d), "remote", "add", "origin",
                             "https://example.invalid/r.git"], check=True)
             cfg = cfg_for(d, bus=d / "bus")                      # 既定の <root>/bus 相当
-            self.assertIsNone(km.project_flow_remote(cfg))
             t = km.Task(id="T1", title="x", verify="true")
             self.assertNotIn("--state-git", km.build_agent_flow_cmd(t, cfg))
 
@@ -709,7 +708,6 @@ class TestDirectStateGit(unittest.TestCase):
 
         self.assertTrue(km.state_transaction(second, reassign, "test reassign"))
         self.assertEqual(stale.get("claim_token"), token)
-        self.assertFalse(km.validate_distributed_claim(first, stale))
         self.assertEqual(km.claim_fence_state(first, stale), "lost")   # 取り直された＝真の不一致
 
     def test_observe_sync_counts_ahead_without_fetching(self):
@@ -759,10 +757,9 @@ class TestDirectStateGit(unittest.TestCase):
         self.assertEqual(km.claim_fence_state(cfg, task), "ok")
         subprocess.run(["git", "-C", str(self.root), "remote", "set-url", "origin",
                         "file:///no-such-remote.git"], check=True)
-        self.assertEqual(km.claim_fence_state(cfg, task), "unknown")
-        # 旧ゲート（bool）はここで False を返す＝"lost" と区別が付かず破棄側へ落ちていた。
+        # bool の合否に畳むと "lost" と区別が付かず、届かないだけの claim を破棄側へ落とす。
         # 破棄するかどうかは 3 値を見る側の責務であることをここで固定する。
-        self.assertFalse(km.validate_distributed_claim(cfg, task))
+        self.assertEqual(km.claim_fence_state(cfg, task), "unknown")
 
     def test_settle_with_unreachable_remote_preserves_work_for_human(self):
         # unknown は破棄でも自動採用でもなく、人の判断へ隔離する（実行ノード消失時と同形）。
@@ -1201,7 +1198,6 @@ class TestDirectStateGit(unittest.TestCase):
         km.state_sync(cfg, force=True)
         self.assertFalse((proot / ".git").exists(), "既存リポジトリの内側に nested repo を作らない")
         self.assertIsNone(km.state_git_for(cfg))         # 同期は諦める（毎周期の失敗を出さない）
-        self.assertIsNone(km.project_flow_remote(cfg))   # flow へ渡す remote もでっち上げない
         # 外側リポジトリの通常操作が壊れていないこと（nested repo があるとここが fatal になる）
         r = subprocess.run(["git", "-C", str(outer), "add", "-A"],
                            capture_output=True, text=True)

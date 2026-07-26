@@ -480,6 +480,21 @@ echo this-later-command-must-not-be-selected
             "Here is how to verify the change\nReview the behavior carefully"
         ))
 
+    def test_first_command_line_joins_continuation_lines(self):
+        """回帰: 行末バックスラッシュの継続行は結合してから候補にする。
+
+        結合せずに行単位で選ぶと `pytest -q \\` のような**途中で切れたコマンド**が採用される。
+        フェンス内は構文チェックを課さないので素通りし、壊れた verify がそのまま done の唯一の
+        根拠になる——実行すれば必ず落ちるので、タスクは永久にリトライと人送りを繰り返す。"""
+        self.assertEqual(
+            km._first_command_line("```sh\npytest -q \\\n  -k my_test\n```"),
+            "pytest -q -k my_test",
+        )
+        self.assertEqual(
+            km._first_command_line("pytest -q \\\n  -k my_test\n"),
+            "pytest -q -k my_test",
+        )
+
     def test_join_continuations_merges_backslash_continued_lines(self):
         self.assertEqual(
             km._join_continuations(["pytest -q \\", "  -k first_command_line"]),

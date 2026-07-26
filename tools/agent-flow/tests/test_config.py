@@ -490,6 +490,28 @@ class SelfUpdateTests(unittest.TestCase):
         self.assertEqual(kf.read_update_state()["applied_sha"], info["remote_sha"])
         self.assertFalse(kf.check_update(a)["available"])   # 適用後は最新
 
+    def test_maybe_self_update_hands_off_to_child(self):
+        # 取り込み（clone → install.sh）は切り離した子プロセスへ渡す。参加巡回は呼び出し側に
+        # 120 秒で kill されるので、この中で install.sh を回すと本体が半分だけ入れ替わりうる。
+        a = self._args()
+        kf.check_update(a)                                   # baseline
+        _commit_change(self.repo, "tools/agent-flow/N4.txt")
+        spawned, applied = [], []
+        with mock.patch.object(kf, "_spawn_update_child", side_effect=lambda: spawned.append(1)), \
+             mock.patch.object(kf, "apply_update", side_effect=lambda *ar, **k: applied.append(1)):
+            self.assertTrue(kf.maybe_self_update(a, idle=True, state={"last": 0.0}))
+        self.assertEqual(applied, [])                        # 巡回の中では適用しない
+        self.assertEqual(len(spawned), 1)                    # 取り込みは子プロセスへ
+
+    def test_spawn_update_child_argv(self):
+        captured = {}
+        with mock.patch.object(kf.subprocess, "Popen",
+                               side_effect=lambda c, **k: captured.update(cmd=c, kw=k)):
+            kf._spawn_update_child()
+        self.assertEqual(captured["cmd"][-2:], ["update", "--now"])
+        if os.name != "nt":          # 親（参加巡回）が kill されても道連れにしない
+            self.assertTrue(captured["kw"]["start_new_session"])
+
     def test_maybe_self_update_interval_gate(self):
         a = self._args(update_check_interval=3600.0, update_enabled=True)
         st = {"last": time.time()}            # 直近にチェック済み → interval 内は何もしない
@@ -540,6 +562,23 @@ class SelfUpdateTests(unittest.TestCase):
             # プロセス再起動を模擬（呼び出し側の state dict が新品になる）
             self.assertFalse(kf.maybe_self_update(a, idle=True, state={"last": 0.0}))
             self.assertEqual(len(calls), 1)                    # 間隔内 → 再チェックしない
+
+    def test_update_state_path_follows_shared_home(self):
+        # 回帰: ここだけ旧ホーム ~/.agent を直書きしており、新ホームしか無い環境で
+        # ~/.agent/ を新しく作って書いていた（control / budget / instructions と置き場が割れる）。
+        os.environ.pop("KIRO_STATE_HOME", None)
+        home = os.path.join(self.tmp, "home")
+        with mock.patch.dict(os.environ, {"HOME": home}, clear=False):
+            os.makedirs(os.path.join(home, ".agents"), exist_ok=True)
+            self.assertEqual(kf._update_state_path(),
+                             os.path.join(home, ".agents", "agent-flow.update.json"))
+            # 旧ホームに既存の記録があればそちらを読む（ベースラインを失わない）
+            old = os.path.join(home, ".agent")
+            os.makedirs(old, exist_ok=True)
+            open(os.path.join(old, "agent-flow.update.json"), "w").close()
+            self.assertEqual(kf._update_state_path(),
+                             os.path.join(old, "agent-flow.update.json"))
+        os.environ["KIRO_STATE_HOME"] = self.state
 
     def test_registry_auto_resolution(self):
         # update_repo 未指定でも skill-registry.json から repo/branch を解決して検出できる

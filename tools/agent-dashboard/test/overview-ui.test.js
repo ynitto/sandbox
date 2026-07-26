@@ -300,6 +300,7 @@ assert.match(renderer, /個別のrunを止める操作ではありません/);
 
 // --- nodesSummaryHtml（案6・複数 PC ノード一覧） ---
 {
+  // eslint-disable-next-line no-new-func
   const nodesSummaryHtml = new Function(
     'esc', 'humanizeAge',
     `${grab('nodesSummaryHtml')}; return nodesSummaryHtml;`

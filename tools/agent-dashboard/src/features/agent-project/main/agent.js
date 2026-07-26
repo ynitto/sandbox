@@ -329,15 +329,8 @@ function buildDoctorCommand(cli, model, prompt, projectDir, plugin = null) {
   return { ...command, cwd };
 }
 
-function quote(arg) {
-  const s = String(arg);
-  if (/^[\w@%+=:,./-]+$/.test(s)) return s;
-  return process.platform === 'win32' ? `"${s.replace(/"/g, '""')}"` : `'${s.replace(/'/g, "'\\''")}'`;
-}
-
 // ANSI エスケープを除去（kiro-cli 等が色付きで返しても JSON / markdown を壊さない）
 function stripAnsi(s) {
-  // eslint-disable-next-line no-control-regex
   return String(s || '').replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '');
 }
 

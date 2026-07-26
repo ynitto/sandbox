@@ -306,12 +306,6 @@ def claim_fence_state(cfg: "Config", task: "Task") -> str:
                        for key in ("claim_owner", "claim_token", "claim_generation")) else "lost"
 
 
-def validate_distributed_claim(cfg: "Config", task: "Task") -> bool:
-    """remote 正本が同じ owner/token/generation の doing である場合だけ settle を許可する。
-    検証できなかった場合（リモート不通）も False になるため、成果の採否を分けたい
-    呼び出し側は `claim_fence_state` の 3 値を直接見る。"""
-    return claim_fence_state(cfg, task) == "ok"
-
 
 def refresh_distributed_task(cfg: "Config", task_id: str) -> bool:
     """fence 敗北時、stale なローカル task を remote 正本へ戻す。"""

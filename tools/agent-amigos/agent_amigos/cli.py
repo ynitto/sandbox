@@ -16,7 +16,7 @@ from .configfile import load_settings, resolve_bus_spec
 from .daemon import NodeDaemon, default_node_id
 from .delivery import deliveries_dir, delivery_dir, list_deliveries
 from .messages import build_message, message_path, unanswered_questions, valid_target
-from .mission import (convergence_state, derive_phase,
+from .mission import (convergence_state, derive_phase, is_owner,
                       load_mission, load_roles, post_mission)
 from .util import log, now_iso, read_json, write_json_atomic
 
@@ -64,7 +64,7 @@ def _home_arg(p: argparse.ArgumentParser) -> None:
 
 
 def _require_owner(mission: dict, node: str) -> None:
-    if mission.get("owner_node") != node:
+    if not is_owner(mission, node):
         raise SystemExit(f"[agent-amigos] このコマンドはオーナーノード"
                          f"（{mission.get('owner_node')}）のみ実行できます（自ノード: {node}）")
 

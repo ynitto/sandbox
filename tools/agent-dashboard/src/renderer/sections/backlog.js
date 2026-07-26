@@ -1008,7 +1008,7 @@ async function refreshEnqueueAdjustmentPlan() {
     return;
   }
   const p = state.project;
-  let planned = { apply: [], skipped: [] };
+  let planned;
   try {
     planned = await api.agentPlanAdjustments({
       backlog: (p && p.backlog) || [],

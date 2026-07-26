@@ -473,10 +473,15 @@ def _first_command_line(out: str) -> Optional[str]:
     一致しない）も認識できず、候補が 1 つも残らない。
     """
     out = strip_ansi(out)
-    fenced = _first_executable_line(_code_fence_lines(out), require_shell_syntax=False)
+    # 行末バックスラッシュの継続行は、候補を選ぶ前に 1 つの論理コマンドへ結合する。
+    # 結合せずに行単位で選ぶと、`pytest -q \` のような**途中で切れたコマンド**が採用される
+    # ——フェンス内は構文チェックを課さないので素通りし、壊れた verify がそのまま done の
+    # 唯一の根拠になる（実行すれば必ず落ちるので、タスクは永久にリトライと人送りを繰り返す）。
+    fenced = _first_executable_line(_join_continuations(_code_fence_lines(out)),
+                                    require_shell_syntax=False)
     if fenced:
         return fenced
-    lines = (out or "").splitlines()
+    lines = _join_continuations((out or "").splitlines())
     return _first_executable_line(
         [
             line

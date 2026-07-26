@@ -10,36 +10,6 @@ def _bus_inside_state(cfg: "Config") -> bool:
         return False
 
 
-def project_flow_remote(cfg: "Config") -> "tuple[str, str, float] | None":
-    """このプロジェクトの agent-flow に注入すべき state-git の (remote, branch, interval)。無ければ None。
-
-    **バスが root 配下（既定 <root>/bus）にあるなら常に None。** そこは agent-project 自身の
-    state 同期が bus ごと鏡写しする領域で、agent-flow に独自の state_git を持たせると同一ブランチ
-    への第二の書き手になる。書き手が増えると除外規則の食い違いが「tracked だが commit されない
-    ファイル」を生み、状態同期が復旧不能に詰まる（実際に起きた: agent-flow の管理クローンが
-    bus/.state-git としてコミットされ、双方の rebase が永久に失敗した）。状態リポジトリへの
-    書き手はプロジェクトにつき agent-project の 1 プロセスに限る。
-
-    バスを root の外（同期されない場所）に置いた構成でだけ、従来どおり agent-flow 自身の
-    state_git で鏡写しさせる。"""
-    if _bus_inside_state(cfg):
-        return None
-    root = cfg.backlog.parent
-    # 状態共有は direct 一本（実装計画 W1-7）: 未初期化なら git init してから remote を見る。
-    # direct にできない構成（既存リポジトリの内側等）では state_git_for も None を返すため、
-    # ここも「共有先なし」に倒す（agent-flow へ渡す remote を でっち上げない）。
-    if not _ensure_direct_state_git(cfg):
-        return None
-    r = subprocess.run(["git", "-C", str(root), "remote", "get-url", "origin"],
-                       capture_output=True, text=True, encoding="utf-8", errors="replace")
-    remote = r.stdout.strip() if r.returncode == 0 else ""
-    if not remote:
-        return None
-    b = subprocess.run(["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"],
-                       capture_output=True, text=True, encoding="utf-8", errors="replace")
-    branch = b.stdout.strip() or "main"
-    return remote, branch, cfg.state_git_interval
-
 
 def status_path(cfg: "Config") -> Path:
     return cfg.backlog.parent / "status.json"

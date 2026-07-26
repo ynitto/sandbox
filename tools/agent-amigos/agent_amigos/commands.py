@@ -31,7 +31,7 @@ from .assign import apply_role, claim_role, confirm_assignment
 from .bus import Bus
 from .configfile import commands_dir, state_dir
 from .messages import build_message, message_path, valid_target
-from .mission import load_mission, new_mission_id, post_mission
+from .mission import is_owner, load_mission, new_mission_id, post_mission
 from .util import log, now_iso, read_json, write_json_atomic
 
 
@@ -141,7 +141,7 @@ def _do_claim(bus: Bus, node_id: str, agent_cli: "str | None", rec: dict) -> str
 
 
 def _require_owner(mission: dict, node_id: str) -> None:
-    if mission.get("owner_node") != node_id:
+    if not is_owner(mission, node_id):
         raise ValueError(f"オーナー（{mission.get('owner_node')}）のみ実行できます")
 
 

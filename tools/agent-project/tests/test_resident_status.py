@@ -76,7 +76,8 @@ def test_engine_status_write_and_ring_buffer():
         assert data["sync_health"] == [
             {"name": "state-repo", "ahead": 0, "behind": 2, "last_error": None}]
         assert data["children"] == [
-            {"name": "proj-x", "alive": True, "quarantined": False, "deaths": 0}]
+            {"name": "proj-x", "alive": True, "quarantined": False, "deaths": 0,
+             "root": None, "paused": False}]
         # リングバッファ: 直近 max_recent_errors 件だけ残る
         assert data["recent_errors"] == ["err-2", "err-3", "err-4"]
     finally:

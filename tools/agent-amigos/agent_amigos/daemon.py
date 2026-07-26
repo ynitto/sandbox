@@ -1,6 +1,11 @@
-"""ノードデーモン — join したノードの常駐ループ（設計書 §6.1・§6.4）。
+"""ノードループ — `join` / `drive` が回す 1 巡（設計書 §6.1・§6.4）。
 
-1 プロセスで次を回す:
+常駐一本化（実装計画 W1-9）で常駐主体はノード常駐体（agent-project `serve`）に移り、
+`serve` / `hub` / `hubbus` は削除済み。ここに残るのは**巡回そのもの**で、
+`agent-amigos drive`（単発・インライン）と `join`（自前で回り続ける従来の入口）の
+両方が同じ `cycle()` を使う。
+
+1 巡で次を回す:
 - バス上の open なミッションを発見し、能力が合うロールへ応募（claim）
 - 自ノードがオーナーのミッションでは、オーナー職務（roster の鏡写し・
   staffing_timeout 後の自己補充 self-staff）を行う
@@ -17,6 +22,7 @@ import signal
 import socket
 import time
 
+from agentcore import vocab
 from agentcore.nodeid import normalize_node_id
 
 from .assign import (apply_role, claim_role, confirm_assignment, matches_role,
@@ -215,7 +221,7 @@ class NodeDaemon:
             roles = active_roles(load_roles(mp), mp)   # 剪定ロールは募集・実行から外す（G5）
             phase = derive_phase(mission, roles, mp)
             seen[mid] = phase
-            if phase in ("done", "cancelled", "failed"):
+            if vocab.is_terminal(phase):
                 continue
             i_am_owner = mission.get("owner_node") == self.node_id
             policy = str(mission.get("assignment_policy") or "first-come")
@@ -293,10 +299,9 @@ class NodeDaemon:
             n += 1
             if until_terminal:
                 if mission_id is not None:
-                    if seen.get(mission_id) in ("done", "cancelled", "failed"):
+                    if vocab.is_terminal(seen.get(mission_id)):
                         return
-                elif seen and all(
-                        p in ("done", "cancelled", "failed") for p in seen.values()):
+                elif seen and all(vocab.is_terminal(p) for p in seen.values()):
                     return
             if cycles and n >= cycles:
                 return

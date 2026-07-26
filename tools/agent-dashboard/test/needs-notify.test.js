@@ -5,8 +5,6 @@
 //   - notify.targetUrl（base/main/notify）: 通知クリックの遷移先ディープリンク組み立て
 
 const assert = require('assert');
-const fs = require('fs');
-const path = require('path');
 const notify = require('../src/main/notify');
 
 // renderer.js から純関数のソースを切り出して評価する（他 UI テストと同じ grab パターン）。

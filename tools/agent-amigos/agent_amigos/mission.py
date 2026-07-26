@@ -325,6 +325,16 @@ def load_roles(mp: MissionPaths) -> "dict[str, dict]":
     return read_all_json(mp.roles_dir())
 
 
+def is_owner(mission: dict, node_id: str) -> bool:
+    """node_id がこのミッションのオーナーノードか（オーナー限定操作の唯一の判定）。
+
+    投げる例外は呼び出し口ごとに違う（CLI は SystemExit で終了、commands 取り込みは
+    ValueError を `.err` へ載せる）ので、raise は各 `_require_owner` に残し、**規則そのもの**
+    だけをここに置く。両方に規則を持たせると、片方だけ直したときに「CLI では弾かれるが
+    dashboard 経由では通る」形で権限判定が割れる。"""
+    return mission.get("owner_node") == node_id
+
+
 # --- 予算会計（決定的） ------------------------------------------------------
 
 def budget_spent_seconds(mp: MissionPaths) -> float:

@@ -548,7 +548,7 @@ function deleteCharterVersion(dir, name) {
         const m = text.match(/^\s*-\s+charter\s*:\s*(.+?)\s*$/m);
         if (m && m[1].trim() === nm) related.push(`${folder}/${entry}`);
       } catch (e) {
-        throw new Error(`関連する作業を確認できないため削除できません: ${folder}/${entry} (${e.message})`);
+        throw new Error(`関連する作業を確認できないため削除できません: ${folder}/${entry} (${e.message})`, { cause: e });
       }
     }
   }
@@ -616,7 +616,7 @@ function writeProjectFile(dir, name, content) {
     try {
       JSON.parse(text);
     } catch (e) {
-      throw new Error(`JSON として不正です: ${e.message}`);
+      throw new Error(`JSON として不正です: ${e.message}`, { cause: e });
     }
   }
   fs.mkdirSync(path.dirname(file), { recursive: true });

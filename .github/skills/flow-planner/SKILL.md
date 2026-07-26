@@ -73,6 +73,7 @@ python3 .github/skills/flow-planner/scripts/plan.py "<要求>" \
   "data_flow": "static|dynamic|unknown",
   "quality_focus": "speed|accuracy|coverage|exploration",
   "complexity": "simple|moderate|complex",
+  "estimated_steps": 6,
   "granularity_target": "fine",
   "constraints": ["制約1"],
   "domain_hints": ["ヒント1"]
@@ -82,6 +83,8 @@ python3 .github/skills/flow-planner/scripts/plan.py "<要求>" \
 - `data_flow`: 入力データが事前確定（static）か実行時に判明（dynamic）か
 - `quality_focus`: 速度重視か精度重視か網羅性重視か探索重視か
 - `decomposition_axes`: WBS的に分割する観点（機能別、フェーズ別、データ別等）
+- `estimated_steps`: 最小限必要な作業ステップ数の見積り（整数。読めなければ null）。
+  Phase 3 へ目安として渡すだけで、**成果ノード数のレンジは上書きしない**
 - `granularity_target`: complexity（または明示 `--granularity`）から決定的に導出
 
 ### Phase 2: 戦略選定（Strategy Selection）

@@ -3,7 +3,7 @@ from __future__ import annotations
 # 単体 import しない。agent_flow/__init__.py が共有名前空間へ順に exec 合成する。
 def build_parser() -> argparse.ArgumentParser:
     """CLI パーサを構築して返す。main と、子プロセス起動 argv の妥当性を検証する
-    テスト（_spawn_orchestrator/_spawn_worker が組み立てた argv を parse できるか）で共有する。
+    テスト（_spawn_orchestrator が組み立てた argv を parse できるか）で共有する。
     グローバル引数とサブコマンド引数の置き場を取り違えると usage エラーで子が即死するため、
     その回帰を単体テストで捕まえられるように公開関数として切り出している。"""
     p = argparse.ArgumentParser(description="agent-flow — git 共有型・分散 Dynamic Workflow")

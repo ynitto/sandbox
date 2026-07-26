@@ -66,7 +66,7 @@ function cancel(boardRepoDir, env) {
 // bids/<who>.json を正規化。勝者は lease 内の (ts, who) 最小（agent-board の winner と同一規則）。
 function readBids(dir, awardNode, nowSec) {
   const bd = path.join(dir, 'bids');
-  let names = [];
+  let names;
   try {
     names = fs.readdirSync(bd).filter((n) => n.endsWith('.json'));
   } catch (e) {
@@ -168,7 +168,7 @@ function toView(dir, nowSec) {
 // board リポジトリ配下の全委譲を正規化ビューにして返す。
 function listViews(boardRepoDir, nowSec) {
   const root = path.join(boardRepoDir, 'delegations');
-  let names = [];
+  let names;
   try {
     names = fs.readdirSync(root).filter((n) => fs.statSync(path.join(root, n)).isDirectory());
   } catch (e) {

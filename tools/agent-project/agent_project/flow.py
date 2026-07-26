@@ -16,7 +16,13 @@ def _new_run_id(task: "Task", cfg: "Config") -> str:
     return _req_id_for(task, cfg, task.retries)
 
 
-_FLOW_TERMINAL = ("done", "failed", "cancelled")
+# agent-flow の run が終端か（`runs/<rid>/meta.json` の status）。**読み取り用の集合**
+# （正典 done/failed/cancelled + 旧綴り "canceled"）を使う。参照箇所はすべて「バス上の
+# 既存 meta.status が終端か」の判定であり、W0-9 の語彙統一より前に人が cancel した run は
+# 旧綴りのままバスに残っている。それを非終端と読むと `_run_resumable` がリース/age 判定へ
+# 落ちて「停滞」と誤読し、`expire_orphan_flow_leases` がリースを失効させて蘇生を確定させる
+# （agentcore.vocab の docstring が警告する経路そのもの）。書き込みは常に正典のみ。
+from agentcore.vocab import TERMINAL_READ as _FLOW_TERMINAL  # noqa: E402
 
 # リース未記録の非終端 run を「停滞」とみなすまでの猶予。agent-flow の worker は 1 ノードに
 # 数分かかるので、生きている run を誤って停滞と読まない程度に長く取る。
@@ -270,8 +276,7 @@ def detach_flow_run(cfg: "Config", task: Task, reason: str = "",
                         meta["failure_reason"] = why
                     else:
                         meta["cancel_reason"] = why
-                    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2),
-                                         encoding="utf-8")
+                    write_json_atomic(str(meta_path), meta)
                 applied = True  # meta がある＝適用済み（既終端でもマーカーは消してよい）
             waits = run_dir / "waits"
             if waits.is_dir():
@@ -428,12 +433,6 @@ def _load_task_file(cfg: "Config", tid: str) -> "Task | None":
     except OSError:
         return None
 
-
-def _task_file_revised(cfg: "Config", task: Task) -> bool:
-    """実行中の revise（軌道修正）が入ったか＝backlog ファイルに `revised` マーカーがあるか。
-    act の結果待ちループから毎ポーリング呼ばれるため、小さなファイル読みだけで判定する。"""
-    fresh = _load_task_file(cfg, task.id)
-    return fresh is not None and bool(fresh.get("revised"))
 
 
 def _wait_abort_reason(cfg: "Config", task: Task, run_id: str) -> "str | None":

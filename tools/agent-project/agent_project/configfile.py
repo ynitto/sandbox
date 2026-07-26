@@ -98,8 +98,6 @@ CONFIG_DEFAULTS = {
     "git_branch": "main",
     "git_subdir": None,
     "state_git": None,                  # 状態の git 保存・共有（プロジェクト状態を双方向同期。None で無効）
-    "state_git_branch": "main",
-    "state_git_subdir": "agent-project",   # リポジトリ内の保存先サブディレクトリ（多重コミッタとの分離）
     "state_git_interval": 300.0,        # fetch/push の最短間隔（秒）。0 で毎同期
     # journal のローテーション: 閾値を超えたら journal-archive/ へ退避して新しい journal を始める。
     # 追記専用ファイルの肥大と、direct 同期での EOF 追記マージ衝突の温床を抑える。
@@ -377,8 +375,6 @@ def build_config(args) -> Config:
         profile_mode=bool(getattr(args, "_profile_mode", False)),
         git_bus=args.git_bus, git_branch=args.git_branch, git_subdir=args.git_subdir,
         state_git=getattr(args, "state_git", None) or None,
-        state_git_branch=str(getattr(args, "state_git_branch", "main") or "main"),
-        state_git_subdir=str(getattr(args, "state_git_subdir", "agent-project") or "").strip("/"),
         state_git_interval=max(0.0, float(getattr(args, "state_git_interval", 300.0) or 0.0)),
         flow_config=getattr(args, "flow_config", None) or None,
         status_interval=max(0.0, float(getattr(args, "status_interval", 0.0) or 0.0)),
@@ -529,10 +525,6 @@ def _add_common(sp):
                     help="ワーク内容（プロジェクトルートの状態）を保存・共有する git リポジトリ（URL/パス）。"
                          "リモートの agent-dashboard と結果/指示を双方向で往復する。"
                          "ルート自体が git クローンなら不要（direct モードで直接コミット・push する）")
-    sp.add_argument("--state-git-branch", default=None, help="state_git の同期先ブランチ（既定 main）")
-    sp.add_argument("--state-git-subdir", default=None,
-                    help="state_git リポジトリ内の保存先サブディレクトリ（既定 agent-project）。"
-                         "同一リポジトリへ他プログラムもコミットする前提の名前空間分離")
     sp.add_argument("--state-git-interval", type=float, default=None,
                     help="state_git の fetch/push の最短間隔（秒。既定 300）。リモートサーバへの"
                          "負荷を一定に保つ律速。0 で毎同期")

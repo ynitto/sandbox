@@ -236,17 +236,16 @@ git_branch: main            # バスに使う git ブランチ
 #   衝突しない。取り込みは ff-only 優先・--autostash 不使用（未コミット変更と衝突するなら
 #   見送る）。viewer 側は同じリポジトリを clone して編集・検収するだけでよい。
 #
-# ルートが git でない場合のフォールバック: state_git を設定すると管理クローン方式で鏡写しする。
+# 共有先はルート自身のリポジトリの origin。state_git は「origin が未設定のルートに設定する URL」
+# として使う（既に origin があれば触らない）。同期先ブランチはルートが開いているブランチで、
+# リポジトリ内のサブディレクトリ分離は使わない（1 プロジェクト = 1 リポジトリ）。
 # fetch/push は state_git_interval で律速され、push は共有すべきローカルコミットがあるときだけ
-# 行う（リモートサーバの負荷を一定に保つ）。同一リポジトリには他プログラムもコミットしてよい:
-# ステージは state_git_subdir 配下のみ・push 競合は pull --rebase → 再 push で吸収・force push
-# はしない。一時状態（bus/・claims/）とルート内側のドット始まり（.swp 等）は同期しない。
+# 行う（リモートサーバの負荷を一定に保つ）。push 競合は fetch + rebase → 再 push で吸収し
+# force push はしない。一時状態（bus/・claims/）とルート内側のドット始まり（.swp 等）は同期しない。
 #
 # ★実運用の組み方（WSL 常駐＋gitlab executor 分散＋別 PC の viewer 監視）は
 #   agent-project.state-git.yaml.example 参照。
-# state_git: git@example.com:team/agent-state.git   # 共有リポジトリ（URL/パス。未指定で無効）
-# state_git_branch: main                # 同期先ブランチ
-# state_git_subdir: agent-project        # リポジトリ内の保存先サブディレクトリ（名前空間分離）
+# state_git: git@example.com:team/agent-state.git   # origin 未設定なら origin にする URL（未指定で無効）
 # state_git_interval: 300               # fetch/push の最短間隔（秒）。0 で毎同期（負荷は増える）
 #
 # journal のローテーション: journal.md が閾値を超えたら journal-archive/ へ退避して新しい

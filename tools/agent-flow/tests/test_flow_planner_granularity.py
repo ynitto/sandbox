@@ -152,5 +152,47 @@ class FallbackGranularityTests(unittest.TestCase):
         self.assertEqual(self.kf.granularity_factor(resolved), 3)
 
 
+class EstimatedStepsTests(unittest.TestCase):
+    """Phase 1 の `estimated_steps`（設計「Phase 1 拡張」）。"""
+
+    def test_normalizes_the_shapes_an_llm_actually_returns(self):
+        self.assertEqual(plan.normalize_estimated_steps(6), 6)
+        self.assertEqual(plan.normalize_estimated_steps("6"), 6)
+        self.assertEqual(plan.normalize_estimated_steps(6.9), 6)
+        self.assertEqual(plan.normalize_estimated_steps("約6ステップ"), 6)
+
+    def test_unreadable_values_become_none(self):
+        for bad in (None, "", "たぶん", 0, -3, True, False, [], {}):
+            self.assertIsNone(plan.normalize_estimated_steps(bad), bad)
+
+    def test_hint_never_overrides_the_granularity_range(self):
+        """見積りが何であれ、プロンプトのレンジは granularity_target が決める。"""
+        seen = {}
+
+        def fake_agent(prompt, model=None):
+            seen["prompt"] = prompt
+            return json.dumps([
+                {"id": f"t{i}", "goal": f"[scope] src/m{i}.py\n実装", "deps": [], "kind": "work"}
+                for i in range(1, 4)])
+
+        analysis = {"subtasks": ["a"], "estimated_steps": 99}
+        with mock.patch.object(plan, "run_agent", fake_agent):
+            plan.phase3_build("req", analysis, {"patterns": []}, None, "fine")
+        self.assertIn("3–8 個", seen["prompt"])                  # fine のレンジのまま
+        self.assertIn("最小ステップ見積り: 99", seen["prompt"])   # 目安としては渡る
+
+    def test_no_hint_line_when_estimate_is_missing(self):
+        seen = {}
+
+        def fake_agent(prompt, model=None):
+            seen["prompt"] = prompt
+            return json.dumps([
+                {"id": "t1", "goal": "[scope] src/a.py\n実装", "deps": [], "kind": "work"}])
+
+        with mock.patch.object(plan, "run_agent", fake_agent):
+            plan.phase3_build("req", {"subtasks": []}, {"patterns": []}, None, "coarse")
+        self.assertNotIn("最小ステップ見積り", seen["prompt"])
+
+
 if __name__ == "__main__":
     unittest.main()

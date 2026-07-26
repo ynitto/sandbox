@@ -15,6 +15,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
+from agentcore import transport  # noqa: E402
 from agentcore.transport import GitTransport  # noqa: E402
 
 
@@ -323,6 +324,70 @@ class TestPushSkipsWhenNothingToSend(TransportTestBase):
         b = GitTransport(wd_b, self.remote, branch="main")
         b.ensure_clone()
         self.assertTrue(os.path.isfile(os.path.join(wd_b, "a.txt")))
+
+
+class TestHangGuards(unittest.TestCase):
+    """常駐体のハング防止（timeout・資格情報プロンプト抑止）。
+
+    スケジューラは tick を専用スレッドで回し、強制打ち切りをサブプロセスの timeout に
+    委ねる設計（Python スレッドは kill できない）。ここが緩むと、停止したリモートが
+    tick スレッドを永久にブロックして常駐体ごと abort → 再起動ループになる。"""
+
+    def test_network_subcommands_get_the_long_limit(self):
+        for args in (["push", "-u", "origin", "main"], ["fetch", "--prune"],
+                     ["-C", "/tmp/x", "pull", "--rebase"], ["clone", "url", "dst"]):
+            self.assertEqual(transport.git_timeout_for(args),
+                             transport.GIT_NET_TIMEOUT_SEC, args)
+
+    def test_local_subcommands_get_the_short_limit(self):
+        # `-C <path>` の値を先頭サブコマンドと読み違えないこと（読み違えると push に
+        # ローカル上限が掛かり、正当に長い転送を毎回打ち切る）。
+        for args in (["-C", "/tmp/x", "rev-parse", "--show-toplevel"],
+                     ["config", "--local", "user.email"], ["add", "--", "a.txt"],
+                     ["remote", "get-url", "origin"]):
+            self.assertEqual(transport.git_timeout_for(args),
+                             transport.GIT_LOCAL_TIMEOUT_SEC, args)
+
+    def test_harden_env_blocks_credential_prompts(self):
+        env = transport.harden_git_env({})
+        self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
+        self.assertEqual(env["GIT_ASKPASS"], "")
+        self.assertEqual(env["SSH_ASKPASS"], "")
+        self.assertIn("BatchMode=yes", env["GIT_SSH_COMMAND"])
+        self.assertEqual(env["LC_ALL"], "C")
+
+    def test_harden_env_keeps_caller_ssh_command(self):
+        # 呼び出し側が明示した GIT_SSH_COMMAND は尊重する（鍵指定などを潰さない）。
+        env = transport.harden_git_env({"GIT_SSH_COMMAND": "ssh -i /k/id"})
+        self.assertEqual(env["GIT_SSH_COMMAND"], "ssh -i /k/id")
+
+    def test_timed_out_result_is_a_failure_not_an_exception(self):
+        r = transport.timed_out_result(["git", "fetch"], 600.0)
+        self.assertEqual(r.returncode, transport.GIT_TIMEOUT_RC)
+        self.assertNotEqual(r.returncode, 0)     # check=True の呼び出しは失敗として扱われる
+        self.assertIn("timeout", r.stderr)
+        self.assertEqual(r.stdout, "")           # stdout を読む側が None で落ちない
+
+    def test_git_returns_timeout_result_instead_of_hanging(self):
+        """timeout を踏んでも例外を投げず、check=False の呼び出しが素通りできること。"""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        t = GitTransport(os.path.join(tmp.name, "wd"), os.path.join(tmp.name, "r.git"))
+        real = subprocess.run
+
+        def fake(cmd, *a, **kw):
+            if cmd[:1] == ["git"]:
+                raise subprocess.TimeoutExpired(cmd, kw.get("timeout", 0))
+            return real(cmd, *a, **kw)
+
+        subprocess.run = fake
+        try:
+            p = t._git(["rev-parse", "--show-toplevel"], check=False)
+            self.assertEqual(p.returncode, transport.GIT_TIMEOUT_RC)
+            with self.assertRaises(RuntimeError):     # check=True は従来どおり失敗を伝える
+                t._git(["rev-parse", "--show-toplevel"], check=True)
+        finally:
+            subprocess.run = real
 
 
 if __name__ == "__main__":

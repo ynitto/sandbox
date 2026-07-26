@@ -72,6 +72,20 @@ def _take_local_on_conflict(rel: str, local_present: bool, remote_present: bool)
     return not _remote_wins(rel)
 
 
+def _git_run(cmd: "list[str]", env: dict):
+    """state リポジトリ向けの git 実行。**必ず timeout を切る**——常駐体は tick を専用スレッドで
+    回し、強制打ち切りをサブプロセスの timeout に委ねる設計（`resident/scheduler.py`）。
+    ここで無制限に待つと、停止したリモート・応答しないマウント・資格情報待ちが tick スレッドを
+    永久にブロックし、self-watchdog が常駐体ごと abort → 再起動 → 同じ所で再び固まる。
+    打ち切りは例外で貫通させず、returncode を見る既存コードがそのまま扱える形で返す。"""
+    limit = _transport.git_timeout_for(cmd)
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", env=env, timeout=limit)
+    except subprocess.TimeoutExpired:
+        return _transport.timed_out_result(cmd, limit)
+
+
 class DirectStateGit:
     """プロジェクトルート自体が git 作業ツリー（トップレベル）のときの直接同期（direct モード）。
 
@@ -106,14 +120,16 @@ class DirectStateGit:
         self._last_sync_error: str = ""
 
     def _env(self) -> dict:
-        env = dict(os.environ)
-        env["LC_ALL"] = "C"
-        env["GIT_EDITOR"] = "true"
-        return env
+        # 資格情報プロンプト抑止・LC_ALL・GIT_EDITOR は agentcore.transport と同じ 1 実装を使う
+        # （転送層を通らない direct モードにも同じ護りが要る）。
+        return _transport.harden_git_env(dict(os.environ))
 
     def _git(self, *args: str):
-        return subprocess.run(["git", "-C", str(self.root), *args],
-                              capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._env())
+        """state リポジトリへの git。**必ず timeout を切る**——常駐体は tick を専用スレッドで
+        回し、強制打ち切りをサブプロセスの timeout に委ねる設計（`resident/scheduler.py`）。
+        ここで無制限に待つと fetch/push の停止が tick スレッドを永久にブロックし、
+        self-watchdog が常駐体ごと abort → 再起動 → 同じ所で再び固まる。"""
+        return _git_run(["git", "-C", str(self.root), *args], self._env())
 
     def _branch(self) -> str:
         # symbolic-ref は unborn ブランチ（空リポジトリの clone 直後）でも現在ブランチ名を返す
@@ -247,17 +263,14 @@ class DirectStateGit:
             existing = [t for t in targets if (self.root / t).exists()]
             if not existing:
                 return None
-            r = subprocess.run(["git", "-C", str(self.root), "add", "--", *existing],
-                               capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
+            r = _git_run(["git", "-C", str(self.root), "add", "--", *existing], env)
             if r.returncode != 0:
                 return None
-            tree = subprocess.run(["git", "-C", str(self.root), "write-tree"],
-                                  capture_output=True, text=True, encoding="utf-8", errors="replace", env=env).stdout.strip()
+            tree = _git_run(["git", "-C", str(self.root), "write-tree"], env).stdout.strip()
             if not tree:
                 return None
-            r = subprocess.run(["git", "-C", str(self.root), "commit-tree", tree,
-                                "-m", self._commit_msg()],
-                               capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
+            r = _git_run(["git", "-C", str(self.root), "commit-tree", tree,
+                                "-m", self._commit_msg()], env)
             new = r.stdout.strip()
             if r.returncode != 0 or not new:
                 return None
@@ -331,8 +344,7 @@ class DirectStateGit:
             base.mkdir(parents=True, exist_ok=True)
 
             def _wgit(*args: str):           # pathspec が root 相対で解決されるよう base を cwd にする
-                return subprocess.run(["git", "-C", str(base), *args],
-                                      capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._env())
+                return _git_run(["git", "-C", str(base), *args], self._env())
 
             for rel in targets:              # 現在のルートの内容を worktree へ写す（削除も反映）
                 src = self.root / rel
@@ -369,8 +381,7 @@ class DirectStateGit:
         if os.path.realpath(top) == root:
             return []
         rel = os.path.relpath(root, top)
-        r = subprocess.run(["git", "-C", top, "status", "--porcelain", "--untracked-files=no"],
-                           capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._env())
+        r = _git_run(["git", "-C", top, "status", "--porcelain", "--untracked-files=no"], self._env())
         out: list[str] = []
         for line in r.stdout.splitlines():
             path = line[3:].split(" -> ")[-1].strip().strip('"')
@@ -390,8 +401,7 @@ class DirectStateGit:
         if not paths:
             return
         for args in (("reset", "-q", "HEAD", "--"), ("checkout", "-q", "--")):
-            subprocess.run(["git", "-C", top, *args, *paths],
-                           capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._env())
+            _git_run(["git", "-C", top, *args, *paths], self._env())
 
     def _rebasing(self) -> bool:
         """rebase が進行中か。worktree では .git が **ファイル** なので <root>/.git/rebase-merge を
@@ -411,8 +421,7 @@ class DirectStateGit:
         return self._git("rev-parse", "--show-toplevel").stdout.strip() or str(self.root)
 
     def _top_git(self, *args: str, env: "dict | None" = None):
-        return subprocess.run(["git", "-C", self._top(), *args],
-                              capture_output=True, text=True, encoding="utf-8", errors="replace", env=env or self._env())
+        return _git_run(["git", "-C", self._top(), *args], env or self._env())
 
     def _merge_union(self, path: str,
                      stages: "dict[int, tuple[str, str]]") -> "str | None":
@@ -514,9 +523,12 @@ class DirectStateGit:
 
     def _cat_blob(self, sha: str) -> "bytes | None":
         try:
+            # blob は binary なので text=True を通す `_git_run` は使えない（decode で壊れる）。
+            # timeout だけ同じ規律で切る。
             r = subprocess.run(["git", "-C", str(self.root), "cat-file", "blob", sha],
-                               capture_output=True, env=self._env())
-        except OSError:
+                               capture_output=True, env=self._env(),
+                               timeout=_transport.GIT_LOCAL_TIMEOUT_SEC)
+        except (OSError, subprocess.TimeoutExpired):
             return None
         return r.stdout if r.returncode == 0 else None
 
@@ -847,16 +859,14 @@ def _git_toplevel(root: Path) -> bool:
     リポジトリ内の深いサブディレクトリでは発動させない（無関係リポジトリへの自動コミットを防ぐ）。"""
     if not (root / ".git").exists():
         return False
-    r = subprocess.run(["git", "-C", str(root), "rev-parse", "--show-toplevel"],
-                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    r = _git_run(["git", "-C", str(root), "rev-parse", "--show-toplevel"], _transport.harden_git_env(dict(os.environ)))
     return r.returncode == 0 and os.path.realpath(r.stdout.strip()) == os.path.realpath(str(root))
 
 
 def _inside_other_git_repo(root: Path) -> bool:
     """root が「自分がトップレベルではない」既存 git リポジトリの内側にあるか。
     `_git_toplevel(root)` が False のときだけ意味を持つ照会（True なら祖先がトップレベル）。"""
-    r = subprocess.run(["git", "-C", str(root), "rev-parse", "--show-toplevel"],
-                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    r = _git_run(["git", "-C", str(root), "rev-parse", "--show-toplevel"], _transport.harden_git_env(dict(os.environ)))
     return r.returncode == 0
 
 
@@ -905,20 +915,16 @@ def _ensure_direct_state_git(cfg: "Config") -> bool:
         if _inside_other_git_repo(root):
             return False
         try:
-            r = subprocess.run(["git", "init", "-q", str(root)],
-                               capture_output=True, text=True, encoding="utf-8", errors="replace")
+            r = _git_run(["git", "init", "-q", str(root)], _transport.harden_git_env(dict(os.environ)))
         except OSError:
             return False
         if r.returncode != 0 or not _git_toplevel(root):
             return False
     remote_url = getattr(cfg, "state_git", None)
     if remote_url:
-        has_origin = subprocess.run(
-            ["git", "-C", str(root), "remote", "get-url", "origin"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace").returncode == 0
+        has_origin = _git_run(["git", "-C", str(root), "remote", "get-url", "origin"], _transport.harden_git_env(dict(os.environ))).returncode == 0
         if not has_origin:
-            subprocess.run(["git", "-C", str(root), "remote", "add", "origin", str(remote_url)],
-                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+            _git_run(["git", "-C", str(root), "remote", "add", "origin", str(remote_url)], _transport.harden_git_env(dict(os.environ)))
     return True
 
 
@@ -955,11 +961,4 @@ def state_git_for(cfg: "Config") -> "DirectStateGit | None":
     return _STATE_GITS[key]
 
 
-# 実行層 agent-flow を「プロジェクト単位で agent-project が起動・監視」する。
-# agent-flow は project の概念を持たず素の単一バス daemon のまま。プロジェクトとリポジトリの対応
-# （＝どのバスがどこへ鏡写しするか）は制御層 agent-project が握り、daemon 起動時に CLI で注入する:
-#   agent-flow --bus <project>/bus --state-git <repo> --state-git-subdir agent-flow ... run ...
-# 起動はバスロックで冪等（既に稼働なら二重起動しない）。agent-project 停止時も detached で残すため、
-# in-flight run（gitlab 長期委譲・夜間停止からの孤児再開）は daemon 側でそのまま継続する。
-FLOW_STATE_SUBDIR = "agent-flow"   # プロジェクト固有リポジトリ内の agent-flow 名前空間（viewer は <clone>/agent-flow）
 

@@ -833,7 +833,7 @@ function globalSettingsIntegrationsHtml() {
       <div class="field"><label for="cfg-rv-mode">起動方法</label><select id="cfg-rv-mode">
         <option value="protocol">アプリ連携</option><option value="exe">実行ファイルを指定</option><option value="command">コマンドを指定</option>
       </select></div>
-      <div class="field"><label for="cfg-rv-exepath">実行ファイルの場所</label><input id="cfg-rv-exepath" class="mono" placeholder="例: C:\Apps\GitLab Review Viewer.exe" /></div>
+      <div class="field"><label for="cfg-rv-exepath">実行ファイルの場所</label><input id="cfg-rv-exepath" class="mono" placeholder="例: C:\\Apps\\GitLab Review Viewer.exe" /></div>
     </div>
     <div class="field"><label for="cfg-rv-command">起動コマンド</label><input id="cfg-rv-command" class="mono" placeholder="{url} などの値を利用できます" /></div>
     <div class="settings-save-actions"><button type="button" id="btn-save-integrations-settings" class="primary-inline">保存</button></div>
@@ -1274,7 +1274,7 @@ function setupOrchestration(root) {
       const details = btn.closest('.orch-dropin');
       const ta = details.querySelector('.orch-dropin-spec');
       let spec;
-      try { spec = JSON.parse(ta.value); } catch (e) { throw new Error(`JSON として読めません: ${e.message}`); }
+      try { spec = JSON.parse(ta.value); } catch (e) { throw new Error(`JSON として読めません: ${e.message}`, { cause: e }); }
       await api.orchestrationAgentSave({ name: btn.getAttribute('data-orch-name'), dir: btn.getAttribute('data-orch-dir'), spec });
       toast('エージェント設定を保存しました', true);
       await refreshOrchestration();
@@ -1294,7 +1294,7 @@ function setupOrchestration(root) {
     const name = (root.querySelector('#orch-new-name') || {}).value || '';
     let spec;
     try { spec = JSON.parse((root.querySelector('#orch-new-spec') || {}).value || '{}'); }
-    catch (e) { throw new Error(`JSON として読めません: ${e.message}`); }
+    catch (e) { throw new Error(`JSON として読めません: ${e.message}`, { cause: e }); }
     await api.orchestrationAgentSave({ name: name.trim(), spec });
     toast('エージェントを追加しました', true);
     await refreshOrchestration();

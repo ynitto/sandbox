@@ -46,8 +46,8 @@ CONFIG_DEFAULTS = {
     "git": None,
     "git_branch": "main",
     "git_subdir": "",
-    # daemon 識別子（既定: host-pid）。--node-id は argparse 既定が None のため、ここに無いと
-    # 設定ファイルの node_id が resolve_config でマージされず常に host-pid になっていた
+    # ノード識別子（既定: PC 名を正規化した値）。--node-id は argparse 既定が None のため、
+    # ここに無いと設定ファイルの node_id が resolve_config でマージされず既定のままになっていた
     # （board 参加ノードは再起動のたび ID が変わり、落札済み委譲の成果報告 status/<who>.json を
     # 見失う＝board 側がスタックする。固定 ID が必須の場合はここで明示する）。
     "node_id": None,
@@ -58,10 +58,9 @@ CONFIG_DEFAULTS = {
     "state_git_branch": "main",         # 同期先ブランチ
     "state_git_subdir": "agent-flow",    # リポジトリ内の保存先サブディレクトリ（多重コミッタとの名前空間分離）
     "state_git_interval": 300.0,        # fetch/push の最短間隔（秒）。0 で毎同期（リモート負荷は増える）
-    "status_interval": 0.0,             # daemon アイドル中の status.json 生存信号更新間隔（秒）。既定 0=無効
     "lease": 1800.0,
     "poll": 2.0,
-    # 委譲公示板（agent-board）への参加（請負・入札）。board を与えると daemon が板を巡回し、
+    # 委譲公示板（agent-board）への参加（請負・入札）。board を与えると participate が板を巡回し、
     # workload=flow の公示に board_repos/board_tags で照合して入札、勝てば自分の inbox へ取り込む。
     # 板は「リポジトリ＋契約」だけで処理を持たない（schemas/board.schema.json）。既定 None で無効。
     "board": None,                      # 板の場所（ローカル dir / git+<url>）。None で board 参加なし
@@ -87,8 +86,7 @@ CONFIG_DEFAULTS = {
     "worker_skill": "flow-worker",
     "granularity": "auto",     # 分解の細かさ: auto(complexity導出・既定)/coarse/fine/finest(明示)
     "exemplar_first": False,   # map-reduce で「1件先行→検証ゲート→残り展開」の見本先行分解にする
-    "max_workers": 4,
-    # daemon が同時に実行する run（orchestrator プロセス）の上限。バックログ一括投入
+    # 1 ノードが同時に実行する run（orchestrator プロセス）の上限。バックログ一括投入
     # （板からの委譲の受理等）や再起動直後の孤児一斉再開で「run 数ぶんの orchestrator
     # ＋計画エージェント」が同時に立ち上がるのを防ぐ。全ノードが park（承認待ち等）の run は
     # worker も計画エージェントも使わないため枠に数えない（gitlab 長期委譲は上限で詰まらない）。
@@ -100,7 +98,7 @@ CONFIG_DEFAULTS = {
     # judge/評価役のサーキットブレーカー: 同一系統（verify/失敗）の作り直しをこの回数で打ち切る。
     # 達成不可能な完了条件で無限に再タスクを生み続けるのを防ぐ（max_iterations と二重ガード）。
     "max_retries": 3,
-    # --- 自己回復リトライ（設計: docs/designs/agent-flow-self-healing-retry-design.md）---
+    # --- 自己回復リトライ（設計: docs/designs/agent-flow-design.md「失敗の 4 層」）---
     # レイヤ1: transient 分類（接続断・5xx・timeout 等）の in-place 再試行。run_agent 内で
     # 指数バックオフ再試行し、上位（再計画の retries 予算）を消費しない。0 で無効。
     "transient_retries": 2,
@@ -109,13 +107,13 @@ CONFIG_DEFAULTS = {
     # 回数。「前回の出力はこう契約違反だった」と指摘して同じ役割で呼び直す。0 で無効。
     "format_retries": 1,
     # レイヤ4: transient 起因で failed 終端した run を、cooldown 後に自動再開する（done 温存）。
-    # daemon の poll と cmd_run の監視ループで働く。人の cancel・superseded は触らない。
+    # participate の巡回と cmd_run の監視ループで働く。人の cancel・superseded は触らない。
     "auto_heal": True,
     "heal_backoff": 300.0,       # heal cooldown 初期値（秒・heal_count に応じ指数）
     "max_heals": 2,              # 進捗なし heal の上限（done ノードが増えれば数え直し）
     "heal_quota": False,         # quota（利用上限）失敗も回収するか（opt-in）
     "quota_cooldown": 3600.0,    # quota 回収時の cooldown（秒）
-    # 孤児 run（owning daemon の消失＝PC シャットダウン・クラッシュ等）の自動再開の上限。
+    # 孤児 run（駆動プロセスの消失＝PC シャットダウン・クラッシュ等）の自動再開の上限。
     # 「前回の再開から進捗（新しい results/）ゼロのままの連続再開」をこの回数で打ち切り
     # failed に確定する（起動のたびに即死する壊れた run を無限に蘇生しない）。進捗があれば
     # 数え直すため、毎日シャットダウンされる PC 上の長期 run は何日でも再開を継続できる。
@@ -133,17 +131,15 @@ CONFIG_DEFAULTS = {
     "stub_sleep_max": None,
     "review": "auto",  # auto: 集約パターンで自動有効 / True/False: 明示上書き
     "workers": 2,
-    # 一時ファイルの自動クリーンアップ（daemon ループ内で定期実行）
-    "cleanup_interval": 3600.0,  # 掃除の実行間隔（秒）。0 以下で無効化
+    # 一時ファイルのクリーンアップ（`agent-flow cleanup` の単発実行。周期は常駐体の gc tick が持つ）
     "cleanup_age": 24.0,         # 孤立クローンを掃除するまでのアイドル時間（時間）
     # 作業後に sparse-checkout クローンを削除するか（True で削除 / False で残して再利用）
     "cleanup_clone": True,
     "cleanup_per_node": False,   # 各ノード完了後に成果物リポジトリの clone を即削除（長命 worker のディスク抑制）
-    # --- 自動アップデート（既定 on）。スキルリポジトリ main の更新を daemon のアイドル時に取り込む ---
+    # --- 自動アップデート（既定 on）。スキルリポジトリ main の更新を participate のアイドル巡回で取り込む ---
     # 更新元は skill-registry.json から自動解決（repositories.origin.url → install_dir）。
-    # アイドル時に git ls-remote で main の先頭コミットを確認し、適用済みと違えば temp 領域へ
-    # sparse-checkout（tools/agent-flow/ だけ）→ install.sh 実行 → graceful 再起動する。
-    # 起動直後の最初のアイドルでも 1 回実施する（停止中に入った更新を取りこぼさない）。
+    # 受理する要求も引き継ぐ孤児も無い巡回で git ls-remote だけを叩き、適用済みと違えば
+    # 取り込み（sparse-checkout → install.sh）を切り離した子プロセスへ渡す（maybe_self_update）。
     "update_enabled": True,              # 自動アップデートの ON/OFF（false で完全無効・既定 on）
     "update_check_interval": 21600.0,    # 更新チェック間隔（秒）。既定 6 時間。0 以下で自動チェック無効
     "update_repo": DEFAULT_UPDATE_REPO,  # スキルリポジトリ（git URL/パス）。空なら skill-registry.json から自動解決
@@ -185,7 +181,7 @@ CONFIG_DEFAULTS = {
         "rework_label": "status:needs-rework",  # 差し戻し時に approved から付け替えるラベル
         # park & poll（承認待ちを worker スロットから切り離す）のパラメータ。
         # defer_waits=false で park & poll を無効化し、従来モード（worker がイシューを監視して
-        # ブロック待機。1 worker=1 イシュー）に戻す。承認待ちが max_workers を占有するが、
+        # ブロック待機。1 worker=1 イシュー）に戻す。承認待ちが worker 枠を占有するが、
         # 挙動が単純で分散の監視分担も不要。既定 true（park & poll 有効）。
         "defer_waits": True,
         "max_open_issues": 0,               # 同時に開ける未決着イシューの上限（0=無制限）。

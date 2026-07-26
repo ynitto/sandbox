@@ -40,7 +40,7 @@ class GitLabClient {
       headers: { 'PRIVATE-TOKEN': this.token },
     });
     const text = await res.text();
-    let body = null;
+    let body;
     try {
       body = text ? JSON.parse(text) : null;
     } catch {
@@ -76,7 +76,7 @@ class GitLabClient {
     if (!parsed || parsed.type !== 'issue') throw new Error(`イシュー URL を解釈できません: ${webUrl}`);
     const enc = encodeURIComponent(parsed.projectPath);
     const issue = await this.api(`/projects/${enc}/issues/${parsed.iid}`);
-    let relatedMrs = [];
+    let relatedMrs;
     try {
       relatedMrs = await this.api(`/projects/${enc}/issues/${parsed.iid}/related_merge_requests`);
     } catch {

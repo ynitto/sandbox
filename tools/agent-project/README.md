@@ -646,25 +646,25 @@ agent-project serve
   （run のパス直後は間隔を待たずに押し出す）。
 - リモート（origin）が無いローカルだけの git リポジトリでも、コミット履歴として状態が残る（push はスキップ）。
 
-### 管理クローン方式（ルートが git でない場合のフォールバック）
+### 共有先の指定（`state_git`）
 
-ルートを git にできない構成では、従来どおり `state_git` を設定すると専用の管理クローン
-（`<root>/.state-git`。`state_git_subdir` だけの sparse-checkout・`--filter=blob:none`）で鏡写しする。
+同期先は**ルート自身のリポジトリの `origin`**。`state_git` を書いておくと、origin が未設定の
+ルートに対してその URL を origin として設定する（既に origin があれば触らない）。
 
 ```yaml
 # .agents/agent-project.yaml（サーバ側）
-state_git: git@example.com:team/agent-state.git   # 共有リポジトリ（URL/パス）
-state_git_subdir: agent-project                   # リポジトリ内の保存先（名前空間）
+state_git: git@example.com:team/agent-state.git   # origin 未設定なら origin として設定する URL
 state_git_interval: 300                          # fetch/push の最短間隔（秒）
 ```
 
-- **リモートサーバに負荷をかけない**: fetch/push は間隔で律速。idle 中は間隔ごとの pull 1 本に収まる。
-- **他のプログラムが同一リポジトリにコミットしてよい**: ステージは自分の `state_git_subdir` 配下のみ、
-  push 競合は `pull --rebase` → 再 push で吸収し、**force push は決してしない**。
-- **双方向で、衝突は決定的に裁定**: 前回同期スナップショット（manifest）基準の 3-way で「どちらが変えたか」を
-  判定して橋渡しする。同時変更だけを **人の入力パス（`commands/`・`inbox/`・`needs/`・`policy.md`・
-  `charter.md`・`repos.{json,yaml,yml}`）はリモート優先／機械状態（backlog・journal・decisions …）は
-  ローカル優先**の規則で決める。
+同期先ブランチはルートが開いているブランチで、リポジトリ内のサブディレクトリ分離は使わない
+（1 プロジェクト = 1 リポジトリ）。**ルートが無関係な既存リポジトリの内側にある構成では同期しない**
+——そこで `git init` すると nested repo になり、外側の `git add -A` が壊れる。共有したいなら
+ルートをリポジトリの外へ置くか、agent-project 専用の状態 worktree へ逃がす。
+
+- **双方向で、衝突は決定的に裁定**: 同時変更だけを **人の入力パス（`commands/`・`inbox/`・`needs/`・
+  `policy.md`・`charter.md`・`repos.{json,yaml,yml}`）はリモート優先／機械状態（backlog・journal・
+  decisions …）はローカル優先**の規則で決める。
 
 同期は run のパス開始（指示の取り込み）・パス終了（結果の押し出し）・watch の idle（間隔律速の pull）で走る。
 ネットワーク断・リポジトリ不通でも**ループは殺さず** journal に残して続行する（done の確定・消化は同期に

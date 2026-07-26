@@ -32,6 +32,15 @@ try:
 except ImportError:
     msvcrt = None
 
+# 共通 git 転送層（設計 §4.1・R1）。board.py の BoardRepo だけでなく stategit.py の direct
+# モードも、timeout・資格情報プロンプト抑止といった護りをここから取る。
+from agentcore import transport as _transport  # noqa: E402
+# JSON の原子的書き出し（tmp へ書いて os.replace）。agent-flow のバス（`runs/<rid>/meta.json`
+# 等）は agent-flow 側が全経路この形で書く。agent-project も同じファイルを書く箇所があるので、
+# 素の write_text を使うと読み手（別プロセスの agent-flow / dashboard）が途中書きを掴み、
+# JSON パースに失敗して「run が存在しない」と誤読する。
+from agentcore.protocol import write_json_atomic  # noqa: E402
+
 # エージェント共通ホームのディレクトリ名。`.agent` から `.agents` へ改名した
 # （複数のエージェントが相乗りする持ち物であることを名前で示す）。
 # 旧ホームが残っている環境では、新ホームがまだ無い間だけ旧ホームを使う——両方へ書くと

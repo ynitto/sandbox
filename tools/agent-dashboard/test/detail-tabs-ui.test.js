@@ -74,7 +74,7 @@ const completedRunForNeed = new Function(
   'relatedRunIdForNeed', `${grab('completedRunForNeed')}; return completedRunForNeed;`
 )(relatedRunIdForNeed);
 // eslint-disable-next-line no-new-func
-const needFinalVerificationFailure = new Function(
+const _needFinalVerificationFailure = new Function(
   'taskForNeed', 'completedRunForNeed', 'needFailureViewModel',
   `${grab('needFinalVerificationFailure')}; return needFinalVerificationFailure;`
 )(taskForNeed, completedRunForNeed, needFailureViewModel);
@@ -807,7 +807,6 @@ assert.match(
     'blocked 以外の票には出さない'
   );
 
-  // eslint-disable-next-line no-new-func
   // eslint-disable-next-line no-new-func
   const needHasDeliverable = new Function(
     'isVerifyPendingNeed', 'completedTaskForNeed', 'artifactRunForNeed', 'taskForNeed',

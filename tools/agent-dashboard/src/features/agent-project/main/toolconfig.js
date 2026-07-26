@@ -8,7 +8,6 @@
 // <workdir>/.kiro 相当を渡し、無ければ ~/.kiro）を使う。
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { agentHomeDir } = require('../../../base/main/agent-home');
 

@@ -31,8 +31,18 @@ def self_path() -> str:
 #   5. 動いていた cwd のまま os.execv で新しい本体へ graceful 再起動
 # update_repo 未設定 or update_check_interval<=0 のときは完全に無効（既定 off）。
 def _update_state_path() -> str:
-    base = os.environ.get("KIRO_STATE_HOME") or os.path.expanduser("~/.agent")
-    return os.path.join(base, "agent-flow.update.json")
+    """適用済み SHA を記録する state ファイル。`$KIRO_STATE_HOME` があればそれを権威にする。
+
+    共通ホームは `~/.agent` から `~/.agents` へ改名済みなので、既定は `agent_home_dir()` に
+    従う。ここだけ旧ホームを直書きしていたため、新ホームしか無い環境で `~/.agent/` を新しく
+    作って書き、他の状態（control / budget / instructions）と置き場が割れていた。
+    移行途中の環境では旧ファイルが残っている側を読む（既存のベースラインを失わない）。"""
+    base = os.environ.get("KIRO_STATE_HOME")
+    if base:
+        return os.path.join(os.path.expanduser(base), "agent-flow.update.json")
+    new = os.path.join(agent_home_dir(), "agent-flow.update.json")
+    old = os.path.join(os.path.expanduser("~"), AGENT_HOME_LEGACY, "agent-flow.update.json")
+    return old if (not os.path.exists(new) and os.path.exists(old)) else new
 
 
 def read_update_state() -> dict:
@@ -267,22 +277,25 @@ def apply_update(args, info: dict, runner=None) -> bool:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def restart_self(cwd: "str | None" = None) -> None:
-    """更新後の本体へ os.execv で graceful 再起動する。動いていた cwd を保ったまま起動し直す。"""
-    if cwd and os.path.isdir(cwd):
-        try:
-            os.chdir(cwd)
-        except OSError:
-            pass
-    sys.stdout.flush()
-    sys.stderr.flush()
-    os.execv(sys.executable, [sys.executable, self_path()] + sys.argv[1:])
+# 更新後に `os.execv` で自分を起動し直す `restart_self` はここにあったが、常駐一本化で
+# 「更新を跨いで生き続けるプロセス」が無くなったため削除した。いまはどのコマンドも 1 巡で
+# 終わるので、次の起動が新しい本体を使う。
+
+
+def _spawn_update_child() -> None:
+    """取り込み（clone → install.sh）を切り離した子プロセスへ渡す。
+
+    `participate` は 1 巡で終わる短命プロセスで、呼び出し側（常駐体の flow tick）は 120 秒で
+    kill する。clone と install.sh をこの巡回の中で回すと、途中で殺されて本体が半分だけ
+    入れ替わりうる。確認（git ls-remote）だけを同期で済ませ、取り込みは親から切り離す。"""
+    kw = {} if os.name == "nt" else {"start_new_session": True}
+    subprocess.Popen([sys.executable, self_path(), "update", "--now"],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kw)
 
 
 def maybe_self_update(args, idle: bool, state: dict, runner=None) -> bool:
-    """daemon のループから定期的に呼ぶ自己更新チェック。更新を適用したら True
-    （呼び出し側は graceful shutdown して restart_self する）。
-    state は {"last": <epoch>} を持つ可変 dict（呼び出し側がループ間で保持）。
+    """参加巡回（`participate`）から呼ぶ自己更新チェック。取り込みを起動したら True。
+    state は {"last": <epoch>} を持つ可変 dict（同一プロセス内の重複チェック抑止）。
     update_enabled=false / update_check_interval<=0 で無効。アイドルでなければ何もしない。"""
     if not getattr(args, "update_enabled", True):
         return False
@@ -290,9 +303,8 @@ def maybe_self_update(args, idle: bool, state: dict, runner=None) -> bool:
     if interval <= 0 or not idle:
         return False
     now = time.time()
-    # 前回チェック時刻は state ファイルにも持続化して参照する。自己更新は restart_self の
-    # 新プロセスになり呼び出し側の state dict がリセットされるため、メモリだけだと再起動
-    # 直後に即時再チェック→再適用→再起動…の自己増殖ループになる。
+    # 前回チェック時刻は state ファイルにも持続化して参照する。`participate` は毎回新しい
+    # プロセスなので、メモリの state dict だけだと毎巡 ls-remote を叩くことになる。
     try:
         persisted = float(read_update_state().get("last_check_at") or 0.0)
     except (TypeError, ValueError):
@@ -307,12 +319,15 @@ def maybe_self_update(args, idle: bool, state: dict, runner=None) -> bool:
     if not info.get("available"):
         return False
     log("update", f"スキルリポジトリ {info['branch']} に更新を検出: "
-                  f"{(info['applied_sha'] or '')[:8]} → {(info['remote_sha'] or '')[:8]}")
-    return apply_update(args, info, runner=runner)
+                  f"{(info['applied_sha'] or '')[:8]} → {(info['remote_sha'] or '')[:8]}"
+                  "（取り込みは別プロセスへ引き渡します）")
+    _spawn_update_child()
+    return True
 
 
 def cmd_update(args) -> int:
-    """手動アップデート: 更新の有無を確認し、--now で取り込んで再起動する。
+    """アップデート: 更新の有無を確認し、--now で取り込む。`participate` のアイドル巡回が
+    切り離した子として起動するのもこの経路（`_spawn_update_child`）。
     終了コード: 0=最新/ベースライン記録/更新あり表示 / 1=取り込み失敗 / 2=未設定・取得不能。"""
     info = check_update(args)
     if not info["enabled"]:
@@ -335,8 +350,8 @@ def cmd_update(args) -> int:
         print("  取り込むには `agent-flow update --now` を実行してください。")
         return 0
     if apply_update(args, info):
-        print("  install.sh を実行して更新しました。再起動します。")
-        restart_self(os.getcwd())   # 戻らない
+        print("  install.sh を実行して更新しました（次回の起動から新しい本体が使われます）。")
+        return 0
     if read_update_state().get("applied_sha") == info.get("remote_sha"):
         print("  本体（update_subdir）に変更が無かったため適用をスキップし、ベースラインだけ進めました。")
         return 0

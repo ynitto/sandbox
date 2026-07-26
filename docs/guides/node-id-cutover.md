@@ -38,18 +38,12 @@ node_id は板（agent-board）とプロトコル上の「PC の身元」。設�
 旧名義（例 `pc-a-3f2c` のような乱数接尾辞付き ID）に未決着の委譲・ミッションが残っていないか
 確認する:
 
-```python
-from agent_project.doctor import doctor_node_id_cutover_findings
-
-findings = doctor_node_id_cutover_findings(
-    board_root="/path/to/board",       # 板のローカルクローン（無ければ None）
-    old_node_id="pc-a-3f2c",
-    new_node_id="pc-a",
-    amigos_bus_root="/path/to/amigos-bus",  # amigos バスのローカルクローン（無ければ省略可）
-)
-for f in findings:
-    print(f["title"], "-", f["evidence"])
+```bash
+agent-project doctor --node-id-cutover pc-a-3f2c
 ```
+
+板・amigos バスの場所と新名義（切替先）は `agent-project.host.yaml` から引くので、同じ値を
+打ち直す必要はない。所見だけを機械可読で欲しいときは `--json` を足す。
 
 - **「旧 node_id 名義の委譲が実行中」** が出たら、対象の委譲が終端（`result.json` 生成）するまで
   待つ。板の該当 `delegations/<id>/status/<old>.json` を見て、駆動しているノードの run/ミッションを

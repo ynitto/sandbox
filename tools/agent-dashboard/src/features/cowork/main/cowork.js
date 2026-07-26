@@ -459,7 +459,7 @@ function resolveLoopPromptText(repo, promptName) {
   const root = viewerRepo(repo) || String(repo || '');
   const name = String(promptName || '').trim();
   if (!root || !name) return '';
-  let marker = null;
+  let marker;
   try { marker = detectMarkers(root); } catch { return ''; }
   if (!marker || !marker.kiroFile) return '';
   let text;
@@ -763,7 +763,7 @@ function applyManagedItems(items) {
   for (const { repo, items: repoItems } of byRepo.values()) {
     const root = viewerRepo(repo) || repo;
     const file = path.join(root, '.kiro', 'kiro-loop.yml');
-    let raw = '';
+    let raw;
     try { raw = fs.readFileSync(file, 'utf8'); } catch { raw = 'prompts:\n'; }
     let next = raw;
     for (const item of repoItems) {

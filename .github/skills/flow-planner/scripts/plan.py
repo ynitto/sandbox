@@ -62,8 +62,10 @@ ANALYZE_PROMPT = """\
    - coverage: 網羅性（漏れなく調べる）
    - exploration: 探索性（多様な案を出す）
 6. **complexity**: simple / moderate / complex
-7. **constraints**: 制約条件（順序依存、リソース制限等）
-8. **domain_hints**: ドメインのヒント（コード変更、リサーチ、データ処理等）
+7. **estimated_steps**: この要求を満たすのに**最小限**必要な作業ステップ数（整数）。
+   実装・調査・検証をまとめて数え、余裕や理想の分割ではなく「これ以下では終わらない」数を出す
+8. **constraints**: 制約条件（順序依存、リソース制限等）
+9. **domain_hints**: ドメインのヒント（コード変更、リサーチ、データ処理等）
 
 ## 出力
 
@@ -76,6 +78,7 @@ JSON オブジェクトのみを出力してください:
   "data_flow": "static|dynamic|unknown",
   "quality_focus": "speed|accuracy|coverage|exploration",
   "complexity": "simple|moderate|complex",
+  "estimated_steps": 6,
   "constraints": ["..."],
   "domain_hints": ["..."]
 }}
@@ -162,7 +165,7 @@ BUILD_PROMPT = """\
 ## 粒度（厳守）
 
 目標粒度: {granularity_target}
-成果ノード（kind が work/generate/map）の数: {work_lo}–{work_hi} 個（上限16）
+成果ノード（kind が work/generate/map）の数: {work_lo}–{work_hi} 個（上限16）{steps_hint}
 各成果ノードのスコープ上限:
 - 1 モジュール相当（または明示された単一結合点）
 - 想定変更は約 30 行以内
@@ -346,6 +349,24 @@ def match_composite(catalog: dict, analysis: dict) -> str | None:
 # --------------------------------------------------------------------------
 # Pipeline
 # --------------------------------------------------------------------------
+def normalize_estimated_steps(value) -> "int | None":
+    """`estimated_steps` を整数へ正規化する（読めない・非正なら None）。
+
+    LLM は "6" / 6.0 / "約6ステップ" / null と揺れる。Phase 3 のプロンプトへ埋める値なので、
+    数として読めないものは黙って落とす——「約6ステップ」をそのまま渡すと、目安のつもりの
+    文字列が指示文の中で別の意味を持ちうる。"""
+    if isinstance(value, bool):     # bool は int の subclass。ステップ数ではない
+        return None
+    if isinstance(value, (int, float)):
+        n = int(value)
+        return n if n > 0 else None
+    m = re.search(r"\d+", str(value or ""))
+    if not m:
+        return None
+    n = int(m.group())
+    return n if n > 0 else None
+
+
 def phase1_analyze(request: str, model: str | None) -> dict:
     """Phase 1: 要求分析。"""
     prompt = ANALYZE_PROMPT.format(request=request)
@@ -353,6 +374,7 @@ def phase1_analyze(request: str, model: str | None) -> dict:
     analysis = extract_json(raw)
     if not isinstance(analysis, dict):
         raise ValueError("Phase 1: analysis is not a dict")
+    analysis["estimated_steps"] = normalize_estimated_steps(analysis.get("estimated_steps"))
     return analysis
 
 
@@ -505,9 +527,15 @@ def phase3_build(request: str, analysis: dict, strategy: dict,
         f"- {s}" for s in analysis.get("subtasks", [])
     )
     lo, hi = work_node_range(granularity_target)
+    # Phase 1 の最小ステップ見積り。**レンジは上書きしない**（レンジは granularity_target が
+    # 決めるという設計の約束を崩さない）。レンジ内のどこを狙うかの手掛かりとしてだけ渡す。
+    steps = normalize_estimated_steps(analysis.get("estimated_steps"))
+    steps_hint = (f"\nPhase 1 の最小ステップ見積り: {steps}"
+                  "（上のレンジ内で目安にする。レンジより優先しない）" if steps else "")
 
     def _build(extra: str = "") -> list[dict]:
         prompt = BUILD_PROMPT.format(
+            steps_hint=steps_hint,
             patterns=strategy.get("patterns", []),
             parallelism=strategy.get("parallelism", 3),
             reason=strategy.get("reason", ""),
@@ -590,6 +618,8 @@ def plan(request: str, model: str | None = None, review="auto",
         "review": bool(strategy.get("review", False)),
         "reason": str(strategy.get("reason", "")),
         "granularity": target,
+        # Phase 1 の見積り（設計「Phase 1 拡張」）。agent-flow 側はログ・診断で使う。
+        "estimated_steps": analysis.get("estimated_steps"),
     }
 
     return final_strategy, normalized

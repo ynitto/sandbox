@@ -65,7 +65,7 @@ test('ノード予算: 台帳をワークロード別に集計し合計上限で
     { ts: 'x', workload: 'routine', seconds: 60 },
     { ts: 'x', workload: 'amigos', seconds: 30 },
     { ts: 'x', workload: 'amigos', seconds: 30 },
-    'broken-line-not-json' && { ts: 'x', workload: 'project', seconds: 0 },
+    { ts: 'x', workload: 'project', seconds: 0 },
   ]);
   fs.appendFileSync(path.join(dir, 'ledger', `${utcDay()}.jsonl`), 'broken\n');
   budget.save(cfgFor(dir), { executionMinutes: 2, period: 'day' }); // 上限 2 分 = 120 秒
@@ -308,7 +308,7 @@ test('ホーム発見: ルート直下の agent-amigos.* と manual_claim の ye
   fs.mkdirSync(hRoot, { recursive: true });
   fs.writeFileSync(path.join(hRoot, 'agent-amigos.yaml'), 'node_id: root-n\nmanual_claim: yes\n');
   const hYes = makeHome(root, 'yes-n', 'node_id: yes-n\nmanual_claim: on\n');
-  const hBool = makeHome(root, 'bool-n',
+  const _hBool = makeHome(root, 'bool-n',
     JSON.stringify({ node_id: 'bool-n', manual_claim: true }), 'json');
   const found = homes.discoverHomes({ ...engineConfig([root]), amigos: { scanDepth: 2 } });
   const byNode = Object.fromEntries(found.map((h) => [h.nodeId, h]));
