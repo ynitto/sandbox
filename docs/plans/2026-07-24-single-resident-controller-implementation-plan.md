@@ -343,6 +343,16 @@ node 名義での `nodes/<pc>.json` 能力宣言・workload=flow/amigos への�
 確認できない**。現状で確かめられるのは `contract_compatible` の判定と既存の板参加までで、
 canary ランブック C10 にその旨を明記してある。
 
+**この R2 待ちで止まっている他計画の作業**（agent シリーズ改良の積み残し。一覧は
+[`2026-07-25-agent-improvement-spec.md`](2026-07-25-agent-improvement-spec.md) §4）:
+
+| # | 内容 |
+|---|---|
+| P1-a | S3-5: 板の `nodes/<node-id>.json` への `repos[].local` 転記 — **その JSON を書く実装が R2 に含まれる**ため、書き手ができるまで転記先が無い |
+| P2-a | S5: 「検証不能」（このノードでは確かめられない受入基準）の板への検証委譲 — 判定結果に理由コードは残してあるが、請負実行が無いので接続先が無い |
+
+R2 を実装するときは、この 2 つを同時に繋ぐと board 側の契約を 1 度で固められる。
+
 ### R3. 旧経路の削除（W1-9）— 完了
 
 削除済み: agent-amigos（`serve` / `hub` / `hubbus`）、agent-project（`instances` / `start` /
