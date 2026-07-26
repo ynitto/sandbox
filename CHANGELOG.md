@@ -7,6 +7,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agentcore / agent-project / agent-flow: リトライのバックオフ待ちを 1 つの seam に集約
+
+リトライ回数を検証するテストが **CPU 高負荷のときだけ落ちる**問題を直した。
+
+原因はテスト側にあった: リトライの検証は `time.sleep` を差し替えて呼び出しを記録するが、
+`time` は stdlib の共有モジュールなので、その差し替えは **CPython の `subprocess` 内部**にも効く。
+`subprocess.run(timeout=…)` はプロセス終了を 0.001 秒から倍々（上限 0.05）でポーリングしており、
+負荷で `git clone` が長引くとその sleep が記録へ混入して「バックオフ 1 回」の検証が壊れていた。
+
+- `agentcore.transport.backoff_sleep` を追加し、**リトライの待ちはすべてここを通す**
+  （transport の clone / git ロック / push 競合、agent-flow の gitcache・workspace・stategit・
+  transient リトライ、agent-project の gitcache・stategit・coordination）
+- 差し替えの対象が自分たちの関数 1 つになったので、stdlib の内部ポーリングは巻き込まれない
+- `time.sleep` の直接呼び出しが seam 1 か所に限られることをテストで固定した
+  （増やすと同じ壊れ方が戻るため）
+
+
 ### agent-project / agent-dashboard: 検収の MR/PR 一本化と、証跡ベースの検証（S4・S5）
 
 **S4: 検収を MR/PR へ寄せ、決着を決定的シグナルで定義する**

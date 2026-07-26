@@ -135,7 +135,7 @@ class StateGit:
             if p.returncode == 0 or not self._is_lock_error(p):
                 break
             if self._remove_stale_locks() == 0 and i < _STATE_GIT_RETRIES - 1:
-                time.sleep(2 ** i)
+                backoff_sleep(2 ** i)
         if check and p.returncode != 0:
             raise RuntimeError(f"git {' '.join(args)} 失敗: {(p.stderr or '').strip()[:300]}")
         return p
@@ -345,7 +345,7 @@ class StateGit:
             self._resolve_rebase()
             self._last_remote = time.time()
             if i < _STATE_PUSH_RETRIES - 1:
-                time.sleep(2 ** i if i < 4 else 16)
+                backoff_sleep(2 ** i if i < 4 else 16)
         raise RuntimeError(f"state_git push が {self.branch} へ反映できませんでした")
 
     def _rebuild(self) -> None:

@@ -114,7 +114,7 @@ def ensure_cache(url: str) -> "str | None":
         if _mirror_clone(url, cache):
             return cache
         if i < CLONE_RETRIES - 1:
-            time.sleep(2 ** i if i < 4 else 16)
+            backoff_sleep(2 ** i if i < 4 else 16)
     return None
 
 
@@ -131,7 +131,7 @@ def _cache_fetch(cache: str) -> bool:
         if r is not None and any(s in (r.stderr or "").lower() for s in _CACHE_CORRUPT):
             return False
         if i < CLONE_RETRIES - 1:
-            time.sleep(2 ** i if i < 4 else 16)
+            backoff_sleep(2 ** i if i < 4 else 16)
     return False
 
 

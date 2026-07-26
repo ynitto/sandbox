@@ -336,8 +336,12 @@ class GitDistributedTests(unittest.TestCase):
             return real_run(cmd, *a, **kw)
 
         slept = []
+        # 差し替えるのは **リトライのバックオフ seam** であって素の time.sleep ではない。
+        # time は stdlib の共有モジュールなので、差し替えると CPython の subprocess 内部
+        # （プロセス終了を 0.001s 倍々でポーリングする）にも効き、CPU 高負荷で git clone が
+        # 長引くとその sleep が記録へ混入してこの検証が壊れる（高負荷時だけ落ちていた）。
         with mock.patch.object(kf.subprocess, "run", side_effect=flaky_run), \
-             mock.patch.object(kf.time, "sleep", side_effect=lambda s: slept.append(s)):
+             mock.patch.object(kf._transport, "backoff_sleep", side_effect=lambda s: slept.append(s)):
             kf.GitBus(clone, "run1", remote=self.bare, branch="main")
         self.assertTrue(os.path.isdir(os.path.join(clone, ".git")))  # 最終的にクローン成功
         self.assertGreaterEqual(calls["n"], 3)                       # 1 試行目が失敗 → 2 試行目で成功
@@ -354,7 +358,7 @@ class GitDistributedTests(unittest.TestCase):
             return real_run(cmd, *a, **kw)
 
         with mock.patch.object(kf.subprocess, "run", side_effect=always_fail), \
-             mock.patch.object(kf.time, "sleep", side_effect=lambda s: None):
+             mock.patch.object(kf._transport, "backoff_sleep", side_effect=lambda s: None):
             with self.assertRaises(RuntimeError) as ctx:
                 kf.GitBus(clone, "run1", remote=self.bare, branch="main")
         self.assertIn(f"{kf.CLONE_RETRIES} 回失敗", str(ctx.exception))
@@ -437,7 +441,7 @@ class GitDistributedTests(unittest.TestCase):
         first.sync_push("seed main")                                      # main を実体化させる
         with open(os.path.join(clone, ".git", "index"), "wb") as f:
             f.write(b"broken")                                            # index を破壊
-        with mock.patch.object(kf.time, "sleep", lambda s: None):         # 競合待ちを高速化
+        with mock.patch.object(kf._transport, "backoff_sleep", lambda s: None):         # 競合待ちを高速化
             bus = kf.GitBus(clone, "run1", remote=self.bare, branch="main")
         marker = subprocess.run(["git", "-C", clone, "config", "--get", "agent-flow.busclone"],
                                 capture_output=True, text=True).stdout.strip()
@@ -459,7 +463,7 @@ class GitDistributedTests(unittest.TestCase):
 
         with open(os.path.join(clone, "poke.txt"), "w") as f:
             f.write("x")
-        with mock.patch.object(kf.time, "sleep", side_effect=age_lock):
+        with mock.patch.object(kf._transport, "backoff_sleep", side_effect=age_lock):
             p = bus._git(["add", "-A"])
         self.assertEqual(p.returncode, 0)
         self.assertFalse(os.path.exists(lock))                            # 残骸化した時点で除去された
@@ -489,7 +493,7 @@ class GitDistributedTests(unittest.TestCase):
 
         with open(os.path.join(clone, "poke.txt"), "w") as f:
             f.write("x")
-        with mock.patch.object(kf.time, "sleep", side_effect=release):
+        with mock.patch.object(kf._transport, "backoff_sleep", side_effect=release):
             p = bus._git(["add", "-A"])
         self.assertEqual(p.returncode, 0)
         self.assertEqual(released, [True])                                # 1 回待って解放を拾った
@@ -524,7 +528,7 @@ class GitDistributedTests(unittest.TestCase):
         first.sync_push("seed main")                                      # main を実体化
         self.assertGreater(_zero_loose_objects(clone), 0)                 # loose object を空に
         self.assertFalse(first._probe_integrity())                       # 破損を検知できる
-        with mock.patch.object(kf.time, "sleep", lambda s: None):
+        with mock.patch.object(kf._transport, "backoff_sleep", lambda s: None):
             bus = kf.GitBus(clone, "run1", remote=self.bare, branch="main")   # 再利用 → 作り直し
         self.assertTrue(bus._probe_integrity())                          # 健全なクローンへ再生
         self.assertEqual(_git_config_get(clone, "agent-flow.busclone"), "1")
@@ -541,7 +545,7 @@ class GitDistributedTests(unittest.TestCase):
         bus.sync_push("seed")
         _zero_loose_objects(clone)                                        # 電源断でのサイズ 0 を模擬
         bus.submit_request("req1", "after crash", "submitter")           # 破損クローンへ書き込み
-        with mock.patch.object(kf.time, "sleep", lambda s: None):
+        with mock.patch.object(kf._transport, "backoff_sleep", lambda s: None):
             bus.sync_push("after crash")                                 # 破損を検知 → 作り直し（例外なし）
         self.assertTrue(bus._probe_integrity())                          # クローンは健全化
         # 健全化後の新規投入はリモートへ確実に届き、seed も無傷（共有リポジトリ側から確認）
@@ -1119,7 +1123,7 @@ class StateGitSyncTests(unittest.TestCase):
         drop.write_text('{"request":"x"}', encoding="utf-8")
         self._commit_push(other, "advance remote")
         _zero_loose_objects(sg.clone)                            # 電源断でのサイズ 0 を模擬
-        with mock.patch.object(kf.time, "sleep", lambda s: None):
+        with mock.patch.object(kf._transport, "backoff_sleep", lambda s: None):
             kf.state_sync(args, force=True)                      # 例外を漏らさず作り直しを予約
         self.assertFalse(sg._ready)                              # クローンは破棄され次回作り直し
         self.assertFalse(os.path.isdir(os.path.join(sg.clone, ".git")))

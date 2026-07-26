@@ -578,7 +578,7 @@ def run_agent(prompt: str, model: str | None, purpose: str = "") -> str:
             wait = _TRANSIENT_BACKOFF * (2 ** attempt) + random.uniform(0, 1.0)
             log("agent", f"transient エラーを再試行 #{attempt + 1}/{_TRANSIENT_RETRIES}"
                          f"（{wait:.0f}s 待機・purpose={purpose or 'worker'}）: {str(e)[:120]}")
-            time.sleep(wait)
+            backoff_sleep(wait)
             last = e
     raise last if last else RuntimeError("run_agent: unreachable")  # pragma: no cover
 

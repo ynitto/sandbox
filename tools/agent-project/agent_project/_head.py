@@ -49,6 +49,10 @@ from agentcore import repolocal as _repolocal  # noqa: E402
 # agent-project / agent-flow / agent-amigos / dashboard の 4 か所に重複しており、
 # 同じ CLI でもツールによってフラグが違う状態になっていた（repolocal と同型の問題）。
 from agentcore import agentcli as _agentcli  # noqa: E402
+# リトライのバックオフ待ちの唯一の seam（agentcore.transport.backoff_sleep）。素の time.sleep を
+# 差し替えると stdlib の subprocess 内部（プロセス終了の 0.001s 倍々ポーリング）にも効いてしまい、
+# 高負荷時だけテストが壊れる。リトライ経路はこの名前を通す。
+from agentcore.transport import backoff_sleep  # noqa: E402
 
 # エージェント共通ホームのディレクトリ名。`.agent` から `.agents` へ改名した
 # （複数のエージェントが相乗りする持ち物であることを名前で示す）。

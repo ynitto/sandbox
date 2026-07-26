@@ -839,7 +839,7 @@ class DirectStateGit:
                         self._git("fetch", "-q", "origin", branch)
                         imported += self._integrate(branch)
                         if i < _STATE_PUSH_RETRIES - 1:
-                            time.sleep(2 ** i if i < 4 else 16)
+                            backoff_sleep(2 ** i if i < 4 else 16)
                     else:
                         # 「反映できませんでした」だけでは何が詰まっているのか分からず、毎パス
                         # 同じ一行が journal に出続ける。詰まりの正体（取り込めていない／作業ツリーが

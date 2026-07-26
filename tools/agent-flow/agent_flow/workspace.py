@@ -108,7 +108,7 @@ def _clone_repo(url: str, base: str, dest: str) -> str:
             if os.path.exists(dest):              # 失敗の残骸を消してからフォールバック／再試行
                 shutil.rmtree(dest, ignore_errors=True)
         if i < CLONE_RETRIES - 1:
-            time.sleep(2 ** i if i < 4 else 16)   # バックオフして再試行
+            backoff_sleep(2 ** i if i < 4 else 16)   # バックオフして再試行
     return ""
 
 
@@ -200,7 +200,7 @@ def finalize_workspace(ws: "dict | None", run_id: str, node_id: str) -> "dict | 
             _ws_git(clone, "rebase", "--abort")
             raise RuntimeError(
                 f"workspace rebase が競合しました（{branch}）: {(rb.stderr or rb.stdout).strip()[:300]}")
-        time.sleep(2 ** i if i < 4 else 16)
+        backoff_sleep(2 ** i if i < 4 else 16)
     raise RuntimeError(f"workspace push が {branch} へ反映できませんでした")
 
 

@@ -119,6 +119,21 @@ def is_corrupt_error(p) -> bool:
     return any(m in err for m in _GIT_CORRUPT_MARKERS)
 
 
+def backoff_sleep(seconds: float) -> None:
+    """リトライのバックオフ待ち。**テストが差し替える唯一の seam**。
+
+    なぜ素の `time.sleep` を直接呼ばないか: リトライ回数やバックオフ量を検証するテストは
+    `time.sleep` を差し替えて呼び出しを記録する。ところが `time` は stdlib の共有モジュール
+    なので、その差し替えは **CPython の `subprocess` 内部**にも効く——`subprocess.run(timeout=…)`
+    はプロセス終了を 0.001 秒から倍々（上限 0.05）でポーリングしており、CPU 高負荷で
+    `git clone` が長引くとその sleep が記録に混入して「バックオフ 1 回」の検証が壊れる。
+    実際に高負荷時だけ落ちるテストとして表面化した。
+
+    自分のバックオフだけを差し替えられる名前をここに 1 つ置き、リトライ経路はすべてこれを通す。
+    """
+    time.sleep(seconds)
+
+
 class GitTransport:
     """1 リモート ⇔ 1 ローカルクローンの git 転送（clone / pull / push / 自己回復）。
 
@@ -252,7 +267,7 @@ class GitTransport:
             # ロック起因の失敗: 残骸（十分古い）なら消して即再試行、稼働中の他 git が
             # 保持する新しいロックなら短く待って再試行する。
             if self._remove_stale_git_locks() == 0 and i < GIT_LOCK_RETRIES - 1:
-                time.sleep(2 ** i)
+                backoff_sleep(2 ** i)
         if check and p.returncode != 0:
             raise RuntimeError(f"git {' '.join(args)} 失敗: {(p.stderr or '').strip()[:300]}")
         return p
@@ -401,7 +416,7 @@ class GitTransport:
                 return r
             if i < CLONE_RETRIES - 1:
                 self._reset_clone_dir()
-                time.sleep(2 ** i if i < 4 else 16)
+                backoff_sleep(2 ** i if i < 4 else 16)
         return r
 
     def _setup_worktree(self, strict: bool = True) -> bool:
@@ -521,7 +536,7 @@ class GitTransport:
             if p.returncode != 0 and is_corrupt_error(p):
                 self._rebuild_clone()
                 self._commit_pending(msg)
-            time.sleep(2 ** i if i < 4 else 16)
+            backoff_sleep(2 ** i if i < 4 else 16)
         raise RuntimeError(f"git push が {self.branch} へ反映できませんでした")
 
     def cleanup_clone(self) -> None:
