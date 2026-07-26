@@ -70,8 +70,13 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
-      # テストは node の標準ライブラリだけで走る（electron は開発時の依存で、
-      # テストからは呼ばない）。lock ファイルが無いので install も行わない。
+      # 実行時依存（`yaml` / `diff2html`）は src から require されるのでテストにも要る。
+      # **開発依存は入れない**（electron はバイナリ取得で分単位かかり、テストは起動しない）。
+      # `package-lock.json` はこのリポジトリでは .gitignore 対象なので `npm ci` は使えない。
+      # postinstall も走らせない（依存の追加スクリプトを CI で実行しない）。
+      - name: 実行時依存の導入
+        working-directory: tools/agent-dashboard
+        run: npm install --omit=dev --no-audit --no-fund --ignore-scripts
       - name: npm test
         working-directory: tools/agent-dashboard
         run: npm test

@@ -22,7 +22,8 @@ Makefile も無い）、全緑の担保は人が手元で回すことに依存�
   **agentcore はテストルートが 2 つある**（`agentcore/tests` 58 件 と
   `agentcore/agentcore/tests` 74 件）ので両方を明示する——片方だけ `discover` すると
   残りが黙ってスキップされる。設定キーの構造テスト（P0-4）は agent-project 側に含まれる
-- agent-dashboard の `npm test`
+- agent-dashboard の `npm test`（実行時依存だけを `npm install --omit=dev` で導入する。
+  electron は開発依存でテストからは起動しないため入れない）
 - 利用者向け文書の内部名検査（R10）
 
 **CI を入れる前に間欠失敗を 1 件潰した（P3-1）**
