@@ -98,11 +98,13 @@ test('git の書き込み API を IPC・preload に載せない', () => {
   }
 });
 
-test('読み取り専用の git 層は health / diffRange / diagnostics だけを公開する', () => {
+test('読み取り専用の git 層は読み取り関数だけを公開する', () => {
+  // resolveDiffRoot は「どのディレクトリの差分を見るか」を決めるだけの純関数（S4-e）。
+  // ここに増やしてよいのは読み取りだけで、書き込み（pull / commit / push）は戻さないこと。
   const git = require('../src/main/git');
   assert.deepStrictEqual(
     Object.keys(git).sort(),
-    ['bridgeRepoPath', 'diagnostics', 'diffRange', 'health']
+    ['bridgeRepoPath', 'diagnostics', 'diffRange', 'health', 'resolveDiffRoot']
   );
 });
 

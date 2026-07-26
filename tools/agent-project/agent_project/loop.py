@@ -321,6 +321,10 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
                 recover_revised(cfg, tasks)
                 policy = load_policy(cfg.policy)
                 ingested += ingest_feedback(cfg, tasks)
+            # フォージ（MR/PR）側の決着を取り込む（S4-4）。検収待ちタスクだけを照会するので
+            # API 呼び出しは有界。到達不能なら何もしない（現状維持）。
+            if poll_task_mrs(cfg, tasks):
+                tasks = load_tasks(cfg.backlog)
 
         # 非ブロッキング委譲（board）の回収: offloaded タスクの run を1回ずつポーリングし、
         # 終端したものだけ settle する（待たない）。専用 daemon が run を保持するので、gitlab の

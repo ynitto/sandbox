@@ -779,9 +779,13 @@ async function openDeliveryArtifactsModel(need, title) {
   if (!$('dlg-delivery-review').open) return;
   const reviewState = deliveryReviewState(entries, mrs);
   const discoveryFailed = entries.some((entry) => entry.discovery === 'failed');
+  // 成果物レビューの正は MR/PR 一本（S4）。MR があるあいだはカード内で差分を開かせない——
+  // レビューコメント・承認状態・行コメントはフォージ側に揃っており、ここに二つ目の
+  // 差分ビューを置くと「どちらで見てどちらに書くのか」が人ごとにばらける。
+  const mrOnly = mrs.length > 0;
   const mrBlock = mrs.length
     ? `<section class="delivery-mr-banner">
-        <p>GitLab 上で差分を確認できます（gitlab executor / タスク MR）。</p>
+        <p>差分レビューは MR で行います（コメント・承認もそちらが正）。</p>
         <div class="row">${mrs
           .map(
             (u, i) =>
@@ -813,12 +817,30 @@ async function openDeliveryArtifactsModel(need, title) {
     : `<section class="delivery-empty-state" role="status">
         <h3>${discoveryFailed ? '変更ファイル一覧を取得できませんでした' : '変更ファイルはありません'}</h3>
         <p>${discoveryFailed
-          ? 'リポジトリの情報またはGitの状態を確認し、もう一度開いてください。'
+          ? esc(entries.map((e) => e.discoveryError).filter(Boolean)[0]
+                || 'リポジトリの情報またはGitの状態を確認し、もう一度開いてください。')
           : '現在の比較条件では、検収対象となる変更を検出しませんでした。'}</p>
       </section>`;
   // このダイアログの主目的はファイル差分の検収。run の summary は複数ノード分が長くなり、
   // overflow:hidden の本文内で差分レイアウト全体を画面外へ押し出すため、ここには載せない。
-  $('delivery-review-body').innerHTML = `${mrBlock}${emptyNotice}
+  if (mrOnly) {
+    // 検収カードの構成は「受入基準・検証レポート要約（S5）＋ MR リンク」。差分は MR で見る。
+    $('delivery-review-body').innerHTML = `${mrBlock}
+      ${verificationSummaryHtml(need)}
+      <section class="delivery-diff-panel" aria-label="検収">
+        <footer class="delivery-review-actions">
+          ${deliveryReviewFooterHtml(need)}
+        </footer>
+      </section>`;
+    wireDeliveryReview($('dlg-delivery-review'), { ...need, delivery: entries });
+    const input = $('dlg-delivery-review').querySelector('.delivery-review-actions .need-input');
+    if (input) {
+      input.value = state.needsDrafts[need.id] || '';
+      input.addEventListener('input', () => { state.needsDrafts[need.id] = input.value; });
+    }
+    return;
+  }
+  $('delivery-review-body').innerHTML = `${mrBlock}${verificationSummaryHtml(need)}${emptyNotice}
     <div id="delivery-assist-panel" class="delivery-assist-panel hidden" aria-live="polite"></div>
     <div class="delivery-review-layout">
       <aside class="delivery-file-panel" aria-label="変更ファイル">
@@ -852,9 +874,57 @@ async function openDeliveryArtifactsModel(need, title) {
   if (firstFile) firstFile.click();
 }
 
+// 検収カードの検証レポート要約（S5）。人がレビューするのは「コマンド」ではなく
+// **基準と証跡**——コマンドの良し悪しは人には判断できないが、基準と証跡なら判断できる、
+// というのが S5 のコンセプト変更そのもの。
+//
+// 証跡の無い pass はエンジン側で fail に落としているが、ここでも薄い基準を目立たせる
+// （抜き取り監査を「別機能」にせず、人が毎回見る 1 枚に載せる）。
+function verificationSummaryHtml(need) {
+  const v = (need && need.verification) || null;
+  const criteria = (v && Array.isArray(v.criteria)) ? v.criteria : [];
+  if (!criteria.length) return '';
+  const mark = { pass: '✓', fail: '✗', unverifiable: '—' };
+  const rows = criteria.map((c, i) => {
+    const verdict = String(c.verdict || '');
+    const ev = c.evidence || {};
+    const cmds = (ev.commands || []).join(' / ');
+    const files = (ev.files || []).join(', ');
+    const shown = [cmds, String(ev.output || '').slice(0, 120), files].filter(Boolean).join(' — ');
+    const thin = verdict === 'pass' && !cmds && !files;
+    return `<tr class="${thin ? 'verification-thin' : ''}">
+      <td>${i + 1}</td>
+      <td>${esc(String(c.text || ''))}</td>
+      <td class="verification-verdict-${esc(verdict)}">${mark[verdict] || '?'} ${esc(verdict)}</td>
+      <td>${shown ? esc(shown) : '<span class="muted">証跡なし</span>'}</td>
+    </tr>`;
+  }).join('');
+  const passed = criteria.filter((c) => c.verdict === 'pass').length;
+  const thinCount = criteria.filter(
+    (c) => c.verdict === 'pass' && !((c.evidence || {}).commands || []).length
+      && !((c.evidence || {}).files || []).length).length;
+  const warn = thinCount
+    ? `<p class="warn">証跡の無い判定が ${thinCount} 件あります。内容を確かめてください。</p>`
+    : '';
+  const report = v.report
+    ? `<p class="muted">検証レポート全文: <code>${esc(String(v.report))}</code></p>` : '';
+  return `<section class="verification-summary" aria-label="検証">
+    <h3>検証（基準 ${criteria.length} 件中 ${passed} 件 pass）</h3>
+    ${warn}
+    <table class="verification-table">
+      <thead><tr><th>#</th><th>受入基準</th><th>判定</th><th>証跡</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    ${report}
+  </section>`;
+}
+
 function deliveryDiffRequest(entry, file = '', opts) {
   return {
     repo: entry.path,
+    // path は agent-project が動いたノードで解決したもので、worker の作業ツリーは /tmp（消える）。
+    // この PC に無ければ main 側が host.yaml repos[] からクローンを引き直す（S4-e）。
+    repoUrl: entry.url || '',
     viewerRoot: typeof state !== 'undefined' && state.project ? state.project.dir : '',
     base: entry.target || entry.base || 'main',
     ref: entry.ref || undefined,
@@ -875,7 +945,8 @@ async function hydrateDeliveryEntries(entries) {
   return Promise.all((entries || []).map(async (entry) => {
     const fallbackFiles = (entry.files || []).filter(isDeliveryArtifactFile);
     const fallback = { ...entry, files: fallbackFiles, files_total: fallbackFiles.length };
-    const canLoad = entry.role !== 'reference' && entry.path;
+    // path が空でも url があれば main 側がノード宣言（host.yaml repos[]）から引き直せる（S4-e）。
+    const canLoad = entry.role !== 'reference' && (entry.path || entry.url);
     if (!canLoad) return { ...fallback, discovery: 'unavailable' };
     try {
       // 検収を開いた最初の解決でリモートを取り込む（以降のファイル選択は取得済みの origin を使う）。
@@ -884,6 +955,7 @@ async function hydrateDeliveryEntries(entries) {
       return { ...entry, files, files_total: files.length, discovery: 'complete' };
     } catch (err) {
       uiLog('delivery file list fallback', entry.name || 'repo', err && err.message ? err.message : err);
+      fallback.discoveryError = String((err && err.message) || err || '');
       return { ...fallback, discovery: 'failed' };
     }
   }));

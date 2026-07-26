@@ -194,4 +194,87 @@ test('backlog の mr_url を合成票へ補う', () => {
   assert.ok(needs[0].delivery.length >= 1);
 });
 
+// --- S4: 検収は MR/PR 一本、ローカル diff は MR の無いタスクだけ -------------------------
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const git = require('../src/main/git');
+
+test('resolveDiffRoot: path が実在すればそれを使う', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dr-'));
+  try {
+    assert.strictEqual(git.resolveDiffRoot(tmp, '', ''), path.resolve(tmp));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// ノード宣言（host.yaml repos[]）を持つ一時ホームを用意する。実ホームを汚さない seam は
+// AGENT_PROJECT_AGENTS_HOME（nodeRepos / agentcore.repolocal と共通）。
+function withNodeRepos(entries, fn) {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dr-home-'));
+  const prev = process.env.AGENT_PROJECT_AGENTS_HOME;
+  process.env.AGENT_PROJECT_AGENTS_HOME = tmp;
+  const body = entries.length
+    ? `repos:\n${entries.map((e) => `  - url: ${e.url}\n    local: ${e.local}\n`).join('')}`
+    : 'repos: []\n';
+  fs.writeFileSync(path.join(tmp, 'agent-project.host.yaml'), body, 'utf8');
+  try {
+    return fn();
+  } finally {
+    if (prev === undefined) delete process.env.AGENT_PROJECT_AGENTS_HOME;
+    else process.env.AGENT_PROJECT_AGENTS_HOME = prev;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+test('resolveDiffRoot: path が無ければ host.yaml repos[] のクローンへ引き直す（S4-e）', () => {
+  // delivery の path は agent-project が動いたノードのもの。worker の作業ツリーは /tmp で
+  // 消えるので、dashboard が別マシンならまず存在しない——これが C5 の実体。
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dr-'));
+  const clone = path.join(tmp, 'app');
+  fs.mkdirSync(clone);
+  const url = 'https://git.example.com/g/app.git';
+  try {
+    withNodeRepos([{ url, local: clone }], () => {
+      assert.strictEqual(git.resolveDiffRoot('/tmp/gone-worktree-xyz', '', url), path.resolve(clone));
+    });
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('resolveDiffRoot: 宣言が無ければ解決しない（なぜ見られないかを人に見せる）', () => {
+  withNodeRepos([], () => {
+    assert.strictEqual(
+      git.resolveDiffRoot('/tmp/gone-worktree-xyz', '', 'https://git.example.com/g/none.git'), '');
+    assert.strictEqual(git.resolveDiffRoot('/tmp/gone-worktree-xyz', '', ''), '');
+  });
+});
+
+test('diffRange: 解決できないときは宣言のしかたを案内する', async () => {
+  await withNodeRepos([], () => assert.rejects(
+    () => git.diffRange('/tmp/gone-worktree-xyz', { repoUrl: 'https://git.example.com/g/a.git' }),
+    /repos\[\]/));
+});
+
+test('検収カードは MR があれば差分ペインを出さない（レビューの正は MR 一本）', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'renderer', 'sections', 'needs.js'), 'utf8');
+  assert.ok(src.includes('const mrOnly = mrs.length > 0;'), 'MR の有無で構成を分ける');
+  assert.ok(/mrOnly[\s\S]{0,400}verificationSummaryHtml/.test(src),
+    'MR ありの構成は「検証要約 + MR リンク」');
+  assert.ok(src.includes("repoUrl: entry.url || ''"),
+    'diff 要求に url を載せる（path が消えていてもノード宣言から引き直せる）');
+});
+
+test('検証要約は基準×証跡を出し、証跡の無い pass を警告する（S5）', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'renderer', 'sections', 'needs.js'), 'utf8');
+  assert.ok(src.includes('function verificationSummaryHtml('), '検証要約の描画入口');
+  assert.ok(src.includes('証跡なし'), '証跡の無い基準はそう表示する');
+  assert.ok(src.includes('証跡の無い判定が'), '抜き取り監査は人が毎回見る 1 枚に載せる');
+});
+
 console.log(`\n${passed} passed`);

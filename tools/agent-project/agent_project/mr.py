@@ -67,6 +67,55 @@ def _gl_quote(project: str) -> str:
     return urllib.parse.quote(project, safe="")
 
 
+# ---------------------------------------------------------------------------
+# フォージ境界（S4-1.7）
+# ---------------------------------------------------------------------------
+# 成果物レビューの正は MR/PR 一本にする、という仕様（S4）は「どのフォージか」に依存しない。
+# 実装は **GitLab のみ**で、GitHub / Gitea は境界だけ切って未対応にしてある——動作確認できる
+# 環境が無いまま書いた API クライアントは「動くかどうか分からないコード」が増えるだけだから。
+# 未対応フォージは「フォージ無し」として扱い、従来の dashboard ボタン決着へ倒す（S4-6）。
+#
+# 認証情報は **設定 2 層のどちらにも置かない**（host.yaml は共有しないが平文で PC に残り、
+# プロジェクト yaml は state repo 経由で全 PC へ配られる）。環境変数か rc ファイルのまま。
+_FORGE_UNSUPPORTED_WARNED: "set[str]" = set()
+
+
+def _forge_kind(url: str) -> str:
+    """リポジトリ URL からフォージ種別を返す。'gitlab' / 'github' / 'gitea' / ''（不明）。
+
+    自己ホストの GitLab はホスト名に gitlab を含まないことが多い（git.example.com 等）ので、
+    ホスト名で判別できないときは **GitLab トークンの有無**で決める（移行前の挙動そのまま:
+    `_gl_parse_repo` が通り、かつトークンがあれば GitLab として叩いていた）。
+    """
+    parsed = _gl_parse_repo(url)
+    if not parsed:
+        return ""
+    host = parsed[0].lower()
+    if "gitlab" in host:
+        return "gitlab"
+    if "github" in host:
+        return "github"
+    if "gitea" in host or "codeberg" in host:
+        return "gitea"
+    return "gitlab" if _gl_token() else ""
+
+
+def forge_available(cfg: "Config", url: str) -> str:
+    """この URL に対して決着まで扱えるフォージ種別（扱えなければ ""）。
+
+    未対応フォージは 1 回だけ警告して "" を返す——黙って無視すると「MR ができない理由」が
+    どこにも出ず、検収カードに MR が載らない原因を人が追えない。
+    """
+    kind = _forge_kind(url)
+    if kind == "gitlab":
+        return "gitlab" if _gl_token() else ""
+    if kind and kind not in _FORGE_UNSUPPORTED_WARNED:
+        _FORGE_UNSUPPORTED_WARNED.add(kind)
+        print(f">>> 注意: {kind} は未対応のフォージです（MR/PR の自動作成・決着は行いません）。"
+              "検収は dashboard のボタンで行ってください", file=sys.stderr)
+    return ""
+
+
 def _task_mr_coords(task: "Task") -> "tuple[str, str, str] | None":
     """タスクに記録済みの MR 座標 (host, project, iid)。無ければ None。"""
     iid = str(task.get("mr_iid") or "").strip()
@@ -88,9 +137,9 @@ def ensure_task_mr(cfg: "Config", task: "Task") -> str:
     if not spec or not spec.get("url"):
         return ""
     parsed = _gl_parse_repo(spec["url"])
+    if not parsed or not forge_available(cfg, spec["url"]):
+        return ""                       # フォージ無し運用（S4-6）＝従来どおり記録のみで続行
     token = _gl_token()
-    if not parsed or not token:
-        return ""
     host, proj = parsed
     source = task_branch_name(cfg, task)
     target = spec.get("target") or spec.get("base") or "main"
@@ -246,6 +295,133 @@ def finalize_task_delivery(cfg: "Config", task: "Task") -> "tuple[bool, str]":
     run("push", "origin", "--delete", branch)
     mode = "競合なしで統合" if diverged else "fast-forward マージ"
     return True, f"作業ブランチ {branch} を {target} へ {mode}"
+
+
+# ---------------------------------------------------------------------------
+# フォージ側シグナルからの決着（S4-3・S4-4）
+# ---------------------------------------------------------------------------
+# 「人のレビューコメントをいつ差し戻しに変えるか」を、キーワード推定ではなく **決定的な
+# シグナル**で決める。コメント本文の語（「やり直し」「LGTM」等）は書き手の言い回し 1 つで
+# 判定が変わり、しかも変わったことに気づけない。
+#
+#   MR がマージされた                        → approve（done 確定）
+#   MR が未マージでクローズされた            → reject
+#   changes-requested ラベル / レビュー      → revise（未解決コメントを feedback に注入）
+#   それ以外（コメントのみ・承認だけ等）      → 何もしない（人の明示操作を待つ）
+#
+# 照会と書き込みは常駐体の sync 周期が担う（dashboard は表示に徹する）。
+_CHANGES_REQUESTED_LABELS = ("status:changes-requested", "changes-requested")
+
+
+def _mr_changes_requested(mr: dict, reviews) -> bool:
+    """フォージ側で「修正を求める」が明示されたか（ラベル or Changes Requested レビュー）。"""
+    labels = [str(x).lower() for x in (mr.get("labels") or [])]
+    if any(lbl in labels for lbl in _CHANGES_REQUESTED_LABELS):
+        return True
+    for r in (reviews if isinstance(reviews, list) else []):
+        # GitLab は reviewer の state（reviewed / requested_changes）を持つ
+        if str((r or {}).get("state") or "").lower() in ("requested_changes", "changes_requested"):
+            return True
+    return False
+
+
+def _unresolved_notes(host: str, token: str, ep: str, iid: str) -> "list[str]":
+    """未解決のレビューコメント本文（解決済み・system note は除く）。
+
+    解決済みまで流すと、一度直した指摘が毎回 feedback へ積み直されて収束しない。
+    """
+    out: "list[str]" = []
+    discussions = _gl_api(host, token, "GET",
+                          f"/projects/{ep}/merge_requests/{iid}/discussions",
+                          params={"per_page": 100})
+    for d in (discussions if isinstance(discussions, list) else []):
+        for n in (d.get("notes") or []):
+            if n.get("system") or not n.get("resolvable") or n.get("resolved"):
+                continue
+            body = str(n.get("body") or "").strip()
+            if body and not body.startswith("agent-project:"):   # 自分が書いたコメントは拾わない
+                out.append(body)
+    return out
+
+
+def _settle_from_forge(cfg: "Config", task: "Task") -> "tuple[str, str]":
+    """1 タスクぶんのフォージ照会。(決着, 理由) を返す。決着は
+    approve / reject / revise / ""（何もしない）。到達不能も ""——フォージが見えないことを
+    「未マージ＝reject」と読むと、回線が切れただけで成果が却下される。"""
+    coords = _task_mr_coords(task)
+    token = _gl_token()
+    if coords is None or not token:
+        return "", ""
+    host, proj, iid = coords
+    ep = _gl_quote(proj)
+    try:
+        mr = _gl_api(host, token, "GET", f"/projects/{ep}/merge_requests/{iid}")
+        state = str(mr.get("state") or "")
+        if state == "merged":
+            return "approve", "MR がマージされた"
+        if state == "closed":
+            return "reject", "MR が未マージでクローズされた"
+        reviews = _gl_api(host, token, "GET", f"/projects/{ep}/merge_requests/{iid}/reviewers")
+        if not _mr_changes_requested(mr, reviews):
+            return "", ""
+        notes = _unresolved_notes(host, token, ep, iid)
+        return "revise", ("\n".join(notes)[:1500] or "フォージで修正が要求されました（コメント無し）")
+    except RuntimeError:
+        return "", ""                    # 到達不能は決着しない（現状維持）
+
+
+def _apply_revise(cfg: "Config", task: "Task", guidance: str) -> None:
+    """フォージの changes-requested を差し戻しへ変換する（needs の [x] 差し戻しと同じ形）。"""
+    task.status = "ready"
+    task.drop("feedback")
+    task.extra.append(("feedback", guidance.replace("\n", " ⏎ ")))
+    task.retries += 1                    # 計画変更＝新しい run（同 run 再開にしない）
+    append_brief_item(cfg, task, guidance, source="forge-changes-requested")
+    autonomy_record(cfg, task, clean=False)
+    persist_task(cfg, task)
+    clear_needs_file(cfg, task.id)
+    append_decision(cfg, task.id, "forge",
+                    context=f"{task.id}（{task.title}）にフォージで修正要求",
+                    action="forge-revise", reason=guidance[:300],
+                    affects=f"{task.id} → ready（次 act に反映）")
+
+
+def poll_task_mrs(cfg: "Config", tasks: "list[Task]") -> "list[str]":
+    """検収待ち（review）タスクの MR を照会し、決定的シグナルを決着へ変換する（S4-3/S4-4）。
+
+    対象は `mr_iid` を持つ review 状態のタスクだけなので、API 呼び出し数は検収待ち件数に
+    比例して有界。`remote_review: observe` では照会結果を journal に残すだけで決着させない
+    （移行用）。決着の口は「フォージのシグナル」と「dashboard のボタン」の 2 つで、どちらも
+    同じ approve / reject / revise の契約へ合流する。
+    """
+    mode = str(getattr(cfg, "remote_review", "settle") or "settle").lower()
+    if mode not in ("settle", "observe"):
+        mode = "settle"
+    settled: "list[str]" = []
+    for t in tasks:
+        if t.norm_status() != "review" or not t.get("mr_iid"):
+            continue
+        decision, why = _settle_from_forge(cfg, t)
+        if not decision:
+            continue
+        if mode == "observe":
+            append_journal(cfg.journal,
+                           f"remote_review(observe): {t.id} のフォージ決着は {decision}（{why[:120]}）"
+                           "— 表示のみで決着させません")
+            continue
+        if decision == "approve":
+            release_claim(cfg, t)
+            ok, msg = approve_review_done(cfg, t, f"フォージの決着: {why}")
+            append_journal(cfg.journal, f"remote_review: {t.id} を承認（{why}）"
+                                        + ("" if ok else f" — 保留: {msg[:120]}"))
+        elif decision == "reject":
+            cmd_reject(cfg, t.id, why)
+            append_journal(cfg.journal, f"remote_review: {t.id} を却下（{why}）")
+        else:
+            _apply_revise(cfg, t, why)
+            append_journal(cfg.journal, f"remote_review: {t.id} を差し戻し（未解決コメントを注入）")
+        settled.append(t.id)
+    return settled
 
 
 def close_task_mr(cfg: "Config", task: "Task", reason: str) -> None:
