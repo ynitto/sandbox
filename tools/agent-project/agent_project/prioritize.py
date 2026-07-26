@@ -19,15 +19,21 @@ def task_runnable_here(cfg: "Config", t: "Task") -> bool:
     注意: これは正の割当フィルタで、claim 自体はホスト内原子性のまま。異なるノードへ
     明示割当したタスクは互いに触らないが、未指定タスクを default_node 空のまま複数の名前付き
     エンジンで走らせると従来同様の二重実行リスクが残る（回避は各タスクへ node を割り当てるか
-    default_node を 1 台に設定する）。"""
-    mine = str(getattr(cfg, "node", "") or "").strip()
+    default_node を 1 台に設定する）。
+
+    照合は `normalize_node_id` を通した綴りで行う（P0-3）。人は板の端末一覧（正規形＝小文字）を
+    見て `- node:` を書くので、エンジン側の名義が大文字を含んでいると**どのノードも拾わないまま
+    ready で固まる**。名義の正規化は 1 か所（`_resolved_node`）に寄せたが、正規化前に書かれた
+    タスクファイルはそのまま残るため、読む側でも同じ規則で突き合わせる。"""
+    mine = normalize_node_id(str(getattr(cfg, "node", "") or "").strip()) \
+        if str(getattr(cfg, "node", "") or "").strip() else ""
     if not mine:
         return True                                   # 無名エンジン＝フィルタしない（従来動作）
     assigned = str(t.get("node", "") or "").strip()
     if assigned:
-        return assigned == mine
+        return normalize_node_id(assigned) == mine
     default = str(getattr(cfg, "default_node", "") or "").strip()
-    return (not default) or (default == mine)
+    return (not default) or (normalize_node_id(default) == mine)
 
 
 def task_deps(task: "Task") -> "list[str]":

@@ -30,14 +30,32 @@ DEFAULT_CONFIG_NAMES = ["agent-project.yaml", "agent-project.yml", "agent-projec
 
 
 def _auto_node_name() -> str:
-    """この PC の既定 node 名を hostname から決定する。
+    """この PC の既定 node 名（`--node` / `AGENT_PROJECT_NODE` / host.yaml のどれも無いとき）。
 
-    共有 YAML に PC 固有値を書かずに複数 PC を起動できるよう、--node /
-    AGENT_PROJECT_NODE / profile のいずれも無いときだけ使う。agent-project の
-    node フィールドで使える文字に正規化し、空なら "node" へ落とす。
-    """
-    raw = socket.gethostname() or os.environ.get("COMPUTERNAME") or os.environ.get("HOSTNAME") or "node"
-    return re.sub(r"[^A-Za-z0-9_.-]+", "-", str(raw)).strip("-._")[:60] or "node"
+    導出は `agentcore.nodeid.default_node_id` の 1 実装に寄せてある（P0-3）。以前はここに
+    独自のサニタイズ（**小文字化しない**・60 文字で切る）があり、大文字を含むホスト名の PC が
+    プロジェクト状態側と板側で 2 名義に割れていた——`Config.node` は `status/<node>.json` の
+    ファイル名にもタスクの `- node:` にもなるので、綴りが割れると人が板の端末一覧を見て
+    書いた割当を誰も拾わない。"""
+    return default_node_id()
+
+
+def _resolved_node(args) -> str:
+    """`Config.node` を板と同じ綴りへ倒す（P0-3）。
+
+    非正規形が入る経路は 3 つ: host.yaml 未宣言（ホスト名）・`AGENT_PROJECT_NODE`・`--node`。
+    後ろ 2 つは `HostConfig` を通らないので正規化されていなかった。ここで 1 箇所に集める。
+
+    **倒したときは黙らない**——「指定した名前で動いていない」ことに気付けないと、
+    `- node:` の割当や板の名義がずれた理由が分からなくなる。"""
+    raw = str(getattr(args, "node", None) or "").strip()
+    if not raw:
+        return default_node_id()
+    node = normalize_node_id(raw)
+    if node != raw:
+        print(f"[agent-project] node 名を正規形へ揃えました: {raw} → {node}"
+              f"（板・状態ファイル名の綴りを 1 つに保つため）", file=sys.stderr)
+    return node
 
 # 設定ファイルで上書きできるキー（snake_case）と組み込み既定。
 # CLI 引数の default は None にし、resolve_config で「設定ファイル→ここ」の順に埋める。
@@ -662,6 +680,19 @@ def _spec_thresholds(args) -> dict:
             "spec_threshold_light": light}
 
 
+def _one_of(value, allowed: "tuple[str, ...]", dflt: str, key: str) -> str:
+    """値域を持つ設定キーを正規形へ倒す。**倒したときは黙らない**——`observe` を
+    `observ` と綴り間違えても既定へ落ちるだけだと、設定した本人が「効いていない」ことに
+    気付けない（S1 の設計動機と同じ）。"""
+    got = str(value or "").strip().lower()
+    if got in allowed:
+        return got
+    if got:
+        print(f"[agent-project] 設定 {key}: 未知の値 '{value}' — 既定 '{dflt}' を使います"
+              f"（有効値: {' / '.join(allowed)}）", file=sys.stderr)
+    return dflt
+
+
 def build_config(args) -> Config:
     # プロジェクトルート = 状態専用リポジトリの clone（`resolve_config` が確定済み・S1）。
     # charter.md / repos.json / backlog/ 等はすべてこの直下（1 プロジェクト = 1 状態リポジトリ =
@@ -717,12 +748,10 @@ def build_config(args) -> Config:
         state_repo_branch=str(getattr(args, "state_repo_branch", "main") or "main"),
         force=bool(getattr(args, "force", False)),
         agent_flow=args.agent_flow, planner=args.planner, flow_planner=args.flow_planner,
-        # profile mode は自動起動時の環境差分を排除するため AGENT_PROJECT_NODE を参照しない。
-        # ただし node がどこにも無いと multi-node/git-cas で起動できないため、最後に hostname
-        # 由来の安定したローカル既定値へフォールバックする。
         # node は resolve_config が host.yaml（node_id）→ 環境変数の順で確定済み。
-        # どこにも無いときだけ hostname 由来の安定した既定へ落とす。
-        node=str(getattr(args, "node", None) or _auto_node_name()).strip(),
+        # どこにも無いときだけホスト名由来の既定へ落とす。綴りの正規化はどの経路から来ても
+        # `_resolved_node` の 1 箇所で行う（板・状態ファイル名と同じ綴りに保つ・P0-3）。
+        node=_resolved_node(args),
         default_node=str(getattr(args, "default_node", "") or "").strip(),
         availability=availability,
         controller_heartbeat_sec=max(1.0, float(getattr(args, "controller_heartbeat_sec", 30.0) or 30.0)),
@@ -808,6 +837,11 @@ def build_config(args) -> Config:
         task_branch=bool(getattr(args, "task_branch", True)),
         task_branch_prefix=str(getattr(args, "task_branch_prefix", "ap/") or "ap/"),
         delivery_review=bool(getattr(args, "delivery_review", True)),
+        # S4-5。`CONFIG_DEFAULTS` にキーはあるのに Config へ渡っておらず、プロジェクト yaml に
+        # `observe` と書いても常に settle になっていた（verifier キーと同型の 2 度目の欠落）。
+        # 再発は tests/test_config_keys.py の構造テストで塞ぐ。
+        remote_review=_one_of(getattr(args, "remote_review", "settle"),
+                              ("settle", "observe"), "settle", "remote_review"),
         dry_run=bool(getattr(args, "dry_run", False)), once=bool(getattr(args, "once", False)),
         project_name=root.name,
         charter=under("charter", "charter.md"),

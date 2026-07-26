@@ -228,6 +228,13 @@ class ResidentCliTests(unittest.TestCase):
         os.environ["AGENT_AMIGOS_TURNS_DIR"] = str(self.turns_home)
         self.addCleanup(os.environ.pop, "AGENT_AMIGOS_TURNS_DIR", None)
 
+    def test_node_commands_dir_follows_the_agents_home(self):
+        # 画面（dashboard）はこの規則と同じ場所へ投函する。両者がずれると、押しても
+        # 何も起きない（`.err` すら出ない）——P0-2 で実際に踏んだ形。旧ホーム（~/.agent）へは
+        # 落とさない（画面側にだけフォールバックがあると、書けるのに誰も読まない場所ができる）。
+        os.environ.pop("AGENT_COMMANDS_DIR", None)
+        self.assertEqual(km.node_commands_dir(), km._agents_home() / "commands")
+
     def test_load_host_config_defaults_to_hostname_worker_profile(self):
         host = km.load_host_config(str(self.tmp / "no-such-file.yaml"))
         self.assertTrue(host.is_worker)
@@ -697,6 +704,107 @@ class ResidentCliTests(unittest.TestCase):
                 serve.kill()
                 serve.wait(timeout=10)
 
+    def _spawn_serve(self):
+        """`cmd_serve` を子プロセスで起こす（stdout をパイプで受ける）。"""
+        root = Path(__file__).resolve().parents[2]
+        code = ("import sys, types;"
+                f"sys.path.insert(0, {str(root / 'agent-project')!r});"
+                f"sys.path.insert(0, {str(root / 'agentcore')!r});"
+                "import agent_project as km;"
+                "sys.exit(km.cmd_serve(types.SimpleNamespace(host_config=None)))")
+        serve = subprocess.Popen(
+            [sys.executable, "-c", code],
+            cwd=str(self.tmp),   # host.yaml を置いていない＝projects 空（ワーカー profile）
+            env={**os.environ, "AGENT_PROJECT_AGENTS_HOME": str(self.tmp / "agents")},
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+
+        def _cleanup():
+            if serve.poll() is None:
+                serve.kill()
+                serve.wait(timeout=10)
+            if serve.stdout is not None:
+                serve.stdout.close()
+
+        self.addCleanup(_cleanup)
+        return serve
+
+    def test_serve_exits_cleanly_on_sigterm_right_after_banner(self):
+        """起動バナー直後の SIGTERM で graceful 終了する（P0-1）。
+
+        バナーは `cmd_serve` の契約上「ハンドラ設置後の最初の出力」なので、これを待って
+        撃てば**必ず**旧実装の窓（子の起動〜tick 開始）に当たる。時間に依存せず決定的で、
+        `status.json` の出現を待つ既存テスト（窓の後ろ側だけを撃つ＝間欠的にしか当たらない）
+        より強い。"""
+        serve = self._spawn_serve()
+        line = serve.stdout.readline()
+        self.assertIn(km.SERVE_BANNER, line, f"起動バナーが最初に出ていない: {line!r}")
+        serve.send_signal(signal.SIGTERM)
+        rc = serve.wait(timeout=60)
+        self.assertEqual(rc, 0, f"バナー直後の SIGTERM で graceful 終了しなかった rc={rc}"
+                                "（-15 は既定ハンドラによる即死＝ハンドラ設置が遅い）")
+
+    def test_serve_stops_children_when_signalled_during_startup(self):
+        """子の起動中に停止要求が入ったら、tick を始めず子を畳んで 0 で返る（P0-1）。
+
+        ハンドラを差し替えて捕まえ、`_build_resident` の**中から**呼ぶ——実プロセスに
+        シグナルを撃つ代わりに窓のど真ん中を狙い撃ちできるので、順序の契約そのものを
+        時間に依存せず固定できる。"""
+        handlers = {}
+        order = []
+
+        def fake_signal(sig, handler):
+            handlers[sig] = handler
+            order.append(("signal", sig))
+            return signal.SIG_DFL
+
+        stopped = {"all": 0}
+        sup = types.SimpleNamespace(names=lambda: [], stop_all=lambda: stopped.__setitem__(
+            "all", stopped["all"] + 1))
+        sched = types.SimpleNamespace(start=lambda: order.append(("sched.start", None)),
+                                      stop=lambda: None, join=lambda timeout=None: None)
+        wrote = {"n": 0}
+
+        def fake_build(host, **kw):
+            order.append(("build", None))
+            # 子を起こしている最中に SIGTERM が届いた状況（旧実装が即死していた窓）
+            self.assertIn(signal.SIGTERM, handlers, "子を起こす前にハンドラが設置されていない")
+            handlers[signal.SIGTERM](signal.SIGTERM, None)
+            return sup, sched, None, lambda: wrote.__setitem__("n", wrote["n"] + 1), None
+
+        with mock.patch.object(km.signal, "signal", side_effect=fake_signal), \
+             mock.patch.object(km, "_build_resident", side_effect=fake_build), \
+             mock.patch.object(km, "graceful_shutdown", side_effect=lambda s: s.stop_all()):
+            rc = km.cmd_serve(types.SimpleNamespace(host_config=None))
+
+        self.assertEqual(rc, 0)
+        self.assertEqual([k for k, _ in order][:2], ["signal", "signal"],
+                         f"ハンドラ設置が先ではない: {order}")
+        self.assertNotIn(("sched.start", None), order, "停止要求後に tick を始めている")
+        self.assertEqual(wrote["n"], 0, "停止要求後に git 観測込みの write_status を呼んでいる")
+        self.assertEqual(stopped["all"], 1, "子を畳んでいない")
+
+    def test_stop_signal_handler_escalates_on_second_signal(self):
+        """2 度目のシグナルは握らず既定ハンドラへ戻す（停止が詰まったときの逃げ道）。"""
+        handlers, restored, killed = {}, [], []
+
+        def fake_signal(sig, handler):
+            if handler is signal.SIG_DFL:
+                restored.append(sig)
+            else:
+                handlers[sig] = handler
+            return signal.SIG_DFL
+
+        with mock.patch.object(km.signal, "signal", side_effect=fake_signal), \
+             mock.patch.object(km.os, "kill", side_effect=lambda pid, sig: killed.append(sig)):
+            stopping = km._install_stop_signals()
+            self.assertFalse(stopping.is_set())
+            handlers[signal.SIGTERM](signal.SIGTERM, None)
+            self.assertTrue(stopping.is_set())
+            self.assertEqual((restored, killed), ([], []))
+            handlers[signal.SIGTERM](signal.SIGTERM, None)      # 2 度目
+        self.assertEqual(restored, [signal.SIGTERM])
+        self.assertEqual(killed, [signal.SIGTERM])
+
     def test_cmd_worker_delegates_to_serve_for_worker_profile(self):
         # worker は serve と同一実装（C12）。projects 無しなら警告を出さず serve と同じ結果になる
         # ことだけを確認する（無限ループを避けるため _build_resident 経路を直接検証済みなので
@@ -1041,6 +1149,16 @@ class ResidentBoardTickTests(unittest.TestCase):
         root.mkdir()
         status = self._tick(self._host(projects=[{"name": "proj-a", "root": str(root)}]))
         self.assertEqual(status.board["intake_projects"], ["proj-a"])
+
+    def test_status_declares_board_workdir(self):
+        """板の**作業ディレクトリ**も状況に載せる（P0-2）。
+
+        dashboard が設定で持っているのは作業フォルダで、指示ドロップの `board:` に要るのは
+        所在（`host.board`）。両方を載せておかないと、画面は作業フォルダを載せるしかなく、
+        `_ingest_node_commands` の完全一致検査に必ず引っかかって全指示が .err へ落ちる。"""
+        status = self._tick()
+        self.assertEqual(status.board["location"], str(self.board))
+        self.assertEqual(status.board["workdir"], os.path.abspath(str(self.board)))
 
     def test_no_board_configured_is_reported_not_crashed(self):
         status = km.EngineStatus("pc-a")

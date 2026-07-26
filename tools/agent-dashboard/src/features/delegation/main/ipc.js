@@ -14,6 +14,10 @@ const boardAdapter = require('./board-adapter');
 const nodeCommands = require('./node-commands');
 const amigosHomes = require('../../amigos/main/homes');
 const amigosMissions = require('../../amigos/main/missions');
+const engine = require('../../agent-project/main/engine');
+// project.js と engine.js は相互参照する（engine.js の `proj()` と同じ事情）。トップレベルで
+// 掴むと読み込み順によって空の module.exports を握るので、使う場所で都度引く。
+const pathsEqual = (a, b) => require('../../agent-project/main/project').pathsEqual(a, b);
 
 function resolveFlowBusDirs(cfg) {
   const d = (cfg && cfg.delegation) || {};
@@ -25,6 +29,30 @@ function resolveBoardRepos(cfg) {
   const d = (cfg && cfg.delegation) || {};
   const list = Array.isArray(d.boardRepos) ? d.boardRepos : [];
   return list.map((p) => String(p || '')).filter(Boolean);
+}
+
+// 指示ドロップの `board:` は**板の所在**（ローカル dir / `git+<url>`。
+// `schemas/agent-node-command.schema.json`）で、常駐体は host.yaml の宣言と完全一致で
+// 照合し、違えば取り込まずに .err へ退避する（別の板を黙って操作しないため）。
+// 一方この画面が設定で持っているのは板の**作業フォルダ**（delegation.boardRepos）なので、
+// そのまま渡すと正典構成（UNC フォルダ 対 `git+ssh://…`）では必ず不一致になり、
+// 全部の指示が .err へ落ちる。実行エンジンが status.json に載せている自分の板
+// （所在と作業フォルダの対）を唯一の根拠にして翻訳する。
+function boardLocationFor(cfg, boardRepo) {
+  const board = engine.readStatus(cfg).board;
+  if (!board || !board.configured) {
+    throw new Error('この端末は仕事のやり取り先に参加していません（実行エンジンの設定を確認してください）');
+  }
+  const target = String(boardRepo || '').trim();
+  if (!target) return board.location;          // 指定なし = この端末の板
+  // 作業フォルダを載せていない古い実行エンジンには、板を指定せずに渡す
+  // （契約上「省略時は host.yaml の board」＝この端末の板になる）。
+  if (!board.workdir) return '';
+  if (!pathsEqual(target, board.viewerWorkdir || board.workdir) && !pathsEqual(target, board.workdir)) {
+    throw new Error('この端末の実行エンジンは、そのやり取り先に参加していません'
+      + '（全体設定のやり取り先と、実行エンジンの宣言が違います）');
+  }
+  return board.location;
 }
 
 // 公示先の解決:
@@ -131,10 +159,11 @@ function registerIpc(ctx) {
   handle('delegation:nodeCommand', (payload) => {
     const p = payload || {};
     if (!contract.ID_RE.test(String(p.id || ''))) throw new Error(`不正な id です: ${p.id}`);
-    const res = nodeCommands.dropNodeCommand(loadConfig(), {
+    const cfg = loadConfig();
+    const res = nodeCommands.dropNodeCommand(cfg, {
       action: String(p.action || ''),
       id: String(p.id || ''),
-      board: String(p.boardRepo || ''),
+      board: boardLocationFor(cfg, p.boardRepo),
       node: String(p.node || ''),
       reason: String(p.reason || ''),
     });
@@ -159,8 +188,9 @@ function registerIpc(ctx) {
       if (!contract.ID_RE.test(id)) throw new Error(`不正な id です: ${p.id}`);
       if (!node) throw new Error('award には node（落札ノード）が必要です');
       // 板へは常駐体が書く（直接書き込みは `git+` 板で誰にも届かない）。
-      const res = nodeCommands.dropNodeCommand(loadConfig(), {
-        action: 'board-award', id, node, board: String(p.boardRepo || ''),
+      const cfg = loadConfig();
+      const res = nodeCommands.dropNodeCommand(cfg, {
+        action: 'board-award', id, node, board: boardLocationFor(cfg, p.boardRepo),
         reason: String(p.reason || ''),
       });
       return { id, target: 'board', file: res.file };
@@ -195,7 +225,7 @@ function registerIpc(ctx) {
       // 板の cancelled.json を書くのは常駐体（S8-2）。dashboard が板の作業クローンへ
       // 直接書いても push する主体が居らず、`git+` 板では黙って効かないボタンだった。
       const res = nodeCommands.dropNodeCommand(cfg, {
-        action: 'board-cancel', id: env.id, board: String(p.boardRepo || ''),
+        action: 'board-cancel', id: env.id, board: boardLocationFor(cfg, p.boardRepo),
         reason: String(env.reason || ''),
       });
       return { id: env.id, target: 'board', file: res.file };

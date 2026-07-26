@@ -487,6 +487,30 @@ class TestWatchGracefulExit(unittest.TestCase):
                 signal.signal(signal.SIGTERM, saved)   # ハンドラを元へ戻す
             self.assertEqual(rc, 0)
 
+    def test_sigterm_handler_is_installed_before_state_sync_and_lease(self):
+        """SIGTERM ハンドラは `state_sync`（git・数秒）と controller lease 取得より**前**（P0-1）。
+
+        後ろだと、その窓で SIGTERM を受けた子が lease を握ったまま finally を通らずに死に、
+        次の子が lease 失効（既定 120 秒）まで controller へ昇格できない。親（serve）の
+        再起動は子へ SIGTERM を送るので `systemctl restart` のたびに踏みうる。"""
+        import unittest.mock as mock
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), watch=True)
+            order = []
+            saved = signal.getsignal(signal.SIGTERM)
+            try:
+                with mock.patch.object(km, "_install_sigterm",
+                                       side_effect=lambda c=None: order.append("sigterm")), \
+                     mock.patch.object(km, "state_sync",
+                                       side_effect=lambda c, force=False: order.append("sync")), \
+                     mock.patch.object(km, "start_controller_heartbeat",
+                                       side_effect=lambda c: order.append("lease")), \
+                     mock.patch.object(km, "run_watch", side_effect=KeyboardInterrupt):
+                    self.assertEqual(km.cmd_run(cfg), 0)
+            finally:
+                signal.signal(signal.SIGTERM, saved)
+            self.assertEqual(order[0], "sigterm", f"ハンドラ設置が先ではない: {order}")
+
     def test_watch_lock_is_released_on_exit(self):
         # 監視ロックは fd に紐づく。終了時に解放しないと、同じプロセスの再起動
         # （自己更新の execv）や次の起動が「既に監視中」と誤判定して上がれない。

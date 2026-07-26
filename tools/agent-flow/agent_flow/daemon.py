@@ -77,8 +77,11 @@ def _default_daemon_id(args) -> str:
 
     正規化は `agentcore.nodeid` の共通実装に委ねる（`_safe` ではない）。`_safe` は不正文字を
     `_` に倒し大小文字も保つため、同じ PC が flow で `Mac`・amigos で `mac` になり、板に
-    2 ノードとして現れていた（大小文字を区別しないファイルシステムでは互いを上書きする）。"""
-    return args.node_id or normalize_node_id(socket.gethostname())
+    2 ノードとして現れていた（大小文字を区別しないファイルシステムでは互いを上書きする）。
+
+    ホスト名の**取り方**まで含めて `agentcore.nodeid.default_node_id` の 1 実装に寄せる
+    （P0-3 — ホスト名が空になる環境での落ち方がツールごとに違うと、そこでも名義が割れる）。"""
+    return args.node_id or default_node_id()
 
 
 class _Deferred:

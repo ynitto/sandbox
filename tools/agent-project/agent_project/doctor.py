@@ -265,9 +265,60 @@ def doctor_coordination_findings(cfg: "Config") -> "list[dict]":
     return findings
 
 
+def _state_root_cutover_findings(state_root: str, old_safe: str, add) -> None:
+    """プロジェクト状態リポジトリ側に残る旧名義の残骸（P0-3）。
+
+    板と amigos だけを見ていると、**同じ PC のプロジェクト状態**に残るものを見落とす。
+    どれも「切替してから気付く」形で表に出るので、切替前に人へ出す:
+
+    - `status/<old>.json` … 状態同期で全 PC へ配られる。鮮度が切れるまで
+      `_peer_nodes` が旧名義を「他ノード」と読んで CAS 経路に入り、切れた後も
+      dashboard の端末一覧に死んだ行として残り続ける。
+    - `claim_owner: <old>` の doing タスク … 新名義からは解放できない
+      （`requeue_draining_tasks` は `claim_owner != node` を飛ばす）。lease ではなく
+      **人が直すまで**固まる。
+    - 手動割当（`node_source` が auto 以外）の `- node: <old>` … 自動割当分は
+      `allocate_distributed_tasks` が拾い直すが、人が指定した割当は誰も拾わない。
+    """
+    stale_status = os.path.join(state_root, "status", f"{old_safe}.json")
+    if os.path.exists(stale_status):
+        add("旧 node_id 名義の生存信号が残っている",
+            f"state_root={state_root} file={stale_status}",
+            "常駐体を止めてからこのファイルを削除し、状態リポジトリへコミットする")
+    backlog = os.path.join(state_root, "backlog")
+    claimed, assigned = [], []
+    try:
+        names = sorted(n for n in os.listdir(backlog) if n.endswith(".md"))
+    except OSError:
+        names = []
+    for name in names:
+        try:
+            with open(os.path.join(backlog, name), encoding="utf-8") as f:
+                body = f.read()
+        except OSError:
+            continue
+        fields = dict(re.findall(r"^- ([a-z_]+)\s*:\s*(.*)$", body, re.M))
+        if normalize_node_id(fields.get("claim_owner", "")) == old_safe \
+                and fields.get("claim_owner", "").strip():
+            claimed.append(name[:-3])
+        node = fields.get("node", "").strip()
+        if node and normalize_node_id(node) == old_safe \
+                and fields.get("node_source", "").strip() != "auto":
+            assigned.append(name[:-3])
+    if claimed:
+        add("旧 node_id 名義が実行権（claim）を握っている",
+            f"state_root={state_root} old={old_safe} tasks={claimed[:8]}",
+            "対象タスクが終わるまで切替を待つ（新名義からは解放できない）")
+    if assigned:
+        add("旧 node_id 名義へ手で割り当てたタスクが残っている",
+            f"state_root={state_root} old={old_safe} tasks={assigned[:8]}",
+            "backlog の `- node:` を新名義へ書き換える（自動割当分は次のパスで振り直される）")
+
+
 def doctor_node_id_cutover_findings(board_root: "str | None", old_node_id: str,
                                     new_node_id: str,
-                                    amigos_bus_root: "str | None" = None) -> "list[dict]":
+                                    amigos_bus_root: "str | None" = None,
+                                    state_roots: "list[str] | None" = None) -> "list[dict]":
     """node_id 切替（実装計画 W1-10・静止点）の事前チェック。旧名義に実行中の委譲・
     ミッションが残っていないかを決定的に検査する（設計 §9 C13 の一環 — 更新は
     「git pull + install.sh」で足りるが node_id はデータの名義そのものを変えるため、
@@ -282,6 +333,9 @@ def doctor_node_id_cutover_findings(board_root: "str | None", old_node_id: str,
       既定採番を PC 名にしたため、ホスト名の重複（`localhost`・コンテナ既定名）が
       現実に起こりうる。気づかず切り替えると 2 台が同じ名義で入札し、bid/status を
       互いに上書きする。
+    - state_roots を渡した場合、プロジェクト状態リポジトリ側の残骸も見る
+      （`_state_root_cutover_findings`）。大文字を含むホスト名の PC は P0-3 の正規化が
+      そのまま名義変更になるので、ここが空でないと切替後に「誰も拾わない ready」が残る。
 
     名義の綴りは `agentcore.nodeid.normalize_node_id` で揃える。ここで独自に綴り替えると、
     板のファイルを書く側（各エンジンの `_safe`）と食い違い、実行中の委譲を見落として
@@ -332,6 +386,9 @@ def doctor_node_id_cutover_findings(board_root: "str | None", old_node_id: str,
                 f"board={board_root} new={new_node_id} heartbeat={rec.get('heartbeat')}",
                 "別 PC が同じ名義で稼働している。ホスト名が重複していないか確認し、"
                 "重複するなら一意な node_id を明示指定する")
+    for state_root in state_roots or []:
+        if state_root and os.path.isdir(state_root):
+            _state_root_cutover_findings(state_root, old_safe, add)
     return findings
 
 
@@ -355,8 +412,14 @@ def node_id_cutover_findings(cfg: "Config", old_node_id: str) -> "list[dict]":
         return []
     board_root = _board_local_root(host.board, host.board_workdir)
     amigos_root = str(host.amigos_bus or "") or None
+    # プロジェクト状態リポジトリも host.yaml が単一ソース（projects[].root）。この PC が
+    # 抱えている状態は全部見る——1 つでも旧名義の残骸があると切替後に固まる（P0-3）。
+    state_roots = [str(p.get("root") or "").strip()
+                   for p in (getattr(host, "projects", None) or [])
+                   if str(p.get("root") or "").strip()]
     return doctor_node_id_cutover_findings(board_root, old, host.node_id,
-                                           amigos_bus_root=amigos_root)
+                                           amigos_bus_root=amigos_root,
+                                           state_roots=state_roots)
 
 
 def _board_local_root(board: str, workdir: "str | None" = None) -> "str | None":
@@ -1068,13 +1131,20 @@ def cmd_run(cfg: Config) -> int:
     controller_stop = None
     availability_stop = None
     try:
+        if cfg.watch:
+            # stop の SIGTERM / drain を graceful 停止へ変換する。**下の 2 行より前**に置く
+            # ——`state_sync` は git 越しで数秒かかりえ、`start_controller_heartbeat` は
+            # controller lease を**取得する**。ここが後ろだと、その窓で SIGTERM を受けた子が
+            # lease を握ったまま finally を通らずに死に、次の子が lease 失効まで
+            # （既定 120 秒）昇格できない。親（serve）の再起動は子へ SIGTERM を送るので、
+            # `systemctl restart` のたびに踏みうる（P0-1・親側と同型の窓）。
+            _install_sigterm(cfg)
         # （再）起動直後は駆動より先にリモート状態を取り込む（停止中に viewer が push した
         # charter 更新/指示/フィードバックを、初回パスが古いローカル状態で読まないように）。
         state_sync(cfg)
         if _coordination_active(cfg):
             controller_stop = start_controller_heartbeat(cfg)
         if cfg.watch:
-            _install_sigterm(cfg)                # stop の SIGTERM / drain を graceful 停止へ変換
             if getattr(cfg, "availability", None):
                 availability_stop = start_availability_monitor(cfg)
             # マスター憲章のみ（バージョン未作成）も project_watch へ: バージョン

@@ -1,6 +1,6 @@
 # P0 詳細設計: canary 前に直す 4 件
 
-ステータス: 詳細設計（未実装）
+ステータス: 実装済み（詳細設計 + 実装で確定した差分を §9 に反映）
 入力: [`2026-07-26-open-items-and-concerns.md`](2026-07-26-open-items-and-concerns.md) §6.1 / §7.1
 参照: [常駐一本化 設計](2026-07-24-single-resident-controller-design.md) §4.2・§6 /
 [S1 詳細設計](2026-07-26-s1-config-two-layer-detailed-design.md) /
@@ -582,6 +582,7 @@ cd tools/agent-dashboard && npm test
 | F2 | **`cmd_serve` の `graceful_shutdown` が設計 §4.2 の 4 ステップを 1 つも注入していない**（`graceful_shutdown(sup)` のみ・`resident_cli.py:797`）。子は自前の `finally` で claim と lease を解放するので実害は限定的だが、**子を持たないワーカーノードでは板への away 宣言も最終 push も行われない**。設計書は 5 段のシーケンスとして書いてある | 中 | P0 に含めない。canary の観測項目（板に「応答なし」で残る時間）として §5 のランブックへ記録し、R2b の設計で決める |
 | G | `node-commands.js` の `expandHome` が `s.startsWith('~')` で、`~foo` のようなパスまで展開する（他モジュールは `/^~(?=$|\/|\\)/`） | 低 | P0-2 §3.2.1 のついで |
 | H | `tests/test_delivery.py` が `cfg.remote_review = …` と**属性を手で生やして**いるため、配線が無くてもテストが緑になる。`Config` が `slots` 無し dataclass であることに依存した書き方で、同じ書き方が他のキーにもあれば同型の欠落を隠す | 中 | P0-4 §5.4 でこのテストを設定ファイル経由へ書き換える |
+| I | **`state_repo` / `state_repo_branch` は設定ファイルのどの層からも `Config` へ届かない**（実装中に到達検査で検出）。`HOST_SOURCED_KEYS` に入っているのに `_host_layer` がこの 2 キーを流さないため、`Config` に載るのは `--state-repo` / `--state-repo-branch`（CLI 明示）だけ。clone 前に `_resolve_state_root` が `projects[]` から直接読むのが正の経路なので**実害は無い**が、`Config` のフィールドとしてはほぼ空のまま残っている | 低 | 到達検査の除外へ理由付きで登録（§9）。フィールド自体を消すかは P1 以降で判断 |
 
 ---
 
@@ -601,3 +602,31 @@ cd tools/agent-dashboard && npm test
   （cutover ガイドが「明示した値はそのまま使う」と約束している）。`Config.node` だけを
   正規化するのは、そこが板とプロジェクト状態の**両方**にファイル名として現れる唯一の値で、
   綴りが割れると回復に人手が要るため。この非対称は意図的なので、ガイドに理由を残す。
+
+---
+
+## 9. 実装で確定した差分
+
+設計と実装がずれたところ。**本文は書き換えず、ここに理由付きで残す**（既存の詳細設計と同じ流儀）。
+
+| # | 設計 | 実装 | 理由 |
+|---|---|---|---|
+| P0-1 | ハンドラ設置 → `load_host_config` → バナー | ハンドラ設置を**最初**（`load_host_config` より前）に置き、`SERVE_BANNER` 定数を切り出した | この時点で畳むべき資源が無いので前へ出せる。バナー文字列を定数にしたのは、テストが「ハンドラ設置後の最初の出力」という契約に依存するため（文言を変えるとテストが落ちる＝契約が明示される） |
+| P0-2 | `BoardRepo` を `try` の**外**で構築して `board.dir` を状況へ載せる | `try` の**中**で構築し、`board_state["workdir"]` はそこで足す | 既存テスト `test_board_failure_is_recorded_not_raised` が `BoardRepo` の構築失敗（例外）でも tick を落とさないことを固定していた。外へ出すと Scheduler が常駐体を隔離してしまう。載らなかった場合の縮退（画面は `board` を省略して投函）は設計どおり |
+| P0-3 | `Config.node` の正規化（3 経路）+ `status/` のファイル名 | それに加えて **`task_runnable_here` の照合も正規形で行う** | 名義を正規化しても、**正規化前に書かれたタスクファイル**（`- node: DESKTOP-X`）はそのまま残る。読む側でも同じ規則で突き合わせないと、切替直後に「誰も拾わない ready」が残ったままになる。doctor の残骸検査（§3.3.4）は掃除のためにそのまま要る |
+| P0-3 | `normalize_node_id` を各所で import | 共有 import（`_head.py`）に `normalize_node_id` / `default_node_id` を置いた | 断片は共有名前空間へ exec 合成される。`doctor` が `configfile` より先だから今は動く、という読み込み順への暗黙依存を作らない |
+| P0-4 | 除外は `root` / `journal_*` の 3 件 | それに加えて到達検査の除外に `state_repo` / `state_repo_branch` を足した（§7-I） | `_host_layer` がこの 2 キーを流しておらず、設定ファイルからは届かない。`_resolve_state_root` が clone 前に `projects[]` から直接読むのが正の経路 |
+| P0-4 | 番兵は型から生成し、値域を持つキーだけ個別指定 | 個別指定は 10 件（`remote_review` / `verify_side_effects` / `plan_sections` / `location` / `level` / `spec_threshold` 系 3 / `hooks` / `agents`） | 実測。見込み（10〜20）の下限で収まった |
+
+### 9.1 実測（実装後）
+
+| 対象 | 結果 |
+|---|---|
+| `tests/test_resident.ResidentCliTests` を 10 回連続 | 10/10 緑（修正前は `test_serve_exits_cleanly_on_sigterm` が 5 回中 1 回失敗） |
+| agent-project | 1,082 件 緑 |
+| agent-flow / agent-amigos | 571 / 176 件 緑 |
+| agentcore（テストルート 2 つ） | 74 / 53 件 緑 |
+| agent-dashboard `npm test` | 緑（失敗 0） |
+
+`npx eslint .` はこの環境では devDependencies が未インストールのため実行できていない
+（`eslint.config.js` の require が解決しない）。CI 新設（P3-1）の際にまとめて回す。

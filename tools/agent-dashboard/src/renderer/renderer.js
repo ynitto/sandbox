@@ -1071,6 +1071,9 @@ function populateSettingsFields() {
   $('cfg-refresh').value = cfg.projects ? cfg.projects.refreshSec : 5;
   $('cfg-engine-distro').value = (cfg.engine && cfg.engine.distro) || '';
   $('cfg-engine-home').value = (cfg.engine && cfg.engine.home) || '';
+  if ($('cfg-node-commands-dir')) {
+    $('cfg-node-commands-dir').value = (cfg.delegation && cfg.delegation.nodeCommandsDir) || '';
+  }
   $('cfg-notify').checked = !(cfg.notifications && cfg.notifications.enabled === false);
   $('cfg-needs-sla').value = cfg.projects && cfg.projects.needsSlaHours !== undefined ? cfg.projects.needsSlaHours : 24;
   if ($('cfg-role')) $('cfg-role').value = cfg.role === 'viewer' ? 'viewer' : 'engineer';
@@ -1200,6 +1203,10 @@ async function saveGlobalSettingsSection(section) {
     cfg.engine = cfg.engine || {};
     cfg.engine.distro = $('cfg-engine-distro').value.trim();
     cfg.engine.home = $('cfg-engine-home').value.trim();
+    if ($('cfg-node-commands-dir')) {
+      cfg.delegation = cfg.delegation || {};
+      cfg.delegation.nodeCommandsDir = $('cfg-node-commands-dir').value.trim();
+    }
     cfg.projects.flowBus = $('cfg-flow-bus').value.trim();
     cfg.projects.flowBusByProject = $('cfg-flow-bus-by-project').value.split('\n').map((line) => {
       const i = line.indexOf('=');

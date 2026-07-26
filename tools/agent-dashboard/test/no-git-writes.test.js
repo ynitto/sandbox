@@ -139,6 +139,27 @@ test('プロジェクトを列挙する設定を持たない（発見は実行�
   assert.ok(defaults.engine, '実行エンジンの在り処が設定の入口');
 });
 
+test('実行エンジンと共有する置き場をこの PC のホームで解決しない', () => {
+  // 正典構成は「Windows の画面 + WSL の実行エンジン」。実行エンジンと読み書きを共有する
+  // 置き場（engine/status.json・この端末への指示）を os.homedir() 基準で解決すると、
+  // 投函先と取り込み先が別ファイルシステムになり、押しても何も起きない（P0-2 で実際に
+  // 踏んだ）。ホームの解決は engine.agentsHome() の 1 実装を通すこと。
+  const shared = [
+    path.join(SRC, 'features', 'delegation', 'main', 'node-commands.js'),
+  ];
+  for (const file of shared) {
+    const code = codeOf(file);
+    assert.ok(!/\bagentHomeSubdir\b/.test(code),
+      `${rel(file)}: agentHomeSubdir はこの PC のホーム基準（実行エンジンのホームを通すこと）`);
+    // os.homedir() は `~` の展開（利用者が明示したパス）にだけ使ってよい
+    const homedirLines = code.split('\n').filter((line) => /os\.homedir\(\)/.test(line));
+    for (const line of homedirLines) {
+      assert.ok(/~/.test(line),
+        `${rel(file)}: 既定の置き場を os.homedir() で決めている: ${line.trim()}`);
+    }
+  }
+});
+
 test('利用者に見せる文へ内部名（node / sync / resident / 常駐体）を出さない（R10）', () => {
   // 内部部品の名前は設計上の呼び名で、利用者の語彙ではない。表示文はコマンド名
   // （agent-project serve）と「実行エンジン」「実行する PC」で語る。

@@ -113,8 +113,7 @@ class HostConfig:
         # （宣言があるのに AGENT_PROJECT_NODE で黙って別名になると、板の名義と claim の
         # 持ち主が食い違う）。node_id 自体は常に値を持つので、この旗が無いと区別できない。
         self.node_id_declared = bool(declared)
-        self.node_id = normalize_node_id(declared) if declared \
-            else normalize_node_id(socket.gethostname())
+        self.node_id = normalize_node_id(declared) if declared else default_node_id()
         self.projects = [dict(p) for p in (data.get("projects") or []) if isinstance(p, dict)]
         self.tags = [str(t) for t in (data.get("tags") or [])]
         # 能力宣言の `agent_cli:`（このノードで使える CLI の一覧・板への入札判定に使う）と、
@@ -422,6 +421,13 @@ def _board_participate_tick(host: "HostConfig", status: "EngineStatus") -> None:
     }
     try:
         board = BoardRepo(host.board, workdir=host.board_workdir)
+        # 板の作業ディレクトリ（`git+` 板なら clone 先）。dashboard が読んでいる板のフォルダと
+        # 同じ実体なので、**「画面が見ている板」と「この常駐体が参加している板」の突き合わせ**に
+        # 使える。これが無いと dashboard は指示ドロップの `board:` に作業ディレクトリを入れる
+        # しかなく、常駐体は所在（location）と完全一致で照合するため全指示が .err へ落ちた
+        # （P0-2）。追加項目なので contract_version は据え置き——載らなければ画面は
+        # 「古い実行エンジン」として board を省略して投函する（安全側へ縮退する）。
+        board_state["workdir"] = board.dir
         board.sync_pull()
         if board.write_node(_node_capability(host),
                             heartbeat_interval=_NODE_HEARTBEAT_INTERVAL_SEC):
@@ -762,40 +768,78 @@ def _build_resident(host: "HostConfig", *, start_children: bool = True):
     return sup, sched, status, write_status, pool
 
 
+SERVE_BANNER = "[agent-project] serve: node_id="
+"""起動バナーの接頭辞。**「この行が出た後はシグナルを取りこぼさない」という約束**の
+観測点で、テストの待ち合わせにも使う（`cmd_serve` はこれを出す前にハンドラを設置する）。"""
+
+
+def _install_stop_signals() -> "threading.Event":
+    """SIGTERM/SIGINT を graceful 停止要求（Event）へ変換する。
+
+    既定ハンドラは即死なので、設置前に SIGTERM が届くと `cmd_serve` の finally
+    （子の graceful 停止）が走らず、`run --watch` の子が監督者不在のまま生き残る——
+    次の起動で Supervisor が新しい子を起こすので同一プロジェクトにループが 2 本並ぶ。
+    systemd の stop/restart は SIGTERM なので、`install.sh --service` が勧める経路が
+    そのままこれを踏む。**したがって設置は子を起こすより前**（P0-1）。
+
+    2 度目のシグナルは握らずに既定ハンドラへ戻す。停止処理そのものが詰まったときに、
+    人（Ctrl-C 2 回）と起動系（SIGKILL 前の再送）が諦める手段を残すため。"""
+    stopping = threading.Event()
+
+    def _handler(signum, _frame):
+        if stopping.is_set():
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
+            return
+        stopping.set()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _handler)
+        except (ValueError, OSError):
+            pass    # メインスレッド以外（テスト等）では設定できない
+    return stopping
+
+
 def cmd_serve(args) -> int:
     """常駐体のエントリポイント（設計 §4.2・実装計画 W1-11）。フォアグラウンド実行——
     常駐化（起動時に上がる・死んだら上げ直す）は起動系（systemd 等）の役目で、このコマンド
-    自体は「起動されたら動き続ける」だけを担う（設計 §7）。"""
-    host = load_host_config(getattr(args, "host_config", None))
-    print(f"[agent-project] serve: node_id={host.node_id}"
-         + (f" host_config={host.path}" if host.path else "（host.yaml 未検出・既定ノード）"))
-    if host.is_worker:
-        print("[agent-project] serve: projects 未宣言 — ワーカーノード（lite）として動作します")
+    自体は「起動されたら動き続ける」だけを担う（設計 §7）。
 
-    sup, sched, status, write_status, pool = _build_resident(host)
-    write_status()
-    sched.start()
-    print(f"[agent-project] serve: 起動しました（projects={len(sup.names())} pid={os.getpid()}）")
-    # SIGTERM を必ず拾う。既定ハンドラは即死なので下の finally（子の graceful 停止）が
-    # 走らず、`run --watch` の子が監督者不在のまま生き残る——次の起動で Supervisor が
-    # 新しい子を起こすので同一プロジェクトにループが 2 本並ぶ。systemd の stop/restart は
-    # SIGTERM なので、`install.sh --service` が勧める経路がそのままこれを踏む。
-    stopping = threading.Event()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        try:
-            signal.signal(sig, lambda *_: stopping.set())
-        except (ValueError, OSError):
-            pass    # メインスレッド以外（テスト等）では設定できない
+    順序が契約: **シグナルハンドラ → バナー → 子の起動 → 状況の書き出し → tick 開始**。
+    ハンドラより後ろは、どこで停止要求が届いても finally が子を畳む。"""
+    stopping = _install_stop_signals()
+    host = load_host_config(getattr(args, "host_config", None))
+    print(f"{SERVE_BANNER}{host.node_id}"
+         + (f" host_config={host.path}" if host.path else "（host.yaml 未検出・既定ノード）"),
+          flush=True)
+    if host.is_worker:
+        print("[agent-project] serve: projects 未宣言 — ワーカーノード（lite）として動作します",
+              flush=True)
+
+    sup = sched = None
     try:
-        while not stopping.wait(1.0):
-            pass
+        sup, sched, status, write_status, pool = _build_resident(host)
+        # 子の起動中に停止要求が入っていたら、ここから先へは進まない。write_status() は
+        # git 観測を含んで数秒かかりうるので、畳む直前に「子は生きている」と書きながら
+        # 起動系の停止猶予を食い潰すのは損しかない。
+        if not stopping.is_set():
+            write_status()
+            sched.start()
+            print(f"[agent-project] serve: 起動しました"
+                  f"（projects={len(sup.names())} pid={os.getpid()}）", flush=True)
+            while not stopping.wait(1.0):
+                pass
     except KeyboardInterrupt:
-        pass        # ハンドラ設定前に届いた場合の保険
+        pass        # ハンドラを設置できない環境（メインスレッド外）の保険
     finally:
         print("[agent-project] serve: 停止します（子の graceful 停止）", file=sys.stderr)
-        sched.stop()
-        graceful_shutdown(sup)
-        sched.join(timeout=5.0)
+        if sched is not None:
+            sched.stop()
+        if sup is not None:
+            graceful_shutdown(sup)
+        if sched is not None:
+            sched.join(timeout=5.0)
     return 0
 
 
@@ -836,7 +880,8 @@ def cmd_worker_init(args) -> int:
     """ワーカーノード（lite）の host.yaml を生成する（実装計画 W1-11・設計 §4.3）。
     projects を持たない host.yaml を書く——導入は clone + install.sh + このコマンドの
     最小手順（設計の要件 R6）。"""
-    node_id = normalize_node_id(getattr(args, "node_id", None) or socket.gethostname())
+    node_id = (normalize_node_id(getattr(args, "node_id", None))
+               if getattr(args, "node_id", None) else default_node_id())
     # 専有項目の契約はワーカーノードでもフルノードと同一（S1）。生成物にも同じ骨格
     # （defaults / projects / repos）を出しておく——空の器があるだけで「ここに書く」が伝わり、
     # プロジェクト yaml 側へ書いてしまう事故（E1/E2）を減らせる。

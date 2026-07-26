@@ -408,8 +408,14 @@ class TestTaskBranchAndDeliveryReview(unittest.TestCase):
     # --- フォージ側シグナルからの決着（S4-3・S4-4） -------------------------------------
 
     def _poll(self, cfg, t, mr, *, reviewers=None, discussions=None, remote_review="settle"):
-        """poll_task_mrs を GitLab API モックで 1 回まわす。"""
-        cfg.remote_review = remote_review
+        """poll_task_mrs を GitLab API モックで 1 回まわす。
+
+        `cfg.remote_review = …` の直代入はしない——`Config` は slots 無しの dataclass なので、
+        **フィールドが存在しなくても代入は通ってしまう**。実際それで「CONFIG_DEFAULTS に
+        あるのに Config へ渡していない」欠落をこのテストが緑のまま見逃していた（P0-4）。
+        `dataclasses.replace` はフィールドが無ければ TypeError になるので、配線が落ちれば
+        ここも落ちる。設定ファイル経由の到達性そのものは tests/test_config_keys.py が見る。"""
+        cfg = dataclasses.replace(cfg, remote_review=remote_review)
 
         def api(host, token, method, path, data=None, params=None):
             if path.endswith("/merge_requests/7"):

@@ -153,6 +153,43 @@ class TestDoctor(unittest.TestCase):
     def test_node_id_cutover_noop_without_board_or_amigos(self):
         self.assertEqual(km.doctor_node_id_cutover_findings(None, "pc-old", "pc-new"), [])
 
+    def test_node_id_cutover_flags_state_repo_residue(self):
+        """プロジェクト状態リポジトリ側の残骸も切替前に出す（P0-3）。
+
+        板と amigos だけ見ていると、同じ PC の状態リポジトリに残るものを見落とす。
+        どれも「切替してから固まる」形でしか表に出ない。"""
+        with tempfile.TemporaryDirectory() as d:
+            root = os.path.join(d, "state")
+            os.makedirs(os.path.join(root, "status"), exist_ok=True)
+            os.makedirs(os.path.join(root, "backlog"), exist_ok=True)
+            old = km.normalize_node_id("DESKTOP-X")
+            with open(os.path.join(root, "status", f"{old}.json"), "w", encoding="utf-8") as f:
+                json.dump({"node": "DESKTOP-X", "updated_iso": "2026-07-26T00:00:00+00:00"}, f)
+            with open(os.path.join(root, "backlog", "T1.md"), "w", encoding="utf-8") as f:
+                f.write("## T1: 実行中\n- status: doing\n- claim_owner: DESKTOP-X\n")
+            with open(os.path.join(root, "backlog", "T2.md"), "w", encoding="utf-8") as f:
+                f.write("## T2: 手で割当\n- status: ready\n- node: DESKTOP-X\n")
+            with open(os.path.join(root, "backlog", "T3.md"), "w", encoding="utf-8") as f:
+                f.write("## T3: 自動割当\n- status: ready\n- node: DESKTOP-X\n"
+                        "- node_source: auto\n")
+            titles = {f["title"] for f in km.doctor_node_id_cutover_findings(
+                None, "DESKTOP-X", "desktop-y", state_roots=[root])}
+            self.assertIn("旧 node_id 名義の生存信号が残っている", titles)
+            self.assertIn("旧 node_id 名義が実行権（claim）を握っている", titles)
+            self.assertIn("旧 node_id 名義へ手で割り当てたタスクが残っている", titles)
+            # 自動割当（node_source: auto）は allocate_distributed_tasks が振り直すので出さない
+            manual = [f for f in km.doctor_node_id_cutover_findings(
+                None, "DESKTOP-X", "desktop-y", state_roots=[root])
+                if f["title"].startswith("旧 node_id 名義へ手で")]
+            self.assertNotIn("T3", manual[0]["evidence"])
+
+    def test_node_id_cutover_state_repo_clean_has_no_findings(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = os.path.join(d, "state")
+            os.makedirs(os.path.join(root, "backlog"), exist_ok=True)
+            self.assertEqual(km.doctor_node_id_cutover_findings(
+                None, "DESKTOP-X", "desktop-y", state_roots=[root]), [])
+
     def test_node_id_cutover_matches_engine_written_filenames(self):
         # 板の status ファイル名は各エンジンの _safe が決める。doctor が独自に綴り替えると
         # 実行中の委譲を見落として「切替してよい」と誤報告する（所見ゼロを許可条件に
