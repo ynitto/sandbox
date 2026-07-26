@@ -640,11 +640,21 @@ JSON 契約（正典: `schemas/board.schema.json`）だけで成立し、処理�
 （NATS / RabbitMQ 等）は、「バス上のファイルが真実・中央は転送のみ」の原則と衝突するので
 採らなかった。
 
-入札の可否（担当リポジトリ・タグ・CLI・契約バージョンの照合）は `agentcore.board.eligible` の
-1 実装で、agent-flow の板参加と共有する——以前は「同じ仕様・別実装」で 2 つあり、片方だけ育つと
-同じ公示が経路によって拾えたり拾えなかったりした（`agentcore.protocol` の claim と同じ理由で
-集約した）。判定材料の正典は各 PC の `agent-project.host.yaml` で、板参加の宣言はノードの
-持ち物として一元化している（[agent-project 設計書](./agent-project-design.md) の「板の請負」）。
+入札の可否（担当リポジトリ・タグ・CLI・契約バージョン・引き受けるエンジン・枠の照合）は
+`agentcore.board.eligible` の 1 実装で、agent-flow の板参加と共有する——以前は「同じ仕様・
+別実装」で 2 つあり、片方だけ育つと同じ公示が経路によって拾えたり拾えなかったりした
+（`agentcore.protocol` の claim と同じ理由で集約した）。判定材料の正典は各 PC の
+`agent-project.host.yaml` で、板参加の宣言はノードの持ち物として一元化している
+（[agent-project 設計書](./agent-project-design.md) の「板の請負」）。
+
+**判定材料を渡し忘れると、症状は「入札しない」として出る。** ここは実際に踏んだ:
+`requires.agent_cli` の照合は fail-close（使える CLI を宣言していないノードは入札しない）
+なのに、板の巡回が `agent_cli` を渡していなかったため、CLI 指定つきの公示に amigos ノードは
+**永久に入札していなかった**。例外も警告も出ず、板の側からは「誰も手を挙げない公示」に
+見えるだけになる。このノードの CLI 宣言はスカラ 1 件（`--agent-cli` / 設定）で、板の語彙は
+「使える CLI の一覧」なので、ロール応募（`assign.py`）と同じ流儀で畳んで渡す。
+`workloads` / `budget.max_concurrent` はロールではなく**ノードの性質**なので、amigos 自身の
+設定ではなく host.yaml から読む（agent-flow と同じ正典を見る）。
 
 ### 8.2 障害と回復
 
