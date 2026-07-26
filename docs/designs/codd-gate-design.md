@@ -279,15 +279,23 @@ agent-project の pilot-then-batch（1 件を人の検収で固めてから残�
 yaml へ**永続化**する（`codd_gate_regression.py`）ための道具であって、コマンド起動時にパッケージへ値を差し込む
 配線層ではない。責務は「実在するか」「使ってよいか」「実引数はどう組むか」の3段に分かれる。
 
+**現在地（実装済み）**。パッケージ外の sibling が codd-gate を検出し、設定へ貼る
+`regression_cmd` / `intake_cmd` の推奨文字列を返す。`codd_gate_wiring.py` の CLI は検出結果と
+結線所見を JSON で表示し、`hooks.wiring: codd_gate_wiring` を明示した場合だけ package doctor に
+同じ所見が出る。有効化の手順は、利用者が yaml / CLI に値を書くか、
+`codd_gate_regression.py --config <path>` が既存 yaml の `regression_cmd` 1行を冪等に更新するかの
+どちらかである。生成 CLI は成功時 JSON に `intake_cmd` の推奨値も出すが、自動注入しない。
+`build_config` は検出も推奨値のインメモリ注入も行わず、明示された汎用フック設定をそのまま使う。
+
 | モジュール | 責務 | 主な関数／型 |
 |---|---|---|
 | `codd_gate_detect.py` | codd-gate 実体の解決・生の検出値 | `resolve_codd_gate()`（`resolve_agent_flow` と対称：explicit→PATH→同梱パス `tools/codd-gate/codd-gate.py`）／`get_version()`／`check_repos_schema_compat()`／`detect_capabilities()`（`--help` の実プローブで verify/tasks/`--debt` の対応を判定） |
-| `codd_gate_status.py` | 検出結果の no-op 縮退 | `CoddGateStatus`（`binary`/`version`/`findings`。`usable` は「実在し findings が空」・`command(*args)` は usable でなければ `None`）／`build_status()`（実在→バージョン→schema 互換の短絡順で判定。下限 `MIN_SUPPORTED_VERSION=(1,0,0)`）／`detect_status()` |
-| `codd_gate_routing.py` | regression/intake/acceptance 共通の実引数組み立て | `resolve_repos_arg()`（vcwd 配下なら相対パス、外なら絶対パス）／`resolve_repo_dir_arg()`（`NAME=DIR`）／`build_routing_args()` |
+| `codd_gate_status.py` | 検出結果の finding 化と no-op 縮退 | `CoddGateStatus`（`binary`/`version`/`findings`。`usable` は「実在し findings が空」・`command(*args)` は usable でなければ `None`）／`build_status()`（実在→バージョン→schema 互換の短絡順で判定。下限 `MIN_SUPPORTED_VERSION=(1,0,0)`）／`detect_status()`（実体の検出だけを行う簡易入口） |
+| `codd_gate_routing.py` | 明示設定する推奨文字列と routing 引数の組み立て | `recommend_regression_cmd()`／`recommend_intake_cmd()`／`resolve_repos_arg()`（vcwd 配下なら相対パス、外なら絶対パス）／`resolve_repo_dir_arg()`（`NAME=DIR`）／`build_routing_args()` |
 | `codd_gate_base.py` | 差分ゲートの base rev 解決 | `resolve_base_rev()`（`$KIRO_BASE_REV`→charter の repo `base:`→`HEAD~1` の順。base 未注入で `--base ""` が失敗する穴を埋める） |
 | `codd_gate_debt.py` | intake 出力の task スキーマ正規化（任意パーサ） | `parse_debt_output()` → `DebtParseResult(items, errors)`／`DriftItem(title, id, fields)`。object/array どちらの stdout も受理し、`title` 欠落など不備な1件だけを `errors` に隔離して残りは処理を続ける |
-| `codd_gate_wiring.py` | 実測と判定（doctor 表示・生成の材料。**パッケージへは配線しない**） | `detect_wiring()`（実在→バージョン→schema→能力の短絡順で実測し `WiringJudgment` を返す。`codd_gate_regression.py` が生成可否の判断に使う）／`judge_wiring()`（純粋関数）／`recommend_regression_cmd()`／`recommend_intake_cmd()`（推奨値の文字列生成）／`regression_wired()`／`intake_wired()`（手書き文字列が既に codd-gate を指すかの正規表現判定＝doctor の表示材料）／`doctor_findings()`（doctor 出力用の所見。読み取り専用） |
-| `codd_gate_regression.py` | regression_cmd の生成・yaml への冪等注入（CLI） | `build_regression_cmd()`／`upsert_config_text()`（正規表現ベースの最小差分行編集。PyYAML load→dump は使わず既存コメントを保持）／`apply_to_file()`。`python3 codd_gate_regression.py --config .agent/agent-project.yaml` で人・install 手順が明示的に実行する生成ツール |
+| `codd_gate_wiring.py` | 実測・結線判定・所見表示と、明示値の yaml 冪等注入 | `detect_wiring()`（実在→バージョン→schema→能力の短絡順で実測し `WiringJudgment` を返す）／`judge_wiring()`（純粋関数）／`recommend_regression_cmd()`／`recommend_intake_cmd()`／`upsert_yaml_text()`／`apply_yaml_file()`／`doctor_findings()`（CLI または明示した doctor フック向け。読み取り専用） |
+| `codd_gate_regression.py` | regression_cmd の生成・yaml への冪等注入（CLI） | `build_regression_cmd()`／`upsert_config_text()`（正規表現ベースの最小差分行編集。PyYAML load→dump は使わず既存コメントを保持）／`apply_to_file()`。`python3 codd_gate_regression.py --config .agent/agent-project.yaml` で人・install 手順が明示的に実行する。成功時 JSON は `regression_cmd` と案内用の `intake_cmd` を返す |
 
 **データ契約**: 入力は `schemas/repos.schema.json` 準拠の `<root>/repos.json`（`check_repos_schema_compat`
 がトップレベル object・`_` 接頭辞以外の値が object という最小構造を検査）。出力は
