@@ -2369,11 +2369,11 @@ def main() -> None:
         setup_ponytail(agent_type, force=force_external)
 
     # 13. headroom インストール（CLI + --agent 向け MCP）
-    if args.excludes_external_skills:
-        print("\n13. headroom をスキップ (--excludes-external-skills が指定されました)")
-    else:
-        print(f"\n13. headroom をセットアップ (agent={agent_type})...")
-        setup_headroom(agent_type, force=force_external)
+    # if args.excludes_external_skills:
+    #     print("\n13. headroom をスキップ (--excludes-external-skills が指定されました)")
+    # else:
+    #     print(f"\n13. headroom をセットアップ (agent={agent_type})...")
+    #     setup_headroom(agent_type, force=force_external)
 
     # 完了
     print("\n" + "=" * 50)
