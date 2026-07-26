@@ -7,16 +7,17 @@
 // 候補を出すたびに Python を起動すると一覧の描画がプロセス起動待ちになる。契約（キーの形と
 // URL 正規化の規則）は agentcore 側が正で、ここはその読み手。
 //
-// **YAML の扱い**: このアプリは YAML パーサを持たない（`toolconfig.parseFlatYaml` も
-// トップレベルのスカラだけ）。`repos:` は決まった形——`- url:` で始まり同じインデントの
-// `local:` が続くマップの列——なので、その形だけを読む小さなパーサを置く。ネストした
-// マッピングやフロー記法（`repos: [{...}]`）は読まない: 読めなければ「宣言なし」に倒れ、
-// 呼び出し側はミラー取得へ落ちるだけで動作は正しい（速度が出ないだけ）。
-// host.yaml を JSON（`agent-project.host.json`）で書いている場合は素直に全部読める。
+// **YAML の扱い**: 読みは base/main/yaml.js（YAML ライブラリ）へ寄せている。以前は
+// 「`- url:` で始まり同じインデントの `local:` が続く」形だけを読む小さなパーサだったが、
+// `repos:  # このPCのクローン` のようなインラインコメントで `repos:` 行の照合が外れ、
+// 宣言が丸ごと無いことにされていた。壊れ方が「静かに宣言なしへ倒れる」＝速度が出ない理由が
+// 分からない形なので、読みは本物のパーサに任せる。
+// 壊れた YAML は従来どおり「宣言なし」に倒れる（呼び出し側はミラー取得へ落ちるだけ）。
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { parseYaml, isPlainObject, scalarString } = require('../../../base/main/yaml');
 
 const HOST_CONFIG_NAMES = [
   'agent-project.host.yaml',
@@ -64,48 +65,24 @@ function sameRepo(a, b) {
   return !!na && na === normalizeRepoUrl(b);
 }
 
-// `repos:` ブロックだけを読む（上のコメントの制限つき）。
-function parseHostRepos(text) {
-  const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
-  const out = [];
-  let inBlock = false;
-  let itemIndent = -1;
-  let cur = null;
-  const flush = () => { if (cur && cur.url) out.push(cur); cur = null; };
-  for (const line of lines) {
-    if (!inBlock) {
-      if (/^repos:\s*$/.test(line)) inBlock = true;
-      continue;
-    }
-    if (!line.trim() || line.trim().startsWith('#')) continue;
-    const indent = line.length - line.replace(/^\s*/, '').length;
-    if (indent === 0) break;                       // 次のトップレベルキー → ブロック終わり
-    const body = line.trim();
-    const item = body.match(/^-\s*(.*)$/);
-    if (item) {
-      flush();
-      if (itemIndent < 0) itemIndent = indent;
-      cur = {};
-      if (item[1]) {
-        const kv = item[1].match(/^([A-Za-z_][\w-]*):\s*(.*)$/);
-        if (kv) cur[kv[1]] = stripQuotes(kv[2]);
-      }
-      continue;
-    }
-    if (!cur || indent <= itemIndent) continue;    // 項目の外（別ブロック）は読まない
-    const kv = body.match(/^([A-Za-z_][\w-]*):\s*(.*)$/);
-    if (kv) cur[kv[1]] = stripQuotes(kv[2]);
+// repos 宣言を [{url, local, …}] へ正規化する。列（`- url: …`）とマップ
+// （`<url>: {local: …}` / `<url>: <local>`）の両方を受ける（JSON 側と同じ規則）。
+function normalizeReposDecl(raw) {
+  if (Array.isArray(raw)) {
+    return raw
+      .filter((e) => isPlainObject(e) && scalarString(e.url))
+      .map((e) => ({ ...e, url: scalarString(e.url) }));
   }
-  flush();
-  return out;
+  if (!isPlainObject(raw)) return [];
+  return Object.entries(raw).map(([url, v]) => (
+    isPlainObject(v) ? { url, ...v } : { url, local: scalarString(v) || '' }
+  ));
 }
 
-function stripQuotes(s) {
-  const t = String(s || '').trim().replace(/\s+#.*$/, '');
-  if (t.length >= 2 && ((t[0] === '"' && t.endsWith('"')) || (t[0] === "'" && t.endsWith("'")))) {
-    return t.slice(1, -1);
-  }
-  return t;
+// host.yaml の `repos:` を読む。読めなければ空配列（＝宣言なし）。
+function parseHostRepos(text) {
+  const doc = parseYaml(text);
+  return isPlainObject(doc) ? normalizeReposDecl(doc.repos) : [];
 }
 
 // このノードの repos 宣言（[{url, local}, …]）。読めなければ空配列。
@@ -121,13 +98,7 @@ function loadNodeRepos() {
   if (file.toLowerCase().endsWith('.json')) {
     try {
       const data = JSON.parse(text);
-      const raw = data && data.repos;
-      if (Array.isArray(raw)) return raw.filter((e) => e && e.url);
-      if (raw && typeof raw === 'object') {
-        return Object.entries(raw).map(([url, v]) =>
-          (v && typeof v === 'object') ? { url, ...v } : { url, local: String(v || '') });
-      }
-      return [];
+      return normalizeReposDecl(data && data.repos);
     } catch {
       return [];
     }

@@ -8,7 +8,8 @@
 登録するだけで、Windows から WSL・別ホストで稼働する本体をドライブできる——上位からの指示・
 確認・方針変更・一時停止/停止・回復（再分解・再投入）をこのアプリで完結する。
 [gitlab-review-viewer](../gitlab-review-viewer/) と同じ構成（プレーン Electron・
-ランタイム依存なし・main / preload / renderer の 3 層）で作られている。
+バンドラなし・main / preload / renderer の 3 層）で作られている。本番依存は差分表示の
+`diff2html` と YAML 読み取りの `yaml` の 2 つだけ。
 
 **ソース構成（制御面分離）**: Electron シェル等の共通部は `src/base/`、
 agent-project / agent-flow の制御は `src/features/agent-project/` に置き、

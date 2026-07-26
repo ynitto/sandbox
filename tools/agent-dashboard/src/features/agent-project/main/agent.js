@@ -18,6 +18,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { readToolConfig } = require('./toolconfig');
 const { agentHomeSubdir, agentDirCandidates } = require('../../../base/main/agent-home');
+const { parseYaml } = require('../../../base/main/yaml');
 
 // エージェント CLI 定義（agents/<name>.json）。**組み込み（kiro/claude/copilot/codex）も
 // 含めて全 CLI がこの定義で動く**（S9）。以前はこのファイルに 6 CLI 分の argv・読み取り専用
@@ -159,19 +160,38 @@ function repoLabel(url) {
   return s.includes('/') ? s.split('/').pop() : s || 'repo';
 }
 
-// プロジェクトの repos レジストリ（repos.json）にある URL 一覧。読めなければ空。
-// repos.yaml/yml はこのアプリに YAML パーサが無いので読まない（候補が減るだけで害は無い）。
+// プロジェクトの repos レジストリにある URL 一覧。読めなければ空。
+// 本体と同じ優先順（yaml → yml → json）で最初に実在するものを読む。json だけを見ていた頃は、
+// レジストリが yaml のプロジェクトで「宣言し忘れ」の行が丸ごと出なかった。
+const REPOS_REGISTRY_NAMES = ['repos.yaml', 'repos.yml', 'repos.json'];
+
+function readReposRegistry(projectDir) {
+  for (const name of REPOS_REGISTRY_NAMES) {
+    let text;
+    try {
+      text = fs.readFileSync(path.join(String(projectDir), name), 'utf8');
+    } catch {
+      continue;
+    }
+    if (name.endsWith('.json')) {
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    }
+    return parseYaml(text);
+  }
+  return null;
+}
+
 function projectRepoUrls(projectDir) {
   if (!projectDir) return [];
-  try {
-    const data = JSON.parse(fs.readFileSync(path.join(String(projectDir), 'repos.json'), 'utf8'));
-    if (!data || typeof data !== 'object') return [];
-    return Object.entries(data)
-      .filter(([name, e]) => !name.startsWith('_') && e && typeof e === 'object' && e.url)
-      .map(([, e]) => String(e.url));
-  } catch {
-    return [];
-  }
+  const data = readReposRegistry(projectDir);
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return [];
+  return Object.entries(data)
+    .filter(([name, e]) => !name.startsWith('_') && e && typeof e === 'object' && e.url)
+    .map(([, e]) => String(e.url));
 }
 
 // tmux で対話 CLI を起動するための一式（起動 argv・入力受付の待ち方）。

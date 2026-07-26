@@ -1,9 +1,11 @@
 'use strict';
 
-// 発見項目の編集を **実体ファイル** へ外科的に書き戻す。YAML ライブラリを使わず、所有する
-// kiro-loop の所有フィールドと statemachine の先頭 name/description だけを書き換え、
-// コメント・順序・他エントリは触らない。
-// フル再シリアライズはコメント破壊のリスクが高いため採らない。
+// 発見項目の編集を **実体ファイル** へ外科的に書き戻す。所有する kiro-loop のフィールドと
+// statemachine の先頭 name/description だけを書き換え、コメント・順序・他エントリは触らない。
+//
+// **読みと違ってここは YAML ライブラリを通さない。** 読み（base/main/yaml.js）の関心は値だが、
+// ここの関心は「どの物理行に書くか」で、フル再シリアライズはコメントと整形を壊す。
+// 書き先の行は discover.parseKiroLoopPromptsWithLines が返すアンカーで決める。
 
 const { parseKiroLoopPromptsWithLines, scalarValue } = require('./discover');
 
