@@ -1,7 +1,7 @@
 """codd_gate_regression の単体テスト（標準ライブラリ unittest）。
 
 regression_cmd の生成（codd-gate 検出結果に応じた no-op 縮退込み）と、
-codd_gate_wiring の冪等注入経路を使う CLI を検証する。
+同モジュールに一元化した冪等注入経路を使う CLI を検証する。
 
 本モジュールの CLI（`--config`）は codd-gate 連携を有効化する唯一の書き込み経路。実行時に
 cfg を書き換える自動配線は存在しないため、「検出 → 推奨文字列の生成 → yaml への冪等注入」の
@@ -23,7 +23,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import codd_gate_regression as regression
 import codd_gate_status as status_mod
-from codd_gate_wiring import judge_wiring
 
 # 完了条件そのもの（grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base'）と同じパターン。
 COMPLETION_RE = re.compile(r'^[ \t]*regression_cmd:.*codd-gate verify --base', re.MULTILINE)
@@ -85,32 +84,96 @@ class TestBuildRegressionCmd(unittest.TestCase):
 
 
 class TestPersistenceBoundary(unittest.TestCase):
-    def test_regression_has_no_second_yaml_writer_api(self):
-        self.assertFalse(hasattr(regression, "upsert_config_text"))
-        self.assertFalse(hasattr(regression, "apply_to_file"))
+    def test_insert_before_intake_cmd(self):
+        text = "root: .\nintake_cmd: 'keep'\n"
+        new_text, changed = regression.upsert_config_text(text, "verify")
+        self.assertTrue(changed)
+        self.assertLess(new_text.index("regression_cmd:"), new_text.index("intake_cmd:"))
+
+    def test_insert_before_agent_cli_with_header(self):
+        text = "root: .\nagent_cli: claude\n"
+        new_text, changed = regression.upsert_config_text(text, "verify")
+        self.assertTrue(changed)
+        self.assertIn("# 一貫性ゲート（codd-gate 連携）", new_text)
+        self.assertLess(new_text.index("regression_cmd:"), new_text.index("agent_cli:"))
+
+    def test_append_without_anchor(self):
+        new_text, changed = regression.upsert_config_text("root: .\n", "verify")
+        self.assertTrue(changed)
+        self.assertTrue(new_text.rstrip().endswith("regression_cmd: 'verify'"))
+
+    def test_upsert_is_idempotent_and_preserves_other_keys(self):
+        text = "root: .\nregression_cmd: 'old'\nintake_cmd: 'keep'\n"
+        once, changed = regression.upsert_config_text(text, "verify 'quoted'")
+        twice, changed_again = regression.upsert_config_text(once, "verify 'quoted'")
+        self.assertTrue(changed)
+        self.assertFalse(changed_again)
+        self.assertEqual(once, twice)
+        self.assertIn("regression_cmd: 'verify ''quoted'''", once)
+        self.assertIn("intake_cmd: 'keep'", once)
+
+    def test_none_preserves_existing_value(self):
+        text = "regression_cmd: 'custom'\n"
+        self.assertEqual(regression.upsert_config_text(text, None), (text, False))
+
+    def test_existing_canonical_value_is_untouched(self):
+        new_text, changed = regression.upsert_config_text(
+            REAL_FILE_SNIPPET,
+            'codd-gate verify --base "$KIRO_BASE_REV" --repos .agent-project/repos.json',
+        )
+        self.assertFalse(changed)
+        self.assertEqual(new_text, REAL_FILE_SNIPPET)
+
+    def test_generated_line_satisfies_completion_condition(self):
+        cmd = regression.build_regression_cmd(
+            status_mod.build_status(["codd-gate"]), ".agent-project/repos.json")
+        new_text, _ = regression.upsert_config_text("agent_cli: claude\n", cmd)
+        self.assertRegex(new_text, COMPLETION_RE)
+
+    def test_apply_file_writes_generated_line(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "agent-project.yaml"
+            path.write_text("agent_cli: claude\n", encoding="utf-8")
+            self.assertTrue(regression.apply_to_file(path, "codd-gate verify --base X"))
+            self.assertRegex(path.read_text(encoding="utf-8"), COMPLETION_RE)
+
+    def test_apply_file_skips_second_write(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "agent-project.yaml"
+            path.write_text("root: .\n", encoding="utf-8")
+            self.assertTrue(regression.apply_to_file(path, "verify"))
+            before = path.stat().st_mtime_ns
+            self.assertFalse(regression.apply_to_file(path, "verify"))
+            self.assertEqual(path.stat().st_mtime_ns, before)
+
+    def test_apply_file_can_create_parent_and_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / ".agent" / "agent-project.yaml"
+            self.assertTrue(regression.apply_to_file(path, "codd-gate verify --base X"))
+            self.assertTrue(path.exists())
+
+    def test_none_does_not_create_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "agent-project.yaml"
+            self.assertFalse(regression.apply_to_file(path, None))
+            self.assertFalse(path.exists())
 
 
 class TestCliMain(unittest.TestCase):
     """`python3 codd_gate_regression.py --config <yaml>` の一気通貫。
 
-    実測は mock し、設定生成と wiring の冪等 upsert への委譲を決定的に検証する。
+    実体検出は mock し、設定生成と冪等 upsert を決定的に検証する。
     """
 
     def _run_cli(
-        self, argv: "list[str]", judgment=None,
+        self, argv: "list[str]", status=None,
     ) -> "tuple[int, dict]":
         """main() を呼び、終了コードと stdout の JSON を返す。"""
         buf = io.StringIO()
         # stderr も飲む（未検出ケースの診断メッセージがテスト出力に混ざるのを防ぐだけ。
         # その内容の検証は TestCliContract の担当）。
-        if judgment is None:
-            usable = status_mod.build_status(
-                ["codd-gate"], version=(1, 0, 0), schema_ok=True)
-            judgment = judge_wiring(
-                usable, None, None,
-                capabilities={"verify": True, "tasks": True, "debt": True},
-                repos_path=".agent-project/repos.json")
-        with mock.patch.object(regression, "probe_wiring", return_value=judgment), \
+        status = status or status_mod.build_status(["codd-gate"])
+        with mock.patch.object(regression, "detect_status", return_value=status), \
                 contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
             rc = regression.main(argv)
         return rc, json.loads(buf.getvalue())
@@ -254,10 +317,8 @@ class TestCliMain(unittest.TestCase):
             cfg = self._config_with(d, "root: .\nregression_cmd: 'make -s smoke'\n")
             before = cfg.read_text(encoding="utf-8")
 
-            judgment = judge_wiring(
-                status_mod.build_status(None), None, None,
-                repos_path=".agent-project/repos.json")
-            _, payload = self._run_cli(["--config", str(cfg)], judgment)
+            _, payload = self._run_cli(
+                ["--config", str(cfg)], status_mod.build_status(None))
 
             self.assertFalse(payload["usable"])
             self.assertIsNone(payload["cmd"])
@@ -265,49 +326,6 @@ class TestCliMain(unittest.TestCase):
             self.assertIsNone(payload["intake_cmd"])
             self.assertFalse(payload["changed"])
             self.assertEqual(cfg.read_text(encoding="utf-8"), before)
-
-    def test_noop_when_verify_capability_is_missing(self):
-        with tempfile.TemporaryDirectory() as d:
-            cfg = self._config_with(d, "root: .\nregression_cmd: 'make -s smoke'\n")
-            before = cfg.read_text(encoding="utf-8")
-            usable = status_mod.build_status(
-                ["codd-gate"], version=(1, 0, 0), schema_ok=True)
-            judgment = judge_wiring(
-                usable, None, None,
-                capabilities={"verify": False, "tasks": True, "debt": True},
-                repos_path=".agent-project/repos.json")
-
-            rc, payload = self._run_cli(["--config", str(cfg)], judgment)
-
-            self.assertEqual(rc, regression.EXIT_UNUSABLE)
-            self.assertFalse(payload["usable"])
-            self.assertEqual(payload["reason"], "verify capability unavailable")
-            self.assertFalse(payload["changed"])
-            self.assertEqual(cfg.read_text(encoding="utf-8"), before)
-
-    def test_noop_when_version_or_schema_is_incompatible(self):
-        statuses = (
-            status_mod.build_status(["codd-gate"], version=(0, 9, 0)),
-            status_mod.build_status(
-                ["codd-gate"], version=(1, 0, 0),
-                schema_ok=False, schema_detail="bad schema"),
-        )
-        for status in statuses:
-            with self.subTest(reason=status.reason), tempfile.TemporaryDirectory() as d:
-                cfg = self._config_with(d, "root: .\nagent_cli: claude\n")
-                before = cfg.read_text(encoding="utf-8")
-                judgment = judge_wiring(
-                    status, None, None,
-                    capabilities={"verify": True, "tasks": True, "debt": True},
-                    repos_path=".agent-project/repos.json")
-
-                rc, payload = self._run_cli(["--config", str(cfg)], judgment)
-
-                self.assertEqual(rc, regression.EXIT_UNUSABLE)
-                self.assertFalse(payload["usable"])
-                self.assertFalse(payload["changed"])
-                self.assertEqual(cfg.read_text(encoding="utf-8"), before)
-
 
 class TestCliContract(unittest.TestCase):
     """CLI としての外形（終了コード・stderr・ヘルプ）。
@@ -363,10 +381,8 @@ class TestCliContract(unittest.TestCase):
             cfg = Path(d) / "agent-project.yaml"
             cfg.write_text("root: .\nagent_cli: claude\n", encoding="utf-8")
 
-            judgment = judge_wiring(
-                status_mod.build_status(None), None, None,
-                repos_path=".agent-project/repos.json")
-            with mock.patch.object(regression, "probe_wiring", return_value=judgment):
+            with mock.patch.object(
+                    regression, "detect_status", return_value=status_mod.build_status(None)):
                 rc, out, err = self._run(["--config", str(cfg)])
 
             self.assertEqual(rc, regression.EXIT_UNUSABLE)

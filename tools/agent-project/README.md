@@ -292,15 +292,13 @@ CLI からも付与・修正できる。
   ```
 
   生成ツールは `regression_cmd` だけを冪等に更新する。`intake_cmd` は設定ファイルへ直接書く。
-  生成ツールは codd-gate のバージョン、repos schema、`verify` 対応を検査し、使えない場合は
-  設定を変更しない。YAML の更新には `codd_gate_wiring.py` の冪等注入処理を使う。
+  生成ツールは codd-gate の実体だけを検出し、見つからない場合は設定を変更しない。
+  YAML の更新処理は `codd_gate_regression.py` にだけ置く。
 
-  稼働全般は `agent-project doctor` で診断する。パッケージ外の codd-gate 結線は自動診断の
-  対象外なので、次の読み取り専用 CLI で確認する。これが結線診断の正準手順であり、設定は
-  書き換えない。
+  codd-gate の結線診断は、リポジトリルートで次の読み取り専用 CLI を実行する。これが唯一の
+  正準手順であり、設定は書き換えない。
 
   ```bash
-  agent-project doctor
   python3 tools/agent-project/codd_gate_wiring.py \
     --config .agent/agent-project.yaml
   ```

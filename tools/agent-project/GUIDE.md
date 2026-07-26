@@ -194,10 +194,10 @@ agent-project doctor --fix        # env/config を自動修正し、program の�
 `audit` が「設定が無人運用に値するか」を採点するのに対し、`doctor` は「**いま現に何が起きているか**」を
 ログ・稼働シグナルから診断する。環境/設定の問題は直し、コードの不具合だけイシューに切り出す。既定では
 実行層 `agent-flow doctor` も連携実行して所見を統合する（`[flow]` 印・`--no-flow` で本体のみ）。
-`agent-project doctor` はパッケージ外の sibling 部品を探索しない。一貫性ゲートの結線は、リポジトリルートで
-`python3 tools/agent-project/codd_gate_wiring.py --config .agent/agent-project.yaml` を実行して確認する。
-この CLI は `codd-gate` の検出結果と未結線時の推奨コマンドを JSON で出し、設定ファイルには書き込まない。
-有効化手順の正本は README。
+一貫性ゲートの結線診断は、リポジトリルートで
+`python3 tools/agent-project/codd_gate_wiring.py --config .agent/agent-project.yaml` を実行する。
+これが唯一の正準入口である。CLI は `codd-gate` の検出結果と未結線時の推奨コマンドを JSON で出し、
+設定ファイルには書き込まない。有効化手順の正本は README。
 
 **卒業の目安**: 予算内で安定収束、`audit --strict` が常時グリーン、夜間放任でも事故ゼロ。
 
