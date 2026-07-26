@@ -518,6 +518,7 @@ CLI: `revive` へ `--charter` と `--all` を足す（`cli.py:262-265`）。
 | P1-2 | `tools/agent-project/agent-project.yaml.example` | `argv_limit` の 1 行 |
 | P1-3 | `tools/agent-project/agent_project/resident_cli.py` | `HOST_TOP_KEYS` / `HOST_PROJECT_KEYS` / `host_config_findings()` 新設・`HostConfig` のスカラ救済・`load_host_config` の 1 度きり警告 |
 | P1-3 | `docs/plans/2026-07-26-s1-config-two-layer-detailed-design.md` | 文言カタログへ W5 / W6 / W7 を追記（既存の「実装で確定した差分」節の流儀） |
+| P1-2 | `tools/agent-project/README.md` | 両方に書けるキーの一覧へ `argv_limit` |
 | P1-4 | `tools/agent-tools/agentcore/agentcore/commands.py` | `pending` の debounce / `stop_at_deferred`・`clear_rejected` / `prune_rejected` 新設 |
 | P1-4 | `tools/agent-project/agent_project/resident_cli.py` | `_ingest_node_commands` の debounce・`.err` 掃除・全 reject の status 記録・`_sweep_node_commands` と gc 登録 |
 | P1-4 | `tools/agent-project/agent_project/commands.py` | `_clear_rejected_commands` を agentcore へ委譲（薄い皮に） |
@@ -643,19 +644,18 @@ cd tools/agent-dashboard && npm test
 
 ## 8. 積み残し（本設計では扱わない）
 
-- **W5/W6 を E へ昇格するか**（host.yaml の綻びで起動を止めるか）。canary で
-  「警告が実際に出た件数と内容」を見てから決める。総覧 §7.2 の「警告から始める」に従う。
-- **`Config` を `slots=True` にする**（P0 §8 から継続）。P1-2 で `argv_limit` を
-  足すが、動的属性を生やしている箇所（`cfg._controller_active` 等）の棚卸しは別途。
-- **プロジェクト側 `commands/` の `.err` にも TTL 掃除を入れるか**。状態リポジトリ配下
-  なので全 PC へ同期され、古い失敗が残ると要対応カードのノイズになる。ノード側で
-  `prune_rejected` を用意するので配線するだけだが、`.err` は「直前の指示は失敗した」
-  バナーの根拠なので、消える条件を増やす前に dashboard 側の表示規約と突き合わせが要る。
-- **`side_effects` の実効性**（プロンプトで頼むだけで、CLI の権限フラグとしては
-  強制していない）。`readonly` の強制をしないという S9 §6 の割り切りと同じ線上にあり、
-  変えるなら割り切りの再決定が先（総覧 §4）。
-- **`spill_prompt` の指示文をどこの正典にするか**（§7-B）。P2-5 で `DIFF_CRITERION` と
-  まとめて決める。
+実装後の確定版。**すべて契機待ち**で、P1 として着手すべきものは残っていない
+（総覧 §3 の末尾 3 行・§5 の最終項・§7.3 P2-5・§7.4 P3-3 へ転記済み）。
+
+| # | 内容 | 拾う契機 |
+|---|---|---|
+| 1 | **W5/W6/W7 を E（fail-fast）へ昇格するか**。host.yaml の綻びで起動を止めるか。S1 §3.3 の E6（`projects[].config`）を宣言どおり fail-fast へ戻すかも同じ判断 | canary（総覧 §1.1）で「警告が実際に出た件数と内容」を見てから |
+| 2 | **doctor から `host_config_findings()` を呼ぶ**。純関数に切り出してあるので配線するだけ。あわせて設定値の検査（`argv_limit ≤ 0` 等・agent-flow の doctor にはある）も | P3-3（doctor へ検査をまとめて足すとき） |
+| 3 | **プロジェクト側 `commands/*.err` の期限掃除**。土台（`prune_rejected`）は用意済みで配線するだけ。状態リポジトリ配下なので古い失敗が全 PC へ配られる | `.err` の残骸が実際に邪魔になったとき。`.err` は失敗バナーの根拠なので、消える条件を増やす前に dashboard の表示規約と突き合わせが要る |
+| 4 | **`spill_prompt` の指示文の正典**（§7-B）。定義の `spill.instruction` は Python から使われておらず、3 者が自前の文を持つ | P2-5 で `DIFF_CRITERION` とまとめて決める（**手は P1-1 で実証済み**——解決済みの文を入力で渡し、受け側の表は受け皿に降格する形） |
+| 5 | **`Config` を `slots=True` にする**（P0 §8 から継続）。動的属性を生やしている箇所（`cfg._controller_active` 等）の棚卸しが要る | P0 §8 と同じ扱い（構造テストで代替できている間は急がない） |
+| 6 | **`side_effects` の実効性**。プロンプトで頼むだけで、CLI の権限フラグとしては強制していない | `readonly` を強制しないという S9 §6 の割り切りと同じ線上。変えるなら割り切りの再決定が先（総覧 §4） |
+| 7 | **ノード宛て指示の猶予（3 秒）が定数**。プロジェクト側は `debounce` 設定で変えられるが、ノードスコープは `cfg` を持たない | 手置きの運用が増えて 3 秒では足りないと分かったとき（板 tick は 30 秒周期なので、猶予を延ばす実利は小さい） |
 
 ---
 

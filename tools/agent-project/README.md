@@ -963,7 +963,7 @@ Windows タスクスケジューラ方式との選択と手順は
   ノードごとに食い違うと実行が非決定になる。
 - **両方に書ける**（優先順位: **CLI > `projects[].overrides` > `defaults` > プロジェクト yaml > 既定**）:
   `agent_cli` / `model` / `act_timeout` / `verify_timeout` / `location` / `concurrency` /
-  `agent_timeout` / `actor` / `notify_cmd` / `ltm_home` / `flow_config` / `verify_cwd`。
+  `agent_timeout` / `argv_limit` / `actor` / `notify_cmd` / `ltm_home` / `flow_config` / `verify_cwd`。
   導入済み CLI・マシン性能・ノード局所パスはノードごとに違ってよい。
 
 ```yaml
