@@ -1277,6 +1277,23 @@ table.list tr.clickable:hover { background: var(--bg2); }
 }
 .task-list-empty { min-height: 184px; display: grid; place-items: center; }
 
+/* 却下済み（墓標）— 既定は畳んでおく。日常の視界には入れず、入れ直したいときだけ開く */
+.tombstones { margin-top: 12px; }
+.tombstones > summary { cursor: pointer; color: var(--muted); padding: 6px 2px; }
+.tombstone-list { display: flex; flex-direction: column; gap: 4px; padding: 4px 2px 8px; }
+.tombstone-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+.tombstone-title { overflow-wrap: anywhere; }
+.tombstone-meta { font-size: 0.9em; overflow-wrap: anywhere; }
+@media (max-width: 768px) {
+  .tombstone-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .tombstone-meta { grid-column: 1 / -1; }
+}
+
 @media (max-width: 768px) {
   .task-toolbar { flex-direction: column; }
   .task-toolbar-filters,

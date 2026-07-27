@@ -215,30 +215,14 @@ function registerIpc(ctx) {
     return res;
   });
 
-  // 不要なバックログタスクの削除（人の明示アクション）。backlog/<id>.md だけを
-  // 対象にし、実行中（doing かつクレームあり）のタスクは拒否する。
-  // クレームロック（claims/<id>.lock）は worker のクラッシュや review/blocked
-  // 滞留で残骸が残るため（agent-project 本体も approve 時に掃除する）、
-  // ロックの存在だけでは拒否せず、削除時に残骸ロックも一緒に片付ける。
-  // agent-project に削除の公式契約は無いため、ファイルをゴミ箱へ移動する
-  handle('dashboard:deleteTask', async ({ dir, id }) => {
-    const tid = String(id || '');
-    if (!tid || tid !== path.basename(tid)) throw new Error(`不正なタスク ID です: ${id}`);
-    const file = path.join(dir, 'backlog', `${tid}.md`);
-    if (!fs.existsSync(file)) throw new Error(`タスクファイルがありません: ${file}`);
-    const lockFile = path.join(dir, 'claims', `${tid}.lock`);
-    const status = project.parseTask(fs.readFileSync(file, 'utf8'), tid).status;
-    if (status === 'doing' && fs.existsSync(lockFile)) {
-      throw new Error(`${tid} は実行中（doing・クレーム中）のため削除できません`);
-    }
-    const via = await trash(file);
-    try {
-      fs.rmSync(lockFile, { force: true }); // 残骸ロックを掃除（無ければ no-op）
-    } catch {
-      /* ロックの掃除失敗は削除自体の失敗にしない */
-    }
-    return { file, via };
-  });
+  // 不要なバックログタスクの削除（人の明示アクション）＝本体の却下（reject）へ委ねる。
+  // 判断も投函も actions 側（requestDeleteTask のコメントに理由）。
+  handle('dashboard:deleteTask', async ({ dir, id, reason }) =>
+    actions.requestDeleteTask(loadConfig(), { dir, id, reason }));
+
+  // 墓標の解除（削除＝却下の取り消し）。同じ題のタスクを入れ直せる状態へ戻す。
+  handle('dashboard:revive', async ({ dir, title, charter }) =>
+    actions.requestRevive(loadConfig(), { dir, title, charter }));
 
   // プロジェクトのリセット（人の明示アクション・危険操作）。charter.md 以外の全データを
   // ゴミ箱へ移動する。charter は「プロジェクト全体の前提

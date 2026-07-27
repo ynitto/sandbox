@@ -269,12 +269,12 @@ function revisePayload({ fields, feedback }) {
 // commands/<name>.json のドロップ（agent-project の ingest_commands が拾う）。
 // 書きかけを watch に読ませないよう .tmp に書いてから rename する。
 // replan / pause / resume / stop / heal はプロジェクト単位（id 不要）なので id を載せない。
-function dropCommand(projectDir, { action, id, reason, fields, feedback, run, charter, complete }) {
+function dropCommand(projectDir, { action, id, reason, fields, feedback, run, charter, title, complete }) {
   const dir = path.join(projectDir, 'commands');
   fs.mkdirSync(dir, { recursive: true });
   const projectScoped =
     action === 'replan' || action === 'heal' || action === 'distill-notes' ||
-    LIFECYCLE_ACTIONS.has(action);
+    action === 'revive' || LIFECYCLE_ACTIONS.has(action);
   const rec = {
     command: action,
     ...(projectScoped ? {} : { id: String(id) }),
@@ -283,9 +283,11 @@ function dropCommand(projectDir, { action, id, reason, fields, feedback, run, ch
     ts: new Date().toISOString(),
     ...(action === 'revise' ? revisePayload({ fields, feedback }) : {}),
     ...(action === 'resume-run' && run ? { run: String(run) } : {}),
-    ...((action === 'replan' || action === 'distill-notes') && charter
+    ...((action === 'replan' || action === 'distill-notes' || action === 'revive') && charter
       ? { charter: String(charter) }
       : {}),
+    // revive は id ではなくタイトル（指紋照合）で対象を指す
+    ...(action === 'revive' && title ? { title: String(title) } : {}),
     // 承認 = 完了か積み直しかは呼び出し側が明示する（本体は文面から推定しない）
     ...(action === 'approve' && complete ? { complete: true } : {}),
   };
@@ -417,6 +419,57 @@ async function requestDistillNotes(cfg, { dir, charter }) {
 // （stop の CLI は同一ホスト限定で、この口の主用途はリモート操作のため）。
 const LIFECYCLE_LABELS = { pause: '一時停止', resume: '再開', stop: '停止' };
 
+// 不要なバックログタスクの削除 ＝ 本体の **却下（reject）** へ委ねる。
+//
+// 以前は viewer が backlog/<id>.md をゴミ箱へ移すだけだった（「削除の公式契約が無い」ため）。
+// だがタスクファイルは状態のごく一部で、生の削除では次の 3 つが起きる:
+//   1. 要対応カード（needs/<id>.md）が残る。しかも対応タスクが無い票は本体の ingest_feedback が
+//      読み飛ばすので、[x] を付けても消えない袋小路になる。
+//   2. 墓標（tombstones.md）が残らないので、charter 運用では次の再分解が同じタスクを作り直す
+//      ＝人には「消しても復活する」としか見えない。
+//   3. 状態 git の同時変更裁定では backlog は実行側（本体）が正なので、本体側に書き込みが
+//      あると viewer 側の削除が取り消されうる（別 PC 運用で消えたはずのタスクが戻る）。
+// reject は archive への退避・needs の掃除・claim 解放・flow の切り離し・墓標・決定記録を
+// 1 つの操作として本体のプロセス内で行う＝上の 3 つが構造的に起きない。
+// 取り消しは墓標の解除（requestRevive）。
+function requestDeleteTask(cfg, { dir, id, reason }) {
+  const tid = String(id || '').trim();
+  if (!tid || tid !== path.basename(tid)) throw new Error(`不正なタスク ID です: ${id}`);
+  const file = path.join(dir, 'backlog', `${tid}.md`);
+  if (!fs.existsSync(file)) throw new Error(`タスクファイルがありません: ${file}`);
+  // 実行中の拒否は本体（cmd_reject）にもあるが、押した瞬間に理由を返せるようここでも見る
+  const status = project.parseTask(fs.readFileSync(file, 'utf8'), tid).status;
+  if (status === 'doing') {
+    throw new Error(`${tid} は実行中（doing）のため削除できません（先に「修正して再実行」で止めてください）`);
+  }
+  return runAction(cfg, {
+    dir,
+    action: 'reject',
+    id: tid,
+    reason: String(reason || '').trim() || 'agent-dashboard から削除（不要と判断）',
+  });
+}
+
+// 墓標の解除（却下＝削除の取り消し）。プロジェクト単位（id ではなく title 指定）の
+// commands/ ドロップ。本体の ingest_commands が cmd_revive へ渡す。
+function requestRevive(cfg, { dir, title, charter }) {
+  const name = String(title || '').trim();
+  if (!name) throw new Error('解除する墓標のタイトルが指定されていません');
+  const { file } = dropCommand(dir, {
+    action: 'revive',
+    reason: 'agent-dashboard から墓標を解除',
+    title: name,
+    charter: String(charter || '').trim() || undefined,
+  });
+  return {
+    output:
+      `「${name}」の墓標を解除するよう要求しました` +
+      '（稼働中の agent-project が取り込むと、同じタスクを入れ直せるようになります）',
+    file,
+    via: 'file',
+  };
+}
+
 function requestLifecycle(cfg, { dir, action, reason }) {
   if (!LIFECYCLE_ACTIONS.has(action)) throw new Error(`不明なライフサイクル操作: ${action}`);
   const why = String(reason || '').trim() || 'agent-dashboard から操作';
@@ -442,6 +495,8 @@ module.exports = {
   dropCommand,
   runAction,
   requestReplan,
+  requestDeleteTask,
+  requestRevive,
   requestLifecycle,
   listNotes,
   writeNote,
