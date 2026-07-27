@@ -11,7 +11,8 @@
   引き継ぎ、総覧に載っていなかった積み残し（今回の突き合わせで発見）は §5 に新規で持つ
 
 **読み方**: §1 が canary の後始末（判断と記録。すぐやる）。§2 が次の実装の本丸（R2b と
-同時に繋ぐもの）。§3 は R2b の静止点に相乗りさせる修正。§4 は契機待ちのまま残る一覧
+同時に繋ぐもの）。**§2b は canary の観測から出た優先項目（flow の work ノード分担と実行
+ノードの観測）**。§3 は R2b の静止点に相乗りさせる修正。§4 は契機待ちのまま残る一覧
 （全件コードで未対応を再確認済み）。§5 は総覧から漏れていた積み残し。§6 は文書の綻び。
 
 ---
@@ -81,6 +82,68 @@ lease 失効 → 再入札が吸収する正常事象として扱う。
 | — | **`poll_board` の取り込み済み判定を板の `status/<who>.json` 基準へ**。現行は自分のバスしか見ず、同一ノードの 2 プロジェクトが同じ板を巡回すると同じ公示を二重に取り込む（S8 §6.5 が「既に壊れている」と記録） | S8 §6.5 |
 | — | **「旧バージョンノードが入札しない」の実機確認**。`eligible` の `requires.contract_version` として実装済み。ワーカーノードが実際に入札する状態になって初めて確かめられる（canary ランブック C10 の「現状では確かめられない」注記を外せる） | 実装計画 §7 R2・R6 |
 | — | dashboard の手動入札ボタン有効化（`intake_projects` ガードの解除）と、`worker` ノードの参加タブ表示の確認 | S8 §6.6・§9-1 |
+
+---
+
+## 2b. flow の work ノード PC 間分担と実行ノードの観測（canary の観測から。優先）
+
+**canary で「flow（既定 CLI: kiro）の各 worker 処理を複数ノードで分担できているか」が
+観測できなかった件の調査結果。結論: 分担は起きておらず（現行仕様）、観測手段も無い
+（実装が要る）。**
+
+### 2b.1 現状の事実（コードで確認）
+
+- **分担の粒度は backlog タスク単位が仕様**。run（プランナーが分解した work ノード
+  t1, t2, … を含む）は、`claim_request` で 1 台に確定し（`bus.py` — docstring が
+  「どのデーモンがこの要求を orchestrate するかを 1 台に決める」）、落札した PC が
+  orchestrator 1 本 + `workers` 個（既定 2）の worker を**自 PC 内の subprocess として**
+  起こして丸ごと完走する（`run.py`）。[`multi-pc-operations.md` §4.2](../guides/multi-pc-operations.md)
+  が「グラフ内の個々のステップが PC 間に散らないのは仕様」と明記している。
+- **work ノード単位の claim/lease の下地は実装済み・分散テスト済み**（`bus.try_claim` は
+  ノード単位。`test_claim_across_separate_clones_single_winner` が別クローンからの同一
+  ノード claim で勝者 1 人を検証済み）。**しかし下地を駆動する主体が居ない**——旧 daemon の
+  オンデマンド worker 起動（`_spawn_worker` + `run_claimable_count`）は常駐一本化で削除
+  された（agent-flow 設計書 §注記に明記。`bus.active_runs` / `run_claimable_count` は
+  呼び手ゼロで残存）。共有 git バス（`git_bus`）を設定しても、他 PC の participate は
+  `run_exists()` ガードで既存 run を弾くため worker を 1 本も起こさない。
+- **実行ノードの記録が PC 非依存**: worker の `who` は `run.py` が `worker-{i}` に固定
+  するため、バス上の記録（`results/<node>.json` の `who`・`claims/<node>/<who>.json`・
+  `events/<who>.jsonl`）も、`agent-flow status` の `@who` 表示も、dashboard の run 詳細も、
+  全 PC で `@worker-1` / `@worker-2` になる。成果物リポジトリのコミット
+  （`[agent-flow] t17-… (req-…)`）の author も `agent-flow <agent-flow@local>` 固定。
+  **「どの PC がどの work ノードを実行したか」を知る手段が CLI・GUI・バスのどこにも無い**。
+- **潜在バグ**: 仮に共有バスで 2 台が同じ run に参加すると、両者が `claims/<node>/worker-1.json`
+  と `events/worker-1.jsonl` という**同一パス**へ書き、「ファイル名が衝突しないので
+  add/add コンフリクトにならない」という設計の不変条件（agent-flow 設計書 付録 A）を破る。
+  分担を実装するなら `who` の PC 名前空間化が前提。
+- **kiro 固有の注意**: kiro はステートレス（1 呼び出し = 1 プロセス）なので分担の構造的
+  障害にはならないが、**月間上限（quota）は 1 ノードでも踏むと run 全体が即 failed 終端**
+  （`_env_failure_reason`。既定 `heal_quota: false` で auto-heal も効かない）。同一 kiro
+  アカウントを複数 PC で使う限り、PC を増やしても実行総量は増えない。
+
+### 2b.2 いま観測できるもの（実装を待たずに）
+
+- **タスク単位の分担**は観測できる: `coordination.py` が実行 PC を backlog タスクの
+  `- node:` フィールドへ記録する。dashboard の backlog 画面 / `agent-project status` で
+  `- node:` が PC 間に散っていれば「タスク単位の分担」は効いている。**canary の分担確認は
+  現状ここが唯一の観測点**。
+- **暫定回避**（ステップ分担を手動で起こす）: `git_bus` を設定した共有バス構成で、
+  dashboard「参加」タブの手動 worker 起動を他 PC から押すと、`dashboard-<hostname>-<rand>`
+  名義の worker が同 run の pending ノードを拾い、`agent-flow status` の `@who` に PC 名が
+  出る。ただし canary の標準構成（`single-resident-setup.md` / ランブック）に `git_bus` の
+  設定手順は無く、手動起動は都度操作。
+
+### 2b.3 やること（実装。優先）
+
+| # | 内容 | 規模 |
+|---|---|---|
+| 1 | **worker の `who` へ PC 名（正規化 node_id）を含める**（`run.py` の `worker-{i}` 固定を `<node_id>-w{i}` 等へ）。観測の最小単位であり、上記の同一パス衝突の回避の前提でもある。板・バスの名義綴りは `protocol.safe_name` の規則に従う | S |
+| 2 | **PC 別の実行内訳の表示** — `agent-flow status` / doctor に `who` 別の集計を足し、dashboard の run 詳細（工程の `@who`）が PC を示すようにする | S |
+| 3 | **ステップ分散の駆動の復活** — `run_claimable_count()` ベースのオンデマンド worker 起動を常駐体側（`_flow_participate_tick` / board tick）へ載せ直す。`run_exists()` ガードとの整合（受理と参加の分離）を設計してから。R2b（§2）と同じ静止点・同じ設計回で扱うのが素直（どちらも「板・バス越しに他ノードの仕事を実行する」経路） | M |
+| 4 | 文書の訂正（§6-7〜§6-9） | S |
+
+1・2 は単独で入れられ、**canary の再観測（分担の有無を目で確かめる）を可能にする**ので
+先行してよい。3 は契約・名義に触るため R2b の静止点と合わせる。
 
 ---
 
@@ -165,6 +228,15 @@ lease 失効 → 再入札が吸収する正常事象として扱う。
    の書き手がまだ無い」（R2a で常駐体が書き手になった）。
 5. **S4/S5 §7 の待ち先表記が旧世代**（「W1-11 待ち」→ 正しくは R2b 待ち）。
 6. **canary ランブックの記録欄が空**（§1.1。文書修正ではなく記入）。
+7. **`multi-pc-operations.md` §4.2 の「実行層の共有バス」行が実装より先行** — 「全 PC が
+   同じ `--git` を見ればステップ粒度の真の分散」と案内するが、それを駆動するオンデマンド
+   worker 起動は削除済みで、共有バスにしても他 PC は worker を起こさない（§2b.1）。
+   現状成立する構成（タスク単位分担・フォージ委譲・手動参加）だけに直す。
+8. **参加 UI 設計（2026-07-20-agent-dashboard-participation-ui-design.md）が陳腐化** —
+   「daemon が claim 可能な工程数に応じてワーカーを自動起動するので手動参加は通常不要」と
+   書くが、daemon ごと削除済みで**手動参加が唯一の経路**になっている。訂正注記が要る。
+9. **agent-flow 設計書の冒頭「複数の PC のワーカーへ配って実行し」が誤読を生む** —
+   現行実装で配られるのは run 単位（1 run = 1 PC）。分担の実態（§2b.1）に合わせた表現へ。
 
 ---
 
@@ -173,8 +245,10 @@ lease 失効 → 再入札が吸収する正常事象として扱う。
 ```
 §1 canary の後始末（記録の記入 + 6 つの判断）      ← いま。実装を伴わない
    └ 判断 1（W→E 昇格）と G-2（needs 復活）は canary の観測結果次第で即実装に化ける
+§2b-1/2 flow worker の who へ PC 名 + PC 別内訳表示  ← いま。単独で入り、分担の再観測を可能にする
 §2 R2b（ノード直轄実行 + 検証委譲後半 + graceful 4 ステップ + 二重取り込み修正）
    └ 着手前に §6-2（明示 node_id の方針矛盾）を決着させ、§3 の相乗り分を確定する
+   └ §2b-3（ステップ分散の駆動の復活）は同じ設計回で扱う
 §3 R2b の静止点で一斉適用（node_id 正規化 or 見送りの明文化・flow-archive 追跡外し）
 §4 契機待ち（着手しない。契機が来た行だけ拾う）
 §5〜§6 次に該当文書・該当ファイルを触るときに反映
