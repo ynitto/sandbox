@@ -1,5 +1,9 @@
 # agent-tools — 3 エンジンで共有するもの
 
+> agent-* ファミリー全体（agent-dashboard を含む）が何のための道具かは
+> [コンセプト正典](../../docs/designs/agent-tools-concept.md) が定める。
+> このファミリーへ機能を足すときは、先にあちらの §7（作業ゲート）を通すこと。
+
 `agent-project` / `agent-flow` / `agent-amigos` が**共通で使うもの**の置き場。
 エンジン固有のものはここに置かない（各エンジンのディレクトリへ）。
 
