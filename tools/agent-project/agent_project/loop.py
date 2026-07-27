@@ -580,6 +580,7 @@ def run_watch(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.sle
     passes = 0
     last: dict = {}
     charter_seen: dict[str, float] = {}
+    controller = True                 # pause 中に idle 判定へ入っても未定義参照にならないように
     while True:
         if is_paused(cfg):           # pause 中はパスを起こさない（resume/stop の指示待ち）
             append_journal(cfg.journal, "=== watch: 一時停止中（resume/stop 待ち。エージェント非起動）===")
@@ -587,10 +588,15 @@ def run_watch(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.sle
         else:
             controller = (not _coordination_active(cfg)
                           or renew_controller_lease(cfg))
-            if _coordination_active(cfg) and controller \
-                    and (charter_names(cfg) or _has_master_charter(cfg)):
+            # 計画（charter 分解）は controller だけが行う。**coordination が有効かどうかでは
+            # 分岐しない**——ピアが消えて単独に戻った PC（coordination 非活性 → controller=True）
+            # も計画を続けなければ、生き残った側で charter 駆動が止まる。
+            if controller and (charter_names(cfg) or _has_master_charter(cfg)):
+                # 多 charter はラウンドロビンで全 charter を 1 巡する（max_passes=1 だと
+                # 毎パス先頭の charter しか処理されず、2 本目以降が永久に計画されない）
                 project_watch(cfg, runner=lambda c: run_loop(c, act, ranker, sleeper),
-                              sleeper=sleeper, max_passes=1, heartbeat=heartbeat)
+                              sleeper=sleeper, max_passes=max(1, len(charter_names(cfg))),
+                              heartbeat=heartbeat)
                 tasks = load_tasks(cfg.backlog)
                 last = {"reason": "project", "cycles": 1, "counts": summarize(tasks),
                         "tasks": tasks, "level": cfg.level}
@@ -631,11 +637,12 @@ def run_watch(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.sle
             maybe_heartbeat_status(cfg)  # --status-interval のときだけ idle 中も生存信号を更新（既定は無効＝無干渉）
             state_sync(cfg)          # 状態 git: 溜まった変更をコミットし、リモートの指示を取り込む
             #                          （コミットは毎回・fetch/push だけ間隔律速。届けば has_work が起こす）
-            if _coordination_active(cfg):
-                next_controller = renew_controller_lease(cfg)
-                if next_controller and (not controller or _charter_mtimes(cfg) != charter_seen):
-                    break             # 前 controller 停止後の自動昇格／charter 更新で project パスへ
-                controller = next_controller
+            next_controller = (not _coordination_active(cfg)
+                               or renew_controller_lease(cfg))
+            if not is_paused(cfg) and next_controller \
+                    and (not controller or _charter_mtimes(cfg) != charter_seen):
+                break                 # 前 controller 停止後の自動昇格／charter 更新で project パスへ
+            controller = next_controller
             if is_paused(cfg):
                 ingest_commands(cfg)  # pause 中も resume/stop（と他の指示）は受け付ける
             if maybe_self_update(cfg):   # アイドル時のみ自己更新を確認・取り込み（取り込めたら再起動）

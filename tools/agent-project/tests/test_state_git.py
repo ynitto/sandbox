@@ -146,6 +146,61 @@ class TestStateSyncBatching(unittest.TestCase):
             self.assertNotIn(leftover.name, self._worktree_names(d))
             self.assertTrue(any(m.startswith("agent-project: state sync") for m in self._log(d)))
 
+    def test_sync_realigns_phantom_staged_index_after_interrupted_export(self):
+        """CAS 成功と index 追随（_refresh_index）の間で死んだプロセスの残骸を自己修復する。
+
+        export は「detached worktree でコミット → CAS でブランチ前進 → 実 index を追随」の
+        順で、最後の追随の前に死ぬ（夜間停止の SIGTERM・watchdog abort・電源断）と、HEAD には
+        入ったのに index だけ古いパスが残る。作業ツリー＝HEAD なので次の export は「差分なし」で
+        何も積まず、`git status` にはステージ済みの変更が**恒久に**表示され続ける（idle 中は
+        journal も動かず自然回復しない）＝「状態リポジトリがステージに乗ったまま同期が
+        止まった」ように見える。次の sync の自己修復（_realign_index）で解消すること。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._init_repo(d)
+            sg = km.DirectStateGit(d, interval=0.0)
+            (d / "journal.md").write_text("a\n", encoding="utf-8")
+            (d / "backlog").mkdir()
+            (d / "backlog" / "T1.md").write_text("## T1: t\n- status: ready\n", encoding="utf-8")
+            sg.sync()
+            with open(d / "journal.md", "a", encoding="utf-8") as f:
+                f.write("b\n")                                   # 既存ファイルの更新
+            (d / "backlog" / "T2.md").write_text("## T2: t\n- status: ready\n",
+                                                 encoding="utf-8")   # 新規ファイル
+            with mock.patch.object(km.DirectStateGit, "_refresh_index",
+                                   lambda self, targets: None):
+                sg.sync()                  # クラッシュ窓の再現: CAS 後の index 追随が走らない
+
+            def staged():
+                out = subprocess.run(["git", "-C", str(d), "status", "--porcelain"],
+                                     capture_output=True, text=True).stdout
+                return [ln for ln in out.splitlines() if ln and ln[0] not in " ?"]
+
+            self.assertTrue(staged())      # 幻のステージが残っている（壊れた前提の確認）
+            sg.sync()                      # 内容の変更なし＝自己修復だけで clean に戻ること
+            self.assertEqual(staged(), [])
+            out = subprocess.run(["git", "-C", str(d), "status", "--porcelain"],
+                                 capture_output=True, text=True).stdout
+            self.assertEqual(out.strip(), "")                    # ?? も残らない
+            # 修復が余計なコミットを作っていない（HEAD の内容は既に正しい）
+            self.assertEqual(len(self._log(d)), 1)               # 連続 sync は amend で 1 つ
+
+    def test_realign_leaves_real_local_edits_alone(self):
+        # 自己修復は「作業ツリー＝HEAD なのに index だけ古い」パスに限る。内容が HEAD と
+        # 異なる変更（人のステージ・編集中のファイル）は実差分なので触らず、export に任せる。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._init_repo(d)
+            sg = km.DirectStateGit(d, interval=0.0)
+            (d / "journal.md").write_text("a\n", encoding="utf-8")
+            sg.sync()
+            (d / "journal.md").write_text("a\nb\n", encoding="utf-8")
+            self.assertEqual(sg._realign_index(), 0)             # 実差分は揃えない
+            sg.sync()                                            # export が普通に拾う
+            r = subprocess.run(["git", "-C", str(d), "status", "--porcelain"],
+                               capture_output=True, text=True)
+            self.assertEqual(r.stdout.strip(), "")
+
     @staticmethod
     def _commit_all(d: Path) -> None:
         subprocess.run(["git", "-C", str(d), "add", "-A"], check=True, capture_output=True)
@@ -704,6 +759,39 @@ class TestDirectStateGit(unittest.TestCase):
         claimed = km.load_tasks(first.backlog)[0]
         self.assertEqual((claimed.status, claimed.get("claim_owner")), ("doing", "pc-a"))
         self.assertEqual(claimed.get("claim_token"), token)
+
+    def test_transaction_succeeds_while_local_state_is_unpushed(self):
+        """ローカルが origin より先行していても CAS トランザクションは成立する。
+
+        state_git_interval の push 間隔の間、ローカルには未 push の state sync コミットが
+        あるのが**普通の運用状態**。以前はその間 `state_transaction` が全て失敗し
+        （lease 更新・claim・自動割当が全滅）、lease が失効して計画役が PC 間を漂流→
+        各 PC が勝手にバックログ分解を走らせる素地になっていた。トランザクションは
+        remote HEAD を親に組み立てるのでローカルの未 push とは独立に成立し、ローカルへは
+        決定的 3-way で合流する。"""
+        first = self._cfg(node="pc-a")
+        mkb(self.root, "T1")
+        km.state_sync(first, force=True)   # T1 を push（リモート正本に載せる）
+        # ローカルだけの未 push コミット（push 間隔の途中を模す）
+        (self.root / "journal.md").write_text("local only\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.root), "add", "journal.md"],
+                       check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(self.root), "-c", "user.email=a@t",
+                        "-c", "user.name=a", "commit", "-qm", "local ahead"],
+                       check=True, capture_output=True)
+        self.assertTrue(km.renew_controller_lease(first))    # ahead でも lease は更新できる
+        token = km.claim_distributed_task(first, "T1")
+        self.assertTrue(token)                               # ahead でも claim できる
+        claimed = km.load_tasks(first.backlog)[0]            # 結果はローカルにも合流している
+        self.assertEqual((claimed.norm_status(), claimed.get("claim_owner")),
+                         ("doing", "pc-a"))
+        self.assertEqual(claimed.get("claim_token"), token)
+        # ローカル先行分は失われない（作業ツリーにも履歴にも残る）
+        self.assertEqual((self.root / "journal.md").read_text(encoding="utf-8"),
+                         "local only\n")
+        merged = subprocess.run(["git", "-C", str(self.root), "log", "--format=%s"],
+                                capture_output=True, text=True).stdout
+        self.assertIn("local ahead", merged)
 
     def test_stale_claim_token_cannot_settle(self):
         first = self._cfg(node="pc-a")
