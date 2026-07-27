@@ -23,9 +23,17 @@ CLIチャットの起動先と検収差分が使えない。**画面は逆に「
 
 - 置き場の解決を `engine.agentsHome(cfg)` の 1 実装へ寄せた（⚙ 設定のディストロ／
   ベースパスもここで効くようになる）。`AGENT_PROJECT_AGENTS_HOME` の優先は従来どおり
-- 宣言された `local`（実行側が書く POSIX パス）を、`engine/status.json` の `children[].root`
-  と**同じ規則・同じディストロ**で `\\wsl.localhost\<distro>\…` へ寄せてから実在を確かめる。
-  変換前のパスで `statSync` していたため、置き場を直しても「実体が無い」判定のままだった
+- 宣言された `local`（実行側が書く POSIX パス）を、この画面から届く形へ寄せてから実在を
+  確かめる。変換前のパスで `statSync` していたため、置き場を直しても「実体が無い」判定の
+  ままだった。寄せ先は実体の在り処で 2 通り:
+  - `/mnt/<drive>/…` → `<drive>:\…`（**成果物リポジトリのクローンは Windows 側にあり得る**。
+    状態リポジトリと違って flock と rename の原子性を要求しないので ext4 に置く必要が無い。
+    UNC へ寄せると `\\wsl.localhost\<distro>\mnt\c\…` の二重経由になり、実体がすぐ隣の
+    `C:\` にあるのに Windows のファイル共有が通せない）
+  - それ以外の POSIX → `\\wsl.localhost\<distro>\…`（`engine/status.json` の
+    `children[].root` と**同じ規則・同じディストロ**。既定ディストロへ丸めない）
+  - この変換は成果物クローンの解決に閉じ込め、状態ルートを寄せる `toViewerPath` は
+    触らない（設計 §4.6 が `/mnt` 経路を意図的に廃止している。状態は ext4 だけが正）
 - 検収差分（`git:diff`）も同じ解決を通す。IPC から設定を渡すようにした
 - `no-git-writes.test.js` の「この PC のホームで解決しない」検査の対象に `nodeRepos.js` を
   追加した。P0-2 で入れた不変条件が**1 ファイルしか見ていなかった**ため素通りしていた

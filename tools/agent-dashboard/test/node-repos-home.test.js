@@ -100,6 +100,35 @@ test('local の変換は設定のディストロを既定へ丸めない（別�
   });
 });
 
+test('/mnt/<drive> は Windows ドライブ実体へ寄せる（成果物は Windows 側にあり得る）', () => {
+  // 成果物リポジトリのクローンは状態リポジトリと違い ext4 である必要が無いので、
+  // Windows ドライブ上に置かれていることがある。UNC へ寄せると
+  // \\wsl.localhost\<distro>\mnt\c\… の二重経由になり、実体がすぐ隣の C:\ にあるのに届かない。
+  withPlatform('win32', () => {
+    const cfg = { engine: { distro: 'Ubuntu' } };
+    assert.strictEqual(nodeRepos.viewerLocalPath('/mnt/c/work/app', cfg), 'C:\\work\\app');
+    assert.strictEqual(nodeRepos.viewerLocalPath('/mnt/d/src/app', cfg), 'D:\\src\\app');
+    // ドライブ直下
+    assert.strictEqual(nodeRepos.viewerLocalPath('/mnt/c', cfg), 'C:\\');
+    assert.strictEqual(nodeRepos.viewerLocalPath('/mnt/c/', cfg), 'C:\\');
+  });
+});
+
+test('/mnt 配下でもドライブ文字でなければディストロ側の実体（巻き込まない）', () => {
+  withPlatform('win32', () => {
+    const cfg = { engine: { distro: 'Ubuntu' } };
+    // /mnt/cd はドライブではなく、ディストロ内の普通のディレクトリ。
+    assert.strictEqual(
+      nodeRepos.viewerLocalPath('/mnt/cd/app', cfg),
+      '\\\\wsl.localhost\\Ubuntu\\mnt\\cd\\app'
+    );
+    assert.strictEqual(
+      nodeRepos.viewerLocalPath('/mnt/wsl/app', cfg),
+      '\\\\wsl.localhost\\Ubuntu\\mnt\\wsl\\app'
+    );
+  });
+});
+
 test('Windows のドライブパスと POSIX 以外はそのまま（変換しない）', () => {
   withPlatform('win32', () => {
     assert.strictEqual(

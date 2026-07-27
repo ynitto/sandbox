@@ -125,15 +125,33 @@ function loadNodeRepos(cfg) {
   return parseHostRepos(text);
 }
 
-// 宣言された `local` を、この画面から開ける形へ寄せる。実行側（WSL）が書く local は POSIX
-// パスなので、Windows の画面からは \\wsl.localhost\<distro>\… でしか届かない。変換せずに
-// statSync へ渡すと現在のドライブ基準に解決されて必ず外れ、宣言はあるのに「実体が無い」と
-// 判定される。engine/status.json の children[].root と同じ規則（同じ distro）で寄せる。
+// 宣言された `local`（実行側＝WSL が書く POSIX パス）を、この画面から届く形へ寄せる。
+// 変換せずに statSync へ渡すと現在のドライブ基準に解決されて必ず外れ、宣言はあるのに
+// 「実体が無い」＝選べない、になる。寄せ先は実体がどこにあるかで 2 通り:
+//
+//   /mnt/<drive>/…   → <drive>:\…                  （Windows ドライブ上の実体）
+//   それ以外の POSIX → \\wsl.localhost\<distro>\…  （ディストロの ext4 上の実体）
+//
+// **成果物リポジトリのクローンは Windows 側に置かれていることがある**。状態リポジトリと
+// 違って flock と rename の原子性を要求しないので、ext4 に置く必要が無い（状態ルートを
+// /mnt/c に置いてはいけない話とは別。ガイド「複数 PC 運用」§3 が縛るのは状態の置き場）。
+// /mnt/c/… を UNC へ寄せると \\wsl.localhost\<distro>\mnt\c\… という二重経由になり、
+// Windows のファイル共有はこれを通せない——実体はすぐ隣の C:\ にあるのに届かなくなる。
+//
+// この変換をここに閉じ込め、状態ルートを寄せる `toViewerPath` は触らない（あちらは
+// 設計 §4.6 で /mnt 経路を意図的に廃止している。状態は ext4 だけが正）。
 function viewerLocalPath(p, cfg) {
   const proj = require('./project');
-  if (!proj._isPosixAbs(p)) return p;
+  const s = String(p || '');
+  if (process.platform !== 'win32' || !proj._isPosixAbs(s)) return s;
+  // ドライブ文字は 1 文字ちょうど（/mnt/cd のような実在しうるディレクトリを巻き込まない）。
+  const drive = s.match(/^\/mnt\/([A-Za-z])(?=\/|$)(.*)$/);
+  if (drive) {
+    const rest = drive[2].replace(/^\//, '').replace(/\//g, '\\');
+    return `${drive[1].toUpperCase()}:\\${rest}`;
+  }
   const distro = String((((cfg || {}).engine) || {}).distro || '').trim();
-  return proj.toViewerPath(p, distro);
+  return proj.toViewerPath(s, distro);
 }
 
 // URL に対応する、このノードのローカルクローン（実在するもの）。無ければ ''。
