@@ -672,6 +672,37 @@ class TestDoctorHostProjects(unittest.TestCase):
             titles = {f["title"] for f in json.loads(buf.getvalue())["findings"]}
             self.assertIn("host.yaml の宣言が読まれていません: nodeid", titles)
 
+    def test_non_normalized_node_id_declaration_is_reported(self):
+        # §6-2 の決着: 明示値は正規化しない代わりに、正規形でないことを doctor が知らせる。
+        host = km.HostConfig({"node_id": "DESKTOP-X"}, path="/tmp/agent-project.host.yaml")
+        findings = km.doctor_node_id_spelling_findings(host, env={})
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["severity"], "warn")     # 起動は止めない
+        self.assertIn("desktop-x", findings[0]["evidence"])   # 正規形を示す
+        self.assertIn("--node-id-cutover", findings[0]["fix"])  # 切替は人の明示操作
+
+    def test_normalized_declaration_is_silent(self):
+        host = km.HostConfig({"node_id": "desk-a"}, path="/tmp/agent-project.host.yaml")
+        self.assertEqual(km.doctor_node_id_spelling_findings(host, env={}), [])
+        # 未宣言（ホスト名から導く）経路は常に正規形なので対象外
+        self.assertEqual(km.doctor_node_id_spelling_findings(km.HostConfig({}), env={}), [])
+
+    def test_amigos_env_declaration_is_checked(self):
+        host = km.HostConfig({}, path="/tmp/agent-project.host.yaml")
+        findings = km.doctor_node_id_spelling_findings(host, env={"AGENT_AMIGOS_NODE": "Mac"})
+        self.assertEqual([f["title"] for f in findings],
+                         ["宣言した node_id が正規形ではない: Mac"])
+
+    def test_amigos_node_json_is_checked(self):
+        with tempfile.TemporaryDirectory() as home:
+            p = Path(home) / ".agents" / "amigos" / "node.json"
+            p.parent.mkdir(parents=True)
+            p.write_text(json.dumps({"id": "PC_One"}), encoding="utf-8")
+            with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home}):
+                findings = km.doctor_node_id_spelling_findings(km.HostConfig({}), env={})
+        self.assertEqual(len(findings), 1)
+        self.assertIn("pc_one", findings[0]["evidence"])
+
     def test_cmd_doctor_includes_host_project_findings(self):
         """`agent-project doctor` から到達できること（呼び出し元の無い検査を作らない）。"""
         with tempfile.TemporaryDirectory() as d:

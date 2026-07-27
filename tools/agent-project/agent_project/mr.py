@@ -492,6 +492,32 @@ def risk_digest(cfg: "Config", task: "Task", changed: "set[str]", protect_hits: 
     return level, "\n".join([header] + lines)
 
 
+def _accepted_external_verification(cfg: "Config", task: "Task", external: dict,
+                                    rev: str) -> "tuple[bool, bool, str, dict]":
+    """他ノードが確かめた結果を、この成果 rev の検証として受理する（P4-b）。
+
+    形は `_run_task_verifier` の戻り値と同じ——受理点から先の settle は「誰が確かめたか」を
+    区別しない（区別すると done への経路が 2 本になる）。証跡は criteria の note と
+    検証レコードに残り、needs 票・受領書からそのまま読める。"""
+    criteria = [{"id": i + 1, "text": c, "verdict": "pass",
+                 "evidence": {"commands": [], "output": "", "files": []},
+                 "note": f"別の端末（{external.get('by') or '不明'}）が確かめました"
+                         f"（委譲 {external.get('did') or '-'}）"}
+                for i, c in enumerate(task_acceptance(task))]
+    result = {"criteria": criteria, "pass": len(criteria), "fail": 0, "unverifiable": 0,
+              "ok": True, "rev": rev, "external": True,
+              "report": str(external.get("report") or "")}
+    task.drop("verification")
+    task.extra.append(("verification", json.dumps(
+        {"pass": result["pass"], "fail": 0, "unverifiable": 0,
+         "report": result["report"], "external_by": external.get("by") or ""},
+        ensure_ascii=False)))
+    msg = (f"検証委譲: 別の端末（{external.get('by') or '不明'}）が "
+           f"{len(criteria)} 件の基準を確かめました（委譲 {external.get('did') or '-'}）")
+    append_journal(cfg.journal, f"検証（委譲の受理）: {task.id} — {msg}")
+    return True, False, msg, result
+
+
 def _run_task_verifier(cfg: "Config", task: "Task",
                        vcwd: "Path") -> "tuple[bool, bool, str, dict | None]":
     """決定的 verify を持たないタスクを、受入基準 × 証跡で検証する（S5）。
@@ -502,8 +528,15 @@ def _run_task_verifier(cfg: "Config", task: "Task",
     """
     if not getattr(cfg, "verifier", True) or not task_acceptance(task):
         return False, False, "verify 未定義（自己申告では done にできない → 人の判断へ）", None
-    result, body = run_verifier(cfg, task, vcwd)
     rev = _git_out(vcwd, "rev-parse", "HEAD").strip() if (vcwd / ".git").exists() else ""
+    external = read_external_verdict(cfg, task, rev)
+    if external:
+        # 検証委譲（P4-b）の受理: このノードでは確かめられなかった基準を板へ回し、別の端末が
+        # 同じ成果コミットで確かめた結果が返ってきている。**同じことをもう一度させない**
+        # （C3）ため、その判定をこの rev の検証として受け入れる。根拠は残す——誰が・どの
+        # 委譲で確かめたかを検証レコードに書き、needs / 受領書から辿れるようにする。
+        return _accepted_external_verification(cfg, task, external, rev)
+    result, body = run_verifier(cfg, task, vcwd)
     report = save_verification_report(cfg, task, result, rev, body)
     if result["ok"]:
         save_verify_recipes(cfg, task, result)     # 効いたコマンドは次回の参考にする（ゲートにはしない）
@@ -875,10 +908,15 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
     unverifiable = (verification is not None and not verification["ok"]
                     and verification["unverifiable"] > 0 and verification["fail"] == 0)
     if unverifiable and not regressed:
-        task.set("env_resume", "1")
         blocked_reasons = " ／ ".join(
             f"{c['text'][:60]} — {c['note'][:100]}"
             for c in verification["criteria"] if c["verdict"] == "unverifiable")[:400]
+        # **まず機械で試せる解決を試す**（C3・C5）: 「このノードでは確かめられない」は
+        # 他の端末なら確かめられるかもしれない。板があるなら検証を公示し、返ってくるまで
+        # 待つ（P4-b）。人へ送るのは、公示できない・誰も請けない場合だけ。
+        if delegate_verification(cfg, task, verification, blocked_reasons, cycle):
+            return {"archived": 0, "followups": []}
+        task.set("env_resume", "1")
         _block(cfg, task, f"[agent-error:env] 検証不能: このノードでは確かめられない基準があります"
                           f"（{blocked_reasons}）。タスクの内容の問題ではないため、リトライ回数は"
                           "消費していません。環境を直してから approve すると、同じ run の続きから"

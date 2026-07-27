@@ -516,6 +516,69 @@ def _host_project_config_findings(entry: dict, root: "Path", host, name: str,
             "critical" if f["severity"] == "error" else "warn")
 
 
+def _amigos_node_id_paths() -> "list[Path]":
+    """agent-amigos が採番済みノード ID を置く場所（新ホーム優先。読みは両方）。
+    綴りの検査のためだけに読む——`agent_amigos.daemon._node_id_paths` と同じ 2 か所。"""
+    home = Path(os.path.expanduser("~"))
+    return [home / ".agents" / "amigos" / "node.json",
+            home / ".agent" / "amigos" / "node.json"]
+
+
+def doctor_node_id_spelling_findings(host=None, env=None) -> "list[dict]":
+    """明示宣言された node_id が**正規形でない**ことを知らせる（§6-2 の決着・2026-07-27）。
+
+    決着は「明示値は正規化しない」。名義が変わることは claim・担当・板の応札の宛先が
+    変わることで、それは[切替ガイド](../../../docs/guides/node-id-cutover.md)の手順で人が
+    明示的に行う操作だから、実装が黙って起こさない。
+
+    ただし放置すると同じ PC が板に 2 名義で現れる: 常駐体（agent-project）は宣言を
+    正規形にして使う一方、人が直接叩く agent-flow / agent-amigos は宣言そのままを使う。
+    **書き換えない代わりに検出して切替を促す**のがこの検査で、不変条件（同じ PC からは
+    常に同じ綴り）を人の操作として守れるようにする。
+
+    見るのは「人が書いた宣言」だけ: host.yaml の `node_id`、`AGENT_AMIGOS_NODE`、
+    agent-amigos の `node.json`。未宣言（ホスト名から導く）経路は `default_node_id` が
+    常に正規形を返すので対象外。agent-flow 側の設定値は agent-flow の doctor が見る。"""
+    if host is None:
+        try:
+            host = load_host_config()
+        except Exception:  # noqa: BLE001 — doctor は host.yaml の不備で落ちない
+            host = None
+    env = os.environ if env is None else env
+    declared: "list[tuple[str, str]]" = []
+    raw = getattr(host, "raw", None)
+    if isinstance(raw, dict) and str(raw.get("node_id") or "").strip():
+        declared.append((getattr(host, "path", "") or "agent-project.host.yaml",
+                         str(raw["node_id"]).strip()))
+    if str(env.get("AGENT_AMIGOS_NODE") or "").strip():
+        declared.append(("環境変数 AGENT_AMIGOS_NODE", str(env["AGENT_AMIGOS_NODE"]).strip()))
+    for path in _amigos_node_id_paths():
+        data = _read_json_file(path)
+        if isinstance(data, dict) and str(data.get("id") or "").strip():
+            declared.append((str(path), str(data["id"]).strip()))
+            break                     # 読み手（amigos）も先に見つけた 1 つだけを使う
+    out: "list[dict]" = []
+    for where, value in declared:
+        norm = normalize_node_id(value)
+        if norm == value:
+            continue
+        out.append({
+            "category": "config", "severity": "warn",
+            "title": f"宣言した node_id が正規形ではない: {value}",
+            "evidence": f"{where}: node_id={value}（正規形は {norm}）— 明示値はそのまま"
+                        "使う契約なので、この PC は板に 2 名義で現れます",
+            "fix": f"名義を {norm} へ切り替える（切替手順: "
+                   f"agent-project doctor --node-id-cutover {value}）"})
+    return out
+
+
+def _read_json_file(path: "Path"):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
 def doctor_host_config_findings(host=None) -> "list[dict]":
     """host.yaml そのものの綻び（未知キー・型違い・板の語彙外）を doctor にも出す。
 
@@ -943,6 +1006,7 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
                      + doctor_wiring_findings(cfg)
                      + doctor_residency_findings(_declared_residency())
                      + doctor_host_config_findings()
+                     + doctor_node_id_spelling_findings()
                      + doctor_host_projects_findings()
                      + node_id_cutover_findings(cfg, cutover_from or ""))
     for f in deterministic:
@@ -970,6 +1034,7 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
                  for g in doctor_env_findings(cfg) + doctor_coordination_findings(cfg)
                  + doctor_audit_findings(cfg) + doctor_residency_findings(_declared_residency())
                  + doctor_host_config_findings()
+                 + doctor_node_id_spelling_findings()
                  + doctor_host_projects_findings()
                  + node_id_cutover_findings(cfg, cutover_from or "")}
         for f in findings:

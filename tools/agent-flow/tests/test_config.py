@@ -309,6 +309,25 @@ class DoctorTests(unittest.TestCase):
         self.assertTrue(any("claude" in t for t in titles))
         self.assertFalse(any("kiro-cli" in t for t in titles))
 
+    def test_non_normalized_node_id_declaration_is_reported(self):
+        # §6-2 の決着（2026-07-27）: 明示値は正規化しない。黙って綴りを書き換える代わりに、
+        # 正規形でないことを doctor が知らせて切替（人の明示操作）を促す。
+        bus = os.path.join(self.tmp, "bus")
+        os.makedirs(bus)
+        args = _Args(bus, node_id="DESKTOP-X")
+        fs = kf.doctor_env_findings(args, which=lambda n: "/usr/bin/" + n)
+        self.assertEqual([f["title"] for f in fs], ["宣言した node_id が正規形ではない"])
+        self.assertEqual(fs[0]["severity"], "warn")          # 起動は止めない
+        self.assertIn("desktop-x", fs[0]["evidence"])        # 正規形を示す
+
+    def test_normalized_or_absent_node_id_is_silent(self):
+        bus = os.path.join(self.tmp, "bus")
+        os.makedirs(bus)
+        for declared in ("desk-a", None, ""):
+            args = _Args(bus, node_id=declared)
+            self.assertEqual(kf.doctor_env_findings(args, which=lambda n: "/usr/bin/" + n), [],
+                             f"node_id={declared!r} で所見が出た")
+
     def test_apply_fix_ensure_bus(self):
         bus = os.path.join(self.tmp, "bus")
         args = _Args(bus)

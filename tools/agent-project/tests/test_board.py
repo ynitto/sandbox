@@ -522,6 +522,43 @@ class BoardWriteExclusionTests(unittest.TestCase):
                          "残 lease が十分なら書かない（冪等）——呼び出し側はこれで文言を分ける")
         self.assertTrue(self.repo.has_live_bid("dg-1", "pc-a"))
 
+    def _dispatched(self, did: str, node: str = "pc-a", state: str = "dispatched") -> Path:
+        """自分が落札して実行中の印（`status/<who>.json`）を置く。"""
+        d = Path(self.repo.delegation_dir(did))
+        (d / "status").mkdir(parents=True, exist_ok=True)
+        (d / "post.json").write_text(json.dumps({"op": "post", "id": did, "workload": "flow"}),
+                                     encoding="utf-8")
+        p = d / "status" / f"{node}.json"
+        p.write_text(json.dumps({"who": node, "state": state, "native_id": did}),
+                     encoding="utf-8")
+        return p
+
+    def test_announce_away_marks_only_my_running_delegations(self):
+        # graceful 停止の away 宣言（設計 §4.2 の 4 ステップ・P0 §7-F2）。R2b で「落札した
+        # 仕事を持つ端末が落ちる」経路が現実になったので、停止側から明示的に宣言する。
+        mine = self._dispatched("dg-1")
+        other_node = self._dispatched("dg-2", node="pc-b")
+        already = self._dispatched("dg-3", state="done")
+        self.assertEqual(self.repo.announce_away("pc-a"), ["dg-1"])
+        self.assertEqual(json.loads(mine.read_text())["state"], "away")
+        self.assertEqual(json.loads(other_node.read_text())["state"], "dispatched")  # 他端末
+        self.assertEqual(json.loads(already.read_text())["state"], "done")           # 終端済み
+        self.assertIn("heartbeat", json.loads(mine.read_text()))
+
+    def test_announce_away_skips_terminal_delegations(self):
+        self._dispatched("dg-4")
+        Path(self.repo.delegation_dir("dg-4"), "result.json").write_text(
+            json.dumps({"status": "done"}), encoding="utf-8")
+        self.assertEqual(self.repo.announce_away("pc-a"), [])
+
+    def test_announce_away_takes_the_board_lock_without_pushing(self):
+        self._dispatched("dg-5")
+        seen, patcher = self._traced()
+        with patcher, mock.patch.object(km.BoardRepo, "sync_push",
+                                        side_effect=AssertionError("ロックの中で push を呼んでいる")):
+            self.repo.announce_away("pc-a")
+        self.assertEqual(seen["max"], 1)
+
     def test_write_creates_the_layout_even_on_a_fresh_board(self):
         # `_ensure()` を通るので、板の dir がまだ無くても落ちない
         fresh = km.BoardRepo(str(self.tmp / "fresh"))

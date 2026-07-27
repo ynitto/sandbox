@@ -195,8 +195,11 @@ test('boardReason: 実行できない端末では理由を添えて押させな�
   assert.match(
     participation.boardReason({ ...READY_BOARD, intakeProjects: [] }),
     /まだ板の仕事を実行できません/,
-    'プロジェクトを持たない端末の落札実行は未対応（R2b）');
+    '取り込み経路も端末じかの実行も無ければ押させない');
   assert.equal(participation.boardReason(READY_BOARD), '');
+  // R2b: プロジェクトを 1 つも持たない端末でも、端末じかに実行できるなら押せる。
+  assert.equal(
+    participation.boardReason({ ...READY_BOARD, intakeProjects: [], nodeDirect: true }), '');
 });
 
 test('boardCandidates: 引き受けられない端末の候補は disabled + 理由つき', () => {
