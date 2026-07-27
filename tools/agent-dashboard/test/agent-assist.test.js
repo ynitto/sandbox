@@ -648,9 +648,9 @@ test('対話診断は読み取り専用・セッション永続化なしで起�
 
 test('対話診断の cwd はタスクの書込先リポジトリ → プロジェクトの順で決める', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'doctor-cwd-'));
-  assert.strictEqual(agent.doctorChatCwd(dir, { selected: {} }), dir,
+  assert.strictEqual(agent.doctorChatCwd({}, dir, { selected: {} }), dir,
     '解決できなければプロジェクト（状態リポジトリ）');
-  assert.strictEqual(agent.doctorChatCwd(dir, { selected: { delivery: [{ url: 'x' }] } }), dir,
+  assert.strictEqual(agent.doctorChatCwd({}, dir, { selected: { delivery: [{ url: 'x' }] } }), dir,
     '宣言の無い URL では従来どおりプロジェクト');
   fs.rmSync(dir, { recursive: true, force: true });
 });

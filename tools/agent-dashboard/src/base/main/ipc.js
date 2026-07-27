@@ -44,7 +44,9 @@ function registerBaseIpcHandlers() {
   // dashboard では path 単独では解決できない。
   handle('git:diff', ({ repo, base, ref, file, branch, fetch, maxBytes, workingTree, viewerRoot, repoUrl }) =>
     git.diffRange(repo, { base, ref, file, branch, fetch: !!fetch, maxBytes,
-                          workingTree: !!workingTree, viewerRoot, repoUrl })
+                          workingTree: !!workingTree, viewerRoot, repoUrl,
+                          // host.yaml の置き場（実行エンジンのホーム）の解決に要る
+                          cfg: loadConfig() })
   );
 
   // GitLab イシューの最新状態を API で補完（設定が無ければ enabled:false）

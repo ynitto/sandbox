@@ -1,7 +1,9 @@
 'use strict';
 
-// この PC の `~/.agents/agent-project.host.yaml` から `repos[]`（ノード固有のローカル
-// クローン宣言・S3）を読む。Python 側 `agentcore.repolocal` と同じ契約の JS 実装。
+// **実行エンジンの** `~/.agents/agent-project.host.yaml` から `repos[]`（ノード固有の
+// ローカルクローン宣言・S3）を読む。Python 側 `agentcore.repolocal` と同じ契約の JS 実装。
+// 「この PC の」ではない——正典構成では画面（Windows）と実行エンジン（WSL）が別なので、
+// 置き場の解決は engine.agentsHome() を通す（下の agentsHome を参照）。
 //
 // **なぜ JS で読み直すか**: この宣言を使うのは UI の即応な部分（CLIチャットの起動先候補）で、
 // 候補を出すたびに Python を起動すると一覧の描画がプロセス起動待ちになる。契約（キーの形と
@@ -25,13 +27,21 @@ const HOST_CONFIG_NAMES = [
   'agent-project.host.json',
 ];
 
-function agentsHome() {
+// host.yaml の置き場。**この PC のホームで解決しない**——正典構成は「Windows の画面 +
+// WSL の実行エンジン」で、host.yaml は実行側（WSL）の ~/.agents にある。os.homedir() 基準だと
+// Windows の C:\Users\<user>\.agents を探し、宣言が丸ごと「無い」ことにされる。症状は
+// 「host.yaml に repos[] を書いたのに CLIチャットの起動先が非活性のまま」で、画面は
+// 逆に「repos[] に書くと選べます」と案内するため人が直しようがない（engine/status.json で
+// 踏んだ P0-2 と同じ壊れ方）。解決は engine.agentsHome() の 1 実装を通す
+// （設定のディストロ／ベースパスもそこで効く）。
+function agentsHome(cfg) {
   const override = process.env.AGENT_PROJECT_AGENTS_HOME;
-  return override ? String(override) : path.join(os.homedir(), '.agents');
+  if (override) return String(override);
+  return require('./engine').agentsHome(cfg);
 }
 
-function findHostConfig() {
-  for (const base of [process.cwd(), agentsHome()]) {
+function findHostConfig(cfg) {
+  for (const base of [process.cwd(), agentsHome(cfg)]) {
     for (const name of HOST_CONFIG_NAMES) {
       const p = path.join(base, name);
       try {
@@ -95,8 +105,8 @@ function parseHostRepos(text) {
 }
 
 // このノードの repos 宣言（[{url, local}, …]）。読めなければ空配列。
-function loadNodeRepos() {
-  const file = findHostConfig();
+function loadNodeRepos(cfg) {
+  const file = findHostConfig(cfg);
   if (!file) return [];
   let text;
   try {
@@ -115,15 +125,45 @@ function loadNodeRepos() {
   return parseHostRepos(text);
 }
 
+// 宣言された `local`（実行側＝WSL が書く POSIX パス）を、この画面から届く形へ寄せる。
+// 変換せずに statSync へ渡すと現在のドライブ基準に解決されて必ず外れ、宣言はあるのに
+// 「実体が無い」＝選べない、になる。寄せ先は実体がどこにあるかで 2 通り:
+//
+//   /mnt/<drive>/…   → <drive>:\…                  （Windows ドライブ上の実体）
+//   それ以外の POSIX → \\wsl.localhost\<distro>\…  （ディストロの ext4 上の実体）
+//
+// **成果物リポジトリのクローンは Windows 側に置かれていることがある**。状態リポジトリと
+// 違って flock と rename の原子性を要求しないので、ext4 に置く必要が無い（状態ルートを
+// /mnt/c に置いてはいけない話とは別。ガイド「複数 PC 運用」§3 が縛るのは状態の置き場）。
+// /mnt/c/… を UNC へ寄せると \\wsl.localhost\<distro>\mnt\c\… という二重経由になり、
+// Windows のファイル共有はこれを通せない——実体はすぐ隣の C:\ にあるのに届かなくなる。
+//
+// この変換をここに閉じ込め、状態ルートを寄せる `toViewerPath` は触らない（あちらは
+// 設計 §4.6 で /mnt 経路を意図的に廃止している。状態は ext4 だけが正）。
+function viewerLocalPath(p, cfg) {
+  const proj = require('./project');
+  const s = String(p || '');
+  if (process.platform !== 'win32' || !proj._isPosixAbs(s)) return s;
+  // ドライブ文字は 1 文字ちょうど（/mnt/cd のような実在しうるディレクトリを巻き込まない）。
+  const drive = s.match(/^\/mnt\/([A-Za-z])(?=\/|$)(.*)$/);
+  if (drive) {
+    const rest = drive[2].replace(/^\//, '').replace(/\//g, '\\');
+    return `${drive[1].toUpperCase()}:\\${rest}`;
+  }
+  const distro = String((((cfg || {}).engine) || {}).distro || '').trim();
+  return proj.toViewerPath(s, distro);
+}
+
 // URL に対応する、このノードのローカルクローン（実在するもの）。無ければ ''。
-function resolveLocalRepo(url, repos) {
+function resolveLocalRepo(url, repos, cfg) {
   if (!String(url || '').trim()) return '';
-  for (const e of (repos || loadNodeRepos())) {
+  for (const e of (repos || loadNodeRepos(cfg))) {
     const local = String((e && e.local) || '').trim();
     if (!local || !sameRepo(e.url, url)) continue;
     const expanded = local.replace(/^~(?=$|\/|\\)/, os.homedir());
+    const viewer = viewerLocalPath(expanded, cfg);
     try {
-      if (fs.statSync(expanded).isDirectory()) return expanded;
+      if (fs.statSync(viewer).isDirectory()) return viewer;
     } catch { /* 宣言はあるが実体が無い */ }
   }
   return '';
@@ -131,6 +171,8 @@ function resolveLocalRepo(url, repos) {
 
 module.exports = {
   HOST_CONFIG_NAMES,
+  agentsHome,
+  viewerLocalPath,
   findHostConfig,
   normalizeRepoUrl,
   sameRepo,

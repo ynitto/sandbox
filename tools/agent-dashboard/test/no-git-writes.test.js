@@ -146,6 +146,10 @@ test('実行エンジンと共有する置き場をこの PC のホームで解�
   // 踏んだ）。ホームの解決は engine.agentsHome() の 1 実装を通すこと。
   const shared = [
     path.join(SRC, 'features', 'delegation', 'main', 'node-commands.js'),
+    // host.yaml（repos[] のローカルクローン宣言）も実行エンジンと共有する置き場。
+    // ここを os.homedir() で解決していたため、Windows の画面では WSL 側の宣言が
+    // 一度も読まれず、CLIチャットの起動先・検収差分が「宣言が無い」と言い続けた。
+    path.join(SRC, 'features', 'agent-project', 'main', 'nodeRepos.js'),
   ];
   for (const file of shared) {
     const code = codeOf(file);
