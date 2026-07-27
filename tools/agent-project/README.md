@@ -168,8 +168,11 @@ owner 失踪は TTL 超で奪取、終了で解放。
 指示（引き受け・中止・落札）を板へ反映する——**板へ書くのは常駐体だけ**で、dashboard は
 `~/.agents/commands/` へ指示を投函するだけ（[`agent-node-command`](../../schemas/agent-node-command.schema.json)）。
 入札の選別（担当リポジトリ・タグ・CLI）は host.yaml の `repos` / `tags` / `agent_cli` が正典。
-**プロジェクトを 1 つも持たないワーカーノードはまだ落札した仕事を実行できない**
-（取り込み先が無い。ノード直轄実行は実装計画 §7 R2b）。
+**プロジェクトを 1 つも持たないワーカーノードは、ノード直轄実行で請ける**（実装計画 §7 R2b）。
+flow tick が `~/.agents/flow-node/bus` を唯一の取り込み先にして
+`agent-flow participate`（入札・落札・板への報告）を 1 巡させ、受理した run を
+`NodeWorkerPool` で実行する。フルノードは従来どおりプロジェクトのバス経由——
+同じノードに 2 つ目の取り込み主体を置かないため、ノード直轄実行はワーカーノードでだけ走る。
 
 ```bash
 agent-project run --executor agent                    # 既定 local（単発 run）

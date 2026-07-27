@@ -163,6 +163,9 @@ function normalizeBoardStatus(raw, heartbeat, distro) {
     lastTick: String(raw.last_tick || ''),
     lastError: raw.last_error || null,
     intakeProjects: (Array.isArray(raw.intake_projects) ? raw.intake_projects : []).map(String),
+    // プロジェクトを 1 つも持たない端末が、落札した仕事を端末じかに実行できるか（R2b）。
+    // 載せていない古い実行エンジンでは false になり、画面は従来どおり非活性へ縮退する。
+    nodeDirect: Boolean(raw.node_direct),
     openDelegations: Number(raw.open_delegations || 0),
     myBids: (Array.isArray(raw.my_bids) ? raw.my_bids : []).map(String),
     heartbeat: heartbeat || null,

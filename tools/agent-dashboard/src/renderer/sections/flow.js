@@ -537,6 +537,18 @@ async function reconcileFlowRun(opts) {
   renderFlow();
 }
 
+// どの端末が何工程を実行したか。1 台しか出ないのが現行仕様の姿（実行は run 単位で 1 台に
+// 確定する）で、複数出たら工程が端末をまたいで分担された証拠になる。端末の記録が無い
+// 古い実行では出さない（名義から端末を推測はしない）。
+function runByPcHtml(run) {
+  const rows = (run.byPc || []).filter((e) => e && e.pc && !String(e.pc).endsWith('?'));
+  if (!rows.length) return '';
+  const body = rows
+    .map((e) => `<span class="key"><strong>${esc(e.pc)}</strong> ${e.count} 工程</span>`)
+    .join(' ');
+  return `<div class="muted" style="margin-top:6px">実行した端末: ${body}</div>`;
+}
+
 function renderFlowDetail() {
   const fr = state.flowRun;
   if (!fr || !fr.run) return '<div class="empty">左の一覧から実行を選択するとタスクグラフを表示します</div>';
@@ -688,6 +700,7 @@ const viewTabs = [
       <div><strong>${run.counts.failed || 0}</strong><span>失敗</span></div>
       <div><strong>${(run.counts.pending || 0) + (run.counts.waiting || 0)}</strong><span>これから</span></div>
     </div>
+    ${runByPcHtml(run)}
     <div class="flow-primary-actions">${runArtifactsButtonHtml(run)} ${resubmit} ${reconcileBtn} ${cancelBtn} ${deleteBtn}</div>
   </section>`;
 

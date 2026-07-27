@@ -75,6 +75,34 @@ def _final_result_nodes(nodes: dict, results: dict) -> list:
     return agg or pool
 
 
+def result_pc(res: dict) -> str:
+    """結果レコードが指す「実行した PC」。書き手が残した `node` が正典。
+
+    無い場合（このフィールドより前に書かれた結果・PC 名を含まない旧名義の worker）は
+    `who` をそのまま見出しに使い、`?` を付けて**推測していないこと**を示す。名義の綴りを
+    割って PC を当てにいくと、名義の作り方の 2 実装目（`worker_who` の写し）になる。"""
+    node = str(res.get("node") or "").strip()
+    if node:
+        return node
+    who = str(res.get("who") or "").strip()
+    return f"{who}?" if who else "?"
+
+
+def execution_by_pc(bus, node_ids) -> "list[tuple[str, int]]":
+    """PC 別の実行内訳 [(PC, 確定したノード数)]。件数の多い順・同数なら名前順。
+
+    「どの PC がどの work ノードを実行したか」は CLI・GUI・バスのどこにも出ていなかった
+    （2026-07-27 棚卸し §2b.1）。分担が起きているかを目で確かめられるようにする最小の口。"""
+    counts: dict = {}
+    for nid in node_ids:
+        res = bus.read_result(nid) or {}
+        if not res:
+            continue
+        pc = result_pc(res)
+        counts[pc] = counts.get(pc, 0) + 1
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+
+
 def _render_status(bus, run_id, events):
     """公式 Dynamic Workflows 風のダッシュボード表示。
     進捗バー / エージェント（タスク）状態ツリー / 直近アクティビティ / 最終サマリ。"""
@@ -104,6 +132,11 @@ def _render_status(bus, run_id, events):
         order = ("done", "claimed", "waiting", "pending", "failed", "unknown")
         agentline = "  ".join(f"{_STATE_GLYPH[k]}{k}={counts[k]}" for k in order if counts.get(k))
         L.append(f"│  agents  : {total}   {agentline}")
+        by_pc = execution_by_pc(bus, nodes)
+        if by_pc:
+            # PC 別の実行内訳。1 行に PC 名が 1 つしか出ないなら分担は起きていない
+            # （run 単位で 1 台に確定するのが現行仕様 — multi-pc-operations.md §4.2）。
+            L.append("│  by pc   : " + "  ".join(f"{pc}={n}" for pc, n in by_pc))
         L.append("├─ tasks")
         memo = {}
         ordered = sorted(nodes, key=lambda n: (_node_depth(n, nodes, memo), n))

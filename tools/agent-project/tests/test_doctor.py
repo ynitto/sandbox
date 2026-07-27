@@ -638,6 +638,71 @@ class TestDoctorHostProjects(unittest.TestCase):
             with mock.patch.dict(os.environ, {"AGENT_PROJECT_AGENTS_HOME": home}):
                 self.assertEqual(km.doctor_host_projects_findings(), [])
 
+    def test_host_config_findings_match_the_startup_warning(self):
+        # 「doctor は緑なのに起動時は警告」を作らない。判定は起動時と同じ 1 実装を呼ぶ。
+        raw = {"schema_version": 1, "node_id": "pc-a", "nodeid": "typo",
+               "workloads": ["flow", "nope"], "budget": {"max_concurrent": -1}}
+        host = km.HostConfig(raw, path="/tmp/agent-project.host.yaml")
+        findings = km.doctor_host_config_findings(host)
+        self.assertEqual(len(findings), len(km.host_config_findings(raw)))
+        self.assertTrue(all(f["severity"] == "warn" for f in findings))  # 起動と同じ強度
+        # 内訳が残る（W→E 昇格の判断材料。題が同じだと doctor の重複畳みで 1 件に潰れる）
+        self.assertEqual(len({f["title"] for f in findings}), len(findings))
+        self.assertTrue(any("nodeid" in f["evidence"] for f in findings))
+        self.assertTrue(any("workloads" in f["evidence"] for f in findings))
+
+    def test_host_config_findings_silent_without_declaration(self):
+        self.assertEqual(km.doctor_host_config_findings(km.HostConfig({})), [])
+
+    def test_cmd_doctor_includes_host_config_findings(self):
+        """起動時の警告が `agent-project doctor` からも数えられること（§1.2 判断 1 の材料）。"""
+        with tempfile.TemporaryDirectory() as d:
+            home = Path(d) / "agents-home"
+            home.mkdir()
+            (home / "agent-project.host.json").write_text(
+                json.dumps({"schema_version": 1, "node_id": "pc-a", "nodeid": "typo"}),
+                encoding="utf-8")
+            cfg = cfg_for(Path(d) / "proj", planner="none", executor="stub")
+            km.ensure_dirs(cfg)
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, {"AGENT_PROJECT_AGENTS_HOME": str(home)}), \
+                 contextlib.redirect_stdout(buf):
+                km.cmd_doctor(cfg, fix=False, as_json=True, agent_run=lambda p, m: "[]",
+                              flow_finder=lambda c, fix: [])
+            titles = {f["title"] for f in json.loads(buf.getvalue())["findings"]}
+            self.assertIn("host.yaml の宣言が読まれていません: nodeid", titles)
+
+    def test_non_normalized_node_id_declaration_is_reported(self):
+        # §6-2 の決着: 明示値は正規化しない代わりに、正規形でないことを doctor が知らせる。
+        host = km.HostConfig({"node_id": "DESKTOP-X"}, path="/tmp/agent-project.host.yaml")
+        findings = km.doctor_node_id_spelling_findings(host, env={})
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["severity"], "warn")     # 起動は止めない
+        self.assertIn("desktop-x", findings[0]["evidence"])   # 正規形を示す
+        self.assertIn("--node-id-cutover", findings[0]["fix"])  # 切替は人の明示操作
+
+    def test_normalized_declaration_is_silent(self):
+        host = km.HostConfig({"node_id": "desk-a"}, path="/tmp/agent-project.host.yaml")
+        self.assertEqual(km.doctor_node_id_spelling_findings(host, env={}), [])
+        # 未宣言（ホスト名から導く）経路は常に正規形なので対象外
+        self.assertEqual(km.doctor_node_id_spelling_findings(km.HostConfig({}), env={}), [])
+
+    def test_amigos_env_declaration_is_checked(self):
+        host = km.HostConfig({}, path="/tmp/agent-project.host.yaml")
+        findings = km.doctor_node_id_spelling_findings(host, env={"AGENT_AMIGOS_NODE": "Mac"})
+        self.assertEqual([f["title"] for f in findings],
+                         ["宣言した node_id が正規形ではない: Mac"])
+
+    def test_amigos_node_json_is_checked(self):
+        with tempfile.TemporaryDirectory() as home:
+            p = Path(home) / ".agents" / "amigos" / "node.json"
+            p.parent.mkdir(parents=True)
+            p.write_text(json.dumps({"id": "PC_One"}), encoding="utf-8")
+            with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home}):
+                findings = km.doctor_node_id_spelling_findings(km.HostConfig({}), env={})
+        self.assertEqual(len(findings), 1)
+        self.assertIn("pc_one", findings[0]["evidence"])
+
     def test_cmd_doctor_includes_host_project_findings(self):
         """`agent-project doctor` から到達できること（呼び出し元の無い検査を作らない）。"""
         with tempfile.TemporaryDirectory() as d:

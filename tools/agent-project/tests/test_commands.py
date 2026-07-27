@@ -1310,6 +1310,89 @@ class EnsureNeedsTests(unittest.TestCase):
             self.assertTrue(km.needs_path(cfg, "T9").exists(), "投入したその場で票ができる")
 
 
+class DecidedNeedsNotReprojectedTests(unittest.TestCase):
+    """人が答え終わった票を作り直さない（総覧 G-2 / コンセプト正典 C3）。
+
+    状態の同期が競合すると backlog は機械状態＝ローカル優先で裁定されるため、人の決定を
+    受け取り損ねた PC の status だけが古いまま残りうる。そのまま自己修復（ensure_needs）が
+    走ると、答え済みの票が復活して全 PC へ再伝播し、人は同じ判断を二度させられる。
+    決定記録（追記のみ＝衝突なく合流する）を根拠にこの再投影だけを止める。"""
+
+    def _cfg(self, d):
+        return cfg_for(Path(d), plan_review=True)
+
+    def _decide(self, cfg, tid, to="ready", actor="alice", action="feedback-resume", dr=1):
+        cfg.decisions.mkdir(parents=True, exist_ok=True)
+        km.decision_path(cfg, tid).write_text(
+            f"## DR-{dr:04d}  2026-07-27  actor: {actor}\n"
+            f"- context : {tid} に人のフィードバック\n- action  : {action}\n"
+            f"- reason  : ok\n- affects : {tid} → {to}\n\n", encoding="utf-8")
+
+    def test_answered_card_is_not_rebuilt_from_a_stale_status(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            t = km.Task(id="T1", title="x", status="blocked", verify="true")
+            km.persist_task(cfg, t)
+            self._decide(cfg, "T1", to="ready")            # 人は既に「再開」と決めた
+            self.assertEqual(km.ensure_needs(cfg, [t]), [])
+            self.assertFalse(km.needs_path(cfg, "T1").exists())
+            # 見送りは記録に残す（黙って消えるのが一番困る）。記録は 1 回だけ
+            self.assertIn("needs 再投影を見送り: T1", cfg.journal.read_text(encoding="utf-8"))
+            before = cfg.journal.read_text(encoding="utf-8")
+            self.assertEqual(km.ensure_needs(cfg, km.load_tasks(cfg.backlog)), [])
+            self.assertEqual(cfg.journal.read_text(encoding="utf-8"), before)
+
+    def test_machine_decisions_are_not_grounds_for_skipping(self):
+        # auto/system/gitlab の記録は「人が答えた」ではない。票は従来どおり作り直す
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            t = km.Task(id="T2", title="x", status="blocked", verify="true")
+            km.persist_task(cfg, t)
+            self._decide(cfg, "T2", to="ready", actor="auto", action="auto-adjudicate")
+            self.assertEqual(km.ensure_needs(cfg, [t]), ["T2"])
+
+    def test_human_decision_back_into_judgement_still_projects(self):
+        # 差し戻し（→ proposed）のように人の決定そのものが判断待ちなら、投影は止めない
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            t = km.Task(id="T3", title="x", status="proposed", verify="true")
+            km.persist_task(cfg, t)
+            self._decide(cfg, "T3", to="proposed", action="plan-rework")
+            self.assertEqual(km.ensure_needs(cfg, [t]), ["T3"])
+
+    def test_blocked_again_after_the_decision_is_a_new_judgement(self):
+        # 人の決定の後で機械が改めて止めた（再 blocked）なら、それは新しい判断待ち。
+        # 判断待ちへ入れた側が押す印（needs_dr）で作り直しと区別する
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            t = km.Task(id="T4", title="x", status="ready", verify="true")
+            km.persist_task(cfg, t)
+            self._decide(cfg, "T4", to="ready")
+            km._block(cfg, t, "また失敗した（retries=3）", {})
+            self.assertEqual(t.norm_status(), "blocked")
+            km.needs_path(cfg, "T4").unlink()              # 票だけ失われた（同期事故）
+            self.assertEqual(km.ensure_needs(cfg, km.load_tasks(cfg.backlog)), ["T4"])
+
+    def test_state_merge_follows_a_deletion_backed_by_a_decision(self):
+        # 同時変更の裁定: リモートが票を消し、その削除に決定記録が伴うなら削除に従う。
+        # 記録が無ければ従来どおりローカルの票を残す（新しい blocked 票を失わない）。
+        decided = {"T1"}.__contains__
+        self.assertFalse(km._take_local_on_conflict(
+            "needs/T1.md", local_present=True, remote_present=False, decided=decided))
+        self.assertTrue(km._take_local_on_conflict(
+            "needs/T2.md", local_present=True, remote_present=False, decided=decided))
+        # 述語を渡さない呼び出し（既存の契約）は従来の裁定のまま
+        self.assertTrue(km._take_local_on_conflict(
+            "needs/T1.md", local_present=True, remote_present=False))
+        # 本文の同時編集は従来どおり人（リモート）を正とする
+        self.assertFalse(km._take_local_on_conflict(
+            "needs/T1.md", local_present=True, remote_present=True, decided=decided))
+
+
 class ReapOrphanNeedsTests(unittest.TestCase):
     """needs は status の投影＝**投影元が消えたら票も消す**（ensure_needs の対）。
 

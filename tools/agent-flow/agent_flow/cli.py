@@ -134,7 +134,10 @@ def build_parser() -> argparse.ArgumentParser:
     orch.set_defaults(func=cmd_orchestrate)
 
     work = sub.add_parser("work", help="ワーカー役")
-    work.add_argument("--node-id", default=f"{socket.gethostname()}-{os.getpid()}")
+    # 手起動（cmd_run / dashboard を介さない）ワーカーの既定名義。PC 名は板・バス共通の
+    # 正規形（`agentcore.nodeid`）から取る——素の hostname だと大文字や不正文字がそのまま
+    # 名義に乗り、同じ PC が板とバスで別綴りになる。pid は同一 PC 上の同時手起動を区別する。
+    work.add_argument("--node-id", default=f"{default_node_id()}-{os.getpid()}")
     work.add_argument("--executor", default=None,
                       help="ワーカーバス（agent/stub/プラグイン名/.py パス）")
     work.add_argument("--model_opt", dest="model", default=None)

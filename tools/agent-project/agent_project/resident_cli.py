@@ -18,11 +18,13 @@ from __future__ import annotations
 # 仕事（run・手番）を tick 内で実行すると、self-watchdog がハングと読んで健全な常駐体を
 # abort する。
 #
-# **落札した仕事のノード直轄実行（R2b）はまだ無い。** 板の請負は各ツールの `participate` が
-# 委譲側 bus 経由で行っており、フルノード（プロジェクトを 1 つ以上持つ PC）ではそれで
-# 落札→取り込み→実行まで通る。プロジェクトを 1 つも持たないワーカーノードだけが
-# 取り込み先を持たない——board tick はその事実を `engine/status.json` の
-# `board.intake_projects` に出し、dashboard が手動入札のボタンを出すかどうかの根拠にする
+# **落札した仕事の実行経路は 2 つ**（どちらも実行はプールへ渡し、tick では走らせない）:
+#   - フルノード（プロジェクトを 1 つ以上持つ PC）… 各プロジェクトのバス経由
+#     （`_flow_participate_tick`）。従来からの経路。
+#   - ワーカーノード（projects 0）… ノード直轄実行（`_node_direct_flow_tick`・実装計画 §7 R2b）。
+#     `~/.agents/flow-node/bus` を唯一の取り込み先にして、入札 → 落札 → 実行 → 板へ報告まで通す。
+# board tick はどちらの経路が使えるかを `engine/status.json` の `board.intake_projects` /
+# `board.node_direct` に出し、dashboard が手動入札のボタンを出すかどうかの根拠にする
 # （操作だけ増えて実行できない状態を構造的に防ぐ）。
 
 from types import SimpleNamespace
@@ -224,6 +226,9 @@ class HostConfig:
 
     def __init__(self, data: dict, path: "str | None" = None):
         self.path = path
+        # 読んだままの宣言。doctor が起動時と**同じ判定**（`host_config_findings`）を
+        # 掛けられるようにするために持つ——doctor 用に読み直すと、読み方の 2 実装目になる。
+        self.raw = dict(data) if isinstance(data, dict) else {}
         declared = str(data.get("node_id") or "").strip()
         # 「宣言されたか」を保つ: `resolve_config` は宣言 > 環境変数 > ホスト名の順に採る
         # （宣言があるのに AGENT_PROJECT_NODE で黙って別名になると、板の名義と claim の
@@ -513,10 +518,21 @@ def _board_intake_projects(host: "HostConfig") -> "list[str]":
     """落札した仕事を**実際に取り込めて実行できる**プロジェクト経路の名前一覧。
 
     板の請負は `agent-flow participate`（プロジェクトのバス経由）が担うので、
-    バスを持つプロジェクトが 1 つも無いノード（＝ワーカーノード）は落札しても行き先が無い。
-    dashboard の手動入札ボタンはこの一覧が空かどうかで可否を決める——空のノードで
-    ボタンを出すと「押せるのに何も起きない」になる（ノード直轄実行 R2b が入るまでの事実）。"""
+    バスを持つプロジェクトが 1 つも無いノード（＝ワーカーノード）にはこの経路が無い。
+    ワーカーノードの取り込み先はノード直轄実行（R2b・`board.node_direct`）で、可否の判断は
+    dashboard 側が両方を見る——ここは「プロジェクト経由の経路」だけを数える名前のまま保つ
+    （名前が指す事実を広げると、画面がどちらの経路を見ているのか分からなくなる）。"""
     return [_project_name(p) for p in host.projects if str(p.get("root") or "").strip()]
+
+
+def _board_node_direct(host: "HostConfig") -> bool:
+    """このノードが**ノード直轄実行**（R2b）で落札した仕事を実行できるか。
+
+    プロジェクトを持たないワーカーノードは、`~/.agents/flow-node/bus` を唯一の取り込み先に
+    して板の仕事を実行する（`_node_direct_flow_tick`）。dashboard の手動入札ボタンは
+    `intake_projects` とこの旗の**どちらか**が立っていれば有効になる——押せるのに何も
+    起きない状態を作らない、という S8 §9-1 の約束はそのまま保つ。"""
+    return bool(host.board) and host.is_worker
 
 
 def _reject_node_command(path: str, why: str, status: "EngineStatus") -> None:
@@ -620,6 +636,10 @@ def _board_participate_tick(host: "HostConfig", status: "EngineStatus") -> None:
         "node_id": host.node_id,
         "contract_version": CONTRACT_VERSION,
         "intake_projects": _board_intake_projects(host),
+        # ノード直轄実行（R2b）で請けられるか。`intake_projects` が空でも、この旗が立って
+        # いれば落札した仕事は `~/.agents/flow-node/bus` で実行される。追加項目なので
+        # contract_version は据え置き——読めない古い画面は従来どおり非活性へ縮退する。
+        "node_direct": _board_node_direct(host),
         "last_tick": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "last_error": None,
     }
@@ -787,6 +807,90 @@ def _amigos_participate_tick(host: "HostConfig", pool: "NodeWorkerPool",
                                  c, capture_output=True, text=True, timeout=1800)))
 
 
+def node_flow_bus_dir() -> str:
+    """ノード直轄実行のバス（`~/.agents/flow-node/bus`）。
+
+    プロジェクトを 1 つも持たないワーカーノードには、落札した仕事を置く場所が無かった
+    （板の請負はプロジェクトのバス経由だったため）。**PC に 1 つのバス**を用意して、
+    そこを唯一の取り込み先にする——プロジェクトごとのバスと同じ形なので、実行・回収・
+    掃除の経路はすべて既存のものがそのまま効く（フォークを作らない・設計 §9 C12）。"""
+    return str(_agents_home() / "flow-node" / "bus")
+
+
+def _node_agent_cli(host: "HostConfig") -> str:
+    """ノード直轄実行で使うエージェント CLI。`defaults.agent_cli`（このノードの既定・スカラ）
+    → 能力宣言 `agent_cli[]` の先頭 → 未指定（agent-flow の既定）。
+
+    ワーカーノードはプロジェクト設定を持たないので、実行系の既定は agent-flow 自身の既定に
+    従う。ノードが宣言しているのは「この PC で使える CLI」だけなので、渡すのもそれだけ。"""
+    declared = str((host.defaults or {}).get("agent_cli") or "").strip()
+    return declared or (str(host.agent_cli[0]).strip() if host.agent_cli else "")
+
+
+def _node_flow_base(host: "HostConfig") -> "list[str]":
+    """ノード直轄実行の agent-flow 共通 argv（グローバル引数）。
+
+    板の場所は **host.yaml が正典**（S1: ノード固有宣言は host.yaml 専有）。フルノードでは
+    flow の設定ファイルから解決していたが、ワーカーノードにはその設定ファイルが無い——
+    宣言を持っている側から明示的に渡す。"""
+    base = resolve_agent_flow(None) + ["--bus", node_flow_bus_dir(), "--board", host.board]
+    if host.path:
+        # 入札選別に使う宣言（repos / tags / agent_cli / workloads / budget）の在処。
+        # 非既定の host.yaml で常駐している PC で、子だけ別の宣言を読まないため。
+        base += ["--node-declaration", str(host.path)]
+    cli = _node_agent_cli(host)
+    if cli:
+        base += ["--agent-cli", cli]
+    return base
+
+
+def _node_direct_flow_tick(host: "HostConfig", pool: "NodeWorkerPool",
+                           status: "EngineStatus") -> None:
+    """ノード直轄実行（実装計画 §7 R2b・設計 §4.2〜§4.3）。
+
+    プロジェクトを 1 つも持たないワーカーノードが、板の公示に入札 → 落札 → ノードのバスへ
+    取り込み → `NodeWorkerPool` で実行 → 板へ結果報告、まで通る唯一の経路。入札・落札・
+    報告の実装は `agent-flow participate`（`poll_board`）が既に持っているので、ここが足すのは
+    **その参加をプロジェクトではなくノードのスコープで 1 巡させること**だけ。
+
+    ロール分岐は「プロジェクト子を起動しない・coordination に触れない」の 2 点に保つ
+    （設計 §9 C12）。したがってこの tick はフルノードでは走らせない——フルノードには
+    プロジェクトのバス経由の取り込み経路が既にあり、同じノードに 2 つ目の取り込み主体を
+    置くと、板の枠（`max_concurrent` の自己抑制）の数え方が経路ごとに割れる。
+
+    実行は必ずプールへ渡す（tick 内では実行しない）。run は周期を超えるので、tick で
+    走らせると self-watchdog が健全な常駐体を abort する（参加 tick 共通の実行規約）。"""
+    if not host.board or not host.is_worker:
+        return
+    busy = pool.busy_ids()
+    running = sorted(r[len("node/"):] for r in busy if r.startswith("node/"))
+    cmd = _node_flow_base(host) + ["participate", "--json", "--node-id", host.node_id]
+    if running:
+        # 渡さないと、枠が空くのを待っている run を毎周「駆動者が居ない孤児」と読んで
+        # 再開回数を焼き、上限で failed に確定する（プロジェクト側の tick と同じ約束）。
+        cmd += ["--running", ",".join(running)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=_FLOW_TICK_TIMEOUT_SEC)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        status.record_error(f"node flow participate: {e}")
+        return
+    if proc.returncode != 0:
+        status.record_error(f"node flow participate 失敗（rc={proc.returncode}）: "
+                            f"{proc.stderr.strip()[-300:]}")
+        return
+    try:
+        items = json.loads(proc.stdout or "[]")
+    except ValueError:
+        return
+    for item in items:
+        rid = str((item or {}).get("run_id") or "").strip()
+        if not rid:
+            continue
+        run_cmd = _node_flow_base(host) + ["--run-id", rid, "run", "--from-inbox"]
+        pool.submit(WorkItem(id=f"node/{rid}", run=lambda c=run_cmd: subprocess.run(c)))
+
+
 def _project_cmd(project: dict, *argv: str) -> "list[str]":
     """host.yaml の 1 プロジェクト宣言に対する `agent-project <argv…>` の起動 argv。
     プロジェクト設定の解決は agent-project 本体に任せる（常駐体は名前を渡すだけ・S1）。"""
@@ -948,6 +1052,9 @@ def _build_resident(host: "HostConfig", *, start_children: bool = True):
 
     def tick_flow() -> None:
         _flow_participate_tick(host, pool, status)
+        # ノード直轄実行（R2b）。プロジェクトを持たないワーカーノードでだけ走る——
+        # 上の tick が回るプロジェクトが 1 つも無い PC の、唯一の取り込み経路。
+        _node_direct_flow_tick(host, pool, status)
         status.tick_counts["flow"] = status.tick_counts.get("flow", 0) + 1
         write_status()
 
@@ -982,6 +1089,42 @@ def _build_resident(host: "HostConfig", *, start_children: bool = True):
                        Tick("gc", 600.0, tick_gc, timeout=gc_budget)],
                       on_tick_error=lambda name, exc: status.record_error(f"{name}: {exc}"))
     return sup, sched, status, write_status, pool
+
+
+def _board_away_announcer(host: "HostConfig") -> "tuple":
+    """graceful 停止に注入する (away 宣言, 最終 push) の 2 ステップを組み立てる。
+
+    板を宣言していない PC では両方 None（`graceful_shutdown` は None のステップを飛ばす）。
+    **停止経路は失敗しても停止を止めない**——板が落ちている・クローンが壊れているときに
+    例外を投げると、子を畳んだ後の停止が止まり、起動系が SIGKILL するまで残る。
+
+    away を書くのは「まだ実行中と board に見えている委譲」だけ（`announce_away`）。書けた
+    ものがあるときだけ push する——空 push は板に無意味なコミットを積む。"""
+    if not host.board:
+        return (None, None)
+    state: dict = {"board": None, "touched": []}
+
+    def _announce() -> None:
+        try:
+            board = BoardRepo(host.board, workdir=host.board_workdir)
+            board.sync_pull()
+            state["board"] = board
+            state["touched"] = board.announce_away(host.node_id)
+        except (OSError, RuntimeError, ValueError) as e:
+            print(f"[agent-project] serve: 板への離席宣言に失敗（停止は続けます）: {e}",
+                  file=sys.stderr)
+
+    def _push() -> None:
+        board, touched = state.get("board"), state.get("touched") or []
+        if board is None or not touched:
+            return
+        try:
+            board.sync_push(f"away {host.node_id}（{len(touched)} 件の実行中を離席）")
+        except (OSError, RuntimeError, ValueError) as e:
+            print(f"[agent-project] serve: 板への最終反映に失敗（停止は続けます）: {e}",
+                  file=sys.stderr)
+
+    return (_announce, _push)
 
 
 SERVE_BANNER = "[agent-project] serve: node_id="
@@ -1053,7 +1196,14 @@ def cmd_serve(args) -> int:
         if sched is not None:
             sched.stop()
         if sup is not None:
-            graceful_shutdown(sup)
+            # 停止の 4 ステップのうち、板に関わる 2 つ（away 宣言・最終 push）を注入する
+            # （設計 §4.2・P0 詳細設計 §7-F2 が「R2b で一緒に設計する」と予約していた分）。
+            # claims / lease の解放は現状 lease 失効が吸収するので注入しない——落札した
+            # 仕事の在処だけが、待っている人から見えない状態だった。
+            away = _board_away_announcer(host)
+            graceful_shutdown(sup, announce_away=away[0], final_push=away[1],
+                              on_step=lambda label: print(
+                                  f"[agent-project] serve: 停止手順 {label}", file=sys.stderr))
         if sched is not None:
             sched.join(timeout=5.0)
     return 0

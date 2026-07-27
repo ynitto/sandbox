@@ -177,7 +177,9 @@ function renderFlowNode(run, node, retryUi, advice) {
     esc(FLOW_STATE_LABEL[effState] || effState) +
     (reconciled ? ' <span class="status-chip st-reconciled" title="GitLab 側の決着を先に表示しています（正式な反映待ち）">GitLab 反映</span>' : '');
   return `<div class="card full">
-      <h3><span class="mono">${esc(node.id)}</span> [${esc(node.kind)}] — ${stateLabel}${node.who ? ` @${esc(node.who)}` : ''}</h3>
+      <h3><span class="mono">${esc(node.id)}</span> [${esc(node.kind)}] — ${stateLabel}${node.who ? ` @${esc(node.who)}` : ''}${
+        node.pc ? ` <span class="muted">（端末: ${esc(node.pc)}）</span>` : ''
+      }</h3>
       <div class="node-goal">${proseHtml(node.goal) || '<span class="muted">（目標なし）</span>'}</div>
       ${node.deps.length ? `<div class="muted" style="margin-top:4px">依存: ${node.deps.map(esc).join(', ')}</div>` : ''}
       ${nodeFateLine(run, effState, retryUi, advice)}

@@ -234,6 +234,35 @@ class BoardRepo:
             bids = os.path.join(self.delegation_dir(did), "bids")
             return _protocol.renew_lease(bids, node_id, lease, extra={"workload": workload})
 
+    def announce_away(self, node_id: str) -> "list[str]":
+        """この端末が離席することを板へ宣言する（graceful 停止の 4 ステップ・設計 §4.2）。
+
+        自分が落札して**まだ終端していない**委譲の `status/<who>.json` を `away` にする。
+        away は `_renew_dispatched_leases`（agent-flow）が「延長しない」と読む状態なので、
+        入札の lease は自然に失効し、依頼側は再入札で別の端末へ回せる。
+
+        これを書かずに落ちると、板から見えるのは「心拍が止まった dispatched」だけになり、
+        依頼側は lease 失効を待つあいだ「応答なし」を見続ける（P0 詳細設計 §7-F2）。
+        ノード直轄実行（R2b）で「落札した仕事を持つワーカーノードが落ちる」経路が現実に
+        なったので、停止側から明示的に宣言する。書き換えた委譲 id を返す（push は呼び出し側）。"""
+        touched: "list[str]" = []
+        with self._locked():
+            self._ensure()
+            for did in self.list_delegations():
+                if self.is_terminal(did):
+                    continue
+                rec = self.read_delegation_json(did, "status", f"{_safe_node(node_id)}.json")
+                if not isinstance(rec, dict):
+                    continue
+                state = str(rec.get("state") or "")
+                if state != "dispatched":
+                    continue      # 自分が実行中の委譲だけ（終端済み・away は触らない）
+                path = os.path.join(self.delegation_dir(did), "status",
+                                    f"{_safe_node(node_id)}.json")
+                write_json_atomic(path, {**rec, "state": "away", "heartbeat": _now_iso_utc()})
+                touched.append(did)
+        return touched
+
     def has_live_bid(self, did: str, node_id: str) -> bool:
         rec = self.read_delegation_json(did, "bids", f"{_safe_node(node_id)}.json")
         try:

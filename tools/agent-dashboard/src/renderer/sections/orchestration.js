@@ -819,7 +819,9 @@ function boardParticipationHtml() {
     : '<tr><td colspan="5" class="muted">まだどの端末も参加を宣言していません</td></tr>';
   const intake = (board.intakeProjects || []).length
     ? `落札した仕事は ${esc((board.intakeProjects || []).join('・'))} で実行します`
-    : 'この端末はまだ仕事を引き受けても実行できません（プロジェクトを 1 つも持っていません）';
+    : board.nodeDirect
+      ? '引き受けた仕事はこの端末がじかに実行します'
+      : 'この端末はまだ仕事を引き受けても実行できません（プロジェクトを 1 つも持っていません）';
   const err = board.lastError
     ? `<p class="need-error">やり取り先に接続できていません: ${esc(board.lastError)}</p>` : '';
   return `<h3>ほかの端末との仕事のやり取り</h3>

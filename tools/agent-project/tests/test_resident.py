@@ -773,7 +773,7 @@ class ResidentCliTests(unittest.TestCase):
 
         with mock.patch.object(km.signal, "signal", side_effect=fake_signal), \
              mock.patch.object(km, "_build_resident", side_effect=fake_build), \
-             mock.patch.object(km, "graceful_shutdown", side_effect=lambda s: s.stop_all()):
+             mock.patch.object(km, "graceful_shutdown", side_effect=lambda s, **kw: s.stop_all()):
             rc = km.cmd_serve(types.SimpleNamespace(host_config=None))
 
         self.assertEqual(rc, 0)
@@ -971,6 +971,111 @@ class ResidentCliTests(unittest.TestCase):
             [t for t in sched._ticks if t.name == "flow"][0].fn()   # 例外を投げないこと自体が検証
         self.assertTrue(status.recent_errors)
         self.assertIn("flow participate", status.recent_errors[-1])
+
+    def _fake_agent_flow(self, log: Path, name: str, emit: str = "[]") -> Path:
+        """`agent-flow` の代わりに argv を記録する偽物（participate は run-id を返す）。"""
+        p = self.tmp / name
+        p.write_text(
+            "import sys\n"
+            f"open(r'{log}', 'a').write(' '.join(sys.argv[1:]) + chr(10))\n"
+            "if 'participate' in sys.argv:\n"
+            f"    print({emit!r})\n",
+            encoding="utf-8")
+        return p
+
+    def test_node_direct_tick_takes_board_work_on_a_worker_node(self):
+        # R2b: プロジェクトを 1 つも持たない端末が、板の仕事を落札してノードのバスで実行する。
+        # 受理（participate）と実行（run）を分ける配線はプロジェクト経路と同じ。
+        log = self.tmp / "node-flow.log"
+        fake = self._fake_agent_flow(log, "fake_flow.py", emit='[{"run_id": "dg-1"}]')
+        host = km.HostConfig({"node_id": "pc-a", "board": str(self.tmp / "board"),
+                              "agent_cli": ["kiro"]})
+        self.assertTrue(host.is_worker)
+        status = km.EngineStatus("pc-a")
+        pool = km.NodeWorkerPool(4)
+        with mock.patch.object(km, "resolve_agent_flow", return_value=[sys.executable, str(fake)]):
+            km._node_direct_flow_tick(host, pool, status)
+            for _ in range(50):
+                if log.exists() and len(log.read_text().splitlines()) >= 2:
+                    break
+                time.sleep(0.02)
+        calls = log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(calls), 2)
+        self.assertIn("participate", calls[0])
+        self.assertIn("--board", calls[0])                 # 板の場所は host.yaml が正典
+        self.assertIn("--node-id pc-a", calls[0])
+        self.assertIn(km.node_flow_bus_dir(), calls[0])    # 取り込み先はノードのバス
+        self.assertIn("--agent-cli kiro", calls[0])        # 実行 CLI はノードの宣言から
+        self.assertIn("run --from-inbox", calls[1])        # 実行は落札した run を続きから
+        self.assertIn("dg-1", calls[1])
+        self.assertEqual(status.recent_errors, [])
+
+    def test_node_direct_tick_is_silent_on_a_full_node(self):
+        # ロール分岐は「プロジェクト子を起動しない」の 1 点に保つ（設計 §9 C12）。
+        # フルノードにはプロジェクト経由の取り込み経路があるので、2 つ目の主体を置かない。
+        log = self.tmp / "node-flow-full.log"
+        fake = self._fake_agent_flow(log, "fake_flow_full.py")
+        root = self.tmp / "fullproj"
+        root.mkdir()
+        host = km.HostConfig({"node_id": "pc-a", "board": str(self.tmp / "board"),
+                              "projects": [{"name": "fp", "root": str(root)}]})
+        status = km.EngineStatus("pc-a")
+        with mock.patch.object(km, "resolve_agent_flow", return_value=[sys.executable, str(fake)]):
+            km._node_direct_flow_tick(host, km.NodeWorkerPool(4), status)
+        self.assertFalse(log.exists())
+
+    def test_node_direct_tick_needs_a_board(self):
+        log = self.tmp / "node-flow-noboard.log"
+        fake = self._fake_agent_flow(log, "fake_flow_nb.py")
+        host = km.HostConfig({"node_id": "pc-a"})
+        with mock.patch.object(km, "resolve_agent_flow", return_value=[sys.executable, str(fake)]):
+            km._node_direct_flow_tick(host, km.NodeWorkerPool(4), km.EngineStatus("pc-a"))
+        self.assertFalse(log.exists())
+
+    def test_node_direct_tick_reports_runs_it_already_drives(self):
+        # 走っている run を申告しないと、participate が毎周それを孤児と読んで再開回数を焼く。
+        log = self.tmp / "node-flow-running.log"
+        fake = self._fake_agent_flow(log, "fake_flow_run.py")
+        host = km.HostConfig({"node_id": "pc-a", "board": str(self.tmp / "board")})
+        pool = km.NodeWorkerPool(1)
+        started, release = threading.Event(), threading.Event()
+        pool.submit(km.WorkItem(id="node/dg-A", run=lambda: (started.set(), release.wait(5))))
+        pool.submit(km.WorkItem(id="node/dg-B", run=lambda: None))     # 枠が無いのでキュー
+        self.assertTrue(started.wait(5))
+        try:
+            with mock.patch.object(km, "resolve_agent_flow",
+                                   return_value=[sys.executable, str(fake)]):
+                km._node_direct_flow_tick(host, pool, km.EngineStatus("pc-a"))
+        finally:
+            release.set()
+        argv = log.read_text(encoding="utf-8").splitlines()[0]
+        self.assertIn("--running dg-A,dg-B", argv)     # 実行中も起動待ちも申告する
+        self.assertNotIn("node/dg-A", argv)            # 投入 id の接頭辞は剥がす
+
+    def test_node_direct_tick_isolates_participate_failure(self):
+        host = km.HostConfig({"node_id": "pc-a", "board": str(self.tmp / "board")})
+        status = km.EngineStatus("pc-a")
+        missing = str(self.tmp / "no-such-agent-flow")
+        with mock.patch.object(km, "resolve_agent_flow", return_value=[missing]):
+            km._node_direct_flow_tick(host, km.NodeWorkerPool(4), status)
+        self.assertTrue(status.recent_errors)
+        self.assertIn("node flow participate", status.recent_errors[-1])
+
+    def test_board_status_declares_node_direct_execution(self):
+        # dashboard の手動入札ボタンはこの旗（か intake_projects）を根拠にする。
+        worker = km.HostConfig({"node_id": "pc-a", "board": str(self.tmp / "b1")})
+        status = km.EngineStatus("pc-a")
+        km._board_participate_tick(worker, status)
+        self.assertTrue(status.board["node_direct"])
+        self.assertEqual(status.board["intake_projects"], [])
+        root = self.tmp / "fullproj2"
+        root.mkdir()
+        full = km.HostConfig({"node_id": "pc-a", "board": str(self.tmp / "b2"),
+                              "projects": [{"name": "fp", "root": str(root)}]})
+        status2 = km.EngineStatus("pc-a")
+        km._board_participate_tick(full, status2)
+        self.assertFalse(status2.board["node_direct"])     # フルノードは従来の経路
+        self.assertEqual(status2.board["intake_projects"], ["fp"])
 
     def test_gc_tick_isolates_project_sweeper_failure(self):
         # 1 プロジェクトの gc 失敗が他プロジェクトの gc・常駐体本体を止めないこと
