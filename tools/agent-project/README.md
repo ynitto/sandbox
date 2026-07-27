@@ -117,8 +117,9 @@ agent-project run --planner none --flow-planner stub --executor stub
                        viewer の稼働判定に使う（[daemon の生存信号](#daemon-の生存信号statusjson--リモート-viewer-の稼働判定)）
   paused.json          一時停止マーカー（commands の pause で生成・resume で削除）
   inbox/  claims/  autonomy/  bus/   取り込み口 / 原子的クレーム / track 状態 / agent-flow 一時バス
-  commands/<name>.json 人の指示（approve/hold/pin/defer/revise/reject/replan/distill-notes/
-                       heal/pause/resume/stop）のドロップ口（CLI 不要。run/watch が取り込む）
+  commands/<name>.json 人の指示（approve/hold/pin/defer/revise/reject/replan/revive/
+                       distill-notes/heal/pause/resume/stop）のドロップ口（CLI 不要。run/watch が
+                       取り込む）
   .state-git/          状態 git 同期の管理クローン（ルートが git でなく state_git 設定時のみ）
 ```
 
@@ -667,7 +668,8 @@ off なら draft）。捨てると「プランナーが何も出さなかった�
 最終防衛線として残す（スキルは差し替え可能なので、投入側の護りは外さない）。
 
 **墓標（`tombstones.md`）**: `reject` したタスクは 1 行ずつここに残り、**同じタイトルは再提案されない**。
-人が手で書き足してもよい。
+人が手で書き足してもよい。agent-dashboard の「削除」もこの `reject` を投函する（タスク画面の
+「却下済み（墓標）」から解除できる）。
 
 ```bash
 agent-project revive "board の UI を作る"   # 墓標を解除（再び提案されうる状態へ戻す）

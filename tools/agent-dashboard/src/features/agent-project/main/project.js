@@ -290,6 +290,24 @@ function parsePolicy(text) {
   return rules;
 }
 
+// 墓標（tombstones.md）— 却下したタスクを再分解で作り直させないための記録。本体の
+// load_tombstones と同じ規則で読む（1 行 1 墓標・`::` 区切り・4 番目が charter= タグ）。
+// 画面に出すのは「消したものを戻せる」ようにするため: 却下（reject）は墓標を残すので、
+// 一覧と解除（revive）が無いと、画面から消したタスクは画面からは二度と入れ直せない。
+function parseTombstones(text) {
+  const out = [];
+  for (const line of String(text || '').replace(/\r\n/g, '\n').split('\n')) {
+    const m = line.match(/^\s*-\s+(.+?)\s*$/);
+    if (!m || line.trimStart().startsWith('-->')) continue;
+    const parts = m[1].split('::').map((x) => x.trim());
+    const title = parts[0] || '';
+    if (!title) continue;
+    const tag = (parts[3] || '').startsWith('charter=') ? parts[3].slice('charter='.length).trim() : '';
+    out.push({ title, reason: parts[1] || '', date: parts[2] || '', charter: tag });
+  }
+  return out;
+}
+
 function parseDecisions(text, id) {
   const records = [];
   let cur = null;
@@ -886,6 +904,10 @@ function listCommandReceipts(dir) {
   return out;
 }
 
+// タスク級の票の kind（本体 needs.py の _TASK_NEEDS_KINDS と同じ集合）。これ以外
+// （milestone・未知）はタスクに紐づかないので、タスクの有無で判断しない。
+const TASK_NEEDS_KINDS = new Set(['plan-review', 'review', 'blocked']);
+
 // needs/<id>.md が無い判断待ちタスク（review / blocked / proposed）を backlog status から補う。
 // 本体の ensure_needs と同じ契約: needs は status の投影で、票が失われても検収・承認導線を残す。
 // ここではファイルを書かず表示用だけを合成する（承認は commands/ 経由で needs ファイルが無くても届く）。
@@ -902,8 +924,14 @@ function synthesizeNeedsFromBacklog(needs, backlog, needsDir, archive) {
     const expected = task ? expectedKind(String(task.status || '')) : '';
     // needs は status の投影。タスクが判断待ちを抜けた（done で archive 済み・ready/doing へ
     // 戻った）のに票ファイルだけ残ると、決着済みの判断がカードとして出続ける。投影から
-    // 外れた票はここで落とす。タスクを持たない票（charter/milestone カード）は対象外。
+    // 外れた票はここで落とす。
     if (archivedIds.has(tid) || (task && !expected)) continue;
+    // 投影元のタスクがどこにも無い票（＝タスクを消した後に残った孤児）も落とす。
+    // 従来は「タスクを持たない票 = charter/milestone カード」と見なして残していたが、
+    // その判別は kind でしかできない: タスク級（plan-review/review/blocked）の票は
+    // タスクが消えた時点で操作不能（承認も却下も対象が無い）＝出し続けても人は何もできない。
+    // 本体側でも reap_orphan_needs が同じ規則でファイルを掃除する（ここは即時の表示同期）。
+    if (!task && TASK_NEEDS_KINDS.has(String(n.kind || ''))) continue;
     // 古い plan-review が残ったまま task が blocked/review へ進んだ場合、存在するだけで
     // 合成を抑止せず、下で正しい種別の表示票に置き換える。
     if (expected && String(n.kind || '') !== expected) continue;
@@ -1892,6 +1920,8 @@ function readProject(workspaceDir, cfg) {
     // プロジェクトルール（rules.md）: 人が書く恒常ルール＋効いた learn の自動昇格。
     // 全タスクの act / plan / verify 合成へ常時注入される（本体 §6.6）。無ければ null。
     rules: readText(path.join(dir, 'rules.md')),
+    // 墓標（却下したタスクの「作り直さない」記録）。削除＝却下の取り消し導線に使う。
+    tombstones: parseTombstones(readText(path.join(dir, 'tombstones.md'))),
     decisions: decisionsAll.slice(0, 100),
     journal: tailLines(path.join(dir, 'journal.md'), 200),
     runLog: readRunLog(path.join(dir, 'run-log.jsonl')),
@@ -1922,6 +1952,7 @@ module.exports = {
   REVIEWS_DIR,
   parseCharter,
   parsePolicy,
+  parseTombstones,
   parseNeeds,
   synthesizeNeedsFromBacklog,
   attachDeliveryHintsFromBacklog,

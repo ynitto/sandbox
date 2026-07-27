@@ -963,7 +963,8 @@ def _run_setup(cfg: "Config", controller: bool = True) -> tuple:
                 persist_task(cfg, t)
     tasks += route_spec_tasks(cfg, tasks, policy)     # spec ルーティング（opt-in・spec 前段を前置）
     tasks += expand_spec_tasks(cfg, tasks)            # 承認済み spec の tasks.md を実装タスクへ展開
-    ensure_needs(cfg, tasks)                          # 判断待ち（proposed/blocked/review）の票を status から整合
+    reconcile_needs(cfg, tasks)                       # 判断待ち（proposed/blocked/review）の票を status から整合
+    #                                                   （作る＝ensure／消す＝対応タスクを失った票の掃除）
     if _coordination_active(cfg) and controller:
         state_sync(cfg, force=True)                   # allocation は remote 正本の最新 backlog を親にする
         allocate_distributed_tasks(cfg)

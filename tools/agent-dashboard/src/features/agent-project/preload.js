@@ -10,7 +10,10 @@ module.exports = {
   requestHeal: (invoke) => (dir) => invoke('engine:heal', { dir }),
   setupDiagnostics: (invoke) => () => invoke('setup:diagnostics'),
   readProject: (invoke) => (dir) => invoke('dashboard:project', { dir }),
-  deleteTask: (invoke) => (dir, id) => invoke('dashboard:deleteTask', { dir, id }),
+  deleteTask: (invoke) => (dir, id, reason) => invoke('dashboard:deleteTask', { dir, id, reason }),
+  // 墓標の解除（削除＝却下の取り消し）。同じ題のタスクを入れ直せる状態へ戻す
+  reviveTombstone: (invoke) => (dir, title, charter) =>
+    invoke('dashboard:revive', { dir, title, charter }),
 
   // dir（プロジェクトフォルダ）は run アーカイブの置き場（<dir>/flow-archive/）に使う
   flowRuns: (invoke) => (dir, busDir, limit) => invoke('flow:runs', { dir, busDir, limit }),

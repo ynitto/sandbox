@@ -126,6 +126,21 @@ class TestCommandsIngest(unittest.TestCase):
             self.assertIn("pin: T1", (d / "policy.md").read_text())
             self.assertIn("DR-", (d / "decisions" / "T1.md").read_text())  # 決定記録も同一
 
+    def test_ingest_commands_revives_a_tombstone(self):
+        # 却下（削除）の取り消しを viewer から届ける口。これが無いと、画面から消したタスクは
+        # 墓標に阻まれて画面からは二度と入れ直せない（CLI が要る＝試行錯誤が止まる）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            c = cfg_for(d)
+            km.ensure_dirs(c)
+            km.append_tombstone(c, "README に概要を足す", "要らなかった")
+            cd = km.commands_dir(c)
+            (cd / "r.json").write_text(json.dumps(
+                {"command": "revive", "title": "README に概要を足す"}), encoding="utf-8")
+            self.assertEqual(km.ingest_commands(c), ["revive:project"])
+            self.assertEqual(km.load_tombstones(c), [])              # 墓標が消える
+            self.assertEqual(list(cd.glob("*.json")), [])            # 処理したら消す
+
     def test_ingest_commands_rejects_bad_files(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
@@ -1293,6 +1308,83 @@ class EnsureNeedsTests(unittest.TestCase):
                 verify_template=None, repos=None, cohort_items=None)
             self.assertEqual(km.cmd_enqueue(cfg, args), 0)
             self.assertTrue(km.needs_path(cfg, "T9").exists(), "投入したその場で票ができる")
+
+
+class ReapOrphanNeedsTests(unittest.TestCase):
+    """needs は status の投影＝**投影元が消えたら票も消す**（ensure_needs の対）。
+
+    従来は作る側しか無く、タスクを消した後に票だけが残った。残った票は ingest_feedback が
+    読み飛ばす（対応タスクが無い）ので [x] を付けても消えず、しかも has_work は「人の入力あり」
+    と数える＝人からは「消しても復活する要対応」に見える袋小路だった。"""
+
+    def _cfg(self, d):
+        return cfg_for(Path(d), plan_review=True)
+
+    def test_card_without_its_task_is_reaped(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            t = km.Task(id="T1", title="x", status="blocked", verify="true")
+            km.persist_task(cfg, t)
+            km.ensure_needs(cfg, [t])
+            self.assertTrue(km.needs_path(cfg, "T1").exists())
+
+            km.delete_task_file(cfg, t)                     # viewer の削除・手作業・同期事故
+            self.assertEqual(km.reap_orphan_needs(cfg), ["T1"])
+            self.assertFalse(km.needs_path(cfg, "T1").exists())
+
+    def test_card_with_a_live_task_is_kept(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            t = km.Task(id="T2", title="x", status="blocked", verify="true")
+            km.persist_task(cfg, t)
+            km.ensure_needs(cfg, [t])
+            self.assertEqual(km.reap_orphan_needs(cfg), [])
+            self.assertTrue(km.needs_path(cfg, "T2").exists())
+
+    def test_milestone_card_is_not_touched(self):
+        # milestone 票の持ち主は reconcile_milestones（project.json の status が正）。
+        # タスクが無いのは当たり前なので、ここで消すと承認前のマイルストーンが毎パス消える。
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            p = cfg.needs / "proj.md"
+            p.write_text("---\nstatus: proposed\nkind: milestone\n---\n\n# マイルストーン\n",
+                         encoding="utf-8")
+            self.assertEqual(km.reap_orphan_needs(cfg), [])
+            self.assertTrue(p.exists())
+
+    def test_reconcile_needs_creates_and_reaps_in_one_pass(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            live = km.Task(id="T3", title="x", status="blocked", verify="true")
+            km.persist_task(cfg, live)
+            gone = km.Task(id="T4", title="y", status="review", verify="true")
+            km.persist_task(cfg, gone)
+            km.ensure_needs(cfg, [gone])
+            km.delete_task_file(cfg, gone)
+
+            made, reaped = km.reconcile_needs(cfg, [live])
+            self.assertEqual((made, reaped), (["T3"], ["T4"]))
+            self.assertTrue(km.needs_path(cfg, "T3").exists())
+            self.assertFalse(km.needs_path(cfg, "T4").exists())
+
+    def test_checked_orphan_stops_waking_the_watch_loop(self):
+        # [x] 済みの孤児票は has_work を毎パス真にしていた（起きても何も処理できない空回り）。
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            t = km.Task(id="T5", title="x", status="blocked", verify="true")
+            km.persist_task(cfg, t)
+            km.ensure_needs(cfg, [t])
+            _submit_feedback(km.needs_path(cfg, "T5"), "やっぱり要らない")
+            km.delete_task_file(cfg, t)
+            self.assertTrue(km.has_work(cfg))               # 孤児票だけで起きてしまう
+
+            km.reap_orphan_needs(cfg)
+            self.assertFalse(km.has_work(cfg))
 
 
 class TestRejectAndImpact(unittest.TestCase):

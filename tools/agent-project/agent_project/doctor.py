@@ -1169,7 +1169,8 @@ def cmd_triage(cfg: Config) -> int:
     for t in tasks:
         persist_task(cfg, t)
     recover_stale_doing(cfg, tasks)             # 実行者が失踪した doing を ready へ戻す
-    ensure_needs(cfg, tasks)                    # 判断待ち（proposed/blocked/review）の票を status から整合
+    reconcile_needs(cfg, tasks)                 # 判断待ち（proposed/blocked/review）の票を status から整合
+    #                                             （作る＝ensure／消す＝対応タスクを失った票の掃除）
     order = prioritize(tasks, policy, cfg.planner, cfg.model)
     print("優先順位（消化対象）:")
     for i, t in enumerate(order, 1):
