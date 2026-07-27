@@ -112,6 +112,7 @@ def _block(cfg, task, reason, reasons, evidence: str = "", failure: "dict | None
     task.status = "blocked"
     reasons[task.id] = reason
     _remember_needs_reason(task, reason)  # 票を失っても ensure_needs が同じ理由で作り直せるように
+    mark_needs_entry(cfg, task)           # この判断待ちが「人の決定より後」であることの印（G-2）
     persist_task(cfg, task)
     # 失敗票でも検収画面が state worktree の内部差分へフォールバックしないよう、成功時と
     # 同じ run metadata 由来の delivery を添える。

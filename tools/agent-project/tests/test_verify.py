@@ -393,6 +393,101 @@ class TestVerifyAssist(unittest.TestCase):
             self.assertEqual(t.get("env_resume"), "1", "環境を直して approve すれば続きから")
             self.assertIn("検証不能", (cfg.needs / "T1.md").read_text(encoding="utf-8"))
 
+    def _verification(self, note: str = "docker がありません") -> dict:
+        return {"criteria": [{"id": 1, "text": "何かが動く", "verdict": "unverifiable",
+                              "evidence": {"commands": [], "output": "", "files": []},
+                              "note": note}],
+                "pass": 0, "fail": 0, "unverifiable": 1, "ok": False}
+
+    def test_unverifiable_is_published_to_the_board_before_asking_a_human(self):
+        # P4-b: 「このノードでは確かめられない」は、まず機械で試せる解決（板への公示）を
+        # 試す。人検収へ直行するのは公示できないときだけ（C3・C5）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mk_state_repo(d)
+            cfg = cfg_for(d, board=str(d / "board"))
+            t = km.Task(id="T1", title="x", status="doing", extra=[("acceptance", "何かが動く")])
+            km.persist_task(cfg, t)
+            self.assertTrue(km.delegate_verification(cfg, t, self._verification(), "理由", 1))
+            self.assertEqual(t.norm_status(), "offloaded")       # 人ではなく板の結果待ち
+            self.assertEqual(t.get("flow_loc"), km.VERIFY_DELEGATION_LOC)
+            self.assertFalse(t.get("env_resume"))                # approve 待ちではない
+            did = t.get("flow_run")
+            post = km.BoardRepo(str(d / "board")).read_post(did)
+            self.assertEqual(post["workload"], "flow")
+            self.assertIn("確かめて報告", post["goal"])
+            self.assertIn("成果物を変更しないでください", post["goal"])  # 直すことは頼まない
+            self.assertIn("何かが動く", post["goal"])
+            self.assertIn("理由", post["goal"])
+
+    def test_verification_is_not_delegated_without_a_board(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mk_state_repo(d)
+            cfg = cfg_for(d)                                   # board 未設定
+            t = km.Task(id="T1", title="x", extra=[("acceptance", "何かが動く")])
+            self.assertFalse(km.delegate_verification(cfg, t, self._verification(), "r", 1))
+
+    def test_verification_is_not_delegated_without_a_revision(self):
+        # 成果の版が特定できないと、返ってきた判定を今の成果に結び付けられない → 人へ。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, board=str(d / "board"))            # git ではない workdir
+            t = km.Task(id="T1", title="x", extra=[("acceptance", "何かが動く")])
+            self.assertFalse(km.delegate_verification(cfg, t, self._verification(), "r", 1))
+
+    def test_external_verdict_is_accepted_for_the_same_revision_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            git_init(d)
+            (d / "a.txt").write_text("x", encoding="utf-8")
+            subprocess.run(["git", "-C", str(d), "add", "-A"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(d), "commit", "-qm", "c"], check=True,
+                           capture_output=True)
+            cfg = cfg_for(d)
+            t = km.Task(id="T1", title="x", extra=[("acceptance", "何かが動く")])
+            rev = km.git_change_baseline(d)[0]
+            km.save_external_verdict(cfg, t, rev, {"verdict": "pass", "did": "dg-1", "by": "pc-b"})
+            ok, flaky, msg, result = km._run_task_verifier(cfg, t, d)
+            self.assertTrue(ok)
+            self.assertTrue(result["external"])
+            self.assertIn("pc-b", msg)                      # 誰が確かめたかを残す
+            self.assertIn("pc-b", result["criteria"][0]["note"])
+            self.assertIn("external_by", t.get("verification"))
+            # 別の版の判定は受理しない（古い版で通った、を今の版の根拠にしない）
+            self.assertIsNone(km.read_external_verdict(cfg, t, "0123456"))
+            self.assertIsNone(km.read_external_verdict(cfg, t, ""))
+
+    def test_delegated_verification_result_is_ingested(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mk_state_repo(d)
+            cfg = cfg_for(d, board=str(d / "board"))
+            t = km.Task(id="T1", title="x", status="offloaded", extra=[("acceptance", "A")])
+            t.set("verify_rev", "abc1234")
+            km.persist_task(cfg, t)
+            km._settle_verify_delegation(cfg, t, "dg-1", True, "board delegation dg-1 done", 1, {})
+            self.assertEqual(t.norm_status(), "ready")        # 次の巡回で検収へ進む
+            rec = json.loads(km.external_verdict_path(cfg, t, "abc1234").read_text(encoding="utf-8"))
+            self.assertEqual(rec["verdict"], "pass")
+            self.assertEqual(rec["did"], "dg-1")
+
+    def test_undecided_delegation_falls_back_to_the_human(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mk_state_repo(d)
+            cfg = cfg_for(d, board=str(d / "board"))
+            km.ensure_dirs(cfg)
+            t = km.Task(id="T1", title="x", status="offloaded", extra=[("acceptance", "A")])
+            t.set("verify_rev", "abc1234")
+            km.persist_task(cfg, t)
+            km._settle_verify_delegation(cfg, t, "dg-1", False, "board delegation dg-1 failed",
+                                         1, {})
+            self.assertEqual(t.norm_status(), "blocked")
+            self.assertEqual(t.get("env_resume"), "1")        # リトライは焼かない（従来どおり）
+            票 = (cfg.needs / "T1.md").read_text(encoding="utf-8")
+            self.assertIn("板へ検証を回しましたが決着しませんでした", 票)
+
     def test_strip_ansi_removes_escapes(self):
         raw = "\x1b[38;5;141m> \x1b[0mgrep -q foo bar.txt\x1b[0m"
         self.assertEqual(km.strip_ansi(raw), "> grep -q foo bar.txt")

@@ -57,18 +57,25 @@ def _remote_wins(rel: str) -> bool:
         parts and parts[-1] in _STATE_REMOTE_WINS_FILES)
 
 
-def _take_local_on_conflict(rel: str, local_present: bool, remote_present: bool) -> bool:
+def _take_local_on_conflict(rel: str, local_present: bool, remote_present: bool,
+                            decided=None) -> bool:
     """同時変更の所有権を返す。
 
     needs の *本文編集* は人（remote）を正とする一方、needs の生成・削除は backlog lifecycle の
     投影なので機械（local）が所有する。したがって remote の削除と local の新規生成・置換が
     競合した場合だけ local を保持する。これにより人のフィードバックは従来どおり優先しつつ、
     stale な票の削除で新しい blocked/review 票が失われることを防ぐ。
+
+    **例外の例外**: リモートがその票を消したのが「人が決めたから」なら、削除に従う。
+    `decided(<タスク id>)` はリモート側に決定記録（`decisions/<id>.md`）があるかを答える
+    述語で、真なら人は既に答えている——ここでローカルの票を残すと、答え済みの判断が
+    全 PC へ復活して人に二度同じことを訊く（判断待ちの復活ループ・総覧 G-2。
+    コンセプト正典 C3「同じ判断を人に二度させない」の直接違反）。
     """
     parts = Path(rel).parts
     is_need = "needs" in parts[:-1]
     if is_need and local_present and not remote_present:
-        return True
+        return not (decided is not None and decided(Path(rel).stem))
     return not _remote_wins(rel)
 
 
@@ -478,6 +485,15 @@ class DirectStateGit:
         def _igit(*args: str):
             return self._top_git(*args, env=env)
 
+        def _remote_has_decision(tid: str) -> bool:
+            """リモート側の木に `decisions/<tid>.md` があるか（＝人の決定が記録済みか）。
+
+            見るのは**リモート**の木。票を消したのはリモート側で、その削除が人の決定に
+            基づくのかどうかが知りたいことのすべてだから。作業ツリーではなく木を見るのは、
+            まだ取り込んでいない（このマージで初めて入る）決定記録も数えるため。"""
+            p = f"{sub}/decisions/{tid}.md" if sub else f"decisions/{tid}.md"
+            return _igit("cat-file", "-e", f"{remote_sha}:{p}").returncode == 0
+
         try:
             if _igit("read-tree", "-m", base, old, remote_sha).returncode != 0:
                 return None
@@ -504,7 +520,8 @@ class DirectStateGit:
                         return None
                     continue
                 take_local = _take_local_on_conflict(
-                    rel, local_present=2 in stages, remote_present=3 in stages)
+                    rel, local_present=2 in stages, remote_present=3 in stages,
+                    decided=_remote_has_decision)
                 want = 2 if take_local else 3
                 if want in stages:            # 選んだ側が「削除」なら消えたままにする
                     mode, sha = stages[want]

@@ -132,6 +132,47 @@ def _mark_offloaded(cfg: "Config", task: "Task", location: str, run_id: str) -> 
 _OFFLOAD_POLL_ERR_LIMIT = 12
 
 
+def _settle_verify_delegation(cfg: "Config", task: "Task", did: str, ok: bool, msg: str,
+                              cycle: int, reasons: dict) -> int:
+    """検証委譲（P4-b）の結果を受け取る。settle した件数（常に 1）を返す。
+
+    成功終端＝別の端末が受入基準を確かめた。その事実を受理点
+    （`verifications/<task-id>/<rev>.external.json`）へ置き、タスクを `ready` へ戻す
+    ——次の巡回の settle が同じ rev の検証としてそれを受け入れ、検収 / 完了へ進む
+    （done の根拠を「誰が確かめたか」で分岐させない）。
+
+    それ以外（失敗・中止・請け負い手なし）は**従来どおり人へ**。機械で試せる解決を
+    試したうえでの人番なので、票には「板でも確かめられなかった」ことまで書く。"""
+    rev = str(task.get("verify_rev") or "").strip()
+    task.drop("flow_run", "flow_loc", "verify_rev")
+    if ok and rev:
+        rel = save_external_verdict(cfg, task, rev, {
+            "verdict": "pass", "did": did, "by": _board_result_winner(cfg, did),
+            "at": _now_ts(), "detail": msg[:300]})
+        task.status = "ready"
+        persist_task(cfg, task)
+        append_journal(cfg.journal, f"cycle {cycle}: {task.id} 検証委譲の結果を受理"
+                                    f"（{did}・{rel or '記録の保存に失敗'}）→ 次の巡回で検収へ")
+        return 1
+    task.set("env_resume", "1")
+    task.status = "blocked"
+    why = ("[agent-error:env] 検証不能: このノードでは確かめられない基準があり、板へ検証を"
+           f"回しましたが決着しませんでした（{did}: {msg[:200]}）。環境を直して approve すると、"
+           "同じ run の続きから再開します。")
+    _block(cfg, task, why, reasons)
+    append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（検証委譲も決着せず）")
+    return 1
+
+
+def _board_result_winner(cfg: "Config", did: str) -> str:
+    """検証を請け負った端末の名義（読めなければ空）。受理の根拠として記録に残す。"""
+    try:
+        res = BoardRepo(cfg.board, workdir=cfg.board_workdir).read_result(did) or {}
+    except (OSError, RuntimeError, ValueError):
+        return ""
+    return str(res.get("winner") or "")
+
+
 def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
                     autonomy_cache: dict, reasons: dict, cycle0: int,
                     spawn_budget: int) -> dict:
@@ -147,7 +188,7 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
         loc = str(task.get("flow_loc", "local") or "local")
         if not run_id:
             continue
-        if loc == "board":
+        if loc in ("board", VERIFY_DELEGATION_LOC):
             if _board is None:
                 _board = BoardRepo(cfg.board, workdir=cfg.board_workdir)
                 _board.sync_pull()
@@ -190,6 +231,13 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
         # claim 後にディスク上で既に offloaded でなければ、他経路（revise/hold）が先に進めた。
         # ここで settle すると cancelled を確定して revise 内容を踏み潰しうる。
         if task.norm_status() != "offloaded":
+            release_claim(cfg, task)
+            continue
+        if loc == VERIFY_DELEGATION_LOC:
+            # 検証委譲（P4-b）の回収。返ってきたのは**検証の判定**であって成果ではない。
+            settled += _settle_verify_delegation(cfg, task, run_id, ok, msg,
+                                                 cycle0 + settled + 1, reasons)
+            collected.append(run_id)
             release_claim(cfg, task)
             continue
         gb = git_change_baseline(cfg.workdir)   # 完了時点の基準（remote/daemon 委譲は local 差分なし）

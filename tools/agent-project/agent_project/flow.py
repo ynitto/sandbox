@@ -582,6 +582,85 @@ def _act_board(task: Task, cfg: "Config") -> "tuple":
     return (ok, msg)
 
 
+VERIFY_DELEGATION_LOC = "board-verify"
+"""検証委譲（P4-b）の `- flow_loc:`。実行そのものではなく**検証だけ**を板へ回した印で、
+回収（`_reap_offloaded`）はこの値を見て「結果＝検証の判定」として扱う。"""
+
+
+def _verify_delegation_id(task: "Task", cfg: "Config", rev: str) -> str:
+    """検証委譲の id。成果コミット（rev）まで含めて決定的にする——成果が進めば別の委譲に
+    なり、古い版の検証結果を今の版の根拠に使えない（`external_verdict_path` と同じ規律）。"""
+    base = _board_delegation_id(task, cfg)
+    tail = re.sub(r"[^A-Za-z0-9_-]+", "", str(rev or ""))[:8]
+    return f"{base}-vfy{('-' + tail) if tail else ''}"[:64]
+
+
+def _verification_request(task: "Task", cfg: "Config", criteria: "list[str]",
+                          reasons: str) -> str:
+    """検証委譲の依頼文。**確かめて報告することだけ**を頼む（直すことは頼まない）——
+    成果はもう出来ており、足りないのは「この端末では確かめられなかった」という事実だけ。
+    直す作業まで頼むと、依頼側が知らないうちに成果が変わる（合意の外の変更）。"""
+    lines = [f"# 検証の依頼: {task.title or task.id}", "",
+             "別の端末で作られた成果が、次の受入基準を満たしているかを**確かめて報告**して"
+             "ください。**成果物を変更しないでください**（直す必要があると分かった場合は、"
+             "その理由を報告に書いてください）。", "", "## 受入基準"]
+    lines += [f"{i}. {c}" for i, c in enumerate(criteria, 1)]
+    lines += ["", "## この端末で確かめられなかった理由（依頼元）", reasons or "（記録なし）", "",
+              "## 報告の仕方",
+              "- 基準ごとに、確かめた手順（コマンド）と出力を証跡として残してください。",
+              "- すべての基準を満たしていれば成功として終えてください。",
+              "- 1 つでも満たしていなければ、どの基準がなぜ満たされていないかを書いて"
+              "失敗として終えてください。"]
+    return "\n".join(lines)
+
+
+def delegate_verification(cfg: "Config", task: "Task", verification: dict,
+                          reasons: str, cycle: int) -> bool:
+    """「このノードでは確かめられない」基準の検証を板へ公示する（P4-b・S5-2 の (a)）。
+
+    公示できたら True（タスクは `offloaded` で結果待ちになる）。板が無い・成果の在処が
+    分からない・板が落ちている場合は False を返し、呼び出し側は従来どおり人へ回す
+    ——**人検収は最後の手段**であって既定ではない（C3: 機械で試せる解決を先に試す。
+    C5: 人の検収に品質判定そのものを負わせない）。
+
+    委譲するのは**検証だけ**で、成果の変更は依頼しない（`_verification_request`）。
+    返ってきた結果は `verifications/<task-id>/<rev>.external.json` に受理点として置かれ、
+    次の settle の検証（`_run_task_verifier`）がその rev の判定として受け入れる。"""
+    if not str(getattr(cfg, "board", "") or "").strip():
+        return False
+    criteria = [c["text"] for c in (verification.get("criteria") or [])
+                if c.get("verdict") == "unverifiable"] or task_acceptance(task)
+    if not criteria:
+        return False
+    rev = git_change_baseline(cfg.workdir)[0] or ""
+    if not rev:
+        # rev が取れない＝受理点（rev ごとの記録）を作れない。委譲しても結果を今の成果に
+        # 結び付けられないので、素直に人へ回す。
+        append_journal(cfg.journal, f"cycle {cycle}: {task.id} 検証委譲は見送り（成果の版が"
+                                    "特定できないため）")
+        return False
+    did = _verify_delegation_id(task, cfg, rev)
+    spec = _workspace_spec_for(cfg, task)
+    try:
+        board = BoardRepo(cfg.board, workdir=cfg.board_workdir)
+        board.sync_pull()
+        env = task_to_delegation(task, spec, workload="flow", delegation_id=did,
+                                 request=_verification_request(task, cfg, criteria, reasons),
+                                 references=task_reference_specs(cfg, task))
+        env["title"] = f"検証: {task.title or task.id}"
+        if board.write_post(env):
+            board.sync_push(f"post {did}（検証委譲）")
+    except (OSError, RuntimeError, ValueError) as e:
+        append_journal(cfg.journal, f"cycle {cycle}: {task.id} 検証委譲に失敗（人へ回します）: {e}")
+        return False
+    task.set("verify_rev", rev)          # 受理点の照合キー（結果はこの版の検証として受ける）
+    task.drop("env_resume")              # 人の approve 待ちではない（板の結果待ち）
+    _mark_offloaded(cfg, task, VERIFY_DELEGATION_LOC, did)
+    append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 検証委譲（{did}・基準 "
+                                f"{len(criteria)} 件を板へ）")
+    return True
+
+
 def _board_result_once(board: "BoardRepo", did: str) -> "tuple[bool, bool, str]":
     """board の result.json を1回だけ読む（待たない）。(terminal, ok, msg)。
     _flow_result_once と同じ契約: terminal=確定したか・ok=成功終端（done）か・

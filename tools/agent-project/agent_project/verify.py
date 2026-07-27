@@ -490,6 +490,38 @@ def verifications_dir(cfg: "Config") -> Path:
     return cfg.backlog.parent / "verifications"
 
 
+def external_verdict_path(cfg: "Config", task: "Task", rev: str) -> Path:
+    """他ノードが確かめた結果の置き場（`verifications/<task-id>/<rev>.external.json`）。
+
+    検証委譲（P4-b）の受理点。**成果コミット（rev）ごとに 1 件**なのが要点で、成果が
+    進めば別のファイルになる——「昔の版で通った」を今の版の根拠に使えない。"""
+    safe_rev = re.sub(r"[^0-9A-Za-z._-]", "-", str(rev or "norev"))[:40] or "norev"
+    return verifications_dir(cfg) / task.id / f"{safe_rev}.external.json"
+
+
+def save_external_verdict(cfg: "Config", task: "Task", rev: str, record: dict) -> str:
+    """他ノードの検証結果を受理点へ保存する（相対パスを返す。失敗しても回収は止めない）。"""
+    path = external_verdict_path(cfg, task, rev)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(str(path), record)
+    except OSError as e:
+        append_journal(cfg.journal, f"外部検証の記録を保存できませんでした（無視）: {task.id}: {e}")
+        return ""
+    return str(path.relative_to(cfg.backlog.parent))
+
+
+def read_external_verdict(cfg: "Config", task: "Task", rev: str) -> "dict | None":
+    """この成果 rev について他ノードが出した検証結果（無ければ None）。"""
+    if not str(rev or "").strip():
+        return None                     # rev が取れない環境では受理しない（照合の根拠が無い）
+    try:
+        rec = json.loads(external_verdict_path(cfg, task, rev).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return rec if isinstance(rec, dict) and rec.get("verdict") == "pass" else None
+
+
 def save_verification_report(cfg: "Config", task: "Task", result: dict, rev: str,
                              body: str) -> str:
     """`verifications/<task-id>/<rev>.md` へ保存し、相対パスを返す（失敗しても検証は止めない）。"""

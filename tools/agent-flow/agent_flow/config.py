@@ -217,6 +217,18 @@ CONFIG_DEFAULTS = {
 AGGREGATING_PATTERNS = {"map-reduce", "fan-out-and-synthesize"}
 
 
+def this_pc(args) -> str:
+    """このプロセスが載っている **PC** の名義（板・バス共通の node_id）。
+
+    `args.node_id` を見ないのが要点。`work` サブコマンドでは `--node-id` が
+    **ワーカーの名義**（`<node_id>-w1` 等）で埋まっており、PC の身元とは別物だからだ。
+    設定ファイルの `node_id` 宣言（あれば）→ `agentcore.nodeid.default_node_id()` の順で解決する
+    ——`_default_daemon_id` が CLI 上書きを尊重したうえで最後に落ちる先と同じ値になる。"""
+    cfg = getattr(args, "_config", None)
+    declared = (cfg or {}).get("node_id") if isinstance(cfg, dict) else None
+    return declared or default_node_id()
+
+
 def _review_decision(review_setting, patterns) -> bool:
     """review の三値解決。True/False は明示指定として尊重。'auto'（既定）や None は
     集約パターンを含むときのみ自動で有効化する。"""
@@ -256,6 +268,10 @@ def resolve_config(args):
     path = _find_config(getattr(args, "config", None))
     cfg = _load_config_file(path) if path else {}
     args._config_path = path
+    # 生の設定値も残す。サブコマンドの引数が同名のグローバル設定を覆い隠す場合に、
+    # 元の宣言を読み直す唯一の口になる（例: `work --node-id <worker 名義>` は args.node_id を
+    # ワーカー名で埋めるので、その PC の node_id 宣言はここからしか取れない — this_pc）。
+    args._config = cfg
     # 後方互換: 旧キー kiro_timeout は agent_timeout の別名として受理する（新キー未指定時のみ）。
     if "agent_timeout" not in cfg and "kiro_timeout" in cfg:
         cfg["agent_timeout"] = cfg["kiro_timeout"]
