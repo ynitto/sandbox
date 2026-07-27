@@ -605,6 +605,7 @@ def project_watch(cfg: "Config", planner=None, reviewer=None, runner=run_loop,
     charter 更新/フィードバックを poll で拾って再開する（idle 中はエージェント非起動）。"""
     passes = 0
     code = 0
+    controller = True
     # （再）起動直後は plan より先にリモート状態を取り込む。自己更新の graceful 再起動を挟むと、
     # 停止中に viewer が push した charter 更新/フィードバックが未取り込みのまま cmd_project の
     # 初回 plan が走り、古い charter で計画してしまう（cmd_project→run_loop の入口同期は plan の後）。
@@ -616,7 +617,31 @@ def project_watch(cfg: "Config", planner=None, reviewer=None, runner=run_loop,
             code = 0
         else:
             names = charter_names(cfg)
-            if not names:
+            # 計画（charter 分解・acceptance 評価）を行うのは常に 1 台だけ（複数 PC ガイド §3.2）。
+            # coordination が有効なら controller lease を取れたパスだけ cmd_project を走らせ、
+            # 取れなければ実行役（runner）として割当済みタスクの消化だけを行う。この関門が
+            # 無いと、起動時にピアの生存がまだ観測できない（status/ が未同期・stale）PC が
+            # ここへ来たまま lease を見ずに毎パス分解し、各 PC が勝手にバックログを作り直す。
+            # 再分解要求（.replan.request＝人の明示アクション。同期対象外のノード局所ファイル）
+            # を抱えているときだけは lease 無しでも通す——このノードでしか消化できないため。
+            # ノード名義（node_id）が無いエンジンは lease に参加できない（renew は常に False）
+            # ので関門の対象外とする——さもないと無名エンジンはどこでも永久に計画できない。
+            controller = (not _coordination_active(cfg)
+                          or not str(getattr(cfg, "node", "") or "").strip()
+                          or replan_request_path(cfg).exists()
+                          or renew_controller_lease(cfg))
+            if not controller:
+                append_journal(cfg.journal,
+                               "=== project watch: 計画役は他 PC（lease 未取得）。実行のみ ===")
+                if has_work(cfg):
+                    runner(cfg)
+                passes += 1
+                if heartbeat:
+                    heartbeat()
+                if max_passes is not None and passes >= max_passes:
+                    return code
+                names = []            # このパスは cmd_project を起こさない
+            elif not names:
                 if not _has_master_charter(cfg):
                     return code
                 # マスター憲章のみ（バージョン未作成）: 分解はしない。実 backlog タスクや人の指示が
@@ -644,7 +669,10 @@ def project_watch(cfg: "Config", planner=None, reviewer=None, runner=run_loop,
         # このパスの版処理を終えたら milestone を status へ整合する（唯一の調整点）。
         # accepted・削除済みバージョン・旧トップレベルの milestone を掃除し、承認できない
         # no-acceptance 等はそのまま残す＝「要対応マイルストーンが何度も復活」を止める根本対策。
-        reconcile_milestones(cfg)
+        # milestone の整合も計画役の責務——実行役（lease 未取得）が古い同期状態を根拠に
+        # 掃除すると、計画役が立てたばかりの milestone を取り違えて消しうる。
+        if controller:
+            reconcile_milestones(cfg)
         pids = {}
         for name in names:           # charter 別の milestone id（フィードバック検知に使う）
             ch = _load_named_charter(cfg, name)

@@ -467,6 +467,50 @@ class TestWatch(unittest.TestCase):
             self.assertEqual(last["reason"], km.REASON_DRAINED)
             self.assertEqual(list((d / "backlog").glob("*.md")), [])
 
+    def test_watch_keeps_planning_when_coordination_goes_inactive(self):
+        # 計画役の分岐は「controller かどうか」だけで決める。かつては
+        # 「coordination が有効かつ controller」を要求していたため、ピアが消えて単独に
+        # 戻った PC（coordination 非活性）は charter があっても run_loop しか回さず、
+        # 計画（charter 駆動）が止まっていた。単独 PC は常に controller として計画を続ける。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, "# Charter: demo\n\n## goal\ng\n\n## acceptance\n- `true`\n")
+            cfg = cfg_for(d)
+            seen = {}
+
+            def fake_project_watch(c, **kw):
+                seen.update(kw)
+                seen["called"] = seen.get("called", 0) + 1
+                return 0
+
+            with mock.patch.object(km, "_coordination_active", return_value=False), \
+                    mock.patch.object(km, "project_watch", fake_project_watch):
+                km.run_watch(cfg, sleeper=lambda s: None, max_passes=1)
+            self.assertEqual(seen.get("called"), 1)           # 単独でも charter 駆動へ入る
+
+    def test_watch_round_robins_all_charters_per_pass(self):
+        # 多 charter 構成では 1 watch パスで全 charter を 1 巡させる（max_passes=1 だと
+        # 毎パス先頭の charter しか処理されず、2 本目以降が永久に計画されない）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cd = d / "charters"
+            cd.mkdir(parents=True)
+            for name in ("v1", "v2", "v3"):
+                (cd / f"{name}.md").write_text(
+                    f"# Charter: {name}\n\n## goal\ng\n\n## acceptance\n- `true`\n",
+                    encoding="utf-8")
+            cfg = cfg_for(d)
+            seen = {}
+
+            def fake_project_watch(c, **kw):
+                seen.update(kw)
+                return 0
+
+            with mock.patch.object(km, "_coordination_active", return_value=False), \
+                    mock.patch.object(km, "project_watch", fake_project_watch):
+                km.run_watch(cfg, sleeper=lambda s: None, max_passes=1)
+            self.assertEqual(seen.get("max_passes"), 3)       # 全 charter を 1 巡
+
 
 class TestWatchGracefulExit(unittest.TestCase):
     """watch の graceful 停止。start / stop / restart と インスタンスレジストリは

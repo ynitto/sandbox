@@ -725,9 +725,59 @@ class DirectStateGit:
             self._top_git("update-index", "--force-remove", "--", *tracked[i:i + 100])
         return len(tracked)
 
+    def _realign_index(self) -> int:
+        """「幻のステージ」を HEAD へ揃える自己修復（冪等）。揃えた数を返す。
+
+        export は「CAS でブランチを進める（_cas_branch）→ 実 index を追随させる
+        （_refresh_index）」の 2 段で、その間にプロセスが死ぬ（夜間の計画停止の SIGTERM・
+        watchdog abort・電源断）と **HEAD には入ったのに index だけ古い** パスが残る。
+        作業ツリー＝HEAD なので次の export は「差分なし」で何も積まず、`git status` には
+        ステージ済みの変更が**恒久に**表示され続ける（idle 中は journal も動かないため
+        自然回復もしない）。「状態リポジトリがステージに乗ったまま同期が止まった」ように
+        見える正体がこれ。
+
+        判定は保守的に「index が HEAD と違うのに、作業ツリーの内容は HEAD と一致する」
+        パスだけ: 人が意図的にステージした変更は内容が HEAD と異なるので触れない。
+        同期対象の名前空間（root 配下・ドット始まりと除外ディレクトリ以外）に限定する。"""
+        sub = self._subdir()
+        fixed = 0
+        for line in self._top_git("status", "--porcelain").stdout.splitlines():
+            if len(line) < 4 or line[0] in " ?":
+                continue                     # index と HEAD が一致（未ステージ/未追跡）は対象外
+            path = line[3:].split(" -> ")[-1].strip().strip('"')
+            if not path:
+                continue
+            rel = path[len(sub) + 1:] if sub and path.startswith(sub + "/") else (
+                path if not sub else "")
+            if not rel:
+                continue                     # 自分の名前空間の外（root がサブディレクトリの構成）
+            parts = Path(rel).parts
+            if any(s.startswith(".") for s in parts) or any(
+                    s in _STATE_EXCLUDE_DIRS for s in parts):
+                continue
+            head = self._top_git("ls-tree", "HEAD", "--", path).stdout.strip()
+            f = Path(self._top()) / path
+            if head:
+                try:
+                    mode, _type, sha = head.split("\t", 1)[0].split()
+                except ValueError:
+                    continue
+                if not f.is_file():
+                    continue                 # 手元の削除中 → 実差分（export に任せる）
+                if self._top_git("hash-object", "--", str(f)).stdout.strip() != sha:
+                    continue                 # 内容が HEAD と違う → 実差分（人のステージ含む）
+                if self._top_git("update-index", "--add", "--cacheinfo",
+                                 f"{mode},{sha},{path}").returncode == 0:
+                    fixed += 1
+            elif not f.exists():
+                # HEAD にも作業ツリーにも無いのに index だけにある残骸
+                if self._top_git("update-index", "--force-remove", "--", path).returncode == 0:
+                    fixed += 1
+        return fixed
+
     def _self_heal(self, branch: str) -> None:
         """前プロセス・旧実装が残した詰まりの残骸を除去する（冪等・失敗しても本業を止めない）。
-        中断 rebase / 古い index.lock / 追跡されてしまった同期除外パス。"""
+        中断 rebase / 古い index.lock / 追跡されてしまった同期除外パス / 幻のステージ。"""
         if self._rebasing():
             self._git("rebase", "--abort")
         p = self._git("rev-parse", "--git-path", "index.lock").stdout.strip()
@@ -738,6 +788,10 @@ class DirectStateGit:
                     lock.unlink()
         try:
             self._untrack_excluded(branch)
+        except OSError:
+            pass
+        try:
+            self._realign_index()
         except OSError:
             pass
 

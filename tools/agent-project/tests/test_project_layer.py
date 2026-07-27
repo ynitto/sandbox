@@ -1403,6 +1403,56 @@ class TestProjectLayer(unittest.TestCase):
             self.assertEqual(ran["n"], 1)                     # backlog があれば消化は回る
             self.assertEqual(planned["n"], 0)                 # それでも分解はしない
 
+    def test_project_watch_without_lease_executes_but_does_not_plan(self):
+        # 複数 PC 構成: 計画（charter 分解・acceptance 評価）は controller lease を取れた
+        # 1 台だけが行う（複数 PC ガイド §3.2）。起動時にピアの生存がまだ観測できない PC が
+        # project_watch へ入っても、coordination が有効になった後 lease を取れないパスは
+        # cmd_project（分解）を起こさず、割当済みタスクの消化（runner）だけを行う。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, "# Charter: demo\n\n## goal\ng\n\n## acceptance\n- `true`\n")
+            mkb(d, "T1", status="ready", verify="true")
+            cfg = cfg_for(d, node="pc-b")
+            ran = {"n": 0}
+            planned = {"n": 0}
+
+            def runner(c):
+                ran["n"] += 1
+                return _drained()
+
+            def planner(ch):
+                planned["n"] += 1
+                return []
+
+            with mock.patch.object(km, "_coordination_active", return_value=True), \
+                    mock.patch.object(km, "renew_controller_lease", return_value=False):
+                km.project_watch(cfg, planner=planner, runner=runner, max_passes=1)
+            self.assertEqual(planned["n"], 0)                 # 分解は起きない
+            self.assertEqual(ran["n"], 1)                     # 消化（実行役）は回る
+
+    def test_project_watch_replan_request_bypasses_lease_gate(self):
+        # 再分解要求（.replan.request）はノード局所ファイル（ドット始まり＝同期対象外）なので、
+        # このノードでしか消化できない。人の明示アクションは lease が無くても通す——さもないと
+        # 実行役の PC で受理された「再分解」ボタンが計画役の交代まで永久に効かない。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, "# Charter: demo\n\n## goal\ng\n\n## acceptance\n- `true`\n")
+            cfg = cfg_for(d, node="pc-b")
+            km.write_replan_request(cfg, "エラー回復")
+            planned = {"n": 0}
+
+            def planner(ch):
+                planned["n"] += 1
+                return []
+
+            def runner(c):
+                return _drained()
+
+            with mock.patch.object(km, "_coordination_active", return_value=True), \
+                    mock.patch.object(km, "renew_controller_lease", return_value=False):
+                km.project_watch(cfg, planner=planner, runner=runner, max_passes=1)
+            self.assertGreater(planned["n"], 0)               # 明示要求の分解は走る
+
     def test_version_inherits_master_charter(self):
         # 計画バージョン（charters/<name>.md）はマスター憲章を継承する:
         # goal はバージョン側が優先、acceptance・制約・前提はバージョンに無ければマスターから補う。

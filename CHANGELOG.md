@@ -7,6 +7,47 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-project: 複数 PC 共有で「ステージに乗ったまま同期停止」と「バックログ分解の多重発火」を修正
+
+複数 PC で 1 つの状態リポジトリを共有すると起きていた 2 つの実害を直した。
+
+**一方の状態リポジトリがステージに乗ったまま同期が止まる**
+
+state 同期の export は「detached worktree でコミット → CAS でブランチ前進 → 実 index を
+追随（`_refresh_index`）」の順で進む。最後の追随の**前**にプロセスが死ぬ（夜間計画停止の
+SIGTERM・watchdog abort・電源断）と、HEAD には入ったのに index だけ古いパスが残る。
+作業ツリー＝HEAD なので次の export は「差分なし」で何も積まず、`git status` には
+ステージ済みの変更が**恒久に**表示され続け（idle 中は journal も動かず自然回復しない）、
+「状態リポジトリがステージに乗ったまま同期が止まった」ように見えていた。
+
+- `_self_heal` に幻のステージの自己修復（`_realign_index`）を追加。判定は保守的に
+  「index が HEAD と違うのに作業ツリーの内容は HEAD と一致する」同期対象パスだけ＝
+  人のステージや編集中の実差分には触れない。次の sync で自動的に clean へ戻る
+
+**バックログ分解が各 PC で勝手に走る**
+
+「計画（charter 分解）は常に 1 台だけ」（複数 PC ガイド §3.2）の関門が 2 か所で破れていた。
+
+- **ローカルが未 push の間、CAS が全滅していた**: `state_transaction` は「ローカルが
+  リモートの祖先」を前提条件にしていたが、`state_git_interval`（既定 300 秒）の push 間隔の
+  途中はローカルに未 push の state sync コミットがあるのが普通の運用状態。その間じゅう
+  lease 更新・claim・自動割当が全て失敗し、lease が失効して計画役が PC 間を漂流→各 PC が
+  好き勝手に分解する素地になっていた。トランザクションは remote HEAD を親に組み立てて
+  成立させ、ローカルへは fast-forward できなければ決定的 3-way（`_integrate`）で合流する。
+  push が通った後にローカル反映で失敗しても False を返さない（リモートで確定した claim を
+  「失敗」と読み、孤児の doing を残さないため）
+- **起動時にピアが見えない PC は関門ごと素通りしていた**: `cmd_run` の振り分けは起動時の
+  `_coordination_active`（origin + 生存ピアの観測）で決まるため、他 PC の status がまだ
+  同期されていない／stale な起動直後は charter ありでも素の `project_watch` に入り、以後
+  lease を一切見ずに毎パス分解していた。`project_watch` のパス頭に controller 関門を追加:
+  coordination が有効なら lease を取れたパスだけ `cmd_project`（分解・評価・milestone 整合）
+  を起こし、取れなければ割当タスクの消化（runner）だけを行う。再分解要求
+  （`.replan.request`＝ノード局所の明示アクション）だけは lease 無しでも通す
+- `run_watch` の計画役分岐を「coordination 有効かつ controller」から「controller」へ:
+  ピアが消えて単独に戻った PC（coordination 非活性）が計画を止めないようにした。多 charter
+  構成では 1 watch パスで全 charter を 1 巡させる（従来は毎パス先頭の 1 本だけ）。charter
+  更新での起床も coordination の有無に依らず効くようにした
+
 ### agent-dashboard: WSL 側の宣言が Windows の画面から読まれていなかった（P0-2 の残り）
 
 正典構成（Windows の画面 + WSL の実行エンジン）で、**実行エンジンと共有する置き場を
