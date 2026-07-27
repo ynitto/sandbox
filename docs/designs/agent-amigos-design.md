@@ -1,7 +1,7 @@
 # agent-amigos — 役割駆動マルチエージェント協働ツール 設計書
 
 > 作成 2026-07-17 ／ 最終照合 2026-07-26（実装 `tools/agent-amigos/` と突き合わせ済み）
-> 実装: `tools/agent-amigos/`（`agent-amigos.py` ＋ `agent_amigos/` パッケージ、テスト 176 件）
+> 実装: `tools/agent-amigos/`（`agent-amigos.py` ＋ `agent_amigos/` パッケージ、テスト 180 件）
 > 正典スキーマ: [`schemas/mission.schema.json`](../../schemas/mission.schema.json) /
 > [`schemas/delivery.schema.json`](../../schemas/delivery.schema.json) /
 > [`schemas/amigos-command.schema.json`](../../schemas/amigos-command.schema.json)
@@ -693,7 +693,7 @@ JSON 契約（正典: `schemas/board.schema.json`）だけで成立し、処理�
 away プロトコル、封筒ランナー、二層の予算会計、integrator と納品棚、owner-picks、
 `acceptance: agent`、build-team とパターンカタログ、seats / aggregate / rounds / topology /
 restaff / conductor、agent-board への入札参加、agent-dashboard の Amigos タブ。
-テストは stub エージェント（LLM 不要）で 176 件。
+テストは stub エージェント（LLM 不要）で 180 件。
 
 **残っている欠落**:
 
