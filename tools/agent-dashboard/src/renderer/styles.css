@@ -272,6 +272,10 @@ button:disabled { opacity: 0.4; cursor: default; }
 .project-item:hover { background: var(--bg3); }
 .project-item.selected { background: var(--bg3); border-left-color: var(--accent); }
 .project-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 実行エンジンは宣言しているが、この PC からは届かないプロジェクト。選べないことを
+   見た目で示しつつ、消さずに残す（なぜ選べないかを人が追えるように）。 */
+.project-item.unreachable { cursor: default; opacity: 0.55; }
+.project-item.unreachable:hover { background: transparent; }
 .project-item-remove {
   flex: none;
   visibility: hidden;

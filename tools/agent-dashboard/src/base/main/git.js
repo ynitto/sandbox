@@ -225,7 +225,9 @@ function bridgeRepoPath(repo, viewerRoot = '') {
 // そこで、そのパスがこの PC に無ければ **S3 のノード固有宣言**（host.yaml `repos[]`）から
 // 同じリポジトリのローカルクローンを引き直す。宣言が無ければ解決しない（空を返す）＝
 // 呼び出し側が「なぜ差分を出せないか」を人に見せる。
-function resolveDiffRoot(repo, viewerRoot = '', repoUrl = '') {
+// cfg は host.yaml の置き場（実行エンジンのホーム）と local の distro 解決に要る。
+// 省略すると Windows では既定ディストロへ倒れるので、IPC からは必ず渡すこと。
+function resolveDiffRoot(repo, viewerRoot = '', repoUrl = '', cfg = null) {
   const given = String(repo || '');
   if (given) {
     const root = path.resolve(bridgeRepoPath(given, viewerRoot));
@@ -234,7 +236,8 @@ function resolveDiffRoot(repo, viewerRoot = '', repoUrl = '') {
   const url = String(repoUrl || '');
   if (!url) return '';
   try {
-    const local = require('../../features/agent-project/main/nodeRepos').resolveLocalRepo(url);
+    const local = require('../../features/agent-project/main/nodeRepos')
+      .resolveLocalRepo(url, null, cfg);
     return local ? path.resolve(local) : '';
   } catch {
     return '';
@@ -247,8 +250,8 @@ function resolveDiffRoot(repo, viewerRoot = '', repoUrl = '') {
 //                対象は成果物リポジトリ＝常駐体が同期する状態リポジトリではない。
 //   branch     … 作業ブランチ名。fetch 後は origin/<branch> を最優先で比較先（tip）に使う
 //                （記録済みの ref が古くても、今 push されている最新を見る）。
-async function diffRange(repo, { base, ref, file, branch, fetch = false, maxBytes = 200_000, workingTree = false, viewerRoot = '', repoUrl = '' } = {}) {
-  const root = resolveDiffRoot(repo, viewerRoot, repoUrl);
+async function diffRange(repo, { base, ref, file, branch, fetch = false, maxBytes = 200_000, workingTree = false, viewerRoot = '', repoUrl = '', cfg = null } = {}) {
+  const root = resolveDiffRoot(repo, viewerRoot, repoUrl, cfg);
   if (!root) {
     throw new Error(repoUrl
       ? `この PC に ${repoUrl} のローカルクローンがありません`

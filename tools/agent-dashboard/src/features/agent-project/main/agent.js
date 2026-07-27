@@ -113,7 +113,7 @@ function buildInteractiveCommand(resolved, options = {}) {
 // 「なぜ選べないのか」が分からず、宣言し忘れに気付けない。
 function chatCwdChoices(cfg, projectDir) {
   const nodeRepos = require('./nodeRepos');
-  const declared = nodeRepos.loadNodeRepos();
+  const declared = nodeRepos.loadNodeRepos(cfg);
   const choices = [];
   const seen = new Set();
   const push = (c) => {
@@ -129,7 +129,7 @@ function chatCwdChoices(cfg, projectDir) {
   for (const e of declared) {
     const url = String((e && e.url) || '').trim();
     if (!url) continue;
-    const local = nodeRepos.resolveLocalRepo(url, declared);
+    const local = nodeRepos.resolveLocalRepo(url, declared, cfg);
     push({
       label: repoLabel(url),
       url,
@@ -675,7 +675,7 @@ function doctorBriefPrompt(context, { file = '', userPrompt = '' } = {}) {
 // 対話診断を開く cwd。失敗診断はログだけでなくコードを見たいので、**タスクの書込先
 // リポジトリ**がこのノードにクローンされていればそこで開く（S3-4 と同じ解決）。
 // 無ければプロジェクト（状態リポジトリ）のフォルダ。
-function doctorChatCwd(projectDir, context) {
+function doctorChatCwd(cfg, projectDir, context) {
   const sel = (context || {}).selected || {};
   const urls = [];
   for (const d of (Array.isArray(sel.delivery) ? sel.delivery : [])) {
@@ -683,9 +683,9 @@ function doctorChatCwd(projectDir, context) {
   }
   if (sel.task && sel.task.workspace) urls.push(String(sel.task.workspace));
   const nodeRepos = require('./nodeRepos');
-  const declared = nodeRepos.loadNodeRepos();
+  const declared = nodeRepos.loadNodeRepos(cfg);
   for (const url of urls) {
-    const local = nodeRepos.resolveLocalRepo(url, declared);
+    const local = nodeRepos.resolveLocalRepo(url, declared, cfg);
     if (local && isExistingDir(local)) return local;
   }
   return String(projectDir || '');
@@ -695,7 +695,7 @@ function doctorChatCwd(projectDir, context) {
 // 組み立てた buildDoctorContext の結果）を受け取り、渡し方だけを変える。
 function openDoctorChat(cfg, { dir, context, needId, userPrompt } = {}) {
   pruneDoctorSpills();
-  const cwd = doctorChatCwd(dir, context);
+  const cwd = doctorChatCwd(cfg, dir, context);
   if (cwd && !isExistingDir(cwd)) throw new Error(`フォルダがありません: ${cwd}`);
   // 診断は使い捨て（readonly + no_session）。作業用セッションと混ざると、読み取り専用の
   // つもりの窓から書き込みができてしまう（S9 §6-2 の決着）。

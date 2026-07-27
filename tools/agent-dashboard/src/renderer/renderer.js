@@ -746,11 +746,15 @@ function renderTree() {
   const navigation = $('tree');
   const tree = $('project-list');
   const prevScroll = navigation.scrollTop; // 再描画（ポーリング）でサイドバーのスクロールを失わない
-  // 実体が無いもの（exists:false）はここで弾く。実行エンジンが宣言していても、この PC からは
-  // そのフォルダに届かない構成（別ディストロを指しているなど）が典型で、直せる見込みが無い
-  // ままサイドバーに残るだけなので最初から出さない。
-  const projects = (state.discovery.projects || []).filter((p) => p.exists);
-  if (!projects.length) {
+  // 実体が無いもの（exists:false）は選べないが、**消さずに理由付きで並べる**。
+  // 以前はここで捨てていた。すると別ディストロを指しているなどの設定のずれ 1 つでサイドバーが
+  // 空になり、画面は「このエンジンにはプロジェクトが登録されていません」と案内する——実際には
+  // 登録されており、人は host.yaml を見に行っても間違いを見つけられない（直しようのない表示）。
+  // 実行側が宣言したパスを出せば、どこを直せばよいかが画面から分かる。
+  const all = state.discovery.projects || [];
+  const projects = all.filter((p) => p.exists);
+  const unreachable = all.filter((p) => !p.exists);
+  if (!all.length) {
     tree.innerHTML =
       `<div class="empty">${esc(engineEmptyMessage())}<br><br><button id="btn-empty-new" class="primary-inline">＋ 新規プロジェクトを作成</button></div>`;
     const nb = $('btn-empty-new');
@@ -792,7 +796,7 @@ function renderTree() {
           <span class="name">${esc(displayName)}</span>${badges.join('')}${held}
         </div>`;
       })
-      .join('');
+      .join('') + unreachableRows(unreachable);
   }
   navigation.scrollTop = prevScroll;
   const running = projects.filter((p) => p.running).length;
@@ -803,8 +807,29 @@ function renderTree() {
   }
 }
 
+// 実行エンジンは宣言しているが、この PC からはフォルダに届かないプロジェクトの行。
+// 選択させない（data-dir を持たせない＝クリック配線の対象外）が、名前と実行側が宣言した
+// パスは見せる。届かない理由はほぼ常に「⚙ 設定のディストロ／ベースパスが実際の置き場と
+// 食い違っている」なので、次に見る場所まで書く。
+function unreachableRows(projects) {
+  return (projects || [])
+    .map((p) => {
+      const why = 'この PC からはこのフォルダに届きません: ' + (p.dir || '(不明)')
+        + ' — ⚙ 設定のディストロ（例 Ubuntu）とベースパスが、実行する PC の置き場と'
+        + '合っているか確認してください';
+      return `<div class="project-item unreachable" title="${esc(why)}">
+          <span class="dot"></span>
+          <span class="name">${esc(p.charterName || p.name)}</span>
+          <span class="badge warn" title="${esc(why)}">届きません</span>
+        </div>`;
+    })
+    .join('');
+}
+
 // プロジェクトが 1 件も無いときの案内。原因（エンジンが動いていない / 動いてはいるが
 // プロジェクトを持っていない）で次にすることが違うので、言い分けて次の一手だけを示す。
+// 「届かない」プロジェクトはこの案内には来ない（上で理由付きの行として並ぶ）ので、
+// ここで「登録されていません」と言い切ってよい。
 function engineEmptyMessage() {
   const e = state.engine;
   if (!e || !e.exists) {

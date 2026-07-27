@@ -7,6 +7,39 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: WSL 側の宣言が Windows の画面から読まれていなかった（P0-2 の残り）
+
+正典構成（Windows の画面 + WSL の実行エンジン）で、**実行エンジンと共有する置き場を
+`os.homedir()` で解決していた経路がもう 1 本残っていた**。P0-2 で指示の投函先を
+`engine.agentsHome()` へ寄せたときの取りこぼしで、症状も同じ「押しても・書いても何も起きない」。
+
+**host.yaml の `repos[]` が一度も読まれていなかった**
+
+`nodeRepos.js` が `~/.agents/agent-project.host.yaml` を Windows 側のホーム
+（`C:\Users\<user>\.agents`）に探していた。宣言は WSL 側にあるので常に「宣言なし」に倒れ、
+CLIチャットの起動先と検収差分が使えない。**画面は逆に「`repos[]` に url と local を書くと
+選べます」と案内する**ため、書いてある人には直しようがない（グレーアウトの理由表示が、
+実際の原因と正反対のことを言う）。
+
+- 置き場の解決を `engine.agentsHome(cfg)` の 1 実装へ寄せた（⚙ 設定のディストロ／
+  ベースパスもここで効くようになる）。`AGENT_PROJECT_AGENTS_HOME` の優先は従来どおり
+- 宣言された `local`（実行側が書く POSIX パス）を、`engine/status.json` の `children[].root`
+  と**同じ規則・同じディストロ**で `\\wsl.localhost\<distro>\…` へ寄せてから実在を確かめる。
+  変換前のパスで `statSync` していたため、置き場を直しても「実体が無い」判定のままだった
+- 検収差分（`git:diff`）も同じ解決を通す。IPC から設定を渡すようにした
+- `no-git-writes.test.js` の「この PC のホームで解決しない」検査の対象に `nodeRepos.js` を
+  追加した。P0-2 で入れた不変条件が**1 ファイルしか見ていなかった**ため素通りしていた
+
+**届かないプロジェクトを黙って消していた**
+
+サイドバーは実体に届かないプロジェクト（`exists:false`）を無言で捨てており、ディストロ設定の
+ずれ 1 つで一覧が空になった。そのとき画面は「このエンジンにはプロジェクトが登録されていません。
+… host.yaml にプロジェクトを追加してください」と案内する——登録はされているので、人は
+host.yaml を見に行っても間違いを見つけられない。
+
+- 届かないプロジェクトは**消さずに非活性で並べる**（実行側が宣言したパスと、次に見る場所を
+  添える）。「登録されていません」の案内は、本当に 1 件も宣言が無いときだけ出す
+
 ### agent-project / agentcore / agent-flow / agent-amigos: 契約の一本化（P2）
 
 修正計画は [`docs/plans/2026-07-26-open-items-and-concerns.md`](docs/plans/2026-07-26-open-items-and-concerns.md) §7.3、
