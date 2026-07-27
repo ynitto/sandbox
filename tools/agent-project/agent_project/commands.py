@@ -796,6 +796,25 @@ def ingest_commands(cfg: "Config") -> "list[str]":
         action = str(rec.get("command", "")).strip()
         tid = str(rec.get("id", "")).strip()
         reason = str(rec.get("reason", "") or "").strip() or "commands/ からの指示"
+        if action == "revive":
+            # プロジェクト単位（id ではなく title 指定）: 墓標を解除して、却下したタスクを
+            # 再び提案されうる状態へ戻す。**却下（reject）の取り消し口**——却下は墓標を
+            # 残すので、これが無いと画面から消したタスクは画面からは二度と戻せない
+            # （試行錯誤で消して入れ直す運用が CLI 無しには成立しない）。
+            rc = cmd_revive(cfg, str(rec.get("title", "") or "").strip(),
+                            str(rec.get("charter", "") or "").strip(),
+                            bool(rec.get("all_charters")))
+            if rc == 0:
+                _write_command_receipt(cfg, f, "revive", "")
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+                append_journal(cfg.journal, f"commands 取り込み: revive（{f.name}）")
+                done.append("revive:project")
+            else:
+                _reject_command(cfg, f, f"revive が失敗 (exit {rc})")
+            continue
         if action == "replan":
             # プロジェクト単位（id 不要）: charter からのバックログ再分解を要求する
             # （複数 charter 運用は "charter" キーで対象を絞れる）

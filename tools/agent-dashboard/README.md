@@ -294,7 +294,8 @@ agent-project の人間ループはこのアプリ内で完結できる。いず
 | 👤 監視担当を割り当て | タスク詳細（backlog）の「監視担当」行 | **例外的に viewer 管理のサイドカーファイル**（`assignments.json`・agent-project の契約外）だけを書く。タスク状態ファイルには触れない（done の不変条件に影響しない）。空にして保存で解除（→[チーム運用](#チーム運用バックログの監視担当を分担する)） |
 | 💬 レビューコメント（追加/編集/削除） | 要対応カード（review / blocked）の「レビューコメント」 | 成果物レビューを複数メンバーで行う。**viewer 管理のサイドカー**（`reviews/<task-id>/*.json`・1 コメント = 1 ファイル・agent-project の契約外）だけを書く。同時投稿はファイル名が別なので state_git で自然にマージされる。承認/再実行の判断は既存の承認/差し戻し/revise で行う（→[チーム運用](#チーム運用成果物レビューを複数メンバーで行う)） |
 | レビュー操作（承認/差し戻し/コメント） | レビュー待ちタブ／フロータブのノード詳細 →「レビューで開く」 | gitlab-review-viewer へ引き継ぎ |
-| 🗑 タスク削除 | タスク詳細（backlog のみ） | **例外的にファイル操作**（削除の公式契約が無いため）。確認のうえ `backlog/<id>.md` をゴミ箱へ移動。実行中（**doing かつクレーム中**）だけ拒否 — クレームロックは worker クラッシュや review/blocked 滞留で残骸が残るため、doing 以外ではロックがあっても削除でき、残骸ロックも一緒に掃除する。決定記録 DR は残らない — 記録を残したい場合は「保留（hold）」を使う |
+| 🗑 タスク削除 | タスク詳細（backlog のみ） | `commands/<name>.json`（`{"command":"reject"}`）ドロップで**本体の却下（reject）**を要求する。以前は `backlog/<id>.md` をゴミ箱へ移す例外的なファイル操作だったが、それだと (1) 要対応カード（`needs/<id>.md`）が残る — 対応タスクの無い票は本体の `ingest_feedback` が読み飛ばすので `[x]` を付けても消せない (2) 墓標（`tombstones.md`）が残らず charter 運用では次の再分解が同じタスクを作り直す (3) 状態 git の同時変更裁定では `backlog/` は実行側が正なので、本体側に書き込みがあると削除自体が取り消される、の 3 つが起きていた。reject なら archive への退避・needs の掃除・claim 解放・run の切り離し・墓標・決定記録（DR）が本体のプロセス内で 1 つの操作として起きる。実行中（**doing**）は押した瞬間に拒否。**取り消しは「却下済み（墓標）」からの解除**（下記）。一時的に止めたいだけなら「保留（hold）」を使う |
+| ⚰ 却下済み（墓標）の一覧・解除 | バックログタブ（末尾・既定は畳んである） | 却下（＝削除）したタスクは `tombstones.md` に 1 行残り、**同じタイトルは再投入も再分解もされない**。一覧に理由・日付・バージョンを出し、「解除」で `commands/`（`{"command":"revive"}`・**プロジェクト単位＝id 無し・タイトル指定**）を投函して本体の `revive` を実行させる。これが無いと画面で消したタスクは画面からは二度と入れ直せない（消して入れ直す試行錯誤が CLI 無しに成立しない） |
 | ■ run キャンセル | フロータブの run 詳細 | run を **cancelled** に終端化する唯一の hard-stop。`inbox/cancels/<run-id>.json` に cancel マーカーを置き（git 同期で他 PC / daemon へ伝わる）、`meta.json` を cancelled に確定し、`waits/`（承認待ち）を掃除して監視の再ポーリングを止める。**承認待ちで park 中の run も暴走中の run も止められる**。起票済みの GitLab イシューは残す（追跡だけやめる＝agent-flow の既定。イシュークローズは daemon の `cancel --close-issues` か gitlab-review-viewer に任せる — この viewer の GitLab クライアントは読み取り専用）。終端済み run には効かない（不可逆） |
 | 🗑 run 削除 | フロータブの run 詳細 | 同上のファイル操作。確認のうえ `<bus>/runs/<run-id>/` をゴミ箱へ移動。終端（done/failed/cancelled）と応答なし（孤児）のみ — orchestrator が生存している実行中 run は拒否 |
 | ⏸ 一時停止 / ▶ 再開 | 概要タブ「稼働操作」 | `commands/<name>.json` ドロップ（`{"command":"pause"/"resume"}`・プロジェクト単位＝id 無し）。本体は `paused.json` を立てて watch の消化を止める（idle 監視・指示の取り込みは継続）。status.json の `paused` がサイドバー ⏸ とヘッダのバッジに出る |
@@ -583,12 +584,16 @@ npm run dist             # Windows 向けビルド（portable + NSIS → release
 - `src/features/agent-project/main/review.js` … gitlab-review-viewer へのレビュー引き継ぎ（protocol / exe / command）。
   exe は実行ファイルへディープリンクを argv 直渡し（portable exe 向け・プロトコル登録に依存しない）
 - `src/features/agent-project/main/actions.js` … 人のアクション層。needs 記入（Decision Outcome + `[x]`）・
-  inbox JSON ドロップ・commands JSON ドロップ（approve/hold/pin/defer/revise）の 3 契約のみを使う。監視担当の割り当て（`setTaskOwner`）と
+  inbox JSON ドロップ・commands JSON ドロップ（approve/hold/pin/defer/revise/reject/revive）の 3 契約のみを使う。監視担当の割り当て（`setTaskOwner`）と
   レビューコメント（`addReviewComment` / `editReviewComment` / `deleteReviewComment`）だけは
   契約外の viewer 管理サイドカー（`assignments.json` / `reviews/<task-id>/*.json`）への書き込み
   （どちらもタスク状態には触れない＝done の不変条件を壊さない）。`requestReplan` は charter からのバックログ再分解を
   `commands/`（`{"command":"replan"}`・id 無し）／CLI `replan` で要求する（エラー回復。本体が
-  既存＋archive（done）タイトルで重複排除するので done と類似は投入されない）
+  既存＋archive（done）タイトルで重複排除するので done と類似は投入されない）。
+  `requestDeleteTask` はタスクの削除を `{"command":"reject"}` として、`requestRevive` は
+  その取り消し（墓標の解除）を `{"command":"revive"}`（id 無し・タイトル指定）として届ける
+  ——削除だけ生のファイル操作にしておくと、要対応カードの残留・再分解での復活・状態 git の
+  裁定による削除の取り消し、が起きる
 - `src/features/agent-project/main/authoring.js` … オーサリング層（新規作成・上位入力ファイルの編集）。
   charter.md の雛形生成（`buildCharter`）と repos.json 生成（`exportReposJson` は agent-project の
   `export_repo_registry` と同じ `_meta.generated_from` 付き・キーソート）、`<親フォルダ>/<名前>/` への

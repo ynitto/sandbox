@@ -232,6 +232,56 @@ def ensure_plan_review_needs(cfg: "Config", tasks: "list[Task]") -> None:
     ensure_needs(cfg, tasks)
 
 
+# 掃除の対象にするタスク級の票の kind（明示の allowlist）。milestone は reconcile_milestones が
+# 持ち主なので触らない。kind が読めない票（旧形式・書きかけ）も触らない＝迷ったら残す。
+_TASK_NEEDS_KINDS = {"plan-review", "review", "blocked"}
+
+
+def reap_orphan_needs(cfg: "Config") -> "list[str]":
+    """backlog に対応するタスクが無い needs/<id>.md を掃除する。消した ID を返す。
+
+    **ensure_needs の対**。票は status の投影（ensure_needs の docstring）なのに、従来は
+    「投影を作る」側しか無く、「投影元が消えたら票も消す」側が無かった。そのため
+    タスクを消した後（viewer の削除・手作業・同期事故）に票だけが残り、しかも残った票は
+    どこからも消せない袋小路になっていた:
+
+      - `ingest_feedback` は対応タスクが無い票を読み飛ばす（`t is None` → continue）＝
+        [x] を付けても取り込まれず、ファイルも消えない。
+      - `has_work` / `_has_pending_input` は [x] 済みの票を「人の入力あり」と数える＝
+        watch が毎パス起きるのに何も処理できない空回りになる。
+      - 手で消しても、タスクが blocked/review/proposed のまま残っていれば ensure_needs が
+        作り直す（設計どおり）。人には「消しても復活する」としか見えない。
+
+    milestone 票は `reconcile_milestones` が project.json の status を正として掃除する
+    （所有者が別）。ここは kind の allowlist でタスク級の票だけに触る。
+    書きかけ（静穏化前）は触らない——同期で票が先に着地しタスクが次パスで来る取り違えを避ける。"""
+    reaped: "list[str]" = []
+    if not cfg.needs.exists():
+        return reaped
+    # backlog は「ファイル名 = タスク ID」なので、掃除の判定に本文の解析は要らない。
+    # 自前で読み直すのは呼び出し側が渡した部分集合で誤って全部消さないため（誤用不能にする）。
+    alive = {p.stem for p in cfg.backlog.glob("*.md")} if cfg.backlog.exists() else set()
+    for nf in sorted(cfg.needs.glob("*.md")):
+        if nf.stem in alive or _needs_kind(nf) not in _TASK_NEEDS_KINDS:
+            continue
+        if not settled(cfg, nf):        # 直近に書かれた票は見送る（次パスで掃除する）
+            continue
+        try:
+            nf.unlink()
+        except OSError:
+            continue
+        append_journal(cfg.journal, f"needs 掃除: {nf.stem}（対応するタスクが backlog に無い）")
+        reaped.append(nf.stem)
+    return reaped
+
+
+def reconcile_needs(cfg: "Config", tasks: "list[Task]") -> "tuple[list[str], list[str]]":
+    """タスク級の needs を backlog の status へ毎パス一致させる唯一の調整点（GC）。
+    作る（ensure_needs）と消す（reap_orphan_needs）を必ず対で回すための入口。
+    milestone 票の同等物は `reconcile_milestones`。返り値は (再生成した ID, 掃除した ID)。"""
+    return ensure_needs(cfg, tasks), reap_orphan_needs(cfg)
+
+
 def clear_needs_file(cfg: "Config", tid: str) -> None:
     p = needs_path(cfg, tid)
     if p.exists():

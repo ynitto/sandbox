@@ -7,6 +7,45 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-project / agent-dashboard: バックログを削除しても要対応（needs）が残り、消しても復活する問題を修正
+
+画面（agent-dashboard・Windows）からバックログを削除しても要対応カードが残り、手で消しても
+復活する——試行錯誤（積んで、走らせて、要らなければ消す）が回らなくなっていた。原因は 3 つあり、
+どれも「削除が公式契約の外にあった」ことから出ていた。
+
+**1. 要対応カードに掃除する側が無かった**
+
+`needs/<id>.md` は「タスクの status の投影」という契約なのに、投影を**作る**側（`ensure_needs`）
+しか無かった。タスクを消した後に票だけが残ると、対応タスクの無い票は `ingest_feedback` が
+読み飛ばす（`[x]` を付けても消えない）うえ、`has_work` は「人の入力あり」と数えて watch を
+毎パス起こす。人からは「消しても消えない・復活する要対応」に見えていた。手で票を消しても、
+タスクが blocked / review / proposed のまま残っていれば `ensure_needs` が作り直す（設計どおり）。
+
+- `reap_orphan_needs` を追加。backlog に対応タスクが無いタスク級の票（`kind:` が
+  plan-review / review / blocked）を掃除する。milestone 票の持ち主は従来どおり
+  `reconcile_milestones`（`project.json` の status が正）なので触らない
+- `reconcile_needs`（= ensure + reap）を毎パスの整合点にして、作ると消すを必ず対で回す。
+  既に取り残されている票も、次のパスで自動的に片付く
+
+**2. viewer の削除がファイルの生 unlink だった**
+
+`backlog/<id>.md` を消すだけでは、票が残る（上記）／墓標（`tombstones.md`）が残らないので
+charter 運用では次の再分解が同じタスクを作り直す／状態 git の同時変更裁定では `backlog/` は
+実行側が正なので、本体側に書き込みがあると viewer 側の削除自体が取り消される。
+
+- 削除を本体の**却下（reject）**へ委ねる（`commands/` へ投函）。archive への退避・needs の掃除・
+  claim 解放・run の切り離し・墓標・決定記録が 1 つの操作として本体のプロセス内で起きる
+- 実行中（doing）は押した瞬間に理由を返す（本体側の拒否と二重）
+
+**3. 消したものを画面から戻せなかった**
+
+却下は「作り直さない」記録（墓標）を残すので、同じ題は再投入も再分解もされない。解除は
+CLI（`agent-project revive`）しか無く、Windows の画面だけで運用しているとやり直せなかった。
+
+- `revive` を `commands/` ドロップで受けられるようにした（プロジェクト単位・タイトル指定）
+- タスク画面に「却下済み（墓標）」の一覧と解除ボタンを追加。理由・日付・バージョンも見える
+- タスクを失った要対応カードは画面側でも即座に落とす（本体の掃除を待たずに視界から消える）
+
 ### agent-project: 複数 PC 共有で「ステージに乗ったまま同期停止」と「バックログ分解の多重発火」を修正
 
 複数 PC で 1 つの状態リポジトリを共有すると起きていた 2 つの実害を直した。

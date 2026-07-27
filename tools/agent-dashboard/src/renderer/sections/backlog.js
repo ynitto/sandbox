@@ -412,6 +412,51 @@ function taskListItemHtml(item, scope) {
   </button>`;
 }
 
+// 却下済み（墓標）— 削除（＝却下）したタスクの「作り直さない」記録。ここに出すのは
+// 削除を取り返しのつく操作にするため: 墓標がある限り同じ題は再投入も再分解もされないので、
+// 一覧と解除が無いと「消したら二度と入れ直せない」＝試行錯誤ができない。
+function tombstonesHtml(p) {
+  const graves = p.tombstones || [];
+  if (!graves.length) return '';
+  const rows = graves
+    .map(
+      (g) => `
+      <div class="tombstone-row" role="listitem">
+        <span class="tombstone-title">${esc(g.title)}</span>
+        <span class="muted tombstone-meta">${esc([g.reason, g.date, g.charter && `バージョン: ${g.charter}`]
+          .filter(Boolean)
+          .join(' ／ '))}</span>
+        <button data-revive="${esc(g.title)}" data-revive-charter="${esc(g.charter || '')}"
+                title="この題を再び提案・投入できる状態へ戻します">解除</button>
+      </div>`
+    )
+    .join('');
+  return `
+    <details class="tombstones">
+      <summary>却下済み（${graves.length} 件） — 同じタスクを作り直させない記録</summary>
+      <div class="tombstone-list" role="list">${rows}</div>
+    </details>`;
+}
+
+function bindTombstones(root, p) {
+  for (const btn of root.querySelectorAll('[data-revive]')) {
+    btn.addEventListener('click', async () => {
+      const title = btn.dataset.revive;
+      const yes = await confirmDialog(
+        `「${title}」の却下を解除します。\n` +
+          '同じ題のタスクを追加でき、計画の作り直しでも再び提案されるようになります。よろしいですか？'
+      );
+      if (!yes) return;
+      const ok = await guard('却下の解除', async () => {
+        await api.reviveTombstone(p.dir, title, btn.dataset.reviveCharter || '');
+        toast(`「${title}」の却下解除を要求しました（稼働中の agent-project が取り込みます）`, true);
+        return true;
+      });
+      if (ok) await reloadProject();
+    });
+  }
+}
+
 function renderBacklog() {
   const p = state.project;
   const el = $('tab-backlog');
@@ -510,8 +555,10 @@ function renderBacklog() {
             <div class="task-list-items">${taskItems}</div>
           </div>`
         : '<div class="empty task-list-empty">この条件に一致するタスクはありません</div>'
-    }`;
+    }
+    ${tombstonesHtml(p)}`;
 
+  bindTombstones(el, p);
   $('btn-enqueue').addEventListener('click', () => openEnqueueDialog());
   const replanBtn = $('btn-replan');
   if (replanBtn && !replanPending) replanBtn.addEventListener('click', openReplanDialog);
@@ -905,20 +952,23 @@ function showTaskDialog(id, scope) {
       }
     });
   }
-  // 削除（人の明示アクション）。agent-project に削除の公式契約は無いため、
-  // backlog/<id>.md をゴミ箱へ移動する。実行中（クレーム中）は main 側でも拒否される
+  // 削除（人の明示アクション）＝本体の却下（reject）へ委ねる。ファイルを消すだけだと
+  // 要対応カード（needs）が残り、charter 運用では次の再分解が同じタスクを作り直す。
+  // 実行中（doing）は main 側でも拒否される。取り消しは「却下済み（墓標）」からの解除。
   const delBtn = $('btn-task-delete');
   if (delBtn) {
     delBtn.addEventListener('click', async () => {
       const yes = await confirmDialog(
-        `タスク ${t.id}「${t.title}」を削除します。\n` +
-          'タスクはゴミ箱へ移動します（決定記録は残りません）。\n' +
+        `タスク ${t.id}「${t.title}」を削除（却下）します。\n` +
+          'バックログと要対応カードから外し、記録は archive と決定記録に残ります。\n' +
+          '同じタスクを再分解で作り直させないため「却下済み（墓標）」にも載ります' +
+          '（入れ直したくなったらそこから解除できます）。\n' +
           '一時的に止めたいだけなら「⏸ 保留にする」を使ってください。よろしいですか？'
       );
       if (!yes) return;
       const ok = await guard('タスク削除', async () => {
-        const res = await api.deleteTask(p.dir, t.id);
-        toast(`${t.id} を削除しました（${res.via === 'trash' ? 'ゴミ箱へ移動' : '完全削除'}）`, true);
+        await api.deleteTask(p.dir, t.id);
+        toast(`${t.id} の削除（却下）を要求しました（稼働中の agent-project が取り込みます）`, true);
         return true;
       });
       if (ok) {
