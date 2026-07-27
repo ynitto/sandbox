@@ -661,7 +661,7 @@ class DirectStateGit:
             return 0                      # 並行更新に競り負け → 次パスで再試行
         return self._materialize(old, new, top or str(self.root))
 
-    _EXCLUDE_PATTERNS = ("claims/", ".state-git*")
+    _EXCLUDE_PATTERNS = ("claims/", "flow-archive/", ".state-git*")
 
     def _ensure_exclude_patterns(self) -> None:
         """同期除外パスをリポジトリローカルの .git/info/exclude に宣言する（冪等）。
@@ -685,7 +685,8 @@ class DirectStateGit:
             pass
 
     def _untrack_excluded(self, branch: str) -> int:
-        """「追跡されてしまった同期除外パス」（claims/・ドット始まり）を追跡から外す（自己修復）。
+        """「追跡されてしまった同期除外パス」（claims/・flow-archive/・ドット始まり）を
+        追跡から外す（自己修復）。
 
         旧実装・他コミッタ（viewer / agent-flow の管理クローン残骸）がこれらを一度コミットすると、
         以後こちらは絶対にコミットしないため **「tracked だが commit されない変更」が永久に残り**、
@@ -701,10 +702,13 @@ class DirectStateGit:
                 continue
             rel = path[len(sub) + 1:] if sub and path.startswith(sub + "/") else path
             parts = Path(rel).parts
-            # claims/（ホスト局所の実行権）とドット始まり（.state-git 残骸等）だけを外す。
-            # flow-archive/ は viewer が所有・コミットする名前空間なので追跡のまま残す。
+            # 外すのは _STATE_EXCLUDE_DIRS（claims/ = ホスト局所の実行権、flow-archive/ =
+            # bus の派生スナップショット）とドット始まり（.state-git 残骸等）。flow-archive/ は
+            # かつて viewer（dashboard）が git へコミットする名前空間だったため追跡に残して
+            # いたが、その書き込みは削除済みで、今はホスト局所のキャッシュにすぎない
+            # （2026-07-27 棚卸し §3-2。新規コミット側の _STATE_EXCLUDE_DIRS とも揃う）。
             if any(s.startswith(".") for s in parts) or any(
-                    s == "claims" for s in parts[:-1]):
+                    s in _STATE_EXCLUDE_DIRS for s in parts[:-1]):
                 tracked.append(path)
         self._ensure_exclude_patterns()
         if not tracked:

@@ -320,9 +320,13 @@ class TestStateSyncBatching(unittest.TestCase):
             root = top / ".agent-project"
             (root / "claims").mkdir(parents=True)
             (root / "bus").mkdir()
+            (root / "flow-archive").mkdir()
             (root / "journal.md").write_text("a\n", encoding="utf-8")
             (root / "claims" / "T1.lock").write_text("owner\n", encoding="utf-8")
             (root / "bus" / ".state-git").write_text("legacy clone marker\n", encoding="utf-8")
+            # 旧 viewer（dashboard の git 書き込み。削除済み）が flow-archive/ を追跡した名残
+            (root / "flow-archive" / "run-1.json").write_text('{"id":"run-1"}\n',
+                                                              encoding="utf-8")
             self._commit_all(top)              # 他コミッタが除外パスまで追跡した状態を再現
             subprocess.run(["git", "-C", str(top), "push", "-q", "-u", "origin", "main"],
                            check=True)
@@ -349,10 +353,12 @@ class TestStateSyncBatching(unittest.TestCase):
             self.assertEqual(r.stdout.strip(), "0")                # 未 push が残らない
             self.assertTrue((root / "commands" / "viewer-approve-T1.json").exists())  # 指示を取得
             ls = subprocess.run(["git", "-C", str(top), "ls-files", "--",
-                                 ".agent-project/claims", ".agent-project/bus/.state-git"],
+                                 ".agent-project/claims", ".agent-project/bus/.state-git",
+                                 ".agent-project/flow-archive"],
                                 capture_output=True, text=True)
             self.assertEqual(ls.stdout.strip(), "")                # 除外パスは追跡から外れた
             self.assertTrue((root / "claims" / "T1.lock").exists())  # 実ファイルは消さない
+            self.assertTrue((root / "flow-archive" / "run-1.json").exists())
 
     def test_direct_integrate_preserves_both_sides_of_diverged_history(self):
         """多重書き手で分岐した履歴を 1 回の sync で決定的に合流させる（マージ・両方残す）。"""
