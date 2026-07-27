@@ -339,7 +339,7 @@ function ownerBadgeHtml(owner) {
   return `<span class="owner-badge" title="監視担当（このタスクの進捗・要対応を見る人）">👤 ${esc(name)}</span>`;
 }
 
-// 委任（offloaded）タスクの「いま誰が持っているか」を板から読む（S8-1）。
+// 委任（offloaded）タスクの「いま誰が持っているか」を板から読む。
 //
 // 委譲 id はタスクの `last_run` に入る（実行側の run-id / mission-id と同一——共通 id に
 // 対応表を持たない delegation 契約 D1 の帰結）。板の正規化ビューを id で引くだけで、
@@ -366,7 +366,7 @@ function boardDelegationSummary(task) {
   return `委任先: ${assignee || '不明'} — 実行中`;
 }
 
-// タスク詳細の「委任」行。中止は板へ直接書かず、この端末の常駐体へ指示を投函する（S8-2）。
+// タスク詳細の「委任」行。中止は板へ直接書かず、この端末の常駐体へ指示を投函する。
 function boardDelegationRowHtml(task) {
   const view = boardDelegationView(task);
   if (!view) return '';
@@ -1015,7 +1015,7 @@ async function requestReplan(charter = '') {
 }
 
 // ---------------------------------------------------------------------------
-// 観点メモ（notes/）。書いても計画は動かない——分解は人が押したときだけ（S6-7）。
+// 観点メモ（notes/）。書いても計画は動かない——分解は人が押したときだけ。
 // ---------------------------------------------------------------------------
 async function openNotesDialog() {
   const p = state.project;

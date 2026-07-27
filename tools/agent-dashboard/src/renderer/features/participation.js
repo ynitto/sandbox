@@ -25,7 +25,7 @@
       const detail = candidate.workload === 'flow' && candidate.available > 1
         ? `実行できる作業 ${candidate.available} 件`
         : candidate.context || '';
-      // 引き受けられない端末では**理由を添えて押させない**（S8-3）。押せるのに何も起きない
+      // 引き受けられない端末では**理由を添えて押させない**。押せるのに何も起きない
       // 状態を作らないのが、この画面に板を載せる条件だった。
       const joined = status.joined || candidate.joined;
       const blocked = !!candidate.disabled;
@@ -57,7 +57,7 @@
 
   async function joinCandidate(candidate, api) {
     if (candidate.workload === 'board') {
-      // 板へ bid を直接書かず、この端末の常駐体へ「引き受ける」意思を渡す（S8-3）。
+      // 板へ bid を直接書かず、この端末の常駐体へ「引き受ける」意思を渡す。
       // 入札の名義と lease は常駐体に一元化する——二重落札を防ぐ規則を UI に複製しない。
       await api.delegationNodeCommand({
         action: 'board-bid', id: candidate.id, boardRepo: candidate.boardRepo,

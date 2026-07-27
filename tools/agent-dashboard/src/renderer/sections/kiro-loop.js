@@ -5,7 +5,7 @@
 // 読み込み順は index.html を参照（core → sections → features → bootstrap）。
 
 // ---------------------------------------------------------------------------
-// kiro-loop 端末（Phase A: capture-pane 視聴）
+// kiro-loop 端末
 // ---------------------------------------------------------------------------
 
 function stripAnsi(s) {
@@ -237,7 +237,7 @@ function renderKiroLoopTerminal() {
 }
 
 // ---------------------------------------------------------------------------
-// kiro-loop 構造化状態と復旧送信（Phase C）
+// kiro-loop 構造化状態と復旧送信
 // ---------------------------------------------------------------------------
 
 function kiroLoopStateHtml(summary, routineName = '') {

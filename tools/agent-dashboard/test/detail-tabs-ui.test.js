@@ -680,7 +680,7 @@ assert.match(html, /<label[^>]+for="doctor-prompt"[^>]*>[^<]*補足したいこ�
 assert.match(html, /<textarea[^>]+id="doctor-prompt"/);
 assert.match(html, /id="btn-doctor-submit"[^>]*>相談する</);
 assert.ok(!html.match(/id="btn-doctor"[^>]+disabled/), 'AI相談は未選択でも利用可能');
-assert.match(html, /id="btn-doctor"[^>]+aria-label="AIに相談"[^>]*>[\s\S]*?<svg[^>]+aria-hidden="true"/);
+assert.match(html, /id="btn-doctor"[^>]+aria-label="相談する"[^>]*>[\s\S]*?<svg[^>]+aria-hidden="true"/);
 assert.ok(!html.match(/id="btn-doctor"[^>]*>AI相談<\/button>/), 'AI相談は文字ボタンではなくアイコンにする');
 assert.ok(renderer.includes('function openDoctor()'));
 assert.ok(renderer.includes('function openPlanCritique('));
@@ -693,7 +693,7 @@ assert.ok(renderer.includes("action: 'revise'"));
 assert.ok(renderer.includes('AIで計画を批評'));
 assert.ok(renderer.includes('変更理由を説明'));
 assert.ok(renderer.includes('フォローアップ案'));
-assert.ok(html.includes('AIで依存・優先度を提案'));
+assert.ok(html.includes('順番を提案'));
 assert.ok(html.includes('id="btn-enq-ai"'));
 assert.ok(html.includes('id="btn-doctor-apply-feedback"'));
 assert.ok(html.includes('id="enq-after-options"'));

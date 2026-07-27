@@ -43,7 +43,7 @@ const state = {
   coworkSelections: {}, // project path → selected routine id
   coworkSearches: { cowork: '' },
   coworkHistoryCache: RoutineUiCache.createBoundedAsyncCache({ max: 12, ttlMs: 60000 }),
-  // 委譲公示板（agent-board）の観測（S8-1）。板は端末単位なのでプロジェクト選択と独立。
+  // 委譲公示板（agent-board）の観測。板は端末単位なのでプロジェクト選択と独立。
   boardStatus: null,   // engine/status.json の board ブロック（参加状況・手動入札の可否）
   boardViews: [],      // 板の公示（正規化ビュー）
   boardNodes: [],      // 板の参加ノード（nodes/<id>.json）
@@ -51,7 +51,7 @@ const state = {
   amigos: null, // amigos:overview のスナップショット { missions, budget, errors }
   amigosBudgetSaving: false,
   amigosReject: null, // 修正依頼ダイアログの対象 { home, missionId }
-  // kiro-loop 端末（Phase A: capture-pane 視聴）
+  // kiro-loop 端末
   kiroLoopTerm: null, // { repo, name, target, session, items, text, error, at }
   kiroLoopCache: RoutineUiCache.createBoundedAsyncCache({ max: 8, ttlMs: 30000 }), // repo → session list
   kiroLoopStateCache: RoutineUiCache.createBoundedAsyncCache({ max: 8, ttlMs: 10000 }), // repo → status summary
@@ -134,7 +134,7 @@ const STATUS_LABELS = {
   proposed: '計画承認待ち',
   ready: '実行待ち',
   doing: '実行中',
-  offloaded: '実行中（委任）',
+  offloaded: '実行中',
   review: '検収待ち',
   blocked: '要対応',
   done: '完了',
@@ -147,11 +147,11 @@ const STATUS_LABELS = {
   cost: 'コスト上限',
   'no-acceptance': '完了条件が未定義',
   drained: '消化完了',
-  throttle: '予算超過（縮退）',
+  throttle: '予算超過',
   // 実行（run）の状態
   failed: '失敗',
   cancelled: '中止',
-  canceled: '中止',   // 語彙統一（W0-9）前に書かれた meta.json の旧綴り
+  canceled: '中止',   // 語彙統一前に書かれた meta.json の旧綴り
   running: '実行中',
   unknown: '不明',
   idle: '待機中',
@@ -207,7 +207,7 @@ function taskCompletionHint(task, { runs = [], archived = false } = {}) {
       unsettledDone: false,
       statusNote: null,
       completeHow:
-        '完了にするには: まず要対応で計画を承認し、実行完了を待つ（検収ゲートなら最後に承認）',
+        'まず要対応で計画を承認してください。実行後に成果を確認します',
       needAsk: 'この承認では完了になりません。実行が許可されるだけです。',
     };
   }
@@ -244,7 +244,7 @@ function taskCompletionHint(task, { runs = [], archived = false } = {}) {
       unsettledDone: true,
       statusNote: '実行済み・未確定',
       completeHow:
-        '完了にするには: 修正後の再実行完了を待つ（操作不要）。要対応が残っていれば先に対応',
+        '要対応が残っていれば対応してください。あとは再実行の完了を待ちます',
       needAsk: null,
     };
   }
@@ -252,7 +252,7 @@ function taskCompletionHint(task, { runs = [], archived = false } = {}) {
     return {
       unsettledDone: false,
       statusNote: null,
-      completeHow: '完了にするには: 本体の実行完了を待つ（通常は操作不要）',
+      completeHow: '実行の完了を待ってください',
       needAsk: null,
     };
   }
@@ -260,7 +260,7 @@ function taskCompletionHint(task, { runs = [], archived = false } = {}) {
     return {
       unsettledDone: false,
       statusNote: null,
-      completeHow: '完了にするには: 実行完了を待つ（操作不要）',
+      completeHow: '実行の完了を待ってください',
       needAsk: null,
     };
   }
@@ -275,7 +275,7 @@ function taskCompletionHint(task, { runs = [], archived = false } = {}) {
 // 関連 run の状態表示。タスク未納品のとき done を「完了」と出さない（タスク完了と誤認させない）。
 function runStatusCaption(runStatus, { taskArchived = false } = {}) {
   if (String(runStatus) !== 'done') return statusLabel(runStatus);
-  return taskArchived ? '納品済み' : '実行完了（タスク未確定）';
+  return taskArchived ? '納品済み' : '実行済み・確認待ち';
 }
 
 // run の機械状態と agent-project タスクの業務状態を混ぜずに表示するためのモデル。
@@ -351,7 +351,7 @@ function runFinalVerificationFailure(project, run) {
     return {
       kind: 'info',
       title: '工程は全て成功・完了の確認待ち',
-      summary: '検証コマンド（verify）が未定義のため、自動では完了にできません。'
+      summary: '完了を自動確認できません。'
         + '成果を確認し、問題なければ要対応の「承認して完了にする」で完了できます。',
       taskId: task.id,
     };
@@ -649,7 +649,7 @@ async function refreshDiscovery() {
   checkNeedsNotifications();
 }
 
-// 委譲公示板の観測（S8-1）。参加できるか・出した仕事が誰に拾われたかを、
+// 委譲公示板の観測。参加できるか・出した仕事が誰に拾われたかを、
 // 板のファイルだけから読む（dashboard は板へ書かない）。板未設定なら空で通す。
 async function refreshBoard() {
   state.boardStatus = (state.engine && state.engine.board) || null;
@@ -733,7 +733,7 @@ function checkNeedsNotifications() {
       title: `${r.name}: 要対応 ${r.added} 件`,
       body:
         r.total > r.added
-          ? `新しく人の判断待ちが増えました（このプロジェクト計 ${r.total} 件）。クリックで開きます。`
+          ? `確認が必要な項目が増えました。現在 ${r.total} 件あります。クリックして開いてください。`
           : '新しく人の判断待ちが発生しました。クリックで開きます。',
       target: { root: r.root, name: r.name },
       badgeCount: total,
@@ -774,10 +774,10 @@ function renderTree() {
           ? '一時停止中'
           : p.running
             ? remoteGuess
-              ? `稼働中（別マシン・約${Math.round((live.ageSec || 0) / 60)}分前に確認）`
+              ? `別のマシンで稼働中・約${Math.round((live.ageSec || 0) / 60)}分前に確認`
               : '稼働中'
             : remoteGuess
-              ? `不明（最終確認 約${Math.round((live.ageSec || 0) / 60)}分前）`
+              ? `状態不明・約${Math.round((live.ageSec || 0) / 60)}分前に確認`
               : '停止中';
         // 表示名は charter.md の `# Charter: <name>` を優先する（無ければフォルダ名）。
         // `.agent-project` のような技術的なフォルダ名でも、charter.md を編集するだけで
@@ -902,7 +902,7 @@ function renderHeader() {
   if (lastLog) metaBits.push(`最終更新: ${esc(statusLabel(lastLog.reason))}・${fmtAgo(lastLog.ts)}`);
   // 実行エンジンが自動で保つ「共有の状況」を平易な一文で常時表示する。取り込みも送信も
   // エンジンが行うので、ここに出るのは結果であって操作ではない。ボタンはその自動回復を
-  // 待たずに前倒しする「今すぐ同期」だけ（実装計画 W2-5）。
+  // 待たずに前倒しする「今すぐ同期」だけ。
   const eng = state.engine;
   if (eng) {
     const cls = eng.level === 'error' ? 'sync-error' : eng.level === 'warn' ? 'sync-warn' : 'sync-ok';
@@ -994,7 +994,7 @@ function renderCliChatButton() {
 }
 
 // 起動先（cwd）の候補。既定はプロジェクト（状態リポジトリ）で、この PC にクローンがある
-// 成果物リポジトリも選べる（S3-4）。S1 以降プロジェクトのフォルダは状態リポジトリの clone
+// 成果物リポジトリも選べる。S1 以降プロジェクトのフォルダは状態リポジトリの clone
 // なので、コードを触りたくて CLI を開いてもそこには 1 行もコードが無い。
 //
 // 宣言が無い／実体が見つからないリポジトリは **消さずに非活性で並べる**——一覧から消えると
@@ -1265,7 +1265,7 @@ async function saveGlobalSettingsSection(section) {
 }
 
 // ---------------------------------------------------------------------------
-// 同期の状況表示と「今すぐ同期」（実装計画 W2-1・W2-5）
+// 同期の状況表示と「今すぐ同期」
 // ---------------------------------------------------------------------------
 // この画面は状態を共有するリポジトリへ **書かない**。取り込み（pull）も送信（push）も
 // 修復も、常駐体（agent-project serve）が自動で行う。ここに残るのは
@@ -1285,7 +1285,7 @@ async function requestHealNow() {
   const res = await guard('今すぐ同期', () => api.requestHeal(dir));
   if (!res) return;
   uiLog('heal', res);
-  toast('今すぐ同期するよう依頼しました（反映まで少し時間がかかることがあります）', true);
+  toast('同期を始めました。反映までお待ちください', true);
   await refreshAll();
 }
 
@@ -1495,7 +1495,7 @@ async function openFailureDiagnosis(needId) {
   $('doctor-prompt').focus();
 }
 
-// 失敗診断を対話セッションで開く（S9-4）。ヘッドレスの openFailureDiagnosis と**同じ文脈**を
+// 失敗診断を対話セッションで開く。ヘッドレスの openFailureDiagnosis と**同じ文脈**を
 // 使う（buildDoctorContext の 1 実装）。違うのは渡し方だけ——ブリーフ 1 行 ＋ 全文ファイルの
 // パスを tmux セッションへ送り、以後は人がその窓で会話する。
 async function openFailureDiagnosisChat(needId) {
@@ -1514,7 +1514,7 @@ async function openFailureDiagnosisChat(needId) {
       context,
       needId: need.id,
     });
-    // 読み取り専用を「保証できない」CLI では、その事実を人に見せる（S9 §6-1 の決着）。
+    // 読み取り専用を「保証できない」CLI では、その事実を人に見せる。
     // 防御は持たない代わりに、判断材料は渡す。
     if (res.readonlyWarning) toast(`${res.readonlyWarning}。開いた窓の操作にご注意ください`);
     toast(res.message || `${res.cli} で対話診断を開きました`, !res.readonlyWarning);
@@ -1583,7 +1583,7 @@ function applyDoctorFeedbackDraft() {
       }
     }
   }
-  toast(filled ? '差し戻し文面を回答欄へ入れました（送信は人が確定します）' : '下書きを保存しました（回答欄を開くと入ります）', true);
+  toast(filled ? '差し戻し案を回答欄へ入れました。内容を確認して送信してください' : '下書きを保存しました。回答欄で確認できます', true);
 }
 
 async function askDoctor() {

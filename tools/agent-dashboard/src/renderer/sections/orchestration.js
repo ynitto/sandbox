@@ -63,13 +63,10 @@ function orchBlockedWorkloads() {
 function orchBlockedBannerHtml() {
   const blocked = orchBlockedWorkloads();
   if (!blocked.length) return '';
-  const detail = blocked
-    .map((b) => `${b.workload} = ${orchLifecycleLabel(b.lifecycle)}`)
-    .join(' / ');
   return `<div class="need-blocker" role="status">
-    <strong>⏸ 実行が管理面で止まっています（${esc(detail)}）</strong>
-    <span>このまま承認・再実行を送っても、着手前に止められて同じ要対応に戻ります。</span>
-    <button type="button" class="primary-inline" data-orch-open="1">エージェント管理を開いて稼働に戻す</button>
+    <strong>作業が停止されています</strong>
+    <span>先に全体設定で作業を再開してください。</span>
+    <button type="button" class="primary-inline" data-orch-open="1">全体設定を開く</button>
   </div>`;
 }
 
@@ -137,8 +134,7 @@ function orchBudgetPanelHtml(budget) {
     <header class="row">
       <div>
         <span class="summary-kicker">利用状況</span>
-        <h3>AI利用量（${esc(periodLabel)}）</h3>
-        <p class="muted">すべての機能で使った量を、取得できた値と推定値に分けて表示します。</p>
+        <h3>利用量（${esc(periodLabel)}）</h3>
       </div>
       <div>${overBadge}</div>
     </header>
@@ -801,7 +797,7 @@ function globalSettingsSyncHtml() {
   </div>`;
 }
 
-// 「この端末は、ほかの端末と仕事をやり取りできているか」（S8-1）。
+// 「この端末は、ほかの端末と仕事をやり取りできているか」。
 // 設定画面に置くのは**構成の確認**だから——動く公示の一覧はタスク画面（委任先）と
 // 参加画面（引き受ける）に置く。ここは「参加できているか」だけを言う。
 function boardParticipationHtml() {
@@ -1688,7 +1684,7 @@ function bindCoworkDetailActions(root, folder) {
   }));
 }
 
-// 定常業務フォルダの登録（S2）。agent-project 管理外のフォルダ（kiro-loop 設定や
+// 定常業務フォルダの登録。agent-project 管理外のフォルダ（kiro-loop 設定や
 // .statemachine/ を持つだけ）をこの画面で扱えるようにする。宣言は dashboard 設定
 // `cowork.roots` が持つ——定常業務の実行側はこの dashboard 自身だから（「宣言は実行側が
 // 持つ」の原則。agent-project の host.yaml に載せると、常駐体が管理しないものを常駐体の

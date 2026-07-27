@@ -239,7 +239,7 @@ async function _resubmitFlowRun() {
   const nameList = (list) =>
     list.slice(0, 8).map((n) => n.id).join(', ') + (list.length > 8 ? ` …（計 ${list.length} 件）` : '');
   const failedNames = rerun.filter((n) => n.state === 'failed');
-  // 'canceled' は語彙統一（W0-9）前に書かれた meta.json の旧綴り（読み取り互換）。
+  // 'canceled' は語彙統一前に書かれた meta.json の旧綴り（読み取り互換）。
   const canceled = run.status === 'cancelled' || run.status === 'canceled';
   const plan = canceled
     ? `中止した実行の続きからは再開できません。\nタスクを積み直して新しい実行を始めます（完了済み ${keep.length} 件も温存されません）。`

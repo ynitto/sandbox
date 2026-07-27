@@ -36,7 +36,7 @@ async function submitPromoteCharter(name) {
 }
 
 // 稼働操作（pause / resume / stop）は commands/ ドロップで届き、実行エンジンが取り込む。
-// 起動だけはこの画面からは行わない（実装計画 W2-2）——止まっているエンジンは commands/ を
+// 起動だけはこの画面からは行わない——止まっているエンジンは commands/ を
 // 読めず、この PC から CLI で起こすと WSL 側の本体と二重に立つ。上げ直しは OS の起動系の
 // 役目なので、ここは起動コマンドを案内するところまでを担う。
 // 複数 PC 分散運用のノード別生存一覧（案6）。status/<node>.json 由来の p.nodes を表示する。
@@ -148,7 +148,7 @@ function overviewSummary(p, flowRuns) {
   const done = (p.archive || []).length;
   const total = done + (p.backlog || []).filter((t) => t.status !== 'rejected').length;
   const progress = total ? Math.round((done / total) * 100) : 0;
-  // 'canceled' は語彙統一（W0-9）前に書かれた meta.json の旧綴り（読み取り互換）。
+  // 'canceled' は語彙統一前に書かれた meta.json の旧綴り（読み取り互換）。
   const activeRuns = (flowRuns || []).filter(
     (r) => !['done', 'failed', 'cancelled', 'canceled'].includes(String(r.status))).length;
 
@@ -375,7 +375,7 @@ function renderProjectSettings() {
       <div>
         <span class="summary-kicker">選択中のプロジェクトに適用</span>
         <h2>プロジェクト設定</h2>
-        <p class="muted">${esc(p.name)} の目的、ルール、対象リポジトリを管理します。</p>
+        <p class="muted">${esc(p.name)} の目的やルールを変更できます。</p>
       </div>
     </header>
     <section class="project-settings-card" aria-labelledby="project-settings-definition-title">
@@ -392,8 +392,8 @@ function renderProjectSettings() {
     <section class="project-settings-card" aria-labelledby="project-settings-technical-title">
       <span class="summary-kicker">診断</span>
       <h3 id="project-settings-technical-title">調査と高度な設定</h3>
-      <p class="muted">実行ID、内部ログ、同期方式などは通常の操作には必要ありません。</p>
-      <button type="button" id="btn-project-technical-info">詳細情報を開く</button>
+      <p class="muted">問題を調べるときだけ使います。</p>
+      <button type="button" id="btn-project-technical-info">診断情報を開く</button>
     </section>
     ${danger}
   </div>`;
@@ -413,17 +413,9 @@ function renderProjectSettings() {
 async function resetProject() {
   const p = state.project;
   if (!p || !p.charter) return;
-  const sharedBusNote =
-    p.busSource && p.busSource !== 'project'
-      ? '\n⚠ 実行データの置き場を他プロジェクトと共有しています。'
-      : '';
   const yes = await confirmDialog(
-    `${p.name}: プロジェクト憲章（charter.md）以外の全データを削除します。\n` +
-      `削除対象: 計画バージョン・タスク ${p.backlog.length} 件・完了記録 ${p.archive.length} 件・要対応 ${p.needs.length} 件・` +
-      `実行中 ${p.claims.length} 件、および履歴・納品記録などの全ファイル。\n` +
-      `ファイルはゴミ箱へ移動します（ゴミ箱の無い環境では完全削除）。${sharedBusNote}\n` +
-      `憲章はプロジェクト全体の前提（マスター）として残ります。マスターは分解されないので、` +
-      `リセット後は待機状態になり、計画バージョンを追加すると作業が再開します。よろしいですか？`
+    `${p.name} のタスク、履歴、成果をすべて削除して、最初からやり直します。\n` +
+      'プロジェクトの目的と完了条件は残ります。この操作は元に戻せません。続けますか？'
   );
   if (!yes) return;
   const ok = await guard('プロジェクトのリセット', async () => {

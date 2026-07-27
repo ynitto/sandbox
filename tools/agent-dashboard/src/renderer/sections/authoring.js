@@ -132,7 +132,7 @@ async function submitNewProject() {
     await selectProject(res.dir);
     return;
   }
-  // 一覧に出るのは実行エンジンが担当しているプロジェクトだけ（実装計画 W2-4）。
+  // 一覧に出るのは実行エンジンが担当しているプロジェクトだけ。
   // 作ったフォルダを実行側へ登録するまでは現れないので、次にすることをそのまま伝える。
   await confirmDialog(
     `プロジェクトを作成しました: ${res.dir}\n\n` +
