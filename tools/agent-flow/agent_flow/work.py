@@ -208,7 +208,9 @@ def cmd_work(args) -> int:
         artifacts = [os.path.relpath(p, bus.run_dir) for p in bus.list_artifacts(nid)]
         if delivery:  # ワークスペースへ push したブランチ/コミットを result に残す（消費側が追跡）
             rdata = {**(rdata if isinstance(rdata, dict) else {}), "delivery": delivery}
-        bus.write_result(nid, who, rstatus, output, rdata, artifacts=artifacts)
+        # 実行した PC を結果に残す（読み手が who の綴りを割って推測しないで済むように）
+        bus.write_result(nid, who, rstatus, output, rdata, artifacts=artifacts,
+                         node=this_pc(args))
         bus.event(who, "result", node=nid, status=rstatus)
         bus.sync_push(f"result {nid} [{rstatus}] by {who}")
         log(who, f"完了: {nid} [{rstatus}]")

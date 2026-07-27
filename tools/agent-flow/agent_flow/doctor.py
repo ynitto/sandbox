@@ -93,11 +93,13 @@ def collect_doctor_signals(args) -> dict:
     metas.sort(key=lambda x: x[1].get("created_at", ""), reverse=True)
     recent = metas[:_DOCTOR_RECENT_RUNS]
     stuck, failed, errors = [], [], []
+    by_pc: dict = {}
     for rid, meta in recent:
         st = meta.get("status")
         age = _age_hours(meta)
         view = probe.run_view(rid)
         nodes = (view.read_graph() or {}).get("nodes", {})
+        by_pc[rid] = dict(execution_by_pc(view, nodes))
         node_states = {nid: view.node_state(nid) for nid in nodes}
         failed_nodes = [nid for nid, s in node_states.items() if s == "failed"]
         if st not in TERMINAL and age >= _DOCTOR_STUCK_HOURS:
@@ -121,7 +123,11 @@ def collect_doctor_signals(args) -> dict:
     return {
         "runs_total": len(runs),
         "recent": [{"run": rid, "status": m.get("status"),
-                    "age_h": round(_age_hours(m), 1), "request": (m.get("request") or "")[:80]}
+                    "age_h": round(_age_hours(m), 1), "request": (m.get("request") or "")[:80],
+                    # 実行した PC の内訳。1 run が複数 PC に散っているか、全 run が同じ 1 台に
+                    # 寄っているかを診断側から見えるようにする（run 単位で 1 台に確定するのが
+                    # 現行仕様なので、後者が既定の姿。分担の観測点は棚卸し §2b）。
+                    "by_pc": by_pc.get(rid, {})}
                    for rid, m in recent],
         "stuck": stuck[:10], "failed": failed[:10], "errors": errors[:20],
     }

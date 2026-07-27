@@ -224,6 +224,9 @@ class HostConfig:
 
     def __init__(self, data: dict, path: "str | None" = None):
         self.path = path
+        # 読んだままの宣言。doctor が起動時と**同じ判定**（`host_config_findings`）を
+        # 掛けられるようにするために持つ——doctor 用に読み直すと、読み方の 2 実装目になる。
+        self.raw = dict(data) if isinstance(data, dict) else {}
         declared = str(data.get("node_id") or "").strip()
         # 「宣言されたか」を保つ: `resolve_config` は宣言 > 環境変数 > ホスト名の順に採る
         # （宣言があるのに AGENT_PROJECT_NODE で黙って別名になると、板の名義と claim の

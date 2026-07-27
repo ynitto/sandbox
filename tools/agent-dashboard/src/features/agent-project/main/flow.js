@@ -243,6 +243,10 @@ function readRun(runDir) {
     const result = readJson(path.join(runDir, 'results', `${id}.json`));
     let state = 'pending';
     let who = null;
+    // 実行した PC（結果レコードの node。agent-flow の worker が書く）。who の綴りから
+    // 推測はしない——名義の作り方の 2 実装目になる（同じ理由で agent-flow 側も
+    // `results/<node>.json` の node フィールドを正典にしている）。
+    let pc = null;
     let finishedAt = null;
     let output = null;
     let data = null;
@@ -255,6 +259,7 @@ function readRun(runDir) {
     if (result) {
       state = result.status === 'failed' ? 'failed' : 'done';
       who = result.who || null;
+      pc = result.node || null;
       finishedAt = result.finished_at || null;
       output = typeof result.output === 'string' ? result.output : null;
       data = result.data !== undefined ? result.data : null;
@@ -307,6 +312,7 @@ function readRun(runDir) {
       retries: Number(spec.retries || 0),
       state,
       who,
+      pc, // 実行した PC（結果に記録があるときだけ。旧い結果は null）
       finishedAt,
       heartbeatAt,
       leaseUntil,
@@ -409,12 +415,30 @@ function readRun(runDir) {
     nodes,
     counts,
     total,
+    byPc: summarizeByPc(nodes), // PC 別の実行内訳（[{pc,count}]。多い順）
     progress: total ? (counts.done + counts.failed) / total : 0,
     gitlabIssues,
     final: finalJson
       ? { finishedAt: finalJson.finished_at || null, summary: finalJson.summary || '' }
       : null,
   };
+}
+
+// PC 別の実行内訳（確定したノード数）。この run が何台に散ったかを画面から数えられるように
+// する。現行仕様では run 単位で 1 台に確定するので通常は 1 エントリ——複数出たら
+// 「ステップが PC 間に散った」証拠になる（分担の観測点。棚卸し 2026-07-27 §2b）。
+// PC の記録が無い結果（この記録より前の agent-flow が確定したもの）は `who` を見出しにして
+// `?` を付ける。名義の綴りを割って PC を当てにはいかない（推測しないことを画面にも出す）。
+function summarizeByPc(nodes) {
+  const acc = new Map();
+  for (const n of Object.values(nodes)) {
+    if (n.state !== 'done' && n.state !== 'failed') continue;
+    const key = n.pc || (n.who ? `${n.who}?` : '?');
+    acc.set(key, (acc.get(key) || 0) + 1);
+  }
+  return [...acc.entries()]
+    .map(([pc, count]) => ({ pc, count }))
+    .sort((a, b) => b.count - a.count || a.pc.localeCompare(b.pc));
 }
 
 // events/*.jsonl を新しい順に最大 limit 件マージして返す
@@ -772,6 +796,7 @@ function summarizeTombstone(tomb) {
       retries: Number(spec.retries || 0),
       state: res ? (res.status === 'failed' ? 'failed' : 'done') : 'pending',
       who: res ? res.who || null : null,
+      pc: res ? res.node || null : null, // 実行した PC（結果に記録があるときだけ）
       finishedAt: res ? res.finished_at || null : null,
       heartbeatAt: null,
       leaseUntil: null,
@@ -830,6 +855,7 @@ function summarizeTombstone(tomb) {
     nodes,
     counts,
     total,
+    byPc: summarizeByPc(nodes),
     progress: total ? (counts.done + counts.failed) / total : 0,
     gitlabIssues,
     final,
@@ -908,4 +934,8 @@ module.exports = {
   gitlabMrDecision,
   gitlabClosedIssueDecision,
   GITLAB_APPROVED_LABELS,
+  // 手掛かり語は executors/gitlab.py の写し。突き合わせテスト
+  // （test/gitlab-decision-golden.test.js）が正典と比べられるように公開する。
+  GITLAB_REJECT_HINTS,
+  GITLAB_APPROVE_HINTS,
 };

@@ -557,6 +557,7 @@ def _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits,
             task.set("gate_ref", mr_url)
     # viewer の検収サブ画面向け: 複数リポジトリの構造化ペイロード（書込先＋参照）
     delivery = delivery_entries(cfg, task, mr_url=mr_url)
+    mark_needs_entry(cfg, task)   # この検収待ちが「人の決定より後」であることの印（G-2）
     persist_task(cfg, task)
     write_needs_file(cfg, task,
                      f"検証は通っている（verify=PASS）。人の検収を待っている理由: {gate_why}。"

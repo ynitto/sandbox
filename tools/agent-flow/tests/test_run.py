@@ -295,6 +295,98 @@ class SpawnArgvTests(unittest.TestCase):
         self.assertEqual(parsed.run_id, "run-43")
 
 
+class WorkerWhoTests(unittest.TestCase):
+    """worker の名義（バス上の `who`）に PC 名が入ること。
+
+    以前は `worker-{i}` 固定で、共有バスに 2 台が参加すると両者が
+    `claims/<node>/worker-1.json` と `events/worker-1.jsonl` という同一パスへ書いた
+    （設計 付録 A の「クレーマごとにファイル名が分かれる」不変条件の破れ）。同時に
+    「どの PC がどの work ノードを実行したか」が status / dashboard / バスのどこにも
+    出ない状態でもあった。"""
+
+    def _args(self, node_id=None):
+        return types.SimpleNamespace(node_id=node_id)
+
+    def test_includes_node_id(self):
+        who = kf.worker_who(self._args("desk-a"), 1)
+        self.assertEqual(who, "desk-a-w1")
+
+    def test_heal_generation_is_distinct(self):
+        args = self._args("desk-a")
+        self.assertEqual(kf.worker_who(args, 2, heal=3), "desk-a-h3w2")
+        # 世代が違えば名義も違う（heal で起こし直した worker が旧世代の claim を継がない）
+        self.assertNotEqual(kf.worker_who(args, 2, heal=3), kf.worker_who(args, 2))
+
+    def test_two_nodes_do_not_share_a_claim_path(self):
+        a = kf.worker_who(self._args("desk-a"), 1)
+        b = kf.worker_who(self._args("desk-b"), 1)
+        self.assertNotEqual(a, b)
+        # claim ファイル名まで割れていることを板・バス共通の綴り規則で確かめる
+        self.assertNotEqual(kf.protocol.safe_name(a), kf.protocol.safe_name(b))
+
+    def test_falls_back_to_this_pc_name(self):
+        # node_id 未宣言なら PC 名の正規形（agentcore.nodeid）を使う
+        who = kf.worker_who(self._args(None), 1)
+        self.assertEqual(who, f"{kf.default_node_id()}-w1")
+
+    def test_spelling_follows_safe_name(self):
+        # 明示 node_id に板のファイル名へ置けない文字があっても綴りは規則に従う
+        who = kf.worker_who(self._args("Desk/A"), 1)
+        self.assertEqual(who, kf.protocol.safe_name(who))
+        self.assertNotIn("/", who)
+
+    def test_workers_on_one_pc_are_distinct(self):
+        args = self._args("desk-a")
+        self.assertEqual([kf.worker_who(args, i + 1) for i in range(2)],
+                         ["desk-a-w1", "desk-a-w2"])
+
+
+class ExecutionByPcTests(unittest.TestCase):
+    """PC 別の実行内訳。「どの PC がどの work ノードを実行したか」は CLI・GUI・バスの
+    どこにも出ていなかった（棚卸し 2026-07-27 §2b.1）。worker が結果へ書いた `node` を
+    正典として集計する——`who` の綴りを割って PC を推測すると、名義の作り方の 2 実装目になる。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-bypc-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.bus = kf.Bus(self.tmp, "run1")
+        self.bus.ensure_run("req")
+        self.nodes = {"t1": {"goal": "g", "deps": []}, "t2": {"goal": "g", "deps": []},
+                      "t3": {"goal": "g", "deps": []}}
+        self.bus.write_graph({"nodes": self.nodes, "iteration": 0})
+
+    def test_counts_by_executing_pc(self):
+        self.bus.write_result("t1", "desk-a-w1", "done", "o", node="desk-a")
+        self.bus.write_result("t2", "desk-a-w2", "done", "o", node="desk-a")
+        self.bus.write_result("t3", "desk-b-w1", "failed", "o", node="desk-b")
+        self.assertEqual(kf.execution_by_pc(self.bus, self.nodes),
+                         [("desk-a", 2), ("desk-b", 1)])
+
+    def test_missing_pc_record_is_marked_not_guessed(self):
+        # 旧い結果（PC を書く前の agent-flow が確定したもの）は who に `?` を付けて出す
+        self.bus.write_result("t1", "worker-1", "done", "o")
+        self.assertEqual(kf.execution_by_pc(self.bus, self.nodes), [("worker-1?", 1)])
+
+    def test_unfinished_nodes_are_not_counted(self):
+        self.assertEqual(kf.execution_by_pc(self.bus, self.nodes), [])
+
+    def test_status_render_shows_breakdown(self):
+        self.bus.write_result("t1", "desk-a-w1", "done", "o", node="desk-a")
+        self.bus.write_result("t2", "desk-b-w1", "done", "o", node="desk-b")
+        _, text = kf._render_status(self.bus, "run1", 0)
+        self.assertIn("by pc", text)
+        self.assertIn("desk-a=1", text)
+        self.assertIn("desk-b=1", text)
+
+    def test_worker_records_this_pc(self):
+        # work は `--node-id` が worker の名義で埋まるので、PC は設定宣言 →
+        # ホスト名の順で解決する（args.node_id は見ない）
+        args = types.SimpleNamespace(node_id="desk-a-w1", _config={"node_id": "desk-a"})
+        self.assertEqual(kf.this_pc(args), "desk-a")
+        self.assertEqual(kf.this_pc(types.SimpleNamespace(node_id="desk-a-w1", _config={})),
+                         kf.default_node_id())
+
+
 class StalledRunRetryTests(unittest.TestCase):
     """停滞した run（orchestrator が消えて非終端のまま止まったもの）も、失敗ノードを戻して再開する。
 

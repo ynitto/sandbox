@@ -6,13 +6,30 @@ def decision_path(cfg: "Config", tid: str) -> Path:
 
 
 def next_dr_id(path: Path) -> str:
+    return f"DR-{_max_dr_num(path) + 1:04d}"
+
+
+def _max_dr_num(path: Path) -> int:
     n = 0
     if path.exists():
         for line in path.read_text(encoding="utf-8").splitlines():
             m = DR_HEADER_RE.match(line)
             if m:
                 n = max(n, int(m.group(1)))
-    return f"DR-{n + 1:04d}"
+    return n
+
+
+def dr_num(dr: "str | None") -> int:
+    """`DR-0007` → 7。空・読めない綴りは 0（「記録なし」と同じ扱い）。"""
+    m = re.search(r"(\d+)", str(dr or ""))
+    return int(m.group(1)) if m else 0
+
+
+def latest_dr_id(cfg: "Config", tid: str) -> str:
+    """このタスクの決定記録の最新 DR 番号（`DR-0007`）。1 件も無ければ空文字。
+    「いつの時点の記録より後か」を数えるための時計として使う（日付は日単位で足りない）。"""
+    n = _max_dr_num(decision_path(cfg, tid))
+    return f"DR-{n:04d}" if n else ""
 
 
 def append_decision(cfg: "Config", tid: str, actor: str, context: str,
@@ -39,6 +56,44 @@ def append_decision(cfg: "Config", tid: str, actor: str, context: str,
     with path.open("a", encoding="utf-8") as f:
         f.write(block + "\n")
     return dr
+
+
+# DR ヘッダの actor がこれらなら機械の記録（人の判断ではない）。人の判断だけを
+# 「もう答えが出ている」の根拠にするため、ここで明示的に区別する。
+_MACHINE_ACTORS = {"auto", "system", "gitlab", "forge"}
+_DR_ACTOR_RE = re.compile(r"^##\s+DR-\d+\s+\S+\s+actor:\s*(?P<actor>.+?)\s*$")
+_DR_AFFECTS_RE = re.compile(r"^-\s*affects\s*:\s*\S+\s*→\s*(?P<status>[A-Za-z_-]+)", re.M)
+
+
+def last_human_decision(cfg: "Config", tid: str) -> "dict | None":
+    """このタスクについて**人**が下した最後の決定（DR）。無ければ None。
+
+    返すのは `{"dr", "actor", "action", "to"}`。`to` は `- affects : <id> → <status>` が
+    示す遷移先 status（読めなければ空）。
+
+    使い道は「同じ判断を人に二度させない」（コンセプト正典 C3）の判定材料。決定記録は
+    追記のみで衝突なく合流するため、**状態ファイルの同期が競合しても人の決定だけは全 PC へ
+    届く**——古い status を持つ PC が「まだ判断待ち」と誤解して票を作り直すのを、この記録で
+    止められる（判断待ちの復活ループ。総覧 G-2）。"""
+    path = decision_path(cfg, tid)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    found: "dict | None" = None
+    for block in re.split(r"(?=^## DR-)", text, flags=re.M):
+        head = block.splitlines()[0] if block.strip() else ""
+        m = _DR_ACTOR_RE.match(head)
+        if not m or m.group("actor").strip() in _MACHINE_ACTORS:
+            continue
+        dr = DR_HEADER_RE.match(head)
+        act = re.search(r"^-\s*action\s*:\s*(?P<action>.+?)\s*$", block, flags=re.M)
+        to = _DR_AFFECTS_RE.search(block)
+        found = {"dr": f"DR-{int(dr.group(1)):04d}" if dr else "",
+                 "actor": m.group("actor").strip(),
+                 "action": act.group("action").strip() if act else "",
+                 "to": to.group("status") if to else ""}
+    return found                      # 最後に現れた人の DR（追記順＝時系列）
 
 
 # ---------------------------------------------------------------------------

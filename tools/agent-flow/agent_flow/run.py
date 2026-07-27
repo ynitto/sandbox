@@ -29,6 +29,32 @@ def _child_base(args, bus_abs: str) -> list:
     return base
 
 
+def worker_who(args, index: int, heal: "int | None" = None) -> str:
+    """この PC が起こす worker の名義（バス上の `who`）。
+
+    **PC 名（node_id）を必ず含める**。以前は `worker-{i}` 固定で、バス上の記録
+    （`claims/<node>/<who>.json`・`events/<who>.jsonl`・`results/<node>.json` の `who`）が
+    全 PC で同じ綴りになっていた。これは 2 つの問題を同時に起こす:
+
+    1. **不変条件の破れ**（設計 付録 A / コンセプト正典 C7「同じ状態に書き手を 2 つ置かない」）。
+       共有バス（`--git`）で 2 台が同じ run に参加すると、両者が `claims/<node>/worker-1.json`
+       と `events/worker-1.jsonl` という**同一パス**へ書く。「クレーマごとにファイル名が
+       分かれるので add/add コンフリクトにならない」という前提が成立しなくなる。
+    2. **観測できない**。`agent-flow status` の `@who`・dashboard の run 詳細・バス上の記録の
+       どれを見ても「どの PC がどの work ノードを実行したか」が分からない。
+
+    綴りは `protocol.safe_name`（板・バス共通の名義規則）に通す。明示 `node_id` の正規化は
+    ここでは行わない——明示値を正規化するかは静止点案件（P0 詳細設計 §8 と総覧で方針が
+    割れている）なので、既定値の導出（`_default_daemon_id`）と同じ扱いに留める。
+
+    移行注意: 実行途中の run を跨いで名義が変わると、旧名義の生存リースが切れるまで
+    新名義がタイブレークで負ける（heal worker が別名義で起きるのと同じ挙動で、
+    リース失効が吸収する）。"""
+    node = protocol.safe_name(_default_daemon_id(args))
+    tag = f"w{index}" if heal is None else f"h{heal}w{index}"
+    return f"{node}-{tag}"
+
+
 def _run_lease_window(args) -> float:
     """run 生存リース（heartbeat）の猶予秒。健康な daemon は poll 毎に更新するので、
     poll の十数倍を確保すれば一過性の遅延（GC/ネットワーク）で誤回収しない。一方 act_timeout
@@ -353,7 +379,7 @@ def cmd_run(args) -> int:
     else:
         worker_env.pop("AGENT_FLOW_DEFER_WAITS", None)
     for i in range(args.workers):
-        wid = f"worker-{i+1}"
+        wid = worker_who(args, i + 1)
         w = subprocess.Popen(base + [
             "work", "--node-id", wid, "--executor", args.executor,
             "--model_opt", args.model or "", "--poll", str(args.poll),
@@ -436,12 +462,13 @@ def cmd_run(args) -> int:
                             ])
                             procs.append((f"orchestrator-heal{n}", orch))
                             for i in range(args.workers):
+                                hid = worker_who(args, i + 1, heal=n)
                                 w = subprocess.Popen(base + [
-                                    "work", "--node-id", f"worker-heal{n}-{i+1}",
+                                    "work", "--node-id", hid,
                                     "--executor", args.executor,
                                     "--model_opt", args.model or "", "--poll", str(args.poll),
                                 ], env=worker_env)
-                                procs.append((f"worker-heal{n}-{i+1}", w))
+                                procs.append((hid, w))
                             healed = True
                 if healed:
                     continue

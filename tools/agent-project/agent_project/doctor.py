@@ -516,6 +516,38 @@ def _host_project_config_findings(entry: dict, root: "Path", host, name: str,
             "critical" if f["severity"] == "error" else "warn")
 
 
+def doctor_host_config_findings(host=None) -> "list[dict]":
+    """host.yaml そのものの綻び（未知キー・型違い・板の語彙外）を doctor にも出す。
+
+    判定は起動時の警告と同じ `resident_cli.host_config_findings` を呼ぶ。ここが繋がって
+    いなかったため「doctor は緑なのに起動時は警告」——同じ判定の結果が場所で食い違う状態
+    ——になっていた（コンセプト正典 C7「判断根拠は 1 か所」。総覧 §7.4 P3-3 は doctor が
+    この関数を呼ぶと記していたが、実際に配線されたのは `layer_findings` だけだった）。
+
+    severity は起動時と同じ強度の **warn**（起動は止まらない）。E への昇格を判断するには
+    「実際に何件・どの内訳の警告が出ているか」を数えられる必要があり、その材料もここで揃う。"""
+    if host is None:
+        try:
+            host = load_host_config()
+        except Exception:  # noqa: BLE001 — doctor は host.yaml の不備で落ちない
+            return []
+    raw = getattr(host, "raw", None)
+    if not isinstance(raw, dict) or not raw:
+        return []                      # host.yaml が無い PC では何も言わない
+    where = getattr(host, "path", "") or "agent-project.host.yaml"
+    out: "list[dict]" = []
+    for line in host_config_findings(raw):
+        # title は所見ごとに変える。`_dedupe_findings` は (category, title) で畳むので、
+        # 同じ題だと全件が 1 件に潰れ、W→E 昇格の判断材料である**内訳**が消える。
+        subject = line.split(":", 1)[0].strip() if ":" in line else line[:40]
+        out.append({"category": "config", "severity": "warn",
+                    "title": f"host.yaml の宣言が読まれていません: {subject}",
+                    "evidence": f"{where}: {line}",
+                    "fix": "host.yaml を宣言どおりの置き場・型に直す"
+                           "（起動時にも同じ警告が出ます）"})
+    return out
+
+
 def doctor_host_projects_findings(host=None) -> "list[dict]":
     """host.yaml の `projects[]` が**起動できる形か**を起動前に検査する（S1 設計 §3.6）。
 
@@ -910,6 +942,7 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
                      + doctor_audit_findings(cfg)
                      + doctor_wiring_findings(cfg)
                      + doctor_residency_findings(_declared_residency())
+                     + doctor_host_config_findings()
                      + doctor_host_projects_findings()
                      + node_id_cutover_findings(cfg, cutover_from or ""))
     for f in deterministic:
@@ -936,6 +969,7 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
         still = {(g["category"], re.sub(r"\s+", " ", g.get("title", "").lower()).strip())
                  for g in doctor_env_findings(cfg) + doctor_coordination_findings(cfg)
                  + doctor_audit_findings(cfg) + doctor_residency_findings(_declared_residency())
+                 + doctor_host_config_findings()
                  + doctor_host_projects_findings()
                  + node_id_cutover_findings(cfg, cutover_from or "")}
         for f in findings:

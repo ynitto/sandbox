@@ -9,7 +9,7 @@
 
 ## TL;DR
 
-agent-flow は、自然言語の要求をタスクグラフへ分解し、複数の PC のワーカーへ配って実行し、結果を評価して作り直しまで回す分散ワークフローエンジンです。
+agent-flow は、自然言語の要求をタスクグラフへ分解して実行し、結果を評価して作り直しまで回す分散ワークフローエンジンです。**PC 間に配る単位は 1 つの要求（run）**で、落札した 1 台がその run のワーカーを自 PC 内に起こして完走します（グラフ内の個々のステップが PC 間に散らないのは仕様。[運用ガイド §4.2](../guides/multi-pc-operations.md)）。
 
 主要な決定は 3 つです。第一に、プロセス間の通信をバス上のファイルだけに限り、タスクの状態は専用フィールドではなくファイルの存在から導きます。第二に、二重実行を止めるロックは、書き込み先を名前で分けた claim と `(ts, who)` の決定的タイブレークで作ります。第三に、agent-flow 自身は常駐しません。受理と実行を別々の単発コマンドに割り、周期駆動は PC に 1 本の常駐体（`agent-project serve`）へ預けます。
 
@@ -274,7 +274,7 @@ auto-heal はこの世代交代を使いません。heal は同一 run の再開
     tasks/<id>.json    ノード仕様
     claims/<id>/<who>.json
     waits/<id>.json    park 記録（承認待ち。秘密は載せない）
-    results/<id>.json  成果（output / data / artifacts / who / status）
+    results/<id>.json  成果（output / data / artifacts / who / node / status）
     artifacts/<id>/    中間成果物のファイル
     events/<who>.jsonl 追記専用ログ
     final.json         全結果のサマリ
@@ -290,6 +290,8 @@ auto-heal はこの世代交代を使いません。heal は同一 run の再開
 | `events/<who>.jsonl` | 各ノードが自分のファイルにだけ追記 |
 
 `node_state` はこの表から導出されます。優先順位は result（終端）、生存リース内の claim、生存リース内の wait、`tasks/` があれば pending、なければ unknown です。
+
+**`<who>` には PC 名が入ります**（`<node_id>-w<i>`、auto-heal の世代は `<node_id>-h<n>w<i>`。綴りは `agentcore.protocol.safe_name` の規則）。2026-07-27 までは `worker-<i>` 固定で、共有バスに 2 台が参加すると両者が `claims/<id>/worker-1.json` と `events/worker-1.jsonl` という同一パスへ書きました——この表の「ファイル名が衝突しない」という不変条件そのものの破れです。あわせて **`results/<id>.json` には実行した PC を `node` として書きます**（`agent-flow status` の `by pc` 行・doctor の signals・dashboard の run 詳細はこのフィールドを読む。読み手が `who` の綴りを割って PC を当てにいくと、名義の作り方の 2 実装目になるため）。
 
 ### B. サブコマンドと主なオプション
 

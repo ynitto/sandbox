@@ -184,6 +184,55 @@ def _remember_needs_reason(task: "Task", reason: str) -> None:
         task.extra.append(("needs_reason", str(reason).replace("\n", " ⏎ ")[:300]))
 
 
+def mark_needs_entry(cfg: "Config", task: "Task") -> None:
+    """このタスクを判断待ちへ入れた時点の決定記録の位置を印として残す（`- needs_dr:`）。
+
+    `_already_decided` が「人が答えた票の作り直し」と「その後で機械が改めて止めた新しい
+    判断待ち」を区別するための唯一の材料。押さずに済ませると、決定の後に再 blocked に
+    なったタスクの票が失われたとき、自己修復が働かなくなる（＝画面から消える）。
+    呼び出し側が直後に persist_task すること（判断待ちへ入れる遷移と同じ書き込みに乗せる）。"""
+    task.drop("needs_dr", "decided_by")
+    dr = latest_dr_id(cfg, task.id)
+    if dr:
+        task.extra.append(("needs_dr", dr))
+
+
+def _already_decided(cfg: "Config", task: "Task", st: str) -> bool:
+    """この票は「人がもう答えた判断」の作り直しか（＝再投影してはいけないか）。
+
+    判断待ちの復活ループ（総覧 G-2）を塞ぐ。状態の同期が競合したとき、backlog は機械状態＝
+    ローカル優先で裁定されるため、**人の決定を受け取り損ねた PC の status だけが古いまま**
+    残りうる。そのまま毎パスの自己修復（ensure_needs）が走ると、人が答え終わった票を作り直し、
+    全 PC へ再伝播する——「同じ判断を人に二度させない」（コンセプト正典 C3）の直接違反。
+
+    決定記録（`decisions/<id>.md`）は追記のみで衝突なく合流するので、status の同期が
+    競合しても人の決定だけは届く。そこで **最後の人の DR が「判断待ちではない status」へ
+    移したと記録しているのに、手元の status がまだ判断待ちなら、古いのは手元**と見なす。
+
+    機械（auto/system/gitlab/forge）の記録は根拠にしない——人が答えていない票を消してしまう。
+    人の決定の後で機械が改めて止めた場合（再 blocked 等）は、その遷移を起こした経路自身が
+    票を書く（`_block` → `write_needs_file`）ので、ここで作り直さなくても票は在る。"""
+    dec = last_human_decision(cfg, task.id)
+    if not dec:
+        return False
+    to = str(dec.get("to") or "")
+    if not to or to == st or to in NEEDS_STATUSES:
+        return False                 # 人の決定も判断待ち行き（差し戻し等）なら投影を止めない
+    # 人の決定の**後で**機械が改めて判断待ちへ入れた（再 blocked・再検収）なら、それは
+    # 新しい判断であって作り直しではない。判断待ちへ入れた側が押した印（needs_dr）と
+    # 突き合わせる（`mark_needs_entry`）。
+    if dr_num(task.get("needs_dr")) >= dr_num(dec.get("dr")):
+        return False
+    if str(task.get("decided_by") or "").strip() != str(dec.get("dr") or ""):
+        # 見送りは 1 回だけ記録する（毎パス書くと journal が埋まる）。印はタスク自身に残す。
+        task.set("decided_by", str(dec.get("dr") or ""))
+        persist_task(cfg, task)
+        append_journal(cfg.journal,
+                       f"needs 再投影を見送り: {task.id}（人の決定 {dec.get('dr') or ''} "
+                       f"{dec.get('action') or ''} は {to} を指しているのに手元は {st}）")
+    return True
+
+
 def ensure_needs(cfg: "Config", tasks: "list[Task]") -> "list[str]":
     """人の判断待ち（proposed / blocked / review）のタスクに needs/<id>.md が無ければ、タスクの
     status から作り直す。既にあれば触らない（人の記入を消さない）。再生成した ID を返す。
@@ -198,6 +247,8 @@ def ensure_needs(cfg: "Config", tasks: "list[Task]") -> "list[str]":
     for t in tasks:
         st = t.norm_status()
         if st not in NEEDS_STATUSES or needs_path(cfg, t.id).exists():
+            continue
+        if _already_decided(cfg, t, st):
             continue
         why = str(t.get("needs_reason") or "").strip()
         ev = _task_definition_block(t)
