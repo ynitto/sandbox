@@ -13,14 +13,14 @@ const FLOW_STATE_LABEL = {
   failed: '失敗',
   claimed: '実行中',
   parked: '承認待ち',
-  pending: '待機（実行可能）',
+  pending: '実行待ち',
   waiting: '依存待ち',
 };
 
 const TERMINAL_NODE_STATES = new Set(['done', 'failed']);
 
 // run の終端 status（flow.js の TERMINAL と同一）。フロータブのフィルタ判定に使う。
-// 'canceled' は語彙統一（W0-9）前に書かれた meta.json の旧綴り — 読み取りだけ受け入れる。
+// 'canceled' は語彙統一前に書かれた meta.json の旧綴り — 読み取りだけ受け入れる。
 const CANCELLED_RUN_STATES = new Set(['cancelled', 'canceled']);
 const TERMINAL_RUN_STATES = new Set(['done', 'failed', ...CANCELLED_RUN_STATES]);
 
@@ -54,7 +54,7 @@ function recToIssue(rec) {
   };
 }
 
-// 実行エンジンの稼働バッジ（実装計画 W2-3）。根拠は engine/status.json の心拍ひとつだけ——
+// 実行エンジンの稼働バッジ。根拠は engine/status.json の心拍ひとつだけ——
 // ロックファイルの覗き見・鍵の手写しは廃止した（本体の導出が変わった瞬間に、稼働中の
 // エンジンを「停止」と表示してしまうため）。
 function daemonBadge() {
@@ -115,7 +115,7 @@ function humanWaitingAdvice(task) {
     chip: '🖐 あなたの判断待ち',
     taskId: task.id,
     text:
-      `元のタスク ${task.id} が人の判断待ち（${statusLabel(task.status)}）のため、ここで待っていても再実行されません。` +
+      `元のタスク ${task.id} は${statusLabel(task.status)}です。要対応タブで確認してください。` +
       '「要対応」タブで回答すると動き出します。',
   };
 }
@@ -139,9 +139,8 @@ function agentErrorAdvice(run, found) {
       cls: 'act',
       chip: paused ? '⏸ 実行一時停止中' : '⏹ 実行停止中',
       text:
-        `AI の利用上限ではありません。オーケストレーション設定で対象の実行が${paused ? '一時停止' : '停止'}されたため、` +
-        'run が失敗終了しました。全体設定の「エージェント」で対象ワークロードを「実行」に戻し、' +
-        '要対応タブから再開してください（完了済みの工程は温存されています）。',
+        `全体設定で作業が${paused ? '一時停止' : '停止'}されています。作業を再開してから、` +
+        '要対応タブで確認してください。完了した工程はそのまま使われます。',
       taskId: found && found.task ? found.task.id : null,
     };
   }
@@ -149,20 +148,17 @@ function agentErrorAdvice(run, found) {
     return {
       kind: 'human',
       cls: 'act',
-      chip: '⏲ この PC の予算上限',
+      chip: '利用上限に達しました',
       text:
-        'AI サービス側の利用上限ではありません。このマシンに設定した実行時間またはトークン予算に達しました。' +
-        '全体設定の「エージェント」にあるオーケストレーション予算を確認し、上限を変更するか期間更新後に再開してください。',
+        'この端末に設定した利用上限に達しました。全体設定で上限を確認してください。',
       taskId: found && found.task ? found.task.id : null,
     };
   }
   const map = {
-    quota: ['⏲ AI 利用上限', 'AI サービス側の利用上限に達したため止まりました。時間をおく（またはプランを' +
-      '見直す）と回復します。回復後、要対応タブで該当タスクを承認すると続きから再開します' +
-      '（完了済みの工程は温存されています）。'],
-    auth: ['🔑 認証切れ', 'エージェント CLI の認証が切れたため止まりました。再ログインしてから、' +
-      '要対応タブで該当タスクを承認すると続きから再開します（完了済みの工程は温存されています）。'],
-    env: ['⚙ 実行環境の問題', 'エージェント CLI の実行環境（CLI の導入・モデル名・PATH）に問題が' +
+    quota: ['利用上限に達しました', 'しばらく待ってから、要対応タブで再開してください。完了した工程はそのまま使われます。'],
+    auth: ['再ログインが必要です', '利用中のサービスへ再ログインしてから、' +
+      '要対応タブで該当タスクを承認してください。完了した工程の続きから再開します。'],
+    env: ['作業環境を確認してください', '作業環境の設定に問題が' +
       'あり止まりました。環境を直してから、要対応タブで該当タスクを承認すると続きから再開します。'],
   };
   const [chip, text] = map[tri[1]];
@@ -191,12 +187,12 @@ function runAdvice(run, group) {
   const latest = group ? group.latest : run;
   if (latest.runId !== run.runId) {
     return { kind: 'old', cls: 'muted', chip: '🗂 古い試行', latestId: latest.runId,
-      text: `新しい試行（${shortRunId(latest.runId)}）に引き継ぎ済みです。この画面は記録 — 操作は不要で、削除しても安全です。` };
+      text: `新しい試行 ${shortRunId(latest.runId)} に引き継ぎました。この記録での操作は不要です。` };
   }
   const found = taskOfRun(run);
   if (found && found.scope === 'archive') {
     return { kind: 'none', cls: 'ok', chip: '✔ タスクは完了済み',
-      text: `元のタスク ${found.task.id} は既に完了しています。この run は途中の記録 — 操作は不要です。` };
+      text: `元のタスク ${found.task.id} は既に完了しています。これは途中の記録です。操作は不要です。` };
   }
   // 環境要因の失敗は blocked/review より先（認証切れ等を「判断待ち」で誤誘導しない）。
   // done（検収待ち）には付けない — delivery_review の完了 run を環境障害扱いにしない。
@@ -224,11 +220,11 @@ function runAdvice(run, group) {
         chip: '🖐 承認待ち',
         taskId: found && found.task ? found.task.id : null,
         text:
-          '工程が承認待ちで保留中です。GitLab のレビューを進めるか、要対応タブ／工程詳細から対応してください。',
+          '承認を待っています。要対応タブで確認してください。',
       };
     }
     return { kind: 'watch', cls: 'ok', chip: '▶ 実行中',
-      text: '実行エンジンが応答しています。操作は不要 — このまま見守れます。' };
+      text: '作業中です。このままお待ちください。' };
   }
   // ここから「止まっている」（failed / cancelled / 非終端なのに応答なし）
   if (found) {
@@ -239,7 +235,7 @@ function runAdvice(run, group) {
       // cancelled は続きから再開できない（新 run 固定）。failed/stalled だけ部分やり直し。
       const resume = !isCancelledRun(st) && (!lastRun || lastRun === run.runId);
       const how = resume
-        ? `失敗・未実行の工程だけをやり直します（完了済み ${doneCount} 件は温存）`
+        ? `失敗・未実行の工程だけをやり直します。完了した ${doneCount} 件はそのまま使います`
         : '新しい実行としてやり直します';
       if (live.paused) {
         return { kind: 'restart', cls: 'warn', chip: '一時停止中', stopped: false,
@@ -254,7 +250,7 @@ function runAdvice(run, group) {
       if (live.via === 'status-sync') {
         // 別マシンの本体は、長い作業（LLM 実行）中は status.json を更新できない＝
         // 「停止」と言い切れない。予約（↻）は本体が生きていれば拾われる。
-        return { kind: 'restart', cls: 'warn', chip: '📡 実行エンジン（別マシン）の応答が途絶えています',
+        return { kind: 'restart', cls: 'warn', chip: '別のマシンから応答がありません',
           stopped: true,
           text: `${ago}長い作業の途中か、停止しています。↻ を押すと予約として受け付けられ、` +
             `実行エンジンが動いていれば順番に${how}。動いていなければ、その PC で ` +
@@ -265,15 +261,15 @@ function runAdvice(run, group) {
     }
     if (task.status === 'rejected') {
       return { kind: 'none', cls: 'muted', chip: '✋ 却下済み',
-        text: `元のタスク ${task.id} は却下されています。この run はその記録です。` };
+        text: `元のタスク ${task.id} は却下されています。これはその記録です。` };
     }
   }
   if (isCancelledRun(st)) {
     return { kind: 'manual', cls: 'muted', chip: '■ 中止済み',
-      text: '人が止めた実行です。やり直したいときだけ ↻ を押してください（自動では動きません）。' };
+      text: '中止した実行です。やり直す場合は「もう一度実行」を押してください。' };
   }
   return { kind: 'manual', cls: 'act', chip: '🖱 あなたの操作待ち',
-    text: 'この実行は自動では再開されません。「↻ 失敗した工程だけやり直す」を押すと、失敗・未実行の工程だけが再実行されます（完了済みは温存）。' };
+    text: '自動では再開されません。「失敗した工程だけやり直す」を押してください。完了した工程はそのまま使われます。' };
 }
 
 // run の再実行操作について、表示可否・文言・説明を一つのモデルにまとめる。
@@ -291,14 +287,14 @@ function flowRetryUi(run, advice) {
   const label = isCancelledRun(run.status)
     ? '↻ 新しくやり直す'
     : partial
-      ? `↻ 失敗した工程だけやり直す（残り ${remainCount} 件）`
+      ? `失敗した工程をやり直す・残り ${remainCount} 件`
       : '↻ 同じ内容でやり直す';
   const title = isCancelledRun(run.status)
     ? '中止した実行の続きからは再開できません。タスクを積み直して新しい実行を始めます'
     : partial
-      ? `失敗・未実行の工程だけを実行し直します。成功した ${doneCount} 件はそのまま使います（作り直しません）`
-        + (advice.kind === 'auto' ? '\n※ 放置しても本体が自動で同じことをします（このボタンは前倒し指示）' : '')
-      : '同じ内容でやり直します（タスクを積み直して本体に実行させます）';
+      ? `失敗・未実行の工程だけをやり直します。完了した ${doneCount} 件はそのまま使います`
+        + (advice.kind === 'auto' ? '\n操作しなくても自動で再開します。今すぐ始める場合だけ押してください。' : '')
+      : '同じ内容でもう一度実行します';
   return {
     canRetry,
     partial,
@@ -519,7 +515,7 @@ async function reconcileFlowRun(opts) {
   }
   if (!res.enabled) {
     state.flowReconcile[run.runId] = { loading: false, at: Date.now(), byNode: {} };
-    if (!auto) toast('GitLab API が未設定です（⚙ 設定で Base URL とトークンを設定してください）');
+    if (!auto) toast('GitLabとの接続が設定されていません。全体設定で接続情報を入力してください');
     renderFlow();
     return;
   }
@@ -688,7 +684,7 @@ const viewTabs = [
     ${relationshipStrip({ run })}
     ${
       run.tombstone
-        ? '<p class="muted">リトライ（世代交代）で置き換えられた実行の記録です。工程出力は抜粋で、成果物の実体・イベントは新しい実行に引き継がれています。</p>'
+        ? '<p class="muted">新しい試行に引き継がれた記録です。成果は新しい試行で確認してください。</p>'
         : archived
           ? '<p class="muted">完了済みの記録です。</p>'
           : ''

@@ -779,7 +779,7 @@ async function openDeliveryArtifactsModel(need, title) {
   if (!$('dlg-delivery-review').open) return;
   const reviewState = deliveryReviewState(entries, mrs);
   const discoveryFailed = entries.some((entry) => entry.discovery === 'failed');
-  // 成果物レビューの正は MR/PR 一本（S4）。MR があるあいだはカード内で差分を開かせない——
+  // 成果物レビューの正は MR/PR 一本。MR があるあいだはカード内で差分を開かせない——
   // レビューコメント・承認状態・行コメントはフォージ側に揃っており、ここに二つ目の
   // 差分ビューを置くと「どちらで見てどちらに書くのか」が人ごとにばらける。
   const mrOnly = mrs.length > 0;
@@ -824,7 +824,7 @@ async function openDeliveryArtifactsModel(need, title) {
   // このダイアログの主目的はファイル差分の検収。run の summary は複数ノード分が長くなり、
   // overflow:hidden の本文内で差分レイアウト全体を画面外へ押し出すため、ここには載せない。
   if (mrOnly) {
-    // 検収カードの構成は「受入基準・検証レポート要約（S5）＋ MR リンク」。差分は MR で見る。
+    // 検収カードの構成は「受入基準・検証レポート要約＋ MR リンク」。差分は MR で見る。
     $('delivery-review-body').innerHTML = `${mrBlock}
       ${verificationSummaryHtml(need)}
       <section class="delivery-diff-panel" aria-label="検収">
@@ -874,7 +874,7 @@ async function openDeliveryArtifactsModel(need, title) {
   if (firstFile) firstFile.click();
 }
 
-// 検収カードの検証レポート要約（S5）。人がレビューするのは「コマンド」ではなく
+// 検収カードの検証レポート要約。人がレビューするのは「コマンド」ではなく
 // **基準と証跡**——コマンドの良し悪しは人には判断できないが、基準と証跡なら判断できる、
 // というのが S5 のコンセプト変更そのもの。
 //
@@ -923,7 +923,7 @@ function deliveryDiffRequest(entry, file = '', opts) {
   return {
     repo: entry.path,
     // path は agent-project が動いたノードで解決したもので、worker の作業ツリーは /tmp（消える）。
-    // この PC に無ければ main 側が host.yaml repos[] からクローンを引き直す（S4-e）。
+    // この PC に無ければ main 側が host.yaml repos[] からクローンを引き直す。
     repoUrl: entry.url || '',
     viewerRoot: typeof state !== 'undefined' && state.project ? state.project.dir : '',
     base: entry.target || entry.base || 'main',
@@ -945,7 +945,7 @@ async function hydrateDeliveryEntries(entries) {
   return Promise.all((entries || []).map(async (entry) => {
     const fallbackFiles = (entry.files || []).filter(isDeliveryArtifactFile);
     const fallback = { ...entry, files: fallbackFiles, files_total: fallbackFiles.length };
-    // path が空でも url があれば main 側がノード宣言（host.yaml repos[]）から引き直せる（S4-e）。
+    // path が空でも url があれば main 側がノード宣言（host.yaml repos[]）から引き直せる。
     const canLoad = entry.role !== 'reference' && (entry.path || entry.url);
     if (!canLoad) return { ...fallback, discovery: 'unavailable' };
     try {
@@ -1342,7 +1342,7 @@ function needAssistActionsHtml(need, settled) {
     specialized.push(`<button class="primary-inline" data-plan-critique="${esc(need.id)}">AIで計画を批評</button>`);
   }
   if (!settled && canDiagnoseNeed(need)) {
-    // 対話診断が既定（S9-4）。原因究明は 1 往復では終わらない——エージェントに追加で
+    // 対話診断が既定。原因究明は 1 往復では終わらない——エージェントに追加で
     // 質問でき、ログの周辺を自分で読ませられる窓を既定にする。ヘッドレスの 1 発実行は
     // 「差し戻し文面案」の抽出が要る用途として併設する。
     specialized.push(`<button class="primary-inline" data-failure-chat="${esc(need.id)}">AIと対話で診断</button>`);

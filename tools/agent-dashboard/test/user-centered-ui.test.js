@@ -24,7 +24,7 @@ assert.match(html, /data-tab="project-settings"[^>]*>プロジェクト設定</)
 assert.match(html, /data-tab="orchestration"[^>]*>全体設定</);
 const projectHeader = html.slice(html.indexOf('<header id="project-header">'), html.indexOf('<nav id="tabs">'));
 assert.match(projectHeader, /id="btn-cli-chat"[^>]*disabled/);
-assert.ok(projectHeader.includes('CLIチャットを開く'), 'CLIチャットは対象が分かるプロジェクトヘッダーに置きます');
+assert.ok(projectHeader.includes('この作業を相談'), '相談は対象が分かるプロジェクトヘッダーに置きます');
 assert.ok(renderer.includes('function openCliChat('));
 assert.ok(renderer.includes('api.agentOpenChat({ dir, cwd })'),
   '選択中ワークスペースと起動先フォルダをCLIチャット起動へ渡します');
@@ -48,8 +48,8 @@ const coworkDialog = html.slice(
   html.indexOf('<dialog id="dlg-cowork-work"'),
   html.indexOf('<dialog id="dlg-cowork-save"')
 );
-assert.ok(coworkDialog.includes('<option value="loop">プロンプト</option>'));
-assert.ok(coworkDialog.includes('<option value="state-machine">定型業務</option>'));
+assert.ok(coworkDialog.includes('<option value="loop">繰り返し作業</option>'));
+assert.ok(coworkDialog.includes('<option value="state-machine">手順付き作業</option>'));
 for (const removed of ['cw-repo', 'cw-workflow', 'cw-description', 'cw-enabled']) {
   assert.ok(!coworkDialog.includes(`id="${removed}"`), `${removed} は作業ダイアログに表示しません`);
 }
