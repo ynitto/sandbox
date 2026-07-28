@@ -372,15 +372,18 @@ class TestProjectLayer(unittest.TestCase):
 
     def test_stub_plan_is_idempotent_across_cycles(self):
         # 常に起票する planner でも、同じ受入条件が積み直されないこと（_enqueue_specs が backlog と
-        # archive のタイトルで冪等に弾く）。これが「初回だけ起票」の担保。
+        # archive のタイトルで冪等に弾く）。分解は明示要求（replan マーカー）でしか走らないので、
+        # 各パスの前に要求を立てる——2 回要求しても積み増さないのが冪等の担保。
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             write_charter(d, CHARTER.replace("test -f {flag}", 'echo "hellO"'))
             cfg = cfg_for(d, max_project_cycles=1)
+            km.write_replan_request(cfg, "分解")
             km.cmd_project(cfg, runner=lambda c: _drained())
             first = [t.title for t in km.load_tasks(cfg.backlog)]
             self.assertEqual(len(first), 1)
-            km.cmd_project(cfg, runner=lambda c: _drained())   # 2 パス目は積み増さない
+            km.write_replan_request(cfg, "分解")
+            km.cmd_project(cfg, runner=lambda c: _drained())   # 2 回目の分解要求は積み増さない
             self.assertEqual([t.title for t in km.load_tasks(cfg.backlog)], first)
 
     def test_cmd_project_stub_executor_never_calls_agent_for_planning(self):
@@ -393,6 +396,7 @@ class TestProjectLayer(unittest.TestCase):
             flag = d / "flag"                      # 存在しない → acceptance 未達のまま
             write_charter(d, CHARTER.replace("{flag}", str(flag)))
             cfg = cfg_for(d, max_project_cycles=1)  # executor="stub"（既定）。planner は注入しない
+            km.write_replan_request(cfg, "分解")     # 分解は明示要求でしか走らない
             orig = km._run_agent_cli
 
             def _boom(prompt, model):
@@ -413,6 +417,7 @@ class TestProjectLayer(unittest.TestCase):
             flag = d / "flag"
             write_charter(d, CHARTER.replace("{flag}", str(flag)))
             cfg = cfg_for(d, executor="agent", max_project_cycles=1)
+            km.write_replan_request(cfg, "分解")     # 分解は明示要求でしか走らない
             calls = {"n": 0}
             orig = km._run_agent_cli
 
@@ -669,11 +674,13 @@ class TestProjectLayer(unittest.TestCase):
                 flag.write_text("x")
                 return _drained()
 
-            code = km.cmd_project(cfg_for(d), planner=planner, runner=runner)
+            cfg = cfg_for(d)
+            km.write_replan_request(cfg, "分解")  # 分解は明示要求でしか走らない
+            code = km.cmd_project(cfg, planner=planner, runner=runner)
             self.assertEqual(code, 1)           # converged → 人の承認待ち
             st = km.load_project_state(cfg_for(d))
             self.assertEqual(st["status"], km.REASON_PROJECT_CONVERGED)
-            self.assertEqual(planned["n"], 1)   # 1 回だけ plan（消化可能タスクがある間は再分解しない）
+            self.assertEqual(planned["n"], 1)   # 1 回だけ plan（要求は one-shot）
             self.assertTrue((d / "needs" / "demo.md").exists())
 
     def test_charter_plan_signature_is_content_based(self):
@@ -688,9 +695,10 @@ class TestProjectLayer(unittest.TestCase):
         self.assertNotEqual(km._charter_plan_signature(a), km._charter_plan_signature(b))
         self.assertEqual(km._charter_plan_signature(a), km._charter_plan_signature(c))
 
-    def test_charter_change_replans_even_with_consumable_tasks(self):
-        # viewer 等で charter を編集したら、消化可能タスクが残っていても次 run で再計画され
-        # backlog に差分が反映される（編集しても backlog が変わらない問題の修正）。
+    def test_charter_edit_does_not_replan_without_request(self):
+        # charter を編集しても、明示の分解要求が無ければ再計画しない（分解は人の明示操作だけ）。
+        # 旧仕様は署名比較で変更を検知して自動再計画していたが、人が整理したバックログを次パスが
+        # 黙って作り直す原因になるため廃止した。編集を反映したいときは分解ボタン（replan）を押す。
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             flag = d / "flag"
@@ -707,52 +715,24 @@ class TestProjectLayer(unittest.TestCase):
                 r["counts"]["blocked"] = 1
                 return r
 
-            # 1回目: 初回計画（消化可能タスク無し）→ planner 呼ばれ、charter 署名がベースライン記録
+            # 1回目: 明示要求 → planner が呼ばれる
+            km.write_replan_request(cfg, "分解")
             km.cmd_project(cfg, planner=planner, runner=runner)
             self.assertEqual(calls["n"], 1)
-            base_sig = km.load_project_state(cfg)["planned_charter_sig"]
             self.assertTrue(any(t.consumable() for t in km.load_tasks(cfg.backlog)))  # 消化可能タスクが残る
 
-            # 2回目: charter 未変更 → 消化可能タスクがあるので再分解しない
-            km.cmd_project(cfg, planner=planner, runner=runner)
-            self.assertEqual(calls["n"], 1)
-
-            # charter の goal を変更（分解に効く内容 → 署名が変わる）
+            # charter の goal を変更しても、要求なしのパスでは再計画しない
             write_charter(d, CHARTER.replace("{flag}", str(flag)).replace(
                 "CSV を要約する CLI を完成させる。", "JSON を要約する CLI を完成させる。"))
-
-            # 3回目: charter 変更検知 → 消化可能タスクがあっても再計画され、新タスクが入る
-            km.cmd_project(cfg, planner=planner, runner=runner)
-            self.assertEqual(calls["n"], 2)
-            self.assertNotEqual(km.load_project_state(cfg)["planned_charter_sig"], base_sig)
-            titles = [t.title for t in km.load_tasks(cfg.backlog)]
-            self.assertIn("タスク2", titles)      # charter 差分が生む新規タスクが backlog に反映
-
-    def test_acceptance_only_edit_does_not_replan(self):
-        # acceptance だけの変更は分解入力でないので再計画を誘発しない（評価側で反映される）。
-        with tempfile.TemporaryDirectory() as d:
-            d = Path(d)
-            flag = d / "flag"
-            write_charter(d, CHARTER.replace("{flag}", str(flag)))
-            cfg = cfg_for(d)
-            calls = {"n": 0}
-
-            def planner(ch):
-                calls["n"] += 1
-                return [{"title": f"タスク{calls['n']}", "verify": f"test -f {flag}"}]
-
-            def runner(c):
-                r = _drained()
-                r["counts"]["blocked"] = 1
-                return r
-
             km.cmd_project(cfg, planner=planner, runner=runner)
             self.assertEqual(calls["n"], 1)
-            # acceptance 行だけ変える（goal/制約/成果物は不変 → 署名は変わらない想定）
-            write_charter(d, CHARTER.replace("{flag}", str(flag)).replace(
-                f"- `test -f {flag}`", f"- `test -f {flag}`\n- `test -d {d}`"))
+
+            # 明示要求すれば、編集後の charter で再計画され差分が入る
+            km.write_replan_request(cfg, "編集を反映")
             km.cmd_project(cfg, planner=planner, runner=runner)
-            self.assertEqual(calls["n"], 1)      # 再計画されない
+            self.assertEqual(calls["n"], 2)
+            titles = [t.title for t in km.load_tasks(cfg.backlog)]
+            self.assertIn("タスク2", titles)      # charter 差分が生む新規タスクが backlog に反映
 
     def test_replan_request_forces_redecompose_and_recreates_done(self):
         # エラー回復: 人が「charter から再分解」を要求すると、消化可能タスクが残り charter が
@@ -816,7 +796,7 @@ class TestProjectLayer(unittest.TestCase):
 
     def test_replan_does_not_resurrect_rejected_tasks(self):
         # replan のやり直しは done の再作成を許すが、却下済み（rejected・人の明示判断）は
-        # archive にあっても照合に残し、復活させない（reject → 自動 replan の直後が典型）。
+        # archive にあっても照合に残し、復活させない（reject → 人が分解を要求した直後が典型）。
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             flag = d / "flag"
@@ -824,7 +804,6 @@ class TestProjectLayer(unittest.TestCase):
             cfg = cfg_for(d)
             mkb(d, "T1", title="決済APIを追加", verify="true")
             km.cmd_reject(cfg, "T1", "スコープ外")            # archive に rejected として退避
-            km.consume_replan_request(cfg)                    # reject が立てた要求は別途消しておく
 
             km.write_replan_request(cfg, "やり直し")
 
@@ -862,16 +841,21 @@ class TestProjectLayer(unittest.TestCase):
             self.assertEqual(len(list(cd.glob("*.json.err"))), 1)   # .err に退避
             self.assertFalse(km.replan_request_path(cfg).exists())  # マーカーは立たない
 
-    def test_unmet_acceptance_generates_improvement(self):
+    def test_unmet_acceptance_awaits_plan_without_auto_tasks(self):
+        # 未達 acceptance から改善タスクを**自動では起こさない**（分解は人の明示操作だけ）。
+        # 旧仕様は未達を改善タスク化して回し続けたが、人が消したタスクを evaluate が作り直す
+        # 原因だった。未達は awaiting-plan として人へ返し、milestone で分解を案内する。
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             write_charter(d, CHARTER.replace("{flag}", str(d / "never")))
-            cfg = cfg_for(d, max_project_cycles=1)
+            cfg = cfg_for(d, max_project_cycles=3)
             code = km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained())
-            self.assertEqual(code, 2)           # 1サイクルで未達のまま予算到達 → project-budget
-            # 未達 acceptance がそれ自体を verify とする改善タスクとして積まれている
-            titles = [t.title for t in km.load_tasks(cfg.backlog)]
-            self.assertTrue(any("受入条件を満たす" in t for t in titles))
+            self.assertEqual(code, 1)           # 人の対応待ち（分解待ち）
+            st = km.load_project_state(cfg)
+            self.assertEqual(st["status"], km.REASON_PROJECT_AWAITING_PLAN)
+            self.assertEqual(km.load_tasks(cfg.backlog), [])   # 改善タスクは積まれない
+            body = (d / "needs" / "demo.md").read_text(encoding="utf-8")
+            self.assertIn("分解", body)          # milestone が分解の実行を案内する
 
     def test_resolve_verify_cwd(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1118,10 +1102,15 @@ class TestProjectLayer(unittest.TestCase):
                 km._task_verify_cwd(cfg_for(d), task)
 
     def test_stall_escalates(self):
+        # 自動改善が無くなったため、1 パスの evaluate は 1 回＝stall はパスをまたいで積み上がる。
+        # PASS 数が増えないまま project_stall 回評価されると停滞（no-progress）で人へ。
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             write_charter(d, CHARTER.replace("{flag}", str(d / "never")))
             cfg = cfg_for(d, max_project_cycles=9, project_stall=2)
+            km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained())
+            self.assertEqual(km.load_project_state(cfg)["status"],
+                             km.REASON_PROJECT_AWAITING_PLAN)   # 1 回目はまだ分解待ち
             code = km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained())
             st = km.load_project_state(cfg)
             self.assertEqual(st["status"], km.REASON_PROJECT_STALL)
@@ -1164,6 +1153,7 @@ class TestProjectLayer(unittest.TestCase):
             flag = d / "flag"                            # 存在しない → acceptance は常に FAIL
             write_charter(d, CHARTER.replace("{flag}", str(flag)))
             cfg = cfg_for(d, project_stall=2, max_project_cycles=5)
+            km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained())
             km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained())
             st = km.load_project_state(cfg)
             self.assertEqual(st["status"], km.REASON_PROJECT_STALL)   # 0 PASS のまま → 停滞で人へ
@@ -1820,6 +1810,7 @@ class TestMultiCharter(unittest.TestCase):
             cfg = cfg_for(d, max_project_cycles=1)
             self._mk_charter(d, "v1")
             planner = lambda ch: [{"title": f"{ch.name} のタスク", "verify": "true"}]
+            km.write_replan_request(cfg, "分解", charter="v1")   # 分解は明示要求でしか走らない
             rc = km.cmd_project(cfg, planner=planner, reviewer=lambda ch: [],
                                 charter_name="v1")
             self.assertEqual(rc, 1)                                     # 収束候補 → 人待ち
@@ -1860,10 +1851,12 @@ class TestMultiCharter(unittest.TestCase):
             self._mk_charter(d, "v1")
             self._mk_charter(d, "v2")
             planner = lambda ch: [{"title": "共通タイトルの作業", "verify": "true"}]
+            km.write_replan_request(cfg, "分解", charter="v1")
             km.cmd_project(cfg, planner=planner, reviewer=lambda ch: [], charter_name="v1")
             # v1 のタスクを未消化のまま残す（doing 相当ではなく ready のタスクを積み直す）
             km.enqueue_task(cfg, {"title": "v1 残作業", "verify": "true", "charter": "v1",
                                   "status": "ready"})
+            km.write_replan_request(cfg, "分解", charter="v2")
             km.cmd_project(cfg, planner=planner, reviewer=lambda ch: [], charter_name="v2")
             # v2 にも同名タスクが plan された（archive/backlog を charter タグで数える）
             tagged = []
@@ -1909,6 +1902,8 @@ class TestMultiCharter(unittest.TestCase):
             self.assertEqual(seen, ["v1", "v2"])                        # 全 charter を順に回す
 
     def test_project_watch_round_robins_charters(self):
+        # watch は全バージョンを 1 パスずつ回すが、plan が走るのは分解要求が宛てられた
+        # バージョンだけ（分解は明示操作・要求は charter 宛てにスコープされる）。
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             cfg = cfg_for(d, max_project_cycles=1)
@@ -1916,9 +1911,10 @@ class TestMultiCharter(unittest.TestCase):
             self._mk_charter(d, "v2")
             seen = []
             planner = lambda ch: seen.append(ch.name) or []
+            km.write_replan_request(cfg, "分解", charter="v2")
             km.project_watch(cfg, planner=planner, reviewer=lambda ch: [],
                              runner=km.run_loop, sleeper=lambda _s: None, max_passes=2)
-            self.assertEqual(seen, ["v1", "v2"])                        # 両バージョンを 1 パスずつ
+            self.assertEqual(seen, ["v2"])       # v1 のパスは要求が無いので plan を起こさない
 
     def test_milestone_approve_finalizes_charter(self):
         with tempfile.TemporaryDirectory() as d:

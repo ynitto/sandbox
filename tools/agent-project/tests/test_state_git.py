@@ -1238,6 +1238,7 @@ class TestDirectStateGit(unittest.TestCase):
         subprocess.run(["git", "-C", str(other), "push", "-q", "origin", "main"],
                        check=True, capture_output=True)       # 停止中に GOAL-B を push
         km._STATE_GITS.clear()                               # 再起動を模擬
+        km.write_replan_request(cfg, "分解")                  # 分解は明示要求でしか走らない
         seen = []
         km.project_watch(cfg, planner=lambda ch: seen.append(
             "B" if "GOAL-B" in cfg.charter.read_text(encoding="utf-8") else "A") or [],

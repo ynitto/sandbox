@@ -7,6 +7,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-project / agent-dashboard: charter からの自動分解を廃止（分解は人の明示操作だけ）・削除は物理削除に変更
+
+バックログを削除しても、次のパスで似たタスクが自動で作り直されていた。原因は charter 駆動の
+分解が「消化可能タスクが無い」「charter が変わった」「却下した」を契機に**自動で**走り、
+削除で空いた穴を planner が埋め直す設計だったこと。charter からの分解は人の試行錯誤で練る
+ものなので、自動分解そのものをやめた。
+
+**エンジン（agent-project）**
+
+- plan（charter 分解）は**人の明示要求（`replan` 指示・viewer の分解ボタン）があったときだけ**
+  走る。初回の分解も charter 編集の反映もこの口で人が起こす（自動契機は全廃）
+- evaluate も未達 acceptance から改善タスクを自動起票しない。未達は新ステータス
+  **awaiting-plan（分解待ち）**として milestone で人へ返す（opt-in の敵対的レビュー所見だけは
+  従来どおり起票）
+- `reject`（却下）は再計画を自動要求しない。却下済みは archive（rejected）・墓標に残り、
+  次の分解時に backlog-planner への入力として渡る
+- backlog-planner への入力を拡張: 同一バージョンのバックログ（保留・実行中・レビュー中）に
+  加えて **archive の却下済み（却下理由付き・直近 30 件）**を渡し、「タイトルが違っても意図が
+  同じ・似ているタスクは出力しない」をスキルの責務として明示（タイトル照合では言い換え
+  再提案を捕まえられないため）。投入側の Jaccard 照合・墓標の完全一致抑止は最終防衛線として維持
+
+**画面（agent-dashboard）**
+
+- 🗑 削除は**物理削除**に変更（backlog と needs をゴミ箱へ。reject 投函をやめた）。分解が
+  自動で走らなくなったので、消したタスクが勝手に復活することはなく、削除→明示的な分解で
+  同種タスクが再提案されるのは期待どおりの試行錯誤の口。「作り直させない」意思表示は
+  ✕ 却下（墓標・決定記録つき）が担う。実行中（doing）に加えて委譲実行中（offloaded）も拒否
+- 「計画を作り直す」ボタンを「バックログを分解」に改め、初回分解の正規の口として案内。
+  awaiting-plan の milestone カードは分解ボタンへの誘導を表示
+
 ### agent-project / agent-dashboard: バックログを削除しても要対応（needs）が残り、消しても復活する問題を修正
 
 画面（agent-dashboard・Windows）からバックログを削除しても要対応カードが残り、手で消しても

@@ -3,13 +3,14 @@
 // バックログの削除と、その取り消し（墓標の解除）のビュアー層テスト。
 // 追加依存なしで `node test/backlog-delete-tombstone.test.js` で走る。
 //
-// 背景（この画面の「消しても消えない」）:
-//   1. 削除が backlog/<id>.md の生 unlink だったため、要対応カード（needs/<id>.md）が残った。
-//      対応タスクが無い票は本体の ingest_feedback が読み飛ばすので、[x] を付けても消せない。
-//   2. 墓標（tombstones.md）が残らないので、charter 運用では次の再分解が同じタスクを作り直した。
-//   3. 状態 git の裁定では backlog は実行側が正なので、viewer 側の生の削除は取り消されうる。
-// 削除を本体の却下（reject）へ委ねると 3 つとも構造的に起きない。代わりに墓標が残るので、
-// 一覧と解除（revive）を画面に用意して「消したら二度と入れ直せない」を作らない。
+// 背景（削除の契約の変遷）:
+//   かつて削除は本体の却下（reject）へ委ねていた——当時は charter 分解が自動で走ったため、
+//   生の削除では墓標が残らず「次の再分解が同じタスクを作り直す」からだ。いまは分解が人の
+//   明示操作でしか走らないので、削除は**物理削除**（needs も一緒に掃除）に戻した:
+//   - 削除 → 明示的な分解で同種のタスクがまた提案されるのは期待どおり（試行錯誤の口）。
+//   - 「作り直させない」意思表示は ✕ 却下（reject）——archive・墓標・決定記録に残り、
+//     次の分解でプランナーに「意図の似た再提案も抑止」として渡る。
+//   墓標の一覧と解除（revive）は却下の取り消しの口として引き続き画面に置く。
 
 const assert = require('assert');
 const fs = require('fs');
@@ -51,29 +52,51 @@ function dropped(dir) {
 }
 
 (async () => {
-  await test('削除は却下（reject）の指示として届く', async () => {
+  await test('削除は物理削除（backlog と needs を掃除し、指示は投函しない）', async () => {
     const dir = mkProject();
     writeTask(dir, 'T1');
+    fs.writeFileSync(path.join(dir, 'needs', 'T1.md'), '# 要対応\n', 'utf8');
     const res = await actions.requestDeleteTask(cfg, { dir, id: 'T1' });
-    assert.strictEqual(res.via, 'file');
-    const rec = dropped(dir);
-    assert.strictEqual(rec.command, 'reject');
-    assert.strictEqual(rec.id, 'T1');
-    // 本体が処理するまでタスクは消さない（生の削除だと状態 git の裁定で取り消されうる）
-    assert.ok(fs.existsSync(path.join(dir, 'backlog', 'T1.md')), 'ファイルは本体が消す');
+    assert.strictEqual(res.via, 'delete');
+    assert.ok(!fs.existsSync(path.join(dir, 'backlog', 'T1.md')), 'タスクファイルは消える');
+    assert.ok(!fs.existsSync(path.join(dir, 'needs', 'T1.md')),
+      '要対応カードも一緒に消える（孤児票は [x] でも消せない袋小路になるため）');
+    assert.ok(!fs.existsSync(path.join(dir, 'commands')), '本体への指示は投函しない');
   });
 
-  await test('実行中（doing）のタスクは削除できない', () => {
+  await test('trash が渡されればゴミ箱移動を優先する', async () => {
+    const dir = mkProject();
+    writeTask(dir, 'T1b');
+    const trashed = [];
+    const res = await actions.requestDeleteTask(cfg, { dir, id: 'T1b' }, async (target) => {
+      trashed.push(target);
+      fs.rmSync(target, { force: true });
+      return 'trash';
+    });
+    assert.strictEqual(res.via, 'trash');
+    assert.deepStrictEqual(trashed, [path.join(dir, 'backlog', 'T1b.md')]);
+  });
+
+  await test('実行中（doing）のタスクは削除できない', async () => {
     const dir = mkProject();
     writeTask(dir, 'T2', { status: 'doing' });
-    assert.throws(() => actions.requestDeleteTask(cfg, { dir, id: 'T2' }), /実行中/);
-    assert.ok(!fs.existsSync(path.join(dir, 'commands')), '指示も投函しない');
+    await assert.rejects(async () => actions.requestDeleteTask(cfg, { dir, id: 'T2' }), /実行中/);
+    assert.ok(fs.existsSync(path.join(dir, 'backlog', 'T2.md')), 'ファイルは残る');
   });
 
-  await test('存在しないタスク ID は拒否する', () => {
+  await test('委譲実行中（offloaded）のタスクは削除できない', async () => {
     const dir = mkProject();
-    assert.throws(() => actions.requestDeleteTask(cfg, { dir, id: 'NOPE' }), /タスクファイルがありません/);
-    assert.throws(() => actions.requestDeleteTask(cfg, { dir, id: '../evil' }), /不正なタスク ID/);
+    writeTask(dir, 'T3', { status: 'offloaded' });
+    await assert.rejects(async () => actions.requestDeleteTask(cfg, { dir, id: 'T3' }), /委譲実行中/);
+    assert.ok(fs.existsSync(path.join(dir, 'backlog', 'T3.md')), 'ファイルは残る');
+  });
+
+  await test('存在しないタスク ID は拒否する', async () => {
+    const dir = mkProject();
+    await assert.rejects(async () => actions.requestDeleteTask(cfg, { dir, id: 'NOPE' }),
+      /タスクファイルがありません/);
+    await assert.rejects(async () => actions.requestDeleteTask(cfg, { dir, id: '../evil' }),
+      /不正なタスク ID/);
   });
 
   await test('墓標の解除はタイトル指定のプロジェクト単位コマンドで届く', () => {

@@ -500,14 +500,19 @@ class ShippedPlannerSkillTests(unittest.TestCase):
         out = self._run({
             "charter": "目標",
             "existing": [{"title": "既にある", "status": "ready", "edited": "human"},
-                         {"title": "普通の", "status": "proposed"}],
+                         {"title": "普通の", "status": "proposed"},
+                         {"title": "廃止済みの施策", "status": "rejected",
+                          "reason": "方針転換で不要"}],
             "tombstones": [{"title": "却下した", "reason": "別案にした"}],
         })
         self.assertIn("既にある", out)
         self.assertIn("人が確定済み", out, "人の編集はプランナーへ明示する")
         self.assertIn("却下した", out)
         self.assertIn("別案にした", out, "却下理由も届ける（違う切り口の判断材料）")
-        self.assertIn("重複する項目は出力しない", out)
+        self.assertIn("意図が同じ・似ている項目は出力しない", out,
+                      "抑止はタイトル一致でなく意図ベース（スキルの責務）")
+        self.assertIn("廃止済みの施策", out)
+        self.assertIn("方針転換で不要", out, "却下理由はプランナーの判断材料として届ける")
 
     def test_notes_and_retry_are_optional(self):
         base = self._run({"charter": "目標"})
@@ -581,12 +586,6 @@ class CharterScopeTests(unittest.TestCase):
         t = km.Task(id="T1", title="X", extra=[("charter", "v1")])
         self.assertTrue(km.task_belongs_to_charter(t, "v1"))
         self.assertFalse(km.task_belongs_to_charter(t, "v2"))
-
-    def test_untagged_consumable_counts_as_human_wait(self):
-        # `_has_project_human_wait` は task_charter_name（タグ無し = "default"）を "" と
-        # 比べていたため、タグ無しタスクが常にスコープ外＝人待ちを見落としていた
-        tasks = [km.Task(id="T1", title="X", status="proposed")]
-        self.assertTrue(km._has_project_human_wait(tasks, "v1"))
 
 
 class NotesTests(unittest.TestCase):

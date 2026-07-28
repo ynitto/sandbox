@@ -408,8 +408,9 @@ function renderProjectSettings() {
 }
 
 // プロジェクトのリセット（危険操作）。charter.md 以外の全データを削除する。
-// charter が残るので、稼働中の agent-project は次パスで
-// charter から再分解して最初からやり直す（done の記録・needs・決定記録もすべて消える）。
+// charter が残るので、「バックログを分解」を実行すれば最初からやり直せる
+// （分解は人の明示操作＝リセット直後に本体が勝手に作り直すことはない。
+//  done の記録・needs・決定記録もすべて消える）。
 async function resetProject() {
   const p = state.project;
   if (!p || !p.charter) return;

@@ -624,9 +624,9 @@ def _rejected_record(t: Task, reason: str) -> str:
 
 def cmd_reject(cfg: Config, tid: str, reason: str) -> int:
     """タスクの却下: 廃止（rejected として archive へ退避）し、依存先を proposed に戻して再審査に
-    かけ、charter があればバックログの再計画（replan）を要求する。実行前（proposed）にも
-    成果物レビュー段（review）にも使える。理由は avoid（回避知識）として蓄積し、同種の再提案を
-    予防リコールが弾く。"""
+    かける。実行前（proposed）にも成果物レビュー段（review）にも使える。再計画は要求しない
+    （分解は人の明示操作）。理由は avoid（回避知識）として蓄積し、同種の再提案を予防リコールが
+    弾くほか、次の分解時に backlog-planner へ「却下済み」として渡り、意図の似た再提案を抑える。"""
     tasks = load_tasks(cfg.backlog)
     t = next((x for x in tasks if x.id == tid), None)
     if t is None:
@@ -673,15 +673,12 @@ def cmd_reject(cfg: Config, tid: str, reason: str) -> int:
                          action="reject", reason=reason,
                          affects=f"{tid} → rejected ／ 依存先を再審査へ: {affected}",
                          avoid=(t.title, reason) if cfg.learn_capture and reason else None)
-    # charter があれば再計画を要求（却下で空いた穴を plan が埋め直す。rejected タイトルは
-    # archive 経由で _existing_titles に含まれるため同一タスクは再提案されない）
-    replanned = ""
-    if charter_names(cfg):
-        write_replan_request(cfg, f"タスク {tid} の却下に伴う再計画",
-                             charter=(t.get("charter") or "").strip())
-        replanned = "／charter からの再計画を要求しました"
+    # 再計画は要求しない（分解は人の明示操作だけ、の契約）。かつては却下のたびに replan を
+    # 自動発行して「穴を埋め直して」いたが、それが「消しても似たタスクが復活する」体験の
+    # 直接の原因だった。却下済みは archive（rejected）と墓標に残り、次に人が分解を要求した
+    # ときに backlog-planner への入力として渡る＝意図の似た再提案はそこで抑止される。
     append_journal(cfg.journal, f"reject: {tid} を却下（依存先 {len(downs)} 件を再審査へ）")
-    print(f"{dr}: {tid} を却下しました。影響（依存先→再審査）: {affected}{replanned}")
+    print(f"{dr}: {tid} を却下しました。影響（依存先→再審査）: {affected}")
     return 0
 
 

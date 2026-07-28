@@ -33,14 +33,15 @@ def _block(title: str, body: str) -> str:
 
 
 def _existing_block(existing: "list[dict]") -> str:
-    """既存タスク一覧。**人が確定させたもの（edited=human）を明示する**——プランナーが
-    それを「まだ無い」と思って作り直すと、人の編集が毎回上書き提案で埋もれる。"""
+    """既存タスク一覧（現役のみ。rejected は _rejected_block）。**人が確定させたもの
+    （edited=human）を明示する**——プランナーがそれを「まだ無い」と思って作り直すと、
+    人の編集が毎回上書き提案で埋もれる。"""
     lines = []
     for t in existing[:200]:
         if not isinstance(t, dict):
             continue
         title = str(t.get("title") or "").strip()
-        if not title:
+        if not title or str(t.get("status") or "") == "rejected":
             continue
         marks = [str(t.get("status") or "").strip() or "?"]
         if str(t.get("edited") or "") == "human":
@@ -49,6 +50,25 @@ def _existing_block(existing: "list[dict]") -> str:
         summary = str(t.get("summary") or "").strip()
         if summary:
             line += f" — {summary[:120]}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _rejected_block(existing: "list[dict]") -> str:
+    """却下済み（archive の rejected）。人が明示的に廃止した判断なので、**意図の再提案ごと**
+    抑止する材料としてプランナーへ渡す（タイトル照合では言い換え再提案を捕まえられない）。"""
+    lines = []
+    for t in existing[:100]:
+        if not isinstance(t, dict):
+            continue
+        title = str(t.get("title") or "").strip()
+        if not title or str(t.get("status") or "") != "rejected":
+            continue
+        reason = str(t.get("reason") or "").strip()
+        line = f"- {title}" + (f" — 却下理由: {reason[:160]}" if reason else "")
+        summary = str(t.get("summary") or "").strip()
+        if summary:
+            line += f"（{summary[:120]}）"
         lines.append(line)
     return "\n".join(lines)
 
@@ -89,7 +109,14 @@ def build_prompt(spec: dict) -> str:
     body += _block("リポジトリの文脈（作業概要の「変更対象」はこれを根拠に書く）",
                    str(spec.get("repo_context") or ""))
     body += _block("プロジェクトの恒常ルール", str(spec.get("rules") or ""))
-    body += _block("既存タスク（**これらと重複する項目は出力しない**）", _existing_block(existing))
+    body += _block("既存タスク（このバージョンの現在のバックログ。**タイトルが違っても、"
+                   "これらと意図が同じ・似ている項目は出力しない**——保留・実行中・レビュー中の"
+                   "ものも、言い換えや粒度を変えただけの再提案をしないこと）",
+                   _existing_block(existing))
+    body += _block("却下済み（人が明示的に廃止したタスク。**同じものはもちろん、意図が似ている"
+                   "項目も再提案しない**。却下理由が示す方針に反する提案は出さないこと。"
+                   "明確に違う切り口なら出してよいが、なぜ違うのかを why に書くこと）",
+                   _rejected_block(existing))
     body += _block("却下・削除済み（墓標。**同じものを再提案しない**。"
                    "違う切り口なら出してよいが、なぜ違うのかを why に書くこと）",
                    _tombstone_block(tombstones))

@@ -419,35 +419,39 @@ async function requestDistillNotes(cfg, { dir, charter }) {
 // （stop の CLI は同一ホスト限定で、この口の主用途はリモート操作のため）。
 const LIFECYCLE_LABELS = { pause: '一時停止', resume: '再開', stop: '停止' };
 
-// 不要なバックログタスクの削除 ＝ 本体の **却下（reject）** へ委ねる。
+// 不要なバックログタスクの削除 ＝ **物理削除**（ゴミ箱へ移動・needs も一緒に掃除）。
 //
-// 以前は viewer が backlog/<id>.md をゴミ箱へ移すだけだった（「削除の公式契約が無い」ため）。
-// だがタスクファイルは状態のごく一部で、生の削除では次の 3 つが起きる:
-//   1. 要対応カード（needs/<id>.md）が残る。しかも対応タスクが無い票は本体の ingest_feedback が
-//      読み飛ばすので、[x] を付けても消えない袋小路になる。
-//   2. 墓標（tombstones.md）が残らないので、charter 運用では次の再分解が同じタスクを作り直す
-//      ＝人には「消しても復活する」としか見えない。
-//   3. 状態 git の同時変更裁定では backlog は実行側（本体）が正なので、本体側に書き込みが
-//      あると viewer 側の削除が取り消されうる（別 PC 運用で消えたはずのタスクが戻る）。
-// reject は archive への退避・needs の掃除・claim 解放・flow の切り離し・墓標・決定記録を
-// 1 つの操作として本体のプロセス内で行う＝上の 3 つが構造的に起きない。
-// 取り消しは墓標の解除（requestRevive）。
-function requestDeleteTask(cfg, { dir, id, reason }) {
+// かつてはここで本体の却下（reject）へ委ねていた——当時は charter 分解が自動で走ったため、
+// 生の削除では墓標が残らず「次の再分解が同じタスクを作り直す」からだ。いまは分解が人の
+// 明示操作（分解ボタン）でしか走らないので、その前提が消えた:
+//   - 削除 → 明示的な分解で同種のタスクがまた提案されるのは**期待どおり**（試行錯誤の口）。
+//   - 「二度と作り直させない」意思表示は削除ではなく **✕ 却下（reject）**——archive・墓標・
+//     決定記録に残り、次の分解でプランナーに「却下済み（意図の再提案も抑止）」として渡る。
+// needs/<id>.md も一緒に消すのは、対応タスクが無い票は本体の ingest_feedback が読み飛ばす
+// ため、残すと [x] を付けても消えない袋小路になるから。
+async function requestDeleteTask(cfg, { dir, id }, trash) {
   const tid = String(id || '').trim();
   if (!tid || tid !== path.basename(tid)) throw new Error(`不正なタスク ID です: ${id}`);
   const file = path.join(dir, 'backlog', `${tid}.md`);
   if (!fs.existsSync(file)) throw new Error(`タスクファイルがありません: ${file}`);
-  // 実行中の拒否は本体（cmd_reject）にもあるが、押した瞬間に理由を返せるようここでも見る
+  // 実行中・委譲中は拒否（消してもエージェント側の run が走り続け、成果の書き戻しで
+  // 状態が食い違う）。押した瞬間に理由を返せるようここで見る。
   const status = project.parseTask(fs.readFileSync(file, 'utf8'), tid).status;
   if (status === 'doing') {
     throw new Error(`${tid} は実行中（doing）のため削除できません（先に「修正して再実行」で止めてください）`);
   }
-  return runAction(cfg, {
-    dir,
-    action: 'reject',
-    id: tid,
-    reason: String(reason || '').trim() || 'agent-dashboard から削除（不要と判断）',
-  });
+  if (status === 'offloaded') {
+    throw new Error(`${tid} は委譲実行中（offloaded）のため削除できません（先に run を中止してください）`);
+  }
+  const via = trash ? await trash(file) : (fs.rmSync(file, { force: true }), 'delete');
+  const needsFile = path.join(dir, 'needs', `${tid}.md`);
+  if (fs.existsSync(needsFile)) fs.rmSync(needsFile, { force: true });
+  return {
+    output:
+      `${tid} を削除しました（バックログと要対応カードから除去）。` +
+      '同じ内容が必要になったら、分解の実行かタスクの追加で入れ直せます',
+    via,
+  };
 }
 
 // 墓標の解除（却下＝削除の取り消し）。プロジェクト単位（id ではなく title 指定）の

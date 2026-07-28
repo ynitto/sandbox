@@ -436,8 +436,9 @@ agent-project audit --strict                     # 無人運用に値するか�
   まで実行されない**。needs/<id>.md（実行前レビュー票・タスク定義つき）で三値の決着ができる:
   - **承認** … `approve <id>`（または票を空のまま `[x]`）→ ready になり実行対象へ
   - **差し戻し** … 票に修正指示を書いて `[x]` → agent-project がタスク定義を修正して**再提案**（再び proposed）
-  - **却下** … `reject <id> --reason ...` → 廃止（archive へ退避・avoid 記録）。**依存先（after 逆辺・推移）は
-    proposed に戻して再審査**にかけ、charter があれば再計画を要求する
+  - **却下** … `reject <id> --reason ...` → 廃止（archive へ退避・avoid 記録・墓標）。**依存先（after 逆辺・推移）は
+    proposed に戻して再審査**にかける。再計画は要求しない（分解は人の明示操作）——却下済みは
+    次の分解時にプランナーへ「意図の似た再提案も抑止」として渡る
   従来の自動投入（verify ありは即 ready）へは `--no-plan-review`／設定 `plan_review: false` で戻せる。
 - **影響範囲の一覧（impact）**: `agent-project impact <id>` で前提（after 上流）と依存先（下流・推移）を
   一覧表示。revise / reject 時にも影響先が出力・DR に添えられる。
@@ -485,14 +486,15 @@ agent-project audit --strict                     # 無人運用に値するか�
   取り込む**。`--debounce` は読めなかったファイル（書きかけ）だけの再試行猶予で、猶予後もダメなら
   `.err` へ退避する。読める指示を先送りすると、承認を処理しないまま再評価するパスが生まれ、
   承認直後にマイルストーンが復活する。
-- **バックログ再分解の要求（`replan`・エラー回復）**: `{"command": "replan", "reason": "..."}`
+- **バックログ分解の要求（`replan`）**: `{"command": "replan", "reason": "..."}`
   （**プロジェクト単位＝`id` 不要**）のドロップ、または CLI `agent-project replan --reason ...` で、
-  charter からのバックログ再分解を **次パスに一発だけ**要求できる（`.replan.request` マーカーを立て、
-  DR を残す）。通常の再分解は「消化可能タスクが無い」か「charter が変わった」ときに自動で走るが、
-  plan 失敗・タスクの取りこぼし/誤削除・完了後のやり直しなどのエラー回復では **charter 無変更のまま**作り直したい。
-  再分解の冪等照合は **done 以外**（現行処理中のバックログ＋却下済み）と行う: 処理中タスクの二重投入や
+  charter からのバックログ分解を **次パスに一発だけ**要求できる（`.replan.request` マーカーを立て、
+  DR を残す）。**分解はこの明示要求でしか走らない**——「消化可能タスクが無い」「charter が変わった」
+  を契機とする自動分解は廃止した（人が削除・整理したバックログを次パスが黙って作り直すため）。
+  初回の分解も、charter 編集後の反映も、エラー回復のやり直しも、すべてこの口で人が起こす。
+  分解の冪等照合は **done 以外**（現行処理中のバックログ＋却下済み）と行う: 処理中タスクの二重投入や
   却下済み（人の明示判断）の復活はさせず、`archive/`（done）と類似のタスクだけ**やり直しとして再作成を
-  許可**する（過去の完了実績が回復のための再分解を弾かない）。charter が無い（backlog ループ）
+  許可**する（過去の完了実績が回復のための分解を弾かない）。charter が無い（backlog ループ）
   プロジェクトでは対象が無いため拒否。
 - **自律裁定（needs の手前・既定 on）**: 人へ回す前に エージェント CLI が「ループ内で積み直して解けるか（requeue）／人が要るか
   （escalate）」を判断。requeue なら needs を作らず guidance を注入して再実行。例外・エージェント CLI 不在・意思決定/リスク絡みは
@@ -549,9 +551,9 @@ cp task.md ./inbox/
 plan→execute→evaluate し、それぞれが独立の acceptance / milestone（`needs/<プロジェクト>-<名前>.md`）/
 収束状態（project.json の `charters` マップ）を持つ。
 
-- plan が投入するタスクには `charter: <名前>` タグが付き、再分解の重複排除・消化判定・評価は
+- plan が投入するタスクには `charter: <名前>` タグが付き、分解の重複排除・消化判定・評価は
   そのバージョンに閉じる（実行そのものは 1 つのバックログを共有）
-- 特定バージョンだけ再分解するには `agent-project replan --charter <名前>`（viewer の replan も同様）
+- 特定バージョンだけ分解するには `agent-project replan --charter <名前>`（viewer の分解ボタンも同様）
 - 単一 `charter.md` は従来どおり動く（charters/ が無いときのフォールバック）
 
 ### マスター憲章（`## master`）
@@ -562,8 +564,8 @@ plan→execute→evaluate し、それぞれが独立の acceptance / milestone�
 
 - バージョンはマスターを**継承**する: goal / deliverables / acceptance はバージョン側が優先
   （空ならマスターの値を使う）、constraints / assumptions / links / repos はマスター∪バージョン
-- マスターを編集すると継承合成後の内容が変わるため、各バージョンの再計画・accepted 再開の
-  判定にもマスター編集が効く
+- マスターを編集すると継承合成後の内容が変わるため、各バージョンの accepted 再開の
+  判定にもマスター編集が効く（分解への反映は人が `replan` を要求したときに行われる）
 - バージョンが 1 つも無い間は分解対象なし＝backlog 消化と指示の取り込みだけが回り、
   `charters/<名前>.md` が置かれた時点で charter 駆動が始まる（`run --watch` が検知する）
 
@@ -576,11 +578,11 @@ backlog の上に、人が書く**目標（charter）**から逆算する evalua
 ```
 charter.md（goal / constraints / assumptions / deliverables / acceptance=受入 verify ／ 任意 links）
    ① plan     charter をエージェントに分解させ enqueue（冪等。verify 必須）
-              ＊消化可能タスクが無いとき、または charter の分解内容が前回計画時から変わったときに起こす
-                （内容署名で検知。編集すれば消化可能タスクがあっても差分を再計画。既存/archive と冪等重複排除）
+              ＊人の明示要求（`replan` 指示・viewer の分解ボタン）があったときだけ起こす
+                （自動分解はしない＝人が整理したバックログを勝手に作り直さない。既存/archive と冪等重複排除）
    ② execute  既存の正準ループ run を drained まで回す（検収/回帰/protect/予算は全て温存）
    ③ evaluate acceptance 全 PASS か判定（＋opt-in 敵対的レビュー --review-project）
-        未達/指摘 → 改善タスクを生成して次サイクル（未達 acceptance はそれ自体を verify とする）
+        未達 → awaiting-plan（分解待ち）として milestone で人へ（改善タスクの自動起票はしない）
         全 PASS かつ改善ゼロ → milestone gate（needs/<project>.md）で人へ
 ```
 
@@ -1134,9 +1136,9 @@ update_installer: install.sh          # サブディレクトリ内で実行す�
 | `triage` / `needs` / `rot` [`--fix`] | 優先順位付けのみ / 判断待ち表示 / rot 検出 |
 | `enqueue` [`--title --verify\|--acceptance\|--verify-template …`\|`--json`] | 取り込み口（整合パスを通る: 重複照合・charter 帰属・墓標） |
 | `approve <id>` / `hold <id>` / `reprioritize <id> --pin\|--defer` | 決定記録を残す人の操作 |
-| `reject <id> --reason` | 却下（廃止・依存先を再審査へ・**墓標を残す**・charter があれば再計画要求） |
+| `reject <id> --reason` | 却下（廃止・依存先を再審査へ・**墓標を残す**。次の分解で意図の似た再提案を抑止） |
 | `revive <タイトル>` [`--charter`/`--all`] | 墓標を解除（却下したタスクを再び提案されうる状態へ戻す）。墓標は `(指紋, charter)` 単位なので、`--charter <名前>` はその charter とタグ無しだけ、`--all` は全部を消す。未指定で対象が複数 charter に割れているときは、消さずに一覧を出す |
-| `replan` [`--charter --revive`] | charter からバックログを再分解（`--revive` は今回だけ墓標を無視） |
+| `replan` [`--charter --revive`] | charter からバックログを分解（**分解はこの明示要求でしか走らない**。`--revive` は今回だけ墓標を無視） |
 | `distill-notes` [`--charter`] | 観点メモ（notes/*.md）をバックログ候補へ分解（plan は自動では消費しない） |
 | `impact <id>` [`--json`] | 依存関係（前提／依存先・推移）の一覧 |
 | `stats` / `runlog` / `audit` [`--strict`] | 計測 / 構造化ログ / Loop Readiness 採点 |

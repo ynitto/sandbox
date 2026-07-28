@@ -52,25 +52,6 @@ def evaluate_acceptance(cfg: "Config", charter: "Charter") -> "tuple[int, int, l
             _prune_caches(_provisioned_urls)   # 共有 cache の worktree 登録を回収（本体は残す）
 
 
-def _has_project_human_wait(tasks: "list[Task]", charter_name: "str | None" = None) -> bool:
-    """Return True when this project/charter is already waiting on a human decision.
-
-    Proposed plan-review tasks are not consumable until approved.  Without this guard, a
-    project pass that contains only proposed/review/blocked tasks sees "no consumable"
-    and asks the planner for another backlog before the inner loop can report the human
-    wait, which can accumulate near-duplicate plan-review tasks while the user has not
-    approved the previous plan.
-    """
-    for t in tasks:
-        # スコープ判定は task_belongs_to_charter に寄せる（タグ無しはどの charter にも属しうる）。
-        # ここは task_charter_name の戻り（タグ無し = "default"）を "" と比べていたため、
-        # **タグ無しタスクが常にスコープ外**になり、人待ちを見落としていた。
-        if not task_belongs_to_charter(t, charter_name):
-            continue
-        if t.norm_status() in ("proposed", "blocked", "review"):
-            return True
-    return False
-
 # 人の検収項目の明示接頭辞（`検収: …` / `human: …`）。機械検証（コマンド化）を試みず、
 # 収束時のチェックリストとして人へ渡す＝タスクの「verify 未定義 → 人が確認して承認で完了」と同じ契約。
 _HUMAN_ACCEPT_PREFIX_RE = re.compile(
@@ -137,11 +118,6 @@ def _acceptance_specs(cmds: "list[str]") -> "list[dict]":
             for cmd in cmds]
 
 
-def _failing_acceptance_specs(results: "list") -> "list[dict]":
-    """未達 acceptance を、それ自体を verify とする改善タスク spec にする（決定的・的が外れない）。"""
-    return _acceptance_specs([cmd for cmd, ok, _ in results if not ok])
-
-
 def write_milestone(cfg: "Config", charter: "Charter", reason: str, summary: str,
                     pid: "str | None" = None, version: str = "",
                     human_acceptance: "list[str] | None" = None) -> None:
@@ -165,6 +141,8 @@ def write_milestone(cfg: "Config", charter: "Charter", reason: str, summary: str
         REASON_PROJECT_COST: "コスト予算到達（人の判断待ち）",
         REASON_PROJECT_BLOCKED: "内側ループが人へエスカレーション",
         REASON_PROJECT_NO_ACCEPTANCE: "acceptance 未定義（done 判定不能→人へ）",
+        REASON_PROJECT_AWAITING_PLAN: "分解待ち（受入条件が未達。自動では改善タスクを起こしません。"
+                                      "dashboard からバックログの分解・追加を実行してください）",
     }
     hint = (
         f"<!-- 完了として受領するなら `agent-project approve {pid} --reason ...`（プロジェクト done）。\n"
@@ -270,14 +248,20 @@ def project_exit_code(reason: str) -> int:
         return 0
     if reason in (REASON_PROJECT_BUDGET, REASON_PROJECT_COST):
         return 2
-    return 1   # converged / no-progress / blocked / no-acceptance は人の対応待ち
+    return 1   # converged / no-progress / blocked / no-acceptance / awaiting-plan は人の対応待ち
 
 
 def _project_evaluate(cfg: "Config", charter: "Charter", pid: str, state: dict,
                       cycle: int, cost_used: float, review_fn,
                       charter_tag: str = "") -> "tuple[str | None, str]":
-    """③ evaluate: acceptance 評価 → 未達/レビュー所見を改善タスク化 → 収束/コスト/停滞を判定する。
+    """③ evaluate: acceptance 評価 → 収束/コスト/停滞/分解待ちを判定する。
     停止すべきなら停止理由を、続行なら None を返す（last_summary も返す）。state(history/best/stall) を更新。
+
+    未達 acceptance からの改善タスクの**自動起票はしない**——バックログを起こすのは人の明示操作
+    （分解要求）だけ、の契約に揃える。自動起票を残すと、人が削除・整理したタスクを evaluate が
+    次サイクルで作り直し、「消しても復活する」ように見える。未達は awaiting-plan（分解待ち）として
+    人へ返し、未達項目は milestone に載せる。敵対的レビュー（--review-project・opt-in）の所見
+    だけは従来どおり改善タスク化する（人が明示的に有効化した検収ゲートのため）。
     charter_tag（複数 charter 運用）を渡すと改善タスクにタグを付け、冪等照合もその charter に閉じる。"""
     passed, total, results = evaluate_acceptance(cfg, charter)
     state["history"] = list(state.get("history", [])) + [passed]
@@ -287,7 +271,6 @@ def _project_evaluate(cfg: "Config", charter: "Charter", pid: str, state: dict,
     # 停滞判定は更新前の値（prev_best）と比べる＝従来の意味を変えない。
     prev_best = int(state.get("best", 0))
     state["best"] = max(prev_best, passed)
-    existing = _existing_titles(cfg, charter_tag or None)
 
     def _tag(specs: "list[dict]") -> "list[dict]":
         if charter_tag:
@@ -296,20 +279,20 @@ def _project_evaluate(cfg: "Config", charter: "Charter", pid: str, state: dict,
         return specs
 
     improved: list[Task] = []
-    if passed < total:                        # 未達 acceptance を、それ自体を verify とする改善タスクへ
-        improved += _enqueue_specs(cfg, _tag(_failing_acceptance_specs(results)),
-                                   existing, cfg.learn_threshold, charter=charter_tag or None)
     findings: list[dict] = []
     if cfg.review_project and passed == total:  # 短絡的達成を疑い敵対的レビュー（opt-in）
         findings = _tag(review_fn(charter))
-        improved += _enqueue_specs(cfg, findings, existing, cfg.learn_threshold,
-                                   charter=charter_tag or None)
+        improved += _enqueue_specs(cfg, findings, _existing_titles(cfg, charter_tag or None),
+                                   cfg.learn_threshold, charter=charter_tag or None)
+    failing = [cmd for cmd, ok, _ in results if not ok]
     last_summary = (f"cycle {cycle}: acceptance {passed}/{total} PASS, "
-                    f"改善 {len(improved)} 件, cost={cost_used:.4f}")
+                    f"改善 {len(improved)} 件, cost={cost_used:.4f}"
+                    + (f" ／ 未達: {' / '.join(failing[:5])}" if failing else ""))
     append_decision(cfg, pid, "auto",
                     context=f"cycle {cycle}: acceptance {passed}/{total} PASS",
                     action="project-evaluate",
-                    reason=("収束候補" if passed == total and not improved else "改善継続"),
+                    reason=("収束候補" if passed == total and not improved else
+                            "改善継続" if improved else "分解待ち（自動起票なし）"),
                     affects=f"改善 {len(improved)} 件 / findings {len(findings)}")
     append_journal(cfg.journal, "project " + last_summary)
     if passed == total and not improved:      # 収束: acceptance 全 PASS かつ改善ゼロ
@@ -322,7 +305,10 @@ def _project_evaluate(cfg: "Config", charter: "Charter", pid: str, state: dict,
         state["stall"] = int(state.get("stall", 0)) + 1
     if state["stall"] >= cfg.project_stall:
         return REASON_PROJECT_STALL, last_summary
-    return None, last_summary
+    if improved:                              # レビュー所見（opt-in）の消化だけは同一パスで続行する
+        return None, last_summary
+    # 未達だが自動では改善しない → 人がバックログを分解・追加する番（milestone で案内する）
+    return REASON_PROJECT_AWAITING_PLAN, last_summary
 
 
 def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, heartbeat=None,
@@ -433,13 +419,6 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
     charter.acceptance = resolved             # 以降の評価は合成済みの決定的コマンドで行う
     # 機械 acceptance が 0 件でも human_items があれば進める: 収束（total=0 は空虚に全 PASS）後、
     # 人が検収チェックリストを確認して承認する。全条件が人の検収というプロジェクトを塞がない。
-    # charter 変更の検知（内容署名）: backlog 分解に効く内容が前回計画時と変わっていれば、消化可能
-    # タスクが残っていても再計画して差分を投入する（viewer 等で charter を編集しても backlog が
-    # 変わらない問題への対処）。署名が未記録（初回/既存プロジェクト）はベースラインを張るだけで
-    # 再計画は誘発しない（次回以降の編集から検知できる）。
-    plan_sig = _charter_plan_signature(charter)
-    charter_changed = bool(state.get("planned_charter_sig")) and state["planned_charter_sig"] != plan_sig
-    state["planned_charter_sig"] = plan_sig
     # "status" はここでは触らない（旧実装は "running" に即上書きしていた）。② execute
     # （runner=run_loop）が内部で ingest_commands を呼び、その場で approve/hold 等の人の指示を
     # 処理する。ここで status を "running" にしてしまうと、直前サイクルの "converged" を
@@ -472,22 +451,18 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
             reason = REASON_PROJECT_BUDGET
             break
 
-        # ① plan — 消化可能タスクが無いとき、または charter が前回計画時から変わったときに目標から
-        #   backlog を起こす（変更が無ければ毎サイクルの再分解は避ける）。再計画は既存/archive タイトルで
-        #   冪等に重複排除されるため、既存タスクを二重投入せず「charter の差分が生む新規タスク」だけ入る。
-        #   再分解要求（replan＝エラー回復のやり直し）だけは照合を「done 以外」に絞る:
-        #   done と類似でも再作成を許可する（過去に完了した同種タスクが再分解を丸ごと弾き、
-        #   「再分解を押しても何も起きない」になるのを防ぐ）。処理中タスクとの二重投入と
-        #   却下済み（人の明示判断）の復活はさせない。
+        # ① plan — **人の明示要求（dashboard/CLI の分解・distill-notes）があったときだけ**目標から
+        #   backlog を起こす。charter からの分解は人の試行錯誤が要る作業なので、自動では走らせない
+        #   ——「消化可能タスクが無い」「charter が変わった」を契機に勝手に分解すると、人が削除・
+        #   整理したバックログを次パスが黙って作り直してしまう（削除が「効かない」ように見える）。
+        #   冪等照合は「done 以外」に絞る: done と類似でも再作成を許可する（過去に完了した同種
+        #   タスクが分解要求を丸ごと弾き「押しても何も起きない」になるのを防ぐ）。処理中タスクとの
+        #   二重投入と却下済み（人の明示判断）の復活は、投入側の照合と backlog-planner への入力
+        #   （既存・却下済みの一覧）の両方でさせない。
         replan_retry = replan_req is not None
-        existing = _existing_titles(cfg, charter_name if multi else None,
-                                    active_only=replan_retry)
-        current_tasks = load_tasks(cfg.backlog)
-        has_consumable = any(
-            t.consumable() and task_belongs_to_charter(t, charter_name if multi else None)
-            for t in current_tasks)
-        has_human_wait = _has_project_human_wait(current_tasks, charter_name if multi else None)
-        if (not has_consumable and not has_human_wait) or charter_changed or replan_retry:
+        if replan_retry:
+            existing = _existing_titles(cfg, charter_name if multi else None,
+                                        active_only=True)
             # リポジトリ理解の成果物化（plan 経路は無条件・sha キャッシュ）。プランナーは
             # タスクの「変更対象」をこの文脈を根拠に書く（S6-2 の必須セクション）。
             ensure_repo_maps(cfg, charter, force=True)
@@ -498,23 +473,20 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
                         sp.setdefault("charter", charter_name)
             planned = _enqueue_specs(cfg, specs, existing, cfg.learn_threshold,
                                      charter=charter_name if multi else None,
-                                     active_only=replan_retry,
+                                     active_only=True,
                                      # `replan --revive`: この 1 回だけ墓標を無視する
-                                     ignore_tombstones=bool(
-                                         replan_retry and (replan_req or {}).get("revive")))
-            trig = ("再分解要求（エラー回復）" if replan_retry
-                    else "charter 変更検知" if charter_changed else f"plan cycle {cycle}")
+                                     ignore_tombstones=bool((replan_req or {}).get("revive")))
             if planned:
                 did_work = True
                 append_journal(cfg.journal,
-                               f"project cycle {cycle}: {trig} で {len(planned)} 件投入 "
-                               f"{[t.id for t in planned]}")
-            elif replan_retry:
-                # 再分解しても差分ゼロ（すべて現行処理中の backlog と重複）＝やり直し対象なし。要求は消化済み。
+                               f"project cycle {cycle}: 分解要求（人の明示操作）で "
+                               f"{len(planned)} 件投入 {[t.id for t in planned]}")
+            else:
+                # 分解しても差分ゼロ（すべて現行処理中の backlog と重複）＝投入対象なし。要求は消化済み。
                 append_journal(cfg.journal,
-                               f"project cycle {cycle}: {trig} → 新規なし（現行バックログと重複）")
-            charter_changed = False   # 変更由来の再計画は 1 回だけ（以降のサイクルで再分解しない）
-            replan_req = None         # 再分解要求も 1 回だけ消化する（one-shot）
+                               f"project cycle {cycle}: 分解要求（人の明示操作）→ 新規なし"
+                               f"（現行バックログと重複）")
+            replan_req = None         # 分解要求は 1 回だけ消化する（one-shot）
 
         # ② execute — 既存の正準ループを無改造で回す（drained まで）
         result = runner(cfg)
@@ -564,7 +536,8 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
     save_charter_state(cfg, state, charter_name if multi else None)
 
     if reason in (REASON_PROJECT_CONVERGED, REASON_PROJECT_STALL,
-                  REASON_PROJECT_BUDGET, REASON_PROJECT_COST, REASON_PROJECT_BLOCKED):
+                  REASON_PROJECT_BUDGET, REASON_PROJECT_COST, REASON_PROJECT_BLOCKED,
+                  REASON_PROJECT_AWAITING_PLAN):
         write_milestone(cfg, charter, reason, last_summary or "（評価前に停止）", pid=pid,
                         version=charter_name if multi else "",
                         human_acceptance=state.get("human_acceptance") or None)

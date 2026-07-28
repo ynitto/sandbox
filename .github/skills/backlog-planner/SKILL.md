@@ -48,7 +48,7 @@ echo '<入力 JSON>' | python3 scripts/prompt.py
 | `granularity` | `coarse`（既定・ユーザーストーリー相当） / `fine` / `finest` |
 | `rules` | `rules.md`（プロジェクト恒常ルール）の抜粋 |
 | `repo_context` | `context/<repo>.md`（repo-map）の抜粋。**作業概要の「変更対象」はこれを根拠に書く** |
-| `existing` | 既存タスク `[{id, title, status, edited, summary}]`。`edited=="human"` は人が確定させたもの |
+| `existing` | 同一バージョンのバックログ `[{id, title, status, edited, summary, reason?}]`。現役（保留・実行中・レビュー中を含む）に加え、archive の却下済み（`status=="rejected"`・`reason` は却下理由）も直近分が載る。**タイトルが違っても意図が同じ・似ているタスクは出力しない**のがこのスキルの主要な責務。`edited=="human"` は人が確定させたもの |
 | `tombstones` | 墓標 `[{title, reason}]`（人が却下・削除したタスク） |
 | `notes` | 観点メモの本文（`distill-notes` のときのみ） |
 | `retry` | 前回出力の欠落セクション（再要求時のみ） |
@@ -80,6 +80,14 @@ echo '<入力 JSON>' | python3 scripts/prompt.py
 3. **既存タスクとの重複は投入側でも Jaccard 照合で弾かれる**（スキルは差し替え可能なので、
    投入側の護りは外さない）
 4. `edited: human` のタスクは**再提案しない**（人の記述 > エージェント提案）
+
+## 意図の抑止はこのスキルの責務
+
+投入側のタイトル照合（Jaccard・墓標の完全一致）は**言い換え・粒度変更の再提案を捕まえられない**。
+「人が却下・保留した意図」「仕掛かり中の意図」と重なるタスクを出さない判断は、`existing`
+（却下済みは却下理由付き）を読んだこのスキルが行う——分解は人の明示操作でしか走らないため、
+ここで出したものはそのまま人のレビュー面に並ぶ。迷ったら出さない側に倒し、出すなら why に
+既存・却下済みとどう違うのかを書くこと。
 
 ## カスタマイズ
 

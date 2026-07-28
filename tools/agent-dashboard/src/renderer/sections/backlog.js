@@ -60,7 +60,8 @@ function rejectConfirmMessage(p, id, what) {
     : '\nこのタスクに依存するタスクはありません。';
   return (
     `${id} を却下します（${what}）。\n` +
-    'タスクは廃止されて履歴に残り、同種のタスクを避ける学習も記録されます。憲章があれば計画の作り直しを依頼します。' +
+    'タスクは廃止されて履歴に残り、同種のタスクを避ける学習も記録されます。' +
+    '次にバックログを分解するとき、意図の似たタスクは再提案されません。' +
     impact +
     '\nよろしいですか？'
   );
@@ -535,14 +536,14 @@ function renderBacklog() {
       <div class="task-toolbar-filters">
         <div class="filters" aria-label="タスクの状態で絞り込む">${chips}<span class="task-count">${tasks.length} 件</span>
           ${p.inboxFiles && p.inboxFiles.length ? `<span class="badge info" title="追加したタスクは次の実行サイクルで一覧に載ります">追加待ち ${p.inboxFiles.length}</span>` : ''}
-          ${replanPending ? '<span class="badge info" title="計画の作り直しを依頼済みです。次の実行で反映されます">再計画 反映待ち</span>' : ''}
+          ${replanPending ? '<span class="badge info" title="バックログの分解を依頼済みです。次の実行で反映されます">分解 反映待ち</span>' : ''}
         </div>
         ${charterChips ? `<div class="filters task-version-filters" aria-label="計画バージョンで絞り込む">${charterChips}</div>` : ''}
         ${ownerChips ? `<div class="filters task-owner-filters" aria-label="監視担当で絞り込む">${ownerChips}</div>` : ''}
       </div>
       <div class="task-toolbar-actions">
         <button id="btn-notes" title="気になったことをメモに書き溜めます（計画は勝手に動きません）">メモ</button>
-        <button id="btn-replan"${replanPending ? ' disabled' : ''} title="プロジェクト憲章からタスクを作り直します">計画を作り直す</button>
+        <button id="btn-replan"${replanPending ? ' disabled' : ''} title="プロジェクト憲章からタスクを分解します（初回の分解もこのボタン。自動では分解されません）">バックログを分解</button>
         <button id="btn-enqueue" class="primary-inline" title="タスクを1件追加します">タスクを追加</button>
       </div>
     </div>
@@ -733,7 +734,7 @@ function showTaskDialog(id, scope) {
           <textarea rows="2" id="task-reason" class="need-input" placeholder="操作の理由（決定記録に残ります）"></textarea>
           <div class="row need-buttons">
             ${canApprove ? `<button class="primary-inline" data-taskact="approve">✓ 承認</button>` : ''}
-            ${t.status === 'doing' ? '' : `<button class="danger" data-taskact="reject" data-confirm-reject="1" title="タスクを廃止します。依存するタスクは計画の再確認に戻り、憲章があれば計画の作り直しを依頼します">✕ 却下</button>`}
+            ${t.status === 'doing' ? '' : `<button class="danger" data-taskact="reject" data-confirm-reject="1" title="タスクを廃止します。依存するタスクは計画の再確認に戻り、次の分解では意図の似たタスクを再提案させません">✕ 却下</button>`}
             <button data-taskact="pin" title="他より先に着手させます">▲ 最優先にする</button>
             <button data-taskact="defer" title="優先度を下げて後に回します">▽ 後回しにする</button>
             <button data-taskact="hold" title="実行を止めて保留にします（再開には承認が必要）">⏸ 保留にする</button>
@@ -813,7 +814,7 @@ function showTaskDialog(id, scope) {
       const reason = $('task-reason') ? $('task-reason').value.trim() : '';
       if (btn.dataset.confirmReject) {
         if (!reason) return toast('却下には理由の記入が必要です（決定記録に残ります）');
-        const yes = await confirmDialog(rejectConfirmMessage(p, t.id, '廃止して計画を作り直す'));
+        const yes = await confirmDialog(rejectConfirmMessage(p, t.id, '廃止して記録に残す'));
         if (!yes) return;
       }
       const ok = await guard('操作', async () => {
@@ -952,23 +953,24 @@ function showTaskDialog(id, scope) {
       }
     });
   }
-  // 削除（人の明示アクション）＝本体の却下（reject）へ委ねる。ファイルを消すだけだと
-  // 要対応カード（needs）が残り、charter 運用では次の再分解が同じタスクを作り直す。
-  // 実行中（doing）は main 側でも拒否される。取り消しは「却下済み（墓標）」からの解除。
+  // 削除（人の明示アクション）＝物理削除（ゴミ箱へ移動・needs も一緒に掃除）。
+  // 分解は人の明示操作でしか走らないので、消したタスクが勝手に作り直されることはない。
+  // 「二度と作り直させない」意思表示は ✕ 却下（archive・墓標・決定記録に残る）を使う。
+  // 実行中（doing）・委譲実行中（offloaded）は main 側でも拒否される。
   const delBtn = $('btn-task-delete');
   if (delBtn) {
     delBtn.addEventListener('click', async () => {
       const yes = await confirmDialog(
-        `タスク ${t.id}「${t.title}」を削除（却下）します。\n` +
-          'バックログと要対応カードから外し、記録は archive と決定記録に残ります。\n' +
-          '同じタスクを再分解で作り直させないため「却下済み（墓標）」にも載ります' +
-          '（入れ直したくなったらそこから解除できます）。\n' +
-          '一時的に止めたいだけなら「⏸ 保留にする」を使ってください。よろしいですか？'
+        `タスク ${t.id}「${t.title}」をゴミ箱へ移動します。\n` +
+          'バックログと要対応カードから外れます（決定記録は残りません）。\n' +
+          '次に「分解」を実行すると同種のタスクがまた提案されることがあります。\n' +
+          '作り直させたくないなら「✕ 却下」を、一時的に止めたいだけなら' +
+          '「⏸ 保留にする」を使ってください。よろしいですか？'
       );
       if (!yes) return;
       const ok = await guard('タスク削除', async () => {
         await api.deleteTask(p.dir, t.id);
-        toast(`${t.id} の削除（却下）を要求しました（稼働中の agent-project が取り込みます）`, true);
+        toast(`${t.id} を削除しました（ゴミ箱へ移動）`, true);
         return true;
       });
       if (ok) {
@@ -1003,8 +1005,8 @@ function showTaskDialog(id, scope) {
   $('dlg-task').showModal();
 }
 
-// charter からのバックログ再分解を要求する（エラー回復用）。本体が次パスで charter を
-// 分解し直し、取りこぼした差分だけを backlog へ入れる（done / 既存と類似は投入しない）。
+// charter からのバックログ分解を要求する（分解はこの明示操作でしか走らない）。本体が次パスで
+// charter を分解し、差分だけを backlog へ入れる（処理中・却下済みと類似は投入しない）。
 // 状態（done 等）は書き換えず、公式契約（commands/replan・CLI replan）だけで届ける。
 function fillCharterSelect(select, p, selected) {
   if (!select) return '';
@@ -1048,15 +1050,15 @@ async function requestReplan(charter = '') {
   if ($('dlg-replan').open) $('dlg-replan').close();
   const versionText = charter ? `計画バージョン「${charter}」` : 'プロジェクト憲章';
   const yes = await confirmDialog(
-    `${p.name}: ${versionText}からタスクを作り直します。\n` +
-      '進行中・却下済みと重複するタスクは追加されません（完了済みと同種のやり直しは作り直されます）。\n' +
+    `${p.name}: ${versionText}からタスクを分解します。\n` +
+      '進行中・却下済みと意図が重複するタスクは追加されません（完了済みと同種のやり直しは作り直されます）。\n' +
       'タスクの状態は書き換えません。反映は次の実行サイクルです（即時ではありません）。よろしいですか？'
   );
   if (!yes) return;
-  const ok = await guard('計画の作り直し', async () => {
+  const ok = await guard('バックログの分解', async () => {
     const res = await api.requestReplan(p.dir, 'agent-dashboard から再分解を要求', charter);
     uiLog('replan', res);
-    toast('計画の作り直しを依頼しました（次の実行で反映されます）', true);
+    toast('バックログの分解を依頼しました（次の実行で反映されます）', true);
     return true;
   });
   if (ok) {

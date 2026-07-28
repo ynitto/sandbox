@@ -1506,7 +1506,9 @@ class TestRejectAndImpact(unittest.TestCase):
             self.assertIn("- avoid:", dec)
             self.assertIn("reject", dec)
 
-    def test_reject_requests_replan_when_charter_exists(self):
+    def test_reject_does_not_request_replan(self):
+        # 却下は再計画を要求しない（分解は人の明示操作だけ）。旧仕様は却下のたびに replan を
+        # 自動発行して「穴を埋め直して」おり、消したそばから似たタスクが復活する原因だった。
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             cfg = cfg_for(d)
@@ -1514,7 +1516,7 @@ class TestRejectAndImpact(unittest.TestCase):
                                    encoding="utf-8")
             mkb(d, "T1", verify="true")
             km.cmd_reject(cfg, "T1", "作り直す")
-            self.assertTrue(km.replan_request_path(cfg).exists())   # 再計画を要求
+            self.assertFalse(km.replan_request_path(cfg).exists())
 
     def test_reject_refuses_doing_with_fresh_claim(self):
         with tempfile.TemporaryDirectory() as d:
