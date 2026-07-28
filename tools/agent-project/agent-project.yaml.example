@@ -104,6 +104,10 @@ concurrency: 1             # 板へ並行 post する独立タスク数（1=逐�
                             #   evaluator/worker/kind 別）で行う。
 # granularity: coarse       # バックログ分解の粒度: coarse（ストーリー相当・INVEST。既定）/
                             #   fine（単機能・単モジュール）/ finest（1ファイル/1関数の最小単位）
+# flow_granularity: auto    # 内側（agent-flow の実行時タスクグラフ）へ渡す分解粒度。上の
+                            #   granularity とは別のノブ（外側=バックログの粒度 / 内側=1 ノードの
+                            #   スコープ上限）。auto（既定）= agent-flow が複雑さから導出。
+                            #   coarse|fine|finest で内側だけ明示できる。外側の値は内側へ流れない
 # agent_flow: /path/to/agent-flow.py   # agent-flow の明示パス（省略時は PATH→リポジトリ内を自動解決）
 
 # bus: bus                  # agent-flow バスの置き場（root 相対、既定: <root>/bus）。

@@ -4,8 +4,78 @@ from __future__ import annotations
 # --------------------------------------------------------------------------
 # Continuation — パターンに応じて done / replan（タスク追加）を決める
 # --------------------------------------------------------------------------
+# 集約の扇入れ幅: 1 つの reduce が受け持つ依存の上限。これを超える map があるときは
+# チャンクごとの中間 reduce を挟んで木構造にする。単段集約は map 件数に比例して 1 ノードへ
+# 成果が集中し、規模で破綻する（データ駆動 fan-out は件数を事前に固定しないので、
+# 正しく展開できたときほど最終ノードが重くなる）。設定 `reduce_width` で調整する。
+_DEFAULT_REDUCE_WIDTH = 8
+
+
+def _chunk_evenly(items: list, width: int) -> "list[list]":
+    """items を「1 チャンク width 以下」かつ**均等**に分ける。
+    端数を最後のチャンクへ寄せない（20 件・幅 8 なら 8/8/4 ではなく 7/7/6）——寄せると
+    最終チャンクだけ極端に軽い/重いノードになり、木にした意味が薄れる。"""
+    n = len(items)
+    width = max(1, int(width))
+    groups = max(1, -(-n // width))          # 切り上げ除算（必要なチャンク数）
+    out: "list[list]" = []
+    start = 0
+    for g in range(groups):
+        size = -(-(n - start) // (groups - g))   # 残り件数を残チャンク数で均す（切り上げ）
+        out.append(items[start:start + size])
+        start += size
+    return out
+
+
+def _emit_reduce_tree(nid: str, map_ids: list, width: int, review: bool,
+                      intent: str, new: list) -> list:
+    """最終 reduce が受ける依存 id を返し、必要なら中間 reduce と検証 gate を new へ積む。
+
+    map が width 以下なら**従来と完全に同じ構造**（gate 1 つ・id も不変）を返す。
+    超える場合だけチャンクごとの中間 reduce へ畳み、最終 reduce は中間 reduce だけを受ける。
+    検証 gate はチャンク単位に分ける（gate も単段だと同じ過負荷になる）。中間 reduce の
+    入力は gate 済みなので、2 段目以降に gate は積まない。
+
+    生成 id に `-r<数字>` を含めないこと（`_retry_depth` が作り直し回数と誤読する）。"""
+    chunks = _chunk_evenly(list(map_ids), width)
+    if len(chunks) <= 1:                      # 従来構造（id を含めて不変）
+        if not review:
+            return list(map_ids)
+        gid = f"{nid}-gate"
+        new.append({"id": gid, "goal": f"{nid} の map 結果を集約前に検証",
+                    "deps": list(map_ids), "kind": "verify"})
+        return list(map_ids) + [gid]
+    level_ids: list = []
+    for i, chunk in enumerate(chunks, start=1):
+        deps = list(chunk)
+        if review:
+            gid = f"{nid}-gate{i}"
+            new.append({"id": gid, "goal": f"{nid} の map 結果（第{i}群・{len(chunk)} 件）を集約前に検証",
+                        "deps": list(chunk), "kind": "verify"})
+            deps = deps + [gid]
+        rid = f"{nid}-rc{i}"
+        goal = (f"{intent}（第{i}群 {len(chunk)} 件ぶんの中間集約。最終集約へ渡す中間成果として"
+                "まとめる。ここでは最終整形をしない）" if intent
+                else f"{nid} 第{i}群（{len(chunk)} 件）の中間集約")
+        new.append({"id": rid, "goal": goal, "deps": deps, "kind": "reduce"})
+        level_ids.append(rid)
+    level = 2                                  # 中間 reduce がまだ幅を超えるなら木を深くする
+    while len(level_ids) > width:
+        nxt: list = []
+        for i, chunk in enumerate(_chunk_evenly(level_ids, width), start=1):
+            rid = f"{nid}-rc{level}-{i}"
+            goal = (f"{intent}（第{level}段の中間集約・第{i}群 {len(chunk)} 件。最終集約へ渡す）"
+                    if intent else f"{nid} 第{level}段・第{i}群の中間集約")
+            new.append({"id": rid, "goal": goal, "deps": list(chunk), "kind": "reduce"})
+            nxt.append(rid)
+        level_ids = nxt
+        level += 1
+    return level_ids
+
+
 def _expand_splits(nodes: dict, results: dict, max_fanout: int,
-                   review: bool = False, request: str = "", exemplar_first: bool = False):
+                   review: bool = False, request: str = "", exemplar_first: bool = False,
+                   reduce_width: int = _DEFAULT_REDUCE_WIDTH):
     """データ駆動の動的 fan-out: 完了した split ノードの data(リスト)を見て、
     実行時に要素ごとの map タスクと、それらを集約する reduce タスクを生成する。
     （reduce は展開時に作るので、split 完了直後に reduce が先走り実行されない）
@@ -15,7 +85,10 @@ def _expand_splits(nodes: dict, results: dict, max_fanout: int,
 
     exemplar_first=True のときは「見本先行」分解にする: まず先頭1件(pilot map)と
     その検証ゲートだけを出し、ゲート通過後に残りの map（pilot を範に取る = pilot に依存）
-    と reduce を展開する。同様手順の繰り返しで、1件で手順を固めてから残りを流す。"""
+    と reduce を展開する。同様手順の繰り返しで、1件で手順を固めてから残りを流す。
+
+    map が reduce_width を超えるときは中間 reduce を挟んで集約を木構造にする
+    （_emit_reduce_tree。単段集約が規模で破綻するのを防ぐ）。"""
     new = []
     have = set(nodes)
     for nid, node in nodes.items():
@@ -35,7 +108,9 @@ def _expand_splits(nodes: dict, results: dict, max_fanout: int,
         def _mgoal(i, item):
             return f"{intent}（対象要素: {item}）" if intent else f"{nid} 要素{i+1}: {item}"
 
-        reduce_goal = (f"{intent}（各 map の結果を要求どおりに集約・整形して最終成果にまとめる）"
+        chunked = len(items) > max(1, int(reduce_width))   # 中間 reduce を挟むか（文言を合わせる）
+        source = "各中間集約の結果" if chunked else "各 map の結果"
+        reduce_goal = (f"{intent}（{source}を要求どおりに集約・整形して最終成果にまとめる）"
                        if intent else f"{nid} の結果を集約")
         pilot_gate = f"{nid}-pilot"
         m1 = f"{nid}-m1"
@@ -65,12 +140,9 @@ def _expand_splits(nodes: dict, results: dict, max_fanout: int,
                 # 要素だけでなく「何をするか」を渡さないと map が意図を失う
                 new.append({"id": mid, "goal": _mgoal(i, item), "deps": [], "kind": "map"})
 
-        reduce_deps = map_ids
-        if review:  # 集約前の事前チェック / 敵対的レビュー。reduce は map＋gate に依存
-            gid = f"{nid}-gate"
-            new.append({"id": gid, "goal": f"{nid} の map 結果を集約前に検証",
-                        "deps": map_ids, "kind": "verify"})
-            reduce_deps = map_ids + [gid]
+        # 集約前の事前チェック / 敵対的レビューの gate と、幅を超えた分の中間 reduce を積む。
+        # 幅以下なら従来と同じ（gate 1 つ・reduce は map 全件に依存）。
+        reduce_deps = _emit_reduce_tree(nid, map_ids, reduce_width, review, intent, new)
         new.append({"id": f"{nid}-reduce", "goal": reduce_goal,
                     "deps": reduce_deps, "kind": "reduce"})
     return new
@@ -78,7 +150,7 @@ def _expand_splits(nodes: dict, results: dict, max_fanout: int,
 
 def continue_stub(request: str, nodes: dict, results: dict, iteration: int,
                   max_fanout: int = 50, review: bool = False, exemplar_first: bool = False,
-                  max_retries: int = 3):
+                  max_retries: int = 3, reduce_width: int = _DEFAULT_REDUCE_WIDTH):
     """パターン継続（LLM 無し版）:
        - データ駆動 fan-out: split 完了 → 要素ごとの map + reduce を生成
        - classify-and-act: 分類完了 → 振り分け先の専門タスクを追加
@@ -88,7 +160,7 @@ def continue_stub(request: str, nodes: dict, results: dict, iteration: int,
     サーキットブレーカー: 同一系統の作り直し回数（retries）が max_retries に達したら、
     その系統の verify-fail / 失敗ノードに対する再タスクをこれ以上生成しない。達成不可能な
     完了条件で無限に再タスクを積み続けるのを防ぐ（node["retries"] で系統ごとに計上）。"""
-    new = _expand_splits(nodes, results, max_fanout, review, request, exemplar_first)
+    new = _expand_splits(nodes, results, max_fanout, review, request, exemplar_first, reduce_width)
     have = set(nodes)
     tripped = []  # サーキットブレーカーが作動した系統（理由表示用）
 
@@ -255,9 +327,10 @@ def _evaluator_fallback(results: dict, why: str):
 
 def continue_agent(request: str, nodes: dict, results: dict, iteration: int,
                   max_fanout: int = 50, review: bool = False, exemplar_first: bool = False,
-                  max_retries: int = 3):
+                  max_retries: int = 3, reduce_width: int = _DEFAULT_REDUCE_WIDTH):
     # データ駆動 fan-out は機械的に展開（LLM 判断不要）。先に処理する。
-    fanout_tasks = _expand_splits(nodes, results, max_fanout, review, request, exemplar_first)
+    fanout_tasks = _expand_splits(nodes, results, max_fanout, review, request, exemplar_first,
+                                  reduce_width)
     if fanout_tasks:
         return "replan", fanout_tasks, f"data-driven fan-out: +{len(fanout_tasks)}"
     # サーキットブレーカー: 作り直しが上限に達した系統は達成不可能とみなし打ち切る

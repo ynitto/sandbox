@@ -94,6 +94,13 @@ class Config:
     argv_limit: int = 100000
     # バックログ分解の粒度: coarse（ストーリー相当・既定）/ fine（単機能）/ finest（1ファイル/1関数）
     granularity: str = "coarse"
+    # 内側（agent-flow の実行時タスクグラフ）へ渡す分解粒度。外側の granularity とは**別のノブ**:
+    # 外側は「人がレビューするバックログの INVEST 粒度」、内側は「1 ノードのスコープ上限」。
+    # 既定 auto は agent-flow 側の complexity 導出に任せる。かつて外側の granularity（既定
+    # coarse）をそのまま内側へ渡していたため、内側の work ノードレンジが常に 1〜3 に固定され、
+    # 複雑なタスクでも「まとめて 1〜3 ノード」に畳まれていた（層ごとに既定が異なるという
+    # 粒度設計の約束を結線が壊していた）。
+    flow_granularity: str = "auto"
     max_iterations: int = 3
     max_cycles: int = 20
     max_seconds: float = 0.0

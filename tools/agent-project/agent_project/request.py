@@ -194,8 +194,14 @@ def build_request(task: Task, cfg: "Config | None" = None) -> str:
     guide = task_guide_block(task)
     if guide:
         base += guide + "\n\n"
-    base += (f"このタスクは完了条件を満たすまで反復し、満たしたら終了すること（loop-until-done）。\n"
-             f"完了条件: 次のシェルコマンドが終了コード 0 で成功すること:\n"
+    # 実行規律（完了条件を満たすまでやり切る）を伝える定型文。**内側プランナーのパターン語彙を
+    # 使わないこと**——かつて「反復し…（loop-until-done）」と書いていたため、全タスクの要求文が
+    # パターン名とキーワード（反復）を含み、flow-planner の戦略選定とフォールバックのキーワード
+    # 検出が loop-until-done へ吸われていた（実行規律のつもりの文が戦略選定の入力を汚す）。
+    # 避ける語: パターンの正規名・「反復/繰り返」「検証/レビュー」「分類/振り分け」
+    # 「各/ごとに/一覧/列挙」「候補/絞り込」「最良」等（agent-flow _detect_pattern の語彙）。
+    base += (f"完了条件: 次のシェルコマンドが終了コード 0 で成功すること"
+             f"（満たすまで作業を続け、満たしたら終了する）:\n"
              f"  {task.verify or '（verify 未定義）'}\n\nタスクID: {task.id}")
     fb = task.feedback()
     if fb:

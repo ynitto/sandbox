@@ -6,12 +6,13 @@ agent-flow の --planner flow-planner で呼び出される。
 
 Usage:
     python3 plan.py "<要求>" [--model <model>] [--review auto|true|false]
-                    [--granularity auto|coarse|fine|finest]
+                    [--granularity auto|coarse|fine|finest] [--probe-root <dir>]
     → JSON を stdout に出力: {"strategy": {...}, "tasks": [...]}
     granularity: auto=complexity から導出（既定）/ coarse|fine|finest=明示指定が優先。
 """
 from __future__ import annotations
 
+import glob as globlib
 import json
 import os
 import subprocess
@@ -66,6 +67,22 @@ ANALYZE_PROMPT = """\
    実装・調査・検証をまとめて数え、余裕や理想の分割ではなく「これ以下では終わらない」数を出す
 8. **constraints**: 制約条件（順序依存、リソース制限等）
 9. **domain_hints**: ドメインのヒント（コード変更、リサーチ、データ処理等）
+10. **enumerable**: 「**同一手順を多数の独立した対象へ繰り返す**」タスクかどうか。
+    次の 3 条件を**それぞれ独立に**判定すること（1 つでも false なら列挙駆動にしない）:
+    - `same_procedure`: 対象ごとに手順が同一か（対象が変わっても作業内容は同じか）
+    - `independent`: 対象間に依存が無いか（先の対象の結果が次の対象に要らないか）
+    - `per_target_deliverable`: 成果が対象単位で完結するか（対象ごとに独立した成果物になるか）
+
+    3 条件がすべて true のときだけ、対象の種別 `target_kind` と、**実行時に対象一覧を得る
+    手順** `how_to_enumerate`（どのディレクトリ・ファイルをどう走査すれば一覧が得られるか。
+    可能なら具体的なパスやグロブを書く）を記入する。件数が要求から確定できるなら
+    `estimated_count` に整数を、確定できなければ null を書く（**推測で埋めない**）。
+
+    ⚠ 注意: ファイル・関数・モジュールは「見ようと思えば常に列挙可能」だが、それは
+    ここで言う列挙駆動ではない。**単一の成果物を作る作業**（新機能の実装・バグ修正・
+    設計など）は多数のファイルに触れても `independent` / `per_target_deliverable` が
+    false になる。逆に「各 API のドキュメント化」「全ファイルへ同じ規約を適用」
+    「各モジュールの現状調査」は 3 条件を満たす。安易に true にしないこと。
 
 ## 出力
 
@@ -80,7 +97,15 @@ JSON オブジェクトのみを出力してください:
   "complexity": "simple|moderate|complex",
   "estimated_steps": 6,
   "constraints": ["..."],
-  "domain_hints": ["..."]
+  "domain_hints": ["..."],
+  "enumerable": {{
+    "same_procedure": true,
+    "independent": true,
+    "per_target_deliverable": true,
+    "target_kind": "対象の種別（例: API エンドポイント）",
+    "how_to_enumerate": "対象一覧の得かた（例: src/routes/**/*.ts のルート定義を走査）",
+    "estimated_count": null
+  }}
 }}
 ```
 
@@ -112,7 +137,7 @@ SELECT_PROMPT = """\
 
 要求の属性（data_flow={data_flow}, quality_focus={quality_focus}, complexity={complexity}）に基づく候補:
 {scored_candidates}
-
+{enumeration_note}
 ## 指示
 
 上記の候補から最適なパターン（組み合わせ）を選び、並列数を決定してください。
@@ -162,6 +187,7 @@ BUILD_PROMPT = """\
 テンプレート: {composite_template}
 検証gate: {review}
 
+{enumeration_note}
 ## 粒度（厳守）
 
 目標粒度: {granularity_target}
@@ -331,6 +357,12 @@ def score_patterns(catalog: dict, analysis: dict) -> list[tuple[str, int]]:
                 for pat in catalog["composites"][comp].get("patterns", []):
                     scores[pat] = scores.get(pat, 0) + 3
 
+    # 列挙駆動の加点（boost。件数が確定している force は Phase 2 の後で決定的に強制する）。
+    # data_flow=static でも「同一手順×独立多対象」なら map-reduce が正しい——Matrix だけだと
+    # 静的な一覧（リポジトリ内の API・ファイル群）が fan-out-and-synthesize に吸われる。
+    if (analysis.get("enumeration_decision") or {}).get("mode") == "boost":
+        scores["map-reduce"] = scores.get("map-reduce", 0) + ENUMERATION_BOOST
+
     ranked = sorted(scores.items(), key=lambda x: -x[1])
     return ranked
 
@@ -378,6 +410,192 @@ def phase1_analyze(request: str, model: str | None) -> dict:
     return analysis
 
 
+# --------------------------------------------------------------------------
+# 列挙駆動の分解（設計: docs/plans/2026-07-28-dynamic-enumeration-decomposition-design.md）
+#   「同一手順×独立多対象」のタスクでは、ノード数を計画時に決めず**実行時の列挙**から
+#   導出する（split → map×N 動的展開）。要求文だけを見る Decision Matrix ではこの類型が
+#   fan-out-and-synthesize に吸われ、対象単位のノードが生まれない。
+# --------------------------------------------------------------------------
+# 3 条件を個別に持つのが要点。「列挙できるか」ではなく「列挙駆動にしてよいか」を見る——
+# ファイル・関数は常に列挙可能なので、単一フラグを LLM に判定させると単一成果物の実装まで
+# map-reduce へ倒れる（＝他パターンを侵食する単一戦略への崩壊）。
+ENUMERABLE_CONDITIONS = ("same_procedure", "independent", "per_target_deliverable")
+ENUMERABLE_LABELS = {
+    "same_procedure": "手順が対象ごとに同一",
+    "independent": "対象間に依存が無い",
+    "per_target_deliverable": "成果が対象単位で完結",
+}
+# これ以下の件数は静的 fan-out で十分（map-reduce のオーバーヘッドが見合わない）。
+ENUMERATION_MIN_COUNT = 3
+# 件数不明時に map-reduce へ与える加点。Matrix の最大加点（data_flow=dynamic の +3）より
+# 大きく取り、静的一覧が fan-out へ吸われるのを覆せるようにする（強制はしない）。
+ENUMERATION_BOOST = 5
+
+# 件数の正規化は最小ステップ見積りと同じ形（int / float / "12件" / null の揺れ）なので共用する。
+normalize_count = normalize_estimated_steps
+
+
+def _as_bool(v) -> bool:
+    """LLM が返す真偽値の揺れ（true / "true" / "yes" / 1）を bool へ。不明は False。"""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.strip().lower() in ("true", "yes", "y", "1", "はい")
+    if isinstance(v, (int, float)):
+        return bool(v)
+    return False
+
+
+def normalize_enumerable(raw) -> dict:
+    """Phase 1 の `enumerable` を正規化する。`is_enumerable` は 3 条件の AND。"""
+    d = raw if isinstance(raw, dict) else {}
+    conds = {k: _as_bool(d.get(k)) for k in ENUMERABLE_CONDITIONS}
+    return {
+        **conds,
+        "is_enumerable": all(conds.values()),
+        "target_kind": str(d.get("target_kind") or "").strip(),
+        "how_to_enumerate": str(d.get("how_to_enumerate") or "").strip(),
+        "estimated_count": normalize_count(d.get("estimated_count")),
+    }
+
+
+# probe（決定的走査）で無視するディレクトリ。数えたいのは成果物の対象であって依存物ではない。
+_PROBE_SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build",
+                    "target", "vendor", ".mypy_cache", ".pytest_cache", ".tox", ".next"}
+# 走査の打ち切り。判定に要るのは「3 件より多いか」だけなので、上限で止めても結論は変わらない。
+_PROBE_CAP = 2000
+_PROBE_GLOB_RE = re.compile(r"[\w./\\*-]*\*[\w./\\*-]*")
+_PROBE_DIR_RE = re.compile(r"(?<![\w*])((?:[\w.-]+/)+[\w.-]*)")
+
+
+def _probe_excluded(path: str, root: str) -> bool:
+    """依存物・隠しディレクトリ配下のファイルか。**グロブ経路にも同じ除外を効かせる**——
+    `src/**/*.ts` は node_modules 配下まで拾うため、除外しないと件数が水増しされる。"""
+    try:
+        rel = os.path.relpath(path, root)
+    except ValueError:                      # 別ドライブ等（Windows）は絶対パスのまま見る
+        rel = path
+    parts = [p for p in rel.replace("\\", "/").split("/") if p not in ("", ".", "..")]
+    if not parts:
+        return False
+    return (parts[-1].startswith(".")
+            or any(p in _PROBE_SKIP_DIRS or p.startswith(".") for p in parts[:-1]))
+
+
+def _probe_walk(base: str, seen: set) -> None:
+    """base 配下のファイルを数える（隠しディレクトリ・依存物は除外・上限で打ち切り）。"""
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = [d for d in dirnames
+                       if d not in _PROBE_SKIP_DIRS and not d.startswith(".")]
+        for f in filenames:
+            if f.startswith("."):
+                continue
+            seen.add(os.path.join(dirpath, f))
+            if len(seen) >= _PROBE_CAP:
+                return
+
+
+def probe_target_count(hint: str, root: str = ".") -> "int | None":
+    """列挙手順のヒントから**決定的に**（LLM 無しで）対象件数を数える。
+
+    ヒント中のグロブ（`src/routes/**/*.ts`）を優先し、無ければディレクトリパス
+    （`src/routes/`）配下のファイル数を数える。数えられなければ None（＝不明）を返し、
+    呼び出し側はハイブリッド発動の boost へ倒す（＝従来どおり LLM が判断する）。
+
+    **0 件は None として扱う**。計画時点ではワークスペースが手元に無いことがあり
+    （worker がノード単位で clone する）、その 0 を「対象なし」と読むと列挙駆動を
+    誤って止めてしまう。probe は判定材料であって、列挙そのものは split が実行時に行う。
+    """
+    text = str(hint or "")
+    if not text.strip():
+        return None
+    seen: set = set()
+    for pat in _PROBE_GLOB_RE.findall(text):
+        pat = pat.strip("`'\"")
+        if "*" not in pat or len(pat) < 3:
+            continue
+        try:
+            for p in globlib.iglob(os.path.join(root, pat), recursive=True):
+                if os.path.isfile(p) and not _probe_excluded(p, root):
+                    seen.add(p)
+                    if len(seen) >= _PROBE_CAP:
+                        return _PROBE_CAP
+        except (OSError, ValueError):
+            continue
+    if not seen:
+        for d in _PROBE_DIR_RE.findall(text):
+            base = os.path.join(root, d.strip("`'\""))
+            if os.path.isdir(base):
+                _probe_walk(base, seen)
+            if len(seen) >= _PROBE_CAP:
+                return _PROBE_CAP
+    return len(seen) or None
+
+
+def enumeration_decision(enumerable: dict, probed: "int | None" = None) -> dict:
+    """ハイブリッド発動の判定（決定: 2026-07-28）。
+
+    force … 3 条件全充足 **かつ** 件数 > 3 が確定 → Decision Matrix のスコアに関わらず
+            patterns に map-reduce を含める（決定的強制）
+    boost … 3 条件全充足だが件数不明 → Matrix へ大幅加点にとどめ、Phase 2 の LLM が最終判断
+    off  … 3 条件のどれかが偽、または件数 ≤ 3 が確定 → **従来経路と完全に同一**
+
+    件数は probe（決定的走査の実測）を Phase 1 の LLM 見積りより優先する。
+    off が現行動作と一致することが、この機能を加法的（回帰なし）に保つ要。
+    """
+    if not enumerable.get("is_enumerable"):
+        missing = [ENUMERABLE_LABELS[k] for k in ENUMERABLE_CONDITIONS if not enumerable.get(k)]
+        return {"mode": "off", "count": None,
+                "reason": ("列挙駆動の条件を満たさない（未充足: " + " / ".join(missing) + "）"
+                           if missing else "列挙駆動の対象ではない")}
+    count = probed if probed is not None else enumerable.get("estimated_count")
+    source = "probe 実測" if probed is not None else "Phase 1 見積り"
+    kind = enumerable.get("target_kind") or "対象"
+    if count is None:
+        return {"mode": "boost", "count": None,
+                "reason": f"列挙駆動の 3 条件を満たすが{kind}の件数が不明 → "
+                          "map-reduce へ加点し Phase 2 が最終判断"}
+    if count <= ENUMERATION_MIN_COUNT:
+        return {"mode": "off", "count": count,
+                "reason": f"列挙可能だが{kind}は {count} 件（≤{ENUMERATION_MIN_COUNT}・{source}）"
+                          " → 静的 fan-out で十分"}
+    return {"mode": "force", "count": count,
+            "reason": f"列挙駆動の 3 条件を満たし{kind}は {count} 件（{source}）"
+                      " → map-reduce を強制"}
+
+
+def enumeration_note(analysis: dict, phase: str) -> str:
+    """Phase 2 / Phase 3 のプロンプトへ差し込む列挙駆動の指示（off なら空＝従来どおり）。"""
+    decision = analysis.get("enumeration_decision") or {}
+    mode = decision.get("mode")
+    if mode not in ("force", "boost"):
+        return ""
+    enum = analysis.get("enumerable") or {}
+    kind = enum.get("target_kind") or "対象"
+    how = enum.get("how_to_enumerate") or ""
+    count = decision.get("count")
+    scale = f"（推定 {count} 件）" if count else "（件数は実行時に確定）"
+    if phase == "select":
+        head = ("**この要求は列挙駆動と判定された（強制）**。patterns に map-reduce を必ず含める"
+                if mode == "force" else
+                "**この要求は列挙駆動の 3 条件を満たす**。map-reduce を第一候補として検討する")
+        return (f"\n## 列挙駆動の判定\n\n{head}。\n"
+                f"- 対象: {kind}{scale}\n"
+                f"- 判定理由: {decision.get('reason', '')}\n"
+                "- 同一手順を多数の独立した対象へ繰り返すため、対象数を計画時に固定せず"
+                " split（実行時列挙）→ map×N 動的展開 → reduce で処理する。\n"
+                "- 精度が要るなら adversarial-verification と複合してよい（review=true）。\n")
+    return (f"\n## 列挙駆動（厳守）\n\n"
+            f"この要求は「同一手順を多数の{kind}へ繰り返す」と判定された{scale}。\n"
+            f"- **split ノードを 1 つだけ**置き、その goal に**実行時の列挙手順**を書くこと。\n"
+            f"- 列挙手順: {how or '対象一覧が得られる場所を実際に走査する'}\n"
+            "- split の goal には「実際にワークスペースを走査して一覧を作る／推測で列挙しない」"
+            "ことを明記し、出力は各対象を文字列とする JSON 配列だけにする。\n"
+            f"- **{kind}ごとの作業を静的な work ノードへ展開しないこと**"
+            "（map と reduce は split 完了後に実行時展開される）。列挙より前に必要な下準備"
+            "（方針・様式の決定など）があるときだけ、split の前段に work ノードを置いてよい。\n")
+
+
 def phase2_select(request: str, analysis: dict, catalog: dict,
                   model: str | None, review="auto") -> dict:
     """Phase 2: 戦略選定。"""
@@ -423,12 +641,26 @@ def phase2_select(request: str, analysis: dict, catalog: dict,
         quality_focus=analysis.get("quality_focus", "speed"),
         complexity=analysis.get("complexity", "moderate"),
         scored_candidates=scored_candidates,
+        enumeration_note=enumeration_note(analysis, "select"),
         analysis=json.dumps(analysis, ensure_ascii=False, indent=2),
     )
     raw = run_agent(prompt, model)
     strategy = extract_json(raw)
     if not isinstance(strategy, dict):
         raise ValueError("Phase 2: strategy is not a dict")
+
+    # 列挙駆動の決定的強制（force）。LLM が別パターンを選んでも map-reduce を先頭へ入れる。
+    # 排他ではなく**追加**なのは、複合（前段の方針決め work / 集約前の verify gate）を
+    # 潰さないため。発動根拠は reason に残す（観測できないと誤爆に気づけない）。
+    decision = analysis.get("enumeration_decision") or {}
+    if decision.get("mode") == "force":
+        pats = [p for p in (strategy.get("patterns") or []) if p != "map-reduce"]
+        strategy["patterns"] = ["map-reduce"] + pats
+        strategy["reason"] = (str(strategy.get("reason") or "").strip()
+                              + f"／[列挙駆動] {decision.get('reason', '')}").strip("／")
+    elif decision.get("mode") == "boost":
+        strategy["reason"] = (str(strategy.get("reason") or "").strip()
+                              + f"／[列挙駆動: 加点] {decision.get('reason', '')}").strip("／")
 
     # review の確定
     if review == "auto":
@@ -493,15 +725,20 @@ def _normalize_goal(goal: str) -> str:
     return _NORM_RE.sub(" ", g).strip()
 
 
-def gate_tasks(tasks: list[dict], target: str) -> list[str]:
+def gate_tasks(tasks: list[dict], target: str, require_split: bool = False) -> list[str]:
     """決定的ゲート。不合格理由のリスト（空なら合格）。
 
     work 系が無いグラフ（split のみ / classify のみ等の実行時展開）は個数・scope を検査しない。
+    require_split=True（列挙駆動の force）のときは split ノードの存在も検査する——強制した
+    のに split が出ないと、対象単位のノードが実行時に展開されず「まとめて 1 ノード」に戻る。
     """
+    issues: list[str] = []
+    if require_split and not any(isinstance(t, dict) and t.get("kind") == "split" for t in tasks):
+        issues.append("列挙駆動と判定されたが split ノードが無い"
+                      "（対象ごとの作業を静的ノードに展開せず、split 1 つへ集約すること）")
     work = [t for t in tasks if isinstance(t, dict) and t.get("kind") in WORK_KINDS]
     if not work:
-        return []
-    issues: list[str] = []
+        return issues
     lo, hi = work_node_range(target)
     n = len(work)
     if n < lo or n > hi:
@@ -541,6 +778,7 @@ def phase3_build(request: str, analysis: dict, strategy: dict,
             reason=strategy.get("reason", ""),
             composite_template=strategy.get("composite_template"),
             review=strategy.get("review", False),
+            enumeration_note=enumeration_note(analysis, "build"),
             granularity_target=granularity_target,
             work_lo=lo,
             work_hi=hi,
@@ -558,8 +796,10 @@ def phase3_build(request: str, analysis: dict, strategy: dict,
                 raise ValueError("Phase 3: tasks is not a list")
         return tasks
 
+    # 列挙駆動を強制したときは split の存在も決定的に見る（強制の実効性はここで担保される）
+    need_split = (analysis.get("enumeration_decision") or {}).get("mode") == "force"
     tasks = _build()
-    issues = gate_tasks(tasks, granularity_target)
+    issues = gate_tasks(tasks, granularity_target, require_split=need_split)
     if issues:
         retry_note = (
             "直前のグラフは粒度ゲート不合格。次を必ず守って作り直すこと:\n- "
@@ -597,8 +837,26 @@ def normalize_tasks(tasks: list) -> list[dict]:
     return normalized
 
 
+def resolve_enumeration(analysis: dict, probe_root: str = ".") -> dict:
+    """Phase 1 の分析から列挙駆動の判定を確定し、analysis へ書き戻して decision を返す。
+
+    probe（決定的走査）は 3 条件を満たしたときだけ走らせる——満たさないなら判定に使わない
+    数字を取りに行くだけで、無駄にディスクを舐めることになる。
+    """
+    enumerable = normalize_enumerable(analysis.get("enumerable"))
+    probed = None
+    if enumerable["is_enumerable"]:
+        probed = probe_target_count(
+            " ".join(x for x in (enumerable["how_to_enumerate"],
+                                 enumerable["target_kind"]) if x), probe_root)
+    decision = enumeration_decision(enumerable, probed)
+    analysis["enumerable"] = {**enumerable, "probed_count": probed}
+    analysis["enumeration_decision"] = decision
+    return decision
+
+
 def plan(request: str, model: str | None = None, review="auto",
-         granularity: str = "auto") -> tuple[dict, list[dict]]:
+         granularity: str = "auto", probe_root: str = ".") -> tuple[dict, list[dict]]:
     """3段パイプラインを実行し (strategy, tasks) を返す。"""
     catalog = load_catalog()
     if catalog is None:
@@ -607,6 +865,7 @@ def plan(request: str, model: str | None = None, review="auto",
     analysis = phase1_analyze(request, model)
     target = resolve_granularity(granularity, analysis.get("complexity"))
     analysis["granularity_target"] = target
+    decision = resolve_enumeration(analysis, probe_root)
 
     strategy = phase2_select(request, analysis, catalog, model, review)
     tasks = phase3_build(request, analysis, strategy, model, target)
@@ -620,6 +879,8 @@ def plan(request: str, model: str | None = None, review="auto",
         "granularity": target,
         # Phase 1 の見積り（設計「Phase 1 拡張」）。agent-flow 側はログ・診断で使う。
         "estimated_steps": analysis.get("estimated_steps"),
+        # 列挙駆動の発動根拠（force/boost/off）。誤爆に気づくための観測点なので必ず載せる。
+        "enumeration": decision,
     }
 
     return final_strategy, normalized
@@ -642,6 +903,9 @@ def main():
     parser.add_argument("--granularity", default="auto",
                         choices=["auto", "coarse", "fine", "finest"],
                         help="分解の細かさ: auto(complexity導出・既定)/coarse/fine/finest(明示優先)")
+    parser.add_argument("--probe-root", dest="probe_root", default=".",
+                        help="列挙 probe（LLM 無しの決定的走査で対象件数を数える）の起点ディレクトリ"
+                             "（既定 cwd）。対象が見つからなければ件数は不明として扱う")
     args = parser.parse_args()
 
     global AGENT_CLI
@@ -654,7 +918,8 @@ def main():
         review = False
 
     try:
-        strategy, tasks = plan(args.request, args.model, review, args.granularity)
+        strategy, tasks = plan(args.request, args.model, review, args.granularity,
+                               args.probe_root)
         result = {"strategy": strategy, "tasks": tasks}
         print(json.dumps(result, ensure_ascii=False, indent=2))
     except Exception as e:

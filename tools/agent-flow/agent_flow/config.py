@@ -105,6 +105,11 @@ CONFIG_DEFAULTS = {
     "max_runs": 8,
     "max_iterations": 3,
     "max_fanout": 50,
+    # 集約（reduce）1 ノードが受け持つ依存の上限。map がこれを超えると、チャンクごとの
+    # 中間 reduce を挟んで集約を木構造にする（単段集約は件数に比例して 1 ノードへ成果が
+    # 集中し規模で破綻する）。review 時の検証 gate も同じ幅でチャンク分割される。
+    # 幅以下なら従来と同一構造（gate 1 つ・reduce は map 全件に依存）。
+    "reduce_width": 8,
     # judge/評価役のサーキットブレーカー: 同一系統（verify/失敗）の作り直しをこの回数で打ち切る。
     # 達成不可能な完了条件で無限に再タスクを生み続けるのを防ぐ（max_iterations と二重ガード）。
     "max_retries": 3,

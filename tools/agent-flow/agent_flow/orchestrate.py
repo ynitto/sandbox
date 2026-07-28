@@ -84,12 +84,15 @@ def _continue(args, request, nodes, results, iteration, strategy=None):
         review = _review_decision(cli, (strategy or {}).get("patterns", []))
     ef = bool(getattr(args, "exemplar_first", False))
     mr = int(getattr(args, "max_retries", 3) or 3)
+    # 集約の扇入れ幅（設定 reduce_width）。子プロセスの orchestrate も --config 経由で
+    # 同じ値を解決するため、argv での転記は要らない。
+    rw = int(getattr(args, "reduce_width", _DEFAULT_REDUCE_WIDTH) or _DEFAULT_REDUCE_WIDTH)
     # 再計画（evaluator-optimizer）はオーケストレータ側でローカルに判断する。stub のときだけ
     # stub 継続、それ以外（agent やプラグイン executor）はローカルのエージェント CLI で判断する
     # （プラグインはワーカータスクの実行のみを委譲し、メタ評価はローカルに残す）。
     if args.executor == "stub":
-        return continue_stub(request, nodes, results, iteration, mf, review, ef, mr)
-    return continue_agent(request, nodes, results, iteration, mf, review, ef, mr)
+        return continue_stub(request, nodes, results, iteration, mf, review, ef, mr, rw)
+    return continue_agent(request, nodes, results, iteration, mf, review, ef, mr, rw)
 
 
 def _node_entry(t):

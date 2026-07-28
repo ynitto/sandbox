@@ -94,6 +94,10 @@ CONFIG_DEFAULTS = {
     # バックログ分解の粒度: coarse（ストーリー相当・既定）/ fine（単機能）/ finest（1ファイル/1関数）。
     # agent-flow の同名設定と語彙を揃えている（あちらは実行時 DAG、こちらは backlog の分解に効く）。
     "granularity": "coarse",
+    # 内側（agent-flow）へ渡す粒度。外側の granularity とは別のノブ（外側=バックログの INVEST
+    # 粒度 / 内側=1 ノードのスコープ上限）。既定 auto は agent-flow の complexity 導出に任せる。
+    # 外側の coarse をそのまま渡すと内側の work ノードレンジが常に 1〜3 に固定される。
+    "flow_granularity": "auto",
     "poll": 5.0,
     "concurrency": 1,
     "level": "unattended",
@@ -814,6 +818,7 @@ def build_config(args) -> Config:
         model=args.model,
         agent_cli=_AGENT_CLI, agent_timeout=_AGENT_TIMEOUT, argv_limit=_ARGV_LIMIT,
         granularity=str(getattr(args, "granularity", "coarse") or "coarse").lower(),
+        flow_granularity=str(getattr(args, "flow_granularity", "auto") or "auto").lower(),
         max_iterations=args.max_iterations,
         max_cycles=args.max_cycles, max_seconds=args.max_seconds,
         max_tokens=getattr(args, "max_tokens", 0) or 0,
@@ -946,6 +951,11 @@ def _add_common(sp):
     sp.add_argument("--granularity", default=None, choices=["coarse", "fine", "finest"],
                     help="バックログ分解の粒度（設定 granularity と同義）。coarse=ストーリー相当（既定）/ "
                          "fine=単機能 / finest=1ファイル/1関数の最小単位")
+    sp.add_argument("--flow-granularity", dest="flow_granularity", default=None,
+                    choices=["auto", "coarse", "fine", "finest"],
+                    help="内側（agent-flow の実行時タスクグラフ）へ渡す分解粒度（設定 flow_granularity "
+                         "と同義）。外側の --granularity とは別のノブ。auto=agent-flow の complexity "
+                         "導出に任せる（既定）/ coarse|fine|finest=内側の 1 ノードスコープを明示指定")
     sp.add_argument("--git-bus", default=None, help="分散移譲先の共有 git リポジトリ")
     sp.add_argument("--git-branch", default=None)
     sp.add_argument("--git-subdir", default=None)
