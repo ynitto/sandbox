@@ -38,6 +38,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - 検証ゲート（review 時）も同じ幅で分割し、中間集約は自分の群のゲート通過後に走る。
   中間集約がなお幅を超える場合はもう一段畳む。**幅以下なら従来と同一構造**（id を含めて不変）
 
+**agent-project（外側が内側の戦略を固定させていた層間の汚染・2 件）**
+
+- 内側へ渡す分解粒度を **`flow_granularity`（既定 auto）** として分離した。従来は外側の
+  `granularity`（バックログの INVEST 粒度・既定 coarse）をそのまま `--granularity` で渡して
+  おり、agent-flow 側では明示指定が complexity 導出より優先されるため、**内側の work ノード
+  レンジが常に 1〜3 に固定**されていた（複雑なタスクでも「まとめて 1〜3 ノード」に畳まれる）。
+  外側の値は内側へ流れなくなった。内側だけ明示したいときは `flow_granularity: coarse|fine|finest`
+- `build_request` の定型文からパターン語彙を除去した。従来は「完了条件を満たすまで反復し…
+  （loop-until-done）」が**全タスク**の要求文に入り、flow-planner の戦略選定にはパターン正規名の
+  アンカー、フォールバックのキーワード検出には「反復」ヒットとなって、実行規律のつもりの文が
+  戦略選定を loop-until-done へ吸っていた。定型文は「完了条件: verify が exit 0（満たすまで
+  作業を続ける）」だけを言う。定型文の語彙衛生はテストで固定
+
 ### agent-project / agent-dashboard: charter からの自動分解を廃止（分解は人の明示操作だけ）・削除は物理削除に変更
 
 バックログを削除しても、次のパスで似たタスクが自動で作り直されていた。原因は charter 駆動の

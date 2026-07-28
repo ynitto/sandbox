@@ -876,20 +876,37 @@ class RepoMapPrefetchTests(unittest.TestCase):
 
 
 class FlowGranularityTests(unittest.TestCase):
-    """S6-1 の積み残し: `--granularity` が内側（agent-flow）へ渡っていなかった。"""
+    """内側（agent-flow）へ渡す粒度は flow_granularity（既定 auto）。
 
-    def test_granularity_is_passed_to_agent_flow(self):
+    外側の granularity（バックログの INVEST 粒度・既定 coarse）は**別のノブ**で、内側へ
+    流してはいけない——coarse を渡すと agent-flow の complexity 導出が常に上書きされ、
+    work ノードレンジが 1〜3 に固定される（実際、複雑なタスクでも「まとめて 1〜3 ノード」に
+    畳まれていた）。"""
+
+    def _cmd(self, d, **kw):
+        cfg = cfg_for(d, agent_flow="agent-flow", **kw)
+        t = km.Task(id="T1", title="x", verify="true")
+        return km.build_agent_flow_cmd(t, cfg, use_git=False)
+
+    def test_default_is_auto_so_inner_derives_from_complexity(self):
         with tempfile.TemporaryDirectory() as d:
-            d = Path(d)
-            cfg = cfg_for(d, granularity="fine", agent_flow="agent-flow")
-            t = km.Task(id="T1", title="x", verify="true")
-            cmd = km.build_agent_flow_cmd(t, cfg, use_git=False)
-            self.assertIn("--granularity", cmd)
+            cmd = self._cmd(Path(d))
             i = cmd.index("--granularity")
-            self.assertEqual(cmd[i + 1], "fine")
+            self.assertEqual(cmd[i + 1], "auto")
             # agent-flow の --granularity は**グローバル引数**（run より前）。
             # run の後ろに置くと `unrecognized arguments` で毎回失敗する。
             self.assertLess(i, cmd.index("run"), "サブコマンドより前に置く")
+
+    def test_outer_granularity_does_not_leak_into_the_inner_graph(self):
+        """外側を fine/coarse にしても内側は auto のまま（ノブの独立）。"""
+        with tempfile.TemporaryDirectory() as d:
+            cmd = self._cmd(Path(d), granularity="fine")
+            self.assertEqual(cmd[cmd.index("--granularity") + 1], "auto")
+
+    def test_explicit_flow_granularity_is_forwarded(self):
+        with tempfile.TemporaryDirectory() as d:
+            cmd = self._cmd(Path(d), flow_granularity="finest")
+            self.assertEqual(cmd[cmd.index("--granularity") + 1], "finest")
 
 
 if __name__ == "__main__":

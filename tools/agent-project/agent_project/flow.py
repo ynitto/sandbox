@@ -105,10 +105,12 @@ def build_agent_flow_cmd(task: Task, cfg: "Config", use_git: bool = False,
     base = _kf_base(cfg, use_git)
     if run_id:
         base += ["--run-id", run_id]      # グローバル引数（サブコマンドより前）
-    # 分解の粒度を内側（実行時タスクグラフ）へも伝える。設定はあったのに渡しておらず、
-    # 外側の backlog だけが granularity に従い、内側は常に auto で分解されていた。
-    # agent-flow の `--granularity` もグローバル引数なので run より前に置く。
-    base += ["--granularity", str(cfg.granularity or "coarse")]
+    # 内側（実行時タスクグラフ）の分解粒度は flow_granularity（既定 auto）を渡す。外側の
+    # granularity（バックログの INVEST 粒度・既定 coarse）を渡してはいけない——別のノブで、
+    # coarse を内側へ流すと agent-flow の complexity 導出が常に上書きされ、work ノードレンジが
+    # 1〜3 に固定される（複雑なタスクでも「まとめて 1〜3 ノード」に畳まれる）。
+    # agent-flow の `--granularity` はグローバル引数なので run より前に置く。
+    base += ["--granularity", str(getattr(cfg, "flow_granularity", "auto") or "auto")]
     cmd = (base + _workspace_cmd_args(cfg, task)
            + _reference_cmd_args(cfg, task) + [
         "run", build_request(task, cfg), "--planner", cfg.flow_planner,
@@ -202,7 +204,9 @@ def cmd_flow_run(cfg: "Config", run_id: str) -> int:
         print("エラー: --run-id が必要です", file=sys.stderr)
         return 2
     cmd = _kf_base(cfg, bool(cfg.git_bus)) + ["--run-id", rid,
-                                              "--granularity", str(cfg.granularity or "coarse"),
+                                              # 内側の粒度は flow_granularity（build_agent_flow_cmd と同じ理由）
+                                              "--granularity",
+                                              str(getattr(cfg, "flow_granularity", "auto") or "auto"),
                                               "run", "--from-inbox",
                                               "--planner", cfg.flow_planner,
                                               "--executor", cfg.executor,

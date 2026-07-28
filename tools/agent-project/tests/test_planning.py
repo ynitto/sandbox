@@ -495,6 +495,43 @@ class RepoMapTests(unittest.TestCase):
         self.assertNotIn("リポジトリ理解", km._plan_decompose_prompt(charter))
 
 
+class RequestBoilerplateHygieneTests(unittest.TestCase):
+    """build_request の定型文は内側プランナーのパターン語彙を含まないこと。
+
+    要求文は flow-planner（LLM）とフォールバックのキーワード検出の入力になる。かつて
+    定型文が「反復し…（loop-until-done）」を含み、**全タスク**の戦略選定が loop-until-done へ
+    吸われていた。タスク本文（title/desc 等）に何が書かれるかは人とプランナー次第なので
+    縛らない——ここで固定するのは**定型文（scaffolding）が汚染源にならない**ことだけ。"""
+
+    # agent-flow _detect_pattern のキーワード語彙のうち、定型文に混入しやすいもの。
+    # パターンの正規名は全部見る。
+    _PATTERN_NAMES = ("loop-until-done", "map-reduce", "fan-out-and-synthesize",
+                      "classify-and-act", "generate-and-filter", "tournament",
+                      "adversarial-verification")
+    _KEYWORDS = ("反復", "繰り返", "検証", "レビュー", "分類", "振り分け",
+                 "それぞれ", "ごとに", "一覧", "列挙", "候補", "絞り込", "最良")
+
+    def _boilerplate(self):
+        """タスク由来の可変部（title/verify/id）を除いた定型文だけを取り出す。"""
+        t = km.Task(id="TID9999", title="TITLE9999", verify="true")
+        req = km.build_request(t, None)
+        return req.replace("TITLE9999", "").replace("TID9999", "").replace("true", "")
+
+    def test_scaffolding_contains_no_pattern_vocabulary(self):
+        text = self._boilerplate()
+        for w in self._PATTERN_NAMES + self._KEYWORDS:
+            self.assertNotIn(w, text, f"定型文にパターン語彙「{w}」が混入している")
+
+    def test_completion_contract_is_still_stated(self):
+        """語彙を消しても実行規律（verify が exit 0 になるまでやり切る）は伝わること。"""
+        t = km.Task(id="T1", title="x", verify="make check")
+        req = km.build_request(t, None)
+        self.assertIn("完了条件", req)
+        self.assertIn("終了コード 0", req)
+        self.assertIn("make check", req)
+        self.assertIn("満たすまで", req)
+
+
 class NodeLocalRepoTests(unittest.TestCase):
     """S3: ノード固有のローカルクローン宣言（host.yaml `repos[]`）。
 
