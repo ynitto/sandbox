@@ -230,8 +230,32 @@ test('chat は send-keys で送り、業務プロンプトより前に置く', (
   assert.ok(chatAt > 0 && promptAt > 0);
   assert.ok(chatAt < promptAt, 'chat コマンドは業務プロンプトより先に送る');
   // スラッシュ補完メニューでの文字化けを避けるため、一括ペーストではなく send-keys で打鍵する。
-  assert.ok(script.includes('send-keys -t "$__ses" -- '), 'send-keys -- <text> Enter で送る');
+  assert.ok(script.includes('send-keys -t "$__ses" -l -- '), 'send-keys で本文を送る');
+  assert.ok(script.includes('sleep 1; tmux send-keys -t "$__ses" Enter;'),
+    'Codex が改行扱いしないよう Enter を遅らせて別送信する');
   assert.ok(!script.includes('paste-buffer'), 'paste-buffer は使わない');
+});
+
+test('Codex の引数なし $skill は補完確定後にもう一度 Enter を送る', () => {
+  const script = loopProvider.chatWindowScript({
+    chatCommand: ['codex'], cwd: '/w', session: 's',
+    prompt: '$openai-templates:artifact-template-analytics-dashboard',
+    sessionCommands: [
+      { id: 'caveman', mode: 'chat', run: '$caveman' },
+      { id: 'ponytail', mode: 'chat', run: '$ponytail full' },
+    ],
+  });
+  const delayedDoubleEnter = /sleep 1; tmux send-keys[^;]+ Enter; sleep 1; tmux send-keys[^;]+ Enter;/;
+  assert.ok(script.slice(script.indexOf("'$caveman'")).match(delayedDoubleEnter),
+    '開始コマンドの skill を実行する');
+  assert.ok(
+    script.slice(script.indexOf("'$openai-templates:artifact-template-analytics-dashboard'"))
+      .match(delayedDoubleEnter),
+    '本題の skill も実行する'
+  );
+  const ponytail = script.slice(script.indexOf("'$ponytail full'"), script.indexOf("'$ponytail full'") + 180);
+  assert.strictEqual((ponytail.match(/send-keys[^;]+ Enter;/g) || []).length, 1,
+    '引数付き skill は Enter を1回送る');
 });
 
 // CLIチャット起動ボタン（プロンプトを送らない経路）との統合。両機能が同じ

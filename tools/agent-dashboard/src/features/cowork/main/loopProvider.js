@@ -335,14 +335,21 @@ function oneLine(s) {
   return String(s == null ? '' : s).replace(/\r?\n/g, ' ').trim();
 }
 
+function sendKeysLine(s) {
+  const text = oneLine(s);
+  const sendEnter = `tmux send-keys -t "$__ses" Enter; `;
+  // Codex は文字列と Enter の瞬時投入を改行扱いする。補完確定後の Enter も分ける。
+  const submit = /^\$[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(text)
+    ? `${sendEnter}sleep 1; ${sendEnter}`
+    : sendEnter;
+  return `tmux send-keys -t "$__ses" -l -- ${shellQuote(text)}; sleep 1; ${submit}`;
+}
+
 // chat モード（「エージェントに送る」）は、CLI が入力を受け付けてから業務プロンプトより先に送る。
-// 送信は kiro-loop の send_prompt_to_session と **完全に同じ形**にする:
-//   tmux send-keys -t <pane> -- <1行テキスト> Enter
-// （paste-buffer の一括ペーストは kiro-cli のスラッシュ補完メニューと競合して化ける。
-//  send-keys は 1 コールでテキストと Enter を送る。-l は付けない＝kiro-loop と同一。）
+// paste-buffer は補完メニューと競合するため使わず、文字列と Enter を別々に送る。
 function sessionChatLines(entries) {
   return (entries || []).filter((e) => e.mode === 'chat' && !e.skip).map((e) => (
-    `tmux send-keys -t "$__ses" -- ${shellQuote(oneLine(e.run))} Enter; sleep 1; `
+    `${sendKeysLine(e.run)}sleep 1; `
   )).join('');
 }
 
@@ -415,8 +422,8 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands,
         // 続いているところへ同じブリーフを再投入すると文脈が二重になる。
         (sendPrompt
           ? (promptOnNewOnly
-            ? `if [ $__new -eq 1 ]; then tmux send-keys -t "$__ses" -- ${shellQuote(oneLine(prompt))} Enter; fi; `
-            : `tmux send-keys -t "$__ses" -- ${shellQuote(oneLine(prompt))} Enter; `)
+            ? `if [ $__new -eq 1 ]; then ${sendKeysLine(prompt)}fi; `
+            : sendKeysLine(prompt))
           : '') +
         `break; fi; sleep 0.5; __i=$((__i+1)); done ) & ` +
         `echo "[agent-dashboard] エージェントCLIに接続します（起動後に自動で送信します・Ctrl+b d で離脱）"; ` +
