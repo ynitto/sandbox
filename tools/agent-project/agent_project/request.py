@@ -65,9 +65,10 @@ def _charter_definition(ch: "Charter") -> str:
 def _charter_plan_signature(ch: "Charter") -> str:
     """charter の「backlog 分解に効く内容」の安定ハッシュ（目標/repos/リンク/制約/前提/成果物）。
     mtime ではなく *内容* ベースなので、state_git 同期やファイルコピーで mtime だけ変わっても
-    誤検知せず、内容が実際に変わったときだけ変化する。これを project state に記録し、次回 run で
-    charter が変わっていれば（＝署名が違えば）消化可能タスクがあっても backlog を再計画する。
-    acceptance は done 判定に効くが分解入力ではないため署名には含めない（評価側で反映される）。"""
+    変化せず、内容が実際に変わったときだけ変化する。かつてはこれを project state に記録して
+    charter 変更の自動再計画に使っていたが、分解は人の明示要求だけになったため、いまは
+    「分解入力の同一性」を確かめる道具（テスト・診断）としてだけ残る。
+    acceptance は done 判定に効くが分解入力ではないため署名には含めない。"""
     return hashlib.sha256(_charter_definition(ch).encode("utf-8")).hexdigest()
 
 

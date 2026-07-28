@@ -200,12 +200,24 @@ def _validate_backlog_spec(spec: dict) -> "list[str]":
     return missing
 
 
+# プランナーへ見せる却下済み（archive の rejected）の上限。archive は際限なく育つので、
+# 直近（mtime 新しい順）に絞ってプロンプトを有界に保つ。
+_PLANNER_REJECTED_LIMIT = 30
+
+_REJECT_REASON_RE = re.compile(r"(?m)^- 却下:\s*(?P<reason>.+)$")
+
+
 def _backlog_existing_summary(cfg: "Config", charter_tag: "str | None") -> "list[dict]":
-    """プランナーへ渡す既存タスク一覧（重複を「出させない」ための入力・S6-5 ①）。
+    """プランナーへ渡す既存タスク一覧（重複・意図の再提案を「出させない」ための入力・S6-5 ①）。
 
     投入側の Jaccard 照合（最終防衛線）は残したまま、生成側にも既存を見せる。
     投入側だけだと、プランナーは毎回同じものを出し、それが黙って落とされる分の
     トークンを払い続けることになる（人からは「再分解しても何も起きない」に見える）。
+
+    現役 backlog（保留 blocked・仕掛かり doing/offloaded・レビュー中 review を含む）に加えて
+    **archive の却下済み（rejected）も理由付きで載せる**。抑止の一次表現は投入側のタイトル照合
+    ではなくこの入力——プランナー（スキル）が「同一バージョンのバックログと意図が似ているものは
+    出さない」を判断する。タイトルが違っても意図が同じ再提案はタイトル照合では捕まらないため。
     """
     out: "list[dict]" = []
     for t in load_tasks(cfg.backlog):
@@ -214,6 +226,29 @@ def _backlog_existing_summary(cfg: "Config", charter_tag: "str | None") -> "list
         out.append({"id": t.id, "title": t.title, "status": t.norm_status(),
                     "edited": str(t.get("edited") or ""),
                     "summary": str(t.get("why") or t.get("desc") or "")[:160]})
+    adir = cfg.archive_dir()
+    if adir.exists():
+        rejected: "list[tuple[float, dict]]" = []
+        for p in adir.glob("*.md"):
+            try:
+                text = p.read_text(encoding="utf-8")
+                t = parse_task(text, p.stem)
+            except (OSError, ValueError):
+                continue
+            if t.norm_status() != "rejected" or not task_belongs_to_charter(t, charter_tag):
+                continue
+            m = _REJECT_REASON_RE.search(text)
+            try:
+                mtime = p.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+            rejected.append((mtime, {
+                "id": t.id, "title": t.title, "status": "rejected",
+                "edited": str(t.get("edited") or ""),
+                "reason": (m.group("reason").strip() if m else ""),
+                "summary": str(t.get("why") or t.get("desc") or "")[:160]}))
+        rejected.sort(key=lambda x: x[0], reverse=True)
+        out.extend(rec for _, rec in rejected[:_PLANNER_REJECTED_LIMIT])
     return out
 
 
@@ -270,15 +305,29 @@ def _builtin_planner_extras(spec: dict) -> str:
         body = (body or "").strip()
         return f"\n\n## {title}\n{body}" if body else ""
 
+    live = [e for e in (spec.get("existing") or [])
+            if e.get("title") and e.get("status") != "rejected"]
+    rejected = [e for e in (spec.get("existing") or [])
+                if e.get("title") and e.get("status") == "rejected"]
     existing = "\n".join(
         f"- {e['title']}（{e.get('status') or '?'}"
         + ("／**人が確定済み・作り直さない**" if e.get("edited") == "human" else "") + "）"
-        for e in (spec.get("existing") or []) if e.get("title"))
+        + (f" — {e['summary']}" if e.get("summary") else "")
+        for e in live)
+    rejected_rows = "\n".join(
+        f"- {e['title']}" + (f" — 却下理由: {e['reason']}" if e.get("reason") else "")
+        + (f"（{e['summary']}）" if e.get("summary") else "")
+        for e in rejected)
     graves = "\n".join(
         f"- {g['title']}" + (f" — 却下理由: {g['reason']}" if g.get("reason") else "")
         for g in (spec.get("tombstones") or []) if g.get("title"))
     return (
-        _block("既存タスク（これらと重複する項目は出力しない）", existing)
+        _block("既存タスク（このバージョンのバックログ。**タイトルが違っても、これらと意図が"
+               "同じ・似ているタスクは出力しない**——保留・実行中・レビュー中のものも、言い換えや"
+               "粒度を変えた再提案をしないこと）", existing)
+        + _block("却下済み（人が明示的に廃止したタスク。**同じものはもちろん、意図が似ている"
+                 "タスクも再提案しない**——却下理由が示す方針に反する提案は出さないこと）",
+                 rejected_rows)
         + _block("却下・削除済み（墓標。同じものを再提案しない）", graves)
         + _block("観点メモ（人が書き溜めたもの。ここからもタスクを起こす）",
                  str(spec.get("notes") or ""))

@@ -1004,6 +1004,8 @@ def _run_setup(cfg: "Config", controller: bool = True) -> tuple:
     tasks += expand_spec_tasks(cfg, tasks)            # 承認済み spec の tasks.md を実装タスクへ展開
     reconcile_needs(cfg, tasks)                       # 判断待ち（proposed/blocked/review）の票を status から整合
     #                                                   （作る＝ensure／消す＝対応タスクを失った票の掃除）
+    prune_dangling_afters(cfg, tasks)                 # 削除された先行タスクへの after 参照を後続から切り離す
+    reap_orphan_task_state(cfg)                       # タスク本体を失った付随状態（検証記録・ブリーフ・claim）を掃除
     if _coordination_active(cfg) and controller:
         state_sync(cfg, force=True)                   # allocation は remote 正本の最新 backlog を親にする
         allocate_distributed_tasks(cfg)

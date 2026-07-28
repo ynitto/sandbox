@@ -414,18 +414,19 @@
     </div>
   </dialog>
 
-  <!-- ======== 計画の作り直し ======== -->
+  <!-- ======== バックログの分解 ======== -->
   <dialog id="dlg-replan">
-    <h2>計画を作り直す</h2>
+    <h2>バックログを分解する</h2>
     <div class="field">
       <label for="replan-charter">計画バージョン</label>
       <select id="replan-charter"></select>
-      <div class="muted">選択したバージョンの目標・制約・前提から、タスクを分解し直します。</div>
+      <div class="muted">選択したバージョンの目標・制約・前提から、タスクを分解します。</div>
     </div>
-    <p class="muted">進行中・却下済みと重複するタスクは追加されません。完了済みと同種の作業は、やり直しとして作成されます。</p>
+    <p class="muted">タスクの分解はこの操作でだけ行われ、自動では行われません。最初のタスク作りも、削除後の作り直しもここから始めます。
+      進行中・却下済みと内容の重なるタスクは追加されません。完了済みと同種の作業は、やり直しとして作成されます。</p>
     <div class="dialog-actions">
       <button id="btn-replan-cancel">キャンセル</button>
-      <button id="btn-replan-submit" class="primary-inline">作り直しを依頼</button>
+      <button id="btn-replan-submit" class="primary-inline">分解を依頼</button>
     </div>
   </dialog>
 

@@ -362,6 +362,27 @@ class TestHangGuards(unittest.TestCase):
         env = transport.harden_git_env({"GIT_SSH_COMMAND": "ssh -i /k/id"})
         self.assertEqual(env["GIT_SSH_COMMAND"], "ssh -i /k/id")
 
+    def test_harden_env_forbids_detached_git_maintenance(self):
+        # commit/fetch 後に git が fork する自動メンテナンス（gc --auto / maintenance --auto）は
+        # 呼び出しプロセスより長生きして .git/objects へ書き続け、一時ディレクトリや worktree の
+        # 後始末と競合する（Directory not empty）。同期実行へ倒す設定が必ず注入されること。
+        env = transport.harden_git_env({})
+        pairs = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"]
+                 for i in range(int(env["GIT_CONFIG_COUNT"]))}
+        self.assertEqual(pairs.get("maintenance.auto"), "false")
+        self.assertEqual(pairs.get("gc.autoDetach"), "false")
+
+    def test_harden_env_stacks_on_existing_git_config_injection(self):
+        # 呼び出し側が既に GIT_CONFIG_COUNT で設定を注入していたら、上書きせず後ろへ積む。
+        env = transport.harden_git_env({"GIT_CONFIG_COUNT": "1",
+                                        "GIT_CONFIG_KEY_0": "user.name",
+                                        "GIT_CONFIG_VALUE_0": "x"})
+        self.assertEqual(env["GIT_CONFIG_KEY_0"], "user.name")     # 既存はそのまま
+        pairs = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"]
+                 for i in range(int(env["GIT_CONFIG_COUNT"]))}
+        self.assertEqual(pairs.get("maintenance.auto"), "false")
+        self.assertEqual(pairs.get("gc.autoDetach"), "false")
+
     def test_timed_out_result_is_a_failure_not_an_exception(self):
         r = transport.timed_out_result(["git", "fetch"], 600.0)
         self.assertEqual(r.returncode, transport.GIT_TIMEOUT_RC)

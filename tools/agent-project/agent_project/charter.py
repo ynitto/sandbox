@@ -15,13 +15,16 @@ REASON_PROJECT_COST = "project-cost"          # プロジェクト累計コス�
 REASON_PROJECT_STALL = "no-progress"          # acceptance PASS 数が増えず人へ
 REASON_PROJECT_BLOCKED = "blocked"            # 内側ループが人へエスカレーション
 REASON_PROJECT_NO_ACCEPTANCE = "no-acceptance"  # acceptance 未定義（done 判定不能）→ 人へ（完了条件を足す）
+# acceptance 未達だが自動では改善タスクを起こさない（分解は人の明示操作）→ 人が分解/修正する番
+REASON_PROJECT_AWAITING_PLAN = "awaiting-plan"
 
 # milestone として「人待ち」にできる status（承認できる converged と、対応が要る no-acceptance/
-# blocked/stall/budget/cost）。これ以外（accepted/running）や、もう無いバージョンの milestone
-# ファイルは reconcile_milestones が消す＝milestone は status の純粋な投影になり復活しない。
+# blocked/stall/budget/cost/awaiting-plan）。これ以外（accepted/running）や、もう無いバージョンの
+# milestone ファイルは reconcile_milestones が消す＝milestone は status の純粋な投影になり復活しない。
 MILESTONE_STATUSES = frozenset({
     REASON_PROJECT_CONVERGED, REASON_PROJECT_STALL, REASON_PROJECT_BUDGET,
     REASON_PROJECT_COST, REASON_PROJECT_BLOCKED, REASON_PROJECT_NO_ACCEPTANCE,
+    REASON_PROJECT_AWAITING_PLAN,
 })
 
 

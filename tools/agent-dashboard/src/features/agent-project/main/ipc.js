@@ -215,10 +215,10 @@ function registerIpc(ctx) {
     return res;
   });
 
-  // 不要なバックログタスクの削除（人の明示アクション）＝本体の却下（reject）へ委ねる。
-  // 判断も投函も actions 側（requestDeleteTask のコメントに理由）。
+  // 不要なバックログタスクの削除（人の明示アクション）＝物理削除（ゴミ箱へ移動）。
+  // 「作り直させない」意思表示は却下（reject）が担う（requestDeleteTask のコメントに理由）。
   handle('dashboard:deleteTask', async ({ dir, id, reason }) =>
-    actions.requestDeleteTask(loadConfig(), { dir, id, reason }));
+    actions.requestDeleteTask(loadConfig(), { dir, id, reason }, trash));
 
   // 墓標の解除（削除＝却下の取り消し）。同じ題のタスクを入れ直せる状態へ戻す。
   handle('dashboard:revive', async ({ dir, title, charter }) =>

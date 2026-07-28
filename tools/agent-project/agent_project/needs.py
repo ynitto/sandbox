@@ -333,6 +333,81 @@ def reconcile_needs(cfg: "Config", tasks: "list[Task]") -> "tuple[list[str], lis
     return ensure_needs(cfg, tasks), reap_orphan_needs(cfg)
 
 
+def prune_dangling_afters(cfg: "Config", tasks: "list[Task]") -> "list[str]":
+    """`after` の先行 id が backlog にも archive にも無い（＝物理削除された）タスクから、
+    その辺を外す。after を編集した（＝切り離した）タスクの id を返す。
+
+    却下（reject）は依存先の after 編集と再審査まで自分で行うが、物理削除は viewer の
+    ファイル操作なので、依存側の切り離しはこの整合点が毎パス引き受ける。実行順だけなら
+    `unmet_deps` が「無い id ＝満たし」と読むので詰まりはしないが、参照を残すと
+    (1) viewer の依存表示・impact が存在しないタスクを指し続ける
+    (2) 同じ id が後で再利用されたとき、無関係な新タスクが突然「先行」になる。
+    archive にある id（done/rejected）は外さない——実行済みの順序の記録として意味があり、
+    unmet_deps 上も満たし扱いで挙動が同じため。"""
+    adir = cfg.archive_dir()
+    archived = {p.stem for p in adir.glob("*.md")} if adir.exists() else set()
+    alive = {t.id for t in tasks}
+    pruned: "list[str]" = []
+    for t in tasks:
+        deps = task_deps(t)
+        keep = [d for d in deps if d in alive or d in archived]
+        if keep == deps:
+            continue
+        gone = [d for d in deps if d not in keep]
+        t.drop("after")
+        if keep:
+            t.extra.append(("after", ", ".join(keep)))
+        persist_task(cfg, t)
+        append_journal(cfg.journal,
+                       f"依存の切り離し: {t.id} の after から {', '.join(gone)} を外す"
+                       f"（backlog にも archive にも無い＝削除済み）")
+        pruned.append(t.id)
+    return pruned
+
+
+def reap_orphan_task_state(cfg: "Config") -> "list[str]":
+    """タスク本体（backlog / archive）を失った id の付随状態を物理削除する。掃除した id を返す。
+
+    対象は参照する主体が無く、残しても効果の無い孤児だけ:
+      - `verifications/<id>/` … 検証レポート。読む導線はタスク/archive 記録から
+      - `brief/<id>.md`       … run ブリーフ。残すと同じ id の再利用時に古い内容が注入される
+      - `claims/<id>.lock`    … 実行権ロック。backlog に無い id は誰も claim を参照しない
+    archive に居る id（done/rejected）の verifications/brief は記録の一部なので触らない。
+    claims だけは backlog 基準（archive 行きの時点で実行権は意味を失う）。
+    書きかけ保護は needs と同じ静穏化（settled）を通す。"""
+    backlog_ids = {p.stem for p in cfg.backlog.glob("*.md")} if cfg.backlog.exists() else set()
+    adir = cfg.archive_dir()
+    recorded = backlog_ids | ({p.stem for p in adir.glob("*.md")} if adir.exists() else set())
+    reaped: "set[str]" = set()
+    root = cfg.backlog.parent
+    vdir = root / "verifications"
+    if vdir.exists():
+        for d in sorted(p for p in vdir.iterdir() if p.is_dir()):
+            if d.name in recorded or not settled(cfg, d):
+                continue
+            shutil.rmtree(d, ignore_errors=True)
+            reaped.add(d.name)
+    bdir = root / "brief"
+    if bdir.exists():
+        for f in sorted(bdir.glob("*.md")):
+            if f.stem in recorded or not settled(cfg, f):
+                continue
+            with contextlib.suppress(OSError):
+                f.unlink()
+                reaped.add(f.stem)
+    cdir = root / "claims"
+    if cdir.exists():
+        for f in sorted(cdir.glob("*.lock")):
+            if f.stem in backlog_ids or not settled(cfg, f):
+                continue
+            with contextlib.suppress(OSError):
+                f.unlink()
+                reaped.add(f.stem)
+    for tid in sorted(reaped):
+        append_journal(cfg.journal, f"孤児の付随状態を掃除: {tid}（タスク本体なし）")
+    return sorted(reaped)
+
+
 def clear_needs_file(cfg: "Config", tid: str) -> None:
     p = needs_path(cfg, tid)
     if p.exists():
@@ -624,9 +699,9 @@ def _rejected_record(t: Task, reason: str) -> str:
 
 def cmd_reject(cfg: Config, tid: str, reason: str) -> int:
     """タスクの却下: 廃止（rejected として archive へ退避）し、依存先を proposed に戻して再審査に
-    かけ、charter があればバックログの再計画（replan）を要求する。実行前（proposed）にも
-    成果物レビュー段（review）にも使える。理由は avoid（回避知識）として蓄積し、同種の再提案を
-    予防リコールが弾く。"""
+    かける。実行前（proposed）にも成果物レビュー段（review）にも使える。再計画は要求しない
+    （分解は人の明示操作）。理由は avoid（回避知識）として蓄積し、同種の再提案を予防リコールが
+    弾くほか、次の分解時に backlog-planner へ「却下済み」として渡り、意図の似た再提案を抑える。"""
     tasks = load_tasks(cfg.backlog)
     t = next((x for x in tasks if x.id == tid), None)
     if t is None:
@@ -657,9 +732,15 @@ def cmd_reject(cfg: Config, tid: str, reason: str) -> int:
         else:
             persist_task(cfg, d)
     close_task_mr(cfg, t, reason)   # タスク MR があればクローズ＋ブランチ削除（best-effort）
-    # 本体を rejected として archive へ退避（納品ではないので DELIVERY には載せない）
+    # 本体を rejected として archive へ退避（納品ではないので DELIVERY には載せない）。
+    # run ブリーフはここで退役させ、蓄積を archive 記録へ転記する（done の archive_task と同じ
+    # 理屈——brief/ に残すと同じ task-id を再利用したとき古い内容が新タスクへ注入される）。
     t.status = "rejected"
-    _archive_write(cfg, t.id, serialize_task(t) + _rejected_record(t, reason))
+    body = serialize_task(t) + _rejected_record(t, reason)
+    brief = retire_brief(cfg, t)
+    if brief:
+        body += f"\n## run ブリーフ（却下時点の蓄積。learn 射影済み）\n{brief}\n"
+    _archive_write(cfg, t.id, body)
     delete_task_file(cfg, t)
     clear_needs_file(cfg, tid)
     affected = ", ".join(d.id for d in downs) or "（なし）"
@@ -673,15 +754,12 @@ def cmd_reject(cfg: Config, tid: str, reason: str) -> int:
                          action="reject", reason=reason,
                          affects=f"{tid} → rejected ／ 依存先を再審査へ: {affected}",
                          avoid=(t.title, reason) if cfg.learn_capture and reason else None)
-    # charter があれば再計画を要求（却下で空いた穴を plan が埋め直す。rejected タイトルは
-    # archive 経由で _existing_titles に含まれるため同一タスクは再提案されない）
-    replanned = ""
-    if charter_names(cfg):
-        write_replan_request(cfg, f"タスク {tid} の却下に伴う再計画",
-                             charter=(t.get("charter") or "").strip())
-        replanned = "／charter からの再計画を要求しました"
+    # 再計画は要求しない（分解は人の明示操作だけ、の契約）。かつては却下のたびに replan を
+    # 自動発行して「穴を埋め直して」いたが、それが「消しても似たタスクが復活する」体験の
+    # 直接の原因だった。却下済みは archive（rejected）と墓標に残り、次に人が分解を要求した
+    # ときに backlog-planner への入力として渡る＝意図の似た再提案はそこで抑止される。
     append_journal(cfg.journal, f"reject: {tid} を却下（依存先 {len(downs)} 件を再審査へ）")
-    print(f"{dr}: {tid} を却下しました。影響（依存先→再審査）: {affected}{replanned}")
+    print(f"{dr}: {tid} を却下しました。影響（依存先→再審査）: {affected}")
     return 0
 
 

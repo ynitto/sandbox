@@ -146,6 +146,8 @@ const STATUS_LABELS = {
   budget: '回数上限',
   cost: 'コスト上限',
   'no-acceptance': '完了条件が未定義',
+  'no-progress': '停滞',
+  'awaiting-plan': '分解待ち',
   drained: '消化完了',
   throttle: '予算超過',
   // 実行（run）の状態
