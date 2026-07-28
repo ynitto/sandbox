@@ -1535,6 +1535,94 @@ class TestRejectAndImpact(unittest.TestCase):
             km.cmd_reject(cfg, "T1", "スコープ外")
             self.assertIn("決済APIを追加", km._existing_titles(cfg))
 
+    def test_reject_retires_brief_into_archive(self):
+        # 却下でも run ブリーフを退役させる（done の archive_task と同じ）。brief/ に残すと
+        # 同じ task-id を再利用したとき前世代の内容が新タスクへ注入される。蓄積は archive の
+        # 却下記録へ転記して残す。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            mkb(d, "T1", verify="true")
+            t = km.load_tasks(cfg.backlog)[0]
+            km.append_brief_item(cfg, t, "制約: 外部APIはモックする")
+            self.assertTrue((d / "brief" / "T1.md").exists())
+            km.cmd_reject(cfg, "T1", "不要")
+            self.assertFalse((d / "brief" / "T1.md").exists())
+            arch = (cfg.archive_dir() / "T1.md").read_text(encoding="utf-8")
+            self.assertIn("run ブリーフ", arch)
+            self.assertIn("外部APIはモックする", arch)
+
+
+class TestDetachAndOrphanGc(unittest.TestCase):
+    """物理削除（viewer のファイル操作）との整合: 依存の切り離しと孤児の付随状態の掃除。
+    却下（cmd_reject）は自分で切り離すが、削除はエンジンの毎パスの整合点が引き受ける。"""
+
+    def test_prune_dangling_afters_detaches_deleted_predecessor(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            mkb(d, "A", verify="true")
+            mkb(d, "B", verify="true")
+            mkb(d, "C", verify="true")
+            tasks = {t.id: t for t in km.load_tasks(cfg.backlog)}
+            tasks["B"].extra.append(("after", "A, GHOST"))   # GHOST = 物理削除済み相当
+            km.persist_task(cfg, tasks["B"])
+            adir = cfg.archive_dir()
+            adir.mkdir(parents=True, exist_ok=True)
+            (adir / "OLD.md").write_text("## OLD: x\n- status: done\n", encoding="utf-8")
+            tasks["C"].extra.append(("after", "OLD"))        # archive の done は切り離さない
+            km.persist_task(cfg, tasks["C"])
+            pruned = km.prune_dangling_afters(cfg, km.load_tasks(cfg.backlog))
+            self.assertEqual(pruned, ["B"])
+            by = {t.id: t for t in km.load_tasks(cfg.backlog)}
+            self.assertEqual(km.task_deps(by["B"]), ["A"])   # 生きている先行は残る
+            self.assertEqual(km.task_deps(by["C"]), ["OLD"])  # 実行済みの順序の記録は残る
+
+    def test_reap_orphan_task_state_removes_stateless_leftovers(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            mkb(d, "LIVE", verify="true")
+            adir = cfg.archive_dir()
+            adir.mkdir(parents=True, exist_ok=True)
+            (adir / "DONE.md").write_text("## DONE: x\n- status: done\n", encoding="utf-8")
+            for tid in ("LIVE", "DONE", "GONE"):
+                (d / "verifications" / tid).mkdir(parents=True, exist_ok=True)
+                (d / "verifications" / tid / "r.md").write_text("x", encoding="utf-8")
+                (d / "brief").mkdir(exist_ok=True)
+                (d / "brief" / f"{tid}.md").write_text("x", encoding="utf-8")
+                (d / "claims").mkdir(exist_ok=True)
+                (d / "claims" / f"{tid}.lock").write_text("x", encoding="utf-8")
+            reaped = km.reap_orphan_task_state(cfg)
+            self.assertEqual(reaped, ["DONE", "GONE"])
+            # 検証記録・ブリーフ: backlog にも archive にも無い id だけ消す
+            self.assertTrue((d / "verifications" / "LIVE").exists())
+            self.assertTrue((d / "verifications" / "DONE").exists())
+            self.assertFalse((d / "verifications" / "GONE").exists())
+            self.assertTrue((d / "brief" / "LIVE.md").exists())
+            self.assertTrue((d / "brief" / "DONE.md").exists())
+            self.assertFalse((d / "brief" / "GONE.md").exists())
+            # claim ロック: backlog に居ない id は実行権の意味を失うので archive 行きでも消す
+            self.assertTrue((d / "claims" / "LIVE.lock").exists())
+            self.assertFalse((d / "claims" / "DONE.lock").exists())
+            self.assertFalse((d / "claims" / "GONE.lock").exists())
+
+    def test_run_pass_detaches_and_reaps(self):
+        # 呼び出し点の確認: 通常の run パス（_run_setup の整合点）で切り離しと掃除が走る。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            mkb(d, "B", verify="true")
+            tasks = km.load_tasks(cfg.backlog)
+            tasks[0].extra.append(("after", "GHOST"))
+            km.persist_task(cfg, tasks[0])
+            (d / "brief").mkdir(exist_ok=True)
+            (d / "brief" / "GHOST.md").write_text("x", encoding="utf-8")
+            km.run_loop(cfg, act=lambda t, c, loc: (True, "ok"))
+            self.assertFalse((d / "brief" / "GHOST.md").exists())
+            journal = cfg.journal.read_text(encoding="utf-8")
+            self.assertIn("依存の切り離し: B", journal)
+
     def test_impact_lists_upstream_and_downstream(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)

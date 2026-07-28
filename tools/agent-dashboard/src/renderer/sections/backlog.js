@@ -960,9 +960,14 @@ function showTaskDialog(id, scope) {
   const delBtn = $('btn-task-delete');
   if (delBtn) {
     delBtn.addEventListener('click', async () => {
+      const downs = dependentsOf(p.backlog, t.id);
+      const detach = downs.length
+        ? `後続タスク（${downs.map((x) => x.id).join(', ')}）の先行指定からは自動で外れます。\n`
+        : '';
       const yes = await confirmDialog(
         `タスク ${t.id}「${t.title}」をゴミ箱へ移動します。\n` +
           'バックログと要対応カードから外れます。操作の記録は残りません。\n' +
+          detach +
           '「バックログを分解」を実行すると、似た内容のタスクがまた提案されることがあります。\n' +
           '作り直させたくないなら「✕ 却下」を、一時的に止めたいだけなら' +
           '「⏸ 保留にする」を使ってください。よろしいですか？'

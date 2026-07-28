@@ -37,6 +37,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - 「計画を作り直す」ボタンを「バックログを分解」に改め、初回分解の正規の口として案内。
   awaiting-plan の milestone カードは分解ボタンへの誘導を表示
 
+**削除・却下と関連状態の整合（切り離しと孤児掃除）**
+
+- エンジンの毎パスの整合点に 2 つの GC を追加。`prune_dangling_afters` は後続タスクの
+  `after`（先行指定）から backlog にも archive にも無い id（＝物理削除済み）を切り離す。
+  `reap_orphan_task_state` はタスク本体を失った付随状態——検証記録 `verifications/<id>/`・
+  run ブリーフ `brief/<id>.md`・実行権ロック `claims/<id>.lock`——を物理削除する
+  （archive に居る id の検証記録・ブリーフは記録として温存。ロックは backlog 基準）
+- 却下（reject）は run ブリーフをその場で退役させ、蓄積を archive の却下記録へ転記する
+  （done の archive と同じ扱い。brief/ に残すと同 id 再利用時に古い内容が注入される）
+- dashboard の削除は viewer が持ち主のレビューコメント（`reviews/<id>/`）も一緒に掃除し、
+  確認ダイアログに影響する後続タスク（先行指定が自動で外れるもの）を表示
+
 ### agent-project / agent-dashboard: バックログを削除しても要対応（needs）が残り、消しても復活する問題を修正
 
 画面（agent-dashboard・Windows）からバックログを削除しても要対応カードが残り、手で消しても

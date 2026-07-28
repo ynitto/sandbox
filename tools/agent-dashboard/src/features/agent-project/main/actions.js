@@ -446,6 +446,11 @@ async function requestDeleteTask(cfg, { dir, id }, trash) {
   const via = trash ? await trash(file) : (fs.rmSync(file, { force: true }), 'delete');
   const needsFile = path.join(dir, 'needs', `${tid}.md`);
   if (fs.existsSync(needsFile)) fs.rmSync(needsFile, { force: true });
+  // viewer 管理のサイドカー（レビューコメント）も一緒に片付ける。持ち主はこのアプリなので、
+  // 実行エンジン側の孤児掃除には任せない。エンジン管理の付随状態（検証記録・実行権ロック・
+  // 後続タスクの先行指定）はエンジンが毎パスの整合点で切り離し・掃除する。
+  const reviewsDir = path.join(dir, project.REVIEWS_DIR, tid);
+  if (fs.existsSync(reviewsDir)) fs.rmSync(reviewsDir, { recursive: true, force: true });
   return {
     output:
       `${tid} を削除しました（要対応カードも片付けました）。` +
