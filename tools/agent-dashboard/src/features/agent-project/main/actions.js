@@ -438,18 +438,18 @@ async function requestDeleteTask(cfg, { dir, id }, trash) {
   // 状態が食い違う）。押した瞬間に理由を返せるようここで見る。
   const status = project.parseTask(fs.readFileSync(file, 'utf8'), tid).status;
   if (status === 'doing') {
-    throw new Error(`${tid} は実行中（doing）のため削除できません（先に「修正して再実行」で止めてください）`);
+    throw new Error(`${tid} は実行中のため削除できません。先に「修正して再実行」で止めてください`);
   }
   if (status === 'offloaded') {
-    throw new Error(`${tid} は委譲実行中（offloaded）のため削除できません（先に run を中止してください）`);
+    throw new Error(`${tid} は委譲先で実行中のため削除できません。先に実行を中止してください`);
   }
   const via = trash ? await trash(file) : (fs.rmSync(file, { force: true }), 'delete');
   const needsFile = path.join(dir, 'needs', `${tid}.md`);
   if (fs.existsSync(needsFile)) fs.rmSync(needsFile, { force: true });
   return {
     output:
-      `${tid} を削除しました（バックログと要対応カードから除去）。` +
-      '同じ内容が必要になったら、分解の実行かタスクの追加で入れ直せます',
+      `${tid} を削除しました（要対応カードも片付けました）。` +
+      '同じ内容が必要になったら、「バックログを分解」かタスクの追加で入れ直せます',
     via,
   };
 }

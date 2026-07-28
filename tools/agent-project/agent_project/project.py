@@ -141,8 +141,8 @@ def write_milestone(cfg: "Config", charter: "Charter", reason: str, summary: str
         REASON_PROJECT_COST: "コスト予算到達（人の判断待ち）",
         REASON_PROJECT_BLOCKED: "内側ループが人へエスカレーション",
         REASON_PROJECT_NO_ACCEPTANCE: "acceptance 未定義（done 判定不能→人へ）",
-        REASON_PROJECT_AWAITING_PLAN: "分解待ち（受入条件が未達。自動では改善タスクを起こしません。"
-                                      "dashboard からバックログの分解・追加を実行してください）",
+        REASON_PROJECT_AWAITING_PLAN: "分解待ち（完了条件をまだ満たせていません。タスクは自動では"
+                                      "追加されないため、「バックログを分解」かタスクの追加で進めてください）",
     }
     hint = (
         f"<!-- 完了として受領するなら `agent-project approve {pid} --reason ...`（プロジェクト done）。\n"

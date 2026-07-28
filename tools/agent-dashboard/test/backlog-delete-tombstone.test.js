@@ -87,7 +87,7 @@ function dropped(dir) {
   await test('委譲実行中（offloaded）のタスクは削除できない', async () => {
     const dir = mkProject();
     writeTask(dir, 'T3', { status: 'offloaded' });
-    await assert.rejects(async () => actions.requestDeleteTask(cfg, { dir, id: 'T3' }), /委譲実行中/);
+    await assert.rejects(async () => actions.requestDeleteTask(cfg, { dir, id: 'T3' }), /委譲先で実行中/);
     assert.ok(fs.existsSync(path.join(dir, 'backlog', 'T3.md')), 'ファイルは残る');
   });
 

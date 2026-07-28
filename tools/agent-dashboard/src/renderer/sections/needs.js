@@ -196,11 +196,11 @@ function needActionsHtml(n, options) {
   if (kind === 'plan-review') {
     buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}">承認して実行</button>`);
     buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}" data-require="1" title="修正指示を記入して計画を練り直させます">差し戻す</button>`);
-    buttons.push(`<button class="danger" data-act="reject" data-id="${esc(n.id)}" data-require="1" title="このタスクを廃止します。次の分解では意図の似たタスクを再提案させません">却下</button>`);
+    buttons.push(`<button class="danger" data-act="reject" data-id="${esc(n.id)}" data-require="1" title="このタスクを廃止します。似た内容のタスクは次の分解でも提案されなくなります">却下</button>`);
   } else if (kind === 'review') {
     buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}">承認して完了にする</button>`);
     buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}" data-require="1" title="修正方針を記入してやり直させます">差し戻す</button>`);
-    buttons.push(`<button class="danger" data-act="reject" data-id="${esc(n.id)}" data-require="1" title="この成果を採用せず廃止します。次の分解では意図の似たタスクを再提案させません">却下</button>`);
+    buttons.push(`<button class="danger" data-act="reject" data-id="${esc(n.id)}" data-require="1" title="この成果を採用せず廃止します。似た内容のタスクは次の分解でも提案されなくなります">却下</button>`);
   } else if (kind === 'milestone') {
     const status = milestoneStatusFor(state.project, n.id);
     if (status === null || status === 'converged') {
@@ -222,7 +222,7 @@ function needActionsHtml(n, options) {
       // 分解待ち: 受入条件が未達で、実行できるタスクが無い。自動では分解しないので、
       // バックログタブの「バックログを分解」へ誘導する（勝手に作り直さないのが契約）。
       buttons.push(
-        `<span class="muted">受入条件が未達で、実行できるタスクがありません。自動では分解しないため、バックログタブの「バックログを分解」でタスクを作ってください。</span>`
+        `<span class="muted">完了条件をまだ満たせておらず、実行できるタスクもありません。タスクは自動では作られないので、バックログタブの「バックログを分解」で作ってください。</span>`
       );
       buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}">↩ 指示を送る</button>`);
     } else {

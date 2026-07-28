@@ -61,7 +61,7 @@ function rejectConfirmMessage(p, id, what) {
   return (
     `${id} を却下します（${what}）。\n` +
     'タスクは廃止されて履歴に残り、同種のタスクを避ける学習も記録されます。' +
-    '次にバックログを分解するとき、意図の似たタスクは再提案されません。' +
+    '似た内容のタスクは、次にバックログを分解しても提案されなくなります。' +
     impact +
     '\nよろしいですか？'
   );
@@ -543,7 +543,7 @@ function renderBacklog() {
       </div>
       <div class="task-toolbar-actions">
         <button id="btn-notes" title="気になったことをメモに書き溜めます（計画は勝手に動きません）">メモ</button>
-        <button id="btn-replan"${replanPending ? ' disabled' : ''} title="プロジェクト憲章からタスクを分解します（初回の分解もこのボタン。自動では分解されません）">バックログを分解</button>
+        <button id="btn-replan"${replanPending ? ' disabled' : ''} title="プロジェクト憲章からタスクを作ります。自動では作られないので、最初の分解もここから始めます">バックログを分解</button>
         <button id="btn-enqueue" class="primary-inline" title="タスクを1件追加します">タスクを追加</button>
       </div>
     </div>
@@ -734,7 +734,7 @@ function showTaskDialog(id, scope) {
           <textarea rows="2" id="task-reason" class="need-input" placeholder="操作の理由（決定記録に残ります）"></textarea>
           <div class="row need-buttons">
             ${canApprove ? `<button class="primary-inline" data-taskact="approve">✓ 承認</button>` : ''}
-            ${t.status === 'doing' ? '' : `<button class="danger" data-taskact="reject" data-confirm-reject="1" title="タスクを廃止します。依存するタスクは計画の再確認に戻り、次の分解では意図の似たタスクを再提案させません">✕ 却下</button>`}
+            ${t.status === 'doing' ? '' : `<button class="danger" data-taskact="reject" data-confirm-reject="1" title="タスクを廃止します。依存するタスクは計画の再確認に戻り、似た内容のタスクは次の分解でも提案されなくなります">✕ 却下</button>`}
             <button data-taskact="pin" title="他より先に着手させます">▲ 最優先にする</button>
             <button data-taskact="defer" title="優先度を下げて後に回します">▽ 後回しにする</button>
             <button data-taskact="hold" title="実行を止めて保留にします（再開には承認が必要）">⏸ 保留にする</button>
@@ -962,8 +962,8 @@ function showTaskDialog(id, scope) {
     delBtn.addEventListener('click', async () => {
       const yes = await confirmDialog(
         `タスク ${t.id}「${t.title}」をゴミ箱へ移動します。\n` +
-          'バックログと要対応カードから外れます（決定記録は残りません）。\n' +
-          '次に「分解」を実行すると同種のタスクがまた提案されることがあります。\n' +
+          'バックログと要対応カードから外れます。操作の記録は残りません。\n' +
+          '「バックログを分解」を実行すると、似た内容のタスクがまた提案されることがあります。\n' +
           '作り直させたくないなら「✕ 却下」を、一時的に止めたいだけなら' +
           '「⏸ 保留にする」を使ってください。よろしいですか？'
       );
@@ -1051,7 +1051,7 @@ async function requestReplan(charter = '') {
   const versionText = charter ? `計画バージョン「${charter}」` : 'プロジェクト憲章';
   const yes = await confirmDialog(
     `${p.name}: ${versionText}からタスクを分解します。\n` +
-      '進行中・却下済みと意図が重複するタスクは追加されません（完了済みと同種のやり直しは作り直されます）。\n' +
+      '進行中・却下済みと内容の重なるタスクは追加されません。完了済みと同種の作業は、やり直しとして作り直されます。\n' +
       'タスクの状態は書き換えません。反映は次の実行サイクルです（即時ではありません）。よろしいですか？'
   );
   if (!yes) return;
