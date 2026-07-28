@@ -78,6 +78,21 @@ def harden_git_env(env: dict) -> dict:
     env["GIT_ASKPASS"] = ""        # 空 = ヘルパを起動しない（GUI プロンプトも出さない）
     env["SSH_ASKPASS"] = ""
     env.setdefault("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
+    # バックグラウンドの自動メンテナンスを禁じる。commit/fetch の後に git が fork する
+    # `gc --auto` / `maintenance run --auto` は呼び出しプロセスより長生きし、状態リポジトリの
+    # `.git/objects` へ書き続ける——一時ディレクトリの掃除・worktree の削除と競合して
+    # 「Directory not empty」で片付けが失敗する（CI で実際に踏んだ）。gc 自体は禁止しない:
+    # autoDetach=false で**同期実行**に倒す（有界・後始末と競合しない）。既存の
+    # GIT_CONFIG_COUNT 注入があれば後ろに積む（上書きしない）。
+    try:
+        base = int(env.get("GIT_CONFIG_COUNT") or 0)
+    except ValueError:
+        base = 0
+    for i, (k, v) in enumerate((("maintenance.auto", "false"),
+                                ("gc.autoDetach", "false"))):
+        env[f"GIT_CONFIG_KEY_{base + i}"] = k
+        env[f"GIT_CONFIG_VALUE_{base + i}"] = v
+    env["GIT_CONFIG_COUNT"] = str(base + 2)
     return env
 
 
