@@ -141,7 +141,12 @@ CLI の `--root`（= host.yaml の `projects[].root`）と同じものを指す�
 ```
 
 **clone は dashboard では行わない**（agent-project が host.yaml の宣言に従って作る）。
-エンジンが居ない閲覧専用 PC だけ `git clone` を 1 回して、その clone を登録する。
+閲覧・検収だけの PC にも**常駐体（`agent-project serve`）を置き、host.yaml に同じ
+プロジェクトを宣言する**——一覧への発見（`engine/status.json`）も、承認などの投函を
+共有先へ届ける push も常駐体だけが担うため、常駐体の居ない PC では一覧に出ず、
+置いた指示も届かない。常駐体を置けない PC からは、フォージ側の決着
+（MR のマージ＝承認／未マージクローズ＝却下／changes-requested＝差し戻し）で
+検収する——こちらはブラウザだけで完結し、決着は実行側の常駐体が拾う。
 
 移行途中の 2 つの形も読める（どちらも旧レイアウトの互換で、正は上の形）:
 
@@ -547,8 +552,9 @@ npm run dist             # Windows 向けビルド（portable + NSIS → release
 画面からの登録・登録解除は無いので、一覧に出すには実行側の `agent-project.host.yaml` へ
 追記する。初回起動後、⚙ 設定で調整するのは次の 4 つ:
 
-1. **この PC の役割**: `engineer`（既定・本体も動かす全機能）／ `viewer`（閲覧・レビュー専用。
-   実行側の設定を持たない PC で、engineer 専用の UI を隠す）。
+1. **この PC の役割**: `engineer`（既定・本体も動かす全機能）／ `viewer`（閲覧・レビュー専用の
+   表示。engineer 専用の UI を隠す）。役割は表示の切替であって、どちらでもこの PC に
+   常駐体は要る（発見と投函の push は常駐体が担う。→「プロジェクトルート」の節）。
 2. （任意）**状況ファイルの読み先**: WSL ディストロとベースパス。既定で `$HOME/.agents` を
    `wslpath` に聞いて解決するので、ふつうは触らなくてよい。
 3. （任意）**GitLab の Base URL / トークン**（read_api で十分）。イシューの最新状態
