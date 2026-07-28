@@ -407,9 +407,10 @@ CLI 定義は同じ定義ファイルから出る argv を両側で固定する�
 ## 6. 人のアクションと護るべき不変条件
 
 dashboard から返せる判断は、plan-review / delivery-review の承認・差し戻し・却下（却下は
-墓標 `tombstones.md` に載り、同種タスクの再生成を抑止する）、feedback 再開、revise
-（doing 中も。受入基準 `acceptance` の項目編集を含む）、replan、inbox 追加、観点メモの追加と
-「メモを分解」（distill-notes）、pause / stop、reset、run の cancel と削除、板への手動入札と
+墓標 `tombstones.md` に載り、次の分解でプランナーに渡って同種・類似タスクの再生成を抑止する）、
+feedback 再開、revise（doing 中も。受入基準 `acceptance` の項目編集を含む）、バックログの分解
+（replan。charter 分解はこの明示操作でしか走らず、初回の分解もここから）、inbox 追加、観点メモの
+追加と「メモを分解」（distill-notes）、pause / stop、reset、run の cancel と削除、板への手動入札と
 中止（§5.2）。どれも次の護りを破らない。
 
 - **done は verify のみが根拠**。状態遷移を画面から直接書き換えない。revise も状態を書かず、
@@ -429,9 +430,12 @@ dashboard から返せる判断は、plan-review / delivery-review の承認・�
 差し戻し）は常駐体が拾い、画面の承認・差し戻しボタンは「フォージを使わない判断」の口として
 同じ契約へ合流する。
 
-例外は 2 つある。ひとつは 🗑 削除（タスク / run）で、削除の公式契約が無いためゴミ箱への移動として
-行う。もうひとつは viewer 管理のサイドカー（監視担当の割り当て `assignments.json` と
-レビューコメント `reviews/<task-id>/*.json`）で、どちらもタスク状態には触れない。
+例外は 2 つある。ひとつは 🗑 削除（タスク / run）で、ゴミ箱への移動として行う。分解は人の明示
+操作でしか走らないため、消したタスクを本体が作り直すことはなく、記録を残さない削除で足りる
+（作り直させない意思表示は却下＝墓標が担う）。タスクの削除は要対応カード（`needs/<id>.md`）も
+一緒に掃除し、実行中（doing / offloaded）は拒否する。もうひとつは viewer 管理のサイドカー
+（監視担当の割り当て `assignments.json` とレビューコメント `reviews/<task-id>/*.json`）で、
+どちらもタスク状態には触れない。
 
 ---
 
