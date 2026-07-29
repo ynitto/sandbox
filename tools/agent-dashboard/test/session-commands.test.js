@@ -202,11 +202,16 @@ test('起動スクリプトは on_error で分岐する（fail は起動しな�
   ]);
   assert.ok(warn.includes('timeout 30'));
   assert.ok(warn.includes('続行します'));
-  assert.ok(!warn.includes('exit 1'));
+  assert.ok(!/exit \d/.test(warn), 'warn はスクリプトを抜けない');
   const fail = loopProvider.sessionProcessLines([
     { id: 'a', mode: 'process', run: 'echo hi', timeout: 30, on_error: 'fail' },
   ]);
-  assert.ok(fail.includes('exit 1'), 'fail はスクリプトを抜けて tmux を作らせない');
+  assert.ok(fail.includes('read _; exit 0;'),
+    'fail は人へ理由を見せてからスクリプトを抜ける（tmux を作らせない）');
+  // 終了コードは 0。非 0 は「WSL / bash がそもそも起動できなかった」の合図として
+  // 起動子（.cmd）が使い、-d 無しでの再試行を引き起こす。ここで非 0 を返すと、
+  // 前準備が落ちただけなのに起動全体をやり直してしまう。
+  assert.ok(!fail.includes('exit 1'), 'スクリプト自身の失敗で非 0 を返さない');
 });
 
 test('起動スクリプトはスキップ済みの行を差し込まない', () => {
