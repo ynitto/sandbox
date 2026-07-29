@@ -1167,6 +1167,14 @@ function toViewerPath(p, distro = '') {
   return `\\\\wsl.localhost\\${name}${rest}`;
 }
 
+// ⚙ 設定で選んだディストロ（engine.distro）。POSIX パスを UNC へ寄せる呼び出しは、
+// **必ずこれを渡す**——渡さないと WSL の既定ディストロへ丸まり、設定と違う環境の
+// 存在しないフォルダを指す。同じ設定を使う経路が食い違うと、ある画面では開けて
+// 別の画面では開けない、という形で表面化する。
+function viewerDistro(cfg) {
+  return String((((cfg || {}).engine) || {}).distro || '').trim();
+}
+
 let _wslDistroCache = { at: 0, name: '' };
 function _defaultWslDistro() {
   if (process.env.WSL_DISTRO_NAME) return process.env.WSL_DISTRO_NAME;
@@ -1980,5 +1988,6 @@ module.exports = {
   hostsMatch,
   sameMachineStatus,
   toViewerPath,
+  viewerDistro,
   _isPosixAbs,
 };

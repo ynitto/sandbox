@@ -302,6 +302,31 @@ test('terminalLaunchSpec は macOS のTerminalとLinuxの利用可能な端末�
   );
 });
 
+test('定常業務も ⚙ 設定のディストロで POSIX パスを解決する（既定へ丸めない）', () => {
+  // 「相談ボタンからは開けるのに定常業務からは開けない」の正体。
+  // engine / nodeRepos 経由（プロジェクト・CLIチャット・対話診断）は toViewerPath に
+  // engine.distro を渡していたが、cowork だけ渡しておらず WSL の既定へ丸まっていた。
+  // 既定が設定と違う環境（docker-desktop 等）では別のディストロを指し、そこには
+  // bash も対象フォルダも無いので、開いたウィンドウが即座に閉じる。
+  const orig = Object.getOwnPropertyDescriptor(process, 'platform');
+  const prevEnv = process.env.WSL_DISTRO_NAME;
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+  process.env.WSL_DISTRO_NAME = 'docker-desktop';   // WSL の既定（設定とは別物）
+  try {
+    const config = { engine: { distro: 'Ubuntu' } };
+    assert.strictEqual(cowork.viewerRepo('/home/me/app', config),
+      '\\\\wsl.localhost\\Ubuntu\\home\\me\\app', '設定のディストロで解決する');
+    assert.strictEqual(cowork.viewerRepo('/home/me/app', { engine: {} }),
+      '\\\\wsl.localhost\\docker-desktop\\home\\me\\app', '設定が空なら従来どおり既定へ');
+    // UNC / ドライブ表記はそのまま（変換対象は POSIX 絶対パスだけ）
+    assert.strictEqual(cowork.viewerRepo('C:\\proj\\app', config), 'C:\\proj\\app');
+  } finally {
+    if (orig) Object.defineProperty(process, 'platform', orig);
+    if (prevEnv === undefined) delete process.env.WSL_DISTRO_NAME;
+    else process.env.WSL_DISTRO_NAME = prevEnv;
+  }
+});
+
 test('win32 で job.prompt があれば kiro-loop を介さず tmux + kiro-cli へ直接送るウィンドウを開く', () => {
   const orig = Object.getOwnPropertyDescriptor(process, 'platform');
   Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
