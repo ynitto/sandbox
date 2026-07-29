@@ -114,47 +114,109 @@ agent-tools はこの表の空白、すなわち**チーム利用**と**人介�
 
 ## 5. ブロック構成と課題への対応
 
+下図は論理的な「知識パイプライン」ではなく、**実在するツール、各メンバーのローカル資源、
+人、GitLab / git、エージェント CLI の配置とデータフロー**を示す。Node B 以降も Node A と同じ
+構成を持ち、GitLab 上のファイル契約を介して非同期に協調する。矢印のラベルは、その境界を越える
+主なデータである。資格情報と CLI のセッションはノードから出ない。
+
 ```mermaid
-flowchart LR
-  subgraph N[個人環境 / CLI ノード群]
-    N1[Node A<br/>CLI・個人/組織利用枠]
-    N2[Node B<br/>CLI・個人/組織利用枠]
-    NN[Node N<br/>CLI・個人/組織利用枠]
-    L[ローカル捕捉<br/>run brief・証跡・利用量]
-    N1 --> L
-    N2 --> L
-    NN --> L
+flowchart TB
+  Human[人<br/>開発者・レビュー担当・管理者]
+
+  subgraph NodeA[個人環境 Node A ― Node B ... N も同型]
+    Dashboard[agent-dashboard]
+    Project[agent-project<br/>resident / controller]
+    Flow[agent-flow]
+    Amigos[agent-amigos]
+    Loop[agent-loop]
+    Gate[codd-gate / verify]
+    Core[agentcore<br/>transport・protocol・budget 読取]
+    CLI[エージェント CLI<br/>個人または組織の利用枠]
+    Skills[(ローカル skills / framework)]
+    Local[(ローカル状態<br/>host.yaml・budget ledger・worktree)]
+
+    Dashboard -->|操作契約<br/>approve・hold・bid| Project
+    Dashboard -->|ノード所有者の budget 設定| Local
+    Project -->|task spec・rules.md・repo 文脈を束ねた prompt| Flow
+    Project -->|mission 参加・役割・予算| Amigos
+    Project -->|計画・裁定・検証 prompt| CLI
+    Project -->|受入基準・検証 recipe| Gate
+    Flow -->|実装 / review / verify prompt| CLI
+    Amigos -->|mission・role・前手番の成果を束ねた prompt| CLI
+    Loop -->|定期 prompt| CLI
+    Skills -->|SKILL.md・テンプレート・framework 指示| Project
+    Skills -->|実行時 skill| CLI
+    CLI -->|応答・patch・使用量・実行結果| Flow
+    CLI -->|計画・裁定結果| Project
+    Gate -->|PASS / fail・evidence| Project
+    Local -->|ノード能力・予算・repo のローカル対応| Project
+    Local -->|routine 設定・prompt| Loop
+    Flow -->|成果・run brief・証跡| Project
+    Core -.->|共通ライブラリ| Project
+    Core -.->|共通ライブラリ| Flow
+    Core -.->|共通ライブラリ| Amigos
   end
 
-  B[(git transport<br/>agent-board / state repo)]
-  D[分担契約<br/>宣言・bid・claim・lease]
-  K[知識パイプライン<br/>decisions → 候補 → rules.md]
-  E[実行への強制<br/>常時注入・codd-gate・verify]
-  H[人 / MR・PR<br/>新種の価値判断だけ]
+  subgraph GitLab[GitLab / git ― 保管・転送・公式決着]
+    State[(project state repo<br/>tasks・brief・decisions・rules.md)]
+    Board[(agent-board repo<br/>nodes・delegations・bids・award・lease)]
+    Source[(成果物 repo / MR・PR<br/>source・diff・review・CI evidence)]
+    SkillRepo[(skills / framework repo<br/>版・系譜・改善 PR)]
+    AmigosBus[(agent-amigos bus<br/>mission・turn・成果・claim)]
+  end
 
-  L -->|秘密を除いた契約と証跡| B
-  B <--> D
-  D -->|落札した仕事| N
-  B --> K
-  K --> E
-  E -->|ルール版付きタスク| D
-  E -->|PASS / fail / rollback| K
-  K -->|未解決候補と根拠| H
-  H -->|決定記録| B
+  Human -->|charter・rules・判断・予算方針| Dashboard
+  Dashboard -->|差分・基準・証跡・残量・判断候補| Human
+  Project <-->|① task / status / brief / decisions / rules.md| State
+  Project <-->|② 能力・予算要約・公示・bid・award・claim / lease| Board
+  Flow <-->|③ clone / source / commit / branch| Source
+  Project <-->|④ MR 状態・review comment・CI evidence| Source
+  Skills <-->|⑤ skill / framework の pull・改善差分 / PR| SkillRepo
+  Amigos <-->|⑧ mission・turn・役割成果・claim / lease| AmigosBus
+  State -.->|⑥ 同じ project rules と知見を取得| NodeB[Node B ... N<br/>同じ agent-* 構成]
+  Board -.->|⑦ 仕事と利用枠を協調分担| NodeB
+  NodeB -.->|成果・証跡・learn / avoid| State
+  NodeB -.->|bid・claim / lease・利用枠要約| Board
 ```
 
-| ブロック | 主に解く課題 | 既存の足場 | 追加・改善が必要な境界 |
-|---|---|---|---|
-| 個人環境 / CLI ノード群 | P1・P2 | host.yaml、node-budget 台帳、CLI プラグイン | 組織契約も含む残量の自己申告・鮮度・観測不能の表現 |
-| git transport + 分担契約 | P1・P2・P6 | board の宣言 / bid / claim / lease / fencing | ノード横断の予算スナップショットと予算を考慮した落札説明 |
-| ローカル捕捉 | P4・P5 | run ブリーフ、archive、検証証跡、decisions | skill / rule の適用版と結果を共通 envelope で記録 |
-| 知識パイプライン | P3・P4・P5 | learn / avoid、類似再利用、`rules.md` 昇格、ltm-use | 複数ノード由来の候補統合、provenance、適用範囲、反証・退役 |
-| 実行への強制 | P3・P4・P6 | `rules.md` 常時注入、verify、codd-gate | 適用確認、ルール版固定、決定的ゲートへの段階的コンパイル |
-| 人 / MR・PR | P4・P6 | 三段自動解決、検収カード、公式決着 | 競合候補と悪化ルールだけを根拠付きで裁定する UI |
+### 5.1 境界を越えるデータ
 
-図の `git transport` はコーディネータではない。各ノードが同じ契約から同じ結論を導き、秘密と
-生のプロンプトはノード外へ出さない。したがってクラウド API を避けても、監査可能性は契約・
-コミット・証跡で確保できる。
+| # | 境界とデータ | 正本 / 書き手 | コンセプトを具体化する点 | 主に解く課題 |
+|---|---|---|---|---|
+| ① | agent-project ↔ state repo: task、status、run brief、`decisions/`、`rules.md`、knowledge observation | task ごとの所有者と agent-project。git は転送のみ | ノードの知見を共有し、検証済み learn を全ノードへ効くプロジェクトルールにする（C1・C8） | P3・P4・P5 |
+| ②・⑦ | agent-project / agentcore ↔ board repo: node 能力、期限付き予算要約、公示、bid、award、claim / lease | 宣言・bid は各ノード、award は同じ入力から決定的に導出 | CLI と財布を中央へ移さず、余力のある個人環境へ**仕事を移動**する（C1・C2・C7） | P1・P2 |
+| ③ | agent-flow ↔ 成果物 repo: clone、source、patch、commit、branch | source / commit は成果物 repo、作業中 patch は担当ノード | 実行はローカル CLI、成果はチームの公式 repo へ分離する。資格情報や prompt は push しない | P2・P6 |
+| ④ | agent-project ↔ MR/PR: diff、review comment、CI evidence、merge / close / changes-requested | 公式決着は GitLab、agent-project は読む | 人のボタンを品質保証にせず、機械証跡と公式状態から done を導く（C4〜C6） | P4・P6 |
+| ⑤ | ローカル skills ↔ skill repo: SKILL.md、version、lineage、評価、改善 PR | skill repo が配布版、各ノードはローカル試用・改善 | 「配った」で終わらず、①の適用版と outcome に接続して使用・改善を測れるようにする（C8） | P3・P4・P5 |
+| ⑥ | state repo → 他ノード: project rules、decision、brief、候補と証跡参照 | state repo 内のプロジェクト状態 | Node A の判断を Node B の prompt へ常時注入し、個人の頭に閉じない（C1・C8） | P3・P5 |
+| ⑧ | agent-amigos ↔ mission bus: mission、role、turn、前手番の成果、claim / lease | mission の各手番担当。bus は転送のみ | 複数 CLI の往復作業も中央実行サービスなしに分担し、前手番の成果を次の prompt の材料へする（C1・C2） | P1・P2・P6 |
+
+### 5.2 ツール内部の prompt とファイルの組み立て
+
+図の Node A 内が、共有物を「実際に使わせる」境界である。agent-project は charter、task spec、
+`rules.md`、関連する decision / learn、repo 文脈、受入基準を実行要求へ束ねる。agent-flow と
+agent-amigos はその要求を役割・手番・依存成果に応じた **prompt** にし、ローカル skill / framework
+を加えてエージェント CLI を起動する。CLI から返る patch や文章を自己申告の成功とは扱わず、
+codd-gate / verify が **ファイル、受入基準、証跡**を検査する。その outcome と使用した rule / skill の
+版を run brief と decision へ戻すことで、⑤の「配布」と①の「学習」が閉じる。
+
+agent-dashboard はこの流れの第二の制御器ではない。人から charter、ルール、判断、予算方針を受け、
+agent-project が読む操作契約を投函するだけである。逆方向には、MR/PR の差分、基準、証跡、板の
+分担理由、各ノードが公開した利用枠要約を一つの判断材料として返す。これが「人への介入回数を
+減らし、1 回の質を上げる」を具体化する。
+
+### 5.3 外部資源との境界と、置かないもの
+
+- **エージェント CLI**: prompt、skill、ローカルファイルを受け、応答・patch・利用量を返す。
+  CLI の認証情報、個人/組織契約のセッション、生の履歴はローカルに留める。
+- **GitLab / git**: project state、board 契約、source、MR/PR、skill 版を保管・転送するが、担当選定、
+  prompt の生成、知識の自動蒸留は行わない。中央は転送だけ、という C2 の具体形である。
+- **人**: 新種の価値判断、charter、予算方針、競合ルールの裁定を担う。機械で検査できる品質や
+  アカウントごとの日常的な残量巡回は担わない。
+
+したがって図には、共有 API キー、クラウド上の共通エージェント実行基盤、中央スケジューラ、
+中央の知識推論サービスを置かない。監査可能性は GitLab 上の契約、commit、decision、証跡で確保し、
+実行と秘密は各ノードに残す。
 
 ## 6. ぶれないための原則
 
