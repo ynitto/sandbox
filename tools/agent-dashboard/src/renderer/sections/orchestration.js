@@ -1694,6 +1694,10 @@ function bindCoworkDetailActions(root, folder) {
 // `cowork.roots` が持つ——定常業務の実行側はこの dashboard 自身だから（「宣言は実行側が
 // 持つ」の原則。agent-project の host.yaml に載せると、常駐体が管理しないものを常駐体の
 // 宣言ファイルに書くねじれになる）。
+//
+// **登録の入口は全体設定「定常業務」だけ**（btn-settings-cowork-add-root）。定常業務画面は
+// 選択中プロジェクトの作業を見る画面なので、別フォルダ（＝他プロジェクト）の登録ボタンを
+// 置かない。選択中フォルダ自身の「登録を解除」だけをバッジとして残す。
 function coworkRootBadgeHtml(folder) {
   const p = (state.discovery && state.discovery.projects) || [];
   const sel = p.find((x) => x && x.dir === folder);
@@ -1779,7 +1783,6 @@ function renderCowork() {
         </div>
         <div class="row">
           <button id="btn-cowork-add">追加</button>
-          <button id="btn-cowork-add-root" title="定常業務のフォルダをこの画面に登録します">フォルダを登録</button>
           <button id="btn-cowork-save">保存</button>
           <button id="btn-cowork-refresh" title="最新の状態を確認">更新</button>
         </div>
@@ -1793,13 +1796,11 @@ function renderCowork() {
         <section class="cowork-list-pane" aria-label="定常業務の一覧">${coworkRoutineSelectorHtml(entries, selectedId)}</section>
         <div id="cowork-selected-slot" class="cowork-detail-pane" data-ui-scroll-key>${coworkSelectedDetailHtml(selected, observed, busyId)}</div>
       </div>`
-      : '<div class="empty"><strong>このプロジェクトに登録された定常業務はありません</strong><span>プロジェクトの設定ファイルに作業を追加してください。</span></div>'}
+      : '<div class="empty"><strong>このプロジェクトに登録された定常業務はありません</strong><span>「追加」から作業を作成できます。別のフォルダを扱うには、全体設定の「定常業務」で登録してください。</span></div>'}
     </div>`;
   bindCoworkRoutineSelector(el);
   const addBtn = $('btn-cowork-add');
   if (addBtn) addBtn.addEventListener('click', () => openCoworkWorkDialog(-1));
-  const addRootBtn = $('btn-cowork-add-root');
-  if (addRootBtn) addRootBtn.addEventListener('click', addCoworkRoot);
   const dropRootBtn = $('btn-cowork-drop-root');
   if (dropRootBtn) dropRootBtn.addEventListener('click', () => dropCoworkRoot(folder));
   const saveBtn = $('btn-cowork-save');

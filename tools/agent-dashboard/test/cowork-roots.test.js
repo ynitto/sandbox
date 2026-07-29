@@ -298,6 +298,9 @@ test('宣言された local が実在しなければ理由付きで非活性', (
   try {
     const proj = path.join(base, 'proj-state');
     fs.mkdirSync(proj, { recursive: true });
+    fs.writeFileSync(path.join(proj, 'repos.json'), JSON.stringify({
+      app: { url: 'https://h/t/app.git' },
+    }), 'utf8');
     const home = path.join(base, 'agents-home');
     fs.mkdirSync(home, { recursive: true });
     fs.writeFileSync(path.join(home, 'agent-project.host.json'), JSON.stringify({
@@ -307,6 +310,38 @@ test('宣言された local が実在しなければ理由付きで非活性', (
     const app = agent.chatCwdChoices({}, proj).find((c) => c.label === 'app');
     assert.ok(app && !app.enabled);
     assert.match(app.reason, /見つかりません/);
+  } finally {
+    if (old === undefined) delete process.env.AGENT_PROJECT_AGENTS_HOME;
+    else process.env.AGENT_PROJECT_AGENTS_HOME = old;
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('レジストリに無いリポジトリは host.yaml に宣言があっても並べない', () => {
+  // 起動先は「選択中プロジェクトに関するルートフォルダ」だけ。ノードの host.yaml repos[] は
+  // 全プロジェクト分のクローン宣言なので、そのまま並べると他プロジェクト用のクローンが混ざる。
+  const base = tmp('kpv-chatcwd-scope-');
+  const old = process.env.AGENT_PROJECT_AGENTS_HOME;
+  try {
+    const proj = path.join(base, 'proj-state');
+    fs.mkdirSync(proj, { recursive: true });
+    fs.writeFileSync(path.join(proj, 'repos.json'), JSON.stringify({
+      app: { url: 'https://h/t/app.git' },
+    }), 'utf8');
+    const clone = path.join(base, 'mirrors', 'unrelated');
+    fs.mkdirSync(clone, { recursive: true });
+    const home = path.join(base, 'agents-home');
+    fs.mkdirSync(home, { recursive: true });
+    fs.writeFileSync(path.join(home, 'agent-project.host.json'), JSON.stringify({
+      schema_version: 1,
+      repos: [{ url: 'https://h/t/unrelated.git', local: clone }],
+    }), 'utf8');
+    process.env.AGENT_PROJECT_AGENTS_HOME = home;
+
+    const got = agent.chatCwdChoices({}, proj);
+    assert.ok(!got.some((c) => c.label === 'unrelated'),
+      '他プロジェクト用のクローンが候補に混ざっている');
+    assert.ok(got.some((c) => c.label === 'app'), 'レジストリのリポジトリは（非活性でも）並ぶ');
   } finally {
     if (old === undefined) delete process.env.AGENT_PROJECT_AGENTS_HOME;
     else process.env.AGENT_PROJECT_AGENTS_HOME = old;
@@ -327,6 +362,15 @@ test('フォルダの登録は全体設定「定常業務」から行える', ()
     '登録の入口が全体設定「定常業務」に置かれていない');
   assert.ok(src.includes('btn-settings-cowork-add-root'), '全体設定に登録ボタンが無い');
   assert.ok(src.includes('data-drop-cowork-root'), '全体設定から登録を解除できない');
+});
+
+test('定常業務画面にはフォルダ登録ボタンを置かない（入口は全体設定だけ）', () => {
+  const src = require('./helpers/renderer-src').read();
+  // 定常業務画面は選択中プロジェクトの作業を見る画面。別フォルダ（＝他プロジェクト）の
+  // 登録ボタンは置かず、全体設定「定常業務」に一本化する。選択中フォルダ自身の
+  // 「登録を解除」バッジだけは残す。
+  assert.ok(!src.includes('btn-cowork-add-root'), '定常業務画面に登録ボタンが残っている');
+  assert.ok(src.includes('btn-cowork-drop-root'), '選択中フォルダの「登録を解除」が消えている');
 });
 
 test('登録・解除のあとは編集中の下書きを捨てる', () => {
