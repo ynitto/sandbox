@@ -160,9 +160,14 @@ test('win32 の loop 実行は既定で別ウィンドウ（WSL tmux）起動に
     // GUI プロセスからの直接 spawn ではコンソールが割り当てられずウィンドウが出ない。
     // cmd の start で新しいコンソールを開かせる（スクリプト本文は一時ファイル経由）。
     assert.match(launched.windowCommand, /^cmd \/s \/c start "/, 'cmd の start でウィンドウを開く');
-    assert.match(launched.windowCommand, /wsl\.exe .*-e bash -lc /, 'wsl.exe で bash ログインシェルを起動する');
     assert.ok(launched.scriptFile, '実行スクリプトを一時ファイルへ書く');
     assert.ok(fs.existsSync(launched.scriptFile), 'スクリプトファイルが実在する');
+    // wsl.exe の起動は起動子（.cmd）側が持つ。コマンドラインには入れ子の引用符を作らない。
+    const launcher = launched.scriptFile.replace(/\.sh$/, '.cmd');
+    assert.ok(fs.existsSync(launcher), '実行スクリプトと対の起動子を書く');
+    assert.match(fs.readFileSync(launcher, 'utf8'), /wsl\.exe .*-e bash -lc /,
+      '起動子が wsl.exe で bash ログインシェルを起動する');
+    assert.ok(launched.windowCommand.includes(`"${launcher}"`), 'start は起動子を呼ぶ');
     assert.ok(
       fs.readFileSync(launched.scriptFile, 'utf8').includes("'kiro-loop' 'send' '毎朝レビュー'"),
       'スクリプト本文に send コマンドが入る'
@@ -423,17 +428,55 @@ test('stateMachineInputAssist は必要な入力を項目名つきで人へ質�
   assert.ok(cowork.stateMachineInputAssist(null, false).includes('プレースホルダー'));
 });
 
-test('windowStartCommand は start のタイトル・distro・スクリプトパスを cmd 規則で組み立てる', () => {
-  const line = cowork_loopProvider.windowStartCommand('Ubuntu', '/mnt/c/Users/dev/Temp/agent-dashboard/run.sh');
+test('windowStartCommand は起動子と引数を対で閉じた引用符だけで並べる（入れ子にしない）', () => {
+  // 以前は start → cmd /c → wsl.exe の 3 段入れ子を 1 行に組み立てており、cmd.exe の
+  // 引用規則を 3 段ぶん同時に満たす必要があった。読み違えると -d の引用符が名前の一部として
+  // 渡る（→「指定された名前のディストリビューションはありません。」）等の形で壊れ、
+  // Windows 無しでは検証もできない。起動子をファイルにして入れ子を無くす。
+  const line = cowork_loopProvider.windowStartCommand(
+    'Ubuntu', '/mnt/c/Users/dev/Temp/agent-dashboard/run.sh',
+    '定常業務 (agent-dashboard)', 'C:\\Temp\\agent-dashboard\\run.cmd'
+  );
   assert.strictEqual(
     line,
-    'start "定常業務 (agent-dashboard)" cmd /d /s /c "wsl.exe -d "Ubuntu" -e bash -lc ". \'/mnt/c/Users/dev/Temp/agent-dashboard/run.sh\'" || pause"'
+    'start "定常業務 (agent-dashboard)" "C:\\Temp\\agent-dashboard\\run.cmd"'
+    + ' "/mnt/c/Users/dev/Temp/agent-dashboard/run.sh" "Ubuntu"'
   );
-  const noDistro = cowork_loopProvider.windowStartCommand('', '/mnt/c/t/run.sh');
-  assert.ok(!noDistro.includes('-d '), 'distro 未指定なら -d を付けない');
-  // wsl.exe やディストロの失敗でコンソールが一瞬で閉じると原因が読めない。
-  // 失敗時だけ pause で止める（実行スクリプト自体は read _ で必ず止まる）。
-  assert.ok(line.endsWith('|| pause"'), '起動失敗時は pause でエラーを読めるようにする');
+  assert.strictEqual((line.match(/"/g) || []).length % 2, 0, '引用符は必ず対で閉じる');
+  assert.ok(!/cmd \/d \/s \/c "/.test(line), 'コマンドラインに入れ子の /c 文字列を作らない');
+  // ディストロ未指定は空文字の引数として渡す（起動子が -d 無しで起動する）
+  const noDistro = cowork_loopProvider.windowStartCommand('', '/mnt/c/t/run.sh', 'T', 'C:\\t\\run.cmd');
+  assert.ok(noDistro.endsWith(' ""'), 'distro 未指定は空の引数として渡す');
+});
+
+test('起動子（.cmd）は -d 失敗時に既定ディストロで再試行し、両方だめなら情報を残して止まる', () => {
+  const batch = cowork_loopProvider.WINDOW_LAUNCHER_BATCH;
+  // 本文はコンソールのコードページで読まれる。日本語を書くと環境によって化けて命令ごと
+  // 壊れるため、可変値は引数（%~1 / %~2）で受け取り本文は ASCII に保つ。
+  assert.ok(Buffer.from(batch, 'utf8').every((b) => b < 0x80),
+    '本文は ASCII のみ（コードページに依存させない）');
+  assert.ok(batch.includes('%~1') && batch.includes('%~2'),
+    'スクリプトパスとディストロ名は引数で受け取る（本文へ埋め込まない）');
+  const withD = batch.indexOf('wsl.exe -d "%__distro%"');
+  const withoutD = batch.indexOf('wsl.exe -e bash');
+  assert.ok(withD > 0 && withoutD > withD, '-d 付きを先に試し、だめなら -d 無しで再試行する');
+  assert.ok(batch.includes('wsl.exe --list --verbose'),
+    '両方失敗したらインストール済みディストロを見せる');
+  assert.ok(batch.includes('pause'), '失敗時はウィンドウを閉じずに止める');
+  assert.ok(batch.includes('echo [agent-dashboard]   distro : %__distro%')
+    && batch.includes('echo [agent-dashboard]   script : %__script%'),
+  '何を使って起動したかを最初に表示する（失敗時の切り分け材料）');
+});
+
+test('writeWindowLauncher は実行スクリプトと対の .cmd を CRLF・ASCII で書く', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-launcher-'));
+  const sh = path.join(dir, 'cowork-run-1-abc.sh');
+  fs.writeFileSync(sh, '#!/bin/sh\necho hi\n', 'utf8');
+  const cmdFile = cowork_loopProvider.writeWindowLauncher(sh);
+  assert.strictEqual(cmdFile, path.join(dir, 'cowork-run-1-abc.cmd'), '同じ場所に対で置く');
+  const body = fs.readFileSync(cmdFile);
+  assert.ok(body.every((b) => b < 0x80), 'ASCII だけで書く');
+  assert.ok(body.toString('ascii').includes('\r\n'), 'バッチは CRLF で書く');
 });
 
 test('windowScript は cd → send 実行 → 送信先ペインのセッションへ tmux attach を組み立てる', () => {

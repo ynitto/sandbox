@@ -131,7 +131,7 @@ function sh(command, args, options = {}) {
 // 特定できたらそのまま tmux attach する——実行の様子を同じウィンドウで見続けられる。
 // 特定できない・失敗したときはウィンドウを開いたまま（read）にして原因を読めるようにする。
 function windowScript(command, argv, cwd) {
-  const cd = cwd ? `cd ${shellQuote(cwd)} || { echo "[agent-dashboard] cd 失敗: ${cwd}"; read _; exit 1; }; ` : '';
+  const cd = cwd ? `cd ${shellQuote(cwd)} || { echo "[agent-dashboard] cd 失敗: ${cwd}"; read _; exit 0; }; ` : '';
   const run = `${splitCommand(command).map(quoteToken).join(' ')} ${argv.map(shellQuote).join(' ')}`;
   return (
     `export LANG=C.UTF-8 LC_ALL=C.UTF-8; ${cd}` +
@@ -161,7 +161,7 @@ function writeWindowScript(script, platform = process.platform) {
   try {
     const cutoff = Date.now() - 24 * 60 * 60 * 1000;
     for (const f of fs.readdirSync(dir)) {
-      if (!/^cowork-run-.*\.(?:sh|command)$/.test(f)) continue;
+      if (!/^cowork-run-.*\.(?:sh|command|cmd)$/.test(f)) continue;
       const p = path.join(dir, f);
       try { if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p); } catch { /* 掃除失敗は無視 */ }
     }
@@ -170,6 +170,15 @@ function writeWindowScript(script, platform = process.platform) {
   const file = path.join(dir, `cowork-run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`);
   fs.writeFileSync(file, `#!/bin/sh\n${script.replace(/\r\n/g, '\n')}\n`, 'utf8');
   if (platform !== 'win32') fs.chmodSync(file, 0o700);
+  return file;
+}
+
+// 起動子（.cmd）を書く。本文は固定・ASCII のみなので毎回同じ内容だが、実行中の
+// 掃除で消えても次回作り直せるよう実行スクリプトと同じ置き場・同じ命名規則にする。
+function writeWindowLauncher(scriptFile) {
+  const fs = require('fs');
+  const file = `${String(scriptFile).replace(/\.sh$/i, '')}.cmd`;
+  fs.writeFileSync(file, `${WINDOW_LAUNCHER_BATCH}\r\n`, 'ascii');
   return file;
 }
 
@@ -207,19 +216,62 @@ function terminalLaunchSpec(platform, scriptFile, which = findExecutable) {
   throw new Error('利用できる外部ターミナルが見つかりません');
 }
 
-// `cmd /s /c start "<title>" wsl.exe …` のコマンドライン。windowsVerbatimArguments で
-// そのまま渡すため自前で組み立てる（Node の既定の引用は cmd.exe の規則と一致しない）。
+// Windows でウィンドウを開く起動子（.cmd）。
+//
+// **入れ子の引用符を作らない**のがこの設計の要。以前は
+//   `cmd /c start "<題>" cmd /d /s /c "wsl.exe -d "<distro>" -e bash -lc ". '<script>'" || pause"`
+// と 3 段の入れ子を 1 行に組み立てていた。cmd.exe の引用規則（/s の「最初と最後の " を剥ぐ」・
+// 演算子判定の引用符パリティ）を 3 段ぶん同時に満たす必要があり、どこか 1 つでも読み違えると
+// `-d "Ubuntu"` の引用符が名前の一部として渡る（→「指定された名前のディストリビューションは
+// ありません。」）といった形で壊れる。壊れているかを Windows 無しで確かめる手段も無い。
+//
+// そこで **起動子をファイルにする**。cmd のコマンドラインに残るのは
+// `start "<題>" "<起動子.cmd>" "<script>" "<distro>"` だけで、引用符は 1 段・対で閉じる。
+//
+// 起動子の本文は **ASCII のみ**にする。バッチ本文は「その時のコンソールのコードページ」で
+// 読まれるため、日本語を書くと環境によって化けて命令ごと壊れる。可変値（スクリプトパスや
+// ディストロ名。ユーザー名が日本語なら パスも日本語になる）は本文に埋め込まず、
+// **引数 %~1 / %~2 として渡す**——コマンドラインは Unicode で渡るのでこの問題を受けない。
+//
 // ログインシェルは bash を使う（sh=dash だと利用者の ~/.bashrc / profile にある
 // bash 構文 `[[ … ]]` が `sh: N: [[: not found` になり、そこで止まると venv 有効化も
 // 走らず「No virtual environment found」のままエージェントが起動できない）。
-//
-// wsl.exe を cmd /c で包み、失敗時（ディストロ不在・bash 不在・スクリプト読込失敗）は
-// pause で止める。実行スクリプト自体は必ず read _ で終わるため、コンソールが「一瞬表示されて
-// 閉じる」のはスクリプトに到達する前の失敗——止めないと原因が読めない。
-// 正常終了（bash が exit 0）では pause せずそのまま閉じる。
-function windowStartCommand(distro, wslScriptPath, title = '定常業務 (agent-dashboard)') {
-  const d = distro ? `-d "${distro}" ` : '';
-  return `start "${title}" cmd /d /s /c "wsl.exe ${d}-e bash -lc ". '${wslScriptPath}'" || pause"`;
+const WINDOW_LAUNCHER_BATCH = [
+  '@echo off',
+  'rem agent-dashboard WSL launcher. %~1 = script path (WSL), %~2 = distro (may be empty).',
+  'rem ASCII only: this file is read with the console code page, not UTF-8.',
+  'set "__script=%~1"',
+  'set "__distro=%~2"',
+  'echo [agent-dashboard] starting WSL',
+  'echo [agent-dashboard]   distro : %__distro%',
+  'echo [agent-dashboard]   script : %__script%',
+  'echo.',
+  'if "%__distro%"=="" goto :wsl_default',
+  'wsl.exe -d "%__distro%" -e bash -lc ". \'%__script%\'"',
+  'if not errorlevel 1 goto :done',
+  'echo.',
+  'echo [agent-dashboard] could not start with -d "%__distro%"',
+  'echo [agent-dashboard] retrying with the WSL default distribution...',
+  'echo.',
+  ':wsl_default',
+  'wsl.exe -e bash -lc ". \'%__script%\'"',
+  'if not errorlevel 1 goto :done',
+  'echo.',
+  'echo [agent-dashboard] could not start WSL.',
+  'echo [agent-dashboard] check that WSL is installed and that the distribution below has bash.',
+  'echo [agent-dashboard] installed distributions:',
+  'wsl.exe --list --verbose',
+  'echo.',
+  'pause',
+  ':done',
+].join('\r\n');
+
+// `cmd /s /c start "<title>" "<launcher.cmd>" "<script>" "<distro>"` のコマンドライン。
+// windowsVerbatimArguments でそのまま渡すため自前で組み立てる（Node の既定の引用は
+// cmd.exe の規則と一致しない）。引用符は対で閉じ、入れ子にしない。
+function windowStartCommand(distro, wslScriptPath, title = '定常業務 (agent-dashboard)',
+                            launcherPath = '') {
+  return `start "${title}" "${launcherPath}" "${wslScriptPath}" "${distro || ''}"`;
 }
 
 // ウィンドウ実行で使う WSL ディストロ。cwd（WSL UNC）から取れないとき（リポジトリが
@@ -245,12 +297,20 @@ function launchWindowScript(script, options = {}) {
   let terminal;
   let spawnOptions = { stdio: 'ignore', detached: true };
   if (platform === 'win32') {
-    // cwd が WSL UNC ならそのディストロ、Windows ドライブ上なら既定側を実ディストロへ解決
-    // （指定なしの既定が docker-desktop 等だと bash が無く、ウィンドウが一瞬で閉じる）。
+    // cwd が WSL UNC ならそのディストロ（そこにリポジトリが在るので動かせない指定）、
+    // Windows ドライブ上なら推測（base/main/wsl.js）。推測が外れても起動子が
+    // 「-d 無し」で自動再試行するので、ここで外しても起動自体は止まらない。
     const distro = wslDistro(options.cwd) || defaultWslDistro();
     // C:\Users\...\Temp\... → /mnt/c/users/.../temp/...（変換できなければそのまま）
     const wslScriptPath = winDriveToWsl(scriptFile) || scriptFile.replace(/\\/g, '/');
-    const cmdline = windowStartCommand(distro, wslScriptPath, options.title);
+    let launcherFile;
+    try {
+      launcherFile = writeWindowLauncher(scriptFile);
+    } catch (e) {
+      return { ok: false, status: -1, stdout: '', stderr: '',
+               error: `起動スクリプトを書けません: ${e.message}`, scriptFile };
+    }
+    const cmdline = windowStartCommand(distro, wslScriptPath, options.title, launcherFile);
     command = 'cmd.exe';
     args = ['/d', '/s', '/c', cmdline];
     windowCommand = `cmd /s /c ${cmdline}`;
@@ -337,7 +397,7 @@ function sessionProcessLines(entries) {
     // bash で走らせる（sh=dash だと `source` や `[[ … ]]` 等の bash 構文が not found になる）。
     const run = `{ if command -v timeout >/dev/null 2>&1; then timeout ${seconds} bash -c ${shellQuote(body)}; else bash -c ${shellQuote(body)}; fi; }`;
     const onFail = e.on_error === 'fail'
-      ? `{ echo "[agent-dashboard] セッション開始コマンド ${e.id} が失敗したため起動しません"; read _; exit 1; }`
+      ? `{ echo "[agent-dashboard] セッション開始コマンド ${e.id} が失敗したため起動しません"; read _; exit 0; }`
       : `echo "[agent-dashboard] セッション開始コマンド ${e.id} が失敗しました（続行します）"`;
     return `echo "[agent-dashboard] セッション開始コマンド: ${e.id}"; ${run} || ${onFail}; `;
   }).join('');
@@ -388,7 +448,7 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands,
   const chat = chatTokens.map(quoteToken).join(' ');
   const ses = String(session || 'kiro-dash');
   const sendPrompt = prompt !== null && prompt !== undefined && String(prompt) !== '';
-  const cd = cwd ? `cd ${shellQuote(cwd)} || { echo "[agent-dashboard] cd 失敗: ${cwd}"; read _; exit 1; }; ` : '';
+  const cd = cwd ? `cd ${shellQuote(cwd)} || { echo "[agent-dashboard] cd 失敗: ${cwd}"; read _; exit 0; }; ` : '';
   const preLines = sessionProcessLines(sessionCommands);
   const chatLines = sessionChatLines(sessionCommands);
   // 検出は 0.5 秒間隔。画面全体を見る（末尾数行に絞ると、入力欄の下にステータス行や
@@ -425,7 +485,7 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands,
     // セッションを新しく作るときだけ前準備を走らせる（既存セッションへの送信では走らせない）
     preLines +
     `echo "[agent-dashboard] tmux セッション $__ses を作成してエージェントCLIを起動します"; ` +
-    `${create.replace('new-session', 'new-session -d')} || { echo "[agent-dashboard] tmux セッション作成に失敗しました"; read _; exit 1; }; ` +
+    `${create.replace('new-session', 'new-session -d')} || { echo "[agent-dashboard] tmux セッション作成に失敗しました"; read _; exit 0; }; ` +
     `fi; ` +
     // 送るものがあるときは、プロンプト検出＋送信を **バックグラウンド**に回し、前面はすぐ
     // アタッチして「起動の様子」を見せる。従来は検出が終わるまで最大 60 秒 "起動を待っています"
@@ -532,7 +592,8 @@ function makeLoopProvider(cfg) {
 module.exports = {
   DEFAULT_READY_PATTERN, DEFAULT_READY_TIMEOUT_SEC,
   makeLoopProvider, isWslPath, wslPath, wslDistro, winDriveToWsl, toWslCwd, shellQuote, sh,
-  decodeCliOutput, windowScript, windowStartCommand, defaultWslDistro, writeWindowScript, runInWindow,
+  decodeCliOutput, windowScript, windowStartCommand, defaultWslDistro, writeWindowScript,
+  writeWindowLauncher, WINDOW_LAUNCHER_BATCH, runInWindow,
   chatWindowScript, chatSessionName, runChatWindow, launchWindowScript,
   sessionProcessLines, sessionChatLines,
   splitCommand, quoteToken, expandHome, findExecutable, terminalLaunchSpec,
