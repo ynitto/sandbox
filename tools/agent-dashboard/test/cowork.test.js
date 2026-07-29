@@ -249,13 +249,38 @@ test('promptOnNewOnly は既存セッションへブリーフを送り直さな�
     chatCommand: ['claude'], cwd: '/home/me/app', session: 'agent-doctor-x',
     prompt: 'ブリーフ', promptOnNewOnly: true,
   });
-  assert.match(once, /if \[ \$__new -eq 1 \]; then tmux send-keys/,
-    '新規作成時だけ送る');
+  assert.match(once, /if \[ \$__new -eq 1 \]; then __wait_ready \|\| exit 0; tmux send-keys/,
+    '新規作成時だけ、入力受付を待ってから送る');
   const always = cowork_loopProvider.chatWindowScript({
     chatCommand: ['claude'], cwd: '/home/me/app', session: 'agent-chat-x', prompt: '業務プロンプト',
   });
   assert.ok(always.includes('tmux send-keys -t "$__ses" -l -- '), '既定は毎回送る（従来動作）');
-  assert.ok(!/if \[ \$__new -eq 1 \]; then tmux send-keys/.test(always));
+  assert.ok(!/if \[ \$__new -eq 1 \]; then __wait_ready \|\| exit 0; tmux send-keys/.test(always));
+});
+
+test('エージェントコマンドと業務プロンプトは 1 送信ごとに入力受付（ready）を待ち直す', () => {
+  // CLI はコマンドをキューしない。前のコマンドの実行中に次を送ると黙って捨てられるため、
+  // 「エージェントに送る」×N → 業務プロンプト の各送信の前で必ず __wait_ready を挟む。
+  const script = cowork_loopProvider.chatWindowScript({
+    chatCommand: 'kiro-cli chat --trust-all-tools',
+    cwd: '/mnt/c/proj/app',
+    session: 'kiro-dash-abc12345',
+    prompt: '本題のプロンプト',
+    sessionCommands: [
+      { id: 'c1', mode: 'chat', run: '/first command' },
+      { id: 'c2', mode: 'chat', run: '/second command' },
+    ],
+  });
+  assert.ok(script.includes('__wait_ready() {'), 'ready 待ちを関数として定義する');
+  const waits = (script.match(/__wait_ready \|\| exit 0; /g) || []).length;
+  assert.strictEqual(waits, 3, 'チャットコマンド2件 + 業務プロンプトの計3送信すべての前で待つ');
+  const firstAt = script.indexOf('/first command');
+  const secondAt = script.indexOf('/second command');
+  const promptAt = script.indexOf('本題のプロンプト');
+  assert.ok(firstAt < secondAt && secondAt < promptAt, '送信順は開始コマンド → 業務プロンプト');
+  const between = script.slice(firstAt, secondAt);
+  assert.ok(between.includes('__wait_ready || exit 0; '),
+    '前のコマンドの完了（入力受付の再表示）を待ってから次を送る');
 });
 
 test('terminalLaunchSpec は macOS のTerminalとLinuxの利用可能な端末を選ぶ', () => {
@@ -402,10 +427,13 @@ test('windowStartCommand は start のタイトル・distro・スクリプトパ
   const line = cowork_loopProvider.windowStartCommand('Ubuntu', '/mnt/c/Users/dev/Temp/agent-dashboard/run.sh');
   assert.strictEqual(
     line,
-    'start "定常業務 (agent-dashboard)" wsl.exe -d "Ubuntu" -e bash -lc ". \'/mnt/c/Users/dev/Temp/agent-dashboard/run.sh\'"'
+    'start "定常業務 (agent-dashboard)" cmd /d /s /c "wsl.exe -d "Ubuntu" -e bash -lc ". \'/mnt/c/Users/dev/Temp/agent-dashboard/run.sh\'" || pause"'
   );
   const noDistro = cowork_loopProvider.windowStartCommand('', '/mnt/c/t/run.sh');
   assert.ok(!noDistro.includes('-d '), 'distro 未指定なら -d を付けない');
+  // wsl.exe やディストロの失敗でコンソールが一瞬で閉じると原因が読めない。
+  // 失敗時だけ pause で止める（実行スクリプト自体は read _ で必ず止まる）。
+  assert.ok(line.endsWith('|| pause"'), '起動失敗時は pause でエラーを読めるようにする');
 });
 
 test('windowScript は cd → send 実行 → 送信先ペインのセッションへ tmux attach を組み立てる', () => {
