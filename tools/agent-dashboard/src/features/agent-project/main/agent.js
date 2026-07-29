@@ -108,8 +108,11 @@ function buildInteractiveCommand(resolved, options = {}) {
 // clone**（backlog / needs / charter の置き場）なので、成果物のコードを触りたくて CLI を
 // 開いても、そこには 1 行もコードが無い。成果物リポジトリで開けるようにする。
 //
-// 候補は、このノードの host.yaml `repos[]` 宣言（S3）から作る。プロジェクトの repos.json に
-// 載っていてもこのノードにクローンが無いものは **非活性で理由付きで見せる**——一覧から消すと
+// 候補は**選択中プロジェクトの repos レジストリ（repos.yaml / repos.json）にある
+// リポジトリだけ**。このノードの host.yaml `repos[]` 宣言（S3）は、その URL の
+// ローカルクローンの置き場を解決するためだけに使う——宣言をそのまま並べると、
+// 他プロジェクト用のクローンが選択中プロジェクトの画面に混ざる。レジストリに載っていても
+// このノードにクローンが無いものは **非活性で理由付きで見せる**——一覧から消すと
 // 「なぜ選べないのか」が分からず、宣言し忘れに気付けない。
 function chatCwdChoices(cfg, projectDir) {
   const nodeRepos = require('./nodeRepos');
@@ -126,9 +129,20 @@ function chatCwdChoices(cfg, projectDir) {
     push({ label: 'プロジェクト（状態リポジトリ）', path: String(projectDir), enabled: true,
            kind: 'project' });
   }
-  for (const e of declared) {
-    const url = String((e && e.url) || '').trim();
-    if (!url) continue;
+  for (const url of projectRepoUrls(projectDir)) {
+    const entry = declared.find((e) => nodeRepos.sameRepo(e && e.url, url));
+    if (!entry) {
+      push({
+        label: repoLabel(url),
+        url,
+        path: '',
+        enabled: false,
+        kind: 'repo',
+        reason: 'この PC にローカルクローンの宣言がありません'
+          + '（~/.agents/agent-project.host.yaml の repos[] に url と local を書くと選べます）',
+      });
+      continue;
+    }
     const local = nodeRepos.resolveLocalRepo(url, declared, cfg);
     push({
       label: repoLabel(url),
@@ -136,20 +150,7 @@ function chatCwdChoices(cfg, projectDir) {
       path: local,
       enabled: !!local,
       kind: 'repo',
-      reason: local ? '' : `宣言された local が見つかりません: ${(e && e.local) || '(未指定)'}`,
-    });
-  }
-  // プロジェクトのレジストリにあるが、このノードには宣言が無いリポジトリ（非活性で見せる）。
-  for (const url of projectRepoUrls(projectDir)) {
-    if (declared.some((e) => nodeRepos.sameRepo(e && e.url, url))) continue;
-    push({
-      label: repoLabel(url),
-      url,
-      path: '',
-      enabled: false,
-      kind: 'repo',
-      reason: 'この PC にローカルクローンの宣言がありません'
-        + '（~/.agents/agent-project.host.yaml の repos[] に url と local を書くと選べます）',
+      reason: local ? '' : `宣言された local が見つかりません: ${entry.local || '(未指定)'}`,
     });
   }
   return choices;
