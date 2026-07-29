@@ -1167,27 +1167,12 @@ function toViewerPath(p, distro = '') {
   return `\\\\wsl.localhost\\${name}${rest}`;
 }
 
-let _wslDistroCache = { at: 0, name: '' };
+// 一覧の解読は base/main/wsl.js が担う（起動経路 = cowork の `wsl.exe -d …` と同じ名前を
+// 使う。`wsl --list --quiet` は UTF-16LE のことも UTF-8 のこともあり、決め打つと化けた
+// 文字列がそのまま名前になって存在しない UNC を指す）。
 function _defaultWslDistro() {
   if (process.env.WSL_DISTRO_NAME) return process.env.WSL_DISTRO_NAME;
-  const now = Date.now();
-  if (now - _wslDistroCache.at < 60000) return _wslDistroCache.name;
-  let name = '';
-  try {
-    const { spawnSync } = require('child_process');
-    // --list --quiet は UTF-16LE。先頭の既定ディストロ名だけ拾う。
-    const r = spawnSync('wsl.exe', ['--list', '--quiet'], {
-      encoding: 'buffer', timeout: 8000, windowsHide: true,
-    });
-    if (r.status === 0 && r.stdout && r.stdout.length) {
-      const text = r.stdout.toString('utf16le').replace(/\0/g, '');
-      name = text.split(/\r?\n/).map((l) => l.trim()).find(Boolean) || '';
-    }
-  } catch {
-    /* WSL 無し */
-  }
-  _wslDistroCache = { at: now, name };
-  return name;
+  return require('../../../base/main/wsl').defaultWslDistro();
 }
 
 let _wslHomeCache = { at: 0, dirs: [] };

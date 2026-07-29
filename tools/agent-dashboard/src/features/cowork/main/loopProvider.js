@@ -223,30 +223,11 @@ function windowStartCommand(distro, wslScriptPath, title = '定常業務 (agent-
 }
 
 // ウィンドウ実行で使う WSL ディストロ。cwd（WSL UNC）から取れないとき（リポジトリが
-// C:\ 配下など）に呼ぶ。`wsl.exe -e bash` をディストロ指定なしで起動すると **wsl の既定
-// ディストロ**が使われるが、それが docker-desktop 等の bash を持たないユーティリティ
-// ディストロだと即失敗し、ウィンドウが一瞬で閉じる。一覧（既定が先頭）から bash を持つ
-// 見込みの通常ディストロを選んで -d で明示する。取れなければ ''（従来どおり -d なし）。
-let _wslDistroCache = { at: 0, name: '' };
-function defaultWslDistro() {
-  if (process.platform !== 'win32') return '';
-  const now = Date.now();
-  if (now - _wslDistroCache.at < 60000) return _wslDistroCache.name;
-  let name = '';
-  try {
-    // --list --quiet の出力は UTF-16LE
-    const r = spawnSync('wsl.exe', ['--list', '--quiet'], {
-      encoding: 'buffer', timeout: 8000, windowsHide: true,
-    });
-    if (r.status === 0 && r.stdout && r.stdout.length) {
-      const names = r.stdout.toString('utf16le').replace(/\u0000/g, '').split(/\r?\n/)
-        .map((s) => s.trim()).filter(Boolean);
-      name = names.find((n) => !/docker-desktop|rancher-desktop|podman-machine/i.test(n)) || '';
-    }
-  } catch { /* wsl.exe が無い環境は '' → 従来どおり -d なしで起動を試みる */ }
-  _wslDistroCache = { at: now, name };
-  return name;
-}
+// C:\ 配下など）に使う。`wsl.exe -e bash` をディストロ指定なしで起動すると **wsl の既定
+// ディストロ**が使われるが、それが docker-desktop 等の bash を持たない補助ディストロだと
+// 即失敗し、ウィンドウが一瞬で閉じる。名前を決められないときは '' ＝ `-d` を付けない
+// （存在しない名前を押し付けるより、確実に在る既定へ倒す）。解決は base/main/wsl.js が担う。
+const { defaultWslDistro } = require('../../../base/main/wsl');
 
 // スクリプトを新しいコンソールウィンドウ（WSL）で起動する共通処理。
 // 成否は「ウィンドウ起動の受付」まで（実行結果はウィンドウ内で人が見る）。
