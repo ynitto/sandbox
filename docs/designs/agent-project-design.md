@@ -3,7 +3,6 @@
 > 最終更新: 2026-07-27（実装 `tools/agent-project/agent_project/` と突き合わせ済み）
 > 実装: `tools/agent-project/`（本体 33 断片 + `resident/` 5 モジュール・約 18,000 行）、テスト 1,174 件
 > 関連: [agent-flow 設計書](./agent-flow-design.md) ／ [codd-gate 設計書](./codd-gate-design.md)
-> 批判的レビュー（指摘のみ）: [agent-project-design-review.md](./agent-project-design-review.md)
 >
 > 旧 `docs/plans/2026-07-22-agent-project-multi-node-daemon-design.md`（複数ノード分担実行）は
 > 本書の「複数 PC で 1 つのバックログを分担する」節へ統合した。
