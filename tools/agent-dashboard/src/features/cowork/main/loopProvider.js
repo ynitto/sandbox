@@ -131,7 +131,7 @@ function sh(command, args, options = {}) {
 // 特定できたらそのまま tmux attach する——実行の様子を同じウィンドウで見続けられる。
 // 特定できない・失敗したときはウィンドウを開いたまま（read）にして原因を読めるようにする。
 function windowScript(command, argv, cwd) {
-  const cd = cwd ? `cd ${shellQuote(cwd)} || { __t "cd 失敗: ${cwd}"; echo "[agent-dashboard] cd 失敗: ${cwd}"; read _; exit 0; }; __t "cd ok: ${cwd}"; ` : '';
+  const cd = cwd ? `cd ${shellQuote(cwd)} || { __t "cd 失敗: ${cwd}"; echo "[agent-dashboard] cd 失敗: ${cwd}"; read _; exit 1; }; __t "cd ok: ${cwd}"; ` : '';
   const run = `${splitCommand(command).map(quoteToken).join(' ')} ${argv.map(shellQuote).join(' ')}`;
   return (
     `export LANG=C.UTF-8 LC_ALL=C.UTF-8; ${cd}` +
@@ -247,8 +247,8 @@ function terminalLaunchSpec(platform, scriptFile, which = findExecutable) {
 // のが唯一の防御になる。この形（title と -lc の引数だけが引用され、入れ子にならない）は
 // 定常業務ウィンドウが元から使っていた形で、wsl.exe の起動までは到達していた実績がある。
 //
-// 起動が失敗したときの説明は、消えるコンソールではなく **起動前の検査**（base/main/wsl.js の
-// verifyWslLaunch）が担い、アプリの画面へ返す。
+// 起動が失敗したときの手掛かりは、消えるコンソールではなく実行ログ（tracePreamble の足跡）
+// に残す。
 //
 // ログインシェルは bash を使う（sh=dash だと利用者の ~/.bashrc / profile にある
 // bash 構文 `[[ … ]]` が `sh: N: [[: not found` になり、そこで止まると venv 有効化も
@@ -372,7 +372,7 @@ function sessionProcessLines(entries) {
     // bash で走らせる（sh=dash だと `source` や `[[ … ]]` 等の bash 構文が not found になる）。
     const run = `{ if command -v timeout >/dev/null 2>&1; then timeout ${seconds} bash -c ${shellQuote(body)}; else bash -c ${shellQuote(body)}; fi; }`;
     const onFail = e.on_error === 'fail'
-      ? `{ echo "[agent-dashboard] セッション開始コマンド ${e.id} が失敗したため起動しません"; read _; exit 0; }`
+      ? `{ echo "[agent-dashboard] セッション開始コマンド ${e.id} が失敗したため起動しません"; read _; exit 1; }`
       : `echo "[agent-dashboard] セッション開始コマンド ${e.id} が失敗しました（続行します）"`;
     return `echo "[agent-dashboard] セッション開始コマンド: ${e.id}"; ${run} || ${onFail}; `;
   }).join('');
@@ -423,7 +423,7 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands,
   const chat = chatTokens.map(quoteToken).join(' ');
   const ses = String(session || 'kiro-dash');
   const sendPrompt = prompt !== null && prompt !== undefined && String(prompt) !== '';
-  const cd = cwd ? `cd ${shellQuote(cwd)} || { __t "cd 失敗: ${cwd}"; echo "[agent-dashboard] cd 失敗: ${cwd}"; read _; exit 0; }; __t "cd ok: ${cwd}"; ` : '';
+  const cd = cwd ? `cd ${shellQuote(cwd)} || { __t "cd 失敗: ${cwd}"; echo "[agent-dashboard] cd 失敗: ${cwd}"; read _; exit 1; }; __t "cd ok: ${cwd}"; ` : '';
   const preLines = sessionProcessLines(sessionCommands);
   const chatLines = sessionChatLines(sessionCommands);
   // 検出は 0.5 秒間隔。画面全体を見る（末尾数行に絞ると、入力欄の下にステータス行や
@@ -437,9 +437,7 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands,
     `__wait_ready() { __i=0; while [ $__i -lt ${waitTicks} ]; do ` +
     `if tmux capture-pane -p -t "$__ses" 2>/dev/null | grep -qiE ${shellQuote(pattern)}; then return 0; fi; ` +
     `sleep 0.5; __i=$((__i+1)); done; return 1; }; `;
-  // CLI はログインシェル経由で起動する（tmux サーバが別の文脈——kiro-loop デーモン等——で
-  // 先に立っていると、サーバ環境の PATH に ~/.local/bin 等が無く CLI が即死しうる）。
-  const create = `tmux new-session -s "$__ses" ${cwd ? `-c ${shellQuote(cwd)} ` : ''}${shellQuote(`exec bash -lc ${shellQuote(`exec ${chat}`)}`)}`;
+  const create = `tmux new-session -s "$__ses" ${cwd ? `-c ${shellQuote(cwd)} ` : ''}${shellQuote(`exec ${chat}`)}`;
   if (!sendPrompt && !chatLines) {
     return (
       `export LANG=C.UTF-8 LC_ALL=C.UTF-8; ${cd}` +
@@ -461,7 +459,7 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands,
     // セッションを新しく作るときだけ前準備を走らせる（既存セッションへの送信では走らせない）
     preLines +
     `echo "[agent-dashboard] tmux セッション $__ses を作成してエージェントCLIを起動します"; ` +
-    `${create.replace('new-session', 'new-session -d')} || { __t "tmux セッション作成に失敗"; echo "[agent-dashboard] tmux セッション作成に失敗しました"; read _; exit 0; }; ` +
+    `${create.replace('new-session', 'new-session -d')} || { __t "tmux セッション作成に失敗"; echo "[agent-dashboard] tmux セッション作成に失敗しました"; read _; exit 1; }; ` +
     `__t "tmux セッション作成 ok"; ` +
     `fi; ` +
     `__t "セッション: $__ses new=$__new"; ` +
