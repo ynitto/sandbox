@@ -173,15 +173,6 @@ function writeWindowScript(script, platform = process.platform) {
   return file;
 }
 
-// 起動子（.cmd）を書く。本文は固定・ASCII のみなので毎回同じ内容だが、実行中の
-// 掃除で消えても次回作り直せるよう実行スクリプトと同じ置き場・同じ命名規則にする。
-function writeWindowLauncher(scriptFile) {
-  const fs = require('fs');
-  const file = `${String(scriptFile).replace(/\.sh$/i, '')}.cmd`;
-  fs.writeFileSync(file, `${WINDOW_LAUNCHER_BATCH}\r\n`, 'ascii');
-  return file;
-}
-
 function findExecutable(name) {
   const fs = require('fs');
   const path = require('path');
@@ -216,70 +207,33 @@ function terminalLaunchSpec(platform, scriptFile, which = findExecutable) {
   throw new Error('利用できる外部ターミナルが見つかりません');
 }
 
-// Windows でウィンドウを開く起動子（.cmd）。
+// `cmd /s /c start "<title>" wsl.exe [-d "<distro>"] -e bash -lc ". '<script>'"` のコマンドライン。
+// windowsVerbatimArguments でそのまま渡すため自前で組み立てる（Node の既定の引用は
+// cmd.exe の規則と一致しない）。
 //
-// **入れ子の引用符を作らない**のがこの設計の要。以前は
-//   `cmd /c start "<題>" cmd /d /s /c "wsl.exe -d "<distro>" -e bash -lc ". '<script>'" || pause"`
-// と 3 段の入れ子を 1 行に組み立てていた。cmd.exe の引用規則（/s の「最初と最後の " を剥ぐ」・
-// 演算子判定の引用符パリティ）を 3 段ぶん同時に満たす必要があり、どこか 1 つでも読み違えると
-// `-d "Ubuntu"` の引用符が名前の一部として渡る（→「指定された名前のディストリビューションは
-// ありません。」）といった形で壊れる。壊れているかを Windows 無しで確かめる手段も無い。
+// **引用符は 1 段に保ち、入れ子を作らない。** 過去に 2 通りの入れ子を試して両方壊した:
+//   ・`start "<題>" cmd /d /s /c "wsl.exe -d "<distro>" … || pause"`（3 段）
+//   ・`start "<題>" "<起動子.cmd>" "<script>" "<distro>"`（起動子をファイル化）
+// cmd.exe の引用・パス解決を Windows 無しで検証する手段が無い以上、**組み立てを増やさない**
+// のが唯一の防御になる。この形（title と -lc の引数だけが引用され、入れ子にならない）は
+// 定常業務ウィンドウが元から使っていた形で、wsl.exe の起動までは到達していた実績がある。
 //
-// そこで **起動子をファイルにする**。cmd のコマンドラインに残るのは
-// `start "<題>" "<起動子.cmd>" "<script>" "<distro>"` だけで、引用符は 1 段・対で閉じる。
-//
-// 起動子の本文は **ASCII のみ**にする。バッチ本文は「その時のコンソールのコードページ」で
-// 読まれるため、日本語を書くと環境によって化けて命令ごと壊れる。可変値（スクリプトパスや
-// ディストロ名。ユーザー名が日本語なら パスも日本語になる）は本文に埋め込まず、
-// **引数 %~1 / %~2 として渡す**——コマンドラインは Unicode で渡るのでこの問題を受けない。
+// 起動が失敗したときの説明は、消えるコンソールではなく **起動前の検査**（base/main/wsl.js の
+// verifyWslLaunch）が担い、アプリの画面へ返す。
 //
 // ログインシェルは bash を使う（sh=dash だと利用者の ~/.bashrc / profile にある
 // bash 構文 `[[ … ]]` が `sh: N: [[: not found` になり、そこで止まると venv 有効化も
 // 走らず「No virtual environment found」のままエージェントが起動できない）。
-const WINDOW_LAUNCHER_BATCH = [
-  '@echo off',
-  'rem agent-dashboard WSL launcher. %~1 = script path (WSL), %~2 = distro (may be empty).',
-  'rem ASCII only: this file is read with the console code page, not UTF-8.',
-  'set "__script=%~1"',
-  'set "__distro=%~2"',
-  'echo [agent-dashboard] starting WSL',
-  'echo [agent-dashboard]   distro : %__distro%',
-  'echo [agent-dashboard]   script : %__script%',
-  'echo.',
-  'if "%__distro%"=="" goto :wsl_default',
-  'wsl.exe -d "%__distro%" -e bash -lc ". \'%__script%\'"',
-  'if not errorlevel 1 goto :done',
-  'echo.',
-  'echo [agent-dashboard] could not start with -d "%__distro%"',
-  'echo [agent-dashboard] retrying with the WSL default distribution...',
-  'echo.',
-  ':wsl_default',
-  'wsl.exe -e bash -lc ". \'%__script%\'"',
-  'if not errorlevel 1 goto :done',
-  'echo.',
-  'echo [agent-dashboard] could not start WSL.',
-  'echo [agent-dashboard] check that WSL is installed and that the distribution below has bash.',
-  'echo [agent-dashboard] installed distributions:',
-  'wsl.exe --list --verbose',
-  'echo.',
-  'pause',
-  ':done',
-].join('\r\n');
-
-// `cmd /s /c start "<title>" "<launcher.cmd>" "<script>" "<distro>"` のコマンドライン。
-// windowsVerbatimArguments でそのまま渡すため自前で組み立てる（Node の既定の引用は
-// cmd.exe の規則と一致しない）。引用符は対で閉じ、入れ子にしない。
-function windowStartCommand(distro, wslScriptPath, title = '定常業務 (agent-dashboard)',
-                            launcherPath = '') {
-  return `start "${title}" "${launcherPath}" "${wslScriptPath}" "${distro || ''}"`;
+function windowStartCommand(distro, wslScriptPath, title = '定常業務 (agent-dashboard)') {
+  const d = distro ? `-d "${distro}" ` : '';
+  return `start "${title}" wsl.exe ${d}-e bash -lc ". '${wslScriptPath}'"`;
 }
 
-// ウィンドウ実行で使う WSL ディストロ。cwd（WSL UNC）から取れないとき（リポジトリが
-// C:\ 配下など）に使う。`wsl.exe -e bash` をディストロ指定なしで起動すると **wsl の既定
-// ディストロ**が使われるが、それが docker-desktop 等の bash を持たない補助ディストロだと
-// 即失敗し、ウィンドウが一瞬で閉じる。名前を決められないときは '' ＝ `-d` を付けない
-// （存在しない名前を押し付けるより、確実に在る既定へ倒す）。解決は base/main/wsl.js が担う。
-const { defaultWslDistro } = require('../../../base/main/wsl');
+// ウィンドウ実行で使う WSL ディストロと、その実地検査。cwd（WSL UNC）から取れないとき
+// （リポジトリが C:\ 配下など）は base/main/wsl.js が一覧から推測する。推測が外れても
+// verifyWslLaunch が既定ディストロへ落として起動できる形を選ぶ。
+// モジュール経由で呼ぶ（分割代入で束縛するとテストから差し替えられない）。
+const wslMain = require('../../../base/main/wsl');
 
 // スクリプトを新しいコンソールウィンドウ（WSL）で起動する共通処理。
 // 成否は「ウィンドウ起動の受付」まで（実行結果はウィンドウ内で人が見る）。
@@ -298,19 +252,19 @@ function launchWindowScript(script, options = {}) {
   let spawnOptions = { stdio: 'ignore', detached: true };
   if (platform === 'win32') {
     // cwd が WSL UNC ならそのディストロ（そこにリポジトリが在るので動かせない指定）、
-    // Windows ドライブ上なら推測（base/main/wsl.js）。推測が外れても起動子が
-    // 「-d 無し」で自動再試行するので、ここで外しても起動自体は止まらない。
-    const distro = wslDistro(options.cwd) || defaultWslDistro();
+    // Windows ドライブ上なら一覧からの推測。
+    const wanted = wslDistro(options.cwd) || wslMain.defaultWslDistro();
     // C:\Users\...\Temp\... → /mnt/c/users/.../temp/...（変換できなければそのまま）
     const wslScriptPath = winDriveToWsl(scriptFile) || scriptFile.replace(/\\/g, '/');
-    let launcherFile;
-    try {
-      launcherFile = writeWindowLauncher(scriptFile);
-    } catch (e) {
-      return { ok: false, status: -1, stdout: '', stderr: '',
-               error: `起動スクリプトを書けません: ${e.message}`, scriptFile };
+    // **ウィンドウを開く前に**「起動できる形」を確かめる。コンソールは失敗すると
+    // 一瞬で閉じて原因を持ち去るので、失敗の説明はそこへ託さずアプリの画面へ返す。
+    // 検査は起動と同じ形（wsl.exe [-d X] -e bash -lc …）で撃ち、希望のディストロが
+    // だめなら既定へ落とす。
+    const check = wslMain.verifyWslLaunch(wslScriptPath, wanted);
+    if (!check.ok) {
+      return { ok: false, status: -1, stdout: '', stderr: '', error: check.error, scriptFile };
     }
-    const cmdline = windowStartCommand(distro, wslScriptPath, options.title, launcherFile);
+    const cmdline = windowStartCommand(check.distro, wslScriptPath, options.title);
     command = 'cmd.exe';
     args = ['/d', '/s', '/c', cmdline];
     windowCommand = `cmd /s /c ${cmdline}`;
@@ -592,8 +546,9 @@ function makeLoopProvider(cfg) {
 module.exports = {
   DEFAULT_READY_PATTERN, DEFAULT_READY_TIMEOUT_SEC,
   makeLoopProvider, isWslPath, wslPath, wslDistro, winDriveToWsl, toWslCwd, shellQuote, sh,
-  decodeCliOutput, windowScript, windowStartCommand, defaultWslDistro, writeWindowScript,
-  writeWindowLauncher, WINDOW_LAUNCHER_BATCH, runInWindow,
+  decodeCliOutput, windowScript, windowStartCommand,
+  writeWindowScript,
+  runInWindow,
   chatWindowScript, chatSessionName, runChatWindow, launchWindowScript,
   sessionProcessLines, sessionChatLines,
   splitCommand, quoteToken, expandHome, findExecutable, terminalLaunchSpec,
