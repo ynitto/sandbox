@@ -212,9 +212,40 @@ function terminalLaunchSpec(platform, scriptFile, which = findExecutable) {
 // ログインシェルは bash を使う（sh=dash だと利用者の ~/.bashrc / profile にある
 // bash 構文 `[[ … ]]` が `sh: N: [[: not found` になり、そこで止まると venv 有効化も
 // 走らず「No virtual environment found」のままエージェントが起動できない）。
+//
+// wsl.exe を cmd /c で包み、失敗時（ディストロ不在・bash 不在・スクリプト読込失敗）は
+// pause で止める。実行スクリプト自体は必ず read _ で終わるため、コンソールが「一瞬表示されて
+// 閉じる」のはスクリプトに到達する前の失敗——止めないと原因が読めない。
+// 正常終了（bash が exit 0）では pause せずそのまま閉じる。
 function windowStartCommand(distro, wslScriptPath, title = '定常業務 (agent-dashboard)') {
   const d = distro ? `-d "${distro}" ` : '';
-  return `start "${title}" wsl.exe ${d}-e bash -lc ". '${wslScriptPath}'"`;
+  return `start "${title}" cmd /d /s /c "wsl.exe ${d}-e bash -lc ". '${wslScriptPath}'" || pause"`;
+}
+
+// ウィンドウ実行で使う WSL ディストロ。cwd（WSL UNC）から取れないとき（リポジトリが
+// C:\ 配下など）に呼ぶ。`wsl.exe -e bash` をディストロ指定なしで起動すると **wsl の既定
+// ディストロ**が使われるが、それが docker-desktop 等の bash を持たないユーティリティ
+// ディストロだと即失敗し、ウィンドウが一瞬で閉じる。一覧（既定が先頭）から bash を持つ
+// 見込みの通常ディストロを選んで -d で明示する。取れなければ ''（従来どおり -d なし）。
+let _wslDistroCache = { at: 0, name: '' };
+function defaultWslDistro() {
+  if (process.platform !== 'win32') return '';
+  const now = Date.now();
+  if (now - _wslDistroCache.at < 60000) return _wslDistroCache.name;
+  let name = '';
+  try {
+    // --list --quiet の出力は UTF-16LE
+    const r = spawnSync('wsl.exe', ['--list', '--quiet'], {
+      encoding: 'buffer', timeout: 8000, windowsHide: true,
+    });
+    if (r.status === 0 && r.stdout && r.stdout.length) {
+      const names = r.stdout.toString('utf16le').replace(/\u0000/g, '').split(/\r?\n/)
+        .map((s) => s.trim()).filter(Boolean);
+      name = names.find((n) => !/docker-desktop|rancher-desktop|podman-machine/i.test(n)) || '';
+    }
+  } catch { /* wsl.exe が無い環境は '' → 従来どおり -d なしで起動を試みる */ }
+  _wslDistroCache = { at: now, name };
+  return name;
 }
 
 // スクリプトを新しいコンソールウィンドウ（WSL）で起動する共通処理。
@@ -233,7 +264,9 @@ function launchWindowScript(script, options = {}) {
   let terminal;
   let spawnOptions = { stdio: 'ignore', detached: true };
   if (platform === 'win32') {
-    const distro = wslDistro(options.cwd);
+    // cwd が WSL UNC ならそのディストロ、Windows ドライブ上なら既定側を実ディストロへ解決
+    // （指定なしの既定が docker-desktop 等だと bash が無く、ウィンドウが一瞬で閉じる）。
+    const distro = wslDistro(options.cwd) || defaultWslDistro();
     // C:\Users\...\Temp\... → /mnt/c/users/.../temp/...（変換できなければそのまま）
     const wslScriptPath = winDriveToWsl(scriptFile) || scriptFile.replace(/\\/g, '/');
     const cmdline = windowStartCommand(distro, wslScriptPath, options.title);
@@ -347,9 +380,12 @@ function sendKeysLine(s) {
 
 // chat モード（「エージェントに送る」）は、CLI が入力を受け付けてから業務プロンプトより先に送る。
 // paste-buffer は補完メニューと競合するため使わず、文字列と Enter を別々に送る。
+// 各コマンドの前で必ず __wait_ready（入力受付待ち）を挟む——エージェントコマンドは CLI 側で
+// キューされないため、前のコマンドの実行中に次を送ると黙って捨てられる。ready が戻らなければ
+// exit 0 で残りの送信ごと諦める（実行中のセッションへ後続を投げ込まない）。
 function sessionChatLines(entries) {
   return (entries || []).filter((e) => e.mode === 'chat' && !e.skip).map((e) => (
-    `${sendKeysLine(e.run)}sleep 1; `
+    `__wait_ready || exit 0; ${sendKeysLine(e.run)}sleep 1; `
   )).join('');
 }
 
@@ -378,7 +414,16 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands,
   // ヒントを出す CLI で取りこぼし、送信されなくなる）。
   const pattern = String(readyPattern || DEFAULT_READY_PATTERN);
   const waitTicks = Math.max(1, Math.round(Number(readyTimeoutSec || DEFAULT_READY_TIMEOUT_SEC) * 2));
-  const create = `tmux new-session -s "$__ses" ${cwd ? `-c ${shellQuote(cwd)} ` : ''}${shellQuote(`exec ${chat}`)}`;
+  // 入力受付（ready）待ち。初回だけでなく**各送信の間**でも呼ぶ——エージェントコマンドは
+  // CLI 側でキューされないため、前のコマンドの完了を待たずに次を送ると取りこぼされる
+  // （以前は最初に 1 回待ったあと sleep 1 だけで連投していた）。
+  const waitReady =
+    `__wait_ready() { __i=0; while [ $__i -lt ${waitTicks} ]; do ` +
+    `if tmux capture-pane -p -t "$__ses" 2>/dev/null | grep -qiE ${shellQuote(pattern)}; then return 0; fi; ` +
+    `sleep 0.5; __i=$((__i+1)); done; return 1; }; `;
+  // CLI はログインシェル経由で起動する（tmux サーバが別の文脈——kiro-loop デーモン等——で
+  // 先に立っていると、サーバ環境の PATH に ~/.local/bin 等が無く CLI が即死しうる）。
+  const create = `tmux new-session -s "$__ses" ${cwd ? `-c ${shellQuote(cwd)} ` : ''}${shellQuote(`exec bash -lc ${shellQuote(`exec ${chat}`)}`)}`;
   if (!sendPrompt && !chatLines) {
     return (
       `export LANG=C.UTF-8 LC_ALL=C.UTF-8; ${cd}` +
@@ -406,10 +451,11 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands,
     // で固まって見えた（CLI の起動自体が遅いと、その間ずっと真っ黒な待ち画面だった）。
     // 判定パターンとタイムアウトは CLI 定義（interactive.ready_pattern /
     // ready_timeout_sec）から来る。大文字小文字は問わない（-i）。
+    // 各送信は __wait_ready を挟んで逐次化する（前のコマンドの完了 = 入力受付の再表示を
+    // 待ってから次を送る。CLI はコマンドをキューしないため、連投すると捨てられる）。
     (sendPrompt || chatLines
-      ? `( __i=0; while [ $__i -lt ${waitTicks} ]; do ` +
-        `if tmux capture-pane -p -t "$__ses" 2>/dev/null | ` +
-        `grep -qiE ${shellQuote(pattern)}; then ` +
+      ? waitReady +
+        `( ` +
         // 「エージェントに送る」開始コマンドの送信タイミング:
         //   ・業務プロンプトを送る定常ループ … 前準備の二重送信を避け、新規セッション時だけ送る。
         //   ・CLIチャットの手動オープン（業務プロンプト無し）… 開くたびに毎回送る（常駐セッションへ
@@ -417,15 +463,15 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands,
         (chatLines
           ? (sendPrompt ? `if [ $__new -eq 1 ]; then ${chatLines}fi; ` : chatLines)
           : '') +
-        // 業務プロンプトも kiro-loop と同じ send-keys（1 コールでテキスト＋Enter）で送る。
+        // 業務プロンプトも kiro-loop と同じ send-keys（テキストと Enter を分けて）で送る。
         // promptOnNewOnly は「既存セッションへは送らない」（S9-4 の対話診断）——会話が
         // 続いているところへ同じブリーフを再投入すると文脈が二重になる。
         (sendPrompt
           ? (promptOnNewOnly
-            ? `if [ $__new -eq 1 ]; then ${sendKeysLine(prompt)}fi; `
-            : sendKeysLine(prompt))
+            ? `if [ $__new -eq 1 ]; then __wait_ready || exit 0; ${sendKeysLine(prompt)}fi; `
+            : `__wait_ready || exit 0; ${sendKeysLine(prompt)}`)
           : '') +
-        `break; fi; sleep 0.5; __i=$((__i+1)); done ) & ` +
+        `) & ` +
         `echo "[agent-dashboard] エージェントCLIに接続します（起動後に自動で送信します・Ctrl+b d で離脱）"; ` +
         `sleep 1; tmux attach -t "$__ses"; `
       : `echo "[agent-dashboard] CLIチャットへ接続します（Ctrl+b d で離脱）"; sleep 1; tmux attach -t "$__ses"; `) +
@@ -505,7 +551,7 @@ function makeLoopProvider(cfg) {
 module.exports = {
   DEFAULT_READY_PATTERN, DEFAULT_READY_TIMEOUT_SEC,
   makeLoopProvider, isWslPath, wslPath, wslDistro, winDriveToWsl, toWslCwd, shellQuote, sh,
-  decodeCliOutput, windowScript, windowStartCommand, writeWindowScript, runInWindow,
+  decodeCliOutput, windowScript, windowStartCommand, defaultWslDistro, writeWindowScript, runInWindow,
   chatWindowScript, chatSessionName, runChatWindow, launchWindowScript,
   sessionProcessLines, sessionChatLines,
   splitCommand, quoteToken, expandHome, findExecutable, terminalLaunchSpec,
