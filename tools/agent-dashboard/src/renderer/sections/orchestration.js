@@ -1653,7 +1653,10 @@ function bindCoworkDetailActions(root, folder) {
     } catch (err) {
       res = { ok: false, error: err.message || String(err) };
     }
-    const detail = String((res && (res.stderr || res.stdout || res.error)) || '').trim();
+    // 別ウィンドウ起動は stdout/stderr を持たない。ウィンドウが一瞬で閉じたときに
+    // 「どこまで進んだか」を読めるよう、最新結果に実行ログの場所を残す。
+    const detail = String((res && (res.stderr || res.stdout || res.error)) || '').trim()
+      || (res && res.logFile ? `実行ログ: ${res.logFile}` : '');
     const message = detail ? detail.slice(0, 240) : (res && res.ok ? '' : 'エラー詳細なし');
     state.coworkRun = {
       id,
