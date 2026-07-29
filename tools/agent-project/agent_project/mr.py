@@ -10,7 +10,66 @@ _GL_TOKEN_ENVS = ("GITLAB_TOKEN", "GL_TOKEN")
 _GL_RC_FILES = ("~/.bashrc", "~/.bash_profile", "~/.profile", "~/.zshrc")
 
 
+def _find_gitlab_idd_scripts_dir() -> "str | None":
+    """gitlab-idd スキルの scripts/ ディレクトリ（config_loader.py 同梱）を探す
+    （agent-flow の executors/gitlab.py と同じ探索順。connections.yaml を同じ流儀で読む）。"""
+    candidates = []
+    cwd = os.getcwd()
+    candidates.append(os.path.join(cwd, ".github", "skills", "gitlab-idd", "scripts"))
+    try:
+        root = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True,
+            encoding="utf-8", errors="replace").stdout.strip()
+        if root:
+            candidates.append(os.path.join(root, ".github", "skills", "gitlab-idd", "scripts"))
+    except Exception:  # noqa: BLE001
+        pass
+    for skills_home in ("~/.agent/skills", "~/.kiro/skills"):
+        candidates.append(os.path.join(os.path.expanduser(skills_home), "gitlab-idd", "scripts"))
+    for agent_dir in [os.path.expanduser("~/.agent"), os.path.expanduser("~/.kiro"),
+                      os.path.expanduser("~/.copilot"),
+                      os.path.expanduser("~/.claude"), os.path.expanduser("~/.codex")]:
+        reg = os.path.join(agent_dir, "skill-registry.json")
+        if os.path.isfile(reg):
+            try:
+                with open(reg, encoding="utf-8") as f:
+                    home = json.load(f).get("skill_home", "")
+                if home:
+                    candidates.append(os.path.join(home, "gitlab-idd", "scripts"))
+            except Exception:  # noqa: BLE001
+                pass
+    for c in candidates:
+        if os.path.isfile(os.path.join(c, "config_loader.py")):
+            return c
+    return None
+
+
+def _token_from_connections(conn_label: str = "default") -> str:
+    """gl.py / agent-flow の executors/gitlab.py と同じ connections.yaml から接続ラベルのトークンを
+    読む（config_loader 経由）。config_loader / connections.yaml / PyYAML が無ければ空文字
+    （→ 次のソースへ委ねる）。"""
+    scripts_dir = _find_gitlab_idd_scripts_dir()
+    if not scripts_dir:
+        return ""
+    try:
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        import importlib
+        config_loader = importlib.import_module("config_loader")
+        conn = config_loader.get_connection("gitlab", conn_label)
+        return str((conn or {}).get("token") or "").strip()
+    except Exception:  # noqa: BLE001 — 不在/解析失敗は無視し、環境変数・シェル rc へ委ねる
+        return ""
+
+
 def _gl_token() -> str:
+    """トークンを agent-flow の gitlab executor と同じ場所・同じ優先順で解決する:
+    connections.yaml（既定ラベル "default"） → 環境変数 GITLAB_TOKEN/GL_TOKEN → シェル rc ファイル。
+    以前は環境変数/rc しか見ておらず、connections.yaml にだけトークンを置いた環境ではタスク MR の
+    作成だけが（agent-flow 側の委譲 executor は動くのに）静かにスキップされていた。"""
+    token = _token_from_connections()
+    if token:
+        return token
     for k in _GL_TOKEN_ENVS:
         v = os.environ.get(k, "").strip()
         if v:
@@ -76,8 +135,9 @@ def _gl_quote(project: str) -> str:
 # 未対応フォージは「フォージ無し」として扱い、従来の dashboard ボタン決着へ倒す（S4-6）。
 #
 # 認証情報は **設定 2 層のどちらにも置かない**（host.yaml は共有しないが平文で PC に残り、
-# プロジェクト yaml は state repo 経由で全 PC へ配られる）。環境変数か rc ファイルのまま。
+# プロジェクト yaml は state repo 経由で全 PC へ配られる）。connections.yaml / 環境変数 / rc ファイルのまま。
 _FORGE_UNSUPPORTED_WARNED: "set[str]" = set()
+_GITLAB_NO_TOKEN_WARNED = False
 
 
 def _forge_kind(url: str) -> str:
@@ -103,12 +163,21 @@ def _forge_kind(url: str) -> str:
 def forge_available(cfg: "Config", url: str) -> str:
     """この URL に対して決着まで扱えるフォージ種別（扱えなければ ""）。
 
-    未対応フォージは 1 回だけ警告して "" を返す——黙って無視すると「MR ができない理由」が
-    どこにも出ず、検収カードに MR が載らない原因を人が追えない。
+    未対応フォージ・トークン欠落はそれぞれ 1 回だけ警告して "" を返す——黙って無視すると
+    「MR ができない理由」がどこにも出ず、検収カードに MR が載らない原因を人が追えない。
     """
+    global _GITLAB_NO_TOKEN_WARNED
     kind = _forge_kind(url)
     if kind == "gitlab":
-        return "gitlab" if _gl_token() else ""
+        if _gl_token():
+            return "gitlab"
+        if not _GITLAB_NO_TOKEN_WARNED:
+            _GITLAB_NO_TOKEN_WARNED = True
+            print(">>> 注意: GitLab トークンが見つかりません"
+                  "（connections.yaml の gitlab/default、環境変数 GITLAB_TOKEN/GL_TOKEN、"
+                  "または ~/.bashrc 等のいずれにも無し）。タスク MR の自動作成・決着は行いません。"
+                  "検収は dashboard のボタンで行ってください", file=sys.stderr)
+        return ""
     if kind and kind not in _FORGE_UNSUPPORTED_WARNED:
         _FORGE_UNSUPPORTED_WARNED.add(kind)
         print(f">>> 注意: {kind} は未対応のフォージです（MR/PR の自動作成・決着は行いません）。"
