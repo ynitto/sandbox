@@ -16,7 +16,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const {
-  toViewerPath, _isPosixAbs, _pathKey,
+  toViewerPath, viewerDistro, _isPosixAbs, _pathKey,
 } = require('../../agent-project/main/project');
 const { parseFlatYaml } = require('../../agent-project/main/toolconfig');
 const { parseYaml, isPlainObject, scalarString } = require('../../../base/main/yaml');
@@ -255,9 +255,11 @@ function scanForCoworkConfigs(rootDir, maxDepth) {
   return found.sort((a, b) => a.folder.localeCompare(b.folder));
 }
 
-function resolveRoot(r) {
+// 走査ルートも ⚙ 設定のディストロで解決する（既定へ丸めると、設定と違う環境を走査して
+// 何も見つからない／別実体を見つける）。
+function resolveRoot(r, config) {
   const raw = String(r).replace(/^~(?=$|\/|\\)/, os.homedir());
-  return _isPosixAbs(raw) ? toViewerPath(raw) : path.resolve(raw);
+  return _isPosixAbs(raw) ? toViewerPath(raw, viewerDistro(config)) : path.resolve(raw);
 }
 
 // ---------------------------------------------------------------------------
@@ -288,7 +290,7 @@ function discoverCoworkItems(config) {
   const seenRoots = new Set();
   for (const r of roots) {
     if (!r) continue;
-    const root = resolveRoot(r);
+    const root = resolveRoot(r, config);
     const rk = _pathKey(root);
     if (seenRoots.has(rk)) continue;                 // 同一実体の root を二重走査しない
     seenRoots.add(rk);

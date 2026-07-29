@@ -131,7 +131,7 @@ function sh(command, args, options = {}) {
 // 特定できたらそのまま tmux attach する——実行の様子を同じウィンドウで見続けられる。
 // 特定できない・失敗したときはウィンドウを開いたまま（read）にして原因を読めるようにする。
 function windowScript(command, argv, cwd) {
-  const cd = cwd ? `cd ${shellQuote(cwd)} || { echo "[agent-dashboard] cd 失敗: ${cwd}"; read _; exit 0; }; ` : '';
+  const cd = cwd ? `cd ${shellQuote(cwd)} || { __t "cd 失敗: ${cwd}"; echo "[agent-dashboard] cd 失敗: ${cwd}"; read _; exit 1; }; __t "cd ok: ${cwd}"; ` : '';
   const run = `${splitCommand(command).map(quoteToken).join(' ')} ${argv.map(shellQuote).join(' ')}`;
   return (
     `export LANG=C.UTF-8 LC_ALL=C.UTF-8; ${cd}` +
@@ -144,7 +144,30 @@ function windowScript(command, argv, cwd) {
     // attach から戻ったら（離脱・失敗とも）Enter 待ちに落として window を人が閉じる。
     `if [ -n "$__sess" ]; then echo; echo "[agent-dashboard] tmux セッション $__sess にアタッチします（Ctrl+b d で離脱）"; sleep 1; tmux attach -t "$__sess"; fi; ` +
     `else echo; echo "[agent-dashboard] tmux セッションを特定できませんでした"; fi; ` +
-    `echo; echo "[agent-dashboard] Enter でこのウィンドウを閉じます"; read _`
+    `echo; echo "[agent-dashboard] Enter でこのウィンドウを閉じます"; __t "Enter 待ち"; read _; __t "=== 終了 ==="`
+  );
+}
+
+// 実行スクリプトと対の実行ログ（同じ場所・拡張子だけ .log）。
+function windowLogPath(scriptFile) {
+  return `${String(scriptFile).replace(/\.(?:sh|command)$/i, '')}.log`;
+}
+
+// 実行の足跡を残すシェル片。**stdout / stderr には触らない**——ここを tee やリダイレクトで
+// 奪うと `tmux attach` が tty を失って動かなくなる。追記だけの `__t` を用意し、各段階で
+// 呼ぶ（呼ぶ側は windowScript / chatWindowScript）。
+//
+// なぜ要るか: ウィンドウが「一瞬出て閉じる」とき、画面に何も残らないので、cd で落ちたのか・
+// tmux が作れなかったのか・attach が即座に戻ったのか・そもそも read が待たずに返ったのかを
+// 区別できない。時刻つきの足跡があれば、次の 1 回で切り分けられる。
+function tracePreamble(logPath) {
+  return (
+    `__log=${shellQuote(logPath)}; `
+    + '__t() { printf "%s %s\\n" "$(date +%H:%M:%S 2>/dev/null)" "$*" >> "$__log" 2>/dev/null || true; }; '
+    + '__t "=== 起動 ==="; '
+    // tty の有無は「read が待たずに返る」＝ウィンドウが一瞬で閉じる症状の決め手になる。
+    // `tty` は tty でないとき stdout に "not a tty" と出して非 0 を返すので、それをそのまま拾う。
+    + '__t "shell=$0 tty=$(tty 2>/dev/null)"; '
   );
 }
 
@@ -157,18 +180,24 @@ function writeWindowScript(script, platform = process.platform) {
   const path = require('path');
   const dir = path.join(os.tmpdir(), 'agent-dashboard');
   fs.mkdirSync(dir, { recursive: true });
-  // 古い実行スクリプトの掃除（1 日以上前のもの。失敗しても実行は続ける）
+  // 古い実行スクリプト・ログの掃除（1 日以上前のもの。失敗しても実行は続ける）
   try {
     const cutoff = Date.now() - 24 * 60 * 60 * 1000;
     for (const f of fs.readdirSync(dir)) {
-      if (!/^cowork-run-.*\.(?:sh|command|cmd)$/.test(f)) continue;
+      if (!/^cowork-run-.*\.(?:sh|command|log)$/.test(f)) continue;
       const p = path.join(dir, f);
       try { if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p); } catch { /* 掃除失敗は無視 */ }
     }
   } catch { /* 掃除失敗は無視 */ }
   const ext = platform === 'darwin' ? 'command' : 'sh';
   const file = path.join(dir, `cowork-run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`);
-  fs.writeFileSync(file, `#!/bin/sh\n${script.replace(/\r\n/g, '\n')}\n`, 'utf8');
+  // ログはスクリプト側（WSL）から書くので、win32 では WSL から見えるパスを渡す。
+  const logPath = windowLogPath(file);
+  const logForScript = platform === 'win32'
+    ? (winDriveToWsl(logPath) || logPath.replace(/\\/g, '/'))
+    : logPath;
+  fs.writeFileSync(file,
+    `#!/bin/sh\n${tracePreamble(logForScript)}${script.replace(/\r\n/g, '\n')}\n`, 'utf8');
   if (platform !== 'win32') fs.chmodSync(file, 0o700);
   return file;
 }
@@ -218,8 +247,8 @@ function terminalLaunchSpec(platform, scriptFile, which = findExecutable) {
 // のが唯一の防御になる。この形（title と -lc の引数だけが引用され、入れ子にならない）は
 // 定常業務ウィンドウが元から使っていた形で、wsl.exe の起動までは到達していた実績がある。
 //
-// 起動が失敗したときの説明は、消えるコンソールではなく **起動前の検査**（base/main/wsl.js の
-// verifyWslLaunch）が担い、アプリの画面へ返す。
+// 起動が失敗したときの手掛かりは、消えるコンソールではなく実行ログ（tracePreamble の足跡）
+// に残す。
 //
 // ログインシェルは bash を使う（sh=dash だと利用者の ~/.bashrc / profile にある
 // bash 構文 `[[ … ]]` が `sh: N: [[: not found` になり、そこで止まると venv 有効化も
@@ -228,12 +257,6 @@ function windowStartCommand(distro, wslScriptPath, title = '定常業務 (agent-
   const d = distro ? `-d "${distro}" ` : '';
   return `start "${title}" wsl.exe ${d}-e bash -lc ". '${wslScriptPath}'"`;
 }
-
-// ウィンドウ実行で使う WSL ディストロと、その実地検査。cwd（WSL UNC）から取れないとき
-// （リポジトリが C:\ 配下など）は base/main/wsl.js が一覧から推測する。推測が外れても
-// verifyWslLaunch が既定ディストロへ落として起動できる形を選ぶ。
-// モジュール経由で呼ぶ（分割代入で束縛するとテストから差し替えられない）。
-const wslMain = require('../../../base/main/wsl');
 
 // スクリプトを新しいコンソールウィンドウ（WSL）で起動する共通処理。
 // 成否は「ウィンドウ起動の受付」まで（実行結果はウィンドウ内で人が見る）。
@@ -251,20 +274,15 @@ function launchWindowScript(script, options = {}) {
   let terminal;
   let spawnOptions = { stdio: 'ignore', detached: true };
   if (platform === 'win32') {
-    // cwd が WSL UNC ならそのディストロ（そこにリポジトリが在るので動かせない指定）、
-    // Windows ドライブ上なら一覧からの推測。
-    const wanted = wslDistro(options.cwd) || wslMain.defaultWslDistro();
+    // ディストロは cwd（WSL UNC）から取れるときだけ指定する。取れないとき（リポジトリが
+    // C:\ 配下）は **指定しない** ＝ wsl の既定に任せる。
+    // 一度 `wsl --list` から名前を推測する実装を入れたが、推測を渡す方が壊れた
+    // （名前を取り違えると「指定された名前のディストリビューションはありません。」）。
+    // 確実に分かるときだけ指定し、分からないときは既定に委ねる。
+    const distro = wslDistro(options.cwd);
     // C:\Users\...\Temp\... → /mnt/c/users/.../temp/...（変換できなければそのまま）
     const wslScriptPath = winDriveToWsl(scriptFile) || scriptFile.replace(/\\/g, '/');
-    // **ウィンドウを開く前に**「起動できる形」を確かめる。コンソールは失敗すると
-    // 一瞬で閉じて原因を持ち去るので、失敗の説明はそこへ託さずアプリの画面へ返す。
-    // 検査は起動と同じ形（wsl.exe [-d X] -e bash -lc …）で撃ち、希望のディストロが
-    // だめなら既定へ落とす。
-    const check = wslMain.verifyWslLaunch(wslScriptPath, wanted);
-    if (!check.ok) {
-      return { ok: false, status: -1, stdout: '', stderr: '', error: check.error, scriptFile };
-    }
-    const cmdline = windowStartCommand(check.distro, wslScriptPath, options.title);
+    const cmdline = windowStartCommand(distro, wslScriptPath, options.title);
     command = 'cmd.exe';
     args = ['/d', '/s', '/c', cmdline];
     windowCommand = `cmd /s /c ${cmdline}`;
@@ -298,6 +316,9 @@ function launchWindowScript(script, options = {}) {
     windowCommand,
     terminal,
     scriptFile,
+    // ウィンドウが一瞬で閉じたときに「どこまで進んだか」を読む先。起動の受付は成功
+    // していても中で落ちることがあり、その足跡はここにしか残らない。
+    logFile: windowLogPath(scriptFile),
   };
 }
 
@@ -351,7 +372,7 @@ function sessionProcessLines(entries) {
     // bash で走らせる（sh=dash だと `source` や `[[ … ]]` 等の bash 構文が not found になる）。
     const run = `{ if command -v timeout >/dev/null 2>&1; then timeout ${seconds} bash -c ${shellQuote(body)}; else bash -c ${shellQuote(body)}; fi; }`;
     const onFail = e.on_error === 'fail'
-      ? `{ echo "[agent-dashboard] セッション開始コマンド ${e.id} が失敗したため起動しません"; read _; exit 0; }`
+      ? `{ echo "[agent-dashboard] セッション開始コマンド ${e.id} が失敗したため起動しません"; read _; exit 1; }`
       : `echo "[agent-dashboard] セッション開始コマンド ${e.id} が失敗しました（続行します）"`;
     return `echo "[agent-dashboard] セッション開始コマンド: ${e.id}"; ${run} || ${onFail}; `;
   }).join('');
@@ -402,7 +423,7 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands,
   const chat = chatTokens.map(quoteToken).join(' ');
   const ses = String(session || 'kiro-dash');
   const sendPrompt = prompt !== null && prompt !== undefined && String(prompt) !== '';
-  const cd = cwd ? `cd ${shellQuote(cwd)} || { echo "[agent-dashboard] cd 失敗: ${cwd}"; read _; exit 0; }; ` : '';
+  const cd = cwd ? `cd ${shellQuote(cwd)} || { __t "cd 失敗: ${cwd}"; echo "[agent-dashboard] cd 失敗: ${cwd}"; read _; exit 1; }; __t "cd ok: ${cwd}"; ` : '';
   const preLines = sessionProcessLines(sessionCommands);
   const chatLines = sessionChatLines(sessionCommands);
   // 検出は 0.5 秒間隔。画面全体を見る（末尾数行に絞ると、入力欄の下にステータス行や
@@ -416,9 +437,7 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands,
     `__wait_ready() { __i=0; while [ $__i -lt ${waitTicks} ]; do ` +
     `if tmux capture-pane -p -t "$__ses" 2>/dev/null | grep -qiE ${shellQuote(pattern)}; then return 0; fi; ` +
     `sleep 0.5; __i=$((__i+1)); done; return 1; }; `;
-  // CLI はログインシェル経由で起動する（tmux サーバが別の文脈——kiro-loop デーモン等——で
-  // 先に立っていると、サーバ環境の PATH に ~/.local/bin 等が無く CLI が即死しうる）。
-  const create = `tmux new-session -s "$__ses" ${cwd ? `-c ${shellQuote(cwd)} ` : ''}${shellQuote(`exec bash -lc ${shellQuote(`exec ${chat}`)}`)}`;
+  const create = `tmux new-session -s "$__ses" ${cwd ? `-c ${shellQuote(cwd)} ` : ''}${shellQuote(`exec ${chat}`)}`;
   if (!sendPrompt && !chatLines) {
     return (
       `export LANG=C.UTF-8 LC_ALL=C.UTF-8; ${cd}` +
@@ -426,9 +445,10 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands,
       `if ! tmux has-session -t "$__ses" 2>/dev/null; then ` +
       preLines +
       `echo "[agent-dashboard] tmux セッション $__ses を作成してエージェントCLIへ接続します（Ctrl+b d で離脱）"; ` +
-      `${create} || echo "[agent-dashboard] tmux セッションを開始できませんでした"; ` +
-      `else echo "[agent-dashboard] CLIチャットへ接続します（Ctrl+b d で離脱）"; tmux attach -t "$__ses"; fi; ` +
-      `echo; echo "[agent-dashboard] Enter でこのウィンドウを閉じます"; read _`
+      `__t "セッション作成して接続"; ${create} || echo "[agent-dashboard] tmux セッションを開始できませんでした"; ` +
+      `else echo "[agent-dashboard] CLIチャットへ接続します（Ctrl+b d で離脱）"; __t "既存セッションへ attach"; tmux attach -t "$__ses"; fi; ` +
+      `__t "attach 終了 status=$?"; ` +
+      `echo; echo "[agent-dashboard] Enter でこのウィンドウを閉じます"; __t "Enter 待ち"; read _; __t "=== 終了 ==="`
     );
   }
   return (
@@ -439,8 +459,10 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands,
     // セッションを新しく作るときだけ前準備を走らせる（既存セッションへの送信では走らせない）
     preLines +
     `echo "[agent-dashboard] tmux セッション $__ses を作成してエージェントCLIを起動します"; ` +
-    `${create.replace('new-session', 'new-session -d')} || { echo "[agent-dashboard] tmux セッション作成に失敗しました"; read _; exit 0; }; ` +
+    `${create.replace('new-session', 'new-session -d')} || { __t "tmux セッション作成に失敗"; echo "[agent-dashboard] tmux セッション作成に失敗しました"; read _; exit 1; }; ` +
+    `__t "tmux セッション作成 ok"; ` +
     `fi; ` +
+    `__t "セッション: $__ses new=$__new"; ` +
     // 送るものがあるときは、プロンプト検出＋送信を **バックグラウンド**に回し、前面はすぐ
     // アタッチして「起動の様子」を見せる。従来は検出が終わるまで最大 60 秒 "起動を待っています"
     // で固まって見えた（CLI の起動自体が遅いと、その間ずっと真っ黒な待ち画面だった）。
@@ -468,9 +490,9 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands,
           : '') +
         `) & ` +
         `echo "[agent-dashboard] エージェントCLIに接続します（起動後に自動で送信します・Ctrl+b d で離脱）"; ` +
-        `sleep 1; tmux attach -t "$__ses"; `
-      : `echo "[agent-dashboard] CLIチャットへ接続します（Ctrl+b d で離脱）"; sleep 1; tmux attach -t "$__ses"; `) +
-    `echo; echo "[agent-dashboard] Enter でこのウィンドウを閉じます"; read _`
+        `sleep 1; __t "attach 開始"; tmux attach -t "$__ses"; __t "attach 終了 status=$?"; `
+      : `echo "[agent-dashboard] CLIチャットへ接続します（Ctrl+b d で離脱）"; sleep 1; __t "attach 開始"; tmux attach -t "$__ses"; __t "attach 終了 status=$?"; `) +
+    `echo; echo "[agent-dashboard] Enter でこのウィンドウを閉じます"; __t "Enter 待ち"; read _; __t "=== 終了 ==="`
   );
 }
 
@@ -546,7 +568,7 @@ function makeLoopProvider(cfg) {
 module.exports = {
   DEFAULT_READY_PATTERN, DEFAULT_READY_TIMEOUT_SEC,
   makeLoopProvider, isWslPath, wslPath, wslDistro, winDriveToWsl, toWslCwd, shellQuote, sh,
-  decodeCliOutput, windowScript, windowStartCommand,
+  decodeCliOutput, windowScript, windowStartCommand, windowLogPath, tracePreamble,
   writeWindowScript,
   runInWindow,
   chatWindowScript, chatSessionName, runChatWindow, launchWindowScript,

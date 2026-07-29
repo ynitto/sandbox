@@ -8,16 +8,9 @@ const { spawnSync } = require('child_process');
 
 const cowork = require('../src/features/cowork/main/cowork');
 const cowork_loopProvider = require('../src/features/cowork/main/loopProvider');
-const wslMain = require('../src/base/main/wsl');
 const {
   makeLoopProvider, winDriveToWsl, toWslCwd, sh: providerSh,
 } = cowork_loopProvider;
-
-// win32 の起動経路は「開く前に wsl.exe を実地検査する」。テスト機に WSL は無いので、
-// 検査だけ差し替えて起動コマンドの組み立てを見る（検査そのものは実物を直接呼んで確かめる）。
-const realVerifyWslLaunch = wslMain.verifyWslLaunch;
-wslMain.verifyWslLaunch = (scriptPath, distro) => ({ ok: true, distro, error: '' });
-wslMain.defaultWslDistro = () => '';
 
 let passed = 0;
 function test(name, fn) {
@@ -309,6 +302,31 @@ test('terminalLaunchSpec は macOS のTerminalとLinuxの利用可能な端末�
   );
 });
 
+test('定常業務も ⚙ 設定のディストロで POSIX パスを解決する（既定へ丸めない）', () => {
+  // 「相談ボタンからは開けるのに定常業務からは開けない」の正体。
+  // engine / nodeRepos 経由（プロジェクト・CLIチャット・対話診断）は toViewerPath に
+  // engine.distro を渡していたが、cowork だけ渡しておらず WSL の既定へ丸まっていた。
+  // 既定が設定と違う環境（docker-desktop 等）では別のディストロを指し、そこには
+  // bash も対象フォルダも無いので、開いたウィンドウが即座に閉じる。
+  const orig = Object.getOwnPropertyDescriptor(process, 'platform');
+  const prevEnv = process.env.WSL_DISTRO_NAME;
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+  process.env.WSL_DISTRO_NAME = 'docker-desktop';   // WSL の既定（設定とは別物）
+  try {
+    const config = { engine: { distro: 'Ubuntu' } };
+    assert.strictEqual(cowork.viewerRepo('/home/me/app', config),
+      '\\\\wsl.localhost\\Ubuntu\\home\\me\\app', '設定のディストロで解決する');
+    assert.strictEqual(cowork.viewerRepo('/home/me/app', { engine: {} }),
+      '\\\\wsl.localhost\\docker-desktop\\home\\me\\app', '設定が空なら従来どおり既定へ');
+    // UNC / ドライブ表記はそのまま（変換対象は POSIX 絶対パスだけ）
+    assert.strictEqual(cowork.viewerRepo('C:\\proj\\app', config), 'C:\\proj\\app');
+  } finally {
+    if (orig) Object.defineProperty(process, 'platform', orig);
+    if (prevEnv === undefined) delete process.env.WSL_DISTRO_NAME;
+    else process.env.WSL_DISTRO_NAME = prevEnv;
+  }
+});
+
 test('win32 で job.prompt があれば kiro-loop を介さず tmux + kiro-cli へ直接送るウィンドウを開く', () => {
   const orig = Object.getOwnPropertyDescriptor(process, 'platform');
   Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
@@ -432,11 +450,10 @@ test('stateMachineInputAssist は必要な入力を項目名つきで人へ質�
   assert.ok(cowork.stateMachineInputAssist(null, false).includes('プレースホルダー'));
 });
 
-test('windowStartCommand は引用符を 1 段に保ち、入れ子の組み立てを作らない', () => {
+test('windowStartCommand は元の 1 段の形（入れ子を作らない）', () => {
   // 入れ子は 2 通り試して 2 通りとも壊した（3 段の cmd /c 入れ子 →「指定された名前の
   // ディストリビューションはありません。」、起動子 .cmd →「指定されたパスが見つかりません。」）。
-  // cmd.exe の引用・パス解決を Windows 無しで検証する手段が無い以上、組み立てを増やさない
-  // のが唯一の防御になる。引用されるのは title と -lc の引数だけで、入れ子にしない。
+  // cmd.exe の引用・パス解決を Windows 無しで検証する手段が無い以上、組み立てを増やさない。
   const line = cowork_loopProvider.windowStartCommand(
     'Ubuntu', '/mnt/c/Users/dev/Temp/agent-dashboard/run.sh'
   );
@@ -452,30 +469,44 @@ test('windowStartCommand は引用符を 1 段に保ち、入れ子の組み立�
   assert.ok(!noDistro.includes('-d '), 'distro 未指定なら -d を付けない');
 });
 
-test('win32 の起動は「開く前に」WSL を実地検査し、だめならウィンドウを開かず理由を返す', () => {
-  // コンソールは失敗すると一瞬で閉じて原因を持ち去る。失敗の説明をそこへ託さず、
-  // 起動前の検査結果としてアプリの画面（呼び出し元の error）へ返す。
-  // スクリプトが WSL から見えない（automount 無効など）
-  const missing = realVerifyWslLaunch('/mnt/c/t/run.sh', 'Ubuntu',
-    () => ({ status: wslMain.SCRIPT_MISSING_EXIT, stdout: '', stderr: '', error: '' }));
-  assert.strictEqual(missing.ok, false);
-  assert.ok(missing.error.includes('/mnt/c/t/run.sh'), 'どのパスが見えないのかを示す');
-  assert.ok(missing.error.includes('automount'), '確認すべき設定名まで示す');
-
-  // 起動できない状態でウィンドウを開くと、コンソールが一瞬で閉じて原因が消える。
-  // 検査が落ちたら開かずに理由を返す。
+test('win32 の -d は cwd（WSL UNC）から取れるときだけ付ける（推測を渡さない）', () => {
+  // 一覧から名前を推測して -d に渡す実装を入れたが、取り違えると
+  // 「指定された名前のディストリビューションはありません。」で即死した。
+  // 確実に分かるときだけ指定し、分からないときは wsl の既定へ委ねる。
   const orig = Object.getOwnPropertyDescriptor(process, 'platform');
   Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
-  wslMain.verifyWslLaunch = () => ({ ok: false, distro: '', error: 'WSL を起動できません（検査）' });
   try {
-    const res = cowork_loopProvider.launchWindowScript('echo hi', { cwd: 'C:\\proj\\app' });
-    assert.strictEqual(res.ok, false, '検査が落ちたらウィンドウを開かない');
-    assert.strictEqual(res.launched, undefined, '起動したことにしない');
-    assert.ok(res.error.includes('WSL を起動できません'), '検査の理由をそのまま返す');
+    const unc = cowork_loopProvider.launchWindowScript('echo hi',
+      { cwd: '\\\\wsl.localhost\\Ubuntu\\home\\me\\app' });
+    assert.ok(unc.windowCommand.includes('-d "Ubuntu"'), 'UNC から取れた名前は指定する');
+    const drive = cowork_loopProvider.launchWindowScript('echo hi', { cwd: 'C:\\proj\\app' });
+    assert.ok(!drive.windowCommand.includes('-d '),
+      'Windows ドライブ上のときは -d を付けず既定に任せる');
   } finally {
-    wslMain.verifyWslLaunch = (scriptPath, distro) => ({ ok: true, distro, error: '' });
     if (orig) Object.defineProperty(process, 'platform', orig);
   }
+});
+
+test('実行スクリプトは足跡（.log）を残す — stdout/stderr は奪わない', () => {
+  // ウィンドウが「一瞬出て閉じる」とき画面に何も残らない。どこまで進んだかを時刻つきで
+  // 残しておかないと、cd・tmux 作成・attach・read のどれで落ちたかを区別できない。
+  const pre = cowork_loopProvider.tracePreamble('/tmp/x.log');
+  assert.ok(pre.includes("__log='/tmp/x.log'"), 'ログ先を持つ');
+  assert.ok(pre.includes('__t()'), '追記用の関数を定義する');
+  assert.ok(pre.includes('>> "$__log"'), '追記だけ（リダイレクトで stdout を奪わない）');
+  assert.ok(!/\bexec\s*>/.test(pre) && !pre.includes('| tee'),
+    'stdout/stderr を奪わない（tmux attach が tty を失うと動かなくなる）');
+  assert.ok(pre.includes('tty='), 'tty の有無を残す（read が即戻る症状の切り分け）');
+
+  const script = cowork_loopProvider.chatWindowScript({
+    chatCommand: 'kiro-cli chat', cwd: '/mnt/c/proj/app', session: 's', prompt: 'p',
+  });
+  for (const mark of ['cd ok', 'tmux セッション作成 ok', 'attach 開始', 'attach 終了 status=$?',
+    'Enter 待ち', '=== 終了 ===']) {
+    assert.ok(script.includes(mark), `足跡を残す: ${mark}`);
+  }
+  assert.strictEqual(cowork_loopProvider.windowLogPath('/tmp/a/cowork-run-1.sh'),
+    '/tmp/a/cowork-run-1.log', 'ログは実行スクリプトと対で置く');
 });
 
 test('windowScript は cd → send 実行 → 送信先ペインのセッションへ tmux attach を組み立てる', () => {

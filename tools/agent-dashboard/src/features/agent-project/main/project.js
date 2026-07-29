@@ -1167,12 +1167,35 @@ function toViewerPath(p, distro = '') {
   return `\\\\wsl.localhost\\${name}${rest}`;
 }
 
-// 一覧の解読は base/main/wsl.js が担う（起動経路 = cowork の `wsl.exe -d …` と同じ名前を
-// 使う。`wsl --list --quiet` は UTF-16LE のことも UTF-8 のこともあり、決め打つと化けた
-// 文字列がそのまま名前になって存在しない UNC を指す）。
+// ⚙ 設定で選んだディストロ（engine.distro）。POSIX パスを UNC へ寄せる呼び出しは、
+// **必ずこれを渡す**——渡さないと WSL の既定ディストロへ丸まり、設定と違う環境の
+// 存在しないフォルダを指す。同じ設定を使う経路が食い違うと、ある画面では開けて
+// 別の画面では開けない、という形で表面化する。
+function viewerDistro(cfg) {
+  return String((((cfg || {}).engine) || {}).distro || '').trim();
+}
+
+let _wslDistroCache = { at: 0, name: '' };
 function _defaultWslDistro() {
   if (process.env.WSL_DISTRO_NAME) return process.env.WSL_DISTRO_NAME;
-  return require('../../../base/main/wsl').defaultWslDistro();
+  const now = Date.now();
+  if (now - _wslDistroCache.at < 60000) return _wslDistroCache.name;
+  let name = '';
+  try {
+    const { spawnSync } = require('child_process');
+    // --list --quiet は UTF-16LE。先頭の既定ディストロ名だけ拾う。
+    const r = spawnSync('wsl.exe', ['--list', '--quiet'], {
+      encoding: 'buffer', timeout: 8000, windowsHide: true,
+    });
+    if (r.status === 0 && r.stdout && r.stdout.length) {
+      const text = r.stdout.toString('utf16le').replace(/\0/g, '');
+      name = text.split(/\r?\n/).map((l) => l.trim()).find(Boolean) || '';
+    }
+  } catch {
+    /* WSL 無し */
+  }
+  _wslDistroCache = { at: now, name };
+  return name;
 }
 
 let _wslHomeCache = { at: 0, dirs: [] };
@@ -1965,5 +1988,6 @@ module.exports = {
   hostsMatch,
   sameMachineStatus,
   toViewerPath,
+  viewerDistro,
   _isPosixAbs,
 };
