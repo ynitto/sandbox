@@ -8,9 +8,16 @@ const { spawnSync } = require('child_process');
 
 const cowork = require('../src/features/cowork/main/cowork');
 const cowork_loopProvider = require('../src/features/cowork/main/loopProvider');
+const wslMain = require('../src/base/main/wsl');
 const {
   makeLoopProvider, winDriveToWsl, toWslCwd, sh: providerSh,
 } = cowork_loopProvider;
+
+// win32 の起動経路は「開く前に wsl.exe を実地検査する」。テスト機に WSL は無いので、
+// 検査だけ差し替えて起動コマンドの組み立てを見る（検査そのものは実物を直接呼んで確かめる）。
+const realVerifyWslLaunch = wslMain.verifyWslLaunch;
+wslMain.verifyWslLaunch = (scriptPath, distro) => ({ ok: true, distro, error: '' });
+wslMain.defaultWslDistro = () => '';
 
 let passed = 0;
 function test(name, fn) {
@@ -160,14 +167,11 @@ test('win32 の loop 実行は既定で別ウィンドウ（WSL tmux）起動に
     // GUI プロセスからの直接 spawn ではコンソールが割り当てられずウィンドウが出ない。
     // cmd の start で新しいコンソールを開かせる（スクリプト本文は一時ファイル経由）。
     assert.match(launched.windowCommand, /^cmd \/s \/c start "/, 'cmd の start でウィンドウを開く');
+    assert.match(launched.windowCommand, /wsl\.exe .*-e bash -lc /, 'wsl.exe で bash ログインシェルを起動する');
     assert.ok(launched.scriptFile, '実行スクリプトを一時ファイルへ書く');
     assert.ok(fs.existsSync(launched.scriptFile), 'スクリプトファイルが実在する');
-    // wsl.exe の起動は起動子（.cmd）側が持つ。コマンドラインには入れ子の引用符を作らない。
-    const launcher = launched.scriptFile.replace(/\.sh$/, '.cmd');
-    assert.ok(fs.existsSync(launcher), '実行スクリプトと対の起動子を書く');
-    assert.match(fs.readFileSync(launcher, 'utf8'), /wsl\.exe .*-e bash -lc /,
-      '起動子が wsl.exe で bash ログインシェルを起動する');
-    assert.ok(launched.windowCommand.includes(`"${launcher}"`), 'start は起動子を呼ぶ');
+    assert.ok(!fs.existsSync(launched.scriptFile.replace(/\.sh$/, '.cmd')),
+      '起動子ファイルは介さない（増やした組み立てが増やした失敗点だった）');
     assert.ok(
       fs.readFileSync(launched.scriptFile, 'utf8').includes("'kiro-loop' 'send' '毎朝レビュー'"),
       'スクリプト本文に send コマンドが入る'
@@ -428,55 +432,50 @@ test('stateMachineInputAssist は必要な入力を項目名つきで人へ質�
   assert.ok(cowork.stateMachineInputAssist(null, false).includes('プレースホルダー'));
 });
 
-test('windowStartCommand は起動子と引数を対で閉じた引用符だけで並べる（入れ子にしない）', () => {
-  // 以前は start → cmd /c → wsl.exe の 3 段入れ子を 1 行に組み立てており、cmd.exe の
-  // 引用規則を 3 段ぶん同時に満たす必要があった。読み違えると -d の引用符が名前の一部として
-  // 渡る（→「指定された名前のディストリビューションはありません。」）等の形で壊れ、
-  // Windows 無しでは検証もできない。起動子をファイルにして入れ子を無くす。
+test('windowStartCommand は引用符を 1 段に保ち、入れ子の組み立てを作らない', () => {
+  // 入れ子は 2 通り試して 2 通りとも壊した（3 段の cmd /c 入れ子 →「指定された名前の
+  // ディストリビューションはありません。」、起動子 .cmd →「指定されたパスが見つかりません。」）。
+  // cmd.exe の引用・パス解決を Windows 無しで検証する手段が無い以上、組み立てを増やさない
+  // のが唯一の防御になる。引用されるのは title と -lc の引数だけで、入れ子にしない。
   const line = cowork_loopProvider.windowStartCommand(
-    'Ubuntu', '/mnt/c/Users/dev/Temp/agent-dashboard/run.sh',
-    '定常業務 (agent-dashboard)', 'C:\\Temp\\agent-dashboard\\run.cmd'
+    'Ubuntu', '/mnt/c/Users/dev/Temp/agent-dashboard/run.sh'
   );
   assert.strictEqual(
     line,
-    'start "定常業務 (agent-dashboard)" "C:\\Temp\\agent-dashboard\\run.cmd"'
-    + ' "/mnt/c/Users/dev/Temp/agent-dashboard/run.sh" "Ubuntu"'
+    'start "定常業務 (agent-dashboard)" wsl.exe -d "Ubuntu" -e bash -lc'
+    + ' ". \'/mnt/c/Users/dev/Temp/agent-dashboard/run.sh\'"'
   );
-  assert.strictEqual((line.match(/"/g) || []).length % 2, 0, '引用符は必ず対で閉じる');
-  assert.ok(!/cmd \/d \/s \/c "/.test(line), 'コマンドラインに入れ子の /c 文字列を作らない');
-  // ディストロ未指定は空文字の引数として渡す（起動子が -d 無しで起動する）
-  const noDistro = cowork_loopProvider.windowStartCommand('', '/mnt/c/t/run.sh', 'T', 'C:\\t\\run.cmd');
-  assert.ok(noDistro.endsWith(' ""'), 'distro 未指定は空の引数として渡す');
+  assert.strictEqual((line.match(/"/g) || []).length, 6, '引用符は title / distro / -lc の 3 組だけ');
+  assert.ok(!/cmd \/d \/s \/c "/.test(line), '入れ子の /c 文字列を作らない');
+  assert.ok(!/\.cmd"/.test(line), '起動子ファイルを介さない');
+  const noDistro = cowork_loopProvider.windowStartCommand('', '/mnt/c/t/run.sh');
+  assert.ok(!noDistro.includes('-d '), 'distro 未指定なら -d を付けない');
 });
 
-test('起動子（.cmd）は -d 失敗時に既定ディストロで再試行し、両方だめなら情報を残して止まる', () => {
-  const batch = cowork_loopProvider.WINDOW_LAUNCHER_BATCH;
-  // 本文はコンソールのコードページで読まれる。日本語を書くと環境によって化けて命令ごと
-  // 壊れるため、可変値は引数（%~1 / %~2）で受け取り本文は ASCII に保つ。
-  assert.ok(Buffer.from(batch, 'utf8').every((b) => b < 0x80),
-    '本文は ASCII のみ（コードページに依存させない）');
-  assert.ok(batch.includes('%~1') && batch.includes('%~2'),
-    'スクリプトパスとディストロ名は引数で受け取る（本文へ埋め込まない）');
-  const withD = batch.indexOf('wsl.exe -d "%__distro%"');
-  const withoutD = batch.indexOf('wsl.exe -e bash');
-  assert.ok(withD > 0 && withoutD > withD, '-d 付きを先に試し、だめなら -d 無しで再試行する');
-  assert.ok(batch.includes('wsl.exe --list --verbose'),
-    '両方失敗したらインストール済みディストロを見せる');
-  assert.ok(batch.includes('pause'), '失敗時はウィンドウを閉じずに止める');
-  assert.ok(batch.includes('echo [agent-dashboard]   distro : %__distro%')
-    && batch.includes('echo [agent-dashboard]   script : %__script%'),
-  '何を使って起動したかを最初に表示する（失敗時の切り分け材料）');
-});
+test('win32 の起動は「開く前に」WSL を実地検査し、だめならウィンドウを開かず理由を返す', () => {
+  // コンソールは失敗すると一瞬で閉じて原因を持ち去る。失敗の説明をそこへ託さず、
+  // 起動前の検査結果としてアプリの画面（呼び出し元の error）へ返す。
+  // スクリプトが WSL から見えない（automount 無効など）
+  const missing = realVerifyWslLaunch('/mnt/c/t/run.sh', 'Ubuntu',
+    () => ({ status: wslMain.SCRIPT_MISSING_EXIT, stdout: '', stderr: '', error: '' }));
+  assert.strictEqual(missing.ok, false);
+  assert.ok(missing.error.includes('/mnt/c/t/run.sh'), 'どのパスが見えないのかを示す');
+  assert.ok(missing.error.includes('automount'), '確認すべき設定名まで示す');
 
-test('writeWindowLauncher は実行スクリプトと対の .cmd を CRLF・ASCII で書く', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-launcher-'));
-  const sh = path.join(dir, 'cowork-run-1-abc.sh');
-  fs.writeFileSync(sh, '#!/bin/sh\necho hi\n', 'utf8');
-  const cmdFile = cowork_loopProvider.writeWindowLauncher(sh);
-  assert.strictEqual(cmdFile, path.join(dir, 'cowork-run-1-abc.cmd'), '同じ場所に対で置く');
-  const body = fs.readFileSync(cmdFile);
-  assert.ok(body.every((b) => b < 0x80), 'ASCII だけで書く');
-  assert.ok(body.toString('ascii').includes('\r\n'), 'バッチは CRLF で書く');
+  // 起動できない状態でウィンドウを開くと、コンソールが一瞬で閉じて原因が消える。
+  // 検査が落ちたら開かずに理由を返す。
+  const orig = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+  wslMain.verifyWslLaunch = () => ({ ok: false, distro: '', error: 'WSL を起動できません（検査）' });
+  try {
+    const res = cowork_loopProvider.launchWindowScript('echo hi', { cwd: 'C:\\proj\\app' });
+    assert.strictEqual(res.ok, false, '検査が落ちたらウィンドウを開かない');
+    assert.strictEqual(res.launched, undefined, '起動したことにしない');
+    assert.ok(res.error.includes('WSL を起動できません'), '検査の理由をそのまま返す');
+  } finally {
+    wslMain.verifyWslLaunch = (scriptPath, distro) => ({ ok: true, distro, error: '' });
+    if (orig) Object.defineProperty(process, 'platform', orig);
+  }
 });
 
 test('windowScript は cd → send 実行 → 送信先ペインのセッションへ tmux attach を組み立てる', () => {
