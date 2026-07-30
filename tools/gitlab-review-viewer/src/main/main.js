@@ -40,7 +40,7 @@ let mainWindow = null;
 let stopHandoff = null;
 
 // gitlab-review-viewer://open?url=<GitLab の web_url> のディープリンク。
-// kiro-projects-viewer などの外部ツールが「このイシュー / MR をレビューで
+// agent-dashboard などの外部ツールが「このイシュー / MR をレビューで
 // 開いて」と指示するための入り口。renderer に転送して対象を解決させる。
 function handleDeepLink(url) {
   if (!url || !url.startsWith('gitlab-review-viewer://')) return;
@@ -122,7 +122,7 @@ if (!gotLock) {
   app.whenReady().then(() => {
     registerIpcHandlers();
     createWindow();
-    // 起動済みインスタンスへの即時ハンドオフ用ローカル IPC を開く。kiro-projects-viewer は
+    // 起動済みインスタンスへの即時ハンドオフ用ローカル IPC を開く。agent-dashboard は
     // portable exe の再起動（自己展開の数秒コスト）を避けて、ここへ URL を送ってくる。
     // second-instance（argv 経由の連携起動）と同じく handleDeepLink に流す。
     stopHandoff = startHandoffServer((url) => handleDeepLink(url));

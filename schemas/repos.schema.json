@@ -27,7 +27,7 @@
         },
         "desc": {
           "type": "string",
-          "description": "内容物・関与範囲の説明。kiro-projects の auto-route（LLM 推定）と gitlab 起票が読む【書込先なら推奨】"
+          "description": "内容物・関与範囲の説明。agent-project の auto-route（LLM 推定）と gitlab 起票が読む【書込先なら推奨】"
         },
         "base": {
           "type": "string",
