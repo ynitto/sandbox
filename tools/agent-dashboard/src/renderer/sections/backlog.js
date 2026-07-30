@@ -641,9 +641,9 @@ function reviseAreaHtml(t) {
       <div class="field"><label>先行タスク</label><input id="rv-after" class="mono" value="${esc(t.extra.after || '')}" />
         <p class="field-help">先に終えるタスクの ID をカンマ区切りで。空欄にすると解除します。</p></div>
     </div>
-    <div class="field"><label>検証コマンド</label><input id="rv-verify" class="mono" value="${esc(t.verify || '')}" />
-      <p class="field-help">完了判定に使うコマンド。空欄にすると削除します。</p></div>
-    <div class="field"><label>受入基準</label>
+    <div class="field"><label>完了ゲート（検証コマンド）</label><input id="rv-verify" class="mono" value="${esc(t.verify || '')}" />
+      <p class="field-help">agent-flow の工程内チェックとは別に、成果をタスク完了として確定するコマンドです。空欄にすると削除します。</p></div>
+    <div class="field"><label>完了ゲート（受入基準）</label>
       <textarea rows="4" id="rv-acceptance" placeholder="1 行 1 基準で書きます">${esc(
         acceptanceList(t).join('\n')
       )}</textarea>
@@ -768,7 +768,7 @@ function showTaskDialog(id, scope) {
       }</td></tr>
       <tr><th>再試行</th><td>${t.retries}</td></tr>
       ${boardDelegationRowHtml(t)}
-      <tr><th>検証コマンド</th><td>${t.verify ? `<pre class="mono">${esc(t.verify)}</pre>` : '<span class="muted">（未定義）</span>'}</td></tr>
+      <tr><th>完了ゲート</th><td>${t.verify ? `<pre class="mono">${esc(t.verify)}</pre>` : '<span class="muted">（未定義）</span>'}</td></tr>
       ${depRow}
       ${extraRows}
       <tr><th>ファイル</th><td><a href="#" id="task-open-file" class="mono">${esc(t.file)}</a></td></tr>

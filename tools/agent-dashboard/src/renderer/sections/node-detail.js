@@ -13,6 +13,31 @@ function nodeTimeline(nodeId) {
   return ((state.flowRun && state.flowRun.nodeEvents) || {})[nodeId] || [];
 }
 
+// agent-flow の kind は実行グラフ内での「役割」であり、agent-project がタスクの
+// 完了を確定する verify（完了ゲート）とは別物。特に verify を生のまま表示すると、
+// バックログの検証コマンドと同じ検証を二重管理しているように見えるため言い分ける。
+function flowNodeKindLabel(kind) {
+  const labels = {
+    verify: '工程内チェック',
+    work: '作業',
+    generate: '生成',
+    classify: '分類',
+    synthesize: '統合',
+    filter: '絞り込み',
+    judge: '判定',
+    reduce: '集約',
+    split: '分割',
+    map: '並列処理',
+  };
+  return labels[String(kind || '')] || String(kind || 'work');
+}
+
+function flowNodeKindHelp(kind) {
+  if (String(kind || '') !== 'verify') return '';
+  return `<div class="muted flow-kind-help">このチェックは作業グラフの途中で、後続工程へ進めるかを判断します。` +
+    'タスクの完了は、バックログに設定された完了ゲートで別に確定します。</div>';
+}
+
 // この工程が「やり直し」でどう扱われるかを言い切る行。
 // グラフで赤いノードを見た人は「この工程だけ再実行したい」と考えるが、単体再実行は
 // 存在しない — やり直しの単位は run で、agent-flow が失敗・未実行の工程だけを pending へ
@@ -177,9 +202,10 @@ function renderFlowNode(run, node, retryUi, advice) {
     esc(FLOW_STATE_LABEL[effState] || effState) +
     (reconciled ? ' <span class="status-chip st-reconciled" title="GitLab 側の決着を先に表示しています（正式な反映待ち）">GitLab 反映</span>' : '');
   return `<div class="card full">
-      <h3><span class="mono">${esc(node.id)}</span> [${esc(node.kind)}] — ${stateLabel}${node.who ? ` @${esc(node.who)}` : ''}${
+      <h3><span class="mono">${esc(node.id)}</span> [${esc(flowNodeKindLabel(node.kind))}] — ${stateLabel}${node.who ? ` @${esc(node.who)}` : ''}${
         node.pc ? ` <span class="muted">（端末: ${esc(node.pc)}）</span>` : ''
       }</h3>
+      ${flowNodeKindHelp(node.kind)}
       <div class="node-goal">${proseHtml(node.goal) || '<span class="muted">（目標なし）</span>'}</div>
       ${node.deps.length ? `<div class="muted" style="margin-top:4px">依存: ${node.deps.map(esc).join(', ')}</div>` : ''}
       ${nodeFateLine(run, effState, retryUi, advice)}
@@ -460,7 +486,7 @@ function renderGraphSvg(run) {
       <rect width="${NW}" height="${NH}" rx="6"></rect>
       <text x="8" y="17" class="mono">${esc(idLabel)}${n.who ? ` @${esc(n.who).slice(0, 8)}` : ''}</text>
       <text x="8" y="31">${esc(goal)}</text>
-      <text x="8" y="42" class="kind">[${esc(n.kind)}]</text>
+      <text x="8" y="42" class="kind">[${esc(flowNodeKindLabel(n.kind))}]</text>
       ${issueIcon}
     </g>`;
   });
