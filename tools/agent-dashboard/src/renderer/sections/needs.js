@@ -23,15 +23,21 @@ function loadNeedsSent() {
 }
 
 const needsSent = loadNeedsSent();
+const NEED_SENT_TTL_MS = 15 * 60 * 1000;
+const COMMAND_RECEIPT_VISIBLE_MS = 2 * 60 * 1000;
 
 function markNeedSent(need) {
-  needsSent[need.file] = need.mtime;
+  needsSent[need.file] = { mtime: need.mtime, sentAt: Date.now() };
   localStorage.setItem('kpv:needsSent', JSON.stringify(needsSent));
 }
 
 function isNeedSent(need) {
-  if (needsSent[need.file] === undefined) return false;
-  if (needsSent[need.file] === need.mtime) return true;
+  const marker = needsSent[need.file];
+  if (marker === undefined) return false;
+  // 旧版の数値マーカーには送信時刻がなく、永久に「反映待ち」になり得るため破棄する。
+  const current = marker && typeof marker === 'object' ? marker : null;
+  if (current && current.mtime === need.mtime
+    && Date.now() - Number(current.sentAt || 0) < NEED_SENT_TTL_MS) return true;
   // ファイルが書き換わった → マーカーは古い（掃除して操作を再度出す）
   delete needsSent[need.file];
   localStorage.setItem('kpv:needsSent', JSON.stringify(needsSent));
@@ -180,12 +186,15 @@ function commandFailureHtml(n) {
 // ことを知らせる確認。取り込みは非同期（ドロップ→後で本体が処理）で、成功時は元ファイルが
 // 消えるだけなので、以前は「保留中（本体未取り込み）」と「受理済み」を画面で区別できず、
 // 押しても何も起きないように見えた。失敗（commandFailure）が無いときだけ出す＝失敗表示を上書きしない。
-function commandReceiptHtml(n) {
+function commandReceiptHtml(n, nowMs = Date.now()) {
   const cr = n && n.commandReceipt;
   if (!cr || (n && n.commandFailure)) return '';
+  const processedAt = Date.parse(String(cr.processedAt || '').replace(' ', 'T'));
+  // 受理通知は一時的なフィードバックであり、履歴ではない。古い通知をカードに残さない。
+  if (Number.isFinite(processedAt) && nowMs - processedAt > COMMAND_RECEIPT_VISIBLE_MS) return '';
   const label = COMMAND_ACTION_LABELS[cr.action] || cr.action || '指示';
   return `<div class="need-command-receipt">
-    <span>「${esc(label)}」は本体に届き、受理されました${cr.processedAt ? `（${esc(cr.processedAt)}）` : ''}。反映まで少し待ってください。</span>
+    <span>「${esc(label)}」を受理しました。</span>
   </div>`;
 }
 
@@ -1254,7 +1263,7 @@ function specFilesHtml(p, n) {
 }
 
 function needBucket(n, sentFn) {
-  if (n.decided) return 'done';
+  if (n.decided || (n.commandReceipt && !n.commandFailure)) return 'done';
   // 送信後に本体側で取り込みが失敗した指示（commands/*.err → n.commandFailure）は
   // 「送信済み」に隠さない。失敗の事実と理由を見せて、次の操作をできるようにする。
   if (n.commandFailure) return 'open';
@@ -1670,8 +1679,10 @@ function taskGuideHtml(task, kind) {
 }
 
 function needNextStepHtml(n, ask, settled) {
-  const guidance = settled
-    ? '回答は送信済みです。処理結果が画面に反映されるまで待ってください。'
+  const guidance = n.decided || (n.commandReceipt && !n.commandFailure)
+    ? 'この項目への回答は完了しています。'
+    : settled
+      ? '回答を送信しました。15分以上状態が変わらない場合は、再度操作できます。'
     : 'まず確認事項を読み、必要なら下の回答欄から承認・差し戻し・再実行を選んでください。';
   return `<section class="need-next-step" aria-label="次にすること">
     <div class="need-step-kicker">次にすること</div>
@@ -1683,8 +1694,8 @@ function needNextStepHtml(n, ask, settled) {
 function renderNeedDetail(p, n) {
   if (!n) return '<div class="empty need-detail-empty">この状態の項目はありません</div>';
   // 取り込み失敗（commandFailure）があるカードは送信済み扱いにしない＝操作を出し直す
-  const settled = n.decided || (!n.commandFailure && isNeedSent(n));
-  const chip = n.decided
+  const settled = n.decided || (!n.commandFailure && (n.commandReceipt || isNeedSent(n)));
+  const chip = n.decided || (n.commandReceipt && !n.commandFailure)
     ? '<span class="status-chip st-done">回答済み</span>'
     : settled
       ? '<span class="status-chip st-review">送信済み</span>'
@@ -1721,7 +1732,6 @@ function renderNeedDetail(p, n) {
     ${commandReceiptHtml(n)}
     ${finalVerificationFailureHtml(finalVerificationFailure)}
     ${needNextStepHtml(n, ask, settled)}
-    ${settled ? '' : `<section class="need-response need-response-primary"><h3>回答する</h3>${needActionsHtml(n)}${needVerifyRevisionHtml(p, n)}</section>`}
     <section class="need-overview-grid">
       <section class="need-decision">
         <h3>確認事項</h3>
@@ -1746,6 +1756,7 @@ function renderNeedDetail(p, n) {
       <button class="need-output-button subtle-action" data-need-output="${esc(n.id)}">詳細情報を開く</button>
     </details>
     ${reviewCommentsHtml(n)}
+    ${settled ? '' : `<section class="need-response need-response-primary"><h3>最終回答</h3><p class="muted need-response-hint">成果とレビューコメントを確認してから回答してください。</p>${needActionsHtml(n)}${needVerifyRevisionHtml(p, n)}</section>`}
   </article>`;
 }
 
@@ -1888,7 +1899,9 @@ function renderNeeds(options) {
     state.needsSelectedId,
     state.needsMobileDetail,
     filters.map((x) => x[2]),
-    p.needs.map((n) => [n.id, n.kind, n.decided, isNeedSent(n), n.why, n.summary, n.risk, n.owner || '', (n.comments || []).map((c) => `${c.id}:${c.editedTs || ''}`).join(','), n.failureSummary || '', n.failureResolution || '', n.failureContext || null, n.commandFailure || null, (n.detail || '').length]),
+    // 要約だけの署名では、同じ長さの本文・成果物・受理状態の更新を見逃して古い表示が残る。
+    // needs は小さな判断待ち集合なので、表示に使うモデル全体を署名に含める。
+    p.needs,
     model.items.map((n) => (ages[n.id] ? `${ages[n.id].level}|${ages[n.id].label}` : '')),
   ]);
   if (el.dataset.sig === sig && el.childElementCount) return;
