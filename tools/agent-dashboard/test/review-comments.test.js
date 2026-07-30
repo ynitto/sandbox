@@ -165,6 +165,36 @@ async function main() {
     assert.ok(renderer.includes('api.deleteReviewComment'), '削除 API の呼び出しがありません');
   });
 
+  test('renderer は一覧に並ぶ全カードのレビューコメント欄を配線する', () => {
+    assert.ok(
+      /for \(const section of root\.querySelectorAll\('\.need-comments'\)\)/.test(renderer),
+      '最初のカードだけでなく全コメント欄を走査していません'
+    );
+    assert.ok(
+      renderer.includes('bindReviewCommentSection(section, p)'),
+      'カード単位のコメント配線が呼ばれていません'
+    );
+    assert.ok(
+      !renderer.includes("const section = root.querySelector('.need-comments')"),
+      '最初のコメント欄だけを配線する実装が残っています'
+    );
+  });
+
+  test('renderer は投稿済みの表示名ではなく投稿者入力欄を参照する', () => {
+    assert.ok(
+      renderer.includes('class="rc-author-input"'),
+      '投稿者入力欄に専用 class がありません'
+    );
+    assert.ok(
+      renderer.includes("section.querySelector('.rc-author-input')"),
+      '投稿者入力欄を専用 class で取得していません'
+    );
+    assert.ok(
+      !renderer.includes("section.querySelector('.rc-author')"),
+      '投稿済みコメントの表示名を入力欄として取得する実装が残っています'
+    );
+  });
+
   console.log(`\n${passed} tests passed`);
 }
 
