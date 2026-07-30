@@ -277,12 +277,22 @@ class TestTaskBranchAndDeliveryReview(unittest.TestCase):
 
     def test_gl_parse_repo_forms(self):
         self.assertEqual(km._gl_parse_repo("https://gitlab.com/g/app.git"),
-                         ("gitlab.com", "g/app"))
+                         ("https", "gitlab.com", "g/app"))
         self.assertEqual(km._gl_parse_repo("https://gl.example.com/team/sub/app"),
-                         ("gl.example.com", "team/sub/app"))
+                         ("https", "gl.example.com", "team/sub/app"))
+        self.assertEqual(km._gl_parse_repo("http://gl.example.com/team/sub/app.git"),
+                         ("http", "gl.example.com", "team/sub/app"))
         self.assertEqual(km._gl_parse_repo("git@gitlab.com:g/app.git"),
-                         ("gitlab.com", "g/app"))
+                         ("https", "gitlab.com", "g/app"))
         self.assertIsNone(km._gl_parse_repo("/local/path/repo"))
+
+    def test_gl_api_uses_parsed_http_scheme(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b"{}"
+        with mock.patch("urllib.request.urlopen", return_value=response) as urlopen:
+            km._gl_api("http", "gl.example.com", "tok", "GET", "/projects/1")
+        self.assertEqual(urlopen.call_args.args[0].full_url,
+                         "http://gl.example.com/api/v4/projects/1")
 
     def _mr_task(self, cfg, d):
         mkb(d, "T1", verify="true")
@@ -297,7 +307,7 @@ class TestTaskBranchAndDeliveryReview(unittest.TestCase):
             t = self._mr_task(cfg, d)
             calls = []
 
-            def api(host, token, method, path, data=None, params=None):
+            def api(scheme, host, token, method, path, data=None, params=None):
                 calls.append((method, path, data, params))
                 if method == "GET" and path.endswith("/merge_requests"):
                     return []                                   # 既存 MR 無し
@@ -417,7 +427,7 @@ class TestTaskBranchAndDeliveryReview(unittest.TestCase):
         ここも落ちる。設定ファイル経由の到達性そのものは tests/test_config_keys.py が見る。"""
         cfg = dataclasses.replace(cfg, remote_review=remote_review)
 
-        def api(host, token, method, path, data=None, params=None):
+        def api(scheme, host, token, method, path, data=None, params=None):
             if path.endswith("/merge_requests/7"):
                 return mr
             if path.endswith("/reviewers"):
@@ -567,7 +577,7 @@ class TestTaskBranchAndDeliveryReview(unittest.TestCase):
             t = self._review_task_with_mr(cfg, d)
             calls = []
 
-            def api(host, token, method, path, data=None, params=None):
+            def api(scheme, host, token, method, path, data=None, params=None):
                 calls.append((method, path, data))
                 if method == "GET" and path.endswith("/merge_requests/7"):
                     return {"state": "opened", "merge_status": "can_be_merged",
@@ -592,7 +602,7 @@ class TestTaskBranchAndDeliveryReview(unittest.TestCase):
             t = self._review_task_with_mr(cfg, d)
             calls = []
 
-            def api(host, token, method, path, data=None, params=None):
+            def api(scheme, host, token, method, path, data=None, params=None):
                 calls.append((method, path, data))
                 if method == "GET" and path.endswith("/merge_requests/7"):
                     return {"state": "opened", "merge_status": "cannot_be_merged",
@@ -628,7 +638,7 @@ class TestTaskBranchAndDeliveryReview(unittest.TestCase):
             t = self._review_task_with_mr(cfg, d)
             calls = []
 
-            def api(host, token, method, path, data=None, params=None):
+            def api(scheme, host, token, method, path, data=None, params=None):
                 calls.append((method, path, data))
                 return {}
 
