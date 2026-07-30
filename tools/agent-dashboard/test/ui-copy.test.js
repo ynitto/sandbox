@@ -9,6 +9,8 @@ const html = fs.readFileSync(path.join(rendererRoot, 'index.html'), 'utf8');
 const orchestration = fs.readFileSync(path.join(rendererRoot, 'sections', 'orchestration.js'), 'utf8');
 const overview = fs.readFileSync(path.join(rendererRoot, 'sections', 'overview.js'), 'utf8');
 const flow = fs.readFileSync(path.join(rendererRoot, 'sections', 'flow.js'), 'utf8');
+const nodeDetail = fs.readFileSync(path.join(rendererRoot, 'sections', 'node-detail.js'), 'utf8');
+const backlog = fs.readFileSync(path.join(rendererRoot, 'sections', 'backlog.js'), 'utf8');
 
 assert.ok(html.includes('<h1>プロジェクト管理</h1>'));
 assert.ok(html.includes('この作業を相談'));
@@ -29,5 +31,13 @@ for (const leaked of ['（S3）', '（既定非表示）', '（憲章には直�
 assert.ok(!html.includes('AI 補完'));
 assert.ok(!flow.includes('エージェント CLI の実行環境'));
 assert.ok(flow.includes('承認を待っています。要対応タブで確認してください。'));
+
+// agent-flow の verify ノード（途中の制御）と agent-project の verify（完了の正本）を
+// 同じ表示名にしない。役割と実行タイミングの違いも、該当画面だけで理解できるようにする。
+assert.ok(nodeDetail.includes("verify: '工程内チェック'"));
+assert.ok(nodeDetail.includes('作業グラフの途中で、後続工程へ進めるかを判断します'));
+assert.ok(nodeDetail.includes('バックログに設定された完了ゲートで別に確定します'));
+assert.ok(backlog.includes('完了ゲート（検証コマンド）'));
+assert.ok(backlog.includes('agent-flow の工程内チェックとは別に'));
 
 console.log('ui-copy tests passed');

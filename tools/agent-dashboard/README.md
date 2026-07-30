@@ -55,6 +55,13 @@ agent-amigos ミッションとノード予算（`src/features/amigos/`）を同
 必要な箇所だけ「タスクを見る」「実行を見る」「成果を見る」から深掘りできる。
 プロジェクト定義の編集やリセットは「プロジェクト設定」にまとめ、日常の確認画面から分離している。
 
+**verify 統一は設計中**: 現行データでは agent-flow の `kind: verify` と agent-project の
+バックログ `verify:` の両方を読み分けて表示するが、同じ完了条件を二つの層で生成・実行し続ける
+ことは目標ではない。統一後は agent-project の検証計画を正本とし、成果 revision と worktree を持つ
+agent-flow が一度だけ実行し、agent-project が receipt を検算して状態を確定する。移行判断と順序は
+[`agent-project / agent-flow task verify 統一設計`](../../docs/plans/2026-07-30-unified-task-verify-design.md)
+を正とし、片側だけを先に無効化しない。
+
 ```
 ┌ サイドバー ────────┐┌ メイン ─────────────────────────────────────────┐
 │ プロジェクト        ││ 概要      charter / acceptance 達成状況 / 稼働操作 │

@@ -1,6 +1,6 @@
 # agent-flow 設計書
 
-> 最終更新: 2026-07-27（実装 `tools/agent-flow/agent_flow/` と突き合わせ済み）
+> 最終更新: 2026-07-31（統一 verify 契約は移行設計。実装順は `docs/plans/2026-07-30-unified-task-verify-design.md`）
 > 実装: `tools/agent-flow/`（本体 24 断片・約 7,000 行）、テスト `tools/agent-flow/tests/`（577 件）
 > 関連: [agent-project 設計書](./agent-project-design.md) ／ [git worktree キャッシュ](./git-worktree-cache-pattern.md)
 >
@@ -9,7 +9,7 @@
 
 ## TL;DR
 
-agent-flow は、自然言語の要求をタスクグラフへ分解して実行し、結果を評価して作り直しまで回す分散ワークフローエンジンです。**PC 間に配る単位は 1 つの要求（run）**で、落札した 1 台がその run のワーカーを自 PC 内に起こして完走します（グラフ内の個々のステップが PC 間に散らないのは仕様。[運用ガイド §4.2](../guides/multi-pc-operations.md)）。
+agent-flow は、自然言語の要求をタスクグラフへ分解して実行し、結果を評価して作り直しまで回す分散ワークフローエンジンです。**PC 間に配る単位は 1 つの要求（run）**で、落札した 1 台がその run のワーカーを自 PC 内に起こして完走します。agent-project から検証計画を受け取った run は、成果を作った worktree と revision のまま検証し、証跡付き receipt を返します（グラフ内の個々のステップが PC 間に散らないのは仕様。[運用ガイド §4.2](../guides/multi-pc-operations.md)）。
 
 主要な決定は 3 つです。第一に、プロセス間の通信をバス上のファイルだけに限り、タスクの状態は専用フィールドではなくファイルの存在から導きます。第二に、二重実行を止めるロックは、書き込み先を名前で分けた claim と `(ts, who)` の決定的タイブレークで作ります。第三に、agent-flow 自身は常駐しません。受理と実行を別々の単発コマンドに割り、周期駆動は PC に 1 本の常駐体（`agent-project serve`）へ預けます。
 
@@ -38,6 +38,7 @@ Anthropic の *Building Effective Agents* は、経路が固定された Workflo
 - 公平なタスク分配。負荷分散は起動位相のずらしとジッタだけの heuristic です
 - 成果物そのものの保管。実体は成果物リポジトリに置き、バスには要約とリンクだけを残します
 - 常駐管理。プロセスの起動・監視・再起動は agent-project の常駐体が担います
+- タスクの受入基準と done の決定。agent-flow は渡された検証計画を緩めずに実行し、採否は agent-project が決めます
 
 ## 主要な設計判断
 
@@ -103,13 +104,13 @@ Anthropic の *Building Effective Agents* は、経路が固定された Workflo
 
 ### 6. 失敗は種別で分け、回復する層を種別ごとに固定する
 
-**判断**: 失敗を transient（待てば直る）、内容（作り直しが要る）、環境（人が直す）の 3 種に分け、種別ごとに回復する層を 1 つに決める。上の層で吸収した失敗は、下の層の予算（`max_retries` / `max_resumes`）を消費させない。
+**判断**: 失敗を transient（待てば直る）、内容（作り直しが要る）、環境（この実行場所では確かめられない）の 3 種に分け、種別ごとに回復する層を 1 つに決める。検証結果では `fail` が内容、`inconclusive` が環境に当たる。上の層で吸収した失敗は、下の層の予算（`max_retries` / `max_resumes`）を消費させない。
 
 **文脈**: 以前はすべての失敗が最上位の再計画まで持ち上がり、同じ扱いを受けていた。実際に codex の利用上限で 26 ノードが 1 つずつリトライ予算を焼き尽くし、理由不明の全滅に見えた。接続断も、JSON の書き損じも、成果物の不合格も、全部が同じ「評価役を呼んでタスクを作り直す」経路を通っていた。一番安く直せる失敗に一番高い機構を使っていたことになる。
 
 **選択肢と却下理由**: worker と orchestrator の呼び出し点それぞれにリトライループを置く案は、`run_agent` という単一チョークポイントが既にあるので冗長で、二重ループが予算の掛け算を生む。transient のときに claim を手放して別ワーカーへ任せる案は、他ワーカーも同じ API 障害で落ちるだけで claim の往復コストが増える。環境の不調はノードを替えても直らないので、run 単位で cooldown する方が正しい。failed run を無差別に自動再開する案は、内容の失敗と環境の失敗で LLM を無駄に焼く。
 
-**トレードオフ**: 層が 4 つに増え、最悪時間の上界が伸びます。上界は 1 呼び出しあたり `(1 + transient_retries) × (1 + format_retries) × agent_timeout + Σbackoff` で有界にしてあります（既定で約 1 時間）。transient はレイヤ 3 に入らないので、`max_retries × transient_retries` の掛け算は経路として発生しません。
+**トレードオフ**: 層が 4 つに増え、最悪時間の上界が伸びます。上界は 1 呼び出しあたり `(1 + transient_retries) × (1 + format_retries) × agent_timeout + Σbackoff` で有界にしてあります（既定で約 1 時間）。transient と `inconclusive` はレイヤ 3 に入らないので、成果修正の予算を減らしません。
 
 **確信度**: 高い。層ごとにテストがあります（`TransientRetryTests` / `FormatRepairTests` / `TransientRunBreakTests` / `AutoHealTests`）。
 
@@ -118,7 +119,7 @@ Anthropic の *Building Effective Agents* は、経路が固定された Workflo
 この節の抽象度は概要です。個々の関数には触れません。
 
 ```
-    要求（agent-project / 板 / 人）
+    要求 + 任意の verification plan（agent-project / 板 / 人）
         │
         ▼
   inbox/<run-id>.json ──── participate が claim（分散時は 1 台に決まる）
@@ -128,9 +129,10 @@ Anthropic の *Building Effective Agents* は、経路が固定された Workflo
   run --from-inbox（1 run = 1 プロセス）
         │
         ├─▶ orchestrator … 戦略を選び graph.json を書く。以後は静止を待って評価と再計画
-        └─▶ worker × N  … claim → 実行 → results/<id>.json
-                                 │
-                                 └─ 承認待ちなら park して claim を解放
+        ├─▶ worker × N  … claim → 実行 → results/<id>.json
+        │                        │
+        │                        └─ 承認待ちなら park して claim を解放
+        └─▶ verifier     … 同じ worktree / revision で基準を調べ、receipt を返す
 ```
 
 要求はまず `inbox/` に置かれます。`participate` は 1 巡のあいだに、キャンセル指示の受理、park 済みノードの再確認、駆動プロセスが消えた run の引き継ぎ判断、委譲公示板の巡回、そして新しい要求の受理を行い、実行すべき run-id を返します。実行はしません。
@@ -146,6 +148,12 @@ Anthropic の *Building Effective Agents* は、経路が固定された Workflo
 orchestrator は最初にパターンと並列数を選んでタスクグラフを書き、あとは run が静止するのを待ちます。静止とは、実行中のノードも、park 中のノードも、いま claim できる pending もない状態です。静止したら評価役の LLM に「この結果で要求を満たすか」を尋ね、足りなければタスクを追加してもう一周します。反復は `max_iterations`（既定 3）で止まります。
 
 worker は claim できるノードを 1 つ取り、kind に応じたプロンプトでエージェント CLI を呼び、結果を書きます。実行中は心拍が claim のリースを延ばし続けるので、長いタスクでも横取りされません。
+
+verification plan を持つ run は、成果 revision が確定したあと専用 verifier を 1 セッション起動します。
+固定検証コマンドは書き換えずに実行します。自然文の criterion は、verifier がコマンド、差分、
+ファイル、ログを調べて `pass` / `fail` / `inconclusive` と証跡を返します。verifier は基準を
+緩めず、成果物も変更しません。`fail` は同じ run の再計画へ戻し、`inconclusive` は成果修正の
+リトライを消費せず上位へ返します。
 
 ## コンポーネント
 
@@ -169,7 +177,7 @@ orchestrator は 7 つのパターンをカタログとして持ちます。最�
 
 ノードの粒度は運任せにしません。`granularity` の既定は `auto` で、分析段の複雑さ判定から目標粒度を決定的に導出します（simple → coarse・work 系 1〜3 ノード / moderate → fine・3〜8 / complex → finest・6〜12、ハード上限 16）。`--granularity` の明示指定だけが導出に勝ちます。成果を生むノードの goal には、触ってよい範囲（`[scope]`）とやらないこと（`[out_of_scope]`）を先頭の構造化ブロックで書かせるスコープ契約を課し、生成後は LLM を使わない決定的ゲートで検査します——work 系ノード数が目標レンジ外、goal にスコープ相当が無い、goal 同士が似すぎている、のいずれかに当たれば指示を強めて 1 回だけ再生成します。検証・統合・ルーティング役（verify / synthesize / reduce / filter / judge / classify / split）はスコープ上限の対象外です。
 
-この形に落ち着いた経緯を書いておきます。戦略選定とグラフ構造には満足できていて、粒度のばらつきの主因は「通常の約 N 倍に細分化」という相対指示と、既定が常に finest だったことにありました。だから直すのは指示の側です。複雑度から目標レンジを決定的に導出し、絶対レンジとスコープ契約をプロンプトに埋め、結果を LLM なしのゲートで検査する。別 LLM に分解を批評させる案はコストと出力の揺れで、初回は粗く作って失敗したら細分化する案は初手の失敗が増えるので、どちらも却下しました（いずれもこのゲートの後段に足せる形は残しています）。ゲートが機械 verify の有無を検査しないのは意図的で、内側ノードの偽完了の検出は flow-worker の規律と外側 agent-project の verify に委ねます。work ノードの手戻りやスコープ逸脱が減らないようなら、分解批評か内側 verify 契約を再検討します。
+この形に落ち着いた経緯を書いておきます。戦略選定とグラフ構造には満足できていて、粒度のばらつきの主因は「通常の約 N 倍に細分化」という相対指示と、既定が常に finest だったことにありました。だから直すのは指示の側です。複雑度から目標レンジを決定的に導出し、絶対レンジとスコープ契約をプロンプトに埋め、結果を LLM なしのゲートで検査する。別 LLM に分解を批評させる案はコストと出力の揺れで、初回は粗く作って失敗したら細分化する案は初手の失敗が増えるので、どちらも却下しました（いずれもこのゲートの後段に足せる形は残しています）。ゲートが completion verifier の有無を検査しないのは意図的で、内側ノードの偽完了は flow-worker の規律と agent-project から渡された verification plan で検出します。work ノードの手戻りやスコープ逸脱が減らないようなら、分解批評か内側 verify 契約を再検討します。
 
 ### executor プラグイン
 
@@ -187,13 +195,17 @@ executor はタスクを実際に実行するバックエンドです。組み�
 
 書込先を決めるのは agent-flow ではなく agent-project です。agent-flow は渡されたワークスペースを厳格に守る側に徹します。読むだけのリポジトリは `--reference` で渡し、clone せずプロンプトとイシュー本文に参照節として描画します。
 
+タスク完了の検証もこの worktree で行います。push 後に別 checkout で再実行すると、cwd、依存物、
+成果 revision のいずれかがずれます。receipt には plan digest と result revision を必ず書き、
+agent-project が採用対象と照合できるようにします。
+
 ### 失敗の 4 層と、それぞれが拾うもの
 
 | 層 | 実体 | 拾う失敗 | 予算 |
 |---|---|---|---|
 | 1. in-place 再試行 | `run_agent` の中 | transient（接続断・5xx・overloaded・タイムアウト） | `transient_retries`（既定 2・指数バックオフ） |
 | 2. 形式修復 | `_repair_json_output` | 出力契約違反（split の配列・decision JSON の崩れ） | `format_retries`（既定 1） |
-| 3. 再計画 | 評価役の継続判断 | 内容の失敗（verify=fail・成果物が要求を満たさない） | `max_retries`（既定 3・系統ごと） |
+| 3. 再計画 | 評価役の継続判断 | 内容の失敗（criterion=`fail`、成果物が要求を満たさない） | `max_retries`（既定 3・系統ごと） |
 | 4. auto-heal | `run` の待機ループと `participate` | transient 起因で failed 終端した run | `max_heals`（既定 2・進捗で数え直し） |
 
 層が分かれているのは、直し方が違うからです。接続が一瞬切れただけならその場でもう一度呼べば済み、グラフを触る必要はありません。LLM が JSON を書き損じたなら、契約違反を指摘して同じ役割で呼び直せばほぼ直ります。成果物が要求を満たさないなら、同じ入力の再実行では直らないので作り直しと付け替えが要ります。
@@ -208,7 +220,10 @@ auto-heal の簿記（`heal_count` / `heal_progress` / `heal_next_at` / `heal_ex
 
 ### リトライの世代交代（inherit_from）
 
-verify が NG になったときや act がタイムアウトしたとき、agent-project は同じタスクを別の run-id で投入し直します。素朴にやると、先行 run が確定させたノード結果も、計画も、中間成果物も、作業ブランチの commit も全部捨てることになります。GitLab 委譲のような長時間の run では、これはトークンと人手の空費です。
+criterion の `fail` はまず同じ run の再計画で直します。上限まで直らない、または人が基準や指示を
+変更した場合だけ、agent-project が同じタスクを別の run-id で投入し直します。素朴にやると、
+先行 run が確定させたノード結果も、計画も、中間成果物も、作業ブランチの commit も全部捨てる
+ことになります。GitLab 委譲のような長時間の run では、これはトークンと人手の空費です。
 
 `Bus.inherit_from(old_run_id)` が「引き継いでから掃除する」1 プリミティブになっています。引き継ぐのは計画（`graph.json`）、ノード仕様（`tasks/`）、中間成果物（`artifacts/`、node-id で決定的にアドレスされるので新 run でも同じパスで見つかる）、そして status が done のノードの結果だけです。failed はやり直させます。claim と events は引き継ぎません。wall-clock のリースや孤児判定を汚染するからです。
 
@@ -216,11 +231,11 @@ verify が NG になったときや act がタイムアウトしたとき、agen
 
 要求文は新世代のものを正にします。以前は旧 run の request をそのままコピーしていたため、リトライの引き金になった差し戻しの指摘が再実行ノードに届いていませんでした。worker は meta.request を全体文脈として読むので、ここが古いと同じ失敗を繰り返します。
 
-安全条件は、先行 run が終端しているか孤児（生存リース切れ）のときだけ触る、です。実行中でリースが有効な run には seed も削除もしません。人が cancel した run も触りません。停止の意思を尊重しないと、cancel 後のリトライが cancelled 行を蘇らせます。先行 run が完全に done（全ノード確定だが verify NG）なら状態は引き継がず掃除だけ行います。同じ出力で即 done になり、また NG になる無限ループを避けるためです。
+安全条件は、先行 run が終端しているか孤児（生存リース切れ）のときだけ触る、です。実行中でリースが有効な run には seed も削除もしません。人が cancel した run も触りません。停止の意思を尊重しないと、cancel 後のリトライが cancelled 行を蘇らせます。先行 run が完全に done（全ノード確定後も criterion が fail）なら状態は引き継がず掃除だけ行います。同じ出力で即 done になり、また fail になる無限ループを避けるためです。
 
-削除の前に墓標（`inherited/<旧 run-id>.json`）を残します。meta、計画、final、全ノードの結果（出力は抜粋）、成果物のファイル名を書き出し、前の世代が持っていた墓標も引き継ぎます。これが無いと、完走したのに verify NG でリトライされた run の記録がバスから即座に消え、viewer がその瞬間にポーリングしていない限り二度と見られません。
+削除の前に墓標（`inherited/<旧 run-id>.json`）を残します。meta、計画、final、全ノードの結果（出力は抜粋）、成果物のファイル名を書き出し、前の世代が持っていた墓標も引き継ぎます。これが無いと、完走後の criterion fail でリトライされた run の記録がバスから即座に消え、viewer がその瞬間にポーリングしていない限り二度と見られません。
 
-auto-heal はこの世代交代を使いません。heal は同一 run の再開なので、要求文は投入時のまま変わりません。これは仕様です。知識の更新を伴わないやり直し（transient の回復）が heal、知識の更新を伴うやり直し（差し戻し・verify NG）が世代交代、という分担です。
+auto-heal はこの世代交代を使いません。heal は同一 run の再開なので、要求文は投入時のまま変わりません。これは仕様です。知識の更新を伴わないやり直し（transient の回復）が heal、知識の更新を伴うやり直し（差し戻しや criterion fail）が世代交代、という分担です。
 
 ## プロセスと責務の対応
 
@@ -228,7 +243,7 @@ auto-heal はこの世代交代を使いません。heal は同一 run の再開
 
 | コマンド | 入口 | 責務 |
 |---|---|---|
-| `run` | `cmd_run` | orchestrator と worker を起こし、生存リース・park 監視・キャンセル検知・auto-heal を待機ループで回す |
+| `run` | `cmd_run` | orchestrator と worker を起こし、成果確定後の verifier、生存リース、park 監視、キャンセル検知、auto-heal を回す |
 | `orchestrate` | `cmd_orchestrate` | 計画、静止待ち、評価と再計画、`final.json` の書き出し |
 | `work` | `cmd_work` | claim、実行、park、結果の書き込み |
 | `participate` | `cmd_participate` | 受理と回収の 1 巡。実行すべき run-id を返す |
@@ -326,7 +341,7 @@ auto-heal はこの世代交代を使いません。heal は同一 run の再開
 | loop-until-done | `work` → `verify` を条件達成まで反復 | テスト通過や品質達成まで繰り返す |
 | map-reduce | `split` → 実行時に `map` × N を展開 → `reduce` | 件数を事前に固定せずデータ駆動で並列処理する |
 
-kind は `work` / `generate` / `classify` / `synthesize` / `verify` / `filter` / `judge` / `reduce` / `split` / `map` の 10 種です。planner が未知の kind を出したら `work` に丸めます。構造化データ（`data`）を成果として期待するのは `split` / `map` / `reduce` / `filter` / `judge` / `verify` だけで、自由記述の kind では本文中の JSON 風断片を data に昇格させません。散文に紛れた `"issues": []` を空リストとして拾い、下流を汚した事故があったためです。
+kind は `work` / `generate` / `classify` / `synthesize` / `verify` / `filter` / `judge` / `reduce` / `split` / `map` の 10 種です。planner が未知の kind を出したら `work` に丸めます。`kind: verify` は run 内の候補比較や反復を制御する工程で、agent-project の verification plan を判定する専用 verifier とは別です。前者が task の done を主張することはできません。構造化データ（`data`）を成果として期待するのは `split` / `map` / `reduce` / `filter` / `judge` / `verify` だけで、自由記述の kind では本文中の JSON 風断片を data に昇格させません。散文に紛れた `"issues": []` を空リストとして拾い、下流を汚した事故があったためです。
 
 `map-reduce` はカタログ上ほかの 6 つと同格の選択可能パターンです。`split` 完了後に `map` と `reduce` を実行時生成する `_expand_splits` は、パターンではなく継続メカニズムで、classify のルーティングや verify の作り直しと同じ層にあります。
 
