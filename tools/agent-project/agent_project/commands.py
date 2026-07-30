@@ -76,14 +76,8 @@ def cmd_retry_mr(cfg: Config, tid: str) -> int:
               file=sys.stderr)
         return 1
     persist_task(cfg, task)
-    # needs を再生成し、dashboard が次回読込時に MR リンクを表示できるようにする。
-    delivery = delivery_entries(cfg, task, mr_url=mr_url)
-    try:
-        evidence = delivery_evidence(cfg, "", None, "local", task=task, mr_url=mr_url)
-    except Exception:  # noqa: BLE001 — MR URL を票へ反映する回復操作自体は成功させる
-        evidence = f"- MR: {mr_url}"
-    write_needs_file(cfg, task, "MR 作成を再試行しました。成果を MR で検収してください。",
-                     review=True, evidence=evidence, mr_url=mr_url, delivery=delivery)
+    # needs 票は verify の基準・証跡やリスクを保持しているため再生成しない。dashboard は
+    # backlog 側の mr_url を票へ補完するので、次回読込から MR リンクを表示できる。
     append_journal(cfg.journal, f"タスク MR {'確認' if before else '再作成'}: {tid} → {mr_url}")
     print(f"{tid}: MR を用意しました: {mr_url}")
     return 0
