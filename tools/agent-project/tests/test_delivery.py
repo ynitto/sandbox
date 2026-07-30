@@ -335,6 +335,29 @@ class TestTaskBranchAndDeliveryReview(unittest.TestCase):
             with mock.patch.object(km, "_gl_token", return_value=""):
                 self.assertEqual(km.ensure_task_mr(cfg, t), "")   # トークン無し＝記録のみで続行
 
+    def test_retry_mr_persists_url_without_rewriting_review_evidence(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, task_branch=True)
+            t = self._mr_task(cfg, d)
+            t.status = "review"
+            km.persist_task(cfg, t)
+            cfg.needs.mkdir(parents=True, exist_ok=True)
+            need = cfg.needs / "T1.md"
+            original = "---\nkind: review\n---\n\nverification evidence\n"
+            need.write_text(original, encoding="utf-8")
+
+            def created(_cfg, task):
+                url = "https://gitlab.example.com/g/app/-/merge_requests/7"
+                task.set("mr_url", url)
+                return url
+
+            with mock.patch.object(km, "ensure_task_mr", side_effect=created):
+                self.assertEqual(km.cmd_retry_mr(cfg, "T1"), 0)
+            saved = km.load_tasks(cfg.backlog)[0]
+            self.assertIn("merge_requests/7", saved.get("mr_url"))
+            self.assertEqual(need.read_text(encoding="utf-8"), original)
+
     def test_delivery_entries_compares_task_branch_with_target(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)

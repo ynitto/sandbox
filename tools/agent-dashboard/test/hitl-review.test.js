@@ -74,6 +74,17 @@ function mkProject() {
     assert.strictEqual(rec.complete, true);
   });
 
+  await test("runAction('retry-mr') は検収タスクの MR 再作成指示をドロップする", async () => {
+    const dir = mkProject();
+    await actions.runAction({ projects: {} },
+      { dir, action: 'retry-mr', id: 'T4', reason: 'GitLab 設定を修復済み' });
+    const files = fs.readdirSync(path.join(dir, 'commands')).filter((f) => f.endsWith('.json'));
+    const rec = JSON.parse(fs.readFileSync(path.join(dir, 'commands', files[0]), 'utf8'));
+    assert.strictEqual(rec.command, 'retry-mr');
+    assert.strictEqual(rec.id, 'T4');
+    assert.strictEqual(rec.reason, 'GitLab 設定を修復済み');
+  });
+
   await test('dependentsOf は after 逆辺の推移閉包を返す', async () => {
     const tasks = [
       { id: 'A', status: 'ready', extra: {} },

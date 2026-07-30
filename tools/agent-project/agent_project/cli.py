@@ -172,6 +172,8 @@ def main(argv=None) -> int:
     ap.add_argument("--complete", action="store_true",
                     help="成果を受け入れて完了にする（検収待ちの blocked / review が対象）。"
                          "省略時は従来どおりブロックを解いて積み直す")
+    rm = sub.add_parser("retry-mr", help="検収到達時に作成できなかったタスク MR を冪等に再作成")
+    _add_common(rm); rm.add_argument("id")
     hd = sub.add_parser("hold", help="policy に deny 追加し保留（決定記録）")
     _add_common(hd); hd.add_argument("id"); hd.add_argument("--reason", required=True)
     rp = sub.add_parser("reprioritize", help="policy に pin/defer 追加（決定記録）")
@@ -295,7 +297,7 @@ def main(argv=None) -> int:
     # cwd 1 件の `run --watch` に化けると、常駐体が監督している子と二重に回って
     # claim を奪い合う。`run` は常駐体が子として起動する経路なので、明示したときだけ動く。
     _subcommands = {"run", "triage", "needs", "promote", "rot", "stats", "audit",
-                    "runlog", "doctor", "update", "enqueue", "approve", "hold", "reprioritize",
+                    "runlog", "doctor", "update", "enqueue", "approve", "retry-mr", "hold", "reprioritize",
                     "revise", "reject", "resume-run", "impact", "replan", "revive",
                     "distill-notes", "board-offload", "gc",
                     # 常駐体の内部配線（help からは隠すが、ここに載せないと
@@ -346,6 +348,7 @@ def main(argv=None) -> int:
         "rot": lambda: cmd_rot(cfg, getattr(args, "fix", False)),
         "approve": lambda: cmd_approve(cfg, args.id, args.reason,
                                        complete=bool(getattr(args, "complete", False))),
+        "retry-mr": lambda: cmd_retry_mr(cfg, args.id),
         "reject": lambda: cmd_reject(cfg, args.id, args.reason),
         "board-offload": lambda: cmd_board_offload(cfg, args),
         "resume-run": lambda: cmd_resume_run(cfg, args.id, args.run,
