@@ -250,12 +250,24 @@ function terminalLaunchSpec(platform, scriptFile, which = findExecutable) {
 // 起動が失敗したときの手掛かりは、消えるコンソールではなく実行ログ（tracePreamble の足跡）
 // に残す。
 //
+// **タイトルは `start ""`（空）に固定する。** `start` は最初の引用済みトークンをタイトルと
+// 見なすため、タイトルを省くと後続の実行ファイルがタイトルとして食われる。空文字を明示すると
+// 「タイトルは空・次のトークンが実行ファイル」と一意に決まり、経路が
+// Node → cmd /c start "" → wsl.exe の 1 本に固定される。
+// 窓のタイトルはスクリプト側からエスケープシーケンスで付ける（引用の段を増やさない）。
+//
 // ログインシェルは bash を使う（sh=dash だと利用者の ~/.bashrc / profile にある
 // bash 構文 `[[ … ]]` が `sh: N: [[: not found` になり、そこで止まると venv 有効化も
 // 走らず「No virtual environment found」のままエージェントが起動できない）。
-function windowStartCommand(distro, wslScriptPath, title = '定常業務 (agent-dashboard)') {
+function windowStartCommand(distro, wslScriptPath) {
   const d = distro ? `-d "${distro}" ` : '';
-  return `start "${title}" wsl.exe ${d}-e bash -lc ". '${wslScriptPath}'"`;
+  return `start "" wsl.exe ${d}-e bash -lc ". '${wslScriptPath}'"`;
+}
+
+// 窓のタイトルを付けるシェル片（OSC 0）。cmd のコマンドラインには載せない。
+function titleEscape(title) {
+  const t = String(title || '').trim();
+  return t ? `printf '\\033]0;%s\\007' ${shellQuote(t)}; ` : '';
 }
 
 // スクリプトを新しいコンソールウィンドウ（WSL）で起動する共通処理。
@@ -264,7 +276,8 @@ function launchWindowScript(script, options = {}) {
   const platform = process.platform;
   let scriptFile;
   try {
-    scriptFile = writeWindowScript(script, platform);
+    // 窓のタイトルはスクリプト側で付ける（cmd のコマンドラインに載せず、引用の段を増やさない）。
+    scriptFile = writeWindowScript(`${titleEscape(options.title)}${script}`, platform);
   } catch (e) {
     return { ok: false, status: -1, stdout: '', stderr: '', error: `実行スクリプトを書けません: ${e.message}` };
   }
@@ -282,7 +295,14 @@ function launchWindowScript(script, options = {}) {
     const distro = wslDistro(options.cwd);
     // C:\Users\...\Temp\... → /mnt/c/users/.../temp/...（変換できなければそのまま）
     const wslScriptPath = winDriveToWsl(scriptFile) || scriptFile.replace(/\\/g, '/');
-    const cmdline = windowStartCommand(distro, wslScriptPath, options.title);
+    // **窓を開く前の事前検査**（wsl.exe / ディストロ / bash / スクリプトの可視性）。
+    // ここで落ちる失敗はコンソールが一瞬で閉じて原因を持ち去るので、窓を開かず画面へ返す。
+    // tmux から先（セッションが作成直後に消える）はスクリプト側の生存チェックが受け持つ。
+    const check = require('../../../base/main/wsl').verifyWslLaunch(wslScriptPath, distro);
+    if (!check.ok) {
+      return { ok: false, status: -1, stdout: '', stderr: '', error: check.error, scriptFile };
+    }
+    const cmdline = windowStartCommand(distro, wslScriptPath);
     command = 'cmd.exe';
     args = ['/d', '/s', '/c', cmdline];
     windowCommand = `cmd /s /c ${cmdline}`;
@@ -437,7 +457,33 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands,
     `__wait_ready() { __i=0; while [ $__i -lt ${waitTicks} ]; do ` +
     `if tmux capture-pane -p -t "$__ses" 2>/dev/null | grep -qiE ${shellQuote(pattern)}; then return 0; fi; ` +
     `sleep 0.5; __i=$((__i+1)); done; return 1; }; `;
-  const create = `tmux new-session -s "$__ses" ${cwd ? `-c ${shellQuote(cwd)} ` : ''}${shellQuote(`exec ${chat}`)}`;
+  // **tmux へは argv をそのまま渡す**（シェル文字列 1 個に畳まない）。
+  // 畳むと `shellQuote('exec ' + 各トークンを quote した文字列)` という二重引用になり、
+  // Windows → wsl.exe → bash → tmux → sh と段が重なるほど解釈が崩れて、
+  // 「セッションは作られたのに直後に消える」形で失敗する。argv 形式なら引用は 1 段で済み、
+  // tmux が exec するので余分な sh も挟まらない（空白入りの引数もそのまま届く）。
+  const cwdArg = cwd ? `-c ${shellQuote(cwd)} ` : '';
+  const create = `tmux new-session -d -s "$__ses" ${cwdArg}${chat}`;
+  // **生存チェック**。`tmux new-session -d` は起動するコマンドが存在しなくても exit 0 を返し、
+  // セッションだけが直後に消える（実機で確認済み）。作成の戻り値だけを見ていると、
+  // 「作成できた」と誤認したまま attach に進み、原因が何も残らないまま窓が閉じる。
+  // 消えていたら **同じコマンドを窓の中で直接実行**して、CLI 自身のエラーを人に見せる。
+  const cliShown = shellQuote(chatTokens.join(' '));
+  const liveCheck =
+    `sleep 1; ` +
+    `if ! tmux has-session -t "$__ses" 2>/dev/null; then ` +
+    `__t "セッションが起動直後に消えた"; ` +
+    `echo; echo "[agent-dashboard] tmux セッションが起動直後に終了しました（エージェントCLIを起動できていません）"; ` +
+    `echo "[agent-dashboard] 同じコマンドをこの窓で直接実行して原因を表示します:"; ` +
+    `echo "  $(printf %s ${cliShown})"; echo; ` +
+    `${chat}; __rc=$?; ` +
+    `__t "CLI 直接実行 exit=$__rc"; ` +
+    `echo; echo "[agent-dashboard] エージェントCLIが exit $__rc で終了しました"; ` +
+    `echo "[agent-dashboard] Enter でこのウィンドウを閉じます"; read _; __t "=== 終了(CLI起動失敗) ==="; exit 1; ` +
+    `fi; __t "セッション生存 ok"; `;
+  const createChecked =
+    `${create} || { __t "tmux セッション作成に失敗"; echo "[agent-dashboard] tmux セッション作成に失敗しました"; read _; exit 1; }; `
+    + `__t "tmux セッション作成 ok"; ` + liveCheck;
   if (!sendPrompt && !chatLines) {
     return (
       `export LANG=C.UTF-8 LC_ALL=C.UTF-8; ${cd}` +
@@ -445,9 +491,9 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands,
       `if ! tmux has-session -t "$__ses" 2>/dev/null; then ` +
       preLines +
       `echo "[agent-dashboard] tmux セッション $__ses を作成してエージェントCLIへ接続します（Ctrl+b d で離脱）"; ` +
-      `__t "セッション作成して接続"; ${create} || echo "[agent-dashboard] tmux セッションを開始できませんでした"; ` +
-      `else echo "[agent-dashboard] CLIチャットへ接続します（Ctrl+b d で離脱）"; __t "既存セッションへ attach"; tmux attach -t "$__ses"; fi; ` +
-      `__t "attach 終了 status=$?"; ` +
+      `__t "セッション作成"; ${createChecked}` +
+      `else echo "[agent-dashboard] CLIチャットへ接続します（Ctrl+b d で離脱）"; __t "既存セッションへ接続"; fi; ` +
+      `__t "attach 開始"; tmux attach -t "$__ses"; __t "attach 終了 status=$?"; ` +
       `echo; echo "[agent-dashboard] Enter でこのウィンドウを閉じます"; __t "Enter 待ち"; read _; __t "=== 終了 ==="`
     );
   }
@@ -459,8 +505,7 @@ function chatWindowScript({ chatCommand, cwd, session, prompt, sessionCommands,
     // セッションを新しく作るときだけ前準備を走らせる（既存セッションへの送信では走らせない）
     preLines +
     `echo "[agent-dashboard] tmux セッション $__ses を作成してエージェントCLIを起動します"; ` +
-    `${create.replace('new-session', 'new-session -d')} || { __t "tmux セッション作成に失敗"; echo "[agent-dashboard] tmux セッション作成に失敗しました"; read _; exit 1; }; ` +
-    `__t "tmux セッション作成 ok"; ` +
+    createChecked +
     `fi; ` +
     `__t "セッション: $__ses new=$__new"; ` +
     // 送るものがあるときは、プロンプト検出＋送信を **バックグラウンド**に回し、前面はすぐ
@@ -568,7 +613,7 @@ function makeLoopProvider(cfg) {
 module.exports = {
   DEFAULT_READY_PATTERN, DEFAULT_READY_TIMEOUT_SEC,
   makeLoopProvider, isWslPath, wslPath, wslDistro, winDriveToWsl, toWslCwd, shellQuote, sh,
-  decodeCliOutput, windowScript, windowStartCommand, windowLogPath, tracePreamble,
+  decodeCliOutput, windowScript, windowStartCommand, titleEscape, windowLogPath, tracePreamble,
   writeWindowScript,
   runInWindow,
   chatWindowScript, chatSessionName, runChatWindow, launchWindowScript,
