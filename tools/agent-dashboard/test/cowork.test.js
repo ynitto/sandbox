@@ -166,7 +166,7 @@ test('win32 の loop 実行は既定で別ウィンドウ（WSL tmux）起動に
     assert.match(launched.message, /別ウィンドウ/);
     // GUI プロセスからの直接 spawn ではコンソールが割り当てられずウィンドウが出ない。
     // cmd の start で新しいコンソールを開かせる（スクリプト本文は一時ファイル経由）。
-    assert.match(launched.windowCommand, /^cmd \/s \/c start "/, 'cmd の start でウィンドウを開く');
+    assert.match(launched.windowCommand, /^cmd\.exe \/d \/c start /, 'cmd の start でウィンドウを開く');
     assert.match(launched.windowCommand, /wsl\.exe .*-e bash -lc /, 'wsl.exe で bash ログインシェルを起動する');
     assert.ok(launched.scriptFile, '実行スクリプトを一時ファイルへ書く');
     assert.ok(fs.existsSync(launched.scriptFile), 'スクリプトファイルが実在する');
@@ -539,28 +539,42 @@ test('stateMachineInputAssist は必要な入力を項目名つきで人へ質�
   assert.ok(cowork.stateMachineInputAssist(null, false).includes('プレースホルダー'));
 });
 
-test('windowStartCommand は Node → cmd /c start "" → wsl.exe の 1 本に固定する', () => {
-  // start は最初の引用済みトークンをタイトルと見なす。空タイトルを明示すると
-  // 「タイトルは空・次が実行ファイル」と一意に決まり、経路が分岐しない。
-  // 入れ子は 2 通り試して 2 通りとも壊した（3 段の cmd /c 入れ子・起動子 .cmd）。
-  const line = cowork_loopProvider.windowStartCommand(
+test('windowStartArgs は argv を返す（コマンドラインを自前で組み立てない）', () => {
+  // 自前の文字列を cmd.exe の引用規則へ合わせようとして 3 通り壊した
+  // （3 段の cmd /c 入れ子・起動子 .cmd・verbatim な 1 本の文字列）。
+  // argv を返して Node に引用させれば、引用の責任が 1 か所に寄る。
+  const args = cowork_loopProvider.windowStartArgs(
     'Ubuntu', '/mnt/c/Users/dev/Temp/agent-dashboard/run.sh'
   );
-  assert.strictEqual(
-    line,
-    'start "" wsl.exe -d "Ubuntu" -e bash -lc'
-    + ' ". \'/mnt/c/Users/dev/Temp/agent-dashboard/run.sh\'"'
-  );
-  assert.ok(line.startsWith('start "" wsl.exe'), 'タイトルは空で固定し、次を wsl.exe にする');
-  assert.strictEqual((line.match(/"/g) || []).length, 6, '引用符は title / distro / -lc の 3 組だけ');
-  assert.ok(!/cmd \/d \/s \/c "/.test(line), '入れ子の /c 文字列を作らない');
-  assert.ok(!/\.cmd"/.test(line), '起動子ファイルを介さない');
-  const noDistro = cowork_loopProvider.windowStartCommand('', '/mnt/c/t/run.sh');
-  assert.ok(!noDistro.includes('-d '), 'distro 未指定なら -d を付けない');
+  assert.deepStrictEqual(args, [
+    '/d', '/c', 'start', '',
+    'wsl.exe', '-d', 'Ubuntu',
+    '-e', 'bash', '-lc', ". '/mnt/c/Users/dev/Temp/agent-dashboard/run.sh'",
+  ]);
+  // 空タイトルは Node が "" として渡す。start に「次が実行ファイル」と確定させるため。
+  assert.strictEqual(args[3], '', 'タイトルは空文字の引数として渡す');
+  assert.strictEqual(args[4], 'wsl.exe', 'タイトルの次が実行ファイル');
+  // 引用符は 1 つも自前で書かない（Node が必要な分だけ付ける）
+  assert.ok(args.every((a) => !a.includes('"')), '引用符を自前で埋め込まない');
+  const noDistro = cowork_loopProvider.windowStartArgs('', '/mnt/c/t/run.sh');
+  assert.ok(!noDistro.includes('-d'), 'distro 未指定なら -d を付けない');
+  assert.strictEqual(noDistro[4], 'wsl.exe');
   // 窓のタイトルはコマンドラインではなくスクリプト側（エスケープシーケンス）で付ける
   const esc = cowork_loopProvider.titleEscape('定常業務 (agent-dashboard)');
   assert.ok(esc.includes('\\033]0;') && esc.includes("'定常業務 (agent-dashboard)'"));
   assert.strictEqual(cowork_loopProvider.titleEscape(''), '', 'タイトル未指定なら何も足さない');
+});
+
+test('win32 の起動は windowsVerbatimArguments に依存しない', () => {
+  // verbatim は「自前で組み立てた 1 本の文字列をそのまま渡す」ための指定。
+  // 引用を Node に任せる以上、これに依存してはいけない（依存が残ると自前組み立てへ戻る）。
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'features', 'cowork', 'main', 'loopProvider.js'), 'utf8'
+  );
+  const win32Branch = src.slice(src.indexOf("if (platform === 'win32') {"), src.indexOf('} else {'));
+  assert.ok(!/windowsVerbatimArguments:\s*true/.test(win32Branch),
+    'win32 分岐で verbatim を有効にしない');
+  assert.ok(win32Branch.includes('windowStartArgs('), 'argv 組み立てを使う');
 });
 
 test('win32 の -d は cwd（WSL UNC）から取れるときだけ付ける（推測を渡さない）', () => {
@@ -572,9 +586,9 @@ test('win32 の -d は cwd（WSL UNC）から取れるときだけ付ける（�
   try {
     const unc = cowork_loopProvider.launchWindowScript('echo hi',
       { cwd: '\\\\wsl.localhost\\Ubuntu\\home\\me\\app' });
-    assert.ok(unc.windowCommand.includes('-d "Ubuntu"'), 'UNC から取れた名前は指定する');
+    assert.ok(unc.windowCommand.includes('-d Ubuntu'), 'UNC から取れた名前は指定する');
     const drive = cowork_loopProvider.launchWindowScript('echo hi', { cwd: 'C:\\proj\\app' });
-    assert.ok(!drive.windowCommand.includes('-d '),
+    assert.ok(!/ -d /.test(drive.windowCommand),
       'Windows ドライブ上のときは -d を付けず既定に任せる');
   } finally {
     if (orig) Object.defineProperty(process, 'platform', orig);
