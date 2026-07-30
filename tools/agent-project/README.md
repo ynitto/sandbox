@@ -245,6 +245,11 @@ LLM が 1 回で合成し、その exit 0 を done の唯一の根拠にして�
 （GitLab のみ。トークンは環境変数 `GITLAB_TOKEN` / `GL_TOKEN`）。**検収の正は MR 一本**で、
 dashboard の検収カードは「受入基準 × 証跡 + MR リンク」になる。
 
+MR の作成タイミングは **verify が PASS してタスクを review（検収待ち）へ保存する直前**である。
+その瞬間に GitLab API エラーやトークン・push の不備があると review 自体は継続し、失敗理由を journal に残す。
+原因を解消した後は `agent-project retry-mr <task-id> --root <ROOT>`、または agent-dashboard の
+検収カードに表示される「MRを作成し直す」で冪等に再試行できる（既存の open MR があれば再利用する）。
+
 フォージ側の**決定的シグナル**が決着になる（`remote_review: settle`・既定）:
 
 | フォージ側の事象 | 決着 |

@@ -156,6 +156,7 @@ const COMMAND_ACTION_LABELS = {
   approve: '承認',
   hold: '保留',
   reject: '却下',
+  'retry-mr': 'MR再作成',
   revise: '修正指示',
   pin: '優先度変更',
   defer: '優先度変更',
@@ -198,6 +199,10 @@ function needActionsHtml(n, options) {
     buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}" data-require="1" title="修正指示を記入して計画を練り直させます">差し戻す</button>`);
     buttons.push(`<button class="danger" data-act="reject" data-id="${esc(n.id)}" data-require="1" title="このタスクを廃止します。似た内容のタスクは次の分解でも提案されなくなります">却下</button>`);
   } else if (kind === 'review') {
+    const hasMr = Boolean((n.mrUrls && n.mrUrls.length) || n.mrUrl);
+    if (!hasMr) {
+      buttons.push(`<button class="primary-inline" data-act="retry-mr" data-id="${esc(n.id)}" title="検収到達時に失敗した MR 作成を再試行します">MRを作成し直す</button>`);
+    }
     buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}">承認して完了にする</button>`);
     buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}" data-require="1" title="修正方針を記入してやり直させます">差し戻す</button>`);
     buttons.push(`<button class="danger" data-act="reject" data-id="${esc(n.id)}" data-require="1" title="この成果を採用せず廃止します。似た内容のタスクは次の分解でも提案されなくなります">却下</button>`);
@@ -1988,6 +1993,10 @@ async function handleNeedAction(btn) {
         await api.submitFeedback(need.file, '', feedbackStub);
         toast('そのまま再実行するよう回答しました', true);
       }
+    } else if (act === 'retry-mr') {
+      const res = await api.runAction({ dir: p.dir, action: 'retry-mr', id, reason: 'MR 作成を再試行' });
+      uiLog('needAction retry-mr', id, res);
+      toast('MRの再作成を依頼しました（反映まで少し時間がかかることがあります）', true);
     } else if (act === 'approve') {
       const reason = needApprovalReason(p, need, state.flowRuns, text);
       // 検収待ち（成果がある blocked / review）の承認は完了確定の意図を明示して送る。

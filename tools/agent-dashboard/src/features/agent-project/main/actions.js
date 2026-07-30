@@ -234,7 +234,7 @@ async function deleteReviewComment(projectDir, taskId, commentId, trash) {
 // 3. 人の指示（approve / hold / pin / defer / revise）
 // ---------------------------------------------------------------------------
 
-const COMMAND_ACTIONS = new Set(['approve', 'hold', 'pin', 'defer', 'revise', 'reject', 'resume-run']);
+const COMMAND_ACTIONS = new Set(['approve', 'retry-mr', 'hold', 'pin', 'defer', 'revise', 'reject', 'resume-run']);
 // プロジェクト単位（id 不要）のライフサイクル指示。リモートの本体を git 越しに操作する口。
 const LIFECYCLE_ACTIONS = new Set(['pause', 'resume', 'stop']);
 
@@ -302,7 +302,7 @@ function dropCommand(projectDir, { action, id, reason, fields, feedback, run, ch
 // プロセスツリーの kill・設定ファイルの探索もその経路のためだけの道具だったので一緒に消す。
 // 人の操作は commands/ の投函だけで届き、実行エンジンの起動・再起動は OS の起動系が担う。
 
-// action: approve | hold | pin | defer | revise
+// action: approve | retry-mr | hold | pin | defer | revise
 //   revise は fields（title/priority/verify/accept/after/note/level/track の置換）と
 //   feedback（次の act に必ず届く指示）を追加で受ける。実行中（doing）のタスクは
 //   本体側が現在の試行を確定せず修正内容で積み直す（早い軌道修正）。
