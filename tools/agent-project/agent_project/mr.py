@@ -87,24 +87,24 @@ def _gl_token() -> str:
     return ""
 
 
-def _gl_parse_repo(url: str) -> "tuple[str, str] | None":
-    """リポジトリ URL → (host, project_path)。https 形と ssh 形（git@host:group/repo.git）を解釈。"""
+def _gl_parse_repo(url: str) -> "tuple[str, str, str] | None":
+    """リポジトリ URL → (scheme, host, project_path)。HTTP(S) のスキームを保持する。"""
     u = (url or "").strip()
-    m = re.match(r"^https?://([^/]+)/(.+?)(?:\.git)?/?$", u)
+    m = re.match(r"^(https?)://([^/]+)/(.+?)(?:\.git)?/?$", u)
     if m:
-        return m.group(1), m.group(2)
+        return m.group(1), m.group(2), m.group(3)
     m = re.match(r"^(?:ssh://)?git@([^:/]+)[:/](.+?)(?:\.git)?/?$", u)
     if m:
-        return m.group(1), m.group(2)
+        return "https", m.group(1), m.group(2)
     return None
 
 
-def _gl_api(host: str, token: str, method: str, path: str,
+def _gl_api(scheme: str, host: str, token: str, method: str, path: str,
             data: "dict | None" = None, params: "dict | None" = None):
     import urllib.error
     import urllib.parse
     import urllib.request
-    url = f"https://{host}/api/v4{path}"
+    url = f"{scheme}://{host}/api/v4{path}"
     if params:
         url += "?" + urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
     body = json.dumps(data).encode("utf-8") if data is not None else None
@@ -150,7 +150,7 @@ def _forge_kind(url: str) -> str:
     parsed = _gl_parse_repo(url)
     if not parsed:
         return ""
-    host = parsed[0].lower()
+    host = parsed[1].lower()
     if "gitlab" in host:
         return "gitlab"
     if "github" in host:
@@ -185,14 +185,18 @@ def forge_available(cfg: "Config", url: str) -> str:
     return ""
 
 
-def _task_mr_coords(task: "Task") -> "tuple[str, str, str] | None":
-    """タスクに記録済みの MR 座標 (host, project, iid)。無ければ None。"""
+def _task_mr_coords(task: "Task") -> "tuple[str, str, str, str] | None":
+    """タスクに記録済みの MR 座標 (scheme, host, project, iid)。無ければ None。"""
     iid = str(task.get("mr_iid") or "").strip()
     pj = str(task.get("mr_project") or "")
     if not iid or "|" not in pj:
         return None
-    host, proj = pj.split("|", 1)
-    return host, proj, iid
+    endpoint, proj = pj.split("|", 1)
+    if "://" in endpoint:
+        scheme, host = endpoint.split("://", 1)
+    else:
+        scheme, host = "https", endpoint  # スキーム記録前の既存タスクとの互換性
+    return scheme, host, proj, iid
 
 
 def ensure_task_mr(cfg: "Config", task: "Task") -> str:
@@ -209,16 +213,16 @@ def ensure_task_mr(cfg: "Config", task: "Task") -> str:
     if not parsed or not forge_available(cfg, spec["url"]):
         return ""                       # フォージ無し運用（S4-6）＝従来どおり記録のみで続行
     token = _gl_token()
-    host, proj = parsed
+    scheme, host, proj = parsed
     source = task_branch_name(cfg, task)
     target = spec.get("target") or spec.get("base") or "main"
     try:
         ep = _gl_quote(proj)
-        found = _gl_api(host, token, "GET", f"/projects/{ep}/merge_requests",
+        found = _gl_api(scheme, host, token, "GET", f"/projects/{ep}/merge_requests",
                         params={"source_branch": source, "state": "opened"})
         mr = found[0] if isinstance(found, list) and found else None
         if mr is None:
-            mr = _gl_api(host, token, "POST", f"/projects/{ep}/merge_requests",
+            mr = _gl_api(scheme, host, token, "POST", f"/projects/{ep}/merge_requests",
                          data={"source_branch": source, "target_branch": target,
                                "title": f"[agent-project] {task.id}: {task.title[:80]}",
                                "description": f"agent-project タスク {task.id} の成果物"
@@ -227,7 +231,7 @@ def ensure_task_mr(cfg: "Config", task: "Task") -> str:
         task.drop("mr_url", "mr_iid", "mr_project")
         task.extra += [("mr_url", str(mr.get("web_url") or "")),
                        ("mr_iid", str(mr.get("iid") or "")),
-                       ("mr_project", f"{host}|{proj}")]
+                       ("mr_project", f"{scheme}://{host}|{proj}")]
         append_journal(cfg.journal, f"タスク MR 用意: {task.id} → {mr.get('web_url', '')}")
         return str(mr.get("web_url") or "")
     except RuntimeError as e:
@@ -246,21 +250,21 @@ def finalize_task_mr(cfg: "Config", task: "Task") -> "tuple[bool, str]":
     token = _gl_token()
     if not token:
         return True, "GitLab トークン無し（MR は手動で決着してください）"
-    host, proj, iid = coords
+    scheme, host, proj, iid = coords
     ep = _gl_quote(proj)
     try:
-        mr = _gl_api(host, token, "GET", f"/projects/{ep}/merge_requests/{iid}")
+        mr = _gl_api(scheme, host, token, "GET", f"/projects/{ep}/merge_requests/{iid}")
         state = str(mr.get("state") or "")
         if state in ("merged", "closed"):
             return True, f"MR は決着済み（{state}）"
         problems = []
-        discussions = _gl_api(host, token, "GET",
+        discussions = _gl_api(scheme, host, token, "GET",
                               f"/projects/{ep}/merge_requests/{iid}/discussions",
                               params={"per_page": 100})
         unresolved = sum(1 for d in (discussions if isinstance(discussions, list) else [])
                          if any(n.get("resolvable") and not n.get("resolved")
                                 for n in (d.get("notes") or [])))
-        changes = _gl_api(host, token, "GET", f"/projects/{ep}/merge_requests/{iid}/changes")
+        changes = _gl_api(scheme, host, token, "GET", f"/projects/{ep}/merge_requests/{iid}/changes")
         no_diff = isinstance(changes.get("changes"), list) and not changes["changes"]
         conflicts = bool(mr.get("has_conflicts")) or \
             str(mr.get("merge_status") or "") == "cannot_be_merged"
@@ -270,15 +274,15 @@ def finalize_task_mr(cfg: "Config", task: "Task") -> "tuple[bool, str]":
             problems.append(f"コンフリクト（merge_status={mr.get('merge_status')}）")
         if problems:
             why = "; ".join(problems)
-            _gl_api(host, token, "POST", f"/projects/{ep}/merge_requests/{iid}/notes",
+            _gl_api(scheme, host, token, "POST", f"/projects/{ep}/merge_requests/{iid}/notes",
                     data={"body": f"agent-project: # 差し戻し（自動チェック）\n- {why}\n"
                                   "解消後に再度 approve してください。"})
             return False, why
         if no_diff:                              # 差分なし＝マージするものが無い → クローズで決着
-            _gl_api(host, token, "PUT", f"/projects/{ep}/merge_requests/{iid}",
+            _gl_api(scheme, host, token, "PUT", f"/projects/{ep}/merge_requests/{iid}",
                     data={"state_event": "close"})
             return True, "差分なし MR＝クローズで決着"
-        _gl_api(host, token, "PUT", f"/projects/{ep}/merge_requests/{iid}/merge",
+        _gl_api(scheme, host, token, "PUT", f"/projects/{ep}/merge_requests/{iid}/merge",
                 data={"should_remove_source_branch": True})
         return True, "MR を自動マージ"
     except RuntimeError as e:
@@ -394,13 +398,13 @@ def _mr_changes_requested(mr: dict, reviews) -> bool:
     return False
 
 
-def _unresolved_notes(host: str, token: str, ep: str, iid: str) -> "list[str]":
+def _unresolved_notes(scheme: str, host: str, token: str, ep: str, iid: str) -> "list[str]":
     """未解決のレビューコメント本文（解決済み・system note は除く）。
 
     解決済みまで流すと、一度直した指摘が毎回 feedback へ積み直されて収束しない。
     """
     out: "list[str]" = []
-    discussions = _gl_api(host, token, "GET",
+    discussions = _gl_api(scheme, host, token, "GET",
                           f"/projects/{ep}/merge_requests/{iid}/discussions",
                           params={"per_page": 100})
     for d in (discussions if isinstance(discussions, list) else []):
@@ -421,19 +425,19 @@ def _settle_from_forge(cfg: "Config", task: "Task") -> "tuple[str, str]":
     token = _gl_token()
     if coords is None or not token:
         return "", ""
-    host, proj, iid = coords
+    scheme, host, proj, iid = coords
     ep = _gl_quote(proj)
     try:
-        mr = _gl_api(host, token, "GET", f"/projects/{ep}/merge_requests/{iid}")
+        mr = _gl_api(scheme, host, token, "GET", f"/projects/{ep}/merge_requests/{iid}")
         state = str(mr.get("state") or "")
         if state == "merged":
             return "approve", "MR がマージされた"
         if state == "closed":
             return "reject", "MR が未マージでクローズされた"
-        reviews = _gl_api(host, token, "GET", f"/projects/{ep}/merge_requests/{iid}/reviewers")
+        reviews = _gl_api(scheme, host, token, "GET", f"/projects/{ep}/merge_requests/{iid}/reviewers")
         if not _mr_changes_requested(mr, reviews):
             return "", ""
-        notes = _unresolved_notes(host, token, ep, iid)
+        notes = _unresolved_notes(scheme, host, token, ep, iid)
         return "revise", ("\n".join(notes)[:1500] or "フォージで修正が要求されました（コメント無し）")
     except RuntimeError:
         return "", ""                    # 到達不能は決着しない（現状維持）
@@ -501,15 +505,15 @@ def close_task_mr(cfg: "Config", task: "Task", reason: str) -> None:
     token = _gl_token()
     if coords is None or not token:
         return
-    host, proj, iid = coords
+    scheme, host, proj, iid = coords
     ep = _gl_quote(proj)
     try:
-        _gl_api(host, token, "POST", f"/projects/{ep}/merge_requests/{iid}/notes",
+        _gl_api(scheme, host, token, "POST", f"/projects/{ep}/merge_requests/{iid}/notes",
                 data={"body": f"agent-project: タスク {task.id} は却下されました（{reason}）。"})
-        _gl_api(host, token, "PUT", f"/projects/{ep}/merge_requests/{iid}",
+        _gl_api(scheme, host, token, "PUT", f"/projects/{ep}/merge_requests/{iid}",
                 data={"state_event": "close"})
         branch = task_branch_name(cfg, task)
-        _gl_api(host, token, "DELETE",
+        _gl_api(scheme, host, token, "DELETE",
                 f"/projects/{ep}/repository/branches/{_gl_quote(branch)}")
     except RuntimeError as e:
         append_journal(cfg.journal, f"却下 MR の後始末に失敗（無視）: {task.id}: {e}")
