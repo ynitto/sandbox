@@ -383,9 +383,9 @@ button:disabled { opacity: 0.4; cursor: default; }
 .rc-time { font-size: 11px; }
 .rc-text { margin-top: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .rc-edit-box { margin-top: 6px; }
-.rc-edit-box textarea, .rc-add textarea, .rc-add .rc-author { width: 100%; box-sizing: border-box; }
+.rc-edit-box textarea, .rc-add textarea, .rc-add .rc-author-input { width: 100%; box-sizing: border-box; }
 .rc-add { display: flex; flex-direction: column; gap: 6px; }
-.rc-add .rc-author { max-width: 260px; }
+.rc-add .rc-author-input { max-width: 260px; }
 
 #sidebar-footer {
   padding: 6px 10px;
@@ -1529,13 +1529,14 @@ table.list tr.clickable:hover { background: var(--bg2); }
 }
 .need-next-step p { margin: 0; font-size: 16px; line-height: 1.55; }
 .need-response-primary {
-  margin: 0 0 14px;
-  padding: 14px;
-  border: 1px solid var(--border);
+  margin: 22px 0 0;
+  padding: 16px;
+  border: 1px solid color-mix(in srgb, var(--accent) 58%, var(--border));
   border-radius: 10px;
-  background: color-mix(in srgb, var(--bg3) 72%, var(--bg2));
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg2));
 }
-.need-response-primary h3 { margin: 0 0 8px; color: var(--fg); font-size: 14px; }
+.need-response-primary h3 { margin: 0 0 4px; color: var(--fg); font-size: 16px; }
+.need-response-hint { margin: 0 0 12px; }
 .need-overview-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));

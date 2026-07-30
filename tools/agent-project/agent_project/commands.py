@@ -58,6 +58,31 @@ def approve_review_done(cfg: Config, t: Task, reason: str) -> "tuple[bool, str]"
     return (True, "\n".join(lines))
 
 
+def cmd_retry_mr(cfg: Config, tid: str) -> int:
+    """検収到達時に失敗したタスク MR 作成を、人の操作で冪等に再試行する。"""
+    task = next((t for t in load_tasks(cfg.backlog) if t.id == tid), None)
+    if task is None:
+        print(f"エラー: タスクが見つかりません: {tid}", file=sys.stderr)
+        return 2
+    if task.norm_status() != "review":
+        print(f"エラー: MR を再作成できるのは検収待ち（review）のタスクだけです（現在: "
+              f"{task.norm_status()}）。", file=sys.stderr)
+        return 2
+    before = str(task.get("mr_url") or "").strip()
+    mr_url = ensure_task_mr(cfg, task)
+    if not mr_url:
+        print("エラー: MR を作成できませんでした。GitLab トークン、リポジトリ URL、"
+              "作業ブランチの push 状態を確認してください。詳細は journal を参照してください。",
+              file=sys.stderr)
+        return 1
+    persist_task(cfg, task)
+    # needs 票は verify の基準・証跡やリスクを保持しているため再生成しない。dashboard は
+    # backlog 側の mr_url を票へ補完するので、次回読込から MR リンクを表示できる。
+    append_journal(cfg.journal, f"タスク MR {'確認' if before else '再作成'}: {tid} → {mr_url}")
+    print(f"{tid}: MR を用意しました: {mr_url}")
+    return 0
+
+
 def cmd_approve(cfg: Config, tid: str, reason: str, complete: bool = False) -> int:
     """判断待ちの承認。
 
@@ -691,7 +716,7 @@ def cmd_revise(cfg: Config, tid: str, fields: dict, feedback: str, reason: str) 
 # watch がこの口を監視して起こす。実行は CLI と同一の関数へ委譲する
 # （ロジックの二重実装はしない＝効果・決定記録 DR も CLI と同一）。
 
-COMMAND_ACTIONS = ("approve", "hold", "pin", "defer", "revise", "reject")
+COMMAND_ACTIONS = ("approve", "retry-mr", "hold", "pin", "defer", "revise", "reject")
 
 
 def commands_dir(cfg: "Config") -> Path:
@@ -924,6 +949,8 @@ def ingest_commands(cfg: "Config") -> "list[str]":
                     # complete: 「成果を受け入れて完了にする」の明示（agent-dashboard の
                     # 「承認して完了にする」）。無ければ従来どおり積み直し。
                     rc = cmd_approve(cfg, tid, reason, complete=bool(rec.get("complete")))
+                elif action == "retry-mr":
+                    rc = cmd_retry_mr(cfg, tid)
                 elif action == "reject":
                     rc = cmd_reject(cfg, tid, reason)
                 elif action == "hold":

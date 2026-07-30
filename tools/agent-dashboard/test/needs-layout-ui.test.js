@@ -74,7 +74,11 @@ assert.ok(renderNeedsSource.includes('needListItemViewModel('));
 assert.ok(renderNeedsSource.includes('needListItemHtml('));
 assert.ok(renderNeedsSource.includes('master-detail needs-layout'));
 assert.ok(renderer.includes('needNextStepHtml('), '詳細は「次にすること」から始めます');
-assert.ok(renderer.includes('need-response-primary'), '回答欄を主要アクションとして上部へ出します');
+assert.ok(renderer.includes('最終回答'), '回答欄を判断材料とコメントの後に出します');
+assert.ok(
+  renderer.indexOf('${reviewCommentsHtml(n)}') < renderer.indexOf('<h3>最終回答</h3>'),
+  '成果物やメンバーコメントを読んだ流れのまま最終回答できる順序にします'
+);
 assert.ok(renderer.includes('詳しい判断材料を見る'), '長い判断材料は折りたたんで段階的に開示します');
 assert.ok(renderer.includes('関連する成果・詳細を確認'), '成果や原文ログは詳細セクションにまとめます');
 

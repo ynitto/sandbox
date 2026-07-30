@@ -109,7 +109,7 @@ test('commandFailureHtml は失敗理由と操作種別をカードに出す', (
 test('renderNeedDetail は取り込み失敗時に操作を出し直す（送信済み扱いにしない）', () => {
   // 実 DOM なしで意図をソース契約として固定する: settled の計算が commandFailure を
   // 考慮していること（これが落ちると「送信済み」のまま操作が消える退行）。
-  assert.match(renderer, /n\.decided \|\| \(!n\.commandFailure && isNeedSent\(n\)\)/);
+  assert.match(renderer, /n\.decided \|\| \(!n\.commandFailure && \(n\.commandReceipt \|\| isNeedSent\(n\)\)\)/);
 });
 
 test('決着したタスクの票は投影から外す（archive 済み・判断待ちを抜けた）', () => {

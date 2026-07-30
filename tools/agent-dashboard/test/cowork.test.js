@@ -8,9 +8,16 @@ const { spawnSync } = require('child_process');
 
 const cowork = require('../src/features/cowork/main/cowork');
 const cowork_loopProvider = require('../src/features/cowork/main/loopProvider');
+const wslMain = require('../src/base/main/wsl');
 const {
   makeLoopProvider, winDriveToWsl, toWslCwd, sh: providerSh,
 } = cowork_loopProvider;
+
+// win32 の起動は「窓を開く前に wsl.exe を実地検査する」。テスト機に WSL は無いので
+// 検査だけ差し替え、起動コマンドの組み立てとスクリプト本体を見る
+// （検査そのものは専用テストで実物を直接呼ぶ）。
+const realVerifyWslLaunch = wslMain.verifyWslLaunch;
+wslMain.verifyWslLaunch = () => ({ ok: true, error: '' });
 
 let passed = 0;
 function test(name, fn) {
@@ -159,7 +166,7 @@ test('win32 の loop 実行は既定で別ウィンドウ（WSL tmux）起動に
     assert.match(launched.message, /別ウィンドウ/);
     // GUI プロセスからの直接 spawn ではコンソールが割り当てられずウィンドウが出ない。
     // cmd の start で新しいコンソールを開かせる（スクリプト本文は一時ファイル経由）。
-    assert.match(launched.windowCommand, /^cmd \/s \/c start "/, 'cmd の start でウィンドウを開く');
+    assert.match(launched.windowCommand, /^cmd\.exe \/d \/c start /, 'cmd の start でウィンドウを開く');
     assert.match(launched.windowCommand, /wsl\.exe .*-e bash -lc /, 'wsl.exe で bash ログインシェルを起動する');
     assert.ok(launched.scriptFile, '実行スクリプトを一時ファイルへ書く');
     assert.ok(fs.existsSync(launched.scriptFile), 'スクリプトファイルが実在する');
@@ -186,8 +193,12 @@ test('chatWindowScript は tmux セッション確保 → 起動待ち → paste
   });
   assert.ok(script.includes('tmux has-session -t "$__ses"'), '既存セッションを再利用する');
   assert.ok(script.includes('tmux new-session -d -s "$__ses"'), '無ければ作成する');
-  assert.ok(script.includes('exec ') && script.includes('kiro-cli') && script.includes('--trust-all-tools'),
-    'chatCommand を argv 分解して起動する');
+  // tmux へは argv をそのまま渡す（シェル文字列 1 個へ畳まない）。畳むと
+  // Node → cmd → wsl → bash → tmux → sh と段が重なるほど引用が崩れ、
+  // 「セッションは作られたのに直後に消える」形で失敗する。
+  assert.ok(script.includes("tmux new-session -d -s \"$__ses\" -c '/mnt/c/proj/app' 'kiro-cli' 'chat' '--trust-all-tools'"),
+    'chatCommand を argv のまま tmux へ渡す（入れ子の引用を作らない）');
+  assert.ok(!/'exec [^']*'"'"'/.test(script), 'シェル文字列へ畳んだ二重引用を作らない');
   assert.ok(script.includes('grep -qiE'), 'kiro-cli の入力プロンプトを待つ');
   assert.ok(script.includes('tmux send-keys -t "$__ses" -l -- ')
     && script.includes('tmux send-keys -t "$__ses" Enter;'),
@@ -203,6 +214,82 @@ test('chatWindowScript は tmux セッション確保 → 起動待ち → paste
   // kiro-cli の入力プレースホルダ（`>` を出さず「Ask a question or describe a task」を表示）も検出する。
   assert.ok(/grep -qiE/.test(script) && script.includes('ask a question'),
     'kiro-cli の入力プレースホルダ（大小無視）も入力待ち判定に含める');
+});
+
+test('窓を開く前に WSL を検査し、落ちたら開かずに理由を画面へ返す', () => {
+  // 段が深い（Node → cmd /c start "" → wsl.exe → bash → tmux → CLI）ので、
+  // 手前で落ちるとコンソールは一瞬で閉じて原因を持ち去る。tmux から先は
+  // スクリプト側の生存チェックが受け持ち、その手前をここで確かめる。
+  const okRes = realVerifyWslLaunch('/mnt/c/t/run.sh', 'Ubuntu',
+    () => ({ status: 0, stdout: '', stderr: '', error: '' }));
+  assert.strictEqual(okRes.ok, true);
+  // 検査は起動と同じ argv の形で撃つ（形が違うと「検査は通るのに本番だけ落ちる」）
+  assert.deepStrictEqual(wslMain.launchArgs('Ubuntu', '/mnt/c/t/run.sh').slice(0, 5),
+    ['-d', 'Ubuntu', '-e', 'bash', '-lc']);
+
+  // /mnt が見えない（automount 無効）— 何を確認すべきかまで書く
+  const missing = realVerifyWslLaunch('/mnt/c/t/run.sh', 'Ubuntu',
+    () => ({ status: wslMain.SCRIPT_MISSING_EXIT, stdout: '', stderr: '', error: '' }));
+  assert.strictEqual(missing.ok, false);
+  assert.ok(missing.error.includes('automount'));
+
+  // ディストロが違う — 推測で別のディストロへ倒さず、そのまま報告する
+  // （別ディストロで開いても対象フォルダは無い）
+  const bad = realVerifyWslLaunch('/mnt/c/t/run.sh', 'Ubuntu', (cmd, args) => (args[0] === '--list'
+    ? { status: 0, stdout: '  NAME   STATE    VERSION\n* Ubuntu Running  2', stderr: '', error: '' }
+    : { status: 1, stdout: '', stderr: '指定された名前のディストリビューションはありません。', error: '' }));
+  assert.strictEqual(bad.ok, false);
+  assert.ok(bad.error.includes('-d Ubuntu'), 'どの指定で失敗したかを書く');
+  assert.ok(bad.error.includes('指定された名前の'), 'wsl 自身のメッセージをそのまま出す');
+  assert.ok(bad.error.includes('* Ubuntu'), 'インストール済み一覧を添える');
+
+  // 検査が落ちたら窓を開かない
+  const orig = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+  wslMain.verifyWslLaunch = () => ({ ok: false, error: 'WSL を起動できません（検査）' });
+  try {
+    const res = cowork_loopProvider.launchWindowScript('echo hi', { cwd: 'C:\\proj\\app' });
+    assert.strictEqual(res.ok, false, '検査が落ちたら窓を開かない');
+    assert.ok(res.error.includes('WSL を起動できません'), '理由をそのまま返す');
+  } finally {
+    wslMain.verifyWslLaunch = () => ({ ok: true, error: '' });
+    if (orig) Object.defineProperty(process, 'platform', orig);
+  }
+});
+
+test('セッションが作成直後に消えたら検知し、CLI を直接実行して原因を見せる', () => {
+  // これが今回の症状の芯。`tmux new-session -d` は起動するコマンドが存在しなくても
+  // exit 0 を返し、セッションだけが直後に消える（tmux 3.4 で実測）。作成の戻り値しか
+  // 見ていないと「作成できた」と誤認して attach に進み、原因が何も残らないまま窓が閉じる。
+  const script = cowork_loopProvider.chatWindowScript({
+    chatCommand: ['kiro-cli', 'chat', '--trust-all-tools'],
+    cwd: '/mnt/c/proj/app', session: 's', prompt: 'p',
+  });
+  const createAt = script.indexOf('tmux new-session -d');
+  const liveAt = script.indexOf('if ! tmux has-session -t "$__ses" 2>/dev/null; then', createAt);
+  assert.ok(liveAt > createAt, '作成の直後に生存を確かめる（戻り値だけを信じない）');
+  const attachAt = script.indexOf('tmux attach -t "$__ses"');
+  assert.ok(liveAt < attachAt, 'attach より前に確かめる');
+  // 消えていたら、同じコマンドを窓の中で直接実行して CLI 自身のエラーを見せる
+  const fallback = script.slice(liveAt, attachAt);
+  assert.ok(fallback.includes('tmux セッションが起動直後に終了しました'), '何が起きたかを述べる');
+  assert.ok(fallback.includes("'kiro-cli' 'chat' '--trust-all-tools'; __rc=$?"),
+    '同じコマンドを直接実行して原因を表示する');
+  assert.ok(fallback.includes('read _'), '原因を読めるようウィンドウを閉じない');
+  assert.ok(fallback.includes('exit 1'), 'attach へ進まず抜ける');
+});
+
+test('チャットも診断も同じ生存チェックを通る（片方だけ直さない）', () => {
+  // 送るものが無い経路（CLIチャットの手動オープン）も同じ形に揃える。
+  for (const prompt of ['p', null]) {
+    const script = cowork_loopProvider.chatWindowScript({
+      chatCommand: ['claude'], cwd: '/w', session: 's', prompt,
+    });
+    assert.ok(script.includes('tmux new-session -d'), `detached で作る (prompt=${prompt})`);
+    assert.ok(script.includes('セッション生存 ok'), `生存チェックを通る (prompt=${prompt})`);
+    assert.ok(script.includes('エージェントCLIが exit $__rc で終了しました'),
+      `失敗時のフォールバック表示を持つ (prompt=${prompt})`);
+  }
 });
 
 test('chatSessionName は kiro 接頭辞 + repo digest（端末タブの既定発見に載る）', () => {
@@ -225,7 +312,9 @@ test('CLIチャット用セッションはプロジェクトとCLIごとに安�
   });
   assert.ok(script.includes('claude') && script.includes('--model') && script.includes('sonnet'));
   assert.ok(script.includes('tmux attach -t "$__ses"'));
-  assert.ok(!script.includes('tmux new-session -d'), '対話CLIは端末へ接続してから起動する');
+  // 送るものが無い経路も detached 作成 → 生存チェック → attach に揃える。
+  // 直接 attach で起動すると、CLI が即死したときエラーが流れて消え、原因が残らない。
+  assert.ok(script.includes('tmux new-session -d'), 'detached で作ってから生存を確かめる');
   assert.ok(!script.includes('grep -qiE'), '接続だけなら入力待ちをしない');
   assert.ok(!script.includes('tmux set-buffer -b agentdash --'), '空プロンプトを送信しない');
 });
@@ -450,23 +539,42 @@ test('stateMachineInputAssist は必要な入力を項目名つきで人へ質�
   assert.ok(cowork.stateMachineInputAssist(null, false).includes('プレースホルダー'));
 });
 
-test('windowStartCommand は元の 1 段の形（入れ子を作らない）', () => {
-  // 入れ子は 2 通り試して 2 通りとも壊した（3 段の cmd /c 入れ子 →「指定された名前の
-  // ディストリビューションはありません。」、起動子 .cmd →「指定されたパスが見つかりません。」）。
-  // cmd.exe の引用・パス解決を Windows 無しで検証する手段が無い以上、組み立てを増やさない。
-  const line = cowork_loopProvider.windowStartCommand(
+test('windowStartArgs は argv を返す（コマンドラインを自前で組み立てない）', () => {
+  // 自前の文字列を cmd.exe の引用規則へ合わせようとして 3 通り壊した
+  // （3 段の cmd /c 入れ子・起動子 .cmd・verbatim な 1 本の文字列）。
+  // argv を返して Node に引用させれば、引用の責任が 1 か所に寄る。
+  const args = cowork_loopProvider.windowStartArgs(
     'Ubuntu', '/mnt/c/Users/dev/Temp/agent-dashboard/run.sh'
   );
-  assert.strictEqual(
-    line,
-    'start "定常業務 (agent-dashboard)" wsl.exe -d "Ubuntu" -e bash -lc'
-    + ' ". \'/mnt/c/Users/dev/Temp/agent-dashboard/run.sh\'"'
+  assert.deepStrictEqual(args, [
+    '/d', '/c', 'start', '',
+    'wsl.exe', '-d', 'Ubuntu',
+    '-e', 'bash', '-lc', ". '/mnt/c/Users/dev/Temp/agent-dashboard/run.sh'",
+  ]);
+  // 空タイトルは Node が "" として渡す。start に「次が実行ファイル」と確定させるため。
+  assert.strictEqual(args[3], '', 'タイトルは空文字の引数として渡す');
+  assert.strictEqual(args[4], 'wsl.exe', 'タイトルの次が実行ファイル');
+  // 引用符は 1 つも自前で書かない（Node が必要な分だけ付ける）
+  assert.ok(args.every((a) => !a.includes('"')), '引用符を自前で埋め込まない');
+  const noDistro = cowork_loopProvider.windowStartArgs('', '/mnt/c/t/run.sh');
+  assert.ok(!noDistro.includes('-d'), 'distro 未指定なら -d を付けない');
+  assert.strictEqual(noDistro[4], 'wsl.exe');
+  // 窓のタイトルはコマンドラインではなくスクリプト側（エスケープシーケンス）で付ける
+  const esc = cowork_loopProvider.titleEscape('定常業務 (agent-dashboard)');
+  assert.ok(esc.includes('\\033]0;') && esc.includes("'定常業務 (agent-dashboard)'"));
+  assert.strictEqual(cowork_loopProvider.titleEscape(''), '', 'タイトル未指定なら何も足さない');
+});
+
+test('win32 の起動は windowsVerbatimArguments に依存しない', () => {
+  // verbatim は「自前で組み立てた 1 本の文字列をそのまま渡す」ための指定。
+  // 引用を Node に任せる以上、これに依存してはいけない（依存が残ると自前組み立てへ戻る）。
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'features', 'cowork', 'main', 'loopProvider.js'), 'utf8'
   );
-  assert.strictEqual((line.match(/"/g) || []).length, 6, '引用符は title / distro / -lc の 3 組だけ');
-  assert.ok(!/cmd \/d \/s \/c "/.test(line), '入れ子の /c 文字列を作らない');
-  assert.ok(!/\.cmd"/.test(line), '起動子ファイルを介さない');
-  const noDistro = cowork_loopProvider.windowStartCommand('', '/mnt/c/t/run.sh');
-  assert.ok(!noDistro.includes('-d '), 'distro 未指定なら -d を付けない');
+  const win32Branch = src.slice(src.indexOf("if (platform === 'win32') {"), src.indexOf('} else {'));
+  assert.ok(!/windowsVerbatimArguments:\s*true/.test(win32Branch),
+    'win32 分岐で verbatim を有効にしない');
+  assert.ok(win32Branch.includes('windowStartArgs('), 'argv 組み立てを使う');
 });
 
 test('win32 の -d は cwd（WSL UNC）から取れるときだけ付ける（推測を渡さない）', () => {
@@ -478,9 +586,9 @@ test('win32 の -d は cwd（WSL UNC）から取れるときだけ付ける（�
   try {
     const unc = cowork_loopProvider.launchWindowScript('echo hi',
       { cwd: '\\\\wsl.localhost\\Ubuntu\\home\\me\\app' });
-    assert.ok(unc.windowCommand.includes('-d "Ubuntu"'), 'UNC から取れた名前は指定する');
+    assert.ok(unc.windowCommand.includes('-d Ubuntu'), 'UNC から取れた名前は指定する');
     const drive = cowork_loopProvider.launchWindowScript('echo hi', { cwd: 'C:\\proj\\app' });
-    assert.ok(!drive.windowCommand.includes('-d '),
+    assert.ok(!/ -d /.test(drive.windowCommand),
       'Windows ドライブ上のときは -d を付けず既定に任せる');
   } finally {
     if (orig) Object.defineProperty(process, 'platform', orig);
