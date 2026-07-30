@@ -236,32 +236,35 @@ function terminalLaunchSpec(platform, scriptFile, which = findExecutable) {
   throw new Error('利用できる外部ターミナルが見つかりません');
 }
 
-// `cmd /s /c start "<title>" wsl.exe [-d "<distro>"] -e bash -lc ". '<script>'"` のコマンドライン。
-// windowsVerbatimArguments でそのまま渡すため自前で組み立てる（Node の既定の引用は
-// cmd.exe の規則と一致しない）。
+// Windows でウィンドウを開く argv。経路は **Node → cmd /d /c start "" → wsl.exe** の 1 本。
 //
-// **引用符は 1 段に保ち、入れ子を作らない。** 過去に 2 通りの入れ子を試して両方壊した:
-//   ・`start "<題>" cmd /d /s /c "wsl.exe -d "<distro>" … || pause"`（3 段）
+// ここに至るまでに 3 通りの組み立てを試し、3 通りとも壊した:
+//   ・`start "<題>" cmd /d /s /c "wsl.exe -d "<distro>" … || pause"`（cmd の 3 段入れ子）
 //   ・`start "<題>" "<起動子.cmd>" "<script>" "<distro>"`（起動子をファイル化）
-// cmd.exe の引用・パス解決を Windows 無しで検証する手段が無い以上、**組み立てを増やさない**
-// のが唯一の防御になる。この形（title と -lc の引数だけが引用され、入れ子にならない）は
-// 定常業務ウィンドウが元から使っていた形で、wsl.exe の起動までは到達していた実績がある。
-//
-// 起動が失敗したときの手掛かりは、消えるコンソールではなく実行ログ（tracePreamble の足跡）
-// に残す。
-//
-// **タイトルは `start ""`（空）に固定する。** `start` は最初の引用済みトークンをタイトルと
-// 見なすため、タイトルを省くと後続の実行ファイルがタイトルとして食われる。空文字を明示すると
-// 「タイトルは空・次のトークンが実行ファイル」と一意に決まり、経路が
-// Node → cmd /c start "" → wsl.exe の 1 本に固定される。
-// 窓のタイトルはスクリプト側からエスケープシーケンスで付ける（引用の段を増やさない）。
+//   ・`start "" wsl.exe …` を 1 本の文字列にして windowsVerbatimArguments で渡す
+// 共通する敗因は「cmd.exe の引用規則に合う文字列を自前で組み立てようとした」こと。
+// Windows 実機なしにその正しさを確かめる手段が無く、段が増えるほど崩れた。
 //
 // ログインシェルは bash を使う（sh=dash だと利用者の ~/.bashrc / profile にある
 // bash 構文 `[[ … ]]` が `sh: N: [[: not found` になり、そこで止まると venv 有効化も
 // 走らず「No virtual environment found」のままエージェントが起動できない）。
-function windowStartCommand(distro, wslScriptPath) {
-  const d = distro ? `-d "${distro}" ` : '';
-  return `start "" wsl.exe ${d}-e bash -lc ". '${wslScriptPath}'"`;
+//
+// 窓のタイトルはスクリプト側のエスケープシーケンスで付ける（コマンドラインに載せない）。
+// 起動が失敗したときの手掛かりは、消えるコンソールではなく実行ログ（tracePreamble）に残す。
+// **コマンドラインを自前で組み立てない。** argv を返して Node に引用させる
+// （windowsVerbatimArguments は使わない）。自前の文字列を cmd.exe の引用規則へ
+// 合わせ続けるのは無理があり、実際に何度も壊した。argv 方式なら引用の責任が 1 か所
+// （Node）に寄り、こちらは「何を渡すか」だけを決める。
+//
+// 空タイトル '' は Node が "" として渡す。start は最初の引用済みトークンをタイトルと
+// 見なすため、これを明示すると「タイトルは空・次のトークンが実行ファイル」と一意に決まる。
+function windowStartArgs(distro, wslScriptPath) {
+  return [
+    '/d', '/c', 'start', '',
+    'wsl.exe',
+    ...(distro ? ['-d', distro] : []),
+    '-e', 'bash', '-lc', `. '${wslScriptPath}'`,
+  ];
 }
 
 // 窓のタイトルを付けるシェル片（OSC 0）。cmd のコマンドラインには載せない。
@@ -302,12 +305,13 @@ function launchWindowScript(script, options = {}) {
     if (!check.ok) {
       return { ok: false, status: -1, stdout: '', stderr: '', error: check.error, scriptFile };
     }
-    const cmdline = windowStartCommand(distro, wslScriptPath);
     command = 'cmd.exe';
-    args = ['/d', '/s', '/c', cmdline];
-    windowCommand = `cmd /s /c ${cmdline}`;
+    args = windowStartArgs(distro, wslScriptPath);
+    // 表示用（実際に渡すのは argv。ここを実行に使わない）
+    windowCommand = ['cmd.exe', ...args].join(' ');
     terminal = 'WSL';
-    spawnOptions = { ...spawnOptions, windowsHide: true, windowsVerbatimArguments: true };
+    // windowsVerbatimArguments は付けない——引用は Node に任せる。
+    spawnOptions = { ...spawnOptions, windowsHide: true };
   } else {
     let spec;
     try {
@@ -613,7 +617,7 @@ function makeLoopProvider(cfg) {
 module.exports = {
   DEFAULT_READY_PATTERN, DEFAULT_READY_TIMEOUT_SEC,
   makeLoopProvider, isWslPath, wslPath, wslDistro, winDriveToWsl, toWslCwd, shellQuote, sh,
-  decodeCliOutput, windowScript, windowStartCommand, titleEscape, windowLogPath, tracePreamble,
+  decodeCliOutput, windowScript, windowStartArgs, titleEscape, windowLogPath, tracePreamble,
   writeWindowScript,
   runInWindow,
   chatWindowScript, chatSessionName, runChatWindow, launchWindowScript,
