@@ -1,9 +1,12 @@
 # agent-project 設計書 批判的レビュー
 
-> 対象: [`agent-project-design.md`](./agent-project-design.md)
+> 対象: [`agent-project-design.md`](../designs/agent-project-design.md)
 > 日付: 2026-07-29
 > 方針: 指摘のみ。修正案・実装変更は含まない。
-> 修正計画: [`docs/plans/2026-07-29-agent-project-design-revision-plan.md`](../plans/2026-07-29-agent-project-design-revision-plan.md)
+> 修正計画: [`2026-07-29-agent-project-design-revision-plan.md`](./2026-07-29-agent-project-design-revision-plan.md)
+>
+> 位置づけ: 本書は**レビュー結果**（計画の入力）。`docs/designs/` の設計正典からは参照しない
+> （設計書の独立性）。計画・履歴は `docs/plans/` 側に閉じる。
 
 設計書を批判的に読んだ結果。よく煮詰まっているのは「done はゲート」「git を CAS」「親子常駐」「needs は投影」「削除≠却下」「板は常駐だけが書く」あたりで、個別の失敗から学んだ跡が強い。一方で、鉄則の適用範囲と分散時の時間・予算・クラッシュ・二系統の実行経路が概要のままなことが、設計書としての最大の穴。
 
