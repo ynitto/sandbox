@@ -180,6 +180,21 @@ async function main() {
     );
   });
 
+  test('renderer は投稿済みの表示名ではなく投稿者入力欄を参照する', () => {
+    assert.ok(
+      renderer.includes('class="rc-author-input"'),
+      '投稿者入力欄に専用 class がありません'
+    );
+    assert.ok(
+      renderer.includes("section.querySelector('.rc-author-input')"),
+      '投稿者入力欄を専用 class で取得していません'
+    );
+    assert.ok(
+      !renderer.includes("section.querySelector('.rc-author')"),
+      '投稿済みコメントの表示名を入力欄として取得する実装が残っています'
+    );
+  });
+
   console.log(`\n${passed} tests passed`);
 }
 
