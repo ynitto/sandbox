@@ -1531,10 +1531,16 @@ function reviewCommentsHtml(n) {
 }
 
 function bindReviewComments(root) {
-  const section = root.querySelector('.need-comments');
-  if (!section) return;
   const p = state.project;
   if (!p) return;
+  for (const section of root.querySelectorAll('.need-comments')) {
+    bindReviewCommentSection(section, p);
+  }
+}
+
+// 一覧には複数の review / blocked カードが同時に並ぶ。最初の section だけを bind すると、
+// 2 枚目以降は入力欄が見えているのに追加・編集・削除が反応しないため、カード単位で配線する。
+function bindReviewCommentSection(section, p) {
   const needId = section.dataset.rcNeed;
   const taskId = section.dataset.rcTask;
   const authorInput = section.querySelector('.rc-author');
