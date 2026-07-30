@@ -76,6 +76,7 @@ test('listCommandReceipts は processed/ が無ければ空を返す', () => {
 // eslint-disable-next-line no-new-func
 const commandReceiptHtml = new Function(
   `const esc = (s) => String(s);
+   const COMMAND_RECEIPT_VISIBLE_MS = 2 * 60 * 1000;
    const COMMAND_ACTION_LABELS = { approve: '承認', hold: '保留' };
    ${grab('commandReceiptHtml')}; return commandReceiptHtml;`
 )();
@@ -84,10 +85,17 @@ test('commandReceiptHtml は受理を確認として出す', () => {
   assert.strictEqual(commandReceiptHtml({}), '');
   const html = commandReceiptHtml({
     commandReceipt: { action: 'approve', processedAt: '2026-07-21 10:05:12' },
-  });
+  }, Date.parse('2026-07-21T10:06:00'));
   assert.match(html, /承認/);
-  assert.match(html, /受理されました/);
-  assert.match(html, /2026-07-21 10:05:12/);
+  assert.match(html, /受理しました/);
+  assert.doesNotMatch(html, /反映まで/);
+});
+
+test('commandReceiptHtml は古い受理通知を表示し続けない', () => {
+  const html = commandReceiptHtml({
+    commandReceipt: { action: 'approve', processedAt: '2026-07-21 10:05:12' },
+  }, Date.parse('2026-07-21T10:08:00'));
+  assert.strictEqual(html, '');
 });
 
 test('commandReceiptHtml は失敗があるときは受理を出さない（失敗表示を上書きしない）', () => {
