@@ -383,9 +383,9 @@ button:disabled { opacity: 0.4; cursor: default; }
 .rc-time { font-size: 11px; }
 .rc-text { margin-top: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .rc-edit-box { margin-top: 6px; }
-.rc-edit-box textarea, .rc-add textarea, .rc-add .rc-author { width: 100%; box-sizing: border-box; }
+.rc-edit-box textarea, .rc-add textarea, .rc-add .rc-author-input { width: 100%; box-sizing: border-box; }
 .rc-add { display: flex; flex-direction: column; gap: 6px; }
-.rc-add .rc-author { max-width: 260px; }
+.rc-add .rc-author-input { max-width: 260px; }
 
 #sidebar-footer {
   padding: 6px 10px;

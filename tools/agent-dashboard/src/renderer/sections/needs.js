@@ -1522,7 +1522,7 @@ function reviewCommentsHtml(n) {
     <h3>レビューコメント <span class="muted">（${comments.length}）</span></h3>
     ${list}
     <div class="rc-add">
-      <input class="rc-author" placeholder="あなたの名前（コメントに付きます）" value="${esc(reviewerName())}" />
+      <input class="rc-author-input" placeholder="あなたの名前（コメントに付きます）" value="${esc(reviewerName())}" />
       <textarea class="rc-input" rows="2" placeholder="成果物へのコメント（他のメンバーと担当者が確認できます）"></textarea>
       <div class="row need-buttons"><span class="spacer"></span>
         <button class="primary-inline" data-rc-add>コメントを追加</button></div>
@@ -1531,13 +1531,21 @@ function reviewCommentsHtml(n) {
 }
 
 function bindReviewComments(root) {
-  const section = root.querySelector('.need-comments');
-  if (!section) return;
   const p = state.project;
   if (!p) return;
+  for (const section of root.querySelectorAll('.need-comments')) {
+    bindReviewCommentSection(section, p);
+  }
+}
+
+// 一覧には複数の review / blocked カードが同時に並ぶ。最初の section だけを bind すると、
+// 2 枚目以降は入力欄が見えているのに追加・編集・削除が反応しないため、カード単位で配線する。
+function bindReviewCommentSection(section, p) {
   const needId = section.dataset.rcNeed;
   const taskId = section.dataset.rcTask;
-  const authorInput = section.querySelector('.rc-author');
+  // 投稿済みコメントの表示名も `.rc-author` を使うため、入力欄は専用 class で引く。
+  // 表示名 span を拾うと 2 件目の投稿時に `undefined.trim()` となり追加できなくなる。
+  const authorInput = section.querySelector('.rc-author-input');
   if (authorInput) {
     authorInput.addEventListener('change', () => setReviewerName(authorInput.value));
   }
