@@ -324,74 +324,77 @@
       <div class="muted">選択したバージョンの目標・制約・前提を、このタスクの実行に適用します。</div>
     </div>
     <div class="field">
-      <label>タイトル</label>
+      <label>タスク名</label>
       <input id="enq-title" placeholder="例: README に使用例を追加する" />
     </div>
     <div class="field">
-      <label>検証コマンド</label>
-      <input id="enq-verify" class="mono" placeholder='例: grep -q "## Usage" README.md' />
-      <p class="field-help">成功すれば完了とみなします。書ける場合はこちらが確実です。</p>
-    </div>
-    <div class="field">
-      <label>完了条件テンプレート</label>
-      <input id="enq-verify-template" class="mono" list="enq-verify-template-options"
-             placeholder="例: file-contains :: README.md :: ## Usage" />
-      <datalist id="enq-verify-template-options">
-        <option value="file-contains :: path :: needle">ファイルに文字列が含まれる</option>
-        <option value="file-exists :: path">ファイルが存在する</option>
-        <option value="cmd-succeeds :: command">コマンドが成功する</option>
-        <option value="endpoint-returns :: url :: 200">URL が指定ステータスを返す</option>
-        <option value="diff-contains :: needle">変更差分に文字列が含まれる</option>
-      </datalist>
-      <p class="field-help">よくある検証を選んで穴埋めできます。</p>
-    </div>
-    <div class="field">
-      <label>完了条件</label>
+      <label>受入基準</label>
       <input id="enq-accept" placeholder="例: README に使用例が載っている" />
-      <p class="field-help">文章で書けます。検証コマンドやテンプレートが無いときに使います。</p>
+      <p class="field-help">完了したと判断できる状態を自然な言葉で書きます。</p>
     </div>
-    <details class="enq-guide-panel" open>
-      <summary>意図と境界</summary>
-      <p class="field-help">計画レビューの材料になります。任意ですが、成果のぶれを減らせます。</p>
-      <div class="field"><label for="enq-desc">作業内容の概要</label>
+    <details class="enq-guide-panel">
+      <summary>作業内容を補足</summary>
+      <p class="field-help">必要な場合だけ、目的や変更範囲を追加します。</p>
+      <div class="field"><label for="enq-desc">変更してほしいこと</label>
         <textarea id="enq-desc" rows="3" placeholder="例: README の冒頭にインストール手順と使用例のセクションを追加する。既存の構成は変えない。"></textarea></div>
       <div class="field"><label for="enq-why">目的・背景</label><input id="enq-why" /></div>
       <div class="row2">
-        <div class="field"><label for="enq-scope">やる範囲</label><input id="enq-scope" /></div>
-        <div class="field"><label for="enq-out_of_scope">やらない範囲</label><input id="enq-out_of_scope" /></div>
+        <div class="field"><label for="enq-scope">変更してよい範囲</label><input id="enq-scope" /></div>
+        <div class="field"><label for="enq-out_of_scope">変更しない範囲</label><input id="enq-out_of_scope" /></div>
       </div>
     </details>
-    <div class="row2">
-      <div class="field">
-        <label>優先度</label>
-        <input id="enq-priority" type="number" step="1" value="0" />
-        <p class="field-help">数字が大きいほど先に着手します。</p>
+    <details>
+      <summary>実行順と変更先</summary>
+      <div class="row2">
+        <div class="field">
+          <label>着手の優先度</label>
+          <input id="enq-priority" type="number" step="1" value="0" />
+          <p class="field-help">数字が大きいほど先に着手します。</p>
+        </div>
+        <div class="field">
+          <label>タスク番号</label>
+          <input id="enq-id" class="mono" placeholder="例: T12" />
+          <p class="field-help">省略すると自動で採番します。</p>
+        </div>
       </div>
       <div class="field">
-        <label>メモ</label>
-        <input id="enq-note" />
-      </div>
-    </div>
-    <div class="row2">
-      <div class="field">
-        <label>ID</label>
-        <input id="enq-id" class="mono" placeholder="例: T12" />
-        <p class="field-help">省略すると自動で採番します。</p>
-      </div>
-      <div class="field">
-        <label for="enq-after">先行タスク</label>
+        <label for="enq-after">先に完了するタスク</label>
         <input id="enq-after" class="mono" list="enq-after-options" placeholder="例: T1, T2" />
         <datalist id="enq-after-options"></datalist>
-        <p class="field-help">先に終えるタスクの ID をカンマ区切りで指定します。</p>
+        <p class="field-help">タスク番号をカンマ区切りで指定します。</p>
       </div>
-    </div>
-    <div class="field" id="enq-workspace-field">
-      <label for="enq-workspace">書込先リポジトリ</label>
-      <select id="enq-workspace"></select>
-      <p class="field-help">省略すると自動で選びます。</p>
-    </div>
+      <div class="field" id="enq-workspace-field">
+        <label for="enq-workspace">変更先</label>
+        <select id="enq-workspace"></select>
+        <p class="field-help">省略すると自動で選びます。</p>
+      </div>
+      <div class="field">
+        <label>補足</label>
+        <input id="enq-note" />
+      </div>
+    </details>
+    <details>
+      <summary>確認方法を固定</summary>
+      <p class="field-help">実行するコマンドが決まっている場合だけ設定します。</p>
+      <div class="field">
+        <label>実行するコマンド</label>
+        <input id="enq-verify" class="mono" placeholder='例: grep -q "## Usage" README.md' />
+      </div>
+      <div class="field">
+        <label>定型の確認方法</label>
+        <input id="enq-verify-template" class="mono" list="enq-verify-template-options"
+               placeholder="例: file-contains :: README.md :: ## Usage" />
+        <datalist id="enq-verify-template-options">
+          <option value="file-contains :: path :: needle">ファイルに文字列が含まれる</option>
+          <option value="file-exists :: path">ファイルが存在する</option>
+          <option value="cmd-succeeds :: command">コマンドが成功する</option>
+          <option value="endpoint-returns :: url :: 200">URL が指定ステータスを返す</option>
+          <option value="diff-contains :: needle">変更差分に文字列が含まれる</option>
+        </datalist>
+      </div>
+    </details>
     <details id="enq-backlog-panel" class="enq-backlog-panel">
-      <summary>既存バックログ</summary>
+      <summary>ほかのタスクを確認</summary>
       <div id="enq-backlog-summary" class="enq-backlog-summary muted"></div>
     </details>
     <div class="enq-assist-row">
@@ -399,7 +402,7 @@
       <span id="enq-ai-status" class="muted" aria-live="polite"></span>
     </div>
     <div id="enq-ai-adjustments" class="enq-ai-adjustments hidden"></div>
-    <div class="muted">検証コマンド・完了条件のどちらも無い場合、取り込み後に内容を確認してください。</div>
+    <div class="muted">受入基準がない場合、取り込み後に内容の確認が必要です。</div>
     <div class="dialog-actions">
       <button id="btn-enq-cancel">キャンセル</button>
       <button id="btn-enq-submit" class="primary-inline">追加</button>
@@ -527,9 +530,9 @@
       <div class="field"></div>
     </div>
     <div class="field">
-      <label>完了条件</label>
-      <textarea id="np-acceptance" rows="3" class="mono" placeholder="pytest -q tests/&#10;accept: README に使用例が載っている"></textarea>
-      <p class="field-help">1 行に 1 つ。成功で終わるコマンド、または「accept: 文章」で書けます。</p>
+      <label>達成条件</label>
+      <textarea id="np-acceptance" rows="3" placeholder="README に使用例が載っている&#10;初めて使う人が手順どおりに実行できる"></textarea>
+      <p class="field-help">1 行に 1 つ。達成した状態を自然な言葉で書きます。</p>
     </div>
     <details id="np-repos-details">
       <summary>対象リポジトリ</summary>
@@ -597,10 +600,10 @@
       <textarea id="ec-goal" rows="3" placeholder="例: CSV 取り込みのエラー処理を改善し、失敗行のレポートを出す"></textarea>
     </div>
     <div class="field" id="ec-acceptance-field">
-      <label>完了条件</label>
+      <label>達成条件</label>
       <div id="ec-acceptance" class="list-editor"></div>
       <button type="button" class="chip" data-add-list="ec-acceptance">＋ 追加</button>
-      <p class="field-help">成功で終わるコマンド、または「accept: 文章」で書けます。</p>
+      <p class="field-help">達成した状態を自然な言葉で書きます。</p>
     </div>
     <div class="field" id="ec-deliverables-field">
       <label>成果物</label>

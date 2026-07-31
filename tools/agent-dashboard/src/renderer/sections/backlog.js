@@ -621,7 +621,7 @@ function isReviseSent(t) {
 // 実行中（doing）のタスクにも送れる: 本体は現在の試行を確定せず修正内容で積み直す。
 function reviseAreaHtml(t) {
   if (isReviseSent(t)) {
-    return `<div class="muted" style="margin-top:8px">✎ 修正指示を送信済みです（反映されると再度編集できます）</div>`;
+    return `<div class="muted" style="margin-top:8px">修正内容を送信済みです（反映されると再度編集できます）</div>`;
   }
   const doingNote =
     t.status === 'doing'
@@ -629,46 +629,62 @@ function reviseAreaHtml(t) {
       : t.status === 'offloaded'
         ? '<div class="muted">委任先で実行中のタスクです。送信すると今回の結果は採用されず、修正を反映してやり直します（切り替えは今回の作業が終わり次第）。</div>'
         : '<div class="muted">修正は次の実行から反映されます。依存関係を変えると作業の順序も変わります。</div>';
-  return `<details class="revise-area"><summary>✎ 修正を指示</summary>
+  const level = String(t.extra.level || '');
+  const levelChoices = [
+    ['', '指定しない'],
+    ['report', '結果だけ報告'],
+    ['assisted', '確認しながら進める'],
+    ['unattended', '確認なしで進める'],
+  ];
+  if (level && !levelChoices.some(([value]) => value === level)) levelChoices.push([level, level]);
+  const levelOptions = levelChoices
+    .map(([value, label]) => `<option value="${esc(value)}" ${value === level ? 'selected' : ''}>${esc(label)}</option>`)
+    .join('');
+  return `<div class="revise-area">
+    <h3>タスクを修正</h3>
     ${doingNote}
-    <div class="field"><label>作業への指示</label>
-      <textarea rows="2" id="rv-feedback" placeholder="例: e2e はローカルサーバでなく実サーバに配備して実施すること"></textarea>
-      <p class="field-help">次の実行に必ず伝わります。</p></div>
-    <div class="field"><label>タイトル</label><input id="rv-title" value="${esc(t.title)}" /></div>
-    <div class="row2">
-      <div class="field"><label>優先度</label><input id="rv-priority" type="number" step="1" value="${t.priority}" />
-        <p class="field-help">数字が大きいほど先に着手します。</p></div>
-      <div class="field"><label>先行タスク</label><input id="rv-after" class="mono" value="${esc(t.extra.after || '')}" />
-        <p class="field-help">先に終えるタスクの ID をカンマ区切りで。空欄にすると解除します。</p></div>
-    </div>
-    <div class="field"><label>完了ゲート（検証コマンド）</label><input id="rv-verify" class="mono" value="${esc(t.verify || '')}" />
-      <p class="field-help">agent-flow の工程内チェックとは別に、成果をタスク完了として確定するコマンドです。空欄にすると削除します。</p></div>
-    <div class="field"><label>完了ゲート（受入基準）</label>
-      <textarea rows="4" id="rv-acceptance" placeholder="1 行 1 基準で書きます">${esc(
-        acceptanceList(t).join('\n')
-      )}</textarea>
-      <p class="field-help">1 行 1 基準。完了時に検証エージェントがこの順に実行して証跡付きで判定し、
-        全部 pass したときだけ完了になります。空欄にすると削除します（3〜7 項目が目安）。</p></div>
-    <div class="row2">
-      <div class="field"><label>自動化レベル</label>
-        <input id="rv-level" list="rv-level-list" value="${esc(t.extra.level || '')}" />
-        <datalist id="rv-level-list"><option value="report">報告のみ</option><option value="assisted">確認しながら</option><option value="unattended">全自動</option></datalist>
-        <p class="field-help">report / assisted / unattended。空欄にすると削除します。</p>
+    <details open>
+      <summary>内容と完了条件</summary>
+      <div class="field"><label>変更してほしいこと</label>
+        <textarea rows="2" id="rv-feedback" placeholder="例: e2e はローカルサーバでなく実サーバに配備して実施すること"></textarea>
+        <p class="field-help">次の実行に反映します。</p></div>
+      <div class="field"><label>タスク名</label><input id="rv-title" value="${esc(t.title)}" /></div>
+      <div class="field"><label>受入基準</label>
+        <textarea rows="4" id="rv-acceptance" placeholder="1 行 1 基準で書きます">${esc(
+          acceptanceList(t).join('\n')
+        )}</textarea>
+        <p class="field-help">すべて満たしたときに完了と判断します。空欄にすると削除します。</p></div>
+    </details>
+    <details>
+      <summary>実行順と担当</summary>
+      <div class="row2">
+        <div class="field"><label>着手の優先度</label><input id="rv-priority" type="number" step="1" value="${t.priority}" />
+          <p class="field-help">数字が大きいほど先に着手します。</p></div>
+        <div class="field"><label>進め方</label>
+          <select id="rv-level">${levelOptions}</select>
+        </div>
       </div>
-      <div class="field"><label>系列</label><input id="rv-track" value="${esc(t.extra.track || '')}" />
-        <p class="field-help">同種タスクのグループ名。空欄にすると削除します。</p></div>
-    </div>
-    <div class="field"><label>実行ノード</label><input id="rv-node" value="${esc(t.extra.node || '')}" />
-      <p class="field-help">このタスクを動かす PC 名。複数 PC で分担するときに指定します。空欄なら既定の PC が拾います。</p></div>
-    <div class="field"><label>メモ</label><input id="rv-note" value="${esc(t.extra.note || '')}" />
-      <p class="field-help">空欄にすると削除します。</p></div>
+      <div class="field"><label>先に完了するタスク</label><input id="rv-after" class="mono" value="${esc(t.extra.after || '')}" />
+        <p class="field-help">タスク番号をカンマ区切りで指定します。空欄にすると解除します。</p></div>
+      <div class="field"><label>関連タスクのグループ</label><input id="rv-track" value="${esc(t.extra.track || '')}" />
+        <p class="field-help">同じ種類のタスクをまとめる名前です。空欄にすると削除します。</p></div>
+      <div class="field"><label>実行する PC</label><input id="rv-node" value="${esc(t.extra.node || '')}" />
+        <p class="field-help">複数の PC で分担するときに指定します。空欄なら自動で選びます。</p></div>
+      <div class="field"><label>補足</label><input id="rv-note" value="${esc(t.extra.note || '')}" />
+        <p class="field-help">空欄にすると削除します。</p></div>
+    </details>
+    <details>
+      <summary>確認方法を固定</summary>
+      <div class="field"><label>実行するコマンド</label><input id="rv-verify" class="mono" value="${esc(t.verify || '')}" />
+        <p class="field-help">コマンドが決まっている場合だけ設定します。空欄にすると削除します。</p></div>
+    </details>
     <details class="revise-guide" ${GUIDE_KEYS.some((k) => t.extra[k]) ? 'open' : ''}>
-      <summary>意図と境界</summary>
-      <p class="field-help">レビュー材料と実行への手がかりです。空欄にした項目は削除します。</p>
+      <summary>目的と変更範囲</summary>
+      <p class="field-help">必要な項目だけ入力します。空欄にした項目は削除します。</p>
       <div class="row need-buttons">
-        <span class="muted">改行は ⏎ で書きます。AI が下書きできます（送信前に確認してください）</span>
+        <span class="muted">入力済みの内容から下書きを作れます。</span>
         <span class="spacer"></span>
-        <button type="button" id="btn-guide-assist">✦ AI で補完</button>
+        <button type="button" id="btn-guide-assist">下書きを作る</button>
       </div>
       <div class="muted" id="guide-assist-status"></div>
       ${GUIDE_KEYS.map(
@@ -677,11 +693,11 @@ function reviseAreaHtml(t) {
       ).join('')}
     </details>
     <div class="row need-buttons">
-      <span class="muted">変更した項目と指示だけが送られ、決定記録に残ります</span>
+      <span class="muted">入力した変更内容は履歴に残ります</span>
       <span class="spacer"></span>
-      <button class="primary-inline" id="btn-revise-send">➤ 修正を送信</button>
+      <button class="primary-inline" id="btn-revise-send">修正を送信</button>
     </div>
-  </details>`;
+  </div>`;
 }
 
 function showTaskDialog(id, scope) {
@@ -709,7 +725,7 @@ function showTaskDialog(id, scope) {
   const canApprove = ['blocked', 'review', 'proposed'].includes(t.status);
   const deps = String(t.extra.after || '').trim();
   const downs = dependentsOf(p.backlog, t.id);
-  const depRow = `<tr><th>依存関係</th><td class="muted">先行タスク: ${deps ? esc(deps) : '（なし）'} ／ 後続タスク（このタスクの変更が影響）: ${
+  const depRow = `<tr><th>実行順</th><td class="muted">先に完了するタスク: ${deps ? esc(deps) : '（なし）'} ／ この後に実行するタスク: ${
     downs.length ? downs.map((x) => `${esc(x.id)}[${esc(statusLabel(x.status))}]`).join(', ') : '（なし）'
   }</td></tr>`;
   const rr = runsForTask(t.id);
@@ -717,6 +733,13 @@ function showTaskDialog(id, scope) {
   const statusCell = hint.statusNote
     ? `${statusChip(t.status)} <span class="badge warn" title="${esc(hint.completeHow)}">${esc(hint.statusNote)}</span>`
     : statusChip(t.status);
+  const acceptance = acceptanceList(t);
+  const acceptanceHtml = acceptance.length
+    ? `<ul>${acceptance.map((item) => `<li>${esc(item)}</li>`).join('')}</ul>`
+    : '<span class="muted">（未定義）</span>';
+  const verificationDetailsRow = t.verify
+    ? `<tr><th>検証の詳細</th><td><details><summary>固定した検証方法</summary><pre class="mono">${esc(t.verify)}</pre></details></td></tr>`
+    : '';
   // 削除を拒むのは「実行中」だけ。クレームロックは worker クラッシュや
   // review/blocked 滞留で残骸が残るため、doing 以外ではロックがあっても削除できる
   const claimed = p.claims.includes(t.id) && t.status === 'doing';
@@ -768,7 +791,8 @@ function showTaskDialog(id, scope) {
       }</td></tr>
       <tr><th>再試行</th><td>${t.retries}</td></tr>
       ${boardDelegationRowHtml(t)}
-      <tr><th>完了ゲート</th><td>${t.verify ? `<pre class="mono">${esc(t.verify)}</pre>` : '<span class="muted">（未定義）</span>'}</td></tr>
+      <tr><th>受入基準</th><td>${acceptanceHtml}</td></tr>
+      ${verificationDetailsRow}
       ${depRow}
       ${extraRows}
       <tr><th>ファイル</th><td><a href="#" id="task-open-file" class="mono">${esc(t.file)}</a></td></tr>

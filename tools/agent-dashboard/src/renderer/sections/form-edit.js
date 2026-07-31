@@ -109,7 +109,7 @@ async function openCharterForm(name, opts) {
   // 完了条件（acceptance）はバージョン、または「マスターでない単一 charter」に出す。マスターは非表示。
   const showAcceptance = !isMaster;
   $('ec-acceptance-field').classList.toggle('hidden', !showAcceptance);
-  renderSimpleList($('ec-acceptance'), fields.acceptance, '例: pytest -q tests/ または accept: 使用例が載っている');
+  renderSimpleList($('ec-acceptance'), fields.acceptance, '例: README に使用例が載っている');
 
   // 成果物は常に出す
   renderSimpleList($('ec-deliverables'), fields.deliverables, '例: report.py');
@@ -352,7 +352,7 @@ async function saveReposForm() {
 
 const CHARTER_SECTION_GUIDE =
   '書式（セクション）: ## goal（目標）/ ## constraints（制約）/ ## assumptions（前提）/ ' +
-  '## deliverables（成果物）/ ## acceptance（完了条件 — 成功で終わるコマンド、または accept: 文章）/ ' +
+  '## deliverables（成果物）/ ## acceptance（達成条件 — 自然言語で 1 行 1 条件）/ ' +
   '## repos（対象リポジトリ）/ ## links（参考リンク）';
 
 async function openEditFile(name, opts) {

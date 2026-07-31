@@ -483,8 +483,7 @@ function stripFence(text) {
 // charter.md の書式契約（agent-project の charter.md.example と authoring.buildCharter に一致）
 const CHARTER_RULES = [
   '- goal は 1〜3 文。達成できたかを後から判定できる表現にする。',
-  '- acceptance の各行は「終了コード 0 を PASS とみなすシェルコマンド」を最優先で書く。',
-  '  コマンドにできない条件だけ "accept: <自然文>" 形式にする。',
+  '- acceptance は達成した状態を自然言語で書く。1 行に 1 条件とし、コマンドや接頭辞へ変換しない。',
   '- deliverables / constraints / assumptions は 1 行 1 項目の短い箇条書き。',
   '- 入力に既に書かれている内容は尊重して残し、空欄・不足だけを補う。',
   '- 実在が確認できないリポジトリ名・パス・コマンドを発明しない。不確かな前提は assumptions に書く。',
@@ -517,7 +516,7 @@ function charterRefinePrompt(content) {
     'あなたはプロジェクト憲章（charter.md）のレビュアー兼共同執筆者です。\n' +
     '以下の charter.md を、書式（# Charter: <name> 見出しと ' +
     '## goal / constraints / assumptions / deliverables / acceptance / repos / links の各セクション）を保ったまま、\n' +
-    '不足セクションの補完・acceptance の検証可能化（シェルコマンド化）・曖昧な記述の明確化をして、\n' +
+    '不足セクションの補完・acceptance の判定観点の明確化・曖昧な記述の明確化をして、\n' +
     '完成版の charter.md **全文だけ** を出力してください（前置き・説明文・コードフェンスなし）。\n\n' +
     `規約:\n${CHARTER_RULES}\n- ## repos の URL・owns 等は変更しない。\n\n` +
     `--- charter.md ---\n${String(content || '').trim() || '(空 — 雛形から書き起こしてください)'}`

@@ -331,9 +331,9 @@ assert.ok(!html.includes('（out_of_scope）'), 'スキーマフィールド名 
 assert.ok(!html.includes('（desc）'), 'スキーマフィールド名 desc をラベルに出しません');
 assert.ok(!html.includes('決定的に展開'), '実装寄りの用語を完了条件ラベルに出しません');
 assert.ok(!html.includes('生コマンド不要'), '実装寄りの用語を完了条件ラベルに出しません');
-assert.ok(html.includes('>完了条件テンプレート</label>'), '完了条件テンプレートは短いラベルにします');
+assert.ok(html.includes('>定型の確認方法</label>'), '利用者には設定の目的が分かる名前を表示します');
 assert.ok(html.includes('>目的・背景</label>'), 'why 欄は目的・背景と表示します');
-assert.ok(html.includes('>やる範囲</label>'), 'scope 欄はやる範囲と表示します');
+assert.ok(html.includes('>変更してよい範囲</label>'), 'scope 欄は変更範囲として表示します');
 assert.ok(renderer.includes("why: '目的・背景'"), '誘導フィールド表示名から冗長な括弧説明を除きます');
 assert.ok(!renderer.includes('空にすると削除）'), '修正フォームのラベルに削除規約の括弧説明を詰め込みません');
 assert.ok(!renderer.includes('概要（desc）・目的（why）'), '要対応の案内にスキーマ名を出しません');

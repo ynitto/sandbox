@@ -342,7 +342,7 @@ test('normalizeDraftFields: 配列/文字列/箇条書き前置きを改行区�
 test('charterDraftPrompt: JSON キー・acceptance 規約・入力欄が載る', () => {
   const p = agent.charterDraftPrompt({ name: 'demo', goal: 'G', memo: '背景メモ' });
   assert.ok(p.includes('"acceptance"') && p.includes('"assumptions"'));
-  assert.ok(p.includes('終了コード 0'), 'acceptance のコマンド化規約');
+  assert.ok(p.includes('自然言語') && p.includes('コマンドや接頭辞へ変換しない'));
   assert.ok(p.includes('demo') && p.includes('背景メモ'));
 });
 

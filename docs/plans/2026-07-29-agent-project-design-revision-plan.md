@@ -1,8 +1,11 @@
 # agent-project 設計修正計画 — レビュー 24 件への対応
 
-> 日付: 2026-07-29（統合版）
-> 入力: [`2026-07-29-agent-project-design-review.md`](./2026-07-29-agent-project-design-review.md)（指摘 24 件＋小項目 6 件）
-> 対象: [`agent-project-design.md`](../designs/agent-project-design.md)
+> 日付: 2026-07-31（verify 統一計画を統合）
+> 入力: [`2026-07-29-agent-project-design-review.md`](./2026-07-29-agent-project-design-review.md)（指摘 24 件＋小項目 6 件）、
+> [`2026-07-30-unified-task-verify-design.md`](./2026-07-30-unified-task-verify-design.md)
+> 対象: [`agent-project-design.md`](../designs/agent-project-design.md)、
+> [`agent-flow-design.md`](../designs/agent-flow-design.md)、
+> [`agent-dashboard-design.md`](../designs/agent-dashboard-design.md)
 > 位置づけ: 本書は**修正計画**。確定した内容は agent-project 設計書へ反映し、本書は「なぜそう直したか」の
 > 履歴として残す。設計判断の正典は常に設計書側。レビュー結果・修正計画は `docs/plans/` に置き、
 > **設計書（`docs/designs/`）からはリンクしない**（設計書の独立性）。
@@ -24,6 +27,22 @@
 - 判定の 2 実装（既存の 1 実装へ経路を寄せるだけ）
 - 新しい停止出口（止めるときは既存の throttle→report 降格だけ）
 - doctor / dashboard への露出パイプの複製（所見の種類だけ増やす）
+
+### verify 統一設計の所在と実装差分
+
+設計判断はすでに次の設計書へ反映している。本書には、その設計を実装へ落とす順序だけを統合する。
+
+| 正典 | 書いてあること |
+|---|---|
+| [`agent-project-design.md`](../designs/agent-project-design.md) | 受入基準と固定コマンドの所有、verification plan の生成、receipt の検算、done の確定 |
+| [`agent-flow-design.md`](../designs/agent-flow-design.md) | 成果 revision 上の verifier runner、criterion の判定、receipt の返却、fail の修正ループ |
+| [`agent-dashboard-design.md`](../designs/agent-dashboard-design.md) | 達成条件・受入基準を通常入力にする UI、固定コマンドの折りたたみ、基準と証拠の結果表示 |
+| [`2026-07-30-unified-task-verify-design.md`](./2026-07-30-unified-task-verify-design.md) | plan / receipt の構造、責務境界、後方互換、切替順序 |
+
+2026-07-31 時点で、dashboard の通常入力と charter 下書きは自然文へ変更済み。ただし保存と実行は
+旧経路のままである。task は `accept` / `acceptance` / `verify`、charter は `## acceptance` を書き、
+charter の自然文は agent-project がコマンドへ一発合成して実行する。UI の変更を契約移行の完了とは
+数えない。
 
 ---
 
@@ -52,7 +71,7 @@ backlog 消化（正準ループ）だけ。目標節の「backlog が空か予�
 
 | フック | 内容 |
 |---|---|
-| E1 | verify / acceptance。各行は「決定的コマンド行」か「自然文基準行」。自然文は verifier が証跡付きで判定。**自然文→コマンドの一発合成は廃止**。負債ラチェット（`codd-gate verify --debt`）は E1 の決定的コマンド行に載る |
+| E1 | `task_acceptance_criteria` / `project_acceptance_criteria` と任意の `verification_commands`。自然文は verifier が証跡付きで判定し、固定コマンドは文字列を変えず実行する。**自然文→コマンドの一発合成は廃止**。負債ラチェット（`codd-gate verify --debt`）は E1 の固定コマンドに載る |
 | E2 | `regression_cmd` |
 | E3 | `intake_cmd` |
 | E4 | `enqueue` / `inbox` |
@@ -64,30 +83,42 @@ verify（E1）→ regression（E2）→ パス保護 → 進捗。
 **regression NG → done せず review**、**パス保護違反 → retry せず人へ**、**進捗 NG → retry**。
 verify PASS は列の入場条件であり、通過しても done 確定ではない。
 
+agent-project は E1 と後段の固定 gate を `verification_plan` に正規化し、canonical JSON の SHA-256
+digest を付ける。agent-flow は plan を planner の自由記述へ混ぜず、成果 revision が確定した後に
+専用 runner で一度だけ実行する。receipt には少なくとも plan digest、result revision、command の
+終了コード、criterion ごとの verdict と証拠を含める。`fail` は同じ agent-flow run の修正ループへ
+戻し、`inconclusive` は修正回数を消費せず別ノード検証または人へ送る。
+
+旧 `acceptance` / `accept` / `verify` / `verify_template` は agent-project の読み取り境界だけで正規形へ
+変換する。新規書き込みは正規形だけとし、dual-write はしない。charter の `## acceptance` も読み取り時に
+`project_acceptance_criteria` へ変換する。
+
 ### W3. 証跡チェック 1 実装（P1）— #2 #3 #4 #15
 
-決定的チェックは 3 つだけ:
+receipt の採否は agent-project の 1 実装へ集約する。決定的チェックは次の 5 つ:
 
-1. 参照ファイルが検証対象の成果コミットに実在する
-2. 各 pass に「実行したコマンドとその終了コード」が対応づく（記録の無い出力は証跡と認めない）
-3. 差分基準を満たす
+1. schema version を解釈でき、plan digest が投入時の値と一致する
+2. result revision が採用対象の成果 revision と一致する
+3. 固定コマンドがすべて終了コード 0
+4. 各 criterion の pass に、対象 revision 上で得たコマンド、ファイル、差分、ログ、画面のいずれかの証拠が対応づく
+5. 差分基準を満たす
 
 内蔵 verifier・`verifier_skill`・他ノードの `external.json` の**すべて**が同じチェックを通り、
-通らない pass は機械的に fail。
+receipt が無い、古い、壊れている、または上の照合を通らない pass は採用しない。
 
 これに吸収する方針文（P0、別実装なし）:
 
 - 外部受理は「誰が」ではなく「何を出したか」＝上のチェックを同じだけ課す。板のノード契約版が合わない判定は fail（#4）
-- `verify_side_effects` の禁止は**強制しない**（非目標）。担保は ② の事後検知（#15）
+- `verify_side_effects` の禁止は**強制しない**（非目標）。担保は ④ の証拠確認による事後検知（#15）
 
 ### W4. `no_diff` による差分基準の差し替え（P1）— #16
 
-タスクに `- no_diff: <理由>` があると、W3 の③が参照する `DIFF_CRITERION` は
+タスクに `- no_diff: <理由>` があると、W3 の⑤が参照する `DIFF_CRITERION` は
 **「宣言した成果物ファイルの実在とその内容の参照」へ差し替わる**（基準は消えない）。
 調査・方針・ドキュメント・「変更しないこと」系はここに載る。チェック経路は W3 のまま。
 
 **なぜ W3 で足りるか**: 証跡の真正性は LLM に証明させない。
-「記録の無いものを証跡と認めない」フェイルクローズだけで、既存の「証跡の無い pass は fail」の延長。
+「正本と一致しないものを証跡と認めない」フェイルクローズだけで、既存の「証跡の無い pass は fail」の延長。
 再実行検算はしない（非目標）。
 
 ---
@@ -222,27 +253,60 @@ LLM の裁定ゲートは「人が要るか」だけ（現行の役割分担）�
 
 ## 段階と完了条件
 
-**P0 — 設計書の書き換え（コード変更ゼロ）**
+**P0 — 設計契約の反映**
 
 W1（人の役割）、W2 のカタログ記述（E1〜E6＋ゲート順）、W3 の方針文、W5、W6 の契約、W8、
-W12〜W16、変更判断・非目標。W14 は天井と B1 方針まで。
+W12〜W16、変更判断・非目標。W14 は天井と B1 方針まで。verify の責務境界は agent-project、
+agent-flow、agent-dashboard の各設計書へ反映済み。以後の実装判断は 7 月 30 日の plan 単独ではなく、
+本書の P1-A を追う。
 
 *完了条件*: レビュー 24 件＋小項目それぞれについて、設計書のどの節を読めばよいかが指せる
-（複数指摘が 1 節を共有してよい）。
+（複数指摘が 1 節を共有してよい）。verify については定義、実行、確定の担当と plan / receipt の
+入出力が 3 設計書で一致する。
 
-**P1 — 小さい決定的な実装（依存順）**
+**P1-A — verify 契約の切替（依存順）**
 
-1. **W3** 証跡チェック 1 実装（外部経路・副作用の事後検知を含む）
-2. **W2** acceptance 二表現（一発合成削除。E1 と同一）
-3. **W6** settle 1 コミット化（未 push は remote 正で再突合するテスト）
-4. **W9** 削除時の後続 proposed 化＋実行中削除の拒否
-5. **W7** `unknown` 隔離上限 → 既存 report 降格
-6. **W4** `no_diff`（W3 ③の述語差し替え）
-7. **W10** learn のスコープと失効
-8. **W11** 保持契約と gc
-9. **W15** 構造テスト＋綻び／到達不能所見をパイプへ
-10. **W14** `existing[]` 契約テスト（実装済みの回帰）
-11. （契機）**W14 B1** 密度段階
+1. **schema と digest**: `verification_plan` / receipt の versioned schema、canonical JSON、
+   SHA-256 digest、criterion id の採番規則を定義する。task / charter / board で同じ schema を使う。
+2. **agent-flow runner**: plan を構造化入力で受け、成果 revision 上で固定コマンドと criterion を一度だけ
+   検証して receipt を返す。verifier は criterion を変更せず、成果物も変更しない。
+3. **agent-project 読み取りアダプタと検算**: 旧形式を正規形へ変換し、W3 の照合を 1 実装に集約する。
+   digest、revision、証拠のいずれかが欠けた receipt では done にしない。
+4. **修正ループ**: criterion の `fail` を同じ agent-flow run の修正へ戻す。`inconclusive` は修正回数を
+   消費せず、別ノード検証か人待ちへ送る。
+5. **charter 移行**: `project_acceptance_criteria` を同じ protocol で評価する。現在の
+   `resolve_charter_acceptance`、`acceptance_synth` キャッシュ、agent-project 側の旧 acceptance 実行を
+   新経路へ置き換える。
+6. **dashboard の保存と結果表示**: 通常 UI は変更済み。次に新規 task / charter を
+   `task_acceptance_criteria` / `project_acceptance_criteria` / `verification_commands` だけで書く。
+   タスク詳細は criterion、verdict、evidence を通常表示し、digest、revision、command は折りたたむ。
+7. **shadow 比較**: 新 runner と旧 project verify を同じ task / revision で比較し、差異だけを記録する。
+   shadow の旧結果は状態遷移に使わない。
+8. **旧経路の撤去**: 比較結果が一致した後に、旧 project verify、旧形式の dashboard 書き込み、
+   planner の完了コマンド一発生成指示を削除する。読み取りアダプタは互換期間だけ残す。
+9. **重複実行の解消**: task 固有 command と regression が完全一致する場合は plan 正規化時に digest で
+   一つへ畳む。
+
+*完了条件*:
+
+- 同じ task / result revision / plan digest の command 実行が一回だけ
+- receipt の digest または revision が違えば done にならない
+- task の fail が同じ agent-flow run の修正ループへ戻る
+- task と charter の自然文基準が criterion / receipt で評価される
+- 新規データに裸の `acceptance` / `accept` / `verify` が書かれない
+- 通常 UI がコマンド入力を要求せず、receipt の基準と証拠を表示する
+
+**P1-B — 残りの決定的な実装（依存順）**
+
+1. **W6** settle 1 コミット化（未 push は remote 正で再突合するテスト）
+2. **W9** 削除時の後続 proposed 化＋実行中削除の拒否
+3. **W7** `unknown` 隔離上限 → 既存 report 降格
+4. **W4** `no_diff`（W3 ⑤の述語差し替え）
+5. **W10** learn のスコープと失効
+6. **W11** 保持契約と gc
+7. **W15** 構造テスト＋綻び／到達不能所見をパイプへ
+8. **W14** `existing[]` 契約テスト（実装済みの回帰）
+9. （契機）**W14 B1** 密度段階
 
 *完了条件*: 各項目にテスト。W3 は「証跡の無い pass が fail」「外部判定も同じチェック」を最低線。
 
@@ -284,6 +348,10 @@ W14 の投入側トークン化衛生（ほぼ同一タイトル用。意図判�
 | 22 | 状態リポジトリの成長 | W11 | P1 |
 | 23 | 断片 exec 合成 | W15 | P0 / P1 |
 | 24 | codd-gate 接点 | W2 | P0 |
+| 統 | plan / receipt schema と digest | W2 / W3 | P1-A |
+| 統 | agent-flow runner と同一 run の修正ループ | W2 | P1-A |
+| 統 | task / charter の正規形保存と旧経路撤去 | W2 / W3 | P1-A |
+| 統 | dashboard の criterion / evidence 表示 | W2 / W3 | P1-A |
 | 小 | 延長スレッド・一斉復帰 | W5 | P0 |
 | 小 | 複数 charter・予算 | W8 | P0 |
 | 小 | 憲章衝突 | W16 | P0 |

@@ -12,6 +12,19 @@ const flow = fs.readFileSync(path.join(rendererRoot, 'sections', 'flow.js'), 'ut
 const nodeDetail = fs.readFileSync(path.join(rendererRoot, 'sections', 'node-detail.js'), 'utf8');
 const backlog = fs.readFileSync(path.join(rendererRoot, 'sections', 'backlog.js'), 'utf8');
 
+function maxDetailsDepth(source) {
+  let depth = 0;
+  let max = 0;
+  for (const match of source.matchAll(/<\/?details\b[^>]*>/g)) {
+    if (match[0].startsWith('</')) depth -= 1;
+    else {
+      depth += 1;
+      max = Math.max(max, depth);
+    }
+  }
+  return max;
+}
+
 assert.ok(html.includes('<h1>プロジェクト管理</h1>'));
 assert.ok(html.includes('この作業を相談'));
 assert.ok(!html.includes('AIに相談'));
@@ -37,7 +50,19 @@ assert.ok(flow.includes('承認を待っています。要対応タブで確認�
 assert.ok(nodeDetail.includes("verify: '工程内チェック'"));
 assert.ok(nodeDetail.includes('作業グラフの途中で、後続工程へ進めるかを判断します'));
 assert.ok(nodeDetail.includes('バックログに設定された完了ゲートで別に確定します'));
-assert.ok(backlog.includes('完了ゲート（検証コマンド）'));
-assert.ok(backlog.includes('agent-flow の工程内チェックとは別に'));
+assert.ok(backlog.includes('<summary>固定した検証方法</summary>'));
+const enqueueDialog = html.slice(html.indexOf('<dialog id="dlg-enqueue">'), html.indexOf('</dialog>', html.indexOf('<dialog id="dlg-enqueue">')));
+const reviseMarkup = backlog.slice(backlog.indexOf('function reviseAreaHtml('), backlog.indexOf('function showTaskDialog('));
+assert.strictEqual(maxDetailsDepth(enqueueDialog), 1, 'タスク追加の折りたたみをネストしません');
+assert.strictEqual(maxDetailsDepth(reviseMarkup), 1, 'タスク編集の折りたたみをネストしません');
+for (const label of ['作業内容を補足', '実行順と変更先', '確認方法を固定', 'ほかのタスクを確認']) {
+  assert.ok(enqueueDialog.includes(`<summary>${label}</summary>`));
+}
+for (const label of ['内容と完了条件', '実行順と担当', '確認方法を固定', '目的と変更範囲']) {
+  assert.ok(reviseMarkup.includes(`<summary>${label}</summary>`));
+}
+assert.ok(html.includes('<label>受入基準</label>'));
+assert.ok(html.includes('<label>達成条件</label>'));
+assert.ok(!html.includes('accept:'));
 
 console.log('ui-copy tests passed');
