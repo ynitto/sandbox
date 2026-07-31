@@ -51,10 +51,11 @@ class Bus:
             os.makedirs(d, exist_ok=True)
 
     def ensure_run(self, request: str, workspace: "dict | None" = None,
-                   references: "list[dict] | None" = None) -> None:
+                   references: "list[dict] | None" = None,
+                   verification_plan: "dict | None" = None) -> None:
         self.ensure_dirs()
         if read_json(self.meta_path) is None:
-            write_json_atomic(self.meta_path, {
+            meta = {
                 "request": request,
                 # この run（=バックログ単位）の唯一の書込先リポジトリ（worker が clone し、
                 # 作業ブランチを作って作業する）。None なら読み取り専用 run（commit/push しない）。
@@ -63,7 +64,18 @@ class Bus:
                 "references": list(references or []),
                 "status": "planning",
                 "created_at": now_iso(),
-            })
+            }
+            # 統一 verify: agent-project が確定した検証計画（digest 付き）。planner の自由記述へは
+            # 混ぜず、成果 revision 確定後の専用 runner（run_verification_plan）だけが実行する。
+            if isinstance(verification_plan, dict):
+                meta["verification_plan"] = verification_plan
+                # workspace の無い run（ローカル実行・成果は投入ノードの作業ツリーに出る）の
+                # 差分基準。投入時点の HEAD を固定しておき、runner が $KIRO_BASE_REV として
+                # 検証コマンドへ渡す（act 前 HEAD——旧 agent-project verify の verify_env と同じ）。
+                base = _vp_result_rev(os.getcwd())
+                if base:
+                    meta["base_rev"] = base
+            write_json_atomic(self.meta_path, meta)
 
     def snapshot_instructions(self) -> bool:
         """グローバル指示（agent-instructions 契約）をこの run の meta.json へ固定する。
@@ -462,6 +474,17 @@ class Bus:
 
     def run_meta(self, run_id: str):
         return read_json(os.path.join(self.runs_root, run_id, "meta.json")) or {}
+
+    # --- 統一 verify の receipt（runs/<run-id>/receipt.json。書き手は専用 runner のみ） ---
+    def receipt_path_for(self, run_id: str) -> str:
+        return os.path.join(self.runs_root, run_id, "receipt.json")
+
+    def run_receipt(self, run_id: str) -> "dict | None":
+        rec = read_json(self.receipt_path_for(run_id))
+        return rec if isinstance(rec, dict) else None
+
+    def write_receipt(self, run_id: str, receipt: dict) -> None:
+        write_json_atomic(self.receipt_path_for(run_id), receipt)
 
     def remove_run(self, run_id: str) -> None:
         shutil.rmtree(os.path.join(self.runs_root, run_id), ignore_errors=True)

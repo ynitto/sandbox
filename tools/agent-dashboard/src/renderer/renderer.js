@@ -564,15 +564,25 @@ const GUIDE_LABELS = {
 
 const PROSE_EXTRA_KEYS = new Set(['feedback', 'needs_reason', 'note', 'accept', ...GUIDE_KEYS]);
 
-// 受入基準（agent-project の acceptance:）。**複数行フィールド**なので md パーサが `\n` で
-// 連結した文字列として届く（project.js の extra 連結）。1 行 1 基準へ戻して扱う。
-// これが S5 で done の根拠になった一次表現であり、計画レビューで人が読んで直す対象。
+// 受入基準。正規形は task_acceptance_criteria（統一 verify）で、旧 acceptance / accept も
+// 読み取り側だけ互換で拾う（新規書き込みは正規形のみ）。**複数行フィールド**なので md パーサが
+// `\n` で連結した文字列として届く（project.js の extra 連結）。1 行 1 基準へ戻して扱う。
 function acceptanceList(task) {
   const ex = (task && task.extra) || {};
-  const raw = String(ex.acceptance || '').trim() || String(ex.accept || '').trim();
+  const raw = String(ex.task_acceptance_criteria || '').trim()
+    || String(ex.acceptance || '').trim() || String(ex.accept || '').trim();
   return raw
     ? raw.split('\n').map((s) => s.trim()).filter(Boolean)
     : [];
+}
+
+// 固定検証コマンド。正規形は verification_commands（複数行フィールド・UI は先頭 1 件を編集）で、
+// 旧 verify: も読み取り側だけ互換で拾う（新規書き込みは正規形のみ）。
+function fixedVerifyCommand(task) {
+  const ex = (task && task.extra) || {};
+  const raw = String(ex.verification_commands || '').trim();
+  if (raw) return raw.split('\n').map((s) => s.trim()).filter(Boolean)[0] || '';
+  return String((task && task.verify) || '').trim();
 }
 
 // タスク追加・再投入でフォームに出さずに引き継ぐフィールド（task.schema.json の人が書ける

@@ -962,40 +962,6 @@ class FeedbackReductionTests(unittest.TestCase):
                                    agent_run=lambda p, m: self.fail("蒸留された"))
             self.assertEqual(got, ("T", "生の指摘"))
 
-    def test_verify_degenerate_screen(self):
-        for bad in ("true", ":", "echo done", "test 1 = 1", "exit 0", ""):
-            self.assertTrue(km._verify_is_degenerate(bad), bad)
-        for good in ("grep -q 概要 README.md", "pytest -q", "test -f x && grep -q y z"):
-            self.assertFalse(km._verify_is_degenerate(good), good)
-
-    def test_synth_rejects_degenerate_output(self):
-        with tempfile.TemporaryDirectory() as d:
-            cfg = cfg_for(Path(d))
-            self.assertEqual(km.synth_verify(cfg, "T", "何かする",
-                                             agent_run=lambda p, m: "true"), "")
-            self.assertEqual(km.synth_verify(cfg, "T", "概要見出し",
-                             agent_run=lambda p, m: "grep -q 概要 README.md"),
-                             "grep -q 概要 README.md")
-
-    def test_synth_self_repair_retries_on_degenerate(self):
-        with tempfile.TemporaryDirectory() as d:
-            cfg = cfg_for(Path(d))
-            calls = {"n": 0, "prompts": []}
-            def flaky(prompt, model):
-                calls["n"] += 1
-                calls["prompts"].append(prompt)
-                return "true" if calls["n"] == 1 else "pytest -q tests/login"
-            got = km.synth_verify(cfg, "T", "ログインが通る", agent_run=flaky)
-            self.assertEqual(got, "pytest -q tests/login")   # 1回目の恒真式を捨て 2回目を採用
-            self.assertEqual(calls["n"], 2)
-            self.assertIn("恒真式", calls["prompts"][1])       # 再合成プロンプトに不採用理由
-
-    def test_synth_self_repair_gives_up_after_attempts(self):
-        with tempfile.TemporaryDirectory() as d:
-            cfg = cfg_for(Path(d))
-            got = km.synth_verify(cfg, "T", "x", agent_run=lambda p, m: "true", attempts=3)
-            self.assertEqual(got, "")                         # 全て恒真式 → 合成失敗（人へ）
-
     def test_expand_verify_template_additions(self):
         self.assertEqual(km.expand_verify_template("test-passes :: pytest -q"), "pytest -q")
         self.assertEqual(km.expand_verify_template("builds :: make"), "make")
@@ -1047,67 +1013,6 @@ class FeedbackReductionTests(unittest.TestCase):
             dr = (cfg.decisions / "T3.md").read_text(encoding="utf-8")
             self.assertIn("gitlab-approve", dr)
             self.assertIn("- learn: e2e 系 :: 実サーバ配備で実施", dr)
-
-    def test_detect_repo_context(self):
-        with tempfile.TemporaryDirectory() as d:
-            d = Path(d)
-            (d / "package.json").write_text('{"scripts": {"test": "jest", "build": "tsc"}}')
-            (d / "Makefile").write_text("smoke:\n\techo ok\nlint:\n\ttrue\n")
-            (d / "tests").mkdir()
-            ctx = km.detect_repo_context(d)
-            self.assertIn("package.json", ctx)
-            self.assertIn("test", ctx)
-            self.assertIn("Makefile", ctx)
-            self.assertIn("smoke", ctx)
-            self.assertIn("pytest", ctx)
-
-    def test_verifier_prompt_injects_repo_context_rules_and_recipes(self):
-        """S5: verifier へ渡す入力に、リポジトリ文脈・恒常ルール・過去のレシピが載る。
-
-        合成 verify の grep 退化を防ぐために注入していた材料は、そのまま検証エージェントの
-        判断材料として要る（「このリポジトリではどうテストを走らせるか」を知らないと、
-        基準を確かめるコマンドを試行錯誤できない）。
-        """
-        with tempfile.TemporaryDirectory() as d:
-            d = Path(d)
-            (d / "backlog").mkdir()
-            (d / "package.json").write_text('{"scripts": {"e2e": "playwright test"}}')
-            cfg = cfg_for(d, workdir=d)
-            (d / "rules.md").write_text("- テストは npm run e2e で走らせる\n", encoding="utf-8")
-            (d / "backlog" / "T1.md").write_text(
-                "## T1: ログイン e2e\n- status: ready\n- acceptance: ログインの e2e が通る\n",
-                encoding="utf-8")
-            task = km.load_tasks(d / "backlog")[0]
-            km.save_verify_recipes(cfg, task, {"criteria": [
-                {"verdict": "pass", "evidence": {"commands": ["npm run e2e"], "files": []}}]})
-            spec = km.verifier_input(cfg, task, d)
-            self.assertEqual(spec["acceptance"], ["ログインの e2e が通る"])
-            self.assertIn("package.json", spec["repo_context"])
-            self.assertIn("npm run e2e", spec["recipes"])
-            self.assertEqual(spec["side_effects"], "workspace")
-            prompt = km.build_verifier_prompt(cfg, spec)
-            self.assertIn("ログインの e2e が通る", prompt)
-            self.assertIn(km.DIFF_CRITERION, prompt, "差分の常設基準が必ず入る")
-
-    def test_recipes_are_reference_not_a_gate(self):
-        """S5: 効いたコマンドはレシピとして残すが、決定的 verify へは昇格させない。
-
-        「実績のあるコマンドを再利用する」だけでは、昇格したコマンドが劣化した検証でも
-        人には見抜けない、という根本問題が残る（それが S5 のコンセプト変更の理由）。
-        """
-        with tempfile.TemporaryDirectory() as d:
-            d = Path(d)
-            cfg = cfg_for(d)
-            done = km.Task(id="A", title="ログイン e2e A")
-            km.save_verify_recipes(cfg, done, {"criteria": [
-                {"verdict": "pass", "evidence": {"commands": ["npx playwright test"], "files": []}},
-                {"verdict": "fail", "evidence": {"commands": ["これは残さない"], "files": []}}]})
-            same = km.Task(id="B", title="ログイン e2e A")
-            self.assertEqual(km.find_verify_recipes(cfg, same), ["npx playwright test"])
-            # レシピがあっても verify（決定的ゲート）は埋まらない
-            same.extra.append(("accept", "e2e が通る"))
-            self.assertFalse(km.ensure_verify(cfg, same))
-            self.assertEqual(same.verify, "")
 
     def test_build_request_injects_similar_learn(self):
         with tempfile.TemporaryDirectory() as d:

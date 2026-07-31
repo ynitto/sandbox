@@ -23,16 +23,79 @@ def _acceptance_cwd(cfg: "Config", charter: "Charter") -> "tuple[Path, str | Non
     return cfg.workdir, None
 
 
-def evaluate_acceptance(cfg: "Config", charter: "Charter") -> "tuple[int, int, list]":
-    """charter の acceptance（受入 verify）を実行し (passed, total, [(cmd, ok, msg)]) を返す。
-    プロジェクト done の唯一の根拠＝全 PASS。実行先は 明示 verify_cwd > 単一 repo の一時 clone > workdir。
-    clone は worker の push 先（target ブランチ）を反映するため毎評価で取り直す。clone 失敗は全 NG 扱い
+def _charter_criteria_prompt(charter: "Charter", criteria: "list[str]", wd: "Path",
+                             rev: str) -> str:
+    """charter 達成条件（project_acceptance_criteria）の verifier プロンプト。
+    task と同じ criterion 契約: 証跡付きで判定し、基準の変更・緩和と成果物の修正を禁じる。"""
+    numbered = "\n".join(f"{i + 1}. {c}" for i, c in enumerate(criteria))
+    return (
+        "あなたはプロジェクト成果の検証エージェントです。下の達成条件それぞれについて、"
+        "実際にコマンドやファイル・差分の確認を行い、証跡付きで判定してください。\n\n"
+        "重要な原則:\n"
+        "- 判定の根拠は実行・確認した結果です。印象や「妥当に見える」は根拠になりません。\n"
+        "- 条件を言い換えたり緩めたりしないでください。\n"
+        "- 成果物を修正しないでください（作業ツリーへの変更は破棄されます）。\n"
+        f"- {verify_side_effect_rule(getattr(charter, 'side_effects', None))}\n\n"
+        f"## プロジェクト\n- 名前: {charter.name}\n- 目標: {str(charter.goal or '')[:800]}\n\n"
+        f"## 検証する場所\n- 作業ディレクトリ: {wd}\n- revision: {rev or '(不明)'}\n\n"
+        f"## 達成条件（この順に判定する）\n{numbered}\n\n"
+        "## 出力\n"
+        "まず人が読む本文を書き、末尾に次の形の JSON を必ず 1 つ添えてください。\n"
+        '{"criteria": [{"id": 1, "verdict": "pass|fail|unverifiable", '
+        '"evidence": {"commands": [], "output": "", "files": []}, "note": ""}]}\n'
+        f"- criteria は上の条件と同じ順で {len(criteria)} 件すべて含めてください。\n"
+        "- verdict=pass には必ず commands か files の証跡を入れてください"
+        "（証跡の無い pass は機械的に fail へ落とされます）。\n"
+    )
+
+
+def _evaluate_charter_criteria(cfg: "Config", charter: "Charter", criteria: "list[str]",
+                               wd: "Path", agent_run=None) -> "list[tuple[str, bool, str]]":
+    """自然文の達成条件を verifier セッション 1 回で判定する（task と同じ criterion 契約・
+    フェイルクローズは normalize_verification の 1 実装）。一発コマンド合成はしない。"""
+    if not criteria:
+        return []
+    rev = _git_out(wd, "rev-parse", "HEAD").strip() if (wd / ".git").exists() else ""
+    run = agent_run or (lambda p, m: _run_agent_cli(p, m, purpose="verify"))
+    try:
+        body = run(_charter_criteria_prompt(charter, criteria, wd, rev), cfg.model)
+    except Exception as e:  # noqa: BLE001 — CLI 不在・上限等の環境要因。未達（要人手）として返す
+        note = f"検証エージェントを実行できませんでした: {str(e)[:200]}"
+        return [(c, False, note) for c in criteria]
+    result = normalize_verification(body, criteria)
+    rows: "list[tuple[str, bool, str]]" = []
+    for c in result["criteria"]:
+        ev = ", ".join(c["evidence"]["commands"][:3]) or ", ".join(c["evidence"]["files"][:3])
+        msg = c["verdict"] + (f"（証跡: {ev[:160]}）" if ev else "") \
+            + (f" — {c['note'][:160]}" if c["note"] else "")
+        rows.append((c["text"], c["verdict"] == "pass", msg[:500]))
+    return rows
+
+
+def evaluate_acceptance(cfg: "Config", charter: "Charter", agent_run=None) -> "tuple[int, int, list]":
+    """charter の acceptance を評価し (passed, total, [(条件, ok, msg)]) を返す。
+    プロジェクト done の機械側の根拠＝全 PASS（done の確定は人の価値判断）。
+
+    統一 verify（P1-A5）: 決定的コマンド行はそのまま実行し（文字列を変えない）、自然文の
+    達成条件は verifier が証跡付きで判定する。自然文からのコマンド一発合成はしない。
+    `検収:` の人の検収項目はここでは数えない（milestone のチェックリストへ）。
+    実行先は 明示 verify_cwd > 単一 repo の一時 clone > workdir。clone は worker の push 先
+    （target ブランチ）を反映するため毎評価で取り直す。clone 失敗は全 NG 扱い
     （workdir へ黙ってフォールバックすると成果の無い場所で誤判定するため）。"""
+    commands: "list[str]" = []
+    criteria: "list[str]" = []
+    for line in charter.acceptance:
+        kind, text = _acceptance_kind(line)
+        if kind == "command":
+            commands.append(text)
+        elif kind == "accept":
+            criteria.append(text)
+    total = len(commands) + len(criteria)
     try:
         wd, tmp = _acceptance_cwd(cfg, charter)
     except RuntimeError as e:
         append_journal(cfg.journal, f"project acceptance: {e} → 全 NG 扱い")
-        return 0, len(charter.acceptance), [(c, False, str(e)[:500]) for c in charter.acceptance]
+        return 0, total, [(c, False, str(e)[:500]) for c in commands + criteria]
     try:
         env = None
         if (wd / ".git").exists():
@@ -40,12 +103,13 @@ def evaluate_acceptance(cfg: "Config", charter: "Charter") -> "tuple[int, int, l
             if head:
                 env = {"KIRO_BASE_REV": head}
         results = []
-        for cmd in charter.acceptance:
+        for cmd in commands:
             ok, _flaky, msg = run_verify_stable(cmd, wd, cfg.verify_timeout,
                                                 cfg.verify_confirm, env)
             results.append((cmd, ok, msg))
+        results += _evaluate_charter_criteria(cfg, charter, criteria, wd, agent_run)
         passed = sum(1 for _, ok, _ in results if ok)
-        return passed, len(results), results
+        return passed, total, results
     finally:
         if tmp:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -76,45 +140,35 @@ def _acceptance_kind(line: str) -> "tuple[str, str]":
     return "accept", s
 
 
-def resolve_charter_acceptance(cfg: "Config", charter: "Charter", state: "dict | None" = None,
-                               agent_run=None) -> "tuple[list[str], list[str], list[str]]":
-    """charter.acceptance の各行を実行可能なシェルコマンドへ解決し (resolved, unresolved, human) を返す。
-    決定的コマンドはそのまま、自然言語（`accept:` 接頭辞 or 散文）はエージェントが決定的 verify を合成する
-    （タスクの synth_verify を流用＝偽 done 防止規則を織込）。合成結果は state['acceptance_synth'] に
-    原文キーでキャッシュし、サイクル/再実行をまたいで done 基準（acceptance）を安定させる（毎回の再合成と
-    非決定的なブレを防ぐ）。合成できない自然言語は unresolved に積み、呼び出し側が done 判定不能として人へ回す。
+def classify_charter_acceptance(charter: "Charter") -> "tuple[list[str], list[str], list[str]]":
+    """charter.acceptance の各行を (commands, criteria, human) に分類する（統一 verify・P1-A5）。
+
+    決定的コマンド行は文字列を変えずそのまま実行する固定検証。自然文（`accept:` 接頭辞 or 散文）は
+    `project_acceptance_criteria`——verifier が証跡付きで判定する criterion で、コマンドへの
+    一発合成はしない（旧 resolve_charter_acceptance の synth_verify 流用と `acceptance_synth`
+    キャッシュは廃止。環境が変わった時点でゲートが壊れる合成コマンドを done 基準にしない）。
     `検収:`/`human:` 接頭辞の行は人の検収項目（human）: 機械検証を試みず、収束時のチェックリストとして
-    milestone に載せる（機械 acceptance 全 PASS + 人の確認・承認で done。タスクの verify 未定義承認と同じ契約）。"""
-    cache = dict((state or {}).get("acceptance_synth") or {})
-    resolved: "list[str]" = []
-    unresolved: "list[str]" = []
+    milestone に載せる（機械 acceptance 全 PASS + 人の確認・承認で done）。"""
+    commands: "list[str]" = []
+    criteria: "list[str]" = []
     human: "list[str]" = []
     for line in charter.acceptance:
         kind, text = _acceptance_kind(line)
         if kind == "command":
-            resolved.append(text)
-            continue
-        if kind == "human":
+            commands.append(text)
+        elif kind == "human":
             human.append(text)
-            continue
-        cmd = cache.get(text)
-        if not cmd:
-            cmd = synth_verify(cfg, charter.name or "project", text, agent_run)
-            if cmd:
-                cache[text] = cmd
-        if cmd:
-            resolved.append(cmd)
         else:
-            unresolved.append(text)
-    if state is not None:
-        state["acceptance_synth"] = cache
-    return resolved, unresolved, human
+            criteria.append(text)
+    return commands, criteria, human
 
 
 def _acceptance_specs(cmds: "list[str]") -> "list[dict]":
-    """acceptance コマンドを、それ自体を verify とするタスク spec にする（決定的・的が外れない）。
-    verify は charter に書かれた受入条件そのもの＝人が入力した条件で done を判定する。"""
-    return [{"title": f"受入条件を満たす: {cmd}"[:120], "verify": cmd, "source": "acceptance"}
+    """acceptance コマンドを、それ自体を固定検証コマンドとするタスク spec にする（決定的・的が
+    外れない）。コマンドは charter に書かれた受入条件そのもの＝人が入力した条件で done を判定する。
+    書き込みは正規形 `verification_commands`（新規データに裸の verify を書かない・P1-A8）。"""
+    return [{"title": f"受入条件を満たす: {cmd}"[:120], "verification_commands": [cmd],
+             "source": "acceptance"}
             for cmd in cmds]
 
 
@@ -253,7 +307,7 @@ def project_exit_code(reason: str) -> int:
 
 def _project_evaluate(cfg: "Config", charter: "Charter", pid: str, state: dict,
                       cycle: int, cost_used: float, review_fn,
-                      charter_tag: str = "") -> "tuple[str | None, str]":
+                      charter_tag: str = "", agent_run=None) -> "tuple[str | None, str]":
     """③ evaluate: acceptance 評価 → 収束/コスト/停滞/分解待ちを判定する。
     停止すべきなら停止理由を、続行なら None を返す（last_summary も返す）。state(history/best/stall) を更新。
 
@@ -263,7 +317,7 @@ def _project_evaluate(cfg: "Config", charter: "Charter", pid: str, state: dict,
     人へ返し、未達項目は milestone に載せる。敵対的レビュー（--review-project・opt-in）の所見
     だけは従来どおり改善タスク化する（人が明示的に有効化した検収ゲートのため）。
     charter_tag（複数 charter 運用）を渡すと改善タスクにタグを付け、冪等照合もその charter に閉じる。"""
-    passed, total, results = evaluate_acceptance(cfg, charter)
+    passed, total, results = evaluate_acceptance(cfg, charter, agent_run)
     state["history"] = list(state.get("history", [])) + [passed]
     # best（過去最高 PASS 数）は停滞判定の基準であると同時に、viewer の「n / m 達成」の表示元。
     # 停滞判定より先にここで更新する: 下の収束 return より後ろで更新していたため、一発で全 PASS
@@ -397,26 +451,13 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
         print(f"[project] {charter.name}: 承認済み（charter.md に変更なし）→ 何もしません。"
               f"続けるなら charter.md を編集してください。")
         return project_exit_code(REASON_PROJECT_ACCEPTED)
-    # acceptance を実行可能なコマンドへ解決（自然言語は決定的 verify へ合成し、結果を state にキャッシュ）。
-    # 合成できない自然言語が残れば done 判定不能＝人へ（acceptance を書けないプロジェクトは人へ回す鉄則）。
+    # acceptance を分類する（統一 verify・P1-A5）: 決定的コマンドは固定検証としてそのまま、
+    # 自然文は project_acceptance_criteria として verifier が証跡付きで判定する（コマンドへの
+    # 一発合成はしない＝「合成できない」という done 判定不能はもう存在しない）。
     # `検収:` 接頭辞の行は人の検収項目（機械検証しない・ブロックしない）。収束時のチェックリストとして
     # milestone に載り、人が確認して承認する＝機械化できない条件の正式な受け皿。
-    resolved, unresolved, human_items = resolve_charter_acceptance(cfg, charter, state, agent_run)
+    commands, criteria, human_items = classify_charter_acceptance(charter)
     state["human_acceptance"] = human_items    # viewer/milestone が検収チェックリストとして読む
-    if unresolved:
-        state["status"] = REASON_PROJECT_NO_ACCEPTANCE          # viewer/GC が status を正に読める
-        save_charter_state(cfg, state, charter_name if multi else None)   # 合成済みキャッシュも残す
-        summary = ("自然文の完了条件を検証コマンドへ変換できませんでした（done 判定不能）: "
-                   + " / ".join(unresolved)
-                   + " ／ 対処: 検証コマンド・テンプレートで書き直すか、機械検証できない条件なら"
-                     "行頭に `検収:` を付けて人の検収項目にしてください（収束時に確認して承認できます）")
-        write_milestone(cfg, charter, REASON_PROJECT_NO_ACCEPTANCE, summary, pid=pid,
-                        version=charter_name if multi else "")
-        print(f"[project] {charter.name}: acceptance を合成できず → 人へ（needs/{pid}.md）")
-        for u in unresolved:
-            print(f"  - 未合成: {u}（`検収:` を付ければ人の検収項目として進められます）", file=sys.stderr)
-        return project_exit_code(REASON_PROJECT_NO_ACCEPTANCE)
-    charter.acceptance = resolved             # 以降の評価は合成済みの決定的コマンドで行う
     # 機械 acceptance が 0 件でも human_items があれば進める: 収束（total=0 は空虚に全 PASS）後、
     # 人が検収チェックリストを確認して承認する。全条件が人の検収というプロジェクトを塞がない。
     # "status" はここでは触らない（旧実装は "running" に即上書きしていた）。② execute
@@ -426,7 +467,8 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
     # 常に exit 2 で失敗し、次サイクルでまた収束候補として復活し続ける」実害があった
     # （cmd_approve は status == converged の milestone しか受け付けないため）。
     # 最終的な状態は下の evaluate ループの結果で必ず上書きされるので、ここで省いても状態は失われない。
-    state.update({"id": pid, "name": charter.name, "acceptance_total": len(charter.acceptance)})
+    state.update({"id": pid, "name": charter.name,
+                  "acceptance_total": len(commands) + len(criteria)})
     save_charter_state(cfg, state, charter_name if multi else None)
 
     # 前パスが残した milestone（needs/<pid>.md）はこのパスで再評価するため先に掃除する。
@@ -436,7 +478,7 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
     clear_needs_file(cfg, pid)
 
     append_journal(cfg.journal, f"=== project 開始 {charter.name} "
-                                f"acceptance={len(charter.acceptance)} ===")
+                                f"acceptance={len(commands) + len(criteria)} ===")
     cost_used = float(state.get("cost", 0.0))
     cycle = 0
     reason = REASON_PROJECT_CONVERGED
@@ -517,7 +559,8 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
         # ③ evaluate — acceptance 評価・改善起票・収束/コスト/停滞判定（停止理由 or None）
         stop_reason, last_summary = _project_evaluate(cfg, charter, pid, state, cycle,
                                                       cost_used, review_fn,
-                                                      charter_tag=charter_name if multi else "")
+                                                      charter_tag=charter_name if multi else "",
+                                                      agent_run=agent_run)
         if stop_reason:
             reason = stop_reason
             break

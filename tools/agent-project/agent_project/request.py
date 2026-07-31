@@ -200,9 +200,20 @@ def build_request(task: Task, cfg: "Config | None" = None) -> str:
     # 検出が loop-until-done へ吸われていた（実行規律のつもりの文が戦略選定の入力を汚す）。
     # 避ける語: パターンの正規名・「反復/繰り返」「検証/レビュー」「分類/振り分け」
     # 「各/ごとに/一覧/列挙」「候補/絞り込」「最良」等（agent-flow _detect_pattern の語彙）。
-    base += (f"完了条件: 次のシェルコマンドが終了コード 0 で成功すること"
-             f"（満たすまで作業を続け、満たしたら終了する）:\n"
-             f"  {task.verify or '（verify 未定義）'}\n\nタスクID: {task.id}")
+    #
+    # 完了条件は verification_plan の材料（受入基準＋固定コマンド）をそのまま提示する。
+    # 成果はこの内容の統一 verify（agent-flow runner の receipt）を通過して初めて完了になる
+    # ——旧「verify コマンド 1 行」の埋め込みは P1-A8 で撤去した。
+    crits = task_acceptance(task)
+    cmds = [c["command"] for c in task_verification_commands(task)]
+    lines = [f"  - {c}" for c in crits]
+    if cmds:
+        lines.append("  次のシェルコマンドが終了コード 0 で成功すること:")
+        lines.extend(f"    {c}" for c in cmds)
+    base += ("完了条件（満たすまで作業を続け、満たしたら終了する。成果はこの内容の機械ゲートを"
+             "通過して初めて完了になる）:\n"
+             + ("\n".join(lines) if lines else "  （完了条件は人が確認する）")
+             + f"\n\nタスクID: {task.id}")
     fb = task.feedback()
     if fb:
         base += f"\n\n人からのフィードバック（必ず反映すること）:\n{fb}"
@@ -401,9 +412,10 @@ def _infer_workspace_from_paths(workspaces: "list[dict]", paths: "list[str]") ->
 
 
 def _owns_infer(task: Task, workspaces: "list[dict]") -> "dict | None":
-    """タスクが触る予定パス（`- paths:` ヒント。無ければ verify コマンドから抽出）を charter の owns:
+    """タスクが触る予定パス（`- paths:` ヒント。無ければ固定検証コマンドから抽出）を charter の owns:
     グロブと突き合わせ、所有するワークスペースを推定する。曖昧（複数一致）なら推定しない。"""
-    paths = _split_tokens(task.get("paths")) or _verify_paths(task.verify)
+    paths = _split_tokens(task.get("paths")) or _verify_paths(
+        " && ".join(c["command"] for c in task_verification_commands(task)))
     if not paths:
         return None
     hits = [s for s in workspaces if any(_owns_matches(s.get("owns", []), p) for p in paths)]
@@ -411,8 +423,10 @@ def _owns_infer(task: Task, workspaces: "list[dict]") -> "dict | None":
 
 
 def _route_agent_prompt(task: Task, workspaces: "list[dict]") -> str:
+    done_hint = " / ".join([c["command"] for c in task_verification_commands(task)][:2]
+                           + task_acceptance(task)[:2])
     lines = ["次のタスクをコミットすべき書込先リポジトリ（ワークスペース）を1つだけ選んでください。",
-             f"タスク: {task.title}", f"verify: {task.verify or '（未定義）'}", "", "候補リポジトリ:"]
+             f"タスク: {task.title}", f"完了条件: {done_hint or '（未定義）'}", "", "候補リポジトリ:"]
     for s in workspaces:
         owns = "・".join(s.get("owns", []))
         lines.append(f"- {s.get('name') or s['url']}"

@@ -194,8 +194,13 @@ function dropped(dir) {
   await test('acceptanceList は \\n 連結された複数行を 1 行 1 基準へ戻す', async () => {
     // eslint-disable-next-line no-new-func
     const acceptanceList = new Function(`${grab('acceptanceList')}; return acceptanceList;`)();
+    assert.deepStrictEqual(acceptanceList({ extra: { task_acceptance_criteria: '新基準A\n新基準B' } }),
+      ['新基準A', '新基準B'], '正規形（統一 verify）を一次に読む');
+    assert.deepStrictEqual(
+      acceptanceList({ extra: { task_acceptance_criteria: '正規', acceptance: '旧' } }),
+      ['正規'], '正規形があれば旧 acceptance は読まない');
     assert.deepStrictEqual(acceptanceList({ extra: { acceptance: '基準A\n基準B' } }),
-      ['基準A', '基準B']);
+      ['基準A', '基準B'], '旧 acceptance も読み取り互換');
     assert.deepStrictEqual(acceptanceList({ extra: { accept: '昔の 1 行' } }), ['昔の 1 行'],
       '旧 accept は 1 項目として扱う（後方互換）');
     assert.deepStrictEqual(acceptanceList({ extra: {} }), []);
@@ -206,8 +211,9 @@ function dropped(dir) {
     assert.ok(renderer.includes("id=\"rv-acceptance\""), '入力欄がある');
     assert.ok(!renderer.includes("$('rv-accept')"),
       '旧 accept の単値欄は残さない（同じものを 2 か所で編集させない）');
-    assert.match(renderer, /fields\.acceptance = acceptanceNow\.length \? acceptanceNow : \[''\]/,
-      '空なら [\'\'] を送って削除（本体の置換規約）');
+    assert.match(renderer,
+      /fields\.task_acceptance_criteria = acceptanceNow\.length \? acceptanceNow : \[''\]/,
+      '書き込みは正規形のみ。空なら [\'\'] を送って削除（本体の置換規約）');
   });
 
   await test('メモ UI は分解を人の操作にとどめる', async () => {

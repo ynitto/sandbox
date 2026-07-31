@@ -156,10 +156,14 @@ def mk_state_repo(d: Path, branch: str = "main") -> Path:
 def cfg_for(d: Path, **kw):
     # 既定 plan_review=False / delivery_review=False（従来動作を検証する既存テスト用）。
     # 実行前レビュー（proposed ゲート）の挙動は TestPlanReview が plan_review=True で検証する。
+    # agent_flow はリポジトリ内の同世代を固定する——resolve_agent_flow は PATH を優先するため、
+    # ホストにインストール済みの旧 agent-flow があると新しい引数（--verification-plan 等）で
+    # 落ち、テストがホスト環境依存になる（両ツールは同時更新が前提の契約）。
     base = dict(backlog=d / "backlog", policy=d / "policy.md", decisions=d / "decisions",
                 journal=d / "journal.md", needs=d / "needs", workdir=d, bus=d / "bus",
                 planner="none", flow_planner="stub", executor="stub", dry_run=True,
-                plan_review=False, delivery_review=False)
+                plan_review=False, delivery_review=False,
+                agent_flow=str(Path(__file__).resolve().parents[2] / "agent-flow" / "agent-flow.py"))
     base.update(kw)
     return km.Config(**base)
 

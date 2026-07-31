@@ -336,12 +336,12 @@ class TestProjectLayer(unittest.TestCase):
             ch = km.load_charter(cfg)
             orig = km._run_agent_cli
             km._run_agent_cli = lambda prompt, model, purpose="": (
-                '[{"title":"lib に型追加","verify":"test -f packages/t.ts"}]')
+                '[{"title":"lib に型追加","paths":["packages/t.ts"]}]')
             try:
                 specs = km.plan_via_agent(cfg, ch)
             finally:
                 km._run_agent_cli = orig
-            self.assertEqual(specs[0]["workspace"], "lib")  # verify=packages/** → lib（必ず明示される）
+            self.assertEqual(specs[0]["workspace"], "lib")  # paths=packages/** → lib（必ず明示される）
 
     def test_plan_via_stub_enqueues_charter_acceptance(self):
         # executor: stub の既定 planner（plan_via_stub）は _run_agent_cli を一切呼ばず、charter の
@@ -354,7 +354,7 @@ class TestProjectLayer(unittest.TestCase):
             ch = km.load_charter(cfg)
             specs = km.plan_via_stub(cfg, ch)
             self.assertEqual(len(specs), 1)
-            self.assertEqual(specs[0]["verify"], f"test -f {flag}")
+            self.assertEqual(specs[0]["verification_commands"], [f"test -f {flag}"])
             self.assertIn("受入条件を満たす", specs[0]["title"])
 
     def test_plan_via_stub_enqueues_even_when_acceptance_already_passes(self):
@@ -368,7 +368,7 @@ class TestProjectLayer(unittest.TestCase):
             cfg = cfg_for(d)
             ch = km.load_charter(cfg)
             specs = km.plan_via_stub(cfg, ch)      # PASS する条件でも初回は起票する
-            self.assertEqual([s["verify"] for s in specs], ['echo "hellO"'])
+            self.assertEqual([s["verification_commands"] for s in specs], [['echo "hellO"']])
 
     def test_stub_plan_is_idempotent_across_cycles(self):
         # 常に起票する planner でも、同じ受入条件が積み直されないこと（_enqueue_specs が backlog と
@@ -546,48 +546,43 @@ class TestProjectLayer(unittest.TestCase):
         self.assertEqual(km._acceptance_kind("human: docs are easy to read"),
                          ("human", "docs are easy to read"))
 
-    def test_resolve_acceptance_synthesizes_natural_language(self):
+    def test_classify_acceptance_splits_commands_criteria_human(self):
+        # 統一 verify（P1-A5）: 自然文は criterion（合成しない）、コマンドは固定検証、検収: は人へ。
+        ch = km.parse_charter("# Charter: x\n## goal\nやる\n## acceptance\n"
+                              "- `test -f keep`\n- accept: README に概要がある\n"
+                              "- 検収: UI が崩れていない\n")
+        commands, criteria, human = km.classify_charter_acceptance(ch)
+        self.assertEqual(commands, ["test -f keep"])
+        self.assertEqual(criteria, ["README に概要がある"])
+        self.assertEqual(human, ["UI が崩れていない"])
+
+    def test_evaluate_acceptance_judges_criteria_with_evidence(self):
+        # 自然文の達成条件は verifier が証跡付きで判定する（コマンドへの一発合成はしない）。
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
+            (d / "keep").write_text("x")
             cfg = cfg_for(d)
             ch = km.parse_charter("# Charter: x\n## goal\nやる\n## acceptance\n"
                                   "- `test -f keep`\n- accept: README に概要がある\n")
-            state = {}
-            resolved, unresolved, human = km.resolve_charter_acceptance(
-                cfg, ch, state, agent_run=lambda p, m: "grep -q 概要 README.md")
-            self.assertEqual(resolved, ["test -f keep", "grep -q 概要 README.md"])
-            self.assertEqual(unresolved, [])
-            self.assertEqual(human, [])
-            # 合成結果は原文キーでキャッシュされ、再実行で安定する（再合成不要）
-            self.assertEqual(state["acceptance_synth"]["README に概要がある"],
-                             "grep -q 概要 README.md")
-            again, _, _ = km.resolve_charter_acceptance(
-                cfg, ch, state, agent_run=lambda p, m: self.fail("再合成された"))
-            self.assertEqual(again, ["test -f keep", "grep -q 概要 README.md"])
+            answer = json.dumps({"criteria": [
+                {"id": 1, "verdict": "pass",
+                 "evidence": {"commands": ["grep -q 概要 README.md"], "output": "", "files": []}}]})
+            passed, total, results = km.evaluate_acceptance(cfg, ch,
+                                                            agent_run=lambda p, m: answer)
+            self.assertEqual((passed, total), (2, 2))
+            self.assertIn("証跡", results[1][2])
 
-    def test_resolve_acceptance_unresolved_when_synth_fails(self):
-        with tempfile.TemporaryDirectory() as d:
-            d = Path(d)
-            cfg = cfg_for(d)
-            ch = km.parse_charter("# Charter: x\n## goal\nやる\n## acceptance\n"
-                                  "- accept: 曖昧で検証できない\n")
-            resolved, unresolved, human = km.resolve_charter_acceptance(
-                cfg, ch, {}, agent_run=lambda p, m: "やはり検証できません。")  # 散文 → 合成失敗
-            self.assertEqual(resolved, [])
-            self.assertEqual(unresolved, ["曖昧で検証できない"])
-            self.assertEqual(human, [])
-
-    def test_resolve_acceptance_human_items_skip_synthesis(self):
-        # 検収: 接頭辞は合成を試みず（agent_run が呼ばれたら fail）、human に積む＝ブロックしない。
+    def test_evaluate_acceptance_pass_without_evidence_fails_close(self):
+        # 証跡の無い pass は fail へ落ちる（normalize_verification の 1 実装がそのまま効く）。
         with tempfile.TemporaryDirectory() as d:
             cfg = cfg_for(Path(d))
             ch = km.parse_charter("# Charter: x\n## goal\nやる\n## acceptance\n"
-                                  "- `test -f keep`\n- 検収: UI が崩れていない\n")
-            resolved, unresolved, human = km.resolve_charter_acceptance(
-                cfg, ch, {}, agent_run=lambda p, m: self.fail("検収項目が合成された"))
-            self.assertEqual(resolved, ["test -f keep"])
-            self.assertEqual(unresolved, [])
-            self.assertEqual(human, ["UI が崩れていない"])
+                                  "- accept: 曖昧で検証できない\n")
+            answer = json.dumps({"criteria": [{"id": 1, "verdict": "pass",
+                                               "evidence": {"commands": [], "files": []}}]})
+            passed, total, _results = km.evaluate_acceptance(cfg, ch,
+                                                             agent_run=lambda p, m: answer)
+            self.assertEqual((passed, total), (0, 1))
 
     def test_human_acceptance_converges_with_checklist(self):
         # 機械 acceptance + 検収項目 → 収束し、milestone に検収チェックリストが載る。
@@ -621,19 +616,21 @@ class TestProjectLayer(unittest.TestCase):
             self.assertEqual(km.load_project_state(cfg_for(d))["status"],
                              km.REASON_PROJECT_CONVERGED)
 
-    def test_unresolved_message_suggests_human_prefix(self):
-        # 合成失敗の milestone は「検収: を付ければ人の検収項目にできる」対処を案内する。
+    def test_unverifiable_criterion_goes_to_milestone(self):
+        # 統一 verify: verifier が unverifiable と判定した達成条件は未達として milestone に載る
+        # （合成失敗という done 判定不能はもう存在しない。基準と判定が人へ届く）。
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             write_charter(d, "# Charter: un\n## goal\nやる\n## acceptance\n"
                              "- accept: 曖昧な完了条件\n")
+            answer = json.dumps({"criteria": [{"id": 1, "verdict": "unverifiable",
+                                               "note": "確認手段が環境に無い"}]})
             code = km.cmd_project(cfg_for(d), planner=lambda ch: [],
                                   runner=lambda c: _drained(),
-                                  agent_run=lambda p, m: "")   # 合成不能
+                                  agent_run=lambda p, m: answer)
             self.assertEqual(code, 1)
             needs = (d / "needs" / "un.md").read_text(encoding="utf-8")
-            self.assertIn("検収:", needs)
-            self.assertIn("変換できませんでした", needs)
+            self.assertIn("曖昧な完了条件", needs)
 
     def test_natural_language_acceptance_converges(self):
         with tempfile.TemporaryDirectory() as d:
@@ -641,9 +638,12 @@ class TestProjectLayer(unittest.TestCase):
             flag = d / "flag"
             write_charter(d, "# Charter: nl\n## goal\nやる\n## acceptance\n"
                              f"- accept: flag ファイルが存在する\n")
+            answer = json.dumps({"criteria": [
+                {"id": 1, "verdict": "pass",
+                 "evidence": {"commands": [f"test -f {flag}"], "output": "", "files": []}}]})
             code = km.cmd_project(cfg_for(d), planner=lambda ch: [],
                                   runner=lambda c: (flag.write_text("x"), _drained())[1],
-                                  agent_run=lambda p, m: f"test -f {flag}")
+                                  agent_run=lambda p, m: answer)
             self.assertEqual(code, 1)            # converged → 人の承認待ち
             self.assertEqual(km.load_project_state(cfg_for(d))["status"],
                              km.REASON_PROJECT_CONVERGED)

@@ -633,23 +633,28 @@ const VAGUE_ACCEPT_RE =
 function lintTaskSpec(spec) {
   const s = spec || {};
   const val = (k) => String(s[k] == null ? '' : s[k]).trim();
+  const list = (k) => (Array.isArray(s[k]) ? s[k] : String(s[k] == null ? '' : s[k]).split('\n'))
+    .map((x) => String(x).trim()).filter(Boolean);
   const out = [];
-  const verify = val('verify');
+  // 統一 verify の正規形（受入基準・固定コマンド）を一次に読み、旧 verify / accept も互換で見る。
+  const commands = list('verification_commands');
+  const criteria = list('task_acceptance_criteria');
+  const verify = commands[0] || val('verify');
   const template = val('verify_template');
-  const accept = val('accept');
-  // 完了条件が何も無い＝自動では完了にできず、必ず人手の検収に落ちる。
+  const accept = criteria.join(' ') || val('accept');
+  // 受入基準が何も無い＝自動では完了にできず、必ず人手の検収に落ちる。
   if (!verify && !template && !accept) {
     out.push({
       level: 'warn',
       field: 'accept',
-      message: '完了条件がありません。verify（検証コマンド）か verify_template、または accept（完了条件の文章）を指定してください。無いと自動で完了にできません。',
+      message: '受入基準がありません。1 行 1 基準で「完了したと判断できる状態」を書いてください。無いと自動で完了にできません。',
     });
   } else if (!verify && !template && accept && VAGUE_ACCEPT_RE.test(accept)) {
-    // 曖昧な自然文 accept は弱い verify に合成され手戻りの元（G6）。
+    // 曖昧な基準は verifier の判定が揺れ、手戻りの元（G6）。警告のみで、コマンド入力は強要しない。
     out.push({
       level: 'warn',
       field: 'accept',
-      message: '完了条件が曖昧です（「ちゃんと」「正しく」等）。検証可能な条件に言い換えるか、verify コマンドを指定すると手戻りが減ります。',
+      message: '受入基準が曖昧です（「ちゃんと」「正しく」等）。観測できる状態に言い換えると手戻りが減ります。',
     });
   }
   // 計画レビューの判断材料（なぜ・範囲）が無いと、承認者が成果のぶれを見抜けない。

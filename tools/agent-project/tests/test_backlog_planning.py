@@ -31,8 +31,9 @@ class AcceptanceRoundTripTests(unittest.TestCase):
             cfg = cfg_for(d)
             t = km.enqueue_task(cfg, {"title": "X", "acceptance": ["基準A", "基準B, カンマ入り"]})
             md = (cfg.backlog / f"{t.id}.md").read_text(encoding="utf-8")
-            self.assertIn("- acceptance: 基準A", md)
-            self.assertIn("- acceptance: 基準B, カンマ入り", md)
+            # 書き込み境界の正規化（P1-A8）: 旧 `acceptance` spec でも正規形の行で保存される
+            self.assertIn("- task_acceptance_criteria: 基準A", md)
+            self.assertIn("- task_acceptance_criteria: 基準B, カンマ入り", md)
             self.assertNotIn("['", md)
             back = km.parse_task(md, t.id)
             self.assertEqual(km.task_acceptance(back), ["基準A", "基準B, カンマ入り"])

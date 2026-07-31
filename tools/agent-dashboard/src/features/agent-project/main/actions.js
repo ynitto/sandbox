@@ -125,9 +125,19 @@ function enqueueToInbox(projectDir, spec) {
   const clean = { title };
   const charter = validateCharterVersion(projectDir, spec.charter);
   if (charter) clean.charter = charter;
+  // 統一 verify の正規形（複数行キー）: 配列のまま JSON に書く（joinすると 1 行に潰れて
+  // 基準の区切りが失われる。agent-project の coerce_multiline が 1 要素 = 1 行で取り込む）。
+  for (const key of ['task_acceptance_criteria', 'verification_commands']) {
+    const v = spec[key];
+    if (v === undefined || v === null) continue;
+    const items = (Array.isArray(v) ? v : String(v).split('\n'))
+      .map((x) => String(x).trim()).filter(Boolean);
+    if (items.length) clean[key] = items;
+  }
   // task.schema.json の人が書けるフィールド（system 管理の routed_by/cohort* は通さない）。
   // workspace/refs/paths はルーティング（書込先・モノレポの担当領域）の明示指定、
   // review/expect/followup は検収・偽 done 対策・派生タスクの契約。
+  // verify / accept は旧形式の互換入力（他経路の投函用）。dashboard の画面は正規形だけを書く。
   for (const key of ['id', 'verify', 'accept', 'verify_template', 'note', 'after', 'level', 'track',
     'node', 'why', 'desc', 'scope', 'out_of_scope', 'constraints', 'hints', 'demo',
     'workspace', 'refs', 'paths', 'review', 'expect', 'followup']) {
@@ -246,7 +256,9 @@ const REVISE_KEYS = ['title', 'priority', 'verify', 'accept', 'after', 'note', '
 
 // 複数行フィールド（agent-project の MULTILINE_KEYS）。配列で送り、**全行を置換**する。
 // 単値キーと同じ String() を通すと ['a','b'] が "a,b" の 1 行に潰れるので経路を分ける。
-const REVISE_LIST_KEYS = ['acceptance'];
+// task_acceptance_criteria / verification_commands が統一 verify の正規形。acceptance は
+// 旧形式の掃除（[''] で削除）にだけ使う。
+const REVISE_LIST_KEYS = ['task_acceptance_criteria', 'verification_commands', 'acceptance'];
 
 // revise ペイロード（フィールド編集 + feedback）を commands/CLI 両経路の形へ正規化する。
 // undefined/null は「触らない」の意味なので落とす（'' は削除の明示指定として残す）

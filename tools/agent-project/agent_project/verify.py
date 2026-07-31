@@ -232,14 +232,19 @@ def verify_side_effect_rule(value: "str | None") -> str:
 def task_acceptance(task: "Task") -> "list[str]":
     """このタスクの受入基準チェックリスト（自然文）。
 
-    後方互換の優先順位を 1 か所に固定する:
-      1. `- acceptance:` 行（複数可）… S6 の backlog-planner が生成し人が直す一次表現
-      2. 無ければ `- accept:`（自然文 1 行）を 1 項目のチェックリストとして扱う
-      3. どちらも無ければ空（＝決定的 verify の fast path だけ・従来どおり）
+    読み取り境界の正規化を 1 か所に固定する（統一 verify・新規書き込みは正規形だけ）:
+      1. `- task_acceptance_criteria:` 行（複数可）… 正規形
+      2. 無ければ `- acceptance:` 行（複数可）… 旧形式（読み替えのみ）
+      3. 無ければ `- accept:`（自然文 1 行）を 1 項目のチェックリストとして扱う（旧形式）
+      4. どれも無ければ空（＝固定検証コマンドの fast path だけ）
 
     `Task.extra` は (key, value) のリストなので、同名キーの複数行はそのまま往復する
     （`- {k}: {v}` で書き戻される）。スキーマもパーサも変えずに済む。
     """
+    canonical = [v.strip() for k, v in task.extra
+                 if k == "task_acceptance_criteria" and str(v).strip()]
+    if canonical:
+        return canonical
     lines = [v.strip() for k, v in task.extra if k == "acceptance" and str(v).strip()]
     if lines:
         return lines
@@ -248,11 +253,12 @@ def task_acceptance(task: "Task") -> "list[str]":
 
 
 def has_verify_plan(task: "Task") -> bool:
-    """concrete な verify か、検証の材料（acceptance / accept / verify_template）を持つか。"""
+    """concrete な verify か、検証の材料（受入基準 / 固定コマンド / verify_template）を持つか。"""
     if task.verify:
         return True
     ex = dict(task.extra)
-    return bool(task_acceptance(task) or ex.get("verify_template", "").strip())
+    return bool(task_acceptance(task) or ex.get("verify_template", "").strip()
+                or str(ex.get("verification_commands", "") or "").strip())
 
 
 def find_skill_script(skill: str, script: str) -> "str | None":
@@ -284,125 +290,6 @@ def find_skill_script(skill: str, script: str) -> "str | None":
         if c.is_file():
             return str(c)
     return None
-
-
-def verifier_input(cfg: "Config", task: "Task", vcwd: "Path") -> dict:
-    """backlog-verifier スキルへ渡す入力（契約は .github/skills/backlog-verifier/SKILL.md）。"""
-    ws = _workspace_spec_for(cfg, task) or {}
-    ex = dict(task.extra)
-    return {
-        "task": {"id": task.id, "title": task.title,
-                 "why": ex.get("why", ""), "desc": ex.get("desc", ""),
-                 "scope": ex.get("scope", ""), "out_of_scope": ex.get("out_of_scope", "")},
-        "acceptance": task_acceptance(task),
-        "workspace": {"url": str(ws.get("url") or ""),
-                      "branch": str(ws.get("branch") or task_branch_name(cfg, task)),
-                      "base": str(ws.get("target") or ws.get("base") or ""),
-                      "path": str(ws.get("path") or "")},
-        "repo_context": detect_repo_context(vcwd),
-        "rules": project_rules_context(cfg, limit=600),
-        "recipes": find_verify_recipes(cfg, task),
-        "feedback": str(ex.get("feedback", "") or ""),
-        "side_effects": str(getattr(cfg, "verify_side_effects", "workspace") or "workspace"),
-        # 解決済みの制約文も渡す（本文が正典・スキルは受け取る）。旧版のスキルはこのキーを
-        # 読まず自前の表へ落ちるので、追加しても壊れない。
-        "side_effects_text": verify_side_effect_rule(
-            getattr(cfg, "verify_side_effects", "workspace")),
-        # 差分の常設基準も同じ扱い（P2-5）。レポートの基準列（`verification_report_md`）と
-        # エージェントが見る基準列が**同じ文字列から**組まれることを、入力で保証する。
-        "diff_criterion": DIFF_CRITERION,
-    }
-
-
-def _prompt_block(title: str, body: str) -> str:
-    """空でなければ `## <見出し>` の節にする（スキル側 `_block` と同じ）。"""
-    body = str(body or "").strip()
-    return f"\n## {title}\n{body}\n" if body else ""
-
-
-def _builtin_verifier_prompt(spec: dict) -> str:
-    """スキルが見つからないときの組み込みプロンプト（スキルと同じ入力・同じ出力契約）。
-
-    スキルを必須にしないのは、検証が止まると全タスクが人へ倒れるから。育てる場所は
-    スキル側（`.github/skills/backlog-verifier/`）だが、**入力は取りこぼさない**——
-    以前はタイトルと受入基準しか使わず、副作用制約（`verify_side_effects`）が
-    スキル未導入のノードで黙って落ちていた。検証は失敗するとリトライで何度も走るので、
-    制約が落ちた回数だけ副作用が累積する。品質材料（rules / repo_context / recipes /
-    feedback）も `verifier_input` が既に組んでいるので、載せない理由が無い。
-
-    節の見出しと順序はスキルと揃える——検証レポートに出る本文を人が読み比べるとき、
-    経路によって見出しが違うと「別の検証をした」ように見える。
-    """
-    task = spec.get("task") or {}
-    ws = spec.get("workspace") or {}
-    criteria = list(spec.get("acceptance") or []) + [
-        str(spec.get("diff_criterion") or "").strip() or DIFF_CRITERION]
-    numbered = "\n".join(f"{i + 1}. {c}" for i, c in enumerate(criteria))
-    side = str(spec.get("side_effects_text") or "").strip() \
-        or verify_side_effect_rule(spec.get("side_effects"))
-    recipes = "\n".join(f"- `{r}`" for r in (spec.get("recipes") or [])[:10])
-
-    head = (
-        "あなたは成果物の検証エージェントです。下の受入基準それぞれについて、"
-        "**実際にコマンドを実行して**充足を確かめ、証跡付きで判定してください。\n\n"
-        "重要な原則:\n"
-        "- 判定の根拠は **実行した結果**です。コードを読んだ印象や「妥当に見える」は根拠になりません。\n"
-        "- 確かめられなかった基準は正直に fail か unverifiable にしてください。\n"
-        "- **成果物を直さないでください。**（作業ツリーへの変更は破棄されます）\n"
-        f"- {side}\n"
-    )
-    body = (
-        "\n## タスク\n"
-        f"- id: {task.get('id', '')}\n"
-        f"- title: {task.get('title', '')}\n"
-        + (f"- why: {task['why']}\n" if task.get("why") else "")
-        + (f"- 作業概要: {task['desc']}\n" if task.get("desc") else "")
-        + (f"- 変更してよい範囲: {task['scope']}\n" if task.get("scope") else "")
-        + (f"- やらないこと: {task['out_of_scope']}\n" if task.get("out_of_scope") else "")
-        + "\n## 検証する場所\n"
-        f"- リポジトリ: {ws.get('url') or '(ワークスペース)'}\n"
-        f"- 成果ブランチ: {ws.get('branch', '')}（比較元: {ws.get('base', '')}）\n"
-        + (f"- 対象パス: {ws['path']}\n" if ws.get("path") else "")
-        + f"\n## 受入基準（この順に判定する）\n{numbered}\n"
-    )
-    extras = (
-        _prompt_block("参考: 過去に有効だった検証コマンド"
-                      "（まずこれを試す。環境が違えば通らないので鵜呑みにしない）", recipes)
-        + _prompt_block("前回の失敗", spec.get("feedback"))
-        + _prompt_block("リポジトリの文脈", spec.get("repo_context"))
-        + _prompt_block("プロジェクトの恒常ルール", spec.get("rules"))
-    )
-    tail = (
-        "\n## 出力\n"
-        "まず人が読むための本文を Markdown で書いてください（基準ごとに、何を実行して何が"
-        "分かったか）。**そのあと、末尾に次の形の JSON を必ず 1 つ添えてください。**\n"
-        '{"criteria": [{"id": 1, "verdict": "pass|fail|unverifiable", '
-        '"evidence": {"commands": [], "output": "", "files": []}, "note": ""}]}\n'
-        f"- criteria は上の基準と同じ順で {len(criteria)} 件すべて含めてください。\n"
-        "- verdict=pass には **必ず** commands か files の証跡を入れてください"
-        "（証跡の無い pass は機械的に fail へ落とされます）。\n"
-        "- 環境にツールが無い等で確かめられない基準は unverifiable にし、"
-        "note に何が足りないかを書いてください（リトライは消費されません）。\n"
-    )
-    return head + body + extras + tail
-
-
-def build_verifier_prompt(cfg: "Config", spec: dict) -> str:
-    """検証プロンプトを組み立てる（スキル優先・見つからなければ組み込み）。"""
-    skill = str(getattr(cfg, "verifier_skill", "backlog-verifier") or "backlog-verifier")
-    script = find_skill_script(skill, "prompt.py")
-    if script:
-        try:
-            proc = subprocess.run([sys.executable, script], input=json.dumps(spec, ensure_ascii=False),
-                                  capture_output=True, text=True, encoding="utf-8",
-                                  errors="replace", timeout=60)
-            if proc.returncode == 0 and proc.stdout.strip():
-                return proc.stdout
-            print(f">>> 警告: {skill} スキルがプロンプトを返しませんでした（組み込みへ）: "
-                  f"{(proc.stderr or '').strip()[:200]}", file=sys.stderr)
-        except (OSError, subprocess.SubprocessError) as e:
-            print(f">>> 警告: {skill} スキルを実行できませんでした（組み込みへ）: {e}", file=sys.stderr)
-    return _builtin_verifier_prompt(spec)
 
 
 def _has_evidence(ev: dict) -> bool:
@@ -537,80 +424,13 @@ def save_verification_report(cfg: "Config", task: "Task", result: dict, rev: str
     return rel
 
 
-# --- 検証レシピ（find_learned_verify の置き換え） -----------------------------------------
-# verifier が見つけた有効なコマンド列を保存し、次回の**参考情報**として渡す。
-# **決定的ゲートには昇格させない**——環境が変われば壊れるものを done の唯一の根拠にしない、
-# というのが「昇格したコマンドの良し悪しを人が判断できない」問題への答え。
-
-def _recipe_fingerprint(task: "Task") -> str:
-    norm = re.sub(r"[^0-9a-z]+", "-", str(task.title or "").lower()).strip("-")
-    return (norm or "task")[:60]
-
-
-def recipes_dir(cfg: "Config") -> Path:
-    return cfg.backlog.parent / "verify-recipes"
-
-
-def find_verify_recipes(cfg: "Config", task: "Task") -> "list[str]":
-    """このタスクに近い過去の検証コマンド（無ければ空）。参考であってゲートではない。"""
-    p = recipes_dir(cfg) / f"{_recipe_fingerprint(task)}.md"
-    try:
-        lines = p.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
-    return [ln.strip("- `").rstrip("`") for ln in lines if ln.startswith("- `")][:10]
-
-
-def save_verify_recipes(cfg: "Config", task: "Task", result: dict) -> None:
-    """pass した基準の証跡コマンドをレシピとして保存する（best-effort）。"""
-    cmds: "list[str]" = []
-    for c in result.get("criteria") or []:
-        if c["verdict"] == "pass":
-            cmds.extend(c["evidence"]["commands"])
-    uniq = list(dict.fromkeys(x.strip() for x in cmds if x.strip()))[:10]
-    if not uniq:
-        return
-    try:
-        p = recipes_dir(cfg) / f"{_recipe_fingerprint(task)}.md"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(f"# 検証レシピ: {task.title}\n\n"
-                     "次回の verifier への **参考**（まずこれを試す）。環境が変われば壊れるので、\n"
-                     "決定的な verify へは昇格させない。\n\n"
-                     + "\n".join(f"- `{c}`" for c in uniq) + "\n", encoding="utf-8")
-    except OSError:
-        pass
-
-
-def run_verifier(cfg: "Config", task: "Task", vcwd: "Path",
-                 agent_run=None) -> "tuple[dict, str]":
-    """検証エージェントを 1 回走らせ、(判定レコード, 本文) を返す。
-
-    LLM 呼び出しは 1 回（1 settle = 1 run）。呼び出しに失敗したら全基準 unverifiable に倒す
-    ——「検証できなかった」を fail（＝リトライを焼く）と混同しない。
-    """
-    spec = verifier_input(cfg, task, vcwd)
-    criteria = list(spec["acceptance"]) + [DIFF_CRITERION]
-    run = agent_run or (lambda p, m: _run_agent_cli(p, m, purpose="verify"))
-    prompt = build_verifier_prompt(cfg, spec)
-    try:
-        body = run(prompt, cfg.model)
-    except Exception as e:  # noqa: BLE001 — CLI 不在・上限・タイムアウトは環境要因
-        body = ""
-        result = {"criteria": [{"id": i + 1, "text": c, "verdict": "unverifiable",
-                                "evidence": {"commands": [], "output": "", "files": []},
-                                "note": f"検証エージェントを実行できませんでした: {str(e)[:200]}"}
-                               for i, c in enumerate(criteria)],
-                  "pass": 0, "fail": 0, "unverifiable": len(criteria), "ok": False}
-        return result, body
-    return normalize_verification(body, criteria), body
-
-
 # ---------------------------------------------------------------------------
-# verify の用意（人が書く負担を減らす）。完了条件は決定的なシェルが正典だが、人が書くのは難しい。
+# verify の用意（人が書く負担を減らす）。
 #   - `- verify_template: <名前> :: <引数...>` … 決定的に展開（エージェント不要）。
-#   - `- accept: <自然言語の完了条件>`         … エージェントが決定的 verify を合成（偽 done 防止規則を織込）。
-# どちらも最終的に concrete な `verify`（終了コード0=PASS）になり、done は verify のみが根拠の不変条件を保つ。
-# 合成/展開できなければ verify は空のまま＝従来どおり人へ（done 不能）。
+# 展開結果は concrete な `verify`（終了コード0=PASS）になり、読み取りアダプタ
+# （task_verification_commands）が source=template の固定コマンドとして plan へ載せる。
+# `accept:` からの LLM 一発合成（synth_verify）は P1-A8 で撤去した——自然文基準は
+# verification_plan の criterion として agent-flow runner の verifier が判定する。
 # ---------------------------------------------------------------------------
 def _sh_q(s: str) -> str:
     return "'" + str(s).replace("'", "'\\''") + "'"
@@ -643,97 +463,8 @@ def expand_verify_template(spec: str) -> "str | None":
     return None
 
 
-def detect_repo_context(workdir: "Path") -> str:
-    """テスト/ビルド基盤を決定的に検出し、合成 verify のヒント文にする（grep 退化を防ぐ）。
-    package.json scripts・pytest/pyproject・Makefile ターゲット・go/cargo 等を軽く走査（有界）。"""
-    hints: list = []
-    try:
-        pj = workdir / "package.json"
-        if pj.exists():
-            data = json.loads(pj.read_text(encoding="utf-8"))
-            scripts = list((data.get("scripts") or {}).keys())[:8]
-            hints.append("package.json（npm/yarn）: scripts=" + (", ".join(scripts) or "なし"))
-    except (OSError, ValueError):
-        pass
-    if (workdir / "pytest.ini").exists() or (workdir / "pyproject.toml").exists() \
-            or (workdir / "tox.ini").exists() or (workdir / "tests").is_dir():
-        hints.append("Python（pytest 等）: `pytest -q` が使えることが多い")
-    mk = workdir / "Makefile"
-    if mk.exists():
-        try:
-            targets = re.findall(r"^([a-zA-Z0-9_.-]+):", mk.read_text(encoding="utf-8"), re.M)[:10]
-            hints.append("Makefile: targets=" + (", ".join(targets) or "なし"))
-        except OSError:
-            pass
-    if (workdir / "go.mod").exists():
-        hints.append("Go: `go test ./...` / `go build ./...`")
-    if (workdir / "Cargo.toml").exists():
-        hints.append("Rust: `cargo test` / `cargo build`")
-    return "\n".join(f"- {h}" for h in hints)[:800]
-
-
-def _synth_verify_prompt(title: str, accept: str, hint: str = "", repo_ctx: str = "",
-                         retry_note: str = "") -> str:
-    extra = ""
-    if retry_note:
-        extra += f"\n**前回の合成は不採用でした（{retry_note}）。今度は必ず改善すること。**\n"
-    if repo_ctx:
-        extra += ("\nこのリポジトリで検出したテスト/ビルド基盤（可能ならこれを使い、存在チェックの grep へ"
-                  f"退化させない）:\n{repo_ctx}\n")
-    if hint:
-        extra += ("\n過去の類似タスクで人が示した『done の見方』（参考にしてよいが、望む最終状態/差分を"
-                  f"検査する原則は保つ）:\n- {hint}\n")
-    return (
-        "次のタスクの『完了条件（自然言語）』を、**決定的なシェルコマンド**に変換してください。"
-        "終了コード 0 を PASS とみなします。\n"
-        "規則: ①「履歴」ではなく「望む最終状態 / 差分」を検査する"
-        "（`git log|grep` で過去コミットに当てない）②差分を見るなら環境変数 `$KIRO_BASE_REV`"
-        "（act 前の HEAD）を使い `git log \"$KIRO_BASE_REV\"..HEAD ...` の形にする"
-        "③外部状態に依存せず再現可能にする。④単なる存在 grep や恒真式に退化させず、"
-        "可能ならテスト/ビルドコマンドで実挙動を確かめる。"
-        "⑤このコマンドは **POSIX sh** で実行される。`powershell.exe`/`pwsh`/`cmd.exe` など"
-        "Windows シェルは使わず、`git`・テストランナー等のクロスプラットフォーム CLI を使う。\n"
-        f"タスク: {title}\n完了条件: {accept}\n{extra}\n"
-        "出力はコマンド 1 行のみ（説明・コードフェンス不要）。検証コマンドを書けない場合は空行を返す。")
-
-
 # 全角の文/句読点。シェルコマンドにはまず現れず、自然言語（散文・拒否文）の強い指標。
 _PROSE_PUNCT = "。、！？；：「」『』（）"
-
-# 常に真＝何も検証しない恒真式。合成 verify がこれに退化すると done の唯一根拠が意味を失う。
-_TAUTOLOGY_RE = re.compile(
-    r"^(?:true|:|/bin/true"
-    r"|test\s+1\s*=\s*1|test\s+-n\s+.\S*|\[\s+1\s*=\s*1\s+\]"
-    r"|echo\b.*|printf\b.*|exit\s+0)$")
-
-
-def _verify_is_degenerate(cmd: str) -> bool:
-    """合成 verify が「常に PASS＝何も検証しない」恒真式に退化していないか（決定的スクリーン）。
-    red-green（変更前 fail・変更後 pass）を実行で確かめられない enqueue 時点でも、明白な恒真式は弾く。
-    複合（; && || | 含む）は個別判定が難しいので通し、単純トークンの恒真だけを弾く（false negative 寄り）。"""
-    s = (cmd or "").strip().strip(";").strip()
-    if not s:
-        return True
-    if any(op in s for op in ("&&", "||", "|", ";", "\n")):
-        return False                              # 複合は退化と断定しない（誤棄却を避ける）
-    return bool(_TAUTOLOGY_RE.match(s))
-
-
-# verify は run_verify が `set -x` + `$KIRO_BASE_REV` 差分など **POSIX sh** 前提で実行する
-# （subprocess.run(f"set -x\\n{cmd}", shell=True)）。エージェント CLI が Windows 上で動くと
-# `powershell.exe -Command ...` / `pwsh` / `cmd.exe /c ...` を返すことがあり、これは sh 実行で
-# 必ず壊れる。フルパス（/ または \\ 区切り）・.exe 付きも同一視して不採用にする。
-_WINDOWS_SHELL_RE = re.compile(r"^(?:powershell|pwsh|cmd)(?:\.exe)?$", re.IGNORECASE)
-
-
-def _is_windows_shell_command(cmd: str) -> bool:
-    """先頭トークンが Windows シェル（powershell/pwsh/cmd、.exe 付き・フルパス可）か。"""
-    s = (cmd or "").strip()
-    if not s:
-        return False
-    token = s.split(maxsplit=1)[0]
-    bare = token.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-    return bool(_WINDOWS_SHELL_RE.fullmatch(bare))
 
 
 def _looks_like_shell_command(line: str) -> bool:
@@ -751,210 +482,6 @@ def _looks_like_shell_command(line: str) -> bool:
     except (OSError, subprocess.SubprocessError):
         return True          # 構文チェック不能な環境では句読点判定のみで通す（best-effort）
     return chk.returncode == 0
-
-
-_FENCE_OPEN_RE = re.compile(r"```(\w*)\s*$")
-
-
-def _code_fence_lines(out: str) -> list[str]:
-    """Markdown コードフェンス内の行を、ブロックの出現順に返す。
-
-    開始フェンスは言語タグの有無を問わない。「実行してください: ```bash」のように
-    同一行にフェンスの前置き文が同居していても、行末が ``` (+言語タグ) であれば開始と
-    認識する（行頭一致 startswith だけだと前置き同居ケースを取りこぼすため）。
-    閉じフェンスがなければ、入力末尾までをそのブロックの内容として扱う。
-    """
-    fenced_lines: list[str] = []
-    in_fence = False
-    for line in (out or "").splitlines():
-        marker = line.strip()
-        if in_fence and marker == "```":
-            in_fence = False
-            continue
-        if not in_fence and _FENCE_OPEN_RE.search(marker):
-            in_fence = True
-            continue
-        if in_fence:
-            fenced_lines.append(line)
-    return fenced_lines
-
-
-_SHELL_FENCE_LANGUAGE_TAGS = frozenset({"bash", "console", "sh", "shell", "zsh"})
-
-# フェンス外では `sh -n` が英語の散文も単純コマンドとして受理するため、頻出する
-# 実行語から始まる行だけを候補にする。ハイフンを含む CLI 名とパス指定も許可する。
-_KNOWN_COMMAND_WORDS = frozenset({
-    "awk", "bash", "cargo", "cd", "codd-gate", "diff", "docker", "find", "git", "go",
-    "grep", "java", "make", "mvn", "node", "npm", "npx", "perl", "php", "pip", "pip3",
-    "pnpm", "poetry", "pytest", "python", "python3", "rg", "ruby", "sed", "sh", "test", "tox",
-    "uv", "yarn", "zsh",
-})
-
-
-_LEADING_SHELL_PROMPT_RE = re.compile(r"^\$\s+")
-
-
-def _strip_leading_shell_prompt(line: str) -> str:
-    """行頭のシェルプロンプト記号 `$ ` を1回だけ剥がす。
-    `$(...)` や `$VAR` は `$` 直後が空白でないため対象外（誤剥離しない）。"""
-    return _LEADING_SHELL_PROMPT_RE.sub("", line, count=1)
-
-
-_VERIFY_COMMAND_LABEL_RE = re.compile(r"^.*?検証コマンド\s*[:：]\s*")
-
-
-def _strip_leading_command_label(line: str) -> str:
-    """行頭の日本語ラベル『検証コマンド:』（全角コロン可）を、変化がなくなるまで繰り返し剥がす。
-    ラベルとコマンドが同一行にある形式（`検証コマンド: <command>`）を、ラベルが
-    別行にある形式と同じ土俵で判定できるようにするため、コマンド判定・sh -n チェック
-    の手前で適用する。行頭一致ではなく `^.*?検証コマンド` の最短一致にしているのは、
-    「以下を実行してください。検証コマンド: <command>」のようにラベルの前に散文が
-    同居する出力にも対応するため（`.*?` は非貪欲なので最初のラベル出現までしか消費しない）。
-    繰り返し適用するのは、LLM がラベルを二重・多重に付けて返す出力（`検証コマンド: 検証
-    コマンド: <command>`）を収束させるため。行内の任意のコロンではなくこの固定ラベル語
-    だけを対象にするのは、`git commit -m "note: fix bug"` のようにコマンド自体に含まれる
-    コロンを誤って割らないため。"""
-    while True:
-        stripped = _VERIFY_COMMAND_LABEL_RE.sub("", line, count=1)
-        if stripped == line:
-            return stripped
-        line = stripped
-
-
-def _has_command_like_leading_token(line: str) -> bool:
-    """フェンス外の行が既知コマンド語または実行可能らしいトークンで始まるか判定する。"""
-    if not line:
-        return False
-    token = line.split(maxsplit=1)[0]
-    bare = token.rsplit("/", 1)[-1]
-    return (
-        bare in _KNOWN_COMMAND_WORDS
-        or token.startswith(("./", "../", "/"))
-        or bool(re.fullmatch(r"[A-Za-z0-9_.]+-[A-Za-z0-9_.-]+", bare))
-    )
-
-
-_TRAILING_BACKSLASH_RE = re.compile(r"\\\s*$")
-
-
-def _join_continuations(lines: list[str]) -> list[str]:
-    """行末バックスラッシュ `\\` による継続行を1つの論理コマンド文字列へ結合する。
-
-    継続中でない行のうち、空行・`#` 始まりの純コメント行は結合対象にせず落とす
-    （継続の起点にしない）。いったん継続に入った行（直前行が `\\` 終端）は、
-    たとえ空行やコメント然とした内容でも連結対象として保持する — バックスラッシュ
-    直後の行を無条件で落とすと結合済みコマンドが途中で壊れるため。戻り値は論理行
-    ごとに1件のリストで、各行の末尾 `\\` は除去し、継続元と継続先はシェルの行
-    継続と同じく半角スペース1つで連結する。
-    """
-    joined: list[str] = []
-    parts: list[str] = []
-    continuing = False
-    for raw in lines:
-        stripped = raw.strip()
-        if not continuing and (not stripped or stripped.startswith("#")):
-            continue
-        m = _TRAILING_BACKSLASH_RE.search(stripped)
-        if m:
-            parts.append(stripped[: m.start()].rstrip())
-            continuing = True
-            continue
-        parts.append(stripped)
-        joined.append(" ".join(p for p in parts if p))
-        parts = []
-        continuing = False
-    if parts:
-        joined.append(" ".join(p for p in parts if p))
-    return joined
-
-
-def _first_executable_line(lines: list[str], *, require_shell_syntax: bool = True) -> Optional[str]:
-    """候補行から最初のコマンドを返す。見つからなければ None。
-
-    require_shell_syntax=False の場合は `_looks_like_shell_command` の sh -n 構文チェックを
-    課さない。コードフェンスで明示的に区切られた行は LLM の意図（これがコマンドである）が
-    明確なため、素通しで信頼する（フェンス外の地の文はこの限りでなく従来どおり厳格に見る）。
-    """
-    for raw_line in lines:
-        line = _strip_leading_command_label(_strip_leading_shell_prompt(_strip_code(raw_line.strip())))
-        if (
-            line
-            and not line.startswith("#")
-            and line.casefold() not in _SHELL_FENCE_LANGUAGE_TAGS
-            and (not require_shell_syntax or _looks_like_shell_command(line))
-        ):
-            return line
-    return None
-
-
-def _first_command_line(out: str) -> Optional[str]:
-    """合成出力の先頭のコマンド行を返す。どの規則にも合わなければ None。
-
-    コードフェンスを最優先でスキャンする: フェンスが見つかれば、フェンス内の最初の
-    非空・非コメント行を無条件でコマンドとして採用する。フェンスが一つも無ければ、
-    フェンス外の行を対象にした従来ロジック（既知コマンド語などの先頭トークン判定 +
-    sh -n 構文チェック）へフォールバックする。行頭のシェルプロンプト記号 `$ ` および
-    日本語ラベル『検証コマンド:』（ラベル単独行・`検証コマンド: <command>` のように
-    コマンドと同一行の両形式・ラベルの前に散文が同居する形式・ラベルの二重/多重付与）は
-    判定前に剥がす（LLM がプロンプト付き・ラベル付き・前置き散文付きでコマンド例を
-    返す出力に対応するため）。
-
-    ANSI エスケープは入口で落とす。エージェント CLI はカラーコード付きで返すことがあり、
-    残したままだとフェンス開始の ``` も先頭トークン（`\x1b[36mgrep` → 既知コマンド語に
-    一致しない）も認識できず、候補が 1 つも残らない。
-    """
-    out = strip_ansi(out)
-    # 行末バックスラッシュの継続行は、候補を選ぶ前に 1 つの論理コマンドへ結合する。
-    # 結合せずに行単位で選ぶと、`pytest -q \` のような**途中で切れたコマンド**が採用される
-    # ——フェンス内は構文チェックを課さないので素通りし、壊れた verify がそのまま done の
-    # 唯一の根拠になる（実行すれば必ず落ちるので、タスクは永久にリトライと人送りを繰り返す）。
-    fenced = _first_executable_line(_join_continuations(_code_fence_lines(out)),
-                                    require_shell_syntax=False)
-    if fenced:
-        return fenced
-    lines = _join_continuations((out or "").splitlines())
-    return _first_executable_line(
-        [
-            line
-            for line in lines
-            if _has_command_like_leading_token(
-                _strip_leading_command_label(_strip_leading_shell_prompt(line.strip()))
-            )
-        ]
-    )
-
-
-def synth_verify(cfg: "Config", title: str, accept: str, agent_run=None,
-                 hint: str = "", repo_ctx: str = "", attempts: int = 2) -> str:
-    """自然言語の完了条件 accept からエージェント（エージェント CLI）が決定的 verify を合成する。
-    失敗・不能・エージェント CLI 不在は空文字（→ verify 未定義のまま人へ）。テストは agent_run を注入する。
-    hint（過去の類似 learn）・repo_ctx（検出したテスト/ビルド基盤）で grep 退化を抑える。
-    **自己修復（多候補）**: 散文/シェル非妥当/恒真式に退化した候補は不採用とし、理由を添えて最大
-    attempts 回まで再合成させる（1 回で諦めず、より良い候補を引き出す）。"""
-    run = agent_run or (lambda p, m: _run_agent_cli(p, m, purpose="verify"))
-    retry_note = ""
-    for _ in range(max(1, attempts)):
-        try:
-            out = run(_synth_verify_prompt(title, accept, hint, repo_ctx, retry_note), cfg.model)
-        except Exception:  # noqa: BLE001  エージェント CLI 不在・タイムアウト等は合成せず人へ
-            return ""
-        cand = _first_command_line(out)
-        if not cand:
-            retry_note = "応答に実行可能なコマンド行がなかった"; continue
-        # PowerShell/cmd は sh -n を通ってしまう（valid な sh 構文）が、verify は POSIX sh で
-        # 実行されるため必ず壊れる。フェンス付きで _first_command_line を素通りした場合もここで弾く。
-        if _is_windows_shell_command(cand):
-            retry_note = ("PowerShell/cmd は使えません（verify は POSIX sh で実行）。"
-                          "git・テストランナー等のクロスプラットフォーム CLI で書くこと"); continue
-        # 自然言語（説明・拒否文）を shell=True に流すと ; | && ` > rm 等が誤実行されうるため弾く。
-        if not _looks_like_shell_command(cand):
-            retry_note = "シェルコマンドでなかった"; continue
-        # 恒真式（true / echo … 等）は done の根拠にならない＝不採用。実挙動を確かめる候補を求める。
-        if _verify_is_degenerate(cand):
-            retry_note = "恒真式に退化していた。テスト/ビルド/差分/最終状態で実挙動を確かめよ"; continue
-        return cand
-    print(f"[agent-project] verify 合成失敗: {retry_note}（task: {title}）", file=sys.stderr)
-    return ""
 
 
 def ensure_verify(cfg: "Config", task: "Task", agent_run=None) -> bool:
@@ -976,6 +503,199 @@ def ensure_verify(cfg: "Config", task: "Task", agent_run=None) -> bool:
             return True
     return False
 
+
+
+# ---------------------------------------------------------------------------
+# 統一 verify（P1-A3）: verification_plan の生成と receipt の検算
+# 正典設計: docs/plans/2026-07-30-unified-task-verify-design.md
+# schema: schemas/verification-plan.schema.json / schemas/verification-receipt.schema.json
+# digest・採番・判定の規則は agentcore.verifycontract の 1 実装（agent-flow runner と共有）。
+# agent-project は plan を確定して run に渡し、返った receipt の digest・revision・証跡を
+# 検算して状態を確定する。receipt が無い・照合を通らない pass は採用しない（fail-close）。
+# ---------------------------------------------------------------------------
+
+def task_verification_commands(task: "Task") -> "list[dict]":
+    """このタスクの固定検証コマンド（正規形＋旧形式の読み替え）。
+
+      1. `- verification_commands:` 行（複数可・正規形）… source=user
+      2. `- verify:`（旧形式 1 行）… source=legacy（verify_template 展開由来なら template）
+    """
+    out: "list[dict]" = []
+    for k, v in task.extra:
+        if k == "verification_commands" and str(v).strip():
+            out.append({"command": str(v).strip(), "source": "user"})
+    if task.verify:
+        src = "template" if dict(task.extra).get("verify_source") == "template" else "legacy"
+        out.append({"command": task.verify, "source": src})
+    return out
+
+
+def build_task_verification_plan(cfg: "Config", task: "Task") -> "dict | None":
+    """タスクの検証材料から verification_plan（digest 付き）を確定する。材料が無ければ None。
+
+    自然文基準があるときは差分の常設基準（DIFF_CRITERION）を最後尾に足す（verifier 経路の
+    既存規則と同じ）。固定コマンドだけのタスクには足さない——criterion が 1 つでもあると
+    実行側で verifier セッション（LLM）が要るため、fast path の費用を変えない。"""
+    criteria = list(task_acceptance(task))
+    commands = task_verification_commands(task)
+    if not criteria and not commands:
+        return None
+    if criteria:
+        criteria.append(DIFF_CRITERION)
+    ws = _workspace_spec_for(cfg, task) or {}
+    return _verifycontract.build_plan(
+        task.id, criteria=criteria, commands=commands,
+        workspace=str(ws.get("url") or ""),
+        policy={"timeout_sec": cfg.verify_timeout, "confirm": cfg.verify_confirm})
+
+
+def read_flow_receipt(cfg: "Config", task: "Task") -> "dict | None":
+    """このタスクの最後の agent-flow run が返した receipt（runs/<rid>/receipt.json）。無ければ None。"""
+    rid = str(task.get("last_run") or "").strip()
+    if not rid:
+        return None
+    try:
+        rec = json.loads((cfg.bus / "runs" / rid / "receipt.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return rec if isinstance(rec, dict) else None
+
+
+def receipt_to_verification(receipt: dict) -> dict:
+    """receipt を既存の検証レコード形（normalize_verification の戻り値と同形）へ変換する。
+
+    settle から needs 票・検証レポート・unverifiable 経路（検証不能→委譲/人送り）までの下流を
+    1 本のまま使うための変換で、判定は変えない（inconclusive → unverifiable の語だけ読み替える。
+    表示・ルーティングの既存語彙が unverifiable のため）。固定コマンドの結果も criterion と同じ
+    行として並べ、人が 1 つの表で読めるようにする。"""
+    out: "list[dict]" = []
+    for c in receipt.get("commands") or []:
+        cmd = str(c.get("command") or "")
+        if c.get("inconclusive"):
+            verdict, note = "unverifiable", str(c.get("note") or "実行できませんでした")
+        elif c.get("exit_code") == 0 and not c.get("flaky"):
+            verdict, note = "pass", ""
+        else:
+            verdict, note = "fail", f"exit={c.get('exit_code')}"
+        out.append({"id": len(out) + 1, "text": f"固定検証コマンド: `{cmd[:160]}`",
+                    "verdict": verdict,
+                    "evidence": {"commands": [cmd][:10] if verdict == "pass" else [],
+                                 "output": str(c.get("output_tail") or "")[:2000], "files": []},
+                    "note": note[:500]})
+    for c in receipt.get("criteria") or []:
+        verdict = str(c.get("verdict") or "").strip().lower()
+        if verdict not in _verifycontract.CRITERION_VERDICTS:
+            verdict = "fail"
+        elif verdict == "pass" and not _verifycontract.criterion_has_evidence(c):
+            verdict = "fail"
+        elif verdict == "inconclusive":
+            verdict = "unverifiable"
+        evs = c.get("evidence") if isinstance(c.get("evidence"), list) else []
+        out.append({"id": len(out) + 1, "text": str(c.get("text") or c.get("id") or "")[:300],
+                    "verdict": verdict,
+                    "evidence": {
+                        "commands": [str(e.get("command")) for e in evs
+                                     if isinstance(e, dict) and e.get("kind") == "command"
+                                     and e.get("command")][:10],
+                        "output": " / ".join(str(e.get("summary") or e.get("output_tail") or "")
+                                             for e in evs if isinstance(e, dict))[:2000],
+                        "files": [str(e.get("path")) for e in evs
+                                  if isinstance(e, dict) and e.get("kind") in ("file", "diff")
+                                  and e.get("path")][:20]},
+                    "note": str(c.get("note") or "")[:500]})
+    counts = {v: sum(1 for c in out if c["verdict"] == v) for v in VERDICTS}
+    return {"criteria": out, "pass": counts["pass"], "fail": counts["fail"],
+            "unverifiable": counts["unverifiable"],
+            "ok": bool(out) and counts["fail"] == 0 and counts["unverifiable"] == 0,
+            "receipt": True}
+
+
+# 固定コマンド実行の 1 実装（agent-flow runner と共有）。モジュール名を経由させるのは
+# テストが `km.run_plan_command` を差し替えられるようにするため（旧 run_verify と同じ流儀）。
+run_plan_command = _verifycontract.run_plan_command
+
+
+def run_local_receipt(cfg: "Config", task: "Task", plan: dict, rev: str,
+                      vcwd: "Path", env: "dict | None") -> dict:
+    """agent-flow runner の receipt を採用できなかったタスクの local runner（P1-A8）。
+
+    plan の固定コマンドをこのノードで一度だけ実行し、同じ契約の receipt を組む
+    （実行セマンティクスは agentcore.verifycontract.run_plan_command の 1 実装——runner と
+    割れない）。dry-run・stub 実行・旧 agent-flow との混在フリートなど「run が receipt を
+    返さない」経路の受け皿で、判定は必ず receipt の検算（採用側と同じ規則）を通る。
+    自然文 criterion の判定（verifier セッション）は agent-flow runner だけが持つため、
+    ここでは inconclusive——採用側で unverifiable（委譲/人送り）へ流れ、pass/fail を
+    発明しない。rev は無ければ空のまま記録する（git の無い workdir。旧 fast path と同じ
+    扱いで、成果 revision の照合は「取れる環境でだけ」効く）。"""
+    commands = [run_plan_command(str(c.get("command") or ""), str(vcwd),
+                                 cfg.verify_timeout, env, cfg.verify_confirm)
+                for c in plan.get("commands") or []]
+    criteria = [{"id": c["id"], "text": str(c.get("text") or ""), "verdict": "inconclusive",
+                 "note": "自然文基準の判定は agent-flow runner の receipt が必要"
+                         "（local runner は固定コマンドのみ実行）"}
+                for c in plan.get("criteria") or []]
+    return _verifycontract.build_receipt(
+        plan, result_rev=rev, commands=commands, criteria=criteria,
+        verified_by=str(getattr(cfg, "node", "") or "local"))
+
+
+def _adopt_receipt(cfg: "Config", task: "Task", receipt: dict,
+                   how: str) -> "tuple[bool, bool, str, dict]":
+    """検算を通った receipt を検証レコード・レポート・journal へ確定する（採用の 1 実装）。"""
+    overall = _verifycontract.receipt_overall(receipt)
+    result = receipt_to_verification(receipt)
+    rev = str(receipt.get("result_rev") or "")
+    result["rev"] = rev
+    body = (f"- plan digest: `{receipt.get('plan_digest')}`\n"
+            f"- result revision: `{rev or '(なし)'}`\n"
+            f"- 判定: {overall}（{how}）\n")
+    report = save_verification_report(cfg, task, result, rev, body)
+    result["report"] = report
+    task.drop("verification")
+    task.extra.append(("verification", json.dumps(
+        {"pass": result["pass"], "fail": result["fail"],
+         "unverifiable": result["unverifiable"], "report": report,
+         "receipt": True, "plan_digest": str(receipt.get("plan_digest") or "")},
+        ensure_ascii=False)))
+    # flaky（confirm 実行で PASS/FAIL を跨いだ）は receipt_overall では fail だが、settle の
+    # 隔離経路（リトライを焼かず人へ）に乗せるため個別に立てて返す（旧 run_verify_stable と同じ）。
+    flaky = any(bool(c.get("flaky")) for c in receipt.get("commands") or []
+                if isinstance(c, dict))
+    vmsg = verification_message(result)
+    if flaky:
+        vmsg = f"flaky: 検証コマンドが不安定（複数回実行で PASS/FAIL 混在） — {vmsg}"[:500]
+    append_journal(cfg.journal, f"検証（receipt）: {task.id} — {vmsg}")
+    return overall == "pass", flaky, vmsg, result
+
+
+def settle_from_receipt(cfg: "Config", task: "Task", plan: "dict | None", expected_rev: str,
+                        vcwd: "Path | None" = None,
+                        env: "dict | None" = None) -> "tuple[bool, bool, str, dict] | None":
+    """統一 verify の検算（W3 の 1 実装）。plan が無ければ None（検証材料の無いタスク）。
+
+    第一経路は agent-flow runner の receipt: digest・成果 revision・証跡の検算を通った判定
+    だけを採用する（fail-close: 通らない receipt の pass は決して採用しない）。採用できず
+    vcwd が与えられていれば local runner（run_local_receipt）が固定コマンドを実行して同じ
+    契約で判定する——旧 fast path / 旧 verifier の実行は P1-A8 で撤去済みで、done の根拠は
+    どの経路でも receipt の検算だけ。
+
+    戻り値は既存 settle と同形 (ok, flaky, vmsg, verification)。"""
+    if not isinstance(plan, dict):
+        return None
+    receipt = read_flow_receipt(cfg, task)
+    if receipt is not None:
+        errs = _verifycontract.receipt_errors(receipt, plan=plan, expected_rev=expected_rev)
+        if not errs:
+            return _adopt_receipt(cfg, task, receipt,
+                                  "agent-flow runner の receipt を検算して採用")
+        append_journal(cfg.journal,
+                       f"検証 receipt を不採用（fail-close・local runner へ）: "
+                       f"{task.id} — {'; '.join(errs[:3])}")
+    if vcwd is None:
+        return None
+    local = run_local_receipt(cfg, task, plan, str(expected_rev or ""), vcwd, env)
+    return _adopt_receipt(cfg, task, local,
+                          "local runner がこのノードで実行（run の receipt なし）")
 
 
 # --- verify 失敗の解釈（単一の解釈点） ---------------------------------------------------

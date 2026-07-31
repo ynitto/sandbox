@@ -119,23 +119,24 @@ def _plan_decompose_prompt(charter: "Charter", granularity: "str | None" = None,
         + "\n\n" + _charter_owns_note(charter)
         + (f"\n\n参考文脈（プロジェクトルール・リポジトリ理解。分解の粒度と verify の精度に使う）:\n{context}"
            if context else "")
-        + "\n\n出力は JSON 配列のみ。各要素は {\"title\": str, \"verify\": str} で、verify は"
-        " 終了コード0をPASSとみなすシェルコマンド（『履歴』でなく『望む最終状態/差分』を見ること）。"
-        " **verify を書けないタスクは verify を省いてよい**（下の acceptance が検証の一次表現）。"
+        + "\n\n出力は JSON 配列のみ。各要素は {\"title\": str, …} で、"
         " 各タスクには次を**必ず**付けること（人が実行前にレビューする材料であり、欠けると"
         "そのタスクは draft に落ちて実行されない）:"
         " **\"why\": str（憲章のどの目標に効くか・1〜2 文）**、"
         " **\"desc\": str（作業概要＝変更対象・作業ステップ 3〜7 行・影響範囲）**、"
         " **\"acceptance\": [str, …]（受入基準チェックリスト 3〜7 項目・自然文。"
-        "検証エージェントが基準ごとに実行して証跡付きで判定し、全 pass のみが完了の根拠になる）**、"
+        "検証エージェントが基準ごとに実行して証跡付きで判定し、全 pass のみが完了の根拠になる。"
+        "シェルコマンドを 1 行合成して書かないこと——確かめ方は検証エージェントが決める）**、"
         " **\"size\": \"S\"|\"M\"|\"L\"（規模感）**。"
         " タスク間に順序依存があれば **\"after\": [\"先行タスクの title\"]**（配列内の先行タスク・"
         "任意）を付けること（依存グラフとして実行順と並列性の判断に使われる。循環は不可）。"
         " 各タスクには **\"workspace\": \"name\"（唯一の書込先・必須）** を付ける。workspace は"
-        " **verify が操作するパスの owns を持つリポジトリ**にすること。読むだけの他リポジトリは"
+        " **受入基準が触るパスの owns を持つリポジトリ**にすること。読むだけの他リポジトリは"
         " \"refs\": [\"name\", ...] に入れる（書込先にはしない）。"
+        " 任意で \"paths\": [str, …]（このタスクが触る見込みのパス）を付けると、"
+        "書込先の突き合わせ（owns）に使われる。"
         " 同じ手順を多数の対象に繰り返すタスクは 1 件ずつ列挙せず、"
-        " {\"title\": \"…{item}…\", \"verify\": \"…{item}…\", \"cohort_items\": [\"対象1\", \"対象2\", …]} の"
+        " {\"title\": \"…{item}…\", \"acceptance\": [\"…{item}…\", …], \"cohort_items\": [\"対象1\", \"対象2\", …]} の"
         " 1 件にまとめること（{item} に各対象が差し込まれ、先頭を pilot として人が指示を固めてから残りが生成される）。"
         " 有益なら任意で \"scope\": str（触ってよい範囲）・\"out_of_scope\": str（このタスクで"
         "やらないこと・隣のタスクとの境界）・\"hints\": str（実装の手がかり・関連ファイルや参考箇所）"
@@ -341,8 +342,11 @@ def _plan_spec_from_item(charter: "Charter", item: dict) -> dict:
     sp = {"title": title,
           # 原題を残す: 人が題を直しても重複照合が効き続ける（S6-3 の保護の実体）
           "planned_title": title,
-          "verify": _strip_code(str(item.get("verify", "") or "").strip()),
+          # 旧 "verify"（コマンド一発生成）は P1-A8 で受け取りをやめた。プランナーが出しても
+          # 捨てる——新規データに裸の verify を書かない（検証の一次表現は acceptance）。
           "workspace": _strip_code(str(item.get("workspace") or "").strip()),
+          # 触る見込みのパス（owns 突き合わせの根拠）。`,` 区切り 1 行（enqueue の paths と同じ規約）
+          "paths": ",".join(_coerce_repos(item.get("paths"))),
           "refs": _coerce_repos(item.get("refs")) or _coerce_repos(item.get("repos")),
           "cohort_items": _coerce_repos(item.get("cohort_items")),
           "acceptance": coerce_multiline(item.get("acceptance")),
@@ -446,16 +450,19 @@ def _review_prompt(charter: "Charter", granularity: "str | None" = None) -> str:
         "改善タスクの粒度: " + plan_granularity_directive(granularity) + "\n\n"
         + build_charter_request(charter)
         + "\n\n" + _charter_owns_note(charter)
-        + "\n\n出力は JSON 配列のみ。各要素は {\"title\": str, \"verify\": str,"
-        " \"workspace\": \"name\"（唯一の書込先・必須。verify が操作するパスの owns を持つ repo）,"
-        " \"refs\": [\"name\", ...]（読むだけの参照）}（改善タスクと検証）。"
+        + "\n\n出力は JSON 配列のみ。各要素は {\"title\": str,"
+        " \"acceptance\": [str, …]（受入基準・自然文。検証エージェントが基準ごとに実行して"
+        "証跡付きで判定する。シェルコマンドを 1 行合成して書かないこと）,"
+        " \"workspace\": \"name\"（唯一の書込先・必須。受入基準が触るパスの owns を持つ repo）,"
+        " \"refs\": [\"name\", ...]（読むだけの参照）}（改善タスク）。"
         " 各タスクには \"why\": str（何が不足でこの改善が要るのか・人のレビュー向けに 1 文）を付けること。"
         " 問題が無ければ空配列 [] を返してください。")
 
 
 def review_via_agent(cfg: "Config", charter: "Charter") -> "list[dict]":
-    """敵対的レビュー（opt-in）。成果物 vs 目標の不足を改善タスク [{title, verify}] として返す。
-    plan と同様、各タスクに書込先 workspace を必ず明示する。"""
+    """敵対的レビュー（opt-in）。成果物 vs 目標の不足を改善タスク [{title, acceptance}] として返す。
+    plan と同様、各タスクに書込先 workspace を必ず明示する（旧 "verify" の受け取りは
+    P1-A8 でやめた——新規データに裸の verify を書かない）。"""
     try:
         out = _run_agent_cli(_review_prompt(charter, cfg.granularity), cfg.model, purpose="review")
     except (OSError, RuntimeError, subprocess.SubprocessError) as e:
@@ -466,7 +473,7 @@ def review_via_agent(cfg: "Config", charter: "Charter") -> "list[dict]":
     for i in arr:
         if isinstance(i, dict) and str(i.get("title", "")).strip():
             sp = {"title": str(i["title"]).strip(),
-                  "verify": _strip_code(str(i.get("verify", "") or "").strip()),
+                  "acceptance": coerce_multiline(i.get("acceptance")),
                   "workspace": _strip_code(str(i.get("workspace") or "").strip()),
                   "refs": _coerce_repos(i.get("refs")) or _coerce_repos(i.get("repos")),
                   **({"why": str(i.get("why") or "").strip()} if str(i.get("why") or "").strip() else {}),

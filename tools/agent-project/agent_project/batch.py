@@ -140,8 +140,8 @@ def _revert_workdir(cfg) -> None:
 def _escalate(cfg, task, reason, reasons, cycle, evidence: str = ""):
     """ループ内で人の判断(needs)へ回す直前のフック。auto_adjudicate が有効なら、人へ送る前に
     エージェント CLI へ『自律的に積み直して解けるか』を諮り、可能なら needs を作らず ready に戻して回し続ける。
-    verify を持たないタスク（acceptance 未定義）は対象外＝必ず人へ。adjudicate_max で有限回に制限。"""
-    if cfg.auto_adjudicate and not cfg.dry_run and task.verify:
+    検証材料（基準・固定コマンド）を持たないタスクは対象外＝必ず人へ。adjudicate_max で有限回に制限。"""
+    if cfg.auto_adjudicate and not cfg.dry_run and has_verify_plan(task):
         done_n = int(task.get("adjudicated", "0") or "0")
         if done_n < cfg.adjudicate_max:
             decision, guide = adjudicate_escalation(cfg, task, reason)

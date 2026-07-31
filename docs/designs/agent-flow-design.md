@@ -1,6 +1,6 @@
 # agent-flow 設計書
 
-> 最終更新: 2026-07-31（統一 verify 契約は移行設計。実装順は `docs/plans/2026-07-30-unified-task-verify-design.md`）
+> 最終更新: 2026-07-31（統一 verify runner を実装。移行順序は `docs/plans/2026-07-30-unified-task-verify-design.md`）
 > 実装: `tools/agent-flow/`（本体 24 断片・約 7,000 行）、テスト `tools/agent-flow/tests/`（577 件）
 > 関連: [agent-project 設計書](./agent-project-design.md) ／ [git worktree キャッシュ](./git-worktree-cache-pattern.md)
 >
@@ -152,8 +152,16 @@ worker は claim できるノードを 1 つ取り、kind に応じたプロン�
 verification plan を持つ run は、成果 revision が確定したあと専用 verifier を 1 セッション起動します。
 固定検証コマンドは書き換えずに実行します。自然文の criterion は、verifier がコマンド、差分、
 ファイル、ログを調べて `pass` / `fail` / `inconclusive` と証跡を返します。verifier は基準を
-緩めず、成果物も変更しません。`fail` は同じ run の再計画へ戻し、`inconclusive` は成果修正の
-リトライを消費せず上位へ返します。
+緩めず、成果物も変更しません（検証後に作業ツリーの変更を破棄する）。`fail` は同じ run の
+修正ループへ戻します——不合格点を列挙した work ノード（`verify-fix-<n>`）を決定的に注入して
+再度静止を待ち、`max_iterations` で有界。`inconclusive` は成果修正のリトライを消費せず
+receipt のまま上位へ返します。コマンドの終了コード非 0 は fail、起動できない（実行場所が無い・
+exit 127 = コマンド不在）は inconclusive で、成果物の欠陥と環境の欠落を混同しません。
+結果は `runs/<run-id>/receipt.json` に書き、同じ plan digest × 同じ成果 revision の receipt が
+既にあれば再実行しません（command 実行は一回だけ）。壊れた plan（digest 不一致・未知版）は
+実行せず receipt も書きません——receipt 欠落を採用側が done にしない fail-close に倒します。
+plan は `--verification-plan`（グローバル引数）または inbox 要求の `verification_plan` キーで
+受け取ります（inbox が権威）。
 
 ## コンポーネント
 
@@ -293,6 +301,7 @@ auto-heal はこの世代交代を使いません。heal は同一 run の再開
     artifacts/<id>/    中間成果物のファイル
     events/<who>.jsonl 追記専用ログ
     final.json         全結果のサマリ
+    receipt.json       統一 verify の receipt（verification-receipt.schema.json）
     inherited/<旧 run-id>.json  リトライで消した先行 run の墓標
 ```
 
@@ -301,6 +310,7 @@ auto-heal はこの世代交代を使いません。heal は同一 run の再開
 | `meta.json` / `graph.json` / `tasks/*` | orchestrator のみ |
 | `claims/<id>/<who>.json` | claim を試みる各ワーカー（ファイル名が衝突しない） |
 | `results/<id>.json` | claim に勝ったワーカー、または park を決着させた `service_waits` |
+| `receipt.json` | orchestrator（成果確定後の専用 verifier セッション）のみ |
 | `waits/<id>.json` | park したワーカーと、それを再確認する監視主体 |
 | `events/<who>.jsonl` | 各ノードが自分のファイルにだけ追記 |
 

@@ -45,6 +45,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "af/<run-id> を base から作って作業、変更があれば agent-flow が commit/push する。"
                         "path はモノレポの作業フォルダ、target は MR/PR のターゲットブランチ。"
                         "省略時は読み取り専用 run")
+    p.add_argument("--verification-plan", dest="verification_plan", default=None,
+                   help="統一 verify の検証計画（verification-plan.schema.json 準拠の JSON）。"
+                        "agent-project が確定して渡す。成果 revision 確定後に専用 runner が一度だけ"
+                        "実行し、receipt（runs/<run-id>/receipt.json）を返す。省略時は従来どおり")
     p.add_argument("--reference", dest="references", action="append", default=None,
                    help="参照リポジトリ（読むだけ・書き込まない／複数可）。素の URL でも JSON "
                         "（{url,path,base,desc}）でも可。エージェントのプロンプトと gitlab イシュー本文に"

@@ -244,7 +244,8 @@ def _agent_managed_rels(cfg: "Config") -> "set[str]":
     wd = cfg.workdir.resolve()
     cand = [cfg.backlog, cfg.needs, cfg.decisions, cfg.archive_dir(), cfg.journal,
             Path(cfg.delivery) if cfg.delivery else None, cfg.runlog, cfg.policy,
-            cfg.bus, cfg.inbox, _claims_dir(cfg), commands_dir(cfg)]
+            cfg.bus, cfg.inbox, _claims_dir(cfg), commands_dir(cfg),
+            verifications_dir(cfg)]   # 検証レポート（receipt 採用時に毎 settle 書く）も運用状態
     rels: set[str] = set()
     for p in cand:
         if not p:

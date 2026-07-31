@@ -518,15 +518,19 @@ def _apply_revise_fields(t: Task, tasks: "list[Task]", fields: dict) -> "list[st
         if key in MULTILINE_KEYS:
             # 複数行フィールドは**全行の置換**（1 行だけ直す編集も、行の集合を丸ごと送る契約）。
             # 行単位の差分編集にすると「何行目を消すか」を UI と本体で二重に数えることになる。
+            # 旧形式キー `acceptance` の編集は正規形 `task_acceptance_criteria` への置換として
+            # 扱う（書き込み境界の正規化・P1-A8。読み取りは互換のため旧行も見るので、旧行を
+            # 残したまま正規行だけ書くと編集が効かない）。
+            canon = "task_acceptance_criteria" if key == "acceptance" else key
             lines = coerce_multiline(fields[key])
             if len(lines) == 1 and lines[0].lower() in _CLEAR_VALUES:
                 lines = []
-            before = [v for k, v in t.extra if k == key]
+            before = [v for k, v in t.extra if k in (key, canon)]
             if lines == before:
                 continue
-            t.drop(key)
-            t.extra += [(key, ln) for ln in lines]
-            changes.append(f"{key}: {len(before)} 件 → {len(lines)} 件"
+            t.drop(key, canon)
+            t.extra += [(canon, ln) for ln in lines]
+            changes.append(f"{canon}: {len(before)} 件 → {len(lines)} 件"
                            + ("（削除）" if not lines else ""))
             continue
         val = str(fields[key]).strip()

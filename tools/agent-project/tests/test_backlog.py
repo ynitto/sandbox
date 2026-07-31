@@ -111,7 +111,10 @@ class TestEnqueue(unittest.TestCase):
             with self.assertRaises(ValueError):
                 km.task_from_spec(cfg, {"verify": "true"})           # title 必須
             t = km.task_from_spec(cfg, {"title": "A", "verify": "`pytest -q`"})
-            self.assertEqual((t.norm_status(), t.verify, t.source), ("ready", "pytest -q", "enqueue"))
+            # 書き込み境界の正規化（P1-A8）: 裸の verify は書かず verification_commands 行になる
+            self.assertEqual((t.norm_status(), t.verify, t.source), ("ready", "", "enqueue"))
+            self.assertEqual(km.task_verification_commands(t),
+                             [{"command": "pytest -q", "source": "user"}])
             t2 = km.task_from_spec(cfg, {"title": "B"})
             self.assertEqual(t2.norm_status(), "inbox")              # verify 無し→人の triage へ
 
@@ -491,7 +494,8 @@ class TestCohort(unittest.TestCase):
             pilot = km.enqueue_task(cfg, {"title": "{item} を移行", "verify": "test -f {item}",
                                           "cohort_items": ["a", "b", "c"]})
             self.assertEqual(pilot.title, "a を移行")
-            self.assertEqual(pilot.verify, "test -f a")
+            self.assertEqual([c["command"] for c in km.task_verification_commands(pilot)],
+                             ["test -f a"])
             self.assertEqual(pilot.get("cohort_role"), "pilot")
             self.assertEqual(pilot.get("review"), "human")          # pilot は人の承認で固める
             self.assertEqual(len(km.load_tasks(cfg.backlog)), 1)    # 残りはまだ作らない

@@ -593,35 +593,27 @@ def _accepted_external_verification(cfg: "Config", task: "Task", external: dict,
 
 def _run_task_verifier(cfg: "Config", task: "Task",
                        vcwd: "Path") -> "tuple[bool, bool, str, dict | None]":
-    """決定的 verify を持たないタスクを、受入基準 × 証跡で検証する（S5）。
+    """receipt を採用できなかったタスクの残余経路（P1-A8 で旧 verify 実行は撤去済み）。
 
+    受理するのは検証委譲（P4-b）の external verdict だけ。それも無ければ done にせず
+    人の判断へ倒す——旧 fast path（task.verify のローカル実行）と旧 verifier（LLM）は
+    agent-flow runner の receipt が完全に置換した。検証材料は verification_plan として
+    run に渡り、receipt の検算（settle_from_receipt）だけが done の根拠になる。
     戻り値は既存の settle と同じ形 (ok, flaky, vmsg) に検証レコードを足したもの。
-    verifier を無効化（`verifier: false`）した場合と、受入基準が 1 つも無い場合は
-    従来どおり「verify 未定義 → 人の判断」へ倒す（自己申告で done にしない不変条件）。
     """
-    if not getattr(cfg, "verifier", True) or not task_acceptance(task):
-        return False, False, "verify 未定義（自己申告では done にできない → 人の判断へ）", None
     rev = _git_out(vcwd, "rev-parse", "HEAD").strip() if (vcwd / ".git").exists() else ""
-    external = read_external_verdict(cfg, task, rev)
-    if external:
-        # 検証委譲（P4-b）の受理: このノードでは確かめられなかった基準を板へ回し、別の端末が
-        # 同じ成果コミットで確かめた結果が返ってきている。**同じことをもう一度させない**
-        # （C3）ため、その判定をこの rev の検証として受け入れる。根拠は残す——誰が・どの
-        # 委譲で確かめたかを検証レコードに書き、needs / 受領書から辿れるようにする。
-        return _accepted_external_verification(cfg, task, external, rev)
-    result, body = run_verifier(cfg, task, vcwd)
-    report = save_verification_report(cfg, task, result, rev, body)
-    if result["ok"]:
-        save_verify_recipes(cfg, task, result)     # 効いたコマンドは次回の参考にする（ゲートにはしない）
-    result["report"] = report
-    result["rev"] = rev
-    task.drop("verification")
-    task.extra.append(("verification", json.dumps(
-        {"pass": result["pass"], "fail": result["fail"],
-         "unverifiable": result["unverifiable"], "report": report}, ensure_ascii=False)))
-    append_journal(cfg.journal, f"検証: {task.id} — {verification_message(result)}"
-                                + (f"（{report}）" if report else ""))
-    return result["ok"], False, verification_message(result), result
+    if task_acceptance(task):
+        external = read_external_verdict(cfg, task, rev)
+        if external:
+            # 検証委譲（P4-b）の受理: このノードでは確かめられなかった基準を板へ回し、別の端末が
+            # 同じ成果コミットで確かめた結果が返ってきている。**同じことをもう一度させない**
+            # （C3）ため、その判定をこの rev の検証として受け入れる。根拠は残す——誰が・どの
+            # 委譲で確かめたかを検証レコードに書き、needs / 受領書から辿れるようにする。
+            return _accepted_external_verification(cfg, task, external, rev)
+    if has_verify_plan(task):
+        return False, False, ("検証 receipt がありません（統一 verify の receipt を検算できるまで"
+                              " done にしない → 人の判断へ）"), None
+    return False, False, "verify 未定義（自己申告では done にできない → 人の判断へ）", None
 
 
 def _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits, assisted,
@@ -908,13 +900,17 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
         if vtmp and (vcwd / ".git").exists():          # 一時 clone は差分基準を clone の HEAD に取り直す
             head = _git_out(vcwd, "rev-parse", "HEAD").strip()
             venv = {"KIRO_BASE_REV": head} if head else None
-        # 検証は 2 経路（S5）。決定的 `verify:` があればそれが最速・最優先の fast path で、
-        # 無ければ受入基準チェックリストを検証エージェントが証跡付きで判定する。
-        # flake 判定（verify_confirm の複数回実行）は fast path にだけ適用する——
-        # verifier 側の揺れは同一レポート内の再試行として verifier 自身に扱わせる。
-        if task.verify:
-            ok, flaky, vmsg = run_verify_stable(task.verify, vcwd, cfg.verify_timeout,
-                                                cfg.verify_confirm, venv)
+        # 検証は統一 verify（P1-A3/A8）のみ: run に渡した verification_plan の receipt を検算し、
+        # digest・成果 revision・証跡が一致した判定だけを採用する。run が receipt を返さない
+        # 経路（dry-run・stub・旧 agent-flow）は local runner が固定コマンドを同じ契約で実行
+        # する。旧 fast path（task.verify のローカル直実行）と旧 verifier（LLM）は撤去済み
+        # ——plan の無いタスクは板委譲の external verdict だけ受理し、無ければ人の判断へ。
+        # flake 判定（verify_confirm）は plan の policy として receipt runner が実行する。
+        _rev_head = _git_out(vcwd, "rev-parse", "HEAD").strip() if (vcwd / ".git").exists() else ""
+        adopted = settle_from_receipt(cfg, task, build_task_verification_plan(cfg, task),
+                                      _rev_head, vcwd, venv)
+        if adopted is not None:
+            ok, flaky, vmsg, verification = adopted
         else:
             ok, flaky, vmsg, verification = _run_task_verifier(cfg, task, vcwd)
         ev = delivery_evidence(cfg, act_msg, git_base, location,

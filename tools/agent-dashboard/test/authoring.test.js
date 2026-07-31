@@ -185,21 +185,27 @@ test('deleteCharterVersion は不正名と存在しない版を明示的に拒�
 });
 
 // --- lintTaskSpec（案5・作成時 lint。非ブロック警告） ---
-test('lintTaskSpec は完了条件が無いタスクを警告する', () => {
+test('lintTaskSpec は受入基準が無いタスクを警告する', () => {
   const w = authoring.lintTaskSpec({ title: '何かする' });
-  assert.ok(w.some((x) => x.field === 'accept' && /完了条件がありません/.test(x.message)));
+  assert.ok(w.some((x) => x.field === 'accept' && /受入基準がありません/.test(x.message)));
 });
 
-test('lintTaskSpec は曖昧な accept を警告する（verify があれば警告しない）', () => {
-  const vague = authoring.lintTaskSpec({ title: 't', accept: 'ちゃんと動くこと' });
+test('lintTaskSpec は曖昧な受入基準を警告する（固定コマンドがあれば警告しない）', () => {
+  const vague = authoring.lintTaskSpec({ title: 't', task_acceptance_criteria: ['ちゃんと動くこと'] });
   assert.ok(vague.some((x) => x.field === 'accept' && /曖昧/.test(x.message)));
-  const withVerify = authoring.lintTaskSpec({ title: 't', accept: 'ちゃんと動くこと', verify: 'npm test' });
-  assert.ok(!withVerify.some((x) => /曖昧/.test(x.message)), 'verify があれば曖昧警告は出さない');
+  const withVerify = authoring.lintTaskSpec({
+    title: 't', task_acceptance_criteria: ['ちゃんと動くこと'], verification_commands: ['npm test'],
+  });
+  assert.ok(!withVerify.some((x) => /曖昧/.test(x.message)), '固定コマンドがあれば曖昧警告は出さない');
+  // 旧形式（accept / verify）も互換で読める
+  const legacy = authoring.lintTaskSpec({ title: 't', accept: 'ちゃんと動くこと' });
+  assert.ok(legacy.some((x) => /曖昧/.test(x.message)));
 });
 
-test('lintTaskSpec は verify があれば完了条件警告を出さない', () => {
-  assert.ok(!authoring.lintTaskSpec({ title: 't', verify: 'npm test' }).some((x) => /完了条件がありません/.test(x.message)));
-  assert.ok(!authoring.lintTaskSpec({ title: 't', verify_template: 'tests-green' }).some((x) => /完了条件がありません/.test(x.message)));
+test('lintTaskSpec は固定コマンドがあれば受入基準警告を出さない', () => {
+  assert.ok(!authoring.lintTaskSpec({ title: 't', verification_commands: ['npm test'] }).some((x) => /受入基準がありません/.test(x.message)));
+  assert.ok(!authoring.lintTaskSpec({ title: 't', verify: 'npm test' }).some((x) => /受入基準がありません/.test(x.message)));
+  assert.ok(!authoring.lintTaskSpec({ title: 't', verify_template: 'tests-green' }).some((x) => /受入基準がありません/.test(x.message)));
 });
 
 test('lintTaskSpec は why/scope 欠落を情報として示す', () => {

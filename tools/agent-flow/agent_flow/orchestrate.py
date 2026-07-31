@@ -225,7 +225,8 @@ def cmd_orchestrate(args) -> int:
                  f"（引き継ぎ {info['seeded_nodes']} ノード・削除={info['deleted']}）")
         bus.sync_push(f"inherit {inh} -> {args.run_id}: {info['reason']}")
     bus.ensure_run(args.request, parse_workspace(getattr(args, "workspace", None)),
-                   parse_references(getattr(args, "references", None)))
+                   parse_references(getattr(args, "references", None)),
+                   parse_verification_plan(getattr(args, "verification_plan", None)))
     bus.note_executor(getattr(args, "executor", None) or "agent")   # viewer の表示切替用
     _deleg_raw = getattr(args, "delegation", None)                  # 委譲公示板由来の来歴（board）
     if _deleg_raw:
@@ -358,6 +359,30 @@ def cmd_orchestrate(args) -> int:
             bus.sync_push(f"replan #{iteration} run {args.run_id}: +{[t['id'] for t in new_tasks]}")
             log(who, f"再計画 #{iteration}: 追加タスク {[(t['id'], t.get('kind','work')) for t in new_tasks]}")
             continue
+
+        # 統一 verify: 評価が done に達し、成果 revision が確定したここで一度だけ検証する。
+        # criterion / コマンドの fail は同じ run の修正ループへ戻す（世代交代より先に、いちばん
+        # 安い層で直す）。inconclusive は修正回数を消費せず receipt のまま上位へ返す。
+        # 環境要因の打ち切り（decision=failed）では検証しない——成果が確定していない。
+        if decision != "failed":
+            try:
+                receipt = run_verification_plan(bus, args, who)
+            except Exception as e:  # noqa: BLE001 — 検証の失敗で run を落とさない（receipt 無し=不採用）
+                log(who, f"統一 verify の実行に失敗（receipt 無しで続行・fail-close）: {e}")
+                receipt = None
+            if receipt and receipt.get("verdict") == "fail" and iteration < args.max_iterations:
+                fix = verify_fix_task(receipt, iteration)
+                iteration += 1
+                graph["nodes"][fix["id"]] = _node_entry(fix)
+                bus.write_task(fix)
+                _sanitize_graph(graph["nodes"])
+                graph["iteration"] = iteration
+                bus.write_graph(graph)
+                bus.set_status("running")
+                bus.event(who, "verify-fix", iteration=iteration, added=[fix["id"]])
+                bus.sync_push(f"verify-fix #{iteration} run {args.run_id}: +{fix['id']}")
+                log(who, f"統一 verify が fail → 修正ループ #{iteration}: {fix['id']}")
+                continue
         break
 
     # 全ノード結果を集約 → final.json 書き出し → 終端（done / 環境要因なら failed）・push

@@ -48,6 +48,7 @@ _FRAGMENTS = (
     "plugins",       # executor プラグイン loader
     "waits",         # park & poll / service_waits
     "continuation",  # Continuation（再計画）
+    "verifyplan",    # 統一 verify の専用 runner（verification_plan → receipt）
     "orchestrate",   # cmd_orchestrate
     "work",          # cmd_work
     "run",           # cmd_run + child spawn

@@ -194,7 +194,7 @@ class SpecTrackTests(unittest.TestCase):
             self.assertEqual(s.id, "T1-spec")
             self.assertEqual(s.get("spec_for"), "T1")
             self.assertEqual(s.get("review"), "human")       # spec は必ず人が検収
-            self.assertIn("specs/T1", s.verify)              # 決定的 verify（3 ファイル存在）
+            self.assertIn("specs/T1", km.task_verification_commands(s)[0]["command"])  # 決定的検証（3 ファイル存在）
             t = km.load_tasks(cfg.backlog)
             t1 = next(x for x in t if x.id == "T1")
             self.assertEqual(t1.get("route"), "spec")

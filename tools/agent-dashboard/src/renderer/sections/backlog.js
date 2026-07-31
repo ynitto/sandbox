@@ -675,7 +675,7 @@ function reviseAreaHtml(t) {
     </details>
     <details>
       <summary>確認方法を固定</summary>
-      <div class="field"><label>実行するコマンド</label><input id="rv-verify" class="mono" value="${esc(t.verify || '')}" />
+      <div class="field"><label>実行するコマンド</label><input id="rv-verify" class="mono" value="${esc(fixedVerifyCommand(t))}" />
         <p class="field-help">コマンドが決まっている場合だけ設定します。空欄にすると削除します。</p></div>
     </details>
     <details class="revise-guide" ${GUIDE_KEYS.some((k) => t.extra[k]) ? 'open' : ''}>
@@ -883,7 +883,6 @@ function showTaskDialog(id, scope) {
         ['title', $('rv-title').value.trim(), String(t.title || '')],
         ['priority', $('rv-priority').value.trim(), String(t.priority)],
         ['after', $('rv-after').value.trim(), String(t.extra.after || '')],
-        ['verify', $('rv-verify').value.trim(), String(t.verify || '')],
         ['level', $('rv-level').value.trim(), String(t.extra.level || '')],
         ['track', $('rv-track').value.trim(), String(t.extra.track || '')],
         ['node', $('rv-node').value.trim(), String(t.extra.node || '')],
@@ -894,15 +893,25 @@ function showTaskDialog(id, scope) {
         if (key === 'priority' && cur === '') continue; // 空欄は「変更なし」（priority に削除は無い）
         if (cur !== orig.trim()) fields[key] = cur;
       }
+      // 固定検証コマンドの書き込みは正規形（verification_commands）のみ。旧 verify: が残っていたら
+      // 同時に消す（正本を 2 か所にしない）。
+      const verifyNow = $('rv-verify').value.trim();
+      if (verifyNow !== fixedVerifyCommand(t)) {
+        fields.verification_commands = verifyNow ? [verifyNow] : [''];
+        if (String(t.verify || '').trim()) fields.verify = '';
+      }
       // 受入基準は複数行フィールド＝**行の集合を丸ごと**送る（本体側も全行置換）。
-      // 単値と同じ扱いにすると "a,b" の 1 行に潰れる。空なら [] を送って削除。
+      // 単値と同じ扱いにすると "a,b" の 1 行に潰れる。空なら [''] を送って削除。
+      // 書き込みは正規形（task_acceptance_criteria）のみ。旧 acceptance 行が残っていたら
+      // 同時に消し、正本が 2 か所にならないようにする（dual-write 禁止の逆向き）。
       const acceptanceNow = $('rv-acceptance')
         .value.split('\n')
         .map((s) => s.trim())
         .filter(Boolean);
       const acceptanceWas = acceptanceList(t);
       if (acceptanceNow.join('\n') !== acceptanceWas.join('\n')) {
-        fields.acceptance = acceptanceNow.length ? acceptanceNow : [''];
+        fields.task_acceptance_criteria = acceptanceNow.length ? acceptanceNow : [''];
+        if (String((t.extra || {}).acceptance || '').trim()) fields.acceptance = [''];
       }
       const feedback = $('rv-feedback').value.trim();
       if (!Object.keys(fields).length && !feedback) {
@@ -1514,10 +1523,14 @@ async function submitEnqueue() {
   const p = state.project;
   if (!p) return;
   const extra = state.enqueueExtra || {};
+  // 統一 verify の正規形だけを書く: 受入基準は task_acceptance_criteria（1 行 1 基準）、
+  // 固定コマンドは verification_commands。旧 verify / accept キーは新規書き込みに使わない。
+  const acceptLines = $('enq-accept').value.split('\n').map((s) => s.trim()).filter(Boolean);
+  const verifyCmd = $('enq-verify').value.trim();
   const spec = {
     title: $('enq-title').value,
-    verify: $('enq-verify').value,
-    accept: $('enq-accept').value,
+    task_acceptance_criteria: acceptLines,
+    verification_commands: verifyCmd ? [verifyCmd] : [],
     priority: $('enq-priority').value,
     note: $('enq-note').value,
     id: $('enq-id').value,
@@ -1552,7 +1565,7 @@ async function submitEnqueue() {
     uiLog('enqueue', res);
     toast(
       `タスクを追加しました: ${res.spec.title}\n` +
-        (res.spec.verify || res.spec.accept
+        ((res.spec.verification_commands || []).length || (res.spec.task_acceptance_criteria || []).length
           ? '（次の実行サイクルで一覧に載ります）'
           : '（完了条件が無いため、取り込み後に内容の確認が必要になります）'),
       true

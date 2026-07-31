@@ -249,6 +249,9 @@ def _spawn_orchestrator(base: list, args, req_id: str, req: dict):
     ws_args = ["--workspace", json.dumps(ws, ensure_ascii=False)] if ws else []
     for r in (req.get("references") or []):   # 参照リポジトリも run meta へ伝搬する
         ws_args += ["--reference", json.dumps(r, ensure_ascii=False)]
+    vp = req.get("verification_plan")         # 統一 verify の検証計画も run meta へ伝搬する
+    if isinstance(vp, dict):
+        ws_args += ["--verification-plan", json.dumps(vp, ensure_ascii=False)]
     inh = req.get("inherit_from")             # リトライ: 先行 run の引き継ぎ元を orchestrate へ
     deleg = req.get("delegation")             # 委譲公示板（agent-board）由来の来歴を meta へ引き回す
     return subprocess.Popen(base + ws_args + [
@@ -299,6 +302,9 @@ def _apply_inbox_request(bus: Bus, args) -> None:
     inh = rec.get("inherit_from")
     if inh and not getattr(args, "inherit_from", None):
         args.inherit_from = inh
+    vp = rec.get("verification_plan")
+    if isinstance(vp, dict) and not getattr(args, "verification_plan", None):
+        args.verification_plan = json.dumps(vp, ensure_ascii=False)
 
 
 def cmd_run(args) -> int:
@@ -350,6 +356,8 @@ def cmd_run(args) -> int:
         base += ["--workspace", args.workspace]   # 唯一の書込先を orchestrator/worker へ伝搬
     for r in (getattr(args, "references", None) or []):
         base += ["--reference", r]                # 参照リポジトリを orchestrator/worker へ伝搬
+    if getattr(args, "verification_plan", None):
+        base += ["--verification-plan", args.verification_plan]  # 統一 verify の計画を orchestrator へ
     base += ["--granularity", str(getattr(args, "granularity", "auto") or "auto")]  # 分解粒度
     if getattr(args, "exemplar_first", False):
         base += ["--exemplar-first"]   # 見本先行分解を orchestrator へ伝搬

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "verification-plan.schema.json",
+  "title": "verification_plan（agent-project が確定し agent-flow が実行する検証計画）",
+  "description": "タスク/charter の受入基準（自然文 criterion）と任意の固定検証コマンドを 1 つの改ざん検知可能な契約に直列化したもの。agent-project が run 投入前に確定して digest を付け、agent-flow の専用 runner が成果 revision 上で一度だけ実行する。自然文からコマンドへの一発合成はしない。digest は digest フィールドを除いた canonical JSON（キー昇順・区切り最小・UTF-8）の SHA-256。正典設計: docs/plans/2026-07-30-unified-task-verify-design.md §4 / 実装: agentcore.verifycontract",
+  "type": "object",
+  "required": ["version", "task_id", "commands", "criteria", "digest"],
+  "properties": {
+    "version": {"type": "integer", "description": "契約版。現行 1。解釈できない版の plan は実行しない（fail-close）", "minimum": 1},
+    "task_id": {"type": "string", "description": "対象タスク id。charter acceptance では project/charter を指す id（例 charter:<名前>）"},
+    "workspace": {"type": "string", "description": "検証対象の書込先ワークスペース名（無ければ空）"},
+    "commands": {
+      "type": "array",
+      "description": "固定検証コマンド。文字列を変えずに実行し、全件終了コード 0 が要求される。正規化段で完全一致コマンドは 1 つへ畳む（task 固有と regression の重複実行の解消）",
+      "items": {
+        "type": "object",
+        "required": ["command"],
+        "properties": {
+          "command": {"type": "string", "description": "POSIX sh で実行される 1 論理コマンド"},
+          "source": {"type": "string", "enum": ["user", "legacy", "template", "policy"], "description": "user=利用者の明示 / legacy=旧 verify: の読み替え / template=verify_template の展開 / policy=project policy 由来の固定 gate（回帰等）"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "criteria": {
+      "type": "array",
+      "description": "自然文の受入基準。verifier が成果 revision 上で証跡付きで判定する。id は plan 内の出現順に C1, C2, … の 1 始まり連番（採番規則の正典）",
+      "items": {
+        "type": "object",
+        "required": ["id", "text"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^C[1-9][0-9]*$"},
+          "text": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "policy": {
+      "type": "object",
+      "description": "実行ポリシー（既定は runner 側の設定）",
+      "properties": {
+        "confirm": {"type": "integer", "description": "固定コマンドの確認実行回数（flaky 検知）", "minimum": 1},
+        "timeout_sec": {"type": "number", "description": "固定コマンド 1 件あたりのタイムアウト秒", "exclusiveMinimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "digest フィールドを除いた canonical JSON の SHA-256"}
+  },
+  "additionalProperties": false
+}

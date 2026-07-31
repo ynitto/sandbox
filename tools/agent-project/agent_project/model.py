@@ -149,8 +149,10 @@ TASK_GUIDE_KEYS = ("why", "desc", "scope", "out_of_scope", "constraints", "hints
 
 # 複数行フィールド（同じキーの `- k: v` 行を要素数だけ並べる）。単値フィールドの規約
 # （リストは ⏎ / カンマで 1 行に畳む）を適用してはいけないものをここに列挙する。
-#   acceptance … 受入基準チェックリスト（S5 の一次表現。基準にカンマは普通に出るので畳めない）
-MULTILINE_KEYS = ("acceptance",)
+#   task_acceptance_criteria … 受入基準（統一 verify の正規形。1 行 1 基準）
+#   verification_commands    … 任意の固定検証コマンド（正規形。1 行 1 コマンド）
+#   acceptance … 受入基準チェックリスト（旧形式。読み取り境界で正規形へ読み替える）
+MULTILINE_KEYS = ("task_acceptance_criteria", "verification_commands", "acceptance")
 
 ENQUEUE_KNOWN_KEYS = {"id", "title", "verify", "priority", "source", "status",
                       "after", "review", "note", "accept", "verify_template", "repos",
@@ -209,12 +211,14 @@ def task_from_spec(cfg: "Config", spec: dict) -> Task:
     verify = _strip_code(str(spec.get("verify", "") or "").strip())
     accept = str(spec.get("accept", "") or "").strip()
     tmpl = str(spec.get("verify_template", "") or "").strip()
-    acceptance = coerce_multiline(spec.get("acceptance"))
+    acceptance = coerce_multiline(spec.get("acceptance")) \
+        or coerce_multiline(spec.get("task_acceptance_criteria"))
+    vcmds = coerce_multiline(spec.get("verification_commands"))
     tid = _gen_task_id(cfg, spec.get("id"), title)
-    # verify が無くても acceptance / accept / verify_template があれば「検証の材料はある」ので
-    # ready 扱い（後で展開/検証エージェントが使う）。述語は verify.py の has_verify_plan と同義
-    # ——ここだけ acceptance を数えないと、受入基準しか持たないタスクが inbox へ落ちる。
-    has_plan = bool(verify or acceptance or accept or tmpl)
+    # verify が無くても基準（正規形/旧形式）・accept・verify_template・固定コマンドがあれば
+    # 「検証の材料はある」ので ready 扱い。述語は verify.py の has_verify_plan と同義
+    # ——ここだけ数え漏らすと、受入基準しか持たないタスクが inbox へ落ちる。
+    has_plan = bool(verify or acceptance or accept or tmpl or vcmds)
     explicit = str(spec.get("status", "") or "").strip()
     default_status = "ready" if has_plan else "inbox"
     # 実行前レビュー（plan_review・既定 on）: status を明示しない新規投入はすべて proposed で入り、
@@ -222,16 +226,26 @@ def task_from_spec(cfg: "Config", spec: dict) -> Task:
     if not explicit and getattr(cfg, "plan_review", False):
         default_status = "proposed"
     status = explicit or default_status
-    t = Task(id=tid, title=title, status=status, verify=verify,
+    # 書き込み境界の正規化（統一 verify・P1-A8）: 新規データに裸の acceptance / accept /
+    # verify を書かない。spec がどの形（旧 CLI フラグ・旧 planner 出力・正規形）で来ても、
+    # 保存は task_acceptance_criteria / verification_commands の正規形 1 本にする。
+    # 旧形式の**読み取り**（task_acceptance / task_verification_commands の読み替え）は
+    # 互換期間中残る——既存タスクファイルはそのまま動く。
+    criteria_lines = coerce_multiline(spec.get("task_acceptance_criteria")) \
+        + coerce_multiline(spec.get("acceptance")) \
+        + ([accept] if accept else [])
+    vcmd_lines = vcmds + ([verify] if verify else [])
+    t = Task(id=tid, title=title, status=status, verify="",
              source=str(spec.get("source", "") or "enqueue"))
     try:
         t.priority = int(spec.get("priority", 0) or 0)
     except (TypeError, ValueError):
         t.priority = 0
-    for k in MULTILINE_KEYS:                         # 複数行フィールド（1 要素 = 1 行）
-        for line in coerce_multiline(spec.get(k)):
-            t.extra.append((k, line))
-    for k in ("after", "review", "note", "accept", "verify_template", "repos",   # 既知の追加フィールド
+    for line in dict.fromkeys(criteria_lines):       # 複数行フィールド（1 要素 = 1 行・重複は畳む）
+        t.extra.append(("task_acceptance_criteria", line))
+    for line in dict.fromkeys(vcmd_lines):
+        t.extra.append(("verification_commands", line))
+    for k in ("after", "review", "note", "verify_template", "repos",   # 既知の追加フィールド
               "workspace", "refs", "paths", "routed_by", "node",   # ルーティング: 書込先・参照repo・触るパス・解決経路・実行ノード
               *TASK_GUIDE_KEYS):                           # 誘導・レビュー記述（why/desc/scope/…）
         v = spec.get(k)
@@ -383,9 +397,12 @@ def create_cohort(cfg: "Config", spec: dict) -> Task:
     # 誘導・レビュー記述（why/desc/…）は pilot にも残り生成メンバにも引き継ぐ（{item} 差し込み可）
     guide = {k: (" ⏎ ".join(map(str, v)) if isinstance(v, list) else str(v))
              for k, v in ((k, spec.get(k)) for k in TASK_GUIDE_KEYS) if v not in (None, "", [])}
+    acceptance_t = coerce_multiline(spec.get("acceptance")) \
+        or coerce_multiline(spec.get("task_acceptance_criteria"))
     pilot_spec = {
         "title": _apply_item(title_t, pilot_item),
         "verify": _apply_item(verify_t, pilot_item, fallback=False) if verify_t else "",
+        "acceptance": [_apply_item(a, pilot_item, fallback=False) for a in acceptance_t],
         "accept": spec.get("accept"),
         "review": "human",                 # pilot は人の承認（feedback）で指示を固める
         "source": str(spec.get("source", "") or "cohort"),
@@ -402,6 +419,7 @@ def create_cohort(cfg: "Config", spec: dict) -> Task:
         "pilot_id": pilot.id,
         "title_template": title_t,
         "verify_template": verify_t,
+        "acceptance_template": acceptance_t,   # 受入基準テンプレ（{item} はメンバ生成時に差し込み）
         "accept": str(spec.get("accept", "") or ""),
         "items": rest,                     # pilot 承認後に生成する残り要素
         "repos": ",".join(repos) if isinstance(repos, list) else (repos or ""),
@@ -430,6 +448,8 @@ def materialize_cohort_rest(cfg: "Config", pilot: Task, feedback: str = "") -> "
         mspec = {
             "title": _apply_item(state["title_template"], item),
             "verify": _apply_item(state["verify_template"], item, fallback=False) if state.get("verify_template") else "",
+            "acceptance": [_apply_item(str(a), item, fallback=False)
+                           for a in (state.get("acceptance_template") or [])],
             "accept": state.get("accept") or None,
             "source": str(state.get("source", "") or "cohort"),
             "repos": repos,

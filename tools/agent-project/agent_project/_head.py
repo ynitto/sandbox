@@ -49,6 +49,7 @@ from agentcore import protocol as _protocol  # noqa: E402
 # agent-project / agent-flow(gitcache・board) が別々に実装していて吸収規則が食い違い、
 # 同じ 2 つの URL が経路によって一致したりしなかったりしていた（agentcore.nodeid と同型の問題）。
 from agentcore import repolocal as _repolocal  # noqa: E402
+from agentcore import verifycontract as _verifycontract  # noqa: E402
 # エージェント CLI 定義（agents/<name>.json）の読み込みと argv 組み立て（S9）。組み込み
 # （kiro/claude/copilot/codex）を含む全 CLI がこの定義で動く。以前は同じ argv 知識が
 # agent-project / agent-flow / agent-amigos / dashboard の 4 か所に重複しており、

@@ -111,6 +111,12 @@ def build_agent_flow_cmd(task: Task, cfg: "Config", use_git: bool = False,
     # 1〜3 に固定される（複雑なタスクでも「まとめて 1〜3 ノード」に畳まれる）。
     # agent-flow の `--granularity` はグローバル引数なので run より前に置く。
     base += ["--granularity", str(getattr(cfg, "flow_granularity", "auto") or "auto")]
+    # 統一 verify: 検証計画を構造化して渡す（planner の自由記述へ混ぜない）。agent-flow は
+    # 成果 revision 確定後の専用 runner で一度だけ実行し、receipt を返す（settle が検算する）。
+    # agent-project と agent-flow は同時に更新する前提（旧 agent-flow はこのフラグを解釈できない）。
+    _plan = build_task_verification_plan(cfg, task)
+    if _plan:
+        base += ["--verification-plan", json.dumps(_plan, ensure_ascii=False)]
     cmd = (base + _workspace_cmd_args(cfg, task)
            + _reference_cmd_args(cfg, task) + [
         "run", build_request(task, cfg), "--planner", cfg.flow_planner,
@@ -824,8 +830,8 @@ def read_brief_discoveries(cfg: "Config", use_git: bool, run_id: str = "") -> "l
 # 検証済み verify ライブラリ（`verify_lib_path` / `save_validated_verify` /
 # `find_learned_verify`）は S5 で廃止した。「実績のあるコマンドを再利用する」発想は、
 # **昇格したコマンドが劣化した検証でも人には見抜けない**という根本問題を解決しないため。
-# 置き換えは `verify-recipes/`（verify.py の `find_verify_recipes` / `save_verify_recipes`）で、
-# あちらは次回 verifier への **参考情報**であって独立した決定的ゲートには昇格させない。
+# 一時期の置き換えだった `verify-recipes/`（旧 verifier への参考情報）も、旧 verifier の
+# 撤去（P1-A8）とともに廃止した——検証は agent-flow runner の receipt が唯一の根拠。
 
 
 def capture_approve_learn(cfg: "Config", task: "Task", location: str) -> None:
