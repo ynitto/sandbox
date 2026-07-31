@@ -889,7 +889,8 @@ class Bus:
                        workspace: "dict | None" = None,
                        references: "list[dict] | None" = None,
                        inherit_from: "str | None" = None,
-                       delegation: "dict | None" = None) -> None:
+                       delegation: "dict | None" = None,
+                       verification_plan: "dict | None" = None) -> None:
         rec = {
             "id": req_id,
             "request": request,
@@ -903,6 +904,10 @@ class Bus:
         if isinstance(delegation, dict) and delegation.get("id"):
             # 委譲公示板（agent-board）由来の来歴。daemon の orchestrate が run meta へ引き回す
             rec["delegation"] = delegation
+        if isinstance(verification_plan, dict):
+            # 統一 verify の検証計画（依頼側が digest 付きで確定済み）。_spawn_orchestrator が
+            # `--verification-plan` として orchestrate へ渡し、専用 runner が receipt を返す。
+            rec["verification_plan"] = verification_plan
         write_json_atomic(os.path.join(self.inbox_dir, f"{req_id}.json"), rec)
 
     def list_inbox(self):

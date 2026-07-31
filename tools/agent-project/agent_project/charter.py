@@ -800,8 +800,23 @@ def _existing_titles(cfg: "Config", charter: "str | None" = None,
 
 
 def _is_duplicate(title: str, verify: str, existing: "list[str]", threshold: float) -> bool:
-    """タイトルが既存と十分類似（Jaccard ≥ threshold）なら重複とみなす（plan/evaluate の冪等性）。"""
-    return any(_title_overlap(title, e) >= threshold for e in existing)
+    """タイトルが既存と**完全一致**（正規化後）なら重複とみなす（plan/evaluate の冪等性）。
+
+    かつては Jaccard ≥ threshold（既定 0.5）で止めていた。墓標を完全一致へ寄せたときに
+    同じ理由がここにも当てはまることは分かっていたが、投入側は「最終防衛線」として残した。
+    その前提は成り立たない——プランナーは差し替え可能なスキルなので、言い換えを止められない
+    護りに強度だけ持たせても、通るものは通り、通さないものが人に見えないまま消える。
+    0.5 は「board UI を作る」と「board 観測 UI を作る」を同一視する強さで、抑止は
+    取り返しがつかない。類似は `_similar_existing` で注記へ回す（人が見て却下できる）。"""
+    fp = _norm_title(title)
+    return bool(fp) and any(_norm_title(e) == fp for e in existing)
+
+
+def _similar_existing(title: str, existing: "list[str]", threshold: float) -> "list[str]":
+    """完全一致ではないが似ている既存タイトル（投入は止めず注記に使う）。"""
+    fp = _norm_title(title)
+    return [e for e in existing
+            if _norm_title(e) != fp and _title_overlap(title, e) >= threshold]
 
 
 # ---------------------------------------------------------------------------

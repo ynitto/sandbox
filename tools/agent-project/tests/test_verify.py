@@ -441,7 +441,17 @@ class TestVerifyAssist(unittest.TestCase):
             t = km.Task(id="T1", title="x", extra=[("acceptance", "何かが動く")])
             self.assertFalse(km.delegate_verification(cfg, t, self._verification(), "r", 1))
 
-    def test_external_verdict_is_accepted_for_the_same_revision_only(self):
+    def _external_receipt(self, cfg, task, rev, evidence=True):
+        """他ノードが返す receipt（内蔵 verifier のものと同じ契約）。"""
+        plan = km.build_task_verification_plan(cfg, task)
+        criteria = [{"id": c["id"], "text": c["text"], "verdict": "pass",
+                     "evidence": ([{"kind": "command", "detail": "pytest -q", "output": "ok"}]
+                                  if evidence else [])}
+                    for c in plan["criteria"]]
+        return plan, km._verifycontract.build_receipt(
+            plan, result_rev=rev, commands=[], criteria=criteria, verified_by="pc-b")
+
+    def test_external_receipt_is_accepted_for_the_same_revision_only(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             git_init(d)
@@ -451,17 +461,40 @@ class TestVerifyAssist(unittest.TestCase):
                            capture_output=True)
             cfg = cfg_for(d)
             t = km.Task(id="T1", title="x", extra=[("acceptance", "何かが動く")])
+            t.verify = ""
             rev = km.git_change_baseline(d)[0]
-            km.save_external_verdict(cfg, t, rev, {"verdict": "pass", "did": "dg-1", "by": "pc-b"})
+            _, receipt = self._external_receipt(cfg, t, rev)
+            km.save_external_verdict(cfg, t, rev, {"receipt": receipt, "did": "dg-1", "by": "pc-b"})
             ok, flaky, msg, result = km._run_task_verifier(cfg, t, d)
             self.assertTrue(ok)
-            self.assertTrue(result["external"])
             self.assertIn("pc-b", msg)                      # 誰が確かめたかを残す
-            self.assertIn("pc-b", result["criteria"][0]["note"])
-            self.assertIn("external_by", t.get("verification"))
+            self.assertIn("plan_digest", t.get("verification"))
             # 別の版の判定は受理しない（古い版で通った、を今の版の根拠にしない）
             self.assertIsNone(km.read_external_verdict(cfg, t, "0123456"))
             self.assertIsNone(km.read_external_verdict(cfg, t, ""))
+
+    def test_external_pass_without_evidence_is_rejected(self):
+        """証跡の無い pass は外部でも採用しない（内蔵 verifier と同じ検算を課す）。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            git_init(d)
+            (d / "a.txt").write_text("x", encoding="utf-8")
+            subprocess.run(["git", "-C", str(d), "add", "-A"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(d), "commit", "-qm", "c"], check=True,
+                           capture_output=True)
+            cfg = cfg_for(d)
+            t = km.Task(id="T1", title="x", extra=[("acceptance", "何かが動く")])
+            t.verify = ""
+            rev = km.git_change_baseline(d)[0]
+            # 旧形式（板が成功終端で終わった事実だけ）は受理しない
+            km.save_external_verdict(cfg, t, rev, {"verdict": "pass", "did": "dg-1", "by": "pc-b"})
+            self.assertIsNone(km.read_external_verdict(cfg, t, rev))
+            # 形が receipt でも証跡ゼロの pass は fail に落ちる（内蔵経路と同じ receipt_overall）
+            _, bare = self._external_receipt(cfg, t, rev, evidence=False)
+            km.save_external_verdict(cfg, t, rev, {"receipt": bare, "did": "dg-1", "by": "pc-b"})
+            ok, _flaky, _msg, result = km._run_task_verifier(cfg, t, d)
+            self.assertFalse(ok)
+            self.assertEqual(result["fail"], len(result["criteria"]))
 
     def test_delegated_verification_result_is_ingested(self):
         with tempfile.TemporaryDirectory() as d:
@@ -469,13 +502,34 @@ class TestVerifyAssist(unittest.TestCase):
             mk_state_repo(d)
             cfg = cfg_for(d, board=str(d / "board"))
             t = km.Task(id="T1", title="x", status="offloaded", extra=[("acceptance", "A")])
+            t.verify = ""
             t.set("verify_rev", "abc1234")
             km.persist_task(cfg, t)
-            km._settle_verify_delegation(cfg, t, "dg-1", True, "board delegation dg-1 done", 1, {})
-            self.assertEqual(t.norm_status(), "ready")        # 次の巡回で検収へ進む
+            _, receipt = self._external_receipt(cfg, t, "abc1234")
+            with mock.patch.object(km, "_board_result_receipt", return_value=receipt), \
+                 mock.patch.object(km, "_board_result_winner", return_value="pc-b"):
+                km._settle_verify_delegation(cfg, t, "dg-1", True, "board delegation dg-1 done",
+                                             1, {})
+            self.assertEqual(t.norm_status(), "ready")        # 次の巡回で検算へ進む
             rec = json.loads(km.external_verdict_path(cfg, t, "abc1234").read_text(encoding="utf-8"))
-            self.assertEqual(rec["verdict"], "pass")
+            self.assertEqual(rec["receipt"]["plan_digest"], receipt["plan_digest"])
             self.assertEqual(rec["did"], "dg-1")
+
+    def test_delegation_without_receipt_goes_to_the_human(self):
+        """板の run が終端しただけでは受理しない（確かめた証跡が無い）。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mk_state_repo(d)
+            cfg = cfg_for(d, board=str(d / "board"))
+            t = km.Task(id="T1", title="x", status="offloaded", extra=[("acceptance", "A")])
+            t.set("verify_rev", "abc1234")
+            km.persist_task(cfg, t)
+            with mock.patch.object(km, "_board_result_receipt", return_value=None):
+                km._settle_verify_delegation(cfg, t, "dg-1", True, "board delegation dg-1 done",
+                                             1, {})
+            self.assertEqual(t.norm_status(), "blocked")
+            self.assertFalse(km.external_verdict_path(cfg, t, "abc1234").exists())
+            self.assertIn("receipt", (cfg.needs / "T1.md").read_text(encoding="utf-8"))
 
     def test_undecided_delegation_falls_back_to_the_human(self):
         with tempfile.TemporaryDirectory() as d:

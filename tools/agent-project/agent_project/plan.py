@@ -504,7 +504,12 @@ def _enqueue_specs(cfg: "Config", specs: "list[dict]", existing: "list[str]",
     for sp in specs:
         title = str(sp.get("title", "") or "").strip()
         verify = str(sp.get("verify", "") or "").strip()
-        if not title or _is_duplicate(title, verify, merged, threshold):
+        if not title:
+            continue
+        if _is_duplicate(title, verify, merged, threshold):
+            # 止めるのは完全一致だけ。しかも黙って落とさない——プランナーから見ると出したものが
+            # 消えるので、記録が無いと「再分解しても何も起きない」としか見えない。
+            append_journal(cfg.journal, f"同じ題の既存タスクがあるため投入を見送り: {title}")
             continue
         grave = tombstone_hit(title, graves)     # 完全一致のみ抑止（§ tombstone_hit の注記）
         if grave is not None:
@@ -514,14 +519,20 @@ def _enqueue_specs(cfg: "Config", specs: "list[dict]", existing: "list[str]",
                            + "。作り直すなら `agent-project revive` で解除してください")
             continue
         wants = _coerce_titles(sp.pop("after_titles", None))  # 生 title を task に書かない（id が正）
-        # 類似の墓標は**止めず**に注記だけ残す（人が票で見て却下できる＝取り返しがつく）
+        # 類似は墓標も現役タスクも**止めず**に注記だけ残す（人が票で見て却下できる＝取り返しがつく）
         near = similar_tombstones(title, graves, threshold)
+        similar = _similar_existing(title, merged, threshold)
+        notes = []
         if near:
-            sp = dict(sp, note=" ⏎ ".join(x for x in [
-                str(sp.get("note") or "").strip(),
-                "⚠ 却下済みのタスクに似ています: "
-                + " / ".join(f"「{t['title']}」（理由: {t['reason'] or '記録なし'}）"
-                             for t in near[:2])] if x))
+            notes.append("⚠ 却下済みのタスクに似ています: "
+                         + " / ".join(f"「{t['title']}」（理由: {t['reason'] or '記録なし'}）"
+                                      for t in near[:2]))
+        if similar:
+            notes.append("⚠ 既存タスクに似ています: "
+                         + " / ".join(f"「{s}」" for s in similar[:2]))
+        if notes:
+            sp = dict(sp, note=" ⏎ ".join(
+                x for x in [str(sp.get("note") or "").strip(), *notes] if x))
         try:
             t = enqueue_task(cfg, sp)
             created.append(t)

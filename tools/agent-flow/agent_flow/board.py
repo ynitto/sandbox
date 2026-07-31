@@ -112,6 +112,11 @@ def _delegation_result_extras(bus_run: "Bus") -> dict:
                 reject_guidance = out[i + len(_REJECT_MARK):].strip()[:1500]
                 break
     extras: dict = {}
+    receipt = read_json(os.path.join(bus_run.run_dir, "receipt.json"))
+    if isinstance(receipt, dict):
+        # 統一 verify の receipt は板の result へそのまま載せる。依頼側は「板が成功終端で
+        # 終わった」ではなく receipt の digest・revision・証跡で採否を決める。
+        extras["receipt"] = receipt
     if reject_guidance:
         extras["reject_guidance"] = reject_guidance
     if notes:
@@ -352,7 +357,11 @@ def poll_board(bus_local: "Bus", args, node_id: str) -> "list[str]":
             did, _board_request(post), f"agent-board:{node_id}",
             workspace=ws or None,
             references=post.get("references") or [],
-            delegation={"id": did, "board": True})
+            delegation={"id": did, "board": True},
+            # 統一 verify: 公示に検証計画が載っていれば、ローカル run の専用 runner が同じ plan を
+            # 実行して receipt を書く。依頼側はその receipt を検算してから採用する。
+            verification_plan=post.get("verification_plan")
+            if isinstance(post.get("verification_plan"), dict) else None)
         bus_local.sync_push(f"board handoff {did} -> inbox")
         # 板へ実行状態を残す（依頼側の観測用）
         write_json_atomic(os.path.join(ddir, "status", f"{protocol.safe_name(node_id)}.json"), {

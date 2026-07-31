@@ -161,7 +161,17 @@ exit 127 = コマンド不在）は inconclusive で、成果物の欠陥と環�
 既にあれば再実行しません（command 実行は一回だけ）。壊れた plan（digest 不一致・未知版）は
 実行せず receipt も書きません——receipt 欠落を採用側が done にしない fail-close に倒します。
 plan は `--verification-plan`（グローバル引数）または inbox 要求の `verification_plan` キーで
-受け取ります（inbox が権威）。
+受け取ります（inbox が権威。env 渡しは不安定として却下・2026-07-31）。
+
+実行場所は workspace 宣言のある run なら該当 repo の clone、無い run（ローカル実行・成果は
+投入ノードの作業ツリーに直接出る）ならプロセスの cwd です。workspace 宣言があるのに clone を
+用意できなかった run は cwd に倒さず inconclusive にします（成果の無い場所で誤判定しない）。
+固定コマンドには差分基準の環境変数 `$KIRO_BASE_REV` を渡します——clone では成果 HEAD、cwd では
+run 投入時に meta に固定した `base_rev`（act 前 HEAD）。plan の policy `confirm` が 1 より
+大きければ同じコマンドを最大 confirm 回実行し、PASS/FAIL を跨いだら flaky を立てます（flaky な
+pass は receipt の全体判定で fail に落ち、採用側が人へ隔離します）。コマンド実行のセマンティクスは
+`agentcore.verifycontract.run_plan_command` の 1 実装で、agent-project の local runner
+（receipt を返せない run の受け皿）と共有します。
 
 ## コンポーネント
 

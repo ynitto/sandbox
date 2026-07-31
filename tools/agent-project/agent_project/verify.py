@@ -407,14 +407,29 @@ def save_external_verdict(cfg: "Config", task: "Task", rev: str, record: dict) -
 
 
 def read_external_verdict(cfg: "Config", task: "Task", rev: str) -> "dict | None":
-    """この成果 rev について他ノードが出した検証結果（無ければ None）。"""
+    """この成果 rev について他ノードが返した receipt（採用できなければ None）。
+
+    受理の条件は内蔵 verifier とまったく同じ——`receipt_errors` の照合（schema、plan digest、
+    result revision、証跡付き pass）を通ることだけ。誰が確かめたかは見ない。かつては
+    「板の run が成功終端で終わった」を根拠に `{"verdict": "pass"}` を書いていたため、
+    証跡が 1 つも無い pass が done へ通っていた。"""
     if not str(rev or "").strip():
         return None                     # rev が取れない環境では受理しない（照合の根拠が無い）
     try:
         rec = json.loads(external_verdict_path(cfg, task, rev).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    return rec if isinstance(rec, dict) and rec.get("verdict") == "pass" else None
+    if not isinstance(rec, dict):
+        return None
+    receipt = rec.get("receipt") if isinstance(rec.get("receipt"), dict) else rec
+    plan = build_task_verification_plan(cfg, task)
+    errs = _verifycontract.receipt_errors(receipt, plan=plan, expected_rev=rev)
+    if errs:
+        append_journal(cfg.journal,
+                       f"外部検証を不採用（fail-close）: {task.id} rev={rev[:12]} — "
+                       f"{'; '.join(errs)[:200]}")
+        return None
+    return receipt
 
 
 def save_verification_report(cfg: "Config", task: "Task", result: dict, rev: str,
@@ -670,7 +685,9 @@ def _adopt_receipt(cfg: "Config", task: "Task", receipt: dict,
     # 隔離経路（リトライを焼かず人へ）に乗せるため個別に立てて返す（旧 run_verify_stable と同じ）。
     flaky = any(bool(c.get("flaky")) for c in receipt.get("commands") or []
                 if isinstance(c, dict))
-    vmsg = verification_message(result)
+    # 経路（誰の receipt か）を判定文にも残す。needs 票と受領書はこの 1 行しか読まないので、
+    # 経路がレポート本文にしか無いと「別の端末が確かめた」ことが人の目に届かない。
+    vmsg = f"{verification_message(result)}（{how}）"
     if flaky:
         vmsg = f"flaky: 検証コマンドが不安定（複数回実行で PASS/FAIL 混在） — {vmsg}"[:500]
     append_journal(cfg.journal, f"検証（receipt）: {task.id} — {vmsg}")

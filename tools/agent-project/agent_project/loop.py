@@ -136,24 +136,29 @@ def _settle_verify_delegation(cfg: "Config", task: "Task", did: str, ok: bool, m
                               cycle: int, reasons: dict) -> int:
     """検証委譲（P4-b）の結果を受け取る。settle した件数（常に 1）を返す。
 
-    成功終端＝別の端末が受入基準を確かめた。その事実を受理点
+    受け取るのは板の result に載った receipt で、それを受理点
     （`verifications/<task-id>/<rev>.external.json`）へ置き、タスクを `ready` へ戻す
-    ——次の巡回の settle が同じ rev の検証としてそれを受け入れ、検収 / 完了へ進む
+    ——次の巡回の settle が内蔵 verifier と同じ検算を通してから採用する
     （done の根拠を「誰が確かめたか」で分岐させない）。
 
-    それ以外（失敗・中止・請け負い手なし）は**従来どおり人へ**。機械で試せる解決を
-    試したうえでの人番なので、票には「板でも確かめられなかった」ことまで書く。"""
+    receipt が返らなかった場合は成功終端でも受理しない。「板の run が終わった」は
+    確かめた証拠ではないからで、証跡の無い pass を通す唯一の穴がここだった。
+    失敗・中止・請け負い手なしと同じく人へ回す。票には「板でも確かめられなかった」ことまで書く。"""
     rev = str(task.get("verify_rev") or "").strip()
-    task.drop("flow_run", "flow_loc", "verify_rev")
-    if ok and rev:
+    receipt = _board_result_receipt(cfg, did)
+    task.drop("flow_run", "flow_loc", "verify_rev", "verify_plan_digest")
+    if ok and rev and receipt is not None:
         rel = save_external_verdict(cfg, task, rev, {
-            "verdict": "pass", "did": did, "by": _board_result_winner(cfg, did),
+            "receipt": receipt, "did": did, "by": _board_result_winner(cfg, did),
             "at": _now_ts(), "detail": msg[:300]})
         task.status = "ready"
         persist_task(cfg, task)
-        append_journal(cfg.journal, f"cycle {cycle}: {task.id} 検証委譲の結果を受理"
-                                    f"（{did}・{rel or '記録の保存に失敗'}）→ 次の巡回で検収へ")
+        append_journal(cfg.journal, f"cycle {cycle}: {task.id} 検証委譲の receipt を受理"
+                                    f"（{did}・{rel or '記録の保存に失敗'}）→ 次の巡回で検算へ")
         return 1
+    if ok and rev:
+        msg = (f"{msg}（板の run は終端しましたが receipt が返っていません。"
+               "確かめた証跡が無いので採用できません）")
     task.set("env_resume", "1")
     task.status = "blocked"
     why = ("[agent-error:env] 検証不能: このノードでは確かめられない基準があり、板へ検証を"
@@ -162,6 +167,16 @@ def _settle_verify_delegation(cfg: "Config", task: "Task", did: str, ok: bool, m
     _block(cfg, task, why, reasons)
     append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（検証委譲も決着せず）")
     return 1
+
+
+def _board_result_receipt(cfg: "Config", did: str) -> "dict | None":
+    """板の result に載った検証 receipt（無ければ None）。採否の検算は settle 側が行う。"""
+    try:
+        res = BoardRepo(cfg.board, workdir=cfg.board_workdir).read_result(did) or {}
+    except (OSError, RuntimeError, ValueError):
+        return None
+    rec = res.get("receipt")
+    return rec if isinstance(rec, dict) else None
 
 
 def _board_result_winner(cfg: "Config", did: str) -> str:

@@ -640,13 +640,20 @@ def delegate_verification(cfg: "Config", task: "Task", verification: dict,
     C5: 人の検収に品質判定そのものを負わせない）。
 
     委譲するのは**検証だけ**で、成果の変更は依頼しない（`_verification_request`）。
-    返ってきた結果は `verifications/<task-id>/<rev>.external.json` に受理点として置かれ、
-    次の settle の検証（`_run_task_verifier`）がその rev の判定として受け入れる。"""
+    公示には `verification_plan`（digest 付き）を載せる——請負側の agent-flow は同じ plan を
+    専用 runner で実行して receipt を返し、依頼側はそれを内蔵 verifier と同じ検算に通す。
+    plan を載せずに「板が成功終端で終わった」を根拠にしていた頃は、証跡が 1 つも無い pass が
+    done へ通っていた。受理点（`verifications/<task-id>/<rev>.external.json`）に置くのは
+    返ってきた receipt そのもので、次の settle がその rev の判定として検算する。"""
     if not str(getattr(cfg, "board", "") or "").strip():
         return False
     criteria = [c["text"] for c in (verification.get("criteria") or [])
                 if c.get("verdict") == "unverifiable"] or task_acceptance(task)
     if not criteria:
+        return False
+    plan = build_task_verification_plan(cfg, task)
+    if not plan:
+        # 検証材料が無い＝請負側に確かめる対象を渡せない。委譲せず人へ回す。
         return False
     rev = git_change_baseline(cfg.workdir)[0] or ""
     if not rev:
@@ -664,12 +671,14 @@ def delegate_verification(cfg: "Config", task: "Task", verification: dict,
                                  request=_verification_request(task, cfg, criteria, reasons),
                                  references=task_reference_specs(cfg, task))
         env["title"] = f"検証: {task.title or task.id}"
+        env["verification_plan"] = plan   # 請負側 agent-flow の runner が同じ plan を実行する
         if board.write_post(env):
             board.sync_push(f"post {did}（検証委譲）")
     except (OSError, RuntimeError, ValueError) as e:
         append_journal(cfg.journal, f"cycle {cycle}: {task.id} 検証委譲に失敗（人へ回します）: {e}")
         return False
     task.set("verify_rev", rev)          # 受理点の照合キー（結果はこの版の検証として受ける）
+    task.set("verify_plan_digest", str(plan.get("digest") or ""))   # 返り receipt の照合キー
     task.drop("env_resume")              # 人の approve 待ちではない（板の結果待ち）
     _mark_offloaded(cfg, task, VERIFY_DELEGATION_LOC, did)
     append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 検証委譲（{did}・基準 "

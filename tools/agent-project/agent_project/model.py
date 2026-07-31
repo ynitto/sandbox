@@ -302,8 +302,8 @@ def reconcile_intake(cfg: "Config", spec: dict) -> "tuple[dict | None, str]":
         tag = names[0]
     existing = _existing_titles(cfg, tag or None, active_only=True)
     if _is_duplicate(title, str(spec.get("verify") or ""), existing, cfg.learn_threshold):
-        dup = max(existing, key=lambda e: _title_overlap(title, e))
-        return None, (f"既存タスク「{dup}」と重複するため投入しませんでした。"
+        dup = next((e for e in existing if _norm_title(e) == _norm_title(title)), title)
+        return None, (f"既存タスク「{dup}」と同じ題のため投入しませんでした。"
                       "内容を足したいときは、そのタスクに feedback を書いてください")
     graves = load_tombstones(cfg, tag or None)
     grave = tombstone_hit(title, graves)
@@ -312,12 +312,19 @@ def reconcile_intake(cfg: "Config", spec: dict) -> "tuple[dict | None, str]":
                       + (f"（理由: {grave['reason']}）" if grave["reason"] else "")
                       + "。作り直すなら `agent-project revive` で解除してください")
     near = similar_tombstones(title, graves, cfg.learn_threshold)
+    notes = []
     if near:
-        spec = dict(spec, note=" ⏎ ".join(x for x in [
-            str(spec.get("note") or "").strip(),
-            "⚠ 却下済みのタスクに似ています: "
-            + " / ".join(f"「{t['title']}」（理由: {t['reason'] or '記録なし'}）"
-                         for t in near[:2])] if x))
+        notes.append("⚠ 却下済みのタスクに似ています: "
+                     + " / ".join(f"「{t['title']}」（理由: {t['reason'] or '記録なし'}）"
+                                  for t in near[:2]))
+    # 現役タスクとの類似も**止めず**に注記する（止めるのは完全一致だけ・S6-2）。
+    similar = _similar_existing(title, existing, cfg.learn_threshold)
+    if similar:
+        notes.append("⚠ 既存タスクに似ています: "
+                     + " / ".join(f"「{s}」" for s in similar[:2]))
+    if notes:
+        spec = dict(spec, note=" ⏎ ".join(
+            x for x in [str(spec.get("note") or "").strip(), *notes] if x))
     return spec, ""
 
 

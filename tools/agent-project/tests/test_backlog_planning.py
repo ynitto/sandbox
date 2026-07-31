@@ -609,10 +609,16 @@ class IntakeReconcileTests(unittest.TestCase):
             d = Path(d)
             cfg = cfg_for(d)
             km.enqueue_task(cfg, {"title": "検収 カード に 証跡 を 出す", "verify": "true"})
-            t, msg = km.enqueue_reconciled(cfg, {"title": "検収 カード に 証跡 を 表示 する"})
+            # 同じ題は止める（正規化して完全一致）
+            t, msg = km.enqueue_reconciled(cfg, {"title": "検収 カード に 証跡 を 出す"})
             self.assertIsNone(t)
-            self.assertIn("重複", msg)
+            self.assertIn("同じ題", msg)
             self.assertEqual(len(km.load_tasks(cfg.backlog)), 1)
+            # 似ているだけなら止めず、注記を付けて通す（機械の抑止は取り返しがつかない）
+            t2, msg2 = km.enqueue_reconciled(cfg, {"title": "検収 カード に 証跡 を 表示 する"})
+            self.assertIsNotNone(t2)
+            self.assertEqual(msg2, "")
+            self.assertIn("既存タスクに似ています", dict(t2.extra).get("note", ""))
 
     def test_new_task_passes_through(self):
         with tempfile.TemporaryDirectory() as d:
@@ -989,3 +995,45 @@ class FlowGranularityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IntakeDuplicateSuppressionTests(unittest.TestCase):
+    """W14 二次: 現役タスク相手に機械が止めるのは正規化タイトルの完全一致だけ（類似は注記）。"""
+
+    def _cfg(self, d):
+        return cfg_for(d, planner="none")
+
+    def test_exact_title_is_blocked_with_a_record(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            km.enqueue_task(cfg, {"title": "board UI を作る", "verify": "true"})
+            spec, why = km.reconcile_intake(cfg, {"title": "Board　UI を作る"})  # 全角・大小差
+            self.assertIsNone(spec)
+            self.assertIn("同じ題", why)
+
+    def test_similar_title_is_admitted_with_a_note(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            km.enqueue_task(cfg, {"title": "board UI を作る", "verify": "true"})
+            spec, why = km.reconcile_intake(cfg, {"title": "board 観測 UI を作る"})
+            self.assertEqual(why, "")
+            self.assertIsNotNone(spec)
+            self.assertIn("既存タスクに似ています", spec["note"])
+            self.assertIn("board UI を作る", spec["note"])
+
+    def test_planner_intake_records_the_skip_and_notes_similarity(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            km.enqueue_task(cfg, {"title": "board UI を作る", "verify": "true"})
+            created = km._enqueue_specs(cfg, [{"title": "board UI を作る", "verify": "true"},
+                                              {"title": "board 観測 UI を作る", "verify": "true"}],
+                                        [], 0.5)
+            titles = [t.title for t in created]
+            self.assertEqual(titles, ["board 観測 UI を作る"])       # 類似は投入される
+            self.assertIn("同じ題の既存タスクがあるため投入を見送り",
+                          cfg.journal.read_text(encoding="utf-8"))   # 完全一致は記録して見送る
+            note = dict(created[0].extra).get("note", "")
+            self.assertIn("既存タスクに似ています", note)

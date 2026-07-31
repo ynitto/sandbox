@@ -1,7 +1,7 @@
 # agent-project 設計書
 
-> 最終更新: 2026-07-31（フック契約カタログ・外部受理の方針文・削除時の後続再審査を反映）
-> 実装: `tools/agent-project/`（本体 33 断片 + `resident/` 5 モジュール・約 18,000 行）、テスト 1,174 件
+> 最終更新: 2026-07-31（統一 verify の契約と P1-B の残実装——settle の 1 コミット、削除時の後続再審査、unknown 隔離の上限、no_diff、learn の失効、保持契約——を反映）
+> 実装: `tools/agent-project/`（本体 31 断片 + `resident/` 5 モジュール・約 18,000 行）、テスト 1,223 件
 > 関連: [agent-flow 設計書](./agent-flow-design.md) ／ [codd-gate 設計書](./codd-gate-design.md)
 >
 > 旧 `docs/plans/2026-07-22-agent-project-multi-node-daemon-design.md`（複数ノード分担実行）は
@@ -63,7 +63,9 @@ agent-project は、バックログを優先順位付けして実行へ委譲し
 
 **選択肢と却下理由**: LLM の合否だけを採用する案は証跡がなく、生成者と判定者の誤りも相関する。人に毎回コマンドを書かせる案は、自動化の入口で人を詰まらせる。自然文から固定コマンドを一発合成する案は、環境が変わった時点でゲートが壊れる。このため、verifier には確認方法を試させる一方、機械側は証跡の欠けた pass、別 revision の receipt、別 plan の receipt を採用しない。
 
-**トレードオフ**: criterion の検証には LLM run の費用がかかる。verifier が見つけたコマンドは次回の参考レシピに残すが、固定ゲートへ自動昇格させない。`inconclusive` は修正リトライを消費させず、まず別ノードへ検証だけを委譲し、それでも決着しなければ人へ回す。verifier は成果物を変更せず、DB や外部サービスへも書き込まない約束だが、この禁止を機構では強制しない（サンドボックスと許可コマンド列挙は非目標）。担保は receipt の証拠確認による事後検知に置く——正本と一致しない証跡を認めないフェイルクローズの延長で足りる。
+差分の常設基準は基準リストの最後に足す。`- no_diff: <理由>` を書いたタスクでは、この基準の述語が「宣言した成果物ファイルが対象 revision に実在し、その内容を判定で参照したこと」へ**差し替わる**（基準そのものは消えない）。調査・方針・ドキュメント・「変更しないこと」を確かめる仕事はここに載る。決定的な no-progress ガードも同じ宣言で外れる——差分ゼロが正だと宣言した仕事に「変更が無い」を理由に fail を付けない。
+
+**トレードオフ**: criterion の検証には LLM run の費用がかかる。verifier が見つけたコマンドは固定ゲートへ昇格させない（レシピとして次回へ引き継ぐ仕組みは旧 verifier の撤去とともに畳んだ）。`inconclusive` は修正リトライを消費させず、まず別ノードへ検証だけを委譲し、それでも決着しなければ人へ回す。verifier は成果物を変更せず、DB や外部サービスへも書き込まない約束だが、この禁止を機構では強制しない（サンドボックスと許可コマンド列挙は非目標）。担保は receipt の証拠確認による事後検知に置く——正本と一致しない証跡を認めないフェイルクローズの延長で足りる。
 
 **確信度**: 高い。task と charter の両方に同じ criterion / receipt 契約を使う。
 
@@ -101,7 +103,11 @@ agent-project は、バックログを優先順位付けして実行へ委譲し
 
 **トレードオフ**: 1 回の調停にネットワーク往復が要ります。settle の直前には fencing を検証しますが、結果は `ok` / `lost` / `unknown` の 3 値で返します。リモートに届かなかっただけの `unknown` を「奪われた」と同一視して成果を捨てると、ネットワークが不安定な PC で作業が消えるからです。`unknown` は破棄も自動採用もせず、人の判断へ隔離します。
 
-**実行権と復旧**: リースの時刻は「奪取を試みてよい」というヒントで、失効だけでは実行権は移りません。実行権の正本は remote の backlog / archive にある `owner/token/generation` で、その変更を fast-forward push の CAS で確定できたノードだけが取得します。clock skew による早期奪取は競合側の push 失敗として現れるので、リース時刻そのものが二重実行を認めることはありません。settle では archive、納品書、needs、verifications、claim 解放を 1 コミットにまとめ、その push が通った時点だけを確定とします。途中死や push 失敗で残るのは未 push のローカルコミット 1 つです。次のパスは remote の backlog + archive を正として投影を作り直すため、段階別の巻き戻しや専用の復旧台帳は持ちません。
+**実行権と復旧**: リースの時刻は「奪取を試みてよい」というヒントで、失効だけでは実行権は移りません。実行権の正本は remote の backlog / archive にある `owner/token/generation` で、その変更を fast-forward push の CAS で確定できたノードだけが取得します。clock skew による早期奪取は競合側の push 失敗として現れるので、リース時刻そのものが二重実行を認めることはありません。
+
+settle では archive、納品書、needs、verifications、claim 解放を 1 コミットにまとめ、その push が通った時点だけを確定とします。同期はそのとき未コミットの変更をまとめて 1 つのコミットにするので、settle の途中でコミットが割れることはない、はずでした。実際には割れていました。削除したパスを `git add` の pathspec に混ぜると git は「一致するファイルが無い」で全体を失敗させ、追加分が 1 つもステージされないまま「backlog を消しただけのコミット」が残ります。実在するパスだけを add に渡す形に直し、archive の追加と backlog の削除が同じコミットに入ることをテストで固定しました。
+
+途中で死んだときや push が通らなかったときに残るのは、未 push のローカルコミット 1 つです。次のパスは巻き戻さず前へ倒します。archive に done の記録があり、backlog にも同じ id が実行中の姿（doing / offloaded / done）のまま残っていて、題も一致するなら、残りの手順（backlog の削除、納品書の再生成、needs の掃除）をやり直して閉じます。archive の納品記録を消す向きに戻さないのは、成果への参照がそこにしか無いからです。ready で積み直された同じ id には触りません（intake は同じ id を再投入します）。題が違えば id の再利用を疑い、journal に残して人の目へ回します。専用の復旧台帳も段階別の巻き戻しも持たず、投影の再計算だけで戻せる形にしています。なお正本の向きは 2 つに分かれます。実行権は remote が正で CAS でしか動きませんが、機械が書く状態（backlog / archive / 納品書 / 検証記録）の同時変更はローカルを採ります。
 
 **確信度**: 中程度。単一 PC 運用では経路ごと無効化されます（`_coordination_active` が origin と peer の実在を見て判定する）。
 
@@ -113,7 +119,7 @@ agent-project は、バックログを優先順位付けして実行へ委譲し
 
 **選択肢と却下理由**: 全部を人へ送る案は、人が律速になって自動化の意味が薄れる。全部を自動解決する案は、判断の質が担保できないうえ履歴が残らない。三段にすると、繰り返す詰まりは 1 段目で消え、新種だけが人に届きます。
 
-**トレードオフ**: 決定記録が育つまでは 1 段目が効きません。効いた learn は `rules.md`（全タスクへ常時注入）へ、さらに効いたものは ltm-use の長期記憶へ、と昇格させて再利用の幅を広げます。
+**トレードオフ**: 決定記録が育つまでは 1 段目が効きません。効いた learn は `rules.md`（全タスクへ常時注入）へ、さらに効いたものは ltm-use の長期記憶へ、と昇格させて再利用の幅を広げます。昇格の逆向きも同じ決定記録で行います——learn にはスコープ（charter / repo / 全体。無印は全体）を持たせ、適用の結末を出典へ書き戻し、成功を挟まない不発が続いた learn と人が無効化した learn は適用しません。新しいファイルも失効専用の台帳も持たず、append-only の記録を数えるだけです。
 
 **確信度**: 高い。判断の履歴が `decisions/` に append-only で残るので、後から効き目を数えられます。
 
@@ -149,7 +155,7 @@ agent-project は、バックログを優先順位付けして実行へ委譲し
 
 **選択肢と却下理由**: 実行も自前で持つ案は、agent-flow が既に持っているタスクグラフと claim プロトコルを二重に実装することになる。逆に agent-project を薄いラッパにする案は、検証ゲートと決定記録の置き場がなくなる。境界を「1 run = 1 タスク = 1 書込先」に引くと、両者の語彙が噛み合います。
 
-**トレードオフ**: プロセス境界を越えるので、成果と検証結果は版付きの plan / receipt 契約で渡します。`agent_flow` は import しません。別 venv、別バージョンで動く前提です。digest と検算の規則だけは `agentcore.verifycontract` の 1 実装を両側が使います——2 実装に割れると「同じ plan なのに digest 不一致」が検算の偽 fail になるためです。plan は `--verification-plan`（または inbox 要求の `verification_plan` キー）で渡します。両ツールは同時に更新する前提で、旧 agent-flow との混在は想定しません。receipt を採用できない間（receipt 欠落・検算不一致）は従来の verify 経路へフォールバックします——これは移行期の挙動で、shadow 比較の一致を実測した後に旧経路ごと撤去します。
+**トレードオフ**: プロセス境界を越えるので、成果と検証結果は版付きの plan / receipt 契約で渡します。`agent_flow` は import しません。別 venv、別バージョンで動く前提です。digest と検算の規則だけは `agentcore.verifycontract` の 1 実装を両側が使います——2 実装に割れると「同じ plan なのに digest 不一致」が検算の偽 fail になるためです。plan は `--verification-plan`（または inbox 要求の `verification_plan` キー）で渡します。両ツールは同時に更新する前提で、旧 agent-flow との混在は想定しません（env 渡しは不安定として却下・2026-07-31）。旧 verify 経路（task.verify のローカル直実行と LLM verifier）は shadow 比較の一致を実測して撤去済みです。receipt を採用できないタスク（receipt 欠落・検算不一致・dry-run / stub 実行）は、agent-project 自身が local runner として plan の固定コマンドを同じ実行セマンティクス（`agentcore.verifycontract.run_plan_command` の 1 実装）で一度だけ実行し、同じ契約の receipt を検算して確定します。自然文基準の判定は agent-flow runner だけが行い、local runner では inconclusive（委譲・人送り）に倒します。
 
 **確信度**: 高い。
 
@@ -213,7 +219,7 @@ review（人の検収）の正はフォージの MR/PR です。書込先を持�
 
 突発の要求は `inbox/` / `enqueue` / 外部 intake のどの経路でも、投入前に整合ステップを通ります。既存タスクと重複するなら新規を作らず、既存タスクへ追記する案を needs で人に提示し、charter タグの無いタスクには現行 charter への帰属を付けます。「気になること」の書き溜め口は `notes/` で、plan は自動では消費しません。人の `distill-notes` 操作でだけバックログ候補になり、消費済みメモは `notes/archive/` へ移ります。
 
-重複防衛の一次は、同じバージョンの現役 backlog と却下済みタスクをプランナーへ見せ、意図が同じ提案を出さないよう求めることです。却下済みの一覧には理由を添え、保持件数には上限を置きます。コンテキストが重い場合も title と status の全件索引は残し、詳しい要約だけを doing / offloaded / review、人が編集したもの、直近の却下へ絞ります。機械が投入を止めるのは、現役タスクまたは墓標と正規化タイトルが完全一致した場合だけです。類似する候補は止めず、プランナーへの提示か needs の注記に留めます。意図の同一性をスコアで決めない以上、差し替えた `planner_skill` が言い換えを出す余地は残ります。これは隠さない設計上の限界です。空白のない日本語で、ほぼ同じ表記のすり抜けが実害になった場合にだけ bigram 等の分割方法を改善しますが、それを意図の判定には使いません。これらの履歴を 1 本のイベント台帳に集める案（backlog-ledger）は却下しました。同じ事実が journal と `decisions/` と archive の 3 系統に重複し、壊れたとき真実が 2 つになります。事実は「誰に属するか」で分けます。人の編集はタスク本体に（`edited: human`）、墓標はもう存在しないタスクに属するので専用ファイルに置き、`tombstones.md` はイベントログではなく「現在の墓標一覧」です（畳み込み不要で、人が手で書けます）。
+重複防衛の一次は、同じバージョンの現役 backlog と却下済みタスクをプランナーへ見せ、意図が同じ提案を出さないよう求めることです。却下済みの一覧には理由を添え、保持件数には上限を置きます。コンテキストが重い場合も title と status の全件索引は残し、詳しい要約だけを doing / offloaded / review、人が編集したもの、直近の却下へ絞ります。機械が投入を止めるのは、現役タスクまたは墓標と正規化タイトルが完全一致した場合だけです。類似する候補は止めず、タスクの注記（「既存タスクに似ています」「却下済みのタスクに似ています」）へ回します。見送ったときは journal に残します——プランナーから見ると出したものが消えるので、記録が無いと「再分解しても何も起きない」としか見えません。現役タスク側にも Jaccard 0.5 の抑止が残っていた頃は、「board UI を作る」を出した後に「board 観測 UI を作る」が黙って消えていました。意図の同一性をスコアで決めない以上、差し替えた `planner_skill` が言い換えを出す余地は残ります。これは隠さない設計上の限界です。空白のない日本語で、ほぼ同じ表記のすり抜けが実害になった場合にだけ bigram 等の分割方法を改善しますが、それを意図の判定には使いません。これらの履歴を 1 本のイベント台帳に集める案（backlog-ledger）は却下しました。同じ事実が journal と `decisions/` と archive の 3 系統に重複し、壊れたとき真実が 2 つになります。事実は「誰に属するか」で分けます。人の編集はタスク本体に（`edited: human`）、墓標はもう存在しないタスクに属するので専用ファイルに置き、`tombstones.md` はイベントログではなく「現在の墓標一覧」です（畳み込み不要で、人が手で書けます）。
 
 spec 前段は 2 段です。タスクの採点（複雑さ・リスク・曖昧さ、各 1〜3 の最大値）が `spec_threshold_full`（既定 3）以上なら 3 点セット（spec / design / tasks）のフル spec、`spec_threshold_light`（既定 2）以上なら `design.md` 1 枚のライト spec を前置し、それ未満は直接実行します。ライト spec は tasks 展開をせず、design.md を実行時の文脈へ注入するだけです。ブラウンフィールドで 3 点セットが重い正体は要求仕様と実装分解の 2 枚（要求は charter と `why`/`desc` に、分解は元タスクの粒度に既にある）なので、そこだけを書かせません。
 
@@ -233,7 +239,9 @@ charter の達成条件も task と同じ criterion / receipt 契約で検証し
 
 **割当** は controller が決めます。生存が観測されているノードの `ready + doing` 件数が最小になるよう、未割当の ready を決定的に配ります。割り当てられていないタスクは他ノードが消化しません（`task_runnable_here`）。
 
-**fencing** は実行権の同一性を確かめます。claim のとき owner/token/generation を書き、settle の直前に remote の正本が同じ 3 つ組の doing であることを確認します。`ok` なら確定、`lost` なら奪われたので成果を捨てて正本へ戻す、`unknown`（リモートに届かない）なら成果を捨てずに人の判断へ隔離します。実装を `board` へ委譲するときも、依頼元が claim を握ったまま実行先だけを変えてタスクを `offloaded` にし、local と同じ fencing を通します。検証だけの委譲は成果を変更しないため claim を取らず、成果 rev ごとの `external.json` を受理点にします。このため、画面上では実装中のタスクと、その成果を検証中の依頼が同時に見えることがあります。外部ノードの判定の受理は「誰が出したか」ではなく「何を出したか」で決めます——内蔵 verifier と同じ receipt 検算（plan digest・成果 revision・証跡）を同じだけ課し、板のノード契約版が合わない判定は fail として扱います。allowlist は持ちません（非目標）。
+**fencing** は実行権の同一性を確かめます。claim のとき owner/token/generation を書き、settle の直前に remote の正本が同じ 3 つ組の doing であることを確認します。`ok` なら確定、`lost` なら奪われたので成果を捨てて正本へ戻す、`unknown`（リモートに届かない）なら成果を捨てずに人の判断へ隔離します。隔離には自動再試行を 1 回だけ持たせます——次のパスで fencing を確かめ直し、リモートに触れて正本が隔離時の姿と一致すれば実行可能へ戻し、そうでなければ人待ちに固定します。隔離が自ノードで上限に達したノードは、既存の throttle → report 降格で新規 claim を止めます。停止の出口は増やさず、他ノードは走り続けます。実装を `board` へ委譲するときも、依頼元が claim を握ったまま実行先だけを変えてタスクを `offloaded` にし、local と同じ fencing を通します。検証だけの委譲は成果を変更しないため claim を取らず、成果 rev ごとの `external.json` を受理点にします。このため、画面上では実装中のタスクと、その成果を検証中の依頼が同時に見えることがあります。外部ノードの判定の受理は「誰が出したか」ではなく「何を出したか」で決めます——内蔵 verifier と同じ receipt 検算（plan digest・成果 revision・証跡）を同じだけ課し、板のノード契約版が合わない判定は fail として扱います。allowlist は持ちません（非目標）。
+
+そのために、検証委譲の公示には `verification_plan` を載せます。請負ノードの agent-flow は同じ plan を専用 runner で実行し、receipt を板の result に載せて返します。依頼側は返ってきた receipt を受理点へ置き、次の settle が内蔵 verifier とまったく同じ検算を通します。plan を渡さず「板の run が成功終端で終わった」を根拠にしていた頃は、証跡が 1 つも無い pass が done へ通っていました。receipt が返らない終端は、成功でも受理せず人へ回します。
 
 `claims/` は同期しないホスト局所のキャッシュで、実行権の正本ではありません。正は remote の backlog + archive とその owner/token/generation です。局所 claim が正本とずれた場合や、突然停止の後に孤立した場合は、毎パスの投影整合で掃除します。
 
@@ -257,7 +265,7 @@ node_id は PC の身元で、板（agent-board）とプロトコル上の名義
 | `doctor` / `update` / `configfile` / `cli` | 診断、自己更新、設定解決、コマンド振り分け |
 | `resident/` | 周期表（scheduler）、子の監督（supervisor）、ノード直轄ワーカー（worker）、gc、状態契約（status） |
 
-`resident/` だけは通常の Python パッケージで、単体 import と単体テストができます。それ以外の 33 断片は共有名前空間へ順に exec して合成する方式なので、`from agent_project.<断片> import …` は成立しません（合成前は他断片のシンボルが未定義）。外から呼びたい機能には CLI の入口を用意し、公開機能と CLI 入口の対応や到達不能な断片は構造テストで数えます。診断結果は doctor の所見から `engine/status.json` の横断エラーを経て dashboard に出し、host.yaml トップレベルの綻びも同じ経路に載せます。host.yaml の綻びはフリート全停止を避けるため起動時警告に留め、起動失敗へ変えるかどうかは doctor の題別内訳が実機で蓄積してから判断します。
+`resident/` だけは通常の Python パッケージで、単体 import と単体テストができます。それ以外の 31 断片は共有名前空間へ順に exec して合成する方式なので、`from agent_project.<断片> import …` は成立しません（合成前は他断片のシンボルが未定義）。外から呼びたい機能には CLI の入口を用意し、公開機能と CLI 入口の対応や到達不能な断片は構造テストで数えます。診断結果は doctor の所見から `engine/status.json` の横断エラーを経て dashboard に出し、host.yaml トップレベルの綻びも同じ経路に載せます。host.yaml の綻びはフリート全停止を避けるため起動時警告に留め、起動失敗へ変えるかどうかは doctor の題別内訳が実機で蓄積してから判断します。
 
 ## 常駐一本化で拾い直したもの（2026-07-26）
 
@@ -321,15 +329,22 @@ node_id は PC の身元で、板（agent-board）とプロトコル上の名義
   specs/<id>/           系   spec 前段の成果（フル: spec/design/tasks・ライト: design.md のみ）
   verifications/<id>/   系   検証レポート（基準×証跡。<rev>.md = 検証した成果コミット。
                              <rev>.external.json = 他ノードへ委譲した検証の受理点）
-  verify-recipes/       系   検証レシピ（次回 verifier への参考。ゲートには昇格しない）
   context/<repo>.md     系＋人 リポジトリ理解（repo-map）
   autonomy/<track>.json 系   track の自動昇格状態
   project.json          系   プロジェクト層の収束状態
   journal.md            系   人間可読のサイクルログ（閾値でローテーション）
   run-log.jsonl         系   構造化 run-log（run ごと 1 行）
+  *-archive/            系   ローテーション退避（journal-archive / run-log-archive）
   status.json / status/ 系   生存信号（単一ファイルとノード別）
   paused.json           系   一時停止マーカー
   bus/                  系   agent-flow の run 状態
+```
+
+保持契約は `gc` が実行します。`archive/` は保持、`verifications/<id>/` は直近 N 世代（settle が
+参照中の rev は N の外でも残す）、`journal.md` と `run-log.jsonl` の退避・不変コピーは期間で刈ります。
+契約はここが正で、`gc` はその実行者にすぎません。
+
+```
 ~/.agents/
   engine/status.json    系   常駐体の心拍・子状態・同期健康・板参加（dashboard が読む唯一の入口）
   agent-project.host.yaml 人 このノードの宣言（projects・repos・availability・板参加の単一ソース）
@@ -351,6 +366,7 @@ node_id は PC の身元で、板（agent-board）とプロトコル上の名義
 - review: human            <検収を要する>
 - level: report | assisted | unattended
 - size: S | M | L          <規模感（分解の妥当性判断用。表示のみ）>
+- no_diff: <理由>          <差分を作らない仕事。差分基準を成果物の実在と参照へ差し替える>
 - why / desc / scope / out_of_scope / constraints / hints / demo   <誘導記述>
 ```
 
@@ -364,7 +380,7 @@ task と同じ criterion / receipt 契約へ渡す。
 
 `- planned_title:`（生成時の原題）と `- edited: human`（人が直した印）は系が書く保護マーカーで、再分解時の重複照合と再提案の抑止に使われます（プロジェクト層の節）。
 
-決定記録は append-only で、`- learn:` 行が横断学習の材料になります。同じ種類の詰まりに二度目からは自動で効き、効いた回数が閾値を超えると `rules.md` へ、さらに ltm-use へ昇格します。
+決定記録は append-only で、`- learn:` 行が横断学習の材料になります。同じ種類の詰まりに二度目からは自動で効き、効いた回数が閾値を超えると `rules.md` へ、さらに ltm-use へ昇格します。guide の末尾に `:: scope=charter:<名前>` または `:: scope=repo:<名前>` を書くと適用先が絞られ、無印は全体に効きます。適用の結末は出典へ `learn-worked` / `learn-misfire` として書き戻し、成功を挟まない不発が続いた learn と、人が `learn-disable` を書いた learn は適用しません。
 
 ### C. CLI と設定
 
@@ -385,7 +401,7 @@ task と同じ criterion / receipt 契約へ渡す。
 
 ### D. テスト
 
-`tools/agent-project/tests/` に 1,174 件（機能別に分割済み）。共有の前置きは `_shared.py` にあり、エージェント CLI なしで全件が通ります。
+`tools/agent-project/tests/` に 1,223 件（機能別に分割済み）。共有の前置きは `_shared.py` にあり、エージェント CLI なしで全件が通ります。
 
 ```bash
 python3 -m pytest tools/agent-project/tests -q

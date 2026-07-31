@@ -253,7 +253,7 @@ LLM の裁定ゲートは「人が要るか」だけ（現行の役割分担）�
 
 ## 段階と完了条件
 
-**P0 — 設計契約の反映**
+**P0 — 設計契約の反映** — [x] 完了
 
 W1（人の役割）、W2 のカタログ記述（E1〜E6＋ゲート順）、W3 の方針文、W5、W6 の契約、W8、
 W12〜W16、変更判断・非目標。W14 は天井と B1 方針まで。verify の責務境界は agent-project、
@@ -266,26 +266,26 @@ agent-flow、agent-dashboard の各設計書へ反映済み。以後の実装判
 
 **P1-A — verify 契約の切替（依存順）**
 
-1. **schema と digest**: `verification_plan` / receipt の versioned schema、canonical JSON、
-   SHA-256 digest、criterion id の採番規則を定義する。task / charter / board で同じ schema を使う。
-2. **agent-flow runner**: plan を構造化入力で受け、成果 revision 上で固定コマンドと criterion を一度だけ
-   検証して receipt を返す。verifier は criterion を変更せず、成果物も変更しない。
-3. **agent-project 読み取りアダプタと検算**: 旧形式を正規形へ変換し、W3 の照合を 1 実装に集約する。
-   digest、revision、証拠のいずれかが欠けた receipt では done にしない。
-4. **修正ループ**: criterion の `fail` を同じ agent-flow run の修正へ戻す。`inconclusive` は修正回数を
-   消費せず、別ノード検証か人待ちへ送る。
-5. **charter 移行**: `project_acceptance_criteria` を同じ protocol で評価する。現在の
-   `resolve_charter_acceptance`、`acceptance_synth` キャッシュ、agent-project 側の旧 acceptance 実行を
-   新経路へ置き換える。
-6. **dashboard の保存と結果表示**: 通常 UI は変更済み。次に新規 task / charter を
-   `task_acceptance_criteria` / `project_acceptance_criteria` / `verification_commands` だけで書く。
-   タスク詳細は criterion、verdict、evidence を通常表示し、digest、revision、command は折りたたむ。
-7. **shadow 比較**: 新 runner と旧 project verify を同じ task / revision で比較し、差異だけを記録する。
-   shadow の旧結果は状態遷移に使わない。
-8. **旧経路の撤去**: 比較結果が一致した後に、旧 project verify、旧形式の dashboard 書き込み、
-   planner の完了コマンド一発生成指示を削除する。読み取りアダプタは互換期間だけ残す。
-9. **重複実行の解消**: task 固有 command と regression が完全一致する場合は plan 正規化時に digest で
-   一つへ畳む。
+- [x] 1. **schema と digest**: `verification_plan` / receipt の versioned schema、canonical JSON、
+  SHA-256 digest、criterion id の採番規則を定義する。task / charter / board で同じ schema を使う。
+  実装は `agentcore.verifycontract` の 1 実装（両ツールが共有）。
+- [x] 2. **agent-flow runner**: plan を構造化入力で受け、成果 revision 上で固定コマンドと criterion を一度だけ
+  検証して receipt を返す。verifier は criterion を変更せず、成果物も変更しない。plan は
+  `--verification-plan`（argv）または inbox 要求の `verification_plan` で渡す。
+- [x] 3. **agent-project 読み取りアダプタと検算**: 旧形式を正規形へ変換し、W3 の照合を 1 実装に集約する。
+  digest、revision、証拠のいずれかが欠けた receipt では done にしない。
+- [x] 4. **修正ループ**: criterion の `fail` を同じ agent-flow run の修正へ戻す。`inconclusive` は修正回数を
+  消費せず、別ノード検証か人待ちへ送る。
+- [x] 5. **charter 移行**: `project_acceptance_criteria` を同じ protocol で評価する。旧
+  `resolve_charter_acceptance` と `acceptance_synth` キャッシュは廃止した。
+- [x] 6. **dashboard の保存と結果表示**: 新規 task / charter は
+  `task_acceptance_criteria` / `project_acceptance_criteria` / `verification_commands` だけで書く。
+  タスク詳細の折りたたみ再構成（digest・revision・command を「検証の詳細」へ）は dashboard 側の残作業。
+- [x] 7. **shadow 比較**: 新 runner と旧 project verify を同じ task / revision で比較し、差異だけを記録した。
+- [x] 8. **旧経路の撤去**: 旧 project verify（task.verify のローカル直実行と LLM verifier）を削除。
+  receipt を返せない run は agent-project 自身が local runner として同じ実行セマンティクスで確定する。
+- [x] 9. **重複実行の解消**: task 固有 command と regression が完全一致する場合は plan 正規化時に digest で
+  一つへ畳む。
 
 *完了条件*:
 
@@ -298,25 +298,55 @@ agent-flow、agent-dashboard の各設計書へ反映済み。以後の実装判
 
 **P1-B — 残りの決定的な実装（依存順）**
 
-1. **W6** settle 1 コミット化（未 push は remote 正で再突合するテスト）
-2. **W9** 削除時の後続 proposed 化＋実行中削除の拒否
-3. **W7** `unknown` 隔離上限 → 既存 report 降格
-4. **W4** `no_diff`（W3 ⑤の述語差し替え）
-5. **W10** learn のスコープと失効
-6. **W11** 保持契約と gc
-7. **W15** 構造テスト＋綻び／到達不能所見をパイプへ
-8. **W14** `existing[]` 契約テスト（実装済みの回帰）
-9. （契機）**W14 B1** 密度段階
+- [x] 1. **W6** settle 1 コミット化。実装中に `git add` が削除済みパスで pathspec ごと失敗し、
+  settle が「backlog を消しただけのコミット」に割れていたのを発見して直した。途中死は
+  巻き戻さず前へ倒す（`heal_partial_settles`）。「remote を正に再突合」は取り下げ——
+  機械が書く状態の裁定はローカル優先で、remote が正なのは実行権だけ。
+- [x] 2. **W9** 削除時の後続 proposed 化（実行中削除の拒否は dashboard 側に既存）
+- [x] 3. **W7** `unknown` 隔離上限 → 既存 report 降格。次パスの fencing 再確認 1 回も実装。
+- [x] 4. **W4** `no_diff`（W3 ⑤の述語差し替え＋決定的 no-progress ガードの opt-out）
+- [x] 5. **W10** learn のスコープと失効（`scope=charter:|repo:`、結末の書き戻し、連続不発と人の無効化）
+- [x] 6. **W11** 保持契約と gc（`verifications_keep` / `gc_retention_days`。`verify-recipes/` は
+  P1-A8 で廃止済みのため対象から外し、設計書の構成表からも削除）
+- [x] 7. **W15** 構造テスト＋綻び／到達不能所見をパイプへ
+- [x] 8. **W14** `existing[]` 契約テスト（却下理由の同梱・上限・組み込みプロンプト・完全一致抑止）
+- [ ] 9. （契機）**W14 B1** 密度段階 — コンテキスト圧が実害になってから
 
 *完了条件*: 各項目にテスト。W3 は「証跡の無い pass が fail」「外部判定も同じチェック」を最低線。
+どちらも満たした（外部判定は 7/31 に receipt 契約へ寄せた）。
 
 **P2 — 観測してから**
 
-W15 の E 昇格、外部検証受理の実運用、削除と実行側 write の競合窓。
+- [ ] W15 の E 昇格（host.yaml の綻びを起動失敗にするか。doctor の題別内訳が溜まってから）
+- [ ] 外部検証受理の実運用
+- [ ] 削除と実行側 write の競合窓
 
 **P3 — 契機待ち（完了条件外）**
 
-W14 の投入側トークン化衛生（ほぼ同一タイトル用。意図判定には使わない）。
+- [ ] W14 の投入側トークン化衛生（ほぼ同一タイトル用。意図判定には使わない）
+
+---
+
+## 積み残し（2026-07-31 時点）
+
+設計書と実装の食い違いは 2 件を解消した。残りは下の 2 件。
+
+- [x] **外部判定が receipt 検算を通っていない**（P1-B 完了条件の未達分）— 検証委譲の公示に
+  `verification_plan` を載せ、請負側 agent-flow の receipt を板の result で返す形にした。
+  依頼側は `receipt_errors` を通してから受理し、receipt が返らない終端は成功でも人へ回す。
+  証跡ゼロの `{"verdict": "pass"}` を組み立てていた `_accepted_external_verification` は削除。
+- [x] **現役タスク相手の重複抑止が Jaccard 0.5** — `_is_duplicate` を正規化タイトルの完全一致へ
+  寄せ、類似は止めずに注記（「既存タスクに似ています」）へ回した。見送りは journal に残す。
+  7/26 の詳細設計が「投入側は最終防衛線として残す」と決めた前提を、7/29 のレビュー #19 が
+  崩していた（差し替え可能なプランナー相手に言い換えは止められない）。決定は下りていたが、
+  P1-B 8 を「実装済みの回帰」と読んでテストしか足していなかった。
+- [ ] **実装委譲（board）の plan / receipt 伝搬** — タスクの実装を板へ委譲した run には
+  まだ plan を渡していない。委譲先で done になった成果は、依頼元の local runner が固定コマンド
+  だけ確かめて確定する（自然文基準は inconclusive）。配管（`submit_request` の
+  `verification_plan`、result の `receipt`）は検証委譲で通したので、載せる側を足すだけ。
+- [ ] **dashboard のタスク詳細の再構成**（P1-A6 の残り）— 保存側は正規形に寄った。
+  受入基準・判定・証拠を通常表示にし、plan digest・成果 revision・実行コマンドを
+  「検証の詳細」へ折りたたむ画面側の作業が残っている。
 
 ---
 
