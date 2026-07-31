@@ -126,6 +126,8 @@ before: ネストしたボックスで描く関数呼び出しの木。after: �
 
 平易・簡潔 — だがアーキテクチャの名詞・動詞は先に読み込んだ語彙定義から直接来る。簡潔さは drift の言い訳にならない。
 
+レポート全体を常に日本語で書く。ページタイトル、候補タイトル、バッジ、図中ラベル、課題、解決案、利点、最優先候補に英語を残さない。アーキテクチャ語彙も「モジュール・インターフェース・実装・深さ・深い・浅い・シーム・アダプタ・レバレッジ・局所性」の日本語表記を使う。以下の英語例は構造例であり、そのまま出力する文言ではない。コード識別子、ファイル名、既存データの値だけは原文を残してよい。
+
 **厳密に使う:** module, interface, implementation, depth, deep, shallow, seam, adapter, leverage, locality。
 
 **決して代替しない:** component, service, unit（→ module）・API, signature（→ interface）・boundary（→ seam）・layer, wrapper（module の意味のとき）。
