@@ -230,6 +230,25 @@ class SettingsResolutionTests(unittest.TestCase):
         # 設定 > 既定。設定に interval があれば drive の既定 0.5 には落ちない
         self.assertEqual(self._ctx(["drive"], interval_default=0.5).interval, 7.0)
 
+    def test_argv_limit_is_configurable(self):
+        # argv_limit は agent-project / agent-flow と同名の設定キー（ノード側で上書き可能）。
+        # ctx のフィールドではなく agentcli モジュールの上限として確定する
+        # （run_agent の呼び出し側が全員 argv_limit を引き回さずに済む・S9 の踏襲）。
+        from agent_amigos import agentcli
+        self.addCleanup(agentcli.configure_argv_limit, 0)
+        with open(self.config, "w", encoding="utf-8") as f:
+            json.dump({"node_id": "cfg-node", "argv_limit": 42}, f)
+        self._ctx(["join"])
+        self.assertEqual(agentcli._agent_argv_limit(), 42)
+
+    def test_argv_limit_defaults_to_builtin_when_unset(self):
+        from agent_amigos import agentcli
+        self.addCleanup(agentcli.configure_argv_limit, 0)
+        with open(self.config, "w", encoding="utf-8") as f:
+            json.dump({"node_id": "cfg-node"}, f)
+        self._ctx(["join"])
+        self.assertEqual(agentcli._agent_argv_limit(), agentcli.DEFAULT_ARGV_LIMIT)
+
     def test_post_roles_file_is_not_a_role_filter(self):
         """`post --roles` は役割ミッション表のファイルパス。応募ロールの絞り込み
         （`join --roles`）と dest を共有すると、公示のたびに roles.yaml という名前の

@@ -246,8 +246,9 @@ def _find_config(explicit):
     """設定ファイルの探索（フォールバック順）:
        1. --config で明示指定
        2. カレントディレクトリ（=プロジェクトルート）直下の agent-flow.{yaml,yml,json}
-       3. カレントディレクトリの .agent/agent-flow.{yaml,yml,json}
-       4. ~/.agent/agent-flow.{yaml,yml,json}
+       3. カレントディレクトリの .agents/agent-flow.{yaml,yml,json}
+       4. カレントディレクトリの .agent/agent-flow.{yaml,yml,json}（旧ホーム）
+       5. ~/.agents/agent-flow.{yaml,yml,json}（新ホームが無ければ旧 ~/.agent/）
     ルート直下を最優先にするのは 1 root = 1 プロジェクト構成でこのファイルが
     プロジェクトのマニフェスト（発見マーカー）を兼ねるため（agent-project と同じ規則）。"""
     if explicit:

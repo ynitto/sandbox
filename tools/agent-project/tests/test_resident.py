@@ -630,6 +630,20 @@ class ResidentCliTests(unittest.TestCase):
         self.assertEqual(host.tags, ["gpu", "docker"])
         self.assertEqual(host.max_concurrent, 3)
 
+    def test_cmd_worker_init_omits_max_concurrent_when_unspecified(self):
+        """CLI で --max-concurrent を指定しなかった場合、host.yaml に budget.max_concurrent
+        を書かない（板の契約: 0/省略=無制限。0 を既定値として書くと「明示的に 0 を宣言」に
+        化けて契約上は無制限を意味してしまうバグの回帰テスト）。"""
+        out = self.tmp / "worker-host.yaml"
+        args = types.SimpleNamespace(node_id="worker-2", tags=None, agent_cli=None,
+                                     board=None, max_concurrent=None, out=str(out), force=False)
+        rc = km.cmd_worker_init(args)
+        self.assertEqual(rc, 0)
+        raw = km.yaml.safe_load(out.read_text(encoding="utf-8"))
+        self.assertNotIn("max_concurrent", raw.get("budget", {}) or {})
+        host = km.load_host_config(str(out))
+        self.assertIsNone(host.max_concurrent)
+
     def test_cmd_worker_init_refuses_overwrite_without_force(self):
         out = self.tmp / "worker-host.yaml"
         out.write_text("existing", encoding="utf-8")

@@ -1,7 +1,7 @@
 # agent-project 設計書
 
 > 最終更新: 2026-07-31（統一 verify の契約と P1-B の残実装——settle の 1 コミット、削除時の後続再審査、unknown 隔離の上限、no_diff、learn の失効、保持契約——を反映）
-> 実装: `tools/agent-project/`（本体 31 断片 + `resident/` 5 モジュール・約 18,000 行）、テスト 1,223 件
+> 実装: `tools/agent-project/`（本体 31 断片 + `resident/` 5 モジュール・約 20,700 行）、テスト 1,229 件
 > 関連: [agent-flow 設計書](./agent-flow-design.md) ／ [codd-gate 設計書](./codd-gate-design.md)
 >
 > 旧 `docs/plans/2026-07-22-agent-project-multi-node-daemon-design.md`（複数ノード分担実行）は
@@ -190,14 +190,14 @@ settle では archive、納品書、needs、verifications、claim 解放を 1 �
 | E5 | `notify_cmd`（通知） |
 | E6 | executor（実行系の差し替え） |
 
-S3 のゲート順と失敗時の行き先: verify（E1）→ 回帰（E2）→ パス保護 → 進捗。回帰 NG は done にせず review へ、パス保護違反は retry せず人へ、進捗 NG は retry。verify の PASS はこの列の入場条件であって、通過しても done 確定ではありません。
+S3 のゲート順と失敗時の行き先: verify（E1）→ 回帰（E2）→ パス保護 → 進捗。回帰 NG と進捗 NG は blocked（人の判断へ）、パス保護違反は review（人の検収へ）。verify の PASS はこの列の入場条件であって、通過しても done 確定ではありません。
 
 E2 の回帰は verification_plan には畳みません。`regression_cmd` はグローバル検査で、パスも
 差分基準（`$KIRO_BASE_REV`）も git-bus ルート（workdir）を前提に書かれており、成果 repo の
 clone 上で走らせるとゲート自体が壊れるためです。重複実行の解消（同一コマンドの digest 畳み込み）は
 plan の正規化段で plan 内にだけ効きます。
 
-止まる理由は 5 つに限られます。消化しきった（drained）、サイクル数・実時間・トークン・コストのいずれかの上限、ソフト上限（throttle）です。throttle に当たった `--watch` は以降 report へ降格し、実行を止めて監視だけ続けます。
+止まる理由は 6 つに限られます。消化しきった（drained）、サイクル数・実時間・トークン・コストのいずれかの上限、ソフト上限（throttle）です。throttle に当たった `--watch` は以降 report へ降格し、実行を止めて監視だけ続けます。
 
 予算は、支払い元と進行状況のどちらに属するかで単位を分けます。トークン、コスト、実時間、`budget.max_concurrent` はノードの財布に属するため、host.yaml の `budget` を正としてノード間では合算しません。同じ仕事が別 PC でも計上されるのは、別の財布を数えているためです。改善サイクル数、停滞の連続回数、acceptance の PASS 数はプロジェクトの進行に属するため、`project.json` で共有します。財布の上限に達したノードだけが既存の throttle → report へ降格し、他ノードは走り続けます。人が押した入札も `budget.max_concurrent` とノード契約版は越えられません。複数 charter でもこの単位は変えず、同じ repo への書き込み競合は agent-flow の claim に任せます。
 
@@ -263,7 +263,8 @@ node_id は PC の身元で、板（agent-board）とプロトコル上の名義
 | `stategit` / `coordination` | direct 同期（3-way 裁定）、CAS transaction と controller リース |
 | `loop` / `commands` / `charter` / `plan` / `project` | 正準ループ、人の操作、charter の解析、分解、プロジェクト層 |
 | `doctor` / `update` / `configfile` / `cli` | 診断、自己更新、設定解決、コマンド振り分け |
-| `resident/` | 周期表（scheduler）、子の監督（supervisor）、ノード直轄ワーカー（worker）、gc、状態契約（status） |
+| `_head` / `gitcache` / `hooks` / `instances` | 共有 import と最下層定数、共有 git キャッシュ + worktree、任意フック（本体外プロバイダ）の解決、稼働インスタンスの外部発見用レジストリ |
+| `resident_cli` / `resident/` | 常駐体 CLI（serve/status/worker、host.yaml 読込、tick 配線）、周期表（scheduler）、子の監督（supervisor）、ノード直轄ワーカー（worker）、gc、状態契約（status） |
 
 `resident/` だけは通常の Python パッケージで、単体 import と単体テストができます。それ以外の 31 断片は共有名前空間へ順に exec して合成する方式なので、`from agent_project.<断片> import …` は成立しません（合成前は他断片のシンボルが未定義）。外から呼びたい機能には CLI の入口を用意し、公開機能と CLI 入口の対応や到達不能な断片は構造テストで数えます。診断結果は doctor の所見から `engine/status.json` の横断エラーを経て dashboard に出し、host.yaml トップレベルの綻びも同じ経路に載せます。host.yaml の綻びはフリート全停止を避けるため起動時警告に留め、起動失敗へ変えるかどうかは doctor の題別内訳が実機で蓄積してから判断します。
 
@@ -288,7 +289,7 @@ node_id は PC の身元で、板（agent-board）とプロトコル上の名義
 
 設計上の位置づけと判断をここに残します。
 
-**板 tick（30 秒）を親の周期表に足しました。** やることは 3 つ——板の同期、ノード能力宣言 `nodes/<pc>.json` の書き出し、ノード宛て指示（`~/.agents/commands/`）の取り込みです。**入札の自動判断はここに置きません。** 自動入札は従来どおり各プロジェクトの `participate`（agent-flow / agent-amigos）が担います。同じノードに 2 つ目の入札主体を置くと、二重落札を防ぐ規則が 2 実装になるからです。ここが書く入札は「人が押した」分だけ。push は律速します。`nodes/<pc>.json` は内容が変わったときだけ push し、心拍だけの更新は 5 分に 1 回です。心拍は `fresh_after_sec`（tick 周期の 4 倍）との比較で読まれるので、それより細かく積んでも板のコミット履歴が騒がしくなるだけです。なお「人が押した入札」は選別照合を素通りして取り込まれます。自動入札は条件を満たす公示を放っておいても拾うので、人がボタンを押す意味があるのは条件を満たさないケース（手元にクローンが無い、タグ宣言漏れ、owner-picks への応募）だけだからです。失効した bid まで通さないよう、この判定は勝者判定と同じ lease の見方に揃えてあります。
+**板 tick（30 秒）を親の周期表に足しました。** やることは 3 つ——板の同期、ノード能力宣言 `nodes/<pc>.json` の書き出し、ノード宛て指示（`~/.agents/commands/`）の取り込みです。**入札の自動判断はここに置きません。** 自動入札は従来どおり各プロジェクトの `participate`（agent-flow / agent-amigos）が担います。同じノードに 2 つ目の入札主体を置くと、二重落札を防ぐ規則が 2 実装になるからです。ここが書く入札は「人が押した」分だけ。push は律速します。`nodes/<pc>.json` は内容が変わったときだけ push し、心拍だけの更新は 5 分に 1 回です。心拍は `fresh_after_sec`（心拍間隔の 4 倍 = 20 分）との比較で読まれるので、それより細かく積んでも板のコミット履歴が騒がしくなるだけです。なお「人が押した入札」は選別照合を素通りして取り込まれます。自動入札は条件を満たす公示を放っておいても拾うので、人がボタンを押す意味があるのは条件を満たさないケース（手元にクローンが無い、タグ宣言漏れ、owner-picks への応募）だけだからです。失効した bid まで通さないよう、この判定は勝者判定と同じ lease の見方に揃えてあります。
 
 **入札選別の宣言はノードの持ち物になりました。** host.yaml の `repos` / `tags` / `agent_cli` / `workloads` / `budget.max_concurrent` が正典で、agent-flow 設定の `board_repos` / `board_tags` / `board_agent_cli` は明示上書きへ降格しました（S1 が host.yaml 専有と決めた群が、agent-flow 側に残っていた取りこぼしの解消）。判定規則そのものは `agentcore.board.eligible` の 1 実装です——agent-flow と agent-amigos が「同じ仕様・別実装」で持っていて、片方だけ育つと同じ公示が経路によって拾えたり拾えなかったりします。
 
@@ -358,7 +359,7 @@ node_id は PC の身元で、板（agent-board）とプロトコル上の名義
 
 ```markdown
 ## <id>: <タイトル>
-- status: inbox | proposed | draft | ready | doing | offloaded | review | blocked | done
+- status: inbox | proposed | draft | ready | doing | offloaded | review | blocked | done | rejected
 - task_acceptance_criteria: <受入基準。1 行 1 基準で複数行可>
 - verification_commands: <任意の固定検証コマンド。利用者が確認方法を知っている場合だけ使う>
 - priority: <整数・大きいほど高>
@@ -389,7 +390,7 @@ task と同じ criterion / receipt 契約へ渡す。
 | `serve` / `status` / `worker` | 常駐体の起動・状態表示・ワーカーノード（サブコマンド省略時は `serve`） |
 | `run` | 正準ループ。charter があれば目標駆動へ入る。`--watch` で常駐 |
 | `enqueue` / `triage` / `needs` / `impact` | 投入、優先順位付けのみ、判断待ちの表示、依存の影響範囲 |
-| `approve` / `hold` / `reprioritize` / `revise` / `reject` / `revive` / `resume-run` | 人の操作（すべて決定記録に残る。reject は墓標を生み、revive が解除する） |
+| `approve` / `retry-mr` / `hold` / `reprioritize` / `revise` / `reject` / `revive` / `resume-run` | 人の操作（すべて決定記録に残る。retry-mr は検収到達時に作れなかったタスク MR を冪等に再作成、reject は墓標を生み、revive が解除する） |
 | `replan` / `distill-notes` / `board-offload` | charter からの再分解（`--revive` で墓標を 1 回だけ無視）、観点メモのバックログ化、委譲公示板への手動委譲 |
 | `stats` / `audit` / `runlog` / `doctor` / `gc` / `update` | 計測、Loop Readiness 採点、ログ、診断、掃除、自己更新 |
 | `promote` / `rot` | learn の長期記憶への昇格、腐ったタスクの検出 |

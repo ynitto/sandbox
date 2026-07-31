@@ -265,7 +265,7 @@ def list_patterns(tier: "str | None" = None) -> "list[dict]":
 
 def _delegation_id() -> str:
     import time
-    return f"dg-{time.strftime('%Y%m%d%H%M%S')}-{os.urandom(2).hex()}"
+    return f"dg-{time.strftime('%Y%m%d%H%M%S', time.gmtime())}-{os.urandom(2).hex()}"
 
 
 def build_flow_delegation(brief: dict, data: dict) -> dict:

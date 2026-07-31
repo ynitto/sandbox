@@ -1280,8 +1280,14 @@ def cmd_worker_init(args) -> int:
         "tags": [t for t in (getattr(args, "tags", None) or "").split(",") if t],
         "agent_cli": [a for a in (getattr(args, "agent_cli", None) or "").split(",") if a],
         "board": getattr(args, "board", None) or "",
-        "budget": {"max_concurrent": int(getattr(args, "max_concurrent", 0) or 0)},
     }
+    # 板の契約（board.schema.json §max_concurrent）は「0/省略=無制限、宣言時のみ数値上限」。
+    # CLI 未指定（None）のときは budget キー自体を書かない——0 を既定値として書くと
+    # 「省略」のつもりが「0 を明示宣言」になり、契約上は無制限を意味してしまう（HostConfig
+    # 側の None/0 区別・resident_cli.py の max_concurrent 参照と合わせる）。
+    _max_concurrent = getattr(args, "max_concurrent", None)
+    if _max_concurrent is not None:
+        data["budget"] = {"max_concurrent": int(_max_concurrent)}
     out = getattr(args, "out", None) or str(_agents_home() / HOST_CONFIG_NAMES[0])
     if os.path.isfile(out) and not getattr(args, "force", False):
         print(f"既に存在します: {out}（上書きするには --force）", file=sys.stderr)

@@ -1,7 +1,7 @@
 # agent-dashboard — 複数エージェントを束ねる操作面 設計書
 
 > 作成 2026-07-14 ／ 最終更新 2026-07-31（統一 verify UI は移行設計。実装順は `docs/plans/2026-07-30-unified-task-verify-design.md`）
-> 実装: `tools/agent-dashboard/`（Electron。本番依存は `diff2html` / `yaml` の 2 つだけ。テスト 63 ファイル・`npm test`）
+> 実装: `tools/agent-dashboard/`（Electron。本番依存は `diff2html` / `yaml` の 2 つだけ。テスト 70 ファイル・`npm test`）
 > 読む契約: [`schemas/node-budget.schema.json`](../../schemas/node-budget.schema.json) /
 > [`schemas/agent-control.schema.json`](../../schemas/agent-control.schema.json) /
 > [`schemas/agent-cli.schema.json`](../../schemas/agent-cli.schema.json) /
@@ -279,7 +279,8 @@ IPC は全チャネルが `{ok, data|error}` に揃う（`base/main/handle.js` �
 | ノード予算・エージェント制御 | `~/.agents/budget/`・`~/.agents/control/`（ツール横断のデータ契約） |
 | レビュー待ち | `repos.json` の GitLab リポジトリのオープンイシュー（API 設定時） |
 
-更新は既定 5 秒のポーリング。純プル型なので、気づきの仕組みは別に要る（§7）。
+更新はポーリングで、間隔はタブごとに違う（agent-project は既定 5 秒、cowork は 10 秒、
+amigos / delegation / orchestration は 15 秒）。純プル型なので、気づきの仕組みは別に要る（§7）。
 
 ---
 
@@ -294,7 +295,7 @@ IPC は全チャネルが `{ok, data|error}` に揃う（`base/main/handle.js` �
 | `kiro-loop` | 稼働中ループの構造化状態・会話画面・復旧送信 | 何も書かない（`kiro-loop send` への依頼だけ） |
 | `amigos` | ミッションの進行・担当・やりとり・納品棚 | ホームの `commands/` ドロップのみ（バスへは書かない） |
 | `orchestration` | ノード予算・エージェント制御・CLI ドロップインの棚卸し | `~/.agents/` 配下の契約ファイル |
-| `delegation` | 独立画面なし（タスク・参加・全体設定へ溶かす・§5.2） | 委譲封筒をネイティブ形式へ変換して投函。**板への書き込みはノード宛て指示ドロップ経由** |
+| `delegation` | 独立画面なし（タスク・参加・全体設定へ溶かす・§5.2） | 委譲封筒をネイティブ形式へ変換して投函。**中止・落札・手動入札はノード宛て指示ドロップ経由**（公示は板の作業ディレクトリへ直接書く。§5.2） |
 | `participation` | 募集中の仕事とこの端末の参加操作（板の公示を含む） | 人が押したときだけ agent-flow ワーカーを 1 つ起動（唯一のプロセス起動経路）／板は指示の投函だけ |
 
 CLI チャット（tmux でエージェント CLI を対話起動する窓）は起動先 cwd を選べる。候補は選択中
@@ -429,8 +430,8 @@ feedback 再開、revise（doing 中も。受入基準の項目編集を含む�
 固定検証コマンドと `verify_template` はタスクの「高度な設定」に置き、CI コマンドを既に知っている
 人だけが使います。AI がシェルコマンドを一度だけ作って欄を埋める機能は持ちません。
 
-タスク詳細は、受入基準、判定、証拠の順に並べます。実行コマンド、終了コード、plan digest、
-成果 revision は「検証の詳細」に畳みます。agent-flow の `kind: verify` は run 内の工程なので
+タスク詳細は、受入基準、判定、証拠の順に並べる予定です（詳細は§8）。実行コマンド、終了コード、
+plan digest、成果 revision は「検証の詳細」に畳む計画です。agent-flow の `kind: verify` は run 内の工程なので
 「工程内チェック」と表示し、task の完了検証と同じ名前を使いません。検証不能時に出す操作は、
 別環境での検証、基準の修正、固定コマンドの追加、成果の修正だけです。証跡なしで done にする
 ボタンは置きません。
@@ -498,7 +499,7 @@ CLI では「このCLIでは助言のみを保証できません」を先に出�
 
 **動いているもの**: §4 の 7 制御面すべて、§6 の人のアクション一式、§7 の通知・SLA・AI 補助・
 投入時リンティング、kiro-loop の構造化状態と復旧送信、この PC の役割切り替え
-（`engineer` / `viewer`）。テストは `npm test` で 63 ファイル・全緑。
+（`engineer` / `viewer`）。テストは `npm test` で 70 ファイル・全緑。
 
 **未実装の改善余地**（元の改善提案から、実装が無いものだけ残した）:
 

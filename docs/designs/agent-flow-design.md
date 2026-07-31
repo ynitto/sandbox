@@ -1,7 +1,7 @@
 # agent-flow 設計書
 
 > 最終更新: 2026-07-31（統一 verify runner を実装。移行順序は `docs/plans/2026-07-30-unified-task-verify-design.md`）
-> 実装: `tools/agent-flow/`（本体 24 断片・約 7,000 行）、テスト `tools/agent-flow/tests/`（577 件）
+> 実装: `tools/agent-flow/`（本体 29 断片・約 8,800 行）、テスト `tools/agent-flow/tests/`（662 件）
 > 関連: [agent-project 設計書](./agent-project-design.md) ／ [git worktree キャッシュ](./git-worktree-cache-pattern.md)
 >
 > 旧 `agent-flow-self-healing-retry-design.md`（自己回復リトライ）と
@@ -161,7 +161,9 @@ exit 127 = コマンド不在）は inconclusive で、成果物の欠陥と環�
 既にあれば再実行しません（command 実行は一回だけ）。壊れた plan（digest 不一致・未知版）は
 実行せず receipt も書きません——receipt 欠落を採用側が done にしない fail-close に倒します。
 plan は `--verification-plan`（グローバル引数）または inbox 要求の `verification_plan` キーで
-受け取ります（inbox が権威。env 渡しは不安定として却下・2026-07-31）。
+受け取ります。argv 未指定のときだけ inbox の値で充填する規則で、呼び出し側に argv への
+転記をさせない設計です。両方指定されていれば CLI 引数が勝ちます（env 渡しは不安定として
+却下・2026-07-31）。
 
 実行場所は workspace 宣言のある run なら該当 repo の clone、無い run（ローカル実行・成果は
 投入ノードの作業ツリーに直接出る）ならプロセスの cwd です。workspace 宣言があるのに clone を
@@ -261,8 +263,8 @@ auto-heal はこの世代交代を使いません。heal は同一 run の再開
 
 | コマンド | 入口 | 責務 |
 |---|---|---|
-| `run` | `cmd_run` | orchestrator と worker を起こし、成果確定後の verifier、生存リース、park 監視、キャンセル検知、auto-heal を回す |
-| `orchestrate` | `cmd_orchestrate` | 計画、静止待ち、評価と再計画、`final.json` の書き出し |
+| `run` | `cmd_run` | orchestrator と worker を起こし、生存リース、park 監視、キャンセル検知、auto-heal を回す |
+| `orchestrate` | `cmd_orchestrate` | 計画、静止待ち、評価と再計画、成果確定後の verifier、`final.json` の書き出し |
 | `work` | `cmd_work` | claim、実行、park、結果の書き込み |
 | `participate` | `cmd_participate` | 受理と回収の 1 巡。実行すべき run-id を返す |
 | `cancel` | `cmd_cancel` | キャンセルマーカーの投函と即時終端化 |
@@ -298,7 +300,7 @@ auto-heal はこの世代交代を使いません。heal は同一 run の再開
 
 ```
 <bus>/
-  inbox/<run-id>.json               要求（request / workspace / references / inherit_from / delegation）
+  inbox/<run-id>.json               要求（request / workspace / references / inherit_from / delegation / verification_plan）
   inbox/claims/<run-id>/<who>.json  受理の claim
   inbox/cancels/<run-id>.json       キャンセルマーカー
   runs/<run-id>/
@@ -377,7 +379,7 @@ kind は `work` / `generate` / `classify` / `synthesize` / `verify` / `filter` /
 
 ### F. テスト
 
-`tools/agent-flow/tests/` に 577 件（機能別に分割済み）。共有の前置きは `_shared.py` にあり、エージェント CLI なしで全件が通ります。
+`tools/agent-flow/tests/` に 662 件（機能別に分割済み）。共有の前置きは `_shared.py` にあり、エージェント CLI なしで全件が通ります。
 
 ```bash
 AGENT_FLOW_STUB_SLEEP_MAX=0 python3 -m pytest tools/agent-flow/tests -q

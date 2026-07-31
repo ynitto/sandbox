@@ -28,6 +28,23 @@ AGENT_ERROR_ENV_CLASSES = ("quota", "auth", "env")
 
 DEFAULT_TIMEOUT = 600.0
 DEFAULT_ARGV_LIMIT = 100000
+# 設定 argv_limit で上書き（0 以下は既定へフォールバック）。cli.py の _resolve_ctx が
+# 起動時に 1 回確定する（agent-project / agent-flow と同じ「同名の設定キー」パターン）。
+_ARGV_LIMIT = 0
+
+
+def configure_argv_limit(value) -> None:
+    """設定 argv_limit をモジュール変数へ確定させる（不正値は組み込み既定へ）。"""
+    global _ARGV_LIMIT
+    try:
+        _ARGV_LIMIT = int(value or 0)
+    except (TypeError, ValueError):
+        _ARGV_LIMIT = 0
+
+
+def _agent_argv_limit() -> int:
+    """argv 渡しのプロンプト上限（バイト）。設定 argv_limit（0 以下なら既定 100000）。"""
+    return _ARGV_LIMIT if _ARGV_LIMIT > 0 else DEFAULT_ARGV_LIMIT
 
 _AGENT_ERROR_TAG_RE = re.compile(r"\[agent-error:(quota|auth|env|transient)\]")
 _AGENT_ERROR_PATTERNS = (
@@ -103,7 +120,7 @@ def _spill_prompt(prompt: str, prompt_via: str = "argv") -> "tuple[str | None, s
     退避そのものは `agentcore.agentcli.spill_prompt` の 1 実装（agent-project /
     agent-flow と共有）。ここに残すのは agent-amigos 固有の「何の全文か」だけ。"""
     return agentcli.spill_prompt(
-        prompt, DEFAULT_ARGV_LIMIT, prompt_via=prompt_via, prefix="agent-amigos-prompt-",
+        prompt, _agent_argv_limit(), prompt_via=prompt_via, prefix="agent-amigos-prompt-",
         # 枠は agentcore の 1 実装（P2-5）。ここが決めるのは「何の全文か」だけ。
         instruction=agentcli.spill_instruction(
             "このターンの全文（役割・ミッション・新着メッセージを含む）"))

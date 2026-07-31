@@ -26,8 +26,7 @@
 - #11 は「hook 例外は 200 で握る（リトライ嵐回避）」で確定。認証は `secret`/`secret_header` の
   汎用照合（`hmac.compare_digest`）。
 - 同梱例: `hooks/gitlab-mr-webhook.py`（GitLab MR）/ `hooks/generic-webhook.py`（非 GitLab 最小例）。
-- E2E テスト（実 HTTP・SessionManager スタブ）で 22 ケース通過: ルート解決/認証/フィルタ/
-  テンプレート注入/キュー投函/ドレイン/保留積み直し/汎用パススルー/health。
+- E2E テストは未整備。
 
 以降は当初の設計案の記録。
 
@@ -185,7 +184,7 @@ hook に渡す **生に近い**コンテキスト。コアは送信元を解釈�
 - 引数は 1 つ（`ctx`）。hook の module-level 変数で状態保持可（HTTP は
   ThreadingHTTPServer なので複数スレッドあり得る → 状態を持つなら hook 側で
   ロックする、あるいは状態を持たない設計にする）。
-- `handle` が無い / callable でない場合は WARNING を出して `500`（または `204`）。
+- `handle` が無い / callable でない場合は WARNING を出して `200`（`"ignored"`）。hook 実行中の例外も同様に WARNING ログ＋ `200`（`"ignored (hook error)"`）で握り潰す（実装: `webhook.py:105-106,127-130`）。
 - 戻り値が `dict` でも `None` でもない場合は WARNING を出してスキップ。
 - 例外は握って `500`。ログに `exc_info` 付きで記録（#11: リトライ嵐を避けるなら 200/204）。
 
@@ -265,7 +264,8 @@ prompts:
 ```
 送信元 ──POST /hooks/<name>──▶ WebhookServer (daemon thread)   ※コアは provider 非依存
    │
-   ├─ ① メソッド判定           POST 以外 → 405
+   ├─ ① メソッド判定           GET（`_health` 以外）→ 405、PUT/DELETE 等未定義メソッドは
+   │                          BaseHTTPRequestHandler 既定の 501
    ├─ ② ルート解決             scheduler.resolve_webhook_route(name) → 無し → 404
    ├─ ③ 汎用シークレット検証    設定 secret_header の値 ≠ secret → 401（secret 未設定なら素通り）
    ├─ ④ ボディ読取/JSON パース   サイズ超過 → 413 / JSON は best-effort（失敗でも {} で続行）
@@ -378,6 +378,10 @@ webhook:
 自作システムなら任意のヘッダ名を指定できる。HMAC 署名方式（GitHub 等）は単純照合では
 不十分なので hook 内で検証する（§9）。
 
+> **実装確認**: 上記 `X-Gitlab-Token` はコード側の既定値としても実装済み
+> （`cli.py:300` は `webhook_cfg.get("secret_header", "X-Gitlab-Token")` で、
+> 未指定時は `X-Gitlab-Token` を使う）。GitLab 以外のヘッダ名を使う場合のみ明示的に指定する。
+
 ### 7.2 エントリごと（`prompts[]`）
 
 ```yaml
@@ -394,6 +398,11 @@ prompts:
 > **イベント種別フィルタはコア設定に持たない**。「MR だけ」「push だけ」といった絞り込みは
 > provider 固有（GitLab は `X-Gitlab-Event`）なので、hook が `ctx.headers` を見て対象外を
 > `None` で弾く（§4.4）。コア設定を provider 中立に保つための意図的な線引き。
+
+> **`hook` 未指定時はパススルー**: `webhook.hook` を省略したエントリは、hook 呼び出しを
+> スキップして `ctx.payload`（受信 JSON ボディ）をそのまま `dict(ctx.payload)` としてテンプレート
+> 注入パラメータに使う（`webhook.py:119-123`）。provider 固有の加工が不要な単純な通知連携で
+> hook スクリプトの用意を省略できる。
 
 **スケジュール要件の緩和 + 非スケジュール化（#2）**: 現状 `_set_entries` は cron/interval が
 無いエントリをスキップする（`agent-loop.py:1503,1519-1526`）。`webhook` ブロックを持つ
@@ -517,6 +526,9 @@ A・B・D はユーザー確認済み（A・B: 2026-07-09、D: 2026-07-10）。�
 - **再読込追従**: ルート表を持たず毎リクエスト `resolve_webhook_route` で解決するため、
   `set_entries` 後のルートは自動追従（#5 解決済み）。キューは name キーで別管理のため
   リロードで消えない（#4 解決済み）。ただし enable/disable/リネームでキューが宙に浮く
-  余地はあるので、drain 時に対応エントリ不在なら破棄+警告する。
+  余地はあるので、drain 時に対応エントリ不在なら破棄+警告するのが本来の設計意図だが、
+  **未実装**（`scheduler.py:497-504`）: リネーム/削除されたエントリの `_external_queues`
+  エントリは破棄もログ警告もされず、宙に浮いたまま残り続ける（`_WEBHOOK_QUEUE_MAX` による
+  bounded deque なのでメモリは有界だが、キー自体は事実上のリークとして残る）。
 - **DESIGN.md 追記**: 実装後、`tools/agent-loop/DESIGN.md` に `webhook` オプションと
   `WebhookServer` を追記する。

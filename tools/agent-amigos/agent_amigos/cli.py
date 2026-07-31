@@ -10,6 +10,7 @@ import shutil
 import sys
 import time
 
+from . import agentcli
 from .assign import unfilled_required
 from .bus import make_bus
 from .configfile import load_settings, resolve_bus_spec
@@ -73,6 +74,7 @@ def _resolve_ctx(args, interval_default: float = 5.0) -> NodeContext:
     設定に `interval` が書いてあればそちらが既定に勝つ——設定 > 既定の順は崩さない。
     """
     settings = load_settings(getattr(args, "config", None))
+    agentcli.configure_argv_limit(settings.get("argv_limit"))
     ctx = NodeContext()
     ctx.settings = settings
     spec = resolve_bus_spec(settings, getattr(args, "bus", None) or None)

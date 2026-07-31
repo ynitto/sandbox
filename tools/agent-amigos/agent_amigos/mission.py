@@ -294,7 +294,7 @@ def normalize_mission(spec: dict) -> "tuple[dict, list]":
 
 
 def new_mission_id() -> str:
-    return f"am-{time.strftime('%Y%m%d%H%M%S')}-{random.randint(0, 0xffff):04x}"
+    return f"am-{time.strftime('%Y%m%d%H%M%S', time.gmtime())}-{random.randint(0, 0xffff):04x}"
 
 
 def post_mission(bus: Bus, design_doc_path: str, roles_path: str, owner_node: str,

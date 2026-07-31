@@ -276,6 +276,7 @@ def main() -> None:
             agent_name=agent_name,
             session_mgr=session_mgr,
             semaphore=semaphore,
+            slot_monitor=slot_monitor,
             poll_interval=inbox_poll_seconds,
         )
         inbox_watcher.start()
@@ -296,7 +297,7 @@ def main() -> None:
                 port=webhook_port,
                 path_prefix=str(webhook_cfg.get("path_prefix", _WEBHOOK_DEFAULT_PATH_PREFIX)),
                 secret=str(webhook_cfg.get("secret", "")),
-                secret_header=webhook_cfg.get("secret_header"),
+                secret_header=webhook_cfg.get("secret_header", "X-Gitlab-Token"),
                 max_body_bytes=int(webhook_cfg.get("max_body_bytes", _WEBHOOK_DEFAULT_MAX_BODY)),
             )
             webhook_server.start()

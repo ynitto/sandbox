@@ -1,6 +1,6 @@
 # agent-amigos — 役割駆動マルチエージェント協働ツール 設計書
 
-> 作成 2026-07-17 ／ 最終照合 2026-07-26（実装 `tools/agent-amigos/` と突き合わせ済み）
+> 作成 2026-07-17 ／ 最終照合 2026-08-01（実装 `tools/agent-amigos/` と突き合わせ済み）
 > 実装: `tools/agent-amigos/`（`agent-amigos.py` ＋ `agent_amigos/` パッケージ、テスト 180 件）
 > 正典スキーマ: [`schemas/mission.schema.json`](../../schemas/mission.schema.json) /
 > [`schemas/delivery.schema.json`](../../schemas/delivery.schema.json) /
@@ -237,7 +237,10 @@ ID は `am-<UTC タイムスタンプ>-<乱数 4 桁>`。**ロール**は役割�
 ```
 
 終端は `done` / `cancelled` / `failed` の 3 つ。`failed` になるのは、予算が尽きて
-`on_exhausted: fail` が指定されているときだけ。**done を作れるのはオーナーの accept だけ**という
+`on_exhausted: fail` が指定されているとき、または `staffing_policy: fail` で募集が
+`staffing_timeout` を超えても必須ロールが埋まらなかったとき（§5.2）。いずれも
+まだ誰も手番を取っていないミッションに限る条件で、走り出した後の欠員は再募集（§5.3）の
+領分だ。**done を作れるのはオーナーの accept だけ**という
 不変条件は agent-project から引き継いでいる。差し戻しは `rejections/` にファイルを 1 つ増やし、
 その件数がそのままラウンド番号になる。旧ラウンドの完了宣言は自動的に無効になる。
 
@@ -295,7 +298,10 @@ git バスでコンフリクトを起こさないよう、書き込み権をパ�
 GitBus はオンプレ git リモート（[ローカル GitLab](./plan-a-local-gitlab-design.md) / Gitea /
 ssh の bare repo）に**専用のバスリポジトリ**を切って使う。`main` には公示インデックス
 （`index/<mid>.json`）だけを置き、ミッション本体は `mission/<mid>` ブランチに分離する。
-参加ノードは `main` を軽く poll して募集を見つけ、引き受けたミッションのブランチだけ clone する。
+参加ノードは `main` を軽く poll して募集を見つける。ミッションのブランチ clone は
+引き受けの有無を問わない — daemon のサイクルは毎回 `list_missions()` の全件を
+`bus.mission(mid)` に通し、未終端のミッションブランチをすべて clone する
+（`agent_amigos/daemon.py` の cycle、`agent_amigos/gitbus.py` の `mission()`）。
 ミッション間で履歴も同期コストもコンフリクトも交差しない。gc はブランチ削除で済む。
 
 同期の作法は agent-project / agent-flow の state_git から流用した。pull は間隔律速（既定 15 秒。
@@ -349,7 +355,10 @@ push 競合は `pull --rebase` からの指数バックオフで、force push �
 
 claim には lease が付き、ランナーは心拍で延長する。lease が切れ、かつ away 宣言も無ければ
 クラッシュとみなしてロールを再募集する。成果物・inbox・events はバスに残っているので、
-後任は「ロール定義 ＋ 前任の status（引き継ぎメモ）・events・artifacts」を読んで続きから始める。
+後任は「ロール定義 ＋ 前任の status（引き継ぎメモ）・events・artifacts」を読んで続きから
+始められる。ただしこれは後任のプロンプトへ自動合成されるわけではない。`_build_prompt`
+（`agent_amigos/runner.py`）が組み込むのは後任**自身**の status とアーティファクト一覧だけで、
+前任分はバスに残るのみ — 参照するかどうかは後任（または見る人）の裁量に委ねられている。
 
 lease は liveness の信号であって progress ではない。ハングはエージェント CLI 側の
 タイムアウト（プラグイン定義の `timeout`）で塞ぐ。
@@ -433,8 +442,11 @@ amigos 側に CLI 分岐コードは書かない。`stub` は LLM を使わず�
 - **`done_when` の成立**。`all-required-done`（既定）は全必須ロールの完了宣言。
   `reviewer-approved` は加えて `approver` ロールの承認。`consensus` は席グループの合意
   （§7.3）で、全席の完了を待たずに早期収束する。
-- **静穏化**。全ロールの idle が `quiescence_turns`（既定 3）続き、未回答の質問が 0 のとき。
-  会話が止まったということはこれ以上進まないので、現状で統合し、良し悪しは受入で判定する。
+- **静穏化**。必須ロールのうち integrator を除くワーカーの idle が全員
+  `quiescence_turns`（既定 3）続き、未回答の質問が 0 のとき（owner 宛の質問は数えない —
+  owner への滞留は人の判断待ちで、静穏化の妨げにしない）。integrator は収束を検知して
+  統合する側なので idle 判定から外れる。会話が止まったということはこれ以上進まないので、
+  現状で統合し、良し悪しは受入で判定する。
 - **予算枯渇の wrap-up**（§6.1）。
 
 後ろの 2 つで収束した場合、deliverable の `MANIFEST.json` に `partial: true` が付く。
@@ -474,7 +486,12 @@ pull 型だと取り忘れがそのまま成果物の喪失になるからだ。
 搬出せず参照だけ（納品書の `exported: false`）。バスに巨大ファイルを積まない、という原則の帰結だ。
 
 コード成果物の場合、amigo は `amigos/<mission-id>/<role-id>` ブランチで作業して push し、
-integrator が `amigos/<mission-id>/integration` へマージする。
+integrator が `amigos/<mission-id>/integration` へマージする — というのが構想であり、
+現状は未実装。`export_delivery`（`agent_amigos/delivery.py`）が納品書に書くのは
+`{"repo": ..., "branch": f"amigos/{mission-id}/integration"}` という参照文字列だけで、
+checkout・ブランチ作成・マージを行うコードは無い。`workspace` は opaque passthrough
+（`schemas/mission.schema.json` の該当プロパティに明記）で、amigo 自身が対象リポジトリを
+どう扱うかは各ロールの裁量に委ねられている。
 
 ---
 
@@ -504,7 +521,7 @@ amigo 数〉に収まる。上振れの上限が見積もれるのが、ロッ�
 ### 6.2 ノード予算（請負側）
 
 ノードで LLM を食うのは amigos だけではないので、上限は**ノード横断の共有台帳**で持つ。
-正典は [`schemas/node-budget.schema.json`](../../schemas/node-budget.schema.json)。
+正典は [`schemas/node-budget.schema.json`](../../schemas/node-budget.schema.json)（v2）。
 
 ```
 $AGENT_BUDGET_DIR（既定 ~/.agents/budget/）
@@ -512,9 +529,22 @@ $AGENT_BUDGET_DIR（既定 ~/.agents/budget/）
   ledger/<YYYYMMDD>.jsonl   # 記帳（UTC 日付・追記専用、各ツールが 1 実行 1 行）
 ```
 
-合計上限 `execution_minutes`（0 = 無制限、既定）、適用期間 `period`（day / month / total）、
-ワークロード別の内訳上限を持つ。amigos は `workload: amigos`、`ref: <mission-id>/<role>` で
-記帳する。定常業務（kiro-loop）・agent-project・agent-flow も同じ台帳に記帳・抑制する。
+v2 は一次単位をトークンへ拡張している。合計上限 `execution_minutes`（0 = 無制限、既定）は
+v1 互換のまま有効で、`tokens`（期間内トークン合計上限）と AND で効く。適用期間 `period`
+（day / month / total）、ワークロード別の内訳上限 `workloads`（分）も従来どおり。amigos は
+`workload: amigos`、`ref: <mission-id>/<role>` で記帳する。定常業務（kiro-loop）・
+agent-project・agent-flow も同じ台帳に記帳・抑制する。
+
+トークンは実測できた行（`tokens_in` / `tokens_out`）だけ台帳に書く。未報告行は読み出し側が
+`rates`（`agent_cli:model → agent_cli → default` の順で解決する tokens/秒の表）で推定する —
+台帳には事実だけを書き、推定値は書かない。
+
+配分は `allocation` で宣言する。`mode: static` は `computed` を再計算せず、ワークロードごとの
+`min_tokens` / `max_tokens` と全体上限だけで実効上限を決める。`mode: auto` は管理面
+（agent-dashboard など）が `rebalance_interval_sec` ごとに `computed.workloads` を書き戻す。
+実効上限の `soft_ratio`（既定 0.9）に達すると縮退（degrade）が始まる。実効上限を使い切った
+ときの挙動 `on_exhausted` はワークロードごとに `pause`（既定・新規実行を控えて自動再開）/
+`stop`（graceful 終了、再開は明示的な再起動のみ）/ `degrade`（縮退指定のまま継続）から選べる。
 
 超過するとそのノードの amigo は CLI ターンを開始せず paused になる（`[node-budget]` タグ付きで
 オーナーへ 1 度だけ通知）。**ミッションは殺さない**。他ノードの amigo は進行を続け、依頼側は
@@ -800,7 +830,9 @@ agent-amigos restaff      <mid> [--add <roles>] [--prune <id,…>]        # 実�
 agent-amigos accept       <mid>  /  reject <mid> --feedback "..."
 agent-amigos deliveries   [-v]                                          # 納品棚の一覧
 agent-amigos collect      <mid> --out <dir>                             # 納品棚とは別に取り出す
-agent-amigos budget       add <mid> --minutes N  /  node [--limit-minutes N] [--period day]
+agent-amigos budget       add <mid> --minutes N  /
+                          node [--limit-minutes N] [--limit-tokens N] [--period day]
+                               [--amigos-minutes N]   # --limit-tokens は v2（実測＋推定の合算）
 agent-amigos say          <mid> --to <role|all|owner> --body "..."      # 人の介入発言
 agent-amigos cancel       <mid>  /  gc [--keep-days N] [--deliveries-keep-days N]
 ```

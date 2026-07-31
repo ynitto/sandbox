@@ -606,6 +606,7 @@ function generateStateMachine(config, payload = {}) {
 // 定常業務だけが `agent_cli` 設定を無視して常に kiro を起動していた。CLI 定義から解決し、
 // `cowork.chatCommand` は明示上書き（空なら解決結果）に降格する。
 // 解決できないとき（定義が見つからない等）は従来の文字列へ落として、定常業務を止めない。
+// ただし黙っては落とさず、フォールバックした事実を警告ログに残す。
 function coworkChatLaunch(config, repo) {
   const explicit = String(((config || {}).cowork || {}).chatCommand || '').trim();
   if (explicit) return { chatCommand: explicit };
@@ -617,7 +618,8 @@ function coworkChatLaunch(config, repo) {
       readyPattern: launch.readyPattern,
       readyTimeoutSec: launch.readyTimeoutSec,
     };
-  } catch {
+  } catch (e) {
+    console.warn(`[cowork] agent_cli 定義の解決に失敗したため既定の 'kiro-cli chat --trust-all-tools' へフォールバックしました: ${(e && e.message) || e}`);
     return { chatCommand: 'kiro-cli chat --trust-all-tools' };
   }
 }

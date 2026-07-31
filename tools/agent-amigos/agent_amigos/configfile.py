@@ -63,6 +63,10 @@ CONFIG_DEFAULTS = {
     "bus_workdir": None,
     "node_id": None,
     "agent_cli": None,
+    # argv 渡しの CLI へ渡せる最大バイト数（既定 100000。超過分は一時ファイルへ退避）。
+    # OS/シェルの ARG_MAX はノードごとに違ってよいので、ノードのローカル設定で上書きできる
+    # （agent-project / agent-flow と同名のキー。agent-cli-plugin-design.md）。
+    "argv_limit": 100000,
     "tags": [],
     "repos": {},             # 担当リポジトリ（repos.schema.json 形）。ロール requires.repos の選別に使う
     "roles": [],             # 応募するロールの絞り込み（空 = 全ロール）

@@ -13,16 +13,26 @@
     "title": { "type": "string", "description": "タスクの題（必須）" },
     "verify": {
       "type": "string",
-      "description": "done 確定の唯一の根拠となるシェルコマンド（exit 0=PASS）。履歴でなく最終状態/差分を見ること（$KIRO_BASE_REV=act 前 HEAD が使える）"
+      "description": "レガシー互換フィールド。verify を直接実行して done 判定する経路は統一 verify 導入で撤去済み——新規の書き込みでは使わない。現在の正は verification_commands（固定コマンド）と task_acceptance_criteria（自然文基準）。done 確定の唯一の根拠は verification-receipt.schema.json の receipt（PASS 判定）。verify_template 展開結果の格納先としては引き続き使われ、読み取り時は verification_commands の一項目（source=legacy/template）へ読み替えられる"
     },
     "acceptance": {
       "type": ["array", "string"],
       "items": { "type": "string" },
-      "description": "受入基準チェックリスト（自然文 3〜7 項目）。settle 時に検証エージェントが基準ごとに証跡付きで判定し、全 pass のみ機械 done 候補。**配列で渡すこと**（md 側は `- acceptance: <基準>` を要素数だけ並べる。文字列 1 本は 1 項目として扱う）"
+      "description": "受入基準チェックリスト（自然文 3〜7 項目）。旧形式——新規の書き込みでは task_acceptance_criteria を使う。task_acceptance_criteria が無いときに限り読み取られる。settle 時に検証エージェントが基準ごとに証跡付きで判定し、全 pass のみ機械 done 候補。**配列で渡すこと**（md 側は `- acceptance: <基準>` を要素数だけ並べる。文字列 1 本は 1 項目として扱う）"
     },
     "accept": {
       "type": "string",
-      "description": "自然言語の完了条件（後方互換。acceptance が無いときに限り 1 項目の受入基準として扱う）"
+      "description": "自然言語の完了条件（旧形式。task_acceptance_criteria/acceptance が無いときに限り 1 項目の受入基準として扱う）"
+    },
+    "task_acceptance_criteria": {
+      "type": ["array", "string"],
+      "items": { "type": "string" },
+      "description": "受入基準（統一 verify の正規形。1 要素 1 基準の自然文）。acceptance/accept より優先して読まれる。settle 時に検証エージェントが基準ごとに証跡付きで判定し、全 pass のみ機械 done 候補。**配列で渡すこと**（md 側は `- task_acceptance_criteria: <基準>` を要素数だけ並べる。文字列 1 本は 1 項目として扱う）"
+    },
+    "verification_commands": {
+      "type": ["array", "string"],
+      "items": { "type": "string" },
+      "description": "固定検証コマンド（統一 verify の正規形。1 要素 1 コマンド）。verify（レガシー）より優先して読まれる。利用者が確認方法を知っている場合だけ使う。task_acceptance_criteria と併用可——両方あればコマンドは基準の判定材料の一つとして検証エージェントに渡る"
     },
     "size": {
       "type": "string",
@@ -88,6 +98,10 @@
       "type": "string",
       "enum": ["changes", "none"],
       "description": "changes = verify PASS でも act が変更を生まねば done しない（偽 done 対策）/ none = 無変更許可"
+    },
+    "no_diff": {
+      "type": "string",
+      "description": "差分を作らない仕事（調査・方針決定・ドキュメントの確認等）向けの宣言。値は理由。task_acceptance_criteria の末尾へ自動付与される差分の常設基準（DIFF_CRITERION）を、宣言した成果物ファイルが対象 revision に実在しその内容を判定で参照したこと、を問う基準へ差し替える（成果物が実在しない・参照できないなら fail）。差分ゼロが正の仕事に no-progress ガードで fail を付けないための宣言でもある"
     },
     "level": {
       "type": "string",

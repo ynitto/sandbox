@@ -7,6 +7,7 @@
 > 作成日: 2026-07-05
 > 対象ファイル: `tools/agent-loop/agent-loop.py`, `tools/agent-loop/hooks/*.py`
 > 関連: `docs/designs/agent-loop-event-hook-design.md`（event_hook 実装の前提）
+> **実装状況**: 本設計は未実装の提案である（`tools/agent-loop/` に `adaptive` 関連のコードは存在しない）。以下は設計案として読むこと。
 
 ---
 
@@ -58,7 +59,7 @@
 
 - `check()` が返した hit/miss/error（フックが既に叩いた結果の副産物）。
 - event_hook の状態ファイル（`gitlab-issue-state.json` 等の `iid -> updated_at`）＝ GitLab 活動の**ローカルログ**。
-- 本体ログ `~/.kiro/agent-loop.log`（補助）。
+- 本体ログ `~/.agents/agent-loop.log`（補助）。
 - 適応状態ファイル（後述）に貯めた**過去の発火履歴**。
 
 これにより「賢く決める」処理そのものがサーバ負荷を生まない。
@@ -126,7 +127,7 @@ next_run_at = now + interval * 60 * (1 ± jitter)
 
 ### 4.1 適応状態ファイル
 
-`~/.kiro/loop-adaptive/<entry-id>.json` にエントリ単位で保存する。
+`~/.agents/loop-adaptive/<entry-id>.json` にエントリ単位で保存する。
 
 ```json
 {
@@ -177,7 +178,7 @@ prompts:
     enabled: true
 ```
 
-グローバル既定を `~/.kiro/agent-loop.yaml` トップレベルに置けるようにしてもよい（`max_concurrent` 等と同じ読み方）:
+グローバル既定を `~/.agents/agent-loop.yaml` トップレベルに置けるようにしてもよい（`max_concurrent` 等と同じ読み方）:
 
 ```yaml
 adaptive_defaults:
@@ -275,7 +276,7 @@ def check():
 
 ```python
 class AdaptiveInterval:
-    """エントリ単位の適応インターバル状態。~/.kiro/loop-adaptive/<id>.json に永続化。"""
+    """エントリ単位の適応インターバル状態。~/.agents/loop-adaptive/<id>.json に永続化。"""
     def __init__(self, entry_id, cfg):        # cfg: min/max/backoff/retry/jitter
         ...
         self._load()                          # 起動時に前回値を復元

@@ -40,9 +40,12 @@
   古い挙動のまま」という二重管理が別の形で戻る。定義が見つからなければインストールの破損
   として明示エラーにする（`install.sh` 再実行の誘導つき）。
 - **探索順**: `$KIRO_AGENTS_DIR` → `<プロジェクトルート>/agents/`（= 実行時 cwd）→
-  `~/.agents/agents/` → `~/.kiro/agents/`。同名は先勝ちで、**組み込み名の予約は解除した**——
+  `~/.agents/agents/` → `~/.kiro/agents/` → 同梱定義（リポジトリ直下 / パッケージ
+  resources の `agents/`。最後の候補）。同名は先勝ちで、**組み込み名の予約は解除した**——
   上位に `claude.json` を置けば同梱定義を上書きできる。これが無いと受入条件
-  （JSON 1 ファイルで完結）が成り立たない。
+  （JSON 1 ファイルで完結）が成り立たない。`~/.agents` が無く旧 `~/.agent`（単数形）が
+  実在する環境では、3 番目の候補はレガシーの `~/.agent/agents/` にフォールバックする
+  （移行未了のホームディレクトリを黙って無視しないため）。
 - **ローダは言語ごとに 1 実装**: Python 側は `agentcore.agentcli`（load / headless_cmd /
   interactive_cmd / classify_error）に集約し、agent-project / agent-flow / agent-amigos が
   これを使う。当初の「各ツールが自前の小さなローダを持つ」方針は Python 側について取り下げた
@@ -82,11 +85,22 @@
     退避しても OS の上限が閾値より低い環境では argv 長超過（`E2BIG`）が残るので、
     失敗トリアージはこれを env（環境要因）に分類する——素の `OSError` の文言は汎用パターンに
     掛からず「内容の問題」と読まれ、タスクのリトライ予算を焼いていた。
+  - **`skill_command_prefix`**: 対話セッションへ送るテキストのうち、スキル起動コマンドの
+    行頭記号（既定 `/`、`/skill-name` 形式）。codex はスキルを `$skill-name` で起動するため
+    `$` を宣言する（`agents/codex.json`）。セッション開始コマンド（agent-session-commands）
+    の chat モードなど、人が `/skill-name` と書いたテキストを CLI へ送る経路が
+    `agentcore.agentcli.rewrite_skill_commands` 経由でこの宣言を見て行頭の `/` を差し替える
+    ——既定 `/` の CLI では何も変えない。
   - **対話モード（`interactive`）**: 対話起動 argv・対話専用の `write_args` / `readonly_args`・
     入力受付を検出する正規表現（`ready_pattern` / `ready_timeout_sec`）・初回プロンプトの
     注入方法（`prompt_inject: send-keys | file`）。dashboard の CLI チャット・cowork の
-    tmux 実行・対話診断・kiro-loop の chat 起動は全部この定義を通る。
+    tmux 実行・対話診断が対象。**kiro-loop / agent-loop の chat 起動はこの契約の対象外**
+    ——`kiro-loop.py:_start_pane` / `agent_loop/session.py:_start_pane` は kiro-cli 固定で
+    自前に argv（`["chat"] + kiro_args_base`）を組み立てており、agentcli 定義を経由しない。
 - 未知の agent_cli で定義も無ければ**明示エラー**（黙るフォールバックは廃止）。
+  例外は cowork の定常業務 tmux 実行（`cowork.js:coworkChatLaunch`）——定義解決に失敗しても
+  `kiro-cli chat --trust-all-tools` へ落として定常業務を止めない。ただし黙ってはいない。
+  フォールバック発動時は `console.warn` で理由（元エラーのメッセージ）を残す。
 - 同梱定義: `agents/{kiro,claude,copilot,codex,cursor,ollama}.json`。追加手順は
   [`agents/README.md`](../../agents/README.md)。
 
@@ -134,13 +148,16 @@
 
 | class | 意味 | 誰が直すか | 各層の動き |
 |---|---|---|---|
+| `control` | 管理設定による実行停止（`[agent-control]`） | 人（dashboard で実行を許可） | 下記「環境要因」の扱い |
 | `quota` | 利用上限 | 時間（またはプラン見直し） | 下記「環境要因」の扱い |
 | `auth` | 認証切れ | 人（再ログイン） | 同上 |
 | `env` | 実行環境（CLI 不在・モデル不正・argv 長超過） | 人（環境修復） | 同上 |
 | `transient` | 一時的（タイムアウト・接続断） | 誰も（自動で解ける） | 通常リトライ |
 | （タグ無し） | 内容の問題 | タスク単位の判断 | 従来どおり retry → 裁定 → 人 |
 
-**環境要因（quota/auth/env）の扱い** — 3 層が同じタグを読む:
+**実行制御・環境要因（control/quota/auth/env）の扱い** — 3 層が同じタグを読む
+（表示上は「実行制御による停止」と「環境要因の失敗」を分けるが、打ち切り・needs 化の
+仕組みは共通）:
 
 1. **agent-flow**（`_continue` → `_env_failure_reason`）: 環境要因の失敗ノードが 1 つでもあれば
    **再計画せず run を即 failed で終端**（`meta.failure_reason` にタグ付き理由）。全ノードで

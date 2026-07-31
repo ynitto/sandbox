@@ -10,7 +10,8 @@ def build_parser() -> argparse.ArgumentParser:
     # 設定値の優先順位: CLI > 設定ファイル(agent-flow.yaml) > 組み込み既定。
     # 設定ファイル対象のオプションは既定 None にし、parse 後 resolve_config で確定する。
     p.add_argument("--config", default=None,
-                   help="設定ファイルのパス（未指定なら ./ → ./.agent → ~/.agent の agent-flow.{yaml,yml,json}）")
+                   help="設定ファイルのパス（未指定なら ./ → ./.agents/ → ./.agent/ → ~/.agents/ の"
+                        " agent-flow.{yaml,yml,json}）")
     p.add_argument("--bus", default=None,
                    help="ローカルバスのルート / git モードでは各ノードのクローン親ディレクトリ")
     p.add_argument("--run-id", default=None, help="run 識別子")
