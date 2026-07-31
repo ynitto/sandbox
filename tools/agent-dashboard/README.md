@@ -81,18 +81,24 @@ agent-amigos ミッションとノード予算（`src/features/amigos/`）を同
 
 ### 一貫性ゲート
 
-概要には、codd-gate の設定上の状態を「結線済み」「一部結線」「未結線」で表示する。併せて
-`regression_cmd` と `intake_cmd` ごとに、設定の有無、codd-gate への結線、現在のコマンドを出す。
-別の回帰コマンドが設定されている場合は「設定あり、未結線」となる。要対応に codd-gate 由来の
-失敗が出たときは、概要と同じキー名で原因と不足している結線を示す。`regression_cmd` の失敗は
-agent-project が done の確定を止めたことを意味し、具体的な原因は要対応の失敗要約で確認する。
-dashboard は設定文字列だけを読み、codd-gate の実在・互換性・実行成功までは確認しない。
+結論: dashboard は公式契約を読み取って結線状態と失敗の意味を表示する。有効化は人に案内し、
+設定、タスク状態、done は書き換えない。
 
-判定に使う公式契約は agent-project の汎用フック `regression_cmd` と `intake_cmd` だけで、
-dashboard 専用のフックは設けない。dashboard は agent-project 本体と同じ探索順でワークスペース
-設定を優先し、無ければ `~/.agents` の実効設定を読み、`readProject()` のスナップショットとして
-renderer へ渡す。コマンドの実行、設定の書き換え、done の確定は行わない。
-「設定ファイルを開く」も OS のエディタを開くだけである。
+設定のデータ経路は `agent-project.yaml` の汎用フック `regression_cmd` / `intake_cmd` →
+`readToolConfig()` → `consistencyGateStatus()` → `readProject().consistencyGate` →
+`dashboard:project` IPC → `state.project` である。概要の `consistencyGateHtml()` はこの表示モデルを使い、
+「結線済み」「一部結線」「未結線」を出す。各フックでは設定の有無、codd-gate への結線、現在の
+コマンドを分けて表示するため、別の回帰コマンドは「設定あり、未結線」となる。dashboard は設定
+文字列だけを読み、codd-gate の実在、互換性、実行成功は確認しない。
+
+失敗のデータ経路は `needs/<id>.md` の `failure-*` → `parseNeeds()` → `readProject().needs` →
+`renderNeedFacts()` である。要対応では、失敗時に記録された phase、要約、コマンドから codd-gate
+由来と確認できた場合だけ、原因と不足している結線を示す。`regression_cmd` の失敗は agent-project
+が done の確定を止めたことを意味する。具体的な原因は同じカードの失敗要約で確認する。
+
+設定は agent-project 本体と同じ探索順で、ワークスペースを優先し、無ければ `~/.agents` の実効値を
+使う。dashboard 専用のフックや状態は増やさない。コマンドの実行、設定の書き換え、done の確定も
+行わない。「設定ファイルを開く」は OS のエディタを開くだけである。
 
 未結線なら、画面に出る設定ファイルへ次の 2 行を書く。
 
@@ -101,7 +107,8 @@ regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV" --repos <root>/repos.j
 intake_cmd: 'codd-gate tasks --debt --repos <root>/repos.json'
 ```
 
-`regression_cmd` は、`tools/agent-project/` で sibling CLI を実行して既存の設定へ追加してもよい。
+`regression_cmd` は、画面に出す案内に従い、`tools/agent-project/` で sibling CLI を実行して既存の
+設定へ追加してもよい。dashboard 自身はこの CLI を実行しない。
 
 ```bash
 python3 codd_gate_regression.py --config /path/to/.agents/agent-project.yaml
