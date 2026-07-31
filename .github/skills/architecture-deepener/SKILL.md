@@ -1,8 +1,8 @@
 ---
-name: improve-codebase-architecture
-description: コードベースから deepening（深化）の機会を発見し、shallow なモジュールを deep に作り変えてテスタビリティと AI ナビゲート性を高めるアーキテクチャ改善スキル。「アーキテクチャを改善して」「リファクタリングの機会を見つけて」「密結合なモジュールを統合して」「コードベースをテストしやすくして」などで発動する。HTML レポートで候補提示し grilling で設計を詰める。
+name: architecture-deepener
+description: コードベースから deepening（深化）の機会を発見し、shallow なモジュールを deep に作り変えてテスタビリティと AI ナビゲート性を高めるアーキテクチャ改善スキル。「アーキテクチャを改善して」「モジュールの深さをレビューして」「密結合なモジュールを統合して」「コードベースをテストしやすくして」などで発動する。HTML レポートで候補提示し grilling で設計を詰める。
 metadata:
-  version: 1.0.0
+  version: 1.1.2
   tier: experimental
   category: maintenance
   tags:
@@ -13,7 +13,7 @@ metadata:
     - seams
 ---
 
-# improve-codebase-architecture
+# Architecture Deepener
 
 アーキテクチャ上の摩擦を可視化し、**deepening（深化）の機会** — shallow なモジュールを deep なモジュールへ作り変えるリファクタリング — を提案する。狙いは**テスタビリティ**と**AI ナビゲート性**の向上。
 
@@ -54,7 +54,9 @@ metadata:
 
 ### 1. 探索（Explore）
 
-まず、プロジェクトのドメイン用語集（`CONTEXT.md` / ドメイングロッサリ。なければ `domain-modeler` の成果物）と、触れる領域の ADR を読む。
+最初に探索範囲を絞る。ユーザーが対象を指定していればそれに従う。指定がなければ `git log --name-only` などで最近繰り返し変更されたファイル群を確認し、変更頻度の高い領域を優先する。変更が分散して明確なホットスポットがなければ探索範囲を広げる。deepening は将来の変更コストを下げる投資なので、動いていない領域を最初から網羅的に調べない。
+
+次に、対象領域のドメイン用語集（`CONTEXT.md` / ドメイングロッサリ。なければ `domain-modeler` の成果物）と ADR を読む。
 
 次に **Agent ツールを `subagent_type=Explore` で**使ってコードベースを歩く。硬直的なヒューリスティクスに従わず、有機的に探索し、**摩擦を感じる場所**を記録する:
 
@@ -68,9 +70,11 @@ shallow だと疑うものには**削除テスト**を適用する: 削除した
 
 ### 2. 候補を HTML レポートとして提示
 
-リポジトリに何も残さないよう、OS の一時ディレクトリに自己完結型 HTML を書き出す。一時ディレクトリは `$TMPDIR`（なければ `/tmp`、Windows は `%TEMP%`）から解決し、`<tmpdir>/architecture-review-<timestamp>.html` に書く。OS に応じて開く（Linux: `xdg-open`、macOS: `open`、Windows: `start`）。絶対パスをユーザーに伝える。
+通常はリポジトリに何も残さないよう、OS の一時ディレクトリに自己完結型 HTML を書き出す。一時ディレクトリは `$TMPDIR`（なければ `/tmp`、Windows は `%TEMP%`）から解決し、`<tmpdir>/architecture-review-<timestamp>.html` に書く。ユーザーが保存・共有・前回比較を求めた場合だけ、指定された永続パスへ直接書く。保存先が未指定なら、レポート提示後に保存先を1つだけ尋ねる。
 
-レポートは **Tailwind（CDN）** でレイアウト、**Mermaid（CDN）** でグラフ的な図を描く。各候補に **before/after の視覚化**を付ける。視覚的に。
+HTML は **インライン CSS とインライン SVG / HTML だけ**で構成し、外部 CDN・JavaScript・フォント・画像へ依存させない。`file://` でオフライン表示できることを自己完結の条件とする。各候補に **before/after の視覚化**を付ける。
+
+OS に応じて開く（Linux: `xdg-open`、macOS: `open`、Windows: `start`）。開けない環境でも読めるよう絶対パスを必ず伝える。
 
 各候補はカードとして:
 
@@ -93,7 +97,7 @@ shallow だと疑うものには**削除テスト**を適用する: 削除した
 
 ### 3. Grilling ループ（深掘り対話）
 
-ユーザーが候補を選んだら、grilling 対話に入る。設計ツリーを一緒に歩く — 制約・依存・深化後モジュールの形・シームの背後に何が座るか・どのテストが生き残るか。
+ユーザーが候補を選んだら、grilling 対話に入る。質問は1つずつ行い、回答を待ってから次へ進む。コードや環境から判定できる事実は自分で調べ、人間の決定だけを尋ねる。設計ツリーを一緒に歩く — 制約・依存・深化後モジュールの形・シームの背後に何が座るか・どのテストが生き残るか。
 
 決定が固まるにつれ、副作用がインラインで起きる:
 
@@ -111,9 +115,9 @@ shallow だと疑うものには**削除テスト**を適用する: 削除した
 | 知りたいこと | 参照 |
 |---|---|
 | アーキテクチャ語彙の完全定義・原則 | [references/language.md](references/language.md) |
-| 依存カテゴリ別の安全な深化手順・テスト戦略 | [references/deepening.md](references/deepening.md) |
-| HTML レポートのスキャフォールド・図パターン・スタイル | [references/html-report.md](references/html-report.md) |
-| 代替インターフェース設計（並列サブエージェント） | [references/interface-design.md](references/interface-design.md) |
+| 依存カテゴリ別の安全な深化手順・テスト戦略 | [references/language.md](references/language.md) と [references/deepening.md](references/deepening.md) |
+| HTML レポートのスキャフォールド・図パターン・スタイル | [references/language.md](references/language.md) と [references/html-report.md](references/html-report.md) |
+| 代替インターフェース設計（並列サブエージェント） | [references/language.md](references/language.md)、[references/deepening.md](references/deepening.md)、[references/interface-design.md](references/interface-design.md) |
 
 ---
 

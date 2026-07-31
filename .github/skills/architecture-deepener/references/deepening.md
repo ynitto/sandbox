@@ -1,6 +1,6 @@
 # Deepening（深化）
 
-shallow なモジュール群を、その依存を踏まえて安全に深化させる方法。[language.md](language.md) の語彙（**module**, **interface**, **seam**, **adapter**）を前提とする。
+shallow なモジュール群を、その依存を踏まえて安全に深化させる方法。先に読み込んだ語彙定義（**module**, **interface**, **seam**, **adapter**）を前提とする。
 
 ## 依存カテゴリ
 
