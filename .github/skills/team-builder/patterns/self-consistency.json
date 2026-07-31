@@ -1,0 +1,33 @@
+{
+  "id": "self-consistency",
+  "name": "Self-Consistency（多解→多数決）",
+  "category": "sampling-voting",
+  "tier": "high",
+  "source": "Self-Consistency (Wang et al., 2023)",
+  "when_to_use": "単発だと不安定な問題で、独立に複数回解いて最も一貫する解を多数決で採りたいとき。",
+  "signals": [
+    "答えのブレを抑えたい",
+    "独立に解ける",
+    "合意・多数派で信頼度を上げたい"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "solver",
+        "role": "問題を独立に解き、最終回答を ANSWER.md に書く（他席の解は見ない）",
+        "required": true,
+        "approver": false,
+        "seats": 5,
+        "aggregate": "majority",
+        "count_hint": "3-7"
+      }
+    ],
+    "convergence": {
+      "done_when": "all-required-done"
+    },
+    "budget_hint": "小〜中（例 60 分）"
+  },
+  "feasibility": "native",
+  "feasibility_note": "seats>1（G1）で N 席の独立解を並べ、aggregate: majority（G2）で integrator が決定的に多数決する。各席は回答を ANSWER.md へ書く。",
+  "notes": "1 ロールに seats を付けるだけで N 席へ展開される。多数決の集計・勝者は integrator が決定的に出す（deliverable/solver/AGGREGATE.*）。"
+}

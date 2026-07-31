@@ -1,0 +1,175 @@
+/* ── コンテナ ────────────────────────────────────── */
+.kiro-view {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    padding: 0;
+}
+
+/* ── ヘッダー ────────────────────────────────────── */
+.kiro-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--background-modifier-border);
+    flex-shrink: 0;
+}
+
+.kiro-status {
+    font-size: 0.78em;
+    padding: 2px 8px;
+    border-radius: 10px;
+}
+
+.kiro-status.on {
+    background: var(--color-green);
+    color: #fff;
+}
+
+.kiro-status.off {
+    background: var(--background-modifier-border);
+    color: var(--text-muted);
+}
+
+/* ── メッセージエリア ─────────────────────────────── */
+.kiro-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* ── バブル ──────────────────────────────────────── */
+.kiro-bubble {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-width: 90%;
+}
+
+.kiro-bubble.user {
+    align-self: flex-end;
+}
+
+.kiro-bubble.assistant {
+    align-self: flex-start;
+}
+
+.kiro-role {
+    font-size: 0.72em;
+    color: var(--text-muted);
+    padding: 0 4px;
+}
+
+.kiro-bubble.user .kiro-role {
+    text-align: right;
+}
+
+.kiro-body {
+    padding: 8px 12px;
+    border-radius: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.55;
+}
+
+.kiro-bubble.user .kiro-body {
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+    border-bottom-right-radius: 3px;
+}
+
+.kiro-bubble.assistant .kiro-body {
+    background: var(--background-secondary);
+    border-bottom-left-radius: 3px;
+}
+
+/* ── システムメッセージ ─────────────────────────── */
+.kiro-sys {
+    font-size: 0.78em;
+    color: var(--text-muted);
+    text-align: center;
+    padding: 2px 0;
+}
+
+.kiro-sys.error {
+    color: var(--color-red);
+}
+
+.kiro-sys.stderr {
+    color: var(--text-muted);
+    text-align: left;
+    font-family: var(--font-monospace);
+    font-size: 0.72em;
+    opacity: 0.7;
+}
+
+/* ── フッター ────────────────────────────────────── */
+.kiro-footer {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 12px 12px;
+    border-top: 1px solid var(--background-modifier-border);
+    flex-shrink: 0;
+    /* Obsidian のステータスバーはワークスペースの外側に描画されるため
+       サイドバーパネルには影響しない。下パディングは余裕のため 12px */
+}
+
+.kiro-send-row {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.kiro-input {
+    width: 100%;
+    resize: none;
+    border-radius: 6px;
+    padding: 8px;
+    font-family: inherit;
+    font-size: inherit;
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    color: var(--text-normal);
+    box-sizing: border-box;
+}
+
+.kiro-input:focus {
+    outline: none;
+    border-color: var(--interactive-accent);
+}
+
+/* ── ボタン ──────────────────────────────────────── */
+.kiro-btn {
+    padding: 4px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.88em;
+    border: 1px solid var(--background-modifier-border);
+    background: var(--background-secondary);
+    color: var(--text-normal);
+}
+
+.kiro-btn:hover {
+    background: var(--background-modifier-hover);
+}
+
+.kiro-btn.primary {
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+    border-color: var(--interactive-accent);
+    padding: 6px 20px;
+    font-size: 0.9em;
+}
+
+.kiro-btn.primary:hover:not(:disabled) {
+    background: var(--interactive-accent-hover);
+}
+
+.kiro-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}

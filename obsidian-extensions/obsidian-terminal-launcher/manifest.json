@@ -1,0 +1,10 @@
+{
+  "id": "obsidian-terminal-launcher",
+  "name": "Terminal Launcher",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "Launch terminal entries defined in terminal-launcher config.json, passing the current note as context",
+  "author": "nitto",
+  "authorUrl": "",
+  "isDesktopOnly": true
+}

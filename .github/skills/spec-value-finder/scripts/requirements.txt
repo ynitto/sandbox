@@ -1,0 +1,6 @@
+# spec-value-finder の依存（すべて pip 一発・サーバ/GPU不要）
+openpyxl>=3.1          # Excel
+python-docx>=1.1       # Word
+python-pptx>=1.0       # PowerPoint
+pypdfium2>=4.0         # PDF（透明テキスト層の抽出）
+PyYAML>=6.0            # マッピングファイル

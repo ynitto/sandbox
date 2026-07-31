@@ -1,0 +1,257 @@
+# Agent Skills — プロジェクト概要
+
+> **テーマ：組織におけるスキル共有と継続的な改善**
+> 発表時間：約5分
+
+---
+
+## 1. このプロジェクトが解決する課題
+
+AIエージェント（GitHub Copilot / Claude Code）は強力だが、そのまま使うと **「汎用的すぎて組織固有のノウハウが活かせない」** という問題がある。
+
+| よくある状況 | 問題点 |
+|---|---|
+| チームメンバーがプロンプトを工夫してうまくいった | 他のメンバーに共有されない |
+| ベストプラクティスをドキュメントにまとめた | エージェントが参照してくれない |
+| AIに複雑なタスクを頼んだら迷走した | 再現性がなく、失敗の原因もわからない |
+
+**Agent Skills は「AIエージェントの能力そのもの」をチームで共有・改善するための仕組み。**
+
+---
+
+## 2. プロジェクト概要
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│                        Agent Skills                            │
+│                                                                │
+│  AIエージェントに「スキル」という形でノウハウを注入し、          │
+│  チーム全体でそのスキルを共有・育て続けるフレームワーク          │
+│                                                                │
+│  対応エージェント:  GitHub Copilot (macOS / Windows) / Claude Code │
+│  スキル数:          38（コアスキル8 + ドメイン固有スキル30）     │
+│  Python スクリプト: 68本                                       │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### スキルとは
+
+SKILL.md ファイルに「目的・手順・出力形式」を記述したもの。エージェントはこれを読んで一貫した振る舞いをする。
+
+```
+<AGENT_HOME>/skills/
+  react-frontend-coder/
+    SKILL.md          ← エージェントへの指示書（Markdown）
+    scripts/          ← 補助スクリプト（Python）
+    references/       ← 参考ドキュメント
+    assets/           ← テンプレート・リソース
+```
+
+---
+
+## 3. 設計思想
+
+### 「知識を個人の頭から、組織のリポジトリへ」
+
+```
+従来:  優秀なメンバーのノウハウ → 属人化 → 退職で消える
+
+本プロジェクト:
+  現場での試行錯誤
+      ↓
+  スキルとして言語化（SKILL.md）
+      ↓
+  フィードバックで検証（ok / needs-improvement / broken）
+      ↓
+  中央リポジトリへ昇格（PR → レビュー → マージ）
+      ↓
+  チーム全体のAIエージェントが活用
+```
+
+### 3つの原則
+
+| 原則 | 内容 |
+|---|---|
+| **気軽に貢献** | スキルは「完成していなくても」共有できる。PRを出すだけ |
+| **安全に更新** | pull前にスナップショット自動保存。1コマンドでロールバック可能 |
+| **実績で評価** | 「使われた回数」「ok率」という定量データを昇格の根拠にする |
+
+---
+
+## 4. 設計のポイント
+
+### 4-1. スクラムマスタースキル — 複雑なタスクの構造化実行
+
+AIへの曖昧な依頼を「7フェーズのスプリント」に変換して実行する。
+
+```
+ユーザー: "React + TypeScript でダッシュボードを作って。テストとデプロイ設定も"
+    ↓
+【Phase 1】スキル探索    — 使えるスキルを自動発見
+【Phase 2】要件定義      — requirements-definer で要件を明確化
+【Phase 3】スキルギャップ解消 — 不足スキルがあれば skill-creator で補完
+【Phase 4】スプリント計画 — タスク分解と優先順位付け
+【Phase 5】タスク実行    — サブエージェントに並列委譲
+【Phase 6】スプリントレビュー — 品質確認とフィードバック収集
+【Phase 7】進捗レポート  — 次スプリントへの引き継ぎ
+```
+
+**ポイント：** エージェントが迷走しないよう、各フェーズの入出力を厳密に定義。
+
+---
+
+### 4-2. ノードフェデレーション — ローカル改善を組織へ還元
+
+```
+中央リポジトリ（信頼された知識の集積）
+    ↓ pull（自動スナップショット → ロールバック可能）
+ノード（各メンバーのローカル環境）
+    ├─ ローカルで試用・改善・評価
+    ├─ フィードバック蓄積（ok率 > 中央の平均 → 改善効果を定量証明）
+    └─ 条件が揃ったら PR を出して中央に貢献
+中央リポジトリ（ノード貢献のレビュー・統合）
+```
+
+**昇格の自動判定（promotion_policy）:**
+```
+✓ ok_count >= 3
+✓ 問題率 <= 10%
+✓ ローカルで改善済み（version_ahead: true）
+→ 「このスキル、中央にあげませんか？」と通知
+```
+
+---
+
+### 4-3. フィードバックループ — 使うほど賢くなる仕組み
+
+```
+スキル実行後に3択でフィードバックを記録:
+  ok               → 成功カウント +1
+  needs-improvement → 改善候補フラグ → skill-evaluator が改善案を提案
+  broken           → アラート → 即座に修正フローが走る
+
+記録されるメトリクス:
+  total_executions, ok_rate, avg_feedback_note_length,
+  last_executed_at, central_ok_rate（中央平均との比較）
+```
+
+**ポイント：** 「なんとなくいい感じ」ではなく、数値で改善を証明できる。
+
+---
+
+### 4-4. スキルの多層構造 — コアとドメインの分離
+
+```
+コアスキル（8、常時ロード）
+  scrum-master / git-skill-manager / skill-evaluator /
+  skill-mentor / skill-selector / skill-creator /
+  ltm-use / karpathy-guidelines
+
+ドメイン固有スキル（31、必要に応じてインストール）
+  ── scrum-master エコシステム ──
+  sprint-reviewer          — スプリント完了判定・レトロスペクティブ
+  requirements-definer     — ユーザーストーリー定義・受け入れ条件管理
+  ── React 開発 ──
+  react-frontend-coder     — React + TypeScript 実装・最適化・ユニットテスト
+  react-frontend-unit-tester — 非推奨（react-frontend-coder に統合）
+  react-best-practices     — 非推奨（react-frontend-coder に統合）
+  ── コード・設計レビュー ──
+  agent-reviewer           — マルチ視点の並列統合レビュー
+  architecture-reviewer    — アーキテクチャレビュー
+  code-reviewer            — コードレビュー
+  code-simplifier          — リファクタリング・コード改善
+  design-reviewer          — クラス・モジュール設計レビュー
+  document-reviewer        — ソフトウェア開発ドキュメントレビュー
+  security-reviewer        — OWASP Top 10 ベースのセキュリティレビュー
+  test-reviewer            — テストコードレビュー
+  ── デバッグ / テスト ──
+  systematic-debugging     — 体系的デバッグ
+  self-checking            — 成果物の自己評価・改善ループ
+  test-driven-development  — Red-Green-Refactor サイクルでTDDを実行
+  webapp-testing           — Playwright によるWebアプリ検証
+  ── 実行手法 ──
+  contract-driven-development — API/I/O 契約先行開発
+  failure-driven-development  — 異常系先行設計
+  risk-driven-development     — リスク起点の段階的変更
+  ── 汎用設計・ドキュメント ──
+  api-designer             — REST/GraphQL API設計
+  aws-architecture-diagram — Draw.io XML形式のAWSアーキテクチャ図生成
+  brainstorming            — 実装前の要件・設計整理
+  ci-cd-configurator       — GitLab CI / Jenkins パイプライン設定
+  deep-research            — 深いリサーチ・調査
+  doc-coauthoring          — 仕様書・設計ドキュメント・RFC等の共同執筆
+  domain-modeler           — DDDドメインモデル設計
+  dynamodb-designer        — DynamoDB設計
+  dependency-auditor       — 依存関係セキュリティ・ライセンス監査
+  performance-profiler     — パフォーマンスボトルネック分析
+  technical-writer         — README・デベロッパーガイド作成
+  ui-designer              — UI/UXデザイン設計
+  ── 外部連携 ──
+  gitlab-idd               — GitLabイシュー駆動開発（非同期分散タスク実行）
+  teams-channel            — Teams チャンネル投稿・取得
+  agent-cli-proxy          — 他AI CLIツール呼び出し
+  ── 特許・知財 ──
+  patent-coach             — 特許出願前の構想・整理・先行技術調査
+  patent-writer            — JPO様式準拠の特許明細書ドラフト作成
+  ── 非推奨 ──
+  agentic-code-evaluator   — self-checking に移行済み
+```
+
+**ポイント：** 組織ごとに必要なスキルセットを「プロファイル」として定義して配布できる。
+
+---
+
+## 5. 今後の課題
+
+設計は整っているが、一部は **まだ実装中または未実装**。
+
+| 課題 | 現状 | 優先度 |
+|---|---|---|
+| **メトリクス収集の自動化** | フィードバック記録は動作・集計基盤は未実装 | 中 |
+| **スキルのコンフリクト解消** | 同名スキルが複数リポジトリにある場合の動作が未定 | 中 |
+| **スキルの依存関係管理** | スキル間の依存宣言・解決の仕組みがない | 中 |
+| **Webベースの管理UI** | 現状CLIのみ。可視化・ダッシュボードがない | 低 |
+| **スキルのA/Bテスト** | 複数バージョンを並走させて比較する仕組みがない | 低 |
+
+### 解決済みの課題
+
+| 課題 | 対応状況 |
+|---|---|
+| **ノードフェデレーション** | `node_identity.py` / `delta_tracker.py` / `promotion_policy.py` / `snapshot.py` を実装・稼働中 |
+| **API 設計スキル不足** | `api-designer` スキルを追加 |
+| **コードレビュースキル不足** | `code-reviewer` スキルを追加 |
+| **CI/CD 設定スキル不足** | `ci-cd-configurator` スキルを追加 |
+| **ドキュメント作成スキル不足** | `technical-writer` スキルを追加 |
+| **アーキテクチャレビュースキル不足** | `architecture-reviewer` スキルを追加 |
+| **設計レビュースキル不足** | `design-reviewer` スキルを追加 |
+| **ドキュメントレビュースキル不足** | `document-reviewer` スキルを追加 |
+| **テストレビュースキル不足** | `test-reviewer` スキルを追加 |
+| **セキュリティレビュースキル不足** | `security-reviewer` スキルを追加 |
+| **スキルのセマンティックバージョニング** | `version` フィールドを SKILL.md に追加・レジストリ v5 で管理。全スキルにバージョン記載済み（`skill-selector` v1.0.0 追記完了）|
+| **長期記憶（LTM）** | `ltm-use` スキルをコアスキルに追加 |
+| **スキル選択の最適化** | `skill-selector` スキルを追加。複合タスクで最適なスキルの組み合わせを自動推薦 |
+| **TDD サポート不足** | `test-driven-development` スキルを追加。Red-Green-Refactor サイクルで C1 カバレッジ 100% を達成 |
+| **特許・知財サポート不足** | `patent-coach` / `patent-writer` スキルを追加。出願前コーチングから JPO 様式明細書作成まで対応 |
+| **GitLab イシュー駆動開発のサポート不足** | `gitlab-idd` スキルを追加。REST API（Python スクリプト）のみで glab 不要。非同期キューによる複数ノード間のタスク分散実行に対応 |
+| **エージェント出力の自己評価機能不足** | `agentic-code-evaluator` スキルを追加。基本リフレクション・エバリュエーター・オプティマイザー・LLM-as-judge 評価戦略を提供 |
+| **コーディング行動規範の欠如** | `karpathy-guidelines` スキルをコアスキルに追加。Andrej Karpathy の観察に基づく 4 原則をすべてのコーディングタスクに常時適用 |
+| **AWS アーキテクチャ図生成機能の不足** | `aws-architecture-diagram` スキルを追加。Draw.io XML 形式で正確な AWS サービスアイコンを使用したアーキテクチャ図を生成 |
+
+---
+
+## 6. まとめ
+
+```
+Agent Skills が目指すもの:
+
+  個人のノウハウ → スキルとして言語化
+  スキル → フィードバックで磨く
+  磨かれたスキル → チーム全体のAIエージェントに展開
+
+  結果: 「組織の学習速度 = AIエージェントの改善速度」になる
+```
+
+**AIを使いこなすノウハウは、コードと同じようにバージョン管理・レビュー・共有できる。**
+これが Agent Skills の根本にある考え方。
+
+---

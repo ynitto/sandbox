@@ -1,0 +1,50 @@
+{
+  "id": "agentcoder",
+  "name": "AgentCoder（生成→テスト→デバッグ）",
+  "category": "software-sop",
+  "tier": "high",
+  "source": "AgentCoder (Huang et al., 2024)",
+  "when_to_use": "正誤をテストで判定できるコード生成。作り手と、それに依存しないテスト設計を分けたい。",
+  "signals": [
+    "コード生成",
+    "テストで合否判定できる",
+    "反復デバッグ"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "coder",
+        "role": "仕様に従い実装し、テスト失敗のフィードバックで修正する",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "test-designer",
+        "role": "仕様（実装ではなく）からテストを設計する",
+        "required": true,
+        "approver": false,
+        "collaborates_with": [
+          "coder"
+        ]
+      },
+      {
+        "id": "executor",
+        "role": "テストを実行し結果を判定、基準を満たしたら承認する",
+        "required": true,
+        "approver": true,
+        "collaborates_with": [
+          "coder",
+          "test-designer"
+        ]
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved",
+      "review_rounds": 3
+    },
+    "budget_hint": "中（例 90 分）"
+  },
+  "feasibility": "native",
+  "feasibility_note": "test-designer は実装を見ずに仕様からテストを書く（会話規約で担保）。",
+  "notes": "テスト実行という外部信号が承認の根拠。反復は差し戻しラウンド。"
+}

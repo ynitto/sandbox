@@ -1,0 +1,49 @@
+{
+  "id": "codet",
+  "name": "CodeT（生成テストで順位付け）",
+  "category": "sampling-voting",
+  "tier": "medium",
+  "source": "CodeT (Chen et al., 2022)",
+  "when_to_use": "複数の実装候補を、生成したテストの通過数で順位付けして選ぶとき。",
+  "signals": [
+    "コード候補の選抜",
+    "生成テストで採点"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "solver-a",
+        "role": "実装候補を作る",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "solver-b",
+        "role": "別候補を作る",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "test-designer",
+        "role": "テストを設計する",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "selector",
+        "role": "各候補をテストで採点し最良を承認する",
+        "required": true,
+        "approver": true,
+        "collaborates_with": [
+          "solver-a",
+          "solver-b",
+          "test-designer"
+        ]
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved"
+    }
+  },
+  "feasibility": "partial"
+}

@@ -1,0 +1,95 @@
+{
+  "filename": "sales-report.xlsx",
+  "properties": {
+    "title": "月次売上レポート",
+    "creator": "xlsx-report-builder"
+  },
+  "sheets": [
+    {
+      "name": "売上明細",
+      "freeze": "A2",
+      "auto_filter": true,
+      "header_style": {
+        "bg": "305496",
+        "font_color": "FFFFFF"
+      },
+      "columns": [
+        {
+          "header": "日付",
+          "key": "date",
+          "width": 14,
+          "number_format": "yyyy-mm-dd"
+        },
+        {
+          "header": "商品",
+          "key": "product",
+          "width": 18
+        },
+        {
+          "header": "数量",
+          "key": "qty",
+          "width": 10,
+          "number_format": "#,##0",
+          "align": "right"
+        },
+        {
+          "header": "金額",
+          "key": "amount",
+          "width": 14,
+          "number_format": "¥#,##0",
+          "align": "right"
+        }
+      ],
+      "rows": [
+        {
+          "date": "2026-05-01",
+          "product": "Aプラン",
+          "qty": 3,
+          "amount": 30000
+        },
+        {
+          "date": "2026-05-03",
+          "product": "Bプラン",
+          "qty": 1,
+          "amount": 8000
+        },
+        {
+          "date": "2026-05-07",
+          "product": "Aプラン",
+          "qty": 5,
+          "amount": 50000
+        },
+        {
+          "date": "2026-05-12",
+          "product": "Cプラン",
+          "qty": 2,
+          "amount": 24000
+        }
+      ],
+      "total_row": {
+        "label_col": "product",
+        "label": "合計",
+        "sums": [
+          "qty",
+          "amount"
+        ]
+      },
+      "conditional": [
+        {
+          "range_col": "amount",
+          "type": "data_bar",
+          "color": "638EC6"
+        }
+      ],
+      "charts": [
+        {
+          "type": "bar",
+          "title": "商品別 金額",
+          "categories_col": "product",
+          "values_col": "amount",
+          "anchor": "G2"
+        }
+      ]
+    }
+  ]
+}

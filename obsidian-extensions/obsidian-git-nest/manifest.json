@@ -1,0 +1,10 @@
+{
+  "id": "obsidian-git-nest",
+  "name": "Git Nest",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "Manage nested git repositories within your Obsidian vault: clone, pull, push, and switch branches via UI.",
+  "author": "nitto",
+  "authorUrl": "",
+  "isDesktopOnly": true
+}

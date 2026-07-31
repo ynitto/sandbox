@@ -1,0 +1,18 @@
+# copilot365-bridge の依存（いずれも「その機能を実際に使うとき」だけ必要）
+#
+# コア（packet.py / selftest / daemon の配線）は標準ライブラリのみで動く。
+# 下記は実運用のチャネルを有効化するときに入れる。
+
+# B→A の実ブラウザ操作（ask / watch-approvals 本番）
+#   インストール後に: playwright install chromium
+playwright>=1.40.0
+
+# クリップボード経路（clip-export / clip-import）
+pyperclip>=1.8.0
+
+# YAML 設定を使う場合（JSON 設定なら不要）
+PyYAML>=6.0
+
+# DOM が取れない面の OCR フォールバック（任意）
+# pytesseract>=0.3.10
+# Pillow>=9.0.0

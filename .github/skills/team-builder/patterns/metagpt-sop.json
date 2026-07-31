@@ -1,0 +1,58 @@
+{
+  "id": "metagpt-sop",
+  "name": "MetaGPT 型 SOP パイプライン",
+  "category": "software-sop",
+  "tier": "high",
+  "source": "MetaGPT (Hong et al., 2024) / ChatDev (Qian et al., 2024)",
+  "when_to_use": "ソフトウェア開発など、要件→設計→実装→検証と工程が定まった構築タスク。",
+  "signals": [
+    "何かを作る（アプリ/API/機能）",
+    "工程が段階的",
+    "成果物が複数種（設計/コード/テスト）"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "pm",
+        "role": "ゴールを要件・受入基準へ落とす",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "architect",
+        "role": "要件から構成を確定し、設計質問に答える",
+        "required": true,
+        "approver": false,
+        "collaborates_with": [
+          "pm"
+        ]
+      },
+      {
+        "id": "engineer",
+        "role": "設計に従い実装し単体テストを通す",
+        "required": true,
+        "approver": false,
+        "collaborates_with": [
+          "architect"
+        ]
+      },
+      {
+        "id": "qa",
+        "role": "成果物を受入基準と突き合わせてレビュー・検証し、満たしたら承認する",
+        "required": true,
+        "approver": true,
+        "collaborates_with": [
+          "engineer"
+        ]
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved",
+      "review_rounds": 2
+    },
+    "budget_hint": "中〜大（例 120 分）"
+  },
+  "feasibility": "native",
+  "feasibility_note": "逐次パイプライン＋承認ゲート＋integrator（自動）。agent-amigos の本領。",
+  "notes": "engineer には requires.tags（python 等）を付ける。工程順は collaborates_with と会話で表現。"
+}

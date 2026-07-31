@@ -1,0 +1,307 @@
+# agent-project の設定ファイルサンプル — **プロジェクトの合意事項**（どう動かすか）
+# ファイル名: agent-project.yaml / .yml / .json（PyYAML が無い環境は JSON。キーは同じ）
+#
+# ── 置き場所は 1 か所だけ（S1）──
+#   **状態専用リポジトリの clone の直下**（= 状態ルート直下）。ここに置いたものが全 PC で
+#   共有される（状態リポジトリの同期に乗る）。--config で明示指定もできるが、探索はしない
+#   ——旧実装の cwd → ./.agents → ./.agent → ~/.agents というチェーンは廃止した。移行時に
+#   成果物リポジトリ側の古い yaml が黙って優先される事故が起きたため。
+#
+# ── ノード固有の設定はここに書かない ──
+#   「何を動かすか・このノードの資源・ローカル環境」は各 PC の
+#   ~/.agents/agent-project.host.yaml が唯一の置き場（agent-project.host.yaml.example 参照）。
+#   このファイルに書くと起動時にエラーで止まる（state repo 経由で全 PC へ配られてしまうため）:
+#     node_id / projects / repos / availability / budget / tags / board_workdir /
+#     amigos_bus / amigos_config / residency / defaults / update（update_* キー）
+#
+#   逆に、次のキーだけは **両方に書ける**（ノード事情による上書きを許す群）。
+#   優先順位: CLI > host.yaml projects[].overrides > host.yaml defaults > このファイル > 既定
+#     agent_cli / model / act_timeout / verify_timeout / location / concurrency /
+#     agent_timeout / argv_limit / actor / notify_cmd / ltm_home / flow_config / verify_cwd
+#
+#   それ以外（計画・ゲート・予算・収束・検証・学習・タスク運用）はこのファイル専有。
+#   ノードごとに食い違うと実行が非決定になるため、host.yaml に書くとエラーで止まる。
+#
+# 値の優先順位: コマンドライン引数 > この設定ファイル > 組み込み既定。
+# つまり「プロジェクトとして決まる値」をここに書き、その場限りの上書きだけ CLI で渡せます。
+#
+# 真偽フラグもこのファイルで指定できます（CLI > config > 既定。CLI の --flag/--no-flag が常に勝つ）:
+#   watch / once / dry_run / rot / ltm / regression_revert / require_progress / auto_level /
+#   review_project（既定 false）、
+#   do_archive / learn / cleanup（既定 true。CLI は --no-archive/--no-learn/--no-cleanup）、
+#   auto_adjudicate（既定 true）。
+#   ※ do_archive は退避の可否。--archive は退避「先パス」用なので config キーは do_archive。
+#   個別パス上書き（--backlog 等）・--json/--fix/--pin のような実行限定フラグは CLI 専用です。
+
+# ---------------------------------------------------------------------------
+# 状態ルート（1 状態リポジトリ = 1 プロジェクト = 1 プロセス）
+# ---------------------------------------------------------------------------
+# root はこのファイルの置き場所そのもの（状態リポジトリの clone）で、設定では変えられない
+# ——`root:` を書いても警告して無視される。clone 先の宣言は host.yaml の projects[].root。
+# charter.md / repos.json / backlog/ / needs/ decisions/ archive/ policy.md / bus は
+# すべて root 直下に集約され、**相対パスの上書きはすべて root 基準**で解決される。
+# workdir: .                # act / verify の作業ディレクトリ（root 相対、既定 . = root）
+
+# ---------------------------------------------------------------------------
+# 実行バックエンド（環境のエージェント CLI（kiro-cli 等）に合わせて切替）
+# ---------------------------------------------------------------------------
+executor: agent             # 実行・評価役: agent（エージェント CLI に委譲。agent_cli で kiro/claude/
+                            # copilot/codex を切替）/ stub（オフライン検証・エージェント不使用。charter があるとき
+                            # 自動で入る plan→execute→evaluate の plan/敵対的レビューも stub 版に切替わり、
+                            # _run_agent_cli を一切呼ばない。「エージェント無しで動かす」なら本命はここ）。
+                            # または agent-flow の executor プラグイン名 / .py パスも指定可（そのまま
+                            # `agent-flow run --executor <値>` に委譲される）。
+# executor: gitlab          #   例: 同梱の gitlab プラグイン（タスクを GitLab イシュー化し、レビュー承認
+                            #   （status:approved）後にクリーンな MR を自動マージして完了する）。
+                            #   プラグイン固有設定は agent-flow 側の設定（例 gitlab: ブロック）で行う。
+                            #   委譲は人のレビュー往復で長時間かかるため act_timeout: 0（無制限待ち）推奨。
+# executor: /path/to/my_executor.py   # 例: 任意の executor プラグイン（.py パス指定）
+planner: agent               # 優先順位付け: agent=エージェント委譲が priority も加味 / none=priority 降順→最古
+flow_planner: flow-planner  # agent-flow run に渡す planner: flow-planner / agent / stub
+# ルーティング（タスク → ちょうど1つの書込先ワークスペース）。決定論（明示 - workspace: > policy route: >
+# charter owns: 推定）で決まらないときの扱い:
+route_planner: agent        # agent=エージェント委譲が charter の desc/owns から1つ推定 / none=決定論のみ（推定しない）
+# default_workspace: app    # それでも決まらないタスクの既定書込先（charter の name/url）。空=無効
+location: auto              # act の実行先: auto / local / board
+concurrency: 1             # 板へ並行 post する独立タスク数（1=逐次。local 単発 run は常に逐次）
+
+# 委譲公示板（agent-board）への依頼側自動配線（opt-in・既定は無効）。
+# board: を設定すると、location: auto は policy.md の offload: に一致するタスクを
+# ローカル実行ではなく委譲公示板へ post するようになる。
+# 板は「リポジトリ＋契約」だけで処理を持たない — 入札・実行は請負側ノードの常駐体
+# （board: 設定で board 参加が有効化されたもの）が行う。
+# 完了は board の result.json をポーリングして自動回収する（_reap_offloaded と同じ非ブロッキング委譲）。
+# 手動投函は `agent-project board-offload <task-id>` でも可（この設定を共有）。
+# board: git+ssh://git@gitea.local/team/agent-board.git
+# board_workdir: ~/.agents/project-board/mirror   # git+ 板のクローン作業領域（既定は自動）
+# board_workload: flow        # 板へ公示する workload（flow / amigos。既定 flow）
+# agent_cli: kiro           # LLM 実行に使うエージェント CLI: kiro（kiro-cli chat・既定）/
+                            #   claude（Claude Code ヘッドレス `claude -p`）/
+                            #   copilot（GitHub Copilot CLI `copilot -p`）/
+                            #   codex（OpenAI Codex CLI `codex exec`）。agent-project 自身の
+                            #   LLM 呼び出し（分解・優先順位・裁定・ルーティング）に効く。実行層
+                            #   agent-flow 側は agent-flow.yaml（flow_config）の agent_cli で揃える。
+                            #   組み込み以外（cursor / ollama / hermes …）は agents/<名前>.json の
+                            #   プラグイン定義で追加できる（契約: schemas/agent-cli.schema.json・
+                            #   探索順: $KIRO_AGENTS_DIR → <root>/agents → ~/.agents/agents → ~/.kiro/agents）。
+# agent_timeout: 300        # エージェント CLI 1 呼び出しのタイムアウト秒（0 以下で無効）
+# argv_limit: 100000        # argv 渡しの CLI（kiro / copilot）へ渡せるプロンプトの最大バイト数。
+                            #   超える分は一時ファイルへ退避し「そのファイルを読んで実行」の短い
+                            #   指示に置き換える（ARG_MAX 由来の起動失敗を避ける）。0 以下で既定へ
+# model: claude-sonnet      # エージェント CLI に渡すモデル（省略可）。
+                            #   kiro: kiro-cli のモデル名 / claude: sonnet・opus 等 /
+                            #   copilot: claude-sonnet-4.5・gpt-5 等（copilot /model の一覧に従う）
+# agents:                   # 処理毎のエージェント上書き（yaml 専用・CLI フラグ無し）。
+#   plan:                   #   キー: plan（分解・再計画・差し戻し修正）/ review（敵対的レビュー）/
+#     agent_cli: claude     #        prioritize（優先順位付け）/ route（書込先ルーティング）/
+#     model: opus           #        adjudicate（人へ回す前の裁定）/ verify（verify 合成）/
+#   assess:                 #        distill（人コメントの蒸留）/ assess（投入時採点）/
+#     model: haiku          #        repo_map（リポジトリ理解の生成）/ doctor（稼働診断）
+#   verify:                 #   値: {agent_cli, model}（どちらか片方でも可）。
+#     agent_cli: copilot    #   未指定の処理はグローバル agent_cli / model を使う。
+                            #   例: 重い分解は opus・大量に走る採点は haiku、のような使い分け。
+                            #   実行層（act 本体）の使い分けは agent-flow.yaml の agents:（planner/
+                            #   evaluator/worker/kind 別）で行う。
+# granularity: coarse       # バックログ分解の粒度: coarse（ストーリー相当・INVEST。既定）/
+                            #   fine（単機能・単モジュール）/ finest（1ファイル/1関数の最小単位）
+# flow_granularity: auto    # 内側（agent-flow の実行時タスクグラフ）へ渡す分解粒度。上の
+                            #   granularity とは別のノブ（外側=バックログの粒度 / 内側=1 ノードの
+                            #   スコープ上限）。auto（既定）= agent-flow が複雑さから導出。
+                            #   coarse|fine|finest で内側だけ明示できる。外側の値は内側へ流れない
+# agent_flow: /path/to/agent-flow.py   # agent-flow の明示パス（省略時は PATH→リポジトリ内を自動解決）
+
+# bus: bus                  # agent-flow バスの置き場（root 相対、既定: <root>/bus）。
+#   agent-flow の既定バス（./bus）と同じ場所を指す。プロジェクト外の共有バスを使うときだけ明示する。
+
+# ---------------------------------------------------------------------------
+# 自律度（信頼を段階的に明け渡す。タスク毎は - level: / - track: で上書き）
+# ---------------------------------------------------------------------------
+level: unattended          # report（act せず計画報告）/ assisted（done は人が承認）/ unattended（自動 done）
+# auto_level: false        # --auto-level: - track: 群の手戻り率で level を自動昇格/降格（opt-in）
+auto_level_max: assisted   # 自動昇格の ceiling（unattended で完全無人化への自動到達を解禁）
+level_promote_after: 5     # 昇格に要する連続 clean 数 ／ level_window: 10（評価窓）／ level_rework_max: 0.0
+level_window: 10
+level_rework_max: 0.0
+
+# ---------------------------------------------------------------------------
+# タイミング・常駐
+# ---------------------------------------------------------------------------
+poll: 5.0                   # --watch のポーリング間隔（秒）
+debounce: 3.0              # watch 中、フィードバックの最終保存からこの秒数は取込を待つ（誤発火防止）
+pace: 0.0                   # 1サイクルの下限間隔（秒）。バースト抑制（0=無制限）
+
+# ---------------------------------------------------------------------------
+# 予算（必ず有限回で止めるための上限）
+# ---------------------------------------------------------------------------
+max_cycles: 20             # 1パスで回す最大サイクル数（watch は1パス毎に与え直す）
+max_seconds: 0.0           # 実時間の上限（0=無制限）
+max_tokens: 0              # 消費トークンの上限（0=無制限。act 出力の @cost tokens= を計上し超過で停止）
+max_cost: 0.0              # 金額(USD)の上限（0=無制限。act 出力の @cost usd= を計上し超過で停止）
+max_retries: 2             # verify NG の再挑戦上限。超えたら人の判断（blocked）へ
+max_iterations: 3          # agent-flow 内の再計画の最大反復
+verify_timeout: 600.0      # verify コマンドのタイムアウト（秒）。テストスイート全体を回す完了条件は
+                           # 数分かかる。短すぎると「完了しているのに時間切れ NG」になる
+act_timeout: 1800.0        # act（agent-flow 実行）の結果待ちタイムアウト（秒）。0=無制限（完了まで待つ）。
+                           #   executor: gitlab など人のレビュー往復で数日かかる長時間委譲では、
+                           #   短いタイムアウトだと待ち切れずに retry を空増やし＆イシュー二重起票を
+                           #   起こす。委譲運用では 0（無制限）を推奨。下の「gitlab 委譲」欄も参照。
+# throttle: 0.0            # ソフト予算比率（例 0.8）。上限の手前で打ち切り、watch は report 降格（0=off）
+
+# ---------------------------------------------------------------------------
+# 検証ゲートと安全（done を守る）
+# ---------------------------------------------------------------------------
+verify_confirm: 1          # verify を N 回再実行し PASS/FAIL が跨いだら flake として人へ隔離（2 以上で有効）
+# verify_cwd: ../clone     # verify/acceptance を実行する作業ディレクトリ（既定 workdir）。git-bus 等で
+#                          # workdir に成果が出ないとき、対象 repo のクローン先を指す。未指定でも charter に
+#                          # 単一 repo があれば acceptance はその repo（target ブランチ）を一時 clone して検証する
+# require_progress: false  # verify=PASS でも変更ゼロなら done せず人へ（履歴一致 verify の偽 done 対策）
+# verify_validate: synth   # red-green 検証: 合成 verify が act 前ツリーでも PASS（=変更を弁別しない偽 done）を
+#                          # 実行で弾く。off/synth（自動生成のみ・既定）/all。per-task `- verify_validate: none` で除外
+# distill_learn: true      # 人コメント（gitlab 承認/却下）を一般化ルールへ蒸留してから learn 化（既定 on）
+# reject_recur: 2          # 同種の gitlab 却下がこの回数に達したら silent 積み直しをやめ「系の再考」で人へ（0/負で無効）
+max_spawn: 20              # 1 run で生成できる派生タスク（followup）数の上限（0 で無効）
+# task_branch: true          # タスク単位ターゲットブランチ（既定 on）: 成果を ap/<task-id> に集約
+# task_branch_prefix: "ap/"   # ブランチ名の接頭辞
+# delivery_review: true       # 成果物レビュー（既定 on）: verify PASS 後は常に検収待ち（review）→
+#                             # 人の承認で done。GitLab 設定（GITLAB_TOKEN/GL_TOKEN）があれば review 到達時に
+#                             # ap/<task-id> → target の MR を自動作成し、承認時にクリーンなら自動マージする。
+#                             # false で従来の unattended 自動 done
+# plan_review: true          # 実行前レビュー（既定 on）: 新規タスクは proposed で入り、人の承認
+#                            # （approve／needs の [x]）で初めて実行される。差し戻し（修正指示つき [x]）は
+#                            # agent-project がタスクを修正して再提案、却下（reject）は廃止＋依存先の再審査＋
+#                            # 再計画。false で従来の自動投入（verify ありは即 ready）に戻す
+# assess: true               # 投入時アセスメント（既定 on）: 新規タスクを c=複雑さ/r=リスク/a=曖昧さ
+#                            # （各1-3）で採点し `- assess:` に記録。採点は情報のみ（plan-review 票・
+#                            # 検収票のリスクダイジェスト・spec ルーティングが読む。実行可否は不変）
+# spec_track: false          # spec ルーティング（既定 off）: 採点 max(c,r,a) が spec_threshold 以上の
+#                            # タスクに spec 前段タスク（specs/<id>/ の spec.md/design.md/tasks.md 作成・
+#                            # review: human）を前置。人が spec を承認すると tasks.md（enqueue --json 互換）
+#                            # が実装タスク群へ展開され、元タスクは after: 実装群 の総合検証として最後に走る。
+#                            # policy.md の `spec: <パターン>` で採点に依らず強制、タスクの
+#                            # `- route: direct` で除外（人の明示が常に勝つ）
+# spec_threshold: 3          # spec ルートに乗せる採点しきい値（1-3・既定 3）
+# repo_map: false            # リポジトリ理解の成果物化（既定 off）: plan 前に charter の書込先 repo ごとに
+#                            # context/<repo名>.md（構造・規約・ビルド/テストコマンド）を生成（HEAD sha
+#                            # キャッシュ・変化時のみ再生成）。読み出しは常時＝人が手書きした context/*.md も
+#                            # plan / act / verify 合成へ有界注入される
+# rules_capture: true        # プロジェクトルールの自動昇格（既定 on）: 効果が再現した learn
+#                            # （auto-resolve が promote_threshold 回以上）を rules.md へ出典付きで追記。
+#                            # rules.md は「フローで判明した恒常ルール（暗黙知）の明文化先」で、人が直接
+#                            # 書いてもよい（正は人）。全タスクの act / plan / verify 合成へ常時・有界注入
+# regression_cmd: make -s smoke   # done 確定前のグローバル回帰検査（失敗で done にせず人へ）
+# 安全ゲート（gate / protect / deny …）は <root>/policy.md に書く（人専管）
+
+# 取り込みコマンド（intake）: 外部の決定的ゲート/検出器から修復タスクを汲み上げる汎用フック。
+# stdout の enqueue --json 形式（spec オブジェクト/配列）を backlog へ冪等取り込み（id が現役
+# backlog に居れば飛ばす）。パス開始時と watch の idle 中に intake_interval で律速して実行。
+# コマンドは単発・有界であること（常駐は agent-project が持つ）。
+# 例: codd-gate（doc/code/test 一貫性ゲート。tools/codd-gate/）の負債をタスク化して流し込む:
+# intake_cmd: codd-gate tasks --debt
+# intake_interval: 600            # 実行間隔（秒。既定 600。0 以下で毎パス/毎 poll）
+
+# 任意フックのプロバイダ指定（能力キー -> module 名）。本体はプロバイダの固有名を持たず、
+# 未指定なら agent-project 直下の sibling を「必要な関数を持つか」で走査して自動検出する。
+# 通常は書かなくてよい。別実装へ差し替える／自動検出の当たりを固定したいときだけ書く。
+# 明示した名前が解決できない場合は自動検出へ落ちず無効になる（doctor が warn で知らせる）。
+# 走査は `def <契約名>(` の行で前置フィルタするので、契約名を別名で公開するプロバイダは載らない。
+# 下の codd_gate_wiring がそれで、doctor に所見を出させたいならコメントを外して明示すること。
+# hooks:
+#   wiring: codd_gate_wiring      # 配線検出（detect_wiring / doctor_findings）のプロバイダ
+
+# ---------------------------------------------------------------------------
+# プロジェクト層（project サブコマンド: charter 駆動の plan→execute→evaluate）
+# ---------------------------------------------------------------------------
+max_project_cycles: 5      # 改善サイクルの上限（必ず有限停止）
+# max_project_cost: 0.0    # プロジェクト累計コスト上限(USD・0=無制限)
+project_stall: 2           # acceptance PASS 数が増えない連続回数→人へ（自動チャーン停止）
+# review_project: false    # evaluate で敵対的レビューを上乗せ（短絡的達成を疑う・opt-in）
+
+# ---------------------------------------------------------------------------
+# 真偽フラグ（常駐の既定をここに固定。CLI の --flag/--no-flag で都度上書き可）
+# ---------------------------------------------------------------------------
+watch: true                # 既定で常駐監視（systemd の ExecStart を `agent-project` だけにできる）
+# do_archive: true         # done を archive/ へ退避（false で削除。CLI: --no-archive）
+# learn: true              # DR 学習を使う（false で無効。CLI: --no-learn）
+# cleanup: true            # run 後にバスの一時状態を掃除（CLI: --no-cleanup）
+# rot: false               # triage で rot 検知を有効化
+# ltm: false               # 長期記憶への昇格＋横断 recall
+# once: false              # 1 タスクで終了
+# dry_run: false           # act を飛ばし verify のみ
+# regression_revert: false # 回帰時に未コミット変更を巻き戻す
+
+# ---------------------------------------------------------------------------
+# 分散移譲（remote）。policy.md の offload と併用
+# ---------------------------------------------------------------------------
+# git_bus: git@example.com:team/flow-bus.git   # 共有 git バス（offload 一致タスクを別マシンへ submit）
+git_branch: main            # バスに使う git ブランチ
+# git_subdir: flow           # リポジトリ内でバスにするサブディレクトリ
+
+# ---------------------------------------------------------------------------
+# 状態の git 同期 — リモートの agent-dashboard と結果/指示を往復
+# ---------------------------------------------------------------------------
+# ワークの内容（状態ルート直下の backlog/needs/decisions/journal/… の状態）を、状態専用
+# リポジトリの origin へ双方向同期する。機械の状態は外へ、人の指示（commands/ ドロップ・
+# inbox/ 投入・needs の記入・policy/charter の編集）は中へ。同期先は **設定しない**
+# ——状態ルートは常に状態専用リポジトリの clone なので、その origin が唯一の同期先（S1）。
+# URL の宣言は host.yaml の projects[].state_repo（clone 前に読む必要があるため）。
+#
+# コミットは detached worktree（専用 index）で組み立て、ブランチは update-ref の CAS で
+# 進めるため、人の並行 git 操作（add/commit）と衝突しない。取り込みは一時 index 上の 3-way
+# マージで決定的に合流する（rebase は使わない・作業ツリーの汚れに依存しない）。
+# **ローカルのコミットは毎同期で行い、fetch/push だけが state_git_interval で律速される。**
+# push 競合は fetch + 統合 → 再 push で吸収し force push はしない。一時状態（bus/・claims/）と
+# ルート内側のドット始まり（.swp 等）は同期しない。
+#
+# ★実運用の組み方（WSL 常駐＋gitlab executor 分散＋別 PC の viewer 監視）は
+#   agent-project.state-git.yaml.example 参照。
+# state_git_interval: 300               # fetch/push の最短間隔（秒）。0 で毎同期（負荷は増える）
+#
+# journal のローテーション: journal.md が閾値を超えたら journal-archive/ へ退避して新しい
+# journal を始める（退避名はタイムスタンプ+ホスト名で一意・以後不変＝マージ衝突源にならない。
+# アーカイブも state 同期の対象）。追記専用ログの肥大と direct 同期での EOF 追記衝突を抑える。
+# journal_max_bytes: 262144             # ローテーション閾値バイト（既定 256KB）。0 以下で無効
+# journal_keep: 20                      # journal-archive/ の保持世代数。0 以下で無制限
+#
+# agent-flow の設定値（executor / state_git_subdir / gitlab.* / defer_waits 等）は agent-project 側に
+# 個別のキーを増やさず、flow_config で渡す agent-flow.yaml に集約して agent-flow に読ませる。
+# flow_config: ~/.agents/agent-flow.yaml    # agent-flow へ --config で渡す agent-flow.yaml
+#   ※ state_git サブディレクトリを変えたいときは agent-flow.yaml の state_git_subdir を設定する
+#     （既定 agent-flow。CLI 注入しないので上書きされない）。viewer の flowBusByProject も合わせる。
+
+# ---------------------------------------------------------------------------
+# 学習・通知・棚卸し
+# ---------------------------------------------------------------------------
+# auto_adjudicate: true      # needs に落とす前に エージェント CLI が積み直し可否を裁定（既定 on。false で無効）
+# adjudicate_max: 1          # 1タスクあたりの自律裁定の上限回数（有限停止のため）
+learn_threshold: 0.5        # DR 学習のタイトル類似度（Jaccard）しきい値
+promote_threshold: 2        # learn ルールがこの回数以上効いたら ltm-use へ昇格（--ltm 時）
+# ltm_home: ~/.claude        # ltm-use ストアのルート（既定 KIRO_LTM_HOME → ~/.claude）
+rot_age_days: 14.0          # rot の stale 判定（経過日数）
+# notify_cmd: "teams-use post"   # 判断待ち遷移時のダイジェストを渡す通知コマンド
+# actor: alice               # 決定記録に残す操作者名（既定 $USER）
+
+# ---------------------------------------------------------------------------
+# 自動アップデート（既定 on・6 時間毎・起動直後にも実施）
+# ---------------------------------------------------------------------------
+# スキルリポジトリ（このツールの配布元）の main ブランチに更新が入ったら、run --watch の
+# アイドル時（消化待ち/フィードバックが無いとき）に自動で取り込む。【既定で有効】（6 時間ごと・
+# 起動直後の最初のアイドルでも 1 回実施し、停止中に入った更新を取りこぼさない）。手順は doctor と
+# 同じ流儀で決定的: git ls-remote で main の先頭を確認し、適用済みと違えば temp 領域へ
+# tools/agent-project/ だけを sparse-checkout → install.sh を実行 → 動いていた cwd のまま
+# graceful 再起動する（os.execv）。手動なら `agent-project update [--check|--now]`。
+# 初回チェックは「いま動いている本体を最新」とみなしベースラインを記録するだけ（無更新）。
+#
+# 更新元 URL は通常は設定不要: install.py が生成する skill-registry.json の
+# repositories.origin.url（無ければ install_dir）から自動解決する。別リポジトリを使うときだけ
+# update_repo を明示する。止めたいときは update_enabled: false か update_check_interval: 0。
+#
+# 以下はすべて任意（既定のままで有効）。
+# update_enabled: true                  # 自動アップデートの ON/OFF（false で完全に止める。既定 on）
+# update_check_interval: 21600          # 更新チェック間隔（秒）。既定 6 時間。0 以下で自動チェック無効
+# update_repo: ""                       # スキルリポジトリ（git URL/パス）。空なら skill-registry.json から自動解決
+# update_branch: main                   # 追従するブランチ（空/既定なら registry の branch を採用）
+# update_subdir: tools/agent-project tools/agent-tools  # 取得対象パス（カンマ/空白区切りで複数）
+#   本体だけを指定すると tools/agent-tools（統合インストーラ + agentcore）が取れず、
+#   installer が必ず失敗する（cone mode の sparse-checkout は指定ディレクトリの兄弟を
+#   含まない）。先頭が installer の実行ディレクトリ。
+# update_installer: install.sh          # サブディレクトリ内で実行するインストーラ

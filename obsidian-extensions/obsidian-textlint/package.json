@@ -1,0 +1,33 @@
+{
+  "name": "obsidian-textlint",
+  "version": "1.0.0",
+  "description": "This is a plugin for Obsidian (https://obsidian.md) that integrates textlint",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "version": "node version-bump.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@codemirror/lint": "^6.1.0",
+    "@codemirror/state": "^6.2.0",
+    "@codemirror/view": "^6.7.3",
+    "@textlint/types": "^13.1.0",
+    "@types/node": "^16.11.6",
+    "@typescript-eslint/eslint-plugin": "5.29.0",
+    "@typescript-eslint/parser": "5.29.0",
+    "builtin-modules": "3.3.0",
+    "esbuild": "0.25.1",
+    "obsidian": "latest",
+    "tslib": "2.4.0",
+    "typescript": "^5.8.2"
+  },
+  "dependencies": {
+    "@types/lodash-es": "^4.17.6",
+    "lodash-es": "^4.17.21"
+  },
+  "packageManager": "pnpm@8.6.5"
+}

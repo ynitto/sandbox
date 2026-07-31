@@ -1,0 +1,10 @@
+{
+  "id": "obsidian-file-watcher",
+  "name": "File Watcher",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "ファイルの作成・変更を監視して Obsidian コマンドを自動実行。cron スケジュールによる定期実行もサポート。",
+  "author": "nitto",
+  "authorUrl": "",
+  "isDesktopOnly": false
+}

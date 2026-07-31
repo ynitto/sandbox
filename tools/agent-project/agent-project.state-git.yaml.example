@@ -1,0 +1,119 @@
+# agent-project の実構成サンプル — 状態を GitLab に保存・共有する常駐構成
+# ファイル名: agent-project.yaml（このサンプルを丸ごと使う。汎用のキー解説は agent-project.yaml.example）
+#
+# 構成: 「1 プロジェクト = 1 状態リポジトリ = 1 daemon（WSL）＋ gitlab executor で作業を各 PC に分散 ＋
+#        別 PC の agent-dashboard で監視・検収 ＋ 状態（ワーク内容）を GitLab に保存」
+# 対になる agent-flow 側の設定 → agent-flow.state-git.yaml.example
+#
+# ── 置き場所（S1）──
+#   **このファイルは状態専用リポジトリの clone 直下に置く**（= 状態ルート直下）。全 PC が
+#   状態リポジトリの同期で共有する。--config で明示指定もできるが、探索はしない
+#   （旧 cwd → ./.agents → ./.agent → ~/.agents のチェーンは廃止）。
+#
+# ── 各 PC の宣言は host.yaml（このファイルではない）──
+#   どの状態リポジトリをどこへ clone して駆動するかは ~/.agents/agent-project.host.yaml:
+#     projects:
+#       - name: proj
+#         state_repo: git@gitlab.example.com:team/proj-state.git
+#         branch: main
+#         root: /home/me/agents/proj-state      # このノードでの clone 先（絶対パス）
+#   agent-project が root へ自動 clone する（手動 clone 不要）。既存ディレクトリを指した場合は
+#   origin の一致を検査し、食い違えば起動を止める（黙って旧構成へ書き続けない）。
+#
+# ── 起動（WSL）──
+#   agent-project serve        # この PC の常駐体（host.yaml のプロジェクトを監督する）
+#   認証: WSL 側ユーザーの SSH 鍵で GitLab へ `git push` が通ること。
+#
+#   ★状態の実体（状態リポジトリの clone / bus）は WSL 側ファイルシステム（ext4）に置く。
+#     /mnt/c 配下（DrvFS）は遅く flock 系ロックも不安定なため、常駐の状態置き場にしない。
+#
+#   実行層 agent-flow は常駐させない。act のたびに `agent-flow run` を単発起動し、
+#   その run が自分で生存リースと park の面倒を見る。agent-flow の設定値
+#   （executor / state_git_subdir / gitlab.* / defer_waits 等）は agent-project 側に
+#   増やさず、flow_config（agent-flow.yaml）へ集約して agent-flow に読ませる。
+
+# --- 置き場（相対パスはすべて root 基準）---
+# root はこのファイルの置き場所（状態リポジトリの clone）そのもの。設定では変えられない
+# ——clone 先の宣言は host.yaml の projects[].root（S1）。
+workdir: work                        # act / verify の作業ディレクトリ（root 相対 = <root>/work）
+# bus: bus                           # 既定は <root>/bus（agent-flow の既定 ./bus と一致）。
+#                                    #   明示は共有バス時のみ
+
+# --- 実行（作業そのものは GitLab イシューで各 PC へ分散）---
+executor: gitlab
+watch: true
+act_timeout: 0             # 委譲はレビュー往復で数日かかりうる。0=無制限で完了まで待つ。
+                           #   短いタイムアウトだと待ち切れずに retry を空増やし＆イシューを
+                           #   二重起票する（この構成では 0 を強く推奨）。
+                           #   併せて agent-flow 側 gitlab: の timeout/approved_timeout を 0（無限）にすると
+                           #   誤タイムアウト由来の retry ループが完全に消える（agent-flow.state-git.yaml 参照）。
+
+# --- 二段階レビュー（既定すべて on。この構成では明示不要だが、意味は把握しておく）---
+# plan_review: true          # 実行前レビュー: 新規タスクは proposed で入り、viewer/needs の承認を
+#                             #   通るまで GitLab イシューは起票されない（着手前ゲート）。
+# task_branch: true          # 各タスクの成果を ap/<task-id> に集約し、workspace の branch として
+#                             #   gitlab executor へ注入する（イシュー本文の「作業ブランチ」に反映され、
+#                             #   人/エージェントのワーカーはこのブランチで MR を作る）。
+# delivery_review: true      # 成果物レビュー: verify PASS 後に agent-project 自身が review へ進める
+#                             #   （viewer/needs での最終 approve が done の条件）。task_branch の同じ
+#                             #   ブランチで MR を探し（無ければ作り＝冪等）、gitlab executor が既に
+#                             #   イシュー決着済みなら二重に MR は作らない。approve でクリーンなら
+#                             #   Stage 2 と同じ規則で自動マージする。
+#                             #   ＝ gitlab のイシュー承認（作業が終わったか）と、この review
+#                             #   （成果を受け入れるか）は別ゲート。両方が揃って done になる。
+# assess: true               # 投入時アセスメント（既定 on）: 新規タスクを c/r/a（各1-3）で採点し
+#                             #   `- assess:` に記録。plan-review 票と検収票のリスクダイジェストに載る
+# spec_track: false          # spec ルーティング（既定 off）: 採点が spec_threshold 以上のタスクに
+#                             #   spec 前段（specs/<id>/ の spec/design/tasks・review: human）を前置し、
+#                             #   spec 承認後に tasks.md を実装タスク群へ展開する。
+#                             #   spec タスク自体は委譲されない（location は local 固定・gitlab 等の
+#                             #   委譲 executor は agent へ自動差し替え。実装タスクは従来どおり委譲）
+# spec_threshold: 3          # spec ルートの採点しきい値（1-3）
+# repo_map: false            # リポジトリ理解の成果物化（既定 off）: plan 前に context/<repo名>.md を
+#                             #   生成（HEAD sha キャッシュ）。読み出しは常時（手書き context/*.md も注入）
+# rules_capture: true        # 効いた learn を rules.md（プロジェクトルール・全タスク常時注入）へ
+#                             #   自動昇格（既定 on）。rules.md は人が書くのが正・viewer 側の編集も
+#                             #   git 同期でそのまま届く（人の入力パス＝同時変更はリモート優先）
+
+# --- 状態の git 同期 ---
+# 同期先は状態リポジトリ自身の origin（clone が必ず持つ）。設定は要らない。
+# state_git_interval: 300            # fetch/push の最短間隔（秒）。バックアップ粒度を細かく
+#                                    #   したければ短く（GitLab への負荷と引き換え）。
+#                                    #   ローカルのコミットは毎同期で行い、これが律速するのは
+#                                    #   fetch/push だけ。
+
+# --- 複数 PC が同じ backlog を直接分担する場合の調整値（有効化の設定は不要） ---
+# controller lease と task claim を remote HEAD の CAS で確定する動作は、origin があり
+# status/<node>.json に自分以外の生存ノードが観測されたときだけ自動で有効になる。
+# （旧 coordination: git-cas キーは廃止。残っていても無視され起動時に警告が出る）
+# controller_heartbeat_sec: 30
+# controller_lease_sec: 120
+# coordination_retries: 3
+# 各 PC の node_id / root / availability は共有 YAML に書かず host.yaml に置く（S1。書くと
+# 起動時にエラーで止まる）。単一実行ノード＋複数 viewer の構成では調整値は既定のままでよい。
+
+# --- agent-flow へ渡す設定 ---
+# flow_config: ~/.agents/agent-flow.yaml   # agent-flow の設定（executor/state_git_subdir/gitlab.*/defer_waits 等）
+#                                          #   はこのファイルに集約
+
+# ── バックアップと復元 ──
+#   バックアップ = 状態リポジトリそのもの（全変更がコミット履歴で残る）。
+#   復元 = clone し直してそのディレクトリで start するだけ。
+#
+# ── 同一リポジトリを他プロセスと共有する取り決め ──
+#   ・push 競合は pull --rebase → 再 push（指数バックオフ）で自動吸収し、失敗しても
+#     次の同期間隔で再試行（ロックを保持して待ち合わない）
+#   ・共有ブランチへの force push は全員禁止（GitLab の保護ブランチで強制推奨）
+#   ・viewer の指示（commands/ ドロップ・inbox/ 投入・needs 記入・charter/policy/repos 編集）は
+#     同じリポジトリへの commit/push として届く
+#   ・ルート内側のドット始まりのファイルと bus/ claims/ は同期・バックアップされない
+#
+# ── 閲覧側（agent-dashboard）──
+#   ・別 PC の viewer: 状態リポジトリを clone し、viewer の ⚙ 設定「プロジェクトのパス」に
+#     その clone を 1 行ずつ登録（複数プロジェクト = 複数 clone）。viewer での承認・指示・
+#     一時停止/停止は commit/push → 本体が最大 state_git_interval 以内に取り込む
+#     （viewer にはエンジンが居ないので clone は手動）
+#   ・同じ PC の viewer（Windows）: git を介さず \\wsl$ 直読みでもよい。WSL 側で
+#       agent-project start --registry /mnt/c/Users/me/.agent-project/instances
+#     （または環境変数 AGENT_PROJECT_REGISTRY）にすると、Windows 側 viewer の自動発見が
+#     この共有レジストリを拾い、\\wsl$ パスで直接読める

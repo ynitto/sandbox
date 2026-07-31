@@ -1,0 +1,319 @@
+"""ノードループ — `join` / `drive` が回す 1 巡（設計書 §5.1・§5.2）。
+
+常駐一本化（実装計画 W1-9）で常駐主体はノード常駐体（agent-project `serve`）に移り、
+`serve` / `hub` / `hubbus` は削除済み。ここに残るのは**巡回そのもの**で、
+`agent-amigos drive`（単発・インライン）と `join`（自前で回り続ける従来の入口）の
+両方が同じ `cycle()` を使う。
+
+1 巡で次を回す:
+- バス上の open なミッションを発見し、能力が合うロールへ応募（claim）
+- 自ノードがオーナーのミッションでは、オーナー職務（roster の鏡写し・
+  staffing_timeout 後の自己補充 self-staff）を行う
+- roster 確定した自分の amigo のターンを順に実行する
+
+オーナーノードも参加ノードも同じ `join` を動かす（役割は mission.json の
+owner_node で決まる）。1 ノード運用は「オーナーが join し、self-staff で
+全必須ロールを自分で claim する」という形で自然に成立する。
+"""
+from __future__ import annotations
+
+import os
+import signal
+import socket
+import time
+
+from agentcore import vocab
+from agentcore import nodeid as _nodeid
+from agentcore.nodeid import normalize_node_id
+
+from .assign import (apply_role, claim_role, confirm_assignment, matches_role,
+                     mirror_roster, staffing_expired, unfilled_required, winner)
+from .bus import Bus
+from .mission import active_roles, derive_phase, load_mission, load_roles
+from .runner import AmigoRunner
+from .util import log, now_iso, read_json, write_json_atomic
+
+
+def _node_id_paths() -> "list[str]":
+    """node.json の探索候補（新ホーム優先）。**読むときは両方を見る。**
+
+    共通ホームは `.agent` → `.agents` へ移行中で、他の状態は agent_home_subdir が
+    サブディレクトリ単位で新旧を判定している。しかし node.json だけは同じ扱いにできない:
+    採番済みのノード ID を保持しており、参照先が変わって既存ファイルを見失うと ID が
+    振り直される。ノード ID は claim / assign / メッセージ宛先に使われるので、
+    振り直しは同一性の断絶になる。そこで「読みは新旧の両方を順に見る」ことで、
+    どちらに置かれていても既存 ID を必ず拾う。新規採番だけ新ホームへ書く。
+    """
+    home = os.path.expanduser("~")
+    return [os.path.join(home, ".agents", "amigos", "node.json"),
+            os.path.join(home, ".agent", "amigos", "node.json")]
+
+
+def default_node_id() -> str:
+    """ノード ID: 環境変数 → node.json（新旧ホームの順に探索。無ければ採番）→ ホスト名。
+
+    新規採番は PC 名そのもの（実装計画 W1-10・設計 §3.1「名義は node_id = PC 名」）。
+    以前は衝突回避のためホスト名+乱数接尾辞を採番していたが、板上の身元は PC 単位で
+    1 つであるべきなので接尾辞は付けない。既に採番済みの node.json（旧形式含む）は
+    そのまま読み続ける——同一性の断絶（claim/assign の宛先が変わる）を避けるため、
+    既存ノードの自動移行はしない（切替は明示的な node_id 指定 + 手順書に従う静止点）。
+
+    正規化は `agentcore.nodeid` の共通実装に委ねる。エンジンごとに独自の綴り替えを持つと
+    同じ PC が flow で `Mac`・amigos で `mac` になり、板に 2 ノードとして現れる。"""
+    env = os.environ.get("AGENT_AMIGOS_NODE")
+    if env:
+        return env
+    paths = _node_id_paths()
+    for path in paths:
+        data = read_json(path)
+        if isinstance(data, dict) and data.get("id"):
+            return str(data["id"])
+    nid = _nodeid.default_node_id()   # ホスト名の取り方まで agentcore の 1 実装へ（P0-3）
+    try:
+        write_json_atomic(paths[0], {"id": nid})   # 新規採番は新ホームへ
+    except OSError:
+        pass
+    return nid
+
+
+class NodeDaemon:
+    def __init__(self, bus: Bus, node_id: str, agent_cli: "str | None" = None,
+                 tags: "list[str] | None" = None, roles_filter: "list[str] | None" = None,
+                 interval: float = 5.0, resume_hours: float = 12.0,
+                 manual_claim: bool = False, commands_home: "str | None" = None,
+                 home: "str | None" = None, repos=None,
+                 board: "str | None" = None, board_workdir: "str | None" = None,
+                 board_lease: float = 900.0):
+        self.bus = bus
+        self.node_id = node_id
+        self.agent_cli = agent_cli
+        self.tags = list(tags or [])
+        # repos: このノードが担当するリポジトリ（repos.schema.json 形）。ロール requires.repos の
+        # 選別に使う — 成果物リポジトリに応じて応募ノードを絞る（設計 §5.1）。
+        self.repos = repos if isinstance(repos, (dict, list)) else {}
+        # board: 委譲公示板（agent-board）の場所。与えると cycle で板を巡回し、workload=amigos の
+        # 公示に repos/tags 照合で入札し、勝てばオーナーとしてミッションを公示する（設計 (B) 構成）。
+        self.board = board
+        self.board_workdir = board_workdir
+        self.board_lease = board_lease
+        self.roles_filter = list(roles_filter or [])
+        self.interval = interval
+        self.resume_hours = resume_hours
+        # manual_claim: 自動応募しない（commands/ 経由の手動引き受けのみ。
+        # 引き受け済みロールのターン実行・オーナー職務は従来どおり動く）
+        self.manual_claim = manual_claim
+        # commands_home: 指示のファイル取り込み（<home>/.agents/agent-amigos/commands/）を
+        # 有効にするホームディレクトリ。None = 取り込まない
+        self.commands_home = commands_home
+        # home: 納品棚（<home>/deliveries/）の置き場。既定は commands_home と同じ
+        # ディレクトリ（＝ノードのホーム）。None なら accept しても搬出しない
+        self.home = home if home is not None else commands_home
+        self._runners: "dict[tuple[str, str], AmigoRunner]" = {}
+        self._active = False
+        self._stopping = False
+
+    def _runner(self, mission_id: str, role_id: str) -> AmigoRunner:
+        key = (mission_id, role_id)
+        if key not in self._runners:
+            self._runners[key] = AmigoRunner(self.bus, mission_id, role_id,
+                                             self.node_id, self.agent_cli)
+        return self._runners[key]
+
+    def _participate(self, mid: str, mp, mission: dict, roles: dict, phase: str,
+                     i_am_owner: bool, policy: str, roster: dict) -> dict:
+        """参加 tick: 応募（claim）とオーナー職務（roster 維持・自己補充・受入判定・
+        conductor）。手番の実行は含まない（`_run_turns` へ分離 — 実装計画 W1-3）。
+        常駐体側の周期表ではこのメソッドだけを短周期で回し、手番はワーカーへ委ねる想定
+        （設計 §4.2「amigos 参加（claim・心拍・away）」の実体）。更新済み roster を返す。"""
+        # 応募: 未充足ロールのうち能力が合うものへ。
+        # first-come は claim（勝者＝確定）、owner-picks は応募のみ（確定はオーナー）。
+        # manual_claim では自動応募しない（commands/ の手動引き受けのみ）。
+        for role in [] if self.manual_claim else list(roles.values()):
+            rid = role["id"]
+            if rid in roster:
+                continue
+            if self.roles_filter and rid not in self.roles_filter:
+                if not (i_am_owner and role.get("builtin") == "integrator"):
+                    continue
+            if role.get("builtin") == "integrator" and not i_am_owner:
+                continue    # integrator はオーナーノードの組み込み職務（§5.7）
+            if not matches_role(role, self.tags,
+                                [self.agent_cli] if self.agent_cli else [], self.repos):
+                continue
+            if policy == "owner-picks":
+                apply_role(self.bus, mp, rid, self.node_id, self.agent_cli)
+                continue
+            if winner(mp, rid) == self.node_id:
+                continue    # claim 済み（roster への鏡写しはオーナー待ち）
+            if claim_role(self.bus, mp, rid, self.node_id, self.agent_cli):
+                log(self.node_id, f"{mid}: ロール {rid} を獲得しました")
+
+        # オーナー職務: roster 維持・自己補充・受入の自動判定
+        if i_am_owner:
+            roster = mirror_roster(self.bus, mp, roles, self.node_id, policy=policy)
+            unfilled = unfilled_required(roles, roster)
+            if unfilled and str(mission.get("staffing_policy")) == "self-staff" \
+                    and staffing_expired(mission):
+                for rid in unfilled:
+                    if policy == "owner-picks":
+                        apply_role(self.bus, mp, rid, self.node_id, self.agent_cli)
+                        confirm_assignment(self.bus, mp, rid, self.node_id)
+                        log(self.node_id, f"{mid}: 未充足ロール {rid} を自己補充します")
+                    elif claim_role(self.bus, mp, rid, self.node_id, self.agent_cli):
+                        log(self.node_id, f"{mid}: 未充足ロール {rid} を自己補充します")
+                roster = mirror_roster(self.bus, mp, roles, self.node_id, policy=policy)
+            if str(mission.get("acceptance")) == "agent" and phase == "reviewing":
+                from .ownerops import acceptance_turn
+                result = acceptance_turn(self.bus, mp, mission, self.node_id,
+                                         self.agent_cli, home=self.home)
+                if result in ("accepted", "rejected"):
+                    self._active = True
+            # 自律コンダクタ（オプトイン・G5 上位ループ）: 実行中に restaff で編成を調整
+            if (mission.get("conductor") or {}).get("enabled") and phase in ("working", "open"):
+                from .ownerops import conductor_turn
+                if conductor_turn(self.bus, mp, mission, self.node_id,
+                                  self.agent_cli) == "acted":
+                    self._active = True
+        return roster
+
+    def _run_turns(self, mid: str, roster: dict) -> None:
+        """手番 tick: 自分が担当する roster エントリのターンを実行する（実装計画 W1-3）。
+        常駐体側ではここをワーカーへの投入に差し替える想定（5s の参加 tick を手番実行で
+        塞がないため）。単発駆動 `drive` は逆にインライン実行でよい — 呼び出し元が
+        待っているのだから（設計 §4.5）。"""
+        for rid, ent in sorted(roster.items()):
+            if ent.get("node") != self.node_id:
+                continue
+            result = self._runner(mid, rid).turn_once()
+            if result in ("acted", "integrated"):
+                self._active = True
+                log(self.node_id, f"{mid}/{rid}: {result}")
+
+    def cycle(self, dispatch_turns=None) -> dict:
+        """1 巡: 指示の取り込み → 全ミッションを見て応募・オーナー職務・自 amigo のターン。
+        返り値は観測サマリ {mission_id: phase}（テスト・status 表示用）。
+
+        `dispatch_turns(mid, roster)` を渡すと手番の実行差し替えができる（既定は
+        `self._run_turns` — インライン実行。常駐体の常駐ノード tick は代わりに
+        roster 収集だけの callable を渡す — `participate_only` 参照。実装計画 W1-11 残・
+        設計 §4.2「手番の実行は tick 内で走らせない」）。"""
+        dispatch_turns = dispatch_turns or self._run_turns
+        self.bus.sync_pull()
+        if self.commands_home:
+            from .commands import ingest_commands
+            if ingest_commands(self.bus, self.node_id, self.commands_home, self.agent_cli):
+                self._active = True
+        # 委譲公示板（agent-board）の巡回: workload=amigos の公示に入札し、勝てばオーナーとして
+        # ミッションを公示する（板は「リポジトリ＋契約」だけで処理を持たない）。board 未設定なら no-op。
+        if self.board:
+            from .board import poll_board
+            try:
+                if poll_board(self):
+                    self._active = True
+            except Exception as e:  # noqa: BLE001 — 板の巡回失敗は daemon を止めない
+                log(self.node_id, f"board 巡回でエラー（無視して継続）: {e}")
+        seen = {}
+        for mid in self.bus.list_missions():
+            mp = self.bus.mission(mid)
+            try:
+                mission = load_mission(mp)
+            except SystemExit:
+                continue
+            roles = active_roles(load_roles(mp), mp)   # 剪定ロールは募集・実行から外す（G5）
+            phase = derive_phase(mission, roles, mp)
+            seen[mid] = phase
+            i_am_owner = mission.get("owner_node") == self.node_id
+            if i_am_owner:
+                # 締切超過・staffing 失敗の通知は**終端判定より前**に出す。failed は終端なので
+                # 下の continue の後ろに置くと、いちばん知らせたい終端理由だけが届かない。
+                from .ownerops import owner_notices
+                if owner_notices(self.bus, mp, mission, phase):
+                    self._active = True
+            if vocab.is_terminal(phase):
+                continue
+            policy = str(mission.get("assignment_policy") or "first-come")
+            roster = read_json(mp.roster()) or {}
+            roster = self._participate(mid, mp, mission, roles, phase, i_am_owner, policy, roster)
+            dispatch_turns(mid, roster)
+        return seen
+
+    def participate_only(self) -> "list[tuple[str, str]]":
+        """参加のみ tick: 応募・オーナー職務は行うが手番は実行しない（実装計画 W1-11 残・
+        設計 §4.2「amigos 参加（claim・心拍・away）」の実体）。ノード常駐体の短周期 tick から
+        呼ぶ想定 — 手番の実行は別プロセス（`agent-amigos run --once`）へ委ねる。
+        自分が roster 上で担当する (mission_id, role_id) の一覧を返す（呼び出し側の
+        実行ディスパッチ用。R1: `cycle` の分岐先を再利用するだけで手番実行の分岐は複製しない）。"""
+        owned: "list[tuple[str, str]]" = []
+
+        def _collect(mid: str, roster: dict) -> None:
+            for rid, ent in roster.items():
+                if ent.get("node") == self.node_id:
+                    owned.append((mid, rid))
+
+        self.cycle(dispatch_turns=_collect)
+        return owned
+
+    # --- graceful offboard（away プロトコル、設計書 §5.3） ------------------
+    def offboard(self, resume_hours: "float | None" = None) -> None:
+        """計画停止: 自分の全 amigo を `state: away`（resume_at 付き）にして
+        最後の push をする。引き継ぎメモは毎ターン更新済みなので、ここでは
+        状態遷移だけを宣言する。ロールは resume_at + grace まで保持される。"""
+        hours = resume_hours if resume_hours is not None else self.resume_hours
+        resume_at = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                  time.gmtime(time.time() + hours * 3600))
+        for (mid, rid), runner in sorted(self._runners.items()):
+            st = runner._load_status()
+            st["state"] = "away"
+            st["resume_at"] = resume_at
+            st["heartbeat"] = now_iso()
+            write_json_atomic(runner.mp.status(runner.who), st)
+            log(self.node_id, f"{mid}/{rid}: away（resume_at={resume_at}）")
+        self.bus.sync_push(f"offboard {self.node_id}")
+
+    def _install_signal_handlers(self) -> None:
+        def _on_signal(_signum, _frame):
+            self._stopping = True
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                signal.signal(sig, _on_signal)
+            except (ValueError, OSError):
+                pass    # メインスレッド以外（テスト等）では設定できない
+
+    def run(self, cycles: int = 0, until_terminal: bool = False,
+           install_signals: bool = True, mission_id: "str | None" = None) -> None:
+        """常駐ループ。cycles>0 ならその回数で終了（テスト・デバッグ用。offboard はしない
+        — テストの後始末を汚さない）。SIGTERM / SIGINT で graceful offboard（away 宣言）
+        してから終了する（install_signals=False なら設定しない — 単発駆動 `drive` 用。
+        実装計画 W1-3）。無風時はインターバルを伸ばす（adaptive interval の簡略採用、上限 8 倍）。
+
+        until_terminal=True なら、その巡で観測したミッションが終端（done/cancelled/failed）
+        に達した時点でも終了する（`drive` 用 — 設計 §4.5「ミッション終端（または --cycles
+        上限）で戻る」）。mission_id を渡すと「そのミッションだけ」の終端で戻る（共有バス上の
+        無関係な未終端ミッションに巻き込まれてハングしないため）。省略時は従来どおり、
+        その巡で観測した全ミッションが終端した時点で戻る。ミッションが 1 つも無い巡（対象
+        mission_id が観測されない巡を含む）は「終端」に数えない（投函前の空振りで即終了しない）。"""
+        if install_signals:
+            self._install_signal_handlers()
+        n = 0
+        sleep = self.interval
+        while not self._stopping:
+            self._active = False
+            try:
+                seen = self.cycle()
+            except Exception as e:  # noqa: BLE001 — デーモンは 1 巡の失敗で死なない
+                log(self.node_id, f"cycle 失敗: {e}")
+                seen = {}
+            n += 1
+            if until_terminal:
+                if mission_id is not None:
+                    if vocab.is_terminal(seen.get(mission_id)):
+                        return
+                elif seen and all(vocab.is_terminal(p) for p in seen.values()):
+                    return
+            if cycles and n >= cycles:
+                return
+            sleep = self.interval if self._active else min(sleep * 2, self.interval * 8)
+            deadline = time.time() + sleep
+            while time.time() < deadline and not self._stopping:
+                time.sleep(min(0.2, self.interval or 0.2))
+        self.offboard()

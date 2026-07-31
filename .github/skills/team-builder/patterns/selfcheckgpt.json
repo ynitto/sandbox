@@ -1,0 +1,37 @@
+{
+  "id": "selfcheckgpt",
+  "name": "SelfCheckGPT（一貫性で幻覚検出）",
+  "category": "verification-judging",
+  "tier": "medium",
+  "source": "SelfCheckGPT (Manakul et al., 2023)",
+  "when_to_use": "主回答の各主張を複数サンプルとの一貫性で検査し、幻覚を洗い出したいとき。",
+  "signals": [
+    "事実性の検証",
+    "幻覚を疑う"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "author",
+        "role": "主回答を作る",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "checker",
+        "role": "独立サンプルと突き合わせ、支持されない主張を指摘・承認する",
+        "required": true,
+        "approver": true,
+        "collaborates_with": [
+          "author"
+        ]
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved",
+      "review_rounds": 2
+    }
+  },
+  "feasibility": "partial",
+  "feasibility_note": "複数サンプルの平均支持度は checker の逐次確認で近似。"
+}

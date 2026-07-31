@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """スキル探索スクリプト。
 
-.github/skills/ 配下の全スキルを走査し、メタデータ一覧をJSON出力する。
+スキル配下の全スキルを走査し、メタデータ一覧をJSON出力する。
 scrum-master自身は一覧から除外する。
+レジストリの enabled / プロファイル設定に基づき、無効なスキルを除外できる。
 
 使い方:
-    python discover_skills.py [skills-directory]
+    python discover_skills.py [skills-directory] [--registry path/to/skill-registry.json]
 
-デフォルト: .github/skills/
+デフォルト: スクリプト配置に応じて自動解決
 """
 
+import argparse
 import json
 import os
 import sys
@@ -59,8 +61,58 @@ def list_dir_files(path: str) -> list[str]:
     )
 
 
-def discover_skills(skills_dir: str) -> list[dict]:
-    """スキルディレクトリを走査してメタデータ一覧を返す。"""
+def load_registry(registry_path: str) -> dict | None:
+    """レジストリJSONを読み込む。存在しなければ None を返す。"""
+    if not os.path.isfile(registry_path):
+        return None
+    with open(registry_path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def is_skill_enabled(skill_name: str, registry: dict | None) -> bool:
+    """レジストリの enabled フラグとアクティブプロファイルに基づき有効判定する。"""
+    if registry is None:
+        return True
+
+    # プロファイルによるフィルタ
+    active_profile = registry.get("active_profile")
+    profiles = registry.get("profiles", {})
+    if active_profile and active_profile in profiles:
+        profile_skills = profiles[active_profile]
+        if "*" not in profile_skills and skill_name not in profile_skills:
+            return False
+
+    # 個別の enabled フラグ
+    for skill in registry.get("installed_skills", []):
+        if skill.get("name") == skill_name:
+            return skill.get("enabled", True)
+
+    return True
+
+
+def skill_sort_key(
+    skill: dict, core_skills: list[str], registry: dict | None
+) -> tuple:
+    """スキルのソートキーを生成する。
+
+    優先度:
+    1. コアスキル (core_skills に含まれる) → 常に先頭
+    2. 名前順
+    """
+    name = skill["name"]
+    is_core = 0 if name in core_skills else 1
+    return (is_core, name)
+
+
+def discover_skills(
+    skills_dir: str, registry: dict | None = None
+) -> list[dict]:
+    """スキルディレクトリを走査してメタデータ一覧を返す。
+
+    registry が指定された場合、enabled=false のスキルや
+    アクティブプロファイル外のスキルを除外する。
+    結果はコアスキル優先・使用頻度順にソートされる。
+    """
     skills = []
 
     if not os.path.isdir(skills_dir):
@@ -87,6 +139,11 @@ def discover_skills(skills_dir: str) -> list[dict]:
             continue
 
         name = fm.get("name", entry)
+
+        # レジストリの enabled / プロファイル判定
+        if not is_skill_enabled(name, registry):
+            continue
+
         description = fm.get("description", "")
 
         skills.append(
@@ -105,12 +162,34 @@ def discover_skills(skills_dir: str) -> list[dict]:
             }
         )
 
+    # コアスキル優先・名前順にソート
+    core_skills = (registry or {}).get("core_skills", [])
+    skills.sort(key=lambda s: skill_sort_key(s, core_skills, registry))
+
     return skills
 
 
+def _default_skills_dir() -> str:
+    """スクリプト配置に応じた既定のスキルディレクトリを返す。
+
+    このスクリプトの __file__ から skill_home を導出する。
+    インストール構造: {skill_home}/scrum-master/scripts/discover_skills.py
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    # scripts/ → scrum-master/ → skill_home/
+    return os.path.normpath(os.path.join(here, "..", ".."))
+
+
 def main() -> None:
-    skills_dir = sys.argv[1] if len(sys.argv) > 1 else ".github/skills"
-    skills = discover_skills(skills_dir)
+    parser = argparse.ArgumentParser(description="スキル探索スクリプト")
+    parser.add_argument("skills_dir", nargs="?", help="探索対象のスキルディレクトリ")
+    parser.add_argument("--registry", help="レジストリJSONのパス（任意）")
+    args = parser.parse_args()
+
+    skills_dir = args.skills_dir or _default_skills_dir()
+    registry = load_registry(args.registry) if args.registry else None
+
+    skills = discover_skills(skills_dir, registry=registry)
     print(json.dumps(skills, ensure_ascii=False, indent=2))
 
 

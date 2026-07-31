@@ -1,0 +1,45 @@
+{
+  "id": "agentless",
+  "name": "Agentless（局所化→修正→検証）",
+  "category": "software-sop",
+  "tier": "medium",
+  "source": "Agentless (Xia et al., 2024)",
+  "when_to_use": "既存コードのバグ修正で、対象箇所の局所化→最小パッチ→テスト検証を一直線に。",
+  "signals": [
+    "バグ修正",
+    "既存コードへの最小変更"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "locator",
+        "role": "修正すべきファイル・箇所を特定する",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "fixer",
+        "role": "最小限のパッチを当てる",
+        "required": true,
+        "approver": false,
+        "collaborates_with": [
+          "locator"
+        ]
+      },
+      {
+        "id": "judge",
+        "role": "テストで検証し承認する",
+        "required": true,
+        "approver": true,
+        "collaborates_with": [
+          "fixer"
+        ]
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved",
+      "review_rounds": 1
+    }
+  },
+  "feasibility": "native"
+}

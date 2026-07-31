@@ -1,0 +1,34 @@
+{
+  "id": "critic",
+  "name": "CRITIC",
+  "category": "refine-loop",
+  "tier": "medium",
+  "source": "CRITIC (Gou et al., 2024)",
+  "when_to_use": "外部ツール（linter/テスト等）の出力を根拠に検証→批評→修正を回したいとき。",
+  "signals": [
+    "外部ツールで検証できる",
+    "ツール出力が批評の根拠"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "solver",
+        "role": "成果物を作りツール指摘で修正する",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "reviewer",
+        "role": "ツール検証の結果でレビュー・承認する",
+        "required": true,
+        "approver": true
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved",
+      "review_rounds": 3
+    }
+  },
+  "feasibility": "native",
+  "feasibility_note": "ツール実行は amigo のターン内で行い、指摘を review で返す。"
+}

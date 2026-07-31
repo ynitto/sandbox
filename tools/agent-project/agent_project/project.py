@@ -1,0 +1,725 @@
+from __future__ import annotations
+# project.py — 元 agent-project.py の 9797-10414 行目（機械分割・内容無改変）。
+# 単体 import しない。agent_project/__init__.py が共有名前空間へ順に exec 合成する。
+def _acceptance_cwd(cfg: "Config", charter: "Charter") -> "tuple[Path, str | None]":
+    """acceptance を実行する作業ディレクトリと、片付けが要る一時 clone のパス（無ければ None）を返す。
+    優先順位: 明示 verify_cwd > 単一対象 repo の一時 clone（target ブランチ＝worker の push 先）> workdir。
+    git-bus 等で workdir に成果が出ないケースに対応する。"""
+    if cfg.verify_cwd:
+        return resolve_verify_cwd(cfg), None
+    spec = _charter_single_repo(charter)
+    if spec:
+        tmp = tempfile.mkdtemp(prefix="agent-accept-")
+        dest = str(Path(tmp) / "repo")
+        branch = spec.get("target") or spec.get("base") or ""
+        try:
+            _clone_repo_shallow(spec["url"], branch, dest)
+        except (OSError, RuntimeError) as e:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise RuntimeError(f"対象 repo の clone 失敗（{spec['url']}@{branch or '既定'}）: {e}") from e
+        append_journal(cfg.journal, f"project acceptance: {spec['url']}@{branch or '既定'}"
+                                    " を clone して検証")
+        return Path(dest), tmp
+    return cfg.workdir, None
+
+
+def _charter_criteria_prompt(charter: "Charter", criteria: "list[str]", wd: "Path",
+                             rev: str) -> str:
+    """charter 達成条件（project_acceptance_criteria）の verifier プロンプト。
+    task と同じ criterion 契約: 証跡付きで判定し、基準の変更・緩和と成果物の修正を禁じる。"""
+    numbered = "\n".join(f"{i + 1}. {c}" for i, c in enumerate(criteria))
+    return (
+        "あなたはプロジェクト成果の検証エージェントです。下の達成条件それぞれについて、"
+        "実際にコマンドやファイル・差分の確認を行い、証跡付きで判定してください。\n\n"
+        "重要な原則:\n"
+        "- 判定の根拠は実行・確認した結果です。印象や「妥当に見える」は根拠になりません。\n"
+        "- 条件を言い換えたり緩めたりしないでください。\n"
+        "- 成果物を修正しないでください（作業ツリーへの変更は破棄されます）。\n"
+        f"- {verify_side_effect_rule(getattr(charter, 'side_effects', None))}\n\n"
+        f"## プロジェクト\n- 名前: {charter.name}\n- 目標: {str(charter.goal or '')[:800]}\n\n"
+        f"## 検証する場所\n- 作業ディレクトリ: {wd}\n- revision: {rev or '(不明)'}\n\n"
+        f"## 達成条件（この順に判定する）\n{numbered}\n\n"
+        "## 出力\n"
+        "まず人が読む本文を書き、末尾に次の形の JSON を必ず 1 つ添えてください。\n"
+        '{"criteria": [{"id": 1, "verdict": "pass|fail|unverifiable", '
+        '"evidence": {"commands": [], "output": "", "files": []}, "note": ""}]}\n'
+        f"- criteria は上の条件と同じ順で {len(criteria)} 件すべて含めてください。\n"
+        "- verdict=pass には必ず commands か files の証跡を入れてください"
+        "（証跡の無い pass は機械的に fail へ落とされます）。\n"
+    )
+
+
+def _evaluate_charter_criteria(cfg: "Config", charter: "Charter", criteria: "list[str]",
+                               wd: "Path", agent_run=None) -> "list[tuple[str, bool, str]]":
+    """自然文の達成条件を verifier セッション 1 回で判定する（task と同じ criterion 契約・
+    フェイルクローズは normalize_verification の 1 実装）。一発コマンド合成はしない。"""
+    if not criteria:
+        return []
+    rev = _git_out(wd, "rev-parse", "HEAD").strip() if (wd / ".git").exists() else ""
+    run = agent_run or (lambda p, m: _run_agent_cli(p, m, purpose="verify"))
+    try:
+        body = run(_charter_criteria_prompt(charter, criteria, wd, rev), cfg.model)
+    except Exception as e:  # noqa: BLE001 — CLI 不在・上限等の環境要因。未達（要人手）として返す
+        note = f"検証エージェントを実行できませんでした: {str(e)[:200]}"
+        return [(c, False, note) for c in criteria]
+    result = normalize_verification(body, criteria)
+    rows: "list[tuple[str, bool, str]]" = []
+    for c in result["criteria"]:
+        ev = ", ".join(c["evidence"]["commands"][:3]) or ", ".join(c["evidence"]["files"][:3])
+        msg = c["verdict"] + (f"（証跡: {ev[:160]}）" if ev else "") \
+            + (f" — {c['note'][:160]}" if c["note"] else "")
+        rows.append((c["text"], c["verdict"] == "pass", msg[:500]))
+    return rows
+
+
+def evaluate_acceptance(cfg: "Config", charter: "Charter", agent_run=None) -> "tuple[int, int, list]":
+    """charter の acceptance を評価し (passed, total, [(条件, ok, msg)]) を返す。
+    プロジェクト done の機械側の根拠＝全 PASS（done の確定は人の価値判断）。
+
+    統一 verify（P1-A5）: 決定的コマンド行はそのまま実行し（文字列を変えない）、自然文の
+    達成条件は verifier が証跡付きで判定する。自然文からのコマンド一発合成はしない。
+    `検収:` の人の検収項目はここでは数えない（milestone のチェックリストへ）。
+    実行先は 明示 verify_cwd > 単一 repo の一時 clone > workdir。clone は worker の push 先
+    （target ブランチ）を反映するため毎評価で取り直す。clone 失敗は全 NG 扱い
+    （workdir へ黙ってフォールバックすると成果の無い場所で誤判定するため）。"""
+    commands: "list[str]" = []
+    criteria: "list[str]" = []
+    for line in charter.acceptance:
+        kind, text = _acceptance_kind(line)
+        if kind == "command":
+            commands.append(text)
+        elif kind == "accept":
+            criteria.append(text)
+    total = len(commands) + len(criteria)
+    try:
+        wd, tmp = _acceptance_cwd(cfg, charter)
+    except RuntimeError as e:
+        append_journal(cfg.journal, f"project acceptance: {e} → 全 NG 扱い")
+        return 0, total, [(c, False, str(e)[:500]) for c in commands + criteria]
+    try:
+        env = None
+        if (wd / ".git").exists():
+            head = _git_out(wd, "rev-parse", "HEAD").strip()
+            if head:
+                env = {"KIRO_BASE_REV": head}
+        results = []
+        for cmd in commands:
+            ok, _flaky, msg = run_verify_stable(cmd, wd, cfg.verify_timeout,
+                                                cfg.verify_confirm, env)
+            results.append((cmd, ok, msg))
+        results += _evaluate_charter_criteria(cfg, charter, criteria, wd, agent_run)
+        passed = sum(1 for _, ok, _ in results if ok)
+        return passed, total, results
+    finally:
+        if tmp:
+            shutil.rmtree(tmp, ignore_errors=True)
+            _prune_caches(_provisioned_urls)   # 共有 cache の worktree 登録を回収（本体は残す）
+
+
+# 人の検収項目の明示接頭辞（`検収: …` / `human: …`）。機械検証（コマンド化）を試みず、
+# 収束時のチェックリストとして人へ渡す＝タスクの「verify 未定義 → 人が確認して承認で完了」と同じ契約。
+_HUMAN_ACCEPT_PREFIX_RE = re.compile(
+    r"^(?:human|manual|検収|手動|手動確認|人手|目視)\s*[:：]\s*(?P<text>.+)$", re.I)
+
+
+def _acceptance_kind(line: str) -> "tuple[str, str]":
+    """acceptance 1 行を (kind, text) に分類する。kind は 'command'（決定的シェル・そのまま実行）、
+    'human'（人の検収項目・機械検証しない）、'accept'（自然言語・要合成）。明示の `accept:` 接頭辞、
+    または『シェルに見えない散文』（全角句読点を含む等）を自然言語とみなす。散文をそのまま shell に
+    流して誤実行するのを防ぐため、判定不明な行は command でなく accept（合成 → 失敗時は人へ）に倒す。
+    機械検証できない条件（UI の見た目・使い勝手 等）は `検収:` で人の検収項目にする。"""
+    s = line.strip()
+    hm = _HUMAN_ACCEPT_PREFIX_RE.match(s)
+    if hm:
+        return "human", hm.group("text").strip()
+    m = _ACCEPT_PREFIX_RE.match(s)
+    if m:
+        return "accept", m.group("text").strip()
+    if _looks_like_shell_command(s):
+        return "command", s
+    return "accept", s
+
+
+def classify_charter_acceptance(charter: "Charter") -> "tuple[list[str], list[str], list[str]]":
+    """charter.acceptance の各行を (commands, criteria, human) に分類する（統一 verify・P1-A5）。
+
+    決定的コマンド行は文字列を変えずそのまま実行する固定検証。自然文（`accept:` 接頭辞 or 散文）は
+    `project_acceptance_criteria`——verifier が証跡付きで判定する criterion で、コマンドへの
+    一発合成はしない（旧 resolve_charter_acceptance の synth_verify 流用と `acceptance_synth`
+    キャッシュは廃止。環境が変わった時点でゲートが壊れる合成コマンドを done 基準にしない）。
+    `検収:`/`human:` 接頭辞の行は人の検収項目（human）: 機械検証を試みず、収束時のチェックリストとして
+    milestone に載せる（機械 acceptance 全 PASS + 人の確認・承認で done）。"""
+    commands: "list[str]" = []
+    criteria: "list[str]" = []
+    human: "list[str]" = []
+    for line in charter.acceptance:
+        kind, text = _acceptance_kind(line)
+        if kind == "command":
+            commands.append(text)
+        elif kind == "human":
+            human.append(text)
+        else:
+            criteria.append(text)
+    return commands, criteria, human
+
+
+def _acceptance_specs(cmds: "list[str]") -> "list[dict]":
+    """acceptance コマンドを、それ自体を固定検証コマンドとするタスク spec にする（決定的・的が
+    外れない）。コマンドは charter に書かれた受入条件そのもの＝人が入力した条件で done を判定する。
+    書き込みは正規形 `verification_commands`（新規データに裸の verify を書かない・P1-A8）。"""
+    return [{"title": f"受入条件を満たす: {cmd}"[:120], "verification_commands": [cmd],
+             "source": "acceptance"}
+            for cmd in cmds]
+
+
+def write_milestone(cfg: "Config", charter: "Charter", reason: str, summary: str,
+                    pid: "str | None" = None, version: str = "",
+                    human_acceptance: "list[str] | None" = None) -> None:
+    """収束候補/要対応を milestone として needs/<pid>.md に出す（検収ゲートのプロジェクト版）。
+    複数 charter 運用では pid が `<project>-<charter名>` になり charter 別に分かれる。
+    version（バージョン名）を渡すと見出しに使う: charter の `# Charter:` 宣言名は前バージョンの
+    コピー等でプロジェクト名のまま食い違うことがあるため、バージョンの識別はファイル名（version）を
+    正とする（viewer の表示も同じ規則）。"""
+    pid = pid or _project_id(cfg, charter)
+    # 見出し: 複数バージョン運用はバージョン名、単一運用は charter の宣言名。
+    # 宣言名がバージョン名と別に意味を持つ場合だけ併記する（「v2」ではなく「v2（保守）」等）。
+    heading = charter.name
+    if version:
+        heading = version if charter.name in ("", "project", version, cfg.project_name) \
+            else f"{version}（{charter.name}）"
+    cfg.needs.mkdir(parents=True, exist_ok=True)
+    labels = {
+        REASON_PROJECT_CONVERGED: "収束候補（acceptance 全 PASS・改善ゼロ）",
+        REASON_PROJECT_STALL: "停滞（acceptance PASS 数が増えない→人へ）",
+        REASON_PROJECT_BUDGET: "サイクル予算到達（人の判断待ち）",
+        REASON_PROJECT_COST: "コスト予算到達（人の判断待ち）",
+        REASON_PROJECT_BLOCKED: "内側ループが人へエスカレーション",
+        REASON_PROJECT_NO_ACCEPTANCE: "acceptance 未定義（done 判定不能→人へ）",
+        REASON_PROJECT_AWAITING_PLAN: "分解待ち（完了条件をまだ満たせていません。タスクは自動では"
+                                      "追加されないため、「バックログを分解」かタスクの追加で進めてください）",
+    }
+    hint = (
+        f"<!-- 完了として受領するなら `agent-project approve {pid} --reason ...`（プロジェクト done）。\n"
+        f"     次フェーズへ続けるなら charter.md の goal/acceptance を更新して再実行。\n"
+        f"     方向修正なら下に方針を書いて [x]（または policy.md を編集）。 -->\n")
+    # 人の検収項目（`検収:` 接頭辞の acceptance）。機械検証は済んでいない＝承認前に人が確認する
+    # チェックリストとして載せる（タスクの verify 未定義承認と同じ「人の確認が done の根拠」契約）。
+    human_block = ""
+    if human_acceptance:
+        human_block = ("## 検収チェックリスト（機械検証されていません。承認前に確認してください）\n"
+                       + "\n".join(f"- [ ] {h}" for h in human_acceptance) + "\n\n")
+    body = (
+        f"{_madr_frontmatter(pid, 'milestone')}"
+        f"# マイルストーン: {heading}\n\n"
+        f"## Context and Problem Statement\n\n"
+        f"- なぜ: {labels.get(reason, reason)}\n"
+        f"- 状態: {reason}\n"
+        f"- 概況: {summary}\n\n"
+        f"## goal\n{charter.goal}\n\n"
+        f"{human_block}"
+        f"{DECISION_MARKER}\n\n"
+        f"<!-- 人の決定の記入欄（MADR の Decision Outcome）。方針・指示をここに書く。 -->\n"
+        f"- [ ] 確定（このボックスを [x] にして保存すると取り込みます）\n\n"
+        f"{hint}")
+    (cfg.needs / f"{pid}.md").write_text(body, encoding="utf-8")
+
+
+_NEEDS_KIND_RE = re.compile(r"(?m)^kind:\s*(\S+)")
+
+
+def _needs_kind(path: Path) -> str:
+    """needs/<id>.md の frontmatter kind を読む（milestone / plan-review / review / blocked）。"""
+    try:
+        head = path.read_text(encoding="utf-8")[:400]
+    except OSError:
+        return ""
+    m = _NEEDS_KIND_RE.search(head)
+    return m.group(1) if m else ""
+
+
+def reconcile_milestones(cfg: "Config") -> None:
+    """milestone ファイル（needs/<pid>.md, kind=milestone）を project.json の status に一致させる
+    唯一の調整点（GC）。この関数だけが「milestone を残すか消すか」を決める＝milestone は status の
+    純粋な投影になり、署名比較の綻び・承認失敗・バージョン削除・旧トップレベル残存などで
+    milestone が『復活』しても、毎パス確実に status に合わせて掃除される（根本対策）。
+
+    残すのは MILESTONE_STATUSES（converged/no-acceptance/blocked/stall/budget/cost）の、いま存在する
+    バージョンの milestone だけ。承認済み（accepted）・もう無いバージョン・旧トップレベル
+    （<project>.md、バージョン運用時）の milestone は消す。タスク級の needs（plan-review/review/
+    blocked タスク）は kind で除外して触らない。"""
+    if not cfg.needs.exists():
+        return
+    data = load_project_state(cfg)
+    names = charter_names(cfg)
+    # 有効な pid → status。単一 charter は top-level、バージョン運用は各 version の state だけ
+    # （トップレベル state は無効）、マスターのみ（names 空）は有効ゼロ＝全 milestone を消す。
+    valid: "dict[str, str]" = {}
+    if names == ["default"]:
+        if data.get("id"):
+            valid[str(data["id"])] = str(data.get("status") or "")
+    else:
+        charters = data.get("charters") or {}
+        for name in names:
+            st = charters.get(name) or {}
+            if st.get("id"):
+                valid[str(st["id"])] = str(st.get("status") or "")
+    for nf in sorted(cfg.needs.glob("*.md")):
+        if _needs_kind(nf) != "milestone":
+            continue
+        status = valid.get(nf.stem)
+        if status is None or status not in MILESTONE_STATUSES:
+            try:
+                nf.unlink()
+            except OSError:
+                pass
+
+
+def finalize_project(cfg: "Config", state: dict, reason: str,
+                     charter: "Charter | None" = None,
+                     charter_name: "str | None" = None) -> None:
+    """プロジェクト（charter）を done 確定する。最終納品書を残し state を accepted に。
+    charter を渡すと accepted_charter_sig を記録し、次回 run は cmd_project 冒頭のガードで
+    charter.md が変わるまで再実行しない（accepted 直後に再収束して milestone が復活するのを防ぐ）。"""
+    pid = state.get("id", "project")
+    name = state.get("name", pid)
+    total = int(state.get("acceptance_total", 0))
+    ts = _now_ts()
+    summary = f"acceptance {total}/{total} PASS"
+    final = Task(id=pid, title=f"[project] {name}", status="done",
+                 source="project", verify=f"acceptance×{total}")
+    append_delivery(cfg, final, summary, ts)
+    append_decision(cfg, pid, "user", context=f"プロジェクト『{name}』を完了として受領",
+                    action="project-accept", reason=reason, affects=summary)
+    clear_needs_file(cfg, pid)
+    state["status"] = REASON_PROJECT_ACCEPTED
+    if charter is not None:
+        state["accepted_charter_sig"] = _charter_full_signature(charter)
+    save_charter_state(cfg, state, charter_name)
+
+
+def project_exit_code(reason: str) -> int:
+    if reason == REASON_PROJECT_ACCEPTED:
+        return 0
+    if reason in (REASON_PROJECT_BUDGET, REASON_PROJECT_COST):
+        return 2
+    return 1   # converged / no-progress / blocked / no-acceptance / awaiting-plan は人の対応待ち
+
+
+def _project_evaluate(cfg: "Config", charter: "Charter", pid: str, state: dict,
+                      cycle: int, cost_used: float, review_fn,
+                      charter_tag: str = "", agent_run=None) -> "tuple[str | None, str]":
+    """③ evaluate: acceptance 評価 → 収束/コスト/停滞/分解待ちを判定する。
+    停止すべきなら停止理由を、続行なら None を返す（last_summary も返す）。state(history/best/stall) を更新。
+
+    未達 acceptance からの改善タスクの**自動起票はしない**——バックログを起こすのは人の明示操作
+    （分解要求）だけ、の契約に揃える。自動起票を残すと、人が削除・整理したタスクを evaluate が
+    次サイクルで作り直し、「消しても復活する」ように見える。未達は awaiting-plan（分解待ち）として
+    人へ返し、未達項目は milestone に載せる。敵対的レビュー（--review-project・opt-in）の所見
+    だけは従来どおり改善タスク化する（人が明示的に有効化した検収ゲートのため）。
+    charter_tag（複数 charter 運用）を渡すと改善タスクにタグを付け、冪等照合もその charter に閉じる。"""
+    passed, total, results = evaluate_acceptance(cfg, charter, agent_run)
+    state["history"] = list(state.get("history", [])) + [passed]
+    # best（過去最高 PASS 数）は停滞判定の基準であると同時に、viewer の「n / m 達成」の表示元。
+    # 停滞判定より先にここで更新する: 下の収束 return より後ろで更新していたため、一発で全 PASS
+    # して収束したプロジェクトは best が 0 のまま残り、完了しているのに「0 / 1 達成」と出ていた。
+    # 停滞判定は更新前の値（prev_best）と比べる＝従来の意味を変えない。
+    prev_best = int(state.get("best", 0))
+    state["best"] = max(prev_best, passed)
+
+    def _tag(specs: "list[dict]") -> "list[dict]":
+        if charter_tag:
+            for sp in specs:
+                sp.setdefault("charter", charter_tag)
+        return specs
+
+    improved: list[Task] = []
+    findings: list[dict] = []
+    if cfg.review_project and passed == total:  # 短絡的達成を疑い敵対的レビュー（opt-in）
+        findings = _tag(review_fn(charter))
+        improved += _enqueue_specs(cfg, findings, _existing_titles(cfg, charter_tag or None),
+                                   cfg.learn_threshold, charter=charter_tag or None)
+    failing = [cmd for cmd, ok, _ in results if not ok]
+    last_summary = (f"cycle {cycle}: acceptance {passed}/{total} PASS, "
+                    f"改善 {len(improved)} 件, cost={cost_used:.4f}"
+                    + (f" ／ 未達: {' / '.join(failing[:5])}" if failing else ""))
+    append_decision(cfg, pid, "auto",
+                    context=f"cycle {cycle}: acceptance {passed}/{total} PASS",
+                    action="project-evaluate",
+                    reason=("収束候補" if passed == total and not improved else
+                            "改善継続" if improved else "分解待ち（自動起票なし）"),
+                    affects=f"改善 {len(improved)} 件 / findings {len(findings)}")
+    append_journal(cfg.journal, "project " + last_summary)
+    if passed == total and not improved:      # 収束: acceptance 全 PASS かつ改善ゼロ
+        return REASON_PROJECT_CONVERGED, last_summary
+    if cfg.max_project_cost and cost_used >= cfg.max_project_cost:
+        return REASON_PROJECT_COST, last_summary
+    if passed > prev_best:                    # 停滞: PASS 数が過去最高を更新しないなら人へ（自動チャーン止め）
+        state["stall"] = 0
+    else:
+        state["stall"] = int(state.get("stall", 0)) + 1
+    if state["stall"] >= cfg.project_stall:
+        return REASON_PROJECT_STALL, last_summary
+    if improved:                              # レビュー所見（opt-in）の消化だけは同一パスで続行する
+        return None, last_summary
+    # 未達だが自動では改善しない → 人がバックログを分解・追加する番（milestone で案内する）
+    return REASON_PROJECT_AWAITING_PLAN, last_summary
+
+
+def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, heartbeat=None,
+                agent_run=None, charter_name: "str | None" = None) -> int:
+    """charter 駆動の plan→execute→evaluate ループ（1 charter の 1 パス。`run` が charter 検出時に呼ぶ）。
+    charter_name（charters/<name>.md）を渡すとその charter だけを回す（複数 charter 運用）。
+    planner/reviewer/runner/agent_run は テストのため注入可能（既定はエージェント委譲＋正準ループ）。"""
+    ensure_dirs(cfg)
+    charter = _load_named_charter(cfg, charter_name)
+    multi = _is_multi_charter(cfg, charter_name)
+    if charter is None:
+        print(f"エラー: charter が見つかりません: {cfg.charter}", file=sys.stderr)
+        print("  ヒント: 目標/制約/前提/成果物/acceptance を charter.md に書いてください。",
+              file=sys.stderr)
+        return 2
+    # 人の指示（commands/ ドロップ）を入口で消化する。従来は execute（run_loop）内でしか
+    # 取り込まれず、下の accepted ガードで早期 return するパスでは承認/却下/replan の指示ファイルが
+    # 何パスも放置され、watch が空振り起床を繰り返した末に、状態が変わってから取り込まれて
+    # exit 2（.err 退避）になる実害があった（viewer の承認ボタンが「押しても何も起きない」の一因）。
+    ingest_commands(cfg)
+    # 人からの再分解要求（エラー回復）を入口で消費する（one-shot）。ここで消しておくことで、
+    # acceptance 未定義など早期 return するパスでもマーカーが残らず、has_work の空振り起床が
+    # 続かない（要求は消化済み＝下の plan ゲートで charter 無変更でも一発だけ plan を強制する）。
+    # 直前の ingest_commands が replan 指示をマーカー化した場合も、この場で拾って同一パスで反映する。
+    replan_req = consume_replan_request(cfg, charter_name if multi else None)
+    problems = validate_charter(charter)
+    if problems:
+        print(f"エラー: charter の repos 定義が不正です（{cfg.charter}）:", file=sys.stderr)
+        for p in problems:
+            print(f"  - {p}", file=sys.stderr)
+        print("  ヒント: 各 repo に `- desc:`（説明・必須）と `- base:`（ベースブランチ・必須）を、"
+              "必要なら `- target:`（既定 base）を付けてください。", file=sys.stderr)
+        return 2
+    pid = _project_id(cfg, charter) + (f"-{charter_name}" if multi else "")
+    # バージョン運用（multi）では、旧・単一 charter 時代のトップレベル milestone
+    # （needs/<project>.md、バージョン接尾辞なし）は不要。単一 charter で一度 run した後に
+    # charters/ を足す（バージョン運用へ移行する）と、この古い milestone が残って「マイルストーン」が
+    # 二重に見える（<project>.md と <project>-<version>.md）。バージョン運用のパスに入ったら常に
+    # 掃除する（accepted ガードや no-acceptance で早期 return するパスより前で行う＝取り残さない）。
+    if multi:
+        base_pid = _project_id(cfg, charter)
+        if base_pid != pid:
+            clear_needs_file(cfg, base_pid)
+    # 収束状態は milestone ファイルより先に決める（viewer と milestone GC はこの status を正とする）。
+    # 早期 return するパス（no-acceptance / 合成不能）でも status を project.json に必ず残すことで、
+    # viewer が「承認できるのか（converged）／完了条件を足すべきか（no-acceptance）」を判別でき、
+    # reconcile_milestones が milestone ファイルを status に追従させられる。
+    state = load_charter_state(cfg, charter_name if multi else None)
+    if state.get("id") != pid:
+        state = {"id": pid, "name": charter.name, "history": [], "best": 0, "stall": 0}
+    if not charter.acceptance:
+        # acceptance（受入 verify）が無いと done を判定できない＝必ず人へ（鉄則の保全）。
+        # status=no-acceptance を保存してから milestone を出す（承認ではなく「完了条件を追加」を促す）。
+        state.update({"id": pid, "name": charter.name, "status": REASON_PROJECT_NO_ACCEPTANCE})
+        save_charter_state(cfg, state, charter_name if multi else None)
+        write_milestone(cfg, charter, REASON_PROJECT_NO_ACCEPTANCE,
+                        "acceptance 未定義のため done 判定不能", pid=pid,
+                        version=charter_name if multi else "")
+        print(f"[project] {charter.name}: acceptance 未定義 → 人へ（needs/{pid}.md）")
+        return project_exit_code(REASON_PROJECT_NO_ACCEPTANCE)
+
+    # executor: stub はローカル完結（エージェント不使用）が既定の意味＝charter 駆動の
+    # 分解・レビューもここで揃える（さもないと --planner none / --executor stub を設定しても
+    # plan_via_agent/review_via_agent が黙ってエージェントを呼んでしまう）。
+    stub_mode = cfg.executor == "stub"
+    # charter_tag をプランナーへ渡す: 既存タスク一覧・墓標をその charter のスコープに閉じる
+    # （複数 charter 運用で、別バージョンのタスクを「既存」として見せない）。
+    plan_fn = planner or ((lambda ch: plan_via_stub(cfg, ch)) if stub_mode
+                          else (lambda ch: plan_via_agent(
+                              cfg, ch, charter_name if multi else None)))
+    review_fn = reviewer or ((lambda ch: review_via_stub(cfg, ch)) if stub_mode
+                             else (lambda ch: review_via_agent(cfg, ch)))
+    # このパス開始時点で「人が承認済み・charter も承認時から無変更」だったか。
+    # 下のガードの早期 return に加え、replan（差分ゼロ）等でガードを抜けて再評価した場合にも、
+    # 新しい仕事が何も無ければ末尾で accepted を維持する（converged へ降格して承認済み
+    # マイルストーンを復活させない）ための基準値。
+    was_accepted = (state.get("status") == REASON_PROJECT_ACCEPTED
+                    and state.get("accepted_charter_sig") == _charter_full_signature(charter))
+    # 承認済み（accepted）かつ charter.md が承認時から無変更なら何もしない（毎 run 再収束して
+    # 承認済みプロジェクトの milestone が復活する不具合の防止）。charter.md を編集すると
+    # 署名が変わり、ここを抜けて通常どおり再評価される（「続行: charter.md を更新して再実行」の
+    # 案内どおりの挙動になる）。replan_req（人が明示的に要求したエラー回復の再分解）がある場合は
+    # 素通りしない＝ここで早期 return すると直前で consume 済みの要求が握り潰され、
+    # 「再分解を押しても何も起きない」になるため、accepted でも明示要求は必ず一度は処理する。
+    if replan_req is None and was_accepted:
+        print(f"[project] {charter.name}: 承認済み（charter.md に変更なし）→ 何もしません。"
+              f"続けるなら charter.md を編集してください。")
+        return project_exit_code(REASON_PROJECT_ACCEPTED)
+    # acceptance を分類する（統一 verify・P1-A5）: 決定的コマンドは固定検証としてそのまま、
+    # 自然文は project_acceptance_criteria として verifier が証跡付きで判定する（コマンドへの
+    # 一発合成はしない＝「合成できない」という done 判定不能はもう存在しない）。
+    # `検収:` 接頭辞の行は人の検収項目（機械検証しない・ブロックしない）。収束時のチェックリストとして
+    # milestone に載り、人が確認して承認する＝機械化できない条件の正式な受け皿。
+    commands, criteria, human_items = classify_charter_acceptance(charter)
+    state["human_acceptance"] = human_items    # viewer/milestone が検収チェックリストとして読む
+    # 機械 acceptance が 0 件でも human_items があれば進める: 収束（total=0 は空虚に全 PASS）後、
+    # 人が検収チェックリストを確認して承認する。全条件が人の検収というプロジェクトを塞がない。
+    # "status" はここでは触らない（旧実装は "running" に即上書きしていた）。② execute
+    # （runner=run_loop）が内部で ingest_commands を呼び、その場で approve/hold 等の人の指示を
+    # 処理する。ここで status を "running" にしてしまうと、直前サイクルの "converged" を
+    # ingest_commands が読めなくなり、watch 中は「承認してもプロジェクト milestone の approve が
+    # 常に exit 2 で失敗し、次サイクルでまた収束候補として復活し続ける」実害があった
+    # （cmd_approve は status == converged の milestone しか受け付けないため）。
+    # 最終的な状態は下の evaluate ループの結果で必ず上書きされるので、ここで省いても状態は失われない。
+    state.update({"id": pid, "name": charter.name,
+                  "acceptance_total": len(commands) + len(criteria)})
+    save_charter_state(cfg, state, charter_name if multi else None)
+
+    # 前パスが残した milestone（needs/<pid>.md）はこのパスで再評価するため先に掃除する。
+    # 残したままだと execute（run 実行）中も「要対応: マイルストーン」カードが出続け、
+    # 収束前の承認（cmd_approve は converged しか受けない＝exit 2）を人に押させてしまう。
+    # まだ必要なら末尾の write_milestone が最新内容で書き直す。
+    clear_needs_file(cfg, pid)
+
+    append_journal(cfg.journal, f"=== project 開始 {charter.name} "
+                                f"acceptance={len(commands) + len(criteria)} ===")
+    cost_used = float(state.get("cost", 0.0))
+    cycle = 0
+    reason = REASON_PROJECT_CONVERGED
+    last_summary = ""
+    did_work = False              # このパスで新規タスク投入 or 消化があったか（accepted 維持の判定）
+
+    while True:
+        cycle += 1
+        if heartbeat:
+            heartbeat()                  # 長い改善ループ中も生存信号を更新（リモート発見の鮮度）
+        if cycle > cfg.max_project_cycles:
+            reason = REASON_PROJECT_BUDGET
+            break
+
+        # ① plan — **人の明示要求（dashboard/CLI の分解・distill-notes）があったときだけ**目標から
+        #   backlog を起こす。charter からの分解は人の試行錯誤が要る作業なので、自動では走らせない
+        #   ——「消化可能タスクが無い」「charter が変わった」を契機に勝手に分解すると、人が削除・
+        #   整理したバックログを次パスが黙って作り直してしまう（削除が「効かない」ように見える）。
+        #   冪等照合は「done 以外」に絞る: done と類似でも再作成を許可する（過去に完了した同種
+        #   タスクが分解要求を丸ごと弾き「押しても何も起きない」になるのを防ぐ）。処理中タスクとの
+        #   二重投入と却下済み（人の明示判断）の復活は、投入側の照合と backlog-planner への入力
+        #   （既存・却下済みの一覧）の両方でさせない。
+        replan_retry = replan_req is not None
+        if replan_retry:
+            existing = _existing_titles(cfg, charter_name if multi else None,
+                                        active_only=True)
+            # リポジトリ理解の成果物化（plan 経路は無条件・sha キャッシュ）。プランナーは
+            # タスクの「変更対象」をこの文脈を根拠に書く（S6-2 の必須セクション）。
+            ensure_repo_maps(cfg, charter, force=True)
+            specs = plan_fn(charter)
+            if multi:
+                for sp in specs:                 # この charter のタスクとしてタグ付け（スコープの正）
+                    if isinstance(sp, dict):
+                        sp.setdefault("charter", charter_name)
+            planned = _enqueue_specs(cfg, specs, existing, cfg.learn_threshold,
+                                     charter=charter_name if multi else None,
+                                     active_only=True,
+                                     # `replan --revive`: この 1 回だけ墓標を無視する
+                                     ignore_tombstones=bool((replan_req or {}).get("revive")))
+            if planned:
+                did_work = True
+                append_journal(cfg.journal,
+                               f"project cycle {cycle}: 分解要求（人の明示操作）で "
+                               f"{len(planned)} 件投入 {[t.id for t in planned]}")
+            else:
+                # 分解しても差分ゼロ（すべて現行処理中の backlog と重複）＝投入対象なし。要求は消化済み。
+                append_journal(cfg.journal,
+                               f"project cycle {cycle}: 分解要求（人の明示操作）→ 新規なし"
+                               f"（現行バックログと重複）")
+            replan_req = None         # 分解要求は 1 回だけ消化する（one-shot）
+
+        # ② execute — 既存の正準ループを無改造で回す（drained まで）
+        result = runner(cfg)
+        cost_used += float(result.get("cost", 0.0))
+        counts = result["counts"]
+        if counts.get("done", 0) > 0:
+            did_work = True
+        if result["reason"] in (REASON_BUDGET, REASON_COST, REASON_THROTTLE):
+            reason = REASON_PROJECT_BUDGET if result["reason"] != REASON_COST else REASON_PROJECT_COST
+            break
+        if counts.get("blocked", 0) > 0 or counts.get("review", 0) > 0 \
+                or counts.get("proposed", 0) > 0:
+            reason = REASON_PROJECT_BLOCKED      # 内側が人へ → プロジェクトも人待ちで止める
+            break
+        # execute 中（runner=run_loop 内の ingest_commands）に人がこの milestone を承認して
+        # いるかもしれない。承認済みなら evaluate で acceptance を再収束させて上書きしない
+        # （accepted を尊重する。さもないと承認直後の同一サイクルで milestone が復活する）。
+        # accepted_charter_sig を「今評価している charter」と突き合わせるのは、charter.md が
+        # 変わった直後の run（冒頭ガードは通過済み）で、まだ古い accepted が残っているだけの
+        # ケースと区別するため（そのケースは新規承認ではないので短絡しない＝通常どおり再評価する）。
+        mid_state = load_charter_state(cfg, charter_name if multi else None)
+        if (mid_state.get("status") == REASON_PROJECT_ACCEPTED
+                and mid_state.get("accepted_charter_sig") == _charter_full_signature(charter)):
+            state.update(mid_state)
+            reason = REASON_PROJECT_ACCEPTED
+            break
+
+        # ③ evaluate — acceptance 評価・改善起票・収束/コスト/停滞判定（停止理由 or None）
+        stop_reason, last_summary = _project_evaluate(cfg, charter, pid, state, cycle,
+                                                      cost_used, review_fn,
+                                                      charter_tag=charter_name if multi else "",
+                                                      agent_run=agent_run)
+        if stop_reason:
+            reason = stop_reason
+            break
+
+    if reason == REASON_PROJECT_CONVERGED and was_accepted and not did_work:
+        # 承認済み（accepted・charter 無変更）のプロジェクトを再評価しただけ（新規タスクなし・
+        # 消化なし）で再収束した場合は accepted を維持する。降格を許すと、差分ゼロの再分解や
+        # 再評価のたびに accepted → converged へ戻り、承認済みのマイルストーンが復活して
+        # 人に同じ承認を何度も求めてしまう。新しい仕事が実際にあった場合（did_work）は
+        # 新規成果の検収ゲートとして通常どおり converged（milestone）へ進む。
+        reason = REASON_PROJECT_ACCEPTED
+        append_journal(cfg.journal, "project: 承認済み（差分ゼロの再評価）→ accepted を維持")
+    state["cost"] = round(cost_used, 4)
+    state["cycles"] = int(state.get("cycles", 0)) + cycle
+    state["status"] = reason
+    save_charter_state(cfg, state, charter_name if multi else None)
+
+    if reason in (REASON_PROJECT_CONVERGED, REASON_PROJECT_STALL,
+                  REASON_PROJECT_BUDGET, REASON_PROJECT_COST, REASON_PROJECT_BLOCKED,
+                  REASON_PROJECT_AWAITING_PLAN):
+        write_milestone(cfg, charter, reason, last_summary or "（評価前に停止）", pid=pid,
+                        version=charter_name if multi else "",
+                        human_acceptance=state.get("human_acceptance") or None)
+    append_journal(cfg.journal, f"=== project 停止 reason={reason} cycles={cycle} "
+                                f"cost={cost_used:.4f} ===")
+    print(f"\n=== agent-project run（charter 駆動: {charter.name}）===")
+    print(f"停止理由 : {reason}")
+    print(f"概況     : {last_summary or '（評価前に停止）'}")
+    if reason == REASON_PROJECT_CONVERGED:
+        print(f"→ 収束候補。受領: agent-project approve {pid} --reason ...  "
+              f"／ 続行: charter.md を更新して run を再実行")
+    elif reason != REASON_PROJECT_ACCEPTED:
+        print(f"→ 人の対応待ち: needs/{pid}.md を確認")
+    return project_exit_code(reason)
+
+
+def _charter_mtimes(cfg: "Config") -> "dict[str, float]":
+    """charter ファイル群（charters/*.md と charter.md）の mtime（更新検知用）。"""
+    out: "dict[str, float]" = {}
+    d = charters_dir(cfg)
+    if d.is_dir():
+        for f in d.glob("*.md"):
+            try:
+                out[f.name] = f.stat().st_mtime
+            except OSError:
+                pass
+    if cfg.charter and cfg.charter.exists():
+        try:
+            out["charter.md"] = cfg.charter.stat().st_mtime
+        except OSError:
+            pass
+    return out
+
+
+def project_watch(cfg: "Config", planner=None, reviewer=None, runner=run_loop,
+                  sleeper=time.sleep, max_passes=None, heartbeat=None) -> int:
+    """`run --watch`（charter あり）: 1 パスごとに plan→execute→evaluate を回し、人待ちで止まったら
+    charter 更新/フィードバックを poll で拾って再開する（idle 中はエージェント非起動）。"""
+    passes = 0
+    code = 0
+    controller = True
+    # （再）起動直後は plan より先にリモート状態を取り込む。自己更新の graceful 再起動を挟むと、
+    # 停止中に viewer が push した charter 更新/フィードバックが未取り込みのまま cmd_project の
+    # 初回 plan が走り、古い charter で計画してしまう（cmd_project→run_loop の入口同期は plan の後）。
+    state_sync(cfg)
+    while True:
+        if is_paused(cfg):           # pause 中は plan/execute/evaluate を起こさない
+            append_journal(cfg.journal, "=== project watch: 一時停止中（resume/stop 待ち）===")
+            write_status(cfg)
+            code = 0
+        else:
+            names = charter_names(cfg)
+            # 計画（charter 分解・acceptance 評価）を行うのは常に 1 台だけ（複数 PC ガイド §3.2）。
+            # coordination が有効なら controller lease を取れたパスだけ cmd_project を走らせ、
+            # 取れなければ実行役（runner）として割当済みタスクの消化だけを行う。この関門が
+            # 無いと、起動時にピアの生存がまだ観測できない（status/ が未同期・stale）PC が
+            # ここへ来たまま lease を見ずに毎パス分解し、各 PC が勝手にバックログを作り直す。
+            # 再分解要求（.replan.request＝人の明示アクション。同期対象外のノード局所ファイル）
+            # を抱えているときだけは lease 無しでも通す——このノードでしか消化できないため。
+            # ノード名義（node_id）が無いエンジンは lease に参加できない（renew は常に False）
+            # ので関門の対象外とする——さもないと無名エンジンはどこでも永久に計画できない。
+            controller = (not _coordination_active(cfg)
+                          or not str(getattr(cfg, "node", "") or "").strip()
+                          or replan_request_path(cfg).exists()
+                          or renew_controller_lease(cfg))
+            if not controller:
+                append_journal(cfg.journal,
+                               "=== project watch: 計画役は他 PC（lease 未取得）。実行のみ ===")
+                if has_work(cfg):
+                    runner(cfg)
+                passes += 1
+                if heartbeat:
+                    heartbeat()
+                if max_passes is not None and passes >= max_passes:
+                    return code
+                names = []            # このパスは cmd_project を起こさない
+            elif not names:
+                if not _has_master_charter(cfg):
+                    return code
+                # マスター憲章のみ（バージョン未作成）: 分解はしない。実 backlog タスクや人の指示が
+                # あるときだけ消化し、無ければ何もしない＝アイドルのまま（リセット直後など、やる
+                # ことが無いのに run_loop が回って run-log/journal を無駄に増やさない）。バージョン
+                # （charters/<名前>.md）が置かれれば次パスで charter 駆動へ入る。
+                if has_work(cfg):
+                    runner(cfg)
+                passes += 1
+                if heartbeat:
+                    heartbeat()
+                if max_passes is not None and passes >= max_passes:
+                    return code
+            for name in names:       # 全 charter（バージョン）をラウンドロビンで 1 パスずつ
+                code = cmd_project(cfg, planner, reviewer, runner, heartbeat=heartbeat,
+                                   charter_name=name)
+                passes += 1
+                if heartbeat:
+                    heartbeat()
+                if max_passes is not None and passes >= max_passes:
+                    return code
+        names = charter_names(cfg)
+        if not names and not _has_master_charter(cfg):
+            return code
+        # このパスの版処理を終えたら milestone を status へ整合する（唯一の調整点）。
+        # accepted・削除済みバージョン・旧トップレベルの milestone を掃除し、承認できない
+        # no-acceptance 等はそのまま残す＝「要対応マイルストーンが何度も復活」を止める根本対策。
+        # milestone の整合も計画役の責務——実行役（lease 未取得）が古い同期状態を根拠に
+        # 掃除すると、計画役が立てたばかりの milestone を取り違えて消しうる。
+        if controller:
+            reconcile_milestones(cfg)
+        pids = {}
+        for name in names:           # charter 別の milestone id（フィードバック検知に使う）
+            ch = _load_named_charter(cfg, name)
+            if ch is not None:
+                pids[name] = _project_id(cfg, ch) + (
+                    f"-{name}" if _is_multi_charter(cfg, name) else "")
+        mtimes0 = _charter_mtimes(cfg)
+        append_journal(cfg.journal, "=== project watch: 監視中（charter 更新/フィードバック待ち）===")
+        while True:                  # idle: charter が変わるか、人のフィードバックが来たら再開
+            sleeper(cfg.poll)
+            if heartbeat:
+                heartbeat()
+            state_sync(cfg)          # 状態 git: リモートの charter 更新/フィードバックを取り込む（間隔律速）
+            if is_paused(cfg):
+                ingest_commands(cfg)  # pause 中も resume/stop（と他の指示）は受け付ける
+                if maybe_self_update(cfg):
+                    raise _RestartRequested()
+                continue             # pause 中は再開条件を評価しない
+            resumed = False
+            for pid in pids.values():
+                # milestone のフィードバックは [x] を待たず本文だけで再開する（方針を書けば動く）。
+                # ただし書きかけを消さないよう静穏化は待つ: settled を挟まないと、人が needs を
+                # 編集して保存した瞬間にファイルごと消えてしまう。
+                nf = needs_path(cfg, pid)
+                if nf.exists() and settled(cfg, nf) and read_feedback(nf):
+                    clear_needs_file(cfg, pid)
+                    resumed = True
+            if resumed or _charter_mtimes(cfg) != mtimes0 or has_work(cfg):
+                break
+            if maybe_self_update(cfg):   # アイドル時のみ自己更新（取り込めたら再起動）
+                raise _RestartRequested()
+
+
+# ---------------------------------------------------------------------------

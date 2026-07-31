@@ -1,0 +1,34 @@
+{
+  "id": "self-debugging",
+  "name": "Self-Debugging",
+  "category": "refine-loop",
+  "tier": "medium",
+  "source": "Self-Debug (Chen et al., 2023)",
+  "when_to_use": "コードを自己説明（ラバーダック）しながら検証→修正で直したいとき。",
+  "signals": [
+    "コードのデバッグ",
+    "自己説明で気づく"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "coder",
+        "role": "実装し、自己説明を経て検証結果で修正する",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "verifier",
+        "role": "実行して合否判定し承認する",
+        "required": true,
+        "approver": true
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved",
+      "review_rounds": 3
+    }
+  },
+  "feasibility": "native",
+  "feasibility_note": "refine-loop の一種。self-refine/agentcoder で代替可。"
+}

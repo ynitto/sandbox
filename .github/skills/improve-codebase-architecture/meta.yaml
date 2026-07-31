@@ -1,0 +1,7 @@
+recommends:
+  - name: code-simplifier
+    reason: "本スキルで合意した深化（shallow→deep）を実際のコードへ適用する実装スキル"
+  - name: domain-modeler
+    reason: "CONTEXT.md のドメイン用語集を整備し、良いシームに名前を与える"
+  - name: doc-coauthoring
+    reason: "却下した候補を ADR として記録し、将来の再提案を防ぐ"

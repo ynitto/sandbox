@@ -1,0 +1,18 @@
+{
+  "name": "claude",
+  "command": ["claude", "-p", "--output-format", "text"],
+  "prompt_via": "stdin",
+  "model_flag": "--model",
+  "output": "stdout",
+  "empty_output_is_error": true,
+  "write_args": ["--dangerously-skip-permissions"],
+  "readonly_args": ["--permission-mode", "plan", "--tools", ""],
+  "readonly": "enforced",
+  "no_session_args": ["--no-session-persistence"],
+  "interactive": {
+    "command": ["claude"],
+    "readonly_args": ["--permission-mode", "plan"],
+    "no_session_args": ["--no-session-persistence"],
+    "prompt_inject": "send-keys"
+  }
+}

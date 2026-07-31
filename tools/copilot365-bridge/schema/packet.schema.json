@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/copilot365-bridge/packet.schema.json",
+  "title": "Airlock Packet v1 (logical view)",
+  "description": "copilot365-bridge のエアロック・パケットの論理スキーマ。実体は packet.py が読み書きするテキスト書式だが、ヘッダの語彙を機械可読に示すための参考スキーマ。",
+  "type": "object",
+  "required": ["id", "to", "from", "intent", "created", "crc32", "body"],
+  "additionalProperties": true,
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "時刻順にソート可能な一意 ID（例: 1781318914718-ea3b78c2）"
+    },
+    "to": {
+      "type": "string",
+      "enum": ["ms365", "outlook", "sharepoint", "kiro", "gitlab", "human"],
+      "description": "宛先の面"
+    },
+    "from": {
+      "type": "string",
+      "enum": ["ms365", "outlook", "sharepoint", "kiro", "gitlab", "human"],
+      "description": "送信元の面"
+    },
+    "intent": {
+      "type": "string",
+      "enum": ["ask", "answer", "approve", "notify", "context", "error"],
+      "description": "パケットの意図"
+    },
+    "created": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC ISO8601"
+    },
+    "reply_to": {
+      "type": "string",
+      "description": "返信元パケットの id（任意・会話連鎖用）"
+    },
+    "crc32": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}$",
+      "description": "body の UTF-8 バイト列に対する zlib.crc32（コピペ取りこぼし検知）"
+    },
+    "body": {
+      "type": "string",
+      "description": "自由テキスト / Markdown 本文"
+    }
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "slidingWindow": 3000,
+  "stagger": true,
+  "entries": [
+    {
+      "title": "API",
+      "type": "wsl",
+      "mode": "wt",
+      "distro": "Ubuntu",
+      "user": "ubuntu",
+      "dir": "~/app/api",
+      "cmd": "npm run dev"
+    },
+    {
+      "title": "Worker",
+      "type": "wsl",
+      "mode": "wt",
+      "distro": "Ubuntu",
+      "user": "ubuntu",
+      "dir": "~/app/worker",
+      "cmd": "npm run worker",
+      "launch": "manual"
+    },
+    {
+      "title": "Logger",
+      "type": "wsl",
+      "mode": "direct",
+      "distro": "Ubuntu",
+      "user": "ubuntu",
+      "dir": "~/app",
+      "cmd": "tail -f logs/app.log"
+    }
+  ]
+}

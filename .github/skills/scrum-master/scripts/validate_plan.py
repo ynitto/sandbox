@@ -9,6 +9,7 @@ scrum-masterが生成したプランJSONの構造を検証する。
     plan.json:   プランJSONファイル
     skills.json: discover_skills.py の出力（任意。指定時はスキル名の存在チェックも行う）
 """
+from __future__ import annotations
 
 import argparse
 import json
@@ -27,6 +28,16 @@ def validate_plan(plan: dict, known_skills: set[str] | None = None) -> list[str]
         errors.append("'goal' フィールドが必須です")
     elif not isinstance(plan["goal"], str) or not plan["goal"].strip():
         errors.append("'goal' は空でない文字列が必要です")
+
+    if "product_goal" not in plan:
+        errors.append("'product_goal' フィールドが必須です")
+    elif not isinstance(plan["product_goal"], str) or not plan["product_goal"].strip():
+        errors.append("'product_goal' は空でない文字列が必要です")
+
+    if "definition_of_done" not in plan:
+        errors.append("'definition_of_done' フィールドが必須です")
+    elif not isinstance(plan["definition_of_done"], str) or not plan["definition_of_done"].strip():
+        errors.append("'definition_of_done' は空でない文字列が必要です")
 
     if "backlog" not in plan:
         errors.append("'backlog' フィールドが必須です")
@@ -72,15 +83,31 @@ def validate_plan(plan: dict, known_skills: set[str] | None = None) -> list[str]
         ):
             errors.append(f"{prefix}: 'done_criteria' は文字列が必要です")
 
-        # skill: 文字列 or null
+        # skill: 文字列, 文字列の配列, or null
         skill = task.get("skill")
         if skill is not None:
-            if not isinstance(skill, str):
-                errors.append(f"{prefix}: 'skill' は文字列またはnullが必要です")
-            elif known_skills is not None and skill not in known_skills:
-                errors.append(
-                    f"{prefix}: スキル '{skill}' は利用可能なスキル一覧に存在しません"
-                )
+            if isinstance(skill, str):
+                skills_to_check = [skill]
+            elif isinstance(skill, list):
+                if len(skill) == 0:
+                    errors.append(f"{prefix}: 'skill' が配列の場合、1つ以上のスキル名が必要です")
+                    skills_to_check = []
+                else:
+                    for si, s in enumerate(skill):
+                        if not isinstance(s, str) or not s.strip():
+                            errors.append(
+                                f"{prefix}: 'skill[{si}]' は空でない文字列が必要です"
+                            )
+                    skills_to_check = [s for s in skill if isinstance(s, str) and s.strip()]
+            else:
+                errors.append(f"{prefix}: 'skill' は文字列、文字列の配列、またはnullが必要です")
+                skills_to_check = []
+            if known_skills is not None:
+                for s in skills_to_check:
+                    if s not in known_skills:
+                        errors.append(
+                            f"{prefix}: スキル '{s}' は利用可能なスキル一覧に存在しません"
+                        )
 
         # status
         status = task.get("status", "pending")
@@ -124,6 +151,10 @@ def validate_plan(plan: dict, known_skills: set[str] | None = None) -> list[str]
                 continue
             if "sprint" not in s or not isinstance(s["sprint"], int):
                 errors.append(f"sprints[{i}]: 'sprint' は整数が必要です")
+            if "sprint_goal" not in s:
+                errors.append(f"sprints[{i}]: 'sprint_goal' フィールドが必要です")
+            elif not isinstance(s["sprint_goal"], str) or not s["sprint_goal"].strip():
+                errors.append(f"sprints[{i}]: 'sprint_goal' は空でない文字列が必要です")
             if "task_ids" not in s or not isinstance(s["task_ids"], list):
                 errors.append(f"sprints[{i}]: 'task_ids' はリストが必要です")
             else:
@@ -132,6 +163,88 @@ def validate_plan(plan: dict, known_skills: set[str] | None = None) -> list[str]
                         errors.append(
                             f"sprints[{i}]: task_id '{tid}' はbacklogに存在しません"
                         )
+
+            # execution_groups バリデーション
+            eg = s.get("execution_groups")
+            if eg is not None:
+                if not isinstance(eg, list):
+                    errors.append(
+                        f"sprints[{i}]: 'execution_groups' はリストのリストが必要です"
+                    )
+                else:
+                    eg_all_ids: list[str] = []
+                    for wi, wave in enumerate(eg):
+                        if not isinstance(wave, list):
+                            errors.append(
+                                f"sprints[{i}].execution_groups[{wi}]: リストが必要です"
+                            )
+                            continue
+                        if len(wave) == 0:
+                            errors.append(
+                                f"sprints[{i}].execution_groups[{wi}]: 空のウェーブは許可されません"
+                            )
+                            continue
+                        for tid in wave:
+                            if not isinstance(tid, str):
+                                errors.append(
+                                    f"sprints[{i}].execution_groups[{wi}]: タスクIDは文字列が必要です"
+                                )
+                            elif tid not in task_ids:
+                                errors.append(
+                                    f"sprints[{i}].execution_groups[{wi}]: task_id '{tid}' はbacklogに存在しません"
+                                )
+                            eg_all_ids.append(tid)
+
+                    # execution_groups のIDとtask_idsの整合性チェック
+                    sprint_task_ids = set(s.get("task_ids", []))
+                    eg_id_set = set(eg_all_ids)
+                    if len(eg_all_ids) != len(eg_id_set):
+                        dupes = [
+                            t for t in eg_all_ids if eg_all_ids.count(t) > 1
+                        ]
+                        errors.append(
+                            f"sprints[{i}]: execution_groups 内でタスクIDが重複しています: {set(dupes)}"
+                        )
+                    if eg_id_set != sprint_task_ids:
+                        missing = sprint_task_ids - eg_id_set
+                        extra = eg_id_set - sprint_task_ids
+                        if missing:
+                            errors.append(
+                                f"sprints[{i}]: execution_groups に含まれていないtask_ids: {missing}"
+                            )
+                        if extra:
+                            errors.append(
+                                f"sprints[{i}]: execution_groups にあるがtask_idsにないID: {extra}"
+                            )
+
+                    # ウェーブ順序の依存整合性チェック
+                    # 前のウェーブで完了するタスクを追跡し、後のウェーブの依存が満たされるか検証
+                    completed_before: set[str] = set()
+                    # スプリント開始前に完了済みとみなせるタスク（他スプリントのタスク）
+                    for tid_check in task_ids:
+                        if tid_check not in sprint_task_ids:
+                            completed_before.add(tid_check)
+                    for wi, wave in enumerate(eg):
+                        if not isinstance(wave, list):
+                            continue
+                        for tid in wave:
+                            if not isinstance(tid, str):
+                                continue
+                            # このタスクの依存先がcompleted_beforeに含まれるか確認
+                            task_obj = next(
+                                (t for t in backlog if isinstance(t, dict) and t.get("id") == tid),
+                                None,
+                            )
+                            if task_obj:
+                                for dep in task_obj.get("depends_on", []):
+                                    if dep in sprint_task_ids and dep not in completed_before:
+                                        errors.append(
+                                            f"sprints[{i}].execution_groups[{wi}]: タスク '{tid}' の依存先 '{dep}' が同一または後続ウェーブにあり、実行順序が不正です"
+                                        )
+                        # このウェーブのタスクを完了済みに追加
+                        for tid in wave:
+                            if isinstance(tid, str):
+                                completed_before.add(tid)
 
     return errors
 

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# git-guard — gitguard.py の薄いシム。shell/非 Python から git/GitLab アクセスを
+# ブレーカー経由で実行する。例:
+#   git-guard clone <url> <dest>
+#   git-guard fetch --prune origin
+#   git-guard api gitlab.example.com GET /projects/123
+#   git-guard status | git-guard stats
+exec python3 "$(dirname "$0")/gitguard.py" "$@"

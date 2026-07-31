@@ -1,0 +1,1059 @@
+from __future__ import annotations
+# prioritize.py — 元 agent-project.py の 2610-3159 行目（機械分割・内容無改変）。
+# 単体 import しない。agent_project/__init__.py が共有名前空間へ順に exec 合成する。
+# 優先順位付け（正準ループ ①②）
+# ---------------------------------------------------------------------------
+def consumable_tasks(tasks: "list[Task]") -> "list[Task]":
+    return [t for t in tasks if t.consumable()]
+
+
+def task_runnable_here(cfg: "Config", t: "Task") -> bool:
+    """このエンジン（cfg.node）がこのタスクを消化してよいか（複数 PC のノード割当）。
+
+    後方互換: エンジンに node 名が無ければ常に True（無名エンジン＝従来どおり全消化）。
+    node 名があるとき:
+      - タスクに `- node:` 指定があれば、名前が一致するノードだけが消化する
+        （バックログ単位で実行 PC を選ぶ＝監視者が revise で node を付け替える）。
+      - タスクが未指定なら、default_node（プロジェクト共有設定）が空（＝誰でも／従来）か、
+        自分が default_node のときだけ消化する（未指定タスクの拾い先を 1 台に寄せられる）。
+    注意: これは正の割当フィルタで、claim 自体はホスト内原子性のまま。異なるノードへ
+    明示割当したタスクは互いに触らないが、未指定タスクを default_node 空のまま複数の名前付き
+    エンジンで走らせると従来同様の二重実行リスクが残る（回避は各タスクへ node を割り当てるか
+    default_node を 1 台に設定する）。
+
+    照合は `normalize_node_id` を通した綴りで行う（P0-3）。人は板の端末一覧（正規形＝小文字）を
+    見て `- node:` を書くので、エンジン側の名義が大文字を含んでいると**どのノードも拾わないまま
+    ready で固まる**。名義の正規化は 1 か所（`_resolved_node`）に寄せたが、正規化前に書かれた
+    タスクファイルはそのまま残るため、読む側でも同じ規則で突き合わせる。"""
+    mine = normalize_node_id(str(getattr(cfg, "node", "") or "").strip()) \
+        if str(getattr(cfg, "node", "") or "").strip() else ""
+    if not mine:
+        return True                                   # 無名エンジン＝フィルタしない（従来動作）
+    assigned = str(t.get("node", "") or "").strip()
+    if assigned:
+        return normalize_node_id(assigned) == mine
+    default = str(getattr(cfg, "default_node", "") or "").strip()
+    return (not default) or (normalize_node_id(default) == mine)
+
+
+def task_deps(task: "Task") -> "list[str]":
+    """`- after: T1, T2` の依存 ID 群（カンマ/空白区切り）。無ければ空。"""
+    raw = task.get("after", "")
+    return [d for d in re.split(r"[,\s]+", raw.strip()) if d]
+
+
+def unmet_deps(task: "Task", tasks: "list[Task]") -> "list[str]":
+    """`after` の依存のうち、まだ未完（backlog に done 以外で残っている）ID。done は退避済みなので満たし。"""
+    pending = {t.id for t in tasks if t.norm_status() != "done"}
+    return [d for d in task_deps(task) if d in pending]
+
+
+def ready_after_deps(tasks: "list[Task]") -> "list[Task]":
+    """消化対象（ready）のうち、依存が満たされたものだけ（DAG 順序）。"""
+    return [t for t in consumable_tasks(tasks) if not unmet_deps(t, tasks)]
+
+
+def _extract_id_array(text: str) -> "list[str] | None":
+    start, end = text.find("["), text.rfind("]")
+    if start < 0 or end <= start:
+        return None
+    try:
+        arr = json.loads(text[start:end + 1])
+    except Exception:  # noqa: BLE001
+        return None
+    return [str(x) for x in arr] if isinstance(arr, list) else None
+
+
+def _extract_json_obj(text: str) -> "dict | None":
+    """応答から最初の JSON オブジェクト {...} を取り出す（説明文が混じっても拾う）。"""
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        obj = json.loads(text[start:end + 1])
+    except Exception:  # noqa: BLE001
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+# LLM 実行に使うエージェント CLI とタイムアウト（設定 agent_cli / agent_timeout）。
+# rank_agent 等の free 関数は args を持たないため、build_config が設定値をここへ確定する
+# （agent-flow の _configure_thresholds と同じ流儀）。
+_AGENT_CLI: str = "kiro"
+_AGENT_TIMEOUT: float = 300.0
+# argv 渡しのプロンプト上限（設定 argv_limit）。0 以下なら組み込み既定。
+_ARGV_LIMIT: int = 0
+# 処理（purpose）毎の上書き（設定 agents: の正規化済みマップ。build_config が確定する）。
+# 例: {"plan": {"agent_cli": "claude", "model": "opus"}, "assess": {"model": "haiku"}}
+_AGENT_OVERRIDES: "dict[str, dict]" = {}
+# エージェントを使用する処理の一覧（設定 agents: のキー）。ここに無いキーは無視される。
+AGENT_PURPOSES = ("plan", "review", "prioritize", "route", "adjudicate", "verify",
+                  "distill", "assess", "repo_map", "doctor")
+
+
+def agent_cli_binary(cli: str) -> str:
+    """doctor が PATH 確認すべき実行ファイル名。定義ファイルの command[0] から導く（S9）。
+    以前は組み込み 4 CLI の対応表をここに持っていたが、定義が JSON へ移った以上
+    表を残すと「JSON を直したのに doctor だけ古い名前を探す」二重管理になる。
+    定義を解決できない名前はそのまま返す（doctor は PATH に無いと報告するだけ）。"""
+    try:
+        return str(_agentcli.load_cli(cli)["command"][0])
+    except _agentcli.AgentCliError:
+        return str(cli)
+
+
+def _normalize_agent_overrides(raw) -> "dict[str, dict]":
+    """設定 agents:（処理毎の agent_cli/model 上書き）を正規化する。未知の処理キー・
+    不正な値は黙って落とす（設定ミスでループを殺さない。有効キーは AGENT_PURPOSES）。"""
+    out: "dict[str, dict]" = {}
+    if not isinstance(raw, dict):
+        return out
+    for k, v in raw.items():
+        key = str(k).strip().lower()
+        if key not in AGENT_PURPOSES or not isinstance(v, dict):
+            continue
+        ov: dict = {}
+        if v.get("agent_cli"):
+            ov["agent_cli"] = str(v["agent_cli"]).strip().lower()
+        if v.get("model"):
+            ov["model"] = str(v["model"]).strip()
+        if ov:
+            out[key] = ov
+    return out
+
+
+def _agent_for(purpose: str) -> "tuple[str, str | None]":
+    """処理（purpose）の実効エージェント。(agent_cli, model 上書き) を返す。
+    agent-control（管理面の横断上書き）＞ 設定 agents: の該当キー ＞ グローバル agent_cli。
+    soft/縮退中は control の degraded を重ねる（model 上書きは無ければ None＝呼び出し値）。"""
+    ov = _AGENT_OVERRIDES.get(purpose) or {}
+    cli = str(ov.get("agent_cli") or _AGENT_CLI).lower()
+    model = ov.get("model") or None
+    c_cli, c_model = _control_override(purpose)
+    if c_cli:
+        cli = c_cli.lower()
+    if c_model:
+        model = c_model
+    nb = _node_budget_state()
+    if nb and (nb.get("soft") or (nb.get("exceeded") and nb.get("on_exhausted") == "degrade")):
+        d_cli, d_model = _control_degraded()
+        if d_cli:
+            cli = d_cli.lower()
+        if d_model:
+            model = d_model
+    return cli, model
+
+
+def _agent_argv_limit() -> int:
+    """argv 渡しのプロンプト上限（バイト）。設定 `argv_limit`（0 以下なら組み込み既定）。
+
+    上限を超えると `execve` が E2BIG で落ち、**プロセス起動そのものが立たない**——
+    verifier は全基準 unverifiable、plan は空振りで人へ倒れる。agent-flow の
+    `_agent_argv_limit` と同じ規則（0 以下は既定へフォールバック）。"""
+    return _ARGV_LIMIT if _ARGV_LIMIT > 0 else _agentcli.DEFAULT_ARGV_LIMIT
+
+
+# 退避したときに argv へ載せる短い指示。`{file}` は退避先に置換される。
+# **定義ファイルの `spill.instruction` は使わない**——あれは権限フラグの置き換え
+# （`--trust-tools=fs_read`）とセットの機構で、実行して確かめる呼び出しに掛けると
+# 検証がコマンドを 1 つも走らせられなくなる（P1-2）。
+# 枠は `agentcore.agentcli.spill_instruction`（3 者共通・P2-5）。ここが決めるのは
+# 「何の全文か」と「読んだあと何をするか」だけ。
+_SPILL_INSTRUCTION = _agentcli.spill_instruction(
+    "この処理の入力の全文", then="その内容を対象にしてください")
+
+
+def _agent_cmd(cli: str, model: "str | None",
+               prompt: str) -> "tuple[list[str], str | None, str | None]":
+    """エージェント CLI 1 回分の (argv, stdin テキスト, 最終応答ファイル) を組み立てる
+    （実行はしない・決定的）。
+
+    組み立ての正典は `agentcore.agentcli`＝定義ファイル（agents/<name>.json）で、**組み込み
+    （kiro/claude/copilot/codex）もここでは特別扱いしない**（S9）。以前はこの関数に 4 CLI の
+    argv がハードコードされ、同じ知識が agent-flow・agent-amigos・dashboard にも重複していた。
+    """
+    spec = load_agent_plugin(cli)
+    built = _agentcli.headless_cmd(spec, model, prompt)
+    return built["argv"], built["stdin"], built["output_file"]
+
+
+# --- エージェント CLI 定義（データ契約: schemas/agent-cli.schema.json） -----------------------
+# 読み込み・argv 組み立ては agentcore.agentcli の 1 実装（agent-flow / agent-amigos と共有）。
+# ここに残すのは「読み込んだ定義を覚えておき、失敗トリアージの errors[] を集める」ところだけ。
+_AGENT_PLUGIN_CACHE: "dict[str, dict]" = {}
+
+
+def load_agent_plugin(name: str) -> dict:
+    """agents/<name>.json を読む（agentcore へ委譲）。見つからない・壊れているは RuntimeError。
+
+    黙って別 CLI へ倒さない: 未知の agent_cli がかつて静かに kiro-cli へ落ちており、
+    設定ミスに気づけなかった。組み込み名も定義ファイル化した今、失敗はほぼインストール破損。
+    """
+    key = str(name or "").strip().lower()
+    if key in _AGENT_PLUGIN_CACHE:
+        return _AGENT_PLUGIN_CACHE[key]
+    try:
+        # キャッシュはここ（_AGENT_PLUGIN_CACHE）で持つ。二重にキャッシュすると
+        # 片方だけ消しても古い定義が返り、テストや長寿命プロセスで定義の差し替えが効かない。
+        spec = _agentcli.load_cli(key, use_cache=False)
+    except _agentcli.AgentCliError as e:
+        raise RuntimeError(str(e)) from e
+    _AGENT_PLUGIN_CACHE[key] = spec
+    return spec
+
+
+def _plugin_error_patterns() -> "tuple":
+    """読み込み済みプラグインの errors 規則（CLI 固有のトリアージ知識）をまとめて返す。"""
+    out = []
+    for spec in _AGENT_PLUGIN_CACHE.values():
+        out.extend(spec.get("errors") or [])
+    return tuple(out)
+
+
+# --- 失敗トリアージ（決定的） -------------------------------------------------------------
+# エラー本文から「誰が直すか」を分類する。分類はメッセージ先頭の機械可読タグ
+# [agent-error:<class>] として運び、agent-flow の run 打ち切り・agent-project のリトライ節約・
+# viewer の行動提示が同じ判定を共有する（CLI 固有規則はプラグイン定義の errors）。
+#   control  : 管理設定による停止 — 明示的に run へ戻すまで継続する
+#   quota    : 利用上限 — 時間をおけば回復する（タスクのリトライを焼かない）
+#   auth     : 認証切れ — 人が環境を直すまで全タスク共倒れ（即座に人へ）
+#   env      : 実行環境の問題（CLI 不在・モデル不正 等）— 人が環境を直す
+#   transient: 一時的（タイムアウト・接続断）— 通常リトライで解ける
+#   （どれにも当たらなければ「内容の問題」= 従来どおりタスク単位の retry / 裁定）
+AGENT_ERROR_ENV_CLASSES = ("control", "quota", "auth", "env")
+_AGENT_ERROR_TAG_RE = re.compile(r"\[agent-error:(control|quota|auth|env|transient)\]")
+_AGENT_ERROR_PATTERNS = (
+    ("control", re.compile(r"\[agent-control\]", re.I),
+     "管理設定で実行が停止されています（dashboard で実行を許可してください）"),
+    ("quota", re.compile(r"usage limit|quota exceeded|rate.?limit|too many requests", re.I),
+     "利用上限に達しています（時間をおくか、プラン・クレジットを見直してください）"),
+    ("auth", re.compile(r"AccessDenied|Unauthorized|authentication failed|not authenticated"
+                        r"|SendMessageError|please (re)?login", re.I),
+     "認証に失敗しています（再ログインが必要です）"),
+    # 「Argument list too long」（E2BIG）は退避（spill）で防ぐが、退避の閾値より OS の上限が
+    # 小さい環境では残る。内容の問題として扱うとタスクのリトライ予算を焼くので env に倒す
+    # （設定 argv_limit を下げれば直る＝人が環境を直す類）。
+    ("env", re.compile(r"issue with the selected model|invalid model"
+                       r"|model .{0,40}(not found|does not exist)|may not have access to it"
+                       r"|command not found|No such file or directory"
+                       r"|Argument list too long|E2BIG", re.I),
+     "実行環境の問題です（モデル名・CLI の導入・PATH・argv_limit を確認してください）"),
+    ("transient", re.compile(r"timed? ?out|connection (reset|refused|closed)|ECONNRESET"
+                             r"|ETIMEDOUT|temporarily unavailable|service unavailable|overloaded",
+                             re.I),
+     "一時的なエラーです（自動でやり直します）"),
+)
+
+
+# 発生元マーカー → 分類（agent-flow の同名定義と同じ契約）。マーカーは止めた本人が書くので、
+# 外側の層が後から載せたタグより確かな証拠になる。タグを無条件に正とすると、内側で付いた
+# 分類を上書きできず、[agent-control] の停止が「利用上限」として人に提示され続ける。
+_AGENT_ERROR_SOURCE_CLASSES = (
+    ("[agent-control]", "control"),
+    ("[node-budget]", "quota"),
+)
+
+
+def _source_marker_class(text: str) -> "str | None":
+    """本文中の発生元マーカーから分類を引く（無ければ None）。"""
+    return next((cls for marker, cls in _AGENT_ERROR_SOURCE_CLASSES if marker in text), None)
+
+
+def agent_error_chain(blob: str) -> "list[str]":
+    """本文から観測できる分類を**すべて**、確からしい順に返す（agent-flow の同名定義と同じ契約）。
+    先頭が proximate cause（表示・行動提示に使う）で、残りは根拠として保持する——
+    先頭以外を捨てると、後から「本当は何が起きていたか」を復元できない。"""
+    text = str(blob or "")
+    chain: "list[str]" = []
+    marker = _source_marker_class(text)
+    if marker:
+        chain.append(marker)
+    for m in _AGENT_ERROR_TAG_RE.finditer(text):
+        if m.group(1) not in chain:
+            chain.append(m.group(1))
+    if not chain:
+        for cls, pat, _ in _plugin_error_patterns() + _AGENT_ERROR_PATTERNS:
+            if pat.search(text) and cls not in chain:
+                chain.append(cls)
+    return chain
+
+
+def classify_agent_failure(blob: str) -> "tuple[str, str] | None":
+    """エラー本文を (class, hint) に分類する（該当なしは None＝内容の問題）。
+    発生元マーカー > [agent-error:] タグ（agent-flow 経由）> プラグイン定義（CLI 固有知識）
+    > 汎用パターン の順に見る。全分類が要るときは agent_error_chain を使う。"""
+    chain = agent_error_chain(blob)
+    if not chain:
+        return None
+    cls = chain[0]
+    text = str(blob or "")
+    # ヒントは「**実際に一致した規則**」から採る。クラスだけで引くと、読み込み済みの別 CLI 定義に
+    # 同じクラスの規則があるとその文言が出る（codex の usage limit に kiro の月間上限の案内が
+    # 付く、という取り違えが実際に起きた）。一致する規則が無いクラス（[agent-error:] タグや
+    # 発生源マーカー由来）だけ、従来どおりクラス一致の汎用ヒントへ落とす。
+    rules = _plugin_error_patterns() + _AGENT_ERROR_PATTERNS
+    hint = next((h for c, pat, h in rules if c == cls and pat.search(text)), "")
+    if not hint:
+        hint = next((h for c, _, h in _AGENT_ERROR_PATTERNS if c == cls), "")
+    return cls, hint
+
+
+def _agent_failure(cli: str, rc: int, out: str, err: str) -> str:
+    """エージェント CLI の失敗を、人が原因に辿り着ける文言にする。
+
+    CLI は起動バナー（workdir / model / プロンプト全文）を stderr へ流す。先頭だけを切り取ると
+    肝心のエラーがバナーに埋もれて消える — 実際 codex の「利用上限に達した」を丸ごと取り逃し、
+    全ノードが理由不明の failed になった。エラーは末尾に出るので末尾を拾い、分類（トリアージ）は
+    機械可読タグとして先頭に載せる。"""
+    blob = f"{out or ''}\n{err or ''}"
+    triage = classify_agent_failure(blob)
+    head = f"{cli} 失敗 (rc={rc})"
+    if triage:
+        cls, hint = triage
+        head = f"[agent-error:{cls}] {head}" + (f": {hint}" if hint else "")
+    tail = (err or out or "").strip()
+    return f"{head}\n{tail[-500:]}" if tail else head
+
+
+# --- ノード予算 v2（node-budget 契約: schemas/node-budget.schema.json） --------------------
+# ノード（マシン）単位の共有台帳。定常業務（kiro-loop）・agent-project・agent-flow・
+# agent-amigos が同じ台帳（$AGENT_BUDGET_DIR、既定 ~/.agents/budget/）に記帳し、合計が上限
+# （0 = 無制限）を超えたら新規の LLM 実行を控える。v2 で一次単位をトークンへ拡張（時間上限は
+# v1 互換で AND）。台帳には実測のみ（実測秒＋実測できたトークン）を書き、未報告行は rates で
+# 読み出し時に推定する。配分・較正の知能は管理面（dashboard）にあり、エンジンは単純比較のみ。
+# 読み書きは各ツールが自前で持つ（データ契約のみ・コード共有なし）。
+_NODE_BUDGET_WORKLOAD = "project"
+_NODE_BUDGET_TOOL = "agent-project"
+
+
+def _utc_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _node_budget_dir() -> str:
+    return str(agent_home_subdir("AGENT_BUDGET_DIR", "budget").absolute())
+
+
+def _node_budget_rate(cfg: dict, cli: str, model: str) -> float:
+    """トークン未報告行の推定レート（tokens/秒）。解決順 cli:model → cli → default。"""
+    rates = cfg.get("rates") or {}
+    per = rates.get("per_cli") or {}
+    for key in (f"{cli}:{model}" if model else None, cli or None):
+        if key and per.get(key):
+            try:
+                return float(per[key])
+            except (TypeError, ValueError):
+                pass
+    try:
+        return float(rates.get("default_tokens_per_second") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _row_tokens(rec: dict, cfg: dict) -> float:
+    """1 記帳のトークン消費。実測（tokens_in+tokens_out）があればその値、無ければ秒 × レート。"""
+    ti, to = rec.get("tokens_in"), rec.get("tokens_out")
+    if ti is not None or to is not None:
+        try:
+            return float(ti or 0) + float(to or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    try:
+        sec = float(rec.get("seconds") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if sec <= 0:
+        return 0.0
+    return sec * _node_budget_rate(cfg, str(rec.get("agent_cli") or ""), str(rec.get("model") or ""))
+
+
+def _node_budget_state() -> "dict | None":
+    """ノード予算の消費状況。設定が無い/上限が全て 0 なら None（= 無制限・チェック不要）。
+    exceeded は時間上限・トークン上限（合計 or 自ワークロードの実効上限）のいずれか到達。
+    soft は縮退開始（soft_ratio 到達・未超過）。on_exhausted は超過時の方針。"""
+    base = _node_budget_dir()
+    try:
+        with open(os.path.join(base, "config.json"), encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        return None
+    limit_min = float(cfg.get("execution_minutes") or 0)
+    wl_limit_min = float((cfg.get("workloads") or {}).get(_NODE_BUDGET_WORKLOAD) or 0)
+    token_limit = float(cfg.get("tokens") or 0)
+    alloc = cfg.get("allocation") or {}
+    wl_alloc = (alloc.get("workloads") or {}).get(_NODE_BUDGET_WORKLOAD) or {}
+    computed = ((cfg.get("computed") or {}).get("workloads") or {}).get(_NODE_BUDGET_WORKLOAD) or {}
+    eff_wl_tokens = float(computed.get("tokens") or 0) or float(wl_alloc.get("max_tokens") or 0)
+    on_exhausted = str(wl_alloc.get("on_exhausted") or "pause")
+    try:
+        soft_ratio = float(alloc.get("soft_ratio") or 0.9)
+    except (TypeError, ValueError):
+        soft_ratio = 0.9
+    if limit_min <= 0 and wl_limit_min <= 0 and token_limit <= 0 and eff_wl_tokens <= 0:
+        return None
+    period = str(cfg.get("period") or "day")
+    prefix = (time.strftime("%Y%m%d", time.gmtime()) if period == "day"
+              else time.strftime("%Y%m", time.gmtime()) if period == "month" else "")
+    total = wl_total = tok_total = wl_tok = 0.0
+    led = os.path.join(base, "ledger")
+    try:
+        names = sorted(n for n in os.listdir(led)
+                       if n.endswith(".jsonl") and n.startswith(prefix))
+    except OSError:
+        names = []
+    for name in names:
+        try:
+            with open(os.path.join(led, name), encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                        sec = float(rec.get("seconds") or 0)
+                    except (ValueError, TypeError):
+                        continue
+                    toks = _row_tokens(rec, cfg)
+                    is_wl = rec.get("workload") == _NODE_BUDGET_WORKLOAD
+                    if sec > 0:
+                        total += sec
+                        if is_wl:
+                            wl_total += sec
+                    if toks > 0:
+                        tok_total += toks
+                        if is_wl:
+                            wl_tok += toks
+        except OSError:
+            continue
+    time_exceeded = ((limit_min > 0 and total >= limit_min * 60)
+                     or (wl_limit_min > 0 and wl_total >= wl_limit_min * 60))
+    token_exceeded = ((token_limit > 0 and tok_total >= token_limit)
+                      or (eff_wl_tokens > 0 and wl_tok >= eff_wl_tokens))
+    exceeded = bool(time_exceeded or token_exceeded)
+    soft_cap = eff_wl_tokens or token_limit
+    soft_spent = wl_tok if eff_wl_tokens else tok_total
+    soft = bool(soft_cap > 0 and soft_spent >= soft_ratio * soft_cap and not exceeded)
+    return {"exceeded": exceeded, "soft": soft, "on_exhausted": on_exhausted,
+            "spent_min": total / 60, "limit_min": limit_min,
+            "spent_tokens": tok_total, "token_limit": token_limit, "period": period}
+
+
+def _node_budget_record(seconds: float, ref: str = "", agent_cli: str = "",
+                        model: str = "", tokens_in=None, tokens_out=None, usd=None) -> None:
+    """台帳へ 1 記帳を追記する（O_APPEND — 複数プロセスの同時追記でも行は壊れない）。
+    tokens_* は実測できたときだけ渡す（推定値は書かない）。agent_cli / model は帰属。"""
+    if seconds <= 0 and not tokens_in and not tokens_out:
+        return
+    d = os.path.join(_node_budget_dir(), "ledger")
+    try:
+        os.makedirs(d, exist_ok=True)
+        rec = {"ts": _utc_iso(), "workload": _NODE_BUDGET_WORKLOAD,
+               "tool": _NODE_BUDGET_TOOL, "seconds": round(float(seconds), 3), "ref": ref}
+        if agent_cli:
+            rec["agent_cli"] = str(agent_cli)
+        if model:
+            rec["model"] = str(model)
+        if tokens_in is not None:
+            rec["tokens_in"] = float(tokens_in)
+        if tokens_out is not None:
+            rec["tokens_out"] = float(tokens_out)
+        if usd is not None:
+            rec["usd"] = float(usd)
+        line = json.dumps(rec, ensure_ascii=False) + "\n"
+        fd = os.open(os.path.join(d, time.strftime("%Y%m%d", time.gmtime()) + ".jsonl"),
+                     os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        try:
+            os.write(fd, line.encode("utf-8"))
+        finally:
+            os.close(fd)
+    except OSError:
+        pass    # 記帳失敗で実行を止めない（台帳は best-effort、上限は次の実行前チェックで効く）
+
+
+# --- agent-control（管理面→エンジンの宣言的オーケストレーション契約） ----------------------
+# schemas/agent-control.schema.json。$AGENT_CONTROL_DIR（既定 ~/.agents/control/）の control.json
+# に管理面が「望ましい状態」を書き、各エンジンが mtime を見て pull で適用する（push 型 IPC なし）。
+# 優先順位 control > CLI 引数 > 設定ファイル > 組み込み既定。適用状況は status/<tool>-<pid>.json へ。
+_CONTROL_CACHE = {"mtime": None, "data": {}}
+
+
+def _control_dir() -> str:
+    return str(agent_home_subdir("AGENT_CONTROL_DIR", "control").absolute())
+
+
+def _load_control() -> dict:
+    """control.json を mtime キャッシュ付きで読む。無ければ {}。"""
+    path = os.path.join(_control_dir(), "control.json")
+    try:
+        mtime = os.stat(path).st_mtime
+    except OSError:
+        _CONTROL_CACHE["mtime"], _CONTROL_CACHE["data"] = None, {}
+        return {}
+    if _CONTROL_CACHE["mtime"] != mtime:
+        try:
+            with open(path, encoding="utf-8") as f:
+                _CONTROL_CACHE["data"] = json.load(f) or {}
+        except (OSError, ValueError):
+            _CONTROL_CACHE["data"] = {}
+        _CONTROL_CACHE["mtime"] = mtime
+    return _CONTROL_CACHE["data"]
+
+
+def _control_workload() -> dict:
+    return dict((_load_control().get("workloads") or {}).get(_NODE_BUDGET_WORKLOAD) or {})
+
+
+def _control_lifecycle() -> str:
+    """このワークロードの望ましい lifecycle（run|pause|stop）。既定 run。"""
+    return str(_control_workload().get("lifecycle") or "run")
+
+
+def _control_override(key: str = "") -> "tuple[str | None, str | None]":
+    """(agent_cli, model) の上書き。解決 workloads[wl].agents[key] > workloads[wl] > defaults。"""
+    ctl = _load_control()
+    wl = _control_workload()
+    agents = wl.get("agents") or {}
+    layers = ([agents.get(key) or {}] if key else []) + [wl, ctl.get("defaults") or {}]
+    cli = model = None
+    for layer in layers:
+        if cli is None and layer.get("agent_cli"):
+            cli = str(layer.get("agent_cli"))
+        if model is None and layer.get("model"):
+            model = str(layer.get("model"))
+    return cli, model
+
+
+def _control_degraded() -> "tuple[str | None, str | None]":
+    d = _control_workload().get("degraded") or {}
+    return (str(d["agent_cli"]) if d.get("agent_cli") else None,
+            str(d["model"]) if d.get("model") else None)
+
+
+def _write_status(effective_cli: str = "", effective_model: str = "", lifecycle: str = "run",
+                  budget: "dict | None" = None, fresh_after_sec: int = 120) -> None:
+    """status/<tool>-<pid>.json へ適用状況ハートビートを原子書換する（best-effort）。"""
+    ctl = _load_control()
+    d = os.path.join(_control_dir(), "status")
+    try:
+        os.makedirs(d, exist_ok=True)
+        rec = {"tool": _NODE_BUDGET_TOOL, "workload": _NODE_BUDGET_WORKLOAD,
+               "pid": os.getpid(), "lifecycle": lifecycle,
+               "effective": {"agent_cli": effective_cli or None, "model": effective_model or None},
+               "fresh_after_sec": fresh_after_sec, "ts": _utc_iso()}
+        if ctl.get("revision") is not None:
+            rec["revision_applied"] = ctl.get("revision")
+        if budget is not None:
+            rec["budget"] = {"exceeded": bool(budget.get("exceeded")),
+                             "soft": bool(budget.get("soft"))}
+        target = os.path.join(d, f"{_NODE_BUDGET_TOOL}-{os.getpid()}.json")
+        tmp = target + f".tmp.{os.getpid()}"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(rec, f, ensure_ascii=False)
+        os.replace(tmp, target)
+    except OSError:
+        pass
+
+
+def _run_agent_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
+    """エージェント CLI（設定 agent_cli: kiro/claude/copilot/codex）を 1 回呼び出してテキスト応答を返す。
+    このツールの LLM 呼び出し（分解・優先順位・裁定・ルーティング等）はすべてここを通る。
+    purpose（AGENT_PURPOSES のいずれか）を渡すと、設定 agents: の処理毎上書き
+    （agent_cli / model）が効く。model は 上書き ＞ 呼び出し値（通常グローバル model）。"""
+    # agent-control: このワークロードが pause/stop 指定なら新規実行を控える（環境要因として運ぶ）。
+    lifecycle = _control_lifecycle()
+    if lifecycle in ("pause", "stop"):
+        _write_status(lifecycle=lifecycle)
+        raise RuntimeError(
+            f"[agent-error:control] [agent-control] このワークロード（project）は管理面により "
+            f"lifecycle={lifecycle} 指定です。dashboard のオーケストレーションタブで run に戻して"
+            "ください")
+    nb = _node_budget_state()
+    # 超過かつ on_exhausted != degrade なら控える。degrade は縮退指定で継続（_agent_for が適用）。
+    if nb and nb["exceeded"] and nb.get("on_exhausted") != "degrade":
+        # ノード予算超過は環境要因（時間経過か人の上限変更で回復）— quota 分類で全層に運ぶ
+        # （リトライ・裁定を焼かず needs へ。環境を直せば続きから、の既存フローに乗る）。
+        _write_status(lifecycle=lifecycle, budget=nb)
+        unit = ("トークン" if nb.get("token_limit") else "実行時間")
+        raise RuntimeError(
+            f"[agent-error:quota] [node-budget] このノードの{unit}予算を超過しています"
+            f"（{nb['spent_min']:.1f}分/{nb['limit_min']:.0f}分・"
+            f"{nb['spent_tokens']:.0f}tok/{nb['token_limit']:.0f}tok・period={nb['period']}）。"
+            "上限を上げる（dashboard のオーケストレーションタブ / agent-amigos budget node）か"
+            "期間の更新を待ってください")
+    cli, model_ov = _agent_for(purpose)
+    _write_status(effective_cli=cli, effective_model=(model_ov or model or ""),
+                  lifecycle=lifecycle, budget=nb)
+    plug = load_agent_plugin(cli)               # 定義ファイルが正典（_agent_cmd も同じキャッシュ）
+    # argv 渡しで長すぎるプロンプトは一時ファイルへ退避し、参照渡しの短い指示に置き換える
+    # （agent-flow / agent-amigos と同じ土台 = agentcore.agentcli.spill_prompt）。S5/S6 で
+    # verifier 入力（repo 文脈 + rules + レシピ + feedback）と planner 入力（charter 全文 +
+    # 既存タスク + 墓標）が肥大したため、既定 CLI の kiro（argv 渡し）で現実に当たる。
+    spill, prompt = _agentcli.spill_prompt(
+        prompt, _agent_argv_limit(), prompt_via=plug["prompt_via"],
+        prefix="agent-project-prompt-", instruction=_SPILL_INSTRUCTION)
+    # 一時ファイルの掃除は 1 つの finally にまとめる。out_file を try の外で束縛すると、
+    # 組み立てが例外で落ちたときに finally が NameError を投げて本当の原因を隠す。
+    out_file = None
+    try:
+        cmd, stdin_text, out_file = _agent_cmd(cli, model_ov or model, prompt)
+        # 発生源で色を抑止（NO_COLOR/TERM=dumb）。残った ANSI は strip_ansi で除去する二段構え。
+        env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", **(plug.get("env") or {})}
+        timeout = plug.get("timeout") or (_AGENT_TIMEOUT if _AGENT_TIMEOUT > 0 else None)
+        t0 = time.monotonic()
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", input=stdin_text,
+                              timeout=timeout, env=env)
+        # トークン実測: エージェントが `@cost tokens=… usd=…` を吐けば台帳へ帰属付きで記帳する。
+        _cost_tokens, _cost_usd = parse_cost(proc.stdout or "")
+        _node_budget_record(time.monotonic() - t0, ref=purpose or "agent",
+                            agent_cli=cli, model=(model_ov or model or ""),
+                            tokens_out=(_cost_tokens or None) if _cost_tokens else None,
+                            usd=(_cost_usd or None) if _cost_usd else None)
+        if proc.returncode != 0:
+            raise RuntimeError(_agent_failure(cmd[0], proc.returncode, proc.stdout, proc.stderr))
+        text = strip_ansi(proc.stdout).strip()
+        if out_file:   # codex 等: 最終応答ファイルが取れればそれを正とする（stdout はイベントログ）
+            with contextlib.suppress(OSError):
+                with open(out_file, encoding="utf-8") as f:
+                    text = f.read().strip() or text
+        if not text and not plug.get("empty_output_is_error", True):
+            return ""
+        if not text:
+            # rc=0 でも本文が空で返る CLI がある（kiro-cli は AWS 認証が切れるとバナーだけ出して
+            # rc=0 で終わる）。空を成功として扱うと、verify 合成も分解も「静かに失敗」して
+            # 決定的フォールバックへ落ちる＝LLM を呼べていないのに動いて見える。失敗にする。
+            raise RuntimeError(_agent_failure(cmd[0], 0, proc.stdout, proc.stderr)
+                               .replace("失敗 (rc=0)", "が空の応答を返しました (rc=0)"))
+        return text
+    finally:
+        # 一時ファイルは 2 つあり、寿命が違う。退避（spill）は CLI の起動が終われば
+        # 用済みだが、最終応答ファイル（out_file）は上の読み出しが終わるまで要る。
+        if out_file:
+            with contextlib.suppress(OSError):
+                os.remove(out_file)
+        if spill:
+            with contextlib.suppress(OSError):
+                os.remove(spill)
+
+
+def rank_agent(ready: "list[Task]", model: "str | None", agent_run=None) -> "list[Task] | None":
+    agent_run = agent_run or (lambda p, m: _run_agent_cli(p, m, purpose="prioritize"))
+    if len(ready) <= 1:
+        return list(ready)     # 0/1 件は並べ替えの余地が無い＝LLM を呼ばない（コスト・レイテンシ削減）
+    listing = "\n".join(
+        f"- {t.id}: {t.title}（priority={t.priority}, source={t.source}）" for t in ready)
+    prompt = ("あなたはバックログの優先順位付け役。次のタスク群を、重要度・緊急度・依存関係に加え、"
+              "**外部で付与された priority（大きいほど高優先）も加味**して優先順位の高い順に並べ替え、"
+              "**タスクID の JSON 配列だけ**を出力してください（説明文なし）。\n\nタスク:\n" + listing)
+    try:
+        order_ids = _extract_id_array(agent_run(prompt, model))
+    except Exception:  # noqa: BLE001
+        return None
+    if not order_ids:
+        return None
+    by_id = {t.id: t for t in ready}
+    ordered = [by_id[i] for i in order_ids if i in by_id]
+    seen = {t.id for t in ordered}
+    ordered += [t for t in ready if t.id not in seen]
+    return ordered
+
+
+def _tail_matching(path: "Path | None", needle: str, limit: int) -> "list[str]":
+    """ファイルから needle を含む行を末尾 limit 件返す（best-effort・無ければ空）。"""
+    if not path or not path.exists():
+        return []
+    try:
+        lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if needle in ln]
+    except OSError:
+        return []
+    return lines[-limit:]
+
+
+def adjudication_context(cfg: "Config", task: Task,
+                         journal_lines: int = 8, decision_chars: int = 1200) -> str:
+    """裁定の判断材料を decisions/journal/task から決定的に集める（LLM 不要・有界）。
+    『過去にどう試して何を人が判断したか』を門番へ渡し、的外れな requeue や再エスカレを減らす。"""
+    parts: list[str] = []
+    jl = _tail_matching(cfg.journal, task.id, journal_lines)
+    if jl:
+        parts.append("これまでのサイクル履歴(journal):\n" + "\n".join(jl))
+    dp = decision_path(cfg, task.id)
+    if dp.exists():
+        try:
+            txt = dp.read_text(encoding="utf-8").strip()
+        except OSError:
+            txt = ""
+        if txt:
+            if len(txt) > decision_chars:        # 直近の判断が重要なので末尾を残す
+                txt = "…\n" + txt[-decision_chars:]
+            parts.append("過去の決定記録(decisions):\n" + txt)
+    fb = task.feedback()
+    if fb:
+        parts.append("適用済みの直近フィードバック: " + fb)
+    note = next((v for k, v in task.extra if k == "note"), None)
+    if note:
+        parts.append("タスクのメモ(note): " + note)
+    return "\n\n".join(parts)
+
+
+def adjudicate_escalation(cfg: "Config", task: Task, reason: str,
+                          agent_run=None) -> "tuple[str, str]":
+    """needs（人の判断）に落とす直前の エージェント CLI 裁定ゲート。
+    『ループ内で自律的に積み直して解けるか／人の判断が要るか』を判断させる。
+    返り値: ("requeue", guidance) なら自律的に積み直す、("escalate", "") なら従来どおり人へ。
+    判断不能・エラー・曖昧は **必ず escalate にフォールバック**（安全側＝人を飛ばさない）。"""
+    run = agent_run or (lambda p, m: _run_agent_cli(p, m, purpose="adjudicate"))
+    ctx = adjudication_context(cfg, task)        # journal/decisions/feedback の文脈を渡す
+    prompt = (
+        "あなたは自律バックログ・ループの『人の判断を呼ぶ前の門番』です。次のタスクが検証(verify)に"
+        "失敗し、通常なら人の判断待ち(needs)へ送られます。これを **ループ内で自律的に積み直して解決を試みる"
+        "価値があるか** を判断してください。\n"
+        "- requeue（積み直す）: 失敗が実装の不足・取り違え等で、明確な追加指示があれば次の試行で解けそうな場合。\n"
+        "- escalate（人へ）: 要件が曖昧／意思決定や承認が要る／リスクが高い／同じ失敗の繰り返しで打開策が無い場合。\n"
+        "**判断は厳しめに。少しでも人の意思決定が要るなら escalate。過去に同じ案件を積み直して解けていない"
+        "なら escalate。**\n\n"
+        f"タスクID: {task.id}\nタイトル: {task.title}\nverify: {task.verify}\n"
+        f"これまでの試行回数(retries): {task.retries}\n失敗理由: {reason}\n\n"
+        + (f"--- 参考文脈（既存の試行・判断の履歴）---\n{ctx}\n\n" if ctx else "")
+        + '出力は次の JSON オブジェクトだけ（説明文なし）:\n'
+        '{"decision": "requeue" | "escalate", "guidance": "requeue の場合のみ、次の試行への具体的な指示"}')
+    try:
+        obj = _extract_json_obj(run(prompt, cfg.model))
+    except Exception:  # noqa: BLE001  エージェント CLI 不在・タイムアウト等は人へ
+        return ("escalate", "")
+    if not obj or obj.get("decision") != "requeue":
+        return ("escalate", "")
+    return ("requeue", str(obj.get("guidance", "")).strip())
+
+
+# ---------------------------------------------------------------------------
+# 投入時アセスメント（Spec Orchestrator の採点段）— c=複雑さ / r=リスク / a=曖昧さ（各1-3）
+# ---------------------------------------------------------------------------
+def _assess_heuristic(cfg: "Config", task: Task) -> dict:
+    """エージェント不在・失敗・stub 時の決定的採点。材料はタスク定義と decisions/ の走査のみ。
+    c: cohort（同種の繰り返し）は多対象＝3。r: 過去の回避判断（avoid）に類似＝3。
+    a: 決定的 verify あり=1 / 受入基準（自然言語）のみ=2 / どちらも無し=3。"""
+    c = 3 if (task.get("cohort_items") or task.get("cohort")) else 1
+    r = 3 if find_avoidance(cfg, task) else 1
+    a = 1 if (task.verify or task.get("verify_template")) else (2 if task_acceptance(task) else 3)
+    return {"c": c, "r": r, "a": a}
+
+
+def _assess_prompt(task: Task) -> str:
+    return (
+        "あなたはタスクの事前アセスメント役です。以下のタスクを 3 軸で採点してください（各 1〜3 の整数）。\n"
+        "- c=複雑さ: 関与するファイル・コンポーネント・手順の多さ（3=多岐にわたる）\n"
+        "- r=リスク: 壊したときの影響の大きさ（認証・決済・データ移行・本番設定などは 3）\n"
+        "- a=曖昧さ: 完了条件・やり方の不確かさ（verify が具体的なら 1）\n\n"
+        f"タイトル: {task.title}\n"
+        f"verify: {task.verify or '（未定義）'}\n"
+        f"受入基準: {' / '.join(task_acceptance(task)) or '（なし）'}\n"
+        f"note: {task.get('note') or '（なし）'}\n"
+        + "".join(f"{k}: {task.get(k)}\n"       # 誘導・レビュー記述があれば採点材料に足す（有るものだけ）
+                  for k in ("why", "desc", "scope", "constraints") if task.get(k))
+        + '\n出力は JSON オブジェクトのみ（説明文なし）: {"c": 1, "r": 1, "a": 1}')
+
+
+def assess_task(cfg: "Config", task: Task, agent_run=None) -> "str | None":
+    """投入時アセスメント。採点は情報であり、それ自体は実行可否・done 条件を変えない
+    （読むのは plan-review 票・リスクダイジェスト・spec ルーティング）。知能は委譲し、
+    失敗・stub は決定的ヒューリスティックへフォールバック。1 タスク 1 回（既存はスキップ）。"""
+    if task.get("assess"):
+        return task.get("assess")
+    scores = None
+    if cfg.executor != "stub":
+        run = agent_run or (lambda p, m: _run_agent_cli(p, m, purpose="assess"))
+        try:
+            obj = _extract_json_obj(run(_assess_prompt(task), cfg.model)) or {}
+            got = {k: int(obj[k]) for k in ("c", "r", "a") if k in obj}
+            if len(got) == 3:
+                scores = {k: min(3, max(1, v)) for k, v in got.items()}
+        except Exception:  # noqa: BLE001  エージェント不在・タイムアウト・非 JSON はヒューリスティックへ
+            scores = None
+    if scores is None:
+        scores = _assess_heuristic(cfg, task)
+    val = f"c={scores['c']} r={scores['r']} a={scores['a']}"
+    task.extra.append(("assess", val))
+    return val
+
+
+# ---------------------------------------------------------------------------
+# spec ルーティング（Spec Driven の前段・opt-in `spec_track`）
+#   採点が spec_threshold に達した（または policy `spec:` に一致する）タスク T に、spec 作成
+#   タスク（specs/<T>/ の spec.md/design.md/tasks.md・review: human）を前置する。人が spec を
+#   承認して done になったら、tasks.md（enqueue --json 互換）を実装タスク群へ展開し、T は
+#   after: 実装タスク群 の総合検証として最後に走る。すべて既存プリミティブ（after DAG・
+#   plan_review/delivery_review・enqueue）の組み合わせで、S0–S7 のゲートは無改造。
+# ---------------------------------------------------------------------------
+def specs_root(cfg: "Config") -> Path:
+    """spec 成果物の置き場（<workdir>/specs）。act の指示（相対パス）と verify（workdir 実行）が
+    同じ場所を指すよう workdir 基準にする。既定 workdir=root なので状態リポジトリに載り、
+    git 同期で viewer からも読める。"""
+    return cfg.workdir / "specs"
+
+
+def _assess_max(task: Task) -> int:
+    """`- assess: c=N r=N a=N` の最大値（未採点は 0）。spec ルーティングのしきい値判定に使う。"""
+    vals = re.findall(r"[cra]=(\d)", task.get("assess", "") or "")
+    return max((int(v) for v in vals), default=0)
+
+
+def spec_kind_for(task: Task) -> str:
+    """この spec タスクの段（`full` / `light`）。マーカーが無い既存タスクは full（後方互換）。"""
+    return "light" if str(task.get("spec_kind") or "").strip() == "light" else "full"
+
+
+def _spec_route_kind(cfg: "Config", task: Task, forced: bool) -> str:
+    """このタスクを spec ルートに乗せるか、乗せるならどの段か（`full` / `light` / ""）。
+
+    ブラウンフィールドではフル spec（spec/design/tasks の 3 点セット）のオーバーヘッドが
+    大きく、「書くか書かないか」の二択だと結局書かれない。要求は charter とタスクの
+    why/desc に既にあり、分解は元タスクの粒度で足りるので、中間段は **design.md 1 枚**
+    （変更方針・影響範囲・受入条件の差分）にする。
+    """
+    if forced:
+        return "full"          # policy `spec:` の明示強制はフル（語彙を増やさない）
+    score = _assess_max(task)
+    if score >= cfg.spec_threshold_full:
+        return "full"
+    if score >= cfg.spec_threshold_light:
+        return "light"
+    return ""
+
+
+def _spec_verify(cfg: "Config", tid: str, kind: str = "full") -> str:
+    """spec 作成タスクの決定的 verify（workdir 相対・specs_root と同じ基準）。
+    full: 3 ファイルが非空で tasks.md が JSON タスク分解を含む / light: design.md 1 枚。"""
+    rel = f"specs/{tid}"
+    if kind == "light":
+        return f"test -s {rel}/design.md"
+    return (f"test -s {rel}/spec.md -a -s {rel}/design.md -a -s {rel}/tasks.md"
+            f" && grep -q '\"title\"' {rel}/tasks.md")
+
+
+def _spec_instructions(cfg: "Config", task: Task) -> str:
+    """spec 作成タスク（`- spec_for:` 持ち）の act 要求文に足す作成指示。実装はさせない。"""
+    tid = task.get("spec_for", "")
+    rel = f"specs/{tid}"
+    if spec_kind_for(task) == "light":
+        return (
+            f"これは実装前の **ライト Spec** 作成タスクです。{task.get('note') or ''}\n"
+            f"作業ディレクトリ直下に {rel}/design.md を 1 枚だけ作成すること"
+            f"（コードの実装はしない。要求仕様書もタスク分解も書かない）:\n"
+            f"- 変更方針 … 既存コードのどこをどう変えるか（現状の構造を読んだ上で）\n"
+            f"- 影響範囲 … 巻き込むモジュール・呼び出し元・壊れうる既存の振る舞い\n"
+            f"- 受入条件の差分 … 元タスクの受入基準のうち、設計判断で具体化された点\n"
+            f"- 検討した代替案と選ばなかった理由（あれば）\n"
+            f"既存コードベースへの変更なので、**現物を読んで書くこと**。"
+            f"一般論や、確かめていない構造の推測は書かないでください。")
+    return (
+        f"これは実装前の Spec 作成タスクです。{task.get('note') or ''}\n"
+        f"作業ディレクトリ直下の {rel}/ に次の 3 ファイルを作成すること（コードの実装はしない）:\n"
+        f"- {rel}/spec.md   … 要求仕様（背景・要求・受け入れ観点）\n"
+        f"- {rel}/design.md … 設計（方針・影響範囲・代替案と選定理由）\n"
+        f"- {rel}/tasks.md  … 実装タスク分解。次の形式の JSON 配列を含む Markdown:\n"
+        f'  [{{"title": "…", "acceptance": ["受入基準（自然文。検証エージェントが実行して確かめられる粒度）", …],'
+        f' "after": ["先行タスクの title"]}}]\n'
+        f"  シェルコマンドを 1 行合成して基準の代わりにしないこと（確かめ方は検証エージェントが決める）。"
+        f"after は任意（配列内の先行タスク）。\n"
+        f'  各タスクには任意で "why"（必要な理由・1 文）・"out_of_scope"（やらないこと）・'
+        f'"hints"（実装の手がかり）を付けてよい（実装ワーカーへの指示と人のレビュー材料になる）。')
+
+
+def route_spec_tasks(cfg: "Config", tasks: "list[Task]", policy: "Policy") -> "list[Task]":
+    """spec ルーティング（S0）。決定はタスクの `- route:` に記録して再ルーティングしない
+    （人の `- route: direct` が採点に常に勝つ＝policy/明示 > エージェント）。ルーティングは
+    「タスクを足す」方向のみで、done 条件・予算には触れない。作成した spec タスクを返す。"""
+    if not cfg.spec_track:
+        return []
+    created: "list[Task]" = []
+    for t in list(tasks):
+        if t.norm_status() not in ("proposed", "ready", "inbox"):
+            continue
+        if t.get("route") or t.get("spec_for") or t.get("spec"):   # 決定済み・spec 系タスクは対象外
+            continue
+        forced = any(t.matches(p) for p in policy.spec)
+        kind = _spec_route_kind(cfg, t, forced)
+        if not kind:
+            continue
+        # 既存コード文脈が無いと「影響範囲」を書けない（S7-3。plan 経路と同じ共通機構）
+        ensure_repo_maps(cfg, charter_for_task(cfg, t), force=True)
+        label = "Spec 作成" if kind == "full" else "設計メモ作成（ライト Spec）"
+        spec_dict = {"id": f"{t.id}-spec", "title": f"{label}: {t.title}",
+                     "verify": _spec_verify(cfg, t.id, kind), "review": "human",
+                     "spec_for": t.id, "spec_kind": kind, "route": "direct", "source": "spec",
+                     "priority": t.priority + 1,
+                     "note": f"対象タスク {t.id}: {t.title}"
+                             + (f"（最終 verify: {t.verify}）" if t.verify else "")}
+        if t.get("charter"):
+            spec_dict["charter"] = t.get("charter")
+        s = enqueue_task(cfg, spec_dict)
+        deps = task_deps(t) + [s.id]
+        t.set("route", "spec")
+        t.set("spec_task", s.id)
+        t.set("after", ", ".join(deps))
+        persist_task(cfg, t)
+        created.append(s)
+        thr = cfg.spec_threshold_full if kind == "full" else cfg.spec_threshold_light
+        why = "policy spec 一致" if forced else \
+            f"採点 {t.get('assess')} が {kind} のしきい値({thr}) 以上"
+        affects = (f"{s.id} を前置（承認後 tasks.md を実装タスクへ展開）" if kind == "full"
+                   else f"{s.id} を前置（design.md を文脈に元タスクをそのまま実行）")
+        append_decision(cfg, t.id, "auto",
+                        context=f"{t.id}（{t.title}）を spec ルート（{kind}）へ",
+                        action="spec-route", reason=why, affects=affects)
+        append_journal(cfg.journal, f"spec ルート（{kind}）: {t.id} に {s.id} を前置（{why}）")
+    return created
+
+
+def expand_spec_tasks(cfg: "Config", tasks: "list[Task]") -> "list[Task]":
+    """spec 前段が done（archive へ・承認済み）になったタスクの tasks.md を実装タスク群へ展開する。
+    tasks.md は enqueue --json 互換の JSON 配列。展開後、元タスクの after を実装タスク群へ
+    付け替え＝元タスクは自らの verify を持つ総合検証として最後に走る。JSON が無ければ展開なし
+    （元タスクが spec を文脈注入されて自力実装する・安全側）。展開数は max_spawn の傘の下。"""
+    if not cfg.spec_track:
+        return []
+    by_id = {t.id: t for t in tasks}
+    created_all: "list[Task]" = []
+    for t in list(tasks):
+        if t.get("route") != "spec" or t.get("spec_expanded"):
+            continue
+        sid = t.get("spec_task", "")
+        if not sid or sid in by_id:                    # spec 前段が未決着（backlog に現存）
+            continue
+        arch = cfg.archive_dir() / f"{sid}.md"
+        try:
+            adone = (arch.exists() and
+                     parse_task(arch.read_text(encoding="utf-8"), sid).norm_status() == "done")
+        except OSError:
+            adone = False
+        if not adone:
+            continue                                   # 却下等は展開しない（再審査は既存機構が担う）
+        if str(t.get("spec_kind") or "") == "light":
+            # ライト spec は tasks.md を作らせない＝展開しない。元タスクをそのまま実行し、
+            # design.md は act の文脈として注入される。`none`（フルなのに tasks.md が壊れて
+            # いた）とは別の事象なので、印も journal の文言も分ける。
+            t.set("spec_expanded", "light")
+            persist_task(cfg, t)
+            append_journal(cfg.journal,
+                           f"ライト spec: {t.id} は展開せず design.md を文脈に実行する")
+            continue
+        tmd = specs_root(cfg) / t.id / "tasks.md"
+        try:
+            items = _extract_json_array(tmd.read_text(encoding="utf-8")) if tmd.exists() else None
+        except OSError:
+            items = None
+        specs = [it for it in (items or []) if isinstance(it, dict)
+                 and str(it.get("title", "")).strip()][: max(0, cfg.max_spawn)]
+        if not specs:
+            t.set("spec_expanded", "none")             # 展開なし＝元タスクが spec 文脈で自力実装
+            persist_task(cfg, t)
+            append_journal(cfg.journal, f"spec 展開なし（tasks.md に有効な JSON 無し）: {t.id}")
+            continue
+        pairs: "list[tuple[dict, Task]]" = []
+        title_to_id: "dict[str, str]" = {}
+        for it in specs:
+            sp = {"title": str(it["title"]).strip(),
+                  "verify": _strip_code(str(it.get("verify", "") or "").strip()),
+                  "source": "spec", "spec": t.id, "route": "direct"}
+            # tasks.md は「enqueue --json 互換」の契約なので、誘導・レビュー記述（why 等）も落とさない
+            for k in ("accept", "verify_template", "note", "priority",
+                      *MULTILINE_KEYS, *TASK_GUIDE_KEYS):
+                if it.get(k) not in (None, "", []):
+                    sp[k] = it[k]
+            for k in ("charter", "workspace"):         # 成果の行き先・スコープは元タスクを引き継ぐ
+                if t.get(k):
+                    sp[k] = t.get(k)
+            try:
+                nt = enqueue_task(cfg, sp)
+            except ValueError:
+                continue
+            pairs.append((it, nt))
+            title_to_id[sp["title"]] = nt.id
+        # 2 パス目: 配列内 after（先行タスクの title）を id へ決定的に解決（未知 title は落とす・循環は拒否）
+        new_tasks = [nt for _, nt in pairs]
+        for it, nt in pairs:
+            deps = [title_to_id[w] for w in _coerce_titles(it.get("after"))
+                    if w in title_to_id and title_to_id[w] != nt.id]
+            if deps:
+                nt.set("after", ", ".join(deps))
+                if _after_introduces_cycle(new_tasks, nt):
+                    nt.drop("after")
+                persist_task(cfg, nt)
+        impl_ids = [nt.id for nt in new_tasks]
+        t.set("after", ", ".join(impl_ids))            # 元タスク＝総合検証として最後に走る
+        t.set("spec_expanded", str(len(impl_ids)))
+        persist_task(cfg, t)
+        append_decision(cfg, t.id, "auto",
+                        context=f"{t.id}（{t.title}）の spec 承認に伴う実装タスク展開",
+                        action="spec-expand",
+                        reason=f"specs/{t.id}/tasks.md から {len(impl_ids)} 件",
+                        affects=f"{t.id} は総合検証（after: {', '.join(impl_ids)}）")
+        append_journal(cfg.journal, f"spec 展開: {t.id} ← {len(impl_ids)} 件（{sid} 承認）")
+        created_all.extend(new_tasks)
+    return created_all
+
+
+def spec_context(cfg: "Config", task: Task, limit: int = 1200) -> str:
+    """act 要求文へ注入する spec 文脈（spec.md/design.md・有界）。対象は spec 展開で生まれた
+    実装タスク（`- spec:`）と、展開後の総合検証タスク（route: spec）。spec 作成タスク自身は対象外。"""
+    tid = task.get("spec") or ("" if task.get("spec_for")
+                               else (task.id if task.get("route") == "spec" else ""))
+    if not tid:
+        return ""
+    parts: "list[str]" = []
+    for name in ("spec.md", "design.md"):
+        p = specs_root(cfg) / tid / name
+        try:
+            txt = p.read_text(encoding="utf-8").strip() if p.exists() else ""
+        except OSError:
+            txt = ""
+        if txt:
+            parts.append(f"--- specs/{tid}/{name} ---\n{txt[:limit]}")
+    return "\n".join(parts)
+
+
+def apply_policy_order(ordered: "list[Task]", policy: Policy) -> "list[Task]":
+    def hit(t, pats):
+        return any(t.matches(p) for p in pats)
+    pinned = [t for t in ordered if hit(t, policy.pin)]
+    deferred = [t for t in ordered if not hit(t, policy.pin) and hit(t, policy.defer)]
+    middle = [t for t in ordered if t not in pinned and t not in deferred]
+    return pinned + middle + deferred
+
+
+def by_priority_then_age(ready: "list[Task]") -> "list[Task]":
+    """優先度降順、同値は最古優先（ready は mtime 昇順で渡される＝安定ソートで age が効く）。"""
+    return sorted(ready, key=lambda t: -t.priority)
+
+
+def prioritize(tasks, policy, planner, model=None, ranker=None) -> "list[Task]":
+    """planner=none: priority＋古さ。planner=agent: エージェント委譲（priority も加味）。policy が最終上書き。"""
+    ready = ready_after_deps(tasks)  # mtime 昇順（最古優先）。依存(after)未達は除外
+    # 0/1 件は並べ替えの余地が無く順序が自明＝planner を問わず LLM 優先順位付けを呼ばない
+    # （エージェント CLI 起動のコスト・レイテンシを丸ごと省く）。policy（pin/defer）は後段で必ず効く。
+    if planner == "none" or len(ready) <= 1:
+        base = by_priority_then_age(ready)
+    else:  # agent（エージェント委譲の順位付け。失敗時は priority＋古さにフォールバック）
+        rank = (ranker or rank_agent)(ready, model)
+        base = rank if rank is not None else by_priority_then_age(ready)
+    return apply_policy_order(base, policy)
+
+
+# ---------------------------------------------------------------------------
+# triage（inbox→ready 昇格・policy deny の適用）
+# ---------------------------------------------------------------------------
+def triage(tasks, policy, plan_review: bool = False) -> "list[tuple[Task, str]]":
+    transitions = []
+    for t in tasks:
+        st = t.norm_status()
+        if st == "inbox" and has_verify_plan(t):   # verify か、用意できる材料(accept/verify_template)があれば昇格
+            # 実行前レビュー時は ready でなく proposed へ（人の承認で初めて実行可能になる）
+            t.status = "proposed" if plan_review else "ready"
+            st = t.status
+        if st in CONSUMABLE and any(t.matches(p) for p in policy.deny):
+            t.status = "blocked"
+            transitions.append((t, "policy:deny（人の判断待ち）"))
+    return transitions
+
+
+# ---------------------------------------------------------------------------

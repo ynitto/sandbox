@@ -1,0 +1,95 @@
+# makaroshki-bridge 設定ファイルサンプル
+# このファイルをコピーして makaroshki-bridge.yaml という名前で保存してください。
+#
+# 検索順序:
+#   1. --config オプションで明示指定したパス
+#   2. カレントディレクトリの makaroshki-bridge.{yaml,yml,json}
+#   3. HOME の makaroshki-bridge.{yaml,yml,json}
+#
+# このツールは PC-B（エージェント側）で動かします。
+# PC-A（人間側）は makaroshki の messenger.html をブラウザで開いて使うだけです。
+
+# ---------------------------------------------------------------------------
+# ハブ（git バックエンド）
+# ---------------------------------------------------------------------------
+hub:
+  # Macaroni のメッセージを置く git リポジトリ。両 PC が push/pull できる場所。
+  # 認証込みの URL を推奨（PAT 埋め込み or 事前に credential helper / SSH 設定）。
+  remote: "https://<TOKEN>@github.com/<you>/<your-macaroni-hub>.git"
+  # ローカルクローンの置き場所（無ければ自動 clone）
+  repo_dir: ~/.makaroshki-bridge/hub
+  branch: main
+
+# ポーリング間隔（秒）。git fetch のたびにリモートへ問い合わせます。
+poll_interval_seconds: 30
+
+# 起動時、既存の過去メッセージには応答せず「処理済み」として記録するか。
+# true（既定）なら、起動後に届いた新着メッセージのみ応答します。
+ignore_backlog_on_start: true
+
+# 監視するチャット。未指定（コメントアウト）なら全チャットを対象にします。
+# watch_chats:
+#   - chat_20260609_sa6e_k2xm_work
+
+# どのメッセージに応答するか:
+#   all       … チャット内の（自分以外からの）全メッセージに応答（既定）
+#   addressed … 自分の client_id が to に含まれるメッセージのみ
+respond_to: all
+
+# 状態（処理済み message_id）の保存先
+state_dir: ~/.makaroshki-bridge/state
+
+# ---------------------------------------------------------------------------
+# エージェント（受信して実行・返信する側）
+# ---------------------------------------------------------------------------
+agent:
+  # Macaroni 上でのエージェントの身元
+  identity:
+    client_id: "HERM"            # 4 文字推奨（Macaroni の client_id 慣習）
+    display_name: "Hermes"
+    git_email: "hermes@example.com"   # コミット作者メール
+
+  # 受信メッセージをエージェントへ渡すプロンプト雛形。
+  # 使える変数: {text} {from_id} {from_name} {chat_id} {chat_title} {message_id} {created_at}
+  prompt_template: |
+    あなたは Macaroni Messenger 経由でユーザーと会話するエージェントです。
+    チャット「{chat_title}」で {from_name} さんから次のメッセージが届きました。
+    実行が必要なら実行し、結果を簡潔に返信してください。
+
+    {text}
+
+  # 実行方式:
+  #   command … 任意のコマンドを起動し、prompt を stdin、返信を stdout で受け取る（推奨・堅牢）
+  #   tmux    … tmux 上の対話エージェント（hermes chat 等）に送って応答を回収（ベストエフォート）
+  runner: command
+
+  # runner: command の場合のコマンド。stdin にプロンプトが流れ、stdout が返信になります。
+  # 環境変数 MACARONI_CHAT_ID / MACARONI_FROM / MACARONI_FROM_NAME / MACARONI_MESSAGE_ID も渡されます。
+  #
+  # 例 1) 自作ラッパに渡す（Hermes を非対話で叩く薄いラッパを用意するのが最も確実）:
+  command: "hermes-oneshot"
+  #
+  # 例 2) kiro-cli を非対話で使う:
+  # command: "kiro-cli chat --no-interactive"
+  #
+  # 例 3) Claude Code / 任意の LLM CLI など stdin→stdout で完結するもの:
+  # command: "claude -p"
+
+  # エージェントの作業ディレクトリ（省略可）
+  # cwd: ~/projects/myapp
+
+  # command 実行のタイムアウト（秒）
+  timeout_seconds: 600
+
+  # ---- runner: tmux を使う場合の追加設定 ----
+  # session: makaroshki-agent
+  # command: "hermes chat --provider kiro-acp --model kiro-acp"  # tmux 内で起動する対話コマンド
+  # startup_timeout_seconds: 60
+  # response_timeout_seconds: 300
+
+# ---------------------------------------------------------------------------
+# send サブコマンド（人間役としてテスト送信する場合の既定送信者）
+# ---------------------------------------------------------------------------
+sender:
+  client_id: "SA6E"
+  display_name: "Я"

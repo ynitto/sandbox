@@ -1,0 +1,135 @@
+<!--
+agent-project の charter.md 規約（プロジェクト憲章の正典）
+========================================================================
+このファイル（<root>/charter.md。プロジェクトルート直下）は
+**人が書く唯一の最上位入力**。これを置くと `agent-project run` が自動で backlog の上に
+「目標 → 分解 → 消化 → 評価 → 改善」のループをもう一段載せ、charter が満たされるまで長期に回す
+（専用 project コマンドは無い。プロセスは run に一本化）。
+
+  使い方:
+    cp tools/agent-project/charter.md.example ./charter.md   # プロジェクトルートに置いて編集して使う
+    agent-project run                      # charter があれば plan→execute→evaluate（収束で人へ）
+    agent-project run --watch              # 目標を満たすまで回り続ける常駐（charter 更新も待つ）
+    agent-project approve <project> --reason "受領"   # 収束候補を完了確定（最終納品書）
+
+書式（`## <key>` セクション。key は goal/constraints/assumptions/deliverables/acceptance/repos/links）:
+
+鉄則:
+1. **プロジェクト done の唯一の根拠は `acceptance` 全 PASS**（各行＝終了コード0をPASSとみなすシェルコマンド）。
+   AI の自己申告や敵対的レビューだけでは done にしない（タスクの verify と同じ鉄則）。
+   検証コマンドを書けない人は **自然文でも書ける**（タスクの `accept:` と同じ）。`- accept: <自然言語の完了条件>`
+   と書くか、全角句読点を含む散文をそのまま箇条書きにすると、run 時にエージェントが**決定的なシェル
+   コマンドへ合成**する（合成結果は安定キャッシュされ done 基準がブレない）。合成できなければ done 判定
+   不能＝人へ回る（鉄則は保たれる）。英文など句読点で判別しにくい散文は `accept:` を明示すること。
+2. acceptance は **「履歴」ではなく「望む最終状態/差分」を見る**こと（偽 done 対策。`$KIRO_BASE_REV` 利用可）。
+   acceptance を書けないプロジェクトは done 判定不能 → 必ず人へ回る。
+3. plan（目標→backlog 分解）と evaluate の敵対的レビューの知能はエージェントへ委譲し、enqueue・acceptance 実行・
+   収束判定は本体が決定的に行う。必ず有限回（--max-project-cycles）で止まる。
+4. project（プロジェクト名）の id はこの見出し名から生成（ASCII 推奨。日本語のみだと既定 `project`）。
+-->
+
+# Charter: my-project
+
+## goal
+ユーザーが CSV を投入すると要約レポートを生成する CLI を完成させる。
+
+## constraints
+- Python 3.9 / 標準ライブラリのみ（pip 依存を増やさない）
+- 既存 API の後方互換を壊さない
+
+## assumptions
+- 入力 CSV は UTF-8・ヘッダ行あり
+
+## deliverables
+- report.py（生成器）
+- tests/（テスト）
+- README の使用例
+
+## acceptance
+# acceptance の実行先: 既定は workdir。offload（git-bus/remote）で worker が対象 repo を temp に clone・push して
+# 消すと workdir に成果が出ないため、下記 repos がちょうど 1 つ（非 readonly）なら、その target ブランチを毎評価で
+# 一時 clone してそこで検証する。明示するなら `--verify-cwd <クローン先>`（設定 verify_cwd）。複数 repo は曖昧なので
+# 自動 clone せず --verify-cwd で指定する。
+- `pytest -q tests/`
+- `python report.py sample.csv | grep -q "Summary"`
+- `grep -q "## Usage" README.md`
+# 検証コマンドを書けない条件は自然文でも可（run 時にエージェントが決定的 verify を合成する）:
+- accept: README に使用例（## Usage）が載っている
+- 不正な CSV を渡すとエラーメッセージを表示して異常終了する。
+
+## repos
+# リポジトリ定義は独立スキーマ（schemas/repos.schema.json）で管理される: 手書きの
+# <root>/repos.{yaml,yml,json} を置くと**そちらがレジストリの正**になり、この ## repos は互換入力。
+# 手書きが無ければ agent-project がこの ## repos から <root>/repos.json を**自動生成**して
+# 外部ツール（codd-gate の --repos 等）へ渡す（_meta マーカー付き・正はこの charter のまま追従）。
+# 対象リポジトリ（任意・複数可）。見出しは `name = url` か素の `url`。各 repo に構造化サブ箇条で
+# メタ情報を付ける（インデントした `- key: value`。日本語キー desc=説明/base=ベース/target=ターゲット/
+# path=パス/owns=担当 も可）:
+#   - owns   … このリポジトリが担当するパス（グロブ、カンマ/空白区切り）【書込先にするなら必須】。
+#              agent-project のルーティングが「タスク → どの書込先（ワークスペース）か」を決める根拠。
+#              **owns を書かない repo は『参照リポジトリ（読むだけ）』** とみなし、書込先にはせず、タスク本文へ
+#              参照情報として伝搬する（clone もしない）。
+#   - desc   … 内容物・関与範囲（役割）の説明【推奨】。auto-route（LLM 推定）や gitlab イシューで使う。
+#   - base   … 作業のベースブランチ【書込先なら推奨】（agent-flow はここから作業ブランチ af/<run-id> を作る）。
+#   - target … MR/PR のターゲットブランチ【任意・既定 = base】。
+#   - path   … モノレポ内の作業フォルダ【任意】（例 apps/api）。worker はそのフォルダ配下のみ変更する。
+#
+# ■ ルーティング（タスク → ちょうど1つの書込先ワークスペース）の決まり方（上が優先）:
+#   1. タスクの `- workspace: <name>`（明示。enqueue --workspace でも可）
+#   2. policy.md の `route: <パターン> -> <name>`（決定論ルール）
+#   3. この owns: のパスグロブと、タスクの `- paths:` ヒントの一致（決定論推定）
+#   4. auto-route（route_planner: agent のとき LLM が desc/owns から1つ選ぶ）
+#   5. default_workspace 設定 / 書込先候補が1つだけならそれ
+#   決定はタスク md（`- workspace:` / `- routed_by:`）へ書き戻され、安定・監査可能になる。
+#   1 つの agent-flow run（=バックログ単位）が書き込むのはちょうど1リポジトリ。複数 repo へまたがる変更は
+#   repo 別タスクへ分割し依存（after）で順序付ける。
+# - app = git@example.com:team/app.git
+#   - owns: apps/app/**, services/api/**     # ここに該当するタスクは app へルーティング
+#   - desc: アプリ本体（API ハンドラ・UI）。エンドポイント追加・画面変更はここ。
+#   - base: main
+#   - target: develop
+# - lib = https://example.com/team/lib.git
+#   - owns: packages/**
+#   - desc: 共有ライブラリ（型定義・ユーティリティ）。
+#   - base: develop                       # target 省略 → develop で作業
+#
+# ■ モノレポ：1 つの URL をフォルダ別の役割（=別ワークスペース）に分ける場合は、同じ url で name/path/owns を
+#   変えた複数エントリにする。リポジトリの同一性は (url, path, base) で判定されるので、path か base が違えば
+#   別ワークスペースとして clone・作業ブランチが分かれる。name は別名にすること。
+# - shop-api = git@example.com:team/shop.git
+#   - path: apps/api
+#   - owns: apps/api/**
+#   - desc: API ハンドラ・エンドポイント。サーバ側ロジックはここ。
+#   - base: main
+# - shop-web = git@example.com:team/shop.git
+#   - path: apps/web
+#   - owns: apps/web/**
+#   - desc: 画面・UI コンポーネント。
+#   - base: main
+#
+# ■ ブランチ別：同じ repo（同じフォルダ）を別ブランチで扱う場合は、path でなく base を変えて区別する。
+#   例：main への修正と release ブランチへのバックポートを別エントリにする。
+# - app-main = git@example.com:team/app.git
+#   - owns: apps/app/**
+#   - desc: 本流の修正。
+#   - base: main
+# - app-backport = git@example.com:team/app.git
+#   - desc: 同じ修正の release/1.x へのバックポート（明示 - workspace: app-backport で割り当てる）。
+#   - base: release/1.x                     # base が違うので path 無しでも別エントリとして成立
+#
+# ■ 参照リポジトリ（読むだけ・書き込まない）は owns を書かない。worker は clone せず、タスク本文に
+#   「参照用リポジトリ（読み取り専用）」として url/path/branch が伝わる。コードでなく規約/wiki/設計の参照は
+#   ## repos でなく ## links に置く。
+# - core-lib = git@example.com:team/core-lib.git
+#   - desc: 型定義・既存実装を読んで合わせるための参照元（owns 無し＝参照のみ）。
+#   - base: main                          # 読む対象ブランチ
+
+## links
+# 参考リンク（任意・複数可）。横展開先プロジェクト名/相対パス、または wiki/ドキュメント URL 等を置ける。
+# パス（兄弟ディレクトリ名・相対・絶対）はリンク先の charter 定義(目標/制約)と
+# decisions の learn(人の判断) を act ワーカーの文脈に取り込む。URL 等はそのまま文脈/イシューへ伝搬する。
+# 各リンクにも `- desc:` を付けられる（内容の説明）。
+# - shared-conventions
+# - ../infra-rules
+# - https://wiki.example.com/team/onboarding
+#   - desc: オンボーディング手順とコーディング規約

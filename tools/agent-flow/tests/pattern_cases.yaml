@@ -1,0 +1,124 @@
+# =============================================================================
+# agent-flow 実動作（live）ワークフローパターン・テストケース
+# =============================================================================
+# これは「実際の kiro-cli で各パターンが期待どおり動くか」を手動/半自動で確認する
+# ためのケース集。オフラインの自動テスト（tests/test_agent_flow.py, planner=stub）
+# とは別物で、こちらは planner=kiro / executor=kiro の実行を対象とする。
+#
+# 実行例:
+#   BUS=$(mktemp -d)
+#   agent-flow --bus "$BUS" run "<request>" --planner kiro --executor kiro --workers 2 --poll 0.5
+#
+# 設計方針:
+#   - 各 request は狙いのパターンのキーワードを支配的にし、他パターンのキーワード
+#     （検出順: classify→map-reduce→tournament→generate-and-filter→
+#      adversarial-verification→loop-until-done→既定 fan-out-and-synthesize）を
+#     混入させない。stub フォールバック時の誤検出も避ける。
+#   - 答えが決定的に正誤判定できる粒度にし、kiro-cli が知識で即答できる小タスク・
+#     小並列に限定して実行コストを抑える。
+#   - review は既定 auto。集約パターン（map-reduce / fan-out-and-synthesize）では
+#     検証 gate（kind=verify）が自動挿入されることの確認も兼ねる。
+#
+# 検証の点検（パターン・review・gate 有無・ノード構成を1行表示）:
+#   for d in "$BUS"/runs/*/; do
+#     python3 - "$d" <<'PY'
+#   import json,sys,os
+#   d=sys.argv[1]; g=json.load(open(d+"graph.json")); s=g["strategy"]
+#   kinds=sorted({n["kind"] for n in g["nodes"].values()})
+#   gate=any(n["kind"]=="verify" for n in g["nodes"].values())
+#   print(os.path.basename(d.rstrip("/")),"| patterns:",s["patterns"],
+#         "| review:",s.get("review"),"| kinds:",kinds,"| gate:",gate)
+#   PY
+#   done
+# 成果は final.json の results.<id>.output / .data を各 check に照らして確認する。
+# =============================================================================
+
+cases:
+  - id: classify-and-act
+    target_pattern: classify-and-act
+    request: >-
+      次の不具合を frontend / backend / infra に分類し、その領域の観点で
+      一次切り分け手順を3つ挙げて: 「本番DBへの接続がタイムアウトする」
+    expect:
+      review_gate: false        # 集約点を持たない → auto では gate を足さない
+      mechanism: classify ノードが label を出し、継続で <id>-act へルーティング
+      node_kinds_initial: [classify]
+    check: >-
+      classify の output に label（backend か infra 寄り）が出て、
+      <id>-act が その領域に沿った切り分け手順を返す。
+
+  - id: fan-out-and-synthesize
+    target_pattern: fan-out-and-synthesize
+    request: >-
+      マイクロサービス化を 可用性・コスト・運用容易性 の3観点で評価し、
+      最後に総合判断を1段落で統合して
+    expect:
+      review_gate: true         # 集約パターン → auto で gate 自動挿入
+      mechanism: 3つの並列 work → verify gate → synthesize
+      node_kinds_initial: [work, verify, synthesize]
+    check: >-
+      synth が3観点ノード＋gate に依存し、出力が3観点すべてに言及して
+      総合判断を1段落で述べる。gate（kind=verify）が存在する。
+
+  - id: map-reduce
+    target_pattern: map-reduce
+    request: >-
+      banana, apple, cherry, date, fig をそれぞれ大文字化して、
+      アルファベット順の1つのリストにまとめて
+    expect:
+      review_gate: true         # 集約パターン → auto で gate 自動挿入
+      mechanism: split → map×5（実行時動的展開）→ verify gate → reduce
+      node_kinds_initial: [split]
+    check: >-
+      reduce の結果（data/output）が ["APPLE","BANANA","CHERRY","DATE","FIG"]。
+      各 map ゴールに元要求の intent（大文字化）が埋め込まれている。
+
+  - id: generate-and-filter
+    target_pattern: generate-and-filter
+    request: >-
+      「ユーザー削除API」のエラーコード名の候補を6つ生成し、命名規則
+      〈英大文字スネークケース・動詞を含まない・20文字以内〉を満たすものだけ残して
+    expect:
+      review_gate: false        # filter を内包 → auto では gate を足さない
+      mechanism: generate×N → filter
+      node_kinds_initial: [generate, filter]
+    check: >-
+      filter の出力が採用/不採用を示し、規則違反（小文字・動詞含む・21文字以上）が
+      除外されている（機械照合可能）。
+
+  - id: tournament
+    target_pattern: tournament
+    request: >-
+      「パスワード再設定メール」の件名を3案ベストオブ3で作り、
+      開封率が最も高そうな1案を理由付きで選んで
+    expect:
+      review_gate: false        # judge を内包 → auto では gate を足さない
+      mechanism: generate×3 → judge
+      node_kinds_initial: [generate, judge]
+    check: judge が winner を1件選び、選定理由を述べる。
+
+  - id: adversarial-verification
+    target_pattern: adversarial-verification
+    request: >-
+      整数配列を昇順ソートするPython関数を書き、その後オフバイワン・空配列・重複の
+      観点で批判的にレビューして問題があれば直して
+    expect:
+      review_gate: false        # verify を内包 → auto では gate を足さない
+      mechanism: generate → verify（fail なら作り直して再検証）
+      node_kinds_initial: [generate, verify]
+    check: >-
+      verify が3観点（オフバイワン・空配列・重複）に言及。問題があれば
+      作り直し（<id>-r1）と再検証が回る。
+
+  - id: loop-until-done
+    target_pattern: loop-until-done
+    request: >-
+      FizzBuzzを1〜15で出力する関数を作り、3/5/15の倍数テストが
+      全て通るまで修正を繰り返して
+    expect:
+      review_gate: false
+      mechanism: work → verify（fail なら retry を回し、pass で停止）
+      node_kinds_initial: [work, verify]
+    check: >-
+      出力が正準FizzBuzz（3→Fizz, 5→Buzz, 15→FizzBuzz）。verify=pass で
+      ループが停止し、max_iterations 以内に done。

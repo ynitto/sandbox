@@ -1,0 +1,119 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "schemas/task.schema.json",
+  "title": "task spec",
+  "description": "制御層タスク（バックログ 1 件）の共通スキーマ。書式の正典は tools/agent-project/backlog.md.example（Markdown 形）で、本スキーマはその JSON 表現（enqueue --json / inbox の *.json / intake_cmd の stdout / codd-gate tasks の出力）。契約の所有者は agent-project。**未知キーは保持される**（前方互換）ため additionalProperties: true。agent-flow のタスクグラフノード {id, goal, deps, kind} は実行層内部の分解ステップであり本スキーマの対象外（層が違う）。",
+  "type": "object",
+  "required": ["title"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "タスク id（省略時は title から生成）。定期投入（intake_cmd）では冪等キーになる。規約: [A-Za-z0-9_-]・48 字以内（超過は slug 化で切り詰め）"
+    },
+    "title": { "type": "string", "description": "タスクの題（必須）" },
+    "verify": {
+      "type": "string",
+      "description": "done 確定の唯一の根拠となるシェルコマンド（exit 0=PASS）。履歴でなく最終状態/差分を見ること（$KIRO_BASE_REV=act 前 HEAD が使える）"
+    },
+    "acceptance": {
+      "type": ["array", "string"],
+      "items": { "type": "string" },
+      "description": "受入基準チェックリスト（自然文 3〜7 項目）。settle 時に検証エージェントが基準ごとに証跡付きで判定し、全 pass のみ機械 done 候補。**配列で渡すこと**（md 側は `- acceptance: <基準>` を要素数だけ並べる。文字列 1 本は 1 項目として扱う）"
+    },
+    "accept": {
+      "type": "string",
+      "description": "自然言語の完了条件（後方互換。acceptance が無いときに限り 1 項目の受入基準として扱う）"
+    },
+    "size": {
+      "type": "string",
+      "enum": ["S", "M", "L"],
+      "description": "規模感（分解の妥当性判断用。計画レビュー票に出るだけで実行には効かない）"
+    },
+    "planned_title": {
+      "type": "string",
+      "description": "プランナーが付けた原題（人が title を直しても重複照合の指紋として残る。人は書かない）"
+    },
+    "verify_template": {
+      "type": "string",
+      "description": "決定的テンプレートで verify を生成（file-contains :: path :: 文字列 等。エージェント不要）"
+    },
+    "priority": { "type": ["integer", "string"], "description": "優先度（整数・大ほど高。既定 0）" },
+    "status": {
+      "type": "string",
+      "enum": ["inbox", "draft", "proposed", "ready", "doing", "done", "blocked", "review", "offloaded", "rejected"],
+      "description": "省略時: verify（または accept/verify_template）有→ready / 無→inbox（人の triage 行き）。proposed=実行前レビュー待ち（plan_review。approve で ready）/ offloaded=実行層 daemon へ submit 済み・結果待ち（act_async）/ rejected=人が却下（agent_project の VALID_STATUS と同期）"
+    },
+    "source": { "type": "string", "description": "出自（human / enqueue / inbox / triage / followup / charter 等）" },
+    "after": {
+      "type": ["array", "string"],
+      "items": { "type": "string" },
+      "description": "依存タスク id（done になるまで消化対象に入らない。DAG）"
+    },
+    "review": { "type": "string", "description": "human = verify PASS でも done 前に人の承認（検収ゲート）" },
+    "note": { "type": "string", "description": "自由記述（保持される）" },
+    "why": {
+      "type": "string",
+      "description": "背景・目的（なぜやるか・価値）。act 要求文とレビュー票（needs）に注入され、実装判断とレビューの基準になる"
+    },
+    "desc": {
+      "type": ["string", "array"],
+      "items": { "type": "string" },
+      "description": "作業内容の詳細（タイトルで足りない具体の指示）。配列は ⏎ 連結で 1 行化される"
+    },
+    "scope": {
+      "type": ["string", "array"],
+      "items": { "type": "string" },
+      "description": "変更してよいファイル/領域。この範囲の外はワーカーに変更させない"
+    },
+    "out_of_scope": {
+      "type": ["string", "array"],
+      "items": { "type": "string" },
+      "description": "やらないこと（非目標）。スコープ膨張・過剰実装を防ぐ（範囲外は @followup 提案へ誘導）"
+    },
+    "constraints": {
+      "type": ["string", "array"],
+      "items": { "type": "string" },
+      "description": "このタスク固有の制約（守るべき規約・禁止事項。rules.md/charter への上乗せ層）"
+    },
+    "hints": {
+      "type": ["string", "array"],
+      "items": { "type": "string" },
+      "description": "実装の手がかり（関連ファイル・参考実装・調査済み情報。ワーカーは現物で確認する）"
+    },
+    "demo": {
+      "type": "string",
+      "description": "人の確認観点（検収で人が何をどう確かめるか。ワーカーにも伝わる）"
+    },
+    "expect": {
+      "type": "string",
+      "enum": ["changes", "none"],
+      "description": "changes = verify PASS でも act が変更を生まねば done しない（偽 done 対策）/ none = 無変更許可"
+    },
+    "level": {
+      "type": "string",
+      "enum": ["report", "assisted", "unattended"],
+      "description": "このタスクの自律度（グローバル --level を上書き）"
+    },
+    "track": { "type": "string", "description": "同種タスク群の名（--auto-level の実績連動昇格の単位）" },
+    "followup": { "type": ["array", "string"], "items": { "type": "string" }, "description": "done 時の派生タスク（次の作業 :: verify）" },
+    "workspace": {
+      "type": "string",
+      "description": "書込先ワークスペース（repos レジストリの repo 名）。ルーティングの明示指定"
+    },
+    "refs": { "type": ["array", "string"], "items": { "type": "string" }, "description": "参照リポジトリ（repo 名/URL。読むだけ）" },
+    "paths": {
+      "type": ["array", "string"],
+      "items": { "type": "string" },
+      "description": "触る予定パスのヒント（repos の owns: との突き合わせ＝ルーティング推定の根拠）"
+    },
+    "routed_by": { "type": "string", "description": "ルーティングの解決経路（system が書き戻す監査情報）" },
+    "cohort_items": {
+      "type": ["array", "string"],
+      "items": { "type": "string" },
+      "description": "pilot-then-batch の対象リスト。title/verify 中の {item} に差し込まれる。先頭が pilot（review: human）"
+    },
+    "cohort": { "type": "string", "description": "所属 cohort id（system が管理）" },
+    "cohort_role": { "type": "string", "description": "pilot / member（system が管理）" }
+  },
+  "additionalProperties": true
+}

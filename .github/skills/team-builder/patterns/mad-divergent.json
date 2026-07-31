@@ -1,0 +1,43 @@
+{
+  "id": "mad-divergent",
+  "name": "MAD（発散的討論）",
+  "category": "debate-consensus",
+  "tier": "medium",
+  "source": "Multi-Agent Debate / MAD (Liang et al., 2024)",
+  "when_to_use": "思考の硬直を崩すため、反論役に必ず反証させて裁定するとき。",
+  "signals": [
+    "視野狭窄を避けたい",
+    "強い反証が要る"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "affirmative",
+        "role": "主張を展開する",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "negative",
+        "role": "必ず反証・欠点指摘する",
+        "required": true,
+        "approver": false,
+        "collaborates_with": [
+          "affirmative"
+        ]
+      },
+      {
+        "id": "judge",
+        "role": "各交換後に裁定し結論を承認する",
+        "required": true,
+        "approver": true
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved",
+      "quiescence_turns": 2
+    }
+  },
+  "feasibility": "partial",
+  "feasibility_note": "multiagent-debate と同型。反論義務を強調した版。"
+}

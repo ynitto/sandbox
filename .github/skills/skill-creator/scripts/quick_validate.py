@@ -6,6 +6,7 @@
 使い方:
     python quick_validate.py <path/to/skill-folder>
 """
+from __future__ import annotations
 
 import re
 import sys
@@ -49,14 +50,20 @@ def parse_frontmatter(content: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def validate_skill(skill_path: str) -> list[str]:
-    """スキルを検証してエラーリストを返す。"""
-    errors = []
+SKILL_MD_MAX_LINES = 500
+DESCRIPTION_MIN_CHARS = 20
+DESCRIPTION_MAX_CHARS = 200
+
+
+def validate_skill(skill_path: str) -> tuple[list[str], list[str]]:
+    """スキルを検証してエラーリストと警告リストを返す。"""
+    errors: list[str] = []
+    warnings: list[str] = []
 
     skill_md = os.path.join(skill_path, "SKILL.md")
     if not os.path.isfile(skill_md):
         errors.append("SKILL.md が見つかりません")
-        return errors
+        return errors, warnings
 
     with open(skill_md, encoding="utf-8") as f:
         content = f.read()
@@ -65,7 +72,7 @@ def validate_skill(skill_path: str) -> list[str]:
     fm = parse_frontmatter(content)
     if fm is None:
         errors.append("YAMLフロントマターが正しくフォーマットされていません（--- で囲む）")
-        return errors
+        return errors, warnings
 
     # 許可されたキーの検査
     unknown_keys = set(fm.keys()) - ALLOWED_FRONTMATTER_KEYS
@@ -95,6 +102,14 @@ def validate_skill(skill_path: str) -> list[str]:
     else:
         if "<" in desc or ">" in desc:
             errors.append("'description' に山括弧（< >）は使用できません")
+        if len(desc) < DESCRIPTION_MIN_CHARS:
+            errors.append(
+                f"'description' は{DESCRIPTION_MIN_CHARS}文字以上にしてください（現在: {len(desc)}文字）"
+            )
+        if len(desc) > DESCRIPTION_MAX_CHARS:
+            warnings.append(
+                f"'description' が長すぎます（{len(desc)}文字 > 推奨{DESCRIPTION_MAX_CHARS}文字）。discover_skills のトークンを節約するため短くしてください"
+            )
         if len(desc) > 1024:
             errors.append("'description' は1024文字以内にしてください")
 
@@ -106,7 +121,94 @@ def validate_skill(skill_path: str) -> list[str]:
         elif len(compat) > 500:
             errors.append("'compatibility' は500文字以内にしてください")
 
-    return errors
+    # SKILL.md 行数チェック
+    line_count = len(content.splitlines())
+    if line_count > SKILL_MD_MAX_LINES:
+        warnings.append(
+            f"SKILL.md が長すぎます（{line_count}行 > 推奨{SKILL_MD_MAX_LINES}行）。references/ への分割を検討してください"
+        )
+    elif line_count > int(SKILL_MD_MAX_LINES * 0.9):
+        warnings.append(
+            f"SKILL.md が制限の90%に達しています（{line_count}行 / {SKILL_MD_MAX_LINES}行）。references/ への分割を準備してください"
+        )
+
+    # references/ リンク整合性チェック
+    refs_dir = os.path.join(skill_path, "references")
+    if os.path.isdir(refs_dir):
+        ref_files = {
+            f for f in os.listdir(refs_dir)
+            if os.path.isfile(os.path.join(refs_dir, f))
+        }
+        for ref_file in sorted(ref_files):
+            if ref_file not in content:
+                warnings.append(
+                    f"references/{ref_file} が SKILL.md から参照されていません"
+                )
+
+    # meta.yaml バリデーション（存在する場合）
+    meta_path = os.path.join(skill_path, "meta.yaml")
+    if os.path.isfile(meta_path):
+        meta_errors, meta_warnings = validate_meta_yaml(meta_path)
+        errors.extend(meta_errors)
+        warnings.extend(meta_warnings)
+
+    return errors, warnings
+
+
+ALLOWED_META_KEYS = {"depends_on", "recommends"}
+ALLOWED_DEP_ITEM_KEYS = {"name", "reason"}
+
+
+def validate_meta_yaml(meta_path: str) -> tuple[list[str], list[str]]:
+    """meta.yaml の構造を検証する。"""
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    with open(meta_path, encoding="utf-8") as f:
+        raw = f.read()
+
+    if yaml:
+        try:
+            data = yaml.safe_load(raw)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"meta.yaml のパースに失敗しました: {exc}")
+            return errors, warnings
+    else:
+        # yaml 未インストール時はスキップ
+        warnings.append("meta.yaml の詳細バリデーションには PyYAML が必要です（pip install pyyaml）")
+        return errors, warnings
+
+    if data is None:
+        return errors, warnings  # 空ファイルは許容
+
+    if not isinstance(data, dict):
+        errors.append("meta.yaml はマッピング（キーと値）形式である必要があります")
+        return errors, warnings
+
+    unknown_keys = set(data.keys()) - ALLOWED_META_KEYS
+    if unknown_keys:
+        errors.append(f"meta.yaml に不明なキー: {', '.join(sorted(unknown_keys))}")
+
+    for section in ("depends_on", "recommends"):
+        entries = data.get(section)
+        if entries is None:
+            continue
+        if not isinstance(entries, list):
+            errors.append(f"meta.yaml の '{section}' はリスト形式である必要があります")
+            continue
+        for i, item in enumerate(entries):
+            if not isinstance(item, dict):
+                errors.append(f"meta.yaml の '{section}[{i}]' はマッピングである必要があります")
+                continue
+            unknown_item_keys = set(item.keys()) - ALLOWED_DEP_ITEM_KEYS
+            if unknown_item_keys:
+                errors.append(
+                    f"meta.yaml の '{section}[{i}]' に不明なキー: {', '.join(sorted(unknown_item_keys))}"
+                )
+            if "name" not in item or not str(item.get("name", "")).strip():
+                errors.append(f"meta.yaml の '{section}[{i}]' に 'name' が必要です")
+
+    return errors, warnings
 
 
 def main() -> None:
@@ -120,15 +222,20 @@ def main() -> None:
         print(f"エラー: '{skill_path}' はディレクトリではありません")
         sys.exit(1)
 
-    errors = validate_skill(skill_path)
+    errors, warnings = validate_skill(skill_path)
+
+    if warnings:
+        print("警告:")
+        for w in warnings:
+            print(f"  ⚠ {w}")
 
     if errors:
         print("バリデーション失敗:")
         for e in errors:
-            print(f"  - {e}")
+            print(f"  ✗ {e}")
         sys.exit(1)
     else:
-        print("バリデーション成功")
+        print("バリデーション成功" + (" (警告あり)" if warnings else ""))
         sys.exit(0)
 
 

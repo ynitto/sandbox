@@ -1,0 +1,34 @@
+{
+  "id": "exchange-of-thought",
+  "name": "Exchange-of-Thought（トポロジ討論）",
+  "category": "debate-consensus",
+  "tier": "medium",
+  "source": "Exchange-of-Thought / EoT (Yin et al., 2023)",
+  "when_to_use": "複数エージェントが通信トポロジ（隣接のみ・ハブ経由等）に沿って毎ラウンド見解を交換し、合意へ収束させたいとき。",
+  "signals": [
+    "多エージェントの情報交換",
+    "全結合だと発散する",
+    "トポロジで伝播を制御したい"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "agent",
+        "role": "毎ラウンド、トポロジ上の隣席の前主張だけを踏まえて自分の見解を更新し ANSWER.md に書く",
+        "required": true,
+        "approver": false,
+        "seats": 4,
+        "rounds": 3,
+        "topology": "ring",
+        "aggregate": "majority",
+        "count_hint": "3-6"
+      }
+    ],
+    "convergence": {
+      "done_when": "consensus",
+      "consensus_ratio": 0.6
+    }
+  },
+  "feasibility": "native",
+  "feasibility_note": "seats>1（G1）＋ rounds（G3・同期ラウンド）＋ topology（complete/ring/star/tree で各席が読む相手を制限）で表現。最終判定は aggregate: majority（G2）、done_when: consensus で合意時に早期終了。"
+}

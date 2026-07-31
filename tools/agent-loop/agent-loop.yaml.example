@@ -1,0 +1,153 @@
+# agent-loop の設定ファイルサンプル
+# ファイル名: agent-loop.yaml
+#
+# このファイルをどこかに置いて --config で指定するか、
+# agent-loop.py と同じ場所か HOME に置くと自動検出されます。
+#
+# 検索順序:
+#   1. --config オプションで明示指定したパス
+#   2. カレントディレクトリの agent-loop.yaml / .yml / .json
+#   3. HOME の agent-loop.yaml / .yml / .json
+
+
+# ---------------------------------------------------------------------------
+# エージェント間メッセージング設定
+# ---------------------------------------------------------------------------
+# agent_name: orchestrator  # このデーモンのエージェント識別名。
+#                           # 設定すると ~/.kiro/agents/<name>/inbox/ を監視し
+#                           # 受信メッセージを kiro-cli へプロンプトとして送信する。
+#                           # 省略時は受信機能なし（送信のみ可）。
+# inbox_poll_seconds: 5     # 受信ボックスのポーリング間隔（秒）。デフォルト 5。
+
+
+# ---------------------------------------------------------------------------
+# inbound webhook（provider 非依存）
+# ---------------------------------------------------------------------------
+# agent-loop 稼働中だけ HTTP サーバを常駐させ、外部システム（GitLab 等）の webhook を
+# `POST <path_prefix>/<name>` で受ける。<name> は下の prompts エントリ名に対応し、
+# 受信 payload は hook でパースしてエントリの prompt テンプレートへ注入される。
+# コアは送信元を知らない（イベント判定・署名検証・payload 構造は hook 側の責務）。
+# webhook:
+#   enabled: true
+#   host: 127.0.0.1              # 既定 localhost。公開時はリバースプロキシ/トンネル経由を推奨
+#   port: 8899                   # 必須。複数 agent-loop を動かす場合はインスタンスごとに変える
+#   path_prefix: /hooks          # 既定 /hooks
+#   secret: ""                   # 汎用共有シークレット。空なら検証せず起動時 WARNING
+#   secret_header: X-Gitlab-Token  # secret を照合するヘッダ名（provider で可変）
+#   max_body_bytes: 1048576      # ボディ上限（既定 1MB）。超過は 413
+
+
+# ---------------------------------------------------------------------------
+# kiro-cli の起動オプション（全ワークスペース共通）
+# ---------------------------------------------------------------------------
+kiro_options:
+  trust_all_tools: true    # ツール使用の確認をスキップ（推奨: true）
+  resume: false            # 直前のセッションを引き継ぐ
+  # agent: my-agent        # エージェントを指定（省略可）
+  # model: claude-sonnet   # モデルを指定（省略可）
+  # extra_args:
+  #   - "--some-option"
+
+# ---------------------------------------------------------------------------
+# タイムアウト設定（秒）
+# ---------------------------------------------------------------------------
+startup_timeout: 60        # kiro-cli 起動待ち上限
+response_timeout: 300      # 1 プロンプトの応答待ち上限
+
+# ---------------------------------------------------------------------------
+# 同時実行数制御（複数 agent-loop プロセス間で共有）
+# ---------------------------------------------------------------------------
+max_concurrent: 3             # kiro-cli の最大同時実行タスク数（0 = 無制限、デフォルト）
+slot_timeout_seconds: 7200    # スロット強制解放までの猶予時間（秒）。デフォルト 7200 = 2時間。
+                              # hook・ペイン監視が両方失敗した場合のフォールバックタイムアウト。
+cooldown_seconds: 30          # セマフォ解放後の再取得待機時間（秒）。デフォルト 0 = 無効。
+                              # 設定すると、一度実行したペインは指定秒数の間セマフォを取得できず、
+                              # 他のペインに実行機会が回るようになる（公平性の確保）。
+
+# ---------------------------------------------------------------------------
+# 定期プロンプトの定義
+# ---------------------------------------------------------------------------
+prompts:
+  # ---- MR コメント返答: 自分担当 MR の未解決スレッドを拾って返答・修正 ----
+  # レビュアーが MR にコメントを投稿した後、このプロンプトが返答または修正を行う
+  - name: "MR コメント返答"
+    prompt: |
+      自分にアサインされたオープン MR の未解決ディスカッションを確認してください。
+      手順:
+      1. python scripts/gl.py list-mrs --state opened でオープン MR を取得
+      2. 自分が assignee の MR に対して python scripts/gl.py get-mr-discussions MR_IID --unresolved で未解決スレッドを取得
+      3. 各スレッドの指摘内容を確認し:
+         - 質問・説明要求 → python scripts/gl.py add-mr-comment MR_IID --body "返答内容" で返答し、python scripts/gl.py resolve-mr-discussion MR_IID DISCUSSION_ID でスレッドをクローズ
+         - コード修正要求 → 修正を実装して push し、python scripts/gl.py add-mr-comment MR_IID --body "修正しました: ..." で報告してスレッドをクローズ
+      4. 全スレッドがクローズしたら python scripts/gl.py add-mr-comment MR_IID --body "全指摘に対応しました。再レビューをお願いします。" を投稿
+      未解決スレッドがなければ「対応待ちのコメントはありません」と報告して終了。
+    interval_minutes: 60   # 1 時間ごとに確認
+    enabled: true
+
+  # ---- GitLab Issue ワーカー: 自分にアサインされた Issue を拾って実行 ----
+  - name: "GitLab Issue ワーカー"
+    prompt: |
+      gitlab-idd スキルのワーカーロールを実行してください。
+      自分にアサインされた status:open の Issue を 1 件取得して実装・報告してください。
+    interval_minutes: 60
+    cron: "0 9 * * 1-5"      # 平日9:00
+    cwd: /path/to/workspace  # ワークスペースを指定
+    enabled: true
+
+  # ---- event_hook: 送信タイミングと内容を Python スクリプトで制御する ----
+  # event_hook を指定すると、スケジュール発火のたびにフックの check() が呼ばれる:
+  #   - str を返す  → そのテキストを prompt として送信（YAML の prompt を上書き）
+  #   - None を返す → 今回は送信せずスキップ
+  # event_hook を使う場合 prompt は省略可（フックが内容を決める）。
+  #
+  # event_hook_fallback: true にすると、フックに環境変数
+  #   AGENT_LOOP_EVENT_HOOK_FALLBACK=1 が渡される。フック側はこれを見て
+  #   「更新が無いときでもフィルター条件に合致する対象をランダムに 1 件選んで
+  #   送信する（フォールバック）」挙動を実装できる。デフォルト false（更新が
+  #   無ければ何も送らない）。フォールバックは check() の呼び出しごとに評価される。
+  # 同梱フック例:
+  #   hooks/gitlab-issue-hook.py … 新規/更新 Issue を検知。更新が無ければ
+  #                                 フォールバックでランダムな Issue を送る。
+  #   hooks/gitlab-mr-hook.py    … 新規/更新 MR を検知。更新が無ければ
+  #                                 フォールバックでランダムな MR を送る。
+  - name: "GitLab Issue ワーカー (event_hook)"
+    event_hook: ~/sandbox/tools/agent-loop/hooks/gitlab-issue-hook.py
+    event_hook_fallback: true   # 更新が無くてもランダムに 1 件送る
+    interval_minutes: 5
+    cwd: /path/to/workspace
+    enabled: false
+
+  # ---- webhook: GitLab の MR webhook を受けてこのセッションに送る ----
+  # 上部の webhook: セクションを有効化した上で、GitLab のプロジェクト設定で
+  #   URL      = http://<host>:<port>/hooks/mr-reviewer
+  #   Secret   = webhook.secret と同じ値（X-Gitlab-Token として送られる）
+  # を登録する。interval/cron を書かなければ push 駆動のみ（自動発火しない）。
+  # 送信元固有の判定・パースは hook 側（hooks/gitlab-mr-webhook.py）が行う。
+  - name: mr-reviewer
+    prompt: |
+      [MR webhook] {project} !{mr_iid}（{action}）
+      タイトル: {title}
+      {source_branch} → {target_branch}
+      URL: {url}
+      この MR をレビューして、指摘があれば MR にコメントしてください。
+    webhook:
+      hook: ~/sandbox/tools/agent-loop/hooks/gitlab-mr-webhook.py
+    enabled: false
+
+  # ---- Kanban 更新: GitLab → Obsidian kanban.md を再生成 ----
+  # terminal-launcher や cron で直接 sync.py --kanban を呼ぶ場合は不要
+  - name: "Kanban 同期"
+    prompt: |
+      以下のコマンドを実行して Obsidian の kanban.md を最新状態に更新してください。
+      python ~/sandbox/tools/gitlab-obsidian-sync/sync.py --kanban --config ~/gitlab-obsidian-sync.yaml
+    interval_minutes: 30
+    enabled: true
+
+  # ---- サンプル: 固定プロンプトによる定期コードレビュー ----
+  - name: "定期コードレビュー"
+    prompt: |
+      直近の変更内容を確認して、問題があれば報告してください。
+    interval_minutes: 30
+    exclude_from_concurrency: true   # このプロンプトは max_concurrent の制限対象外にする
+                                     # 軽量な確認タスクや緊急タスクに有用
+    enabled: false                   # 一時的に無効化する

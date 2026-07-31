@@ -7,11 +7,13 @@
     python init_skill.py <skill-name> --path <output-directory>
 
 例:
-    python init_skill.py my-skill --path .github/skills
+    python init_skill.py my-skill --path <AGENT_HOME>/skills
+    python init_skill.py my-skill --path <workspace-skill-dir>
 """
 
 import argparse
 import os
+import re
 import sys
 
 
@@ -30,6 +32,8 @@ def init_skill(name: str, base_path: str) -> None:
     skill_md = f"""---
 name: {name}
 description: TODO - このスキルの説明を記述する。何をするか＋いつ使うかを含める。
+metadata:
+  version: "1.0"
 ---
 
 # {name}
@@ -97,8 +101,6 @@ def main() -> None:
     args = parser.parse_args()
 
     # 名前のバリデーション
-    import re
-
     if not re.match(r"^[a-z0-9]+(-[a-z0-9]+)*$", args.name):
         print(
             "エラー: スキル名はkebab-case（小文字・数字・ハイフン）で指定してください"

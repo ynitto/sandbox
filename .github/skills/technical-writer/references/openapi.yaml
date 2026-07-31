@@ -1,0 +1,250 @@
+openapi: 3.1.0
+info:
+  title: "[API_NAME] API"
+  version: "1.0.0"
+  description: |
+    [この API が何を解決するか・どんな開発者向けかを2〜3文で説明する]
+
+    デベロッパーガイド: [docs/developer-guide.md へのリンク]
+  contact:
+    name: "[チーム名] サポート"
+    url: "[サポートフォーム URL]"
+  license:
+    name: "[LICENSE_TYPE]"
+
+servers:
+  - url: https://api.example.com/v1
+    description: 本番環境
+  - url: https://api-staging.example.com/v1
+    description: ステージング環境
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: resources
+    description: リソースの CRUD 操作
+
+paths:
+  /resources:
+    get:
+      tags: [resources]
+      summary: リソース一覧を取得する
+      operationId: listResources
+      parameters:
+        - name: limit
+          in: query
+          description: 返却件数の上限（1〜100）
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+        - name: cursor
+          in: query
+          description: ページネーション用カーソル
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResourceList"
+              example:
+                items:
+                  - id: res_abc123
+                    name: my-resource
+                    created_at: "2024-01-15T09:30:00Z"
+                total: 42
+                next_cursor: cur_xyz789
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    post:
+      tags: [resources]
+      summary: リソースを作成する
+      operationId: createResource
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResourceCreate"
+            example:
+              name: my-resource
+              tags: [production, api]
+      responses:
+        "201":
+          description: 作成成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Resource"
+              example:
+                id: res_abc123
+                name: my-resource
+                tags: [production, api]
+                created_at: "2024-01-15T09:30:00Z"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /resources/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: リソース ID
+        schema:
+          type: string
+          example: res_abc123
+
+    get:
+      tags: [resources]
+      summary: リソースを取得する
+      operationId: getResource
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Resource"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    delete:
+      tags: [resources]
+      summary: リソースを削除する
+      operationId: deleteResource
+      responses:
+        "204":
+          description: 削除成功
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: "`Authorization: Bearer YOUR_API_KEY` の形式で渡す"
+
+  schemas:
+    Resource:
+      type: object
+      required: [id, name, created_at]
+      properties:
+        id:
+          type: string
+          description: リソース ID
+          example: res_abc123
+        name:
+          type: string
+          description: リソース名（1〜64文字）
+          minLength: 1
+          maxLength: 64
+          example: my-resource
+        tags:
+          type: array
+          items:
+            type: string
+          description: 分類タグ（最大10件）
+          maxItems: 10
+          example: [production, api]
+        created_at:
+          type: string
+          format: date-time
+          description: 作成日時（ISO 8601）
+          example: "2024-01-15T09:30:00Z"
+
+    ResourceCreate:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          example: my-resource
+        tags:
+          type: array
+          items:
+            type: string
+          maxItems: 10
+          example: [production, api]
+
+    ResourceList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Resource"
+        total:
+          type: integer
+          description: 全件数
+          example: 42
+        next_cursor:
+          type: string
+          description: 次ページのカーソル（最終ページの場合は省略）
+          example: cur_xyz789
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          example: validation_error
+        message:
+          type: string
+          example: "name は必須です"
+
+  responses:
+    BadRequest:
+      description: リクエスト不正
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            code: validation_error
+            message: "name は必須です"
+    Unauthorized:
+      description: 認証失敗
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            code: unauthorized
+            message: "API キーが無効です"
+    NotFound:
+      description: リソースが存在しない
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            code: not_found
+            message: "指定されたリソースが見つかりません"
+    Conflict:
+      description: 競合（同名リソースが既に存在する）
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            code: conflict
+            message: "同名のリソースが既に存在します"

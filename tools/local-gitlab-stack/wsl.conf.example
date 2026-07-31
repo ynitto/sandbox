@@ -1,0 +1,8 @@
+# WSL ディストロ内の /etc/wsl.conf にコピー。編集後: wsl --shutdown で反映。
+# systemd を有効化して docker サービスを起動時に立ち上げられるようにする。
+[boot]
+systemd=true
+
+[automount]
+# /mnt/c は遅いので GitLab データは WSL の ext4 側（このリポジトリのクローン先）に置くこと。
+options = "metadata"

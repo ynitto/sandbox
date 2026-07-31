@@ -1,81 +1,73 @@
 ---
 name: git-skill-manager
-description: Gitリポジトリを使ってエージェントスキルを管理するスキル。複数リポジトリの登録、スキルのpull（取得）とpush（共有）を行う。「スキルをpullして」「リポジトリからスキルを取ってきて」「スキルをpushして」「リポジトリを登録して」「スキル一覧」など、スキルの取得・共有・リポジトリ管理に関するリクエストで使用する。GitHub/GitLab/Bitbucket/セルフホスト問わず動作する。Copilot + Windows環境で動作し、gitは設定済みの前提。
+description: スキルのインストール（pull）・チーム公開（push）・品質評価・非推奨化・アーカイブなど、Gitリポジトリを介したエージェントスキルのライフサイクル管理を担う。「スキルをpullして」「スキルをpushして」「スキルをインストールして」「スキルを有効化して」「スキルを無効化して」「スキルを非推奨にして」「スキルをアーカイブして」「スキルを昇格して」などのリクエストで発動する。
+metadata:
+  version: 1.2.2
+  tier: core
+  category: meta
+  tags:
+    - skill-management
+    - git
+    - versioning
 ---
 
 # Git Skill Manager
 
 Gitリポジトリ経由でエージェントスキルの取得（pull）と共有（push）を行う管理システム。
 
+## skill-creator との使い分け
+
+**外部URLからスキルを安全に取り込みたい場合は skill-creator（モードD）を使ってください。**
+skill-creator がライセンス・セキュリティ・ネットワーク通信を事前に検証し、
+確認後にこのスキル（git-skill-manager）を自動で呼び出してインストールします。
+
+このスキル（git-skill-manager）は以下の用途に特化しています:
+
+| 操作 | 説明 |
+|---|---|
+| `repo add` / `pull` | 登録済みリポジトリからスキルを取得・更新 |
+| `push` | ローカルスキルをチームリポジトリへ push（デフォルト: main 直接 / オプション: ブランチ作成 & PR/MR 促進） |
+| `pin` / `lock` | バージョン固定・スナップショット |
+| `enable` / `disable` / `profile` | スキルの有効化管理 |
+| `feedback` / `promote` / `refine` | 評価・昇格・改良フロー |
+
 ## 利用者
 
 | 呼び出し元 | 操作 | 例 |
 |---|---|---|
-| ユーザー直接 | repo add / pull / search / list | 「スキルをpullして」「リポジトリを登録して」 |
-| scrum-master サブエージェント | push | Phase 6 のスキル共有時にテンプレート経由で起動される |
+| ユーザー直接 | repo add / pull / push / search / list / enable / disable / profile / promote / evaluate / refine / discover | 「スキルをpullして」「リポジトリを登録して」「スキルを無効化して」「スキルを昇格して」「スキルを評価して」「スキル候補を発見して」 |
+| scrum-master サブエージェント | push / promote / evaluate / discover | Phase 6 のスキル共有・昇格・評価・発見時にテンプレート経由で起動される |
 
 - ユーザー直接呼び出しの場合、対話的に確認しながら進める
 - サブエージェント経由の場合、プロンプトに必要な情報（対象スキル・リポジトリ名・操作）が含まれるため、確認なしで実行する
 
 ## 動作環境
 
-- **Claude Code（Copilot）on Windows**
+- **GitHub Copilot Chat**（Windows / macOS / Linux）および **Claude Code** で動作する
 - git はインストール・認証設定済み（SSH鍵 or credential manager）
-- シェルは PowerShell または cmd を想定。bashコマンドは使わない
+- シェルは実行環境に依存する（PowerShell、bash、zsh など）
 
 -----
 
-## アーキテクチャ
+## アーキテクチャ・パス定義
 
-```
-ローカル（Windows）
-─────────────────────────────────────────
-  %USERPROFILE%\.gitlab\skills\          ← スキルインストール先
-    ├── skill-a\SKILL.md
-    ├── skill-b\SKILL.md
-    └── ...
-
-  %USERPROFILE%\.gitlab\skill-registry.json  ← レジストリ
-─────────────────────────────────────────
-         │ pull              │ push
-         ▼                   ▼
-  ┌────────────────┐  ┌────────────────┐
-  │ repo: team     │  │ repo: personal │
-  │ (GitHub)       │  │ (GitLab)       │
-  └────────────────┘  └────────────────┘
-```
+詳細 → [references/architecture.md](references/architecture.md)
 
 -----
 
 ## レジストリ
 
-パス: `%USERPROFILE%\.gitlab\skill-registry.json`
+パス: `{agent_home}/skill-registry.json`（`agent_home` は `install.py` 実行時のエージェント種別で決まる。実際のパスは `skill-registry.json` の `skill_home` フィールドで確認できる）
 
-```json
-{
-  "version": 1,
-  "repositories": [
-    {
-      "name": "team-skills",
-      "url": "https://github.com/myorg/agent-skills.git",
-      "branch": "main",
-      "skill_root": "skills",
-      "description": "チーム共有スキル集"
-    }
-  ],
-  "installed_skills": [
-    {
-      "name": "docx-converter",
-      "source_repo": "team-skills",
-      "source_path": "skills/docx-converter",
-      "commit_hash": "a1b2c3d",
-      "installed_at": "2026-02-14T12:00:00Z"
-    }
-  ]
-}
-```
+スキルの登録情報（リポジトリ・インストール済みスキル・プロファイル・フィードバック履歴）を管理するJSONファイル。初回操作時に自動作成する。
 
-レジストリが存在しなければ初回操作時に自動作成する。
+詳細なスキーマとフィールド説明 → [references/registry-schema.md](references/registry-schema.md)
+
+-----
+
+## スクリプトパス
+
+`{SCRIPTS_DIR}` = `<skill_home>/git-skill-manager/scripts`（`skill_home` は `skill-registry.json` の `skill_home` フィールド）
 
 -----
 
@@ -87,409 +79,382 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
 |**repo list**  |「登録リポジトリ一覧」         |
 |**repo remove**|「リポジトリを削除して」        |
 |**pull**       |「スキルをpullして」「スキルを取得」|
-|**push**       |「スキルをpushして」「スキルを共有」|
+|**push**       |「スキルをpushして」「スキルを共有」「ブランチを切ってpushして」「PRを作ってpushして」|
 |**list**       |「インストール済みスキル一覧」     |
 |**search**     |「リポジトリにあるスキルを探して」   |
-
------
-
-## パス定義
-
-すべての操作で以下のパスを使う。
-
-```powershell
-$SKILL_HOME   = "$env:USERPROFILE\.gitlab\skills"
-$REGISTRY     = "$env:USERPROFILE\.gitlab\skill-registry.json"
-$TEMP_WORK    = "$env:TEMP\claude-skill-work"
-```
-
-初回は `$SKILL_HOME` ディレクトリを作成する:
-
-```powershell
-if (-not (Test-Path $SKILL_HOME)) { New-Item -ItemType Directory -Path $SKILL_HOME -Force }
-```
+|**search --refresh**|「最新のスキルを検索して」  |
+|**enable**     |「スキルを有効化して」         |
+|**disable**    |「スキルを無効化して」         |
+|**pin**        |「スキルを固定して」「バージョンをpinして」|
+|**unpin**      |「スキルの固定を解除して」       |
+|**lock**       |「全スキルをロックして」        |
+|**unlock**     |「全スキルのロックを解除して」     |
+|**promote**    |「このスキルを他でも使えるようにして」「スキルを昇格して」|
+|**profile use**|「プロファイルを切り替えて」      |
+|**profile create**|「プロファイルを作成して」    |
+|**profile list**|「プロファイル一覧」         |
+|**profile delete**|「プロファイルを削除して」    |
+|**feedback**   |「フィードバックを記録して」「良かった/改善したい/うまくいかなかった」|
+|**refine**     |「スキルを改良して」「フィードバックを反映して」「改善待ちを処理して」|
+|**discover**   |「スキル候補を探して」「履歴からスキルを発見して」「新しいスキルを見つけて」|
+|**evaluate**   |「スキルを評価して」「試用中スキルを確認して」「ワークスペーススキルを整理して」|
+|**diff**       |「スキルの差分を見せて」「リポジトリ間の違いを確認して」|
+|**sync**       |「マージしたスキルを全リポジトリに配信して」「スキルを同期して」|
+|**merge**      |「スキルをマージして」「リポジトリ間のスキルを統合して配信して」|
+|**changelog**  |「スキルの変更履歴を生成して」「CHANGELOGを作って」|
+|**bump**       |「バージョンを上げて」「パッチバージョンアップして」「メジャーバージョンアップして」|
+|**auto-update**|「自動更新を有効化して」「更新チェックして」「自動更新の設定を見せて」|
+|**snapshot**   |「スナップショットを保存して」「一覧を見せて」|
+|**rollback**   |「元に戻して」「前の状態に戻して」「pullを取り消して」|
+|**metrics**    |「メトリクスを見せて」「スキルの実行統計を確認」|
+|**metrics-detail**|「○○のメトリクスを詳しく」「スキルの実行時間の推移を見たい」|
+|**metrics-co** |「どのスキルが一緒に使われてる？」「共起分析して」|
+|**metrics-collect**|「メトリクスを集計して」「ログを再集計して」|
+|**deps**       |「依存関係を確認して」「スキルの前提が揃ってるか確認して」|
+|**deps-graph** |「依存グラフを見せて」「スキルの依存関係を図示して」|
+|**deprecate**  |「スキルを非推奨にして」「○○を deprecated にして」「代替スキルを○○に変えて」|
+|**archive**    |「スキルをアーカイブして」「deprecated スキルを整理して」|
 
 -----
 
 ## repo add
 
-```powershell
+```bash
 # 接続確認
 git ls-remote $REPO_URL HEAD
 
 # 成功したらレジストリに追加
+cd {SKILL_HOME}/../..   # skill-registry.json があるディレクトリ
+python {SCRIPTS_DIR}/repo.py add <name> <url>
+python {SCRIPTS_DIR}/repo.py add <name> <url> --readonly
+python {SCRIPTS_DIR}/repo.py add <name> <url> --priority 1 --skill-root .github/skills
+python {SCRIPTS_DIR}/repo.py list
+python {SCRIPTS_DIR}/repo.py remove <name>
 ```
 
-```python
-import json, os
-from datetime import datetime, timezone
-
-registry_path = os.path.join(os.environ["USERPROFILE"], ".gitlab", "skill-registry.json")
-
-def load_registry():
-    if os.path.exists(registry_path):
-        with open(registry_path, encoding="utf-8") as f:
-            return json.load(f)
-    return {"version": 1, "repositories": [], "installed_skills": []}
-
-def save_registry(reg):
-    os.makedirs(os.path.dirname(registry_path), exist_ok=True)
-    with open(registry_path, "w", encoding="utf-8") as f:
-        json.dump(reg, f, indent=2, ensure_ascii=False)
-
-def add_repo(name, url, branch="main", skill_root="skills", description=""):
-    reg = load_registry()
-    if any(r["name"] == name for r in reg["repositories"]):
-        print(f"'{name}' は既に登録済みです")
-        return
-    reg["repositories"].append({
-        "name": name,
-        "url": url,
-        "branch": branch,
-        "skill_root": skill_root,
-        "description": description,
-    })
-    save_registry(reg)
-    print(f"✅ リポジトリ '{name}' を登録しました")
-```
+→ 実装: `scripts/repo.py` — `add_repo()`, `list_repos()`, `remove_repo()`
 
 -----
 
 ## pull
 
-### 処理フロー
-
-```python
-import subprocess, shutil, os, re, json, glob
-from datetime import datetime
-
-temp_work = os.path.join(os.environ["TEMP"], "claude-skill-work")
-skill_home = os.path.join(os.environ["USERPROFILE"], ".gitlab", "skills")
-
-def pull_skills(repo_name=None, skill_name=None):
-    """
-    repo_name=None → 全リポジトリから取得
-    skill_name=None → リポジトリ内の全スキルを取得
-    """
-    reg = load_registry()
-    repos = reg["repositories"]
-    if repo_name:
-        repos = [r for r in repos if r["name"] == repo_name]
-        if not repos:
-            print(f"❌ リポジトリ '{repo_name}' が見つかりません")
-            return
-
-    os.makedirs(skill_home, exist_ok=True)
-
-    # 全リポジトリからスキル候補を収集
-    candidates = {}  # skill_name -> [{ repo, path, date, ... }]
-
-    for repo in repos:
-        clone_dir = os.path.join(temp_work, repo["name"])
-        if os.path.exists(clone_dir):
-            shutil.rmtree(clone_dir)
-
-        subprocess.run([
-            "git", "clone", "--depth", "1",
-            "--branch", repo["branch"],
-            repo["url"], clone_dir
-        ], check=True)
-
-        root = os.path.join(clone_dir, repo["skill_root"])
-        if not os.path.isdir(root):
-            continue
-
-        for entry in os.listdir(root):
-            skill_md = os.path.join(root, entry, "SKILL.md")
-            if not os.path.isfile(skill_md):
-                continue
-            if skill_name and entry != skill_name:
-                continue
-
-            # コミット日時を取得
-            result = subprocess.run(
-                ["git", "log", "-1", "--format=%aI", "--",
-                 os.path.join(repo["skill_root"], entry).replace("\\", "/")],
-                cwd=clone_dir, capture_output=True, text=True
-            )
-            commit_date = result.stdout.strip() or "1970-01-01T00:00:00+00:00"
-
-            commit_hash = subprocess.run(
-                ["git", "rev-parse", "--short", "HEAD"],
-                cwd=clone_dir, capture_output=True, text=True
-            ).stdout.strip()
-
-            candidates.setdefault(entry, []).append({
-                "repo_name": repo["name"],
-                "source_path": os.path.join(repo["skill_root"], entry),
-                "full_path": os.path.join(root, entry),
-                "commit_date": commit_date,
-                "commit_hash": commit_hash,
-            })
-
-    # 同名スキルの競合解決: コミット日時が新しい方を採用
-    installed = []
-    conflicts = []
-
-    for sname, sources in candidates.items():
-        if len(sources) > 1:
-            sources.sort(key=lambda s: s["commit_date"], reverse=True)
-            conflicts.append({
-                "skill": sname,
-                "adopted": sources[0]["repo_name"],
-                "rejected": [s["repo_name"] for s in sources[1:]],
-            })
-        winner = sources[0]
-
-        dest = os.path.join(skill_home, sname)
-        if os.path.exists(dest):
-            shutil.rmtree(dest)
-        shutil.copytree(winner["full_path"], dest)
-
-        installed.append({
-            "name": sname,
-            "source_repo": winner["repo_name"],
-            "source_path": winner["source_path"],
-            "commit_hash": winner["commit_hash"],
-            "installed_at": datetime.now().isoformat(),
-        })
-
-    # レジストリ更新
-    existing = {s["name"]: s for s in reg.get("installed_skills", [])}
-    for s in installed:
-        existing[s["name"]] = s
-    reg["installed_skills"] = list(existing.values())
-    save_registry(reg)
-
-    # クリーンアップ
-    shutil.rmtree(temp_work, ignore_errors=True)
-
-    # 結果レポート
-    print(f"\n📦 pull 完了")
-    print(f"   新規/更新: {len(installed)} 件")
-    if conflicts:
-        print(f"   競合解決:  {len(conflicts)} 件")
-        for c in conflicts:
-            print(f"     {c['skill']}: {c['adopted']} を採用（{', '.join(c['rejected'])} より新しい）")
-    for s in installed:
-        print(f"   ✅ {s['name']} ← {s['source_repo']} ({s['commit_hash']})")
+```bash
+python {SCRIPTS_DIR}/pull.py                          # 全リポジトリから全スキルをpull
+python {SCRIPTS_DIR}/pull.py --skill <name>           # 特定スキルのみpull
+python {SCRIPTS_DIR}/pull.py --repo <repo-name>       # 特定リポジトリからpull
+python {SCRIPTS_DIR}/pull.py --no-interactive         # 非対話モード（サブエージェント経由）
 ```
+
+→ 実装: `scripts/pull.py` — `pull_skills()`
+
+競合解決・ロジック詳細 → [references/examples.md](references/examples.md)
 
 -----
 
 ## push
 
-### 処理フロー
-
-```python
-def push_skill(skill_path, repo_name, branch_strategy="new_branch", commit_msg=None):
-    """
-    skill_path: プッシュするスキルフォルダのパス
-    repo_name: プッシュ先リポジトリ名（レジストリの name）
-    branch_strategy: "new_branch" or "direct"
-    """
-    reg = load_registry()
-    repo = next((r for r in reg["repositories"] if r["name"] == repo_name), None)
-    if not repo:
-        print(f"❌ リポジトリ '{repo_name}' が見つかりません")
-        return
-
-    skill_md = os.path.join(skill_path, "SKILL.md")
-    if not os.path.isfile(skill_md):
-        print(f"❌ SKILL.md が見つかりません: {skill_path}")
-        return
-
-    skill_name = os.path.basename(skill_path.rstrip("\\/"))
-    clone_dir = os.path.join(temp_work, f"push-{repo_name}")
-    if os.path.exists(clone_dir):
-        shutil.rmtree(clone_dir)
-
-    # clone
-    subprocess.run([
-        "git", "clone", "--depth", "1",
-        "--branch", repo["branch"],
-        repo["url"], clone_dir
-    ], check=True)
-
-    # ブランチ作成
-    push_branch = repo["branch"]
-    if branch_strategy == "new_branch":
-        push_branch = f"add-skill/{skill_name}"
-        subprocess.run(["git", "checkout", "-b", push_branch], cwd=clone_dir, check=True)
-
-    # スキルをコピー
-    dest = os.path.join(clone_dir, repo["skill_root"], skill_name)
-    if os.path.exists(dest):
-        shutil.rmtree(dest)
-    shutil.copytree(skill_path, dest)
-
-    # 不要ファイル除外
-    for pattern in ["__pycache__", ".DS_Store", "*.pyc", "node_modules"]:
-        for match in glob.glob(os.path.join(dest, "**", pattern), recursive=True):
-            if os.path.isdir(match):
-                shutil.rmtree(match)
-            else:
-                os.remove(match)
-
-    # commit & push
-    if not commit_msg:
-        commit_msg = f"Add skill: {skill_name}"
-
-    subprocess.run(["git", "add", "."], cwd=clone_dir, check=True)
-
-    # 変更があるか確認
-    diff = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=clone_dir)
-    if diff.returncode == 0:
-        print("ℹ️ 変更がありません。プッシュをスキップします")
-        shutil.rmtree(temp_work, ignore_errors=True)
-        return
-
-    subprocess.run(["git", "commit", "-m", commit_msg], cwd=clone_dir, check=True)
-    subprocess.run(["git", "push", "origin", push_branch], cwd=clone_dir, check=True)
-
-    commit_hash = subprocess.run(
-        ["git", "rev-parse", "--short", "HEAD"],
-        cwd=clone_dir, capture_output=True, text=True
-    ).stdout.strip()
-
-    # クリーンアップ
-    shutil.rmtree(temp_work, ignore_errors=True)
-
-    print(f"\n🚀 push 完了")
-    print(f"   スキル:     {skill_name}")
-    print(f"   リポジトリ: {repo_name} ({repo['url']})")
-    print(f"   ブランチ:   {push_branch}")
-    print(f"   コミット:   {commit_hash}")
-    if branch_strategy == "new_branch":
-        print(f"   💡 PR/MR を作成してマージしてください")
+```bash
+python {SCRIPTS_DIR}/manage.py push                                     # 全スキルを全書き込み可能リポジトリへpush
+python {SCRIPTS_DIR}/manage.py push --skills skill-a,skill-b            # 特定スキルをpush
+python {SCRIPTS_DIR}/manage.py push --repos team-skills                 # 特定リポジトリへpush
+python {SCRIPTS_DIR}/manage.py push --skills my-skill --msg "feat: ..." # コミットメッセージ指定
 ```
+
+→ 実装: `scripts/push.py` — `push_skill()`, `push_all_skills()`
+→ `scripts/manage.py` — `push_to_main()`
+
+デフォルトは main ブランチへの直接 push。ユーザーが「ブランチを切って」「PR を作って」と要求した場合のみ `add-skill/<name>` ブランチを作成して push し、PR/MR 作成を促す。
 
 -----
 
 ## list
 
-```python
-def list_skills():
-    reg = load_registry()
-    registry_map = {s["name"]: s for s in reg.get("installed_skills", [])}
-
-    print(f"📂 スキル一覧 ({skill_home})\n")
-    if not os.path.isdir(skill_home):
-        print("   (スキルなし)")
-        return
-
-    for entry in sorted(os.listdir(skill_home)):
-        if not os.path.isfile(os.path.join(skill_home, entry, "SKILL.md")):
-            continue
-        info = registry_map.get(entry, {})
-        repo = info.get("source_repo", "local")
-        hash_ = info.get("commit_hash", "-")
-        print(f"   {entry:30s}  repo: {repo:20s}  commit: {hash_}")
+```bash
+python {SCRIPTS_DIR}/manage.py list
 ```
+
+→ 実装: `scripts/manage.py` — `list_skills()`
+
+インストール済みスキルの一覧を表示。有効/無効、ソースリポジトリ、コミットハッシュ、pin状態、バージョンを表示する。
+
+- `v1.2.3` — ローカルのバージョン
+- `v1.2.3 ⬆️` — ローカルが中央より新しい（version_ahead）
+- `v1.2.3 (central: v1.2.4)` — 中央に新しいバージョンがある（pull 推奨）
 
 -----
 
 ## search
 
-```python
-def search_skills(repo_name=None, keyword=None):
-    reg = load_registry()
-    repos = reg["repositories"]
-    if repo_name:
-        repos = [r for r in repos if r["name"] == repo_name]
-
-    for repo in repos:
-        clone_dir = os.path.join(temp_work, repo["name"])
-        if os.path.exists(clone_dir):
-            shutil.rmtree(clone_dir)
-        subprocess.run([
-            "git", "clone", "--depth", "1",
-            "--branch", repo["branch"],
-            repo["url"], clone_dir
-        ], check=True)
-
-        root = os.path.join(clone_dir, repo["skill_root"])
-        if not os.path.isdir(root):
-            continue
-
-        print(f"\n🔍 {repo['name']} ({repo['url']})")
-        found = False
-        for entry in sorted(os.listdir(root)):
-            skill_md = os.path.join(root, entry, "SKILL.md")
-            if not os.path.isfile(skill_md):
-                continue
-            with open(skill_md, encoding="utf-8") as f:
-                content = f.read()
-            desc = ""
-            match = re.match(r'^---\s*\n(.*?)\n---', content, re.DOTALL)
-            if match:
-                for line in match.group(1).splitlines():
-                    if line.startswith("description:"):
-                        desc = line[len("description:"):].strip()
-                        break
-
-            if keyword and keyword.lower() not in entry.lower() and keyword.lower() not in desc.lower():
-                continue
-
-            found = True
-            short_desc = desc[:80] + "..." if len(desc) > 80 else desc
-            print(f"   {entry:30s}  {short_desc}")
-
-        if not found:
-            print("   (該当なし)")
-
-    shutil.rmtree(temp_work, ignore_errors=True)
+```bash
+python {SCRIPTS_DIR}/manage.py search                             # 全スキルを一覧（インデックスキャッシュ使用）
+python {SCRIPTS_DIR}/manage.py search --keyword converter         # キーワード検索
+python {SCRIPTS_DIR}/manage.py search --repo team-skills          # リポジトリ絞り込み
+python {SCRIPTS_DIR}/manage.py search --refresh                   # リモートから最新インデックスを取得して検索
 ```
+
+デフォルトではレジストリ内の `remote_index` を検索する（ネットワーク不要、即座に結果を返す）。
+`--refresh` 指定時はリモートから最新情報を取得してインデックスを更新してから検索する。
+インデックスが空の場合（初回）は自動的に `--refresh` と同様の動作をする。
+
+→ 実装: `scripts/manage.py` — `search_skills()`
+
+-----
+
+## enable / disable
+
+```bash
+python {SCRIPTS_DIR}/manage.py enable <skill-name>
+python {SCRIPTS_DIR}/manage.py disable <skill-name>
+```
+
+スキルの有効・無効を切り替える。無効化されたスキルはディスク上に残るが、`discover_skills.py` のメタデータ収集から除外される（コンテキストウィンドウを節約）。
+
+→ 実装: `scripts/manage.py` — `enable_skill()`, `disable_skill()`
+
+-----
+
+## pin / unpin
+
+```bash
+python {SCRIPTS_DIR}/manage.py pin <skill-name>                   # 現在のコミットに固定
+python {SCRIPTS_DIR}/manage.py pin <skill-name> --commit abc1234  # 指定コミットに固定
+python {SCRIPTS_DIR}/manage.py unpin <skill-name>
+```
+
+スキルを特定のコミットハッシュに固定する。pin されたスキルは pull 時にそのコミットの内容を取得し、新しいバージョンには更新されない。
+
+→ 実装: `scripts/manage.py` — `pin_skill()`, `unpin_skill()`
+
+-----
+
+## lock / unlock
+
+```bash
+python {SCRIPTS_DIR}/manage.py lock
+python {SCRIPTS_DIR}/manage.py unlock
+```
+
+全インストール済みスキルのバージョンを一括で固定・解除する。チームで同じバージョンのスキルセットを共有するときに使う。
+
+→ 実装: `scripts/manage.py` — `lock_all()`, `unlock_all()`
+
+-----
+
+## promote
+
+```bash
+python {SCRIPTS_DIR}/manage.py promote .github/skills
+python {SCRIPTS_DIR}/manage.py promote <workspace-skill-dir>
+```
+
+ワークスペースのスキルディレクトリ（`<workspace-skill-dir>`）のスキルをユーザー領域（`<AGENT_HOME>/skills/`）にコピーし、リポジトリにも push する。プロジェクト固有でないスキルを他のプロジェクトでも再利用可能にする。
+
+→ 実装: `scripts/manage.py` — `promote_skills()`
+
+-----
+
+## ワークスペーストライアルフロー
+
+VSCode チャット経由で作成されたスキルはワークスペースのスキルディレクトリ（`<workspace-skill-dir>`）に置かれ、試用してから昇格する。
+
+ライフサイクル・評価フロー詳細 → [references/workspace-trial.md](references/workspace-trial.md)
+
+-----
+
+## feedback
+
+```bash
+python {SCRIPTS_DIR}/record_feedback.py <skill-name> ok
+python {SCRIPTS_DIR}/record_feedback.py <skill-name> needs-improvement --note "改善点のメモ"
+python {SCRIPTS_DIR}/record_feedback.py <skill-name> broken --note "エラー内容"
+```
+
+直前に実行したスキルの満足度をユーザーに確認し、レジストリに記録する。
+スキル単体起動後に `copilot-instructions.md` の指示で自動的に呼ばれる。
+
+→ 実装: `scripts/record_feedback.py`
+
+フィードバック記録の詳細フロー・しきい値 → [references/feedback-loop.md](references/feedback-loop.md)
+
+-----
+
+## evaluate
+
+`skill-evaluator` スキルを呼び出してワークスペース・インストール済みスキルを評価する。評価フロー詳細 → [references/feedback-loop.md](references/feedback-loop.md)
+
+-----
+
+## refine
+
+```bash
+python {SCRIPTS_DIR}/manage.py refine <skill-name>
+# 改良完了後:
+python {SCRIPTS_DIR}/manage.py mark-refined <skill-name>
+```
+
+蓄積されたフィードバックをもとに、スキルの改良フローを開始する。ワークスペーススキルとインストール済みスキル（user-space / リポジトリ管理）の両方に対応する。
+
+→ 実装: `scripts/manage.py` — `refine_skill()`, `mark_refined()`
+
+スクリプト出力の `REFINE_COMPLETE_CMD:` 行に示されたコマンドを**必ず実行する**（`pending_refinement` フラグの解除）。
+
+-----
+
+## diff / sync / merge
+
+```bash
+python {SCRIPTS_DIR}/manage.py diff <skill-name>
+python {SCRIPTS_DIR}/manage.py diff <skill-name> --repos team-skills,personal
+
+python {SCRIPTS_DIR}/manage.py sync <skill-name>
+python {SCRIPTS_DIR}/manage.py sync <skill-name> --repos team-skills,personal
+
+python {SCRIPTS_DIR}/manage.py merge <skill-name>
+```
+
+複数リポジトリに分岐した同名スキルを比較・統合・配信するクロスリポジトリ操作。
+
+| 操作 | 用途 |
+|---|---|
+| `diff` | リポジトリ間の差分を表示（マージ前確認） |
+| `sync` | マージ済みスキルを複数リポジトリへ一括 push |
+| `merge` | diff → skill-creator → sync を一括実行 |
+
+詳細な処理フローと出力例 → [references/cross-repo-ops.md](references/cross-repo-ops.md)
+
+-----
+
+## changelog / bump
+
+```bash
+python {SCRIPTS_DIR}/manage.py changelog <skill-name>
+python {SCRIPTS_DIR}/manage.py changelog <skill-name> --dry-run
+
+python {SCRIPTS_DIR}/manage.py bump <skill-name>               # patch (デフォルト)
+python {SCRIPTS_DIR}/manage.py bump <skill-name> --type minor
+python {SCRIPTS_DIR}/manage.py bump <skill-name> --type major
+```
+
+スキルのバージョン管理操作。
+
+- **changelog**: コミット履歴とフロントマターのバージョン変更から `CHANGELOG.md` を自動生成する
+- **bump**: SKILL.md の `metadata.version` をセマンティックバージョニングに従ってインクリメントする（`X.Y.Z` 形式）
+
+コマンド例・バージョン指針・処理フロー・タイミング → [references/version-management.md](references/version-management.md)
+
+-----
+
+## discover
+
+`skill-creator`（モードC）を起動し、直近のチャット履歴から新しいスキル候補を発見する。スクリプト呼び出しなし — エージェントが skill-creator を直接起動する。
+
+処理フロー詳細 → [references/version-management.md](references/version-management.md)
+
+-----
+
+## metrics
+
+```bash
+python {SCRIPTS_DIR}/metrics_report.py
+python {SCRIPTS_DIR}/metrics_report.py --skill <skill-name>   # 特定スキルの詳細
+python {SCRIPTS_DIR}/metrics_report.py --co                   # 共起分析
+python {SCRIPTS_DIR}/metrics_collector.py                     # ログを再集計
+```
+
+→ 実装: `scripts/metrics_report.py`, `scripts/metrics_collector.py` | 詳細 → [references/metrics.md](references/metrics.md)
+
+-----
+
+## profile
+
+```bash
+python {SCRIPTS_DIR}/manage.py profile list
+python {SCRIPTS_DIR}/manage.py profile create <name> <skill1,skill2,...>
+python {SCRIPTS_DIR}/manage.py profile use <name>
+python {SCRIPTS_DIR}/manage.py profile delete <name>
+```
+
+プロファイルはスキルの有効・無効を一括で切り替えるショートカット。プロファイルをアクティブにすると、そのプロファイルに含まれるスキルのみがコンテキストにロードされる。
+
+→ 実装: `scripts/manage.py` — `profile_create()`, `profile_use()`, `profile_list()`, `profile_delete()`
+
+-----
+
+## auto-update
+
+```bash
+python {SCRIPTS_DIR}/auto_update.py check         # 更新チェック
+python {SCRIPTS_DIR}/auto_update.py run           # 自動更新を実行
+python {SCRIPTS_DIR}/auto_update.py configure     # 設定を表示・変更
+```
+
+セッション開始時やユーザーの指示で、リポジトリの更新を自動チェックする機能。デフォルトは無効。
+セッション開始時のトリガーは `.github/copilot-instructions.md` で定義されている。
+
+→ 実装: `scripts/auto_update.py`
+
+動作モード・設定操作・チェック操作の詳細 → [references/auto-update.md](references/auto-update.md)
+
+-----
+
+## snapshot / rollback
+
+```bash
+python {SCRIPTS_DIR}/snapshot.py save
+python {SCRIPTS_DIR}/snapshot.py save --label "リリース前"
+python {SCRIPTS_DIR}/snapshot.py list
+python {SCRIPTS_DIR}/snapshot.py restore --latest
+python {SCRIPTS_DIR}/snapshot.py restore <snap-id>
+python {SCRIPTS_DIR}/snapshot.py clean --keep 5
+```
+
+pull 実行時に自動でスナップショットを保存し、問題が発生した場合に元の状態へ復元する。「元に戻して」「pullを取り消して」でロールバックを発動する。
+
+詳細 → [references/snapshot-rollback.md](references/snapshot-rollback.md)
+
+-----
+
+## deps
+
+```bash
+python {SCRIPTS_DIR}/manage.py deps                # 全スキルの依存関係を検証
+python {SCRIPTS_DIR}/manage.py deps <skill-name>   # 特定スキルの依存関係を検証
+python {SCRIPTS_DIR}/manage.py deps-graph          # 全スキルの依存グラフ（Mermaid）
+python {SCRIPTS_DIR}/manage.py deps-graph <skill-name>
+```
+
+スキルの `depends_on`（必須依存）・`recommends`（推奨依存）を SKILL.md フロントマターから解析し、充足状況の検証と Mermaid 依存グラフの出力を行う。
+
+→ 実装: `scripts/deps.py` — `check_deps()`, `show_graph()`
+
+フロントマタースキーマ・エージェントの動作・出力例 → [references/deps.md](references/deps.md)
+
+-----
+
+## deprecate
+
+スキルを非推奨化し、代替スキルへの移行を促す。
+
+ライフサイクル: `Active → Deprecated（2スプリント）→ Archived → Removed`
+
+SKILL.md フロントマターに `tier: deprecated` / `deprecated_by: <代替>` / `deprecated_since: <ver>` を追記し、`skill-registry.json` の `deprecated_skills` に登録する。
+
+詳細 → [references/deprecation.md](references/deprecation.md)
+
+-----
+
+## archive
+
+Deprecated 期間（2スプリント）終了後にスキルを `.github/skills/_archived/` へ移動し、レジストリの `archived_skills` へ移す。
+
+詳細 → [references/deprecation.md](references/deprecation.md)
 
 -----
 
 ## エラーハンドリング
 
-|エラー               |対処                         |
-|------------------|---------------------------|
-|`git ls-remote` 失敗|URL・認証を確認するよう案内            |
-|clone 失敗          |ブランチ名を `git ls-remote` で確認 |
-|push rejected     |`git pull --rebase` 後に再push|
-|SKILL.md なし       |スキルフォルダの構成確認を案内            |
-|レジストリ破損           |削除して再作成するか、リポジトリから再pull    |
-|ネットワークエラー         |ネットワーク接続を確認するよう案内          |
-
------
+→ [references/errors.md](references/errors.md)
 
 ## 使用例
 
-### 初回セットアップ
-
-```
-ユーザー: 「https://github.com/myorg/skills.git をスキルリポジトリに登録して」
-
-Claude:
-  1. git ls-remote で接続確認
-  2. レジストリ作成、リポジトリ追加
-  3. 「登録しました。pullしますか？」
-```
-
-### pull
-
-```
-ユーザー: 「スキルを全部同期して」
-
-Claude:
-  1. 全リポジトリを shallow clone
-  2. 各リポジトリのスキルを走査
-  3. 同名競合はコミット日時で新しい方を採用
-  4. %USERPROFILE%\.gitlab\skills\ にコピー、レジストリ更新
-  5. 結果レポート
-```
-
-### push
-
-```
-ユーザー: 「今作ったスキルを team-skills にpushして」
-
-Claude:
-  1. レジストリから team-skills の情報を取得
-  2. SKILL.md の存在確認
-  3. clone → ブランチ作成 → コピー → commit → push
-  4. コミットハッシュとブランチ名を報告
-```
+操作ごとのエージェント対話例 → [references/examples.md](references/examples.md)

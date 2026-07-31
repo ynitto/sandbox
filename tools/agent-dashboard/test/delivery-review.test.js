@@ -1,0 +1,314 @@
+'use strict';
+
+// 検収サブ画面向け: needs の delivery / mr-url パースと「変更ファイル」差分の内訳。
+
+const assert = require('assert');
+const project = require('../src/main/project');
+
+let passed = 0;
+function test(name, fn) {
+  fn();
+  passed += 1;
+  console.log(`ok - ${name}`);
+}
+
+test('frontmatter の delivery / mr-url を構造化する', () => {
+  const delivery = [
+    {
+      name: 'app',
+      role: 'write',
+      path: '/tmp/app',
+      base: 'main',
+      branch: 'ap/T1',
+      files: ['src/a.py'],
+      files_total: 1,
+      mr_url: 'https://gitlab.example.com/g/app/-/merge_requests/3',
+    },
+    { name: 'spec', role: 'reference', url: 'https://gitlab.example.com/g/spec.git', files: [] },
+  ];
+  const md = `---
+kind: review
+task-id: T1
+mr-url: https://gitlab.example.com/g/app/-/merge_requests/3
+delivery: ${JSON.stringify(delivery)}
+---
+
+# 要対応: T1 — 直す
+
+## Context and Problem Statement
+
+- なぜ: 検収待ち
+- 状態: review
+
+## 判断材料
+- 変更ファイル（1 件）:
+    - src/a.py
+`;
+  const n = project.parseNeeds(md, 'T1');
+  assert.strictEqual(n.mrUrl, 'https://gitlab.example.com/g/app/-/merge_requests/3');
+  assert.strictEqual(n.delivery.length, 2);
+  assert.strictEqual(n.delivery[0].role, 'write');
+  assert.strictEqual(n.delivery[1].role, 'reference');
+  assert.deepStrictEqual(n.delivery[0].files, ['src/a.py']);
+});
+
+test('delivery は .agent-project 配下だけを成果物一覧から除外する', () => {
+  const delivery = [
+    {
+      name: 'app',
+      role: 'write',
+      path: '/tmp/app',
+      base: 'main',
+      ref: 'topic',
+      files: ['src/app.js', '.kiro-project/runs/result.json', '.agent-project/backlog/T1.md', 'docs/readme.md', 'xkiro-project/public.md'],
+      files_total: 5,
+    },
+  ];
+  const n = project.parseNeeds(
+    `---\nkind: review\ndelivery: ${JSON.stringify(delivery)}\n---\n# 要対応: T-internal — x\n`,
+    'T-internal'
+  );
+  assert.deepStrictEqual(n.delivery[0].files, [
+    'src/app.js',
+    '.kiro-project/runs/result.json',
+    'docs/readme.md',
+    'xkiro-project/public.md',
+  ]);
+  assert.strictEqual(n.delivery[0].files_total, 4);
+});
+
+test('現行形式「変更ファイル（N 件）」を差分として拾う', () => {
+  const n = project.parseNeeds(
+    `---
+kind: review
+---
+# 要対応: T2 — x
+
+- なぜ: 検収
+- 状態: review
+
+## 判断材料
+- 成果物: ブランチ \`kp/T2\`（2 ファイル変更・base \`main\`）
+- 差分を見る: \`git -C /tmp/app diff main...kp/T2\`
+- 変更ファイル（2 件）:
+    - lib/x.js
+    - test/x.test.js
+- 検証: \`true\` → PASS
+`,
+    'T2'
+  );
+  assert.strictEqual(n.diff.hasDiff, true);
+  assert.deepStrictEqual(n.diff.artifacts, ['lib/x.js', 'test/x.test.js']);
+  assert.ok(n.delivery.length >= 1);
+  assert.ok(n.delivery[0].diff_cmd.includes('git -C'));
+});
+
+test('所在の末尾と変更ファイルの先頭が重なる場合はリポジトリルートへ補正する', () => {
+  const n = project.parseNeeds(
+    `---
+kind: blocked
+---
+# 要対応: T2 — x
+
+## 判断材料
+- 成果物: git: 未コミットの変更あり
+- 所在: /work/project/.agent-project
+- 差分: 2 ファイル
+    - .agent-project/backlog/T2.md
+    - src/app.js
+`,
+    'T2'
+  );
+  assert.strictEqual(n.delivery[0].path, '/work/project');
+  assert.deepStrictEqual(n.delivery[0].files, ['src/app.js']);
+  assert.strictEqual(n.delivery[0].files_total, 1);
+});
+
+test('既知分が内部ファイルだけでもGit一覧を取り直すためdeliveryを保持する', () => {
+  const n = project.parseNeeds(
+    `---\nkind: review\n---\n# 要対応: T-hidden — x\n\n## 判断材料\n- 成果物: git: 未コミットの変更あり\n- 所在: /work/project/.agent-project\n- 差分: 10 ファイル\n    - .agent-project/bus/run.json\n    - …他 9 件\n`,
+    'T-hidden'
+  );
+  assert.strictEqual(n.delivery[0].path, '/work/project');
+  assert.deepStrictEqual(n.delivery[0].files, []);
+  assert.strictEqual(n.delivery[0].files_total, 0);
+});
+
+test('旧票の state worktree 所在を本体リポジトリへ補正する', () => {
+  const entries = [{
+    name: 'write', role: 'write', path: '/work/project-agent-state',
+    base: '', branch: '', ref: '', files: [], files_total: 0,
+  }];
+  const repaired = project._repairStateDeliveryPaths(
+    entries,
+    '/work/project-agent-state/.agent-project',
+    '/work/project/.agent-project',
+    '.agent-project/'
+  );
+  assert.strictEqual(repaired[0].path, '/work/project');
+});
+
+test('複数リポジトリ見出しから delivery を復元する', () => {
+  const detail = [
+    '### リポジトリ: payments（書込先）',
+    '- 成果物: ブランチ `kp/T9`（1 ファイル変更・base `main`）',
+    '- 所在: /work/payments',
+    '- 差分を見る: `git -C /work/payments diff main...origin/kp/T9`',
+    '- MR: https://gitlab.example.com/g/payments/-/merge_requests/9（承認時にクリーンなら自動マージ）',
+    '- 変更ファイル（1 件）:',
+    '    - src/pay.py',
+    '### リポジトリ: shared-spec（参照（読取））',
+    '- 参照: https://gitlab.example.com/g/shared-spec.git',
+    '- ブランチ指定: `main`',
+    '- 注: 参照リポジトリ。本タスクの成果差分は書込先を見る',
+  ].join('\n');
+  const entries = project._deliveryFromDetail(detail);
+  assert.strictEqual(entries.length, 2);
+  assert.strictEqual(entries[0].name, 'payments');
+  assert.strictEqual(entries[0].role, 'write');
+  assert.deepStrictEqual(entries[0].files, ['src/pay.py']);
+  assert.match(entries[0].mr_url, /merge_requests\/9/);
+  assert.strictEqual(entries[1].role, 'reference');
+});
+
+test('backlog の mr_url を合成票へ補う', () => {
+  const needs = [
+    {
+      id: 'T3',
+      taskId: 'T3',
+      kind: 'review',
+      mrUrl: '',
+      mrUrls: [],
+      delivery: [],
+      detail: '',
+    },
+  ];
+  const backlog = [
+    {
+      id: 'T3',
+      extra: { mr_url: 'https://gitlab.example.com/g/app/-/merge_requests/11' },
+    },
+  ];
+  project.attachDeliveryHintsFromBacklog(needs, backlog);
+  assert.strictEqual(needs[0].mrUrl, 'https://gitlab.example.com/g/app/-/merge_requests/11');
+  assert.ok(needs[0].delivery.length >= 1);
+});
+
+// --- S4: 検収は MR/PR 一本、ローカル diff は MR の無いタスクだけ -------------------------
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const git = require('../src/main/git');
+
+test('resolveDiffRoot: path が実在すればそれを使う', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dr-'));
+  try {
+    assert.strictEqual(git.resolveDiffRoot(tmp, '', ''), path.resolve(tmp));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// ノード宣言（host.yaml repos[]）を持つ一時ホームを用意する。実ホームを汚さない seam は
+// AGENT_PROJECT_AGENTS_HOME（nodeRepos / agentcore.repolocal と共通）。
+function withNodeRepos(entries, fn) {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dr-home-'));
+  const prev = process.env.AGENT_PROJECT_AGENTS_HOME;
+  process.env.AGENT_PROJECT_AGENTS_HOME = tmp;
+  const body = entries.length
+    ? `repos:\n${entries.map((e) => `  - url: ${e.url}\n    local: ${e.local}\n`).join('')}`
+    : 'repos: []\n';
+  fs.writeFileSync(path.join(tmp, 'agent-project.host.yaml'), body, 'utf8');
+  try {
+    return fn();
+  } finally {
+    if (prev === undefined) delete process.env.AGENT_PROJECT_AGENTS_HOME;
+    else process.env.AGENT_PROJECT_AGENTS_HOME = prev;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+test('resolveDiffRoot: path が無ければ host.yaml repos[] のクローンへ引き直す（S4-e）', () => {
+  // delivery の path は agent-project が動いたノードのもの。worker の作業ツリーは /tmp で
+  // 消えるので、dashboard が別マシンならまず存在しない——これが C5 の実体。
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dr-'));
+  const clone = path.join(tmp, 'app');
+  fs.mkdirSync(clone);
+  const url = 'https://git.example.com/g/app.git';
+  try {
+    withNodeRepos([{ url, local: clone }], () => {
+      assert.strictEqual(git.resolveDiffRoot('/tmp/gone-worktree-xyz', '', url), path.resolve(clone));
+    });
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('resolveDiffRoot: 宣言が無ければ解決しない（なぜ見られないかを人に見せる）', () => {
+  withNodeRepos([], () => {
+    assert.strictEqual(
+      git.resolveDiffRoot('/tmp/gone-worktree-xyz', '', 'https://git.example.com/g/none.git'), '');
+    assert.strictEqual(git.resolveDiffRoot('/tmp/gone-worktree-xyz', '', ''), '');
+  });
+});
+
+test('diffRange: 解決できないときは宣言のしかたを案内する', async () => {
+  await withNodeRepos([], () => assert.rejects(
+    () => git.diffRange('/tmp/gone-worktree-xyz', { repoUrl: 'https://git.example.com/g/a.git' }),
+    /repos\[\]/));
+});
+
+test('検収カードは MR があれば差分ペインを出さない（レビューの正は MR 一本）', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'renderer', 'sections', 'needs.js'), 'utf8');
+  assert.ok(src.includes('const mrOnly = mrs.length > 0;'), 'MR の有無で構成を分ける');
+  assert.ok(/mrOnly[\s\S]{0,400}verificationSummaryHtml/.test(src),
+    'MR ありの構成は「検証要約 + MR リンク」');
+  assert.ok(src.includes("repoUrl: entry.url || ''"),
+    'diff 要求に url を載せる（path が消えていてもノード宣言から引き直せる）');
+});
+
+test('検証要約は基準×証跡を出し、証跡の無い pass を警告する（S5）', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'renderer', 'sections', 'needs.js'), 'utf8');
+  assert.ok(src.includes('function verificationSummaryHtml('), '検証要約の描画入口');
+  assert.ok(src.includes('証跡なし'), '証跡の無い基準はそう表示する');
+  assert.ok(src.includes('証跡の無い判定が'), '抜き取り監査は人が毎回見る 1 枚に載せる');
+});
+
+test('frontmatter の verification を構造化する（S5）', () => {
+  const verification = {
+    criteria: [
+      { id: 1, text: '候補が並ぶ', verdict: 'pass',
+        evidence: { commands: ['npm test'], output: '24 passing', files: [] }, note: '' },
+      { id: 2, text: '理由が出る', verdict: 'fail',
+        evidence: { commands: [], output: '', files: [] }, note: '未実装' },
+      { id: 3, text: '読めない判定', verdict: 'maybe', evidence: {}, note: '' },
+    ],
+    report: 'verifications/T1/9f3a.md',
+  };
+  const md = `---
+kind: review
+task-id: T1
+verification: ${JSON.stringify(verification)}
+---
+
+# 要対応: T1
+`;
+  const v = project.parseNeeds(md, 'T1').verification;
+  assert.strictEqual(v.criteria.length, 3);
+  assert.strictEqual(v.pass, 1);
+  assert.deepStrictEqual(v.criteria[0].evidence.commands, ['npm test']);
+  assert.strictEqual(v.criteria[2].verdict, 'fail', '読めない判定は fail（フェイルクローズ）');
+  assert.strictEqual(v.report, 'verifications/T1/9f3a.md');
+});
+
+test('verification が壊れていれば要約を出さない（誤った要約より無い方がよい）', () => {
+  for (const raw of ['{ not json', '{}', '{"criteria": []}', '']) {
+    const md = `---\nkind: review\ntask-id: T1\nverification: ${raw}\n---\n\n# 要対応: T1\n`;
+    assert.strictEqual(project.parseNeeds(md, 'T1').verification, null, raw);
+  }
+});
+
+console.log(`\n${passed} passed`);

@@ -1,0 +1,10 @@
+{
+  "id": "obsidian-textlint",
+  "name": "Textlint",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "Integrates textlint (https://github.com/textlint/textlint)",
+  "author": "ynitto",
+  "authorUrl": "https://github.com/ynitto",
+  "isDesktopOnly": false
+}

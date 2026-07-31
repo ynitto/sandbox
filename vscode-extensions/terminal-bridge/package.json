@@ -1,0 +1,54 @@
+{
+  "name": "vscode-terminal-bridge",
+  "displayName": "Terminal Bridge",
+  "description": "Expose VS Code integrated terminals over a local HTTP bridge so MCP clients can drive them.",
+  "version": "0.1.0",
+  "publisher": "agent-skills",
+  "engines": {
+    "vscode": "^1.93.0"
+  },
+  "categories": ["Other"],
+  "extensionKind": ["ui", "workspace"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "terminalBridge.showStatus",
+        "title": "Terminal Bridge: Show status",
+        "category": "Terminal Bridge"
+      },
+      {
+        "command": "terminalBridge.listTerminals",
+        "title": "Terminal Bridge: List terminals",
+        "category": "Terminal Bridge"
+      }
+    ],
+    "configuration": {
+      "title": "Terminal Bridge",
+      "properties": {
+        "terminalBridge.port": {
+          "type": "number",
+          "default": 52718,
+          "description": "Loopback TCP port used by the bridge HTTP server."
+        },
+        "terminalBridge.captureBufferLines": {
+          "type": "number",
+          "default": 200,
+          "minimum": 1,
+          "description": "Maximum number of lines retained per terminal in the capture ring buffer."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.93.0",
+    "typescript": "^5.5.0"
+  }
+}

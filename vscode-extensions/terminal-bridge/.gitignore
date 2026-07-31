@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Build artifacts
+out/
+dist/
+coverage/
+*.tsbuildinfo
+
+# VS Code / extension artifacts
+.vscode-test/
+*.vsix
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store

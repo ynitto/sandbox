@@ -1,0 +1,41 @@
+# gitea-sync-bot 設定（案A: ローカル GitLab ⇄ 上流 GitLab）
+# 本体: tools/gitea-sync-bot/ ／ 設計: docs/designs/plan-a-local-gitlab-design.md
+# コピー先例: /opt/gitea-sync-bot/sync.config.yaml
+#
+# トークンは環境変数展開で渡す（直書きしない）:
+#   export LOCAL_GITLAB_TOKEN=...    # ローカル GitLab の PAT（api, write_repository）
+#   export UPSTREAM_GITLAB_TOKEN=... # 上流 GitLab の Project Access Token（write_repository のみ）
+#   export SYNC_WEBHOOK_SECRET=...
+
+# 同期対象（allowlist）。feature/* 等は上流へ出さない。
+sync:
+  include: ["refs/heads/main", "refs/heads/release/*", "refs/tags/*"]
+  exclude: ["refs/heads/feature/*", "refs/heads/fix/*", "refs/heads/sync/*"]
+
+# 上流負荷を抑える（webhook 主導・cron は長間隔バックストップ）
+poll_interval_minutes: 20
+debounce_seconds: 5
+state_dir: "/opt/gitea-sync-bot/state"
+
+# 分岐時: 作業側＝ローカル GitLab に MR を自動起票
+integration:
+  branch_prefix: "sync/integrate"
+  forge: "gitlab"                         # 作業側 forge = GitLab（MR を /api/v4 で起票）
+  api_base: "http://gitlab.local/api/v4"
+  create_pr: true
+
+# ローカル GitLab からボットへ push webhook（同一ホスト）
+webhook:
+  host: "0.0.0.0"
+  port: 9000
+  secret: "${SYNC_WEBHOOK_SECRET}"
+
+repos:
+  - name: myproject
+    workdir: "/opt/gitea-sync-bot/work/myproject"
+    # working = 作業側（ローカル GitLab）／ upstream = マスター（上流 GitLab）
+    working:
+      url: "http://gitlab.local/team/myproject.git"
+      token: "${LOCAL_GITLAB_TOKEN}"       # 統合 MR 起票に使用
+    upstream:
+      url: "https://oauth2:${UPSTREAM_GITLAB_TOKEN}@gitlab.example.com/team/myproject.git"

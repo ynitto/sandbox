@@ -1,0 +1,824 @@
+"""agent-flow の単体テスト — agent_cli（`test_agent_flow.py` から機能別に分割）。
+
+共有の前置き（環境隔離・モジュールのロード・共通ヘルパ）は `_shared.py` にある。
+
+    python -m unittest discover -s tools/agent-flow/tests
+"""
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from _shared import *  # noqa: E402,F401,F403 — 共有の前置き（環境隔離・km ロード・共通ヘルパ）
+
+
+class StructuredResultTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-data-")
+        self.bus = kf.Bus(self.tmp, "run1")
+        self.bus.ensure_run("req")
+
+    def test_result_data_roundtrip(self):
+        self.bus.write_result("t1", "w", "done", "txt", data={"items": [1, 2, 3]})
+        r = self.bus.read_result("t1")
+        self.assertEqual(r["output"], "txt")
+        self.assertEqual(r["data"], {"items": [1, 2, 3]})
+
+    def test_result_without_data_has_no_key(self):
+        self.bus.write_result("t1", "w", "done", "txt")
+        self.assertNotIn("data", self.bus.read_result("t1"))
+
+    def test_collect_dep_results_sees_through_gate(self):
+        # planner が work→gate→synth と直列にしても、集約役は gate が検証した
+        # 上流（t2,t3）の成果を受け取れる（gate 経由でも入力が空にならない）
+        self.bus.write_graph({"nodes": {
+            "t2": {"deps": [], "kind": "work"},
+            "t3": {"deps": [], "kind": "work"},
+            "gate": {"deps": ["t2", "t3"], "kind": "verify"},
+            "synth": {"deps": ["gate"], "kind": "synthesize"},
+        }})
+        self.bus.write_result("t2", "w", "done", "out2")
+        self.bus.write_result("t3", "w", "done", "out3")
+        self.bus.write_result("gate", "w", "done", "verify=pass", data={"ok": True})
+        node = {"deps": ["gate"], "kind": "synthesize"}
+        dep = kf._collect_dep_results(self.bus, node, "synthesize")
+        self.assertEqual(set(dep), {"gate", "t2", "t3"})  # 上流が透過された
+        self.assertEqual(dep["t2"]["output"], "out2")
+
+    def test_collect_dep_results_no_passthrough_for_work(self):
+        # 非集約ノードは透過しない（gate をそのまま受ける）
+        self.bus.write_graph({"nodes": {
+            "a": {"deps": [], "kind": "work"},
+            "gate": {"deps": ["a"], "kind": "verify"},
+        }})
+        self.bus.write_result("a", "w", "done", "oa")
+        self.bus.write_result("gate", "w", "done", "verify=pass", data={"ok": True})
+        dep = kf._collect_dep_results(self.bus, {"deps": ["gate"], "kind": "work"}, "work")
+        self.assertEqual(set(dep), {"gate"})
+
+    def test_executor_returns_text_and_data(self):
+        text, data = kf.execute_stub("classify", "backend のバグ", {}, None)
+        self.assertEqual(text, "class=backend")
+        self.assertEqual(data, {"label": "backend"})
+        text, data = kf.execute_stub("work", "ふつうの仕事", {}, None)
+        self.assertIsNone(data)
+
+    def test_reduce_aggregates_dependency_data(self):
+        deps = {
+            "a": {"output": "oa", "data": ["x", "y"]},
+            "b": {"output": "ob", "data": ["z"]},
+            "c": {"output": "oc"},  # data 無し → output を要素化
+        }
+        text, data = kf.execute_stub("reduce", "集約", deps, None)
+        self.assertEqual(data["count"], 4)
+        self.assertEqual(sorted(str(i) for i in data["items"]), ["oc", "x", "y", "z"])
+
+
+class OutputSanitizeTests(unittest.TestCase):
+    def test_strip_ansi(self):
+        raw = "\x1b[38;5;141m> \x1b[0mhello\x1b[1mX\x1b[22m"
+        self.assertEqual(kf.strip_ansi(raw), "> helloX")
+        self.assertEqual(kf.strip_ansi(""), "")
+
+    def test_reconcile_count_fixes_mismatch(self):
+        d = kf._reconcile_count({"primes": [2, 3, 5], "count": 99, "range": {"min": 2}})
+        self.assertEqual(d["count"], 3)
+
+    def test_reconcile_count_skips_when_ambiguous(self):
+        # count 無し / 複数リスト / 非 dict は変更しない
+        self.assertEqual(kf._reconcile_count({"primes": [2, 3]}), {"primes": [2, 3]})
+        self.assertEqual(kf._reconcile_count({"a": [1], "b": [1, 2], "count": 5})["count"], 5)
+        self.assertEqual(kf._reconcile_count([1, 2, 3]), [1, 2, 3])
+
+
+class AgentFailureTests(unittest.TestCase):
+    """エージェント CLI の失敗を、人が原因に辿り着ける形で表に出すこと。
+
+    CLI は起動バナー（workdir / model / プロンプト全文）を stderr に流す。以前は stderr の
+    「先頭」だけを切り取っていたため、肝心のエラーがバナーに埋もれて消えた。実際 codex の
+    「利用上限に達した」を取り逃し、全ノードが理由不明の failed になった。"""
+
+    # 実物に近い形：バナーが先頭を埋め、本当のエラーは末尾に出る
+    BANNER = ("OpenAI Codex v0.144.1\n--------\nworkdir: /x\nmodel: gpt-5.6-sol\n"
+              + "プロンプト全文 " * 80)
+
+    def test_usage_limit_is_surfaced(self):
+        err = self.BANNER + "\nERROR: You've hit your usage limit. Upgrade to Pro ... try again at 9:44 PM."
+        msg = kf._agent_failure("codex", 1, "", err)
+        self.assertIn("利用上限", msg.split("\n")[0])   # 見出しで分かる
+        self.assertIn("usage limit", msg)               # 原文も残る（末尾を拾う）
+
+    def test_auth_failure_is_surfaced(self):
+        msg = kf._agent_failure("kiro-cli", 0, "", "SendMessageError: AccessDeniedException")
+        self.assertIn("認証", msg.split("\n")[0])
+
+    def test_bad_model_is_surfaced(self):
+        msg = kf._agent_failure("claude", 1, "", "There's an issue with the selected model (claude-opus).")
+        self.assertIn("モデル", msg.split("\n")[0])
+
+    def test_unknown_failure_keeps_the_tail(self):
+        # 既知パターンに当たらなくても、末尾（＝エラーが出る場所）は必ず残す
+        err = self.BANNER + "\nsomething exploded at line 42"
+        msg = kf._agent_failure("codex", 1, "", err)
+        self.assertIn("something exploded", msg)
+
+    def test_empty_response_with_rc0_is_a_failure(self):
+        # kiro-cli は認証が切れるとバナーだけ出して rc=0 で終わる。空を成功として扱うと
+        # worker は「空の成果物で done」、planner は stub へ黙って落ちる（沈黙した失敗）。
+        proc = types.SimpleNamespace(returncode=0, stdout="  \n", stderr="AccessDeniedException")
+        with mock.patch.object(kf.subprocess, "run", return_value=proc):
+            with self.assertRaises(RuntimeError) as cm:
+                kf.run_agent("p", None)
+        self.assertIn("空の応答", str(cm.exception))
+        self.assertIn("認証", str(cm.exception))
+
+
+class AgentTimeoutTests(unittest.TestCase):
+    """エージェント CLI のハングがタイムアウトで失敗化され、run が無限停止しないこと。"""
+
+    def test_run_agent_timeout_raises_runtimeerror(self):
+        import subprocess
+        def boom(*a, **k):
+            raise subprocess.TimeoutExpired(cmd="kiro-cli", timeout=k.get("timeout"))
+        with mock.patch.object(kf.subprocess, "run", side_effect=boom), \
+                mock.patch.object(kf, "_TRANSIENT_RETRIES", 0):   # レイヤ1 は別テストで検証
+            with self.assertRaises(RuntimeError) as ctx:
+                kf.run_agent("素数を列挙", None)
+        self.assertIn("タイムアウト", str(ctx.exception))
+        # ハングは transient タグ付き＝レイヤ1（in-place 再試行）の対象になる
+        self.assertEqual(kf.classify_agent_failure(str(ctx.exception))[0], "transient")
+
+    def test_agent_timeout_env_override(self):
+        with mock.patch.dict(os.environ, {"AGENT_FLOW_TIMEOUT": "0"}, clear=False):
+            os.environ.pop("AGENT_FLOW_KIRO_TIMEOUT", None)
+            self.assertIsNone(kf._agent_timeout())   # 0/負で無効化
+        with mock.patch.dict(os.environ, {"AGENT_FLOW_TIMEOUT": "120"}, clear=False):
+            os.environ.pop("AGENT_FLOW_KIRO_TIMEOUT", None)
+            self.assertEqual(kf._agent_timeout(), 120.0)
+
+    def test_agent_timeout_legacy_env_still_honored(self):
+        # 後方互換: 旧名 AGENT_FLOW_KIRO_TIMEOUT も受理する（新名未設定時）
+        with mock.patch.dict(os.environ, {"AGENT_FLOW_KIRO_TIMEOUT": "90"}, clear=False):
+            os.environ.pop("AGENT_FLOW_TIMEOUT", None)
+            self.assertEqual(kf._agent_timeout(), 90.0)
+
+    def test_agent_timeout_new_env_beats_legacy(self):
+        # 新名が旧名より優先される
+        with mock.patch.dict(os.environ,
+                             {"AGENT_FLOW_TIMEOUT": "30", "AGENT_FLOW_KIRO_TIMEOUT": "120"}):
+            self.assertEqual(kf._agent_timeout(), 30.0)
+
+    def test_agent_timeout_config_beats_env(self):
+        # 設定ファイル（_configure_thresholds 経由）が環境変数より優先される
+        with mock.patch.object(kf, "_AGENT_TIMEOUT", 300.0), \
+             mock.patch.dict(os.environ, {"AGENT_FLOW_TIMEOUT": "120"}):
+            self.assertEqual(kf._agent_timeout(), 300.0)
+        with mock.patch.object(kf, "_AGENT_TIMEOUT", 0.0):
+            self.assertIsNone(kf._agent_timeout())   # 設定の 0/負も無効化として尊重
+
+    def test_stub_sleep_max_config_beats_env(self):
+        # stub_sleep_max も設定が環境変数より優先される（0 で即時）
+        calls = []
+        with mock.patch.object(kf, "_STUB_SLEEP_MAX", 0.0), \
+             mock.patch.dict(os.environ, {"AGENT_FLOW_STUB_SLEEP_MAX": "5"}), \
+             mock.patch.object(kf.time, "sleep", side_effect=lambda s: calls.append(s)):
+            kf._stub_sleep()
+        self.assertEqual(calls, [])   # 設定 0 → sleep されない
+
+    def test_configure_thresholds_pins_config_values(self):
+        # resolve_config 済みの args から agent_timeout / stub_sleep_max が確定すること
+        import argparse
+        args = argparse.Namespace(argv_limit=None, executor_dir=None,
+                                  agent_timeout=45.0, stub_sleep_max=0.0)
+        with mock.patch.object(kf, "_AGENT_TIMEOUT", None), \
+             mock.patch.object(kf, "_STUB_SLEEP_MAX", None):
+            kf._configure_thresholds(args)
+            self.assertEqual(kf._AGENT_TIMEOUT, 45.0)
+            self.assertEqual(kf._STUB_SLEEP_MAX, 0.0)
+
+
+class AgentCliTests(unittest.TestCase):
+    """agent_cli 設定による LLM 実行 CLI の切替（kiro-cli / Claude Code）。"""
+
+    @staticmethod
+    def _capture_run():
+        calls = {}
+        def fake_run(cmd, **kw):
+            calls["cmd"] = list(cmd)
+            calls["input"] = kw.get("input")
+            return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
+        return calls, fake_run
+
+    def test_default_is_kiro_cli_with_argv_prompt(self):
+        calls, fake = self._capture_run()
+        with mock.patch.object(kf.subprocess, "run", side_effect=fake):
+            out = kf.run_agent("プロンプト", "m1")
+        self.assertEqual(out, "ok")
+        self.assertEqual(calls["cmd"][:4],
+                         ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"])
+        self.assertIn("--model", calls["cmd"])
+        self.assertEqual(calls["cmd"][-1], "プロンプト")   # 従来どおり argv 渡し
+        self.assertIsNone(calls["input"])
+
+    def test_claude_uses_headless_stdin(self):
+        calls, fake = self._capture_run()
+        with mock.patch.object(kf, "_AGENT_CLI", "claude"), \
+             mock.patch.object(kf.subprocess, "run", side_effect=fake):
+            out = kf.run_agent("プロンプト", "claude-sonnet")
+        self.assertEqual(out, "ok")
+        self.assertEqual(calls["cmd"][0], "claude")
+        self.assertIn("-p", calls["cmd"])
+        self.assertIn("--output-format", calls["cmd"])
+        self.assertIn("--model", calls["cmd"])
+        self.assertEqual(calls["input"], "プロンプト")     # stdin 渡し
+        self.assertNotIn("プロンプト", calls["cmd"])       # argv には載せない
+
+    def test_claude_large_prompt_skips_spill(self):
+        # stdin 渡しは ARG_MAX に当たらないため、argv_limit 超過でも一時ファイルへ退避しない
+        calls, fake = self._capture_run()
+        big = "x" * (kf._agent_argv_limit() + 10)
+        with mock.patch.object(kf, "_AGENT_CLI", "claude"), \
+             mock.patch.object(kf.subprocess, "run", side_effect=fake):
+            kf.run_agent(big, None)
+        self.assertEqual(calls["input"], big)
+        self.assertTrue(all("ファイル" not in str(a) for a in calls["cmd"]))
+
+    def test_copilot_uses_prompt_flag(self):
+        calls, fake = self._capture_run()
+        with mock.patch.object(kf, "_AGENT_CLI", "copilot"), \
+             mock.patch.object(kf.subprocess, "run", side_effect=fake):
+            out = kf.run_agent("プロンプト", "gpt-5")
+        self.assertEqual(out, "ok")
+        self.assertEqual(calls["cmd"][0], "copilot")
+        self.assertIn("-s", calls["cmd"])                  # 応答本文のみ
+        self.assertIn("--allow-all-tools", calls["cmd"])   # 非対話モードの必須フラグ
+        i = calls["cmd"].index("-p")
+        self.assertEqual(calls["cmd"][i + 1], "プロンプト")  # -p の引数で渡す
+        self.assertIn("--model", calls["cmd"])
+        self.assertIsNone(calls["input"])
+
+    def test_copilot_large_prompt_spills_to_file(self):
+        # copilot は argv（-p）渡しのため、kiro と同じスピル退避が効く
+        calls, fake = self._capture_run()
+        big = "x" * (kf._agent_argv_limit() + 10)
+        with mock.patch.object(kf, "_AGENT_CLI", "copilot"), \
+             mock.patch.object(kf.subprocess, "run", side_effect=fake):
+            kf.run_agent(big, None)
+        i = calls["cmd"].index("-p")
+        self.assertNotEqual(calls["cmd"][i + 1], big)       # 全文は argv に載せない
+        self.assertIn("ファイル", calls["cmd"][i + 1])       # 参照渡しの短い指示に置換
+        self.assertIsNone(calls["input"])
+
+    def test_codex_uses_exec_stdin_and_last_message_file(self):
+        calls = {}
+        def fake_run(cmd, **kw):
+            calls["cmd"] = list(cmd)
+            calls["input"] = kw.get("input")
+            # codex は最終応答を --output-last-message のファイルへ書く
+            i = cmd.index("--output-last-message")
+            with open(cmd[i + 1], "w", encoding="utf-8") as f:
+                f.write("最終応答")
+            return types.SimpleNamespace(returncode=0, stdout="イベントログ...", stderr="")
+        with mock.patch.object(kf, "_AGENT_CLI", "codex"), \
+             mock.patch.object(kf.subprocess, "run", side_effect=fake_run):
+            out = kf.run_agent("プロンプト", "gpt-5-codex")
+        self.assertEqual(out, "最終応答")                   # stdout のログではなくファイルの中身
+        self.assertEqual(calls["cmd"][:2], ["codex", "exec"])
+        self.assertIn("--skip-git-repo-check", calls["cmd"])
+        self.assertIn("--dangerously-bypass-approvals-and-sandbox", calls["cmd"])
+        self.assertIn("--model", calls["cmd"])
+        self.assertEqual(calls["cmd"][-1], "-")             # プロンプトは stdin（"-"）
+        self.assertEqual(calls["input"], "プロンプト")
+        i = calls["cmd"].index("--output-last-message")
+        self.assertFalse(os.path.exists(calls["cmd"][i + 1]))   # 一時ファイルは掃除される
+
+    def test_codex_falls_back_to_stdout_when_last_message_empty(self):
+        calls, fake = self._capture_run()                   # ファイルへ何も書かない
+        with mock.patch.object(kf, "_AGENT_CLI", "codex"), \
+             mock.patch.object(kf.subprocess, "run", side_effect=fake):
+            out = kf.run_agent("プロンプト", None)
+        self.assertEqual(out, "ok")                         # stdout へフォールバック
+
+    def test_configure_thresholds_sets_agent_cli(self):
+        orig = kf._AGENT_CLI
+        try:
+            kf._configure_thresholds(types.SimpleNamespace(agent_cli="claude"))
+            self.assertEqual(kf._AGENT_CLI, "claude")
+        finally:
+            kf._AGENT_CLI = orig
+
+    def test_child_base_forwards_agent_cli_and_parses(self):
+        ns = types.SimpleNamespace(lease=1800.0, git=None, agent_cli="claude")
+        base = kf._child_base(ns, "/tmp/bus")
+        i = base.index("--agent-cli")
+        self.assertEqual(base[i + 1], "claude")
+        # 子プロセスの argv として parser が受理する（usage エラーで即死しない）
+        args = kf.build_parser().parse_args(base[2:] + ["status"])
+        self.assertEqual(args.agent_cli, "claude")
+
+
+class StructuredExtractionTests(unittest.TestCase):
+    """自由記述 kind の本文に紛れた JSON 風断片を data に誤昇格させないこと。"""
+
+    def test_work_does_not_extract_incidental_json(self):
+        # 本文に "issues": [] を含む work 出力でも data は None（誤抽出の事故防止）
+        txt = 'verify=pass（修正不要）。t2の検査で問題なし（{"ok": true, "issues": []}）。通過。'
+        with mock.patch.object(kf, "run_agent", return_value=txt):
+            _, data = kf.execute_agent("work", "修正し通過", {}, None)
+        self.assertIsNone(data)
+
+    def test_generate_does_not_extract_incidental_json(self):
+        with mock.patch.object(kf, "run_agent", return_value="例: [1, 2] のような配列を返す関数"):
+            _, data = kf.execute_agent("generate", "関数を書く", {}, None)
+        self.assertIsNone(data)
+
+    def test_split_still_extracts_list(self):
+        with mock.patch.object(kf, "run_agent", return_value='["1-100", "101-200"]'):
+            _, data = kf.execute_agent("split", "分割", {}, None)
+        self.assertEqual(data, ["1-100", "101-200"])
+
+    def test_reduce_still_extracts_and_reconciles(self):
+        with mock.patch.object(kf, "run_agent",
+                               return_value='{"primes": [2, 3, 5], "count": 99}'):
+            _, data = kf.execute_agent("reduce", "集約", {}, None)
+        self.assertEqual(data["count"], 3)  # 実リスト長へ補正
+
+
+class FlowWorkerSkillTests(unittest.TestCase):
+    """flow-worker スキル連携: 実行規律入りプロンプトの利用と組み込みフォールバック。"""
+
+    REPO_ROOT = HERE.parents[2]
+
+    def setUp(self):
+        # スキル検索はワークスペース（cwd）起点なのでリポジトリルートへ移動する
+        self._cwd = os.getcwd()
+        os.chdir(self.REPO_ROOT)
+        # 解決メモをテスト毎にリセット（他テストの cwd の影響を受けない）
+        kf._worker_skill_script.clear()
+
+    def tearDown(self):
+        os.chdir(self._cwd)
+        kf._worker_skill_script.clear()
+
+    def _capture_prompt(self, fn, *args, **kwargs):
+        reply = kwargs.pop("_reply", "ok")
+        seen = {}
+
+        def fake_run(prompt, model, purpose=""):
+            seen["prompt"] = prompt
+            return reply
+
+        with mock.patch.object(kf, "run_agent", side_effect=fake_run):
+            fn(*args, **kwargs)
+        return seen["prompt"]
+
+    def test_find_skill_script_locates_flow_worker(self):
+        path = kf._find_skill_script("flow-worker", "prompt.py")
+        self.assertIsNotNone(path)
+        self.assertTrue(path.endswith(os.path.join("flow-worker", "scripts", "prompt.py")))
+
+    def test_execute_agent_uses_skill_discipline_prompt(self):
+        prompt = self._capture_prompt(
+            kf.execute_agent, "work", "ログイン画面を追加", {"t0": {"output": "依存成果"}}, None,
+            repo_instruction="【ワークスペース】/tmp/ws", request="EC サイトを作る")
+        self.assertIn("三つの約束", prompt)        # スキル由来の規律ブロック
+        self.assertIn("ログイン画面を追加", prompt)  # goal 維持
+        self.assertIn("【ワークスペース】/tmp/ws", prompt)  # インターフェース情報の伝搬
+        self.assertIn("EC サイトを作る", prompt)     # run の元要求（全体文脈）
+        self.assertIn("[t0] 依存成果", prompt)
+
+    def test_execute_agent_verify_skill_prompt_keeps_contract(self):
+        prompt = self._capture_prompt(kf.execute_agent, "verify", "検証する", {}, None)
+        self.assertIn("再導出", prompt)
+        self.assertIn("verify=pass", prompt)
+        self.assertIn('{"ok": true|false, "issues": ["..."]}', prompt)
+
+    def test_execute_agent_falls_back_when_skill_disabled(self):
+        with mock.patch.object(kf, "_WORKER_SKILL", "none"):
+            prompt = self._capture_prompt(kf.execute_agent, "work", "g", {}, None)
+        self.assertNotIn("三つの約束", prompt)
+        self.assertIn("成果物を簡潔に直接出力してください", prompt)
+
+    def test_execute_agent_falls_back_when_script_broken(self):
+        # 解決メモに壊れたパスを注入 → subprocess 失敗 → 組み込みプロンプトで続行
+        with mock.patch.dict(kf._worker_skill_script,
+                             {"flow-worker": "/nonexistent/prompt.py"}, clear=True):
+            prompt = self._capture_prompt(kf.execute_agent, "work", "g", {}, None)
+        self.assertIn("成果物を簡潔に直接出力してください", prompt)
+
+    def test_continue_agent_uses_skill_evaluator_prompt(self):
+        nodes = {"t1": {"goal": "g", "deps": [], "kind": "work"}}
+        results = {"t1": {"status": "done", "output": "済",
+                          "data": {"guidance": "APIはv2で"}}}
+        prompt = self._capture_prompt(
+            kf.continue_agent, "req", nodes, results, 0,
+            _reply='{"decision":"done","reason":"ok","new_tasks":[]}')
+        self.assertIn("評価規律", prompt)
+        self.assertIn('"decision":"done"|"replan"', prompt)  # 出力契約は従来と同一
+        self.assertIn("APIはv2で", prompt)                    # 人フィードバックの伝搬
+
+    def test_worker_skill_config_normalization(self):
+        args = types.SimpleNamespace(worker_skill="  None ")
+        kf._configure_thresholds(args)
+        try:
+            self.assertIsNone(kf._flow_worker_prompt({"role": "worker", "kind": "work",
+                                                      "goal": "g"}))
+        finally:
+            kf._configure_thresholds(types.SimpleNamespace(
+                worker_skill=kf.CONFIG_DEFAULTS["worker_skill"]))
+
+
+class AgentOverrideTests(unittest.TestCase):
+    """役割（planner/evaluator/worker/kind）毎のエージェント上書き（設定 agents:）。"""
+
+    def setUp(self):
+        self._cli, self._ov = kf._AGENT_CLI, dict(kf._AGENT_OVERRIDES)
+
+    def tearDown(self):
+        kf._AGENT_CLI, kf._AGENT_OVERRIDES = self._cli, self._ov
+
+    def test_normalize_accepts_roles_and_kinds_only(self):
+        raw = {"planner": {"agent_cli": "Claude", "model": "opus"},
+               "verify": {"model": "haiku"},
+               "worker": {"agent_cli": "copilot"},
+               "unknown": {"agent_cli": "x"},       # 未知キーは落とす
+               "evaluator": "not-a-dict",           # 不正な値も落とす
+               "judge": {}}                          # 空も落とす
+        out = kf._normalize_agent_overrides(raw)
+        self.assertEqual(set(out), {"planner", "verify", "worker"})
+        self.assertEqual(out["planner"], {"agent_cli": "claude", "model": "opus"})
+        self.assertEqual(kf._normalize_agent_overrides(None), {})
+        self.assertEqual(kf._normalize_agent_overrides("x"), {})
+
+    def test_agent_for_resolution_order(self):
+        kf._AGENT_CLI = "kiro"
+        kf._AGENT_OVERRIDES = {"planner": {"agent_cli": "claude", "model": "opus"},
+                               "worker": {"agent_cli": "copilot"}}
+        self.assertEqual(kf._agent_for("planner"), ("claude", "opus"))
+        self.assertEqual(kf._agent_for("verify"), ("copilot", None))   # kind → worker へ
+        self.assertEqual(kf._agent_for("evaluator"), ("kiro", None))   # 未指定 → グローバル
+        self.assertEqual(kf._agent_for(""), ("kiro", None))
+
+    def test_run_agent_uses_purpose_override(self):
+        kf._AGENT_CLI = "kiro"
+        kf._AGENT_OVERRIDES = {"planner": {"agent_cli": "claude", "model": "opus"}}
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append((cmd, kw.get("input")))
+            return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+        with mock.patch.object(kf.subprocess, "run", side_effect=fake_run):
+            kf.run_agent("プロンプト", "global-model", purpose="planner")
+            kf.run_agent("プロンプト", "global-model", purpose="work")
+        cmd1, stdin1 = calls[0]
+        self.assertEqual(cmd1[0], "claude")                      # 上書き CLI
+        self.assertIn("opus", cmd1)                              # 上書き model が勝つ
+        self.assertEqual(stdin1, "プロンプト")                   # claude は stdin 渡し
+        cmd2, _ = calls[1]
+        self.assertEqual(cmd2[0], "kiro-cli")                    # 未指定はグローバル
+        self.assertIn("global-model", cmd2)
+
+
+class TestAgentPluginAndTriage(unittest.TestCase):
+    """エージェント CLI プラグイン（agents/<name>.json）と失敗トリアージ。
+    環境要因（quota/auth/env）の失敗はどのノードをリトライしても同じ理由で落ちるため、
+    run を即座に打ち切って人に環境を直させる（完了済みノードは温存＝再開で続きから）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-agents-")
+        self._old = os.environ.get("KIRO_AGENTS_DIR")
+        os.environ["KIRO_AGENTS_DIR"] = self.tmp
+        kf._AGENT_PLUGIN_CACHE.clear()
+
+    def tearDown(self):
+        if self._old is None:
+            os.environ.pop("KIRO_AGENTS_DIR", None)
+        else:
+            os.environ["KIRO_AGENTS_DIR"] = self._old
+        kf._AGENT_PLUGIN_CACHE.clear()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write(self, name, spec):
+        with open(os.path.join(self.tmp, f"{name}.json"), "w", encoding="utf-8") as f:
+            json.dump(spec, f)
+
+    def test_plugin_command_built_and_invoked(self):
+        self._write("myllm", {"command": ["my-cli", "run", "{model}"],
+                              "default_model": "base-7b"})
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append((cmd, kw.get("input")))
+            return types.SimpleNamespace(returncode=0, stdout="応答です", stderr="")
+        with mock.patch.object(kf.subprocess, "run", side_effect=fake_run), \
+                mock.patch.object(kf, "_AGENT_CLI", "myllm"):
+            out = kf.run_agent("こんにちは", None)
+        self.assertEqual(out, "応答です")
+        cmd, stdin_text = calls[0]
+        self.assertEqual(cmd, ["my-cli", "run", "base-7b"])
+        self.assertEqual(stdin_text, "こんにちは")
+
+    def test_unknown_agent_cli_is_explicit_error(self):
+        with mock.patch.object(kf, "_AGENT_CLI", "nosuchcli"):
+            with self.assertRaises(RuntimeError) as cm:
+                kf.run_agent("x", None)
+        self.assertIn("agents/nosuchcli.json", str(cm.exception))
+
+    def test_agent_failure_carries_triage_tag(self):
+        msg = kf._agent_failure("codex", 1, "", "usage limit reached")
+        self.assertTrue(msg.startswith("[agent-error:quota]"), msg)
+        self.assertIsNone(kf.classify_agent_failure("テストが 3 件落ちた"))
+
+    def test_env_failure_fails_run_fast_instead_of_replanning(self):
+        # 認証切れタグ付きの失敗ノードが 1 つでもあれば、再計画（リトライ生成）せず打ち切る
+        nodes = {"t1": {"goal": "a", "deps": [], "kind": "work"},
+                 "t2": {"goal": "b", "deps": [], "kind": "work"}}
+        results = {"t1": {"status": "done", "output": "ok"},
+                   "t2": {"status": "failed",
+                          "output": "実行エラー: [agent-error:auth] kiro-cli 失敗 (rc=0): 認証切れ"}}
+        args = types.SimpleNamespace(executor="stub", max_fanout=50, review=False,
+                                     exemplar_first=False, max_retries=3)
+        decision, new_tasks, reason = kf._continue(args, "req", nodes, results, 0)
+        self.assertEqual(decision, "failed")
+        self.assertEqual(new_tasks, [])
+        self.assertIn("[agent-error:auth]", reason)
+        self.assertIn("温存", reason)                  # 完了済みは捨てない、と言い切る
+
+    def test_env_failure_preserves_control_and_budget_classes(self):
+        """管理停止と利用上限を別クラスのまま run まで運ぶ。"""
+        nodes = {"t1": {"goal": "a", "deps": [], "kind": "work"}}
+        args = types.SimpleNamespace(executor="stub", max_fanout=50, review=False,
+                                     exemplar_first=False, max_retries=3)
+        for source, error_class in (("agent-control", "control"), ("node-budget", "quota")):
+            with self.subTest(source=source, error_class=error_class):
+                results = {
+                    "t1": {
+                        "status": "failed",
+                        "output": (f"実行エラー: [agent-error:{error_class}] [{source}] "
+                                   "管理面により実行できません"),
+                    },
+                }
+                decision, _, reason = kf._continue(args, "req", nodes, results, 0)
+                self.assertEqual(decision, "failed")
+                self.assertIn(f"[agent-error:{error_class}]", reason)
+                self.assertIn(f"[{source}]", reason)
+                self.assertNotIn("プラン・クレジット", reason)
+
+    def test_content_failure_still_replans(self):
+        # タグ無し（内容の問題）は従来どおり retry タスクを生成する
+        nodes = {"t1": {"goal": "a", "deps": [], "kind": "work"}}
+        results = {"t1": {"status": "failed", "output": "実行エラー: テストが落ちた"}}
+        args = types.SimpleNamespace(executor="stub", max_fanout=50, review=False,
+                                     exemplar_first=False, max_retries=3)
+        decision, new_tasks, _ = kf._continue(args, "req", nodes, results, 0)
+        self.assertEqual(decision, "replan")
+        self.assertEqual(len(new_tasks), 1)
+
+
+class FormatRepairTests(unittest.TestCase):
+    """レイヤ2（形式修復リトライ）: 出力契約違反（JSON 崩れ・配列でない）を
+    「前回の出力はこう契約違反だった」の指摘付き再呼び出しで 1 回修復する。"""
+
+    def test_split_repaired_to_list(self):
+        outs = ["リストにできませんでした。ごめんなさい。", '["a-m", "n-z"]']
+        with mock.patch.object(kf, "run_agent", side_effect=outs), \
+                mock.patch.object(kf, "_FORMAT_RETRIES", 1):
+            text, data = kf.execute_agent("split", "五十音を2分割", {}, None)
+        self.assertEqual(data, ["a-m", "n-z"])           # 修復で fan-out 可能になる
+
+    def test_split_repair_prompt_carries_violation(self):
+        prompts = []
+        def capture(prompt, model, purpose=""):
+            prompts.append(prompt)
+            return "だめでした" if len(prompts) == 1 else '["x"]'
+        with mock.patch.object(kf, "run_agent", side_effect=capture), \
+                mock.patch.object(kf, "_FORMAT_RETRIES", 1):
+            kf.execute_agent("split", "分割", {}, None)
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("契約違反", prompts[1])            # 違反の指摘が修復プロンプトに載る
+        self.assertIn("だめでした", prompts[1])          # 前回出力も見せる
+
+    def test_split_unrepairable_falls_back_to_none(self):
+        with mock.patch.object(kf, "run_agent", return_value="常に散文"), \
+                mock.patch.object(kf, "_FORMAT_RETRIES", 1):
+            text, data = kf.execute_agent("split", "分割", {}, None)
+        self.assertIsNone(data)                          # 従来のフォールバック（評価役が判断）
+
+    def test_format_retries_zero_disables_repair(self):
+        calls = []
+        def count(prompt, model, purpose=""):
+            calls.append(1)
+            return "散文"
+        with mock.patch.object(kf, "run_agent", side_effect=count), \
+                mock.patch.object(kf, "_FORMAT_RETRIES", 0):
+            kf.execute_agent("split", "分割", {}, None)
+        self.assertEqual(len(calls), 1)
+
+    def test_evaluator_json_repaired(self):
+        outs = ["判定: 完了です", '{"decision":"done","reason":"ok","new_tasks":[]}']
+        nodes = {"t1": {"goal": "g", "deps": [], "kind": "work"}}
+        results = {"t1": {"status": "done", "output": "ok"}}
+        with mock.patch.object(kf, "run_agent", side_effect=outs), \
+                mock.patch.object(kf, "_FORMAT_RETRIES", 1):
+            decision, new, reason = kf.continue_agent("req", nodes, results, 0)
+        self.assertEqual(decision, "done")
+        self.assertEqual(reason, "ok")                   # 修復後の JSON が採用される
+
+    def test_evaluator_transient_fails_run_with_tag(self):
+        # 評価役の呼び出し自体が transient 失敗 → fallback（内容推定）でなくタグ付き failed 終端
+        # ＝ auto-heal / 環境復旧が拾う。
+        def boom(prompt, model, purpose=""):
+            raise RuntimeError("[agent-error:transient] ETIMEDOUT（3 回試行後）")
+        nodes = {"t1": {"goal": "g", "deps": [], "kind": "work"}}
+        results = {"t1": {"status": "done", "output": "ok"}}   # 全 done でも failed に倒す
+        with mock.patch.object(kf, "run_agent", side_effect=boom):
+            decision, new, reason = kf.continue_agent("req", nodes, results, 0)
+        self.assertEqual(decision, "failed")
+        self.assertIn("[agent-error:transient]", reason)
+
+    def test_planner_json_repaired(self):
+        outs = ["こんなグラフはどうでしょう",
+                '{"patterns":["fan-out-and-synthesize"],"parallelism":2,'
+                '"tasks":[{"id":"t1","goal":"g","deps":[],"kind":"work"}]}']
+        with mock.patch.object(kf, "run_agent", side_effect=outs), \
+                mock.patch.object(kf, "_FORMAT_RETRIES", 1):
+            strategy, tasks = kf.plan_strategy_agent("req", None)
+        self.assertEqual(strategy["patterns"], ["fan-out-and-synthesize"])
+        self.assertEqual([t["id"] for t in tasks], ["t1"])
+
+    def test_planner_unrepairable_falls_back_to_stub(self):
+        with mock.patch.object(kf, "run_agent", return_value="散文"), \
+                mock.patch.object(kf, "_FORMAT_RETRIES", 1):
+            strategy, tasks = kf.plan_strategy_agent("req", None)
+        self.assertTrue(strategy["patterns"])            # stub 戦略に倒れて run は続行
+        self.assertTrue(tasks)
+
+
+class AgentControlTests(unittest.TestCase):
+    """agent-control 契約（control.json 上書き・lifecycle・status ハートビート）。"""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="kf-control-")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        _prev_control = os.environ["AGENT_CONTROL_DIR"]
+        os.environ["AGENT_CONTROL_DIR"] = self.dir
+        # pop すると**モジュール既定の隔離先ごと消え**、以降のテストが開発者の実
+        # `~/.agents/control` を読む（テスト順で agent_cli 系が落ちる原因だった）。
+        self.addCleanup(os.environ.__setitem__, "AGENT_CONTROL_DIR", _prev_control)
+        os.environ["AGENT_BUDGET_DIR"] = self.dir       # 予算は無設定（None）
+        self.addCleanup(os.environ.pop, "AGENT_BUDGET_DIR", None)
+        kf._CONTROL_CACHE["mtime"] = None               # mtime キャッシュを毎テストで無効化
+
+    def _control(self, ctl):
+        with open(os.path.join(self.dir, "control.json"), "w", encoding="utf-8") as f:
+            json.dump(ctl, f)
+        kf._CONTROL_CACHE["mtime"] = None
+
+    def test_override_resolution_order(self):
+        # agents[purpose] > workload > defaults
+        self._control({"version": 1, "defaults": {"model": "sonnet"},
+                       "workloads": {"flow": {"model": "opus",
+                                              "agents": {"planner": {"agent_cli": "cursor"}}}}})
+        self.assertEqual(kf._control_override("planner"), ("cursor", "opus"))
+        self.assertEqual(kf._control_override("worker"), (None, "opus"))
+
+    def test_control_overrides_agent_for(self):
+        self._control({"version": 1,
+                       "workloads": {"flow": {"agents": {"verify": {"model": "opus"}}}}})
+        cli, model = kf._agent_for("verify")
+        self.assertEqual(model, "opus")                 # control が最優先
+
+    def test_lifecycle_pause_blocks_run_agent(self):
+        self._control({"version": 1, "workloads": {"flow": {"lifecycle": "pause"}}})
+        with self.assertRaises(RuntimeError) as ctx:
+            kf.run_agent("x", None, purpose="worker")
+        self.assertIn("[agent-control]", str(ctx.exception))
+        self.assertIn("[agent-error:control]", str(ctx.exception))
+        self.assertEqual(kf.classify_agent_failure(str(ctx.exception))[0], "control")
+
+    def test_status_heartbeat_written(self):
+        self._control({"version": 1, "revision": 7, "workloads": {"flow": {}}})
+        with mock.patch.object(kf, "_run_agent_once", return_value="ok"):
+            kf.run_agent("x", None, purpose="worker")
+        status_dir = os.path.join(self.dir, "status")
+        files = [n for n in os.listdir(status_dir) if n.endswith(".json")]
+        self.assertTrue(files)
+        with open(os.path.join(status_dir, files[0]), encoding="utf-8") as f:
+            rec = json.load(f)
+        self.assertEqual(rec["tool"], "agent-flow")
+        self.assertEqual(rec["workload"], "flow")
+        self.assertEqual(rec["revision_applied"], 7)
+        self.assertEqual(rec["lifecycle"], "run")
+
+
+class GlobalInstructionsTests(unittest.TestCase):
+    """グローバル指示（agent-instructions 契約）: 描画・meta スナップショット・ワーカー注入・status。"""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="kf-instr-")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        self.instr = tempfile.mkdtemp(prefix="kf-instr-home-")
+        self.addCleanup(shutil.rmtree, self.instr, ignore_errors=True)
+        os.environ["AGENT_INSTRUCTIONS_DIR"] = self.instr
+        self.addCleanup(os.environ.pop, "AGENT_INSTRUCTIONS_DIR", None)
+        kf._INSTRUCTIONS_REV_APPLIED = None
+        self.addCleanup(setattr, kf, "_INSTRUCTIONS_REV_APPLIED", None)
+
+    def _write_instructions(self, obj):
+        with open(os.path.join(self.instr, "instructions.json"), "w", encoding="utf-8") as f:
+            json.dump(obj, f)
+
+    def test_render_matches_canonical_format(self):
+        block = kf.render_instructions_block({
+            "revision": 5, "enabled": True, "text": "回答は日本語。",
+            "skills": ["karpathy-guidelines", {"name": "self-checking", "note": "提出前に自己評価"}],
+            "tools": {"allow": ["fs_read"], "deny_note": "push は人の確認"}, "max_chars": 2000,
+        })
+        self.assertTrue(block.startswith("<!-- agent-instructions rev:5 -->\n"))
+        self.assertIn("## 共通指示（agent-dashboard 管理・全ノード共通）", block)
+        self.assertIn("- self-checking — 提出前に自己評価", block)
+        self.assertIn("ツール（許可）: fs_read", block)
+        self.assertEqual(kf.render_instructions_block({"enabled": False, "text": "x", "revision": 1}), "")
+        self.assertEqual(kf.render_instructions_block(None), "")
+
+    def test_render_truncates_but_keeps_marker(self):
+        block = kf.render_instructions_block({"revision": 3, "enabled": True, "text": "あ" * 500}, 80)
+        self.assertLessEqual(len(block), 80)
+        self.assertTrue(block.startswith("<!-- agent-instructions rev:3 -->"))
+        self.assertTrue(block.endswith("…"))
+
+    def test_prepend_dedups_on_marker(self):
+        block = "<!-- agent-instructions rev:1 -->\nX"
+        merged = kf.prepend_instructions("本文", block)
+        self.assertTrue(merged.startswith(block))
+        self.assertIn("本文", merged)
+        self.assertEqual(kf.prepend_instructions(merged, block), merged)  # 二重注入しない
+
+    def test_snapshot_writes_meta_and_propagates(self):
+        self._write_instructions({"version": 1, "revision": 2, "enabled": True, "text": "共通指示X"})
+        bus = kf.Bus(self.dir, "run-gi")
+        bus.ensure_run("元要求")
+        self.assertTrue(bus.snapshot_instructions())
+        meta = bus.run_meta("run-gi")
+        self.assertEqual(meta["instructions"]["revision"], 2)
+        self.assertIn("共通指示X", meta["instructions"]["text"])
+        self.assertTrue(meta["instructions"]["text"].startswith("<!-- agent-instructions rev:2 -->"))
+        # 冪等: 既にスナップショット済みなら再書き込みしない
+        self.assertFalse(bus.snapshot_instructions())
+
+    def test_snapshot_skips_when_disabled_or_empty(self):
+        self._write_instructions({"version": 1, "revision": 1, "enabled": False, "text": "x"})
+        bus = kf.Bus(self.dir, "run-off")
+        bus.ensure_run("req")
+        self.assertFalse(bus.snapshot_instructions())
+        self.assertNotIn("instructions", bus.run_meta("run-off"))
+
+    def test_snapshot_skips_when_request_has_marker(self):
+        self._write_instructions({"version": 1, "revision": 1, "enabled": True, "text": "x"})
+        bus = kf.Bus(self.dir, "run-mk")
+        bus.ensure_run("<!-- agent-instructions rev:9 --> 既に注入済みの要求")
+        self.assertFalse(bus.snapshot_instructions())
+
+    def test_execute_agent_injects_block_via_builtin_prompt(self):
+        block = "<!-- agent-instructions rev:4 -->\n## 共通指示（agent-dashboard 管理・全ノード共通）\n回答は日本語。"
+        captured = {}
+
+        def fake_run_agent(prompt, model, purpose=""):
+            captured["prompt"] = prompt
+            return "ok"
+
+        # flow-worker スキルを無効化して組み込み fallback プロンプトを通す
+        with mock.patch.object(kf, "_flow_worker_prompt", return_value=None), \
+             mock.patch.object(kf, "run_agent", side_effect=fake_run_agent):
+            kf.execute_agent("work", "タスクG", {}, None, instructions=block)
+        self.assertTrue(captured["prompt"].startswith(block))
+        self.assertIn("タスクG", captured["prompt"])
+
+    def test_execute_agent_no_double_inject_when_prompt_has_marker(self):
+        block = "<!-- agent-instructions rev:4 -->\n共通指示"
+        # スキルが既にブロックを前置したプロンプトを返す → 外側は二重注入しない
+        skill_prompt = block + "\n\nタスク本文"
+        captured = {}
+
+        def fake_run_agent(prompt, model, purpose=""):
+            captured["prompt"] = prompt
+            return "ok"
+
+        with mock.patch.object(kf, "_flow_worker_prompt", return_value=skill_prompt), \
+             mock.patch.object(kf, "run_agent", side_effect=fake_run_agent):
+            kf.execute_agent("work", "g", {}, None, instructions=block)
+        self.assertEqual(captured["prompt"].count("agent-instructions"), 1)
+
+    def test_status_carries_instructions_revision_applied(self):
+        _prev_control = os.environ["AGENT_CONTROL_DIR"]
+        os.environ["AGENT_CONTROL_DIR"] = self.dir
+        # pop すると**モジュール既定の隔離先ごと消え**、以降のテストが開発者の実
+        # `~/.agents/control` を読む（テスト順で agent_cli 系が落ちる原因だった）。
+        self.addCleanup(os.environ.__setitem__, "AGENT_CONTROL_DIR", _prev_control)
+        kf._CONTROL_CACHE["mtime"] = None
+        kf._note_instructions_applied(3)
+        with mock.patch.object(kf, "_run_agent_once", return_value="ok"):
+            kf.run_agent("x", None, purpose="worker")
+        status_dir = os.path.join(self.dir, "status")
+        files = [n for n in os.listdir(status_dir) if n.endswith(".json")]
+        with open(os.path.join(status_dir, files[0]), encoding="utf-8") as f:
+            rec = json.load(f)
+        self.assertEqual(rec["instructions_revision_applied"], 3)

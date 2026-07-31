@@ -1,0 +1,10 @@
+{
+  "id": "obsidian-kiro-bridge",
+  "name": "Kiro Bridge",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "Run the current Obsidian note as a Kiro task via Windows Terminal (Windows or WSL)",
+  "author": "nitto",
+  "authorUrl": "",
+  "isDesktopOnly": true
+}

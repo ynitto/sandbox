@@ -1,0 +1,47 @@
+{
+  "name": "gitlab-review-viewer",
+  "version": "0.1.0",
+  "description": "GitLab イシューと MR を並べて表示するレビュー専用ビュアー",
+  "author": "sandbox",
+  "license": "MIT",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win",
+    "dist:portable": "electron-builder --win portable"
+  },
+  "devDependencies": {
+    "electron": "^43.0.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "jp.sandbox.gitlab-review-viewer",
+    "productName": "GitLab Review Viewer",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": [
+        "portable",
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "protocols": [
+      {
+        "name": "GitLab Review Viewer",
+        "schemes": [
+          "gitlab-review-viewer"
+        ]
+      }
+    ]
+  }
+}

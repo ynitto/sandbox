@@ -1,0 +1,650 @@
+# agent-dashboard
+
+> 旧 `kiro-projects-viewer` 系統から移行した後継実装。
+> 改称方針: [`docs/designs/agent-tools-rename-design.md`](../../docs/designs/agent-tools-rename-design.md)。
+
+**複数の agent-project プロセスを束ねて可視化し、入出力を git 経由で編集・検収する GUI。**
+各プロジェクト（1 プロジェクト = 1 ディレクトリ = 1 プロセス）の状態共有リポジトリの clone を
+登録するだけで、Windows から WSL・別ホストで稼働する本体をドライブできる——上位からの指示・
+確認・方針変更・一時停止/停止・回復（再分解・再投入）をこのアプリで完結する。
+[gitlab-review-viewer](../gitlab-review-viewer/) と同じ構成（プレーン Electron・
+バンドラなし・main / preload / renderer の 3 層）で作られている。本番依存は差分表示の
+`diff2html` と YAML 読み取りの `yaml` の 2 つだけ。
+
+**ソース構成（制御面分離）**: Electron シェル等の共通部は `src/base/`、
+agent-project / agent-flow の制御は `src/features/agent-project/` に置き、
+kiro-loop 制御（`src/features/kiro-loop/`）・定常業務（`src/features/cowork/`）・
+agent-amigos ミッションとノード予算（`src/features/amigos/`）を同じ形で差し込んでいる
+（動的プラグインではない。列挙合成のみ。詳細は
+[`docs/designs/agent-dashboard-design.md`](../../docs/designs/agent-dashboard-design.md) §3.2・§4）。
+
+**renderer の構成（機能分割）**: 画面側（`src/renderer/`）は保守性のため 1 本の
+巨大 `renderer.js` を機能ごとのファイルへ分割している。すべて**クラシックスクリプト**で、
+`index.html` の `<script>` 読み込み順を通じてグローバルスコープを共有する（バンドラなし）。
+読み込み順に意味があり、この契約を守る限りファイルを増やせる:
+
+1. `renderer.js`（**core**）— `state` / `$` / 共有定数・ユーティリティ・発見/プロジェクト選択・
+   タブ制御・ポーリング・git pull と、フィーチャータブ登録簿（`registerFeatureTab`）を宣言。**最初**に読む。
+2. `sections/*.js` — 各タブの描画（overview / backlog / needs / flow / node-detail / gitlab /
+   history / amigos / orchestration / cowork / kiro-loop）。中身は関数宣言のみで load 時実行を持たない
+   ため、相互の順序は不問。
+3. `features/*.js` — `registerFeatureTab` で自分のタブを差し込む独立モジュール。
+4. `bootstrap.js` — `init()` の定義と呼び出し。全関数が出揃った後に動くよう**最後**に読む。
+
+テストはソースを文字列走査するため、`test/helpers/renderer-src.js` が上記を結合して
+「元の renderer.js 相当の全文」を返す（アサーションはコードのファイル位置に依存しない）。
+
+**ミッションタブ**（`src/features/amigos/`）: agent-amigos ミッションの進行
+を、目的・現在の状態・担当状況が分かる要約カードで一覧する。「詳しく見る」から、
+担当メンバーごとの作業状況と、エージェント間のやりとり（要約＋全文展開）を確認できる。
+**ノード予算**（[node-budget 契約](../../schemas/node-budget.schema.json) —
+定常業務・プロジェクト・フロー・ミッションの実行時間合計に上限。0 = 無制限、
+依頼側・請負側どちらのノードでも同じ）は、アプリの「全体設定 → エージェント」で
+機能別の消費内訳を表示・編集する。ミッションも依頼先ホームも無いときはタブ自体を隠す。
+
+**セッション開始コマンド**（[agent-session-commands 契約](../../schemas/agent-session-commands.schema.json)
+— 「全体設定 → エージェント → 共通設定」で編集）: エージェントのセッションが始まった直後に、
+上から順に 1 回だけ実行する前準備。`process` はホストのシェルで実行して完了を待ち（`git fetch`・
+`docker compose up` など）、`chat` はセッションへ最初のプロンプトとして送る。常駐系
+（kiro-loop / agent-loop / このアプリの定常業務ウィンドウ）は tmux ペイン 1 本、agent-flow は
+ワーカープロセス 1 つが「セッション」にあたる。共通指示（agent-instructions）と違い**委譲先
+ノードへは伝播しない** — コマンドの到達範囲を、その端末に置いた設定ファイルへ閉じ込める。
+設定: [`docs/plans/2026-07-20-agent-dashboard-session-commands-design.md`](../../docs/plans/2026-07-20-agent-dashboard-session-commands-design.md)。
+
+**概要から詳細へ**: 最初の画面で「現在の状態／あなたの対応／進捗／成果」を把握し、
+必要な箇所だけ「タスクを見る」「実行を見る」「成果を見る」から深掘りできる。
+プロジェクト定義の編集やリセットは「プロジェクト設定」にまとめ、日常の確認画面から分離している。
+
+**verify 統一は設計中**: 現行データでは agent-flow の `kind: verify` と agent-project の
+バックログ `verify:` の両方を読み分けて表示するが、同じ完了条件を二つの層で生成・実行し続ける
+ことは目標ではない。統一後は agent-project の検証計画を正本とし、成果 revision と worktree を持つ
+agent-flow が一度だけ実行し、agent-project が receipt を検算して状態を確定する。移行判断と順序は
+[`agent-project / agent-flow task verify 統一設計`](../../docs/plans/2026-07-30-unified-task-verify-design.md)
+を正とし、片側だけを先に無効化しない。
+
+```
+┌ サイドバー ────────┐┌ メイン ─────────────────────────────────────────┐
+│ プロジェクト        ││ 概要      charter / acceptance 達成状況 / 稼働操作 │
+│  ● 稼働中 ⏸一時停止 ││ バックログ  タスク一覧（status / priority / verify）│
+│  [needs] [tasks]    ││ 要対応     needs/（人の判断待ち・検収待ち）        │
+│  （1 行 = 1 clone） ││ フロー     agent-flow run のタスクグラフ（DAG）     │
+│                     ││ レビュー待ち repos のオープンイシュー → レビューへ │
+│                     ││ 履歴      run-log / 決定記録 / 納品 / journal     │
+└─────────────────────┘└──────────────────────────────────────────────┘
+```
+
+## 何が見えるか（データソース）
+
+すべて **読み取り専用**。agent-project / agent-flow のファイルを直接読む
+（両ツールの稼働は不要。稼働中なら自動更新で追従する）。
+
+| タブ | データソース |
+|------|-------------|
+| 概要 | `charter.md`（goal / deliverables / acceptance）・`project.json`（acceptance PASS 履歴）・`backlog/` 集計・`policy.md`・`claims/`・`run-log.jsonl`・`DELIVERY.md`・`status.json`（daemon の生存信号。`engine/status.json` で分からないときのフォールバック） |
+| バックログ | `backlog/<id>.md`（1 ファイル = 1 タスク。status / priority / verify / after 等）・`archive/<id>.md`（done） |
+| 要対応 | `needs/<id>.md`（MADR 形式。blocked / review / milestone。「ファイルを開いて回答」でエディタへ） |
+| フロー | `<bus>/runs/<run-id>/`（`graph.json` + `results/` + `claims/` + `waits/` からノード状態を導出し DAG を描画。`events/*.jsonl` のアクティビティ付き）。run のスナップショットはポーリングのたびに**プロジェクト配下の `flow-archive/<run-id>.json`** へ写し取り、掃除で bus から消えた run も「アーカイブ」として一覧・閲覧できる（プロジェクトのデータなのでリセットで一緒に消える。state_git の同期対象からは bus と同様に外れる）。gitlab executor の **park & poll**（承認待ちで worker スロットを解放し保留）に対応し、生存 lease を持つ `waits/<node>.json` を「**承認待ち（parked）**」ノード（オレンジ・レビュー中アイコン）として、同時イシュー上限での「起票見送り（throttle）」も区別して表示する（lease 失効は pending へ縮退＝本体と同じ）。`cancelled` run も終端として正しく扱う（応答なしに誤分類しない）。バスは `<root>/bus` → `<root>/bus` → ⚙ 設定 → agent-project 設定ファイル（`.agents/`）の `bus:` の順に自動発見。run の生存（orchestrator 応答なし）は `meta.json` の生存リース（`orch_lease_until`）から、daemon の稼働はロックファイル（`$TMPDIR/agent-flow-locks/daemon-<sha1>.lock` の pid。同一ホストのみ）から、無ければ `<bus>/status.json`（生存信号。state_git 同期経由の推定）から判定 — **agent-flow CLI には一切聞かない**。ノード詳細では進捗（開始・経過・worker heartbeat/lease・所要・作り直し回数・claimed/result のタイムライン）と、gitlab executor の**関連イシュー**（承認は `data`、却下は output の URL、実行中は決定的タスクトークンの GitLab 検索）を表示し「レビューで開く」で gitlab-review-viewer へ引き継ぐ。run 表示ペインは**概要 / タスクグラフ / ノード情報**の縦 3 段に分かれ、各段が独立して縦スクロールする（グラフが縦に長くても概要・ノード詳細を見失わない） |
+| レビュー待ち | `repos.json` の GitLab リポジトリのオープンイシュー＋関連 MR（API 設定時）。プロジェクトが扱うリポジトリの「いまレビュー待ち・作業中」を横断一覧し gitlab-review-viewer へ引き継ぐ。既定では **agent-flow 由来のイシュー**（gitlab executor が起票 = 本文の `task-token` マーカー）だけに絞る（「agent-flow 由来のみ」チップで解除可）。各行の **「関連 run」列**は、イシュー本文の `task-token` をロード済み run 一覧の各ノードの決定的トークンと突き合わせて起票元の run/ノードを特定し、クリックでフロー画面のその run・ノードを直接開く（イシュー URL は承認/却下まで bus に現れないため、レビュー待ち中の対応付けはこのトークン一致で行う。追加の API/走査コストは無し）。run/ノード単位の委譲イシューの決着（承認/却下）はフロータブのノード詳細が担当 |
+| 履歴 | `run-log.jsonl`・`decisions/<id>.md`（DR）・`DELIVERY.md`・`journal.md` |
+
+### 関係性のたどり（charter → backlog → run → issue）
+
+タブ構成はそのままに、**どのタスクがどの run（GitLab イシュー）につながっているか**を可視化し、
+クリックで関連画面へ遷移できる。鍵は agent-flow の決定的 run-id
+`req-<backlogハッシュ>-<taskid>-r<retries>` — ここから紐づくバックログタスクとリトライ系統を復元する。
+
+- **リトライは「意味的に同一」なので束ねる**: 同一タスクの `…-r0 / …-r1 / …` は 1 系統として
+  フロー一覧にまとめ、最新試行を見出しに、過去の試行は色付きピル（`r0` `r1` …）で畳む。
+  `--inherit-from` で先行 run を引き継いだ run には「↩ 引き継ぎ元」を併記する。
+- **パンくず**（タスクダイアログ・run 詳細）: `🎯 charter ▸ 🗒 task ▸ ⚙ run(系統) ▸ 🔗 issue`。
+  各セグメントはクリックで対応する画面へ飛ぶ（run→フロー、task→バックログ、issue→GitLab）。
+- **相互リンク**: バックログ各行に関連 run バッジ `⚙N`（クリックでフローへ）、フロー一覧に
+  タスクリンク `🗒 <taskid>`（クリックでバックログのタスクダイアログへ）、タスクダイアログに
+  「関連する agent-flow run（リトライ系統）」一覧。
+
+### 検収カードの中身（S4・S5）
+
+検収カードは「**受入基準 × 証跡** + MR リンク」で構成される。
+
+- **検証表** … 基準ごとの判定（pass / fail / 検証不能）と証跡（実行したコマンド・出力の要約・
+  参照したファイル）。人がレビューするのは**コマンドではなく基準と証跡**——コマンドの良し悪しは
+  人には判断できないが、基準と証跡なら判断できる。証跡の薄い判定は警告として目立たせる
+  （抜き取り監査を別機能にせず、人が毎回見る 1 枚に載せる）
+- **MR リンク** … MR があるあいだ、カード内で差分は開かない。レビューコメント・承認状態・
+  行コメントはフォージ側に揃っており、二つ目の差分ビューを置くと「どちらで見てどちらに書くか」が
+  人ごとにばらける
+- **差分**（MR を持たないタスクのみ） … `~/.agents/agent-project.host.yaml` の `repos[]` で
+  このノードにクローンを宣言していれば表示できる。宣言が無ければ理由を表示する
+  （worker の作業ツリーは `/tmp` で消えるので、記録されたパスからは復元できない）
+
+このアプリは git・フォージへ書き込まない。承認/差し戻しボタンは契約ファイルの投函で、
+実際の MR 操作は本体（agent-project の常駐体）が行う。
+
+### CLIチャットの起動先（S3）
+
+ヘッダの「CLIチャットを開く」は、隣のドロップダウンで**開くフォルダ**を選べる。
+
+- 既定は **プロジェクト（状態リポジトリの clone）**（従来動作）
+- **選択中プロジェクトの repos レジストリ（repos.yaml / repos.json）にある成果物リポジトリ**も
+  選べる。ローカルクローンの置き場は各 PC の `~/.agents/agent-project.host.yaml` の
+  `repos[]` 宣言（url と local）で解決する。host.yaml はノード全体（全プロジェクト分）の
+  宣言なので、そのまま並べず**レジストリにある URL だけ**に絞る——他プロジェクト用の
+  クローンが選択中プロジェクトの画面に混ざらないように
+
+S1 以降プロジェクトのフォルダは状態リポジトリの clone（backlog / needs / charter の置き場）
+なので、コードを触りたくて CLI を開いてもそこには 1 行もコードが無い。宣言が無い／実体が
+見つからないリポジトリは**消さずに非活性で理由付きで並べる**——一覧から消えると「なぜ選べないか」
+が分からず、宣言し忘れに気付けない。
+
+### プロジェクトルート（状態専用リポジトリの clone）
+
+登録するのは**状態専用リポジトリの clone**。agent-project の状態ルートはこれ 1 つで
+（S1）、`charter.md` / `backlog/` / `needs/` / `bus/` / `flow-archive/` はすべてその直下、
+CLI の `--root`（= host.yaml の `projects[].root`）と同じものを指す。承認・投入・リセットなどの
+操作はすべてここを基準に行う。
+
+```
+/home/me/agents/webapp-state   ← 状態リポジトリの clone（これを登録する）
+├── agent-project.yaml         ← プロジェクトの合意（全 PC 共有）
+├── charter.md  charters/  backlog/  needs/  decisions/
+└── bus/  flow-archive/
+```
+
+**clone は dashboard では行わない**（agent-project が host.yaml の宣言に従って作る）。
+閲覧・検収だけの PC にも**常駐体（`agent-project serve`）を置き、host.yaml に同じ
+プロジェクトを宣言する**——一覧への発見（`engine/status.json`）も、承認などの投函を
+共有先へ届ける push も常駐体だけが担うため、常駐体の居ない PC では一覧に出ず、
+置いた指示も届かない。常駐体を置けない PC からは、フォージ側の決着
+（MR のマージ＝承認／未マージクローズ＝却下／changes-requested＝差し戻し）で
+検収する——こちらはブラウザだけで完結し、決着は実行側の常駐体が拾う。
+
+移行途中の 2 つの形も読める（どちらも旧レイアウトの互換で、正は上の形）:
+
+- 成果物リポジトリを登録したまま・直下に旧ブートストラップ `state_repo:` が残っている
+  → 隣の `<repo>-state` を開く
+- 状態が `<ws>/.agent-project` にネストしている → その下を開く
+
+状態 worktree（`<repo>-agent-state`）への正規化と自動作成は**廃止した**。エンジンがそこへ
+書かなくなった以上、開くと「更新が止まった状態」を実体と信じて見せることになるため。
+
+**agent-project プロジェクトの発見は実行側の状況ファイル 1 本**（`engine/status.json` の
+`children[].root`）。どのプロジェクトを持つかを決めるのは実行側の `agent-project.host.yaml` で、
+この画面はそれを映すだけ——**画面からの登録・登録解除は無い**（一覧に出すには host.yaml へ
+追記する）。設定に残るのは「どこの状況ファイルを読むか」（ディストロ / ベースパス）と表示の
+好みだけ。
+
+実行側は宣言しているのに**この PC からそのフォルダに届かない**プロジェクトは、一覧から消さずに
+「**届きません**」バッジ付きの非活性行として並べる（宣言されたパスと、次に見る場所を添える）。
+原因はほぼ常に設定のディストロ／ベースパスが実際の置き場と食い違っていることで、黙って消すと
+一覧が空になり「プロジェクトが登録されていません」という**直しようのない案内**になる。
+その案内は本当に 1 件も宣言が無いときだけ出す。
+
+**定常業務だけのフォルダは別**（S2）。kiro-loop 設定や `.statemachine/` を持つだけで
+agent-project の管理外というフォルダは、**全体設定「定常業務」の「フォルダを登録」から登録する**
+（設定 `cowork.roots`。定常業務タブは選択中プロジェクトの作業を見る画面なので、
+別フォルダの登録ボタンは置かない——登録の入口はプロジェクト選択に依存しない全体設定に一本化）。宣言をここに置くのは、定常業務のエンジン（kiro-loop /
+statemachine-use）が agent-project の常駐体・状態リポジトリと無関係に動き、起動・tmux 管理・
+履歴記録をすべてこの dashboard が担っているため——「宣言は実行側が持つ」の原則どおり。
+登録したフォルダは一覧に **kind=routine** として並び、定常業務タブだけを出す。
+agent-project のプロジェクトと同じパスを登録した場合は project 側を正として畳む。
+
+レイアウトはプロジェクトルート直下フラット（charter.md / backlog/ / needs/ … が直下）のみ。
+
+### リモートで稼働する agent-project を見る（状態共有リポジトリ経由）
+
+本体（agent-project）の**状態ルートは常に状態専用リポジトリの clone**（direct モード・S1。
+本体側 README「状態の git 保存・共有」参照）。本体が状態を直接コミット・push するので、同じ
+リポジトリを clone してある PC からは、常駐体（`agent-project serve`）がその clone を子として
+持つだけで一覧に出る。
+
+**同期の書き手は常駐体だけ**で、この画面は pull も push もしない。以前は viewer 側にも
+⇣ ボタン・自動 pull 間隔・「操作を都度コミットしてプッシュ」があったが、viewer の push が
+本体の状態ファイルへコンフリクトマーカーを書き込んで状態共有を壊した実障害を受けて撤去した
+（設計: [`docs/designs/agent-dashboard-design.md`](../../docs/designs/agent-dashboard-design.md) §3.1。
+`test/no-git-writes.test.js` が構造として固定している）。
+
+したがって viewer の操作（needs 記入・`commands/` ドロップ・`inbox/` 投入・一時停止/停止）は
+**ローカルのファイルとして置かれるだけ**で、常駐体が次の同期でコミット・push し、本体側が
+取り込んで次パスを起こす。反映は常駐体の同期間隔ぶん遅れる。
+
+フロータブも同様: agent-flow 側の `state_git`（agent-flow README「状態の git 保存・共有」）で
+ローカルバス（`runs/`・`inbox/`）が同じ共有リポジトリの別 subdir（既定 `agent-flow`）に同期される
+ので、⚙ 設定（または `.agents/` の agent-flow 設定の `bus:`）でバスとして `<clone>/agent-flow` を
+指すと、リモートの run の進捗/結果を DAG で追える（run の生存は meta の生存リース
+`orch_lease_until` から判定する）。
+
+#### 複数プロジェクトを束ねる
+
+プロジェクトごとに別々の状態リポジトリを使う構成（`default` は個人リポジトリ、`alpha` はチーム
+共有リポジトリ等）でも、1 画面に束ねて見られる。どのプロジェクトを持つかは実行側の
+`agent-project.host.yaml` が決め、この画面はそれを映す。
+
+**フローバス**: agent-flow のバスは既定で `<root>/bus`。pure-remote 監視（ローカルに常駐体が
+いない）でバスがリポジトリの `agent-flow/` 名前空間に鏡写しされる構成では、⚙ 設定
+「プロジェクト単位バス」に 1 行 1 件 `プロジェクト名 = <clone>/agent-flow` を書く
+（`projects.flowBusByProject`）。ローカルの `<root>/bus` に `runs/` が実在するときはそちらが優先される。
+
+
+#### daemon の稼働判定（同期経由の推定）
+
+本体が別ホストの場合でも、`<root>/status.json`（生存信号。本体側 README「daemon の生存信号」
+参照）が state_git で同期されてくるので稼働を判定できる。判定は次の順:
+
+1. **`engine/status.json`**（実行側の常駐体が書く。子の生死・休止中・切り離しを含む）— 確定判定
+2. **`<root>/status.json`**（同期経由）— 1 で分からないときのフォールバック。
+   `updated_iso` が本体自身の計算した鮮度窓（`fresh_after_sec`）以内なら「稼働中」とみなす
+
+サイドバーの ● は判定根拠を区別して表示する（同期経由の推定は輪郭のみの◯＋プロジェクト名に
+`~` を付け、確定判定と見分けられるようにする）。プロジェクトの**概要タブ**には「daemon の生存」
+カードを追加し、判定根拠・最終確認からの経過時間・`watch`/`level`・最終サイクル（`run-log.jsonl`
+の末尾。これも既に同期対象）を表示する。
+
+status.json は本体側の実パス完了時にのみ更新されるため、**長時間 idle が続くと最終確認時刻は
+古いまま**になる（本体側の設計: idle 中の追加 git コミットを既定でゼロに保つトレードオフ）。
+より新鮮な生存表示が要る場合は本体側で `--status-interval`（例 `3600`）を指定してもらう
+（idle 中もその間隔で status.json だけ更新され、その分だけ state_git のコミットが増える）。
+
+#### フロータブの run 稼働判定（agent-flow）
+
+エンジンそのものの稼働判定はフロータブが持たない。常駐一本化で実行主体は PC の常駐体
+（`agent-project serve`）だけになり、稼働表示は `engine/status.json`（`children[].alive` ＝
+親が Popen で見た実測）へ一本化した。
+
+run 単位の駆動状況は `runs/<id>/meta.json` の生存リース（`orch_lease_until` /
+`heartbeat_at`）で判定する。orchestrator が自分で張るリースなので、同期経由（state_git の鏡）
+で別ホストの run を見ているときも同じ判定がそのまま効く。
+
+### 気づく — 要対応の OS 通知（張り付き監視の解消）
+
+ダッシュボードは既定 5 秒ポーリングの純プル型なので、画面を見ていないと新しい要対応
+（人の判断待ち）に気づけない。これを補うため、**新しい要対応が現れたら OS 通知・タスクバー
+バッジ・ウィンドウのフラッシュ**で知らせる（⚙ 設定「要対応が増えたら OS 通知で知らせる」・
+既定 on）。
+
+- **増分検知**: `discover()` の `needsCount`（サイドバーの要対応バッジと同じ数）を前回と
+  突き合わせ、**観測済みプロジェクトで数が増えたときだけ**通知する。起動直後の既存分では
+  通知しない（初回はベースライン取得のみ）。減少・新規発見でも通知しない。
+- **騒音を出さない**: ウィンドウを見ている間はポップアップとフラッシュを抑制し、バッジ
+  （未対応の総数）だけを更新する。
+- **クリックで対象へ**: 通知をクリックすると窓を前面化し、既存のディープリンク
+  （`agent-dashboard://open?root=…`）でそのプロジェクトを開く。
+- **層**: base が汎用の通知プリミティブ（`app:notify` / `src/base/main/notify.js`）を提供し、
+  「何を・なぜ通知するか」は agent-project の意味を知る renderer が決める。Windows は
+  `setBadgeCount` 非対応のため通知とフラッシュで補う。
+
+さらに、要対応タブでは各カードに**待ち時間バッジ**を出し、未対応を**滞留の長い順**に並べる。
+needs の最終更新からの経過を「N 分/時間/日待ち」で表示し、SLA しきい値（⚙ 設定
+「要対応 SLA」・既定 24h）を超えると赤、1/3 を超えると黄で**停滞**（人待ちで下流が止まっている
+時間）を警告する。既定選択も最も停滞したカードになり、最優先の判断へ誘導する。
+
+## 人のアクション（見るだけでなく、その場で判断を返せる）
+
+agent-project の人間ループはこのアプリ内で完結できる。いずれも agent-project の
+**公式な入力契約だけ**を使い、done の確定条件（verify のみが根拠）を迂回しない。
+
+| 操作 | 場所 | 実装（入力契約） |
+|------|------|-----------------|
+| 表示を更新 | サイドバー ⟳ | この PC 上の状態ファイルだけを読み直す。共有先との通信は行わない |
+| 共有先と同期／同期を修復 | ヘッダの同期状態の横（必要な場合だけ表示） | 取得・履歴合流・送信を一つの操作で行う。書き込み中でも一時 worktree でコミット済み履歴を隔離合流し、作業中ファイルには触れない。ローカル反映を待つ場合は赤い食い違いではなく黄色の反映待ちとして通知する。健康状態は作業ツリーを変更しない fetch で60秒ごとに再確認し、最終確認時刻または確認失敗を併記する |
+| 実行前レビュー（承認・差し戻し・却下） | 要対応カード（kind=plan-review） | 新規タスクは承認されるまで実行されない（本体の plan_review・既定 on）。**承認**=`approve` 指示ドロップ（実行を許可）／**差し戻し**=修正指示を記入して `[x]`（agent-project がタスク定義を修正して再提案）／**却下**=`reject` 指示ドロップ（廃止・avoid 記録・墓標・依存タスクは再審査へ。次の分解では意図の似たタスクを再提案させない）。却下の確認ダイアログに影響範囲（依存タスクの推移一覧）を表示 |
+| 成果物レビュー（承認・差し戻し・却下） | 要対応カード（kind=review）／タスク詳細 | 検証 PASS 後の検収（本体の delivery_review・既定 on）。成果は ap/<task-id> ブランチに集約され、GitLab 設定時は MR が自動作成される（needs に URL）。**MR があるあいだ差分レビューは MR が正**で、カードは「受入基準 × 証跡 + MR リンク」になる（S4・S5）。**承認**=`approve`（本体がクリーンなら MR を自動マージして done 確定）／**差し戻し**=記入必須 `[x]`（同一ブランチに次試行）／**却下**=`reject`（MR クローズ＋ブランチ削除＋廃止＋墓標）。フォージ側でマージ／未マージクローズ／changes-requested を付けても同じ決着になる（本体の `remote_review`） |
+| フィードバックして再開 | 要対応カード | `needs/<id>.md` の「## Decision Outcome」に記入 + `- [x]` 確定（`ingest_feedback` の正規ルート） |
+| そのまま再実行 | 要対応カード（blocked） | 空記入で `- [x]` 確定 |
+| 検証コマンドを変更して再実行 | 要対応詳細（blocked） | 関連タスクの現在の `verify` を表示し、変更後は既存の `revise`（`fields.verify`）で置換して新しい試行を開始する。タスク分解・依存関係・既存成果物は維持し、古い run は履歴に残す。送信前に旧／新コマンドと再実行範囲を確認する |
+| 承認して done 確定 | 要対応カード（review / milestone） | `commands/<name>.json` ドロップ（`ingest_commands` が CLI と同一ロジック・同一 DR で実行） |
+| 差し戻す | 要対応カード（review） | 修正方針の記入必須 → feedback として確定（手戻り扱い） |
+| 保留（hold） | 要対応カード・タスク詳細 | 同上（`{"command":"hold"}` ドロップ → policy.deny 追加） |
+| 最優先へ / 後回し | タスク詳細 | 同上（`{"command":"pin"/"defer"}` ドロップ → policy 追記） |
+| ✎ 修正して指示（revise） | タスク詳細（backlog）／要対応詳細（blocked の verify 変更） | 同上（`{"command":"revise"}` ドロップ）。タイトル・優先度・依存 after・verify・accept の**置換**とフィードバック注入。**実行中（doing）のタスクにも送れ**、本体は現在の試行の結果を確定せず（verify も done もせず）修正内容で積み直す＝気づいた時点の早い軌道修正。変更した項目だけが送られ、DR（`action: revise`）に記録される |
+| ＋ バックログに追加 | バックログタブ | `inbox/<name>.json` ドロップ（E4 push 型取り込み口）で**バックログにタスクを 1 件追加**（本体が次サイクルで `backlog/<id>.md` にする）。verify / accept / priority / note / id / after 付き。ダイアログでは既存 backlog 一覧・先行タスク datalist に加え、「AIで依存・優先度を提案」で after/priority の下書きもできる（投入は人の「追加」） |
+| AIで計画を批評 | 要対応（plan-review） | 読み取り専用 Doctor（`plan-critique`）。charter / 兄弟タスクとの整合を批評し、推薦と差し戻し文面案を返す |
+| 変更理由を説明 / フォローアップ案 | 要対応（review）・検収ダイアログ | 読み取り専用（`delivery-rationale` / `followup-suggest`）。差分の意図説明と次タスク案。承認・inbox 投入は人が確定 |
+| ↻ charter から分解 | バックログタブ | `commands/<name>.json`（`{"command":"replan"}`・**プロジェクト単位＝id 無し**）ドロップで**バックログの分解を要求**（`ingest_commands` が CLI `replan` と同一ロジック・同一 DR で実行）。**分解はこの明示操作でしか走らない**（本体は「タスクが無い」「charter が変わった」を契機に自動では分解しない＝消したタスクが勝手に作り直されない）。初回の分解も charter 編集の反映もこのボタンで人が起こす。本体が次パスで `charter.md` を分解し、差分だけを backlog に入れる。**処理中と類似・却下済みのタスクは投入しない**（既存＋`archive/` タイトルの照合に加え、プランナーへ現行バックログ・却下済みを渡して意図の似た再提案も抑止）。要求中は「分解 反映待ち」バッジを出しボタンを二重送信防止で無効化する（本体が分解まで進めると解除）。状態（done 等）は書き換えない |
+| ✎ タスクグラフを積み直す（after 含む revise） | タスク詳細（backlog のみ） | revise（`commands/`）で **依存 after** を含む項目（title / 優先度 / verify / accept / after / note / level / track）を置換。本体が取り込むと `rev` を上げ、agent-flow に**新しいタスクグラフ（run の DAG）**を作らせる（実行中タスクは現在の試行を破棄して積み直し）。after 編集は DAG 循環を本体側が拒否。状態（done 等）は書かない |
+| ＋ 新規プロジェクト | サイドバー ＋（プロジェクトが無い空状態にも導線） | `<親フォルダ>/<名前>/charter.md`（goal / constraints / assumptions / deliverables / acceptance / repos をフォームから）と、repos があれば `repos.json`（`_meta.generated_from` 付き＝正は charter）を作成。以後は agent-project の run が charter から backlog を生成する（専用の作成コマンドは無く、charter を置くだけが公式手順）。作成したルートは設定 roots に追加して発見対象にする |
+| ✨ charter の AI 下書き | 新規プロジェクト作成フォーム | goal・自由メモ（背景・要望の自然文）・書きかけの各欄をエージェント CLI に渡し、constraints / assumptions / deliverables / acceptance を**フォームへ下書き**する（→[charter 入力補助](#charter-入力補助ai-下書き補完)）。応答はフォームに流し込むだけで、ファイル作成は従来どおり「作成」ボタン（人の確定操作）のみ |
+| ✨ charter の AI 補完・📋 雛形挿入 | 編集ダイアログ（charter.md / charters/&lt;name&gt;.md のみ） | 編集中の charter 全文をエージェント CLI に渡し、書式を保ったまま不足セクションの補完・acceptance のコマンド化・曖昧な記述の明確化をした**完成版に置き換える**（「↩ 補完前に戻す」で復元・保存するまでファイルには書かない）。雛形挿入は `## goal`〜`## links` のスケルトンを挿入（書きかけがあるときは確認してから置換）。ダイアログ上部にセクションの意味のガイドを常時表示 |
+| バージョン（複数 charter）の一覧・編集 | 概要タブ「バージョン」／バックログの charter フィルタ | `charters/<名前>.md`（1 ファイル = 1 バージョン）を一覧し、バージョンごとの acceptance 達成状況・状態を表示。各 charter は「✎ 編集」から直接編集できる。バックログはタスクの `charter:` タグでバージョン別に絞り込める。新規プロジェクト作成でも charter 名（バージョン）を指定可能 |
+| ✎ プロジェクトファイル編集 | 概要タブ「プロジェクトファイル」 | 人が書く**上位入力だけ**をアプリ内で直接編集: `charter.md`（最上位入力）／`policy.md`（運用ルール）／`repos.json`（レジストリ）。保存すると次の run で後段データ（backlog 生成・ルーティング）に反映される。repos.json が charter からの自動生成物（`_meta`）のときは「run 時に charter で上書きされる」旨を警告する。JSON は保存前に構文検証。タスク状態ファイル（`backlog/*.md` の status 等）は編集対象にしない — done の不変条件を壊さないため |
+| ↻ revise して再投入 | タスク詳細（**archive のみ**） | archive（done）タスクの内容（title / verify / accept / priority / note / after / level / track）を prefill した投入フォームを開き、編集して `inbox/<name>.json` ドロップ。**新しいタスク**として triage→verify を通す（archive の記録はそのまま残る）。誤 done などの**エラー復帰用途**。元 ID を引き継ぐが衝突時は本体が採番し直す |
+| 👤 監視担当を割り当て | タスク詳細（backlog）の「監視担当」行 | **例外的に viewer 管理のサイドカーファイル**（`assignments.json`・agent-project の契約外）だけを書く。タスク状態ファイルには触れない（done の不変条件に影響しない）。空にして保存で解除（→[チーム運用](#チーム運用バックログの監視担当を分担する)） |
+| 💬 レビューコメント（追加/編集/削除） | 要対応カード（review / blocked）の「レビューコメント」 | 成果物レビューを複数メンバーで行う。**viewer 管理のサイドカー**（`reviews/<task-id>/*.json`・1 コメント = 1 ファイル・agent-project の契約外）だけを書く。同時投稿はファイル名が別なので state_git で自然にマージされる。承認/再実行の判断は既存の承認/差し戻し/revise で行う（→[チーム運用](#チーム運用成果物レビューを複数メンバーで行う)） |
+| レビュー操作（承認/差し戻し/コメント） | レビュー待ちタブ／フロータブのノード詳細 →「レビューで開く」 | gitlab-review-viewer へ引き継ぎ |
+| 🗑 タスク削除 | タスク詳細（backlog のみ） | **物理削除**（`backlog/<id>.md` をゴミ箱へ移動し、要対応カード `needs/<id>.md` とレビューコメント `reviews/<id>/` も一緒に掃除。決定記録は残らない）。後続タスクの先行指定（after）と、検証記録・実行権ロックなどエンジン側の付随状態は、稼働中の agent-project が次パスの整合点で切り離し・掃除する（確認ダイアログに影響する後続タスクを表示）。分解は人の明示操作でしか走らないので、消したタスクが本体に勝手に作り直されることはなく、**「分解」を実行すれば同種のタスクがまた提案されうる**（消して作り直す試行錯誤の口）。**作り直させたくない**なら削除ではなく **✕ 却下（reject）** を使う——archive・墓標・決定記録に残り、次の分解でプランナーに「意図の似た再提案も抑止」として渡る。実行中（**doing**）・委譲実行中（**offloaded**）は押した瞬間に拒否。一時的に止めたいだけなら「保留（hold）」を使う |
+| ⚰ 却下済み（墓標）の一覧・解除 | バックログタブ（末尾・既定は畳んである） | 却下したタスクは `tombstones.md` に 1 行残り、**同じタイトルは再投入も分解でも再作成されない**。一覧に理由・日付・バージョンを出し、「解除」で `commands/`（`{"command":"revive"}`・**プロジェクト単位＝id 無し・タイトル指定**）を投函して本体の `revive` を実行させる。これが無いと画面で消したタスクは画面からは二度と入れ直せない（消して入れ直す試行錯誤が CLI 無しに成立しない） |
+| ■ run キャンセル | フロータブの run 詳細 | run を **cancelled** に終端化する唯一の hard-stop。`inbox/cancels/<run-id>.json` に cancel マーカーを置き（git 同期で他 PC / daemon へ伝わる）、`meta.json` を cancelled に確定し、`waits/`（承認待ち）を掃除して監視の再ポーリングを止める。**承認待ちで park 中の run も暴走中の run も止められる**。起票済みの GitLab イシューは残す（追跡だけやめる＝agent-flow の既定。イシュークローズは daemon の `cancel --close-issues` か gitlab-review-viewer に任せる — この viewer の GitLab クライアントは読み取り専用）。終端済み run には効かない（不可逆） |
+| 🗑 run 削除 | フロータブの run 詳細 | 同上のファイル操作。確認のうえ `<bus>/runs/<run-id>/` をゴミ箱へ移動。終端（done/failed/cancelled）と応答なし（孤児）のみ — orchestrator が生存している実行中 run は拒否 |
+| ⏸ 一時停止 / ▶ 再開 | 概要タブ「稼働操作」 | `commands/<name>.json` ドロップ（`{"command":"pause"/"resume"}`・プロジェクト単位＝id 無し）。本体は `paused.json` を立てて watch の消化を止める（idle 監視・指示の取り込みは継続）。status.json の `paused` がサイドバー ⏸ とヘッダのバッジに出る |
+| ⏹ 停止 | 概要タブ「稼働操作」 | 同上（`{"command":"stop"}`）。本体は状態を push してから graceful 停止する。**再開はプロジェクトのマシン（WSL 等）の常駐体が次の監視巡で子を起こす**（常駐体ごと落ちている場合だけ `agent-project serve` を人が上げる — プロセス起動はファイル契約の外） |
+| ⚠ リセット（charter 以外を全消去） | 概要タブ「危険な操作」 | プロジェクトを **charter からゼロにやり直す**危険操作。`charter.md` **以外**の全データ（backlog / archive / needs / decisions / journal / run-log / DELIVERY / inbox / commands / bus 直下 / flow-archive 等）をゴミ箱へ移動。charter が残るため、「分解」を実行すれば charter から最初からやり直せる（分解は人の明示操作＝リセット直後に本体が勝手に作り直すことはない）。ドット始まりの同期内部（プロジェクトの `.state-git` と **バスの `bus/.state-git`**）は温存 — 管理クローンの manifest が残ることで削除が state_git 同期で「ローカルの削除」としてリモートへ伝播する（クローンごと消すと次の同期でリモートから旧データ・旧 run が**復活**してしまう）。charter.md が無いプロジェクトでは出さない（残すものが無く、プロジェクト削除になるため）。共有バス構成では削除が他プロジェクトにも影響する旨を確認ダイアログで警告する |
+
+- 理由・方針の記入はすべて決定記録（`decisions/` の DR）や次 act への feedback として
+  agent-project 側に残る
+- 承認 / 保留の指示は needs ファイル自体を変えない（commands/ 経由）ため、送信後の
+  カードは「**指示送信済み（取り込み待ち）**」表示になり操作ボタンを出さない
+  （二重送信防止。ファイルパス + mtime で照合し、ファイルが書き換わったら解除）。
+  revise も同様に、送信後はタスク行に ✎ バッジ・詳細に「修正指示送信済み」を出し、
+  本体が取り込んでタスクファイルが書き換わるまで再送を防ぐ
+- ファイル書き込み（needs / inbox / commands）は稼働中の agent-project の watch が自動で
+  取り込む。**指示（承認/保留/優先度変更）は既定でファイルドロップ**（本体が WSL 内で
+  稼働していても届く。CLI は不要）。届け方は ⚙ 設定「指示の届け方」で制御できる:
+  auto（稼働中はファイル・停止中は CLI・CLI 不可ならファイルに退避）／file（常にファイル）／
+  cli（常に CLI。PATH に無ければ `python3 /path/to/agent-project.py` 形式で指定）
+- 入力中は自動更新を一時停止する（書きかけのフィードバックが消えない）
+
+### チーム運用（バックログの監視担当を分担する）
+
+複数人でひとつのプロジェクトを見るとき、**各バックログタスクに「監視担当」（その進捗・
+要対応・検収を見る人）を割り当てて、監視コントロールを人の間で分散**できる。これは
+エージェントの**実作業の分担（ルーティング・workspace）とは別軸**で、厳密な排他制御は
+しない——「誰が見るか」が画面上でわかるための軽量な運用機能。
+
+- **データ**: プロジェクトルート直下の `assignments.json`（viewer 管理のサイドカー。
+  `{ "members": [...], "tasks": { "<task-id>": "<名前>" } }`）。agent-project の契約ファイル
+  ではないため本体の動作・done の不変条件には一切影響せず、state_git 同期の対象なので
+  （ドット始まり・`flow-archive`/`claims` 以外は全て同期される）**チームの clone 全員に共有**
+  される（push は実行側の常駐体が状態同期で行う——この画面は git へ書き込まない）。
+- **手書きも可**: backlog の md に `- owner: <名前>` と書いてもよい（本体は未知キーを
+  保持する契約）。`assignments.json` の割り当てがあればそちらが優先。タスク追加時に
+  inbox JSON へ `owner` を含めても同様に保持される。
+- **UI**:
+  - バックログタブ — 一覧の各行に 👤 バッジ、ツールバーに「担当:」チップ
+    （全員／メンバー名／未担当）。タスク詳細の「監視担当」行で割り当て・解除
+    （入力欄は既存メンバーの datalist 付き。新しい名前を書けばメンバーに追加される）
+  - 要対応タブ — 一覧・詳細カードに 👤 バッジ。誰が判断すべき票かが一目でわかる
+
+**ミーティングの流れ（推奨運用）**:
+
+1. バックログタブを画面共有し、状態チップ（実行中／検収待ち／要対応…）とパイプラインで
+   進捗を確認する
+2. 判断が要るタスク・新しいタスクを開き、「監視担当」に人を割り当てて保存する
+   （そのまま push され、次の pull で全員の画面に反映される）
+3. ミーティング後、各メンバーは自分の clone で「担当:」チップを自分の名前にして
+   **自分の担当だけ**を追う。要対応タブでは 👤 バッジで自分宛ての判断待ちを拾う
+4. 担当の変更・解除はいつでも上書きできる（記録は git 履歴に残る）
+
+### チーム運用（成果物レビューを複数メンバーで行う）
+
+バックログの成果物ができた（検収待ち＝review、または人待ち＝blocked）とき、**複数メンバーが
+成果物にコメントを入れ、監視担当者がそれらを確認・整理して「承認するか再実行するか」を判断**
+できる。判断（承認/差し戻し/revise）は既存の要対応アクションがそのまま担い、追加するのは
+**コメントの層だけ**（必要最小限）。
+
+- **データ**: プロジェクトルート直下の `reviews/<task-id>/*.json`（**1 コメント = 1 ファイル**・
+  `{ author, text, ts, editedTs? }`）。viewer 管理のサイドカーで agent-project の契約外＝
+  タスク状態・done の不変条件には触れない。1 コメント 1 ファイルなので、**複数メンバーが
+  別 PC から同時にコメントしてもファイル名が衝突せず state_git 同期で自然にマージ**される
+  （全体 JSON の last-write-wins で消えない。バスの `runs/` と同じ流儀）。同期対象なので
+  チームの clone 全員に配られる（push は実行側の常駐体が状態同期で行う）。
+- **UI**（要対応カードの「レビューコメント」セクション・review / blocked でだけ出す）:
+  - 各メンバーは名前（localStorage に記憶）とコメントを入れて「コメントを追加」
+  - 一覧で全員のコメント（投稿者・時刻・本文）を確認。**監視担当者は各コメントを編集・
+    削除して整理**できる（編集済みは「（編集済み）」表示）
+  - 整理したうえで、同じカードの**承認 / 差し戻し（＝再実行）/ ✎ 修正して指示（revise）**で
+    決着させる（コメント層と判断層は分離。判断は従来どおり公式契約 commands/ 経由）
+
+**レビューの流れ（推奨運用）**:
+
+1. 成果物が検収待ち（review）になると要対応タブに票が立つ（👤 監視担当バッジ付き）
+2. メンバーは票を開き、「検収物を確認」で差分を見ながら「レビューコメント」に指摘を残す
+   （push され、各自の pull で全員に共有される）
+3. 監視担当者はコメントを確認し、重複や解決済みを編集・削除して論点を整理する
+4. 整理した内容をもとに、**承認**（完了確定）／**差し戻し**（コメントを反映指示にして再実行）
+   ／**✎ revise**（verify・指示の修正を添えて再実行）のいずれかで決着させる
+
+> 補足（運用でカバー・今は未実装）: コメントの新着通知・返信スレッド・投稿者ごとの権限・
+> 解決/未解決の状態管理は入れていない（フラットな一覧＋編集・削除で足りる想定）。必要に
+> なったら足せる。
+
+### Viewer アシスタント（AI 下書き・Doctor）
+
+このビュアーは、共通設定で選んだ**エージェント CLI をヘッドレスで 1 回呼ぶ**補助機能を持つ
+（`src/main/agent.js`）。同じ CLI とモデルを charter 入力補助と Doctor で共有する:
+
+- **下書き（新規作成フォーム）** … goal か自由メモに一言書いて「✨ AI で下書き」。
+  書きかけの全欄をプロンプトに渡し、JSON（goal / constraints / assumptions /
+  deliverables / acceptance）で受けてフォームへ流し込む。既存の記入は尊重される。
+- **補完（編集ダイアログ）** … charter 全文を渡し、書式（`# Charter:` と各 `## セクション`）を
+  保った完成版全文で受けて**エディタの内容だけ**を置き換える（`## repos` は変更しない
+  規約付き）。「↩ 補完前に戻す」でワンタッチ復元。
+- **書き込みはしない** … エージェントの応答はテキストのみ。ファイルへの書き込みは
+  従来どおり人の「作成」「保存」ボタンだけが行う（authoring 層の「人が書く上位入力
+  だけを書く」護りを AI で迂回しない）。acceptance には「exit 0 = PASS のシェルコマンドを
+  最優先、書けない条件のみ `accept: 自然文`」の規約をプロンプトで強制する。
+- **Doctor（現在画面の相談）** … サイドバー上部の共通操作「AI相談」からダイアログを開く。
+  補足文は任意で、空欄でも現在の画面について相談できる。プロジェクト選択中は現在のタブ、
+  選択中の要対応・run・ノードと関連出力を渡し、未選択時はアプリ全体の状態を渡す。
+  「現在起きていること」「次にすること」「判断の根拠」の順で助言を表示する。Doctor は
+  読み取り専用モードで CLI を起動し、コマンド実行・ファイル編集・外部操作を許可しない。
+  入力コンテキストは最大 120,000 文字。画面スナップショットは kiro では一時ファイルへ
+  退避して `--trust-tools=fs_read`（読み取りのみ）で読ませる — kiro-cli は positional
+  プロンプト併用時に stdin を読まないため（WSL プロジェクトではディストロの `/tmp` に
+  書き、実行後に削除する）。claude 等の stdin を読む CLI へは従来どおり stdin で渡す。
+- **計画批評** … 計画レビュー（plan-review）カードの「AIで計画を批評」。提案タスクを
+  charter の goal/acceptance と兄弟 proposed タスクと突き合わせ、取りこぼし・重複・依存・
+  推薦・差し戻し文面案を返す。文面案は「差し戻し文面を回答欄へ」でコピーできる（送信は人）。
+- **検収の変更理由** … 検収カード／「検収物を確認」の「変更理由を説明」。差分と
+  verify/accept/charter から「なぜ変えたか」・acceptance 対応・リスク・承認推薦を返す。
+- **フォローアップ案** … 検収ダイアログの「フォローアップ案」。追加タスク案を JSON で提案し、
+  「タスク追加フォームへ」で人が確認してから inbox 投入できる（自動投入しない）。
+- **依存・優先度の提案** … タスク追加ダイアログの「AIで依存・優先度を提案」。既存 backlog を
+  見ながら after / priority / note を下書きし、既存タスクへの調整案も示す。調整案は選択して
+  「選択した調整を反映」で公式の revise として送る（人確認必須）。手動では先行タスク ID の
+  datalist と既存 backlog 一覧も使える。
+- **失敗出力の深掘り** … 要対応カードは最初に短い理由だけを示し、詳細画面の
+  「出力全体を見る」で needs の原文と関連 run の全ノード出力・エラーを遅延読込する。
+  画面表示側では省略しないため、概要から必要な失敗だけを深掘りできる。
+- **検収物の差分確認** … 「検収物を確認」ダイアログの「すべての差分を表示」で、変更ファイル
+  一覧が省略されていても書込先リポジトリの差分全体を一つのビューへまとめる。複数リポジトリは
+  見出しで区切り、作業ブランチがある場合は base との差分、旧形式の未コミット成果は HEAD との
+  差分を表示する。個別ファイルの「開く」に失敗した場合は理由を画面へ通知する。
+
+**使う CLI とモデル**（⚙ 設定「Viewer アシスタント」）:
+
+`kiro`（既定）/ `claude` / `copilot` / `codex` / `cursor` / `ollama` から選ぶ。
+モデルは任意指定で、この設定は全プロジェクトの charter 補助と Doctor に共通して効く。
+プロジェクトごとの `agent_cli` / `model` は Viewer の選択には使わない。
+
+CLI が PATH に無い・タイムアウト（既定 180 秒・⚙ で変更可）の場合はトーストで通知して
+フォームの内容はそのまま残る。
+
+> 本体（agent-project / agent-flow）が run で使うエージェント・モデルの切替は、各プロジェクトの
+> `agent-project.yaml` / `agent-flow.yaml` の `agent_cli` と `model:` で行う。
+> Viewer アシスタントの設定とは独立している。
+
+## エラー時の流れとビュアーの役割
+
+agent-flow でタスクが失敗したとき、どの層が何をし、人（ビュアー）はどこで関与するか。
+
+```
+ノード失敗（実行エラー / verify fail / gitlab 却下）
+  │ agent-flow 内で自動回復: 評価役が [retry] 置換ノードを追加して再実行
+  │ 同一系統の作り直しが max_retries（既定 3）に達すると打ち切り
+  ▼
+run は done で終端（失敗ノードを含んだまま。run が failed になるのは
+orchestrator の消失＝クラッシュ/シャットダウンで自動再開も尽きたときだけ）
+  │ agent-project が結果を verify ゲートで検証 → NG なら retry
+  │ （gitlab 却下 [gitlab-reject] は人コメントを feedback として次 act に注入）
+  ▼
+task の retries 上限 → blocked ＋ needs/<id>.md 生成 ＝ ここで初めて人の出番
+  │
+  ▼ ビュアーの「要対応」タブで方針を記入して再開 / 承認 / 保留
+```
+
+- **agent-flow 単体では人は関与しない**（自動 retry → サーキットブレーカーで打ち切り）。
+  人へのエスカレーションは agent-project の役割（needs/ 経由）で、ビュアーの
+  「要対応」タブが対応窓口。
+- **gitlab executor だけは実行中に人の判断を待つ**: タスクをイシュー化し、関連 MR の
+  決着（全マージ＝承認 ／ 未マージクローズ＝却下）をポーリングする。ここでの
+  ユーザーアクションは GitLab 上（MR のマージ/クローズ・イシューへのコメント）。
+  - **承認**: イシューを status:done でクローズ → ノード done（`data` に issue_iid /
+    web_url / decision / merged_mrs が残る）
+  - **却下**: 人コメントを取り込み → イシューをクローズ → ノード failed。承認と対称の
+    構造化データ（`data` に issue_iid / web_url / decision: rejected / reason /
+    guidance（人コメント）/ merged_mrs）が残り、output にも
+    `[gitlab-reject] …（イシュー URL）やり直し指示: <人コメント>` が残る（旧 run 互換）。
+    agent-project 管理下ならコメントを feedback に注入して自動で再委譲される
+- **ビュアーの役割**:
+  | 場面 | 見る場所 | できる指示 |
+  |------|---------|-----------|
+  | ノードの進捗・失敗理由 | フロータブ → ノード詳細（経過・heartbeat・output・タイムライン） | — |
+  | gitlab 委譲の判断待ち | ノード詳細の「関連イシュー」（実行中はタスクトークン検索）／レビュー待ちタブ | 「レビューで開く」→ gitlab-review-viewer で MR のマージ/差し戻し・コメント |
+  | クローズ済みイシューが未反映 | RUN 概要の「⟳ GitLab と突き合わせ」 | 実行中ノードの関連イシューが GitLab で既にクローズ（承認/却下）済みなら、タスクグラフへ完了/失敗を先読み反映（下記） |
+  | 却下されたタスク | ノード詳細（output の却下理由・イシューリンク） | イシューのコメントが次の act に効く（レビューで開いて記入） |
+  | run 自体の失敗（orchestrator 消失・再開上限） | フロータブ run 詳細（失敗理由・自動再開回数） | 「↻ 同じ要求で再投入」（inbox へ新しい run として投入） |
+  | retry が尽きて人待ち（blocked/review） | 要対応タブ（needs/） | フィードバックして再開・承認・保留 |
+  | plan 失敗・タスクの取りこぼし/誤削除 | バックログタブ | 「↻ charter から再分解」→ 本体が charter を分解し直し**取りこぼした差分だけ**を投入（done / 既存と類似は重複排除で入れない）。charter を編集しなくても再分解を一発で起こせる |
+
+### クローズ済みイシューのタスクグラフ反映（GitLab と突き合わせ）
+
+gitlab executor は「関連イシューがクローズされた（承認/却下で決着した）」ことを result で bus に
+書くが、それを検知するのは worker が決着ループを回しているとき **だけ**。非ブロッキング委譲
+（板）＋PC の日次停止などで worker が止まっている間に人がイシューを承認クローズすると、
+bus に result が無いまま残り、タスクグラフはノードを「実行中」のまま表示してしまう（完了に
+できない）。
+
+その run の非終端ノードの関連イシュー（本文の決定的タスクトークンで検索）を GitLab の「今」の
+状態と突き合わせ、タスクグラフのノードにイシュー状態を出す。
+
+- **クローズ済み**: **executor と同じ規則**（関連 MR の状態 → `status:approved`/`status:done`
+  ラベル → 人コメントの承認/却下語。手掛かり無しのクローズは取り下げ＝却下）で承認/却下を判定し、
+  ノードを **完了/失敗として先読み反映** する。反映されたノードは **破線枠**＋詳細の「GitLab 反映」
+  チップで区別でき、bus に result が届けば通常表示に確定する（bus が常に正で、反映は暫定表示）。
+- **オープン中（レビュー待ち）**: ノードに「レビュー中」チップと**青系のイシューアイコン**を出す
+  （状態は変えない＝実行中のまま。リンクから 1 クリックでレビューへ）。
+
+**取得は自動**: run を開いたとき／ポーリング更新時に、GitLab 設定済みなら一度だけ自動で突き合わせる
+（同一 run は **60 秒の律速**でキャッシュを使い、ポーリング毎回は API を叩かない。結果は run 単位で
+キャッシュし、run を切り替えても保持）。RUN 概要の **「⟳ GitLab 最新化」** は手動の即時再取得用。
+GitLab の Base URL / トークン（⚙ 設定）が未設定なら自動取得は走らない。追加の API 呼び出しは
+非終端ノードのみ・最大 40 件・直列・60 秒律速で有界。
+
+## gitlab-review-viewer との連携（レビューの引き継ぎ）
+
+レビュー待ちタブ（またはフロータブのノード詳細）の「**レビューで開く**」を押すと、そのイシューを gitlab-review-viewer で開く。
+
+- 既定は **カスタム URL スキーム**（`protocol`）: `gitlab-review-viewer://open?url=<イシューの web_url>` を
+  OS 経由で開く。gitlab-review-viewer 側はディープリンク対応済み（シングルインスタンス化
+  されており、起動済みならそのウィンドウで対象イシュー + 関連 MR を開く。未起動なら起動する）。
+  プロトコル登録はインストーラ（NSIS）版で行われる。
+- **portable exe 版の gitlab-review-viewer では `protocol` は使えない**。portable はインストーラを
+  通らず、起動ごとに一時ディレクトリへ展開されるため、カスタム URL スキームを OS に恒久登録できない
+  （登録先が毎回消える一時パスになる）。この場合は ⚙ 設定 → 起動方法を **「実行ファイル直接」（`exe`）**
+  にし、gitlab-review-viewer の実行ファイルパスを指定する。ディープリンク URL を実行ファイルへ
+  argv として直接渡すため、プロトコル登録に依存せず連携起動できる（gitlab-review-viewer は
+  `deepLinkFromArgv` / `second-instance` で受け取り、未起動でも起動済みでも同じ挙動になる）。
+  - **起動済みなら exe を再起動せず即ハンドオフ**（`exe` モードの高速経路）: portable exe を
+    argv 付きで再起動すると、既に起動済みでも OS が毎回「自己展開 → Electron 起動 →
+    single-instance で argv 転送 → 即終了」の 2 個目プロセス立ち上げコスト（数秒）を必ず払う。
+    これを避けるため、`exe` モードではまず gitlab-review-viewer が起動時に開く**ローカル IPC
+    エンドポイント**（Windows: 名前付きパイプ／その他: Unix ドメインソケット。ユーザーごとに
+    決定的な名前）へ接続を試み、**届けば URL を送るだけで即座に既存ウィンドウが対象を開く**
+    （exe は spawn しない・トーストは「起動中の gitlab-review-viewer に引き継ぎました」）。
+    接続に失敗した＝未起動のときだけ、従来どおり exe を argv 付きで起動する（＝cold start の
+    ときにだけ自己展開コストを払う）。設定不要・自動。古い gitlab-review-viewer（エンドポイント
+    非対応）が相手でも接続に失敗して従来の argv 起動へ素通りする（後方互換）。
+- それ以外の任意起動が必要なら **コマンド起動**（`command`）:
+  `"C:\Apps\GitLab Review Viewer.exe" "{protocolUrl}"`
+  （`{url}` `{projectPath}` `{type}` `{iid}` に加え、組み立て済みディープリンク `{protocolUrl}` を置換）
+
+逆方向として、本アプリ自身も `agent-dashboard://open?root=<container>&project=<name>` の
+ディープリンクを受け付ける（他ツールから特定プロジェクトのダッシュボードを直接開ける）。
+
+## セットアップ
+
+```bash
+cd tools/agent-dashboard
+npm install
+npm start                # 開発起動
+npm run dist             # Windows 向けビルド（portable + NSIS → release/）
+```
+
+プロジェクトの一覧は**実行側の常駐体が書く状況ファイル**（`engine/status.json`）から出る。
+画面からの登録・登録解除は無いので、一覧に出すには実行側の `agent-project.host.yaml` へ
+追記する。初回起動後、⚙ 設定で調整するのは次の 4 つ:
+
+1. **この PC の役割**: `engineer`（既定・本体も動かす全機能）／ `viewer`（閲覧・レビュー専用の
+   表示。engineer 専用の UI を隠す）。役割は表示の切替であって、どちらでもこの PC に
+   常駐体は要る（発見と投函の push は常駐体が担う。→「プロジェクトルート」の節）。
+2. （任意）**状況ファイルの読み先**: WSL ディストロとベースパス。既定で `$HOME/.agents` を
+   `wslpath` に聞いて解決するので、ふつうは触らなくてよい。
+3. （任意）**GitLab の Base URL / トークン**（read_api で十分）。イシューの最新状態
+   （ラベル・関連 MR）の補完と、repos のイシュー一覧に使う。未設定でも bus 上の
+   情報だけで動く。
+4. （任意）自動更新間隔（既定 5 秒。0 で手動 ⟳ のみ）、要対応の SLA しきい値（既定 24 時間）、
+   **Viewer アシスタント**（charter の AI 下書き・補完と Doctor に使う共通のエージェント CLI・
+   モデル・タイムアウト。→[Viewer アシスタント](#viewer-アシスタントai-下書きdoctor)）。
+
+設定は `userData/config.json`（Windows: `%APPDATA%/agent-dashboard/config.json`）に保存される。
+
+## 実装メモ
+
+- `src/features/agent-project/main/project.js` … agent-project データ層。パース規則は agent-project.py の
+  `HEAD_RE` / `FIELD_RE` / `parse_charter` / `parse_policy` と同じ（書式の正典は
+  `tools/agent-project/backlog.md.example` / `charter.md.example`）
+- `src/features/agent-project/main/flow.js` … agent-flow バスのリーダー。状態はファイル存在から導出
+  （`results/` → done/failed、lease 内 `claims/` → claimed、依存未達 → waiting）。
+  claim 勝者の決定的タイブレーク `(ts, who)` も agent-flow 本体と同じ。
+  run の生存判定は agent-flow の `run_is_orphaned` と同じ導出（`orch_lease_until`
+  のリース、無ければ `updated_at` の age）。daemon 稼働はロックパスの同一導出
+  （`sha1("local::" + realpath(bus))`）＋記録 pid の生存確認（agent-project の
+  fcntl 不在時フォールバックと同じ根拠）で、CLI を起動せずに判定する
+- `src/features/agent-project/main/toolconfig.js` … `.agents/` の agent-project / agent-flow 設定ファイルから
+  `bus` / `lock_dir` などトップレベルのスカラだけを読む簡易リーダー
+  （共有バス構成・ロック置き場の自動発見に使う）
+- `src/features/agent-project/main/agent.js` … charter 入力補助と Doctor のエージェント CLI 連携層。
+  共通設定から 6 CLI を解決し、Doctor は各 CLI の読み取り専用・ツール無効モードで起動する。
+  応答のパース（JSON 抽出・コードフェンス剥がし）まで。ファイルは書かない
+- `src/base/main/gitlab.js` … GitLab REST v4 の読み取り専用クライアント（net.fetch・プロキシ対応）。
+  実行中ノードの関連イシューは、gitlab executor と同一導出の決定的タスクトークン
+  （`kf-<sha1(run_id/node_id)[:12]>`）でイシュー本文の隠しマーカーを検索して見つける
+- `src/features/agent-project/main/review.js` … gitlab-review-viewer へのレビュー引き継ぎ（protocol / exe / command）。
+  exe は実行ファイルへディープリンクを argv 直渡し（portable exe 向け・プロトコル登録に依存しない）
+- `src/features/agent-project/main/actions.js` … 人のアクション層。needs 記入（Decision Outcome + `[x]`）・
+  inbox JSON ドロップ・commands JSON ドロップ（approve/hold/pin/defer/revise/reject/revive）の 3 契約のみを使う。監視担当の割り当て（`setTaskOwner`）と
+  レビューコメント（`addReviewComment` / `editReviewComment` / `deleteReviewComment`）だけは
+  契約外の viewer 管理サイドカー（`assignments.json` / `reviews/<task-id>/*.json`）への書き込み
+  （どちらもタスク状態には触れない＝done の不変条件を壊さない）。`requestReplan` は charter からのバックログ再分解を
+  `commands/`（`{"command":"replan"}`・id 無し）／CLI `replan` で要求する（エラー回復。本体が
+  既存＋archive（done）タイトルで重複排除するので done と類似は投入されない）。
+  `requestDeleteTask` はタスクの削除を `{"command":"reject"}` として、`requestRevive` は
+  その取り消し（墓標の解除）を `{"command":"revive"}`（id 無し・タイトル指定）として届ける
+  ——削除だけ生のファイル操作にしておくと、要対応カードの残留・再分解での復活・状態 git の
+  裁定による削除の取り消し、が起きる
+- `src/features/agent-project/main/authoring.js` … オーサリング層（新規作成・上位入力ファイルの編集）。
+  charter.md の雛形生成（`buildCharter`）と repos.json 生成（`exportReposJson` は agent-project の
+  `export_repo_registry` と同じ `_meta.generated_from` 付き・キーソート）、`<親フォルダ>/<名前>/` への
+  プロジェクト作成、charter/policy/repos のホワイトリスト読み書き（repos.json は JSON 構文検証）。
+  **タスク状態は書かない** — actions.js と同じく done の不変条件を壊さない。archive タスクの
+  「revise して再投入」は actions.js の inbox 契約をそのまま使う（新タスクとして verify を通す）
+- `src/main/*.js` は上記の実体への**互換シム**（既存テストの `require('../src/main/…')` を
+  壊さないために残してある）。新規コードは実体パスを直接 require すること
+- IPC は gitlab-review-viewer と同じ `{ok, data|error}` 形式・`window.api` 公開
+
+## 制限事項
+
+- タスク本文の編集は「✎ 修正して指示（revise）」から公式契約（commands/）経由で行える
+  （title・優先度・依存 after・verify・accept の置換とフィードバック注入）。それ以外の
+  フィールドはファイルで編集する（詳細ダイアログから開ける）。
+  状態遷移を直接書き換える操作は意図的に持たない（done は verify のみが根拠、の
+  不変条件をアプリから壊さないため。revise も状態を書かず、本体側の同一ロジックが遷移を決める）。
+  例外は 🗑 削除（タスク / run）のみ —
+  削除の公式契約が無いため、確認ダイアログのうえゴミ箱への移動として行う
+- **編集できるのは「人が書く上位入力」だけ**（charter.md / policy.md / repos.*）。これらは
+  agent-project の入力ファイルなので、アプリから編集しても後段（backlog 生成・ルーティング）は
+  本体の run が決定的に作り直す＝done の不変条件は保たれる。**タスク状態ファイル
+  （`backlog/*.md`・`archive/*.md`・`project.json` 等）はアプリから書き換えない**。
+  archive（done）タスクをやり直したいときは「↻ revise して再投入」で**新しいタスク**として
+  inbox へ入れる（archive のファイルは消さず、verify を通して done を取り直す）
+- 新規プロジェクト作成は charter.md を置くだけ（＋任意で repos.json）。plan / backlog 生成・
+  acceptance 実行・収束判定は本体の run が行う（アプリは backlog を生成しない）
+- approve / hold / reprioritize / revise は**ファイルドロップ（`commands/`）の一本**。本体を CLI で
+  起こす経路は削除した（CLI パス誤りが「押しても何も起きない」原因不明の不具合になり、同一ホスト
+  でしか効かなかった）。本体が止まっていれば、次に常駐体が動いたときに取り込まれる
+- `bus/` は agent-project が local run 後に掃除するため（`--no-cleanup` で保持）、
+  フロータブは稼働中の run が主対象
+- agent-flow の状態（run 一覧・生存・daemon 稼働）はすべてファイルから判定するため
+  agent-flow CLI は不要。ただし daemon 稼働の pid 判定は同一ホスト上でのみ有効
+  （Windows のビュアーから WSL 内の daemon は temp 領域が別のため見えない — その
+  場合も run の生存リースによる「応答なし」判定は共有バスのファイルだけで機能する）
+- GitLab 書き込み操作は持たない（レビュー操作は gitlab-review-viewer の役割）

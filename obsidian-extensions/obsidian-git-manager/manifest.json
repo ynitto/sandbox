@@ -1,0 +1,10 @@
+{
+  "id": "obsidian-git-manager",
+  "name": "Git Repository Manager",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "Git リポジトリのフォルダとリモート情報を JSON で管理。設定 UI からの手動追加と、フォルダを再帰スキャンしての自動登録に対応。",
+  "author": "nitto",
+  "authorUrl": "",
+  "isDesktopOnly": true
+}

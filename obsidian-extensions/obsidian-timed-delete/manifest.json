@@ -1,0 +1,10 @@
+{
+  "id": "obsidian-timed-delete",
+  "name": "Timed Delete",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "複数のフォルダと条件を設定して、ファイルを時限的に自動削除します。",
+  "author": "nitto",
+  "authorUrl": "",
+  "isDesktopOnly": false
+}

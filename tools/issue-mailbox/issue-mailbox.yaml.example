@@ -1,0 +1,102 @@
+# issue-mailbox 設定ファイルサンプル
+# このファイルをコピーして issue-mailbox.yaml という名前で保存してください。
+#
+# 検索順序:
+#   1. --config オプションで明示指定したパス
+#   2. カレントディレクトリの issue-mailbox.yaml / .yml / .json
+#   3. HOME の issue-mailbox.yaml / .yml / .json
+
+# ---------------------------------------------------------------------------
+# tmux 通知先ペイン設定
+# ---------------------------------------------------------------------------
+#
+# target: tmux のペイン指定。"セッション名:ウィンドウ.ペイン" 形式。
+#   例) "main:1.0"  → セッション main, ウィンドウ 1, ペイン 0
+#       "mailbox"   → セッション mailbox のカレントペイン
+#
+# send_enter: true にすると通知テキストの後に Enter を送信する。
+#   - false (デフォルト): ペインに文字を送るだけ（表示のみ）
+#   - true: kiro-cli など対話型 AI セッションにプロンプトとして渡す場合に使用
+#
+# 【推奨セットアップ】
+#   1. 通知専用ペインで view モードを起動:
+#        python issue-mailbox.py view --config ~/issue-mailbox.yaml
+#   2. 別ペインでポーラーを起動:
+#        python issue-mailbox.py --config ~/issue-mailbox.yaml
+#   この場合、tmux セクションは省略可（ログファイルへの書き込みのみ）。
+#
+# 【kiro-cli にプロンプトとして渡す場合】
+#   kiro-cli が動いているペインを target に指定して send_enter: true にする。
+#   通知テキストをそのまま kiro-cli への指示として送信する。
+
+tmux:
+  target: "main:mailbox"      # 通知を送る tmux ペイン
+  send_enter: false           # Enter を送信する場合は true
+
+# ---------------------------------------------------------------------------
+# ファイルパス設定
+# ---------------------------------------------------------------------------
+
+# ポーリング状態の保存先ディレクトリ
+state_dir: ~/.issue-mailbox/state
+
+# 通知ログの保存先（view モードはこのファイルを tail -f する）
+log_file: ~/.issue-mailbox/notifications.log
+
+# ---------------------------------------------------------------------------
+# リポジトリ定義
+# ---------------------------------------------------------------------------
+repositories:
+  # ---- GitLab.com のプロジェクト ----
+  - name: "my-api"
+    gitlab_url: "https://gitlab.com"
+
+    # プロジェクト ID: GitLab の [プロジェクト設定 > 一般] で確認できます
+    project_id: 12345678
+
+    # アクセストークン: [GitLab > ユーザー設定 > アクセストークン] で作成
+    # 必要スコープ: read_api
+    private_token: "glpat-xxxxxxxxxxxxxxxxxxxx"
+
+    # 取得する Issue の状態: "opened" / "closed" / "all"
+    # "opened" の場合、リストから消えたイシューを CLOSED として検出します
+    state: "opened"
+
+    # ラベルでフィルタリング（空リストで全 Issue）
+    labels_filter: []
+    # labels_filter:
+    #   - "ai-task"
+    #   - "backend"
+
+    # 担当者でフィルタリング（省略時は全ユーザー）
+    # assignee_username: "your-gitlab-username"
+
+    # ポーリング間隔（分）
+    poll_interval_minutes: 5
+
+    # 変更検出の対象設定
+    watch:
+      new_issues: true          # 新規イシューを検出
+      state_changes: true       # opened / closed などの状態変化を検出
+      title_changes: false      # タイトル変更を検出（ノイズになりやすい）
+      label_changes: false      # ラベル変更を検出
+      assignee_changes: true    # 担当者変更を検出
+
+    enabled: true
+
+  # ---- オンプレミス GitLab の別プロジェクト ----
+  # - name: "company-backend"
+  #   gitlab_url: "https://gitlab.company.example.com"
+  #   project_id: 42
+  #   private_token: "glpat-yyyyyyyyyyyyyyyyyyyy"
+  #   state: "opened"
+  #   labels_filter:
+  #     - "ai-task"
+  #   poll_interval_minutes: 10
+  #   watch:
+  #     new_issues: true
+  #     state_changes: true
+  #     title_changes: false
+  #     label_changes: false
+  #     assignee_changes: true
+  #   enabled: true

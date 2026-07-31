@@ -1,0 +1,16 @@
+{
+  "id": "graph-of-thoughts",
+  "name": "Graph of Thoughts (GoT)",
+  "category": "search-writing",
+  "tier": "medium",
+  "target": "agent-flow",
+  "source": "Graph of Thoughts (Besta et al., 2024)",
+  "when_to_use": "思考を分岐させ、有望なものを合流（マージ）・精製する非線形な探索。",
+  "signals": ["分岐と合流の両方", "部分解のマージ", "非線形な推論グラフ"],
+  "flow": {
+    "strategy": "根から k 分岐 → スコアで上位を選抜 → マージ器で統合 → 精製、を繰り返し、最良枝と統合結果を比較して選ぶ。",
+    "notes": "分岐＋マージのグラフ探索は agent-flow のタスクグラフで表現する。"
+  },
+  "feasibility": "needs-extension",
+  "feasibility_note": "分岐＋マージの探索グラフは役割協働では表せない（G4）。agent-flow へ委譲する。"
+}

@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# gitlab-issue-watch.sh — hermes cron (--no-agent --script) から呼ばれるラッパー。
+# 環境変数をここに集約し、gitlab-issue-watch.py を起動する。
+#
+#   cp gitlab-issue-watch.sh.example ~/.hermes/scripts/gitlab-issue-watch.sh
+#   chmod +x ~/.hermes/scripts/gitlab-issue-watch.sh
+#   # パス・フィルター・secret を編集してから:
+#   hermes cron create "every 5m" --no-agent --script ~/.hermes/scripts/gitlab-issue-watch.sh
+set -euo pipefail
+
+# --- gl.py（gitlab-idd スキル同梱）---------------------------------------
+# Hermes に gitlab-idd を配置した場所に合わせる。
+export HERMES_GLGW_GL_PY="$HOME/.hermes/skills/gitlab-idd/scripts/gl.py"
+# connections.yaml / git remote を解決する作業ディレクトリ（対象リポジトリ）。
+export HERMES_GLGW_GL_CWD="$HOME/projects/target-repo"
+# GITLAB_TOKEN を connections.yaml で管理していない場合はここで:
+# export GITLAB_TOKEN="glpat-xxxx"
+
+# --- フィルター -----------------------------------------------------------
+# claim 運用と組み合わせる前提で「着手待ちラベルのみ」を推奨。
+export HERMES_GLGW_ISSUE_LABELS="status::todo"
+# export HERMES_GLGW_ISSUE_ASSIGNEE="my-bot-user"
+# export HERMES_GLGW_ISSUE_EXCLUDE_LABELS="status::blocked"
+
+# --- 投函先（Hermes webhook route）----------------------------------------
+export HERMES_GLGW_WEBHOOK_URL="http://127.0.0.1:8644/webhooks/gitlab-issues"
+# config.yaml の route secret と同じ値（INSECURE_NO_AUTH 運用なら未設定で可）。
+export HERMES_GLGW_SECRET="change-me"
+
+# --- 任意調整 --------------------------------------------------------------
+# export HERMES_GLGW_MAX_POSTS=3
+# export HERMES_GLGW_POST_TIMEOUT=30
+# export HERMES_GLGW_STATE_FILE="$HOME/.hermes/gitlab-issue-gateway/state.json"
+
+exec python3 "$HOME/sandbox/tools/hermes-gitlab-gateway/gitlab-issue-watch.py" "$@"

@@ -1,0 +1,62 @@
+# agent-amigos 役割ミッション表の例（post --roles で渡す。JSON でも可）
+# 設計書: docs/designs/agent-amigos-design.md 付録 A ／ 正典スキーマ: schemas/mission.schema.json
+mission:
+  title: 社内 FAQ ボットの MVP
+  goal: design-doc.md の受入基準をすべて満たす FAQ ボットを納品する
+  # deadline: 2026-07-24T09:00:00Z    # 任意（wall-clock）。超過は owner へ通知のみ（自動 fail しない）
+  assignment_policy: first-come        # first-come（claim 勝者＝確定）| owner-picks（assign で確定）
+  staffing_policy: self-staff          # self-staff | wait | fail（fail は募集失敗で終端）
+  staffing_timeout: 600                # 秒。経過後に未充足の必須ロールをオーナーが自己補充
+  acceptance: manual                   # manual | agent（オーナー CLI が自動判定・上限超で人へ）
+  convergence:
+    done_when: reviewer-approved       # all-required-done | reviewer-approved | consensus
+    quiescence_turns: 3                # 全ロール静穏がこのターン数続いたら統合へ（partial）
+    review_rounds: 2                   # acceptance: agent の差し戻し上限（超えたら人へ）
+    question_timeout: 2                # 未回答質問を owner へ昇格するまでの自ターン数
+    # consensus_ratio: 0.6             # done_when: consensus — 最頻回答の占有率しきい値
+    # consensus_min: 2                 # done_when: consensus — 合意判定に要る最小回答席数
+  budget:
+    execution_minutes: 120             # 予算 = 全 amigo の agent CLI 実実行時間の合計（0=無制限）
+    per_role_turns: 30                 # ロールあたりターン上限（空転の保険）
+    soft_ratio: 0.9                    # これを超えたら wrap-up モード
+    on_exhausted: wrap-up              # wrap-up（現状統合の partial 納品）| fail
+  # conductor:                          # 自律コンダクタ（既定 off・オプトイン）
+  #   enabled: true                     # 実行中に owner が team-builder 的判断で restaff を回す
+  #   cli: claude                       # 判断に使う agent CLI（stub は判断しない）
+  #   max_ops: 3                        # 1 回の restaff で許す add+prune 上限
+  #   max_total_ops: 12                 # ミッション全体の restaff 総上限（暴走止め）
+
+roles:
+  - id: architect
+    title: アーキテクト
+    mission: |
+      design-doc.md を正として構成を確定し、他ロールからの設計質問に回答する。
+      判断に迷うものは owner へ decision-request でエスカレーションする。
+    deliverables: [architecture.md]
+    required: true
+    agent_cli: claude
+  - id: impl-api
+    title: API 実装
+    mission: architecture.md に従い API を実装し、単体テストを通す。
+    deliverables: [src/, tests/]
+    required: true
+    requires: { tags: [python] }       # ノード能力（join --tags）とのマッチング条件
+    collaborates_with: [architect]     # 会話相手のヒント（順序の強制ではない）
+    agent_cli: codex
+  - id: reviewer
+    title: レビュアー
+    mission: 全ロールの成果物を design-doc.md と突き合わせてレビューし、指摘を返す。
+    required: true
+    approver: true                     # done_when: reviewer-approved の承認者
+  # 並列同一シート（G1）＋ 決定的集約（G2）の例 — 同じロールを N 席に増やし多数決する:
+  # - id: solver
+  #   title: ソルバー
+  #   mission: 問題を独立に解き、最終回答を ANSWER.md に書く（他席は見ない）。
+  #   deliverables: [ANSWER.md]
+  #   seats: 5                         # solver#0..#4 の独立席へ展開される
+  #   aggregate: majority              # integrator が集約: majority|consensus|weighted-vote|approval-count|gather
+  #   # rounds: 3                      # 同期討論（G3）: 全席が前ラウンドを出し切るまで次へ進めない
+  #   # topology: ring                 # 討論の通信トポロジ complete|ring|star|tree（G3）
+  #   # aggregate_answer: ANSWER.md    # 集約が読む正準回答ファイル（既定は単一 deliverable）
+  #   # aggregate_score: SCORE         # weighted-vote / approval-count の数値信号ファイル
+  # integrator は省略可（省略時はオーナーノードが自動で self-staff する組み込みロール）

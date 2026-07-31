@@ -1,0 +1,31 @@
+{
+  "_comment": "wsl-launcher の設定例。PC 起動（ログオン）時に、所定 cwd（プロジェクトルート）で agent-project を常駐起動する運用の turnkey 配線。使い方: この内容を config.json にコピーし、wslPath を自分のプロジェクトルート（WSL パス）に、distro を自分のディストロ名に書き換える。詳細は README.md 参照。",
+  "settings": {
+    "terminalApp": "wt",
+    "delayBetweenLaunchesMs": 500,
+    "defaultDistro": "Ubuntu",
+    "wslWaitEnabled": true,
+    "wslWaitTimeoutSeconds": 60
+  },
+  "terminals": [
+    {
+      "name": "agent-project (demo)",
+      "wslPath": "/home/user/projects/demo",
+      "command": "agent-project run --watch",
+      "distro": "Ubuntu",
+      "keepOpen": true,
+      "enabled": true
+    }
+  ],
+  "_terminals_alt": [
+    {
+      "_comment": "常駐体（agent-project serve）を使わず、プロジェクトの監視ループを別ターミナルで明示常駐する構成。上の terminals をこれに差し替える。run --watch は OS の排他ロックで同一 root の重複監視を拒否するため、毎起動でランチャが叩いても二重起動しない。",
+      "name": "agent-project (demo)",
+      "wslPath": "/home/user/projects/demo",
+      "command": "agent-project run --watch",
+      "distro": "Ubuntu",
+      "keepOpen": true,
+      "enabled": true
+    }
+  ]
+}

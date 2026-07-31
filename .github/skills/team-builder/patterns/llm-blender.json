@@ -1,0 +1,43 @@
+{
+  "id": "llm-blender",
+  "name": "LLM-Blender（順位付け→融合）",
+  "category": "ensembling",
+  "tier": "medium",
+  "source": "LLM-Blender (Jiang et al., 2023)",
+  "when_to_use": "複数候補を対戦順位付けし、上位を融合して 1 つに高めたいとき。",
+  "signals": [
+    "候補が複数",
+    "順位付けして融合"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "gen-a",
+        "role": "候補を生成する",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "gen-b",
+        "role": "別候補を生成する",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "ranker-fuser",
+        "role": "候補を順位付けし上位を 1 つへ融合する",
+        "required": true,
+        "approver": true,
+        "collaborates_with": [
+          "gen-a",
+          "gen-b"
+        ]
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved"
+    }
+  },
+  "feasibility": "partial",
+  "feasibility_note": "双方向ペア対戦は ranker の判断で近似。融合は integrator 的。"
+}
