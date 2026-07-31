@@ -611,6 +611,55 @@ def doctor_host_config_findings(host=None) -> "list[dict]":
     return out
 
 
+def structure_counts() -> dict:
+    """断片合成と CLI 入口の対応を数える（W15・純関数）。
+
+    返り値は {"fragments", "unlisted"（_FRAGMENTS に無い .py）, "missing"（列挙にあるのに
+    ファイルが無い）, "commands"（cli の dispatch 名）, "unrouted"（add_parser したのに
+    `_subcommands` に無い＝serve に飲まれる名前）}。断片は単体 import できない合成方式なので、
+    外から呼ぶ機能は CLI 入口を持つ以外に届かせる道が無い——「入口が無いまま実装だけある」
+    （node-id-cutover の実例）を検出できる唯一の材料がこの対応表。"""
+    pkg = Path(__file__).resolve().parent
+    listed = list(_FRAGMENTS)
+    on_disk = {p.stem for p in pkg.glob("*.py")} - {"__init__", "__main__"}
+    src = (pkg / "cli.py").read_text(encoding="utf-8")
+    # トップレベルの `sub.add_parser` だけを数える（`wksub.add_parser` のような
+    # サブサブコマンドは _subcommands に載らないのが正しい＝誤検知の元）。
+    parsers = set(re.findall(r'\bsub\.add_parser\(\s*"([a-z0-9-]+)"', src))
+    routed = set(re.findall(r'"([a-z0-9-]+)"', re.search(
+        r"_subcommands\s*=\s*\{(.*?)\}", src, flags=re.S).group(1))) if re.search(
+        r"_subcommands\s*=\s*\{(.*?)\}", src, flags=re.S) else set()
+    return {"fragments": len(listed),
+            "unlisted": sorted(on_disk - set(listed)),
+            "missing": sorted(n for n in listed if not (pkg / f"{n}.py").is_file()),
+            "commands": sorted(parsers),
+            "unrouted": sorted(parsers - routed)}
+
+
+def doctor_structure_findings() -> "list[dict]":
+    """構造の綻び（到達不能な断片・CLI 入口を持たないサブコマンド宣言）を所見にする（W15）。
+    起動は止めない warn。所見は既存パイプ（engine/status.json の横断エラー → dashboard）に載る。"""
+    c = structure_counts()
+    out: "list[dict]" = []
+    for name in c["unlisted"]:
+        out.append({"category": "program", "severity": "warn",
+                    "title": f"到達不能な断片: {name}.py",
+                    "evidence": f"agent_project/{name}.py は _FRAGMENTS に無く一度も exec されない",
+                    "fix": "__init__.py の _FRAGMENTS へ依存順で足すか、ファイルを消す"})
+    for name in c["missing"]:
+        out.append({"category": "program", "severity": "critical",
+                    "title": f"断片の実体がありません: {name}.py",
+                    "evidence": f"_FRAGMENTS が {name} を列挙しているが agent_project/{name}.py が無い",
+                    "fix": "ファイルを復元するか _FRAGMENTS から外す"})
+    for name in c["unrouted"]:
+        out.append({"category": "program", "severity": "warn",
+                    "title": f"CLI 入口が繋がっていません: {name}",
+                    "evidence": f"cli.py が `{name}` を add_parser しているが _subcommands に無い"
+                                "（サブコマンド無し＝serve の既定に飲まれる）",
+                    "fix": "cli.py の _subcommands へ同じ名前を足す"})
+    return out
+
+
 def doctor_host_projects_findings(host=None) -> "list[dict]":
     """host.yaml の `projects[]` が**起動できる形か**を起動前に検査する（S1 設計 §3.6）。
 
@@ -1006,6 +1055,7 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
                      + doctor_wiring_findings(cfg)
                      + doctor_residency_findings(_declared_residency())
                      + doctor_host_config_findings()
+                     + doctor_structure_findings()
                      + doctor_node_id_spelling_findings()
                      + doctor_host_projects_findings()
                      + node_id_cutover_findings(cfg, cutover_from or ""))
@@ -1034,6 +1084,7 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
                  for g in doctor_env_findings(cfg) + doctor_coordination_findings(cfg)
                  + doctor_audit_findings(cfg) + doctor_residency_findings(_declared_residency())
                  + doctor_host_config_findings()
+                 + doctor_structure_findings()
                  + doctor_node_id_spelling_findings()
                  + doctor_host_projects_findings()
                  + node_id_cutover_findings(cfg, cutover_from or "")}

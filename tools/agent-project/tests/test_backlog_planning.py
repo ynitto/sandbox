@@ -365,6 +365,72 @@ class PlannerSkillTests(unittest.TestCase):
                              ["human"])
             self.assertEqual([g["title"] for g in spec["tombstones"]], ["却下したタスク"])
 
+    def test_existing_carries_rejected_with_reason_from_archive(self):
+        """W14 一次防衛の契約: 却下済みも**理由付きで**プランナー入力に載る（生成側で抑止する）。
+        載らないとプランナーは同じ意図を出し続け、投入側で黙って落とされる分を払い続ける。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            ch = _charter(cfg)
+            km.enqueue_task(cfg, {"title": "生きているタスク", "verify": "true", "why": "理由文"})
+            km.enqueue_task(cfg, {"title": "却下されるタスク", "verify": "true"})
+            tid = [t.id for t in km.load_tasks(cfg.backlog) if t.title == "却下されるタスク"][0]
+            self.assertEqual(km.cmd_reject(cfg, tid, "方向性が違う"), 0)
+            spec = km.build_planner_input(cfg, ch)
+            by = {e["title"]: e for e in spec["existing"]}
+            self.assertEqual(by["却下されるタスク"]["status"], "rejected")
+            self.assertEqual(by["却下されるタスク"]["reason"], "方向性が違う")
+            self.assertEqual(by["生きているタスク"]["summary"], "理由文")   # status/summary も落とさない
+            self.assertIn("ready", {e["status"] for e in spec["existing"]})
+
+    def test_rejected_list_is_bounded_to_the_most_recent(self):
+        """archive は際限なく育つので却下済みは直近 N 件で有界（全件索引は現役側が持つ）。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            ch = _charter(cfg)
+            adir = cfg.archive_dir()
+            adir.mkdir(parents=True, exist_ok=True)
+            for i in range(km._PLANNER_REJECTED_LIMIT + 5):
+                p = adir / f"R{i}.md"
+                p.write_text(f"## R{i}: 却下 {i}\n- status: rejected\n\n- 却下: 理由 {i}\n",
+                             encoding="utf-8")
+                os.utime(p, (1000.0 + i, 1000.0 + i))       # 新しいほど i が大きい
+            rejected = [e for e in km.build_planner_input(cfg, ch)["existing"]
+                        if e["status"] == "rejected"]
+            self.assertEqual(len(rejected), km._PLANNER_REJECTED_LIMIT)
+            titles = {e["title"] for e in rejected}
+            self.assertIn(f"却下 {km._PLANNER_REJECTED_LIMIT + 4}", titles)   # 直近は残る
+            self.assertNotIn("却下 0", titles)                                # 最古から落ちる
+
+    def test_builtin_planner_prompt_separates_live_and_rejected(self):
+        """スキル不在でも組み込みプロンプトが live / 却下（理由付き）/ 墓標を出し分ける。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d, planner_skill="no-such-planner-skill")
+            ch = _charter(cfg)
+            km.enqueue_task(cfg, {"title": "生きているタスク", "verify": "true"})
+            km.append_tombstone(cfg, "墓標のタスク", "二度と出さない")
+            spec = km.build_planner_input(cfg, ch)
+            spec["existing"].append({"id": "R1", "title": "却下のタスク", "status": "rejected",
+                                     "edited": "", "reason": "方向性が違う", "summary": ""})
+            prompt = km.build_planner_prompt(cfg, spec, ch)
+            self.assertIn("生きているタスク", prompt)
+            self.assertIn("却下のタスク", prompt)
+            self.assertIn("方向性が違う", prompt)              # 却下理由がプランナーへ届く
+            self.assertIn("墓標のタスク", prompt)
+
+    def test_machine_suppression_is_exact_title_match_only(self):
+        """W14 二次: 機械が投入を止めるのは墓標との**完全一致**だけ。類似は止めず注記に留める。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            km.append_tombstone(cfg, "board UI を作る", "いらない")
+            stones = km.load_tombstones(cfg)
+            self.assertIsNotNone(km.tombstone_hit("Board　UI を作る", stones))   # 正規化して一致
+            self.assertIsNone(km.tombstone_hit("board 観測 UI を作る", stones))  # 類似は止めない
+            self.assertTrue(km.similar_tombstones("board 観測 UI を作る", stones, 0.5))  # 提示はする
+
     def test_existing_is_scoped_to_the_charter(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
@@ -903,6 +969,17 @@ class FlowGranularityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             cmd = self._cmd(Path(d), granularity="fine")
             self.assertEqual(cmd[cmd.index("--granularity") + 1], "auto")
+
+    def test_verification_plan_is_passed_as_argv(self):
+        """検証計画は argv `--verification-plan` で渡す（env 渡しは不安定として人が却下・
+        2026-07-31。両ツールは同時更新が前提で旧 agent-flow との混在は非対応）。"""
+        with tempfile.TemporaryDirectory() as d:
+            cmd = self._cmd(Path(d))
+            i = cmd.index("--verification-plan")
+            self.assertLess(i, cmd.index("run"), "グローバル引数（サブコマンドより前）")
+            plan = json.loads(cmd[i + 1])
+            self.assertEqual([c["command"] for c in plan["commands"]], ["true"])
+            self.assertTrue(str(plan.get("digest", "")).startswith("sha256:"))
 
     def test_explicit_flow_granularity_is_forwarded(self):
         with tempfile.TemporaryDirectory() as d:

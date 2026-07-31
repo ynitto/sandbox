@@ -321,6 +321,35 @@ def claim_fence_state(cfg: "Config", task: "Task") -> str:
 
 
 
+def requeue_unknown_once(cfg: "Config", tasks: "list[Task]") -> "list[str]":
+    """unknown 隔離（W7）の自動再試行は**次パスの fencing 再確認 1 回だけ**。復帰させた id を返す。
+
+    隔離時に token は回転・push 済みなので、「remote に触れて、remote がこの回転後の姿と一致」
+    なら他ノードは取り直していない——ready へ戻して同じ run の続き（last_run 再開）に乗せる。
+    触れない・一致しない場合は blocked のまま人待ちに固定する（fence_recheck 印で 2 回目はしない）。"""
+    if not _coordination_active(cfg):
+        return []
+    out: "list[str]" = []
+    for t in tasks:
+        if (t.norm_status() != "blocked" or not t.get("fence_unknown")
+                or t.get("fence_recheck")):
+            continue
+        t.set("fence_recheck", "1")
+        current, reachable = _fetch_remote_task(cfg, t.id)
+        matched = (reachable and current is not None
+                   and all(str(current.get(k) or "") == str(t.get(k) or "")
+                           for k in ("claim_owner", "claim_token", "claim_generation")))
+        if matched:
+            t.status = "ready"
+            t.drop("fence_unknown", "fence_recheck")
+            clear_needs_file(cfg, t.id)
+            append_journal(cfg.journal,
+                           f"unknown 復帰: {t.id} は再確認でリモートと一致（同じ run の続きへ）")
+            out.append(t.id)
+        persist_task(cfg, t)
+    return out
+
+
 def refresh_distributed_task(cfg: "Config", task_id: str) -> bool:
     """fence 敗北時、stale なローカル task を remote 正本へ戻す。"""
     current = _remote_task(cfg, task_id)

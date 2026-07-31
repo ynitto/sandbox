@@ -668,6 +668,7 @@ def _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits,
 def _settle_done(cfg, task, act_msg, git_base, branch, ev, vmsg, dtok, dusd, cycle, autonomy_cache):
     """verify=PASS かつゲート対象外 → 無人 auto-done（受領書＋archive）。集計 delta を返す。"""
     task.status = "done"
+    record_learn_outcome(cfg, task, worked=True)                        # learn 適用で done＝成功（W10）
     autonomy_record(cfg, task, clean=True, cache=autonomy_cache)        # 無人 auto-done＝clean 実績
     ts = _now_ts()
     ref = extract_delivery_ref(act_msg, cfg, git_base)   # 成果参照（baseline 以降の新規のみ）
@@ -764,7 +765,9 @@ def _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location="local",
         if learned and not task.get("autolearned"):
             src, guide = learned
             task.drop("feedback", "autolearned")
-            task.extra += [("feedback", guide.replace("\n", " ⏎ ")), ("autolearned", "1")]
+            # autolearned には出典 id を刻む（W10）: done なら learn-worked、再 blocked なら
+            # learn-misfire を出典の決定記録へ返し、連続不発の失効判定の材料にする。
+            task.extra += [("feedback", guide.replace("\n", " ⏎ ")), ("autolearned", src)]
             task.status = "ready"
             persist_task(cfg, task)
             append_decision(cfg, task.id, "auto",
@@ -851,6 +854,9 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
         # リモートに触れず claim を検証できなかった。fence を失った証拠は無いので破棄しない
         # （一過性の通信断で完成した成果が消える）。かといって他ノードが取り直していない保証も
         # 無いので自動採用もしない。実行ノード消失時（recover_stale_doing）と同じ扱いで人へ回す。
+        # W7: 隔離元ノードを刻む——上限判定（_budget_reason）と次パスの再確認 1 回
+        # （requeue_unknown_once）がこの印を読む。
+        task.set("fence_unknown", cfg.node or "1")
         _requeue_for_human(cfg, task, cycle,
                            "リモート不通で claim を検証できませんでした。成果は保持しています。"
                            "resume/revise で採否を決めてください",
@@ -958,9 +964,12 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
         if policy.protect:                             # act が保護パスを触ったか（safety denylist）
             protect_hits = sorted({(p, m) for p in changed
                                    if (m := path_protected(p, policy.protect))})
-    # no-progress: verify=PASS でも変更ゼロ＝履歴一致 verify による偽 done の疑い（opt-in）
+    # no-progress: verify=PASS でも変更ゼロ＝履歴一致 verify による偽 done の疑い（opt-in）。
+    # `- no_diff:` 宣言（W4）は「差分ゼロが正」の宣言なので expect: none と同じく外れる
+    # （差分基準の差し替えは build_task_verification_plan 側。ここは決定的ガードの opt-out）。
     _expect = task.get("expect", "")
     require_prog = ((cfg.require_progress or _expect == "changes") and _expect != "none"
+                    and not str(task.get("no_diff") or "").strip()
                     and (cfg.workdir / ".git").exists())
     no_progress = (ok and not flaky and not regressed and require_prog and not changed)
     # red-green: 合成 verify が act 前ツリーでも PASS＝この変更を弁別していない（偽 done）。
@@ -1033,6 +1042,49 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
     return {"archived": 0, "followups": []}
 
 
+def heal_partial_settles(cfg: "Config", tasks: "list[Task]") -> "list[str]":
+    """settle 途中死の投影復旧（W6）。前へ倒して完成させた id を返す。
+
+    settle は archive 書き込み → backlog 削除 → 納品書再生成 → needs 掃除の順にファイルを置き、
+    コミットは state sync が 1 つにまとめる。途中死すると「archive にも backlog にも同じ id が
+    ある」形が残り、そのままコミットされると done の記録と doing の実行予定が併存する。
+    専用の復旧台帳は持たず、毎パスの整合点が残りの手順（削除・再生成・掃除）を決定的に
+    やり直す——巻き戻しではなく前へ倒す（archive の納品記録を消すと成果参照が失われる）。
+
+    id 再利用（過去の done と同 id で積み直された新タスク）と区別するため、倒すのは
+    **実行中の姿のまま残っている（doing / offloaded / done）かつ題が一致する**ものだけ。
+    ready や inbox で積み直されたものは新しい仕事なので触らない（intake は同じ id を
+    再投入しうる）。題が違えば journal に残して人の目へ回す（自動では消さない）。"""
+    adir = cfg.archive_dir()
+    if not adir.exists():
+        return []
+    healed: "list[str]" = []
+    for t in list(tasks):
+        ap = adir / f"{t.id}.md"
+        if not ap.is_file() or t.norm_status() not in ("doing", "offloaded", "done"):
+            continue
+        try:
+            arch = parse_task(ap.read_text(encoding="utf-8"), t.id)
+        except (OSError, ValueError):
+            continue
+        if arch.norm_status() not in ("done", "rejected"):
+            continue
+        if (arch.title or "").strip() != (t.title or "").strip():
+            append_journal(cfg.journal,
+                           f"整合点: {t.id} が backlog と archive の両方にあるが題が違う"
+                           f"（id 再利用の疑い。自動では触らない）")
+            continue
+        delete_task_file(cfg, t)
+        clear_needs_file(cfg, t.id)
+        rebuild_delivery(cfg)
+        tasks.remove(t)
+        append_journal(cfg.journal,
+                       f"整合点: {t.id} の settle 途中死を回収（archive を正として backlog を"
+                       f"閉じ、納品書を再生成）")
+        healed.append(t.id)
+    return healed
+
+
 def _run_setup(cfg: "Config", controller: bool = True) -> tuple:
     """run_loop の前処理: inbox 取り込み → 読み込み → 人のフィードバック解除 → triage/rot で
     ready/blocked を確定 → verify を用意する。(tasks, policy, reasons, ingested, inboxed, pre_blocked)。"""
@@ -1045,8 +1097,10 @@ def _run_setup(cfg: "Config", controller: bool = True) -> tuple:
     ingest_commands(cfg)          # 人の指示（approve/hold/pin/defer/revise のファイルドロップ）を先に適用
     inboxed = run_intake(cfg) + ingest_inbox(cfg)     # 取り込みコマンド＋外部ドロップ(inbox/)を backlog へ
     tasks = load_tasks(cfg.backlog)
+    heal_partial_settles(cfg, tasks)  # settle 途中死（archive と backlog に同 id）の投影復旧（W6）
     recover_revised(cfg, tasks)   # 実行側が settle できなかった revise 予約の回収（クラッシュ自己回復）
     recover_stale_doing(cfg, tasks)   # 実行者が失踪した doing を ready へ戻す（再起動/クラッシュ自己回復）
+    requeue_unknown_once(cfg, tasks)  # unknown 隔離の fencing 再確認（次パス 1 回だけ・W7）
     policy = load_policy(cfg.policy)
     reasons: dict[str, str] = {}
     ingested = ingest_feedback(cfg, tasks)           # 人のフィードバックでブロック解除
@@ -1083,8 +1137,18 @@ def _run_setup(cfg: "Config", controller: bool = True) -> tuple:
 
 
 def _budget_reason(cfg: "Config", cycle: int, start: float,
-                   tokens_used: int, cost_used: float) -> "str | None":
-    """予算ゲート: サイクル/実時間/トークン/コスト/ソフト(throttle) の上限到達なら停止理由を返す。"""
+                   tokens_used: int, cost_used: float,
+                   tasks: "list[Task] | None" = None) -> "str | None":
+    """予算ゲート: サイクル/実時間/トークン/コスト/ソフト(throttle) の上限到達なら停止理由を返す。
+
+    unknown 隔離（W7）も同じ出口: 自ノード印の隔離が上限に達したら throttle と同じ
+    report 降格で新規 claim を止める（停止機構を増やさない。他ノードは走り続ける）。"""
+    if tasks is not None and cfg.unknown_quarantine_max > 0:
+        mine = sum(1 for t in tasks
+                   if t.norm_status() == "blocked"
+                   and str(t.get("fence_unknown") or "") == (cfg.node or "1"))
+        if mine >= cfg.unknown_quarantine_max:
+            return REASON_THROTTLE
     if cycle >= cfg.max_cycles:
         return REASON_BUDGET
     if cfg.max_seconds and (time.time() - start) >= cfg.max_seconds:

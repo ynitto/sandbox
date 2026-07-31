@@ -68,6 +68,19 @@ class PlanBuildTests(unittest.TestCase):
         self.assertEqual(texts, ["基準", km.DIFF_CRITERION])
         self.assertEqual(vc.plan_errors(plan), [])
 
+    def test_no_diff_swaps_diff_criterion(self):
+        """W4: `- no_diff: <理由>` は⑤の述語を「成果物の実在と参照」へ差し替える（基準は消えない）。"""
+        t = _task(self.d, lines=["task_acceptance_criteria: 基準",
+                                 "no_diff: 調査タスクで差分を作らない"])
+        t.verify = ""
+        plan = km.build_task_verification_plan(self.cfg, t)
+        texts = [c["text"] for c in plan["criteria"]]
+        self.assertEqual(len(texts), 2)
+        self.assertNotIn(km.DIFF_CRITERION, texts)
+        self.assertIn("調査タスクで差分を作らない", texts[1])
+        self.assertIn("実在", texts[1])
+        self.assertEqual(vc.plan_errors(plan), [])
+
     def test_command_only_plan_has_no_criteria(self):
         t = _task(self.d, lines=["verify: `pytest -q`"])
         plan = km.build_task_verification_plan(self.cfg, t)

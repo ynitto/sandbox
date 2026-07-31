@@ -394,6 +394,78 @@ class TestLearning(unittest.TestCase):
             self.assertEqual(res["counts"]["blocked"], 1)
 
 
+class TestLearnScopeAndExpiry(unittest.TestCase):
+    """W10: learn のスコープ（charter/repo/全体）と失効（連続不発・人の無効化）。"""
+
+    def _seed(self, d, src_id, title, guide):
+        cfg = cfg_for(d)
+        km.ensure_dirs(cfg)
+        km.append_decision(cfg, src_id, "alice", context=src_id, action="feedback-resume",
+                           reason=guide, affects="→ ready", learn=(title, guide))
+        return cfg
+
+    def test_charter_scoped_learn_applies_only_to_that_charter(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._seed(d, "OLD", "fix slugify util",
+                             "置換を直す :: scope=charter:alpha")
+            t = km.Task(id="NEW", title="fix slugify util again")
+            self.assertIsNone(km.find_learned_resolution(cfg, t))    # タグ無し＝default は対象外
+            t.set("charter", "alpha")
+            hit = km.find_learned_resolution(cfg, t)
+            self.assertEqual(hit, ("OLD", "置換を直す"))              # guide はスコープタグを外して返す
+
+    def test_repo_scoped_learn_matches_workspace(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._seed(d, "OLD", "fix slugify util", "直す :: scope=repo:tools-x")
+            t = km.Task(id="NEW", title="fix slugify util again")
+            self.assertIsNone(km.find_learned_resolution(cfg, t))
+            t.set("workspace", "git@example.com:me/tools-x.git")
+            self.assertEqual(km.find_learned_resolution(cfg, t), ("OLD", "直す"))
+
+    def test_consecutive_misfires_expire_the_learn(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._seed(d, "OLD", "fix slugify util", "直す")
+            cfg = cfg_for(d, learn_misfire_limit=2)
+            for _ in range(2):
+                km.append_decision(cfg, "OLD", "auto", context="x", action="learn-misfire",
+                                   reason="不発: T9", affects="OLD")
+            t = km.Task(id="NEW", title="fix slugify util again")
+            self.assertIsNone(km.find_learned_resolution(cfg, t))
+            # worked が挟まれば連続が切れて復活する
+            km.append_decision(cfg, "OLD", "auto", context="x", action="learn-worked",
+                               reason="成功: T10", affects="OLD")
+            self.assertIsNotNone(km.find_learned_resolution(cfg, t))
+
+    def test_human_disable_via_decision_record(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._seed(d, "OLD", "fix slugify util", "直す")
+            km.append_decision(cfg, "OLD", "alice", context="この learn は誤り",
+                               action="learn-disable", reason="前提が変わった", affects="OLD")
+            self.assertIsNone(km.find_learned_resolution(
+                cfg, km.Task(id="NEW", title="fix slugify util again")))
+
+    def test_outcome_is_recorded_to_the_source(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._seed(d, "OLD", "fix slugify util", "直す")
+            t = km.Task(id="T1", title="x")
+            t.set("autolearned", "OLD")
+            km.record_learn_outcome(cfg, t, worked=False, why="また落ちた")
+            km.record_learn_outcome(cfg, t, worked=False)     # 2 回目は書かない（1 タスク 1 回）
+            src = (d / "decisions" / "OLD.md").read_text(encoding="utf-8")
+            self.assertEqual(src.count("learn-misfire"), 1)
+            self.assertIn("不発: T1", src)
+            # ltm 出典・旧形式 "1" は対象外
+            t2 = km.Task(id="T2", title="x")
+            t2.set("autolearned", "ltm:mem-1")
+            km.record_learn_outcome(cfg, t2, worked=True)
+            self.assertFalse((d / "decisions" / "ltm:mem-1.md").exists())
+
+
 class TestDecisionCapture(unittest.TestCase):
     """人の判断（approve 理由・hold 理由）から learn/avoid を自動抽出して蓄積する（learn_capture）。"""
 

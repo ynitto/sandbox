@@ -150,6 +150,18 @@ class TestVerifyProgress(unittest.TestCase):
             res = km.run_loop(self._cfg(d, require_progress=True))
             self.assertEqual(res["counts"]["done"], 1)      # 正当な無変更タスクは opt-out で done
 
+    def test_no_diff_opts_out_of_progress_guard(self):
+        """W4: 差分ゼロが正の宣言。no-progress ガードは expect: none と同じく外れる。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._repo(d)
+            (d / "backlog" / "R1.md").write_text(
+                "## R1: x\n- status: ready\n- verify: `git log|grep -q refactor`\n"
+                "- no_diff: 調査のみ\n",
+                encoding="utf-8")
+            res = km.run_loop(self._cfg(d, require_progress=True))
+            self.assertEqual(res["counts"]["done"], 1)
+
     def test_expect_changes_opts_in_without_global(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)

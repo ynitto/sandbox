@@ -107,11 +107,50 @@ def _title_overlap(a: str, b: str) -> float:
     return len(wa & wb) / len(wa | wb)
 
 
+def split_learn_scope(guide: str) -> "tuple[str, tuple[str, str]]":
+    """guide 末尾のスコープタグを (本文, (kind, name)) に分ける。タグ無しは kind=""（全体）。"""
+    m = LEARN_SCOPE_RE.search(guide)
+    if not m:
+        return guide.strip(), ("", "")
+    return guide[:m.start()].strip(), (m.group("kind"), m.group("name"))
+
+
+def _learn_scope_applies(task: Task, kind: str, name: str) -> bool:
+    """スコープ付き learn をこのタスクへ適用してよいか（W10）。全体（kind=""）は常に適用。"""
+    if not kind:
+        return True
+    if kind == "charter":
+        return task_charter_name(task) == name
+    return name in str(task.get("workspace") or "")     # repo: workspace 指定の部分一致
+
+
+def learn_suppressed(path: "Path", limit: int) -> bool:
+    """learn 出典（decisions/<src>.md）単位の失効判定（W10）。
+
+    人の無効化（`action  : learn-disable` の決定記録）か、連続不発（learn-misfire が
+    learn-worked を挟まず limit 回）で、その出典の learn は適用しない。記録は append-only の
+    決定記録だけで数える（新ファイルなし・ファイル内の追記順＝時系列）。"""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    streak, disabled = 0, False
+    for block in re.split(r"(?=^## DR)", text, flags=re.M):
+        if "action  : learn-disable" in block:
+            disabled = True
+        elif "action  : learn-misfire" in block:
+            streak += 1
+        elif "action  : learn-worked" in block:
+            streak = 0
+    return disabled or (limit > 0 and streak >= limit)
+
+
 def _best_learn_match(task: Task, threshold: float, files: "list[Path]",
                       label, skip_id: "str | None" = None,
                       pattern: "re.Pattern" = LEARN_RE) -> "tuple[str, str] | None":
     """与えた md 群の該当行（既定 `- learn:`／pattern で `- avoid:` 等に切替）を Jaccard で
-    タイトル照合し最良を返す（決定的・LLM 不要）。pattern は title/guide の名前付きグループを持つこと。"""
+    タイトル照合し最良を返す（決定的・LLM 不要）。pattern は title/guide の名前付きグループを持つこと。
+    guide 末尾のスコープタグ（W10）はここで解釈し、スコープ外の行は候補にしない。"""
     best, best_score = None, 0.0
     for f in sorted(files):
         if skip_id is not None and f.stem == skip_id:  # 自分の履歴は除く（自己ループ防止）
@@ -120,9 +159,12 @@ def _best_learn_match(task: Task, threshold: float, files: "list[Path]",
             m = pattern.match(line)
             if not m:
                 continue
+            guide, (kind, name) = split_learn_scope(m.group("guide"))
+            if not _learn_scope_applies(task, kind, name):
+                continue
             score = _title_overlap(task.title, m.group("title"))
             if score >= threshold and score > best_score:
-                best, best_score = (label(f), m.group("guide").strip()), score
+                best, best_score = (label(f), guide), score
     return best
 
 
@@ -161,8 +203,10 @@ def find_learned_resolution(cfg: "Config", task: Task) -> "tuple[str, str] | Non
     どちらも決定的なファイル走査＋Jaccard で、エージェント（LLM）を一切起動しない。"""
     local = []
     if cfg.decisions.exists():
-        local = _best_learn_match(task, cfg.learn_threshold,
-                                  list(cfg.decisions.glob("*.md")),
+        limit = int(getattr(cfg, "learn_misfire_limit", 3) or 0)
+        files = [f for f in cfg.decisions.glob("*.md")
+                 if not learn_suppressed(f, limit)]     # 失効した出典は適用しない（W10）
+        local = _best_learn_match(task, cfg.learn_threshold, files,
                                   label=lambda f: f.stem, skip_id=task.id)
     if local:
         return local
@@ -172,6 +216,23 @@ def find_learned_resolution(cfg: "Config", task: Task) -> "tuple[str, str] | Non
             return _best_learn_match(task, cfg.learn_threshold, list(mem_dir.glob("*.md")),
                                      label=lambda f: f"ltm:{f.stem}")
     return None
+
+
+def record_learn_outcome(cfg: "Config", task: Task, worked: bool, why: str = "") -> None:
+    """auto-resolve（learn 適用）の結末を**出典の決定記録**へ返す（W10・タスクごと 1 回）。
+
+    done なら learn-worked、再 blocked なら learn-misfire。出典ファイル内の追記順が時系列なので、
+    learn_suppressed が「worked を挟まない misfire の連続」をそのまま数えられる。ltm 出典は
+    ローカルに決定記録が無いので対象外。"""
+    src = str(task.get("autolearned") or "").strip()
+    if not src or src == "1" or src.startswith("ltm:") or task.get("learn_outcome"):
+        return
+    task.extra.append(("learn_outcome", "worked" if worked else "misfire"))
+    append_decision(cfg, src, "auto",
+                    context=f"{task.id}（{task.title}）への learn 適用の結果",
+                    action="learn-worked" if worked else "learn-misfire",
+                    reason=(("成功: " if worked else "不発: ") + f"{task.id} {why}").strip()[:160],
+                    affects=src)
 
 
 def find_avoidance(cfg: "Config", task: Task) -> "tuple[str, str] | None":

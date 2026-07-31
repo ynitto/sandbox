@@ -961,3 +961,86 @@ class RunResumeTests(unittest.TestCase):
             self.assertIn("--run-id", cmd)
             self.assertLess(cmd.index("--run-id"), cmd.index("run"), "run より前に置く")
             self.assertEqual(cmd[cmd.index("--run-id") + 1], "req-x-T1-r0")
+
+
+class TestRetentionContract(unittest.TestCase):
+    """W11: 保持契約（gc が実行者）。verifications は直近 N、journal/run-log は期間、archive は保持。"""
+
+    def _old(self, p: Path, days: float):
+        t = time.time() - days * 86400.0
+        os.utime(p, (t, t))
+
+    def test_verifications_keep_latest_n_and_pinned_rev(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, verifications_keep=2)
+            mkb(d, "T1", verify="true")
+            t = km.load_tasks(cfg.backlog)[0]
+            t.set("verify_rev", "revold")            # settle が参照中＝N の外でも消さない
+            km.persist_task(cfg, t)
+            vd = km.verifications_dir(cfg) / "T1"
+            vd.mkdir(parents=True, exist_ok=True)
+            for i, name in enumerate(("revold.md", "r1.md", "r2.md", "r3.md")):
+                p = vd / name
+                p.write_text("x", encoding="utf-8")
+                self._old(p, 10 - i)                 # revold が最古
+            out = km.enforce_retention(cfg)
+            left = sorted(p.name for p in vd.iterdir())
+            self.assertEqual(left, ["r2.md", "r3.md", "revold.md"])
+            self.assertEqual(out["verifications"], 1)
+
+    def test_journal_archive_and_runlog_copies_expire_by_age(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, gc_retention_days=7)
+            (d / "journal-archive").mkdir(parents=True, exist_ok=True)
+            old = d / "journal-archive" / "journal-old.000.md"
+            new = d / "journal-archive" / "journal-new.000.md"
+            for p, age in ((old, 30), (new, 1)):
+                p.write_text("x", encoding="utf-8")
+                self._old(p, age)
+            rl = d / "run-log" / "pc-a"
+            rl.mkdir(parents=True, exist_ok=True)
+            for name, age in (("r-old.json", 30), ("r-new.json", 1)):
+                p = rl / name
+                p.write_text("{}", encoding="utf-8")
+                self._old(p, age)
+            km.enforce_retention(cfg)
+            self.assertFalse(old.exists())
+            self.assertTrue(new.exists())
+            self.assertFalse((rl / "r-old.json").exists())
+            self.assertTrue((rl / "r-new.json").exists())
+
+    def test_runlog_rotates_by_period_and_archive_is_kept(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, gc_retention_days=7)
+            cfg.runlog.write_text('{"run_id":"x"}\n', encoding="utf-8")
+            self._old(cfg.runlog, 30)
+            adir = cfg.archive_dir()
+            adir.mkdir(parents=True, exist_ok=True)
+            keep = adir / "DONE.md"
+            keep.write_text("## DONE: x\n- status: done\n", encoding="utf-8")
+            self._old(keep, 400)                     # archive はどれだけ古くても保持
+            km.enforce_retention(cfg)
+            arch = sorted((d / "run-log-archive").iterdir())
+            self.assertEqual(len(arch), 1)
+            self.assertIn("run_id", arch[0].read_text(encoding="utf-8"))
+            self.assertFalse(cfg.runlog.exists())    # 退避後は次の追記から始め直す
+            self.assertTrue(keep.exists())
+
+    def test_zero_disables_pruning(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, verifications_keep=0, gc_retention_days=0)
+            vd = km.verifications_dir(cfg) / "T1"
+            vd.mkdir(parents=True, exist_ok=True)
+            for name in ("r1.md", "r2.md", "r3.md"):
+                (vd / name).write_text("x", encoding="utf-8")
+            (d / "journal-archive").mkdir(parents=True, exist_ok=True)
+            old = d / "journal-archive" / "journal-old.000.md"
+            old.write_text("x", encoding="utf-8")
+            self._old(old, 999)
+            km.enforce_retention(cfg)
+            self.assertEqual(len(list(vd.iterdir())), 3)
+            self.assertTrue(old.exists())

@@ -70,6 +70,16 @@ class Config:
     controller_lease_sec: float = 120.0
     coordination_retries: int = 3
     clock_skew_tolerance_sec: float = 30.0
+    # unknown（リモート不通で claim を検証できない）隔離の上限（W7）。自ノードの隔離が
+    # この件数に達したら既存の throttle→report 降格で新規 claim を止める（0 = 無効）。
+    unknown_quarantine_max: int = 3
+    # learn の失効（W10）: worked を挟まず misfire がこの回数続いた出典の learn は適用しない
+    # （0 = 失効しない）。人の無効化は決定記録の `action  : learn-disable`。
+    learn_misfire_limit: int = 3
+    # 保持契約（W11・gc が実行者）。verifications は task ごとに直近 N 世代（0 = 刈らない）、
+    # journal / run-log の退避と不変コピーは日数で刈る（0 = 刈らない）。archive は常に保持。
+    verifications_keep: int = 5
+    gc_retention_days: int = 30
     planner: str = "agent"         # 優先順位付け戦略: agent（エージェント委譲）/ none（priority＋古さ）
     flow_planner: str = "flow-planner"  # agent-flow run に渡す planner
     # ルーティング: タスク → ちょうど1つの書込先ワークスペースを決める自動判断。agent=曖昧時に

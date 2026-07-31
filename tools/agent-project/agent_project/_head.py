@@ -115,6 +115,9 @@ FIELD_RE = re.compile(r"^-\s+(?P<key>\w+):\s*(?P<val>.*)$")
 POLICY_RE = re.compile(r"^(?P<key>deny|pin|defer|offload|gate|protect|route|spec):\s*(?P<val>.+)$")
 DR_HEADER_RE = re.compile(r"^##\s+DR-(\d+)\b")
 LEARN_RE = re.compile(r"^- learn:\s*(?P<title>.+?)\s*::\s*(?P<guide>.+)$")
+# learn のスコープ（W10）: guide 末尾の任意タグ `:: scope=charter:<名前>` / `:: scope=repo:<名前>`。
+# タグ無し＝全体。墓標の `:: charter=<名前>` と同じ「末尾タグ」流儀（新しい行形式は増やさない）。
+LEARN_SCOPE_RE = re.compile(r"\s*::\s*scope=(?P<kind>charter|repo):(?P<name>\S+)\s*$")
 # 回避知識（hold/deny 由来）。learn が「どう解けば良いか（auto-resolve 向け）」なのに対し、
 # avoid は「この種のタスクは自動実行してはいけない（人の判断が要る）」を運ぶ。投入/triage 時に
 # 類似タスクを検出して ready へ落とさず inbox（人の triage）へ寄せる予防リコールに使う。

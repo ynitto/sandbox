@@ -1482,6 +1482,26 @@ class TestDetachAndOrphanGc(unittest.TestCase):
             by = {t.id: t for t in km.load_tasks(cfg.backlog)}
             self.assertEqual(km.task_deps(by["B"]), ["A"])   # 生きている先行は残る
             self.assertEqual(km.task_deps(by["C"]), ["OLD"])  # 実行済みの順序の記録は残る
+            # W9: 前提を失った後続は実行可能のまま放置せず、人の再審査（proposed）を通す
+            self.assertEqual(by["B"].norm_status(), "proposed")
+            self.assertTrue((d / "needs" / "B.md").exists())
+            self.assertIn("削除", (d / "needs" / "B.md").read_text(encoding="utf-8"))
+
+    def test_prune_dangling_afters_leaves_doing_running(self):
+        """W9: doing は落とさない（実行中の中断はしない。切り離しだけ行う）。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            mkb(d, "B", verify="true", status="doing")
+            tasks = km.load_tasks(cfg.backlog)
+            tasks[0].extra.append(("after", "GHOST"))
+            km.persist_task(cfg, tasks[0])
+            pruned = km.prune_dangling_afters(cfg, km.load_tasks(cfg.backlog))
+            self.assertEqual(pruned, ["B"])
+            by = {t.id: t for t in km.load_tasks(cfg.backlog)}
+            self.assertEqual(km.task_deps(by["B"]), [])
+            self.assertEqual(by["B"].norm_status(), "doing")
+            self.assertFalse((d / "needs" / "B.md").exists())
 
     def test_reap_orphan_task_state_removes_stateless_leftovers(self):
         with tempfile.TemporaryDirectory() as d:

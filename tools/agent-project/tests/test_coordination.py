@@ -413,3 +413,76 @@ class RecoverStaleDoingTests(unittest.TestCase):
             self.assertEqual(km.recover_stale_doing(cfg, [t]), [])
             self._claim(cfg, "T1", pid=1, host="other-host", ts=0)   # TTL 超過
             self.assertEqual(km.recover_stale_doing(cfg, [t]), ["T1"])
+
+
+class TestUnknownQuarantine(unittest.TestCase):
+    """W7: unknown 隔離の上限（既存 report 降格の出口）と、次パスの fencing 再確認 1 回。"""
+
+    def _quarantined(self, d, tid, node="pc-a", rechecked=False):
+        mkb(d, tid, status="blocked", verify="true")
+        body = (d / "backlog" / f"{tid}.md").read_text(encoding="utf-8")
+        t = km.parse_task(body, tid)
+        t.set("fence_unknown", node)
+        t.set("claim_owner", node)
+        t.set("claim_token", "tok")
+        t.set("claim_generation", "2")
+        if rechecked:
+            t.set("fence_recheck", "1")
+        (d / "backlog" / f"{tid}.md").write_text(km.serialize_task(t), encoding="utf-8")
+        return t
+
+    def test_quarantine_cap_returns_throttle_reason(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, node="pc-a", unknown_quarantine_max=2)
+            for tid in ("Q1", "Q2"):
+                self._quarantined(d, tid)
+            tasks = km.load_tasks(cfg.backlog)
+            self.assertEqual(km._budget_reason(cfg, 0, time.time(), 0, 0.0, tasks),
+                             km.REASON_THROTTLE)
+
+    def test_other_nodes_quarantine_does_not_throttle_me(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, node="pc-b", unknown_quarantine_max=2)
+            for tid in ("Q1", "Q2"):
+                self._quarantined(d, tid, node="pc-a")   # 隔離元は pc-a
+            tasks = km.load_tasks(cfg.backlog)
+            self.assertIsNone(km._budget_reason(cfg, 0, time.time(), 0, 0.0, tasks))
+
+    def test_recheck_restores_when_remote_matches(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, node="pc-a")
+            km.ensure_dirs(cfg)
+            t = self._quarantined(d, "Q1")
+            (cfg.needs / "Q1.md").write_text("x", encoding="utf-8")
+            remote = km.parse_task(km.serialize_task(t), "Q1")
+            with mock.patch.object(km, "_coordination_active", return_value=True), \
+                 mock.patch.object(km, "_fetch_remote_task", return_value=(remote, True)):
+                out = km.requeue_unknown_once(cfg, km.load_tasks(cfg.backlog))
+            self.assertEqual(out, ["Q1"])
+            back = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(back.norm_status(), "ready")
+            self.assertFalse(back.get("fence_unknown"))
+            self.assertFalse((cfg.needs / "Q1.md").exists())
+
+    def test_recheck_happens_only_once(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, node="pc-a")
+            km.ensure_dirs(cfg)
+            self._quarantined(d, "Q1")
+            # 1 回目: 依然リモート不通 → blocked のまま・fence_recheck が立つ
+            with mock.patch.object(km, "_coordination_active", return_value=True), \
+                 mock.patch.object(km, "_fetch_remote_task", return_value=(None, False)) as f:
+                self.assertEqual(km.requeue_unknown_once(cfg, km.load_tasks(cfg.backlog)), [])
+                self.assertEqual(f.call_count, 1)
+            back = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(back.norm_status(), "blocked")
+            self.assertEqual(back.get("fence_recheck"), "1")
+            # 2 回目: もう自動では触らない（人待ち）
+            with mock.patch.object(km, "_coordination_active", return_value=True), \
+                 mock.patch.object(km, "_fetch_remote_task") as f2:
+                self.assertEqual(km.requeue_unknown_once(cfg, km.load_tasks(cfg.backlog)), [])
+                f2.assert_not_called()

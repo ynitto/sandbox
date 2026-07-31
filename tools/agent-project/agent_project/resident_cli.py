@@ -308,6 +308,25 @@ def _warn_host_config(data, path: str) -> None:
         print(f">>> 警告: host.yaml（{path}）: {line}", file=sys.stderr)
 
 
+def _record_diagnostic_findings(host, status) -> int:
+    """doctor の決定的所見（host.yaml の綻び・構造の到達不能）を横断エラーへ載せる（W15）。
+
+    パイプは 1 本——所見 → `engine/status.json` の `recent_errors` → dashboard。所見の
+    **種類**だけを増やし、露出の経路は増やさない。起動時警告（`_warn_host_config`）は
+    stderr にしか出ず、常駐運用では誰も読まない（別 PC の dashboard からは尚更見えない）。
+    同じ所見を毎 tick 積まないよう、既に載っている行は書かない（リングバッファの浪費防止）。"""
+    findings = doctor_host_config_findings(host) + doctor_structure_findings()
+    seen = set(status.recent_errors)
+    n = 0
+    for f in findings:
+        line = f"doctor[{f['severity']}] {f['title']}: {f.get('evidence', '')}"[:400]
+        if line not in seen:
+            status.record_error(line)
+            seen.add(line)
+            n += 1
+    return n
+
+
 def _project_name(project: dict) -> str:
     """host.yaml の 1 プロジェクト宣言の識別名（宣言があればそれ、無ければ実効 root の slug）。
     子プロセス名・gc sweeper 名・`engine/status.json` の children[].name はすべてこれ——
@@ -1064,6 +1083,7 @@ def _build_resident(host: "HostConfig", *, start_children: bool = True):
         write_status()
 
     def tick_gc() -> None:
+        _record_diagnostic_findings(host, status)   # 綻び・到達不能の所見を横断エラーへ（W15）
         run_gc(_project_gc_sweepers(host) + [("board", lambda: _sweep_terminal_delegations(host)),
                                             ("commands", _sweep_node_commands)],
               on_event=lambda name, ev, exc: (status.record_error(f"gc {name}: {exc}")

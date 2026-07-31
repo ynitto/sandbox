@@ -363,7 +363,13 @@ class DirectStateGit:
                     shutil.copy2(src, dst)
                 elif dst.exists():
                     _wgit("rm", "-rq", "--ignore-unmatch", "--", rel)
-            _wgit("add", "-A", "--", *targets)
+            # add は**存在するパスだけ**に絞る。消えたパス（上の rm で staged 済み）を pathspec に
+            # 混ぜると git add が "did not match any files" で**全体失敗**し、追加分が 1 つも
+            # ステージされない——settle の「backlog 削除＋archive/納品書 追加」が削除だけの
+            # コミットに割れていた（W6: settle は 1 コミット）の直接原因。
+            live = [t for t in targets if (base / t).exists()]
+            if live:
+                _wgit("add", "-A", "--", *live)
             if _wgit("diff", "--cached", "--quiet").returncode == 0:
                 return None                  # 差分なし
             # 連続する state sync は未 push の間 --amend で 1 コミットに束ねる

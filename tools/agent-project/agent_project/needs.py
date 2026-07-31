@@ -343,7 +343,11 @@ def prune_dangling_afters(cfg: "Config", tasks: "list[Task]") -> "list[str]":
     (1) viewer の依存表示・impact が存在しないタスクを指し続ける
     (2) 同じ id が後で再利用されたとき、無関係な新タスクが突然「先行」になる。
     archive にある id（done/rejected）は外さない——実行済みの順序の記録として意味があり、
-    unmet_deps 上も満たし扱いで挙動が同じため。"""
+    unmet_deps 上も満たし扱いで挙動が同じため。
+
+    切り離す前に、後続を proposed へ落として人の再審査にかける（W9・cmd_reject と同じ形）。
+    前提を失ったタスクを実行可能のまま放置しない——unmet_deps は「無い id＝満たし」と読むので、
+    放置すると次パスでそのまま実行される。done/doing は落とさない（実行中の中断はしない）。"""
     adir = cfg.archive_dir()
     archived = {p.stem for p in adir.glob("*.md")} if adir.exists() else set()
     alive = {t.id for t in tasks}
@@ -357,10 +361,17 @@ def prune_dangling_afters(cfg: "Config", tasks: "list[Task]") -> "list[str]":
         t.drop("after")
         if keep:
             t.extra.append(("after", ", ".join(keep)))
-        persist_task(cfg, t)
+        if t.norm_status() not in ("done", "doing"):
+            t.status = "proposed"
+            clear_needs_file(cfg, t.id)
+            persist_task(cfg, t)
+            write_needs_file(cfg, t, f"前提タスク {', '.join(gone)} が削除されたため再審査",
+                             evidence=_task_definition_block(t), kind="plan-review")
+        else:
+            persist_task(cfg, t)
         append_journal(cfg.journal,
                        f"依存の切り離し: {t.id} の after から {', '.join(gone)} を外す"
-                       f"（backlog にも archive にも無い＝削除済み）")
+                       f"（backlog にも archive にも無い＝削除済み・後続は再審査へ）")
         pruned.append(t.id)
     return pruned
 

@@ -199,6 +199,14 @@ def _task_verify_cwd(cfg: "Config", task: "Task") -> "tuple[Path, str | None]":
 DIFF_CRITERION = ("このタスクの差分が、上の基準の対象範囲に実在すること"
                   "（変更が無い・無関係な場所にしか無いなら fail）")
 
+
+def no_diff_criterion(reason: str) -> str:
+    """`- no_diff: <理由>` の差し替え基準（W4）。差分基準は消えず、述語だけ変わる:
+    調査・方針・「変更しないこと」系は差分でなく、宣言した成果物の実在と参照で判定する。"""
+    return (f"このタスクは差分を作らない宣言（no_diff: {reason}）。代わりに、タスクが宣言した"
+            "成果物ファイルが対象 revision に実在し、その内容を上の基準の判定で参照したこと"
+            "（成果物が実在しない・内容を参照できないなら fail）")
+
 VERDICTS = ("pass", "fail", "unverifiable")
 
 # 副作用の許容範囲（設定 verify_side_effects）の**正典**。DB・外部サービスへの書き込みは
@@ -541,7 +549,8 @@ def build_task_verification_plan(cfg: "Config", task: "Task") -> "dict | None":
     if not criteria and not commands:
         return None
     if criteria:
-        criteria.append(DIFF_CRITERION)
+        nd = str(task.get("no_diff") or "").strip()
+        criteria.append(no_diff_criterion(nd) if nd else DIFF_CRITERION)
     ws = _workspace_spec_for(cfg, task) or {}
     return _verifycontract.build_plan(
         task.id, criteria=criteria, commands=commands,

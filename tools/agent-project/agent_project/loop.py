@@ -355,7 +355,7 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
         if _DRAIN_REQUESTED.is_set():
             reason = REASON_DRAINED
             break
-        budget_stop_reason = _budget_reason(cfg, cycle, start, tokens_used, cost_used)
+        budget_stop_reason = _budget_reason(cfg, cycle, start, tokens_used, cost_used, tasks)
         if budget_stop_reason:
             reason = budget_stop_reason
             break

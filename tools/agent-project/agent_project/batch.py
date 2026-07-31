@@ -35,7 +35,7 @@ def rotate_journal(path: Path, max_bytes: "int | None" = None,
             return None
     except OSError:
         return None
-    arch_dir = path.parent / "journal-archive"
+    arch_dir = path.parent / f"{path.stem}-archive"   # journal.md → journal-archive/（従来と同じ）
     try:
         arch_dir.mkdir(parents=True, exist_ok=True)
         ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
@@ -65,6 +65,73 @@ def rotate_journal(path: Path, max_bytes: "int | None" = None,
         except OSError:
             pass
     return dest
+
+
+def _prune_older_than(files, days: float) -> int:
+    """mtime が days より古いファイルを消す（days<=0 は無効）。消した件数を返す。"""
+    if days <= 0:
+        return 0
+    cutoff = time.time() - days * 86400.0
+    n = 0
+    for p in files:
+        try:
+            if p.is_file() and p.stat().st_mtime < cutoff:
+                p.unlink()
+                n += 1
+        except OSError:
+            pass
+    return n
+
+
+def enforce_retention(cfg: "Config") -> dict:
+    """保持契約（W11）の実行者。gc から呼ぶ。返り値は {対象: 削除・退避件数}。
+
+    契約:
+      - `verifications/<id>/` … 最新 rev ＋直近 N（`verifications_keep`）。**現に settle が
+        参照している rev（live タスクの `verify_rev`）は N の外でも消さない**——W3 の検算は
+        レポートの実在を前提にするので、消す側が順序の約束を持つ（消してから採用しない）
+      - `journal.md` / `run-log.jsonl` … 期間ローテーション（`gc_retention_days` より古い
+        退避・不変コピーを刈る。journal の世代数上限は従来どおり追記側が持つ）
+      - `archive/` … 保持（触らない）
+
+    `verify-recipes/` は旧 verifier の撤去（P1-A8）とともに廃止済みで、対象に持たない。"""
+    out = {"verifications": 0, "journal-archive": 0, "run-log": 0}
+    days = float(getattr(cfg, "gc_retention_days", 30) or 0)
+    keep = int(getattr(cfg, "verifications_keep", 5) or 0)
+    vdir = verifications_dir(cfg)
+    if keep > 0 and vdir.is_dir():
+        pinned = {str(t.get("verify_rev") or "").strip()
+                  for t in load_tasks(cfg.backlog)} - {""}
+        for tdir in sorted(p for p in vdir.iterdir() if p.is_dir()):
+            reports = sorted((p for p in tdir.iterdir() if p.is_file()),
+                             key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
+            for old in reports[keep:]:
+                if any(old.name.startswith(rev) for rev in pinned):
+                    continue                       # settle 対象 rev は N の外でも残す
+                try:
+                    old.unlink()
+                    out["verifications"] += 1
+                except OSError:
+                    pass
+    root = cfg.backlog.parent
+    for name in ("journal-archive", "run-log-archive"):
+        d = root / name
+        if d.is_dir():
+            out["journal-archive"] += _prune_older_than(d.iterdir(), days)
+    if cfg.runlog is not None:
+        # 期間ローテーション: 現行 JSONL が retention より古くなったら退避して始め直す
+        # （サイズ閾値は持たない——run-log は 1 run 1 行で、育ち方が時間に比例する）。
+        try:
+            aged = (cfg.runlog.is_file() and days > 0
+                    and cfg.runlog.stat().st_mtime < time.time() - days * 86400.0)
+        except OSError:
+            aged = False
+        if aged and rotate_journal(cfg.runlog, max_bytes=1, keep=0) is not None:
+            out["run-log"] += 1
+        rl = cfg.runlog.parent / "run-log"
+        if rl.is_dir():
+            out["run-log"] += _prune_older_than(rl.rglob("*.json"), days)
+    return out
 
 
 def append_journal(path: Path, line: str) -> None:
@@ -110,6 +177,7 @@ def _block(cfg, task, reason, reasons, evidence: str = "", failure: "dict | None
             # cancelled な同一 run-id を approve 後に作り直さない（cancel→ready と同じく retries を進める）
             task.retries += 1
     task.status = "blocked"
+    record_learn_outcome(cfg, task, worked=False, why=reason[:80])  # learn 適用後の再 blocked＝不発（W10）
     reasons[task.id] = reason
     _remember_needs_reason(task, reason)  # 票を失っても ensure_needs が同じ理由で作り直せるように
     mark_needs_entry(cfg, task)           # この判断待ちが「人の決定より後」であることの印（G-2）

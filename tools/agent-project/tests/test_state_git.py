@@ -890,6 +890,77 @@ class TestDirectStateGit(unittest.TestCase):
         self.assertIn("リモート不通", (cfg.needs / "T1.md").read_text(encoding="utf-8"))
         self.assertNotIn("破棄", cfg.journal.read_text(encoding="utf-8"))
 
+    def test_settle_artifacts_land_in_one_commit(self):
+        """W6: settle の archive・backlog 削除・納品書・journal は 1 コミットにまとまり、
+        push が通って確定する（archive を導入するコミットが同時に backlog を消す）。"""
+        cfg = self._cfg(node="pc-a", delivery_review=False, plan_review=False)
+        mkb(self.root, "T1", verify="true")
+        result = km.run_loop(cfg)
+        self.assertEqual(result["counts"]["done"], 1)
+        log = subprocess.run(["git", "-C", str(self.root), "log", "--name-status",
+                              "--format=@@%H", "origin/main"],
+                             capture_output=True, text=True, check=True).stdout
+        commits = [c for c in log.split("@@") if c.strip()]
+        with_archive = [c for c in commits if "archive/T1.md" in c]
+        self.assertEqual(len(with_archive), 1, "archive/T1.md を導入するコミットは 1 つ")
+        c = with_archive[0]
+        self.assertIn("D\tbacklog/T1.md", c)      # backlog の削除が同じコミットに入る
+        self.assertIn("DELIVERY.md", c)           # 納品書も同じコミットに入る
+
+    def test_partial_settle_heals_forward_on_next_pass(self):
+        """W6: settle 途中死（archive 書き込み後・backlog 削除前）は次パスの整合点が
+        前へ倒して完成させる。専用リカバリ台帳は持たない。"""
+        cfg = self._cfg()
+        mkb(self.root, "T1", status="doing", verify="true")
+        adir = cfg.archive_dir()
+        adir.mkdir(parents=True, exist_ok=True)
+        (adir / "T1.md").write_text("## T1: T1\n- status: done\n", encoding="utf-8")
+        (cfg.needs / "T1.md").write_text("x", encoding="utf-8")
+        tasks = km.load_tasks(cfg.backlog)
+        healed = km.heal_partial_settles(cfg, tasks)
+        self.assertEqual(healed, ["T1"])
+        self.assertFalse((cfg.backlog / "T1.md").exists())
+        self.assertFalse((cfg.needs / "T1.md").exists())
+        self.assertEqual(tasks, [])
+        self.assertIn("T1", (self.root / "DELIVERY.md").read_text(encoding="utf-8"))
+
+    def test_partial_settle_heal_spares_reused_ids(self):
+        """id 再利用は倒さない: 別題の doing も、同題で積み直された ready も新しい仕事。"""
+        cfg = self._cfg()
+        mkb(self.root, "T1", title="新しい別の仕事", status="doing", verify="true")
+        mkb(self.root, "T2", title="同じ題で積み直し", verify="true")   # intake の再投入＝ready
+        adir = cfg.archive_dir()
+        adir.mkdir(parents=True, exist_ok=True)
+        (adir / "T1.md").write_text("## T1: 昔の仕事\n- status: done\n", encoding="utf-8")
+        (adir / "T2.md").write_text("## T2: 同じ題で積み直し\n- status: done\n", encoding="utf-8")
+        tasks = km.load_tasks(cfg.backlog)
+        self.assertEqual(km.heal_partial_settles(cfg, tasks), [])
+        self.assertTrue((cfg.backlog / "T1.md").exists())
+        self.assertTrue((cfg.backlog / "T2.md").exists())
+        self.assertTrue((adir / "T1.md").exists())
+
+    def test_unpushed_settle_commit_survives_and_pushes_on_next_pass(self):
+        """W6: push 失敗で残るのは未 push のローカルコミット。リモート復帰後の次パスで
+        そのまま押し出され、別 clone から見える（remote 正の再突合＝投影の再計算だけ）。"""
+        cfg = self._cfg(node="pc-a", delivery_review=False, plan_review=False)
+        # 単一ノード視点（ピア無し＝CAS 経路も claim fencing も通らない）で「push だけが失敗」を作る
+        (self.root / "status" / "pc-peer.json").unlink()
+        mkb(self.root, "T1", verify="true")
+        good_url = str(self.remote)
+        subprocess.run(["git", "-C", str(self.root), "remote", "set-url", "origin",
+                        "file:///no-such-remote.git"], check=True)
+        with mock.patch.object(km, "_STATE_PUSH_RETRIES", 1), \
+             mock.patch.object(km, "backoff_sleep", lambda *_: None):
+            result = km.run_loop(cfg)
+        self.assertEqual(result["counts"]["done"], 1)     # push 失敗でもループは続行・done は確定待ち
+        subprocess.run(["git", "-C", str(self.root), "remote", "set-url", "origin",
+                        good_url], check=True)
+        km._STATE_GITS.clear()
+        km.state_sync(cfg, force=True)                    # 次パス相当の同期で押し出す
+        got = self._other("after-heal")
+        self.assertTrue((got / "archive" / "T1.md").exists())
+        self.assertFalse((got / "backlog" / "T1.md").exists())
+
     def test_controller_balances_unassigned_ready_tasks_across_active_nodes(self):
         controller = self._cfg(node="pc-a")
         mkb(self.root, "T1")

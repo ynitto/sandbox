@@ -722,3 +722,46 @@ class TestDoctorHostProjects(unittest.TestCase):
             titles = {f["title"] for f in json.loads(buf.getvalue())["findings"]}
             self.assertIn("宣言された root がありません", titles)
             self.assertEqual(rc, 2)                      # 未解決の critical → 2
+
+
+class TestStructureFindings(unittest.TestCase):
+    """W15: 断片合成と CLI 入口の対応を数え、綻びを所見にする（起動は止めない warn）。"""
+
+    def test_repository_has_no_unreachable_fragments_or_unrouted_commands(self):
+        """構造テストの本体: 現在のリポジトリは到達不能な断片も宙に浮いた入口も持たない。"""
+        c = km.structure_counts()
+        self.assertEqual(c["unlisted"], [], "断片は _FRAGMENTS に載せる（載せないと exec されない）")
+        self.assertEqual(c["missing"], [])
+        self.assertEqual(c["unrouted"], [], "add_parser した名前は _subcommands にも足す")
+        self.assertGreater(c["fragments"], 20)
+        self.assertIn("doctor", c["commands"])
+        self.assertEqual(km.doctor_structure_findings(), [])
+
+    def test_unreachable_fragment_becomes_a_finding(self):
+        with mock.patch.object(km, "structure_counts",
+                               return_value={"fragments": 31, "unlisted": ["ghost"],
+                                             "missing": [], "commands": [], "unrouted": []}):
+            f = km.doctor_structure_findings()
+        self.assertEqual(len(f), 1)
+        self.assertEqual((f[0]["category"], f[0]["severity"]), ("program", "warn"))
+        self.assertIn("ghost", f[0]["title"])
+
+    def test_unrouted_subcommand_becomes_a_finding(self):
+        with mock.patch.object(km, "structure_counts",
+                               return_value={"fragments": 31, "unlisted": [], "missing": [],
+                                             "commands": ["revive"], "unrouted": ["revive"]}):
+            f = km.doctor_structure_findings()
+        self.assertEqual(len(f), 1)
+        self.assertIn("revive", f[0]["title"])
+        self.assertIn("serve", f[0]["evidence"])
+
+    def test_findings_reach_the_status_json_pipe(self):
+        """所見 → engine/status.json の横断エラー → dashboard のパイプ 1 本に載る（重複は積まない）。"""
+        status = km.EngineStatus("pc-a")
+        host = km.HostConfig({"schema_version": 1, "node_id": "pc-a", "nodeid": "typo"},
+                             path="/tmp/agent-project.host.yaml")
+        n = km._record_diagnostic_findings(host, status)
+        self.assertGreater(n, 0)
+        self.assertTrue(any("nodeid" in e for e in status.recent_errors))
+        self.assertTrue(all(e.startswith("doctor[") for e in status.recent_errors))
+        self.assertEqual(km._record_diagnostic_findings(host, status), 0)   # 毎 tick 積まない

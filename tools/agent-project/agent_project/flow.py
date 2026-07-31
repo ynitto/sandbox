@@ -113,6 +113,7 @@ def build_agent_flow_cmd(task: Task, cfg: "Config", use_git: bool = False,
     base += ["--granularity", str(getattr(cfg, "flow_granularity", "auto") or "auto")]
     # 統一 verify: 検証計画を構造化して渡す（planner の自由記述へ混ぜない）。agent-flow は
     # 成果 revision 確定後の専用 runner で一度だけ実行し、receipt を返す（settle が検算する）。
+    # 受け渡しは argv `--verification-plan`（env 渡しは不安定として人が却下・2026-07-31）。
     # agent-project と agent-flow は同時に更新する前提（旧 agent-flow はこのフラグを解釈できない）。
     _plan = build_task_verification_plan(cfg, task)
     if _plan:
@@ -131,9 +132,12 @@ def build_agent_flow_cmd(task: Task, cfg: "Config", use_git: bool = False,
 
 
 def cmd_gc(cfg: "Config", json_out: bool = False) -> int:
-    """agent-flow バスの一時ファイル・古い run アーカイブを掃除する（実装計画 W1-11 残・
-    設計 §4.2 node 層 gc tick の実体）。掃除の実装は持たない（R1）——既存 agent-flow の
-    `run_cleanup`/`cmd_gc` を `agent-flow cleanup`/`agent-flow gc` として単発起動するだけ。
+    """状態リポジトリの保持契約（W11）を実行し、agent-flow バスの一時ファイル・古い run
+    アーカイブを掃除する（設計 §4.2 node 層 gc tick の実体）。
+
+    バス側の掃除の実装は持たない（R1）——既存 agent-flow の `run_cleanup`/`cmd_gc` を
+    `agent-flow cleanup`/`agent-flow gc` として単発起動するだけ。状態リポジトリ側
+    （verifications / journal / run-log）の保持契約だけはこちらの `enforce_retention` が持つ。
 
     `_cleanup_bus`（loop.py）は git_bus 構成のバスをあえて素通りする（作業中のため）ので、
     その委譲先はここ。ロック/tmp/孤立クローン/共有キャッシュの掃除は git_bus の有無に
@@ -141,7 +145,7 @@ def cmd_gc(cfg: "Config", json_out: bool = False) -> int:
     flow daemon 自体を廃止したため呼び手が居なくなっていた）。"""
     use_git = bool(cfg.git_bus)
     base = _kf_base(cfg, use_git)
-    totals: dict = {}
+    totals: dict = {f"state.{k}": v for k, v in enforce_retention(cfg).items()}  # 保持契約（W11）
     proc = subprocess.run(base + ["cleanup", "--json"], capture_output=True, text=True)
     try:
         totals.update({f"cleanup.{k}": v for k, v in json.loads(proc.stdout or "{}").items()})
@@ -348,6 +352,8 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
     if resuming:
         append_journal(cfg.journal,
                        f"run 再開: {task.id} は {rid} の失敗ノードだけをやり直します（done は温存）")
+    # 統一 verify の plan は build_agent_flow_cmd が argv `--verification-plan` で渡す
+    # （env 渡しは不安定として人が却下・2026-07-31。両ツールは同時更新が前提）。
     try:
         # Popen＋ポーリング: subprocess.run だと timeout まで mid-revise を検知できない。
         proc = subprocess.Popen(cmd, cwd=str(cfg.workdir),
