@@ -1214,10 +1214,10 @@ function consistencyGateHtml(p) {
     </div>`;
   }).join('');
 
-  // 未結線が 1 つでもあれば有効化導線を出す。書く行・CLI・注意書きは
+  // 未設定のフックが 1 つでもあれば有効化導線を出す。書く行・CLI・注意書きは
   // tools/agent-project/README.md「一貫性ゲート（codd-gate 連携・オプション）」の原文に合わせる
   // （画面と README で手順が食い違うと、どちらが正か人が判断できなくなる）。
-  //   - 有効化は設定ファイルへ 2 行書く。`<root>/repos.json` は README 同様プレースホルダのまま出す
+  //   - 有効化は設定ファイルへ未設定の行を書く。`<root>/repos.json` は README 同様プレースホルダのまま出す
   //     （このプロジェクトの root は結線判定に使っていないので、ここで勝手に埋めない）。
   //   - regression_cmd の行だけは sibling CLI codd_gate_regression.py で冪等 upsert できる。
   //     intake_cmd に対応する注入 CLI は無いので yaml を直接編集する。
@@ -1230,32 +1230,25 @@ function consistencyGateHtml(p) {
   const jsonConfig = gate.configFile && /\.json$/i.test(gate.configFile);
   const reposArg = '<root>/repos.json';
   const settings = [
-    !gate.regressionWired && ['regression_cmd', `codd-gate verify --base "$KIRO_BASE_REV" --repos ${reposArg}`],
-    !gate.intakeWired && ['intake_cmd', `codd-gate tasks --debt --repos ${reposArg}`],
+    !regressionConfigured && ['regression_cmd', `codd-gate verify --base "$KIRO_BASE_REV" --repos ${reposArg}`],
+    !intakeConfigured && ['intake_cmd', `codd-gate tasks --debt --repos ${reposArg}`],
   ].filter(Boolean);
   const lines = jsonConfig
     ? JSON.stringify(Object.fromEntries(settings), null, 2)
     : settings.map(([key, value]) => `${key}: '${value}'`).join('\n');
-  const configuredUnwired = [
-    !gate.regressionWired && regressionConfigured && 'regression_cmd',
-    !gate.intakeWired && intakeConfigured && 'intake_cmd',
-  ].filter(Boolean);
-  const replaceWarning = configuredUnwired.length
-    ? `<p><strong>注意:</strong> <code>${configuredUnwired.join('</code>、<code>')}</code> には別のコマンドが設定済みです。例の行で置き換えると現在の処理は失われるため、残すか置き換えるかを決めてから編集してください。</p>`
-    : '';
   // CLI は install.sh 導入版だと単体ファイルとして置かれない（install.sh:50-52 が zipapp ルートへ
   // 同梱するだけ）。どこで打てば動くかを書かないと、コピーして必ず No such file になる。
-  const cliHint = gate.configFile && !gate.configError && !jsonConfig && !gate.regressionWired && !regressionConfigured
+  const cliHint = gate.configFile && !gate.configError && !jsonConfig && !regressionConfigured
     ? `<p><code>regression_cmd</code> の行は手書きの代わりに CLI で入れてもよい（ソースを持っているなら
         <span class="mono">tools/agent-project/</span> で実行する）:
         <code>python3 codd_gate_regression.py --config /path/to/.agents/agent-project.yaml</code>
         （codd-gate を実測してこの 1 キーだけを冪等 upsert する。<code>--dry-run</code> なら書かずに結果だけ出す。
         codd-gate が未検出・バージョン/schema 非互換なら何も書かない）。</p>`
     : '';
-  const intakeHint = !jsonConfig && !gate.intakeWired
+  const intakeHint = !jsonConfig && !intakeConfigured
     ? `<p><code>intake_cmd</code> に対応する注入 CLI は無いので、こちらは yaml を直接編集する。</p>`
     : '';
-  const enable = wiredAll
+  const enable = settings.length === 0
     ? ''
     : `<div class="need-resolution">
         <span class="label-chip">有効化</span>
@@ -1269,7 +1262,7 @@ function consistencyGateHtml(p) {
              <span class="mono">.agents/agent-project.yaml</span> を作り、次の行を書く:`}
         <pre class="mono">${esc(lines)}</pre>
         <p><code>&lt;root&gt;</code> は対象プロジェクトのルートパスへ置き換えてください。</p>
-        ${replaceWarning}${cliHint}${intakeHint}
+        ${cliHint}${intakeHint}
         ${gate.configFile
           ? `<div class="summary-actions">
               <button class="summary-link secondary" data-gate-open="${esc(gate.configFile)}">自動検出した設定ファイルを開く</button>

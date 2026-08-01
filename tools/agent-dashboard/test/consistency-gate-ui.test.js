@@ -133,6 +133,24 @@ assert.ok(otherCmd.includes('設定: あり'), '別コマンドが設定済み�
 assert.ok(otherCmd.includes('設定: なし'), '未設定であることを明示していない');
 assert.ok(otherCmd.includes('一貫性ゲートの検査ではありません'),
   '別コマンドが入っていることを説明していない');
+assert.ok(!/<pre[^>]*>[^]*regression_cmd:/.test(otherCmd),
+  '設定済みの regression_cmd に置換用の設定例を出している');
+
+// 両キーが設定済みなら、codd-gate に未結線でも設定編集・CLI の導線は出さない。
+const bothConfiguredUnwired = consistencyGateHtml({
+  consistencyGate: {
+    configFile: '/ws/.agents/agent-project.yaml',
+    regressionConfigured: true,
+    intakeConfigured: true,
+    regressionWired: false,
+    intakeWired: false,
+    wired: false,
+    regressionCmd: 'make smoke',
+    intakeCmd: 'agent-project intake',
+  },
+});
+assert.ok(!bothConfiguredUnwired.includes('有効化'), '未設定キーが無いのに有効化導線を出している');
+assert.ok(!bothConfiguredUnwired.includes('data-gate-open'));
 
 // 設定ファイルはあるが両方未結線（ゲート未導入プロジェクトの初期表示）。
 // 見出しは「未結線」。貼る 2 行・注入 CLI・注意書き・開くボタンが同時に出る唯一の経路。
