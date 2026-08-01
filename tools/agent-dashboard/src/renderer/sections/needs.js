@@ -1312,6 +1312,41 @@ function needsViewModel(needs, filter, selectedId, sentFn) {
   return { counts, items, selected, selectedId: selected ? selected.id : null };
 }
 
+function planReviewBatchCandidates(needs, sentFn) {
+  return (needs || []).filter((need) =>
+    need && need.kind === 'plan-review' && !need.decided &&
+    !(need.commandReceipt && !need.commandFailure) && !sentFn(need));
+}
+
+async function approvePlanReviewBatch(candidates) {
+  const p = state.project;
+  if (!p || !candidates.length) return false;
+  const yes = await confirmDialog(
+    `未対応の計画 ${candidates.length} 件をまとめて承認し、実行可能にします。よろしいですか？`);
+  if (!yes) return false;
+  const succeeded = [];
+  const failed = [];
+  await guard('計画の一括承認', async () => {
+    for (const need of candidates) {
+      try {
+        await api.runAction({
+          dir: p.dir, action: 'approve', id: need.id,
+          reason: '計画レビューで内容を確認し、一括承認',
+        });
+        markNeedSent(need);
+        succeeded.push(need.id);
+      } catch (err) {
+        failed.push(`${need.id}: ${err.message || err}`);
+      }
+    }
+    return true;
+  });
+  if (failed.length) toast(`一部の承認に失敗しました: ${failed.join(' / ')}`);
+  else toast(`${succeeded.length} 件の計画を承認しました`, true);
+  if (succeeded.length) await reloadProject();
+  return succeeded.length > 0;
+}
+
 // 検証失敗の表示モデル。**解析済みの事実（failureSummary / failureContext）だけを使う。**
 //
 // 以前はここが散文を正規表現で読み、「検証」と「FAIL」が同じ行にあれば検証失敗と断定して
@@ -1689,10 +1724,11 @@ function bindReviewCommentSection(section, p) {
 // 他種別（blocked/review）では記述があるときだけ出す。⏎ は改行マーカー（1 行 = 1 フィールド規約）。
 function taskGuideHtml(task, kind) {
   const ex = (task && task.extra) || {};
-  const rows = GUIDE_KEYS
-    .filter((k) => String(ex[k] || '').trim())
-    .map((k) => `<div class="task-guide-row"><dt>${esc(GUIDE_LABELS[k] || k)}</dt>
-      <dd>${proseHtml(String(ex[k]).replace(/\s*⏎\s*/g, '\n'))}</dd></div>`);
+  const rowFor = (k) => String(ex[k] || '').trim()
+    ? `<div class="task-guide-row"><dt>${esc(GUIDE_LABELS[k] || k)}</dt>
+      <dd>${proseHtml(String(ex[k]).replace(/\s*⏎\s*/g, '\n'))}</dd></div>`
+    : '';
+  const rows = GUIDE_KEYS.map(rowFor).filter(Boolean);
   // 受入基準は「完了条件」の一部ではなく**レビューの本体**。settle 時に検証エージェントが
   // 1 項目ずつ実行して証跡付きで判定し、全 pass だけが done の根拠になるので、人がここで
   // 直しておかないと後から効かない。だから箇条書きで先に出す。
@@ -1716,12 +1752,25 @@ function taskGuideHtml(task, kind) {
   const sizeRow = ex.size
     ? `<div class="task-guide-row"><dt>規模感</dt><dd>${esc(ex.size)}</dd></div>`
     : '';
-  const tail = `${acceptanceRow}${verifyRow}${sizeRow}`;
+  const afterRow = ex.after
+    ? `<div class="task-guide-row"><dt>先に完了するタスク</dt><dd>${esc(ex.after)}</dd></div>`
+    : '';
+  const refsRow = ex.refs
+    ? `<div class="task-guide-row"><dt>参考リポジトリ</dt><dd>${esc(ex.refs)}</dd></div>`
+    : '';
+  const tail = `${acceptanceRow}${verifyRow}${sizeRow}${afterRow}`;
   // 他種別（blocked/review）は「記述があるときだけ出す」の従来の見た目を保つ。
   // 受入基準や完了条件だけを理由にセクションを増やさない（plan-review が対象）。
   if (!rows.length && kind !== 'plan-review') return '';
+  const orderedRows = kind === 'plan-review'
+    ? [
+        ...['why', 'desc', 'scope', 'out_of_scope', 'risks'].map(rowFor),
+        acceptanceRow, verifyRow, sizeRow, afterRow,
+        ...['constraints', 'hints', 'demo'].map(rowFor), refsRow,
+      ].filter(Boolean).join('')
+    : `${rows.join('')}${tail}`;
   const body = rows.length
-    ? `<dl class="task-guide">${rows.join('')}${tail}</dl>`
+    ? `<dl class="task-guide">${orderedRows}</dl>`
     : `<p class="muted">作業内容の記述（概要・目的・範囲）がありません。タイトルと完了条件だけでは
        レビュー判断が難しいため、下の「差し戻す」で記述を求めるか、バックログのタスク編集で
        概要・目的を追記してから承認することを推奨します。</p>${
@@ -1924,6 +1973,7 @@ function renderNeeds(options) {
   }
 
   const model = needsViewModel(p.needs, state.needsFilter, state.needsSelectedId, isNeedSent);
+  const planBatch = planReviewBatchCandidates(p.needs, isNeedSent);
   state.needsSelectedId = model.selectedId;
   const gitlabCount = (state.gitlab.repoIssues || []).length;
   const filters = [
@@ -1990,7 +2040,10 @@ function renderNeeds(options) {
         <main class="detail-panel">${renderNeedDetail(p, model.selected)}</main>
       </div>`;
 
-  el.innerHTML = `<div class="queue-summary" aria-label="要対応の状態">${filterButtons}</div>${gitlab}`;
+  el.innerHTML = `<div class="queue-summary" aria-label="要対応の状態">${filterButtons}
+    ${planBatch.length > 1
+      ? `<button type="button" class="primary-inline" data-approve-plan-batch>計画 ${planBatch.length} 件をまとめて承認</button>`
+      : ''}</div>${gitlab}`;
   restoreNeedsScroll(el, scrollSnapshot, renderOptions);
 
   for (const btn of el.querySelectorAll('[data-needs-filter]')) {
@@ -2003,6 +2056,8 @@ function renderNeeds(options) {
       if (state.needsFilter === 'gitlab') renderGitLab();
     });
   }
+  const batchApprove = el.querySelector('[data-approve-plan-batch]');
+  if (batchApprove) batchApprove.addEventListener('click', () => approvePlanReviewBatch(planBatch));
   for (const btn of el.querySelectorAll('[data-need-select]')) {
     btn.addEventListener('click', () => {
       state.needsSelectedId = btn.dataset.needSelect;

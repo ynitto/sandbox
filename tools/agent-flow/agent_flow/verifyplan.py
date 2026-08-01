@@ -206,21 +206,7 @@ def run_verification_plan(bus: "Bus", args, who: str) -> "dict | None":
     commands = [_vp_run_command(c["command"], vcwd, timeout, env, confirm)
                 for c in plan.get("commands") or []]
     criteria = _vp_judge_criteria(args, plan, vcwd, rev)
-    integration = None
-    integration_plan = plan.get("integration")
-    if isinstance(integration_plan, dict):
-        target = str(integration_plan.get("target") or "")
-        fetched = _ws_git(vcwd, "fetch", "--quiet", "origin", target)
-        if fetched.returncode != 0:
-            integration = {"target": target, "target_rev": "", "verdict": "inconclusive",
-                           "conflict_files": []}
-        else:
-            target_rev = _ws_git(vcwd, "rev-parse", "FETCH_HEAD").stdout.strip()
-            integrated = bool(target_rev) and _ws_git(
-                vcwd, "merge-base", "--is-ancestor", target_rev, rev).returncode == 0
-            integration = {"target": target, "target_rev": target_rev,
-                           "verdict": "pass" if integrated else "fail",
-                           "conflict_files": []}
+    integration = _verifycontract.run_plan_integration(plan, vcwd, rev)
     if in_clone:
         # clone の成果は push 済みコミットなので verifier の残骸を破棄してよい。cwd（投入
         # ノードの作業ツリー）は未コミットの成果そのものを含みうるため破棄しない。

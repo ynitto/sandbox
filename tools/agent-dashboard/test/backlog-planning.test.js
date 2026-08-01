@@ -11,8 +11,12 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+// package.json の既存バックログテスト入口から、純粋なブロック分割テストも実行する。
+require('./note-tasking.test');
+
 const actions = require('../src/main/actions');
 const renderer = require('./helpers/renderer-src').read();
+const indexHtml = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'index.html'), 'utf8');
 
 // renderer の関数 1 本を本文ごと切り出す（detail-tabs-ui.test.js と同じ流儀）
 function grab(name) {
@@ -96,6 +100,19 @@ function dropped(dir) {
     }
   });
 
+  await test('revise は risks を配列のまま送る', async () => {
+    const { root, dir } = mkProject();
+    try {
+      await actions.runAction({}, {
+        dir, action: 'revise', id: 'T1', reason: 'リスク更新',
+        fields: { risks: ['誤操作を防ぐ', '旧形式も維持する'] },
+      });
+      assert.deepStrictEqual(dropped(dir).rec.risks, ['誤操作を防ぐ', '旧形式も維持する']);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   // --- 観点メモ（notes/） ---------------------------------------------------
 
   await test('writeNote は notes/ にファイルを作る（名前は自動で安全化）', async () => {
@@ -122,6 +139,37 @@ function dropped(dir) {
     }
   });
 
+  await test('updateNote は既存メモを同じファイルへ保存する', async () => {
+    const { root, dir } = mkProject();
+    try {
+      const created = actions.writeNote(dir, { body: '書きかけ' });
+      const before = fs.statSync(created.file).mtimeMs;
+      const saved = actions.updateNote(dir, { name: created.name, body: '更新後', mtime: before });
+      assert.strictEqual(saved.name, created.name);
+      assert.strictEqual(fs.readFileSync(created.file, 'utf8'), '更新後\n');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  await test('updateNote は読み込み後に外部変更されたメモを上書きしない', async () => {
+    const { root, dir } = mkProject();
+    try {
+      const created = actions.writeNote(dir, { body: '最初' });
+      const stale = fs.statSync(created.file).mtimeMs;
+      fs.writeFileSync(created.file, '外部変更\n', 'utf8');
+      const future = new Date(Date.now() + 2000);
+      fs.utimesSync(created.file, future, future);
+      assert.throws(
+        () => actions.updateNote(dir, { name: created.name, body: '上書き', mtime: stale }),
+        /別の場所で更新/
+      );
+      assert.strictEqual(fs.readFileSync(created.file, 'utf8'), '外部変更\n');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   await test('listNotes は新しい順で archive/ を除く', async () => {
     const { root, dir } = mkProject();
     try {
@@ -143,6 +191,22 @@ function dropped(dir) {
     const { root, dir } = mkProject();
     try {
       assert.deepStrictEqual(actions.listNotes(dir), []);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  await test('markNoteBlocks はタスク化したブロックをメモ一覧へ関連付ける', async () => {
+    const { root, dir } = mkProject();
+    try {
+      const created = actions.writeNote(dir, { body: 'タスクにする段落' });
+      actions.markNoteBlocks(dir, {
+        name: created.name,
+        links: [{ fingerprint: 'abc123', taskIds: ['note-1', 'note-2'] }],
+      });
+      const note = actions.listNotes(dir)[0];
+      assert.deepStrictEqual(note.links.abc123.taskIds, ['note-1', 'note-2']);
+      assert.ok(fs.existsSync(path.join(dir, 'notes', '.task-links.json')));
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -216,10 +280,45 @@ function dropped(dir) {
       '書き込みは正規形のみ。空なら [\'\'] を送って削除（本体の置換規約）');
   });
 
-  await test('メモ UI は分解を人の操作にとどめる', async () => {
+  await test('タスク編集フォームは risks を複数行で置換する', async () => {
+    assert.ok(renderer.includes('id="rv-risks"'), 'リスクの入力欄がある');
+    assert.match(renderer,
+      /fields\.risks = risksNow\.length \? risksNow : \[''\]/,
+      '1行1リスクの配列として送る。空なら削除する');
+  });
+
+  await test('メモ UI は編集と選択タスク化を分け、候補確認まで自動追加しない', async () => {
     assert.ok(renderer.includes('openNotesDialog'), 'メモダイアログがある');
-    assert.ok(renderer.includes('api.distillNotes'), '分解は明示操作から呼ぶ');
+    assert.ok(indexHtml.includes('id="notes-mode-edit"'), '編集モードがある');
+    assert.ok(indexHtml.includes('id="notes-mode-task"'), 'タスク化モードがある');
+    assert.match(indexHtml, /notes-editor-actions[\s\S]*notes-charter[\s\S]*btn-note-save/,
+      'バージョン選択と保存はメモ編集欄にまとめる');
+    assert.ok(indexHtml.includes('id="notes-charter-description"'), '選択したバージョンの説明を近くに表示する');
+    assert.ok(renderer.includes("option.textContent = option.value || '初版'"),
+      'メモのバージョンプルダウンはバージョン名だけを表示する');
+    assert.ok(indexHtml.includes('id="enq-charter-description"'), 'タスク追加でもバージョンの説明を近くに表示する');
+    assert.ok(renderer.includes("updateCharterSelectContext('enq-charter', 'enq-charter-description')"),
+      'タスク追加でもバージョン名だけの選択肢と説明を同期する');
+    assert.ok(indexHtml.includes('id="dlg-note-candidates"'), '候補確認ダイアログがある');
+    assert.ok(renderer.includes("mode: 'note-task-candidates'"), '選択内容は読み取り専用AI補助へ渡す');
+    assert.ok(renderer.includes('api.enqueueTask'), '確認後は既存のタスク追加経路を使う');
+    assert.ok(!indexHtml.includes('btn-notes-distill'), '全メモ一括分解は主要導線から外す');
     assert.ok(/renderBacklog[\s\S]{0,4000}btn-notes/.test(renderer), 'バックログにメモボタンがある');
+  });
+
+  await test('バージョン選択は名前だけを表示し、目標を近くの説明欄へ出す', async () => {
+    const select = { value: '顧客検証', options: [{ value: '顧客検証', textContent: '顧客検証 — 長い目標' }] };
+    const description = { textContent: '' };
+    // eslint-disable-next-line no-new-func
+    const update = new Function('$', 'state', 'charterAssistContext',
+      `${grab('updateCharterSelectContext')}; return updateCharterSelectContext;`)(
+      (id) => id === 'version' ? select : description,
+      { project: {} },
+      () => ({ goal: '対象ユーザーへの検証を完了する' })
+    );
+    update('version', 'description');
+    assert.strictEqual(select.options[0].textContent, '顧客検証');
+    assert.strictEqual(description.textContent, '対象ユーザーへの検証を完了する');
   });
 
   console.log(`\n${passed} tests passed`);

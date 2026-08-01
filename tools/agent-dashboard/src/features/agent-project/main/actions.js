@@ -127,7 +127,7 @@ function enqueueToInbox(projectDir, spec) {
   if (charter) clean.charter = charter;
   // 統一 verify の正規形（複数行キー）: 配列のまま JSON に書く（joinすると 1 行に潰れて
   // 基準の区切りが失われる。agent-project の coerce_multiline が 1 要素 = 1 行で取り込む）。
-  for (const key of ['task_acceptance_criteria', 'verification_commands']) {
+  for (const key of ['task_acceptance_criteria', 'verification_commands', 'risks']) {
     const v = spec[key];
     if (v === undefined || v === null) continue;
     const items = (Array.isArray(v) ? v : String(v).split('\n'))
@@ -258,7 +258,7 @@ const REVISE_KEYS = ['title', 'priority', 'verify', 'accept', 'after', 'note', '
 // 単値キーと同じ String() を通すと ['a','b'] が "a,b" の 1 行に潰れるので経路を分ける。
 // task_acceptance_criteria / verification_commands が統一 verify の正規形。acceptance は
 // 旧形式の掃除（[''] で削除）にだけ使う。
-const REVISE_LIST_KEYS = ['task_acceptance_criteria', 'verification_commands', 'acceptance'];
+const REVISE_LIST_KEYS = ['task_acceptance_criteria', 'verification_commands', 'acceptance', 'risks'];
 
 // revise ペイロード（フィールド編集 + feedback）を commands/CLI 両経路の形へ正規化する。
 // undefined/null は「触らない」の意味なので落とす（'' は削除の明示指定として残す）
@@ -367,10 +367,24 @@ function notesDir(dir) {
   return path.join(dir, 'notes');
 }
 
+function noteLinksFile(dir) {
+  return path.join(notesDir(dir), '.task-links.json');
+}
+
+function readNoteLinks(dir) {
+  try {
+    const value = JSON.parse(fs.readFileSync(noteLinksFile(dir), 'utf8'));
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
 // メモ一覧（archive/ は除く＝消費済みは出さない）。新しい順。
 function listNotes(dir) {
   const d = notesDir(dir);
-  let names = [];
+  const linked = readNoteLinks(dir);
+  let names;
   try {
     names = fs.readdirSync(d).filter((n) => n.toLowerCase().endsWith('.md'));
   } catch {
@@ -382,12 +396,36 @@ function listNotes(dir) {
     try {
       const st = fs.statSync(p);
       if (!st.isFile()) continue;
-      out.push({ name, mtime: st.mtimeMs, body: fs.readFileSync(p, 'utf8') });
+      out.push({ name, mtime: st.mtimeMs, body: fs.readFileSync(p, 'utf8'), links: linked[name] || {} });
     } catch {
       /* 読めないメモは黙って飛ばす（一覧を壊さない） */
     }
   }
   return out.sort((a, b) => b.mtime - a.mtime);
+}
+
+function markNoteBlocks(dir, { name, links }) {
+  const noteName = String(name || '').trim();
+  if (!NOTE_NAME_RE.test(noteName) || !noteName.toLowerCase().endsWith('.md')) {
+    throw new Error('メモ名が不正です');
+  }
+  if (!fs.existsSync(path.join(notesDir(dir), noteName))) {
+    throw new Error(`メモが見つかりません: ${noteName}`);
+  }
+  const all = readNoteLinks(dir);
+  const note = all[noteName] && typeof all[noteName] === 'object' ? all[noteName] : {};
+  for (const raw of Array.isArray(links) ? links : []) {
+    const fingerprint = String((raw && raw.fingerprint) || '').trim().slice(0, 120);
+    const taskIds = [...new Set((Array.isArray(raw && raw.taskIds) ? raw.taskIds : [])
+      .map((id) => String(id).trim().slice(0, 80)).filter(Boolean))];
+    if (fingerprint && taskIds.length) note[fingerprint] = { taskIds, updatedAt: new Date().toISOString() };
+  }
+  all[noteName] = note;
+  const file = noteLinksFile(dir);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(`${file}.tmp`, `${JSON.stringify(all, null, 2)}\n`, 'utf8');
+  fs.renameSync(`${file}.tmp`, file);
+  return { file, links: note };
 }
 
 // メモを 1 件書く。**git には触らない**（この機能の書き込みはすべて状態ルート配下のファイルで、
@@ -406,6 +444,24 @@ function writeNote(dir, { name, body }) {
   fs.writeFileSync(`${file}.tmp`, `${text}\n`, 'utf8');
   fs.renameSync(`${file}.tmp`, file);
   return { file, name: path.basename(file) };
+}
+
+function updateNote(dir, { name, body, mtime }) {
+  const noteName = String(name || '').trim();
+  if (!NOTE_NAME_RE.test(noteName) || !noteName.toLowerCase().endsWith('.md')) {
+    throw new Error('メモ名が不正です');
+  }
+  const text = String(body || '').trim();
+  if (!text) throw new Error('メモが空です');
+  const file = path.join(notesDir(dir), noteName);
+  if (!fs.existsSync(file)) throw new Error(`メモが見つかりません: ${noteName}`);
+  const expectedMtime = Number(mtime);
+  if (Number.isFinite(expectedMtime) && Math.abs(fs.statSync(file).mtimeMs - expectedMtime) > 0.5) {
+    throw new Error('メモが別の場所で更新されています。再読み込みしてから編集してください');
+  }
+  fs.writeFileSync(`${file}.tmp`, `${text}\n`, 'utf8');
+  fs.renameSync(`${file}.tmp`, file);
+  return { file, name: noteName, mtime: fs.statSync(file).mtimeMs };
 }
 
 // メモをバックログ候補へ分解するよう本体へ依頼する（commands/ ドロップの一本。replan と同じ流儀）。
@@ -521,6 +577,8 @@ module.exports = {
   requestLifecycle,
   listNotes,
   writeNote,
+  updateNote,
+  markNoteBlocks,
   requestDistillNotes,
   DECISION_MARKER,
 };

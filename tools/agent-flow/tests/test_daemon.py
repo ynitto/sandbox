@@ -620,6 +620,23 @@ class DaemonPrimitiveTests(unittest.TestCase):
         finally:
             kf.cleanup_workspace()
 
+    def test_finalize_base_sync_accepts_target_trailing_whitespace(self):
+        remote = self._make_remote(name="base_sync_whitespace")
+        subprocess.run(["git", "-C", remote, "checkout", "-qb", "ap/T1"], check=True)
+        subprocess.run(["git", "-C", remote, "commit", "--allow-empty", "-qm", "task"], check=True)
+        subprocess.run(["git", "-C", remote, "checkout", "-q", "main"], check=True)
+        with open(os.path.join(remote, "doc.md"), "w", encoding="utf-8") as fh:
+            fh.write("既存の末尾空白  \n")
+        subprocess.run(["git", "-C", remote, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", remote, "commit", "-qm", "docs"], check=True)
+        try:
+            ws = kf.ensure_workspace_clone(
+                {"url": remote, "base": "main", "target": "main", "branch": "ap/T1"}, "run-ws")
+            self.assertEqual(kf.sync_workspace_base(ws)["status"], "merged")
+            self.assertIsNotNone(kf.finalize_workspace(ws, "run-ws", "base-sync"))
+        finally:
+            kf.cleanup_workspace()
+
     def test_inject_base_sync_precedes_every_root_node(self):
         nodes = {
             "t1": {"goal": "a", "deps": [], "kind": "work"},

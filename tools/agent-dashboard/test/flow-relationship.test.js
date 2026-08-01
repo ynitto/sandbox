@@ -22,11 +22,11 @@ function grab(name) {
 }
 
 // eslint-disable-next-line no-new-func
-const planRevisionMap = new Function(`${grab('planRevisionMap')}; return planRevisionMap;`)();
+const flowGraphLayout = new Function(`${grab('flowGraphLayout')}; return flowGraphLayout;`)();
 // eslint-disable-next-line no-new-func
-const flowGraphLayout = new Function(
-  'planRevisionMap', `${grab('flowGraphLayout')}; return flowGraphLayout;`
-)(planRevisionMap);
+const planTimelineEntries = new Function(`${grab('planTimelineEntries')}; return planTimelineEntries;`)();
+// eslint-disable-next-line no-new-func
+const planFlowPhases = new Function(`${grab('planFlowPhases')}; return planFlowPhases;`)();
 
 let passed = 0;
 function test(name, fn) {
@@ -156,21 +156,62 @@ test('readRun は実行イベントから計画リビジョンを返す', () => 
   }
 });
 
-test('計画変更後の独立工程は境界の右側へ置き、依存関係だけを区画内で前後させる', () => {
-  const layout = flowGraphLayout({
+test('計画の変遷はリビジョン順を保ち、変更された現存工程だけを返す', () => {
+  const run = {
     planRevisions: [
       { revision: 0, added: ['synth'] },
-      { revision: 1, added: ['t11', 'gate3'] },
+      { revision: 1, added: ['t11'], updated: ['gate3'], replaced: [{ old: 'old', next: 't11' }] },
     ],
     nodes: {
       synth: { id: 'synth', deps: [] },
       t11: { id: 't11', deps: [] },
       gate3: { id: 'gate3', deps: ['t11'] },
     },
-  });
-  assert.ok(layout.pos.synth.x < layout.boundaries[0].x);
-  assert.ok(layout.boundaries[0].x < layout.pos.t11.x);
+  };
+  const entries = planTimelineEntries(run);
+  assert.deepStrictEqual(entries.map((entry) => entry.revision.revision), [0, 1]);
+  assert.deepStrictEqual(entries[0].nodeIds, []);
+  assert.deepStrictEqual(entries[1].nodeIds, ['t11', 'gate3']);
+});
+
+test('各計画フェーズ内では deps だけで横位置を決める', () => {
+  const layout = flowGraphLayout({ nodes: {
+    synth: { id: 'synth', deps: [] },
+    t11: { id: 't11', deps: [] },
+    gate3: { id: 'gate3', deps: ['t11'] },
+  } });
+  assert.strictEqual(layout.pos.synth.x, layout.pos.t11.x);
   assert.ok(layout.pos.t11.x < layout.pos.gate3.x);
+});
+
+test('タスクの流れは初期計画と再計画の追加工程を別フェーズに分ける', () => {
+  const run = {
+    planRevisions: [
+      { revision: 0, added: ['synth', 'gate'] },
+      { revision: 1, added: ['t11'], updated: ['gate'], replaced: [] },
+      { revision: 2, added: [], replaced: [{ old: 't11', next: 't11-r1' }] },
+    ],
+    nodes: {
+      synth: { id: 'synth', deps: [] },
+      gate: { id: 'gate', deps: ['synth'] },
+      t11: { id: 't11', deps: [] },
+      't11-r1': { id: 't11-r1', deps: ['gate'] },
+    },
+  };
+  const phases = planFlowPhases(run);
+  assert.deepStrictEqual(phases.map((phase) => phase.nodeIds), [
+    ['synth', 'gate'],
+    ['t11'],
+    ['t11-r1'],
+  ]);
+  assert.deepStrictEqual(phases[2].inheritedEdges, [{ from: 'gate', to: 't11-r1' }]);
+});
+
+test('再計画があるrunだけ計画の変遷とタスクの流れを切り替える', () => {
+  assert.match(renderer, /hasPlanChanges = \(run\.planRevisions \|\| \[\]\)\.length > 1/);
+  assert.match(renderer, /data-flow-graph-mode="plan"/);
+  assert.match(renderer, /data-flow-graph-mode="dependencies"/);
+  assert.match(renderer, />タスクの流れ<\/button>/);
 });
 
 // --- レビュー待ちイシュー ↔ run/ノードの token 対応付け ---

@@ -364,6 +364,14 @@ function registerIpc(ctx) {
     if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
     return actions.writeNote(dir, { name, body });
   });
+  handle('dashboard:updateNote', ({ dir, name, body, mtime }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    return actions.updateNote(dir, { name, body, mtime });
+  });
+  handle('dashboard:markNoteBlocks', ({ dir, name, links }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    return actions.markNoteBlocks(dir, { name, links });
+  });
   handle('dashboard:distillNotes', ({ dir, charter }) => {
     if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
     return actions.requestDistillNotes(loadConfig(), { dir, charter });

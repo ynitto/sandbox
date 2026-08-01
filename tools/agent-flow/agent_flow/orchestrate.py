@@ -53,13 +53,17 @@ def _env_failure_reason(results: dict) -> "str | None":
         cls = _source_marker_class(output)
         if cls is None:
             cls = d.get("error_class") if isinstance(d, dict) else None
-        if cls not in ("transient",) + AGENT_ERROR_ENV_CLASSES:
+        if cls not in ("transient", "integration") + AGENT_ERROR_ENV_CLASSES:
             m = _AGENT_ERROR_TAG_RE.search(output)
             cls = m.group(1) if m else None
         if cls == "transient":
             return (f"[agent-error:transient] 一時的エラーの失敗（{nid}）: in-place 再試行でも"
                     "回復せず、run を打ち切りました。自動再開（auto-heal）の対象です"
                     "（完了済みの工程は温存されます）。")
+        if cls == "integration":
+            return (f"[agent-error:integration] target 統合の失敗（{nid}）: "
+                    "未統合の成果を後続で検証・完了扱いにしないため run を打ち切りました。"
+                    "新しい試行で最新 target を統合してください。")
         if cls in AGENT_ERROR_ENV_CLASSES:
             # 発生元マーカーも run まで運び、管理面の停止と node-budget の予算超過を
             # 表示層が区別できるようにする（どちらも「止まっている」だが直し方が違う）。

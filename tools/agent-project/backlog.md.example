@@ -32,6 +32,7 @@ schemas/task.schema.json（本ファイルが Markdown 形の正典・未知キ�
   - out_of_scope: <やらないこと>                 # 任意。非目標。スコープ膨張・過剰実装を防ぐ
   - constraints : <タスク固有の制約>             # 任意。守るべき規約・禁止事項（rules/charter に上乗せ）
   - hints  : <実装の手がかり>                    # 任意。関連ファイル・参考実装・調査済み情報
+  - risks  : <実装・運用上のリスクと対策>         # 任意・複数可。計画レビュー対象は「なし」を含め必須
   - demo   : <人の確認観点>                      # 任意。検収で人が何をどう確かめるか（ワーカーにも伝わる）
   - size   : S | M | L                          # 任意。規模感（分解の妥当性を人が判断する材料。実行には効かない）
   - planned_title: <プランナーが付けた原題>      # system 管理。人が題を直しても重複照合が効き続ける指紋
@@ -88,7 +89,7 @@ schemas/task.schema.json（本ファイルが Markdown 形の正典・未知キ�
            `protect`/`gate`/`regression` は level に依らず常に上乗せ（緩めても安全網は残る）。
 - track  : 同種タスクの群名。`--auto-level` 有効時、その群の手戻り率が低ければ level を自動で1段上げ、
            手戻り（差し戻し/回帰/偽done）で下げる。ceiling は既定 `assisted`（無人化は明示許可制）。
-- why / desc / scope / out_of_scope / constraints / hints / demo :
+- why / desc / scope / out_of_scope / constraints / hints / risks / demo :
            **人のレビューとエージェント誘導のための記述**（すべて任意・値は 1 行。改行は ⏎）。
            書けば act 要求文へ整形注入されてワーカーの挙動を変え、実行前レビュー・検収の票
            （needs/<id>.md）にも判断材料として載る。一般的なバックログ項目との対応:
@@ -101,6 +102,8 @@ schemas/task.schema.json（本ファイルが Markdown 形の正典・未知キ�
                             に対する、タスク 1 件だけの守るべき規約・禁止事項の層）。
              hints        = 実装の手がかり（関連ファイル・参考実装・調査済み情報。ワーカーは
                             鵜呑みにせず現物で確認する）。
+             risks        = 実装・運用上のリスクと対策。計画レビュー対象では該当しない場合も
+                            「なし」と明記する。誘導材料であり、done の根拠にはしない。
              demo         = 人の検収観点（review: human / assisted の検収で人が何をどう確かめるか。
                             ワーカーにも伝わり「人がここを見る」前提で仕上げさせる）。
            ⚠ これらは**誘導であって完了条件ではない**。done の根拠は変わらず verify のみ。

@@ -42,6 +42,10 @@ module.exports = {
   requestReplan: (invoke) => (dir, reason, charter) => invoke('dashboard:replan', { dir, reason, charter }),
   listNotes: (invoke) => (dir) => invoke('dashboard:listNotes', { dir }),
   writeNote: (invoke) => (dir, name, body) => invoke('dashboard:writeNote', { dir, name, body }),
+  updateNote: (invoke) => (dir, name, body, mtime) =>
+    invoke('dashboard:updateNote', { dir, name, body, mtime }),
+  markNoteBlocks: (invoke) => (dir, name, links) =>
+    invoke('dashboard:markNoteBlocks', { dir, name, links }),
   distillNotes: (invoke) => (dir, charter) => invoke('dashboard:distillNotes', { dir, charter }),
   requestLifecycle: (invoke) => (dir, action, reason) =>
     invoke('dashboard:lifecycle', { dir, action, reason }),

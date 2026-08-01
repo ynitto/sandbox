@@ -1691,6 +1691,9 @@ table.list tr.clickable:hover { background: var(--bg2); }
   min-width: 0;
   max-width: calc(100vw - 32px);
 }
+#dlg-task[open],
+#dlg-notes[open],
+#dlg-note-candidates[open] { height: min(720px, calc(100vh - 32px)); }
 #dlg-task .dialog-scroll-body { padding-top: 0; }
 #dlg-task input, #dlg-task select, #dlg-task button { min-height: 44px; box-sizing: border-box; }
 #dlg-task textarea { min-height: 72px; box-sizing: border-box; }
@@ -1728,7 +1731,6 @@ table.list tr.clickable:hover { background: var(--bg2); }
 .revise-area textarea { width: 100%; resize: vertical; }
 
 @media (max-width: 768px) {
-  #dlg-task { width: calc(100vw - 16px); max-width: calc(100vw - 16px); }
   .task-owner-editor .owner-edit { grid-template-columns: 1fr; }
   .task-owner-editor .owner-edit label { grid-column: auto; }
   #dlg-task .need-buttons button { width: 100%; }
@@ -1912,6 +1914,147 @@ table.list tr.clickable:hover { background: var(--bg2); }
   overflow: auto;
   margin: 10px 0;
 }
+#graph-box.graph-mode-plan { overflow-x: hidden; }
+#graph-box.graph-mode-dependencies:has(.task-flow) { overflow-x: hidden; }
+.flow-graph-tabs {
+  display: inline-grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  padding: 3px;
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg2);
+}
+.flow-graph-tabs button {
+  min-height: 44px;
+  padding: 6px 14px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+.flow-graph-tabs button[aria-selected="true"] {
+  border-color: var(--accent);
+  background: var(--bg3);
+  color: var(--fg);
+}
+.plan-timeline {
+  list-style: none;
+  margin: 0;
+  padding: 16px 16px 16px 38px;
+}
+.plan-timeline-step { position: relative; padding: 0 0 22px; }
+.plan-timeline-step:last-child { padding-bottom: 0; }
+.plan-timeline-step::before {
+  content: '';
+  position: absolute;
+  left: -22px;
+  top: 22px;
+  bottom: -22px;
+  width: 2px;
+  background: var(--border);
+}
+.plan-timeline-step:last-child::before { display: none; }
+.plan-timeline-step::after {
+  content: '';
+  position: absolute;
+  left: -27px;
+  top: 17px;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  background: var(--bg2);
+}
+.plan-timeline-card {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  min-height: 58px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg3);
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 180ms ease, background-color 180ms ease;
+}
+.plan-timeline-card:hover,
+.plan-timeline-card.selected,
+.plan-timeline-card:focus-visible { border-color: var(--accent); }
+.plan-timeline-card.selected { background: color-mix(in srgb, var(--accent) 10%, var(--bg3)); }
+.plan-timeline-head { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+.plan-timeline-head strong { color: var(--accent); }
+.plan-timeline-head span,
+.plan-timeline-meta { color: var(--muted); font-size: 11px; }
+.plan-timeline-reason { line-height: 1.45; overflow-wrap: anywhere; }
+.plan-timeline-nodes { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-top: 7px; }
+.plan-node {
+  min-height: 44px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+.plan-node.state-done { border-left-color: var(--green); }
+.plan-node.state-failed { border-left-color: var(--red); }
+.plan-node.state-claimed { border-left-color: var(--accent2); }
+.plan-node.state-parked { border-left-color: var(--orange); }
+.plan-node.state-pending { border-left-color: var(--blue); }
+.plan-node:hover,
+.plan-node:focus-visible { border-color: var(--accent); }
+.task-flow { padding: 14px; }
+.task-flow-phase {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+}
+.task-flow-phase-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+}
+.task-flow-phase-head strong { color: var(--fg); }
+.task-flow-graph { overflow-x: auto; }
+.task-flow-transition {
+  position: relative;
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  min-height: 58px;
+  margin: 18px 0;
+  padding: 9px 12px 9px 18px;
+  border: 1px dashed var(--accent);
+  border-left-width: 4px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg2));
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+.task-flow-transition:hover,
+.task-flow-transition:focus-visible { border-style: solid; }
+.task-flow-transition-title { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); }
+.task-flow-transition-title strong { color: var(--accent); }
+.task-flow-inherited {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.task-flow-inherited-item { color: var(--fg); font-family: Consolas, monospace; }
+.plan-change-sw { width: 14px; height: 0; border-top: 2px dashed var(--accent); display: inline-block; }
 svg.graph { display: block; }
 svg.graph .edge { stroke: var(--border); stroke-width: 1.5; fill: none; }
 /* 完了したノード同士を繋ぐエッジ: 消化済みの経路を一目で追えるよう強調する */
@@ -1928,16 +2071,6 @@ svg.graph .node.state-parked rect { fill: #3a2f13; stroke: var(--orange); }
 svg.graph .node.state-waiting rect { fill: var(--bg3); stroke: var(--border); }
 svg.graph .node.selected rect { stroke-width: 3; }
 svg.graph .node:focus-visible rect { stroke: var(--accent); stroke-width: 3; }
-svg.graph .plan-revision-line { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 5 5; opacity: 0.65; }
-svg.graph .plan-revision { cursor: pointer; }
-svg.graph .plan-revision rect { fill: var(--bg3); stroke: var(--accent); stroke-width: 1.5; }
-svg.graph .plan-revision text { fill: var(--fg); font-size: 10px; }
-svg.graph .plan-revision .revision-title { fill: var(--accent); font-size: 11px; font-weight: 700; }
-svg.graph .plan-revision .revision-meta { fill: var(--muted); font-size: 9px; }
-svg.graph .plan-revision:hover rect,
-svg.graph .plan-revision.selected rect,
-svg.graph .plan-revision:focus-visible rect { fill: color-mix(in srgb, var(--accent) 12%, var(--bg3)); stroke-width: 3; }
-svg.graph .plan-initial-label { fill: var(--muted); font-size: 11px; font-weight: 700; }
 /* GitLab クローズ反映で状態を先読みしたノード（bus の result 反映待ち）は破線枠で区別する */
 svg.graph .node.reconciled rect { stroke-dasharray: 4 3; }
 /* gitlab executor ノードの右上イシューアイコン（1 クリックでレビュー起動） */
@@ -2491,6 +2624,105 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   #flow-layout.show-detail #flow-detail { display: block; }
   .flow-graph-workspace { grid-template-columns: 1fr; }
   .flow-node-detail { border-left: 0; border-top: 1px solid var(--border); }
+}
+
+/* メモ: 自由編集と部分タスク化を同じ作業領域で切り替える。 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+#dlg-notes,
+#dlg-note-candidates { width: min(960px, calc(100vw - 32px)); min-width: 0; max-width: calc(100vw - 32px); }
+#dlg-notes .dialog-actions > button,
+#dlg-note-candidates .dialog-actions > button { min-height: 44px; }
+.notes-workspace {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 14px;
+  min-height: 420px;
+}
+.notes-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding-right: 12px;
+  border-right: 1px solid var(--border);
+}
+.notes-list { display: grid; gap: 5px; overflow: auto; align-content: start; }
+.note-list-item {
+  display: grid;
+  gap: 3px;
+  min-height: 44px;
+  width: 100%;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.note-list-item small { color: var(--muted); font-size: 11px; }
+.note-list-item.active { border-color: var(--accent); background: var(--bg); }
+.notes-empty { padding: 10px 4px; }
+.notes-editor { display: flex; flex-direction: column; min-width: 0; }
+.notes-editor-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 10px; }
+.notes-mode-tabs { display: inline-grid; grid-template-columns: 1fr 1fr; gap: 3px; padding: 3px; border: 1px solid var(--border); border-radius: 6px; }
+.notes-mode-tabs button { min-height: 44px; border-color: transparent; background: transparent; }
+.notes-mode-tabs button[aria-pressed="true"] { border-color: var(--accent); background: var(--bg); }
+#note-body { width: 100%; height: 300px; min-height: 180px; box-sizing: border-box; resize: vertical; line-height: 1.55; }
+#note-task-panel { height: 300px; min-height: 180px; overflow: auto; }
+.note-block-list { display: grid; gap: 8px; }
+.note-block {
+  display: flex;
+  gap: 10px;
+  min-height: 44px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  cursor: pointer;
+}
+.note-block:hover { border-color: var(--accent); }
+.note-block.linked { cursor: default; opacity: 0.72; }
+.note-block > input { flex: 0 0 auto; margin-top: 4px; }
+.note-block-body { display: grid; gap: 4px; min-width: 0; }
+.note-block-body .task-prose { white-space: normal; overflow-wrap: anywhere; }
+.note-block-state { color: var(--muted); font-size: 12px; }
+.notes-status { min-height: 1.5em; margin-top: 8px; overflow-wrap: anywhere; }
+.notes-editor-actions { display: flex; align-items: flex-end; gap: 12px; margin-top: auto; padding-top: 12px; border-top: 1px solid var(--border); }
+.notes-editor-actions > button { flex: none; min-height: 44px; }
+.notes-charter-field { flex: 1; min-width: 0; margin: 0; }
+.notes-charter-field label { font-size: 11px; margin-bottom: 2px; }
+.notes-charter-field select { width: min(220px, 100%); }
+.charter-description { max-width: 60ch; margin: 4px 0 0; font-size: 11px; line-height: 1.45; }
+.note-candidates-list { display: grid; gap: 12px; overflow: auto; }
+.note-candidate { padding: 12px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); }
+.note-candidate.added { opacity: 0.65; border-color: var(--green); }
+.note-candidate-select { display: flex; align-items: center; gap: 7px; min-height: 44px; font-weight: 600; cursor: pointer; }
+
+@media (max-width: 768px) {
+  #dlg-task,
+  #dlg-notes,
+  #dlg-note-candidates { width: calc(100vw - 16px); max-width: calc(100vw - 16px); }
+  #dlg-task[open],
+  #dlg-notes[open],
+  #dlg-note-candidates[open] { height: calc(100vh - 16px); }
+}
+
+@media (max-width: 700px) {
+  .notes-workspace { grid-template-columns: 1fr; min-height: 0; }
+  .notes-sidebar { max-height: 150px; padding: 0 0 10px; border-right: 0; border-bottom: 1px solid var(--border); }
+  .notes-editor-head { align-items: stretch; flex-direction: column; }
+  .notes-mode-tabs { width: 100%; }
+  #note-body, #note-task-panel { height: 120px; min-height: 120px; }
+  .notes-editor-actions { align-items: stretch; flex-wrap: wrap; }
+  .notes-charter-field { flex: 1 0 100%; }
+  #btn-note-save, #btn-note-candidates { margin-left: auto; }
 }
 
 @media (max-width: 680px) {

@@ -321,7 +321,7 @@
     <div class="field" id="enq-charter-field">
       <label for="enq-charter">計画バージョン</label>
       <select id="enq-charter"></select>
-      <div class="muted">選択したバージョンの目標・制約・前提を、このタスクの実行に適用します。</div>
+      <p id="enq-charter-description" class="muted charter-description" aria-live="polite"></p>
     </div>
     <div class="field">
       <label>タスク名</label>
@@ -342,6 +342,8 @@
         <div class="field"><label for="enq-scope">変更してよい範囲</label><input id="enq-scope" /></div>
         <div class="field"><label for="enq-out_of_scope">変更しない範囲</label><input id="enq-out_of_scope" /></div>
       </div>
+      <div class="field"><label for="enq-risks">リスクと対策</label>
+        <textarea id="enq-risks" rows="3" placeholder="1 行 1 リスク。該当しない場合は「なし」"></textarea></div>
     </details>
     <details>
       <summary>実行順と変更先</summary>
@@ -428,20 +430,50 @@
   <!-- ======== メモ ======== -->
   <dialog id="dlg-notes">
     <h2>メモ</h2>
-    <p class="muted">あとで考えたいことを残せます。必要になったらタスクにしてください。</p>
-    <div class="field">
-      <label for="note-body">新しいメモ</label>
-      <textarea id="note-body" rows="4" placeholder="例: 検収カードの証跡が薄いときに気づける仕組みが要りそう"></textarea>
+    <p class="muted">自由に書き残し、必要な段落だけを選んでタスク候補にできます。</p>
+    <div class="notes-workspace">
+      <aside class="notes-sidebar" aria-label="メモ一覧">
+        <button type="button" id="btn-note-new">新しいメモ</button>
+        <div id="notes-list" class="notes-list"></div>
+      </aside>
+      <section class="notes-editor">
+        <div class="notes-editor-head">
+          <strong id="note-current-name">新しいメモ</strong>
+          <div class="notes-mode-tabs" role="group" aria-label="メモの操作">
+            <button type="button" id="notes-mode-edit" aria-pressed="true">編集</button>
+            <button type="button" id="notes-mode-task" aria-pressed="false">タスク化</button>
+          </div>
+        </div>
+        <div id="note-edit-panel">
+          <label class="sr-only" for="note-body">メモ本文</label>
+          <textarea id="note-body" rows="16" placeholder="例: 検収カードの証跡が薄いときに気づける仕組みが要りそう"></textarea>
+        </div>
+        <div id="note-task-panel" class="hidden" aria-label="タスク化する段落"></div>
+        <div id="notes-status" class="muted notes-status" aria-live="polite"></div>
+        <div class="notes-editor-actions">
+          <div class="field notes-charter-field">
+            <label for="notes-charter">計画バージョン</label>
+            <select id="notes-charter"></select>
+            <p id="notes-charter-description" class="muted charter-description" aria-live="polite"></p>
+          </div>
+          <button id="btn-note-save" class="primary-inline">保存</button>
+          <button id="btn-note-candidates" class="primary-inline hidden" disabled>選択した項目から候補を作る</button>
+        </div>
+      </section>
     </div>
-    <div class="field">
-      <label for="notes-charter">計画バージョン</label>
-      <select id="notes-charter"></select>
-    </div>
-    <div id="notes-list" class="notes-list"></div>
     <div class="dialog-actions">
       <button id="btn-notes-close">閉じる</button>
-      <button id="btn-notes-distill">メモをタスクにする</button>
-      <button id="btn-note-add" class="primary-inline">メモを追加</button>
+    </div>
+  </dialog>
+
+  <dialog id="dlg-note-candidates">
+    <h2>タスク候補を確認</h2>
+    <p class="muted">追加する候補を選び、内容を直してからタスク一覧へ送ります。まだ実行は始まりません。</p>
+    <div id="note-candidates-list" class="note-candidates-list"></div>
+    <div id="note-candidates-status" class="muted notes-status" aria-live="polite"></div>
+    <div class="dialog-actions">
+      <button id="btn-note-candidates-close">戻る</button>
+      <button id="btn-note-candidates-submit" class="primary-inline">選択した候補を追加</button>
     </div>
   </dialog>
 
@@ -671,6 +703,7 @@
        フィーチャータブ → bootstrap（init を最後に実行）。 -->
   <script src="renderer.js"></script>
   <script src="sections/overview.js"></script>
+  <script src="note-blocks.js"></script>
   <script src="sections/backlog.js"></script>
   <script src="sections/authoring.js"></script>
   <script src="sections/form-edit.js"></script>

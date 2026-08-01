@@ -674,9 +674,10 @@ def run_local_receipt(cfg: "Config", task: "Task", plan: dict, rev: str,
                  "note": "自然文基準の判定は agent-flow runner の receipt が必要"
                          "（local runner は固定コマンドのみ実行）"}
                 for c in plan.get("criteria") or []]
+    integration = _verifycontract.run_plan_integration(plan, str(vcwd), rev)
     return _verifycontract.build_receipt(
         plan, result_rev=rev, commands=commands, criteria=criteria,
-        verified_by=str(getattr(cfg, "node", "") or "local"))
+        verified_by=str(getattr(cfg, "node", "") or "local"), integration=integration)
 
 
 def _adopt_receipt(cfg: "Config", task: "Task", receipt: dict,

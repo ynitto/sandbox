@@ -17,7 +17,7 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const { readToolConfig } = require('./toolconfig');
-const { agentHomeSubdir, agentDirCandidates } = require('../../../base/main/agent-home');
+const { agentDirCandidates } = require('../../../base/main/agent-home');
 const { parseYaml } = require('../../../base/main/yaml');
 
 // エージェント CLI 定義（agents/<name>.json）。**組み込み（kiro/claude/copilot/codex）も
@@ -571,12 +571,14 @@ const DOCTOR_MODES = {
   },
 };
 
-const STRUCTURED_ASSIST_MODES = new Set(['followup-suggest', 'enqueue-assist', 'task-guide']);
+const STRUCTURED_ASSIST_MODES = new Set([
+  'followup-suggest', 'enqueue-assist', 'task-guide', 'note-task-candidates',
+]);
 
 // 誘導・レビュー記述フィールド（agent-project の TASK_GUIDE_KEYS と同じ。
 // 意味論の正典は tools/agent-project/backlog.md.example）。task-guide 補完と
 // フォローアップ提案の受け渡しに使う。値は 1 行（改行は ⏎ 規約）。
-const TASK_GUIDE_KEYS = ['why', 'desc', 'scope', 'out_of_scope', 'constraints', 'hints', 'demo'];
+const TASK_GUIDE_KEYS = ['why', 'desc', 'scope', 'out_of_scope', 'risks', 'constraints', 'hints', 'demo'];
 
 function resolveDoctorMode(mode) {
   const key = String(mode || 'consultation');
@@ -815,6 +817,21 @@ function taskAssistPrompt(mode, context, userPrompt = '') {
       (note ? `\nユーザー補足:\n${note}\n` : '')
     );
   }
+  if (mode === 'note-task-candidates') {
+    return (
+      'あなたはAgent Dashboardの読み取り専用バックログ提案アシスタントです。\n' +
+      '利用者がメモから選んだ段落だけを、内容のまとまりに応じて1件以上、必要なら複数のタスク候補へ分けてください。\n' +
+      'コマンド実行・ファイル変更・タスク追加はしないでください。候補は人が確認してから追加します。\n\n' +
+      '出力は次の形の JSON オブジェクトのみ（説明文・コードフェンスなし）:\n' +
+      '{"rationale":"...","tasks":[{"title":"...","desc":"...","acceptance":["..."],"priority":0,"after":["T1"],"why":"..."}]}\n' +
+      '- tasks は1〜8件。別々に完了判定できる作業だけを分け、細かくしすぎない。\n' +
+      '- acceptance は自然言語で1項目1条件。after は既存タスクIDのみ。priorityは整数。\n' +
+      '- 選択されていないメモを推測で追加せず、既存backlogとの重複候補も作らない。\n\n' +
+      `charter:\n${charter}\n\n既存 backlog:\n${backlog || '(空)'}\n\n` +
+      `選択したメモブロック:\n${JSON.stringify(ctx.blocks || [], null, 2)}\n` +
+      (note ? `\nユーザー補足:\n${note}\n` : '')
+    );
+  }
   if (mode === 'task-guide') {
     const task = ctx.task || {};
     return (
@@ -824,8 +841,10 @@ function taskAssistPrompt(mode, context, userPrompt = '') {
       '出力は次の形の JSON オブジェクトのみ（説明文・コードフェンスなし）:\n' +
       '{"why":"背景・目的（なぜやるか・1文）","desc":"作業内容の詳細","scope":"変更してよい範囲",' +
       '"out_of_scope":"やらないこと","constraints":"タスク固有の制約","hints":"実装の手がかり",' +
+      '"risks":["実装・運用上のリスクと対策"],' +
       '"demo":"人の確認観点","rationale":"提案の根拠・1文"}\n' +
-      '- 各値は 1 行（改行は ⏎）。charter・既存 backlog・タスク定義から根拠をもって書ける項目だけ埋め、\n' +
+      '- risks は1要素1項目の配列（該当なしは ["なし"]）。他の各値は 1 行（改行は ⏎）。\n' +
+      '  charter・既存 backlog・タスク定義から根拠をもって書ける項目だけ埋め、\n' +
       '  推測になる項目は空文字にすること（憶測で境界や制約を発明しない）。\n' +
       '- 既に値がある項目は、明確な改善があるときだけ置換案を出し、なければ現在の値をそのまま返すこと。\n\n' +
       `charter:\n${charter}\n\n既存 backlog:\n${backlog || '(空)'}\n\n` +
@@ -888,11 +907,37 @@ function normalizeFollowupSuggestions(obj) {
   };
 }
 
+function normalizeNoteTaskCandidates(obj) {
+  const tasks = (Array.isArray(obj && obj.tasks) ? obj.tasks : []).slice(0, 8).map((raw) => {
+    const item = raw && typeof raw === 'object' ? raw : {};
+    const priority = parseInt(item.priority, 10);
+    const acceptance = (Array.isArray(item.acceptance)
+      ? item.acceptance
+      : String(item.acceptance == null ? '' : item.acceptance).split('\n'))
+      .map((value) => String(value).trim()).filter(Boolean).slice(0, 12);
+    return {
+      title: String(item.title || '').trim(),
+      desc: normalizeGuideValue(item.desc, 1200),
+      acceptance,
+      priority: Number.isFinite(priority) ? priority : 0,
+      after: normalizeAfter(item.after),
+      why: normalizeGuideValue(item.why),
+    };
+  }).filter((task) => task.title);
+  return { rationale: String((obj && obj.rationale) || '').trim(), tasks };
+}
+
 // task-guide（意図と境界の AI 補完）の応答正規化。空文字は「提案なし」の明示。
 function normalizeTaskGuide(obj) {
   const out = { rationale: String((obj && obj.rationale) || '').trim() };
   for (const key of TASK_GUIDE_KEYS) {
-    out[key] = normalizeGuideValue(obj && obj[key]);
+    if (key === 'risks') {
+      const raw = obj && obj[key];
+      out[key] = (Array.isArray(raw) ? raw : String(raw == null ? '' : raw).split(/\r?\n/))
+        .map((v) => String(v).trim()).filter(Boolean).slice(0, 12).join('\n');
+    } else {
+      out[key] = normalizeGuideValue(obj && obj[key]);
+    }
   }
   return out;
 }
@@ -1030,6 +1075,8 @@ async function completeTaskAssist(cfg, { dir, mode, context, userPrompt }) {
   }
   const fields = m === 'followup-suggest'
     ? normalizeFollowupSuggestions(obj)
+    : m === 'note-task-candidates'
+      ? normalizeNoteTaskCandidates(obj)
     : m === 'task-guide'
       ? normalizeTaskGuide(obj)
       : normalizeEnqueueAssist(obj);
@@ -1109,6 +1156,7 @@ module.exports = {
   taskAssistPrompt,
   TASK_GUIDE_KEYS,
   normalizeFollowupSuggestions,
+  normalizeNoteTaskCandidates,
   normalizeEnqueueAssist,
   normalizeTaskGuide,
   planBacklogAdjustments,

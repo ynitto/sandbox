@@ -227,10 +227,16 @@ def finalize_workspace(ws: "dict | None", run_id: str, node_id: str) -> "dict | 
     unmerged = _ws_git(clone, "diff", "--name-only", "--diff-filter=U").stdout.strip()
     if unmerged:
         raise RuntimeError(f"未解決の競合があります: {unmerged[:300]}")
-    checked = _ws_git(clone, "diff", "--cached", "--check")
-    if checked.returncode != 0:
-        raise RuntimeError(f"競合マーカーまたは不正な差分が残っています: "
-                           f"{(checked.stderr or checked.stdout).strip()[:300]}")
+    staged = [p for p in _ws_git(clone, "diff", "--cached", "--name-only",
+                                 "--diff-filter=ACMR").stdout.splitlines() if p]
+    if staged:
+        checked = _ws_git(clone, "grep", "--cached", "-n", "-E",
+                          r"^(<<<<<<< |=======$|>>>>>>> )", "--", *staged)
+        if checked.returncode == 0:
+            raise RuntimeError(f"競合マーカーが残っています: {checked.stdout.strip()[:300]}")
+        if checked.returncode != 1:
+            raise RuntimeError(f"競合マーカーを検査できません: "
+                               f"{(checked.stderr or checked.stdout).strip()[:300]}")
     merging = _ws_git(clone, "rev-parse", "-q", "--verify", "MERGE_HEAD").returncode == 0
     if not merging and _ws_git(clone, "diff", "--cached", "--quiet").returncode == 0:
         return None                               # 変更なし → commit/push しない

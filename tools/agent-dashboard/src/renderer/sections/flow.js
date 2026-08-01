@@ -442,6 +442,7 @@ async function selectFlowRun(runId) {
   state.flowRunId = runId;
   state.flowNodeId = null;
   state.flowRevisionId = null;
+  state.flowGraphMode = 'plan';
   state.flowDetailView = 'overview';
   state.flowMobileDetail = true;
   state.flowRun = await guard('実行内容の読み込み', () => api.flowRun(state.project.dir, state.project.busDir, runId));
@@ -713,18 +714,33 @@ const viewTabs = [
     </details>` : ''}
   </section>`;
 
+  const hasPlanChanges = (run.planRevisions || []).length > 1;
+  const graphMode = hasPlanChanges ? state.flowGraphMode : 'dependencies';
+  const graphModeTabs = hasPlanChanges
+    ? `<div class="flow-graph-tabs" role="tablist" aria-label="工程の表示方法">
+        <button type="button" role="tab" data-flow-graph-mode="plan"
+          aria-selected="${graphMode === 'plan'}">計画の変遷</button>
+        <button type="button" role="tab" data-flow-graph-mode="dependencies"
+          aria-selected="${graphMode === 'dependencies'}">タスクの流れ</button>
+      </div>`
+    : '';
+  const graphContent = graphMode === 'plan' ? renderPlanTimeline(run) : renderTaskFlow(run);
+  const graphHint = graphMode === 'plan'
+    ? '計画変更を選ぶと理由を表示します'
+    : hasPlanChanges ? '再計画は上から下へ、依存関係は左から右へ表示します' : '工程を選ぶと内容を表示します';
   const graphView = `<div class="flow-graph-workspace">
     <section class="flow-graph-surface">
       <div class="flow-section-heading">
         <div><span class="summary-kicker">作業の流れ</span><h2>工程</h2></div>
-        <span class="muted">工程を選ぶと内容を表示します</span>
+        <span class="muted">${graphHint}</span>
       </div>
-      <div id="graph-box">${renderGraphSvg(run)}</div>
-      <div class="legend">${legend}</div>
+      ${graphModeTabs}
+      <div id="graph-box" class="graph-mode-${graphMode}">${graphContent}</div>
+      ${graphMode === 'dependencies' ? `<div class="legend">${legend}${hasPlanChanges ? '<span class="key"><span class="plan-change-sw"></span>計画更新</span>' : ''}</div>` : ''}
     </section>
     <aside id="flow-node" class="flow-node-detail">
       <span class="summary-kicker">${revision ? '計画変更の内容' : '工程の内容'}</span>
-      ${nodeDetail || '<div class="empty">グラフから工程を選択してください</div>'}
+      ${nodeDetail || `<div class="empty">${graphMode === 'plan' ? '計画変更' : 'グラフから工程'}を選択してください</div>`}
     </aside>
   </div>`;
 

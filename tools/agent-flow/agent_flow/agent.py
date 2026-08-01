@@ -865,6 +865,17 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
             repaired = _repair_json_output(prompt, text, kind, why, model, want_list=True)
             if isinstance(repaired, list):
                 data = repaired
+    elif kind == "work":
+        # work 本文は自由記述のまま保つが、末尾の完了可否 envelope だけは機械判定へ渡す。
+        # 本文中の JSON 例を誤採用しないよう、契約どおり末尾にある {"ok": ...} に限定する。
+        matches = list(re.finditer(r'\{\s*"ok"\s*:', text))
+        if matches:
+            try:
+                envelope = json.loads(text[matches[-1].start():].strip())
+            except (ValueError, TypeError):
+                envelope = None
+            if isinstance(envelope, dict) and isinstance(envelope.get("ok"), bool):
+                data = envelope
     if kind == "reduce":
         data = _reconcile_count(data)
     elif kind == "verify":

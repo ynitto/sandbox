@@ -44,11 +44,22 @@ async function init() {
   $('btn-enq-cancel').addEventListener('click', () => $('dlg-enqueue').close());
   $('btn-enq-submit').addEventListener('click', submitEnqueue);
   $('btn-enq-ai').addEventListener('click', aiEnqueueAssist);
+  $('enq-charter').addEventListener('change', () => updateCharterSelectContext('enq-charter', 'enq-charter-description'));
   $('btn-replan-cancel').addEventListener('click', () => $('dlg-replan').close());
   $('btn-replan-submit').addEventListener('click', () => requestReplan($('replan-charter').value));
-  $('btn-notes-close').addEventListener('click', () => $('dlg-notes').close());
-  $('btn-note-add').addEventListener('click', () => addNote());
-  $('btn-notes-distill').addEventListener('click', () => distillNotes($('notes-charter').value));
+  $('btn-notes-close').addEventListener('click', closeNotesDialog);
+  $('dlg-notes').addEventListener('cancel', (event) => {
+    event.preventDefault();
+    closeNotesDialog();
+  });
+  $('btn-note-new').addEventListener('click', newNote);
+  $('btn-note-save').addEventListener('click', saveNote);
+  $('notes-charter').addEventListener('change', () => updateCharterSelectContext('notes-charter', 'notes-charter-description'));
+  $('notes-mode-edit').addEventListener('click', () => setNotesMode('edit'));
+  $('notes-mode-task').addEventListener('click', () => setNotesMode('task'));
+  $('btn-note-candidates').addEventListener('click', buildNoteCandidates);
+  $('btn-note-candidates-close').addEventListener('click', () => $('dlg-note-candidates').close());
+  $('btn-note-candidates-submit').addEventListener('click', submitNoteCandidates);
   // 新規プロジェクト作成
   $('btn-new-project').addEventListener('click', openNewProject);
   $('btn-np-cancel').addEventListener('click', () => $('dlg-new-project').close());

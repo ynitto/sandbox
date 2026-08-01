@@ -384,6 +384,13 @@ class FlowWorkerSkillTests(unittest.TestCase):
         self.assertIn("EC サイトを作る", prompt)     # run の元要求（全体文脈）
         self.assertIn("[t0] 依存成果", prompt)
 
+    def test_work_terminal_ok_false_is_structured_without_promoting_body_json(self):
+        reply = '本文の例 {"sample": 1}\n\n{"ok": false, "issues": ["未完了"]}'
+        with mock.patch.object(kf, "run_agent", return_value=reply):
+            text, data = kf.execute_agent("work", "g", {}, None)
+        self.assertEqual(text, reply)
+        self.assertEqual(data, {"ok": False, "issues": ["未完了"]})
+
     def test_execute_agent_verify_skill_prompt_keeps_contract(self):
         prompt = self._capture_prompt(kf.execute_agent, "verify", "検証する", {}, None)
         self.assertIn("再導出", prompt)

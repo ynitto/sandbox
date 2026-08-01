@@ -1,6 +1,6 @@
 # agent-flow 設計書
 
-> 最終更新: 2026-07-31（統一 verify runner を実装。移行順序は `docs/plans/2026-07-30-unified-task-verify-design.md`）
+> 最終更新: 2026-08-01（再計画イベントの差分契約を反映）
 > 実装: `tools/agent-flow/`（本体 29 断片・約 8,800 行）、テスト `tools/agent-flow/tests/`（662 件）
 > 関連: [agent-project 設計書](./agent-project-design.md) ／ [git worktree キャッシュ](./git-worktree-cache-pattern.md)
 >
@@ -147,6 +147,19 @@ Anthropic の *Building Effective Agents* は、経路が固定された Workflo
 
 orchestrator は最初にパターンと並列数を選んでタスクグラフを書き、あとは run が静止するのを待ちます。静止とは、実行中のノードも、park 中のノードも、いま claim できる pending もない状態です。静止したら評価役の LLM に「この結果で要求を満たすか」を尋ね、足りなければタスクを追加してもう一周します。反復は `max_iterations`（既定 3）で止まります。
 
+計画の履歴は最終形の `graph.json` から推測せず、イベントへ差分として残します。初期計画は
+`planned.tasks`、以後の `replan` と実行中の人の指摘を反映する `inflight_amend` は、理由と
+`changes`（`added` / `replaced` / `updated` / `removed`）を記録します。`graph.json` の `deps` は
+実行上の依存関係、イベントの差分は計画が変わった時系列の境界で、同じ意味ではありません。
+`added` / `updated` / `removed` はノード ID の列、`replaced` は `{old, next}` の列です。
+依存のない追加工程へ再計画を理由に依存線を足さず、利用側はこの二つの事実を分けて表示します。
+
+書込 workspace に作業ブランチと別の target がある場合は、planner の計画とは別に system node
+`base-sync` を先頭へ置き、すべての root node をその完了後に開始します。target がすでに作業ブランチの
+祖先なら no-op、進んでいれば agent-flow が通常 merge を行います。競合時だけ worker に競合ファイルの
+編集を任せますが、履歴操作は渡しません。競合解消または祖先性の検査に失敗した run は通常の成果修正へ
+再計画せず、integration failure として終端します。fetch 失敗は transient のままです。
+
 worker は claim できるノードを 1 つ取り、kind に応じたプロンプトでエージェント CLI を呼び、結果を書きます。実行中は心拍が claim のリースを延ばし続けるので、長いタスクでも横取りされません。
 
 verification plan を持つ run は、成果 revision が確定したあと専用 verifier を 1 セッション起動します。
@@ -160,6 +173,11 @@ exit 127 = コマンド不在）は inconclusive で、成果物の欠陥と環�
 結果は `runs/<run-id>/receipt.json` に書き、同じ plan digest × 同じ成果 revision の receipt が
 既にあれば再実行しません（command 実行は一回だけ）。壊れた plan（digest 不一致・未知版）は
 実行せず receipt も書きません——receipt 欠落を採用側が done にしない fail-close に倒します。
+書込 workspace の plan は target も固定し、receipt には検証時の target revision と統合判定を載せます。
+target revision が成果 revision の祖先でない限り integration は pass になりません。ブランチ単体の
+検証が通っていても、最新 target を含まない成果を採用させないためです。この祖先性判定は
+`agentcore.verifycontract` に置き、receipt が無い場合の agent-project local runner も同じ実装を使います。
+検証経路が変わっても integration の有無や合否を変えません。
 plan は `--verification-plan`（グローバル引数）または inbox 要求の `verification_plan` キーで
 受け取ります。argv 未指定のときだけ inbox の値で充填する規則で、呼び出し側に argv への
 転記をさせない設計です。両方指定されていれば CLI 引数が勝ちます（env 渡しは不安定として
@@ -211,6 +229,11 @@ executor はタスクを実際に実行するバックエンドです。組み�
 
 1 つの run が書き込んでよいリポジトリはちょうど 1 つです。worker は temp 領域に作業ツリーを用意し、作業ブランチ（既定 `af/<run-id>`、spec で `branch` を明示すればそちら）を base から作ってエージェントに渡します。エージェントは編集だけを行い、commit と push は agent-flow が行います。変更がなければ何も push しません。調査だけのグラフでブランチを作らないためです。
 
+`base-sync` の競合解消も同じ所有境界に従います。worker が編集を終えた後、制御層が未解決 index、
+競合マーカー、target の祖先性を検査し、成功時だけ merge commit と push を行います。ここで見るのは
+競合マーカーであり、target から入った既存の末尾空白は競合として扱いません。通常 work node も、
+最終出力の構造化 envelope が `{"ok": false}` なら `done` にせず失敗として扱います。
+
 作業ツリーは、URL 単位のホスト共有 bare ミラーから detached worktree を生やして用意します。フルクローンを初回 1 回と増分 fetch に圧縮し、GitLab 側の pack 生成負荷を抑えるためです。手元に同じリポジトリのクローンがあればそこから worktree を切り、ネットワークすら使いません。どちらも失敗したら従来の direct clone に落ちます。「手元のクローン」の宣言は各 PC の `agent-project.host.yaml` の `repos[]`（URL とローカルパスの対）が正典です。共有レジストリ repos.json にホスト固有の絶対パスを書くと状態同期で全 PC へ配られてしまうため、そこには書けません（残っていれば警告して無視）。URL の同一性判定は `agentcore.repolocal` の 1 実装に揃えてあり、板経由で請け負った仕事も submit 前に自ノードの宣言をマージするので、同じ最適化が効きます。
 
 書込先を決めるのは agent-flow ではなく agent-project です。agent-flow は渡されたワークスペースを厳格に守る側に徹します。読むだけのリポジトリは `--reference` で渡し、clone せずプロンプトとイシュー本文に参照節として描画します。
@@ -240,8 +263,11 @@ auto-heal の簿記（`heal_count` / `heal_progress` / `heal_next_at` / `heal_ex
 
 ### リトライの世代交代（inherit_from）
 
-criterion の `fail` はまず同じ run の再計画で直します。上限まで直らない、または人が基準や指示を
-変更した場合だけ、agent-project が同じタスクを別の run-id で投入し直します。素朴にやると、
+criterion の `fail` はまず同じ run の再計画で直します。計画を変えない失敗やタイムアウトを別の
+run-id でやり直す場合は、先行 run の確定済み成果を引き継げます。一方、人が基準や指示を変更した
+新 run は done node を引き継ぎません。古い前提で完了した工程を新しい計画へ混ぜないためです。
+
+計画を変えない再試行でも、素朴に新 run を作ると、
 先行 run が確定させたノード結果も、計画も、中間成果物も、作業ブランチの commit も全部捨てる
 ことになります。GitLab 委譲のような長時間の run では、これはトークンと人手の空費です。
 
