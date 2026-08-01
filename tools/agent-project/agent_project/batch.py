@@ -10,12 +10,6 @@ def summarize(tasks: "list[Task]") -> "dict[str, int]":
     return c
 
 
-# journal のローテーション閾値（バイト。0 以下で無効）とアーカイブ保持世代数（0 以下で無制限）。
-# build_config が設定 journal_max_bytes / journal_keep をここへ確定する（_AGENT_CLI と同じ流儀）。
-_JOURNAL_MAX_BYTES: int = 262144
-_JOURNAL_KEEP: int = 20
-
-
 def _journal_lock_path(path: Path) -> str:
     h = hashlib.sha1(str(path).encode()).hexdigest()[:12]
     return os.path.join(tempfile.gettempdir(), f"agent-project-journal-{h}.lock")
@@ -27,7 +21,8 @@ def rotate_journal(path: Path, max_bytes: "int | None" = None,
     退避名はタイムスタンプ＋ホスト名で一意（複数ホストの direct 同期でも rename が衝突しない・
     退避ファイルは以後不変＝マージ衝突源にならない）。保持世代を超えた古いアーカイブは削除する。
     ローテーションしたら退避先を返す（しなければ None）。呼び出し側でロックを取ること。"""
-    mx = _JOURNAL_MAX_BYTES if max_bytes is None else max_bytes
+    mx = ((_RUNTIME_CONFIG.journal_max_bytes if _RUNTIME_CONFIG is not None else 262144)
+          if max_bytes is None else max_bytes)
     if mx <= 0:
         return None
     try:
@@ -52,7 +47,8 @@ def rotate_journal(path: Path, max_bytes: "int | None" = None,
         path.replace(dest)                 # 同一ファイルシステム内の原子的 rename
     except OSError:
         return None
-    keep_n = _JOURNAL_KEEP if keep is None else keep
+    keep_n = ((_RUNTIME_CONFIG.journal_keep if _RUNTIME_CONFIG is not None else 20)
+              if keep is None else keep)
     if keep_n > 0:
         try:
             # 刈り込みは mtime 順（＝退避した順）。名前順だけに頼ると、旧命名で残っている

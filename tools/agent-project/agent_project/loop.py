@@ -119,6 +119,14 @@ def state_sync(cfg: "Config", force: bool = False) -> None:
         append_journal(cfg.journal, f"state-git 同期失敗（続行）: {e}")
 
 
+def settle_task(cfg: "Config", task: "Task", *args) -> dict:
+    """versioned state を確定・同期してから、ホスト局所の claim を解放する。"""
+    result = _settle_task(cfg, task, *args)
+    state_sync(cfg, force=True)
+    release_claim(cfg, task)
+    return result
+
+
 def _mark_offloaded(cfg: "Config", task: "Task", location: str, run_id: str) -> None:
     """タスクを『非ブロッキング委譲・結果待ち』に退避する（run_loop が settle をスキップ）。"""
     task.status = "offloaded"
@@ -302,13 +310,12 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
             release_claim(cfg, task)
             settled += 1
             continue
-        res = _settle_task(cfg, task, loc, msg, cycle0 + settled + 1, dtok, dusd, gb, venv,
-                           policy, autonomy_cache, reasons)
+        res = settle_task(cfg, task, loc, msg, cycle0 + settled + 1, dtok, dusd, gb, venv,
+                          policy, autonomy_cache, reasons)
         archived += res["archived"]
         if res["followups"] and spawned < spawn_budget:
             new = spawn_followups(cfg, task, res["followups"], tasks, spawn_budget - spawned)
             spawned += len(new)
-        release_claim(cfg, task)
         settled += 1
     if _board is not None:
         # 回収し終えた公示を消す。失敗しても実害は無い（次パスで同じ run_id を通らないだけ。
@@ -484,8 +491,8 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
                                 reasons, location, phase=PHASE_ACT, verdict=VERIFY_NOT_RUN)
                 release_claim(cfg, task)
                 continue
-            res = _settle_task(cfg, task, location, act_msg, cycle, dtok, dusd, git_base,
-                               verify_env, policy, autonomy_cache, reasons)
+            res = settle_task(cfg, task, location, act_msg, cycle, dtok, dusd, git_base,
+                              verify_env, policy, autonomy_cache, reasons)
             archived += res["archived"]
             if res["followups"] and spawned_total < cfg.max_spawn:   # done から派生タスク（backlog 自走）
                 new = spawn_followups(cfg, task, res["followups"], tasks, cfg.max_spawn - spawned_total)
@@ -494,7 +501,6 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
                     append_journal(cfg.journal,
                                    f"cycle {cycle}: {task.id} から派生生成 {[t.id for t in new]}")
 
-            release_claim(cfg, task)          # doing でなくなったので実行権を解放
             if cfg.once:
                 stop = "once"
                 break

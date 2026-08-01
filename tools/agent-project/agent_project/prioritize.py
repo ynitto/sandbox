@@ -76,16 +76,8 @@ def _extract_json_obj(text: str) -> "dict | None":
     return obj if isinstance(obj, dict) else None
 
 
-# LLM 実行に使うエージェント CLI とタイムアウト（設定 agent_cli / agent_timeout）。
-# rank_agent 等の free 関数は args を持たないため、build_config が設定値をここへ確定する
-# （agent-flow の _configure_thresholds と同じ流儀）。
-_AGENT_CLI: str = "kiro"
-_AGENT_TIMEOUT: float = 300.0
-# argv 渡しのプロンプト上限（設定 argv_limit）。0 以下なら組み込み既定。
-_ARGV_LIMIT: int = 0
-# 処理（purpose）毎の上書き（設定 agents: の正規化済みマップ。build_config が確定する）。
-# 例: {"plan": {"agent_cli": "claude", "model": "opus"}, "assess": {"model": "haiku"}}
-_AGENT_OVERRIDES: "dict[str, dict]" = {}
+# build_config が確定した唯一の実行時設定。free 関数も値を複製せず同じ Config を読む。
+_RUNTIME_CONFIG = None
 # エージェントを使用する処理の一覧（設定 agents: のキー）。ここに無いキーは無視される。
 AGENT_PURPOSES = ("plan", "review", "prioritize", "route", "adjudicate", "verify",
                   "distill", "assess", "repo_map", "doctor")
@@ -126,8 +118,9 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
     """処理（purpose）の実効エージェント。(agent_cli, model 上書き) を返す。
     agent-control（管理面の横断上書き）＞ 設定 agents: の該当キー ＞ グローバル agent_cli。
     soft/縮退中は control の degraded を重ねる（model 上書きは無ければ None＝呼び出し値）。"""
-    ov = _AGENT_OVERRIDES.get(purpose) or {}
-    cli = str(ov.get("agent_cli") or _AGENT_CLI).lower()
+    cfg = _RUNTIME_CONFIG
+    ov = ((cfg.agents if cfg is not None else {}) or {}).get(purpose) or {}
+    cli = str(ov.get("agent_cli") or (cfg.agent_cli if cfg is not None else "kiro")).lower()
     model = ov.get("model") or None
     c_cli, c_model = _control_override(purpose)
     if c_cli:
@@ -150,7 +143,8 @@ def _agent_argv_limit() -> int:
     上限を超えると `execve` が E2BIG で落ち、**プロセス起動そのものが立たない**——
     verifier は全基準 unverifiable、plan は空振りで人へ倒れる。agent-flow の
     `_agent_argv_limit` と同じ規則（0 以下は既定へフォールバック）。"""
-    return _ARGV_LIMIT if _ARGV_LIMIT > 0 else _agentcli.DEFAULT_ARGV_LIMIT
+    limit = _RUNTIME_CONFIG.argv_limit if _RUNTIME_CONFIG is not None else 0
+    return limit if limit > 0 else _agentcli.DEFAULT_ARGV_LIMIT
 
 
 # 退避したときに argv へ載せる短い指示。`{file}` は退避先に置換される。
@@ -598,7 +592,9 @@ def _run_agent_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
         cmd, stdin_text, out_file = _agent_cmd(cli, model_ov or model, prompt)
         # 発生源で色を抑止（NO_COLOR/TERM=dumb）。残った ANSI は strip_ansi で除去する二段構え。
         env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", **(plug.get("env") or {})}
-        timeout = plug.get("timeout") or (_AGENT_TIMEOUT if _AGENT_TIMEOUT > 0 else None)
+        configured_timeout = (_RUNTIME_CONFIG.agent_timeout
+                              if _RUNTIME_CONFIG is not None else 300.0)
+        timeout = plug.get("timeout") or (configured_timeout if configured_timeout > 0 else None)
         t0 = time.monotonic()
         proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", input=stdin_text,
                               timeout=timeout, env=env)

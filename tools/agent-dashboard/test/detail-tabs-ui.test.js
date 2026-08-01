@@ -449,7 +449,7 @@ const renderNeedDetailWithVerifyRevision = new Function(
   'isNeedSent', 'esc', 'needKindLabel', 'riskBadgeHtml', 'needDisplayTitle', 'NEED_ASK',
   'renderNeedFacts', 'needActionsHtml', 'specFilesHtml', 'mdToHtml', 'needVerifyRevisionHtml',
   'taskForNeed', 'taskCompletionHint', 'runsForTask', 'canDiagnoseNeed',
-  'state', 'needFinalVerificationFailure', 'finalVerificationFailureHtml', 'needAssistActionsHtml',
+  'needDecisionViewModel', 'state', 'needFinalVerificationFailure', 'finalVerificationFailureHtml', 'needAssistActionsHtml',
   'needArtifactsButtonHtml', 'ownerBadgeHtml', 'commandFailureHtml', 'commandReceiptHtml',
   'reviewCommentsHtml', 'taskGuideHtml', 'needNextStepHtml',
   `${grab('renderNeedDetail')}; return renderNeedDetail;`
@@ -469,6 +469,7 @@ const renderNeedDetailWithVerifyRevision = new Function(
   () => null,
   () => [],
   canDiagnoseNeed,
+  () => ({ statusTitle: '作業が停止しています', actionTitle: '再開方法', nextStep: '再開してください。', reason: '検証失敗' }),
   { flowRuns: [] },
   () => null,
   () => '',
@@ -777,7 +778,7 @@ assert.match(
   '行番号列をコード行の上端から下端まで伸ばす'
 );
 
-// verify 未定義の確認待ち（blocked）は「承認して完了にする」を出す（承認で done 確定）
+// blocked は成果の有無に関係なく再開操作だけを出す。完了承認は review に限定する。
 {
   // eslint-disable-next-line no-new-func
   const isVerifyPendingNeed = new Function(
@@ -834,29 +835,20 @@ assert.match(
   const pendingHtml = needActionsHtml({
     id: 'T1', taskId: 'T1', kind: 'blocked', why: 'verify 未定義（工程は完了しています…）', file: '/p/needs/T1.md',
   });
-  assert.match(pendingHtml, /data-act="approve"[^>]*>承認して完了にする</, 'verify 未定義の確認待ちに承認完了ボタンを出す');
+  assert.ok(!pendingHtml.includes('data-act="approve"'), 'blocked に完了承認を出さない');
+  assert.match(pendingHtml, /data-act="feedback"[^>]*>指示を送って再開</, 'blocked の主操作は再開にする');
   assert.match(pendingHtml, /data-act="rerun"/, 'そのまま再実行も残す');
   const plainHtml = needActionsHtml({
     id: 'T2', taskId: 'T2', kind: 'blocked', why: '検証が失敗', file: '/p/needs/T2.md',
   });
   assert.ok(!plainHtml.includes('data-act="approve"'), '通常の blocked に承認完了ボタンを出さない');
 
-  // 検収物が少しでもあれば、要対応の画面から直接「承認して完了にする」を押せる。
-  // 以前は差分検収ダイアログ経由に限定していたが、経路が絞られるほど
-  // 「操作が見当たらない」状態が生まれるため、承認は常に出す方針へ変えた。
+  // 過去の完了 run や成果物があっても、現在 blocked なら再開判断を優先する。
   actionState.project = doneRunProject;
   actionState.flowRuns = doneRuns;
   const completedFailureHtml = needActionsHtml(verifyFailureNeed);
-  assert.match(
-    completedFailureHtml,
-    /data-act="approve"[^>]*>承認して完了にする</,
-    '工程完了済みの検証失敗は要対応の画面から直接完了承認できる'
-  );
-  assert.match(
-    needActionsHtml(verifyFailureNeed, { inReview: true }),
-    /data-act="approve"[^>]*>承認して完了にする</,
-    '差分検収ダイアログ内でも同じ承認ができる'
-  );
+  assert.ok(!completedFailureHtml.includes('data-act="approve"'), '過去の成果物で blocked を完了承認へ変えない');
+  assert.ok(!needActionsHtml(verifyFailureNeed, { inReview: true }).includes('data-act="approve"'), '検収ダイアログからも blocked を完了させない');
 
   // 「少しでも検収物があれば承認できる」— 以前は AND 連鎖のどれか 1 つが欠けると
   // 承認ボタンごと消えていた。欠けがちだった条件を 1 つずつ落として確認する。
@@ -954,6 +946,7 @@ assert.match(
 }
 
 // renderNeedDetail が taskGuideHtml を組み込むこと（呼び出しが消えると退行）
-assert.match(renderer, /\$\{taskGuideHtml\(task, n\.kind\)\}/);
+assert.match(renderer, /const taskGuide = taskGuideHtml\(task, n\.kind\)/);
+assert.match(renderer, /作業内容と完了条件/);
 
 console.log('detail-tabs-ui: all tests passed');

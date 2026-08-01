@@ -109,9 +109,14 @@ class TestAgentCliAndGranularity(unittest.TestCase):
             return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
         return calls, fake_run
 
+    @staticmethod
+    def _runtime(cli="kiro", argv_limit=0):
+        return types.SimpleNamespace(agent_cli=cli, agent_timeout=300.0,
+                                     agents={}, argv_limit=argv_limit)
+
     def test_run_agent_cli_default_agent_argv(self):
         calls, fake = self._capture_run()
-        with mock.patch.object(km, "_AGENT_CLI", "kiro"), \
+        with mock.patch.object(km, "_RUNTIME_CONFIG", self._runtime("kiro")), \
              mock.patch.object(km.subprocess, "run", side_effect=fake):
             out = km._run_agent_cli("プロンプト", None)
         self.assertEqual(out, "ok")
@@ -122,7 +127,7 @@ class TestAgentCliAndGranularity(unittest.TestCase):
 
     def test_run_agent_cli_claude_uses_stdin(self):
         calls, fake = self._capture_run()
-        with mock.patch.object(km, "_AGENT_CLI", "claude"), \
+        with mock.patch.object(km, "_RUNTIME_CONFIG", self._runtime("claude")), \
              mock.patch.object(km.subprocess, "run", side_effect=fake):
             out = km._run_agent_cli("プロンプト", "claude-sonnet")
         self.assertEqual(out, "ok")
@@ -134,7 +139,7 @@ class TestAgentCliAndGranularity(unittest.TestCase):
 
     def test_run_agent_cli_copilot_uses_prompt_flag(self):
         calls, fake = self._capture_run()
-        with mock.patch.object(km, "_AGENT_CLI", "copilot"), \
+        with mock.patch.object(km, "_RUNTIME_CONFIG", self._runtime("copilot")), \
              mock.patch.object(km.subprocess, "run", side_effect=fake):
             out = km._run_agent_cli("プロンプト", "gpt-5")
         self.assertEqual(out, "ok")
@@ -156,7 +161,7 @@ class TestAgentCliAndGranularity(unittest.TestCase):
             with open(cmd[i + 1], "w", encoding="utf-8") as f:
                 f.write("最終応答")
             return types.SimpleNamespace(returncode=0, stdout="イベントログ...", stderr="")
-        with mock.patch.object(km, "_AGENT_CLI", "codex"), \
+        with mock.patch.object(km, "_RUNTIME_CONFIG", self._runtime("codex")), \
              mock.patch.object(km.subprocess, "run", side_effect=fake_run):
             out = km._run_agent_cli("プロンプト", "gpt-5-codex")
         self.assertEqual(out, "最終応答")                  # stdout のログではなくファイルの中身
@@ -171,31 +176,23 @@ class TestAgentCliAndGranularity(unittest.TestCase):
 
     def test_run_agent_cli_codex_falls_back_to_stdout(self):
         calls, fake = self._capture_run()                  # ファイルへ何も書かない
-        with mock.patch.object(km, "_AGENT_CLI", "codex"), \
+        with mock.patch.object(km, "_RUNTIME_CONFIG", self._runtime("codex")), \
              mock.patch.object(km.subprocess, "run", side_effect=fake):
             out = km._run_agent_cli("プロンプト", None)
         self.assertEqual(out, "ok")                        # stdout へフォールバック
 
-    def test_build_config_sets_agent_globals_and_fields(self):
-        orig = (km._AGENT_CLI, km._AGENT_TIMEOUT)
-        try:
-            ns = self._resolve(None, agent_cli="claude", agent_timeout=42.0)
-            cfg = km.build_config(ns)
-            self.assertEqual((cfg.agent_cli, cfg.agent_timeout), ("claude", 42.0))
-            self.assertEqual((km._AGENT_CLI, km._AGENT_TIMEOUT), ("claude", 42.0))
-        finally:
-            km._AGENT_CLI, km._AGENT_TIMEOUT = orig
+    def test_build_config_is_the_runtime_source(self):
+        ns = self._resolve(None, agent_cli="claude", agent_timeout=42.0)
+        cfg = km.build_config(ns)
+        self.assertEqual((cfg.agent_cli, cfg.agent_timeout), ("claude", 42.0))
+        self.assertIs(km._RUNTIME_CONFIG, cfg)
 
     def test_relative_overrides_resolve_under_root(self):
         # 相対パスの上書きは（cwd や workdir ではなく）root 基準で解決される
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            orig = (km._AGENT_CLI, km._AGENT_TIMEOUT)
-            try:
-                ns = self._resolve(None, root=str(d), workdir="wd", backlog="bl", bus="b")
-                cfg = km.build_config(ns)
-            finally:
-                km._AGENT_CLI, km._AGENT_TIMEOUT = orig
+            ns = self._resolve(None, root=str(d), workdir="wd", backlog="bl", bus="b")
+            cfg = km.build_config(ns)
             self.assertEqual(cfg.workdir, (d / "wd").resolve())
             self.assertEqual(cfg.backlog, d.resolve() / "bl")
             self.assertEqual(cfg.bus, d.resolve() / "b")
@@ -789,9 +786,11 @@ class AgentPromptSpillTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="spill-"))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-        self._old_limit = km._ARGV_LIMIT
-        self.addCleanup(setattr, km, "_ARGV_LIMIT", self._old_limit)
-        km._ARGV_LIMIT = 200
+        self.runtime = types.SimpleNamespace(agent_cli="kiro", agent_timeout=300.0,
+                                             agents={}, argv_limit=200)
+        self.runtime_patch = mock.patch.object(km, "_RUNTIME_CONFIG", self.runtime)
+        self.runtime_patch.start()
+        self.addCleanup(self.runtime_patch.stop)
         km._AGENT_PLUGIN_CACHE.clear()
         self.addCleanup(km._AGENT_PLUGIN_CACHE.clear)
         self._old_dir = os.environ.pop("KIRO_AGENTS_DIR", None)
@@ -812,8 +811,8 @@ class AgentPromptSpillTests(unittest.TestCase):
                 seen["body"] = Path(m.group(0)).read_text(encoding="utf-8")
             return subprocess.CompletedProcess(cmd, 0, "OK", "")
 
-        with mock.patch.object(km, "_AGENT_CLI", cli), \
-                mock.patch.object(km.subprocess, "run", side_effect=fake_run):
+        self.runtime.agent_cli = cli
+        with mock.patch.object(km.subprocess, "run", side_effect=fake_run):
             seen["text"] = km._run_agent_cli(prompt, None)
         return seen
 
@@ -847,7 +846,7 @@ class AgentPromptSpillTests(unittest.TestCase):
         self.assertIn("みじかい", seen["argv"])
 
     def test_argv_limit_falls_back_when_unset(self):
-        km._ARGV_LIMIT = 0
+        self.runtime.argv_limit = 0
         self.assertEqual(km._agent_argv_limit(), km._agentcli.DEFAULT_ARGV_LIMIT)
 
     def test_e2big_is_classified_as_env(self):

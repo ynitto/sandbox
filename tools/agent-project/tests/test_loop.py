@@ -657,10 +657,17 @@ class TestJournalRotation(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.journal = self.tmp / "journal.md"
+        self._runtime = km._RUNTIME_CONFIG
+        km._RUNTIME_CONFIG = types.SimpleNamespace(journal_max_bytes=262144, journal_keep=20)
+        self.addCleanup(setattr, km, "_RUNTIME_CONFIG", self._runtime)
+
+    def _runtime_config(self, **values):
+        for key, value in values.items():
+            setattr(km._RUNTIME_CONFIG, key, value)
 
     def test_no_rotation_below_threshold(self):
-        with mock.patch.object(km, "_JOURNAL_MAX_BYTES", 10_000):
-            km.append_journal(self.journal, "small")
+        self._runtime_config(journal_max_bytes=10_000)
+        km.append_journal(self.journal, "small")
         self.assertFalse((self.tmp / "journal-archive").exists())
 
     def test_rotation_archives_and_starts_fresh(self):
@@ -668,10 +675,9 @@ class TestJournalRotation(unittest.TestCase):
         # （_JOURNAL_KEEP=0 で無制限）。両方を1つのテストで見ると、ローテーション行に
         # 載るアーカイブ名＝**ホスト名の長さ**で退避回数が変わり、保持世代 20 を超えるか
         # どうかが実行環境まかせになる（長いホスト名の機材でだけ落ちていた）。
-        with mock.patch.object(km, "_JOURNAL_MAX_BYTES", 200), \
-             mock.patch.object(km, "_JOURNAL_KEEP", 0):
-            for i in range(30):
-                km.append_journal(self.journal, f"line {i} " + "x" * 40)
+        self._runtime_config(journal_max_bytes=200, journal_keep=0)
+        for i in range(30):
+            km.append_journal(self.journal, f"line {i} " + "x" * 40)
         arch = sorted((self.tmp / "journal-archive").iterdir())
         self.assertTrue(arch)                                   # 退避が発生している
         self.assertLess(self.journal.stat().st_size, 400)       # アクティブは小さいまま
@@ -682,10 +688,9 @@ class TestJournalRotation(unittest.TestCase):
             self.assertIn(f"line {i} ", joined)                 # 行は失われない
 
     def test_rotation_prunes_old_archives(self):
-        with mock.patch.object(km, "_JOURNAL_MAX_BYTES", 120), \
-             mock.patch.object(km, "_JOURNAL_KEEP", 2):
-            for i in range(60):
-                km.append_journal(self.journal, f"line {i} " + "y" * 40)
+        self._runtime_config(journal_max_bytes=120, journal_keep=2)
+        for i in range(60):
+            km.append_journal(self.journal, f"line {i} " + "y" * 40)
         arch = [p for p in (self.tmp / "journal-archive").iterdir() if p.is_file()]
         self.assertLessEqual(len(arch), 2)                      # 保持世代で刈り込む
         # **どれが残るか**まで見る。同一秒に複数回退避すると連番が付くが、ゼロ詰めしないと
@@ -700,21 +705,18 @@ class TestJournalRotation(unittest.TestCase):
             self.assertLessEqual(p.stat().st_mtime, newest.stat().st_mtime)
 
     def test_rotation_disabled_with_zero(self):
-        with mock.patch.object(km, "_JOURNAL_MAX_BYTES", 0):
-            for i in range(50):
-                km.append_journal(self.journal, "z" * 80)
+        self._runtime_config(journal_max_bytes=0)
+        for i in range(50):
+            km.append_journal(self.journal, "z" * 80)
         self.assertFalse((self.tmp / "journal-archive").exists())
 
-    def test_build_config_sets_journal_globals(self):
-        orig = (km._JOURNAL_MAX_BYTES, km._JOURNAL_KEEP)
-        try:
-            ns = types.SimpleNamespace(root=str(self.tmp), journal_max_bytes=99,
-                                       journal_keep=3)
-            km.resolve_config(ns)
-            km.build_config(ns)
-            self.assertEqual((km._JOURNAL_MAX_BYTES, km._JOURNAL_KEEP), (99, 3))
-        finally:
-            km._JOURNAL_MAX_BYTES, km._JOURNAL_KEEP = orig
+    def test_build_config_sets_journal_fields(self):
+        ns = types.SimpleNamespace(root=str(self.tmp), journal_max_bytes=99,
+                                   journal_keep=3)
+        km.resolve_config(ns)
+        cfg = km.build_config(ns)
+        self.assertEqual((cfg.journal_max_bytes, cfg.journal_keep), (99, 3))
+        self.assertIs(km._RUNTIME_CONFIG, cfg)
 
 
 class TestPauseResumeStop(unittest.TestCase):

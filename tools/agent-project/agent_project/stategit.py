@@ -163,6 +163,60 @@ class DirectStateGit:
         return os.path.join(tempfile.gettempdir(),
                             f"agent-project-sync-{hashlib.sha1(str(self.root).encode()).hexdigest()[:12]}.lock")
 
+    def _transaction_materialize(self, branch: str, old: str, new: str) -> None:
+        """成功した remote CAS をローカル clone へ反映する。"""
+        self._git("update-ref", f"refs/remotes/origin/{branch}", new)
+        local = self._git("rev-parse", "-q", "--verify", f"refs/heads/{branch}").stdout.strip()
+        if not local or self._git("merge-base", "--is-ancestor", local, new).returncode == 0:
+            if self._cas_branch(branch, new, local):
+                top = self._git("rev-parse", "--show-toplevel").stdout.strip()
+                self._materialize(local or old, new, top or str(self.root))
+            return
+        self._integrate(branch)
+
+    def transaction(self, branch: str, mutate, message: str,
+                    retries: int = 3) -> bool:
+        """remote HEAD を親に変更を作り、fast-forward push を CAS として確定する。"""
+        with _file_lock(self._sync_lock_path()):
+            self._ensure_identity()
+            for _ in range(max(1, retries)):
+                if self._git("fetch", "-q", "origin", branch).returncode != 0:
+                    return False
+                old = self._git("rev-parse", f"refs/remotes/origin/{branch}").stdout.strip()
+                if not old:
+                    return False
+                tmp = Path(tempfile.mkdtemp(prefix="agent-project-txn-"))
+                worktree = tmp / "worktree"
+                try:
+                    if self._git("worktree", "add", "--detach", "-q",
+                                 str(worktree), old).returncode != 0:
+                        return False
+                    if not mutate(worktree):
+                        return False
+                    env = self._env()
+
+                    def wgit(*args: str):
+                        return _git_run(["git", "-C", str(worktree), *args], env)
+
+                    if wgit("add", "-A").returncode != 0:
+                        return False
+                    if wgit("diff", "--cached", "--quiet").returncode == 0:
+                        return True
+                    commit = wgit("-c", "user.email=agent-project@local",
+                                  "-c", "user.name=agent-project", "commit", "-qm",
+                                  f"agent-project: {message}")
+                    if commit.returncode != 0:
+                        return False
+                    new = wgit("rev-parse", "HEAD").stdout.strip()
+                    if wgit("push", "-q", "origin",
+                            f"HEAD:refs/heads/{branch}").returncode == 0:
+                        self._transaction_materialize(branch, old, new)
+                        return True
+                finally:
+                    self._git("worktree", "remove", "--force", str(worktree))
+                    shutil.rmtree(tmp, ignore_errors=True)
+        return False
+
     def _ensure_identity(self) -> None:
         if not self._git("config", "user.email").stdout.strip():
             self._git("config", "user.email", "agent-project@local")
@@ -1034,6 +1088,5 @@ def state_git_for(cfg: "Config") -> "DirectStateGit | None":
     if key not in _STATE_GITS:
         _STATE_GITS[key] = DirectStateGit(root, cfg.state_git_interval)
     return _STATE_GITS[key]
-
 
 

@@ -742,6 +742,7 @@ def _one_of(value, allowed: "tuple[str, ...]", dflt: str, key: str) -> str:
 
 
 def build_config(args) -> Config:
+    global _RUNTIME_CONFIG
     # プロジェクトルート = 状態専用リポジトリの clone（`resolve_config` が確定済み・S1）。
     # charter.md / repos.json / backlog/ 等はすべてこの直下（1 プロジェクト = 1 状態リポジトリ =
     # 1 プロセス）で、相対パスの上書きもすべて root 基準で解決する。
@@ -763,25 +764,21 @@ def build_config(args) -> Config:
             return p if p.is_absolute() else (root / p)
         return root / sub
 
-    # エージェント CLI（分解・優先順位・裁定等の free 関数が参照）をここで確定する。
-    global _AGENT_CLI, _AGENT_TIMEOUT, _AGENT_OVERRIDES, _ARGV_LIMIT
-    _AGENT_CLI = str(getattr(args, "agent_cli", "kiro") or "kiro").lower()
-    _AGENT_TIMEOUT = float(getattr(args, "agent_timeout", 300.0) or 0.0)
-    _AGENT_OVERRIDES = _normalize_agent_overrides(getattr(args, "agents", None))
+    agent_cli = str(getattr(args, "agent_cli", "kiro") or "kiro").lower()
+    agent_timeout = float(getattr(args, "agent_timeout", 300.0) or 0.0)
+    agent_overrides = _normalize_agent_overrides(getattr(args, "agents", None))
     try:
-        _ARGV_LIMIT = int(getattr(args, "argv_limit", None) or 0)
+        argv_limit = int(getattr(args, "argv_limit", None) or 0)
     except (TypeError, ValueError):
-        _ARGV_LIMIT = 0                     # 不正値は組み込み既定へ（_agent_argv_limit が吸収）
-    # journal ローテーション（append_journal が参照する free 関数向け設定）も同時に確定する。
-    global _JOURNAL_MAX_BYTES, _JOURNAL_KEEP
+        argv_limit = 0
     try:
-        _JOURNAL_MAX_BYTES = int(getattr(args, "journal_max_bytes", 262144) or 0)
+        journal_max_bytes = int(getattr(args, "journal_max_bytes", 262144) or 0)
     except (TypeError, ValueError):
-        _JOURNAL_MAX_BYTES = 262144
+        journal_max_bytes = 262144
     try:
-        _JOURNAL_KEEP = int(getattr(args, "journal_keep", 20) or 0)
+        journal_keep = int(getattr(args, "journal_keep", 20) or 0)
     except (TypeError, ValueError):
-        _JOURNAL_KEEP = 20
+        journal_keep = 20
 
     availability = dict(getattr(args, "availability", {}) or {})
     cfg = Config(
@@ -789,6 +786,8 @@ def build_config(args) -> Config:
         policy=under("policy", "policy.md"),
         decisions=under("decisions", "decisions"),
         journal=under("journal", "journal.md"),
+        journal_max_bytes=journal_max_bytes,
+        journal_keep=journal_keep,
         needs=under("needs", "needs"),
         workdir=workdir,
         bus=under("bus", "bus"),
@@ -824,7 +823,7 @@ def build_config(args) -> Config:
         board_workload=str(getattr(args, "board_workload", "flow") or "flow"),
         executor=args.executor,
         model=args.model,
-        agent_cli=_AGENT_CLI, agent_timeout=_AGENT_TIMEOUT, argv_limit=_ARGV_LIMIT,
+        agent_cli=agent_cli, agent_timeout=agent_timeout, argv_limit=argv_limit,
         granularity=str(getattr(args, "granularity", "coarse") or "coarse").lower(),
         flow_granularity=str(getattr(args, "flow_granularity", "auto") or "auto").lower(),
         max_iterations=args.max_iterations,
@@ -890,7 +889,7 @@ def build_config(args) -> Config:
                        else "required"),
         repo_map=bool(getattr(args, "repo_map", False)),
         rules_capture=bool(getattr(args, "rules_capture", True)),
-        agents=_AGENT_OVERRIDES,
+        agents=agent_overrides,
         task_branch=bool(getattr(args, "task_branch", True)),
         task_branch_prefix=str(getattr(args, "task_branch_prefix", "ap/") or "ap/"),
         delivery_review=bool(getattr(args, "delivery_review", True)),
@@ -914,6 +913,7 @@ def build_config(args) -> Config:
         update_subdir=str(getattr(args, "update_subdir", TOOL_SUBDIR) or TOOL_SUBDIR),
         update_installer=str(getattr(args, "update_installer", "install.sh") or "install.sh"),
     )
+    _RUNTIME_CONFIG = cfg
     return cfg
 
 

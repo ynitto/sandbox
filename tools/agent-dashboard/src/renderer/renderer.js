@@ -14,6 +14,7 @@ const state = {
   flowRunId: null,
   flowRun: null, // {run, events, nodeEvents}
   flowNodeId: null,
+  flowRevisionId: null,
   flowDetailView: 'overview', // 選択中 run の内部ビュー（overview / graph / history）
   flowMobileDetail: false,
   flowNodeIssue: null, // {token, issue|null}（実行中ノードのイシュー検索結果キャッシュ）

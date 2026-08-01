@@ -76,30 +76,6 @@ def request_drain(cfg: "Config") -> None:
         release_controller_lease(cfg)
 
 
-def _transaction_materialize(git: "DirectStateGit", branch: str, old: str, new: str) -> bool:
-    """成功した remote CAS をローカル clone へ反映する。**push は既に通っている**＝リモートの
-    トランザクションは確定済みなので、ローカルへの反映がどう転んでも True を返す（False を
-    返すと、確定した claim/lease を呼び出し側が「失敗」と読み、リモートに孤児の doing や
-    lease が残る）。
-
-    - ローカルが new の祖先（通常）: fast-forward + 反映（従来どおり）。
-    - ローカルが先行/分岐（未 push の state sync コミットを持つ普通の運用状態）: 決定的
-      3-way（`_integrate`）で合流する。以前はここで False を返して**トランザクション自体を
-      諦めて**いたため、state_git_interval の push 間隔の間じゅう（＝ローカルが ahead の間）
-      lease 更新・claim・自動割当が全滅し、lease が失効して計画役が PC 間を漂流→各 PC が
-      勝手にバックログ分解を走らせる実害があった。"""
-    # push 直後の remote-tracking を確定させる（`_integrate` は origin/<branch> を比較対象にする）
-    git._git("update-ref", f"refs/remotes/origin/{branch}", new)
-    local = git._git("rev-parse", "-q", "--verify", f"refs/heads/{branch}").stdout.strip()
-    if not local or git._git("merge-base", "--is-ancestor", local, new).returncode == 0:
-        if git._cas_branch(branch, new, local):
-            top = git._git("rev-parse", "--show-toplevel").stdout.strip()
-            git._materialize(local or old, new, top or str(git.root))
-        return True
-    git._integrate(branch)        # ローカル先行/分岐 → パス所有権の 3-way で必ず決着する
-    return True
-
-
 def state_transaction(cfg: "Config", mutate, message: str = "coordination update") -> bool:
     """remote HEAD を親に変更を作り、fast-forward push を CAS として使う。
 
@@ -113,49 +89,9 @@ def state_transaction(cfg: "Config", mutate, message: str = "coordination update
     root = Path(cfg.backlog).parent
     git = DirectStateGit(root, interval=0.0)
     branch = str(getattr(cfg, "state_repo_branch", "main") or "main")
-    with _file_lock(git._sync_lock_path()):
-        git._ensure_identity()
-        for _ in range(max(1, int(getattr(cfg, "coordination_retries", 3) or 3))):
-            fetched = git._git("fetch", "-q", "origin", branch)
-            if fetched.returncode != 0:
-                return False
-            # ローカルがリモートより先行していても進める（トランザクションは remote HEAD を
-            # 親に組み立てるので、ローカルの未 push コミットとは独立に成立する。反映は
-            # `_transaction_materialize` が fast-forward か決定的 3-way で行う）。
-            old = git._git("rev-parse", f"refs/remotes/origin/{branch}").stdout.strip()
-            if not old:
-                return False
-            tmp = Path(tempfile.mkdtemp(prefix="agent-project-txn-"))
-            worktree = tmp / "worktree"
-            try:
-                if git._git("worktree", "add", "--detach", "-q", str(worktree), old).returncode != 0:
-                    return False
-                if not mutate(worktree):
-                    return False
-                add = subprocess.run(["git", "-C", str(worktree), "add", "-A"],
-                                     capture_output=True, text=True, encoding="utf-8", errors="replace")
-                if add.returncode != 0:
-                    return False
-                changed = subprocess.run(["git", "-C", str(worktree), "diff", "--cached", "--quiet"])
-                if changed.returncode == 0:
-                    return True
-                commit = subprocess.run(
-                    ["git", "-C", str(worktree), "-c", "user.email=agent-project@local",
-                     "-c", "user.name=agent-project", "commit", "-qm", f"agent-project: {message}"],
-                    capture_output=True, text=True, encoding="utf-8", errors="replace")
-                if commit.returncode != 0:
-                    return False
-                new = subprocess.run(["git", "-C", str(worktree), "rev-parse", "HEAD"],
-                                     capture_output=True, text=True, encoding="utf-8").stdout.strip()
-                push = subprocess.run(["git", "-C", str(worktree), "push", "-q", "origin",
-                                       f"HEAD:refs/heads/{branch}"], capture_output=True, text=True,
-                                      encoding="utf-8", errors="replace")
-                if push.returncode == 0:
-                    return _transaction_materialize(git, branch, old, new)
-            finally:
-                git._git("worktree", "remove", "--force", str(worktree))
-                shutil.rmtree(tmp, ignore_errors=True)
-    return False
+    return git.transaction(
+        branch, mutate, message,
+        retries=max(1, int(getattr(cfg, "coordination_retries", 3) or 3)))
 
 
 def controller_path(root: Path) -> Path:

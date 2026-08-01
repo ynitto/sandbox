@@ -14,6 +14,20 @@ def _plan_strategy(args):
     return plan_strategy_stub(args.request, review, gran)
 
 
+def _plan_changes(tasks: list[dict]) -> dict:
+    """再計画の種類を表示側で推測せずに済む、共通の変更差分。"""
+    replaced = [
+        {"old": str(t["replaces"]), "next": str(t["id"])}
+        for t in tasks if t.get("replaces")
+    ]
+    return {
+        "added": [str(t["id"]) for t in tasks],
+        "replaced": replaced,
+        "updated": [],
+        "removed": [item["old"] for item in replaced],
+    }
+
+
 def _env_failure_reason(results: dict) -> "str | None":
     """失敗結果に実行制御・環境要因または transient のトリアージタグがあれば、その説明を返す。
 
@@ -342,6 +356,7 @@ def cmd_orchestrate(args) -> int:
 
         if decision == "replan" and new_tasks:
             iteration += 1
+            changes = _plan_changes(new_tasks)
             for t in new_tasks:
                 graph["nodes"][t["id"]] = _node_entry(t)
                 bus.write_task({k: v for k, v in t.items() if k != "replaces"})
@@ -355,7 +370,8 @@ def cmd_orchestrate(args) -> int:
             graph["iteration"] = iteration
             bus.write_graph(graph)
             bus.set_status("running")
-            bus.event(who, "replan", iteration=iteration, added=[t["id"] for t in new_tasks])
+            bus.event(who, "replan", iteration=iteration, reason=reason,
+                      added=changes["added"], changes=changes)
             bus.sync_push(f"replan #{iteration} run {args.run_id}: +{[t['id'] for t in new_tasks]}")
             log(who, f"再計画 #{iteration}: 追加タスク {[(t['id'], t.get('kind','work')) for t in new_tasks]}")
             continue

@@ -803,7 +803,6 @@ def _requeue_for_human(cfg: "Config", task: "Task", cycle: int, need: str, log: 
     claim を解放して blocked にし、fencing token を進めてから needs 票を書く。token を進めるのは
     「この試行の claim はもう有効でない」と確定させるため——進めないまま放置すると、後から
     復帰したノードが古い token で settle を通してしまう。"""
-    release_claim(cfg, task)
     task.status = "blocked"
     task.set("claim_owner", "")
     task.set("claim_token", hashlib.sha256(os.urandom(32)).hexdigest()[:32])

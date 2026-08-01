@@ -73,6 +73,18 @@ test('listCommandReceipts は processed/ が無ければ空を返す', () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('新しい判断待ちには、それ以前の再実行レシートを回答済みとして使わない', () => {
+  const need = { mtime: Date.parse('2026-08-01T09:44:41') };
+  assert.strictEqual(
+    project.commandArtifactIsCurrent(need, { mtime: Date.parse('2026-08-01T09:14:35') }),
+    false
+  );
+  assert.strictEqual(
+    project.commandArtifactIsCurrent(need, { mtime: Date.parse('2026-08-01T09:45:00') }),
+    true
+  );
+});
+
 // eslint-disable-next-line no-new-func
 const commandReceiptHtml = new Function(
   `const esc = (s) => String(s);

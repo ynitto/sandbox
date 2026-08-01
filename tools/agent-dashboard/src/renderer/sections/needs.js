@@ -142,17 +142,8 @@ function needCompleteHowHtml(n) {
       status === null || status === 'converged'
         ? '承認すると、プロジェクトは完了します。'
         : 'まだプロジェクト完了の段階ではありません。';
-  } else if (n.kind === 'blocked' && isVerifyPendingNeed(p, n)) {
-    line = '承認すると、このタスクは完了します（検証コマンド未定義のため、人の確認が完了の根拠になります）。';
-  } else if (n.kind === 'blocked' && needHasArtifacts(p, n, state.flowRuns)) {
-    line = '成果はできています。内容を確認して問題なければ、承認するとこのタスクを完了できます。';
-  } else if (n.kind === 'blocked' && needHasDeliverable(p, n, state.flowRuns)) {
-    // 完了は選べるが、成果物は確認できていない（実行はしたが差分が無い・取得できない）。
-    // ここで「成果はできています」と言うと、着手前に止まった run でも成果があることに
-    // なってしまう。断定せず、確認してから判断してもらう。
-    line = '成果物は確認できていません。内容を確かめたうえで、完了にしてよければ承認できます。';
-  } else if (!line && n.kind === 'blocked') {
-    line = '指示を送ると、作業を再開します。';
+  } else if (n.kind === 'blocked') {
+    line = '指示を送るか再実行すると、停止した作業を再開します。';
   }
   if (!line) return '';
   return `<div class="task-complete-banner need-complete-how">${esc(line)}</div>`;
@@ -176,11 +167,16 @@ function commandFailureHtml(n) {
   const cf = n && n.commandFailure;
   if (!cf) return '';
   const label = COMMAND_ACTION_LABELS[cf.action] || cf.action || '指示';
-  return `<div class="need-command-failure" role="alert">
-    <strong>「${esc(label)}」は届きましたが、処理に失敗しました${cf.failedAt ? `（${esc(cf.failedAt)}）` : ''}</strong>
-    <span>${esc(cf.error || '')}</span>
-    <span class="muted">原因を解消してから、もう一度同じ操作を送ってください。</span>
-  </div>`;
+  return `<details class="need-command-history" aria-label="過去の操作">
+    <summary>過去の操作 <span class="muted">直近1件</span></summary>
+    <div class="need-command-failure">
+      <strong>「${esc(label)}」操作に失敗${cf.failedAt ? `（${esc(cf.failedAt)}）` : ''}</strong>
+      <dl>
+        <div><dt>失敗理由</dt><dd>${esc(cf.error || '記録されていません')}</dd></div>
+        <div><dt>対処指示</dt><dd>${esc(cf.instruction || '指示なし')}</dd></div>
+      </dl>
+    </div>
+  </details>`;
 }
 
 // 直前の指示（承認・保留など）が本体に届き、取り込みに成功した（commands/processed/*.json）
@@ -199,8 +195,7 @@ function commandReceiptHtml(n, nowMs = Date.now()) {
   </div>`;
 }
 
-function needActionsHtml(n, options) {
-  const inReview = Boolean(options && options.inReview);
+function needActionsHtml(n) {
   const kind = n.kind || 'blocked';
   const buttons = [];
   if (kind === 'plan-review') {
@@ -247,16 +242,7 @@ function needActionsHtml(n, options) {
       buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}">↩ 指示を送る</button>`);
     }
   } else {
-    // 検収物が少しでもあれば「承認して完了にする」を出す（本体は complete で完了確定する）。
-    // 差分を先に見たい人向けに「差分を確認して承認」も併置し、承認そのものは常に押せる形にする
-    // ——「見当たらないから完了できない」を作らないことを、細かい出し分けより優先する。
-    // 成果を見る導線は needArtifactsButtonHtml（「成果を確認」）が別に出すので、
-    // ここは承認そのものだけを置く（同じ操作を 2 つ並べない）。
-    const canApproveCompletion = needHasDeliverable(state.project, n, state.flowRuns);
-    if (canApproveCompletion) {
-      buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}" title="成果を確認済みとして、このタスクを完了（納品確定）にします">承認して完了にする</button>`);
-    }
-    buttons.push(`<button class="${canApproveCompletion ? '' : 'primary-inline'}" data-act="feedback" data-id="${esc(n.id)}">指示を送って再開</button>`);
+    buttons.push(`<button class="primary-inline" data-act="feedback" data-id="${esc(n.id)}">指示を送って再開</button>`);
     buttons.push(`<button data-act="rerun" data-id="${esc(n.id)}">そのまま再実行</button>`);
     buttons.push(`<button data-act="hold" data-id="${esc(n.id)}" title="このタスクを止めて保留にします">保留にする</button>`);
   }
@@ -1376,25 +1362,38 @@ function needAssistActionsHtml(need, settled) {
 
 function needListSummary(need) {
   const failure = needFailureViewModel(need);
-  return failure ? failure.summary : (NEED_ASK[need.kind] || NEED_ASK.blocked);
+  if (failure) return failure.summary;
+  if (need && need.kind === 'blocked' && String(need.why || '').trim()) return String(need.why).trim();
+  return NEED_ASK[need.kind] || NEED_ASK.blocked;
+}
+
+function needDecisionViewModel(need) {
+  const kind = String((need && need.kind) || 'blocked');
+  const copy = {
+    'plan-review': ['実行前の確認を待っています', '実行前の確認', '計画を確認し、実行するか差し戻すか選んでください。'],
+    review: ['成果の確認を待っています', '成果の確認', '成果を確認し、承認または修正指示を選んでください。'],
+    milestone: ['プロジェクト完了の確認を待っています', '完了の確認', '完了条件を確認し、プロジェクトを完了にするか選んでください。'],
+    blocked: ['作業が停止しています', '再開方法', '停止理由を確認し、指示を追加して再開するか、そのまま再実行してください。'],
+  }[kind] || ['確認を待っています', '対応方法', NEED_ASK.blocked];
+  return { statusTitle: copy[0], actionTitle: copy[1], nextStep: copy[2], reason: needListSummary(need || {}) };
 }
 
 function needListItemViewModel(need, bucket, age) {
   const stateText = { open: '未対応', sent: '送信済み', done: '回答済み' }[bucket] || String(bucket || '未対応');
   const risk = String((need && need.risk) || '');
+  const decision = needDecisionViewModel(need);
   return {
     id: String((need && need.id) || ''),
     state: String(bucket || 'open'),
     stateText,
     kindText: needKindLabel(need && need.kind),
     title: needDisplayTitle(need || {}),
-    decision: need && need.commandFailure
-      ? `${COMMAND_ACTION_LABELS[need.commandFailure.action] || need.commandFailure.action}の取り込みに失敗しました — 詳細を開いて理由を確認してください`
-      : needListSummary(need || {}),
-    failure: Boolean(needFailureViewModel(need)) || Boolean(need && need.commandFailure),
+    decision: decision.reason,
+    nextAction: decision.nextStep,
+    failure: Boolean(needFailureViewModel(need)),
     owner: String((need && need.owner) || '').trim(),
     risk,
-    riskText: RISK_LABELS[risk] || 'リスク未設定',
+    riskText: RISK_LABELS[risk] || '',
     ageText: String((age && age.label) || '—'),
     ageLevel: String((age && age.level) || ''),
   };
@@ -1411,11 +1410,11 @@ function needListItemHtml(item, selected, slaHours) {
     <span class="need-list-type" data-label="状態と種類">
       <span class="status-chip ${stateClass}">${esc(item.stateText)}</span>
       <span class="need-list-kind">${esc(item.kindText)}</span>
-      <span class="risk-badge${riskClass}">${esc(item.riskText)}</span>
+      ${item.riskText ? `<span class="risk-badge${riskClass}">${esc(item.riskText)}</span>` : ''}
       ${item.owner ? ownerBadgeHtml(item.owner) : ''}
     </span>
     <strong class="need-list-title" data-label="確認事項">${esc(item.title)}</strong>
-    <span class="need-list-summary ${item.failure ? 'failure' : ''}" data-label="判断すること">${esc(item.decision)}</span>
+    <span class="need-list-summary ${item.failure ? 'failure' : ''}" data-label="現在の状態">${esc(item.decision)}<small>${esc(item.nextAction)}</small></span>
     <span class="need-list-age ${esc(item.ageLevel)}" data-label="待ち時間" title="${ageTitle}">${esc(item.ageText)}</span>
     <svg class="need-list-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9 18 6-6-6-6" /></svg>
   </button>`;
@@ -1525,9 +1524,9 @@ function reviewCommentItemHtml(c) {
   </li>`;
 }
 
-// 成果物レビュー（検収待ち＝review／人待ち＝blocked）でだけ出す。plan-review 等では出さない。
+// 成果物への共同コメントは、成果を判断する review でだけ出す。
 function reviewCommentsHtml(n) {
-  if (!['review', 'blocked'].includes(n.kind || 'blocked')) return '';
+  if (n.kind !== 'review') return '';
   const comments = n.comments || [];
   const list = comments.length
     ? `<ul class="rc-list">${comments.map(reviewCommentItemHtml).join('')}</ul>`
@@ -1683,15 +1682,16 @@ function taskGuideHtml(task, kind) {
   return `<section class="need-task-guide"><h3>作業内容</h3>${body}</section>`;
 }
 
-function needNextStepHtml(n, ask, settled) {
+function needNextStepHtml(n, decision, settled) {
   const guidance = n.decided || (n.commandReceipt && !n.commandFailure)
     ? 'この項目への回答は完了しています。'
     : settled
       ? '回答を送信しました。15分以上状態が変わらない場合は、再度操作できます。'
-    : 'まず確認事項を読み、必要なら下の回答欄から承認・差し戻し・再実行を選んでください。';
-  return `<section class="need-next-step" aria-label="次にすること">
-    <div class="need-step-kicker">次にすること</div>
-    <p>${esc(ask)}</p>
+      : decision.nextStep;
+  return `<section class="need-next-step" aria-label="現在の状態">
+    <div class="need-step-kicker">現在の状態</div>
+    <h3>${esc(decision.statusTitle)}</h3>
+    <p>${esc(decision.reason)}</p>
     <span class="muted">${esc(guidance)}</span>
   </section>`;
 }
@@ -1714,9 +1714,9 @@ function renderNeedDetail(p, n) {
     : '';
   const task = taskForNeed(p, n);
   const hint = task ? taskCompletionHint(task, { runs: runsForTask(task.id) }) : null;
+  const taskGuide = taskGuideHtml(task, n.kind);
   const finalVerificationFailure = needFinalVerificationFailure(p, n, state.flowRuns);
-  const ask =
-    (hint && hint.needAsk) || NEED_ASK[n.kind] || NEED_ASK.blocked;
+  const decision = needDecisionViewModel(n);
   const unsettle =
     hint && hint.unsettledDone
       ? ' <span class="badge warn">実行済み・未確定</span>'
@@ -1733,17 +1733,10 @@ function renderNeedDetail(p, n) {
       </div>
       <span class="muted">${esc(n.date || '')}</span>
     </header>
-    ${commandFailureHtml(n)}
+    ${needNextStepHtml(n, decision, settled)}
     ${commandReceiptHtml(n)}
+    ${settled ? '' : `<section class="need-response need-response-primary"><h3>${esc(decision.actionTitle)}</h3><p class="muted need-response-hint">${esc(decision.nextStep)}</p>${needActionsHtml(n)}${needVerifyRevisionHtml(p, n)}</section>`}
     ${finalVerificationFailureHtml(finalVerificationFailure)}
-    ${needNextStepHtml(n, ask, settled)}
-    <section class="need-overview-grid">
-      <section class="need-decision">
-        <h3>確認事項</h3>
-        <p>${esc(ask)}</p>
-      </section>
-      ${taskGuideHtml(task, n.kind)}
-    </section>
     <section class="need-facts">
       <div class="need-facts-heading">
         <h3>状況</h3>
@@ -1752,6 +1745,7 @@ function renderNeedDetail(p, n) {
         </div>
       </div>
       ${renderNeedFacts(n) || '<p class="muted">追加の状況説明はありません。</p>'}
+      ${commandFailureHtml(n)}
     </section>
     <details class="need-evidence" data-ui-key="need-evidence:${esc(n.id)}">
       <summary>関連する成果・詳細を確認</summary>
@@ -1761,7 +1755,7 @@ function renderNeedDetail(p, n) {
       <button class="need-output-button subtle-action" data-need-output="${esc(n.id)}">詳細情報を開く</button>
     </details>
     ${reviewCommentsHtml(n)}
-    ${settled ? '' : `<section class="need-response need-response-primary"><h3>最終回答</h3><p class="muted need-response-hint">成果とレビューコメントを確認してから回答してください。</p>${needActionsHtml(n)}${needVerifyRevisionHtml(p, n)}</section>`}
+    ${taskGuide ? `<details class="need-evidence need-task-context" data-ui-key="need-task:${esc(n.id)}"><summary>作業内容と完了条件</summary>${taskGuide}</details>` : ''}
   </article>`;
 }
 

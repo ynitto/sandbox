@@ -1442,6 +1442,13 @@ table.list tr.clickable:hover { background: var(--bg2); }
   -webkit-line-clamp: 2;
 }
 .need-list-summary.failure { color: #ffb4ad; }
+.need-list-summary small {
+  display: block;
+  margin-top: 3px;
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 600;
+}
 .need-list-age {
   min-width: 0;
   color: var(--muted);
@@ -1528,6 +1535,7 @@ table.list tr.clickable:hover { background: var(--bg2); }
   letter-spacing: 0.06em;
 }
 .need-next-step p { margin: 0; font-size: 16px; line-height: 1.55; }
+.need-detail-card .need-next-step h3 { margin: 0; color: var(--fg); font-size: 17px; letter-spacing: 0; }
 .need-response-primary {
   margin: 22px 0 0;
   padding: 16px;
@@ -1537,11 +1545,6 @@ table.list tr.clickable:hover { background: var(--bg2); }
 }
 .need-response-primary h3 { margin: 0 0 4px; color: var(--fg); font-size: 16px; }
 .need-response-hint { margin: 0 0 12px; }
-.need-overview-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
-  gap: 12px;
-}
 .need-evidence {
   margin-top: 18px;
   padding: 0 12px 12px;
@@ -1557,9 +1560,8 @@ table.list tr.clickable:hover { background: var(--bg2); }
 }
 .need-evidence > .subtle-action,
 .need-evidence > button { margin-top: 8px; }
+.need-task-context > .need-task-guide { margin-top: 8px; }
 .need-detail-card section h3 { margin: 0 0 7px; color: var(--muted); font-size: 13px; letter-spacing: 0.04em; }
-.need-decision { padding: 12px 14px; border-radius: 7px; background: var(--bg3); }
-.need-decision p { margin: 0; font-size: 15px; line-height: 1.55; }
 .task-complete-banner,
 .need-complete-how {
   margin: 0 0 10px;
@@ -1758,20 +1760,33 @@ table.list tr.clickable:hover { background: var(--bg2); }
 }
 .final-verification-failure strong { color: #ff8d88; }
 .final-verification-failure span { line-height: 1.5; }
-/* 直前の指示（承認等）が本体の取り込みで失敗したことを知らせるバナー（commands/*.err） */
+/* 過去の操作失敗は現在の停止理由より弱く見せ、必要なときだけ開く。 */
+.need-command-history {
+  margin-top: 12px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg3);
+}
+.need-command-history > summary {
+  min-height: 44px;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+}
+.need-command-history > summary span { margin-left: 6px; font-size: 11px; font-weight: 400; }
 .need-command-failure {
   display: grid;
-  gap: 4px;
-  margin: 10px 0 14px;
-  padding: 11px 13px;
-  border: 1px solid rgba(220, 50, 47, 0.65);
-  border-left-width: 4px;
-  border-radius: 7px;
-  background: rgba(220, 50, 47, 0.11);
+  gap: 8px;
+  padding: 0 0 12px;
   color: var(--fg);
 }
-.need-command-failure strong { color: #ff8d88; }
-.need-command-failure span { line-height: 1.5; overflow-wrap: anywhere; }
+.need-command-failure strong { color: var(--muted); font-size: 12px; }
+.need-command-failure dl { display: grid; gap: 8px; margin: 0; }
+.need-command-failure dl > div { display: grid; gap: 2px; }
+.need-command-failure dt { color: var(--muted); font-size: 11px; font-weight: 650; }
+.need-command-failure dd { margin: 0; line-height: 1.5; overflow-wrap: anywhere; }
 /* 作業内容（タスクの why/desc/scope 等）— 計画レビューの判断材料 */
 .need-task-guide { margin: 10px 0 14px; }
 .task-guide { display: grid; gap: 8px; margin: 6px 0 0; }
@@ -1862,6 +1877,17 @@ svg.graph .node.state-pending rect { fill: var(--bg3); stroke: var(--blue); }
 svg.graph .node.state-parked rect { fill: #3a2f13; stroke: var(--orange); }
 svg.graph .node.state-waiting rect { fill: var(--bg3); stroke: var(--border); }
 svg.graph .node.selected rect { stroke-width: 3; }
+svg.graph .node:focus-visible rect { stroke: var(--accent); stroke-width: 3; }
+svg.graph .plan-revision-line { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 5 5; opacity: 0.65; }
+svg.graph .plan-revision { cursor: pointer; }
+svg.graph .plan-revision rect { fill: var(--bg3); stroke: var(--accent); stroke-width: 1.5; }
+svg.graph .plan-revision text { fill: var(--fg); font-size: 10px; }
+svg.graph .plan-revision .revision-title { fill: var(--accent); font-size: 11px; font-weight: 700; }
+svg.graph .plan-revision .revision-meta { fill: var(--muted); font-size: 9px; }
+svg.graph .plan-revision:hover rect,
+svg.graph .plan-revision.selected rect,
+svg.graph .plan-revision:focus-visible rect { fill: color-mix(in srgb, var(--accent) 12%, var(--bg3)); stroke-width: 3; }
+svg.graph .plan-initial-label { fill: var(--muted); font-size: 11px; font-weight: 700; }
 /* GitLab クローズ反映で状態を先読みしたノード（bus の result 反映待ち）は破線枠で区別する */
 svg.graph .node.reconciled rect { stroke-dasharray: 4 3; }
 /* gitlab executor ノードの右上イシューアイコン（1 クリックでレビュー起動） */
@@ -1872,6 +1898,15 @@ svg.graph .node-issue.rejected circle { fill: var(--red); }
 svg.graph .node-issue.review circle { fill: var(--accent2); }
 svg.graph .node-issue .node-issue-glyph { fill: #fff; font-size: 12px; font-weight: 700; }
 svg.graph .node-issue:hover circle { stroke: var(--fg); }
+
+.flow-revision-detail h3 { margin: 6px 0 3px; }
+.flow-revision-reason,
+.flow-revision-change { margin-top: 16px; }
+.flow-revision-detail h4 { margin: 0 0 6px; color: var(--muted); font-size: 12px; }
+.flow-revision-reason p { margin: 0; line-height: 1.6; overflow-wrap: anywhere; }
+.flow-revision-change ul { margin: 0; padding-left: 20px; line-height: 1.6; overflow-wrap: anywhere; }
+.flow-revision-change details { margin-top: 6px; }
+.flow-revision-change summary { min-height: 36px; cursor: pointer; color: var(--accent); }
 
 .legend { display: flex; gap: 12px; font-size: 11px; color: var(--muted); flex-wrap: wrap; }
 .legend .key { display: inline-flex; align-items: center; gap: 4px; }

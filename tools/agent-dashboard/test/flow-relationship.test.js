@@ -8,6 +8,25 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const flow = require('../src/main/flow');
+const renderer = require('./helpers/renderer-src').read();
+
+function grab(name) {
+  const at = renderer.indexOf(`function ${name}(`);
+  assert.ok(at >= 0, `renderer に function ${name} が見つかりません`);
+  let depth = 0;
+  for (let i = renderer.indexOf('{', at); i < renderer.length; i++) {
+    if (renderer[i] === '{') depth++;
+    else if (renderer[i] === '}' && --depth === 0) return renderer.slice(at, i + 1);
+  }
+  throw new Error(`function ${name} の閉じ括弧が見つかりません`);
+}
+
+// eslint-disable-next-line no-new-func
+const planRevisionMap = new Function(`${grab('planRevisionMap')}; return planRevisionMap;`)();
+// eslint-disable-next-line no-new-func
+const flowGraphLayout = new Function(
+  'planRevisionMap', `${grab('flowGraphLayout')}; return flowGraphLayout;`
+)(planRevisionMap);
 
 let passed = 0;
 function test(name, fn) {
@@ -95,6 +114,63 @@ test('readRun は旧形式 run-id でも作業ブランチから taskId を補�
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test('計画変更イベントを新旧同じリビジョン契約へ正規化する', () => {
+  const revisions = flow.normalizePlanRevisions([
+    { ts: '2026-08-01T00:00:00Z', kind: 'planned', tasks: ['synth'] },
+    { ts: '2026-08-01T00:01:00Z', kind: 'replan', added: ['t11'] },
+    {
+      ts: '2026-08-01T00:02:00Z', kind: 'inflight_amend', reason: '人の指摘を反映',
+      changes: { added: [], replaced: [{ old: 't11', next: 't11-r1' }], updated: ['gate'], removed: ['t11'] },
+    },
+  ], ['synth', 't11-r1', 'gate']);
+  assert.deepStrictEqual(revisions, [
+    { revision: 0, timestamp: '2026-08-01T00:00:00Z', reason: '初期計画', added: ['synth'], replaced: [], updated: [], removed: [] },
+    { revision: 1, timestamp: '2026-08-01T00:01:00Z', reason: '実行結果を受けて工程構成を見直しました', added: ['t11'], replaced: [], updated: [], removed: [] },
+    { revision: 2, timestamp: '2026-08-01T00:02:00Z', reason: '人の指摘を反映', added: [], replaced: [{ old: 't11', next: 't11-r1' }], updated: ['gate'], removed: ['t11'] },
+  ]);
+});
+
+test('readRun は実行イベントから計画リビジョンを返す', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-revision-'));
+  try {
+    const runDir = path.join(tmp, 'runs', 'run-revision');
+    fs.mkdirSync(path.join(runDir, 'results'), { recursive: true });
+    fs.mkdirSync(path.join(runDir, 'events'), { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'meta.json'), JSON.stringify({ status: 'running' }));
+    fs.writeFileSync(path.join(runDir, 'graph.json'), JSON.stringify({ nodes: {
+      synth: { goal: '統合', deps: [] },
+      t11: { goal: '追加修正', deps: [] },
+    } }));
+    fs.writeFileSync(path.join(runDir, 'events', 'orchestrator.jsonl'), [
+      JSON.stringify({ ts: '2026-08-01T00:00:00Z', kind: 'planned', tasks: ['synth'] }),
+      JSON.stringify({ ts: '2026-08-01T00:01:00Z', kind: 'replan', reason: '未解決を修正', added: ['t11'] }),
+    ].join('\n'));
+    const run = flow.readRun(runDir);
+    assert.strictEqual(run.planRevisions.length, 2);
+    assert.deepStrictEqual(run.planRevisions[1].added, ['t11']);
+    assert.strictEqual(run.planRevisions[1].reason, '未解決を修正');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('計画変更後の独立工程は境界の右側へ置き、依存関係だけを区画内で前後させる', () => {
+  const layout = flowGraphLayout({
+    planRevisions: [
+      { revision: 0, added: ['synth'] },
+      { revision: 1, added: ['t11', 'gate3'] },
+    ],
+    nodes: {
+      synth: { id: 'synth', deps: [] },
+      t11: { id: 't11', deps: [] },
+      gate3: { id: 'gate3', deps: ['t11'] },
+    },
+  });
+  assert.ok(layout.pos.synth.x < layout.boundaries[0].x);
+  assert.ok(layout.boundaries[0].x < layout.pos.t11.x);
+  assert.ok(layout.pos.t11.x < layout.pos.gate3.x);
 });
 
 // --- レビュー待ちイシュー ↔ run/ノードの token 対応付け ---

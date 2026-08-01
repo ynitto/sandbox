@@ -135,6 +135,7 @@ async function gotoRunNode(runId, nodeId) {
   await selectFlowRun(runId); // 内部で flowNodeId を null にして再描画する
   if (nodeId) {
     state.flowNodeId = nodeId;
+    state.flowRevisionId = null;
     state.flowNodeIssue = null;
     state.flowDetailView = 'graph';
     state.flowMobileDetail = true;

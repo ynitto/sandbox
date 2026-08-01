@@ -26,8 +26,6 @@ from _shared import *  # noqa: E402,F401,F403 — 共有の前置き（環境隔
 # (1) 存在検査の除外: `Config` のフィールドを持たないキー。
 FIELD_EXEMPT = {
     "root": "パスの起点。Config には root 自体でなく under() で展開した個別パスが載る",
-    "journal_max_bytes": "append_journal（free 関数）が読む batch._JOURNAL_MAX_BYTES へ確定する",
-    "journal_keep": "同上 batch._JOURNAL_KEEP",
 }
 
 # (2) 到達検査の除外: フィールドはあるが、設定ファイルから値を届ける経路が無いキー。

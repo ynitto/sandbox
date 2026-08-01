@@ -557,11 +557,7 @@ class TestStateRootContract(unittest.TestCase):
     def _build(self, **cli):
         ns = types.SimpleNamespace(config=None, **cli)
         km.resolve_config(ns)
-        orig = (km._AGENT_CLI, km._AGENT_TIMEOUT)
-        try:
-            return km.build_config(ns)
-        finally:
-            km._AGENT_CLI, km._AGENT_TIMEOUT = orig
+        return km.build_config(ns)
 
     def _expect_exit(self, **cli) -> str:
         err = io.StringIO()
@@ -700,6 +696,27 @@ class TestDirectStateGit(unittest.TestCase):
         cfg = self._cfg()
         self.assertIsInstance(km.state_git_for(cfg), km.DirectStateGit)   # state_git 未設定でも有効
         self.assertIn("direct モード", km.state_git_status_line(cfg))
+
+    def test_coordination_uses_state_repository_transaction_interface(self):
+        cfg = self._cfg()
+        mutate = lambda _root: True
+        with mock.patch.object(km, "_coordination_active", return_value=True), \
+             mock.patch.object(km.DirectStateGit, "transaction", return_value=True) as transaction:
+            self.assertTrue(km.state_transaction(cfg, mutate, "claim T1"))
+        transaction.assert_called_once_with("main", mutate, "claim T1", retries=3)
+
+    def test_settlement_syncs_before_releasing_local_claim(self):
+        cfg = self._cfg()
+        task = km.Task(id="T1", title="T1")
+        order = []
+        with mock.patch.object(km, "_settle_task",
+                               side_effect=lambda *_: order.append("state") or {"archived": 0}), \
+             mock.patch.object(km, "state_sync",
+                               side_effect=lambda *_a, **_kw: order.append("sync")), \
+             mock.patch.object(km, "release_claim",
+                               side_effect=lambda *_: order.append("claim")):
+            self.assertEqual(km.settle_task(cfg, task), {"archived": 0})
+        self.assertEqual(order, ["state", "sync", "claim"])
 
     def test_controller_lease_has_one_winner_across_clones(self):
         first = self._cfg(node="pc-a", controller_lease_sec=120.0)

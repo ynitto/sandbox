@@ -870,7 +870,9 @@ function listCommandFailures(dir) {
     const entry = {
       action: String(cmd.command || ''),
       error: String(rec.error || ''),
+      instruction: String(cmd.feedback || cmd.reason || ''),
       failedAt: String(rec.failed_at || ''),
+      mtime: statMtime(path.join(cdir, f)),
     };
     const prev = out[tid];
     if (!prev || String(prev.failedAt) < entry.failedAt) out[tid] = entry;
@@ -897,11 +899,16 @@ function listCommandReceipts(dir) {
       action: String(rec.action || ''),
       processedAt: String(rec.processed_at || ''),
       source: String(rec.source || ''),
+      mtime: statMtime(path.join(pdir, f)),
     };
     const prev = out[tid];
     if (!prev || String(prev.processedAt) < entry.processedAt) out[tid] = entry;
   }
   return out;
+}
+
+function commandArtifactIsCurrent(need, artifact) {
+  return Boolean(artifact) && (!need.mtime || !artifact.mtime || artifact.mtime >= need.mtime);
 }
 
 // タスク級の票の kind（本体 needs.py の _TASK_NEEDS_KINDS と同じ集合）。これ以外
@@ -1815,9 +1822,9 @@ function readProject(workspaceDir, cfg) {
   for (const need of needs) {
     const tid = String(need.taskId || need.id || '').trim();
     const cf = commandFailures[tid];
-    if (cf && !need.decided) need.commandFailure = cf;
+    if (!need.decided && commandArtifactIsCurrent(need, cf)) need.commandFailure = cf;
     const cr = commandReceipts[tid];
-    if (cr && !need.decided) need.commandReceipt = cr;
+    if (!need.decided && commandArtifactIsCurrent(need, cr)) need.commandReceipt = cr;
   }
   // 要対応カードにも監視担当を載せる（誰がこの判断を見るかの分担を画面で示す）。
   // 併せて成果物レビューのコメント（reviews/<task-id>/）も載せる＝複数メンバーの
@@ -1966,6 +1973,7 @@ module.exports = {
   attachDeliveryHintsFromBacklog,
   listCommandFailures,
   listCommandReceipts,
+  commandArtifactIsCurrent,
   readNodeStatuses,
   _splitDiff,
   _deliveryFromDetail,

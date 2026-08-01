@@ -293,7 +293,7 @@ def _inflight_amend_pending(bus, graph, who, args, consumed_fb: set) -> int:
     if not new_pieces:
         return 0
     inject = _INFLIGHT_FB_MARK + "\n" + "\n".join(f"- {p}" for p in new_pieces)
-    amended = 0
+    updated = []
     for nid, entry in list(nodes.items()):
         if bus.node_state(nid) != "pending":           # 待機ノードのみ（実行中/監視中/終端は不変）
             continue
@@ -303,13 +303,14 @@ def _inflight_amend_pending(bus, graph, who, args, consumed_fb: set) -> int:
         if entry.get("retries"):
             spec["retries"] = entry["retries"]
         bus.write_task(spec)                           # 待機ノードの spec を書き換え（claim 前なので安全）
-        amended += 1
-    if amended:
+        updated.append(nid)
+    if updated:
         bus.write_graph(graph)
-        bus.event(who, "inflight_amend", nodes=amended)
-        bus.sync_push(f"in-flight 反映 run {args.run_id}: 待機 {amended} ノードへ人指摘")
-        log(who, f"in-flight: 待機 {amended} ノードへ人の指摘を反映（実行中は不変）")
-    return amended
+        bus.event(who, "inflight_amend", nodes=len(updated), reason="人の指摘を待機工程へ反映",
+                  changes={"added": [], "replaced": [], "updated": updated, "removed": []})
+        bus.sync_push(f"in-flight 反映 run {args.run_id}: 待機 {len(updated)} ノードへ人指摘")
+        log(who, f"in-flight: 待機 {len(updated)} ノードへ人の指摘を反映（実行中は不変）")
+    return len(updated)
 
 
 def _evaluator_fallback(results: dict, why: str):

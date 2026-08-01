@@ -10,6 +10,18 @@ from _shared import *  # noqa: E402,F401,F403 — 共有の前置き（環境隔
 
 
 class PlannerTests(unittest.TestCase):
+    def test_plan_changes_uses_one_contract_for_add_and_replace(self):
+        changes = kf._plan_changes([
+            {"id": "new", "replaces": "old"},
+            {"id": "extra"},
+        ])
+        self.assertEqual(changes, {
+            "added": ["new", "extra"],
+            "replaced": [{"old": "old", "next": "new"}],
+            "updated": [],
+            "removed": ["old"],
+        })
+
     def test_parallel_split(self):
         tasks = kf.plan_stub("a; b; c")
         self.assertEqual([t["id"] for t in tasks], ["t1", "t2", "t3"])
@@ -254,10 +266,16 @@ class PlannerRobustnessTests(unittest.TestCase):
         consumed = set()
         n = kf._inflight_amend_pending(bus, {"nodes": nodes, "iteration": 0}, "orch", args, consumed)
         self.assertEqual(n, 1)                                  # p1 のみ反映
-        p1 = json.loads(open(os.path.join(bus.tasks_dir, "p1.json")).read())
-        c1 = json.loads(open(os.path.join(bus.tasks_dir, "c1.json")).read())
+        with open(os.path.join(bus.tasks_dir, "p1.json")) as f:
+            p1 = json.load(f)
+        with open(os.path.join(bus.tasks_dir, "c1.json")) as f:
+            c1 = json.load(f)
         self.assertIn("実サーバで検証すること", p1["goal"])       # 待機ノードに人指摘が入った
         self.assertNotIn("実サーバで検証すること", c1["goal"])    # 実行中ノードは不変
+        with open(os.path.join(bus.events_dir, "orch.jsonl")) as f:
+            event = json.loads(f.read().splitlines()[-1])
+        self.assertEqual(event["changes"]["updated"], ["p1"])
+        self.assertIn("人の指摘", event["reason"])
         # 冪等: 同じ発生源では二度入れない
         self.assertEqual(kf._inflight_amend_pending(bus, {"nodes": nodes, "iteration": 0},
                                                     "orch", args, consumed), 0)

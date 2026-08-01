@@ -412,6 +412,7 @@ function readRun(runDir) {
     failureReason: meta.failure_reason || null,
     strategy: graph.strategy || null,
     iteration: Number(graph.iteration || 0),
+    planRevisions: readPlanRevisions(runDir, Object.keys(nodes)),
     nodes,
     counts,
     total,
@@ -467,6 +468,55 @@ function readRunEvents(runDir, limit = 50) {
   // ts は ISO 文字列（now_iso）。UTC Z 固定なので辞書順＝時刻順で新しい順に並べる
   events.sort((a, b) => String(b.ts || '').localeCompare(String(a.ts || '')));
   return events.slice(0, limit);
+}
+
+function normalizePlanRevisions(events, nodeIds = []) {
+  const ordered = [...(events || [])]
+    .filter((ev) => ev && typeof ev === 'object')
+    .sort((a, b) => String(a.ts || '').localeCompare(String(b.ts || '')));
+  const planned = ordered.find((ev) => ev.kind === 'planned');
+  const changes = ordered.filter((ev) => ev.changes || ev.kind === 'replan');
+  const introduced = new Set();
+  for (const ev of changes) {
+    const c = ev.changes && typeof ev.changes === 'object' ? ev.changes : {};
+    for (const id of [...(c.added || []), ...(ev.added || [])]) introduced.add(String(id));
+    for (const item of c.replaced || []) {
+      if (item && item.next) introduced.add(String(item.next));
+    }
+  }
+  const initial = Array.isArray(planned && planned.tasks)
+    ? planned.tasks.map(String)
+    : nodeIds.map(String).filter((id) => !introduced.has(id));
+  const revisions = [{
+    revision: 0,
+    timestamp: (planned && planned.ts) || null,
+    reason: '初期計画',
+    added: [...new Set(initial)],
+    replaced: [],
+    updated: [],
+    removed: [],
+  }];
+  for (const ev of changes) {
+    const c = ev.changes && typeof ev.changes === 'object' ? ev.changes : {};
+    const strings = (value) => [...new Set((Array.isArray(value) ? value : []).map(String))];
+    const replaced = (Array.isArray(c.replaced) ? c.replaced : [])
+      .filter((item) => item && item.old && item.next)
+      .map((item) => ({ old: String(item.old), next: String(item.next) }));
+    revisions.push({
+      revision: revisions.length,
+      timestamp: ev.ts || null,
+      reason: String(ev.reason || '実行結果を受けて工程構成を見直しました'),
+      added: strings(c.added || ev.added),
+      replaced,
+      updated: strings(c.updated),
+      removed: strings(c.removed),
+    });
+  }
+  return revisions;
+}
+
+function readPlanRevisions(runDir, nodeIds) {
+  return normalizePlanRevisions(readRunEvents(runDir, 5000), nodeIds);
 }
 
 // ノード別のタイムライン（claimed / result イベント）。開始時刻・所要時間の根拠になる
@@ -852,6 +902,7 @@ function summarizeTombstone(tomb) {
     failureReason: meta.failure_reason || null,
     strategy: graph.strategy || null,
     iteration: Number(graph.iteration || 0),
+    planRevisions: normalizePlanRevisions([], Object.keys(nodes)),
     nodes,
     counts,
     total,
@@ -911,6 +962,8 @@ module.exports = {
   isCancelled,
   parseRunId,
   readRunEvents,
+  normalizePlanRevisions,
+  readPlanRevisions,
   readNodeEvents,
   listRuns,
   summarizeTombstone,

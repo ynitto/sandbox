@@ -441,6 +441,7 @@ function renderFlow() {
 async function selectFlowRun(runId) {
   state.flowRunId = runId;
   state.flowNodeId = null;
+  state.flowRevisionId = null;
   state.flowDetailView = 'overview';
   state.flowMobileDetail = true;
   state.flowRun = await guard('実行内容の読み込み', () => api.flowRun(state.project.dir, state.project.busDir, runId));
@@ -567,8 +568,13 @@ function renderFlowDetail() {
     g.attempts.some((a) => a.runId === run.runId));
   const advice = runAdvice(run, group);
   const retryUi = flowRetryUi(run, advice);
-  const node = state.flowNodeId ? run.nodes[state.flowNodeId] : null;
-  const nodeDetail = node ? renderFlowNode(run, node, retryUi, advice) : '';
+  const revision = state.flowRevisionId === null
+    ? null
+    : (run.planRevisions || []).find((item) => item.revision === Number(state.flowRevisionId));
+  const node = revision ? null : (state.flowNodeId ? run.nodes[state.flowNodeId] : null);
+  const nodeDetail = revision
+    ? renderPlanRevision(revision)
+    : node ? renderFlowNode(run, node, retryUi, advice) : '';
   const events = (fr.events || [])
     .map(
       (ev) =>
@@ -714,7 +720,7 @@ const viewTabs = [
       <div class="legend">${legend}</div>
     </section>
     <aside id="flow-node" class="flow-node-detail">
-      <span class="summary-kicker">工程の内容</span>
+      <span class="summary-kicker">${revision ? '計画変更の内容' : '工程の内容'}</span>
       ${nodeDetail || '<div class="empty">グラフから工程を選択してください</div>'}
     </aside>
   </div>`;

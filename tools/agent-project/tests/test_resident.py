@@ -15,10 +15,12 @@ class AgentOverrideTests(unittest.TestCase):
     各処理でエージェント CLI とモデルを個別に選べることを検証する。"""
 
     def setUp(self):
-        self._cli, self._ov = km._AGENT_CLI, dict(km._AGENT_OVERRIDES)
+        self._runtime = km._RUNTIME_CONFIG
+        km._RUNTIME_CONFIG = types.SimpleNamespace(
+            agent_cli="kiro", agent_timeout=300.0, agents={}, argv_limit=0)
 
     def tearDown(self):
-        km._AGENT_CLI, km._AGENT_OVERRIDES = self._cli, self._ov
+        km._RUNTIME_CONFIG = self._runtime
 
     def test_normalize_accepts_known_purposes_only(self):
         raw = {"plan": {"agent_cli": "Claude", "model": "opus"},
@@ -32,9 +34,9 @@ class AgentOverrideTests(unittest.TestCase):
         self.assertEqual(km._normalize_agent_overrides(None), {})
 
     def test_agent_for_falls_back_to_global(self):
-        km._AGENT_CLI = "kiro"
-        km._AGENT_OVERRIDES = {"plan": {"agent_cli": "claude", "model": "opus"},
-                               "assess": {"model": "haiku"}}
+        km._RUNTIME_CONFIG.agents = {
+            "plan": {"agent_cli": "claude", "model": "opus"},
+            "assess": {"model": "haiku"}}
         self.assertEqual(km._agent_for("plan"), ("claude", "opus"))
         self.assertEqual(km._agent_for("assess"), ("kiro", "haiku"))  # model だけ上書き
         self.assertEqual(km._agent_for("verify"), ("kiro", None))     # 未指定 → グローバル
@@ -67,8 +69,8 @@ class AgentOverrideTests(unittest.TestCase):
                 os.remove(out_file)
 
     def test_run_agent_cli_uses_purpose_override(self):
-        km._AGENT_CLI = "kiro"
-        km._AGENT_OVERRIDES = {"plan": {"agent_cli": "claude", "model": "opus"}}
+        km._RUNTIME_CONFIG.agents = {
+            "plan": {"agent_cli": "claude", "model": "opus"}}
         calls = []
 
         def fake_run(cmd, **kw):

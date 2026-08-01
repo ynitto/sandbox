@@ -54,7 +54,7 @@ test('listCommandFailures は .err をタスク id ごと最新 1 件にまと�
   write('b.json.err', {
     error: '統合で競合しました',
     failed_at: '2026-07-20 11:59:35',
-    command: { command: 'approve', id: 'T1' },
+    command: { command: 'approve', id: 'T1', reason: '成果を確認したため完了する' },
   });
   write('c.json.err', { error: 'id なし', failed_at: '2026-07-20', command: {} });
   fs.writeFileSync(path.join(cdir, 'garbage.json.err'), '{oops', 'utf8');
@@ -64,6 +64,7 @@ test('listCommandFailures は .err をタスク id ごと最新 1 件にまと�
   assert.deepStrictEqual(Object.keys(out), ['T1']);
   assert.strictEqual(out.T1.action, 'approve');
   assert.strictEqual(out.T1.error, '統合で競合しました');
+  assert.strictEqual(out.T1.instruction, '成果を確認したため完了する');
   assert.strictEqual(out.T1.failedAt, '2026-07-20 11:59:35');
   fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -91,19 +92,58 @@ const commandFailureHtml = new Function(
    ${grab('commandFailureHtml')}; return commandFailureHtml;`
 )();
 
+// eslint-disable-next-line no-new-func
+const needListItemViewModel = new Function(
+  `const COMMAND_ACTION_LABELS = { approve: '承認' };
+   const RISK_LABELS = {};
+   const NEED_ASK = { blocked: '追加指示を入力してください。' };
+   const needFailureViewModel = () => null;
+   const needKindLabel = () => '作業再開';
+   const needDisplayTitle = (n) => n.title || n.id;
+   ${grab('needListSummary')};
+   ${grab('needDecisionViewModel')};
+   ${grab('needListItemViewModel')};
+   return needListItemViewModel;`
+)();
+
 test('commandFailureHtml は失敗理由と操作種別をカードに出す', () => {
   assert.strictEqual(commandFailureHtml({}), '');
   const html = commandFailureHtml({
     commandFailure: {
       action: 'approve',
       error: '成果ブランチをターゲットへ統合できないため done にできません',
+      instruction: '成果を確認したため完了する',
       failedAt: '2026-07-20 11:59:35',
     },
   });
   assert.match(html, /承認/);
   assert.match(html, /統合できない/);
   assert.match(html, /2026-07-20 11:59:35/);
-  assert.match(html, /role="alert"/);
+  assert.match(html, /失敗理由/);
+  assert.match(html, /対処指示/);
+  assert.match(html, /成果を確認したため完了する/);
+  assert.match(html, /aria-label="過去の操作"/);
+  assert.match(html, /^<details/);
+  assert.ok(!/^<details[^>]*open/.test(html), '過去の操作は初期状態で折りたたむ');
+});
+
+test('別の操作失敗が残っていても一覧は現在の停止理由を表示する', () => {
+  const item = needListItemViewModel({
+    id: 'dashboard-163827',
+    kind: 'blocked',
+    why: 'agent-flow run タイムアウト（1800.0s）',
+    commandFailure: { action: 'approve', error: '成果ブランチの統合競合' },
+  }, 'open', null);
+  assert.strictEqual(item.decision, 'agent-flow run タイムアウト（1800.0s）');
+  assert.match(item.nextAction, /再開/);
+  assert.strictEqual(item.failure, false, '過去の操作失敗で現在の停止理由をエラー色にしない');
+});
+
+test('詳細は現在の状況を直前の操作失敗より先に表示する', () => {
+  const source = grab('renderNeedDetail');
+  assert.ok(source.indexOf('${renderNeedFacts(n)') >= 0);
+  assert.ok(source.indexOf('${commandFailureHtml(n)}') >= 0);
+  assert.ok(source.indexOf('${renderNeedFacts(n)') < source.indexOf('${commandFailureHtml(n)}'));
 });
 
 test('renderNeedDetail は取り込み失敗時に操作を出し直す（送信済み扱いにしない）', () => {
