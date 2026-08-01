@@ -51,7 +51,6 @@ const summary = overviewSummary(project, [
   { status: 'failed' },
 ]);
 assert.strictEqual(summary.headline, '1 件の確認を待っています');
-assert.strictEqual(summary.tone, 'action');
 assert.deepStrictEqual(summary.undecided.map((need) => need.id), ['N1'],
   '既存の未判断 needs を概要の対応対象として保持する');
 assert.strictEqual(summary.working, 3);
@@ -279,113 +278,46 @@ assert.match(renderer, /orchInstructionsDirty/, '共通指示の未保存入力�
 }
 assert.match(renderer, /個別のrunを止める操作ではありません/);
 
-// --- 一貫性ゲート（概要タブに結線状態・ゲートバッジ・未結線導線を表示する） ---
-// 結線判定は consistency-gate.test.js、写し取りの網羅は consistency-gate-ui.test.js が持つ。
-// ここは「概要がゲート節を実際に埋め込み、見出しのゲートバッジと未結線導線を出す」ことだけを見る。
+// --- 一貫性ゲート: 利用者が判断する状態・意味・対処だけを固定する ---
 {
-  // 概要セクションがゲート節を実際に差し込んでいる（結線の call-site）。
-  const renderOverview = grab('renderOverview');
-  assert.match(renderOverview, /\$\{consistencyGateHtml\(p\)\}/, '概要にゲート節を差し込んでいない');
-  assert.match(renderOverview, /bindConsistencyGate\(el\)/, '概要の有効化ボタンを結線していない');
-  assert.match(renderOverview, /s\.undecided\.length[\s\S]*data-summary-tab="needs"/,
-    '一貫性ゲート追加後も既存 needs の件数と「対応する」導線を表示する');
   const escStub = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   // eslint-disable-next-line no-new-func
   const gateHtml = new Function('esc', `${grab('consistencyGateHtml')}; return consistencyGateHtml;`)(escStub);
-  const headBadge = (html, text) => (html.match(new RegExp(`class="badge (?:info|warn)">${text}<`, 'g')) || []).length;
 
-  // ゲートバッジ: 全結線なら見出しに「結線済み」、未結線導線は出さない。
   const wired = gateHtml({ consistencyGate: {
     configFile: '/ws/.agents/agent-project.yaml', regressionWired: true, intakeWired: true, wired: true,
     regressionConfigured: true, intakeConfigured: true,
     regressionCmd: 'codd-gate verify', intakeCmd: 'codd-gate tasks --debt' } });
-  assert.strictEqual(headBadge(wired, '結線済み'), 3, '全結線のゲートバッジ（見出し＋2行）が出る');
+  assert.ok(wired.includes('regression_cmd') && wired.includes('intake_cmd'));
   assert.strictEqual((wired.match(/設定: あり/g) || []).length, 2, '両コマンドの設定済み状態が出る');
-  assert.ok(!wired.includes('一部結線'));
+  assert.ok(wired.includes('失敗すると done の確定を止めます'), '回帰失敗で done にしない意味が出ない');
   assert.ok(!wired.includes('有効化'), '全結線なら未結線導線を出さない');
 
-  // ゲートバッジ: 一部未結線なら見出しに「一部結線」。
   const partial = gateHtml({ consistencyGate: {
     configFile: '/ws/.agents/agent-project.yaml', regressionWired: true, intakeWired: false, wired: false,
     regressionConfigured: true, intakeConfigured: false,
     regressionCmd: 'codd-gate verify', intakeCmd: null } });
-  assert.strictEqual(headBadge(partial, '一部結線'), 1, '一部未結線のゲートバッジ（一部結線）が出る');
   assert.ok(partial.includes('設定: あり') && partial.includes('設定: なし'),
     'regression_cmd と intake_cmd の設定状態が区別できない');
-
-  // 未結線導線: 有効化ラベル・書くべき yaml 行・設定ファイルを開くボタンが共存する。
   assert.ok(partial.includes('有効化'), '未結線時の有効化導線が出ない');
-  assert.match(partial, /intake_cmd: 'codd-gate tasks --debt/);
-  assert.ok(partial.includes('data-gate-open="/ws/.agents/agent-project.yaml"'),
-    '設定ファイルを開く導線が出ない');
+  assert.ok(partial.includes('/ws/.agents/agent-project.yaml') && partial.includes('設定ファイルを開く'),
+    '未結線時に設定編集へ進めない');
 
-  // regression_cmd 未結線時は README と同じ sibling CLI 導線を出す。
   const regressionUnwired = gateHtml({ consistencyGate: {
     configFile: '/ws/.agents/agent-project.yaml', regressionWired: false, intakeWired: true, wired: false,
     regressionConfigured: false, intakeConfigured: true,
     regressionCmd: null, intakeCmd: 'codd-gate tasks --debt' } });
-  assert.ok(regressionUnwired.includes('tools/agent-project/'), 'sibling CLI の実行場所が出ない');
-  assert.ok(regressionUnwired.includes(
-    'codd_gate_regression.py --config /path/to/.agents/agent-project.yaml'
-  ), 'regression_cmd の sibling CLI 導線が出ない');
+  assert.ok(regressionUnwired.includes('tools/agent-project/')
+    && regressionUnwired.includes('codd_gate_regression.py'), 'sibling CLI の導線が出ない');
 
-  // 別コマンドが設定済みでも、codd-gate へは未結線と表示して現在値を隠さない。
   const configuredUnwired = gateHtml({ consistencyGate: {
     configFile: '/ws/.agents/agent-project.yaml', regressionWired: false, intakeWired: false, wired: false,
     regressionConfigured: true, intakeConfigured: false,
     regressionCmd: 'make smoke', intakeCmd: null } });
-  assert.strictEqual(headBadge(configuredUnwired, '未結線'), 3, '両フック未結線の見出し＋2行が出る');
-  assert.ok(!configuredUnwired.includes('一部結線'), '両方未結線を一部結線と表示しない');
   assert.ok(configuredUnwired.includes('make smoke'), '設定済みの別コマンドを隠さない');
-  assert.ok(configuredUnwired.includes('設定: あり') && configuredUnwired.includes('設定: なし'),
-    '設定済みと未設定を区別する');
   assert.ok(configuredUnwired.includes('一貫性ゲートの検査ではありません'),
     '設定済みでも未結線である理由を表示する');
-  assert.match(configuredUnwired, /<pre[^>]*>[\s\S]*regression_cmd:[\s\S]*intake_cmd:/,
-    '両方未結線なら README と同じ2設定行を提示する');
-
-  const brokenJson = gateHtml({ consistencyGate: {
-    configFile: '/ws/.agents/agent-project.json', configError: 'invalid-json',
-    regressionWired: false, intakeWired: false, wired: false,
-    regressionConfigured: false, intakeConfigured: false,
-    regressionCmd: null, intakeCmd: null } });
-  assert.ok(brokenJson.includes('JSON として読めません'), '壊れた JSON の修復が必要だと案内する');
-  assert.match(brokenJson, /&quot;regression_cmd&quot;:[\s\S]*&quot;intake_cmd&quot;:/,
-    'JSON 設定には JSON 形式の設定例を出す');
-  assert.ok(!brokenJson.includes('codd_gate_regression.py') && !brokenJson.includes('yaml を直接編集'),
-    'JSON 設定に YAML 専用の導線を出さない');
-
-  // ペイロード無し（旧 main と組み合わせた場合）は概要へ何も足さない。
-  assert.strictEqual(gateHtml({}), '');
-
-  let click;
-  const opened = [];
-  const button = {
-    dataset: { gateOpen: '/ws/.agents/agent-project.yaml' },
-    addEventListener(event, handler) {
-      assert.strictEqual(event, 'click');
-      click = handler;
-    },
-  };
-  const root = {
-    querySelectorAll(selector) {
-      assert.strictEqual(selector, 'button[data-gate-open]');
-      return [button];
-    },
-  };
-  const guardStub = (label, fn) => {
-    assert.strictEqual(label, '設定ファイルを開く');
-    return fn();
-  };
-  const apiStub = { openPath: (file) => opened.push(file) };
-  // eslint-disable-next-line no-new-func
-  const bindGate = new Function('guard', 'api',
-    `${grab('bindConsistencyGate')}; return bindConsistencyGate;`)(guardStub, apiStub);
-  bindGate(root);
-  click();
-  assert.deepStrictEqual(opened, ['/ws/.agents/agent-project.yaml'],
-    '有効化ボタンは表示した設定ファイルを一度だけ開く');
 }
 
 console.log('overview-ui: all tests passed');

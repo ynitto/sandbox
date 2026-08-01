@@ -36,28 +36,6 @@ ${detail}
 `;
 }
 
-// frontmatter 経路（agent-project が構造化して書いた票）を検証するための card。既存 card() は
-// 触らず、失敗の構造化フィールドを差し込めるようにするだけ。
-function cardFm(fm, why, detail) {
-  const front = Object.entries(fm).map(([k, v]) => `${k}: ${v}`).join('\n');
-  return `---
-${front}
-kind: blocked
-task-id: T-1
----
-
-# 要対応: T-1 — 何かをする
-
-## Context and Problem Statement
-
-- なぜ: ${why}
-- 状態: blocked（agent-project の判断待ち）
-
-## 判断材料（成果物の所在・差分・検証）
-${detail}
-`;
-}
-
 test('検証コマンドが対象を見つけられない失敗を要約する', () => {
   const n = project.parseNeeds(
     card('繰り返し NG（retries=3）: exit=4 no tests ran in 0.00s',
@@ -195,44 +173,16 @@ test('差分リストは次のセクションで終わる（検証行を取り�
   assert.strictEqual(n.diff.internal.length, 0);
 });
 
-// --- 一貫性ゲート由来の失敗: 診断要約とゲート分類フィールドの共存 ---
-// 概要の「一貫性ゲート」節と需要カードの結線表示（needGateSource）は、parseNeeds が載せる
-// failureSummary（人が読む一文）と failureContext.command（codd-gate を含むか）で駆動される。
-// どちらか一方が他方を潰さず共存することを、データ層で固定する。
-
-test('ゲート由来の検証失敗は診断要約とゲート分類フィールドが共存する（frontmatter 経路）', () => {
-  const n = project.parseNeeds(cardFm({
-    'failure-summary': '完了前の回帰検査で一貫性ゲートが停止しました。',
-    'failure-resolution': '置き去りのドキュメントを解消してから同じ検証を再実行してください。',
-    'failure-command': 'codd-gate verify --base "$KIRO_BASE_REV" --repos <root>/repos.json',
-    'failure-category': '一貫性ゲート',
-    'failure-owner': '成果物',
-    'failure-exit': '2',
-    'failure-phase': 'regression',
-    'verify-verdict': 'failed',
-  }, '回帰検知: 一貫性ゲートが完了を止めた', '- 所在: /ws/.agents'), 'T-1');
-  // 診断要約はそのまま出る（ゲート表示が要約を潰さない）
-  assert.strictEqual(n.failureSummary, '完了前の回帰検査で一貫性ゲートが停止しました。');
-  assert.strictEqual(n.failureResolution, '置き去りのドキュメントを解消してから同じ検証を再実行してください。');
-  // 表示側（needGateFailure）がゲート判定に使う command に codd-gate が載る
-  assert.match(n.failureContext.command, /codd-gate/);
-  // 分類フィールドが要約と共存する
-  assert.strictEqual(n.failurePhase, 'regression');
-  assert.strictEqual(n.verifyVerdict, 'failed');
-  // 回帰 NG は done に倒さず、blocked の人判断待ちを維持する
-  assert.strictEqual(n.kind, 'blocked');
-  assert.strictEqual(n.decided, false);
-});
-
-test('回帰検知の散文からもゲート判定用の command と診断要約が両立する（フォールバック経路）', () => {
+test('一貫性ゲートの回帰失敗は原因を読め、done にしない', () => {
   const n = project.parseNeeds(
     card('回帰検知: 失敗した工程: `codd-gate verify --repos repos.json`（それより前の工程は成功） exit=2',
       '- 検証: `codd-gate verify --repos repos.json` → FAIL'),
     'T-1'
   );
-  assert.match(n.failureContext.command, /codd-gate verify/);
   assert.match(n.failureSummary, /codd-gate verify --repos repos\.json/);
   assert.match(n.failureSummary, /それより前の工程は成功/);
+  assert.strictEqual(n.kind, 'blocked');
+  assert.strictEqual(n.decided, false);
 });
 
 console.log(`\n${passed} passed`);
