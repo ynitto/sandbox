@@ -180,14 +180,6 @@ build_engine() {
   copy_py_tree "${pkg_dir}" "${build_dir}/${pkg_name}"
   copy_py_tree "${AGENTCORE_PKG}" "${build_dir}/agentcore" -not -path './tests/*'
 
-  # codd-gate 自動検出・regression/intake 結線が読む sibling module（パッケージの外・
-  # install.sh と同階層の codd_gate_*.py）は zipapp ルートへ同梱する。無ければ遅延 import が
-  # 失敗して no-op 縮退するだけ（安全）だが、同梱すれば配布バイナリでも検出・結線が動く。
-  local f
-  for f in "${src_dir}"/codd_gate_*.py; do
-    [[ -f "$f" ]] && cp "$f" "${build_dir}/$(basename "$f")"
-  done
-
   cat > "${build_dir}/__main__.py" <<EOF
 from ${pkg_name} import main
 
@@ -233,6 +225,19 @@ pkg_of() {
 for engine in "${ENGINES[@]}"; do
   build_engine "${engine}" "$(pkg_of "${engine}")"
 done
+
+# Ollama は API 応答の token count を失わず台帳へ渡すため、共通の薄いアダプターを置く。
+OLLAMA_BUILD="$(mktemp -d "${TMPDIR:-/tmp}/agent-ollama-build.XXXXXX")"
+copy_py_tree "${AGENTCORE_PKG}" "${OLLAMA_BUILD}/agentcore" -not -path './tests/*'
+cat > "${OLLAMA_BUILD}/__main__.py" <<'EOF'
+from agentcore.ollama_adapter import main
+raise SystemExit(main())
+EOF
+"$PYTHON_CMD" -m zipapp "${OLLAMA_BUILD}" -o "${INSTALL_PREFIX}/agent-ollama" \
+  -p "/usr/bin/env ${PYTHON_CMD}"
+chmod +x "${INSTALL_PREFIX}/agent-ollama"
+rm -rf "${OLLAMA_BUILD}"
+ok "インストールしました: ${INSTALL_PREFIX}/agent-ollama（Ollama usage 対応）"
 
 # ---------------------------------------------------------------------------
 # 3. エンジン固有の付帯物

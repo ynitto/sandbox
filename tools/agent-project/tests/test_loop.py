@@ -79,6 +79,74 @@ class TestRunlogAndThrottle(unittest.TestCase):
 
 
 class TestRunLoop(unittest.TestCase):
+    def test_max_seconds_deadline_is_visible_during_act(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true")
+
+            def act(_task, cfg, _loc):
+                self.assertIsInstance(cfg._active_run_deadline, float)
+                self.assertGreater(cfg._active_run_deadline, time.time())
+                return True, "ok"
+
+            km.run_loop(cfg_for(d, dry_run=False, max_seconds=30.0), act=act)
+
+    def test_max_seconds_expiry_stops_without_consuming_retry(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true")
+            result = km.run_loop(
+                cfg_for(d, dry_run=False, max_seconds=30.0),
+                act=lambda *_: (km._BudgetExpired(), "max_seconds"))
+            task = km.load_tasks(d / "backlog")[0]
+            self.assertEqual(result["reason"], km.REASON_BUDGET)
+            self.assertEqual(task.norm_status(), "ready")
+            self.assertEqual(task.retries, 0)
+
+    def test_claim_loss_preserves_successor_claim_and_task(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true")
+
+            def lose_claim(_task, _cfg, _loc):
+                lock = d / "claims" / "T1.lock"
+                lock.write_text(json.dumps({"host": "successor", "pid": 99, "id": "T1"}),
+                                encoding="utf-8")
+                return km._ClaimLost(), "agent-project task claim 喪失"
+
+            km.run_loop(cfg_for(d, dry_run=False), act=lose_claim)
+            lock = d / "claims" / "T1.lock"
+            self.assertEqual(json.loads(lock.read_text(encoding="utf-8"))["host"], "successor")
+            self.assertEqual(km.load_tasks(d / "backlog")[0].norm_status(), "doing")
+
+    def test_claim_unknown_stops_as_infrastructure_error_without_releasing_claim(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true")
+            result = km.run_loop(
+                cfg_for(d, dry_run=False),
+                act=lambda *_: (km._ClaimUnknown(), "agent-project task claim を確認不能"))
+            task = km.load_tasks(d / "backlog")[0]
+            lock = d / "claims" / "T1.lock"
+            self.assertEqual(result["reason"], km.REASON_INFRASTRUCTURE)
+            self.assertEqual(km.exit_code_for(result), 2)
+            self.assertEqual(task.norm_status(), "doing")
+            self.assertTrue(lock.exists(), "所有権不明時は claim を解放しない")
+
+    def test_watch_returns_immediately_on_infrastructure_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true")
+
+            def no_idle(_seconds):
+                self.fail("infrastructure error 後に watch が idle へ戻った")
+
+            result = km.run_watch(
+                cfg_for(d, dry_run=False),
+                act=lambda *_: (km._ClaimUnknown(), "claim unknown"),
+                sleeper=no_idle)
+            self.assertEqual(result["reason"], km.REASON_INFRASTRUCTURE)
+
     def test_drains_and_archives_done(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
@@ -357,11 +425,11 @@ class TestActRunMidRevise(unittest.TestCase):
             with mock.patch.object(km.subprocess, "Popen", return_value=Proc()), \
                  mock.patch.object(km, "_wait_abort_reason", return_value=None), \
                  mock.patch.object(km, "_CLAIM_HEARTBEAT_SEC", 0.0), \
-                 mock.patch.object(km, "_refresh_claim", return_value=False), \
+                 mock.patch.object(km, "_refresh_claim", return_value=km._CLAIM_REFRESH_LOST), \
                  mock.patch.object(km.time, "sleep", lambda *_: None), \
                  mock.patch.object(km, "reap_orphan_flow", return_value=0):
                 ok, msg = km._act_run(t, cfg)
-            self.assertFalse(ok)
+            self.assertIsInstance(ok, km._ClaimLost)
             self.assertIn("claim", msg)
 
     def test_expired_orchestrator_lease_stops_run(self):
@@ -384,12 +452,100 @@ class TestActRunMidRevise(unittest.TestCase):
 
             with mock.patch.object(km.subprocess, "Popen", return_value=Proc()), \
                  mock.patch.object(km, "_wait_abort_reason", return_value=None), \
-                 mock.patch.object(km, "_flow_run_lease_expired", side_effect=[False, True]), \
+                 mock.patch.object(km, "_flow_run_lease_state",
+                                   side_effect=[km._FLOW_LEASE_ALIVE, km._FLOW_LEASE_EXPIRED]), \
+                 mock.patch.object(km, "_FLOW_LEASE_EXPIRY_CONFIRM_SEC", 0.0), \
                  mock.patch.object(km.time, "sleep", lambda *_: None), \
                  mock.patch.object(km, "reap_orphan_flow", return_value=0):
                 ok, msg = km._act_run(t, cfg)
             self.assertFalse(ok)
             self.assertIn("lease", msg)
+
+    def test_terminal_run_is_not_misread_as_missing_lease(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), dry_run=False, act_timeout=0.0)
+            km.ensure_dirs(cfg)
+            t = km.Task(id="T1", title="x", verify="true", status="doing")
+            km.persist_task(cfg, t)
+
+            class Proc:
+                returncode = 0
+                stdout = io.StringIO("")
+                calls = 0
+                def poll(self):
+                    self.calls += 1
+                    return None if self.calls <= 2 else self.returncode
+                def kill(self): self.returncode = -9
+
+            with mock.patch.object(km.subprocess, "Popen", return_value=Proc()), \
+                 mock.patch.object(km, "_wait_abort_reason", return_value=None), \
+                 mock.patch.object(km, "_flow_run_lease_state",
+                                   return_value=km._FLOW_LEASE_TERMINAL), \
+                 mock.patch.object(km, "_STALE_RUN_SEC", 0.0), \
+                 mock.patch.object(km.time, "sleep", lambda *_: None):
+                ok, _msg = km._act_run(t, cfg)
+            self.assertTrue(ok)
+
+    def test_terminal_run_stops_wrapper_after_fixed_grace(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), dry_run=False, act_timeout=0.0)
+            km.ensure_dirs(cfg)
+            t = km.Task(id="T1", title="x", verify="true", status="doing")
+            km.persist_task(cfg, t)
+            run_dir = cfg.bus / "runs" / km.run_id_for(cfg, t)
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "meta.json").write_text(json.dumps({"status": "done"}), encoding="utf-8")
+
+            class Proc:
+                returncode = None
+                stdout = io.StringIO("")
+                def poll(self): return self.returncode
+                def terminate(self): self.returncode = -15
+                def wait(self, timeout=None): return self.returncode
+                def kill(self): self.returncode = -9
+
+            with mock.patch.object(km.subprocess, "Popen", return_value=Proc()), \
+                 mock.patch.object(km, "_wait_abort_reason", return_value=None), \
+                 mock.patch.object(km, "_flow_run_lease_state",
+                                   return_value=km._FLOW_LEASE_TERMINAL), \
+                 mock.patch.object(km, "_FLOW_TICK_TIMEOUT_SEC", 0.0), \
+                 mock.patch.object(km.time, "sleep", lambda *_: None), \
+                 mock.patch.object(km, "reap_orphan_flow", return_value=0):
+                ok, _msg = km._act_run(t, cfg)
+            self.assertTrue(ok, "terminal=done は wrapper の終了コードで failed に戻さない")
+
+    def test_terminal_grace_does_not_interrupt_scheduled_auto_heal(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), dry_run=False, act_timeout=0.0)
+            km.ensure_dirs(cfg)
+            t = km.Task(id="T1", title="x", verify="true", status="doing")
+            km.persist_task(cfg, t)
+            run_dir = cfg.bus / "runs" / km.run_id_for(cfg, t)
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "meta.json").write_text(json.dumps({
+                "status": "failed", "heal_next_at": time.time() + 3600,
+            }), encoding="utf-8")
+
+            class Proc:
+                returncode = 0
+                stdout = io.StringIO("")
+                calls = 0
+                terminated = False
+                def poll(self):
+                    self.calls += 1
+                    return None if self.calls <= 2 else self.returncode
+                def terminate(self): self.terminated = True; self.returncode = -15
+                def kill(self): self.terminated = True; self.returncode = -9
+
+            proc = Proc()
+            with mock.patch.object(km.subprocess, "Popen", return_value=proc), \
+                 mock.patch.object(km, "_wait_abort_reason", return_value=None), \
+                 mock.patch.object(km, "_flow_run_lease_state",
+                                   return_value=km._FLOW_LEASE_TERMINAL), \
+                 mock.patch.object(km, "_FLOW_TICK_TIMEOUT_SEC", 0.0), \
+                 mock.patch.object(km.time, "sleep", lambda *_: None):
+                km._act_run(t, cfg)
+            self.assertFalse(proc.terminated)
 
     def test_detach_keeps_cancel_marker_when_no_meta(self):
         """submit 前 detach: マーカーを残し daemon の run 化前 cancel へ渡す。"""
@@ -552,11 +708,11 @@ class TestActTimeoutZero(unittest.TestCase):
             meta = run / "meta.json"
             meta.write_text(json.dumps({"status": "running", "orch_lease_until": 100.0}),
                             encoding="utf-8")
-            self.assertFalse(km._flow_run_lease_expired(cfg, rid, now=100.0))
-            self.assertTrue(km._flow_run_lease_expired(cfg, rid, now=100.1, use_git=True))
+            self.assertEqual(km._flow_run_lease_state(cfg, rid, now=100.0), km._FLOW_LEASE_ALIVE)
+            self.assertEqual(km._flow_run_lease_state(cfg, rid, now=100.1), km._FLOW_LEASE_EXPIRED)
             meta.write_text(json.dumps({"status": "done", "orch_lease_until": 0.0}),
                             encoding="utf-8")
-            self.assertIsNone(km._flow_run_lease_expired(cfg, rid, now=100.1))
+            self.assertEqual(km._flow_run_lease_state(cfg, rid, now=100.1), km._FLOW_LEASE_TERMINAL)
 
     def test_flow_run_lease_expiry_reads_git_bus_run_clone(self):
         with tempfile.TemporaryDirectory() as d:
@@ -568,13 +724,45 @@ class TestActTimeoutZero(unittest.TestCase):
             (run / "meta.json").write_text(
                 json.dumps({"status": "running", "orch_lease_until": 100.0}),
                 encoding="utf-8")
-            self.assertTrue(km._flow_run_lease_expired(cfg, rid, now=100.1, use_git=True))
+            self.assertEqual(km._flow_run_lease_state(cfg, rid, now=100.1, use_git=True),
+                             km._FLOW_LEASE_EXPIRED)
             local = cfg.bus / "runs" / rid
             local.mkdir(parents=True)
             (local / "meta.json").write_text(
                 json.dumps({"status": "running", "orch_lease_until": 200.0}),
                 encoding="utf-8")
-            self.assertFalse(km._flow_run_lease_expired(cfg, rid, now=100.1))
+            self.assertEqual(km._flow_run_lease_state(cfg, rid, now=100.1), km._FLOW_LEASE_ALIVE)
+
+    def test_active_run_deadline_honors_overall_max_seconds(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), act_timeout=0.0)
+            cfg._active_run_deadline = 123.0
+            self.assertEqual(km._act_deadline(cfg, now=100.0), (123.0, "max_seconds"))
+
+    def test_active_run_deadline_returns_budget_expiry(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), dry_run=False, act_timeout=0.0, max_seconds=30.0)
+            cfg._active_run_deadline = 0.0
+            km.ensure_dirs(cfg)
+            task = km.Task(id="T1", title="x", verify="true", status="doing")
+            km.persist_task(cfg, task)
+
+            class Proc:
+                returncode = 0
+                stdout = io.StringIO("")
+                def poll(self): return None
+                def terminate(self): self.returncode = -15
+                def wait(self, timeout=None): return self.returncode
+                def kill(self): self.returncode = -9
+
+            with mock.patch.object(km.subprocess, "Popen", return_value=Proc()), \
+                 mock.patch.object(km, "_wait_abort_reason", return_value=None), \
+                 mock.patch.object(km, "_flow_run_lease_state",
+                                   return_value=km._FLOW_LEASE_ALIVE), \
+                 mock.patch.object(km, "reap_orphan_flow", return_value=0):
+                status, msg = km._act_run(task, cfg)
+            self.assertIsInstance(status, km._BudgetExpired)
+            self.assertIn("max_seconds", msg)
 
     def test_req_id_for_generation(self):
         with tempfile.TemporaryDirectory() as d:

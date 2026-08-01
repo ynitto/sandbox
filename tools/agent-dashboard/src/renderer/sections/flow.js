@@ -446,7 +446,7 @@ async function selectFlowRun(runId) {
   state.flowRunId = runId;
   state.flowNodeId = null;
   state.flowRevisionId = null;
-  state.flowGraphMode = 'plan';
+  state.flowGraphMode = 'dependencies';
   state.flowDetailView = 'overview';
   state.flowMobileDetail = true;
   state.flowRun = await guard('実行内容の読み込み', () => api.flowRun(state.project.dir, state.project.busDir, runId));
@@ -740,6 +740,7 @@ const viewTabs = [
       </div>
       ${graphModeTabs}
       <div id="graph-box" class="graph-mode-${graphMode}">${graphContent}</div>
+      ${projectAcceptanceHtml(state.project, run)}
       ${graphMode === 'dependencies' ? `<div class="legend">${legend}${hasPlanChanges ? '<span class="key"><span class="plan-change-sw"></span>計画更新</span>' : ''}</div>` : ''}
     </section>
     <aside id="flow-node" class="flow-node-detail">

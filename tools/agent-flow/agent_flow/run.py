@@ -487,7 +487,6 @@ def cmd_run(args) -> int:
                 # 子（orchestrator/worker）を停止する。--close-issues は cmd_cancel 側で実施済み。
                 bus.mark_canceled(run_id, bus.cancel_info(run_id).get("reason") or "cancel 指示")
                 bus.clear_waits_for_run(run_id)
-                bus.clear_cancel(run_id)
                 bus.sync_push(f"cancel run {run_id}")
                 print(f"\n>>> run {run_id} は cancel されました。停止します。", flush=True)
                 break
@@ -504,6 +503,10 @@ def cmd_run(args) -> int:
 
     bus.sync_pull()
     state_sync(args, force=True)   # 状態 git: run の結末（results/final/meta）を間隔を待たず共有側へ
+    if bus.get_status() == "cancelled" and bus.is_canceled_requested(run_id):
+        bus.clear_cancel(run_id)   # shutdown 後の所有者 acknowledgement
+        bus.sync_push(f"ack cancel run {run_id}")
+        state_sync(args, force=True)
     final = read_json(bus.final_path)
     if final:
         print("\n=== 最終結果 ===")

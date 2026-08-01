@@ -1,6 +1,6 @@
 {
   "name": "ollama",
-  "command": ["ollama", "run", "{model}"],
+  "command": ["agent-ollama", "{model}"],
   "prompt_via": "stdin",
   "default_model": "qwen3",
   "output": "stdout",

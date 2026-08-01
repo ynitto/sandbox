@@ -262,6 +262,11 @@ def _select_batch(order: "list[Task]", cfg: "Config", policy, remaining: int) ->
 #   <root>/claims/<id>.lock を O_CREAT|O_EXCL で作れた者だけが実行権を持つ。owner 失踪時のため TTL で奪取可。
 _UNBOUNDED_ACT_CLAIM_WINDOW_SEC = 1800.0
 _CLAIM_HEARTBEAT_SEC = _UNBOUNDED_ACT_CLAIM_WINDOW_SEC / 3.0
+_CLAIM_REFRESH_RETRY_SEC = 5.0
+_CLAIM_REFRESH_UNKNOWN_GRACE_SEC = 60.0
+_CLAIM_REFRESH_OK = "ok"
+_CLAIM_REFRESH_LOST = "lost"
+_CLAIM_REFRESH_UNKNOWN = "unknown"
 
 
 def _claims_dir(cfg: "Config") -> Path:
@@ -275,7 +280,7 @@ def _claim_ttl(cfg: "Config") -> float:
     return act_window + cfg.verify_timeout + 60.0
 
 
-def _refresh_claim(cfg: "Config", task: "Task") -> bool:
+def _refresh_claim(cfg: "Config", task: "Task") -> str:
     """自分が保持する claim の失踪判定時計を更新する。"""
     p = _claims_dir(cfg) / f"{task.id}.lock"
 
@@ -287,11 +292,14 @@ def _refresh_claim(cfg: "Config", task: "Task") -> bool:
     try:
         rec = json.loads(p.read_text(encoding="utf-8"))
         if not ours(rec):
-            return False
+            return _CLAIM_REFRESH_LOST
         os.utime(p, None)
-        return ours(json.loads(p.read_text(encoding="utf-8")))
+        return (_CLAIM_REFRESH_OK if ours(json.loads(p.read_text(encoding="utf-8")))
+                else _CLAIM_REFRESH_LOST)
+    except FileNotFoundError:
+        return _CLAIM_REFRESH_LOST
     except (OSError, ValueError, TypeError):
-        return False
+        return _CLAIM_REFRESH_UNKNOWN
 
 
 def claim_task(cfg: "Config", task: "Task") -> bool:
@@ -433,11 +441,13 @@ def _act_batch(batch: "list[Task]", cfg: "Config", act, policy) -> "dict[str, tu
             msg = f"既存 done run {reuse_done_run} の成果を再利用（タスクグラフ実行を省略）"
             append_journal(cfg.journal, f"{t.id}: {msg}")
             return (locs[t.id], None, msg, True)
-        # act は (bool|_Pending, msg)。_Pending は「非ブロッキング submit 済み・未終端」＝offload。
+        # act は (bool|_Pending|_ClaimLost|_ClaimUnknown|_BudgetExpired, msg)。
         # bool は「act 自体の成否」。捨てると失敗 run でも verify=true で done になり得る。
         status, msg = act(t, cfg, locs[t.id])
         if isinstance(status, _Pending):
             return (locs[t.id], status, msg, None)
+        if isinstance(status, (_ClaimLost, _ClaimUnknown, _BudgetExpired)):
+            return (locs[t.id], None, msg, status)
         return (locs[t.id], None, msg, bool(status))
 
     if len(claimed) == 1:

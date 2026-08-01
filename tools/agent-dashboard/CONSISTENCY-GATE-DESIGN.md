@@ -1,130 +1,67 @@
-【差別化の切り口】現在の結線状態と失敗時点の記録を別の時系列として扱い、誤断定と done の迂回を防ぐ。
+【差別化の切り口】検証 CLI を識別せず、既存の完了前フックだけを表示する。
 
-# dashboard 一貫性ゲート表示設計
+# dashboard プロジェクト共通チェック表示設計
 
 ## TL;DR
 
-dashboard は、概要で `regression_cmd` と `intake_cmd` の現在の結線状態を見せ、要対応で codd-gate 由来と確認できる失敗の意味を見せる。未結線なら公式の設定例と sibling CLI を案内するだけで、設定もタスク状態も変更しない。
-
-主要な判断は三つ。全体状態は概要、個別失敗は要対応に置く。`設定あり` と `codd-gate 結線済み` を分ける。過去の失敗原因は失敗時の `failure-*` と記録コマンドから判定し、現在の設定から推測しない。
-
-自動設定、codd-gate の実行、新しい dashboard 専用フックは採らない。agent-project の完了判定と公式ファイル契約を二重実装するためだ。
-
-読むべき人は dashboard と agent-project の保守担当者。codd-gate 自体の実装担当者には、CLI 契約の確認箇所以外は不要である。
+dashboard は `regression_cmd` の設定有無と値を表示する。コマンド内の CLI は解釈せず、未設定なら state repo が持つ共通チェックを案内する。設定やタスク状態は変更しない。
 
 ## 前提と完了条件
 
-現 HEAD には必要な表示経路がすでにある。この文書は追加実装案ではなく、今後の変更で守る表示契約と検収基準を一つに固定するものとした。
+agent-project の完了前チェックは既存の `regression_cmd` が正典である。dashboard はこの契約の読み取り側に留まり、検証 CLI ごとの設定、検出器、状態モデルを持たない。
 
-完了条件は、表示項目、未設定時の導線、done 不変条件、公式契約の境界、テスト観点が、t3 と t4 の調査結果および現物コードに対応していること。`未設定` はキーが空の場合だけを指さない。汎用フックに別コマンドが入っていて codd-gate の正規形に合わない場合も `未結線` とする。
-
-正典は agent-project が生成する設定、`needs/`、`inbox/`、`commands/` と、agent-project README および CLI parser である。dashboard README や画面文言はその利用者であって正典ではない。
+完了条件は、任意の `regression_cmd` を同じように表示でき、回帰失敗が done を止めた事実を要対応で確認できること。新しい検証 CLI を追加しても dashboard の変更は不要である。
 
 ## 範囲
 
-目標は、人が画面だけで両フックの設定有無、結線状態、ゲート失敗の意味、次に行う手作業を判断できること。判定不能な場合は不明と分かり、生の記録へ戻れることも含む。
-
-対象外は、agent-project のフック実装、dashboard 専用 IPC の追加、設定や needs の自動更新、codd-gate の実行、UI 操作による done 確定である。
+対象は、概要での設定表示、未設定時の案内、要対応での回帰失敗表示である。コマンドの実行、設定の更新、CLI の存在確認、`intake_cmd` の表示、done の確定は対象外とする。
 
 ## 表示項目
 
-抽象度:コンポーネント。
-
 | 配置 | 表示 | 根拠 |
 |---|---|---|
-| 概要「一貫性ゲート」 | 全体の `結線済み`、`一部結線`、`未結線` | `consistencyGate.wired` と各 `*Wired` |
-| 同上 | `regression_cmd` と `intake_cmd` ごとの `設定:あり/なし`、`結線済み/未結線`、現在値 | `*Configured`、`*Wired`、`*Cmd` |
-| 同上 | regression 失敗は done 確定を止めること、intake 成功時はドリフトを修復タスクへ積むこと | agent-project のフック契約 |
-| 同上 | 自動探索した設定候補であり、実効 `--config` と一致する保証がないこと | `configSource`、`explicitConfigUnknown` |
-| 要対応の既存「状況」 | 検証失敗の要約、対処、分類、対象、コマンド、作業場所、終了コード | `needs/<id>.md` の構造化 `failure-*` |
-| 同上 | codd-gate の実行経路が regression かタスク自身の verify か、`intake_cmd` が未結線なら概要への案内 | `failure-phase` と記録された `codd-gate verify` |
+| 概要「プロジェクト共通チェック」 | `設定済み` または `未設定`、現在のコマンド | `projectCheck.configured`、`projectCheck.command` |
+| 同上 | 未設定時の `regression_cmd: ./tools/check` | state repo が所有する共通チェックの標準形 |
+| 要対応 | 完了前の共通チェックが失敗し、done を止めたこと | `failure-phase=regression` |
 
-現在値は未結線でも隠さない。たとえば `regression_cmd: make -s smoke` は `設定:あり、未結線` と表示し、一貫性ゲートの検査ではないと添える。キーの存在だけで有効とする案は却下する。
+表示はコマンド文字列をエスケープする。`codd-gate`、`make`、将来の CLI のいずれでも扱いを変えない。
 
-要対応では失敗要約と対処を先に、ゲート説明を後に置く。現在の `regression_cmd` が結線済みという理由だけで過去の失敗を codd-gate 由来にする案も却下する。設定変更後に過去の意味まで変わってしまうからだ。
+## 未設定時の導線
 
-## 未結線時の導線
-
-抽象度:画面仕様。
-
-未結線のキーだけ、次の正式値を提示する。`<root>` は利用者が対象プロジェクトのルートへ置換する。
+自動探索した設定ファイルがある場合は、それを OS のエディタで開くボタンだけを出す。画面から設定を生成・更新する機能や専用の配線 CLI は設けない。
 
 ```yaml
-regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV" --repos <root>/repos.json'
-intake_cmd: 'codd-gate tasks --debt --repos <root>/repos.json'
+regression_cmd: ./tools/check
 ```
 
-YAML では該当トップレベルキーを追加または置換する。JSON では既存トップレベル object の同名プロパティだけを追加または置換し、ファイル全体を置換させない。別コマンドが設定済みなら、置換で現在の処理を失うと警告する。両方必要な場合のコマンド合成は利用者が判断する。
-
-`regression_cmd` が未設定で既存 YAML を読めた場合に限り、リポジトリルートから次を実行する選択肢を示す。
-
-```bash
-python3 tools/agent-project/codd_gate_regression.py \
-  --config <状態 clone>/agent-project.yaml
-```
-
-この CLI は既存 YAML の `regression_cmd` 一つだけを冪等更新する。`--dry-run` は無変更確認に使える。`intake_cmd` 用の注入 CLI はないため、設定を直接編集する。設定ファイル未検出、JSON、既存 `regression_cmd` ありのいずれかなら CLI を勧めない。
-
-画面の操作は、自動検出した設定ファイルを OS のエディタで開くところまで。設定作成、保存、CLI 実行は利用者が行う。
+`./tools/check` は state repo が所有する。検証 CLI の追加や順序変更はそのファイルだけで行う。
 
 ## done 不変条件
 
-抽象度:境界。
-
-`regression_cmd` はタスク verify が通った後、done 確定前に agent-project が実行する。失敗時は `_settle_done()` へ進まず needs を生成する。dashboard はこの結果を読むだけであり、有効化導線から approve、complete、status 更新を送ってはならない。
-
-`intake_cmd` の出力は agent-project が検証し、既存の `enqueue_reconciled()` を通して backlog 化する。dashboard が検出結果を直接 backlog や done へ書く経路は設けない。既存の人操作が必要な場合も `commands/` または `inbox/` へ投函し、agent-project に判定させる公式経路を保つ。
-
-設定ファイルを開くボタンは `openPath` だけを呼ぶ。表示更新は次の `readProject()` スナップショットで行い、楽観的に結線済みへ変えない。
+`regression_cmd` はタスク verify が通った後、done 確定前に agent-project が実行する。失敗時は agent-project が needs を生成する。dashboard は結果を読むだけで、approve、complete、status 更新を送らない。
 
 ## 公式契約の境界
 
-抽象度:データ経路。
-
 | 公式入力 | dashboard の読取経路 | 許される解釈 |
 |---|---|---|
-| `agent-project.{yaml,yml,json}` | `readToolConfig()` → `consistencyGateStatus()` → `readProject().consistencyGate` → `dashboard:project` | 設定有無とコマンド語順による結線判定まで |
-| `needs/<id>.md` の `failure-*` | `parseNeeds()` → `needFailureViewModel()` → `renderNeedFacts()` | producer が記録した要約と実行時コマンド。旧票だけ限定的な後方互換解析 |
-| `commands/*.err` と `commands/processed/*.json` | `listCommandFailures()` / `listCommandReceipts()` | 最新の失敗または受理。失敗表示を受理や送信待ちで覆わない |
-| `commands/*.json` | ファイル存在と短い localStorage 表示 | `送信済み（取り込み待ち）` まで。処理成功とは呼ばない |
-| `inbox/*.{json,md,markdown,txt}` | `readProject().inboxFiles` | backlog 化前の追加待ち件数。needs やゲート状態へ混ぜない |
+| `agent-project.{yaml,yml,json}` | `readToolConfig()` → `projectCheckStatus()` → `readProject().projectCheck` | `regression_cmd` の有無と値 |
+| `needs/<id>.md` の `failure-*` | `parseNeeds()` → `needFailureViewModel()` → `renderNeedFacts()` | producer が記録した失敗工程と要約 |
 
-dashboard は codd-gate の実在、バージョン互換性、実行成功を判定しない。また、agent-project が明示 `--config` で使うパスは現行 instance/status 契約にないため、自動探索候補との一致を断定しない。実効設定を正確に表示したくなった時点で、agent-project の公式契約を拡張する。
+dashboard は CLI の種類、実在、バージョン、実行成功を判定しない。agent-project が明示 `--config` で使うパスは現契約にないため、自動探索候補との一致も断定しない。
 
 ## 主要判断と却下案
 
-### 概要と要対応へ分ける
-
-概要は現在の全体状態、要対応は失敗時点の個別事実を担当する。技術情報欄へ集約する案は、対処したい人から遠い。両画面へ同じ説明を複製する案は、文言と状態がずれるため採らない。確信度は高い。
-
-### 設定と実行記録を分ける
-
-現在設定は結線の見込み、失敗記録は過去に実行された事実である。別モデルとして表示する。現在設定から過去原因を補完する案は誤断定を生むため却下する。代わりに情報が足りない旧票は不明のまま生ログへ案内する。確信度は高い。
-
-### 有効化は人へ返す
-
-dashboard は設定例、既存 CLI、設定ファイルを開く操作だけを提供する。自動書換は既存コマンドを失う恐れがあり、自動実行は dashboard が公式な完了判定を持つことになるため却下する。手作業は残るが、done 不変条件を一か所に保てる。確信度は高い。
+CLI ごとの結線判定は、新しい検証機を追加するたびにコードと学習項目が増えるため採らない。共通チェックの manifest や plugin registry も、1本のコマンドで足りる間は設けない。既存負債の自動投入は完了前チェックとは責務が異なるため、この表示へ混ぜない。
 
 ## テスト観点
 
-抽象度:検収。
-
-1. 設定モデル:両方結線、片方だけ結線、両方未結線、空値、別コマンド、複数行 YAML、壊れた JSON で `configured`、`wired`、全体三値が一致する。
-2. 概要 UI:現在値を隠さず、未結線の行だけ設定例を出す。YAML と JSON の編集指示、置換警告、CLI の表示条件、自動探索の注意、`openPath` だけの操作を確認する。
-3. 要対応 UI:`failure-phase=regression` と記録された `codd-gate verify` がそろう場合だけ完了前の回帰検査と表示する。タスク verify は別経路と表示し、`codd-gate doctor`、`make smoke`、根拠なしでは断定しない。
-4. 不変条件:回帰失敗が needs に残り done にならないこと、intake が agent-project の取り込み経路を通ること、表示コードから設定、needs、status を書かないことを確認する。
-5. 契約同期:設定例を agent-project README と、`verify --base --repos`、`tasks --debt --repos`、sibling CLI の `--config` / `--dry-run` と照合する。
-
-受入条件は、概要だけで現在の二つのフック状態を判断でき、要対応だけで記録済み失敗の意味と次の確認先を判断でき、どの導線からも dashboard が状態を確定しないこと。
-
-## 検証記録
-
-データ経路と CLI 契約を、現 HEAD の `project.js`、`toolconfig.js`、`renderer.js`、`sections/overview.js`、`sections/needs.js`、agent-project の `mr.py` と `model.py`、対象テストに突き合わせた。
-
-2026-08-01 に対象テストを再実行し、すべて成功した。対象ソースへの ESLint も成功した。実装、README、回帰テストを本設計に合わせて更新した。
+1. 任意の `regression_cmd` を設定済みとして値とともに表示する。
+2. 未設定と設定ファイル未検出を安全に表示する。
+3. コマンド文字列を HTML として解釈しない。
+4. `failure-phase=regression` だけを共通チェック失敗として表示する。
+5. 表示操作が `openPath` 以外の書き込みを行わない。
 
 ## 未解決と範囲外
 
-- 実効 `--config` パスと dashboard の自動探索候補が一致するかは、現契約では分からない。
-- codd-gate の実在、互換性、実行成功の監視は対象外。必要なら agent-project の status 契約として追加する。
-- 新規フック、設定注入 CLI、UI からの状態書換は行わない。
+- 実効 `--config` パスの表示は、agent-project が公式契約へ公開した場合に検討する。
+- 実行時間や検査別の内訳が必要になった場合は、共通チェックの標準出力ではなく、計測要件を先に定める。

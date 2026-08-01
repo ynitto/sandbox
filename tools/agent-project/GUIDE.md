@@ -124,15 +124,10 @@ agent-project runlog --tail 20    # 何が起きたかを構造化ログで確�
 **安全装置の役割**（→ [早見表](#安全装置の早見表)）: `gate`=質の承認 / `protect`=危険パスの番人 /
 `regression_cmd`=巻き込み検知 / `verify_confirm`=flake 隔離 / `require_progress`=偽 done 捕捉。
 
-**一貫性ゲート（opt-in）**: ドキュメントだけが置き去りになる事故は上の5つでは止まらない。別ツール
-`codd-gate` を `regression_cmd`（done 前の差分ゲート）と `intake_cmd`（負債を修復タスク化）に結線すると
-塞げる。**人か install 手順が `<状態 clone>/agent-project.yaml` にコマンドを書くか、CLI の
-`--regression-cmd` / `--intake-cmd` に渡したときだけ有効になる。自動検出だけでは有効にならない。**
-`regression_cmd` の1行は、リポジトリルートで
-`python3 tools/agent-project/codd_gate_regression.py --config <状態 clone>/agent-project.yaml` を明示実行しても
-冪等に追加できる。`intake_cmd` は人か install 手順が設定する。貼る値と
-`--repos` の既定・`--dry-run` の挙動は README「フレーク耐性 / 回帰 / 検収 / パス保護」の一貫性ゲート項が正本
-（ここには複製しない）。
+**プロジェクト共通チェック（opt-in）**: state repo の `./tools/check` に、テストや `codd-gate` など
+done 前に必ず通したい検査をまとめ、`regression_cmd: ./tools/check` と一度だけ設定する。agent-project は
+コマンドの中身を解釈しない。検証 CLI を増やす場合も `tools/check` だけを変更し、通常タスクの `verify` や
+agent-project の設定項目は増やさない。詳細は README の「フレーク耐性 / 回帰 / 検収 / パス保護」を参照する。
 
 **自律度はタスク毎に変えてよい**（実運用では backlog 毎に違う）。グローバル `--level` は既定で、タスク行
 `- level:` が**上書き**する（実効＝明示 > 自動 > グローバル。`protect`/`gate` は常に上乗せ）:
@@ -194,10 +189,7 @@ agent-project doctor --fix        # env/config を自動修正し、program の�
 `audit` が「設定が無人運用に値するか」を採点するのに対し、`doctor` は「**いま現に何が起きているか**」を
 ログ・稼働シグナルから診断する。環境/設定の問題は直し、コードの不具合だけイシューに切り出す。既定では
 実行層 `agent-flow doctor` も連携実行して所見を統合する（`[flow]` 印・`--no-flow` で本体のみ）。
-一貫性ゲートの結線診断は、リポジトリルートで
-`python3 tools/agent-project/codd_gate_wiring.py --config <状態 clone>/agent-project.yaml` を実行する。
-これが唯一の正準入口である。CLI は `codd-gate` の検出結果と未結線時の推奨コマンドを JSON で出し、
-設定ファイルには書き込まない。有効化手順の正本は README。
+共通チェック自体の診断は state repo で `./tools/check` を直接実行する。
 
 **卒業の目安**: 予算内で安定収束、`audit --strict` が常時グリーン、夜間放任でも事故ゼロ。
 
@@ -297,10 +289,10 @@ cd ~/projects/payments && agent-project needs                               # �
 1. **最終状態/差分を assert する**（履歴の絶対状態を見ない）。
    ```yaml
    verify: `grep -q "def new_helper" util.py`            # ◎ コードの結果
-   verify: `test -n "$(git log $KIRO_BASE_REV..HEAD --grep refactor)"`  # ◎ 差分スコープ
+   verify: `test -n "$(git log $AGENT_BASE_REV..HEAD --grep refactor)"`  # ◎ 差分スコープ
    verify: `git log | grep -q refactor`                  # ✗ 過去コミットにマッチ
    ```
-   `$KIRO_BASE_REV`（act 前の HEAD）は verify 実行時に自動で渡る。
+   `$AGENT_BASE_REV`（act 前の HEAD）は verify 実行時に自動で渡る。旧 `$KIRO_BASE_REV` も互換期間は使える。
 2. **変更が出るはずの作業には `- expect: changes`** を付ける（無変更 done を人へ）。逆に正当な無変更タスクは
    `- expect: none`。全体で強制するなら `--require-progress`（または `require_progress: true`）。
 3. **成果参照は自動で真正化**される。DELIVERY/needs には act 前以降の新規差分のみが載り、無ければ `(変更なし)`。
@@ -321,7 +313,7 @@ concrete な verify に変換されるので「done は verify のみが根拠�
 | 検収ゲート | `policy.md: gate:` / `- review: human` | verify=PASS でも質的に要承認 | L2+ |
 | パス保護 | `policy.md: protect:` | 危険パス（CI/秘密等）への変更 | L2+ |
 | 回帰ゲート | `regression_cmd` (+`regression_revert`) | done が他を壊す巻き込み事故 | L2+ |
-| 一貫性ゲート | `regression_cmd`／`intake_cmd` に `codd-gate`（opt-in） | ドキュメント・テストの置き去り | L2+ |
+| プロジェクト共通チェック | `regression_cmd: ./tools/check`（opt-in） | テストや決定的検査の置き去り | L2+ |
 | flake 隔離 | `verify_confirm: 2` | 揺れる verify の誤 done / retry 暴走 | L2+ |
 | 偽 done 捕捉 | `require_progress` / `expect: changes` | 変更ゼロの done（履歴一致 verify） | L2+ |
 | 予算停止 | `max_cost` / `max_tokens` / `throttle` | コスト暴走（必ず有限停止） | L3+ |
@@ -452,8 +444,8 @@ agent-project needs           # 人の判断待ち（承認は GitLab の status
 | `verify_confirm` | `1` | L2+ | flake が疑わしければ `2`（コストは回数分） |
 | `verify_cwd` | なし | project | verify/acceptance の実行先（明示すると常に最優先）。git-bus 等で workdir に成果が無いとき repo のクローン先を指す。未指定でも `- workspace:` 指定タスクは該当 repo を指定 branch/path で自動 clone して検証し、acceptance も単一 repo を自動 clone する |
 | `require_progress` | `false` | L2+ | 偽 done を全体で弾く。`expect:` で個別調整 |
-| `regression_cmd` | なし | L2+ | done 前のグローバル検査（例 `pytest -q`）。一貫性ゲートもこのキーに載せる |
-| `intake_cmd` / `intake_interval` | なし / `600` | L2+ | 外部の決定的ゲートを watch 周期で pull し enqueue（例 `codd-gate tasks --debt`）。yaml へ直接書く |
+| `regression_cmd` | なし | L2+ | done 前の共通チェック。state repo の `./tools/check` など1本にまとめる |
+| `intake_cmd` / `intake_interval` | なし / `600` | L2+ | 外部検出器を watch 周期で pull し enqueue。継続投入が必要な場合だけ使う |
 | `max_cost`/`max_tokens` | `0` | L3+ | 無人運用は必ず上限を入れる |
 | `throttle` | `0.0` | L3+ | 上限の手前で減速（例 `0.8`） |
 | `concurrency` | `1` | L4 | daemon/remote と併用で並列消化 |

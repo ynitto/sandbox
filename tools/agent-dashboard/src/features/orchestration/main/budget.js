@@ -188,25 +188,48 @@ function usage(cfg) {
   const dir = resolveBudgetDir(cfg);
   const config = loadBudgetConfig(dir);
   const seconds = {};
+  const recordCounts = {};
+  const unestimatedRecords = {};
+  const agentTotals = {};
   const measuredTokens = {};
   const estimatedTokens = {};
   let totalSeconds = 0;
+  let totalRecords = 0;
+  let totalUnestimatedRecords = 0;
   let totalMeasured = 0;
   let totalEstimated = 0;
   for (const rec of ledgerRecords(dir, config.period)) {
     const wl = String(rec.workload || 'other');
+    const agent = String(rec.agent_cli || 'unknown');
+    const agentTotal = agentTotals[agent] || (agentTotals[agent] = {
+      seconds: 0, recordCount: 0, unestimatedRecords: 0,
+      measuredTokens: 0, estimatedTokens: 0,
+    });
+    recordCounts[wl] = (recordCounts[wl] || 0) + 1;
+    agentTotal.recordCount += 1;
+    totalRecords += 1;
     const sec = Number(rec.seconds);
     if (Number.isFinite(sec) && sec > 0) {
       seconds[wl] = (seconds[wl] || 0) + sec;
+      agentTotal.seconds += sec;
       totalSeconds += sec;
     }
     const tok = rowTokens(rec, config);
-    if (!(tok > 0)) continue;
+    if (!(tok > 0)) {
+      if (!isMeasured(rec) && Number.isFinite(sec) && sec > 0) {
+        unestimatedRecords[wl] = (unestimatedRecords[wl] || 0) + 1;
+        agentTotal.unestimatedRecords += 1;
+        totalUnestimatedRecords += 1;
+      }
+      continue;
+    }
     if (isMeasured(rec)) {
       measuredTokens[wl] = (measuredTokens[wl] || 0) + tok;
+      agentTotal.measuredTokens += tok;
       totalMeasured += tok;
     } else {
       estimatedTokens[wl] = (estimatedTokens[wl] || 0) + tok;
+      agentTotal.estimatedTokens += tok;
       totalEstimated += tok;
     }
   }
@@ -214,6 +237,7 @@ function usage(cfg) {
   const softRatio = softRatioOf(config);
   const allWl = new Set([
     ...KNOWN_WORKLOADS,
+    ...Object.keys(recordCounts),
     ...Object.keys(seconds),
     ...Object.keys(measuredTokens),
     ...Object.keys(estimatedTokens),
@@ -241,6 +265,8 @@ function usage(cfg) {
     if (soft) softWorkloads.push(wl);
     workloads[wl] = {
       seconds: secs,
+      recordCount: recordCounts[wl] || 0,
+      unestimatedRecords: unestimatedRecords[wl] || 0,
       measuredTokens: mt,
       estimatedTokens: et,
       totalTokens: tt,
@@ -264,6 +290,10 @@ function usage(cfg) {
     exceededWorkloads.length > 0 ||
     tokenExceededWorkloads.length > 0;
   const hasData = config.exists || totalSeconds > 0 || ledgerFiles(dir, 'total').length > 0;
+  const agents = Object.fromEntries(Object.entries(agentTotals).map(([name, totals]) => [name, {
+    ...totals,
+    totalTokens: totals.measuredTokens + totals.estimatedTokens,
+  }]));
 
   return {
     dir,
@@ -281,6 +311,8 @@ function usage(cfg) {
     // v1 互換フィールド
     totals: seconds,
     totalSeconds,
+    totalRecords,
+    totalUnestimatedRecords,
     limitSeconds,
     exceeded,
     exceededWorkloads,
@@ -289,6 +321,7 @@ function usage(cfg) {
     softRatio,
     tokenLimit,
     totalTokens: { measured: totalMeasured, estimated: totalEstimated, total: totalTokens },
+    agents,
     tokenExceededTotal,
     timeExceededTotal,
     tokenExceededWorkloads,

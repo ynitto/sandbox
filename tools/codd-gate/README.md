@@ -179,95 +179,39 @@ codd-gate check --repo-dir app=. --covered src/util.py --need doc,test   # 接�
 | `check` [`--doc --code --fresh`\|`--refs`\|`--covered --need`] | 状態アサーション | 0/1 |
 
 共通フラグ: `--config` `--repos FILE` `--repo-dir NAME=DIR`（複数可） `--sync` `--map` `--json`。
-`--base` 省略時は環境変数 `$KIRO_BASE_REV` を読む（連携用。単体では明示指定が普通）。
+差分基準の優先順位は `--base` → `$AGENT_BASE_REV` → 旧 `$KIRO_BASE_REV`。
+環境変数は連携用で、単体では `--base` の明示指定が普通。旧名は新しい変数が無い場合だけ読む。
 
 ---
 
 ## 付録: agent-project との連携（オプション）
 
-ここから先は**追加情報**——単体利用には不要。codd-gate は agent-project から**完全に独立**しており
-（charter.md を読まない・結合は `schemas/` のデータ契約のみ）、組むと「NG を返す」だけでなく
-**ドリフトが自動で修復タスクになり消化される**。結合はすべて agent-project が公式に用意する
-**外部 CLI の差し込み点**（正典: `docs/designs/agent-project-design.md` §4.1）経由で、
-双方無改造・外せば元に戻る。**有効化は設定だけ**:
-
-```yaml
-# .agents/agent-project.yaml — この 2 行＋charter acceptance 1 行で常時運用が立ち上がる
-regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV"'   # ① 毎タスクの done 確定前の差分ゲート
-intake_cmd: 'codd-gate tasks --debt --repos .agent-project/projects/default/repos.json'  # ③ 負債の自動返済
-```
-
-| 使う差し込み点（設計書 §4.1 の番号） | 拡張する機能 | codd-gate のコマンド |
-|--------------------------------------|--------------|---------------------|
-| E2 `regression_cmd`（S3 検証ゲートの後・done 確定前） | 検証ゲート（全タスク横断の検査） | ① `verify --base "$KIRO_BASE_REV"` |
-| E1 charter `## acceptance`（プロジェクト evaluate） | プロジェクト受入判定 | ② `verify --debt --max-*` |
-| E3 `intake_cmd`（S0 取り込み・watch idle） | backlog の自走（pull 型供給） | ③ `tasks --debt [--cohort]` |
-| E1 タスクの `- verify:`（S3） | done の根拠 | ④ `check …` / `verify --base …` |
-
-charter は機能要件ではなく**機能追加・リファクタリング・リアーキテクチャの指針**として書き、
-一貫性の維持は codd-gate が機械的に担う。
-
-**タスク追加の責務境界**: agent-project は**元よりタスクを入力とする設計**（enqueue/inbox は
-「汎用の取り込み口」で、外部ソースは薄いアダプタで流し込む思想。タスク書式の正典は
-`backlog.md.example`）。その JSON 表現は**共通 task スキーマ**（`schemas/task.schema.json`）として
-独立管理されており、codd-gate の `tasks` は所見をこの**共通スキーマへ直接出力する**——
-「agent-project 向けアダプタ」ではない（スキーマを読める消化先なら何でもよい）。
-スキーマ外の消化先（issue tracker 等）が必要なら、所見 JSON から変換する。
-
-**レジストリ共用**: **共通スキーマの独立ファイル**（`schemas/repos.schema.json`）を両ツールで指す。
-agent-project は `<root>/repos.{yaml,json}` を読み、**無ければ charter の `## repos` から
-自動生成する**（`_meta` マーカー付き・正は charter のまま追従）——codd-gate はその生成物を
-`--repos` で読むだけで、charter を一切知らない。identity (url, path, base) も共通。
-
-**① 差分ゲート（done 確定前・毎タスク）** — `regression_cmd` に差し込む。verify PASS 後・
-done 確定前に走り、ドキュメント置き去りの done を止める（`$KIRO_BASE_REV` は agent-project が
-verify/regression に渡す act 前 HEAD）。
+ここから先は単体利用には不要。codd-gate は agent-project から独立している。連携するときも
+agent-project へ専用設定を追加せず、state repo が持つ共通チェックから呼ぶ。
 
 ```yaml
 # .agents/agent-project.yaml
-regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV"'
+regression_cmd: ./tools/check
 ```
 
-タスク単位なら verify そのもの・または追加条件に使う:
+```sh
+#!/bin/sh
+set -eu
+
+codd-gate verify --base "$AGENT_BASE_REV" --repos ./repos.json
+# 将来の検証 CLI はここへ1行追加する。
+```
+
+通常タスクの `verify` や charter acceptance には重ねない。共通チェックは各タスクの verify PASS 後、
+done 確定前に1度だけ実行される。負債を backlog へ投入したい場合は、必要なときに明示して実行する。
 
 ```bash
-agent-project enqueue --title "util を高速化" \
-  --verify 'pytest -q tests/ && codd-gate verify --base "$KIRO_BASE_REV"'
-```
-
-**② 負債ラチェット（プロジェクト done の受入条件）** — charter の acceptance に置く。
-数値を段階的に下げれば「整合性を取りつつ改修していく」がプロジェクトの done 条件そのものになる。
-
-```markdown
-## acceptance
-- `codd-gate verify --debt --max-broken 0 --max-undocumented 12`
-```
-
-**③ 負債の自動返済（intake_cmd）** — agent-project の取り込みコマンドに登録すると、watch の
-周期（`intake_interval` 既定 600 秒）で `tasks --debt` が呼ばれ、負債が backlog へ**冪等に**積まれる
-（タスク `id` は発見内容から決定的に生成され、現役 backlog に居る発見は再投入されない）。
-codd-gate 側は呼ばれるたびに**単発で終わる**——常駐は agent-project だけが持つ。手動でも流せる:
-
-```bash
-codd-gate tasks --debt | agent-project enqueue --json          # 既存負債を積む（単発）
+codd-gate tasks --debt | agent-project enqueue --json
 codd-gate tasks --base origin/main --inbox .agent-project/projects/default/inbox/
 ```
 
-**後段のタスク分解**: 負債は 1 発見 = 1 タスク（小さく・個別に verify 可能）で出す。未文書化・未テストの
-ような**同種作業の山**は `tasks --debt --cohort` で repo 単位の cohort（agent-project の
-pilot-then-batch: 1 件を人の検収で固めてから残りを自動展開）にまとめ、分解と展開を agent-project に
-委ねられる。巨大な「全部直す」タスクは決して生成しない。
-
-生成されるタスクは agent-project の鉄則に沿う:
-
-- 同一 repo のドリフト → 決定的 verify 付き（`codd-gate check --doc … --code … --fresh`）＋ `- expect: changes`
-- **別 repo への追随** → `- accept:`（自然言語）＋ `- workspace: <repo名>` ＋ `- paths:` を付けて
-  agent-project のワークスペース・ルーティングに乗せる（verify 合成 or 人へ、既存機構のまま）
-- 未文書化/未テスト → `codd-gate check --covered <path> --need doc|test` を verify に
-
-**④ タスク単位の verify** — 修復タスクの done 根拠は `codd-gate check`（状態アサーション）。
-通常タスクにも `--verify 'pytest -q && codd-gate verify --base "$KIRO_BASE_REV"'` のように併記できる。
-単体運用の git hook / CI とはそのまま併用できる（同じコマンド・同じ判定）。
+`codd-gate tasks` が生成した修復タスクは、タスク自身が持つ `codd-gate check` を完了根拠として使う。
+これは通常タスクへ一律に verify を追加する仕組みではない。
 
 ## テスト
 

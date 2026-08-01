@@ -842,8 +842,10 @@ function taskAssistPrompt(mode, context, userPrompt = '') {
       '{"why":"背景・目的（なぜやるか・1文）","desc":"作業内容の詳細","scope":"変更してよい範囲",' +
       '"out_of_scope":"やらないこと","constraints":"タスク固有の制約","hints":"実装の手がかり",' +
       '"risks":["実装・運用上のリスクと対策"],' +
+      '"acceptance":["完了を判定できる受入基準"],"size":"S|M|L",' +
       '"demo":"人の確認観点","rationale":"提案の根拠・1文"}\n' +
-      '- risks は1要素1項目の配列（該当なしは ["なし"]）。他の各値は 1 行（改行は ⏎）。\n' +
+      '- risks と acceptance は1要素1項目の配列（risks の該当なしは ["なし"]）。size は S/M/L。\n' +
+      '- 配列以外の各値は 1 行（改行は ⏎）。\n' +
       '  charter・既存 backlog・タスク定義から根拠をもって書ける項目だけ埋め、\n' +
       '  推測になる項目は空文字にすること（憶測で境界や制約を発明しない）。\n' +
       '- 既に値がある項目は、明確な改善があるときだけ置換案を出し、なければ現在の値をそのまま返すこと。\n\n' +
@@ -939,6 +941,11 @@ function normalizeTaskGuide(obj) {
       out[key] = normalizeGuideValue(obj && obj[key]);
     }
   }
+  const acceptance = obj && obj.acceptance;
+  out.acceptance = (Array.isArray(acceptance) ? acceptance : String(acceptance == null ? '' : acceptance).split(/\r?\n/))
+    .map((v) => String(v).trim()).filter(Boolean).slice(0, 12);
+  const size = String((obj && obj.size) || '').trim().toUpperCase();
+  out.size = ['S', 'M', 'L'].includes(size) ? size : '';
   return out;
 }
 

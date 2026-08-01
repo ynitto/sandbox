@@ -173,7 +173,10 @@ def _ask_conductor(mp: MissionPaths, mission: dict, roles: dict, node_id: str, c
 """
     t0 = time.monotonic()
     text = agentcli.run_agent(prompt, cli)
-    nodebudget.record(time.monotonic() - t0, ref=f"{mp.mission_id}/conductor", node=node_id)
+    nodebudget.record(
+        time.monotonic() - t0, ref=f"{mp.mission_id}/conductor", node=node_id,
+        agent_cli=cli, tokens_in=getattr(text, "tokens_in", None),
+        tokens_out=getattr(text, "tokens_out", None))
     data = extract_json(text)
     if not isinstance(data, dict):
         raise RuntimeError("conductor 出力を JSON オブジェクトとして解釈できません")
@@ -372,7 +375,9 @@ def acceptance_turn(bus: Bus, mp: MissionPaths, mission: dict, node_id: str,
         t0 = time.monotonic()
         text = agentcli.run_agent(prompt, cli)
         nodebudget.record(time.monotonic() - t0, ref=f"{mp.mission_id}/acceptance",
-                          node=node_id)
+                          node=node_id, agent_cli=cli,
+                          tokens_in=getattr(text, "tokens_in", None),
+                          tokens_out=getattr(text, "tokens_out", None))
         data = extract_json(text)
         accept = bool(data.get("accept"))
         feedback = str(data.get("feedback") or "受入基準を満たしていません。")

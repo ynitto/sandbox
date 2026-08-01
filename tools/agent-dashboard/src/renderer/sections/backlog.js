@@ -1242,7 +1242,9 @@ function updateCharterSelectContext(selectId, descriptionId) {
   const select = $(selectId);
   for (const option of select.options) option.textContent = option.value || '初版';
   const context = charterAssistContext(state.project, select.value);
-  $(descriptionId).textContent = context.goal || 'このバージョンには説明がありません。';
+  const description = $(descriptionId);
+  if (context.goal) description.innerHTML = mdToHtml(context.goal);
+  else description.textContent = 'このバージョンには説明がありません。';
 }
 
 async function renderNotesList(preferredName = '') {
@@ -1771,6 +1773,7 @@ function openEnqueueDialog(prefill = {}) {
   setEnq('enq-scope', prefill.scope);
   setEnq('enq-out_of_scope', prefill.out_of_scope);
   setEnq('enq-risks', Array.isArray(prefill.risks) ? prefill.risks.join('\n') : prefill.risks);
+  setEnq('enq-size', prefill.size);
   fillCharterSelect($('enq-charter'), state.project, prefill.charter || '');
   updateCharterSelectContext('enq-charter', 'enq-charter-description');
   fillWorkspaceSelect($('enq-workspace'), state.project, prefill.workspace || '');
@@ -1790,6 +1793,65 @@ function openEnqueueDialog(prefill = {}) {
   const status = $('enq-ai-status');
   if (status) status.textContent = '';
   $('dlg-enqueue').showModal();
+}
+
+async function aiEnqueueGuideAssist() {
+  const p = state.project;
+  if (!p) return toast('プロジェクトを選択してください');
+  const title = $('enq-title').value.trim();
+  if (!title) return toast('タスク名を書いてから必須項目を補完してください');
+  if (state.assistBusy) return;
+  state.assistBusy = true;
+  const button = $('btn-enq-guide-assist');
+  const status = $('enq-guide-assist-status');
+  button.disabled = true;
+  status.textContent = '計画レビュー情報を補完しています…';
+  try {
+    const current = {
+      why: $('enq-why').value.trim(),
+      desc: $('enq-desc').value.trim(),
+      scope: $('enq-scope').value.trim(),
+      risks: $('enq-risks').value.trim(),
+      acceptance: $('enq-accept').value.split('\n').map((s) => s.trim()).filter(Boolean),
+      size: $('enq-size').value,
+    };
+    const res = await api.agentTaskAssist({
+      dir: p.dir,
+      mode: 'task-guide',
+      context: {
+        charter: charterAssistContext(p, $('enq-charter').value),
+        backlog: backlogAssistRows(p),
+        task: { title, ...current },
+      },
+    });
+    const fields = res.fields || {};
+    let filled = 0;
+    for (const [id, key] of [
+      ['enq-why', 'why'], ['enq-desc', 'desc'], ['enq-scope', 'scope'], ['enq-risks', 'risks'],
+    ]) {
+      if (!$(id).value.trim() && String(fields[key] || '').trim()) {
+        $(id).value = String(fields[key]).trim().replace(/\s*⏎\s*/g, '\n');
+        filled += 1;
+      }
+    }
+    if (!current.acceptance.length && Array.isArray(fields.acceptance) && fields.acceptance.length) {
+      $('enq-accept').value = fields.acceptance.join('\n');
+      filled += 1;
+    }
+    if (!current.size && fields.size) {
+      $('enq-size').value = fields.size;
+      filled += 1;
+    }
+    status.textContent = filled
+      ? `${filled} 項目を補完しました。内容を確認してから追加してください`
+      : '補完できる項目はありませんでした';
+  } catch (err) {
+    status.textContent = '';
+    toast(`計画レビュー情報の補完に失敗しました: ${err.message || err}`);
+  } finally {
+    state.assistBusy = false;
+    button.disabled = false;
+  }
 }
 
 async function aiEnqueueAssist() {
@@ -1901,6 +1963,7 @@ async function submitEnqueue() {
   spec.scope = enqField('enq-scope') || spec.scope || '';
   spec.out_of_scope = enqField('enq-out_of_scope') || spec.out_of_scope || '';
   spec.risks = enqField('enq-risks').split('\n').map((s) => s.trim()).filter(Boolean);
+  spec.size = enqField('enq-size');
   // 作成時 lint（案5・非ブロック）: 情報不足・曖昧 accept を投入前に見せ、続行するか監視者が選ぶ。
   try {
     const warnings = await api.lintTask(spec);

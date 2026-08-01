@@ -159,7 +159,8 @@ def _vp_discard_local_changes(clone: "str | None") -> None:
     subprocess.run(["git", "-C", clone, "clean", "-fd"], capture_output=True, timeout=60)
 
 
-def run_verification_plan(bus: "Bus", args, who: str) -> "dict | None":
+def run_verification_plan(bus: "Bus", args, who: str, *, heartbeat=None,
+                          lease_window: float = 120.0) -> "dict | None":
     """meta.verification_plan を成果 revision 上で実行し receipt を書いて返す。
 
     plan が無ければ None（従来どおり）。壊れた plan は実行しない（receipt を書かない
@@ -171,8 +172,9 @@ def run_verification_plan(bus: "Bus", args, who: str) -> "dict | None":
     agent-project verify が workdir で走らせていた対象を受け継ぐ（P1-A8 で旧経路を撤去し、
     receipt がこの層でも唯一の検証根拠になるため）。workspace 宣言があるのに clone を
     用意できなかった run は従来どおり実行しない（成果の無い場所で誤判定しない）。
-    `$KIRO_BASE_REV`（差分基準）は clone なら成果 HEAD（旧 _task_verify_cwd の一時 clone と
-    同じ規則）、cwd なら投入時に固定した meta.base_rev（act 前 HEAD）を渡す。"""
+    `$AGENT_BASE_REV`（差分基準）は clone なら成果 HEAD（旧 _task_verify_cwd の一時 clone と
+    同じ規則）、cwd なら投入時に固定した meta.base_rev（act 前 HEAD）を渡す。
+    `$KIRO_BASE_REV` は後方互換の別名として同じ値を渡す。"""
     meta = bus.run_meta(args.run_id) or {}
     plan = meta.get("verification_plan")
     if not isinstance(plan, dict):
@@ -182,12 +184,16 @@ def run_verification_plan(bus: "Bus", args, who: str) -> "dict | None":
         log(who, f"verification_plan が不正のため検証を実行しません（fail-close）: {errs[:3]}")
         bus.event(who, "verify-plan-invalid", errors=errs[:5])
         return None
+
+    def while_alive(fn):
+        return (_with_run_heartbeat(heartbeat, lease_window, fn) if heartbeat else fn())
+
     ws = bus.run_workspace()
     in_clone = ws is not None
     if in_clone:
-        spec = ensure_workspace_clone(ws, args.run_id)
+        spec = while_alive(lambda: ensure_workspace_clone(ws, args.run_id))
         vcwd = str((spec or {}).get("clone") or "")
-        _vp_refresh_result(vcwd, str((spec or {}).get("branch") or ""))
+        while_alive(lambda: _vp_refresh_result(vcwd, str((spec or {}).get("branch") or "")))
     else:
         vcwd = os.getcwd()
     rev = _vp_result_rev(vcwd)
@@ -198,14 +204,14 @@ def run_verification_plan(bus: "Bus", args, who: str) -> "dict | None":
     started = now_iso()
     timeout = _vp_timeout(plan)
     base_rev = rev if in_clone else str(meta.get("base_rev") or rev or "")
-    env = {"KIRO_BASE_REV": base_rev} if base_rev else None
+    env = {"AGENT_BASE_REV": base_rev, "KIRO_BASE_REV": base_rev} if base_rev else None
     try:
         confirm = int((plan.get("policy") or {}).get("confirm") or 1)
     except (TypeError, ValueError):
         confirm = 1
-    commands = [_vp_run_command(c["command"], vcwd, timeout, env, confirm)
-                for c in plan.get("commands") or []]
-    criteria = _vp_judge_criteria(args, plan, vcwd, rev)
+    commands = [while_alive(lambda c=c: _vp_run_command(
+        c["command"], vcwd, timeout, env, confirm)) for c in plan.get("commands") or []]
+    criteria = while_alive(lambda: _vp_judge_criteria(args, plan, vcwd, rev))
     integration = _verifycontract.run_plan_integration(plan, vcwd, rev)
     if in_clone:
         # clone の成果は push 済みコミットなので verifier の残骸を破棄してよい。cwd（投入

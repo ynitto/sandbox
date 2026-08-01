@@ -168,7 +168,8 @@ def run_agent(prompt: str, cli: str, model: "str | None" = None,
             return ""
         if not text:
             raise RuntimeError(f"{cmd[0]} の応答が空でした")
-        return text
+        tokens_in, tokens_out = agentcli.parse_usage(proc.stderr or "")
+        return agentcli.UsageText(text, tokens_in, tokens_out)
     finally:
         if out_file:
             with contextlib.suppress(OSError):

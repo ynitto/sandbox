@@ -125,6 +125,9 @@ function enqueueToInbox(projectDir, spec) {
   const clean = { title };
   const charter = validateCharterVersion(projectDir, spec.charter);
   if (charter) clean.charter = charter;
+  const size = String(spec.size || '').trim().toUpperCase();
+  if (size && !['S', 'M', 'L'].includes(size)) throw new Error(`規模感は S / M / L のいずれかです: ${spec.size}`);
+  if (size) clean.size = size;
   // 統一 verify の正規形（複数行キー）: 配列のまま JSON に書く（joinすると 1 行に潰れて
   // 基準の区切りが失われる。agent-project の coerce_multiline が 1 要素 = 1 行で取り込む）。
   for (const key of ['task_acceptance_criteria', 'verification_commands', 'risks']) {

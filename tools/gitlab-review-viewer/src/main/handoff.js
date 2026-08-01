@@ -23,6 +23,43 @@ const crypto = require('crypto');
 
 const MAX_MSG = 8 * 1024; // 受信メッセージ上限（ディープリンク 1 本で十分）
 
+function acceptHandoffConnection(sock, onUrl) {
+  let buf = '';
+  sock.setEncoding('utf8');
+  const onData = (d) => {
+    buf += d;
+    if (buf.length > MAX_MSG) {
+      sock.destroy();
+      return;
+    }
+    const nl = buf.indexOf('\n');
+    if (nl === -1) return; // 行が揃うまで待つ
+    sock.removeListener('data', onData);
+    const line = buf.slice(0, nl).trim();
+    let url = '';
+    if (line.startsWith('{')) {
+      try {
+        url = String(JSON.parse(line).url || '');
+      } catch {
+        url = '';
+      }
+    } else {
+      url = line;
+    }
+    if (url) {
+      try {
+        sock.write('ok');
+      } catch {
+        /* 応答は best-effort */
+      }
+      onUrl(url);
+    }
+    sock.end();
+  };
+  sock.on('data', onData);
+  sock.on('error', () => {}); // 相手が即切断してもクラッシュさせない
+}
+
 function endpointPath() {
   const key = crypto
     .createHash('sha1')
@@ -50,42 +87,7 @@ function startHandoffServer(onUrl) {
     }
   }
 
-  const server = net.createServer((sock) => {
-    let buf = '';
-    sock.setEncoding('utf8');
-    const onData = (d) => {
-      buf += d;
-      if (buf.length > MAX_MSG) {
-        sock.destroy();
-        return;
-      }
-      const nl = buf.indexOf('\n');
-      if (nl === -1) return; // 行が揃うまで待つ
-      sock.removeListener('data', onData);
-      const line = buf.slice(0, nl).trim();
-      let url = '';
-      if (line.startsWith('{')) {
-        try {
-          url = String(JSON.parse(line).url || '');
-        } catch {
-          url = '';
-        }
-      } else {
-        url = line;
-      }
-      if (url) {
-        try {
-          sock.write('ok');
-        } catch {
-          /* 応答は best-effort */
-        }
-        onUrl(url);
-      }
-      sock.end();
-    };
-    sock.on('data', onData);
-    sock.on('error', () => {}); // 相手が即切断してもクラッシュさせない
-  });
+  const server = net.createServer((sock) => acceptHandoffConnection(sock, onUrl));
   server.on('error', () => {}); // listen 失敗でもアプリは動かす
   try {
     server.listen(endpoint);
@@ -109,4 +111,4 @@ function startHandoffServer(onUrl) {
   };
 }
 
-module.exports = { startHandoffServer, endpointPath };
+module.exports = { startHandoffServer, endpointPath, acceptHandoffConnection };

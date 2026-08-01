@@ -44,6 +44,7 @@ async function init() {
   $('btn-enq-cancel').addEventListener('click', () => $('dlg-enqueue').close());
   $('btn-enq-submit').addEventListener('click', submitEnqueue);
   $('btn-enq-ai').addEventListener('click', aiEnqueueAssist);
+  $('btn-enq-guide-assist').addEventListener('click', aiEnqueueGuideAssist);
   $('enq-charter').addEventListener('change', () => updateCharterSelectContext('enq-charter', 'enq-charter-description'));
   $('btn-replan-cancel').addEventListener('click', () => $('dlg-replan').close());
   $('btn-replan-submit').addEventListener('click', () => requestReplan($('replan-charter').value));

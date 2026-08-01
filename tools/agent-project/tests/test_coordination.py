@@ -150,10 +150,23 @@ class TestAtomicClaim(unittest.TestCase):
             lock = d / "claims" / "T1.lock"
             before = json.loads(lock.read_text(encoding="utf-8"))
             os.utime(lock, (0, 0))
-            self.assertTrue(km._refresh_claim(cfg, t))
+            self.assertEqual(km._refresh_claim(cfg, t), km._CLAIM_REFRESH_OK)
             self.assertEqual(json.loads(lock.read_text(encoding="utf-8")), before,
                              "heartbeat は所有者レコードを書き換えない")
             self.assertGreater(lock.stat().st_mtime, time.time() - 5)
+
+    def test_refresh_claim_distinguishes_loss_from_temporary_read_failure(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = self._task(d)
+            self.assertTrue(km.claim_task(cfg, t))
+            lock = d / "claims" / "T1.lock"
+            lock.write_text(json.dumps({"host": "other", "pid": 1, "id": "T1"}),
+                            encoding="utf-8")
+            self.assertEqual(km._refresh_claim(cfg, t), km._CLAIM_REFRESH_LOST)
+            with mock.patch.object(Path, "read_text", side_effect=PermissionError("busy")):
+                self.assertEqual(km._refresh_claim(cfg, t), km._CLAIM_REFRESH_UNKNOWN)
 
     def test_claim_revalidates_against_disk(self):
         with tempfile.TemporaryDirectory() as d:

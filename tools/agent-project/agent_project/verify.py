@@ -59,7 +59,7 @@ def run_verify_at_rev(cmd: str, workdir: Path, rev: str, timeout: float,
     """verify を workdir の rev（act 前 HEAD）のツリーで実行し PASS したか（True/False）を返す。
     detached worktree を temp に生やして実行し後始末する。git でない/worktree 作成失敗＝判定不能で None。
     red-green の『red（変更前は fail のはず）』を取るのに使う——base で PASS するなら変更を弁別していない。
-    KIRO_BASE_REV は rev 自身に固定（差分基準 verify は base==HEAD で空差分＝正しく fail する）。"""
+    AGENT_BASE_REV は rev 自身に固定（差分基準 verify は base==HEAD で空差分＝正しく fail する）。"""
     if not cmd.strip() or not rev or not (workdir / ".git").exists():
         return None
     wt = tempfile.mkdtemp(prefix="agent-redgreen-")
@@ -68,7 +68,7 @@ def run_verify_at_rev(cmd: str, workdir: Path, rev: str, timeout: float,
                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
         if add.returncode != 0:
             return None
-        base_env = {**(env or {}), "KIRO_BASE_REV": rev}
+        base_env = {**(env or {}), "AGENT_BASE_REV": rev, "KIRO_BASE_REV": rev}
         ok, _ = run_verify(cmd, Path(wt), timeout, base_env)
         return ok
     except (OSError, subprocess.SubprocessError):
@@ -136,7 +136,7 @@ def _task_verify_cwd(cfg: "Config", task: "Task") -> "tuple[Path, str | None]":
     `cd api && yarn test`）で書かれる規約で、プランナーの生成指示・owns 突き合わせ（_verify_paths）・
     agent-flow のワークスペース（エージェントはリポジトリ直下で path 配下のみ編集）と一致する。
     `path`（モノレポのサブフォルダ）は編集範囲/owns 用であり verify の cwd ではない。ここで
-    `clone/path` に潜ると `cd api` 等の相対指定が二重になって verify が壊れ、$KIRO_BASE_REV を
+    `clone/path` に潜ると `cd api` 等の相対指定が二重になって verify が壊れ、$AGENT_BASE_REV を
     取り直す `.git` 判定（呼び出し側）も外れる。"""
     if cfg.verify_cwd:                              # 明示指定は常に最優先（運用の上書き）
         return resolve_verify_cwd(cfg), None
@@ -461,7 +461,7 @@ def _sh_q(s: str) -> str:
 
 def expand_verify_template(spec: str) -> "str | None":
     """`<名前> :: <引数...>` を決定的なシェル verify に展開する（エージェント不要）。未知の名前は None。
-    鉄則どおり「履歴でなく最終状態/差分」を見る形にする（diff-contains は $KIRO_BASE_REV を使う）。"""
+    鉄則どおり「履歴でなく最終状態/差分」を見る形にする（diff-contains は $AGENT_BASE_REV を使う）。"""
     name, _, rest = (spec or "").partition("::")
     name = name.strip().lower()
     rest = rest.strip()
@@ -475,7 +475,7 @@ def expand_verify_template(spec: str) -> "str | None":
         pat = f"def +{sym}|function +{sym}|{sym} *=|class +{sym}"
         return f"grep -qE {_sh_q(pat)} {_sh_q(path)}"
     if name in ("diff-contains", "grep-diff") and args:               # act 後の差分に needle（履歴に騙されない）
-        return f'git log "$KIRO_BASE_REV"..HEAD -p 2>/dev/null | grep -qF -- {_sh_q(args[0])}'
+        return f'git log "$AGENT_BASE_REV"..HEAD -p 2>/dev/null | grep -qF -- {_sh_q(args[0])}'
     if name in ("cmd-succeeds", "tests-pass", "cmd", "run",            # 残り全体をコマンドとして実行
                 "test-passes", "builds", "exit-zero") and rest:       # test-passes/builds/exit-zero は意図を明示する別名
         return rest

@@ -96,6 +96,14 @@ class TestLoad(_Isolated):
         with self.assertRaises(agentcli.AgentCliError):
             agentcli.load_cli("brokenjson", project_dir=str(self.tmp / "proj"), use_cache=False)
 
+    def test_usage_contract_reads_only_complete_stderr_marker(self):
+        self.assertEqual(
+            agentcli.parse_usage("log\n@agent-usage tokens_in=12 tokens_out=34\n"),
+            (12, 34))
+        self.assertEqual(agentcli.parse_usage("@agent-usage tokens_in=-1 tokens_out=2"),
+                         (None, None))
+        self.assertEqual(agentcli.parse_usage("@agent-usage tokens_in=1"), (None, None))
+
 
 class TestHeadless(_Isolated):
     def spec(self, **over):
@@ -273,8 +281,8 @@ class TestBundledGolden(_Isolated):
             "interactive": ["cursor-agent", "--model", "M"],
         },
         "ollama": {
-            "write": ["ollama", "run", "M"],
-            "readonly": ["ollama", "run", "M"],
+            "write": ["agent-ollama", "M"],
+            "readonly": ["agent-ollama", "M"],
             "interactive": ["ollama", "run", "M"],
         },
     }

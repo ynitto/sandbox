@@ -108,7 +108,7 @@ for (const id of ['cfg-roots', 'cfg-autodiscover', 'cfg-project-command', 'cfg-f
   'cfg-git-pull', 'cfg-git-autopush']) {
   assert.ok(!renderer.includes(`id="${id}"`), `${id} は削除済みのはず`);
 }
-for (const section of ['app', 'agents', 'sync', 'routine', 'integrations']) {
+for (const section of ['app', 'usage', 'agents', 'instructions', 'control', 'sync', 'routine', 'integrations']) {
   assert.ok(renderer.includes(`id: '${section}'`), `全体設定に ${section} 分類が必要です`);
 }
 assert.ok(renderer.includes('data-global-settings-section="${item.id}"'), '分類タブに設定IDを付けます');
@@ -121,8 +121,8 @@ for (const id of ['btn-save-app-settings', 'btn-save-agent-settings', 'btn-save-
 }
 assert.ok(renderer.includes('まず「使用するエージェント」を選んでください'),
   'エージェント設定で最初に入力する項目を明示します');
-assert.ok(renderer.includes('必要な場合だけ設定します'),
-  '共通設定が任意であることを明示します');
+assert.ok(renderer.includes('必要な場合だけ変更します'),
+  'エージェントの追加設定が任意であることを明示します');
 assert.ok(renderer.includes('class="settings-save-actions"'), 'カードの保存位置を共通化します');
 assert.ok(css.includes('.settings-save-actions'), '保存フッターを同じ配置で描画します');
 const renderAmigosSource = renderer.slice(
@@ -137,9 +137,41 @@ const amigosVisibilitySource = renderer.slice(
 assert.ok(!amigosVisibilitySource.includes('budget.hasData'), '予算データだけでミッションタブを表示しません');
 assert.ok(!renderer.includes('function renderAdvancedBudgetSettings('), '詳細設定用の旧予算管理処理を残しません');
 assert.ok(!renderer.includes('id="btn-amigos-budget-save"'), '旧予算管理の保存操作を残しません');
-for (const label of ['利用状況', '共通設定', 'エージェント一覧']) {
-  assert.ok(renderer.includes(label), `エージェント分類に「${label}」が必要です`);
+for (const label of ['利用状況', 'エージェント', '共通指示', '実行制御']) {
+  assert.ok(renderer.includes(`label: '${label}'`), `全体設定に「${label}」タブが必要です`);
 }
+const usageSettingsSource = renderer.slice(
+  renderer.indexOf('function globalSettingsUsageHtml('),
+  renderer.indexOf('\nfunction globalSettingsInstructionsHtml(')
+);
+const agentSettingsSource = renderer.slice(
+  renderer.indexOf('function globalSettingsAgentsHtml('),
+  renderer.indexOf('\nfunction globalSettingsUsageHtml(')
+);
+const instructionSettingsSource = renderer.slice(
+  renderer.indexOf('function globalSettingsInstructionsHtml('),
+  renderer.indexOf('\nfunction globalSettingsControlHtml(')
+);
+const controlSettingsSource = renderer.slice(
+  renderer.indexOf('function globalSettingsControlHtml('),
+  renderer.indexOf('\nfunction renderOrchestration(')
+);
+assert.ok(usageSettingsSource.includes('orchBudgetPanelHtml('), '利用状況タブに利用量を表示します');
+assert.ok(agentSettingsSource.includes('orchMatrixPanelHtml(') && agentSettingsSource.includes('orchInventoryPanelHtml('),
+  'エージェントタブに担当設定と一覧を表示します');
+assert.ok(instructionSettingsSource.includes('orchInstructionsPanelHtml(')
+  && instructionSettingsSource.includes('orchSessionCommandsPanelHtml('), '共通指示タブに指示と開始コマンドを表示します');
+assert.ok(controlSettingsSource.includes('orchAllocationPanelHtml(') && controlSettingsSource.includes('orchStatusPanelHtml('),
+  '実行制御タブに上限と稼働制御を表示します');
+assert.ok(renderer.includes('推定できない記録'), '推定不能を0トークンと区別します');
+assert.ok(renderer.includes('実測トークンが記録されず、推定レートもない実行'),
+  '推定不可の理由を利用状況の近くで説明します');
+assert.ok(renderer.includes('利用記録なし'), '未使用は利用記録なしと表示します');
+assert.ok(renderer.includes('budget.agents || {}'), 'エージェント別の利用量を台帳集計から表示します');
+assert.ok(renderer.includes('<h4 class="orch-usage-subheading">エージェント別</h4>'),
+  '利用状況にエージェント別内訳が必要です');
+assert.ok(renderer.includes('トークン上限は設定されていません。利用量は引き続き記録されます。'),
+  '上限なしでも利用量を表示することを明示します');
 assert.ok(renderer.includes('すべてのプロジェクトに適用'), '全体設定であることはページ内で明示します');
 assert.ok(!renderer.includes('function updateTabScope('), 'タブ切替で共通ヘッダーを変化させません');
 assert.ok(!css.includes('#main.global-settings-active #project-header'), 'どのタブでもプロジェクトヘッダーを維持します');

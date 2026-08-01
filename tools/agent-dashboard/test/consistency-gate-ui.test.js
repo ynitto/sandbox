@@ -1,266 +1,71 @@
 'use strict';
 
-// 一貫性ゲート状態セクション（renderer.js consistencyGateHtml）の表示ロジック。
-// main 側の結線判定は test/consistency-gate.test.js が受け持つ。ここは
-// 「ペイロードをどうバッジ・導線に写すか」だけを見る。
-
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 
-const RENDERER_JS = path.join(__dirname, '..', 'src', 'renderer', 'renderer.js');
-const rendererSrc = fs.readFileSync(RENDERER_JS, 'utf8');
+const rendererSrc = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'renderer', 'renderer.js'), 'utf8'
+);
 
 function grab(name) {
   const at = rendererSrc.indexOf(`function ${name}(`);
   assert.ok(at >= 0, `renderer.js に function ${name} が見つかりません`);
   let depth = 0;
   for (let i = rendererSrc.indexOf('{', at); i < rendererSrc.length; i++) {
-    if (rendererSrc[i] === '{') depth++;
+    if (rendererSrc[i] === '{') depth += 1;
     else if (rendererSrc[i] === '}') {
-      depth--;
+      depth -= 1;
       if (depth === 0) return rendererSrc.slice(at, i + 1);
     }
   }
   throw new Error(`function ${name} の閉じ括弧が見つかりません`);
 }
 
-const badges = (html, text) => (html.match(new RegExp(`class="badge (?:info|warn)">${text}<`, 'g')) || []).length;
-const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => (
+  { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]
+));
 // eslint-disable-next-line no-new-func
-const consistencyGateHtml = new Function('esc', `${grab('consistencyGateHtml')}; return consistencyGateHtml;`)(esc);
+const projectCheckHtml = new Function('esc', `${grab('projectCheckHtml')}; return projectCheckHtml;`)(esc);
 
-// 完了条件そのもの: 識別子と文言が renderer.js に出ていること。
-for (const token of ['regression_cmd', 'intake_cmd', '一貫性ゲート']) {
-  assert.ok(rendererSrc.includes(token), `renderer.js に ${token} がありません`);
-}
+assert.strictEqual(projectCheckHtml(null), '');
+assert.strictEqual(projectCheckHtml({}), '');
 
-// ペイロードが無いプロジェクト（古い main と組み合わせた場合）は何も描かない。
-assert.strictEqual(consistencyGateHtml(null), '');
-assert.strictEqual(consistencyGateHtml({}), '');
-
-// 両方結線: 行と見出しが結線済み、コマンド表示あり、有効化導線は出さない。
-const both = consistencyGateHtml({
-  dir: '/ws/.agent-project',
-  consistencyGate: {
-    configFile: '/ws/.agent/agent-project.yaml',
-    regressionConfigured: true,
-    intakeConfigured: true,
-    regressionWired: true,
-    intakeWired: true,
-    wired: true,
-    regressionCmd: 'codd-gate verify --repos repos.json',
-    intakeCmd: 'codd-gate tasks --debt',
-  },
-});
-assert.ok(both.includes('一貫性ゲート'));
-assert.ok(both.includes('regression_cmd') && both.includes('intake_cmd'));
-assert.strictEqual(badges(both, '結線済み'), 3);
-assert.ok(!both.includes('未結線'));
-assert.ok(both.includes('codd-gate verify --repos repos.json'));
-assert.ok(both.includes('codd-gate tasks --debt'));
-assert.strictEqual((both.match(/設定: あり/g) || []).length, 2);
-assert.ok(both.includes('失敗すると done の確定を止めます'));
-assert.ok(both.includes('実行可否や成功はこの画面では確認していません'));
-assert.ok(!both.includes('有効化'), '全結線なら有効化導線は不要');
-assert.ok(!both.includes('data-gate-open'));
-
-// intake_cmd だけ未結線: 未結線バッジと有効化導線が出る。書くのは intake_cmd の行だけで、
-// regression_cmd の行も注入 CLI も出さない（README: intake_cmd に対応する注入 CLI は無い）。
-const partial = consistencyGateHtml({
-  dir: '/ws/.agent-project',
-  consistencyGate: {
+const configured = projectCheckHtml({
+  projectCheck: {
     configFile: '/ws/.agents/agent-project.yaml',
-    configSource: 'dashboard-auto-discovery',
-    explicitConfigUnknown: true,
-    regressionWired: true,
-    intakeWired: false,
-    wired: false,
-    regressionCmd: 'codd-gate verify --base "$KIRO_BASE_REV"',
-    intakeCmd: null,
+    configured: true,
+    command: 'make -s smoke',
   },
 });
-assert.strictEqual(badges(partial, '結線済み'), 1);
-assert.strictEqual(badges(partial, '未結線'), 1);
-assert.strictEqual(badges(partial, '一部結線'), 1, '片方だけ結線の見出しバッジは 一部結線');
-assert.ok(partial.includes('有効化'));
-assert.ok(partial.includes('data-gate-open="/ws/.agents/agent-project.yaml"'));
-assert.ok(partial.includes("intake_cmd: 'codd-gate tasks --debt --repos &lt;root&gt;/repos.json'"),
-  '未結線の intake_cmd の行が README と同じ形式で提示されていない');
-assert.ok(!partial.includes('codd_gate_regression.py'),
-  'regression_cmd は結線済みなのに注入 CLI を勧めている');
-assert.ok(!/<pre[^>]*>[^]*regression_cmd:/.test(partial), '結線済みの行まで書けと言っている');
+assert.ok(configured.includes('プロジェクト共通チェック'));
+assert.ok(configured.includes('make -s smoke'));
+assert.ok(configured.includes('設定済み'));
+assert.ok(!configured.includes('codd-gate'));
+assert.ok(!configured.includes('intake_cmd'));
+assert.ok(!configured.includes('data-project-check-open'));
 
-// regression_cmd だけ未結線 + 設定ファイルあり: 注入 CLI を実パス付きで出す。
-const regressionOnly = consistencyGateHtml({
-  dir: '/ws/.agent-project',
-  consistencyGate: {
+const missing = projectCheckHtml({
+  projectCheck: {
     configFile: '/ws/.agents/agent-project.yaml',
-    regressionConfigured: false,
-    intakeConfigured: true,
-    regressionWired: false,
-    intakeWired: true,
-    wired: false,
-    regressionCmd: null,
-    intakeCmd: 'codd-gate tasks --debt',
+    configured: false,
+    command: null,
   },
 });
-assert.ok(regressionOnly.includes(
-  'tools/agent-project/codd_gate_regression.py --config &lt;状態 clone&gt;/agent-project.yaml'
-), 'sibling CLI の導線が README と一致しない');
-assert.ok(regressionOnly.includes('--dry-run'), '書かずに試す --dry-run を案内していない');
-// install.sh は codd_gate_*.py を zipapp 内へ同梱するだけなので、どこで打てば動くかを書かないと
-// コピーしても No such file になる。
-assert.ok(regressionOnly.includes('tools/agent-project/'), 'CLI をどこで実行するか示していない');
-assert.ok(!regressionOnly.includes('注入 CLI は無い'), 'intake_cmd は結線済みなのに注意書きが出ている');
+assert.ok(missing.includes("regression_cmd: './tools/check'"));
+assert.ok(missing.includes('data-project-check-open="/ws/.agents/agent-project.yaml"'));
+assert.ok(!missing.includes('codd_gate_'));
 
-// 未結線だが値は入っている（regression_cmd は codd-gate 専用キーではない）。
-// 「未結線＝何も設定されていない」と読ませないため、設定値そのものは見せる。
-const otherCmd = consistencyGateHtml({
-  dir: '/ws/.agent-project',
-  consistencyGate: {
-    configFile: '/ws/.agents/agent-project.yaml',
-    regressionConfigured: true,
-    intakeConfigured: false,
-    regressionWired: false,
-    intakeWired: false,
-    wired: false,
-    regressionCmd: 'make -s smoke',
-    intakeCmd: null,
-  },
+const noConfig = projectCheckHtml({
+  projectCheck: { configFile: null, configured: false, command: null },
 });
-assert.strictEqual(badges(otherCmd, '結線済み'), 0, 'codd-gate を指さないコマンドを結線済みと言わない');
-assert.ok(otherCmd.includes('make -s smoke'), '設定されているコマンドを隠している');
-assert.ok(otherCmd.includes('設定: あり'), '別コマンドが設定済みであることを明示していない');
-assert.ok(otherCmd.includes('設定: なし'), '未設定であることを明示していない');
-assert.ok(otherCmd.includes('一貫性ゲートの検査ではありません'),
-  '別コマンドが入っていることを説明していない');
-assert.ok(/<pre[^>]*>[^]*regression_cmd:/.test(otherCmd),
-  '設定済みでも未結線の regression_cmd に設定例を出していない');
-assert.ok(otherCmd.includes('現在の処理は失われます'),
-  '設定済みの regression_cmd を置換する危険を説明していない');
+assert.ok(noConfig.includes("regression_cmd: './tools/check'"));
+assert.ok(!noConfig.includes('data-project-check-open'));
 
-// 両キーが設定済みでも、codd-gate に未結線なら手動の設定編集導線を出す。
-// sibling CLI は既存 regression_cmd を自動置換しうるため案内しない。
-const bothConfiguredUnwired = consistencyGateHtml({
-  consistencyGate: {
-    configFile: '/ws/.agents/agent-project.yaml',
-    regressionConfigured: true,
-    intakeConfigured: true,
-    regressionWired: false,
-    intakeWired: false,
-    wired: false,
-    regressionCmd: 'make smoke',
-    intakeCmd: 'agent-project intake',
-  },
+const xss = projectCheckHtml({
+  projectCheck: { configured: true, command: '<img src=x onerror=alert(1)>' },
 });
-assert.ok(bothConfiguredUnwired.includes('有効化'), '未結線なのに有効化導線を出していない');
-assert.ok(bothConfiguredUnwired.includes('data-gate-open'));
-assert.ok(/<pre[^>]*>[^]*regression_cmd:[^]*intake_cmd:/.test(bothConfiguredUnwired),
-  '未結線キーの README 準拠例が揃っていない');
-assert.ok(bothConfiguredUnwired.includes('現在の処理は失われます'),
-  '設定済みキーを置換する危険を説明していない');
-assert.ok(!bothConfiguredUnwired.includes('codd_gate_regression.py'),
-  '設定済み regression_cmd を sibling CLI で自動置換する導線を出している');
-
-// 設定ファイルはあるが両方未結線（ゲート未導入プロジェクトの初期表示）。
-// 見出しは「未結線」。貼る 2 行・注入 CLI・注意書き・開くボタンが同時に出る唯一の経路。
-const noneWired = consistencyGateHtml({
-  dir: '/ws/.agent-project',
-  consistencyGate: {
-    configFile: '/ws/.agents/agent-project.yaml',
-    configSource: 'dashboard-auto-discovery',
-    explicitConfigUnknown: true,
-    regressionConfigured: false,
-    intakeConfigured: false,
-    regressionWired: false,
-    intakeWired: false,
-    wired: false,
-    regressionCmd: null,
-    intakeCmd: null,
-  },
-});
-assert.strictEqual(badges(noneWired, '未結線'), 3, '行 2 つ + 見出しバッジ');
-assert.ok(!noneWired.includes('一部結線'), '一度も結線していない状態を「一部結線」と言わない');
-assert.ok(noneWired.includes('これらのフックからは実行されません'));
-assert.strictEqual((noneWired.match(/設定: なし/g) || []).length, 2);
-assert.ok(/<pre[^>]*>[^]*regression_cmd:[^]*intake_cmd:/.test(noneWired), '貼る 2 行が揃っていない');
-assert.ok(noneWired.includes('codd_gate_regression.py'));
-assert.ok(noneWired.includes('注入 CLI は無い'));
-assert.ok(noneWired.includes('data-gate-open="/ws/.agents/agent-project.yaml"'));
-assert.ok(noneWired.includes('dashboard が自動探索した設定候補'));
-assert.ok(noneWired.includes('--config') && noneWired.includes('確認できません'));
-
-// 設定ファイル自体が無い: 開くボタンも注入 CLI も出さず（--config は既存ファイル必須）、
-// 作成先は README と同じ .agents/agent-project.yaml を示す。
-const noConfig = consistencyGateHtml({
-  consistencyGate: {
-    configFile: null, regressionWired: false, intakeWired: false, wired: false,
-    regressionCmd: null, intakeCmd: null,
-  },
-});
-assert.strictEqual(badges(noConfig, '未結線'), 3);
-assert.ok(!noConfig.includes('data-gate-open'), '設定ファイルが無いのに開くボタンを出さない');
-assert.ok(!noConfig.includes('codd_gate_regression.py'),
-  '設定ファイルが無いのに注入 CLI を勧めている（--config は既存ファイルを指す必要がある）');
-assert.ok(noConfig.includes('.agents/agent-project.yaml'));
-// README と同じプレースホルダを使い、viewer 側パスを実行環境へ誤って持ち込まない。
-assert.ok(noConfig.includes('&lt;root&gt;/repos.json'));
-assert.ok(noConfig.includes('対象プロジェクトのルートパスへ置き換えてください'));
-
-const jsonConfig = consistencyGateHtml({
-  consistencyGate: {
-    configFile: '/ws/.agents/agent-project.json',
-    regressionWired: false, intakeWired: false, wired: false,
-    regressionCmd: null, intakeCmd: null,
-  },
-});
-assert.ok(jsonConfig.includes('既存トップレベル object'));
-assert.ok(jsonConfig.includes('ファイル全体は置き換えない'));
-assert.ok(!jsonConfig.includes('codd_gate_regression.py'), 'JSON に YAML 用 CLI を案内しない');
-
-// Windows 側で見える WSL UNC は WSL シェルのパスではないため、コマンドへ直挿ししない。
-const crossRuntimePath = consistencyGateHtml({
-  dir: '\\\\wsl.localhost\\Ubuntu\\home\\Alice Smith\\app',
-  consistencyGate: {
-    configFile: '\\\\wsl.localhost\\Ubuntu\\home\\Alice Smith\\app\\.agents\\agent-project.yaml',
-    regressionWired: false, intakeWired: false, wired: false,
-    regressionCmd: null, intakeCmd: null,
-  },
-});
-assert.ok(!crossRuntimePath.includes('--repos \\\\wsl.localhost'));
-assert.ok(!crossRuntimePath.includes('--config \\\\wsl.localhost'));
-assert.ok(crossRuntimePath.includes('&lt;root&gt;/repos.json'));
-assert.ok(crossRuntimePath.includes('&lt;状態 clone&gt;/agent-project.yaml'));
-
-// README との文言一致。ここがズレると画面と README でどちらが正か判断できなくなる。
-// 単体配布（agent-dashboard だけを取り出した場合）では README が無いのでスキップする。
-const README = path.join(__dirname, '..', '..', 'agent-project', 'README.md');
-if (fs.existsSync(README)) {
-  const readme = fs.readFileSync(README, 'utf8');
-  const quoted = (key) => {
-    const m = readme.match(new RegExp('^[ \\t]*' + key + ":\\s*('[^'\\n]*')", 'm'));
-    assert.ok(m, `README.md から ${key} の行を取り出せません（README 側の書式が変わった）`);
-    return `${key}: ${m[1]}`;
-  };
-  assert.ok(noConfig.includes(esc(quoted('regression_cmd'))),
-    'regression_cmd の行が README と一致しない');
-  assert.ok(noConfig.includes(esc(quoted('intake_cmd'))),
-    'intake_cmd の行が README と一致しない');
-  const cli = readme.match(/python3[^\n]*codd_gate_regression\.py[\s\\]*--config\s+([^\s`]+)/);
-  assert.ok(cli, 'README の注入 CLI または --config 引数が変わった（画面側の文言も合わせること）');
-  assert.ok(regressionOnly.includes(esc(cli[1])),
-    'README と同じ設定ファイルのプレースホルダを表示していない');
-}
-
-// コマンド文字列は必ず esc を通す（値は yaml 由来の外部入力）。
-const xss = consistencyGateHtml({
-  consistencyGate: {
-    configFile: null, regressionWired: true, intakeWired: false,
-    regressionCmd: '<img src=x onerror=alert(1)>', intakeCmd: null,
-  },
-});
-assert.ok(!xss.includes('<img'), 'コマンド文字列が素通しされている');
+assert.ok(!xss.includes('<img'));
 assert.ok(xss.includes('&lt;img'));
 
 console.log('consistency-gate-ui: ok');

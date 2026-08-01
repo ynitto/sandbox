@@ -599,11 +599,14 @@ def _run_agent_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
         t0 = time.monotonic()
         proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", input=stdin_text,
                               timeout=timeout, env=env)
-        # トークン実測: エージェントが `@cost tokens=… usd=…` を吐けば台帳へ帰属付きで記帳する。
+        # 共通アダプターは stderr の usage 契約、旧 CLI は stdout の @cost を読む。
+        _tokens_in, _tokens_out = _agentcli.parse_usage(proc.stderr or "")
         _cost_tokens, _cost_usd = parse_cost(proc.stdout or "")
         _node_budget_record(time.monotonic() - t0, ref=purpose or "agent",
                             agent_cli=cli, model=(model_ov or model or ""),
-                            tokens_out=(_cost_tokens or None) if _cost_tokens else None,
+                            tokens_in=_tokens_in,
+                            tokens_out=(_tokens_out if _tokens_out is not None else
+                                        ((_cost_tokens or None) if _cost_tokens else None)),
                             usd=(_cost_usd or None) if _cost_usd else None)
         if proc.returncode != 0:
             raise RuntimeError(_agent_failure(cmd[0], proc.returncode, proc.stdout, proc.stderr))

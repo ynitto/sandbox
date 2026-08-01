@@ -218,20 +218,56 @@ class ImpactTests(unittest.TestCase):
         rc, _ = run_cli(["verify", *args, "--base", self.base, "--strict-cross"])
         self.assertEqual(rc, 1)
 
-    def test_base_from_env(self):
+    def test_base_from_agent_env_precedes_legacy_env(self):
         write(self.d, "src/util.py", "def helper():\n    return 9\n")
-        old = os.environ.get("KIRO_BASE_REV")
+        old_agent = os.environ.get("AGENT_BASE_REV")
+        old_kiro = os.environ.get("KIRO_BASE_REV")
+        os.environ["AGENT_BASE_REV"] = self.base
+        os.environ["KIRO_BASE_REV"] = "not-a-revision"
+        try:
+            rc, _ = run_cli(["verify", *self.args])
+            self.assertEqual(rc, 1)
+        finally:
+            if old_agent is None:
+                os.environ.pop("AGENT_BASE_REV", None)
+            else:
+                os.environ["AGENT_BASE_REV"] = old_agent
+            if old_kiro is None:
+                os.environ.pop("KIRO_BASE_REV", None)
+            else:
+                os.environ["KIRO_BASE_REV"] = old_kiro
+
+    def test_base_from_legacy_env(self):
+        write(self.d, "src/util.py", "def helper():\n    return 9\n")
+        old_agent = os.environ.pop("AGENT_BASE_REV", None)
+        old_kiro = os.environ.get("KIRO_BASE_REV")
         os.environ["KIRO_BASE_REV"] = self.base
         try:
             rc, _ = run_cli(["verify", *self.args])
             self.assertEqual(rc, 1)
         finally:
-            if old is None:
+            if old_agent is not None:
+                os.environ["AGENT_BASE_REV"] = old_agent
+            if old_kiro is None:
                 os.environ.pop("KIRO_BASE_REV", None)
             else:
-                os.environ["KIRO_BASE_REV"] = old
+                os.environ["KIRO_BASE_REV"] = old_kiro
+
+    def test_explicit_base_precedes_environment(self):
+        write(self.d, "src/util.py", "def helper():\n    return 9\n")
+        old_agent = os.environ.get("AGENT_BASE_REV")
+        os.environ["AGENT_BASE_REV"] = "not-a-revision"
+        try:
+            rc, _ = run_cli(["verify", *self.args, "--base", self.base])
+            self.assertEqual(rc, 1)
+        finally:
+            if old_agent is None:
+                os.environ.pop("AGENT_BASE_REV", None)
+            else:
+                os.environ["AGENT_BASE_REV"] = old_agent
 
     def test_missing_base_dies(self):
+        os.environ.pop("AGENT_BASE_REV", None)
         os.environ.pop("KIRO_BASE_REV", None)
         rc, _ = run_cli(["verify", *self.args])
         self.assertEqual(rc, 2)

@@ -15,7 +15,7 @@ const state = {
   flowRun: null, // {run, events, nodeEvents}
   flowNodeId: null,
   flowRevisionId: null,
-  flowGraphMode: 'plan', // plan（計画の変遷）/ dependencies（依存関係）
+  flowGraphMode: 'dependencies', // plan（計画の変遷）/ dependencies（タスクの流れ）
   flowDetailView: 'overview', // 選択中 run の内部ビュー（overview / graph / history）
   flowMobileDetail: false,
   flowNodeIssue: null, // {token, issue|null}（実行中ノードのイシュー検索結果キャッシュ）
@@ -1185,127 +1185,34 @@ function strategyDisplayLabel(strategy) {
   }
 }
 
-// 一貫性ゲート（codd-gate 連携）の結線状態。結線判定は main 側 consistencyGateStatus() が
-// 設定 yaml の regression_cmd / intake_cmd を読んで済ませてあるので、ここは表示だけを行う。
-// UI から設定を書き換えない（done 不変条件）。有効化は「設定ファイルを開く」か
-// 「人が打つコマンドを見せる」に留める（startAgentProject と同じ考え方）。
-function consistencyGateHtml(p) {
-  const gate = p && p.consistencyGate;
-  if (!gate) return '';
-  const regressionConfigured = gate.regressionConfigured ?? Boolean(gate.regressionCmd && String(gate.regressionCmd).trim());
-  const intakeConfigured = gate.intakeConfigured ?? Boolean(gate.intakeCmd && String(gate.intakeCmd).trim());
-  // 未結線でも値が入っていることはある（regression_cmd は codd-gate 専用キーではなく汎用フック）。
-  // そのときバッジだけ出して値を隠すと「未結線＝何も設定されていない」と読めてしまうので、
-  // 設定されているコマンドは必ず見せたうえで「一貫性ゲートの検査ではない」と添える。
-  const rows = [
-    ['regression_cmd', '完了前の回帰検査', regressionConfigured, gate.regressionWired, gate.regressionCmd,
-      'このコマンドが失敗すると done の確定を止めます。原因は要対応の失敗要約を確認してください。'],
-    ['intake_cmd', 'ドリフトの取り込み', intakeConfigured, gate.intakeWired, gate.intakeCmd,
-      'このコマンドが正常に実行された場合、検出したズレを修復タスクとしてバックログへ積みます。'],
-  ].map(([key, label, configuredFlag, wired, cmd, note]) => {
-    return `<div>
-      <dt>${esc(label)}<br><span class="mono">${key}</span></dt>
-      <dd>
-        <span class="badge ${wired ? 'info' : 'warn'}">${wired ? '結線済み' : '未結線'}</span>
-        <span class="muted">設定: ${configuredFlag ? 'あり' : 'なし'}</span>
-        ${cmd ? `<code>${esc(cmd)}</code>` : ''}
-        <span class="muted">${!wired && configuredFlag
-          ? '別のコマンドが設定されています。一貫性ゲートの検査ではありません。'
-          : esc(note)}</span>
-      </dd>
-    </div>`;
-  }).join('');
-
-  // 未結線のフックが 1 つでもあれば有効化導線を出す。書く行・CLI・注意書きは
-  // tools/agent-project/README.md「一貫性ゲート（codd-gate 連携・オプション）」の原文に合わせる
-  // （画面と README で手順が食い違うと、どちらが正か人が判断できなくなる）。
-  //   - 有効化は設定ファイルへ未結線の行を書く。`<root>/repos.json` は README 同様プレースホルダのまま出す
-  //     （このプロジェクトの root は結線判定に使っていないので、ここで勝手に埋めない）。
-  //   - regression_cmd の行だけは sibling CLI codd_gate_regression.py で冪等 upsert できる。
-  //     intake_cmd に対応する注入 CLI は無いので yaml を直接編集する。
-  //   - CLI の --config は**既存の**設定ファイルを指すこと（無ければエラーで止まる）。
-  //     よって設定ファイル未検出のときは CLI を勧めず、作成手順だけを出す。
-  //   - viewer の p.dir/configFile は Windows では WSL UNC になることがあるため、実行環境の
-  //     シェルへそのまま貼れるとは限らない。README と同じプレースホルダを示す。
-  const wiredAll = gate.wired;
-  const jsonConfig = gate.configFile && /\.json$/i.test(gate.configFile);
-  const reposArg = '<root>/repos.json';
-  const settings = [
-    !gate.regressionWired && ['regression_cmd', `codd-gate verify --base "$KIRO_BASE_REV" --repos ${reposArg}`],
-    !gate.intakeWired && ['intake_cmd', `codd-gate tasks --debt --repos ${reposArg}`],
-  ].filter(Boolean);
-  const lines = jsonConfig
-    ? JSON.stringify(Object.fromEntries(settings), null, 2)
-    : settings.map(([key, value]) => `${key}: '${value}'`).join('\n');
-  // CLI は install.sh 導入版だと単体ファイルとして置かれない（install.sh:50-52 が zipapp ルートへ
-  // 同梱するだけ）。どこで打てば動くかを書かないと、コピーして必ず No such file になる。
-  const cliHint = gate.configFile && !gate.configError && !jsonConfig && !regressionConfigured
-    ? `<p><code>regression_cmd</code> の行は手書きの代わりに CLI で入れてもよい（リポジトリルートで実行する）:
-        <code>python3 tools/agent-project/codd_gate_regression.py --config &lt;状態 clone&gt;/agent-project.yaml</code>
-        （codd-gate を実測してこの 1 キーだけを冪等 upsert する。<code>--dry-run</code> なら書かずに結果だけ出す。
-        codd-gate が未検出・バージョン/schema 非互換なら何も書かない）。</p>`
-    : '';
-  const intakeHint = !jsonConfig && !intakeConfigured
-    ? `<p><code>intake_cmd</code> に対応する注入 CLI は無いので、こちらは yaml を直接編集する。</p>`
-    : '';
-  const replacementWarning = settings.some(([key]) =>
-    key === 'regression_cmd' ? regressionConfigured : intakeConfigured)
-    ? `<p><strong>注意:</strong> 設定済みのキーをこの例へ置換すると、現在の処理は失われます。
-        既存処理も必要なら、置換せず両方を実行するコマンドへまとめてください。</p>`
-    : '';
-  const enable = settings.length === 0
-    ? ''
-    : `<div class="need-resolution">
-        <span class="label-chip">有効化</span>
-        ${gate.configError
-          ? `設定ファイル <span class="mono">${esc(gate.configFile)}</span> は JSON として読めません。修復してから次の設定を追加してください:`
-          : jsonConfig
-          ? `自動検出した設定候補 <span class="mono">${esc(gate.configFile)}</span> の既存トップレベル object で、次のプロパティを追加または置換する（ファイル全体は置き換えない）:`
-          : gate.configFile
-          ? `設定ファイル <span class="mono">${esc(gate.configFile)}</span> で次の行を追加または置換する:`
-          : `agent-project の設定ファイルが見つかりません。ワークスペース直下に
-             <span class="mono">.agents/agent-project.yaml</span> を作り、次の行を書く:`}
-        <pre class="mono">${esc(lines)}</pre>
-        <p><code>&lt;root&gt;</code> は対象プロジェクトのルートパスへ置き換えてください。</p>
-        ${replacementWarning}
-        ${cliHint}${intakeHint}
-        ${gate.configFile
-          ? `<div class="summary-actions">
-              <button class="summary-link secondary" data-gate-open="${esc(gate.configFile)}">自動検出した設定ファイルを開く</button>
-            </div>`
-          : ''}
-      </div>`;
-
-  // 見出しバッジは 3 値。2 値だと「一度も有効化していない既定状態」まで『一部のみ』＝
-  // 部分的に動作中と読めてしまい、このセクションが最も助けたい相手を取り違える。
-  const wiredNone = !gate.regressionWired && !gate.intakeWired;
-  const headLabel = wiredAll ? '結線済み' : wiredNone ? '未結線' : '一部結線';
-  const headNote = wiredAll
-    ? '設定上は両方のフックへ結線済みです。codd-gate の実行可否や成功はこの画面では確認していません。'
-    : wiredNone
-      ? 'codd-gate は両方のフックに未結線です。これらのフックからは実行されません。'
-      : 'codd-gate は一方のフックだけに結線済みです。実行可否や成功はこの画面では確認していません。';
-  const configScopeNote = gate.explicitConfigUnknown
-    ? '<p class="muted">この状態は dashboard が自動探索した設定候補です。agent-project が <code>--config</code> で別の設定を使っているかは確認できません。</p>'
-    : '';
-  return `<section class="overview-version-section" aria-labelledby="consistency-gate-title">
+function projectCheckHtml(p) {
+  const check = p && p.projectCheck;
+  if (!check) return '';
+  const configured = check.configured ?? Boolean(check.command && String(check.command).trim());
+  const setup = configured ? '' : `<div class="need-resolution">
+    <span class="label-chip">設定</span>
+    <p>state repo の共通チェックを <code>regression_cmd</code> に1度だけ設定します。</p>
+    <pre class="mono">regression_cmd: './tools/check'</pre>
+    ${check.configFile ? `<div class="summary-actions">
+      <button class="summary-link secondary" data-project-check-open="${esc(check.configFile)}">自動検出した設定ファイルを開く</button>
+    </div>` : ''}
+  </div>`;
+  return `<section class="overview-version-section" aria-labelledby="project-check-title">
     <div class="overview-version-heading">
       <div>
-        <h2 id="consistency-gate-title">一貫性ゲート</h2>
-        <p>${headNote}</p>
+        <h2 id="project-check-title">プロジェクト共通チェック</h2>
+        <p>タスクの完了前に一度だけ実行し、失敗した場合は done の確定を止めます。</p>
       </div>
-      <div class="summary-actions"><span class="badge ${wiredAll ? 'info' : 'warn'}">${headLabel}</span></div>
+      <div class="summary-actions"><span class="badge ${configured ? 'info' : 'warn'}">${configured ? '設定済み' : '未設定'}</span></div>
     </div>
-    ${configScopeNote}
-    <dl class="need-failure-context">${rows}</dl>
-    ${enable}
+    ${check.command ? `<code>${esc(check.command)}</code>` : ''}
+    ${setup}
   </section>`;
 }
 
-// 有効化導線のボタン。設定ファイルを OS の既定エディタで開くだけ（読み書きは行わない）。
-function bindConsistencyGate(root) {
-  for (const btn of root.querySelectorAll('button[data-gate-open]')) {
-    btn.addEventListener('click', () => guard('設定ファイルを開く', () => api.openPath(btn.dataset.gateOpen)));
+function bindProjectCheck(root) {
+  for (const btn of root.querySelectorAll('button[data-project-check-open]')) {
+    btn.addEventListener('click', () => guard('設定ファイルを開く', () => api.openPath(btn.dataset.projectCheckOpen)));
   }
 }
 

@@ -135,3 +135,4 @@ REASON_DRAINED = "drained"  # 消化可能タスクが尽きた（実質完了�
 REASON_BUDGET = "budget"    # 予算（サイクル数/実時間）が尽きた
 REASON_COST = "cost"        # 予算（トークン/金額）が尽きた
 REASON_THROTTLE = "throttle"  # ソフト予算（throttle 比率）超過＝自動スロットル（watch は report へ降格）
+REASON_INFRASTRUCTURE = "infrastructure"  # 所有権など安全に継続できない基盤状態

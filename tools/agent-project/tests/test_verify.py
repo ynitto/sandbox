@@ -72,7 +72,7 @@ class TestFlakeTolerantVerify(unittest.TestCase):
 
 
 class TestVerifyProgress(unittest.TestCase):
-    """履歴一致 verify による偽 done の対策（成果参照の真正化・KIRO_BASE_REV・no-progress ガード）。"""
+    """履歴一致 verify による偽 done の対策（成果参照の真正化・AGENT_BASE_REV・no-progress ガード）。"""
 
     def _git(self, d, *a):
         import subprocess as sp
@@ -122,13 +122,20 @@ class TestVerifyProgress(unittest.TestCase):
             (d / "app.py").write_text("changed\n", encoding="utf-8")        # 本物のコード変更
             self.assertIn("app.py", km.meaningful_changes(cfg, base))
 
-    def test_kiro_base_rev_passed_to_verify(self):
+    def test_legacy_kiro_base_rev_reaches_verify(self):
         with tempfile.TemporaryDirectory() as d:
             # 差分スコープ verify: baseline 以降に該当コミットが無ければ正しく未done
             d = Path(d)
             self._repo(d, '`test -n "$(git log $KIRO_BASE_REV..HEAD --grep refactor 2>/dev/null)"`')
             res = km.run_loop(self._cfg(d))
             self.assertEqual(res["counts"]["done"], 0)      # 過去コミットには騙されない
+
+    def test_agent_base_rev_and_legacy_alias_reach_verify(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._repo(d, '`test -n "$AGENT_BASE_REV" && test "$AGENT_BASE_REV" = "$KIRO_BASE_REV"`')
+            res = km.run_loop(self._cfg(d))
+            self.assertEqual(res["counts"]["done"], 1)
 
     def test_require_progress_blocks_false_done(self):
         with tempfile.TemporaryDirectory() as d:
@@ -266,7 +273,7 @@ class TestVerifyAssist(unittest.TestCase):
                          "test -e 'report.py'")
         self.assertEqual(km.expand_verify_template("cmd-succeeds :: pytest -q tests/"),
                          "pytest -q tests/")
-        self.assertIn("KIRO_BASE_REV", km.expand_verify_template("diff-contains :: def foo"))
+        self.assertIn("AGENT_BASE_REV", km.expand_verify_template("diff-contains :: def foo"))
         self.assertIsNone(km.expand_verify_template("unknown-template :: x"))
 
     def test_enqueue_template_materializes_verify_and_ready(self):
@@ -655,5 +662,3 @@ class TestVerifyFailingStep(unittest.TestCase):
             ok, msg = km.run_verify("false", Path(d), 30)
         self.assertFalse(ok)
         self.assertIn("失敗した工程: `false`", msg)
-
-

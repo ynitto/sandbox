@@ -264,7 +264,7 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
             release_claim(cfg, task)
             continue
         gb = git_change_baseline(cfg.workdir)   # 完了時点の基準（remote/daemon 委譲は local 差分なし）
-        venv = {"KIRO_BASE_REV": gb[0]} if gb[0] else None
+        venv = {"AGENT_BASE_REV": gb[0], "KIRO_BASE_REV": gb[0]} if gb[0] else None
         # settle 前に last_run を残す（delivery / protect / resume）。flow_run を落とす前に移す。
         _pin_last_run(cfg, task, run_id)
         task.drop("flow_run", "flow_loc")
@@ -361,6 +361,7 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
                        f"見えない（ローカルでは通るのに verify が落ち続ける）。"
                        f"`git -C {cfg.backlog.parent} push origin {_branch}` を検討すること")
     start = time.time()
+    cfg._active_run_deadline = start + cfg.max_seconds if cfg.max_seconds > 0 else None
     cycle = 0
     archived = 0
     spawned_total = 0
@@ -430,7 +431,8 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
         # verify 以降のローカル状態変更は逐次のまま（competition を避け不変条件を保つ）。
         batch = _select_batch(order, cfg, policy, cfg.max_cycles - cycle)
         git_base = git_change_baseline(cfg.workdir)   # act 前スナップショット（保護パス/進捗判定/成果参照）
-        verify_env = {"KIRO_BASE_REV": git_base[0]} if git_base[0] else None  # verify に差分基準を渡す
+        verify_env = ({"AGENT_BASE_REV": git_base[0], "KIRO_BASE_REV": git_base[0]}
+                      if git_base[0] else None)  # 旧名は互換期間だけ併記
         act_results = _act_batch(batch, cfg, act, policy)   # クレームできたものだけ実行
         if not act_results:                      # 全て他者がクレーム済み → 次パスへ（この run では触らない）
             unavailable.update(t.id for t in batch)
@@ -444,6 +446,22 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
             packed = act_results[task.id]
             location, pend, act_msg = packed[0], packed[1], packed[2]
             act_ok = packed[3] if len(packed) > 3 else True
+            if isinstance(act_ok, _ClaimLost):
+                append_journal(cfg.journal, f"cycle {cycle}: {task.id} の claim 喪失を検知し結果を不採用")
+                unavailable.add(task.id)
+                continue
+            if isinstance(act_ok, _ClaimUnknown):
+                append_journal(cfg.journal,
+                               f"cycle {cycle}: {task.id} の claim を確認できないため安全停止")
+                stop = REASON_INFRASTRUCTURE
+                break
+            if isinstance(act_ok, _BudgetExpired):
+                task.status = "ready"
+                persist_task(cfg, task)
+                release_claim(cfg, task)
+                append_journal(cfg.journal, f"cycle {cycle}: {task.id} を実時間予算到達で中断（retry 不消費）")
+                stop = REASON_BUDGET
+                break
             if pend is not None:                  # 非ブロッキング委譲（offload）: 待たず offloaded に退避
                 _mark_offloaded(cfg, task, location, pend.run_id)
                 release_claim(cfg, task)          # 実行権は解放（次パスでポーリングして終端したら settle）
@@ -663,9 +681,18 @@ def run_watch(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.sle
             if controller and (charter_names(cfg) or _has_master_charter(cfg)):
                 # 多 charter はラウンドロビンで全 charter を 1 巡する（max_passes=1 だと
                 # 毎パス先頭の charter しか処理されず、2 本目以降が永久に計画されない）
-                project_watch(cfg, runner=lambda c: run_loop(c, act, ranker, sleeper),
-                              sleeper=sleeper, max_passes=max(1, len(charter_names(cfg))),
-                              heartbeat=heartbeat)
+                project_result = {}
+
+                def _project_runner(c):
+                    result = run_loop(c, act, ranker, sleeper)
+                    project_result.clear()
+                    project_result.update(result)
+                    return result
+
+                project_watch(cfg, runner=_project_runner, sleeper=sleeper,
+                              max_passes=max(1, len(charter_names(cfg))), heartbeat=heartbeat)
+                if project_result.get("reason") == REASON_INFRASTRUCTURE:
+                    return project_result
                 tasks = load_tasks(cfg.backlog)
                 last = {"reason": "project", "cycles": 1, "counts": summarize(tasks),
                         "tasks": tasks, "level": cfg.level}
@@ -678,6 +705,8 @@ def run_watch(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.sle
             c = last["counts"]
             print(f"[watch] pass {passes}: reason={last['reason']} "
                   f"done={c['done']} blocked={c['blocked']}", flush=True)
+            if last["reason"] == REASON_INFRASTRUCTURE:
+                return last
             if last["reason"] == REASON_THROTTLE and cfg.level != "report":
                 cfg.level = "report"  # ソフト予算超過 → 以降は report 降格（spend を止め監視は継続）
                 print("[watch] throttle: ソフト予算超過につき report レベルへ降格（act 停止）", flush=True)

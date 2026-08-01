@@ -150,8 +150,9 @@ verify は act 完了後に走る。
 MR 承認まで数日かかる委譲でループを塞がず、同じプロジェクトの他タスク・他プロジェクトを並行に
 進められる。委譲 id は決定的なので agent-project が再起動しても同じ委譲に再合流する。
 `act_timeout` は run 全体の壁時計上限なので既定は `0`（無制限）とし、進捗と失踪は run の
-orchestrator lease で判定する。lease が失効した run は失敗として止め、次回は done を温存して
-再開する。有限値が必要な運用だけ明示する。agent-flow の
+orchestrator lease で判定する。正常終端・一時的な読取不能・期限切れを区別し、期限切れが10秒
+続いた run だけを止めて次回は done を温存して再開する。`max_seconds` は進行中の run にも効く。
+有限値が必要な運用だけ明示する。agent-flow の
 `gitlab.timeout/approved_timeout: 0` と併用すれば、レビュー待ちの誤タイムアウトも起きない。
 
 **並列消費（`--concurrency N`、既定 1）**: 依存解決済みの独立タスクを先頭から最大 N 件 板へ並行
@@ -161,8 +162,9 @@ post し、実体の並列は請負側ノードの worker に委ねる。**実�
 **原子的クレーム（二重実行防止）**: 各タスクは実行前に `claims/<id>.lock` を `O_CREAT|O_EXCL` で確保した者だけが
 回す。**同じ backlog を複数プロセス/ホストで回しても同一タスクは二度実行されない**。取得後に disk を再検証し、
 owner 失踪は TTL 超で奪取、終了で解放。無制限 run の claim は 600 秒ごとに mtime を更新し、
-更新時に owner / pid / task が一致しなければ run を止める。JSON を書き直さないため、監視側が
-途中状態を読む窓も作らない。
+更新時に owner / pid / task が一致しなければ run を止める。一時的なI/O失敗は60秒まで再確認し、
+claim を失った試行は task と claim を書き換えない。JSON を書き直さないため、監視側が途中状態を
+読む窓も作らない。
 
 **分散移譲（board）**: `board: <委譲公示板>`＋`policy.md` の `offload: <パターン>` 一致タスクは
 `board` に解決され、板へ公示する。請負側ノードの常駐体が入札・実行し、結果は次パスで回収する。
@@ -202,7 +204,7 @@ verify は done 確定の唯一の根拠だが機械的合否でしかない。�
 （「done は機械検証の PASS のみが根拠」の鉄則は不変）:
 
 - **`- verify_template: <名前> :: <引数…>`** … 決定的に展開（**エージェント不要**）。`file-contains :: <path> :: <文字列>` /
-  `file-exists :: <path>` / `defines :: <symbol> :: <path>` / `diff-contains :: <文字列>`（act 後の差分・`$KIRO_BASE_REV`）/
+  `file-exists :: <path>` / `defines :: <symbol> :: <path>` / `diff-contains :: <文字列>`（act 後の差分・`$AGENT_BASE_REV`）/
   `cmd-succeeds :: <コマンド>`。enqueue 時に即展開。
 - **`- acceptance: <受入基準>`（複数行可）** … settle 時に**検証エージェント**が基準ごとに実際にコマンドを
   試行錯誤して充足を確かめ、**判定 + 証跡**を返す（S5）。`- accept:`（自然文 1 行）は 1 項目の
@@ -298,7 +300,8 @@ CLI からも付与・修正できる。
 
 - **成果参照の真正化（常時）**: DELIVERY/needs の成果参照は **act 前(baseline)以降の新規変更のみ**を載せ、無ければ
   `(変更なし)`（既存コミットを成果物と偽らない）。agent-project 自身の状態ファイルは差分から除外。
-- **差分基準（常時）**: verify 実行時に `$KIRO_BASE_REV`（act 前 HEAD）を渡す。`git log $KIRO_BASE_REV..HEAD --grep …`
+- **差分基準（常時）**: verify 実行時に `$AGENT_BASE_REV`（act 前 HEAD）を渡す。`git log $AGENT_BASE_REV..HEAD --grep …`
+  旧 `$KIRO_BASE_REV` も後方互換として同じ値を渡す。
   で差分スコープ verify が書ける。
 - **no-progress ガード（opt-in）**: `--require-progress` / per-task `- expect: changes` で、verify=PASS でも変更が
   無ければ done せず人へ。正当な無変更は `- expect: none` で opt-out。
@@ -348,43 +351,17 @@ CLI からも付与・修正できる。
   `review`（検収待ち）になり `needs/<id>.md` を生成。`approve <id>` で done 確定／フィードバックで差し戻し。
 - **パス保護**（safety denylist）: policy `protect: <glob>` に一致するファイルを act が**変更したら** verify=PASS でも
   done せず検収待ちへ。`gate` がタスク一致なのに対し `protect` は**変更されたパス**一致。
-- **一貫性ゲート（codd-gate 連携・オプション）**: ドキュメント・コード・テストの整合は**完全独立**の
-  ツール [`codd-gate`](../codd-gate/README.md)（本ツールの install.sh が隣にあれば同梱インストールする）で
-  検査できる。リポジトリ定義には、本ツールが charter から生成する `<root>/repos.json` を使う。
-  連携を有効にするには、設定ファイルへ次の2行を書く。
+- **プロジェクト共通チェック**: state repo が持つ1本のコマンドを `regression_cmd` に設定する。
+  agent-project はコマンドの中身や使用する検証 CLI を解釈せず、各タスクの verify PASS 後、done 確定前に
+  実行する。失敗時は done にせず人へ戻す。
 
   ```yaml
-  regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV" --repos <root>/repos.json'
-  intake_cmd: 'codd-gate tasks --debt --repos <root>/repos.json'
+  regression_cmd: ./tools/check
   ```
 
-  CLI で起動する場合は、同じ値を `--regression-cmd 'codd-gate verify …'` と
-  `--intake-cmd 'codd-gate tasks --debt …'` に渡す。`regression_cmd` は毎タスクの verify
-  PASS 後、done 確定前に実行される。agent-project は `intake_cmd` が返す既存負債を修復タスクとして
-  backlog へ取り込む。各タスクは `codd-gate check …` で修復を確認する。charter acceptance には
-  `codd-gate verify --debt --max-broken N …` を置き、受入時の負債ラチェットに使う。
-
-  `regression_cmd` は生成ツールでも設定できる。既存の設定ファイルを `--config` で指定して、
-  リポジトリルートから実行する。
-
-  ```bash
-  python3 tools/agent-project/codd_gate_regression.py \
-    --config <状態 clone>/agent-project.yaml
-  ```
-
-  生成ツールは `regression_cmd` だけを冪等に更新する。`intake_cmd` は設定ファイルへ直接書く。
-  生成ツールは codd-gate の実体だけを検出し、見つからない場合は設定を変更しない。
-  YAML の更新処理は `codd_gate_regression.py` にだけ置く。
-
-  codd-gate の結線診断は、リポジトリルートで次の読み取り専用 CLI を実行する。これが唯一の
-  正準手順であり、設定は書き換えない。
-
-  ```bash
-  python3 tools/agent-project/codd_gate_wiring.py \
-    --config <状態 clone>/agent-project.yaml
-  ```
-
-  JSON の `regression_wired` と `intake_wired` が現在の結線状態、`findings` が未結線時の設定例を示す。
+  `tools/check` の中で、テスト、[`codd-gate`](../codd-gate/README.md)、その他の検証 CLI を順に呼ぶ。
+  検証 CLI を増やすときに変更するのはこのファイルだけでよく、agent-project の設定や通常タスクの
+  `verify` は増やさない。既存負債を自動で backlog へ投入する必要が明確な場合だけ、別途 `intake_cmd` を使う。
 
 ### policy.md（人による上書き・per-project）
 
@@ -638,7 +615,7 @@ charter.md（goal / constraints / assumptions / deliverables / acceptance=受入
   - **verify の実行先もワークスペースに従う**: `- workspace:` を持つタスクは成果が workdir（git-bus ルート）でなく該当 repo の
     作業ブランチへ push されるため、verify/回帰を workdir で回すと「成果の無い場所」で偽 NG になる。そこで verify は**該当 repo を
     指定ブランチ（`target`→`base`）で取得し、`path` 指定があればそれをルートに**したクローン内で実行する
-    （差分基準 `$KIRO_BASE_REV` はクローンの HEAD に取り直す）。取得は **URL 単位のホスト共有 bare ミラー
+    （差分基準 `$AGENT_BASE_REV` はクローンの HEAD に取り直す）。取得は **URL 単位のホスト共有 bare ミラー
     （`--mirror --filter=blob:none`）から detached worktree を生やす**方式で、毎回 fetch してから最新で worktree を作るので
     都度 clone と鮮度は同等のまま GitLab の pack 生成負荷を抑える（ミラー root は `KIRO_GIT_CACHE_DIR`、既定
     `$TMPDIR/kiro-git-cache`、agent-flow と共有。詳細は

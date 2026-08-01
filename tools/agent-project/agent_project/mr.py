@@ -919,7 +919,7 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
         venv = verify_env
         if vtmp and (vcwd / ".git").exists():          # 一時 clone は差分基準を clone の HEAD に取り直す
             head = _git_out(vcwd, "rev-parse", "HEAD").strip()
-            venv = {"KIRO_BASE_REV": head} if head else None
+            venv = {"AGENT_BASE_REV": head, "KIRO_BASE_REV": head} if head else None
         # 検証は統一 verify（P1-A3/A8）のみ: run に渡した verification_plan の receipt を検算し、
         # digest・成果 revision・証跡が一致した判定だけを採用する。run が receipt を返さない
         # 経路（dry-run・stub・旧 agent-flow）は local runner が固定コマンドを同じ契約で実行
@@ -939,9 +939,9 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
         if ok and not flaky and cfg.regression_cmd:    # done 確定前のグローバル回帰ゲート（巻き込み事故）
             # 回帰検査は **常に git-bus ルート（workdir）** で走らせる。task.verify と違い
             # cfg.regression_cmd はグローバル検査で、パス（例 `--repos <root>/repos.json`）も
-            # 差分基準（`--base "$KIRO_BASE_REV"`）も workdir を前提に書かれる。workspace タスクの
+            # 差分基準（`--base "$AGENT_BASE_REV"`）も workdir を前提に書かれる。workspace タスクの
             # vcwd（該当 repo の一時 clone）で走らせると codd-gate が repos.json を解決できず、
-            # KIRO_BASE_REV も clone の HEAD（workdir に無い rev）になって回帰ゲートが壊れる。
+            # AGENT_BASE_REV も clone の HEAD（workdir に無い rev）になって回帰ゲートが壊れる。
             rok, rmsg = run_verify(cfg.regression_cmd, cfg.workdir, cfg.verify_timeout, verify_env)
             if not rok:
                 regressed = True

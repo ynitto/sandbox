@@ -297,7 +297,7 @@ class CancelTests(unittest.TestCase):
         self.assertTrue(b.cancel_request_run("req-new", "run 化前 cancel"))
         self.assertEqual(b.run_meta("req-new").get("status"), "cancelled")
 
-    def test_cmd_cancel_marks_and_clears(self):
+    def test_cmd_cancel_marks_and_keeps_intent_until_owner_acknowledges(self):
         self.bus.write_wait("n1", {"id": "n1", "wait_lease_until": time.time() + 1000,
                                    "issue": {"iid": 1}})
         args = argparse.Namespace(bus=self.tmp, run_id="run1", reason="緊急停止",
@@ -307,10 +307,32 @@ class CancelTests(unittest.TestCase):
             rc = kf.cmd_cancel(args)
         self.assertEqual(rc, 0)
         self.assertEqual(self.bus.run_meta("run1").get("status"), "cancelled")
-        self.assertFalse(self.bus.is_canceled_requested("run1"), "適用後マーカーは消す")
+        self.assertTrue(self.bus.is_canceled_requested("run1"), "実行所有者が止まるまで意図を残す")
         self.assertIsNone(self.bus.read_wait("n1"))             # park 再ポーリングを止める
 
-    def test_cmd_cancel_terminal_clears_leftover_waits(self):
+    def test_touch_run_converges_to_cancelled_when_cancel_races_heartbeat(self):
+        original_write = kf.write_json_atomic
+        heartbeat_read = threading.Event()
+        allow_heartbeat_write = threading.Event()
+
+        def delayed_write(path, data):
+            if (path == self.bus.meta_path and data.get("orch_lease_until") is not None
+                    and data.get("status") == "running"):
+                heartbeat_read.set()
+                allow_heartbeat_write.wait(1.0)
+            original_write(path, data)
+
+        with mock.patch.object(kf, "write_json_atomic", side_effect=delayed_write):
+            th = threading.Thread(target=lambda: self.bus.touch_run("run1", 120.0))
+            th.start()
+            self.assertTrue(heartbeat_read.wait(1.0))
+            self.bus.cancel_request("run1", "host", "停止")
+            self.bus.mark_canceled("run1", "停止")
+            allow_heartbeat_write.set()
+            th.join(1.0)
+        self.assertEqual(self.bus.run_meta("run1").get("status"), "cancelled")
+
+    def test_cmd_cancel_terminal_clears_waits_but_keeps_owner_intent(self):
         self.bus.set_status("done")
         self.bus.write_wait("n1", {"id": "n1", "wait_lease_until": time.time() + 1000})
         self.bus.cancel_request("run1", "host", "古い")
@@ -321,7 +343,7 @@ class CancelTests(unittest.TestCase):
             rc = kf.cmd_cancel(args)
         self.assertEqual(rc, 0)
         self.assertIsNone(self.bus.read_wait("n1"))
-        self.assertFalse(self.bus.is_canceled_requested("run1"))
+        self.assertTrue(self.bus.is_canceled_requested("run1"))
 
     def test_orch_check_canceled(self):
         args = argparse.Namespace(run_id="run1")

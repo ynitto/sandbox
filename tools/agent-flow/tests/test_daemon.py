@@ -75,6 +75,36 @@ class OrphanRecoveryTests(unittest.TestCase):
         self.assertEqual(kf._run_lease_window(types.SimpleNamespace(poll=20.0)), 200.0)
         self.assertEqual(kf._run_lease_window(types.SimpleNamespace(poll=None)), 120.0)
 
+    def test_blocking_orchestrator_phase_keeps_heartbeat_alive(self):
+        calls = []
+
+        def heartbeat(force=False):
+            calls.append(force)
+
+        result = kf._with_run_heartbeat(
+            heartbeat, 0.03, lambda: (time.sleep(0.05), "done")[1])
+        self.assertEqual(result, "done")
+        self.assertGreaterEqual(len(calls), 2)
+
+    def test_blocking_orchestrator_phase_waits_for_inflight_heartbeat(self):
+        entered = threading.Event()
+        release = threading.Event()
+
+        def heartbeat(force=False):
+            entered.set()
+            release.wait()
+
+        done = threading.Event()
+        outer = threading.Thread(target=lambda: (
+            kf._with_run_heartbeat(heartbeat, 0.03, lambda: entered.wait()), done.set()))
+        outer.start()
+        self.assertTrue(entered.wait(1.0))
+        time.sleep(0.02)
+        self.assertFalse(done.is_set(), "heartbeat 実行中に wrapper が戻ってはいけない")
+        release.set()
+        outer.join(1.0)
+        self.assertTrue(done.is_set())
+
     def _args(self, **kw):
         base = dict(max_resumes=3, lease=1800.0)
         base.update(kw)

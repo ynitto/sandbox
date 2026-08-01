@@ -41,6 +41,9 @@ _AGENTS_HOME_ENV = "AGENT_PROJECT_AGENTS_HOME"
 _AGENTS_HOME_DIR = ".agents"
 _AGENTS_HOME_LEGACY = ".agent"
 
+_USAGE_RE = re.compile(
+    r"(?m)^@agent-usage\s+tokens_in=(\d+)\s+tokens_out=(\d+)\s*$")
+
 def _bundled_dir() -> "Path | None":
     """ツール同梱の定義（このリポジトリの agents/）。install.py が ~/.agents/agents/ へ配るが、
     リポジトリから直接動かす開発環境でも解決できるよう、上へ辿って最後の候補として見る。"""
@@ -53,6 +56,25 @@ def _bundled_dir() -> "Path | None":
 
 class AgentCliError(RuntimeError):
     """定義が見つからない / 壊れている。黙って別 CLI へ倒さないための明示エラー。"""
+
+
+def parse_usage(stderr: str) -> "tuple[int | None, int | None]":
+    """CLI アダプターが stderr に出す実測 usage を読む。本文(stdout)は信頼しない。"""
+    matches = list(_USAGE_RE.finditer(str(stderr or "")))
+    if not matches:
+        return None, None
+    match = matches[-1]
+    return int(match.group(1)), int(match.group(2))
+
+
+class UsageText(str):
+    """文字列互換の応答に、台帳へ渡す実測値だけを添える。"""
+
+    def __new__(cls, text: str, tokens_in=None, tokens_out=None):
+        value = super().__new__(cls, text)
+        value.tokens_in = tokens_in
+        value.tokens_out = tokens_out
+        return value
 
 
 def _agents_home() -> Path:

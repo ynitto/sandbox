@@ -152,7 +152,7 @@ def run_plan_command(cmd: str, cwd: "str | None", timeout: float,
 
     規則: 終了コード非 0 は fail（成果物の欠陥）、起動できない（実行場所が無い・コマンド不在
     exit 127）は inconclusive（環境。修正リトライを消費させない）、タイムアウトは exit 124 の
-    fail。env は `$KIRO_BASE_REV`（差分基準）等の受け渡し。confirm>1 は同じコマンドを最大
+    fail。env は `$AGENT_BASE_REV`（差分基準）等の受け渡し。confirm>1 は同じコマンドを最大
     confirm 回実行し、PASS/FAIL を跨いだら flaky を立てる（flaky な pass は receipt_overall が
     fail に落とす）。"""
     entry: dict = {"command": cmd}

@@ -2062,7 +2062,10 @@ svg.graph .edge.done { stroke: var(--green); stroke-width: 2.5; opacity: 0.85; }
 svg.graph .node rect { rx: 6; stroke-width: 1.5; }
 svg.graph .node text { fill: var(--fg); font-size: 11px; }
 svg.graph .node .kind { fill: var(--muted); font-size: 9px; }
+svg.graph .node .timing { fill: var(--muted); font-size: 9px; }
 svg.graph .node { cursor: pointer; }
+svg.graph .node.kind-verify rect { stroke-width: 2.5; }
+svg.graph .node.kind-verify .kind { fill: var(--fg); font-weight: 700; }
 svg.graph .node.state-done rect { fill: #1d3325; stroke: var(--green); }
 svg.graph .node.state-failed rect { fill: #3a1d20; stroke: var(--red); }
 svg.graph .node.state-claimed rect { fill: #17313d; stroke: var(--accent2); }
@@ -2073,6 +2076,25 @@ svg.graph .node.selected rect { stroke-width: 3; }
 svg.graph .node:focus-visible rect { stroke: var(--accent); stroke-width: 3; }
 /* GitLab クローズ反映で状態を先読みしたノード（bus の result 反映待ち）は破線枠で区別する */
 svg.graph .node.reconciled rect { stroke-dasharray: 4 3; }
+
+.project-acceptance {
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: 7px;
+  background: var(--bg2);
+}
+.project-acceptance-head { display: flex; justify-content: space-between; gap: 10px; }
+.project-acceptance p { margin: 6px 0 5px; color: var(--muted); line-height: 1.45; }
+.project-acceptance time { color: var(--muted); font-size: 11px; }
+.project-acceptance-passed { border-left-color: var(--green); }
+.project-acceptance-running { border-left-color: var(--accent2); }
+.project-acceptance-attention { border-left-color: var(--orange); background: color-mix(in srgb, var(--orange) 7%, var(--bg2)); }
+.project-acceptance-pending { border-left-color: var(--border); }
+.project-acceptance-attention .project-acceptance-head span { color: var(--orange); }
+.project-acceptance-passed .project-acceptance-head span { color: var(--green); }
+.project-acceptance-running .project-acceptance-head span { color: var(--accent2); }
 /* gitlab executor ノードの右上イシューアイコン（1 クリックでレビュー起動） */
 svg.graph .node-issue { cursor: pointer; }
 svg.graph .node-issue circle { fill: var(--orange); stroke: var(--bg); stroke-width: 1.5; }
@@ -3048,6 +3070,7 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   top: -1px;
   z-index: 10;
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   padding: 8px;
   border: 1px solid var(--border);
@@ -3134,6 +3157,31 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 }
 .orch-panel > header.row { justify-content: space-between; align-items: flex-start; gap: 12px; }
 .orch-panel h3 { margin: 2px 0 4px; }
+.orch-usage-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0 10px;
+}
+.orch-usage-summary > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg3);
+}
+.orch-usage-summary span { color: var(--muted); font-size: 12px; }
+.orch-usage-summary strong { overflow-wrap: anywhere; font-size: 18px; }
+.orch-usage-breakdown { display: flex; flex-wrap: wrap; gap: 12px; margin: 10px 0; }
+.orch-usage-subheading { margin: 22px 0 4px; font-size: 15px; }
+.orch-no-limit { margin: 12px 0; }
+.orch-share { display: grid; grid-template-columns: minmax(80px, 1fr) 4em; align-items: center; gap: 8px; }
+@media (max-width: 680px) {
+  .orch-usage-summary { grid-template-columns: minmax(0, 1fr); }
+}
 .orch-table { width: 100%; }
 .orch-table td, .orch-table th { vertical-align: middle; }
 .orch-actions { gap: 8px; margin-top: 12px; flex-wrap: wrap; }

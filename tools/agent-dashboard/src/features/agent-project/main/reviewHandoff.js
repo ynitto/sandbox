@@ -27,11 +27,11 @@ function endpointPath() {
 
 // 起動済み gitlab-review-viewer へ URL を渡す。成功なら true（exe 起動不要）。
 // 未起動（ENOENT/ECONNREFUSED）・応答なし（timeout）なら false（呼び出し側が exe 起動へ）。
-function tryHandoff(url, timeoutMs = 400) {
+function tryHandoff(url, timeoutMs = 400, connect = () => net.connect(endpointPath())) {
   return new Promise((resolve) => {
     let done = false;
     let ack = '';
-    const sock = net.connect(endpointPath());
+    const sock = connect();
     const finish = (ok) => {
       if (done) return;
       done = true;

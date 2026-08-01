@@ -92,43 +92,87 @@ function orchBudgetPanelHtml(budget) {
   const periodLabel = { day: '今日', month: '今月', total: '累計' }[cfg.period] || cfg.period;
   const tt = budget.totalTokens || { measured: 0, estimated: 0, total: 0 };
   const limit = Number(budget.tokenLimit || 0);
-  const limitTxt = limit > 0 ? `${orchTokens(limit)} トークン` : '無制限';
-  // 全体トークンゲージ（実測 + 推定の積み上げ）
-  const denom = limit > 0 ? limit : Math.max(tt.total, 1);
-  const mPct = Math.min(100, (tt.measured / denom) * 100);
-  const ePct = Math.min(100 - mPct, (tt.estimated / denom) * 100);
+  const totalRecords = Number(budget.totalRecords || 0);
+  const unknownRecords = Number(budget.totalUnestimatedRecords || 0);
+  const totalTxt = tt.total > 0 ? `${orchTokens(tt.total)} トークン`
+    : unknownRecords > 0 ? '推定不可' : '0 トークン';
   const timeTxt = cfg.execution_minutes > 0
     ? `${amigosMin(budget.totalSeconds)} / ${amigosMin(budget.limitSeconds)} 分`
     : `${amigosMin(budget.totalSeconds)} 分（上限なし）`;
   const overBadge = budget.exceeded
     ? orchBadge('over', '上限到達 — 新しい実行を制限中')
-    : orchBadge('ok', '余裕あり');
+    : limit > 0 || cfg.execution_minutes > 0
+      ? orchBadge('ok', '上限内')
+      : orchBadge('muted', '上限なし');
+  const gauge = limit > 0 ? (() => {
+    const mPct = Math.min(100, (tt.measured / limit) * 100);
+    const ePct = Math.min(100 - mPct, (tt.estimated / limit) * 100);
+    const usedPct = (tt.total / limit) * 100;
+    const remaining = Math.max(0, limit - tt.total);
+    return `<div class="orch-gauge">
+      <div class="orch-gauge-head">
+        <strong>${usedPct.toFixed(1)}% 使用</strong>
+        <span class="muted">残り ${esc(orchTokens(remaining))} / 上限 ${esc(orchTokens(limit))} トークン</span>
+      </div>
+      <div class="orch-bar orch-bar-lg" role="img" aria-label="上限の ${usedPct.toFixed(1)}% を使用">
+        <span class="orch-bar-measured" style="width:${mPct.toFixed(1)}%"></span>
+        <span class="orch-bar-estimated" style="width:${ePct.toFixed(1)}%"></span>
+      </div>
+    </div>`;
+  })() : '<p class="muted orch-no-limit">トークン上限は設定されていません。利用量は引き続き記録されます。</p>';
 
   const wlRows = (budget.knownWorkloads || [])
     .concat(Object.keys(budget.workloads || {}).filter((w) => !(budget.knownWorkloads || []).includes(w)))
     .map((wl) => {
-      const w = (budget.workloads || {})[wl] || { measuredTokens: 0, estimatedTokens: 0, totalTokens: 0, tokenCap: 0 };
+      const w = (budget.workloads || {})[wl] || {
+        seconds: 0, recordCount: 0, unestimatedRecords: 0,
+        measuredTokens: 0, estimatedTokens: 0, totalTokens: 0, tokenCap: 0,
+      };
       const cap = Number(w.tokenCap || 0);
-      const capTxt = cap > 0 ? `${orchTokens(cap)} トークン` : '無制限';
-      const d = cap > 0 ? cap : Math.max(w.totalTokens, 1);
-      const mp = Math.min(100, (w.measuredTokens / d) * 100);
-      const ep = Math.min(100 - mp, (w.estimatedTokens / d) * 100);
+      const records = Number(w.recordCount || 0);
+      const unknown = Number(w.unestimatedRecords || 0);
+      const share = tt.total > 0 && w.totalTokens > 0 ? (w.totalTokens / tt.total) * 100 : 0;
+      const tokenText = records === 0 ? '利用記録なし'
+        : w.totalTokens > 0 ? `${orchTokens(w.totalTokens)}${unknown > 0 ? ' + 一部推定不可' : ''}${cap > 0 ? ` / 上限 ${orchTokens(cap)}` : ''}`
+          : unknown > 0 ? '推定不可' : '0';
       let badge = '';
       if (w.tokenExceeded) badge = orchBadge('over', '上限に到達');
       else if (w.soft) badge = orchBadge('soft', '節約モード');
       else if (w.timeExceeded) badge = orchBadge('over', '時間上限に到達');
+      else if (unknown > 0) badge = orchBadge('muted', 'トークン推定不可');
+      else if (records === 0) badge = orchBadge('muted', '記録なし');
       return `<tr>
         <td>${esc(amigosWorkloadLabel(wl))}</td>
         <td class="orch-bar-cell">
-          <div class="orch-bar" title="実測 ${esc(orchTokens(w.measuredTokens))} / 推定 ${esc(orchTokens(w.estimatedTokens))}">
-            <span class="orch-bar-measured" style="width:${mp.toFixed(1)}%"></span>
-            <span class="orch-bar-estimated" style="width:${ep.toFixed(1)}%"></span>
-          </div>
+          <div class="orch-share"><div class="orch-bar" title="全体の ${share.toFixed(1)}%">
+            <span class="orch-bar-measured" style="width:${share.toFixed(1)}%"></span>
+          </div><span class="num mono">${w.totalTokens > 0 ? `${share.toFixed(1)}%` : '—'}</span></div>
         </td>
-        <td class="num mono">${esc(orchTokens(w.totalTokens))} / ${esc(capTxt)}</td>
+        <td class="num mono" title="実測 ${esc(orchTokens(w.measuredTokens))} / 推定 ${esc(orchTokens(w.estimatedTokens))}">${esc(tokenText)}</td>
+        <td class="num mono">${esc(amigosMin(w.seconds))} 分</td>
+        <td class="num mono">${records}件</td>
         <td>${badge}</td>
       </tr>`;
     }).join('');
+  const agentRows = Object.entries(budget.agents || {})
+    .sort((a, b) => (b[1].totalTokens - a[1].totalTokens) || (b[1].seconds - a[1].seconds))
+    .map(([name, agent]) => {
+      const records = Number(agent.recordCount || 0);
+      const unknown = Number(agent.unestimatedRecords || 0);
+      const share = tt.total > 0 && agent.totalTokens > 0 ? (agent.totalTokens / tt.total) * 100 : 0;
+      const tokenText = agent.totalTokens > 0
+        ? `${orchTokens(agent.totalTokens)}${unknown > 0 ? ' + 一部推定不可' : ''}`
+        : unknown > 0 ? '推定不可' : '0';
+      return `<tr>
+        <td><code>${esc(name === 'unknown' ? '未記録' : name)}</code></td>
+        <td class="orch-bar-cell"><div class="orch-share"><div class="orch-bar" title="全体の ${share.toFixed(1)}%">
+          <span class="orch-bar-measured" style="width:${share.toFixed(1)}%"></span>
+        </div><span class="num mono">${agent.totalTokens > 0 ? `${share.toFixed(1)}%` : '—'}</span></div></td>
+        <td class="num mono" title="実測 ${esc(orchTokens(agent.measuredTokens))} / 推定 ${esc(orchTokens(agent.estimatedTokens))}">${esc(tokenText)}</td>
+        <td class="num mono">${esc(amigosMin(agent.seconds))} 分</td>
+        <td class="num mono">${records}件</td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="5" class="muted">エージェント別の利用記録はありません。</td></tr>';
 
   return `<section class="orch-panel">
     <header class="row">
@@ -138,23 +182,28 @@ function orchBudgetPanelHtml(budget) {
       </div>
       <div>${overBadge}</div>
     </header>
-    <div class="orch-gauge">
-      <div class="orch-gauge-head">
-        <strong>合計 ${esc(orchTokens(tt.total))} トークン</strong>
-        <span class="muted">/ 上限 ${esc(limitTxt)}</span>
-        <span class="orch-legend"><span class="orch-swatch orch-bar-measured"></span>実測 ${esc(orchTokens(tt.measured))}</span>
-        <span class="orch-legend"><span class="orch-swatch orch-bar-estimated"></span>推定 ${esc(orchTokens(tt.estimated))}</span>
-        <span class="muted">・時間 ${esc(timeTxt)}</span>
-      </div>
-      <div class="orch-bar orch-bar-lg">
-        <span class="orch-bar-measured" style="width:${mPct.toFixed(1)}%"></span>
-        <span class="orch-bar-estimated" style="width:${ePct.toFixed(1)}%"></span>
-      </div>
+    <div class="orch-usage-summary">
+      <div><span>合計</span><strong>${esc(totalTxt)}</strong></div>
+      <div><span>実行時間</span><strong>${esc(timeTxt)}</strong></div>
+      <div><span>記録</span><strong>${totalRecords}件</strong></div>
     </div>
-    <table class="amigos-table orch-table">
-      <thead><tr><th>機能</th><th>内訳</th><th>利用量 / 上限</th><th>状態</th></tr></thead>
+    <p class="orch-usage-breakdown">
+      <span class="orch-legend"><span class="orch-swatch orch-bar-measured"></span>実測 ${esc(orchTokens(tt.measured))}</span>
+      <span class="orch-legend"><span class="orch-swatch orch-bar-estimated"></span>推定 ${esc(orchTokens(tt.estimated))}</span>
+      ${unknownRecords > 0 ? `<span class="muted">推定できない記録 ${unknownRecords}件</span>` : ''}
+    </p>
+    ${unknownRecords > 0 ? '<p class="muted">実測トークンが記録されず、推定レートもない実行はトークン量を算出できません。実行時間と記録件数は集計しています。</p>' : ''}
+    ${gauge}
+    <div class="table-scroll"><table class="amigos-table orch-table">
+      <thead><tr><th>機能</th><th>全体に占める割合</th><th>トークン</th><th>実行時間</th><th>記録</th><th>状態</th></tr></thead>
       <tbody>${wlRows}</tbody>
-    </table>
+    </table></div>
+    <h4 class="orch-usage-subheading">エージェント別</h4>
+    <p class="muted">エージェントCLIごとの利用量です。トークンを取得できない実行も、時間と記録件数には含まれます。</p>
+    <div class="table-scroll"><table class="amigos-table orch-table">
+      <thead><tr><th>エージェント</th><th>全体に占める割合</th><th>トークン</th><th>実行時間</th><th>記録</th></tr></thead>
+      <tbody>${agentRows}</tbody>
+    </table></div>
   </section>`;
 }
 
@@ -705,11 +754,15 @@ function orchInventoryPanelHtml(overview) {
 
 const GLOBAL_SETTINGS_SECTIONS = [
   { id: 'app', label: 'アプリ' },
+  { id: 'usage', label: '利用状況' },
   { id: 'agents', label: 'エージェント' },
+  { id: 'instructions', label: '共通指示' },
+  { id: 'control', label: '実行制御' },
   { id: 'sync', label: '同期と実行' },
   { id: 'routine', label: '定常業務' },
   { id: 'integrations', label: '外部連携' },
 ];
+const ORCHESTRATION_SETTINGS_SECTIONS = new Set(['usage', 'agents', 'instructions', 'control']);
 
 function globalSettingsPaneHtml(id, content) {
   const active = state.globalSettingsSection === id;
@@ -905,21 +958,26 @@ function globalSettingsAgentsHtml(overview) {
   if (!overview) return `${globalSettingsAssistantHtml()}<div class="empty compact">エージェント情報を読み込んでいます。</div>`;
   if (overview.error) return `${globalSettingsAssistantHtml()}<div class="empty compact"><strong>エージェント情報を読み込めませんでした</strong><span>${esc(overview.error)}</span></div>`;
   return `${globalSettingsAssistantHtml()}
-    <section class="agent-management-section" aria-labelledby="agent-management-settings-title">
-      <header class="agent-management-section-heading"><span class="summary-kicker">必要に応じて</span><h2 id="agent-management-settings-title">共通設定</h2>
-        <p class="muted">すべてのエージェントへ共通の指示・コマンド・利用上限・担当が必要な場合だけ設定します。</p></header>
-      ${orchInstructionsPanelHtml(overview)}${orchSessionCommandsPanelHtml(overview)}${orchAllocationPanelHtml(overview.budget)}${orchMatrixPanelHtml(overview)}
-    </section>
-    <section class="agent-management-section" aria-labelledby="agent-management-status-title">
-      <header class="agent-management-section-heading"><span class="summary-kicker">確認</span><h2 id="agent-management-status-title">利用状況</h2>
-        <p class="muted">AIの利用量と、現在動いている実行サービスを確認します。</p></header>
-      ${orchBudgetPanelHtml(overview.budget)}${orchStatusPanelHtml(overview)}
-    </section>
-    <section class="agent-management-section" aria-labelledby="agent-management-agents-title">
-      <header class="agent-management-section-heading"><span class="summary-kicker">登録内容</span><h2 id="agent-management-agents-title">エージェント一覧</h2>
-        <p class="muted">この端末で選択できるエージェントを管理します。</p></header>
-      ${orchInventoryPanelHtml(overview)}
-    </section>`;
+    ${orchMatrixPanelHtml(overview)}
+    ${orchInventoryPanelHtml(overview)}`;
+}
+
+function globalSettingsUsageHtml(overview) {
+  if (!overview) return '<div class="empty compact">利用状況を読み込んでいます。</div>';
+  if (overview.error) return `<div class="empty compact"><strong>利用状況を読み込めませんでした</strong><span>${esc(overview.error)}</span></div>`;
+  return orchBudgetPanelHtml(overview.budget);
+}
+
+function globalSettingsInstructionsHtml(overview) {
+  if (!overview) return '<div class="empty compact">共通指示を読み込んでいます。</div>';
+  if (overview.error) return `<div class="empty compact"><strong>共通指示を読み込めませんでした</strong><span>${esc(overview.error)}</span></div>`;
+  return `${orchInstructionsPanelHtml(overview)}${orchSessionCommandsPanelHtml(overview)}`;
+}
+
+function globalSettingsControlHtml(overview) {
+  if (!overview) return '<div class="empty compact">実行制御を読み込んでいます。</div>';
+  if (overview.error) return `<div class="empty compact"><strong>実行制御を読み込めませんでした</strong><span>${esc(overview.error)}</span></div>`;
+  return `${orchAllocationPanelHtml(overview.budget)}${orchStatusPanelHtml(overview)}`;
 }
 
 function renderOrchestration() {
@@ -943,14 +1001,17 @@ function renderOrchestration() {
           <h2>全体設定</h2>
           <p class="muted">この端末で使うアプリ、エージェント、連携機能をまとめて管理します。</p>
         </div>
-        <div class="row global-settings-agent-refresh" ${section === 'agents' ? '' : 'hidden'}><button id="btn-orch-refresh">最新の状態にする</button></div>
+        <div class="row global-settings-agent-refresh" ${ORCHESTRATION_SETTINGS_SECTIONS.has(section) ? '' : 'hidden'}><button id="btn-orch-refresh">最新の状態にする</button></div>
       </header>
       <div class="global-settings-tabs" role="tablist" aria-label="設定の種類">${tabs}</div>
       <label class="global-settings-select" for="global-settings-select">設定の種類
         <select id="global-settings-select">${options}</select>
       </label>
       ${globalSettingsPaneHtml('app', globalSettingsAppHtml())}
+      ${globalSettingsPaneHtml('usage', globalSettingsUsageHtml(ov))}
       ${globalSettingsPaneHtml('agents', globalSettingsAgentsHtml(ov))}
+      ${globalSettingsPaneHtml('instructions', globalSettingsInstructionsHtml(ov))}
+      ${globalSettingsPaneHtml('control', globalSettingsControlHtml(ov))}
       ${globalSettingsPaneHtml('sync', globalSettingsSyncHtml())}
       ${globalSettingsPaneHtml('routine', globalSettingsRoutineHtml())}
       ${globalSettingsPaneHtml('integrations', globalSettingsIntegrationsHtml())}
@@ -977,7 +1038,7 @@ function selectGlobalSettingsSection(root, section, { focus = false } = {}) {
   const select = root.querySelector('#global-settings-select');
   if (select) select.value = section;
   const refresh = root.querySelector('.global-settings-agent-refresh');
-  if (refresh) refresh.hidden = section !== 'agents';
+  if (refresh) refresh.hidden = !ORCHESTRATION_SETTINGS_SECTIONS.has(section);
   root.closest('.tabpane').scrollTop = 0;
 }
 

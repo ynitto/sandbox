@@ -52,7 +52,7 @@ schemas/task.schema.json（本ファイルが Markdown 形の正典・未知キ�
            ⚠ **「履歴」ではなく「望む最終状態」を見ること。** 例: `git log|grep refactor` は過去の
            コミットにマッチして“やってないのに done”になる。**コードの結果**を assert する（例:
            `grep -q "def new_helper" util.py`）か、**差分**を見る（`git diff` / 環境変数
-           `$KIRO_BASE_REV`＝act 前の HEAD を使い `git log $KIRO_BASE_REV..HEAD --grep ...`）。
+           `$AGENT_BASE_REV`＝act 前の HEAD を使い `git log $AGENT_BASE_REV..HEAD --grep ...`）。
 - acceptance : **受入基準チェックリスト**（S5。3〜7 項目・自然文。1 行 1 基準で複数行書ける）。
            `verify` が書けない条件はこちらに書く。settle 時に**検証エージェント**が、基準ごとに
            実際にコマンドを試行錯誤して充足を確かめ、**判定 + 証跡**（実行したコマンド・出力の要約・
@@ -77,7 +77,7 @@ schemas/task.schema.json（本ファイルが Markdown 形の正典・未知キ�
            人が直したタスクには `- edited: human` が付き、以後の replan では作り直されない。
 - verify_template : **決定的に verify を展開する入口**（エージェント不要）。テンプレ名:
            file-contains :: path :: 文字列／file-exists :: path／defines :: symbol :: path／
-           diff-contains :: 文字列（$KIRO_BASE_REV 差分）／cmd-succeeds :: コマンド。
+           diff-contains :: 文字列（$AGENT_BASE_REV 差分）／cmd-succeeds :: コマンド。
            acceptance / verify_template があれば verify 空でも ready 扱い（rot/inbox 落ちにしない）。
 - expect : `changes`=verify=PASS でも act が変更を生まねば done せず人へ（履歴一致 verify の偽 done 対策。
            リファクタ等「必ず差分が出る」作業に付ける）。`none`=無変更を許可（`--require-progress` 時の opt-out）。

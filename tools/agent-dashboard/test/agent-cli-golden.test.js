@@ -13,6 +13,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+process.env.KIRO_AGENTS_DIR = path.resolve(__dirname, '..', '..', '..', 'agents');
 const agentCli = require('../src/features/agent-project/main/agentCli');
 
 let passed = 0;
@@ -50,8 +51,8 @@ const GOLDEN = {
     interactive: ['cursor-agent', '--model', 'M'],
   },
   ollama: {
-    write: ['ollama', 'run', 'M'],
-    readonly: ['ollama', 'run', 'M'],
+    write: ['agent-ollama', 'M'],
+    readonly: ['agent-ollama', 'M'],
     interactive: ['ollama', 'run', 'M'],
   },
 };

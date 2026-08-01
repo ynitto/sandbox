@@ -45,17 +45,17 @@ assert.ok(!html.includes('AI 補完'));
 assert.ok(!flow.includes('エージェント CLI の実行環境'));
 assert.ok(flow.includes('承認を待っています。要対応タブで確認してください。'));
 
-// agent-flow の verify ノード（途中の制御）と agent-project の verify（完了の正本）を
-// 同じ表示名にしない。役割と実行タイミングの違いも、該当画面だけで理解できるようにする。
+// 工程途中のチェックと、成果全体の受け入れを同じ表示名にしない。
 assert.ok(nodeDetail.includes("verify: '工程内チェック'"));
 assert.ok(nodeDetail.includes('作業グラフの途中で、後続工程へ進めるかを判断します'));
-assert.ok(nodeDetail.includes('バックログに設定された完了ゲートで別に確定します'));
+assert.ok(nodeDetail.includes('完了ゲートで成果全体を確認します'));
+assert.ok(nodeDetail.includes('aria-label="完了ゲート"'));
 assert.ok(backlog.includes('<summary>固定した検証方法</summary>'));
 const enqueueDialog = html.slice(html.indexOf('<dialog id="dlg-enqueue">'), html.indexOf('</dialog>', html.indexOf('<dialog id="dlg-enqueue">')));
 const reviseMarkup = backlog.slice(backlog.indexOf('function reviseAreaHtml('), backlog.indexOf('function showTaskDialog('));
 assert.strictEqual(maxDetailsDepth(enqueueDialog), 1, 'タスク追加の折りたたみをネストしません');
 assert.strictEqual(maxDetailsDepth(reviseMarkup), 1, 'タスク編集の折りたたみをネストしません');
-for (const label of ['作業内容を補足', '実行順と変更先', '確認方法を固定', 'ほかのタスクを確認']) {
+for (const label of ['計画レビュー情報（必須）', '実行順と変更先', '確認方法を固定', 'ほかのタスクを確認']) {
   assert.ok(enqueueDialog.includes(`<summary>${label}</summary>`));
 }
 for (const label of ['内容と完了条件', '実行順と担当', '確認方法を固定', '目的と変更範囲']) {
@@ -70,7 +70,7 @@ for (const id of ['rv-feedback', 'rv-title', 'rv-acceptance', 'rv-priority', 'rv
 assert.ok(backlog.includes('<summary>詳細情報</summary>'));
 assert.ok(backlog.includes('function requestTaskDialogClose('));
 assert.ok(backlog.includes('taskDialogInputSnapshot('));
-assert.ok(html.includes('<label>受入基準</label>'));
+assert.ok(html.includes('<label for="enq-accept">受入基準</label>'));
 assert.ok(html.includes('<label>達成条件</label>'));
 assert.ok(!html.includes('accept:'));
 

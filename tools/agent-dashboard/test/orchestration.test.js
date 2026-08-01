@@ -94,8 +94,36 @@ test('予算 v2: 実測トークンと推定トークン（seconds × rate）を
   // v1 互換: 秒集計も残る
   assert.strictEqual(u.totalSeconds, 115);
   assert.strictEqual(u.totals.flow, 100);
+  assert.strictEqual(u.totalRecords, 3);
+  assert.strictEqual(u.workloads.project.recordCount, 1);
+  assert.strictEqual(u.workloads.flow.recordCount, 1);
+  assert.strictEqual(u.totalUnestimatedRecords, 0);
+  assert.strictEqual(u.agents.claude.measuredTokens, 15400);
+  assert.strictEqual(u.agents.ollama.estimatedTokens, 4000);
+  assert.strictEqual(u.agents.kiro.recordCount, 1);
   assert.strictEqual(u.tokenLimit, 1000000);
   assert.strictEqual(u.exceeded, false);
+});
+
+test('予算 v2: 推定レートがない実行を未使用ではなく推定不能として数える', () => {
+  const dir = tmpdir('orch-budget-');
+  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ version: 2, period: 'day' }));
+  writeLedger(dir, utcDay(), [
+    { ts: 'x', workload: 'flow', seconds: 30, agent_cli: 'unknown' },
+    { ts: 'x', workload: 'flow', seconds: 15, agent_cli: 'unknown' },
+  ]);
+
+  const u = budget.usage(budgetCfg(dir));
+  assert.strictEqual(u.totalTokens.total, 0);
+  assert.strictEqual(u.totalSeconds, 45);
+  assert.strictEqual(u.totalRecords, 2);
+  assert.strictEqual(u.totalUnestimatedRecords, 2);
+  assert.strictEqual(u.workloads.flow.recordCount, 2);
+  assert.strictEqual(u.workloads.flow.unestimatedRecords, 2);
+  assert.strictEqual(u.workloads.project.recordCount, 0);
+  assert.strictEqual(u.agents.unknown.recordCount, 2);
+  assert.strictEqual(u.agents.unknown.seconds, 45);
+  assert.strictEqual(u.agents.unknown.unestimatedRecords, 2);
 });
 
 test('予算 v2: トークン上限（全体）超過と実効上限（per-workload）soft/exceeded 判定', () => {

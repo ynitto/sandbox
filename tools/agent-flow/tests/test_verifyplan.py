@@ -107,12 +107,14 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(r["result_rev"], rev)
 
     def test_no_workspace_run_gets_base_rev_from_meta(self):
-        """cwd 実行の $KIRO_BASE_REV は投入時に固定した meta.base_rev（act 前 HEAD）。"""
+        """cwd 実行では新旧の差分基準変数へ meta.base_rev（act 前 HEAD）を渡す。"""
         _origin, work, base = _mkrepo(self.tmp)
         cwd = os.getcwd()
         os.chdir(work)
         self.addCleanup(os.chdir, cwd)
-        self._seed_meta(_plan(commands=['test "$KIRO_BASE_REV" = ' + base]))  # 投入時 HEAD
+        self._seed_meta(_plan(commands=[
+            f'test "$AGENT_BASE_REV" = {base} && test "$KIRO_BASE_REV" = {base}'
+        ]))
         # 投入後に成果コミットが積まれても base_rev は動かない
         pathlib.Path(work, "result.txt").write_text("r\n", encoding="utf-8")
         for cmd in (["git", "add", "-A"],
@@ -142,9 +144,9 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(self.bus.run_receipt("run-vp-1")["verdict"], "inconclusive")
 
     def test_clone_run_passes_head_as_base_rev(self):
-        """clone 実行の $KIRO_BASE_REV は成果 HEAD（旧 _task_verify_cwd の一時 clone と同じ規則）。"""
+        """clone 実行の $AGENT_BASE_REV は成果 HEAD。"""
         origin, _work, rev = _mkrepo(self.tmp)
-        plan = _plan(commands=['test "$KIRO_BASE_REV" = ' + rev])
+        plan = _plan(commands=['test "$AGENT_BASE_REV" = ' + rev])
         self._seed_meta(plan, workspace={"url": origin, "base": "main", "branch": "main"})
         r = kf.run_verification_plan(self.bus, self.args, "orch")
         self.assertEqual(r["verdict"], "pass")

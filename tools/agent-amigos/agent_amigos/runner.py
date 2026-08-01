@@ -214,8 +214,8 @@ class AmigoRunner:
                 actions, cli_seconds = self._stub_actions(mission, roles, role, st, fresh,
                                                           rnd, wrap_up), _stub_cost()
             else:
-                actions, cli_seconds = self._llm_actions(mission, roles, role, st, fresh,
-                                                         rnd, wrap_up, cli, model)
+                actions, cli_seconds, usage = self._llm_actions(
+                    mission, roles, role, st, fresh, rnd, wrap_up, cli, model)
         except RuntimeError as e:
             triage = agentcli.classify_agent_failure(str(e))
             if triage and triage[0] in agentcli.AGENT_ERROR_ENV_CLASSES:
@@ -241,7 +241,9 @@ class AmigoRunner:
         # agent_cli / model を帰属として付す（トークンは stub/CLI とも実測できないため付さない）。
         nodebudget.record(cli_seconds, ref=f"{self.mp.mission_id}/{self.role_id}",
                           node=self.node_id, agent_cli=(cli if cli != "stub" else ""),
-                          model=model or "")
+                          model=model or "",
+                          tokens_in=getattr(usage, "tokens_in", None) if cli != "stub" else None,
+                          tokens_out=getattr(usage, "tokens_out", None) if cli != "stub" else None)
         return "acted" if applied else "idle"
 
     # --- idle（LLM を呼ばないターン） ----------------------------------------
@@ -498,9 +500,10 @@ class AmigoRunner:
         try:
             cli, model = self._resolve_cli(role, nodebudget.state())
             if cli == "stub":
-                content, secs = self._stub_debate(role, r), _stub_cost()
+                content, secs, usage = self._stub_debate(role, r), _stub_cost(), ""
             else:
-                content, secs = self._llm_debate(mission, role, r, peer_pos, cli, model)
+                content, secs, usage = self._llm_debate(
+                    mission, role, r, peer_pos, cli, model)
         except RuntimeError as e:
             triage = agentcli.classify_agent_failure(str(e))
             if triage and triage[0] in agentcli.AGENT_ERROR_ENV_CLASSES:
@@ -511,7 +514,7 @@ class AmigoRunner:
         if r == n_rounds - 1:
             actions += [{"kind": "write_artifact", "path": "ANSWER.md", "content": content},
                         {"kind": "declare_done"}]
-        return self._apply_debate(actions, roles, role, st, rnd, secs)
+        return self._apply_debate(actions, roles, role, st, rnd, secs, cli, model, usage)
 
     def _finish_debate(self, roles: dict, role: dict, st: dict, rnd: int, final_r: int) -> str:
         last = self._read_round(self.role_id, final_r)
@@ -528,7 +531,7 @@ class AmigoRunner:
         return f"# {self.role_id} round {r}\nposition: stub の主張（{role.get('title') or self.role_id}）\n"
 
     def _llm_debate(self, mission: dict, role: dict, r: int, peer_pos: dict,
-                    cli: str, model: "str | None") -> "tuple[str, float]":
+                    cli: str, model: "str | None") -> "tuple[str, float, str]":
         design = ""
         try:
             with open(self.mp.design_doc(), encoding="utf-8") as f:
@@ -556,10 +559,11 @@ class AmigoRunner:
 更新・補強してかまいません。出力は主張の本文のみ（JSON もコードフェンスも不要）。"""
         t0 = time.monotonic()
         text = agentcli.run_agent(prompt, cli, model)
-        return text, time.monotonic() - t0
+        return text, time.monotonic() - t0, text
 
     def _apply_debate(self, actions: list, roles: dict, role: dict, st: dict,
-                      rnd: int, secs: float) -> str:
+                      rnd: int, secs: float, cli: str = "", model: "str | None" = None,
+                      usage="") -> str:
         txn = TurnTxn()
         applied, rejected = self._apply_actions(txn, actions, roles, role, st, rnd)
         st["turn"] = int(st.get("turn") or 0) + 1
@@ -573,7 +577,9 @@ class AmigoRunner:
                           "actions": len(applied), "rejected": rejected})
         txn.apply(self.bus, f"{self.who} debate turn {st['turn']}")
         nodebudget.record(secs, ref=f"{self.mp.mission_id}/{self.role_id}",
-                          node=self.node_id)
+                          node=self.node_id, agent_cli=cli, model=model or "",
+                          tokens_in=getattr(usage, "tokens_in", None),
+                          tokens_out=getattr(usage, "tokens_out", None))
         return "acted" if applied else "idle"
 
     # --- アクション封筒の検証・適用（§5.4） ----------------------------------
@@ -766,7 +772,7 @@ class AmigoRunner:
     # --- LLM 実行（kiro/claude/copilot/codex/プラグイン） --------------------
     def _llm_actions(self, mission: dict, roles: dict, role: dict, st: dict,
                      fresh: list, rnd: int, wrap_up: bool, cli: str,
-                     model: "str | None" = None) -> "tuple[list, float]":
+                     model: "str | None" = None) -> "tuple[list, float, str]":
         prompt = self._build_prompt(mission, roles, role, st, fresh, rnd, wrap_up)
         t0 = time.monotonic()
         text = agentcli.run_agent(prompt, cli, model or self.model or role.get("model"))
@@ -775,7 +781,7 @@ class AmigoRunner:
         actions = data.get("actions") if isinstance(data, dict) else data
         if not isinstance(actions, list):
             raise RuntimeError("アクション封筒（{\"actions\": [...]}）を抽出できませんでした")
-        return actions, seconds
+        return actions, seconds, text
 
     def _build_prompt(self, mission: dict, roles: dict, role: dict, st: dict,
                       fresh: list, rnd: int, wrap_up: bool) -> str:

@@ -27,8 +27,8 @@ def cmd_cancel(args) -> int:
     """run を cancelled に終端化する（人の明示指示による唯一の hard-stop）。
     cancel マーカーを inbox に置いて全 PC / daemon へ伝え、run が存在すれば即 status=cancelled を
     確定する（監視主体が居なくても止まる）。park 済みノードの再ポーリングを止め、--close-issues なら
-    起票済みイシューも後始末する。既に終端した run でも残 waits / 残マーカーは掃除する
-    （dashboard cancelRun の alreadyTerminal と同契約）。"""
+    起票済みイシューも後始末する。既に終端した run でも残 waits は掃除する。
+    cancel マーカーは実行所有者の停止確認か run の GC まで残す。"""
     bus = make_bus(args, f"cancel-{os.getpid()}")
     bus.sync_pull()
     rid = args.run_id
@@ -39,7 +39,6 @@ def cmd_cancel(args) -> int:
     cur = bus.run_meta(rid).get("status")
     if cur in TERMINAL:
         cleared = bus.clear_waits_for_run(rid)
-        bus.clear_cancel(rid)
         if cleared:
             bus.sync_push(f"cancel cleanup waits {rid}")
         print(f">>> run {rid} は既に終端（status={cur}）。cancel は不要です"
@@ -52,10 +51,8 @@ def cmd_cancel(args) -> int:
         _apply_on_cancel(bus, args, rid)
     cleared = bus.clear_waits_for_run(rid)     # park 済みノードの再ポーリングを止める
     marked = bus.mark_canceled(rid, reason)    # run が存在すれば即終端化（監視主体が居なくても止まる）
-    # run 化済みなら適用後にクリア。run_meta() は欠落時 {} を返すので truthy 判定しない
-    # （空 dict は真扱いとなり、run 化前 cancel のマーカーを誤って消してしまう）。
-    if bus.run_exists(rid):
-        bus.clear_cancel(rid)
+    # マーカーは実行所有者が子の停止を確認するまで残す。外部 cancel がここで消すと、
+    # 並行 heartbeat の古い meta 書き戻しで cancelled が失われる。
     bus.sync_push(f"cancel run {rid}: {reason}")
     tail = "・status=cancelled 確定" if marked else "（daemon が受理して終端化します）"
     print(f">>> run {rid} をキャンセルしました{tail}。park 解除 {cleared} 件、"
@@ -63,4 +60,3 @@ def cmd_cancel(args) -> int:
     if not marked and not bus.run_exists(rid):
         print(f">>> 注: 要求 {rid} はまだ run 化されていません。daemon が受理時に cancelled で終端します。")
     return 0
-

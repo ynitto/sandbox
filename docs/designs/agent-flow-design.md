@@ -186,7 +186,7 @@ plan は `--verification-plan`（グローバル引数）または inbox 要求�
 実行場所は workspace 宣言のある run なら該当 repo の clone、無い run（ローカル実行・成果は
 投入ノードの作業ツリーに直接出る）ならプロセスの cwd です。workspace 宣言があるのに clone を
 用意できなかった run は cwd に倒さず inconclusive にします（成果の無い場所で誤判定しない）。
-固定コマンドには差分基準の環境変数 `$KIRO_BASE_REV` を渡します——clone では成果 HEAD、cwd では
+固定コマンドには差分基準の環境変数 `$AGENT_BASE_REV` を渡します——clone では成果 HEAD、cwd では
 run 投入時に meta に固定した `base_rev`（act 前 HEAD）。plan の policy `confirm` が 1 より
 大きければ同じコマンドを最大 confirm 回実行し、PASS/FAIL を跨いだら flaky を立てます（flaky な
 pass は receipt の全体判定で fail に落ち、採用側が人へ隔離します）。コマンド実行のセマンティクスは
@@ -299,7 +299,7 @@ auto-heal はこの世代交代を使いません。heal は同一 run の再開
 | `gc` / `cleanup` | `cmd_gc` / `cmd_cleanup` | 古い run の削除 / バス外の一時ファイルの掃除 |
 | `doctor` / `update` | `cmd_doctor` / `cmd_update` | 稼働診断 / 自己更新 |
 
-生存リースは orchestrator 自身が張ります。`heartbeat()` がリース窓の 1/3 ごとに `meta.json` を書いて push し、計画中（LLM を呼んでいて数十秒かかる区間）は別スレッドが短い間隔で更新し続けます。git バスでは、書き換えたまま未コミットで残すと `pull --rebase` が dirty な作業ツリーで失敗し続け、他ノードの結果を永久に取り込めなくなります。心拍が push まで含めて 1 単位なのはそのためです。
+生存リースは orchestrator 自身が張ります。`heartbeat()` がリース窓の 1/3 ごとに `meta.json` を書いて push します。通常の監視ループだけでなく、計画、静止後の LLM 評価、verification plan の固定コマンドと自然文基準判定のようにメインスレッドが長く塞がる区間も、同じ間隔の別スレッドが更新します。計画だけを守ると、既定 120 秒のリースより長い評価・検証を孤児と誤認するためです。区間を抜けるときは実行中の heartbeat が終わるまで待ち、古い更新を次の状態へ持ち越しません。git バスでは、書き換えたまま未コミットで残すと `pull --rebase` が dirty な作業ツリーで失敗し続け、他ノードの結果を永久に取り込めなくなります。心拍が push まで含めて 1 単位なのはそのためです。cancel マーカーは外部の適用側では消さず、実行所有者が停止を確認してから消します。heartbeat と cancel が同じ古い `meta.json` から競合しても、残った停止意図を再適用して `cancelled` へ収束させるためです。
 
 ## 常駐デーモン廃止で拾い直したもの（2026-07-26）
 

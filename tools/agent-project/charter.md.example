@@ -21,7 +21,7 @@ agent-project の charter.md 規約（プロジェクト憲章の正典）
    と書くか、全角句読点を含む散文をそのまま箇条書きにすると、run 時にエージェントが**決定的なシェル
    コマンドへ合成**する（合成結果は安定キャッシュされ done 基準がブレない）。合成できなければ done 判定
    不能＝人へ回る（鉄則は保たれる）。英文など句読点で判別しにくい散文は `accept:` を明示すること。
-2. acceptance は **「履歴」ではなく「望む最終状態/差分」を見る**こと（偽 done 対策。`$KIRO_BASE_REV` 利用可）。
+2. acceptance は **「履歴」ではなく「望む最終状態/差分」を見る**こと（偽 done 対策。`$AGENT_BASE_REV` 利用可）。
    acceptance を書けないプロジェクトは done 判定不能 → 必ず人へ回る。
 3. plan（目標→backlog 分解）と evaluate の敵対的レビューの知能はエージェントへ委譲し、enqueue・acceptance 実行・
    収束判定は本体が決定的に行う。必ず有限回（--max-project-cycles）で止まる。

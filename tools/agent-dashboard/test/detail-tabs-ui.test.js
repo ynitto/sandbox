@@ -136,6 +136,38 @@ const runArtifactsButtonHtml = new Function(
   'esc', `${grab('runArtifactsButtonHtml')}; return runArtifactsButtonHtml;`
 )((value) => String(value == null ? '' : value));
 
+// eslint-disable-next-line no-new-func
+const projectAcceptanceStage = new Function(
+  'sanitizeTaskId', 'runFinalVerificationFailure', 'fixedVerifyCommand', 'acceptanceList', 'fmtTime',
+  `${grab('projectAcceptanceStage')}; return projectAcceptanceStage;`
+)(
+  (value) => String(value || ''),
+  (_project, run) => run._failure || null,
+  (task) => task.verify || '',
+  (task) => task.acceptance || [],
+  (value) => String(value || '')
+);
+
+{
+  const task = { id: 'T1', status: 'blocked', verify: 'npm test' };
+  const stage = projectAcceptanceStage(
+    { backlog: [task], archive: [], needs: [{ id: 'T1', taskId: 'T1', kind: 'blocked', date: '2026-08-02' }] },
+    { taskId: 'T1', status: 'done', _failure: { kind: 'error' } }
+  );
+  assert.strictEqual(stage.state, 'attention');
+  assert.strictEqual(stage.label, '検証失敗・判断待ち');
+  assert.match(stage.detail, /固定コマンドが失敗/);
+}
+assert.match(renderer, /projectAcceptanceHtml\(state\.project, run\)/, '実行画面に完了ゲートを表示する');
+assert.ok(!renderer.includes('agent-flow → agent-project'), '内部コンポーネント名を画面へ出さない');
+assert.match(renderer, /flowGraphMode: 'dependencies'/, '工程はタスクの流れを既定表示にする');
+assert.match(renderer, /state\.flowGraphMode = 'dependencies'/, 'run を切り替えてもタスクの流れを既定表示にする');
+assert.match(renderer, /kind-verify/, '工程内チェックをグラフ上で識別できる');
+assert.match(renderer, /n\.kind === 'verify'.*stateLabel/s, '工程内チェックは状態を文字でも表示する');
+assert.match(renderer, /nodeTimingLabel\(n\)/, '工程カードに実行タイミングを表示する');
+assert.match(css, /\.node\.kind-verify/, '工程内チェック専用の強調表示が必要');
+assert.match(css, /\.project-acceptance-attention/, '判断待ち専用の見た目が必要');
+
 assert.match(
   runArtifactsButtonHtml({ runId: 'run-done', status: 'done' }),
   /data-run-artifacts="run-done"[^>]*>成果を見る</,
@@ -958,6 +990,14 @@ assert.match(
 // renderNeedDetail が taskGuideHtml を組み込むこと（呼び出しが消えると退行）
 assert.match(renderer, /const taskGuide = taskGuideHtml\(task, n\.kind\)/);
 assert.match(renderer, /作業内容と完了条件/);
+{
+  const detailSource = grab('renderNeedDetail');
+  const taskContextAt = detailSource.indexOf("n.kind === 'plan-review' ? taskContext");
+  assert.ok(
+    taskContextAt >= 0 && taskContextAt < detailSource.indexOf('need-response-primary'),
+    '計画レビューは作業内容を承認・差し戻し操作より先に表示する'
+  );
+}
 
 // 計画レビューは工程を増やさず、未対応の proposed だけを一度に承認できる。
 {
@@ -972,6 +1012,26 @@ assert.match(renderer, /作業内容と完了条件/);
     { id: 'T4', kind: 'plan-review' },
   ], (need) => need.id === 'T4').map((need) => need.id), ['T1']);
   assert.ok(renderer.includes('data-approve-plan-batch'), '計画レビューの一括承認入口を出す');
+  assert.match(
+    grab('renderNeeds'),
+    /state\.needsFilter === 'open'\s*\? planReviewBatchCandidates\(model\.items, isNeedSent\)/,
+    '一括承認は未対応画面に表示中の計画だけを対象にする'
+  );
+  // eslint-disable-next-line no-new-func
+  const confirmMessage = new Function(
+    `${grab('planReviewBatchConfirmMessage')}; return planReviewBatchConfirmMessage;`
+  )();
+  assert.match(
+    confirmMessage([{ id: 'T1', title: '認証を更新' }, { id: 'T2', title: '監査ログを追加' }]),
+    /T1: 認証を更新[\s\S]*T2: 監査ログを追加/,
+    '一括承認前に対象IDとタイトルを列挙する'
+  );
+  assert.match(
+    grab('renderNeeds'),
+    /approvePlanReviewBatch\(planBatch, batchApprove\)/,
+    '一括承認ボタンを処理へ渡して連打を防ぐ'
+  );
+  assert.match(grab('approvePlanReviewBatch'), /button\.disabled = true/);
 }
 
 console.log('detail-tabs-ui: all tests passed');

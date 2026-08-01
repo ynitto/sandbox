@@ -70,7 +70,7 @@ class Bus:
             if isinstance(verification_plan, dict):
                 meta["verification_plan"] = verification_plan
                 # workspace の無い run（ローカル実行・成果は投入ノードの作業ツリーに出る）の
-                # 差分基準。投入時点の HEAD を固定しておき、runner が $KIRO_BASE_REV として
+                # 差分基準。投入時点の HEAD を固定しておき、runner が $AGENT_BASE_REV として
                 # 検証コマンドへ渡す（act 前 HEAD——旧 agent-project verify の verify_env と同じ）。
                 base = _vp_result_rev(os.getcwd())
                 if base:
@@ -741,11 +741,10 @@ class Bus:
         return os.path.exists(os.path.join(self.inbox_cancels_dir, f"{run_id}.json"))
 
     def clear_cancel(self, run_id: str) -> bool:
-        """適用済み cancel マーカーを消す。消えたら True。
+        """実行所有者が停止を確認した cancel マーカーを消す。消えたら True。
 
-        終端化＋waits 掃除が終わったあとに呼ぶ。残すと同一 run-id の意図的再開が即座に
-        再 cancel され、daemon も毎 poll 同じマーカーを拾い続ける。伝播は meta.status=
-        cancelled の sync で足りる。"""
+        外部の cancel 適用側からは呼ばない。所有者が止まる前に消すと、並行 heartbeat の
+        古い meta 書き戻しで停止意図が失われる。"""
         p = os.path.join(self.inbox_cancels_dir, f"{run_id}.json")
         try:
             os.remove(p)
@@ -844,6 +843,10 @@ class Bus:
         meta["orch_lease_until"] = time.time() + lease_sec
         meta["heartbeat_at"] = now_iso()
         write_json_atomic(v.meta_path, meta)
+        # cancel と heartbeat が同じ古い meta から競合しても、残してある停止意図へ収束させる。
+        if self.is_canceled_requested(run_id):
+            info = self.cancel_info(run_id)
+            self.mark_canceled(run_id, info.get("reason") or "cancel 指示")
 
     def run_is_orphaned(self, run_id: str, grace_sec: float) -> bool:
         """run が非終端なのに生存リースが切れている（owning daemon/orchestrator が消失した）か。

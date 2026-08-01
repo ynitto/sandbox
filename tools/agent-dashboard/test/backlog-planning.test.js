@@ -17,6 +17,7 @@ require('./note-tasking.test');
 const actions = require('../src/main/actions');
 const renderer = require('./helpers/renderer-src').read();
 const indexHtml = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'index.html'), 'utf8');
+const bootstrap = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'bootstrap.js'), 'utf8');
 
 // renderer の関数 1 本を本文ごと切り出す（detail-tabs-ui.test.js と同じ流儀）
 function grab(name) {
@@ -108,6 +109,28 @@ function dropped(dir) {
         fields: { risks: ['誤操作を防ぐ', '旧形式も維持する'] },
       });
       assert.deepStrictEqual(dropped(dir).rec.risks, ['誤操作を防ぐ', '旧形式も維持する']);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  await test('タスク追加は計画規模 size を失わず保存する', async () => {
+    const { root, dir } = mkProject();
+    try {
+      const res = actions.enqueueToInbox(dir, { title: '計画レビュー', size: 'M' });
+      assert.strictEqual(JSON.parse(fs.readFileSync(res.file, 'utf8')).size, 'M');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  await test('タスク追加は不正な計画規模を拒否する', async () => {
+    const { root, dir } = mkProject();
+    try {
+      assert.throws(
+        () => actions.enqueueToInbox(dir, { title: '計画レビュー', size: 'XL' }),
+        /規模感は S \/ M \/ L/
+      );
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -287,6 +310,32 @@ function dropped(dir) {
       '1行1リスクの配列として送る。空なら削除する');
   });
 
+  await test('タスク追加フォームで計画規模を選び送信できる', async () => {
+    assert.match(indexHtml, /<select id="enq-size"[\s\S]*value="S"[\s\S]*value="M"[\s\S]*value="L"/);
+    assert.match(renderer, /spec\.size = enqField\('enq-size'\)/);
+  });
+
+  await test('タスク追加では計画レビューの必須項目を初期表示する', async () => {
+    assert.match(indexHtml, /<details class="enq-guide-panel" open>/);
+    assert.match(indexHtml, /<summary>計画レビュー情報（必須）<\/summary>/);
+    for (const id of ['enq-title', 'enq-accept', 'enq-desc', 'enq-why', 'enq-scope', 'enq-risks']) {
+      assert.match(indexHtml, new RegExp(`id="${id}"[^>]*required`), `${id} を必須として示す`);
+    }
+  });
+
+  await test('タスク追加はAIで計画レビュー必須項目を補完できる', async () => {
+    assert.ok(indexHtml.includes('id="btn-enq-guide-assist"'));
+    assert.ok(indexHtml.includes('id="enq-guide-assist-status"'));
+    assert.match(indexHtml, /<div class="row need-buttons">[\s\S]*?入力済みの内容から下書きを作れます。[\s\S]*?<span class="spacer"><\/span>[\s\S]*?id="btn-enq-guide-assist">下書きを作る<\/button>[\s\S]*?<div class="muted" id="enq-guide-assist-status"/);
+    assert.match(renderer, /<div class="row need-buttons">[\s\S]*?入力済みの内容から下書きを作れます。[\s\S]*?<span class="spacer"><\/span>[\s\S]*?id="btn-guide-assist">下書きを作る<\/button>/);
+    const assist = grab('aiEnqueueGuideAssist');
+    assert.match(assist, /mode: 'task-guide'/);
+    for (const id of ['enq-why', 'enq-desc', 'enq-scope', 'enq-risks', 'enq-accept', 'enq-size']) {
+      assert.ok(assist.includes(`$('${id}')`), `${id} をAI提案から補完する`);
+    }
+    assert.match(bootstrap, /btn-enq-guide-assist'[\s\S]*aiEnqueueGuideAssist/);
+  });
+
   await test('メモ UI は編集と選択タスク化を分け、候補確認まで自動追加しない', async () => {
     assert.ok(renderer.includes('openNotesDialog'), 'メモダイアログがある');
     assert.ok(indexHtml.includes('id="notes-mode-edit"'), '編集モードがある');
@@ -308,17 +357,21 @@ function dropped(dir) {
 
   await test('バージョン選択は名前だけを表示し、目標を近くの説明欄へ出す', async () => {
     const select = { value: '顧客検証', options: [{ value: '顧客検証', textContent: '顧客検証 — 長い目標' }] };
-    const description = { textContent: '' };
+    const description = { textContent: '', innerHTML: '' };
     // eslint-disable-next-line no-new-func
-    const update = new Function('$', 'state', 'charterAssistContext',
+    const update = new Function('$', 'state', 'charterAssistContext', 'mdToHtml',
       `${grab('updateCharterSelectContext')}; return updateCharterSelectContext;`)(
       (id) => id === 'version' ? select : description,
       { project: {} },
-      () => ({ goal: '対象ユーザーへの検証を完了する' })
+      () => ({ goal: '**対象ユーザー**への検証を完了する' }),
+      (src) => `<div class="md"><p>${src.replace(/\*\*(.*?)\*\*/, '<strong>$1</strong>')}</p></div>`
     );
     update('version', 'description');
     assert.strictEqual(select.options[0].textContent, '顧客検証');
-    assert.strictEqual(description.textContent, '対象ユーザーへの検証を完了する');
+    assert.strictEqual(
+      description.innerHTML,
+      '<div class="md"><p><strong>対象ユーザー</strong>への検証を完了する</p></div>'
+    );
   });
 
   console.log(`\n${passed} tests passed`);

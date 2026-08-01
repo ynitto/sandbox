@@ -27,6 +27,26 @@ from agentcore.vocab import TERMINAL_READ as _FLOW_TERMINAL  # noqa: E402
 # リース未記録の非終端 run を「停滞」とみなすまでの猶予。agent-flow の worker は 1 ノードに
 # 数分かかるので、生きている run を誤って停滞と読まない程度に長く取る。
 _STALE_RUN_SEC = 600.0
+_FLOW_LEASE_ALIVE = "alive"
+_FLOW_LEASE_EXPIRED = "expired"
+_FLOW_LEASE_TERMINAL = "terminal"
+_FLOW_LEASE_UNKNOWN = "unknown"
+_FLOW_LEASE_EXPIRY_CONFIRM_SEC = 10.0
+
+
+class _ClaimLost:
+    """act の失敗ではなく、別 owner へ実行権が移ったことを表す。"""
+    pass
+
+
+class _ClaimUnknown:
+    """claim の所有権を確認できず、安全に継続も解放もできないことを表す。"""
+    pass
+
+
+class _BudgetExpired:
+    """act の内容失敗ではなく、run 全体の実時間予算到達を表す。"""
+    pass
 
 
 def _run_age_sec(meta: dict) -> float:
@@ -43,26 +63,47 @@ def _run_age_sec(meta: dict) -> float:
     return (datetime.now(timezone.utc) - dt).total_seconds()
 
 
-def _flow_run_lease_expired(cfg: "Config", rid: str,
-                            now: "float | None" = None, *,
-                            use_git: bool = False) -> "bool | None":
-    """非終端 run の orchestrator lease 状態。記録なし/終端は None。"""
+def _flow_run_bus(cfg: "Config", use_git: bool = False) -> "Path":
+    """監視対象runの実体があるbus root。"""
     bus = cfg.bus
     if use_git and cfg.git_bus:
         # agent-flow run 自身の GitBus clone は --bus/run に固定され、監視ループが pull する。
         bus = bus / "run"
         if cfg.git_subdir:
             bus /= cfg.git_subdir.strip("/")
+    return bus
+
+
+def _flow_run_lease_state(cfg: "Config", rid: str,
+                          now: "float | None" = None, *,
+                          use_git: bool = False) -> str:
+    """orchestrator lease を alive / expired / terminal / unknown で返す。"""
+    bus = _flow_run_bus(cfg, use_git)
     try:
         meta = json.loads((bus / "runs" / rid / "meta.json").read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError):
-        return None
+        return _FLOW_LEASE_UNKNOWN
     if str(meta.get("status") or "") in _FLOW_TERMINAL:
-        return None
+        return _FLOW_LEASE_TERMINAL
     lease = meta.get("orch_lease_until")
     if not isinstance(lease, (int, float)):
-        return None
-    return float(lease) < (time.time() if now is None else now)
+        return _FLOW_LEASE_UNKNOWN
+    return (_FLOW_LEASE_EXPIRED
+            if float(lease) < (time.time() if now is None else now)
+            else _FLOW_LEASE_ALIVE)
+
+
+def _act_deadline(cfg: "Config", now: "float | None" = None) -> "tuple[float | None, str]":
+    """local act が従う最も早い壁時計上限と、その設定名。"""
+    base = time.time() if now is None else now
+    candidates = []
+    if cfg.act_timeout > 0:
+        candidates.append((base + cfg.act_timeout, "act_timeout"))
+    overall = getattr(cfg, "_active_run_deadline", None)
+    if isinstance(overall, (int, float)):
+        candidates.append((float(overall), "max_seconds"))
+    return min(candidates, default=(None, ""),
+               key=lambda item: float("inf") if item[0] is None else item[0])
 
 
 def _run_resumable(cfg: "Config", rid: str) -> bool:
@@ -343,9 +384,10 @@ def detach_flow_run(cfg: "Config", task: Task, reason: str = "",
     else:
         _write_cancel_marker()
         _apply_terminal()
-    # meta を触れたときだけマーカーを消す。meta 無し（まだ submit 前）は残し、
-    # daemon の run 化前 cancel（cancel_request_run）へ渡す。
-    if applied:
+    # failed は子を止めた後に使う一時マーカーなので、その場で消して再開可能にする。
+    # cancelled は実行所有者が停止を確認するまで残す。外部から消すと、並行 heartbeat が
+    # 古い meta を書き戻したときに停止意図まで失われる。
+    if applied and failed:
         try:
             (cancels / f"{rid}.json").unlink(missing_ok=True)
         except OSError:
@@ -396,11 +438,15 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
 
     drainer = threading.Thread(target=_drain, daemon=True)
     drainer.start()
-    deadline = (time.time() + cfg.act_timeout) if cfg.act_timeout > 0 else None
+    deadline, deadline_source = _act_deadline(cfg)
     lease_start_deadline = time.time() + _STALE_RUN_SEC
     lease_monitor_armed = False
+    lease_expired_since = None
+    lease_unknown_since = None
+    terminal_since = None
+    claim_unknown_since = None
 
-    def _fail_run(why: str) -> "tuple[bool, str]":
+    def _fail_run(why: str, status=False, *, detach: bool = True):
         try:
             proc.terminate()
             proc.wait(timeout=5)
@@ -409,10 +455,11 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
                 proc.kill()
             except OSError:
                 pass
-        task.set("flow_run", rid)
-        detach_flow_run(cfg, task, why, failed=True)
+        if detach:
+            task.set("flow_run", rid)
+            detach_flow_run(cfg, task, why, failed=True)
         reap_orphan_flow(cfg)
-        return False, why
+        return status, why
 
     # 同期 run は agent-project のループを塞ぐため、従来は run 完了まで state_git が push
     # されず、別 PC の dashboard/engine が bus/runs の graph・claims・results を見られなかった。
@@ -429,8 +476,6 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
             abort = _wait_abort_reason(cfg, task, rid)
             if abort:
                 why = abort
-                task.set("flow_run", rid)
-                detach_flow_run(cfg, task, f"{why} により同期 run を中断")
                 try:
                     proc.terminate()
                     proc.wait(timeout=5)
@@ -439,21 +484,75 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
                         proc.kill()
                     except OSError:
                         pass
+                task.set("flow_run", rid)
+                detach_flow_run(cfg, task, f"{why} により同期 run を中断")
                 # 刈り残した orch/worker は daemon を残して止める（外部 daemon 全滅を避ける）
                 reap_orphan_flow(cfg)
                 return (False, f"daemon run {rid} の結果待ちを中断（{why} を検知）")
             now = time.time()
-            lease_expired = _flow_run_lease_expired(cfg, rid, now, use_git=use_git)
-            if lease_expired is False:
+            lease_state = _flow_run_lease_state(cfg, rid, now, use_git=use_git)
+            tick = time.monotonic()
+            if lease_state == _FLOW_LEASE_ALIVE:
                 lease_monitor_armed = True
-            elif lease_expired is True and (lease_monitor_armed or now >= lease_start_deadline):
-                return _fail_run("agent-flow run 応答なし（orchestrator lease 失効）")
-            elif lease_expired is None and now >= lease_start_deadline:
-                return _fail_run("agent-flow run 応答なし（orchestrator lease 未記録）")
+                lease_expired_since = lease_unknown_since = None
+                terminal_since = None
+            elif lease_state == _FLOW_LEASE_TERMINAL:
+                lease_expired_since = lease_unknown_since = None
+                try:
+                    meta = json.loads((_flow_run_bus(cfg, use_git) / "runs" / rid / "meta.json")
+                                      .read_text(encoding="utf-8"))
+                except (OSError, ValueError, json.JSONDecodeError):
+                    meta = {}
+                healing = (str(meta.get("status") or "") == "failed"
+                           and isinstance(meta.get("heal_next_at"), (int, float))
+                           and float(meta["heal_next_at"]) > now
+                           and not meta.get("heal_exhausted"))
+                if healing:
+                    terminal_since = None
+                else:
+                    if terminal_since is None:
+                        terminal_since = tick
+                    if tick - terminal_since >= _FLOW_TICK_TIMEOUT_SEC:
+                        try:
+                            proc.terminate()
+                            proc.wait(timeout=5)
+                        except Exception:  # noqa: BLE001
+                            try:
+                                proc.kill()
+                            except OSError:
+                                pass
+                        reap_orphan_flow(cfg)
+                        drainer.join(timeout=2.0)
+                        break
+            elif lease_state == _FLOW_LEASE_EXPIRED:
+                terminal_since = None
+                lease_unknown_since = None
+                if lease_monitor_armed or now >= lease_start_deadline:
+                    if lease_expired_since is None:
+                        lease_expired_since = tick
+                    if tick - lease_expired_since >= _FLOW_LEASE_EXPIRY_CONFIRM_SEC:
+                        return _fail_run("agent-flow run 応答なし（orchestrator lease 失効）")
+            else:
+                terminal_since = None
+                lease_expired_since = None
+                if lease_unknown_since is None:
+                    lease_unknown_since = tick
+                if tick - lease_unknown_since >= _STALE_RUN_SEC:
+                    return _fail_run("agent-flow run 応答なし（orchestrator lease 未記録）")
             if now >= next_claim_heartbeat:
-                if not _refresh_claim(cfg, task):
-                    return _fail_run("agent-project task claim 喪失")
-                next_claim_heartbeat = now + _CLAIM_HEARTBEAT_SEC
+                refreshed = _refresh_claim(cfg, task)
+                if refreshed == _CLAIM_REFRESH_OK:
+                    claim_unknown_since = None
+                    next_claim_heartbeat = now + _CLAIM_HEARTBEAT_SEC
+                elif refreshed == _CLAIM_REFRESH_LOST:
+                    return _fail_run("agent-project task claim 喪失", _ClaimLost())
+                else:
+                    if claim_unknown_since is None:
+                        claim_unknown_since = tick
+                    if tick - claim_unknown_since >= _CLAIM_REFRESH_UNKNOWN_GRACE_SEC:
+                        return _fail_run("agent-project task claim を確認不能", _ClaimUnknown(),
+                                         detach=False)
+                    next_claim_heartbeat = now + _CLAIM_REFRESH_RETRY_SEC
             if now >= next_progress_sync:
                 sync = globals().get("state_sync")
                 if sync is not None:
@@ -464,7 +563,11 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
                 next_progress_sync = now + max(1.0, float(getattr(cfg, "state_git_interval", 300.0) or 300.0))
             if deadline is not None and now >= deadline:
                 # submit タイムアウトと同じ: failed にして次回は done ノードを引き継ぐ。
-                return _fail_run(f"agent-flow run タイムアウト（{cfg.act_timeout}s）")
+                why = (f"agent-project 実時間上限（max_seconds={cfg.max_seconds}s）"
+                       if deadline_source == "max_seconds"
+                       else f"agent-flow run タイムアウト（{cfg.act_timeout}s）")
+                status = _BudgetExpired() if deadline_source == "max_seconds" else False
+                return _fail_run(why, status)
             time.sleep(1.0)
     finally:
         if proc.poll() is None:
@@ -482,9 +585,15 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
     # 同期 run の cancelled は exit≠0 でもメッセージが日本語のため、meta で確定して
     # 上位の cancelled 特別扱い（リトライ非消費で ready）へ乗せる。
     try:
-        meta = json.loads((cfg.bus / "runs" / rid / "meta.json").read_text(encoding="utf-8"))
-        if str(meta.get("status") or "") == "cancelled":
+        meta = json.loads((_flow_run_bus(cfg, use_git) / "runs" / rid / "meta.json")
+                          .read_text(encoding="utf-8"))
+        terminal_status = str(meta.get("status") or "")
+        if terminal_status == "cancelled":
             return (False, f"daemon run {rid} cancelled")
+        if terminal_status == "done":
+            return (True, out[-300:].strip())
+        if terminal_status == "failed":
+            return (False, out[-300:].strip() or str(meta.get("failure_reason") or "run failed"))
     except (OSError, ValueError, json.JSONDecodeError):
         pass
     return (proc.returncode == 0, out[-300:].strip())

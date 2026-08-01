@@ -1318,33 +1318,48 @@ function planReviewBatchCandidates(needs, sentFn) {
     !(need.commandReceipt && !need.commandFailure) && !sentFn(need));
 }
 
-async function approvePlanReviewBatch(candidates) {
+function planReviewBatchConfirmMessage(candidates) {
+  const items = candidates.map((need) => `${need.id}: ${need.title || need.id}`).join('\n');
+  return `表示中の計画 ${candidates.length} 件をまとめて承認し、実行可能にします。\n\n${items}\n\nよろしいですか？`;
+}
+
+async function approvePlanReviewBatch(candidates, button) {
   const p = state.project;
   if (!p || !candidates.length) return false;
-  const yes = await confirmDialog(
-    `未対応の計画 ${candidates.length} 件をまとめて承認し、実行可能にします。よろしいですか？`);
-  if (!yes) return false;
-  const succeeded = [];
-  const failed = [];
-  await guard('計画の一括承認', async () => {
-    for (const need of candidates) {
-      try {
-        await api.runAction({
-          dir: p.dir, action: 'approve', id: need.id,
-          reason: '計画レビューで内容を確認し、一括承認',
-        });
-        markNeedSent(need);
-        succeeded.push(need.id);
-      } catch (err) {
-        failed.push(`${need.id}: ${err.message || err}`);
+  if (button) {
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+  }
+  try {
+    const yes = await confirmDialog(planReviewBatchConfirmMessage(candidates));
+    if (!yes) return false;
+    const succeeded = [];
+    const failed = [];
+    await guard('計画の一括承認', async () => {
+      for (const need of candidates) {
+        try {
+          await api.runAction({
+            dir: p.dir, action: 'approve', id: need.id,
+            reason: '計画レビューで内容を確認し、一括承認',
+          });
+          markNeedSent(need);
+          succeeded.push(need.id);
+        } catch (err) {
+          failed.push(`${need.id}: ${err.message || err}`);
+        }
       }
+      return true;
+    });
+    if (failed.length) toast(`一部の承認に失敗しました: ${failed.join(' / ')}`);
+    else toast(`${succeeded.length} 件の計画を承認しました`, true);
+    if (succeeded.length) await reloadProject();
+    return succeeded.length > 0;
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.removeAttribute('aria-busy');
     }
-    return true;
-  });
-  if (failed.length) toast(`一部の承認に失敗しました: ${failed.join(' / ')}`);
-  else toast(`${succeeded.length} 件の計画を承認しました`, true);
-  if (succeeded.length) await reloadProject();
-  return succeeded.length > 0;
+  }
 }
 
 // 検証失敗の表示モデル。**解析済みの事実（failureSummary / failureContext）だけを使う。**
@@ -1459,30 +1474,10 @@ function needListItemHtml(item, selected, slaHours) {
   </button>`;
 }
 
-// この検証失敗が一貫性ゲート由来なら、どの経路で止まったかを返す（`regression` / `verify`）。
-// 由来を返り値で分けるのは、断定してよい文面が経路ごとに違うため:
-//   - `regression`: 回帰ゲート失敗には producer が `回帰検知: グローバル検査 \`<cmd>\` 失敗`
-//     を why に書く（tools/agent-project/agent_project/mr.py:582）。ただしこのプレフィックスは
-//     codd-gate 以外の regression_cmd（yaml example の `make -s smoke` など）にも同じく付くので、
-//     `回帰検知` だけでは一貫性ゲート由来と断定できない。記録中の codd-gate コマンドと
-//     併せて、実行時に「回帰検査が止めた」と判断する（現在の結線状態には依存させない）。
-//   - `verify`: タスク自身の verify が codd-gate のとき（README が charter acceptance に勧める形）。
-//     context.command は _diagnoseFailure が verify 行から取る値で regression_cmd ではないので、
-//     こちらを「回帰検査が止めた」と言うと概要タブの結線表示と矛盾する。
-// どちらにも当たらなければ何も足さない。ペイロード無し（旧 main）も同様——概要タブ側の
-// consistencyGateHtml も空を返すので、存在しないセクションへ誘導しない。
-function needGateSource(failure, n, gate) {
-  if (!failure || !gate) return null;
-  const regressionText = `${failure.summary || ''}\n${(n && n.why) || ''}`;
-  const command = String((failure.context && failure.context.command) || '');
-  const canonicalVerify = /\bcodd-gate\b[^\n]*\bverify\b/;
-  const recordedVerify = canonicalVerify.test(`${regressionText}\n${command}`);
-  if ((n && n.failurePhase === 'regression' && recordedVerify)
-      || (/回帰検知/.test(regressionText) && recordedVerify)) {
-    return 'regression';
-  }
-  if (canonicalVerify.test(command)) return 'verify';
-  return null;
+function needProjectCheckSource(failure, n) {
+  if (!failure || !n) return null;
+  const recorded = `${failure.summary || ''}\n${n.why || ''}`;
+  return n.failurePhase === 'regression' || /回帰検知/.test(recorded) ? 'regression' : null;
 }
 
 function renderNeedFacts(p, n) {
@@ -1508,22 +1503,11 @@ function renderNeedFacts(p, n) {
         ).join('')}</dl>`);
       }
     }
-    // ゲート由来の失敗には、概要の「一貫性ゲート」節と同じ語彙で結線状態を添える。失敗の意味
-    // （＝一貫性ゲートが完了前に止めた）と、直した後にドリフトが自動起票されるか（intake_cmd の
-    // 結線）を、失敗を見ているその場で判断できるようにする。既存の検証失敗要約（見出し・要約行・
-    // context）はそのまま——このブロックは後ろに足すだけで、可読性を落とさない。
-    const gate = p && p.consistencyGate;
-    const gateSource = needGateSource(failure, n, gate);
-    if (gateSource) {
-      const originLine = gateSource === 'regression'
-        ? `この失敗は完了前の回帰検査（<span class="mono">regression_cmd</span>）が止めたものです。`
-        : `このタスクの検証コマンドが一貫性ゲートの検査です。完了前の回帰検査（<span class="mono">regression_cmd</span>）とは別の経路です。`;
-      const intakeLine = gate.intakeWired
-        ? `<span class="badge info">結線済み</span> の <span class="mono">intake_cmd</span> が正常に実行された場合、検出したドリフトを修復タスクへ起票します。`
-        : `ドリフトの取り込み（<span class="mono">intake_cmd</span>）は <span class="badge warn">未結線</span> です。直してもドリフトは自動起票されないため、概要タブの「一貫性ゲート」で有効化してください。`;
-      facts.push(`<div class="need-resolution need-gate">
-        <span class="label-chip">一貫性ゲート</span>
-        ${originLine}${intakeLine}
+    const projectCheck = p && p.projectCheck;
+    if (projectCheck && needProjectCheckSource(failure, n)) {
+      facts.push(`<div class="need-resolution need-project-check">
+        <span class="label-chip">プロジェクト共通チェック</span>
+        完了前の共通チェック（<span class="mono">regression_cmd</span>）が失敗したため、done を止めています。
       </div>`);
     }
   }
@@ -1812,6 +1796,11 @@ function renderNeedDetail(p, n) {
   const task = taskForNeed(p, n);
   const hint = task ? taskCompletionHint(task, { runs: runsForTask(task.id) }) : null;
   const taskGuide = taskGuideHtml(task, n.kind);
+  const taskContext = taskGuide
+    ? `<details class="need-evidence need-task-context" data-ui-key="need-task:${esc(n.id)}" ${
+        n.kind === 'plan-review' ? 'open' : ''
+      }><summary>作業内容と完了条件</summary>${taskGuide}</details>`
+    : '';
   const finalVerificationFailure = needFinalVerificationFailure(p, n, state.flowRuns);
   const decision = needDecisionViewModel(n);
   const unsettle =
@@ -1832,6 +1821,7 @@ function renderNeedDetail(p, n) {
     </header>
     ${needNextStepHtml(n, decision, settled)}
     ${commandReceiptHtml(n)}
+    ${n.kind === 'plan-review' ? taskContext : ''}
     ${settled ? '' : `<section class="need-response need-response-primary"><h3>${esc(decision.actionTitle)}</h3><p class="muted need-response-hint">${esc(decision.nextStep)}</p>${needActionsHtml(n)}${needVerifyRevisionHtml(p, n)}</section>`}
     ${finalVerificationFailureHtml(finalVerificationFailure)}
     <section class="need-facts">
@@ -1852,7 +1842,7 @@ function renderNeedDetail(p, n) {
       <button class="need-output-button subtle-action" data-need-output="${esc(n.id)}">詳細情報を開く</button>
     </details>
     ${reviewCommentsHtml(n)}
-    ${taskGuide ? `<details class="need-evidence need-task-context" data-ui-key="need-task:${esc(n.id)}"><summary>作業内容と完了条件</summary>${taskGuide}</details>` : ''}
+    ${n.kind !== 'plan-review' ? taskContext : ''}
   </article>`;
 }
 
@@ -1973,7 +1963,9 @@ function renderNeeds(options) {
   }
 
   const model = needsViewModel(p.needs, state.needsFilter, state.needsSelectedId, isNeedSent);
-  const planBatch = planReviewBatchCandidates(p.needs, isNeedSent);
+  const planBatch = state.needsFilter === 'open'
+    ? planReviewBatchCandidates(model.items, isNeedSent)
+    : [];
   state.needsSelectedId = model.selectedId;
   const gitlabCount = (state.gitlab.repoIssues || []).length;
   const filters = [
@@ -1996,7 +1988,7 @@ function renderNeeds(options) {
     state.needsSelectedId,
     state.needsMobileDetail,
     filters.map((x) => x[2]),
-    p.consistencyGate || null,
+    p.projectCheck || null,
     // 要約だけの署名では、同じ長さの本文・成果物・受理状態の更新を見逃して古い表示が残る。
     // needs は小さな判断待ち集合なので、表示に使うモデル全体を署名に含める。
     p.needs,
@@ -2057,7 +2049,9 @@ function renderNeeds(options) {
     });
   }
   const batchApprove = el.querySelector('[data-approve-plan-batch]');
-  if (batchApprove) batchApprove.addEventListener('click', () => approvePlanReviewBatch(planBatch));
+  if (batchApprove) {
+    batchApprove.addEventListener('click', () => approvePlanReviewBatch(planBatch, batchApprove));
+  }
   for (const btn of el.querySelectorAll('[data-need-select]')) {
     btn.addEventListener('click', () => {
       state.needsSelectedId = btn.dataset.needSelect;

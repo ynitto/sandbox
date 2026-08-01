@@ -101,7 +101,7 @@ def evaluate_acceptance(cfg: "Config", charter: "Charter", agent_run=None) -> "t
         if (wd / ".git").exists():
             head = _git_out(wd, "rev-parse", "HEAD").strip()
             if head:
-                env = {"KIRO_BASE_REV": head}
+                env = {"AGENT_BASE_REV": head, "KIRO_BASE_REV": head}
         results = []
         for cmd in commands:
             ok, _flaky, msg = run_verify_stable(cmd, wd, cfg.verify_timeout,
@@ -300,7 +300,7 @@ def finalize_project(cfg: "Config", state: dict, reason: str,
 def project_exit_code(reason: str) -> int:
     if reason == REASON_PROJECT_ACCEPTED:
         return 0
-    if reason in (REASON_PROJECT_BUDGET, REASON_PROJECT_COST):
+    if reason in (REASON_PROJECT_BUDGET, REASON_PROJECT_COST, REASON_INFRASTRUCTURE):
         return 2
     return 1   # converged / no-progress / blocked / no-acceptance / awaiting-plan は人の対応待ち
 
@@ -533,6 +533,9 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
         # ② execute — 既存の正準ループを無改造で回す（drained まで）
         result = runner(cfg)
         cost_used += float(result.get("cost", 0.0))
+        if result["reason"] == REASON_INFRASTRUCTURE:
+            reason = REASON_INFRASTRUCTURE
+            break
         counts = result["counts"]
         if counts.get("done", 0) > 0:
             did_work = True
@@ -592,6 +595,8 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
     if reason == REASON_PROJECT_CONVERGED:
         print(f"→ 収束候補。受領: agent-project approve {pid} --reason ...  "
               f"／ 続行: charter.md を更新して run を再実行")
+    elif reason == REASON_INFRASTRUCTURE:
+        print("→ 基盤状態を確認できないため安全停止しました。")
     elif reason != REASON_PROJECT_ACCEPTED:
         print(f"→ 人の対応待ち: needs/{pid}.md を確認")
     return project_exit_code(reason)
@@ -650,7 +655,9 @@ def project_watch(cfg: "Config", planner=None, reviewer=None, runner=run_loop,
                 append_journal(cfg.journal,
                                "=== project watch: 計画役は他 PC（lease 未取得）。実行のみ ===")
                 if has_work(cfg):
-                    runner(cfg)
+                    result = runner(cfg)
+                    if result["reason"] == REASON_INFRASTRUCTURE:
+                        return 2
                 passes += 1
                 if heartbeat:
                     heartbeat()
@@ -665,7 +672,9 @@ def project_watch(cfg: "Config", planner=None, reviewer=None, runner=run_loop,
                 # ことが無いのに run_loop が回って run-log/journal を無駄に増やさない）。バージョン
                 # （charters/<名前>.md）が置かれれば次パスで charter 駆動へ入る。
                 if has_work(cfg):
-                    runner(cfg)
+                    result = runner(cfg)
+                    if result["reason"] == REASON_INFRASTRUCTURE:
+                        return 2
                 passes += 1
                 if heartbeat:
                     heartbeat()
@@ -675,6 +684,9 @@ def project_watch(cfg: "Config", planner=None, reviewer=None, runner=run_loop,
                 code = cmd_project(cfg, planner, reviewer, runner, heartbeat=heartbeat,
                                    charter_name=name)
                 passes += 1
+                state = load_charter_state(cfg, name)
+                if state.get("status") == REASON_INFRASTRUCTURE:
+                    return 2
                 if heartbeat:
                     heartbeat()
                 if max_passes is not None and passes >= max_passes:

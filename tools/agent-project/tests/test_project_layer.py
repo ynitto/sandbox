@@ -1049,7 +1049,7 @@ class TestProjectLayer(unittest.TestCase):
             vcwd, tmp = km._task_verify_cwd(cfg_for(d, task_branch=False), task)
             try:
                 self.assertNotEqual(vcwd.name, "pkg")        # path には潜らない（クローンのルート）
-                self.assertTrue((vcwd / ".git").exists())    # ルートなので $KIRO_BASE_REV を取り直せる
+                self.assertTrue((vcwd / ".git").exists())    # ルートなので $AGENT_BASE_REV を取り直せる
                 self.assertTrue((vcwd / "pkg" / "IN_SUB.txt").exists())   # path はルートからの相対で届く
             finally:
                 if tmp:
@@ -1915,6 +1915,23 @@ class TestMultiCharter(unittest.TestCase):
             km.project_watch(cfg, planner=planner, reviewer=lambda ch: [],
                              runner=km.run_loop, sleeper=lambda _s: None, max_passes=2)
             self.assertEqual(seen, ["v2"])       # v1 のパスは要求が無いので plan を起こさない
+
+    def test_project_watch_exits_nonzero_on_infrastructure_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, max_project_cycles=1)
+            self._mk_charter(d, "v1")
+            calls = []
+
+            def runner(_cfg):
+                calls.append(1)
+                return {"reason": km.REASON_INFRASTRUCTURE, "cost": 0.0,
+                        "counts": {"done": 0, "blocked": 0, "review": 0, "proposed": 0}}
+
+            code = km.project_watch(cfg, planner=lambda ch: [], reviewer=lambda ch: [],
+                                    runner=runner, sleeper=lambda _s: None)
+            self.assertEqual(code, 2)
+            self.assertEqual(len(calls), 1)
 
     def test_milestone_approve_finalizes_charter(self):
         with tempfile.TemporaryDirectory() as d:

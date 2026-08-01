@@ -214,8 +214,31 @@ def _orch_check_canceled(bus: Bus, args, who: str) -> bool:
         bus.mark_canceled(args.run_id, reason)
     bus.event(who, "cancelled", run=args.run_id, reason=reason)
     bus.sync_push(f"cancel run {args.run_id}: {reason}")
+    if bus.is_canceled_requested(args.run_id):
+        bus.clear_cancel(args.run_id)  # heartbeat停止済みの実行所有者 acknowledgement
+        bus.sync_push(f"ack cancel run {args.run_id}")
     log(who, f"cancel 指示を検知（{reason}）。orchestrator を終了します。")
     return True
+
+
+def _with_run_heartbeat(heartbeat, lease_window: float, fn):
+    """ブロッキング処理中も orchestrator lease を更新して fn の結果を返す。"""
+    stop = threading.Event()
+
+    def beat() -> None:
+        while not stop.wait(max(lease_window / 3.0, 0.01)):
+            try:
+                heartbeat(force=True)
+            except Exception:  # noqa: BLE001 — 心拍失敗で本処理を落とさない
+                pass
+
+    thread = threading.Thread(target=beat, name="orch-blocking-hb", daemon=True)
+    thread.start()
+    try:
+        return fn()
+    finally:
+        stop.set()
+        thread.join()  # in-flight heartbeat の書込完了前に次の状態更新へ進まない
 
 
 def cmd_orchestrate(args) -> int:
@@ -282,19 +305,6 @@ def cmd_orchestrate(args) -> int:
         bus.sync_push(f"heartbeat run {args.run_id}")
 
     heartbeat(force=True)      # 計画（LLM）は数十秒かかる。その前に張る。
-    # 計画が lease_window（下限 120s）を超えると run_is_orphaned が真になり、daemon 経由で
-    # ない直起動 orchestrate や心拍を引き継ぐ親が居ない経路で二重に adopt される。
-    # 計画中は短い間隔で heartbeat し続ける（終了後 stop）。
-    _plan_stop = threading.Event()
-
-    def _plan_hb() -> None:
-        while not _plan_stop.wait(max(lease_window / 3.0, 5.0)):
-            try:
-                heartbeat(force=True)
-            except Exception:  # noqa: BLE001 — 心拍失敗で計画自体を落とさない
-                pass
-
-    _plan_th = threading.Thread(target=_plan_hb, name="orch-plan-hb", daemon=True)
     graph = bus.read_graph()
 
     # 既存グラフがあれば計画をやり直さず再開（resume）
@@ -306,12 +316,8 @@ def cmd_orchestrate(args) -> int:
             bus.sync_push(f"resume run {args.run_id}")
     else:
         # 要求から 7 パターンの組み合わせと並列数を選び、初期グラフを形作る
-        _plan_th.start()
-        try:
-            strategy, tasks = _plan_strategy(args)
-        finally:
-            _plan_stop.set()
-            _plan_th.join(timeout=2.0)
+        strategy, tasks = _with_run_heartbeat(
+            heartbeat, lease_window, lambda: _plan_strategy(args))
         graph = {"strategy": strategy,
                  "nodes": {t["id"]: _node_entry(t) for t in tasks},
                  "iteration": 0}
@@ -357,8 +363,10 @@ def cmd_orchestrate(args) -> int:
         if iteration >= args.max_iterations:
             decision, new_tasks, reason = "done", [], f"max-iterations({args.max_iterations}) 到達"
         else:
-            decision, new_tasks, reason = _continue(
-                args, args.request, nodes, results, iteration, graph.get("strategy"))
+            decision, new_tasks, reason = _with_run_heartbeat(
+                heartbeat, lease_window,
+                lambda: _continue(args, args.request, nodes, results, iteration,
+                                  graph.get("strategy")))
         log(who, f"評価 #{iteration}: {decision} — {reason}")
 
         if decision == "replan" and new_tasks:
@@ -389,7 +397,8 @@ def cmd_orchestrate(args) -> int:
         # 環境要因の打ち切り（decision=failed）では検証しない——成果が確定していない。
         if decision != "failed":
             try:
-                receipt = run_verification_plan(bus, args, who)
+                receipt = run_verification_plan(
+                    bus, args, who, heartbeat=heartbeat, lease_window=lease_window)
             except Exception as e:  # noqa: BLE001 — 検証の失敗で run を落とさない（receipt 無し=不採用）
                 log(who, f"統一 verify の実行に失敗（receipt 無しで続行・fail-close）: {e}")
                 receipt = None

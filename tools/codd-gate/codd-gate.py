@@ -18,11 +18,9 @@ identity は (url, path, base)＝パス＋ブランチで一意。charter.md は
 組む場合は agent-project 側が charter から <root>/repos.json を自動生成してこちらへ渡す
 （codd-gate は agent-project から完全に独立。共有するのは schemas/ のデータ契約だけ）。
 
-agent-project と連携する場合も本体は無改造で、既存の決定的フックだけで結合する（＝プラグイン）:
-  - タスク verify / regression_cmd に `codd-gate verify --base "$KIRO_BASE_REV"` を差し込む（差分ゲート）。
-  - charter acceptance に `codd-gate verify --debt --max-broken N` を置く（負債ラチェット）。
-  - agent-project の `intake_cmd: 'codd-gate tasks --debt'` で watch の周期ごとに負債を自動で
-    汲み上げる（id が冪等キー。手動なら `codd-gate tasks | agent-project enqueue --json` / --inbox）。
+agent-project と連携する場合は、state repo の共通チェックから
+`codd-gate verify --base "$AGENT_BASE_REV"` を呼ぶ。既存負債のタスク化は必要なときに
+`codd-gate tasks | agent-project enqueue --json` または `--inbox` で明示実行する。
 
 鉄則（agent-project と同じ流儀）:
   1. verify は「履歴」ではなく「現在の状態と差分」だけを見る。マップのキャッシュを信用せず毎回スキャンする。
@@ -1007,16 +1005,16 @@ def main(argv: "list[str] | None" = None) -> int:
     common.add_argument("--json", action="store_true", help="JSON で出力")
 
     ap = argparse.ArgumentParser(prog="codd-gate",
-                                 description="doc/code/test の一貫性ゲート（CoDD 流用・agent-project プラグイン）")
+                                 description="doc/code/test の一貫性ゲート（CoDD 流用・独立 CLI）")
     ap.add_argument("--version", action="version", version=f"codd-gate {VERSION}")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("scan", parents=[common], help="接続マップと負債の棚卸し")
     sp = sub.add_parser("impact", parents=[common], help="差分の Green/Amber/Gray/Followup 分類")
-    sp.add_argument("--base", default=None, help="差分の基準 rev（既定 $KIRO_BASE_REV）")
+    sp.add_argument("--base", default=None, help="差分の基準 rev（既定 $AGENT_BASE_REV、旧 $KIRO_BASE_REV）")
     sp.add_argument("--repo", default=None, help="差分を取る repo 名（曖昧なとき必須）")
     sp = sub.add_parser("verify", parents=[common], help="一貫性ゲート（exit 0/1）")
-    sp.add_argument("--base", default=None, help="差分の基準 rev（既定 $KIRO_BASE_REV。--debt 時は不要）")
+    sp.add_argument("--base", default=None, help="差分の基準 rev（既定 $AGENT_BASE_REV、旧 $KIRO_BASE_REV。--debt 時は不要）")
     sp.add_argument("--repo", default=None)
     sp.add_argument("--strict", action="store_true", help="gray（未接続の変更）も NG にする")
     sp.add_argument("--strict-cross", action="store_true", help="followup（別 repo の追随）も NG にする")
@@ -1102,9 +1100,10 @@ def _run(args, conf: dict, repos: "list[Repo]") -> int:
         return _emit_tasks(specs, args)
 
     # ここから差分モード（impact / verify / tasks）
-    base = getattr(args, "base", None) or os.environ.get("KIRO_BASE_REV", "")
+    base = (getattr(args, "base", None) or os.environ.get("AGENT_BASE_REV")
+            or os.environ.get("KIRO_BASE_REV", ""))
     if not base:
-        _die("差分の基準 rev がありません（--base か $KIRO_BASE_REV。全体負債は --debt）")
+        _die("差分の基準 rev がありません（--base か $AGENT_BASE_REV。旧 $KIRO_BASE_REV も可。全体負債は --debt）")
     target = _select_target(repos, getattr(args, "repo", None))
     imp = classify_impact(mapdata, repos, target, base)
 

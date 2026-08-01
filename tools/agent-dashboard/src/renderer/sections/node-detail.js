@@ -13,6 +13,68 @@ function nodeTimeline(nodeId) {
   return ((state.flowRun && state.flowRun.nodeEvents) || {})[nodeId] || [];
 }
 
+function shortClock(value) {
+  if (!value) return '';
+  const date = typeof value === 'number' ? new Date(value * 1000) : new Date(value);
+  if (isNaN(date.getTime())) return '';
+  return date.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+function nodeStartedAt(node) {
+  const claim = nodeTimeline(node.id).find((event) => event.kind === 'claimed');
+  return claim ? claim.ts : null;
+}
+
+function nodeTimingLabel(node) {
+  if (node.finishedAt) return `${node.state === 'failed' ? '失敗' : '完了'} ${shortClock(node.finishedAt)}`;
+  const startedAt = nodeStartedAt(node);
+  return startedAt ? `開始 ${shortClock(startedAt)}` : '';
+}
+
+function projectAcceptanceStage(project, run) {
+  const key = sanitizeTaskId(run && run.taskId);
+  const task = key && [...((project && project.backlog) || []), ...((project && project.archive) || [])]
+    .find((item) => sanitizeTaskId(item.id) === key);
+  if (!task) return null; // agent-flow 単体実行には agent-project のゲートを捏造しない
+  const need = ((project && project.needs) || []).find((item) =>
+    sanitizeTaskId(item.taskId || item.id) === key && String(item.kind || 'blocked') === 'blocked');
+  const failure = runFinalVerificationFailure(project, run);
+  const command = fixedVerifyCommand(task);
+  const criteria = acceptanceList(task);
+  const method = command ? '固定コマンド' : criteria.length ? `受入基準 ${criteria.length} 件` : '人による確認';
+  const timing = need && need.date ? `判定 ${fmtTime(need.date)}` : '';
+  if (failure) {
+    return {
+      state: 'attention',
+      label: failure.kind === 'info' ? '人の確認待ち' : '検証失敗・判断待ち',
+      detail: failure.kind === 'info' ? method : `${method}が失敗。要対応で判断`, timing,
+    };
+  }
+  if (((project && project.archive) || []).includes(task)) {
+    return { state: 'passed', label: '受け入れ済み', detail: method, timing };
+  }
+  if (task.status === 'review') {
+    return { state: 'attention', label: '受け入れ待ち', detail: `${method}・成果の承認待ち`, timing };
+  }
+  if (task.status === 'blocked' && String(run.status) === 'done') {
+    return { state: 'attention', label: '人の判断待ち', detail: method, timing };
+  }
+  if (String(run.status) !== 'done') {
+    return { state: 'pending', label: '作業完了後に確認', detail: method, timing: '' };
+  }
+  return { state: 'running', label: '確認中', detail: method, timing };
+}
+
+function projectAcceptanceHtml(project, run) {
+  const stage = projectAcceptanceStage(project, run);
+  if (!stage) return '';
+  return `<section class="project-acceptance project-acceptance-${esc(stage.state)}" aria-label="完了ゲート">
+    <div class="project-acceptance-head"><strong>完了ゲート</strong><span>${esc(stage.label)}</span></div>
+    <p>${esc(stage.detail)}</p>
+    ${stage.timing ? `<time>${esc(stage.timing)}</time>` : ''}
+  </section>`;
+}
+
 // agent-flow の kind は実行グラフ内での「役割」であり、agent-project がタスクの
 // 完了を確定する verify（完了ゲート）とは別物。特に verify を生のまま表示すると、
 // バックログの検証コマンドと同じ検証を二重管理しているように見えるため言い分ける。
@@ -35,7 +97,7 @@ function flowNodeKindLabel(kind) {
 function flowNodeKindHelp(kind) {
   if (String(kind || '') !== 'verify') return '';
   return `<div class="muted flow-kind-help">このチェックは作業グラフの途中で、後続工程へ進めるかを判断します。` +
-    'タスクの完了は、バックログに設定された完了ゲートで別に確定します。</div>';
+    'すべての工程が終わると、完了ゲートで成果全体を確認します。</div>';
 }
 
 // この工程が「やり直し」でどう扱われるかを言い切る行。
@@ -392,7 +454,7 @@ function swColor(st) {
 function flowGraphLayout(run) {
   const nodes = Object.values(run.nodes || {});
   const NW = 168;
-  const NH = 46;
+  const NH = 58;
   const GX = 70;
   const GY = 18;
   const PAD = 16;
@@ -599,6 +661,9 @@ function renderGraphSvg(run) {
     // 完了/失敗を映す）。反映で状態が変わったノードは reconciled クラスで区別できるようにする。
     const reconciled = reconciledStateFor(run, n.id);
     const effState = reconciled || n.state;
+    const stateLabel = n.kind === 'verify' && effState === 'parked'
+      ? '判断待ち'
+      : FLOW_STATE_LABEL[effState] || effState;
     const recClass = reconciled ? ' reconciled' : '';
     // gitlab executor で関連イシュー URL が確定済みのノード、または突き合わせで URL が判明した
     // ノード（クローズ済み/レビュー中どちらも）には、1 クリックでレビューを起動するイシュー
@@ -625,13 +690,14 @@ function renderGraphSvg(run) {
           <text x="9" y="13" text-anchor="middle" class="node-issue-glyph">↗</text>
         </g>`
       : '';
-    return `<g class="node state-${effState}${recClass} ${state.flowNodeId === n.id ? 'selected' : ''}" data-node="${esc(n.id)}"
-      role="button" tabindex="0" aria-label="${esc(`${n.id}、${flowNodeKindLabel(n.kind)}、${FLOW_STATE_LABEL[effState] || effState}`)}"
+    return `<g class="node state-${effState}${recClass}${n.kind === 'verify' ? ' kind-verify' : ''} ${state.flowNodeId === n.id ? 'selected' : ''}" data-node="${esc(n.id)}"
+      role="button" tabindex="0" aria-label="${esc(`${n.id}、${flowNodeKindLabel(n.kind)}、${stateLabel}`)}"
       transform="translate(${x},${y})">
       <rect width="${NW}" height="${NH}" rx="6"></rect>
       <text x="8" y="17" class="mono">${esc(idLabel)}${n.who ? ` @${esc(n.who).slice(0, 8)}` : ''}</text>
       <text x="8" y="31">${esc(goal)}</text>
-      <text x="8" y="42" class="kind">[${esc(flowNodeKindLabel(n.kind))}]</text>
+      <text x="8" y="42" class="kind">[${esc(flowNodeKindLabel(n.kind))}]${n.kind === 'verify' ? ` ${esc(stateLabel)}` : ''}</text>
+      <text x="8" y="53" class="timing">${esc(nodeTimingLabel(n))}</text>
       ${issueIcon}
     </g>`;
   });

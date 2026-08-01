@@ -572,7 +572,9 @@ def run_agent(prompt: str, model: str | None, purpose: str = "") -> str:
             t0 = time.monotonic()
             text = _run_agent_once(prompt, model, purpose)
             _node_budget_record(time.monotonic() - t0, ref=purpose or "worker",
-                                agent_cli=cli_used, model=model_used or "")
+                                agent_cli=cli_used, model=model_used or "",
+                                tokens_in=getattr(text, "tokens_in", None),
+                                tokens_out=getattr(text, "tokens_out", None))
             return text
         except RuntimeError as e:
             triage = classify_agent_failure(str(e))
@@ -645,7 +647,8 @@ def _run_agent_once(prompt: str, model: str | None, purpose: str = "") -> str:
             # stub 戦略へ黙って落ちる＝LLM を呼べていないのに動いているように見える。失敗にする。
             raise RuntimeError(_agent_failure(cmd[0], 0, proc.stdout, proc.stderr)
                                .replace("失敗 (rc=0)", "が空の応答を返しました (rc=0)"))
-        return text
+        tokens_in, tokens_out = _agentcli.parse_usage(proc.stderr or "")
+        return _agentcli.UsageText(text, tokens_in, tokens_out)
     finally:
         if out_file:
             with contextlib.suppress(OSError):

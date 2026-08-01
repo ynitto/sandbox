@@ -465,6 +465,7 @@ test('taskAssistPrompt / normalize: 意図と境界（task-guide）の JSON 契�
     task: { id: 'T2', title: '対象タスク', verify: 'true', why: '既存の理由' },
   });
   assert.ok(p.includes('"why"') && p.includes('"out_of_scope"') && p.includes('"demo"'));
+  assert.ok(p.includes('"acceptance"') && p.includes('"size"'), '計画必須項目も補完契約に含める');
   assert.ok(p.includes('対象タスク'));
   assert.ok(p.includes('空文字'), '根拠が無い項目は空文字＝発明しない契約');
   const g = agent.normalizeTaskGuide({
@@ -472,11 +473,15 @@ test('taskAssistPrompt / normalize: 意図と境界（task-guide）の JSON 契�
     why: ' 目的 ',
     scope: 'src/ のみ\napp/ も可',   // 生の改行は ⏎ 規約へ畳む
     out_of_scope: '',
+    acceptance: ['画面に表示される', '保存後も維持される'],
+    size: 'm',
     unknown: 'x',
   });
   assert.strictEqual(g.why, '目的');
   assert.strictEqual(g.scope, 'src/ のみ ⏎ app/ も可');
   assert.strictEqual(g.out_of_scope, '', '空文字は「提案なし」の明示');
+  assert.deepStrictEqual(g.acceptance, ['画面に表示される', '保存後も維持される']);
+  assert.strictEqual(g.size, 'M');
   assert.strictEqual(g.unknown, undefined, '未知キーは通さない');
   assert.strictEqual(g.rationale, '根拠');
 });

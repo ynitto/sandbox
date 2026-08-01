@@ -220,7 +220,7 @@ def doctor_env_findings(cfg: "Config", which=shutil.which) -> "list[dict]":
     if not which("git"):
         findings.append({
             "category": "env", "severity": "warn", "title": "git が見つからない",
-            "evidence": "成果参照・$KIRO_BASE_REV 差分 verify・回帰巻き戻しに git を使う",
+            "evidence": "成果参照・$AGENT_BASE_REV 差分 verify・回帰巻き戻しに git を使う",
             "fix": "git をインストールして PATH を通す"})
     elif not (cfg.workdir / ".git").exists():
         findings.append({
@@ -1421,11 +1421,11 @@ def cmd_run(cfg: Config) -> int:
             # （charters/<name>.md）が置かれた瞬間に charter 駆動へ入れる（run_watch は
             # charter の追加を監視しないため、ここで振り分けを間違えると気づけない）。
             if _coordination_active(cfg):
-                run_watch(cfg)      # role は各パスで lease から決め、停止後も自動昇格する
+                return exit_code_for(run_watch(cfg))  # 基盤エラーは supervisor へ非0で返す
             elif charter_names(cfg) or _has_master_charter(cfg):
-                project_watch(cfg)  # 目標を満たすまで回り続ける常駐（全 charter）
+                return project_watch(cfg)  # 目標を満たすまで回り続ける常駐（全 charter）
             else:
-                run_watch(cfg)      # backlog 監視の常駐
+                return exit_code_for(run_watch(cfg))  # backlog 監視の常駐
             return 0
         return _run_single(cfg)
     except (KeyboardInterrupt, _StopRequested):

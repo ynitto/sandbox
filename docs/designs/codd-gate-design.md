@@ -1,9 +1,14 @@
 # codd-gate — 設計書
 
-> 最終更新: 2026-07-20 ／ 関連: `tools/codd-gate/`（`codd-gate.py` / `README.md` / `tests/`）,
-> `tools/agent-project/`（`codd_gate_detect.py` 等の自動検出レイヤ含む）, `docs/designs/agent-project-design.md`
+> 最終更新: 2026-08-02 ／ 関連: `tools/codd-gate/`（`codd-gate.py` / `README.md` / `tests/`）,
+> `tools/agent-project/`, `tools/agent-dashboard/`, `docs/designs/agent-project-design.md`
 >
 > 本書は codd-gate の**唯一の設計正典**。実装と差が出たら本書を更新する。
+
+> **2026-08-02 の改訂結果**: agent-project と codd-gate の専用配線を削除し、
+> §4.3 の「プロジェクト共通チェック」へ集約した。agent-project が知るコマンドは1本、
+> 個々の検証 CLI はリポジトリ側で束ねる。新しい設定キー、タスクごとの必須 verify、
+> CLI 検出用のプラグイン規約は増やさない。
 
 `codd-gate` は、**ドキュメント・コード・テストの一貫性を「受け入れ前のゲート」と「負債の棚卸し→
 タスク化」で常時維持する**決定的ツール。[CoDD (Coherence-Driven Development)](https://github.com/yohey-w/codd-dev)
@@ -48,7 +53,7 @@ codd-gate は呼ばれるたびに 1 パスで判定して終わる。
       ┌─┴───────────────────────────────────────────────────────────────┐
       │ agent-project（無改造）                                        │
       │   plan → execute（act=agent-flow）→ verify ゲート → done          │
-      │                          │verify/regression に $KIRO_BASE_REV    │
+      │                          │verify/regression に $AGENT_BASE_REV   │
       │        ┌─────────────────▼─────────────┐                        │
       │        │ ① codd-gate verify --base …   │ ← 差分ゲート（毎タスク） │
       │        └───────────────────────────────┘                        │
@@ -155,7 +160,7 @@ repos 解決（--repos / 設定 repos: / --repo-dir） → 各 repo の git ls-f
 ### impact / verify — Impact + no fake green
 
 ```
-差分（--base|$KIRO_BASE_REV .. 作業ツリー、staged/unstaged/未追跡込み）
+差分（--base|$AGENT_BASE_REV .. 作業ツリー、staged/unstaged/未追跡込み）
   → 変更ファイルごとに分類:
      code 変更:  接続 doc が同一差分で更新済み → GREEN ／ 同一 repo で未更新 → AMBER(doc-stale)
                  接続 doc が別 repo → FOLLOWUP ／ 接続ゼロ → GRAY(unmapped)
@@ -236,7 +241,10 @@ agent-project の pilot-then-batch（1 件を人の検収で固めてから残�
 
 ---
 
-## 4. agent-project との結合点（オプション連携・プラグイン境界）
+## 4. agent-project との結合点（オプション連携）
+
+§4〜§4.2 は廃止した直接配線の判断履歴であり、現行設計は §4.3 とする。現在の agent-project は
+codd-gate を名指しせず、専用の検出、設定注入、結線診断も持たない。
 
 連携は一方向のオプション（codd-gate 単体でも §3 の全ステージが完結する）。agent-project 本体は
 無改造で、結合はすべて **agent-project が公式に定義する外部 CLI の差し込み点**
@@ -260,17 +268,19 @@ agent-project の pilot-then-batch（1 件を人の検収で固めてから残�
 
 | # | 差し込み点 | 差し込み | 拡張する機能／効き方 |
 |---|-----------|---------|--------------------|
-| ① | E2 `regression_cmd`（設定/CLI） | `codd-gate verify --base "$KIRO_BASE_REV" --repos <root>/repos.json` | **検証ゲート**の拡張。毎タスクの verify PASS 後・done 確定前に横断検査。NG なら done せず人へ |
+| ① | E2 `regression_cmd`（設定/CLI） | `codd-gate verify --base "$AGENT_BASE_REV" --repos <root>/repos.json` | **検証ゲート**の拡張。毎タスクの verify PASS 後・done 確定前に横断検査。NG なら done せず人へ |
 | ② | E1 charter `## acceptance` | `codd-gate verify --debt --max-broken 0 …` | **プロジェクト受入判定**の拡張。evaluate のたび負債ラチェットを決定的に判定 |
 | ③ | E3 `intake_cmd`（設定/CLI） | `codd-gate tasks --debt [--cohort]` | **backlog の自走**の拡張（pull 型供給）。watch の周期（intake_interval）で負債→修復タスクを**冪等取り込み**（決定的なタスク id が冪等キー）。正準ループが消化（ルーティング・検収・自律度は既存機構のまま）。手動は E4（`enqueue --json` / `inbox/`） |
 | ④ | E1 タスクの `- verify:` | `codd-gate check …` | **done の根拠**。修復タスクの完了を状態アサーションで判定 |
 | （補） | repos レジストリ（`schemas/repos.schema.json`） | agent-project が charter から `<root>/repos.json` を自動生成 → codd-gate は `--repos` で読む | レジストリの共用。codd-gate は charter を読まない（完全独立）。identity (url, path, base) は共通 |
 
-`$KIRO_BASE_REV` は agent-project が verify / regression に渡す act 前 HEAD（実装済みの規約）を
-そのまま使う。ワークスペース運用（別 repo clone 内での verify 実行）でも、タスク生成時に
+`$AGENT_BASE_REV` は agent-project が verify / regression に渡す act 前 HEAD（実装済みの規約）を
+そのまま使う。旧 `$KIRO_BASE_REV` は後方互換として同じ値を渡す。ワークスペース運用（別 repo clone 内での verify 実行）でも、タスク生成時に
 `--repo-dir <name>=.` を焼き込むことで clone 内で自己完結する。
 
-### 4.1 値の組み立てと永続化を担う任意部品（`tools/agent-project/codd_gate_*.py`）
+### 4.1 廃止した専用設定支援（判断履歴）
+
+この節に記録する `codd_gate_*.py` は 2026-08-02 に削除済みであり、現行 API ではない。
 
 表①〜③の文字列（`codd-gate verify …` や `codd-gate tasks --debt` 等）は、原則として人が yaml か CLI に手で書く
 （§4 の境界どおり、パッケージが埋めることはない）。その手書きを楽にするための任意の生成・判定部品が、
@@ -292,7 +302,7 @@ JSON で表示し、設定は書き換えない。有効化の手順は、利用
 | `codd_gate_detect.py` | codd-gate 実体の解決・生の検出値 | `resolve_codd_gate()`（`resolve_agent_flow` と対称：explicit→PATH→同梱パス `tools/codd-gate/codd-gate.py`）／`get_version()`／`check_repos_schema_compat()`／`detect_capabilities()`（`--help` の実プローブで verify/tasks/`--debt` の対応を判定） |
 | `codd_gate_status.py` | 検出結果の finding 化と no-op 縮退 | `CoddGateStatus`（`binary`/`version`/`findings`。`usable` は「実在し findings が空」・`command(*args)` は usable でなければ `None`）／`build_status()`（実在→バージョン→schema 互換の短絡順で判定。下限 `MIN_SUPPORTED_VERSION=(1,0,0)`）／`detect_status()`（実体の検出だけを行う簡易入口） |
 | `codd_gate_routing.py` | 明示設定する推奨文字列と routing 引数の組み立て | `recommend_regression_cmd()`／`recommend_intake_cmd()`／`resolve_repos_arg()`（vcwd 配下なら相対パス、外なら絶対パス）／`resolve_repo_dir_arg()`（`NAME=DIR`）／`build_routing_args()` |
-| `codd_gate_base.py` | 差分ゲートの base rev 解決 | `resolve_base_rev()`（`$KIRO_BASE_REV`→charter の repo `base:`→`HEAD~1` の順。base 未注入で `--base ""` が失敗する穴を埋める） |
+| `codd_gate_base.py` | 差分ゲートの base rev 解決 | `resolve_base_rev()`（`$AGENT_BASE_REV`→旧 `$KIRO_BASE_REV`→charter の repo `base:`→`HEAD~1` の順。base 未注入で `--base ""` が失敗する穴を埋める） |
 | `codd_gate_debt.py` | intake 出力の task スキーマ正規化（任意パーサ） | `parse_debt_output()` → `DebtParseResult(items, errors)`／`DriftItem(title, id, fields)`。object/array どちらの stdout も受理し、`title` 欠落など不備な1件だけを `errors` に隔離して残りは処理を続ける |
 | `codd_gate_wiring.py` | 実測・結線判定・読み取り専用の所見表示 | `detect_wiring()`（実在→バージョン→schema→能力の短絡順で実測し `WiringJudgment` を返す）／`judge_wiring()`（純粋関数）／`recommend_regression_cmd()`／`recommend_intake_cmd()`／`render_findings()`。`python3 tools/agent-project/codd_gate_wiring.py --config .agent/agent-project.yaml` が結線診断の唯一の正準入口 |
 | `codd_gate_regression.py` | regression_cmd の生成・yaml への冪等注入（CLI） | `build_regression_cmd()`／`upsert_config_text()`（正規表現ベースの最小差分行編集。PyYAML load→dump は使わず既存コメントを保持）／`apply_to_file()`。`python3 tools/agent-project/codd_gate_regression.py --config .agent/agent-project.yaml` で人・install 手順が明示的に実行する。成功時 JSON は `regression_cmd` と案内用の `intake_cmd` を返す |
@@ -357,7 +367,7 @@ yaml/CLI を読めば一意に決まり、起動時の環境プローブ結果�
   本当に必要になれば、agent-flow に「静止後・final 確定前に走る `gate_cmd`」を E2 の相似形（単発・
   有界・exit code 契約）として追加する道はあるが、現状は外側で必ずゲートされるため設けない。
 
-### 4.2 境界の完了条件（決定的ゲート）
+### 4.2 境界の完了条件（達成済み）
 
 §4 の境界、すなわち「パッケージは汎用フックだけを提供し codd-gate を名指し・import・自動配線しない／
 codd_gate_* は任意の sibling 部品」を、散文の宣言ではなく機械可読な受入で固定する。設計上の完了条件は、
@@ -391,6 +401,88 @@ run 受入と同じ単一パターンで足り、パスを `agent_project/` へ�
 `_apply_codd_gate_auto_wiring` と doctor/model の `import codd_gate_*` を除いた状態にすれば PASS する。除去そのものは
 実装側の後続タスクで扱い、本節はドキュメント上の完了条件を定義するに留める。
 
+### 4.3 プロジェクト共通チェックへの集約
+
+**背景と課題（概要）**: 柱2 / C5・C7。codd-gate を `regression_cmd`、`intake_cmd`、acceptance、
+タスクの `verify` へ個別に結線すると、同じ検証機の名前と引数が複数箇所に現れる。さらに別の決定的 CLI を
+追加するたび、検出、設定例、doctor、dashboard の判定も増やすことになる。これは品質ゲートを増やすほど
+運用を難しくする。done 前の機械検証は残し、agent-project と検証 CLI の接点だけを1本にする。
+
+**移行後の構成（コンポーネント）**:
+
+```
+agent-project
+    │ regression_cmd: ./tools/check
+    ▼
+state repo 管理の共通チェック（./tools/check）
+    ├── codd-gate verify --base "$AGENT_BASE_REV" --repos ...
+    ├── 既存のテスト／lint
+    └── 将来追加する決定的 CLI
+```
+
+共通チェックの代表名は上図のとおりとする。リポジトリに既存の `make check` や同等の入口があれば、
+新しいラッパーを作らずそれを使う。agent-project の設定は既存の `regression_cmd` 1項目だけで、
+個々の CLI 名を持たない。新しい検証機は共通チェックへ1行追加し、同じ done 前ゲートに乗せる。
+
+**判断1: agent-project の入口は既存の `regression_cmd` 1本にする。** codd-gate 専用の設定キーや
+自動配線は追加しない。普通のタスクへ `codd-gate` 固有の `verify` を重ねることもしない。
+修復タスクを `codd-gate tasks` から明示的に生成した場合だけ、そのタスクが持つ `check` を完了根拠として使える。
+これはプロジェクト設定ではなく、修復内容と対になる一時的な検証である。負債ラチェットを常時課す場合も、
+charter の acceptance に codd-gate を追加せず、共通チェックの中で `verify --debt --max-*` を実行する。
+
+CLIごとに `regression_cmd` 相当の設定を増やす案は、設定場所と実行順が検証機の数だけ増えるため却下した。
+agent-project が PATH を走査して検証機を自動発見する案も採らない。インストール環境の差で実行内容が変わり、
+なぜそのゲートが動いたかをリポジトリから説明できなくなる。共通チェックを state repo で管理すれば、
+チーム全員が同じ入口と順序をレビューできる。
+
+**判断2: v1 の実行契約は cwd、`$AGENT_BASE_REV`、終了コード、標準出力だけにする。** 共通チェックは
+agent-project の workdir で単発実行し、成功は exit 0、失敗は非0とする。失敗理由は標準出力または標準エラーへ
+書き、agent-project が既存の回帰失敗として needs と証跡へ残す。個々の CLI が必要とする設定は、その CLI または
+state repo の責務であり、agent-project の設定へ写さない。
+
+差分基準の正本は agent-flow run の `meta.base_rev`、local 実行では run_loop が act 前に採った baseline とし、
+環境変数は子プロセスへ渡す実行時の輸送手段に限る。
+ファイルへ書く案は、並行タスク間の競合、古い値の残留、後始末を増やすため採らない。CLI が読む優先順位は
+`--base` → `$AGENT_BASE_REV` → 旧 `$KIRO_BASE_REV` とする。producer は互換期間中だけ新旧両名へ同じ値を渡す。
+
+manifest、プラグイン登録、独自 JSON、CLI の `--describe` 規約は作らない。現時点では、共通チェックに
+コマンドを1行足す方が短く、実行内容も読みやすい。3〜5種類の検証機が構造化所見や修復タスクを相互利用し、
+exit code とログでは情報を失うと実測できた時点で、共通チェックの出力だけを後方互換に拡張する。
+agent-project と各 CLI を直接結ぶ規約には戻さない。
+
+**判断3: 負債の自動投入は標準経路から外す。** `codd-gate tasks --debt` は単体 CLI として残し、
+人が必要なときに `enqueue --json` または inbox へ渡せる。定期的な自動返済が必要なプロジェクトだけ、
+既存の `intake_cmd` を明示してよい。ただし、これは共通チェック導入の必須設定にしない。
+
+共通チェックの実行中に backlog を更新する案は却下した。done の合否判定とタスク追加を同じプロセスに入れると、
+再実行で状態が変わり、失敗の切り分けも難しくなる。通常運用では回帰失敗を needs へ残せば足りる。
+負債を継続的に返すチームだけが、既存の冪等な intake を別周期で使う。
+
+**表示と診断（コンポーネント）**: dashboard は `regression_cmd` の文字列から codd-gate の有無を推測せず、
+共通チェックが設定されているかと、実行時に記録されたコマンド、終了コード、出力を表示する。
+旧 codd-gate 専用表示は削除する。共通チェックの内側は、state repo でそのコマンドを直接実行して調べる。
+
+**移行結果（実装済み）**:
+
+1. 新規導入の `regression_cmd` を共通チェックに向け、codd-gate はその内側で呼ぶ。
+2. dashboard の表示を共通チェック基準へ寄せ、直接配線の読取を削除する。
+3. `codd_gate_detect.py`、`codd_gate_wiring.py`、`codd_gate_regression.py` など codd-gate 専用の
+   設定支援を削除した。agent-project の汎用 `regression_cmd` と `intake_cmd` は残した。
+
+移行後も合否の意味は変えない。共通チェックは従来の `regression_cmd` と同じ位置で一度だけ動き、
+非0なら done を止める。切替前後で同じ変更に対する exit code が一致すること、CLIごとの設定を
+agent-project に追加していないこと、共通チェックが未解決の CLI を黙って飛ばさないことを受入条件とする。
+
+**決定記録**:
+
+| 項目 | 内容 |
+|------|------|
+| 決定日 | 2026-08-02 |
+| 採用 | 既存の `regression_cmd` から、state repo 管理の共通チェックを1本だけ実行する |
+| 却下 | CLIごとの直接配線、自動発見、先行したプラグイン／JSON規約 |
+| 受け入れる制約 | 検証機の追加時に、共通チェックを1行編集する |
+| 再評価条件 | 3〜5種類の検証機で構造化所見や修復タスクを共有し、exit code とログでは情報が欠ける |
+
 ## 5. codd-dev からの主な翻案（差分）
 
 | codd-dev | codd-gate | 理由 |
@@ -398,7 +490,7 @@ run 受入と同じ単一パターンで足り、パスを `agent_project/` へ�
 | requirements（機能要件）を起点に build | **charter（指針）を起点にしない**。要件分解は agent-project の plan の領分で、codd-gate は成果物間の整合だけを見る | 要求が「機能要件ではなく指針」のため。greenfield の `build` は翻案しない |
 | 自前で build/test を実行して root cause 解析 | 実行は agent-project の verify / regression に委譲 | ループ制御・予算・検収は既存の制御層が持っている |
 | profiles/adapters（言語知識をコアから排除） | repos レジストリの per-repo グロブ（docs/tests/code）＋固定の推定規則 | 単一ファイル・stdlib の範囲で同じ狙い（コアに言語知識を持たせない）を実現 |
-| MCP サーバー / git hooks | CLI ＋ agent-project フック（hooks は README の運用例） | プラグイン境界を「決定的フック」に一本化 |
+| MCP サーバー / git hooks | CLI ＋リポジトリ管理の共通チェック（現行の直接フックも移行中は互換） | agent-project と検証 CLI の境界を1本にする |
 | 単一リポジトリ前提 | 複数 repo（(url, path, base) identity・repo プレフィックス参照・Followup 分類） | 要求 4 |
 
 ## 6. 制約と将来拡張

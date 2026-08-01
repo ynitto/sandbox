@@ -232,10 +232,10 @@ class LocalReceiptTests(unittest.TestCase):
         self.assertEqual(verification["unverifiable"], len(plan["criteria"]))
 
     def test_env_reaches_local_command(self):
-        t = _task(self.d, lines=['verification_commands: test "$KIRO_BASE_REV" = base123'])
+        t = _task(self.d, lines=['verification_commands: test "$AGENT_BASE_REV" = base123'])
         plan = km.build_task_verification_plan(self.cfg, t)
         ok, *_ = km.settle_from_receipt(self.cfg, t, plan, "", self.d,
-                                        {"KIRO_BASE_REV": "base123"})
+                                        {"AGENT_BASE_REV": "base123"})
         self.assertTrue(ok)
 
     def test_rejected_flow_receipt_falls_to_local_runner(self):

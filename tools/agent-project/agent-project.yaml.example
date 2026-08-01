@@ -186,25 +186,16 @@ max_spawn: 20              # 1 run で生成できる派生タスク（followup�
 #                            # （auto-resolve が promote_threshold 回以上）を rules.md へ出典付きで追記。
 #                            # rules.md は「フローで判明した恒常ルール（暗黙知）の明文化先」で、人が直接
 #                            # 書いてもよい（正は人）。全タスクの act / plan / verify 合成へ常時・有界注入
-# regression_cmd: make -s smoke   # done 確定前のグローバル回帰検査（失敗で done にせず人へ）
+# regression_cmd: ./tools/check   # state repo が持つ共通チェック（失敗で done にせず人へ）
 # 安全ゲート（gate / protect / deny …）は <root>/policy.md に書く（人専管）
 
 # 取り込みコマンド（intake）: 外部の決定的ゲート/検出器から修復タスクを汲み上げる汎用フック。
 # stdout の enqueue --json 形式（spec オブジェクト/配列）を backlog へ冪等取り込み（id が現役
 # backlog に居れば飛ばす）。パス開始時と watch の idle 中に intake_interval で律速して実行。
 # コマンドは単発・有界であること（常駐は agent-project が持つ）。
-# 例: codd-gate（doc/code/test 一貫性ゲート。tools/codd-gate/）の負債をタスク化して流し込む:
-# intake_cmd: codd-gate tasks --debt
+# 例: 外部検出器が返す既存負債を、自動で backlog へ流し込みたい場合だけ設定する:
+# intake_cmd: external-check tasks --json
 # intake_interval: 600            # 実行間隔（秒。既定 600。0 以下で毎パス/毎 poll）
-
-# 任意フックのプロバイダ指定（能力キー -> module 名）。本体はプロバイダの固有名を持たず、
-# 未指定なら agent-project 直下の sibling を「必要な関数を持つか」で走査して自動検出する。
-# 通常は書かなくてよい。別実装へ差し替える／自動検出の当たりを固定したいときだけ書く。
-# 明示した名前が解決できない場合は自動検出へ落ちず無効になる（doctor が warn で知らせる）。
-# 走査は `def <契約名>(` の行で前置フィルタするので、契約名を別名で公開するプロバイダは載らない。
-# 下の codd_gate_wiring がそれで、doctor に所見を出させたいならコメントを外して明示すること。
-# hooks:
-#   wiring: codd_gate_wiring      # 配線検出（detect_wiring / doctor_findings）のプロバイダ
 
 # ---------------------------------------------------------------------------
 # プロジェクト層（project サブコマンド: charter 駆動の plan→execute→evaluate）

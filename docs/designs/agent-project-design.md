@@ -155,7 +155,7 @@ settle は二段階です。まず archive、納品書、needs、verifications �
 
 **選択肢と却下理由**: 実行も自前で持つ案は、agent-flow が既に持っているタスクグラフと claim プロトコルを二重に実装することになる。逆に agent-project を薄いラッパにする案は、検証ゲートと決定記録の置き場がなくなる。境界を「1 run = 1 タスク = 1 書込先」に引くと、両者の語彙が噛み合います。
 
-**トレードオフ**: プロセス境界を越えるので、成果と検証結果は版付きの plan / receipt 契約で渡します。`agent_flow` は import しません。別 venv、別バージョンで動く前提です。run 全体の所要時間はタスクグラフの粒度やレビュー待ちで決まるため、壁時計上限 `act_timeout` の既定は `0`（無制限）とします。失踪判定は agent-flow の orchestrator lease を使い、いったん生存を観測した lease が失効した run は失敗として止め、次回は done を温存して再開します。有限の全体上限が必要な運用だけ明示設定します。agent-project のホスト局所 claim は、無制限 run の回収窓 1,800 秒に対して 3 分の 1 の 600 秒ごとに mtime だけを更新します。更新時に owner / pid / task の同一性を再検証し、更新できなければ実行権喪失として run を止めます。claim 本文を書き直す方式は監視側が途中の JSON を読む窓を作るため採りません。digest、固定コマンドの実行規則、target revision の祖先性判定は `agentcore.verifycontract` の 1 実装を両側が使います——2 実装に割れると、同じ plan でも実行経路によって合否が変わるためです。plan は `--verification-plan`（または inbox 要求の `verification_plan` キー）で渡します。両ツールは同時に更新する前提で、旧 agent-flow との混在は想定しません（env 渡しは不安定として却下・2026-07-31）。旧 verify 経路（task.verify のローカル直実行と LLM verifier）は shadow 比較の一致を実測して撤去済みです。receipt を採用できないタスク（receipt 欠落・検算不一致・dry-run / stub 実行）は、agent-project 自身が local runner として plan の固定コマンドを一度だけ実行します。書込 workspace の plan では同じ target 統合判定も行い、両方を同じ契約の receipt にして検算します。target を取得できなければ pass を作らず inconclusive に倒します。自然文基準の判定は agent-flow runner だけが行い、local runner では inconclusive（委譲・人送り）に倒します。
+**トレードオフ**: プロセス境界を越えるので、成果と検証結果は版付きの plan / receipt 契約で渡します。`agent_flow` は import しません。別 venv、別バージョンで動く前提です。run 全体の所要時間はタスクグラフの粒度やレビュー待ちで決まるため、壁時計上限 `act_timeout` の既定は `0`（無制限）とします。明示した `max_seconds` は run 全体の予算なので、進行中の local act にも残り期限を渡します。失踪判定は agent-flow の orchestrator lease を使いますが、状態を alive / expired / terminal / unknown に分けます。terminal は正常な終了処理を待ち、auto-heal 待機中でなければ固定 120 秒で wrapper を停止します。terminal の結果は wrapper の終了コードで覆しません。expired はスリープ復帰などの瞬間的な期限切れを避けるため 10 秒連続した場合だけ失敗として止め、unknown は 600 秒継続した場合だけ未記録と判断します。次回は done を温存して再開します。agent-project のホスト局所 claim は、無制限 run の回収窓 1,800 秒に対して 3 分の 1 の 600 秒ごとに mtime だけを更新します。更新時に owner / pid / task の同一性を再検証し、所有者不一致は直ちに結果を不採用にします。読取・mtime 更新の一時失敗は 5 秒間隔で 60 秒まで再確認します。それでも確認できなければ所有権不明として task と claim を変更せず、run/watch を基盤エラーで非 0 終了します。claim を失った試行も task と claim を書き換えないため、後継 owner の状態を消しません。claim 本文を書き直す方式は監視側が途中の JSON を読む窓を作るため採りません。digest、固定コマンドの実行規則、target revision の祖先性判定は `agentcore.verifycontract` の 1 実装を両側が使います——2 実装に割れると、同じ plan でも実行経路によって合否が変わるためです。plan は `--verification-plan`（または inbox 要求の `verification_plan` キー）で渡します。両ツールは同時に更新する前提で、旧 agent-flow との混在は想定しません（env 渡しは不安定として却下・2026-07-31）。旧 verify 経路（task.verify のローカル直実行と LLM verifier）は shadow 比較の一致を実測して撤去済みです。receipt を採用できないタスク（receipt 欠落・検算不一致・dry-run / stub 実行）は、agent-project 自身が local runner として plan の固定コマンドを一度だけ実行します。書込 workspace の plan では同じ target 統合判定も行い、両方を同じ契約の receipt にして検算します。target を取得できなければ pass を作らず inconclusive に倒します。自然文基準の判定は agent-flow runner だけが行い、local runner では inconclusive（委譲・人送り）に倒します。
 
 **確信度**: 高い。
 
@@ -199,7 +199,7 @@ target の未統合は成果内容の失敗と分けます。receipt が検証�
 進んだ場合の鮮度確認は、approve の直前に行います。
 
 E2 の回帰は verification_plan には畳みません。`regression_cmd` はグローバル検査で、パスも
-差分基準（`$KIRO_BASE_REV`）も git-bus ルート（workdir）を前提に書かれており、成果 repo の
+差分基準（`$AGENT_BASE_REV`）も git-bus ルート（workdir）を前提に書かれており、成果 repo の
 clone 上で走らせるとゲート自体が壊れるためです。重複実行の解消（同一コマンドの digest 畳み込み）は
 plan の正規化段で plan 内にだけ効きます。
 
@@ -212,8 +212,9 @@ plan の正規化段で plan 内にだけ効きます。
 review（人の検収）の正はフォージの MR/PR です。書込先を持つタスクは review 到達時に MR を冪等作成し、検収カードには MR リンクと検証レポートの要約が載ります。worker の作業ツリーは `/tmp` で push 後に消えるため、常に存在する差分のビューはリモートだけだからです。決着は決定的シグナルに限ります——マージは approve、未マージのクローズは reject、changes-requested のラベルまたはレビュー状態は未解決コメントを feedback に注入した revise、コメントのみは何もしない（差し戻しはラベルか dashboard ボタンを使い、コメント本文のキーワード推定は検収の決着に使いません）。フォージの照会と決着の書き込みは常駐体の sync 周期が担い、dashboard の承認・差し戻しボタンは同じ revise / approve 契約へ合流します。同時操作ではマージ・クローズ・changes-requested の決定的シグナルが勝ち、ボタンはそれが無い場合だけ有効である。フォージ実装は GitLab のみで、未対応リモートでは dashboard のボタン決着が正式な契約となる。MR を作る主体は常駐体です。worker に push 直後に作らせる案は、フォージの書込トークンを全ワーカーノードへ配ることになり、板経由で信頼境界の外のノードが請け負う構成で破綻します。dashboard に作らせる案は「dashboard は書かない」原則に反するうえ、dashboard を開かないノードでは MR が永遠にできません。常駐体なら、トークンは常駐ノード 1 台に留まり、検収カードが立つ瞬間に MR URL を確定できます。もうひとつの不変条件として、フォージへ到達できないとき（回線断・トークン失効）は決着しません。「見えない = 未マージ = reject」と読むと、回線が切れただけで成果が却下されるからです。fencing の `unknown` と同じ思想です。
 
 検収へ入った時点の target revision はタスクに保存します。approve の直前に target を取り直し、同じ
-revision の場合だけ統合へ進みます。進んでいれば review を維持し、未検証の target をその場で merge して
-done にすることはありません。
+revision なら統合へ進みます。target が進んでいても、検証済みの成果 revision 自体が現在の target に
+含まれる場合は、フォージ等で先に統合された冪等な納品として approve を続行します。含まれない場合だけ
+review を維持し、未検証の target をその場で merge して done にすることはありません。
 
 ## プロジェクト層（charter からバックログを作る）
 

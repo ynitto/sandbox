@@ -1,8 +1,8 @@
 ---
 name: codd-gate
-description: ドキュメント・コード・テストの一貫性を機械的に維持する codd-gate（CoDD 流用の決定的ゲート。agent-project から完全独立で単体で CI/git hook から使え、連携は schemas/ の共通データ契約のみ）を運用するスキル。「ドキュメントとコードの整合を常にとって」「一貫性ゲートを入れて」「ドリフトを backlog に積んで」「接続マップを作って」「未文書化・未テストを棚卸しして」「done 前にドキュメント置き去りを止めて」などで発動する。差分ゲート（verify）・負債ラチェット（--debt）・修復タスク生成（tasks）を agent-project の regression/acceptance/enqueue に結線する。単発のドリフト調査レポートが欲しいだけなら doc-drift-detector を使う。
+description: ドキュメント・コード・テストの一貫性を機械的に維持する codd-gate（CoDD 流用の決定的ゲート。agent-project から完全独立で単体で CI/git hook から使え、連携時は state repo の共通チェックから呼ぶ）を運用するスキル。「ドキュメントとコードの整合を常にとって」「一貫性ゲートを入れて」「ドリフトを backlog に積んで」「接続マップを作って」「未文書化・未テストを棚卸しして」「done 前にドキュメント置き去りを止めて」などで発動する。単発のドリフト調査レポートが欲しいだけなら doc-drift-detector を使う。
 metadata:
-  version: "1.0.0"
+  version: "1.1.0"
   tier: experimental
   category: operations
   tags:
@@ -45,24 +45,27 @@ codd-gate check  --doc D --code C --fresh   # 状態アサーション（修復�
   設定 `.kiro/codd-gate.{yaml,json}` の `repos:` で与える（identity = (url, path, base)。`dir:` で
   ローカル checkout、`docs:/tests:/code:` で分類グロブを上書き）。charter.md は読まない。
 
-## 追加情報: agent-project への結線（オプション連携。有効化は設定だけ）
+## 追加情報: agent-project との連携（オプション）
 
-codd-gate は agent-project から**完全独立**（結線は schemas/ の共通データ契約と、agent-project が
-公式に定義する外部 CLI 差し込み点＝設計書 §4.1: E1 verify/acceptance・E2 regression_cmd・E3 intake_cmd
-のみ）。agent-project の install.sh は隣に codd-gate があれば同梱インストールする。リポジトリ定義は
-agent-project が charter から `<root>/repos.json` を自動生成するので、それを `--repos` で渡す。
-この順で提案する:
+codd-gate は agent-project から完全に独立させる。`.agents/agent-project.yaml` には state repo が持つ
+共通チェックを1本だけ設定し、その内側から codd-gate を呼ぶ。
 
-1. **差分ゲート**: `.agents/agent-project.yaml` に
-   `regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV"'`
-2. **受入ラチェット**: charter `## acceptance` に
-   `- codd-gate verify --debt --max-broken 0 --max-undocumented <現状値>`
-   （現状値は `codd-gate scan` で測ってから入れ、改修の進行に合わせて下げる）
-3. **負債の自動返済**: 同 yaml に `intake_cmd: 'codd-gate tasks --debt --repos <root>/repos.json'`
-   （watch の周期で冪等取り込み。タスク id が冪等キー）。同種負債の山は `--cohort` を足して
-   pilot-then-batch に分解を委ねる。単発なら `codd-gate tasks --debt | agent-project enqueue --json`。
-   別 repo 追随タスクは `workspace:` 付きで出るのでルーティングはそのまま乗る
-4. 修復タスクの verify は `codd-gate check`（状態アサーション）を使う。履歴 grep を書かない
+```yaml
+regression_cmd: ./tools/check
+```
+
+```sh
+#!/bin/sh
+set -eu
+codd-gate verify --base "$AGENT_BASE_REV" --repos ./repos.json
+```
+
+差分基準は agent-project が実行時に渡す。旧 `$KIRO_BASE_REV` は後方互換としてのみ扱う。
+
+通常タスクの verify や charter acceptance へ同じ検査を重ねない。検証 CLI を増やす場合は
+`tools/check` に1行追加する。既存負債は必要なときに
+`codd-gate tasks --debt | agent-project enqueue --json` で明示投入する。codd-gate が生成した修復タスクでは、
+タスク自身の `codd-gate check` を完了根拠として使う。
 
 **守ること**: 常駐・繰り返しは agent-project（または cron/CI）に持たせる。codd-gate に watch 的な
 長期実行を求めない（どのサブコマンドも単発・有界が設計上の不変条件）。
