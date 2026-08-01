@@ -5,6 +5,11 @@ from __future__ import annotations
 #   Quick Red Flags を決定的に採点する。L0–L3 のレベルと 0–100 スコア・赤旗・提案を出し、
 #   「いまどの自律度で無人運用してよいか」を機械判定する。stdlib のみ・エージェント不要。
 # ---------------------------------------------------------------------------
+# node_id（PC の身元）の正規化は 3 ツール共通の 1 実装を使う（実装計画 W1-10）。
+# doctor が独自に綴り替えると板のファイルを書く側と食い違い、切替前チェックが空振りする。
+from agentcore.nodeid import normalize_node_id  # noqa: E402
+
+
 def compute_audit(cfg: Config) -> dict:
     """backlog/policy/config/state を走査して Loop Readiness を採点する（決定的）。"""
     tasks = load_tasks(cfg.backlog)
@@ -187,7 +192,7 @@ def doctor_env_findings(cfg: "Config", which=shutil.which) -> "list[dict]":
     """環境/設定の決定的チェック（LLM 不要）。fix_action を持つものは --fix で修正できる。"""
     findings: list[dict] = []
     # 未 push のローカルコミット（unpushed_commits の docstring 参照）
-    n, branch = unpushed_commits(cfg.state_top)
+    n, branch = unpushed_commits(cfg.backlog.parent)
     if n:
         findings.append({
             "category": "git", "severity": "warn",
@@ -195,9 +200,9 @@ def doctor_env_findings(cfg: "Config", which=shutil.which) -> "list[dict]":
             "evidence": ("worker と verify は origin から clone して実行するため、ローカルにだけある "
                          "コミットは彼らからは見えない。手元で直した成果は verify に届かず、"
                          "「ローカルでは通るのに verify は落ち続ける」状態になる"),
-            "fix": f"git -C {cfg.state_top} push origin {branch}"})
+            "fix": f"git -C {cfg.backlog.parent} push origin {branch}"})
     needs_cli = cfg.planner == "agent" or cfg.executor == "agent" or cfg.auto_adjudicate
-    agent_bin = _AGENT_CLI_BINARIES.get(cfg.agent_cli, cfg.agent_cli)
+    agent_bin = agent_cli_binary(cfg.agent_cli)
     if needs_cli and not which(agent_bin):
         findings.append({
             "category": "env", "severity": "critical",
@@ -231,6 +236,536 @@ def doctor_env_findings(cfg: "Config", which=shutil.which) -> "list[dict]":
     return findings
 
 
+def doctor_coordination_findings(cfg: "Config") -> "list[dict]":
+    """multi-node Git CAS の起動前不変条件を決定的に検査する。
+
+    coordination は設定キーでなく観測で決まる（実装計画 W1-8）ため、`_coordination_active` が
+    False の間はこの検査自体が無関係（origin が無い／取り合うピアがいなければ以下は起こり得ない）。
+    「origin が無い」チェックは旧版にあったが、外側のゲートと同じ条件を二重に見るだけの
+    到達不能コードになったため削除した。"""
+    if not _coordination_active(cfg):
+        return []
+    findings: list[dict] = []
+
+    def add(title: str, evidence: str, fix: str) -> None:
+        findings.append({"category": "config", "severity": "critical", "title": title,
+                         "evidence": evidence, "fix": fix})
+
+    if not str(getattr(cfg, "node", "") or "").strip():
+        add("git-cas には node が必要", "実行権の owner と controller 候補を識別できない",
+            "PC 固有 profile に node を設定する")
+    heartbeat = float(getattr(cfg, "controller_heartbeat_sec", 30.0) or 30.0)
+    lease = float(getattr(cfg, "controller_lease_sec", 120.0) or 120.0)
+    if heartbeat >= lease:
+        add("controller heartbeat が lease 以上", f"heartbeat={heartbeat}s lease={lease}s",
+            "controller_heartbeat_sec を controller_lease_sec より短くする")
+    if availability_state(cfg) == "invalid":
+        add("availability 設定が不正", json.dumps(getattr(cfg, "availability", {}), ensure_ascii=False),
+            "timezone と daily_stop(HH:MM) を修正する")
+    return findings
+
+
+def _state_root_cutover_findings(state_root: str, old_safe: str, add) -> None:
+    """プロジェクト状態リポジトリ側に残る旧名義の残骸（P0-3）。
+
+    板と amigos だけを見ていると、**同じ PC のプロジェクト状態**に残るものを見落とす。
+    どれも「切替してから気付く」形で表に出るので、切替前に人へ出す:
+
+    - `status/<old>.json` … 状態同期で全 PC へ配られる。鮮度が切れるまで
+      `_peer_nodes` が旧名義を「他ノード」と読んで CAS 経路に入り、切れた後も
+      dashboard の端末一覧に死んだ行として残り続ける。
+    - `claim_owner: <old>` の doing タスク … 新名義からは解放できない
+      （`requeue_draining_tasks` は `claim_owner != node` を飛ばす）。lease ではなく
+      **人が直すまで**固まる。
+    - 手動割当（`node_source` が auto 以外）の `- node: <old>` … 自動割当分は
+      `allocate_distributed_tasks` が拾い直すが、人が指定した割当は誰も拾わない。
+    """
+    stale_status = os.path.join(state_root, "status", f"{old_safe}.json")
+    if os.path.exists(stale_status):
+        add("旧 node_id 名義の生存信号が残っている",
+            f"state_root={state_root} file={stale_status}",
+            "常駐体を止めてからこのファイルを削除し、状態リポジトリへコミットする")
+    backlog = os.path.join(state_root, "backlog")
+    claimed, assigned = [], []
+    try:
+        names = sorted(n for n in os.listdir(backlog) if n.endswith(".md"))
+    except OSError:
+        names = []
+    for name in names:
+        try:
+            with open(os.path.join(backlog, name), encoding="utf-8") as f:
+                body = f.read()
+        except OSError:
+            continue
+        fields = dict(re.findall(r"^- ([a-z_]+)\s*:\s*(.*)$", body, re.M))
+        if normalize_node_id(fields.get("claim_owner", "")) == old_safe \
+                and fields.get("claim_owner", "").strip():
+            claimed.append(name[:-3])
+        node = fields.get("node", "").strip()
+        if node and normalize_node_id(node) == old_safe \
+                and fields.get("node_source", "").strip() != "auto":
+            assigned.append(name[:-3])
+    if claimed:
+        add("旧 node_id 名義が実行権（claim）を握っている",
+            f"state_root={state_root} old={old_safe} tasks={claimed[:8]}",
+            "対象タスクが終わるまで切替を待つ（新名義からは解放できない）")
+    if assigned:
+        add("旧 node_id 名義へ手で割り当てたタスクが残っている",
+            f"state_root={state_root} old={old_safe} tasks={assigned[:8]}",
+            "backlog の `- node:` を新名義へ書き換える（自動割当分は次のパスで振り直される）")
+
+
+def doctor_node_id_cutover_findings(board_root: "str | None", old_node_id: str,
+                                    new_node_id: str,
+                                    amigos_bus_root: "str | None" = None,
+                                    state_roots: "list[str] | None" = None) -> "list[dict]":
+    """node_id 切替（実装計画 W1-10・静止点）の事前チェック。旧名義に実行中の委譲・
+    ミッションが残っていないかを決定的に検査する（設計 §9 C13 の一環 — 更新は
+    「git pull + install.sh」で足りるが node_id はデータの名義そのものを変えるため、
+    残骸を残したまま切り替えると旧名義の bid/status が孤立し二重入札の温床になる）。
+
+    - 板 `delegations/<id>/status/<old_node_id>.json` が存在するのに `result.json` が
+      無い委譲は「旧名義でまだ引き受けている」ため未決着（実行中の委譲あり）。
+    - amigos_bus_root を渡した場合、`status/<old_node_id>--*.json`（ロール別状態ファイル）が
+      1 つでも見つかれば要確認として挙げる（terminal 判定にはミッション文脈が要るため、
+      ここでは「見つかったら人が見る」に倒す——doctor は誤動作より過検知を選ぶ）。
+    - 新名義が板に**別 PC の生存ノードとして既に登録済み**なら衝突として挙げる。W1-10 で
+      既定採番を PC 名にしたため、ホスト名の重複（`localhost`・コンテナ既定名）が
+      現実に起こりうる。気づかず切り替えると 2 台が同じ名義で入札し、bid/status を
+      互いに上書きする。
+    - state_roots を渡した場合、プロジェクト状態リポジトリ側の残骸も見る
+      （`_state_root_cutover_findings`）。大文字を含むホスト名の PC は P0-3 の正規化が
+      そのまま名義変更になるので、ここが空でないと切替後に「誰も拾わない ready」が残る。
+
+    名義の綴りは `agentcore.nodeid.normalize_node_id` で揃える。ここで独自に綴り替えると、
+    板のファイルを書く側（各エンジンの `_safe`）と食い違い、実行中の委譲を見落として
+    「切替してよい」と誤報告する——所見ゼロを切替の許可条件にしている手順書の前提が壊れる。"""
+    findings: list[dict] = []
+
+    def add(title: str, evidence: str, fix: str) -> None:
+        findings.append({"category": "config", "severity": "critical", "title": title,
+                         "evidence": evidence, "fix": fix})
+
+    old_safe = normalize_node_id(old_node_id)
+    new_safe = normalize_node_id(new_node_id)
+    if board_root and os.path.isdir(os.path.join(board_root, "delegations")):
+        deleg_root = os.path.join(board_root, "delegations")
+        active = []
+        for did in sorted(os.listdir(deleg_root)):
+            status_path = os.path.join(deleg_root, did, "status", f"{old_safe}.json")
+            result_path = os.path.join(deleg_root, did, "result.json")
+            if os.path.exists(status_path) and not os.path.exists(result_path):
+                active.append(did)
+        if active:
+            add("旧 node_id 名義の委譲が実行中",
+                f"board={board_root} old={old_node_id} delegations={active[:8]}",
+                "対象の委譲が終端（result.json 生成）するまで node_id 切替を待つ")
+    if amigos_bus_root and os.path.isdir(os.path.join(amigos_bus_root, "missions")):
+        stale = []
+        missions_root = os.path.join(amigos_bus_root, "missions")
+        for mid in sorted(os.listdir(missions_root)):
+            status_dir = os.path.join(missions_root, mid, "status")
+            if not os.path.isdir(status_dir):
+                continue
+            for name in os.listdir(status_dir):
+                if name.startswith(f"{old_safe}--") and name.endswith(".json"):
+                    stale.append(f"{mid}/{name}")
+        if stale:
+            add("旧 node_id 名義の amigos ロール状態が残存",
+                f"amigos_bus={amigos_bus_root} old={old_node_id} entries={stale[:8]}",
+                "ミッションが終端しているか確認してから node_id 切替を行う（人の目視確認が必要）")
+    if board_root and new_safe != old_safe:
+        node_path = os.path.join(board_root, "nodes", f"{new_safe}.json")
+        try:
+            with open(node_path, encoding="utf-8") as f:
+                rec = json.loads(f.read())
+        except (OSError, ValueError):
+            rec = None
+        if isinstance(rec, dict) and _node_record_is_fresh(rec):
+            add("新 node_id が板で使用中",
+                f"board={board_root} new={new_node_id} heartbeat={rec.get('heartbeat')}",
+                "別 PC が同じ名義で稼働している。ホスト名が重複していないか確認し、"
+                "重複するなら一意な node_id を明示指定する")
+    for state_root in state_roots or []:
+        if state_root and os.path.isdir(state_root):
+            _state_root_cutover_findings(state_root, old_safe, add)
+    return findings
+
+
+def node_id_cutover_findings(cfg: "Config", old_node_id: str) -> "list[dict]":
+    """`doctor --node-id-cutover <旧 node_id>` の入口（実装計画 W1-10「doctor に切替前チェック」）。
+
+    検査そのものは `doctor_node_id_cutover_findings` が持つ。ここが足すのは板と amigos バスの
+    場所、そして新名義（このノードのいまの node_id）の解決だけ——どちらも host.yaml が
+    単一ソースなので、人に同じ値を打ち直させない。
+
+    以前はこの検査に呼び出し元が無く、手順書（docs/guides/node-id-cutover.md）が
+    `from agent_project.doctor import …` を案内していた。agent_project の断片は共有名前空間へ
+    exec して合成する前提で、単体 import すると即 NameError になる——手順どおりに叩いても
+    動かない検査だった。"""
+    old = str(old_node_id or "").strip()
+    if not old:
+        return []
+    try:
+        host = load_host_config()
+    except Exception:  # noqa: BLE001 — host.yaml の不備で doctor を落とさない
+        return []
+    board_root = _board_local_root(host.board, host.board_workdir)
+    amigos_root = str(host.amigos_bus or "") or None
+    # プロジェクト状態リポジトリも host.yaml が単一ソース（projects[].root）。この PC が
+    # 抱えている状態は全部見る——1 つでも旧名義の残骸があると切替後に固まる（P0-3）。
+    state_roots = [str(p.get("root") or "").strip()
+                   for p in (getattr(host, "projects", None) or [])
+                   if str(p.get("root") or "").strip()]
+    return doctor_node_id_cutover_findings(board_root, old, host.node_id,
+                                           amigos_bus_root=amigos_root,
+                                           state_roots=state_roots)
+
+
+def _board_local_root(board: str, workdir: "str | None" = None) -> "str | None":
+    """板のローカルディレクトリ。`git+<url>` はクローン済みの作業領域を指す
+    （未クローンなら None＝板の検査は飛ばす。切替チェックのために clone しに行かない）。"""
+    spec = str(board or "").strip()
+    if not spec:
+        return None
+    try:
+        d = BoardRepo(spec, workdir=workdir).dir
+    except Exception:  # noqa: BLE001 — 板の解決失敗は「検査対象なし」に倒す
+        return None
+    return d if os.path.isdir(d) else None
+
+
+def _declared_residency() -> str:
+    """host.yaml が宣言する常駐化方式（設計 §7）。未検出・未宣言は "auto"。
+
+    doctor はプロジェクト単位で動くが常駐化は PC 単位なので、cfg ではなく host.yaml を見る。
+    `load_host_config` は resident_cli フラグメント（doctor より後に exec される）にあるが、
+    名前解決は呼び出し時なので参照して問題ない。host.yaml が無い PC でも doctor は動くため、
+    未定義・読み取り失敗は "auto" に倒す。"""
+    try:
+        return load_host_config().residency
+    except Exception:  # noqa: BLE001 — doctor は host.yaml の不備で落ちない
+        return "auto"
+
+
+def doctor_residency_findings(residency: "str | None" = None) -> "list[dict]":
+    """常駐化（起動系）の構成検査（実装計画 W1-11 残・設計 §7）。要件は 2 つだけ:
+    (a) PC 起動/ログオン時に常駐体が上がる、(b) 死んだら上げ直される。実現方式は
+    systemd user unit（WSL/Linux）と Windows タスクスケジューラの 2 案があり選択式。
+
+    **検査できるのは systemd 側だけ。** Windows タスクスケジューラの構成有無は WSL の
+    外側（schtasks.exe）を要するのでここからは見えず、したがって「両方構成されている」
+    という二重構成の検出もできない。`residency` はどちらを選んだかの宣言
+    （host.yaml の `residency`）で、`windows-task` / `none` なら検査しない——
+    タスクスケジューラ案を正しく構成した PC に「常駐化が未構成」を出し続けると、
+    正しい構成の利用者へ恒久的な誤警告を浴びせることになる。
+
+    systemd が無い環境（この macOS 開発機を含む）でも所見を出さない——本節の要件は
+    フルノード（Windows/WSL 配置）のものであり、非対象環境での「未設定」警告は
+    ノイズにしかならない（doctor は誤検知よりノイズの少なさを優先する）。
+
+    systemd 側の不備も `warn` に留める（未構成を critical にすると、方式を宣言し忘れた
+    PC で運用を止めてしまう）。"""
+    if str(residency or "auto").lower() in ("windows-task", "windows", "none", "manual"):
+        return []   # 検査対象外の方式を明示宣言している（誤警告を出さない）
+    if not os.path.isdir("/run/systemd/system") or not shutil.which("systemctl"):
+        return []   # systemd 非対象環境（このリポジトリの開発機である macOS 含む）
+    unit_path = os.path.expanduser("~/.config/systemd/user/agent-project.service")
+    if not os.path.isfile(unit_path):
+        return [{"category": "config", "severity": "warn", "title": "常駐化が未構成",
+                "evidence": f"{unit_path} が無い（systemd user unit 未生成）",
+                "fix": "bash install.sh --service を実行するか、Windows タスクスケジューラ側の"
+                       "常駐起動を構成する（設計 §7・二重構成はしない）"}]
+    try:
+        enabled = subprocess.run(["systemctl", "--user", "is-enabled", "agent-project.service"],
+                                 capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return []   # systemctl 呼び出し自体に失敗（サンドボックス等）——判定不能として静かに諦める
+    if enabled not in ("enabled", "enabled-runtime", "static"):
+        return [{"category": "config", "severity": "warn", "title": "常駐 unit が未有効化",
+                "evidence": f"systemctl --user is-enabled agent-project.service = {enabled!r}",
+                "fix": "systemctl --user enable --now agent-project.service && "
+                       "loginctl enable-linger $USER"}]
+    return []
+
+
+def _host_project_config_findings(entry: dict, root: "Path", host, name: str,
+                                  add) -> None:
+    """状態ルート直下のプロジェクト yaml と host.yaml の層契約（E1/E2/E7 + 警告）を再掲する。
+
+    判定は起動経路と同じ `configfile.layer_findings` を呼ぶ——doctor 用に別の判定を書くと、
+    「doctor は緑なのに起動が止まる」が起きる。"""
+    try:
+        cfg_path = _project_config_path(None, root)
+        project = _load_config_file(cfg_path) if cfg_path else {}
+    except SystemExit:
+        # PyYAML 不在で yaml 設定を読めない等。doctor は診断コマンドなので落ちない。
+        add("プロジェクト設定を読めない", f"{name}: {root} 直下の設定ファイルが読めません",
+            "PyYAML を入れる（pip install pyyaml）か JSON 設定にする", "critical")
+        return
+    except (OSError, ValueError) as exc:
+        add("プロジェクト設定を読めない", f"{name}: {exc}", "設定ファイルの書式を直す", "critical")
+        return
+    if not isinstance(project, dict):
+        project = {}
+    for f in layer_findings(project, dict(getattr(host, "defaults", None) or {}),
+                            dict(entry.get("overrides") or {}), cfg_path):
+        add(f"{f['id']}: {f['title']}", f"{name}: {', '.join(f['keys'])}",
+            "\n            ".join(line.strip() for line in f["lines"][1:]) or
+            "設定の置き場所を契約どおりに直す",
+            "critical" if f["severity"] == "error" else "warn")
+
+
+def _amigos_node_id_paths() -> "list[Path]":
+    """agent-amigos が採番済みノード ID を置く場所（新ホーム優先。読みは両方）。
+    綴りの検査のためだけに読む——`agent_amigos.daemon._node_id_paths` と同じ 2 か所。"""
+    home = Path(os.path.expanduser("~"))
+    return [home / ".agents" / "amigos" / "node.json",
+            home / ".agent" / "amigos" / "node.json"]
+
+
+def doctor_node_id_spelling_findings(host=None, env=None) -> "list[dict]":
+    """明示宣言された node_id が**正規形でない**ことを知らせる（§6-2 の決着・2026-07-27）。
+
+    決着は「明示値は正規化しない」。名義が変わることは claim・担当・板の応札の宛先が
+    変わることで、それは[切替ガイド](../../../docs/guides/node-id-cutover.md)の手順で人が
+    明示的に行う操作だから、実装が黙って起こさない。
+
+    ただし放置すると同じ PC が板に 2 名義で現れる: 常駐体（agent-project）は宣言を
+    正規形にして使う一方、人が直接叩く agent-flow / agent-amigos は宣言そのままを使う。
+    **書き換えない代わりに検出して切替を促す**のがこの検査で、不変条件（同じ PC からは
+    常に同じ綴り）を人の操作として守れるようにする。
+
+    見るのは「人が書いた宣言」だけ: host.yaml の `node_id`、`AGENT_AMIGOS_NODE`、
+    agent-amigos の `node.json`。未宣言（ホスト名から導く）経路は `default_node_id` が
+    常に正規形を返すので対象外。agent-flow 側の設定値は agent-flow の doctor が見る。"""
+    if host is None:
+        try:
+            host = load_host_config()
+        except Exception:  # noqa: BLE001 — doctor は host.yaml の不備で落ちない
+            host = None
+    env = os.environ if env is None else env
+    declared: "list[tuple[str, str]]" = []
+    raw = getattr(host, "raw", None)
+    if isinstance(raw, dict) and str(raw.get("node_id") or "").strip():
+        declared.append((getattr(host, "path", "") or "agent-project.host.yaml",
+                         str(raw["node_id"]).strip()))
+    if str(env.get("AGENT_AMIGOS_NODE") or "").strip():
+        declared.append(("環境変数 AGENT_AMIGOS_NODE", str(env["AGENT_AMIGOS_NODE"]).strip()))
+    for path in _amigos_node_id_paths():
+        data = _read_json_file(path)
+        if isinstance(data, dict) and str(data.get("id") or "").strip():
+            declared.append((str(path), str(data["id"]).strip()))
+            break                     # 読み手（amigos）も先に見つけた 1 つだけを使う
+    out: "list[dict]" = []
+    for where, value in declared:
+        norm = normalize_node_id(value)
+        if norm == value:
+            continue
+        out.append({
+            "category": "config", "severity": "warn",
+            "title": f"宣言した node_id が正規形ではない: {value}",
+            "evidence": f"{where}: node_id={value}（正規形は {norm}）— 明示値はそのまま"
+                        "使う契約なので、この PC は板に 2 名義で現れます",
+            "fix": f"名義を {norm} へ切り替える（切替手順: "
+                   f"agent-project doctor --node-id-cutover {value}）"})
+    return out
+
+
+def _read_json_file(path: "Path"):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def doctor_host_config_findings(host=None) -> "list[dict]":
+    """host.yaml そのものの綻び（未知キー・型違い・板の語彙外）を doctor にも出す。
+
+    判定は起動時の警告と同じ `resident_cli.host_config_findings` を呼ぶ。ここが繋がって
+    いなかったため「doctor は緑なのに起動時は警告」——同じ判定の結果が場所で食い違う状態
+    ——になっていた（コンセプト正典 C7「判断根拠は 1 か所」。総覧 §7.4 P3-3 は doctor が
+    この関数を呼ぶと記していたが、実際に配線されたのは `layer_findings` だけだった）。
+
+    severity は起動時と同じ強度の **warn**（起動は止まらない）。E への昇格を判断するには
+    「実際に何件・どの内訳の警告が出ているか」を数えられる必要があり、その材料もここで揃う。"""
+    if host is None:
+        try:
+            host = load_host_config()
+        except Exception:  # noqa: BLE001 — doctor は host.yaml の不備で落ちない
+            return []
+    raw = getattr(host, "raw", None)
+    if not isinstance(raw, dict) or not raw:
+        return []                      # host.yaml が無い PC では何も言わない
+    where = getattr(host, "path", "") or "agent-project.host.yaml"
+    out: "list[dict]" = []
+    for line in host_config_findings(raw):
+        # title は所見ごとに変える。`_dedupe_findings` は (category, title) で畳むので、
+        # 同じ題だと全件が 1 件に潰れ、W→E 昇格の判断材料である**内訳**が消える。
+        subject = line.split(":", 1)[0].strip() if ":" in line else line[:40]
+        out.append({"category": "config", "severity": "warn",
+                    "title": f"host.yaml の宣言が読まれていません: {subject}",
+                    "evidence": f"{where}: {line}",
+                    "fix": "host.yaml を宣言どおりの置き場・型に直す"
+                           "（起動時にも同じ警告が出ます）"})
+    return out
+
+
+def structure_counts() -> dict:
+    """断片合成と CLI 入口の対応を数える（W15・純関数）。
+
+    返り値は {"fragments", "unlisted"（_FRAGMENTS に無い .py）, "missing"（列挙にあるのに
+    ファイルが無い）, "commands"（cli の dispatch 名）, "unrouted"（add_parser したのに
+    `_subcommands` に無い＝serve に飲まれる名前）}。断片は単体 import できない合成方式なので、
+    外から呼ぶ機能は CLI 入口を持つ以外に届かせる道が無い——「入口が無いまま実装だけある」
+    （node-id-cutover の実例）を検出できる唯一の材料がこの対応表。"""
+    pkg = Path(__file__).resolve().parent
+    listed = list(_FRAGMENTS)
+    on_disk = {p.stem for p in pkg.glob("*.py")} - {"__init__", "__main__"}
+    src = (pkg / "cli.py").read_text(encoding="utf-8")
+    # トップレベルの `sub.add_parser` だけを数える（`wksub.add_parser` のような
+    # サブサブコマンドは _subcommands に載らないのが正しい＝誤検知の元）。
+    parsers = set(re.findall(r'\bsub\.add_parser\(\s*"([a-z0-9-]+)"', src))
+    routed = set(re.findall(r'"([a-z0-9-]+)"', re.search(
+        r"_subcommands\s*=\s*\{(.*?)\}", src, flags=re.S).group(1))) if re.search(
+        r"_subcommands\s*=\s*\{(.*?)\}", src, flags=re.S) else set()
+    return {"fragments": len(listed),
+            "unlisted": sorted(on_disk - set(listed)),
+            "missing": sorted(n for n in listed if not (pkg / f"{n}.py").is_file()),
+            "commands": sorted(parsers),
+            "unrouted": sorted(parsers - routed)}
+
+
+def doctor_structure_findings() -> "list[dict]":
+    """構造の綻び（到達不能な断片・CLI 入口を持たないサブコマンド宣言）を所見にする（W15）。
+    起動は止めない warn。所見は既存パイプ（engine/status.json の横断エラー → dashboard）に載る。"""
+    c = structure_counts()
+    out: "list[dict]" = []
+    for name in c["unlisted"]:
+        out.append({"category": "program", "severity": "warn",
+                    "title": f"到達不能な断片: {name}.py",
+                    "evidence": f"agent_project/{name}.py は _FRAGMENTS に無く一度も exec されない",
+                    "fix": "__init__.py の _FRAGMENTS へ依存順で足すか、ファイルを消す"})
+    for name in c["missing"]:
+        out.append({"category": "program", "severity": "critical",
+                    "title": f"断片の実体がありません: {name}.py",
+                    "evidence": f"_FRAGMENTS が {name} を列挙しているが agent_project/{name}.py が無い",
+                    "fix": "ファイルを復元するか _FRAGMENTS から外す"})
+    for name in c["unrouted"]:
+        out.append({"category": "program", "severity": "warn",
+                    "title": f"CLI 入口が繋がっていません: {name}",
+                    "evidence": f"cli.py が `{name}` を add_parser しているが _subcommands に無い"
+                                "（サブコマンド無し＝serve の既定に飲まれる）",
+                    "fix": "cli.py の _subcommands へ同じ名前を足す"})
+    return out
+
+
+def doctor_host_projects_findings(host=None) -> "list[dict]":
+    """host.yaml の `projects[]` が**起動できる形か**を起動前に検査する（S1 設計 §3.6）。
+
+    ここが無いと、`root` の綴り間違い・origin の取り違え・層契約違反は「子の起動失敗 →
+    隔離表示」という最も遠い症状でしか観測できない（常駐体は子を exec するだけで、
+    止まった理由は子の stderr に出て親のログには要約しか残らない）。検査の中身は
+    起動経路（`_resolve_state_root` / `_ensure_state_clone` / `_validate_layers`）が
+    fail-fast する条件の再掲で、**判定は同じ関数を呼ぶ**（二重実装しない）。
+
+    プロジェクトを 1 つも宣言していない PC（ワーカーノード）では空を返す。host.yaml が
+    無い・読めない環境でも doctor は走り切る（residency 検査と同じ流儀）。"""
+    if host is None:
+        try:
+            host = load_host_config()
+        except Exception:  # noqa: BLE001 — doctor は host.yaml の不備で落ちない
+            return []
+    out: "list[dict]" = []
+
+    def add(title: str, evidence: str, fix: str, severity: str = "critical") -> None:
+        out.append({"category": "config", "severity": severity, "title": title,
+                    "evidence": evidence, "fix": fix})
+
+    for entry in getattr(host, "projects", None) or []:
+        if not isinstance(entry, dict):
+            continue
+        name = _project_name(entry) or "(名前なし)"
+        state_repo = str(entry.get("state_repo") or "").strip()
+        branch = str(entry.get("branch") or "").strip() or "main"
+        if entry.get("config"):
+            add("E6: projects[].config は廃止", f"{name}: config={entry['config']}",
+                "設定は状態リポジトリ直下の agent-project.yaml へ移す")
+        raw = str(entry.get("root") or "").strip()
+        if not raw:
+            add("projects[].root が未宣言", f"{name}: root がありません",
+                "状態リポジトリの clone 先を絶対パスで宣言する"
+                "（常駐体の子は cwd を当てにできない）")
+            continue
+        root = Path(raw).expanduser()
+        if not root.is_absolute():
+            add("projects[].root が相対パス", f"{name}: root={raw}",
+                "絶対パスで宣言する（起動元の cwd で clone 先が変わる）", "warn")
+            root = (Path.cwd() / root)
+        root = root.resolve()
+        if not root.exists():
+            if not state_repo:
+                add("宣言された root がありません", f"{name}: {root} が存在しません",
+                    "パスの綴りを直すか、projects[].state_repo を宣言して自動 clone させる")
+            continue                    # state_repo 宣言済み＝起動時に clone される（正常）
+        if not root.is_dir():
+            add("root がディレクトリではありません", f"{name}: {root}",
+                "root には状態リポジトリの clone 先ディレクトリを宣言する")
+            continue
+        top = _git_toplevel_of(root)
+        if top is None:
+            if state_repo and not _looks_like_fresh_root(root):
+                add("E4: root が git リポジトリでない", f"{name}: {root}",
+                    "空のディレクトリを root にするか、その場所を退避してから clone させる")
+        elif _norm_path_key(top) != _norm_path_key(root):
+            add("root が別リポジトリの内側", f"{name}: {root} は {top} の内側です",
+                "状態ルートは状態専用リポジトリの clone（そのトップレベル）にする")
+        else:
+            origin = _git_line(root, "remote", "get-url", "origin") or ""
+            if state_repo and origin and not _same_git_remote(origin, state_repo):
+                add("E3: root の origin が宣言と違う",
+                    f"{name}: 宣言 {state_repo} / 実際 {origin}",
+                    "root を退避するか、state_repo / root の宣言を直す"
+                    "（worktree への暗黙フォールバックは廃止）")
+            elif state_repo and not origin:
+                add("root に origin が無い", f"{name}: {root}",
+                    "状態リポジトリを clone し直す（このままでは他の PC と共有されない）",
+                    "warn")
+            # E5 の判定は起動経路と同じ条件でだけ行う（`_check_adhoc_state_root` は
+            # state_repo 未宣言のときにしか走らない）。宣言があるときは origin の一致が
+            # 根拠になるので、マーカーの有無で critical を出すと「状態ファイルがまだ 1 つも
+            # 無い正しい clone」を誤って弾く。
+            if not state_repo and not _state_root_markers(root) \
+                    and not _looks_like_fresh_root(root):
+                add("E5: root が状態ルートに見えない",
+                    f"{name}: {root} に状態マーカー（backlog/ charter.md 等）がありません",
+                    "成果物リポジトリを登録していないか確認する"
+                    "（登録するのは状態専用リポジトリの clone）")
+            head = _git_line(root, "rev-parse", "--abbrev-ref", "HEAD") or ""
+            if head and head != "HEAD" and head != branch:
+                add("チェックアウトが宣言ブランチと違う",
+                    f"{name}: 宣言 {branch} / 実際 {head}",
+                    f"git -C {root} switch {branch}（同期は宣言ブランチへ行う）", "warn")
+        _host_project_config_findings(entry, root, host, name, add)
+    return out
+
+
+def _node_record_is_fresh(rec: dict) -> bool:
+    """板の `nodes/<id>.json` が「今も生きているノード」を指すか（board.schema.json の
+    heartbeat + fresh_after_sec 流儀）。heartbeat を持たない登録は生死を判定できないので
+    生存扱いにする——切替前チェックは見落とし（誤って許可）より過検知に倒す。"""
+    stamp = str(rec.get("heartbeat") or "").strip()
+    if not stamp:
+        return True
+    try:
+        seen = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    fresh = float(rec.get("fresh_after_sec", 120.0) or 120.0)
+    age = (datetime.now(timezone.utc) - seen.astimezone(timezone.utc)).total_seconds()
+    return age <= fresh
+
+
 def doctor_audit_findings(cfg: "Config") -> "list[dict]":
     """compute_audit の未達チェックを config カテゴリの finding に変換（決定的）。"""
     a = compute_audit(cfg)
@@ -257,31 +792,6 @@ def doctor_audit_findings(cfg: "Config") -> "list[dict]":
             f["fix"] = f"未達を解消する: {c['label']}"
         out.append(f)
     return out
-
-
-def doctor_flow_bus_coverage_findings(cfg: "Config") -> "list[dict]":
-    """このプロジェクトのバスに稼働中の agent-flow daemon がいるかを確認し、不在を warn にする
-    （未担当だと run が local 実行に落ち、夜間停止からの自動再開・gitlab 長期委譲の継続が効かない）。
-    manage_flow_daemon が on なら agent-project が自動起動するので通常は満たされ、
-    起動失敗や off での起動忘れのときに気づける。鏡写しの落とし先があるバスだけ確認する。"""
-    # 対象は「root 配下のバス（agent-project の state 同期が鏡写しする）」か
-    # 「root 外でも鏡写しの落とし先があるバス」。どちらでもなければ確認しない。
-    if not _bus_inside_state(cfg) and project_flow_remote(cfg) is None:
-        return []
-    managed = bool(getattr(cfg, "manage_flow_daemon", False))
-    if daemon_running(cfg, use_git=False):
-        return []
-    fix = ("manage_flow_daemon: true を設定（agent-project が自動起動）"
-           if not managed else
-           f"起動失敗の可能性。手動確認: agent-flow --bus {cfg.bus} daemon"
-           "（バスが root 配下なら state-git は不要＝agent-project が鏡写しする）")
-    return [{
-        "category": "config", "severity": "warn",
-        "title": "agent-flow daemon 不在",
-        "evidence": f"{cfg.bus} を担当する agent-flow daemon が見つかりません"
-                    "（run が local 実行に落ち、夜間停止からの自動再開・gitlab 長期委譲の継続が効きません）",
-        "fix": fix,
-    }]
 
 
 def _hook_misconfig_findings(cfg: "Config") -> "list[dict]":
@@ -533,13 +1043,22 @@ def collect_flow_findings(cfg: "Config", fix: bool, runner=None) -> "list[dict]"
 
 
 def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
-               agent_run=None, skill_finder=find_skill, flow_finder=collect_flow_findings) -> int:
+               agent_run=None, skill_finder=find_skill, flow_finder=collect_flow_findings,
+               cutover_from: "str | None" = None) -> int:
     """稼働を診断し env/config を（--fix で）修正、program は gitlab-idd で起票する。
     実行層 agent-flow の doctor も連携実行し findings を統合する（cfg.with_flow 時）。
+    `cutover_from` を渡すと node_id 切替の事前チェックも足す（`--node-id-cutover`）。
     終了コード: 0=健康 / 1=未解決の所見あり / 2=未解決の critical あり。"""
     # 決定的所見は ensure_dirs より前に集める（create-dirs 所見を消さないため）
-    deterministic = (doctor_env_findings(cfg) + doctor_audit_findings(cfg)
-                     + doctor_flow_bus_coverage_findings(cfg) + doctor_wiring_findings(cfg))
+    deterministic = (doctor_env_findings(cfg) + doctor_coordination_findings(cfg)
+                     + doctor_audit_findings(cfg)
+                     + doctor_wiring_findings(cfg)
+                     + doctor_residency_findings(_declared_residency())
+                     + doctor_host_config_findings()
+                     + doctor_structure_findings()
+                     + doctor_node_id_spelling_findings()
+                     + doctor_host_projects_findings()
+                     + node_id_cutover_findings(cfg, cutover_from or ""))
     for f in deterministic:
         f["source"] = "check"
     signals = collect_doctor_signals(cfg)
@@ -558,8 +1077,17 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
                     applied.append((f, msg))
         # 適用後に決定的チェックを取り直し、もう再現しない所見は『修正により解消』として畳む
         # （例: create-dirs は複数の監査未達を一度に解消する）。
+        # 取り直す集合は上の deterministic と同じ構成にする。片方だけに載っている検査は
+        # 「再現しなかった」と読まれて『修正により解消』に畳まれる（切替チェックは --fix で
+        # 直せる類ではないので、黙って消えると人は解決したと誤解する）。
         still = {(g["category"], re.sub(r"\s+", " ", g.get("title", "").lower()).strip())
-                 for g in doctor_env_findings(cfg) + doctor_audit_findings(cfg)}
+                 for g in doctor_env_findings(cfg) + doctor_coordination_findings(cfg)
+                 + doctor_audit_findings(cfg) + doctor_residency_findings(_declared_residency())
+                 + doctor_host_config_findings()
+                 + doctor_structure_findings()
+                 + doctor_node_id_spelling_findings()
+                 + doctor_host_projects_findings()
+                 + node_id_cutover_findings(cfg, cutover_from or "")}
         for f in findings:
             if f.get("source") == "check" and not f.get("resolved"):
                 key = (f["category"], re.sub(r"\s+", " ", f.get("title", "").lower()).strip())
@@ -744,6 +1272,7 @@ def cmd_enqueue(cfg: Config, args) -> int:
                   "accept": args.accept, "verify_template": args.verify_template,
                   "repos": _coerce_repos(getattr(args, "repos", None)),
                   "cohort_items": _coerce_repos(getattr(args, "cohort_items", None)),
+                  "acceptance": getattr(args, "acceptance", None),
                   **{k: getattr(args, k, None) for k in TASK_GUIDE_KEYS}}]
     created = []
     for sp in specs:
@@ -751,10 +1280,14 @@ def cmd_enqueue(cfg: Config, args) -> int:
             print(f"enqueue 失敗: オブジェクトでない要素: {sp!r}", file=sys.stderr)
             return 2
         try:
-            created.append(enqueue_task(cfg, sp))
+            t, msg = enqueue_reconciled(cfg, sp)   # 整合パス（重複照合・charter 帰属・墓標）
         except ValueError as e:
             print(f"enqueue 失敗: {e}", file=sys.stderr)
             return 2
+        if t is None:
+            print(f"enqueue 見送り: {msg}", file=sys.stderr)
+            continue
+        created.append(t)
     for t in created:
         recalled = apply_intake_recall(cfg, t)   # 過去の hold に類似すれば実行前に人の判断へ
         if recalled:
@@ -786,7 +1319,8 @@ def cmd_triage(cfg: Config) -> int:
     for t in tasks:
         persist_task(cfg, t)
     recover_stale_doing(cfg, tasks)             # 実行者が失踪した doing を ready へ戻す
-    ensure_needs(cfg, tasks)                    # 判断待ち（proposed/blocked/review）の票を status から整合
+    reconcile_needs(cfg, tasks)                 # 判断待ち（proposed/blocked/review）の票を status から整合
+    #                                             （作る＝ensure／消す＝対応タスクを失った票の掃除）
     order = prioritize(tasks, policy, cfg.planner, cfg.model)
     print("優先順位（消化対象）:")
     for i, t in enumerate(order, 1):
@@ -829,55 +1363,69 @@ def _run_single(cfg: Config) -> int:
 
 
 def cmd_run(cfg: Config) -> int:
+    _DRAIN_REQUESTED.clear()
     # 起動時に死んだインスタンスのゴミレコードを掃除する。前回の異常終了（kill -9 / クラッシュ /
     # マシン再起動）では finally が走らず *.json が残るため、自分を register する前に一掃して
     # instances の発見ノイズと start の偽の重複検出を防ぐ（prune は自ホストの死レコードを即削除）。
-    live = list_instances(prune=True, extra=cfg.registry)
     # 同じプロジェクトを二重に監視させない。start は弾いていたが `run --watch` の直叩きは
     # 素通りで、同じ backlog を 2 つのループが奪い合う（同じタスクを二重実行し、状態ファイルと
     # 決定記録を互いに上書きする）。start は自分を register する前にここを通るので自分自身を
     # 重複とは見ない。--force は start から伝搬する。
+    watch_lock = None
     if cfg.watch and not cfg.force:
-        me = socket.gethostname()
-        mine = str((cfg.source_root or cfg.backlog.parent).resolve())
-        dup = [r for r in live
-               if str(r.get("root", "")) == mine and str(r.get("host", "")) == me
-               and r.get("watch")]
-        if dup:
-            print(f"既に root={mine} を監視中です（pid={dup[0].get('pid')}）。"
-                  f"重複起動は --force、再起動は restart を使ってください。", file=sys.stderr)
+        # 同じ backlog を 2 ループが奪い合うと、同じタスクを二重実行して状態ファイルと
+        # 決定記録を互いに上書きする。判定は OS の排他ロック——以前の「レジストリの心拍が
+        # 新しいレコードがあるか」は推定なので、心拍 ttl が長い LLM 実行中に切れる窓で
+        # 二重起動が通っていた（実装計画 W1-9）。
+        watch_lock = acquire_watch_lock(cfg)
+        if watch_lock is None:
+            mine = str(cfg.backlog.parent.resolve())
+            holder = watch_lock_holder(cfg)
+            print(f"既に root={mine} を監視中です"
+                  + (f"（pid={holder}）" if holder else "")
+                  + "。重複起動は --force を使ってください。", file=sys.stderr)
             return 1
     ensure_dirs(cfg)
     # 前世代の agent-flow（クラッシュ・電源断で stop を通らず居残ったもの）を刈る。ここを通らないと
     # 残った orchestrator がリースを更新し続け、この後の run_id_for が「まだ実行中」と読んで
     # **続きから再開せず新しい run を作り**、同じタスクを二重実行する（reap_orphan_flow 参照）。
-    # manage_flow_daemon=on なら daemon も含めて刈り（ensure_flow_daemon が立て直す）。
-    # 既定 off では外部 daemon を残し、orch/worker/都度 run だけ刈る。
     reaped = reap_orphan_flow(cfg)
     if reaped:
         append_journal(cfg.journal,
                        f"前世代の agent-flow を {reaped} プロセス停止（クラッシュの残骸）。"
                        f"run のリースを失効させ、続きから再開できる状態に戻した")
-    reg = register_instance(cfg, cfg.registry)   # ローカル＋共有レジストリへ登録（リモート発見）
-    hb = lambda: refresh_instance(reg)
-    # watch はタスク実行中（エージェント CLI・agent-flow run）に数分〜数十分ブロックする。
-    # パス境界の hb だけでは心拍が TTL 切れし、外からは停止したように見えるため、実行中も
-    # 打ち続ける別スレッドを立てる（単発 run は即終わるので不要）。
-    hb_stop = _start_heartbeat_thread(cfg, reg) if cfg.watch else None
+    # インスタンスレジストリ（自己申告 + 心拍）は廃止した（実装計画 W1-9）。稼働の可視化は
+    # 常駐体が書く `engine/status.json` の children[].alive（親が Popen で見た実測）へ移り、
+    # 二重監視の防止は OS の排他ロック（acquire_watch_lock）へ移った——どちらも心拍窓を
+    # 持たないので、長い作業中に窓が切れて「停止中」に見える問題が構造的に消える。
+    controller_stop = None
+    availability_stop = None
     try:
+        if cfg.watch:
+            # stop の SIGTERM / drain を graceful 停止へ変換する。**下の 2 行より前**に置く
+            # ——`state_sync` は git 越しで数秒かかりえ、`start_controller_heartbeat` は
+            # controller lease を**取得する**。ここが後ろだと、その窓で SIGTERM を受けた子が
+            # lease を握ったまま finally を通らずに死に、次の子が lease 失効まで
+            # （既定 120 秒）昇格できない。親（serve）の再起動は子へ SIGTERM を送るので、
+            # `systemctl restart` のたびに踏みうる（P0-1・親側と同型の窓）。
+            _install_sigterm(cfg)
         # （再）起動直後は駆動より先にリモート状態を取り込む（停止中に viewer が push した
         # charter 更新/指示/フィードバックを、初回パスが古いローカル状態で読まないように）。
         state_sync(cfg)
-        ensure_flow_daemon(cfg, cfg.flow_max_workers)   # 実行層 daemon の確保（opt-in・冪等）
+        if _coordination_active(cfg):
+            controller_stop = start_controller_heartbeat(cfg)
         if cfg.watch:
-            _install_sigterm()                   # stop の SIGTERM を KeyboardInterrupt 化（graceful 停止）
+            if getattr(cfg, "availability", None):
+                availability_stop = start_availability_monitor(cfg)
             # マスター憲章のみ（バージョン未作成）も project_watch へ: バージョン
             # （charters/<name>.md）が置かれた瞬間に charter 駆動へ入れる（run_watch は
             # charter の追加を監視しないため、ここで振り分けを間違えると気づけない）。
-            if charter_names(cfg) or _has_master_charter(cfg):
-                project_watch(cfg, heartbeat=hb)  # 目標を満たすまで回り続ける常駐（全 charter）
+            if _coordination_active(cfg):
+                run_watch(cfg)      # role は各パスで lease から決め、停止後も自動昇格する
+            elif charter_names(cfg) or _has_master_charter(cfg):
+                project_watch(cfg)  # 目標を満たすまで回り続ける常駐（全 charter）
             else:
-                run_watch(cfg, heartbeat=hb)      # backlog 監視の常駐
+                run_watch(cfg)      # backlog 監視の常駐
             return 0
         return _run_single(cfg)
     except (KeyboardInterrupt, _StopRequested):
@@ -889,22 +1437,26 @@ def cmd_run(cfg: Config) -> int:
         # 自己更新を適用済み。finally でレジストリを掃除してから新しい本体へ exec する。
         print("\n=== agent-project 自己更新を適用。graceful 再起動します ===")
     finally:
-        if hb_stop is not None:
-            hb_stop.set()          # レジストリを消す前に心拍を止める（無駄打ちを避ける）
-        for p in reg:
-            try:
-                p.unlink()
-            except OSError:
-                pass
+        if controller_stop is not None:
+            controller_stop.set()
+        if availability_stop is not None:
+            availability_stop.set()
+        if _coordination_active(cfg):
+            release_controller_lease(cfg)
+        # 監視ロックは最後に解放する。flock は fd に紐づくので、下の execv 再起動より
+        # 前に手放さないと、再起動後の自分自身が「既に監視中」と判定して起動できない。
+        release_watch_lock(watch_lock)
     # _RestartRequested 経由でここに到達（return 済みの正常/停止系は通らない）。後始末後に再起動。
     restart_self(_START_CWD)
     return 0
 
 
-def _install_sigterm() -> None:
+def _install_sigterm(cfg: "Config | None" = None) -> None:
     """stop からの SIGTERM を KeyboardInterrupt 化して finally で後始末させる（watch 常駐用）。"""
     try:
         signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+        if cfg is not None and hasattr(signal, "SIGUSR1"):
+            signal.signal(signal.SIGUSR1, lambda *_: request_drain(cfg))
     except (ValueError, OSError):  # メインスレッド以外/未対応では無視
         pass
 

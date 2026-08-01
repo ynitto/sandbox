@@ -108,7 +108,7 @@ def _clone_repo(url: str, base: str, dest: str) -> str:
             if os.path.exists(dest):              # 失敗の残骸を消してからフォールバック／再試行
                 shutil.rmtree(dest, ignore_errors=True)
         if i < CLONE_RETRIES - 1:
-            time.sleep(2 ** i if i < 4 else 16)   # バックオフして再試行
+            backoff_sleep(2 ** i if i < 4 else 16)   # バックオフして再試行
     return ""
 
 
@@ -151,15 +151,67 @@ def ensure_workspace_clone(spec: "dict | None", run_id: str) -> "dict | None":
         n += 1
     base = spec.get("base") or ""
     # 作業起点の優先順: 既存の run ブランチ → base → 既定（detached worktree で作り、push 時に作業ブランチ化）。
-    # repos に local（手元の同じリポジトリのクローン）があれば、そこから worktree を切る。
-    # 目の前に同じリポジトリがあるのに毎回ネットワーク越しにミラーを取り直すのは無駄で、
-    # オフラインでも動かない。local の作業ツリー・index には触らない（別 worktree なので）。
-    path = provision_tree(spec["url"], [branch, base], dest,
-                          local=str(spec.get("local") or "")) or ""
+    # local（手元の同じリポジトリのクローン）があれば、そこから worktree を切る。目の前に同じ
+    # リポジトリがあるのに毎回ネットワーク越しにミラーを取り直すのは無駄で、オフラインでも
+    # 動かない。local の作業ツリー・index には触らない（別 worktree なので）。
+    #
+    # spec に載っていなければ **このノードの host.yaml `repos[]` から解決する**（S3）。
+    # 依頼元（agent-project / 板）が載せてこない経路——板の公示・古い形の run——でも、
+    # 手元にクローンがあるノードではそれを使えるようにする。
+    local = str((_repolocal.merge_local(spec) or spec).get("local") or "")
+    path = provision_tree(spec["url"], [branch, base], dest, local=local) or ""
     if path:
         _prepare_run_branch(path, branch, base)
     _workspace_clone[key] = path
     return {**spec, "clone": path, "branch": branch}
+
+
+def sync_workspace_base(ws: "dict | None") -> dict:
+    """明示作業ブランチへ最新 target を通常 merge する。競合は worktree に残して返す。"""
+    if not ws or not ws.get("clone") or not ws.get("target"):
+        return {"status": "noop", "conflict_files": []}
+    clone, target = str(ws["clone"]), str(ws["target"])
+    fetched = _ws_git(clone, "fetch", "--quiet", "origin", target)
+    if fetched.returncode != 0:
+        raise RuntimeError(f"target {target} の fetch に失敗しました: "
+                           f"{(fetched.stderr or fetched.stdout).strip()[:300]}")
+    target_rev = _ws_git(clone, "rev-parse", "FETCH_HEAD").stdout.strip()
+    if not target_rev:
+        raise RuntimeError(f"target {target} の revision を解決できません")
+    ws["target_rev"] = target_rev
+    if _ws_git(clone, "merge-base", "--is-ancestor", target_rev, "HEAD").returncode == 0:
+        return {"status": "noop", "target": target, "target_rev": target_rev,
+                "conflict_files": []}
+    merged = _ws_git(clone, "merge", "--no-commit", "--no-ff", target_rev)
+    conflicts = [p for p in _ws_git(
+        clone, "diff", "--name-only", "--diff-filter=U").stdout.splitlines() if p]
+    if conflicts:
+        return {"status": "conflict", "target": target, "target_rev": target_rev,
+                "conflict_files": sorted(conflicts)}
+    if merged.returncode != 0:
+        raise RuntimeError(f"target {target} の merge に失敗しました: "
+                           f"{(merged.stderr or merged.stdout).strip()[:300]}")
+    return {"status": "merged", "target": target, "target_rev": target_rev,
+            "conflict_files": []}
+
+
+def inject_base_sync(nodes: dict, workspace: "dict | None") -> "dict | None":
+    """書込ブランチと target が異なる graph の root 前へ system node を差し込む。"""
+    if not workspace:
+        return None
+    branch, target = str(workspace.get("branch") or ""), str(workspace.get("target") or "")
+    if not workspace.get("url") or not branch or not target or branch == target:
+        return None
+    nid = "base-sync"
+    if nid in nodes:
+        return None
+    roots = [node for node in nodes.values() if not node.get("deps")]
+    task = {"id": nid, "kind": "base-sync", "deps": [],
+            "goal": f"最新 {target} を {branch} へ統合し、競合があれば解消する"}
+    nodes[nid] = _node_entry(task)
+    for node in roots:
+        node["deps"] = [nid]
+    return task
 
 
 def finalize_workspace(ws: "dict | None", run_id: str, node_id: str) -> "dict | None":
@@ -172,7 +224,15 @@ def finalize_workspace(ws: "dict | None", run_id: str, node_id: str) -> "dict | 
     if not clone or not os.path.isdir(clone):
         return None
     _ws_git(clone, "add", "-A")
-    if _ws_git(clone, "diff", "--cached", "--quiet").returncode == 0:
+    unmerged = _ws_git(clone, "diff", "--name-only", "--diff-filter=U").stdout.strip()
+    if unmerged:
+        raise RuntimeError(f"未解決の競合があります: {unmerged[:300]}")
+    checked = _ws_git(clone, "diff", "--cached", "--check")
+    if checked.returncode != 0:
+        raise RuntimeError(f"競合マーカーまたは不正な差分が残っています: "
+                           f"{(checked.stderr or checked.stdout).strip()[:300]}")
+    merging = _ws_git(clone, "rev-parse", "-q", "--verify", "MERGE_HEAD").returncode == 0
+    if not merging and _ws_git(clone, "diff", "--cached", "--quiet").returncode == 0:
         return None                               # 変更なし → commit/push しない
     c = _ws_git(clone, "commit", "-m", f"[agent-flow] {node_id} ({run_id})")
     if c.returncode != 0:
@@ -180,6 +240,9 @@ def finalize_workspace(ws: "dict | None", run_id: str, node_id: str) -> "dict | 
         # エージェントの編集を含まない古い HEAD が push され「変更が入ったつもりの
         # delivery」で done になる（サイレントなデータ喪失）。ここで明示的に失敗させる。
         raise RuntimeError(f"workspace commit が失敗しました: {(c.stderr or c.stdout).strip()[:300]}")
+    target_rev = str(ws.get("target_rev") or "")
+    if target_rev and _ws_git(clone, "merge-base", "--is-ancestor", target_rev, "HEAD").returncode != 0:
+        raise RuntimeError("merge commit に検証対象 target が含まれていません")
     for i in range(5):
         # detached HEAD のまま作業ブランチへ push（ローカルでブランチを checkout しない）。
         if _ws_git(clone, "push", "origin", f"HEAD:refs/heads/{branch}").returncode == 0:
@@ -196,7 +259,7 @@ def finalize_workspace(ws: "dict | None", run_id: str, node_id: str) -> "dict | 
             _ws_git(clone, "rebase", "--abort")
             raise RuntimeError(
                 f"workspace rebase が競合しました（{branch}）: {(rb.stderr or rb.stdout).strip()[:300]}")
-        time.sleep(2 ** i if i < 4 else 16)
+        backoff_sleep(2 ** i if i < 4 else 16)
     raise RuntimeError(f"workspace push が {branch} へ反映できませんでした")
 
 
@@ -296,4 +359,3 @@ class Heartbeat(threading.Thread):
     def stop(self) -> None:
         self._stopped.set()
         self.join(timeout=5)
-

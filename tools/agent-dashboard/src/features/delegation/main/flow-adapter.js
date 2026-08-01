@@ -14,7 +14,8 @@ const path = require('path');
 
 const flow = require('../../agent-project/main/flow');
 
-const TERMINAL = new Set(['done', 'failed', 'canceled']);
+// 終端集合と「人が中止した」判定は flow.js の 1 定義を使う（複製すると語彙統一のたびにずれる）。
+const { TERMINAL, isCancelled } = flow;
 
 function nowIso() {
   return new Date().toISOString().replace(/\.\d+Z$/, 'Z');
@@ -82,7 +83,7 @@ function toView(run) {
   const st = String(run.status || 'unknown');
   const terminal = TERMINAL.has(st);
   let phase;
-  if (st === 'canceled') phase = 'cancelled';
+  if (isCancelled(st)) phase = 'cancelled';
   else if (st === 'done') phase = 'done';
   else if (st === 'failed') phase = 'failed';
   else phase = 'working';

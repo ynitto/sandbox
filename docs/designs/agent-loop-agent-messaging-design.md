@@ -87,7 +87,7 @@ inbox_poll_seconds: 5      # ← 新規
   "created_at": 1716460000.0,
   "subject": "feature X の実装依頼",
   "body": "src/feature_x.py を実装してください。\n仕様: ...",
-  "reply_to": "orchestrator",
+  "reply_to": "9f8e7d6c5b4a3928",
   "correlation_id": "conv-2026-05-23-001",
   "cwd": "/home/user/projects/myapp"
 }
@@ -101,11 +101,15 @@ inbox_poll_seconds: 5      # ← 新規
 | `created_at` | float | ✅ | 作成日時（Unix timestamp） |
 | `subject` | str | — | 件名（短いタスク説明） |
 | `body` | str | ✅ | メッセージ本文（kiro-cli へ渡すプロンプトのベース） |
-| `reply_to` | str | — | 返信先エージェント名（省略時は `from` と同じ） |
+| `reply_to` | str | — | 返信元メッセージ ID（`--reply-to` 未指定時はキー自体を省略） |
 | `correlation_id` | str | — | 会話スレッド追跡 ID |
 | `cwd` | str | — | 送信元の作業ディレクトリ |
 
----
+> `reply_to` はメッセージ ID を保持するフィールドとして統一されている。返信先エージェント名は
+> 別フィールドの `from`（送信元エージェント名）を使う。スレッド追跡に使えるのは ID のみのため。
+> 実装（`tools/agent-loop/agent_loop/sendcmd.py`）は `--reply-to` 指定時のみ `reply_to` に
+> メッセージ ID を格納し、未指定時はキーを `null` にする（エージェント名へのフォールバックは
+> しない）。受信側（`inbox.py`）のプロンプト整形は `from` を使って返信コマンドを組み立てる。
 
 ## 5. 新規コンポーネント
 

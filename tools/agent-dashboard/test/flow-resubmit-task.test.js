@@ -3,9 +3,9 @@
 // flow 画面の「やり直す」が、agent-project 配下の run では **タスクの積み直し** になること。
 // 追加依存なしで `node test/flow-resubmit-task.test.js` で走る。
 //
-// 背景: 以前は bus/inbox に新しい run を投入していた。しかし inbox は agent-flow の daemon が
-// 拾う契約で、agent-project は daemon を使わず run を都度起動する（manage_flow_daemon の既定は
-// false）。そのため誰も拾わず「押しても何も起きないボタン」になっていた。さらに inbox 投入は
+// 背景: 以前は bus/inbox に新しい run を投入していた。しかし inbox は板から受けた委譲を拾う
+// 契約で、agent-project 自身は run を都度起動する。そのため誰も拾わず「押しても何も起きない
+// ボタン」になっていた。さらに inbox 投入は
 // agent-project のタスク状態に触らないので、仮に走っても結果が settle されずタスクは doing の
 // まま取り残される。タスクを ready へ戻せば、本体が新しい run を起こし結果も回収する。
 

@@ -549,15 +549,29 @@ const AMIGOS_ROLES_SAMPLE = JSON.stringify(
   2
 );
 
+function selectedAmigosPostMode() {
+  const checked = document.querySelector('input[name="amigos-post-mode"]:checked');
+  return checked ? checked.value : 'team-building';
+}
+
+// モードに応じて「担当チームの設定（役割指定）」と「チームビルディングの案内」を出し分ける。
+function applyAmigosPostMode() {
+  const mode = selectedAmigosPostMode();
+  const rolesBox = $('amigos-post-roles-details');
+  const hint = $('amigos-buildteam-hint');
+  if (rolesBox) rolesBox.hidden = mode !== 'roles';
+  if (hint) hint.hidden = mode !== 'team-building';
+}
+
 function openAmigosRequestDialog() {
   const dlg = $('dlg-amigos-post');
   if (!dlg) return;
   const homes = amigosForProject(state.amigos, selectedProjectFolder()).homes || [];
-  const sel = $('amigos-post-home');
-  sel.innerHTML = homes
-    .map((h, index) => `<option value="${esc(h.dir)}">${esc(coworkRepoLabel(h.dir) || `実行先 ${index + 1}`)}</option>`)
-    .join('');
+  const home = homes[0];
+  $('amigos-post-home').value = home?.dir || '';
+  $('amigos-post-home-label').textContent = home ? (coworkRepoLabel(home.dir) || '現在のチーム') : '未設定';
   if (!$('amigos-post-roles').value.trim()) $('amigos-post-roles').value = AMIGOS_ROLES_SAMPLE;
+  applyAmigosPostMode();
   dlg.showModal();
 }
 
@@ -590,8 +604,35 @@ function setupAmigosDialogs() {
   if (!dlg) return;
   $('btn-amigos-post-cancel').addEventListener('click', () => dlg.close());
   $('btn-amigos-detail-close').addEventListener('click', () => $('dlg-amigos-detail').close());
+  document.querySelectorAll('input[name="amigos-post-mode"]').forEach((el) => {
+    el.addEventListener('change', applyAmigosPostMode);
+  });
   dlg.addEventListener('submit', (ev) => {
     ev.preventDefault();
+    const mode = selectedAmigosPostMode();
+    const common = {
+      home: $('amigos-post-home').value,
+      title: $('amigos-post-title').value.trim(),
+      goal: $('amigos-post-goal').value.trim(),
+      design: $('amigos-post-design').value,
+    };
+    if (mode === 'team-building') {
+      if (!common.goal && !common.design.trim()) {
+        toast('「完了したときの状態」か「進め方」を入力してください');
+        return;
+      }
+      guard('チームビルディングの依頼', async () => {
+        await api.amigosBuildTeam({
+          ...common,
+          capabilities: $('amigos-post-capabilities').value.trim(),
+        });
+        dlg.close();
+        toast('依頼しました。内容に合わせて担当を編成し、作業を開始します', true);
+        await refreshAmigos();
+        renderAmigos();
+      });
+      return;
+    }
     guard('タスクの依頼', async () => {
       let roles;
       try {
@@ -600,13 +641,7 @@ function setupAmigosDialogs() {
         toast(`担当チームの設定を読み取れません: ${e.message}`);
         return;
       }
-      await api.amigosRequest({
-        home: $('amigos-post-home').value,
-        title: $('amigos-post-title').value.trim(),
-        goal: $('amigos-post-goal').value.trim(),
-        design: $('amigos-post-design').value,
-        roles,
-      });
+      await api.amigosRequest({ ...common, roles });
       dlg.close();
       toast('依頼を投函しました（常駐デーモンが取り込み、公示します）', true);
       await refreshAmigos();
@@ -698,5 +733,5 @@ function renderAmigos() {
 }
 
 function workTypeLabel(type) {
-  return type === 'state-machine' ? '定型業務' : '定期実行';
+  return type === 'state-machine' ? '定型業務' : 'プロンプト';
 }

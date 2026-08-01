@@ -5,7 +5,7 @@
 // - ホーム = `agent-amigos.{yaml,yml,json}` または `.agent/agent-amigos.*` を持つ
 //   ディレクトリ（設定ファイルが dashboard の自動発見マーカーを兼ねる —
 //   agent-project と同じ流儀）。`amigos.homeDirs` の明示指定 + 全体設定
-//   `projects.roots` 配下の走査で見つける。
+//   実行エンジンが担当するプロジェクト（engine/status.json）配下の走査で見つける。
 // - タスク依頼（post）・手動引き受け（claim）は、ホームの
 //   `.agent/agent-amigos/commands/*.json` へ JSON を 1 ファイル置くだけ（agent-project の
 //   commands/ と同じ結合方式）。常駐デーモンが次のサイクルで取り込む。
@@ -123,8 +123,9 @@ function discoverHomes(cfg) {
   const explicit = (Array.isArray(a.homeDirs) ? a.homeDirs : [])
     .map((d) => path.resolve(expandHome(String(d || ''))))
     .filter(Boolean);
-  const roots = (cfg && cfg.projects && cfg.projects.roots) || [];
-  const depth = Math.max(1, Number((cfg && cfg.projects && cfg.projects.scanDepth) || 2));
+  // 走査対象は実行エンジンが担当しているプロジェクト（実装計画 W2-4 で設定 roots は廃止）。
+  const roots = require('../../agent-project/main/engine').projectRoots(cfg);
+  const depth = Math.max(1, Number(a.scanDepth || 2));
   const dirs = [...new Set([...explicit, ...scanRoots(roots, depth)])];
   const homes = [];
   for (const dir of dirs) {
@@ -132,7 +133,7 @@ function discoverHomes(cfg) {
     if (!conf && !explicit.includes(dir)) continue;
     const values = (conf && conf.values) || {};
     const busSpec = String(values.bus || '.');
-    let busDir = null;
+    let busDir;
     if (busSpec.startsWith('git+') || busSpec.startsWith('hub+')) {
       // GitBus / HubBus はローカルミラー（workdir）がバスの実体。agent-amigos と同じ導出:
       // 設定 bus_workdir、無ければ ~/.agent/amigos/{bus|hub}/<sha1(url)[:8]>（gitbus.py / hubbus.py）。
@@ -169,7 +170,9 @@ function discoverHomes(cfg) {
 
 // 投函できるコマンド。契約の正典は schemas/amigos-command.schema.json（取り込み側は
 // agent_amigos/commands.py の _dispatch）。両者の一致はテストで担保する。
-const ALLOWED_COMMANDS = new Set(['post', 'claim', 'assign', 'accept', 'reject', 'cancel', 'say']);
+const ALLOWED_COMMANDS = new Set([
+  'post', 'build-team', 'claim', 'assign', 'restaff', 'accept', 'reject', 'cancel', 'say',
+]);
 
 // 指示の投函: ホーム検証（発見済みのホームのみ）→ commands/ へアトミックに 1 ファイル書く。
 function writeCommand(cfg, homeDir, rec) {

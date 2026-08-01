@@ -2,10 +2,10 @@
 
 P0 は LocalBus（同一ディレクトリ共有・sync は no-op）のみ。
 GitBus（専用バスリポジトリ＋ミッション別ブランチ）と HubBus は P1/P2
-（設計書 §5）。協調ロジックは転送層に依存しないよう、すべて Bus の
+（設計書 §4.4）。協調ロジックは転送層に依存しないよう、すべて Bus の
 パスヘルパ経由でファイルを読み書きする。
 
-書き込み規律（設計書 §4.2）: 書き込み所有権はパス単位で分割される。
+書き込み規律（設計書 §4.3）: 書き込み所有権はパス単位で分割される。
 このモジュールはレイアウト（どこに何があるか）だけを知り、所有権の強制は
 呼び出し側（runner のアクション封筒検証・owner コマンド）が行う。
 """
@@ -14,11 +14,13 @@ from __future__ import annotations
 import glob
 import os
 
+from agentcore import protocol
+
 from .util import read_json, write_json_atomic
 
 
 class MissionPaths:
-    """ミッションディレクトリ配下のレイアウト（設計書 §4.1）。
+    """ミッションディレクトリ配下のレイアウト（設計書 §4.2）。
 
     root はミッション内容の実体ディレクトリ:
     LocalBus では `<bus>/missions/<mid>/`、GitBus では `mission/<mid>` ブランチの
@@ -41,7 +43,12 @@ class MissionPaths:
         return os.path.join(self.root, "roles")
 
     def assignment(self, role_id: str, node_id: str) -> str:
-        return os.path.join(self.root, "assignments", role_id, f"{node_id}.json")
+        # ファイル名は agentcore.protocol が claim を書くときと同じ正規化を通す。
+        # claim の書き手（protocol.write_claim / renew_lease / release_claim）は
+        # safe_name(node_id) でファイル名を作るので、読み手がここで生の node_id を
+        # 使うと node_id に記号が混じった環境だけ「書いたのに読めない」が起きる。
+        return os.path.join(self.root, "assignments", role_id,
+                            f"{protocol.safe_name(node_id)}.json")
 
     def assignments_dir(self, role_id: str) -> str:
         return os.path.join(self.root, "assignments", role_id)
@@ -76,6 +83,15 @@ class MissionPaths:
 
     def rejections_dir(self) -> str:
         return os.path.join(self.root, "rejections")
+
+    def pruned_dir(self) -> str:
+        return os.path.join(self.root, "pruned")
+
+    def pruned(self, role_id: str) -> str:
+        return os.path.join(self.root, "pruned", f"{role_id}.json")
+
+    def conductor_state(self) -> str:
+        return os.path.join(self.root, "conductor.json")
 
     def deliverable_dir(self) -> str:
         return os.path.join(self.root, "deliverable")
@@ -141,23 +157,26 @@ class Bus:
 def make_bus(spec: str, workdir: "str | None" = None) -> Bus:
     """バス指定からバス実装を作る。
     - ローカルディレクトリ: そのままパス
-    - `git+<url>`: 専用バスリポジトリ（ミッション別ブランチ、設計書 §5.1）
-    - `hub+<url>`: hub サーバ経由（`agent-amigos hub` の対向、設計書 §5.2）
+    - `git+<url>`: 専用バスリポジトリ（ミッション別ブランチ、設計書 §4.4）
+
+    `hub+<url>`（hub サーバ経由）は廃止した（実装計画 W1-9）。常駐一本化で
+    `agent-amigos serve`（hub の公開元）が無くなり、対向だけ残しても繋ぐ先が無い。
+    共有は git バス（`git+<url>`）に一本化する。
     """
     s = str(spec or "").strip()
     if s.startswith("git+"):
         from .gitbus import GitBus
         return GitBus(s[4:], workdir=workdir)
     if s.startswith("hub+"):
-        from .hubbus import HubBus
-        return HubBus(s[4:], workdir=workdir)
+        raise SystemExit("[agent-amigos] hub バス（hub+<url>）は廃止されました。"
+                         "git バス（git+<url>）かローカルディレクトリを指定してください")
     if not s:
         raise SystemExit("[agent-amigos] バスのパスを指定してください（--bus <dir>）")
     return Bus(s)
 
 
 class TurnTxn:
-    """ターン原子性（設計書 §6.6）のローカル近似。
+    """ターン原子性（設計書 §5.3）のローカル近似。
 
     1 ターンの成果（アクション封筒の適用 + events 追記 + status 更新）を先に
     メモリへ積み、`apply()` で「成果物 → メッセージ → status/events」の順に

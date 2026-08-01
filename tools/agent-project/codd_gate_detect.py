@@ -1,24 +1,10 @@
 #!/usr/bin/env python3
-"""codd_gate_detect — codd-gate CLI の実在・能力検出（tools/agent-project 配下の新規モジュール）。
+"""codd-gate CLI の実体と、推奨設定の可否に必要な生の検出値を返す sibling 部品。
 
-agent-project.py（`resolve_agent_flow`, `agent-project.py:3477`）が agent-flow の実体を
-explicit → PATH → 同梱パスの順で解決するのと同型の解決連鎖を、codd-gate 向けに提供する
-（`resolve_codd_gate`）。加えて、実バイナリへ直接問い合わせて得るバージョン・schemas 互換・
-利用可能サブコマンドの生の判定値を提供する（`get_version` / `check_repos_schema_compat` /
-`detect_capabilities`。設計は .agent-project/bus/runs/run-20260712-213419-5922/artifacts/d1
-2.2・2.3(a) を参照）。
-
-このモジュールの責務は「CLI がどの機能を実際に提供しているか」の**生の判定**だけに絞り、
-「使ってよいか」（no-op 縮退・finding 化）の判断はしない（呼び出し側 or codd_gate_status.py
-の責務）。以下は意図的にこのモジュールへ含めない（同一 run の別タスクの責務）:
-  - プロセス内キャッシュ（a3）
-  - finding 化・no-op 縮退を含む CoddGateStatus 相当の値オブジェクト（a4, d2 で実装済み。
-    `codd_gate_status.py` の `build_status(binary, version=..., version_known=..., schema_ok=...)`
-    が本モジュールの戻り値を受け取る合流点になる）
-  - agent-project.py 本体への結線（b1-b3 / c1-c2 / e1-e2）
-  - `tasks`/`--debt` 出力の per-record 検証（d1 2.3(b)。実行時の防御的パースとして e 系の責務）
-
-依存は標準ライブラリのみ（agent-project.py 全体の方針に合わせる）。
+``tools/agent-project`` 直下に置くパッケージ外モジュールとして、explicit → PATH →
+同梱パスの実体解決、バージョン、repos schema、サブコマンド能力だけを検出する。
+利用可否の判定、推奨コマンドの組み立て、yaml 注入、doctor 所見、``agent_project``
+パッケージへの結線は行わない。依存は標準ライブラリのみ。
 """
 from __future__ import annotations
 

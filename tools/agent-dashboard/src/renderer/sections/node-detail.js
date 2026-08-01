@@ -13,6 +13,31 @@ function nodeTimeline(nodeId) {
   return ((state.flowRun && state.flowRun.nodeEvents) || {})[nodeId] || [];
 }
 
+// agent-flow の kind は実行グラフ内での「役割」であり、agent-project がタスクの
+// 完了を確定する verify（完了ゲート）とは別物。特に verify を生のまま表示すると、
+// バックログの検証コマンドと同じ検証を二重管理しているように見えるため言い分ける。
+function flowNodeKindLabel(kind) {
+  const labels = {
+    verify: '工程内チェック',
+    work: '作業',
+    generate: '生成',
+    classify: '分類',
+    synthesize: '統合',
+    filter: '絞り込み',
+    judge: '判定',
+    reduce: '集約',
+    split: '分割',
+    map: '並列処理',
+  };
+  return labels[String(kind || '')] || String(kind || 'work');
+}
+
+function flowNodeKindHelp(kind) {
+  if (String(kind || '') !== 'verify') return '';
+  return `<div class="muted flow-kind-help">このチェックは作業グラフの途中で、後続工程へ進めるかを判断します。` +
+    'タスクの完了は、バックログに設定された完了ゲートで別に確定します。</div>';
+}
+
 // この工程が「やり直し」でどう扱われるかを言い切る行。
 // グラフで赤いノードを見た人は「この工程だけ再実行したい」と考えるが、単体再実行は
 // 存在しない — やり直しの単位は run で、agent-flow が失敗・未実行の工程だけを pending へ
@@ -177,7 +202,10 @@ function renderFlowNode(run, node, retryUi, advice) {
     esc(FLOW_STATE_LABEL[effState] || effState) +
     (reconciled ? ' <span class="status-chip st-reconciled" title="GitLab 側の決着を先に表示しています（正式な反映待ち）">GitLab 反映</span>' : '');
   return `<div class="card full">
-      <h3><span class="mono">${esc(node.id)}</span> [${esc(node.kind)}] — ${stateLabel}${node.who ? ` @${esc(node.who)}` : ''}</h3>
+      <h3><span class="mono">${esc(node.id)}</span> [${esc(flowNodeKindLabel(node.kind))}] — ${stateLabel}${node.who ? ` @${esc(node.who)}` : ''}${
+        node.pc ? ` <span class="muted">（端末: ${esc(node.pc)}）</span>` : ''
+      }</h3>
+      ${flowNodeKindHelp(node.kind)}
       <div class="node-goal">${proseHtml(node.goal) || '<span class="muted">（目標なし）</span>'}</div>
       ${node.deps.length ? `<div class="muted" style="margin-top:4px">依存: ${node.deps.map(esc).join(', ')}</div>` : ''}
       ${nodeFateLine(run, effState, retryUi, advice)}
@@ -239,7 +267,8 @@ async function _resubmitFlowRun() {
   const nameList = (list) =>
     list.slice(0, 8).map((n) => n.id).join(', ') + (list.length > 8 ? ` …（計 ${list.length} 件）` : '');
   const failedNames = rerun.filter((n) => n.state === 'failed');
-  const canceled = run.status === 'canceled';
+  // 'canceled' は語彙統一前に書かれた meta.json の旧綴り（読み取り互換）。
+  const canceled = run.status === 'cancelled' || run.status === 'canceled';
   const plan = canceled
     ? `中止した実行の続きからは再開できません。\nタスクを積み直して新しい実行を始めます（完了済み ${keep.length} 件も温存されません）。`
     : keep.length
@@ -258,7 +287,6 @@ async function _resubmitFlowRun() {
     api.flowResubmit(projectDir, state.project.busDir, run.runId)
   );
   if (res) {
-    const d = state.flowDaemon;
     uiLog('resubmit', res);
     if (res.viaTask) {
       const live = (state.project && state.project.liveness) || {};
@@ -275,16 +303,9 @@ async function _resubmitFlowRun() {
       );
     } else {
       toast(
-        `新しい実行として開始を依頼しました${d && d.running === false ? '（実行エンジンが停止中のため、起動後に始まります）' : ''}`,
+        `新しい実行として開始を依頼しました${state.engine && !state.engine.running ? '（実行エンジンが動いていないため、起動後に始まります）' : ''}`,
         true
       );
-    }
-    if (res.viaTask) {
-      // resume-run の指示ファイルはプロジェクト側（commands/）に落ちる。bus は触っていない
-      await gitPushAfterWrite(`agent-dashboard: resume run ${run.runId}`, projectDir);
-    } else {
-      // bus/inbox への再投入ファイルだけを反映（bus 全体のスナップショットは撮らない）
-      await gitPushBusOp(`agent-dashboard: resubmit run ${run.runId}`, ['inbox']);
     }
     await reloadProject();
   }
@@ -302,7 +323,6 @@ async function cancelFlowRun() {
     `この実行（${run.runId}）を中止します。\n以後の作業・レビュー待ちの監視・自動再開をすべて止めます。${note}\nよろしいですか？`
   );
   if (!yes) return;
-  let cancelRes = null;
   const ok = await guard('実行の中止', async () => {
     const res = await api.flowCancel(
       state.project.dir,
@@ -310,7 +330,6 @@ async function cancelFlowRun() {
       run.runId,
       'agent-dashboard から手動キャンセル'
     );
-    cancelRes = res;
     uiLog('cancel', run.runId, res);
     if (res && res.alreadyTerminal) {
       toast(`この実行は既に終了していました（${statusLabel(res.status)}）。中止は不要です。`, true);
@@ -320,15 +339,6 @@ async function cancelFlowRun() {
     return true;
   });
   if (ok) {
-    // cancel マーカー・meta・waits/ 削除を反映。waits を落とすと、git 同期後に
-    // リモート側で park 済みノードが復活して見える瞬間を防げる。
-    await gitPushBusOp(`agent-dashboard: cancel run ${run.runId}`,
-      ['inbox/cancels', `runs/${run.runId}/meta.json`, `runs/${run.runId}/waits`]);
-    // revise（detach）コマンドも state 側へ送る。bus だけ push すると remote project が
-    // cancel を刈って新 act を始めたあとに revise が遅れ、すぐまた切り離される。
-    if (state.project && state.project.dir && !(cancelRes && cancelRes.alreadyTerminal)) {
-      await gitPushAfterWrite(`agent-dashboard: cancel detach ${run.runId}`, state.project.dir);
-    }
     await reloadProject();
   }
 }
@@ -337,7 +347,7 @@ async function cancelFlowRun() {
 async function deleteFlowRun() {
   const run = state.flowRun && state.flowRun.run;
   if (!run) return;
-  // canceled は終端。done/failed 以外を一律「応答なし」と言うと誤り。
+  // cancelled は終端。done/failed 以外を一律「応答なし」と言うと誤り。
   const warn =
     !TERMINAL_RUN_STATES.has(run.status) && run.alive === false
       ? '\nこの実行はまだ終了していません（応答なし）。削除すると自動での再開もできなくなります。'
@@ -358,11 +368,10 @@ async function deleteFlowRun() {
     return true;
   });
   if (ok) {
-    // 消した run のディレクトリだけを反映（他 run の揮発ファイルを巻き込まない）
-    await gitPushBusOp(`agent-dashboard: delete run ${run.runId}`, [`runs/${run.runId}`]);
     state.flowRunId = null;
     state.flowRun = null;
     state.flowNodeId = null;
+    state.flowRevisionId = null;
     await reloadProject();
   }
 }
@@ -380,46 +389,120 @@ function swColor(st) {
   return { done: '#3fb950', failed: '#f85149', claimed: '#4cc2b0', parked: '#d29922', pending: '#58a6ff', waiting: '#3a4048' }[st] || '#3a4048';
 }
 
-// トポロジカル深さでノードを列に並べ、SVG で DAG を描く
-function renderGraphSvg(run) {
-  const nodes = Object.values(run.nodes);
-  if (!nodes.length) return '<div class="empty">工程がありません</div>';
-  const depthMemo = {};
-  const visiting = new Set();
-  const depth = (id) => {
-    if (depthMemo[id] !== undefined) return depthMemo[id];
-    if (visiting.has(id)) return 0; // 循環はサニタイズ済みのはずだが防御
-    visiting.add(id);
-    const n = run.nodes[id];
-    const d = n && n.deps.length ? 1 + Math.max(...n.deps.map((x) => (run.nodes[x] ? depth(x) : 0))) : 0;
-    visiting.delete(id);
-    depthMemo[id] = d;
-    return d;
-  };
-  const cols = new Map();
-  for (const n of nodes) {
-    const d = depth(n.id);
-    if (!cols.has(d)) cols.set(d, []);
-    cols.get(d).push(n);
+function planRevisionMap(run) {
+  const out = Object.fromEntries(Object.keys(run.nodes || {}).map((id) => [id, 0]));
+  for (const revision of run.planRevisions || []) {
+    if (!revision || !revision.revision) continue;
+    const ids = [...(revision.added || []), ...(revision.updated || [])];
+    for (const item of revision.replaced || []) if (item && item.next) ids.push(item.next);
+    for (const id of ids) if (Object.prototype.hasOwnProperty.call(out, id)) out[id] = revision.revision;
   }
+  return out;
+}
+
+function flowGraphLayout(run) {
+  const nodes = Object.values(run.nodes || {});
+  const revisions = Array.isArray(run.planRevisions) ? run.planRevisions : [];
+  const hasRevisions = revisions.length > 1;
+  const revisionOf = hasRevisions ? planRevisionMap(run) : Object.fromEntries(nodes.map((n) => [n.id, 0]));
   const NW = 168;
   const NH = 46;
   const GX = 70;
   const GY = 18;
   const PAD = 16;
+  const TOP = hasRevisions ? 76 : PAD;
+  const REV_GAP = 220;
   const pos = {};
+  const boundaries = [];
+  const revisionBases = [];
   let maxRows = 0;
-  const sortedCols = [...cols.keys()].sort((a, b) => a - b);
-  for (const d of sortedCols) {
-    const list = cols.get(d);
-    list.sort((a, b) => a.id.localeCompare(b.id));
-    list.forEach((n, i) => {
-      pos[n.id] = { x: PAD + d * (NW + GX), y: PAD + i * (NH + GY) };
-    });
-    maxRows = Math.max(maxRows, list.length);
+  let cursor = PAD;
+  const revisionNumbers = hasRevisions
+    ? revisions.map((item) => item.revision)
+    : [0];
+  for (const revision of revisionNumbers) {
+    if (revision) {
+      boundaries.push({ ...revisions.find((item) => item.revision === revision), x: cursor + REV_GAP / 2 });
+      cursor += REV_GAP;
+    }
+    const base = cursor;
+    revisionBases.push({ revision, x: base });
+    const list = nodes.filter((node) => revisionOf[node.id] === revision);
+    const depthMemo = {};
+    const visiting = new Set();
+    const depth = (id) => {
+      if (depthMemo[id] !== undefined) return depthMemo[id];
+      if (visiting.has(id)) return 0;
+      visiting.add(id);
+      const node = run.nodes[id];
+      const deps = (node && node.deps || []).filter((dep) => revisionOf[dep] === revision);
+      const value = deps.length ? 1 + Math.max(...deps.map(depth)) : 0;
+      visiting.delete(id);
+      depthMemo[id] = value;
+      return value;
+    };
+    const cols = new Map();
+    for (const node of list) {
+      const d = depth(node.id);
+      if (!cols.has(d)) cols.set(d, []);
+      cols.get(d).push(node);
+    }
+    const sortedCols = [...cols.keys()].sort((a, b) => a - b);
+    for (const d of sortedCols) {
+      const col = cols.get(d).sort((a, b) => a.id.localeCompare(b.id));
+      col.forEach((node, i) => { pos[node.id] = { x: base + d * (NW + GX), y: TOP + i * (NH + GY) }; });
+      maxRows = Math.max(maxRows, col.length);
+    }
+    const colCount = Math.max(1, sortedCols.length);
+    cursor = base + colCount * NW + (colCount - 1) * GX;
   }
-  const width = PAD * 2 + sortedCols.length * NW + (sortedCols.length - 1) * GX;
-  const height = PAD * 2 + maxRows * NH + (maxRows - 1) * GY;
+  const width = cursor + PAD;
+  const rows = Math.max(1, maxRows);
+  const height = TOP + rows * NH + (rows - 1) * GY + PAD;
+  return { pos, width, height, boundaries, revisionBases, hasRevisions, NW, NH };
+}
+
+function planRevisionSummary(revision) {
+  const replacedNext = new Set((revision.replaced || []).map((item) => item.next));
+  const replacedOld = new Set((revision.replaced || []).map((item) => item.old));
+  const counts = [
+    ['追加', (revision.added || []).filter((id) => !replacedNext.has(id)).length],
+    ['差替', (revision.replaced || []).length],
+    ['更新', (revision.updated || []).length],
+    ['削除', (revision.removed || []).filter((id) => !replacedOld.has(id)).length],
+  ].filter(([, count]) => count);
+  return counts.length ? counts.map(([label, count]) => `${label}${count}`).join('・') : '変更内容なし';
+}
+
+function renderPlanRevision(revision) {
+  const groups = [
+    ['追加した工程', revision.added || []],
+    ['差し替えた工程', (revision.replaced || []).map((item) => `${item.old} → ${item.next}`)],
+    ['内容を更新した工程', revision.updated || []],
+    ['削除した工程', revision.removed || []],
+  ].filter(([, items]) => items.length);
+  const lists = groups.map(([label, items]) => {
+    const first = items.slice(0, 8);
+    const rest = items.slice(8);
+    return `<section class="flow-revision-change"><h4>${esc(label)}（${items.length}）</h4>
+      <ul>${first.map((item) => `<li>${esc(item)}</li>`).join('')}</ul>
+      ${rest.length ? `<details><summary>残り ${rest.length} 件</summary><ul>${rest.map((item) => `<li>${esc(item)}</li>`).join('')}</ul></details>` : ''}
+    </section>`;
+  }).join('');
+  return `<div class="flow-revision-detail">
+    <h3>計画を更新 #${esc(revision.revision)}</h3>
+    <span class="muted">${revision.timestamp ? esc(fmtTime(revision.timestamp)) : '時刻不明'}・${esc(planRevisionSummary(revision))}</span>
+    <section class="flow-revision-reason"><h4>変更理由</h4><p>${esc(revision.reason || '実行結果を受けて工程構成を見直しました')}</p></section>
+    ${lists || '<p class="muted">変更対象の詳細は記録されていません。</p>'}
+  </div>`;
+}
+
+// リビジョンを横方向の第一軸、実在する依存関係を区画内の第二軸として DAG を描く。
+function renderGraphSvg(run) {
+  const nodes = Object.values(run.nodes);
+  if (!nodes.length) return '<div class="empty">工程がありません</div>';
+  const layout = flowGraphLayout(run);
+  const { pos, width, height, boundaries, revisionBases, hasRevisions, NW, NH } = layout;
 
   // 完了したノード同士を繋ぐエッジは「消化済みの経路」として強調する（done クラス）。
   // GitLab 突き合わせの先読み反映（reconciled）があれば表示上の状態はそちらを優先する。
@@ -442,6 +525,25 @@ function renderGraphSvg(run) {
       edges.push(`<path class="edge${doneEdge ? ' done' : ''}" d="M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}" />`);
     }
   }
+  const revisionLines = boundaries.map((revision) =>
+    `<line class="plan-revision-line" x1="${revision.x}" y1="6" x2="${revision.x}" y2="${height - 6}" />`
+  ).join('');
+  const revisionCards = boundaries.map((revision) => {
+    const reason = String(revision.reason || '実行結果を受けて工程構成を見直しました');
+    const shortReason = reason.length > 28 ? `${reason.slice(0, 27)}…` : reason;
+    const summary = planRevisionSummary(revision);
+    const label = `計画を更新 ${revision.revision}。${reason}。${summary}`;
+    return `<g class="plan-revision ${state.flowRevisionId === revision.revision ? 'selected' : ''}"
+      data-revision="${revision.revision}" role="button" tabindex="0" aria-label="${esc(label)}">
+      <rect x="${revision.x - 96}" y="8" width="192" height="52" rx="7"></rect>
+      <text x="${revision.x}" y="23" text-anchor="middle" class="revision-title">計画を更新 #${revision.revision}</text>
+      <text x="${revision.x}" y="39" text-anchor="middle">${esc(shortReason)}</text>
+      <text x="${revision.x}" y="53" text-anchor="middle" class="revision-meta">${esc(summary)}${revision.timestamp ? `・${esc(fmtTime(revision.timestamp))}` : ''}</text>
+    </g>`;
+  }).join('');
+  const initialLabel = hasRevisions
+    ? `<text x="${revisionBases[0].x}" y="24" class="plan-initial-label">初期計画</text>`
+    : '';
   const boxes = nodes.map((n) => {
     const { x, y } = pos[n.id];
     // GitLab クローズ反映があれば表示上の状態はそちらを優先する（bus に result が届く前でも
@@ -474,15 +576,17 @@ function renderGraphSvg(run) {
           <text x="9" y="13" text-anchor="middle" class="node-issue-glyph">↗</text>
         </g>`
       : '';
-    return `<g class="node state-${effState}${recClass} ${state.flowNodeId === n.id ? 'selected' : ''}" data-node="${esc(n.id)}" transform="translate(${x},${y})">
+    return `<g class="node state-${effState}${recClass} ${state.flowNodeId === n.id ? 'selected' : ''}" data-node="${esc(n.id)}"
+      role="button" tabindex="0" aria-label="${esc(`${n.id}、${flowNodeKindLabel(n.kind)}、${FLOW_STATE_LABEL[effState] || effState}`)}"
+      transform="translate(${x},${y})">
       <rect width="${NW}" height="${NH}" rx="6"></rect>
       <text x="8" y="17" class="mono">${esc(idLabel)}${n.who ? ` @${esc(n.who).slice(0, 8)}` : ''}</text>
       <text x="8" y="31">${esc(goal)}</text>
-      <text x="8" y="42" class="kind">[${esc(n.kind)}]</text>
+      <text x="8" y="42" class="kind">[${esc(flowNodeKindLabel(n.kind))}]</text>
       ${issueIcon}
     </g>`;
   });
-  return `<svg class="graph" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${edges.join('')}${boxes.join('')}</svg>`;
+  return `<svg class="graph" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${revisionLines}${edges.join('')}${initialLabel}${revisionCards}${boxes.join('')}</svg>`;
 }
 
 function bindFlowDetail(root) {
@@ -505,11 +609,28 @@ function bindFlowDetail(root) {
     btn.addEventListener('click', () => openRunArtifacts(btn.dataset.runArtifacts));
   }
   for (const g of root.querySelectorAll('g.node[data-node]')) {
-    g.addEventListener('click', () => {
+    const select = () => {
       state.flowNodeId = g.dataset.node;
+      state.flowRevisionId = null;
       state.flowDetailView = 'graph';
       state.flowNodeIssue = null; // ノードを切り替えたら検索結果を破棄
       renderFlow();
+    };
+    g.addEventListener('click', select);
+    g.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select(); }
+    });
+  }
+  for (const g of root.querySelectorAll('g.plan-revision[data-revision]')) {
+    const select = () => {
+      state.flowRevisionId = Number(g.dataset.revision);
+      state.flowNodeId = null;
+      state.flowDetailView = 'graph';
+      renderFlow();
+    };
+    g.addEventListener('click', select);
+    g.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select(); }
     });
   }
   // ノード右上のイシューアイコン: 1 クリックでレビュー（gitlab-review-viewer）を起動する。
@@ -549,12 +670,6 @@ function bindFlowDetail(root) {
       gotoRun(btn.dataset.gotoRun);
     });
   }
-  for (const btn of root.querySelectorAll('button[data-start-kiro]')) {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      startAgentProject();
-    });
-  }
   for (const btn of root.querySelectorAll('button[data-resume-kiro]')) {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
@@ -567,7 +682,6 @@ function bindFlowDetail(root) {
         return true;
       });
       if (ok) {
-        gitPushAfterWrite('agent-dashboard: resume', p.dir);
         await reloadProject();
       }
     });

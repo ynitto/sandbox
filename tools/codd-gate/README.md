@@ -120,7 +120,7 @@ codd-gate scan --sync                                 # dir 無し repo を最�
   共有 bare ミラー（初回のみ `--mirror --filter=blob:none`、以後は**増分 fetch**）から
   **detached worktree** を生やして**最新の base** で実体化し、run 後に worktree だけ回収する
   （ミラーは残る＝次回は増分だけ）。ミラー root は `KIRO_GIT_CACHE_DIR`（既定
-  `$TMPDIR/kiro-git-cache`）で kiro ツール群と共有。パターンの正典は
+  `$TMPDIR/kiro-git-cache`）で agent ツール群と共有。パターンの正典は
   [`docs/designs/git-worktree-cache-pattern.md`](../../docs/designs/git-worktree-cache-pattern.md)。
   鮮度は INV-1（毎回 fetch → fetch 後の SHA で worktree）で保証し、実体化できない repo で
   黙って PASS 側に倒さない（チェック不能なら exit 2）。

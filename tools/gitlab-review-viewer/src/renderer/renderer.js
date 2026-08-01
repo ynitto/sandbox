@@ -491,7 +491,7 @@ async function selectCandidate(index) {
 }
 
 // ディープリンク（gitlab-review-viewer://open?url=<GitLab web_url>）から
-// 対象を解決し、候補一覧の先頭に挿入して選択する。kiro-projects-viewer 等の
+// 対象を解決し、候補一覧の先頭に挿入して選択する。agent-dashboard 等の
 // 外部ツールがレビューをシームレスに引き継ぐための入り口。
 async function openFromUrl(rawUrl) {
   let target = String(rawUrl || '');
@@ -1129,7 +1129,7 @@ async function doSendBack() {
 // 差し戻しは、検知内容を伝える固定コメントを操作対象（表示中のイシューを優先。
 // 無ければ MR）へ投稿し、ステータスをアクションバーの差し戻しと同じ遷移
 // （SENDBACK_FLOW）で戻す（対象のステータスが遷移表に無ければコメント投稿のみ）。
-// イシューを優先するのは、委譲元ツール（kiro-flow 等）がイシューの人コメントを
+// イシューを優先するのは、委譲元ツール（agent-flow 等）がイシューの人コメントを
 // フィードバックとして取り込むため。イシューへ投稿するときは対象 MR の参照を添える。
 // 同じ MR への確認はセッション中 1 回だけ（タブ切替のたびに出すと邪魔になる）。
 
@@ -1242,7 +1242,7 @@ async function doMRSendback() {
 //   混ざるため、破壊的操作（クローズ＋ブランチ削除）は**イシューとタイトルが似ている
 //   MR のみ**を対象にする（タブ選択と同じ titleSimilarity。対象はダイアログに事前表示）
 // - イシューは削除しない — コメント・経緯が記録として残り、委譲元ツール
-//   （kiro-flow はイシューのクローズで却下を検知し、人コメントをやり直し指示として
+//   （agent-flow はイシューのクローズで却下を検知し、人コメントをやり直し指示として
 //   取り込む。削除すると 404 の一般エラーになりフィードバックごと壊れる）にも
 //   決着が正しく伝わる。
 const REJECT_TITLE_SIMILARITY = 0.5;
@@ -1304,7 +1304,7 @@ async function doReject() {
 
     if (t.type === 'issue') {
       // 表示キャッシュの state に頼らず常に明示的にクローズする（既にクローズ済みなら
-      // no-op）。委譲元の自動クローズ（kiro-flow）は daemon 停止中などで走らないことがある
+      // no-op）。委譲元の自動クローズ（agent-flow）は daemon 停止中などで走らないことがある
       const closed = await api.glSetState(targetOf(t), 'close');
       applyUpdatedItem(closed);
       toast(`${pageLabel(t)} を却下しました（MR ${mrs.length} 件をクローズ・ブランチ削除、イシューは閉じる）`);
@@ -1710,7 +1710,7 @@ async function init() {
 
   document.addEventListener('keydown', handleKeydown);
 
-  // 外部ツール（kiro-projects-viewer 等）からのディープリンク
+  // 外部ツール（agent-dashboard 等）からのディープリンク
   if (api.onOpenTarget) {
     api.onOpenTarget(({ url }) => openFromUrl(url));
   }

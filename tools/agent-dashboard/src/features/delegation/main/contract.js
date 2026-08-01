@@ -89,6 +89,11 @@ function validateEnvelope(env) {
     out.requested_at = env.requested_at ? String(env.requested_at) : '';
     out.engine = isObj(env.engine) ? env.engine : {};
 
+    // 委譲公示板（agent-board）だけが解釈する additive ブロック（board.schema.json / 設計 §4.3・§7）。
+    // 直接 flow/amigos へ投函する経路では無視されるが、board 経由の post のために保持する。
+    if (isObj(env.requires)) out.requires = env.requires;
+    if (isObj(env.speculation)) out.speculation = env.speculation;
+
     // workload=amigos は役割ミッション表が必須（mission.schema.json の roles と同形）。
     if (workload === 'amigos') {
       const roles = out.engine.amigos && out.engine.amigos.roles;

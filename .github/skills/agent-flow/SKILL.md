@@ -23,7 +23,7 @@ kiro-cli が無い環境では `--planner stub --executor stub` で挙動を確�
 
 ## 前提
 
-- Python 3.9+（標準ライブラリのみ）。git は分散モード（`--git`）で必要。実運用には kiro-cli。
+- Python 3.11+（標準ライブラリのみ）。git は分散モード（`--git`）で必要。実運用には kiro-cli。
 - 未インストールなら `python3 tools/agent-flow/agent-flow.py …` で代用。インストール済みなら `agent-flow …`。
 
 ```bash

@@ -210,15 +210,15 @@ const README = path.join(__dirname, '..', '..', 'agent-project', 'README.md');
 if (fs.existsSync(README)) {
   const readme = fs.readFileSync(README, 'utf8');
   const quoted = (key) => {
-    const m = readme.match(new RegExp('`(' + key + ": '[^`]*')`"));
+    const m = readme.match(new RegExp('^[ \\t]*' + key + ":\\s*('[^'\\n]*')", 'm'));
     assert.ok(m, `README.md から ${key} の行を取り出せません（README 側の書式が変わった）`);
-    return m[1];
+    return `${key}: ${m[1]}`;
   };
   assert.ok(noConfig.includes(esc(quoted('regression_cmd'))),
     'regression_cmd の行が README と一致しない');
   assert.ok(noConfig.includes(esc(quoted('intake_cmd'))),
     'intake_cmd の行が README と一致しない');
-  assert.ok(readme.includes('python3 codd_gate_regression.py --config '),
+  assert.ok(/python3[^\n]*codd_gate_regression\.py[\s\\]*--config\b/.test(readme),
     'README の注入 CLI 名が変わった（画面側の文言も合わせること）');
 }
 

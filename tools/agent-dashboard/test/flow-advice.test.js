@@ -13,8 +13,6 @@
 // ソースから抽出して隔離実行する（判定は state と引数のみに依存する純関数）。
 
 const assert = require('assert');
-const fs = require('fs');
-const path = require('path');
 
 let passed = 0;
 function test(name, fn) {
@@ -44,7 +42,9 @@ function grab(name) {
 // 判定器を隔離された環境で組み立てる。state は呼び出しごとに差し替える。
 function makeAdvisor(project) {
   const code = [
-    'const TERMINAL_RUN_STATES = new Set(["done", "failed", "canceled"]);',
+    'const CANCELLED_RUN_STATES = new Set(["cancelled", "canceled"]);',
+    'const TERMINAL_RUN_STATES = new Set(["done", "failed", ...CANCELLED_RUN_STATES]);',
+    'const isCancelledRun = (s) => CANCELLED_RUN_STATES.has(String(s || ""));',
     'const statusLabel = (s) => ({ review: "検収待ち", blocked: "要対応", proposed: "計画承認待ち" }[s] || s);',
     grab('sanitizeTaskId'),
     grab('shortRunId'),
@@ -60,7 +60,9 @@ function makeAdvisor(project) {
 
 function makeNodePresenter(project) {
   const code = [
-    'const TERMINAL_RUN_STATES = new Set(["done", "failed", "canceled"]);',
+    'const CANCELLED_RUN_STATES = new Set(["cancelled", "canceled"]);',
+    'const TERMINAL_RUN_STATES = new Set(["done", "failed", ...CANCELLED_RUN_STATES]);',
+    'const isCancelledRun = (s) => CANCELLED_RUN_STATES.has(String(s || ""));',
     'const statusLabel = (s) => ({ review: "検収待ち", blocked: "要対応", proposed: "計画承認待ち" }[s] || s);',
     'const esc = (s) => String(s == null ? "" : s);',
     grab('sanitizeTaskId'),
@@ -114,13 +116,15 @@ test('応答なし + タスク ready + 本体稼働中 → 自動でやり直さ
   assert.match(a.text, /操作は不要/);
 });
 
-test('応答なし + タスク ready + 本体停止中 → 起動ボタンでその場で解決できる（restart）', () => {
+test('応答なし + タスク ready + 実行エンジン停止中 → 起動コマンドを案内する（restart）', () => {
+  // この画面からはエンジンを起こせない（実装計画 W2-2）。押せないボタンを出す代わりに、
+  // 実行する PC で打つコマンドをそのまま文中に出す。
   const advise = makeAdvisor(project({ running: false }));
   const r = baseRun({ alive: false });
   const a = advise(r, group(r));
   assert.strictEqual(a.kind, 'restart');
-  assert.strictEqual(a.stopped, true);           // バナーに「自動実行を開始」が出る
-  assert.match(a.text, /自動実行を開始/);
+  assert.strictEqual(a.stopped, true);
+  assert.match(a.text, /agent-project serve/);
 });
 
 test('一時停止中 → 再開ボタンでその場で解決できる', () => {
@@ -202,7 +206,7 @@ test('古い試行（最新が別 run）→ 見るだけ・削除可、最新へ
   const a = advise(r, { latest, attempts: [latest, r] });
   assert.strictEqual(a.kind, 'old');
   assert.strictEqual(a.latestId, 'req-abcd1234-T-9-r2');
-  assert.match(a.text, /削除しても安全/);
+  assert.match(a.text, /操作は不要/);
 });
 
 test('タスクが archive（完了済み）→ この run は記録（操作不要）', () => {
@@ -243,7 +247,7 @@ test('別マシンの応答途絶は「停止」と言い切らず、↻ が予�
   const r = baseRun({ status: 'failed', alive: false });
   const a = advise(r, group(r));
   assert.strictEqual(a.kind, 'restart');
-  assert.match(a.chip, /別マシン/);
+  assert.match(a.chip, /別のマシン/);
   assert.match(a.text, /12 分前/);
   assert.match(a.text, /予約/);
   assert.ok(!/停止中です/.test(a.text), '停止と言い切らない');
@@ -259,9 +263,9 @@ test('失敗トリアージ: 認証切れタグ → タスク状態より先に�
   });
   const a = advise(r, group(r));
   assert.strictEqual(a.kind, 'human');
-  assert.match(a.chip, /認証切れ/);
+  assert.match(a.chip, /再ログインが必要/);
   assert.match(a.text, /再ログイン/);
-  assert.match(a.text, /温存/);
+  assert.match(a.text, /完了した工程の続きから再開/);
 });
 
 test('失敗トリアージ: blocked + auth → 判断待ちより環境要因を優先する', () => {
@@ -273,7 +277,7 @@ test('失敗トリアージ: blocked + auth → 判断待ちより環境要因�
   });
   const a = advise(r, group(r));
   assert.strictEqual(a.kind, 'human');
-  assert.match(a.chip, /認証切れ/);
+  assert.match(a.chip, /再ログインが必要/);
   assert.ok(!/あなたの判断待ち/.test(a.chip), '汎用の判断待ちで上書きしない');
 });
 
@@ -285,7 +289,7 @@ test('失敗トリアージ: 利用上限タグ → 時間をおけば回復と�
   });
   const a = advise(r, group(r));
   assert.match(a.chip, /利用上限/);
-  assert.match(a.text, /時間をおく/);
+  assert.match(a.text, /しばらく待って/);
 });
 
 test('失敗トリアージ: agent-control stop → AI 利用上限ではなく実行停止と言う', () => {
@@ -301,9 +305,9 @@ test('失敗トリアージ: agent-control stop → AI 利用上限ではなく�
   });
   const a = advise(r, group(r));
   assert.match(a.chip, /実行停止中/);
-  assert.match(a.text, /AI の利用上限ではありません/);
-  assert.match(a.text, /run/);
-  assert.ok(!/時間をおく/.test(a.text), '時間経過で回復すると誤案内しない');
+  assert.match(a.text, /全体設定で作業が停止/);
+  assert.ok(!/ワークロード|run/.test(a.text), '内部の状態名を表示しない');
+  assert.ok(!/しばらく待って/.test(a.text), '時間経過で回復すると誤案内しない');
 });
 
 test('失敗トリアージ: control 専用タグ → 実行停止として案内する', () => {
@@ -314,8 +318,8 @@ test('失敗トリアージ: control 専用タグ → 実行停止として案�
   });
   const a = advise(r, group(r));
   assert.match(a.chip, /実行停止中/);
-  assert.match(a.text, /AI の利用上限ではありません/);
-  assert.ok(!/時間をおく/.test(a.text));
+  assert.match(a.text, /全体設定で作業が停止/);
+  assert.ok(!/しばらく待って/.test(a.text));
 });
 
 test('停止中の再実行は、先に flow 全体を run へ戻す', () => {
@@ -334,9 +338,9 @@ test('失敗トリアージ: node-budget → 外部 AI ではなくノード予�
     failureReason: '[agent-error:quota] [node-budget] このノードのトークン予算を超過しています',
   });
   const a = advise(r, group(r));
-  assert.match(a.chip, /ノード予算/);
-  assert.match(a.text, /AI サービス側の利用上限ではありません/);
-  assert.match(a.text, /オーケストレーション/);
+  assert.match(a.chip, /利用上限に達しました/);
+  assert.match(a.text, /全体設定で上限を確認/);
+  assert.ok(!/オーケストレーション|トークン/.test(a.text), '内部用語を表示しない');
 });
 
 console.log(`\n${passed} passed`);

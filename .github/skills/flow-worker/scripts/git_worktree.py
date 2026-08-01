@@ -4,7 +4,7 @@
 エージェント（LLM ワーカー）がタスク中に別リポジトリ・別ブランチへアクセスするとき、
 自前の git clone / checkout / 共有チェックアウトへの commit の代わりに使う唯一の入口。
 docs/designs/git-worktree-cache-pattern.md のパターンを stdlib のみで実装しており、
-kiro-flow / kiro-project とキャッシュ root（KIRO_GIT_CACHE_DIR / $TMPDIR/kiro-git-cache）を
+agent-flow / agent-project とキャッシュ root（KIRO_GIT_CACHE_DIR / $TMPDIR/kiro-git-cache）を
 共有する。
 
 なぜ worktree か:
@@ -47,7 +47,7 @@ _CORRUPT = ("not a git repository", "bad object", "corrupt", "broken link",
 
 
 def cache_root() -> str:
-    """ホスト共有 git キャッシュの root（kiro-flow / kiro-project と同一の既定）。"""
+    """ホスト共有 git キャッシュの root（agent-flow / agent-project と同一の既定）。"""
     return os.environ.get("KIRO_GIT_CACHE_DIR") or os.path.join(
         tempfile.gettempdir(), "kiro-git-cache")
 
@@ -59,7 +59,7 @@ def _cache_path_for(url: str) -> str:
 
 @contextlib.contextmanager
 def _url_lock(url: str):
-    """URL 単位のホスト内ロック（INV-2）。kiro-flow / kiro-project と同じ .lock ファイルを使う。"""
+    """URL 単位のホスト内ロック（INV-2）。agent-flow / agent-project と同じ .lock ファイルを使う。"""
     root = cache_root()
     os.makedirs(root, exist_ok=True)
     h = hashlib.sha1(url.strip().encode()).hexdigest()

@@ -1,0 +1,36 @@
+{
+  "id": "camel",
+  "name": "CAMEL（役割演技協働）",
+  "category": "team-topology",
+  "tier": "medium",
+  "source": "CAMEL (Li et al., 2023)",
+  "when_to_use": "指示役と実行役に役割を固定し、対話で 1 タスクを進めたいとき。",
+  "signals": [
+    "役割分担の対話",
+    "指示役と実行役"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "user-role",
+        "role": "タスクを具体化し指示する",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "assistant-role",
+        "role": "指示に従い解く",
+        "required": true,
+        "approver": false,
+        "collaborates_with": [
+          "user-role"
+        ]
+      }
+    ],
+    "convergence": {
+      "done_when": "all-required-done",
+      "quiescence_turns": 2
+    }
+  },
+  "feasibility": "native"
+}

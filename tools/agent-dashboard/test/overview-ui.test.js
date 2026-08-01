@@ -122,6 +122,8 @@ assert.strictEqual(coworkPathKey('C:\\Users\\Me\\proj'), 'c:/users/me/proj');
     '選択プロジェクト自身の設定ファイルだけを認識する'
   );
   assert.strictEqual(coworkHasProjectConfig({ discoveredRepos: ['/home/me/proj-a'] }, '/home/me/proj-b'), false);
+  assert.strictEqual(coworkHasProjectConfig({ items: [{ repo: '/home/me/proj-b' }] }, '/home/me/proj-b'), true,
+    '手動追加した作業だけのプロジェクトも定常業務を表示する');
 }
 
 // eslint-disable-next-line no-new-func
@@ -179,18 +181,24 @@ assert.ok(!html.includes('id="btn-git-pull"'), '最新取得の単独ボタン�
 assert.ok(!html.includes('id="btn-git-heal"'), '同期修復を Doctor の固定ボタンとして残さない');
 assert.match(html, /id="btn-refresh"[^>]+aria-label="表示を更新"/);
 assert.match(html, /id="project-meta"[^>]+aria-live="polite"/);
+// 同期の表示は実行エンジンの状況ファイル一本（W2-5）。操作は「今すぐ同期」の投函だけで、
+// この画面から git を叩く経路（pull / commitPush / heal）はソースごと消えている。
 assert.match(renderer, /id="btn-sync-now"/);
-assert.match(renderer, /共有先と同期/);
-assert.match(renderer, /同期を修復/);
-assert.match(renderer, /共有先確認:/);
-assert.match(renderer, /remoteCheckedAt/);
-assert.match(renderer, /refreshAll\(\{ sync: false \}\)/);
-assert.match(renderer, /reloadProject\(\{ refreshRemoteHealth: sync \}\)/);
-assert.match(renderer, /api\.gitHealth\(project\.dir, refreshRemoteHealth\)/);
+assert.match(renderer, /今すぐ同期/);
+assert.match(renderer, /最終確認:/);
+assert.match(renderer, /api\.engineStatus\(\)/);
+assert.match(renderer, /api\.requestHeal\(dir\)/);
+for (const gone of ['api.gitHealth', 'api.gitHeal', 'api.gitPull', 'api.gitCommitPush',
+  'gitPushAfterWrite', 'gitPushBusOp', 'api.startProject', 'api.removeProject']) {
+  assert.ok(!renderer.includes(gone), `${gone} は削除済みのはず`);
+}
 
 for (const label of ['現在の状態', 'あなたの対応', '進捗', '成果', '対応する', 'タスクを見る', '実行を見る', '成果を見る']) {
   assert.ok(renderer.includes(label), `概要に「${label}」が必要です`);
 }
+assert.ok(renderer.includes('const staleNodes = (p.nodes || []).filter((node) => !node.running)'),
+  '応答のないPCを「あなたの対応」に反映します');
+assert.ok(renderer.includes('実行を確認する'), 'PCが応答しないときの次の操作を直接示します');
 assert.match(css, /button:focus-visible/);
 assert.match(css, /@media \(max-width: 680px\)/);
 assert.match(css, /\.sidebar-actions button,[\s\S]*?min-width: 44px; height: 44px;/);
@@ -202,8 +210,11 @@ assert.match(css, /\.sidebar-actions button,[\s\S]*?min-width: 44px; height: 44p
   const orchBadgeStub = (kind, label) => `<span class="badge ${kind}">${escStub(label)}</span>`;
   const wlLabelStub = (w) => w;
   const stateStub = { orchSkillsInventory: [
-    { name: 'karpathy-guidelines', dir: '/x/.github/skills' },
-    { name: 'systematic-debugging', dir: '/x/.agents/skills' },
+    {
+      name: 'karpathy-guidelines', description: 'LLM向けの実装原則', category: 'coding',
+      version: '1.2.0', tags: ['quality', 'code'], sources: ['kiro', 'agents'], dir: '/secret/skills',
+    },
+    { name: 'systematic-debugging', description: '原因を段階的に調べる', sources: ['claude'] },
   ] };
   // eslint-disable-next-line no-new-func
   const panel = new Function('esc', 'orchBadge', 'amigosWorkloadLabel', 'state',
@@ -227,12 +238,26 @@ assert.match(css, /\.sidebar-actions button,[\s\S]*?min-width: 44px; height: 44p
     '選択済みスキルだけを編集行として表示する');
   assert.ok(out.includes('id="orch-skill-add"'), '名前を入力して追加する欄がある');
   assert.ok(out.includes('list="orch-skill-options"'), '入力欄が候補リストにつながっている');
+  assert.ok(out.includes('id="orch-skill-candidate-description"'), '追加前の候補説明欄がある');
   assert.ok(out.includes('<option value="systematic-debugging"'), '未選択スキルが入力候補に出る');
   assert.ok(out.includes('karpathy-guidelines'), '選択済みスキルが行に出る');
+  assert.ok(out.includes('class="orch-skill-details"'), '説明と属性は開閉できる詳細領域に入る');
+  assert.ok(out.includes('<summary>説明と属性を表示</summary>'), '詳細を表示する操作が明確である');
+  assert.ok(out.includes('LLM向けの実装原則'), '選択後は説明が表示される');
+  assert.ok(out.includes('分類: coding'), '選択後は分類が表示される');
+  assert.ok(out.includes('タグ: quality, code'), '選択後はタグが表示される');
+  assert.ok(out.includes('利用元: Kiro, 共通'), '重複したスキルの利用元がまとめて表示される');
+  assert.ok(!out.includes('/secret/skills'), '内部の保存パスは表示しない');
   assert.ok(!out.includes('class="orch-skill-on"'), '大量のチェックボックス一覧を表示しない');
   assert.ok(out.includes('data-ui-key="orch-instr-preview"'), 'プレビューの開閉状態を復元できるキーがある');
   assert.ok(out.includes('未反映（2/3）'), '実行サービスの未反映バッジが出る');
   assert.ok(out.includes('agent-instructions rev:3'), 'プレビューが描画結果を出す');
+}
+{
+  // eslint-disable-next-line no-new-func
+  const shorten = new Function(`${grab('shortSkillDescription')}; return shortSkillDescription;`)();
+  assert.strictEqual(shorten('あ'.repeat(101)), `${'あ'.repeat(100)}…`, '候補説明は100文字で打ち切る');
+  assert.strictEqual(shorten('短い説明'), '短い説明', '短い候補説明はそのまま表示する');
 }
 assert.match(renderer, /orchInstructionsPanelHtml\(overview\)/);
 assert.match(renderer, /api\.orchestrationInstructionsSave/);
@@ -241,7 +266,7 @@ assert.match(renderer, /api\.orchestrationInstructionsSave/);
   assert.match(render, /captureUiState\(\)/, '全体設定の再描画前に開閉・スクロール状態を保存する');
   assert.match(render, /restoreUiState\(/, '全体設定の再描画後に開閉・スクロール状態を復元する');
 }
-assert.match(renderer, /details\[d\.dataset\.uiKey\] = d\.open/,
+assert.match(renderer, /details\[key\] = d\.open/,
   '開いた状態だけでなく、利用者が閉じた状態も保存する');
 assert.match(renderer, /d\.open = ui\.details\[key\]/, '保存した開閉状態をそのまま復元する');
 assert.match(renderer, /data-ui-key="orch-agents-/, '担当設定の開閉状態に安定キーがある');
@@ -318,6 +343,25 @@ assert.match(renderer, /個別のrunを止める操作ではありません/);
   assert.ok(configuredUnwired.includes('make smoke'), '設定済みの別コマンドを隠さない');
   assert.ok(configuredUnwired.includes('一貫性ゲートの検査ではありません'),
     '設定済みでも未結線である理由を表示する');
+}
+
+// --- nodesSummaryHtml（案6・複数 PC ノード一覧） ---
+{
+  // eslint-disable-next-line no-new-func
+  const nodesSummaryHtml = new Function(
+    'esc', 'humanizeAge',
+    `${grab('nodesSummaryHtml')}; return nodesSummaryHtml;`
+  )((s) => String(s == null ? '' : s), (ms) => `${Math.round(ms / 1000)}秒前`);
+  assert.strictEqual(nodesSummaryHtml([]), '', 'ノードが無ければ何も出さない（従来の見た目）');
+  assert.strictEqual(nodesSummaryHtml(undefined), '', 'undefined でも安全');
+  const html = nodesSummaryHtml([
+    { node: 'pc-a', host: 'h1', running: true, ageSec: 0 },
+    { node: 'pc-b', host: 'h2', running: false, ageSec: 9999 },
+  ]);
+  assert.ok(html.includes('pc-a') && html.includes('pc-b'), '両ノードを出す');
+  assert.ok(html.includes('稼働中'), '稼働中ノードを示す');
+  assert.ok(html.includes('応答なし'), '応答なし（heartbeat 途絶）ノードを示す');
+  assert.ok(html.includes('node-stale'), '応答なしは stale クラス');
 }
 
 console.log('overview-ui: all tests passed');

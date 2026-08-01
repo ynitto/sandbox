@@ -29,63 +29,30 @@ def _child_base(args, bus_abs: str) -> list:
     return base
 
 
-def _acquire_daemon_lock(args):
-    """daemon singleton ロックを取得して pid を記録し、lock_file を返す。既に保持中なら None。
-    pid は flock の有無に関わらず記録する（flock 非対応環境でも pid 生存で発見できるように）。"""
-    lock_path = _daemon_lock_path(args)
-    # 既存ホルダの pid を消さないよう truncate せず開く（ロック取得後にだけ書く）
-    lock_file = os.fdopen(os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644), "r+")
-    if fcntl is not None:
-        try:
-            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            lock_file.close()
-            return None
-    elif msvcrt is not None:
-        # Windows: msvcrt.locking の非ブロッキング領域ロックで排他する。
-        # 以前の「PID を読んで生死判定→書き込み」は TOCTOU（2 プロセスが同時に判定を通過し
-        # 両方 daemon になる）だったため、OS のロックに置き換える。
-        try:
-            lock_file.seek(0)
-            msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
-        except OSError:
-            lock_file.close()
-            return None
-    else:  # pragma: no cover — fcntl も msvcrt も無い環境のみ（従来の PID フォールバック）
-        try:
-            lock_file.seek(0)
-            raw = (lock_file.read() or "").strip()
-            if raw:
-                old = int(raw)
-                if old != os.getpid() and _pid_alive(old):
-                    lock_file.close()
-                    return None
-        except (ValueError, OSError):
-            pass
-    lock_file.seek(0)
-    lock_file.truncate()
-    lock_file.write(str(os.getpid()))
-    lock_file.flush()
-    return lock_file
+def worker_who(args, index: int, heal: "int | None" = None) -> str:
+    """この PC が起こす worker の名義（バス上の `who`）。
 
+    **PC 名（node_id）を必ず含める**。以前は `worker-{i}` 固定で、バス上の記録
+    （`claims/<node>/<who>.json`・`events/<who>.jsonl`・`results/<node>.json` の `who`）が
+    全 PC で同じ綴りになっていた。これは 2 つの問題を同時に起こす:
 
-def _release_daemon_lock(lock_file) -> None:
-    """daemon singleton ロックを解放して fd を閉じる（自己更新の再起動前に呼ぶ）。
-    flock は fd に紐づくため、execv で再起動する前に解放しないと再取得で多重起動扱いになる。"""
-    if lock_file is None:
-        return
-    try:
-        if fcntl is not None:
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
-        elif msvcrt is not None:
-            lock_file.seek(0)
-            msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
-    except OSError:
-        pass
-    try:
-        lock_file.close()
-    except OSError:
-        pass
+    1. **不変条件の破れ**（設計 付録 A / コンセプト正典 C7「同じ状態に書き手を 2 つ置かない」）。
+       共有バス（`--git`）で 2 台が同じ run に参加すると、両者が `claims/<node>/worker-1.json`
+       と `events/worker-1.jsonl` という**同一パス**へ書く。「クレーマごとにファイル名が
+       分かれるので add/add コンフリクトにならない」という前提が成立しなくなる。
+    2. **観測できない**。`agent-flow status` の `@who`・dashboard の run 詳細・バス上の記録の
+       どれを見ても「どの PC がどの work ノードを実行したか」が分からない。
+
+    綴りは `protocol.safe_name`（板・バス共通の名義規則）に通す。明示 `node_id` の正規化は
+    ここでは行わない——明示値を正規化するかは静止点案件（P0 詳細設計 §8 と総覧で方針が
+    割れている）なので、既定値の導出（`_default_daemon_id`）と同じ扱いに留める。
+
+    移行注意: 実行途中の run を跨いで名義が変わると、旧名義の生存リースが切れるまで
+    新名義がタイブレークで負ける（heal worker が別名義で起きるのと同じ挙動で、
+    リース失効が吸収する）。"""
+    node = protocol.safe_name(_default_daemon_id(args))
+    tag = f"w{index}" if heal is None else f"h{heal}w{index}"
+    return f"{node}-{tag}"
 
 
 def _run_lease_window(args) -> float:
@@ -213,7 +180,7 @@ def _adopt_orphan_runs(bus: Bus, daemon_id: str, owned: set, lease_window: float
                 continue
             why = f"進捗なしの連続再開が上限超過（max_resumes={max_r}）"
         if bus.mark_run_failed(req_id, f"orphaned: owning daemon が消失（生存リース切れ・{why}）"):
-            bus.clear_waits_for_run(req_id)  # 残 park で viewer が canceled 相当を公園表示しない
+            bus.clear_waits_for_run(req_id)  # 残 park で viewer が cancelled 相当を公園表示しない
             bus.run_view(req_id).event(daemon_id, "run-orphaned", run=req_id)
             bus.sync_push(f"run {req_id} failed: orphaned（生存リース切れ・{why}）")
             failed.append(req_id)
@@ -228,7 +195,7 @@ def _heal_failed_runs(bus: Bus, daemon_id: str, owned: set, lease_window: float,
     一時不調なので、待ってから run 単位でやり直すのが正しい回復（done ノードは温存）。
     quota は heal_quota=true のときだけ・長い cooldown（quota_cooldown）で回収する。
 
-    触らないもの: canceled（人の意思）・superseded / inherit_from 予約済み（新世代が拾う）・
+    触らないもの: cancelled（人の意思）・superseded / inherit_from 予約済み（新世代が拾う）・
     heal_exhausted（進捗なし heal が max_heals 超過）・タグ無しの内容失敗・auth/env（人が直す）。
     分散時は reclaim_request の claim プロトコルで 1 daemon だけが heal する。
     戻り値: {run_id: orchestrator プロセス}。"""
@@ -282,15 +249,21 @@ def _spawn_orchestrator(base: list, args, req_id: str, req: dict):
     ws_args = ["--workspace", json.dumps(ws, ensure_ascii=False)] if ws else []
     for r in (req.get("references") or []):   # 参照リポジトリも run meta へ伝搬する
         ws_args += ["--reference", json.dumps(r, ensure_ascii=False)]
+    vp = req.get("verification_plan")         # 統一 verify の検証計画も run meta へ伝搬する
+    if isinstance(vp, dict):
+        ws_args += ["--verification-plan", json.dumps(vp, ensure_ascii=False)]
     inh = req.get("inherit_from")             # リトライ: 先行 run の引き継ぎ元を orchestrate へ
+    deleg = req.get("delegation")             # 委譲公示板（agent-board）由来の来歴を meta へ引き回す
     return subprocess.Popen(base + ws_args + [
-        "--granularity", str(getattr(args, "granularity", "finest") or "finest"),
+        "--granularity", str(getattr(args, "granularity", "auto") or "auto"),
         *(["--exemplar-first"] if getattr(args, "exemplar_first", False) else []),
         "--run-id", req_id, "orchestrate", "--request", req["request"],
         # --inherit-from は orchestrate サブコマンドの引数（グローバルではない）。
         # サブコマンド名より前に置くと親 parser に拾われ usage エラーで即死するため、
         # 必ず "orchestrate" の後ろに付ける（cmd_run の起動と同じ並び）。
         *(["--inherit-from", inh] if inh else []),
+        *(["--delegation", json.dumps(deleg, ensure_ascii=False)]
+          if isinstance(deleg, dict) and deleg.get("id") else []),
         "--planner", args.planner, "--executor", args.executor,
         "--max-iterations", str(args.max_iterations),
         "--max-fanout", str(args.max_fanout),
@@ -300,25 +273,38 @@ def _spawn_orchestrator(base: list, args, req_id: str, req: dict):
     ])
 
 
-def _spawn_worker(base: list, args, rid: str, wid: str):
-    """run rid のワーカーを1つ base argv から起動する（idle-exit のオンデマンド worker）。
-    親（daemon）で解決した executor プラグイン設定（例 gitlab: の repo_url/conn_label）を
-    `AGENT_FLOW_EXECUTOR_CONFIG` として worker の環境に明示的に渡す。worker が `--config` を
-    再解決できない/別の設定を拾う場合でも、親の設定が確実に届くようにする。"""
-    env = os.environ.copy()
-    cfgjson = resolve_executor_config_json(args)
-    if cfgjson is not None:
-        env["AGENT_FLOW_EXECUTOR_CONFIG"] = cfgjson
-    # park & poll: daemon は service_waits で park を面倒見るので worker の deferral を有効化する
-    # （承認待ちで worker スロットをブロックさせず、承認待ちは waits/ へ退避させる）。
-    # 設定 defer_waits=false のときは有効化せず、従来モード（worker がブロック待機）に戻す。
-    if _defer_enabled(args):
-        env["AGENT_FLOW_DEFER_WAITS"] = "1"
-    return subprocess.Popen(base + [
-        "--run-id", rid, "work", "--node-id", wid,
-        "--executor", args.executor, "--model_opt", args.model or "",
-        "--poll", str(args.poll), "--idle-exit",
-    ], env=env)
+# run とは独立に短命ワーカーを湧かせる `_spawn_worker`（`--idle-exit` のオンデマンド worker）は
+# ここにあったが、常駐一本化で呼び手（daemon ループ）が無くなったため削除した。ワーカーは
+# `cmd_run` が run ごとに `--workers` 個だけ起こす。executor 設定の子への伝搬は
+# `resolve_executor_config_json` に残っており、`make_executor` が同じ値を使う。
+
+
+def _apply_inbox_request(bus: Bus, args) -> None:
+    """inbox 要求（`inbox/<run-id>.json`）の内容を run の引数へ流し込む（`--from-inbox`）。
+
+    受理の判断（板の落札・claim）と実行は別プロセスに分かれる（`participate` が受理し、
+    ノード常駐体が `run --from-inbox` を起こす）。要求文・書込先ワークスペース・参照リポジトリ・
+    引き継ぎ元は inbox 要求が唯一の権威なので、呼び出し側に argv で転記させず**ここで読む**
+    ——転記させると項目が増えるたびに常駐体側の組み立てを直す必要が出て、抜けたぶんだけ
+    静かに機能が落ちる（workspace が落ちれば成果が別の場所に書かれる）。
+    要求が無ければ何もしない（run_id 指定の通常の再開として続行する）。"""
+    rec = bus.read_inbox(str(args.run_id or "").strip()) if getattr(args, "run_id", None) else None
+    if not rec:
+        return
+    if not getattr(args, "request", ""):
+        args.request = rec.get("request", "")
+    ws = rec.get("workspace")
+    if ws and not getattr(args, "workspace", None):
+        args.workspace = json.dumps(ws, ensure_ascii=False)
+    refs = rec.get("references") or []
+    if refs and not getattr(args, "references", None):
+        args.references = [json.dumps(r, ensure_ascii=False) for r in refs]
+    inh = rec.get("inherit_from")
+    if inh and not getattr(args, "inherit_from", None):
+        args.inherit_from = inh
+    vp = rec.get("verification_plan")
+    if isinstance(vp, dict) and not getattr(args, "verification_plan", None):
+        args.verification_plan = json.dumps(vp, ensure_ascii=False)
 
 
 def cmd_run(args) -> int:
@@ -331,6 +317,8 @@ def cmd_run(args) -> int:
         os.environ["AGENT_FLOW_NO_SESSION_COMMANDS"] = "1"
     probe = make_bus(args, "run")
     probe.sync_pull()
+    if getattr(args, "from_inbox", False):
+        _apply_inbox_request(probe, args)
     resuming = bool(args.run_id) and probe.run_exists(args.run_id)
     if resuming:
         meta = probe.run_meta(args.run_id)
@@ -368,7 +356,9 @@ def cmd_run(args) -> int:
         base += ["--workspace", args.workspace]   # 唯一の書込先を orchestrator/worker へ伝搬
     for r in (getattr(args, "references", None) or []):
         base += ["--reference", r]                # 参照リポジトリを orchestrator/worker へ伝搬
-    base += ["--granularity", str(getattr(args, "granularity", "finest") or "finest")]  # 分解粒度
+    if getattr(args, "verification_plan", None):
+        base += ["--verification-plan", args.verification_plan]  # 統一 verify の計画を orchestrator へ
+    base += ["--granularity", str(getattr(args, "granularity", "auto") or "auto")]  # 分解粒度
     if getattr(args, "exemplar_first", False):
         base += ["--exemplar-first"]   # 見本先行分解を orchestrator へ伝搬
     mode = _mode_string(args, bus_root)
@@ -397,7 +387,7 @@ def cmd_run(args) -> int:
     else:
         worker_env.pop("AGENT_FLOW_DEFER_WAITS", None)
     for i in range(args.workers):
-        wid = f"worker-{i+1}"
+        wid = worker_who(args, i + 1)
         w = subprocess.Popen(base + [
             "work", "--node-id", wid, "--executor", args.executor,
             "--model_opt", args.model or "", "--poll", str(args.poll),
@@ -440,7 +430,7 @@ def cmd_run(args) -> int:
             st = bus.get_status()
             if st in TERMINAL:
                 # auto-heal（レイヤ4・daemon 無し経路）: transient 起因の failed なら cooldown 後に
-                # 同一プロセス内で再開する（done 温存・進捗リセット付き max_heals・canceled は対象外）。
+                # 同一プロセス内で再開する（done 温存・進捗リセット付き max_heals・cancelled は対象外）。
                 healed = False
                 max_h = int(getattr(args, "max_heals", 2) or 0)
                 if (st == "failed" and getattr(args, "auto_heal", True) and max_h > 0
@@ -471,24 +461,29 @@ def cmd_run(args) -> int:
                                 "--max-iterations", str(args.max_iterations),
                                 "--max-fanout", str(args.max_fanout),
                                 "--max-retries", str(args.max_retries),
+                                # 初回起動と同じ検証 gate 設定で起こす。落とすと、CLI で
+                                # --no-review を明示した run が heal 後だけ gate 付きに戻る。
+                                *(["--review"] if args.review is True
+                                  else ["--no-review"] if args.review is False else []),
                                 "--model_opt", args.model or "",
                                 "--poll", str(args.poll), "--node-id", "orchestrator",
                             ])
                             procs.append((f"orchestrator-heal{n}", orch))
                             for i in range(args.workers):
+                                hid = worker_who(args, i + 1, heal=n)
                                 w = subprocess.Popen(base + [
-                                    "work", "--node-id", f"worker-heal{n}-{i+1}",
+                                    "work", "--node-id", hid,
                                     "--executor", args.executor,
                                     "--model_opt", args.model or "", "--poll", str(args.poll),
                                 ], env=worker_env)
-                                procs.append((f"worker-heal{n}-{i+1}", w))
+                                procs.append((hid, w))
                             healed = True
                 if healed:
                     continue
                 print(f"\n>>> run {bus.get_status()}。ワーカーを停止します。", flush=True)
                 break
             if bus.is_canceled_requested(run_id) and bus.get_status() not in TERMINAL:
-                # cancel 指示: この run を canceled に終端化し、park の再ポーリングを止め、
+                # cancel 指示: この run を cancelled に終端化し、park の再ポーリングを止め、
                 # 子（orchestrator/worker）を停止する。--close-issues は cmd_cancel 側で実施済み。
                 bus.mark_canceled(run_id, bus.cancel_info(run_id).get("reason") or "cancel 指示")
                 bus.clear_waits_for_run(run_id)
@@ -513,12 +508,12 @@ def cmd_run(args) -> int:
     if final:
         print("\n=== 最終結果 ===")
         print(final.get("summary", ""))
-    # run が failed/canceled で終端したら非 0 を返す。failed は上位＝agent-project が
-    # act 失敗として検知しリトライできるようにする。canceled も 0 だと verify=true で偽 done
+    # run が failed/cancelled で終端したら非 0 を返す。failed は上位＝agent-project が
+    # act 失敗として検知しリトライできるようにする。cancelled も 0 だと verify=true で偽 done
     # になる（agent-project は戻り値で成否を見る）。done は 0。非終端のままなら failed 扱い。
     st = bus.get_status()
     if st == "done":
         return 0
-    if st == "canceled":
+    if st == "cancelled":
         return 2
     return 1

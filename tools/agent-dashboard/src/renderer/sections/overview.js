@@ -32,26 +32,50 @@ async function submitPromoteCharter(name) {
   if (!res) return;
   uiLog('promoteCharter', res);
   toast(`初版をバージョン「${res.name}」にしました（タスク ${res.tagged} 件を引き継ぎ）`, true);
-  gitPushAfterWrite(`agent-dashboard: promote charter.md to charters/${res.name}.md`, p.dir);
   await reloadProject();
 }
 
-// 稼働操作（起動 / pause / resume / stop）。pause/resume/stop は commands/ ドロップ
-// （＋git push）で届き、リモート本体（WSL・別ホスト）の watch が同期間隔内に取り込む。
-// 起動だけはドロップでは届かない（停止中の本体は commands/ を読めない）ため、
-// この PC の CLI で `agent-project start` を実行する（startAgentProject）。
+// 稼働操作（pause / resume / stop）は commands/ ドロップで届き、実行エンジンが取り込む。
+// 起動だけはこの画面からは行わない——止まっているエンジンは commands/ を
+// 読めず、この PC から CLI で起こすと WSL 側の本体と二重に立つ。上げ直しは OS の起動系の
+// 役目なので、ここは起動コマンドを案内するところまでを担う。
+// 複数 PC 分散運用のノード別生存一覧（案6）。status/<node>.json 由来の p.nodes を表示する。
+// どのノード（PC）が生きているか・応答なし（heartbeat 途絶）かを一目で見せる。ノードが
+// 無い（無名エンジン・単一 PC）ときは何も出さない＝従来の見た目を変えない。純関数。
+function nodesSummaryHtml(nodes) {
+  const list = Array.isArray(nodes) ? nodes : [];
+  if (!list.length) return '';
+  const rows = list
+    .map((n) => {
+      const alive = n.running ? 'ok' : 'stale';
+      const dot = n.running ? '🟢' : '🔴';
+      const age =
+        n.ageSec == null
+          ? ''
+          : n.running
+          ? '稼働中'
+          : `応答なし（最終確認 ${typeof humanizeAge === 'function' ? humanizeAge(n.ageSec * 1000) : `${Math.round(n.ageSec)}秒前`}）`;
+      const host = n.host ? ` <span class="muted">@${esc(n.host)}</span>` : '';
+      return `<li class="node-row node-${alive}">${dot} <b>${esc(n.node)}</b>${host} <span class="muted">${esc(age)}</span></li>`;
+    })
+    .join('');
+  return `<section class="summary-card nodes-card" aria-label="実行する PC の一覧">
+    <h2 class="summary-kicker">実行する PC</h2>
+    <ul class="nodes-list">${rows}</ul>
+    <p class="muted">応答が無い PC に割り当てたタスクは、担当を付け替えるか要対応から再実行できます。</p>
+  </section>`;
+}
+
 function lifecycleCardHtml(p) {
   const live = p.liveness || {};
   const paused = !!live.paused;
   if (!live.running) {
-    // 本体が停止中: pause/stop を出しても届かない（誰も読まない）。起動だけを出す
+    // 停止中: pause/stop を出しても届かない（誰も読まない）。次にすることだけを出す
     return `
     <div class="card full">
       <h3>自動実行</h3>
       <div class="row">
-        <button class="chip primary-inline" data-start-kiro
-          title="このPCで自動実行を開始します">自動実行を開始</button>
-        <span class="muted">停止中です。開始するまでタスクは進みません。</span>
+        <span class="muted">停止中です。実行する PC で <code>agent-project serve</code> を起動してください。</span>
       </div>
     </div>`;
   }
@@ -84,52 +108,14 @@ async function withActionLock(key, fn) {
   }
 }
 
-// 本体（agent-project）の起動。確認 → CLI 実行 → 結果を平易に伝える。
-// 本体が別マシンの構成では「この PC が実行役になる」ことを事前に言い、
-// CLI が無ければ人が本体マシンで打つコマンドをそのまま見せる。
-async function startAgentProject() {
-  return withActionLock('start-project', _startAgentProject);
-}
-
-async function _startAgentProject() {
-  const p = state.project;
-  if (!p) return;
-  const yes = await confirmDialog(
-    `${p.name}: この PC で本体（agent-project の常駐）を起動します。\n` +
-      '以後この PC がタスクを実行します。\n' +
-      'プロジェクトの本体が別のマシン（WSL・別 PC）にある場合は、そちらで\n' +
-      '  agent-project start\nを実行するほうが適切です。\nこの PC で起動しますか？'
-  );
-  if (!yes) return;
-  try {
-    const res = await api.startProject(p.dir);
-    uiLog('start', res);
-    toast('本体を起動しました（タスクの消化が始まります。表示への反映まで少し時間がかかります）', true);
-  } catch (err) {
-    uiLog('start failed', String(err.message || err));
-    await confirmDialog(
-      'この PC からは起動できませんでした（agent-project CLI が見つからないか失敗）。\n' +
-        `理由: ${String(err.message || err).slice(0, 200)}\n\n` +
-        '本体のマシンで次のコマンドを実行してください（このプロジェクトのフォルダで）:\n' +
-        '  agent-project start\n\n' +
-        'CLI の場所は ⚙ 設定の「agent-project CLI」でも指定できます。'
-    );
-    return;
-  }
-  await refreshAll();
-}
-
 const LIFECYCLE_CONFIRMS = {
   pause: (p) => `${p.name}: watch の消化を一時停止します（idle 監視・指示の取り込みは継続）。よろしいですか？`,
   resume: (p) => `${p.name}: 一時停止を解除して消化を再開します。よろしいですか？`,
   stop: (p) =>
-    `${p.name}: 本体プロセスを停止します。\n再開はプロジェクトのマシン（WSL 等）で agent-project start を実行してください。よろしいですか？`,
+    `${p.name}: このプロジェクトの自動実行を停止します。\n再開は実行する PC で agent-project serve を起動してください。よろしいですか？`,
 };
 
 function bindLifecycleButtons(root) {
-  for (const b of root.querySelectorAll('button[data-start-kiro]')) {
-    b.addEventListener('click', () => startAgentProject());
-  }
   for (const b of root.querySelectorAll('button[data-lifecycle]')) {
     b.addEventListener('click', async () => {
       const p = state.project;
@@ -145,7 +131,6 @@ function bindLifecycleButtons(root) {
         return true;
       });
       if (ok) {
-        gitPushAfterWrite(`agent-dashboard: ${action}`, p.dir);
         await reloadProject();
       }
     });
@@ -163,7 +148,9 @@ function overviewSummary(p, flowRuns) {
   const done = (p.archive || []).length;
   const total = done + (p.backlog || []).filter((t) => t.status !== 'rejected').length;
   const progress = total ? Math.round((done / total) * 100) : 0;
-  const activeRuns = (flowRuns || []).filter((r) => !['done', 'failed', 'canceled'].includes(String(r.status))).length;
+  // 'canceled' は語彙統一前に書かれた meta.json の旧綴り（読み取り互換）。
+  const activeRuns = (flowRuns || []).filter(
+    (r) => !['done', 'failed', 'cancelled', 'canceled'].includes(String(r.status))).length;
 
   let headline;
   let tone;
@@ -272,7 +259,6 @@ async function deleteOverviewVersion(name) {
   const res = await guard('計画バージョンの削除', () => api.deleteCharter(p.dir, name));
   if (!res) return;
   toast(`計画バージョン「${name}」を削除しました`, true);
-  gitPushAfterWrite(`agent-dashboard: delete charters/${name}.md`, p.dir);
   await reloadProject();
 }
 
@@ -285,6 +271,7 @@ function renderOverview() {
   }
 
   const s = overviewSummary(p, state.flowRuns);
+  const staleNodes = (p.nodes || []).filter((node) => !node.running);
   const goalText = overviewGoal(p);
   const deliveryRows = (p.delivery || [])
     .slice(-3)
@@ -295,7 +282,7 @@ function renderOverview() {
     ? s.live.paused
       ? '<button class="summary-link" data-lifecycle="resume">再開</button>'
       : '<button class="summary-link secondary" data-lifecycle="pause">一時停止</button>'
-    : '<button class="summary-link" data-start-kiro>自動実行を開始</button>';
+    : '<span class="muted">停止中（実行する PC で agent-project serve を起動してください）</span>';
 
   el.innerHTML = `
     <div class="overview-shell">
@@ -314,6 +301,7 @@ function renderOverview() {
         <div class="summary-progress-label">${s.total ? `${s.done} / ${s.total} 件完了（${s.progress}%）` : 'タスクはまだありません'}</div>
       </section>
 
+      ${nodesSummaryHtml(p.nodes)}
       <div class="overview-grid">
         <section class="summary-card action-card ${s.undecided.length ? 'has-action' : ''}" aria-labelledby="summary-action-title">
           <h2 class="summary-kicker" id="summary-action-title">あなたの対応</h2>
@@ -321,8 +309,12 @@ function renderOverview() {
             ? `<div class="summary-number">${s.undecided.length}<span>件</span></div>
                <p>確認または判断が必要です。</p>
                <button class="summary-link" data-summary-tab="needs">対応する</button>`
-            : `<div class="summary-status-ok">対応はありません</div>
-               <p class="muted">このまま進行を見守れます。</p>`}
+            : staleNodes.length
+              ? `<div class="summary-number">${staleNodes.length}<span>台</span></div>
+                 <p>応答のない PC があります。実行中の作業と担当を確認してください。</p>
+                 <button class="summary-link" data-summary-tab="flow">実行を確認する</button>`
+              : `<div class="summary-status-ok">対応はありません</div>
+                 <p class="muted">このまま進行を見守れます。</p>`}
         </section>
 
         <section class="summary-card progress-card" aria-labelledby="summary-progress-title">
@@ -390,7 +382,7 @@ function renderProjectSettings() {
       <div>
         <span class="summary-kicker">選択中のプロジェクトに適用</span>
         <h2>プロジェクト設定</h2>
-        <p class="muted">${esc(p.name)} の目的、ルール、対象リポジトリを管理します。</p>
+        <p class="muted">${esc(p.name)} の目的やルールを変更できます。</p>
       </div>
     </header>
     <section class="project-settings-card" aria-labelledby="project-settings-definition-title">
@@ -407,8 +399,8 @@ function renderProjectSettings() {
     <section class="project-settings-card" aria-labelledby="project-settings-technical-title">
       <span class="summary-kicker">診断</span>
       <h3 id="project-settings-technical-title">調査と高度な設定</h3>
-      <p class="muted">実行ID、内部ログ、同期方式などは通常の操作には必要ありません。</p>
-      <button type="button" id="btn-project-technical-info">詳細情報を開く</button>
+      <p class="muted">問題を調べるときだけ使います。</p>
+      <button type="button" id="btn-project-technical-info">診断情報を開く</button>
     </section>
     ${danger}
   </div>`;
@@ -422,43 +414,27 @@ function renderProjectSettings() {
   if (technicalInfo) technicalInfo.addEventListener('click', () => openTechnicalInfo());
 }
 
-// プロジェクトのリセット（危険操作）。charter.md 以外の全データを削除し、バスの
-// agent-flow daemon を停止する。charter が残るので、稼働中の agent-project は次パスで
-// charter から再分解して最初からやり直す（done の記録・needs・決定記録もすべて消える）。
+// プロジェクトのリセット（危険操作）。charter.md 以外の全データを削除する。
+// charter が残るので、「バックログを分解」を実行すれば最初からやり直せる
+// （分解は人の明示操作＝リセット直後に本体が勝手に作り直すことはない。
+//  done の記録・needs・決定記録もすべて消える）。
 async function resetProject() {
   const p = state.project;
   if (!p || !p.charter) return;
-  const sharedBusNote =
-    p.busSource && p.busSource !== 'project'
-      ? '\n⚠ 実行基盤を他プロジェクトと共有しています: 停止は他プロジェクトの実行にも影響します。'
-      : '';
   const yes = await confirmDialog(
-    `${p.name}: プロジェクト憲章（charter.md）以外の全データを削除し、実行エンジンを停止します。\n` +
-      `削除対象: 計画バージョン・タスク ${p.backlog.length} 件・完了記録 ${p.archive.length} 件・要対応 ${p.needs.length} 件・` +
-      `実行中 ${p.claims.length} 件、および履歴・納品記録などの全ファイル。\n` +
-      `ファイルはゴミ箱へ移動します（ゴミ箱の無い環境では完全削除）。${sharedBusNote}\n` +
-      `憲章はプロジェクト全体の前提（マスター）として残ります。マスターは分解されないので、` +
-      `リセット後は待機状態になり、計画バージョンを追加すると作業が再開します。よろしいですか？`
+    `${p.name} のタスク、履歴、成果をすべて削除して、最初からやり直します。\n` +
+      'プロジェクトの目的と完了条件は残ります。この操作は元に戻せません。続けますか？'
   );
   if (!yes) return;
   const ok = await guard('プロジェクトのリセット', async () => {
     const res = await api.resetProject(p.dir, p.workspace);
     uiLog('reset', res);
-    const d = res.daemon || {};
-    const daemonMsg = !d.running
-      ? '実行エンジンは稼働していませんでした'
-      : d.stopped
-        ? '実行エンジンを停止しました'
-        : d.remote
-          ? '実行エンジンは別のマシンで稼働中のため、そちらで停止してください'
-          : '実行エンジンを停止できませんでした';
     const errMsg = res.errors && res.errors.length ? `／削除できなかったもの ${res.errors.length} 件` : '';
     const masterMsg = res.masterized ? '／憲章をマスターに整えました' : '';
-    toast(`${p.name}: ${res.removed.length} 件を削除（憲章は残しました）${masterMsg}${errMsg}。${daemonMsg}`, !errMsg);
+    toast(`${p.name}: ${res.removed.length} 件を削除（憲章は残しました）${masterMsg}${errMsg}`, !errMsg);
     return true;
   });
   if (ok) {
-    gitPushAfterWrite('agent-dashboard: project reset (keep charter)', p.dir);
     await reloadProject();
   }
 }

@@ -19,17 +19,25 @@
     }
     return `<div class="participation-grid">${candidates.map((candidate) => {
       const status = (statuses || {})[candidate.key] || {};
-      const type = candidate.workload === 'amigos' ? 'ミッション' : 'プロジェクト作業';
+      const type = candidate.workload === 'amigos'
+        ? 'ミッション'
+        : candidate.workload === 'board' ? 'よその端末からの依頼' : 'プロジェクト作業';
       const detail = candidate.workload === 'flow' && candidate.available > 1
         ? `実行できる作業 ${candidate.available} 件`
         : candidate.context || '';
+      // 引き受けられない端末では**理由を添えて押させない**。押せるのに何も起きない
+      // 状態を作らないのが、この画面に板を載せる条件だった。
+      const joined = status.joined || candidate.joined;
+      const blocked = !!candidate.disabled;
       const label = status.busy
         ? '参加しています…'
-        : status.joined ? '参加を依頼済み' : candidate.actionLabel || '参加する';
+        : joined ? '参加を依頼済み' : candidate.actionLabel || '参加する';
       const feedback = status.error
         ? `<p class="participation-feedback is-error" role="alert">${escHtml(status.error)}</p>`
         : status.message
         ? `<p class="participation-feedback" role="status">${escHtml(status.message)}</p>`
+        : blocked
+        ? `<p class="participation-feedback" role="status">${escHtml(candidate.reason)}</p>`
         : '';
       return `<article class="participation-card">
         <div class="participation-card-heading">
@@ -40,7 +48,7 @@
         ${detail ? `<p class="participation-context">${escHtml(detail)}</p>` : ''}
         <div class="participation-card-action">
           <button type="button" class="primary-inline participation-join"
-            data-participation-key="${escHtml(candidate.key)}"${status.busy || status.joined ? ' disabled' : ''}>${escHtml(label)}</button>
+            data-participation-key="${escHtml(candidate.key)}"${status.busy || joined || blocked ? ' disabled' : ''}>${escHtml(label)}</button>
         </div>
         ${feedback}
       </article>`;
@@ -48,6 +56,15 @@
   }
 
   async function joinCandidate(candidate, api) {
+    if (candidate.workload === 'board') {
+      // 板へ bid を直接書かず、この端末の常駐体へ「引き受ける」意思を渡す。
+      // 入札の名義と lease は常駐体に一元化する——二重落札を防ぐ規則を UI に複製しない。
+      await api.delegationNodeCommand({
+        action: 'board-bid', id: candidate.id, boardRepo: candidate.boardRepo,
+        reason: 'agent-dashboard の参加画面から引き受け',
+      });
+      return { message: '引き受けを依頼しました。落札すると「実行」に現れます。' };
+    }
     if (candidate.workload === 'flow') {
       await api.participationFlowJoin({
         busDir: candidate.busDir,
@@ -81,7 +98,11 @@
           projectName,
         })
       : [];
-    return [...flow, ...model.amigosCandidates(appState.amigos)];
+    const board = model.boardCandidates(appState.boardViews || [], {
+      board: appState.boardStatus || null,
+      commands: appState.boardCommands || {},
+    });
+    return [...flow, ...model.amigosCandidates(appState.amigos), ...board];
   }
 
   function setVisibility(button, pane, visible) {

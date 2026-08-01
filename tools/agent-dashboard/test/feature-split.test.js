@@ -31,11 +31,18 @@ test('各 feature が registerIpc / preloadApi / configDefaults を持つ', () =
   }
 });
 
-test('agent-project の設定既定に projects / agent がある', () => {
+test('agent-project の設定既定に engine / projects / agent がある', () => {
   const stack = loadFeatures().find((f) => f.id === 'agent-project');
   assert.ok(stack.configDefaults.projects);
   assert.ok(stack.configDefaults.agent);
-  assert.strictEqual(stack.configDefaults.projects.command, 'agent-project');
+  // 実行エンジンの在り処が設定の入口（プロジェクト一覧はここから受け取る）
+  assert.strictEqual(stack.configDefaults.engine.distro, '');
+  assert.strictEqual(stack.configDefaults.engine.home, '');
+  // 本体を CLI で起こす経路は削除済み（W2-2）。設定にも残さない
+  assert.strictEqual(stack.configDefaults.projects.command, undefined);
+  assert.strictEqual(stack.configDefaults.projects.roots, undefined);
+  assert.strictEqual(stack.configDefaults.projects.gitAutoPush, undefined);
+  assert.strictEqual(stack.configDefaults.projects.flowLockDir, undefined);
 });
 
 test('agent-project preload に discover / flowRuns がある', () => {
@@ -82,6 +89,7 @@ test('cowork は定期実行と定型業務 API を登録する', () => {
   const api = cowork.preloadApi();
   assert.strictEqual(typeof api.coworkOverview, 'function');
   assert.strictEqual(typeof api.coworkSaveWork, 'function');
+  assert.strictEqual(typeof api.coworkGenerateStateMachine, 'function');
   const calls = [];
   const overview = api.coworkOverview((channel, args) => {
     calls.push([channel, args]);
@@ -105,12 +113,14 @@ test('amigos はミッションビューとノード予算 API を登録する',
     saveConfig: () => ({}),
   });
   assert.deepStrictEqual(registered.sort(),
-    ['amigos:accept', 'amigos:budgetSave', 'amigos:claim', 'amigos:deliveryContents',
-     'amigos:deliveryExport', 'amigos:overview', 'amigos:reject', 'amigos:request'].sort());
+    ['amigos:accept', 'amigos:budgetSave', 'amigos:buildTeam', 'amigos:claim',
+     'amigos:deliveryContents', 'amigos:deliveryExport', 'amigos:overview', 'amigos:reject',
+     'amigos:request'].sort());
   const api = amigos.preloadApi();
   assert.strictEqual(typeof api.amigosOverview, 'function');
   assert.strictEqual(typeof api.amigosBudgetSave, 'function');
   assert.strictEqual(typeof api.amigosRequest, 'function');
+  assert.strictEqual(typeof api.amigosBuildTeam, 'function');
   assert.strictEqual(typeof api.amigosClaim, 'function');
   assert.strictEqual(typeof api.amigosAccept, 'function');
   assert.strictEqual(typeof api.amigosReject, 'function');
@@ -219,10 +229,12 @@ test('delegation は共通封筒の投函・一覧 API を登録する', () => {
   });
   assert.deepStrictEqual(registered.sort(),
     ['delegation:accept', 'delegation:award', 'delegation:cancel', 'delegation:list',
+     'delegation:nodeCommand', 'delegation:nodes',
      'delegation:post', 'delegation:reject'].sort());
   const api = del.preloadApi();
   for (const name of ['delegationList', 'delegationPost', 'delegationAward',
-    'delegationAccept', 'delegationReject', 'delegationCancel']) {
+    'delegationAccept', 'delegationReject', 'delegationCancel',
+    'delegationNodes', 'delegationNodeCommand']) {
     assert.strictEqual(typeof api[name], 'function', name);
   }
   const calls = [];

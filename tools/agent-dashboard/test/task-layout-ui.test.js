@@ -48,6 +48,7 @@ const taskListItemHtml = new Function(
     statusText: '実行待ち',
     priority: 8,
     priorityText: '高 8',
+    owner: '',
     nextAction: '自動で実行されます',
   });
 }

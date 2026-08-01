@@ -6,21 +6,28 @@
 //   claims/<id>/ に lease 内の claim があれば claimed
 //   tasks/<id>.json（または graph.json のノード）だけなら pending
 // 依存未達の pending は表示上 waiting として区別する（agent-flow に明示状態は無い）。
-// run の生存（orchestrator が駆動中か）も meta.json の生存リース
-// （orch_lease_until / heartbeat_at）から、daemon の稼働はロックファイル
-// （$TMPDIR/agent-flow-locks/daemon-<sha1>.lock。同一ホストのみ）から、無ければ
-// <bus>/status.json（state_git 越しに同期された生存信号。別ホスト構成のフォールバック）
-// から、いずれもファイルだけで判定する。
+// run の生存（orchestrator が駆動中か）は meta.json の生存リース
+// （orch_lease_until / heartbeat_at）から、ファイルだけで判定する。エンジンそのものの
+// 稼働判定はこのモジュールが持たない（常駐一本化で engine/status.json へ一本化した。
+// 末尾の注記を参照）。
 
 const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const project = require('./project');
 
-// 終端 status（agent-flow 本体と一致させる）。canceled は人の明示指示による恒久停止。
-// これに含めないと canceled run が「応答なし/実行中」に誤分類され、再投入/削除の可否もずれる。
-const TERMINAL = new Set(['done', 'failed', 'canceled']);
+// 終端 status（agent-flow 本体 = agentcore.vocab.TERMINAL_READ と一致させる）。cancelled は
+// 人の明示指示による恒久停止。これに含めないと cancelled run が「応答なし/実行中」に誤分類され、
+// 再投入/削除の可否もずれる。旧綴り 'canceled'（語彙統一 W0-9 より前に書かれた meta.json）も
+// 読み取りだけは終端として受け入れる——**書くのは正典の 'cancelled' のみ**。
+const CANCELLED = 'cancelled';
+const CANCELLED_SPELLINGS = new Set([CANCELLED, 'canceled']);
+const TERMINAL = new Set(['done', 'failed', ...CANCELLED_SPELLINGS]);
+
+// meta.status が「人が中止した」を表すか（新旧どちらの綴りでも真）。
+function isCancelled(status) {
+  return CANCELLED_SPELLINGS.has(String(status || ''));
+}
 
 // 生存リース未記録の run（heartbeat 前に owner が死んだ／古い agent-flow の run）を
 // 停止扱いにするまでの猶予秒。agent-flow の孤児回収リース（poll*10、最低 120s）より
@@ -96,7 +103,7 @@ function nodeTaskToken(runId, nodeId) {
 // gitlab executor の決着（承認/却下）をビュアー側で「先読み」する（クローズ済みイシューの反映）
 // ---------------------------------------------------------------------------
 // gitlab executor は「関連イシューがクローズされた」ことを result で bus に書くが、それは
-// worker が決着ループでクローズを検知したときだけ。非ブロッキング委譲（act_async）＋PC の
+// worker が決着ループでクローズを検知したときだけ。非ブロッキング委譲（板）＋PC の
 // 日次停止などで worker が止まっている間に人がイシューを承認クローズすると、bus には result が
 // 無いままなので、ビュアーのタスクグラフはノードを「実行中」のまま表示してしまう（＝完了に
 // できない）。そこで、executor が result を書くのと同じ信号（関連 MR の状態 → status ラベル →
@@ -193,7 +200,7 @@ function readRunMeta(busDir, runId) {
 // 拾わない無反応ボタン）へ落ちる。
 // 旧データ互換で kp/<task-id>（kiro 改名前）も受ける。
 // task_branch_prefix が設定で ap/ 以外のときも、単一段の prefix/<task-id> を受け取る
-// （取れないと flow:resubmit が inbox 投入＝daemon 無し既定では無反応ボタンになる）。
+// （取れないと flow:resubmit が inbox 投入＝誰も拾わない無反応ボタンになる）。
 function taskIdOfRun(runId, meta) {
   const fromId = parseRunId(runId).taskId;
   if (fromId) return fromId;
@@ -236,6 +243,10 @@ function readRun(runDir) {
     const result = readJson(path.join(runDir, 'results', `${id}.json`));
     let state = 'pending';
     let who = null;
+    // 実行した PC（結果レコードの node。agent-flow の worker が書く）。who の綴りから
+    // 推測はしない——名義の作り方の 2 実装目になる（同じ理由で agent-flow 側も
+    // `results/<node>.json` の node フィールドを正典にしている）。
+    let pc = null;
     let finishedAt = null;
     let output = null;
     let data = null;
@@ -248,6 +259,7 @@ function readRun(runDir) {
     if (result) {
       state = result.status === 'failed' ? 'failed' : 'done';
       who = result.who || null;
+      pc = result.node || null;
       finishedAt = result.finished_at || null;
       output = typeof result.output === 'string' ? result.output : null;
       data = result.data !== undefined ? result.data : null;
@@ -300,6 +312,7 @@ function readRun(runDir) {
       retries: Number(spec.retries || 0),
       state,
       who,
+      pc, // 実行した PC（結果に記録があるときだけ。旧い結果は null）
       finishedAt,
       heartbeatAt,
       leaseUntil,
@@ -385,7 +398,7 @@ function readRun(runDir) {
     // owner が消えた」孤児の可能性を示す（agent-flow が回収するまでの間の表示）
     alive: TERMINAL.has(status) ? null : runAlive(meta, now),
     heartbeatAt: meta.heartbeat_at || null,
-    resumeCount: Number(meta.resume_count || 0), // daemon が孤児を自動再開した回数（進捗でリセット）
+    resumeCount: Number(meta.resume_count || 0), // 孤児を自動再開した回数（進捗でリセット）
     workspace: meta.workspace || null, // 唯一の書込先（gitlab executor の起票先解決に使う）
     references: Array.isArray(meta.references) ? meta.references : [],
     executor: meta.executor || null, // この run を駆動した executor（orchestrator が記録）
@@ -399,9 +412,11 @@ function readRun(runDir) {
     failureReason: meta.failure_reason || null,
     strategy: graph.strategy || null,
     iteration: Number(graph.iteration || 0),
+    planRevisions: readPlanRevisions(runDir, Object.keys(nodes)),
     nodes,
     counts,
     total,
+    byPc: summarizeByPc(nodes), // PC 別の実行内訳（[{pc,count}]。多い順）
     progress: total ? (counts.done + counts.failed) / total : 0,
     gitlabIssues,
     final: finalJson
@@ -410,13 +425,30 @@ function readRun(runDir) {
   };
 }
 
+// PC 別の実行内訳（確定したノード数）。この run が何台に散ったかを画面から数えられるように
+// する。現行仕様では run 単位で 1 台に確定するので通常は 1 エントリ——複数出たら
+// 「ステップが PC 間に散った」証拠になる（分担の観測点。棚卸し 2026-07-27 §2b）。
+// PC の記録が無い結果（この記録より前の agent-flow が確定したもの）は `who` を見出しにして
+// `?` を付ける。名義の綴りを割って PC を当てにはいかない（推測しないことを画面にも出す）。
+function summarizeByPc(nodes) {
+  const acc = new Map();
+  for (const n of Object.values(nodes)) {
+    if (n.state !== 'done' && n.state !== 'failed') continue;
+    const key = n.pc || (n.who ? `${n.who}?` : '?');
+    acc.set(key, (acc.get(key) || 0) + 1);
+  }
+  return [...acc.entries()]
+    .map(([pc, count]) => ({ pc, count }))
+    .sort((a, b) => b.count - a.count || a.pc.localeCompare(b.pc));
+}
+
 // events/*.jsonl を新しい順に最大 limit 件マージして返す
 function readRunEvents(runDir, limit = 50) {
   const dir = path.join(runDir, 'events');
   const events = [];
   for (const f of safeList(dir)) {
     if (!f.endsWith('.jsonl')) continue;
-    let raw = '';
+    let raw;
     try {
       raw = fs.readFileSync(path.join(dir, f), 'utf8');
     } catch {
@@ -436,6 +468,55 @@ function readRunEvents(runDir, limit = 50) {
   // ts は ISO 文字列（now_iso）。UTC Z 固定なので辞書順＝時刻順で新しい順に並べる
   events.sort((a, b) => String(b.ts || '').localeCompare(String(a.ts || '')));
   return events.slice(0, limit);
+}
+
+function normalizePlanRevisions(events, nodeIds = []) {
+  const ordered = [...(events || [])]
+    .filter((ev) => ev && typeof ev === 'object')
+    .sort((a, b) => String(a.ts || '').localeCompare(String(b.ts || '')));
+  const planned = ordered.find((ev) => ev.kind === 'planned');
+  const changes = ordered.filter((ev) => ev.changes || ev.kind === 'replan');
+  const introduced = new Set();
+  for (const ev of changes) {
+    const c = ev.changes && typeof ev.changes === 'object' ? ev.changes : {};
+    for (const id of [...(c.added || []), ...(ev.added || [])]) introduced.add(String(id));
+    for (const item of c.replaced || []) {
+      if (item && item.next) introduced.add(String(item.next));
+    }
+  }
+  const initial = Array.isArray(planned && planned.tasks)
+    ? planned.tasks.map(String)
+    : nodeIds.map(String).filter((id) => !introduced.has(id));
+  const revisions = [{
+    revision: 0,
+    timestamp: (planned && planned.ts) || null,
+    reason: '初期計画',
+    added: [...new Set(initial)],
+    replaced: [],
+    updated: [],
+    removed: [],
+  }];
+  for (const ev of changes) {
+    const c = ev.changes && typeof ev.changes === 'object' ? ev.changes : {};
+    const strings = (value) => [...new Set((Array.isArray(value) ? value : []).map(String))];
+    const replaced = (Array.isArray(c.replaced) ? c.replaced : [])
+      .filter((item) => item && item.old && item.next)
+      .map((item) => ({ old: String(item.old), next: String(item.next) }));
+    revisions.push({
+      revision: revisions.length,
+      timestamp: ev.ts || null,
+      reason: String(ev.reason || '実行結果を受けて工程構成を見直しました'),
+      added: strings(c.added || ev.added),
+      replaced,
+      updated: strings(c.updated),
+      removed: strings(c.removed),
+    });
+  }
+  return revisions;
+}
+
+function readPlanRevisions(runDir, nodeIds) {
+  return normalizePlanRevisions(readRunEvents(runDir, 5000), nodeIds);
 }
 
 // ノード別のタイムライン（claimed / result イベント）。開始時刻・所要時間の根拠になる
@@ -460,7 +541,7 @@ function readNodeEvents(runDir, perNode = 10) {
 
 // 失敗した run を「同じ要求の新しい run」として inbox へ再投入する（人の明示アクション）。
 // agent-flow の公式な入力契約（inbox/<req-id>.json = submit_request と同形）だけを使い、
-// 稼働中の daemon が新規要求として拾う。結果の再利用はしない（新しい run として最初から）。
+// 常駐体の flow tick が新規要求として拾う。結果の再利用はしない（新しい run として最初から）。
 function resubmitRun(busDir, runId) {
   const runDir = path.join(busDir, 'runs', runId);
   const meta = readJson(path.join(runDir, 'meta.json'));
@@ -514,7 +595,7 @@ function prepareRunDeletion(busDir, runId) {
   const status = String(meta.status || 'unknown');
   if (!TERMINAL.has(status) && runAlive(meta, Date.now() / 1000) === true) {
     throw new Error(
-      `run は実行中です（status=${status}）。終端（done/failed/canceled）または応答なしの run だけ削除できます`
+      `run は実行中です（status=${status}）。終端（done/failed/cancelled）または応答なしの run だけ削除できます`
     );
   }
   return { runDir, status };
@@ -526,9 +607,9 @@ function writeJsonAtomic(file, obj) {
   fs.renameSync(`${file}.tmp`, file);
 }
 
-// run を canceled に終端化する（人の明示指示による恒久停止）。agent-flow の cmd_cancel と同じ 3 手を
-// ファイル操作で行う: (1) cancel マーカーを inbox/cancels/ に書く（git 同期で他 PC / daemon へ伝わる）、
-// (2) run が存在すれば meta を canceled に確定（daemon 不在でも即停止）、(3) park 記録を掃除して
+// run を cancelled に終端化する（人の明示指示による恒久停止）。agent-flow の cmd_cancel と同じ 3 手を
+// ファイル操作で行う: (1) cancel マーカーを inbox/cancels/ に書く（git 同期で他 PC へ伝わる）、
+// (2) run が存在すれば meta を cancelled に確定（実行中でなくても即停止）、(3) park 記録を掃除して
 // 監視の再ポーリングを止める。起票済みイシューのクローズは呼び出し側（ipc）が gitlab API で行う（任意）。
 // 返り値の issues は掃除前の park 済みイシュー座標（--close-issues 相当の後始末に使う）。
 function cancelRun(busDir, runId, { reason } = {}) {
@@ -565,15 +646,15 @@ function cancelRun(busDir, runId, { reason } = {}) {
     }
     return { status: curStatus, alreadyTerminal: true, marked: false, cleared, issues };
   }
-  // (1) cancel マーカー（close_issues は viewer 側で閉じるため false で置く＝daemon の二重クローズを避ける）
+  // (1) cancel マーカー（close_issues は viewer 側で閉じるため false で置く＝二重クローズを避ける）
   writeJsonAtomic(path.join(busDir, 'inbox', 'cancels', `${id}.json`), {
     id, who: `viewer-${os.hostname()}`, reason: reason || '',
     close_issues: false, requested_at: new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
   });
-  // (2) run が存在すれば meta を canceled に確定（監視主体が居なくても止まる）
+  // (2) run が存在すれば meta を cancelled に確定（監視主体が居なくても止まる）
   let marked = false;
   if (meta && !TERMINAL.has(curStatus)) {
-    meta.status = 'canceled';
+    meta.status = CANCELLED;
     meta.updated_at = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
     if (reason) meta.cancel_reason = reason;
     writeJsonAtomic(path.join(runDir, 'meta.json'), meta);
@@ -590,8 +671,8 @@ function cancelRun(busDir, runId, { reason } = {}) {
       /* 消せなくても致命的でない */
     }
   }
-  // (4) 適用済み cancel マーカーを消す（daemon 不在でも sticky にしない）。
-  // orch は meta=canceled で止まる。remote daemon も meta を見て終端を知る。
+  // (4) 適用済み cancel マーカーを消す（実行中でなくても sticky にしない）。
+  // orch は meta=cancelled で止まる。他ノードも meta を見て終端を知る。
   if (marked) {
     try {
       fs.unlinkSync(path.join(busDir, 'inbox', 'cancels', `${id}.json`));
@@ -599,7 +680,7 @@ function cancelRun(busDir, runId, { reason } = {}) {
       /* 残っても致命ではない */
     }
   }
-  return { status: marked ? 'canceled' : curStatus, marked, cleared, issues };
+  return { status: marked ? CANCELLED : curStatus, marked, cleared, issues };
 }
 
 // ---------------------------------------------------------------------------
@@ -765,6 +846,7 @@ function summarizeTombstone(tomb) {
       retries: Number(spec.retries || 0),
       state: res ? (res.status === 'failed' ? 'failed' : 'done') : 'pending',
       who: res ? res.who || null : null,
+      pc: res ? res.node || null : null, // 実行した PC（結果に記録があるときだけ）
       finishedAt: res ? res.finished_at || null : null,
       heartbeatAt: null,
       leaseUntil: null,
@@ -820,9 +902,11 @@ function summarizeTombstone(tomb) {
     failureReason: meta.failure_reason || null,
     strategy: graph.strategy || null,
     iteration: Number(graph.iteration || 0),
+    planRevisions: normalizePlanRevisions([], Object.keys(nodes)),
     nodes,
     counts,
     total,
+    byPc: summarizeByPc(nodes),
     progress: total ? (counts.done + counts.failed) / total : 0,
     gitlabIssues,
     final,
@@ -865,123 +949,21 @@ function listRuns(busDir, limit = 30) {
 }
 
 // ---------------------------------------------------------------------------
-// agent-flow daemon の稼働検知（CLI 不要・ロックファイルだけで判定）
+// 稼働の判定はこのモジュールが持たない（実装計画 W2-3）
 // ---------------------------------------------------------------------------
-
-// agent-flow / agent-project と完全に同じ導出でロックパスを組む:
-//   sha1("local::" + realpath(bus)) → <lock_dir>/daemon-<hash>.lock
-// lock_dir 未指定時の既定も両ツールと同じ tempdir 配下。
-function daemonLockPath(busDir, lockDir) {
-  let real;
-  try {
-    real = fs.realpathSync(busDir);
-  } catch {
-    real = path.resolve(busDir); // バス未作成でも Python の realpath と同じ値になる
-  }
-  const h = crypto.createHash('sha1').update(`local::${real}`).digest('hex');
-  const base = lockDir || path.join(os.tmpdir(), 'agent-flow-locks');
-  return path.join(base, `daemon-${h}.lock`);
-}
-
-function pidAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return err.code === 'EPERM'; // 別ユーザの生存プロセス（シグナルを送れないだけ）
-  }
-}
-
-// <busDir>/status.json — agent-flow の生存信号（write_daemon_status が書く）。本体が state_git
-// （鏡）越しにバス状態を同期する別ホスト構成のとき、ロックファイルは本体側の一時領域にあって
-// ここには絶対に無い（sha1 の元になる bus パス自体が別ホストの --bus 値で、このクローンの
-// busDir とは無関係）。その場合の唯一の生存根拠がこれ。agent-project の readStatus と同じ考え方。
-function readDaemonStatus(busDir) {
-  const rec = readJson(path.join(busDir, 'status.json'));
-  if (!rec || typeof rec !== 'object') return null;
-  const updatedMs = Date.parse(rec.updated_iso || '');
-  if (isNaN(updatedMs)) return null;
-  const ageSec = (Date.now() - updatedMs) / 1000;
-  const freshSec = Number(rec.fresh_after_sec) || 120;
-  return { ...rec, ageSec, fresh: ageSec >= 0 && ageSec <= freshSec };
-}
-
-// 対象バスの agent-flow daemon が稼働中か。
-//  1. 同一ホストのロックファイル（pid 生存）で確定判定（従来どおり。agent-project の
-//     daemon_running と同じく pid のみ判定＝fcntl 不在時フォールバックと同じ根拠）
-//  2. ロックが無ければ status.json（state_git 越しの同期・同期遅延を許容した推定）へ
-//     フォールバック（GitBus 分散実行のバスは対象外＝write_daemon_status が書かないため
-//     status.json 自体が存在せず、自然に判定不能へ落ちる）
-// running: true=稼働中 / false=停止 / null=判定不能（ロックはあるが pid を読めない等）
-// via: 'lock'（確定）／'status-local'（同一マシン・WSL含む）／'status-sync'（別ホスト推定）／'none'
-function daemonStatus(busDir, lockDir) {
-  const lockPath = daemonLockPath(busDir, lockDir);
-  let raw;
-  try {
-    raw = fs.readFileSync(lockPath, 'utf8');
-  } catch {
-    const status = readDaemonStatus(busDir);
-    if (status) {
-      const sameHost = project.sameMachineStatus(status);
-      return {
-        running: status.fresh, pid: status.pid || 0, lockPath,
-        via: sameHost ? 'status-local' : 'status-sync',
-        ageSec: Math.round(status.ageSec), nodeId: status.node_id,
-        orchestrators: status.orchestrators, workers: status.workers,
-      };
-    }
-    return { running: false, pid: 0, lockPath, via: 'none' };
-  }
-  const pid = parseInt(raw.trim().split('\n')[0], 10) || 0;
-  if (!pid) return { running: null, pid: 0, lockPath, via: 'lock' };
-  const alive = pidAlive(pid);
-  const out = { running: alive, pid, lockPath, via: 'lock' };
-  // 生存判定はロック（pid）が正。加えて daemon がローカルにも書く status.json が新しければ、
-  // orchestrator/worker 数をベストエフォートで添える（同一ホストでも「何基動いているか」を可視化する）。
-  // status.json が無い/古い場合は数を付けない＝生存判定・従来挙動には一切影響しない。
-  if (alive) {
-    const status = readDaemonStatus(busDir);
-    if (status && status.fresh) {
-      if (Number.isFinite(status.orchestrators)) out.orchestrators = status.orchestrators;
-      if (Number.isFinite(status.workers)) out.workers = status.workers;
-      if (status.node_id) out.nodeId = status.node_id;
-    }
-  }
-  return out;
-}
-
-// 対象バスの agent-flow daemon を停止する（人の明示アクション。プロジェクトのリセットで使う）。
-// agent-flow に stop コマンドは無く、daemon は SIGTERM で graceful に終了する
-// （子 orchestrator/worker を terminate してから抜ける）設計なので、同一ホストの
-// ロックファイルから pid を取り SIGTERM を送って終了を待つ。
-//   ・稼働していない → {running:false, stopped:true}（何もしない・冪等）
-//   ・同一ホスト（via=lock）→ SIGTERM 送信 → timeoutMs まで生存確認 → {stopped}
-//   ・別ホスト（via=status-sync）→ このプロセスからは止められない → {remote:true, stopped:false}
-async function stopDaemon(busDir, lockDir, { timeoutMs = 5000 } = {}) {
-  const st = daemonStatus(busDir, lockDir);
-  if (!st.running) return { running: false, stopped: true, via: st.via, pid: st.pid || 0 };
-  if (st.via !== 'lock' || !st.pid) {
-    return { running: true, stopped: false, remote: true, via: st.via, pid: st.pid || 0 };
-  }
-  try {
-    process.kill(st.pid, 'SIGTERM');
-  } catch (err) {
-    if (err.code === 'ESRCH') return { running: false, stopped: true, via: 'lock', pid: st.pid };
-    throw new Error(`agent-flow daemon（pid=${st.pid}）へ SIGTERM を送れません: ${err.message}`);
-  }
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (!pidAlive(st.pid)) return { running: true, stopped: true, via: 'lock', pid: st.pid };
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  return { running: true, stopped: !pidAlive(st.pid), via: 'lock', pid: st.pid };
-}
+// 以前はここで agent-flow のロックパス（sha1("local::" + realpath(bus))）を本体と同じ式で
+// 手写しし、pid の生存でエンジンの稼働を判定していた。常駐一本化で実行主体は常駐体だけに
+// なり、稼働表示は engine/status.json（features/agent-project/main/engine.js）へ一本化した。
+// ロック鍵の導出をここへ複製し直さないこと——本体の式が変わった瞬間に、稼働中のエンジンを
+// 「停止」と表示する（実際に起きた）。
 
 module.exports = {
   readRun,
+  isCancelled,
   parseRunId,
   readRunEvents,
+  normalizePlanRevisions,
+  readPlanRevisions,
   readNodeEvents,
   listRuns,
   summarizeTombstone,
@@ -993,9 +975,6 @@ module.exports = {
   readArchivedRun,
   flowArchiveDir,
   ARCHIVE_DIRNAME,
-  daemonStatus,
-  stopDaemon,
-  readDaemonStatus,
   runAlive,
   resubmitRun,
   readRunMeta,
@@ -1008,4 +987,8 @@ module.exports = {
   gitlabMrDecision,
   gitlabClosedIssueDecision,
   GITLAB_APPROVED_LABELS,
+  // 手掛かり語は executors/gitlab.py の写し。突き合わせテスト
+  // （test/gitlab-decision-golden.test.js）が正典と比べられるように公開する。
+  GITLAB_REJECT_HINTS,
+  GITLAB_APPROVE_HINTS,
 };

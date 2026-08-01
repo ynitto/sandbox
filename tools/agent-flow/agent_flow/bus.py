@@ -1,9 +1,13 @@
 from __future__ import annotations
-# bus.py — 元 agent-flow.py の 374-1083 行目（機械分割・内容無改変）。
+# bus.py — 元 agent-flow.py の 374-1083 行目（機械分割・内容無改変ではなくなった。
+# 常駐一本化 P0・W0-8 で claim/lease の実装を agentcore.protocol へ委譲した — 設計 §4.1・R1）。
 # 単体 import しない。agent_flow/__init__.py が共有名前空間へ順に exec 合成する。
 # --------------------------------------------------------------------------
 # Bus — メッセージバス抽象（M1: ローカルディレクトリ実装）
 # --------------------------------------------------------------------------
+from agentcore import protocol  # noqa: E402
+
+
 class Bus:
     def __init__(self, root: str, run_id: str):
         self.root = root
@@ -47,10 +51,11 @@ class Bus:
             os.makedirs(d, exist_ok=True)
 
     def ensure_run(self, request: str, workspace: "dict | None" = None,
-                   references: "list[dict] | None" = None) -> None:
+                   references: "list[dict] | None" = None,
+                   verification_plan: "dict | None" = None) -> None:
         self.ensure_dirs()
         if read_json(self.meta_path) is None:
-            write_json_atomic(self.meta_path, {
+            meta = {
                 "request": request,
                 # この run（=バックログ単位）の唯一の書込先リポジトリ（worker が clone し、
                 # 作業ブランチを作って作業する）。None なら読み取り専用 run（commit/push しない）。
@@ -59,7 +64,18 @@ class Bus:
                 "references": list(references or []),
                 "status": "planning",
                 "created_at": now_iso(),
-            })
+            }
+            # 統一 verify: agent-project が確定した検証計画（digest 付き）。planner の自由記述へは
+            # 混ぜず、成果 revision 確定後の専用 runner（run_verification_plan）だけが実行する。
+            if isinstance(verification_plan, dict):
+                meta["verification_plan"] = verification_plan
+                # workspace の無い run（ローカル実行・成果は投入ノードの作業ツリーに出る）の
+                # 差分基準。投入時点の HEAD を固定しておき、runner が $KIRO_BASE_REV として
+                # 検証コマンドへ渡す（act 前 HEAD——旧 agent-project verify の verify_env と同じ）。
+                base = _vp_result_rev(os.getcwd())
+                if base:
+                    meta["base_rev"] = base
+            write_json_atomic(self.meta_path, meta)
 
     def snapshot_instructions(self) -> bool:
         """グローバル指示（agent-instructions 契約）をこの run の meta.json へ固定する。
@@ -94,7 +110,7 @@ class Bus:
 
     # --- メタ / グラフ ---
     def set_status(self, status: str) -> None:
-        """run の進捗 status を書く。既に終端（done/failed/canceled）なら上書きしない。
+        """run の進捗 status を書く。既に終端（done/failed/cancelled）なら上書きしない。
 
         cancel / 完了後に orchestrator が set_status("running") を呼んでも、人が止めた／確定済みの
         終端を resurrect しない（_orch_check_canceled と resume/plan 経路の競合を防ぐ）。"""
@@ -115,6 +131,18 @@ class Bus:
         if not ex or meta.get("executor") == ex:
             return
         meta["executor"] = ex
+        write_json_atomic(self.meta_path, meta)
+
+    def note_delegation(self, delegation: "dict | None") -> None:
+        """この run の来歴（委譲公示板 = agent-board 由来なら delegation id）を meta に記録する（冪等）。
+        board が inbox/<id>.json に載せた delegation:{id, board} を run meta へ引き回し、
+        viewer / status が「板の委譲 <id> 由来」と表示できるようにする（additive・未知でも無害）。"""
+        if not isinstance(delegation, dict) or not delegation.get("id"):
+            return
+        meta = read_json(self.meta_path) or {}
+        if meta.get("delegation") == delegation:
+            return
+        meta["delegation"] = delegation
         write_json_atomic(self.meta_path, meta)
 
     def get_status(self):
@@ -145,33 +173,16 @@ class Bus:
         return os.path.join(self.claims_dir, node_id)
 
     def _list_claims_in(self, claim_dir: str):
-        out = {}
-        if os.path.isdir(claim_dir):
-            for name in os.listdir(claim_dir):
-                if name.endswith(".json"):
-                    info = read_json(os.path.join(claim_dir, name))
-                    if info:
-                        out[name[:-5]] = info
-        return out
+        return protocol.list_claims(claim_dir)
 
     def _winner_in(self, claim_dir: str):
-        """lease 内の claim から決定的に勝者を選ぶ。無ければ None。"""
-        now = time.time()
-        live = [
-            (info.get("ts", 0.0), who)
-            for who, info in self._list_claims_in(claim_dir).items()
-            if info.get("lease_until", 0) >= now
-        ]
-        return min(live)[1] if live else None
+        """lease 内の claim から決定的に勝者を選ぶ。無ければ None。
+        実体は agentcore.protocol.winner（flow のタスク claim・amigos のロール claim・
+        板の入札で共通の (ts, who) タイブレーク実装 — 設計 §4.1・R1）。"""
+        return protocol.winner(claim_dir)
 
     def _write_claim_in(self, claim_dir: str, who: str, lease_sec: float) -> None:
-        os.makedirs(claim_dir, exist_ok=True)
-        write_json_atomic(os.path.join(claim_dir, f"{who}.json"), {
-            "who": who,
-            "ts": _unique_ts(),
-            "claimed_at": now_iso(),
-            "lease_until": time.time() + lease_sec,
-        })
+        protocol.write_claim(claim_dir, who, lease_sec)
 
     def _try_claim_in(self, claim_dir: str, who: str, lease_sec: float, msg: str) -> bool:
         # 同一マシン上の並行 claim を排他ロックで直列化する（ロックはバス外＝
@@ -179,25 +190,15 @@ class Bus:
         # タイブレークの勝者」の食い違いによる二重勝者を防ぐ。
         # git 分散（別マシン）はクローンごとに別ロックなので直列化されないが、
         # その整合は sync_pull 後の決定的タイブレーク＋lease が担う。
-        os.makedirs(claim_dir, exist_ok=True)
-        with _file_lock(_claim_lock_path(claim_dir)):
-            w = self._winner_in(claim_dir)
-            if w is not None and w != who:
-                return False  # 既に他者が勝者（lease 内）
-            self._write_claim_in(claim_dir, who, lease_sec)
-            self.sync_push(msg)
-            self.sync_pull()  # 他ノードの claim を取り込んでから勝敗判定
-            if self._winner_in(claim_dir) == who:
-                return True
-            # 敗者が自分の claim ファイルを残すと、勝者の park/release 後に敗者和己の
+        return protocol.try_claim(
+            claim_dir, who, lease_sec,
+            on_write=lambda: self.sync_push(msg),
+            on_sync=self.sync_pull,  # 他ノードの claim を取り込んでから勝敗判定
+            # 敗者が自分の claim ファイルを残すと、勝者の park/release 後に敗者自己の
             # lease が _winner になり、誰も動いていないのに node_state=claimed の
-            # zombie になる（git 分散で両者が書けた場合）。負けた自分の分だけ消す。
-            try:
-                os.remove(os.path.join(claim_dir, f"{who}.json"))
-                self.sync_push(f"claim withdraw {who}")
-            except OSError:
-                pass
-            return False
+            # zombie になる（git 分散で両者が書けた場合）。protocol.try_claim が
+            # 負けた自分の分だけ消してから、以下で push する。
+            on_withdraw=lambda: self.sync_push(f"claim withdraw {who}"))
 
     # 後方互換のためのノード単位ラッパ
     def _winner(self, node_id: str):
@@ -209,22 +210,10 @@ class Bus:
     def extend_claim(self, node_id: str, who: str, lease_sec: float) -> bool:
         """実行中ワーカーの心拍用: 自分の claim の lease_until **だけ**を延長する。
         ts / claimed_at は書き換えない（新しい ts を振り直すと勝者タイブレークの根拠が
-        動いてしまう）。claim ロックの中で行い、自分の claim が消えている（release /
-        withdraw 済み）か、lease 失効中に他者が勝者になっていれば延長せず False を返す
-        ——失った claim を心拍が無条件に書き戻すと二重実行になるため。"""
-        claim_dir = self._claim_dir(node_id)
-        path = os.path.join(claim_dir, f"{who}.json")
-        os.makedirs(claim_dir, exist_ok=True)
-        with _file_lock(_claim_lock_path(claim_dir)):
-            cur = read_json(path)
-            if not cur:
-                return False
-            w = self._winner_in(claim_dir)
-            if w is not None and w != who:
-                return False
-            cur["lease_until"] = time.time() + lease_sec
-            write_json_atomic(path, cur)
-        return True
+        動いてしまう）。claim が消えている（release / withdraw 済み）か、lease 失効中に
+        他者が勝者になっていれば延長せず False を返す——失った claim を心拍が無条件に
+        書き戻すと二重実行になるため。実体は agentcore.protocol.extend_claim。"""
+        return protocol.extend_claim(self._claim_dir(node_id), who, lease_sec)
 
     def try_claim(self, node_id: str, who: str, lease_sec: float) -> bool:
         self.sync_pull()
@@ -236,10 +225,7 @@ class Bus:
     def release_claim(self, node_id: str, who: str) -> None:
         """自分の claim ファイルを消して node を手放す（park 時に worker スロットを空けるため）。
         心拍（Heartbeat）を停止してから呼ぶこと——停止前に消すと直後の心拍が claim を書き戻す。"""
-        try:
-            os.remove(os.path.join(self._claim_dir(node_id), f"{who}.json"))
-        except OSError:
-            pass
+        protocol.release_claim(self._claim_dir(node_id), who)
         self.sync_push(f"release {node_id} by {who}")
 
     # --- park（保留待ち）プロトコル ---
@@ -326,7 +312,13 @@ class Bus:
         return read_json(self.result_path(node_id))
 
     def write_result(self, node_id: str, who: str, status: str, output: str,
-                     data=None, artifacts=None) -> None:
+                     data=None, artifacts=None, node: "str | None" = None) -> None:
+        """ノードの結果を確定する。
+
+        `node` は**実行した PC**（node_id の正規形）。`who`（worker の名義）にも PC 名は
+        入るが、読み手（`agent-flow status` の内訳・doctor・dashboard の run 詳細）が名義を
+        文字列として割って PC を推測するのは「同じ規則の 2 実装」を作る——書き手が事実として
+        1 フィールドに残す。旧い結果（このフィールドが無い）を読む側は `who` へ落ちる。"""
         rec = {
             "id": node_id,
             "who": who,
@@ -334,6 +326,8 @@ class Bus:
             "output": output,
             "finished_at": now_iso(),
         }
+        if node:
+            rec["node"] = node
         if data is not None:  # 構造化成果（任意）。エージェント間を JSON で流す
             rec["data"] = data
         if artifacts:  # 生成した中間成果物（run_dir 相対パス）。後続が参照できる
@@ -398,7 +392,7 @@ class Bus:
 
     def heal_class(self, run_id: str) -> "str | None":
         """failed run が auto-heal 候補なら、そのトリアージ class（transient / quota）を返す。
-        人の cancel（status=canceled）・世代交代（superseded）・heal 上限超過（heal_exhausted）・
+        人の cancel（status=cancelled）・世代交代（superseded）・heal 上限超過（heal_exhausted）・
         タグ無し（内容の失敗）・auth/env（人が直す）は対象外＝None。"""
         meta = self.run_meta(run_id) or {}
         if meta.get("status") != "failed" or meta.get("superseded") or meta.get("heal_exhausted"):
@@ -480,6 +474,17 @@ class Bus:
 
     def run_meta(self, run_id: str):
         return read_json(os.path.join(self.runs_root, run_id, "meta.json")) or {}
+
+    # --- 統一 verify の receipt（runs/<run-id>/receipt.json。書き手は専用 runner のみ） ---
+    def receipt_path_for(self, run_id: str) -> str:
+        return os.path.join(self.runs_root, run_id, "receipt.json")
+
+    def run_receipt(self, run_id: str) -> "dict | None":
+        rec = read_json(self.receipt_path_for(run_id))
+        return rec if isinstance(rec, dict) else None
+
+    def write_receipt(self, run_id: str, receipt: dict) -> None:
+        write_json_atomic(self.receipt_path_for(run_id), receipt)
 
     def remove_run(self, run_id: str) -> None:
         shutil.rmtree(os.path.join(self.runs_root, run_id), ignore_errors=True)
@@ -630,10 +635,10 @@ class Bus:
             return {"inherited": False, "seeded_nodes": 0, "deleted": False,
                     "reason": "先行 run が見つからない"}
         terminal = old_meta.get("status") in TERMINAL
-        if old_meta.get("status") == "canceled":
-            # 人の停止を尊重。seed も削除もしない（cancel 後リトライが canceled 行を蘇らせない）。
+        if old_meta.get("status") == "cancelled":
+            # 人の停止を尊重。seed も削除もしない（cancel 後リトライが cancelled 行を蘇らせない）。
             return {"inherited": False, "seeded_nodes": 0, "deleted": False,
-                    "reason": "canceled は引き継がない"}
+                    "reason": "cancelled は引き継がない"}
         if not terminal and not self.run_is_orphaned(old_run_id, orphan_grace):
             return {"inherited": False, "seeded_nodes": 0, "deleted": False,
                     "reason": f"先行 run は実行中（status={old_meta.get('status')}）＝触らない"}
@@ -698,7 +703,7 @@ class Bus:
         非終端のまま inbox に残る。owning daemon 消失後（PC シャットダウン等）に daemon を再起動
         すると、これら旧世代の孤児が一斉に adopt（再開）され、世代交代で消えるべき旧リトライが
         復活して二重実行になる。これを防ぐため、次世代に引き継がれた先行 run を再開せず終端化する。
-        failed（≒ 異常終了）や canceled（人の明示指示）と区別できるよう superseded=True を記録する。
+        failed（≒ 異常終了）や cancelled（人の明示指示）と区別できるよう superseded=True を記録する。
         終端化後は次世代の inherit_from が確定済みノードを引き継いでから掃除できる（作業は失わない）。
         終端化できたら True、既に終端 / run が存在しないなら False。"""
         v = self.run_view(run_id)
@@ -720,7 +725,7 @@ class Bus:
     def cancel_request(self, run_id: str, who: str, reason: str = "",
                        close_issues: bool = False) -> None:
         """cancel マーカーを inbox/cancels/ に書く（git 同期でリモート優先で全 PC へ伝わる）。
-        監視主体（daemon/run/orchestrator）がこれを見て run を canceled に終端化し、その run の
+        監視主体（daemon/run/orchestrator）がこれを見て run を cancelled に終端化し、その run の
         orchestrator/worker を止め、park 済みノードの再ポーリングを止める。"""
         os.makedirs(self.inbox_cancels_dir, exist_ok=True)
         write_json_atomic(os.path.join(self.inbox_cancels_dir, f"{run_id}.json"), {
@@ -737,7 +742,7 @@ class Bus:
 
         終端化＋waits 掃除が終わったあとに呼ぶ。残すと同一 run-id の意図的再開が即座に
         再 cancel され、daemon も毎 poll 同じマーカーを拾い続ける。伝播は meta.status=
-        canceled の sync で足りる。"""
+        cancelled の sync で足りる。"""
         p = os.path.join(self.inbox_cancels_dir, f"{run_id}.json")
         try:
             os.remove(p)
@@ -755,13 +760,13 @@ class Bus:
         return sorted(f[:-5] for f in os.listdir(d) if f.endswith(".json"))
 
     def mark_canceled(self, run_id: str, reason: str = "") -> bool:
-        """run_id がまだ終端でなければ status を canceled に確定する（cancel マーカーの適用）。
+        """run_id がまだ終端でなければ status を cancelled に確定する（cancel マーカーの適用）。
         終端化できたら True、既に終端 / run が存在しないなら False。"""
         v = self.run_view(run_id)
         meta = read_json(v.meta_path)
         if not meta or meta.get("status") in TERMINAL:
             return False
-        meta["status"] = "canceled"
+        meta["status"] = "cancelled"
         meta["updated_at"] = now_iso()
         if reason:
             meta["cancel_reason"] = reason
@@ -807,7 +812,7 @@ class Bus:
         return True
 
     def cancel_request_run(self, req_id: str, reason: str = "") -> bool:
-        """run 化前に cancel された要求を canceled run として終端化する（fail_request の canceled 版）。
+        """run 化前に cancel された要求を cancelled run として終端化する（fail_request の cancelled 版）。
         既に run があれば mark_canceled に委ねる。これで消費者は「取り下げ」を終端として観測でき、
         daemon が同じ要求を毎 poll 受理し直すのを止める。"""
         v = self.run_view(req_id)
@@ -818,7 +823,7 @@ class Bus:
             "request": req.get("request", ""),
             "workspace": req.get("workspace"),
             "references": list(req.get("references") or []),
-            "status": "canceled",
+            "status": "cancelled",
             "created_at": now_iso(),
             "updated_at": now_iso(),
             "cancel_reason": reason or "cancel 指示（run 化前）",
@@ -883,7 +888,9 @@ class Bus:
     def submit_request(self, req_id: str, request: str, submitter: str,
                        workspace: "dict | None" = None,
                        references: "list[dict] | None" = None,
-                       inherit_from: "str | None" = None) -> None:
+                       inherit_from: "str | None" = None,
+                       delegation: "dict | None" = None,
+                       verification_plan: "dict | None" = None) -> None:
         rec = {
             "id": req_id,
             "request": request,
@@ -894,6 +901,13 @@ class Bus:
         }
         if inherit_from:                      # リトライ: 先行 run の引き継ぎ元を orchestrate へ伝搬
             rec["inherit_from"] = inherit_from
+        if isinstance(delegation, dict) and delegation.get("id"):
+            # 委譲公示板（agent-board）由来の来歴。daemon の orchestrate が run meta へ引き回す
+            rec["delegation"] = delegation
+        if isinstance(verification_plan, dict):
+            # 統一 verify の検証計画（依頼側が digest 付きで確定済み）。_spawn_orchestrator が
+            # `--verification-plan` として orchestrate へ渡し、専用 runner が receipt を返す。
+            rec["verification_plan"] = verification_plan
         write_json_atomic(os.path.join(self.inbox_dir, f"{req_id}.json"), rec)
 
     def list_inbox(self):

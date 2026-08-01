@@ -28,6 +28,35 @@ except ImportError:  # PyYAML 無し → JSON のみ
 
 DEFAULT_CONFIG_NAMES = ["agent-project.yaml", "agent-project.yml", "agent-project.json"]
 
+
+def _auto_node_name() -> str:
+    """この PC の既定 node 名（`--node` / `AGENT_PROJECT_NODE` / host.yaml のどれも無いとき）。
+
+    導出は `agentcore.nodeid.default_node_id` の 1 実装に寄せてある（P0-3）。以前はここに
+    独自のサニタイズ（**小文字化しない**・60 文字で切る）があり、大文字を含むホスト名の PC が
+    プロジェクト状態側と板側で 2 名義に割れていた——`Config.node` は `status/<node>.json` の
+    ファイル名にもタスクの `- node:` にもなるので、綴りが割れると人が板の端末一覧を見て
+    書いた割当を誰も拾わない。"""
+    return default_node_id()
+
+
+def _resolved_node(args) -> str:
+    """`Config.node` を板と同じ綴りへ倒す（P0-3）。
+
+    非正規形が入る経路は 3 つ: host.yaml 未宣言（ホスト名）・`AGENT_PROJECT_NODE`・`--node`。
+    後ろ 2 つは `HostConfig` を通らないので正規化されていなかった。ここで 1 箇所に集める。
+
+    **倒したときは黙らない**——「指定した名前で動いていない」ことに気付けないと、
+    `- node:` の割当や板の名義がずれた理由が分からなくなる。"""
+    raw = str(getattr(args, "node", None) or "").strip()
+    if not raw:
+        return default_node_id()
+    node = normalize_node_id(raw)
+    if node != raw:
+        print(f"[agent-project] node 名を正規形へ揃えました: {raw} → {node}"
+              f"（板・状態ファイル名の綴りを 1 つに保つため）", file=sys.stderr)
+    return node
+
 # 設定ファイルで上書きできるキー（snake_case）と組み込み既定。
 # CLI 引数の default は None にし、resolve_config で「設定ファイル→ここ」の順に埋める。
 # 真偽フラグ（--watch / --ltm / --no-archive 等）と個別パス上書きは CLI 専用。
@@ -38,8 +67,22 @@ CONFIG_DEFAULTS = {
     "planner": "agent",
     "flow_planner": "flow-planner",
     "route_planner": "agent",
+    # node 未指定タスクを既定でどの PC（ノード）が拾うか。プロジェクト共有設定（空＝誰でも／従来）。
+    # 各 PC 固有の node 名は共有 yaml に置かず CLI --node / 環境変数 AGENT_PROJECT_NODE から取る。
+    "default_node": "",
+    "controller_heartbeat_sec": 30.0,
+    "controller_lease_sec": 120.0,
+    "coordination_retries": 3,
+    "clock_skew_tolerance_sec": 30.0,
+    "unknown_quarantine_max": 3,
+    "learn_misfire_limit": 3,
+    "verifications_keep": 5,
+    "gc_retention_days": 30,
     "default_workspace": "",
     "location": "auto",
+    "board": "",
+    "board_workdir": None,
+    "board_workload": "flow",
     "model": None,
     # LLM 実行に使うエージェント CLI: kiro（kiro-cli chat）/ claude（Claude Code `claude -p`）/
     # copilot（GitHub Copilot CLI `copilot -p`）/ codex（OpenAI Codex CLI `codex exec`）。
@@ -48,9 +91,17 @@ CONFIG_DEFAULTS = {
     # agent-flow 側の設定（flow_config / agent-flow.yaml の agent_cli）で揃える。
     "agent_cli": "kiro",
     "agent_timeout": 300.0,   # エージェント CLI 1 呼び出しのタイムアウト秒（0 以下で無効）
+    # argv でプロンプトを渡す CLI（kiro / copilot）へ渡せる最大バイト数。超える分は一時ファイルへ
+    # 退避し「そのファイルを読んで実行」の短い指示に置き換える（ARG_MAX 由来の E2BIG 回避）。
+    # agent-flow の同名設定と語彙・既定を揃えてある。0 以下で組み込み既定へ戻る。
+    "argv_limit": 100000,
     # バックログ分解の粒度: coarse（ストーリー相当・既定）/ fine（単機能）/ finest（1ファイル/1関数）。
     # agent-flow の同名設定と語彙を揃えている（あちらは実行時 DAG、こちらは backlog の分解に効く）。
     "granularity": "coarse",
+    # 内側（agent-flow）へ渡す粒度。外側の granularity とは別のノブ（外側=バックログの INVEST
+    # 粒度 / 内側=1 ノードのスコープ上限）。既定 auto は agent-flow の complexity 導出に任せる。
+    # 外側の coarse をそのまま渡すと内側の work ノードレンジが常に 1〜3 に固定される。
+    "flow_granularity": "auto",
     "poll": 5.0,
     "concurrency": 1,
     "level": "unattended",
@@ -67,7 +118,6 @@ CONFIG_DEFAULTS = {
     "verify_confirm": 1,
     "verify_cwd": None,
     "act_timeout": 1800.0,
-    "act_async": False,   # 非ブロッキング委譲（daemon/remote へ submit して待たず offloaded で回収）
     # agent-flow バスの置き場（絶対パスで明示すると外部 daemon を検知できる）。None なら <root>/bus。
     # 設定ファイルの bus: をここに載せておかないと resolve_config が読まず黙って既定バスに落ちる
     # （daemon 非検知の原因になる）。CLI --bus と同義。
@@ -75,30 +125,20 @@ CONFIG_DEFAULTS = {
     "git_bus": None,
     "git_branch": "main",
     "git_subdir": None,
-    "state_git": None,                  # 状態の git 保存・共有（プロジェクト状態を双方向同期。None で無効）
-    "state_git_branch": "main",
-    "state_git_subdir": "agent-project",   # リポジトリ内の保存先サブディレクトリ（多重コミッタとの分離）
     "state_git_interval": 300.0,        # fetch/push の最短間隔（秒）。0 で毎同期
     # journal のローテーション: 閾値を超えたら journal-archive/ へ退避して新しい journal を始める。
     # 追記専用ファイルの肥大と、direct 同期での EOF 追記マージ衝突の温床を抑える。
     "journal_max_bytes": 262144,        # 閾値バイト（既定 256KB）。0 以下でローテーション無効
     "journal_keep": 20,                 # journal-archive/ の保持世代数。0 以下で無制限
-    # 実行層 agent-flow daemon をこのプロジェクト用に agent-project が起動・監視する（opt-in）。
-    "manage_flow_daemon": False,
-    "flow_config": None,        # daemon に --config で渡す共有 agent-flow.yaml（任意。agent-flow の設定はここに集約）
-    "flow_max_workers": 4,      # agent-flow daemon の worker 上限
-    # 状態 worktree: root が git の作業ツリー内にあるとき、状態の読み書きを専用ブランチの
-    # worktree（切りっぱなし）へ逃がす。設定の root は本体のまま書ける（人が書く自然な形）。
-    # 本体の作業ツリー・index を一切汚さず、状態の履歴は同じリポジトリの別ブランチに残る。
-    # git 管理外・worktree を作れない場合は自動で本体へフォールバックする（設定は要らない）。
-    "state_worktree_dir": "",           # 既定: <repo>-agent-state（リポジトリの隣）
-    "state_branch": "agent-state",       # 状態を載せるブランチ（無ければ作る）
-    "state_commit": True,               # 状態 worktree の変更を git にコミットする
-    "state_commit_interval": 300.0,     # 実行の副産物だけの変化をまとめる間隔（秒）。0 で毎回コミット
-    "state_push": False,                # コミットを origin へ push する（共有運用）
-    "state_backup_branch": "main",      # 状態のバックアップ先（正本ブランチ）。空で無効
+    "flow_config": None,        # agent-flow へ --config で渡す共有 agent-flow.yaml（任意。agent-flow の設定はここに集約）
+    # 状態専用リポジトリ（S1: 状態ルートは常に状態専用リポジトリの通常 clone）。
+    # **宣言の唯一の置き場は host.yaml の `projects[]`**（clone を作る前に読める場所が要るため。
+    # 状態リポジトリの中に書いても clone 済みの後にしか読めず、意味を持てない）。ここに残して
+    # あるのは「Config が現在どの状態リポジトリで動いているか」を doctor・status が示すための
+    # 導出値で、プロジェクト yaml から設定しても効かない（`_INERT_PROJECT_KEYS`＝警告して無視）。
+    "state_repo": "",                   # 状態専用リポジトリの URL/パス（host.yaml projects[].state_repo）
+    "state_repo_branch": "main",        # 状態を載せるブランチ（host.yaml projects[].branch）
     "status_interval": 0.0,             # watch アイドル中の status.json 生存信号更新間隔（秒）。既定 0=無効
-    "lock_dir": None,   # agent-flow daemon ロックの置き場（外部 daemon 発見のため agent-flow と一致させる）
     "agent_flow": None,
     "notify_cmd": None,
     "actor": os.environ.get("USER", "user"),
@@ -116,7 +156,7 @@ CONFIG_DEFAULTS = {
     "max_spawn": 20,            # 1 run の派生タスク生成上限（0 で無効）
     "regression_cmd": None,     # done 確定前のグローバル回帰検査コマンド（巻き込み事故の検知）
     "regression_revert": False,
-    "intake_cmd": None,         # 外部ゲート/検出器から修復タスクを汲み上げるコマンド（例: codd-gate tasks --debt）
+    "intake_cmd": None,         # JSON を返す外部の決定的検出器から修復タスクを汲み上げるコマンド
     "hooks": {},                # 任意フックのプロバイダ指定（能力キー -> module 名）。既定は sibling 自動検出
     "intake_interval": 600.0,   # intake の実行間隔（秒）。0 以下で毎パス/毎 poll
     "auto_level_max": "assisted",   # 自動昇格の ceiling（unattended への自動到達は明示時のみ）
@@ -131,7 +171,7 @@ CONFIG_DEFAULTS = {
     "update_check_interval": 21600.0,    # 更新チェック間隔（秒）。既定 6 時間。0 以下で自動チェック無効
     "update_repo": DEFAULT_UPDATE_REPO,  # スキルリポジトリ（git URL/パス）。空なら skill-registry.json から自動解決
     "update_branch": "main",             # 追従するブランチ
-    "update_subdir": TOOL_SUBDIR,        # リポジトリ内のこのツールのサブディレクトリ
+    "update_subdir": TOOL_SUBDIR,        # 取得対象パス（カンマ/空白区切りで複数。既定は本体+agentcore）
     "update_installer": "install.sh",    # サブディレクトリ内で実行するインストーラ
     # 実行前レビュー（plan review）: 新規タスクは proposed で入り、人の承認（approve）で実行可能になる。
     # false で従来の自動投入（verify ありは即 ready）へ戻す。
@@ -142,7 +182,12 @@ CONFIG_DEFAULTS = {
     # spec ルーティング: 採点 max(c,r,a) >= spec_threshold のタスクに spec 前段タスクを前置
     # （specs/<id>/ の spec/design/tasks を人が承認してから実装へ）。opt-in。
     "spec_track": False,
+    # 3 段ルーティング（S7）: full 以上=フル spec / light 以上=ライト spec（design.md 1 枚）/
+    # それ未満=スキップ。full は未設定（None）なら旧 `spec_threshold` を読む＝既存設定は
+    # そのままフル spec の閾値として効く。採点は各軸 1〜3 なので上限 3。
     "spec_threshold": 3,
+    "spec_threshold_full": None,
+    "spec_threshold_light": 2,
     # リポジトリ理解の成果物化: plan 前に context/<repo名>.md を生成（sha キャッシュ）。読み出しは常時。
     "repo_map": False,
     # 効いた learn を rules.md（全タスク常時注入のプロジェクトルール）へ自動昇格。読み出しは常時。
@@ -159,6 +204,30 @@ CONFIG_DEFAULTS = {
     # 自動作成し、承認時にクリーン（コンフリクト無し・未解決ディスカッション無し）なら自動マージする。
     # false で従来の unattended 自動 done。
     "delivery_review": True,
+    # フォージ（MR/PR）側の決定的シグナルからの決着（S4）。
+    #   settle  … マージ=承認 / 未マージクローズ=却下 / changes-requested=差し戻し として決着する
+    #   observe … 照会結果を journal に残すだけ（移行用）
+    # コメント本文のキーワード推定は使わない——書き手の言い回し 1 つで判定が変わり、
+    # 変わったことに気づけない。差し戻しは「人がラベル／レビュー状態を明示したとき」。
+    "remote_review": "settle",
+    # 証跡ベースの検証（S5）。受入基準チェックリスト（`- acceptance:` 複数行）に対して
+    # 検証エージェントが実行時にコマンドを試行錯誤し、基準ごとの判定＋証跡を返す。
+    #   verifier          … false で従来どおり決定的 verify のみ（acceptance は表示だけ・移行用）
+    #   verifier_skill    … プロンプト・出力契約を供給するスキル名（上位に置けば差し替え可）
+    #   verify_side_effects … workspace=作業ツリー内のみ / network=読み取りの HTTP 到達まで許す
+    #     （DB・外部サービスへの書き込みはどちらでも不可。検証は失敗するとリトライで何度も
+    #      走るので副作用が累積する。そこまで要る検証は人が verify: に明示的に書く）
+    "verifier": True,
+    "verifier_skill": "backlog-verifier",
+    "verify_side_effects": "workspace",
+    # バックログ分解（S6）。charter → タスクの分解を backlog-planner スキルへ出す。
+    #   planner_skill … プロンプト・出力契約を供給するスキル名（上位に置けば差し替え可。
+    #     見つからなければ組み込みプロンプトへ落ちる＝計画は止めない）
+    #   plan_sections … required=必須項目（why/desc/acceptance/size）の欠落を 1 回再要求し、
+    #     なお欠けるタスクは proposed（plan_review off なら draft）で人の目へ回す /
+    #     warn=注記だけ付けてそのまま投入
+    "planner_skill": "backlog-planner",
+    "plan_sections": "required",
     # 真偽フラグ（CLI > 設定ファイル > 既定）。CLI 未指定（None）なら設定ファイル→この既定で確定
     "watch": False, "once": False, "dry_run": False, "rot": False, "ltm": False,
     "require_progress": False, "auto_level": False, "review_project": False,
@@ -166,6 +235,162 @@ CONFIG_DEFAULTS = {
     "bus_keep_runs": 20,  # 掃除しても残す直近 run 数（viewer のフロータブが読む一次ソース）
     "with_flow": True,   # doctor: 実行層 agent-flow doctor も連携実行（CLI 既定 on・直接 Config は off）
 }
+
+
+# ---------------------------------------------------------------------------
+# 設定 2 層の責務分離（S1）。「どのキーをどちらのファイルに書けるか」を **契約として固定** する。
+#
+#   agent-project.host.yaml（~/.agents/・共有しない） … このノードの宣言（何を動かすか・資源）
+#   agent-project.yaml（状態リポジトリ直下・全 PC 共有） … プロジェクトの合意（どう動かすか）
+#
+# 分類が無いと、ノード固有の絶対パスや資源上限が state repo 経由で全 PC へ配られ（C1/C3 の
+# 元凶）、逆に「全ノードで同一であるべき動作」が PC ごとに食い違って実行が非決定になる。
+# 帰属は静的に検査する（`_validate_layers`）——黙って読み替えると、設定した本人が
+# 「効いていない」ことに気付けない。
+# ---------------------------------------------------------------------------
+
+# 両方に書けるキー（ノード事情による上書きを許す群）。優先順位は
+#   CLI > host.yaml projects[].overrides > host.yaml defaults > プロジェクト yaml > 組み込み既定。
+# ここに入れてよいのは「ノードごとに違って **よい**（違っても実行の意味が変わらない）」もの
+# だけ: 導入済み CLI・マシン性能・ノード局所のパス。判断や収束条件は入れない。
+SHARED_KEYS = frozenset({
+    "agent_cli", "model", "act_timeout", "verify_timeout", "location", "concurrency",
+    # ノードごとに CLI 性能・操作者名義・通知手段が異なる
+    "agent_timeout", "actor", "notify_cmd",
+    # argv 長の上限は OS とシェルの事情（ARG_MAX）。ノードごとに違ってよく、違っても
+    # 実行の意味は変わらない（退避されるかどうかだけが変わる）
+    "argv_limit",
+    # ノード局所のパスを指しうるキー。共有 yaml に絶対パスが載ると他 PC で壊れるため、
+    # プロジェクト共通の既定を置きつつノードで差し替えられるようにする
+    "ltm_home", "flow_config", "verify_cwd",
+})
+
+# host.yaml だけが値を持つ CONFIG_DEFAULTS キー（プロジェクト yaml から読まない）。
+HOST_SOURCED_KEYS = frozenset({
+    "board_workdir",            # git+ 板の clone 作業領域＝ノード局所パス
+    "state_repo", "state_repo_branch",   # clone 前に読む宣言。projects[] が唯一の置き場
+    # ツールの自動アップデートは「このノードのインストール管理」。プロジェクト共有設定に置くと
+    # 更新の停止・更新元の差し替えが全 PC へ一斉に飛ぶ（あるノードだけ固定したい運用ができない）
+    "update_enabled", "update_check_interval", "update_repo", "update_branch",
+    "update_subdir", "update_installer",
+})
+
+# プロジェクト yaml に書いたらエラーにするキー（構造キーを含む）。
+# 「読んでしまうと全 PC で誤って効く」ものだけを入れる——無害な残骸は `_INERT_PROJECT_KEYS`。
+HOST_ONLY_KEYS = frozenset({
+    "node", "node_id", "projects", "repos", "availability", "budget", "tags",
+    "amigos_bus", "amigos_config", "residency", "defaults", "update",
+    "board_workdir",
+    "update_enabled", "update_check_interval", "update_repo", "update_branch",
+    "update_subdir", "update_installer",
+})
+
+# プロジェクト yaml に残っていても **構造上ただの無効値** になるキー（警告して無視）。
+# エラーにしない理由: このファイルは state repo 経由で全 PC が共有するため、無害な残骸で
+# 全ノードを同時に落とす方が害が大きい。値 = 案内文。
+_INERT_PROJECT_KEYS = {
+    "root": "このファイルの置き場所（状態リポジトリ直下）が root です",
+    "state_repo": "host.yaml の projects[].state_repo が唯一の置き場です（clone 前に読む必要があるため）",
+    "state_repo_branch": "host.yaml の projects[].branch へ書いてください",
+    "state_repo_dir": "clone 先は host.yaml の projects[].root で宣言してください",
+    "state_git": "状態 clone の origin が同期先です（設定は不要になりました）",
+    "state_commit_interval": "state_git_interval に一本化しました",
+}
+
+# 廃止した状態 worktree 方式のキー（検出したら fail-fast）。値 = 移行の案内。
+# 黙って無視すると「バックアップされているつもりの未バックアップ状態」が続く——
+# state_push / state_backup_branch は「共有できている」と誤認させる分だけ危険度が高い。
+_REMOVED_WORKTREE_KEYS = {
+    "state_worktree_dir", "state_branch", "state_commit", "state_push", "state_backup_branch",
+}
+
+# 上記のどれでもない CONFIG_DEFAULTS キー＝プロジェクト yaml 専有（host.yaml に書いたらエラー）。
+# 差集合で定義するのは、キーを増やしたときに分類漏れが起きないようにするため
+# （新しいキーは既定でプロジェクト共有側に落ちる＝安全側）。
+PROJECT_ONLY_KEYS = frozenset(
+    set(CONFIG_DEFAULTS) - SHARED_KEYS - HOST_SOURCED_KEYS - set(_INERT_PROJECT_KEYS))
+
+
+def _layer_error(lines: "list[str]") -> "None":
+    """設定の層違反を fail-fast で報せる（起動を止める）。"""
+    print("\n".join(["[agent-project] 設定の置き場所が契約と違います:", *lines]), file=sys.stderr)
+    sys.exit(2)
+
+
+def layer_findings(project: dict, defaults: dict, overrides: dict,
+                   cfg_path=None) -> "list[dict]":
+    """設定 2 層の帰属違反を **判定だけ** して返す（起動は止めない）。
+
+    プロジェクト yaml 側 = 「全 PC へ配られてしまうと困るもの」を弾く。
+    host.yaml の defaults/overrides 側 = 「ノードごとに食い違うと実行が非決定になるもの」を弾く。
+    どちらにも属さない未知キーは警告のみ（typo の検出。既存の黙殺をやめる）。
+
+    起動経路（`_validate_layers`・fail-fast）と doctor（診断・止めない）が**同じ 1 つの規則**を
+    使うための分離（S1 §3.6）。判定と出口を分けないと、doctor 側に「起動時と少しだけ違う
+    判定」が生えて、doctor が緑なのに起動が止まる（あるいはその逆）ようになる。
+
+    返す各要素: `{"id", "severity"("error"|"warn"), "keys", "title", "lines"}`。
+    `lines` は起動時の案内文そのもの（doctor は `title` と `keys` を使う）。"""
+    where = f"（{cfg_path}）" if cfg_path else ""
+    out: "list[dict]" = []
+    bad = sorted(k for k in project if k in _REMOVED_WORKTREE_KEYS)
+    if bad:
+        out.append({"id": "E7", "severity": "error", "keys": bad,
+                    "title": "廃止した状態 worktree 方式のキーがプロジェクト yaml に残っている",
+                    "lines": [
+                        f"  廃止した状態 worktree 方式のキーが残っています{where}: {', '.join(bad)}",
+                        "  状態ルートは状態専用リポジトリの clone に一本化しました（S1）。",
+                        "  移行: bash tools/agent-project/migrate-state-repo.sh "
+                        "--state-dir <状態フォルダ> --state-repo <URL>",
+                        "  手順: docs/guides/state-repo-migration.md",
+                    ]})
+    bad = sorted(k for k in project if k in HOST_ONLY_KEYS)
+    if bad:
+        out.append({"id": "E1", "severity": "error", "keys": bad,
+                    "title": "ノード固有のキーがプロジェクト yaml にある",
+                    "lines": [
+                        f"  ノード固有のキーがプロジェクト yaml にあります{where}: {', '.join(bad)}",
+                        "  これらは PC ごとに違う宣言なので、state repo 経由で全 PC へ配ると壊れます。",
+                        "  ~/.agents/agent-project.host.yaml へ移してください。",
+                    ]})
+    for key in sorted(k for k in project if k in _INERT_PROJECT_KEYS):
+        out.append({"id": "W-INERT", "severity": "warn", "keys": [key],
+                    "title": f"{key} はプロジェクト yaml では効かない",
+                    "lines": [f">>> 警告: {key} はプロジェクト yaml では効きません{where}"
+                              f"（無視します）— {_INERT_PROJECT_KEYS[key]}"]})
+    for layer, label in ((overrides, "projects[].overrides"), (defaults, "defaults")):
+        bad = sorted(k for k in layer if k not in SHARED_KEYS)
+        if bad:
+            out.append({"id": "E2", "severity": "error", "keys": bad,
+                        "title": f"host.yaml の {label}: に上書きできないキーがある",
+                        "lines": [
+                            f"  host.yaml の {label}: に上書きできないキーがあります: "
+                            f"{', '.join(bad)}",
+                            "  『プロジェクトとしてどう進めるか』の合意はノードごとに食い違うと"
+                            "実行が非決定になるため、状態リポジトリ直下の agent-project.yaml へ"
+                            "書いてください。",
+                            f"  上書きできるのは次のキーだけです: {', '.join(sorted(SHARED_KEYS))}",
+                        ]})
+    unknown = sorted(k for k in project
+                     if k not in CONFIG_DEFAULTS and k not in _INERT_PROJECT_KEYS
+                     and not str(k).startswith("_"))
+    if unknown:
+        out.append({"id": "W-UNKNOWN", "severity": "warn", "keys": unknown,
+                    "title": "未知の設定キー（綴り間違いの疑い）",
+                    "lines": [f">>> 警告: 未知の設定キー{where}: {', '.join(unknown)}"
+                              f"（無視します。綴りを確認してください）"]})
+    return out
+
+
+def _validate_layers(project: dict, cfg_path, defaults: dict, overrides: dict) -> None:
+    """設定 2 層の帰属契約を検査する（S1）。違反は fail-fast、警告は 1 回だけ出す。
+
+    判定そのものは `layer_findings` が持つ（doctor と共有）。ここは出口だけを担う。"""
+    for finding in layer_findings(project, defaults, overrides, cfg_path):
+        if finding["severity"] == "error":
+            _layer_error(finding["lines"])          # 起動を止める（戻らない）
+        for line in finding["lines"]:
+            print(line, file=sys.stderr)
 
 
 def _normalize_hooks(raw) -> dict:
@@ -181,52 +406,352 @@ def _normalize_hooks(raw) -> dict:
             for k, v in raw.items() if isinstance(v, str) and str(v).strip()}
 
 
-def _find_config(explicit):
-    """設定ファイルの探索: 1) --config 明示 2) ./（ルート直下）3) ./.agent/ 4) ~/.agent/。
-    ルート直下を最優先にするのは 1 root = 1 プロジェクト構成で agent-project.yaml が
-    プロジェクトのマニフェスト（viewer の自動発見マーカー）を兼ねるため。"""
+def _project_config_path(explicit, root: Path):
+    """プロジェクト設定ファイルの解決: --config 明示、無ければ **状態ルート直下のみ**。
+
+    旧実装の探索チェーン（cwd → ./.agents → ./.agent → ~/.agents）は廃止した（S1）。
+    状態ルートは常に状態専用リポジトリの clone で、プロジェクトの合意事項はその中に置く——
+    「どこに置いたら読まれるのか」が探索順に依存すると、成果物リポジトリ側の古い yaml が
+    黙って優先される事故（移行時に実際に起きた）を招く。"""
     if explicit:
-        p = os.path.expanduser(explicit)
+        p = os.path.expanduser(str(explicit))
         if not os.path.isfile(p):
             print(f"[agent-project] 設定ファイルが見つかりません: {explicit}", file=sys.stderr)
             sys.exit(1)
         return p
-    for base in (os.getcwd(),
-                 os.path.join(os.getcwd(), AGENT_HOME),
-                 os.path.join(os.getcwd(), AGENT_HOME_LEGACY),
-                 str(agent_home_dir())):
-        for name in DEFAULT_CONFIG_NAMES:
-            cand = os.path.join(base, name)
-            if os.path.isfile(cand):
-                return cand
+    for name in DEFAULT_CONFIG_NAMES:
+        cand = root / name
+        if cand.is_file():
+            return str(cand)
+    _warn_legacy_config_locations(root)
     return None
 
 
+def _warn_legacy_config_locations(root: Path) -> None:
+    """旧探索先にだけ設定が在るときに 1 度だけ報せる（黙って既定で走らない）。
+
+    探索チェーンを畳んだので、旧レイアウトのままのプロジェクトは「設定を書いたのに
+    何も効かない」状態になる。無言だと原因が追えないため、見つけた場所を名指しする。"""
+    legacy = [Path(base) / name
+              for base in (root / AGENT_HOME, root / AGENT_HOME_LEGACY, agent_home_dir())
+              for name in DEFAULT_CONFIG_NAMES]
+    found = [str(p) for p in legacy if p.is_file()]
+    if found:
+        print(f">>> 警告: 設定ファイルの探索は状態ルート直下のみになりました（S1）。"
+              f"次のファイルは読まれません: {', '.join(found)} — "
+              f"内容を {root / DEFAULT_CONFIG_NAMES[0]} へ移してください", file=sys.stderr)
+
+
+def _norm_path_key(p) -> str:
+    """パス一致判定用の正規化（絶対化・シンボリックリンク解決）。解決できなければ素の絶対パス。"""
+    try:
+        return str(Path(str(p)).expanduser().resolve())
+    except (OSError, RuntimeError, ValueError):
+        return str(Path(str(p)).expanduser().absolute())
+
+
+def _match_host_project(host, args) -> dict:
+    """このプロセスが駆動するプロジェクト宣言を host.yaml から特定する（S1 §3.1 の対象決定）。
+
+    a) --project <name> … 名前で選ぶ（無ければ fail-fast。黙って別プロジェクトを動かさない）
+    b) --state-repo <url> … ad-hoc 起動（host.yaml の宣言を使わない）
+    c) --root / cwd … root 一致の宣言があればそれ（overrides が効く）。無ければ ad-hoc
+    """
+    projects = [p for p in getattr(host, "projects", []) or [] if isinstance(p, dict)]
+    name = str(getattr(args, "project", "") or "").strip()
+    if name:
+        for p in projects:
+            if str(p.get("name") or "").strip() == name or _project_name(p) == name:
+                return p
+        known = ", ".join(sorted(_project_name(p) for p in projects)) or "(宣言なし)"
+        print(f"[agent-project] host.yaml に project '{name}' がありません（宣言済み: {known}）",
+              file=sys.stderr)
+        sys.exit(2)
+    if str(getattr(args, "state_repo", "") or "").strip():
+        return {}
+    target = _norm_path_key(getattr(args, "root", None) or ".")
+    for p in projects:
+        if p.get("root") and _norm_path_key(p["root"]) == target:
+            return p
+    return {}
+
+
+def _state_root_markers(root: Path) -> "list[str]":
+    """状態ルートらしさの根拠（見つかったマーカー名）。空なら状態ルートではない。
+
+    **`agent-project.{yaml,yml,json}` はマーカーに入れない。** 移行前の構成ではまさにそれが
+    成果物リポジトリ直下に置かれていた（`state_repo:` を clone 前に読むためのブートストラップ）
+    ので、マーカーに数えると「弾きたい相手」が全員すり抜ける。"""
+    return [name for name in ("project.json", "backlog", "charter.md", "charters",
+                              "needs", "decisions", "archive", "DELIVERY.md",
+                              "repos.json", "policy.md", "rules.md")
+            if (root / name).exists()]
+
+
+def _looks_like_fresh_root(root: Path) -> bool:
+    """まだ何も入っていないルート（新規プロジェクトの初期化）か。
+
+    「.git 以外に何も無い」で判定する。コミットの有無ではなく中身で見るのは、空リポジトリの
+    clone も `git init` 直後のディレクトリも同じ『これから状態を作る場所』だから。"""
+    try:
+        return not any(p.name != ".git" for p in root.iterdir())
+    except OSError:
+        return True
+
+
+def _ensure_state_clone(root: Path, state_repo: str, branch: str) -> None:
+    """状態専用リポジトリを root へ確保する（既にあれば origin の同一性だけ確かめる）。
+
+    旧実装は origin 不一致・clone 失敗を **worktree 方式への暗黙フォールバック** で吸収して
+    いた（`_redirect_root_to_state_repo`）。移行が効いていないことに誰も気付けないまま、
+    状態が旧構成へ書かれ続ける事故の元だったので、S1 では必ず止める。"""
+    if (root / ".git").exists():
+        origin = _git_line(root, "remote", "get-url", "origin") or ""
+        # origin が一致すれば正しい clone。**origin が無い場合も素通りさせない**——成果物
+        # リポジトリ（`git init` しただけで remote 未設定）を root に宣言してしまった構成が
+        # そのまま通ると、状態がそこへ書かれた上に origin まで生やしてしまう。
+        ok = _same_git_remote(origin, state_repo) if origin \
+            else bool(_state_root_markers(root) or _looks_like_fresh_root(root))
+        if not ok:
+            print(f"[agent-project] {root} は宣言された状態リポジトリの clone ではありません。\n"
+                  f"  宣言（host.yaml projects[].state_repo）: {state_repo}\n"
+                  f"  実際の origin                          : {origin or '(未設定)'}\n"
+                  f"  root を退避するか、host.yaml の state_repo / root の宣言を直してください。",
+                  file=sys.stderr)
+            sys.exit(2)
+        return
+    if root.exists() and not _looks_like_fresh_root(root):
+        print(f"[agent-project] {root} は git リポジトリではないのに中身があります。"
+              f"状態リポジトリを clone できません（既存の内容を壊さないため中止）。\n"
+              f"  空のディレクトリを root に宣言するか、その場所を退避してください。",
+              file=sys.stderr)
+        sys.exit(2)
+    if not _ensure_state_repo_clone(state_repo, root, branch):
+        print(f"[agent-project] 状態リポジトリを clone できませんでした: {state_repo} → {root}\n"
+              f"  ネットワーク・認証・URL を確認してください（旧 worktree 方式への"
+              f"フォールバックは廃止しました）。", file=sys.stderr)
+        sys.exit(2)
+
+
+def _check_adhoc_state_root(root: Path) -> None:
+    """状態リポジトリの宣言が無いまま起動したときの root 検査（S1 §3.1 の単発 run 契約）。
+
+    守りたいのはただ 1 つ、**成果物リポジトリを状態ルートにしてしまう事故**。そこで動かすと
+    人のコードリポジトリに backlog/ や journal.md が生えて git status が永久に汚れる。
+
+    - git 管理外 → 許す（ローカル縮退。次の同期で `git init` される）。**中身の有無は見ない**
+      ——普通のディレクトリは誰のリポジトリでもないので、上の事故は起こりえない。
+    - 他リポジトリの内側（自分はトップレベルでない） → 中止。`_ensure_direct_state_git` が
+      nested repo を作らないために黙って同期を諦める構成で、起動できても状態は共有されない。
+    - トップレベルだが状態マーカーが無く、中身がある → 成果物リポジトリとみなして中止。
+    """
+    if not root.exists():
+        return
+    top = _git_toplevel_of(root)
+    if top is None:
+        return
+    if _looks_like_fresh_root(root) or _state_root_markers(root):
+        return
+    if _norm_path_key(top) != _norm_path_key(root):
+        print(f"[agent-project] {root} は git リポジトリ {top} の内側です。\n"
+              f"  状態ルートは状態専用リポジトリの clone（そのトップレベル）である必要があります。\n"
+              f"  そこで起動すると状態が成果物リポジトリへ書き込まれ、共有もされません。",
+              file=sys.stderr)
+        sys.exit(2)
+    hint = ""
+    for name in DEFAULT_CONFIG_NAMES:
+        legacy = root / name
+        if not legacy.is_file():
+            continue
+        try:
+            url = str((_load_config_file(str(legacy)) or {}).get("state_repo") or "").strip()
+        except (OSError, ValueError, SystemExit):
+            url = ""
+        if url:
+            hint = (f"\n  この場所の {name} には state_repo: {url} が残っています"
+                    f"（旧ブートストラップ設定。もう読まれません）。\n"
+                    f"  その URL を ~/.agents/agent-project.host.yaml の projects[].state_repo へ"
+                    f"転記し、projects[].root には状態 clone のパスを宣言してください。")
+        break
+    print(f"[agent-project] {root} は状態ルートに見えません（成果物リポジトリではありませんか）。\n"
+          f"  状態ルートは状態専用リポジトリの clone です。--state-repo <URL> を渡すか、\n"
+          f"  ~/.agents/agent-project.host.yaml の projects[] で宣言してください。{hint}\n"
+          f"  手順: docs/guides/state-repo-migration.md", file=sys.stderr)
+    sys.exit(2)
+
+
+def _resolve_state_root(args, entry: dict) -> Path:
+    """状態ルート（= 状態専用リポジトリの clone）を確定して返す（S1 §3.1）。
+
+    旧実装の「成果物リポジトリを root に取り、状態を worktree / 別 clone へリダイレクトする」
+    2 段構えは廃止した。root は最初から状態リポジトリで、`source_root` / `state_top` という
+    リダイレクト前後の二重表現も要らなくなる。"""
+    state_repo = str(getattr(args, "state_repo", "") or "").strip() \
+        or str(entry.get("state_repo") or "").strip()
+    branch = str(getattr(args, "state_repo_branch", "") or "").strip() \
+        or str(entry.get("branch") or "").strip() or "main"
+    raw = getattr(args, "root", None) or entry.get("root")
+    if not raw and entry:
+        # host.yaml の宣言に root が無い＝clone 先が cwd 依存になる。常駐体の子は cwd を
+        # 当てにできないので、ここで止めて宣言を促す（黙って cwd 配下に作らない）。
+        print(f"[agent-project] host.yaml の projects[] に root がありません: "
+              f"{entry.get('name') or entry.get('state_repo') or entry}\n"
+              f"  root には状態リポジトリの clone 先を絶対パスで宣言してください。",
+              file=sys.stderr)
+        sys.exit(2)
+    if not raw and state_repo:
+        # --state-repo だけで起動したとき（ad-hoc）の既定 clone 先は cwd 配下の <リポジトリ名>。
+        raw = Path.cwd() / _repo_basename(state_repo)
+    root = Path(str(raw or ".")).expanduser()
+    root = (root if root.is_absolute() else (Path.cwd() / root)).resolve()
+    args.state_repo, args.state_repo_branch = state_repo, branch
+    if state_repo:
+        _ensure_state_clone(root, state_repo, branch)
+    else:
+        _check_adhoc_state_root(root)
+    return root
+
+
+def _repo_basename(url: str) -> str:
+    """git URL/パスから clone 先ディレクトリ名を導く（`git clone` の既定と同じ規則）。"""
+    s = str(url or "").strip().rstrip("/")
+    if s.endswith(".git"):
+        s = s[:-4]
+    name = re.split(r"[/:]", s)[-1] if s else ""
+    return name or "state"
+
+
+def _host_layer(host, entry: dict) -> dict:
+    """host.yaml が値を持つ CONFIG_DEFAULTS キー（`HOST_SOURCED_KEYS`）を集める。"""
+    update = getattr(host, "update", None) or {}
+    layer = {f"update_{k}": v for k, v in update.items()
+             if f"update_{k}" in HOST_SOURCED_KEYS and v is not None}
+    if getattr(host, "board_workdir", None):
+        layer["board_workdir"] = host.board_workdir
+    if entry.get("board_workdir"):
+        layer["board_workdir"] = entry["board_workdir"]
+    return layer
+
+
 def resolve_config(args):
-    """CLI 未指定（None）の設定値だけを 設定ファイル→組み込み既定 で埋める（CLI > config > 既定）。"""
-    path = _find_config(getattr(args, "config", None))
+    """CLI 未指定値を host.yaml（ノード固有）→ プロジェクト yaml（共有）→ 既定で埋める（S1）。
+
+    層の優先順位: CLI > projects[].overrides > defaults > プロジェクト yaml > 組み込み既定。
+    `HOST_SOURCED_KEYS` だけは host.yaml が単一ソース（プロジェクト yaml を読まない）。"""
+    host = load_host_config(getattr(args, "host_config", None))
+    entry = _match_host_project(host, args)
+    root = _resolve_state_root(args, entry)
+    args.root = str(root)
+    path = _project_config_path(getattr(args, "config", None), root)
     cfg = _load_config_file(path) if path else {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    overrides = dict(entry.get("overrides") or {})
+    defaults = dict(getattr(host, "defaults", None) or {})
+    _validate_layers(cfg, path, defaults, overrides)
+    host_layer = _host_layer(host, entry)
     args._config_path = path
+    args._host_config_path = getattr(host, "path", None)
     for key, dflt in CONFIG_DEFAULTS.items():
-        if getattr(args, key, None) is None:
-            setattr(args, key, cfg.get(key, dflt))
+        if getattr(args, key, None) is not None:
+            continue                                  # 1) CLI が最優先
+        if key in HOST_SOURCED_KEYS:
+            setattr(args, key, host_layer.get(key, dflt))
+        elif key in overrides:
+            setattr(args, key, overrides[key])        # 2) ノード×プロジェクトの上書き
+        elif key in defaults:
+            setattr(args, key, defaults[key])         # 3) ノード全体の既定
+        else:
+            setattr(args, key, cfg.get(key, dflt))    # 4) プロジェクトの合意 → 5) 組み込み既定
+    if getattr(args, "node", None) is None:
+        # 宣言 > 環境変数 > ホスト名（build_config の `_auto_node_name`）。宣言を環境変数に
+        # 負けさせると、host.yaml に node_id を書いた PC が起動元シェル次第で別名になる。
+        args.node = (getattr(host, "node_id", "") if getattr(host, "node_id_declared", False)
+                     else "") or os.environ.get("AGENT_PROJECT_NODE", "")
+    # 稼働時間帯は PC 単位の性質なので host.yaml が単一ソース（旧 profile の唯一の実質項目）。
+    args.availability = dict(getattr(host, "availability", None) or {})
+    _warn_deprecated_coordination(args, cfg, path)
+    _warn_removed_flags(args)
     return args
 
 
+def _warn_removed_flags(args) -> None:
+    """廃止した CLI フラグを黙って捨てない（`_warn_deprecated_coordination` と同じ流儀）。"""
+    if getattr(args, "_removed_profile", None) is not None:
+        _layer_error([
+            "  --profile は廃止しました（PC 固有 profile → host.yaml へ吸収・S1）。",
+            "  転記: profile.root → projects[].root / profile.node → node_id /",
+            "        profile.availability → availability / profile.project_config → 廃止",
+            "        （設定は状態リポジトリ直下の agent-project.yaml が正）。",
+        ])
+    if getattr(args, "_removed_state_repo_dir", None) is not None:
+        _layer_error([
+            "  --state-repo-dir は廃止しました（S1）。clone 先は root そのものです。",
+            "  --root <clone 先> を渡すか、host.yaml の projects[].root で宣言してください。",
+        ])
+
+
+def _warn_deprecated_coordination(args, cfg: dict, path) -> None:
+    """廃止した `coordination` 指定（yaml キー・CLI フラグ）を黙って捨てない（実装計画 W1-8）。
+
+    設定読み込みは CONFIG_DEFAULTS のキーだけを走査するため、既存 yaml に残った
+    `coordination: git-cas` はエラーにも警告にもならず消える。挙動が変わったのに設定は
+    残っている状態は原因を追えないので、一度だけ stderr へ出して移行先を示す。"""
+    used = [src for src, hit in (
+        (f"設定ファイル {path}" if path else "設定ファイル", "coordination" in (cfg or {})),
+        ("--coordination", getattr(args, "_deprecated_coordination", None) is not None),
+    ) if hit]
+    if used:
+        print(f">>> 警告: {' と '.join(used)} の coordination 指定は廃止されました（無視します）。"
+              "複数 PC 制御は origin と status/ に観測される他ノードの有無で自動判定します",
+              file=sys.stderr)
+
+
+def _spec_thresholds(args) -> dict:
+    """spec ルーティングの 2 閾値を確定する（S7）。
+
+    後方互換: `spec_threshold_full` の明示が無ければ旧 `spec_threshold` を full として読む。
+    採点は各軸 1〜3（`_assess_max` は最大値）なので上限は 3 にクランプする——仕様の草案は
+    「full=4 相当」としていたが、4 には決して到達しないので **full=3 / light=2** が既定。
+    light > full の設定は意味を成さない（ライトの窓が消える）ので light を full に丸める。
+    """
+    def _clamp(v, dflt):
+        try:
+            return min(3, max(1, int(v if v is not None else dflt)))
+        except (TypeError, ValueError):
+            return dflt
+
+    legacy = _clamp(getattr(args, "spec_threshold", None), 3)
+    full = _clamp(getattr(args, "spec_threshold_full", None), legacy)
+    light = min(_clamp(getattr(args, "spec_threshold_light", None), 2), full)
+    return {"spec_threshold": legacy, "spec_threshold_full": full,
+            "spec_threshold_light": light}
+
+
+def _one_of(value, allowed: "tuple[str, ...]", dflt: str, key: str) -> str:
+    """値域を持つ設定キーを正規形へ倒す。**倒したときは黙らない**——`observe` を
+    `observ` と綴り間違えても既定へ落ちるだけだと、設定した本人が「効いていない」ことに
+    気付けない（S1 の設計動機と同じ）。"""
+    got = str(value or "").strip().lower()
+    if got in allowed:
+        return got
+    if got:
+        print(f"[agent-project] 設定 {key}: 未知の値 '{value}' — 既定 '{dflt}' を使います"
+              f"（有効値: {' / '.join(allowed)}）", file=sys.stderr)
+    return dflt
+
+
 def build_config(args) -> Config:
-    # プロジェクトルート = --root（cwd 相対、既定 . = cwd）が唯一のアンカー。charter.md /
-    # repos.json / backlog/ 等はすべてこの直下（1 プロジェクト = 1 ディレクトリ = 1 プロセス）で、
-    # 相対パスの上書きもすべて root 基準で解決する（viewer の bus 解決とも一致する）。
+    global _RUNTIME_CONFIG
+    # プロジェクトルート = 状態専用リポジトリの clone（`resolve_config` が確定済み・S1）。
+    # charter.md / repos.json / backlog/ 等はすべてこの直下（1 プロジェクト = 1 状態リポジトリ =
+    # 1 プロセス）で、相対パスの上書きもすべて root 基準で解決する。
+    #
+    # 旧実装の「成果物リポジトリを root に取り、状態を worktree / 別 clone へリダイレクトする」
+    # 2 段構え（state_top / source_root）は廃止した。リダイレクト前後で root が 2 つある状態は、
+    # start/stop の照合・検収 diff・インスタンスレジストリがそれぞれ別の値を使う温床だった。
     root = Path(str(args.root or ".")).expanduser()
     root = (root if root.is_absolute() else (Path.cwd() / root)).resolve()
-    # 状態の読み書きは、本体の作業ツリーから切り離した専用 worktree へ逃がす（設定の root は
-    # 本体を指したままでよい）。以降のパスはすべてこの実効 root を基準に組まれる。
-    state_top: "Path | None" = None
-    source_root = root                    # リダイレクト前＝人・外部操作者が --root に渡す値
-    root, state_top = _redirect_root_to_state_worktree(
-        root,
-        str(getattr(args, "state_worktree_dir", "") or ""),
-        str(getattr(args, "state_branch", "agent-state") or "agent-state"))
     # act / verify の作業ディレクトリ。相対値は root 基準（既定 . = root）。
     wd = Path(str(getattr(args, "workdir", None) or ".")).expanduser()
     workdir = (wd if wd.is_absolute() else (root / wd)).resolve()
@@ -239,56 +764,68 @@ def build_config(args) -> Config:
             return p if p.is_absolute() else (root / p)
         return root / sub
 
-    # エージェント CLI（分解・優先順位・裁定等の free 関数が参照）をここで確定する。
-    global _AGENT_CLI, _AGENT_TIMEOUT, _AGENT_OVERRIDES
-    _AGENT_CLI = str(getattr(args, "agent_cli", "kiro") or "kiro").lower()
-    _AGENT_TIMEOUT = float(getattr(args, "agent_timeout", 300.0) or 0.0)
-    _AGENT_OVERRIDES = _normalize_agent_overrides(getattr(args, "agents", None))
-    # journal ローテーション（append_journal が参照する free 関数向け設定）も同時に確定する。
-    global _JOURNAL_MAX_BYTES, _JOURNAL_KEEP
+    agent_cli = str(getattr(args, "agent_cli", "kiro") or "kiro").lower()
+    agent_timeout = float(getattr(args, "agent_timeout", 300.0) or 0.0)
+    agent_overrides = _normalize_agent_overrides(getattr(args, "agents", None))
     try:
-        _JOURNAL_MAX_BYTES = int(getattr(args, "journal_max_bytes", 262144) or 0)
+        argv_limit = int(getattr(args, "argv_limit", None) or 0)
     except (TypeError, ValueError):
-        _JOURNAL_MAX_BYTES = 262144
+        argv_limit = 0
     try:
-        _JOURNAL_KEEP = int(getattr(args, "journal_keep", 20) or 0)
+        journal_max_bytes = int(getattr(args, "journal_max_bytes", 262144) or 0)
     except (TypeError, ValueError):
-        _JOURNAL_KEEP = 20
+        journal_max_bytes = 262144
+    try:
+        journal_keep = int(getattr(args, "journal_keep", 20) or 0)
+    except (TypeError, ValueError):
+        journal_keep = 20
 
+    availability = dict(getattr(args, "availability", {}) or {})
     cfg = Config(
         backlog=under("backlog", "backlog"),
         policy=under("policy", "policy.md"),
         decisions=under("decisions", "decisions"),
         journal=under("journal", "journal.md"),
+        journal_max_bytes=journal_max_bytes,
+        journal_keep=journal_keep,
         needs=under("needs", "needs"),
         workdir=workdir,
         bus=under("bus", "bus"),
         git_bus=args.git_bus, git_branch=args.git_branch, git_subdir=args.git_subdir,
-        state_git=getattr(args, "state_git", None) or None,
-        state_git_branch=str(getattr(args, "state_git_branch", "main") or "main"),
-        state_git_subdir=str(getattr(args, "state_git_subdir", "agent-project") or "").strip("/"),
         state_git_interval=max(0.0, float(getattr(args, "state_git_interval", 300.0) or 0.0)),
-        manage_flow_daemon=bool(getattr(args, "manage_flow_daemon", False)),
         flow_config=getattr(args, "flow_config", None) or None,
-        flow_max_workers=max(1, int(getattr(args, "flow_max_workers", 4) or 4)),
         status_interval=max(0.0, float(getattr(args, "status_interval", 0.0) or 0.0)),
-        state_worktree_dir=str(getattr(args, "state_worktree_dir", "") or ""),
-        state_branch=str(getattr(args, "state_branch", "agent-state") or "agent-state"),
-        state_commit=bool(getattr(args, "state_commit", True)),
-        state_commit_interval=max(0.0, float(getattr(args, "state_commit_interval", 300.0) or 0.0)),
-        state_push=bool(getattr(args, "state_push", False)),
-        state_backup_branch=str(getattr(args, "state_backup_branch", "main") or ""),
-        state_top=state_top,
-        source_root=source_root,
+        state_repo=str(getattr(args, "state_repo", "") or ""),
+        state_repo_branch=str(getattr(args, "state_repo_branch", "main") or "main"),
         force=bool(getattr(args, "force", False)),
-        lock_dir=getattr(args, "lock_dir", None),
         agent_flow=args.agent_flow, planner=args.planner, flow_planner=args.flow_planner,
+        # node は resolve_config が host.yaml（node_id）→ 環境変数の順で確定済み。
+        # どこにも無いときだけホスト名由来の既定へ落とす。綴りの正規化はどの経路から来ても
+        # `_resolved_node` の 1 箇所で行う（板・状態ファイル名と同じ綴りに保つ・P0-3）。
+        node=_resolved_node(args),
+        default_node=str(getattr(args, "default_node", "") or "").strip(),
+        availability=availability,
+        controller_heartbeat_sec=max(1.0, float(getattr(args, "controller_heartbeat_sec", 30.0) or 30.0)),
+        controller_lease_sec=max(1.0, float(getattr(args, "controller_lease_sec", 120.0) or 120.0)),
+        coordination_retries=max(1, int(getattr(args, "coordination_retries", 3) or 3)),
+        unknown_quarantine_max=max(0, int(getattr(args, "unknown_quarantine_max", 3) or 0)),
+        learn_misfire_limit=max(0, int(getattr(args, "learn_misfire_limit", 3) or 0)),
+        verifications_keep=max(0, int(getattr(args, "verifications_keep", 5) or 0)),
+        gc_retention_days=max(0, int(getattr(args, "gc_retention_days", 30) or 0)),
+        clock_skew_tolerance_sec=max(0.0, float(
+            availability.get("clock_skew_tolerance_sec",
+                             getattr(args, "clock_skew_tolerance_sec", 30.0)) or 0.0)),
         route_planner=str(getattr(args, "route_planner", "agent") or "agent"),
         default_workspace=str(getattr(args, "default_workspace", "") or ""),
-        location=args.location, executor=args.executor,
+        location=args.location,
+        board=str(getattr(args, "board", "") or ""),
+        board_workdir=getattr(args, "board_workdir", None) or None,
+        board_workload=str(getattr(args, "board_workload", "flow") or "flow"),
+        executor=args.executor,
         model=args.model,
-        agent_cli=_AGENT_CLI, agent_timeout=_AGENT_TIMEOUT,
+        agent_cli=agent_cli, agent_timeout=agent_timeout, argv_limit=argv_limit,
         granularity=str(getattr(args, "granularity", "coarse") or "coarse").lower(),
+        flow_granularity=str(getattr(args, "flow_granularity", "auto") or "auto").lower(),
         max_iterations=args.max_iterations,
         max_cycles=args.max_cycles, max_seconds=args.max_seconds,
         max_tokens=getattr(args, "max_tokens", 0) or 0,
@@ -296,7 +833,7 @@ def build_config(args) -> Config:
         max_retries=args.max_retries, pace=args.pace, verify_timeout=args.verify_timeout,
         verify_confirm=max(1, int(getattr(args, "verify_confirm", 1) or 1)),
         verify_cwd=getattr(args, "verify_cwd", None),
-        act_timeout=args.act_timeout, act_async=bool(getattr(args, "act_async", False)),
+        act_timeout=args.act_timeout,
         notify_cmd=args.notify_cmd, actor=args.actor,
         archive=under("archive", "archive"), do_archive=bool(getattr(args, "do_archive", True)),
         learn=bool(getattr(args, "learn", True)),
@@ -336,14 +873,31 @@ def build_config(args) -> Config:
         plan_review=bool(getattr(args, "plan_review", True)),
         assess=bool(getattr(args, "assess", True)),
         spec_track=bool(getattr(args, "spec_track", False)),
-        spec_threshold=min(3, max(1, int(getattr(args, "spec_threshold", 3) or 3))),
+        **_spec_thresholds(args),
+        # S5 の検証設定は CONFIG_DEFAULTS にあるだけで Config へ渡されておらず、
+        # `verifier: false` も `verifier_skill:` も**設定しても効かなかった**（読み出しは
+        # getattr の既定に落ちていた）。プロジェクト yaml の合意事項が黙って無視される類の
+        # 欠落なので、S6 の設定追加と同時に配線する。
+        verifier=bool(getattr(args, "verifier", True)),
+        verifier_skill=str(getattr(args, "verifier_skill", "") or "backlog-verifier"),
+        verify_side_effects=(str(getattr(args, "verify_side_effects", "") or "workspace")
+                             if str(getattr(args, "verify_side_effects", "")) in
+                             ("workspace", "network") else "workspace"),
+        planner_skill=str(getattr(args, "planner_skill", "") or "backlog-planner"),
+        plan_sections=(str(getattr(args, "plan_sections", "") or "required")
+                       if str(getattr(args, "plan_sections", "")) in ("required", "warn")
+                       else "required"),
         repo_map=bool(getattr(args, "repo_map", False)),
         rules_capture=bool(getattr(args, "rules_capture", True)),
-        agents=_AGENT_OVERRIDES,
+        agents=agent_overrides,
         task_branch=bool(getattr(args, "task_branch", True)),
         task_branch_prefix=str(getattr(args, "task_branch_prefix", "ap/") or "ap/"),
         delivery_review=bool(getattr(args, "delivery_review", True)),
-        registry=_split_registry(getattr(args, "registry", None)),
+        # S4-5。`CONFIG_DEFAULTS` にキーはあるのに Config へ渡っておらず、プロジェクト yaml に
+        # `observe` と書いても常に settle になっていた（verifier キーと同型の 2 度目の欠落）。
+        # 再発は tests/test_config_keys.py の構造テストで塞ぐ。
+        remote_review=_one_of(getattr(args, "remote_review", "settle"),
+                              ("settle", "observe"), "settle", "remote_review"),
         dry_run=bool(getattr(args, "dry_run", False)), once=bool(getattr(args, "once", False)),
         project_name=root.name,
         charter=under("charter", "charter.md"),
@@ -359,6 +913,7 @@ def build_config(args) -> Config:
         update_subdir=str(getattr(args, "update_subdir", TOOL_SUBDIR) or TOOL_SUBDIR),
         update_installer=str(getattr(args, "update_installer", "install.sh") or "install.sh"),
     )
+    _RUNTIME_CONFIG = cfg
     return cfg
 
 
@@ -366,10 +921,24 @@ def _add_common(sp):
     # 設定ファイルで上書き可能なキー（CONFIG_DEFAULTS）は default=None にし、resolve_config で確定する
     # （CLI > 設定ファイル > 組み込み既定）。個別パス上書きと真偽フラグは CLI 専用。
     sp.add_argument("--config", default=None,
-                    help="設定ファイル（未指定なら ./ → ./.agent → ~/.agent の agent-project.{yaml,yml,json}）")
+                    help="プロジェクト設定ファイル（未指定なら状態ルート直下の "
+                         "agent-project.{yaml,yml,json}）")
+    sp.add_argument("--host-config", dest="host_config", default=None,
+                    help="agent-project.host.yaml の場所（既定: cwd → ~/.agents の順に探索）")
+    sp.add_argument("--project", default=None,
+                    help="host.yaml の projects[] から名前で選ぶ（root/state_repo/overrides を"
+                         "その宣言から取る）")
     sp.add_argument("--root", default=None,
-                    help="プロジェクトルート（cwd 相対、既定 . = cwd）。charter.md / backlog/ 等はこの直下。"
-                         "相対パスの上書きはすべてこの root 基準で解決される")
+                    help="状態ルート＝状態専用リポジトリの clone（cwd 相対、既定 . = cwd）。"
+                         "charter.md / backlog/ 等はこの直下で、相対パスの上書きもすべて"
+                         "この root 基準で解決される")
+    # 廃止フラグの受け口（`--coordination` と同じ流儀）。**消さずに残す**のは argparse の
+    # 前方一致対策——消すと `--profile x` が無関係なフラグ名のエラーになり、`--state-repo-dir`
+    # は「unrecognized argument」で移行先を案内できない。値が来たら _warn_removed_flags が
+    # 移行手順付きで止める。
+    sp.add_argument("--profile", dest="_removed_profile", default=None, help=argparse.SUPPRESS)
+    sp.add_argument("--state-repo-dir", dest="_removed_state_repo_dir", default=None,
+                    help=argparse.SUPPRESS)
     sp.add_argument("--backlog", default=None, help="バックログディレクトリ（既定 <root>/backlog）")
     sp.add_argument("--policy", default=None, help="（既定 <root>/policy.md）")
     sp.add_argument("--decisions", default=None, help="決定記録ディレクトリ（既定 <root>/decisions）")
@@ -390,36 +959,62 @@ def _add_common(sp):
     sp.add_argument("--granularity", default=None, choices=["coarse", "fine", "finest"],
                     help="バックログ分解の粒度（設定 granularity と同義）。coarse=ストーリー相当（既定）/ "
                          "fine=単機能 / finest=1ファイル/1関数の最小単位")
+    sp.add_argument("--flow-granularity", dest="flow_granularity", default=None,
+                    choices=["auto", "coarse", "fine", "finest"],
+                    help="内側（agent-flow の実行時タスクグラフ）へ渡す分解粒度（設定 flow_granularity "
+                         "と同義）。外側の --granularity とは別のノブ。auto=agent-flow の complexity "
+                         "導出に任せる（既定）/ coarse|fine|finest=内側の 1 ノードスコープを明示指定")
     sp.add_argument("--git-bus", default=None, help="分散移譲先の共有 git リポジトリ")
     sp.add_argument("--git-branch", default=None)
     sp.add_argument("--git-subdir", default=None)
-    sp.add_argument("--state-git", default=None,
-                    help="ワーク内容（プロジェクトルートの状態）を保存・共有する git リポジトリ（URL/パス）。"
-                         "リモートの agent-dashboard と結果/指示を双方向で往復する。"
-                         "ルート自体が git クローンなら不要（direct モードで直接コミット・push する）")
-    sp.add_argument("--state-git-branch", default=None, help="state_git の同期先ブランチ（既定 main）")
-    sp.add_argument("--state-git-subdir", default=None,
-                    help="state_git リポジトリ内の保存先サブディレクトリ（既定 agent-project）。"
-                         "同一リポジトリへ他プログラムもコミットする前提の名前空間分離")
     sp.add_argument("--state-git-interval", type=float, default=None,
                     help="state_git の fetch/push の最短間隔（秒。既定 300）。リモートサーバへの"
                          "負荷を一定に保つ律速。0 で毎同期")
+    sp.add_argument("--state-repo", default=None,
+                    help="状態専用リポジトリの URL/パス（host.yaml を使わない単発起動用）。"
+                         "root がまだ無ければそこへ clone する。既定の clone 先は "
+                         "<cwd>/<リポジトリ名>（--root で明示可）")
+    sp.add_argument("--state-repo-branch", default=None,
+                    help="状態専用リポジトリ内で状態を載せるブランチ（既定 main）")
     sp.add_argument("--status-interval", type=float, default=None,
                     help="watch アイドル中に status.json（生存信号。リモート viewer の稼働判定に使う）を"
                          "更新する間隔（秒。既定 0＝無効）。0 のままなら idle 中に status.json は触らず、"
                          "state_git への追加コミットは生まない（実パスの完了時にのみ書く＝相乗り）。"
                          ">0 にすると idle でもこの間隔で 1 回だけ書き直し、その分だけ state_git の"
                          "コミットが増える（負荷とリモートでの生存判定の鮮度のトレードオフ）")
-    sp.add_argument("--lock-dir", dest="lock_dir", default=None,
-                    help="agent-flow daemon ロックの置き場（設定ファイル lock_dir と同義）。"
-                         "外部起動の daemon を発見するため agent-flow 側と一致させる")
     sp.add_argument("--agent-flow", default=None)
+    sp.add_argument("--node", dest="node", default=None,
+                    help="この PC（エンジン）のノード名（複数 PC のバックログ分担）。指定すると "
+                         "node 割当が一致するタスクと未割当タスク（default_node 規則）だけを消化する。"
+                         "環境変数 AGENT_PROJECT_NODE でも指定可。未指定時は hostname から自動決定")
+    sp.add_argument("--controller-heartbeat-sec", type=float, default=None,
+                    help="controller lease 更新間隔（秒・既定 30）")
+    sp.add_argument("--controller-lease-sec", type=float, default=None,
+                    help="controller lease 有効期間（秒・既定 120）")
+    sp.add_argument("--coordination-retries", type=int, default=None,
+                    help="Git CAS 競合時の再試行回数（既定 3）")
+    # 廃止済み（実装計画 W1-8）。**受け口だけ残す**のは argparse の前方一致対策——消すと
+    # 旧 `--coordination git-cas` が `--coordination-retries` に解決され、
+    # 「invalid int value: 'git-cas'」という無関係なフラグ名のエラーになる（さらに
+    # `--coordination 3` はエラーにすらならず retries=3 として通ってしまう）。
+    sp.add_argument("--coordination", dest="_deprecated_coordination", default=None,
+                    help=argparse.SUPPRESS)
+    sp.add_argument("--clock-skew-tolerance-sec", type=float, default=None,
+                    help="ノード間の時刻ずれ許容秒（既定 30）")
     sp.add_argument("--planner", default=None, choices=["agent", "none"],
                     help="優先順位付け: agent=エージェント委譲（priority 加味）/ none=priority＋古さ（既定 agent）")
     sp.add_argument("--flow-planner", default=None,
                     choices=["flow-planner", "agent", "stub"], help="agent-flow run に渡す planner（既定 flow-planner）")
     sp.add_argument("--location", default=None,
-                    choices=["auto", "local", "daemon", "remote"], help="act の実行モード（既定 auto）")
+                    choices=["auto", "local", "board"],
+                    help="act の実行モード（既定 auto）")
+    sp.add_argument("--board", default=None,
+                    help="委譲公示板（agent-board）の場所（ローカル dir / git+<url>）。設定すると "
+                         "location=auto は offload ポリシー一致タスクを板へ post する（依頼側自動配線）")
+    sp.add_argument("--board-workdir", dest="board_workdir", default=None,
+                    help="git+ 板のクローン作業領域（既定は自動）")
+    sp.add_argument("--board-workload", dest="board_workload", default=None,
+                    choices=["flow", "amigos"], help="板へ公示する workload（既定 flow）")
     sp.add_argument("--executor", default=None,
                     help="act の実体（agent-flow run へ委譲）。組み込み agent / stub、または agent-flow の "
                          "executor プラグイン名（例 gitlab）/ .py パスを指定できる（既定 agent）")
@@ -442,9 +1037,6 @@ def _add_common(sp):
                          "成果が無いとき、対象 repo のクローン先を指す。未指定でも charter に単一 repo があれば"
                          "acceptance はその repo を一時 clone して実行する")
     sp.add_argument("--act-timeout", type=float, default=None)
-    sp.add_argument("--act-async", dest="act_async", action="store_true", default=None,
-                    help="非ブロッキング委譲: daemon/remote へ submit して待たず offloaded にし、"
-                         "次パスでポーリングして回収する（gitlab 等の長期委譲でループを塞がない）")
     sp.add_argument("--notify-cmd", default=None, help="要対応ダイジェストを渡す通知コマンド")
     sp.add_argument("--actor", default=None)
     sp.add_argument("--learn", action=argparse.BooleanOptionalAction, default=None,
@@ -480,8 +1072,8 @@ def _add_common(sp):
     sp.add_argument("--regression-revert", action=argparse.BooleanOptionalAction, default=None,
                     help="回帰検知時に作業ツリーの未コミット変更を巻き戻す（best-effort・既定 off）")
     sp.add_argument("--intake-cmd", default=None,
-                    help="外部の決定的ゲート/検出器から修復タスクを汲み上げるコマンド（stdout の "
-                         "enqueue --json 形式を冪等取り込み。例: codd-gate tasks --debt。"
+                    help="外部の決定的検出器から修復タスクを汲み上げるコマンド（stdout の "
+                         "enqueue --json 形式を冪等取り込み。"
                          "単発・有界なコマンドであること＝常駐はこちらが持つ）")
     sp.add_argument("--intake-interval", type=float, default=None,
                     help="intake の実行間隔（秒。既定 600。0 以下で毎パス/毎 poll）")
@@ -503,7 +1095,19 @@ def _add_common(sp):
                     help="spec ルーティング: 採点が --spec-threshold に達したタスクに spec 前段タスク"
                          "（specs/<id>/ の spec/design/tasks 作成→人の承認→実装タスク展開）を前置（既定 off）")
     sp.add_argument("--spec-threshold", type=int, default=None,
-                    help="spec ルートに乗せる採点しきい値（max(c,r,a) がこの値以上。1-3・既定 3）")
+                    help="フル spec の採点しきい値の別名（--spec-threshold-full の旧名。1-3）")
+    sp.add_argument("--spec-threshold-full", dest="spec_threshold_full", type=int, default=None,
+                    help="フル spec（spec/design/tasks の 3 点セット + 展開）に乗せる採点しきい値"
+                         "（max(c,r,a) がこの値以上。1-3・既定 3）")
+    sp.add_argument("--spec-threshold-light", dest="spec_threshold_light", type=int, default=None,
+                    help="ライト spec（design.md 1 枚・展開なし）に乗せる採点しきい値"
+                         "（1-3・既定 2。full 未満のときだけライトになる）")
+    sp.add_argument("--planner-skill", dest="planner_skill", default=None,
+                    help="バックログ分解のプロンプト・出力契約を供給するスキル名（既定 backlog-planner）")
+    sp.add_argument("--plan-sections", dest="plan_sections", default=None,
+                    choices=["required", "warn"],
+                    help="バックログの必須項目（why/desc/acceptance/size）の扱い。"
+                         "required=欠落を 1 回再要求し、なお欠ければ人の目へ回す（既定）/ warn=注記のみ")
     sp.add_argument("--repo-map", action=argparse.BooleanOptionalAction, default=None,
                     help="リポジトリ理解の成果物化: plan 前に書込先 repo ごとに context/<repo名>.md を"
                          "生成（HEAD sha キャッシュ・変化時のみ再生成）。読み出しは常時（既定 off）")

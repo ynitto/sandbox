@@ -24,14 +24,15 @@ function grab(name) {
 
 // eslint-disable-next-line no-new-func
 const needListItemViewModel = new Function(
-  'needKindLabel', 'needDisplayTitle', 'needListSummary', 'needFailureViewModel', 'RISK_LABELS',
+  'needKindLabel', 'needDisplayTitle', 'needListSummary', 'needFailureViewModel', 'RISK_LABELS', 'needDecisionViewModel',
   `${grab('needListItemViewModel')}; return needListItemViewModel;`
 )(
   () => '検収',
   (need) => need.title,
   () => '成果物を確認し、完了にしてよいか判断してください。',
   () => null,
-  { low: 'リスク低', med: 'リスク中', high: 'リスク高' }
+  { low: 'リスク低', med: 'リスク中', high: 'リスク高' },
+  () => ({ reason: '成果物を確認し、完了にしてよいか判断してください。', nextStep: '成果を確認し、承認または修正指示を選んでください。' })
 );
 // eslint-disable-next-line no-new-func
 const needListItemHtml = new Function(
@@ -50,7 +51,9 @@ assert.deepStrictEqual(item, {
   kindText: '検収',
   title: '検索機能の成果を確認',
   decision: '成果物を確認し、完了にしてよいか判断してください。',
+  nextAction: '成果を確認し、承認または修正指示を選んでください。',
   failure: false,
+  owner: '',
   risk: 'high',
   riskText: 'リスク高',
   ageText: '9時間待ち',
@@ -72,6 +75,14 @@ assert.ok(renderNeedsSource.includes('need-list-grid'), '要対応のメイン�
 assert.ok(renderNeedsSource.includes('needListItemViewModel('));
 assert.ok(renderNeedsSource.includes('needListItemHtml('));
 assert.ok(renderNeedsSource.includes('master-detail needs-layout'));
+assert.ok(renderer.includes('needNextStepHtml('), '詳細は「次にすること」から始めます');
+assert.ok(renderer.includes('decision.actionTitle'), '回答欄は種類別の操作名を出します');
+assert.ok(
+  renderer.indexOf('${needNextStepHtml(n, decision, settled)}') < renderer.indexOf('${needActionsHtml(n)}'),
+  '現在の状態の直後に推奨操作を出します'
+);
+assert.ok(renderer.includes('詳しい判断材料を見る'), '長い判断材料は折りたたんで段階的に開示します');
+assert.ok(renderer.includes('関連する成果・詳細を確認'), '成果や原文ログは詳細セクションにまとめます');
 
 assert.match(css, /\.need-list-item\s*\{[^}]*grid-template-columns:\s*140px\s+minmax\(220px,\s*1fr\)\s+minmax\(260px,\s*1\.2fr\)\s+112px\s+24px/s);
 assert.match(css, /\.needs-layout:not\(\.show-detail\)\s+\.detail-panel\s*\{[^}]*display:\s*none/s);
@@ -91,6 +102,18 @@ assert.match(
   /#main\s*\{[^}]*min-height:\s*0/s,
   '縦並びになる狭い画面でもメイン領域が内容高へ膨張しないようにします'
 );
+assert.match(css, /\.need-next-step\s*\{[^}]*background:[^}]*linear-gradient/s);
+assert.match(css, /\.need-evidence\s*\{[^}]*border:[^}]*var\(--border\)/s);
+
 assert.match(css, /@media \(max-width:\s*1180px\)[\s\S]*\.need-list-item\s*\{[^}]*grid-template-columns:\s*1fr\s+auto/s);
+
+// 項目リストのスクロール: needs-layout は display:block（グリッドでない）ため、master-list に
+// 高さ制約が無いと内容ぶんに伸び、#tab-needs の overflow:hidden にクリップされてスクロール
+// できなくなる（実際に報告された不具合）。一覧モードの master-list が自前スクロールを持つこと。
+assert.match(
+  css,
+  /\.needs-layout:not\(\.show-detail\)\s+\.master-list\s*\{[^}]*height:\s*100%[^}]*overflow-y:\s*auto/s,
+  '要対応の項目リストがスクロールできること（height:100% + overflow-y:auto）'
+);
 
 console.log('needs-layout-ui: all tests passed');

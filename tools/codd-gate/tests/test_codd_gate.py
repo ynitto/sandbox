@@ -17,7 +17,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-# テストの git コミットを環境の署名設定から切り離す（kiro-project のテストと同じ流儀）
+# テストの git コミットを環境の署名設定から切り離す（agent-project のテストと同じ流儀）
 os.environ["GIT_CONFIG_COUNT"] = "1"
 os.environ["GIT_CONFIG_KEY_0"] = "commit.gpgsign"
 os.environ["GIT_CONFIG_VALUE_0"] = "false"
@@ -277,7 +277,7 @@ class TasksTests(unittest.TestCase):
         self.assertEqual(specs[0]["workspace"], "lib")
 
     def test_task_ids_fit_enqueue_slug_rules(self):
-        """id は kiro-project の _slug_id（[A-Za-z0-9_-]・48 字）をそのまま通る＝intake の冪等キー。"""
+        """id は agent-project の _slug_id（[A-Za-z0-9_-]・48 字）をそのまま通る＝intake の冪等キー。"""
         long = "src/very/long/nested/path/some_component_with_long_name.py"
         tid = cg._task_id("cohort", f"app:docs/x.md", f"app:{long}")   # cohort が最長の kind
         self.assertLessEqual(len(tid), 48)

@@ -498,7 +498,7 @@ def cmd_msg(args: argparse.Namespace) -> None:
         "created_at": float(ts),
         "subject": subject,
         "body": body,
-        "reply_to": reply_to_id or from_agent,
+        "reply_to": reply_to_id or None,
         "correlation_id": correlation_id,
         "cwd": str(Path.cwd()),
     }

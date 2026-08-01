@@ -53,7 +53,8 @@ agent-flow run "<要求>" --planner flow-planner
 
 ```bash
 # 全段パイプライン（agent-flow が内部で呼ぶ）
-python3 .github/skills/flow-planner/scripts/plan.py "<要求>" [--model <model>] [--review auto|true|false]
+python3 .github/skills/flow-planner/scripts/plan.py "<要求>" \
+  [--model <model>] [--review auto|true|false] [--granularity auto|coarse|fine|finest]
 ```
 
 ## 3段階パイプライン
@@ -72,14 +73,45 @@ python3 .github/skills/flow-planner/scripts/plan.py "<要求>" [--model <model>]
   "data_flow": "static|dynamic|unknown",
   "quality_focus": "speed|accuracy|coverage|exploration",
   "complexity": "simple|moderate|complex",
+  "estimated_steps": 6,
+  "granularity_target": "fine",
   "constraints": ["制約1"],
-  "domain_hints": ["ヒント1"]
+  "domain_hints": ["ヒント1"],
+  "enumerable": {
+    "same_procedure": true,
+    "independent": true,
+    "per_target_deliverable": true,
+    "target_kind": "API エンドポイント",
+    "how_to_enumerate": "src/routes/**/*.ts のルート定義を走査",
+    "estimated_count": null
+  }
 }
 ```
 
 - `data_flow`: 入力データが事前確定（static）か実行時に判明（dynamic）か
 - `quality_focus`: 速度重視か精度重視か網羅性重視か探索重視か
 - `decomposition_axes`: WBS的に分割する観点（機能別、フェーズ別、データ別等）
+- `estimated_steps`: 最小限必要な作業ステップ数の見積り（整数。読めなければ null）。
+  Phase 3 へ目安として渡すだけで、**成果ノード数のレンジは上書きしない**
+- `granularity_target`: complexity（または明示 `--granularity`）から決定的に導出
+- `enumerable`: 列挙駆動の判定材料（下記）
+
+#### 列挙駆動の 3 条件（`enumerable`）
+
+「同一手順を多数の独立した対象へ繰り返す」タスクかを、**3 条件を個別に**判定する
+（`is_enumerable` はその AND。単一フラグにしない）:
+
+| 条件 | 意味 |
+|------|------|
+| `same_procedure` | 対象ごとに手順が同一か |
+| `independent` | 対象間に依存が無いか（先の結果が次に要らないか） |
+| `per_target_deliverable` | 成果が対象単位で完結するか |
+
+ファイル・関数・モジュールは「見ようと思えば常に列挙可能」なので、単一フラグを
+LLM に判定させると**単一成果物の実装まで map-reduce へ倒れる**（他パターンを侵食する
+単一戦略への崩壊）。新機能実装・バグ修正は多数のファイルに触れても後ろ 2 条件が偽になる。
+
+`estimated_count` は要求から確定できるときだけ整数、不明なら null（推測で埋めない）。
 
 ### Phase 2: 戦略選定（Strategy Selection）
 
@@ -87,6 +119,27 @@ Phase 1 の分析結果から最適なパターン（複合含む）を選ぶ。
 
 **Decision Matrix**: 属性とパターンのスコアリングで候補を2-3に絞り、
 LLMには「候補から最適を選べ」と制約付き選択をさせる。
+
+**列挙駆動のハイブリッド発動**（Matrix の上に乗る決定的ルール）:
+
+| 状況 | 発動 | 挙動 |
+|------|------|------|
+| 3 条件全充足 ＋ 件数 > 3 が確定 | `force` | Matrix のスコアに関わらず `patterns` の先頭へ map-reduce を入れる（**追加**であって排他ではない。複合は潰さない） |
+| 3 条件全充足だが件数不明 | `boost` | map-reduce へ +5 加点し、最終判断は LLM に委ねる |
+| 条件のどれかが偽 / 件数 ≤ 3 | `off` | **何もしない**（従来経路と完全に同一＝回帰なし） |
+
+件数は probe（決定的走査の実測）を Phase 1 の見積りより優先する。
+Matrix だけだと、リポジトリ内に静的に存在する対象一覧（API 群・ファイル群）は
+`data_flow=static` と判定されて fan-out-and-synthesize に吸われ、対象単位のノードが
+生まれない。発動根拠は `strategy.reason` と `strategy.enumeration` に必ず残す
+（観測できないと誤爆に気づけない）。
+
+**列挙 probe**（`--probe-root`、既定 cwd。LLM を呼ばない）:
+`how_to_enumerate` / `target_kind` からグロブ（`src/routes/**/*.ts`）を、無ければ
+ディレクトリパスを取り出して実際に走査し件数を数える。依存物（`node_modules` 等）と
+隠しディレクトリは除外。**0 件は「不明」として扱う**——計画時点ではワークスペースが
+手元に無いことがあり、0 を「対象なし」と読むと列挙駆動を誤って止める。
+列挙そのものは実行時に split が行うので、probe は判定材料に徹する。
 
 **出力**:
 ```json
@@ -103,6 +156,11 @@ LLMには「候補から最適を選べ」と制約付き選択をさせる。
 
 選定した戦略をタスクグラフに変換する。テンプレート駆動で構造を保証し、
 LLMには各ノードの goal 具体化のみを依頼。
+
+列挙駆動が `force` / `boost` のときは、split の goal に**実行時の列挙手順**を埋め込ませる
+（「実際に走査して一覧を作る・推測で列挙しない」を明記）。`force` のときは決定的ゲートで
+**split の存在**も検査し、無ければ 1 回だけ作り直す——強制したのに split が出ないと、
+対象単位の展開が起きず「まとめて 1 ノード」へ戻ってしまう。
 
 **出力**: agent-flow 互換の `{strategy, tasks}` 形式。
 
@@ -181,6 +239,32 @@ Decision Matrix（`data_flow` / `quality_focus` / `complexity` のスコアリ�
 （fan-out-and-synthesize / map-reduce）を含む場合は、統合前に検証 gate
 （adversarial-verification）を挟むかどうかを `review` で判断する。
 
+## タスク粒度（内側 DAG）
+
+自律開発では二層で粒度を分ける（設計: `docs/plans/2026-07-25-flow-planner-granularity-design.md`）:
+
+| 層 | ツール | 粒度 | 本スキル |
+|----|--------|------|----------|
+| 外側 | agent-project backlog | INVEST + verify | 改修しない |
+| 内側 | agent-flow / flow-planner | スコープ上限 | **本スキルが制御** |
+
+### 操作定義（成果ノード: work / generate / map）
+
+- 1 モジュール相当（または明示された単一結合点）
+- 想定変更 ≤ 約 30 行
+- goal 先頭に `[scope]` と `[out_of_scope]` を付ける
+
+### complexity → 目標粒度（`granularity: auto` 時）
+
+| complexity | target | work 系ノード数 |
+|------------|--------|-----------------|
+| simple | coarse | 1–3 |
+| moderate | fine | 3–8 |
+| complex | finest | 6–12（上限16） |
+
+`--granularity coarse|fine|finest` の明示指定が優先。Phase 3 後に決定的ゲート（個数・scope・重複）で
+不合格なら最大1回再生成する。verify コマンドの有無は検査しない。
+
 ## decomposition スキルとの統合
 
 本スキルは `decomposition` スキルの以下の能力を Phase 1 に統合している:
@@ -191,7 +275,7 @@ Decision Matrix（`data_flow` / `quality_focus` / `complexity` のスコアリ�
 
 違い:
 - `decomposition`: 人間が実行する ToDo リストを生成（20-60分粒度）
-- `flow-planner`: agent-flow worker が実行するタスクグラフを生成（LLM実行粒度）
+- `flow-planner`: agent-flow worker が実行するタスクグラフを生成（上記スコープ上限）
 
 ## 設定
 
@@ -199,12 +283,20 @@ agent-flow の設定ファイル（`agent-flow.yaml`）で planner を指定:
 
 ```yaml
 planner: flow-planner   # flow-planner | agent | stub
+granularity: auto       # auto | coarse | fine | finest
+reduce_width: 8         # 集約1つが受け持つ依存の上限（超過分は中間集約へ畳む）
 ```
 
-または CLI で `--planner flow-planner`。
+または CLI で `--planner flow-planner` / `--granularity auto`。
+スクリプト直接呼び出しでは `--probe-root <dir>` で列挙 probe の走査起点を指定できる（既定 cwd）。
+
+`reduce_width` は agent-flow 側（実行時 fan-out の展開）の設定で、列挙駆動と対になる。
+対象単位へ正しく展開できるほど集約への入力が増えるため、幅を超えた分は中間集約へ畳んで
+木構造にする（単段集約は規模で破綻する）。幅以下なら従来と同一構造。
 
 ## 注意事項
 
 - エージェント CLI（既定 kiro-cli）が必要（LLM呼び出しに使用）
-- 3段パイプラインのため、現行 `agent` planner より LLM 呼び出し回数が多い（2-3回）
+- 3段パイプラインのため、現行 `agent` planner より LLM 呼び出し回数が多い（2-3回、ゲート再生成で+1）
 - フォールバック: いずれかの段で失敗した場合は現行 `plan_strategy_agent` に倒す
+- 非目標: 内側 verify 必須化、分解批評 Phase 3.5、失敗時自動細分化（将来フック）

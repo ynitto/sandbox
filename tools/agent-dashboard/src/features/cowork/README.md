@@ -4,7 +4,8 @@ Cowork は agent-dashboard の独立した制御面です。
 
 - 作業は `cowork.items` にフラットに並びます。`type: "loop"` は `kiro-loop` / 将来の `agent-loop`、`type: "state-machine"` は `statemachine-use` で実行します。
 - 各作業は `repo` で全体設定に登録済みのフォルダ（リポジトリ）を参照します。追加 UI では登録済みリポジトリから選択します。
-- `projects.roots` 配下の `.kiro/kiro-loop.*` / `.statemachine/*/workflow.yaml` は自動発見します。発見結果は短時間キャッシュし、ポーリングごとに再走査しません。
+- 実行エンジンが担当するプロジェクト配下の `.kiro/kiro-loop.*` / `.statemachine/*/workflow.yaml` は自動発見します。発見結果は短時間キャッシュし、ポーリングごとに再走査しません（キャッシュの鍵は走査ルート＝エンジン担当 + `cowork.roots` なので、フォルダの登録・解除は即座に効きます）。
+- 実行エンジンの管理外のフォルダは `cowork.roots` に登録すると走査対象になります。登録の入口は**⚙ 全体設定の「定常業務」**です。定常業務画面はプロジェクトを 1 つ選んでから開く画面なので、エンジンがまだ動いていない初期状態ではそこからは 1 件目を登録できません（全体設定はプロジェクト選択に依存しません）。
 - `loopProvider` / `loopCommand` で定期実行バックエンドを切り替えます。既定は `kiro-loop` ですが、呼び出しは provider 抽象越しなので `agent-loop` へ差し替えできます。
 - loop の単発実行は `<loopCommand> send <プロンプト名>` で行います（`run` サブコマンドは存在しません）。`send` はワークスペース（cwd）の `.kiro/kiro-loop.*` から定期プロンプト名を解決し、稼働中の tmux セッションへ送信します。項目に `args` を明示した場合はそちらを優先します。
 - `statemachine-use` は CLI ではなく**スキル**です。ステートマシンの実行は `<loopCommand> send "xxx ステートマシンを実行して"` でエージェントセッションへプロンプトを送ってスキルを発動します。

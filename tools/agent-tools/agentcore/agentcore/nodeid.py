@@ -1,0 +1,67 @@
+"""agentcore.nodeid — node_id（PC の身元）の正規化の単一定義。
+
+node_id は板（agent-board）とプロトコル上の「どの PC か」であり、設計 §3.1 は
+`node_id = PC 名` を既定とする。板は名義でファイルを分割する
+（`nodes/<node-id>.json` / `delegations/<id>/bids/<who>.json` /
+`.../status/<who>.json`）ため、**同じ PC からは常に同じ綴りが出る**ことが不変条件になる。
+
+各エンジンが独自に正規化すると、これが壊れる（実装計画 W1-10 のレビューで実際に検出）:
+
+- agent-flow は不正文字を `_` へ、大小文字はそのまま（`Mac`）
+- agent-amigos は不正文字を `-` へ、さらに小文字化（`mac`）
+
+同一 PC が板に 2 ノードとして現れ、しかも macOS の既定ファイルシステムは大小文字を
+区別しないので `Mac.json` と `mac.json` が同じファイルになって互いを上書きし、
+Linux では別ノードとして残る——プラットフォームで壊れ方が変わる。
+
+したがって正規化はここ 1 箇所に置き、flow / amigos / project（doctor）が同じ関数を使う。
+
+**小文字化する理由**: ホスト名は DNS 上そもそも大小文字を区別せず、同じ PC が
+`Mac` と `mac` の 2 通りで観測されうる。大小文字を区別しないファイルシステム上での
+自己衝突を避けるため、正規形は小文字に倒す。
+"""
+from __future__ import annotations
+
+import os
+import socket
+
+# 板のファイル名にそのまま使える文字集合（flow / amigos 双方の既存 `_safe` が
+# 「安全」と認める文字の共通部分。ここを通した id は各エンジンの `_safe` に
+# 掛けても不変＝二重正規化で綴りが変わらない）。
+_ALLOWED_EXTRA = "._-"
+_FALLBACK = "node"
+
+
+def normalize_node_id(name: "str | None") -> str:
+    """node_id を正規形（小文字・`[a-z0-9._-]` のみ）に揃える。
+
+    非 ASCII の英数（例: 日本語のホスト名）も `isalnum()` では真になるが、板のファイル名
+    として扱うと OS・git・転送経路ごとに正規化（NFC/NFD）が割れるため ASCII に落とす。
+    空になった場合は `"node"` を返す（名前が消えて空文字がファイル名になる事故を防ぐ）。"""
+    out = []
+    for ch in str(name or ""):
+        if (ch.isascii() and ch.isalnum()) or ch in _ALLOWED_EXTRA:
+            out.append(ch)
+        else:
+            out.append("-")
+    # 先頭・末尾の区切りは落とす（`-mac-` のような綴りゆれを作らない）
+    normalized = "".join(out).strip("-").lower()
+    return normalized or _FALLBACK
+
+
+def default_node_id() -> str:
+    """宣言が無いときの既定 node_id（= この PC の名前を正規形にしたもの）。
+
+    **正規化だけでなく「どこから PC 名を取るか」もここに 1 つ持つ**（P0-3）。
+    以前は agent-project の設定層（`_auto_node_name`）が独自のサニタイズ
+    （小文字化しない・60 文字で切る）で別に導出しており、大文字を含むホスト名の PC が
+    プロジェクト状態側 `status/DESKTOP-X.json` と板側 `nodes/desktop-x.json` の
+    2 名義になっていた。人が板の端末一覧（小文字）を見て書いた `- node:` を
+    どのノードも拾わない、という形で表に出る。
+
+    `socket.gethostname()` が空になる環境（一部のコンテナ）に備えて
+    `COMPUTERNAME`（Windows）・`HOSTNAME` も見る。どれも空なら `normalize_node_id` の
+    フォールバック（`"node"`）へ落ちる。"""
+    raw = (socket.gethostname() or os.environ.get("COMPUTERNAME")
+           or os.environ.get("HOSTNAME") or "")
+    return normalize_node_id(raw)

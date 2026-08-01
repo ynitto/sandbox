@@ -23,6 +23,18 @@ _STATE_GIT_RETRIES = 4                          # ロック起因の git 失敗�
 _STATE_PUSH_RETRIES = 5                         # push 競合の再試行回数（2,4,8,16s バックオフ）
 
 
+def _git_run(cmd: "list[str]", env: "dict | None" = None):
+    """agent-flow の state クローン向け git 実行。**必ず timeout を切る**——ネットワーク停止・
+    資格情報待ちで git が無限に待つと、呼び出し元（run の同期・常駐体の tick）ごと固まる。
+    打ち切りは例外で貫通させず、returncode を見る既存コードがそのまま扱える形で返す。"""
+    limit = _transport.git_timeout_for(cmd)
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", env=env, timeout=limit)
+    except subprocess.TimeoutExpired:
+        return _transport.timed_out_result(cmd, limit)
+
+
 class _StateGitCorrupt(Exception):
     """state_git クローンの電源断オブジェクト破損を検知した内部シグナル（sync が捕捉して作り直す）。"""
 
@@ -54,9 +66,8 @@ class StateGit:
         ceil = env.get("GIT_CEILING_DIRECTORIES")
         env["GIT_CEILING_DIRECTORIES"] = parent + (os.pathsep + ceil if ceil else "")
         env["GIT_DISCOVERY_ACROSS_FILESYSTEM"] = "0"
-        env["LC_ALL"] = "C"              # ロック競合の検知は英語メッセージの文字列マッチに頼る
-        env["GIT_EDITOR"] = "true"       # rebase --continue がエディタを開かないように
-        return env
+        # LC_ALL / GIT_EDITOR / 資格情報プロンプト抑止は agentcore.transport と同じ 1 実装から取る。
+        return _transport.harden_git_env(env)
 
     _STALE_LOCKS = ("index.lock", "HEAD.lock", "config.lock", "shallow.lock", "packed-refs.lock")
 
@@ -90,12 +101,10 @@ class StateGit:
         rename 前にオブジェクト内容を fsync させ、電源断でのサイズ 0 オブジェクト発生を防ぐ。"""
         for key, val in _DURABLE_GIT_CONFIG:
             try:
-                cur = subprocess.run(["git", "-C", cwd, "config", "--local", "--get", key],
-                                     capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._env())
+                cur = _git_run(["git", "-C", cwd, "config", "--local", "--get", key], self._env())
                 if cur.returncode == 0 and cur.stdout.strip() == val:
                     continue
-                subprocess.run(["git", "-C", cwd, "config", "--local", key, val],
-                               capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._env())
+                _git_run(["git", "-C", cwd, "config", "--local", key, val], self._env())
             except OSError:
                 pass
 
@@ -104,8 +113,7 @@ class StateGit:
         try:
             if not self.remote or not os.path.isdir(self.remote):
                 return
-            probe = subprocess.run(["git", "-C", self.remote, "rev-parse", "--git-dir"],
-                                   capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._env())
+            probe = _git_run(["git", "-C", self.remote, "rev-parse", "--git-dir"], self._env())
             if probe.returncode == 0:
                 self._apply_durable_writes(self.remote)
         except OSError:
@@ -114,9 +122,8 @@ class StateGit:
     def _probe_integrity(self) -> bool:
         """再利用クローンのオブジェクトが健全か軽量に確認する。破損なら False。"""
         try:
-            p = subprocess.run(
-                ["git", "-C", self.clone, "fsck", "--connectivity-only", "--no-dangling",
-                 "--no-reflogs"], capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._env())
+            p = _git_run(["git", "-C", self.clone, "fsck", "--connectivity-only",
+                          "--no-dangling", "--no-reflogs"], self._env())
         except OSError:
             return False
         return p.returncode == 0 and not self._is_corrupt_error(p)
@@ -124,12 +131,11 @@ class StateGit:
     def _git(self, *args: str, check: bool = False):
         p = None
         for i in range(_STATE_GIT_RETRIES):
-            p = subprocess.run(["git", "-C", self.clone, *args],
-                               capture_output=True, text=True, encoding="utf-8", errors="replace", env=self._env())
+            p = _git_run(["git", "-C", self.clone, *args], self._env())
             if p.returncode == 0 or not self._is_lock_error(p):
                 break
             if self._remove_stale_locks() == 0 and i < _STATE_GIT_RETRIES - 1:
-                time.sleep(2 ** i)
+                backoff_sleep(2 ** i)
         if check and p.returncode != 0:
             raise RuntimeError(f"git {' '.join(args)} 失敗: {(p.stderr or '').strip()[:300]}")
         return p
@@ -184,8 +190,7 @@ class StateGit:
         os.makedirs(os.path.dirname(self.clone) or ".", exist_ok=True)
         # blob:none で履歴の実体を引かない（非対応サーバはフィルタ無しへフォールバック）
         for extra in (["--filter=blob:none"], []):
-            r = subprocess.run(["git", "clone", "--no-checkout", *extra, self.remote, self.clone],
-                               capture_output=True, text=True, encoding="utf-8", errors="replace")
+            r = _git_run(["git", "clone", "--no-checkout", *extra, self.remote, self.clone])
             if r.returncode == 0:
                 break
             shutil.rmtree(self.clone, ignore_errors=True)
@@ -340,7 +345,7 @@ class StateGit:
             self._resolve_rebase()
             self._last_remote = time.time()
             if i < _STATE_PUSH_RETRIES - 1:
-                time.sleep(2 ** i if i < 4 else 16)
+                backoff_sleep(2 ** i if i < 4 else 16)
         raise RuntimeError(f"state_git push が {self.branch} へ反映できませんでした")
 
     def _rebuild(self) -> None:
@@ -407,85 +412,9 @@ def state_git_for(args) -> "StateGit | None":
     return _STATE_GITS[key]
 
 
-def daemon_status_path(bus: Bus) -> str:
-    return os.path.join(bus.root, "status.json")
-
-
-def _daemon_status_fresh_after_sec(args) -> float:
-    """リモート viewer が『稼働中』と信じてよい経過秒数の目安。state_git/status の同期間隔
-    から書き手（自分の設定を知っている側）が計算し、viewer 側は単純比較だけで済むようにする。
-    agent-project の同名関数（write_status 側）と同じ考え方。"""
-    intervals = [v for v in (getattr(args, "state_git_interval", 0.0),
-                             getattr(args, "status_interval", 0.0)) if v and v > 0]
-    return max([2.0 * v for v in intervals] + [120.0])
-
-
-def _status_runtime() -> dict:
-    """Windows ビュアーが同一マシンの WSL daemon を見分けるための最小ランタイム情報。"""
-    info = {"runtime": "linux", "wsl_distro": None}
-    distro = os.environ.get("WSL_DISTRO_NAME")
-    is_wsl = False
-    try:
-        with open("/proc/version", encoding="utf-8", errors="ignore") as f:
-            is_wsl = "microsoft" in f.read().lower()
-    except OSError:
-        pass
-    if distro or is_wsl:
-        info["runtime"], info["wsl_distro"] = "wsl", distro
-    elif sys.platform.startswith("win"):
-        info["runtime"] = "windows"
-    elif sys.platform == "darwin":
-        info["runtime"] = "darwin"
-    return info
-
-
-def write_daemon_status(args, bus: Bus, daemon_id: str, orchestrators: dict, workers: list) -> None:
-    """status.json（生存信号）を書く。state_git（鏡）越しにリモートの agent-dashboard が
-    『daemon が今も生きているか』を判定するための最小スナップショット（bus.root 直下）。
-    _scan() はバスのツリー全体を走査するため、ここに置くだけで既存の StateGit がそのまま
-    同期対象に含める（GitBus 側のような sparse-checkout の追加設定は不要）。
-    実イベント（run 終端・生存リース push）のタイミングで呼べば、そのイベントで既に走る
-    state_sync/push に相乗りする＝これ単体で追加の push を生まない。
-
-    GitBus（--git）モードでは書かない: GitBus の sparse-checkout は `runs/`/`inbox/`（or
-    --git-subdir）しか作業ツリーに展開しないため、bus_root 直下のファイルは対象外の
-    パスになり、GitBus.sync_push() の `git add -A` を壊しかねない（state_git と --git は
-    元々ここでも相互排他 — state_git_for() と同じ前提）。"""
-    if getattr(args, "git", None):
-        return
-    rec = {
-        "host": socket.gethostname(), "pid": os.getpid(), "node_id": daemon_id,
-        "orchestrators": len(orchestrators), "workers": len(workers),
-        "updated_iso": now_iso(), "fresh_after_sec": _daemon_status_fresh_after_sec(args),
-        **_status_runtime(),
-    }
-    try:
-        p = daemon_status_path(bus)
-        os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
-        with open(p, "w", encoding="utf-8") as f:
-            json.dump(rec, f, ensure_ascii=False, indent=2)
-    except OSError:
-        pass
-
-
-def maybe_heartbeat_daemon_status(args, bus: Bus, daemon_id: str, orchestrators: dict,
-                                  workers: list) -> None:
-    """daemon アイドル中の任意の生存信号更新（`--status-interval`。既定 0＝無効）。
-    無効時は status.json に一切触れない＝state_git の commit-if-diff で追加コミットを
-    作らない（idle の git 負荷は今日と同じゼロ）。有効時も前回書き込みから
-    status_interval 秒経つまでは触らず、書き込み頻度を利用者の指定した間隔に抑える。
-    GitBus（--git）モードでは何もしない（write_daemon_status 側の理由と同じ）。"""
-    if getattr(args, "git", None):
-        return
-    interval = float(getattr(args, "status_interval", 0.0) or 0.0)
-    if interval <= 0:
-        return
-    try:
-        age = time.time() - os.path.getmtime(daemon_status_path(bus))
-    except OSError:
-        age = float("inf")     # 未作成 → 書く
-    if age >= interval:
-        write_daemon_status(args, bus, daemon_id, orchestrators, workers)
+# 生存信号 `<bus>/status.json` の書き出しはここにあったが、常駐一本化で書き手（daemon ループ）が
+# 無くなったため削除した。稼働判定は agent-project の常駐体が書く `engine/status.json` に一本化して
+# あり、agent-dashboard もそちらだけを読む（`src/features/agent-project/main/flow.js`）。
 
 
 def state_git_status_line(args) -> str:

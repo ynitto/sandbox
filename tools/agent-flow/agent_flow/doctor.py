@@ -25,7 +25,7 @@ def doctor_env_findings(args, which=shutil.which) -> "list[dict]":
     needs_cli = (getattr(args, "executor", "agent") == "agent"
                  or getattr(args, "planner", "") == "agent")
     agent_cli = str(getattr(args, "agent_cli", "kiro") or "kiro")
-    agent_bin = _AGENT_CLI_BINARIES.get(agent_cli, agent_cli)
+    agent_bin = agent_cli_binary(agent_cli)
     if needs_cli and not which(agent_bin):
         findings.append({
             "category": "env", "severity": "critical",
@@ -78,7 +78,28 @@ def doctor_env_findings(args, which=shutil.which) -> "list[dict]":
             "category": "config", "severity": "info", "title": "argv_limit が無効（≤0）",
             "evidence": f"argv_limit={getattr(args, 'argv_limit', None)}",
             "fix": "argv_limit を正のバイト数にする（大きなプロンプトの ARG_MAX 回避）"})
+    findings += node_id_spelling_findings(getattr(args, "node_id", None))
     return findings
+
+
+def node_id_spelling_findings(declared) -> "list[dict]":
+    """明示宣言された node_id が正規形でないことを知らせる（§6-2 の決着・2026-07-27）。
+
+    **明示値は正規化しない**——名義が変わることは claim・担当・板の応札の宛先が変わること
+    であり、それは切替ガイドの手順で人が明示的に行う操作だから、実装が黙って起こさない。
+    ただし放置すると同じ PC が板に 2 名義で現れる（agent-project は宣言を正規化して使う
+    ので、`node_id: DESKTOP-X` は常駐体では `desktop-x`・直接叩いた flow では `DESKTOP-X`）。
+    書き換えない代わりに**検出して人に切替を促す**のが、この所見の役どころ。"""
+    raw = str(declared or "").strip()
+    if not raw or normalize_node_id(raw) == raw:
+        return []
+    return [{
+        "category": "config", "severity": "warn",
+        "title": "宣言した node_id が正規形ではない",
+        "evidence": f"node_id={raw}（正規形は {normalize_node_id(raw)}）— "
+                    "agent-project は宣言を正規形にして使うため、板に 2 名義で現れます",
+        "fix": f"node_id を {normalize_node_id(raw)} へ切り替える"
+               "（名義の変更は切替手順で行う: agent-project doctor --node-id-cutover <旧名義>）"}]
 
 
 def collect_doctor_signals(args) -> dict:
@@ -93,11 +114,13 @@ def collect_doctor_signals(args) -> dict:
     metas.sort(key=lambda x: x[1].get("created_at", ""), reverse=True)
     recent = metas[:_DOCTOR_RECENT_RUNS]
     stuck, failed, errors = [], [], []
+    by_pc: dict = {}
     for rid, meta in recent:
         st = meta.get("status")
         age = _age_hours(meta)
         view = probe.run_view(rid)
         nodes = (view.read_graph() or {}).get("nodes", {})
+        by_pc[rid] = dict(execution_by_pc(view, nodes))
         node_states = {nid: view.node_state(nid) for nid in nodes}
         failed_nodes = [nid for nid, s in node_states.items() if s == "failed"]
         if st not in TERMINAL and age >= _DOCTOR_STUCK_HOURS:
@@ -121,7 +144,11 @@ def collect_doctor_signals(args) -> dict:
     return {
         "runs_total": len(runs),
         "recent": [{"run": rid, "status": m.get("status"),
-                    "age_h": round(_age_hours(m), 1), "request": (m.get("request") or "")[:80]}
+                    "age_h": round(_age_hours(m), 1), "request": (m.get("request") or "")[:80],
+                    # 実行した PC の内訳。1 run が複数 PC に散っているか、全 run が同じ 1 台に
+                    # 寄っているかを診断側から見えるようにする（run 単位で 1 台に確定するのが
+                    # 現行仕様なので、後者が既定の姿。分担の観測点は棚卸し §2b）。
+                    "by_pc": by_pc.get(rid, {})}
                    for rid, m in recent],
         "stuck": stuck[:10], "failed": failed[:10], "errors": errors[:20],
     }

@@ -41,15 +41,16 @@
 | ホーム env | `KIRO_PROJECT_HOME` 等 | `AGENT_PROJECT_HOME` 等（`KIRO_AGENTS_DIR` / `KIRO_STATE_HOME` は共有のため維持） |
 | daemon ロック | `kiro-flow-locks` | `agent-flow-locks` |
 | 作業ブランチ接頭辞 | `kp/` / `kf/` | `ap/` / `af/` |
-| 状態ブランチ | `kiro-state` | `agent-state` |
+| 状態ブランチ | `kiro-state` | `agent-state`（※その後 S1 で状態ブランチ／worktree 方式自体が廃止され、この改称対応は無効化された。状態は状態専用リポジトリの通常 clone〈DirectStateGit〉に一本化し、`state_branch` 等は起動時に fail-fast する廃止キーになっている） |
 | Electron 製品名 | Kiro Projects Viewer | Agent Dashboard |
 | 設定キー / IPC | `config.kiro` / `kiro:*` | `config.projects` / `dashboard:*` |
 | スキル | `.github/skills/kiro-*` | `.github/skills/agent-*` |
+| 共有ライブラリ | （なし） | `tools/agent-tools/agentcore`（transport / protocol / vocab / agentcli ほか。3 エンジンの zipapp へ同梱） |
 
 **維持するもの**（製品・共有インフラ）:
 
 - `kiro-cli`（エージェント CLI 実装の一種）
-- （未移行の旧系統として残置する）`kiro-loop`
+- `kiro-loop`（`agent-loop` へクローン移行済み。旧系統は削除せず残置する）
 - `kiro-project` / `kiro-flow` / `kiro-projects-viewer` は移行完了後に削除済み
 - `$KIRO_AGENTS_DIR` / `$KIRO_STATE_HOME`（複数ツール共有）
 - `~/.kiro/agents`・`~/.kiro/skills`（共有定義の探索先として併用）
@@ -60,7 +61,6 @@
 |----------|----------|
 | `kiro-project-design.md` | `agent-project-design.md` |
 | `kiro-flow-design.md` | `agent-flow-design.md` |
-| `kiro-flow-retry-inheritance-design.md` | `agent-flow-retry-inheritance-design.md` |
 | `docs/plans/*kiro-projects-viewer*` | `docs/plans/*agent-dashboard*` |
 | `kiro-loop-*-design.md` / `DESIGN.md` | `agent-loop-*-design.md` 等 |
 
@@ -68,9 +68,12 @@
 
 ## 5. インストール
 
+3 エンジン（agent-project / agent-flow / agent-amigos）は統合インストーラ 1 本でまとめて入る。
+共有ライブラリ agentcore と環境チェックもここに集約されている（各エンジンの `install.sh` は
+`tools/agent-tools/install.sh --only <engine>` へ委譲するシムとして残る）。
+
 ```bash
-bash tools/agent-flow/install.sh
-bash tools/agent-project/install.sh
+bash tools/agent-tools/install.sh          # 3 エンジン + agentcore 一括
 bash tools/agent-loop/install.sh
 # GUI
 cd tools/agent-dashboard && npm start
@@ -80,6 +83,6 @@ cd tools/agent-dashboard && npm start
 
 ## 6. 非目標（この改称ではやらないこと）
 
-- `kiro-loop` の移行・削除
+- `kiro-loop` の削除（`agent-loop` へのクローン移行は実施済み）
 - 稼働中プロジェクト状態（`.kiro-project`）の自動移行
 - `kiro-cli` の改称（エージェント CLI 製品名は維持）

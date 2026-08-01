@@ -11,7 +11,7 @@ def needs_path(cfg: "Config", tid: str) -> Path:
 # （書き手の文言が変わると読み手の正規表現が外れ、表示だけが静かに壊れるのを断つ）。
 # 値は 1 行・キーは frontmatter 互換。空の項目は書かない＝旧記録と同じ見た目を保つ。
 _FAILURE_FM_KEYS = (
-    ("failure-class", "cls"),            # proximate cause（control/quota/auth/env/transient）
+    ("failure-class", "cls"),            # proximate cause（control/quota/auth/env/transient/integration）
     ("failure-chain", "chain"),          # 観測した全分類（カンマ区切り。根拠として保持）
     ("failure-phase", "phase"),          # どの工程まで到達したか
     ("verify-verdict", "verdict"),       # 検証の結末（passed/failed/not_run/unknown）
@@ -43,7 +43,8 @@ def _failure_frontmatter(failure: "dict | None") -> str:
 
 def _madr_frontmatter(rec_id: str, kind: str, risk: str = "",
                       mr_url: str = "", delivery: "list | None" = None,
-                      failure: "dict | None" = None) -> str:
+                      failure: "dict | None" = None,
+                      verification: "dict | None" = None) -> str:
     """needs/<id>.md の MADR（Markdown Any Decision Records）互換 frontmatter。
     status は常に proposed で生成し、人の確定（[x]）＝決定。ファイル自体は取り込み時に
     消費され、恒久の決定記録は decisions/<id>.md（DR）に残る。
@@ -58,6 +59,14 @@ def _madr_frontmatter(rec_id: str, kind: str, risk: str = "",
     if delivery:
         # JSON 1 行（viewer がパース）。複数リポジトリの書込/参照を構造化する。
         extra += f"delivery: {json.dumps(delivery, ensure_ascii=False, separators=(',', ':'))}\n"
+    if verification and (verification.get("criteria") or []):
+        # 検証レポートの要約（S5）。人が検収で読むのは「コマンド」ではなく **基準と証跡**——
+        # コマンドの良し悪しは判断できないが、基準と証跡なら判断できる。
+        extra += ("verification: "
+                  + json.dumps({"criteria": verification["criteria"],
+                                "report": verification.get("report", ""),
+                                "pass": verification.get("pass", 0)},
+                               ensure_ascii=False, separators=(",", ":")) + "\n")
     extra += _failure_frontmatter(failure)
     return (
         "---\n"
@@ -75,7 +84,8 @@ def write_needs_file(cfg: "Config", task: Task, reason: str, review: bool = Fals
                      evidence: str = "", kind: str = "",
                      risk: "tuple[str, str] | None" = None,
                      mr_url: str = "", delivery: "list | None" = None,
-                     failure: "dict | None" = None) -> None:
+                     failure: "dict | None" = None,
+                     verification: "dict | None" = None) -> None:
     cfg.needs.mkdir(parents=True, exist_ok=True)
     if kind == "plan-review":   # 実行前レビュー（proposed。承認されるまで実行しない）
         state = "proposed（実行前レビュー待ち・未実行）"
@@ -116,7 +126,7 @@ def write_needs_file(cfg: "Config", task: Task, reason: str, review: bool = Fals
     fm_mr = str(mr_url or (task.get("mr_url") if review else "") or "").strip()
     fm_delivery = delivery if delivery is not None else None
     body = (
-        f"{_madr_frontmatter(task.id, kind, risk=risk[0] if risk else '', mr_url=fm_mr if review else '', delivery=fm_delivery, failure=failure)}"
+        f"{_madr_frontmatter(task.id, kind, risk=risk[0] if risk else '', mr_url=fm_mr if review else '', delivery=fm_delivery, failure=failure, verification=verification)}"
         f"# 要対応: {task.id} — {task.title}\n\n"
         f"## Context and Problem Statement\n\n"
         f"- なぜ: {reason}\n"
@@ -132,11 +142,24 @@ def write_needs_file(cfg: "Config", task: Task, reason: str, review: bool = Fals
 
 
 def _task_definition_block(task: Task) -> str:
-    """実行前レビュー票に載せるタスク定義（人がレビューする対象そのもの）。"""
+    """実行前レビュー票に載せるタスク定義（人がレビューする対象そのもの）。
+
+    **受入基準（acceptance）は箇条書きで先に出す。**S5 で done の根拠が「1 行のコマンド」から
+    「基準 × 証跡」に変わった以上、実行前に人が読んで直すべき一次表現はこれである
+    （ここに出ていないものは、結局レビューされない）。
+    """
     lines = [f"- title  : {task.title}",
              f"- verify : `{task.verify}`" if task.verify else "- verify : （未定義）"]
+    crit = task_acceptance(task)
+    if crit:
+        lines.append("- acceptance（受入基準・検証エージェントがこれを証跡付きで判定します）:")
+        lines += [f"    {i}. {c}" for i, c in enumerate(crit, 1)]
+        if len(crit) > 7:
+            lines.append(f"    ※ 基準が {len(crit)} 件あります（目安は 3〜7 件）。"
+                         "多すぎる場合はタスクの分割を検討してください")
     for k in (*TASK_GUIDE_KEYS,   # 誘導・レビュー記述（why/desc/scope/…＝人がレビューする判断材料）
-              "accept", "verify_template", "after", "note", "workspace", "charter",
+              # accept は task_acceptance が上の箇条書きへ畳むので、ここでは出さない（二重表示を避ける）
+              "size", "verify_template", "after", "note", "workspace", "charter",
               "assess", "route"):   # assess=投入時採点（c/r/a）・route=spec ルーティングの決定
         v = task.get(k)
         if v:
@@ -161,6 +184,55 @@ def _remember_needs_reason(task: "Task", reason: str) -> None:
         task.extra.append(("needs_reason", str(reason).replace("\n", " ⏎ ")[:300]))
 
 
+def mark_needs_entry(cfg: "Config", task: "Task") -> None:
+    """このタスクを判断待ちへ入れた時点の決定記録の位置を印として残す（`- needs_dr:`）。
+
+    `_already_decided` が「人が答えた票の作り直し」と「その後で機械が改めて止めた新しい
+    判断待ち」を区別するための唯一の材料。押さずに済ませると、決定の後に再 blocked に
+    なったタスクの票が失われたとき、自己修復が働かなくなる（＝画面から消える）。
+    呼び出し側が直後に persist_task すること（判断待ちへ入れる遷移と同じ書き込みに乗せる）。"""
+    task.drop("needs_dr", "decided_by")
+    dr = latest_dr_id(cfg, task.id)
+    if dr:
+        task.extra.append(("needs_dr", dr))
+
+
+def _already_decided(cfg: "Config", task: "Task", st: str) -> bool:
+    """この票は「人がもう答えた判断」の作り直しか（＝再投影してはいけないか）。
+
+    判断待ちの復活ループ（総覧 G-2）を塞ぐ。状態の同期が競合したとき、backlog は機械状態＝
+    ローカル優先で裁定されるため、**人の決定を受け取り損ねた PC の status だけが古いまま**
+    残りうる。そのまま毎パスの自己修復（ensure_needs）が走ると、人が答え終わった票を作り直し、
+    全 PC へ再伝播する——「同じ判断を人に二度させない」（コンセプト正典 C3）の直接違反。
+
+    決定記録（`decisions/<id>.md`）は追記のみで衝突なく合流するので、status の同期が
+    競合しても人の決定だけは届く。そこで **最後の人の DR が「判断待ちではない status」へ
+    移したと記録しているのに、手元の status がまだ判断待ちなら、古いのは手元**と見なす。
+
+    機械（auto/system/gitlab/forge）の記録は根拠にしない——人が答えていない票を消してしまう。
+    人の決定の後で機械が改めて止めた場合（再 blocked 等）は、その遷移を起こした経路自身が
+    票を書く（`_block` → `write_needs_file`）ので、ここで作り直さなくても票は在る。"""
+    dec = last_human_decision(cfg, task.id)
+    if not dec:
+        return False
+    to = str(dec.get("to") or "")
+    if not to or to == st or to in NEEDS_STATUSES:
+        return False                 # 人の決定も判断待ち行き（差し戻し等）なら投影を止めない
+    # 人の決定の**後で**機械が改めて判断待ちへ入れた（再 blocked・再検収）なら、それは
+    # 新しい判断であって作り直しではない。判断待ちへ入れた側が押した印（needs_dr）と
+    # 突き合わせる（`mark_needs_entry`）。
+    if dr_num(task.get("needs_dr")) >= dr_num(dec.get("dr")):
+        return False
+    if str(task.get("decided_by") or "").strip() != str(dec.get("dr") or ""):
+        # 見送りは 1 回だけ記録する（毎パス書くと journal が埋まる）。印はタスク自身に残す。
+        task.set("decided_by", str(dec.get("dr") or ""))
+        persist_task(cfg, task)
+        append_journal(cfg.journal,
+                       f"needs 再投影を見送り: {task.id}（人の決定 {dec.get('dr') or ''} "
+                       f"{dec.get('action') or ''} は {to} を指しているのに手元は {st}）")
+    return True
+
+
 def ensure_needs(cfg: "Config", tasks: "list[Task]") -> "list[str]":
     """人の判断待ち（proposed / blocked / review）のタスクに needs/<id>.md が無ければ、タスクの
     status から作り直す。既にあれば触らない（人の記入を消さない）。再生成した ID を返す。
@@ -175,6 +247,8 @@ def ensure_needs(cfg: "Config", tasks: "list[Task]") -> "list[str]":
     for t in tasks:
         st = t.norm_status()
         if st not in NEEDS_STATUSES or needs_path(cfg, t.id).exists():
+            continue
+        if _already_decided(cfg, t, st):
             continue
         why = str(t.get("needs_reason") or "").strip()
         ev = _task_definition_block(t)
@@ -207,6 +281,142 @@ def ensure_needs(cfg: "Config", tasks: "list[Task]") -> "list[str]":
 def ensure_plan_review_needs(cfg: "Config", tasks: "list[Task]") -> None:
     """後方互換の薄い別名（proposed だけでなく判断待ち全体を面倒見る ensure_needs へ委譲）。"""
     ensure_needs(cfg, tasks)
+
+
+# 掃除の対象にするタスク級の票の kind（明示の allowlist）。milestone は reconcile_milestones が
+# 持ち主なので触らない。kind が読めない票（旧形式・書きかけ）も触らない＝迷ったら残す。
+_TASK_NEEDS_KINDS = {"plan-review", "review", "blocked"}
+
+
+def reap_orphan_needs(cfg: "Config") -> "list[str]":
+    """backlog に対応するタスクが無い needs/<id>.md を掃除する。消した ID を返す。
+
+    **ensure_needs の対**。票は status の投影（ensure_needs の docstring）なのに、従来は
+    「投影を作る」側しか無く、「投影元が消えたら票も消す」側が無かった。そのため
+    タスクを消した後（viewer の削除・手作業・同期事故）に票だけが残り、しかも残った票は
+    どこからも消せない袋小路になっていた:
+
+      - `ingest_feedback` は対応タスクが無い票を読み飛ばす（`t is None` → continue）＝
+        [x] を付けても取り込まれず、ファイルも消えない。
+      - `has_work` / `_has_pending_input` は [x] 済みの票を「人の入力あり」と数える＝
+        watch が毎パス起きるのに何も処理できない空回りになる。
+      - 手で消しても、タスクが blocked/review/proposed のまま残っていれば ensure_needs が
+        作り直す（設計どおり）。人には「消しても復活する」としか見えない。
+
+    milestone 票は `reconcile_milestones` が project.json の status を正として掃除する
+    （所有者が別）。ここは kind の allowlist でタスク級の票だけに触る。
+    書きかけ（静穏化前）は触らない——同期で票が先に着地しタスクが次パスで来る取り違えを避ける。"""
+    reaped: "list[str]" = []
+    if not cfg.needs.exists():
+        return reaped
+    # backlog は「ファイル名 = タスク ID」なので、掃除の判定に本文の解析は要らない。
+    # 自前で読み直すのは呼び出し側が渡した部分集合で誤って全部消さないため（誤用不能にする）。
+    alive = {p.stem for p in cfg.backlog.glob("*.md")} if cfg.backlog.exists() else set()
+    for nf in sorted(cfg.needs.glob("*.md")):
+        if nf.stem in alive or _needs_kind(nf) not in _TASK_NEEDS_KINDS:
+            continue
+        if not settled(cfg, nf):        # 直近に書かれた票は見送る（次パスで掃除する）
+            continue
+        try:
+            nf.unlink()
+        except OSError:
+            continue
+        append_journal(cfg.journal, f"needs 掃除: {nf.stem}（対応するタスクが backlog に無い）")
+        reaped.append(nf.stem)
+    return reaped
+
+
+def reconcile_needs(cfg: "Config", tasks: "list[Task]") -> "tuple[list[str], list[str]]":
+    """タスク級の needs を backlog の status へ毎パス一致させる唯一の調整点（GC）。
+    作る（ensure_needs）と消す（reap_orphan_needs）を必ず対で回すための入口。
+    milestone 票の同等物は `reconcile_milestones`。返り値は (再生成した ID, 掃除した ID)。"""
+    return ensure_needs(cfg, tasks), reap_orphan_needs(cfg)
+
+
+def prune_dangling_afters(cfg: "Config", tasks: "list[Task]") -> "list[str]":
+    """`after` の先行 id が backlog にも archive にも無い（＝物理削除された）タスクから、
+    その辺を外す。after を編集した（＝切り離した）タスクの id を返す。
+
+    却下（reject）は依存先の after 編集と再審査まで自分で行うが、物理削除は viewer の
+    ファイル操作なので、依存側の切り離しはこの整合点が毎パス引き受ける。実行順だけなら
+    `unmet_deps` が「無い id ＝満たし」と読むので詰まりはしないが、参照を残すと
+    (1) viewer の依存表示・impact が存在しないタスクを指し続ける
+    (2) 同じ id が後で再利用されたとき、無関係な新タスクが突然「先行」になる。
+    archive にある id（done/rejected）は外さない——実行済みの順序の記録として意味があり、
+    unmet_deps 上も満たし扱いで挙動が同じため。
+
+    切り離す前に、後続を proposed へ落として人の再審査にかける（W9・cmd_reject と同じ形）。
+    前提を失ったタスクを実行可能のまま放置しない——unmet_deps は「無い id＝満たし」と読むので、
+    放置すると次パスでそのまま実行される。done/doing は落とさない（実行中の中断はしない）。"""
+    adir = cfg.archive_dir()
+    archived = {p.stem for p in adir.glob("*.md")} if adir.exists() else set()
+    alive = {t.id for t in tasks}
+    pruned: "list[str]" = []
+    for t in tasks:
+        deps = task_deps(t)
+        keep = [d for d in deps if d in alive or d in archived]
+        if keep == deps:
+            continue
+        gone = [d for d in deps if d not in keep]
+        t.drop("after")
+        if keep:
+            t.extra.append(("after", ", ".join(keep)))
+        if t.norm_status() not in ("done", "doing"):
+            t.status = "proposed"
+            clear_needs_file(cfg, t.id)
+            persist_task(cfg, t)
+            write_needs_file(cfg, t, f"前提タスク {', '.join(gone)} が削除されたため再審査",
+                             evidence=_task_definition_block(t), kind="plan-review")
+        else:
+            persist_task(cfg, t)
+        append_journal(cfg.journal,
+                       f"依存の切り離し: {t.id} の after から {', '.join(gone)} を外す"
+                       f"（backlog にも archive にも無い＝削除済み・後続は再審査へ）")
+        pruned.append(t.id)
+    return pruned
+
+
+def reap_orphan_task_state(cfg: "Config") -> "list[str]":
+    """タスク本体（backlog / archive）を失った id の付随状態を物理削除する。掃除した id を返す。
+
+    対象は参照する主体が無く、残しても効果の無い孤児だけ:
+      - `verifications/<id>/` … 検証レポート。読む導線はタスク/archive 記録から
+      - `brief/<id>.md`       … run ブリーフ。残すと同じ id の再利用時に古い内容が注入される
+      - `claims/<id>.lock`    … 実行権ロック。backlog に無い id は誰も claim を参照しない
+    archive に居る id（done/rejected）の verifications/brief は記録の一部なので触らない。
+    claims だけは backlog 基準（archive 行きの時点で実行権は意味を失う）。
+    書きかけ保護は needs と同じ静穏化（settled）を通す。"""
+    backlog_ids = {p.stem for p in cfg.backlog.glob("*.md")} if cfg.backlog.exists() else set()
+    adir = cfg.archive_dir()
+    recorded = backlog_ids | ({p.stem for p in adir.glob("*.md")} if adir.exists() else set())
+    reaped: "set[str]" = set()
+    root = cfg.backlog.parent
+    vdir = root / "verifications"
+    if vdir.exists():
+        for d in sorted(p for p in vdir.iterdir() if p.is_dir()):
+            if d.name in recorded or not settled(cfg, d):
+                continue
+            shutil.rmtree(d, ignore_errors=True)
+            reaped.add(d.name)
+    bdir = root / "brief"
+    if bdir.exists():
+        for f in sorted(bdir.glob("*.md")):
+            if f.stem in recorded or not settled(cfg, f):
+                continue
+            with contextlib.suppress(OSError):
+                f.unlink()
+                reaped.add(f.stem)
+    cdir = root / "claims"
+    if cdir.exists():
+        for f in sorted(cdir.glob("*.lock")):
+            if f.stem in backlog_ids or not settled(cfg, f):
+                continue
+            with contextlib.suppress(OSError):
+                f.unlink()
+                reaped.add(f.stem)
+    for tid in sorted(reaped):
+        append_journal(cfg.journal, f"孤児の付随状態を掃除: {tid}（タスク本体なし）")
+    return sorted(reaped)
 
 
 def clear_needs_file(cfg: "Config", tid: str) -> None:
@@ -276,6 +486,10 @@ def ingest_feedback(cfg: "Config", tasks: "list[Task]") -> "list[str]":
             continue
         fb = read_feedback(nf)
         if t.norm_status() == "proposed":            # 実行前レビューの決着（承認 or 差し戻し）
+            # 票を読んで確定した＝人がこの計画を引き受けた。以後 backlog-planner には
+            # 「人が確定済み・作り直すな」として届く（S6-3。revise と同じ印）。
+            t.set("edited", "human")
+            persist_task(cfg, t)
             if fb:                                   # 差し戻し: agent-project がタスクを修正して再提案
                 plan_rework(cfg, t, fb)              # （新しいレビュー票を needs に書き直す）
             else:                                    # 空のまま [x] = 承認（実行を許可）
@@ -363,10 +577,6 @@ def _plan_approve(cfg: "Config", t: Task, reason: str) -> None:
     append_decision(cfg, t.id, cfg.actor, context=f"{t.id}（{t.title}）の実行を承認",
                     action="plan-approve", reason=reason, affects=f"{t.id} → {t.status}")
     append_journal(cfg.journal, f"plan-review 承認: {t.id} → {t.status}")
-
-
-_PLAN_REWORK_FIELDS = ("title", "verify", "accept", "after", "priority", "note",
-                       *TASK_GUIDE_KEYS)
 
 
 def _plan_rework_prompt(t: Task, feedback: str) -> str:
@@ -500,9 +710,9 @@ def _rejected_record(t: Task, reason: str) -> str:
 
 def cmd_reject(cfg: Config, tid: str, reason: str) -> int:
     """タスクの却下: 廃止（rejected として archive へ退避）し、依存先を proposed に戻して再審査に
-    かけ、charter があればバックログの再計画（replan）を要求する。実行前（proposed）にも
-    成果物レビュー段（review）にも使える。理由は avoid（回避知識）として蓄積し、同種の再提案を
-    予防リコールが弾く。"""
+    かける。実行前（proposed）にも成果物レビュー段（review）にも使える。再計画は要求しない
+    （分解は人の明示操作）。理由は avoid（回避知識）として蓄積し、同種の再提案を予防リコールが
+    弾くほか、次の分解時に backlog-planner へ「却下済み」として渡り、意図の似た再提案を抑える。"""
     tasks = load_tasks(cfg.backlog)
     t = next((x for x in tasks if x.id == tid), None)
     if t is None:
@@ -533,25 +743,34 @@ def cmd_reject(cfg: Config, tid: str, reason: str) -> int:
         else:
             persist_task(cfg, d)
     close_task_mr(cfg, t, reason)   # タスク MR があればクローズ＋ブランチ削除（best-effort）
-    # 本体を rejected として archive へ退避（納品ではないので DELIVERY には載せない）
+    # 本体を rejected として archive へ退避（納品ではないので DELIVERY には載せない）。
+    # run ブリーフはここで退役させ、蓄積を archive 記録へ転記する（done の archive_task と同じ
+    # 理屈——brief/ に残すと同じ task-id を再利用したとき古い内容が新タスクへ注入される）。
     t.status = "rejected"
-    _archive_write(cfg, t.id, serialize_task(t) + _rejected_record(t, reason))
+    body = serialize_task(t) + _rejected_record(t, reason)
+    brief = retire_brief(cfg, t)
+    if brief:
+        body += f"\n## run ブリーフ（却下時点の蓄積。learn 射影済み）\n{brief}\n"
+    _archive_write(cfg, t.id, body)
     delete_task_file(cfg, t)
     clear_needs_file(cfg, tid)
     affected = ", ".join(d.id for d in downs) or "（なし）"
+    # 墓標を残す（S6-4）。archive の rejected も `_existing_titles` に効くが、それだけだと
+    # (a) プランナーは毎回同じものを出し続けて投入側で黙って落とされる（＝人には「再分解しても
+    # 何も起きない」に見える）(b) 却下理由がプランナーに届かない (c) 人が手で墓標を足せない。
+    # 人が直した題ではなく**原題も**残す——プランナーは原題で出し直してくるため。
+    for title in dict.fromkeys(x for x in (t.title, str(t.get("planned_title") or "").strip()) if x):
+        append_tombstone(cfg, title, reason, charter=(t.get("charter") or "").strip())
     dr = append_decision(cfg, tid, cfg.actor, context=f"{tid}（{t.title}）を却下（廃止）",
                          action="reject", reason=reason,
                          affects=f"{tid} → rejected ／ 依存先を再審査へ: {affected}",
                          avoid=(t.title, reason) if cfg.learn_capture and reason else None)
-    # charter があれば再計画を要求（却下で空いた穴を plan が埋め直す。rejected タイトルは
-    # archive 経由で _existing_titles に含まれるため同一タスクは再提案されない）
-    replanned = ""
-    if charter_names(cfg):
-        write_replan_request(cfg, f"タスク {tid} の却下に伴う再計画",
-                             charter=(t.get("charter") or "").strip())
-        replanned = "／charter からの再計画を要求しました"
+    # 再計画は要求しない（分解は人の明示操作だけ、の契約）。かつては却下のたびに replan を
+    # 自動発行して「穴を埋め直して」いたが、それが「消しても似たタスクが復活する」体験の
+    # 直接の原因だった。却下済みは archive（rejected）と墓標に残り、次に人が分解を要求した
+    # ときに backlog-planner への入力として渡る＝意図の似た再提案はそこで抑止される。
     append_journal(cfg.journal, f"reject: {tid} を却下（依存先 {len(downs)} 件を再審査へ）")
-    print(f"{dr}: {tid} を却下しました。影響（依存先→再審査）: {affected}{replanned}")
+    print(f"{dr}: {tid} を却下しました。影響（依存先→再審査）: {affected}")
     return 0
 
 

@@ -23,15 +23,21 @@ function loadNeedsSent() {
 }
 
 const needsSent = loadNeedsSent();
+const NEED_SENT_TTL_MS = 15 * 60 * 1000;
+const COMMAND_RECEIPT_VISIBLE_MS = 2 * 60 * 1000;
 
 function markNeedSent(need) {
-  needsSent[need.file] = need.mtime;
+  needsSent[need.file] = { mtime: need.mtime, sentAt: Date.now() };
   localStorage.setItem('kpv:needsSent', JSON.stringify(needsSent));
 }
 
 function isNeedSent(need) {
-  if (needsSent[need.file] === undefined) return false;
-  if (needsSent[need.file] === need.mtime) return true;
+  const marker = needsSent[need.file];
+  if (marker === undefined) return false;
+  // 旧版の数値マーカーには送信時刻がなく、永久に「反映待ち」になり得るため破棄する。
+  const current = marker && typeof marker === 'object' ? marker : null;
+  if (current && current.mtime === need.mtime
+    && Date.now() - Number(current.sentAt || 0) < NEED_SENT_TTL_MS) return true;
   // ファイルが書き換わった → マーカーは古い（掃除して操作を再度出す）
   delete needsSent[need.file];
   localStorage.setItem('kpv:needsSent', JSON.stringify(needsSent));
@@ -65,6 +71,7 @@ function stabilizeMilestoneNeeds(previousProject, nextProject) {
     'no-acceptance',
     'blocked',
     'no-progress',
+    'awaiting-plan',
     'project-budget',
     'project-cost',
   ]);
@@ -101,10 +108,10 @@ function milestoneVersionName(p, id) {
 
 // needs（要対応）の種別ラベル。内部の kind 名は UI に出さない
 const NEED_KIND_LABELS = {
-  'plan-review': '計画レビュー',
-  review: '検収',
-  milestone: 'マイルストーン',
-  blocked: '対応依頼',
+  'plan-review': '開始前確認',
+  review: '成果確認',
+  milestone: '完了確認',
+  blocked: '作業再開',
 };
 
 function needKindLabel(kind) {
@@ -135,17 +142,8 @@ function needCompleteHowHtml(n) {
       status === null || status === 'converged'
         ? '承認すると、プロジェクトは完了します。'
         : 'まだプロジェクト完了の段階ではありません。';
-  } else if (n.kind === 'blocked' && isVerifyPendingNeed(p, n)) {
-    line = '承認すると、このタスクは完了します（検証コマンド未定義のため、人の確認が完了の根拠になります）。';
-  } else if (n.kind === 'blocked' && needHasArtifacts(p, n, state.flowRuns)) {
-    line = '成果はできています。内容を確認して問題なければ、承認するとこのタスクを完了できます。';
-  } else if (n.kind === 'blocked' && needHasDeliverable(p, n, state.flowRuns)) {
-    // 完了は選べるが、成果物は確認できていない（実行はしたが差分が無い・取得できない）。
-    // ここで「成果はできています」と言うと、着手前に止まった run でも成果があることに
-    // なってしまう。断定せず、確認してから判断してもらう。
-    line = '成果物は確認できていません。内容を確かめたうえで、完了にしてよければ承認できます。';
-  } else if (!line && n.kind === 'blocked') {
-    line = '指示を送ると、作業を再開します。';
+  } else if (n.kind === 'blocked') {
+    line = '指示を送るか再実行すると、停止した作業を再開します。';
   }
   if (!line) return '';
   return `<div class="task-complete-banner need-complete-how">${esc(line)}</div>`;
@@ -155,6 +153,7 @@ const COMMAND_ACTION_LABELS = {
   approve: '承認',
   hold: '保留',
   reject: '却下',
+  'retry-mr': 'MR再作成',
   revise: '修正指示',
   pin: '優先度変更',
   defer: '優先度変更',
@@ -168,25 +167,49 @@ function commandFailureHtml(n) {
   const cf = n && n.commandFailure;
   if (!cf) return '';
   const label = COMMAND_ACTION_LABELS[cf.action] || cf.action || '指示';
-  return `<div class="need-command-failure" role="alert">
-    <strong>「${esc(label)}」は届きましたが、処理に失敗しました${cf.failedAt ? `（${esc(cf.failedAt)}）` : ''}</strong>
-    <span>${esc(cf.error || '')}</span>
-    <span class="muted">原因を解消してから、もう一度同じ操作を送ってください。</span>
+  return `<details class="need-command-history" aria-label="過去の操作">
+    <summary>過去の操作 <span class="muted">直近1件</span></summary>
+    <div class="need-command-failure">
+      <strong>「${esc(label)}」操作に失敗${cf.failedAt ? `（${esc(cf.failedAt)}）` : ''}</strong>
+      <dl>
+        <div><dt>失敗理由</dt><dd>${esc(cf.error || '記録されていません')}</dd></div>
+        <div><dt>対処指示</dt><dd>${esc(cf.instruction || '指示なし')}</dd></div>
+      </dl>
+    </div>
+  </details>`;
+}
+
+// 直前の指示（承認・保留など）が本体に届き、取り込みに成功した（commands/processed/*.json）
+// ことを知らせる確認。取り込みは非同期（ドロップ→後で本体が処理）で、成功時は元ファイルが
+// 消えるだけなので、以前は「保留中（本体未取り込み）」と「受理済み」を画面で区別できず、
+// 押しても何も起きないように見えた。失敗（commandFailure）が無いときだけ出す＝失敗表示を上書きしない。
+function commandReceiptHtml(n, nowMs = Date.now()) {
+  const cr = n && n.commandReceipt;
+  if (!cr || (n && n.commandFailure)) return '';
+  const processedAt = Date.parse(String(cr.processedAt || '').replace(' ', 'T'));
+  // 受理通知は一時的なフィードバックであり、履歴ではない。古い通知をカードに残さない。
+  if (Number.isFinite(processedAt) && nowMs - processedAt > COMMAND_RECEIPT_VISIBLE_MS) return '';
+  const label = COMMAND_ACTION_LABELS[cr.action] || cr.action || '指示';
+  return `<div class="need-command-receipt">
+    <span>「${esc(label)}」を受理しました。</span>
   </div>`;
 }
 
-function needActionsHtml(n, options) {
-  const inReview = Boolean(options && options.inReview);
+function needActionsHtml(n) {
   const kind = n.kind || 'blocked';
   const buttons = [];
   if (kind === 'plan-review') {
     buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}">承認して実行</button>`);
     buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}" data-require="1" title="修正指示を記入して計画を練り直させます">差し戻す</button>`);
-    buttons.push(`<button class="danger" data-act="reject" data-id="${esc(n.id)}" data-require="1" title="このタスクを廃止し、計画を作り直させます">却下</button>`);
+    buttons.push(`<button class="danger" data-act="reject" data-id="${esc(n.id)}" data-require="1" title="このタスクを廃止します。似た内容のタスクは次の分解でも提案されなくなります">却下</button>`);
   } else if (kind === 'review') {
+    const hasMr = Boolean((n.mrUrls && n.mrUrls.length) || n.mrUrl);
+    if (!hasMr) {
+      buttons.push(`<button class="primary-inline" data-act="retry-mr" data-id="${esc(n.id)}" title="検収到達時に失敗した MR 作成を再試行します">MRを作成し直す</button>`);
+    }
     buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}">承認して完了にする</button>`);
     buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}" data-require="1" title="修正方針を記入してやり直させます">差し戻す</button>`);
-    buttons.push(`<button class="danger" data-act="reject" data-id="${esc(n.id)}" data-require="1" title="この成果を採用せず廃止し、計画を作り直させます">却下</button>`);
+    buttons.push(`<button class="danger" data-act="reject" data-id="${esc(n.id)}" data-require="1" title="この成果を採用せず廃止します。似た内容のタスクは次の分解でも提案されなくなります">却下</button>`);
   } else if (kind === 'milestone') {
     const status = milestoneStatusFor(state.project, n.id);
     if (status === null || status === 'converged') {
@@ -204,6 +227,13 @@ function needActionsHtml(n, options) {
         buttons.push(`<button class="primary-inline" data-open-version="${esc(ver)}">✎ 完了条件を追加</button>`);
       }
       buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}">↩ 指示を送る</button>`);
+    } else if (status === 'awaiting-plan') {
+      // 分解待ち: 受入条件が未達で、実行できるタスクが無い。自動では分解しないので、
+      // バックログタブの「バックログを分解」へ誘導する（勝手に作り直さないのが契約）。
+      buttons.push(
+        `<span class="muted">完了条件をまだ満たせておらず、実行できるタスクもありません。タスクは自動では作られないので、バックログタブの「バックログを分解」で作ってください。</span>`
+      );
+      buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}">↩ 指示を送る</button>`);
     } else {
       // blocked / 停滞 / 予算到達など: 承認前の段階。内容を確認して対応する
       buttons.push(
@@ -212,16 +242,7 @@ function needActionsHtml(n, options) {
       buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}">↩ 指示を送る</button>`);
     }
   } else {
-    // 検収物が少しでもあれば「承認して完了にする」を出す（本体は complete で完了確定する）。
-    // 差分を先に見たい人向けに「差分を確認して承認」も併置し、承認そのものは常に押せる形にする
-    // ——「見当たらないから完了できない」を作らないことを、細かい出し分けより優先する。
-    // 成果を見る導線は needArtifactsButtonHtml（「成果を確認」）が別に出すので、
-    // ここは承認そのものだけを置く（同じ操作を 2 つ並べない）。
-    const canApproveCompletion = needHasDeliverable(state.project, n, state.flowRuns);
-    if (canApproveCompletion) {
-      buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}" title="成果を確認済みとして、このタスクを完了（納品確定）にします">承認して完了にする</button>`);
-    }
-    buttons.push(`<button class="${canApproveCompletion ? '' : 'primary-inline'}" data-act="feedback" data-id="${esc(n.id)}">指示を送って再開</button>`);
+    buttons.push(`<button class="primary-inline" data-act="feedback" data-id="${esc(n.id)}">指示を送って再開</button>`);
     buttons.push(`<button data-act="rerun" data-id="${esc(n.id)}">そのまま再実行</button>`);
     buttons.push(`<button data-act="hold" data-id="${esc(n.id)}" title="このタスクを止めて保留にします">保留にする</button>`);
   }
@@ -244,10 +265,10 @@ function needActionsHtml(n, options) {
 
 // 種別ごとの「何を確認するか」。カードの先頭で確認の目的を一文で示す
 const NEED_ASK = {
-  'plan-review': 'このタスクの実行を始めてよいか確認してください。',
-  review: '成果物を確認し、完了にしてよいか判断してください。',
-  milestone: 'プロジェクトを完了にしてよいか確認してください。',
-  blocked: '作業を再開するための対応を指示してください。',
+  'plan-review': '作業を始めてよいか確認してください。',
+  review: 'できあがった内容を確認し、完了にしてよいか判断してください。',
+  milestone: 'プロジェクト全体を完了にしてよいか確認してください。',
+  blocked: '作業を再開するための追加指示を入力してください。',
 };
 
 // カード見出し用にタイトルの定型接頭辞（種別バッジと重複する）を落とす
@@ -294,6 +315,7 @@ function taskForNeed(project, need) {
 }
 
 // 「そのまま再実行」をどの口へ送るか。
+//   revise     … target 統合失敗。done ノードを温存すると同じ不整合を再利用するため、新しい試行へ送る。
 //   resume-run … 再開できる run がある。本体が last_run を固定して ready へ積み直す正規の口で、
 //                 失敗した工程だけやり直し done は温存される。指示ファイルが残るので
 //                 失敗すれば journal と .err に理由が残る。
@@ -302,6 +324,9 @@ function taskForNeed(project, need) {
 // 経路の選択をここに閉じ込める（呼び出し側で条件を書くと、片方だけ直して食い違う）。
 function needRerunPlan(project, need) {
   const task = taskForNeed(project, need);
+  if (task && String((need && need.failureClass) || '') === 'integration') {
+    return { via: 'revise', id: String(task.id) };
+  }
   const run = String(((task && task.extra) || {}).last_run || '').trim();
   if (task && run) return { via: 'resume-run', id: String(task.id), run };
   return { via: 'feedback' };
@@ -415,9 +440,22 @@ function needApprovalReason(project, need, flowRuns, input) {
 
 // 成果（差分）を見る導線。承認できるかとは独立に、見るものがあるなら常に出す
 // （承認状態で出し分けると「成果も承認も見当たらない」状態が生まれる）。
+// delivery（検収物）に中身があるか。done run が無くても、コメント付き再実行などで
+// delivery だけが記録されている票の成果を確認できるようにする。
+function hasDeliveryContent(need) {
+  return ((need && need.delivery) || []).some(
+    (e) => e && e.role !== 'reference'
+      && ((e.files || []).length || String(e.mr_url || '').trim() || (e.path && (e.ref || e.branch)))
+  );
+}
+
 function needArtifactsButtonHtml(project, need, flowRuns) {
-  // リトライ中（最新試行が未完）でも、系統内に done 世代があれば成果への導線を残す
-  if (!completedTaskForNeed(project, need) && !artifactRunForNeed(project, need, flowRuns)) return '';
+  // リトライ中（最新試行が未完）でも、系統内に done 世代があれば成果への導線を残す。
+  // done run が無くても、delivery に中身があれば「成果を確認」を出す（検収時に成果物が
+  // 見られない、と報告された症状の対策）。
+  if (!completedTaskForNeed(project, need)
+    && !artifactRunForNeed(project, need, flowRuns)
+    && !hasDeliveryContent(need)) return '';
   return `<button type="button" class="primary-inline" data-need-artifacts="${esc(need.id)}">成果を確認</button>`;
 }
 
@@ -556,7 +594,7 @@ function deliveryReviewState(entries, mrs) {
   const fileCount = list.reduce((count, entry) => count + (entry.files || []).length, 0);
   const hasMr = Boolean((mrs || []).length || list.some((entry) => entry.mr_url));
   const canDiscover = list.some(
-    (entry) => entry.role !== 'reference' && entry.path && (entry.ref || !entry.branch)
+    (entry) => entry.role !== 'reference' && entry.path
   );
   return { fileCount, hasMr, canDiscover, hasContent: fileCount > 0 || hasMr };
 }
@@ -635,7 +673,7 @@ function deliveryReviewFooterHtml(need) {
     const label = need.taskStatus ? statusLabel(need.taskStatus) : '関連タスクなし';
     return `<h3>タスクの状態</h3><p><span class="status-chip st-${esc(need.taskStatus || '')}">${esc(label)}</span></p>`;
   }
-  return `<h3>要確認コメント・操作</h3>${commandFailureHtml(need)}${
+  return `<h3>要確認コメント・操作</h3>${commandFailureHtml(need)}${commandReceiptHtml(need)}${
     need.decided || (!need.commandFailure && isNeedSent(need))
       ? '<p class="muted">この要確認項目には回答済みです。</p>'
       : needActionsHtml(need, { inReview: true })
@@ -660,7 +698,7 @@ function renderDeliveryRepo(entry, idx) {
   // 解決済み ref、または branch 指定のない現在の作業ツリーだけをローカル表示する。
   // branch 名だけでは fetch 失敗時に誤誘導するため表示しない。
   const canDiff = Boolean(
-    entry.path && (entry.ref || !entry.branch) && entry.role !== 'reference'
+    entry.path && entry.role !== 'reference'
   );
   const unresolved = entry.role !== 'reference' && entry.branch && !entry.ref;
   const fileBtns = files
@@ -753,9 +791,13 @@ async function openDeliveryArtifactsModel(need, title) {
   if (!$('dlg-delivery-review').open) return;
   const reviewState = deliveryReviewState(entries, mrs);
   const discoveryFailed = entries.some((entry) => entry.discovery === 'failed');
+  // 成果物レビューの正は MR/PR 一本。MR があるあいだはカード内で差分を開かせない——
+  // レビューコメント・承認状態・行コメントはフォージ側に揃っており、ここに二つ目の
+  // 差分ビューを置くと「どちらで見てどちらに書くのか」が人ごとにばらける。
+  const mrOnly = mrs.length > 0;
   const mrBlock = mrs.length
     ? `<section class="delivery-mr-banner">
-        <p>GitLab 上で差分を確認できます（gitlab executor / タスク MR）。</p>
+        <p>差分レビューは MR で行います（コメント・承認もそちらが正）。</p>
         <div class="row">${mrs
           .map(
             (u, i) =>
@@ -771,31 +813,46 @@ async function openDeliveryArtifactsModel(need, title) {
       ? entries.map((e, i) => renderDeliveryRepo(e, i)).join('')
       : '<p class="muted">構造化された検収物情報がありません。判断材料の本文を確認してください。</p>';
   const canShowAllDiffs = reviewState.fileCount > 0 && entries.some(
-    (entry) => entry.role !== 'reference' && entry.path && (entry.ref || !entry.branch)
+    (entry) => entry.role !== 'reference' && entry.path
   );
   const allDiffs = canShowAllDiffs
     ? `<button class="primary-inline" data-delivery-all-diff>すべての差分を表示</button>`
     : '';
-  const assistToolbar = !need.decided && !isNeedSent(need)
-    ? `<div class="delivery-review-toolbar delivery-assist-toolbar">
-        ${allDiffs}
-        <button type="button" data-delivery-rationale="${esc(need.id)}">変更理由を説明</button>
-        <button type="button" data-delivery-followup="${esc(need.id)}">フォローアップ案</button>
-      </div>`
-    : allDiffs
-      ? `<div class="delivery-review-toolbar">${allDiffs}</div>`
-      : '';
+  // 検収経路から dashboard 側の WSL ヘッドレス AI 呼び出し（変更理由の説明・フォローアップ案）を
+  // 撤去した（案3）。多段シェル越しの同期 AI 実行が「起動を待っています」で固まる停滞の元だった。
+  // AI による accept→verify 合成はエンジン側ループ内で行う。ここは差分表示のみ残す。
+  const assistToolbar = allDiffs
+    ? `<div class="delivery-review-toolbar">${allDiffs}</div>`
+    : '';
   const emptyNotice = reviewState.hasContent
     ? ''
     : `<section class="delivery-empty-state" role="status">
         <h3>${discoveryFailed ? '変更ファイル一覧を取得できませんでした' : '変更ファイルはありません'}</h3>
         <p>${discoveryFailed
-          ? 'リポジトリの情報またはGitの状態を確認し、もう一度開いてください。'
+          ? esc(entries.map((e) => e.discoveryError).filter(Boolean)[0]
+                || 'リポジトリの情報またはGitの状態を確認し、もう一度開いてください。')
           : '現在の比較条件では、検収対象となる変更を検出しませんでした。'}</p>
       </section>`;
   // このダイアログの主目的はファイル差分の検収。run の summary は複数ノード分が長くなり、
   // overflow:hidden の本文内で差分レイアウト全体を画面外へ押し出すため、ここには載せない。
-  $('delivery-review-body').innerHTML = `${mrBlock}${emptyNotice}
+  if (mrOnly) {
+    // 検収カードの構成は「受入基準・検証レポート要約＋ MR リンク」。差分は MR で見る。
+    $('delivery-review-body').innerHTML = `${mrBlock}
+      ${verificationSummaryHtml(need)}
+      <section class="delivery-diff-panel" aria-label="検収">
+        <footer class="delivery-review-actions">
+          ${deliveryReviewFooterHtml(need)}
+        </footer>
+      </section>`;
+    wireDeliveryReview($('dlg-delivery-review'), { ...need, delivery: entries });
+    const input = $('dlg-delivery-review').querySelector('.delivery-review-actions .need-input');
+    if (input) {
+      input.value = state.needsDrafts[need.id] || '';
+      input.addEventListener('input', () => { state.needsDrafts[need.id] = input.value; });
+    }
+    return;
+  }
+  $('delivery-review-body').innerHTML = `${mrBlock}${verificationSummaryHtml(need)}${emptyNotice}
     <div id="delivery-assist-panel" class="delivery-assist-panel hidden" aria-live="polite"></div>
     <div class="delivery-review-layout">
       <aside class="delivery-file-panel" aria-label="変更ファイル">
@@ -829,13 +886,66 @@ async function openDeliveryArtifactsModel(need, title) {
   if (firstFile) firstFile.click();
 }
 
-function deliveryDiffRequest(entry, file = '') {
+// 検収カードの検証レポート要約。人がレビューするのは「コマンド」ではなく
+// **基準と証跡**——コマンドの良し悪しは人には判断できないが、基準と証跡なら判断できる、
+// というのが S5 のコンセプト変更そのもの。
+//
+// 証跡の無い pass はエンジン側で fail に落としているが、ここでも薄い基準を目立たせる
+// （抜き取り監査を「別機能」にせず、人が毎回見る 1 枚に載せる）。
+function verificationSummaryHtml(need) {
+  const v = (need && need.verification) || null;
+  const criteria = (v && Array.isArray(v.criteria)) ? v.criteria : [];
+  if (!criteria.length) return '';
+  const mark = { pass: '✓', fail: '✗', unverifiable: '—' };
+  const rows = criteria.map((c, i) => {
+    const verdict = String(c.verdict || '');
+    const ev = c.evidence || {};
+    const cmds = (ev.commands || []).join(' / ');
+    const files = (ev.files || []).join(', ');
+    const shown = [cmds, String(ev.output || '').slice(0, 120), files].filter(Boolean).join(' — ');
+    const thin = verdict === 'pass' && !cmds && !files;
+    return `<tr class="${thin ? 'verification-thin' : ''}">
+      <td>${i + 1}</td>
+      <td>${esc(String(c.text || ''))}</td>
+      <td class="verification-verdict-${esc(verdict)}">${mark[verdict] || '?'} ${esc(verdict)}</td>
+      <td>${shown ? esc(shown) : '<span class="muted">証跡なし</span>'}</td>
+    </tr>`;
+  }).join('');
+  const passed = criteria.filter((c) => c.verdict === 'pass').length;
+  const thinCount = criteria.filter(
+    (c) => c.verdict === 'pass' && !((c.evidence || {}).commands || []).length
+      && !((c.evidence || {}).files || []).length).length;
+  const warn = thinCount
+    ? `<p class="warn">証跡の無い判定が ${thinCount} 件あります。内容を確かめてください。</p>`
+    : '';
+  const report = v.report
+    ? `<p class="muted">検証レポート全文: <code>${esc(String(v.report))}</code></p>` : '';
+  return `<section class="verification-summary" aria-label="検証">
+    <h3>検証（基準 ${criteria.length} 件中 ${passed} 件 pass）</h3>
+    ${warn}
+    <table class="verification-table">
+      <thead><tr><th>#</th><th>受入基準</th><th>判定</th><th>証跡</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    ${report}
+  </section>`;
+}
+
+function deliveryDiffRequest(entry, file = '', opts) {
   return {
     repo: entry.path,
+    // path は agent-project が動いたノードで解決したもので、worker の作業ツリーは /tmp（消える）。
+    // この PC に無ければ main 側が host.yaml repos[] からクローンを引き直す。
+    repoUrl: entry.url || '',
+    viewerRoot: typeof state !== 'undefined' && state.project ? state.project.dir : '',
     base: entry.target || entry.base || 'main',
     ref: entry.ref || undefined,
+    // 作業ブランチが分かれば origin/<branch> を優先（fetch 後は今 push されている最新を検収する）。
+    branch: entry.branch || undefined,
+    fetch: Boolean(opts && opts.fetch),
     file: file || undefined,
-    workingTree: !entry.ref,
+    // ref も branch も無い＝ローカル作業ツリー比較。branch があれば origin/<branch> で range 比較。
+    workingTree: !entry.ref && !entry.branch,
   };
 }
 
@@ -847,14 +957,17 @@ async function hydrateDeliveryEntries(entries) {
   return Promise.all((entries || []).map(async (entry) => {
     const fallbackFiles = (entry.files || []).filter(isDeliveryArtifactFile);
     const fallback = { ...entry, files: fallbackFiles, files_total: fallbackFiles.length };
-    const canLoad = entry.role !== 'reference' && entry.path && (entry.ref || !entry.branch);
+    // path が空でも url があれば main 側がノード宣言（host.yaml repos[]）から引き直せる。
+    const canLoad = entry.role !== 'reference' && (entry.path || entry.url);
     if (!canLoad) return { ...fallback, discovery: 'unavailable' };
     try {
-      const result = await api.gitDiff(deliveryDiffRequest(entry));
+      // 検収を開いた最初の解決でリモートを取り込む（以降のファイル選択は取得済みの origin を使う）。
+      const result = await api.gitDiff(deliveryDiffRequest(entry, '', { fetch: true }));
       const files = (result.files || []).filter(isDeliveryArtifactFile);
       return { ...entry, files, files_total: files.length, discovery: 'complete' };
     } catch (err) {
       uiLog('delivery file list fallback', entry.name || 'repo', err && err.message ? err.message : err);
+      fallback.discoveryError = String((err && err.message) || err || '');
       return { ...fallback, discovery: 'failed' };
     }
   }));
@@ -919,16 +1032,21 @@ function renderDeliveryDiff(diffText) {
 
 async function collectDeliveryDiffSections(need, { maxChars = 80000 } = {}) {
   const entries = (need.delivery || []).filter(
-    (entry) => entry.role !== 'reference' && entry.path && (entry.ref || !entry.branch)
+    (entry) => entry.role !== 'reference' && entry.path
   );
   const sections = await Promise.all(
     entries.map(async (entry) => {
+      const compareBase = entry.target || entry.base;
       const label = entry.ref
         ? `${entry.base || 'main'}...${entry.ref}`
-        : '現在の作業ツリー（HEADとの差分）';
+        : entry.branch
+          ? `${compareBase || 'main'}...origin/${entry.branch}`
+          : compareBase
+            ? `${compareBase} との差分（作業ツリー）`
+            : '現在の作業ツリー（HEADとの差分）';
       const files = (entry.files || []).slice(0, 40);
       try {
-        const res = await api.gitDiff(deliveryDiffRequest(entry));
+        const res = await api.gitDiff(deliveryDiffRequest(entry, '', { fetch: true }));
         let text = res.text || '(差分なし)';
         if (text.length > maxChars) {
           text = `${text.slice(0, maxChars)}\n…（差分が長いため省略）`;
@@ -1076,12 +1194,7 @@ function wireDeliveryReview(root, need) {
       if (ok) $('dlg-delivery-review').close();
     });
   }
-  for (const btn of root.querySelectorAll('[data-delivery-rationale]')) {
-    btn.addEventListener('click', () => openDeliveryRationale(btn.dataset.deliveryRationale));
-  }
-  for (const btn of root.querySelectorAll('[data-delivery-followup]')) {
-    btn.addEventListener('click', () => openDeliveryFollowup(btn.dataset.deliveryFollowup));
-  }
+  // 検収経路の WSL ヘッドレス AI（変更理由の説明・フォローアップ案）は撤去した（案3）。
   const allDiffs = root.querySelector('[data-delivery-all-diff]');
   if (allDiffs) {
     allDiffs.addEventListener('click', async () => {
@@ -1112,7 +1225,6 @@ function wireDeliveryReview(root, need) {
       const idx = Number(btn.getAttribute('data-delivery-diff'));
       const entry = (need.delivery || [])[idx];
       if (!entry || !entry.path) return toast('ローカル path が無いため差分を取得できません');
-      if (!entry.ref && entry.branch) return toast('作業ブランチの ref が未解決のため差分を取得できません');
       const file = btn.getAttribute('data-file') || '';
       const view = $('delivery-diff-view');
       root.querySelectorAll('[data-delivery-file]').forEach((item) => {
@@ -1146,7 +1258,7 @@ function specFilesHtml(p, n) {
 }
 
 function needBucket(n, sentFn) {
-  if (n.decided) return 'done';
+  if (n.decided || (n.commandReceipt && !n.commandFailure)) return 'done';
   // 送信後に本体側で取り込みが失敗した指示（commands/*.err → n.commandFailure）は
   // 「送信済み」に隠さない。失敗の事実と理由を見せて、次の操作をできるようにする。
   if (n.commandFailure) return 'open';
@@ -1233,15 +1345,20 @@ function canDiagnoseNeed(need) {
 }
 
 function needAssistActionsHtml(need, settled) {
+  // 検収（review）は accept の判断そのもの。dashboard 側の WSL ヘッドレス AI をこの経路に
+  // 置かない（案3）。「変更理由を説明」も汎用「AIに相談」も出さず、AI 支援ボタンは無しにする
+  // （accept→verify の AI 合成はエンジン側ループ内で行う）。
+  if (need && need.kind === 'review') return '';
   const specialized = [];
   if (!settled && need.kind === 'plan-review') {
     specialized.push(`<button class="primary-inline" data-plan-critique="${esc(need.id)}">AIで計画を批評</button>`);
   }
-  if (!settled && need.kind === 'review') {
-    specialized.push(`<button type="button" data-delivery-rationale="${esc(need.id)}">変更理由を説明</button>`);
-  }
   if (!settled && canDiagnoseNeed(need)) {
-    specialized.push(`<button class="primary-inline" data-failure-diagnose="${esc(need.id)}">AIで失敗を診断</button>`);
+    // 対話診断が既定。原因究明は 1 往復では終わらない——エージェントに追加で
+    // 質問でき、ログの周辺を自分で読ませられる窓を既定にする。ヘッドレスの 1 発実行は
+    // 「差し戻し文面案」の抽出が要る用途として併設する。
+    specialized.push(`<button class="primary-inline" data-failure-chat="${esc(need.id)}">AIと対話で診断</button>`);
+    specialized.push(`<button type="button" data-failure-diagnose="${esc(need.id)}">文面を生成</button>`);
   }
   if (specialized.length) return specialized.join('');
   return `<button type="button" data-need-consult="${esc(need.id)}">AIに相談</button>`;
@@ -1249,24 +1366,38 @@ function needAssistActionsHtml(need, settled) {
 
 function needListSummary(need) {
   const failure = needFailureViewModel(need);
-  return failure ? failure.summary : (NEED_ASK[need.kind] || NEED_ASK.blocked);
+  if (failure) return failure.summary;
+  if (need && need.kind === 'blocked' && String(need.why || '').trim()) return String(need.why).trim();
+  return NEED_ASK[need.kind] || NEED_ASK.blocked;
+}
+
+function needDecisionViewModel(need) {
+  const kind = String((need && need.kind) || 'blocked');
+  const copy = {
+    'plan-review': ['実行前の確認を待っています', '実行前の確認', '計画を確認し、実行するか差し戻すか選んでください。'],
+    review: ['成果の確認を待っています', '成果の確認', '成果を確認し、承認または修正指示を選んでください。'],
+    milestone: ['プロジェクト完了の確認を待っています', '完了の確認', '完了条件を確認し、プロジェクトを完了にするか選んでください。'],
+    blocked: ['作業が停止しています', '再開方法', '停止理由を確認し、指示を追加して再開するか、そのまま再実行してください。'],
+  }[kind] || ['確認を待っています', '対応方法', NEED_ASK.blocked];
+  return { statusTitle: copy[0], actionTitle: copy[1], nextStep: copy[2], reason: needListSummary(need || {}) };
 }
 
 function needListItemViewModel(need, bucket, age) {
   const stateText = { open: '未対応', sent: '送信済み', done: '回答済み' }[bucket] || String(bucket || '未対応');
   const risk = String((need && need.risk) || '');
+  const decision = needDecisionViewModel(need);
   return {
     id: String((need && need.id) || ''),
     state: String(bucket || 'open'),
     stateText,
     kindText: needKindLabel(need && need.kind),
     title: needDisplayTitle(need || {}),
-    decision: need && need.commandFailure
-      ? `${COMMAND_ACTION_LABELS[need.commandFailure.action] || need.commandFailure.action}の取り込みに失敗しました — 詳細を開いて理由を確認してください`
-      : needListSummary(need || {}),
-    failure: Boolean(needFailureViewModel(need)) || Boolean(need && need.commandFailure),
+    decision: decision.reason,
+    nextAction: decision.nextStep,
+    failure: Boolean(needFailureViewModel(need)),
+    owner: String((need && need.owner) || '').trim(),
     risk,
-    riskText: RISK_LABELS[risk] || 'リスク未設定',
+    riskText: RISK_LABELS[risk] || '',
     ageText: String((age && age.label) || '—'),
     ageLevel: String((age && age.level) || ''),
   };
@@ -1283,10 +1414,11 @@ function needListItemHtml(item, selected, slaHours) {
     <span class="need-list-type" data-label="状態と種類">
       <span class="status-chip ${stateClass}">${esc(item.stateText)}</span>
       <span class="need-list-kind">${esc(item.kindText)}</span>
-      <span class="risk-badge${riskClass}">${esc(item.riskText)}</span>
+      ${item.riskText ? `<span class="risk-badge${riskClass}">${esc(item.riskText)}</span>` : ''}
+      ${item.owner ? ownerBadgeHtml(item.owner) : ''}
     </span>
     <strong class="need-list-title" data-label="確認事項">${esc(item.title)}</strong>
-    <span class="need-list-summary ${item.failure ? 'failure' : ''}" data-label="判断すること">${esc(item.decision)}</span>
+    <span class="need-list-summary ${item.failure ? 'failure' : ''}" data-label="現在の状態">${esc(item.decision)}<small>${esc(item.nextAction)}</small></span>
     <span class="need-list-age ${esc(item.ageLevel)}" data-label="待ち時間" title="${ageTitle}">${esc(item.ageText)}</span>
     <svg class="need-list-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9 18 6-6-6-6" /></svg>
   </button>`;
@@ -1404,11 +1536,219 @@ function renderNeedFacts(p, n) {
   return facts.join('');
 }
 
+// 成果物レビューのコメント（チーム運用）: 複数メンバーが成果物にコメントを入れ、
+// 監視担当者が確認・整理して承認/再実行を判断する。投稿者名は localStorage に覚える
+// （設定画面を増やさない最小構成。空なら「匿名」で保存される）。
+function reviewerName() {
+  try {
+    return localStorage.getItem('kpv:reviewerName') || '';
+  } catch {
+    return '';
+  }
+}
+function setReviewerName(v) {
+  try {
+    localStorage.setItem('kpv:reviewerName', String(v || '').trim());
+  } catch {
+    /* localStorage 不可でも致命的でない */
+  }
+}
+
+function reviewCommentTime(ts) {
+  const s = String(ts || '');
+  return s ? s.slice(0, 16).replace('T', ' ') : '';
+}
+
+function reviewCommentItemHtml(c) {
+  return `<li class="rc-item" data-rc-id="${esc(c.id)}">
+    <div class="rc-head">
+      <span class="rc-author">👤 ${esc(c.author)}</span>
+      <span class="rc-time muted">${esc(reviewCommentTime(c.ts))}${c.editedTs ? '（編集済み）' : ''}</span>
+      <span class="spacer"></span>
+      <button class="linklike rc-edit-btn" data-rc-edit="${esc(c.id)}">編集</button>
+      <button class="linklike danger" data-rc-del="${esc(c.id)}">削除</button>
+    </div>
+    <div class="rc-text">${esc(c.text)}</div>
+  </li>`;
+}
+
+// 成果物への共同コメントは、成果を判断する review でだけ出す。
+function reviewCommentsHtml(n) {
+  if (n.kind !== 'review') return '';
+  const comments = n.comments || [];
+  const list = comments.length
+    ? `<ul class="rc-list">${comments.map(reviewCommentItemHtml).join('')}</ul>`
+    : '<p class="muted">まだレビューコメントはありません。メンバーが成果物へコメントを残せます。</p>';
+  return `<section class="need-comments" data-rc-need="${esc(n.id)}" data-rc-task="${esc(n.taskId || n.id)}">
+    <h3>レビューコメント <span class="muted">（${comments.length}）</span></h3>
+    ${list}
+    <div class="rc-add">
+      <input class="rc-author-input" placeholder="あなたの名前（コメントに付きます）" value="${esc(reviewerName())}" />
+      <textarea class="rc-input" rows="2" placeholder="成果物へのコメント（他のメンバーと担当者が確認できます）"></textarea>
+      <div class="row need-buttons"><span class="spacer"></span>
+        <button class="primary-inline" data-rc-add>コメントを追加</button></div>
+    </div>
+  </section>`;
+}
+
+function bindReviewComments(root) {
+  const p = state.project;
+  if (!p) return;
+  for (const section of root.querySelectorAll('.need-comments')) {
+    bindReviewCommentSection(section, p);
+  }
+}
+
+// 一覧には複数の review / blocked カードが同時に並ぶ。最初の section だけを bind すると、
+// 2 枚目以降は入力欄が見えているのに追加・編集・削除が反応しないため、カード単位で配線する。
+function bindReviewCommentSection(section, p) {
+  const needId = section.dataset.rcNeed;
+  const taskId = section.dataset.rcTask;
+  // 投稿済みコメントの表示名も `.rc-author` を使うため、入力欄は専用 class で引く。
+  // 表示名 span を拾うと 2 件目の投稿時に `undefined.trim()` となり追加できなくなる。
+  const authorInput = section.querySelector('.rc-author-input');
+  if (authorInput) {
+    authorInput.addEventListener('change', () => setReviewerName(authorInput.value));
+  }
+  const addBtn = section.querySelector('[data-rc-add]');
+  if (addBtn) {
+    addBtn.addEventListener('click', async () => {
+      const author = authorInput ? authorInput.value.trim() : '';
+      const ta = section.querySelector('.rc-input');
+      const text = ta ? ta.value.trim() : '';
+      if (!text) return toast('コメントを入力してください');
+      setReviewerName(author);
+      const ok = await guard('コメント追加', async () => {
+        const res = await api.addReviewComment(p.dir, taskId, author, text);
+        uiLog('addComment', taskId, res);
+        toast('コメントを追加しました', true);
+        return true;
+      });
+      if (ok) {
+        await reloadProject();
+      }
+    });
+  }
+  for (const btn of section.querySelectorAll('[data-rc-del]')) {
+    btn.addEventListener('click', async () => {
+      const yes = await confirmDialog('このレビューコメントを削除します。よろしいですか？');
+      if (!yes) return;
+      const ok = await guard('コメント削除', async () => {
+        const res = await api.deleteReviewComment(p.dir, taskId, btn.dataset.rcDel);
+        uiLog('deleteComment', taskId, res);
+        toast('コメントを削除しました', true);
+        return true;
+      });
+      if (ok) {
+        await reloadProject();
+      }
+    });
+  }
+  for (const btn of section.querySelectorAll('[data-rc-edit]')) {
+    btn.addEventListener('click', () => {
+      const item = btn.closest('.rc-item');
+      if (!item || item.querySelector('.rc-edit-box')) return; // 既に編集中
+      const need = (p.needs || []).find((x) => x.id === needId);
+      const c = ((need && need.comments) || []).find((x) => x.id === btn.dataset.rcEdit);
+      if (!c) return;
+      const textDiv = item.querySelector('.rc-text');
+      const box = document.createElement('div');
+      box.className = 'rc-edit-box';
+      box.innerHTML = `<textarea class="rc-edit-input" rows="3"></textarea>
+        <div class="row need-buttons"><span class="spacer"></span>
+          <button class="rc-edit-cancel">キャンセル</button>
+          <button class="primary-inline rc-edit-save">保存</button></div>`;
+      box.querySelector('.rc-edit-input').value = c.text;
+      textDiv.after(box);
+      textDiv.style.display = 'none';
+      box.querySelector('.rc-edit-cancel').addEventListener('click', () => {
+        box.remove();
+        textDiv.style.display = '';
+      });
+      box.querySelector('.rc-edit-save').addEventListener('click', async () => {
+        const text = box.querySelector('.rc-edit-input').value.trim();
+        if (!text) return toast('コメントを入力してください');
+        const ok = await guard('コメント編集', async () => {
+          const res = await api.editReviewComment(p.dir, taskId, c.id, text);
+          uiLog('editComment', taskId, res);
+          toast('コメントを編集しました', true);
+          return true;
+        });
+        if (ok) {
+          await reloadProject();
+        }
+      });
+    });
+  }
+}
+
+// タスクの誘導・レビュー記述（GUIDE_KEYS）を「作業内容」セクションとして出す。
+// 計画レビュー（plan-review）はタイトルと完了条件だけでは承認判断ができない——何をどう変えるかの
+// 概要・目的・範囲がレビューの本体。plan-review では記述が無い場合も
+// セクションを出し、「情報が足りない」ことと補い方（タスク編集）を明示する（無言で薄いカードにしない）。
+// 他種別（blocked/review）では記述があるときだけ出す。⏎ は改行マーカー（1 行 = 1 フィールド規約）。
+function taskGuideHtml(task, kind) {
+  const ex = (task && task.extra) || {};
+  const rows = GUIDE_KEYS
+    .filter((k) => String(ex[k] || '').trim())
+    .map((k) => `<div class="task-guide-row"><dt>${esc(GUIDE_LABELS[k] || k)}</dt>
+      <dd>${proseHtml(String(ex[k]).replace(/\s*⏎\s*/g, '\n'))}</dd></div>`);
+  // 受入基準は「完了条件」の一部ではなく**レビューの本体**。settle 時に検証エージェントが
+  // 1 項目ずつ実行して証跡付きで判定し、全 pass だけが done の根拠になるので、人がここで
+  // 直しておかないと後から効かない。だから箇条書きで先に出す。
+  const criteria = acceptanceList(task);
+  const acceptanceRow = criteria.length
+    ? `<div class="task-guide-row"><dt>受入基準</dt><dd><ol class="acceptance-list">${
+        criteria.map((c) => `<li>${esc(c)}</li>`).join('')
+      }</ol><span class="muted">検証エージェントがこの順に実行して証跡付きで判定します</span>${
+        criteria.length > 7
+          ? `<span class="badge warn">基準 ${criteria.length} 件（目安は 3〜7 件）</span>`
+          : ''
+      }</dd></div>`
+    : '';
+  const verifyRow = task && (task.verify || ex.verify_template)
+    ? `<div class="task-guide-row"><dt>完了条件（決定的コマンド）</dt><dd>${
+        task.verify
+          ? `<code>${esc(task.verify)}</code>`
+          : esc(ex.verify_template)
+      }</dd></div>`
+    : '';
+  const sizeRow = ex.size
+    ? `<div class="task-guide-row"><dt>規模感</dt><dd>${esc(ex.size)}</dd></div>`
+    : '';
+  const tail = `${acceptanceRow}${verifyRow}${sizeRow}`;
+  // 他種別（blocked/review）は「記述があるときだけ出す」の従来の見た目を保つ。
+  // 受入基準や完了条件だけを理由にセクションを増やさない（plan-review が対象）。
+  if (!rows.length && kind !== 'plan-review') return '';
+  const body = rows.length
+    ? `<dl class="task-guide">${rows.join('')}${tail}</dl>`
+    : `<p class="muted">作業内容の記述（概要・目的・範囲）がありません。タイトルと完了条件だけでは
+       レビュー判断が難しいため、下の「差し戻す」で記述を求めるか、バックログのタスク編集で
+       概要・目的を追記してから承認することを推奨します。</p>${
+         tail ? `<dl class="task-guide">${tail}</dl>` : ''
+       }`;
+  return `<section class="need-task-guide"><h3>作業内容</h3>${body}</section>`;
+}
+
+function needNextStepHtml(n, decision, settled) {
+  const guidance = n.decided || (n.commandReceipt && !n.commandFailure)
+    ? 'この項目への回答は完了しています。'
+    : settled
+      ? '回答を送信しました。15分以上状態が変わらない場合は、再度操作できます。'
+      : decision.nextStep;
+  return `<section class="need-next-step" aria-label="現在の状態">
+    <div class="need-step-kicker">現在の状態</div>
+    <h3>${esc(decision.statusTitle)}</h3>
+    <p>${esc(decision.reason)}</p>
+    <span class="muted">${esc(guidance)}</span>
+  </section>`;
+}
+
 function renderNeedDetail(p, n) {
   if (!n) return '<div class="empty need-detail-empty">この状態の項目はありません</div>';
   // 取り込み失敗（commandFailure）があるカードは送信済み扱いにしない＝操作を出し直す
-  const settled = n.decided || (!n.commandFailure && isNeedSent(n));
-  const chip = n.decided
+  const settled = n.decided || (!n.commandFailure && (n.commandReceipt || isNeedSent(n)));
+  const chip = n.decided || (n.commandReceipt && !n.commandFailure)
     ? '<span class="status-chip st-done">回答済み</span>'
     : settled
       ? '<span class="status-chip st-review">送信済み</span>'
@@ -1416,15 +1756,15 @@ function renderNeedDetail(p, n) {
   const detail = (n.detail || '').trim();
   const detailBlock = detail
     ? `<details class="need-detail" data-ui-key="need-detail:${esc(n.id)}">
-        <summary>判断材料を見る</summary>
+        <summary>詳しい判断材料を見る</summary>
         <div class="body">${mdToHtml(detail)}</div>
       </details>`
     : '';
   const task = taskForNeed(p, n);
   const hint = task ? taskCompletionHint(task, { runs: runsForTask(task.id) }) : null;
+  const taskGuide = taskGuideHtml(task, n.kind);
   const finalVerificationFailure = needFinalVerificationFailure(p, n, state.flowRuns);
-  const ask =
-    (hint && hint.needAsk) || NEED_ASK[n.kind] || NEED_ASK.blocked;
+  const decision = needDecisionViewModel(n);
   const unsettle =
     hint && hint.unsettledDone
       ? ' <span class="badge warn">実行済み・未確定</span>'
@@ -1435,18 +1775,16 @@ function renderNeedDetail(p, n) {
       <div>
         <div class="need-detail-badges">
           <span class="badge" title="${esc(n.kind || 'blocked')}">${esc(needKindLabel(n.kind))}</span>
-          ${riskBadgeHtml(n)} ${chip}${unsettle}
+          ${riskBadgeHtml(n)} ${ownerBadgeHtml(n.owner)} ${chip}${unsettle}
         </div>
         <h2>${esc(needDisplayTitle(n))}</h2>
       </div>
       <span class="muted">${esc(n.date || '')}</span>
     </header>
-    ${commandFailureHtml(n)}
+    ${needNextStepHtml(n, decision, settled)}
+    ${commandReceiptHtml(n)}
+    ${settled ? '' : `<section class="need-response need-response-primary"><h3>${esc(decision.actionTitle)}</h3><p class="muted need-response-hint">${esc(decision.nextStep)}</p>${needActionsHtml(n)}${needVerifyRevisionHtml(p, n)}</section>`}
     ${finalVerificationFailureHtml(finalVerificationFailure)}
-    <section class="need-decision">
-      <h3>判断すること</h3>
-      <p>${esc(ask)}</p>
-    </section>
     <section class="need-facts">
       <div class="need-facts-heading">
         <h3>状況</h3>
@@ -1455,20 +1793,23 @@ function renderNeedDetail(p, n) {
         </div>
       </div>
       ${renderNeedFacts(p, n) || '<p class="muted">追加の状況説明はありません。</p>'}
+      ${commandFailureHtml(n)}
     </section>
-    ${settled ? '' : `<section class="need-response"><h3>回答</h3>${needActionsHtml(n)}${needVerifyRevisionHtml(p, n)}</section>`}
-    <section class="need-evidence">
-      <h3>成果物</h3>
+    <details class="need-evidence" data-ui-key="need-evidence:${esc(n.id)}">
+      <summary>関連する成果・詳細を確認</summary>
       ${specFilesHtml(p, n) || '<p class="muted">関連するSpecはありません。</p>'}
       ${needArtifactsButtonHtml(p, n, state.flowRuns)}
       ${detailBlock}
       <button class="need-output-button subtle-action" data-need-output="${esc(n.id)}">詳細情報を開く</button>
-    </section>
+    </details>
+    ${reviewCommentsHtml(n)}
+    ${taskGuide ? `<details class="need-evidence need-task-context" data-ui-key="need-task:${esc(n.id)}"><summary>作業内容と完了条件</summary>${taskGuide}</details>` : ''}
   </article>`;
 }
 
 function bindNeedDetail(root) {
   bindOrchBlockedBanner(root);
+  bindReviewComments(root);
   for (const btn of root.querySelectorAll('button[data-open]')) {
     btn.addEventListener('click', () => guard('ファイルを開く', () => api.openPath(btn.dataset.open)));
   }
@@ -1496,11 +1837,11 @@ function bindNeedDetail(root) {
   for (const btn of root.querySelectorAll('button[data-failure-diagnose]')) {
     btn.addEventListener('click', () => openFailureDiagnosis(btn.dataset.failureDiagnose));
   }
+  for (const btn of root.querySelectorAll('button[data-failure-chat]')) {
+    btn.addEventListener('click', () => openFailureDiagnosisChat(btn.dataset.failureChat));
+  }
   for (const btn of root.querySelectorAll('button[data-plan-critique]')) {
     btn.addEventListener('click', () => openPlanCritique(btn.dataset.planCritique));
-  }
-  for (const btn of root.querySelectorAll('button[data-delivery-rationale]')) {
-    btn.addEventListener('click', () => openDeliveryRationale(btn.dataset.deliveryRationale));
   }
   for (const btn of root.querySelectorAll('button[data-verify-revise]')) {
     btn.addEventListener('click', async () => {
@@ -1528,7 +1869,6 @@ function bindNeedDetail(root) {
         return true;
       });
       if (ok) {
-        gitPushAfterWrite(`agent-dashboard: revise verify ${task.id}`, p.dir);
         await reloadProject();
       } else {
         btn.disabled = false;
@@ -1607,7 +1947,9 @@ function renderNeeds(options) {
     state.needsMobileDetail,
     filters.map((x) => x[2]),
     p.consistencyGate || null,
-    p.needs.map((n) => [n.id, n.kind, n.decided, isNeedSent(n), n.why, n.summary, n.risk, n.failureSummary || '', n.failureResolution || '', n.failureContext || null, n.commandFailure || null, (n.detail || '').length]),
+    // 要約だけの署名では、同じ長さの本文・成果物・受理状態の更新を見逃して古い表示が残る。
+    // needs は小さな判断待ち集合なので、表示に使うモデル全体を署名に含める。
+    p.needs,
     model.items.map((n) => (ages[n.id] ? `${ages[n.id].level}|${ages[n.id].label}` : '')),
   ]);
   if (el.dataset.sig === sig && el.childElementCount) return;
@@ -1700,7 +2042,16 @@ async function handleNeedAction(btn) {
       // コマンドも journal も残らないので、失敗しても画面には何も出ず、同じ状態に
       // 戻ったようにしか見えない。再開できる run が無い票だけ従来の口へ落とす。
       const plan = needRerunPlan(p, need);
-      if (plan.via === 'resume-run') {
+      if (plan.via === 'revise') {
+        const feedback = '最新 target ブランチを統合し、競合を解消してから全検証をやり直してください。';
+        const res = await api.runAction({
+          dir: p.dir, action: 'revise', id: plan.id,
+          reason: 'target 統合失敗のため新しい試行を作成', feedback,
+        });
+        markNeedSent(need);
+        uiLog('needAction integration rerun', id, res);
+        toast('最新 target から新しい試行を開始するよう依頼しました', true);
+      } else if (plan.via === 'resume-run') {
         const res = await api.runAction({
           dir: p.dir,
           action: 'resume-run',
@@ -1715,6 +2066,10 @@ async function handleNeedAction(btn) {
         await api.submitFeedback(need.file, '', feedbackStub);
         toast('そのまま再実行するよう回答しました', true);
       }
+    } else if (act === 'retry-mr') {
+      const res = await api.runAction({ dir: p.dir, action: 'retry-mr', id, reason: 'MR 作成を再試行' });
+      uiLog('needAction retry-mr', id, res);
+      toast('MRの再作成を依頼しました（反映まで少し時間がかかることがあります）', true);
     } else if (act === 'approve') {
       const reason = needApprovalReason(p, need, state.flowRuns, text);
       // 検収待ち（成果がある blocked / review）の承認は完了確定の意図を明示して送る。
@@ -1734,7 +2089,7 @@ async function handleNeedAction(btn) {
       uiLog('needAction hold', id, res);
       toast('保留にしました', true);
     } else if (act === 'reject') {
-      const yes = await confirmDialog(rejectConfirmMessage(p, id, '廃止して計画を作り直す'));
+      const yes = await confirmDialog(rejectConfirmMessage(p, id, '廃止して記録に残す'));
       if (!yes) return false;
       const res = await api.runAction({ dir: p.dir, action: 'reject', id, reason: text });
       markNeedSent(need);
@@ -1744,7 +2099,6 @@ async function handleNeedAction(btn) {
     return true;
   });
   if (ok) {
-    gitPushAfterWrite(`agent-dashboard: ${act} ${id}`, p.dir);
     await reloadProject();
   }
   return ok;

@@ -26,7 +26,7 @@ const BACKLOG_FILTERS = [
 //   その agent-flow run（リトライ系統）を結ぶ。リトライは「意味的に同一」なので系統でまとめる。
 // ---------------------------------------------------------------------------
 
-// agent-project の run-id 生成（_submit_req_id）と同じ task.id 正規化。バックログの task.id を
+// agent-project の run-id 生成（_req_id_for）と同じ task.id 正規化。バックログの task.id を
 // run-id 内の taskId 断片へ合わせるために使う。
 // tid に依存するタスク（after 逆辺・推移）。却下・修正の影響一覧に使う
 function dependentsOf(tasks, tid) {
@@ -60,7 +60,8 @@ function rejectConfirmMessage(p, id, what) {
     : '\nこのタスクに依存するタスクはありません。';
   return (
     `${id} を却下します（${what}）。\n` +
-    'タスクは廃止されて履歴に残り、同種のタスクを避ける学習も記録されます。憲章があれば計画の作り直しを依頼します。' +
+    'タスクは廃止されて履歴に残り、同種のタスクを避ける学習も記録されます。' +
+    '似た内容のタスクは、次にバックログを分解しても提案されなくなります。' +
     impact +
     '\nよろしいですか？'
   );
@@ -134,6 +135,7 @@ async function gotoRunNode(runId, nodeId) {
   await selectFlowRun(runId); // 内部で flowNodeId を null にして再描画する
   if (nodeId) {
     state.flowNodeId = nodeId;
+    state.flowRevisionId = null;
     state.flowNodeIssue = null;
     state.flowDetailView = 'graph';
     state.flowMobileDetail = true;
@@ -253,20 +255,26 @@ function relatedRunsBlock(taskId, { archived = false } = {}) {
 // パンくず／リンクのクリック配線（dialog・detail・backlog 各ルートから呼ぶ）。
 function bindRelationship(root) {
   for (const b of root.querySelectorAll('[data-goto-run]')) {
-    b.addEventListener('click', (e) => {
+    b.addEventListener('click', async (e) => {
       e.preventDefault();
       e.stopPropagation();
       const dlg = $('dlg-task');
-      if (dlg && dlg.open) dlg.close();
+      if (dlg && dlg.open) {
+        await requestTaskDialogClose();
+        if (dlg.open) return;
+      }
       gotoRun(b.dataset.gotoRun);
     });
   }
   for (const b of root.querySelectorAll('[data-goto-task]')) {
-    b.addEventListener('click', (e) => {
+    b.addEventListener('click', async (e) => {
       e.preventDefault();
       e.stopPropagation();
       const dlg = $('dlg-task');
-      if (dlg && dlg.open) dlg.close();
+      if (dlg && dlg.open) {
+        await requestTaskDialogClose();
+        if (dlg.open) return;
+      }
       gotoTask(b.dataset.gotoTask);
     });
   }
@@ -312,6 +320,79 @@ function pipelineRibbonHtml(p) {
   return `<div class="pipeline">${cells}</div>`;
 }
 
+// ---------------------------------------------------------------------------
+// 監視担当（チーム運用）: ミーティングで各タスクに「見る人」を割り当て、進捗確認・
+// 検収・要対応の監視を分担する。実作業（エージェント）の分担とは別軸で、
+// assignments.json（viewer 管理のサイドカー）にだけ書く＝タスク状態には触れない。
+// ---------------------------------------------------------------------------
+
+const OWNER_UNASSIGNED = '__none__'; // 「未担当」フィルタの番兵値（表示専用）
+
+// 担当フィルタのチップ定義。メンバーが誰もいなければ空（チップ行ごと出さない）。
+function ownerFilterChoices(p) {
+  const members = (p && p.assignments && p.assignments.members) || [];
+  if (!members.length) return [];
+  return [['', '全員'], ...members.map((m) => [m, m]), [OWNER_UNASSIGNED, '未担当']];
+}
+
+function filterTasksByOwner(tasks, key) {
+  if (!key) return tasks;
+  if (key === OWNER_UNASSIGNED) return tasks.filter((t) => !String(t.owner || '').trim());
+  return tasks.filter((t) => String(t.owner || '').trim() === key);
+}
+
+function ownerBadgeHtml(owner) {
+  const name = String(owner || '').trim();
+  if (!name) return '';
+  return `<span class="owner-badge" title="監視担当（このタスクの進捗・要対応を見る人）">👤 ${esc(name)}</span>`;
+}
+
+// 委任（offloaded）タスクの「いま誰が持っているか」を板から読む。
+//
+// 委譲 id はタスクの `last_run` に入る（実行側の run-id / mission-id と同一——共通 id に
+// 対応表を持たない delegation 契約 D1 の帰結）。板の正規化ビューを id で引くだけで、
+// dashboard は板へ何も書かない。板を使っていなければ null（画面には何も足さない）。
+function boardDelegationView(task) {
+  const did = String((task && task.extra && task.extra.last_run) || '').trim();
+  if (!did) return null;
+  return (state.boardViews || []).find((v) => String(v.id) === did) || null;
+}
+
+function boardDelegationSummary(task) {
+  const view = boardDelegationView(task);
+  if (!view) return '';
+  const assignee = (view.units && view.units[0] && view.units[0].assignee) || '';
+  const bids = ((view.units && view.units[0] && view.units[0].bids) || [])
+    .filter((b) => b.state !== 'expired').length;
+  if (view.phase === 'open') {
+    return bids ? `委任先: 未定（入札 ${bids} 件）` : '委任先: 未定（入札を待っています）';
+  }
+  if (view.phase === 'done') return `委任先: ${assignee || '不明'} — 完了`;
+  if (view.phase === 'failed') return `委任先: ${assignee || '不明'} — 失敗`;
+  if (view.phase === 'cancelled') return '委任: 中止されました';
+  if (view.phase === 'waiting') return `委任先: ${assignee || '不明'} — 待機中`;
+  return `委任先: ${assignee || '不明'} — 実行中`;
+}
+
+// タスク詳細の「委任」行。中止は板へ直接書かず、この端末の常駐体へ指示を投函する。
+function boardDelegationRowHtml(task) {
+  const view = boardDelegationView(task);
+  if (!view) return '';
+  const sent = (state.boardCommands || {})[String(view.id)];
+  const note = sent && sent.state === 'pending' ? '<span class="muted">（指示を送信済み）</span>'
+    : sent && sent.state === 'done' ? '<span class="muted">（指示は受理されました）</span>'
+    : sent && sent.state === 'error'
+      ? `<span class="need-error">（指示が通りませんでした: ${esc(sent.error || '')}）</span>`
+      : '';
+  const canCancel = !['done', 'failed', 'cancelled'].includes(String(view.phase));
+  const cancel = canCancel
+    ? `<button type="button" data-board-cancel="${esc(view.id)}"
+        title="この委任を板の上で中止します（実行中なら次の巡回で止まります）">委任を中止</button>`
+    : '';
+  return `<tr><th>委任</th><td>${esc(boardDelegationSummary(task))}
+    <span class="mono muted">${esc(view.id)}</span> ${cancel} ${note}</td></tr>`;
+}
+
 function taskListItemViewModel(task, hint) {
   const priority = Number(task.priority) || 0;
   const priorityLevel = priority >= 8 ? '高' : priority >= 4 ? '中' : '低';
@@ -322,18 +403,66 @@ function taskListItemViewModel(task, hint) {
     statusText: statusLabel(task.status || 'unknown'),
     priority,
     priorityText: `${priorityLevel} ${priority}`,
-    nextAction: String((hint && hint.completeHow) || '詳細を確認してください'),
+    owner: String(task.owner || '').trim(),
+    // 委任中のタスクは「次の行動」より「いま誰が持っているか」が知りたい情報になる。
+    nextAction: (task.status === 'offloaded' && boardDelegationSummary(task))
+      || String((hint && hint.completeHow) || '詳細を確認してください'),
   };
 }
 
 function taskListItemHtml(item, scope) {
   return `<button type="button" class="task-list-item" data-task="${esc(item.id)}" data-scope="${esc(scope)}" role="listitem" aria-label="${esc(item.title)}の詳細を開く">
     <span class="task-list-status" data-label="状態" aria-label="状態 ${esc(item.statusText)}">${statusChip(item.status)}</span>
-    <span class="task-list-title" data-label="タスク">${esc(item.title)}</span>
+    <span class="task-list-title" data-label="タスク">${esc(item.title)}${item.owner ? ` ${ownerBadgeHtml(item.owner)}` : ''}</span>
     <span class="task-list-priority" data-label="優先度" aria-label="優先度 ${esc(item.priorityText)}">${esc(item.priorityText)}</span>
     <span class="task-list-next" data-label="次の行動">${esc(item.nextAction)}</span>
     <svg class="task-list-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9 18 6-6-6-6" /></svg>
   </button>`;
+}
+
+// 却下済み（墓標）— 削除（＝却下）したタスクの「作り直さない」記録。ここに出すのは
+// 削除を取り返しのつく操作にするため: 墓標がある限り同じ題は再投入も再分解もされないので、
+// 一覧と解除が無いと「消したら二度と入れ直せない」＝試行錯誤ができない。
+function tombstonesHtml(p) {
+  const graves = p.tombstones || [];
+  if (!graves.length) return '';
+  const rows = graves
+    .map(
+      (g) => `
+      <div class="tombstone-row" role="listitem">
+        <span class="tombstone-title">${esc(g.title)}</span>
+        <span class="muted tombstone-meta">${esc([g.reason, g.date, g.charter && `バージョン: ${g.charter}`]
+          .filter(Boolean)
+          .join(' ／ '))}</span>
+        <button data-revive="${esc(g.title)}" data-revive-charter="${esc(g.charter || '')}"
+                title="この題を再び提案・投入できる状態へ戻します">解除</button>
+      </div>`
+    )
+    .join('');
+  return `
+    <details class="tombstones">
+      <summary>却下済み（${graves.length} 件） — 同じタスクを作り直させない記録</summary>
+      <div class="tombstone-list" role="list">${rows}</div>
+    </details>`;
+}
+
+function bindTombstones(root, p) {
+  for (const btn of root.querySelectorAll('[data-revive]')) {
+    btn.addEventListener('click', async () => {
+      const title = btn.dataset.revive;
+      const yes = await confirmDialog(
+        `「${title}」の却下を解除します。\n` +
+          '同じ題のタスクを追加でき、計画の作り直しでも再び提案されるようになります。よろしいですか？'
+      );
+      if (!yes) return;
+      const ok = await guard('却下の解除', async () => {
+        await api.reviveTombstone(p.dir, title, btn.dataset.reviveCharter || '');
+        toast(`「${title}」の却下解除を要求しました（稼働中の agent-project が取り込みます）`, true);
+        return true;
+      });
+      if (ok) await reloadProject();
+    });
+  }
 }
 
 function renderBacklog() {
@@ -375,6 +504,21 @@ function renderBacklog() {
         .join('')
     : '';
 
+  // 監視担当フィルタ（チーム運用）。ミーティングで「自分の担当だけ」に絞って進捗を追える。
+  // メンバーが誰もいなくなったらフィルタも解除する（チップ無しで絞り込みが残留しない）
+  const ownerChipDefs = ownerFilterChoices(p);
+  if (!ownerChipDefs.length) state.backlogOwner = '';
+  tasks = filterTasksByOwner(tasks, state.backlogOwner || '');
+  const ownerChips = ownerChipDefs.length
+    ? `<span class="muted" style="margin-left:8px">担当:</span>` +
+      ownerChipDefs
+        .map(
+          ([v, label]) =>
+            `<button class="chip ${((state.backlogOwner || '') === v) ? 'active' : ''}" data-owner-filter="${esc(v)}" aria-pressed="${((state.backlogOwner || '') === v)}">${esc(label)}</button>`
+        )
+        .join('')
+    : '';
+
   // priority 降順 → 古い順（planner none と同じ感覚）
   tasks = [...tasks].sort((a, b) => b.priority - a.priority || a.mtime - b.mtime);
 
@@ -399,12 +543,14 @@ function renderBacklog() {
       <div class="task-toolbar-filters">
         <div class="filters" aria-label="タスクの状態で絞り込む">${chips}<span class="task-count">${tasks.length} 件</span>
           ${p.inboxFiles && p.inboxFiles.length ? `<span class="badge info" title="追加したタスクは次の実行サイクルで一覧に載ります">追加待ち ${p.inboxFiles.length}</span>` : ''}
-          ${replanPending ? '<span class="badge info" title="計画の作り直しを依頼済みです。次の実行で反映されます">再計画 反映待ち</span>' : ''}
+          ${replanPending ? '<span class="badge info" title="バックログの分解を依頼済みです。次の実行で反映されます">分解 反映待ち</span>' : ''}
         </div>
         ${charterChips ? `<div class="filters task-version-filters" aria-label="計画バージョンで絞り込む">${charterChips}</div>` : ''}
+        ${ownerChips ? `<div class="filters task-owner-filters" aria-label="監視担当で絞り込む">${ownerChips}</div>` : ''}
       </div>
       <div class="task-toolbar-actions">
-        <button id="btn-replan"${replanPending ? ' disabled' : ''} title="プロジェクト憲章からタスクを作り直します">計画を作り直す</button>
+        <button id="btn-notes" title="気になったことをメモに書き溜めます（計画は勝手に動きません）">メモ</button>
+        <button id="btn-replan"${replanPending ? ' disabled' : ''} title="プロジェクト憲章からタスクを作ります。自動では作られないので、最初の分解もここから始めます">バックログを分解</button>
         <button id="btn-enqueue" class="primary-inline" title="タスクを1件追加します">タスクを追加</button>
       </div>
     </div>
@@ -417,11 +563,15 @@ function renderBacklog() {
             <div class="task-list-items">${taskItems}</div>
           </div>`
         : '<div class="empty task-list-empty">この条件に一致するタスクはありません</div>'
-    }`;
+    }
+    ${tombstonesHtml(p)}`;
 
+  bindTombstones(el, p);
   $('btn-enqueue').addEventListener('click', () => openEnqueueDialog());
   const replanBtn = $('btn-replan');
   if (replanBtn && !replanPending) replanBtn.addEventListener('click', openReplanDialog);
+  const notesBtn = $('btn-notes');
+  if (notesBtn) notesBtn.addEventListener('click', openNotesDialog);
 
   for (const chip of el.querySelectorAll('.chip[data-filter]')) {
     chip.addEventListener('click', () => {
@@ -432,6 +582,12 @@ function renderBacklog() {
   for (const chip of el.querySelectorAll('.chip[data-charter-filter]')) {
     chip.addEventListener('click', () => {
       state.backlogCharter = chip.dataset.charterFilter;
+      renderBacklog();
+    });
+  }
+  for (const chip of el.querySelectorAll('.chip[data-owner-filter]')) {
+    chip.addEventListener('click', () => {
+      state.backlogOwner = chip.dataset.ownerFilter;
       renderBacklog();
     });
   }
@@ -472,7 +628,7 @@ function isReviseSent(t) {
 // 実行中（doing）のタスクにも送れる: 本体は現在の試行を確定せず修正内容で積み直す。
 function reviseAreaHtml(t) {
   if (isReviseSent(t)) {
-    return `<div class="muted" style="margin-top:8px">✎ 修正指示を送信済みです（反映されると再度編集できます）</div>`;
+    return `<div class="muted" style="margin-top:8px">修正内容を送信済みです（反映されると再度編集できます）</div>`;
   }
   const doingNote =
     t.status === 'doing'
@@ -480,44 +636,113 @@ function reviseAreaHtml(t) {
       : t.status === 'offloaded'
         ? '<div class="muted">委任先で実行中のタスクです。送信すると今回の結果は採用されず、修正を反映してやり直します（切り替えは今回の作業が終わり次第）。</div>'
         : '<div class="muted">修正は次の実行から反映されます。依存関係を変えると作業の順序も変わります。</div>';
-  return `<details class="revise-area"><summary>✎ 修正を指示</summary>
+  const level = String(t.extra.level || '');
+  const levelChoices = [
+    ['', '指定しない'],
+    ['report', '結果だけ報告'],
+    ['assisted', '確認しながら進める'],
+    ['unattended', '確認なしで進める'],
+  ];
+  if (level && !levelChoices.some(([value]) => value === level)) levelChoices.push([level, level]);
+  const levelOptions = levelChoices
+    .map(([value, label]) => `<option value="${esc(value)}" ${value === level ? 'selected' : ''}>${esc(label)}</option>`)
+    .join('');
+  return `<div class="revise-area">
+    <h3>タスクを修正</h3>
     ${doingNote}
-    <div class="field"><label>作業への指示（次の実行に必ず伝わります）</label>
-      <textarea rows="2" id="rv-feedback" placeholder="例: e2e はローカルサーバでなく実サーバに配備して実施すること"></textarea></div>
-    <div class="field"><label>タイトル</label><input id="rv-title" value="${esc(t.title)}" /></div>
-    <div class="row2">
-      <div class="field"><label>優先度（数字が大きいほど先に着手）</label><input id="rv-priority" type="number" step="1" value="${t.priority}" /></div>
-      <div class="field"><label>先行タスク（このタスクより先に終えるべき ID。カンマ区切り。空にすると解除）</label><input id="rv-after" class="mono" value="${esc(t.extra.after || '')}" /></div>
-    </div>
-    <div class="field"><label>検証コマンド（完了判定に使うコマンド。空にすると削除）</label><input id="rv-verify" class="mono" value="${esc(t.verify || '')}" /></div>
-    <div class="field"><label>完了条件（文章で。検証コマンドが書けないとき。空にすると削除）</label><input id="rv-accept" value="${esc(t.extra.accept || '')}" /></div>
-    <div class="row2">
-      <div class="field"><label>自動化レベル（report=報告のみ / assisted=確認しながら / unattended=全自動。空にすると削除）</label>
-        <input id="rv-level" list="rv-level-list" value="${esc(t.extra.level || '')}" />
-        <datalist id="rv-level-list"><option value="report"></option><option value="assisted"></option><option value="unattended"></option></datalist>
+    <details open>
+      <summary>内容と完了条件</summary>
+      <div class="field"><label for="rv-feedback">変更してほしいこと</label>
+        <textarea rows="2" id="rv-feedback" placeholder="例: e2e はローカルサーバでなく実サーバに配備して実施すること"></textarea>
+        <p class="field-help">次の実行に反映します。</p></div>
+      <div class="field"><label for="rv-title">タスク名</label><input id="rv-title" value="${esc(t.title)}" /></div>
+      <div class="field"><label for="rv-acceptance">受入基準</label>
+        <textarea rows="4" id="rv-acceptance" placeholder="1 行 1 基準で書きます">${esc(
+          acceptanceList(t).join('\n')
+        )}</textarea>
+        <p class="field-help">すべて満たしたときに完了と判断します。空欄にすると削除します。</p></div>
+    </details>
+    <details>
+      <summary>実行順と担当</summary>
+      <div class="row2">
+        <div class="field"><label for="rv-priority">着手の優先度</label><input id="rv-priority" type="number" step="1" value="${t.priority}" />
+          <p class="field-help">数字が大きいほど先に着手します。</p></div>
+        <div class="field"><label for="rv-level">進め方</label>
+          <select id="rv-level">${levelOptions}</select>
+        </div>
       </div>
-      <div class="field"><label>系列（同種タスクのグループ名。空にすると削除）</label><input id="rv-track" value="${esc(t.extra.track || '')}" /></div>
-    </div>
-    <div class="field"><label>メモ（空にすると削除）</label><input id="rv-note" value="${esc(t.extra.note || '')}" /></div>
+      <div class="field"><label for="rv-after">先に完了するタスク</label><input id="rv-after" class="mono" value="${esc(t.extra.after || '')}" />
+        <p class="field-help">タスク番号をカンマ区切りで指定します。空欄にすると解除します。</p></div>
+      <div class="field"><label for="rv-track">関連タスクのグループ</label><input id="rv-track" value="${esc(t.extra.track || '')}" />
+        <p class="field-help">同じ種類のタスクをまとめる名前です。空欄にすると削除します。</p></div>
+      <div class="field"><label for="rv-node">実行する PC</label><input id="rv-node" value="${esc(t.extra.node || '')}" />
+        <p class="field-help">複数の PC で分担するときに指定します。空欄なら自動で選びます。</p></div>
+      <div class="field"><label for="rv-note">補足</label><input id="rv-note" value="${esc(t.extra.note || '')}" />
+        <p class="field-help">空欄にすると削除します。</p></div>
+    </details>
+    <details>
+      <summary>確認方法を固定</summary>
+      <div class="field"><label for="rv-verify">実行するコマンド</label><input id="rv-verify" class="mono" value="${esc(fixedVerifyCommand(t))}" />
+        <p class="field-help">コマンドが決まっている場合だけ設定します。空欄にすると削除します。</p></div>
+    </details>
     <details class="revise-guide" ${GUIDE_KEYS.some((k) => t.extra[k]) ? 'open' : ''}>
-      <summary>意図と境界（レビュー材料 兼 実行ワーカーへの誘導。空にすると削除）</summary>
+      <summary>目的と変更範囲</summary>
+      <p class="field-help">必要な項目だけ入力します。空欄にした項目は削除します。</p>
       <div class="row need-buttons">
-        <span class="muted">改行は ⏎ で書きます。AI がタスクと憲章から下書きできます（送信前に人が確認）</span>
+        <span class="muted">入力済みの内容から下書きを作れます。</span>
         <span class="spacer"></span>
-        <button type="button" id="btn-guide-assist">✦ AI で補完</button>
+        <button type="button" id="btn-guide-assist">下書きを作る</button>
       </div>
       <div class="muted" id="guide-assist-status"></div>
       ${GUIDE_KEYS.map(
         (k) =>
-          `<div class="field"><label>${esc(GUIDE_LABELS[k])}</label><input id="rv-${k}" value="${esc(t.extra[k] || '')}" /></div>`
+          `<div class="field"><label for="rv-${k}">${esc(GUIDE_LABELS[k])}</label><input id="rv-${k}" value="${esc(t.extra[k] || '')}" /></div>`
       ).join('')}
     </details>
     <div class="row need-buttons">
-      <span class="muted">変更した項目と指示だけが送られ、決定記録に残ります</span>
+      <span class="muted">入力した変更内容は履歴に残ります</span>
       <span class="spacer"></span>
-      <button class="primary-inline" id="btn-revise-send">➤ 修正を送信</button>
+      <button class="primary-inline" id="btn-revise-send">修正を送信</button>
     </div>
-  </details>`;
+  </div>`;
+}
+
+const TASK_EXTRA_LABELS = {
+  workspace: '作業フォルダ',
+  refs: '関連情報',
+  after: '先に完了するタスク',
+  level: '進め方',
+  track: '関連タスクのグループ',
+  node: '実行する PC',
+  note: '補足',
+  flow_run: '関連する実行',
+  charter: '計画バージョン',
+  feedback: 'フィードバック',
+  needs_reason: '対応が必要な理由',
+  acceptance: '受入基準（旧形式）',
+  accept: '受入基準（旧形式）',
+  task_acceptance_criteria: '受入基準',
+  verification_commands: '検証コマンド',
+};
+
+function taskDialogInputSnapshot(dialog) {
+  return JSON.stringify(
+    [...dialog.querySelectorAll('input, textarea, select')].map((field) => [
+      field.id,
+      field.type === 'checkbox' ? field.checked : field.value,
+    ])
+  );
+}
+
+async function requestTaskDialogClose() {
+  const dialog = $('dlg-task');
+  if (!dialog.open) return;
+  if (dialog._inputSnapshot !== taskDialogInputSnapshot(dialog)) {
+    const discard = await confirmDialog('入力中の変更を破棄して閉じますか？');
+    if (!discard) return;
+  }
+  dialog._inputSnapshot = null;
+  dialog.close();
 }
 
 function showTaskDialog(id, scope) {
@@ -526,6 +751,7 @@ function showTaskDialog(id, scope) {
   const t = list.find((x) => x.id === id);
   if (!t) return;
   const extraRows = Object.entries(t.extra)
+    .filter(([k]) => k !== 'owner') // 監視担当は専用行（下の「監視担当」）で表示・編集する
     .map(([k, v]) => {
       // flow_run（offloaded の委譲先 run-id）はフロータブの該当 run へのリンクにする
       let cell;
@@ -537,14 +763,15 @@ function showTaskDialog(id, scope) {
       } else {
         cell = `<pre class="mono">${esc(v)}</pre>`;
       }
-      return `<tr><th>${esc(k)}</th><td>${cell}</td></tr>`;
+      const label = GUIDE_LABELS[k] || TASK_EXTRA_LABELS[k] || `詳細（${k}）`;
+      return `<tr><th>${esc(label)}</th><td>${cell}</td></tr>`;
     })
     .join('');
   // 決定記録を残す人の操作（backlog のタスクのみ。archive は閲覧のみ）
   const canApprove = ['blocked', 'review', 'proposed'].includes(t.status);
   const deps = String(t.extra.after || '').trim();
   const downs = dependentsOf(p.backlog, t.id);
-  const depRow = `<tr><th>依存関係</th><td class="muted">先行タスク: ${deps ? esc(deps) : '（なし）'} ／ 後続タスク（このタスクの変更が影響）: ${
+  const depRow = `<tr><th>実行順</th><td class="muted">先に完了するタスク: ${deps ? esc(deps) : '（なし）'} ／ この後に実行するタスク: ${
     downs.length ? downs.map((x) => `${esc(x.id)}[${esc(statusLabel(x.status))}]`).join(', ') : '（なし）'
   }</td></tr>`;
   const rr = runsForTask(t.id);
@@ -552,6 +779,13 @@ function showTaskDialog(id, scope) {
   const statusCell = hint.statusNote
     ? `${statusChip(t.status)} <span class="badge warn" title="${esc(hint.completeHow)}">${esc(hint.statusNote)}</span>`
     : statusChip(t.status);
+  const acceptance = acceptanceList(t);
+  const acceptanceHtml = acceptance.length
+    ? `<ul>${acceptance.map((item) => `<li>${esc(item)}</li>`).join('')}</ul>`
+    : '<span class="muted">（未定義）</span>';
+  const verificationDetailsRow = t.verify
+    ? `<tr><th>検証の詳細</th><td><details><summary>固定した検証方法</summary><pre class="mono">${esc(t.verify)}</pre></details></td></tr>`
+    : '';
   // 削除を拒むのは「実行中」だけ。クレームロックは worker クラッシュや
   // review/blocked 滞留で残骸が残るため、doing 以外ではロックがあっても削除できる
   const claimed = p.claims.includes(t.id) && t.status === 'doing';
@@ -561,46 +795,122 @@ function showTaskDialog(id, scope) {
           <div class="row need-buttons">
             <span class="muted">完了（履歴）のタスクです。内容を編集して新しいタスクとしてやり直せます（履歴は残ります）。</span>
             <span class="spacer"></span>
-            <button class="primary-inline" id="btn-task-reinject" title="このタスクの内容を編集して、新しいタスクとして追加し直します">↻ 編集してやり直す</button>
+            <button class="primary-inline" id="btn-task-reinject" title="このタスクの内容を編集して、新しいタスクとして追加し直します">編集してやり直す</button>
           </div>
         </div>`
       : `<div class="need-actions">
           <div class="task-complete-banner">${esc(hint.completeHow)}</div>
+          <label for="task-reason">操作の理由</label>
           <textarea rows="2" id="task-reason" class="need-input" placeholder="操作の理由（決定記録に残ります）"></textarea>
           <div class="row need-buttons">
-            ${canApprove ? `<button class="primary-inline" data-taskact="approve">✓ 承認</button>` : ''}
-            ${t.status === 'doing' ? '' : `<button class="danger" data-taskact="reject" data-confirm-reject="1" title="タスクを廃止します。依存するタスクは計画の再確認に戻り、憲章があれば計画の作り直しを依頼します">✕ 却下</button>`}
-            <button data-taskact="pin" title="他より先に着手させます">▲ 最優先にする</button>
-            <button data-taskact="defer" title="優先度を下げて後に回します">▽ 後回しにする</button>
-            <button data-taskact="hold" title="実行を止めて保留にします（再開には承認が必要）">⏸ 保留にする</button>
+            ${canApprove ? `<button class="primary-inline" data-taskact="approve">承認</button>` : ''}
+            ${t.status === 'doing' ? '' : `<button class="danger" data-taskact="reject" data-confirm-reject="1" title="タスクを廃止します。依存するタスクは計画の再確認に戻り、似た内容のタスクは次の分解でも提案されなくなります">却下</button>`}
+            <button data-taskact="pin" title="他より先に着手させます">最優先にする</button>
+            <button data-taskact="defer" title="優先度を下げて後に回します">後回しにする</button>
+            <button data-taskact="hold" title="実行を止めて保留にします（再開には承認が必要）">保留にする</button>
             <span class="spacer"></span>
             <button class="danger" id="btn-task-delete" ${claimed ? 'disabled' : ''}
-              title="${claimed ? '実行中のタスクは削除できません' : 'タスクをゴミ箱へ移動します（決定記録は残りません）'}">🗑 削除</button>
+              title="${claimed ? '実行中のタスクは削除できません' : 'タスクをゴミ箱へ移動します（決定記録は残りません）'}">削除</button>
           </div>
         </div>`;
+  const ownerEditArea = scope === 'archive' ? '' : `<div class="task-owner-editor">
+    <h3>監視担当</h3>
+    <p class="muted">エージェントの実作業とは別に、進捗確認と検収を担当する人です。</p>
+    <div class="row owner-edit">
+      <label for="task-owner">担当者</label>
+      <input id="task-owner" list="task-owner-list" value="${esc(t.owner || '')}"
+        placeholder="担当者名（空にして保存で解除）" />
+      <datalist id="task-owner-list">${((p.assignments && p.assignments.members) || [])
+        .map((m) => `<option value="${esc(m)}"></option>`)
+        .join('')}</datalist>
+      <button id="btn-task-owner" title="このタスクの進捗・要対応を見る人を決めます">担当を保存</button>
+    </div>
+  </div>`;
   $('dlg-task-title').innerHTML = `<span class="mono">${esc(t.id)}</span>: ${esc(t.title)}`;
   $('dlg-task-body').innerHTML = `
-    ${relationshipStrip({ taskId: t.id })}
-    <table class="list">
-      <tr><th>状態</th><td>${statusCell}</td></tr>
-      <tr><th>完了まで</th><td class="task-complete-how">${esc(hint.completeHow)}</td></tr>
-      <tr><th>出自</th><td>${esc(t.source)}</td></tr>
-      <tr><th>優先度</th><td>${t.priority}</td></tr>
-      <tr><th>再試行</th><td>${t.retries}</td></tr>
-      <tr><th>検証コマンド</th><td>${t.verify ? `<pre class="mono">${esc(t.verify)}</pre>` : '<span class="muted">（未定義）</span>'}</td></tr>
-      ${depRow}
-      ${extraRows}
-      <tr><th>ファイル</th><td><a href="#" id="task-open-file" class="mono">${esc(t.file)}</a></td></tr>
-    </table>
-    ${relatedRunsBlock(t.id, { archived: scope === 'archive' })}
-    ${actionArea}
-    ${scope === 'archive' ? '' : reviseAreaHtml(t)}`;
+    <div class="task-dialog-tabs" role="tablist" aria-label="タスク詳細の表示内容">
+      <button type="button" id="task-tab-overview" role="tab" aria-selected="true" aria-controls="task-panel-overview" data-task-section="overview">概要</button>
+      ${scope === 'archive' ? '' : '<button type="button" id="task-tab-edit" role="tab" aria-selected="false" aria-controls="task-panel-edit" data-task-section="edit" tabindex="-1">編集</button>'}
+      <button type="button" id="task-tab-actions" role="tab" aria-selected="false" aria-controls="task-panel-actions" data-task-section="actions" tabindex="-1">操作</button>
+    </div>
+    <section id="task-panel-overview" role="tabpanel" aria-labelledby="task-tab-overview" data-task-panel="overview">
+      ${relationshipStrip({ taskId: t.id })}
+      <table class="list task-summary-table">
+        <tr><th>状態</th><td>${statusCell}</td></tr>
+        <tr><th>完了まで</th><td class="task-complete-how">${esc(hint.completeHow)}</td></tr>
+        <tr><th>出自</th><td>${esc(t.source)}</td></tr>
+        <tr><th>優先度</th><td>${t.priority}</td></tr>
+        <tr><th>監視担当</th><td>${t.owner ? ownerBadgeHtml(t.owner) : '<span class="muted">（未担当）</span>'}</td></tr>
+        <tr><th>再試行</th><td>${t.retries}</td></tr>
+        ${boardDelegationRowHtml(t)}
+        <tr><th>受入基準</th><td>${acceptanceHtml}</td></tr>
+        ${verificationDetailsRow}
+        ${depRow}
+      </table>
+      ${relatedRunsBlock(t.id, { archived: scope === 'archive' })}
+      <details class="task-technical-details">
+        <summary>詳細情報</summary>
+        <table class="list">
+          ${extraRows}
+          <tr><th>タスクファイル</th><td><a href="#" id="task-open-file" class="mono">${esc(t.file)}</a></td></tr>
+        </table>
+      </details>
+    </section>
+    ${scope === 'archive' ? '' : `<section id="task-panel-edit" role="tabpanel" aria-labelledby="task-tab-edit" data-task-panel="edit" hidden>
+      ${ownerEditArea}
+      ${reviseAreaHtml(t)}
+    </section>`}
+    <section id="task-panel-actions" role="tabpanel" aria-labelledby="task-tab-actions" data-task-panel="actions" hidden>
+      ${actionArea}
+    </section>`;
+  const taskBody = $('dlg-task-body');
+  for (const tab of taskBody.querySelectorAll('[data-task-section]')) {
+    tab.addEventListener('click', () => {
+      const selected = tab.dataset.taskSection;
+      for (const item of taskBody.querySelectorAll('[data-task-section]')) {
+        item.setAttribute('aria-selected', String(item === tab));
+        item.tabIndex = item === tab ? 0 : -1;
+      }
+      for (const panel of taskBody.querySelectorAll('[data-task-panel]')) {
+        panel.hidden = panel.dataset.taskPanel !== selected;
+      }
+    });
+    tab.addEventListener('keydown', (event) => {
+      if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+      event.preventDefault();
+      const tabs = [...taskBody.querySelectorAll('[data-task-section]')];
+      const offset = event.key === 'ArrowRight' ? 1 : -1;
+      const next = tabs[(tabs.indexOf(tab) + offset + tabs.length) % tabs.length];
+      next.focus();
+      next.click();
+    });
+  }
   bindRelationship($('dlg-task-body')); // パンくず・関連 run のクリック配線
   const link = $('task-open-file');
   if (link) link.addEventListener('click', (e) => {
     e.preventDefault();
     guard('ファイルを開く', () => api.openPath(t.file));
   });
+  for (const btn of document.querySelectorAll('#dlg-task-body button[data-board-cancel]')) {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.boardCancel;
+      const view = (state.boardViews || []).find((v) => String(v.id) === id);
+      const yes = await confirmDialog(
+        `この委任（${id}）を中止しますか？\n実行中の端末があれば、次の巡回で止まります。`);
+      if (!yes) return;
+      await guard('委任の中止', async () => {
+        await api.delegationCancel({
+          target: 'board', id, boardRepo: (view && view.boardRepo) || '',
+          workload: (view && view.workload) || 'flow',
+          reason: 'agent-dashboard から中止',
+        });
+        toast('中止を依頼しました（板への反映はこの端末の実行エンジンが行います）', true);
+        return true;
+      });
+      await refreshBoard();
+      renderBacklog();
+    });
+  }
   const TASK_ACT_DONE = {
     approve: '承認を送信しました',
     reject: '却下を送信しました',
@@ -613,7 +923,7 @@ function showTaskDialog(id, scope) {
       const reason = $('task-reason') ? $('task-reason').value.trim() : '';
       if (btn.dataset.confirmReject) {
         if (!reason) return toast('却下には理由の記入が必要です（決定記録に残ります）');
-        const yes = await confirmDialog(rejectConfirmMessage(p, t.id, '廃止して計画を作り直す'));
+        const yes = await confirmDialog(rejectConfirmMessage(p, t.id, '廃止して記録に残す'));
         if (!yes) return;
       }
       const ok = await guard('操作', async () => {
@@ -623,7 +933,27 @@ function showTaskDialog(id, scope) {
         return true;
       });
       if (ok) {
-        gitPushAfterWrite(`agent-dashboard: ${btn.dataset.taskact} ${t.id}`, p.dir);
+        $('dlg-task').close();
+        await reloadProject();
+      }
+    });
+  }
+  // 監視担当の割り当て（assignments.json への書き込みのみ。タスク状態には触れない）
+  const ownBtn = $('btn-task-owner');
+  if (ownBtn) {
+    ownBtn.addEventListener('click', async () => {
+      const owner = $('task-owner').value.trim();
+      if (owner === String(t.owner || '').trim()) return toast('担当は変わっていません');
+      const ok = await guard('監視担当の設定', async () => {
+        const res = await api.setTaskOwner(p.dir, t.id, owner);
+        uiLog('setOwner', t.id, res);
+        toast(
+          owner ? `${t.id} の監視担当を「${owner}」にしました` : `${t.id} の監視担当を解除しました`,
+          true
+        );
+        return true;
+      });
+      if (ok) {
         $('dlg-task').close();
         await reloadProject();
       }
@@ -638,16 +968,35 @@ function showTaskDialog(id, scope) {
         ['title', $('rv-title').value.trim(), String(t.title || '')],
         ['priority', $('rv-priority').value.trim(), String(t.priority)],
         ['after', $('rv-after').value.trim(), String(t.extra.after || '')],
-        ['verify', $('rv-verify').value.trim(), String(t.verify || '')],
-        ['accept', $('rv-accept').value.trim(), String(t.extra.accept || '')],
         ['level', $('rv-level').value.trim(), String(t.extra.level || '')],
         ['track', $('rv-track').value.trim(), String(t.extra.track || '')],
+        ['node', $('rv-node').value.trim(), String(t.extra.node || '')],
         ['note', $('rv-note').value.trim(), String(t.extra.note || '')],
         ...GUIDE_KEYS.map((k) => [k, $(`rv-${k}`).value.trim(), String(t.extra[k] || '')]),
       ];
       for (const [key, cur, orig] of cmp) {
         if (key === 'priority' && cur === '') continue; // 空欄は「変更なし」（priority に削除は無い）
         if (cur !== orig.trim()) fields[key] = cur;
+      }
+      // 固定検証コマンドの書き込みは正規形（verification_commands）のみ。旧 verify: が残っていたら
+      // 同時に消す（正本を 2 か所にしない）。
+      const verifyNow = $('rv-verify').value.trim();
+      if (verifyNow !== fixedVerifyCommand(t)) {
+        fields.verification_commands = verifyNow ? [verifyNow] : [''];
+        if (String(t.verify || '').trim()) fields.verify = '';
+      }
+      // 受入基準は複数行フィールド＝**行の集合を丸ごと**送る（本体側も全行置換）。
+      // 単値と同じ扱いにすると "a,b" の 1 行に潰れる。空なら [''] を送って削除。
+      // 書き込みは正規形（task_acceptance_criteria）のみ。旧 acceptance 行が残っていたら
+      // 同時に消し、正本が 2 か所にならないようにする（dual-write 禁止の逆向き）。
+      const acceptanceNow = $('rv-acceptance')
+        .value.split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const acceptanceWas = acceptanceList(t);
+      if (acceptanceNow.join('\n') !== acceptanceWas.join('\n')) {
+        fields.task_acceptance_criteria = acceptanceNow.length ? acceptanceNow : [''];
+        if (String((t.extra || {}).acceptance || '').trim()) fields.acceptance = [''];
       }
       const feedback = $('rv-feedback').value.trim();
       if (!Object.keys(fields).length && !feedback) {
@@ -662,7 +1011,6 @@ function showTaskDialog(id, scope) {
         return true;
       });
       if (ok) {
-        gitPushAfterWrite(`agent-dashboard: revise ${t.id}`, p.dir);
         $('dlg-task').close();
         await reloadProject();
       }
@@ -691,7 +1039,10 @@ function showTaskDialog(id, scope) {
               id: t.id,
               title: $('rv-title').value.trim() || t.title,
               verify: $('rv-verify').value.trim() || t.verify || '',
-              accept: $('rv-accept').value.trim(),
+              acceptance: $('rv-acceptance')
+                .value.split('\n')
+                .map((s) => s.trim())
+                .filter(Boolean),
               note: $('rv-note').value.trim(),
               ...current,
             },
@@ -720,24 +1071,32 @@ function showTaskDialog(id, scope) {
       }
     });
   }
-  // 削除（人の明示アクション）。agent-project に削除の公式契約は無いため、
-  // backlog/<id>.md をゴミ箱へ移動する。実行中（クレーム中）は main 側でも拒否される
+  // 削除（人の明示アクション）＝物理削除（ゴミ箱へ移動・needs も一緒に掃除）。
+  // 分解は人の明示操作でしか走らないので、消したタスクが勝手に作り直されることはない。
+  // 「二度と作り直させない」意思表示は ✕ 却下（archive・墓標・決定記録に残る）を使う。
+  // 実行中（doing）・委譲実行中（offloaded）は main 側でも拒否される。
   const delBtn = $('btn-task-delete');
   if (delBtn) {
     delBtn.addEventListener('click', async () => {
+      const downs = dependentsOf(p.backlog, t.id);
+      const detach = downs.length
+        ? `後続タスク（${downs.map((x) => x.id).join(', ')}）の先行指定からは自動で外れます。\n`
+        : '';
       const yes = await confirmDialog(
-        `タスク ${t.id}「${t.title}」を削除します。\n` +
-          'タスクはゴミ箱へ移動します（決定記録は残りません）。\n' +
-          '一時的に止めたいだけなら「⏸ 保留にする」を使ってください。よろしいですか？'
+        `タスク ${t.id}「${t.title}」をゴミ箱へ移動します。\n` +
+          'バックログと要対応カードから外れます。操作の記録は残りません。\n' +
+          detach +
+          '「バックログを分解」を実行すると、似た内容のタスクがまた提案されることがあります。\n' +
+          '作り直させたくないなら「✕ 却下」を、一時的に止めたいだけなら' +
+          '「⏸ 保留にする」を使ってください。よろしいですか？'
       );
       if (!yes) return;
       const ok = await guard('タスク削除', async () => {
-        const res = await api.deleteTask(p.dir, t.id);
-        toast(`${t.id} を削除しました（${res.via === 'trash' ? 'ゴミ箱へ移動' : '完全削除'}）`, true);
+        await api.deleteTask(p.dir, t.id);
+        toast(`${t.id} を削除しました（ゴミ箱へ移動）`, true);
         return true;
       });
       if (ok) {
-        gitPushAfterWrite(`agent-dashboard: delete task ${t.id}`, p.dir);
         $('dlg-task').close();
         await reloadProject();
       }
@@ -766,11 +1125,13 @@ function showTaskDialog(id, scope) {
       });
     });
   }
-  $('dlg-task').showModal();
+  const dialog = $('dlg-task');
+  dialog._inputSnapshot = taskDialogInputSnapshot(dialog);
+  dialog.showModal();
 }
 
-// charter からのバックログ再分解を要求する（エラー回復用）。本体が次パスで charter を
-// 分解し直し、取りこぼした差分だけを backlog へ入れる（done / 既存と類似は投入しない）。
+// charter からのバックログ分解を要求する（分解はこの明示操作でしか走らない）。本体が次パスで
+// charter を分解し、差分だけを backlog へ入れる（処理中・却下済みと類似は投入しない）。
 // 状態（done 等）は書き換えず、公式契約（commands/replan・CLI replan）だけで届ける。
 function fillCharterSelect(select, p, selected) {
   if (!select) return '';
@@ -814,19 +1175,89 @@ async function requestReplan(charter = '') {
   if ($('dlg-replan').open) $('dlg-replan').close();
   const versionText = charter ? `計画バージョン「${charter}」` : 'プロジェクト憲章';
   const yes = await confirmDialog(
-    `${p.name}: ${versionText}からタスクを作り直します。\n` +
-      '進行中・却下済みと重複するタスクは追加されません（完了済みと同種のやり直しは作り直されます）。\n' +
+    `${p.name}: ${versionText}からタスクを分解します。\n` +
+      '進行中・却下済みと内容の重なるタスクは追加されません。完了済みと同種の作業は、やり直しとして作り直されます。\n' +
       'タスクの状態は書き換えません。反映は次の実行サイクルです（即時ではありません）。よろしいですか？'
   );
   if (!yes) return;
-  const ok = await guard('計画の作り直し', async () => {
+  const ok = await guard('バックログの分解', async () => {
     const res = await api.requestReplan(p.dir, 'agent-dashboard から再分解を要求', charter);
     uiLog('replan', res);
-    toast('計画の作り直しを依頼しました（次の実行で反映されます）', true);
+    toast('バックログの分解を依頼しました（次の実行で反映されます）', true);
     return true;
   });
   if (ok) {
-    gitPushAfterWrite('agent-dashboard: replan request', p.dir);
+    await reloadProject();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 観点メモ（notes/）。書いても計画は動かない——分解は人が押したときだけ。
+// ---------------------------------------------------------------------------
+async function openNotesDialog() {
+  const p = state.project;
+  if (!p) return toast('プロジェクトを選択してください');
+  fillCharterSelect($('notes-charter'), p, state.backlogCharter || '');
+  $('note-body').value = '';
+  await renderNotesList();
+  $('dlg-notes').showModal();
+}
+
+async function renderNotesList() {
+  const p = state.project;
+  const el = $('notes-list');
+  if (!p || !el) return;
+  let notes = [];
+  try {
+    notes = await api.listNotes(p.dir);
+  } catch (err) {
+    el.innerHTML = `<div class="muted">メモを読めませんでした: ${esc(String(err.message || err))}</div>`;
+    return;
+  }
+  el.innerHTML = notes.length
+    ? `<h3>書き溜めたメモ（${notes.length} 件）</h3>${notes
+        .map(
+          (n) => `<details class="note-item"><summary>${esc(n.name)}</summary>
+            <div class="task-prose">${proseHtml(String(n.body || ''))}</div></details>`
+        )
+        .join('')}`
+    : '<div class="muted">まだメモはありません。</div>';
+}
+
+async function addNote() {
+  const p = state.project;
+  if (!p) return toast('プロジェクトを選択してください');
+  const body = $('note-body').value.trim();
+  if (!body) return toast('メモの内容を入力してください');
+  const ok = await guard('メモの保存', async () => {
+    const res = await api.writeNote(p.dir, '', body);
+    uiLog('writeNote', res);
+    toast(`メモを保存しました（${res.name}）`, true);
+    return true;
+  });
+  if (ok) {
+    $('note-body').value = '';
+    await renderNotesList();
+  }
+}
+
+async function distillNotes(charter = '') {
+  const p = state.project;
+  if (!p) return toast('プロジェクトを選択してください');
+  const yes = await confirmDialog(
+    `${p.name}: 書き溜めたメモからタスク候補を起こします。\n` +
+      '既存タスクと重複するものは追加されません。追加されたタスクは承認するまで実行されません。\n' +
+      '取り込めたメモは notes/archive/ へ移ります。反映は次の実行サイクルです。よろしいですか？'
+  );
+  if (!yes) return;
+  const ok = await guard('メモの分解', async () => {
+    const res = await api.distillNotes(p.dir, charter);
+    uiLog('distillNotes', res);
+    toast('メモの分解を依頼しました（次の実行で反映されます）', true);
+    return true;
+  });
+  if (ok) {
+    $('dlg-notes').close();
     await reloadProject();
   }
 }
@@ -913,7 +1344,7 @@ async function refreshEnqueueAdjustmentPlan() {
     return;
   }
   const p = state.project;
-  let planned = { apply: [], skipped: [] };
+  let planned;
   try {
     planned = await api.agentPlanAdjustments({
       backlog: (p && p.backlog) || [],
@@ -1022,7 +1453,6 @@ async function applySelectedEnqueueAdjustments(applyList) {
       }
     }
     if (sent.length) {
-      gitPushAfterWrite(`agent-dashboard: revise deps/priority ${sent.join(',')}`, p.dir);
       state.enqueueAdjustments = (state.enqueueAdjustments || []).filter((a) => !sent.includes(a.id));
       await reloadProject();
       fillEnqueueAfterOptions(state.project);
@@ -1068,6 +1498,14 @@ function openEnqueueDialog(prefill = {}) {
   $('enq-note').value = prefill.note || '';
   $('enq-id').value = prefill.id || '';
   $('enq-after').value = Array.isArray(prefill.after) ? prefill.after.join(', ') : (prefill.after || '');
+  // 構造化フォームの入力（案5・案3）。再投入では元の値を引き継ぎ、通常は空にする。
+  // desc（作業内容の概要）は複数行 textarea なので ⏎ 規約を改行へ戻して見せる。
+  const setEnq = (id, v) => { const el = $(id); if (el) el.value = v || ''; };
+  setEnq('enq-verify-template', prefill.verify_template);
+  setEnq('enq-desc', String(prefill.desc || '').replace(/\s*⏎\s*/g, '\n'));
+  setEnq('enq-why', prefill.why);
+  setEnq('enq-scope', prefill.scope);
+  setEnq('enq-out_of_scope', prefill.out_of_scope);
   fillCharterSelect($('enq-charter'), state.project, prefill.charter || '');
   fillWorkspaceSelect($('enq-workspace'), state.project, prefill.workspace || '');
   // level / track と誘導・レビュー記述（why 等）・ルーティング/検収系（refs/paths/review/expect/
@@ -1172,10 +1610,14 @@ async function submitEnqueue() {
   const p = state.project;
   if (!p) return;
   const extra = state.enqueueExtra || {};
+  // 統一 verify の正規形だけを書く: 受入基準は task_acceptance_criteria（1 行 1 基準）、
+  // 固定コマンドは verification_commands。旧 verify / accept キーは新規書き込みに使わない。
+  const acceptLines = $('enq-accept').value.split('\n').map((s) => s.trim()).filter(Boolean);
+  const verifyCmd = $('enq-verify').value.trim();
   const spec = {
     title: $('enq-title').value,
-    verify: $('enq-verify').value,
-    accept: $('enq-accept').value,
+    task_acceptance_criteria: acceptLines,
+    verification_commands: verifyCmd ? [verifyCmd] : [],
     priority: $('enq-priority').value,
     note: $('enq-note').value,
     id: $('enq-id').value,
@@ -1184,12 +1626,33 @@ async function submitEnqueue() {
     workspace: $('enq-workspace') ? $('enq-workspace').value : '',
     ...Object.fromEntries(ENQUEUE_PASSTHROUGH_KEYS.map((k) => [k, extra[k] || ''])),
   };
+  // 構造化フォーム（案5・案3）。passthrough の空値を上書きするため spread の後に読む。
+  // desc（複数行 textarea）は md の 1 行 = 1 フィールド規約に合わせ改行を ⏎ へ畳む。
+  const enqField = (id) => { const el = $(id); return el ? el.value.trim() : ''; };
+  spec.verify_template = enqField('enq-verify-template') || spec.verify_template || '';
+  spec.desc = enqField('enq-desc').replace(/\r?\n/g, ' ⏎ ') || spec.desc || '';
+  spec.why = enqField('enq-why') || spec.why || '';
+  spec.scope = enqField('enq-scope') || spec.scope || '';
+  spec.out_of_scope = enqField('enq-out_of_scope') || spec.out_of_scope || '';
+  // 作成時 lint（案5・非ブロック）: 情報不足・曖昧 accept を投入前に見せ、続行するか監視者が選ぶ。
+  try {
+    const warnings = await api.lintTask(spec);
+    if (Array.isArray(warnings) && warnings.length) {
+      const body = warnings.map((w) => `・${w.message}`).join('\n');
+      const proceed = await confirmDialog(
+        `このタスクは次の点で情報が不足しています:\n\n${body}\n\nこのまま追加しますか？（あとで編集もできます）`
+      );
+      if (!proceed) return; // 追加を中断してフォームに戻る（ブロックではなく監視者の選択）
+    }
+  } catch (e) {
+    uiLog('lint skipped', String((e && e.message) || e));
+  }
   const ok = await guard('タスク追加', async () => {
     const res = await api.enqueueTask(p.dir, spec);
     uiLog('enqueue', res);
     toast(
       `タスクを追加しました: ${res.spec.title}\n` +
-        (res.spec.verify || res.spec.accept
+        ((res.spec.verification_commands || []).length || (res.spec.task_acceptance_criteria || []).length
           ? '（次の実行サイクルで一覧に載ります）'
           : '（完了条件が無いため、取り込み後に内容の確認が必要になります）'),
       true
@@ -1197,7 +1660,6 @@ async function submitEnqueue() {
     return true;
   });
   if (ok) {
-    gitPushAfterWrite(`agent-dashboard: enqueue ${spec.title || ''}`.trim(), p.dir);
     $('dlg-enqueue').close();
     await reloadProject();
   }

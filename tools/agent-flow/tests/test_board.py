@@ -1,0 +1,536 @@
+"""agent-flow の単体テスト — board（`test_agent_flow.py` から機能別に分割）。
+
+共有の前置き（環境隔離・モジュールのロード・共通ヘルパ）は `_shared.py` にある。
+
+    python -m unittest discover -s tools/agent-flow/tests
+"""
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from _shared import *  # noqa: E402,F401,F403 — 共有の前置き（環境隔離・km ロード・共通ヘルパ）
+
+
+class DelegationProvenanceTests(unittest.TestCase):
+    """委譲公示板（agent-board）由来の来歴を inbox 要求 → run meta へ引き回す（additive）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-test-deleg-")
+        self.bus = kf.Bus(self.tmp, "run-d")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_submit_request_carries_delegation(self):
+        self.bus.submit_request("run-d", "do it", "agent-board:pc-a",
+                                delegation={"id": "dg-1", "board": True})
+        rec = self.bus.read_inbox("run-d")
+        self.assertEqual(rec["delegation"], {"id": "dg-1", "board": True})
+
+    def test_submit_request_omits_empty_delegation(self):
+        self.bus.submit_request("run-d", "do it", "s", delegation=None)
+        self.assertNotIn("delegation", self.bus.read_inbox("run-d"))
+        self.bus.submit_request("run-d", "do it", "s", delegation={"board": True})  # id 無し
+        self.assertNotIn("delegation", self.bus.read_inbox("run-d"))
+
+    def test_note_delegation_writes_meta(self):
+        self.bus.ensure_run("do it")
+        self.bus.note_delegation({"id": "dg-1", "board": True})
+        self.assertEqual(self.bus.run_meta("run-d")["delegation"], {"id": "dg-1", "board": True})
+        # id 無し / 非 dict は無視（additive・安全側）
+        self.bus.note_delegation(None)
+        self.bus.note_delegation({"board": True})
+        self.assertEqual(self.bus.run_meta("run-d")["delegation"], {"id": "dg-1", "board": True})
+
+
+class BoardParticipationTests(unittest.TestCase):
+    """委譲公示板（agent-board）への参加（請負・入札）。板 = リポジトリ＋契約で処理を持たず、
+    入札・引き渡しは flow デーモンが担う。ローカル板ディレクトリでプロトコルを stub 検証する。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-board-")
+        self.local = os.path.join(self.tmp, "localbus")
+        self.board = os.path.join(self.tmp, "board")
+        self.bus = kf.Bus(self.local, "_")
+        os.makedirs(os.path.join(self.board, "delegations"), exist_ok=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _post(self, did, **kw):
+        d = os.path.join(self.board, "delegations", did)
+        os.makedirs(d, exist_ok=True)
+        rec = {"op": "post", "version": 1, "id": did, "workload": "flow", "goal": "実装", **kw}
+        with open(os.path.join(d, "post.json"), "w", encoding="utf-8") as f:
+            json.dump(rec, f)
+        return d
+
+    def _args(self, **kw):
+        base = dict(board=self.board, board_workdir=None, board_branch="main",
+                    board_repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}},
+                    board_tags=[], board_lease=900.0)
+        base.update(kw)
+        return types.SimpleNamespace(**base)
+
+    def test_eligible_by_workspace_repo(self):
+        repos = {"app": {"url": "git@h:team/app.git", "owns": ["**"]}}
+        self.assertTrue(kf.board_eligible(
+            {"workspace": {"url": "git@h:team/app.git"}}, repos, []))
+        # 担当外リポジトリの公示には入札しない
+        self.assertFalse(kf.board_eligible(
+            {"workspace": {"url": "git@h:team/other.git"}}, repos, []))
+        # requires.tags 不足は不可
+        self.assertFalse(kf.board_eligible({"requires": {"tags": ["python"]}}, repos, []))
+
+    def test_win_and_handoff_to_inbox(self):
+        d = self._post("dg-1", workspace={"url": "git@h:team/app.git", "base": "main"})
+        handed = kf.poll_board(self.bus, self._args(), "pc-a")
+        self.assertEqual(handed, ["dg-1"])
+        # local inbox へ取り込まれ、来歴が付く
+        req = self.bus.read_inbox("dg-1")
+        self.assertIsNotNone(req)
+        self.assertEqual(req["delegation"], {"id": "dg-1", "board": True})
+        self.assertEqual(req["workspace"], {"url": "git@h:team/app.git", "base": "main"})
+        # 板に入札と状態が残る
+        self.assertTrue(os.path.exists(os.path.join(d, "bids", "pc-a.json")))
+        self.assertTrue(os.path.exists(os.path.join(d, "status", "pc-a.json")))
+
+    def test_ineligible_repo_no_bid(self):
+        self._post("dg-2", workspace={"url": "git@h:team/other.git"})
+        handed = kf.poll_board(self.bus, self._args(), "pc-a")
+        self.assertEqual(handed, [])
+        self.assertIsNone(self.bus.read_inbox("dg-2"))
+
+    def test_skip_amigos_workload_and_terminal(self):
+        self._post("dg-a", workload="amigos", workspace={"url": "git@h:team/app.git"})
+        d = self._post("dg-done", workspace={"url": "git@h:team/app.git"})
+        with open(os.path.join(d, "result.json"), "w") as f:
+            json.dump({"winner": "x"}, f)
+        handed = kf.poll_board(self.bus, self._args(), "pc-a")
+        self.assertEqual(handed, [])   # amigos は対象外・result 済みは触らない
+
+    def test_no_board_is_noop(self):
+        self.assertEqual(kf.poll_board(self.bus, self._args(board=None), "pc-a"), [])
+
+    def test_already_taken_not_rehanded(self):
+        self._post("dg-1", workspace={"url": "git@h:team/app.git"})
+        kf.poll_board(self.bus, self._args(), "pc-a")
+        # 2 巡目: 既に inbox にあるので再取り込みしない
+        self.assertEqual(kf.poll_board(self.bus, self._args(), "pc-a"), [])
+
+    def test_owner_picks_applies_without_dispatching(self):
+        # owner-picks: award.json が無い間は応募（bid）を書くだけで取り込まない。
+        d = self._post("dg-1", workspace={"url": "git@h:team/app.git"},
+                       policy={"assignment": "owner-picks"})
+        handed = kf.poll_board(self.bus, self._args(), "pc-a")
+        self.assertEqual(handed, [])
+        self.assertIsNone(self.bus.read_inbox("dg-1"))
+        self.assertTrue(os.path.exists(os.path.join(d, "bids", "pc-a.json")))
+        self.assertFalse(os.path.exists(os.path.join(d, "status", "pc-a.json")))
+
+    def test_owner_picks_dispatches_when_awarded_to_self(self):
+        d = self._post("dg-1", workspace={"url": "git@h:team/app.git"},
+                       policy={"assignment": "owner-picks"})
+        with open(os.path.join(d, "award.json"), "w", encoding="utf-8") as f:
+            json.dump({"node": "pc-a", "awarded_by": "requester"}, f)
+        handed = kf.poll_board(self.bus, self._args(), "pc-a")
+        self.assertEqual(handed, ["dg-1"])
+        self.assertIsNotNone(self.bus.read_inbox("dg-1"))
+        self.assertTrue(os.path.exists(os.path.join(d, "status", "pc-a.json")))
+
+    def test_owner_picks_skips_when_awarded_to_other_node(self):
+        d = self._post("dg-1", workspace={"url": "git@h:team/app.git"},
+                       policy={"assignment": "owner-picks"})
+        with open(os.path.join(d, "award.json"), "w", encoding="utf-8") as f:
+            json.dump({"node": "pc-b", "awarded_by": "requester"}, f)
+        handed = kf.poll_board(self.bus, self._args(), "pc-a")
+        self.assertEqual(handed, [])
+        self.assertIsNone(self.bus.read_inbox("dg-1"))
+
+    def test_owner_picks_multiple_nodes_can_apply_without_evicting(self):
+        # first-come と違い、応募段階では他ノードの bid を奪わない（両方の応募が残る）。
+        d = self._post("dg-1", workspace={"url": "git@h:team/app.git"},
+                       policy={"assignment": "owner-picks"})
+        kf.poll_board(self.bus, self._args(), "pc-a")
+        bus_b = kf.Bus(os.path.join(self.tmp, "localbus-b"), "_")
+        kf.poll_board(bus_b, self._args(), "pc-b")
+        self.assertTrue(os.path.exists(os.path.join(d, "bids", "pc-a.json")))
+        self.assertTrue(os.path.exists(os.path.join(d, "bids", "pc-b.json")))
+
+    # --- 引き受けるエンジンと枠での自己抑制（P2-3） --------------------------
+
+    def _host_yaml(self, **decl):
+        """このノードの宣言（host.yaml）を `--node-declaration` で明示する。
+
+        入札選別の正典は host.yaml（S1）。テストは中立な一時 cwd で走るので、明示しないと
+        宣言なし（＝制限なし）になる。"""
+        path = os.path.join(self.tmp, "host.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(decl, f)
+        return path
+
+    def test_declared_workloads_restrict_bidding(self):
+        self._post("dg-1", workspace={"url": "git@h:team/app.git"})
+        args = self._args(node_declaration=self._host_yaml(workloads=["amigos"]))
+        self.assertEqual(kf.poll_board(self.bus, args, "pc-a"), [],
+                         "amigos しか引き受けないと宣言したノードは flow の公示を拾わない")
+
+    def test_undeclared_workloads_do_not_restrict_bidding(self):
+        """**宣言していない PC の挙動は変わらない。** 導出値（amigos_bus の有無など）を
+        判定に使うとここが黙って壊れる——P2-3 が明示宣言だけを正とした理由。"""
+        self._post("dg-1", workspace={"url": "git@h:team/app.git"})
+        args = self._args(node_declaration=self._host_yaml(amigos_bus="/tmp/bus"))
+        self.assertEqual(kf.poll_board(self.bus, args, "pc-a"), ["dg-1"])
+
+    def test_busy_node_stops_bidding(self):
+        """板の契約「超過時は新規入札を控える」（`$defs.node.max_concurrent`）。"""
+        # 1 件目は預かり済み（board の status/<who>.json が根拠）
+        d0 = self._post("dg-0", workspace={"url": "git@h:team/app.git"})
+        os.makedirs(os.path.join(d0, "status"), exist_ok=True)
+        with open(os.path.join(d0, "status", "pc-a.json"), "w", encoding="utf-8") as f:
+            json.dump({"who": "pc-a", "state": "dispatched"}, f)
+        self._post("dg-1", workspace={"url": "git@h:team/app.git"})
+        args = self._args(node_declaration=self._host_yaml(budget={"max_concurrent": 1}))
+        self.assertEqual(kf.poll_board(self.bus, args, "pc-a"), [])
+        self.assertFalse(os.path.exists(
+            os.path.join(self.board, "delegations", "dg-1", "bids", "pc-a.json")))
+
+    def test_zero_max_concurrent_is_unlimited(self):
+        # スキーマの語彙（0 = 無制限）。実装が「既定 4」に読んでいたのを揃えた（P2-3）
+        self._post("dg-1", workspace={"url": "git@h:team/app.git"})
+        args = self._args(node_declaration=self._host_yaml(budget={"max_concurrent": 0}))
+        self.assertEqual(kf.poll_board(self.bus, args, "pc-a"), ["dg-1"])
+
+    def test_one_poll_does_not_exceed_the_limit(self):
+        # 同じ 1 巡で 2 件拾うと上限を超える。落札のたびに枠を減らす
+        for did in ("dg-1", "dg-2"):
+            self._post(did, workspace={"url": "git@h:team/app.git"})
+        args = self._args(node_declaration=self._host_yaml(budget={"max_concurrent": 1}))
+        self.assertEqual(kf.poll_board(self.bus, args, "pc-a"), ["dg-1"])
+
+    def test_manual_bid_overrides_the_self_throttle(self):
+        """人が「このノードで請け負う」を押した分は自己抑制を飛ばす（S8-3 の forced と同じ）。
+        ここで抑制を効かせると、書かれた入札が永遠に取り込まれない宙ぶらりんになる。"""
+        d0 = self._post("dg-0", workspace={"url": "git@h:team/app.git"})
+        os.makedirs(os.path.join(d0, "status"), exist_ok=True)
+        with open(os.path.join(d0, "status", "pc-a.json"), "w", encoding="utf-8") as f:
+            json.dump({"who": "pc-a", "state": "dispatched"}, f)
+        d1 = self._post("dg-1", workspace={"url": "git@h:team/app.git"})
+        # 常駐体が先に入札を書いた状態（手動入札）
+        protocol = __import__("agentcore.protocol", fromlist=["protocol"])
+        protocol.renew_lease(os.path.join(d1, "bids"), "pc-a", 900.0)
+        args = self._args(node_declaration=self._host_yaml(budget={"max_concurrent": 1}))
+        self.assertEqual(kf.poll_board(self.bus, args, "pc-a"), ["dg-1"])
+
+    def test_dispatched_lease_renewed_when_near_expiry(self):
+        # 長時間 run が board_lease を超えても勝者を保つには、残りが半分未満のときに延長する。
+        d = self._post("dg-1", workspace={"url": "git@h:team/app.git"})
+        args = self._args(board_lease=1000.0)
+        kf.poll_board(self.bus, args, "pc-a")   # 落札→dispatch
+        board = kf._board_bus(self.board, "pc-a", args)
+        bid_path = os.path.join(d, "bids", "pc-a.json")
+        status_path = os.path.join(d, "status", "pc-a.json")
+        orig_ts = json.load(open(bid_path))["ts"]
+        bid = json.load(open(bid_path))
+        bid["lease_until"] = time.time() + 10   # 残りわずか（lease=1000 の半分よりずっと少ない）
+        with open(bid_path, "w") as f:
+            json.dump(bid, f)
+        kf._renew_dispatched_leases(board, "pc-a", 1000.0)
+        renewed = json.load(open(bid_path))
+        self.assertGreater(renewed["lease_until"], time.time() + 500)
+        self.assertEqual(renewed["ts"], orig_ts)   # タイブレークの根拠 ts は温存する
+        self.assertGreater(json.load(open(status_path))["lease_until"], time.time() + 500)
+
+    def test_dispatched_lease_not_renewed_when_still_fresh(self):
+        # まだ十分残っているうちは書き換えない（board への無駄な push/commit を避ける）。
+        d = self._post("dg-1", workspace={"url": "git@h:team/app.git"})
+        args = self._args(board_lease=1000.0)
+        kf.poll_board(self.bus, args, "pc-a")
+        board = kf._board_bus(self.board, "pc-a", args)
+        bid_path = os.path.join(d, "bids", "pc-a.json")
+        before = json.load(open(bid_path))["lease_until"]
+        kf._renew_dispatched_leases(board, "pc-a", 1000.0)
+        after = json.load(open(bid_path))["lease_until"]
+        self.assertEqual(before, after)
+
+    def test_lease_renewal_keeps_winner_across_dispatcher_polls(self):
+        # 実運用に近い経路: poll_board 自体が毎巡 _renew_dispatched_leases を呼ぶので、
+        # 短い lease でも自分が生きている限り再入札を経ずに勝者であり続ける。
+        d = self._post("dg-1", workspace={"url": "git@h:team/app.git"})
+        args = self._args(board_lease=20.0)
+        kf.poll_board(self.bus, args, "pc-a")
+        bid_path = os.path.join(d, "bids", "pc-a.json")
+        bid = json.load(open(bid_path))
+        bid["lease_until"] = time.time() + 1   # ほぼ失効寸前まで経過したことにする
+        with open(bid_path, "w") as f:
+            json.dump(bid, f)
+        # 次の poll（自分自身）: dg-1 は既に inbox にあるので再取り込みはしないが、延長は起こる
+        kf.poll_board(self.bus, args, "pc-a")
+        self.assertGreater(json.load(open(bid_path))["lease_until"], time.time() + 15)
+        # 延長が効いているので、この時点で他ノードは勝者になれない
+        board_b = kf._board_bus(self.board, "pc-b", self._args(board_lease=20.0))
+        self.assertEqual(board_b._winner_in(os.path.join(d, "bids")), "pc-a")
+
+    def test_report_results_writes_result_on_terminal_run(self):
+        d = self._post("dg-1", workspace={"url": "git@h:team/app.git"})
+        args = self._args()
+        kf.poll_board(self.bus, args, "pc-a")   # 落札→取り込み
+        board = kf._board_bus(self.board, "pc-a", args)
+        # 実行中はまだ result.json を書かない
+        self.assertEqual(kf.report_board_results(self.bus, board, "pc-a"), [])
+        self.assertFalse(os.path.exists(os.path.join(d, "result.json")))
+        # run が done に達したら報告する
+        self.bus.run_view("dg-1").set_status("done")
+        reported = kf.report_board_results(self.bus, board, "pc-a")
+        self.assertEqual(reported, ["dg-1"])
+        res = json.load(open(os.path.join(d, "result.json")))
+        self.assertEqual(res["status"], "done")
+        self.assertEqual(res["winner"], "pc-a")
+        # 冪等: 二重報告しない
+        self.assertEqual(kf.report_board_results(self.bus, board, "pc-a"), [])
+
+    def test_report_results_includes_notes_discoveries_and_reject_guidance(self):
+        # 実装計画 W1-9: submit の結果読み戻し（reject 時のガイダンス・発見事項）と等価にする
+        # ため、板 result.json に result_notes / discoveries / reject_guidance を載せる。
+        self._post("dg-3", workspace={"url": "git@h:team/app.git"})
+        args = self._args()
+        kf.poll_board(self.bus, args, "pc-a")
+        board = kf._board_bus(self.board, "pc-a", args)
+        run = self.bus.run_view("dg-3")
+        run.write_graph({"nodes": {"sink": {"kind": "synthesize", "deps": []}}})
+        run.write_result("sink", "pc-a", "done", "output text", data={
+            "decision": "rejected", "guidance": "テストを追加してください",
+            "notes": [{"note_id": "n1", "body": "レビューコメント"}],
+            "constraints": [{"text": "DB マイグレーションは要レビュー"}, "第二の発見"],
+        })
+        run.set_status("done")
+        reported = kf.report_board_results(self.bus, board, "pc-a")
+        self.assertEqual(reported, ["dg-3"])
+        res = json.load(open(os.path.join(self.board, "delegations", "dg-3", "result.json")))
+        self.assertEqual(res["reject_guidance"], "テストを追加してください")
+        self.assertEqual(res["result_notes"], [{"note_id": "n1", "body": "レビューコメント"}])
+        self.assertEqual(res["discoveries"],
+                         ["DB マイグレーションは要レビュー", "第二の発見"])
+
+    def test_reject_guidance_falls_back_to_output_marker(self):
+        # gitlab executor は「イシュー削除」「人コメント無しの差し戻し」で
+        # decision=rejected かつ guidance="" を書き、やり直し指示は output の
+        # [gitlab-reject] 以降にしか無い。構造化だけを見ると submit 経路
+        # （read_reject_guidance の第 2 パス）と非等価になる。
+        self._post("dg-5", workspace={"url": "git@h:team/app.git"})
+        args = self._args()
+        kf.poll_board(self.bus, args, "pc-a")
+        board = kf._board_bus(self.board, "pc-a", args)
+        run = self.bus.run_view("dg-5")
+        run.write_graph({"nodes": {"sink": {"kind": "synthesize", "deps": []}}})
+        # ノード status は実運用どおり failed（却下は park の決着として failed になる）。
+        run.write_result("sink", "pc-a", "failed",
+                         "[gitlab-reject] 却下されました（イシューが削除された＝取り下げ）。"
+                         "人コメントは読めないため自動で原因を判断してやり直してください。",
+                         data={"decision": "rejected", "guidance": ""})
+        run.set_status("failed")
+        self.assertEqual(kf.report_board_results(self.bus, board, "pc-a"), ["dg-5"])
+        res = json.load(open(os.path.join(self.board, "delegations", "dg-5", "result.json")))
+        self.assertTrue(res["reject_guidance"].startswith("却下されました"))
+        self.assertNotIn("[gitlab-reject]", res["reject_guidance"])
+
+    def test_report_results_omits_extras_when_nothing_to_report(self):
+        # 何も無ければ result_notes/discoveries/reject_guidance を空で埋めない（省略）。
+        self._post("dg-4", workspace={"url": "git@h:team/app.git"})
+        args = self._args()
+        kf.poll_board(self.bus, args, "pc-a")
+        board = kf._board_bus(self.board, "pc-a", args)
+        self.bus.run_view("dg-4").set_status("done")
+        kf.report_board_results(self.bus, board, "pc-a")
+        res = json.load(open(os.path.join(self.board, "delegations", "dg-4", "result.json")))
+        self.assertNotIn("reject_guidance", res)
+        self.assertNotIn("result_notes", res)
+        self.assertNotIn("discoveries", res)
+
+    def test_report_results_reflects_cancelled_status(self):
+        # 語彙統一（W0-9）後は flow の終端語彙も板と同じ cancelled（英式）——翻訳不要で素通り。
+        self._post("dg-2", workspace={"url": "git@h:team/app.git"})
+        args = self._args()
+        kf.poll_board(self.bus, args, "pc-a")
+        board = kf._board_bus(self.board, "pc-a", args)
+        self.bus.run_view("dg-2").set_status("cancelled")
+        reported = kf.report_board_results(self.bus, board, "pc-a")
+        self.assertEqual(reported, ["dg-2"])
+        d = os.path.join(self.board, "delegations", "dg-2")
+        res = json.load(open(os.path.join(d, "result.json")))
+        self.assertEqual(res["status"], "cancelled")
+
+
+class BoardLocalCloneTests(unittest.TestCase):
+    """S3: 板の請負側が公示 workspace に **自ノードの** ローカルクローンを載せる。
+
+    公示に載るのは依頼側が見た URL だけで、依頼側の local は請負ノードに存在しないので
+    正しく落とされている。だが請負側が自分の local を載せる実装が無かったため、板経由の仕事は
+    手元に同じリポジトリがあっても毎回ネットワーク越しにミラーを取り直していた
+    （C3「flow/amigos の git clone のリモート負荷」そのもの）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-board-local-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.board = os.path.join(self.tmp, "board")
+        os.makedirs(os.path.join(self.board, "delegations"), exist_ok=True)
+        self.bus = kf.Bus(os.path.join(self.tmp, "bus"), "run-bl")
+        self.clone = os.path.join(self.tmp, "mirrors", "app")
+        os.makedirs(self.clone, exist_ok=True)
+
+    def _use_host(self, repos):
+        home = os.path.join(self.tmp, "agents-home")
+        os.makedirs(home, exist_ok=True)
+        with open(os.path.join(home, "agent-project.host.json"), "w", encoding="utf-8") as f:
+            json.dump({"schema_version": 1, "repos": repos}, f)
+        old = os.environ.get("AGENT_PROJECT_AGENTS_HOME")
+        os.environ["AGENT_PROJECT_AGENTS_HOME"] = home
+        self.addCleanup(lambda: os.environ.__setitem__("AGENT_PROJECT_AGENTS_HOME", old)
+                        if old is not None else os.environ.pop("AGENT_PROJECT_AGENTS_HOME", None))
+
+    def _post(self, did, **kw):
+        d = os.path.join(self.board, "delegations", did)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "post.json"), "w", encoding="utf-8") as f:
+            json.dump({"op": "post", "version": 1, "id": did, "workload": "flow",
+                       "goal": "実装", **kw}, f)
+        return d
+
+    def _args(self):
+        return types.SimpleNamespace(
+            board=self.board, board_workdir=None, board_branch="main",
+            board_repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}},
+            board_tags=[], board_lease=900.0)
+
+    def test_won_delegation_carries_this_nodes_local_clone(self):
+        self._use_host([{"url": "git@h:team/app.git", "local": self.clone}])
+        self._post("dg-l1", workspace={"url": "git@h:team/app.git", "base": "main"})
+        self.assertEqual(kf.poll_board(self.bus, self._args(), "pc-a"), ["dg-l1"])
+        ws = self.bus.read_inbox("dg-l1")["workspace"]
+        self.assertEqual(ws["local"], self.clone, "手元のクローンから worktree を切れる")
+        self.assertEqual(ws["base"], "main", "公示の内容は保つ")
+
+    def test_undeclared_repo_leaves_workspace_untouched(self):
+        self._use_host([{"url": "git@h:team/other.git", "local": self.clone}])
+        self._post("dg-l2", workspace={"url": "git@h:team/app.git", "base": "main"})
+        self.assertEqual(kf.poll_board(self.bus, self._args(), "pc-a"), ["dg-l2"])
+        ws = self.bus.read_inbox("dg-l2")["workspace"]
+        self.assertNotIn("local", ws, "宣言が無ければ従来どおりミラーから取る")
+
+    def test_eligibility_is_unchanged_by_url_normalisation(self):
+        # 正規化を agentcore へ統一しても入札判定は変わらない（末尾 .git・大小文字の吸収）。
+        repos = {"app": {"url": "git@h:team/app.git", "owns": ["**"]}}
+        self.assertTrue(kf.board_eligible({"workspace": {"url": "git@h:team/app"}}, repos, []))
+        self.assertTrue(kf.board_eligible({"workspace": {"url": "git@H:team/App.git"}}, repos, []))
+        self.assertFalse(kf.board_eligible({"workspace": {"url": "git@h:team/apps.git"}}, repos, []))
+
+
+class BoardManualBidTests(unittest.TestCase):
+    """S8-3: 手動入札（人が「このノードで請け負う」を押し、常駐体が先に bid を書く）。
+
+    自動入札は repos/tags 照合で自分を抑えるが、人がボタンを押したときはその自己抑制を
+    人が上書きしたということ。ここで選別を問い直すと、書かれた入札は永遠に取り込まれない。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-board-manual-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.board = os.path.join(self.tmp, "board")
+        os.makedirs(os.path.join(self.board, "delegations"), exist_ok=True)
+        self.bus = kf.Bus(os.path.join(self.tmp, "bus"), "_")
+
+    def _post(self, did, **kw):
+        d = os.path.join(self.board, "delegations", did)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "post.json"), "w", encoding="utf-8") as f:
+            json.dump({"op": "post", "version": 1, "id": did, "workload": "flow",
+                       "goal": "実装", **kw}, f)
+        return d
+
+    def _args(self, **kw):
+        base = dict(board=self.board, board_workdir=None, board_branch="main",
+                    board_repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}},
+                    board_tags=["python"], board_agent_cli=["codex"], board_lease=900.0,
+                    node_declaration=os.path.join(self.tmp, "no-such-host.yaml"))
+        base.update(kw)
+        return types.SimpleNamespace(**base)
+
+    def _write_bid(self, ddir, node_id, lease_until):
+        bids = os.path.join(ddir, "bids")
+        os.makedirs(bids, exist_ok=True)
+        with open(os.path.join(bids, f"{node_id}.json"), "w", encoding="utf-8") as f:
+            json.dump({"who": node_id, "ts": 1.0, "lease_until": lease_until,
+                       "workload": "flow"}, f)
+
+    def test_own_live_bid_overrides_repo_selection(self):
+        # 担当外のリポジトリ（自動入札なら見送る公示）でも、自分名義の入札があれば取り込む。
+        d = self._post("dg-m1", workspace={"url": "git@h:team/other.git"})
+        self.assertEqual(kf.poll_board(self.bus, self._args(), "pc-a"), [],
+                         "前提: 自動入札はこの公示を拾わない")
+        self._write_bid(d, "pc-a", time.time() + 900)
+        self.assertEqual(kf.poll_board(self.bus, self._args(), "pc-a"), ["dg-m1"])
+        self.assertIsNotNone(self.bus.read_inbox("dg-m1"))
+
+    def test_own_live_bid_overrides_tag_selection(self):
+        d = self._post("dg-m2", requires={"tags": ["gpu"]},
+                       workspace={"url": "git@h:team/app.git"})
+        self.assertEqual(kf.poll_board(self.bus, self._args(), "pc-a"), [])
+        self._write_bid(d, "pc-a", time.time() + 900)
+        self.assertEqual(kf.poll_board(self.bus, self._args(), "pc-a"), ["dg-m2"])
+
+    def test_expired_own_bid_does_not_override(self):
+        # 人の意思も lease と一緒に失効する。切れた入札で選別を素通りし続けない。
+        d = self._post("dg-m3", workspace={"url": "git@h:team/other.git"})
+        self._write_bid(d, "pc-a", time.time() - 10)
+        self.assertEqual(kf.poll_board(self.bus, self._args(), "pc-a"), [])
+
+    def test_other_nodes_bid_does_not_override(self):
+        d = self._post("dg-m4", workspace={"url": "git@h:team/other.git"})
+        self._write_bid(d, "pc-b", time.time() + 900)
+        self.assertEqual(kf.poll_board(self.bus, self._args(), "pc-a"), [])
+
+    def test_owner_picks_manual_bid_still_waits_for_award(self):
+        # 手動入札は「応募してよい」までで、落札を勝手に決めはしない（依頼者の award が要る）。
+        d = self._post("dg-m5", workspace={"url": "git@h:team/other.git"},
+                       policy={"assignment": "owner-picks"})
+        self._write_bid(d, "pc-a", time.time() + 900)
+        self.assertEqual(kf.poll_board(self.bus, self._args(), "pc-a"), [])
+        with open(os.path.join(d, "award.json"), "w", encoding="utf-8") as f:
+            json.dump({"node": "pc-a"}, f)
+        self.assertEqual(kf.poll_board(self.bus, self._args(), "pc-a"), ["dg-m5"])
+
+
+class BoardDoubleIntakeTests(unittest.TestCase):
+    """同一ノードで 2 つのプロジェクトが同じ板を巡回したときの二重取り込み。
+
+    取り込み済みの判定を「自分のバス」でしていたため、A のバスへ取り込んだ直後の公示を
+    B のバスへもう一度取り込んでいた（同一ノードでの二重実行）。判定は板の
+    `status/<who>.json`（自分が落札・引き渡し済みの印）を先に見る。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-board-dup-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.board = os.path.join(self.tmp, "board")
+        os.makedirs(os.path.join(self.board, "delegations"), exist_ok=True)
+        self.bus_a = kf.Bus(os.path.join(self.tmp, "bus-a"), "_")
+        self.bus_b = kf.Bus(os.path.join(self.tmp, "bus-b"), "_")
+        d = os.path.join(self.board, "delegations", "dg-x")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "post.json"), "w", encoding="utf-8") as f:
+            json.dump({"op": "post", "version": 1, "id": "dg-x", "workload": "flow",
+                       "goal": "実装", "workspace": {"url": "git@h:team/app.git"}}, f)
+
+    def _args(self):
+        return types.SimpleNamespace(
+            board=self.board, board_workdir=None, board_branch="main",
+            board_repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}},
+            board_tags=[], board_agent_cli=[], board_lease=900.0,
+            node_declaration=os.path.join(self.tmp, "no-such-host.yaml"))
+
+    def test_second_bus_on_same_node_does_not_take_it_again(self):
+        self.assertEqual(kf.poll_board(self.bus_a, self._args(), "pc-a"), ["dg-x"])
+        self.assertEqual(kf.poll_board(self.bus_b, self._args(), "pc-a"), [],
+                         "同じノードの別プロジェクトが同じ公示を取り込まない")
+        self.assertIsNone(self.bus_b.read_inbox("dg-x"))
+
+    def test_other_node_still_blocked_by_first_come_winner(self):
+        self.assertEqual(kf.poll_board(self.bus_a, self._args(), "pc-a"), ["dg-x"])
+        bus_c = kf.Bus(os.path.join(self.tmp, "bus-c"), "_")
+        self.assertEqual(kf.poll_board(bus_c, self._args(), "pc-b"), [])

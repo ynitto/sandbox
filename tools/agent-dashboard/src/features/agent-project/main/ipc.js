@@ -6,21 +6,14 @@
 const fs = require('fs');
 const path = require('path');
 const project = require('./project');
+const engine = require('./engine');
 const flow = require('./flow');
-const { lookupScalar } = require('./toolconfig');
+const git = require('../../../base/main/git');
 const { openInReviewViewer } = require('./review');
 const actions = require('./actions');
 const authoring = require('./authoring');
 const agent = require('./agent');
 const reset = require('./reset');
-
-// agent-flow daemon ロックの置き場。⚙ 設定 > ~/.agent の agent-project/agent-flow 設定の
-// lock_dir > 両ツール共通の既定（tempdir 配下。daemonStatus 側で導出）。
-function flowLockDir(cfg) {
-  if (cfg.projects && cfg.projects.flowLockDir) return cfg.projects.flowLockDir;
-  const found = lookupScalar('lock_dir');
-  return found ? found.value : null;
-}
 
 // ゴミ箱へ移動（可能な環境ではリカバリできる）。ゴミ箱が無い環境では完全削除
 async function removeToTrash(shell, target) {
@@ -34,33 +27,30 @@ async function removeToTrash(shell, target) {
 }
 
 function registerIpc(ctx) {
-  const { handle, loadConfig, saveConfig, shell, client } = ctx;
+  const { handle, loadConfig, shell, client } = ctx;
   const trash = (target) => removeToTrash(shell, target);
 
-  // 発見: 設定 roots + instances 自動発見 → コンテナ→プロジェクトのツリー
+  // 発見: 実行エンジンの状況ファイル（engine/status.json）に載っているプロジェクト
   handle('dashboard:discover', () => project.discover(loadConfig()));
 
-  // プロジェクトの登録を実体に即して直接消す（config.roots のエントリ削除、または
-  // ~/.agent-project/instances/*.json の該当レコード削除）。ファイル・ディレクトリ本体は
-  // 一切触らない。親フォルダのスキャンで見つかった子は個別の登録が無いためエラーにする
-  // （親フォルダの登録自体を ⚙ 設定のプロジェクトルートから編集してもらう）。
-  handle('dashboard:removeProject', ({ dir }) => {
+  // 実行エンジンの状況（稼働・共有の進み具合・直近のエラー・切り離したプロジェクト）。
+  // 画面の稼働表示・同期表示はすべてこの 1 枚が根拠（実装計画 W2-3・W2-5）。
+  handle('engine:status', () => {
+    const status = engine.readStatus(loadConfig());
+    return { ...status, ...engine.summarize(status) };
+  });
+
+  // 「今すぐ同期」。自動回復が既定で、これはその前倒し——投函するだけで実行は常駐体が行う。
+  handle('engine:heal', ({ dir }) => {
     if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    const { file } = actions.dropCommand(dir, { action: 'heal', reason: 'agent-dashboard から今すぐ同期' });
+    return { file, via: 'file' };
+  });
+
+  // セットアップ診断: 発見したプロジェクトの置き場が共有できる状態かを赤/緑で返す。
+  handle('setup:diagnostics', () => {
     const cfg = loadConfig();
-    const result = project.removeProjectRegistration(cfg, dir);
-    if (result.removedFrom === 'roots') {
-      cfg.projects = cfg.projects || {};
-      cfg.projects.roots = result.roots;
-      saveConfig(cfg);
-      return { removedFrom: 'roots' };
-    }
-    if (result.removedFrom === 'instance') {
-      return { removedFrom: 'instance', file: result.file };
-    }
-    throw new Error(
-      '登録元が見つかりません（親フォルダ登録の配下で自動発見されたプロジェクトは個別に削除できません。' +
-        '⚙ 設定のプロジェクトルートから親フォルダの登録を編集してください）'
-    );
+    return git.diagnostics(cfg.role, engine.projectRoots(cfg));
   });
 
   // 1 プロジェクトの完全スナップショット（バスの発見に設定 projects.flowBus も使う）
@@ -115,10 +105,7 @@ function registerIpc(ctx) {
     const merged = [...runs, ...archived].sort((a, b) =>
       String(b.createdAt || '').localeCompare(String(a.createdAt || ''))
     );
-    return {
-      runs: merged,
-      daemon: flow.daemonStatus(busDir, flowLockDir(loadConfig())),
-    };
+    return { runs: merged };
   });
   handle('flow:run', ({ dir, busDir, runId }) => {
     const runDir = path.join(busDir, 'runs', runId);
@@ -143,14 +130,14 @@ function registerIpc(ctx) {
   // 失敗した run の「やり直し」。
   //
   // agent-project 配下の run なら、bus へ投げ直すのではなく **タスクを積み直す**。
-  // bus/inbox は agent-flow の daemon が拾う契約だが、agent-project は daemon を使わず run を
-  // 都度起動する（manage_flow_daemon の既定は false）。そこへ投入しても誰も拾わない＝押しても
+  // bus/inbox は板から受けた委譲を拾う契約で、agent-project 自身は run を都度起動する。
+  // そこへ投入しても誰も拾わない＝押しても
   // 何も起きないボタンになる。しかも inbox 投入は agent-project のタスク状態に触らないため、
   // 仮に走っても結果が settle されず、タスクは doing のまま取り残される。
   // タスクを ready へ戻せば agent-project が新しい run を起こし、結果も正しく回収する。
   // （run-id にはタスク ID が埋まっている: req-<hash>-<task-id>-r<n>）
   //
-  // agent-flow を単体で使っている run（タスクに紐づかない・daemon 運用）は従来どおり inbox へ。
+  // agent-flow を単体で使っている run（タスクに紐づかない）は従来どおり inbox へ。
   handle('flow:resubmit', async ({ dir, busDir, runId }) => {
     const meta = flow.readRunMeta(busDir, runId);
     // run-id にタスクが埋まっていない旧形式（run-<ts>-<rand>）でも、作業ブランチ ap/<task-id>
@@ -228,37 +215,20 @@ function registerIpc(ctx) {
     return res;
   });
 
-  // 不要なバックログタスクの削除（人の明示アクション）。backlog/<id>.md だけを
-  // 対象にし、実行中（doing かつクレームあり）のタスクは拒否する。
-  // クレームロック（claims/<id>.lock）は worker のクラッシュや review/blocked
-  // 滞留で残骸が残るため（agent-project 本体も approve 時に掃除する）、
-  // ロックの存在だけでは拒否せず、削除時に残骸ロックも一緒に片付ける。
-  // agent-project に削除の公式契約は無いため、ファイルをゴミ箱へ移動する
-  handle('dashboard:deleteTask', async ({ dir, id }) => {
-    const tid = String(id || '');
-    if (!tid || tid !== path.basename(tid)) throw new Error(`不正なタスク ID です: ${id}`);
-    const file = path.join(dir, 'backlog', `${tid}.md`);
-    if (!fs.existsSync(file)) throw new Error(`タスクファイルがありません: ${file}`);
-    const lockFile = path.join(dir, 'claims', `${tid}.lock`);
-    const status = project.parseTask(fs.readFileSync(file, 'utf8'), tid).status;
-    if (status === 'doing' && fs.existsSync(lockFile)) {
-      throw new Error(`${tid} は実行中（doing・クレーム中）のため削除できません`);
-    }
-    const via = await trash(file);
-    try {
-      fs.rmSync(lockFile, { force: true }); // 残骸ロックを掃除（無ければ no-op）
-    } catch {
-      /* ロックの掃除失敗は削除自体の失敗にしない */
-    }
-    return { file, via };
-  });
+  // 不要なバックログタスクの削除（人の明示アクション）＝物理削除（ゴミ箱へ移動）。
+  // 「作り直させない」意思表示は却下（reject）が担う（requestDeleteTask のコメントに理由）。
+  handle('dashboard:deleteTask', async ({ dir, id, reason }) =>
+    actions.requestDeleteTask(loadConfig(), { dir, id, reason }, trash));
+
+  // 墓標の解除（削除＝却下の取り消し）。同じ題のタスクを入れ直せる状態へ戻す。
+  handle('dashboard:revive', async ({ dir, title, charter }) =>
+    actions.requestRevive(loadConfig(), { dir, title, charter }));
 
   // プロジェクトのリセット（人の明示アクション・危険操作）。charter.md 以外の全データを
-  // ゴミ箱へ移動し、バスの agent-flow daemon を停止する。charter は「プロジェクト全体の前提
+  // ゴミ箱へ移動する。charter は「プロジェクト全体の前提
   // （マスター）」として残す＝分解されないので、リセット後は待機状態になり作業は計画バージョンの
   // 追加で再開する（初版 charter からマイルストーンが出てこない）。
-  // 順序は「daemon 停止 → charter をマスター化 → 削除」:
-  //   - 先に daemon を止めないと worker が消したバスへ結果を書き戻す。
+  // 順序は「charter をマスター化 → 削除」:
   //   - 削除の前に charter をマスター化しておくと、削除中に本体が非マスター charter を分解して
   //     マイルストーンを作る取りこぼしを防げる（削除がその残骸も一緒に片付ける）。
   // ドット始まりの同期内部（.state-git 等）は温存する — 管理クローンの manifest が残る
@@ -270,7 +240,6 @@ function registerIpc(ctx) {
     const cfg = loadConfig();
     const plan = reset.planReset(dir);
     const bus = project.resolveBusDir(dir, workspace || dir, cfg);
-    const daemon = await flow.stopDaemon(bus.busDir, flowLockDir(cfg));
     let masterized = false;
     try {
       const info = authoring.readProjectFile(dir, 'charter.md');
@@ -286,7 +255,7 @@ function registerIpc(ctx) {
       /* マスター化に失敗してもリセット自体は続行する */
     }
     const res = await reset.executeReset(plan, trash);
-    return { ...res, daemon, masterized, busDir: bus.busDir, busSource: bus.source };
+    return { ...res, masterized, busDir: bus.busDir, busSource: bus.source };
   });
 
   // 実行中ノードの関連イシューを決定的タスクトークンで検索（gitlab executor 連動）
@@ -348,9 +317,33 @@ function registerIpc(ctx) {
   });
 
 
+  // 監視担当の割り当て（チーム運用）。assignments.json（viewer 管理のサイドカー）だけを
+  // 書き、タスク状態ファイルには触れない。空の owner で割り当て解除。
+  handle('dashboard:setOwner', ({ dir, id, owner }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    return actions.setTaskOwner(dir, id, owner);
+  });
+
+  // 成果物レビューのコメント（reviews/<task-id>/）。複数メンバーが投稿し、監視担当者が
+  // 確認・整理して承認/再実行を判断する。1 コメント = 1 ファイル（同時投稿が衝突しない）。
+  handle('dashboard:addComment', ({ dir, taskId, author, text }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    return actions.addReviewComment(dir, taskId, { author, text });
+  });
+  handle('dashboard:editComment', ({ dir, taskId, commentId, text }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    return actions.editReviewComment(dir, taskId, commentId, text);
+  });
+  handle('dashboard:deleteComment', ({ dir, taskId, commentId }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    return actions.deleteReviewComment(dir, taskId, commentId, trash);
+  });
+
   // 人のアクション（needs 回答・タスク投入・決定記録を残す CLI 操作）
   handle('dashboard:feedback', ({ file, feedback, stub }) => actions.submitFeedback(file, feedback, stub));
   handle('dashboard:enqueue', ({ dir, spec }) => actions.enqueueToInbox(dir, spec || {}));
+  // 作成時 lint（案5）: 投入前に情報不足・曖昧 accept を警告する（非ブロック。判断は監視者）。
+  handle('dashboard:lintTask', ({ spec }) => authoring.lintTaskSpec(spec || {}));
   handle('dashboard:action', (args) => actions.runAction(loadConfig(), args));
 
   // charter からのバックログ再分解を要求（エラー回復・やり直し）。プロジェクト単位（id 無し）。
@@ -361,6 +354,21 @@ function registerIpc(ctx) {
     return actions.requestReplan(loadConfig(), { dir, reason, charter });
   });
 
+  // 観点メモ（notes/）。plan は自動では消費しないので、書いても計画は勝手に動かない。
+  // 分解は人が明示的に押したときだけ（commands/distill-notes ドロップ）。
+  handle('dashboard:listNotes', ({ dir }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    return actions.listNotes(dir);
+  });
+  handle('dashboard:writeNote', ({ dir, name, body }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    return actions.writeNote(dir, { name, body });
+  });
+  handle('dashboard:distillNotes', ({ dir, charter }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    return actions.requestDistillNotes(loadConfig(), { dir, charter });
+  });
+
   // プロジェクト単位のライフサイクル操作（pause / resume / stop）。commands/ ドロップ
   // （＋都度 push）で届け、リモート本体（WSL・別ホスト）の watch が同期間隔内に取り込む。
   handle('dashboard:lifecycle', ({ dir, action, reason }) => {
@@ -368,12 +376,9 @@ function registerIpc(ctx) {
     return actions.requestLifecycle(loadConfig(), { dir, action, reason });
   });
 
-  // 本体（agent-project）の起動。停止中の本体は commands/ を読めないため、ファイルドロップ
-  // でなくこの PC の CLI で `agent-project start` を実行する（detach され即座に戻る）。
-  handle('dashboard:start', ({ dir }) => {
-    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
-    return actions.startProject(loadConfig(), { dir });
-  });
+  // 本体を CLI で起こす経路（旧 dashboard:start）は削除した（実装計画 W2-2）。
+  // 実行エンジンの起動・再起動は OS の起動系（systemd 等）の管轄で、この画面は
+  // 止まっていることを案内表示するところまでを担う。
 
   // オーサリング（作成・編集）。人が書く上位入力ファイル（charter/policy/repos）だけを
   // 対象にし、タスク状態は触らない（done は verify のみが根拠の不変条件を壊さない）。
@@ -469,6 +474,14 @@ function registerIpc(ctx) {
     return agent.completeDoctor(loadConfig(), { dir: dir || null, context, userPrompt, mode });
   });
 
+  // 失敗診断を tmux の対話セッションで開く（S9-4）。ヘッドレスの agent:doctor と**同じ文脈**を
+  // 受け取り、渡し方だけを変える（ブリーフ 1 行 ＋ 全文ファイルのパス）。読み取り専用・
+  // セッション永続化なしで起動し、セッション名も作業用と別系統にする。
+  handle('agent:doctorChat', ({ dir, context, needId, userPrompt }) => {
+    if (!context || typeof context !== 'object') throw new Error('画面の状態が指定されていません');
+    return agent.openDoctorChat(loadConfig(), { dir: dir || null, context, needId, userPrompt });
+  });
+
   // フォローアップ案・依存/優先度提案。JSON を返すだけで inbox / backlog には書かない。
   handle('agent:taskAssist', ({ dir, mode, context, userPrompt }) => {
     if (!context || typeof context !== 'object') throw new Error('補助コンテキストが指定されていません');
@@ -489,10 +502,14 @@ function registerIpc(ctx) {
   handle('agent:resolve', ({ dir }) => agent.resolveAgent(loadConfig(), dir));
 
   // 保存済みの全体エージェント設定で、選択中ワークスペースの対話CLIを外部 tmux に開く。
-  handle('agent:openChat', ({ dir }) => {
+  // cwd は省略でプロジェクト（状態リポジトリ）、指定でこのノードの成果物クローン等（S3-4）。
+  handle('agent:openChat', ({ dir, cwd }) => {
     if (!dir) throw new Error('プロジェクトを選択してください');
-    return agent.openInteractiveChat(loadConfig(), dir);
+    return agent.openInteractiveChat(loadConfig(), dir, cwd);
   });
+
+  // CLIチャットの起動先候補（プロジェクト + このノードにクローンがある成果物リポジトリ）。
+  handle('agent:chatCwdChoices', ({ dir }) => agent.chatCwdChoices(loadConfig(), dir));
 
   // gitlab-review-viewer へレビューを引き継ぐ
   handle('review:open', ({ target }) => openInReviewViewer(loadConfig(), target || {}));
@@ -500,4 +517,4 @@ function registerIpc(ctx) {
 
 }
 
-module.exports = { registerIpc, flowLockDir };
+module.exports = { registerIpc };

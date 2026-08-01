@@ -24,10 +24,15 @@ assert.match(html, /data-tab="project-settings"[^>]*>プロジェクト設定</)
 assert.match(html, /data-tab="orchestration"[^>]*>全体設定</);
 const projectHeader = html.slice(html.indexOf('<header id="project-header">'), html.indexOf('<nav id="tabs">'));
 assert.match(projectHeader, /id="btn-cli-chat"[^>]*disabled/);
-assert.ok(projectHeader.includes('CLIチャットを開く'), 'CLIチャットは対象が分かるプロジェクトヘッダーに置きます');
+assert.ok(projectHeader.includes('この作業を相談'), '相談は対象が分かるプロジェクトヘッダーに置きます');
 assert.ok(renderer.includes('function openCliChat('));
-assert.ok(renderer.includes('api.agentOpenChat({ dir })'), '選択中ワークスペースをCLIチャット起動へ渡します');
-assert.match(css, /\.project-cli-chat\s*\{[^}]*min-height:\s*36px/s);
+assert.ok(renderer.includes('api.agentOpenChat({ dir, cwd })'),
+  '選択中ワークスペースと起動先フォルダをCLIチャット起動へ渡します');
+// 起動先（cwd）の選択（S3）。プロジェクトのフォルダは S1 以降「状態リポジトリの clone」なので、
+// コードを触りたくて CLI を開いてもそこには 1 行もコードが無い。成果物リポジトリを選べること。
+assert.ok(projectHeader.includes('id="cli-chat-cwd"'), 'CLIチャットの起動先を選べます');
+assert.ok(renderer.includes('function refreshCliChatCwdChoices('));
+assert.match(css, /\.project-cli-chat\s*\{[^}]*min-height:\s*44px/s);
 assert.match(css, /@media \(pointer:\s*coarse\)[\s\S]*?\.project-cli-chat\s*\{[^}]*min-height:\s*44px/s);
 assert.ok(
   html.indexOf('data-tab="project-settings"') < html.indexOf('data-tab="orchestration"'),
@@ -39,6 +44,20 @@ for (const id of ['btn-project-settings', 'dlg-project-settings', 'project-setti
 }
 assert.ok(!html.includes('>オーケストレーション</button>'), '内部用語をタブ名に出しません');
 assert.ok(!html.includes('>Amigos</button>'), 'UI のタブ名に内部機能名 Amigos を出しません');
+const coworkDialog = html.slice(
+  html.indexOf('<dialog id="dlg-cowork-work"'),
+  html.indexOf('<dialog id="dlg-cowork-save"')
+);
+assert.ok(coworkDialog.includes('<option value="loop">繰り返し作業</option>'));
+assert.ok(coworkDialog.includes('<option value="state-machine">手順付き作業</option>'));
+for (const removed of ['cw-repo', 'cw-workflow', 'cw-description', 'cw-enabled']) {
+  assert.ok(!coworkDialog.includes(`id="${removed}"`), `${removed} は作業ダイアログに表示しません`);
+}
+assert.ok(coworkDialog.includes('id="cw-prompt-field"'));
+assert.ok(coworkDialog.includes('id="cw-instruction-field"'));
+assert.strictEqual((coworkDialog.match(/cowork-kind-help/g) || []).length, 2,
+  '種類を切り替えても補足欄の高さを揃える');
+assert.match(css, /#dlg-cowork-work \.cowork-kind-help\s*\{[^}]*min-height:\s*2\.9em/s);
 assert.ok(!html.includes('定期・定型作業'));
 assert.ok(!renderer.includes('定期・定型作業'));
 assert.ok(renderer.includes('function overviewVersionsHtml('), '概要画面に計画バージョン一覧が必要です');
@@ -79,10 +98,15 @@ for (const id of ['dlg-settings', 'dlg-advanced-settings', 'btn-open-advanced-se
 }
 
 const technicalInfo = html.slice(html.indexOf('<dialog id="dlg-technical-info"'), html.indexOf('<dialog id="dlg-need-output"'));
-for (const id of ['cfg-roots', 'cfg-refresh', 'cfg-notify', 'cfg-flow-bus', 'cfg-flow-lockdir',
-  'cfg-project-command', 'cfg-agent-cli', 'cfg-cowork-loop-provider', 'cfg-gl-url']) {
+for (const id of ['cfg-refresh', 'cfg-notify', 'cfg-flow-bus', 'cfg-engine-distro', 'cfg-engine-home',
+  'cfg-agent-cli', 'cfg-cowork-loop-provider', 'cfg-gl-url']) {
   assert.ok(renderer.includes(`id="${id}"`), `全体設定ページに ${id} が必要です`);
   assert.ok(!technicalInfo.includes(`id="${id}"`), `詳細情報に ${id} を出しません`);
+}
+// プロジェクトの登録・本体起動・ロックの置き場は設定から消えた（W2-2〜W2-4）
+for (const id of ['cfg-roots', 'cfg-autodiscover', 'cfg-project-command', 'cfg-flow-lockdir',
+  'cfg-git-pull', 'cfg-git-autopush']) {
+  assert.ok(!renderer.includes(`id="${id}"`), `${id} は削除済みのはず`);
 }
 for (const section of ['app', 'agents', 'sync', 'routine', 'integrations']) {
   assert.ok(renderer.includes(`id: '${section}'`), `全体設定に ${section} 分類が必要です`);
@@ -136,6 +160,21 @@ const missionRequestDialog = html.slice(
   html.indexOf('<dialog id="dlg-amigos-post"'),
   html.indexOf('<dialog id="dlg-amigos-detail"')
 );
+assert.match(missionRequestDialog, /<form[^>]*class="dialog-shell"/,
+  '項目が増えても依頼ダイアログ全体が画面外へはみ出さない');
+assert.ok(missionRequestDialog.includes('class="dialog-scroll-body"'),
+  '入力欄だけをスクロールできる');
+assert.ok(missionRequestDialog.includes('おまかせ編成'));
+assert.ok(missionRequestDialog.includes('自分で役割を指定'));
+assert.ok(!missionRequestDialog.includes('<select id="amigos-post-home"'),
+  '対象チームは固定表示にし、選択操作を出さない');
+assert.match(missionRequestDialog, /<strong id="amigos-post-home-label"/,
+  '固定された対象チーム名を表示する');
+assert.match(css, /\.amigos-request-dialog\[open\]\s*\{[^}]*height:/s,
+  'モード切替でダイアログ外形を変えない');
+assert.match(css, /\.amigos-mode input\s*\{[^}]*position:\s*absolute;[^}]*opacity:\s*0/s,
+  'ラジオ入力はカードへ視覚的に統合する');
+assert.ok(!missionRequestDialog.includes('team-builder スキル'), '利用者向け説明に内部スキル名を出さない');
 assert.ok(!missionRequestDialog.includes('commands/'), '依頼画面に内部ディレクトリを出しません');
 assert.ok(!missionRequestDialog.includes('schemas/mission.schema.json'), '依頼画面にスキーマ名を出しません');
 assert.ok(!missionRequestDialog.includes('design doc'), '依頼画面に内部の成果物名を出しません');
@@ -164,6 +203,22 @@ assert.match(css, /\.developer-log\s*\{[^}]*overflow-wrap:\s*anywhere/s);
 assert.match(css, /\.developer-log\s*>\s*div\s*\{[^}]*word-break:\s*break-word/s);
 assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
 assert.match(css, /button:focus-visible/);
+assert.match(html, /id="toast"[^>]+role="status"[^>]+aria-live="polite"[^>]+aria-atomic="true"/,
+  '操作結果を支援技術にも通知します');
+assert.ok(renderer.includes('<button type="button" class="project-item'),
+  'プロジェクト選択はキーボード操作できるボタンにします');
+assert.ok(renderer.includes('aria-current="${state.selectedDir === p.dir'),
+  '選択中のプロジェクトを支援技術へ伝えます');
+const flowOverview = renderer.slice(renderer.indexOf('const overviewView ='), renderer.indexOf('const graphView ='));
+assert.ok(flowOverview.indexOf('${adviceBanner}') < flowOverview.indexOf('flow-progress-block'),
+  '次に必要な対応を進捗より先に表示します');
+assert.ok(flowOverview.indexOf('flow-progress-block') < flowOverview.indexOf('flow-request-details'),
+  '長い依頼内容は進捗と操作の後ろへ移します');
+assert.ok(flowOverview.includes('<details class="flow-request-details">'),
+  '依頼内容は必要なときだけ展開します');
+assert.match(css, /\.sync-action\s*\{[^}]*min-height:\s*44px/s);
+assert.match(css, /@media \(max-width: 900px\)[\s\S]*?#tabs\s*\{[^}]*flex-wrap:\s*wrap/s,
+  '狭い幅でも設定タブを横スクロールの外へ隠しません');
 assert.match(css, /\.amigos-mission-grid\s*\{/);
 assert.match(css, /\.amigos-mission-card\s*\{/);
 assert.match(css, /\.amigos-detail-dialog\s*\{/);
@@ -204,8 +259,12 @@ const restoreUiStateSource = renderer.slice(
   renderer.indexOf('function restoreUiState('),
   renderer.indexOf('\nfunction renderAllTabs(', renderer.indexOf('function restoreUiState('))
 );
+assert.ok(renderer.includes('function detailsUiKey('),
+  '明示キーのない折りたたみも再描画後に照合できる共通キーを持ちます');
+assert.match(renderer, /document\.querySelectorAll\('details'\)/,
+  '再描画される全折りたたみの開閉状態を保存します');
 assert.ok(
-  restoreUiStateSource.indexOf("document.querySelectorAll('details[data-ui-key]')")
+  restoreUiStateSource.indexOf("document.querySelectorAll('details')")
     < restoreUiStateSource.indexOf('Object.entries(ui.scroll)'),
   '詳細を開いてレイアウトを確定してからスクロール位置を復元します'
 );
@@ -276,5 +335,27 @@ assert.strictEqual(
 );
 assert.strictEqual(strategyDisplayLabel('sequential'), 'sequential');
 assert.ok(!strategyDisplayLabel({ patterns: ['map-reduce'] }).includes('[object Object]'));
+
+assert.ok(!html.includes('>（案'), '案番号などの設計用語をラベルに出しません');
+assert.ok(!renderer.includes('この PC の役割（案'), '設定ラベルに設計案番号を出しません');
+assert.ok(!renderer.includes('engineer（本体も動かす'), '役割選択肢に内部ロール名を前面に出しません');
+assert.ok(!renderer.includes('viewer（閲覧・レビュー専用）'), '役割選択肢に内部ロール名を前面に出しません');
+assert.ok(renderer.includes('>実行も行う（すべての機能）</option>'), '実行ロールは平易な日本語で示します');
+assert.ok(renderer.includes('>閲覧・レビュー専用</option>'), '閲覧ロールは平易な日本語で示します');
+assert.ok(!renderer.includes('登録された clone がありません'), '診断結果に clone などの開発用語を出しません');
+assert.ok(!renderer.includes('（役割: viewer）'), '診断結果に内部ロール名を括弧付きで出しません');
+assert.ok(!renderer.includes('再配分しました（computed を更新）'), '内部実装語をトーストに出しません');
+assert.ok(!html.includes('なぜ（why）'), 'スキーマフィールド名 why をラベルに出しません');
+assert.ok(!html.includes('（scope）'), 'スキーマフィールド名 scope をラベルに出しません');
+assert.ok(!html.includes('（out_of_scope）'), 'スキーマフィールド名 out_of_scope をラベルに出しません');
+assert.ok(!html.includes('（desc）'), 'スキーマフィールド名 desc をラベルに出しません');
+assert.ok(!html.includes('決定的に展開'), '実装寄りの用語を完了条件ラベルに出しません');
+assert.ok(!html.includes('生コマンド不要'), '実装寄りの用語を完了条件ラベルに出しません');
+assert.ok(html.includes('>定型の確認方法</label>'), '利用者には設定の目的が分かる名前を表示します');
+assert.ok(html.includes('>目的・背景</label>'), 'why 欄は目的・背景と表示します');
+assert.ok(html.includes('>変更してよい範囲</label>'), 'scope 欄は変更範囲として表示します');
+assert.ok(renderer.includes("why: '目的・背景'"), '誘導フィールド表示名から冗長な括弧説明を除きます');
+assert.ok(!renderer.includes('空にすると削除）'), '修正フォームのラベルに削除規約の括弧説明を詰め込みません');
+assert.ok(!renderer.includes('概要（desc）・目的（why）'), '要対応の案内にスキーマ名を出しません');
 
 console.log('user-centered-ui: all tests passed');

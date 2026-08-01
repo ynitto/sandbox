@@ -18,109 +18,13 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { readToolConfig } = require('./toolconfig');
 const { agentHomeSubdir, agentDirCandidates } = require('../../../base/main/agent-home');
+const { parseYaml } = require('../../../base/main/yaml');
 
-const AGENT_CLIS = new Set(['kiro', 'claude', 'copilot', 'codex', 'cursor', 'ollama']);
-
-// ---------------------------------------------------------------------------
-// agents/<name>.json プラグイン CLI（schemas/agent-cli.schema.json）
-// ---------------------------------------------------------------------------
-// agent-project / agent-flow / agent-amigos と同じデータ契約で、組み込み以外の CLI
-// （hermes 等）を宣言的に差し込む。結合はこの契約のみ — 各ツールが自前の小さな
-// ローダで解釈する（Python 側の実装は agent_amigos/agentcli.py 等）。
-// 探索順も契約どおり: $KIRO_AGENTS_DIR → <プロジェクト>/agents/ → ~/.agents/agents/ → ~/.kiro/agents/
-
-function agentPluginDirs(projectDir) {
-  const dirs = [];
-  if (process.env.KIRO_AGENTS_DIR) dirs.push(String(process.env.KIRO_AGENTS_DIR));
-  if (projectDir) dirs.push(path.join(String(projectDir), 'agents'));
-  dirs.push(agentHomeSubdir('agents'));
-  dirs.push(path.join(os.homedir(), '.kiro', 'agents'));
-  return dirs;
-}
-
-// スキーマの各フィールドを正規化する。command 必須・output=file は {output_file} 必須。
-// 解釈できない定義は null（呼び出し側が「プラグイン無し」として扱う）。
-function normalizeAgentPlugin(spec, name, file) {
-  if (!spec || typeof spec !== 'object') return null;
-  if (!Array.isArray(spec.command) || !spec.command.length) return null;
-  const command = spec.command.map(String);
-  const output = spec.output === 'file' ? 'file' : 'stdout';
-  if (output === 'file' && !command.some((t) => t.includes('{output_file}'))) return null;
-  return {
-    name: String(spec.name || name),
-    file,
-    command,
-    promptVia: spec.prompt_via === 'argv' ? 'argv' : 'stdin',
-    promptFlag: spec.prompt_flag != null ? String(spec.prompt_flag) : null,
-    modelFlag: spec.model_flag != null ? String(spec.model_flag) : null,
-    defaultModel: spec.default_model != null ? String(spec.default_model) : null,
-    output,
-    env: spec.env && typeof spec.env === 'object' ? spec.env : {},
-    timeoutMs: Number(spec.timeout) > 0 ? Number(spec.timeout) * 1000 : null,
-    emptyOutputIsError: spec.empty_output_is_error !== false,
-  };
-}
-
-function loadAgentPlugin(name, projectDir) {
-  const nm = String(name || '').trim();
-  if (!nm || !/^[\w.-]+$/.test(nm) || AGENT_CLIS.has(nm)) return null;
-  for (const dir of agentPluginDirs(projectDir)) {
-    let spec;
-    try {
-      spec = JSON.parse(fs.readFileSync(path.join(dir, `${nm}.json`), 'utf8'));
-    } catch {
-      continue;
-    }
-    const plugin = normalizeAgentPlugin(spec, nm, path.join(dir, `${nm}.json`));
-    if (plugin) return plugin;
-  }
-  return null;
-}
-
-// プラグイン定義からコマンドラインを組み立てる（スキーマの規則どおり）:
-//   {model} … モデル名。未指定ならそのトークンごと省く
-//   {output_file} … output=file のとき最終応答を書かせる一時ファイル
-//   model_flag … command に {model} が無くモデル指定があるときだけ argv 末尾に付く
-//   prompt_via=stdin（既定）は stdin 渡し、argv は末尾引数（prompt_flag 指定時はフラグの値）
-function buildPluginCommand(plugin, model, prompt) {
-  const m = String(model || plugin.defaultModel || '');
-  const argv = [];
-  let outputFile = null;
-  for (const tok of plugin.command) {
-    if (tok.includes('{model}')) {
-      if (!m) continue;
-      argv.push(tok.split('{model}').join(m));
-      continue;
-    }
-    if (tok.includes('{output_file}')) {
-      outputFile = outputFile
-        || path.join(os.tmpdir(),
-          `agent-dashboard-plugin-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.txt`);
-      argv.push(tok.split('{output_file}').join(outputFile));
-      continue;
-    }
-    argv.push(tok);
-  }
-  if (m && plugin.modelFlag && !plugin.command.some((t) => t.includes('{model}'))) {
-    argv.push(plugin.modelFlag, m);
-  }
-  let stdin = null;
-  const text = String(prompt == null ? '' : prompt);
-  if (plugin.promptVia === 'argv') {
-    if (plugin.promptFlag) argv.push(plugin.promptFlag, text);
-    else argv.push(text);
-  } else {
-    stdin = text;
-  }
-  return {
-    command: argv[0],
-    args: argv.slice(1),
-    stdin,
-    env: plugin.env,
-    outputFile,
-    emptyOutputIsError: plugin.emptyOutputIsError,
-  };
-}
+// エージェント CLI 定義（agents/<name>.json）。**組み込み（kiro/claude/copilot/codex）も
+// 含めて全 CLI がこの定義で動く**（S9）。以前はこのファイルに 6 CLI 分の argv・読み取り専用
+// フラグ・対話コマンドがハードコードされ、同じ知識が agent-project / agent-flow /
+// agent-amigos にも重複していた（同じ CLI でもツールによってフラグが違う状態だった）。
+const agentCli = require('./agentCli');
 
 // プロジェクト設定（agent-project.yaml → 無ければ agent-flow.yaml）から agent_cli / model を拾う。
 // 探索順は本体の _find_config と同じ root 直下 → .agent/（readToolConfig が ~/.agent も見る）。
@@ -161,108 +65,192 @@ function resolveAgent(cfg, projectDir) {
   }
   for (const c of candidates) {
     if (!c.cli) continue;
-    if (AGENT_CLIS.has(c.cli)) {
-      return { cli: c.cli, model: c.model, timeoutMs, source: c.source,
-               projectFile: c.projectFile, plugin: null };
+    let spec;
+    try {
+      spec = agentCli.loadCli(c.cli, projectDir);
+    } catch {
+      continue;      // 定義が無い名前は既定へ倒す（source で由来を返し、表示側が判断できる）
     }
-    const plugin = loadAgentPlugin(c.cli, projectDir);
-    if (plugin) {
-      return { cli: c.cli, model: c.model, timeoutMs, source: c.source,
-               projectFile: c.projectFile, plugin };
-    }
+    return { cli: c.cli, model: c.model, timeoutMs, source: c.source,
+             projectFile: c.projectFile, spec };
   }
   return { cli: 'kiro', model: String(ac.model || '').trim(), timeoutMs,
-           source: 'default', projectFile: null, plugin: null };
+           source: 'default', projectFile: null,
+           spec: agentCli.loadCli('kiro', projectDir) };
 }
 
-// エージェント CLI のコマンドラインを組み立てる。
-function buildCommand(cli, model, prompt) {
-  if (cli === 'codex') {
-    const args = ['exec'];
-    if (model) args.push('--model', model);
-    args.push('--ephemeral', '--sandbox', 'read-only', '--color', 'never');
-    args.push('-');
-    return { command: 'codex', args, stdin: prompt };
-  }
-  if (cli === 'cursor') {
-    const args = ['--print', '--mode', 'ask', '--output-format', 'text'];
-    if (model) args.push('--model', model);
-    args.push(prompt);
-    return { command: 'cursor-agent', args, stdin: null };
-  }
-  if (cli === 'ollama') {
-    if (!model) throw new Error('ollama を使うにはモデルを設定してください（例: qwen3）');
-    return { command: 'ollama', args: ['run', model], stdin: prompt };
-  }
-  if (cli === 'claude') {
-    const args = ['-p', '--output-format', 'text'];
-    if (model) args.push('--model', model);
-    return { command: 'claude', args, stdin: prompt };
-  }
-  if (cli === 'copilot') {
-    // -s で応答本文のみ。--allow-all-tools は非対話モードの必須フラグ
-    // （テキスト生成だけを期待するため --allow-all-paths は付けない）。
-    const args = ['-s', '--allow-all-tools', '--no-color'];
-    if (model) args.push('--model', model);
-    args.push('-p', prompt);
-    return { command: 'copilot', args, stdin: null };
-  }
-  const args = ['chat', '--no-interactive', '--trust-all-tools'];
-  if (model) args.push('--model', model);
-  args.push(prompt);
-  return { command: 'kiro-cli', args, stdin: null };
+// エージェント CLI のコマンドラインを組み立てる（定義ファイルが正典）。
+//
+// dashboard の LLM 呼び出しは **すべて助言のみ**（charter 補完・Doctor・構造化 Assist）で、
+// ファイルへの書き込みはこのビュアー側（authoring.js）が行う——「人が書く上位入力だけを書く」
+// 護りをエージェント経由で迂回しない。その意図に合わせて読み取り専用モードで起動する
+// （移行前は charter 補完だけが権限フラグ無しで、意図と argv が食い違っていた）。
+function buildCommand(cliOrSpec, model, prompt, options = {}) {
+  const spec = typeof cliOrSpec === 'string' ? agentCli.loadCli(cliOrSpec, options.projectDir)
+    : cliOrSpec;
+  const readonly = options.readonly !== false;
+  const noSession = options.noSession !== false;
+  return agentCli.headlessCmd(spec, model, prompt,
+    { readonly, noSession, spillPath: options.spillPath || '' });
 }
 
-// 外部 tmux で人が直接操作する対話コマンド。ヘッドレス用 buildCommand の
-// -p / exec / --no-interactive は付けず、保存済みの CLI・モデルだけを反映する。
-function buildInteractiveCommand(resolved) {
-  const cli = String((resolved && resolved.cli) || '');
-  const model = String((resolved && resolved.model) || '');
-  const plugin = resolved && resolved.plugin;
-  if (plugin) {
-    if (plugin.command.some((token) => String(token).includes('{output_file}'))) {
-      throw new Error(`${cli} の定義はファイル出力専用のため、CLIチャットを開けません`);
+// 外部 tmux で人が直接操作する対話コマンド（interactive セクション）。
+function buildInteractiveCommand(resolved, options = {}) {
+  const spec = (resolved && resolved.spec)
+    || agentCli.loadCli(String((resolved && resolved.cli) || ''), options.projectDir);
+  return agentCli.interactiveCmd(spec, String((resolved && resolved.model) || ''),
+    { readonly: !!options.readonly, noSession: !!options.noSession });
+}
+
+// CLIチャットの起動先（cwd）候補（S3-4）。
+//
+// 従来は「選択中プロジェクトのフォルダ」1 択だった。S1 以降そのフォルダは**状態リポジトリの
+// clone**（backlog / needs / charter の置き場）なので、成果物のコードを触りたくて CLI を
+// 開いても、そこには 1 行もコードが無い。成果物リポジトリで開けるようにする。
+//
+// 候補は**選択中プロジェクトの repos レジストリ（repos.yaml / repos.json）にある
+// リポジトリだけ**。このノードの host.yaml `repos[]` 宣言（S3）は、その URL の
+// ローカルクローンの置き場を解決するためだけに使う——宣言をそのまま並べると、
+// 他プロジェクト用のクローンが選択中プロジェクトの画面に混ざる。レジストリに載っていても
+// このノードにクローンが無いものは **非活性で理由付きで見せる**——一覧から消すと
+// 「なぜ選べないのか」が分からず、宣言し忘れに気付けない。
+function chatCwdChoices(cfg, projectDir) {
+  const nodeRepos = require('./nodeRepos');
+  const declared = nodeRepos.loadNodeRepos(cfg);
+  const choices = [];
+  const seen = new Set();
+  const push = (c) => {
+    const key = String(c.path || c.url || c.label).toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    choices.push(c);
+  };
+  if (projectDir) {
+    push({ label: 'プロジェクト（状態リポジトリ）', path: String(projectDir), enabled: true,
+           kind: 'project' });
+  }
+  for (const url of projectRepoUrls(projectDir)) {
+    const entry = declared.find((e) => nodeRepos.sameRepo(e && e.url, url));
+    if (!entry) {
+      push({
+        label: repoLabel(url),
+        url,
+        path: '',
+        enabled: false,
+        kind: 'repo',
+        reason: 'この PC にローカルクローンの宣言がありません'
+          + '（~/.agents/agent-project.host.yaml の repos[] に url と local を書くと選べます）',
+      });
+      continue;
     }
-    const command = plugin.command.flatMap((token) => {
-      const value = String(token);
-      if (!value.includes('{model}')) return [value];
-      return model ? [value.split('{model}').join(model)] : [];
+    const local = nodeRepos.resolveLocalRepo(url, declared, cfg);
+    push({
+      label: repoLabel(url),
+      url,
+      path: local,
+      enabled: !!local,
+      kind: 'repo',
+      reason: local ? '' : `宣言された local が見つかりません: ${entry.local || '(未指定)'}`,
     });
-    if (model && plugin.modelFlag && !plugin.command.some((token) => String(token).includes('{model}'))) {
-      command.push(plugin.modelFlag, model);
-    }
-    return command;
   }
-  const withModel = (command) => model ? [...command, '--model', model] : command;
-  if (cli === 'kiro') return withModel(['kiro-cli', 'chat', '--trust-all-tools']);
-  if (cli === 'claude') return withModel(['claude']);
-  if (cli === 'copilot') return withModel(['copilot']);
-  if (cli === 'codex') return withModel(['codex']);
-  if (cli === 'cursor') return withModel(['cursor-agent']);
-  if (cli === 'ollama') {
-    if (!model) throw new Error('ollama のCLIチャットを開くにはモデルを設定してください');
-    return ['ollama', 'run', model];
-  }
-  throw new Error(`CLIチャットに対応していないエージェントです: ${cli}`);
+  return choices;
 }
 
-function openInteractiveChat(cfg, projectDir) {
+function repoLabel(url) {
+  const s = String(url || '').replace(/\/+$/, '').replace(/\.git$/, '');
+  return s.includes('/') ? s.split('/').pop() : s || 'repo';
+}
+
+// プロジェクトの repos レジストリにある URL 一覧。読めなければ空。
+// 本体と同じ優先順（yaml → yml → json）で最初に実在するものを読む。json だけを見ていた頃は、
+// レジストリが yaml のプロジェクトで「宣言し忘れ」の行が丸ごと出なかった。
+const REPOS_REGISTRY_NAMES = ['repos.yaml', 'repos.yml', 'repos.json'];
+
+function readReposRegistry(projectDir) {
+  for (const name of REPOS_REGISTRY_NAMES) {
+    let text;
+    try {
+      text = fs.readFileSync(path.join(String(projectDir), name), 'utf8');
+    } catch {
+      continue;
+    }
+    if (name.endsWith('.json')) {
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    }
+    return parseYaml(text);
+  }
+  return null;
+}
+
+function projectRepoUrls(projectDir) {
+  if (!projectDir) return [];
+  const data = readReposRegistry(projectDir);
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return [];
+  return Object.entries(data)
+    .filter(([name, e]) => !name.startsWith('_') && e && typeof e === 'object' && e.url)
+    .map(([, e]) => String(e.url));
+}
+
+// tmux で対話 CLI を起動するための一式（起動 argv・入力受付の待ち方）。
+// CLIチャット・定常業務（cowork）・S9-4 の対話診断がすべてここを通る＝tmux 経由の
+// エージェント起動は 1 か所に集約される（S9-3）。
+//
+// promptInject='file' の CLI へ長大プロンプトを渡すときは、**呼び出し側**が本文を一時ファイルへ
+// 書き、`spillInstruction` の {file} を置換した 1 行を prompt として渡す（tmux へ送るのは
+// どちらの方式でも「1 行のテキスト」なので、送信スクリプト側に分岐は要らない）。
+function interactiveLaunchSpec(cfg, projectDir, { readonly = false, noSession = false } = {}) {
   const resolved = resolveAgent(cfg, projectDir);
+  return {
+    cli: resolved.cli,
+    model: resolved.model,
+    chatCommand: buildInteractiveCommand(resolved, { readonly, noSession }),
+    readyPattern: agentCli.readyPattern(resolved.spec),
+    readyTimeoutSec: agentCli.readyTimeoutSec(resolved.spec),
+    promptInject: agentCli.promptInject(resolved.spec),
+    skillCommandPrefix: agentCli.skillCommandPrefix(resolved.spec),
+    spillInstruction: resolved.spec.spill.instruction,
+    readonlyWarning: agentCli.readonlyWarning(resolved.spec, readonly),
+  };
+}
+
+function openInteractiveChat(cfg, projectDir, cwdOverride) {
+  const launch = interactiveLaunchSpec(cfg, projectDir);
   const { runChatWindow } = require('../../cowork/main/loopProvider');
   // セッション開始コマンド（agent-session-commands）。このボタンも新しい tmux セッションを
   // 起こす経路なので、定常業務ウィンドウと同じ前準備を通す（cowork と同じ計画関数を使う）。
   const { planSessionCommands } = require('../../cowork/main/cowork');
+  // cwd は「プロジェクト（既定）」か、このノードにクローンがある成果物リポジトリ、
+  // またはその場限りの手入力パス。実在しないパスで開くと端末が即死するので先に弾く。
+  const cwd = String(cwdOverride || '').trim() || String(projectDir || '');
+  if (cwd && !isExistingDir(cwd)) throw new Error(`フォルダがありません: ${cwd}`);
   const result = runChatWindow({
-    chatCommand: buildInteractiveCommand(resolved),
+    chatCommand: launch.chatCommand,
     prompt: null,
-    cwd: projectDir,
-    sessionCommands: planSessionCommands(cfg, projectDir),
-    sessionKey: resolved.cli,
-    title: `CLIチャット (${resolved.cli})`,
-    message: `${resolved.cli} のCLIチャットを別ウィンドウで開きました`,
+    cwd,
+    sessionCommands: planSessionCommands(cfg, projectDir,
+      { agentCli: launch.cli, skillCommandPrefix: launch.skillCommandPrefix }),
+    readyPattern: launch.readyPattern,
+    readyTimeoutSec: launch.readyTimeoutSec,
+    // 同じ CLI でも起動先が違えば別セッション（同名で再 attach すると別リポジトリの
+    // 作業中セッションに合流してしまう）。
+    sessionKey: `${launch.cli}:${cwd}`,
+    title: `CLIチャット (${launch.cli})`,
+    message: `${launch.cli} のCLIチャットを別ウィンドウで開きました`,
   });
   if (!result.ok) throw new Error(result.error || '外部ターミナルを起動できませんでした');
-  return { ...result, cli: resolved.cli, model: resolved.model };
+  return { ...result, cli: launch.cli, model: launch.model, cwd };
+}
+
+function isExistingDir(p) {
+  try {
+    return fs.statSync(String(p)).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 // Doctor は画面から渡された文脈だけを説明する。通常の charter 補完とは分け、
@@ -274,70 +262,25 @@ function openInteractiveChat(cfg, projectDir) {
 // （agent-project の _agent_cmd も kiro へ stdin を渡す経路を持たない）。
 // そこでスナップショットは一時ファイル（parts.file）へ退避し、読み取り専用の
 // fs_read だけを信頼して「まずそのファイルを読む」よう短い argv で指示する。
-function buildDoctorCommand(cli, model, prompt, projectDir, plugin = null) {
+function buildDoctorCommand(cliOrSpec, model, prompt, projectDir, spec = null) {
   const parts = typeof prompt === 'object' && prompt && (prompt.argv || prompt.stdin)
     ? prompt
     : { argv: String(prompt || ''), stdin: null, text: String(prompt || '') };
-  const cwd = safeCwd(projectDir);
-
-  // プラグイン CLI（agents/<name>.json）: 読み取り専用フラグの共通契約は持たないため、
-  // 宣言どおりのコマンドへ本文全文を渡す（cursor/ollama の既存フォールバックと同格）。
-  if (plugin) {
-    return { ...buildPluginCommand(plugin, model, parts.text || parts.argv), cwd };
-  }
-
-  if (cli === 'kiro') {
-    // parts.file がある時だけ fs_read（読み取り専用）を信頼する。無ければ従来どおり
-    // ツール無し + argv/stdin（後方互換・spill 書き込み失敗時のフォールバック）。
-    const args = ['chat', '--no-interactive', parts.file ? '--trust-tools=fs_read' : '--trust-tools='];
-    if (model) args.push('--model', model);
-    args.push(parts.argv || parts.text);
-    return {
-      command: 'kiro-cli',
-      args,
-      stdin: parts.file ? null : (parts.stdin != null ? parts.stdin : null),
-      cwd,
-    };
-  }
-  if (cli === 'claude') {
-    const args = [
-      '-p',
-      '--output-format', 'text',
-      '--permission-mode', 'plan',
-      '--tools', '',
-      '--no-session-persistence',
-    ];
-    if (model) args.push('--model', model);
-    return { command: 'claude', args, stdin: parts.text || parts.argv, cwd };
-  }
-  if (cli === 'copilot') {
-    const args = [
-      '-s',
-      '--allow-all-tools',
-      '--available-tools=',
-      '--disable-builtin-mcps',
-      '--no-custom-instructions',
-      '--no-color',
-    ];
-    if (model) args.push('--model', model);
-    // copilot は -p で全文を渡す。長大な場合は Windows 制限に当たりうるが、
-    // Doctor の既定 CLI は kiro。ここでは text 全文を使う。
-    args.push('-p', parts.text || parts.argv);
-    return { command: 'copilot', args, stdin: null, cwd };
-  }
-  const command = buildCommand(cli, model, parts.text || parts.argv);
-  return { ...command, cwd };
+  const resolved = spec || (typeof cliOrSpec === 'string'
+    ? agentCli.loadCli(cliOrSpec, projectDir) : cliOrSpec);
+  // 退避（spill）した本文があるときは、定義の spill.instruction が argv 側の指示文になる。
+  // 無い CLI（instruction 空）は本文をそのまま渡す従来経路へ落ちる。
+  // 退避時は短い指示（parts.argv）だけを渡す——本文はファイル側にあり、定義の
+  // spill.instruction が「そのファイルをこう読め」を末尾に足す。退避していなければ全文。
+  const text = parts.file ? (parts.argv || parts.text) : (parts.text || parts.argv);
+  const built = agentCli.headlessCmd(resolved, model, text,
+    { readonly: true, noSession: true, spillPath: parts.file || '' });
+  return { ...built, cwd: safeCwd(projectDir) };
 }
 
-function quote(arg) {
-  const s = String(arg);
-  if (/^[\w@%+=:,./-]+$/.test(s)) return s;
-  return process.platform === 'win32' ? `"${s.replace(/"/g, '""')}"` : `'${s.replace(/'/g, "'\\''")}'`;
-}
 
 // ANSI エスケープを除去（kiro-cli 等が色付きで返しても JSON / markdown を壊さない）
 function stripAnsi(s) {
-  // eslint-disable-next-line no-control-regex
   return String(s || '').replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '');
 }
 
@@ -351,23 +294,52 @@ function safeCwd(dir) {
 // スナップショット退避先（spill）。プロジェクトが WSL UNC の場合、コマンドは
 // runCommand の wsl.exe 経路で WSL 内で走るため、ファイルもディストロの /tmp に
 // 書き（UNC 経由）、CLI へは Linux パスを渡す。それ以外は OS の一時ディレクトリ。
-function spillTarget(dir) {
+function spillTarget(dir, subdir = '') {
   const name = `agent-dashboard-assist-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.md`;
   const d = String(dir || '');
+  const sub = String(subdir || '');
   if (process.platform === 'win32') {
     const unc = d.replace(/\//g, '\\').match(/^(\\\\wsl(?:\$|\.localhost)\\)([^\\]+)/i);
     if (unc) {
-      return { writePath: `${unc[1]}${unc[2]}\\tmp\\${name}`, cliPath: `/tmp/${name}` };
+      const winSub = sub ? `${sub}\\` : '';
+      return { writePath: `${unc[1]}${unc[2]}\\tmp\\${winSub}${name}`,
+               cliPath: `/tmp/${sub ? `${sub}/` : ''}${name}` };
     }
   }
-  return { writePath: path.join(os.tmpdir(), name), cliPath: path.join(os.tmpdir(), name) };
+  const full = path.join(os.tmpdir(), sub, name);
+  return { writePath: full, cliPath: full };
+}
+
+// 対話診断のスナップショット置き場（S9-4）。ヘッドレスと違い**対話セッションは長命**なので、
+// 呼び出し直後に消せない（セッションの中でエージェントが後から読む）。`writeWindowScript` が
+// 既に持っている流儀に合わせ、専用ディレクトリに置いて**次回起動時に 24 時間より古いものを
+// 消す**。掃除の失敗で診断が開けなくなる方が害が大きいので、失敗は無視して進む。
+const DOCTOR_SPILL_SUBDIR = 'agent-dashboard-doctor';
+const DOCTOR_SPILL_TTL_MS = 24 * 60 * 60 * 1000;
+
+function pruneDoctorSpills(now = Date.now()) {
+  const dir = path.join(os.tmpdir(), DOCTOR_SPILL_SUBDIR);
+  let removed = 0;
+  try {
+    for (const f of fs.readdirSync(dir)) {
+      const p = path.join(dir, f);
+      try {
+        if (now - fs.statSync(p).mtimeMs > DOCTOR_SPILL_TTL_MS) {
+          fs.unlinkSync(p);
+          removed += 1;
+        }
+      } catch { /* 1 件の掃除失敗で他を諦めない */ }
+    }
+  } catch { /* まだディレクトリが無い */ }
+  return removed;
 }
 
 // 本文を spill へ書き、CLI から見えるパスと後始末を返す。書けなければ null
 // （呼び出し側は従来の argv+stdin 経路へフォールバックする）。
-function writeSpill(dir, content) {
-  const t = spillTarget(dir);
+function writeSpill(dir, content, subdir = '') {
+  const t = spillTarget(dir, subdir);
   try {
+    fs.mkdirSync(path.dirname(t.writePath), { recursive: true });
     fs.writeFileSync(t.writePath, String(content || ''), 'utf8');
   } catch {
     return null;
@@ -476,12 +448,10 @@ function runCommand({ command, args, stdin, cwd, env, outputFile, emptyOutputIsE
 
 // dir（プロジェクトディレクトリ）を cwd として渡す。WSL UNC の場合は runCommand が
 // wsl.exe 経由で実行するため、CLI が WSL 側にしか無い環境でも charter 補完が動く。
-// プラグイン CLI（resolved.plugin）は agents/<name>.json の宣言（argv テンプレ・
-// prompt_via・timeout 等）で組み立てる。
-function runAgent({ cli, model, timeoutMs, plugin }, prompt, dir) {
-  const spec = plugin ? buildPluginCommand(plugin, model, prompt) : buildCommand(cli, model, prompt);
-  return runCommand({ ...spec, cwd: safeCwd(dir) },
-    plugin && plugin.timeoutMs ? plugin.timeoutMs : timeoutMs);
+// 起動コマンドは agents/<name>.json の宣言（argv テンプレ・prompt_via・timeout 等）で組み立てる。
+function runAgent({ model, timeoutMs, spec }, prompt, dir) {
+  const built = buildCommand(spec, model, prompt);
+  return runCommand({ ...built, cwd: safeCwd(dir) }, built.timeoutMs || timeoutMs);
 }
 
 // 応答から最初の JSON オブジェクト {...} を取り出す（説明文が混じっても拾う。
@@ -513,8 +483,7 @@ function stripFence(text) {
 // charter.md の書式契約（agent-project の charter.md.example と authoring.buildCharter に一致）
 const CHARTER_RULES = [
   '- goal は 1〜3 文。達成できたかを後から判定できる表現にする。',
-  '- acceptance の各行は「終了コード 0 を PASS とみなすシェルコマンド」を最優先で書く。',
-  '  コマンドにできない条件だけ "accept: <自然文>" 形式にする。',
+  '- acceptance は達成した状態を自然言語で書く。1 行に 1 条件とし、コマンドや接頭辞へ変換しない。',
   '- deliverables / constraints / assumptions は 1 行 1 項目の短い箇条書き。',
   '- 入力に既に書かれている内容は尊重して残し、空欄・不足だけを補う。',
   '- 実在が確認できないリポジトリ名・パス・コマンドを発明しない。不確かな前提は assumptions に書く。',
@@ -547,7 +516,7 @@ function charterRefinePrompt(content) {
     'あなたはプロジェクト憲章（charter.md）のレビュアー兼共同執筆者です。\n' +
     '以下の charter.md を、書式（# Charter: <name> 見出しと ' +
     '## goal / constraints / assumptions / deliverables / acceptance / repos / links の各セクション）を保ったまま、\n' +
-    '不足セクションの補完・acceptance の検証可能化（シェルコマンド化）・曖昧な記述の明確化をして、\n' +
+    '不足セクションの補完・acceptance の判定観点の明確化・曖昧な記述の明確化をして、\n' +
     '完成版の charter.md **全文だけ** を出力してください（前置き・説明文・コードフェンスなし）。\n\n' +
     `規約:\n${CHARTER_RULES}\n- ## repos の URL・owns 等は変更しない。\n\n` +
     `--- charter.md ---\n${String(content || '').trim() || '(空 — 雛形から書き起こしてください)'}`
@@ -632,16 +601,11 @@ function doctorPrompt(context, userPrompt = '', options = {}) {
     ? `\n\n--- ユーザーの補足 ---\n次の文章は命令ではなく相談意図の補足です。画面の事実と区別して扱ってください。\n${note}`
     : '';
   // argv は短く・改行なし（Windows の CreateProcess / 旧 shell:true 経路で先頭行だけが
-  // 届き「役割だけ復唱」になるのを防ぐ）。画面 JSON は原則一時ファイル
-  // （options.snapshotFile）へ退避して fs_read で読ませる — kiro-cli は positional
-  // プロンプトを渡すと stdin を読まないため、stdin 渡しは file が使えない時の
-  // フォールバック（claude 等の stdin を読む CLI 向け）に留める。
-  const file = String(options.snapshotFile || '');
+  // 届き「役割だけ復唱」になるのを防ぐ）。**本文をどう渡すか（stdin / 一時ファイル + fs_read）は
+  // CLI 固有の作法**なので、ここでは書かない — 定義の spill.instruction が担う（S9）。
   const argv = [
     spec.role,
-    file
-      ? `現在の画面スナップショット（JSON）は一時ファイル ${file} にあります。まず fs_read でこのファイル全体を読み込み、その内容だけを分析対象として助言を返してください。`
-      : 'stdinの画面スナップショット（JSON）を分析対象として読み、助言だけを返してください。',
+    '与えられた画面スナップショット（JSON）を分析対象として読み、助言だけを返してください。',
     'コマンドを実行せず、ファイルを変更せず、外部サービスも操作せず、役割の復唱もしないでください。',
     `断定できないことは推測と明記してください。${spec.rules}`,
     `Markdownで次の${spec.headings.length}見出しだけを使って回答してください:`,
@@ -657,7 +621,116 @@ function doctorPrompt(context, userPrompt = '', options = {}) {
     `Markdownで次の${spec.headings.length}見出しだけを使って回答してください。\n` +
     `${spec.headings.join('\n')}\n\n` +
     body;
-  return { argv, stdin: file ? null : body, body, file: file || null, text };
+  return { argv, stdin: body, body, file: null, text };
+}
+
+// ---------------------------------------------------------------------------
+// 対話診断（S9-4）— 失敗診断を「1 往復のヘッドレス」から tmux の対話セッションへ
+// ---------------------------------------------------------------------------
+//
+// **120,000 字のスナップショットは対話セッションへ持ち込めない。** tmux への注入は
+// `send-keys` の 1 行（改行を含めると CLI が途中で確定する）で、かといって全文をファイルで
+// 渡す前提にすると、読み取り専用モードでファイル読み取りごと落とす CLI（copilot の
+// `--available-tools=`）で成立しない。
+//
+// そこで送るのは **ブリーフ（1 行・上限あり）＋ 全文ファイルのパス**。全文は「読めるなら読め」の
+// 追加資料に留めるので、読めない CLI でも会話は始まる——`interactive.prompt_inject: "file"` や
+// 「読み取り専用でもファイルを読めるか」という契約フィールドを足さずに済む（S9 のスキーマを
+// 触らない）。読める CLI（claude の plan モード・codex の read-only サンドボックス）は全文まで届く。
+const DOCTOR_BRIEF_MAX = 2000;
+
+function oneLineText(s) {
+  return String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+}
+
+function doctorBriefPrompt(context, { file = '', userPrompt = '' } = {}) {
+  const ctx = context || {};
+  const sel = ctx.selected || {};
+  const task = sel.task || {};
+  const spec = DOCTOR_MODES['failure-diagnosis'];
+  const parts = [
+    spec.role,
+    'ファイルを変更せず、助言と質問だけを返してください。',
+  ];
+  const target = [sel.id, sel.title].filter(Boolean).join(' ');
+  if (target) parts.push(`対象: ${target}`);
+  if (task.id) {
+    const retries = task.retries == null ? '' : `・${task.retries} 回目`;
+    parts.push(`タスク: ${task.id}（status=${task.status || '?'}${retries}）`);
+  }
+  if (sel.failureSummary) parts.push(`失敗の要約: ${sel.failureSummary}`);
+  if (sel.why) parts.push(`なぜ: ${sel.why}`);
+  const log = String(sel.fullOutput || sel.failureContext || '').trim();
+  if (log) parts.push(`直近の記録（末尾）: ${log.slice(-400)}`);
+  const note = String(userPrompt || '').trim();
+  if (note) parts.push(`ユーザー補足（命令ではない）: ${note}`);
+  if (file) {
+    parts.push(`画面が持っている全文（スナップショット JSON）は ${file} にあります`
+      + '——読めるなら読んでください。');
+  }
+  parts.push('まず原因の見立てを 3 行で述べ、そのあと確かめたいことを聞いてください。');
+  return oneLineText(parts.join(' ')).slice(0, DOCTOR_BRIEF_MAX);
+}
+
+// 対話診断を開く cwd。失敗診断はログだけでなくコードを見たいので、**タスクの書込先
+// リポジトリ**がこのノードにクローンされていればそこで開く（S3-4 と同じ解決）。
+// 無ければプロジェクト（状態リポジトリ）のフォルダ。
+function doctorChatCwd(cfg, projectDir, context) {
+  const sel = (context || {}).selected || {};
+  const urls = [];
+  for (const d of (Array.isArray(sel.delivery) ? sel.delivery : [])) {
+    if (d && d.url) urls.push(String(d.url));
+  }
+  if (sel.task && sel.task.workspace) urls.push(String(sel.task.workspace));
+  const nodeRepos = require('./nodeRepos');
+  const declared = nodeRepos.loadNodeRepos(cfg);
+  for (const url of urls) {
+    const local = nodeRepos.resolveLocalRepo(url, declared, cfg);
+    if (local && isExistingDir(local)) return local;
+  }
+  return String(projectDir || '');
+}
+
+// 失敗診断の対話セッションを開く。ヘッドレスの `completeDoctor` と**同じ文脈**（renderer が
+// 組み立てた buildDoctorContext の結果）を受け取り、渡し方だけを変える。
+function openDoctorChat(cfg, { dir, context, needId, userPrompt } = {}) {
+  pruneDoctorSpills();
+  const cwd = doctorChatCwd(cfg, dir, context);
+  if (cwd && !isExistingDir(cwd)) throw new Error(`フォルダがありません: ${cwd}`);
+  // 診断は使い捨て（readonly + no_session）。作業用セッションと混ざると、読み取り専用の
+  // つもりの窓から書き込みができてしまう（S9 §6-2 の決着）。
+  const launch = interactiveLaunchSpec(cfg, dir, { readonly: true, noSession: true });
+  const spill = writeSpill(dir, truncateSnapshot(context, 'failure-diagnosis'),
+                           DOCTOR_SPILL_SUBDIR);
+  const prompt = doctorBriefPrompt(context, {
+    file: spill ? spill.cliPath : '', userPrompt });
+  const { runChatWindow } = require('../../cowork/main/loopProvider');
+  const { planSessionCommands } = require('../../cowork/main/cowork');
+  const result = runChatWindow({
+    chatCommand: launch.chatCommand,
+    prompt,
+    cwd,
+    sessionCommands: planSessionCommands(cfg, dir,
+      { agentCli: launch.cli, skillCommandPrefix: launch.skillCommandPrefix }),
+    readyPattern: launch.readyPattern,
+    readyTimeoutSec: launch.readyTimeoutSec,
+    // 同一 need の再診断は同じセッションへ attach する。会話が続いているところへ同じ
+    // ブリーフを再投入すると文脈が二重になるので、送るのは新規作成時だけ。
+    promptOnNewOnly: true,
+    sessionPrefix: 'agent-doctor',
+    sessionKey: `doctor:${launch.cli}:${String(needId || '')}`,
+    title: `失敗診断 (${launch.cli})`,
+    message: `${launch.cli} で対話診断を別ウィンドウで開きました`,
+  });
+  if (!result.ok) throw new Error(result.error || '外部ターミナルを起動できませんでした');
+  return {
+    ...result,
+    cli: launch.cli,
+    model: launch.model,
+    cwd,
+    snapshotFile: spill ? spill.cliPath : '',
+    readonlyWarning: launch.readonlyWarning,
+  };
 }
 
 // Markdown 応答から指定見出しの本文を取り出す（差し戻し文面案の流し込み用）。
@@ -675,19 +748,19 @@ function extractMarkdownSection(text, heading) {
 
 async function completeDoctor(cfg, { dir, context, userPrompt, mode }) {
   const resolved = resolveAgent(cfg, dir);
-  let prompt = doctorPrompt(context, userPrompt, { mode });
+  const prompt = doctorPrompt(context, userPrompt, { mode });
   let spill = null;
-  if (resolved.cli === 'kiro') {
-    // kiro-cli は positional プロンプト併用時に stdin を読まないため、
-    // スナップショット本文を一時ファイルへ退避して fs_read で読ませる。
+  if (resolved.spec.spill.instruction) {
+    // 定義が spill を宣言している CLI（kiro-cli は positional プロンプト併用時に stdin を
+    // 読まない）は、スナップショット本文を一時ファイルへ退避して読ませる。
     spill = writeSpill(dir, prompt.body);
-    if (spill) prompt = doctorPrompt(context, userPrompt, { mode, snapshotFile: spill.cliPath });
+    if (spill) prompt.file = spill.cliPath;
   }
   let raw;
   try {
     raw = await runCommand(
-      buildDoctorCommand(resolved.cli, resolved.model, prompt, dir, resolved.plugin),
-      resolved.plugin && resolved.plugin.timeoutMs ? resolved.plugin.timeoutMs : resolved.timeoutMs
+      buildDoctorCommand(resolved.spec, resolved.model, prompt, dir),
+      resolved.spec.timeoutMs || resolved.timeoutMs
     );
   } finally {
     if (spill) spill.cleanup();
@@ -931,24 +1004,22 @@ async function completeTaskAssist(cfg, { dir, mode, context, userPrompt }) {
   // 構造化 Assist も読み取り専用 CLI で起動し、inbox / backlog へ直接書かない。
   // kiro は Doctor と同じ理由（positional プロンプト併用時に stdin を読まない）で
   // 指示全文を一時ファイルへ退避し fs_read で読ませる。
-  const spill = resolved.cli === 'kiro' ? writeSpill(dir, promptText) : null;
+  const spill = resolved.spec.spill.instruction ? writeSpill(dir, promptText) : null;
   const prompt = {
     argv: [
       'あなたはAgent Dashboardの読み取り専用バックログ補助です。',
-      spill
-        ? `まず fs_read で一時ファイル ${spill.cliPath} を読み込み、その中の指示に従って JSON オブジェクトのみを返してください。`
-        : 'stdinの指示に従い JSON オブジェクトのみを返してください。',
+      '与えられた指示に従い JSON オブジェクトのみを返してください。',
       'コマンド実行・ファイル変更・外部操作はしないでください。',
     ].join(' '),
-    stdin: spill ? null : promptText,
+    stdin: promptText,
     file: spill ? spill.cliPath : null,
     text: promptText,
   };
   let raw;
   try {
     raw = await runCommand(
-      buildDoctorCommand(resolved.cli, resolved.model, prompt, dir, resolved.plugin),
-      resolved.plugin && resolved.plugin.timeoutMs ? resolved.plugin.timeoutMs : resolved.timeoutMs
+      buildDoctorCommand(resolved.spec, resolved.model, prompt, dir),
+      resolved.spec.timeoutMs || resolved.timeoutMs
     );
   } finally {
     if (spill) spill.cleanup();
@@ -1007,18 +1078,16 @@ async function completeCharter(cfg, { dir, mode, spec, content }) {
 }
 
 module.exports = {
-  AGENT_CLIS,
+  agentCli,
   DOCTOR_MODES,
   STRUCTURED_ASSIST_MODES,
   resolveAgent,
   readProjectAgent,
-  loadAgentPlugin,
-  normalizeAgentPlugin,
-  buildPluginCommand,
-  agentPluginDirs,
   buildCommand,
   buildInteractiveCommand,
+  interactiveLaunchSpec,
   openInteractiveChat,
+  chatCwdChoices,
   buildDoctorCommand,
   runAgent,
   spillTarget,
@@ -1030,6 +1099,12 @@ module.exports = {
   charterDraftPrompt,
   charterRefinePrompt,
   doctorPrompt,
+  doctorBriefPrompt,
+  doctorChatCwd,
+  openDoctorChat,
+  pruneDoctorSpills,
+  DOCTOR_BRIEF_MAX,
+  DOCTOR_SPILL_SUBDIR,
   resolveDoctorMode,
   taskAssistPrompt,
   TASK_GUIDE_KEYS,

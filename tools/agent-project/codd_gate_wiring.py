@@ -25,9 +25,8 @@
 `tests/test_codd_gate_wiring.py` の TestHookResolution が両方向で固定している。
 
 このモジュールが意図的に含めないもの:
-  - `.agent/agent-project.yaml` / `cfg.regression_cmd`・`cfg.intake_cmd` への実書き込み・永続化
-    （`codd_gate_regression.py` の冪等 upsert が唯一の書き込み経路。本モジュールは推奨文字列を
-    返すだけで、どこへも書かない）
+  - `build_config` や `cfg.regression_cmd`・`cfg.intake_cmd` のインメモリ書き換え
+  - YAML への書き込み（`codd_gate_regression.py` が `regression_cmd` の冪等注入を担う）
   - `codd-gate tasks --debt` 出力の enqueue 経路統合（`agent_project/model.py` の `run_intake` が
     検出器非依存のパースで担う。本体は `intake_cmd` という差し込み点のみを持ち、codd-gate 固有の
     実装へは依存しない）

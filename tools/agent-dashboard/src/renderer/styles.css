@@ -137,7 +137,7 @@ html, body {
 .sync-error { color: #dc322f; font-weight: 600; }
 .sync-status { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; }
-.sync-action { padding: 2px 7px; color: var(--fg); font-weight: 500; }
+.sync-action { min-height: 44px; padding: 5px 9px; color: var(--fg); font-weight: 500; }
 .sync-checked { color: var(--muted); font-weight: 400; }
 
 /* フロー画面の advice（次に何が起きるか・あなたの出番はあるか）。
@@ -219,7 +219,7 @@ button:disabled { opacity: 0.4; cursor: default; }
   border-bottom: 1px solid var(--border);
 }
 .sidebar-header h1 { font-size: 15px; margin: 0; color: var(--fg); }
-.sidebar-actions button { width: 36px; height: 36px; padding: 0; }
+.sidebar-actions button { width: 44px; height: 44px; padding: 0; }
 .sidebar-actions .assistant-button { display: inline-grid; place-items: center; }
 .sidebar-actions button svg,
 .nav-group-header button svg {
@@ -247,7 +247,7 @@ button:disabled { opacity: 0.4; cursor: default; }
   font-weight: 600;
   letter-spacing: 0.04em;
 }
-.nav-group-header button { width: 36px; height: 36px; padding: 0; display: inline-grid; place-items: center; }
+.nav-group-header button { width: 44px; height: 44px; padding: 0; display: inline-grid; place-items: center; }
 
 .container-item { margin-bottom: 4px; }
 .container-label {
@@ -263,15 +263,27 @@ button:disabled { opacity: 0.4; cursor: default; }
 .project-item {
   display: flex;
   align-items: center;
+  width: 100%;
   gap: 6px;
   min-height: 42px;
   padding: 8px 10px 8px 18px;
   cursor: pointer;
+  color: inherit;
+  background: transparent;
+  border-top: 0;
+  border-right: 0;
+  border-bottom: 0;
+  border-radius: 0;
+  text-align: left;
   border-left: 3px solid transparent;
 }
 .project-item:hover { background: var(--bg3); }
 .project-item.selected { background: var(--bg3); border-left-color: var(--accent); }
 .project-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 実行エンジンは宣言しているが、この PC からは届かないプロジェクト。選べないことを
+   見た目で示しつつ、消さずに残す（なぜ選べないかを人が追えるように）。 */
+.project-item.unreachable { cursor: default; opacity: 0.55; }
+.project-item.unreachable:hover { background: transparent; }
 .project-item-remove {
   flex: none;
   visibility: hidden;
@@ -350,6 +362,39 @@ button:disabled { opacity: 0.4; cursor: default; }
 .risk-badge.risk-med { color: var(--yellow); border-color: var(--yellow); }
 .risk-badge.risk-high { color: var(--red); border-color: var(--red); }
 
+/* 監視担当（チーム運用）バッジ: バックログ行・要対応カードで「誰が見るか」を示す */
+.owner-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.owner-edit { gap: 6px; align-items: center; }
+.owner-edit input { max-width: 220px; }
+
+/* 成果物レビューのコメント（チーム運用）: 複数メンバーの投稿を一覧し、担当者が整理して判断する */
+.need-comments { margin-top: 14px; }
+.rc-list { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.rc-item {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg2);
+}
+.rc-head { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.rc-author { font-weight: 650; }
+.rc-time { font-size: 11px; }
+.rc-text { margin-top: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.rc-edit-box { margin-top: 6px; }
+.rc-edit-box textarea, .rc-add textarea, .rc-add .rc-author-input { width: 100%; box-sizing: border-box; }
+.rc-add { display: flex; flex-direction: column; gap: 6px; }
+.rc-add .rc-author-input { max-width: 260px; }
+
 #sidebar-footer {
   padding: 6px 10px;
   border-top: 1px solid var(--border);
@@ -368,11 +413,16 @@ button:disabled { opacity: 0.4; cursor: default; }
 #project-title { display: flex; align-items: baseline; gap: 10px; }
 #project-name { font-size: 18px; font-weight: 650; }
 #project-meta { font-size: 11px; margin-top: 3px; }
-.project-cli-chat { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 5px 10px; }
+.project-cli-chat-group { display: inline-flex; align-items: center; gap: 6px; }
+/* 起動先（cwd）の選択。長い URL 由来の名前でヘッダを押し広げないよう幅を締める。 */
+.project-cli-chat-cwd { max-width: 220px; min-height: 44px; }
+.project-cli-chat-cwd:disabled { opacity: .6; }
+.project-cli-chat { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 5px 10px; }
 .project-cli-chat svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
 @media (pointer: coarse) {
   .project-cli-chat { min-height: 44px; }
+  .project-cli-chat-cwd { min-height: 44px; }
 }
 
 #tabs {
@@ -422,6 +472,17 @@ button:disabled { opacity: 0.4; cursor: default; }
   border: 1px solid var(--border);
   border-radius: 8px;
 }
+/* 複数 PC 分散運用のノード一覧（案6） */
+.nodes-card { padding: 14px 18px; margin-bottom: 14px; }
+.nodes-list { list-style: none; margin: 6px 0; padding: 0; display: grid; gap: 4px; }
+.nodes-list .node-row { line-height: 1.6; overflow-wrap: anywhere; }
+.nodes-list .node-stale b { color: #ff8d88; }
+/* セットアップ診断（案4） */
+.diag-list { list-style: none; margin: 6px 0; padding: 0; display: grid; gap: 6px; }
+.diag-row { padding: 8px 10px; border: 1px solid var(--border); border-left-width: 4px; border-radius: 6px; }
+.diag-ok { border-left-color: rgba(133,153,0,0.7); }
+.diag-warn { border-left-color: rgba(181,137,0,0.8); }
+.diag-error { border-left-color: rgba(220,50,47,0.8); }
 .summary-hero {
   padding: 20px 22px;
   margin-bottom: 14px;
@@ -677,7 +738,7 @@ button:disabled { opacity: 0.4; cursor: default; }
 .kiro-loop-overview-heading h3 { margin: 3px 0 12px; font-size: 18px; overflow-wrap: anywhere; }
 .kiro-loop-overview-facts {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
   gap: 8px;
   margin-bottom: 12px;
 }
@@ -1068,6 +1129,8 @@ pre.mono {
 }
 .flow-request-body .md p:first-child { margin-top: 0; }
 .flow-request-body .md p:last-child { margin-bottom: 0; }
+.flow-request-details { margin-top: 14px; }
+.flow-request-details summary { color: var(--muted); cursor: pointer; }
 .flow-run-heading h2 { line-height: 1.35; }
 .node-goal .md { margin-top: 4px; }
 .node-goal .md p { margin: 2px 0; }
@@ -1095,7 +1158,7 @@ table.list tr.clickable:hover { background: var(--bg2); }
 }
 .status-chip.st-ready { color: var(--blue); border-color: var(--blue); }
 .status-chip.st-doing { color: var(--accent2); border-color: var(--accent2); }
-/* offloaded = 委譲実行中（agent-flow daemon で結果待ち）。機械稼働中なので doing と同系にする */
+/* offloaded = 委譲実行中（板の請負側で結果待ち）。機械稼働中なので doing と同系にする */
 .status-chip.st-offloaded { color: var(--accent2); border-color: var(--accent2); }
 .status-chip.st-blocked { color: var(--red); border-color: var(--red); }
 .status-chip.st-review { color: var(--yellow); border-color: var(--yellow); }
@@ -1224,6 +1287,23 @@ table.list tr.clickable:hover { background: var(--bg2); }
 }
 .task-list-empty { min-height: 184px; display: grid; place-items: center; }
 
+/* 却下済み（墓標）— 既定は畳んでおく。日常の視界には入れず、入れ直したいときだけ開く */
+.tombstones { margin-top: 12px; }
+.tombstones > summary { cursor: pointer; color: var(--muted); padding: 6px 2px; }
+.tombstone-list { display: flex; flex-direction: column; gap: 4px; padding: 4px 2px 8px; }
+.tombstone-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+.tombstone-title { overflow-wrap: anywhere; }
+.tombstone-meta { font-size: 0.9em; overflow-wrap: anywhere; }
+@media (max-width: 768px) {
+  .tombstone-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .tombstone-meta { grid-column: 1 / -1; }
+}
+
 @media (max-width: 768px) {
   .task-toolbar { flex-direction: column; }
   .task-toolbar-filters,
@@ -1295,6 +1375,14 @@ table.list tr.clickable:hover { background: var(--bg2); }
   min-height: 0;
 }
 .needs-layout:not(.show-detail) .detail-panel { display: none; }
+/* 一覧モードの master-list に高さを与える。needs-layout は（グリッドの .master-detail と違い）
+   display:block なので、子は高さ制約を受けず内容ぶんに伸びる。#tab-needs は overflow:hidden の
+   ため、あふれた項目はクリップされて **スクロールできない**（項目リストがスクロールできない不具合）。
+   show-detail 側の .detail-panel と同じく height:100% + overflow-y:auto で自前スクロールにする。 */
+.needs-layout:not(.show-detail) .master-list {
+  height: 100%;
+  overflow-y: auto;
+}
 .needs-layout.show-detail .master-list { display: none; }
 .needs-layout.show-detail .detail-panel {
   display: block;
@@ -1364,6 +1452,13 @@ table.list tr.clickable:hover { background: var(--bg2); }
   -webkit-line-clamp: 2;
 }
 .need-list-summary.failure { color: #ffb4ad; }
+.need-list-summary small {
+  display: block;
+  margin-top: 3px;
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 600;
+}
 .need-list-age {
   min-width: 0;
   color: var(--muted);
@@ -1433,9 +1528,50 @@ table.list tr.clickable:hover { background: var(--bg2); }
 .need-detail-head h2 { margin: 8px 0 14px; font-size: 20px; line-height: 1.4; }
 .need-detail-badges { display: flex; flex-wrap: wrap; gap: 5px; }
 .need-detail-card section { margin-top: 18px; }
+
+.need-next-step {
+  display: grid;
+  gap: 5px;
+  margin: 0 0 14px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--accent) 58%, var(--border));
+  border-radius: 10px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 18%, var(--bg3)), var(--bg3));
+}
+.need-step-kicker {
+  color: var(--accent2);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+.need-next-step p { margin: 0; font-size: 16px; line-height: 1.55; }
+.need-detail-card .need-next-step h3 { margin: 0; color: var(--fg); font-size: 17px; letter-spacing: 0; }
+.need-response-primary {
+  margin: 22px 0 0;
+  padding: 16px;
+  border: 1px solid color-mix(in srgb, var(--accent) 58%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg2));
+}
+.need-response-primary h3 { margin: 0 0 4px; color: var(--fg); font-size: 16px; }
+.need-response-hint { margin: 0 0 12px; }
+.need-evidence {
+  margin-top: 18px;
+  padding: 0 12px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg3);
+}
+.need-evidence > summary {
+  min-height: 44px;
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 650;
+}
+.need-evidence > .subtle-action,
+.need-evidence > button { margin-top: 8px; }
+.need-task-context > .need-task-guide { margin-top: 8px; }
 .need-detail-card section h3 { margin: 0 0 7px; color: var(--muted); font-size: 13px; letter-spacing: 0.04em; }
-.need-decision { padding: 12px 14px; border-radius: 7px; background: var(--bg3); }
-.need-decision p { margin: 0; font-size: 15px; line-height: 1.55; }
 .task-complete-banner,
 .need-complete-how {
   margin: 0 0 10px;
@@ -1550,13 +1686,53 @@ table.list tr.clickable:hover { background: var(--bg2); }
 .need-verify-revision .need-buttons { margin-top: 10px; }
 
 /* revise（人の即時フィードバック）フォーム — タスク詳細ダイアログ内 */
+#dlg-task {
+  width: min(960px, calc(100vw - 32px));
+  min-width: 0;
+  max-width: calc(100vw - 32px);
+}
+#dlg-task .dialog-scroll-body { padding-top: 0; }
+#dlg-task input, #dlg-task select, #dlg-task button { min-height: 44px; box-sizing: border-box; }
+#dlg-task textarea { min-height: 72px; box-sizing: border-box; }
+.task-dialog-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  margin: 0 0 14px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+}
+.task-dialog-tabs button { color: var(--muted); background: transparent; border-color: transparent; }
+.task-dialog-tabs button[aria-selected="true"] { color: var(--fg); background: var(--bg3); border-color: var(--accent); }
+.task-summary-table { margin-bottom: 12px; }
+.task-technical-details {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.task-technical-details summary { min-height: 44px; cursor: pointer; color: var(--accent); font-weight: 600; }
+.task-owner-editor { margin-bottom: 16px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+.task-owner-editor h3 { color: var(--fg); }
+.task-owner-editor .owner-edit { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 8px; }
+.task-owner-editor .owner-edit label { grid-column: 1 / -1; font-weight: 600; }
+.task-owner-editor .owner-edit input { width: 100%; max-width: none; }
+.need-actions > label { display: block; margin: 12px 0 5px; font-weight: 600; }
 .revise-area {
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px dashed var(--border);
+  margin-top: 0;
 }
 .revise-area summary { cursor: pointer; color: var(--accent); margin-bottom: 8px; }
 .revise-area textarea { width: 100%; resize: vertical; }
+
+@media (max-width: 768px) {
+  #dlg-task { width: calc(100vw - 16px); max-width: calc(100vw - 16px); }
+  .task-owner-editor .owner-edit { grid-template-columns: 1fr; }
+  .task-owner-editor .owner-edit label { grid-column: auto; }
+  #dlg-task .need-buttons button { width: 100%; }
+}
 
 /* ---------- フロー（agent-flow） ---------- */
 
@@ -1634,20 +1810,51 @@ table.list tr.clickable:hover { background: var(--bg2); }
 }
 .final-verification-failure strong { color: #ff8d88; }
 .final-verification-failure span { line-height: 1.5; }
-/* 直前の指示（承認等）が本体の取り込みで失敗したことを知らせるバナー（commands/*.err） */
+/* 過去の操作失敗は現在の停止理由より弱く見せ、必要なときだけ開く。 */
+.need-command-history {
+  margin-top: 12px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg3);
+}
+.need-command-history > summary {
+  min-height: 44px;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+}
+.need-command-history > summary span { margin-left: 6px; font-size: 11px; font-weight: 400; }
 .need-command-failure {
   display: grid;
-  gap: 4px;
-  margin: 10px 0 14px;
-  padding: 11px 13px;
-  border: 1px solid rgba(220, 50, 47, 0.65);
-  border-left-width: 4px;
-  border-radius: 7px;
-  background: rgba(220, 50, 47, 0.11);
+  gap: 8px;
+  padding: 0 0 12px;
   color: var(--fg);
 }
-.need-command-failure strong { color: #ff8d88; }
-.need-command-failure span { line-height: 1.5; overflow-wrap: anywhere; }
+.need-command-failure strong { color: var(--muted); font-size: 12px; }
+.need-command-failure dl { display: grid; gap: 8px; margin: 0; }
+.need-command-failure dl > div { display: grid; gap: 2px; }
+.need-command-failure dt { color: var(--muted); font-size: 11px; font-weight: 650; }
+.need-command-failure dd { margin: 0; line-height: 1.5; overflow-wrap: anywhere; }
+/* 作業内容（タスクの why/desc/scope 等）— 計画レビューの判断材料 */
+.need-task-guide { margin: 10px 0 14px; }
+.task-guide { display: grid; gap: 8px; margin: 6px 0 0; }
+.task-guide-row dt { color: var(--muted); font-size: 11px; font-weight: 650; }
+.task-guide-row dd { margin: 2px 0 0; line-height: 1.6; overflow-wrap: anywhere; }
+.task-guide-row dd code { overflow-wrap: anywhere; }
+
+/* 指示が本体に届き受理された確認（緑＝正常。失敗バナーとは色で区別する） */
+.need-command-receipt {
+  margin: 10px 0 14px;
+  padding: 9px 13px;
+  border: 1px solid rgba(133, 153, 0, 0.55);
+  border-left-width: 4px;
+  border-radius: 7px;
+  background: rgba(133, 153, 0, 0.1);
+  color: var(--fg);
+}
+.need-command-receipt span { line-height: 1.5; overflow-wrap: anywhere; }
 /* verify 未定義など「失敗ではなく確認待ち」の情報バナー（赤＝エラーと誤読させない） */
 .final-verification-failure.info {
   border-color: rgba(38, 139, 210, 0.6);
@@ -1720,6 +1927,17 @@ svg.graph .node.state-pending rect { fill: var(--bg3); stroke: var(--blue); }
 svg.graph .node.state-parked rect { fill: #3a2f13; stroke: var(--orange); }
 svg.graph .node.state-waiting rect { fill: var(--bg3); stroke: var(--border); }
 svg.graph .node.selected rect { stroke-width: 3; }
+svg.graph .node:focus-visible rect { stroke: var(--accent); stroke-width: 3; }
+svg.graph .plan-revision-line { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 5 5; opacity: 0.65; }
+svg.graph .plan-revision { cursor: pointer; }
+svg.graph .plan-revision rect { fill: var(--bg3); stroke: var(--accent); stroke-width: 1.5; }
+svg.graph .plan-revision text { fill: var(--fg); font-size: 10px; }
+svg.graph .plan-revision .revision-title { fill: var(--accent); font-size: 11px; font-weight: 700; }
+svg.graph .plan-revision .revision-meta { fill: var(--muted); font-size: 9px; }
+svg.graph .plan-revision:hover rect,
+svg.graph .plan-revision.selected rect,
+svg.graph .plan-revision:focus-visible rect { fill: color-mix(in srgb, var(--accent) 12%, var(--bg3)); stroke-width: 3; }
+svg.graph .plan-initial-label { fill: var(--muted); font-size: 11px; font-weight: 700; }
 /* GitLab クローズ反映で状態を先読みしたノード（bus の result 反映待ち）は破線枠で区別する */
 svg.graph .node.reconciled rect { stroke-dasharray: 4 3; }
 /* gitlab executor ノードの右上イシューアイコン（1 クリックでレビュー起動） */
@@ -1730,6 +1948,15 @@ svg.graph .node-issue.rejected circle { fill: var(--red); }
 svg.graph .node-issue.review circle { fill: var(--accent2); }
 svg.graph .node-issue .node-issue-glyph { fill: #fff; font-size: 12px; font-weight: 700; }
 svg.graph .node-issue:hover circle { stroke: var(--fg); }
+
+.flow-revision-detail h3 { margin: 6px 0 3px; }
+.flow-revision-reason,
+.flow-revision-change { margin-top: 16px; }
+.flow-revision-detail h4 { margin: 0 0 6px; color: var(--muted); font-size: 12px; }
+.flow-revision-reason p { margin: 0; line-height: 1.6; overflow-wrap: anywhere; }
+.flow-revision-change ul { margin: 0; padding-left: 20px; line-height: 1.6; overflow-wrap: anywhere; }
+.flow-revision-change details { margin-top: 6px; }
+.flow-revision-change summary { min-height: 36px; cursor: pointer; color: var(--accent); }
 
 .legend { display: flex; gap: 12px; font-size: 11px; color: var(--muted); flex-wrap: wrap; }
 .legend .key { display: inline-flex; align-items: center; gap: 4px; }
@@ -1762,6 +1989,7 @@ dialog[open] > form.dialog-shell {
   margin: 0;
 }
 dialog.wide { min-width: 720px; }
+#dlg-cowork-work .cowork-kind-help { display: block; min-height: 2.9em; }
 dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
 dialog h2 { margin-top: 0; font-size: 15px; }
 dialog h3 { font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
@@ -2295,6 +2523,7 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   .cowork-routine-tools { justify-content: space-between; width: 100%; }
   .cowork-routine-search { width: 100%; }
   .project-header-main { align-items: stretch; flex-direction: column; }
+  .project-cli-chat-group { align-self: flex-start; flex-wrap: wrap; }
   .project-cli-chat { align-self: flex-start; }
   #project-title { flex-wrap: wrap; }
   dialog, dialog.wide { min-width: 0; width: calc(100vw - 24px); max-width: calc(100vw - 24px); }
@@ -2383,9 +2612,32 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .amigos-card-fact { white-space: nowrap; }
 .amigos-card-actions { display: flex; flex: none; justify-content: flex-end; }
 .amigos-card-actions button { min-height: 44px; }
-.amigos-team-settings { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; }
+.amigos-request-dialog { width: min(760px, calc(100vw - 32px)); }
+.amigos-request-dialog[open] { height: min(720px, calc(100vh - 32px)); }
+.amigos-request-dialog[open] > form { flex: 1 1 auto; height: 100%; }
+.amigos-request-dialog .dialog-heading p { margin: 4px 0 0; }
+.amigos-fixed-team { display: flex; align-items: baseline; gap: 10px; }
+.amigos-fixed-team span { font-size: 12px; }
+.amigos-fixed-team strong { font-size: 13px; overflow-wrap: anywhere; }
+.amigos-team-settings { margin: 12px 0 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; }
 .amigos-team-settings summary { min-height: 32px; cursor: pointer; color: var(--muted); }
 .amigos-team-settings .field { margin-top: 10px; }
+.amigos-mode-field { min-width: 0; margin: 12px 0 0; padding: 0; border: 0; }
+.amigos-mode-field legend { margin-bottom: 6px; font-size: 12px; color: var(--muted); }
+.amigos-mode { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.amigos-mode label { position: relative; display: flex; align-items: flex-start; min-height: 64px; padding: 10px 72px 10px 12px; border: 1px solid var(--border); border-radius: 7px; cursor: pointer; }
+.amigos-mode input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.amigos-mode-option:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.amigos-mode-option:has(input:checked)::after { content: "選択中"; position: absolute; top: 10px; right: 10px; padding: 2px 7px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 10px; font-weight: 600; }
+.amigos-mode-option:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.amigos-mode-option span { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.amigos-mode-option strong { color: var(--fg); font-size: 13px; }
+.amigos-mode-option small { color: var(--muted); line-height: 1.4; }
+.amigos-buildteam-hint { margin: 12px 0 0; padding: 0; border: 0; }
+.amigos-buildteam-hint small { display: block; margin-top: 4px; }
+@media (max-width: 680px) {
+  .amigos-mode { grid-template-columns: 1fr; }
+}
 .amigos-attention {
   padding: 9px 11px;
   border: 1px solid rgba(255, 184, 77, 0.55);
@@ -2593,6 +2845,19 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .global-settings-card-heading h2 { margin: 2px 0 4px; font-size: 20px; }
 .global-settings-card-heading p { margin: 0; max-width: 68em; }
 .global-settings-card > h3 { margin: 20px 0 10px; padding-top: 16px; border-top: 1px solid var(--border); }
+/* 全体設定に並べる登録フォルダの一覧（定常業務のフォルダ）。 */
+.settings-root-list { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 6px; }
+.settings-root-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.settings-root-list code { overflow-wrap: anywhere; }
+
 .settings-save-actions {
   display: flex;
   align-items: center;
@@ -2716,13 +2981,22 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .orch-skill-picker > label { color: var(--text); font-weight: 600; }
 .orch-skill-add-row { display: flex; gap: 8px; align-items: center; }
 .orch-skill-add-row input { flex: 1 1 260px; min-width: 0; }
-.orch-skill-list { display: flex; flex-direction: column; gap: 8px; max-height: 280px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin-top: 8px; background: var(--bg); }
-.orch-skill-row { display: grid; grid-template-columns: minmax(180px, 0.8fr) minmax(220px, 1.2fr) auto; gap: 10px; align-items: end; padding: 8px; border: 1px solid var(--border); border-radius: 6px; }
-.orch-skill-identity { display: flex; flex-direction: column; gap: 3px; min-width: 0; overflow-wrap: anywhere; align-self: center; }
-.orch-skill-note-label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.orch-skill-candidate-description { margin: 1px 0 0; padding-left: 1px; color: var(--text); font-size: 12px; line-height: 1.45; }
+.orch-skill-list { display: flex; flex-direction: column; margin-top: 8px; }
+.orch-skill-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px 12px; align-items: start; padding: 12px 0; border-top: 1px solid var(--border); }
+.orch-skill-row:first-child { border-top: 0; }
+.orch-skill-identity { min-width: 0; overflow-wrap: anywhere; grid-column: 1; grid-row: 1; }
+.orch-skill-identity strong { color: var(--text); font-size: 14px; line-height: 1.35; }
+.orch-skill-description { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.orch-skill-meta { overflow-wrap: anywhere; font-size: 11px; line-height: 1.45; }
+.orch-skill-note-label { display: flex; flex-direction: column; gap: 4px; min-width: 0; grid-column: 1 / -1; grid-row: 2; }
 .orch-skill-note-label span { font-size: 11px; color: var(--muted); }
 .orch-skill-note { width: 100%; }
-.orch-skill-remove { min-height: 36px; }
+.orch-skill-remove { min-height: 32px; grid-column: 2; grid-row: 1; align-self: start; }
+.orch-skill-details { grid-column: 1 / -1; grid-row: 3; font-size: 12px; }
+.orch-skill-details > summary { color: var(--muted); cursor: pointer; }
+.orch-skill-details .orch-skill-description { margin-top: 6px; }
+.orch-skill-details .orch-skill-meta { display: block; margin-top: 3px; }
 .orch-skill-empty { margin: 4px; }
 .orch-instr-preview-body { white-space: pre-wrap; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin-top: 6px; font-size: 12px; }
 .orch-instr-preview, .orch-instr-applied { margin-top: 10px; }
@@ -2752,7 +3026,18 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 
 @media (max-width: 680px) {
   .orch-skill-add-row { align-items: stretch; flex-direction: column; }
-  .orch-skill-row { grid-template-columns: 1fr; align-items: stretch; }
+  .orch-skill-row { grid-template-columns: minmax(0, 1fr) auto; }
   .orch-sess-head, .orch-sess-process-only, .orch-sess-when-grid { flex-direction: column; align-items: stretch; }
   .orch-sess-narrow { flex: 1 1 auto; }
+}
+
+/* 定常業務タブ: この画面に登録したフォルダであることの印と解除動線（S2）。 */
+.cowork-root-badge { margin-left: 10px; display: inline-flex; align-items: center; gap: 6px; }
+.cowork-root-badge .linklike { background: none; border: 0; padding: 0; color: inherit;
+  text-decoration: underline; cursor: pointer; font: inherit; min-height: 0; }
+
+@media (max-width: 900px) {
+  #tabs { flex-wrap: wrap; overflow-x: visible; }
+  .tab-utility-group { width: 100%; margin-left: 0; border-top: 1px solid var(--border); }
+  .tab-utility-group .tab { flex: 1; margin-left: 0; }
 }

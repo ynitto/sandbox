@@ -63,13 +63,10 @@ function orchBlockedWorkloads() {
 function orchBlockedBannerHtml() {
   const blocked = orchBlockedWorkloads();
   if (!blocked.length) return '';
-  const detail = blocked
-    .map((b) => `${b.workload} = ${orchLifecycleLabel(b.lifecycle)}`)
-    .join(' / ');
   return `<div class="need-blocker" role="status">
-    <strong>⏸ 実行が管理面で止まっています（${esc(detail)}）</strong>
-    <span>このまま承認・再実行を送っても、着手前に止められて同じ要対応に戻ります。</span>
-    <button type="button" class="primary-inline" data-orch-open="1">エージェント管理を開いて稼働に戻す</button>
+    <strong>作業が停止されています</strong>
+    <span>先に全体設定で作業を再開してください。</span>
+    <button type="button" class="primary-inline" data-orch-open="1">全体設定を開く</button>
   </div>`;
 }
 
@@ -137,8 +134,7 @@ function orchBudgetPanelHtml(budget) {
     <header class="row">
       <div>
         <span class="summary-kicker">利用状況</span>
-        <h3>AI利用量（${esc(periodLabel)}）</h3>
-        <p class="muted">すべての機能で使った量を、取得できた値と推定値に分けて表示します。</p>
+        <h3>利用量（${esc(periodLabel)}）</h3>
       </div>
       <div>${overBadge}</div>
     </header>
@@ -371,11 +367,11 @@ function orchInstructionsPanelHtml(overview) {
   const inventoryByName = new Map(inv.map((s) => [s.name, s]));
   const skillRows = [...selected.keys()].sort().map((name) => {
     const note = selected.get(name) || '';
-    const where = (inventoryByName.get(name) || {}).dir || '';
-    return orchSkillRowHtml(name, note, where);
+    return orchSkillRowHtml(name, note, inventoryByName.get(name));
   }).join('');
   const skillOptions = inv.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)))
-    .map((s) => `<option value="${esc(s.name)}" label="${esc(s.dir || '')}"></option>`).join('');
+    .filter((s) => !selected.has(s.name))
+    .map((s) => `<option value="${esc(s.name)}"></option>`).join('');
   const allow = (gi.tools && Array.isArray(gi.tools.allow)) ? gi.tools.allow.join(', ') : '';
   const denyNote = (gi.tools && gi.tools.deny_note) || '';
   const appliedRows = (overview.status || []).map((s) => {
@@ -401,14 +397,15 @@ function orchInstructionsPanelHtml(overview) {
     </label>
     <div class="orch-instr-field">推奨スキル
       <div class="orch-skill-picker">
-        <label for="orch-skill-add">スキル名</label>
+        <label for="orch-skill-add">候補から追加</label>
         <div class="orch-skill-add-row">
           <input type="text" id="orch-skill-add" list="orch-skill-options" autocomplete="off"
-            aria-describedby="orch-skill-add-help" placeholder="名前を入力して候補から選択" />
+            aria-describedby="orch-skill-add-help orch-skill-candidate-description" placeholder="名前を入力して候補から選択" />
           <datalist id="orch-skill-options">${skillOptions}</datalist>
           <button type="button" id="btn-orch-skill-add" disabled>追加</button>
         </div>
-        <small id="orch-skill-add-help" class="muted">名前の一部を入力すると、この端末で利用できるスキルが候補に表示されます。</small>
+        <p id="orch-skill-candidate-description" class="orch-skill-candidate-description" aria-live="polite" hidden></p>
+        <small id="orch-skill-add-help" class="muted">名前の一部を入力してください。各エージェントと共通のスキル置き場から候補を表示します。</small>
       </div>
       <div class="orch-skill-list" id="orch-skill-selected">
         ${skillRows || '<p class="muted orch-skill-empty">追加されたスキルはありません。</p>'}
@@ -441,14 +438,34 @@ function orchInstructionsPanelHtml(overview) {
   </section>`;
 }
 
-function orchSkillRowHtml(name, note = '', where = '') {
+function orchSkillRowHtml(name, note = '', skill = null) {
+  const info = skill || {};
+  const sourceLabels = { kiro: 'Kiro', copilot: 'Copilot', claude: 'Claude', codex: 'Codex', agents: '共通' };
+  const metadata = [];
+  if (info.category) metadata.push(`分類: ${info.category}`);
+  if (info.version) metadata.push(`バージョン: ${info.version}`);
+  if (Array.isArray(info.tags) && info.tags.length) metadata.push(`タグ: ${info.tags.join(', ')}`);
+  if (Array.isArray(info.sources) && info.sources.length) {
+    metadata.push(`利用元: ${info.sources.map((source) => sourceLabels[source] || source).join(', ')}`);
+  }
+  const hasDetails = info.description || metadata.length;
   return `<div class="orch-skill-row" data-orch-skill="${esc(name)}">
-    <div class="orch-skill-identity"><strong>${esc(name)}</strong>${where ? `<small class="muted">${esc(where)}</small>` : ''}</div>
+    <div class="orch-skill-identity"><strong>${esc(name)}</strong></div>
     <label class="orch-skill-note-label"><span>使う場面（任意）</span>
       <input type="text" class="orch-skill-note" placeholder="例: コード修正時" value="${esc(note)}" />
     </label>
     <button type="button" class="orch-skill-remove" aria-label="${esc(name)}を削除">削除</button>
+    ${hasDetails ? `<details class="orch-skill-details" data-ui-key="orch-skill-details-${esc(name)}">
+      <summary>説明と属性を表示</summary>
+      ${info.description ? `<p class="orch-skill-description">${esc(info.description)}</p>` : ''}
+      ${metadata.length ? `<small class="muted orch-skill-meta">${esc(metadata.join(' · '))}</small>` : ''}
+    </details>` : ''}
   </div>`;
+}
+
+function shortSkillDescription(text) {
+  const chars = Array.from(String(text || '').trim());
+  return chars.length > 100 ? `${chars.slice(0, 100).join('')}…` : chars.join('');
 }
 
 // 4.6 セッション開始コマンド: セッションが始まった直後に 1 回だけ走らせる前準備。
@@ -465,10 +482,11 @@ function orchSessionRowHtml(cmd, index) {
   const c = cmd || {};
   const mode = c.mode === 'chat' ? 'chat' : 'process';
   const when = c.when || {};
+  const strategy = c.strategy === 'bundle' ? 'bundle' : 'paste';
   const list = (v) => (Array.isArray(v) ? v.join(', ') : '');
   return `<div class="orch-sess-row" data-orch-sess="${index}" data-orch-sess-mode="${mode}">
     <div class="orch-sess-head">
-      <label class="orch-sess-field orch-sess-id"><span>名前（ID）</span>
+      <label class="orch-sess-field orch-sess-id"><span>名前</span>
         <input type="text" class="orch-sess-id-input mono" placeholder="sync-repo" value="${esc(c.id || '')}" />
       </label>
       <label class="orch-sess-field"><span>実行方法</span>
@@ -482,6 +500,9 @@ function orchSessionRowHtml(cmd, index) {
           <option value="warn"${c.on_error !== 'fail' ? ' selected' : ''}>続行する</option>
           <option value="fail"${c.on_error === 'fail' ? ' selected' : ''}>開始を中止する</option>
         </select>
+      </label>
+      <label class="orch-sess-field orch-sess-strategy" ${mode === 'chat' ? '' : 'hidden'} title="従来の 1 コマンド 1 ペースト式ではなく、同じ指定の行を 1 つの起動アクション束にまとめます">
+        <input type="checkbox" class="orch-sess-bundle" ${strategy === 'bundle' ? 'checked' : ''} /> まとめて依頼
       </label>
       <button type="button" class="orch-sess-remove" aria-label="${esc(c.id || `${index + 1}行目`)}を削除">削除</button>
     </div>
@@ -526,10 +547,10 @@ function orchSessionPreviewHtml() {
   };
   const rows = entries.map((e, i) => {
     const skipped = !!e.skip;
-    const label = e.mode === 'chat' ? 'エージェントに送る' : 'コマンドを実行';
+    const label = e.mode === 'chat' ? (e.strategy === 'bundle' ? 'まとめて依頼' : 'エージェントに送る') : 'コマンドを実行';
     const note = skipped
       ? `<small class="muted">${esc(reason[e.skip] || 'スキップします')}</small>`
-      : `<small class="muted">${esc(e.mode === 'chat' ? '' : `${e.cwd || '（セッションの場所）'} / 上限 ${e.timeout} 秒 / ${e.on_error === 'fail' ? '失敗したら開始を中止' : '失敗しても続行'}`)}</small>`;
+      : `<small class="muted">${esc(e.mode === 'chat' ? (e.strategy === 'bundle' ? `含む行: ${(e.bundled_ids || []).join(', ')}` : '従来式: 1 コマンド 1 ペースト') : `${e.cwd || '（セッションの場所）'} / 上限 ${e.timeout} 秒 / ${e.on_error === 'fail' ? '失敗したら開始を中止' : '失敗しても続行'}`)}</small>`;
     return `<li class="orch-sess-preview-item${skipped ? ' orch-sess-preview-skipped' : ''}">
       <div class="orch-sess-preview-head"><strong>${esc(String(i + 1))}. ${esc(e.id)}</strong> ${orchBadge(skipped ? 'muted' : 'ok', label)}</div>
       <pre class="mono">${esc(e.run)}</pre>${note}
@@ -575,6 +596,7 @@ function orchSessionCommandsPanelHtml(overview) {
     <ul class="orch-sess-notes muted">
       <li>コマンドはそのままシェルへ渡します。空白を含む場所を指す <code>{cwd}</code> などは <code>"</code> で囲んでください。</li>
       <li>「失敗したとき: 開始を中止する」を選ぶと、そのコマンドが失敗したときエージェントが起動しなくなります。</li>
+      <li>「エージェントに送る」は、行ごとに従来の 1 コマンド 1 ペースト式と、チェックした行を 1 つにまとめる依頼式を選べます。</li>
       <li>設定を変えても、すでに動いているセッションには反映されません。次に始まるセッションから有効になります。</li>
     </ul>
     <div class="settings-save-actions">
@@ -609,6 +631,9 @@ function readSessionCommandsForm(root) {
       run: row.querySelector('.orch-sess-run').value.trim(),
       on_error: row.querySelector('.orch-sess-onerror').value === 'fail' ? 'fail' : 'warn',
     };
+    if (mode === 'chat' && row.querySelector('.orch-sess-bundle') && row.querySelector('.orch-sess-bundle').checked) {
+      cmd.strategy = 'bundle';
+    }
     if (mode === 'process') {
       const cwd = row.querySelector('.orch-sess-cwd').value.trim();
       if (cwd) cmd.cwd = cwd;
@@ -697,20 +722,27 @@ function globalSettingsAppHtml() {
     <header class="global-settings-card-heading">
       <span class="summary-kicker">アプリ</span>
       <h2>表示と通知</h2>
-      <p class="muted">プロジェクトの探し方と、画面更新・通知の動作を設定します。</p>
+      <p class="muted">画面更新と通知の動作を設定します。</p>
     </header>
-    <div class="field">
-      <label for="cfg-roots">プロジェクトを探すフォルダ（1行に1つ）</label>
-      <textarea id="cfg-roots" rows="4" placeholder="例: C:\src\payments&#10;/home/me/src/webapp"></textarea>
-      <p class="field-help">親フォルダを登録すると、その中のプロジェクトも自動で見つけます。</p>
-    </div>
+    <p class="field-help">プロジェクトの一覧は実行エンジンから自動で受け取ります（この画面での登録は不要です）。</p>
     <div class="row2">
-      <div class="field"><label class="check"><input type="checkbox" id="cfg-autodiscover" /> 稼働中のプロジェクトを自動で追加</label></div>
       <div class="field"><label for="cfg-refresh">表示の更新間隔（秒）</label><input id="cfg-refresh" type="number" min="0" step="1" /></div>
-    </div>
-    <div class="row2">
-      <div class="field"><label class="check"><input type="checkbox" id="cfg-notify" /> 対応が必要になったら通知する</label></div>
       <div class="field"><label for="cfg-needs-sla">長時間未対応として知らせるまで（時間）</label><input id="cfg-needs-sla" type="number" min="1" step="1" /></div>
+    </div>
+    <div class="field"><label class="check"><input type="checkbox" id="cfg-notify" /> 対応が必要になったら通知する</label></div>
+    <div class="field">
+      <label for="cfg-role">この PC の役割</label>
+      <select id="cfg-role">
+        <option value="engineer">実行も行う（すべての機能）</option>
+        <option value="viewer">閲覧・レビュー専用</option>
+      </select>
+      <p class="field-help">閲覧専用では、監視・コメント・承認だけを行います。実行用の環境設定は不要です。</p>
+    </div>
+    <div class="field">
+      <label>セットアップ診断</label>
+      <p class="field-help">受け取ったプロジェクトのフォルダが正しく共有できるか確認します。</p>
+      <div class="row"><button type="button" id="btn-setup-diagnostics">診断する</button></div>
+      <div id="setup-diagnostics-result" class="muted" aria-live="polite"></div>
     </div>
     <div class="settings-save-actions"><button type="button" id="btn-save-app-settings" class="primary-inline">保存</button></div>
   </div>`;
@@ -747,25 +779,81 @@ function globalSettingsSyncHtml() {
       <h2>変更の共有と実行場所</h2>
       <p class="muted">複数の環境で状態を共有する場合の動作を設定します。</p>
     </header>
-    <h3>変更の共有</h3>
+    <h3>実行エンジンの場所</h3>
+    <p class="field-help">プロジェクトの一覧・稼働状況・共有の進み具合は、ここから受け取ります。変更の取り込みと送信は実行エンジンが自動で行うため、この画面から共有先へ書き込むことはありません。</p>
     <div class="row2">
-      <div class="field"><label for="cfg-git-pull">共有先を確認する間隔（秒・0で自動確認なし）</label><input id="cfg-git-pull" type="number" min="0" step="1" /></div>
-      <div class="field"><label class="check"><input type="checkbox" id="cfg-git-autopush" /> 操作した変更を自動で共有する</label></div>
+      <div class="field"><label for="cfg-engine-distro">Linux 環境（WSL）の名前</label><input id="cfg-engine-distro" class="mono" placeholder="空欄なら既定の環境" /></div>
+      <div class="field"><label for="cfg-engine-home">状況の保存先</label><input id="cfg-engine-home" class="mono" placeholder="空欄なら自動で探します" /></div>
     </div>
-    <div class="row2">
-      <div class="field"><label for="cfg-action-mode">承認や優先度変更の届け方</label><select id="cfg-action-mode">
-        <option value="auto">自動</option><option value="file">共有ファイルを使用</option><option value="cli">実行コマンドを使用</option>
-      </select></div>
-      <div class="field"><label for="cfg-project-command">プロジェクト操作コマンド</label><input id="cfg-project-command" class="mono" placeholder="agent-project" /></div>
-    </div>
+    <div class="field"><label for="cfg-node-commands-dir">この端末への指示の受け渡し先</label>
+      <input id="cfg-node-commands-dir" class="mono" placeholder="空欄なら実行エンジンと同じ場所" /></div>
+    <p class="field-help">画面のボタン（引き受ける・取りやめる・引き渡し先を決める）は、この場所へ依頼を置いて実行エンジンに取り込んでもらいます。</p>
     <h3>実行データの共有先</h3>
-    <div class="row2">
-      <div class="field"><label for="cfg-flow-bus">共通の共有先</label><input id="cfg-flow-bus" class="mono" placeholder="空欄なら自動で探します" /></div>
-      <div class="field"><label for="cfg-flow-lockdir">実行状態の保存先</label><input id="cfg-flow-lockdir" class="mono" placeholder="空欄なら既定の場所を使用" /></div>
-    </div>
+    <div class="field"><label for="cfg-flow-bus">共通の共有先</label><input id="cfg-flow-bus" class="mono" placeholder="空欄なら自動で探します" /></div>
     <div class="field"><label for="cfg-flow-bus-by-project">プロジェクトごとの共有先（1行に1つ）</label>
       <textarea id="cfg-flow-bus-by-project" class="mono" rows="4" placeholder="alpha = /home/me/clones/alpha/agent-flow"></textarea></div>
     <div class="settings-save-actions"><button type="button" id="btn-save-sync-settings" class="primary-inline">保存</button></div>
+    ${boardParticipationHtml()}
+  </div>`;
+}
+
+// 「この端末は、ほかの端末と仕事をやり取りできているか」。
+// 設定画面に置くのは**構成の確認**だから——動く公示の一覧はタスク画面（委任先）と
+// 参加画面（引き受ける）に置く。ここは「参加できているか」だけを言う。
+function boardParticipationHtml() {
+  const board = state.boardStatus;
+  if (!board || !board.configured) {
+    return `<h3>ほかの端末との仕事のやり取り</h3>
+      <p class="field-help">この端末は仕事のやり取り（委譲公示板）に参加していません。
+      参加するには、実行エンジンの設定でやり取り先を宣言してください。</p>`;
+  }
+  const nodes = state.boardNodes || [];
+  const rows = nodes.length
+    ? nodes.map((n) => `<tr class="${n.stale ? 'is-stale' : ''}">
+        <td class="mono">${esc(n.name)}</td>
+        <td>${n.stale ? '<span class="muted">応答なし</span>' : '稼働中'}</td>
+        <td>${esc([...(n.workloads || []), ...(n.tags || []), ...(n.agentCli || [])].join('・') || '—')}</td>
+        <td>${esc((n.repos || []).join('・') || '—')}</td>
+        <td>${n.contractVersion ? esc(String(n.contractVersion)) : '<span class="muted">未宣言</span>'}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="5" class="muted">まだどの端末も参加を宣言していません</td></tr>';
+  const intake = (board.intakeProjects || []).length
+    ? `落札した仕事は ${esc((board.intakeProjects || []).join('・'))} で実行します`
+    : board.nodeDirect
+      ? '引き受けた仕事はこの端末がじかに実行します'
+      : 'この端末はまだ仕事を引き受けても実行できません（プロジェクトを 1 つも持っていません）';
+  const err = board.lastError
+    ? `<p class="need-error">やり取り先に接続できていません: ${esc(board.lastError)}</p>` : '';
+  return `<h3>ほかの端末との仕事のやり取り</h3>
+    <p class="field-help">この端末の名前は <span class="mono">${esc(board.selfName || '')}</span>、
+    やり取り先は <span class="mono">${esc(board.location || '')}</span> です。${esc(intake)}。
+    募集中の依頼は ${board.openDelegations} 件、この端末が引き受けを申し出ているのは
+    ${(board.myBids || []).length} 件です。</p>
+    ${err}
+    <div class="table-scroll"><table class="board-nodes">
+      <thead><tr><th>端末</th><th>状態</th><th>引き受けられるもの</th>
+        <th>手元にあるリポジトリ</th><th>版</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+}
+
+// 登録済みの定常業務フォルダ（cowork.roots）。**定常業務画面ではなくここに置く**——
+// 定常業務画面はプロジェクトを 1 つ選んでから開く画面なので、実行エンジンがまだ動いて
+// いない初期状態（選べるプロジェクトが 1 つも無い）では最初の 1 件を登録できなかった。
+// 全体設定はプロジェクト選択に依存しないので、そこからなら初期状態でも登録できる。
+function globalSettingsCoworkRootsHtml() {
+  const roots = ((state.config && state.config.cowork) || {}).roots || [];
+  const rows = roots.map((r) => `<li>
+    <code class="mono">${esc(String(r))}</code>
+    <button type="button" class="linklike" data-drop-cowork-root="${esc(String(r))}">登録を解除</button>
+  </li>`).join('');
+  return `<div class="field">
+    <label>定常業務のフォルダ</label>
+    <p class="field-help">実行エンジンが担当していないフォルダ（kiro-loop の設定や .statemachine/ を
+      持つだけのフォルダ）を、定常業務画面で扱えるようにします。実行エンジンが担当している
+      プロジェクトは登録不要です。</p>
+    ${rows ? `<ul class="settings-root-list">${rows}</ul>`
+      : '<p class="muted">登録されたフォルダはありません。</p>'}
+    <div class="row"><button type="button" id="btn-settings-cowork-add-root">フォルダを登録</button></div>
   </div>`;
 }
 
@@ -774,8 +862,9 @@ function globalSettingsRoutineHtml() {
     <header class="global-settings-card-heading">
       <span class="summary-kicker">定常業務</span>
       <h2>定期実行と定型処理</h2>
-      <p class="muted">定常業務を動かすコマンドを設定します。通常は変更不要です。</p>
+      <p class="muted">定常業務を動かすフォルダとコマンドを設定します。コマンドは通常は変更不要です。</p>
     </header>
+    ${globalSettingsCoworkRootsHtml()}
     <div class="row2">
       <div class="field"><label for="cfg-cowork-loop-provider">定期実行の種類</label><input id="cfg-cowork-loop-provider" class="mono" placeholder="kiro-loop" /></div>
       <div class="field"><label for="cfg-cowork-loop-command">定期実行コマンド</label><input id="cfg-cowork-loop-command" class="mono" placeholder="kiro-loop" /></div>
@@ -805,7 +894,7 @@ function globalSettingsIntegrationsHtml() {
       <div class="field"><label for="cfg-rv-mode">起動方法</label><select id="cfg-rv-mode">
         <option value="protocol">アプリ連携</option><option value="exe">実行ファイルを指定</option><option value="command">コマンドを指定</option>
       </select></div>
-      <div class="field"><label for="cfg-rv-exepath">実行ファイルの場所</label><input id="cfg-rv-exepath" class="mono" placeholder="例: C:\Apps\GitLab Review Viewer.exe" /></div>
+      <div class="field"><label for="cfg-rv-exepath">実行ファイルの場所</label><input id="cfg-rv-exepath" class="mono" placeholder="例: C:\\Apps\\GitLab Review Viewer.exe" /></div>
     </div>
     <div class="field"><label for="cfg-rv-command">起動コマンド</label><input id="cfg-rv-command" class="mono" placeholder="{url} などの値を利用できます" /></div>
     <div class="settings-save-actions"><button type="button" id="btn-save-integrations-settings" class="primary-inline">保存</button></div>
@@ -925,6 +1014,34 @@ function setupGlobalSettings(root) {
   }
   const coworkOpen = root.querySelector('#btn-settings-cowork-open');
   if (coworkOpen) coworkOpen.addEventListener('click', openCoworkFromSettings);
+  const coworkAddRoot = root.querySelector('#btn-settings-cowork-add-root');
+  if (coworkAddRoot) coworkAddRoot.addEventListener('click', addCoworkRoot);
+  for (const btn of root.querySelectorAll('[data-drop-cowork-root]')) {
+    btn.addEventListener('click', () => dropCoworkRoot(btn.dataset.dropCoworkRoot));
+  }
+  const diagBtn = root.querySelector('#btn-setup-diagnostics');
+  if (diagBtn) diagBtn.addEventListener('click', () => runSetupDiagnostics(root));
+}
+
+// セットアップ診断: 登録フォルダの有効性を赤/緑で表示し、誤設定を沈黙させない。
+async function runSetupDiagnostics(root) {
+  const out = root.querySelector('#setup-diagnostics-result');
+  if (out) out.textContent = '診断中…';
+  try {
+    const res = await api.setupDiagnostics();
+    if (!out) return;
+    if (!res || !res.clones || !res.clones.length) {
+      out.innerHTML = '<p class="muted">登録されたフォルダがありません。⚙ 全体設定の「プロジェクトを探すフォルダ」に追加してください。</p>';
+      return;
+    }
+    const rows = res.clones
+      .map((c) => `<li class="diag-row diag-${esc(c.level)}"><b>${esc(c.root)}</b><br><span class="muted">${esc(c.summary)}</span></li>`)
+      .join('');
+    const roleNote = res.role === 'viewer' ? '現在の役割: 閲覧・レビュー専用' : '現在の役割: 実行も行う';
+    out.innerHTML = `<ul class="diag-list">${rows}</ul><p class="muted">${esc(roleNote)}</p>`;
+  } catch (e) {
+    if (out) out.textContent = `診断できませんでした: ${String((e && e.message) || e)}`;
+  }
 }
 
 function setupOrchestration(root) {
@@ -968,7 +1085,7 @@ function setupOrchestration(root) {
   const rebalanceBtn = root.querySelector('#btn-orch-rebalance');
   if (rebalanceBtn) rebalanceBtn.addEventListener('click', () => guard('再配分', async () => {
     await api.orchestrationRebalance();
-    toast('再配分しました（computed を更新）', true);
+    toast('再配分しました', true);
     await refreshOrchestration();
     renderOrchestration();
   }));
@@ -1033,9 +1150,15 @@ function setupOrchestration(root) {
   const skillInput = root.querySelector('#orch-skill-add');
   const skillAdd = root.querySelector('#btn-orch-skill-add');
   const skillList = root.querySelector('#orch-skill-selected');
+  const skillDescription = root.querySelector('#orch-skill-candidate-description');
   const skillInventory = new Map((state.orchSkillsInventory || []).map((s) => [String(s.name), s]));
   const updateSkillAdd = () => {
     if (skillAdd) skillAdd.disabled = !skillInput || !skillInput.value.trim();
+    if (skillDescription) {
+      const candidate = skillInput ? skillInventory.get(skillInput.value.trim()) : null;
+      skillDescription.textContent = shortSkillDescription(candidate && candidate.description);
+      skillDescription.hidden = !skillDescription.textContent;
+    }
   };
   const addSkill = () => {
     if (!skillInput || !skillList) return;
@@ -1056,7 +1179,7 @@ function setupOrchestration(root) {
     }
     const empty = skillList.querySelector('.orch-skill-empty');
     if (empty) empty.remove();
-    skillList.insertAdjacentHTML('beforeend', orchSkillRowHtml(name, '', candidate.dir || ''));
+    skillList.insertAdjacentHTML('beforeend', orchSkillRowHtml(name, '', candidate));
     skillInput.value = '';
     updateSkillAdd();
     state.orchInstructionsDirty = true;
@@ -1125,6 +1248,8 @@ function setupOrchestration(root) {
     row.querySelector('.orch-sess-run-label').textContent =
       mode === 'chat' ? 'エージェントへ送る内容' : '実行するコマンド';
     row.querySelector('.orch-sess-process-only').hidden = mode === 'chat';
+    const strategy = row.querySelector('.orch-sess-strategy');
+    if (strategy) strategy.hidden = mode !== 'chat';
   };
   if (sessList) {
     sessList.addEventListener('input', markSessionDirty);
@@ -1215,7 +1340,7 @@ function setupOrchestration(root) {
       const details = btn.closest('.orch-dropin');
       const ta = details.querySelector('.orch-dropin-spec');
       let spec;
-      try { spec = JSON.parse(ta.value); } catch (e) { throw new Error(`JSON として読めません: ${e.message}`); }
+      try { spec = JSON.parse(ta.value); } catch (e) { throw new Error(`JSON として読めません: ${e.message}`, { cause: e }); }
       await api.orchestrationAgentSave({ name: btn.getAttribute('data-orch-name'), dir: btn.getAttribute('data-orch-dir'), spec });
       toast('エージェント設定を保存しました', true);
       await refreshOrchestration();
@@ -1235,7 +1360,7 @@ function setupOrchestration(root) {
     const name = (root.querySelector('#orch-new-name') || {}).value || '';
     let spec;
     try { spec = JSON.parse((root.querySelector('#orch-new-spec') || {}).value || '{}'); }
-    catch (e) { throw new Error(`JSON として読めません: ${e.message}`); }
+    catch (e) { throw new Error(`JSON として読めません: ${e.message}`, { cause: e }); }
     await api.orchestrationAgentSave({ name: name.trim(), spec });
     toast('エージェントを追加しました', true);
     await refreshOrchestration();
@@ -1259,8 +1384,12 @@ function coworkRepoLabel(repo) {
   return parts.length ? parts[parts.length - 1] : s;
 }
 
-// リポジトリパスの比較キー。WSL UNC（\\wsl.localhost\<distro>\...）と POSIX、
-// /mnt/<drive> と Windows ドライブ表記を同一視する（main 側 _pathKey の縮約版）。
+// cowork のリポジトリパス比較キー。WSL UNC（\\wsl.localhost\<distro>\...）と POSIX、
+// /mnt/<drive> と Windows ドライブ表記を同一視する。
+// **main 側 _pathKey とは別物**（あちらは W2-4 で /mnt 折り畳みを廃止した）。cowork は
+// Windows ドライブ上のリポジトリを wsl.exe 経由で回すので、この機能では /mnt 表記と
+// ドライブ表記が同じ実体を指す——ここを main 側に合わせると、同じリポジトリの作業が
+// 別プロジェクト扱いになって一覧から消える。
 function coworkPathKey(p) {
   let s = String(p || '').trim().replace(/\\/g, '/');
   if (!s) return '';
@@ -1393,7 +1522,10 @@ function bindCoworkRoutineSelector(root) {
 
 function coworkHasProjectConfig(cowork, projectFolder) {
   const key = coworkPathKey(projectFolder);
-  return !!key && ((cowork && cowork.discoveredRepos) || []).some((repo) => coworkPathKey(repo) === key);
+  return !!key && (
+    ((cowork && cowork.discoveredRepos) || []).some((repo) => coworkPathKey(repo) === key)
+    || ((cowork && cowork.items) || []).some((item) => coworkPathKey(item.repo || item.cwd) === key)
+  );
 }
 
 function coworkRunBannerHtml() {
@@ -1423,9 +1555,7 @@ function coworkSelectedDetailHtml(entry, observed, busyId) {
   const running = !!st.running || busyId === id;
   const status = running ? 'running' : (st.status || 'unknown');
   const run = state.coworkRun && String(state.coworkRun.id) === id ? state.coworkRun : null;
-  const typeDetail = item.type === 'state-machine'
-    ? (item.workflow ? item.workflow : 'workflow 未設定')
-    : 'kiro-loop';
+  const typeDetail = workTypeLabel(item.type);
   const lastResult = running
     ? '実行中です'
     : run && run.phase === 'error'
@@ -1523,7 +1653,10 @@ function bindCoworkDetailActions(root, folder) {
     } catch (err) {
       res = { ok: false, error: err.message || String(err) };
     }
-    const detail = String((res && (res.stderr || res.stdout || res.error)) || '').trim();
+    // 別ウィンドウ起動は stdout/stderr を持たない。ウィンドウが一瞬で閉じたときに
+    // 「どこまで進んだか」を読めるよう、最新結果に実行ログの場所を残す。
+    const detail = String((res && (res.stderr || res.stdout || res.error)) || '').trim()
+      || (res && res.logFile ? `実行ログ: ${res.logFile}` : '');
     const message = detail ? detail.slice(0, 240) : (res && res.ok ? '' : 'エラー詳細なし');
     state.coworkRun = {
       id,
@@ -1556,6 +1689,69 @@ function bindCoworkDetailActions(root, folder) {
   }));
 }
 
+// 定常業務フォルダの登録。agent-project 管理外のフォルダ（kiro-loop 設定や
+// .statemachine/ を持つだけ）をこの画面で扱えるようにする。宣言は dashboard 設定
+// `cowork.roots` が持つ——定常業務の実行側はこの dashboard 自身だから（「宣言は実行側が
+// 持つ」の原則。agent-project の host.yaml に載せると、常駐体が管理しないものを常駐体の
+// 宣言ファイルに書くねじれになる）。
+//
+// **登録の入口は全体設定「定常業務」だけ**（btn-settings-cowork-add-root）。定常業務画面は
+// 選択中プロジェクトの作業を見る画面なので、別フォルダ（＝他プロジェクト）の登録ボタンを
+// 置かない。選択中フォルダ自身の「登録を解除」だけをバッジとして残す。
+function coworkRootBadgeHtml(folder) {
+  const p = (state.discovery && state.discovery.projects) || [];
+  const sel = p.find((x) => x && x.dir === folder);
+  if (!sel || sel.kind !== 'routine') return '';
+  return '<span class="cowork-root-badge">この画面に登録したフォルダ'
+    + '<button id="btn-cowork-drop-root" type="button" class="linklike">登録を解除</button></span>';
+}
+
+async function addCoworkRoot() {
+  const picked = await guard('フォルダを登録できません', () => api.coworkPickRoot());
+  if (!picked || picked.canceled) return;
+  if (picked.registered) return toast('このフォルダは既に登録されています');
+  if (picked.managedByEngine) {
+    return toast('このフォルダは実行エンジンが担当しているので、登録しなくても表示されます');
+  }
+  // マーカーが無い＝まだ定常業務が無いフォルダ。登録は許す（登録しないと選択できず、
+  // 「追加」で最初の 1 件を作ることもできない）が、次に何をすればよいかを明示する。
+  const summary = picked.markers
+    .map((m) => [m.loop, ...(m.stateMachines || [])].filter(Boolean).join(' / '))
+    .filter(Boolean)
+    .join('、');
+  const body = summary
+    ? `見つかった定常業務: ${summary}`
+    : '定常業務の設定（kiro-loop / .statemachine）はまだありません。'
+      + '\n登録後、このフォルダを選んで「追加」から作成できます。';
+  if (!confirm(`${picked.folder}\n\n${body}\n\nこのフォルダを登録しますか？`)) return;
+  const res = await guard('フォルダを登録できません', () => api.coworkSetRoot(picked.folder, false));
+  if (!res) return;
+  toast(summary ? 'フォルダを登録しました' : 'フォルダを登録しました（「追加」から作業を作成できます）', true);
+  await afterCoworkRootChange(res);
+}
+
+async function dropCoworkRoot(folder) {
+  if (!folder) return;
+  if (!confirm(`${folder}\n\nこのフォルダの登録を解除しますか？（フォルダの中身は消えません）`)) return;
+  const res = await guard('登録を解除できません', () => api.coworkSetRoot(folder, true));
+  if (!res) return;
+  toast('登録を解除しました', true);
+  await afterCoworkRootChange(res);
+}
+
+// 登録・解除のあと片付け。**編集中の下書きを捨てる**のが要点——下書きは前回の overview を
+// 種に固定されるので、捨てないと新しく登録したフォルダの定常業務が一覧に出てこない。
+async function afterCoworkRootChange(res) {
+  if (res && Array.isArray(res.roots) && state.config) {
+    state.config.cowork = { ...(state.config.cowork || {}), roots: res.roots };
+  }
+  await refreshDiscovery();
+  await refreshCowork({ forceDiscover: true });
+  state.coworkDraft = null;
+  renderCowork();
+  if ($('tab-orchestration') && state.orchestration) renderOrchestration();
+}
+
 function renderCowork() {
   const ui = captureUiState();
   const el = $('tab-cowork');
@@ -1572,7 +1768,8 @@ function renderCowork() {
   }
   // 選択中プロジェクトの作業だけを表示する（従来は全プロジェクトの作業が常に並んでいた）。
   const folder = selectedProjectFolder();
-  const entries = coworkHasProjectConfig(cw, folder) ? coworkVisibleEntries(draft, folder) : [];
+  const entries = (coworkHasProjectConfig(cw, folder) || state.coworkForcedOpen)
+    ? coworkVisibleEntries(draft, folder) : [];
   const selected = coworkSelectedEntry(entries, folder);
   const selectedId = selected ? coworkEntryId(selected.item, selected.index) : '';
   const scopeLabel = `このプロジェクトの作業 ${entries.length} 件`;
@@ -1592,17 +1789,20 @@ function renderCowork() {
       </header>
       <div class="cowork-scope muted">
         <span>${esc(scopeLabel)}</span>
+        ${coworkRootBadgeHtml(folder)}
       </div>
       ${coworkRunBannerHtml()}
       ${entries.length ? `<div class="cowork-split-view">
         <section class="cowork-list-pane" aria-label="定常業務の一覧">${coworkRoutineSelectorHtml(entries, selectedId)}</section>
         <div id="cowork-selected-slot" class="cowork-detail-pane" data-ui-scroll-key>${coworkSelectedDetailHtml(selected, observed, busyId)}</div>
       </div>`
-      : '<div class="empty"><strong>このプロジェクトに登録された定常業務はありません</strong><span>プロジェクトの設定ファイルに作業を追加してください。</span></div>'}
+      : '<div class="empty"><strong>このプロジェクトに登録された定常業務はありません</strong><span>「追加」から作業を作成できます。別のフォルダを扱うには、全体設定の「定常業務」で登録してください。</span></div>'}
     </div>`;
   bindCoworkRoutineSelector(el);
   const addBtn = $('btn-cowork-add');
   if (addBtn) addBtn.addEventListener('click', () => openCoworkWorkDialog(-1));
+  const dropRootBtn = $('btn-cowork-drop-root');
+  if (dropRootBtn) dropRootBtn.addEventListener('click', () => dropCoworkRoot(folder));
   const saveBtn = $('btn-cowork-save');
   if (saveBtn) saveBtn.addEventListener('click', openCoworkSaveDialog);
   const refreshBtn = $('btn-cowork-refresh');

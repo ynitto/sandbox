@@ -6,6 +6,7 @@ import atexit
 import contextlib
 import hashlib
 import inspect
+import io
 import json
 import os
 import random
@@ -30,18 +31,30 @@ except ImportError:
     msvcrt = None  # type: ignore
 
 # 終端 status（これに達した run は active_runs から外れ、孤児 reclaim も resume しない）。
-# canceled は人の明示指示（cmd_cancel）による恒久停止。done/failed と同じく終端だが、
+# cancelled は人の明示指示（cmd_cancel）による恒久停止。done/failed と同じく終端だが、
 # 「成果あり(done)」でも「異常(failed)」でもない「意図的な打ち切り」を表す。
-TERMINAL = {"done", "failed", "canceled"}
-
-
-def _claim_lock_path(claim_dir: str) -> str:
-    """claim 用の排他ロックファイルのパス（バス外の一時領域に置く）。
-    同一マシンの同一 claim_dir には同一パスが対応し、プロセス/スレッド間で排他になる。"""
-    h = hashlib.sha1(os.path.abspath(claim_dir).encode()).hexdigest()
-    d = os.path.join(tempfile.gettempdir(), "agent-flow-locks")
-    os.makedirs(d, exist_ok=True)
-    return os.path.join(d, f"{h}.lock")
+# 常駐一本化 P0・W0-9 で語彙統一（旧 "canceled" 米式 → "cancelled" 英式。板・amigos と揃える）。
+# 実体は agentcore.vocab（flow/amigos/project/板で共通の完了語彙 — 設計 §4.1・R1）。
+# ここで読み取り用の集合（正典 + 旧綴り）を使うのは、TERMINAL の参照がすべて
+# 「バス上の既存 meta.status が終端か」の判定だからである。改称前に cancel された run が
+# 旧綴りのままバスに残っており、それを非終端と読むと active_runs → 孤児回収で蘇る。
+# **書き込みは常に正典**（cancelled）で、旧綴りを書く箇所はもう存在しない。
+from agentcore.vocab import TERMINAL_READ as TERMINAL  # noqa: E402
+# node_id（PC の身元）の正規化は 3 ツール共通の 1 実装に寄せる（実装計画 W1-10）。
+# エンジンごとの綴り替えは同じ PC を板に 2 ノードとして登録してしまう。
+from agentcore.nodeid import normalize_node_id, default_node_id  # noqa: E402
+# git URL の正規化一致と「このノードのローカルクローン」解決（S3）。gitcache の `_same_repo` と
+# board の `_norm_repo_url` は同じ判定の別実装で、agent-project 側とも吸収規則が食い違っていた。
+from agentcore import repolocal as _repolocal  # noqa: E402
+from agentcore import verifycontract as _verifycontract  # noqa: E402
+# エージェント CLI 定義（agents/<name>.json）の読み込みと argv 組み立て（S9）。組み込み
+# （kiro/claude/copilot/codex）を含む全 CLI がこの定義で動く。以前は同じ argv 知識が
+# agent-project / agent-flow / agent-amigos / dashboard に重複していた（repolocal と同型）。
+from agentcore import agentcli as _agentcli  # noqa: E402
+# リトライのバックオフ待ちの唯一の seam（agentcore.transport.backoff_sleep）。素の time.sleep を
+# 差し替えると stdlib の subprocess 内部（プロセス終了の 0.001s 倍々ポーリング）にも効いてしまい、
+# 高負荷時だけテストが壊れる。リトライ経路はこの名前を通す。
+from agentcore.transport import backoff_sleep  # noqa: E402
 
 
 @contextlib.contextmanager

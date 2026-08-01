@@ -7,6 +7,1242 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-flow / flow-planner: 列挙駆動の分解（対象単位のノードが生まれるようにする）・集約の木構造化
+
+「API のドキュメント化」のような粗いバックログに対し、対象単位のノードが生まれず
+「まとめて調査する 1 ノード」に畳まれていた。粒度ノブ（`granularity`）はこの問題の解ではない
+——ノブは 1 ノードのスコープ上限を決めるもので、対象数に応じたノード数は**列挙**からしか
+導出できない。粒度は計画時に確定させず、列挙を実行時のステップとして扱う設計に変えた。
+
+**flow-planner**
+
+- Phase 1 に **enumerability 軸**を追加。「同一手順を多数の独立した対象へ繰り返す」かを
+  3 条件（手順が同一 / 対象間に依存が無い / 成果が対象単位で完結）で**個別に**判定する。
+  単一フラグにしないのは、ファイル・関数が常に列挙可能なため、単一成果物の実装まで
+  map-reduce へ倒れる（他パターンを侵食する）のを防ぐため
+- Phase 2 で**ハイブリッド発動**: 3 条件全充足かつ件数 > 3 が確定なら Decision Matrix の
+  スコアに関わらず map-reduce を含める（force。複合は潰さない追加）。件数不明なら +5 加点に
+  とどめ LLM が最終判断（boost）。条件未充足・件数 ≤ 3 は**従来経路と完全に同一**（off）
+- **列挙 probe**（`--probe-root`・LLM を呼ばない決定的走査）: 列挙手順のグロブ／ディレクトリを
+  実際に走査して件数だけ実測する。依存物・隠しディレクトリは除外。0 件は「不明」として扱う
+  （計画時点で作業対象を手元に取得していないことがあるため、対象なしとは読まない）
+- Phase 3 は split の goal に実行時の列挙手順を埋め込ませ、force のときは**split の存在**も
+  決定的ゲートで検査して 1 回だけ作り直す（強制したのに split が出ないと元の症状へ戻る）
+- 発動根拠は `strategy.reason` と `strategy.enumeration` に必ず残す（誤爆の観測点）
+
+**agent-flow**
+
+- 実行時 fan-out の集約を**木構造**にした（新設定 `reduce_width`・既定 8）。map が幅を超えると
+  チャンクごとの中間集約を挟み、最終集約は中間集約だけを受ける。単段集約は対象数に比例して
+  1 ノードへ成果が集中し、正しく展開できたときほど失敗しやすかった
+- 検証ゲート（review 時）も同じ幅で分割し、中間集約は自分の群のゲート通過後に走る。
+  中間集約がなお幅を超える場合はもう一段畳む。**幅以下なら従来と同一構造**（id を含めて不変）
+
+**agent-project（外側が内側の戦略を固定させていた層間の汚染・2 件）**
+
+- 内側へ渡す分解粒度を **`flow_granularity`（既定 auto）** として分離した。従来は外側の
+  `granularity`（バックログの INVEST 粒度・既定 coarse）をそのまま `--granularity` で渡して
+  おり、agent-flow 側では明示指定が complexity 導出より優先されるため、**内側の work ノード
+  レンジが常に 1〜3 に固定**されていた（複雑なタスクでも「まとめて 1〜3 ノード」に畳まれる）。
+  外側の値は内側へ流れなくなった。内側だけ明示したいときは `flow_granularity: coarse|fine|finest`
+- `build_request` の定型文からパターン語彙を除去した。従来は「完了条件を満たすまで反復し…
+  （loop-until-done）」が**全タスク**の要求文に入り、flow-planner の戦略選定にはパターン正規名の
+  アンカー、フォールバックのキーワード検出には「反復」ヒットとなって、実行規律のつもりの文が
+  戦略選定を loop-until-done へ吸っていた。定型文は「完了条件: verify が exit 0（満たすまで
+  作業を続ける）」だけを言う。定型文の語彙衛生はテストで固定
+
+### agent-project / agent-dashboard: charter からの自動分解を廃止（分解は人の明示操作だけ）・削除は物理削除に変更
+
+バックログを削除しても、次のパスで似たタスクが自動で作り直されていた。原因は charter 駆動の
+分解が「消化可能タスクが無い」「charter が変わった」「却下した」を契機に**自動で**走り、
+削除で空いた穴を planner が埋め直す設計だったこと。charter からの分解は人の試行錯誤で練る
+ものなので、自動分解そのものをやめた。
+
+**エンジン（agent-project）**
+
+- plan（charter 分解）は**人の明示要求（`replan` 指示・viewer の分解ボタン）があったときだけ**
+  走る。初回の分解も charter 編集の反映もこの口で人が起こす（自動契機は全廃）
+- evaluate も未達 acceptance から改善タスクを自動起票しない。未達は新ステータス
+  **awaiting-plan（分解待ち）**として milestone で人へ返す（opt-in の敵対的レビュー所見だけは
+  従来どおり起票）
+- `reject`（却下）は再計画を自動要求しない。却下済みは archive（rejected）・墓標に残り、
+  次の分解時に backlog-planner への入力として渡る
+- backlog-planner への入力を拡張: 同一バージョンのバックログ（保留・実行中・レビュー中）に
+  加えて **archive の却下済み（却下理由付き・直近 30 件）**を渡し、「タイトルが違っても意図が
+  同じ・似ているタスクは出力しない」をスキルの責務として明示（タイトル照合では言い換え
+  再提案を捕まえられないため）。投入側の Jaccard 照合・墓標の完全一致抑止は最終防衛線として維持
+
+**画面（agent-dashboard）**
+
+- 🗑 削除は**物理削除**に変更（backlog と needs をゴミ箱へ。reject 投函をやめた）。分解が
+  自動で走らなくなったので、消したタスクが勝手に復活することはなく、削除→明示的な分解で
+  同種タスクが再提案されるのは期待どおりの試行錯誤の口。「作り直させない」意思表示は
+  ✕ 却下（墓標・決定記録つき）が担う。実行中（doing）に加えて委譲実行中（offloaded）も拒否
+- 「計画を作り直す」ボタンを「バックログを分解」に改め、初回分解の正規の口として案内。
+  awaiting-plan の milestone カードは分解ボタンへの誘導を表示
+
+**削除・却下と関連状態の整合（切り離しと孤児掃除）**
+
+- エンジンの毎パスの整合点に 2 つの GC を追加。`prune_dangling_afters` は後続タスクの
+  `after`（先行指定）から backlog にも archive にも無い id（＝物理削除済み）を切り離す。
+  `reap_orphan_task_state` はタスク本体を失った付随状態——検証記録 `verifications/<id>/`・
+  run ブリーフ `brief/<id>.md`・実行権ロック `claims/<id>.lock`——を物理削除する
+  （archive に居る id の検証記録・ブリーフは記録として温存。ロックは backlog 基準）
+- 却下（reject）は run ブリーフをその場で退役させ、蓄積を archive の却下記録へ転記する
+  （done の archive と同じ扱い。brief/ に残すと同 id 再利用時に古い内容が注入される）
+- dashboard の削除は viewer が持ち主のレビューコメント（`reviews/<id>/`）も一緒に掃除し、
+  確認ダイアログに影響する後続タスク（先行指定が自動で外れるもの）を表示
+
+### agent-project / agent-dashboard: バックログを削除しても要対応（needs）が残り、消しても復活する問題を修正
+
+画面（agent-dashboard・Windows）からバックログを削除しても要対応カードが残り、手で消しても
+復活する——試行錯誤（積んで、走らせて、要らなければ消す）が回らなくなっていた。原因は 3 つあり、
+どれも「削除が公式契約の外にあった」ことから出ていた。
+
+**1. 要対応カードに掃除する側が無かった**
+
+`needs/<id>.md` は「タスクの status の投影」という契約なのに、投影を**作る**側（`ensure_needs`）
+しか無かった。タスクを消した後に票だけが残ると、対応タスクの無い票は `ingest_feedback` が
+読み飛ばす（`[x]` を付けても消えない）うえ、`has_work` は「人の入力あり」と数えて watch を
+毎パス起こす。人からは「消しても消えない・復活する要対応」に見えていた。手で票を消しても、
+タスクが blocked / review / proposed のまま残っていれば `ensure_needs` が作り直す（設計どおり）。
+
+- `reap_orphan_needs` を追加。backlog に対応タスクが無いタスク級の票（`kind:` が
+  plan-review / review / blocked）を掃除する。milestone 票の持ち主は従来どおり
+  `reconcile_milestones`（`project.json` の status が正）なので触らない
+- `reconcile_needs`（= ensure + reap）を毎パスの整合点にして、作ると消すを必ず対で回す。
+  既に取り残されている票も、次のパスで自動的に片付く
+
+**2. viewer の削除がファイルの生 unlink だった**
+
+`backlog/<id>.md` を消すだけでは、票が残る（上記）／墓標（`tombstones.md`）が残らないので
+charter 運用では次の再分解が同じタスクを作り直す／状態 git の同時変更裁定では `backlog/` は
+実行側が正なので、本体側に書き込みがあると viewer 側の削除自体が取り消される。
+
+- 削除を本体の**却下（reject）**へ委ねる（`commands/` へ投函）。archive への退避・needs の掃除・
+  claim 解放・run の切り離し・墓標・決定記録が 1 つの操作として本体のプロセス内で起きる
+- 実行中（doing）は押した瞬間に理由を返す（本体側の拒否と二重）
+
+**3. 消したものを画面から戻せなかった**
+
+却下は「作り直さない」記録（墓標）を残すので、同じ題は再投入も再分解もされない。解除は
+CLI（`agent-project revive`）しか無く、Windows の画面だけで運用しているとやり直せなかった。
+
+- `revive` を `commands/` ドロップで受けられるようにした（プロジェクト単位・タイトル指定）
+- タスク画面に「却下済み（墓標）」の一覧と解除ボタンを追加。理由・日付・バージョンも見える
+- タスクを失った要対応カードは画面側でも即座に落とす（本体の掃除を待たずに視界から消える）
+
+### agent-project: 複数 PC 共有で「ステージに乗ったまま同期停止」と「バックログ分解の多重発火」を修正
+
+複数 PC で 1 つの状態リポジトリを共有すると起きていた 2 つの実害を直した。
+
+**一方の状態リポジトリがステージに乗ったまま同期が止まる**
+
+state 同期の export は「detached worktree でコミット → CAS でブランチ前進 → 実 index を
+追随（`_refresh_index`）」の順で進む。最後の追随の**前**にプロセスが死ぬ（夜間計画停止の
+SIGTERM・watchdog abort・電源断）と、HEAD には入ったのに index だけ古いパスが残る。
+作業ツリー＝HEAD なので次の export は「差分なし」で何も積まず、`git status` には
+ステージ済みの変更が**恒久に**表示され続け（idle 中は journal も動かず自然回復しない）、
+「状態リポジトリがステージに乗ったまま同期が止まった」ように見えていた。
+
+- `_self_heal` に幻のステージの自己修復（`_realign_index`）を追加。判定は保守的に
+  「index が HEAD と違うのに作業ツリーの内容は HEAD と一致する」同期対象パスだけ＝
+  人のステージや編集中の実差分には触れない。次の sync で自動的に clean へ戻る
+
+**バックログ分解が各 PC で勝手に走る**
+
+「計画（charter 分解）は常に 1 台だけ」（複数 PC ガイド §3.2）の関門が 2 か所で破れていた。
+
+- **ローカルが未 push の間、CAS が全滅していた**: `state_transaction` は「ローカルが
+  リモートの祖先」を前提条件にしていたが、`state_git_interval`（既定 300 秒）の push 間隔の
+  途中はローカルに未 push の state sync コミットがあるのが普通の運用状態。その間じゅう
+  lease 更新・claim・自動割当が全て失敗し、lease が失効して計画役が PC 間を漂流→各 PC が
+  好き勝手に分解する素地になっていた。トランザクションは remote HEAD を親に組み立てて
+  成立させ、ローカルへは fast-forward できなければ決定的 3-way（`_integrate`）で合流する。
+  push が通った後にローカル反映で失敗しても False を返さない（リモートで確定した claim を
+  「失敗」と読み、孤児の doing を残さないため）
+- **起動時にピアが見えない PC は関門ごと素通りしていた**: `cmd_run` の振り分けは起動時の
+  `_coordination_active`（origin + 生存ピアの観測）で決まるため、他 PC の status がまだ
+  同期されていない／stale な起動直後は charter ありでも素の `project_watch` に入り、以後
+  lease を一切見ずに毎パス分解していた。`project_watch` のパス頭に controller 関門を追加:
+  coordination が有効なら lease を取れたパスだけ `cmd_project`（分解・評価・milestone 整合）
+  を起こし、取れなければ割当タスクの消化（runner）だけを行う。再分解要求
+  （`.replan.request`＝ノード局所の明示アクション）だけは lease 無しでも通す
+- `run_watch` の計画役分岐を「coordination 有効かつ controller」から「controller」へ:
+  ピアが消えて単独に戻った PC（coordination 非活性）が計画を止めないようにした。多 charter
+  構成では 1 watch パスで全 charter を 1 巡させる（従来は毎パス先頭の 1 本だけ）。charter
+  更新での起床も coordination の有無に依らず効くようにした
+
+### agent-dashboard: WSL 側の宣言が Windows の画面から読まれていなかった（P0-2 の残り）
+
+正典構成（Windows の画面 + WSL の実行エンジン）で、**実行エンジンと共有する置き場を
+`os.homedir()` で解決していた経路がもう 1 本残っていた**。P0-2 で指示の投函先を
+`engine.agentsHome()` へ寄せたときの取りこぼしで、症状も同じ「押しても・書いても何も起きない」。
+
+**host.yaml の `repos[]` が一度も読まれていなかった**
+
+`nodeRepos.js` が `~/.agents/agent-project.host.yaml` を Windows 側のホーム
+（`C:\Users\<user>\.agents`）に探していた。宣言は WSL 側にあるので常に「宣言なし」に倒れ、
+CLIチャットの起動先と検収差分が使えない。**画面は逆に「`repos[]` に url と local を書くと
+選べます」と案内する**ため、書いてある人には直しようがない（グレーアウトの理由表示が、
+実際の原因と正反対のことを言う）。
+
+- 置き場の解決を `engine.agentsHome(cfg)` の 1 実装へ寄せた（⚙ 設定のディストロ／
+  ベースパスもここで効くようになる）。`AGENT_PROJECT_AGENTS_HOME` の優先は従来どおり
+- 宣言された `local`（実行側が書く POSIX パス）を、この画面から届く形へ寄せてから実在を
+  確かめる。変換前のパスで `statSync` していたため、置き場を直しても「実体が無い」判定の
+  ままだった。寄せ先は実体の在り処で 2 通り:
+  - `/mnt/<drive>/…` → `<drive>:\…`（**成果物リポジトリのクローンは Windows 側にあり得る**。
+    状態リポジトリと違って flock と rename の原子性を要求しないので ext4 に置く必要が無い。
+    UNC へ寄せると `\\wsl.localhost\<distro>\mnt\c\…` の二重経由になり、実体がすぐ隣の
+    `C:\` にあるのに Windows のファイル共有が通せない）
+  - それ以外の POSIX → `\\wsl.localhost\<distro>\…`（`engine/status.json` の
+    `children[].root` と**同じ規則・同じディストロ**。既定ディストロへ丸めない）
+  - この変換は成果物クローンの解決に閉じ込め、状態ルートを寄せる `toViewerPath` は
+    触らない（設計 §4.6 が `/mnt` 経路を意図的に廃止している。状態は ext4 だけが正）
+- 検収差分（`git:diff`）も同じ解決を通す。IPC から設定を渡すようにした
+- `no-git-writes.test.js` の「この PC のホームで解決しない」検査の対象に `nodeRepos.js` を
+  追加した。P0-2 で入れた不変条件が**1 ファイルしか見ていなかった**ため素通りしていた
+
+**届かないプロジェクトを黙って消していた**
+
+サイドバーは実体に届かないプロジェクト（`exists:false`）を無言で捨てており、ディストロ設定の
+ずれ 1 つで一覧が空になった。そのとき画面は「このエンジンにはプロジェクトが登録されていません。
+… host.yaml にプロジェクトを追加してください」と案内する——登録はされているので、人は
+host.yaml を見に行っても間違いを見つけられない。
+
+- 届かないプロジェクトは**消さずに非活性で並べる**（実行側が宣言したパスと、次に見る場所を
+  添える）。「登録されていません」の案内は、本当に 1 件も宣言が無いときだけ出す
+
+### agent-project / agentcore / agent-flow / agent-amigos: 契約の一本化（P2）
+
+修正計画は [`docs/plans/2026-07-26-open-items-and-concerns.md`](docs/plans/2026-07-26-open-items-and-concerns.md) §7.3、
+詳細設計は [`docs/plans/2026-07-26-p2-contract-consolidation-detailed-design.md`](docs/plans/2026-07-26-p2-contract-consolidation-detailed-design.md)。
+**同じ規則が複数実装に割れている**ものを畳む段。片方だけ育つと、板の入札選別は fail-close
+なので**誤動作ではなく無言の不参加**（「なぜかこの PC だけ仕事が来ない」）として出る。
+
+**ノード契約バージョンの定義を 1 か所にした（P2-1）**
+
+`CONTRACT_VERSION` が 3 箇所（`agentcore/board.py` の判定・`resident/status.py` の宣言・
+dashboard `engine.js` の期待値）にあり、片方だけ上げると「版 2 と宣言しつつ版 1 で判定」に
+なっていた。正典を `agentcore.board` にし、`resident/status.py` は import（`contract_compatible`
+の重複本体ごと削除）。dashboard の定数は残るが、**Python の正典を実際に読んで**突き合わせる
+ゴールデンテストで縛った（写しそのものが問題なので、写しを機械に突き合わせさせる）。
+
+**板へ他 PC の絶対パスを配るのをやめた（P2-2）**
+
+`nodes/<id>.json` に host.yaml の `repos[].local`（手元クローンの絶対パス）を載せていたが、
+`repos.schema.json` は同じ値を「ホスト固有なので共有レジストリには置けない」と宣言しており、
+S3 の動機と正面から矛盾していた。**読み手を全部数えたところ 1 人も居なかった**——入札判定は
+name と正規化 url、画面は url からラベルを作るだけ、doctor は心拍だけ。速度最適化としての
+`local` は請負ノードが自分の host.yaml から解決する（板は経路に無い）。publish をやめ、
+`board.schema.json` の `$defs.node.repos` を実装の形（2 形を受ける・`local` 禁止）へ直した。
+
+**宣言していたのに読まれていなかった 2 つを入札判定へ繋いだ（P2-3）**
+
+- `workloads`（引き受けるエンジン）。スキーマは「公示の workload がこれに含まれないと入札
+  しない」と宣言していたが、`eligible()` に引数自体が無かった。**明示宣言だけを正**とし、
+  設定から導出しない——`amigos_bus` の有無などから推測すると、宣言していない PC が黙って
+  入札をやめる。宣言が無ければ板にも出さない（宣言していないことを宣言しない）
+- `budget.max_concurrent`。「超過時は新規入札を控える」という契約に実装が無く、忙しいノードが
+  仕事を掴んだまま枠待ちで塞いでいた。板上の自分名義の非終端 `status/` 件数で自己抑制する
+  （枠の真実は板にあるので、常駐体のワーカープールと二重管理しない）
+- **`0` の意味を契約側（無制限）へ揃えた**。実装は「0 = 未設定 → 既定 4」と真逆に読んでいた。
+  「未宣言なら 4」は設定を読む側の既定へ移し、`NodeWorkerPool` は上限なしを表現できるように
+  した。**`max_concurrent: 0` を「既定 4 のつもり」で書いている PC は更新前に書き直すこと**
+  （キーごと省略すれば従来どおり 4）
+- あわせて **agent-amigos が `agent_cli` を渡し忘れていた**のを直した。判定は fail-close なので、
+  `requires.agent_cli` を持つ公示に amigos ノードは**永久に入札していなかった**
+
+**板への書き込みが排他を通るようにした（P2-4）**
+
+S8 で足した `write_bid` / `write_cancelled` / `write_award` だけが flock と `_ensure()` を
+通らず直接書いていた。転送層の破損時再クローン（`rmtree`）や `pull --rebase` と並走すると
+入札・中止マーカーが消えうる。あわせて `write_bid` の戻り値（冪等で書かなかった場合）を
+受理レシートの文言に出すようにした——常に「入札しました」と返すと、押したのに板へ
+届いていない場合と区別が付かない。
+
+**同じ文字列・同じ規則の写しを畳んだ（P2-5）**
+
+- `DIFF_CRITERION`（差分の常設基準）を本体の 1 か所へ。スキルへは解決済みの文を入力で渡す
+  （P1-1 の `side_effects_text` と同じ手）。2 か所で育てると、検証レポートに出る基準文と
+  エージェントが見た基準文が黙ってずれる（判定は番号で突き合わせるので機械は気付かない）
+- 退避の指示文の**枠**を `agentcore.agentcli.spill_instruction` へ。呼び出し側が決めるのは
+  「何の全文か」だけ（定義側の `spill.instruction` へは寄せない——あちらは権限フラグ置換と
+  セットの別機構）
+- host.yaml の `repos:` 正規化を `agentcore.repolocal.normalize_repos` の 1 実装へ
+  （写しの側では `local: null` が `"None"` という文字列のパスになっていた）
+- JS の URL 正規化に **symlink 解決**を足して Python と揃え、両言語をゴールデン表で縛った
+- 板レイアウトの名義綴りを `protocol.safe_name` へ（flow だけ置換文字が `_` で、正規化されて
+  いない node_id では**書いたファイルと読むファイルが別名**になり、手動入札の受け皿が
+  効かなくなる）
+
+**CI が 31 件のテストを黙って素通りしていた**
+
+`unittest discover` は `unittest.TestCase` のサブクラスしか集めない。`resident` の単体テスト
+4 ファイル（scheduler / supervisor / worker / status）はモジュール直下の `def test_*` で
+書かれており、**CI で緑とも赤とも報告されていなかった**（`if __name__` の手動実行でしか
+走らない）。P3-1 で CI を入れたとき「4 パッケージの単体テスト」と書いたが、実際にはここが
+抜けていた。標準の `load_tests` プロトコルで拾うようにした（`tools/agent-project/tests/_functest.py`。
+pytest は足さない——stdlib だけで走るのがこのリポジトリの規約で、CI もそれ前提）。
+
+
+### 破壊的変更: agent シリーズの python 下限を 3.11 へ
+
+インストーラの版検査（`tools/agent-tools/install.sh`）と文書の要求が **3.9** だったが、
+新設した CI が回すのは **3.11** だけで、宣言と検査が食い違っていた（積み残し §7.7 C-1）。
+**検査に宣言を合わせる**方向で解消する——誰も動かしていない版を CI で支え続けても、
+その版で動く保証は「たぶん」以上にはならない。
+
+- `install.sh` は 3.11 未満の python を除外する。案内に **Ubuntu 22.04 の既定は 3.10**
+  であることと、その系での入れ方（deadsnakes / 24.04 以降は既定で足りる）を書いた
+- 反映先: セットアップガイド §1 / agent-flow の README・SKILL
+- **既存ノードへの影響**: 3.10 以下で動かしている PC は、更新前に python を上げる必要がある
+  （自己更新は `install.sh` を叩くので、上げていないノードはそこで止まって理由を表示する）
+
+### リポジトリ / agent-project: 文書と CI（P3）
+
+修正計画は [`docs/plans/2026-07-26-open-items-and-concerns.md`](docs/plans/2026-07-26-open-items-and-concerns.md) §7.4。
+実機 canary（R1）と独立に進められる 4 件。
+
+**CI を新設した（P3-1）**
+
+このリポジトリには CI 設定が 1 つも無く（`.github/workflows` も `.gitlab-ci.yml` も
+Makefile も無い）、全緑の担保は人が手元で回すことに依存していた。
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) で 3 系統を回す:
+
+- 4 パッケージの単体テスト（agent-project / agent-flow / agent-amigos / agentcore）。
+  **agentcore はテストルートが 2 つある**（`agentcore/tests` 58 件 と
+  `agentcore/agentcore/tests` 74 件）ので両方を明示する——片方だけ `discover` すると
+  残りが黙ってスキップされる。設定キーの構造テスト（P0-4）は agent-project 側に含まれる
+- agent-dashboard の `npm test`（実行時依存だけを `npm install --omit=dev` で導入する。
+  electron は開発依存でテストからは起動しないため入れない）
+- 利用者向け文書の内部名検査（R10）
+
+**CI を入れる前に間欠失敗を 1 件潰した（P3-1）**
+
+`test_daemon.OrphanRecoveryTests.test_reclaim_after_owner_lease_expiry` が 40 回中 3 回失敗して
+いた。`reclaim_request(..., lease_sec=0.01)` は「自分の claim を書く → 勝者判定」の往復より
+lease が短く、**claim した瞬間に自分の lease が切れて自分で勝者判定に負ける**。実装ではなく
+テストの作りの問題（0.01 秒 lease が非現実的）で、失効を時間ではなく値（`lease_until` を
+過去へ）で作る形に直した。CI は手元より遅いランナーで回るので、時間依存はここで潰しておく
+（間欠的に赤い CI は無い CI より悪い）。
+
+**R10 検査を機械化した（P3-1）**
+
+素朴な `grep` では成立しない: 利用者向け文書にはガイドのファイル名や契約のスキーマ名が
+正当に含まれ、それらは内部名を含む（隠すのは製品名としての内部名であって契約の語彙ではない）。
+[`tools/ci/check_user_docs.py`](tools/ci/check_user_docs.py) は**本文だけ**を見る——
+コードブロック・インラインコード・リンク先・パス・ファイル名を落としてから検査する。
+どうしても本文で言及する行は `<!-- r10-allow: 理由 -->` で免除し、理由が行に残る。
+検査自身の単体テスト（`tools/ci/tests/`）で「何を落として何を見るか」を固定した。
+
+**`docs/guides/multi-pc-operations.md` を全面改訂した（P3-2）**
+
+常駐一本化の前に書かれた記述（廃止済みの `start` / `stop`、通らない `status --root`、
+旧モデルの「各 PC 1 daemon」）が 10 箇所以上残り、一部だけ新しいという最も読み違えやすい
+状態だった。「PC に 1 本の常駐体 + プロジェクトごとの子」「git を触るのは常駐体だけ」の
+現行モデルで書き直し、dashboard の自動 pull を前提にした障害説明（凍結した clone が
+ゴースト表示の主犯という記述）も、pull 経路が消えた現行に合わせて畳んだ。
+
+**doctor に host.yaml の起動前チェックを足した（P3-3）**
+
+`projects[].root` の綴り間違い・origin の取り違え・設定 2 層の帰属違反は、これまで
+「子の起動失敗 → 隔離表示」という最も遠い症状でしか観測できなかった。
+`doctor_host_projects_findings` が root の存在・git トップレベル・origin 一致・
+チェックアウトのブランチ・E1〜E7 相当の設定検査を宣言ごとに見る。
+
+- 層契約の判定は起動経路と**同じ関数**（`configfile.layer_findings`）を呼ぶ。doctor 用に
+  別判定を書くと「doctor は緑なのに起動が止まる」が生まれる。fail-fast の出口だけを
+  `_validate_layers` に残し、判定は共有した
+- `state_repo` を宣言していて root が無いだけの状態は**所見にしない**（初回起動で clone
+  される正常な形。ここを警告にすると新規プロジェクトの度に赤が出る）
+
+**S1 詳細設計に記述訂正を追記した（P3-4）**
+
+本文が現存しないシンボル（`_validate_layers` の引数形・`_STATE_SIGNIFICANT`）を参照して
+いた。結論は正しいので本文は書き換えず、§6.1 に訂正表だけを足した。
+
+### agent-project / agent-dashboard / agentcore: 実機 canary の前に直す 4 件（P0）
+
+詳細設計は [`docs/plans/2026-07-26-p0-pre-canary-fixes-detailed-design.md`](docs/plans/2026-07-26-p0-pre-canary-fixes-detailed-design.md)。
+いずれも canary（複数 PC で 1 週間）で観測したい異常と同じ症状を出す不具合で、直さずに入ると
+「設計の問題か既知バグか」を切り分けられない。
+
+**起動直後の SIGTERM で子だけが生き残っていた（P0-1）**
+
+`serve` はシグナルハンドラを子の起動・`write_status()`（git 観測を含む）・tick 開始の**後**に
+設置していた。この窓で SIGTERM が届くと既定ハンドラで即死し、`graceful_shutdown` が走らずに
+`run --watch` の子が監督者不在で残る——次の起動で同一プロジェクトにループが 2 本並ぶ。
+`systemctl restart` がそのまま踏む経路。
+
+- ハンドラ設置を**起動バナーより前**へ移した。バナーは「以降は取りこぼさない」境界で、
+  テストの待ち合わせ点にもなる。停止要求が入っていれば tick を始めず子を畳んで 0 で返る
+- 2 度目のシグナルは握らず既定ハンドラへ戻す（停止処理が詰まったときの逃げ道を残す）
+- **子（`run --watch`）にも同型の窓があった**: `_install_sigterm` が `state_sync`（git）と
+  controller lease の取得より後で、その窓で死ぬと lease を握ったまま `finally` を通らない
+  （次の子が最大 120 秒 controller へ昇格できない）。設置を先頭へ移した
+- 間欠失敗していた `test_serve_exits_cleanly_on_sigterm`（5 回中 1 回）が決定的に緑になった
+
+**dashboard のボタンが常駐体に届いていなかった（P0-2）**
+
+正典構成（Windows の画面 + WSL の実行エンジン）で、指示の投函先と取り込み先が**別ファイル
+システム**だった。同じ dashboard の `engine.js` は `wslpath` で WSL 側 home を解決して
+`engine/status.json` を読んでいるのに、この経路だけ `os.homedir()` に落ちていた。
+
+- 投函先の解決を `engine.agentsHome()` の 1 実装へ寄せた。旧ホーム（`~/.agent`）への
+  フォールバックは**持たない**——実行エンジン側に無いので、書けるのに誰も読まない場所が増える
+- **置き場を直しても届かなかった**: 指示の `board:` は板の**所在**（`host.board`）なのに、
+  dashboard は板の**作業フォルダ**（`delegation.boardRepos`）を載せており、常駐体の
+  完全一致検査に必ず引っかかっていた。常駐体が `engine/status.json` の `board` へ
+  `workdir` を載せ（additive・契約版据え置き）、画面はそれと突き合わせて所在へ翻訳する
+- 参加していない板への指示は投函せず**その場で理由を返す**（`.err` で後から知るより短い）
+- `delegation.nodeCommandsDir` を既定と設定画面（「この端末への指示の受け渡し先」）に出した
+- 実行エンジンと共有する置き場を `os.homedir()` で決めないことを構造テストで固定
+
+**大文字ホスト名の PC が 2 名義になっていた（P0-3）**
+
+`Config.node` だけが独自のサニタイズ（**小文字化しない**）で導出されており、`DESKTOP-X` の
+ような PC はプロジェクト状態側 `status/DESKTOP-X.json` と板側 `nodes/desktop-x.json` に
+割れていた。人が板の端末一覧（小文字）を見て書いた `- node:` を**どのノードも拾わないまま
+ready で固まる**。
+
+- `agentcore.nodeid.default_node_id()` を新設し、ホスト名の取り方まで含めて 1 実装に。
+  agent-project / agent-flow / agent-amigos が同じ関数を使う
+- `AGENT_PROJECT_NODE` と `--node` も正規化する（host.yaml 宣言だけが正規化されていた非対称）。
+  綴りを変えたときは 1 行知らせる——黙って変えると「指定した名前で動いていない」ことに気付けない
+- `- node:` の照合も正規形で行う。正規化前に書かれたタスクも同じ PC のものなら拾える
+- `doctor --node-id-cutover` がプロジェクト状態側の残骸（`status/` の旧名義・旧名義の
+  `claim_owner`・手で割り当てた `- node:`）も見る。切替手順書に読み方を追記
+
+**`remote_review: observe` が到達不能の死んだコードだった（P0-4）**
+
+`CONFIG_DEFAULTS` にキーはあり層検査も通るのに `Config` へ渡しておらず、読み出しは
+`getattr(cfg, …, "settle")` だったので**プロジェクト yaml に `observe` と書いても常に
+`settle`**。S5 の verifier キーと同型の 2 度目。
+
+- `Config` へ配線し、値域外は警告して既定へ倒す。`mr.py` の `getattr` フォールバックは削除
+  （読み手が庇うと、配線が落ちても静かに動き続ける）
+- **設定キーの構造テストを新設**（`tests/test_config_keys.py`）: `CONFIG_DEFAULTS` の全キーが
+  ①`Config` のフィールドを持ち ②設定ファイルから宣言すると実際に値が変わる、を検査する。
+  除外は理由の記入を必須にし、番兵も除外も無いキーはテストが落ちる
+
+### agent-dashboard / agent-project / agent-flow / agentcore: 板の観測・操作 UI と診断の対話化（S8・S9-4）
+
+詳細設計は [`docs/plans/2026-07-26-s8-s9-4-board-ui-and-doctor-chat-detailed-design.md`](docs/plans/2026-07-26-s8-s9-4-board-ui-and-doctor-chat-detailed-design.md)。
+
+**まず直したもの: `git+` 板では dashboard のボタンが誰にも届いていなかった**
+
+板への `cancel` / `award` は板の作業ディレクトリへファイルを置くだけで、push する主体が居ない。
+ローカル dir の板でしか成立しておらず、**`git+` 板では押しても何も起きないボタン**だった。
+新しい操作（手動入札）を足す前にここを直した。
+
+- 板への書き込み（`board-cancel` / `board-award` / `board-bid`）を**ノード宛て指示ドロップ**へ
+  一本化した。新契約 [`agent-node-command.schema.json`](schemas/agent-node-command.schema.json)、
+  置き場は `$AGENT_COMMANDS_DIR`（既定 `~/.agents/commands/`）。**板へ書くのは常駐体だけ**
+- プロジェクト配下の `commands/` ではなく**ノードスコープ**に置いた——板はプロジェクトに属さず、
+  プロジェクトを 1 つも持たない PC からも板を操作できる必要がある
+- 形（`<name>.json` / `processed/` / `.err`）と述語は `agentcore.commands` で共有する。
+  利用者から見える「送信済み → 受理済み → 失敗バナー」を 2 種類作らない
+
+**同一ノードで 2 プロジェクトが同じ板を巡回すると、同じ公示を二重に取り込んでいた**
+
+`poll_board` の「取り込み済みか」の判定が**自分のバスだけ**を見ていたため、A のバスへ取り込んだ
+直後の公示を B のバスがもう一度取り込む（同一ノードでの二重実行）。判定を板の
+`status/<who>.json`（自分が落札・引き渡し済みの印）へ移した——板が真実という原則にも合う。
+
+**R2a: 常駐体の board tick（30 秒）**
+
+- `nodes/<node-id>.json`（能力宣言）の**書き手ができた**。host.yaml の `tags` / `agent_cli` /
+  `repos[]`（`local` 込み）/ `budget.max_concurrent` がそのまま載る（積み残し P1-a の決着）
+- **心拍だけの更新は 5 分に 1 回**に律速する。30 秒ごとに書き換えると板に無意味なコミットが積む
+  （宣言の内容が変わったときは間隔に関わらず即書く）
+- ノード宛て指示を取り込み、板へ書いて push する。終端済み公示・別の板宛て・未知の指示は
+  理由つきで `.err` へ退避する（黙って無視しない）
+- `engine/status.json` に `board` ブロックを足した。**dashboard が「参加しているか・手動入札
+  できるか」を判断する唯一の根拠**——host.yaml と agent-flow 設定を dashboard が自前で読み解くと
+  宣言の解釈が 2 実装になる
+- **入札の自動判断は tick に置かない**。自動入札は従来どおり各プロジェクトの `participate` が担う
+  （同じノードに 2 つ目の入札主体を置くと二重落札になる）
+
+**入札選別規則を `agentcore.board` へ 1 本化**
+
+agent-flow と agent-amigos が「同じ仕様・別実装」で持っていた `board_eligible` を集約した
+（`agentcore.repolocal` が解決したのと同型の問題）。契約にあって両方が見ていなかった
+`requires.agent_cli` と `requires.contract_version` の判定も入れた（どちらも fail-close）。
+判定材料の正典は host.yaml で、agent-flow 設定の `board_repos` / `board_tags` /
+`board_agent_cli` は**明示上書きへ降格**した（S1 の取りこぼしだった二重宣言の解消）。
+
+**S8: 板の観測と操作（委譲の独立タブは作らない）**
+
+置き場は人の問いごとに 3 か所へ割った——orchestration タブは全体設定になったので、
+そこに動く一覧は置けない:
+
+- **タスク画面**: 委任（offloaded）タスクに「委任先: pc-b — 実行中」の 1 行と、
+  詳細の「委任」行（中止ボタン付き）。データ源は板のファイルだけ
+- **参加タブ**: 募集中の公示を「引き受ける」候補として出す（手動入札）。**引き受けても実行
+  できない端末ではボタンを理由付きで非活性**にする——プロジェクトを 1 つも持たない端末の
+  落札実行は未対応（Phase 5 / R2b）。「操作だけ増えて実行できない」状態を構造的に防ぐ
+- **全体設定 → 同期**: この端末の参加状況と参加ノード一覧（心拍・引き受けられるもの・
+  手元にあるリポジトリ・契約の版）。他 PC の絶対パス（`local`）は出さない
+- **手動入札は「自己抑制の上書き」**。自分名義の有効な入札がある公示は、`poll_board` が
+  repos/tags 照合を問わずに取り込む——人が押した意思がここで通る
+
+**S9-4: 失敗診断の対話化**
+
+- 失敗診断のボタンを「AIと対話で診断」（既定）と「文面を生成」（従来のヘッドレス 1 発）に
+  分けた。原因究明は 1 往復では終わらない
+- **120,000 字のスナップショットは対話セッションへ持ち込めない**（tmux への注入は改行を
+  含められない 1 行、全文をファイルで渡す前提は読み取り専用でファイル読み取りごと落とす
+  CLI で成立しない）。送るのは**ブリーフ 1 行（2,000 字上限）＋ 全文ファイルのパス**で、
+  全文は「読めるなら読め」の追加資料に留める——S9 のスキーマを触らずに済む
+- 診断は**使い捨て**（`readonly_args` + `no_session_args`）。セッション名も `agent-doctor-` と
+  別系統にする（読み取り専用のつもりの窓が作業セッションに合流すると書き込みができてしまう）
+- 同一の要対応の再診断は既存セッションへ attach し、**ブリーフは送り直さない**
+- 読み取り専用を保証できない CLI（`readonly: best-effort`）では、その旨を画面に出す
+- cwd はタスクの書込先リポジトリ（このノードの宣言から解決）→ プロジェクトの順
+
+### agent-project / agent-dashboard / agent-flow: 「エージェントが書き、人が直す」バックログと spec の 3 段（S6・S7）
+
+詳細設計は [`docs/plans/2026-07-26-s6-s7-backlog-planning-detailed-design.md`](docs/plans/2026-07-26-s6-s7-backlog-planning-detailed-design.md)。
+
+**まず直したもの: `acceptance` の受け渡しが 4 か所で切れていた**
+
+S5 は受入基準を「done の根拠」に据えたのに、**それを生む側・人が直す側のどこにも通っていなかった**。
+新機能より先にここを直した（通っていない表現の上に生成側を乗せても、人には見えないまま回る）。
+
+- `task_from_spec` が `acceptance` を既知キーとして扱うようにした。従来は「未知キー保持」の枝に落ち、
+  配列が **`- acceptance: ['A', 'B']` という Python の repr 1 行**になっていた
+- 投入時の「検証の材料があるか」の判定を `has_verify_plan` と同義に揃えた。従来は acceptance を
+  数えておらず、**受入基準しか持たないタスクが inbox（人の triage）へ落ちていた**
+- 計画レビュー票に受入基準を箇条書きで載せた（人が読んで直す一次表現が票に無ければ、直す機会は無い）
+- `revise` で受入基準を編集できるようにした（`--acceptance` 複数指定＝全行置換）。dashboard の
+  タスク編集にも「受入基準」欄を追加
+
+**S6: バックログの生成・レビュー・整合**
+
+- **`backlog-planner` スキル**（`.github/skills/backlog-planner/`）が charter を分解する。設定
+  `planner_skill` で差し替え可。**見つからなければ組み込みプロンプトへ落ちる**——計画が止まると
+  プロジェクトが 1 歩も進まないので、スキルは必須にしない
+- **必須項目の決定的ゲート**（`plan_sections: required`・既定）: `why` / `desc`（作業概要）/
+  `acceptance` / `size` の欠落は機械で見て**1 回だけ再要求**し、それでも欠けるタスクは**捨てずに
+  人の目へ回す**（`plan_review` on なら proposed で票に欠落を書き、off なら draft）。捨てると
+  「プランナーが何も出さなかった」としか見えず、charter が悪いのかスキルが壊れたのか切り分けられない
+- **重複はプランナーに出させない**: 既存タスク一覧と墓標を入力に載せる。投入側の Jaccard 照合は
+  最終防衛線として残す（スキルは差し替え可能なので、投入側の護りは外さない）
+- **墓標（`tombstones.md`）**: `reject` が 1 行残し、同じタイトルは再提案されない。人が手で書ける。
+  `agent-project revive <タイトル>` で解除、`replan --revive` は今回だけ無視（行は消さない）
+- **抑止は正規化タイトルの完全一致のみ**。類似（Jaccard）は投入を止めず票に注記するだけにした——
+  抑止は取り返しがつかない（黙って消えるので人は気づけない）が、提示は取り返しがつく
+- **人が直した印**（`- edited: human`）を `revise` とレビュー票の確定で付け、プランナーへ
+  「作り直すな」として届ける。題を直しても原題（`- planned_title:`）が指紋として残るので、
+  次の replan で元の題のタスクが復活しない
+- **随時入力の整合パス**: `enqueue` / `inbox/` / `intake_cmd` は重複照合・charter タグ付与・墓標照合を
+  通ってから投入される。重複は新規作成せず理由を返す
+- **観点メモ（`notes/`）**: 書き溜めても plan は**自動では消費しない**（メモは「まだ決めていないこと」の
+  置き場で、勝手にタスク化されると人はメモを書けなくなる）。`agent-project distill-notes` か
+  dashboard の「メモ」ボタンを押したときだけバックログ候補になり、取り込めたメモは `notes/archive/` へ
+
+**S7: spec を 3 段にする（ブラウンフィールド適合）**
+
+- 投入時採点 `max(c,r,a)` で スキップ / **ライト spec**（`design.md` 1 枚・展開なし）/ フル spec を選ぶ。
+  `spec_threshold_full`（既定 3）/ `spec_threshold_light`（既定 2）。旧 `spec_threshold` は full の
+  別名として読むので既存設定はそのまま効く
+- ライト spec は「既存コードのどこをどう変えるか（変更方針・影響範囲・受入条件の差分）」だけを書かせる。
+  要求は charter とタスクの `why`/`desc` に既にあり、分解は元タスクの粒度で足りる——3 点セットの
+  オーバーヘッドの正体はこの 2 枚だった
+- plan と spec ルーティングの直前では `repo_map` 設定に関わらず `context/<repo>.md` を用意する。
+  作業概要の「変更対象」も影響範囲も既存コードの文脈が無ければ書けず、opt-in のままだと決定的ゲートが
+  恒常的に発火して**設定 1 つで機能全体が空回りする**
+
+**あわせて直した不具合**
+
+- **S5 の設定キーが Config に届いていなかった** — `verifier` / `verifier_skill` /
+  `verify_side_effects` は `CONFIG_DEFAULTS` にあるだけで `Config` へ渡されておらず、読み出しは
+  `getattr` の既定に落ちていた。つまり `verifier: false` も `verifier_skill:` も**設定しても効かなかった**
+- **`has_consumable` がタグ無しタスクを数えていなかった** — スコープ判定が完全一致を要求し、
+  `_existing_titles` の述語（タグ無しはどの charter にも属しうる）と食い違っていた。結果、消化可能な
+  タスクがあっても**再分解が誤発火**していた。`_has_project_human_wait` も同じ穴で人待ちを見落として
+  いた（`task_charter_name` の戻り「default」を "" と比べていた）。述語を
+  `task_belongs_to_charter` 1 つに寄せた
+- **`--granularity` が agent-flow へ渡っていなかった** — 外側の backlog だけが設定に従い、内側の
+  タスクグラフは常に auto で分解されていた（agent-flow 側の受け口は存在した）
+- **flow-planner のスキル名がハードコードだった** — agent-flow に `planner_skill`（既定
+  `flow-planner`）を足し、`worker_skill` と対称にした
+- **組み込みプロンプトが既存タスク・墓標・メモ・再要求を落としていた** — スキル未導入の環境では
+  再要求が同じプロンプトの繰り返しになり（欠落が直らない）、`distill-notes` がメモを読まないまま
+  分解していた
+
+
+### agentcore / agent-project / agent-flow: リトライのバックオフ待ちを 1 つの seam に集約
+
+リトライ回数を検証するテストが **CPU 高負荷のときだけ落ちる**問題を直した。
+
+原因はテスト側にあった: リトライの検証は `time.sleep` を差し替えて呼び出しを記録するが、
+`time` は stdlib の共有モジュールなので、その差し替えは **CPython の `subprocess` 内部**にも効く。
+`subprocess.run(timeout=…)` はプロセス終了を 0.001 秒から倍々（上限 0.05）でポーリングしており、
+負荷で `git clone` が長引くとその sleep が記録へ混入して「バックオフ 1 回」の検証が壊れていた。
+
+- `agentcore.transport.backoff_sleep` を追加し、**リトライの待ちはすべてここを通す**
+  （transport の clone / git ロック / push 競合、agent-flow の gitcache・workspace・stategit・
+  transient リトライ、agent-project の gitcache・stategit・coordination）
+- 差し替えの対象が自分たちの関数 1 つになったので、stdlib の内部ポーリングは巻き込まれない
+- `time.sleep` の直接呼び出しが seam 1 か所に限られることをテストで固定した
+  （増やすと同じ壊れ方が戻るため）
+
+
+### agent-project / agent-dashboard: 検収の MR/PR 一本化と、証跡ベースの検証（S4・S5）
+
+**S4: 検収を MR/PR へ寄せ、決着を決定的シグナルで定義する**
+
+- **フォージ側の人の操作が決着になる**。`poll_task_mrs` が検収待ちタスクの MR を照会し、
+  マージ=承認 / 未マージクローズ=却下 / `status:changes-requested` ラベル・レビュー=差し戻し
+  として決着させる（常駐体の sync 周期）。**コメント本文のキーワード推定は使わない**——
+  書き手の言い回し 1 つで判定が変わり、変わったことに気づけないため。差し戻しに注入するのは
+  **未解決**の discussion だけ（解決済みまで流すと、一度直した指摘が毎回積み直されて収束しない）。
+- 到達不能（ネットワーク断・トークン失効）は決着しない。「未マージ＝却下」と読むと、回線が
+  切れただけで成果が却下される。
+- `remote_review: settle | observe`（既定 settle）。observe は表示のみ（移行用）。
+- **フォージ境界**を切り、実装は GitLab のみ。GitHub / Gitea は未対応として「フォージ無し運用」
+  へ倒す（1 回だけ警告）。動作確認できる環境が無いまま書いた API クライアントは、動くかどうか
+  分からないコードが増えるだけ。認証情報は環境変数 / rc ファイルのままで、**設定 2 層のどちらにも
+  置かない**（host.yaml は平文で PC に残り、プロジェクト yaml は全 PC へ配られる）。
+- **検収カード**: MR があるあいだはカード内で差分を開かせない（レビューの正は MR 一本）。
+  MR を持たないタスクだけ、S3 のノード宣言（host.yaml `repos[]`）から解決したクローンで差分を出す。
+  worker の作業ツリーは `/tmp` で消えるため、`delivery.path` 前提の経路は別マシンの dashboard では
+  そもそも動いていなかった（これが C5 の実体）。解決できないときは理由と宣言のしかたを表示する。
+
+**S5: 「コマンドの exit 0」から「基準 × 証跡」へ**
+
+- バックログに **`- acceptance:`（複数行可）** を追加した。`Task.extra` が (key, value) のリストなので
+  同名キーの複数行はそのまま往復する——スキーマもパーサも変えずに済んだ。`accept`（自然文 1 行）は
+  1 項目の acceptance として扱う（後方互換）。
+- settle で決定的 `verify:` が無いタスクは、**検証エージェント**が基準ごとに実際にコマンドを
+  試行錯誤して充足を確かめ、**判定 + 証跡**を返す。プロンプトと出力契約は
+  `.github/skills/backlog-verifier/`（上位に置けば差し替え可・`verifier_skill` で名前も変更可）。
+- 機械的な護りは 4 つ: **フェイルクローズ**（明示 pass が無ければ fail）/ **証跡必須**
+  （pass なのに実行コマンドも参照ファイルも無ければ fail へ落とす）/ **差分の常設基準**
+  （何も変えずに全 pass を返す道を塞ぐ・red-green の代替）/ **検収カードでの抜き取り監査**
+  （証跡の薄い判定を警告表示。監査を別機能にせず人が毎回見る 1 枚に載せる）。
+- **「検証不能」はリトライを焼かない**。環境にツールが無い等は失敗ではなく、直す先がタスクの中に
+  無い。環境要因失敗と同じ扱いで理由付きで人へ回す（直して approve すれば同じ run の続きから）。
+- 検証レポートを `verifications/<task-id>/<rev>.md` に保存し、needs 票に要約（基準 × 証跡の表）を
+  載せる。**人検収で人が読むのはこの表**——コマンドの良し悪しは人には判断できないが、基準と証跡なら
+  判断できる、というのが S5 のコンセプト変更そのもの。
+- `verify_side_effects: workspace | network`（既定 workspace）。DB・外部サービスへの**書き込み**は
+  どちらでも不可（検証は失敗するとリトライで何度も走るので副作用が累積する）。
+- **廃止**: `accept` からの LLM 一発合成（`ensure_verify` の synth 経路）と、検証済み verify
+  ライブラリ（`verify_lib_path` / `save_validated_verify` / `find_learned_verify`）。後者の
+  置き換えは `verify-recipes/` で、**次回 verifier への参考情報**であって決定的ゲートには昇格させない。
+
+詳細設計: [`docs/plans/2026-07-26-s4-s5-review-and-verification-detailed-design.md`](docs/plans/2026-07-26-s4-s5-review-and-verification-detailed-design.md)
+
+
+### 全ツール: エージェント CLI 差分吸収レイヤ（S9-1〜3）
+
+「この CLI をどう起動するか」の知識が **8 か所・4 実装**（agent-project / agent-flow /
+agent-amigos / agent-dashboard）に散っていた。CLI の作法が変わるたび複数箇所の修正が要り、
+実際に**同じ CLI でもツールによってフラグが違う**状態になっていた（claude が agent-project
+では `--dangerously-skip-permissions` 付き・dashboard では無し、cursor は同梱定義と dashboard
+の組み込み分岐で argv 自体が別物）。定義ファイル 1 枚に集約する。
+
+- **組み込み CLI（kiro / claude / copilot / codex）も `agents/<name>.json` へ移した**。
+  コード側に CLI 分岐は無い。組み込み名の予約も解除したので、上位ディレクトリ（`$KIRO_AGENTS_DIR`
+  → プロジェクトの `agents/` → `~/.agents/agents/`）に置けば同梱定義を上書きできる——
+  これが無いと「CLI の作法変更が JSON 1 ファイルで完結する」が成り立たない。
+- **フォールバックの組み込みテーブルは持たない**。定義を解決できない `agent_cli` は明示エラー
+  にする（インストール破損として読めるメッセージ）。テーブルを残すと「JSON を直したのに
+  古い挙動のまま」という、いま消した二重管理が別の形で戻る。
+- **契約の拡張**（`schemas/agent-cli.schema.json`）:
+  `interactive`（対話 argv・`ready_pattern`・`ready_timeout_sec`・`prompt_inject`）/
+  `readonly_args` + `readonly`（強制力の宣言）/ `write_args` / `no_session_args` /
+  `command_suffix`（位置引数の末尾固定）/ `spill`（長大プロンプトの一時ファイル退避）。
+  既存の定義（`cursor.json` / `ollama.json`）はそのまま有効。
+- **Python ローダを `agentcore.agentcli` へ 1 本化**（agent-project / agent-flow / agent-amigos
+  が共有）。`agentcore.repolocal` で URL 正規化を寄せたのと同じ判断で、解釈のズレが
+  「同じ定義ファイルがツールによって別の argv になる」形で出るため。
+  agent-dashboard だけは UI の応答性のため JS の自前ローダを持ち、**同じ定義から同じ argv が
+  出ることをゴールデンテストで固定**した（`test/agent-cli-golden.test.js`）。
+- **tmux 経由の起動がすべてこのレイヤを通る**（S9-3）。入力受付の検出パターン・タイムアウトは
+  定義から来るようになり、定常業務（cowork）の tmux 実行も `agent_cli` 設定に従う——
+  従来は `cowork.chatCommand` の**文字列固定**で、定常業務だけが常に kiro を起動していた
+  （`cowork.chatCommand` は明示上書きとして残る）。
+- **挙動が変わる点**: dashboard のヘッドレス LLM 呼び出し（charter 補完・Doctor・構造化
+  Assist）は**すべて読み取り専用モード**で起動するようになった。「ファイルへの書き込みは
+  ビュアー側が行う」という元々の護りの意図に argv を合わせたもので、移行前は charter 補完
+  だけが権限フラグ無しだった。読み取り専用を保証しない CLI（`readonly: best-effort`）では
+  警告を返す——このレイヤは argv を組み立てるだけで、フラグを無視する CLI への防御は持たない。
+- **副産物の修正**: 失敗トリアージのヒントを「クラス一致」で引いていたため、読み込み済みの
+  別 CLI 定義に同クラスの規則があるとその文言が出ていた（codex の usage limit に kiro の
+  月間上限の案内が付く）。実際に一致した規則からヒントを採るようにした。
+
+詳細設計: [`docs/plans/2026-07-26-s9-agent-cli-layer-detailed-design.md`](docs/plans/2026-07-26-s9-agent-cli-layer-detailed-design.md)
+
+
+### agent-project / agent-flow / agent-dashboard: ノード固有ローカルクローン層と定常業務フォルダの登録（S3・S2）
+
+Phase 1 の残り。どちらも「宣言は実行側が持つ」という同じ原則の適用。
+
+**S3: ノード固有ローカルリポジトリ層**
+
+- **`agentcore.repolocal`（新規）**: git URL の正規化一致を 1 実装に集約した。従来は
+  agent-project の `_same_git_remote`・agent-flow の `_same_repo`・board の `_norm_repo_url` が
+  別実装で、末尾 `.git` とスラッシュは 3 者とも吸収する一方 **小文字化は agent-flow だけ・
+  ローカルパスの絶対化は agent-project だけ**という食い違いがあり、同じ 2 つの URL が経路に
+  よって一致したりしなかったりしていた（`agentcore.nodeid` が解決したのと同型の問題）。
+  host.yaml `repos[]` の読み取りと workspace spec への `local` マージもここに置く。
+- **`local` の宣言場所を host.yaml `repos[]` に一本化**。共有 repos.json は charter から自動
+  生成され状態リポジトリ経由で全 PC へ配られるため、1 台で書いた絶対パスが全ノードへ伝播して
+  いた（C3/C4 の元凶）。repos.json の `local` は警告して無視する（移行先を示す・1 回だけ）。
+  `schemas/repos.schema.json` の `local` / `dir` を deprecated と明記。
+- **板の請負側の欠落を修正**: `poll_board` が落札した公示 workspace に自ノードの `local` を
+  載せてから submit するようになった。公示に載るのは依頼側が見た URL だけで、請負側が自分の
+  クローンを載せる実装が無かったため、板経由の仕事は手元に同じリポジトリがあっても毎回
+  ネットワーク越しにミラーを取り直していた。
+- agent-flow の provision は spec に `local` が無くてもノード宣言から解決する。
+- **dashboard の CLIチャットに起動先（cwd）の選択**を追加。S1 以降プロジェクトのフォルダは
+  状態リポジトリの clone なので、コードを触りたくて CLI を開いてもそこには 1 行もコードが
+  無い。この PC にクローンがある成果物リポジトリを選べる。宣言が無いものは消さずに非活性で
+  理由付きで並べる（一覧から消えると宣言し忘れに気付けない）。
+
+**S2: 定常業務フォルダの dashboard 管理**
+
+- dashboard 設定に **`cowork.roots[]`** を追加。agent-project 管理外のフォルダ（kiro-loop 設定や
+  `.statemachine/` を持つだけ）を定常業務画面で扱えるようにする。W2-4 で一覧の唯一の源を
+  `engine/status.json` にした結果、この経路が消えていた。
+- 宣言を dashboard に置くのは、定常業務のエンジン（kiro-loop / statemachine-use）が
+  agent-project の常駐体・状態リポジトリと無関係に動き、起動・tmux 管理・履歴記録をすべて
+  dashboard が担っているため。host.yaml に載せると、常駐体が管理しないものを常駐体の宣言
+  ファイルに書くねじれになる。
+- 定常業務タブに登録・解除の UI（フォルダ選択 → マーカー検出 → プレビュー → 登録）。
+- セレクタには **kind=routine** として合流し、既存の `isProject=false` 分岐（定常業務タブのみ）
+  へ流す。project root と同じパスは **project 側を正**として畳む（routine で上書きすると
+  backlog / charter / needs / 検収が画面から消えるため）。
+- **agent-project のプロジェクト一覧は従来どおり `engine/status.json` のみ**（W2-4 維持）。
+
+agent-flow のテスト環境にも host.yaml の隔離漏れがあったので塞いだ（agent-project では S1 で
+修正済みの同種の穴）。
+
+
+### agent-project: 状態専用リポジトリの唯一化と設定 2 層の責務分離（S1・**破壊的変更**）
+
+設定の置き場が「成果物側 yaml・状態側 yaml・profile・host.yaml」の 4 か所に散り、状態ルートも
+worktree 方式と専用リポジトリ方式の 2 系統が併存していた。宣言の場所と実行の場所が食い違う
+ことが、移行が効かない・設定が効かない・ノード固有パスが全 PC へ配られる、の共通原因だった
+（設計: `docs/plans/2026-07-26-s1-config-two-layer-detailed-design.md`）。
+
+- **状態ルートは常に状態専用リポジトリの clone**。worktree 方式（`state_worktree_dir` /
+  `state_branch` / `state_commit` / `state_push` / `state_backup_branch`）を廃止し、これらの
+  キーを検出したら移行手順を示して**起動を止める**。黙って無視すると「バックアップされている
+  つもりの未バックアップ状態」が続くため。
+- **暗黙フォールバックの廃止**。宣言した `state_repo` と root の `origin` が食い違う・clone に
+  失敗する構成は起動を止める。旧実装はここで黙って worktree 方式へ倒れ、移行が効いていない
+  ことに誰も気付けないまま状態が旧構成へ書かれ続けていた。
+- **成果物リポジトリを状態ルートにする事故を起動時に検出**。他リポジトリの内側・状態マーカーの
+  無い git リポジトリを root にすると停止し、移行前の `state_repo:` 入り yaml が残っていれば
+  その URL を案内に含める。
+- **設定は 2 ファイル**: `~/.agents/agent-project.host.yaml`（ノード固有）と状態リポジトリ直下の
+  `agent-project.yaml`（プロジェクト共有）。キーの帰属は起動時に検査し、違反は移行先を示して
+  止める。両方に書けるのは `agent_cli` / `model` / `act_timeout` / `verify_timeout` /
+  `location` / `concurrency` / `agent_timeout` / `actor` / `notify_cmd` / `ltm_home` /
+  `flow_config` / `verify_cwd` の 12 キーだけで、優先順位は
+  CLI > `projects[].overrides` > `defaults` > プロジェクト yaml > 既定。
+- **profile（`~/.agents/agent-project/profiles/`）を廃止**。`root` / `node` / `availability` は
+  host.yaml へ吸収した（`--profile` は移行先を示して停止する）。
+- **設定ファイルの探索チェーンを廃止**（`cwd → ./.agents → ./.agent → ~/.agents`）。状態ルート
+  直下のみを読む。旧探索先にファイルが残っていれば名指しで警告する（移行時に成果物側の古い
+  yaml が黙って優先される事故を防ぐ）。
+- **`update_*` と `board_workdir` をノード側へ移設**。ツールの自動更新はノードのインストール
+  管理で、共有設定に置くと更新の停止・更新元の差し替えが全 PC へ一斉に飛ぶ。
+- **状態のコミッタを `DirectStateGit` ただ 1 つに統合**（`commit_state` / `backup_state` /
+  本体側ミラーの取り込みを削除）。ローカルのコミットは毎同期で行い、`state_git_interval` が
+  律速するのは fetch/push だけ。
+- **`state_top` / `source_root` を削除**。成果物リポジトリの解決は
+  host.yaml `repos[].local` → ローカルパス → 共有 bare ミラーの順に置き換えた（S3 リゾルバの入口）。
+- 常駐体は子へ `--project <名前>` だけを渡すようになった（宣言の解釈を親子で二重化しない）。
+- 移行手順: `docs/guides/state-repo-migration.md`（廃止キーと移行先の対応表を追加）。
+
+### docs: agent-dashboard の設計書を 1 本へ統合し、実装と再照合
+
+`docs/designs/agent-dashboard-*.md` の 3 本（制御面分離 77 行 ＋ kiro-loop 端末ビュー 125 行 ＋
+agent-project 連携の改善案 188 行）を **`docs/designs/agent-dashboard-design.md` の 1 本へ統合**し、
+実装（`tools/agent-dashboard/`）と突き合わせて書き直した。agent-amigos の設計書統合と同じ流儀。
+
+- **構成を抽象から具体への段階的開示に組み替えた**: TL;DR → 背景と目標/非目標 →
+  主要な設計判断（ADR 5 件・却下案つき）→ 全体像と合成契約 → 制御面ごとの責務 →
+  人のアクションと不変条件 → 気づく/下ごしらえする → 実装状況、＋付録（関連文書）。
+- **実装と食い違っていた記述を訂正**: 旧「制御面分離」は feature を 2 つ（agent-project /
+  kiro-loop）としていたが実際は 7 つ。renderer も「単一スクリプトのまま」ではなく
+  core → sections → features → bootstrap の読み込み順契約へ分割済み。旧「改善案」の
+  現状把握にあった「state_git 経由の pull/push」は撤去済みで、いまは常駐体が唯一の書き手。
+- **改善案の実装状況を実測で洗い直した**: 通知・SLA バッジ・plan 批評・検収の変更理由説明・
+  フォローアップ案・**投入時の acceptance リンティング**は実装済み（旧文書は最後の 1 つを
+  未実装として「次アクション候補」に挙げたままだった）。未実装だけを §8 の表に残した。
+- **README の陳腐化を修正**（`tools/agent-dashboard/README.md`）:
+  - 「リモートで稼働する agent-project を見る（git 経由・一次経路）」節が、撤去済みの
+    viewer 側 pull / push（⇣ ボタン・自動 pull 間隔・操作を都度コミットしてプッシュ・
+    多重コミッタ対策）を現行手順として説明していた。実際の経路（常駐体が唯一の書き手）へ書き換え。
+  - 「ワークスペースとプロジェクトルート」節が「登録するのはワークスペース」と書きつつ、
+    同じ節の末尾で「画面からの登録・登録解除は無い」と自己矛盾していた。
+  - 「セットアップ」がプロジェクトルートの登録手順を案内していた（登録機能は無い）。
+    実際に設定する 4 項目へ差し替え、**未文書だった「この PC の役割」（engineer / viewer）**を追記。
+  - 「制限事項」と操作表の「稼働していなければ CLI にフォールバック」（削除済み経路）を訂正。
+  - 「実装メモ」が互換シム（`src/main/*.js`）のパスで実装を説明していたので実体パスへ。
+- **feature README を 3 つ新設**（`orchestration` / `delegation` / `participation`）。
+  「制御面をそのディレクトリに閉じられることが README で追える」という受け入れ条件を
+  4/7 の feature しか満たしていなかった。amigos feature README の壊れた相対リンクも修正。
+- `docs/designs/README.md` の索引を 24 件へ更新。
+
+### agent-dashboard: 護りの検査範囲を全制御面へ広げ、配布物の取りこぼしを塞ぐ
+
+設計書の照合で見つかった構造の穴 2 件を直した。どちらも**壊れても気づけない**性質のもの。
+
+- **`no-git-writes.test.js` の検査範囲が 3 層だけだった**（`base/main`・`features/agent-project`・
+  `renderer`）。制御面が 2 つから 7 つへ増えた結果、後から足した `amigos` / `delegation` /
+  `orchestration` / `participation` には護りが掛かっていなかった。範囲を `src/` 全体へ広げ、
+  除外は `cowork`（人の成果物リポジトリでブランチを切って push する機能）1 つだけにした。
+  あわせて**範囲そのものを検査するテスト**を追加 — 新しい feature は自動でこの護りの下に入り、
+  外すには除外リストを触るしかない。護りの中身より先に「掛かっている範囲」が縮むほうが
+  起きやすく、しかもテストは緑のままなので気づけない。
+- **配布物に `diff2html` が入る保証が無かった**。`index.html` は `../../node_modules/diff2html/…` を
+  相対参照する一方、`package.json` の `build.files` は `src/**/*` と `package.json` しか
+  列挙していなかった。electron-builder が本番依存を暗黙に含めるかどうかに配布物を賭けず、
+  `node_modules/diff2html/bundles/**` を明示。開発起動では node_modules がそこに在るため
+  気づけず、漏れていれば**パッケージ版だけ差分ビューが白紙**になる壊れ方だった。
+  `test/packaging-assets.test.js` を新設し、`index.html` の相対参照と `build.files` の対応・
+  参照先の実在・glob 判定そのものの健全性を検査する（依存未インストール環境でも走る）。
+- テストは 60 → 61 ファイル、`npm test` 全緑。
+
+### agent-amigos: 設計書との照合で見つかった 4 件を修正（設定の読み落とし・沈黙する stub・staffing fail・deadline）
+
+設計書の統合（下記）で洗い出した実装漏れを直した。いずれも**沈黙して壊れる**性質のもの。
+
+- **設定ファイルの読み落とし（最も実害が大きい）**: `agent_cli` / `tags` / `roles` /
+  `interval` / `resume_hours` / `manual_claim` / `board` を読むのは `participate` だけで、
+  `join` / `drive` / `run` は CLI 引数しか見ていなかった。設定に `agent_cli: claude` と
+  書いたノードが黙って `stub` で走り、`tags` が空になるので `requires.tags` 付きロールへ
+  応募もできなかった。**解決を `cli._resolve_ctx` へ一本化**し、全サブコマンドが同じ
+  CLI > 環境変数 > 設定 > 既定 の順を通るようにした。`join` / `drive` に
+  `--manual-claim` / `--no-manual-claim`、`join` に `--board`、`drive` に `--tags` /
+  `--roles` を追加。`join` も commands/ を取り込むようになった。
+  - 応募ロールの絞り込み `--roles` は dest を `role_filter` に分けた。`post --roles` は
+    役割ミッション表の**ファイルパス**で、dest を共有すると公示のたびに
+    「roles.yaml という名前のロールだけに応募する」絞り込みが生えていた。
+  - `drive` は設定に `board` があっても板には触らない（R9: ローカルミッション）。
+- **決まらない agent CLI が黙って stub へ落ちていた**: `stub` は LLM なしのダミー応答なので、
+  ダミー成果物がそのまま統合・納品まで進み得た。解決できない場合は
+  `[agent-error:env]` を投げ、既存の環境要因トリアージに乗せて **paused ＋ owner へ通知**
+  にした（ミッションは殺さない）。stub は明示指定のときだけ使う。
+  あわせて 3 か所に写経されていた paused 遷移を `AmigoRunner._pause` へ集約し、
+  **遷移時だけ通知**（環境が直るまで owner の inbox を埋めない）に揃えた。
+- **`staffing_policy: fail` が `wait` と同じ挙動だった**: 値は受け付けるのに誰も見ておらず、
+  open のまま滞留していた。`derive_phase` が「`staffing_timeout` 超過かつ必須ロール未充足」を
+  **ファイルから導出**して failed を返すようにした（新しい終端ファイルも書き手も増やさない）。
+  効くのは**まだ誰も手番を取っていないミッションだけ**——走り出した後にノードが落ちて空いた席は
+  再募集の領分で、区別しないと夜中の 1 台のクラッシュが進行中のミッションを巻き添えにする。
+  `normalize_mission` で値の検証も追加した（`self_staff` のようなタイポが黙って通っていた）。
+- **`mission.deadline` の超過が通知されなかった**: 正規化して保存するだけで誰も見ていなかった。
+  オーナー巡回が `inbox/owner` へ **1 度だけ**通知する（`ownerops.owner_notices`）。自動 fail は
+  しない——予算追加・収束条件の見直し・cancel のどれを選ぶかは人の判断に残す。
+  `staffing_policy: fail` での終端理由も同じ経路で届く。
+- **away 中も `question_timeout` が進んでいた**: 宛先ノードが夜に落ちているだけで質問が
+  期限切れになり、翌朝の owner の inbox が裁定要求で埋まっていた。宛先が away（grace 内）の
+  間は**時計を止め**、代わりに送信側へ不在を 1 度だけ知らせる。`open_questions` に宛先を
+  記録するようにした（旧形式の int も読める）。
+- 時刻パースの写経（`calendar.timegm(time.strptime(...))`）を `util.iso_to_epoch` へ寄せた。
+- テストを 17 件追加（158 → 176）: 設定解決の全項目、CLI 未解決の paused、ロール側 CLI だけで
+  足りること、通知が 1 度だけであること、staffing fail の終端と進行中ミッションの非巻き添え、
+  deadline 通知、away 中のエスカレーション抑止と復帰後の再開。
+
+### docs: agent-amigos の設計書を 1 本へ統合し、実装と再照合
+
+`agent-amigos-design.md` と `agent-amigos-teambuilder-patterns.md` の 2 本を
+**`docs/designs/agent-amigos-design.md` の 1 本へ統合**し、実装（`tools/agent-amigos/`）と
+突き合わせて書き直した。
+
+- **構成を抽象から具体への段階的開示に組み替えた**: TL;DR → 背景と目標/非目標 →
+  主要な設計判断（ADR 5 件・却下案つき）→ 全体像 → 協働プロトコル → 予算 →
+  チーム設計の自動化 → 運用 → 実装状況、＋付録（ロールミッション表 / CLI / 旧 § 番号の対応）。
+  文字数は 2 本合計 75.8k → 54.3k。
+- **実装と食い違っていた記述を訂正**: hub 中継サーバ（旧 §5.2・P2）と常駐 `serve`（旧 §11.1）は
+  撤去済みなのに実装済みと書かれていた。`GlobalSemaphore（~/.kiro/slots/）`は turnmark
+  （`~/.agents/amigos/turns/`）へ、`content_file` は `content` へ、`mission.yaml` /
+  `roles/*.yaml` は正規化 JSON へ。未記載だった `drive` / `participate` / `deliveries` /
+  `restaff` / `budget node`、agent-control 連携、agent-board への入札参加、`repos` 能力宣言、
+  `done_when: consensus`、席・討論・コンダクタのプリミティブを反映。
+- **既知の欠落を §9 に明記**: `staffing_policy: fail` 未実装、`mission.deadline` の超過通知
+  未実装、away 中の `question_timeout` 抑止 未実装、可用性ウィンドウ宣言 未実装、
+  設定ファイルの `agent_cli` / `tags` / `roles` / `manual_claim` / `board` を読むのが
+  `participate` だけという読み落とし。
+- **旧 § 番号を参照していた箇所を新番号へ追随**（`agent_amigos/` 各モジュール・テスト・
+  `schemas/mission.schema.json` / `schemas/README.md`・dashboard の amigos feature・
+  team-builder スキル）。対応表は設計書 付録 C。
+- **設定ファイル例・README を見直し**: `agent-amigos.yaml.example` の「サブコマンド省略 =
+  serve」を削除、`roles.yaml.example` に `done_when: consensus` / `review_rounds` /
+  `consensus_*` を追加し未実装項目を注記。`tools/agent-amigos/README.md` の
+  「現実装では seats>1・投票・同期ラウンド・動的編成が無い」という自己矛盾した記述を訂正
+  （いずれも実装済み。medium は 25 → 29 種）。`schemas/mission.schema.json` に
+  `requires.repos`（実装済みだが未文書化）を追加。
+- `docs/designs/README.md` の索引を 26 件へ更新（未掲載だった agent-dashboard の設計 2 件を追加）。
+- テストは 158 件緑のまま（コメントのみの変更）。
+
+### agentcore: P0 完了確認・R9 の常設テスト化・残存重複の棚卸し
+
+P0 が完了したかの確認と、設計 §5 の事前検証（V1〜V4）を実施した。
+
+- **R9 を常設の非退行テストとして固定**（実装計画 §0-4）: `agent-flow run` が常駐体なし・
+  `--git` 未指定・ネットワークなしで完結することを明示的に名前つきテストで固定した
+  （開発木・zipapp 双方で確認）。amigos 側（`agent-amigos drive`）は P1（W1-3）の
+  新設コマンドなので、この時点では対象外。
+- **P0 完了条件「`_recover`/claim 系の実装が agentcore 以外に grep で見つからない」を
+  再監査**: 未達であることを確認・列挙した。既知の残存（`agent_flow/stategit.py`・
+  `DirectStateGit`）に加え、**今回新たに発見**: `agent_amigos/gitbus.py`
+  （amigos のミッションバス自身の git+ 実装。板の `BoardMirror` とは別物・
+  ミッション単位ブランチ分離・自身のヘッダに「P1」と明記済み）。
+  `agent_flow/gitcache.py`・`agent_project/gitcache.py`・`workspace.py`
+  （workspace/成果物クローンのキャッシュ）は設計が言う「5 実装」とは別カテゴリと判断し
+  対象外のまま。
+- **V2（agentcore の import 経路）を最終マージ後の状態で再検証**: 3 ツールの zipapp を
+  実際に `install.sh` でビルドし、`agentcore/` の同梱・`agent-flow run` のローカル/
+  `--git` 両モードでの実行を確認。
+- **V1・V3・V4（WSL/Windows 起動系の実挙動）は本セッションの Linux サンドボックスでは
+  検証不能**——実機（Windows + WSL）が必要。P1 着手前に別途実施が必要。
+- 全テスト緑を再確認: agentcore 40 / agent-flow 530 / agent-amigos 145 /
+  agent-project 918 / agent-dashboard 634 件。
+
+### agentcore: P0 のレビュー指摘を修正 — 語彙統一の取りこぼし（dashboard）・claim 心拍の退行・転送の空 push
+
+P0（W0-6〜W0-10）のレビューで見つかった 6 件を修正した。いずれも P0 の変更が入り口で、
+放置すると実運用で表面化する。
+
+- **語彙統一（W0-9）が agent-dashboard に届いていなかった（機能不全）**: 本体側は
+  `cancelled` を書くようになったのに、dashboard は `canceled` 決め打ちのままだった。結果、
+  (a) 中止した run が終端と認識されず「実行中／応答なし」に誤分類され、削除・再投入の可否も
+  ずれる、(b) dashboard の「中止」は `meta.status = 'canceled'` を書くため、本体の終端判定に
+  引っかからず **人の中止操作が run を止められない**。`flow.js` / `flow-adapter.js` /
+  `participation/model.js` / renderer の 4 系統を `cancelled` へ統一し、`flow-adapter.js` が
+  持っていた終端集合の複製は `flow.js` の 1 定義（`TERMINAL` / `isCancelled`）参照に置き換えた。
+- **読み取り側だけ旧綴りを受け入れる互換を追加**: 語彙統一は静止点で一斉に切り替えるが、
+  **バス上に既にある過去の run の meta.json は書き換わらない**。旧綴りを非終端と読むと、
+  改称前に人が cancel した run が `active_runs` に戻り、孤児回収で failed 化されて蘇る。
+  `agentcore.vocab.TERMINAL_READ` / `is_terminal_read()` を追加し、flow と dashboard の
+  **読み取り**だけがこれを使う（**書き込みは正典 `cancelled` のみ**・翻訳マップは持たない）。
+- **amigos のロール心拍が消えた claim を書き戻していた（退行）**: `assign.renew_lease` の
+  移植先 `protocol.renew_lease` は「無ければ新規作成」する仕様だったため、剪定・取り下げ・
+  オーナーの再編で claim が消えたあとも心拍が書き戻し、誰も動いていないロールを占有し続ける
+  zombie 勝者を作りうる（移植前は自分の claim が無ければ no-op だった）。
+  `protocol.renew_lease(..., create_if_missing=False)` を追加し、心拍からはこれで呼ぶ。
+  板の入札延長（flow / amigos）は従来どおり新規作成する側の既定を使う。
+- **`protocol.winner()` が壊れた claim 1 件で止まっていた（退行）**: 移植前の amigos
+  `live_claims` は `lease_until` / `ts` を数値化して読めないものを飛ばしていたが、共通実装は
+  素の比較だったため、壊れた 1 ファイルで `TypeError` になり **そのロール/委譲が誰にも
+  取れなくなる**。数値として読めない claim を無視するようにした。
+- **転送が「押し出すものが無くても push する」ようになっていた**: `BoardRepo` / `BoardMirror`
+  は移植前に `status --porcelain` が空なら push を省いていたが、`GitTransport.sync_push` には
+  その抑止が無く、板を巡回するたびに空 push がリモートへ飛ぶ。commit 済み未 push まで含めて
+  判定する `_ahead()` で抑止する（前回 push が落ちて commit だけ残った場合は従来どおり押す）。
+- **claim ファイル名の正規化がずれていた**: `protocol` は `safe_name(node_id)` でファイルを
+  書くのに、amigos の `MissionPaths.assignment()` は生の `node_id` でパスを組んでいた。
+  node_id に記号が混じる環境でだけ「書いたのに読めない」が起きるため、読み手側も同じ正規化を
+  通す。あわせて claim 実装の残骸（flow の `_unique_ts` / `_claim_lock_path`。同じ claim_dir に
+  対して 2 つのロック名前空間が並立する温床）を削除した。
+- 回帰テストを追加（agentcore 5 / agent-flow 1 / agent-amigos 2 / dashboard 2）。全テスト緑:
+  agentcore 40 / agent-flow 529 / agent-amigos 145 / agent-project 918 / dashboard 全件。
+
+### agentcore: P0 完了 — GitBus/StateGit の transport 委譲・flow/amigos の claim 統一・語彙統一・契約掃除
+
+[常駐一本化 実装計画](docs/plans/2026-07-24-single-resident-controller-implementation-plan.md) の
+P0（W0-6〜W0-10）を完了し、直前のコミットで着手した P0 の残りを仕上げた。
+
+- **W0-6 — `agent_flow/gitbus.py` の `GitBus` を transport 委譲へ**: 転送の実装は
+  `agentcore.transport.GitTransport` の 1 実装のみに。白箱テスト（`_is_corrupt_error` の
+  クラス参照・`_clone_with_retry` の monkey-patch・`_git`/`_probe_integrity` の直接呼び出し）
+  と互換な薄いラッパーとして GitBus を残した。移植中に `GitTransport._rebuild_clone` の
+  実バグ（存在しないメソッド名を呼んでいた——`sync_pull`/`sync_push` 経路の破損リカバリが
+  必ず `AttributeError` で落ちる潜在バグ）を発見・修正し、再現テストを追加。
+- **W0-8（残り）— flow のタスク claim・amigos のロール claim を `agentcore.protocol` へ**:
+  `agent_flow/bus.py` の `_winner_in`/`_write_claim_in`/`_try_claim_in`/`extend_claim`・
+  `agent_amigos/assign.py` の `claim_role`/`apply_role`/`live_claims`/`winner`/`renew_lease`、
+  および flow 自身の板参加（`agent_flow/board.py` の `_write_or_renew_bid`）を移植。
+  claim 3 実装 → 1 実装（設計 R1 の達成条件）。
+- **W0-9 — 完了語彙の統一（`canceled` 米式 → `cancelled` 英式・静止点で全ツール一斉）**:
+  agent-flow の内部 `TERMINAL` 定数を `agentcore.vocab.TERMINAL` の参照に置換し、run
+  status・cancel マーカー・ログメッセージの綴りを統一。`agent_flow/board.py` の
+  `_FLOW_TO_BOARD_STATUS` 翻訳マップを削除（板の語彙と一致したため翻訳不要に）。
+  `agent_project/loop.py` の `endswith(("canceled","cancelled"))` 二重判定を単一判定へ
+  縮約。Python の識別子（`mark_canceled`/`is_canceled_requested`/`_orch_check_canceled`）は
+  内部実装詳細として据え置き、対外契約となる文字列値・スキーマ・ドキュメントのみ改称。
+- **W0-10 — 契約の掃除**: `schemas/board.schema.json` から未実装の speculation
+  （`result_report`/`results/<who>.json`/`resolve`）を削除し、`agent-board/README.md` の
+  レイアウト説明も追従（実装時に additive で復活）。stale lock 閾値の 30s/300s 統一は
+  StateGit の直接（direct）モード統一が前提の P1 マターと判断し見送り（理由をコード
+  コメントに明記）。
+- **W0-7 — `agent_project/stategit.py` の `StateGit`（管理クローンモード）を transport 委譲へ**:
+  低レベルの git 実行・ロック回復・クローン/push リトライ層を `agentcore.transport` へ委譲し、
+  CAS export・manifest 3-way・パス所有権裁定（`_resolve_rebase`/`_three_way`/
+  `_take_local_on_conflict` 等）はこのクラスのポリシーとして残した（挙動不変。直接
+  （direct）モードとの統一は P1）。副次効果として fsck 破損検知・durable-write・clone
+  指数バックオフを新たに獲得。`DirectStateGit`（direct モード・実運用の既定経路）は
+  アーキテクチャが大きく異なり（クローンを持たず detached worktree + CAS で完結）
+  transport との重複が薄いため今回は対象外——フォローアップとして明記。
+- 全テスト緑を確認: agentcore 35 / agent-flow 528 / agent-amigos 143 / agent-project 918 件。
+- **未着手（フォローアップ）**: `DirectStateGit` の transport 委譲・`agent_flow/stategit.py`
+  （flow 独自の状態鏡写し。今回の移植中に発見した 6 個目の転送重複実装）・
+  `agent_flow/gitcache.py` / `workspace.py`（共有 git キャッシュ + worktree の別実装）の
+  統合。P1〜P3（常駐体本体・dashboard 縮退・パッケージ統合・実機 canary）は本計画どおり。
+
+### agentcore: 共通 git 転送層・claim/lease プロトコルを新設し BoardRepo / BoardMirror を移植（常駐一本化 P0 着手）
+
+[常駐一本化 実装計画](docs/plans/2026-07-24-single-resident-controller-implementation-plan.md) の
+P0（W0-1〜W0-5）に着手。転送・claim の重複実装を解消する共通ライブラリ `agentcore/`（3 ツールが
+`import agentcore` する通常パッケージ・独立配布はしない）を新設し、`agent-project` の
+`BoardRepo` と `agent-amigos` の `BoardMirror` をそちらへ移植した。
+
+- **`agentcore.transport.GitTransport`**: `agent_flow/gitbus.py` の `GitBus` に実証されていた
+  護り（stale lock 掃除・中断 rebase の abort・fsck プローブ・破損時の退避→再クローン→復元・
+  durable-write 設定・clone/push の指数バックオフリトライ・force push 禁止・間隔律速で
+  失敗時はクロックを進めない）を、sparse / フルチェックアウトの両方に使える汎用実装として
+  切り出した。bare repo + 故意のロック残骸/中断 rebase/オブジェクト破損を使う新規単体テスト
+  12 件。
+- **`agentcore.protocol`**: 名前空間付き claim・`(ts, who)` 決定的タイブレーク・lease の
+  書込/延長（残り半分で更新）/失効判定を共通化。`agentcore.vocab`（完了語彙
+  `done`/`failed`/`cancelled`）・`agentcore.heartbeat`（心拍/鮮度）を追加。単体テスト 20 件。
+- **`agent_project/board.py` の `BoardRepo`・`agent_amigos/board.py` の `BoardMirror`** を
+  `GitTransport` 経由へ置換（board の入札・bid 延長ロジックも `agentcore.protocol` へ移植）。
+  外部 API・既存テスト（`TestBoardAutoWiring` 12 件・`BoardParticipationTests` 等）は無改変で
+  緑のまま。副次効果として、板の 2 クローンが GitBus 相当の破損自己回復・durable-write を
+  新たに獲得した。既存クローン（マーカー導入前）を「管理外の非空ディレクトリ」として
+  拒否しないための後方互換パスと新規テストを追加。amigos に `BoardMirrorGitTests`
+  （git+ モードの 2 ノード post/bid 往復・ロック残骸回復）を新設。
+- 3 ツールの `install.sh` を拡張し、zipapp へ `agentcore/` を同梱（独立パッケージ化はしない —
+  設計 R10）。エントリスクリプト・パッケージ `__init__.py` に import 経路の path shim を追加。
+- 全テスト緑を確認: agentcore 33 / agent-flow 528 / agent-amigos 143 / agent-project 918 件。
+- **未着手（フォローアップ）**: W0-6（`GitBus` の転送委譲）・W0-7（`StateGit` 下回りの置換）・
+  W0-8 の残り（flow タスク claim・amigos ロール claim の `agentcore.protocol` 移植）・
+  W0-9（語彙統一 `canceled`→`cancelled` の全ツール一斉改称）・W0-10（契約の掃除）。
+  P1〜P3（常駐体本体・dashboard 縮退・パッケージ統合・実機 canary）は本計画どおり後続フェーズ。
+
+### agent-project: 委譲公示板（agent-board）への依頼側自動配線 ＋ 請負側の成果報告を実装
+
+新 location `board`。`agent-project.yaml` に `board:`（板の場所。ローカル dir / `git+<url>`）を
+設定すると、`location: auto` は `policy.offload` 一致タスクを（remote より優先して）委譲公示板へ
+自動 post するようになる（`decide_location`・`agent_project/flow.py:_act_board`）。既存の
+非ブロッキング委譲（`_Pending`/`offloaded` ステータス）と同じ枠組みに乗せてあるため、結果は
+`_reap_offloaded` が板の `result.json` を1回ずつポーリングして回収し、done/failed/canceled の
+既存 settle 経路（canceled → retries を進めて再投函 等）へそのまま合流する。
+
+- **請負側の成果報告を新規実装**（自動配線の前提）: 従来 board 参加デーモン（agent-flow /
+  agent-amigos）は「入札→自分のエンジンへ引き渡し」までで、完了を板へ書き戻す処理が無かった。
+  依頼側の自動回収を機能させるため、`agent_flow/board.py` / `agent_amigos/board.py` に
+  `report_board_results` を追加: 落札ノードが自分の実行（flow run / amigos mission）の終端
+  （done/failed/cancelled）を検知し、板の `result.json` を直接書く（speculation 無し・単一落札の
+  簡略形。冪等・二重報告しない）。`board.schema.json` の `result` に `status` を明示追加。
+- **`agent_project/board.py` を git 対応の `BoardRepo` へ刷新**: 従来の手動 `board-offload` は
+  ローカル dir の板にしか投函できなかった（`git+<url>` 未対応）。プロセス間 flock で直列化した
+  git pull/push（間隔律速・rebase リトライ・force push 禁止・`main` ブランチ既定へのフォールバック）
+  を実装し、`git+` 板にも対応。`task_to_delegation` は `build_request` の全文を `goal` に使うよう
+  修正（従来は `task.title`/`desc` の簡易版で、charter/rules/decisions/run ブリーフ等が
+  board 経由だと欠落していた — local run / daemon submit と同じ文脈を維持する）。
+- `_submit_bound`（並列 submit 判定）・`batch.py` へ `board` を追加し、複数タスクの board 公示も
+  並行化できるようにした。
+- テスト: agent-project `TestBoardAutoWiring` 12 件（decide_location の優先順位・post→pending→
+  result 到着での確定・reap の done/failed/canceled 分岐・`git+` 板の実 push/pull 往復）、
+  agent-flow / agent-amigos に `report_board_results` のテストを追加。
+
+### agent-board: 委譲公示板（依頼の公示・入札・成果一本化の分散バックエンド）を新設
+
+契約 `schemas/board.schema.json` と、専用リポジトリ（＝板）の規約 `tools/agent-board/README.md`。
+**agent-board は実行プロセスを持たず、「リポジトリ＋契約」だけ**。エージェント処理の依頼を公示し、
+登録ノードの入札（先勝ち claim）で引き受け先を決める、エンジン非依存の一段下の層。**入札・引き渡しの
+処理は既存デーモン（agent-flow / agent-amigos）が担う**（新しいデーモン・サーバは増やさない）。
+真実は板のファイル・中央（forge）は転送のみ。結合はデータ契約のみ。正典設計:
+`docs/plans/2026-07-23-delegation-board-distributed-bidding-design.md`。
+
+- **板のレイアウト契約**: `nodes/<id>`（能力宣言）・`delegations/<id>/{post,bids,award,status,
+  results,result,cancelled}`。書き込み所有権をパス単位で分割し git でもコンフリクトしない。
+- **先勝ち入札 ＋ 決定的一本化**: agent-flow / agent-amigos と同一仕様の名前空間付き claim ＋
+  `(ts, who)` タイブレーク（同じ仕様・別実装）。2 ノードが同時入札しても落札は決定的に 1 ノード。
+  成果は `result.json` 1 つに一本化。
+
+### schemas: `board.schema.json` を新設し、`delegation.schema.json` に additive 拡張
+
+`delegation.schema.json` の post 封筒へ `requires`（入札資格 tags/agent_cli/repos）と
+`speculation`（投機同時実行）を additive で追加（委譲公示板の参加者だけが解釈・直接経路は無視）。
+`board.schema.json` は板のファイルレイアウト（node/bid/award/status/result_report/result/
+cancelled）を文書化。`schemas/README.md` に board 行を追加。
+
+### agent-flow: 委譲公示板への参加（請負・入札）と来歴の引き回し
+
+設定 `board:`（CLI `--board`）を与えると、daemon が板を巡回して `workload=flow` の公示に
+`board_repos` / `board_tags` で照合して入札（flow の claim をそのまま流用）、勝てば自分の
+`inbox/<id>.json` へ取り込む（＝既存の inbox→orchestrator フローがそのまま拾う）。`agent_flow/board.py`。
+取り込んだ run の `meta.json` には来歴 `delegation:{id, board}` が残る（`submit_request` /
+`submit --delegation` / `note_delegation`・additive）。
+
+### agent-amigos: 委譲公示板への参加（請負・入札）と `repos` 能力宣言
+
+設定 `board:`（CLI `--board`）を与えると、daemon が板を巡回して `workload=amigos` の公示に
+repos/tags 照合で入札し、勝てば**オーナーとしてミッションを公示**する（`agent_amigos/board.py`）。
+あわせて `agent-amigos.yaml` の `repos:`（`repos.schema.json` 形）を能力宣言に追加し、`matches_role`
+がロールの `requires.repos` とノードの担当リポジトリを名前 / URL（`.git`・末尾スラッシュの揺れを
+吸収）で突き合わせる。成果物リポジトリに応じて応募ノードを絞れる。
+
+### agent-project: `board-offload` — バックログのタスクを委譲公示板へ委譲
+
+`agent-project board-offload <task-id> --board <repo>`。ルーティング（`resolve_workspace`）で
+workspace を確定したうえで、タスクを `delegation.schema.json` の post 封筒へ変換して板へ投函する
+（workspace の repo 名を `requires.repos` に載せ、担当ノードだけが入札する）。
+
+### agent-dashboard: 委譲タブに公示板（board）ターゲットを追加
+
+`src/features/delegation/main/board-adapter.js` を新設し、`target: 'board'` の post/award/cancel を
+板リポジトリへファイル投函、板のファイルだけから正規化ビュー（入札の勝者判定・フェーズ・成果）を
+導出。`delegation.boardRepos` を横断一覧に含める。契約コアは `requires` / `speculation` を保持。
+テスト `test/delegation-board.test.js`。
+
+### agent-dashboard: 検収の成果物 diff を最新化（fetch + origin/<branch>）し、done run が無くても成果を確認できるように
+
+`src/base/main/git.js`（`diffRange`）・`src/base/main/ipc.js`・`src/renderer/sections/needs.js`。
+
+- **diff が古いまま**の不具合を修正。コメント付きで再実行して push し直した run の検収で、差分が
+  古い（前回の）内容のままだった。`diffRange` に `fetch` / `branch` を追加し、**diff を取る前に
+  `git fetch origin <branch>`** で remote-tracking を更新し、比較先（tip）は **`origin/<branch>` を
+  最優先**で使うようにした（比較元 base も fetch 後は `origin/<base>` を優先）。fetch はベスト
+  エフォート（オフラインでも既存 ref で続行）。検収を開いた最初の解決で 1 回 fetch する。
+- **done run が無くても、delivery に中身があれば「成果を確認」ボタンを表示**するようにした
+  （`hasDeliveryContent`）。コメント付き再実行などで delivery だけが記録されている票でも成果物を
+  確認できる。あわせて、作業ブランチだけで ref 未解決の検収物も `origin/<branch>` で差分を出せる
+  ようにした（従来は「ref 未解決」で差分を出さなかった）。
+
+### agent-dashboard: 状態フォルダ（<project>-agent-state）が無ければ開いたときに自動作成する
+
+`src/features/agent-project/main/project.js`。プロジェクトを開いたとき、状態 worktree
+（`<repo>-agent-state`）が無く、かつ `agent-state` ブランチが存在すれば、`git worktree add` で
+自動作成するようにした（agent-project の `_ensure_state_worktree` と同型：`--no-checkout` →
+状態ディレクトリだけ sparse checkout → checkout）。
+
+- ブランチはローカル `refs/heads/agent-state` か remote-tracking `refs/remotes/origin/agent-state` を
+  使う。どちらも無ければ作らない（クローン元が無い＝本体未セットアップ）。**fetch はしない**
+  （readProject から同期的に呼ぶため UI をネットワーク待ちで固まらせない。通常の clone は
+  `origin/agent-state` の remote-tracking ref を持つのでこれで足りる）。
+- 既存・非 git・ブランチ未存在はすべて no-op。作成失敗・再試行はセッション内で 1 回に抑制。
+
+### agent-dashboard / kiro-loop / agent-loop: 実行状況ダイアログの送信が `[[: not found` / `python: No such file or directory` で失敗する不具合を修正
+
+- **agent-dashboard**: `src/features/kiro-loop/main/exec.js` の `shInWsl` を `sh -lc`（dash）から
+  `bash -lc` へ変更。dash だと利用者の profile / `~/.bashrc` の bash 構文 `[[ … ]]` が
+  `sh: N: [[: not found` になり、そこで止まって venv 有効化も走らず、kiro-loop の
+  `#!/usr/bin/env python` が解決できず `python: No such file or directory` になっていた。
+- **kiro-loop / agent-loop**: スクリプトの shebang を `#!/usr/bin/env python` → `#!/usr/bin/env python3`
+  へ修正（`kiro-loop.py` / `kiro-send.py` / `agent-send.py`）。インストーラの python 検出順も
+  `python python3` → `python3 python` にし、`python` 未存在（python3 のみ）の環境でも動くようにした。
+
+### agent-dashboard: ステートマシン実行時、必要な入力パラメータを人へ質問させる
+
+`src/features/cowork/main/cowork.js`。statemachine-use で作ったステートマシンに入力パラメータが要る
+場合、勝手に仮の値で進めず、人へ質問してから実行させる。従来は汎用的な補助文だけだったが、
+定義（`.statemachine/<name>/workflow.yaml`）を読んで**具体的に必要な入力を洗い出す**ようにした:
+
+- action/condition が `{{input}}` を参照していて、実行時に入力が渡されていない → 実行対象の入力を要求
+- `context` の初期値が空（`""` / 空欄）のキー → その `context.<key>` を要求
+
+必要な入力があるときは、起動プロンプトに項目名を列挙し「値が不明なものを箇条書きで質問し、回答を
+得てから実行して」と明示する。定義を読めない/追加入力が不要なときは従来の汎用補助へフォールバック。
+
+### agent-dashboard: kiro-cli の入力プレースホルダを起動検出パターンに追加
+
+`src/features/cowork/main/loopProvider.js`。kiro-cli は入力欄に `>` ではなくゴーストテキスト
+「Ask a question or describe a task」を表示するため、「行全体が素のプロンプトだけ」という判定に
+一致せず、起動検出が発火せずコマンドが送られなかった。検出正規表現にこのプレースホルダ
+（`ask a question` / `describe a task`・大小無視）を追加する。入力受付中にだけ出るため、準備完了の
+合図として適切。
+
+### agent-dashboard: CLIチャットの「エージェントに送る」がまったく入力されない不具合を修正（send-keys の形）
+
+`src/features/cowork/main/loopProvider.js`。送信を `tmux send-keys -t <pane> -l -- <text>` ＋別 Enter で
+組み立てていたが、この形（特に `-l --` の組み合わせ／テキストと Enter の分割）では文字が届かない
+環境があった。kiro-cli 用に実績のある kiro-loop の `send_prompt_to_session` と**完全に同じ形**
+（`tmux send-keys -t <pane> -- <1行テキスト> Enter` の 1 コール・`-l` なし）へ揃える。
+
+### agent-dashboard: CLIチャットの「エージェントに送る」が送られなくなる不具合を修正（プロンプト検出）
+
+`src/features/cowork/main/loopProvider.js`。プロンプト検出を「画面末尾（非空）3 行」に絞ったところ、
+kiro-cli のように**入力欄の下にステータス行/ヒントを出す** CLI では素のプロンプト（`>`）が末尾 3 行から
+外れて一致せず、開始コマンドが送られなくなっていた。検出を**画面全体**の走査へ戻す（判定は従来どおり
+「行全体が素のプロンプトだけ」で、起動バナー本文には出にくい形）。送信の打鍵化（send-keys）・前面即
+アタッチ＋バックグラウンド送信はそのまま。
+
+### agent-dashboard: kiro-cli の CLIチャットで「エージェントに送る」が文字化け・起動待ちで固まる不具合を修正
+
+`src/features/cowork/main/loopProvider.js`。kiro-cli 等スラッシュ補完メニューを持つ CLI 向けに、
+kiro-loop（kiro-cli 用の実績ある送信方式）へ揃えた。
+
+- **送信方式を `paste-buffer`（一括ペースト）から `send-keys -l`（打鍵）へ変更**。一括ペーストは
+  kiro-cli のスラッシュコマンド補完メニューの非同期描画と競合し、文字が化けていた
+  （例: `/caveman` → `/cavem,an`）。kiro-loop と同じく 1 文字ずつ「打鍵」し、確定の Enter を
+  分けて送る。複数行は空白で 1 行に畳む（kiro-loop と同じ）。
+- **前面はすぐアタッチし、プロンプト検出＋送信はバックグラウンドで行う**ように変更。従来は入力
+  プロンプト検出が終わるまで最大 60 秒 “起動を待っています” で固まって見えた（CLI 起動が遅いと
+  その間ずっと待ち画面）。今は接続後に CLI 起動の様子が見え、準備でき次第に自動送信する。
+- **プロンプト検出を「画面末尾（非空）3 行」に限定**（0.5 秒間隔）。従来は画面全体を見ていたため、
+  起動バナー中の `>` を早合点して未起動のまま送信し、文字化けの一因になっていた（kiro-loop の
+  `_pane_has_prompt` と同じ判定）。
+
+### agent-dashboard: 検収画面の差分が target ブランチではなくローカル HEAD と比較していた不具合を修正
+
+`src/base/main/git.js`（`diffRange`）と `src/renderer/sections/needs.js`。
+
+- 作業 ref が未解決の検収物で、差分の比較元が **ローカルの現在ブランチ（HEAD）** になっており、
+  設定した **target ブランチと比較されていなかった**。working-tree 差分のとき、target ブランチが
+  分かるなら、その分岐点（`git merge-base <target> HEAD`）から作業ツリーまでを比較するようにした
+  （未コミット分も含め「target に対して何を変えたか」を表示）。target が渡されない/解決できない
+  ときだけ従来どおり HEAD との差分へフォールバックする。
+- 差分ラベルを「現在の作業ツリー（HEADとの差分）」から「`<target>` との差分（作業ツリー）」へ変更。
+
+### agent-dashboard: CLIチャットの起動が極端に遅い・送信コマンドが文字化けする不具合を修正
+
+`src/features/cowork/main/loopProvider.js`。
+
+- **起動が極端に遅い**（毎回 60 秒待たされる）不具合を修正。エージェント起動後の入力プロンプト
+  検出が、素のプロンプト（`>` `❯` `›` `?` だけの行）しか一致せず、**枠で囲う入力欄**を持つ CLI
+  （Claude Code の `│ > │` 等）では一致しないため、検出ループが上限の 60 秒まるごと待ってから
+  アタッチしていた。検出正規表現に枠付きプロンプト（`│` に続く `>` `❯` `›`）を追加し、素早く
+  検出してアタッチするようにした。
+- **「エージェントに送る」コマンドが文字化けする**不具合を修正（例: `/caveman` → `/cavem,an`）。
+  `tmux paste-buffer` の素のペーストが、スラッシュコマンドの補完メニューを持つ CLI（Claude Code
+  等）の非同期メニュー描画と競合して文字を崩していた。ブラケットペースト（`paste-buffer -p`）で
+  一括挿入し、ペースト確定を待ってから Enter で送るようにした（`-p` 非対応 CLI では素のペーストに
+  フォールバックするため kiro-cli 等はそのまま動く）。
+
+`src/features/cowork/main/loopProvider.js`。
+
+- **「エージェントに送る」（chat モードのセッション開始コマンド）が CLIチャットで効かない不具合を修正**。
+  従来は chat モードの開始コマンドを **tmux セッションを新規作成したときだけ**（`__new`）送っていた。
+  CLIチャットのウィンドウは離脱（Ctrl+b d）してもセッションが常駐するため、初回オープン以降・および
+  「セッションを作った後に開始コマンドを設定した」ケースでは一度も送られなかった。手動オープン
+  （業務プロンプト無し）の経路では、既存セッションへ再接続したときも毎回送るように変更した。
+  業務プロンプトを送る定常ループの経路は従来どおり新規セッション時だけに限定し、周期送信での
+  前準備の二重実行を避ける。
+- **process モードのセッション開始コマンドを bash で実行**するよう変更。従来は `sh -c`（dash）で
+  走らせていたため、`source .venv/bin/activate` や `[[ … ]]` などの bash 構文が
+  `sh: source: not found` 等で失敗していた。
+
+### agent-dashboard: 定常業務タブの常時表示と Windows CLI チャットのログインシェル修正
+
+- **定常業務タブを常に表示**（`src/renderer/renderer.js` の `updateCoworkTabVisibility`）。
+  従来は「発見済み or 手動登録の作業が無いプロジェクトではタブごと隠す」挙動だったが、
+  作業が未登録でも空状態（`renderCowork` の「このプロジェクトに登録された定常業務はありません」）
+  から追加へ導けるよう、定常業務タブ・ペインは常時表示にした。現在のタブが隠れたときの退避先も
+  既定タブが無ければ常時表示の定常業務へ倒す。agent-project 系タブの出し分けは従来どおり。
+- **Windows から CLI チャットを開くと `sh: N: [[: not found` /
+  `No virtual environment found in .venv or ~/.venv` で起動できない不具合を修正**
+  （`src/features/cowork/main/loopProvider.js` の `windowStartCommand`）。
+  別ウィンドウの WSL 実行を `wsl.exe -e sh -lc …`（sh=dash）で起動していたため、
+  利用者の `~/.bashrc` / profile にある bash 構文 `[[ … ]]` が dash で解釈できずエラーになり、
+  そこで止まって venv 有効化も走らず、エージェント CLI が起動できないまま長時間待たされていた。
+  ログインシェルを **bash**（`wsl.exe -e bash -lc …`）に変更し、bash 構文と venv 自動有効化が
+  正しく走るようにした。
+
 ### schemas / agent-dashboard: ノード予算 v2（トークン一次）とオーケストレーション契約の正典化
 
 予算の一次単位を実行時間（分）からトークンへ刷新し、稼働中エンジンへの横断操作

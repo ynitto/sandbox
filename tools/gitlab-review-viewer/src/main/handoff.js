@@ -9,7 +9,7 @@
 // このローカルソケット（Windows: 名前付きパイプ／その他: Unix ドメインソケット）へ URL を
 // 送るだけで、そのウィンドウが即座に対象を開ける。
 //
-// エンドポイント名は kiro-projects-viewer 側（src/main/reviewHandoff.js の endpointPath）と
+// エンドポイント名は agent-dashboard 側（src/main/reviewHandoff.js の endpointPath）と
 // **同一の決定的導出**でなければならない（ユーザーごとに分離するため username の sha1 を混ぜる）。
 // この 2 箇所は対で保守すること。プロトコルは 1 行 =「生の URL か {"url":...} を改行終端」。
 // サーバは 'ok' を返す。ローカルユーザー限定のソケットで、扱う URL は

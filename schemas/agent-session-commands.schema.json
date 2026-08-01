@@ -10,17 +10,23 @@
       "properties": {
         "engines": {
           "type": "array",
-          "items": {"type": "string"},
+          "items": {
+            "type": "string"
+          },
           "description": "実行中のエンジン名。kiro-loop / agent-loop / agent-flow / dashboard。将来 agent-project / agent-amigos を足せるよう語彙は開いている"
         },
         "workloads": {
           "type": "array",
-          "items": {"type": "string"},
+          "items": {
+            "type": "string"
+          },
           "description": "agent-control のワークロード名（routine / flow / project / amigos）。既存語彙を流用する"
         },
         "agent_cli": {
           "type": "array",
-          "items": {"type": "string"},
+          "items": {
+            "type": "string"
+          },
           "description": "解決済みの CLI 名（kiro / claude / copilot / codex / ドロップイン名）"
         }
       },
@@ -29,7 +35,10 @@
     "command": {
       "type": "object",
       "description": "セッション開始時に実行する 1 コマンド",
-      "required": ["id", "run"],
+      "required": [
+        "id",
+        "run"
+      ],
       "properties": {
         "id": {
           "type": "string",
@@ -37,7 +46,10 @@
           "description": "一意な識別子。ログ・実行済み記録・UI の行キーに使う"
         },
         "mode": {
-          "enum": ["process", "chat"],
+          "enum": [
+            "process",
+            "chat"
+          ],
           "default": "process",
           "description": "process=ホストのシェルで実行し完了を待つ / chat=セッションへ最初のプロンプトとして送信（常駐系のみ。単発系ではスキップ）"
         },
@@ -47,26 +59,47 @@
           "description": "process ならシェルコマンド文字列、chat なら送信するテキスト。プレースホルダ {cwd} {workspace} {engine} {workload} {agent_cli} {model} {run_id} {node_id} を使える（未定義は空文字へ落とす）。**シェルクォートは行わない** — 空白を含むパスが入りうる箇所は利用者が引用符で囲む（例 git -C \"{cwd}\" fetch）。自動クォートすると && でつないだ複合コマンドが書けなくなるため、この責任は利用者側に置く"
         },
         "cwd": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "default": null,
           "description": "実行ディレクトリ（process のみ）。プレースホルダ可。省略時はセッションの cwd"
         },
         "env": {
           "type": "object",
-          "additionalProperties": {"type": "string"},
+          "additionalProperties": {
+            "type": "string"
+          },
           "description": "追加の環境変数（process のみ。os.environ に上書きマージ）。値にプレースホルダ可"
         },
         "timeout": {
-          "type": ["number", "null"],
+          "type": [
+            "number",
+            "null"
+          ],
           "default": null,
           "description": "このコマンド単体の上限秒（process のみ。null なら既定 60）。超過は打ち切って on_error に従う"
         },
         "on_error": {
-          "enum": ["warn", "fail"],
+          "enum": [
+            "warn",
+            "fail"
+          ],
           "default": "warn",
           "description": "warn=失敗しても続行（既定・フェイルセーフ） / fail=セッション開始を中止（常駐系ではペインを作らない）。前準備が必須のときだけ fail を選ぶ"
         },
-        "when": {"$ref": "#/$defs/when"}
+        "when": {
+          "$ref": "#/$defs/when"
+        },
+        "strategy": {
+          "enum": [
+            "paste",
+            "bundle"
+          ],
+          "default": "paste",
+          "description": "mode=chat の送信戦略。paste=従来どおり 1 コマンド 1 ペーストでセッションへ送る。bundle=同じセッション開始時に bundle 指定された chat 行を 1 つの有界テキストブロックへまとめ、エージェントに起動アクションとして実行依頼する。process では無視される"
+        }
       },
       "additionalProperties": true
     },
@@ -74,7 +107,10 @@
       "type": "object",
       "description": "session.json — セッション開始コマンド（管理面だけが書く。原子書換）",
       "properties": {
-        "version": {"type": "integer", "const": 1},
+        "version": {
+          "type": "integer",
+          "const": 1
+        },
         "revision": {
           "type": "integer",
           "minimum": 0,
@@ -87,7 +123,9 @@
         },
         "commands": {
           "type": "array",
-          "items": {"$ref": "#/$defs/command"},
+          "items": {
+            "$ref": "#/$defs/command"
+          },
           "description": "実行するコマンドの順序付きリスト。**配列順に逐次実行**する（並列にしない。前準備は順序に意味があることが多い）。1 セッションにつき 1 回だけ"
         },
         "max_total_timeout": {
@@ -96,11 +134,21 @@
           "default": 120,
           "description": "全コマンド合計の上限秒（既定 120・ハード上限 600）。超過したら残りを打ち切って警告する。セッション開始が無限に伸びるのを防ぐ有界化"
         },
-        "updated_at": {"type": "string", "description": "ISO8601 UTC"},
-        "updated_by": {"type": "string", "description": "書いた主体（dashboard / cli / 人）"}
+        "updated_at": {
+          "type": "string",
+          "description": "ISO8601 UTC"
+        },
+        "updated_by": {
+          "type": "string",
+          "description": "書いた主体（dashboard / cli / 人）"
+        }
       },
       "additionalProperties": true
     }
   },
-  "allOf": [{"$ref": "#/$defs/session_commands"}]
+  "allOf": [
+    {
+      "$ref": "#/$defs/session_commands"
+    }
+  ]
 }

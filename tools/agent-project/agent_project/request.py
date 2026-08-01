@@ -65,9 +65,10 @@ def _charter_definition(ch: "Charter") -> str:
 def _charter_plan_signature(ch: "Charter") -> str:
     """charter の「backlog 分解に効く内容」の安定ハッシュ（目標/repos/リンク/制約/前提/成果物）。
     mtime ではなく *内容* ベースなので、state_git 同期やファイルコピーで mtime だけ変わっても
-    誤検知せず、内容が実際に変わったときだけ変化する。これを project state に記録し、次回 run で
-    charter が変わっていれば（＝署名が違えば）消化可能タスクがあっても backlog を再計画する。
-    acceptance は done 判定に効くが分解入力ではないため署名には含めない（評価側で反映される）。"""
+    変化せず、内容が実際に変わったときだけ変化する。かつてはこれを project state に記録して
+    charter 変更の自動再計画に使っていたが、分解は人の明示要求だけになったため、いまは
+    「分解入力の同一性」を確かめる道具（テスト・診断）としてだけ残る。
+    acceptance は done 判定に効くが分解入力ではないため署名には含めない。"""
     return hashlib.sha256(_charter_definition(ch).encode("utf-8")).hexdigest()
 
 
@@ -193,9 +194,26 @@ def build_request(task: Task, cfg: "Config | None" = None) -> str:
     guide = task_guide_block(task)
     if guide:
         base += guide + "\n\n"
-    base += (f"このタスクは完了条件を満たすまで反復し、満たしたら終了すること（loop-until-done）。\n"
-             f"完了条件: 次のシェルコマンドが終了コード 0 で成功すること:\n"
-             f"  {task.verify or '（verify 未定義）'}\n\nタスクID: {task.id}")
+    # 実行規律（完了条件を満たすまでやり切る）を伝える定型文。**内側プランナーのパターン語彙を
+    # 使わないこと**——かつて「反復し…（loop-until-done）」と書いていたため、全タスクの要求文が
+    # パターン名とキーワード（反復）を含み、flow-planner の戦略選定とフォールバックのキーワード
+    # 検出が loop-until-done へ吸われていた（実行規律のつもりの文が戦略選定の入力を汚す）。
+    # 避ける語: パターンの正規名・「反復/繰り返」「検証/レビュー」「分類/振り分け」
+    # 「各/ごとに/一覧/列挙」「候補/絞り込」「最良」等（agent-flow _detect_pattern の語彙）。
+    #
+    # 完了条件は verification_plan の材料（受入基準＋固定コマンド）をそのまま提示する。
+    # 成果はこの内容の統一 verify（agent-flow runner の receipt）を通過して初めて完了になる
+    # ——旧「verify コマンド 1 行」の埋め込みは P1-A8 で撤去した。
+    crits = task_acceptance(task)
+    cmds = [c["command"] for c in task_verification_commands(task)]
+    lines = [f"  - {c}" for c in crits]
+    if cmds:
+        lines.append("  次のシェルコマンドが終了コード 0 で成功すること:")
+        lines.extend(f"    {c}" for c in cmds)
+    base += ("完了条件（満たすまで作業を続け、満たしたら終了する。成果はこの内容の機械ゲートを"
+             "通過して初めて完了になる）:\n"
+             + ("\n".join(lines) if lines else "  （完了条件は人が確認する）")
+             + f"\n\nタスクID: {task.id}")
     fb = task.feedback()
     if fb:
         base += f"\n\n人からのフィードバック（必ず反映すること）:\n{fb}"
@@ -266,27 +284,27 @@ def decide_pace(cfg: "Config", cycle_elapsed: float) -> float:
 
 
 def decide_location(task: Task, policy: Policy, cfg: "Config") -> str:
-    """act の実行モードを local / daemon / remote に決める（agent-flow の起動方法を統合）。
+    """act の実行モードを local / board に決める（agent-flow の起動方法を統合）。
 
-      local  : agent-flow run（単発・自己完結・daemon 不要）
-      daemon : ローカルバスの daemon に submit して結果を待つ（warm worker 再利用）
-      remote : 共有 git バス（別マシンの daemon）へ submit＝真のオフロード
-    `--location auto`（既定）: offload 一致かつ git-bus → remote / ローカル daemon 稼働 → daemon / それ以外 local。
-    明示指定（local/daemon/remote）はそれを優先（remote は git-bus 必須、無ければ local）。"""
+      local  : agent-flow run（単発・自己完結）。orchestrator が自分で生存リースを張り park も
+               面倒見るので、駆動を代行する常駐プロセスは要らない
+      board  : 委譲公示板（agent-board）へ post。請負側（別ノードの常駐体）が入札・実行する
+               （依頼側の自動配線・opt-in。設計:
+               docs/plans/2026-07-23-delegation-board-distributed-bidding-design.md）
+    `--location auto`（既定）: offload 一致かつ board 設定あり → board / それ以外 local。
+    明示指定（local/board）はそれを優先（board は board 設定必須。無ければ local にフォールバック）。"""
     if task.get("spec_for"):
         # spec 作成タスク（§5.10）: 成果物 specs/<id>/ はプロジェクトの workdir に要る。
-        # daemon/remote だと別プロセス・別マシンに生成されローカルの verify が通らないため、
-        # location 設定に依らず常にローカル単発 run で実行する（executor の差し替えは
-        # build_agent_flow_cmd が行う。local 固定はその前提でもある）。
+        # board だと別マシンに生成されローカルの verify が通らないため、location 設定に依らず
+        # 常にローカル単発 run で実行する（executor の差し替えは build_agent_flow_cmd が行う。
+        # local 固定はその前提でもある）。
         return "local"
     loc = cfg.location
     if loc == "auto":
-        if cfg.git_bus and any(task.matches(p) for p in policy.offload):
-            return "remote"
-        if daemon_running(cfg, use_git=False):
-            return "daemon"
+        if getattr(cfg, "board", "") and any(task.matches(p) for p in policy.offload):
+            return "board"
         return "local"
-    if loc == "remote" and not cfg.git_bus:
+    if loc == "board" and not getattr(cfg, "board", ""):
         return "local"
     return loc
 
@@ -294,9 +312,8 @@ def decide_location(task: Task, policy: Policy, cfg: "Config") -> str:
 def _kf_base(cfg: "Config", use_git: bool) -> "list[str]":
     """agent-flow 共通 argv（bus / git / --config）。
 
-    flow_config は daemon 起動（flow_daemon_cmd）だけでなく sync run / submit / result /
-    doctor にも渡す。付け忘れると manage_flow_daemon=false の主経路だけ executor・gitlab・
-    agent_cli 等の yaml 設定が消える。"""
+    flow_config は run / result / doctor のどの起動にも渡す。付け忘れると executor・gitlab・
+    agent_cli 等の yaml 設定が黙って消える。"""
     base = resolve_agent_flow(cfg.agent_flow) + ["--bus", str(cfg.bus)]
     if use_git and cfg.git_bus:
         base += ["--git", cfg.git_bus, "--git-branch", cfg.git_branch]
@@ -395,9 +412,10 @@ def _infer_workspace_from_paths(workspaces: "list[dict]", paths: "list[str]") ->
 
 
 def _owns_infer(task: Task, workspaces: "list[dict]") -> "dict | None":
-    """タスクが触る予定パス（`- paths:` ヒント。無ければ verify コマンドから抽出）を charter の owns:
+    """タスクが触る予定パス（`- paths:` ヒント。無ければ固定検証コマンドから抽出）を charter の owns:
     グロブと突き合わせ、所有するワークスペースを推定する。曖昧（複数一致）なら推定しない。"""
-    paths = _split_tokens(task.get("paths")) or _verify_paths(task.verify)
+    paths = _split_tokens(task.get("paths")) or _verify_paths(
+        " && ".join(c["command"] for c in task_verification_commands(task)))
     if not paths:
         return None
     hits = [s for s in workspaces if any(_owns_matches(s.get("owns", []), p) for p in paths)]
@@ -405,8 +423,10 @@ def _owns_infer(task: Task, workspaces: "list[dict]") -> "dict | None":
 
 
 def _route_agent_prompt(task: Task, workspaces: "list[dict]") -> str:
+    done_hint = " / ".join([c["command"] for c in task_verification_commands(task)][:2]
+                           + task_acceptance(task)[:2])
     lines = ["次のタスクをコミットすべき書込先リポジトリ（ワークスペース）を1つだけ選んでください。",
-             f"タスク: {task.title}", f"verify: {task.verify or '（未定義）'}", "", "候補リポジトリ:"]
+             f"タスク: {task.title}", f"完了条件: {done_hint or '（未定義）'}", "", "候補リポジトリ:"]
     for s in workspaces:
         owns = "・".join(s.get("owns", []))
         lines.append(f"- {s.get('name') or s['url']}"
@@ -485,9 +505,11 @@ def _workspace_token(spec: dict) -> str:
     url/path/base/target/desc/branch/local を伝搬。worker（作業ツリーの用意・作業ブランチ）と
     gitlab の起票先解決の双方で使われる。
 
-    local（手元にある同じリポジトリのクローン）を落とすと、worker は目の前に同じリポジトリが
-    あってもネットワーク越しにミラーを取り直す。ここで伝搬させることで worker はローカルから
-    worktree を切れる（速い・オフラインでも動く）。"""
+    `local`（手元にある同じリポジトリのクローン）はこのノードの host.yaml `repos[]` から埋める
+    （S3）。落とすと worker は目の前に同じリポジトリがあってもネットワーク越しにミラーを
+    取り直す。共有レジストリ（repos.json）には置けない——ホスト固有の絶対パスが状態リポジトリ
+    経由で全 PC へ配られるため。"""
+    spec = _repolocal.merge_local(spec) or spec
     meta = {k: spec[k] for k in ("path", "base", "target", "desc", "branch", "local")
             if spec.get(k)}
     if meta.get("desc") and len(meta["desc"]) > 300:

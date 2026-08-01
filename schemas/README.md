@@ -1,4 +1,4 @@
-# schemas/ — ツール横断の共通スキーマ（repos / task / node-budget / agent-control / agent-instructions / agent-session-commands / mission / amigos-command / delivery / delegation）
+# schemas/ — ツール横断の共通スキーマ（repos / task / node-budget / agent-control / agent-instructions / agent-session-commands / agent-node-command / mission / amigos-command / delivery / delegation / board / verification-plan / verification-receipt）
 
 agent-project・agent-flow・codd-gate・agent-amigos が**データ契約だけで**結合するための独立スキーマ。
 ツール同士は互いの実装を知らず、ここで定義する形式だけを読む/書く（結合は常に一方向×データ）。
@@ -6,15 +6,19 @@ agent-project・agent-flow・codd-gate・agent-amigos が**データ契約だけ
 | スキーマ | 何の契約か | 所有者（変更の主導） |
 |----------|-----------|--------------------|
 | [`repos.schema.json`](repos.schema.json) | リポジトリレジストリ（identity = **(url, path, base)**＝パス＋ブランチで一意） | 共有（本ディレクトリが正典） |
-| [`task.schema.json`](task.schema.json) | 制御層タスク（バックログ 1 件）の JSON 表現 | kiro-projects（Markdown 形の正典は `tools/kiro-projects/backlog.md.example`） |
-| [`node-budget.schema.json`](node-budget.schema.json) | ノード単位の予算 v2 — トークン一次（実行時間上限は v1 互換で AND）＋配分宣言（`$AGENT_BUDGET_DIR`＝既定 `~/.agents/budget/` の config.json ＋ ledger/<YYYYMMDD>.jsonl） | 共有（本ディレクトリが正典。初出は agent-amigos 設計書 §3.3、v2 は `docs/plans/2026-07-19-agent-dashboard-orchestration-token-budget-design.md`） |
+| [`task.schema.json`](task.schema.json) | 制御層タスク（バックログ 1 件）の JSON 表現 | agent-project（Markdown 形の正典は `tools/agent-project/backlog.md.example`） |
+| [`verification-plan.schema.json`](verification-plan.schema.json) | 統一 verify の検証計画 — 受入基準（自然文 criterion・出現順 C1, C2, … 採番）＋任意の固定検証コマンドを canonical JSON の SHA-256 digest 付きで直列化。agent-project が確定し、agent-flow の専用 runner が成果 revision 上で一度だけ実行する | 共有（本ディレクトリが正典。設計は `docs/plans/2026-07-30-unified-task-verify-design.md`。digest・採番の 1 実装は `agentcore/verifycontract.py`） |
+| [`verification-receipt.schema.json`](verification-receipt.schema.json) | 統一 verify の receipt — plan digest・result revision・command 終了コード・criterion ごとの verdict（pass / fail / inconclusive）と証拠。agent-project が検算し、一致した PASS だけを done 候補に採用（fail-close）。他ノードへの検証委譲（external.json）も同じ schema | 共有（本ディレクトリが正典。全体判定の再導出と検算は `agentcore/verifycontract.py` の `receipt_overall` / `receipt_errors`） |
+| [`node-budget.schema.json`](node-budget.schema.json) | ノード単位の予算 v2 — トークン一次（実行時間上限は v1 互換で AND）＋配分宣言（`$AGENT_BUDGET_DIR`＝既定 `~/.agents/budget/` の config.json ＋ ledger/<YYYYMMDD>.jsonl） | 共有（本ディレクトリが正典。初出は agent-amigos 設計書 §6.2、v2 は `docs/plans/2026-07-19-agent-dashboard-orchestration-token-budget-design.md`） |
 | [`agent-control.schema.json`](agent-control.schema.json) | 管理面→各エンジンの宣言的オーケストレーション（`$AGENT_CONTROL_DIR`＝既定 `~/.agents/control/` の control.json ＋ status/<tool>-<pid>.json）。エージェント CLI / モデルの横断上書き・縮退・一時停止 / 停止・委譲誘導。優先順位は control > CLI 引数 > 設定ファイル > 組み込み既定 | 共有（本ディレクトリが正典。設計は `docs/plans/2026-07-19-agent-dashboard-orchestration-token-budget-design.md`） |
 | [`agent-instructions.schema.json`](agent-instructions.schema.json) | 管理面→各エンジンのノード共通指示（`$AGENT_INSTRUCTIONS_DIR`＝既定 `~/.agents/instructions/` の instructions.json）。指示文・推奨スキル（名前参照）・ツール方針を各エンジンが決定的に描画して実行エージェントのプロンプトへ前置。agent-flow は run の meta.json スナップショットで委譲先ノードへ伝播。適用状況は agent-control status の `instructions_revision_applied` に相乗り。最弱の層（タスク > brief > charter/rules > 共通指示） | 共有（本ディレクトリが正典。設計は `docs/plans/2026-07-19-agent-dashboard-global-instructions-design.md`） |
 | [`agent-session-commands.schema.json`](agent-session-commands.schema.json) | 管理面→各エンジンのセッション開始コマンド（`$AGENT_SESSION_DIR`＝既定 `~/.agents/session/` の session.json）。セッションが始まった直後に配列順で 1 回だけ実行する前準備。`process` はホストのシェルで実行して完了を待ち、`chat` はセッションへ最初のプロンプトとして送る（単発系にはセッションが無いのでスキップ）。`when` で engines / workloads / agent_cli を絞れる。適用状況は agent-control status の `session_commands_revision_applied` に相乗り。**agent-instructions と違い委譲先ノードへ伝播しない** — 副作用のあるコマンドの到達範囲を各ノードのローカル設定へ閉じ込める | 共有（本ディレクトリが正典。設計は `docs/plans/2026-07-20-agent-dashboard-session-commands-design.md`） |
+| [`agent-node-command.schema.json`](agent-node-command.schema.json) | 管理面→常駐体（`agent-project serve`）のノード宛て指示ドロップ（`$AGENT_COMMANDS_DIR`＝既定 `~/.agents/commands/` の `<name>.json` ＋ `processed/<name>.json` ＋ `<name>.json.err`）。委譲公示板への入札 / 中止 / 落札（`board-bid` / `board-cancel` / `board-award`）。**板はプロジェクトに属さない**ので、プロジェクト配下の `commands/` ではなくノードスコープに置く（プロジェクトを 1 つも持たないワーカーノードからも板を操作できるように）。宣言的な agent-control と違い**一度きりの行為**で、取り込まれたらファイルは消える。書き手は板へ直接書かない — 板への書き込みと push は常駐体だけ | 共有（本ディレクトリが正典。設計は `docs/plans/2026-07-26-s8-s9-4-board-ui-and-doctor-chat-detailed-design.md`。取り込みの正典は `agent_project/resident_cli.py` の board tick、土台は `agentcore/commands.py`） |
 | [`mission.schema.json`](mission.schema.json) | 協働ミッションの公示（agent-amigos の `post --roles` に渡すミッション + 役割ミッション表）。バスへ書かれる読取契約（外部ビュアーが読む `mission.json` / `MANIFEST.json` / `final.json` / `cancelled.json`）は `$defs` に文書化 | agent-amigos（検証は stdlib パーサ `normalize_mission`。スキーマは文書化とテスト突き合わせ — enum/既定値の一致をテストで担保） |
 | [`amigos-command.schema.json`](amigos-command.schema.json) | agent-amigos への指示ドロップ（`<home>/.agents/agent-amigos/commands/*.json` — post / claim / assign / accept / reject / cancel / say）。投函側は人・agent-dashboard、取り込み側は常駐デーモン | agent-amigos（取り込みの正典は `agent_amigos/commands.py`。コマンド一覧の一致を両側のテストで担保 — Python `CommandSchemaTests` / dashboard `amigos.test.js`） |
 | [`delivery.schema.json`](delivery.schema.json) | agent-amigos の納品書（accept 時にオーナーホームの `deliveries/<mid>/delivery.json` へ書かれる受領記録）。バスの `MANIFEST.json` が integrator の組み立て記録（gc 対象）なのに対し、こちらは受入という事実と搬出先の永続記録 | agent-amigos（書き手は owner デーモン。読み手は agent-dashboard の納品一覧と `agent-amigos deliveries`） |
-| [`delegation.schema.json`](delegation.schema.json) | agent-dashboard から agent-flow / agent-amigos への委譲をエンジン非依存に扱う封筒（post / award / accept / reject / cancel）と正規化ビュー（`$defs.delegation_view` — 公示→入札→落札→受入の観測）。バス・claim プロトコルは統一せず、dashboard のエンジン別アダプタがネイティブ形式（amigos-command / flow inbox）へ決定的に変換する。共通 id を両エンジンの native id に採用（対応表なし）。dashboard 側実装済み（`tools/agent-dashboard/src/features/delegation/`・renderer UI は残作業） | 共有（本ディレクトリが正典。設計は `docs/plans/2026-07-19-delegation-contract-design.md`。契約一致は dashboard `test/delegation.test.js` で `amigos-command` enum と突き合わせ） |
+| [`delegation.schema.json`](delegation.schema.json) | agent-dashboard から agent-flow / agent-amigos への委譲をエンジン非依存に扱う封筒（post / award / accept / reject / cancel）と正規化ビュー（`$defs.delegation_view` — 公示→入札→落札→受入の観測）。バス・claim プロトコルは統一せず、dashboard のエンジン別アダプタがネイティブ形式（amigos-command / flow inbox）へ決定的に変換する。共通 id を両エンジンの native id に採用（対応表なし）。additive: `requires`（入札資格 tags/agent_cli/repos）・`speculation`（投機同時実行）は委譲公示板（agent-board）だけが解釈する。dashboard 側実装済み（`tools/agent-dashboard/src/features/delegation/`） | 共有（本ディレクトリが正典。設計は `docs/plans/2026-07-19-delegation-contract-design.md`。契約一致は dashboard `test/delegation.test.js` で `amigos-command` enum と突き合わせ） |
+| [`board.schema.json`](board.schema.json) | 委譲公示板（agent-board）のバス契約 — 専用リポジトリ（またはローカル dir）に置く板のファイルレイアウト（`nodes/<id>` 登録・`delegations/<id>/{post,bids,award,status,results,result,cancelled}`）。**agent-board は処理を持たず「リポジトリ＋契約」だけ**で、入札・引き渡しは請負側デーモン（agent-flow の `agent_flow/board.py` / agent-amigos の `agent_amigos/board.py`）が担う。公示本体は `delegation.schema.json` の op=post 封筒そのまま、入札は両エンジンと同一仕様の名前空間付き claim ＋ `(ts, who)` タイブレーク（同じ仕様・別実装）。真実は板のファイル・中央（forge）は転送のみ。成果物リポジトリでノードを選別（node.repos × workspace.url を identity 照合） | 共有（本ディレクトリが正典。公示は agent-project `board-offload` / dashboard、入札は agent-flow / agent-amigos の daemon。契約一致は各ツールのテスト＝flow `BoardParticipationTests` / amigos `BoardParticipationTests` / dashboard `test/delegation-board.test.js`） |
 
 ## node-budget — 誰がどう読む/書くか
 
@@ -76,7 +80,7 @@ app:
   desc: アプリ本体（API・UI）
   base: main
   target: develop        # 省略時 base
-  owns: [src/**]         # kiro-projects: 書込先ルーティングの根拠（無指定=参照リポジトリ）
+  owns: [src/**]         # agent-project: 書込先ルーティングの根拠（無指定=参照リポジトリ）
   docs: [docs/**, README.md]   # codd-gate: 分類グロブ（他ツールは無視）
   tests: [tests/**]
 shop-api:                # モノレポ: 同じ url を path 別に分ければ別エントリ（identity は url+path+base）
@@ -86,15 +90,15 @@ shop-api:                # モノレポ: 同じ url を path 別に分ければ�
   desc: API 側
 ```
 
-- **kiro-projects**: 手書きの `<project>/repos.{yaml,yml,json}` があればそれをレジストリの正として
+- **agent-project**: 手書きの `<project>/repos.{yaml,yml,json}` があればそれをレジストリの正として
   読む（charter.md の `## repos` は**互換入力**。内部的にはこのスキーマの形へ正規化して引き回す）。
   手書きが無ければ **charter の `## repos` から `repos.json` を自動生成**する（`_meta.generated_from`
   マーカー付き・正は charter のまま追従。手で管理するなら `_meta` を消す）——外部ツールへは常に
   「このスキーマのファイル」として渡る。
 - **agent-flow**: `--workspace` / `--reference` の値は本スキーマの**1 エントリの射影**
-  （`{url, path, base, target, desc}`）。kiro-projects がレジストリから選んで渡す。
+  （`{url, path, base, target, desc}`）。agent-project がレジストリから選んで渡す。
 - **codd-gate**: `--repos <file>`（設定 `repos_file`）でこのファイルを読む（**charter は読まない＝
-  kiro-projects から完全独立**）。`docs/tests/code/dir` は codd-gate 拡張キー（他ツールは未知キー
+  agent-project から完全独立**）。`docs/tests/code/dir` は codd-gate 拡張キー（他ツールは未知キー
   として無害に無視——additionalProperties: true が互換性の要）。
 - **メタデータ予約**: トップレベルの `_` 接頭辞キー（例 `_meta`）はメタデータ予約で、全消費側が
   repo エントリとして扱わずスキップする。
@@ -107,7 +111,7 @@ shop-api:                # モノレポ: 同じ url を path 別に分ければ�
  "priority": 1, "paths": "docs/util.md", "expect": "changes"}
 ```
 
-- **kiro-projects が契約の所有者**（読む側）: `enqueue --json` / `inbox/*.json` / `intake_cmd` の
+- **agent-project が契約の所有者**（読む側）: `enqueue --json` / `inbox/*.json` / `intake_cmd` の
   stdout がこの形式。**未知キーは保持**（前方互換）。verify 無しは inbox=人の triage 行き。
 - **供給側**（codd-gate `tasks`・webhook/issue 抽出等）は**この共通スキーマへ直接出力する**
   （特定ツール向け「アダプタ」ではない——スキーマを読める消化先なら何でもよい）。自ツールの内部形式

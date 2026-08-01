@@ -11,6 +11,7 @@ const os = require('os');
 const path = require('path');
 
 const budget = require('../src/features/orchestration/main/budget');
+const { engineConfig } = require('./helpers/engine-status');
 const control = require('../src/features/orchestration/main/control');
 const agents = require('../src/features/orchestration/main/agents');
 const instructions = require('../src/features/orchestration/main/instructions');
@@ -331,7 +332,7 @@ test('エージェント: list は first-wins で同名を陰らせ、契約違�
   fs.writeFileSync(path.join(dir1, 'kiro.json'), JSON.stringify({ command: ['kiro'] }));
   try {
     process.env.KIRO_AGENTS_DIR = dir1;
-    const cfg = { projects: { roots: [root2] }, orchestration: {} };
+    const cfg = { ...engineConfig([root2]), orchestration: {} };
     const res = agents.list(cfg);
     assert.deepStrictEqual(res.builtins, ['kiro', 'claude', 'copilot', 'codex']);
     const byPath = Object.fromEntries(res.dropins.map((d) => [d.path, d]));
@@ -465,16 +466,37 @@ test('指示: prependBlock は二重注入を防ぐ（マーカーが既にあ�
   assert.strictEqual(instructions.prependBlock('本文', ''), '本文');
 });
 
-test('指示: skillsInventory は探索順で SKILL.md 持ちを first-wins 列挙する', () => {
-  const root = tmpdir('orch-instr-root-');
-  const skillsDir = path.join(root, '.github', 'skills');
-  fs.mkdirSync(path.join(skillsDir, 'alpha'), { recursive: true });
-  fs.writeFileSync(path.join(skillsDir, 'alpha', 'SKILL.md'), '# alpha');
-  fs.mkdirSync(path.join(skillsDir, 'beta'), { recursive: true }); // SKILL.md 無し → 除外
-  const inv = instructions.skillsInventory({ projects: { roots: [root] }, orchestration: {} });
-  const names = inv.map((s) => s.name);
-  assert.ok(names.includes('alpha'));
-  assert.ok(!names.includes('beta'));
+test('指示: skillsInventory は5つのユーザースキル置き場を読み、同名と表示用メタデータをまとめる', () => {
+  const home = tmpdir('orch-instr-home-');
+  const kiro = path.join(home, '.kiro', 'skills', 'alpha');
+  const codex = path.join(home, '.codex', 'skills', 'nested', 'alpha-copy');
+  const agents = path.join(home, '.agents', 'skills', 'beta');
+  fs.mkdirSync(kiro, { recursive: true });
+  fs.mkdirSync(codex, { recursive: true });
+  fs.mkdirSync(agents, { recursive: true });
+  fs.writeFileSync(path.join(kiro, 'SKILL.md'), `---
+name: alpha
+description: "人向けの説明"
+allowed-tools: Bash(*)
+metadata:
+  version: 1.2.0
+  category: review
+  tags:
+    - quality
+    - code
+---
+# alpha`);
+  fs.writeFileSync(path.join(codex, 'SKILL.md'), '---\nname: alpha\ndescription: 後勝ちにしない\n---\n');
+  fs.writeFileSync(path.join(agents, 'SKILL.md'), '---\nname: beta\ndescription: 別スキル\n---\n');
+
+  const inv = instructions.skillsInventory({}, home);
+  assert.deepStrictEqual(inv.map((s) => s.name), ['alpha', 'beta']);
+  assert.strictEqual(inv[0].description, '人向けの説明');
+  assert.strictEqual(inv[0].category, 'review');
+  assert.strictEqual(inv[0].version, '1.2.0');
+  assert.deepStrictEqual(inv[0].tags, ['quality', 'code']);
+  assert.deepStrictEqual(inv[0].sources, ['kiro', 'codex']);
+  assert.ok(!Object.hasOwn(inv[0], 'allowed-tools'));
 });
 
 // --- IPC 配線（overview がまとめて返す） -------------------------------------

@@ -14,6 +14,10 @@ const { app } = require('electron');
 const { loadFeatures } = require('../../features');
 
 const BASE_DEFAULT_CONFIG = {
+  // この PC の役割（案4）。engineer=本体(agent-project)も動かす（全機能）。
+  //   viewer=閲覧・レビュー専用（clone を登録して監視・コメント・承認のみ。WSL/CLI 設定不要）。
+  // 既定 engineer で従来どおり全機能。viewer にすると engineer 専用 UI を隠す。
+  role: 'engineer',
   gitlab: {
     // gitlab-review-viewer と同じ形。タスクに紐づく GitLab イシューの
     // 最新状態（ラベル・state）を API で補完するのに使う。空なら

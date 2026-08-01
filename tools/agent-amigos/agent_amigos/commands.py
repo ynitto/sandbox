@@ -1,4 +1,4 @@
-"""指示のファイル取り込み — `<home>/.agent/agent-amigos/commands/*.json`。
+"""指示のファイル取り込み — `<home>/.agents/agent-amigos/commands/*.json`。
 
 agent-project の `commands/` と同じ結合方式: 外部操作者（agent-dashboard・人・スキル）は
 JSON を 1 ファイル置くだけで、常駐デーモンが次のサイクルで取り込む。プロセス間 API を
@@ -7,8 +7,13 @@ JSON を 1 ファイル置くだけで、常駐デーモンが次のサイクル
 コマンド形式（1 ファイル 1 コマンド）:
     {"command": "post",   "title": "...", "goal": "...", "design": "<design doc 本文>",
      "roles": [ {...役割ミッション表の 1 行...} ], "mission": {…任意の mission 上書き…}}
+    {"command": "build-team", "title": "...", "goal": "...", "design": "<任意>",
+     "constraints": "<任意>", "capabilities": ["python", ...], "agent_cli": "claude"}
+        # ロール未指定。team-builder スキルで最適なロール表を設計してから post する
     {"command": "claim",  "mission": "<mid>", "role": "<role-id>"}      # 手動引き受け
     {"command": "assign", "mission": "<mid>", "role": "...", "node": "..."}  # owner-picks 確定
+    {"command": "restaff", "mission": "<mid>", "add": [ {…役割…} ], "prune": ["<role-id>"]}
+        # 実行中のチーム編成変更（G5・owner-only）: ロール追加 / 停止（剪定）
     {"command": "accept", "mission": "<mid>"}
     {"command": "reject", "mission": "<mid>", "feedback": "..."}
     {"command": "cancel", "mission": "<mid>", "reason": "..."}
@@ -26,7 +31,7 @@ from .assign import apply_role, claim_role, confirm_assignment
 from .bus import Bus
 from .configfile import commands_dir, state_dir
 from .messages import build_message, message_path, valid_target
-from .mission import load_mission, new_mission_id, post_mission
+from .mission import is_owner, load_mission, new_mission_id, post_mission
 from .util import log, now_iso, read_json, write_json_atomic
 
 
@@ -65,6 +70,58 @@ def _do_post(bus: Bus, node_id: str, home: str, rec: dict) -> str:
     return f"post {mid}（{mission_over.get('title') or 'untitled'}）"
 
 
+def _do_build_team(bus: Bus, node_id: str, agent_cli: "str | None", home: str,
+                   rec: dict) -> str:
+    """チームビルディング: ロール未指定のミッションから team-builder スキルで
+    最適なロールミッション表を設計し、そのまま従来の post 経路へ流す。"""
+    from . import teambuilding
+    design = rec.get("design")
+    design_file = rec.get("design_file")
+    if design_file:
+        design_path = os.path.expanduser(str(design_file))
+        if not os.path.isfile(design_path):
+            raise ValueError(f"design_file が見つかりません: {design_file}")
+        with open(design_path, encoding="utf-8") as f:
+            design = f.read()
+    brief = {
+        "title": rec.get("title"),
+        "goal": rec.get("goal"),
+        "design": design,
+        "constraints": rec.get("constraints"),
+        "capabilities": rec.get("capabilities"),
+        "agent_cli": rec.get("agent_cli") or agent_cli,
+    }
+    cli = str(rec.get("agent_cli") or agent_cli or "")
+    mission_over, roles, meta = teambuilding.build_team(
+        brief, cli, model=rec.get("model"), pattern=rec.get("pattern"))
+
+    # target=agent-flow: amigos へは公示せず、委譲封筒を状態領域へ書く（G4）。
+    # amigos デーモンは flow を実行しない — dashboard の委譲アダプタ / agent-flow が拾う。
+    if meta.get("target") == "agent-flow":
+        deleg = meta["delegation"]
+        path = os.path.join(_designs_dir(home), f"{deleg['id']}-delegation.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        write_json_atomic(path, deleg)
+        return (f"build-team → agent-flow 委譲（探索木・動的分解）: {deleg['id']} を "
+                f"{path} に出力（amigos へは公示しません。agent-flow submit / 委譲アダプタで実行）")
+    # 明示 mission 上書き（rec.mission）は設計値より優先する
+    merged_mission = {**mission_over, **dict(rec.get("mission") or {})}
+    post_rec = {"command": "post", "roles": roles, "mission": merged_mission,
+                "mission_id": rec.get("mission_id")}
+    for key in ("title", "goal"):
+        if rec.get(key) is not None:
+            post_rec[key] = rec[key]
+    if design_file:
+        post_rec["design_file"] = design_file
+    elif design:
+        post_rec["design"] = design
+    else:
+        post_rec["design"] = teambuilding.brief_to_design_doc(brief)
+    result = _do_post(bus, node_id, home, post_rec)
+    return (f"build-team → {result}（roles={len(roles)}, "
+            f"pattern={meta.get('chosen_pattern') or '-'}, skill={meta.get('skill_source')}）")
+
+
 def _do_claim(bus: Bus, node_id: str, agent_cli: "str | None", rec: dict) -> str:
     mid = str(rec.get("mission") or "")
     role = str(rec.get("role") or "")
@@ -84,7 +141,7 @@ def _do_claim(bus: Bus, node_id: str, agent_cli: "str | None", rec: dict) -> str
 
 
 def _require_owner(mission: dict, node_id: str) -> None:
-    if mission.get("owner_node") != node_id:
+    if not is_owner(mission, node_id):
         raise ValueError(f"オーナー（{mission.get('owner_node')}）のみ実行できます")
 
 
@@ -92,6 +149,8 @@ def _dispatch(bus: Bus, node_id: str, agent_cli: "str | None", home: str, rec: d
     cmd = str(rec.get("command") or "")
     if cmd == "post":
         return _do_post(bus, node_id, home, rec)
+    if cmd == "build-team":
+        return _do_build_team(bus, node_id, agent_cli, home, rec)
     if cmd == "claim":
         return _do_claim(bus, node_id, agent_cli, rec)
     mid = str(rec.get("mission") or "")
@@ -101,6 +160,15 @@ def _dispatch(bus: Bus, node_id: str, agent_cli: "str | None", home: str, rec: d
         _require_owner(mission, node_id)
         confirm_assignment(bus, mp, str(rec.get("role") or ""), str(rec.get("node") or ""))
         return f"assign {mid}/{rec.get('role')} → {rec.get('node')}"
+    if cmd == "restaff":
+        from .ownerops import restaff_mission
+        _require_owner(mission, node_id)
+        add = rec.get("add") if isinstance(rec.get("add"), list) else None
+        prune = rec.get("prune") if isinstance(rec.get("prune"), list) else None
+        if not add and not prune:
+            raise ValueError("restaff には add（役割配列）か prune（id 配列）が必要です")
+        result = restaff_mission(bus, mp, add=add, prune=prune, by=node_id)
+        return f"restaff {mid}（追加 {result['added']} / 停止 {result['pruned']}）"
     if cmd == "accept":
         from .ownerops import accept_mission
         _require_owner(mission, node_id)

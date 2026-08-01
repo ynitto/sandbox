@@ -352,7 +352,7 @@ import json
 import subprocess
 from pathlib import Path
 
-_STATE_FILE = Path.home() / ".kiro" / "hooks" / "gitlab-issue-state.json"
+_STATE_FILE = Path.home() / ".agents" / "hooks" / "gitlab-issue-state.json"
 
 _LABEL_PROMPTS: dict[str, str] = {
     "priority:critical": "緊急イシューが割り当てられました。最優先で対応してください。\n\n{issue_json}",

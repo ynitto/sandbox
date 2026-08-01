@@ -15,6 +15,20 @@
 前方参照が def 時に評価されないようにするため）。
 """
 import pkgutil as _pkgutil
+import os as _os
+import sys as _sys
+
+# agentcore（transport / protocol / vocab / heartbeat の共通ライブラリ）への import 経路。
+# 開発木・リポジトリ内直接実行では tools/agent-tools/agentcore にある（3 エンジンで共有する
+# ものの置き場。tools/agent-project/agent_project/__init__.py から見て ../../agent-tools/agentcore）。
+# zipapp 配布では install.sh が agentcore/ を同じアーカイブへ同梱するため、zip 自身が
+# sys.path に載っていれば下記の追加パスは（存在しなくても無害に）素通りし、素の
+# `import agentcore` がアーカイブ内の agentcore/ を解決する（事前検証 V2）。
+_agentcore_dir = _os.path.join(
+    _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))),
+    "agent-tools", "agentcore")
+if _agentcore_dir not in _sys.path:
+    _sys.path.insert(0, _agentcore_dir)
 
 # exec する断片を依存順（＝元ファイルの記述順）に並べる。この順序を保つ限り、元ファイルが
 # top-to-bottom で NameError なく実行できた以上、import 時の前方参照はすべて満たされる。
@@ -24,7 +38,8 @@ _FRAGMENTS = (
     "model",       # Task / enqueue / cohort / intake
     "policy",      # Policy / 自律レベル / パス保護ゲート
     "decisions",   # 決定記録 / DR 学習 / ltm 昇格
-    "instances",   # 稼働レジストリ / start・stop・restart
+    "instances",   # watch ロック / ランタイム検出 / 孤児 flow の回収
+    #                （稼働レジストリと start・stop・restart は W1-9 で削除済み）
     "state",       # 状態 worktree
     "rules",       # rules.md（恒常ルール）
     "brief",       # run ブリーフ（run/branch スコープ・差し戻し意図とノード発見制約の蓄積・伝播）
@@ -37,6 +52,7 @@ _FRAGMENTS = (
     "batch",       # 並列消費 / claims
     "mr",          # タスク MR
     "stategit",    # 状態の git 保存・共有
+    "coordination",# multi-node controller / availability / fencing
     "loop",        # 正準ループ run / watch
     "commands",    # 人の操作 / revise / commands 取り込み / stats
     "doctor",      # audit / doctor
@@ -44,8 +60,10 @@ _FRAGMENTS = (
     "plan",        # repo-map / plan・review / spec 展開
     "gitcache",    # 共有 git キャッシュ + worktree
     "project",     # acceptance / milestone / finalize / cmd_project
+    "board",       # 委譲公示板（agent-board）へのタスク委譲
     "configfile",  # 設定ファイル解決 / build_config / _add_common
     "update",      # 自動アップデート
+    "resident_cli",# 常駐体 CLI: serve / status / worker init / worker（実装計画 W1-11）
     "cli",         # main / サブコマンドのディスパッチ
 )
 
@@ -54,7 +72,7 @@ for _name in _FRAGMENTS:
     # pkgutil.get_data はファイルシステム配置でも zipapp（zip 内）でも断片ソースを読める。
     # open(__file__) は zipapp 内で機能しないため使わない。
     _src = _pkgutil.get_data(__name__, _name + ".py")
-    _code = compile(_src, _name + ".py", "exec")
+    _code = compile(_src, _os.path.join(_os.path.dirname(__file__), _name + ".py"), "exec")
     exec(_code, _g)
 
-del _pkgutil, _g, _name, _src, _code
+del _pkgutil, _os, _sys, _agentcore_dir, _g, _name, _src, _code

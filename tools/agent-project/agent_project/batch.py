@@ -10,12 +10,6 @@ def summarize(tasks: "list[Task]") -> "dict[str, int]":
     return c
 
 
-# journal のローテーション閾値（バイト。0 以下で無効）とアーカイブ保持世代数（0 以下で無制限）。
-# build_config が設定 journal_max_bytes / journal_keep をここへ確定する（_AGENT_CLI と同じ流儀）。
-_JOURNAL_MAX_BYTES: int = 262144
-_JOURNAL_KEEP: int = 20
-
-
 def _journal_lock_path(path: Path) -> str:
     h = hashlib.sha1(str(path).encode()).hexdigest()[:12]
     return os.path.join(tempfile.gettempdir(), f"agent-project-journal-{h}.lock")
@@ -27,7 +21,8 @@ def rotate_journal(path: Path, max_bytes: "int | None" = None,
     退避名はタイムスタンプ＋ホスト名で一意（複数ホストの direct 同期でも rename が衝突しない・
     退避ファイルは以後不変＝マージ衝突源にならない）。保持世代を超えた古いアーカイブは削除する。
     ローテーションしたら退避先を返す（しなければ None）。呼び出し側でロックを取ること。"""
-    mx = _JOURNAL_MAX_BYTES if max_bytes is None else max_bytes
+    mx = ((_RUNTIME_CONFIG.journal_max_bytes if _RUNTIME_CONFIG is not None else 262144)
+          if max_bytes is None else max_bytes)
     if mx <= 0:
         return None
     try:
@@ -35,7 +30,7 @@ def rotate_journal(path: Path, max_bytes: "int | None" = None,
             return None
     except OSError:
         return None
-    arch_dir = path.parent / "journal-archive"
+    arch_dir = path.parent / f"{path.stem}-archive"   # journal.md → journal-archive/（従来と同じ）
     try:
         arch_dir.mkdir(parents=True, exist_ok=True)
         ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
@@ -52,7 +47,8 @@ def rotate_journal(path: Path, max_bytes: "int | None" = None,
         path.replace(dest)                 # 同一ファイルシステム内の原子的 rename
     except OSError:
         return None
-    keep_n = _JOURNAL_KEEP if keep is None else keep
+    keep_n = ((_RUNTIME_CONFIG.journal_keep if _RUNTIME_CONFIG is not None else 20)
+              if keep is None else keep)
     if keep_n > 0:
         try:
             # 刈り込みは mtime 順（＝退避した順）。名前順だけに頼ると、旧命名で残っている
@@ -65,6 +61,73 @@ def rotate_journal(path: Path, max_bytes: "int | None" = None,
         except OSError:
             pass
     return dest
+
+
+def _prune_older_than(files, days: float) -> int:
+    """mtime が days より古いファイルを消す（days<=0 は無効）。消した件数を返す。"""
+    if days <= 0:
+        return 0
+    cutoff = time.time() - days * 86400.0
+    n = 0
+    for p in files:
+        try:
+            if p.is_file() and p.stat().st_mtime < cutoff:
+                p.unlink()
+                n += 1
+        except OSError:
+            pass
+    return n
+
+
+def enforce_retention(cfg: "Config") -> dict:
+    """保持契約（W11）の実行者。gc から呼ぶ。返り値は {対象: 削除・退避件数}。
+
+    契約:
+      - `verifications/<id>/` … 最新 rev ＋直近 N（`verifications_keep`）。**現に settle が
+        参照している rev（live タスクの `verify_rev`）は N の外でも消さない**——W3 の検算は
+        レポートの実在を前提にするので、消す側が順序の約束を持つ（消してから採用しない）
+      - `journal.md` / `run-log.jsonl` … 期間ローテーション（`gc_retention_days` より古い
+        退避・不変コピーを刈る。journal の世代数上限は従来どおり追記側が持つ）
+      - `archive/` … 保持（触らない）
+
+    `verify-recipes/` は旧 verifier の撤去（P1-A8）とともに廃止済みで、対象に持たない。"""
+    out = {"verifications": 0, "journal-archive": 0, "run-log": 0}
+    days = float(getattr(cfg, "gc_retention_days", 30) or 0)
+    keep = int(getattr(cfg, "verifications_keep", 5) or 0)
+    vdir = verifications_dir(cfg)
+    if keep > 0 and vdir.is_dir():
+        pinned = {str(t.get("verify_rev") or "").strip()
+                  for t in load_tasks(cfg.backlog)} - {""}
+        for tdir in sorted(p for p in vdir.iterdir() if p.is_dir()):
+            reports = sorted((p for p in tdir.iterdir() if p.is_file()),
+                             key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
+            for old in reports[keep:]:
+                if any(old.name.startswith(rev) for rev in pinned):
+                    continue                       # settle 対象 rev は N の外でも残す
+                try:
+                    old.unlink()
+                    out["verifications"] += 1
+                except OSError:
+                    pass
+    root = cfg.backlog.parent
+    for name in ("journal-archive", "run-log-archive"):
+        d = root / name
+        if d.is_dir():
+            out["journal-archive"] += _prune_older_than(d.iterdir(), days)
+    if cfg.runlog is not None:
+        # 期間ローテーション: 現行 JSONL が retention より古くなったら退避して始め直す
+        # （サイズ閾値は持たない——run-log は 1 run 1 行で、育ち方が時間に比例する）。
+        try:
+            aged = (cfg.runlog.is_file() and days > 0
+                    and cfg.runlog.stat().st_mtime < time.time() - days * 86400.0)
+        except OSError:
+            aged = False
+        if aged and rotate_journal(cfg.runlog, max_bytes=1, keep=0) is not None:
+            out["run-log"] += 1
+        rl = cfg.runlog.parent / "run-log"
+        if rl.is_dir():
+            out["run-log"] += _prune_older_than(rl.rglob("*.json"), days)
+    return out
 
 
 def append_journal(path: Path, line: str) -> None:
@@ -87,6 +150,17 @@ def append_runlog(path: "Path | None", record: dict) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        node = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(record.get("node", "") or "")).strip("-")
+        run_id = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(record.get("run_id", "") or "")).strip("-")
+        if node and run_id:
+            immutable = path.parent / "run-log" / node / f"{run_id}.json"
+            immutable.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with immutable.open("x", encoding="utf-8") as f:
+                    json.dump(record, f, ensure_ascii=False, indent=2)
+                    f.write("\n")
+            except FileExistsError:
+                pass
     except OSError:
         pass
 
@@ -96,11 +170,13 @@ def _block(cfg, task, reason, reasons, evidence: str = "", failure: "dict | None
     if task.norm_status() == "offloaded" or task.get("flow_run"):
         detached = detach_flow_run(cfg, task, reason[:120] or "hold/block により委譲から切り離し")
         if detached:
-            # canceled な同一 run-id を approve 後に作り直さない（cancel→ready と同じく retries を進める）
+            # cancelled な同一 run-id を approve 後に作り直さない（cancel→ready と同じく retries を進める）
             task.retries += 1
     task.status = "blocked"
+    record_learn_outcome(cfg, task, worked=False, why=reason[:80])  # learn 適用後の再 blocked＝不発（W10）
     reasons[task.id] = reason
     _remember_needs_reason(task, reason)  # 票を失っても ensure_needs が同じ理由で作り直せるように
+    mark_needs_entry(cfg, task)           # この判断待ちが「人の決定より後」であることの印（G-2）
     persist_task(cfg, task)
     # 失敗票でも検収画面が state worktree の内部差分へフォールバックしないよう、成功時と
     # 同じ run metadata 由来の delivery を添える。
@@ -128,8 +204,8 @@ def _revert_workdir(cfg) -> None:
 def _escalate(cfg, task, reason, reasons, cycle, evidence: str = ""):
     """ループ内で人の判断(needs)へ回す直前のフック。auto_adjudicate が有効なら、人へ送る前に
     エージェント CLI へ『自律的に積み直して解けるか』を諮り、可能なら needs を作らず ready に戻して回し続ける。
-    verify を持たないタスク（acceptance 未定義）は対象外＝必ず人へ。adjudicate_max で有限回に制限。"""
-    if cfg.auto_adjudicate and not cfg.dry_run and task.verify:
+    検証材料（基準・固定コマンド）を持たないタスクは対象外＝必ず人へ。adjudicate_max で有限回に制限。"""
+    if cfg.auto_adjudicate and not cfg.dry_run and has_verify_plan(task):
         done_n = int(task.get("adjudicated", "0") or "0")
         if done_n < cfg.adjudicate_max:
             decision, guide = adjudicate_escalation(cfg, task, reason)
@@ -153,23 +229,19 @@ def _escalate(cfg, task, reason, reasons, cycle, evidence: str = ""):
 
 
 # ---------------------------------------------------------------------------
-# 並列消費（§11）— agent-flow の worker 並列へ寄せる。
-#   prioritize が返す order は依存(after)解決済み＝互いに独立。daemon/remote へ submit する
-#   タスクは実行が daemon 側の隔離ワーカで走るので、最大 concurrency 個まで並行 submit して
+# 並列消費（§11）— 委譲公示板の請負側 worker 並列へ寄せる。
+#   prioritize が返す order は依存(after)解決済み＝互いに独立。板へ post するタスクは実行が
+#   請負ノードの隔離ワーカで走るので、最大 concurrency 個まで並行 post して
 #   一括で待つ。verify と done/archive/decisions/派生など「ローカル状態の変更」は逐次のまま
 #   （workdir/決定記録の競合を避け、不変条件をそのまま守る）。local act は逐次（並列化しない）。
 # ---------------------------------------------------------------------------
 def _submit_bound(location: str, cfg: "Config") -> bool:
-    """その location が daemon/remote への submit（=隔離ワーカ実行）になるか。local 実行なら False。"""
-    if location == "remote":
-        return True
-    if location == "daemon":
-        return daemon_running(cfg, use_git=False)
-    return False
+    """その location が委譲公示板への post（=別ノードの隔離ワーカ実行）になるか。local 実行なら False。"""
+    return location == "board"
 
 
 def _select_batch(order: "list[Task]", cfg: "Config", policy, remaining: int) -> "list[Task]":
-    """先頭から、並行 submit 可能（daemon/remote）なタスクを最大 width 個まとめる。
+    """先頭から、並行 post 可能（board）なタスクを最大 width 個まとめる。
     先頭が local 実行なら従来どおり1件だけ（逐次）。残サイクル予算 remaining も超えない。"""
     width = cfg.concurrency if (cfg.concurrency > 1 and not cfg.once) else 1
     width = max(1, min(width, remaining))
@@ -202,6 +274,8 @@ def _claim_ttl(cfg: "Config") -> float:
 
 def claim_task(cfg: "Config", task: "Task") -> bool:
     """task の実行権を原子的に取得できれば True。既に新鮮なクレームがあれば False（他者が実行中）。"""
+    if _DRAIN_REQUESTED.is_set():
+        return False
     d = _claims_dir(cfg)
     p = d / f"{task.id}.lock"
     rec = json.dumps({"host": socket.gethostname(), "pid": os.getpid(),
@@ -244,6 +318,15 @@ def claim_task(cfg: "Config", task: "Task") -> bool:
     # 人の revise・直接編集をこの試行に反映し、doing 永続化で上書き消失させない）。
     live.drop("revised")                      # これから走る試行は最新内容を含む＝マーカー消化
     _adopt_task(task, live)
+    if _coordination_active(cfg):
+        if not claim_distributed_task(cfg, task.id):
+            release_claim(cfg, task)
+            return False
+        live = _load_task_file(cfg, task.id)
+        if live is None:
+            release_claim(cfg, task)
+            return False
+        _adopt_task(task, live)
     return True
 
 
@@ -271,7 +354,7 @@ def _claim_alive(cfg: "Config", tid: str) -> bool:
 
 
 def recover_stale_doing(cfg: "Config", tasks: "list[Task]") -> "list[str]":
-    """実行者が失踪した doing を ready へ戻す（自己回復）。戻した ID を返す。
+    """失踪した doing を単一ノードでは再開し、分散モードでは人の判断へ隔離する。
 
     agent-project が再起動・クラッシュ（あるいは stop）すると、実行中だったタスクは doing のまま
     残る。**doing は消化対象（CONSUMABLE = ready/todo）ではない**ので次のパスでも拾われず、
@@ -284,10 +367,21 @@ def recover_stale_doing(cfg: "Config", tasks: "list[Task]") -> "list[str]":
         if t.norm_status() != "doing" or _claim_alive(cfg, t.id):
             continue
         release_claim(cfg, t)
-        t.status = "ready"
+        distributed = _coordination_active(cfg)
+        if distributed:
+            t.status = "blocked"
+            t.set("claim_owner", "")
+            t.set("claim_token", hashlib.sha256(os.urandom(32)).hexdigest()[:32])
+            t.set("claim_generation", str(int(t.get("claim_generation") or 0) + 1))
+            write_needs_file(
+                cfg, t, "実行ノードが停止しました。成果を自動採用せず、resume/revise で再割当してください")
+        else:
+            t.status = "ready"
         persist_task(cfg, t)
-        append_journal(cfg.journal,
-                       f"doing 回復: {t.id} を ready へ戻す（実行者が失踪＝結果は返らない）")
+        append_journal(
+            cfg.journal,
+            (f"doing 隔離: {t.id} を blocked 化（分散実行者が失踪）" if distributed else
+             f"doing 回復: {t.id} を ready へ戻す（実行者が失踪＝結果は返らない）"))
         revived.append(t.id)
     return revived
 

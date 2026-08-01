@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:" />
-  <title>Agent Dashboard</title>
+  <title>プロジェクト管理</title>
   <link rel="stylesheet" href="../../node_modules/diff2html/bundles/css/diff2html.min.css" />
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -14,9 +14,9 @@
     <!-- ======== サイドバー: コンテナ → プロジェクト ======== -->
     <aside id="sidebar">
       <div class="sidebar-header">
-        <h1>Agent Dashboard</h1>
+        <h1>プロジェクト管理</h1>
         <div class="row sidebar-actions">
-          <button id="btn-doctor" class="assistant-button" aria-label="AIに相談" title="現在の画面についてAIに相談">
+          <button id="btn-doctor" class="assistant-button" aria-label="相談する" title="いま表示している内容を相談する">
             <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
               <path d="M21 11.5a8.4 8.4 0 0 1-9 8.5 9.6 9.6 0 0 1-4-.9L3 21l1.7-4.4A8.3 8.3 0 0 1 3 11.5a8.4 8.4 0 0 1 9-8.5 8.4 8.4 0 0 1 9 8.5Z" />
               <path d="m12 7 .7 1.7L14.5 9.5l-1.8.7L12 12l-.7-1.8-1.8-.7 1.8-.8L12 7Z" />
@@ -40,14 +40,6 @@
           </div>
           <div id="project-list"></div>
         </section>
-        <!-- Cowork は右ペインのタブに統一（左ペインには出さない）。作業が無いときはタブ自体を隠す。 -->
-        <!-- kiro-loop 端末はメインタブ側。左ペインの一覧枠は将来の session 一覧用に残す（既定非表示）。 -->
-        <section id="kiro-loop-nav" class="nav-group hidden" data-feature="kiro-loop" aria-labelledby="kiro-loop-group-title" hidden>
-          <div class="nav-group-header">
-            <h2 id="kiro-loop-group-title">kiro-loop</h2>
-          </div>
-          <div id="kiro-loop-list"></div>
-        </section>
       </div>
       <div id="sidebar-footer" class="muted"></div>
     </aside>
@@ -60,13 +52,18 @@
             <span id="project-name" class="muted">プロジェクトを選択してください</span>
             <span id="project-badges"></span>
           </div>
-          <button id="btn-cli-chat" class="project-cli-chat" type="button" disabled
-            title="選択中プロジェクトで、全体設定のエージェントを使って開きます">
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path d="M4 5h16v14H4z"/><path d="m8 9 3 3-3 3M13 15h3"/>
-            </svg>
-            <span>CLIチャットを開く</span>
-          </button>
+          <div class="project-cli-chat-group">
+
+            <select id="cli-chat-cwd" class="project-cli-chat-cwd"
+              title="相談する作業フォルダ" aria-label="相談する作業フォルダ"></select>
+            <button id="btn-cli-chat" class="project-cli-chat" type="button" disabled
+              title="選んだフォルダで、全体設定のエージェントを使って開きます">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M4 5h16v14H4z"/><path d="m8 9 3 3-3 3M13 15h3"/>
+              </svg>
+              <span>この作業を相談</span>
+            </button>
+          </div>
         </div>
         <div id="project-meta" class="muted" aria-live="polite"></div>
       </header>
@@ -121,42 +118,36 @@
 
 
   <!-- ======== 定常業務の編集 ======== -->
-  <dialog id="dlg-cowork-work" class="wide">
+  <dialog id="dlg-cowork-work">
     <form method="dialog">
       <h2 id="cowork-work-title">作業を編集</h2>
       <div class="row2">
         <div class="field">
-          <label>対象フォルダ</label>
-          <select id="cw-repo"></select>
-        </div>
-        <div class="field">
-          <label>種類</label>
+          <label for="cw-type">種類</label>
           <select id="cw-type">
-            <option value="loop">kiro-loop / agent-loop 定期実行</option>
-            <option value="state-machine">statemachine-use 定型業務</option>
+            <option value="loop">繰り返し作業</option>
+            <option value="state-machine">手順付き作業</option>
           </select>
         </div>
-      </div>
-      <div class="row2">
         <div class="field">
-          <label>名前</label>
-          <input id="cw-name" />
-        </div>
-        <div class="field">
-          <label>スケジュール（定期実行のみ）</label>
-          <input id="cw-schedule" class="mono" placeholder="例: 0 9 * * *" />
+          <label for="cw-name">名前</label>
+          <input id="cw-name" autocomplete="off" />
         </div>
       </div>
-      <div class="field">
-        <label>workflow（statemachine-use の定型業務のみ）</label>
-        <input id="cw-workflow" class="mono" placeholder="例: workflows/release.yaml" />
+      <div class="field" id="cw-prompt-field">
+        <label for="cw-prompt">依頼すること</label>
+        <textarea id="cw-prompt" rows="6" placeholder="エージェントに繰り返し実行してほしい内容"></textarea>
+        <small class="muted cowork-kind-help">同じ依頼を、停止するまで繰り返します。</small>
+      </div>
+      <div class="field" id="cw-instruction-field" hidden>
+        <label for="cw-instruction">定型業務の手順</label>
+        <textarea id="cw-instruction" rows="6" placeholder="判断や分岐を含む一連の手順を文章で入力"></textarea>
+        <small class="muted cowork-kind-help">入力した手順に沿って、作業を順番に進めます。</small>
       </div>
       <div class="field">
-        <label>説明</label>
-        <textarea id="cw-description" rows="3"></textarea>
-      </div>
-      <div class="field" id="cw-enabled-field">
-        <label><input type="checkbox" id="cw-enabled" /> 有効（定期実行のみ・kiro-loop の enabled）</label>
+        <label for="cw-schedule">実行予定</label>
+        <input id="cw-schedule" class="mono" placeholder="例: 0 9 * * *" />
+        <small class="muted">空欄の場合は手動実行のみです。</small>
       </div>
       <div class="dialog-actions">
         <button id="btn-cw-cancel" value="cancel">キャンセル</button>
@@ -170,7 +161,7 @@
     <form method="dialog">
       <h2>作業の変更を保存</h2>
       <div class="field">
-        <label>ブランチ（空なら現在のブランチ）</label>
+        <label>保存先のブランチ</label>
         <input id="cw-save-branch" class="mono" placeholder="例: cowork/config" />
       </div>
       <div class="field">
@@ -186,38 +177,60 @@
     </form>
   </dialog>
 
-  <!-- ======== ミッション依頼（commands/ へ post を投函） ======== -->
-  <dialog id="dlg-amigos-post" class="wide">
-    <form method="dialog">
-      <h2>ミッションを依頼</h2>
-      <p class="muted">目標と進め方を入力すると、担当メンバーが協力して作業を進めます。</p>
-      <div class="field">
-        <label>実行先</label>
-        <select id="amigos-post-home"></select>
+  <!-- ======== ミッション依頼 ======== -->
+  <dialog id="dlg-amigos-post" class="wide amigos-request-dialog" aria-labelledby="amigos-post-title-heading">
+    <form method="dialog" class="dialog-shell">
+      <header class="dialog-heading">
+        <div>
+          <span class="summary-kicker">チームで進める作業</span>
+          <h2 id="amigos-post-title-heading">ミッションを依頼</h2>
+          <p class="muted">達成したい状態と進め方を入力してください。</p>
+        </div>
+      </header>
+      <div class="dialog-scroll-body">
+      <div class="field amigos-fixed-team">
+        <span class="muted">対象チーム</span>
+        <strong id="amigos-post-home-label"></strong>
+        <input id="amigos-post-home" type="hidden" />
       </div>
+      <fieldset class="field amigos-mode-field">
+        <legend>担当の決め方</legend>
+        <div id="amigos-post-mode" class="amigos-mode" role="radiogroup">
+          <label class="amigos-mode-option"><input type="radio" name="amigos-post-mode" value="team-building" checked />
+            <span><strong>おまかせ編成</strong><small>内容に合わせて必要な担当を自動で決めます</small></span></label>
+          <label class="amigos-mode-option"><input type="radio" name="amigos-post-mode" value="roles" />
+            <span><strong>自分で役割を指定</strong><small>必要な担当が決まっている場合に使います</small></span></label>
+        </div>
+      </fieldset>
       <div class="field">
-        <label>タイトル</label>
+        <label for="amigos-post-title">タイトル</label>
         <input id="amigos-post-title" placeholder="例: 社内 FAQ ボットの MVP" />
       </div>
       <div class="field">
-        <label>完了したときの状態</label>
+        <label for="amigos-post-goal">完了したときの状態</label>
         <input id="amigos-post-goal" placeholder="例: 必要な機能が動作し、確認できる状態にする" />
       </div>
       <div class="field">
-        <label>進め方・完了条件</label>
-        <textarea id="amigos-post-design" rows="8" class="mono"
+        <label for="amigos-post-design">進め方・完了条件</label>
+        <textarea id="amigos-post-design" rows="6"
           placeholder="例:&#10;必要な画面を作る&#10;テストで動作を確認する"></textarea>
       </div>
-      <details class="amigos-team-settings">
-        <summary>担当チームの設定</summary>
+      <div id="amigos-buildteam-hint" class="field amigos-buildteam-hint">
+        <label for="amigos-post-capabilities">使ってよい技術・環境 <span class="muted">省略できます</span></label>
+        <input id="amigos-post-capabilities" placeholder="例: Python、Web画面" />
+        <small class="muted">複数ある場合はカンマで区切ってください。</small>
+      </div>
+      <details id="amigos-post-roles-details" class="amigos-team-settings" hidden>
+        <summary>担当の構成を編集</summary>
         <div class="field">
-          <label>担当の構成（通常はそのままで構いません）</label>
+          <label for="amigos-post-roles">担当の構成</label>
           <textarea id="amigos-post-roles" rows="6" class="mono"></textarea>
         </div>
       </details>
+      </div>
       <div class="dialog-actions">
         <button id="btn-amigos-post-cancel" value="cancel" type="button">キャンセル</button>
-        <button id="btn-amigos-post-ok" value="default">依頼を投函</button>
+        <button id="btn-amigos-post-ok" class="primary-inline" value="default">ミッションを依頼</button>
       </div>
     </form>
   </dialog>
@@ -231,7 +244,7 @@
     <div id="amigos-detail-body"></div>
   </dialog>
 
-  <!-- ======== 修正依頼（差し戻し） ======== -->
+  <!-- ======== 修正依頼 ======== -->
   <dialog id="dlg-amigos-reject">
     <form method="dialog">
       <h2>修正を依頼</h2>
@@ -283,11 +296,11 @@
 
   <dialog id="dlg-doctor" class="wide doctor-dialog" aria-labelledby="doctor-title">
     <div class="dialog-heading">
-      <div><span class="summary-kicker">AIアシスタント</span><h2 id="doctor-title">現在の画面を相談</h2></div>
-      <button id="btn-doctor-close" aria-label="AI相談を閉じる">閉じる</button>
+      <div><h2 id="doctor-title">現在の画面を相談</h2></div>
+      <button id="btn-doctor-close" aria-label="相談を閉じる">閉じる</button>
     </div>
     <div class="doctor-form">
-      <label for="doctor-prompt">補足したいこと（任意）</label>
+      <label for="doctor-prompt">補足したいこと</label>
       <textarea id="doctor-prompt" rows="3" placeholder="例: 同期エラーを中心に、次に何をすべきか教えてください"></textarea>
       <div class="doctor-form-actions">
         <span class="muted">空欄でも現在の画面について相談できます。</span>
@@ -311,70 +324,124 @@
       <div class="muted">選択したバージョンの目標・制約・前提を、このタスクの実行に適用します。</div>
     </div>
     <div class="field">
-      <label>タイトル（必須）</label>
+      <label>タスク名</label>
       <input id="enq-title" placeholder="例: README に使用例を追加する" />
     </div>
     <div class="field">
-      <label>検証コマンド — 完了判定に使うコマンド（成功すれば完了。書ければ最も確実です）</label>
-      <input id="enq-verify" class="mono" placeholder='例: grep -q "## Usage" README.md' />
+      <label>受入基準</label>
+      <textarea id="enq-accept" rows="3" placeholder="例: README に使用例が載っている"></textarea>
+      <p class="field-help">完了したと判断できる状態を自然な言葉で、1 行 1 基準で書きます。</p>
     </div>
-    <div class="field">
-      <label>完了条件 — 文章で（検証コマンドが書けないとき。実行時に自動でコマンド化されます）</label>
-      <input id="enq-accept" placeholder="例: README に使用例が載っている" />
-    </div>
-    <div class="row2">
-      <div class="field">
-        <label>優先度（数字が大きいほど先に着手）</label>
-        <input id="enq-priority" type="number" step="1" value="0" />
+    <details class="enq-guide-panel">
+      <summary>作業内容を補足</summary>
+      <p class="field-help">必要な場合だけ、目的や変更範囲を追加します。</p>
+      <div class="field"><label for="enq-desc">変更してほしいこと</label>
+        <textarea id="enq-desc" rows="3" placeholder="例: README の冒頭にインストール手順と使用例のセクションを追加する。既存の構成は変えない。"></textarea></div>
+      <div class="field"><label for="enq-why">目的・背景</label><input id="enq-why" /></div>
+      <div class="row2">
+        <div class="field"><label for="enq-scope">変更してよい範囲</label><input id="enq-scope" /></div>
+        <div class="field"><label for="enq-out_of_scope">変更しない範囲</label><input id="enq-out_of_scope" /></div>
+      </div>
+    </details>
+    <details>
+      <summary>実行順と変更先</summary>
+      <div class="row2">
+        <div class="field">
+          <label>着手の優先度</label>
+          <input id="enq-priority" type="number" step="1" value="0" />
+          <p class="field-help">数字が大きいほど先に着手します。</p>
+        </div>
+        <div class="field">
+          <label>タスク番号</label>
+          <input id="enq-id" class="mono" placeholder="例: T12" />
+          <p class="field-help">省略すると自動で採番します。</p>
+        </div>
       </div>
       <div class="field">
-        <label>メモ</label>
-        <input id="enq-note" />
-      </div>
-    </div>
-    <div class="row2">
-      <div class="field">
-        <label>ID（任意・省略で自動採番。やり直しでは元の ID を引き継ぎます）</label>
-        <input id="enq-id" class="mono" placeholder="例: T12" />
-      </div>
-      <div class="field">
-        <label for="enq-after">先行タスク（先に終えるべきタスクの ID。任意・カンマ区切り）</label>
+        <label for="enq-after">先に完了するタスク</label>
         <input id="enq-after" class="mono" list="enq-after-options" placeholder="例: T1, T2" />
         <datalist id="enq-after-options"></datalist>
+        <p class="field-help">タスク番号をカンマ区切りで指定します。</p>
       </div>
-    </div>
-    <div class="field" id="enq-workspace-field">
-      <label for="enq-workspace">書込先リポジトリ（任意 — リポジトリ一覧の書込先から選択。省略で自動ルーティング）</label>
-      <select id="enq-workspace"></select>
-    </div>
+      <div class="field" id="enq-workspace-field">
+        <label for="enq-workspace">変更先</label>
+        <select id="enq-workspace"></select>
+        <p class="field-help">省略すると自動で選びます。</p>
+      </div>
+      <div class="field">
+        <label>補足</label>
+        <input id="enq-note" />
+      </div>
+    </details>
+    <details>
+      <summary>確認方法を固定</summary>
+      <p class="field-help">実行するコマンドが決まっている場合だけ設定します。</p>
+      <div class="field">
+        <label>実行するコマンド</label>
+        <input id="enq-verify" class="mono" placeholder='例: grep -q "## Usage" README.md' />
+      </div>
+      <div class="field">
+        <label>定型の確認方法</label>
+        <input id="enq-verify-template" class="mono" list="enq-verify-template-options"
+               placeholder="例: file-contains :: README.md :: ## Usage" />
+        <datalist id="enq-verify-template-options">
+          <option value="file-contains :: path :: needle">ファイルに文字列が含まれる</option>
+          <option value="file-exists :: path">ファイルが存在する</option>
+          <option value="cmd-succeeds :: command">コマンドが成功する</option>
+          <option value="endpoint-returns :: url :: 200">URL が指定ステータスを返す</option>
+          <option value="diff-contains :: needle">変更差分に文字列が含まれる</option>
+        </datalist>
+      </div>
+    </details>
     <details id="enq-backlog-panel" class="enq-backlog-panel">
-      <summary>既存バックログ（依存・優先度の参考）</summary>
+      <summary>ほかのタスクを確認</summary>
       <div id="enq-backlog-summary" class="enq-backlog-summary muted"></div>
     </details>
     <div class="enq-assist-row">
-      <button type="button" id="btn-enq-ai">AIで依存・優先度を提案</button>
+      <button type="button" id="btn-enq-ai">順番を提案</button>
       <span id="enq-ai-status" class="muted" aria-live="polite"></span>
     </div>
     <div id="enq-ai-adjustments" class="enq-ai-adjustments hidden"></div>
-    <div class="muted">検証コマンド・完了条件のどちらも無い場合、取り込み後に内容の確認（人の判断）が必要になります。</div>
+    <div class="muted">受入基準がない場合、取り込み後に内容の確認が必要です。</div>
     <div class="dialog-actions">
       <button id="btn-enq-cancel">キャンセル</button>
       <button id="btn-enq-submit" class="primary-inline">追加</button>
     </div>
   </dialog>
 
-  <!-- ======== 計画の作り直し ======== -->
+  <!-- ======== バックログの分解 ======== -->
   <dialog id="dlg-replan">
-    <h2>計画を作り直す</h2>
+    <h2>バックログを分解する</h2>
     <div class="field">
       <label for="replan-charter">計画バージョン</label>
       <select id="replan-charter"></select>
-      <div class="muted">選択したバージョンの目標・制約・前提から、タスクを分解し直します。</div>
+      <div class="muted">選択したバージョンの目標・制約・前提から、タスクを分解します。</div>
     </div>
-    <p class="muted">進行中・却下済みと重複するタスクは追加されません。完了済みと同種の作業は、やり直しとして作成されます。</p>
+    <p class="muted">タスクの分解はこの操作でだけ行われ、自動では行われません。最初のタスク作りも、削除後の作り直しもここから始めます。
+      進行中・却下済みと内容の重なるタスクは追加されません。完了済みと同種の作業は、やり直しとして作成されます。</p>
     <div class="dialog-actions">
       <button id="btn-replan-cancel">キャンセル</button>
-      <button id="btn-replan-submit" class="primary-inline">作り直しを依頼</button>
+      <button id="btn-replan-submit" class="primary-inline">分解を依頼</button>
+    </div>
+  </dialog>
+
+  <!-- ======== メモ ======== -->
+  <dialog id="dlg-notes">
+    <h2>メモ</h2>
+    <p class="muted">あとで考えたいことを残せます。必要になったらタスクにしてください。</p>
+    <div class="field">
+      <label for="note-body">新しいメモ</label>
+      <textarea id="note-body" rows="4" placeholder="例: 検収カードの証跡が薄いときに気づける仕組みが要りそう"></textarea>
+    </div>
+    <div class="field">
+      <label for="notes-charter">計画バージョン</label>
+      <select id="notes-charter"></select>
+    </div>
+    <div id="notes-list" class="notes-list"></div>
+    <div class="dialog-actions">
+      <button id="btn-notes-close">閉じる</button>
+      <button id="btn-notes-distill">メモをタスクにする</button>
+      <button id="btn-note-add" class="primary-inline">メモを追加</button>
     </div>
   </dialog>
 
@@ -401,68 +468,76 @@
   <dialog id="dlg-new-project" class="wide">
     <h2>新規プロジェクトを作成</h2>
     <div class="muted" style="margin-bottom:8px">
-      <code class="mono">&lt;親フォルダ&gt;/&lt;名前&gt;/</code> にプロジェクト憲章（マスター）を作成します。
-      憲章は全バージョン共通の前提となり、タスクは「計画バージョン」に書いたやるべきことから作られます。
+      作成先と名前を決めて、プロジェクトの目標を入力してください。
     </div>
     <div class="row2">
       <div class="field">
-        <label>作成先の親フォルダ（既存を選ぶか新規パスを入力）</label>
+        <label>作成先の親フォルダ</label>
         <input id="np-root" class="mono" list="np-root-list" placeholder="例: C:\clones" />
         <datalist id="np-root-list"></datalist>
+        <p class="field-help">既存のフォルダを選ぶか、新しいパスを入力します。</p>
       </div>
       <div class="field">
-        <label>プロジェクト名（ディレクトリ名。空白・区切り文字は不可）</label>
+        <label>プロジェクト名</label>
         <input id="np-name" class="mono" placeholder="例: my-project" />
+        <p class="field-help">フォルダ名になります。空白や区切り文字は使えません。</p>
       </div>
     </div>
     <div class="row2">
       <div class="field">
-        <label>最初の計画バージョン名（任意。指定すると目標・完了条件をやるべきことにした最初のバージョンも作成します）</label>
-        <input id="np-charter" class="mono" placeholder="例: v1（空なら憲章のみ作成し、後からバージョンを追加）" />
+        <label>最初の計画バージョン名</label>
+        <input id="np-charter" class="mono" placeholder="例: v1" />
+        <p class="field-help">任意です。指定すると、目標と完了条件から最初のバージョンも作成します。空なら憲章のみ作成します。</p>
       </div>
       <div class="field"></div>
     </div>
     <div class="field">
-      <label>目標（このプロジェクトで達成したいこと）</label>
+      <label>目標</label>
       <textarea id="np-goal" rows="2" placeholder="例: ユーザーが CSV を投入すると要約レポートを生成する CLI を完成させる"></textarea>
+      <p class="field-help">このプロジェクトで達成したいことです。</p>
     </div>
     <div class="ai-assist">
       <div class="field">
-        <label>自由メモ（背景・要望。AI 下書きの材料 — charter には直接載りません）</label>
+        <label>自由メモ</label>
         <textarea id="np-memo" rows="2" placeholder="例: 社内の営業チームが月次で使う。既存の集計 Excel を置き換えたい。Python が得意な人しかいない"></textarea>
+        <p class="field-help">背景や要望を書いてください。</p>
       </div>
       <div class="row" style="align-items:center; gap:8px">
         <button id="btn-np-ai" type="button" class="primary-inline"
-          title="goal・自由メモ・書きかけの各欄からエージェントが constraints / assumptions / deliverables / acceptance を下書きします（既存の記入は尊重されます）">
-          ✨ AI で下書き（不足セクションを補完）</button>
+          title="入力済みの内容をもとに空欄を補います">
+          下書きを作る</button>
         <span id="np-ai-status" class="muted"></span>
       </div>
     </div>
     <div class="row2">
       <div class="field">
-        <label>成果物（1 行 1 つ）</label>
-        <textarea id="np-deliverables" rows="3" placeholder="report.py（生成器）&#10;tests/（テスト）"></textarea>
+        <label>成果物</label>
+        <textarea id="np-deliverables" rows="3" placeholder="report.py — 生成器&#10;tests/ — テスト"></textarea>
+        <p class="field-help">1 行に 1 つ。</p>
       </div>
       <div class="field">
-        <label>制約（1 行 1 つ）</label>
+        <label>制約</label>
         <textarea id="np-constraints" rows="3" placeholder="Python 3.9 / 標準ライブラリのみ"></textarea>
+        <p class="field-help">1 行に 1 つ。</p>
       </div>
     </div>
     <div class="row2">
       <div class="field">
-        <label>前提（1 行 1 つ・任意）</label>
+        <label>前提</label>
         <textarea id="np-assumptions" rows="2" placeholder="入力 CSV は UTF-8 / 週次で 1 万行程度"></textarea>
+        <p class="field-help">1 行に 1 つ。任意です。</p>
       </div>
       <div class="field"></div>
     </div>
     <div class="field">
-      <label>完了条件（1 行 1 つ。成功で終わるコマンド、または <code class="mono">accept: 文章</code>。プロジェクト完了の判定基準になります）</label>
-      <textarea id="np-acceptance" rows="3" class="mono" placeholder="pytest -q tests/&#10;accept: README に使用例（## Usage）が載っている"></textarea>
+      <label>達成条件</label>
+      <textarea id="np-acceptance" rows="3" placeholder="README に使用例が載っている&#10;初めて使う人が手順どおりに実行できる"></textarea>
+      <p class="field-help">1 行に 1 つ。達成した状態を自然な言葉で書きます。</p>
     </div>
     <details id="np-repos-details">
-      <summary>対象リポジトリ（任意）</summary>
+      <summary>対象リポジトリ</summary>
       <div class="muted" style="margin:6px 0">
-        owns（担当範囲）を書くと成果物の書き込み先になり、書かなければ参照のみになります。
+        担当範囲を書くと成果物の書き込み先になり、書かなければ参照のみになります。
       </div>
       <div id="np-repos"></div>
       <button id="np-add-repo" type="button" class="chip">＋ リポジトリを追加</button>
@@ -483,10 +558,10 @@
     <div class="muted" id="ef-hint"></div>
     <div id="ef-ai-row" class="row hidden" style="align-items:center; gap:8px; margin-top:6px">
       <button id="btn-ef-template" type="button" class="chip"
-        title="charter.md の雛形（## goal / constraints / assumptions / deliverables / acceptance / repos / links）を挿入します">📋 雛形を挿入</button>
+        title="憲章の雛形を挿入します">📋 雛形を挿入</button>
       <button id="btn-ef-ai" type="button" class="chip"
-        title="エージェントが書式を保ったまま不足セクションの補完・acceptance のコマンド化・曖昧な記述の明確化をします（保存するまでファイルには書き込みません）">✨ AI 補完</button>
-      <button id="btn-ef-ai-undo" type="button" class="chip hidden" title="AI 補完前の内容に戻します">↩ 補完前に戻す</button>
+        title="不足している内容を補います。確認してから保存してください">入力を補完</button>
+      <button id="btn-ef-ai-undo" type="button" class="chip hidden" title="補完前の内容に戻します">↩ 補完前に戻す</button>
       <span id="ef-ai-status" class="muted"></span>
     </div>
     <div class="dialog-actions">
@@ -502,8 +577,9 @@
     <h2 id="nc-title">計画バージョンを追加</h2>
     <p class="muted" id="nc-desc">新しい計画バージョンを作成します。</p>
     <div class="field">
-      <label>バージョン名（空白・スラッシュ・ハイフン等は不可）</label>
+      <label>バージョン名</label>
       <input id="nc-name" class="mono" placeholder="例: v2" />
+      <p class="field-help">空白・スラッシュ・ハイフンなどは使えません。</p>
     </div>
     <div class="dialog-actions">
       <button id="btn-nc-cancel">キャンセル</button>
@@ -524,9 +600,10 @@
       <textarea id="ec-goal" rows="3" placeholder="例: CSV 取り込みのエラー処理を改善し、失敗行のレポートを出す"></textarea>
     </div>
     <div class="field" id="ec-acceptance-field">
-      <label>完了条件（成功で終わるコマンド、または「accept: 文章」。プロジェクト/バージョン完了の判定基準）</label>
+      <label>達成条件</label>
       <div id="ec-acceptance" class="list-editor"></div>
       <button type="button" class="chip" data-add-list="ec-acceptance">＋ 追加</button>
+      <p class="field-help">達成した状態を自然な言葉で書きます。</p>
     </div>
     <div class="field" id="ec-deliverables-field">
       <label>成果物</label>
@@ -571,8 +648,8 @@
   <dialog id="dlg-edit-repos" class="wide">
     <h2>リポジトリ一覧を編集</h2>
     <p class="muted">
-      作業対象のリポジトリです。担当範囲（owns）を書くと成果物の書き込み先、書かなければ参照のみになります。
-      モノレポは「モノレポ内フォルダ」（例 apps/api）を書いて、同じ URL をフォルダ別の行に分けられます。
+      作業対象のリポジトリです。担当範囲を書くと、成果物の保存先として使われます。
+      モノレポでは、対象のフォルダも入力してください。例: apps/api
     </p>
     <div id="er-warning" class="warning hidden"></div>
     <div id="er-rows"></div>
@@ -585,7 +662,7 @@
     </div>
   </dialog>
 
-  <div id="toast" class="hidden"></div>
+  <div id="toast" class="hidden" role="status" aria-live="polite" aria-atomic="true"></div>
 
   <script src="../../node_modules/diff2html/bundles/js/diff2html-ui-slim.min.js"></script>
   <script src="routine-ui-cache.js"></script>

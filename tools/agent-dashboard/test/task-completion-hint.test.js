@@ -1,8 +1,6 @@
 'use strict';
 
 const assert = require('assert');
-const fs = require('fs');
-const path = require('path');
 
 const renderer = require('./helpers/renderer-src').read();
 
@@ -42,7 +40,7 @@ const STATUS_LABELS = {
   blocked: '要対応',
   done: '完了',
   failed: '失敗',
-  canceled: '中止',
+  cancelled: '中止',
   running: '実行中',
 };
 // eslint-disable-next-line no-new-func
@@ -157,7 +155,7 @@ const doneRun = { runId: 'req-x-T1-r1', status: 'done' };
 {
   const h = taskCompletionHint({ status: 'ready', extra: {} }, { runs: [] });
   assert.strictEqual(h.unsettledDone, false);
-  assert.match(h.completeHow, /操作不要/);
+  assert.match(h.completeHow, /実行の完了を待ってください/);
 }
 
 {
@@ -165,7 +163,7 @@ const doneRun = { runId: 'req-x-T1-r1', status: 'done' };
   assert.match(h.completeHow, /完了済み/);
 }
 
-assert.strictEqual(runStatusCaption('done', { taskArchived: false }), '実行完了（タスク未確定）');
+assert.strictEqual(runStatusCaption('done', { taskArchived: false }), '実行済み・確認待ち');
 assert.strictEqual(runStatusCaption('done', { taskArchived: true }), '納品済み');
 assert.strictEqual(runStatusCaption('failed', { taskArchived: false }), '失敗');
 

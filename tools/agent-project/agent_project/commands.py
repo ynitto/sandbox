@@ -11,6 +11,13 @@ def approve_review_done(cfg: Config, t: Task, reason: str) -> "tuple[bool, str]"
     タスク MR があれば Stage 2 と同一規則で自動決着（クリーンならマージ・未クリーンなら
     差し戻しコメントを付けて review のまま needs 票を書き直す）。"""
     tid = t.id
+    fresh, stale_msg = review_target_fresh(cfg, t)
+    if not fresh:
+        delivery = delivery_entries(cfg, t, mr_url=str(t.get("mr_url") or ""))
+        write_needs_file(cfg, t, stale_msg, review=True, delivery=delivery,
+                         failure={"cls": "integration", "chain": ["integration"],
+                                  "phase": PHASE_VERIFY, "verdict": VERIFY_FAILED})
+        return False, f"{tid}: {stale_msg}"
     mr_ok, mr_msg = finalize_task_delivery(cfg, t)
     if not mr_ok:
         mr_url = str(t.get("mr_url") or "")
@@ -32,7 +39,7 @@ def approve_review_done(cfg: Config, t: Task, reason: str) -> "tuple[bool, str]"
     gate_branch = ex.get("gate_branch", "")
     t.status = "done"
     autonomy_record(cfg, t, clean=True)          # 検収承認＝手戻りなし。track の信頼を上げる
-    t.drop("gate_ref", "gate_ts", "gate_vmsg", "gate_branch")
+    t.drop("gate_ref", "gate_ts", "gate_vmsg", "gate_branch", "gate_target", "gate_target_rev")
     # review 時に保持した所在（ref/ブランチ）を受領書へ引き継ぐ（どこに成果物があるかを残す）
     gate_ev = (f"- 成果物: {ref}\n- 所在: {cfg.workdir}"
                + (f" / ブランチ {gate_branch}" if gate_branch else "")) if ref else ""
@@ -56,6 +63,31 @@ def approve_review_done(cfg: Config, t: Task, reason: str) -> "tuple[bool, str]"
             lines.append(f"cohort {t.get('cohort')}: 残り {len(members)} 件を生成しました "
                          f"（{', '.join(m.id for m in members[:6])}{' …' if len(members) > 6 else ''}）。")
     return (True, "\n".join(lines))
+
+
+def cmd_retry_mr(cfg: Config, tid: str) -> int:
+    """検収到達時に失敗したタスク MR 作成を、人の操作で冪等に再試行する。"""
+    task = next((t for t in load_tasks(cfg.backlog) if t.id == tid), None)
+    if task is None:
+        print(f"エラー: タスクが見つかりません: {tid}", file=sys.stderr)
+        return 2
+    if task.norm_status() != "review":
+        print(f"エラー: MR を再作成できるのは検収待ち（review）のタスクだけです（現在: "
+              f"{task.norm_status()}）。", file=sys.stderr)
+        return 2
+    before = str(task.get("mr_url") or "").strip()
+    mr_url = ensure_task_mr(cfg, task)
+    if not mr_url:
+        print("エラー: MR を作成できませんでした。GitLab トークン、リポジトリ URL、"
+              "作業ブランチの push 状態を確認してください。詳細は journal を参照してください。",
+              file=sys.stderr)
+        return 1
+    persist_task(cfg, task)
+    # needs 票は verify の基準・証跡やリスクを保持しているため再生成しない。dashboard は
+    # backlog 側の mr_url を票へ補完するので、次回読込から MR リンクを表示できる。
+    append_journal(cfg.journal, f"タスク MR {'確認' if before else '再作成'}: {tid} → {mr_url}")
+    print(f"{tid}: MR を用意しました: {mr_url}")
+    return 0
 
 
 def cmd_approve(cfg: Config, tid: str, reason: str, complete: bool = False) -> int:
@@ -212,7 +244,7 @@ def cmd_resume_run(cfg: Config, tid: str, run_id: str, reason: str) -> int:
     # 実行中（orchestrator の生存リースが有効）の run への再開指示だけは拒否する。
     # run が bus に無い場合は拒否しない: bus 掃除後でも agent-flow は作業ブランチ
     # ap/<task-id> から続きを解決できる。
-    # canceled / done は続きから再開できないので last_run を固定せず retries を進め、新 run にする。
+    # cancelled / done は続きから再開できないので last_run を固定せず retries を進め、新 run にする。
     meta_path = cfg.bus / "runs" / rid / "meta.json"
     st = ""
     if meta_path.exists():
@@ -220,7 +252,7 @@ def cmd_resume_run(cfg: Config, tid: str, run_id: str, reason: str) -> int:
             st = str(json.loads(meta_path.read_text(encoding="utf-8")).get("status") or "")
         except (OSError, ValueError):
             st = "?"
-        if st in ("canceled", "done"):
+        if st in ("cancelled", "done"):
             release_claim(cfg, t)
             t.retries += 1
             t.drop("feedback", "revised", "last_run")
@@ -265,7 +297,160 @@ def cmd_reprioritize(cfg: Config, tid: str, kind: str, reason: str) -> int:
     return 0
 
 
-def cmd_replan(cfg: Config, reason: str, charter_name: str = "") -> int:
+# ---------------------------------------------------------------------------
+# 観点メモ（notes/）— 人が気になったことを書き溜める場所（S6-7・C9）
+#   plan は notes を**自動では消費しない**。人が `distill-notes` を叩いたときだけ
+#   backlog-planner の入力に載せてバックログ候補を起こし、消費したメモは archive へ移す。
+#   自動消費にしないのは、メモは「まだ決めていないこと」の置き場だから——勝手にタスク化
+#   されると、人はメモを書けなくなる。
+#
+# CLI 名が `distill` でなく `distill-notes` なのは、`distill_learn`（人コメント → 一般化
+# ルールの蒸留）が既に `distill` の語彙を使っており、`agents:` の purpose キーにもあるため。
+# 同名にすると設定でどちらの蒸留か区別できなくなる。
+# ---------------------------------------------------------------------------
+def notes_dir(cfg: "Config") -> Path:
+    """観点メモの置き場（状態リポジトリ直下）。root は backlog の親（verifications/ と同じ導出）。"""
+    return cfg.backlog.parent / "notes"
+
+
+def read_notes(cfg: "Config", limit: int = 8000) -> "tuple[str, list[Path]]":
+    """`notes/*.md` を有界に読む（本文, 読んだファイル）。archive/ 配下は対象外。"""
+    d = notes_dir(cfg)
+    if not d.exists():
+        return "", []
+    parts: "list[str]" = []
+    used: "list[Path]" = []
+    total = 0
+    for p in sorted(d.glob("*.md")):
+        try:
+            txt = p.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if not txt:
+            continue
+        chunk = f"--- {p.name} ---\n{txt}"
+        if total + len(chunk) > limit:
+            break
+        parts.append(chunk)
+        used.append(p)
+        total += len(chunk)
+    return "\n\n".join(parts), used
+
+
+def archive_notes(cfg: "Config", files: "list[Path]") -> int:
+    """消費したメモを `notes/archive/` へ移す（同名があればタイムスタンプを足す）。"""
+    dst = notes_dir(cfg) / "archive"
+    dst.mkdir(parents=True, exist_ok=True)
+    moved = 0
+    for p in files:
+        target = dst / p.name
+        if target.exists():
+            target = dst / f"{p.stem}-{datetime.now().strftime('%Y%m%d%H%M%S')}{p.suffix}"
+        try:
+            os.replace(p, target)
+            moved += 1
+        except OSError:
+            continue
+    return moved
+
+
+def cmd_distill_notes(cfg: Config, charter_name: str = "") -> int:
+    """観点メモをバックログ候補へ分解する（人の明示操作）。
+
+    メモ → backlog-planner → **整合パス経由**で proposed 投入 → 消費したメモを archive へ。
+    整合パスを通すのは、メモ由来のタスクこそ既存計画と重複しやすいから（人は既に起票済みの
+    ことをもう一度メモに書く）。
+    """
+    charter = _load_named_charter(cfg, charter_name or None)
+    if charter is None:
+        print(f"エラー: charter がありません（分解の土台がありません）: {cfg.charter}", file=sys.stderr)
+        return 2
+    notes, files = read_notes(cfg)
+    if not notes:
+        print(f"観点メモがありません（{notes_dir(cfg)}/*.md に書いてください）。")
+        return 1
+    multi = _is_multi_charter(cfg, charter_name)
+    tag = charter_name if multi else None
+    ensure_repo_maps(cfg, charter, force=True)
+    specs = plan_via_agent(cfg, charter, tag, notes=notes)
+    if not specs:
+        print("メモからタスク候補を起こせませんでした（メモはそのまま残します）。", file=sys.stderr)
+        return 1
+    for sp in specs:
+        sp["source"] = "notes"
+        if tag:
+            sp.setdefault("charter", tag)
+    created = _enqueue_specs(cfg, specs, _existing_titles(cfg, tag), cfg.learn_threshold,
+                             charter=tag)
+    moved = archive_notes(cfg, files) if created else 0
+    dr = append_decision(cfg, _project_id(cfg, charter), cfg.actor,
+                         context=f"観点メモ {len(files)} 件をバックログ候補へ分解",
+                         action="distill-notes", reason="人の明示操作",
+                         affects=f"{len(created)} 件を投入 ／ メモ {moved} 件を archive へ")
+    append_journal(cfg.journal,
+                   f"distill-notes: メモ {len(files)} 件 → {len(created)} 件投入"
+                   f"（{[t.id for t in created]}）／ archive へ {moved} 件")
+    print(f"{dr}: メモ {len(files)} 件から {len(created)} 件を投入しました"
+          f"（重複は投入しません）。消費したメモ {moved} 件を notes/archive/ へ移しました。")
+    if not created:
+        print("  ※ すべて既存タスクと重複していたため、メモは残してあります。")
+    return 0
+
+
+def cmd_revive(cfg: Config, title: str, charter: str = "", all_charters: bool = False) -> int:
+    """墓標を解除する（`tombstones.md` から指紋一致の行を消す）。
+
+    `replan --revive`（今回だけ無視する）と分けているのは、再分解の結果を見てから
+    消すかどうかを決められるようにするため。消すのは取り返しがつく操作なので、
+    こちらは明示のサブコマンドに置く。
+
+    スコープ（P1-5）: 追記は `(指紋, charter)` 単位なので、削除も charter で絞る。
+      --charter X … X 向け + タグ無しを削除
+      --all       … 指紋一致を全削除（従来の挙動。**明示のときだけ**）
+      未指定      … charter が 0〜1 個ならその範囲。2 個以上あって一致行のタグが
+                    割れているときは**消さずに聞く**——「消しすぎ」は人が気づけない
+                    （次の plan が黙って作り直す）ので、止める側に倒す。
+    """
+    title = str(title or "").strip()
+    if not title:
+        print("エラー: 解除するタスクのタイトルを指定してください", file=sys.stderr)
+        return 2
+    charter = str(charter or "").strip()
+    scope: "str | None" = None if all_charters else charter or None
+    hits = [g for g in load_tombstones(cfg) if g["fingerprint"] == _norm_title(title)]
+    if not all_charters and not charter:
+        names = charter_names(cfg)
+        tags = {g["charter"] for g in hits if g["charter"]}
+        if len(names) > 1 and len(tags) > 1:
+            print(f"複数の charter に同じ墓標があります: {title}", file=sys.stderr)
+            for g in hits:
+                print(f"    - {g['title']}（charter={g['charter'] or '(タグ無し)'}）", file=sys.stderr)
+            print("  --charter <名前> で対象を指定するか、--all で全部解除してください",
+                  file=sys.stderr)
+            return 2
+        scope = names[0] if len(names) == 1 else None
+    n = remove_tombstone(cfg, title, scope)
+    if not n:
+        graves = load_tombstones(cfg)
+        print(f"該当する墓標がありません: {title}"
+              + (f"（charter={scope}）" if scope else ""), file=sys.stderr)
+        if graves:
+            print("  現在の墓標:", file=sys.stderr)
+            for g in graves[:10]:
+                print(f"    - {g['title']}"
+                      + (f"（charter={g['charter']}）" if g["charter"] else ""), file=sys.stderr)
+        return 1
+    where = f"charter={scope} とタグ無し" if scope else "全 charter"
+    dr = append_decision(cfg, _slug_id(title) or "tombstone", cfg.actor,
+                         context=f"墓標を解除: {title}", action="revive",
+                         reason="人の明示操作", affects=f"{n} 件の墓標行を削除（{where}）")
+    append_journal(cfg.journal, f"revive: 墓標を解除（{n} 件・{where}）: {title}")
+    print(f"{dr}: 墓標を解除しました（{n} 件・{where}）。"
+          "次の再分解から再提案されうる状態になります。")
+    return 0
+
+
+def cmd_replan(cfg: Config, reason: str, charter_name: str = "", revive: bool = False) -> int:
     """charter からのバックログ再分解を要求する（エラー回復用の一発の口）。
     次の project パスで plan を強制し、charter を分解し直して backlog の差分を投入する。
     冪等照合は「done 以外」（現行処理中のバックログ＋却下済み）と行う＝処理中タスクとの二重投入や
@@ -277,12 +462,13 @@ def cmd_replan(cfg: Config, reason: str, charter_name: str = "") -> int:
         print(f"エラー: charter がありません（再分解の対象なし）: {cfg.charter}", file=sys.stderr)
         return 2
     pid = _project_id(cfg, charter) + (f"-{charter_name}" if _is_multi_charter(cfg, charter_name) else "")
-    write_replan_request(cfg, reason, charter=charter_name)
+    write_replan_request(cfg, reason, charter=charter_name, revive=revive)
     dr = append_decision(cfg, pid, cfg.actor,
                          context=f"{charter.name}: charter からのバックログ再分解を要求",
                          action="replan", reason=reason,
                          affects="次パスで charter を再分解（現行処理中のバックログと重複するものは"
-                                 "投入しない。done と同種のやり直しは再作成する）")
+                                 "投入しない。done と同種のやり直しは再作成する）"
+                                 + ("／墓標は今回だけ無視する" if revive else ""))
     print(f"{dr}: charter からのバックログ再分解を要求しました（次パスで反映）。")
     return 0
 
@@ -295,7 +481,7 @@ def cmd_replan(cfg: Config, reason: str, charter_name: str = "") -> int:
 #   現在の試行の結果は確定させず（done にせず）修正内容で積み直す＝早い軌道修正。
 # ---------------------------------------------------------------------------
 REVISE_FIELDS = ("title", "priority", "verify", "accept", "after",
-                 "note", "level", "track", *TASK_GUIDE_KEYS)
+                 "note", "level", "track", "node", *MULTILINE_KEYS, *TASK_GUIDE_KEYS)
 _CLEAR_VALUES = ("", "-", "none")      # フィールド削除の明示値（revise の置換規約）
 
 
@@ -335,6 +521,24 @@ def _apply_revise_fields(t: Task, tasks: "list[Task]", fields: dict) -> "list[st
     changes: list[str] = []
     for key in REVISE_FIELDS:
         if key not in fields or fields[key] is None:
+            continue
+        if key in MULTILINE_KEYS:
+            # 複数行フィールドは**全行の置換**（1 行だけ直す編集も、行の集合を丸ごと送る契約）。
+            # 行単位の差分編集にすると「何行目を消すか」を UI と本体で二重に数えることになる。
+            # 旧形式キー `acceptance` の編集は正規形 `task_acceptance_criteria` への置換として
+            # 扱う（書き込み境界の正規化・P1-A8。読み取りは互換のため旧行も見るので、旧行を
+            # 残したまま正規行だけ書くと編集が効かない）。
+            canon = "task_acceptance_criteria" if key == "acceptance" else key
+            lines = coerce_multiline(fields[key])
+            if len(lines) == 1 and lines[0].lower() in _CLEAR_VALUES:
+                lines = []
+            before = [v for k, v in t.extra if k in (key, canon)]
+            if lines == before:
+                continue
+            t.drop(key, canon)
+            t.extra += [(canon, ln) for ln in lines]
+            changes.append(f"{canon}: {len(before)} 件 → {len(lines)} 件"
+                           + ("（削除）" if not lines else ""))
             continue
         val = str(fields[key]).strip()
         if key == "title":
@@ -454,6 +658,11 @@ def cmd_revise(cfg: Config, tid: str, fields: dict, feedback: str, reason: str) 
         print("エラー: 変更がありません（フィールドか --feedback を指定してください）", file=sys.stderr)
         return 2
 
+    # 人がこのタスクを引き受けた印（S6-3）。以後 backlog-planner の入力に載り、
+    # 「人が確定済み・作り直すな」としてプランナーへ届く。**人の記述 > エージェント提案。**
+    # 付ける場所は 2 つだけ（ここと needs 票の確定チェック）——エディタでの md 直接編集は
+    # 検出しない（内容署名の維持コストに見合わない。原題 planned_title で復活は防いである）。
+    t.set("edited", "human")
     status = t.norm_status()
     doing = status == "doing" and _claim_fresh(cfg, tid)
     # 前回の再利用予約が残っている状態で別の revise が来た場合は、古い予約を必ず破棄する。
@@ -518,7 +727,7 @@ def cmd_revise(cfg: Config, tid: str, fields: dict, feedback: str, reason: str) 
 # watch がこの口を監視して起こす。実行は CLI と同一の関数へ委譲する
 # （ロジックの二重実装はしない＝効果・決定記録 DR も CLI と同一）。
 
-COMMAND_ACTIONS = ("approve", "hold", "pin", "defer", "revise", "reject")
+COMMAND_ACTIONS = ("approve", "retry-mr", "hold", "pin", "defer", "revise", "reject")
 
 
 def commands_dir(cfg: "Config") -> Path:
@@ -531,25 +740,12 @@ def _reject_command(cfg: "Config", f: Path, why: str) -> None:
     退避先には失敗理由も書く。以前は元の JSON をそのまま改名するだけだったので、
     「なぜ通らなかったか」は journal を grep しないと分からず、画面には成功トーストだけが
     出ていた（承認を押しても何も起きない、と繰り返し報告された不具合の一因）。
-    元の指示は `command` として保持し、消費側が理由と一緒に読めるようにする。"""
+    元の指示は `command` として保持し、消費側が理由と一緒に読めるようにする。
+
+    退避そのものは `agentcore.commands.reject`（ノードスコープの指示ドロップと共有する土台）。
+    journal への記録だけがプロジェクト固有なのでここに残す。"""
     append_journal(cfg.journal, f"commands 取り込み失敗: {f.name}: {why}")
-    dest = f.with_name(f.name + ".err")
-    try:
-        try:
-            rec = json.loads(f.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            rec = None
-        payload = {"error": why, "failed_at": _now_ts(), "command": rec}
-        dest.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        f.unlink()
-    except OSError:
-        try:
-            f.rename(dest)
-        except OSError:
-            try:
-                f.unlink()
-            except OSError:
-                pass
+    _cmddrop.reject(f, why, now=_now_ts())
 
 
 def _clear_rejected_commands(cfg: "Config", tid: str) -> None:
@@ -557,21 +753,43 @@ def _clear_rejected_commands(cfg: "Config", tid: str) -> None:
 
     .err は viewer が「直前の指示は失敗した」バナーを出す根拠になる。成功後も残すと、
     解決済みの失敗が同じタスクの次の要対応カードに出続ける（直ったのに失敗表示）。
-    掃除は成功時だけ——失敗の履歴を先に消すと、失敗が誰にも見えない元の不具合に戻る。"""
-    if not tid:
-        return
-    for e in commands_dir(cfg).glob("*.err"):
-        try:
-            payload = json.loads(e.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        cmd = payload.get("command") if isinstance(payload, dict) else None
-        if str((cmd or {}).get("id", "") or "") != tid:
-            continue
-        try:
-            e.unlink()
-        except OSError:
-            pass
+    掃除は成功時だけ——失敗の履歴を先に消すと、失敗が誰にも見えない元の不具合に戻る。
+
+    実体は `agentcore.commands.clear_rejected`（ノードスコープの指示ドロップと共有する
+    土台）。新旧 2 形式の `.err` からの id 取り出しもあちらが持つ。"""
+    _cmddrop.clear_rejected(commands_dir(cfg), tid)
+
+
+# 受理レシート（processed/<name>.json）— 指示を取り込んだ結果の痕跡。
+#   成功時にファイルを消すだけだと、リモート閲覧者からは「保留中（エンジン未取り込み）」と
+#   「処理済み」が区別できず、承認を押しても何も起きないように見える（原因不明の停滞）。
+#   成功も痕跡として残し、viewer が「送信済み → 受理済み」を表示できるようにする。失敗は従来
+#   どおり <name>.json.err に残す（.err は viewer の失敗バナーの根拠なので二重化しない）。
+#   commands/ 配下なので状態同期でそのまま全 PC へ届く。放置すると溜まるため件数/期限で掃除する。
+_RECEIPT_KEEP = 200                       # 直近この件数だけ残す
+_RECEIPT_TTL_SEC = 24 * 3600              # かつ、これより古い受理レシートは消す（同期越しの閲覧猶予）
+
+
+def commands_receipts_dir(cfg: "Config") -> Path:
+    return Path(_cmddrop.receipts_dir(commands_dir(cfg)))
+
+
+def _prune_command_receipts(cfg: "Config") -> None:
+    """受理レシートを件数上限と TTL で掃除する（commands/ 履歴の肥大を防ぐ）。"""
+    _cmddrop.prune_receipts(commands_dir(cfg), keep=_RECEIPT_KEEP, ttl_sec=_RECEIPT_TTL_SEC)
+
+
+def _write_command_receipt(cfg: "Config", f: Path, action: str, tid: str,
+                           detail: str = "") -> None:
+    """取り込みに成功した指示の受理レシートを processed/<name>.json にアトミックに残す。
+    viewer が元ファイル名（source）で自分の『送信済み』表示を『受理済み』へ更新できる。"""
+    payload = {"action": action, "id": tid}
+    if detail:
+        payload["detail"] = detail[:500]
+    # 時刻はプロジェクト側の共通形式（人間可読のローカル時刻）を保つ——dashboard は
+    # レシートの processed_at を文字列比較で「最新の 1 件」に畳むので、書式を混ぜない。
+    _cmddrop.write_receipt(commands_dir(cfg), f.name, payload, now=_now_ts(),
+                           keep=_RECEIPT_KEEP, ttl_sec=_RECEIPT_TTL_SEC)
 
 
 def _read_command(f: Path) -> "tuple[dict | None, str]":
@@ -579,14 +797,9 @@ def _read_command(f: Path) -> "tuple[dict | None, str]":
 
     「取り込めるか」の唯一の判定点。has_work（起床するか）と ingest_commands（処理するか）が
     同じ述語を共有するために切り出してある。両者が食い違うと、起床したのに取り込めないパスが
-    生まれ、そのパスが charter を再評価して承認済みマイルストーンを書き直してしまう。"""
-    try:
-        rec = json.loads(f.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as e:
-        return None, f"JSON 解析失敗: {e}"
-    if not isinstance(rec, dict):
-        return None, "オブジェクトではない"
-    return rec, ""
+    生まれ、そのパスが charter を再評価して承認済みマイルストーンを書き直してしまう。
+    実体は `agentcore.commands.read_command`——ノードスコープの指示ドロップと同じ述語を使う。"""
+    return _cmddrop.read_command(f)
 
 
 def ingest_commands(cfg: "Config") -> "list[str]":
@@ -619,11 +832,31 @@ def ingest_commands(cfg: "Config") -> "list[str]":
         action = str(rec.get("command", "")).strip()
         tid = str(rec.get("id", "")).strip()
         reason = str(rec.get("reason", "") or "").strip() or "commands/ からの指示"
+        if action == "revive":
+            # プロジェクト単位（id ではなく title 指定）: 墓標を解除して、却下したタスクを
+            # 再び提案されうる状態へ戻す。**却下（reject）の取り消し口**——却下は墓標を
+            # 残すので、これが無いと画面から消したタスクは画面からは二度と戻せない
+            # （試行錯誤で消して入れ直す運用が CLI 無しには成立しない）。
+            rc = cmd_revive(cfg, str(rec.get("title", "") or "").strip(),
+                            str(rec.get("charter", "") or "").strip(),
+                            bool(rec.get("all_charters")))
+            if rc == 0:
+                _write_command_receipt(cfg, f, "revive", "")
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+                append_journal(cfg.journal, f"commands 取り込み: revive（{f.name}）")
+                done.append("revive:project")
+            else:
+                _reject_command(cfg, f, f"revive が失敗 (exit {rc})")
+            continue
         if action == "replan":
             # プロジェクト単位（id 不要）: charter からのバックログ再分解を要求する
             # （複数 charter 運用は "charter" キーで対象を絞れる）
             rc = cmd_replan(cfg, reason, str(rec.get("charter", "") or "").strip())
             if rc == 0:
+                _write_command_receipt(cfg, f, "replan", "")
                 try:
                     f.unlink()
                 except OSError:
@@ -633,8 +866,48 @@ def ingest_commands(cfg: "Config") -> "list[str]":
             else:
                 _reject_command(cfg, f, f"replan が失敗 (exit {rc})")
             continue
+        if action == "distill-notes":
+            # プロジェクト単位（id 不要）: 観点メモをバックログ候補へ分解する（S6-7）。
+            # plan は notes を自動では消費しないので、**この指示だけが入口**（dashboard のボタン）。
+            rc = cmd_distill_notes(cfg, str(rec.get("charter", "") or "").strip())
+            if rc == 0:
+                _write_command_receipt(cfg, f, "distill-notes", "")
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+                append_journal(cfg.journal, f"commands 取り込み: distill-notes（{f.name}）")
+                done.append("distill-notes:project")
+            else:
+                # メモが無い / 分解できなかった。指示は消して受理扱いにする——.err に残すと
+                # 「メモを書く前に押した」だけで人が消す残骸が積む（heal と同じ判断）。
+                _write_command_receipt(cfg, f, "distill-notes", "")
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+                append_journal(cfg.journal,
+                               f"commands 取り込み: distill-notes は投入なし（{f.name}・exit {rc}）")
+                done.append("distill-notes:project")
+            continue
+        if action == "heal":
+            # 「今すぐ強制同期」（設計 §5 の commands/heal・実装計画 W2-5）。自動回復が既定で、
+            # これはその前倒しの逃げ道——dashboard の 🩺 が投函し、常駐体がこの場で押し出す。
+            # 失敗しても state_sync が journal に残して続行する（ここで指示を .err へ落とすと、
+            # ネットワーク断のたびに人が消す残骸が積む）。
+            state_sync(cfg, force=True)
+            _write_command_receipt(cfg, f, "heal", "")
+            try:
+                f.unlink()
+            except OSError:
+                pass
+            append_journal(cfg.journal, f"commands 取り込み: heal（{f.name}・理由: {reason}）")
+            done.append("heal:project")
+            continue
         if action in ("pause", "resume", "stop"):
             # プロジェクト単位のライフサイクル指示（id 不要）。リモート viewer の停止/回復の口。
+            # stop は下で raise するため、受理レシートは unlink 前にここで残す。
+            _write_command_receipt(cfg, f, action, "")
             try:
                 f.unlink()
             except OSError:
@@ -663,6 +936,7 @@ def ingest_commands(cfg: "Config") -> "list[str]":
             # run の「続きから」再開（id + run）。viewer の再実行ボタンの正規の口。
             rc = cmd_resume_run(cfg, tid, str(rec.get("run", "") or ""), reason) if tid else 2
             if rc == 0:
+                _write_command_receipt(cfg, f, "resume-run", tid)
                 try:
                     f.unlink()
                 except OSError:
@@ -686,6 +960,8 @@ def ingest_commands(cfg: "Config") -> "list[str]":
                     # complete: 「成果を受け入れて完了にする」の明示（agent-dashboard の
                     # 「承認して完了にする」）。無ければ従来どおり積み直し。
                     rc = cmd_approve(cfg, tid, reason, complete=bool(rec.get("complete")))
+                elif action == "retry-mr":
+                    rc = cmd_retry_mr(cfg, tid)
                 elif action == "reject":
                     rc = cmd_reject(cfg, tid, reason)
                 elif action == "hold":
@@ -700,6 +976,7 @@ def ingest_commands(cfg: "Config") -> "list[str]":
             if errmsg:
                 sys.stderr.write(errmsg + "\n")   # 端末での従来の見え方は変えない
         if rc == 0:
+            _write_command_receipt(cfg, f, action, tid)
             try:
                 f.unlink()
             except OSError:

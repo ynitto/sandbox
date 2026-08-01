@@ -6,12 +6,26 @@ from __future__ import annotations
 # --------------------------------------------------------------------------
 def _plan_strategy(args):
     review = getattr(args, "review", "auto")  # 'auto'/True/False の三値
-    gran = getattr(args, "granularity", "finest")
+    gran = getattr(args, "granularity", "auto") or "auto"
     if args.planner == "flow-planner":
         return plan_strategy_flow_planner(args.request, args.model, review, gran)
     if args.planner == "agent":
         return plan_strategy_agent(args.request, args.model, review, gran)
     return plan_strategy_stub(args.request, review, gran)
+
+
+def _plan_changes(tasks: list[dict]) -> dict:
+    """再計画の種類を表示側で推測せずに済む、共通の変更差分。"""
+    replaced = [
+        {"old": str(t["replaces"]), "next": str(t["id"])}
+        for t in tasks if t.get("replaces")
+    ]
+    return {
+        "added": [str(t["id"]) for t in tasks],
+        "replaced": replaced,
+        "updated": [],
+        "removed": [item["old"] for item in replaced],
+    }
 
 
 def _env_failure_reason(results: dict) -> "str | None":
@@ -84,12 +98,15 @@ def _continue(args, request, nodes, results, iteration, strategy=None):
         review = _review_decision(cli, (strategy or {}).get("patterns", []))
     ef = bool(getattr(args, "exemplar_first", False))
     mr = int(getattr(args, "max_retries", 3) or 3)
+    # 集約の扇入れ幅（設定 reduce_width）。子プロセスの orchestrate も --config 経由で
+    # 同じ値を解決するため、argv での転記は要らない。
+    rw = int(getattr(args, "reduce_width", _DEFAULT_REDUCE_WIDTH) or _DEFAULT_REDUCE_WIDTH)
     # 再計画（evaluator-optimizer）はオーケストレータ側でローカルに判断する。stub のときだけ
     # stub 継続、それ以外（agent やプラグイン executor）はローカルのエージェント CLI で判断する
     # （プラグインはワーカータスクの実行のみを委譲し、メタ評価はローカルに残す）。
     if args.executor == "stub":
-        return continue_stub(request, nodes, results, iteration, mf, review, ef, mr)
-    return continue_agent(request, nodes, results, iteration, mf, review, ef, mr)
+        return continue_stub(request, nodes, results, iteration, mf, review, ef, mr, rw)
+    return continue_agent(request, nodes, results, iteration, mf, review, ef, mr, rw)
 
 
 def _node_entry(t):
@@ -176,13 +193,13 @@ def _finalize_run(bus, args, iteration: int, failure: "str | None" = None) -> No
 
 
 def _orch_check_canceled(bus: Bus, args, who: str) -> bool:
-    """cancel マーカーがあれば run を canceled に終端化して True を返す（orchestrator の停止用）。
+    """cancel マーカーがあれば run を cancelled に終端化して True を返す（orchestrator の停止用）。
     close_issues 要求があるときは waits を残す（daemon/cmd_cancel がイシュー後始末に座標を使う）。
     それ以外は waits を掃除して park の再ポーリングを止める。
-    既に meta が canceled ならマーカー無しでも止まる（daemon が適用後にマーカーを消したあとでも
+    既に meta が cancelled ならマーカー無しでも止まる（daemon が適用後にマーカーを消したあとでも
     同じ ID の orch が走り続けない／再起動即 cancel と整合する）。"""
     meta = bus.run_meta(args.run_id) or {}
-    already = meta.get("status") == "canceled"
+    already = meta.get("status") == "cancelled"
     if not already and not bus.is_canceled_requested(args.run_id):
         return False
     info = bus.cancel_info(args.run_id) if bus.is_canceled_requested(args.run_id) else {}
@@ -191,7 +208,7 @@ def _orch_check_canceled(bus: Bus, args, who: str) -> bool:
         bus.clear_waits_for_run(args.run_id)
     if not already:
         bus.mark_canceled(args.run_id, reason)
-    bus.event(who, "canceled", run=args.run_id, reason=reason)
+    bus.event(who, "cancelled", run=args.run_id, reason=reason)
     bus.sync_push(f"cancel run {args.run_id}: {reason}")
     log(who, f"cancel 指示を検知（{reason}）。orchestrator を終了します。")
     return True
@@ -222,8 +239,15 @@ def cmd_orchestrate(args) -> int:
                  f"（引き継ぎ {info['seeded_nodes']} ノード・削除={info['deleted']}）")
         bus.sync_push(f"inherit {inh} -> {args.run_id}: {info['reason']}")
     bus.ensure_run(args.request, parse_workspace(getattr(args, "workspace", None)),
-                   parse_references(getattr(args, "references", None)))
+                   parse_references(getattr(args, "references", None)),
+                   parse_verification_plan(getattr(args, "verification_plan", None)))
     bus.note_executor(getattr(args, "executor", None) or "agent")   # viewer の表示切替用
+    _deleg_raw = getattr(args, "delegation", None)                  # 委譲公示板由来の来歴（board）
+    if _deleg_raw:
+        try:
+            bus.note_delegation(json.loads(_deleg_raw))
+        except (ValueError, TypeError):
+            pass
     # グローバル指示（agent-instructions）を投入ノードの instructions.json から meta へ固定する。
     # GitBus 同期で委譲先ワーカーへ伝播する（run 単位の一貫性基準）。--no-global-instructions /
     # 環境変数 AGENT_FLOW_NO_GLOBAL_INSTRUCTIONS=1 で無効化。
@@ -287,6 +311,9 @@ def cmd_orchestrate(args) -> int:
         graph = {"strategy": strategy,
                  "nodes": {t["id"]: _node_entry(t) for t in tasks},
                  "iteration": 0}
+        base_sync = inject_base_sync(graph["nodes"], bus.run_workspace())
+        if base_sync:
+            tasks.append(base_sync)
         _sanitize_graph(graph["nodes"])  # 未知依存・循環を弾く
         bus.write_graph(graph)
         for t in tasks:
@@ -332,6 +359,7 @@ def cmd_orchestrate(args) -> int:
 
         if decision == "replan" and new_tasks:
             iteration += 1
+            changes = _plan_changes(new_tasks)
             for t in new_tasks:
                 graph["nodes"][t["id"]] = _node_entry(t)
                 bus.write_task({k: v for k, v in t.items() if k != "replaces"})
@@ -345,10 +373,35 @@ def cmd_orchestrate(args) -> int:
             graph["iteration"] = iteration
             bus.write_graph(graph)
             bus.set_status("running")
-            bus.event(who, "replan", iteration=iteration, added=[t["id"] for t in new_tasks])
+            bus.event(who, "replan", iteration=iteration, reason=reason,
+                      added=changes["added"], changes=changes)
             bus.sync_push(f"replan #{iteration} run {args.run_id}: +{[t['id'] for t in new_tasks]}")
             log(who, f"再計画 #{iteration}: 追加タスク {[(t['id'], t.get('kind','work')) for t in new_tasks]}")
             continue
+
+        # 統一 verify: 評価が done に達し、成果 revision が確定したここで一度だけ検証する。
+        # criterion / コマンドの fail は同じ run の修正ループへ戻す（世代交代より先に、いちばん
+        # 安い層で直す）。inconclusive は修正回数を消費せず receipt のまま上位へ返す。
+        # 環境要因の打ち切り（decision=failed）では検証しない——成果が確定していない。
+        if decision != "failed":
+            try:
+                receipt = run_verification_plan(bus, args, who)
+            except Exception as e:  # noqa: BLE001 — 検証の失敗で run を落とさない（receipt 無し=不採用）
+                log(who, f"統一 verify の実行に失敗（receipt 無しで続行・fail-close）: {e}")
+                receipt = None
+            if receipt and receipt.get("verdict") == "fail" and iteration < args.max_iterations:
+                fix = verify_fix_task(receipt, iteration)
+                iteration += 1
+                graph["nodes"][fix["id"]] = _node_entry(fix)
+                bus.write_task(fix)
+                _sanitize_graph(graph["nodes"])
+                graph["iteration"] = iteration
+                bus.write_graph(graph)
+                bus.set_status("running")
+                bus.event(who, "verify-fix", iteration=iteration, added=[fix["id"]])
+                bus.sync_push(f"verify-fix #{iteration} run {args.run_id}: +{fix['id']}")
+                log(who, f"統一 verify が fail → 修正ループ #{iteration}: {fix['id']}")
+                continue
         break
 
     # 全ノード結果を集約 → final.json 書き出し → 終端（done / 環境要因なら failed）・push

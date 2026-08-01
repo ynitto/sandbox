@@ -4,7 +4,11 @@ from __future__ import annotations
 # --------------------------------------------------------------------------
 # status — 状態表示。既定は 1 回表示、--follow でライブ監視（tmux ペイン向け）
 # --------------------------------------------------------------------------
-_STATE_GLYPH = {"done": "✓", "failed": "✗", "claimed": "▶", "pending": "○", "unknown": "·"}
+# waiting は park（承認待ち等で claim を解放し、監視主体が決着を待っている）状態。これを
+# 落とすと、全ノードが承認待ちの run が「進捗 0/N・実行中ゼロ」としか見えず、止まっているのか
+# 待っているのかを画面から判別できない（park & poll の運用で実際に困った）。
+_STATE_GLYPH = {"done": "✓", "failed": "✗", "claimed": "▶", "waiting": "⏸",
+                "pending": "○", "unknown": "·"}
 
 
 def _progress_bar(done: int, total: int, width: int = 24) -> str:
@@ -44,19 +48,59 @@ _AGG_KINDS = ("synthesize", "reduce", "judge", "filter")
 def _final_result_nodes(nodes: dict, results: dict) -> list:
     """ワークフローの最終成果に当たるノード id を返す。
 
-    sink（他ノードの deps に現れない末端）かつ done のものを集め、集約 kind
-    （synthesize/reduce/judge/filter）があればそれを優先する。末端が無い／done で
-    ないときは done ノード全体へフォールバックする（最終結果を必ず何か返すため）。"""
+    sink（他ノードの deps に現れない末端）かつ**終端（done/failed）**のものを集め、集約 kind
+    （synthesize/reduce/judge/filter）があればそれを優先する。末端が無いときは終端ノード全体へ
+    フォールバックする（最終結果を必ず何か返すため）。
+
+    **failed を含めるのが要点**。以前は done だけを集めていたため、全ノードが失敗した run で
+    空リストを返し「最終結果を必ず何か返す」という自分の意図を裏切っていた。実害は却下連携:
+    委譲 executor の却下は park の決着として **failed** ノードになる（`_finish_wait` 参照）ので、
+    却下 run では常に空になり、`result --json` の final_nodes 経由で読む
+    やり直し指示（reject_guidance）・人コメント（result_notes）・発見事項（discoveries）が
+    submit 経路でも板経路でも一切拾えなかった。
+
+    done が 1 つでもあれば従来どおり done の sink が選ばれる（成功 run の見え方は不変）。
+    変わるのは「done が無い run が空ではなく failed の sink を返す」点だけ。"""
     if not nodes:
         return []
-    done = [nid for nid in nodes if (results.get(nid) or {}).get("status") == "done"]
-    if not done:
+    terminal = [nid for nid in nodes if (results.get(nid) or {}).get("status") in TERMINAL]
+    done = [nid for nid in terminal if (results.get(nid) or {}).get("status") == "done"]
+    pool_all = done or terminal        # 成功があればそれを優先（従来の見え方を保つ）
+    if not pool_all:
         return []
     depended = {d for n in nodes.values() for d in n.get("deps", [])}
-    sinks = [nid for nid in done if nid not in depended]
-    pool = sinks or done
+    sinks = [nid for nid in pool_all if nid not in depended]
+    pool = sinks or pool_all
     agg = [nid for nid in pool if nodes[nid].get("kind") in _AGG_KINDS]
     return agg or pool
+
+
+def result_pc(res: dict) -> str:
+    """結果レコードが指す「実行した PC」。書き手が残した `node` が正典。
+
+    無い場合（このフィールドより前に書かれた結果・PC 名を含まない旧名義の worker）は
+    `who` をそのまま見出しに使い、`?` を付けて**推測していないこと**を示す。名義の綴りを
+    割って PC を当てにいくと、名義の作り方の 2 実装目（`worker_who` の写し）になる。"""
+    node = str(res.get("node") or "").strip()
+    if node:
+        return node
+    who = str(res.get("who") or "").strip()
+    return f"{who}?" if who else "?"
+
+
+def execution_by_pc(bus, node_ids) -> "list[tuple[str, int]]":
+    """PC 別の実行内訳 [(PC, 確定したノード数)]。件数の多い順・同数なら名前順。
+
+    「どの PC がどの work ノードを実行したか」は CLI・GUI・バスのどこにも出ていなかった
+    （2026-07-27 棚卸し §2b.1）。分担が起きているかを目で確かめられるようにする最小の口。"""
+    counts: dict = {}
+    for nid in node_ids:
+        res = bus.read_result(nid) or {}
+        if not res:
+            continue
+        pc = result_pc(res)
+        counts[pc] = counts.get(pc, 0) + 1
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
 
 
 def _render_status(bus, run_id, events):
@@ -85,9 +129,14 @@ def _render_status(bus, run_id, events):
                  f"   iter={graph.get('iteration', 0)}")
     if total:
         L.append(f"│  progress: {_progress_bar(done, total)}")
-        order = ("done", "claimed", "pending", "failed", "unknown")
+        order = ("done", "claimed", "waiting", "pending", "failed", "unknown")
         agentline = "  ".join(f"{_STATE_GLYPH[k]}{k}={counts[k]}" for k in order if counts.get(k))
         L.append(f"│  agents  : {total}   {agentline}")
+        by_pc = execution_by_pc(bus, nodes)
+        if by_pc:
+            # PC 別の実行内訳。1 行に PC 名が 1 つしか出ないなら分担は起きていない
+            # （run 単位で 1 台に確定するのが現行仕様 — multi-pc-operations.md §4.2）。
+            L.append("│  by pc   : " + "  ".join(f"{pc}={n}" for pc, n in by_pc))
         L.append("├─ tasks")
         memo = {}
         ordered = sorted(nodes, key=lambda n: (_node_depth(n, nodes, memo), n))

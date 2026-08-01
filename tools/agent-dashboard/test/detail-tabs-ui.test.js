@@ -74,7 +74,7 @@ const completedRunForNeed = new Function(
   'relatedRunIdForNeed', `${grab('completedRunForNeed')}; return completedRunForNeed;`
 )(relatedRunIdForNeed);
 // eslint-disable-next-line no-new-func
-const needFinalVerificationFailure = new Function(
+const _needFinalVerificationFailure = new Function(
   'taskForNeed', 'completedRunForNeed', 'needFailureViewModel',
   `${grab('needFinalVerificationFailure')}; return needFinalVerificationFailure;`
 )(taskForNeed, completedRunForNeed, needFailureViewModel);
@@ -98,7 +98,7 @@ const artifactRunForNeed = new Function(
 // eslint-disable-next-line no-new-func
 const needArtifactsButtonHtml = new Function(
   'esc', 'completedTaskForNeed', 'artifactRunForNeed',
-  `${grab('needArtifactsButtonHtml')}; return needArtifactsButtonHtml;`
+  `${grab('hasDeliveryContent')}; ${grab('needArtifactsButtonHtml')}; return needArtifactsButtonHtml;`
 )(
   (value) => String(value == null ? '' : value),
   completedTaskForNeed,
@@ -449,8 +449,9 @@ const renderNeedDetailWithVerifyRevision = new Function(
   'isNeedSent', 'esc', 'needKindLabel', 'riskBadgeHtml', 'needDisplayTitle', 'NEED_ASK',
   'renderNeedFacts', 'needActionsHtml', 'specFilesHtml', 'mdToHtml', 'needVerifyRevisionHtml',
   'taskForNeed', 'taskCompletionHint', 'runsForTask', 'canDiagnoseNeed',
-  'state', 'needFinalVerificationFailure', 'finalVerificationFailureHtml', 'needAssistActionsHtml',
-  'needArtifactsButtonHtml', 'commandFailureHtml',
+  'needDecisionViewModel', 'state', 'needFinalVerificationFailure', 'finalVerificationFailureHtml', 'needAssistActionsHtml',
+  'needArtifactsButtonHtml', 'ownerBadgeHtml', 'commandFailureHtml', 'commandReceiptHtml',
+  'reviewCommentsHtml', 'taskGuideHtml', 'needNextStepHtml',
   `${grab('renderNeedDetail')}; return renderNeedDetail;`
 )(
   () => false,
@@ -468,12 +469,18 @@ const renderNeedDetailWithVerifyRevision = new Function(
   () => null,
   () => [],
   canDiagnoseNeed,
+  () => ({ statusTitle: '作業が停止しています', actionTitle: '再開方法', nextStep: '再開してください。', reason: '検証失敗' }),
   { flowRuns: [] },
   () => null,
   () => '',
   needAssistActionsHtml,
   needArtifactsButtonHtml,
-  () => ''
+  () => '',
+  () => '',
+  () => '',
+  () => '',
+  () => '',
+  (_n, ask, settled) => `<section class="need-next-step">${ask}:${settled}</section>`
 );
 assert.ok(
   renderNeedDetailWithVerifyRevision(
@@ -486,8 +493,12 @@ const failureDiagnosisHtml = renderNeedDetailWithVerifyRevision(
   { backlog: [{ id: 'T1', verify: 'npm test' }] },
   { id: 'T1', title: '検証失敗', kind: 'blocked', decided: false, failureSummary: 'テスト失敗' }
 );
-assert.ok(failureDiagnosisHtml.includes('data-failure-diagnose="T1"'));
-assert.ok(failureDiagnosisHtml.includes('AIで失敗を診断'));
+// 失敗診断は 2 本立て（S9-4）: 既定は対話診断（追加で質問できる窓）、ヘッドレスの 1 発実行は
+// 「差し戻し文面案」の抽出が要る用途として併設する。
+assert.ok(failureDiagnosisHtml.includes('data-failure-chat="T1"'), '対話診断を既定で出す');
+assert.ok(failureDiagnosisHtml.includes('AIと対話で診断'));
+assert.ok(failureDiagnosisHtml.includes('data-failure-diagnose="T1"'), '文面生成も併設する');
+assert.ok(failureDiagnosisHtml.includes('文面を生成'));
 assert.ok(!failureDiagnosisHtml.includes('data-need-consult="T1"'), '専用の失敗診断がある場合は汎用AI相談を重複表示しない');
 assert.ok(!failureDiagnosisHtml.includes('>AIに相談<'));
 assert.match(
@@ -642,7 +653,7 @@ const flowGroupBucket = new Function(
   'runAdvice',
   'TERMINAL_RUN_STATES',
   `${grab('flowGroupBucket')}; return flowGroupBucket;`
-)((latest, group) => group.advice, new Set(['done', 'failed', 'canceled']));
+)((latest, group) => group.advice, new Set(['done', 'failed', 'cancelled', 'canceled']));
 assert.strictEqual(flowGroupBucket({ advice: { kind: 'human' }, latest: { status: 'running' } }), 'action');
 assert.strictEqual(flowGroupBucket({ advice: { kind: 'manual' }, latest: { status: 'running' } }), 'action');
 assert.strictEqual(flowGroupBucket({ advice: { kind: 'restart' }, latest: { status: 'failed' } }), 'action');
@@ -670,7 +681,7 @@ assert.match(html, /<label[^>]+for="doctor-prompt"[^>]*>[^<]*補足したいこ�
 assert.match(html, /<textarea[^>]+id="doctor-prompt"/);
 assert.match(html, /id="btn-doctor-submit"[^>]*>相談する</);
 assert.ok(!html.match(/id="btn-doctor"[^>]+disabled/), 'AI相談は未選択でも利用可能');
-assert.match(html, /id="btn-doctor"[^>]+aria-label="AIに相談"[^>]*>[\s\S]*?<svg[^>]+aria-hidden="true"/);
+assert.match(html, /id="btn-doctor"[^>]+aria-label="相談する"[^>]*>[\s\S]*?<svg[^>]+aria-hidden="true"/);
 assert.ok(!html.match(/id="btn-doctor"[^>]*>AI相談<\/button>/), 'AI相談は文字ボタンではなくアイコンにする');
 assert.ok(renderer.includes('function openDoctor()'));
 assert.ok(renderer.includes('function openPlanCritique('));
@@ -683,7 +694,7 @@ assert.ok(renderer.includes("action: 'revise'"));
 assert.ok(renderer.includes('AIで計画を批評'));
 assert.ok(renderer.includes('変更理由を説明'));
 assert.ok(renderer.includes('フォローアップ案'));
-assert.ok(html.includes('AIで依存・優先度を提案'));
+assert.ok(html.includes('順番を提案'));
 assert.ok(html.includes('id="btn-enq-ai"'));
 assert.ok(html.includes('id="btn-doctor-apply-feedback"'));
 assert.ok(html.includes('id="enq-after-options"'));
@@ -721,9 +732,12 @@ assert.ok(
 );
 assert.ok(html.includes('../../node_modules/diff2html/bundles/css/diff2html.min.css'));
 assert.ok(html.includes('../../node_modules/diff2html/bundles/js/diff2html-ui-slim.min.js'));
-assert.ok(renderer.includes('workingTree: !entry.ref'));
-assert.ok(renderer.includes("entry.path && (entry.ref || !entry.branch)"), '作業ツリーもファイル別に表示する');
-assert.ok(!renderer.includes('entry.ref || entry.branch'), '未解決 ref で差分ボタンを出さない');
+assert.ok(renderer.includes('workingTree: !entry.ref && !entry.branch'),
+  'ref も branch も無いときだけ作業ツリー比較（branch があれば origin/<branch> で range 比較）');
+assert.ok(renderer.includes('branch: entry.branch') && renderer.includes('fetch: Boolean(opts && opts.fetch)'),
+  '検収差分は branch を渡し、fetch 後は origin/<branch> を優先する');
+assert.ok(renderer.includes("deliveryDiffRequest(entry, '', { fetch: true })"),
+  '検収を開いた最初の解決でリモートを取り込む（古い diff が出ない）');
 assert.match(css, /\.nav-group/);
 assert.match(css, /\.doctor-form/);
 assert.match(css, /\.delivery-dialog/);
@@ -764,7 +778,7 @@ assert.match(
   '行番号列をコード行の上端から下端まで伸ばす'
 );
 
-// verify 未定義の確認待ち（blocked）は「承認して完了にする」を出す（承認で done 確定）
+// blocked は成果の有無に関係なく再開操作だけを出す。完了承認は review に限定する。
 {
   // eslint-disable-next-line no-new-func
   const isVerifyPendingNeed = new Function(
@@ -799,7 +813,6 @@ assert.match(
   );
 
   // eslint-disable-next-line no-new-func
-  // eslint-disable-next-line no-new-func
   const needHasDeliverable = new Function(
     'isVerifyPendingNeed', 'completedTaskForNeed', 'artifactRunForNeed', 'taskForNeed',
     `${grab('needHasDeliverable')}; return needHasDeliverable;`
@@ -822,29 +835,20 @@ assert.match(
   const pendingHtml = needActionsHtml({
     id: 'T1', taskId: 'T1', kind: 'blocked', why: 'verify 未定義（工程は完了しています…）', file: '/p/needs/T1.md',
   });
-  assert.match(pendingHtml, /data-act="approve"[^>]*>承認して完了にする</, 'verify 未定義の確認待ちに承認完了ボタンを出す');
+  assert.ok(!pendingHtml.includes('data-act="approve"'), 'blocked に完了承認を出さない');
+  assert.match(pendingHtml, /data-act="feedback"[^>]*>指示を送って再開</, 'blocked の主操作は再開にする');
   assert.match(pendingHtml, /data-act="rerun"/, 'そのまま再実行も残す');
   const plainHtml = needActionsHtml({
     id: 'T2', taskId: 'T2', kind: 'blocked', why: '検証が失敗', file: '/p/needs/T2.md',
   });
   assert.ok(!plainHtml.includes('data-act="approve"'), '通常の blocked に承認完了ボタンを出さない');
 
-  // 検収物が少しでもあれば、要対応の画面から直接「承認して完了にする」を押せる。
-  // 以前は差分検収ダイアログ経由に限定していたが、経路が絞られるほど
-  // 「操作が見当たらない」状態が生まれるため、承認は常に出す方針へ変えた。
+  // 過去の完了 run や成果物があっても、現在 blocked なら再開判断を優先する。
   actionState.project = doneRunProject;
   actionState.flowRuns = doneRuns;
   const completedFailureHtml = needActionsHtml(verifyFailureNeed);
-  assert.match(
-    completedFailureHtml,
-    /data-act="approve"[^>]*>承認して完了にする</,
-    '工程完了済みの検証失敗は要対応の画面から直接完了承認できる'
-  );
-  assert.match(
-    needActionsHtml(verifyFailureNeed, { inReview: true }),
-    /data-act="approve"[^>]*>承認して完了にする</,
-    '差分検収ダイアログ内でも同じ承認ができる'
-  );
+  assert.ok(!completedFailureHtml.includes('data-act="approve"'), '過去の成果物で blocked を完了承認へ変えない');
+  assert.ok(!needActionsHtml(verifyFailureNeed, { inReview: true }).includes('data-act="approve"'), '検収ダイアログからも blocked を完了させない');
 
   // 「少しでも検収物があれば承認できる」— 以前は AND 連鎖のどれか 1 つが欠けると
   // 承認ボタンごと消えていた。欠けがちだった条件を 1 つずつ落として確認する。
@@ -882,5 +886,67 @@ assert.match(
     '成果が一度も出ていないものは完了承認を出さない（再開・指示が正しい導線）'
   );
 }
+
+// --- taskGuideHtml（計画レビューの「作業内容」セクション） ---
+{
+  // eslint-disable-next-line no-new-func
+  const taskGuideHtml = new Function(
+    'esc', 'proseHtml', 'GUIDE_KEYS', 'GUIDE_LABELS', 'acceptanceList',
+    `${grab('taskGuideHtml')}; return taskGuideHtml;`
+  )(
+    (v) => String(v == null ? '' : v),
+    (v) => String(v == null ? '' : v),
+    ['why', 'desc', 'scope', 'out_of_scope', 'constraints', 'hints', 'demo'],
+    { desc: '作業内容の詳細', why: '背景・目的' },
+    // 本物と同じ規則（複数行フィールドは \n 連結で届く。acceptance が無ければ accept へ）
+    (t) => {
+      const ex = (t && t.extra) || {};
+      const raw = String(ex.acceptance || '').trim() || String(ex.accept || '').trim();
+      return raw ? raw.split('\n').map((s) => s.trim()).filter(Boolean) : [];
+    }
+  );
+  const withGuide = taskGuideHtml(
+    { verify: 'npm test', extra: { desc: '冒頭に手順を追加 ⏎ 構成は変えない', why: '導入が不明' } },
+    'plan-review'
+  );
+  assert.ok(withGuide.includes('作業内容'), 'セクション見出しを出す');
+  assert.ok(withGuide.includes('冒頭に手順を追加'), 'desc を出す（⏎ は改行に戻す）');
+  assert.ok(withGuide.includes('冒頭に手順を追加\n構成は変えない'), '⏎ を改行へ復元');
+  assert.ok(withGuide.includes('導入が不明'), 'why を出す');
+  assert.ok(withGuide.includes('npm test'), '完了条件も並べる');
+  // 受入基準（S5 で done の根拠になった一次表現）は、計画レビューで人が読んで直す対象。
+  // ここに出ていなければ、後から直す機会は無い。
+  const withCriteria = taskGuideHtml(
+    { verify: '', extra: { desc: 'x', acceptance: '基準A\n基準B\n基準C' } },
+    'plan-review'
+  );
+  assert.ok(withCriteria.includes('受入基準'), '受入基準の見出しを出す');
+  assert.ok(
+    withCriteria.includes('基準A') && withCriteria.includes('基準C'),
+    '受入基準は 1 行 1 項目で全部出す（最後の 1 行だけにならない）'
+  );
+  const manyCriteria = taskGuideHtml(
+    { verify: '', extra: { desc: 'x', acceptance: 'a\nb\nc\nd\ne\nf\ng\nh' } },
+    'plan-review'
+  );
+  assert.ok(manyCriteria.includes('目安は 3〜7 件'), '多すぎる基準は注意を出す');
+  const legacyAccept = taskGuideHtml({ verify: '', extra: { accept: '昔の 1 行' } }, 'plan-review');
+  assert.ok(legacyAccept.includes('昔の 1 行'), '旧 accept も 1 項目の受入基準として出す');
+  const emptyPlan = taskGuideHtml({ verify: '', extra: {} }, 'plan-review');
+  assert.ok(
+    emptyPlan.includes('記述（概要・目的・範囲）がありません'),
+    'plan-review は記述ゼロでも「情報が足りない」ことを明示する（無言で薄いカードにしない）'
+  );
+  assert.strictEqual(
+    taskGuideHtml({ verify: 'x', extra: {} }, 'blocked'),
+    '',
+    'plan-review 以外は記述が無ければ何も出さない（従来の見た目を保つ）'
+  );
+  assert.strictEqual(taskGuideHtml(null, 'blocked'), '', 'タスク未解決でも安全');
+}
+
+// renderNeedDetail が taskGuideHtml を組み込むこと（呼び出しが消えると退行）
+assert.match(renderer, /const taskGuide = taskGuideHtml\(task, n\.kind\)/);
+assert.match(renderer, /作業内容と完了条件/);
 
 console.log('detail-tabs-ui: all tests passed');

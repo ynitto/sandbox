@@ -1,43 +1,43 @@
 # agent-project の実構成サンプル — 状態を GitLab に保存・共有する常駐構成
 # ファイル名: agent-project.yaml（このサンプルを丸ごと使う。汎用のキー解説は agent-project.yaml.example）
 #
-# 構成: 「1 プロジェクト = 1 ディレクトリ = 1 daemon（WSL）＋ gitlab executor で作業を各 PC に分散 ＋
-#        別 PC の agent-dashboard で監視・検収 ＋ 状態（ワーク内容）を GitLab にバックアップ」
+# 構成: 「1 プロジェクト = 1 状態リポジトリ = 1 daemon（WSL）＋ gitlab executor で作業を各 PC に分散 ＋
+#        別 PC の agent-dashboard で監視・検収 ＋ 状態（ワーク内容）を GitLab に保存」
 # 対になる agent-flow 側の設定 → agent-flow.state-git.yaml.example
 #
-# ── 推奨レイアウト（direct モード・state_git 設定不要）──
-#   プロジェクトルート自体を GitLab の「状態リポジトリ」の clone にする:
-#     git clone git@gitlab.example.com:team/proj-state.git ~/projects/proj
-#     cd ~/projects/proj && vi charter.md          # 入力（charter / repos.json / policy.md）を書く
-#     agent-project start                       # このディレクトリを常駐監視（run --watch を detached）
-#   agent-project はルートの変更（backlog/needs/decisions/journal/…）をそのままコミットして
-#   origin へ push し、viewer 側の commit（指示・検収）を pull で取り込む。
-#   一時状態（bus/ claims/）とドット始まりは同期しない。
-#   複数プロジェクトは「リポジトリを分けて clone を並べ、各ディレクトリで start する」だけ。
+# ── 置き場所（S1）──
+#   **このファイルは状態専用リポジトリの clone 直下に置く**（= 状態ルート直下）。全 PC が
+#   状態リポジトリの同期で共有する。--config で明示指定もできるが、探索はしない
+#   （旧 cwd → ./.agents → ./.agent → ~/.agents のチェーンは廃止）。
 #
-# ── 前提の配置（サーバ PC = Windows + WSL）──
-#   ★状態の実体（プロジェクトルート / bus）は WSL 側ファイルシステム（ext4）に置く。
-#     /mnt/c 配下（DrvFS）は遅く flock 系ロックも不安定なため、常駐の状態置き場にしない。
-#   設定ファイルは <root>/agent-project.yaml（ルート直下＝プロジェクトのマニフェスト。推奨）
-#   か <root>/.agents/agent-project.yaml か ~/.agents/ に置く。
+# ── 各 PC の宣言は host.yaml（このファイルではない）──
+#   どの状態リポジトリをどこへ clone して駆動するかは ~/.agents/agent-project.host.yaml:
+#     projects:
+#       - name: proj
+#         state_repo: git@gitlab.example.com:team/proj-state.git
+#         branch: main
+#         root: /home/me/agents/proj-state      # このノードでの clone 先（絶対パス）
+#   agent-project が root へ自動 clone する（手動 clone 不要）。既存ディレクトリを指した場合は
+#   origin の一致を検査し、食い違えば起動を止める（黙って旧構成へ書き続けない）。
 #
-# ── 起動（WSL・プロジェクトルートで）──
-#   agent-flow daemon &        # 実行層（同じバスで常駐。agent-flow.state-git.yaml.example を読む）
-#   agent-project start        # 制御層（run --watch を detached 起動）
+# ── 起動（WSL）──
+#   agent-project serve        # この PC の常駐体（host.yaml のプロジェクトを監督する）
 #   認証: WSL 側ユーザーの SSH 鍵で GitLab へ `git push` が通ること。
 #
-#   ※ agent-flow daemon を agent-project に管理させる構成もある。その場合は
-#     manage_flow_daemon: true と flow_config: <agent-flow.yaml のパス> を設定する。
-#     agent-flow の設定値（executor / state_git_subdir / gitlab.* / defer_waits 等）は
-#     agent-project 側に増やさず、その flow_config（agent-flow.yaml）へ集約して agent-flow に読ませる。
-#     agent-project が CLI 注入するのは routing（--state-git の remote/branch/interval）だけで、
-#     direct モードならルートの origin が自動で使われる。
+#   ★状態の実体（状態リポジトリの clone / bus）は WSL 側ファイルシステム（ext4）に置く。
+#     /mnt/c 配下（DrvFS）は遅く flock 系ロックも不安定なため、常駐の状態置き場にしない。
+#
+#   実行層 agent-flow は常駐させない。act のたびに `agent-flow run` を単発起動し、
+#   その run が自分で生存リースと park の面倒を見る。agent-flow の設定値
+#   （executor / state_git_subdir / gitlab.* / defer_waits 等）は agent-project 側に
+#   増やさず、flow_config（agent-flow.yaml）へ集約して agent-flow に読ませる。
 
 # --- 置き場（相対パスはすべて root 基準）---
-root: .                              # プロジェクトルート = cwd（状態リポジトリの clone）
+# root はこのファイルの置き場所（状態リポジトリの clone）そのもの。設定では変えられない
+# ——clone 先の宣言は host.yaml の projects[].root（S1）。
 workdir: work                        # act / verify の作業ディレクトリ（root 相対 = <root>/work）
-# bus: bus                           # 既定は <root>/bus。agent-flow daemon をプロジェクトルートで
-#                                    #   起動すれば既定同士（./bus）で一致する（明示は共有バス時のみ）
+# bus: bus                           # 既定は <root>/bus（agent-flow の既定 ./bus と一致）。
+#                                    #   明示は共有バス時のみ
 
 # --- 実行（作業そのものは GitLab イシューで各 PC へ分散）---
 executor: gitlab
@@ -45,8 +45,6 @@ watch: true
 act_timeout: 0             # 委譲はレビュー往復で数日かかりうる。0=無制限で完了まで待つ。
                            #   短いタイムアウトだと待ち切れずに retry を空増やし＆イシューを
                            #   二重起票する（この構成では 0 を強く推奨）。
-act_async: true            # 非ブロッキング委譲: submit して待たず offloaded にし、次パスでポーリングして
-                           #   回収する。長期委譲でループを塞がず、複数タスクを並行に進める。
                            #   併せて agent-flow 側 gitlab: の timeout/approved_timeout を 0（無限）にすると
                            #   誤タイムアウト由来の retry ループが完全に消える（agent-flow.state-git.yaml 参照）。
 
@@ -77,20 +75,26 @@ act_async: true            # 非ブロッキング委譲: submit して待たず
 #                             #   自動昇格（既定 on）。rules.md は人が書くのが正・viewer 側の編集も
 #                             #   git 同期でそのまま届く（人の入力パス＝同時変更はリモート優先）
 
-# --- 状態の git 保存・共有 ---
-# direct モード（ルートが clone）なら設定不要。ルートが git でない場合のみ管理クローン方式:
-# state_git: git@gitlab.example.com:team/agent-state.git
-# state_git_subdir: agent-project     # agent-project 自身の名前空間（既定 agent-project）。
-#                                    #   agent-flow 側の subdir は agent-flow.yaml の state_git_subdir
-#                                    #   （既定 agent-flow）で別に決まる
+# --- 状態の git 同期 ---
+# 同期先は状態リポジトリ自身の origin（clone が必ず持つ）。設定は要らない。
 # state_git_interval: 300            # fetch/push の最短間隔（秒）。バックアップ粒度を細かく
-#                                    #   したければ短く（GitLab への負荷と引き換え）
+#                                    #   したければ短く（GitLab への負荷と引き換え）。
+#                                    #   ローカルのコミットは毎同期で行い、これが律速するのは
+#                                    #   fetch/push だけ。
 
-# --- agent-flow daemon を agent-project に管理させる場合 ---
-# manage_flow_daemon: true                 # agent-flow daemon を自動起動・監視
-# flow_config: ~/.agents/agent-flow.yaml      # agent-flow の設定（executor/state_git_subdir/gitlab.*/defer_waits 等）
+# --- 複数 PC が同じ backlog を直接分担する場合の調整値（有効化の設定は不要） ---
+# controller lease と task claim を remote HEAD の CAS で確定する動作は、origin があり
+# status/<node>.json に自分以外の生存ノードが観測されたときだけ自動で有効になる。
+# （旧 coordination: git-cas キーは廃止。残っていても無視され起動時に警告が出る）
+# controller_heartbeat_sec: 30
+# controller_lease_sec: 120
+# coordination_retries: 3
+# 各 PC の node_id / root / availability は共有 YAML に書かず host.yaml に置く（S1。書くと
+# 起動時にエラーで止まる）。単一実行ノード＋複数 viewer の構成では調整値は既定のままでよい。
+
+# --- agent-flow へ渡す設定 ---
+# flow_config: ~/.agents/agent-flow.yaml   # agent-flow の設定（executor/state_git_subdir/gitlab.*/defer_waits 等）
 #                                          #   はこのファイルに集約
-# flow_max_workers: 6                      # daemon の worker 上限
 
 # ── バックアップと復元 ──
 #   バックアップ = 状態リポジトリそのもの（全変更がコミット履歴で残る）。
@@ -108,6 +112,7 @@ act_async: true            # 非ブロッキング委譲: submit して待たず
 #   ・別 PC の viewer: 状態リポジトリを clone し、viewer の ⚙ 設定「プロジェクトのパス」に
 #     その clone を 1 行ずつ登録（複数プロジェクト = 複数 clone）。viewer での承認・指示・
 #     一時停止/停止は commit/push → 本体が最大 state_git_interval 以内に取り込む
+#     （viewer にはエンジンが居ないので clone は手動）
 #   ・同じ PC の viewer（Windows）: git を介さず \\wsl$ 直読みでもよい。WSL 側で
 #       agent-project start --registry /mnt/c/Users/me/.agent-project/instances
 #     （または環境変数 AGENT_PROJECT_REGISTRY）にすると、Windows 側 viewer の自動発見が

@@ -87,11 +87,12 @@ test('片方だけ止まっていても検出する（flow=stop で実行は進�
   assert.deepStrictEqual(o.orchBlockedWorkloads(), [{ workload: 'flow', lifecycle: 'stop' }]);
 });
 
-test('警告は状態語・原因・戻す導線を含む（色だけに頼らない）', () => {
+test('警告は状況・次の操作・戻す導線を短く示す', () => {
   const o = makeOrch({ control: { workloads: { flow: { lifecycle: 'stop' } } } });
   const html = o.orchBlockedBannerHtml();
-  assert.ok(html.includes('flow = 停止'), '状態を日本語の状態語で示す');
-  assert.ok(/同じ要対応に戻ります/.test(html), '送っても動かないことを明示する');
+  assert.ok(html.includes('作業が停止されています'), '状況を平易に示す');
+  assert.ok(html.includes('先に全体設定で作業を再開してください。'), '次の操作を明示する');
+  assert.ok(!html.includes('flow ='), '内部のワークロード名を見せない');
   assert.ok(html.includes('data-orch-open'), 'エージェント管理へ戻す導線を出す');
 });
 
@@ -99,6 +100,13 @@ test('再実行は last_run がある票を resume-run へ送る', () => {
   const project = { backlog: [{ id: 't-1', extra: { last_run: 'req-abc-t-1-r0' } }] };
   assert.deepStrictEqual(needRerunPlan(project, { id: 't-1' }), {
     via: 'resume-run', id: 't-1', run: 'req-abc-t-1-r0',
+  });
+});
+
+test('target 統合失敗は done を温存せず revise で新しい試行へ送る', () => {
+  const project = { backlog: [{ id: 't-1', extra: { last_run: 'req-abc-t-1-r0' } }] };
+  assert.deepStrictEqual(needRerunPlan(project, { id: 't-1', failureClass: 'integration' }), {
+    via: 'revise', id: 't-1',
   });
 });
 

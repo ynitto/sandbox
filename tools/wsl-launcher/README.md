@@ -32,8 +32,8 @@ python setup.py --unregister :: 自動起動の解除
   "terminals": [
     {
       "name": "kiro-project (demo)",
-      "wslPath": "/home/user/projects/demo",  // ← プロジェクトルート（charter.md / bus のある場所）
-      "command": "agent-project start",        // ← ここで常駐を起動
+      "wslPath": "/home/user",                 // ← cwd は問わない（宣言は host.yaml が持つ）
+      "command": "agent-project serve",        // ← ここで常駐体を起動
       "distro": "Ubuntu",
       "keepOpen": true,
       "enabled": true
@@ -42,22 +42,23 @@ python setup.py --unregister :: 自動起動の解除
 }
 ```
 
-## なぜ `agent-project start` を推奨するか（毎起動で叩いても安全）
+## なぜ `agent-project serve` なのか
 
-- **二重起動しない**: `agent-project start` は同一 `root+host` の重複監視を既定で拒否する
-  （`--force`/`restart` で明示上書き）。前回インスタンスの pid が起動で消えていれば新規 start が通る＝
-  「毎起動でランチャが叩く」運用に整合する。`run --watch` を直接叩くより安全。
-- **flow daemon も冪等**: `manage_flow_daemon` 構成なら agent-project が agent-flow daemon を確保する。
-  daemon は realpath 正規化した flock のシングルトンで、既に稼働していれば二重起動せず終了する。
-  daemon を別ターミナルで明示常駐したい場合は `config.example.json` の `_terminals_alt` を参照
-  （`agent-flow daemon` と `agent-project start` の2件構成）。
-- **所定 cwd で状態を再発見**: kiro-project は `root=cwd` をアンカーに charter/backlog・`bus`・state_git を
-  発見して継続する。シャットダウンで消えた孤児 run は次の daemon 起動時に同一 run-id で reclaim され、
-  確定済みの成果を活かして続きから走る。**`wslPath` を必ずプロジェクトルートに固定すること**
-  （cwd を取り違えると別バス扱いになる）。
+- **PC に 1 本**: `serve` は `agent-project.host.yaml` に宣言したプロジェクトを**まとめて**
+  子として起動・監視する常駐体。プロジェクトごとにランチャの行を増やす必要はなく、
+  持つプロジェクトを変えるときは host.yaml を書き換えるだけ。
+- **cwd に依存しない**: 宣言が絶対パスなので `wslPath` はどこでもよい（プロジェクトルートに
+  合わせる必要はない）。
+- **落ちても上がる**: 子がクラッシュすれば常駐体が再起動し、繰り返し落ちるものだけを切り離す。
+  常駐体自身の再起動は起動系の担当——**systemd がある環境なら
+  `bash tools/agent-tools/install.sh --service` の方が確実**（`Restart=always` + `WatchdogSec` +
+  `loginctl enable-linger`）。このランチャは Windows タスクスケジューラ方式の代わりに使う。
+  二重構成しないこと（[セットアップガイド](../../docs/guides/single-resident-setup.md) §4）。
+- **孤児 run の回収**: シャットダウンで消えた run は次の起動で同一 run-id のまま reclaim され、
+  確定済みの成果を活かして続きから走る。
 
 ## 関連
 
 - `tools/terminal-launcher/` — 同様のログオン時自動起動（PowerShell 版）。
-- `tools/agent-project/agent-project.state-git.yaml.example` — 常駐手順（WSL・プロジェクトルートで
-  `agent-flow daemon &` / `agent-project start`）と dashboard 監視の組み方。
+- [`docs/guides/single-resident-setup.md`](../../docs/guides/single-resident-setup.md) — 常駐体の
+  構成手順（host.yaml の書き方・常駐化 2 方式の選択）と dashboard 監視の組み方。

@@ -1,10 +1,10 @@
-"""GitBus — 専用バスリポジトリ ＋ ミッション別ブランチ（設計書 §5.1、P1）。
+"""GitBus — 専用バスリポジトリ ＋ ミッション別ブランチ（設計書 §4.4、P1）。
 
 - オンプレ git remote に**専用のバスリポジトリ**（例 amigos-bus.git）を切る。
   既存リポジトリの subdir 間借りはしない。
 - **ミッション（タスク）単位でブランチ分離**:
     main            … 公示インデックスのみ（index/<mid>.json、オーナーが書く）
-    mission/<mid>   … そのミッションの §4 レイアウト一式（リポジトリ直下が内容ルート）
+    mission/<mid>   … そのミッションの §4.2 レイアウト一式（リポジトリ直下が内容ルート）
   参加ノードは main を軽く poll して募集を発見し、join したミッションの
   ブランチだけを clone する。gc はブランチ削除。
 - **同期の作法は agent-project / agent-flow の state_git の規律を流用**:
@@ -13,9 +13,9 @@
 - 各ノードは**自分専用のクローン**を持つため、ローカルの変更はすべて自プロセス
   由来 = `add -A` でステージしても他者の書き込みを巻き込まない（state_git の
   「自 subdir のみステージ」と同じ安全性が、クローン分離によって成立する）。
-- 所有権分割（§4.2）により同一ファイルの双方向変更は起きないので 3-way 裁定は
+- 所有権分割（§4.3）により同一ファイルの双方向変更は起きないので 3-way 裁定は
   不要。万一 rebase が衝突したら abort → origin へリセットし、そのターンは
-  「なかったこと」になる（ターン原子性 §6.6: バスには全部か無かしか残らない）。
+  「なかったこと」になる（ターン原子性 §5.3: バスには全部か無かしか残らない）。
 """
 from __future__ import annotations
 
@@ -25,6 +25,8 @@ import random
 import shutil
 import subprocess
 import time
+
+from agentcore import transport as _transport
 
 from .bus import Bus, MissionPaths
 from .util import log, write_json_atomic
@@ -55,9 +57,18 @@ class GitBus(Bus):
 
     # --- git 低レベル -------------------------------------------------------
     def _git(self, cwd: "str | None", *args: str, check: bool = True):
+        """バスリポジトリへの git。**必ず timeout を切り、資格情報を対話で聞かせない**——
+        ノードは端末を持たないまま常駐するので、聞かれた git は誰も答えられないまま待ち続け、
+        ターンごと固まる（agentcore.transport と同じ規律。設計 §4.1・R1）。"""
         cmd = ["git"] + (["-C", cwd] if cwd else []) + list(args)
-        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
-                              errors="replace")
+        limit = _transport.git_timeout_for(cmd)
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                                  errors="replace",
+                                  env=_transport.harden_git_env(dict(os.environ)),
+                                  timeout=limit)
+        except subprocess.TimeoutExpired:
+            proc = _transport.timed_out_result(cmd, limit)
         if check and proc.returncode != 0:
             raise RuntimeError(f"git {' '.join(args)} 失敗 (rc={proc.returncode}): "
                                f"{(proc.stderr or proc.stdout).strip()[-500:]}")
@@ -112,7 +123,7 @@ class GitBus(Bus):
         proc = self._git(d, "pull", "--rebase", "--quiet", "origin", branch, check=False)
         if proc.returncode != 0:
             # 所有権分割により本来起きない。起きたら abort → origin に合わせる
-            # （ローカルの未 push ターンは失われるが、やり直すだけで整合は壊れない §6.6）
+            # （ローカルの未 push ターンは失われるが、やり直すだけで整合は壊れない §5.3）
             self._git(d, "rebase", "--abort", check=False)
             self._git(d, "fetch", "--quiet", "origin", branch, check=False)
             self._git(d, "reset", "--hard", f"origin/{branch}", "--quiet", check=False)

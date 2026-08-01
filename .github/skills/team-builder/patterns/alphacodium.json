@@ -1,0 +1,42 @@
+{
+  "id": "alphacodium",
+  "name": "AlphaCodium",
+  "category": "software-sop",
+  "tier": "medium",
+  "source": "AlphaCodium (Ridnik et al., 2024)",
+  "when_to_use": "問題内省＋AIテスト生成を前段に置き、全テスト緑まで反復する競プロ型。",
+  "signals": [
+    "競技プログラミング",
+    "公開＋自動生成テスト"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "analyst",
+        "role": "問題を内省しテストを生成する",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "coder",
+        "role": "実装し全テスト緑まで修正する",
+        "required": true,
+        "approver": false,
+        "collaborates_with": [
+          "analyst"
+        ]
+      },
+      {
+        "id": "verifier",
+        "role": "テスト実行で承認する",
+        "required": true,
+        "approver": true
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved",
+      "review_rounds": 3
+    }
+  },
+  "feasibility": "native"
+}

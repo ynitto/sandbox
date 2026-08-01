@@ -16,10 +16,6 @@ function buildBaseApi() {
     getConfig: () => invoke('config:get'),
     saveConfig: (config) => invoke('config:save', { config }),
 
-    gitPull: (dir, force) => invoke('git:pull', { dir, force }),
-    gitCommitPush: (dir, message, paths) => invoke('git:commitPush', { dir, message, paths }),
-    gitHealth: (dir, refreshRemote = true) => invoke('git:health', { dir, refreshRemote }),
-    gitHeal: (dir) => invoke('git:heal', { dir }),
     gitDiff: (args) => invoke('git:diff', args),
 
     glEnrich: (urls) => invoke('gitlab:enrich', { urls }),

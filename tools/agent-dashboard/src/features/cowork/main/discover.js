@@ -1,23 +1,25 @@
 'use strict';
 
-// Cowork の自動発見。全体設定の `projects.roots` 配下を走査し、kiro-loop の定期処理
+// Cowork の自動発見。実行エンジンが担当するプロジェクト配下を走査し、kiro-loop の定期処理
 // （.kiro/kiro-loop.{yaml,yml,json} の prompts[]）とステートマシン（.statemachine/<name>/
 // workflow.yaml）を **ジョブ単位** で抽出して Cowork 項目にする。
 //
-// dashboard には YAML ライブラリが無いため、prompts の抽出は行指向の限定パーサで行う
-// （ブロックスカラ `prompt: |` やコメントは「厳密に field 列の key: value 行だけ読む」規則で
-// 構造的に無視される）。.json は JSON.parse で読む。
-//
-// 発見時に各フィールドの行番号（parseKiroLoopPromptsWithLines）と scheduleKey を記録し、
-// 保存時の外科的書き戻し（writeback.js）が「読んだ物理フィールドへそのまま書く」ためのアンカーにする。
+// **パーサは 2 系統あり、役割で分けている**:
+//   ・値（name / schedule / enabled / prompt 本文）= base/main/yaml.js（YAML ライブラリ）
+//   ・書き戻しのアンカー（各フィールドの物理行・インデント）= parseKiroLoopPromptsWithLines
+// 値の解釈（引用・ブロックスカラ・フロー記法）はライブラリに任せ、行指向パーサは「どの行に
+// 書くか」だけを答える。**両者は prompts[] の並びが一致していなければならない**——ずれると
+// 別のエントリへ書き戻す。行指向側がコメント行でリストを閉じないのはそのため。
+// .json は JSON.parse で読む。
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const {
-  toViewerPath, _isPosixAbs, _pathKey,
+  toViewerPath, viewerDistro, _isPosixAbs, _pathKey,
 } = require('../../agent-project/main/project');
 const { parseFlatYaml } = require('../../agent-project/main/toolconfig');
+const { parseYaml, isPlainObject, scalarString } = require('../../../base/main/yaml');
 
 // 走査を軽く保つためのスキップ（プロジェクト内部の既知/生成物ディレクトリ）。隠しフォルダは
 // 別途 name.startsWith('.') で降下対象から外す（マーカーの .kiro/.statemachine は「降りる」の
@@ -120,6 +122,9 @@ function parseKiroLoopPromptsWithLines(text) {
       if (di < dashIndent) break;                            // リストが閉じた
       continue;
     }
+    // 列 0 のコメント行（`# ---- 区切り ----`）でリストを閉じない。閉じると以降の
+    // エントリが丸ごと落ち、値側（YAML パーサ）と番号がずれて別のエントリへ書き戻す。
+    if (raw.trimStart().startsWith('#')) continue;
     // トップレベルの新キー（prompts と同じ列 0 のスカラ）に達したら prompts リスト終了
     if (indent === 0) break;
     if (cur && indent === cur.fieldIndent) readField(raw.slice(indent), j);
@@ -128,44 +133,35 @@ function parseKiroLoopPromptsWithLines(text) {
   return entries;
 }
 
-// エントリごとの prompt 本文（インラインスカラ or ブロックスカラ `prompt: |`）を返す。
-// 書き戻しには使わない読み取り専用（ステートマシン対エントリの検出用）。
+// prompts: の各エントリ（マップ）を YAML パーサで読む。**値の読みはこちらが正**——
+// 行指向パーサ（parseKiroLoopPromptsWithLines）は書き戻しのアンカー専用で、
+// 引用・ブロックスカラ・フロー記法の解釈までは持たない。
+function kiroLoopEntries(text) {
+  const doc = parseYaml(text);
+  if (!isPlainObject(doc) || !Array.isArray(doc.prompts)) return [];
+  return doc.prompts.filter(isPlainObject);
+}
+
+// エントリごとの prompt 本文。ブロックスカラの相対インデントは保つ（前後の空白だけ落とす）。
 function kiroLoopPromptTexts(text) {
-  const norm = String(text == null ? '' : text);
-  const lines = norm.split('\n');
-  return parseKiroLoopPromptsWithLines(norm).map((e) => {
-    const f = e.fields.prompt;
-    if (!f) return '';
-    const raw = String(f.rawVal == null ? '' : f.rawVal).trim();
-    if (!/^[|>][+-]?\d*\s*(#.*)?$/.test(raw)) return scalarValue(f.rawVal);
-    // ブロックスカラ: fieldIndent より深い行を本文として読む（浅い行で終了）
-    const out = [];
-    for (let i = f.line + 1; i < lines.length; i += 1) {
-      const l = lines[i];
-      if (/^\s*$/.test(l)) { out.push(''); continue; }
-      const indent = l.length - l.replace(/^\s+/, '').length;
-      if (indent <= e.fieldIndent) break;
-      out.push(l.trim());
-    }
-    return out.join('\n').trim();
+  return kiroLoopEntries(text).map((e) => {
+    const v = e.prompt;
+    if (v == null) return '';
+    return (typeof v === 'string' ? v : (scalarString(v) || '')).trim();
   });
 }
 
 // 書き戻し不要な読み取り用: {name, interval_minutes, cron, enabled} の素の値。
 function parseKiroLoopPrompts(text) {
-  return parseKiroLoopPromptsWithLines(text).map((e) => {
+  return kiroLoopEntries(text).map((e) => {
     const out = {};
-    if (e.fields.name) out.name = scalarValue(e.fields.name.rawVal);
-    if (e.fields.cron) out.cron = scalarValue(e.fields.cron.rawVal);
-    if (e.fields.interval_minutes) {
-      const n = parseInt(scalarValue(e.fields.interval_minutes.rawVal), 10);
-      if (!Number.isNaN(n)) out.interval_minutes = n;
-    }
-    if (e.fields.enabled) {
-      const v = scalarValue(e.fields.enabled.rawVal).toLowerCase();
-      if (v === 'true') out.enabled = true;
-      else if (v === 'false') out.enabled = false;
-    }
+    const name = scalarString(e.name);
+    if (name !== null) out.name = name;
+    const cron = scalarString(e.cron);
+    if (cron !== null) out.cron = cron;
+    const n = parseInt(scalarString(e.interval_minutes), 10);
+    if (!Number.isNaN(n)) out.interval_minutes = n;
+    if (typeof e.enabled === 'boolean') out.enabled = e.enabled;
     return out;
   });
 }
@@ -259,28 +255,42 @@ function scanForCoworkConfigs(rootDir, maxDepth) {
   return found.sort((a, b) => a.folder.localeCompare(b.folder));
 }
 
-function resolveRoot(r) {
+// 走査ルートも ⚙ 設定のディストロで解決する（既定へ丸めると、設定と違う環境を走査して
+// 何も見つからない／別実体を見つける）。
+function resolveRoot(r, config) {
   const raw = String(r).replace(/^~(?=$|\/|\\)/, os.homedir());
-  return _isPosixAbs(raw) ? toViewerPath(raw) : path.resolve(raw);
+  return _isPosixAbs(raw) ? toViewerPath(raw, viewerDistro(config)) : path.resolve(raw);
 }
 
 // ---------------------------------------------------------------------------
 // 発見項目の生成
 // ---------------------------------------------------------------------------
+// 定常業務の走査ルート = 実行エンジンが担当しているプロジェクト + 設定の cowork.roots（S2）。
+//
+// engine 側は agent-project が管理するプロジェクト（宣言は host.yaml）。cowork.roots は
+// agent-project 管理外の定常業務専用フォルダで、宣言も実行も dashboard が持つ。
+// W2-4 で廃止したのは「agent-project プロジェクト一覧の二重管理」であって、
+// dashboard 自身が実行するものの宣言まで持てなくする趣旨ではない。
+function coworkRoots(config) {
+  const cfg = (config && config.cowork) || {};
+  const declared = Array.isArray(cfg.roots) ? cfg.roots : [];
+  return [
+    ...require('../../agent-project/main/engine').projectRoots(config),
+    ...declared.map((r) => String(r || '').trim()).filter(Boolean),
+  ];
+}
+
 function discoverCoworkItems(config) {
   const cfg = (config && config.cowork) || {};
   if (cfg.discover === false) return [];
-  const roots = (config && config.projects && config.projects.roots) || [];
-  const scanDepth = Math.max(
-    1,
-    Number(cfg.scanDepth || (config && config.projects && config.projects.scanDepth) || 2)
-  );
+  const roots = coworkRoots(config);
+  const scanDepth = Math.max(1, Number(cfg.scanDepth || 2));
 
   const items = [];
   const seenRoots = new Set();
   for (const r of roots) {
     if (!r) continue;
-    const root = resolveRoot(r);
+    const root = resolveRoot(r, config);
     const rk = _pathKey(root);
     if (seenRoots.has(rk)) continue;                 // 同一実体の root を二重走査しない
     seenRoots.add(rk);
@@ -318,6 +328,7 @@ function discoverCoworkItems(config) {
             name: e.name || `定期実行 ${idx + 1}`,
             repo: folder,
             schedule,
+            prompt: kiro.texts[idx] || '',
             enabled: e.enabled !== false,
             _src: {
               kind: 'kiro-loop', file: mk.kiroFile, format: kiro.format,
@@ -357,6 +368,8 @@ function discoverCoworkItems(config) {
 }
 
 module.exports = {
+  isDir,
+  coworkRoots,
   discoverCoworkItems,
   scanForCoworkConfigs,
   detectMarkers,

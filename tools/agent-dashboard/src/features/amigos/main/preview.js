@@ -54,7 +54,7 @@ function readPreview(root, skip) {
   const files = [];
   for (const f of all.slice(0, MAX_FILES)) {
     const ext = path.extname(f.rel).toLowerCase();
-    let bytes = 0;
+    let bytes;
     try {
       bytes = fs.statSync(f.full).size;
     } catch {

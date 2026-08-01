@@ -14,7 +14,21 @@
 `from __future__ import annotations` を置くこと（注釈を文字列化し、後方定義シンボルへの
 前方参照が def 時に評価されないようにするため）。
 """
+import os as _os
 import pkgutil as _pkgutil
+import sys as _sys
+
+# agentcore（transport / protocol / vocab / heartbeat の共通ライブラリ）への import 経路。
+# 開発木・リポジトリ内直接実行では tools/agent-tools/agentcore にある（3 エンジンで共有する
+# ものの置き場。tools/agent-flow/agent_flow/__init__.py から見て ../../agent-tools/agentcore）。
+# zipapp 配布では install.sh が agentcore/ を同じアーカイブへ同梱するため、zip 自身が
+# sys.path に載っていれば下記の追加パスは（存在しなくても無害に）素通りし、素の
+# `import agentcore` がアーカイブ内の agentcore/ を解決する（事前検証 V2）。
+_agentcore_dir = _os.path.join(
+    _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))),
+    "agent-tools", "agentcore")
+if _agentcore_dir not in _sys.path:
+    _sys.path.insert(0, _agentcore_dir)
 
 # exec する断片を依存順（＝元ファイルの記述順）に並べる。この順序を保つ限り、元ファイルが
 # top-to-bottom で NameError なく実行できた以上、import 時の前方参照はすべて満たされる。
@@ -34,11 +48,13 @@ _FRAGMENTS = (
     "plugins",       # executor プラグイン loader
     "waits",         # park & poll / service_waits
     "continuation",  # Continuation（再計画）
+    "verifyplan",    # 統一 verify の専用 runner（verification_plan → receipt）
     "orchestrate",   # cmd_orchestrate
     "work",          # cmd_work
     "run",           # cmd_run + child spawn
-    "submit",        # cmd_submit + cmd_cancel
-    "daemon",        # daemon lock + cmd_daemon
+    "submit",        # cmd_cancel
+    "board",         # 委譲公示板（agent-board）への参加（入札・引き渡し）
+    "daemon",        # tick 部品 + cmd_participate
     "cleanup",       # sweep / cmd_gc
     "status",        # cmd_status / cmd_result
     "doctor",        # cmd_doctor
@@ -54,4 +70,4 @@ for _name in _FRAGMENTS:
     _code = compile(_src, _name + ".py", "exec")
     exec(_code, _g)
 
-del _pkgutil, _g, _name, _src, _code
+del _os, _pkgutil, _sys, _agentcore_dir, _g, _name, _src, _code

@@ -1,0 +1,34 @@
+{
+  "id": "constitutional-ai",
+  "name": "Constitutional AI",
+  "category": "refine-loop",
+  "tier": "medium",
+  "source": "Constitutional AI (Bai et al., 2022)",
+  "when_to_use": "明文化した原則（ガイドライン）への適合を批評→改稿で担保したいとき。",
+  "signals": [
+    "守るべき原則・規約がある",
+    "コンプライアンス的な改稿"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "author",
+        "role": "成果物を作り、原則違反の指摘で改稿する",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "critic",
+        "role": "各原則に照らして違反を洗い出し、無くなれば承認する",
+        "required": true,
+        "approver": true
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved",
+      "review_rounds": 2
+    }
+  },
+  "feasibility": "partial",
+  "feasibility_note": "原則ごとの並列チェックは 1 critic の逐次確認で近似。"
+}

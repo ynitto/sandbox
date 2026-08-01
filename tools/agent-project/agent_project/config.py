@@ -6,7 +6,13 @@ from __future__ import annotations
 # このツールがスキルリポジトリ内に置かれているサブディレクトリ（自動アップデートの参照先）。
 # 自動アップデートは update_repo のこのパス以下だけを temp 領域へ sparse-checkout して
 # install.sh を実行する（doctor と同じ流儀で、操作は決定的・無関係ファイルは取得しない）。
-TOOL_SUBDIR = "tools/agent-project"
+#
+# **共有物のパスも並べる**（カンマ/空白区切り。`update.split_subdirs`）。cone mode の
+# sparse-checkout は指定ディレクトリの**兄弟を含まない**ため、本体だけ取ると
+# `tools/agent-tools`（統合インストーラ + agentcore＝3 エンジンで共有するものの置き場）が
+# 無く、installer が `agentcore パッケージが見つかりません` で必ず失敗する
+# （自己更新が毎回サイレントに見送られる）。先頭が installer とダイジェストの基準ディレクトリ。
+TOOL_SUBDIR = "tools/agent-project tools/agent-tools"
 # スキルリポジトリ（git URL/パス）の既定。空なら install.py が生成する skill-registry.json から
 # 自動解決する（repositories.origin.url → install_dir）。設定ファイルの update_repo で明示も可。
 DEFAULT_UPDATE_REPO = ""
@@ -26,58 +32,86 @@ class Config:
     needs: Path        # ディレクトリ（案件毎）
     workdir: Path
     bus: Path
+    journal_max_bytes: int = 262144
+    journal_keep: int = 20
     git_bus: "str | None" = None
     git_branch: str = "main"
     git_subdir: "str | None" = None
-    # 状態の git 保存・共有（state_git）: ワーク内容（プロジェクトルートの状態）を共有 git リポジトリへ
-    # 双方向同期し、リモートの agent-dashboard と結果/指示を往復する。fetch/push は
-    # state_git_interval で律速。ルート自体が git クローンなら管理クローンを介さず直接コミット・push
-    # する（direct モード。state_git 未設定でも有効）。
-    state_git: "str | None" = None        # 共有リポジトリ（URL/パス）。None で無効（direct モードを除く）
-    state_git_branch: str = "main"        # 同期先ブランチ
-    state_git_subdir: str = "agent-project"  # リポジトリ内の保存先サブディレクトリ（多重コミッタとの名前空間分離）
+    # 状態の git 同期: root（= 状態専用リポジトリの clone）自身の origin へ双方向同期し、
+    # リモートの agent-dashboard と結果/指示を往復する（DirectStateGit）。ローカルのコミットは
+    # 毎同期で行い、fetch/push だけを state_git_interval で律速する。
     state_git_interval: float = 300.0     # fetch/push の最短間隔（秒）。0 で毎同期（リモート負荷は増える）
-    # 実行層 agent-flow daemon をこのプロジェクト用に agent-project が起動・監視する（opt-in）。
-    manage_flow_daemon: bool = False
-    # daemon に --config で渡す共有 agent-flow.yaml（任意。未指定は agent-flow の既定発見に委ねる）。
+    # agent-flow へ --config で渡す共有 agent-flow.yaml（任意。未指定は agent-flow の既定発見に委ねる）。
     # agent-flow の設定値（executor / state_git_subdir / gitlab.* / defer_waits 等）は個別に CLI 注入
     # せず、この設定ファイルに集約して agent-flow に読ませる（agent-project 側に agent-flow 設定を増やさない）。
     # 例外は「バスをどのリポジトリへ鏡写しするか」の routing（--state-git 等）のみで、これは
     # agent-project の役割なので CLI 注入し続ける。
     flow_config: "str | None" = None
-    flow_max_workers: int = 4          # agent-flow daemon の worker 上限
-    # 状態 worktree（build_config が root を差し替える。下の _redirect_root_to_state_worktree 参照）
-    state_worktree_dir: str = ""
-    state_branch: str = "agent-state"
-    state_commit: bool = True
-    state_commit_interval: float = 300.0
-    state_push: bool = False
-    state_backup_branch: str = "main"  # 状態のバックアップ先（正本ブランチ）。空で無効
-    state_top: "Path | None" = None    # 本体リポジトリのトップ（状態を worktree へ逃がしたときだけ入る）
-    # 設定・CLI で指定された素の root（worktree へリダイレクトする前）。プロジェクトの同一性は
-    # これで判定する: 実書き込み先（backlog.parent）は worktree 側を指すので、start/stop が照合に
-    # 使う root（_resolved_root＝リダイレクトしない）と食い違い、重複検出が空振りする。
-    # 外部操作者が --root に渡すのもこの値（worktree 側を渡すと二重リダイレクトになる）。
-    source_root: "Path | None" = None
+    # 状態専用リポジトリ（S1）。root は常にこのリポジトリの通常 clone で、リダイレクトは無い。
+    # 宣言の唯一の置き場は host.yaml の projects[]（clone 前に読める場所が要るため）で、
+    # ここに入るのは「いま何で動いているか」の導出値（doctor・status の表示と origin 検査）。
+    state_repo: str = ""
+    state_repo_branch: str = "main"    # 状態を載せるブランチ
     force: bool = False                # 同じプロジェクトを監視中でも起動する（watch の重複を許す）
     status_interval: float = 0.0          # watch アイドル中に status.json の生存信号を更新する間隔（秒）。
                                            # 既定 0=無効（idle 中は追加コミットを一切生まない）。>0 でこの間隔
                                            # ごとに 1 回だけ書き直し、state_git の commit-if-diff に乗る
-    lock_dir: "str | None" = None   # agent-flow daemon ロックの置き場（外部 daemon 発見のため agent-flow と一致させる）
     agent_flow: "str | None" = None
+    # 複数 PC のノード割当（バックログ単位で実行 PC を選ぶ）。node はこの PC のエンジン名で、
+    # PC 毎に異なるため CLI --node か環境変数 AGENT_PROJECT_NODE からのみ取り（共有 yaml には
+    # 載せない＝全 PC 同名になる事故を防ぐ）。空なら無名エンジン＝従来どおり全タスクを消化する。
+    # default_node はプロジェクト共有設定で、node 未指定タスクをどの PC が拾うかの既定
+    # （空なら従来どおり誰でも拾う）。割当の一致判定は task_runnable_here。
+    node: str = ""
+    default_node: str = ""
+    availability: dict = field(default_factory=dict)  # PC 固有の夜間停止設定（local profile のみ）
+    # coordination（複数 PC 制御）の設定キーは廃止した（実装計画 W1-8）。
+    # _coordination_active(cfg) が「origin があり、かつ自分以外の生存ノードが status/ に
+    # 観測されているか」を都度見る（単独 PC は origin があっても CAS を通さない）。
+    controller_heartbeat_sec: float = 30.0
+    controller_lease_sec: float = 120.0
+    coordination_retries: int = 3
+    clock_skew_tolerance_sec: float = 30.0
+    # unknown（リモート不通で claim を検証できない）隔離の上限（W7）。自ノードの隔離が
+    # この件数に達したら既存の throttle→report 降格で新規 claim を止める（0 = 無効）。
+    unknown_quarantine_max: int = 3
+    # learn の失効（W10）: worked を挟まず misfire がこの回数続いた出典の learn は適用しない
+    # （0 = 失効しない）。人の無効化は決定記録の `action  : learn-disable`。
+    learn_misfire_limit: int = 3
+    # 保持契約（W11・gc が実行者）。verifications は task ごとに直近 N 世代（0 = 刈らない）、
+    # journal / run-log の退避と不変コピーは日数で刈る（0 = 刈らない）。archive は常に保持。
+    verifications_keep: int = 5
+    gc_retention_days: int = 30
     planner: str = "agent"         # 優先順位付け戦略: agent（エージェント委譲）/ none（priority＋古さ）
     flow_planner: str = "flow-planner"  # agent-flow run に渡す planner
     # ルーティング: タスク → ちょうど1つの書込先ワークスペースを決める自動判断。agent=曖昧時に
     # エージェント委譲で推定（charter owns: と route: の決定論を先に適用）/ none=決定論のみ（推定しない）。
     route_planner: str = "agent"
     default_workspace: str = ""    # route で決まらないタスクの既定ワークスペース（charter の name/url）。空で無効
-    location: str = "auto"         # act の実行モード: auto / local / daemon / remote
+    location: str = "auto"         # act の実行モード: auto / local / board
+    # 委譲公示板（agent-board）への依頼側自動配線（opt-in）。空文字で無効（従来どおり）。
+    # 設定すると `location: auto` は offload ポリシー一致タスクを板へ post し、入札・実行は
+    # 請負側（agent-flow / agent-amigos の board 参加デーモン）に委ねる。板は「リポジトリ＋契約」
+    # だけで agent-project はここへファイルを書く/読むだけ（結合はデータ契約のみ）。
+    board: str = ""                # 板の場所（ローカル dir / git+<url>）
+    board_workdir: "str | None" = None  # git+ 板のクローン作業領域（既定は自動）
+    board_workload: str = "flow"   # 板へ公示する workload（flow / amigos）
     executor: str = "agent"
     model: "str | None" = None
     agent_cli: str = "kiro"        # LLM 実行に使うエージェント CLI: kiro / claude / copilot / codex
     agent_timeout: float = 300.0   # エージェント CLI 1 呼び出しのタイムアウト秒（0 以下で無効）
+    # argv 渡しの CLI へ渡せる最大バイト数（超過分は一時ファイルへ退避して参照渡し）。
+    # free 関数も実行時の Config を参照し、doctor / status と同じ値を使う。
+    argv_limit: int = 100000
     # バックログ分解の粒度: coarse（ストーリー相当・既定）/ fine（単機能）/ finest（1ファイル/1関数）
     granularity: str = "coarse"
+    # 内側（agent-flow の実行時タスクグラフ）へ渡す分解粒度。外側の granularity とは**別のノブ**:
+    # 外側は「人がレビューするバックログの INVEST 粒度」、内側は「1 ノードのスコープ上限」。
+    # 既定 auto は agent-flow 側の complexity 導出に任せる。かつて外側の granularity（既定
+    # coarse）をそのまま内側へ渡していたため、内側の work ノードレンジが常に 1〜3 に固定され、
+    # 複雑なタスクでも「まとめて 1〜3 ノード」に畳まれていた（層ごとに既定が異なるという
+    # 粒度設計の約束を結線が壊していた）。
+    flow_granularity: str = "auto"
     max_iterations: int = 3
     max_cycles: int = 20
     max_seconds: float = 0.0
@@ -101,9 +135,6 @@ class Config:
     level_window: int = 10           # 手戻り率の評価窓（直近 N 件の完了）
     level_rework_max: float = 0.0    # 昇格を許す最大 rework_rate（既定 0＝手戻りゼロ）
     act_timeout: float = 1800.0
-    # 非ブロッキング委譲: daemon/remote への submit で結果を待たず次のタスクへ進み、offloaded にして
-    # 次パスでポーリングして回収する。gitlab 等の長期委譲でループを塞がない（専用 daemon が run を保持）。
-    act_async: bool = False
     notify_cmd: "str | None" = None
     actor: str = "user"
     archive: "Path | None" = None   # done の退避先ディレクトリ（既定 archive/）
@@ -149,7 +180,22 @@ class Config:
     # spec ルーティング（既定 off）: 採点 max(c,r,a) が spec_threshold に達したタスクに spec 前段
     # タスク（specs/<id>/ の spec.md/design.md/tasks.md 作成・人の承認で実装タスクへ展開）を前置する。
     spec_track: bool = False
+    # 3 段ルーティング（S7）: 採点 max(c,r,a) が full 以上ならフル spec（spec/design/tasks の
+    # 3 点セット + tasks.md 展開）、light 以上ならライト spec（design.md 1 枚・展開なし）、
+    # それ未満はスキップ。旧 `spec_threshold` は full の別名として読む（既存設定を壊さない）。
+    # 採点は各軸 1〜3 なので上限は 3（4 以上を書いても到達しない）。
     spec_threshold: int = 3
+    spec_threshold_full: int = 3
+    spec_threshold_light: int = 2
+    # 証跡ベースの検証（S5）。false で従来どおり決定的 verify のみ（acceptance は表示だけ＝移行用）。
+    verifier: bool = True
+    verifier_skill: str = "backlog-verifier"
+    verify_side_effects: str = "workspace"    # workspace=作業ツリー内のみ / network=読み取りの HTTP 到達まで
+    # バックログ分解（S6）。planner_skill=分解のプロンプト・出力契約を供給するスキル名。
+    # plan_sections=required で必須項目（why/desc/acceptance/size）の欠落を 1 回再要求し、
+    # なお欠けるタスクは人の目に入る場所（proposed / draft）へ回す。warn は注記のみ。
+    planner_skill: str = "backlog-planner"
+    plan_sections: str = "required"
     # リポジトリ理解の成果物化（既定 off）: plan の直前に charter の書込先 repo ごとに
     # context/<repo名>.md を生成（HEAD sha キャッシュ・変化時のみ再生成）。読み出しは常時
     # （人が手書きした context/*.md も plan / act / verify 合成へ有界注入される）。
@@ -168,9 +214,14 @@ class Config:
     # 成果物レビュー（既定 on）: verify PASS 後、level に依らず常に review（検収待ち）へ。
     # 人の承認で done 確定（GitLab 設定があれば MR を自動マージ規則で決着）。false で従来の自動 done。
     delivery_review: bool = True
+    # フォージ（MR/PR）側の決定的シグナルからの決着（S4-5）。
+    #   settle  … マージ=承認 / 未マージクローズ=却下 / changes-requested=差し戻し として決着する
+    #   observe … 照会結果を journal に残すだけ（移行用）
+    # 値域の正規化は build_config で済ませる——読み手（mr.py）が getattr の既定で庇うと、
+    # 配線が落ちても「常に settle」で静かに動き続けて誰も気付けない（P0-4 で実際に踏んだ）。
+    remote_review: str = "settle"
     throttle: float = 0.0   # ソフト予算比率(0=off)。max_tokens/max_cost のこの割合で run を打ち切り watch は report 降格
     runlog: "Path | None" = None    # 構造化 run-log（JSONL・run 毎に1行追記）。既定 <root>/run-log.jsonl
-    registry: "list" = field(default_factory=list)  # 共有レジストリ（別ホスト発見用。NFS/同期/git バス）
     dry_run: bool = False
     once: bool = False
     project_name: str = ""               # プロジェクト名（ルートのディレクトリ名。milestone id の一次ソース）
@@ -253,13 +304,63 @@ def _current_branch(cfg: "Config") -> str:
     return _git_out(cfg.workdir, "rev-parse", "--abbrev-ref", "HEAD").strip()
 
 
-def _source_repo(cfg: "Config") -> Path:
-    """成果物（worker が書いたコード）が置かれるリポジトリ。
+def resolve_local_repo(url: str) -> "Path | None":
+    """URL に対応する **このノードのローカルクローン** を host.yaml の `repos[]` から引く（S3）。
 
-    cfg.workdir は状態 worktree（<repo>-agent-state/.agent-project）を指すので、そこの git を見ても
-    出てくるのは bus/ の claims や events ばかりで、レビューしたいコードは 1 行も出てこない。
-    コードは本体リポジトリの作業ブランチ ap/<task-id> にある。"""
-    return cfg.state_top or cfg.workdir
+    ノード固有の絶対パスを host.yaml だけに置くのが S3 の要点——共有 repos.json に書くと、
+    その PC にしか存在しないパスが state repo 経由で全 PC へ配られる。解決の実装は
+    `agentcore.repolocal` に一本化してある（agent-flow・dashboard と同じ規則で引くため）。"""
+    local = _repolocal.resolve_local(url)
+    return Path(local) if local else None
+
+
+def _task_repo_url(cfg: "Config", task: "Task | None") -> str:
+    """タスクの書込先リポジトリ URL（run メタ → 永続化済み workspace spec → 生トークン）。
+
+    生の `- workspace:` トークンまで落ちるのは、charter のレジストリに載っていないローカル
+    パスをそのまま書込先にした単一リポジトリ運用のため。`_raw_url_spec` は URL らしくない
+    トークンを spec 化しない（正しい——ルーティングの推測はしない）ので、ここで拾わないと
+    その構成では成果物の所在が永久に解決できない。"""
+    if task is None:
+        return ""
+    url = str((_task_run_meta(cfg, task).get("workspace") or {}).get("url") or "").strip()
+    if url:
+        return url
+    url = str((_workspace_spec_for(cfg, task) or {}).get("url") or "").strip()
+    return url or _strip_code(str(task.get("workspace") or "").strip())
+
+
+def _source_repo(cfg: "Config", task: "Task | None" = None) -> Path:
+    """成果物（worker が書いたコード）が置かれるリポジトリのローカル解決（S1 §3.5）。
+
+    S1 以前は「リダイレクト前の root（成果物リポジトリ）」= `cfg.state_top` を暗黙のアンカーに
+    していた。状態ルートを状態専用リポジトリ一本にした結果その手掛かりが無くなるので、
+    タスクの書込先 URL から解決し直す:
+
+      1. host.yaml `repos[].local`（S3 のノード固有宣言。フルクローンなのでマージまでできる）
+      2. workspace がローカルパスそのもの（`_raw_url_spec` が許す形）ならそのディレクトリ
+      3. 共有 bare ミラー（`ensure_cache`。agent-flow と同じキャッシュ・毎回 fetch＝INV-1 鮮度）
+      4. どれも解決できなければ workdir（従来のフォールバック。差分は空になる）
+
+    3 は blobless ミラーなので、フォージ無し運用の自動マージ（`_merge_task_branch`）では
+    blob の遅延取得にネットワークが要る。**そこまで含めて確実にしたいノードは 1 を宣言する**
+    ——S4 でレビューと決着が MR/PR へ寄るため、3 の出番は縮む見込み。"""
+    url = _task_repo_url(cfg, task)
+    if url:
+        local = resolve_local_repo(url)
+        if local is not None:
+            return local
+        if "://" not in url:
+            p = Path(url).expanduser()
+            if p.is_dir():
+                return p
+        try:
+            cache = ensure_cache(url)
+        except (OSError, subprocess.SubprocessError):
+            cache = None
+        if cache:
+            return Path(cache)
+    return cfg.workdir
 
 
 def _task_run_meta(cfg: "Config", task: "Task") -> dict:
@@ -293,11 +394,13 @@ def _task_work_branch(cfg: "Config", task: "Task") -> "tuple[str, str] | None":
 
 
 def work_branch_changes(cfg: "Config", base: str, branch: str,
-                        repo: "Path | None" = None) -> "tuple[str, list[str]]":
+                        repo: "Path | None" = None,
+                        task: "Task | None" = None) -> "tuple[str, list[str]]":
     """作業ブランチの成果 (ref, 変更ファイル一覧)。無ければ ("", [])。
 
-    worker は成果を origin へ push するので、ローカルに無ければ取り込んでから差分を取る。"""
-    repo = Path(repo) if repo is not None else _source_repo(cfg)
+    worker は成果を origin へ push するので、ローカルに無ければ取り込んでから差分を取る。
+    repo 未指定なら task の書込先 URL からローカルクローンを解決する（`_source_repo`）。"""
+    repo = Path(repo) if repo is not None else _source_repo(cfg, task)
 
     def _has(ref: str) -> bool:
         return bool(_git_out(repo, "rev-parse", "--verify", "--quiet", ref).strip())
@@ -341,7 +444,7 @@ def delivery_entries(cfg: "Config", task: "Task | None" = None,
     persisted_ws = _workspace_spec_for(cfg, task) or {}
     entries: "list[dict]" = []
     if branch:
-        repo = _source_repo(cfg)
+        repo = _source_repo(cfg, task)
         ref, files = work_branch_changes(cfg, target, branch, repo=repo)
         url = str(ws.get("url") or persisted_ws.get("url") or "")
         name = _repo_label(url, fallback=repo.name)
@@ -451,7 +554,7 @@ def delivery_evidence(cfg: "Config", act_msg: str, git_base, location: str = "lo
     branch = _current_branch(cfg)
     changed = sorted(meaningful_changes(cfg, git_base)) if git_base is not None else []
     where = str(cfg.workdir)
-    if location == "remote" and cfg.git_bus:
+    if cfg.git_bus:
         where += f"（git-bus: {cfg.git_bus}@{cfg.git_branch}）"
     lines = [f"- 成果物: {ref}",
              f"- 所在: {where}" + (f" / ブランチ {branch}" if branch else ""),
@@ -565,6 +668,34 @@ def append_delivery(cfg: Config, task: Task, ref: str, ts: str, branch: str = ""
         f.write(f"{header}| {task.id} | {title} | PASS | {cell} | {ts} |\n")
 
 
+def rebuild_delivery(cfg: Config) -> None:
+    """archive/ の集合から DELIVERY.md を決定的・原子的に再生成する。"""
+    rows: list[tuple[str, str, str, str]] = []
+    archive = cfg.archive_dir()
+    if archive.is_dir():
+        for path in sorted(archive.glob("*.md"), key=lambda p: p.name):
+            try:
+                body = path.read_text(encoding="utf-8")
+                task = parse_task(body, path.stem)
+            except OSError:
+                continue
+            completed = re.search(r"(?m)^- 完了\s*:\s*(.+)$", body)
+            result = re.search(r"(?m)^- 成果\s*:\s*(.+)$", body)
+            rows.append((task.id, task.title, result.group(1).strip() if result else "(参照なし)",
+                         completed.group(1).strip() if completed else ""))
+    lines = ["# 納品一覧（受領書）", "",
+             "| id | タイトル | 検収 | 成果参照 | 完了 |", "|---|---|---|---|---|"]
+    for task_id, title, ref, completed in rows:
+        cells = [str(v).replace("|", "\\|").replace("\n", " ")
+                 for v in (task_id, title, ref, completed)]
+        lines.append(f"| {cells[0]} | {cells[1]} | PASS | {cells[2]} | {cells[3]} |")
+    path = cfg.delivery
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.parent / f".{path.name}.tmp.{os.getpid()}"
+    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def archive_task(cfg: Config, task: Task, vmsg: str, ref: str, ts: str, evidence: str = "") -> None:
     """done タスクを archive/<id>.md へ退避し、検収用の『納品書』を付す（backlog と1:1）。
     evidence（成果物の所在・差分・検証）を載せ、後から「どこに何が入ったか」を辿れるようにする。
@@ -586,6 +717,7 @@ def archive_task(cfg: Config, task: Task, vmsg: str, ref: str, ts: str, evidence
                  f"{brief}\n")
     _archive_write(cfg, task.id, body)
     delete_task_file(cfg, task)
+    rebuild_delivery(cfg)
 
 
 def _archive_write(cfg: "Config", tid: str, body: str) -> None:

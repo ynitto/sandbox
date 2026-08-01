@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>アーキテクチャレビュー — agent-flow</title>
+  <style>
+    :root{color-scheme:light;--ink:#172033;--muted:#64748b;--line:#cbd5e1;--paper:#fafaf9;--card:#fff;--deep:#172033;--accent:#047857;--warn:#b45309;--leak:#b91c1c}
+    *{box-sizing:border-box} body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
+    main{width:min(1080px,calc(100% - 32px));margin:auto;padding:48px 0} h1,h2{line-height:1.2} h1{font-size:34px;margin:0 0 8px} h2{font-size:24px;margin:8px 0 18px}
+    header{margin-bottom:34px}.meta,.files,.caption{color:var(--muted)} .legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:18px;font-size:13px}.key{display:inline-flex;align-items:center;gap:7px}.swatch{width:24px;height:14px;border:1px solid #64748b;background:#fff}.swatch.seam{border-style:dashed}.swatch.deep{background:var(--deep)}.swatch.leak{border:0;border-top:3px solid var(--leak)}
+    article,.recommendation{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:24px;margin:28px 0;box-shadow:0 8px 26px rgba(15,23,42,.04)}
+    .badges{margin-bottom:15px}.badge{display:inline-block;margin:0 6px 6px 0;padding:3px 9px;border-radius:999px;background:#ecfdf5;color:#065f46;font-weight:700;font-size:13px}.badge.amber{background:#fffbeb;color:#92400e}.badge.slate{background:#f1f5f9;color:#475569}
+    .files{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:13px;padding:10px 12px;background:#f8fafc;border-radius:8px;margin:12px 0 20px}
+    .diagrams{display:grid;grid-template-columns:1fr 1fr;gap:16px}.diagram{min-height:280px;padding:16px;border:1px solid var(--line);border-radius:10px;background:#f8fafc;overflow:hidden}.diagram h3{margin:0 0 10px;font-size:14px;color:var(--muted);letter-spacing:.08em}.diagram svg{display:block;width:100%;height:auto;max-height:320px} svg text{font:13px system-ui,-apple-system,"Segoe UI",sans-serif;fill:var(--ink)} svg .white{fill:#fff} svg .small{font-size:11px;fill:var(--muted)}
+    .facts{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:20px}.facts h3{font-size:13px;letter-spacing:.08em;color:var(--muted);margin:0 0 5px}.facts p{margin:0}.wins{margin:18px 0 0;padding-left:20px}.wins li{margin:5px 0}.evidence{margin-top:16px;padding:12px 14px;border-left:3px solid var(--accent);background:#f0fdf4;font-size:13px}.deletion{margin-top:12px;color:#334155;font-size:13px}.recommendation{border:2px solid var(--accent);padding:28px}.recommendation a{color:var(--accent);font-weight:700}
+    @media(max-width:760px){.diagrams,.facts{grid-template-columns:1fr}main{padding:28px 0}h1{font-size:28px}}
+  </style>
+</head>
+<body><main>
+  <header>
+    <h1>agent-flow アーキテクチャレビュー</h1>
+    <div class="meta">2026-08-01 · 対象: 実行フロー、run状態、子プロセス起動 · 査読反映済み · 実装変更なし</div>
+    <div class="legend"><span class="key"><span class="swatch"></span>モジュール</span><span class="key"><span class="swatch seam"></span>シーム</span><span class="key"><span class="swatch leak"></span>漏れ</span><span class="key"><span class="swatch deep"></span>深いモジュール</span></div>
+  </header>
+
+  <section id="candidates">
+    <article id="candidate-1">
+      <h2>共有名前空間フラグメントの独立モジュール化を再評価</h2>
+      <div class="badges"><span class="badge slate">仮説的</span><span class="badge slate">プロセス内</span></div>
+      <div class="files">agent_flow/__init__.py:4–15, 33–71 · agent_flow/*.py · tests/*.py</div>
+      <div class="diagrams">
+        <div class="diagram"><h3>現状 — 意図的な互換構造</h3><svg viewBox="0 0 470 270" role="img" aria-label="27個のフラグメントを共有名前空間へ合成する現状"><defs><marker id="a1" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#b91c1c"></path></marker></defs><rect x="15" y="20" width="105" height="42" rx="7" fill="#fff" stroke="#64748b"></rect><text x="68" y="46" text-anchor="middle">run.py</text><rect x="15" y="82" width="105" height="42" rx="7" fill="#fff" stroke="#64748b"></rect><text x="68" y="108" text-anchor="middle">work.py</text><rect x="15" y="144" width="105" height="42" rx="7" fill="#fff" stroke="#64748b"></rect><text x="68" y="170" text-anchor="middle">waits.py</text><rect x="15" y="206" width="105" height="42" rx="7" fill="#fff" stroke="#64748b"></rect><text x="68" y="232" text-anchor="middle">ほか24断片</text><rect x="205" y="56" width="245" height="150" rx="9" fill="#fff" stroke="#b91c1c" stroke-width="2"></rect><text x="328" y="88" text-anchor="middle">agent_flow globals</text><text x="328" y="116" text-anchor="middle" class="small">読み込み量を分割</text><text x="328" y="140" text-anchor="middle" class="small">既存テスト互換を維持</text><text x="328" y="164" text-anchor="middle" class="small">zipapp配布を維持</text><line x1="120" y1="41" x2="205" y2="82" stroke="#b91c1c" marker-end="url(#a1)"></line><line x1="120" y1="103" x2="205" y2="115" stroke="#b91c1c" marker-end="url(#a1)"></line><line x1="120" y1="165" x2="205" y2="148" stroke="#b91c1c" marker-end="url(#a1)"></line><line x1="120" y1="227" x2="205" y2="181" stroke="#b91c1c" marker-end="url(#a1)"></line></svg></div>
+        <div class="diagram"><h3>深化後</h3><svg viewBox="0 0 470 270" role="img" aria-label="責務別の深いモジュールへ畳み込む"><rect x="38" y="28" width="394" height="214" rx="12" fill="#172033"></rect><text x="235" y="58" text-anchor="middle" class="white">agent-flow 実行モジュール群</text><rect x="65" y="82" width="105" height="92" rx="8" fill="#334155" stroke="#94a3b8"></rect><text x="118" y="112" text-anchor="middle" class="white">run状態</text><text x="118" y="136" text-anchor="middle" class="small">内部実装を隠す</text><rect x="183" y="82" width="105" height="92" rx="8" fill="#334155" stroke="#94a3b8"></rect><text x="236" y="112" text-anchor="middle" class="white">ノード実行</text><text x="236" y="136" text-anchor="middle" class="small">内部実装を隠す</text><rect x="301" y="82" width="105" height="92" rx="8" fill="#334155" stroke="#94a3b8"></rect><text x="354" y="112" text-anchor="middle" class="white">計画と継続</text><text x="354" y="136" text-anchor="middle" class="small">内部実装を隠す</text><line x1="70" y1="204" x2="400" y2="204" stroke="#cbd5e1" stroke-dasharray="5 5"></line><text x="235" y="225" text-anchor="middle" class="white">明示された小さいインターフェース</text></svg></div>
+      </div>
+      <div class="facts"><div><h3>課題</h3><p>27フラグメントが一つの共有名前空間を持つため、独立import・シンボル所有・テスト面がファイル構造からは判別しにくい状態です。</p></div><div><h3>解決案</h3><p>実測でナビゲート摩擦が変更コストを上回る場合だけ、互換性とzipapp配布を保ちながら責務単位の実モジュール化を検討します。</p></div></div>
+      <ul class="wins"><li>局所性: 変更先が一箇所</li><li>レバレッジ: 小さいインターフェース</li><li>テスト面: private参照を削減</li></ul>
+      <div class="evidence">根拠: <code>__init__.py:4–15</code> と <code>README.md:441–462</code> は、LLMの読み込み量、既存のモンキーパッチとglobal再束縛、zipapp配布を保つための意図的な判断だと明記しています。privateシンボルを直接使うテストが広く存在するため、移行面は大きいままです。</div>
+      <div class="deletion"><b>削除テスト:</b> フラグメント合成を削除しても実行時の複雑性は消えません。一方、現方式は読み込み量と互換性を実際に隠しているため、単なる素通しとも判定できません。</div>
+    </article>
+
+    <article id="candidate-2">
+      <h2>除外: ワークノード実行は既に深い</h2>
+      <div class="badges"><span class="badge slate">候補から除外</span><span class="badge amber">ローカル差替可能</span></div>
+      <div class="files">agent_flow/work.py:40–220 · plugins.py:21–63, 160–182 · tests/test_bus.py:843–892</div>
+      <div class="facts"><div><h3>判定</h3><p><code>cmd_work(args)</code> はclaim、workspace、heartbeat、executor、park、claim喪失、結果確定を一つのインターフェースの背後に所有しており、既に深いモジュールです。</p></div><div><h3>残る確認</h3><p>executorにはagent・stub・pluginの複数アダプタがあり、シームも成立しています。順序不変条件に再現可能なテスト欠落が見つかるまで構造変更はしません。</p></div></div>
+      <ul class="wins"><li>局所性: <code>cmd_work</code> に集中済み</li><li>レバレッジ: 一入口で全試行</li><li>テスト面: executorシームを利用済み</li></ul>
+      <div class="evidence">根拠: <code>work.py:40–220</code> と設計書 <code>agent-flow-design.md:260–272</code> が同じ責務を示し、<code>tests/test_bus.py:843–892</code> は <code>cmd_work</code> の入口から結果を検証しています。</div>
+      <div class="deletion"><b>削除テスト:</b> <code>cmd_work</code> を削除するとclaimから結果確定までの順序制約が呼び出し側へ再出現します。削除テストを通るため、深化候補ではなく保持対象です。</div>
+    </article>
+
+    <article id="candidate-3">
+      <h2>初回／auto-healの子プロセス起動を一箇所へ深化</h2>
+      <div class="badges"><span class="badge">強く推奨</span><span class="badge slate">プロセス内</span></div>
+      <div class="files">agent_flow/run.py:12–29, 367–395, 458–478</div>
+      <div class="diagrams">
+        <div class="diagram"><h3>現状 — 固有argvが重複</h3><svg viewBox="0 0 470 280" role="img" aria-label="初回起動とauto-heal再起動が固有argvを重複して組み立てる"><defs><marker id="a3" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#b91c1c"></path></marker></defs><rect x="20" y="102" width="105" height="64" rx="8" fill="#fff" stroke="#64748b"></rect><text x="73" y="130" text-anchor="middle">_child_base</text><text x="73" y="150" text-anchor="middle" class="small">共通argvは集約済み</text><g fill="#fff" stroke="#64748b"><rect x="190" y="45" width="245" height="64" rx="8"></rect><rect x="190" y="166" width="245" height="64" rx="8"></rect></g><text x="312" y="73" text-anchor="middle">初回起動 argv</text><text x="312" y="94" text-anchor="middle" class="small">run.py:367–395</text><text x="312" y="194" text-anchor="middle">auto-heal argv</text><text x="312" y="215" text-anchor="middle" class="small">run.py:458–478</text><line x1="125" y1="125" x2="190" y2="80" stroke="#b91c1c" marker-end="url(#a3)"></line><line x1="125" y1="143" x2="190" y2="195" stroke="#b91c1c" marker-end="url(#a3)"></line><text x="235" y="270" text-anchor="middle" fill="#b91c1c">固有オプション追加時に同期が必要</text></svg></div>
+        <div class="diagram"><h3>深化後</h3><svg viewBox="0 0 470 280" role="img" aria-label="run起動契約が子プロセス詳細を隠す"><rect x="52" y="42" width="366" height="172" rx="12" fill="#172033"></rect><text x="235" y="76" text-anchor="middle" class="white">run起動モジュール</text><text x="235" y="108" text-anchor="middle" class="white">要求・設定・実行役を受け取る</text><text x="235" y="136" text-anchor="middle" class="small">argv配置・JSON化・環境変数を内部化</text><rect x="93" y="160" width="124" height="34" rx="7" fill="#334155" stroke="#94a3b8"></rect><text x="155" y="182" text-anchor="middle" class="white">orchestrator</text><rect x="253" y="160" width="124" height="34" rx="7" fill="#334155" stroke="#94a3b8"></rect><text x="315" y="182" text-anchor="middle" class="white">worker</text><line x1="235" y1="214" x2="235" y2="250" stroke="#64748b" stroke-dasharray="5 5"></line><text x="235" y="269" text-anchor="middle">小さい起動インターフェース</text></svg></div>
+      </div>
+      <div class="facts"><div><h3>課題</h3><p>共通argvは <code>_child_base</code> に集約済みですが、orchestratorとworkerの固有argvは初回起動とauto-heal再起動で重複し、設定伝搬の不変条件が二箇所へ漏れています。</p></div><div><h3>解決案</h3><p>初回とauto-healが同じ子プロセス起動構築を使う形へ畳み、固有オプションの追加を一箇所で完結させます。</p></div></div>
+      <ul class="wins"><li>局所性: 転記規則を集中</li><li>レバレッジ: 一要求で全起動</li><li>テスト面: 起動契約を一面化</li></ul>
+      <div class="evidence">根拠: <code>run.py:367–395</code> と <code>458–478</code> が同じorchestrator／workerの固有argvを組み立てています。auto-heal側のコメントは、過去に <code>--review</code> の伝搬を落とすとheal後だけ挙動が変わることを不変条件として明記しています。</div>
+      <div class="deletion"><b>削除テスト:</b> <code>_child_base</code> は削除すると共通argvが二箇所へ再出現するため既に深い一方、固有argvの重複を削除しても同じ複雑性が二経路に残ります。深化対象は後者だけです。</div>
+    </article>
+  </section>
+
+  <section id="top-recommendation" class="recommendation">
+    <h2>最優先候補</h2>
+    <p><a href="#candidate-3">初回／auto-healの子プロセス起動を一箇所へ深化</a> — 実際に重複する二つの実行経路へ限定でき、設定伝搬漏れを一度の修正と一つのテスト面へ局所化します。</p>
+  </section>
+</main>
+</body></html>

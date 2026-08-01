@@ -7,6 +7,35 @@ def consumable_tasks(tasks: "list[Task]") -> "list[Task]":
     return [t for t in tasks if t.consumable()]
 
 
+def task_runnable_here(cfg: "Config", t: "Task") -> bool:
+    """このエンジン（cfg.node）がこのタスクを消化してよいか（複数 PC のノード割当）。
+
+    後方互換: エンジンに node 名が無ければ常に True（無名エンジン＝従来どおり全消化）。
+    node 名があるとき:
+      - タスクに `- node:` 指定があれば、名前が一致するノードだけが消化する
+        （バックログ単位で実行 PC を選ぶ＝監視者が revise で node を付け替える）。
+      - タスクが未指定なら、default_node（プロジェクト共有設定）が空（＝誰でも／従来）か、
+        自分が default_node のときだけ消化する（未指定タスクの拾い先を 1 台に寄せられる）。
+    注意: これは正の割当フィルタで、claim 自体はホスト内原子性のまま。異なるノードへ
+    明示割当したタスクは互いに触らないが、未指定タスクを default_node 空のまま複数の名前付き
+    エンジンで走らせると従来同様の二重実行リスクが残る（回避は各タスクへ node を割り当てるか
+    default_node を 1 台に設定する）。
+
+    照合は `normalize_node_id` を通した綴りで行う（P0-3）。人は板の端末一覧（正規形＝小文字）を
+    見て `- node:` を書くので、エンジン側の名義が大文字を含んでいると**どのノードも拾わないまま
+    ready で固まる**。名義の正規化は 1 か所（`_resolved_node`）に寄せたが、正規化前に書かれた
+    タスクファイルはそのまま残るため、読む側でも同じ規則で突き合わせる。"""
+    mine = normalize_node_id(str(getattr(cfg, "node", "") or "").strip()) \
+        if str(getattr(cfg, "node", "") or "").strip() else ""
+    if not mine:
+        return True                                   # 無名エンジン＝フィルタしない（従来動作）
+    assigned = str(t.get("node", "") or "").strip()
+    if assigned:
+        return normalize_node_id(assigned) == mine
+    default = str(getattr(cfg, "default_node", "") or "").strip()
+    return (not default) or (normalize_node_id(default) == mine)
+
+
 def task_deps(task: "Task") -> "list[str]":
     """`- after: T1, T2` の依存 ID 群（カンマ/空白区切り）。無ければ空。"""
     raw = task.get("after", "")
@@ -47,20 +76,22 @@ def _extract_json_obj(text: str) -> "dict | None":
     return obj if isinstance(obj, dict) else None
 
 
-# LLM 実行に使うエージェント CLI とタイムアウト（設定 agent_cli / agent_timeout）。
-# rank_agent 等の free 関数は args を持たないため、build_config が設定値をここへ確定する
-# （agent-flow の _configure_thresholds と同じ流儀）。
-_AGENT_CLI: str = "kiro"
-_AGENT_TIMEOUT: float = 300.0
-# 処理（purpose）毎の上書き（設定 agents: の正規化済みマップ。build_config が確定する）。
-# 例: {"plan": {"agent_cli": "claude", "model": "opus"}, "assess": {"model": "haiku"}}
-_AGENT_OVERRIDES: "dict[str, dict]" = {}
+# build_config が確定した唯一の実行時設定。free 関数も値を複製せず同じ Config を読む。
+_RUNTIME_CONFIG = None
 # エージェントを使用する処理の一覧（設定 agents: のキー）。ここに無いキーは無視される。
 AGENT_PURPOSES = ("plan", "review", "prioritize", "route", "adjudicate", "verify",
                   "distill", "assess", "repo_map", "doctor")
-# agent_cli の設定値 → doctor が PATH 確認すべき実行ファイル名（未知の agent_cli はそのまま使う）。
-_AGENT_CLI_BINARIES = {"kiro": "kiro-cli", "claude": "claude", "copilot": "copilot",
-                       "codex": "codex"}
+
+
+def agent_cli_binary(cli: str) -> str:
+    """doctor が PATH 確認すべき実行ファイル名。定義ファイルの command[0] から導く（S9）。
+    以前は組み込み 4 CLI の対応表をここに持っていたが、定義が JSON へ移った以上
+    表を残すと「JSON を直したのに doctor だけ古い名前を探す」二重管理になる。
+    定義を解決できない名前はそのまま返す（doctor は PATH に無いと報告するだけ）。"""
+    try:
+        return str(_agentcli.load_cli(cli)["command"][0])
+    except _agentcli.AgentCliError:
+        return str(cli)
 
 
 def _normalize_agent_overrides(raw) -> "dict[str, dict]":
@@ -87,8 +118,9 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
     """処理（purpose）の実効エージェント。(agent_cli, model 上書き) を返す。
     agent-control（管理面の横断上書き）＞ 設定 agents: の該当キー ＞ グローバル agent_cli。
     soft/縮退中は control の degraded を重ねる（model 上書きは無ければ None＝呼び出し値）。"""
-    ov = _AGENT_OVERRIDES.get(purpose) or {}
-    cli = str(ov.get("agent_cli") or _AGENT_CLI).lower()
+    cfg = _RUNTIME_CONFIG
+    ov = ((cfg.agents if cfg is not None else {}) or {}).get(purpose) or {}
+    cli = str(ov.get("agent_cli") or (cfg.agent_cli if cfg is not None else "kiro")).lower()
     model = ov.get("model") or None
     c_cli, c_model = _control_override(purpose)
     if c_cli:
@@ -105,159 +137,70 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
     return cli, model
 
 
+def _agent_argv_limit() -> int:
+    """argv 渡しのプロンプト上限（バイト）。設定 `argv_limit`（0 以下なら組み込み既定）。
+
+    上限を超えると `execve` が E2BIG で落ち、**プロセス起動そのものが立たない**——
+    verifier は全基準 unverifiable、plan は空振りで人へ倒れる。agent-flow の
+    `_agent_argv_limit` と同じ規則（0 以下は既定へフォールバック）。"""
+    limit = _RUNTIME_CONFIG.argv_limit if _RUNTIME_CONFIG is not None else 0
+    return limit if limit > 0 else _agentcli.DEFAULT_ARGV_LIMIT
+
+
+# 退避したときに argv へ載せる短い指示。`{file}` は退避先に置換される。
+# **定義ファイルの `spill.instruction` は使わない**——あれは権限フラグの置き換え
+# （`--trust-tools=fs_read`）とセットの機構で、実行して確かめる呼び出しに掛けると
+# 検証がコマンドを 1 つも走らせられなくなる（P1-2）。
+# 枠は `agentcore.agentcli.spill_instruction`（3 者共通・P2-5）。ここが決めるのは
+# 「何の全文か」と「読んだあと何をするか」だけ。
+_SPILL_INSTRUCTION = _agentcli.spill_instruction(
+    "この処理の入力の全文", then="その内容を対象にしてください")
+
+
 def _agent_cmd(cli: str, model: "str | None",
                prompt: str) -> "tuple[list[str], str | None, str | None]":
     """エージェント CLI 1 回分の (argv, stdin テキスト, 最終応答ファイル) を組み立てる
-    （実行はしない・決定的）。最終応答ファイルは codex のみ使う（stdout がイベントログのため）。"""
-    if cli == "claude":
-        # Claude Code ヘッドレス。プロンプトは stdin 渡し（ARG_MAX に当たらない）。
-        cmd = ["claude", "-p", "--output-format", "text", "--dangerously-skip-permissions"]
-        if model:
-            cmd += ["--model", model]
-        return cmd, prompt, None
-    if cli == "copilot":
-        # GitHub Copilot CLI ヘッドレス。-s で応答本文のみ、--allow-all-tools は
-        # 非対話モードの必須フラグ（--allow-all-paths はファイル読み書きの許可）。
-        cmd = ["copilot", "-s", "--allow-all-tools", "--allow-all-paths", "--no-color"]
-        if model:
-            cmd += ["--model", model]
-        return cmd + ["-p", prompt], None, None
-    if cli == "codex":
-        # OpenAI Codex CLI ヘッドレス（codex exec）。プロンプトは stdin 渡し（"-"）。
-        # stdout には実行イベントログが混ざるため、最終応答は --output-last-message の
-        # ファイルから読む。--skip-git-repo-check は git リポジトリ外でも動かすため。
-        fd, out_file = tempfile.mkstemp(prefix="agent-project-codex-", suffix=".txt")
-        os.close(fd)
-        cmd = ["codex", "exec", "--skip-git-repo-check",
-               "--dangerously-bypass-approvals-and-sandbox", "--color", "never",
-               "--output-last-message", out_file]
-        if model:
-            cmd += ["--model", model]
-        return cmd + ["-"], prompt, out_file
-    if cli in ("kiro", ""):
-        cmd = ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"]
-        if model:
-            cmd += ["--model", model]
-        return cmd + [prompt], None, None
-    # 組み込み以外 → プラグイン定義（agents/<name>.json・契約は schemas/agent-cli.schema.json）。
-    # 以前は未知の agent_cli が黙って kiro-cli に落ちていた（設定ミスに気づけない罠）。
-    # 定義が無ければ明示エラーにする。
-    plug = load_agent_plugin(cli)
-    if plug is None:
-        raise RuntimeError(
-            f"未知の agent_cli です: {cli!r}（組み込みは kiro/claude/copilot/codex。"
-            f"それ以外は agents/{cli}.json 定義が必要です — 契約: schemas/agent-cli.schema.json・"
-            f"探索順: $KIRO_AGENTS_DIR → <root>/agents → ~/.agents/agents → ~/.kiro/agents）")
-    return _plugin_agent_cmd(plug, model, prompt)
+    （実行はしない・決定的）。
+
+    組み立ての正典は `agentcore.agentcli`＝定義ファイル（agents/<name>.json）で、**組み込み
+    （kiro/claude/copilot/codex）もここでは特別扱いしない**（S9）。以前はこの関数に 4 CLI の
+    argv がハードコードされ、同じ知識が agent-flow・agent-amigos・dashboard にも重複していた。
+    """
+    spec = load_agent_plugin(cli)
+    built = _agentcli.headless_cmd(spec, model, prompt)
+    return built["argv"], built["stdin"], built["output_file"]
 
 
-# --- エージェント CLI プラグイン（データ契約: schemas/agent-cli.schema.json） -----------------
-# 組み込み（kiro/claude/copilot/codex）以外の CLI（cursor / ollama / hermes …）を、
-# 定義ファイルだけで差し込む公式の口。agent-flow も同じ契約を読む（結合はデータ契約のみ・
-# ローダは各ツールが自前で持つ = ツール間のコード依存を作らない）。
-_AGENT_PLUGIN_CACHE: "dict[str, dict | None]" = {}
+# --- エージェント CLI 定義（データ契約: schemas/agent-cli.schema.json） -----------------------
+# 読み込み・argv 組み立ては agentcore.agentcli の 1 実装（agent-flow / agent-amigos と共有）。
+# ここに残すのは「読み込んだ定義を覚えておき、失敗トリアージの errors[] を集める」ところだけ。
+_AGENT_PLUGIN_CACHE: "dict[str, dict]" = {}
 
 
-def _agent_plugin_dirs() -> "list[Path]":
-    dirs: "list[Path]" = []
-    envd = os.environ.get("KIRO_AGENTS_DIR")
-    if envd:
-        dirs.append(Path(envd).expanduser())
-    dirs.append(Path.cwd() / "agents")            # プロジェクトルート（run は cwd=root で動く）
-    dirs.append(agent_home_subdir("", "agents"))
-    dirs.append(Path.home() / ".kiro" / "agents")
-    return dirs
+def load_agent_plugin(name: str) -> dict:
+    """agents/<name>.json を読む（agentcore へ委譲）。見つからない・壊れているは RuntimeError。
 
-
-def _normalize_agent_plugin(name: str, raw: dict, path: Path) -> dict:
-    cmd = raw.get("command")
-    if not isinstance(cmd, list) or not cmd or not all(isinstance(c, str) for c in cmd):
-        raise RuntimeError(f"エージェント定義 {path}: command は文字列配列が必須です")
-    output = str(raw.get("output", "stdout"))
-    if output == "file" and not any("{output_file}" in c for c in cmd):
-        raise RuntimeError(f"エージェント定義 {path}: output=file には command 中の "
-                           "{output_file} プレースホルダが必要です")
-    errors = []
-    for e in (raw.get("errors") or []):
-        try:
-            errors.append((str(e.get("class", "env")),
-                           re.compile(str(e.get("match", "")), re.I),
-                           str(e.get("hint", ""))))
-        except re.error as ex:
-            raise RuntimeError(f"エージェント定義 {path}: errors.match が正規表現として不正です: {ex}")
-    return {"name": name, "command": list(cmd),
-            "prompt_via": str(raw.get("prompt_via", "stdin")),
-            "prompt_flag": raw.get("prompt_flag"),
-            "model_flag": raw.get("model_flag"),
-            "default_model": raw.get("default_model"),
-            "output": output, "env": dict(raw.get("env") or {}),
-            "timeout": raw.get("timeout"),
-            "empty_output_is_error": bool(raw.get("empty_output_is_error", True)),
-            "errors": errors, "path": str(path)}
-
-
-def load_agent_plugin(name: str) -> "dict | None":
-    """agents/<name>.json を探索順に読み、正規化して返す（無ければ None・プロセス内キャッシュ）。
-    壊れた定義は黙って無視せず RuntimeError（設定ミスの静かな握り潰しを作らない）。"""
+    黙って別 CLI へ倒さない: 未知の agent_cli がかつて静かに kiro-cli へ落ちており、
+    設定ミスに気づけなかった。組み込み名も定義ファイル化した今、失敗はほぼインストール破損。
+    """
     key = str(name or "").strip().lower()
-    if not key:
-        return None
     if key in _AGENT_PLUGIN_CACHE:
         return _AGENT_PLUGIN_CACHE[key]
-    spec = None
-    for d in _agent_plugin_dirs():
-        p = d / f"{key}.json"
-        try:
-            if not p.is_file():
-                continue
-            raw = json.loads(p.read_text(encoding="utf-8"))
-        except ValueError as e:
-            raise RuntimeError(f"エージェント定義 {p} を JSON として読めません: {e}")
-        except OSError:
-            continue
-        spec = _normalize_agent_plugin(key, raw, p)
-        break
+    try:
+        # キャッシュはここ（_AGENT_PLUGIN_CACHE）で持つ。二重にキャッシュすると
+        # 片方だけ消しても古い定義が返り、テストや長寿命プロセスで定義の差し替えが効かない。
+        spec = _agentcli.load_cli(key, use_cache=False)
+    except _agentcli.AgentCliError as e:
+        raise RuntimeError(str(e)) from e
     _AGENT_PLUGIN_CACHE[key] = spec
     return spec
-
-
-def _plugin_agent_cmd(plug: dict, model: "str | None",
-                      prompt: str) -> "tuple[list[str], str | None, str | None]":
-    """プラグイン定義から (argv, stdin テキスト, 最終応答ファイル) を組み立てる
-    （_agent_cmd と同じ契約・決定的）。"""
-    model = model or plug.get("default_model") or None
-    out_file = None
-    cmd: "list[str]" = []
-    used_model = False
-    for part in plug["command"]:
-        if "{output_file}" in part:
-            if out_file is None:
-                fd, out_file = tempfile.mkstemp(prefix=f"agent-project-agent-{plug['name']}-", suffix=".txt")
-                os.close(fd)
-            part = part.replace("{output_file}", out_file)
-        if "{model}" in part:
-            if not model:
-                continue                          # モデル未指定 → トークンごと省く
-            part = part.replace("{model}", model)
-            used_model = True
-        cmd.append(part)
-    if model and not used_model and plug.get("model_flag"):
-        cmd += [str(plug["model_flag"]), model]
-    if plug["prompt_via"] == "argv":
-        if plug.get("prompt_flag"):
-            cmd += [str(plug["prompt_flag"]), prompt]
-        else:
-            cmd.append(prompt)
-        return cmd, None, out_file
-    return cmd, prompt, out_file
 
 
 def _plugin_error_patterns() -> "tuple":
     """読み込み済みプラグインの errors 規則（CLI 固有のトリアージ知識）をまとめて返す。"""
     out = []
     for spec in _AGENT_PLUGIN_CACHE.values():
-        if spec:
-            out.extend(spec.get("errors") or [])
+        out.extend(spec.get("errors") or [])
     return tuple(out)
 
 
@@ -270,9 +213,10 @@ def _plugin_error_patterns() -> "tuple":
 #   auth     : 認証切れ — 人が環境を直すまで全タスク共倒れ（即座に人へ）
 #   env      : 実行環境の問題（CLI 不在・モデル不正 等）— 人が環境を直す
 #   transient: 一時的（タイムアウト・接続断）— 通常リトライで解ける
+#   integration: target 未統合・競合 — 最新 target を取り込む新しい試行が必要
 #   （どれにも当たらなければ「内容の問題」= 従来どおりタスク単位の retry / 裁定）
 AGENT_ERROR_ENV_CLASSES = ("control", "quota", "auth", "env")
-_AGENT_ERROR_TAG_RE = re.compile(r"\[agent-error:(control|quota|auth|env|transient)\]")
+_AGENT_ERROR_TAG_RE = re.compile(r"\[agent-error:(control|quota|auth|env|transient|integration)\]")
 _AGENT_ERROR_PATTERNS = (
     ("control", re.compile(r"\[agent-control\]", re.I),
      "管理設定で実行が停止されています（dashboard で実行を許可してください）"),
@@ -281,10 +225,14 @@ _AGENT_ERROR_PATTERNS = (
     ("auth", re.compile(r"AccessDenied|Unauthorized|authentication failed|not authenticated"
                         r"|SendMessageError|please (re)?login", re.I),
      "認証に失敗しています（再ログインが必要です）"),
+    # 「Argument list too long」（E2BIG）は退避（spill）で防ぐが、退避の閾値より OS の上限が
+    # 小さい環境では残る。内容の問題として扱うとタスクのリトライ予算を焼くので env に倒す
+    # （設定 argv_limit を下げれば直る＝人が環境を直す類）。
     ("env", re.compile(r"issue with the selected model|invalid model"
                        r"|model .{0,40}(not found|does not exist)|may not have access to it"
-                       r"|command not found|No such file or directory", re.I),
-     "実行環境の問題です（モデル名・CLI の導入・PATH を確認してください）"),
+                       r"|command not found|No such file or directory"
+                       r"|Argument list too long|E2BIG", re.I),
+     "実行環境の問題です（モデル名・CLI の導入・PATH・argv_limit を確認してください）"),
     ("transient", re.compile(r"timed? ?out|connection (reset|refused|closed)|ECONNRESET"
                              r"|ETIMEDOUT|temporarily unavailable|service unavailable|overloaded",
                              re.I),
@@ -333,7 +281,15 @@ def classify_agent_failure(blob: str) -> "tuple[str, str] | None":
     if not chain:
         return None
     cls = chain[0]
-    hint = next((h for c, _, h in _plugin_error_patterns() + _AGENT_ERROR_PATTERNS if c == cls), "")
+    text = str(blob or "")
+    # ヒントは「**実際に一致した規則**」から採る。クラスだけで引くと、読み込み済みの別 CLI 定義に
+    # 同じクラスの規則があるとその文言が出る（codex の usage limit に kiro の月間上限の案内が
+    # 付く、という取り違えが実際に起きた）。一致する規則が無いクラス（[agent-error:] タグや
+    # 発生源マーカー由来）だけ、従来どおりクラス一致の汎用ヒントへ落とす。
+    rules = _plugin_error_patterns() + _AGENT_ERROR_PATTERNS
+    hint = next((h for c, pat, h in rules if c == cls and pat.search(text)), "")
+    if not hint:
+        hint = next((h for c, _, h in _AGENT_ERROR_PATTERNS if c == cls), "")
     return cls, hint
 
 
@@ -622,12 +578,24 @@ def _run_agent_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
     cli, model_ov = _agent_for(purpose)
     _write_status(effective_cli=cli, effective_model=(model_ov or model or ""),
                   lifecycle=lifecycle, budget=nb)
-    cmd, stdin_text, out_file = _agent_cmd(cli, model_ov or model, prompt)
-    plug = _AGENT_PLUGIN_CACHE.get(cli)   # _agent_cmd がロード済み（組み込み CLI は None）
-    # 発生源で色を抑止（NO_COLOR/TERM=dumb）。残った ANSI は strip_ansi で除去する二段構え。
-    env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", **((plug or {}).get("env") or {})}
-    timeout = (plug or {}).get("timeout") or (_AGENT_TIMEOUT if _AGENT_TIMEOUT > 0 else None)
+    plug = load_agent_plugin(cli)               # 定義ファイルが正典（_agent_cmd も同じキャッシュ）
+    # argv 渡しで長すぎるプロンプトは一時ファイルへ退避し、参照渡しの短い指示に置き換える
+    # （agent-flow / agent-amigos と同じ土台 = agentcore.agentcli.spill_prompt）。S5/S6 で
+    # verifier 入力（repo 文脈 + rules + レシピ + feedback）と planner 入力（charter 全文 +
+    # 既存タスク + 墓標）が肥大したため、既定 CLI の kiro（argv 渡し）で現実に当たる。
+    spill, prompt = _agentcli.spill_prompt(
+        prompt, _agent_argv_limit(), prompt_via=plug["prompt_via"],
+        prefix="agent-project-prompt-", instruction=_SPILL_INSTRUCTION)
+    # 一時ファイルの掃除は 1 つの finally にまとめる。out_file を try の外で束縛すると、
+    # 組み立てが例外で落ちたときに finally が NameError を投げて本当の原因を隠す。
+    out_file = None
     try:
+        cmd, stdin_text, out_file = _agent_cmd(cli, model_ov or model, prompt)
+        # 発生源で色を抑止（NO_COLOR/TERM=dumb）。残った ANSI は strip_ansi で除去する二段構え。
+        env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", **(plug.get("env") or {})}
+        configured_timeout = (_RUNTIME_CONFIG.agent_timeout
+                              if _RUNTIME_CONFIG is not None else 300.0)
+        timeout = plug.get("timeout") or (configured_timeout if configured_timeout > 0 else None)
         t0 = time.monotonic()
         proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", input=stdin_text,
                               timeout=timeout, env=env)
@@ -644,7 +612,7 @@ def _run_agent_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
             with contextlib.suppress(OSError):
                 with open(out_file, encoding="utf-8") as f:
                     text = f.read().strip() or text
-        if not text and plug is not None and not plug.get("empty_output_is_error", True):
+        if not text and not plug.get("empty_output_is_error", True):
             return ""
         if not text:
             # rc=0 でも本文が空で返る CLI がある（kiro-cli は AWS 認証が切れるとバナーだけ出して
@@ -654,9 +622,14 @@ def _run_agent_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
                                .replace("失敗 (rc=0)", "が空の応答を返しました (rc=0)"))
         return text
     finally:
+        # 一時ファイルは 2 つあり、寿命が違う。退避（spill）は CLI の起動が終われば
+        # 用済みだが、最終応答ファイル（out_file）は上の読み出しが終わるまで要る。
         if out_file:
             with contextlib.suppress(OSError):
                 os.remove(out_file)
+        if spill:
+            with contextlib.suppress(OSError):
+                os.remove(spill)
 
 
 def rank_agent(ready: "list[Task]", model: "str | None", agent_run=None) -> "list[Task] | None":
@@ -755,10 +728,10 @@ def adjudicate_escalation(cfg: "Config", task: Task, reason: str,
 def _assess_heuristic(cfg: "Config", task: Task) -> dict:
     """エージェント不在・失敗・stub 時の決定的採点。材料はタスク定義と decisions/ の走査のみ。
     c: cohort（同種の繰り返し）は多対象＝3。r: 過去の回避判断（avoid）に類似＝3。
-    a: 決定的 verify あり=1 / accept（自然言語）のみ=2 / どちらも無し=3。"""
+    a: 決定的 verify あり=1 / 受入基準（自然言語）のみ=2 / どちらも無し=3。"""
     c = 3 if (task.get("cohort_items") or task.get("cohort")) else 1
     r = 3 if find_avoidance(cfg, task) else 1
-    a = 1 if (task.verify or task.get("verify_template")) else (2 if task.get("accept") else 3)
+    a = 1 if (task.verify or task.get("verify_template")) else (2 if task_acceptance(task) else 3)
     return {"c": c, "r": r, "a": a}
 
 
@@ -770,7 +743,7 @@ def _assess_prompt(task: Task) -> str:
         "- a=曖昧さ: 完了条件・やり方の不確かさ（verify が具体的なら 1）\n\n"
         f"タイトル: {task.title}\n"
         f"verify: {task.verify or '（未定義）'}\n"
-        f"accept: {task.get('accept') or '（なし）'}\n"
+        f"受入基準: {' / '.join(task_acceptance(task)) or '（なし）'}\n"
         f"note: {task.get('note') or '（なし）'}\n"
         + "".join(f"{k}: {task.get(k)}\n"       # 誘導・レビュー記述があれば採点材料に足す（有るものだけ）
                   for k in ("why", "desc", "scope", "constraints") if task.get(k))
@@ -821,10 +794,35 @@ def _assess_max(task: Task) -> int:
     return max((int(v) for v in vals), default=0)
 
 
-def _spec_verify(cfg: "Config", tid: str) -> str:
-    """spec 作成タスクの決定的 verify: 3 ファイルが非空で、tasks.md が JSON タスク分解を含む。
-    workdir 相対（specs_root と同じ基準）。"""
+def spec_kind_for(task: Task) -> str:
+    """この spec タスクの段（`full` / `light`）。マーカーが無い既存タスクは full（後方互換）。"""
+    return "light" if str(task.get("spec_kind") or "").strip() == "light" else "full"
+
+
+def _spec_route_kind(cfg: "Config", task: Task, forced: bool) -> str:
+    """このタスクを spec ルートに乗せるか、乗せるならどの段か（`full` / `light` / ""）。
+
+    ブラウンフィールドではフル spec（spec/design/tasks の 3 点セット）のオーバーヘッドが
+    大きく、「書くか書かないか」の二択だと結局書かれない。要求は charter とタスクの
+    why/desc に既にあり、分解は元タスクの粒度で足りるので、中間段は **design.md 1 枚**
+    （変更方針・影響範囲・受入条件の差分）にする。
+    """
+    if forced:
+        return "full"          # policy `spec:` の明示強制はフル（語彙を増やさない）
+    score = _assess_max(task)
+    if score >= cfg.spec_threshold_full:
+        return "full"
+    if score >= cfg.spec_threshold_light:
+        return "light"
+    return ""
+
+
+def _spec_verify(cfg: "Config", tid: str, kind: str = "full") -> str:
+    """spec 作成タスクの決定的 verify（workdir 相対・specs_root と同じ基準）。
+    full: 3 ファイルが非空で tasks.md が JSON タスク分解を含む / light: design.md 1 枚。"""
     rel = f"specs/{tid}"
+    if kind == "light":
+        return f"test -s {rel}/design.md"
     return (f"test -s {rel}/spec.md -a -s {rel}/design.md -a -s {rel}/tasks.md"
             f" && grep -q '\"title\"' {rel}/tasks.md")
 
@@ -833,15 +831,27 @@ def _spec_instructions(cfg: "Config", task: Task) -> str:
     """spec 作成タスク（`- spec_for:` 持ち）の act 要求文に足す作成指示。実装はさせない。"""
     tid = task.get("spec_for", "")
     rel = f"specs/{tid}"
+    if spec_kind_for(task) == "light":
+        return (
+            f"これは実装前の **ライト Spec** 作成タスクです。{task.get('note') or ''}\n"
+            f"作業ディレクトリ直下に {rel}/design.md を 1 枚だけ作成すること"
+            f"（コードの実装はしない。要求仕様書もタスク分解も書かない）:\n"
+            f"- 変更方針 … 既存コードのどこをどう変えるか（現状の構造を読んだ上で）\n"
+            f"- 影響範囲 … 巻き込むモジュール・呼び出し元・壊れうる既存の振る舞い\n"
+            f"- 受入条件の差分 … 元タスクの受入基準のうち、設計判断で具体化された点\n"
+            f"- 検討した代替案と選ばなかった理由（あれば）\n"
+            f"既存コードベースへの変更なので、**現物を読んで書くこと**。"
+            f"一般論や、確かめていない構造の推測は書かないでください。")
     return (
         f"これは実装前の Spec 作成タスクです。{task.get('note') or ''}\n"
         f"作業ディレクトリ直下の {rel}/ に次の 3 ファイルを作成すること（コードの実装はしない）:\n"
         f"- {rel}/spec.md   … 要求仕様（背景・要求・受け入れ観点）\n"
         f"- {rel}/design.md … 設計（方針・影響範囲・代替案と選定理由）\n"
         f"- {rel}/tasks.md  … 実装タスク分解。次の形式の JSON 配列を含む Markdown:\n"
-        f'  [{{"title": "…", "verify": "終了コード0で合否が決まるシェルコマンド",'
+        f'  [{{"title": "…", "acceptance": ["受入基準（自然文。検証エージェントが実行して確かめられる粒度）", …],'
         f' "after": ["先行タスクの title"]}}]\n'
-        f"  verify は『履歴』でなく『望む最終状態/差分』を見ること。after は任意（配列内の先行タスク）。\n"
+        f"  シェルコマンドを 1 行合成して基準の代わりにしないこと（確かめ方は検証エージェントが決める）。"
+        f"after は任意（配列内の先行タスク）。\n"
         f'  各タスクには任意で "why"（必要な理由・1 文）・"out_of_scope"（やらないこと）・'
         f'"hints"（実装の手がかり）を付けてよい（実装ワーカーへの指示と人のレビュー材料になる）。')
 
@@ -859,11 +869,15 @@ def route_spec_tasks(cfg: "Config", tasks: "list[Task]", policy: "Policy") -> "l
         if t.get("route") or t.get("spec_for") or t.get("spec"):   # 決定済み・spec 系タスクは対象外
             continue
         forced = any(t.matches(p) for p in policy.spec)
-        if not forced and _assess_max(t) < cfg.spec_threshold:
+        kind = _spec_route_kind(cfg, t, forced)
+        if not kind:
             continue
-        spec_dict = {"id": f"{t.id}-spec", "title": f"Spec 作成: {t.title}",
-                     "verify": _spec_verify(cfg, t.id), "review": "human",
-                     "spec_for": t.id, "route": "direct", "source": "spec",
+        # 既存コード文脈が無いと「影響範囲」を書けない（S7-3。plan 経路と同じ共通機構）
+        ensure_repo_maps(cfg, charter_for_task(cfg, t), force=True)
+        label = "Spec 作成" if kind == "full" else "設計メモ作成（ライト Spec）"
+        spec_dict = {"id": f"{t.id}-spec", "title": f"{label}: {t.title}",
+                     "verify": _spec_verify(cfg, t.id, kind), "review": "human",
+                     "spec_for": t.id, "spec_kind": kind, "route": "direct", "source": "spec",
                      "priority": t.priority + 1,
                      "note": f"対象タスク {t.id}: {t.title}"
                              + (f"（最終 verify: {t.verify}）" if t.verify else "")}
@@ -876,13 +890,15 @@ def route_spec_tasks(cfg: "Config", tasks: "list[Task]", policy: "Policy") -> "l
         t.set("after", ", ".join(deps))
         persist_task(cfg, t)
         created.append(s)
+        thr = cfg.spec_threshold_full if kind == "full" else cfg.spec_threshold_light
         why = "policy spec 一致" if forced else \
-            f"採点 {t.get('assess')} が spec_threshold({cfg.spec_threshold}) 以上"
+            f"採点 {t.get('assess')} が {kind} のしきい値({thr}) 以上"
+        affects = (f"{s.id} を前置（承認後 tasks.md を実装タスクへ展開）" if kind == "full"
+                   else f"{s.id} を前置（design.md を文脈に元タスクをそのまま実行）")
         append_decision(cfg, t.id, "auto",
-                        context=f"{t.id}（{t.title}）を spec ルートへ",
-                        action="spec-route", reason=why,
-                        affects=f"{s.id} を前置（承認後 tasks.md を実装タスクへ展開）")
-        append_journal(cfg.journal, f"spec ルート: {t.id} に {s.id} を前置（{why}）")
+                        context=f"{t.id}（{t.title}）を spec ルート（{kind}）へ",
+                        action="spec-route", reason=why, affects=affects)
+        append_journal(cfg.journal, f"spec ルート（{kind}）: {t.id} に {s.id} を前置（{why}）")
     return created
 
 
@@ -909,6 +925,15 @@ def expand_spec_tasks(cfg: "Config", tasks: "list[Task]") -> "list[Task]":
             adone = False
         if not adone:
             continue                                   # 却下等は展開しない（再審査は既存機構が担う）
+        if str(t.get("spec_kind") or "") == "light":
+            # ライト spec は tasks.md を作らせない＝展開しない。元タスクをそのまま実行し、
+            # design.md は act の文脈として注入される。`none`（フルなのに tasks.md が壊れて
+            # いた）とは別の事象なので、印も journal の文言も分ける。
+            t.set("spec_expanded", "light")
+            persist_task(cfg, t)
+            append_journal(cfg.journal,
+                           f"ライト spec: {t.id} は展開せず design.md を文脈に実行する")
+            continue
         tmd = specs_root(cfg) / t.id / "tasks.md"
         try:
             items = _extract_json_array(tmd.read_text(encoding="utf-8")) if tmd.exists() else None
@@ -928,7 +953,8 @@ def expand_spec_tasks(cfg: "Config", tasks: "list[Task]") -> "list[Task]":
                   "verify": _strip_code(str(it.get("verify", "") or "").strip()),
                   "source": "spec", "spec": t.id, "route": "direct"}
             # tasks.md は「enqueue --json 互換」の契約なので、誘導・レビュー記述（why 等）も落とさない
-            for k in ("accept", "verify_template", "note", "priority", *TASK_GUIDE_KEYS):
+            for k in ("accept", "verify_template", "note", "priority",
+                      *MULTILINE_KEYS, *TASK_GUIDE_KEYS):
                 if it.get(k) not in (None, "", []):
                     sp[k] = it[k]
             for k in ("charter", "workspace"):         # 成果の行き先・スコープは元タスクを引き継ぐ

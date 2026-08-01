@@ -188,6 +188,22 @@ def run_cleanup(args, bus: Bus) -> dict:
             "work_repos": n_work, "cache": n_cache}
 
 
+def cmd_cleanup(args) -> int:
+    """`run_cleanup` の単発 CLI（実装計画 W1-11 残・設計 §4.2 node 層 gc tick の実体）。
+    従来は daemon ループの内蔵掃除としてしか呼べなかった（間隔設定で律速）。
+    daemon が常駐しない構成（常駐一本化後の agent-project resident が gc tick から
+    プロジェクト毎に叩く用途）向けに単発実行できる入口を追加する——`run_cleanup` 自体は
+    変更しない（R1: 掃除の実装はここでも増やさない）。"""
+    bus = make_bus(args, "cleanup")
+    result = run_cleanup(args, bus)
+    if getattr(args, "json", False):
+        print(json.dumps(result, ensure_ascii=False))
+    else:
+        print(f"cleanup: locks={result['locks']} tmp={result['tmp']} clones={result['clones']} "
+             f"work_repos={result['work_repos']} cache={result['cache']}")
+    return 0
+
+
 # --------------------------------------------------------------------------
 # gc — 古い run を掃除
 # --------------------------------------------------------------------------

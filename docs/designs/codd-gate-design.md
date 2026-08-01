@@ -243,6 +243,21 @@ agent-project の pilot-then-batch（1 件を人の検収で固めてから残�
 （正典: [`agent-project-design.md`](agent-project-design.md) §4.1 フック契約カタログ、E1〜E6）
 のうち **E1（verify/acceptance）・E2（regression_cmd）・E3（intake_cmd）** を使う。外せば元に戻る。
 
+**プラグイン境界（規範）**。この節の記述はすべてこの一線に従う。
+
+- **パッケージ（`agent_project/*`）は汎用フックだけを提供する。** E1〜E6 の差し込み点を用意するのが責務で、
+  パッケージのコードから codd-gate を名指し・import・自動配線しない。`regression_cmd`/`intake_cmd`/acceptance の
+  値をパッケージが書くことはない（手で書いていなければ空のまま通過する＝連携なし）。パッケージにとって
+  codd-gate は「汎用フックへ渡されうる任意の値」であって、コード上の依存先ではない。
+- **`codd_gate_*.py` は `tools/agent-project/` 直下の任意 sibling 部品。** 標準ライブラリだけで動き、
+  `agent-project.py` 側の型（Config/Charter/Task）に依存せず、単体テストを持ち、パッケージからは import されない。
+  パッケージ・ディレクトリ `agent_project/` の外（その隣）に置くので、`agent_project.codd_gate_*` ではなく
+  トップレベルの sibling モジュールとしてだけ存在する。丸ごと削除してもパッケージは同一挙動を保つ。
+- **`regression_cmd`/`intake_cmd` に値を書く主体は一つだけ。** 値がフィールドへ入る経路は 2 つに限る。
+  (i) 有効化＝人か install 手順が yaml か CLI に書く。(ii) 永続化＝`codd_gate_regression.py` が yaml へ冪等注入する。
+  起動時の Config 生成（`build_config`）が値を差し込む経路は設けない。結合の実体は `schemas/` の共通データ契約と、
+  この一意の書き手が汎用フックへ置く文字列値だけ。
+
 | # | 差し込み点 | 差し込み | 拡張する機能／効き方 |
 |---|-----------|---------|--------------------|
 | ① | E2 `regression_cmd`（設定/CLI） | `codd-gate verify --base "$KIRO_BASE_REV" --repos <root>/repos.json` | **検証ゲート**の拡張。毎タスクの verify PASS 後・done 確定前に横断検査。NG なら done せず人へ |
@@ -255,79 +270,67 @@ agent-project の pilot-then-batch（1 件を人の検収で固めてから残�
 そのまま使う。ワークスペース運用（別 repo clone 内での verify 実行）でも、タスク生成時に
 `--repo-dir <name>=.` を焼き込むことで clone 内で自己完結する。
 
-### 4.1 自動検出レイヤ（`tools/agent-project/codd_gate_*.py`）
+### 4.1 値の組み立てと永続化を担う任意部品（`tools/agent-project/codd_gate_*.py`）
 
-表①〜③の文字列は今日まで人が手で書く前提だったが、その組み立てを機械化するための補助モジュールが
-`tools/agent-project/` 直下に**部品として**存在する（標準ライブラリのみ・agent-project.py 側の型
-（Config/Charter/Task）に依存しない・単体テスト付き）。責務は「実在するか」「使ってよいか」
-「実引数はどう組むか」の3段に分かれる。
+表①〜③の文字列（`codd-gate verify …` や `codd-gate tasks --debt` 等）は、原則として人が yaml か CLI に手で書く
+（§4 の境界どおり、パッケージが埋めることはない）。その手書きを楽にするための任意の生成・判定部品が、
+`tools/agent-project/` 直下に **sibling として**置いてある（標準ライブラリのみ・agent-project.py 側の型
+（Config/Charter/Task）に依存しない・単体テスト付き・パッケージからは import されない）。これらは値を組み立てて
+yaml へ**永続化**する（`codd_gate_regression.py`）ための道具であって、コマンド起動時にパッケージへ値を差し込む
+配線層ではない。責務は「実在するか」「使ってよいか」「実引数はどう組むか」の3段に分かれる。
+
+**現在地（実装済み）**。パッケージ外の sibling が codd-gate を検出し、設定へ貼る
+`regression_cmd` / `intake_cmd` の推奨文字列を返す。結線診断の正準入口は
+`python3 tools/agent-project/codd_gate_wiring.py --config <path>` だけで、検出結果と結線所見を
+JSON で表示し、設定は書き換えない。有効化の手順は、利用者が yaml / CLI に値を書くか、
+`codd_gate_regression.py --config <path>` が既存 yaml の `regression_cmd` 1行を冪等に更新するかの
+どちらかである。生成 CLI は成功時 JSON に `intake_cmd` の推奨値も出すが、自動注入しない。
+`build_config` は検出も推奨値のインメモリ注入も行わず、明示された汎用フック設定をそのまま使う。
 
 | モジュール | 責務 | 主な関数／型 |
 |---|---|---|
 | `codd_gate_detect.py` | codd-gate 実体の解決・生の検出値 | `resolve_codd_gate()`（`resolve_agent_flow` と対称：explicit→PATH→同梱パス `tools/codd-gate/codd-gate.py`）／`get_version()`／`check_repos_schema_compat()`／`detect_capabilities()`（`--help` の実プローブで verify/tasks/`--debt` の対応を判定） |
-| `codd_gate_status.py` | 検出結果の no-op 縮退 | `CoddGateStatus`（`binary`/`version`/`findings`。`usable` は「実在し findings が空」・`command(*args)` は usable でなければ `None`）／`build_status()`（実在→バージョン→schema 互換の短絡順で判定。下限 `MIN_SUPPORTED_VERSION=(1,0,0)`）／`detect_status()` |
-| `codd_gate_routing.py` | regression/intake/acceptance 共通の実引数組み立て | `resolve_repos_arg()`（vcwd 配下なら相対パス、外なら絶対パス）／`resolve_repo_dir_arg()`（`NAME=DIR`）／`build_routing_args()` |
+| `codd_gate_status.py` | 検出結果の finding 化と no-op 縮退 | `CoddGateStatus`（`binary`/`version`/`findings`。`usable` は「実在し findings が空」・`command(*args)` は usable でなければ `None`）／`build_status()`（実在→バージョン→schema 互換の短絡順で判定。下限 `MIN_SUPPORTED_VERSION=(1,0,0)`）／`detect_status()`（実体の検出だけを行う簡易入口） |
+| `codd_gate_routing.py` | 明示設定する推奨文字列と routing 引数の組み立て | `recommend_regression_cmd()`／`recommend_intake_cmd()`／`resolve_repos_arg()`（vcwd 配下なら相対パス、外なら絶対パス）／`resolve_repo_dir_arg()`（`NAME=DIR`）／`build_routing_args()` |
 | `codd_gate_base.py` | 差分ゲートの base rev 解決 | `resolve_base_rev()`（`$KIRO_BASE_REV`→charter の repo `base:`→`HEAD~1` の順。base 未注入で `--base ""` が失敗する穴を埋める） |
-| `codd_gate_debt.py` | intake 側のレコード単位パース | `parse_debt_output()` → `DebtParseResult(items, errors)`／`DriftItem(title, id, fields)`。object/array どちらの stdout も受理し、`title` 欠落など不備な1件だけを `errors` に隔離して残りは処理を続ける |
-| `codd_gate_wiring.py` | 実測配線＋結線判定＋所見の整形（「a2」相当） | `probe_wiring()`（実在→バージョン→schema→能力の短絡順で実測し `WiringJudgment` を返す）／`judge_wiring()`（純粋関数）／`regression_wired()`/`intake_wired()`（手書き文字列が既に codd-gate を指しているかの正規表現判定）／`render_findings()`。本体が求める契約名 `detect_wiring`/`doctor_findings` はファイル末尾で別名として公開する（後述）。CLI は `python3 codd_gate_wiring.py` |
-| `codd_gate_regression.py` | regression_cmd の生成・yaml への冪等注入（CLI） | `build_regression_cmd()`／`upsert_config_text()`（正規表現ベースの最小差分行編集。PyYAML load→dump は使わず既存コメントを保持）／`apply_to_file()`。CLI は `--config` が実在する設定ファイルを指すことを要求し、結果を終了コードで返す（0 注入済み・冪等 no-op ／1 設定ファイル不在・読めない ／2 引数誤り ／3 codd-gate が使えず何も書いていない） |
+| `codd_gate_debt.py` | intake 出力の task スキーマ正規化（任意パーサ） | `parse_debt_output()` → `DebtParseResult(items, errors)`／`DriftItem(title, id, fields)`。object/array どちらの stdout も受理し、`title` 欠落など不備な1件だけを `errors` に隔離して残りは処理を続ける |
+| `codd_gate_wiring.py` | 実測・結線判定・読み取り専用の所見表示 | `detect_wiring()`（実在→バージョン→schema→能力の短絡順で実測し `WiringJudgment` を返す）／`judge_wiring()`（純粋関数）／`recommend_regression_cmd()`／`recommend_intake_cmd()`／`render_findings()`。`python3 tools/agent-project/codd_gate_wiring.py --config .agent/agent-project.yaml` が結線診断の唯一の正準入口 |
+| `codd_gate_regression.py` | regression_cmd の生成・yaml への冪等注入（CLI） | `build_regression_cmd()`／`upsert_config_text()`（正規表現ベースの最小差分行編集。PyYAML load→dump は使わず既存コメントを保持）／`apply_to_file()`。`python3 tools/agent-project/codd_gate_regression.py --config .agent/agent-project.yaml` で人・install 手順が明示的に実行する。成功時 JSON は `regression_cmd` と案内用の `intake_cmd` を返す |
 
 **データ契約**: 入力は `schemas/repos.schema.json` 準拠の `<root>/repos.json`（`check_repos_schema_compat`
 がトップレベル object・`_` 接頭辞以外の値が object という最小構造を検査）。出力は
 `schemas/task.schema.json` 準拠の `codd-gate tasks --debt` の stdout JSON（`parse_debt_output` が
 受理・正規化し、`DriftItem.to_spec()` で `enqueue_task` / `run_intake` がそのまま飲める dict に戻る）。
-`CoddGateStatus` はディスクにも `schemas/` にも乗らないプロセス内一過性の値オブジェクトで、
-①未検出 ②バージョン不明 ③下限未満 ④repos.json 非互換のいずれかで `usable=False` に倒れる
-（呼び出し側は `if status.command(...):` の1行で「使えない環境では自動配線せず既存挙動のまま通過する」
-を担保できる設計）。
+`CoddGateStatus` はディスクにも `schemas/` にも乗らないプロセス内一過性の値オブジェクトである。
+生成ツールが呼ぶ `detect_status()` は実体の有無だけを調べる。実体を検出できなければ
+`regression_cmd` を書かず、既存設定を残す。
 
-**現在地（結線状況）**: 上記7モジュールは単体テスト付きの部品として `agent_project` パッケージの
-**外**（`tools/agent-project/` 直下）に置いてある。パッケージ側に `codd_gate` という固有名は無く、
-起動時に codd-gate へ問い合わせる経路も持たない。以前は `agent_project.configfile.build_config()`
-が `cfg.regression_cmd`/`cfg.intake_cmd` をメモリ上で自動配線していたが、これは削除した
-（`_apply_codd_gate_auto_wiring` が戻っていないこと、`<root>/repos.json` が実在しても build_config が
-何も補わないことを `tests/test_agent_project.py` の `TestCoddGateNoAutoWiring` が固定している）。
-**agent_project 側との結線は明示設定だけ**になり、入口は次の3つに限られる。
+**有効化（値をどう入れるか）**: `regression_cmd`/`intake_cmd`/acceptance に codd-gate を効かせるには、
+その値を yaml か CLI に書く。書き手は人か install 手順で、パッケージの Config 生成は該当フィールドを
+自動で埋めない。手で書いていなければ空のまま（＝連携なし）で通過する。だから「有効化されているか」は
+yaml/CLI を読めば一意に決まり、起動時の環境プローブ結果には依存しない（決定的で監査できる）。
 
-1. **`.agents/agent-project.yaml` へ2行書く**: `regression_cmd`（E2）と `intake_cmd`（E3）。表①〜③の
-   文字列をそのまま手で書く経路で、これが正準。
-2. **`regression_cmd` の1行を CLI で入れる**: `python3 tools/agent-project/codd_gate_regression.py
-   --config .agents/agent-project.yaml`。codd-gate を実測し、使えるときだけ1キーを冪等 upsert する
-   （既存コメントを壊さない行編集）。`--config` は実在する設定ファイルを指す必要がある。無ければ
-   エラーで止まり何も作らない: `root:`/`agent_cli:` を欠いた起動不能な yaml が「パス誤りの成功」として
-   できてしまうのを防ぐため。結果は終了コード 0/1/2/3 で返す（上表）。`intake_cmd` に対応する注入 CLI は
-   無く、こちらは yaml を直接編集する（非対称）。
-3. **doctor に結線状況を出させる**: 設定へ `hooks: {wiring: codd_gate_wiring}` と書いたときだけ、
-   `agent_project/doctor.py` の `doctor_wiring_findings` がこの検出レイヤへ到達する。
+**永続化（値をどこへ残すか）**: 手書きの代わりに値を生成して yaml へ書き込む主体は
+`codd_gate_regression.py` 一つだけ。人か install 手順が
+`python3 tools/agent-project/codd_gate_regression.py --config .agent/agent-project.yaml` を能動的に実行し、
+`detect_status()`（実体検出）→`build_regression_cmd()`（実引数を組み立てる）→
+`upsert_config_text()`（正規表現ベースの冪等 upsert。PyYAML の load→dump は使わず既存コメントを残す）→
+`apply_to_file()` で `regression_cmd` を1行だけ注入する。これが値をディスクへ残す唯一の経路で、書いた後は
+以後の全コマンドで同一に効く。コマンド起動のたびに走る自動配線は無い。人が明示した値は独立キー単位で
+常に優先され、codd-gate の実体を検出できない場合は生成ツールが値を書かない。
 
-3 の解決機構そのものは codd-gate を知らない。本体は能力キーと必須属性名の表
-（`agent_project/hooks.py` の `HOOK_CAPABILITIES`: `wiring.detect` -> `detect_wiring`、
-`wiring.findings` -> `doctor_findings`）だけを持ち、設定の明示指定 -> sibling ディレクトリの走査、の順で
-プロバイダを引き当てる。`codd_gate_wiring.py` は後者の走査に意図的に載らない: 契約名を `def` で
-定義せず、ファイル末尾で `detect_wiring = probe_wiring` / `doctor_findings = render_findings` と
-別名公開しているため、走査の前置フィルタ（ソーステキストの `^def <属性名>(` 照合）に一致しない。
-零設定で勝手に繋がる経路を残すと、モジュールの置き場（パッケージ外）と有効化手順（設定ファイル）が
-食い違い、利用者から「なぜ動いているのか、どう止めるのか」が見えなくなる。この不一致は
-`tests/test_codd_gate_wiring.py` の `TestHookResolution` が両方向で固定している。
+**`.agent/agent-project.yaml` を機械が勝手に書き換えない**: 同ファイルは `agent_project/state.py` の
+`_HUMAN_OWNED_STATE_FILES`（状態 worktree の鏡合わせが「機械は書かない」前提に立つ人専有ファイル一覧）に
+含まれる。だから yaml への書き込みは、人の手か、人が明示起動した `codd_gate_regression.py` に限られる。
+どちらも人が意図した書き込みで、書き手が一つに定まるので、鏡合わせは人の編集と機械の書き込みを取り違えない。
+起動のたびに Config 生成が値を差し込む設計は、この専有前提を崩すため採らない。
 
-設定を書かずに現状だけ知りたい利用者向けには CLI がある: `python3 tools/agent-project/codd_gate_wiring.py
-[--config …]` が `usable`/`regression_wired`/`intake_wired`/`findings` を JSON で出す。読むだけで
-どこへも書かず、所見の有無を終了コードに載せない（未結線は壊れた状態ではないため）。
-
-**`.agents/agent-project.yaml` を機械が勝手に書き換える経路は無い**。同ファイルは
-`agent_project/state.py` の `_HUMAN_OWNED_STATE_FILES`（状態 worktree の鏡合わせが「機械が
-絶対に書かない」という前提の上に立つ人専有ファイル一覧）に含まれており、機械が書き換えると
-鏡合わせが人の編集と機械の書き込みを区別できなくなる。このファイルへ書く主体は、人が明示的に
-起動する `codd_gate_regression.py` だけ。
-
-**no-op 縮退の位置**: 自動配線を外したぶん、縮退の責任は各入口へ移った。`codd_gate_regression.py` は
-codd-gate が未検出・バージョン不適合・schema 不適合・capability 不足のいずれでも何も書かずに 3 で
-終わる（`CoddGateStatus.usable=False`）。doctor は、明示指定を解決できなければ warn を1件出し、
-プロバイダ呼び出しが例外を投げても所見を空へ畳んで走り切る（診断コマンドが落ちるほうが失う情報が多い）。
-手で書いた `regression_cmd` を codd-gate 未インストール環境へ持ち込むとコマンド不在で非 0 終了して
-block される、という E2 本来の落とし穴は残ったまま（E2 が「止める」方向の安全ゲート、E3 が「足す」
-方向の任意機能という非対称は変わらない）。自動配線でこれを覆い隠さず、README の有効化手順と doctor の
-所見で見えるようにする、というのが現在の立場。
+**任意部品の可搬性（欠落時の挙動）**: `codd_gate_*.py` が隣に無い、または削除された場合でも、パッケージは
+同一に動く。パッケージは `codd_gate_*` を import せず、`regression_cmd`/`intake_cmd` が空なら連携が無効なだけ
+（従来どおりの verify/intake）。さらに codd-gate バイナリ自体が未検出のときは、生成ツール
+（`codd_gate_regression.py`）が `CoddGateStatus.usable=False` を見て値を書かないので、「未検出環境に手書き値を
+持ち込んでコマンド不在で block される」という従来の落とし穴は、生成経由なら「最初から書かれない」に置き換わる
+（手書き値をそのまま持ち込むかは人の判断。E2＝止める安全ゲート、E3＝足す任意機能という非対称は変わらない）。
 
 **差し込み点選択の妥当性（検証）**:
 
@@ -353,6 +356,40 @@ block される、という E2 本来の落とし穴は残ったまま（E2 が�
   シェル合成で足りる（`agent-flow run "…" && codd-gate verify --base …`）。将来、内側の決定的ゲートが
   本当に必要になれば、agent-flow に「静止後・final 確定前に走る `gate_cmd`」を E2 の相似形（単発・
   有界・exit code 契約）として追加する道はあるが、現状は外側で必ずゲートされるため設けない。
+
+### 4.2 境界の完了条件（決定的ゲート）
+
+§4 の境界、すなわち「パッケージは汎用フックだけを提供し codd-gate を名指し・import・自動配線しない／
+codd_gate_* は任意の sibling 部品」を、散文の宣言ではなく機械可読な受入で固定する。設計上の完了条件は、
+次の1行が exit 0 を返すことである。
+
+```
+! git grep _apply_codd_gate -- tools/agent-project
+```
+
+`git grep` はマッチが1件でもあれば exit 0、皆無なら非 0 を返す。先頭の `!`（agent-project の verify 記法で
+「非 0 を期待する」否定）がこれを反転させるので、`_apply_codd_gate` が1件も残っていないときにだけ全体が
+exit 0（PASS）になる。この関数（`agent_project/configfile.py` の `_apply_codd_gate_auto_wiring`）はパッケージ内に
+しか現れず、sibling の `codd_gate_*.py` や tests には出ない（それらは `resolve_codd_gate` などを正当に持つ）。
+だから受入パスを `tools/agent-project` に置いたまま、パッケージから自動配線関数を消せば exit 0 に届く。
+run 受入と同じ単一パターンで足り、パスを `agent_project/` へ絞る必要はない。
+
+より厳しく、パッケージからの名指し・import の不在まで見たいなら、パスをパッケージに絞って次を使う。
+
+```
+! git grep -nE '_codd_gate|import codd_gate' -- tools/agent-project/agent_project
+```
+
+パスを `tools/agent-project` 全体へ広げると、sibling の `resolve_codd_gate` や tests の `import codd_gate_debt`
+まで巻き込み、境界が禁じていない任意部品を違反扱いにしてしまう。だからこの広いパターンはパッケージ
+（`agent_project/`）限定で使い、正典の完了条件は上の単一パターンに固定する（両者を1本の連結パターンに混ぜない。
+`_apply_codd_gate` は `_codd_gate` に包含されるため連結は冗長でもある）。コメントや docstring 中の `codd-gate`
+への言及まで消す必要が出る `codd.?gate` の総当たりは、コード結合の禁止という意図を超えるので採らない。
+
+どちらも毎回スキャンし直す決定的判定で（不変条件 1「no fake green」と同じ規律）、境界が守られているかを
+人の読解ではなく exit code で決める。§4.1「有効化／永続化」が説明する状態、つまりパッケージから
+`_apply_codd_gate_auto_wiring` と doctor/model の `import codd_gate_*` を除いた状態にすれば PASS する。除去そのものは
+実装側の後続タスクで扱い、本節はドキュメント上の完了条件を定義するに留める。
 
 ## 5. codd-dev からの主な翻案（差分）
 

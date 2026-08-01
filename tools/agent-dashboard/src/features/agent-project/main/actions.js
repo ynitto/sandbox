@@ -9,17 +9,14 @@
 //      → ingest_commands が CLI と同一ロジック・同一の決定記録（DR）で実行する。
 //      revise は人の即時フィードバック: タスクの内容・依存（after）・優先度の修正と
 //      feedback（次の act に必ず届く指示）を、ループがブロックする前に能動的に届ける。
-//      ファイルだけで届くため、本体が WSL 内で稼働していても操作できる。
-//      本体が稼働していないときは agent-project CLI に委譲し、CLI も使えなければ
-//      指示ファイルを置いて次回起動時の取り込みに委ねる（ロジックの二重実装はしない）。
+//      ファイルだけで届くため、本体が WSL 内で稼働していても操作できる。実行エンジンが
+//      止まっていれば取り込み待ちのまま残る（サイレントに失敗しない）。
 // done の確定・状態遷移そのものをこのアプリが直接書き換えることはしない
 // （「done は verify のみが根拠」の不変条件を壊さない）。
 
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
 const project = require('./project');
-const { agentDirCandidates } = require('../../../base/main/agent-home');
 
 const DECISION_MARKER = '## Decision Outcome';
 
@@ -128,11 +125,21 @@ function enqueueToInbox(projectDir, spec) {
   const clean = { title };
   const charter = validateCharterVersion(projectDir, spec.charter);
   if (charter) clean.charter = charter;
+  // 統一 verify の正規形（複数行キー）: 配列のまま JSON に書く（joinすると 1 行に潰れて
+  // 基準の区切りが失われる。agent-project の coerce_multiline が 1 要素 = 1 行で取り込む）。
+  for (const key of ['task_acceptance_criteria', 'verification_commands']) {
+    const v = spec[key];
+    if (v === undefined || v === null) continue;
+    const items = (Array.isArray(v) ? v : String(v).split('\n'))
+      .map((x) => String(x).trim()).filter(Boolean);
+    if (items.length) clean[key] = items;
+  }
   // task.schema.json の人が書けるフィールド（system 管理の routed_by/cohort* は通さない）。
   // workspace/refs/paths はルーティング（書込先・モノレポの担当領域）の明示指定、
   // review/expect/followup は検収・偽 done 対策・派生タスクの契約。
+  // verify / accept は旧形式の互換入力（他経路の投函用）。dashboard の画面は正規形だけを書く。
   for (const key of ['id', 'verify', 'accept', 'verify_template', 'note', 'after', 'level', 'track',
-    'why', 'desc', 'scope', 'out_of_scope', 'constraints', 'hints', 'demo',
+    'node', 'why', 'desc', 'scope', 'out_of_scope', 'constraints', 'hints', 'demo',
     'workspace', 'refs', 'paths', 'review', 'expect', 'followup']) {
     const v = spec[key];
     if (v === undefined || v === null) continue;
@@ -150,19 +157,108 @@ function enqueueToInbox(projectDir, spec) {
 }
 
 // ---------------------------------------------------------------------------
+// 監視担当の割り当て（assignments.json）— viewer 管理のチーム運用メタデータ。
+// タスク状態ファイル（backlog/*.md）には触れない: agent-project の契約の外にある
+// サイドカーファイルへの書き込みなので、done の不変条件・状態遷移に影響しない。
+// プロジェクトルート直下に置くため state_git 同期でチームへ共有される。
+// 書きかけを同期に載せないよう .tmp に書いてから rename する。
+// ---------------------------------------------------------------------------
+
+function setTaskOwner(projectDir, id, owner) {
+  const tid = String(id || '').trim();
+  if (!tid || tid !== path.basename(tid)) throw new Error(`不正なタスク ID です: ${id}`);
+  const name = String(owner || '').trim().slice(0, 60);
+  const file = path.join(projectDir, project.ASSIGNMENTS_FILE);
+  const cur = project.readAssignments(projectDir);
+  if (name) {
+    cur.tasks[tid] = name;
+    if (!cur.members.includes(name)) cur.members.push(name);
+  } else {
+    delete cur.tasks[tid];
+  }
+  fs.mkdirSync(projectDir, { recursive: true });
+  fs.writeFileSync(`${file}.tmp`, `${JSON.stringify(cur, null, 2)}\n`, 'utf8');
+  fs.renameSync(`${file}.tmp`, file);
+  return { file, id: tid, owner: name };
+}
+
+// ---------------------------------------------------------------------------
+// レビューコメント（reviews/<task-id>/*.json）— 成果物レビューを複数メンバーで行う。
+// 1 コメント = 1 ファイル（同時投稿がファイル名衝突せず state_git でマージされる）。
+// viewer 管理のサイドカーなのでタスク状態・done の不変条件には触れない。
+// 書きかけを watch/同期に載せないよう .tmp に書いてから rename する。
+// ---------------------------------------------------------------------------
+
+function _reviewDir(projectDir, taskId) {
+  const tid = String(taskId || '').trim();
+  if (!tid || tid !== path.basename(tid)) throw new Error(`不正なタスク ID です: ${taskId}`);
+  return path.join(projectDir, project.REVIEWS_DIR, tid);
+}
+
+function _commentFile(dir, commentId) {
+  const cid = String(commentId || '').trim();
+  if (!cid || cid !== path.basename(cid) || /[\\/]/.test(cid)) {
+    throw new Error(`不正なコメント ID です: ${commentId}`);
+  }
+  return path.join(dir, `${cid}.json`);
+}
+
+function addReviewComment(projectDir, taskId, { author, text }) {
+  const body = String(text || '').trim();
+  if (!body) throw new Error('コメント本文が空です');
+  const dir = _reviewDir(projectDir, taskId);
+  fs.mkdirSync(dir, { recursive: true });
+  const ts = new Date().toISOString();
+  // ファイル名に ts を含めて時系列に並べやすくする（同ミリ秒の衝突は slug で分ける）。
+  const cid = `${ts.replace(/[:.]/g, '-')}-${slugify(author || 'anon')}`;
+  const rec = { author: String(author || '').trim().slice(0, 60) || '匿名', text: body, ts };
+  const file = path.join(dir, `${cid}.json`);
+  fs.writeFileSync(`${file}.tmp`, `${JSON.stringify(rec, null, 2)}\n`, 'utf8');
+  fs.renameSync(`${file}.tmp`, file);
+  return { file, id: cid, comment: { id: cid, ...rec } };
+}
+
+// 監視担当者がコメントを整理（編集）する。author/ts は保持し editedTs を足す。
+function editReviewComment(projectDir, taskId, commentId, text) {
+  const body = String(text || '').trim();
+  if (!body) throw new Error('コメント本文が空です');
+  const dir = _reviewDir(projectDir, taskId);
+  const file = _commentFile(dir, commentId);
+  const cur = project.readReviewComments(projectDir, taskId).find((c) => c.id === String(commentId));
+  if (!cur) throw new Error(`コメントが見つかりません: ${commentId}`);
+  const rec = { author: cur.author, text: body, ts: cur.ts, editedTs: new Date().toISOString() };
+  fs.writeFileSync(`${file}.tmp`, `${JSON.stringify(rec, null, 2)}\n`, 'utf8');
+  fs.renameSync(`${file}.tmp`, file);
+  return { file, id: String(commentId), comment: { id: String(commentId), ...rec } };
+}
+
+async function deleteReviewComment(projectDir, taskId, commentId, trash) {
+  const dir = _reviewDir(projectDir, taskId);
+  const file = _commentFile(dir, commentId);
+  if (!fs.existsSync(file)) throw new Error(`コメントが見つかりません: ${commentId}`);
+  const via = trash ? await trash(file) : (fs.rmSync(file, { force: true }), 'delete');
+  return { file, id: String(commentId), via };
+}
+
+// ---------------------------------------------------------------------------
 // 3. 人の指示（approve / hold / pin / defer / revise）
 // ---------------------------------------------------------------------------
 
-const COMMAND_ACTIONS = new Set(['approve', 'hold', 'pin', 'defer', 'revise', 'reject', 'resume-run']);
+const COMMAND_ACTIONS = new Set(['approve', 'retry-mr', 'hold', 'pin', 'defer', 'revise', 'reject', 'resume-run']);
 // プロジェクト単位（id 不要）のライフサイクル指示。リモートの本体を git 越しに操作する口。
 const LIFECYCLE_ACTIONS = new Set(['pause', 'resume', 'stop']);
 
 // revise が受けるフィールド編集キー（agent-project の REVISE_FIELDS と同じ）。
 // 値は「置換」規約: '' / '-' / 'none' はフィールド削除、未指定（undefined/null）は触らない。
-// why 以降は誘導・レビュー記述（backlog.md.example 参照）。編集 UI は未対応だが、
-// ペイロード契約は本体と揃えておく（AI 補助・将来の UI がそのまま通せる）。
+// why 以降は誘導・レビュー記述（backlog.md.example 参照）。
 const REVISE_KEYS = ['title', 'priority', 'verify', 'accept', 'after', 'note', 'level', 'track',
-  'why', 'desc', 'scope', 'out_of_scope', 'constraints', 'hints', 'demo'];
+  'node', 'why', 'desc', 'scope', 'out_of_scope', 'constraints', 'hints', 'demo'];
+
+// 複数行フィールド（agent-project の MULTILINE_KEYS）。配列で送り、**全行を置換**する。
+// 単値キーと同じ String() を通すと ['a','b'] が "a,b" の 1 行に潰れるので経路を分ける。
+// task_acceptance_criteria / verification_commands が統一 verify の正規形。acceptance は
+// 旧形式の掃除（[''] で削除）にだけ使う。
+const REVISE_LIST_KEYS = ['task_acceptance_criteria', 'verification_commands', 'acceptance'];
 
 // revise ペイロード（フィールド編集 + feedback）を commands/CLI 両経路の形へ正規化する。
 // undefined/null は「触らない」の意味なので落とす（'' は削除の明示指定として残す）
@@ -172,6 +268,11 @@ function revisePayload({ fields, feedback }) {
     const v = fields && fields[key];
     if (v !== undefined && v !== null) out[key] = String(v);
   }
+  for (const key of REVISE_LIST_KEYS) {
+    const v = fields && fields[key];
+    if (v === undefined || v === null) continue;
+    out[key] = (Array.isArray(v) ? v : [v]).map((x) => String(x));
+  }
   const fb = String(feedback || '').trim();
   if (fb) out.feedback = fb;
   return out;
@@ -179,11 +280,13 @@ function revisePayload({ fields, feedback }) {
 
 // commands/<name>.json のドロップ（agent-project の ingest_commands が拾う）。
 // 書きかけを watch に読ませないよう .tmp に書いてから rename する。
-// replan / pause / resume / stop はプロジェクト単位（id 不要）なので id を載せない。
-function dropCommand(projectDir, { action, id, reason, fields, feedback, run, charter, complete }) {
+// replan / pause / resume / stop / heal はプロジェクト単位（id 不要）なので id を載せない。
+function dropCommand(projectDir, { action, id, reason, fields, feedback, run, charter, title, complete }) {
   const dir = path.join(projectDir, 'commands');
   fs.mkdirSync(dir, { recursive: true });
-  const projectScoped = action === 'replan' || LIFECYCLE_ACTIONS.has(action);
+  const projectScoped =
+    action === 'replan' || action === 'heal' || action === 'distill-notes' ||
+    action === 'revive' || LIFECYCLE_ACTIONS.has(action);
   const rec = {
     command: action,
     ...(projectScoped ? {} : { id: String(id) }),
@@ -192,7 +295,11 @@ function dropCommand(projectDir, { action, id, reason, fields, feedback, run, ch
     ts: new Date().toISOString(),
     ...(action === 'revise' ? revisePayload({ fields, feedback }) : {}),
     ...(action === 'resume-run' && run ? { run: String(run) } : {}),
-    ...(action === 'replan' && charter ? { charter: String(charter) } : {}),
+    ...((action === 'replan' || action === 'distill-notes' || action === 'revive') && charter
+      ? { charter: String(charter) }
+      : {}),
+    // revive は id ではなくタイトル（指紋照合）で対象を指す
+    ...(action === 'revive' && title ? { title: String(title) } : {}),
     // 承認 = 完了か積み直しかは呼び出し側が明示する（本体は文面から推定しない）
     ...(action === 'approve' && complete ? { complete: true } : {}),
   };
@@ -203,239 +310,119 @@ function dropCommand(projectDir, { action, id, reason, fields, feedback, run, ch
   return { file, rec };
 }
 
-// プロジェクトルートから --root を導く（1 プロジェクト = 1 ディレクトリ）
-function cliScope(projectDir) {
-  return { root: path.resolve(projectDir) };
-}
+// 本体（agent-project）を CLI で起こす経路は削除した（実装計画 W2-2）。CLI 引数の組み立て・
+// プロセスツリーの kill・設定ファイルの探索もその経路のためだけの道具だったので一緒に消す。
+// 人の操作は commands/ の投函だけで届き、実行エンジンの起動・再起動は OS の起動系が担う。
 
-function quote(arg) {
-  const s = String(arg);
-  if (/^[\w@%+=:,./-]+$/.test(s)) return s;
-  return process.platform === 'win32' ? `"${s.replace(/"/g, '""')}"` : `'${s.replace(/'/g, "'\\''")}'`;
-}
-
-function findProjectConfig(...dirs) {
-  // agent-project の _find_config と同じ名前を、本体／状態 worktree の候補から探す。
-  // cwd 依存を避け、dashboard CLI 委譲が設定を拾えるようにする。
-  // `dir`（状態ルート）と `fromStateWorktree(dir)`（本体）の両方を見る——yaml が
-  // 状態 worktree 側だけにある構成でも --config を落とさない。
-  const bases = [];
-  const add = (d) => {
-    if (!d) return;
-    const resolved = path.resolve(d);
-    for (const base of [
-      resolved,
-      ...agentDirCandidates(resolved),
-      path.dirname(resolved),
-      ...agentDirCandidates(path.dirname(resolved)),
-    ]) {
-      if (!bases.includes(base)) bases.push(base);
-    }
-  };
-  for (const d of dirs) add(d);
-  for (const base of bases) {
-    for (const name of ['agent-project.yaml', 'agent-project.yml']) {
-      const p = path.join(base, name);
-      if (fs.existsSync(p)) return p;
-    }
-  }
-  return null;
-}
-
-// ⚙ 設定の CLI コマンド（例 `python3 /path/to/agent-project.py`）を argv 配列へ分解する。
-// クォート（"…" / '…'）で空白入りパスも表せる。
-function splitCommand(command) {
-  const out = [];
-  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
-  let m;
-  while ((m = re.exec(String(command || '').trim()))) {
-    out.push(m[1] != null ? m[1] : m[2] != null ? m[2] : m[3]);
-  }
-  return out;
-}
-
-// タイムアウト時にプロセスツリーごと止める。Windows の child.kill() はトップ（多くは
-// シェル）しか殺さず、agent-project 本体や WSL 側の子が生き残って再実行と多重化する。
-function killTree(child) {
-  if (!child || child.pid == null) return;
-  try {
-    if (process.platform === 'win32') {
-      spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
-    } else {
-      try {
-        process.kill(-child.pid, 'SIGTERM'); // detached 起動によるプロセスグループごと
-      } catch {
-        child.kill();
-      }
-    }
-  } catch {
-    try {
-      child.kill();
-    } catch {
-      /* 既に終了 */
-    }
-  }
-}
-
-function runProjectCli(command, args, timeoutMs = 60000, cwd) {
-  // shell:true + 文字列連結は、空白入りコマンドパスで壊れ、cmd.exe の %VAR% 展開で
-  // --reason / feedback の日本語文が変質し、メタ文字がインジェクションになる。
-  // argv 配列 + shell:false で渡す（PATHEXT で .exe/.cmd は解決される）。
-  const tokens = splitCommand(command);
-  const file = tokens[0] || 'agent-project';
-  const argv = [...tokens.slice(1), ...args.map(String)];
-  const cmdline = `${command} ${args.map(quote).join(' ')}`; // 表示・手動再実行用
-  return new Promise((resolve, reject) => {
-    let child;
-    try {
-      child = spawn(file, argv, {
-        shell: false,
-        windowsHide: true,
-        cwd: cwd || undefined,
-        detached: process.platform !== 'win32', // POSIX: グループ kill を可能にする
-      });
-    } catch (e) {
-      reject(new Error(`agent-project を起動できません（⚙ 設定の CLI コマンドを確認）: ${e.message}`));
-      return;
-    }
-    let out = '';
-    let err = '';
-    const timer = setTimeout(() => {
-      killTree(child);
-      reject(new Error(`agent-project がタイムアウトしました: ${cmdline}`));
-    }, timeoutMs);
-    child.stdout.on('data', (d) => (out += d));
-    child.stderr.on('data', (d) => (err += d));
-    child.stdin.on('error', () => {});
-    child.stdin.end();
-    child.on('error', (e) => {
-      clearTimeout(timer);
-      reject(new Error(`agent-project を起動できません（⚙ 設定の CLI コマンドを確認）: ${e.message}`));
-    });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      if (code === 0) resolve({ output: out.trim(), command: cmdline });
-      else reject(new Error(`agent-project が失敗しました (exit ${code}): ${(err || out).trim().slice(-400)}`));
-    });
-  });
-}
-
-// CLI 実行（approve / hold / reprioritize / revise / resume-run）。本体が稼働していないときの経路
-async function runActionViaCli(cfg, { dir, action, id, reason, fields, feedback, run, complete }) {
-  const command = (cfg.projects && cfg.projects.command) || 'agent-project';
-  // ファイル操作は状態ルート（dir）。CLI --root は本体側（二重リダイレクト防止）。
-  const root = project.fromStateWorktree(path.resolve(dir));
-  const base = ['--root', root];
-  const cfgPath = findProjectConfig(root, dir);
-  if (cfgPath) base.push('--config', cfgPath);
-  let args;
-  if (action === 'approve') {
-    args = ['approve', id, '--reason', reason, ...(complete ? ['--complete'] : []), ...base];
-  }
-  else if (action === 'reject') args = ['reject', id, '--reason', reason, ...base];
-  else if (action === 'hold') args = ['hold', id, '--reason', reason, ...base];
-  else if (action === 'pin') args = ['reprioritize', id, '--pin', '--reason', reason, ...base];
-  else if (action === 'resume-run') args = ['resume-run', id, '--run', String(run), '--reason', reason, ...base];
-  else if (action === 'revise') {
-    const payload = revisePayload({ fields, feedback });
-    args = ['revise', id, '--reason', reason];
-    for (const [key, value] of Object.entries(payload)) args.push(`--${key}`, value);
-    args.push(...base);
-  } else args = ['reprioritize', id, '--defer', '--reason', reason, ...base];
-  const cwd = cfgPath ? path.dirname(cfgPath) : root;
-  return runProjectCli(command, args, 60000, cwd);
-}
-
-// action: approve | hold | pin | defer | revise
+// action: approve | retry-mr | hold | pin | defer | revise
 //   revise は fields（title/priority/verify/accept/after/note/level/track の置換）と
 //   feedback（次の act に必ず届く指示）を追加で受ける。実行中（doing）のタスクは
 //   本体側が現在の試行を確定せず修正内容で積み直す（早い軌道修正）。
-// 経路は project.actionMode で制御する:
-//   auto（既定）… 本体が稼働中（instances の heartbeat）なら commands/ ドロップ、
-//                 稼働していなければ CLI、CLI も使えなければドロップにフォールバック
-//   file        … 常に commands/ ドロップ（WSL 内の本体・CLI 無し環境向け）
-//   cli         … 常に CLI（従来の挙動）
+// 経路は commands/ ドロップの一本（案2後半）。以前は actionMode(auto/file/cli) で CLI 直接実行と
+// サイレントフォールバックに分岐していたが、CLI パス誤り時に「押しても何も起きない」原因不明の
+// 停滞を生んでいた。稼働中の本体（同一 PC の WSL・別ホスト問わず）が git 同期越しに ingest し、
+// 受理レシート（commands/processed/）でカードに「受理済み」を返す。停止中は取り込み待ちのまま
+// 残り、送信済み表示で「エンジン待ち」が見える（サイレントに失敗しない）。
 async function runAction(cfg, { dir, action, id, reason, fields, feedback, run, complete }) {
   if (!COMMAND_ACTIONS.has(action)) throw new Error(`不明なアクション: ${action}`);
   const why = String(reason || '').trim() || 'agent-dashboard から操作';
-  const mode = (cfg.projects && cfg.projects.actionMode) || 'auto';
   if (action === 'revise' && Object.keys(revisePayload({ fields, feedback })).length === 0) {
     throw new Error('revise には変更フィールドかフィードバックの指定が必要です');
   }
   if (action === 'resume-run' && !String(run || '').trim()) {
     throw new Error('resume-run には再開する run-id の指定が必要です');
   }
-
-  // Windows ビュアーが WSL UNC パスを開いているときは、Windows 側の agent-project CLI は
-  // WSL 内の本体と別世界なので、auto でもファイルドロップを優先する。
-  const wslUnc = process.platform === 'win32' && /^\\\\wsl(?:\$|\.localhost)\\/i.test(String(dir || ''));
-  if (mode === 'file' || wslUnc || (mode !== 'cli' && project.isProjectRunning(dir))) {
-    const { file } = dropCommand(dir, { action, id, reason: why, fields, feedback, run });
-    return {
-      output: `${action} ${id}: 指示ファイルを投入しました（稼働中の agent-project が取り込みます）`,
-      file,
-      via: 'file',
-    };
-  }
-  try {
-    const res = await runActionViaCli(cfg, { dir, action, id, reason: why, fields, feedback, run });
-    return { ...res, via: 'cli' };
-  } catch (err) {
-    if (mode === 'cli') throw err;
-    // CLI が無い/失敗 → ファイルドロップに退避（次回の agent-project 起動時に取り込まれる）
-    const { file } = dropCommand(dir, { action, id, reason: why, fields, feedback, run });
-    return {
-      output:
-        `${action} ${id}: CLI を実行できないため指示ファイルを置きました` +
-        `（次回の agent-project 起動時に取り込まれます）`,
-      file,
-      via: 'file-fallback',
-      cliError: err.message,
-    };
-  }
+  const { file } = dropCommand(dir, { action, id, reason: why, fields, feedback, run, complete });
+  return {
+    output: `${action} ${id}: 指示ファイルを投入しました（稼働中の agent-project が取り込み、受理後にカードへ反映されます）`,
+    file,
+    via: 'file',
+  };
 }
 
 // charter からのバックログ再分解を要求する（エラー回復用の一発の口。プロジェクト単位＝id 無し）。
 // 本体は次パスで charter を分解し直す。冪等照合は「done 以外」（処理中＋却下済み）と行う＝
 // 処理中タスクの二重投入や却下済みの復活はせず、done と類似のタスクだけやり直しとして再作成される。
-// 経路は runAction と同じ auto/file/cli 契約。file は commands/replan ドロップ、cli は
-// `agent-project replan --reason ...`。稼働中はドロップ・停止中は CLI・CLI 不可はドロップ退避。
+// 経路は runAction と同じく commands/replan ドロップの一本（案2後半）。稼働中の本体が次パスで
+// 取り込み、受理レシートでカードへ反映する。停止中は取り込み待ちのまま残る（サイレント失敗しない）。
 async function requestReplan(cfg, { dir, reason, charter }) {
   const why = String(reason || '').trim() || 'agent-dashboard から再分解を要求';
   const charterName = validateCharterVersion(dir, charter);
-  const mode = (cfg.projects && cfg.projects.actionMode) || 'auto';
+  const { file } = dropCommand(dir, { action: 'replan', reason: why, charter: charterName });
+  return {
+    output: 'charter からの再分解を要求しました（稼働中の agent-project が次パスで取り込みます）',
+    file,
+    via: 'file',
+  };
+}
 
-  const wslUnc = process.platform === 'win32' && /^\\\\wsl(?:\$|\.localhost)\\/i.test(String(dir || ''));
-  if (mode === 'file' || wslUnc || (mode !== 'cli' && project.isProjectRunning(dir))) {
-    const { file } = dropCommand(dir, { action: 'replan', reason: why, charter: charterName });
-    return {
-      output: 'charter からの再分解を要求しました（稼働中の agent-project が次パスで取り込みます）',
-      file,
-      via: 'file',
-    };
-  }
+// ---------------------------------------------------------------------------
+// 観点メモ（notes/）— 人が気になったことを書き溜める場所（S6-7）。
+// plan はメモを**自動では消費しない**ので、書いたままにしておいても計画は動かない。
+// 人が「メモを分解」を押したときだけ、本体（agent-project distill-notes）がバックログ候補を起こす。
+// ---------------------------------------------------------------------------
+const NOTE_NAME_RE = /^[A-Za-z0-9_.-]+$/;
+
+function notesDir(dir) {
+  return path.join(dir, 'notes');
+}
+
+// メモ一覧（archive/ は除く＝消費済みは出さない）。新しい順。
+function listNotes(dir) {
+  const d = notesDir(dir);
+  let names = [];
   try {
-    const command = (cfg.projects && cfg.projects.command) || 'agent-project';
-    const root = project.fromStateWorktree(path.resolve(dir));
-    const args = ['replan', '--reason', why, '--root', root];
-    if (charterName) args.push('--charter', charterName);
-    const cfgPath = findProjectConfig(root, dir);
-    if (cfgPath) args.push('--config', cfgPath);
-    const cwd = cfgPath ? path.dirname(cfgPath) : root;
-    const res = await runProjectCli(command, args, 60000, cwd);
-    return { ...res, via: 'cli' };
-  } catch (err) {
-    if (mode === 'cli') throw err;
-    const { file } = dropCommand(dir, { action: 'replan', reason: why, charter: charterName });
-    return {
-      output:
-        'CLI を実行できないため再分解の要求ファイルを置きました' +
-        '（次回の agent-project 起動時に取り込まれます）',
-      file,
-      via: 'file-fallback',
-      cliError: err.message,
-    };
+    names = fs.readdirSync(d).filter((n) => n.toLowerCase().endsWith('.md'));
+  } catch {
+    return [];
   }
+  const out = [];
+  for (const name of names) {
+    const p = path.join(d, name);
+    try {
+      const st = fs.statSync(p);
+      if (!st.isFile()) continue;
+      out.push({ name, mtime: st.mtimeMs, body: fs.readFileSync(p, 'utf8') });
+    } catch {
+      /* 読めないメモは黙って飛ばす（一覧を壊さない） */
+    }
+  }
+  return out.sort((a, b) => b.mtime - a.mtime);
+}
+
+// メモを 1 件書く。**git には触らない**（この機能の書き込みはすべて状態ルート配下のファイルで、
+// commit/push は本体の状態同期が行う＝no-git-writes の約束を守る）。
+function writeNote(dir, { name, body }) {
+  const text = String(body || '').trim();
+  if (!text) throw new Error('メモが空です');
+  const d = notesDir(dir);
+  fs.mkdirSync(d, { recursive: true });
+  let base = String(name || '').trim().replace(/\.md$/i, '');
+  if (!base || !NOTE_NAME_RE.test(base)) {
+    base = `note-${new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14)}`;
+  }
+  let file = path.join(d, `${base}.md`);
+  for (let i = 2; fs.existsSync(file); i += 1) file = path.join(d, `${base}-${i}.md`);
+  fs.writeFileSync(`${file}.tmp`, `${text}\n`, 'utf8');
+  fs.renameSync(`${file}.tmp`, file);
+  return { file, name: path.basename(file) };
+}
+
+// メモをバックログ候補へ分解するよう本体へ依頼する（commands/ ドロップの一本。replan と同じ流儀）。
+async function requestDistillNotes(cfg, { dir, charter }) {
+  const notes = listNotes(dir);
+  if (!notes.length) throw new Error('分解できるメモがありません（先にメモを書いてください）');
+  const charterName = validateCharterVersion(dir, charter);
+  const { file } = dropCommand(dir, {
+    action: 'distill-notes',
+    reason: `agent-dashboard からメモ ${notes.length} 件の分解を要求`,
+    charter: charterName,
+  });
+  return {
+    output: `メモ ${notes.length} 件の分解を要求しました（稼働中の agent-project が次パスで取り込みます）`,
+    file,
+    via: 'file',
+  };
 }
 
 // プロジェクト単位のライフサイクル操作（pause / resume / stop）。
@@ -443,6 +430,66 @@ async function requestReplan(cfg, { dir, reason, charter }) {
 // 同期間隔内に取り込む契約（agent-project の ingest_commands）。CLI は使わない
 // （stop の CLI は同一ホスト限定で、この口の主用途はリモート操作のため）。
 const LIFECYCLE_LABELS = { pause: '一時停止', resume: '再開', stop: '停止' };
+
+// 不要なバックログタスクの削除 ＝ **物理削除**（ゴミ箱へ移動・needs も一緒に掃除）。
+//
+// かつてはここで本体の却下（reject）へ委ねていた——当時は charter 分解が自動で走ったため、
+// 生の削除では墓標が残らず「次の再分解が同じタスクを作り直す」からだ。いまは分解が人の
+// 明示操作（分解ボタン）でしか走らないので、その前提が消えた:
+//   - 削除 → 明示的な分解で同種のタスクがまた提案されるのは**期待どおり**（試行錯誤の口）。
+//   - 「二度と作り直させない」意思表示は削除ではなく **✕ 却下（reject）**——archive・墓標・
+//     決定記録に残り、次の分解でプランナーに「却下済み（意図の再提案も抑止）」として渡る。
+// needs/<id>.md も一緒に消すのは、対応タスクが無い票は本体の ingest_feedback が読み飛ばす
+// ため、残すと [x] を付けても消えない袋小路になるから。
+async function requestDeleteTask(cfg, { dir, id }, trash) {
+  const tid = String(id || '').trim();
+  if (!tid || tid !== path.basename(tid)) throw new Error(`不正なタスク ID です: ${id}`);
+  const file = path.join(dir, 'backlog', `${tid}.md`);
+  if (!fs.existsSync(file)) throw new Error(`タスクファイルがありません: ${file}`);
+  // 実行中・委譲中は拒否（消してもエージェント側の run が走り続け、成果の書き戻しで
+  // 状態が食い違う）。押した瞬間に理由を返せるようここで見る。
+  const status = project.parseTask(fs.readFileSync(file, 'utf8'), tid).status;
+  if (status === 'doing') {
+    throw new Error(`${tid} は実行中のため削除できません。先に「修正して再実行」で止めてください`);
+  }
+  if (status === 'offloaded') {
+    throw new Error(`${tid} は委譲先で実行中のため削除できません。先に実行を中止してください`);
+  }
+  const via = trash ? await trash(file) : (fs.rmSync(file, { force: true }), 'delete');
+  const needsFile = path.join(dir, 'needs', `${tid}.md`);
+  if (fs.existsSync(needsFile)) fs.rmSync(needsFile, { force: true });
+  // viewer 管理のサイドカー（レビューコメント）も一緒に片付ける。持ち主はこのアプリなので、
+  // 実行エンジン側の孤児掃除には任せない。エンジン管理の付随状態（検証記録・実行権ロック・
+  // 後続タスクの先行指定）はエンジンが毎パスの整合点で切り離し・掃除する。
+  const reviewsDir = path.join(dir, project.REVIEWS_DIR, tid);
+  if (fs.existsSync(reviewsDir)) fs.rmSync(reviewsDir, { recursive: true, force: true });
+  return {
+    output:
+      `${tid} を削除しました（要対応カードも片付けました）。` +
+      '同じ内容が必要になったら、「バックログを分解」かタスクの追加で入れ直せます',
+    via,
+  };
+}
+
+// 墓標の解除（却下＝削除の取り消し）。プロジェクト単位（id ではなく title 指定）の
+// commands/ ドロップ。本体の ingest_commands が cmd_revive へ渡す。
+function requestRevive(cfg, { dir, title, charter }) {
+  const name = String(title || '').trim();
+  if (!name) throw new Error('解除する墓標のタイトルが指定されていません');
+  const { file } = dropCommand(dir, {
+    action: 'revive',
+    reason: 'agent-dashboard から墓標を解除',
+    title: name,
+    charter: String(charter || '').trim() || undefined,
+  });
+  return {
+    output:
+      `「${name}」の墓標を解除するよう要求しました` +
+      '（稼働中の agent-project が取り込むと、同じタスクを入れ直せるようになります）',
+    file,
+    via: 'file',
+  };
+}
 
 function requestLifecycle(cfg, { dir, action, reason }) {
   if (!LIFECYCLE_ACTIONS.has(action)) throw new Error(`不明なライフサイクル操作: ${action}`);
@@ -457,54 +504,23 @@ function requestLifecycle(cfg, { dir, action, reason }) {
   };
 }
 
-// 本体（agent-project）の起動。stop/pause と違い、停止中の本体は commands/ を読めないため
-// ファイルドロップでは届かない — この PC の CLI で `agent-project start --root <dir>` を実行する
-// （start は常駐を detach して即座に戻る）。本体が別マシンの構成では、この PC で起動すると
-// 「この PC が実行役」になる（クレームにより同一タスクの二重実行は起きないが、エージェント
-// CLI の有無等は環境依存）。その判断は呼び出し側（renderer の確認ダイアログ）が人に委ねる。
-async function startProject(cfg, { dir }) {
-  const command = (cfg.projects && cfg.projects.command) || 'agent-project';
-  const root = project.fromStateWorktree(path.resolve(dir));
-  // runAction / requestReplan と同じガード: Windows ビュアーが WSL UNC を開いているとき、
-  // Windows 側 CLI で start すると UNC/Linux パスの --root で失敗するか、最悪 WSL 内の
-  // 本体とは別に Windows 側で二重起動する。停止中の本体はファイルドロップでは起こせない
-  // ため、人が WSL 内で打つべきコマンドを返して手動起動に委ねる。
-  const unc = process.platform === 'win32' &&
-    String(root || '').replace(/\//g, '\\').match(/^\\\\wsl(?:\$|\.localhost)\\[^\\]+(.*)$/i);
-  if (unc) {
-    const linuxRoot = (unc[1] || '/').replace(/\\/g, '/') || '/';
-    const err = new Error(
-      'WSL 内のプロジェクトは Windows 側の CLI からは起動できません。WSL のターミナルで起動してください。'
-    );
-    err.manualCommand = `${command} start --root ${linuxRoot}`;
-    throw err;
-  }
-  const cfgPath = findProjectConfig(root, dir);
-  const args = ['start', '--root', root];
-  if (cfgPath) args.push('--config', cfgPath);
-  const cwd = cfgPath ? path.dirname(cfgPath) : root;
-  try {
-    const res = await runProjectCli(command, args, 120000, cwd);
-    return { ...res, via: 'cli' };
-  } catch (err) {
-    // CLI が無い/失敗 → 人が本体マシンで打つべきコマンドをそのまま返す（コピーして実行できる）
-    err.manualCommand = `${command} ${args.map(quote).join(' ')}`;
-    throw err;
-  }
-}
-
 module.exports = {
   submitFeedback,
   buildNeedsStub,
   enqueueToInbox,
+  setTaskOwner,
+  addReviewComment,
+  editReviewComment,
+  deleteReviewComment,
   validateCharterVersion,
   dropCommand,
   runAction,
   requestReplan,
+  requestDeleteTask,
+  requestRevive,
   requestLifecycle,
-  startProject,
-  findProjectConfig,
-  splitCommand,
-  runProjectCli,
+  listNotes,
+  writeNote,
+  requestDistillNotes,
   DECISION_MARKER,
 };

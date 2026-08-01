@@ -147,10 +147,27 @@ def delete_task_file(cfg: "Config", task: Task) -> None:
 # 値は 1 行（改行は ⏎ 規約・feedback と同じ）。JSON のリスト指定は ⏎ 連結で 1 行化される。
 TASK_GUIDE_KEYS = ("why", "desc", "scope", "out_of_scope", "constraints", "hints", "demo")
 
+# 複数行フィールド（同じキーの `- k: v` 行を要素数だけ並べる）。単値フィールドの規約
+# （リストは ⏎ / カンマで 1 行に畳む）を適用してはいけないものをここに列挙する。
+#   task_acceptance_criteria … 受入基準（統一 verify の正規形。1 行 1 基準）
+#   verification_commands    … 任意の固定検証コマンド（正規形。1 行 1 コマンド）
+#   acceptance … 受入基準チェックリスト（旧形式。読み取り境界で正規形へ読み替える）
+MULTILINE_KEYS = ("task_acceptance_criteria", "verification_commands", "acceptance")
+
 ENQUEUE_KNOWN_KEYS = {"id", "title", "verify", "priority", "source", "status",
                       "after", "review", "note", "accept", "verify_template", "repos",
-                      "workspace", "refs", "paths", "routed_by",
-                      "cohort_items", "cohort", "cohort_role", *TASK_GUIDE_KEYS}
+                      "workspace", "refs", "paths", "routed_by", "node",
+                      "cohort_items", "cohort", "cohort_role",
+                      *MULTILINE_KEYS, *TASK_GUIDE_KEYS}
+
+
+def coerce_multiline(v) -> "list[str]":
+    """複数行フィールドの spec 値（list / str / None）を行のリストへ正規化する。
+    文字列 1 本は 1 要素。各要素の生の改行は ⏎ 規約へ畳む（md は 1 行 = 1 フィールド）。"""
+    if v in (None, "", []):
+        return []
+    items = v if isinstance(v, list) else [v]
+    return [s for s in (str(x).replace("\n", " ⏎ ").strip() for x in items) if s]
 
 
 def _slug_id(text: str) -> str:
@@ -194,9 +211,14 @@ def task_from_spec(cfg: "Config", spec: dict) -> Task:
     verify = _strip_code(str(spec.get("verify", "") or "").strip())
     accept = str(spec.get("accept", "") or "").strip()
     tmpl = str(spec.get("verify_template", "") or "").strip()
+    acceptance = coerce_multiline(spec.get("acceptance")) \
+        or coerce_multiline(spec.get("task_acceptance_criteria"))
+    vcmds = coerce_multiline(spec.get("verification_commands"))
     tid = _gen_task_id(cfg, spec.get("id"), title)
-    # verify が無くても accept / verify_template があれば「verify を用意できる」ので ready 扱い（後で展開/合成）
-    has_plan = bool(verify or accept or tmpl)
+    # verify が無くても基準（正規形/旧形式）・accept・verify_template・固定コマンドがあれば
+    # 「検証の材料はある」ので ready 扱い。述語は verify.py の has_verify_plan と同義
+    # ——ここだけ数え漏らすと、受入基準しか持たないタスクが inbox へ落ちる。
+    has_plan = bool(verify or acceptance or accept or tmpl or vcmds)
     explicit = str(spec.get("status", "") or "").strip()
     default_status = "ready" if has_plan else "inbox"
     # 実行前レビュー（plan_review・既定 on）: status を明示しない新規投入はすべて proposed で入り、
@@ -204,14 +226,27 @@ def task_from_spec(cfg: "Config", spec: dict) -> Task:
     if not explicit and getattr(cfg, "plan_review", False):
         default_status = "proposed"
     status = explicit or default_status
-    t = Task(id=tid, title=title, status=status, verify=verify,
+    # 書き込み境界の正規化（統一 verify・P1-A8）: 新規データに裸の acceptance / accept /
+    # verify を書かない。spec がどの形（旧 CLI フラグ・旧 planner 出力・正規形）で来ても、
+    # 保存は task_acceptance_criteria / verification_commands の正規形 1 本にする。
+    # 旧形式の**読み取り**（task_acceptance / task_verification_commands の読み替え）は
+    # 互換期間中残る——既存タスクファイルはそのまま動く。
+    criteria_lines = coerce_multiline(spec.get("task_acceptance_criteria")) \
+        + coerce_multiline(spec.get("acceptance")) \
+        + ([accept] if accept else [])
+    vcmd_lines = vcmds + ([verify] if verify else [])
+    t = Task(id=tid, title=title, status=status, verify="",
              source=str(spec.get("source", "") or "enqueue"))
     try:
         t.priority = int(spec.get("priority", 0) or 0)
     except (TypeError, ValueError):
         t.priority = 0
-    for k in ("after", "review", "note", "accept", "verify_template", "repos",   # 既知の追加フィールド
-              "workspace", "refs", "paths", "routed_by",   # ルーティング: 書込先・参照repo・触るパス・解決経路
+    for line in dict.fromkeys(criteria_lines):       # 複数行フィールド（1 要素 = 1 行・重複は畳む）
+        t.extra.append(("task_acceptance_criteria", line))
+    for line in dict.fromkeys(vcmd_lines):
+        t.extra.append(("verification_commands", line))
+    for k in ("after", "review", "note", "verify_template", "repos",   # 既知の追加フィールド
+              "workspace", "refs", "paths", "routed_by", "node",   # ルーティング: 書込先・参照repo・触るパス・解決経路・実行ノード
               *TASK_GUIDE_KEYS):                           # 誘導・レビュー記述（why/desc/scope/…）
         v = spec.get(k)
         if v in (None, "", []):
@@ -242,6 +277,64 @@ def enqueue_task(cfg: "Config", spec: dict) -> Task:
     cfg.backlog.mkdir(parents=True, exist_ok=True)
     persist_task(cfg, t)
     return t
+
+
+# ---------------------------------------------------------------------------
+# 随時取り込みの整合パス（S6-6・C8）— enqueue / inbox / intake_cmd の 3 経路が通る 1 か所。
+#   plan 経由（_enqueue_specs）は自前で照合するのでここは通らない。
+# ---------------------------------------------------------------------------
+def reconcile_intake(cfg: "Config", spec: dict) -> "tuple[dict | None, str]":
+    """随時入力を既存計画と整合させる。返り値 (投入する spec | None, 人へのメッセージ)。
+
+    1. **重複照合** — 既存タスクと十分似ていれば新規作成せず、既存タスクへ feedback として
+       追記する案を needs に出す（採否は人が決める）。突発タスクは「もう起票してあること」を
+       もう一度書いたものが多く、それを黙って 2 件目にすると計画が二重に膨らむ。
+    2. **charter 帰属** — `- charter:` タグが無ければ現行 charter 名を付ける。タグ無しタスクは
+       スコープ判定の穴（`task_belongs_to_charter`）を毎回踏むので、入口で埋める。
+    """
+    title = str(spec.get("title", "") or "").strip()
+    if not title:
+        return spec, ""
+    names = charter_names(cfg)
+    tag = str(spec.get("charter") or "").strip()
+    if not tag and len(names) == 1:
+        spec = dict(spec, charter=names[0])
+        tag = names[0]
+    existing = _existing_titles(cfg, tag or None, active_only=True)
+    if _is_duplicate(title, str(spec.get("verify") or ""), existing, cfg.learn_threshold):
+        dup = next((e for e in existing if _norm_title(e) == _norm_title(title)), title)
+        return None, (f"既存タスク「{dup}」と同じ題のため投入しませんでした。"
+                      "内容を足したいときは、そのタスクに feedback を書いてください")
+    graves = load_tombstones(cfg, tag or None)
+    grave = tombstone_hit(title, graves)
+    if grave is not None:
+        return None, (f"却下済み（墓標）のため投入しませんでした: {title}"
+                      + (f"（理由: {grave['reason']}）" if grave["reason"] else "")
+                      + "。作り直すなら `agent-project revive` で解除してください")
+    near = similar_tombstones(title, graves, cfg.learn_threshold)
+    notes = []
+    if near:
+        notes.append("⚠ 却下済みのタスクに似ています: "
+                     + " / ".join(f"「{t['title']}」（理由: {t['reason'] or '記録なし'}）"
+                                  for t in near[:2]))
+    # 現役タスクとの類似も**止めず**に注記する（止めるのは完全一致だけ・S6-2）。
+    similar = _similar_existing(title, existing, cfg.learn_threshold)
+    if similar:
+        notes.append("⚠ 既存タスクに似ています: "
+                     + " / ".join(f"「{s}」" for s in similar[:2]))
+    if notes:
+        spec = dict(spec, note=" ⏎ ".join(
+            x for x in [str(spec.get("note") or "").strip(), *notes] if x))
+    return spec, ""
+
+
+def enqueue_reconciled(cfg: "Config", spec: dict) -> "tuple[Task | None, str]":
+    """整合パスを通してから投入する（随時入力の共通入口）。弾かれたら (None, 理由)。"""
+    spec, msg = reconcile_intake(cfg, spec)
+    if spec is None:
+        append_journal(cfg.journal, f"整合パス: 投入を見送り — {msg}")
+        return None, msg
+    return enqueue_task(cfg, spec), msg
 
 
 # ---------------------------------------------------------------------------
@@ -311,9 +404,12 @@ def create_cohort(cfg: "Config", spec: dict) -> Task:
     # 誘導・レビュー記述（why/desc/…）は pilot にも残り生成メンバにも引き継ぐ（{item} 差し込み可）
     guide = {k: (" ⏎ ".join(map(str, v)) if isinstance(v, list) else str(v))
              for k, v in ((k, spec.get(k)) for k in TASK_GUIDE_KEYS) if v not in (None, "", [])}
+    acceptance_t = coerce_multiline(spec.get("acceptance")) \
+        or coerce_multiline(spec.get("task_acceptance_criteria"))
     pilot_spec = {
         "title": _apply_item(title_t, pilot_item),
         "verify": _apply_item(verify_t, pilot_item, fallback=False) if verify_t else "",
+        "acceptance": [_apply_item(a, pilot_item, fallback=False) for a in acceptance_t],
         "accept": spec.get("accept"),
         "review": "human",                 # pilot は人の承認（feedback）で指示を固める
         "source": str(spec.get("source", "") or "cohort"),
@@ -330,6 +426,7 @@ def create_cohort(cfg: "Config", spec: dict) -> Task:
         "pilot_id": pilot.id,
         "title_template": title_t,
         "verify_template": verify_t,
+        "acceptance_template": acceptance_t,   # 受入基準テンプレ（{item} はメンバ生成時に差し込み）
         "accept": str(spec.get("accept", "") or ""),
         "items": rest,                     # pilot 承認後に生成する残り要素
         "repos": ",".join(repos) if isinstance(repos, list) else (repos or ""),
@@ -358,6 +455,8 @@ def materialize_cohort_rest(cfg: "Config", pilot: Task, feedback: str = "") -> "
         mspec = {
             "title": _apply_item(state["title_template"], item),
             "verify": _apply_item(state["verify_template"], item, fallback=False) if state.get("verify_template") else "",
+            "acceptance": [_apply_item(str(a), item, fallback=False)
+                           for a in (state.get("acceptance_template") or [])],
             "accept": state.get("accept") or None,
             "source": str(state.get("source", "") or "cohort"),
             "repos": repos,
@@ -449,7 +548,11 @@ def ingest_inbox(cfg: "Config") -> "list[Task]":
                     if already_completed(cfg, sid):
                         skipped.append(sid)
                         continue
-                    created.append(enqueue_task(cfg, sp))
+                    t, msg = enqueue_reconciled(cfg, sp)   # 整合パス（重複照合・charter 帰属・墓標）
+                    if t is None:
+                        skipped.append(f"{sid or sp.get('title', '')}: {msg}")
+                        continue
+                    created.append(t)
             elif f.suffix.lower() in (".md", ".markdown", ".txt"):
                 t = parse_task(f.read_text(encoding="utf-8"), f.stem)
                 if already_completed(cfg, _slug_id(t.id)):
@@ -494,7 +597,7 @@ _INTAKE_LAST: "dict[str, float]" = {}
 def _parse_intake_records(text: str) -> "tuple[list[dict], list[str]]":
     """intake_cmd の stdout（`enqueue --json` と同形式＝1件の object か配列）を spec dict のリストへ
     正規化する汎用パーサ。**どの検出器の出力かを問わず**レコード単位に検証するだけで、外部の
-    決定的ゲート/検出器（codd-gate 等）の実装には一切依存しない——intake_cmd 自体が差し込み点で
+    決定的な外部検出器の実装には一切依存しない——intake_cmd 自体が差し込み点で
     あり、本体（この関数）はそこへ流れ込む JSON レコードを汎用に受けるフックに徹する。
 
     トップレベルは object（1件）でも array（複数件）でもよい（`run_intake` の従来挙動と対称）。
@@ -539,8 +642,8 @@ def _parse_intake_records(text: str) -> "tuple[list[dict], list[str]]":
 
 def run_intake(cfg: "Config") -> "list[Task]":
     """取り込みコマンド（intake_cmd）を実行し、stdout の JSON（spec オブジェクト/配列＝
-    `enqueue --json` と同形式）を backlog へ**冪等に**取り込む。外部の決定的ゲート/検出器
-    （例: `codd-gate tasks --debt`）を watch の周期で汲み上げる汎用フック。
+    `enqueue --json` と同形式）を backlog へ**冪等に**取り込む。外部の決定的検出器を
+    watch の周期で汲み上げる汎用フック。
 
     - **冪等**: spec の `id` が現役 backlog（blocked/review 含む）に居れば飛ばす。定期実行しても
       同じ発見が重複投入されない（done→archive 後に同じ発見が再発したら新タスクとして積み直せる）。
@@ -580,10 +683,13 @@ def run_intake(cfg: "Config") -> "list[Task]":
         if sid and sid in existing:
             continue                        # 冪等: 現役 backlog に居る発見は再投入しない
         try:
-            created.append(enqueue_task(cfg, sp))
+            t, _msg = enqueue_reconciled(cfg, sp)   # 整合パス（重複照合・charter 帰属・墓標）
         except ValueError as e:
             append_journal(cfg.journal, f"intake spec 無効: {e}")
             continue
+        if t is None:
+            continue                        # 見送りの理由は enqueue_reconciled が journal に残す
+        created.append(t)
         if sid:
             existing.add(sid)
     if created:

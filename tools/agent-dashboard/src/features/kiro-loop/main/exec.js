@@ -64,17 +64,20 @@ function resultOf(res) {
 }
 
 // Windows では常に WSL へ。Linux ネイティブではそのまま tmux を叩く。
+// ログインシェルは bash を使う（sh=dash だと利用者の ~/.bashrc / profile にある bash 構文
+// `[[ … ]]` が `sh: N: [[: not found` になり、そこで止まると venv 有効化も走らず、
+// kiro-loop（`#!/usr/bin/env python`）の python も解決できず「python: No such file or directory」になる）。
 function shInWsl(script, timeoutMs = 8000, distro = '') {
   const wrapped = `export LANG=C.UTF-8 LC_ALL=C.UTF-8; ${script}`;
   if (process.platform === 'win32') {
-    const wslArgs = distro ? ['-d', distro, '-e', 'sh', '-lc', wrapped] : ['-e', 'sh', '-lc', wrapped];
+    const wslArgs = distro ? ['-d', distro, '-e', 'bash', '-lc', wrapped] : ['-e', 'bash', '-lc', wrapped];
     return resultOf(spawnSync('wsl.exe', wslArgs, {
       encoding: 'buffer',
       timeout: timeoutMs,
       windowsHide: true,
     }));
   }
-  return resultOf(spawnSync('sh', ['-lc', wrapped], {
+  return resultOf(spawnSync('bash', ['-lc', wrapped], {
     encoding: 'buffer',
     timeout: timeoutMs,
     windowsHide: true,

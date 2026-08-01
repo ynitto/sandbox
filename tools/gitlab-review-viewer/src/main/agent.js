@@ -14,7 +14,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-// kiro-flow と同じ発想: argv が長すぎると OS の制限で起動に失敗するため退避する
+// agent-flow と同じ発想: argv が長すぎると OS の制限で起動に失敗するため退避する
 const ARGV_LIMIT = 100000;
 
 // テンプレートを argv 配列に分割する（ダブル/シングルクォート対応の簡易トークナイザ）

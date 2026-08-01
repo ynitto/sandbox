@@ -82,7 +82,7 @@ Windows 用の exe としてビルドして起動できる Electron アプリ。
   - **却下** — イシュー名と**似たタイトルのマージリクエストをクローズしてソース
     ブランチを削除**し、イシューは**明示的に閉じる**（表示キャッシュの状態に頼らない。
     既にクローズ済みなら no-op）。**イシューは削除しない** — コメント・経緯が記録として
-    残り、委譲元ツール（kiro-flow はイシューのクローズで却下を検知し、人コメントを
+    残り、委譲元ツール（agent-flow はイシューのクローズで却下を検知し、人コメントを
     やり直し指示として取り込む）にも決着が正しく伝わる。対象 MR はイシューの
     `related_merge_requests`（open）のうち**タイトル類似度**（タブ選択と同じ
     `titleSimilarity` ≥ 0.5）を満たすものだけ——本文で言及しただけの無関係な MR を
@@ -245,7 +245,7 @@ Obsidian が起動する。
 
 `gitlab-review-viewer://open?url=<GitLab の web_url>` のカスタム URL スキームで、
 外部ツールから特定のイシュー / MR をレビュー画面として開ける。
-[kiro-projects-viewer](../kiro-projects-viewer/) の GitLab タブ「レビューで開く」が
+[agent-dashboard](../agent-dashboard/) の GitLab タブ「レビューで開く」が
 この入り口を使う。
 
 - シングルインスタンス化されており、起動済みならそのウィンドウで対象を開く
@@ -262,7 +262,7 @@ Obsidian が起動する。
 ユーザーごとに分離）を開き、`gitlab-review-viewer://…` を 1 行受け取ると `second-instance`
 （argv 経由の連携起動）と同じく対象を開く（`src/main/handoff.js`）。
 
-これは **portable exe の連携起動を速くするため**。呼び出し側（kiro-projects-viewer の `exe`
+これは **portable exe の連携起動を速くするため**。呼び出し側（agent-dashboard の `exe`
 モード）が portable exe を argv 付きで再起動すると、既に起動済みでも OS は毎回「自己展開 →
 Electron 起動 → single-instance で転送 → 即終了」の 2 個目プロセス立ち上げコスト（数秒）を
 必ず払う。呼び出し側はまずこのエンドポイントへ接続を試み、**届けば URL を送るだけで即座に

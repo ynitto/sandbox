@@ -1,7 +1,7 @@
 'use strict';
 
 // プロジェクトの「新規作成」層と、人が書く上位入力ファイル（charter.md / policy.md /
-// repos.*）の「直接編集」層。ここが書くのは kiro-project の **人が書く入力だけ**:
+// repos.*）の「直接編集」層。ここが書くのは agent-project の **人が書く入力だけ**:
 //   - charter.md … 最上位入力（目標/制約/前提/成果物/acceptance/repos）。これを置くと
 //     run が plan→execute→evaluate を回し、backlog をこの憲章から生成する。
 //   - policy.md  … 運用ルール（deny/pin/defer/gate/route…）。
@@ -92,7 +92,7 @@ function charterReposLines(repos) {
 
 // 新規プロジェクトの charter.md 本文を作る。空セクションでも見出しは残す（後から編集できる）。
 // spec.master が真なら `## master` セクションを付けたマスター憲章（全バージョン共通の前提。
-// kiro-project はこれを分解せず、charters/<名前>.md の計画バージョンへ継承する）にする。
+// agent-project はこれを分解せず、charters/<名前>.md の計画バージョンへ継承する）にする。
 // マスター憲章は完了条件（acceptance）を持たない: 完了条件は各計画バージョンが定義する。
 // spec.version が真（計画バージョン charters/<名前>.md の生成）のときは、空の constraints /
 // assumptions を**見出しごと省略**する。本体の継承規則は「見出しがあって空＝継承値を空に上書き」
@@ -173,7 +173,7 @@ function parseCharterDoc(text) {
 }
 
 // セクション本文（複数行）を箇条書き項目の配列にする（- とコード用バッククォートを剥がす。
-// kiro-project の _charter_bullets と同じく `cmd` の飾りを外して素の文字列で扱う）。
+// agent-project の _charter_bullets と同じく `cmd` の飾りを外して素の文字列で扱う）。
 function sectionItems(body) {
   return String(body || '')
     .split('\n')
@@ -312,7 +312,7 @@ function validateRepoRows(rows) {
 }
 
 // ---------------------------------------------------------------------------
-// repos.json の生成（kiro-project の export_repo_registry と同じ形）
+// repos.json の生成（agent-project の export_repo_registry と同じ形）
 // ---------------------------------------------------------------------------
 
 // カンマ/空白区切りのグロブ文字列を配列にする（repos スキーマの globs）。
@@ -324,7 +324,7 @@ function splitGlobs(v) {
     .filter(Boolean);
 }
 
-// キーを再帰的にソートした安定 JSON（kiro-project は sort_keys=True で書くため、
+// キーを再帰的にソートした安定 JSON（agent-project は sort_keys=True で書くため、
 // 生成物の byte 一致を狙って同じ順序にする＝本体が毎回上書きし直さない）。
 function sortDeep(v) {
   if (Array.isArray(v)) return v.map(sortDeep);
@@ -367,7 +367,7 @@ function exportReposJson(repos, includeMeta = true) {
     ? {
         _meta: {
           generated_from: 'charter.md ## repos',
-          note: 'kiro-project が自動生成（正は charter）。手で管理するなら _meta を消す',
+          note: 'agent-project が自動生成（正は charter）。手で管理するなら _meta を消す',
         },
         ...entries,
       }
@@ -424,7 +424,7 @@ function createProject(spec) {
     );
   }
   // inbox/ は外部ソース（このビュアーの投入含む）が見つけられるよう先に作っておく
-  // （kiro-project 本体も起動時に作る）。
+  // （agent-project 本体も起動時に作る）。
   fs.mkdirSync(path.join(dir, 'inbox'), { recursive: true });
 
   let reposFile = null;
@@ -456,14 +456,14 @@ function readJsonFile(file) {
 }
 
 // project.json のトップレベル（初版 charter.md の収束状態）が持つキー。
-// kiro-project の load_charter_state / save_charter_state（name 無し＝トップレベル）と対。
+// agent-project の load_charter_state / save_charter_state（name 無し＝トップレベル）と対。
 const CHARTER_STATE_KEYS = [
   'id', 'name', 'history', 'best', 'stall', 'acceptance_synth', 'planned_charter_sig',
   'acceptance_total', 'status', 'cost', 'cycles', 'accepted_charter_sig',
 ];
 
 // 初版（charter.md）に後からバージョン名を付け、charters/<name>.md へ移す（昇格）。
-// kiro-project は charters/*.md があると charter.md を駆動対象から外すため、バージョン追加後も
+// agent-project は charters/*.md があると charter.md を駆動対象から外すため、バージョン追加後も
 // 初版を並行駆動に含めるにはこの昇格が必要になる。やること:
 //   1. charter.md → charters/<name>.md へ移動（本文は無変更）
 //   2. 既存の未タグ backlog タスクへ `- charter: <name>` を付与（初版のタスクの帰属を追従。
@@ -501,7 +501,7 @@ function promoteCharterVersion(dir, name) {
 
   const pj = path.join(dir, 'project.json');
   const state = readJsonFile(pj);
-  const pid = path.basename(path.resolve(dir)); // kiro-project の _project_id（ルートのディレクトリ名）と同じ
+  const pid = path.basename(path.resolve(dir)); // agent-project の _project_id（ルートのディレクトリ名）と同じ
   if (state && state.id) {
     const sub = {};
     for (const k of CHARTER_STATE_KEYS) {
@@ -548,7 +548,7 @@ function deleteCharterVersion(dir, name) {
         const m = text.match(/^\s*-\s+charter\s*:\s*(.+?)\s*$/m);
         if (m && m[1].trim() === nm) related.push(`${folder}/${entry}`);
       } catch (e) {
-        throw new Error(`関連する作業を確認できないため削除できません: ${folder}/${entry} (${e.message})`);
+        throw new Error(`関連する作業を確認できないため削除できません: ${folder}/${entry} (${e.message})`, { cause: e });
       }
     }
   }
@@ -616,7 +616,7 @@ function writeProjectFile(dir, name, content) {
     try {
       JSON.parse(text);
     } catch (e) {
-      throw new Error(`JSON として不正です: ${e.message}`);
+      throw new Error(`JSON として不正です: ${e.message}`, { cause: e });
     }
   }
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -624,9 +624,54 @@ function writeProjectFile(dir, name, content) {
   return { file, name };
 }
 
+// 作成時 lint（案5・G6）: バックログの情報量不足・曖昧な完了条件を投入前に警告する。
+// 純関数（副作用なし・投入はブロックしない）。判断は監視者に委ねる＝警告のみ返す。
+// 返り値: [{ level: 'warn'|'info', field, message }]。
+const VAGUE_ACCEPT_RE =
+  /(いい感じ|良い感じ|よい感じ|ちゃんと|きちんと|しっかり|うまく|上手く|正しく|適切に|きれいに|綺麗に|なるべく|できるだけ|良く|よしなに|いい感じに)/;
+
+function lintTaskSpec(spec) {
+  const s = spec || {};
+  const val = (k) => String(s[k] == null ? '' : s[k]).trim();
+  const list = (k) => (Array.isArray(s[k]) ? s[k] : String(s[k] == null ? '' : s[k]).split('\n'))
+    .map((x) => String(x).trim()).filter(Boolean);
+  const out = [];
+  // 統一 verify の正規形（受入基準・固定コマンド）を一次に読み、旧 verify / accept も互換で見る。
+  const commands = list('verification_commands');
+  const criteria = list('task_acceptance_criteria');
+  const verify = commands[0] || val('verify');
+  const template = val('verify_template');
+  const accept = criteria.join(' ') || val('accept');
+  // 受入基準が何も無い＝自動では完了にできず、必ず人手の検収に落ちる。
+  if (!verify && !template && !accept) {
+    out.push({
+      level: 'warn',
+      field: 'accept',
+      message: '受入基準がありません。1 行 1 基準で「完了したと判断できる状態」を書いてください。無いと自動で完了にできません。',
+    });
+  } else if (!verify && !template && accept && VAGUE_ACCEPT_RE.test(accept)) {
+    // 曖昧な基準は verifier の判定が揺れ、手戻りの元（G6）。警告のみで、コマンド入力は強要しない。
+    out.push({
+      level: 'warn',
+      field: 'accept',
+      message: '受入基準が曖昧です（「ちゃんと」「正しく」等）。観測できる状態に言い換えると手戻りが減ります。',
+    });
+  }
+  // 計画レビューの判断材料（なぜ・範囲）が無いと、承認者が成果のぶれを見抜けない。
+  if (!val('why') && !val('scope')) {
+    out.push({
+      level: 'info',
+      field: 'why',
+      message: 'why（なぜ）/ scope（やる範囲）が未記入です。計画レビューの判断材料になり、成果物のぶれを減らせます。',
+    });
+  }
+  return out;
+}
+
 module.exports = {
   EDITABLE_FILES,
   POLICY_KINDS,
+  lintTaskSpec,
   isEditable,
   buildCharter,
   charterReposLines,

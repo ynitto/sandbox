@@ -17,14 +17,13 @@
 
 - **7 つのワークフローパターン**を orchestrator が知っていて、**要求からパターンと並列数（fan-out 幅）を
   自動選択**してグラフを形作る（下記）。エージェント評価役はパターンを踏まえて継続（ルーティング/再生成/統合）を判断。
-- **`daemon`**：常駐し、投入された要求を拾って orchestrator を起動、claim 可能タスク量に応じて
-  **ワーカーをオンデマンド起動**（仕事が無くなれば自然終了）。**分散時は各 PC でデーモンを動かす**だけ。
-  起動は**冪等**——同一バスのデーモンが既に稼働していれば二重起動せず終了する。冪等判定のロックは
-  バスを `realpath` で正規化したキーで `$TMPDIR/agent-flow-locks/`（設定 `lock_dir` / `--lock-dir` で変更可）に
-  置き、PID を記録する。これにより symlink 経由や別 cwd で起動した外部デーモンも、別ツール（agent-project 等）
-  から同一デーモンとして発見できる（`flock` 不能環境では PID 生存で判定）。
-- **シャットダウン耐性（孤児 run の自動再開）**：PC の毎日シャットダウンやクラッシュで daemon ごと
-  消えても run は失われない。次に起動した daemon が生存リース切れの非終端 run（孤児）を検知して
+- **`participate` と `run` の 2 段構え（常駐しない）**：agent-flow 自身は常駐しない。`participate` が
+  受理と回収を 1 巡だけ行い、実行すべき run-id を返す。実行は `run --from-inbox` が run 1 本ごとに担う。
+  周期駆動は PC に 1 本の常駐体（`agent-project serve`）が持ち、重複呼び出しは claim プロトコルが弾く。
+  分散時は各 PC で同じバスに対して `participate` を回すだけでよい。単発の `agent-flow run "<要求>"` も
+  自分で生存リースを張り park も面倒を見るので、常駐体なしで 1 本完走できる。
+- **シャットダウン耐性（孤児 run の自動再開）**：PC の毎日シャットダウンやクラッシュで駆動プロセスごと
+  消えても run は失われない。次に走った `participate` が生存リース切れの非終端 run（孤児）を検知して
   reclaim し、**同じ run-id で orchestrator を再起動**する——確定済みの `results/` はバスに残っている
   ため、**未完了ノードだけが続きから実行される**。再開は「進捗なしの連続 `max_resumes` 回」
   （既定 3）まで。前回の再開以降に results が増えていれば数え直すため、進捗のある長期 run は
@@ -48,14 +47,14 @@
   避ける（復旧手順は「設計の肝」の「破損リポジトリの復旧」を参照）。
 - **park & poll（承認待ちを worker スロットから切り離す）**：gitlab 等の executor が「人の承認待ち」で
   worker をブロックし続ける代わりに、ノードを **park（保留）** して claim を解放する（worker スロットが空く）。
-  承認待ちは監視主体（daemon/run）が `service_waits` で `watch_interval`（既定 90 秒）毎に **まとめて再確認** し、
-  決着したら結果を書く。これで「承認待ちが `max_workers` を食い潰して発行が止まる」問題と「N プロセスが各自
-  30 秒毎に GitLab を叩く多重ポーリング」を同時に解消する（`max_workers` は小さいまま据え置ける）。park 記録
-  `runs/<run>/waits/<node>.json` はバス上で **git 同期し daemon 消失を跨いで生存**——次に起きた daemon が
+  承認待ちは監視主体（`run` / `participate`）が `service_waits` で `watch_interval`（既定 90 秒）毎に **まとめて再確認** し、
+  決着したら結果を書く。これで「承認待ちが worker 枠を食い潰して発行が止まる」問題と「N プロセスが各自
+  30 秒毎に GitLab を叩く多重ポーリング」を同時に解消する（`workers` は小さいまま据え置ける）。park 記録
+  `runs/<run>/waits/<node>.json` はバス上で **git 同期し駆動プロセスの消失を跨いで生存**する。次に走った参加ノードが
   引き継いで再確認する（孤児 run reclaim と同じ耐性）。生存リース（`wait_lease`）が失効すれば `node_state` は
   `pending` へ**縮退**し、full worker が **冪等な再アタッチ**（同一トークンの既存 open イシューに再接続）で拾い直す
   ——park を行き止まりにしない。監視主体が無い単発 `work` 実行では従来どおりブロック待機へ**フォールバック**する。
-  **分散（git バス）では、起票は per-node の claim で全 PC に公平分散し、監視は各 run の駆動オーナー daemon 1 台に
+  **分散（git バス）では、起票は per-node の claim で全 PC に公平分散し、監視は各 run の駆動オーナー 1 台に
   分担する**（`service_waits` は「自分が orchestrator を回している run」だけを見る）。これで N 台が全 park を重複
   ポーリングせず、run が各 PC に分散する分だけ監視も分散する。オーナー消失時は孤児 reclaim が run（＝監視）を
   別 PC へ移すので取りこぼさない。
@@ -63,20 +62,19 @@
   絞れる。上限に達したら**起票を一時停止**する（**エラーにはしない**。人がレビューを捌いて枠が空けば自動で起票再開）。
   人のレビュー速度に発行をペーシングし、PC/GitLab サーバ負荷を抑えるための蛇口。既存の再タスク打ち切り
   （`--max-retries`）と同じく「これ以上作らない」思想の延長で、run を落とさない。
-- **`cancel`（run スコープの恒久停止）**：`agent-flow cancel <run-id>` で run を **`canceled`** に終端化する。人の明示指示に
+- **`cancel`（run スコープの恒久停止）**：`agent-flow cancel <run-id>` で run を **`cancelled`** に終端化する。人の明示指示に
   よる唯一の hard-stop で、**承認待ちで park 中の run も暴走中の run も止められる緊急回避手段**。cancel マーカーは
-  inbox に置かれ git 同期で全 PC / daemon へ伝わり、監視主体が **新規起票・park の再ポーリング・孤児 resume を
-  同時に停止**する（`canceled` は終端なので `active_runs` から外れ reclaim 対象にもならない）。`--close-issues` で
+  inbox に置かれ git 同期で全 PC へ伝わり、監視主体が **新規起票・park の再ポーリング・孤児 resume を
+  同時に停止**する（`cancelled` は終端なので `active_runs` から外れ reclaim 対象にもならない）。`--close-issues` で
   起票済みイシューに取消コメントを付けてクローズもできる（既定はイシューを残し、追跡だけやめる）。
 - **`status`**：公式 Dynamic Workflows 風のダッシュボード（進捗バー・エージェント状態ツリー・
   アクティビティ・最終結果）。`--follow` でライブ監視。
 - **`result`**：完了した run の**最終結果を探し出して提示**。集約／末端（sink）ノードの全文出力を
   自動特定して返す（`status` の要約に対し全文）。run-id 省略で最新を選択、`--json` で機械可読。
-- **`submit`**：要求を inbox に投入。デーモンが拾う（要求は claim で 1 台だけが orchestrate を担当）。
 - **`run`**：単発実行。**既存 run-id なら再開、無ければ新規**と状態で自動判断（旧 `up`/`resume` を統合）。
   既存 run-id が **`failed`** のときは**明示 retry** として扱い、**失敗ノードだけを `pending` へ戻して
   再実行**する（確定済み `done` ノードは温存＝続きから）。これが無いと failed run は再開しても全ノードが
-  終端のまま静止し、何も再実行されない（`done`/`canceled` は終端として尊重し再実行しない）。
+  終端のまま静止し、何も再実行されない（`done`/`cancelled` は終端として尊重し再実行しない）。
 - 要求をタスクに分解し、**依存関係を尊重**しつつ複数ワーカーが**競合せず** claim して並列実行。
 - **動的な再計画**：全タスク完了後に結果を評価し、不足があればタスクを追加して反復（最大 `--max-iterations`）。
   達成不可能な完了条件で無限に再タスクを積まないよう、同一系統の作り直しは **サーキットブレーカー**（`--max-retries`、既定 3）で打ち切る。
@@ -88,7 +86,7 @@
   **sparse checkout** でそのサブツリーだけを展開する（無関係なファイルを取得しない）。各ノードは起動毎に
   バスを clone するため、**初回 clone もネットワーク障害に備えて指数バックオフでリトライ**する（push/pull と
   同様）。委譲される側（実作業ノード）のワークスペース clone も同様にリトライする。
-- **1 run = 1 ワークスペース（唯一の書込先）**：`run`/`submit` に `--workspace <url|JSON>`（**ちょうど1つ**）を渡すと、その
+- **1 run = 1 ワークスペース（唯一の書込先）**：`run` に `--workspace <url|JSON>`（**ちょうど1つ**）を渡すと、その
   run の **worker がワークスペースを temp 領域に用意し、作業ブランチ `af/<run-id>` を `base` から作ってエージェントへ
   渡す**（「ここで編集せよ。commit/push は agent-flow がやる」）。作業ツリーは **URL 単位のホスト共有 bare ミラー
   （`--mirror --filter=blob:none`）から detached worktree を生やして用意**する（フル clone を「初回 1 回+増分」へ圧縮し
@@ -98,7 +96,7 @@
   [docs/designs/git-worktree-cache-pattern.md](../../docs/designs/git-worktree-cache-pattern.md)。**エージェントが編集したら agent-flow が commit して
   push**（分散の別 worker は同じ `af/<run-id>` へ push し、rebase リトライで統合）。**変更が無ければブランチを push しない**＝
   調査だけの読み取り専用グラフでは何も書き込まない。**作業後に clone を必ず削除**。ワークスペースは run の bus メタに載るため
-  local/daemon/remote で同一に働く。`--workspace` 値は素の URL でも、構造化 JSON（`{url,path,base,target,desc}`）でも受ける。
+  ローカル実行でも分散でも同一に働く。`--workspace` 値は素の URL でも、構造化 JSON（`{url,path,base,target,desc}`）でも受ける。
   **リポジトリの同一性は (url, path, base)**（同 URL でも path（モノレポのフォルダ）や base（作業ブランチ）が違えば別）。
   作業指示は `workspace_instruction` で「path 配下のみ変更・MR/PR ターゲット=target」を伝え、gitlab executor 経由なら
   **起票先プロジェクトをこのワークスペース URL から解決**してイシュー本文にも載る。
@@ -110,11 +108,27 @@
   **gitlab イシュー本文の『## 参照リポジトリ』節**に描画する（要求本文へ畳むと分解後のノード/イシューに届かないため）。
   未注釈のノードは worker 側で全 repo にフォールバックする（取りこぼし防止）。これにより fan-out で多数のノードに
   分解されても、各ノードは自分に必要な repo だけを clone する（URL 単位の重複排除と併せて無駄 clone を最小化）。
-- **分解の粒度（`granularity` / `--granularity`）**：タスク分解の細かさを設定ファイルで調整できる。`coarse`（現状）/
-  `fine`（1段細かい）/ `finest`（2段細かい・**既定**）の3段。細かいほどプランナーへ「原子的に分解せよ」と指示し、
-  並列ノード数を 1/2/3 倍にスケールする（上限 16・全 planner 共通／flow-planner にも `--granularity` で伝搬）。
-  要求に `x3`・`並列3` の明示があればそれを尊重し倍率を効かせない。agent-project から呼ぶ場合も `agent-flow.yaml` の
-  `granularity` がそのまま効く。
+- **分解の粒度（`granularity` / `--granularity`）**：`auto`（**既定**・complexity から導出）/
+  `coarse` / `fine` / `finest`（明示優先）。flow-planner は絶対レンジ（simple→1–3 / moderate→3–8 /
+  complex→6–12）とスコープ契約（`[scope]` / `[out_of_scope]`、想定≤30行）で分解し、決定的ゲートで再生成する。
+  stub/agent planner では明示時のみ並列ノード倍率（×1/×2/×3、上限16）が効く。要求に `x3`・`並列3` の明示が
+  あればそれを尊重。agent-project から呼ぶ場合も `agent-flow.yaml` の `granularity` がそのまま効く
+  （外側 backlog の INVEST 粒度とは別レイヤ）。
+- **列挙駆動の分解**：「同じ手順を多数の独立した対象へ繰り返す」要求（各 API のドキュメント化・全ファイルへの規約適用など）では、
+  対象の数を計画時に決めずに**実行時の列挙**から導出する。flow-planner は要求分析で 3 条件——手順が対象ごとに同一 /
+  対象間に依存が無い / 成果が対象単位で完結——を個別に判定し、すべて満たすときだけ列挙駆動と見なす。件数が確定
+  （下記 probe の実測または要求文の明示）していて 3 件より多ければ map-reduce を**決定的に選ぶ**。件数が不明なら
+  スコアの加点にとどめ、最終判断は計画エージェントに委ねる。3 条件のどれかが偽、または 3 件以下なら**従来どおり**
+  静的な fan-out に倒す（単一成果物の実装・バグ修正・観点別レビューは対象外）。判定の根拠は戦略の `reason` に必ず残る。
+  対象一覧は split が実行時に実リポジトリを走査して作るため、粗いバックログのままでも対象ごとの処理へ展開される。
+- **列挙 probe（LLM を呼ばない件数の実測）**：上記の判定に使う件数は、分析が挙げた列挙手順（`src/routes/**/*.ts` 等）を
+  そのまま決定的に走査して数える。依存物ディレクトリ（`node_modules` など）と隠しディレクトリは数えない。
+  見つからなければ「不明」として扱い、加点側に倒す（計画時点で作業対象を手元に取得していないことがあるため、
+  0 件を「対象なし」とは読まない）。`--probe-root` で走査の起点を変えられる（既定は現在のディレクトリ）。
+- **集約の扇入れ幅（`reduce_width`・既定 8）**：map が多いとき、集約を 1 段で行わずチャンクごとの中間集約を挟んで
+  木構造にする。単段の集約は対象数に比例して 1 か所へ成果が集中し、規模が大きいほど失敗しやすい。
+  幅以下なら従来と同一構造（集約 1 つが全 map を受ける）。検証ゲートを挟む設定のときはゲートも同じ幅で分割し、
+  中間集約は自分の群のゲート通過後に走る。中間集約がなお幅を超える場合はもう一段畳んで木を深くする。
 - **見本先行分解（`exemplar_first` / `--exemplar-first`）**：map-reduce の fan-out を「1件先行 → 自動検証ゲート →
   残り展開」にする（既定 off）。split 完了直後は **先頭1件(pilot map)とその verify ゲートだけ**を出し、ゲート通過後に
   残りの map（pilot に依存＝見本を範に取る）と reduce を展開する。同様手順の繰り返しを 1 件で固めてから一気に流せる。
@@ -125,16 +139,17 @@
 - **lease ハートビート**：実行中はリースを延長し続け、長時間タスクでも他ノードに横取りされない。
 - **`status`**：状態を 1 回表示。`--follow` でライブ監視（tmux ペインに置けば監視ダッシュボード）。
 - **`gc`**：古い・完了済みの run をバスから削除（git バスでは git rm＋push）。対応する inbox 要求と
-  claim も併せて消す（残すとデーモンが完了済み要求を拾い直して再実行してしまうため）。加えて、
+  claim も併せて消す（残すと参加ノードが完了済み要求を拾い直して再実行してしまうため）。加えて、
   **run を伴わない「孤児 inbox 要求」も掃除する**——旧バージョンや外部ツールが run だけ消した／
-  crash 等で取り残された要求は、デーモンの受理ゲート（`run_exists` のみ）から見ると「新規要求」に
+  crash 等で取り残された要求は、受理ゲート（`run_exists` のみ）から見ると「新規要求」に
   見え、**不要な run を再起動する**。`--older-than` より古く、かつ現在 claim されていない（lease 内で
   担当中でない）孤児だけを消す（フレッシュな未受理要求＝正規の受理待ちは保護。`--status` 指定時は
   run status で絞る意図なので触らない）。`--dry-run` で対象確認できる。
-- **一時ファイルの自動掃除**：`daemon` が `cleanup_interval` ごとに、バス外に溜まる一時ファイルを掃除する
-  — 未使用ロック（`$TMPDIR/agent-flow-locks/`）・`*.tmp.<pid>` 中間ファイル残骸・孤立した git クローン。
-  保持中のロックや稼働中クローンは消さない。`--no-cleanup` で無効化。
-- **作業後にクローンを削除**：`--git` 利用時、各コマンド（`run`/`work`/`orchestrate`/`daemon` など）が作る
+- **一時ファイルの掃除**：`agent-flow cleanup` がバス外に溜まる一時ファイルを掃除する
+  （未使用ロック `$TMPDIR/agent-flow-locks/`、`*.tmp.<pid>` の中間ファイル残骸、孤立した git クローン、
+  孤立したワークスペース temp clone、長期未使用の共有ミラー）。保持中のロックや稼働中クローンは消さない。
+  周期実行は常駐体の gc tick が担う（agent-flow 側に定期掃除ループは無い）。
+- **作業後にクローンを削除**：`--git` 利用時、各コマンド（`run`/`work`/`orchestrate` など）が作る
   sparse-checkout クローンを、作業後（プロセス終了時）に丸ごと削除する（既定の挙動）。
   push 済みデータは共有リポジトリ側にあるため失われない。`--keep-clone` で残して次回再利用（再クローン回避）。
 - LLM は **kiro-cli** がデフォルト。kiro-cli 無しでも動く **stub** モードでプロトコル検証可能。
@@ -209,7 +224,7 @@ worker タスク ──▶ イシュー起票（status:open,assignee:any ＋ pri
   GitLab へ委譲するのは**ワーカータスクの実行**だけ。
 - **設定**：ポーリング間隔・タイムアウト・付与ラベルは設定ファイルの `gitlab:` ブロックで調整する
   （[`agent-flow.yaml.example`](agent-flow.yaml.example) 参照）。`timeout` を `0` にすると無限待ち。
-- **park & poll（承認待ちを worker から切り離す）**：daemon/run から起動したワーカーでは、承認待ちで
+- **park & poll（承認待ちを worker から切り離す）**：`run` から起動したワーカーでは、承認待ちで
   ブロックし続けず、1 回だけ決着を確認して未決着ならノードを **park**（`waits/<node>.json` へ退避）し
   claim を解放する。承認待ちは監視主体が `watch_interval`（既定 90 秒）毎に **まとめて再確認** する
   （多数の承認待ちがあっても GitLab へのポーリングは監視 1 本のバッチに畳まれる）。決着判定・却下 data・
@@ -252,19 +267,24 @@ worker タスク ──▶ イシュー起票（status:open,assignee:any ＋ pri
 agent-flow --bus /tmp/flowbus run "ログイン機能を実装" --executor gitlab
 ```
 
-## デーモン構成（オンデマンド起動）
+## 受理と実行の分担（常駐しない構成）
 
 ```
-submit "要求" ─▶ inbox/<id>.json
-                     │  （要求を claim：分散時は 1 台のデーモンだけが担当）
-  ┌──────────────────▼───────────────────────────────────────────┐
-  │ daemon（各 PC で常駐）                                          │
-  │   1) inbox を監視 → 新要求を claim → orchestrator をオンデマンド起動 │
-  │   2) バス上の claim 可能タスク数を見て worker をオンデマンド起動      │
-  │      （max-workers 上限・短命/ idle-exit で仕事が尽きたら終了）       │
-  └──────────────────────────────────────────────────────────────┘
-        分散時: 共有 git バスを複数デーモンが見て各自 worker を湧かせる
+要求 ─▶ inbox/<run-id>.json
+              │  （要求を claim：分散時は 1 台のノードだけが担当）
+              ▼
+  agent-flow participate            … 受理と回収を 1 巡。実行すべき run-id を返すだけ
+              │
+              ▼
+  agent-flow --run-id <id> run --from-inbox
+              ├─▶ orchestrator ×1   … 計画・静止待ち・評価・再計画
+              └─▶ worker ×--workers … claim → 実行 → results/
 ```
+
+周期駆動は PC に 1 本の常駐体（`agent-project serve`）が持ち、`participate` を短周期で回して、
+返ってきた run-id を `run --from-inbox` としてワーカープールへ投入する。`participate` を呼ぶ側は
+自分が走らせている（または起動待ちの）run-id を `--running` で渡すこと。渡さないと起動待ちの run を
+孤児と誤判定して再開回数（`max_resumes`）を焼く。分散時は各 PC で同じバスに対してこれを回すだけでよい。
 
 ## 7 つのワークフローパターン
 
@@ -350,8 +370,8 @@ retry、`FLAKY` を含むゴールは検証で issue 扱い → 作り直しが�
 claim は lease 超過で自動的に無効化され、別ノードが再 claim できる。
 
 ```
-<bus>/inbox/<req-id>.json          # 投入された要求（submit が書く）
-<bus>/inbox/claims/<req-id>/<who>.json  # 要求の取得マーカー（どのデーモンが担当か）
+<bus>/inbox/<req-id>.json          # 投入された要求（agent-project / 板 / 人が書く）
+<bus>/inbox/claims/<req-id>/<who>.json  # 要求の取得マーカー（どのノードが担当か）
 <bus>/runs/<run-id>/
   meta.json            # 要求・status（planning/running/done）
   graph.json           # タスクグラフ（orchestrator のみ書く）
@@ -368,12 +388,12 @@ claim は lease 超過で自動的に無効化され、別ノードが再 claim 
 ```
 
 **ノードクローンの自己回復（git バス）**：各ノードのクローンは使い捨てのキャッシュで、
-真実は常にリモート側にある。前プロセスの異常終了（SIGKILL・電源断・daemon の terminate）が
+真実は常にリモート側にある。前プロセスの異常終了（SIGKILL・電源断・親からの terminate）が
 `.git/index.lock` 等のロック残骸や中断 rebase を残しても、再利用時に残骸を除去して回復し、
 それでも使えなければクローンを作り直す。実行中にロックへ遭遇した場合も、新しいロック
 （稼働中の他 git の可能性）は短く待ち、古いロック（残骸）は除去して再試行する。これが無いと
-orchestrator の run 作成（`sync_push`）が恒久的に失敗し、daemon が同じ要求を毎 poll
-再 claim し続ける無限ループに陥る。加えて daemon 側でも、orchestrator が run の meta を
+orchestrator の run 作成（`sync_push`）が恒久的に失敗し、参加ノードが同じ要求を毎巡
+再 claim し続ける無限ループに陥る。加えて受理側でも、orchestrator が run の meta を
 一度も書けずに死んだ要求は failed run を新規作成して終端化する（`fail_request`）ため、
 最悪ケースでも要求の再 claim ループは有限回で止まる。
 
@@ -408,8 +428,11 @@ loose object を「一時ファイル→ rename」で書くが *中身の fsync 
 ## インストール
 
 ```bash
-bash tools/agent-flow/install.sh          # ~/.local/bin/agent-flow にインストール
-bash tools/agent-flow/install.sh --prefix /usr/local/bin   # 任意の場所へ
+bash tools/agent-tools/install.sh                     # agent-project / agent-flow / agent-amigos を
+                                          # まとめて ~/.local/bin へ（推奨。3 本は同じ
+                                          # agentcore と契約バージョンを共有する）
+bash tools/agent-tools/install.sh --only agent-flow   # このツールだけ
+bash tools/agent-tools/install.sh --prefix /usr/local/bin   # 任意の場所へ
 ```
 
 標準ライブラリのみで動作（pip 依存なし）。git は分散モードで必要、kiro-cli は実運用で必要
@@ -432,30 +455,32 @@ tools/agent-flow/
   agent-flow.py          # 薄いエントリ（後方互換・テスト e2e）
   agent_flow/            # 実体（断片 *.py。__init__.py が共有名前空間へ exec）
   executors/            # executor プラグイン（install 時に prefix 隣へ）
-  install.sh            # zipapp 化して ~/.local/bin/agent-flow へ
+  install.sh            # tools/agent-tools/install.sh --only agent-flow へ委譲する薄いシム
+tools/agent-tools/install.sh        # 3 エンジン共通のインストーラ（zipapp 化・agentcore 同梱・環境チェック）
 ```
 
-編集は `agent_flow/<断片>.py` を触る。配布後も `--help` / `run` / `daemon` は従来どおり。
+編集は `agent_flow/<断片>.py` を触る。配布後も `--help` / `run` / `participate` は従来どおり。
 
 ## 設定ファイル
 
-環境ごとに決まる値（バス、git リポジトリ、planner/executor、`max_workers`、`poll`、`lease` 等）は
+環境ごとに決まる値（バス、git リポジトリ、planner/executor、`workers`、`poll`、`lease` 等）は
 設定ファイルに書ける。**優先順位は CLI 引数 > 設定ファイル > 組み込み既定**。
 
 ```bash
 cp tools/agent-flow/agent-flow.yaml.example ~/.agents/agent-flow.yaml   # 編集して配置
 ```
 
-検索順序（フォールバック、kiro-loop と同じ流儀）:
+検索順序（フォールバック）:
 
 1. `--config <path>` で明示指定
-2. カレントディレクトリの `.agents/agent-flow.{yaml,yml,json}`
-3. `~/.agents/agent-flow.{yaml,yml,json}`
+2. カレントディレクトリ直下の `agent-flow.{yaml,yml,json}`（1 root = 1 プロジェクトのマニフェスト）
+3. カレントディレクトリの `.agents/`（旧 `.agent/`）配下の同名ファイル
+4. `~/.agents/agent-flow.{yaml,yml,json}`
 
 YAML を使うには PyYAML が必要（任意）。無い環境では **JSON**（`agent-flow.json`、同じキー）でよい。
 設定できるキー: `bus` / `git` / `git_branch` / `git_subdir` / `planner` / `executor` / `executor_dir`
 （プラグイン検索ディレクトリ）/ `worker_skill`（executor=agent の実行系プロンプト供給スキル。
-既定 `flow-worker`・`none` で組み込み）/ `model` / `max_workers` / `max_runs`（daemon の同時実行 run＝
+既定 `flow-worker`・`none` で組み込み）/ `model` / `max_runs`（1 ノードが同時に実行する run＝
 orchestrator プロセス上限。既定 8。全ノードが park（承認待ち）の run は数えない。0 以下で無制限）/
 `workers` / `max_iterations` / `poll` / `lease` /
 `agent_timeout`（エージェント CLI タイムアウト秒）/ `stub_sleep_max`（stub スリープ上限秒）/
@@ -473,23 +498,23 @@ viewer 監視＋GitLab バックアップは [`agent-flow.state-git.yaml.example
 
 ## 使い方
 
-### デーモン（推奨・オンデマンド起動）
+### 参加（inbox に積まれた要求を拾う）
+
+常駐はしない。PC の常駐体（`agent-project serve`）が短周期で `participate` を回し、受理された
+run を `run --from-inbox` として起こす。手で 1 巡させることもできる。
 
 ```bash
-# 1) デーモンを常駐起動（このマシンのワーカー上限は --max-workers）
-agent-flow --bus /tmp/flowbus daemon --max-workers 4 &
-# サブコマンドを省略すると daemon として起動する（値は設定ファイル/既定から）
-agent-flow &
+# 1) 受理だけ 1 巡（cancel 受理・park 再確認・孤児回収・板巡回・inbox 受理）。
+#    実行すべき run-id を出力するだけで、run は実行しない。
+agent-flow --bus /tmp/flowbus participate --json
 
-# 2) 要求を投入（run-id が標準出力に返る）。デーモンが拾って自動実行する
-#    submit の前に daemon を確保すること（daemon は冪等なので、そのまま起動コマンドを実行してよい）
-RID=$(agent-flow --bus /tmp/flowbus submit "要件整理; API設計; テスト")
+# 2) 受理された run を実行する（要求文・書込先・引き継ぎ元は inbox 要求から読む）
+agent-flow --bus /tmp/flowbus --run-id "$RID" run --from-inbox
 agent-flow --bus /tmp/flowbus --run-id "$RID" status --follow --until-done
 
-# 分散: 各 PC で同じ --git を指すデーモンを起動するだけ。要求はどの PC から submit してもよい。
+# 分散: 各 PC で同じ --git を指す participate を回すだけ（claim プロトコルで 1 台に決まる）。
 # 既存リポジトリ（GitHub 等）を間借りするなら専用ブランチ（例 agent-flow-bus）を使うと main を汚さない
-agent-flow --git git@example.com:team/repo.git --git-branch agent-flow-bus daemon --max-workers 4 &   # PC ごとに
-agent-flow --git git@example.com:team/repo.git --git-branch agent-flow-bus submit "<要求>"
+agent-flow --git git@example.com:team/repo.git --git-branch agent-flow-bus participate --json
 ```
 
 ### ワンショット（単発実行・既存 run-id なら自動で再開）
@@ -522,7 +547,7 @@ agent-flow --bus /tmp/flowbus result                              # 最終結果
 agent-flow --bus /tmp/flowbus --run-id <run-id> result --json     # 機械可読な最終結果
 agent-flow --bus /tmp/flowbus gc --older-than 7 --keep 5 --status done --dry-run
 
-# run を止める（承認待ちで park 中でも暴走中でも効く恒久停止。canceled で終端化）
+# run を止める（承認待ちで park 中でも暴走中でも効く恒久停止。cancelled で終端化）
 agent-flow --bus /tmp/flowbus cancel <run-id>                     # イシューは残し追跡だけやめる
 agent-flow --bus /tmp/flowbus cancel <run-id> --close-issues --reason "要件変更"  # 起票済みも後始末
 ```
@@ -546,7 +571,7 @@ agent-flow --bus /tmp/flowbus doctor --json   # 連携呼び出し用の finding
 
 **収集と適用を決定的に・診断と分類は kiro-cli へ委譲** して稼働の問題を洗い出し、原因を分類する。
 
-- **env**（ユーザー環境固有）… `kiro-cli`/`git` 不在・バスに書き込めない・worker/daemon 未起動 等。
+- **env**（ユーザー環境固有）… `kiro-cli`/`git` 不在・バスに書き込めない・常駐体や worker が未起動 等。
 - **config**（設定）… 有限停止の無効化（`max_iterations`/`max_retries` ≤0）・`lease`/`argv_limit` 不正・バス未作成 等。
 - **program**（プログラム上の不具合）… 正しい環境・設定でも再現する failed・グラフ生成や claim/再計画のロジック欠陥。**コード修正が必要なものだけ**。
 
@@ -588,52 +613,31 @@ state_git_interval: 300                          # fetch/push の最短間隔（
   同時変更のみ「`inbox/`（人の投入）はリモート優先・`runs/`（機械状態）はローカル優先」で裁定。
   gc / cleanup による run の掃除（削除）もリモートへ伝播する。書きかけの `*.tmp` は同期しない。
 
-同期が走るのは `daemon` の poll ループ（間隔律速）・run 終端時（即時）・`run` の待機ループ。viewer 側の
+同期が走るのは `participate` の 1 巡・run 終端時（即時）・`run` の待機ループ。viewer 側の
 組み方（clone または git-file-sync の pair + フロータブのバス発見）は agent-dashboard の README を参照。
 
-### daemon の生存信号（status.json）— リモート viewer の稼働判定
-
-daemon の稼働検知は本来ロックファイル（`$TMPDIR/agent-flow-locks/daemon-<sha1>.lock`。
-pid のみ記録）で行うが、これは**同一ホスト限定**——state_git（鏡）越しにバスを見ているリモートの
-viewer からは、daemon 自身の一時領域にあるこのファイルへ絶対に届かない。`<bus>/status.json`
-（`host`/`pid`/`node_id`/`orchestrators`/`workers`/`updated_iso`/`fresh_after_sec`）を daemon が
-書き、これも state_git で同期することで、viewer 側にロック不在時のフォールバック判定材料を渡す。
-
-```json
-{"host": "myserver", "pid": 4242, "node_id": "myserver-4242",
- "orchestrators": 1, "workers": 2,
- "updated_iso": "2026-07-05T03:34:24Z", "fresh_after_sec": 600}
-```
-
-- **`bus.root` 直下に置くだけで既存の state_git がそのまま同期する**: `StateGit._scan()` はバスの
-  ツリー全体を走査するため、GitBus（`--git`）側のような sparse-checkout の追加設定は不要。
-  GitBus モードでは書かない（sparse-checkout が `runs/`/`inbox/`（or `--git-subdir`）しか
-  展開せず、対象外パスへの書き込みが `git add -A` を壊しかねないため。state_git と `--git` は
-  元々ここでも相互排他）。
-- **アイドル中の追加コミットは既定でゼロ**: 起動時に一度だけローカルへ書き、以降は実イベント
-  （run 終端・「駆動中の run の生存リース」push）のタイミングで書き直し、その他ファイルの変更と
-  **同じコミットに相乗り**する（単体では追加の push を生まない）。`--status-interval`
-  （daemon サブコマンドの引数。既定 `0`＝無効）を指定しない限り、アイドル中は status.json に
-  一切触れない。完全アイドルのままでも、起動直後に一度書いた内容が既存の `state_sync`（自身の
-  `state_git_interval` で律速）に拾われるため、`state_git_interval` 以内には生存が可視化される。
-- `fresh_after_sec` は daemon が自分の同期間隔（`state_git_interval`/`status_interval` の
-  大きい方の 2 倍・下限 120 秒）から計算して埋め込むため、viewer 側は単純な経過時間比較だけで済む。
+> 生存信号 `<bus>/status.json` は書かない（常駐一本化で書き手が消えたため実装ごと削除した）。
+> 稼働判定は agent-project の常駐体が書く `engine/status.json` に一本化してあり、agent-dashboard も
+> そちらだけを読む。run が生きているかは、鏡写しされた `runs/<id>/meta.json` の生存リース
+> （`orch_lease_until`）で判定できる。
 
 ## 自動アップデート（既定 on）
 
-スキルリポジトリ（このツールの配布元）の **main ブランチに更新が入ったら、daemon のアイドル時に自動で取り込む**。
-**既定で有効**（6 時間ごと。前回チェック時刻は `~/.agents/agent-flow.update.json` に持続化され、
-**再起動を跨いで間隔が尊重される**——前回から間隔ぶん経っていれば起動後の最初のアイドルで実施する）。
-止めたいときは `update_enabled: false` か `update_check_interval: 0`。手順は doctor と同じ流儀で**決定的**——
-知能は使わず、ファイル操作だけで完結する。
+スキルリポジトリ（このツールの配布元）の main ブランチに更新が入ったら取り込む。手順は doctor と
+同じ流儀で**決定的**で、知能は使わずファイル操作だけで完結する。
+
+確認が走るのは **`participate` のアイドル巡回**（受理する要求も引き継ぐ孤児も無かった巡回）で、
+間隔は `update_check_interval`（既定 6 時間・`~/.agents/agent-flow.update.json` に持続化）。
+**取り込みは切り離した子プロセス（`agent-flow update --now`）へ渡す**——参加巡回は呼び出し側が
+120 秒で kill するため、その中で `install.sh` を回すと本体が半分だけ入れ替わりうる。
 
 1. `git ls-remote` でスキルリポジトリ main の先頭コミットを確認する
-2. 適用済み SHA（`~/.agents/agent-flow.update.json`）と違えば「更新候補」
-3. **アイドル時（要求も子プロセスも無いとき）だけ**、temp 領域へ `tools/agent-flow/` だけを **sparse-checkout**（無関係ファイルは取得しない）
+2. 適用済み SHA（`~/.agents/agent-flow.update.json`。`KIRO_STATE_HOME` で変更可）と違えば「更新候補」
+3. temp 領域へ `tools/agent-flow/` と `tools/agent-tools/` だけを **sparse-checkout**（無関係ファイルは取得しない）
 4. **取得した本体の内容ダイジェストが前回適用時と同一なら適用せず、ベースライン SHA だけ進める**
    （state_git 等で自分の push が更新元リポジトリの新コミットになる構成での自己増殖ループ防止）
 5. その中の `install.sh` を実行して `~/.local/bin` の本体を更新する
-6. **動いていたカレントディレクトリのまま** `os.execv` で新しい本体へ **graceful 再起動**する
+   （どのコマンドも 1 巡で終わるので再起動は要らない。次の起動から新しい本体が使われる）
 
 **更新元 URL は通常は設定不要**。`install.py` がインストール時に生成する `skill-registry.json`
 （`~/.kiro` / `~/.claude` / `~/.copilot` / `~/.codex` のいずれか）の `repositories.origin.url`
@@ -651,7 +655,7 @@ update_enabled: true            # 自動アップデートの ON/OFF（false で
 update_check_interval: 21600    # 更新チェック間隔（秒）。既定 6 時間。0 以下で自動チェック無効
 update_repo: ""                 # 空なら skill-registry.json から自動解決。別 repo を使うときだけ指定
 update_branch: main             # 追従するブランチ（空/既定なら registry の branch を採用）
-update_subdir: tools/agent-flow  # リポジトリ内のこのツールのサブディレクトリ
+update_subdir: tools/agent-flow tools/agent-tools  # 取得対象パス（カンマ/空白区切りで複数）
 update_installer: install.sh    # サブディレクトリ内で実行するインストーラ
 ```
 
@@ -662,15 +666,16 @@ update_installer: install.sh    # サブディレクトリ内で実行するイ�
 
 | コマンド | 役割 |
 |---------|------|
-| `daemon` | 常駐し orchestrator/worker をオンデマンド起動（`--max-workers`）。**サブコマンド省略時の既定**・**冪等（同一バスは 1 つだけ）** |
-| `submit <要求>` | 要求を inbox に投入（run-id を返す）。デーモンが拾う |
-| `run [要求]` | 単発実行。**既存 --run-id なら再開、無ければ新規**（状態で自動判断） |
+| `participate` | 受理と回収を 1 巡（cancel 受理・park 再確認・孤児回収・板巡回・inbox 受理）。実行すべき run-id を返すだけで run は起こさない。`--running` に自分が走らせている run-id を渡す |
+| `run [要求]` | 単発実行。**既存 --run-id なら再開、無ければ新規**（状態で自動判断）。`--from-inbox` で要求文/書込先/引き継ぎ元を inbox から読む |
+| `cancel <run-id>` | run を `cancelled` に終端化（park 中でも暴走中でも効く）。`--close-issues` で起票済みイシューも後始末 |
+| `cleanup` | バス外の一時ファイル（ロック残骸・`*.tmp.<pid>`・孤立クローン・共有ミラー）を単発で掃除。`--json` で機械可読 |
 | `status` | ダッシュボード表示（進捗バー/エージェント状態/アクティビティ）。`--follow` ライブ / `--list` 一覧 |
 | `result` | 完了した run の**最終結果**（集約／末端ノードの全文出力）を提示。run-id 省略で最新を自動選択。`--json` で機械可読 |
 | `gc` | 古い run を削除（対応する inbox 要求・claim も）（`--older-than` 日 / `--keep` 件 / `--status` / `--dry-run`） |
 | `doctor` | 稼働診断。run 状態/イベント/環境から問題を env/config/program に分類。`--fix` で env/config 修正・program は gitlab-idd 起票。`--json` は連携呼び出し用 |
 | `update` | スキルリポジトリ(main)の更新を確認。`--check` で有無のみ・`--now` で取り込み再起動（[自動アップデート](#自動アップデートopt-in)参照） |
-| `orchestrate` / `work` | 計画役・ワーカー役の内部コマンド（`run`/`daemon` が起動する） |
+| `orchestrate` / `work` | 計画役・ワーカー役の内部コマンド（`run` が起動する） |
 
 ### 主なオプション
 
@@ -682,24 +687,23 @@ update_installer: install.sh    # サブディレクトリ内で実行するイ�
 | `--git-subdir` | （直下） | リポジトリ内でバスにするサブディレクトリ（sparse checkout 対象） |
 | `--lease` | 1800 | claim のリース秒数（実行中はハートビートが延長） |
 | `--workers` | 2 | 起動するワーカー数（`run`） |
-| `--max-workers` | 4 | デーモンが同時に走らせる worker 上限（`daemon`） |
+| `--max-runs` | 8 | 1 ノードが同時に実行する run の上限（`participate`）。全ノードが park の run は数えない。0 以下で無制限 |
 | `--planner` / `--executor` | `flow-planner` / `agent` | planner は `flow-planner`（3段パイプライン、既定）/ `agent`（エージェント CLI に1回問い合わせ）/ `stub`（オフライン検証）。executor は評価役にも使う |
 | `--agent-cli` | `kiro` | LLM 実行に使うエージェント CLI（設定 `agent_cli`）。`kiro`=kiro-cli chat / `claude`=Claude Code ヘッドレス（`claude -p`・プロンプトは stdin 渡し）/ `copilot`=GitHub Copilot CLI（`copilot -p`・argv 渡しのため kiro と同じスピル退避が効く） / `codex`=OpenAI Codex CLI（`codex exec`・プロンプトは stdin 渡し・最終応答は `--output-last-message` 経由で取得）。planner / executor / verify 等の LLM 呼び出しすべてに効く。モデルは設定 `model` で指定 |
 | `--max-iterations` | 3 | 再計画（evaluator-optimizer）の最大反復回数 |
 | `--max-fanout` | 50 | データ駆動 fan-out（split→map）の最大展開数 |
 | `--max-retries` | 3 | サーキットブレーカー：同一系統の作り直し（verify=fail 再生成・失敗 retry）の打ち切り回数。達成不可能な完了条件での無限再タスクを防ぐ |
-| `--max-resumes` | 3 | 孤児 run（owning daemon 消失）の自動再開の上限（`daemon`）。「進捗なしの連続回数」で数え、進捗（新しい results）があれば数え直す。`0` 以下で無効（孤児は即 failed） |
+| `--max-resumes` | 3 | 孤児 run（駆動プロセス消失）の自動再開の上限（`participate`）。「進捗なしの連続回数」で数え、進捗（新しい results）があれば数え直す。`0` 以下で無効（孤児は即 failed） |
 | `--argv-limit` | 100000 | エージェント CLI へ argv で渡すプロンプトの最大バイト数（設定 `argv_limit`）。超過分は一時ファイルへ退避し参照渡しにして ARG_MAX 失敗を回避 |
 | `--review` / `--no-review` | auto | 検証 gate の有効化。既定 `auto`（集約パターンで自動 ON）／`--review` 常時 ON ／`--no-review` OFF。設定は `review: auto\|true\|false` |
 | `--poll` | 2.0 | ポーリング間隔（秒） |
-| `--cleanup-interval` / `--no-cleanup` | 3600 | 一時ファイル自動掃除の間隔（秒, `daemon`）。`--no-cleanup` または `0` で無効化 |
-| `--cleanup-age` | 24 | 孤立クローンを掃除するまでのアイドル時間（時間, `daemon`） |
+| `--cleanup-age` | 24 | 孤立クローン/共有ミラーを掃除するまでのアイドル時間（時間, `cleanup`） |
 | `--keep-clone` | off | 作業後も sparse-checkout クローンを削除せず残す（既定は削除。設定は `cleanup_clone: true\|false`） |
 | `--keep-alive` / `--idle-exit` | off | run 完了後も待機 / claim 可能タスクが尽きたら終了（`work`） |
 
 ## 依存
 
-- Python 3.9+（標準ライブラリのみ）
+- Python 3.11+（標準ライブラリのみ）
 - git モードでは `git` コマンド（共有リポジトリは初期化済みであること）
 - 実運用では `--planner agent` / `--executor agent` が要求するエージェント CLI
   （既定 `kiro-cli`。設定 `agent_cli` で `claude` / `copilot` / `codex` にも切替可）
@@ -707,7 +711,7 @@ update_installer: install.sh    # サブディレクトリ内で実行するイ�
 ## スキル
 
 `.github/skills/agent-flow/` に、この CLI を呼び出すスキルを同梱。「ワークフローを実行して」「要求を投入して」
-「デーモンを起動して」「run の状態を見て」などで発動し、`run`/`submit`/`daemon`/`status`/`gc` の使い分けや
+「run の状態を見て」などで発動し、`run`/`participate`/`status`/`result`/`gc` の使い分けや
 要求の書き方（パターン/並列数/`--review`）を案内する。
 
 ## テスト
@@ -715,13 +719,15 @@ update_installer: install.sh    # サブディレクトリ内で実行するイ�
 kiro-cli 不要（stub のみ）。プロトコル・障害注入・依存分解・再計画・end-to-end を検証する。
 
 ```bash
-python3 tools/agent-flow/tests/test_agent_flow.py
-# または: python3 -m unittest discover -s tools/agent-flow/tests
+python3 -m unittest discover -s tools/agent-flow/tests   # 全部
+python3 -m unittest tests.test_planner                  # 1 機能だけ（tools/agent-flow で実行）
 ```
+
+テストは機能別のファイルに分かれている（`tests/test_<機能>.py`。共有の前置きは `tests/_shared.py`）。
 
 主なケース: 決定的タイブレーク、**lease 切れ claim の回収（死んだワーカー）**、
 **同時 claim でも勝者は 1 人**、逐次依存の分解、失敗 → 再計画 → retry 成功（end-to-end）、
-**要求 claim でデーモンが 1 台に決まる**・`run_claimable_count` の依存考慮、
+**要求 claim で受理ノードが 1 台に決まる**・`run_claimable_count` の依存考慮、
 **6 パターン検出・並列数抽出・fan-out/tournament のグラフ形・classify ルーティング・verify fail の作り直し**、
 **構造化成果 + reduce 集約・データ駆動 fan-out（split→map→reduce）・統合前 gate（--review）・
 グラフ健全性検査（未知依存/循環/自己ループ）・kind 正規化**、
@@ -764,8 +770,12 @@ stub の擬似実行スリープは設定ファイルの `stub_sleep_max`（既�
   時間がかかり遅延も入るため自然に分散する。厳密な公平分配は今後の課題。
 - **ハートビート間隔の下限**: `max(2 秒, lease/3)`。極端に短い lease では下限が効くため、
   lease は実タスク時間に対して十分大きく設定すること。
-- **inbox の蓄積**: `submit` した要求ファイルは残る（run 作成済みなら再処理はされない）。
-  デーモンは run 終了を別途検知しない設計なので、不要な run は `gc` で掃除する。
+- **inbox の蓄積**: 投入された要求ファイルは残る（run 作成済みなら再処理はされない）。不要な run は
+  `gc` で掃除する（対応する inbox 要求と claim も一緒に消える）。
+- **受理から実行までの窓**: `participate` が受理した直後は run がまだ無いため、生存リースを張れない。
+  この間に呼び出し側が落ちると、その要求は inbox claim の lease（`--lease`・既定 1800 秒）が失効する
+  まで誰も拾い直さない。短くするとワーカープールで起動待ちの run を別ノードが二重に拾うので、
+  この窓は意図的に縮めていない。
 
 ## 既存ツールとの関係
 

@@ -6,11 +6,15 @@ agent-amigos（役割駆動マルチエージェント協働）の独立した�
 
 - **ホーム** = `agent-amigos.{yaml,yml,json}` または `.agents/agent-amigos.*` を持つ
   ディレクトリ（設定ファイルが自動発見マーカーを兼ねる — agent-project と同じ流儀）。
-  `amigos.homeDirs` の明示指定 + 全体設定 `projects.roots` 配下の走査で見つけ、
+  `amigos.homeDirs` の明示指定 + 実行エンジンが担当するプロジェクト配下の走査で見つけ、
   ホームのバス（設定 `bus`、既定はホーム自身）をミッション一覧に含める。
-- **タスク依頼（post）**: 「タスクを依頼…」フォーム（投函先ホーム・タイトル・goal・
-  design doc 本文・役割ミッション表 JSON）→ ホームの
-  `.agents/agent-amigos/commands/*.json` へ post 指示を投函。常駐デーモンが取り込んで公示する。
+- **タスク依頼（post / build-team）**: 「ミッションを依頼」フォームは 2 モード。
+  - **チームビルディング（既定）**: タイトル・goal・進め方（design doc 本文）・使える環境
+    （任意タグ）だけを入力 → `build-team` 指示を投函。常駐デーモンが
+    [team-builder スキル](../../../../../.github/skills/team-builder/)で役割を設計してから公示する。
+  - **役割を自分で指定**: 従来どおり役割ミッション表 JSON も入力 → `post` 指示を投函。
+  どちらもホームの `.agents/agent-amigos/commands/*.json` へ 1 ファイル投函する（IPC は
+  `amigos:buildTeam` / `amigos:request`）。
 - **手動引き受け（claim）**: 募集中ロールの「引き受け」ボタン → 同じく claim 指示を投函。
   ホーム側を `manual_claim: true` にすると自動応募が止まり、手動引き受けだけで回せる。
 - dashboard がバスへ直接書くことは無い（書くのはホームの commands ドロップだけ —
@@ -20,7 +24,7 @@ agent-amigos（役割駆動マルチエージェント協働）の独立した�
 ## ミッション一覧（読み取り専用）
 
 - バス上のファイル（真実）だけを読む。**dashboard からバスへは一切書かない**
-  （書き込み所有権はオーナー / amigo のもの — agent-amigos 設計書 §4.2）。
+  （書き込み所有権はオーナー / amigo のもの — agent-amigos 設計書 §4.3）。
 - バスの形は 2 種類を受ける: ローカルバス（`<busDir>/missions/<mid>/`）と
   GitBus のクローン作業領域（`<busDir>/mission__<mid>/`）。`amigos.busDirs` 未設定時は
   `~/.agents/amigos/bus/*`（GitBus 既定 workdir）を自動発見する。

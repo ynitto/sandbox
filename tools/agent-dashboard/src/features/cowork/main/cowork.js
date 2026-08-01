@@ -5,25 +5,37 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const {
-  makeLoopProvider, isWslPath, wslPath, wslDistro, toWslCwd, shellQuote, decodeCliOutput,
+  makeLoopProvider, runChatWindow, isWslPath, wslPath, wslDistro, toWslCwd, shellQuote, decodeCliOutput,
 } = require('./loopProvider');
-const { _pathKey, _isPosixAbs, toViewerPath } = require('../../agent-project/main/project');
+const { _pathKey, _isPosixAbs, toViewerPath, viewerDistro } = require('../../agent-project/main/project');
 const { parseFlatYaml } = require('../../agent-project/main/toolconfig');
 const {
   discoverCoworkItems, parseKiroLoopPrompts, scheduleOf, detectMarkers, kiroLoopPromptTexts,
+  scanForCoworkConfigs, isDir, coworkRoots,
 } = require('./discover');
-const { applyKiroLoopEdits, applyStatemachineEdits } = require('./writeback');
+const { applyKiroLoopEdits, applyStatemachineEdits, upsertManagedKiroPrompt } = require('./writeback');
 const globalInstructions = require('../../orchestration/main/instructions');
 const sessionCommands = require('../../orchestration/main/sessionCommands');
+
+// 設定に書かれたフォルダ表記を、このビュアーで開けるパスへ揃える（discover と同じ規則）。
+// WSL の Linux 絶対パスは Windows ビュアーでは UNC へ翻訳する（そうしないと C:\home\… に化ける）。
+function _resolveRoot(raw, config) {
+  const s = String(raw || '').replace(/^~(?=$|\/|\\)/, os.homedir());
+  if (!s) return '';
+  return _isPosixAbs(s) ? toViewerPath(s, viewerDistro(config)) : path.resolve(s);
+}
 
 // 発見結果キャッシュ。overview のポーリングごとに roots を再走査しない。
 const DISCOVER_TTL_MS = 30000;
 let _discoverCache = { key: '', at: 0, items: null };
 
 function discoverCacheKey(config) {
-  const roots = ((config && config.projects && config.projects.roots) || []).map(String).join('\0');
+  // 走査ルートは discover.coworkRoots と同じもの（エンジン担当 + cowork.roots）を使う。
+  // engine 側だけを鍵にすると、フォルダを登録／解除しても鍵が変わらず、TTL が切れるまで
+  // 古い発見結果を返し続ける。
+  const roots = coworkRoots(config).map(String).join('\0');
   const cw = (config && config.cowork) || {};
-  const depth = cw.scanDepth || (config && config.projects && config.projects.scanDepth) || 2;
+  const depth = cw.scanDepth || 2;
   return `${roots}|${depth}|${cw.discover === false ? '0' : '1'}`;
 }
 
@@ -59,15 +71,18 @@ function itemId(item, i) {
 }
 
 // Windows dashboard から POSIX リポジトリを読むときは UNC へ（discover と同じ橋渡し）。
-function viewerRepo(repo) {
+// **config を必ず渡す**——⚙ 設定のディストロを使わずに既定へ丸めると、engine / nodeRepos
+// 経由の経路（プロジェクト・CLIチャット・対話診断）とは違うディストロを指し、
+// 「相談ボタンからは開けるのに定常業務からは開けない」という食い違いになる。
+function viewerRepo(repo, config) {
   const s = String(repo || '');
   if (!s) return '';
-  if (process.platform === 'win32' && _isPosixAbs(s)) return toViewerPath(s);
+  if (process.platform === 'win32' && _isPosixAbs(s)) return toViewerPath(s, viewerDistro(config));
   return s;
 }
 
-function listLogCandidates(repo, type) {
-  const root = viewerRepo(repo);
+function listLogCandidates(repo, type, config) {
+  const root = viewerRepo(repo, config);
   if (!root) return [];
   const names = type === 'loop'
     ? ['.kiro-loop/logs', '.agent-loop/logs', 'logs']
@@ -157,7 +172,7 @@ function itemLogs(config, itemIdValue, { historyLimit = 50 } = {}) {
   if (!item) throw new Error(`Cowork 作業が見つかりません: ${itemIdValue}`);
   const type = item.type === 'state-machine' ? 'state-machine' : 'loop';
   const repo = item.repo || item.cwd || '';
-  const logs = listLogCandidates(repo, type).map((l) => {
+  const logs = listLogCandidates(repo, type, config).map((l) => {
     let size = 0;
     try { size = fs.statSync(l.file).size; } catch { /* 消えた候補 */ }
     return { file: l.file, name: path.basename(l.file), mtimeMs: l.mtimeMs, size };
@@ -178,7 +193,7 @@ function readLog(config, itemIdValue, file, maxBytes = 16000) {
   const item = resolveItem(config, itemIdValue);
   if (!item) throw new Error(`Cowork 作業が見つかりません: ${itemIdValue}`);
   const type = item.type === 'state-machine' ? 'state-machine' : 'loop';
-  const candidates = listLogCandidates(item.repo || item.cwd || '', type);
+  const candidates = listLogCandidates(item.repo || item.cwd || '', type, config);
   const hit = candidates.find((l) => l.file === String(file || ''));
   if (!hit) throw new Error('この作業のログではありません');
   const limit = Math.max(1000, Math.min(Number(maxBytes) || 16000, 200000));
@@ -210,10 +225,10 @@ function processStatus(item, cfg) {
 }
 
 // probeProcess=false（既定）: ログ mtime だけで状態推定。WSL への pgrep/wmic を毎ポーリングで撃たない。
-function dynamicState(item, cfg, { probeProcess = false } = {}) {
+function dynamicState(item, cfg, { probeProcess = false } = {}, config = null) {
   const repo = item.repo || item.cwd || '';
   const proc = probeProcess ? processStatus(item, cfg) : { running: false, detail: '' };
-  const logs = repo ? listLogCandidates(repo, item.type) : [];
+  const logs = repo ? listLogCandidates(repo, item.type, config) : [];
   const latest = logs[0] || null;
   const text = latest ? tail(latest.file) : '';
   let status = proc.running ? 'running' : latest ? 'idle' : 'unknown';
@@ -230,7 +245,7 @@ function dynamicState(item, cfg, { probeProcess = false } = {}) {
   };
 }
 
-function normalizeItem(item, i, cfg, stateOpts) {
+function normalizeItem(item, i, cfg, stateOpts, config) {
   const type = item.type === 'state-machine' ? 'state-machine' : 'loop';
   const id = itemId({ ...item, type }, i);
   return {
@@ -241,15 +256,17 @@ function normalizeItem(item, i, cfg, stateOpts) {
     branch: item.branch || '',
     schedule: item.schedule || item.cron || '',
     workflow: item.workflow || item.file || '',
+    prompt: item.prompt || '',
+    instruction: item.instruction || '',
     description: item.description || '',
     command: type === 'state-machine' ? (cfg.stateMachineCommand || 'statemachine-use') : (cfg.loopCommand || cfg.loopProvider || 'kiro-loop'),
     source: 'config',
-    state: dynamicState({ ...item, id, type }, cfg, stateOpts),
+    state: dynamicState({ ...item, id, type }, cfg, stateOpts, config),
   };
 }
 
 // 発見項目（discover.js 由来）を Cowork 項目へ。source/_src/enabled を保持しつつ live state を付与。
-function normalizeDiscovered(d, cfg, stateOpts) {
+function normalizeDiscovered(d, cfg, stateOpts, config) {
   const type = d.type === 'state-machine' ? 'state-machine' : 'loop';
   return {
     id: d.id,
@@ -259,18 +276,21 @@ function normalizeDiscovered(d, cfg, stateOpts) {
     branch: '',
     schedule: d.schedule || '',
     workflow: d.workflow || '',
+    prompt: d.prompt || '',
+    instruction: '',
     description: d.description || '',
     command: type === 'state-machine' ? (cfg.stateMachineCommand || 'statemachine-use') : (cfg.loopCommand || cfg.loopProvider || 'kiro-loop'),
     source: 'discovered',
     enabled: d.enabled !== false,
     _src: d._src,
-    state: dynamicState({ ...d, type }, cfg, stateOpts),
+    state: dynamicState({ ...d, type }, cfg, stateOpts, config),
   };
 }
 
 // 重複排除キー: type|repo実体|ジョブ名。先に並ぶ config 項目が発見項目に勝つ（手動登録が正）。
 function jobKey(it) {
-  const name = (it._src && (it._src.promptName || it._src.workflowName)) || it.name || '';
+  const name = (it._src && (it._src.promptName || it._src.workflowName))
+    || (it.type === 'state-machine' && it.workflow) || it.name || '';
   return `${it.type}|${_pathKey(it.repo || '')}|${name}`;
 }
 
@@ -302,7 +322,7 @@ function rawDiscovered(config, { forceDiscover = false } = {}) {
 }
 
 function discoverNormalized(config, cfg, opts) {
-  return rawDiscovered(config, opts).map((d) => normalizeDiscovered(d, cfg, opts));
+  return rawDiscovered(config, opts).map((d) => normalizeDiscovered(d, cfg, opts, config));
 }
 
 // opts.probeProcess: true のときだけプロセス探査（実行直後・手動更新用）。ポーリングはログのみ。
@@ -312,7 +332,7 @@ function overview(config, opts = {}) {
   const stateOpts = { probeProcess: opts.probeProcess === true };
   const discoverOpts = { forceDiscover: opts.forceDiscover === true, ...stateOpts };
   const loop = makeLoopProvider(cfg);
-  const configItems = itemsOf(cfg).map((item, i) => normalizeItem(item, i, cfg, stateOpts));
+  const configItems = itemsOf(cfg).map((item, i) => normalizeItem(item, i, cfg, stateOpts, config));
   const discovered = discoverNormalized(config, cfg, discoverOpts);
   const items = dedupeItems([...configItems, ...discovered]);
   const discoveredByKey = new Map();
@@ -364,6 +384,57 @@ function withInputAssist(prompt) {
   return p ? `${p}\n\n${INPUT_ASSIST}` : p;
 }
 
+// ステートマシン定義（.statemachine/<name>/workflow.yaml）を読み、実行に必要な入力を洗い出す。
+//   usesInput      … action/condition が {{input}} を参照している（実行対象そのものの入力が要る）
+//   requiredContext… context の初期値が空（"" / '' / 空欄）のキー = 実行時に埋める前提のパラメータ
+// 読めない・定義が無いときは null（呼び出し側は従来の汎用補助へフォールバック）。
+function stateMachineFilePath(item, cwd, config) {
+  const src = item && item._src;
+  if (src && src.kind === 'statemachine' && src.file) return viewerRepo(src.file, config) || src.file;
+  const machine = String((item && (item.workflow || item.file || item.name)) || '').trim();
+  if (!machine || /[\\/]/.test(machine)) return '';
+  const root = viewerRepo(cwd, config) || String(cwd || '');
+  return root ? path.join(root, '.statemachine', machine, 'workflow.yaml') : '';
+}
+
+function stateMachineInputSpec(wfPath) {
+  if (!wfPath) return null;
+  let text;
+  try { text = fs.readFileSync(wfPath, 'utf8'); } catch { return null; }
+  const usesInput = /\{\{\s*input\s*\}\}/.test(text);
+  const requiredContext = [];
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  const ctxIdx = lines.findIndex((l) => /^context\s*:\s*(#.*)?$/.test(l));
+  if (ctxIdx >= 0) {
+    for (let i = ctxIdx + 1; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (/^\s*(#.*)?$/.test(line)) continue;                 // 空行・コメントは飛ばす
+      if (/^\S/.test(line)) break;                            // インデントが戻ったら context ブロック終了
+      const m = line.match(/^\s+([A-Za-z0-9_.-]+)\s*:\s*(.*?)\s*(#.*)?$/);
+      if (!m) continue;
+      const val = (m[2] || '').trim();
+      if (val === '' || val === '""' || val === "''") requiredContext.push(m[1]);
+    }
+  }
+  return { usesInput, requiredContext };
+}
+
+// 必要な入力があれば「人へ質問してから実行」を具体的な項目名つきで促す補助文を返す。
+// 定義を読めない/追加入力が要らないときは従来の汎用補助（INPUT_ASSIST）。
+function stateMachineInputAssist(spec, hasInput) {
+  if (!spec) return INPUT_ASSIST;
+  const needs = [];
+  if (spec.usesInput && !hasInput) needs.push('入力（{{input}}: 実行対象そのもの）');
+  for (const key of spec.requiredContext) needs.push(`context.${key}`);
+  if (!needs.length) return INPUT_ASSIST;
+  return (
+    '（重要）このステートマシンの実行には、次の入力パラメータが必要です:\n'
+    + needs.map((n) => `- ${n}`).join('\n') + '\n'
+    + '勝手に仮の値で進めず、まず上記のうち値が不明なものを箇条書きで私（人間）に質問し、'
+    + '回答を得てから実行してください。すでに値が与えられているものは質問不要です。'
+  );
+}
+
 // グローバル指示（agent-instructions 契約）を起動プロンプト先頭へ前置する。
 // dashboard は指示の書き手であると同時に、自分が起動する CLI に対する読み手でもある
 // （cowork の定常業務 / 定型業務ウィンドウ）。二重注入・空・破損はすべて no-op。
@@ -383,14 +454,21 @@ function withGlobalInstructions(config, prompt) {
 // セッション開始コマンド（agent-session-commands 契約）の実行計画。tmux セッションを新しく
 // 作るときだけ走るシェル片へ落とすため、ここで when 判定とプレースホルダ展開まで済ませる。
 // 不在・破損・無効はすべて空配列（＝何も差し込まない）。
-function planSessionCommands(config, cwd) {
+// agentCli は「どの CLI へ送るか」で決まる。定常業務ウィンドウは chatCommand（既定 kiro-cli）
+// で起動するので既定は kiro、CLIチャット・対話診断は解決済みの CLI を呼び出し側が渡す。
+function planSessionCommands(config, cwd, { agentCli = 'kiro', skillCommandPrefix = '/' } = {}) {
   try {
     const dir = sessionCommands.resolveSessionDir(config || {});
     // コマンドは WSL 側のシェルで走るため、{cwd} / {workspace} は Linux パスへ揃える
     // （Windows パスのまま渡すと cd も git -C も刺さらない）。
     const linuxCwd = toWslCwd(cwd) || String(cwd || '');
     return sessionCommands.plan(sessionCommands.loadSessionCommands(dir), {
-      engine: 'dashboard', workload: 'routine', cwd: linuxCwd, workspace: linuxCwd, agent_cli: 'kiro',
+      engine: 'dashboard',
+      workload: 'routine',
+      cwd: linuxCwd,
+      workspace: linuxCwd,
+      agent_cli: agentCli,
+      skill_command_prefix: skillCommandPrefix,
     });
   } catch {
     return []; // フェイルセーフ: 計画の失敗で起動を止めない
@@ -399,11 +477,11 @@ function planSessionCommands(config, cwd) {
 
 // repo の .kiro/kiro-loop.{yaml,yml,json} から定期プロンプト本文を名前で解決する。
 // 見つからなければ ''（呼び出し側が代替の指示文へフォールバックする）。
-function resolveLoopPromptText(repo, promptName) {
-  const root = viewerRepo(repo) || String(repo || '');
+function resolveLoopPromptText(repo, promptName, config) {
+  const root = viewerRepo(repo, config) || String(repo || '');
   const name = String(promptName || '').trim();
   if (!root || !name) return '';
-  let marker = null;
+  let marker;
   try { marker = detectMarkers(root); } catch { return ''; }
   if (!marker || !marker.kiroFile) return '';
   let text;
@@ -433,14 +511,14 @@ function runLoop(config, itemIdValue) {
   const runId = item.source === 'discovered'
     ? ((item._src && item._src.promptName) || item.name)
     : (item.name || item.id);
-  const cwd = viewerRepo(item.repo || item.cwd) || item.repo || item.cwd;
+  const cwd = viewerRepo(item.repo || item.cwd, config) || item.repo || item.cwd;
   // ウィンドウ実行用: kiro-loop.yml のプロンプト本文を解決して直接送る（kiro-loop 非経由）。
   // 本文を解決できなければ、エージェント自身に設定を読ませる指示文で代替する。
   // 明示 args の項目は従来の <loopCommand> 実行のまま（prompt を渡さない）。
   const prompt = Array.isArray(item.args)
     ? undefined
     : withGlobalInstructions(config, withInputAssist(
-      resolveLoopPromptText(item.repo || item.cwd, runId)
+      resolveLoopPromptText(item.repo || item.cwd, runId, config)
         || `.kiro/kiro-loop.yml（または kiro-loop.yaml / .json）の定期プロンプト「${runId}」の本文を読んで、その指示を実行して`
     ));
   const res = makeLoopProvider(cfg).run({
@@ -454,7 +532,7 @@ function runStateMachine(config, itemIdValue, input) {
   const cfg = config.cowork || {};
   const item = resolveItem(config, itemIdValue);
   if (!item) throw new Error(`Cowork 定型業務が見つかりません: ${itemIdValue}`);
-  const cwd = viewerRepo(item.repo || item.cwd) || item.repo || item.cwd || process.cwd();
+  const cwd = viewerRepo(item.repo || item.cwd, config) || item.repo || item.cwd || process.cwd();
   // statemachine-use は CLI ではなくスキル。エージェントセッションへ
   // 「statemachine-use スキルで xxx ステートマシンを実行して」を送って発動する。
   // kiro-loop.yml に対となる定期プロンプトがある統合項目はその本文を優先する。
@@ -467,11 +545,17 @@ function runStateMachine(config, itemIdValue, input) {
     // 明示 args はレガシー実行（prompt を渡さない）
   } else {
     const smName = item.workflow || item.file || item.name;
-    const pairedBody = pairedName ? resolveLoopPromptText(item.repo || item.cwd, pairedName) : '';
+    const pairedBody = pairedName ? resolveLoopPromptText(item.repo || item.cwd, pairedName, config) : '';
     const smPrompt = (pairedBody && !input)
       ? pairedBody
       : `statemachine-use スキルで${smName}ステートマシンを実行して${input ? `。入力: ${String(input)}` : ''}`;
-    prompt = withGlobalInstructions(config, withInputAssist(smPrompt));
+    // ステートマシン定義から必要な入力（{{input}} と 空の context キー）を洗い出し、
+    // 埋まっていなければ「人へ質問してから実行」を項目名つきで促す（勝手に仮値で進めない）。
+    const spec = stateMachineInputSpec(stateMachineFilePath(item, cwd, config));
+    const assist = stateMachineInputAssist(spec, Boolean(input));
+    const smPromptTrim = smPrompt.trim();
+    const withAssist = smPromptTrim ? `${smPromptTrim}\n\n${assist}` : smPromptTrim;
+    prompt = withGlobalInstructions(config, withAssist);
     // 非ウィンドウ実行（非 win32 / runWindow:false）用の従来 send 引数も併せて用意する
     const legacy = (pairedName && !input)
       ? pairedName
@@ -486,50 +570,104 @@ function runStateMachine(config, itemIdValue, input) {
   return res;
 }
 
-function gitInRepo(repo, args, timeoutMs) {
+function stateMachineCreationPrompt(name, machine, instruction) {
+  return `statemachine-use スキルの作成モードで、次の指示から「${name}」ステートマシンを作成してください。\n`
+    + `生成先は .statemachine/${machine}/ とし、作成だけを行って実行はしないでください。\n\n`
+    + `指示:\n${instruction}`;
+}
+
+function generateStateMachine(config, payload = {}) {
+  const repo = String(payload.repo || '').trim();
+  const name = String(payload.name || '').trim();
+  const machine = String(payload.machine || '').trim();
+  const instruction = String(payload.instruction || '').trim();
+  if (!repo || !name || !instruction) throw new Error('名前と定型業務の手順を入力してください');
+  if (!/^[A-Za-z0-9_.-]+$/.test(machine) || machine === '.' || machine === '..') {
+    throw new Error('定型業務の識別名が不正です');
+  }
+  const gitRoot = gitInRepo(repo, ['rev-parse', '--show-toplevel'], 10000, config);
+  if (!gitRoot.ok) throw new Error('選択中の作業フォルダは Git リポジトリではありません');
+  const cfg = config.cowork || {};
+  const prompt = withGlobalInstructions(config, stateMachineCreationPrompt(name, machine, instruction));
+  return runChatWindow({
+    ...coworkChatLaunch(config, repo),
+    prompt,
+    cwd: repo,
+    sessionCommands: planSessionCommands(config, repo),
+    sessionKey: 'statemachine-builder',
+    title: '定型業務を作成',
+    message: '外部ターミナルで定型業務の作成を開始しました',
+  });
+}
+
+// 定常業務の tmux 実行で使う対話 CLI の一式（S9-3）。
+//
+// 以前は `cowork.chatCommand` の**文字列固定**（既定 'kiro-cli chat --trust-all-tools'）で、
+// 定常業務だけが `agent_cli` 設定を無視して常に kiro を起動していた。CLI 定義から解決し、
+// `cowork.chatCommand` は明示上書き（空なら解決結果）に降格する。
+// 解決できないとき（定義が見つからない等）は従来の文字列へ落として、定常業務を止めない。
+// ただし黙っては落とさず、フォールバックした事実を警告ログに残す。
+function coworkChatLaunch(config, repo) {
+  const explicit = String(((config || {}).cowork || {}).chatCommand || '').trim();
+  if (explicit) return { chatCommand: explicit };
+  try {
+    const { interactiveLaunchSpec } = require('../../agent-project/main/agent');
+    const launch = interactiveLaunchSpec(config, repo);
+    return {
+      chatCommand: launch.chatCommand,
+      readyPattern: launch.readyPattern,
+      readyTimeoutSec: launch.readyTimeoutSec,
+    };
+  } catch (e) {
+    console.warn(`[cowork] agent_cli 定義の解決に失敗したため既定の 'kiro-cli chat --trust-all-tools' へフォールバックしました: ${(e && e.message) || e}`);
+    return { chatCommand: 'kiro-cli chat --trust-all-tools' };
+  }
+}
+
+function gitInRepo(repo, args, timeoutMs, config) {
   if (process.platform === 'win32' && isWslPath(repo)) {
     const distro = wslDistro(repo);
     const script = `export LANG=C.UTF-8 LC_ALL=C.UTF-8; cd ${shellQuote(wslPath(repo))} && git ${args.map(shellQuote).join(' ')}`;
     const wslArgs = distro ? ['-d', distro, '-e', 'sh', '-lc', script] : ['-e', 'sh', '-lc', script];
     return sh('wsl.exe', wslArgs, { timeoutMs });
   }
-  return sh('git', ['-C', viewerRepo(repo) || repo, ...args], { timeoutMs });
+  return sh('git', ['-C', viewerRepo(repo, config) || repo, ...args], { timeoutMs });
 }
 
 // 指定ファイル（repo 相対 POSIX パス）に差分があればそれだけを commit する。無ければ skip。
-function gitCommitFiles(repo, relFiles, message) {
+function gitCommitFiles(repo, relFiles, message, config) {
   if (!relFiles.length) return { ok: true, skipped: true };
-  const st = gitInRepo(repo, ['status', '--porcelain', '--', ...relFiles], 10000);
+  const st = gitInRepo(repo, ['status', '--porcelain', '--', ...relFiles], 10000, config);
   if (!st.ok) return { ok: false, step: 'status', error: st.stderr || st.error };
   if (!st.stdout.trim()) return { ok: true, skipped: true };
-  const add = gitInRepo(repo, ['add', '--', ...relFiles], 30000);
+  const add = gitInRepo(repo, ['add', '--', ...relFiles], 30000, config);
   if (!add.ok) return { ok: false, step: 'add', error: add.stderr || add.error };
-  const ci = gitInRepo(repo, ['commit', '-m', message, '--', ...relFiles], 30000);
+  const ci = gitInRepo(repo, ['commit', '-m', message, '--', ...relFiles], 30000, config);
   if (!ci.ok) return { ok: false, step: 'commit', error: ci.stderr || ci.error };
   return { ok: true };
 }
 
-function gitSave(repo, { branch, createBranch, push } = {}) {
+function gitSave(repo, { branch, createBranch, push } = {}, config) {
   if (!repo) return { skipped: true };
-  const current = gitInRepo(repo, ['rev-parse', '--abbrev-ref', 'HEAD'], 10000);
+  const current = gitInRepo(repo, ['rev-parse', '--abbrev-ref', 'HEAD'], 10000, config);
   if (!current.ok) return { ok: false, error: current.stderr || current.error || 'git rev-parse failed' };
   let checkout = null;
   if (branch) {
-    checkout = gitInRepo(repo, createBranch ? ['checkout', '-B', branch] : ['switch', branch], 30000);
+    checkout = gitInRepo(repo, createBranch ? ['checkout', '-B', branch] : ['switch', branch], 30000, config);
     if (!checkout.ok) return { ok: false, step: 'checkout', error: checkout.stderr || checkout.error };
   }
   let pushed = null;
   if (push) {
     const b = branch || current.stdout;
-    pushed = gitInRepo(repo, ['push', '-u', 'origin', b], 120000);
+    pushed = gitInRepo(repo, ['push', '-u', 'origin', b], 120000, config);
     if (!pushed.ok) return { ok: false, step: 'push', error: pushed.stderr || pushed.error };
   }
   return { ok: true, branch: branch || current.stdout, checkout, pushed };
 }
 
 // repo からの相対 POSIX パス（WSL の git でも -C の git でも解決できる形）。
-function relPosix(repo, file) {
-  const root = viewerRepo(repo) || repo;
+function relPosix(repo, file, config) {
+  const root = viewerRepo(repo, config) || repo;
   return path.relative(root, file).split(path.sep).join('/');
 }
 
@@ -543,6 +681,9 @@ function applyKiroLoopJson(raw, items) {
     const p = prompts[it._src.promptIndex];
     if (!p || typeof p !== 'object') continue;
     if ((it.name || '') !== (p.name || '')) { p.name = it.name || ''; changed = true; }
+    if (Object.prototype.hasOwnProperty.call(it, 'prompt') && String(it.prompt || '') !== String(p.prompt || '')) {
+      p.prompt = String(it.prompt || ''); changed = true;
+    }
     const curEnabled = p.enabled !== false;
     if ((it.enabled !== false) !== curEnabled) { p.enabled = it.enabled !== false; changed = true; }
     if (it._src.scheduleKey === 'cron') {
@@ -557,7 +698,7 @@ function applyKiroLoopJson(raw, items) {
 
 // 発見項目の編集を _src.file 単位に束ねて実体へ書き戻す。差分がある時だけ write。
 // 返り値 { touched: [{repo, relFiles:[...]}], errors:[...] }。
-function applyDiscoveredEdits(discovered) {
+function applyDiscoveredEdits(discovered, config) {
   // 統合項目（ステートマシン＋対となる kiro-loop エントリ）は schedule/enabled の編集を
   // kiro-loop 側の実体へ書き戻す合成項目に展開する。プロンプト名は変更しない
   // （表示名の変更は workflow.yaml の name へ書き戻す）。
@@ -598,6 +739,7 @@ function applyDiscoveredEdits(discovered) {
         if (r.changed) newText = r.text;
       } else {
         const current = parseKiroLoopPrompts(raw.replace(/\r\n/g, '\n'));
+        const currentTexts = kiroLoopPromptTexts(raw.replace(/\r\n/g, '\n'));
         const edits = [];
         for (const it of items) {
           const cur = current[it._src.promptIndex] || {};
@@ -605,6 +747,10 @@ function applyDiscoveredEdits(discovered) {
           let changed = false;
           if ((it.name || '') !== (cur.name || '')) { edit.name = it.name || ''; changed = true; }
           if ((it.enabled !== false) !== (cur.enabled !== false)) { edit.enabled = it.enabled !== false; changed = true; }
+          if (Object.prototype.hasOwnProperty.call(it, 'prompt')
+              && String(it.prompt || '') !== String(currentTexts[it._src.promptIndex] || '')) {
+            edit.prompt = String(it.prompt || ''); changed = true;
+          }
           if (it._src.scheduleKey && (it.schedule || '') !== scheduleOf(cur).schedule) {
             edit.schedule = it.schedule || '';
             changed = true;
@@ -636,7 +782,7 @@ function applyDiscoveredEdits(discovered) {
     if (newText != null && newText !== raw) {
       try {
         fs.writeFileSync(file, newText, 'utf8');
-        touched.push({ repo: first.repo, relFiles: [relPosix(first.repo, file)] });
+        touched.push({ repo: first.repo, relFiles: [relPosix(first.repo, file, config)] });
       } catch {
         errors.push(`書き込み失敗: ${file}`);
       }
@@ -651,6 +797,89 @@ function stripRuntimeFields(it) {
   return rest;
 }
 
+function applyManagedItems(items, config) {
+  const byRepo = new Map();
+  for (const item of items.filter((it) => it.managed && it.repo)) {
+    const key = _pathKey(item.repo);
+    if (!byRepo.has(key)) byRepo.set(key, { repo: item.repo, items: [] });
+    byRepo.get(key).items.push(item);
+  }
+  const touched = [];
+  const errors = [];
+  for (const { repo, items: repoItems } of byRepo.values()) {
+    const root = viewerRepo(repo, config) || repo;
+    const file = path.join(root, '.kiro', 'kiro-loop.yml');
+    let raw;
+    try { raw = fs.readFileSync(file, 'utf8'); } catch { raw = 'prompts:\n'; }
+    let next = raw;
+    for (const item of repoItems) {
+      const prompt = item.type === 'state-machine'
+        ? (item.schedule ? `statemachine-use スキルで${item.workflow || item.id}ステートマシンを実行して` : null)
+        : String(item.prompt || '').trim();
+      next = upsertManagedKiroPrompt(next, item, prompt).text;
+    }
+    if (next === raw) continue;
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, next, 'utf8');
+      touched.push({ repo, relFiles: [relPosix(repo, file, config)] });
+    } catch (err) {
+      errors.push(`kiro-loop.yml の書き込み失敗: ${err.message}`);
+    }
+  }
+  return { touched, errors };
+}
+
+// ---------------------------------------------------------------------------
+// 定常業務ワークスペースの登録（S2）
+// ---------------------------------------------------------------------------
+
+// フォルダを見て「定常業務として登録する価値があるか」を返す（登録前のプレビュー用）。
+// マーカーが無ければ registered=false で返し、画面は「ステートマシン新規作成」へ誘導する。
+function inspectCoworkRoot(config, dir) {
+  const raw = String(dir || '').trim();
+  if (!raw) throw new Error('フォルダを選択してください');
+  const folder = _resolveRoot(raw, config);
+  if (!isDir(folder)) throw new Error(`フォルダがありません: ${folder}`);
+  const roots = ((config && config.cowork) || {}).roots || [];
+  const registered = roots.some((r) => _pathKey(_resolveRoot(String(r || ''), config)) === _pathKey(folder));
+  // 直下だけでなく既定の走査深さまで見る（登録するのは親フォルダで、実体は 1 段下、という
+  // 置き方が普通にある。ここで「マーカー無し」と言い切ると登録できるのに拒否してしまう）。
+  const depth = Math.max(1, Number(((config && config.cowork) || {}).scanDepth || 2));
+  const found = scanForCoworkConfigs(folder, depth);
+  return {
+    folder,
+    registered,
+    // 実行エンジンが既に担当しているプロジェクトなら、登録しなくても定常業務は見えている。
+    managedByEngine: require('../../agent-project/main/engine')
+      .projectRoots(config)
+      .some((r) => _pathKey(_resolveRoot(String(r || ''), config)) === _pathKey(folder)),
+    markers: found.map((m) => ({
+      folder: m.folder,
+      loop: m.kiroFile ? path.basename(m.kiroFile) : '',
+      stateMachines: m.smNames || [],
+    })),
+  };
+}
+
+// 登録 / 登録解除。設定 `cowork.roots` だけを触る（実体ファイルには何も書かない）。
+function setCoworkRoot(config, saveConfig, { dir, remove } = {}) {
+  const folder = _resolveRoot(String(dir || '').trim(), config);
+  if (!folder) throw new Error('フォルダを選択してください');
+  const cfg = { ...(config || {}) };
+  const cur = ((cfg.cowork || {}).roots || []).map((r) => String(r || '').trim()).filter(Boolean);
+  const key = _pathKey(folder);
+  const kept = cur.filter((r) => _pathKey(_resolveRoot(r, config)) !== key);
+  if (!remove) {
+    if (!isDir(folder)) throw new Error(`フォルダがありません: ${folder}`);
+    kept.push(folder);
+  }
+  cfg.cowork = { ...(cfg.cowork || {}), roots: kept };
+  saveConfig(cfg);
+  return { ok: true, roots: kept, folder, removed: !!remove };
+}
+
+
 function saveWork(config, saveConfig, { items, branch, createBranch, push } = {}) {
   const all = Array.isArray(items) ? items : [];
   const configItems = all.filter((it) => it.source !== 'discovered');
@@ -662,7 +891,8 @@ function saveWork(config, saveConfig, { items, branch, createBranch, push } = {}
   const saved = saveConfig(cfg);
 
   // 2) 発見項目の編集を実体ファイルへ書き戻し
-  const wb = applyDiscoveredEdits(discovered);
+  const wb = applyDiscoveredEdits(discovered, config);
+  const managed = applyManagedItems(configItems, config);
 
   // 3) touched repo（書き戻し先）＋手動項目の repo を commit → branch/create/push
   const repoMap = new Map(); // repoKey -> { repo, relFiles:Set }
@@ -676,22 +906,30 @@ function saveWork(config, saveConfig, { items, branch, createBranch, push } = {}
     const e = ensure(t.repo);
     if (e) t.relFiles.forEach((f) => e.relFiles.add(f));
   }
+  for (const t of managed.touched) {
+    const e = ensure(t.repo);
+    if (e) t.relFiles.forEach((f) => e.relFiles.add(f));
+  }
   for (const it of configItems) ensure(it.repo);
 
   const git = [...repoMap.values()].map(({ repo, relFiles }) => {
     const files = [...relFiles];
-    const commit = gitCommitFiles(repo, files, 'chore(cowork): update kiro-loop/statemachine config');
-    const save = gitSave(repo, { branch, createBranch, push });
+    const commit = gitCommitFiles(repo, files, 'chore(cowork): update kiro-loop/statemachine config', config);
+    const save = gitSave(repo, { branch, createBranch, push }, config);
     return { repo, result: { ...save, commit } };
   });
   invalidateDiscoverCache();
-  return { config: saved, git, writeback: { errors: wb.errors } };
+  return { config: saved, git, writeback: { errors: [...wb.errors, ...managed.errors] } };
 }
 
 module.exports = {
-  overview, runLoop, runStateMachine, saveWork, itemsOf, wslPath, dynamicState,
+  overview, runLoop, runStateMachine, generateStateMachine, saveWork, itemsOf, wslPath, dynamicState,
   resolveItem, findItem, dedupeItems, applyDiscoveredEdits, gitCommitFiles,
   invalidateDiscoverCache, decodeCliOutput, viewerRepo,
   itemLogs, readLog, appendHistory, readHistory, historyFile,
   resolveLoopPromptText, withInputAssist, withGlobalInstructions, planSessionCommands,
+  coworkChatLaunch,
+  applyManagedItems, stateMachineCreationPrompt,
+  inspectCoworkRoot, setCoworkRoot,
+  stateMachineInputSpec, stateMachineInputAssist, stateMachineFilePath,
 };

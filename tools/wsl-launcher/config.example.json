@@ -11,7 +11,7 @@
     {
       "name": "agent-project (demo)",
       "wslPath": "/home/user/projects/demo",
-      "command": "agent-project start",
+      "command": "agent-project run --watch",
       "distro": "Ubuntu",
       "keepOpen": true,
       "enabled": true
@@ -19,18 +19,10 @@
   ],
   "_terminals_alt": [
     {
-      "_comment": "manage_flow_daemon を使わず agent-flow daemon を別ターミナルで明示常駐する構成。上の terminals をこの2件に差し替える。daemon は flock 冪等・agent-project start は同一 root+host の重複監視を拒否するため、毎起動でランチャが叩いても二重起動しない。",
-      "name": "agent-flow daemon (demo)",
-      "wslPath": "/home/user/projects/demo",
-      "command": "agent-flow daemon",
-      "distro": "Ubuntu",
-      "keepOpen": true,
-      "enabled": true
-    },
-    {
+      "_comment": "常駐体（agent-project serve）を使わず、プロジェクトの監視ループを別ターミナルで明示常駐する構成。上の terminals をこれに差し替える。run --watch は OS の排他ロックで同一 root の重複監視を拒否するため、毎起動でランチャが叩いても二重起動しない。",
       "name": "agent-project (demo)",
       "wslPath": "/home/user/projects/demo",
-      "command": "agent-project start",
+      "command": "agent-project run --watch",
       "distro": "Ubuntu",
       "keepOpen": true,
       "enabled": true

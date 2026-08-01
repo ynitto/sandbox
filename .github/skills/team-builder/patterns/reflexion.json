@@ -1,0 +1,38 @@
+{
+  "id": "reflexion",
+  "name": "Reflexion",
+  "category": "refine-loop",
+  "tier": "medium",
+  "source": "Reflexion (Shinn et al., 2023)",
+  "when_to_use": "客観的な合否信号（テスト等）があり、失敗の言語的内省を次試行に活かしたいとき。",
+  "signals": [
+    "客観的な合否がある",
+    "試行錯誤",
+    "失敗から学ぶ"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "actor",
+        "role": "作業し、失敗時は内省メモを残して再挑戦する",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "verifier",
+        "role": "客観信号で合否を判定し承認する",
+        "required": true,
+        "approver": true,
+        "collaborates_with": [
+          "actor"
+        ]
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved",
+      "review_rounds": 3
+    }
+  },
+  "feasibility": "native",
+  "feasibility_note": "内省メモは引き継ぎノート、再試行は差し戻しラウンドで表現。self-refine の客観信号版。"
+}

@@ -100,28 +100,53 @@ test('status.json が無ければ none（判定材料なし）', () => {
   }
 });
 
-test('状態 worktree 構成でも instances を実効パス（backlog の親）で照合する', () => {
-  // レコードの root は「リダイレクト前の素の root」で、viewer の登録パス（状態 worktree の
-  // 実体）とは一致しない。実効パス（backlog の親）で照合しないと、稼働中でも instances を
-  // 取りこぼし、長い作業中に「本体が停止中」と誤表示する（実際に起きた）。
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-live-wt-'));
-  const idir = path.join(os.homedir(), '.agent-project', 'instances');
-  fs.mkdirSync(idir, { recursive: true });
-  const file = path.join(idir, `kpv-test-${process.pid}.json`);
-  fs.writeFileSync(file, JSON.stringify({
-    pid: process.pid,
-    root: '/somewhere/else/.agent-project',          // リダイレクト前の root（一致しない）
-    backlog: path.join(tmp, 'backlog'),             // 実効パス（実書き込み先）は一致する
-    heartbeat: Date.now() / 1000,
-    ttl: 90,
-    host: os.hostname(),
-  }));
+test('実行エンジンが監督している子は children[].alive を確定根拠にする', () => {
+  // 根拠を instances レジストリ（自己申告 + 心拍鮮度）から engine/status.json の
+  // children[].alive（親が Popen で見た実測）へ移した（実装計画 W1-9）。心拍窓を持たないので、
+  // 長い作業（LLM 実行）中に窓が切れて「停止中」と誤表示する経路が構造的に消える。
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-live-eng-'));
+  fs.mkdirSync(path.join(tmp, 'backlog'), { recursive: true });
   try {
-    const live = project.projectLiveness(tmp);
+    const alive = { name: 'p1', alive: true, quarantined: false, paused: false, root: tmp };
+    const live = project.projectLiveness(tmp, alive);
     assert.strictEqual(live.running, true, JSON.stringify(live));
-    assert.strictEqual(live.via, 'instances');
+    assert.strictEqual(live.via, 'engine');
+    // 監督下で止まっている子は「稼働していない」と確定できる（推定へ落とさない）
+    const dead = { name: 'p1', alive: false, quarantined: false, paused: false, root: tmp };
+    assert.strictEqual(project.projectLiveness(tmp, dead).running, false);
+    assert.strictEqual(project.projectLiveness(tmp, dead).via, 'engine');
   } finally {
-    fs.unlinkSync(file);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// --- readNodeStatuses（案6・ノード別生存一覧） ---
+test('readNodeStatuses は status/<node>.json を新しさ付きで並べる', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-nodes-'));
+  try {
+    const sdir = path.join(tmp, 'status');
+    fs.mkdirSync(sdir, { recursive: true });
+    const now = new Date().toISOString();
+    const old = new Date(Date.now() - 9999 * 1000).toISOString();
+    fs.writeFileSync(path.join(sdir, 'pc-a.json'), JSON.stringify(
+      { node: 'pc-a', host: 'h1', updated_iso: now, fresh_after_sec: 120, watch: true, level: 'unattended' }));
+    fs.writeFileSync(path.join(sdir, 'pc-b.json'), JSON.stringify(
+      { node: 'pc-b', host: 'h2', updated_iso: old, fresh_after_sec: 120 }));
+    const nodes = project.readNodeStatuses(tmp);
+    assert.deepStrictEqual(nodes.map((n) => n.node), ['pc-a', 'pc-b']); // 名前順
+    assert.strictEqual(nodes[0].running, true);   // 新しい → 稼働中
+    assert.strictEqual(nodes[1].running, false);  // 古い → 応答なし（heartbeat 途絶）
+    assert.ok(nodes[1].ageSec > 1000);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('readNodeStatuses は status/ が無ければ空配列', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-nodes-'));
+  try {
+    assert.deepStrictEqual(project.readNodeStatuses(tmp), []);
+  } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });

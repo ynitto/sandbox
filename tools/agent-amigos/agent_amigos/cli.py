@@ -1,32 +1,36 @@
-"""CLI — サブコマンド体系（設計書 §11）。"""
+"""CLI — サブコマンド体系（設計書 付録 B）。"""
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
+import json
 import os
 import shutil
 import sys
 import time
 
+from . import agentcli
 from .assign import unfilled_required
 from .bus import make_bus
 from .configfile import load_settings, resolve_bus_spec
 from .daemon import NodeDaemon, default_node_id
 from .delivery import deliveries_dir, delivery_dir, list_deliveries
 from .messages import build_message, message_path, unanswered_questions, valid_target
-from .mission import (convergence_state, derive_phase,
+from .mission import (convergence_state, derive_phase, is_owner,
                       load_mission, load_roles, post_mission)
 from .util import log, now_iso, read_json, write_json_atomic
 
 
 def _bus_arg(p: argparse.ArgumentParser) -> None:
     p.add_argument("--bus", required=False, default="",
-                   help="バス指定: ローカル dir / git+<url> / hub+<url>。"
-                        "省略時は 環境変数 AGENT_AMIGOS_BUS → 設定 .agent/agent-amigos.yaml の bus"
+                   help="バス指定: ローカル dir / git+<url>。"
+                        "省略時は 環境変数 AGENT_AMIGOS_BUS → 設定 .agents/agent-amigos.yaml の bus"
                         "（既定 . = ホーム自身）の順に解決")
     p.add_argument("--bus-workdir", default=None,
-                   help="GitBus / HubBus のミラー作業領域（既定: ~/.agent/amigos/…）")
+                   help="GitBus のミラー作業領域（既定: ~/.agents/amigos/…）")
     p.add_argument("--config", default=None,
-                   help="設定ファイル（既定: ./ → ./.agent/ → ~/.agent/ の "
+                   help="設定ファイル（既定: ./ → ./.agents/ → ~/.agents/ の "
                         "agent-amigos.{yaml,yml,json} を自動探索）")
 
 
@@ -34,24 +38,92 @@ def _node_arg(p: argparse.ArgumentParser) -> None:
     p.add_argument("--node-id", default=None, help="ノード ID（既定: 設定 → 自動採番）")
 
 
-def _resolve(args) -> "tuple":
-    """バスとノード ID を CLI > 環境変数 > 設定ファイル > 既定（ホーム自身）の順で解決する。
-    serve と同じ resolve_bus_spec を使い、サブコマンド間でバス解決を揃える。"""
-    settings = load_settings(getattr(args, "config", None))
-    spec = resolve_bus_spec(settings, getattr(args, "bus", None) or None)
-    bus = make_bus(spec, workdir=getattr(args, "bus_workdir", None)
-                   or settings.get("bus_workdir"))
-    node = getattr(args, "node_id", None) or settings.get("node_id") or default_node_id()
-    return bus, node
+def _csv(value) -> "list[str]":
+    return [s.strip() for s in str(value or "").split(",") if s.strip()]
 
 
-def _node_home(args) -> str:
-    """ノードのホーム（納品棚 `<home>/deliveries/` と DELIVERY.md の置き場）。
+class NodeContext:
+    """このノードの実行パラメータを解決した結果（CLI > 環境変数 > 設定ファイル > 既定）。
+
+    **解決はここ 1 箇所に閉じる。** 以前はバスとノード ID だけをここで解決し、
+    agent_cli / tags / roles / interval / manual_claim / board は各サブコマンドが自前で
+    `args` から拾っていた。結果 `participate` だけが設定ファイルを読み、`join` / `drive` /
+    `run` は CLI 引数しか見ない状態になっていた——設定に `agent_cli: claude` と書いた
+    ノードが黙って `stub`（LLM なしのダミー）で走り、ダミー成果物が統合・納品まで
+    進み得た。解決を分散させると、次にサブコマンドを足したときに同じ穴が空く。
+    """
+
+    __slots__ = ("settings", "bus", "node_id", "agent_cli", "tags", "roles", "interval",
+                 "resume_hours", "manual_claim", "board", "board_workdir", "board_lease",
+                 "repos", "home")
+
+
+def _home_of(settings: dict, args) -> str:
+    """ノードのホーム（納品棚 `<home>/deliveries/` と DELIVERY.md・commands の置き場）。
     --home 明示 > 設定ファイルの位置（configfile の探索順）。"""
     explicit = getattr(args, "home", None)
     if explicit:
         return os.path.abspath(os.path.expanduser(explicit))
-    return load_settings(getattr(args, "config", None))["_home"]
+    return settings["_home"]
+
+
+def _resolve_ctx(args, interval_default: float = 5.0) -> NodeContext:
+    """設定の解決（唯一の実装）。値ごとの優先順位は CLI > 環境変数 > 設定 > 既定。
+
+    `interval_default` だけコマンドごとに違う（`drive` は呼び出し元が待つので短い）。
+    設定に `interval` が書いてあればそちらが既定に勝つ——設定 > 既定の順は崩さない。
+    """
+    settings = load_settings(getattr(args, "config", None))
+    agentcli.configure_argv_limit(settings.get("argv_limit"))
+    ctx = NodeContext()
+    ctx.settings = settings
+    spec = resolve_bus_spec(settings, getattr(args, "bus", None) or None)
+    ctx.bus = make_bus(spec, workdir=getattr(args, "bus_workdir", None)
+                       or settings.get("bus_workdir"))
+    ctx.node_id = (getattr(args, "node_id", None) or settings.get("node_id")
+                   or default_node_id())
+    ctx.agent_cli = getattr(args, "agent_cli", None) or settings.get("agent_cli") or None
+    ctx.tags = _csv(getattr(args, "tags", None)) or list(settings["tags"])
+    # 応募ロールの絞り込みは `--roles` だが dest は role_filter。`post --roles` は
+    # 役割ミッション表の**ファイルパス**で、同じ dest だと公示のたびに
+    # 「roles.yaml という名前のロールだけに応募する」絞り込みが生えてしまう。
+    ctx.roles = _csv(getattr(args, "role_filter", None)) or list(settings["roles"])
+    interval = getattr(args, "interval", None)
+    ctx.interval = float(interval if interval is not None
+                         else (settings.get("interval") or interval_default))
+    resume = getattr(args, "resume_hours", None)
+    ctx.resume_hours = float(resume if resume is not None
+                             else (settings.get("resume_hours") or 12.0))
+    manual = getattr(args, "manual_claim", None)
+    ctx.manual_claim = bool(settings["manual_claim"] if manual is None else manual)
+    ctx.board = getattr(args, "board", None) or settings.get("board")
+    ctx.board_workdir = settings.get("board_workdir")
+    ctx.board_lease = float(settings.get("board_lease") or 900.0)
+    ctx.repos = settings.get("repos")
+    ctx.home = _home_of(settings, args)
+    return ctx
+
+
+def _resolve(args) -> "tuple":
+    """バスとノード ID だけが要るコマンド（オーナー操作・照会）向けの薄い入口。
+    解決そのものは `_resolve_ctx` 1 本。"""
+    ctx = _resolve_ctx(args)
+    return ctx.bus, ctx.node_id
+
+
+def _node_home(args) -> str:
+    return _home_of(load_settings(getattr(args, "config", None)), args)
+
+
+def _daemon(ctx: NodeContext, board: "str | None") -> NodeDaemon:
+    """解決済みの設定からノードループを組み立てる（組み立ても 1 箇所）。
+    `board` だけは呼び出し側が決める——`drive` は設定に板があっても触らない（R9）。"""
+    return NodeDaemon(ctx.bus, ctx.node_id, agent_cli=ctx.agent_cli, tags=ctx.tags,
+                      roles_filter=ctx.roles, interval=ctx.interval,
+                      resume_hours=ctx.resume_hours, manual_claim=ctx.manual_claim,
+                      commands_home=ctx.home, home=ctx.home, repos=ctx.repos,
+                      board=board, board_workdir=ctx.board_workdir,
+                      board_lease=ctx.board_lease)
 
 
 def _home_arg(p: argparse.ArgumentParser) -> None:
@@ -61,7 +133,7 @@ def _home_arg(p: argparse.ArgumentParser) -> None:
 
 
 def _require_owner(mission: dict, node: str) -> None:
-    if mission.get("owner_node") != node:
+    if not is_owner(mission, node):
         raise SystemExit(f"[agent-amigos] このコマンドはオーナーノード"
                          f"（{mission.get('owner_node')}）のみ実行できます（自ノード: {node}）")
 
@@ -82,85 +154,164 @@ def cmd_init_bus(args) -> int:
 
 
 def cmd_post(args) -> int:
-    bus, node = _resolve(args)
-    mid = post_mission(bus, args.design, args.roles, node, args.mission_id)
-    print(f"ミッションを公示しました: {mid}（owner={node}）")
-    if args.serve:
-        NodeDaemon(bus, node, agent_cli=args.agent_cli, interval=args.interval,
-                   resume_hours=args.resume_hours,
-                   home=_node_home(args)).run(cycles=args.cycles)
+    ctx = _resolve_ctx(args)
+    mid = post_mission(ctx.bus, args.design, args.roles, ctx.node_id, args.mission_id)
+    print(f"ミッションを公示しました: {mid}（owner={ctx.node_id}）")
+    if args.drive:
+        # 公示したミッションをその場で回して終端まで進める（旧 --serve の常駐は廃止——
+        # 常駐は agent-project serve の 1 本。実装計画 W1-9）。単発なので呼び出し元の
+        # 寿命に束縛され、終端で戻る。
+        _daemon(ctx, board=None).run(cycles=args.cycles, until_terminal=True,
+                                     mission_id=mid, install_signals=False)
+    return 0
+
+
+def _write_roles_spec(path: str, spec: dict) -> None:
+    """設計したロールミッション表を YAML / JSON で書き出す（拡張子で選択）。"""
+    if path.lower().endswith((".yaml", ".yml")):
+        try:
+            import yaml  # type: ignore
+        except ImportError:
+            raise SystemExit("[agent-amigos] YAML 出力には PyYAML が必要です"
+                             "（.json を指定するか pip install pyyaml）")
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(spec, f, allow_unicode=True, sort_keys=False)
+    else:
+        write_json_atomic(path, spec)
+
+
+def cmd_build_team(args) -> int:
+    """チームビルディング: ミッション（ゴール/design）だけから team-builder スキルで
+    最適なロールミッション表を設計する。既定はドライラン（設計を表示）。
+    --out で保存、--post で公示（従来の post 経路へ合流）まで行う。"""
+    import json
+    from . import teambuilding
+    if args.list_patterns:
+        rows = teambuilding.list_patterns()
+        if not rows:
+            print("パターンカタログが見つかりません（スキル未インストール？）")
+            return 0
+        print(f"オーケストレーションパターン（{len(rows)} 件。high=自動選択対象 / medium=--pattern で明示指定）:")
+        for p in sorted(rows, key=lambda r: (r.get("tier") != "high", r.get("id"))):
+            print(f"  [{p.get('tier'):<6}] {p.get('id'):<24} {p.get('name')}")
+            print(f"           {p.get('when_to_use', '')}")
+        return 0
+    ctx = _resolve_ctx(args)
+    bus, node = ctx.bus, ctx.node_id
+    design_text = None
+    if args.design:
+        if not os.path.isfile(args.design):
+            raise SystemExit(f"[agent-amigos] design doc が見つかりません: {args.design}")
+        with open(args.design, encoding="utf-8") as f:
+            design_text = f.read()
+    brief = {"title": args.title, "goal": args.goal, "design": design_text,
+             "constraints": args.constraints,
+             "capabilities": _csv(args.capabilities),
+             "agent_cli": ctx.agent_cli}
+    mission_over, roles, meta = teambuilding.build_team(
+        brief, ctx.agent_cli or "", model=args.model, pattern=args.pattern)
+
+    # target=agent-flow: 探索木・動的分解は agent-flow へ委譲する（roles は出さない・G4）
+    if meta.get("target") == "agent-flow":
+        deleg = meta["delegation"]
+        log(node, f"team-builder 完了: target=agent-flow "
+                  f"pattern={meta.get('chosen_pattern') or '-'} id={deleg['id']}")
+        if args.out:
+            write_json_atomic(args.out, deleg)
+            print(f"agent-flow 委譲封筒を書き出しました: {args.out}（id={deleg['id']}）")
+        else:
+            print(json.dumps(deleg, ensure_ascii=False, indent=2))
+        print("  ※ このミッションは探索木・動的分解が本質のため agent-flow へ委譲します（役割協働ではない）。")
+        print(f"  実行: agent-flow submit {json.dumps(deleg['goal'], ensure_ascii=False)}")
+        print("  （dashboard の委譲アダプタでも投函できます — workload=flow）")
+        return 0
+
+    spec = {"mission": mission_over, "roles": roles}
+    log(node, f"team-builder 完了: roles={len(roles)} "
+              f"pattern={meta.get('chosen_pattern') or '-'} skill={meta.get('skill_source')}")
+
+    if args.out:
+        _write_roles_spec(args.out, spec)
+        print(f"ロールミッション表を書き出しました: {args.out}（roles={len(roles)}）")
+        print(f"  内容を確認・調整してから: agent-amigos post --design <doc> --roles {args.out}")
+        return 0
+    if not args.post:
+        print(json.dumps(spec, ensure_ascii=False, indent=2))
+        return 0
+
+    # --post: design doc（無ければブリーフから生成）＋ 設計した roles で公示する
+    import tempfile
+    workdir = tempfile.mkdtemp(prefix="agent-amigos-build-team-")
+    design_path = args.design
+    if not design_path:
+        design_path = os.path.join(workdir, "design.md")
+        with open(design_path, "w", encoding="utf-8") as f:
+            f.write(teambuilding.brief_to_design_doc(brief))
+    roles_path = os.path.join(workdir, "roles.json")
+    write_json_atomic(roles_path, spec)
+    mid = post_mission(bus, design_path, roles_path, node, args.mission_id)
+    print(f"チームを設計し公示しました: {mid}（owner={node}, roles={len(roles)}）")
+    if args.drive:
+        # 公示したミッションをその場で回して終端まで進める（旧 --serve の常駐は廃止——
+        # 常駐は agent-project serve の 1 本。実装計画 W1-9）。単発なので呼び出し元の
+        # 寿命に束縛され、終端で戻る。
+        _daemon(ctx, board=None).run(cycles=args.cycles, until_terminal=True,
+                                     mission_id=mid, install_signals=False)
     return 0
 
 
 def cmd_join(args) -> int:
-    bus, node = _resolve(args)
-    roles_filter = [r for r in (args.roles or "").split(",") if r]
-    tags = [t for t in (args.tags or "").split(",") if t]
-    NodeDaemon(bus, node, agent_cli=args.agent_cli, tags=tags,
-               roles_filter=roles_filter, interval=args.interval,
-               resume_hours=args.resume_hours,
-               home=_node_home(args)).run(cycles=args.cycles)
+    ctx = _resolve_ctx(args)
+    _daemon(ctx, board=ctx.board).run(cycles=args.cycles)
     return 0
 
 
-def cmd_serve(args) -> int:
-    """常駐起動（サブコマンド省略時の既定 — agent-project の run --watch と同じ位置づけ）。
+def cmd_drive(args) -> int:
+    """単発駆動（実装計画 W1-3・設計 §4.5）: cycle() をその場で回し、--mission-id 指定時は
+    そのミッションが、未指定時はその巡で観測した全ミッションが終端（done/cancelled/failed）
+    に達するか --cycles 上限で戻る。共有バスでは無関係な未終端ミッションに巻き込まれて
+    ハングしないよう --mission-id の指定を推奨する。常駐化（デーモンロック・シグナル常駐）
+    はしない — 呼び出し元（スキル・チャット・人）の寿命に束縛されるフォアグラウンド実行。
+    板・他 PC には触らない（ローカルミッション。R9）。"""
+    # commands/ の取り込みは drive も担う。旧 `serve` の廃止（実装計画 W1-9）でこのツールを
+    # 常駐させる経路が無くなったため、投函（post / claim / accept …）を読む入口が drive しか
+    # 残っていない——渡さないと commands/ に置かれた依頼が永久に取り込まれない。
+    # board は渡さない: 設定に板があっても drive は他 PC の公示に触らない（R9）。
+    ctx = _resolve_ctx(args, interval_default=0.5)
+    _daemon(ctx, board=None).run(cycles=args.cycles, until_terminal=True,
+                                 install_signals=False, mission_id=args.mission_id)
+    return 0
 
-    cwd（またはその `.agent/agent-amigos.yaml`）をホームとして:
-    - ホームのバス（既定: cwd 自身のローカルバス）でノードデーモンを回す
-    - `hub.serve: true` なら同じバスを hub として公開（cwd-as-hub。他ノードは
-      hub+http://<host>:<port> で参加できる）
-    - `<home>/.agent/agent-amigos/commands/*.json` の指示（依頼 post・手動引き受け claim・
-      assign / accept / reject / cancel / say）を毎サイクル取り込む
-    """
-    settings = load_settings(args.config)
-    home = settings["_home"]
-    spec = resolve_bus_spec(settings, args.bus or None)
-    bus = make_bus(spec, workdir=args.bus_workdir or settings.get("bus_workdir"))
-    node = args.node_id or settings.get("node_id") or default_node_id()
 
-    hub_server = None
-    hub_serve = settings["hub_serve"] if args.hub is None else bool(args.hub)
-    if hub_serve:
-        if bus.kind != "local":
-            raise SystemExit("[agent-amigos] hub.serve はローカルバス（cwd-as-hub）のみ"
-                             f"対応です（現在のバス: {bus.kind}）")
-        from . import hub as hubmod
-        import threading
-        hub_server = hubmod.serve(bus.root, str(settings["hub_host"]),
-                                  int(settings["hub_port"]), settings["hub_token"])
-        threading.Thread(target=hub_server.serve_forever, daemon=True).start()
-        log(node, f"hub を公開しました: http://{settings['hub_host']}:"
-                  f"{hub_server.server_port}（data={bus.root}）")
-
-    manual = settings["manual_claim"] if args.manual_claim is None else bool(args.manual_claim)
-    log(node, f"常駐開始: home={home} bus={bus.root if bus.kind == 'local' else spec} "
-              f"agent_cli={args.agent_cli or settings.get('agent_cli') or 'stub'} "
-              f"manual_claim={manual}"
-              + (f" config={settings['_config_path']}" if settings["_config_path"] else "（設定なし）"))
-    daemon = NodeDaemon(
-        bus, node,
-        agent_cli=args.agent_cli or settings.get("agent_cli"),
-        tags=[t for t in (args.tags or "").split(",") if t] or settings["tags"],
-        roles_filter=[r for r in (args.roles or "").split(",") if r] or settings["roles"],
-        interval=args.interval if args.interval is not None else float(settings["interval"]),
-        resume_hours=(args.resume_hours if args.resume_hours is not None
-                      else float(settings["resume_hours"])),
-        manual_claim=manual,
-        commands_home=home,
-    )
-    try:
-        daemon.run(cycles=args.cycles)
-    finally:
-        if hub_server is not None:
-            hub_server.shutdown()
+def cmd_participate(args) -> int:
+    """参加のみ 1 巡（実装計画 W1-11 残・設計 §4.2「amigos 参加（claim・心拍・away）」）:
+    応募・オーナー職務・板巡回のみ行い、手番は実行しない。ノード常駐体（agent-project
+    resident）の短周期 tick から都度起動される想定 — bus が調停役なのでプロセス境界を
+    跨いでも roster は安全に進む。自分が roster 上で担当する (mission_id, role_id) を
+    出力する（呼び出し側が `agent-amigos run --once` をディスパッチする材料。R9: 常駐なしの
+    単発 CLI として amigos 単体でも成立する）。"""
+    ctx = _resolve_ctx(args)
+    daemon = _daemon(ctx, board=ctx.board)
+    # log()（claim 等の逐次ログ）は素の print で stdout に出る。呼び出し側（resident の
+    # amigos tick）は stdout を機械可読な結果として json.loads するため、ログが先頭に
+    # 混ざると必ずパース失敗する。このコマンドの間だけ stdout を奪って stderr へ転送し、
+    # 結果（JSON / 平文一覧）だけを最後に本来の stdout へ書く。
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        owned = daemon.participate_only()
+    sys.stderr.write(buf.getvalue())
+    if args.json:
+        print(json.dumps([{"mission_id": m, "role_id": r} for m, r in owned], ensure_ascii=False))
+    else:
+        for mid, rid in owned:
+            print(f"{mid} {rid}")
     return 0
 
 
 def cmd_run(args) -> int:
     from .runner import AmigoRunner
-    bus, node = _resolve(args)
-    runner = AmigoRunner(bus, args.mission, args.role, node, args.agent_cli)
+    ctx = _resolve_ctx(args)
+    runner = AmigoRunner(ctx.bus, args.mission, args.role, ctx.node_id, ctx.agent_cli)
     if args.once:
         print(runner.turn_once())
         return 0
@@ -169,7 +320,7 @@ def cmd_run(args) -> int:
         print(result)
         if result in ("exit",):
             return 0
-        time.sleep(args.interval)
+        time.sleep(ctx.interval)
 
 
 def cmd_status(args) -> int:
@@ -292,7 +443,7 @@ def cmd_reject(args) -> int:
 
 
 def cmd_assign(args) -> int:
-    """owner-picks: 応募者をロールへ確定する（オーナー。設計書 §6.3）。"""
+    """owner-picks: 応募者をロールへ確定する（オーナー。設計書 §5.1）。"""
     from .assign import applicants, confirm_assignment
     bus, node = _resolve(args)
     mp, mission, roles = _mission(bus, args.mission)
@@ -309,6 +460,29 @@ def cmd_assign(args) -> int:
         return 0
     confirm_assignment(bus, mp, args.role, args.node)
     print(f"確定しました: {args.role} → {args.node}")
+    return 0
+
+
+def cmd_restaff(args) -> int:
+    """実行中のチーム編成を変更する（G5・オーナー）: ロールの追加 / 停止（剪定）。"""
+    from .ownerops import restaff_mission
+    from .mission import _load_spec_file
+    bus, node = _resolve(args)
+    mp, mission, _roles = _mission(bus, args.mission)
+    _require_owner(mission, node)
+    add = None
+    if args.add:
+        spec = _load_spec_file(args.add)
+        add = spec.get("roles") if isinstance(spec, dict) and "roles" in spec else spec
+        if not isinstance(add, list):
+            raise SystemExit("[agent-amigos] --add は役割ミッション表（roles 配列 / {roles:[…]}）"
+                             "のファイルを指定してください")
+    prune = [p for p in (args.prune or "").split(",") if p]
+    if not add and not prune:
+        raise SystemExit("[agent-amigos] restaff には --add か --prune が必要です")
+    result = restaff_mission(bus, mp, add=add, prune=prune, by=node)
+    print(f"チーム編成を変更しました: 追加={result['added'] or 'なし'} "
+          f"停止={result['pruned'] or 'なし'}")
     return 0
 
 
@@ -337,7 +511,7 @@ def cmd_budget(args) -> int:
 
 
 def _cmd_budget_node(args) -> int:
-    """ノード予算（請負側の上限、§3.3）の表示・設定。台帳・設定は
+    """ノード予算（請負側の上限、§6.2）の表示・設定。台帳・設定は
     $AGENT_BUDGET_DIR（既定 ~/.agents/budget/）のツール横断契約
     （schemas/node-budget.schema.json）。agent-dashboard も同じファイルを管理する。"""
     from . import nodebudget
@@ -436,25 +610,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="agent-amigos",
         description="役割駆動マルチエージェント協働ツール（設計書: docs/designs/agent-amigos-design.md）。"
-                    "サブコマンドを省略すると常駐起動（serve）になり、cwd の "
-                    ".agent/agent-amigos.yaml を設定として cwd をホーム（バス・hub）に使う")
+                    "常駐は agent-project serve が担う（PC に 1 本）。本コマンドは単発実行"
+                    "（drive / participate / run）と依頼・確認の操作を提供する")
     sub = ap.add_subparsers(dest="cmd", required=True)
-
-    p = sub.add_parser("serve",
-                       help="常駐起動（省略時の既定）: ノードデーモン + commands/ 取り込み + "
-                            "hub 公開（設定 hub.serve）")
-    _bus_arg(p); _node_arg(p)
-    p.add_argument("--agent-cli", default=None)
-    p.add_argument("--tags", default="", help="ノードの能力タグ（カンマ区切り。設定 tags を上書き）")
-    p.add_argument("--roles", default="", help="応募ロールの絞り込み（カンマ区切り。設定 roles を上書き）")
-    p.add_argument("--interval", type=float, default=None)
-    p.add_argument("--cycles", type=int, default=0, help="巡回数（0=無限。テスト用）")
-    p.add_argument("--resume-hours", type=float, default=None)
-    p.add_argument("--hub", action=argparse.BooleanOptionalAction, default=None,
-                   help="バスを hub として公開する（設定 hub.serve を上書き）")
-    p.add_argument("--manual-claim", action=argparse.BooleanOptionalAction, default=None,
-                   help="自動応募しない（commands/ 経由の手動引き受けのみ。設定 manual_claim を上書き）")
-    p.set_defaults(fn=cmd_serve)
 
     p = sub.add_parser("init-bus", help="バスを初期化する")
     _bus_arg(p); _node_arg(p)
@@ -465,34 +623,111 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--design", required=True, help="design doc（Markdown）")
     p.add_argument("--roles", required=True, help="役割ミッション表（YAML/JSON）")
     p.add_argument("--mission-id", default=None)
-    p.add_argument("--serve", action="store_true",
-                   help="公示後そのままオーナーノードのデーモンとして常駐する")
+    p.add_argument("--drive", action="store_true",
+                   help="公示後そのままミッションを回して終端まで進める（単発。常駐はしない）")
     p.add_argument("--agent-cli", default=None)
-    p.add_argument("--interval", type=float, default=5.0)
-    p.add_argument("--cycles", type=int, default=0, help="デーモン巡回数（0=無限。テスト用）")
-    p.add_argument("--resume-hours", type=float, default=12.0,
-                   help="graceful offboard 時の resume_at（時間後。away 保持の期待復帰時刻）")
+    p.add_argument("--interval", type=float, default=None)
+    p.add_argument("--cycles", type=int, default=0, help="巡回数の上限（0=無限。--drive 用）")
+    # --resume-hours は置かない。away 宣言（graceful offboard）は常駐が抜けるときの作法で、
+    # --drive は終端まで回して戻る単発。受け取っても使い道が無く、渡せるのに効かない
+    # フラグは「効いたつもり」を生む。
     p.set_defaults(fn=cmd_post)
+
+    p = sub.add_parser("build-team",
+                       help="チームビルディング: ミッション（ゴール/design）だけから "
+                            "team-builder スキルで最適なロール表を設計する（既定はドライラン）")
+    _bus_arg(p); _node_arg(p); _home_arg(p)
+    p.add_argument("--goal", default=None, help="ミッションの目標（design が無ければ必須）")
+    p.add_argument("--title", default=None, help="ミッションの短い名前")
+    p.add_argument("--design", default=None,
+                   help="design doc（Markdown）。あれば正典として設計に反映し、公示にも使う")
+    p.add_argument("--constraints", default=None, help="予算・締切・技術/体制の制約")
+    p.add_argument("--capabilities", default="",
+                   help="使えるノードの能力タグ（カンマ区切り。requires.tags の候補）")
+    p.add_argument("--agent-cli", default=None,
+                   help="設計に使う agent CLI（かつ各ロールの既定。stub/未指定は不可）")
+    p.add_argument("--model", default=None, help="設計に使うモデル（任意）")
+    p.add_argument("--pattern", default=None,
+                   help="使うオーケストレーションパターンを id で指定（省略時は高価値パターンから"
+                        "ミッションに応じて自動選択）。一覧は --list-patterns")
+    p.add_argument("--list-patterns", action="store_true",
+                   help="利用可能なパターンの一覧を表示して終了する")
+    p.add_argument("--out", default=None,
+                   help="設計したロール表の書き出し先（.yaml/.json）。指定時は公示しない")
+    p.add_argument("--post", action="store_true",
+                   help="設計後そのまま公示する（従来の post 経路へ合流）")
+    p.add_argument("--drive", action="store_true",
+                   help="--post と併用: 公示後そのままミッションを回して終端まで進める（単発）")
+    p.add_argument("--mission-id", default=None)
+    p.add_argument("--interval", type=float, default=None)
+    p.add_argument("--cycles", type=int, default=0, help="巡回数の上限（0=無限。--drive 用）")
+    p.set_defaults(fn=cmd_build_team)
 
     p = sub.add_parser("join", help="参加ノードのデーモンを起動する")
     _bus_arg(p); _node_arg(p)
-    p.add_argument("--roles", default="", help="応募するロールの絞り込み（カンマ区切り）")
-    p.add_argument("--tags", default="", help="ノードの能力タグ（カンマ区切り）")
+    p.add_argument("--roles", dest="role_filter", default="",
+                   help="応募するロールの絞り込み（カンマ区切り。設定 roles を上書き）")
+    p.add_argument("--tags", default="", help="ノードの能力タグ（カンマ区切り。設定 tags を上書き）")
     p.add_argument("--agent-cli", default=None,
-                   help="このノードの既定 agent CLI（kiro/claude/copilot/codex/stub/プラグイン名）")
-    p.add_argument("--interval", type=float, default=5.0)
+                   help="このノードの既定 agent CLI（kiro/claude/copilot/codex/stub/プラグイン名）。"
+                        "省略時は設定 agent_cli")
+    p.add_argument("--manual-claim", action=argparse.BooleanOptionalAction, default=None,
+                   help="自動応募しない（commands 経由の手動引き受けのみ。設定 manual_claim を上書き）")
+    p.add_argument("--board", default=None,
+                   help="委譲公示板（agent-board）の場所（ローカル dir / git+<url>）。設定 board を上書き")
+    p.add_argument("--interval", type=float, default=None)
     p.add_argument("--cycles", type=int, default=0)
-    p.add_argument("--resume-hours", type=float, default=12.0,
+    p.add_argument("--resume-hours", type=float, default=None,
                    help="graceful offboard 時の resume_at（時間後。away 保持の期待復帰時刻）")
     p.set_defaults(fn=cmd_join)
+
+    p = sub.add_parser("drive",
+                       help="単発駆動: 常駐せず cycle() をその場で回し、ミッション終端"
+                            "（または --cycles 上限）で戻る（スキル呼び出し用・R9）")
+    _bus_arg(p); _node_arg(p); _home_arg(p)
+    p.add_argument("--agent-cli", default=None,
+                   help="このターンで使う agent CLI（省略時は設定 agent_cli → ロールの agent_cli）")
+    p.add_argument("--tags", default="", help="ノードの能力タグ（カンマ区切り。設定 tags を上書き）")
+    p.add_argument("--roles", dest="role_filter", default="",
+                   help="応募ロールの絞り込み（カンマ区切り。設定 roles を上書き）")
+    p.add_argument("--manual-claim", action=argparse.BooleanOptionalAction, default=None,
+                   help="自動応募しない（設定 manual_claim を上書き）")
+    p.add_argument("--interval", type=float, default=None,
+                   help="ミッション未終端時の巡回間隔秒（既定 0.5。呼び出し元が待つので短め）")
+    p.add_argument("--cycles", type=int, default=10000,
+                   help="巡回数の安全上限（既定 10000。0=無限。ミッション終端で先に戻る）。"
+                        "終端に達し得ないミッション（充足不能な必須ロール・受入が解決しない等）で"
+                        "フォアグラウンド呼び出しを無限ハングさせないための保険")
+    p.add_argument("--mission-id", default=None,
+                   help="終端判定をこのミッションだけに絞る（省略時はその巡で観測した"
+                        "全ミッションの終端を待つ。共有バスでは無関係な未終端ミッションに"
+                        "巻き込まれてハングし得るため指定を推奨）")
+    p.set_defaults(fn=cmd_drive)
+
+    p = sub.add_parser("participate",
+                       help="参加のみ 1 巡（実装計画 W1-11 残）: 応募・オーナー職務・板巡回のみ行い、"
+                            "手番は実行しない。ノード常駐体の短周期 tick 用 — 担当 "
+                            "(mission,role) を出力する（実行は `run --once` へ委ねる）")
+    _bus_arg(p); _node_arg(p)
+    p.add_argument("--agent-cli", default=None)
+    p.add_argument("--tags", default="", help="ノードの能力タグ（カンマ区切り。設定 tags を上書き）")
+    p.add_argument("--roles", dest="role_filter", default="",
+                   help="応募ロールの絞り込み（カンマ区切り。設定 roles を上書き）")
+    p.add_argument("--manual-claim", action=argparse.BooleanOptionalAction, default=None,
+                   help="自動応募しない（commands/ 経由の手動引き受けのみ。設定 manual_claim を上書き）")
+    p.add_argument("--board", default=None,
+                   help="委譲公示板（agent-board）の場所（ローカル dir / git+<url>）")
+    p.add_argument("--json", action="store_true", help="機械可読な JSON で出力")
+    p.set_defaults(fn=cmd_participate)
 
     p = sub.add_parser("run", help="単発 amigo（デバッグ用）")
     _bus_arg(p); _node_arg(p)
     p.add_argument("--mission", required=True)
     p.add_argument("--role", required=True)
-    p.add_argument("--agent-cli", default=None)
+    p.add_argument("--agent-cli", default=None,
+                   help="このターンで使う agent CLI（省略時は設定 agent_cli → ロールの agent_cli）")
     p.add_argument("--once", action="store_true")
-    p.add_argument("--interval", type=float, default=5.0)
+    p.add_argument("--interval", type=float, default=None)
     p.set_defaults(fn=cmd_run)
 
     p = sub.add_parser("status", help="ミッションの状態を表示する")
@@ -529,6 +764,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("node", nargs="?", default=None,
                    help="確定するノード（省略時は応募者一覧を表示）")
     p.set_defaults(fn=cmd_assign)
+
+    p = sub.add_parser("restaff",
+                       help="実行中のチーム編成を変更（オーナー）: --add <roles.json> で役割追加、"
+                            "--prune <id,...> で役割停止（剪定）")
+    _bus_arg(p); _node_arg(p)
+    p.add_argument("mission")
+    p.add_argument("--add", default=None, help="追加する役割ミッション表（YAML/JSON）")
+    p.add_argument("--prune", default="", help="停止するロール id（カンマ区切り）")
+    p.set_defaults(fn=cmd_restaff)
 
     p = sub.add_parser("budget",
                        help="予算の管理: add = ミッション予算の追加（オーナー）、"
@@ -570,24 +814,22 @@ def build_parser() -> argparse.ArgumentParser:
                         "納品棚は受け取った成果物の唯一の置き場になるため自動では消さない")
     p.set_defaults(fn=cmd_gc)
 
-    from . import hub
-    hub.add_parser(sub)
     return ap
 
 
-# 既知のサブコマンド。省略して呼ばれたら「常駐起動（serve）」を既定にする
-# （agent-project の run --watch 既定と同じ流儀 — PC 起動時に立ち上げっぱなしにして
-# cwd のホームを面倒見る daemon 用途を一級にする）。
-_SUBCOMMANDS = {"serve", "init-bus", "post", "join", "run", "status", "collect",
-                "accept", "reject", "assign", "budget", "say", "cancel", "gc", "hub",
-                "deliveries"}
-
-
 def resolve_argv(argv: "list[str] | None") -> "list[str]":
-    """サブコマンド省略時に serve を補う（-h/--help は素通し）。"""
+    """サブコマンド省略時の既定は無い（-h/--help は素通し）。
+
+    以前は `serve`（常駐）を補っていたが、常駐は `agent-project serve` の 1 本に集約した
+    （実装計画 W1-9）。裸起動を黙って常駐にすると、常駐体と二重に回って claim を奪い合う。
+    案内だけ出して終える——単発で回すなら `drive`、参加だけなら `participate`。"""
     argv = list(sys.argv[1:] if argv is None else argv)
-    if not argv or (argv[0] not in _SUBCOMMANDS and argv[0] not in ("-h", "--help")):
-        return ["serve", *argv]
+    if not argv:
+        print("[agent-amigos] 常駐は `agent-project serve`（PC に 1 本）が担います。\n"
+              "  単発で回す   : agent-amigos drive --mission-id <id>\n"
+              "  参加だけ 1 巡: agent-amigos participate\n"
+              "  一覧         : agent-amigos --help", file=sys.stderr)
+        raise SystemExit(2)
     return argv
 
 

@@ -10,10 +10,11 @@ const state = {
   selectedDir: null, // 選択中プロジェクトのディレクトリ
   project: null, // readProject のスナップショット
   flowRuns: [],
-  flowDaemon: null, // {running, pid, lockPath}（ロックファイルからの判定）
+  engine: null, // engine/status.json のスナップショット（稼働・共有の状況・切り離し）
   flowRunId: null,
   flowRun: null, // {run, events, nodeEvents}
   flowNodeId: null,
+  flowRevisionId: null,
   flowDetailView: 'overview', // 選択中 run の内部ビュー（overview / graph / history）
   flowMobileDetail: false,
   flowNodeIssue: null, // {token, issue|null}（実行中ノードのイシュー検索結果キャッシュ）
@@ -21,6 +22,7 @@ const state = {
   // { [runId]: { loading, at, byNode: {[id]:{reconciled,url,issueState,labels,relatedMrs,...}} } }
   flowReconcile: {},
   backlogFilter: 'active',
+  backlogOwner: '', // 監視担当フィルタ（'' = 全員 / '__none__' = 未担当 / それ以外 = 担当者名）
   needsFilter: 'open', // open / sent / done / gitlab
   needsSelectedId: null,
   needsMobileDetail: false,
@@ -42,10 +44,15 @@ const state = {
   coworkSelections: {}, // project path → selected routine id
   coworkSearches: { cowork: '' },
   coworkHistoryCache: RoutineUiCache.createBoundedAsyncCache({ max: 12, ttlMs: 60000 }),
+  // 委譲公示板（agent-board）の観測。板は端末単位なのでプロジェクト選択と独立。
+  boardStatus: null,   // engine/status.json の board ブロック（参加状況・手動入札の可否）
+  boardViews: [],      // 板の公示（正規化ビュー）
+  boardNodes: [],      // 板の参加ノード（nodes/<id>.json）
+  boardCommands: {},   // 投函したノード宛て指示の状況（送信済み → 受理済み / 失敗）
   amigos: null, // amigos:overview のスナップショット { missions, budget, errors }
   amigosBudgetSaving: false,
   amigosReject: null, // 修正依頼ダイアログの対象 { home, missionId }
-  // kiro-loop 端末（Phase A: capture-pane 視聴）
+  // kiro-loop 端末
   kiroLoopTerm: null, // { repo, name, target, session, items, text, error, at }
   kiroLoopCache: RoutineUiCache.createBoundedAsyncCache({ max: 8, ttlMs: 30000 }), // repo → session list
   kiroLoopStateCache: RoutineUiCache.createBoundedAsyncCache({ max: 8, ttlMs: 10000 }), // repo → status summary
@@ -128,7 +135,7 @@ const STATUS_LABELS = {
   proposed: '計画承認待ち',
   ready: '実行待ち',
   doing: '実行中',
-  offloaded: '実行中（委任）',
+  offloaded: '実行中',
   review: '検収待ち',
   blocked: '要対応',
   done: '完了',
@@ -140,11 +147,14 @@ const STATUS_LABELS = {
   budget: '回数上限',
   cost: 'コスト上限',
   'no-acceptance': '完了条件が未定義',
+  'no-progress': '停滞',
+  'awaiting-plan': '分解待ち',
   drained: '消化完了',
-  throttle: '予算超過（縮退）',
+  throttle: '予算超過',
   // 実行（run）の状態
   failed: '失敗',
-  canceled: '中止',
+  cancelled: '中止',
+  canceled: '中止',   // 語彙統一前に書かれた meta.json の旧綴り
   running: '実行中',
   unknown: '不明',
   idle: '待機中',
@@ -200,7 +210,7 @@ function taskCompletionHint(task, { runs = [], archived = false } = {}) {
       unsettledDone: false,
       statusNote: null,
       completeHow:
-        '完了にするには: まず要対応で計画を承認し、実行完了を待つ（検収ゲートなら最後に承認）',
+        'まず要対応で計画を承認してください。実行後に成果を確認します',
       needAsk: 'この承認では完了になりません。実行が許可されるだけです。',
     };
   }
@@ -237,7 +247,7 @@ function taskCompletionHint(task, { runs = [], archived = false } = {}) {
       unsettledDone: true,
       statusNote: '実行済み・未確定',
       completeHow:
-        '完了にするには: 修正後の再実行完了を待つ（操作不要）。要対応が残っていれば先に対応',
+        '要対応が残っていれば対応してください。あとは再実行の完了を待ちます',
       needAsk: null,
     };
   }
@@ -245,7 +255,7 @@ function taskCompletionHint(task, { runs = [], archived = false } = {}) {
     return {
       unsettledDone: false,
       statusNote: null,
-      completeHow: '完了にするには: 本体の実行完了を待つ（通常は操作不要）',
+      completeHow: '実行の完了を待ってください',
       needAsk: null,
     };
   }
@@ -253,7 +263,7 @@ function taskCompletionHint(task, { runs = [], archived = false } = {}) {
     return {
       unsettledDone: false,
       statusNote: null,
-      completeHow: '完了にするには: 実行完了を待つ（操作不要）',
+      completeHow: '実行の完了を待ってください',
       needAsk: null,
     };
   }
@@ -268,7 +278,7 @@ function taskCompletionHint(task, { runs = [], archived = false } = {}) {
 // 関連 run の状態表示。タスク未納品のとき done を「完了」と出さない（タスク完了と誤認させない）。
 function runStatusCaption(runStatus, { taskArchived = false } = {}) {
   if (String(runStatus) !== 'done') return statusLabel(runStatus);
-  return taskArchived ? '納品済み' : '実行完了（タスク未確定）';
+  return taskArchived ? '納品済み' : '実行済み・確認待ち';
 }
 
 // run の機械状態と agent-project タスクの業務状態を混ぜずに表示するためのモデル。
@@ -344,7 +354,7 @@ function runFinalVerificationFailure(project, run) {
     return {
       kind: 'info',
       title: '工程は全て成功・完了の確認待ち',
-      summary: '検証コマンド（verify）が未定義のため、自動では完了にできません。'
+      summary: '完了を自動確認できません。'
         + '成果を確認し、問題なければ要対応の「承認して完了にする」で完了できます。',
       taskId: task.id,
     };
@@ -544,16 +554,37 @@ function splitRequest(request) {
 // 意味論の正典は tools/agent-project/backlog.md.example。値は 1 行・改行は ⏎）
 const GUIDE_KEYS = ['why', 'desc', 'scope', 'out_of_scope', 'constraints', 'hints', 'demo'];
 const GUIDE_LABELS = {
-  why: '背景・目的（なぜやるか。実装判断とレビューの基準）',
-  desc: '作業内容の詳細（タイトルで足りない具体の指示）',
-  scope: '変更してよい範囲（この外は変更させない）',
-  out_of_scope: 'やらないこと（スコープ外・非目標）',
-  constraints: 'タスク固有の制約（守るべき規約・禁止事項）',
-  hints: '実装の手がかり（関連ファイル・参考実装）',
-  demo: '人の確認観点（検収で何をどう確かめるか）',
+  why: '目的・背景',
+  desc: '作業内容の詳細',
+  scope: '変更してよい範囲',
+  out_of_scope: 'やらないこと',
+  constraints: 'タスク固有の制約',
+  hints: '実装の手がかり',
+  demo: '人の確認観点',
 };
 
 const PROSE_EXTRA_KEYS = new Set(['feedback', 'needs_reason', 'note', 'accept', ...GUIDE_KEYS]);
+
+// 受入基準。正規形は task_acceptance_criteria（統一 verify）で、旧 acceptance / accept も
+// 読み取り側だけ互換で拾う（新規書き込みは正規形のみ）。**複数行フィールド**なので md パーサが
+// `\n` で連結した文字列として届く（project.js の extra 連結）。1 行 1 基準へ戻して扱う。
+function acceptanceList(task) {
+  const ex = (task && task.extra) || {};
+  const raw = String(ex.task_acceptance_criteria || '').trim()
+    || String(ex.acceptance || '').trim() || String(ex.accept || '').trim();
+  return raw
+    ? raw.split('\n').map((s) => s.trim()).filter(Boolean)
+    : [];
+}
+
+// 固定検証コマンド。正規形は verification_commands（複数行フィールド・UI は先頭 1 件を編集）で、
+// 旧 verify: も読み取り側だけ互換で拾う（新規書き込みは正規形のみ）。
+function fixedVerifyCommand(task) {
+  const ex = (task && task.extra) || {};
+  const raw = String(ex.verification_commands || '').trim();
+  if (raw) return raw.split('\n').map((s) => s.trim()).filter(Boolean)[0] || '';
+  return String((task && task.verify) || '').trim();
+}
 
 // タスク追加・再投入でフォームに出さずに引き継ぐフィールド（task.schema.json の人が書ける
 // フィールドのうち、専用入力欄が無いもの。system 管理の routed_by/cohort* は引き継がない）
@@ -623,9 +654,29 @@ document.addEventListener(
 // ---------------------------------------------------------------------------
 
 async function refreshDiscovery() {
+  // 稼働状況（engine/status.json）が発見の根拠でもあるので、一覧より先に取る。
+  state.engine = await api.engineStatus().catch(() => null);
   state.discovery = await api.discover();
+  await refreshBoard();
   renderTree();
   checkNeedsNotifications();
+}
+
+// 委譲公示板の観測。参加できるか・出した仕事が誰に拾われたかを、
+// 板のファイルだけから読む（dashboard は板へ書かない）。板未設定なら空で通す。
+async function refreshBoard() {
+  state.boardStatus = (state.engine && state.engine.board) || null;
+  if (!state.boardStatus || !state.boardStatus.configured) {
+    state.boardViews = [];
+    state.boardCommands = {};
+    state.boardNodes = [];
+    return;
+  }
+  const list = await api.delegationList({ only: 'board' }).catch(() => null);
+  state.boardViews = (list && list.items) || [];
+  state.boardCommands = (list && list.commands) || {};
+  const nodes = await api.delegationNodes().catch(() => null);
+  state.boardNodes = (nodes && nodes.nodes) || [];
 }
 
 // 要対応カウントの増分を計算する純関数（副作用なし・テスト対象）。
@@ -695,7 +746,7 @@ function checkNeedsNotifications() {
       title: `${r.name}: 要対応 ${r.added} 件`,
       body:
         r.total > r.added
-          ? `新しく人の判断待ちが増えました（このプロジェクト計 ${r.total} 件）。クリックで開きます。`
+          ? `確認が必要な項目が増えました。現在 ${r.total} 件あります。クリックして開いてください。`
           : '新しく人の判断待ちが発生しました。クリックで開きます。',
       target: { root: r.root, name: r.name },
       badgeCount: total,
@@ -704,52 +755,21 @@ function checkNeedsNotifications() {
   }
 }
 
-// プロジェクトの登録を実体に即して直接消す（config.roots のエントリ削除、または
-// ~/.agent-project/instances/*.json の該当レコード削除。main/project.js の
-// removeProjectRegistration 参照）。ファイル・ディレクトリ本体は一切削除しない。
-// 親フォルダのスキャンで見つかった子は個別の登録が無いため、guard がエラーを表示する。
-async function removeProject(dir) {
-  const p = (state.discovery.projects || []).find((x) => x.dir === dir);
-  const label = (p && (p.charterName || p.name)) || dir;
-  const yes = await confirmDialog(
-    `${label} の登録をこのビュアーから削除します。\n` +
-      'プロジェクトのファイル・ディレクトリは一切削除しません。\n' +
-      'よろしいですか？'
-  );
-  if (!yes) return;
-  const res = await guard('プロジェクトの削除', () => api.removeProject(dir));
-  if (!res) return;
-  // config.roots が変わった可能性があるので設定キャッシュも同期しておく
-  // （そのままだと後で設定ダイアログを保存したときに古い roots で上書きしてしまう）。
-  state.config = await guard('設定読込', () => api.getConfig());
-  toast(`${label} の登録を削除しました`, true);
-  await refreshDiscovery();
-  await refreshCowork();
-  if (state.selectedDir === dir) {
-    const next = (state.discovery.projects || []).find((x) => x.exists);
-    if (next) {
-      await selectProject(next.dir);
-    } else {
-      state.selectedDir = null;
-      state.project = null;
-      localStorage.removeItem('kpv:selected');
-      renderAllTabs();
-    }
-  }
-}
-
 function renderTree() {
   const navigation = $('tree');
   const tree = $('project-list');
   const prevScroll = navigation.scrollTop; // 再描画（ポーリング）でサイドバーのスクロールを失わない
-  const { instances } = state.discovery;
-  // 実体が無い登録（exists:false）はここで弾く。過去に登録した config.roots のゴーストパスや、
-  // 稼働していない/実在しないホストの instances/*.json（自動発見）が典型で、直せる見込みが無い
-  // ままサイドバーに残り続けるだけなので、手動で消させるより最初から出さない方が親切。
-  const projects = (state.discovery.projects || []).filter((p) => p.exists);
-  if (!projects.length) {
+  // 実体が無いもの（exists:false）は選べないが、**消さずに理由付きで並べる**。
+  // 以前はここで捨てていた。すると別ディストロを指しているなどの設定のずれ 1 つでサイドバーが
+  // 空になり、画面は「このエンジンにはプロジェクトが登録されていません」と案内する——実際には
+  // 登録されており、人は host.yaml を見に行っても間違いを見つけられない（直しようのない表示）。
+  // 実行側が宣言したパスを出せば、どこを直せばよいかが画面から分かる。
+  const all = state.discovery.projects || [];
+  const projects = all.filter((p) => p.exists);
+  const unreachable = all.filter((p) => !p.exists);
+  if (!all.length) {
     tree.innerHTML =
-      '<div class="empty">プロジェクトが見つかりません。<br>⚙ 設定でワークスペース（.agent/agent-project.yaml のある開発フォルダ）を追加するか、<br>agent-project を稼働させてください。<br><br><button id="btn-empty-new" class="primary-inline">＋ 新規プロジェクトを作成</button></div>';
+      `<div class="empty">${esc(engineEmptyMessage())}<br><br><button id="btn-empty-new" class="primary-inline">＋ 新規プロジェクトを作成</button></div>`;
     const nb = $('btn-empty-new');
     if (nb) nb.addEventListener('click', openNewProject);
   } else {
@@ -767,70 +787,94 @@ function renderTree() {
           ? '一時停止中'
           : p.running
             ? remoteGuess
-              ? `稼働中（別マシン・約${Math.round((live.ageSec || 0) / 60)}分前に確認）`
+              ? `別のマシンで稼働中・約${Math.round((live.ageSec || 0) / 60)}分前に確認`
               : '稼働中'
             : remoteGuess
-              ? `不明（最終確認 約${Math.round((live.ageSec || 0) / 60)}分前）`
+              ? `状態不明・約${Math.round((live.ageSec || 0) / 60)}分前に確認`
               : '停止中';
         // 表示名は charter.md の `# Charter: <name>` を優先する（無ければフォルダ名）。
         // `.agent-project` のような技術的なフォルダ名でも、charter.md を編集するだけで
         // サイドバーに任意の名前を出せる（✎ charter.md から編集）。フォルダ名は行の
         // title 属性（フルパス）で見られるので、括弧併記はしない。
         const displayName = p.charterName || p.name;
-        // 削除ボタンは config.roots に直接登録されたプロジェクト（source: 'config'）だけに出す。
-        // scan（親フォルダ配下の自動発見）はそのプロジェクト個別の登録が無く、instance
-        // （~/.agent-project/instances/ 自動発見）は稼働中プロセスが自分で書き直す一時的な
-        // レコードなので、どちらも「消す」という操作の対象として筋が悪い（scan は親フォルダの
-        // 登録ごと削除することになり、instance は生きていれば次のハートビートで復活する）。
-        const removeBtn = p.source === 'config'
-          ? `<button class="project-item-remove" data-remove-dir="${esc(p.dir)}" title="プロジェクトの登録をこのビュアーから削除する（ファイルは削除しません）">×</button>`
-          : '';
-        return `<div class="project-item ${state.selectedDir === p.dir ? 'selected' : ''}" data-dir="${esc(p.dir)}" title="${esc(p.dir)}">
+        // 繰り返し失敗して切り離されたプロジェクトは、止まっていることが人に見えないと
+        // そのまま忘れられる。行そのものに印を出す（詳しい説明はヘッダの状況表示が担う）。
+        const held = p.quarantined
+          ? '<span class="badge warn" title="繰り返し失敗したため一時的に切り離されています">停止中</span>'
+          : p.offHours
+            ? '<span class="badge" title="稼働時間外のため休止中です（時間になると自動で再開します）">休止中</span>'
+            : '';
+        return `<button type="button" class="project-item ${state.selectedDir === p.dir ? 'selected' : ''}" data-dir="${esc(p.dir)}"
+          aria-current="${state.selectedDir === p.dir ? 'true' : 'false'}" title="${esc(p.dir)}">
           <span class="dot ${p.running ? 'running' : ''} ${remoteGuess ? 'synced' : ''} ${p.paused ? 'paused' : ''}" title="${esc(dotTitle)}"></span>
-          <span class="name">${esc(displayName)}</span>${badges.join('')}
-          ${removeBtn}
-        </div>`;
+          <span class="name">${esc(displayName)}</span>${badges.join('')}${held}
+        </button>`;
       })
-      .join('');
+      .join('') + unreachableRows(unreachable);
   }
   navigation.scrollTop = prevScroll;
-  const live = instances.filter((i) => i.fresh).length;
-  $('sidebar-footer').textContent = `稼働中 ${live} ／ 更新 ${new Date().toLocaleTimeString('ja-JP')}`;
+  const running = projects.filter((p) => p.running).length;
+  $('sidebar-footer').textContent = `稼働中 ${running} ／ 更新 ${new Date().toLocaleTimeString('ja-JP')}`;
 
   for (const el of tree.querySelectorAll('.project-item[data-dir]')) {
     el.addEventListener('click', () => selectProject(el.dataset.dir));
   }
-  for (const btn of tree.querySelectorAll('button[data-remove-dir]')) {
-    btn.addEventListener('click', (ev) => {
-      ev.stopPropagation();   // 親の project-item クリック（選択）を発火させない
-      removeProject(btn.dataset.removeDir);
-    });
+}
+
+// 実行エンジンは宣言しているが、この PC からはフォルダに届かないプロジェクトの行。
+// 選択させない（data-dir を持たせない＝クリック配線の対象外）が、名前と実行側が宣言した
+// パスは見せる。届かない理由はほぼ常に「⚙ 設定のディストロ／ベースパスが実際の置き場と
+// 食い違っている」なので、次に見る場所まで書く。
+function unreachableRows(projects) {
+  return (projects || [])
+    .map((p) => {
+      const why = 'この PC からはこのフォルダに届きません: ' + (p.dir || '(不明)')
+        + ' — ⚙ 設定のディストロ（例 Ubuntu）とベースパスが、実行する PC の置き場と'
+        + '合っているか確認してください';
+      return `<div class="project-item unreachable" title="${esc(why)}">
+          <span class="dot"></span>
+          <span class="name">${esc(p.charterName || p.name)}</span>
+          <span class="badge warn" title="${esc(why)}">届きません</span>
+        </div>`;
+    })
+    .join('');
+}
+
+// プロジェクトが 1 件も無いときの案内。原因（エンジンが動いていない / 動いてはいるが
+// プロジェクトを持っていない）で次にすることが違うので、言い分けて次の一手だけを示す。
+// 「届かない」プロジェクトはこの案内には来ない（上で理由付きの行として並ぶ）ので、
+// ここで「登録されていません」と言い切ってよい。
+function engineEmptyMessage() {
+  const e = state.engine;
+  if (!e || !e.exists) {
+    return '実行エンジンが動いていません。実行する PC で「agent-project serve」を起動してください。';
   }
+  if (!e.running) {
+    return '実行エンジンの応答が止まっています。実行する PC で「agent-project serve」が動いているか確認してください。';
+  }
+  return 'このエンジンにはプロジェクトが登録されていません。実行する PC の agent-project.host.yaml にプロジェクトを追加してください。';
 }
 
 async function selectProject(dir) {
   state.selectedDir = dir;
   localStorage.setItem('kpv:selected', dir);
+  // 起動先候補はプロジェクトごとに違う（レジストリとノード宣言の交差）。選択のたびに引き直す。
+  state.cliChatCwdChoices = [];
   renderTree();
-  await reloadProject();
+  await Promise.all([reloadProject(), refreshCliChatCwdChoices()]);
 }
 
-async function reloadProject({ refreshRemoteHealth = true } = {}) {
+async function reloadProject() {
   if (!state.selectedDir) return;
   const project = await guard('プロジェクト読込', () => api.readProject(state.selectedDir));
   if (!project) return;
   project.needs = stabilizeMilestoneNeeds(state.project, project);
-  // 同期の健康状態（ローカル参照のみ・リモートへは触らない）。失敗しても表示を欠くだけ。
-  const gitHealth = await api.gitHealth(project.dir, refreshRemoteHealth).catch(() => null);
-  // バスが未作成でも daemon の稼働はロックファイルから判定できるため常に読む。
   // project.dir は run アーカイブ（<dir>/flow-archive/）の置き場として渡す。
   const fr = (await guard('フロー読込', () => api.flowRuns(project.dir, project.busDir))) || {};
   // project だけ先に差し替えると、flowRuns が前プロジェクト分または空の短い時間が生じ、
   // 完了runを根拠にする承認ボタンが消える。両方を読み終えてから表示状態へ反映する。
   state.flowRuns = fr.runs || [];
   state.project = project;
-  state.gitHealth = gitHealth;
-  state.flowDaemon = fr.daemon || null;
   if (state.flowRunId && !state.flowRuns.some((r) => r.runId === state.flowRunId)) {
     state.flowRunId = null;
     state.flowRun = null;
@@ -870,34 +914,28 @@ function renderHeader() {
   const lastLog = p.runLog.length ? p.runLog[p.runLog.length - 1] : null;
   const metaBits = [];
   if (lastLog) metaBits.push(`最終更新: ${esc(statusLabel(lastLog.reason))}・${fmtAgo(lastLog.ts)}`);
-  // 同期の健康状態を平易な一文で常時表示する。異常（error）は要対応として目立たせ、
-  // 「なぜ画面が最新でないのか」「次に何を押せばよいのか」を人が推測しなくて済むようにする。
-  const gh = state.gitHealth;
-  if (gh && !gh.notRepo) {
-    const cls = gh.level === 'error' ? 'sync-error' : gh.level === 'warn' ? 'sync-warn' : 'sync-ok';
-    const checkedAgo = gh.remoteCheckedAt
-      ? fmtAgo(new Date(gh.remoteCheckedAt).toISOString())
+  // 実行エンジンが自動で保つ「共有の状況」を平易な一文で常時表示する。取り込みも送信も
+  // エンジンが行うので、ここに出るのは結果であって操作ではない。ボタンはその自動回復を
+  // 待たずに前倒しする「今すぐ同期」だけ。
+  const eng = state.engine;
+  if (eng) {
+    const cls = eng.level === 'error' ? 'sync-error' : eng.level === 'warn' ? 'sync-warn' : 'sync-ok';
+    const checkedLabel = eng.exists && eng.ageSec !== null && eng.ageSec !== undefined
+      ? `最終確認: ${eng.ageSec} 秒前`
       : '';
-    const checkedLabel = gh.remoteCheckError
-      ? `共有先確認: ${checkedAgo ? `${checkedAgo}（再確認失敗）` : '失敗'}`
-      : checkedAgo
-        ? `共有先確認: ${checkedAgo}`
-        : '';
-    let action = '';
-    if (gh.level === 'error') {
-      action = '<button id="btn-sync-now" class="sync-action">同期を修復</button>';
-    } else if (gh.level === 'warn' && !(gh.behind > 0 && gh.dirty > 0)) {
-      action = '<button id="btn-sync-now" class="sync-action">共有先と同期</button>';
-    }
+    // 停止中は投函しても誰も読まない。押せるのは「動いてはいるが揃っていない」ときだけ。
+    const action = eng.running && eng.level !== 'ok'
+      ? '<button id="btn-sync-now" class="sync-action">今すぐ同期</button>'
+      : '';
     metaBits.push(
-      `<span class="sync-status ${cls}" title="${esc(gh.summary)}">` +
-        `<span class="status-dot" aria-hidden="true"></span> 同期: ${esc(gh.summary)} ` +
+      `<span class="sync-status ${cls}" title="${esc(eng.summary)}">` +
+        `<span class="status-dot" aria-hidden="true"></span> ${esc(eng.summary)} ` +
         `${checkedLabel ? `<small class="sync-checked">${esc(checkedLabel)}</small>` : ''} ${action}</span>`
     );
   }
   $('project-meta').innerHTML = metaBits.join(' ｜ ');
   const syncButton = $('btn-sync-now');
-  if (syncButton) syncButton.addEventListener('click', manualGitHeal);
+  if (syncButton) syncButton.addEventListener('click', requestHealNow);
   const needsBadge = $('needs-badge');
   const undecided = p.needs.filter((n) => !n.decided).length;
   needsBadge.textContent = undecided;
@@ -910,8 +948,22 @@ function renderHeader() {
 // ---------------------------------------------------------------------------
 
 // 再描画（ポーリング・操作後のリロード）は各タブの innerHTML を作り直すため、素のままでは
-// スクロール位置と <details> の開閉が毎回初期化されてしまう。描画前に id 付きスクロール要素の
-// 位置と data-ui-key 付き <details> の開閉を控え、描画後に復元する（存在しなくなった要素は無視）。
+// スクロール位置と <details> の開閉が毎回初期化されてしまう。明示キーがない details も
+// 所属画面・見出し・同名内の位置から安定キーを作り、機能追加のたびに保存指定を足さなくてよいようにする。
+function detailsUiKey(d) {
+  if (d.dataset.uiKey) return `key:${d.dataset.uiKey}`;
+  if (d.id) return `id:${d.id}`;
+  const root = d.closest('.tabpane, dialog');
+  const summary = d.querySelector(':scope > summary');
+  if (!root || !root.id || !summary) return '';
+  const signature = `${d.className}|${summary.textContent.trim()}`;
+  const same = [...root.querySelectorAll('details')].filter((item) => {
+    const itemSummary = item.querySelector(':scope > summary');
+    return item.className === d.className && itemSummary && itemSummary.textContent.trim() === summary.textContent.trim();
+  });
+  return `auto:${root.id}:${signature}:${same.indexOf(d)}`;
+}
+
 function captureUiState() {
   const scroll = {};
   for (const el of document.querySelectorAll('.tabpane, [data-ui-scroll-key], #tree, #flow-runs, #flow-view-body, #graph-box')) {
@@ -919,9 +971,11 @@ function captureUiState() {
   }
   const open = [];
   const details = {};
-  for (const d of document.querySelectorAll('details[data-ui-key]')) {
-    details[d.dataset.uiKey] = d.open;
-    if (d.open) open.push(d.dataset.uiKey);
+  for (const d of document.querySelectorAll('details')) {
+    const key = detailsUiKey(d);
+    if (!key) continue;
+    details[key] = d.open;
+    if (d.open) open.push(key);
   }
   return { scroll, open: new Set(open), details };
 }
@@ -930,8 +984,9 @@ function restoreUiState(ui) {
   if (!ui) return;
   // details を先に開いてスクロール範囲を確定する。閉じたまま scrollTop を代入すると、
   // ブラウザが短いレイアウトの最大値へ丸め、その後 details を開いても元の位置へ戻らない。
-  for (const d of document.querySelectorAll('details[data-ui-key]')) {
-    const key = d.dataset.uiKey;
+  for (const d of document.querySelectorAll('details')) {
+    const key = detailsUiKey(d);
+    if (!key) continue;
     if (ui.details && Object.prototype.hasOwnProperty.call(ui.details, key)) {
       d.open = ui.details[key];
     } else if (ui.open.has(key)) {
@@ -966,18 +1021,64 @@ function renderCliChatButton() {
   const button = $('btn-cli-chat');
   if (!button) return;
   button.disabled = !selectedProjectFolder() || button.dataset.busy === 'true';
+  renderCliChatCwdOptions();
+}
+
+// 起動先（cwd）の候補。既定はプロジェクト（状態リポジトリ）で、**選択中プロジェクトの
+// repos レジストリにある**成果物リポジトリも選べる（他プロジェクト用のクローンは並べない）。
+// S1 以降プロジェクトのフォルダは状態リポジトリの clone なので、コードを触りたくて CLI を
+// 開いてもそこには 1 行もコードが無い。
+//
+// 宣言が無い／実体が見つからないリポジトリは **消さずに非活性で並べる**——一覧から消えると
+// 「なぜ選べないのか」が分からず、host.yaml への宣言し忘れに気付けない。
+function renderCliChatCwdOptions() {
+  const sel = $('cli-chat-cwd');
+  if (!sel) return;
+  const dir = selectedProjectFolder();
+  const choices = state.cliChatCwdChoices || [];
+  sel.disabled = !dir || choices.length <= 1;
+  const keep = sel.value;
+  sel.innerHTML = '';
+  for (const c of choices) {
+    const opt = document.createElement('option');
+    opt.value = c.path || '';
+    opt.textContent = c.enabled ? c.label : `${c.label}（選べません）`;
+    opt.disabled = !c.enabled;
+    if (c.reason) opt.title = c.reason;
+    sel.appendChild(opt);
+  }
+  if (keep && choices.some((c) => c.enabled && c.path === keep)) sel.value = keep;
+}
+
+async function refreshCliChatCwdChoices() {
+  const dir = selectedProjectFolder();
+  if (!dir) {
+    state.cliChatCwdChoices = [];
+    return renderCliChatCwdOptions();
+  }
+  try {
+    state.cliChatCwdChoices = (await api.agentChatCwdChoices(dir)) || [];
+  } catch {
+    state.cliChatCwdChoices = [];   // 候補が出せなくても既定（プロジェクト）で開ける
+  }
+  renderCliChatCwdOptions();
 }
 
 async function openCliChat() {
   const dir = selectedProjectFolder();
   if (!dir) return toast('CLIチャットを開くプロジェクトを選択してください');
   const button = $('btn-cli-chat');
+  const sel = $('cli-chat-cwd');
+  const cwd = sel && sel.value && sel.value !== dir ? sel.value : '';
   button.dataset.busy = 'true';
   button.setAttribute('aria-busy', 'true');
   renderCliChatButton();
   try {
-    const result = await guard('CLIチャットを開けません', () => api.agentOpenChat({ dir }));
-    if (result) toast(`${result.cli}${result.model ? ` / ${result.model}` : ''} のCLIチャットを開きました`, true);
+    const result = await guard('CLIチャットを開けません', () => api.agentOpenChat({ dir, cwd }));
+    if (result) {
+      const where = result.cwd && result.cwd !== dir ? `（${result.cwd}）` : '';
+      toast(`${result.cli}${result.model ? ` / ${result.model}` : ''} のCLIチャットを開きました${where}`, true);
+    }
   } finally {
     delete button.dataset.busy;
     button.removeAttribute('aria-busy');
@@ -1024,17 +1125,16 @@ function initTabs() {
 
 function populateSettingsFields() {
   const cfg = state.config;
-  $('cfg-roots').value = ((cfg.projects && cfg.projects.roots) || []).join('\n');
-  $('cfg-autodiscover').checked = !cfg.projects || cfg.projects.autoDiscover !== false;
   $('cfg-refresh').value = cfg.projects ? cfg.projects.refreshSec : 5;
-  $('cfg-git-pull').value = cfg.projects && cfg.projects.gitPullSec !== undefined ? cfg.projects.gitPullSec : 300;
-  $('cfg-git-autopush').checked = !!(cfg.projects && cfg.projects.gitAutoPush);
+  $('cfg-engine-distro').value = (cfg.engine && cfg.engine.distro) || '';
+  $('cfg-engine-home').value = (cfg.engine && cfg.engine.home) || '';
+  if ($('cfg-node-commands-dir')) {
+    $('cfg-node-commands-dir').value = (cfg.delegation && cfg.delegation.nodeCommandsDir) || '';
+  }
   $('cfg-notify').checked = !(cfg.notifications && cfg.notifications.enabled === false);
   $('cfg-needs-sla').value = cfg.projects && cfg.projects.needsSlaHours !== undefined ? cfg.projects.needsSlaHours : 24;
-  $('cfg-project-command').value = (cfg.projects && cfg.projects.command) || 'agent-project';
-  $('cfg-action-mode').value = (cfg.projects && cfg.projects.actionMode) || 'auto';
+  if ($('cfg-role')) $('cfg-role').value = cfg.role === 'viewer' ? 'viewer' : 'engineer';
   $('cfg-flow-bus').value = (cfg.projects && cfg.projects.flowBus) || '';
-  $('cfg-flow-lockdir').value = (cfg.projects && cfg.projects.flowLockDir) || '';
   $('cfg-flow-bus-by-project').value = Object.entries(
     (cfg.projects && cfg.projects.flowBusByProject) || {}
   )
@@ -1216,7 +1316,7 @@ function technicalProjectInfoHtml() {
     return '<div class="empty compact">プロジェクトを選ぶと、実行状態とログをここで確認できます。</div>';
   }
   const run = state.flowRun && state.flowRun.run;
-  const journal = (p.journal || []).slice(-80).reverse().map((line) => `<div>${linkify(line.replace(/^\-\s*/, ''))}</div>`).join('');
+  const journal = (p.journal || []).slice(-80).reverse().map((line) => `<div>${linkify(line.replace(/^-\s*/, ''))}</div>`).join('');
   const runRows = [...(p.runLog || [])].reverse().slice(0, 40).map((entry) => `<tr>
     <td>${fmtTime(entry.ts)}</td><td>${esc(statusLabel(entry.reason))}</td><td>${esc(entry.level || '')}</td>
     <td>${entry.cycles ?? ''}</td><td>${entry.tokens ?? ''}</td><td>${entry.cost ?? ''}</td>
@@ -1272,12 +1372,11 @@ async function saveGlobalSettingsSection(section) {
   const cfg = state.config;
   if (section === 'app') {
     cfg.projects = cfg.projects || {};
-    cfg.projects.roots = $('cfg-roots').value.split('\n').map((s) => s.trim()).filter(Boolean);
-    cfg.projects.autoDiscover = $('cfg-autodiscover').checked;
     cfg.projects.refreshSec = Math.max(0, parseInt($('cfg-refresh').value, 10) || 0);
     cfg.notifications = cfg.notifications || {};
     cfg.notifications.enabled = $('cfg-notify').checked;
     cfg.projects.needsSlaHours = Math.max(1, parseInt($('cfg-needs-sla').value, 10) || 24);
+    if ($('cfg-role')) cfg.role = $('cfg-role').value === 'viewer' ? 'viewer' : 'engineer';
   } else if (section === 'agents') {
     cfg.agent = cfg.agent || {};
     cfg.agent.cli = $('cfg-agent-cli').value.trim();
@@ -1285,12 +1384,14 @@ async function saveGlobalSettingsSection(section) {
     cfg.agent.timeoutSec = Math.max(30, parseInt($('cfg-agent-timeout').value, 10) || 180);
   } else if (section === 'sync') {
     cfg.projects = cfg.projects || {};
-    cfg.projects.gitPullSec = Math.max(0, parseInt($('cfg-git-pull').value, 10) || 0);
-    cfg.projects.gitAutoPush = $('cfg-git-autopush').checked;
-    cfg.projects.command = $('cfg-project-command').value.trim() || 'agent-project';
-    cfg.projects.actionMode = $('cfg-action-mode').value;
+    cfg.engine = cfg.engine || {};
+    cfg.engine.distro = $('cfg-engine-distro').value.trim();
+    cfg.engine.home = $('cfg-engine-home').value.trim();
+    if ($('cfg-node-commands-dir')) {
+      cfg.delegation = cfg.delegation || {};
+      cfg.delegation.nodeCommandsDir = $('cfg-node-commands-dir').value.trim();
+    }
     cfg.projects.flowBus = $('cfg-flow-bus').value.trim();
-    cfg.projects.flowLockDir = $('cfg-flow-lockdir').value.trim();
     cfg.projects.flowBusByProject = $('cfg-flow-bus-by-project').value.split('\n').map((line) => {
       const i = line.indexOf('=');
       if (i < 0) return null;
@@ -1323,111 +1424,28 @@ async function saveGlobalSettingsSection(section) {
 }
 
 // ---------------------------------------------------------------------------
-// git pull（選択中プロジェクトのリポジトリ最新化）
+// 同期の状況表示と「今すぐ同期」
 // ---------------------------------------------------------------------------
-// 自動: ポーリングのたびに呼ぶが、実際の pull は main 側が設定間隔（下限 60 秒）で
-// スロットリングする（リモートサーバへ負荷をかけない）。git リポジトリでない
-// プロジェクトは黙ってスキップされる。エラーは同じ内容を繰り返しトーストしない。
-let lastGitPullError = null;
+// この画面は状態を共有するリポジトリへ **書かない**。取り込み（pull）も送信（push）も
+// 修復も、常駐体（agent-project serve）が自動で行う。ここに残るのは
+//   ・その結果を見せること（engine/status.json の sync_health）
+//   ・自動回復を待たずに前倒しする「今すぐ同期」を commands/heal として投函すること
+// の 2 つだけ。git を直接叩く経路を戻さないこと（過去に、本体の書き込みと衝突して
+// 状態ファイルへコンフリクトマーカーが書き込まれ、プロジェクトが状態を失った）。
 
-// 状態同期の pull 先は project.dir（状態 worktree）。selectedDir＝登録ワークスペースだけ
-// 引くと、agent-state 側の backlog/commands/bus が更新されず、リモートの指示・進捗が
-// 画面に反映されない。
 function gitStateDir() {
   return (state.project && state.project.dir) || state.selectedDir;
 }
 
-async function maybeAutoGitPull() {
-  const sec = state.config && state.config.projects ? Number(state.config.projects.gitPullSec) : 0;
+// 「今すぐ同期」。投函するだけで、実際の取り込み・送信は常駐体が行う。
+async function requestHealNow() {
   const dir = gitStateDir();
-  if (!sec || !dir) return;
-  try {
-    const res = await api.gitPull(dir, false);
-    if (res && !res.skipped) lastGitPullError = null;
-  } catch (err) {
-    const msg = err.message || String(err);
-    if (lastGitPullError !== msg) {
-      lastGitPullError = msg;
-      toast(`git pull（自動）: ${msg}`);
-    }
-  }
-}
-
-// commitPush が notRepo（＝そのディレクトリが git 作業ツリーでない）で「黙ってスキップ」した
-// ことを、ディレクトリごとに一度だけ知らせる（操作のたびに出すと煩いのでセッション内で重複排除）。
-// バックログ修正・タスク操作・needs 記入・run 削除など、gitAutoPush 有効なのに反映されない全操作が
-// 対象。ローカル daemon バス（<project>/bus）や、本体の state_git が「作業ディレクトリ→別クローン」
-// 方式で同期する構成では作業ディレクトリ自体が git リポジトリでないため、viewer からは直接 push
-// できず daemon 側の state_git 同期に委ねられる。git クローン上で viewer を動かせば直接反映される。
-const _pushSkipWarned = new Set();
-function warnPushSkipped(dir, kind) {
-  if (!dir || _pushSkipWarned.has(dir)) return;
-  _pushSkipWarned.add(dir);
-  // 仕組みの詳細（git 作業ツリーでない・state_git 同期・設定の対処法）はログへ
-  uiLog('pushSkipped', {
-    dir,
-    kind,
-    reason: 'git 作業ツリーでないため viewer から直接 push できない（本体の state_git 同期に委ねる）',
-    hint:
-      kind === 'bus'
-        ? '⚙ 設定 flowBusByProject でバスの git クローンを登録すると直接反映できます'
-        : '状態共有リポジトリの git クローン上でプロジェクトを開くと直接反映できます',
-  });
-  toast(
-    '変更は保存しましたが、この画面から共有先へは直接反映できないため、本体の同期に任せます。' +
-      '（詳細は開発者ログを参照。この通知はプロジェクトごとに一度だけ出ます）'
-  );
-}
-
-// 管理ファイルを書き換えた操作（指示ドロップ・inbox 投入・needs 記入・削除など）の後に呼ぶ。
-// 設定 gitAutoPush が有効なら、操作したディレクトリの変更をコミットして push する
-// （状態共有 git への都度反映）。書き込み本体は成功済みなので待たずに走らせ、失敗（push 不可）や
-// notRepo による「黙ってスキップ」だけトーストで知らせる（後者はディレクトリごとに一度だけ）。
-// 戻り値は commitPush の結果 Promise（gitAutoPush 無効/対象なしのときは null）。
-// opts.kind は notRepo 通知の対処ヒント切り替え用（'bus'（バス）／既定 'project'）。
-// opts.paths は「操作が触ったパス（dir 相対）」の限定コミット（bus 操作で必須 —
-// 全体スナップショットを commit すると本体の state 同期と同じファイルを取り合う）。
-function gitPushAfterWrite(message, dir, opts) {
-  const cfg = state.config;
-  if (!cfg || !cfg.projects || !cfg.projects.gitAutoPush) return null;
-  const target = dir || state.selectedDir;
-  if (!target) return null;
-  const kind = (opts && opts.kind) || 'project';
-  return api
-    .gitCommitPush(target, message, (opts && opts.paths) || null)
-    .then((res) => {
-      if (res && res.skipped && res.notRepo) warnPushSkipped(target, kind);
-      return res;
-    })
-    .catch((err) => {
-      toast(`git 同期（プッシュ）: ${err.message || err}`);
-      return null;
-    });
-}
-
-// バス操作（run の削除・再投入・中止）の git 反映。バスは agent-project の state 同期が
-// 鏡写しする（bus は同期対象・claims だけ除外）ため、busDir が git 作業ツリーでなければ
-// notRepo で黙ってスキップして本体の同期に委ねる。notRepo 通知は gitPushAfterWrite が
-// バス向けのヒント付きで出す（ここは busDir を対象にするだけ）。
-// paths（busDir 相対）で「操作が触った場所」だけを反映する。省略すると bus 全体の
-// スナップショットがコミットされ、本体が鏡写しする run の揮発ファイル（meta / claims /
-// events）を取り合って履歴の食い違いを量産する（実運用で発生した）。
-function gitPushBusOp(message, paths) {
-  const busDir = state.project && state.project.busDir;
-  return gitPushAfterWrite(message, busDir, { kind: 'bus', paths });
-}
-
-// 同期状態の横に必要な場合だけ出す操作。取り込み・履歴修復・送信を一つにまとめる。
-// まとめて自動修復し、やったことを平易な文で知らせる。force push はせず人の作業は壊さない
-async function manualGitHeal() {
-  const healDir = gitStateDir();
-  if (!healDir) return toast('プロジェクトを選択してください');
-  const res = await guard('共有先との同期', () => api.gitHeal(healDir));
+  if (!dir) return toast('プロジェクトを選択してください');
+  const res = await guard('今すぐ同期', () => api.requestHeal(dir));
   if (!res) return;
-  uiLog('gitHeal', res);
-  const steps = (res.steps || []).join(' → ');
-  toast(`${res.summary}${steps ? `（${steps}）` : ''}`, res.level !== 'error');
-  await refreshAll({ sync: false });
+  uiLog('heal', res);
+  toast('同期を始めました。反映までお待ちください', true);
+  await refreshAll();
 }
 
 function activeTabName() {
@@ -1636,6 +1654,38 @@ async function openFailureDiagnosis(needId) {
   $('doctor-prompt').focus();
 }
 
+// 失敗診断を対話セッションで開く。ヘッドレスの openFailureDiagnosis と**同じ文脈**を
+// 使う（buildDoctorContext の 1 実装）。違うのは渡し方だけ——ブリーフ 1 行 ＋ 全文ファイルの
+// パスを tmux セッションへ送り、以後は人がその窓で会話する。
+async function openFailureDiagnosisChat(needId) {
+  if (state.doctorBusy) return;
+  const need = state.project && state.project.needs.find((item) => item.id === needId);
+  if (!need || !canDiagnoseNeed(need)) return toast('診断できる失敗情報が見つかりません');
+  const prevMode = state.doctorMode;
+  const prevNeed = state.doctorNeedId;
+  state.doctorBusy = true;
+  state.doctorMode = 'failure-diagnosis';
+  state.doctorNeedId = need.id;
+  try {
+    const context = await buildDoctorContext();
+    const res = await api.agentDoctorChat({
+      dir: state.project ? state.project.dir : null,
+      context,
+      needId: need.id,
+    });
+    // 読み取り専用を「保証できない」CLI では、その事実を人に見せる。
+    // 防御は持たない代わりに、判断材料は渡す。
+    if (res.readonlyWarning) toast(`${res.readonlyWarning}。開いた窓の操作にご注意ください`);
+    toast(res.message || `${res.cli} で対話診断を開きました`, !res.readonlyWarning);
+  } catch (err) {
+    toast(`対話診断を開けませんでした: ${err.message || err}`);
+  } finally {
+    state.doctorBusy = false;
+    state.doctorMode = prevMode;
+    state.doctorNeedId = prevNeed;
+  }
+}
+
 async function openPlanCritique(needId) {
   if (state.doctorBusy) return;
   const need = state.project && state.project.needs.find((item) => item.id === needId);
@@ -1692,7 +1742,7 @@ function applyDoctorFeedbackDraft() {
       }
     }
   }
-  toast(filled ? '差し戻し文面を回答欄へ入れました（送信は人が確定します）' : '下書きを保存しました（回答欄を開くと入ります）', true);
+  toast(filled ? '差し戻し案を回答欄へ入れました。内容を確認して送信してください' : '下書きを保存しました。回答欄で確認できます', true);
 }
 
 async function askDoctor() {
@@ -1730,17 +1780,16 @@ async function askDoctor() {
   }
 }
 
-async function refreshAll({ sync = true } = {}) {
+async function refreshAll() {
   if (state.busy) return;
   state.busy = true;
   try {
-    if (sync) await maybeAutoGitPull();
     await refreshDiscovery();
     // Cowork は軽量 overview（ログ推定のみ・発見キャッシュ利用）。重いプロセス探査は実行直後/手動更新のみ。
     await refreshCowork();
     await refreshAmigos();
     await refreshOrchestration();
-    if (state.selectedDir) await reloadProject({ refreshRemoteHealth: sync });
+    if (state.selectedDir) await reloadProject();
     if (activeTab() === 'cowork') renderCowork();
     if (activeTab() === 'amigos') renderAmigos();
     if (activeTab() === 'orchestration' && !state.globalSettingsDirty && !state.orchInstructionsDirty && !state.orchSessionDirty) renderOrchestration();
@@ -1827,11 +1876,12 @@ function configuredCoworkItems() {
 
 function coworkDraft() {
   // 発見項目（source:'discovered'）も編集できるよう、overview のマージ済み一覧を種にする。
-  // overview 未取得時のみ設定の手動項目にフォールバック。
-  if (!state.coworkDraft) {
-    const merged = (state.cowork && Array.isArray(state.cowork.items)) ? state.cowork.items : null;
-    state.coworkDraft = (merged || configuredCoworkItems()).map((x) => ({ ...x }));
-  }
+  // **overview 未取得のうちは種を確定させない**——初回描画は refreshCowork より先に走るので、
+  // ここで空配列をキャッシュすると、あとから発見項目が届いても画面が空のまま固まる
+  // （.kiro/kiro-loop.yml があるのに定常業務が出ない、の正体）。
+  const merged = (state.cowork && Array.isArray(state.cowork.items)) ? state.cowork.items : null;
+  if (!merged) return configuredCoworkItems();
+  if (!state.coworkDraft) state.coworkDraft = merged.map((x) => ({ ...x }));
   return state.coworkDraft;
 }
 
@@ -1872,25 +1922,28 @@ function workspaceFeatureModel(discovery, selectedDir, coworkCount) {
   };
 }
 
-// 作業（発見 or 手動）が無いときは Cowork タブを隠す。設定から明示オープン中は例外。
+// 定常業務タブは常に表示する（作業が未登録のプロジェクトでも、空状態から追加へ導ける）。
+// agent-project 系タブだけはワークスペースの内容に応じて出し分ける。
 function updateCoworkTabVisibility() {
   const btn = $('tab-btn-cowork');
   const pane = $('tab-cowork');
   if (!btn || !pane) return;
   const folder = selectedProjectFolder();
-  const coworkAvailable = coworkHasProjectConfig(state.cowork, folder);
+  const coworkAvailable = coworkHasProjectConfig(state.cowork, folder) || state.coworkForcedOpen;
   const features = workspaceFeatureModel(state.discovery, state.selectedDir, coworkAvailable ? 1 : 0);
   for (const el of document.querySelectorAll('.tab[data-feature="agent-project"], .tabpane[data-feature="agent-project"]')) {
     el.classList.toggle('hidden', !features.agentProject);
     el.hidden = !features.agentProject;
   }
-  btn.classList.toggle('hidden', !features.cowork);
-  btn.hidden = !features.cowork;
-  pane.classList.toggle('hidden', !features.cowork);
-  pane.hidden = !features.cowork;
+  // 定常業務タブ・ペインは常時表示（隠さない）。
+  btn.classList.remove('hidden');
+  btn.hidden = false;
+  pane.classList.remove('hidden');
+  pane.hidden = false;
   const current = document.querySelector('.tab.active');
   if (!current || current.hidden || current.classList.contains('hidden')) {
-    if (features.defaultTab) switchTab(features.defaultTab);
+    // 現在のタブが隠れたときは、既定タブ（無ければ常時表示の定常業務）へ退避する。
+    switchTab(features.defaultTab || 'cowork');
   }
 }
 

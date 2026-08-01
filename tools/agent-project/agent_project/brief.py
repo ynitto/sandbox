@@ -88,14 +88,6 @@ def append_brief_item(cfg: "Config", task: "Task", text, source: str = "") -> bo
     return True
 
 
-def add_brief_items(cfg: "Config", task: "Task", texts, source: str = "") -> int:
-    """複数の項目をまとめて追記する（ノード発見制約の回収経路用）。実際に追記できた件数を返す。"""
-    n = 0
-    for t in (texts or []):
-        if append_brief_item(cfg, task, t, source=source):
-            n += 1
-    return n
-
 
 def brief_context(cfg: "Config", task: "Task", limit: int = 1200) -> str:
     """build_request 注入用の run ブリーフ本文（末尾 _BRIEF_MAX_ITEMS 件を有界に）。無ければ空（後方互換）。
@@ -145,12 +137,16 @@ def capture_insight(cfg: "Config", task: "Task", text, source: str,
     added = append_brief_item(cfg, task, text, source=source)
     if added and learn and getattr(cfg, "learn_capture", True):
         body = _norm_brief_item(text)
+        # charter 運用のタスク由来の教訓は charter スコープで残す（W10）。default（単一運用・
+        # タグ無し）は全体スコープのまま——タグを付けると他 charter へ効かなくなるだけで得が無い。
+        _cn = task_charter_name(task)
+        guide = body if _cn == "default" else f"{body} :: scope=charter:{_cn}"
         append_decision(cfg, task.id, "system",
                         context=f"{task.id}（{task.title}）の {source} 由来の教訓を捕捉",
                         action=learn_action or f"capture:{source}",
                         reason=body[:200],
                         affects=f"{task.id} の run ブリーフ＋横断 learn",
-                        learn=(task.title, body))
+                        learn=(task.title, guide))
     return added
 
 

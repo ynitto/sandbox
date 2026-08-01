@@ -53,15 +53,18 @@ const noop = () => '';
 const renderNeedDetail = new Function(
   'isNeedSent', 'esc', 'needKindLabel', 'riskBadgeHtml', 'needDisplayTitle', 'NEED_ASK',
   'renderNeedFacts', 'needActionsHtml', 'specFilesHtml', 'mdToHtml', 'needVerifyRevisionHtml',
-  'taskForNeed', 'taskCompletionHint', 'runsForTask', 'canDiagnoseNeed', 'state',
+  'taskForNeed', 'taskCompletionHint', 'runsForTask', 'canDiagnoseNeed', 'needDecisionViewModel', 'state',
   'needFinalVerificationFailure', 'finalVerificationFailureHtml', 'needAssistActionsHtml',
-  'needArtifactsButtonHtml', 'commandFailureHtml',
+  'needArtifactsButtonHtml', 'ownerBadgeHtml', 'commandFailureHtml', 'commandReceiptHtml',
+  'reviewCommentsHtml', 'taskGuideHtml', 'needNextStepHtml',
   `${grab('renderNeedDetail')}; return renderNeedDetail;`
 )(
   () => false, esc, () => '対応依頼', noop, (n) => String(n.title || n.id),
   { blocked: '対応方法を指示してください。' }, renderNeedFacts, () => '<div>回答欄</div>', noop,
-  mdToHtml, noop, () => null, () => null, () => [], () => false, { flowRuns: [] },
-  () => null, noop, () => '<button>AIに相談</button>', noop, noop
+  mdToHtml, noop, () => null, () => null, () => [], () => false,
+  () => ({ actionTitle: '判断すること', nextStep: '対応方法を指示してください。' }), { flowRuns: [] },
+  () => null, noop, () => '<button>AIに相談</button>', noop, noop, noop, noop, noop, noop, noop,
+  (_n, ask) => `<section><h3>判断すること</h3>${ask}</section>`
 );
 /* eslint-enable no-new-func */
 
@@ -87,7 +90,7 @@ function parseDom(html) {
       continue;
     }
     const attrs = m[3] || '';
-    const cls = (attrs.match(/class="([^"]*)"/) || [, ''])[1].split(/\s+/).filter(Boolean);
+    const cls = (attrs.match(/class="([^"]*)"/) || ['', ''])[1].split(/\s+/).filter(Boolean);
     const node = {
       tag, attrs, classes: new Set(cls), text: '',
       ancestors: stack.slice(),
@@ -208,14 +211,14 @@ test('可読性: 既存の検証失敗 見出し・要約行・context は落ち
   assert.ok(d.one('need-failure-context'), 'need-failure-context の dl が残る');
 });
 
-test('実画面相当: 詳細カードで折り畳み（判断材料を見る）とゲート節が共存する', () => {
+test('実画面相当: 詳細カードで折り畳み（詳しい判断材料を見る）とゲート節が共存する', () => {
   const card = renderNeedDetail(projectIntakeUnwired, gateNeed);
   const d = dom(card);
-  // 折り畳み: <details class="need-detail"><summary>判断材料を見る</summary>
+  // 折り畳み: <details class="need-detail"><summary>詳しい判断材料を見る</summary>
   const details = d.byTag('details').find((e) => e.classes.has('need-detail'));
   assert.ok(details, '判断材料の <details> 折り畳みが残る');
   const summary = d.byTag('summary').find((e) => hasAncestor(e, 'need-detail'));
-  assert.ok(summary && summary.text.trim() === '判断材料を見る', 'summary 文言が残る');
+  assert.ok(summary && summary.text.trim() === '詳しい判断材料を見る', 'summary 文言が残る');
   // 見出し: 「状況」「判断すること」の h3 が残る
   const h3 = d.byTag('h3').map((e) => e.text.trim());
   assert.ok(h3.includes('状況') && h3.includes('判断すること'), 'セクション見出し h3 が残る');

@@ -1,0 +1,57 @@
+{
+  "id": "chateval",
+  "name": "ChatEval 型 審査パネル",
+  "category": "verification-judging",
+  "tier": "high",
+  "source": "ChatEval (Chan et al., 2024)",
+  "when_to_use": "成果物を複数観点で厳しく品質保証／評価したいとき。観点ごとの審査員で多面的に承認。",
+  "signals": [
+    "多観点の品質保証が要る",
+    "評価・選定タスク",
+    "1 人の承認では不安"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "worker",
+        "role": "評価対象の成果物を作成する",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "judge-correctness",
+        "role": "正確性の観点でレビューし承認/差し戻す",
+        "required": true,
+        "approver": true,
+        "collaborates_with": [
+          "worker"
+        ]
+      },
+      {
+        "id": "judge-clarity",
+        "role": "明瞭さ・可読性の観点でレビューし承認/差し戻す",
+        "required": true,
+        "approver": true,
+        "collaborates_with": [
+          "worker"
+        ]
+      },
+      {
+        "id": "judge-scope",
+        "role": "要件充足・スコープの観点でレビューし承認/差し戻す",
+        "required": true,
+        "approver": true,
+        "collaborates_with": [
+          "worker"
+        ]
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved"
+    },
+    "budget_hint": "中（例 90 分）"
+  },
+  "feasibility": "partial",
+  "feasibility_note": "逐次ボット読み・平均スコア集計ではなく、各観点の judge を approver にして全員承認ゲート（reviewer-approved は全 approver の承認を要求）で近似する。",
+  "notes": "観点はミッションに合わせて増減。全 approver の承認が揃うと収束。"
+}

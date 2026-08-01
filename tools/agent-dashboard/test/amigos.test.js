@@ -13,6 +13,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const budget = require('../src/features/amigos/main/budget');
+const { engineConfig } = require('./helpers/engine-status');
 const deliveries = require('../src/features/amigos/main/deliveries');
 const missions = require('../src/features/amigos/main/missions');
 
@@ -64,7 +65,7 @@ test('ノード予算: 台帳をワークロード別に集計し合計上限で
     { ts: 'x', workload: 'routine', seconds: 60 },
     { ts: 'x', workload: 'amigos', seconds: 30 },
     { ts: 'x', workload: 'amigos', seconds: 30 },
-    'broken-line-not-json' && { ts: 'x', workload: 'project', seconds: 0 },
+    { ts: 'x', workload: 'project', seconds: 0 },
   ]);
   fs.appendFileSync(path.join(dir, 'ledger', `${utcDay()}.jsonl`), 'broken\n');
   budget.save(cfgFor(dir), { executionMinutes: 2, period: 'day' }); // 上限 2 分 = 120 秒
@@ -252,7 +253,9 @@ test('クロス検証: agent-amigos stub の実バスを dashboard リーダー�
                 AGENT_BUDGET_DIR: path.join(work, 'nb') };
   let r = spawnSync('python3', [entry, 'post', '--bus', bus, '--design',
     path.join(work, 'design.md'), '--roles', path.join(work, 'roles.json'),
-    '--mission-id', 'am-x', '--serve', '--agent-cli', 'stub', '--cycles', '10',
+    // --drive: 公示後そのまま終端まで回す単発（旧 --serve の常駐は廃止。常駐は
+    // agent-project serve の 1 本 — 実装計画 W1-9）
+    '--mission-id', 'am-x', '--drive', '--agent-cli', 'stub', '--cycles', '10',
     '--interval', '0'], { encoding: 'utf8', env, cwd: work });
   assert.strictEqual(r.status, 0, r.stderr);
   const ov = missions.overview(cfgFor(path.join(work, 'nb'), { busDirs: [bus] }));
@@ -289,7 +292,7 @@ test('ホーム発見: projects.roots 配下の .agent/agent-amigos.* をマー�
   const h2 = makeHome(root, 'sub/node-b',
     JSON.stringify({ node_id: 'pc-b', bus: 'shared', manual_claim: true }), 'json');
   fs.mkdirSync(path.join(root, 'not-a-home'), { recursive: true });
-  const found = homes.discoverHomes({ projects: { roots: [root], scanDepth: 3 }, amigos: {} });
+  const found = homes.discoverHomes({ ...engineConfig([root]), amigos: { scanDepth: 3 } });
   const byNode = Object.fromEntries(found.map((h) => [h.nodeId, h]));
   assert.ok(byNode['pc-a'] && byNode['pc-b']);
   assert.strictEqual(path.resolve(byNode['pc-a'].busDir), path.resolve(h1));
@@ -305,9 +308,9 @@ test('ホーム発見: ルート直下の agent-amigos.* と manual_claim の ye
   fs.mkdirSync(hRoot, { recursive: true });
   fs.writeFileSync(path.join(hRoot, 'agent-amigos.yaml'), 'node_id: root-n\nmanual_claim: yes\n');
   const hYes = makeHome(root, 'yes-n', 'node_id: yes-n\nmanual_claim: on\n');
-  const hBool = makeHome(root, 'bool-n',
+  const _hBool = makeHome(root, 'bool-n',
     JSON.stringify({ node_id: 'bool-n', manual_claim: true }), 'json');
-  const found = homes.discoverHomes({ projects: { roots: [root], scanDepth: 2 }, amigos: {} });
+  const found = homes.discoverHomes({ ...engineConfig([root]), amigos: { scanDepth: 2 } });
   const byNode = Object.fromEntries(found.map((h) => [h.nodeId, h]));
   assert.ok(byNode['root-n'] && byNode['yes-n'] && byNode['bool-n']);
   assert.strictEqual(path.resolve(byNode['root-n'].dir), path.resolve(hRoot));
@@ -320,7 +323,7 @@ test('ホーム発見: ルート直下の agent-amigos.* と manual_claim の ye
 test('投函: 発見済みホームの commands/ にだけ書ける（外は拒否）', () => {
   const root = tmpdir('amigos-homes-');
   const h1 = makeHome(root, 'node-a', 'node_id: pc-a\n');
-  const cfg = { projects: { roots: [root] }, amigos: {} };
+  const cfg = { ...engineConfig([root]), amigos: {} };
   const res = homes.writeCommand(cfg, h1, { command: 'claim', mission: 'am-1', role: 'impl' });
   const rec = JSON.parse(fs.readFileSync(res.file, 'utf8'));
   assert.deepStrictEqual(rec, { command: 'claim', mission: 'am-1', role: 'impl' });
@@ -349,7 +352,7 @@ test('ホーム発見: git+/hub+ バスはローカルミラー（bus_workdir �
   //   ~/.agents/amigos/{bus|hub}/<sha1[:8]>（旧 ~/.agent/ しか無い環境ではそちら）
   makeHome(root, 'git-default', 'node_id: git-b\nbus: git+https://host/team/bus.git\n');
   makeHome(root, 'hub-default', 'node_id: hub-a\nbus: hub+http://hub:8787\n');
-  const found = homes.discoverHomes({ projects: { roots: [root], scanDepth: 2 }, amigos: {} });
+  const found = homes.discoverHomes({ ...engineConfig([root]), amigos: { scanDepth: 2 } });
   const byNode = Object.fromEntries(found.map((h) => [h.nodeId, h]));
   assert.strictEqual(path.resolve(byNode['git-a'].busDir), path.resolve(h1, 'mirror'));
   const digestOf = (url) =>
@@ -365,7 +368,7 @@ test('overview はホームのバスを含め、ミッションへ home を対�
   const root = tmpdir('amigos-homes-');
   const h1 = makeHome(root, 'node-a', 'node_id: pc-a\nbus: .\n');
   makeMission(h1, 'am-home');   // ホーム = バス（missions/<mid>/）
-  const cfg = { projects: { roots: [root] },
+  const cfg = { ...engineConfig([root]),
                 amigos: { budgetDir: tmpdir('amigos-b-'), busDirs: [] } };
   const homeList = homes.discoverHomes(cfg);
   const ov = missions.overview(cfg, homeList.map((h) => h.busDir));
@@ -383,19 +386,20 @@ test('クロス検証: dashboard の投函 → Python 常駐デーモンが取�
   }
   const root = tmpdir('amigos-x-');
   const home = makeHome(root, 'node-a', JSON.stringify({ node_id: 'pc-a' }), 'json');
-  const cfg = { projects: { roots: [root] }, amigos: {} };
+  const cfg = { ...engineConfig([root]), amigos: {} };
   // dashboard からタスク依頼（post）を投函
   homes.writeCommand(cfg, home, {
     command: 'post', title: 'ダッシュボード依頼', goal: 'g', mission_id: 'am-dash',
     design: '# design\n', mission: { staffing_timeout: 0 },
     roles: [{ id: 'impl', mission: '実装', deliverables: ['main.py'] }],
   });
-  // 常駐デーモン（serve --cycles）が取り込む
+  // 単発駆動（drive）が commands/ を取り込む。常駐（旧 serve）は agent-project serve の
+  // 1 本に集約したので、このツールを常駐させる経路はもう無い（実装計画 W1-9）。
   const entry = path.join(__dirname, '..', '..', 'agent-amigos', 'agent-amigos.py');
   const env = { ...process.env, AGENT_AMIGOS_STUB_COST: '0.01',
                 AGENT_BUDGET_DIR: path.join(root, 'nb') };
   const r = spawnSync('python3',
-    [entry, 'serve', '--agent-cli', 'stub', '--cycles', '10', '--interval', '0'],
+    [entry, 'drive', '--agent-cli', 'stub', '--cycles', '10', '--interval', '0'],
     { encoding: 'utf8', env, cwd: home });
   assert.strictEqual(r.status, 0, r.stderr);
   // dashboard 側のビューでミッションが見え、home が対応付く
@@ -546,13 +550,14 @@ test('クロス検証: accept 投函 → デーモンが納品棚へ搬出し da
   }
   const root = tmpdir('amigos-deliv-');
   const home = makeHome(root, 'node-d', JSON.stringify({ node_id: 'pc-d' }), 'json');
-  const cfg = { projects: { roots: [root] }, amigos: {} };
+  const cfg = { ...engineConfig([root]), amigos: {} };
   const entry = path.join(__dirname, '..', '..', 'agent-amigos', 'agent-amigos.py');
   const env = { ...process.env, AGENT_AMIGOS_STUB_COST: '0.01',
                 AGENT_BUDGET_DIR: path.join(root, 'nb') };
+  // 旧 serve（常駐）は廃止。単発駆動 drive が commands/ 取り込みも担う（実装計画 W1-9）。
   const serve = (cycles) => {
     const r = spawnSync('python3',
-      [entry, 'serve', '--agent-cli', 'stub', '--cycles', String(cycles), '--interval', '0'],
+      [entry, 'drive', '--agent-cli', 'stub', '--cycles', String(cycles), '--interval', '0'],
       { encoding: 'utf8', env, cwd: home });
     assert.strictEqual(r.status, 0, r.stderr);
   };
@@ -585,7 +590,7 @@ test('クロス検証: accept 投函 → デーモンが納品棚へ搬出し da
 test('未取り込みの指示は pendingCommands として数える（常駐停止に気づける）', () => {
   const root = tmpdir('amigos-pending-');
   const home = makeHome(root, 'node-p', JSON.stringify({ node_id: 'pc-p' }), 'json');
-  const cfg = { projects: { roots: [root] }, amigos: {} };
+  const cfg = { ...engineConfig([root]), amigos: {} };
   assert.strictEqual(homes.discoverHomes(cfg)[0].pendingCommands, 0);
   homes.writeCommand(cfg, home, { command: 'accept', mission: 'am-x' });
   assert.strictEqual(homes.discoverHomes(cfg)[0].pendingCommands, 1);
@@ -608,7 +613,7 @@ function rendererFns(names) {
 test('納品はミッションへ結び付き、bus から消えたものだけ別枠になる', () => {
   const root = tmpdir('amigos-attach-');
   const home = makeHome(root, 'node-a', JSON.stringify({ node_id: 'pc-a' }), 'json');
-  const cfg = { projects: { roots: [root] }, amigos: {} };
+  const cfg = { ...engineConfig([root]), amigos: {} };
   const bus = path.join(home, 'missions');
   // 生きているミッション（バス上にある）
   const dir = path.join(bus, 'am-live');

@@ -136,15 +136,31 @@ def _parallelism(request: str, default: int) -> int:
 
 
 # --------------------------------------------------------------------------
-# 分解の粒度（granularity）— 設定ファイルで調整。coarse=現状 / fine=1段細かい /
-#   finest=2段細かい（既定）。factor は並列ノード数の倍率＋プロンプトの分解指示に効く。
+# 分解の粒度（granularity）— coarse/fine/finest は明示倍率、auto（既定）は倍率1
+#   （flow-planner が complexity から目標レンジを導出）。factor は stub/agent planner の
+#   並列ノード数スケールに効く。flow-planner 経路ではタスク数はスキル側が決める。
 # --------------------------------------------------------------------------
-GRANULARITY_FACTORS = {"coarse": 1, "fine": 2, "finest": 3}
+GRANULARITY_FACTORS = {"auto": 1, "coarse": 1, "fine": 2, "finest": 3}
+GRANULARITY_SCOPE_DIRECTIVES = {
+    "coarse": (
+        "分解の粒度: 各成果ノード（work/generate/map）は1モジュール相当まで。"
+        "個数の目安は1–3。goal 先頭に [scope] と [out_of_scope] を付けること。"
+    ),
+    "fine": (
+        "分解の粒度: 各成果ノードは単機能・単モジュール（想定変更は約30行以内）。"
+        "個数の目安は3–8。goal 先頭に [scope] と [out_of_scope] を付けること。"
+    ),
+    "finest": (
+        "分解の粒度: 各成果ノードは1ファイル/1関数/1結合点まで（想定変更は約30行以内）。"
+        "個数の目安は6–12（上限16）。goal 先頭に [scope] と [out_of_scope] を付けること。"
+    ),
+    "auto": "",  # flow-planner が complexity から導出。agent planner では指示なし
+}
 
 
 def granularity_factor(level: "str | None") -> int:
-    """粒度レベルを倍率（1/2/3）に。未知値は既定（finest=3）。"""
-    return GRANULARITY_FACTORS.get((level or "finest").lower(), 3)
+    """粒度レベルを倍率に。未知値・None は既定 auto（倍率1）。"""
+    return GRANULARITY_FACTORS.get((level or "auto").lower(), 1)
 
 
 def scale_parallelism(par: int, level: "str | None") -> int:
@@ -163,14 +179,22 @@ def maybe_scale_parallelism(request: str, par: int, level: "str | None") -> int:
 
 
 def granularity_directive(level: "str | None") -> str:
-    """プランナーへ渡す分解の細かさ指示。coarse は空（現状どおり）。"""
-    f = granularity_factor(level)
-    if f <= 1:
-        return ""
-    unit = "1ファイル/1関数/1観点" if f >= 3 else "意味のある最小単位"
-    return (f"分解の粒度: 通常より細かく、各タスクを{unit}まで原子的に分解すること。"
-            f"目安は通常の約{f}倍の数の小さなタスク（ただし無意味な細分化・重複は避け、"
-            "各タスクは独立に検証可能に保つこと）。")
+    """プランナーへ渡す分解の細かさ指示。auto は空（flow-planner が導出）。"""
+    lv = (level or "auto").lower()
+    return GRANULARITY_SCOPE_DIRECTIVES.get(lv, "")
+
+
+# auto は「flow-planner が complexity から導出する」という意味なので、flow-planner を通らない
+# 経路（スキル未導入・スキル失敗のフォールバック）では導出者が居ない。そのまま渡すと粒度指示も
+# 並列数倍率も効かず、設定を何も変えていない利用者の計画だけが黙って粗くなる（auto 導入前の
+# 既定は finest だった）。フォールバックでは旧既定へ解決して、従来の粒度を維持する。
+_AUTO_FALLBACK_GRANULARITY = "finest"
+
+
+def fallback_granularity(level: "str | None") -> str:
+    """flow-planner を経ない planner に渡す粒度。auto/未指定は旧既定（finest）へ解決する。"""
+    lv = (level or "auto").lower()
+    return lv if lv in GRANULARITY_SCOPE_DIRECTIVES and lv != "auto" else _AUTO_FALLBACK_GRANULARITY
 
 
 def _strategy_to_graph(pattern: str, request: str, par: int, review: bool = False):
@@ -216,10 +240,10 @@ def _strategy_to_graph(pattern: str, request: str, par: int, review: bool = Fals
                     "deps": gen_ids, "kind": "synthesize"}]
 
 
-def plan_strategy_stub(request: str, review="auto", granularity="finest"):
+def plan_strategy_stub(request: str, review="auto", granularity="auto"):
     """要求からパターンと並列数を選び、初期グラフを作る（LLM 無し版）。
     review は 'auto'（既定）/True/False の三値。auto は集約パターンで自動有効。
-    granularity で並列ノード数（=分解の細かさ）をスケールする。"""
+    granularity で並列ノード数をスケールする（auto/coarse=×1, fine=×2, finest=×3）。"""
     pattern = _detect_pattern(request)
     base = plan_stub(request)
     par = maybe_scale_parallelism(request, _parallelism(request, len([t for t in base if not t["deps"]])),
@@ -233,7 +257,7 @@ def plan_strategy_stub(request: str, review="auto", granularity="finest"):
     return strategy, tasks
 
 
-def plan_strategy_agent(request: str, model: str | None, review="auto", granularity="finest"):
+def plan_strategy_agent(request: str, model: str | None, review="auto", granularity="auto"):
     """kiro-cli にパターン選択・並列数・初期グラフを決めさせる。
     review は 'auto'（既定）/True/False の三値。auto は集約パターンで自動有効。
     granularity で分解の細かさを指示し、返ってきた並列数も粒度倍率でスケールする。
@@ -342,23 +366,25 @@ def _find_skill_script(skill: str, script: str):
 
 
 def _find_flow_planner_script():
-    """flow-planner スキルの plan.py を探す。"""
-    return _find_skill_script("flow-planner", "plan.py")
+    """計画スキルの plan.py を探す（スキル名は設定 planner_skill。既定 flow-planner）。"""
+    skill = str(_PLANNER_SKILL or "").strip() or "flow-planner"
+    return _find_skill_script(skill, "plan.py")
 
 
-def plan_strategy_flow_planner(request: str, model: str | None, review="auto", granularity="finest"):
+def plan_strategy_flow_planner(request: str, model: str | None, review="auto", granularity="auto"):
     """flow-planner スキルの3段パイプラインを呼び出す。
     スキルが見つからない / 失敗した場合は plan_strategy_agent にフォールバック。
-    granularity はスキルへ `--granularity` で渡し、返ってきた並列数も粒度倍率でスケールする。"""
+    granularity はスキルへ `--granularity` で渡す（auto=complexity 導出 / 明示は優先）。
+    タスク数・スコープ契約はスキル側が決めるため、ここでの並列数倍率は掛けない。"""
     script = _find_flow_planner_script()
     if not script:
         # flow-planner スキル未インストール → エージェント planner にフォールバック
-        return plan_strategy_agent(request, model, review, granularity)
+        return plan_strategy_agent(request, model, review, fallback_granularity(granularity))
     # 計画に使う CLI/モデルは planner の設定（agents: planner: {agent_cli, model}）に従わせる。
     # スキル側の既定は kiro-cli だが、それを黙って使うと agent_cli を claude/codex にしていても
     # 計画だけ kiro-cli で走り、kiro-cli が使えない環境では毎回失敗して stub へ落ちていた。
     cli, model_ov = _agent_for("planner")
-    cmd = [sys.executable, script, request, "--granularity", str(granularity),
+    cmd = [sys.executable, script, request, "--granularity", str(granularity or "auto"),
            "--agent-cli", cli]
     model = model_ov or model
     if model:
@@ -376,16 +402,18 @@ def plan_strategy_flow_planner(request: str, model: str | None, review="auto", g
         tasks = _coerce_tasks(data.get("tasks", []))
         if not tasks:
             raise ValueError("flow-planner returned empty tasks")
-        # strategy を正規化
+        # strategy を正規化（粒度・タスク数は flow-planner が確定済み → 倍率を掛けない）
         patterns = [p for p in (strategy.get("patterns") or []) if p in PATTERNS] or ["fan-out-and-synthesize"]
+        resolved = strategy.get("granularity") or granularity or "auto"
         final_strategy = {
             "patterns": patterns,
-            "parallelism": maybe_scale_parallelism(request, int(strategy.get("parallelism", 2) or 2), granularity),
+            "parallelism": int(strategy.get("parallelism", 2) or 2),
             "review": _review_decision(review, patterns) if not isinstance(strategy.get("review"), bool)
                       else strategy["review"],
-            "reason": f"[flow-planner] {strategy.get('reason', '')}（粒度 {granularity}）",
+            "reason": f"[flow-planner] {strategy.get('reason', '')}（粒度 {resolved}）",
+            "granularity": resolved,
         }
         return final_strategy, tasks
     except Exception:  # noqa: BLE001 — flow-planner 失敗時はエージェント planner にフォールバック
-        return plan_strategy_agent(request, model, review, granularity)
+        return plan_strategy_agent(request, model, review, fallback_granularity(granularity))
 

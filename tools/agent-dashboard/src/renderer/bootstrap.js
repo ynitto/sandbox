@@ -13,7 +13,7 @@ async function init() {
   setupKiroLoopDialog();
   state.config = await guard('設定読込', () => api.getConfig());
   initTabs();
-  $('btn-refresh').addEventListener('click', () => refreshAll({ sync: false }));
+  $('btn-refresh').addEventListener('click', () => refreshAll());
   $('btn-cli-chat').addEventListener('click', openCliChat);
   $('btn-doctor').addEventListener('click', openDoctor);
   $('btn-doctor-submit').addEventListener('click', askDoctor);
@@ -24,6 +24,7 @@ async function init() {
   $('btn-settings').addEventListener('click', () => openGlobalSettings('app'));
   $('btn-technical-info-close').addEventListener('click', () => $('dlg-technical-info').close());
   $('btn-cw-cancel').addEventListener('click', () => $('dlg-cowork-work').close());
+  $('cw-type').addEventListener('change', updateCoworkWorkFields);
   const chClose = $('btn-cowork-history-close');
   if (chClose) {
     chClose.addEventListener('click', () => {
@@ -31,16 +32,23 @@ async function init() {
       $('dlg-cowork-history').close();
     });
   }
-  $('btn-cw-ok').addEventListener('click', (ev) => { ev.preventDefault(); applyCoworkWorkDialog(); });
+  $('btn-cw-ok').addEventListener('click', async (ev) => { ev.preventDefault(); await applyCoworkWorkDialog(); });
   setupAmigosDialogs();
   $('btn-cw-save-cancel').addEventListener('click', () => $('dlg-cowork-save').close());
   $('btn-cw-save-ok').addEventListener('click', (ev) => { ev.preventDefault(); saveCoworkDraft(); });
-  $('btn-task-close').addEventListener('click', () => $('dlg-task').close());
+  $('btn-task-close').addEventListener('click', requestTaskDialogClose);
+  $('dlg-task').addEventListener('cancel', (event) => {
+    event.preventDefault();
+    requestTaskDialogClose();
+  });
   $('btn-enq-cancel').addEventListener('click', () => $('dlg-enqueue').close());
   $('btn-enq-submit').addEventListener('click', submitEnqueue);
   $('btn-enq-ai').addEventListener('click', aiEnqueueAssist);
   $('btn-replan-cancel').addEventListener('click', () => $('dlg-replan').close());
   $('btn-replan-submit').addEventListener('click', () => requestReplan($('replan-charter').value));
+  $('btn-notes-close').addEventListener('click', () => $('dlg-notes').close());
+  $('btn-note-add').addEventListener('click', () => addNote());
+  $('btn-notes-distill').addEventListener('click', () => distillNotes($('notes-charter').value));
   // 新規プロジェクト作成
   $('btn-new-project').addEventListener('click', openNewProject);
   $('btn-np-cancel').addEventListener('click', () => $('dlg-new-project').close());

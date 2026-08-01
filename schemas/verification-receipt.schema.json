@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "verification-receipt.schema.json",
+  "title": "verification receipt（agent-flow runner が返す検証結果）",
+  "description": "verification_plan を成果 revision 上で一度だけ実行した結果。agent-project は plan_digest・result_rev・全 command の終了コード・全 criterion の証跡付き verdict を検算し、一致した PASS だけを状態遷移に採用する。receipt が無い・古い・壊れている・照合を通らない pass は採用しない（フェイルクローズ）。他ノードへ検証委譲した場合も同じ schema の receipt を返させる（external.json の中身）。正典設計: docs/plans/2026-07-30-unified-task-verify-design.md §4 / 実装: agentcore.verifycontract",
+  "type": "object",
+  "required": ["version", "task_id", "plan_digest", "result_rev", "verdict", "commands", "criteria"],
+  "properties": {
+    "version": {"type": "integer", "enum": [1, 2], "description": "1=従来契約、2=target統合結果付き。解釈できない版は採用しない"},
+    "task_id": {"type": "string"},
+    "plan_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "実行した plan の digest。投入時の正本と一致しなければ採用しない"},
+    "result_rev": {"type": "string", "description": "検証した成果 revision（コミット SHA）。採用対象の成果 revision と一致しなければ採用しない"},
+    "workspace": {"type": "string"},
+    "verdict": {"type": "string", "enum": ["pass", "fail", "inconclusive"], "description": "全体判定。採用側は自称を信用せず中身から再導出して照合する"},
+    "commands": {
+      "type": "array",
+      "description": "固定コマンドの実行結果（plan と同数・同順）",
+      "items": {
+        "type": "object",
+        "required": ["command"],
+        "properties": {
+          "command": {"type": "string"},
+          "exit_code": {"type": "integer", "description": "終了コード。inconclusive でない限り必須（無ければ fail-close）"},
+          "output_tail": {"type": "string", "description": "出力の末尾（人が読む一次資料。有界）"},
+          "flaky": {"type": "boolean", "description": "confirm>1 で PASS/FAIL を跨いだ（不安定）→ fail"},
+          "inconclusive": {"type": "boolean", "description": "コマンドを起動できなかった（不在・環境未到達）。終了コード非 0＝fail と混同しない"},
+          "note": {"type": "string", "description": "inconclusive の理由（有界）"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "criteria": {
+      "type": "array",
+      "description": "criterion ごとの判定（plan と同 id）。pass には evidence が必須（証跡の無い pass は採用側で fail へ落とされる）",
+      "items": {
+        "type": "object",
+        "required": ["id", "verdict"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^C[1-9][0-9]*$"},
+          "text": {"type": "string"},
+          "verdict": {"type": "string", "enum": ["pass", "fail", "inconclusive"], "description": "fail=証跡付きで不充足（同じ run の修正ループへ）/ inconclusive=この環境では確認不能（修正リトライを消費せず別ノード検証または人へ）"},
+          "evidence": {
+            "type": "array",
+            "description": "対象 revision 上で得た証拠。kind ごとの補助フィールドは kind に応じて読む",
+            "items": {
+              "type": "object",
+              "required": ["kind"],
+              "properties": {
+                "kind": {"type": "string", "enum": ["command", "file", "diff", "log", "screen"]},
+                "command": {"type": "string"},
+                "exit_code": {"type": "integer"},
+                "path": {"type": "string"},
+                "summary": {"type": "string"},
+                "output_tail": {"type": "string"}
+              },
+              "additionalProperties": true
+            }
+          },
+          "note": {"type": "string", "description": "inconclusive の理由・補足（有界）"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "integration": {
+      "type": "object",
+      "description": "version 2 のtarget統合結果",
+      "required": ["target", "target_rev", "verdict", "conflict_files"],
+      "properties": {
+        "target": {"type": "string", "minLength": 1},
+        "target_rev": {"type": "string", "description": "inconclusive のときだけ空を許す。採用側が verdict と組み合わせて検査する"},
+        "verdict": {"type": "string", "enum": ["pass", "fail", "inconclusive"]},
+        "conflict_files": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "started_at": {"type": "string", "description": "ISO8601 UTC"},
+    "finished_at": {"type": "string", "description": "ISO8601 UTC"},
+    "verified_by": {"type": "string", "description": "検証したノードの node_id（外部委譲の受理判断には使わない——受理は「何を出したか」で決まる）"}
+  },
+  "additionalProperties": false
+}

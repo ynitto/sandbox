@@ -20,7 +20,7 @@ const FIELD_RE = /^-\s+(\w+):\s*(.*)$/;
 const POLICY_RE = /^(deny|pin|defer|offload|gate|protect|route):\s*(.+)$/;
 const DR_HEAD_RE = /^##\s+(DR-\d+)\s+(\S+)\s+actor:\s*(.*)$/;
 
-// offloaded: 非ブロッキング委譲（act_async）で agent-flow daemon へ submit 済み・結果待ち。
+// offloaded: 委譲公示板へ公示済み・請負側の実行結果待ち。
 //   flow_run（run-id）を extra に持ち、フロータブの該当 run へ辿れる。
 // proposed: 実行前レビュー待ち（承認されるまで実行しない）／rejected: 却下済み（archive に退避）
 const TASK_STATUSES = ['inbox', 'draft', 'proposed', 'ready', 'doing', 'done', 'blocked', 'review', 'offloaded', 'rejected'];
@@ -159,6 +159,80 @@ function listTasks(dir) {
 }
 
 // ---------------------------------------------------------------------------
+// 監視担当（assignments.json）— viewer 管理のチーム運用メタデータ
+//   タスクの「実作業の分担（エージェント）」とは別軸の、人の監視・検収の分担。
+//   agent-project の契約ファイルではない（本体は読まない）ため、書いても
+//   done の不変条件・状態遷移には一切影響しない。プロジェクトルート直下に
+//   置くので state_git 同期（ドット始まり・flow-archive/claims 以外は全て対象）で
+//   チームに共有される。書式:
+//     { "members": ["alice", "bob"], "tasks": { "<task-id>": "alice" } }
+// ---------------------------------------------------------------------------
+
+const ASSIGNMENTS_FILE = 'assignments.json';
+
+function readAssignments(dir) {
+  const raw = readJson(path.join(dir, ASSIGNMENTS_FILE));
+  const out = { members: [], tasks: {} };
+  if (raw && typeof raw === 'object') {
+    if (Array.isArray(raw.members)) {
+      out.members = raw.members.map((m) => String(m).trim()).filter(Boolean);
+    }
+    if (raw.tasks && typeof raw.tasks === 'object') {
+      for (const [id, name] of Object.entries(raw.tasks)) {
+        const v = String(name == null ? '' : name).trim();
+        if (v) out.tasks[String(id)] = v;
+      }
+    }
+  }
+  return out;
+}
+
+// タスクの実効担当: assignments.json（viewer の割り当て）＞ backlog md の `- owner:`
+// （未知キーは本体が保持する契約なので、手書き・inbox 経由の owner も生きる）。
+function effectiveOwner(assignments, task) {
+  return (
+    (assignments.tasks && assignments.tasks[task.id]) ||
+    String((task.extra && task.extra.owner) || '').trim() ||
+    ''
+  );
+}
+
+// ---------------------------------------------------------------------------
+// レビューコメント（reviews/<task-id>/*.json）— viewer 管理のチーム運用メタデータ。
+//   成果物レビューを複数メンバーで行うための、タスク（成果物）単位のコメント束。
+//   agent-project の契約ファイルではない（本体は読まない）＝ done の不変条件に影響しない。
+//   1 コメント = 1 ファイル。複数メンバーが別 PC から同時にコメントしてもファイル名が
+//   別なので state_git 同期で自然にマージされる（全体 JSON の last-write-wins を避ける。
+//   バスの runs/ と同じ流儀）。書式: { author, text, ts, editedTs? }。
+// ---------------------------------------------------------------------------
+
+const REVIEWS_DIR = 'reviews';
+
+function readReviewComments(dir, taskId) {
+  const tid = String(taskId || '').trim();
+  if (!tid || tid !== path.basename(tid)) return [];
+  const cdir = path.join(dir, REVIEWS_DIR, tid);
+  const out = [];
+  for (const f of safeList(cdir)) {
+    if (!f.endsWith('.json')) continue;
+    const rec = readJson(path.join(cdir, f));
+    if (!rec || typeof rec !== 'object') continue;
+    const text = String(rec.text || '').trim();
+    if (!text) continue;
+    out.push({
+      id: f.replace(/\.json$/, ''),
+      author: String(rec.author || '').trim() || '匿名',
+      text,
+      ts: String(rec.ts || ''),
+      editedTs: rec.editedTs ? String(rec.editedTs) : '',
+    });
+  }
+  // 投稿時刻の昇順（会話として読める順）。ts 欠落はファイル名末尾で代替。
+  out.sort((a, b) => String(a.ts || a.id).localeCompare(String(b.ts || b.id)));
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // charter.md
 // ---------------------------------------------------------------------------
 
@@ -214,6 +288,24 @@ function parsePolicy(text) {
     if (m) rules.push({ kind: m[1], value: m[2].split('#')[0].trim() });
   }
   return rules;
+}
+
+// 墓標（tombstones.md）— 却下したタスクを再分解で作り直させないための記録。本体の
+// load_tombstones と同じ規則で読む（1 行 1 墓標・`::` 区切り・4 番目が charter= タグ）。
+// 画面に出すのは「消したものを戻せる」ようにするため: 却下（reject）は墓標を残すので、
+// 一覧と解除（revive）が無いと、画面から消したタスクは画面からは二度と入れ直せない。
+function parseTombstones(text) {
+  const out = [];
+  for (const line of String(text || '').replace(/\r\n/g, '\n').split('\n')) {
+    const m = line.match(/^\s*-\s+(.+?)\s*$/);
+    if (!m || line.trimStart().startsWith('-->')) continue;
+    const parts = m[1].split('::').map((x) => x.trim());
+    const title = parts[0] || '';
+    if (!title) continue;
+    const tag = (parts[3] || '').startsWith('charter=') ? parts[3].slice('charter='.length).trim() : '';
+    out.push({ title, reason: parts[1] || '', date: parts[2] || '', charter: tag });
+  }
+  return out;
 }
 
 function parseDecisions(text, id) {
@@ -307,6 +399,43 @@ function _extractMrUrls(...sources) {
     }
   }
   return out;
+}
+
+// 検証レポートの要約（S5）。人が検収で読むのは「コマンド」ではなく **基準と証跡**。
+// 壊れていれば null（＝要約を出さない）。表示できないことより、誤った要約を出す方が悪い。
+function _parseVerification(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  let data;
+  try {
+    data = JSON.parse(s);
+  } catch {
+    return null;
+  }
+  if (!data || typeof data !== 'object' || !Array.isArray(data.criteria)) return null;
+  const criteria = data.criteria
+    .filter((c) => c && typeof c === 'object')
+    .map((c, i) => {
+      const ev = (c.evidence && typeof c.evidence === 'object') ? c.evidence : {};
+      return {
+        id: Number(c.id) || i + 1,
+        text: String(c.text || ''),
+        verdict: ['pass', 'fail', 'unverifiable'].includes(String(c.verdict))
+          ? String(c.verdict) : 'fail',   // 読めない判定は fail（フェイルクローズ）
+        evidence: {
+          commands: (Array.isArray(ev.commands) ? ev.commands : []).map(String),
+          output: String(ev.output || ''),
+          files: (Array.isArray(ev.files) ? ev.files : []).map(String),
+        },
+        note: String(c.note || ''),
+      };
+    });
+  if (!criteria.length) return null;
+  return {
+    criteria,
+    report: String(data.report || ''),
+    pass: criteria.filter((c) => c.verdict === 'pass').length,
+  };
 }
 
 function _parseDeliveryJson(raw) {
@@ -606,11 +735,13 @@ function parseNeeds(text, id) {
     mrUrl: '', // 代表 MR URL（frontmatter mr-url / 判断材料）。GitLab ならこれを開く
     mrUrls: [], // 複数リポジトリ分の MR URL
     delivery: [], // 検収サブ画面用のリポジトリ単位エントリ
+    verification: null, // 検証レポートの要約（S5）: { criteria: [{id,text,verdict,evidence,note}], report, pass }
   };
   const s = String(text || '').replace(/\r\n/g, '\n');
   const fm = s.match(/^---\n([\s\S]*?)\n---\n?/);
   let body = s;
   let deliveryRaw = '';
+  let verificationRaw = '';
   const fmFields = {};          // frontmatter の生キー（失敗の構造化フィールドを読むのに使う）
   if (fm) {
     body = s.slice(fm[0].length);
@@ -627,6 +758,7 @@ function parseNeeds(text, id) {
       else if (key === 'risk') need.risk = val;
       else if (key === 'mr-url') need.mrUrl = val;
       else if (key === 'delivery') deliveryRaw = val;
+      else if (key === 'verification') verificationRaw = val;
     }
   }
   const title = body.match(/^#\s+(.+)$/m);
@@ -698,6 +830,7 @@ function parseNeeds(text, id) {
   }
   // 検収サブ画面: frontmatter delivery を優先し、無ければ判断材料から復元する
   need.delivery = _normalizeDelivery(_parseDeliveryJson(deliveryRaw));
+  need.verification = _parseVerification(verificationRaw);
   if (!need.delivery.length) need.delivery = _normalizeDelivery(_deliveryFromDetail(need.detail));
   need.mrUrls = _extractMrUrls(need.mrUrl, need.delivery.map((e) => e.mr_url).join(' '), need.detail);
   if (!need.mrUrl && need.mrUrls.length) need.mrUrl = need.mrUrls[0];
@@ -737,7 +870,9 @@ function listCommandFailures(dir) {
     const entry = {
       action: String(cmd.command || ''),
       error: String(rec.error || ''),
+      instruction: String(cmd.feedback || cmd.reason || ''),
       failedAt: String(rec.failed_at || ''),
+      mtime: statMtime(path.join(cdir, f)),
     };
     const prev = out[tid];
     if (!prev || String(prev.failedAt) < entry.failedAt) out[tid] = entry;
@@ -745,21 +880,67 @@ function listCommandFailures(dir) {
   return out;
 }
 
+// commands/processed/*.json — 本体が取り込みに成功した指示の受理レシート（本体
+// _write_command_receipt と対）。中身は {ok, action, id, processed_at, source}。承認の
+// 取り込みは非同期（ドロップ→後で本体が処理）で、送信時トーストは「送信済み」までしか
+// 言えない。成功時に元ファイルが消えるだけだと「保留中（本体未取り込み）」と「処理済み」が
+// 区別できず、押しても何も起きないように見える。受理レシートを読み、送信した指示が本体に
+// 届いたことをカードで示す。タスク id ごとに最新の 1 件へまとめる。
+function listCommandReceipts(dir) {
+  const out = {};
+  const pdir = path.join(dir, 'commands', 'processed');
+  for (const f of safeList(pdir)) {
+    if (!f.endsWith('.json')) continue;
+    const rec = readJson(path.join(pdir, f));
+    if (!rec || typeof rec !== 'object' || !rec.ok) continue;
+    const tid = String(rec.id || '').trim();
+    if (!tid) continue;                       // プロジェクト単位（replan/pause 等）はカードに紐づかない
+    const entry = {
+      action: String(rec.action || ''),
+      processedAt: String(rec.processed_at || ''),
+      source: String(rec.source || ''),
+      mtime: statMtime(path.join(pdir, f)),
+    };
+    const prev = out[tid];
+    if (!prev || String(prev.processedAt) < entry.processedAt) out[tid] = entry;
+  }
+  return out;
+}
+
+function commandArtifactIsCurrent(need, artifact) {
+  return Boolean(artifact) && (!need.mtime || !artifact.mtime || artifact.mtime >= need.mtime);
+}
+
+// タスク級の票の kind（本体 needs.py の _TASK_NEEDS_KINDS と同じ集合）。これ以外
+// （milestone・未知）はタスクに紐づかないので、タスクの有無で判断しない。
+const TASK_NEEDS_KINDS = new Set(['plan-review', 'review', 'blocked']);
+
 // needs/<id>.md が無い判断待ちタスク（review / blocked / proposed）を backlog status から補う。
 // 本体の ensure_needs と同じ契約: needs は status の投影で、票が失われても検収・承認導線を残す。
 // ここではファイルを書かず表示用だけを合成する（承認は commands/ 経由で needs ファイルが無くても届く）。
-function synthesizeNeedsFromBacklog(needs, backlog, needsDir) {
+function synthesizeNeedsFromBacklog(needs, backlog, needsDir, archive) {
   const expectedKind = (status) =>
     status === 'review' ? 'review' : status === 'proposed' ? 'plan-review' : status === 'blocked' ? 'blocked' : '';
   const taskById = new Map((backlog || []).map((t) => [String(t.id), t]));
+  const archivedIds = new Set((archive || []).map((t) => String(t.id)));
   const have = new Set();
   const out = [];
   for (const n of needs || []) {
     const tid = String(n.taskId || n.id || '');
     const task = taskById.get(tid);
     const expected = task ? expectedKind(String(task.status || '')) : '';
-    // needs は backlog status の投影。古い plan-review が残ったまま task が blocked/review へ
-    // 進んだ場合、存在するだけで合成を抑止せず、下で正しい種別の表示票に置き換える。
+    // needs は status の投影。タスクが判断待ちを抜けた（done で archive 済み・ready/doing へ
+    // 戻った）のに票ファイルだけ残ると、決着済みの判断がカードとして出続ける。投影から
+    // 外れた票はここで落とす。
+    if (archivedIds.has(tid) || (task && !expected)) continue;
+    // 投影元のタスクがどこにも無い票（＝タスクを消した後に残った孤児）も落とす。
+    // 従来は「タスクを持たない票 = charter/milestone カード」と見なして残していたが、
+    // その判別は kind でしかできない: タスク級（plan-review/review/blocked）の票は
+    // タスクが消えた時点で操作不能（承認も却下も対象が無い）＝出し続けても人は何もできない。
+    // 本体側でも reap_orphan_needs が同じ規則でファイルを掃除する（ここは即時の表示同期）。
+    if (!task && TASK_NEEDS_KINDS.has(String(n.kind || ''))) continue;
+    // 古い plan-review が残ったまま task が blocked/review へ進んだ場合、存在するだけで
+    // 合成を抑止せず、下で正しい種別の表示票に置き換える。
     if (expected && String(n.kind || '') !== expected) continue;
     out.push(n);
     if (n.id) have.add(String(n.id));
@@ -913,15 +1094,10 @@ function _wslUncMatch(p) {
   return s.match(/^\\\\wsl(?:\$|\.localhost)\\[^\\]+(.*)$/i);
 }
 
-// POSIX 形のキーへ正規化: /mnt/<drive>/… は Windows ドライブ表記（c:/…）へ寄せる。
-// これが無いと、WSL 側インスタンスが記録した /mnt/c/Users/... と Windows 側の
-// C:\Users\... が別プロジェクト扱いになり「稼働していない」と誤判定される。
+// POSIX 形の比較キー。実行側（WSL）が書くパスと画面側の UNC を突き合わせるためだけに使う。
+// Windows ドライブを WSL から見た /mnt/<drive>/… は扱わない（設計 §4.6 で経路ごと廃止）。
 function _posixKey(rest) {
   const r = String(rest || '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, '') || '/';
-  const mnt = r.match(/^\/mnt\/([a-z])(\/.*)?$/i);
-  if (mnt) {
-    return `${mnt[1]}:${mnt[2] || '/'}`.toLowerCase();
-  }
   return r.toLowerCase();
 }
 
@@ -986,19 +1162,24 @@ function sameMachineStatus(status) {
 }
 
 // POSIX 絶対パスを Windows から読める WSL UNC へ（distro が取れなければそのまま）。
-// /mnt/<drive>/… は Windows ドライブの実体なので UNC ではなく C:\… へ直接変換する。
-// これが無いと、WSL 側が記録した /mnt/c/… の検収リポジトリを Windows の dashboard が
-// \\wsl.localhost\<distro>\mnt\c\…（または C:\mnt\c\…）として解決し
-// 「リポジトリが見つかりません: /mnt/c/…」で diff が読めない。
-function toViewerPath(p) {
+// distro を明示できる: 実行側の状況ファイル（engine/status.json）が持つパスは、⚙ 設定で
+// 選んだディストロのものとして解決する。既定ディストロへ丸めると、別ディストロに
+// プロジェクトを置いた環境で存在しないフォルダを指す。
+function toViewerPath(p, distro = '') {
   const s = String(p || '');
   if (process.platform !== 'win32' || !_isPosixAbs(s)) return s;
-  const mnt = s.match(/^\/mnt\/([a-z])(\/.*)?$/i);
-  if (mnt) return `${mnt[1].toUpperCase()}:${(mnt[2] || '/').replace(/\//g, '\\')}`;
-  const distro = _defaultWslDistro();
-  if (!distro) return s;
+  const name = String(distro || '').trim() || _defaultWslDistro();
+  if (!name) return s;
   const rest = s.replace(/\//g, '\\');
-  return `\\\\wsl.localhost\\${distro}${rest}`;
+  return `\\\\wsl.localhost\\${name}${rest}`;
+}
+
+// ⚙ 設定で選んだディストロ（engine.distro）。POSIX パスを UNC へ寄せる呼び出しは、
+// **必ずこれを渡す**——渡さないと WSL の既定ディストロへ丸まり、設定と違う環境の
+// 存在しないフォルダを指す。同じ設定を使う経路が食い違うと、ある画面では開けて
+// 別の画面では開けない、という形で表面化する。
+function viewerDistro(cfg) {
+  return String((((cfg || {}).engine) || {}).distro || '').trim();
 }
 
 let _wslDistroCache = { at: 0, name: '' };
@@ -1088,47 +1269,6 @@ function listInstances() {
   return out;
 }
 
-// プロジェクトの「登録」を実体に即して直接消す（discover が発見する経路をそのまま辿るだけで、
-// 除外リストのような別レイヤーは作らない。ファイル・ディレクトリ本体には一切触れない）:
-//   - config.projects.roots に直接登録（source: 'config'）→ その要素を roots から取り除く
-//   - ~/.agent-project/instances/*.json 経由の自動発見（source: 'instance'）→ 該当レコードの
-//     ファイルを削除する（稼働中プロセスが生きていれば次のハートビートで自然に書き直されるが、
-//     それはそのプロセス自身が再登録するのであって、ビュアー側の設定ではない）
-//   - 親フォルダ登録（scan）配下で見つかった子は、個別の登録が無い（親フォルダの登録そのものが
-//     「設定」）ため対象外＝呼び出し側でエラーにする
-// 戻り値: { removedFrom: 'roots', roots: string[] } | { removedFrom: 'instance', file: string }
-//        | { removedFrom: null }
-function removeProjectRegistration(cfg, dir) {
-  const resolved = path.resolve(dir);
-  const rootsList = (cfg.projects && cfg.projects.roots) || [];
-  // 登録が /home/... で UI からは UNC（またはその逆）で来ても同一視できるよう pathsEqual で照合
-  const idx = rootsList.findIndex((r) => {
-    const expanded = String(r).replace(/^~(?=$|\/|\\)/, os.homedir());
-    return path.resolve(expanded) === resolved || pathsEqual(expanded, dir) || pathsEqual(expanded, resolved);
-  });
-  if (idx !== -1) {
-    const nextRoots = rootsList.slice();
-    nextRoots.splice(idx, 1);
-    return { removedFrom: 'roots', roots: nextRoots };
-  }
-  for (const idir of instanceDirs()) {
-    for (const f of safeList(idir)) {
-      if (!f.endsWith('.json')) continue;
-      const file = path.join(idir, f);
-      const rec = readJson(file);
-      if (!rec) continue;
-      const candidates = [rec.root, rec.root_windows, rec.effective_root, rec.effective_root_windows]
-        .filter(Boolean)
-        .flatMap((r) => [r, projectWorkspaceDir(r)]);
-      if (candidates.some((r) => r && (pathsEqual(r, dir) || pathsEqual(r, resolved)))) {
-        fs.unlinkSync(file);
-        return { removedFrom: 'instance', file };
-      }
-    }
-  }
-  return { removedFrom: null };
-}
-
 // <root>/status.json — 生存信号（agent-project.py の write_status が書く。paused も載る）。
 // 本体が別ホストで稼働し git 同期経由でしか届かない場合、instances（同一ホストのローカル
 // レジストリ）は空になる。この場合の唯一の生存根拠が、同期されてきた status.json の
@@ -1145,37 +1285,74 @@ function readStatus(dir) {
   return { ...rec, ageSec, fresh: ageSec >= 0 && ageSec <= freshSec };
 }
 
-// プロジェクトの agent-projects の稼働判定。判定根拠と経過時間も返す（UI 表示用）:
-//   'instances'   … 同一ホストの instances（heartbeat 鮮度）から確定判定（従来どおり。CLI 不要）
-//   'status-sync' … リモート本体（state_git 越し）は同期されてきた status.json の新しさで近似判定
+// ノード別生存信号 status/<node>.json（本体 write_status のノード別書き出しと対）。
+// 複数 PC 分散運用で「どのノード（PC）が生きているか／実行中か」を一覧するための読み取り。
+// 各ノードが別ファイルなので、同期越しでも上書き合戦にならず全ノードの状態が並ぶ。
+function readNodeStatuses(dir) {
+  const sdir = path.join(dir, 'status');
+  const out = [];
+  for (const f of safeList(sdir)) {
+    if (!f.endsWith('.json')) continue;
+    const rec = readJson(path.join(sdir, f));
+    if (!rec || typeof rec !== 'object') continue;
+    const updatedMs = Date.parse(rec.updated_iso || '');
+    const ageSec = isNaN(updatedMs) ? null : (Date.now() - updatedMs) / 1000;
+    const freshSec = Number(rec.fresh_after_sec) || 120;
+    out.push({
+      node: String(rec.node || f.replace(/\.json$/, '')),
+      host: String(rec.host || ''),
+      running: ageSec !== null && ageSec >= 0 && ageSec <= freshSec,
+      ageSec: ageSec === null ? null : Math.round(ageSec),
+      paused: !!rec.paused,
+      level: rec.level,
+      watch: rec.watch,
+    });
+  }
+  return out.sort((a, b) => String(a.node).localeCompare(String(b.node)));
+}
+
+// この PC の実行エンジンが監督している子のうち、状態の置き場が dir と同じものを返す。
+// 突き合わせは viewerRoot（実行側の POSIX パスを画面から開ける形に寄せたもの）を
+// resolveProjectRoot で状態の置き場へ寄せてから _pathKey で行う——実行側は素の root を
+// 書くが、状態を worktree へ逃がしている構成では dir が実体（<repo>-agent-state/...）に
+// なるため、素の文字列比較では取りこぼす。
+function engineChildFor(dir, cfg) {
+  if (!dir || !cfg) return null;
+  try {
+    const engine = require('./engine');
+    const key = _pathKey(dir);
+    for (const c of engine.readStatus(cfg).children) {
+      const viewer = String(c.viewerRoot || '').trim();
+      if (!viewer) continue;
+      if (_pathKey(resolveProjectRoot(viewer)) === key) return c;
+    }
+  } catch {
+    return null;   // 設定が読めない等（単体テストの部分 cfg）は判定材料なしに倒す
+  }
+  return null;
+}
+
+
+// プロジェクトの稼働判定。判定根拠と経過時間も返す（UI 表示用）:
+//   'engine'      … この PC の実行エンジンが監督している子の実測（children[].alive）。確定判定
+//   'status-sync' … 別 PC の本体（state_git 越し）は同期されてきた status.json の新しさで近似判定
 //                    （同期遅延ぶんの誤差を許容する。running:false でも「最終確認 N 分前」は分かる）
-//   'none'        … 判定材料が無い（instances も status.json も無い）
-// WSL 内の本体が登録する root_windows / effective_root_windows（\\wsl.localhost\...）にも
-// 一致させる（Windows のビュアーから WSL 内の稼働を発見するため）。
-function projectLiveness(dir) {
+//   'none'        … 判定材料が無い
+//
+// 根拠を instances レジストリ（各プロセスの自己申告 + heartbeat 鮮度）から
+// `engine/status.json` の `children[].alive` へ移した（実装計画 W1-9）。後者は**親が
+// Popen で見た実測**なので心拍窓を持たない——レジストリの鮮度窓は長い作業（LLM 実行）中に
+// 切れて status.json の推定へ落ち、稼働中を「停止中」と誤表示していた（実際に起きた）。
+// child は discover が engine/status.json から取ってくる同じプロジェクトの子エントリ。
+// 省略時（単体呼び出し）は engine から引き当てる。
+function projectLiveness(dir, child, cfg) {
   const status = readStatus(dir);
   const paused = !!(status && status.paused);
-  if (dir) {
-    for (const inst of listInstances()) {
-      if (!inst.fresh) continue;
-      // レコードの root は「リダイレクト前の素の root」（本体の設計）。状態を worktree へ
-      // 逃がしている構成では、viewer の登録パスは実体（<repo>-agent-state/.agent-project）へ
-      // 正規化されるため root とは一致しない。実効パス（backlog の親 = 実書き込み先）でも
-      // 照合しないと、稼働中なのに instances を取りこぼして status.json の鮮度判定へ落ち、
-      // 長い作業（LLM 実行）中に「本体が停止中」と誤表示する（実際に起きた）。
-      // Windows ビュアーは UNC、本体レコードは Linux パスなので pathsEqual で規約差を吸収する。
-      const candidates = [
-        inst.root,
-        inst.root_windows,
-        inst.effective_root,
-        inst.effective_root_windows,
-        inst.backlog ? path.dirname(String(inst.backlog).replace(/\\/g, '/')) : '',
-        inst.backlog_windows ? path.dirname(String(inst.backlog_windows)) : '',
-      ];
-      if (candidates.some((r) => r && pathsEqual(r, dir))) {
-        return { running: true, via: 'instances', ageSec: 0, paused };
-      }
-    }
+  const c = child === undefined ? engineChildFor(dir, cfg) : child;
+  if (c) {
+    // この PC が監督している＝生死は実測で分かる。paused（稼働時間外）は running:false だが
+    // 「壊れて止まった」ではないので、呼び出し側が別の印で出す（discover の offHours）。
+    return { running: !!c.alive, via: 'engine', ageSec: 0, paused: paused || !!c.paused };
   }
   if (status) {
     // 同一ホストが書いた status.json なら「別マシン」ではない。instances の生存窓（ttl×3＝
@@ -1228,18 +1405,21 @@ function hasProjectManifest(dir) {
   );
 }
 
-// ワークスペース（このビュアーに登録するフォルダ）から、agent-project が状態を書く
-// **プロジェクトルート**を解決する。
+// 登録フォルダから agent-project の **プロジェクトルート**（状態の置き場）を解決する。
 //
-//   ワークスペース  … .agent/agent-project.yaml を持つ開発フォルダ。agent-project CLI を起動する場所
-//                    （CLI から見た cwd）。人が普段開いているフォルダ＝登録するのはこれ。
-//   プロジェクトルート … 設定の `root:` が指す状態の置き場（例 <ws>/.agent-project）。backlog /
-//                    needs / charter / bus はすべてこの直下。CLI の --root・instances の root と同じ。
+// S1 以降、状態ルートは常に**状態専用リポジトリの clone**で、リダイレクトは無い。
+// dashboard に登録するのもその clone なので、通常はここは恒等写像に近い。
+// 残る仕事は移行途中の 2 つの形を読めるようにすることだけ:
 //
-// 設定の探索順は本体の _find_config と同じ（<ws>/ → <ws>/.agent/）。`root:` が無ければワークスペース
-// 自身がプロジェクトルート＝状態フォルダを直接登録する従来の使い方（instances 由来の自動発見も
-// root を直接指すのでこの経路に乗る）。
-// ~/.agent のグローバル設定にある `root:` は使わない: それを採るとすべてのワークスペースが同じ
+//   ・成果物リポジトリを登録したまま（直下に旧ブートストラップ `state_repo:` が残っている）
+//     → 隣の `<repo>-state` を開く（`resolveStateRepoRoot`）
+//   ・状態が `<ws>/.agent-project` にネストしている旧レイアウト → その下を開く
+//
+// **状態 worktree（`<repo>-agent-state`）へのリダイレクトと自動作成は廃止した。** エンジンが
+// そこへ書かなくなった以上、開くと「更新が止まった状態」を実体と信じて見せることになる
+// （読みが古いだけでなく、指示・タスク編集の書き込み先まで死んだ worktree へ落ちる）。
+//
+// ~/.agent のグローバル設定にある値は使わない: それを採るとすべてのワークスペースが同じ
 // 状態フォルダを指してしまう（本体は 1 プロセス 1 プロジェクトなので困らないが、ビュアーは
 // 複数プロジェクトを同時に扱う）。
 // readToolConfig は最後に ~/.agents を探すので、プロジェクトに設定が無いとグローバル設定が返る。
@@ -1252,32 +1432,105 @@ function resolveProjectRoot(workspaceDir) {
   const ws = path.resolve(String(workspaceDir || ''));
   if (!ws) return ws;
   const cfg = readToolConfig('agent-project', [ws, ...agentDirCandidates(ws)]);
-  const fromWorkspace = _configFromWorkspace(cfg, ws);
-  const raw = fromWorkspace && cfg.values ? cfg.values.root : null;
-  const branch =
-    (fromWorkspace && cfg.values && cfg.values.state_branch) || DEFAULT_STATE_BRANCH;
-  if (!raw) {
-    // 設定を開発フォルダに置かず、状態だけを <workspace>/.agent-project に置く従来構成。
-    // 開発フォルダを登録した場合も、稼働レコードが指す状態フォルダと同じ実体へ解決する。
-    const nestedState = path.join(ws, '.agent-project');
-    if (hasProjectStateMarkers(nestedState)) return toStateWorktree(nestedState, branch);
-    return toStateWorktree(ws, branch);
+  const fromWorkspace =
+    cfg && cfg.file && path.resolve(cfg.file).startsWith(ws + path.sep);
+  const values = fromWorkspace && cfg.values ? cfg.values : null;
+
+  // 移行途中の互換: 成果物リポジトリを登録したままでも隣の状態 clone を開く。
+  // 実体の git clone は agent-project に任せ、dashboard はパス解決だけする。
+  const stateRepoRoot = resolveStateRepoRoot(ws, values);
+  if (stateRepoRoot) return stateRepoRoot;
+
+  // 旧レイアウト（状態が <ws>/.agent-project にネストしている）だけ読み替える。**登録パス自身に
+  // マニフェストがあっても優先しない**——設定ファイルだけがあって実体は下、という形がまさに
+  // この旧レイアウトで、先に ws を返すと backlog が 1 件も見えない空プロジェクトとして出る。
+  const nestedState = path.join(ws, '.agent-project');
+  if (path.basename(ws) !== '.agent-project' && hasProjectStateMarkers(nestedState)) {
+    return nestedState;
   }
-  const r = String(raw).replace(/^~(?=$|\/|\\)/, os.homedir());
-  // yaml に Linux 絶対パス（/home/...）が書いてあると、win32 の path.resolve は
-  // C:\home\... に化けて実在しない。Windows ビュアーでは WSL UNC へ翻訳する。
-  let root;
-  if (_isPosixAbs(r)) {
-    root = toViewerPath(r);
-  } else if (path.isAbsolute(r)) {
-    root = path.resolve(r);
-  } else {
-    root = path.resolve(ws, r);
-  }
-  return toStateWorktree(root, branch);
+  return ws;
 }
 
-const DEFAULT_STATE_BRANCH = 'agent-state';
+// git リモート URL/パスの正規化比較（本体 _same_git_remote と同型）。
+function _sameGitRemote(a, b) {
+  const norm = (u) => {
+    let s = String(u || '').trim().replace(/\/+$/, '');
+    if (s.endsWith('.git')) s = s.slice(0, -4);
+    if (!s.includes('://') && !s.includes('@')) {
+      // ローカルパスらしい → 絶対化（~ 展開込み）
+      const expanded = s.replace(/^~(?=$|\/|\\)/, os.homedir());
+      try { return path.resolve(expanded); } catch { return expanded; }
+    }
+    return s;
+  };
+  const na = norm(a);
+  const nb = norm(b);
+  return Boolean(na) && Boolean(nb) && na === nb;
+}
+
+function _gitRemoteOrigin(dir) {
+  try {
+    const r = require('child_process').spawnSync(
+      'git', ['-C', dir, 'remote', 'get-url', 'origin'],
+      { encoding: 'utf8', timeout: 10000, windowsHide: true }
+    );
+    if (r.status !== 0) return '';
+    return String(r.stdout || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+// ワークスペース（成果物側）の git トップ。絶対パスは使わず prefix 深さで組み立てる
+// （Windows ビュアー＋WSL の混在でも表記を壊さない）。
+function gitRepoTop(dir) {
+  const gp = gitShowPrefix(dir);
+  if (!gp.ok) return null;
+  return _repoTopPath(dir, gp.prefix) || null;
+}
+
+// 旧ブートストラップ `agent-project.yaml` の `state_repo:` から状態 clone のパスを返す
+// （**移行途中の互換経路**）。S1 以降 clone 先の宣言は各 PC の host.yaml `projects[].root` で、
+// dashboard はそれを読まない（登録するのは状態 clone そのもの）。ここが効くのは
+// 「成果物リポジトリを登録したまま・直下に旧 yaml が残っている」形だけ。
+//   ・clone 先は <成果物top の親>/<repo名>-state（旧 `state_repo_dir` は廃止した——
+//     ノード固有パスを共有 yaml に書く経路そのものが S1 で無くなったため）
+//
+// **clone 自体は dashboard では行わない。** 通常 clone は agent-project に任せる。ここは
+// パス解決だけし、未作成でもそのパスを返す（エンジン起動後に実体が現れる）。
+//
+// origin が state_repo と食い違う既存ディレクトリだけは使わない（旧 worktree 等を
+// 誤って開かない。本体と同じ護り）。workspace 自身が既にその clone なら workspace を返す。
+function resolveStateRepoRoot(workspaceDir, values) {
+  if (!values) return null;
+  const stateRepo = String(values.state_repo || '').trim();
+  if (!stateRepo) return null;
+
+  const ws = path.resolve(String(workspaceDir || ''));
+  if (!ws) return null;
+
+  // 登録パス自身が状態専用 clone（origin 一致）なら、そのままルート。
+  if (fs.existsSync(path.join(ws, '.git')) && _sameGitRemote(_gitRemoteOrigin(ws), stateRepo)) {
+    return ws;
+  }
+
+  const deliverableTop = gitRepoTop(ws) || ws;
+  const dst = path.resolve(
+    path.join(path.dirname(deliverableTop), `${path.basename(deliverableTop)}-state`));
+
+  // 自分自身へ解決された場合（上の origin チェックで既に返しているが、非 git 等の保険）
+  if (pathsEqual(dst, ws)) return ws;
+
+  // 既存ディレクトリの origin が state_repo と食い違う（旧 worktree や別 repo）なら使わない。
+  // 黙って誤ディレクトリを開くと移行が効かない。未作成・空フォルダはパスを返して
+  // agent-project の clone を待つ（dashboard は git clone しない）。
+  if (fs.existsSync(path.join(dst, '.git'))
+      && !_sameGitRemote(_gitRemoteOrigin(dst), stateRepo)) {
+    return null;
+  }
+
+  return dst;
+}
 
 // git 管理下か + repo トップから dir までの相対パス（区切りは常に "/"、非 git なら ok:false）。
 // あえて --show-toplevel（絶対パス）ではなく --show-prefix（相対パス）を使う: 絶対パスは
@@ -1319,44 +1572,14 @@ function _splitTail(p, depth) {
   return { sep, head: segs, tail };
 }
 
-// 本体 root → 状態 worktree の実体パス（文字列のみ・fs 非依存の純関数＝テスト可能）。
-// 既に状態 worktree を指している（repo トップの basename が -<branch>）なら null を返し、
-// 呼び出し側は二重リダイレクトを避けて root をそのまま使う。
-function _stateWorktreePath(root, prefixRel, branch) {
-  const { sep, head, tail } = _splitTail(root, _prefixDepth(prefixRel));
-  if (head.length === 0) return null;
-  const base = head[head.length - 1];
-  if (base.endsWith(`-${branch}`)) return null;
-  return head
-    .slice(0, -1)
-    .concat(`${base}-${branch}`)
-    .concat(tail)
-    .join(sep);
-}
-
-// 状態 worktree → 本体 root（_stateWorktreePath の逆・純関数）。
-// 状態 worktree でない（basename が -<branch> でない）なら null。
-function _sourceRootPath(stateDir, prefixRel, branch) {
-  const { sep, head, tail } = _splitTail(stateDir, _prefixDepth(prefixRel));
-  if (head.length === 0) return null;
-  const base = head[head.length - 1];
-  const suffix = `-${branch}`;
-  if (!base.endsWith(suffix)) return null;
-  return head
-    .slice(0, -1)
-    .concat(base.slice(0, -suffix.length))
-    .concat(tail)
-    .join(sep);
-}
-
+// dir（repo トップより下でもよい）から repo トップのパス。git の絶対パス出力は使わず、
+// prefix の深さぶんだけ dir 自身の表記から削る（WSL/Windows 混在でも表記を壊さない）。
 function _repoTopPath(dir, prefixRel) {
   const { sep, head } = _splitTail(dir, _prefixDepth(prefixRel));
   return head.join(sep);
 }
 
-// 旧 blocked 票は cfg.workdir（状態 worktree の repo top）を「所在」として記録していた。
-// その path のまま git diff すると変更は全て .agent-project/** で、成果物フィルタ後に空になる。
-// state/source の project dir と git prefix が分かる場合だけ、完全一致する誤った repo top を補正する。
+
 function _repairStateDeliveryPaths(entries, stateProjectDir, sourceProjectDir, prefixRel) {
   if (!sourceProjectDir || pathsEqual(stateProjectDir, sourceProjectDir)) return entries || [];
   const stateTop = _repoTopPath(stateProjectDir, prefixRel);
@@ -1366,31 +1589,6 @@ function _repairStateDeliveryPaths(entries, stateProjectDir, sourceProjectDir, p
       ? { ...entry, path: sourceTop }
       : entry
   );
-}
-
-function fromStateWorktree(stateDir, branch = DEFAULT_STATE_BRANCH) {
-  // toStateWorktree の逆: 状態 worktree 側のパスを本体側（CLI --root が取る値）へ戻す。
-  // worktree を --root に渡すと agent-project が二重リダイレクトする。
-  const gp = gitShowPrefix(stateDir);
-  if (!gp.ok) return stateDir;                       // git 管理外
-  return _sourceRootPath(stateDir, gp.prefix, branch) || stateDir;
-}
-
-// 状態の実体は「状態 worktree」にある。agent-project は root（例 <repo>/.agent-project）の読み書きを
-// <repo>-<state_branch>/.agent-project へ逃がすので、本体側に残る .agent-project は **main に載る
-// バックアップ**であって実体ではない（significant だけが載り、bus＝run の進捗は載らない）。
-//
-// 本体側を開くと 3 つ壊れる:
-//   ・読み  … 古いバックアップを見る。実行中の run が一切見えない（bus が無い）
-//   ・書き  … 指示・タスク編集が本体へ落ち、人の作業ツリーを汚す
-//   ・git   … gitAutoPush が main へ commit/push してしまう（main はバックアップ専用にしたい）
-// 実体へ正規化してから開く。worktree が無ければ（agent-project 未起動・非 git）そのまま返す。
-function toStateWorktree(root, branch) {
-  const gp = gitShowPrefix(root);
-  if (!gp.ok) return root;                            // git 管理外 → 本体がそのまま実体
-  const candidate = _stateWorktreePath(root, gp.prefix, branch);
-  if (!candidate) return root;                        // 既に状態 worktree の中にいる
-  return isProjectDir(candidate) ? candidate : root;  // 未作成なら本体のまま（従来動作）
 }
 
 function hasProjectStateMarkers(dir) {
@@ -1415,89 +1613,48 @@ function projectWorkspaceDir(projectRoot) {
   return path.basename(resolved) === '.agent-project' ? path.dirname(resolved) : resolved;
 }
 
-// 登録ルートがプロジェクトそのものでないとき、配下からプロジェクト
-// （agent-project.yaml マニフェスト、または charter.md / backlog/ 等のマーカーを持つ
-// ディレクトリ）を探す。1 root = 1 プロジェクトなので、プロジェクトと判定した
-// ディレクトリの配下はそれ以上掘らない。プロジェクト内部の既知ディレクトリと
-// 隠しディレクトリはスキップして走査を軽く保つ。
-const SCAN_SKIP = new Set([
-  'node_modules', 'bus', 'work', 'archive', 'flow-archive', 'backlog', 'needs', 'decisions',
-  'commands', 'inbox', 'claims', 'autonomy', 'charters', 'runs', 'dist', 'release',
-]);
-
-function scanForProjects(rootDir, maxDepth) {
-  const found = [];
-  const walk = (dir, depth) => {
-    for (const name of safeList(dir)) {
-      if (name.startsWith('.') || SCAN_SKIP.has(name)) continue;
-      const child = path.join(dir, name);
-      let st;
-      try {
-        st = fs.statSync(child);
-      } catch {
-        continue;
-      }
-      if (!st.isDirectory()) continue;
-      if (isProjectDir(child)) {
-        found.push(child);
-        continue;
-      }
-      if (depth < maxDepth) walk(child, depth + 1);
-    }
-  };
-  walk(rootDir, 1);
-  return found.sort();
-}
-
-// 設定 roots ＋ instances 自動発見からプロジェクト一覧を作る。
-// 登録パス 1 件 = 1 ワークスペース（.agent/agent-project.yaml を持つ開発フォルダ。状態フォルダを
-// 直接登録する従来の使い方や、instances 由来の自動発見＝プロジェクトルート直指定も
-// resolveProjectRoot が「設定が無ければ自分自身」に倒すのでそのまま乗る）。
-// 登録パスがワークスペースでもプロジェクトでもない場合は「束ねる親フォルダ」とみなし、
-// 配下（既定 2 階層・設定 projects.scanDepth）から agent-project.yaml 等を自動発見して
-// 見つかったものをそれぞれ 1 件として追加する。
+// プロジェクト一覧は **実行エンジンの状況ファイル**（engine/status.json の children）から作る
+// （実装計画 W2-4）。フォルダを列挙する設定・親フォルダの自動スキャン・稼働レコードからの
+// 自動追加はすべて廃止した——プロジェクトを宣言する場所は実行側の host.yaml 1 か所で、
+// この画面はそれを映すだけ（設計 §4.6・R10）。
+// children[].root は実行側が `run --watch --root` に渡している値そのものなので、
+// resolveProjectRoot（設定が無ければ自分自身に倒す）で状態の置き場へ寄せられる。
 function discover(cfg) {
-  const roots = new Map(); // resolved root -> {root, source}
-  const scanDepth = Math.max(1, Number((cfg.projects && cfg.projects.scanDepth) || 2));
-  for (const r of (cfg.projects && cfg.projects.roots) || []) {
-    if (!r) continue;
-    // Windows のビュアーから WSL の POSIX パス（/home/...）を登録すると、path.resolve は
-    // C:\home\... の幽霊エントリに化け、exists:false になってプロジェクト一覧にも
-    // Cowork のリポジトリ選択（exists で絞る）にも出てこない。instances 経路（下）と同じく、
-    // POSIX 絶対パスは WSL UNC（\\wsl.localhost\<distro>\...）へ寄せてから解決する。
-    const raw = String(r).replace(/^~(?=$|\/|\\)/, os.homedir());
-    const resolved = _isPosixAbs(raw) ? toViewerPath(raw) : path.resolve(raw);
-    if (fs.existsSync(resolved) && !isProjectDir(resolved)) {
-      const children = scanForProjects(resolved, scanDepth);
-      if (children.length) {
-        for (const d of children) {
-          if (!roots.has(d)) roots.set(d, { root: d, source: 'scan' });
-        }
-        continue;
-      }
-    }
-    roots.set(resolved, { root: resolved, source: 'config' });
+  const engine = require('./engine');
+  const status = engine.readStatus(cfg);
+  const roots = new Map(); // resolved root -> {root, source, child}
+  for (const child of status.children) {
+    const viewer = String(child.viewerRoot || '').trim();
+    if (!viewer) continue;
+    // 絶対パス（POSIX / ドライブ / UNC）はそのまま使う。UNC を path.resolve に通すと、
+    // 実行ホストによっては cwd を前置されて存在しないパスに化ける。
+    const resolved = _isPosixAbs(viewer) || path.isAbsolute(viewer) || viewer.startsWith('\\\\')
+      ? viewer
+      : path.resolve(viewer);
+    if (!roots.has(resolved)) roots.set(resolved, { root: resolved, source: 'engine', child });
   }
-  const instances = cfg.projects && cfg.projects.autoDiscover === false ? [] : listInstances();
-  for (const inst of instances) {
-    // Windows では root_windows（UNC）を優先。Linux パスを path.resolve すると
-    // C:\home\... の幽霊エントリになる。
-    const preferred =
-      (process.platform === 'win32' && (inst.root_windows || inst.effective_root_windows)) ||
-      inst.root_windows ||
-      inst.root;
-    if (!preferred) continue;
-    const resolved = _isPosixAbs(preferred) ? toViewerPath(preferred) : path.resolve(String(preferred));
-    const workspace = projectWorkspaceDir(resolved);
-    if (![...roots.keys()].some((k) => pathsEqual(k, workspace) || pathsEqual(k, resolved))) {
-      roots.set(workspace, { root: workspace, source: 'instance' });
+  // 定常業務専用フォルダ（S2）。agent-project の管理外なので engine/status.json には出ない
+  // が、セレクタには並べて定常業務タブを開けるようにする。**engine 由来が既に居る実体には
+  // 足さない**——project エントリは backlog / charter / needs / 検収を持ち、routine エントリは
+  // cowork タブしか持たないので、routine で上書きすると機能が消える。
+  for (const raw of (((cfg && cfg.cowork) || {}).roots || [])) {
+    const declared = String(raw || '').trim();
+    if (!declared) continue;
+    const expanded = declared.replace(/^~(?=$|\/|\\)/, os.homedir());
+    const resolved = _isPosixAbs(expanded) ? toViewerPath(expanded)
+      : path.isAbsolute(expanded) || expanded.startsWith('\\\\') ? expanded
+        : path.resolve(expanded);
+    if (![...roots.keys()].some((k) => pathsEqual(k, resolved))) {
+      roots.set(resolved, { root: resolved, source: 'cowork', child: null });
     }
   }
 
   const projects = [];
   const seenDirs = new Set();                     // 実体（状態の置き場）で重複排除する
-  for (const { root, source } of roots.values()) {
-    const workspace = root;                       // 登録パス（＝選択の識別子。config.roots と一致）
+  // engine 由来を先に処理する（同じ実体に解決される cowork.roots のエントリを後から
+  // 落とすため。Map は挿入順で回るので engine → cowork の順になる）。
+  for (const { root, source, child } of roots.values()) {
+    const workspace = root;                       // 選択の識別子（readProject の入力もこれ）
     const dir = resolveProjectRoot(workspace);    // 状態の置き場（backlog/needs/charter はこの下）
     // 本体（<repo>/.agent-project）と状態 worktree（<repo>-agent-state/.agent-project）は
     // どちらも登録・スキャンで挙がるが、正規化すると同じ実体を指す。両方を並べると同じ run が
@@ -1512,7 +1669,13 @@ function discover(cfg) {
     // instances（同一ホスト・確定）を先に見て、無ければ status.json（リモート・同期経由の推定）
     // にフォールバックする（projectLiveness が両方を見る）。突き合わせは本体が記録する
     // root＝プロジェクトルートで行う。
-    const liveness = projectLiveness(dir);
+    const liveness = projectLiveness(dir, child);
+    // 実行エンジンが「繰り返し失敗したので一時的に切り離した」プロジェクトは、稼働中と
+    // 区別して出す（人が気づかないと、そのプロジェクトだけ永久に止まったままになる）。
+    const quarantined = !!(child && child.quarantined);
+    // 稼働時間外の計画停止。切り離しと違って時間が来れば自動で戻るので、別の印にする
+    // （同じ「停止中」に見えると、直す必要が無いものを人が直しに行く）。
+    const offHours = !!(child && child.paused);
     // 表示名: charter.md の `# Charter: <name>` があればそれを一覧にも出す（既定はワークスペース名。
     // charter を編集するだけでサイドバーに任意の名前を出せる。charter.md はサイドバーからも既存の
     // 「✎ charter.md」で編集できるため、ここでは discover 側の表示だけ揃える）。
@@ -1524,9 +1687,12 @@ function discover(cfg) {
     projects.push({
       name: path.basename(projectWorkspaceDir(workspace)),
       charterName,
-      dir: workspace,        // 選択・登録解除はワークスペース基準（readProject の入力もこれ）
+      dir: workspace,
       root: dir,             // プロジェクトルート（状態の置き場。readProject が操作の基準にする）
       source,
+      // kind: project = agent-project が回すプロジェクト / routine = 定常業務専用フォルダ（S2）。
+      // 表示側は既存の isProject 分岐（cowork タブのみ・既定タブ cowork）へ流す。
+      kind: source === 'cowork' ? 'routine' : 'project',
       exists: fs.existsSync(workspace),
       isProject: isProjectDir(workspace) || isProjectDir(dir),
       hasCharter,
@@ -1535,10 +1701,12 @@ function discover(cfg) {
       needsCount: needs,
       running: liveness.running,
       paused: liveness.paused,
+      quarantined,
+      offHours,
       liveness,
     });
   }
-  return { projects, instances };
+  return { projects, engine: status };
 }
 
 // ---------------------------------------------------------------------------
@@ -1567,6 +1735,11 @@ function resolveBusDir(projectDir, workspaceDir, cfg) {
   };
 
   push(fallback, path.join(projectDir, 'bus'), 'project');
+  // agent-flow 自身の state-git が状態リポジトリへ鏡写しするバスの名前空間
+  // （本体の FLOW_STATE_SUBDIR="agent-flow"）。バスをルート外に置く構成では、実行中 run の
+  // ミラーはリモート clone の <clone>/agent-flow に届く。従来は flowBusByProject の手動設定が
+  // 必須で、設定漏れ＝「別 PC で実行中の run が見えない」だったため自動発見する。
+  push(fallback, path.join(projectDir, 'agent-flow'), 'state-mirror');
   // pure-remote（clone だけ・ローカル daemon 無し）では明示写像の <clone>/agent-flow を使う。
   const names = [path.basename(path.resolve(projectDir)), path.basename(workspace)];
   const byProject = cfg && cfg.projects && cfg.projects.flowBusByProject;
@@ -1585,10 +1758,20 @@ function resolveBusDir(projectDir, workspaceDir, cfg) {
   }
 
   const ordered = [...preferred, ...fallback];
-  for (const c of ordered) {
-    if (fs.existsSync(path.join(c.dir, 'runs'))) {
-      return { busDir: c.dir, hasBus: true, source: c.source, candidates: ordered };
-    }
+  // 明示設定（preferred）は従来どおり定義順の最初の実在を採る（人の指定が正）。
+  const explicitHit = preferred.find((c) => fs.existsSync(path.join(c.dir, 'runs')));
+  if (explicitHit) {
+    return { busDir: explicitHit.dir, hasBus: true, source: explicitHit.source, candidates: ordered };
+  }
+  // 自動発見（fallback）は <root>/bus と <root>/agent-flow（鏡写し）が両方在りうる。
+  // エンジン PC ではローカル bus が生きた実体、リモート clone では鏡写し側が新しいことが
+  // 多い——構成を推測せず、実測の鮮度（runs 配下の最新更新時刻）で新しい方を選ぶ。
+  const implicitHits = fallback.filter((c) => fs.existsSync(path.join(c.dir, 'runs')));
+  if (implicitHits.length) {
+    const pick = implicitHits.length === 1
+      ? implicitHits[0]
+      : implicitHits.slice().sort((a, b) => _busRecency(b.dir) - _busRecency(a.dir))[0];
+    return { busDir: pick.dir, hasBus: true, source: pick.source, candidates: ordered };
   }
   const first = ordered[0] || { dir: path.join(projectDir, 'bus'), source: 'project' };
   return { busDir: first.dir, hasBus: false, source: first.source, candidates: ordered };
@@ -1636,6 +1819,27 @@ function consistencyGateStatus(cfg) {
   };
 }
 
+// バス候補の鮮度: runs/ とその直下エントリ（有界サンプル）の最新 mtime。
+// run の meta/イベントはファイル置換（rename）で書かれるため run ディレクトリの mtime が動く。
+function _busRecency(busDir) {
+  const runsDir = path.join(busDir, 'runs');
+  let latest;
+  try {
+    latest = fs.statSync(runsDir).mtimeMs;
+  } catch {
+    return 0;
+  }
+  for (const name of safeList(runsDir).slice(0, 50)) {
+    try {
+      const m = fs.statSync(path.join(runsDir, name)).mtimeMs;
+      if (m > latest) latest = m;
+    } catch {
+      /* 列挙後に消えた run は無視 */
+    }
+  }
+  return latest;
+}
+
 // 1 プロジェクトの完全なスナップショット。
 // 入力は**ワークスペース**（登録するフォルダ）。状態は resolveProjectRoot が導く
 // **プロジェクトルート**（dir）の直下から読む。返り値の `dir` はプロジェクトルートで、
@@ -1645,24 +1849,47 @@ function readProject(workspaceDir, cfg) {
   const dir = resolveProjectRoot(workspace);
   const backlog = listTasks(path.join(dir, 'backlog'));
   const archive = listTasks(path.join(dir, 'archive'));
+  // 監視担当（チーム運用）: 各タスクへ実効担当を載せ、メンバー一覧は割り当て済みの
+  // 名前も合流して返す（ミーティングで新しい名前を書けばそのまま選択肢になる）。
+  const assignments = readAssignments(dir);
+  const memberSet = new Set(assignments.members);
+  for (const t of [...backlog, ...archive]) {
+    t.owner = effectiveOwner(assignments, t);
+    if (t.owner) memberSet.add(t.owner);
+  }
+  assignments.members = [...memberSet].sort((a, b) => a.localeCompare(b, 'ja'));
   const needsDir = path.join(dir, 'needs');
   const needs = attachDeliveryHintsFromBacklog(
-    synthesizeNeedsFromBacklog(listMdDir(needsDir, parseNeeds), backlog, needsDir),
+    synthesizeNeedsFromBacklog(listMdDir(needsDir, parseNeeds), backlog, needsDir, archive),
     backlog
   );
   // 直前の指示の失敗（commands/*.err）を該当カードへ。決着済みカードには出さない。
   const commandFailures = listCommandFailures(dir);
+  // 直前の指示の受理（commands/processed/*.json）を該当カードへ＝「送信済み → 受理済み」。
+  const commandReceipts = listCommandReceipts(dir);
   for (const need of needs) {
-    const cf = commandFailures[String(need.taskId || need.id || '').trim()];
-    if (cf && !need.decided) need.commandFailure = cf;
+    const tid = String(need.taskId || need.id || '').trim();
+    const cf = commandFailures[tid];
+    if (!need.decided && commandArtifactIsCurrent(need, cf)) need.commandFailure = cf;
+    const cr = commandReceipts[tid];
+    if (!need.decided && commandArtifactIsCurrent(need, cr)) need.commandReceipt = cr;
   }
-  const projectCfg = readToolConfig('agent-project', [workspace, ...agentDirCandidates(workspace)]);
-  const stateBranch = (projectCfg && projectCfg.values && projectCfg.values.state_branch) || DEFAULT_STATE_BRANCH;
+  // 要対応カードにも監視担当を載せる（誰がこの判断を見るかの分担を画面で示す）。
+  // 併せて成果物レビューのコメント（reviews/<task-id>/）も載せる＝複数メンバーの
+  // コメントを担当者が一箇所で確認・整理して承認/再実行を判断できる。
+  const ownerByTask = new Map([...backlog, ...archive].map((t) => [String(t.id), t.owner || '']));
+  for (const need of needs) {
+    const tid = String(need.taskId || need.id || '').trim();
+    need.owner = ownerByTask.get(tid) || '';
+    need.comments = readReviewComments(dir, tid);
+  }
   const gp = gitShowPrefix(dir);
-  if (gp.ok) {
-    const sourceDir = fromStateWorktree(dir, stateBranch);
+  if (gp.ok && !pathsEqual(dir, workspace)) {
+    // 状態 clone と成果物リポジトリは別物なので、needs に載った検収 diff の「所在」は
+    // 状態側のパスのままだとこのビュアーから開けない。登録ワークスペース側へ読み替える。
+    // （worktree 方式の逆変換 fromStateWorktree は方式ごと廃止した — S1）
     for (const need of needs) {
-      need.delivery = _repairStateDeliveryPaths(need.delivery, dir, sourceDir, gp.prefix);
+      need.delivery = _repairStateDeliveryPaths(need.delivery, dir, workspace, gp.prefix);
     }
   }
   const decisionsAll = [];
@@ -1705,7 +1932,7 @@ function readProject(workspaceDir, cfg) {
   const specs = [];
   for (const sub of safeList(path.join(dir, 'specs'))) {
     const sdir = path.join(dir, 'specs', sub);
-    let isDir = false;
+    let isDir;
     try {
       isDir = fs.statSync(sdir).isDirectory();
     } catch {
@@ -1719,6 +1946,7 @@ function readProject(workspaceDir, cfg) {
   }
 
   const bus = resolveBusDir(dir, workspace, cfg);
+  const projectCfg = readToolConfig('agent-project', [workspace, ...agentDirCandidates(workspace)]);
 
   // 複数 charter（charters/<name>.md = 1 バージョン）。無ければ単一 charter.md（従来）。
   // バージョンの identity は **ファイル名**（v2 など）。agent-project 側の `charter:` タグ・
@@ -1748,6 +1976,7 @@ function readProject(workspaceDir, cfg) {
     policy: parsePolicy(readText(path.join(dir, 'policy.md'))),
     backlog,
     archive,
+    assignments,                          // 監視担当（viewer 管理・assignments.json）
     byStatus,
     claims,
     needs,
@@ -1755,6 +1984,8 @@ function readProject(workspaceDir, cfg) {
     // プロジェクトルール（rules.md）: 人が書く恒常ルール＋効いた learn の自動昇格。
     // 全タスクの act / plan / verify 合成へ常時注入される（本体 §6.6）。無ければ null。
     rules: readText(path.join(dir, 'rules.md')),
+    // 墓標（却下したタスクの「作り直さない」記録）。削除＝却下の取り消し導線に使う。
+    tombstones: parseTombstones(readText(path.join(dir, 'tombstones.md'))),
     decisions: decisionsAll.slice(0, 100),
     journal: tailLines(path.join(dir, 'journal.md'), 200),
     runLog: readRunLog(path.join(dir, 'run-log.jsonl')),
@@ -1768,7 +1999,8 @@ function readProject(workspaceDir, cfg) {
     autonomy,
     // 一貫性ゲート（codd-gate）が設定 yaml に結線されているか。読み取り専用の事実。
     consistencyGate: consistencyGateStatus(projectCfg),
-    liveness: projectLiveness(dir),
+    liveness: projectLiveness(dir, undefined, cfg),
+    nodes: readNodeStatuses(dir),   // 複数 PC 分散運用のノード別生存一覧（無ければ空）
     busDir: bus.busDir,
     hasBus: bus.hasBus,
     busSource: bus.source,
@@ -1779,35 +2011,42 @@ function readProject(workspaceDir, cfg) {
 module.exports = {
   dependentsOf,
   parseTask,
+  readAssignments,
+  effectiveOwner,
+  ASSIGNMENTS_FILE,
+  readReviewComments,
+  REVIEWS_DIR,
   parseCharter,
   parsePolicy,
+  parseTombstones,
   parseNeeds,
   synthesizeNeedsFromBacklog,
   attachDeliveryHintsFromBacklog,
   listCommandFailures,
+  listCommandReceipts,
+  commandArtifactIsCurrent,
+  readNodeStatuses,
   _splitDiff,
   _deliveryFromDetail,
   _extractMrUrls,
   parseDecisions,
   listInstances,
-  removeProjectRegistration,
   isProjectRunning,
   replanRequestPending,
   readStatus,
   projectLiveness,
   discover,
-  scanForProjects,
   readProject,
   resolveProjectRoot,
-  fromStateWorktree,
+  resolveStateRepoRoot,
   resolveBusDir,
-  _stateWorktreePath,
-  _sourceRootPath,
   _repairStateDeliveryPaths,
+  _sameGitRemote,
   _pathKey,
   pathsEqual,
   hostsMatch,
   sameMachineStatus,
   toViewerPath,
+  viewerDistro,
   _isPosixAbs,
 };

@@ -10,94 +10,26 @@ def _bus_inside_state(cfg: "Config") -> bool:
         return False
 
 
-def project_flow_remote(cfg: "Config") -> "tuple[str, str, float] | None":
-    """このプロジェクトの agent-flow に注入すべき state-git の (remote, branch, interval)。無ければ None。
-
-    **バスが root 配下（既定 <root>/bus）にあるなら常に None。** そこは agent-project 自身の
-    state 同期が bus ごと鏡写しする領域で、agent-flow に独自の state_git を持たせると同一ブランチ
-    への第二の書き手になる。書き手が増えると除外規則の食い違いが「tracked だが commit されない
-    ファイル」を生み、状態同期が復旧不能に詰まる（実際に起きた: agent-flow の管理クローンが
-    bus/.state-git としてコミットされ、双方の rebase が永久に失敗した）。状態リポジトリへの
-    書き手はプロジェクトにつき agent-project の 1 プロセスに限る。
-
-    バスを root の外（同期されない場所）に置いた構成でだけ、従来どおり agent-flow 自身の
-    state_git で鏡写しさせる。"""
-    if _bus_inside_state(cfg):
-        return None
-    root = cfg.backlog.parent
-    if _direct_state_git_ok(cfg):
-        r = subprocess.run(["git", "-C", str(root), "remote", "get-url", "origin"],
-                           capture_output=True, text=True, encoding="utf-8", errors="replace")
-        remote = r.stdout.strip() if r.returncode == 0 else ""
-        if not remote:
-            return None
-        b = subprocess.run(["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"],
-                           capture_output=True, text=True, encoding="utf-8", errors="replace")
-        branch = b.stdout.strip() or "main"
-        return remote, branch, cfg.state_git_interval
-    if getattr(cfg, "state_git", None):
-        return cfg.state_git, cfg.state_git_branch, cfg.state_git_interval
-    return None
-
-
-def flow_daemon_cmd(cfg: "Config", budget: int) -> "list[str]":
-    """このプロジェクトの agent-flow daemon 起動コマンド。CLI で注入するのは agent-project の役割である
-    per-project routing（どのバスをどのリポジトリへ鏡写しするか＝`--state-git` remote/branch/interval）
-    と、バス・executor・予算・ロック置き場だけ。state_git サブディレクトリを含む agent-flow の設定値は
-    個別注入せず flow_config（--config）に集約して agent-flow に読ませる（未指定なら agent-flow の既定
-    ＝subdir は "agent-flow"）。これで agent-project 側に agent-flow 設定を増やさずに済む。"""
-    base = resolve_agent_flow(cfg.agent_flow) + ["--bus", str(cfg.bus)]
-    rf = project_flow_remote(cfg)
-    if rf is not None:
-        remote, branch, interval = rf
-        base += ["--state-git", remote, "--state-git-branch", branch,
-                 "--state-git-interval", str(interval)]
-    fc = getattr(cfg, "flow_config", None)
-    if fc:
-        base += ["--config", os.path.abspath(os.path.expanduser(str(fc)))]
-    if cfg.lock_dir:
-        base += ["--lock-dir", str(cfg.lock_dir)]   # agent-flow と同じロック置き場（検知の一致）
-    base += ["daemon", "--max-workers", str(max(1, int(budget))), "--executor", cfg.executor]
-    return base
-
-
-def ensure_flow_daemon(cfg: "Config", budget: int) -> bool:
-    """このプロジェクトの agent-flow daemon を（無ければ）detached で起動する。起動したら True。
-    manage_flow_daemon が off・per-project 対象でない・既に稼働中、のときは何もしない（冪等）。
-    agent-project 停止後も残す（start_new_session）＝in-flight run を跨いで維持する。"""
-    if not getattr(cfg, "manage_flow_daemon", False):
-        return False
-    # バスが root 配下なら agent-project の state 同期が鏡写しするので、daemon に state_git は
-    # 要らない（注入しない）。root の外のバスは従来どおり注入先が無ければ対象外。
-    if not _bus_inside_state(cfg) and project_flow_remote(cfg) is None:
-        return False
-    if daemon_running(cfg, use_git=False):      # 既にこのバスの daemon が稼働（ロック保持）→ 冪等スキップ
-        return False
-    cmd = flow_daemon_cmd(cfg, budget)
-    try:
-        cfg.bus.mkdir(parents=True, exist_ok=True)
-        logp = cfg.backlog.parent / "flow-daemon.log"
-        try:
-            logf = open(logp, "a", encoding="utf-8")
-        except OSError:
-            logf = subprocess.DEVNULL
-        try:
-            subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT,
-                             stdin=subprocess.DEVNULL, start_new_session=True,
-                             cwd=str(cfg.workdir))
-        finally:
-            if hasattr(logf, "close"):
-                logf.close()
-        append_journal(cfg.journal,
-                       f"agent-flow daemon 起動: bus={cfg.bus} max_workers={max(1, int(budget))}")
-        return True
-    except OSError as e:
-        append_journal(cfg.journal, f"agent-flow daemon 起動失敗（続行）: {e}")
-        return False
-
 
 def status_path(cfg: "Config") -> Path:
     return cfg.backlog.parent / "status.json"
+
+
+def status_dir(cfg: "Config") -> Path:
+    """ノード毎の生存信号 status/<node>.json の置き場（複数 PC 分散運用）。"""
+    return cfg.backlog.parent / "status"
+
+
+def node_status_path(cfg: "Config") -> "Path | None":
+    """このエンジンのノード別生存信号ファイル。node 未設定（無名エンジン）なら None。
+
+    ファイル名のサニタイズは板側と同じ `normalize_node_id` を通す。ここに独自の規則を
+    持っていたのが `status/DESKTOP-X.json` と `nodes/desktop-x.json` の 2 名義の原因だった
+    （P0-3）。`Config.node` は既に正規形なので結果は同値だが、**規則を 2 つ持たない**。"""
+    node = str(getattr(cfg, "node", "") or "").strip()
+    if not node:
+        return None
+    return status_dir(cfg) / f"{normalize_node_id(node)}.json"
 
 
 def pause_path(cfg: "Config") -> Path:
@@ -129,16 +61,30 @@ def write_status(cfg: "Config") -> None:
     rec = {
         "host": socket.gethostname(), "watch": cfg.watch, "level": cfg.level,
         "paused": is_paused(cfg),
+        # ノード名（複数 PC 分散運用）。無名エンジンは空（従来と同じ見え方）。
+        "node": str(getattr(cfg, "node", "") or "").strip(),
+        "availability": availability_state(cfg),
         "updated_iso": _now_ts(), "fresh_after_sec": _status_fresh_after_sec(cfg),
         # Windows ビュアーが同一マシンの WSL 本体を「別マシン」と誤認しないための信号
         **detect_runtime(),
     }
+    body = json.dumps(rec, ensure_ascii=False, indent=2)
     try:
-        p = status_path(cfg)
+        p = status_path(cfg)                       # 従来の単一 status.json（後方互換）
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+        p.write_text(body, encoding="utf-8")
     except OSError:
         pass
+    # ノード名があれば status/<node>.json にも書く。複数の名前付きエンジンが同じ状態リポジトリを
+    # 共有しても、各ノードが別ファイルを持つので単一 status.json の上書き合戦にならない。
+    # viewer はこのディレクトリを読んでノード一覧（生存・実行中）を出せる。
+    np = node_status_path(cfg)
+    if np is not None:
+        try:
+            np.parent.mkdir(parents=True, exist_ok=True)
+            np.write_text(body, encoding="utf-8")
+        except OSError:
+            pass
 
 
 def maybe_heartbeat_status(cfg: "Config") -> None:
@@ -173,6 +119,14 @@ def state_sync(cfg: "Config", force: bool = False) -> None:
         append_journal(cfg.journal, f"state-git 同期失敗（続行）: {e}")
 
 
+def settle_task(cfg: "Config", task: "Task", *args) -> dict:
+    """versioned state を確定・同期してから、ホスト局所の claim を解放する。"""
+    result = _settle_task(cfg, task, *args)
+    state_sync(cfg, force=True)
+    release_claim(cfg, task)
+    return result
+
+
 def _mark_offloaded(cfg: "Config", task: "Task", location: str, run_id: str) -> None:
     """タスクを『非ブロッキング委譲・結果待ち』に退避する（run_loop が settle をスキップ）。"""
     task.status = "offloaded"
@@ -186,20 +140,86 @@ def _mark_offloaded(cfg: "Config", task: "Task", location: str, run_id: str) -> 
 _OFFLOAD_POLL_ERR_LIMIT = 12
 
 
+def _settle_verify_delegation(cfg: "Config", task: "Task", did: str, ok: bool, msg: str,
+                              cycle: int, reasons: dict) -> int:
+    """検証委譲（P4-b）の結果を受け取る。settle した件数（常に 1）を返す。
+
+    受け取るのは板の result に載った receipt で、それを受理点
+    （`verifications/<task-id>/<rev>.external.json`）へ置き、タスクを `ready` へ戻す
+    ——次の巡回の settle が内蔵 verifier と同じ検算を通してから採用する
+    （done の根拠を「誰が確かめたか」で分岐させない）。
+
+    receipt が返らなかった場合は成功終端でも受理しない。「板の run が終わった」は
+    確かめた証拠ではないからで、証跡の無い pass を通す唯一の穴がここだった。
+    失敗・中止・請け負い手なしと同じく人へ回す。票には「板でも確かめられなかった」ことまで書く。"""
+    rev = str(task.get("verify_rev") or "").strip()
+    receipt = _board_result_receipt(cfg, did)
+    task.drop("flow_run", "flow_loc", "verify_rev", "verify_plan_digest")
+    if ok and rev and receipt is not None:
+        rel = save_external_verdict(cfg, task, rev, {
+            "receipt": receipt, "did": did, "by": _board_result_winner(cfg, did),
+            "at": _now_ts(), "detail": msg[:300]})
+        task.status = "ready"
+        persist_task(cfg, task)
+        append_journal(cfg.journal, f"cycle {cycle}: {task.id} 検証委譲の receipt を受理"
+                                    f"（{did}・{rel or '記録の保存に失敗'}）→ 次の巡回で検算へ")
+        return 1
+    if ok and rev:
+        msg = (f"{msg}（板の run は終端しましたが receipt が返っていません。"
+               "確かめた証跡が無いので採用できません）")
+    task.set("env_resume", "1")
+    task.status = "blocked"
+    why = ("[agent-error:env] 検証不能: このノードでは確かめられない基準があり、板へ検証を"
+           f"回しましたが決着しませんでした（{did}: {msg[:200]}）。環境を直して approve すると、"
+           "同じ run の続きから再開します。")
+    _block(cfg, task, why, reasons)
+    append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（検証委譲も決着せず）")
+    return 1
+
+
+def _board_result_receipt(cfg: "Config", did: str) -> "dict | None":
+    """板の result に載った検証 receipt（無ければ None）。採否の検算は settle 側が行う。"""
+    try:
+        res = BoardRepo(cfg.board, workdir=cfg.board_workdir).read_result(did) or {}
+    except (OSError, RuntimeError, ValueError):
+        return None
+    rec = res.get("receipt")
+    return rec if isinstance(rec, dict) else None
+
+
+def _board_result_winner(cfg: "Config", did: str) -> str:
+    """検証を請け負った端末の名義（読めなければ空）。受理の根拠として記録に残す。"""
+    try:
+        res = BoardRepo(cfg.board, workdir=cfg.board_workdir).read_result(did) or {}
+    except (OSError, RuntimeError, ValueError):
+        return ""
+    return str(res.get("winner") or "")
+
+
 def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
                     autonomy_cache: dict, reasons: dict, cycle0: int,
                     spawn_budget: int) -> dict:
     """offloaded タスク（非ブロッキング委譲・結果待ち）を1回ずつポーリングし、終端した run だけ
-    settle する（未終端はそのまま次パスへ）。専用 daemon が run を保持するので、ここでは待たない。
+    settle する（未終端はそのまま次パスへ）。請負側が run を保持するので、ここでは待たない。
     deltas（settled/archived/spawned/tokens/cost）を返す。"""
     settled = archived = spawned = tokens = 0
     cost = 0.0
+    _board = None   # 遅延・使い回し（board-loc の offloaded がある回だけ 1 回だけ構築・pull する）
+    collected: "list[str]" = []   # 回収し終えた公示（パス末尾でまとめて板から消す）
     for task in [t for t in tasks if t.norm_status() == "offloaded"]:
         run_id = str(task.get("flow_run", "") or "")
-        loc = str(task.get("flow_loc", "daemon") or "daemon")
+        loc = str(task.get("flow_loc", "local") or "local")
         if not run_id:
             continue
-        term, ok, msg = _flow_result_once(cfg, loc == "remote", run_id)
+        if loc in ("board", VERIFY_DELEGATION_LOC):
+            if _board is None:
+                _board = BoardRepo(cfg.board, workdir=cfg.board_workdir)
+                _board.sync_pull()
+            term, ok, msg = _board_result_once(_board, run_id)
+        else:
+            # 旧 daemon/remote 経路で offloaded になったまま残っているタスクの回収路
+            # （新規に board 以外の offloaded は作られない）。
+            term, ok, msg = _flow_result_once(cfg, False, run_id)
         if not term:
             if msg.startswith("error:"):
                 # 結果の取得自体が失敗（CLI 不在・バス破損・出力化け等）。これを「まだ実行中」と
@@ -232,8 +252,15 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
         if not claim_task(cfg, task):      # 実行権を取ってから確定（他インスタンスと競合しない）
             continue
         # claim 後にディスク上で既に offloaded でなければ、他経路（revise/hold）が先に進めた。
-        # ここで settle すると canceled を確定して revise 内容を踏み潰しうる。
+        # ここで settle すると cancelled を確定して revise 内容を踏み潰しうる。
         if task.norm_status() != "offloaded":
+            release_claim(cfg, task)
+            continue
+        if loc == VERIFY_DELEGATION_LOC:
+            # 検証委譲（P4-b）の回収。返ってきたのは**検証の判定**であって成果ではない。
+            settled += _settle_verify_delegation(cfg, task, run_id, ok, msg,
+                                                 cycle0 + settled + 1, reasons)
+            collected.append(run_id)
             release_claim(cfg, task)
             continue
         gb = git_change_baseline(cfg.workdir)   # 完了時点の基準（remote/daemon 委譲は local 差分なし）
@@ -243,22 +270,35 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
         task.drop("flow_run", "flow_loc")
         task.status = "doing"
         persist_task(cfg, task)
+        if loc == "board":
+            # 終端を読み終えた公示は板から消す（設計 §4.2 gc tick「終端した公示」の実体）。
+            # **消してよいと知っているのは依頼側だけ**なので、時間ベースの一括掃除にはしない
+            # ——その期間オフラインだった依頼側が結果を読む前に消えると `read_result` が
+            # None を返し、offloaded が未終端のまま永久に固まる（タイムアウトが無い）。
+            #
+            # **消すのは「タスクが offloaded を抜けた後」**。上の persist_task より前に消すと、
+            # そこでクラッシュしたときタスクは offloaded のまま公示だけ消え、次パスで結果が
+            # 読めず永久に固まる——まさに時間ベース掃除で避けたかった状態になる。
+            # 実際の削除はパス末尾で 1 回にまとめる（board への push を run ごとに撃たない）。
+            collected.append(run_id)
         dtok, dusd = parse_cost(msg)
         tokens += dtok
         cost += dusd
         # 人が dashboard 等から run を中止したとき: verify=true でも done にしない。
-        # retries を上げて次の run-id を変える（同一 id の canceled run を再開しようとして固まるのを防ぐ）。
-        if not ok and msg.rstrip().endswith("canceled"):
+        # retries を上げて次の run-id を変える（同一 id の cancelled run を再開しようとして固まるのを防ぐ）。
+        # 語彙統一（W0-9）により board 経由・flow/daemon 経由とも "cancelled" で揃っている
+        # （旧 "canceled"（米式）との二重判定は不要になった）。
+        if not ok and msg.rstrip().endswith("cancelled"):
             task.retries += 1
             task.status = "ready"
             persist_task(cfg, task)
             append_journal(cfg.journal,
-                           f"cycle {cycle0 + settled + 1}: {task.id} offload run が canceled → "
+                           f"cycle {cycle0 + settled + 1}: {task.id} offload run が cancelled → "
                            f"ready（人が中止・retries={task.retries} で新 run）")
             release_claim(cfg, task)
             settled += 1
             continue
-        # act/flow 失敗: verify=true で偽 done にしない（canceled 以外の not ok）。
+        # act/flow 失敗: verify=true で偽 done にしない（cancelled 以外の not ok）。
         # 上の act 失敗と同じく、検証はここまで到達していないので未実行として記録する。
         if not ok:
             ev = delivery_evidence(cfg, msg, gb, loc,
@@ -270,14 +310,24 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
             release_claim(cfg, task)
             settled += 1
             continue
-        res = _settle_task(cfg, task, loc, msg, cycle0 + settled + 1, dtok, dusd, gb, venv,
-                           policy, autonomy_cache, reasons)
+        res = settle_task(cfg, task, loc, msg, cycle0 + settled + 1, dtok, dusd, gb, venv,
+                          policy, autonomy_cache, reasons)
         archived += res["archived"]
         if res["followups"] and spawned < spawn_budget:
             new = spawn_followups(cfg, task, res["followups"], tasks, spawn_budget - spawned)
             spawned += len(new)
-        release_claim(cfg, task)
         settled += 1
+    if _board is not None:
+        # 回収し終えた公示を消す。失敗しても実害は無い（次パスで同じ run_id を通らないだけ。
+        # 孤児は gc tick の長期マージン掃除が拾う）ので、板の不調で reap を止めない。
+        for did in collected:
+            with contextlib.suppress(Exception):   # noqa: BLE001 — git 転送は OSError に限らない
+                _board.drop_delegation(did)
+        # dashboard 等がこのマシン上の同一板クローンへ直接書いた award.json / cancelled.json は
+        # agent-project 自身は post 時（新規のときだけ）しか push しない——ここで押し出さないと
+        # 依頼側の意思表示（落札確定・中止）が板の同期契機を失い、リモートの請負ノードへ永久に
+        # 届かない。post 有無に関わらず、板を触った回は必ず 1 回 push しておく（差分無しは no-op）。
+        _board.sync_push("reap sync")
     return {"settled": settled, "archived": archived, "spawned": spawned,
             "tokens": tokens, "cost": cost}
 
@@ -292,13 +342,10 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
     # 取り込めなければ push も non-fast-forward で永久に通らず、リモートとの乖離が広がり続ける
     # （実際 viewer が同じ agent-state ブランチへ push した途端に詰まり、分散構成で状態が共有
     # されなくなった）。同期の直前にコミットしておけば rebase は素直に通る。
-    # 人が本体側 <repo>/.agent-project を編集していたら、コミットする前に取り込む。人にとっての
-    # 正本はそこ（リポジトリを開けばある）だが、実書き込み先は状態 worktree なので、取り込まないと
-    # 編集は効かないまま鏡の同期で消える（実際 agent-flow.yaml の evaluator 切替が無視され続けた）。
-    sync_mirror_edits(cfg)
-    commit_state(cfg, force=True)
     state_sync(cfg)                    # 状態 git: リモートの指示（commands/inbox/needs 記入）を先に取り込む
-    tasks, policy, reasons, ingested, inboxed, pre_blocked = _run_setup(cfg)
+    controller = (not _coordination_active(cfg)
+                  or renew_controller_lease(cfg))
+    tasks, policy, reasons, ingested, inboxed, pre_blocked = _run_setup(cfg, controller)
     append_journal(cfg.journal, f"=== agent-project 開始 tasks={len(tasks)} "
                                 f"ingested={len(ingested)} planner={cfg.planner} "
                                 f"executor={cfg.executor} dry_run={cfg.dry_run} ===")
@@ -306,13 +353,13 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
     # 未 push のローカルコミットを起動時に必ず警告する。doctor は人が叩かないと動かないが、
     # これは黙って詰まる（worker と verify は origin から clone するので、ローカルにだけある
     # コミットは彼らからは存在しない）。原因に辿り着くのが難しい詰まり方なので、先に言う。
-    _unpushed, _branch = unpushed_commits(cfg.state_top)
+    _unpushed, _branch = unpushed_commits(cfg.backlog.parent)
     if _unpushed:
         append_journal(cfg.journal,
                        f"警告: origin へ未 push のコミットが {_unpushed} 件ある（{_branch}）。"
                        f"worker と verify は origin から clone するため、これらの成果は彼らから "
                        f"見えない（ローカルでは通るのに verify が落ち続ける）。"
-                       f"`git -C {cfg.state_top} push origin {_branch}` を検討すること")
+                       f"`git -C {cfg.backlog.parent} push origin {_branch}` を検討すること")
     start = time.time()
     cycle = 0
     archived = 0
@@ -327,7 +374,10 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
     autonomy_cache: dict = {}                  # track→自動昇格レコードの読みキャッシュ
 
     while True:                                # report タスクは actionable から除外し有限停止で収束
-        budget_stop_reason = _budget_reason(cfg, cycle, start, tokens_used, cost_used)
+        if _DRAIN_REQUESTED.is_set():
+            reason = REASON_DRAINED
+            break
+        budget_stop_reason = _budget_reason(cfg, cycle, start, tokens_used, cost_used, tasks)
         if budget_stop_reason:
             reason = budget_stop_reason
             break
@@ -344,8 +394,12 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
                 recover_revised(cfg, tasks)
                 policy = load_policy(cfg.policy)
                 ingested += ingest_feedback(cfg, tasks)
+            # フォージ（MR/PR）側の決着を取り込む（S4-4）。検収待ちタスクだけを照会するので
+            # API 呼び出しは有界。到達不能なら何もしない（現状維持）。
+            if poll_task_mrs(cfg, tasks):
+                tasks = load_tasks(cfg.backlog)
 
-        # 非ブロッキング委譲（act_async）の回収: offloaded タスクの run を1回ずつポーリングし、
+        # 非ブロッキング委譲（board）の回収: offloaded タスクの run を1回ずつポーリングし、
         # 終端したものだけ settle する（待たない）。専用 daemon が run を保持するので、gitlab の
         # 長期委譲でもループを塞がず、完了したものから順に消化できる。
         reaped = _reap_offloaded(cfg, tasks, policy, autonomy_cache, reasons, cycle,
@@ -359,7 +413,8 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
             tasks = load_tasks(cfg.backlog)    # settle が状態を変えたので再読
 
         order_all = [t for t in prioritize(tasks, policy, cfg.planner, cfg.model, ranker)
-                     if t.id not in unavailable]  # 他 worker/インスタンスがクレーム済みは除外
+                     if t.id not in unavailable        # 他 worker/インスタンスがクレーム済みは除外
+                     and task_runnable_here(cfg, t)]    # 他ノード（PC）へ割当済みは消化しない
         levels = {t.id: resolve_level(t, cfg, autonomy_cache) for t in order_all}
         for t in order_all:                       # report タスクは実行せず「計画」に載せて保留（塩漬け）
             if levels[t.id] == "report" and t.id not in plan_seen:
@@ -404,21 +459,23 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
                 append_journal(cfg.journal, f"cycle {cycle}: {task.id} cost tokens={dtok} usd={dusd:.4f}"
                                             f"（累計 tokens={tokens_used} usd={cost_used:.4f}）")
             # 人が run を中止したとき: verify=true でも done にしない（リトライ非消費で ready）。
-            # retries は上げる＝次の run-id を変える。上げないと canceled な同一 id を作り直し、
+            # retries は上げる＝次の run-id を変える。上げないと cancelled な同一 id を作り直し、
             # agent-flow は終端 run を再開できず永久 no-op になる。
-            # act 中の revise（軌道修正）は失敗/canceled より優先——結果を確定せず積み直す。
-            if str(act_msg or "").rstrip().endswith("canceled") or act_ok is False:
+            # act 中の revise（軌道修正）は失敗/cancelled より優先——結果を確定せず積み直す。
+            # 語彙統一（W0-9）により board 経由の同一サイクル即時終端（_act_board）・flow/daemon
+            # 経由とも "cancelled" で揃っている（旧 "canceled"（米式）との二重判定は不要）。
+            if str(act_msg or "").rstrip().endswith("cancelled") or act_ok is False:
                 fresh = _load_task_file(cfg, task.id)
                 if fresh is not None and fresh.get("revised"):
                     _requeue_revised(cfg, task, fresh, cycle)
                     release_claim(cfg, task)
                     continue
-            if str(act_msg or "").rstrip().endswith("canceled"):
+            if str(act_msg or "").rstrip().endswith("cancelled"):
                 task.retries += 1
                 task.status = "ready"
                 persist_task(cfg, task)
                 append_journal(cfg.journal,
-                               f"cycle {cycle}: {task.id} run が canceled → ready"
+                               f"cycle {cycle}: {task.id} run が cancelled → ready"
                                f"（人が中止・retries={task.retries} で新 run）")
                 release_claim(cfg, task)
                 continue
@@ -434,8 +491,8 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
                                 reasons, location, phase=PHASE_ACT, verdict=VERIFY_NOT_RUN)
                 release_claim(cfg, task)
                 continue
-            res = _settle_task(cfg, task, location, act_msg, cycle, dtok, dusd, git_base,
-                               verify_env, policy, autonomy_cache, reasons)
+            res = settle_task(cfg, task, location, act_msg, cycle, dtok, dusd, git_base,
+                              verify_env, policy, autonomy_cache, reasons)
             archived += res["archived"]
             if res["followups"] and spawned_total < cfg.max_spawn:   # done から派生タスク（backlog 自走）
                 new = spawn_followups(cfg, task, res["followups"], tasks, cfg.max_spawn - spawned_total)
@@ -444,7 +501,6 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
                     append_journal(cfg.journal,
                                    f"cycle {cycle}: {task.id} から派生生成 {[t.id for t in new]}")
 
-            release_claim(cfg, task)          # doing でなくなったので実行権を解放
             if cfg.once:
                 stop = "once"
                 break
@@ -467,6 +523,8 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
                                 f"done={counts['done']} blocked={counts['blocked']} "
                                 f"notified={notified} promoted={len(promoted)} ===")
     append_runlog(cfg.runlog, {                    # 構造化 run-log（機械可読・運用判断の土台）
+        "run_id": f"{int(time.time_ns())}-{os.getpid()}",
+        "node": str(getattr(cfg, "node", "") or ""),
         "ts": datetime.now().isoformat(timespec="seconds"), "reason": reason,
         "level": cfg.level, "cycles": cycle, "done": counts["done"],
         "blocked": counts["blocked"], "review": counts.get("review", 0),
@@ -485,18 +543,18 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
 
 def _cleanup_bus(cfg: Config) -> None:
     """local run 後に不要となる agent-flow バスの一時状態を掃除する。
-    daemon 稼働中や git バス（remote）は作業中のため触らない。また state_git でバスを
-    リモート viewer へ鏡写ししている構成では、ここで runs/ を消すと『フロータブに見せたい
-    run 状態』を破壊し、削除が次の同期でリモートへ伝播してしまうため触らない
-    （agent-flow 側の state_git がバスの寿命を管理する＝gc に委ねる）。
+    daemon 稼働中や git バス（remote）は作業中のため触らない。
 
     runs/<id>/ は viewer のフロータブが読む一次ソースなので、直近 bus_keep_runs 件は残す。
+    状態リポジトリは bus/ も同期するので削除は次の同期でリモートへ伝播するが、それは
+    「古い run を捨てる」意図どおり——だから消すのは keep 件数を超えた分だけに限る。
     かつては act のたびに runs/ を丸ごと消していたため、run は完了しているのに viewer が
     その最終状態（全ノード done）を観測する前にディレクトリごと消え、最後に撮れた
     スナップショット（最終ノードが実行中）のままフローが固まって見えていた。掃除は
     「古い run を捨てる」ためのものであって「いま終わった run を人の目から隠す」ためのものではない。"""
-    if (not cfg.cleanup or cfg.git_bus or cfg.state_git
-            or daemon_running(cfg, use_git=False)):
+    # 旧 `cfg.state_git`（明示 URL 指定）での素通りは廃止した（S1）。状態ルートは常に状態
+    # 専用リポジトリの clone になり、その条件は「常に真」＝ 掃除が永久に走らなくなるため。
+    if not cfg.cleanup or cfg.git_bus:
         return
     shutil.rmtree(cfg.bus / "inbox", ignore_errors=True)   # local run では使わない submit キュー
     runs = cfg.bus / "runs"
@@ -536,8 +594,12 @@ def has_work(cfg: Config) -> bool:
     後ろに dep-gated ready が並ぶだけで project_watch が空パスを無限に回す（実害: cycles が
     数千まで増え、journal が秒単位で埋まる）。dependents が ready でも ready_after_deps が
     空なら起こさない。"""
+    if _coordination_active(cfg) and availability_state(cfg) != "active":
+        return False
     tasks = load_tasks(cfg.backlog)
-    if ready_after_deps(tasks):
+    # 他ノード（PC）へ割当済みの ready では起こさない。起こすと消化対象ゼロの空パスを
+    # 毎 poll 繰り返す（cycles が増え journal が埋まる）。自ノードが消化できる ready だけで起こす。
+    if any(task_runnable_here(cfg, t) for t in ready_after_deps(tasks)):
         return True
     for t in tasks:
         st = t.norm_status()
@@ -586,12 +648,30 @@ def run_watch(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.sle
               max_passes=None, heartbeat=None) -> dict:
     passes = 0
     last: dict = {}
+    charter_seen: dict[str, float] = {}
+    controller = True                 # pause 中に idle 判定へ入っても未定義参照にならないように
     while True:
         if is_paused(cfg):           # pause 中はパスを起こさない（resume/stop の指示待ち）
             append_journal(cfg.journal, "=== watch: 一時停止中（resume/stop 待ち。エージェント非起動）===")
             write_status(cfg)        # paused をリモート viewer へ知らせる
         else:
-            last = run_loop(cfg, act, ranker, sleeper)
+            controller = (not _coordination_active(cfg)
+                          or renew_controller_lease(cfg))
+            # 計画（charter 分解）は controller だけが行う。**coordination が有効かどうかでは
+            # 分岐しない**——ピアが消えて単独に戻った PC（coordination 非活性 → controller=True）
+            # も計画を続けなければ、生き残った側で charter 駆動が止まる。
+            if controller and (charter_names(cfg) or _has_master_charter(cfg)):
+                # 多 charter はラウンドロビンで全 charter を 1 巡する（max_passes=1 だと
+                # 毎パス先頭の charter しか処理されず、2 本目以降が永久に計画されない）
+                project_watch(cfg, runner=lambda c: run_loop(c, act, ranker, sleeper),
+                              sleeper=sleeper, max_passes=max(1, len(charter_names(cfg))),
+                              heartbeat=heartbeat)
+                tasks = load_tasks(cfg.backlog)
+                last = {"reason": "project", "cycles": 1, "counts": summarize(tasks),
+                        "tasks": tasks, "level": cfg.level}
+                charter_seen = _charter_mtimes(cfg)
+            else:
+                last = run_loop(cfg, act, ranker, sleeper)
             passes += 1
             if heartbeat:
                 heartbeat()          # 各パスで生存信号を更新（共有レジストリ越しのリモート発見用）
@@ -605,17 +685,33 @@ def run_watch(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.sle
                 write_status(cfg)    # 直近パスの生存信号は降格前の level だったため上書きしておく
             if max_passes is not None and passes >= max_passes:
                 return last
+            if _DRAIN_REQUESTED.is_set():
+                return last
             append_journal(cfg.journal, "=== watch: 監視中（新規タスク/フィードバック待ち。"
                                         "エージェントは待機しない）===")
         while is_paused(cfg) or not has_work(cfg):   # idle/pause: エージェント CLI/flow は一切起動しない
             sleeper(cfg.poll)
+            if _DRAIN_REQUESTED.is_set():
+                return last
+            if _coordination_active(cfg):
+                state = availability_state(cfg)
+                if state != "active":
+                    release_controller_lease(cfg)
+                if state == "stopped":
+                    return last
             if heartbeat:
                 heartbeat()          # idle 中も heartbeat を保ち、リモートから生存が見えるようにする
             if not is_paused(cfg):
                 run_intake(cfg)      # 外部ゲートからの汲み上げ（間隔律速。積まれれば has_work が起こす）
             maybe_heartbeat_status(cfg)  # --status-interval のときだけ idle 中も生存信号を更新（既定は無効＝無干渉）
-            commit_state(cfg)        # 状態 worktree: 溜まった変更をまとめてコミット（間隔律速）
-            state_sync(cfg)          # 状態 git: リモートの指示を取り込む（間隔律速。届けば has_work が起こす）
+            state_sync(cfg)          # 状態 git: 溜まった変更をコミットし、リモートの指示を取り込む
+            #                          （コミットは毎回・fetch/push だけ間隔律速。届けば has_work が起こす）
+            next_controller = (not _coordination_active(cfg)
+                               or renew_controller_lease(cfg))
+            if not is_paused(cfg) and next_controller \
+                    and (not controller or _charter_mtimes(cfg) != charter_seen):
+                break                 # 前 controller 停止後の自動昇格／charter 更新で project パスへ
+            controller = next_controller
             if is_paused(cfg):
                 ingest_commands(cfg)  # pause 中も resume/stop（と他の指示）は受け付ける
             if maybe_self_update(cfg):   # アイドル時のみ自己更新を確認・取り込み（取り込めたら再起動）

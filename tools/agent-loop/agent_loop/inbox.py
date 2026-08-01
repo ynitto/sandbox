@@ -18,7 +18,7 @@ class InboxWatcher:
       created_at  (float) 作成日時 (Unix timestamp)
       subject     (str)   件名（省略可）
       body        (str)   本文
-      reply_to    (str)   返信先エージェント名（省略時は from と同じ）
+      reply_to    (str)   返信元メッセージ ID（省略可。返信先エージェント名は from を使う）
       correlation_id (str) 会話追跡用 ID（省略可）
       cwd         (str)   送信元の作業ディレクトリ（省略可）
     """
@@ -28,11 +28,13 @@ class InboxWatcher:
         agent_name: str,
         session_mgr: "SessionManager",
         semaphore: "GlobalSemaphore | None" = None,
+        slot_monitor: "SlotMonitor | None" = None,
         poll_interval: int = 5,
     ) -> None:
         self._agent_name = agent_name
         self._session_mgr = session_mgr
         self._semaphore = semaphore
+        self._slot_monitor = slot_monitor
         self._poll_interval = poll_interval
         self._inbox_dir = _AGENTS_DIR / agent_name / "inbox"
         self._processed_dir = self._inbox_dir / ".processed"
@@ -101,13 +103,19 @@ class InboxWatcher:
                 return False
 
         prompt_text = self._build_prompt(data)
-        return self._session_mgr.send_prompt(prompt_id, prompt_text)
+        ok = self._session_mgr.send_prompt(prompt_id, prompt_text)
+        if ok:
+            if self._slot_monitor is not None and pane_id:
+                self._slot_monitor.track(pane_id)
+        else:
+            if self._semaphore is not None and pane_id:
+                self._semaphore.release(pane_id)
+        return ok
 
     def _build_prompt(self, data: dict[str, Any]) -> str:
         from_agent = data.get("from", "unknown")
         subject = data.get("subject", "")
         body = data.get("body", "")
-        reply_to = data.get("reply_to") or from_agent
         msg_id = data.get("id", "")
 
         parts: list[str] = [f"[エージェント {from_agent} からのメッセージ]"]

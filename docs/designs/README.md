@@ -2,24 +2,25 @@
 
 `docs/designs/` 配下の設計書 25 件をカテゴリ別に整理し、読む順序を示す索引。
 
-## まず読むもの — 主要 4 設計
+## まず読むもの — コンセプトと主要 4 設計
 
-エンジン（agent-project / agent-flow）、ドキュメント一貫性ゲート（codd-gate）、名称移行方針（agent-tools-rename）の4件が全体の骨格。ここから読み始めるとコードベース全体の見取り図が掴める。基本の読む順序は 1 → 2 → 3（制御層 → 実行層 → 品質ゲートの順に責務が積み上がる）。`kiro-*` と `agent-*` の併存に迷ったら、先に 4 を読むと名称の由来と移行状況が先にわかる。
+最初に 0 のコンセプト正典を読む。agent-* ファミリー全体が何のための道具か（チーム利用と人介在の最適化の二本柱）と、設計をぶれさせないための原則 C1〜C7、このリポジトリでの作業ゲートがここにある。続くエンジン（agent-project / agent-flow）、ドキュメント一貫性ゲート（codd-gate）、名称移行方針（agent-tools-rename）の4件が全体の骨格。基本の読む順序は 0 → 1 → 2 → 3（コンセプト → 制御層 → 実行層 → 品質ゲートの順に責務が積み上がる）。`kiro-*` と `agent-*` の併存に迷ったら、先に 4 を読むと名称の由来と移行状況が先にわかる。
 
-1. [`agent-project-design.md`](./agent-project-design.md) — 単一プロジェクトのバックログを自律的に優先順位付け・実行・検証・収束させる制御層の設計正典。3層2ループ構成（project 上位ループ／run 正準ループ／agent-flow 実行層）を地図として示す。
-2. [`agent-flow-design.md`](./agent-flow-design.md) — git 共有バス上でタスクグラフを動的生成し複数ワーカーへ分散実行する Dynamic Workflow 基盤の設計書。
+0. [`agent-tools-concept.md`](./agent-tools-concept.md) — ファミリー全体の上位文書。個人単位のクレジットを前提に実作業をチームで分担する（柱1）、人の判断を最少回数・最高品質で使い品質責任を個人に負わせない（柱2）という二本柱と、原則 C1〜C7、モジュール別の設計方針、作業時の強制ゲート（§7）を定める。対象パスの変更はこのゲートを通す。
+1. [`agent-project-design.md`](./agent-project-design.md) — 単一プロジェクトのバックログを自律的に優先順位付け・実行・検証・収束させる制御層の設計正典。done を verify の終了コードだけで確定する不変条件、常駐体と子プロセスの分担、複数 PC を git の CAS で調停する方式を扱う（旧 multi-node daemon 設計を統合済み）。
+2. [`agent-flow-design.md`](./agent-flow-design.md) — git 共有バス上でタスクグラフを動的生成し複数ワーカーへ分散実行する Dynamic Workflow 基盤の設計書。自己回復リトライ（4 層）とリトライ時の世代交代（`inherit_from`）も統合済み。
 3. [`codd-gate-design.md`](./codd-gate-design.md) — ドキュメント・コード・テストの一貫性を「受け入れ前ゲート」と「負債棚卸し→タスク化」で維持する決定的ツールの設計正典。agent-project 本体は無改造のまま、`schemas/` の共通データ契約と agent-project 側の汎用フック契約（E1〜E3）の2点で連携する独立ツール。
 4. [`agent-tools-rename-design.md`](./agent-tools-rename-design.md) — 旧 `kiro-*` 系統を `agent-*` へクローン移行・改称する方針と新旧名称対応表。agent-project/agent-flow/agent-dashboard の移行は完了、`kiro-loop → agent-loop` の移行のみ未了で、現行の指針であり続けている（詳細は次節「ループ拡張」の注記）。
 
-> **補足**: agent-dashboard の画面設計は主に `docs/plans/2026-07-14-agent-dashboard-*-design.md` 等に分散。本ディレクトリには制御面分離の正典 [`agent-dashboard-feature-split-design.md`](./agent-dashboard-feature-split-design.md) を置く。
+> **補足**: agent-dashboard の画面ごとの詳細設計は `docs/plans/2026-07-1x-agent-dashboard-*-design.md` に日付つきで分散している。本ディレクトリには骨格の正典 [`agent-dashboard-design.md`](./agent-dashboard-design.md) を置く。
 
 ---
 
 ## カテゴリ別索引（全 25 件）
 
-### 1. 主要 4 設計
+### 1. コンセプトと主要 4 設計
 
-詳細な要旨は前掲「まず読むもの」を参照。[`agent-project-design.md`](./agent-project-design.md) ・ [`agent-flow-design.md`](./agent-flow-design.md) ・ [`codd-gate-design.md`](./codd-gate-design.md) ・ [`agent-tools-rename-design.md`](./agent-tools-rename-design.md)
+詳細な要旨は前掲「まず読むもの」を参照。[`agent-tools-concept.md`](./agent-tools-concept.md) ・ [`agent-project-design.md`](./agent-project-design.md) ・ [`agent-flow-design.md`](./agent-flow-design.md) ・ [`codd-gate-design.md`](./codd-gate-design.md) ・ [`agent-tools-rename-design.md`](./agent-tools-rename-design.md)
 
 ### 2. ループ拡張（kiro-loop / agent-loop）
 
@@ -41,10 +42,9 @@
 
 | ファイル | 要旨 |
 |---|---|
-| [`agent-amigos-design.md`](./agent-amigos-design.md) | 役割ミッション表と design doc で公示したミッションに分散ノードがロールを claim して参加し、オーナーが指示した収束条件・予算（実質実行時間）の範囲で型付きメッセージで相互協働しながら 1 つの成果物をオーナーへ納品する協働基盤の設計。P0（MVP）・P1（GitBus 分散・away プロトコル）・P2（hub サーバ・owner-picks・acceptance: agent・スキーマ正典化）を `tools/agent-amigos/` に実装済み。1 ノードでも自己補充で完結し、中央は専用バスリポジトリ（ミッション別ブランチ、state_git の同期規律を流用）または任意の hub（転送のみ、P1/P2）。定時シャットダウンには away プロトコルとターン原子性で耐える。 |
-| [`agent-dashboard-feature-split-design.md`](./agent-dashboard-feature-split-design.md) | agent-dashboard を base / agent-project / kiro-loop にソース分離し、フルプラグインなしで他グループが kiro-loop 制御面を差し込めるようにする設計。 |
-| [`agent-cli-plugin-design.md`](./agent-cli-plugin-design.md) | agent-project/agent-flow の LLM 実行 CLI をプラグイン化しデータ契約のみで拡張可能にし、失敗を quota/auth/env/transient で決定的にトリアージする設計。 |
-| [`agent-flow-retry-inheritance-design.md`](./agent-flow-retry-inheritance-design.md) | agent-flow のリトライ時に先行 run の結果・成果物・作業ブランチを再利用し先行 run を安全削除する設計。 |
+| [`agent-amigos-design.md`](./agent-amigos-design.md) | 役割ミッション表と design doc で公示したミッションに分散ノードがロールを claim して参加し、オーナーが指示した収束条件と予算（実質実行時間）の範囲で型付きメッセージをやり取りしながら 1 つの成果物をオーナーへ納品する協働基盤の設計正典。`tools/agent-amigos/` に実装済みで、残る欠落は同書 §9 に明記。中央は専用バスリポジトリ（ミッション別ブランチ、state_git の同期規律を流用）で、転送だけを担い調整はしない。1 ノードでも自己補充で完結し、定時シャットダウンには away プロトコルとターン原子性で耐える。チーム設計の自動化（team-builder）とオーケストレーションパターンの写像（旧 `agent-amigos-teambuilder-patterns.md`）も統合済み。 |
+| [`agent-dashboard-design.md`](./agent-dashboard-design.md) | 別ホストで動く agent-project / agent-flow / agent-amigos / 定常業務を 1 つの Windows GUI から見渡し、人の判断だけを公式契約で返す操作面の設計正典。dashboard は状態の書き手にならない（読むのはファイル、書くのは `commands/` 等の投函だけ）・制御面はソースツリー分離と列挙合成・プロジェクトの発見は実行側の `engine/status.json` 1 枚、の 3 点が骨格。旧 `agent-dashboard-{feature-split,kiro-loop-terminal,project-ux-improvements}` を統合済み。 |
+| [`agent-cli-plugin-design.md`](./agent-cli-plugin-design.md) | エージェント CLI の呼び出しを「CLI × モード（ヘッドレス/対話）× 権限（書き込み可/読み取り専用）」のデータ契約 `agents/<name>.json` で差し替え可能にし（組み込み 4 CLI も定義ファイル化・Python ローダは agentcore に 1 実装）、失敗を quota/auth/env/transient で決定的にトリアージする設計。agent-project / agent-flow / agent-amigos / agent-dashboard が共通で使う。 |
 | [`git-gitlab-circuit-breaker-pattern.md`](./git-gitlab-circuit-breaker-pattern.md) | git/GitLab へアクセスする任意ツール向けの汎用サーキットブレーカー＋監視パターン。 |
 | [`git-worktree-cache-pattern.md`](./git-worktree-cache-pattern.md) | 同一 remote を繰り返し clone するツール向けに共有 bare ミラー＋使い捨て worktree へ置換する汎用パターン。 |
 | [`gitlab-agent-sns-design.md`](./gitlab-agent-sns-design.md) | GitLab Issue＋Moltbook リポジトリでエージェント向け SNS を構築する moltbook-use の確定版設計。 |
@@ -64,4 +64,4 @@
 
 ## 前提・スコープ外の事項
 
-本 README は `docs/designs/` 配下の実ファイル一覧（25件、実在確認・漏れ/幽霊ファイルなしを確認済み）を基準に作成した。
+本 README は `docs/designs/` 配下の実ファイル一覧（25 件、2026-07-27 に実在確認済み）を基準に作成した。

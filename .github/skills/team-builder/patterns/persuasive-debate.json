@@ -1,0 +1,48 @@
+{
+  "id": "persuasive-debate",
+  "name": "Persuasive Debate（割当側討論）",
+  "category": "debate-consensus",
+  "tier": "medium",
+  "source": "Persuasive LLMs (Khan et al., 2024)",
+  "when_to_use": "二者択一を、各案の擁護役を割り当てて論じさせ裁定したいとき。",
+  "signals": [
+    "二択の意思決定",
+    "各案を強く擁護させたい"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "setter",
+        "role": "対立する 2 案を用意する",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "debater",
+        "role": "割り当てられた側（席0=案A擁護 / 席1=案B擁護）として、毎ラウンド相手の前主張に反論しつつ自案を擁護する",
+        "required": true,
+        "approver": false,
+        "seats": 2,
+        "rounds": 2,
+        "collaborates_with": [
+          "setter"
+        ]
+      },
+      {
+        "id": "judge",
+        "role": "両者の最終主張から優勢な案を選び承認する",
+        "required": true,
+        "approver": true,
+        "collaborates_with": [
+          "debater"
+        ]
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved",
+      "review_rounds": 1
+    }
+  },
+  "feasibility": "native",
+  "feasibility_note": "2 席の割当側討論を rounds:2（G3）で同期させ、judge が裁定する。席0/席1 の役割差はミッション文で指定する。"
+}

@@ -123,6 +123,26 @@ test('plan は enabled=false を完全な no-op にする', () => {
   assert.deepStrictEqual(sc.plan(data, { engine: 'kiro-loop' }), []);
 });
 
+
+test('chat はコマンドごとに従来ペースト式とまとめ依頼式を選べる', () => {
+  const entries = sc.plan({
+    revision: 9,
+    commands: [
+      { id: 'slash', mode: 'chat', strategy: 'paste', run: '/skill skill-selector' },
+      { id: 'docs', mode: 'chat', strategy: 'bundle', run: 'docs を読む' },
+      { id: 'skill', mode: 'chat', strategy: 'bundle', run: 'skill-selector を使う' },
+    ],
+  }, { engine: 'kiro-loop' });
+  assert.strictEqual(entries.length, 2);
+  assert.strictEqual(entries[0].id, 'slash');
+  assert.strictEqual(entries[0].strategy, 'paste');
+  assert.strictEqual(entries[1].id, 'agent-startup-actions');
+  assert.strictEqual(entries[1].strategy, 'bundle');
+  assert.deepStrictEqual(entries[1].bundled_ids, ['docs', 'skill']);
+  assert.ok(entries[1].run.includes('agent-session-command-bundle rev:9'));
+  assert.ok(entries[1].run.includes('[docs] docs を読む'));
+});
+
 test('plan は chat を単発系で no-session としてスキップする', () => {
   const data = { commands: [{ id: 'c', mode: 'chat', run: 'docs を読んで' }] };
   const onLoop = sc.plan(data, { engine: 'kiro-loop' });
@@ -196,7 +216,7 @@ test('起動スクリプトはスキップ済みの行を差し込まない', ()
   assert.strictEqual(lines, '');
 });
 
-test('chat は paste-buffer で送り、業務プロンプトより前に置く', () => {
+test('chat は send-keys で送り、業務プロンプトより前に置く', () => {
   const entries = sc.plan(
     { commands: [{ id: 'prime', mode: 'chat', run: 'docs を読んで' }] },
     { engine: 'dashboard' }
@@ -209,12 +229,38 @@ test('chat は paste-buffer で送り、業務プロンプトより前に置く'
   const promptAt = script.indexOf('本題のプロンプト');
   assert.ok(chatAt > 0 && promptAt > 0);
   assert.ok(chatAt < promptAt, 'chat コマンドは業務プロンプトより先に送る');
-  assert.ok(script.includes('paste-buffer'), 'send-keys ではなく paste-buffer で送る');
+  // スラッシュ補完メニューでの文字化けを避けるため、一括ペーストではなく send-keys で打鍵する。
+  assert.ok(script.includes('send-keys -t "$__ses" -l -- '), 'send-keys で本文を送る');
+  assert.ok(script.includes('sleep 1; tmux send-keys -t "$__ses" Enter;'),
+    'Codex が改行扱いしないよう Enter を遅らせて別送信する');
+  assert.ok(!script.includes('paste-buffer'), 'paste-buffer は使わない');
+});
+
+test('Codex の引数なし $skill は補完確定後にもう一度 Enter を送る', () => {
+  const script = loopProvider.chatWindowScript({
+    chatCommand: ['codex'], cwd: '/w', session: 's',
+    prompt: '$openai-templates:artifact-template-analytics-dashboard',
+    sessionCommands: [
+      { id: 'caveman', mode: 'chat', run: '$caveman' },
+      { id: 'ponytail', mode: 'chat', run: '$ponytail full' },
+    ],
+  });
+  const delayedDoubleEnter = /sleep 1; tmux send-keys[^;]+ Enter; sleep 1; tmux send-keys[^;]+ Enter;/;
+  assert.ok(script.slice(script.indexOf("'$caveman'")).match(delayedDoubleEnter),
+    '開始コマンドの skill を実行する');
+  assert.ok(
+    script.slice(script.indexOf("'$openai-templates:artifact-template-analytics-dashboard'"))
+      .match(delayedDoubleEnter),
+    '本題の skill も実行する'
+  );
+  const ponytail = script.slice(script.indexOf("'$ponytail full'"), script.indexOf("'$ponytail full'") + 180);
+  assert.strictEqual((ponytail.match(/send-keys[^;]+ Enter;/g) || []).length, 1,
+    '引数付き skill は Enter を1回送る');
 });
 
 // CLIチャット起動ボタン（プロンプトを送らない経路）との統合。両機能が同じ
 // chatWindowScript を通るため、片方だけを見たテストでは落ちない穴が空きやすい。
-test('プロンプトを送らない起動でも新規セッションなら開始コマンドが走る', () => {
+test('プロンプトを送らない起動（CLIチャット）は毎回「エージェントに送る」を実行する', () => {
   const entries = sc.plan(
     { commands: [
       { id: 'sync', mode: 'process', run: 'git fetch' },
@@ -228,14 +274,36 @@ test('プロンプトを送らない起動でも新規セッションなら開�
   });
   assert.ok(script.includes('git fetch'), 'process はプロンプト無しでも走る');
   assert.ok(script.includes('docs を読んで'), 'chat もプロンプト無しの起動で送る');
-  assert.ok(script.includes('grep -qE'), 'chat を送るなら入力プロンプトを待つ');
+  assert.ok(script.includes('grep -qiE'), 'chat を送るなら入力プロンプトを待つ');
+  // 業務プロンプト無しの手動オープンでは、既存セッションへ再接続しても送れるよう
+  // 新規セッション（__new）に限定しない。__new 限定だと初回以降・設定変更後に一度も効かない。
+  const chatAt = script.indexOf('docs を読んで');
+  const guardAt = script.lastIndexOf('__new -eq 1', chatAt);
+  assert.ok(
+    guardAt < 0 || script.slice(guardAt, chatAt).includes('fi;'),
+    'chat 送信は __new（新規セッション）に閉じ込めない'
+  );
+});
+
+test('業務プロンプトを送る定常ループでは chat 前準備を新規セッション時だけ送る（二重送信を避ける）', () => {
+  const entries = sc.plan(
+    { commands: [{ id: 'prime', mode: 'chat', run: 'docs を読んで' }] },
+    { engine: 'kiro-loop', cwd: '/w' }
+  );
+  const script = loopProvider.chatWindowScript({
+    chatCommand: 'kiro-cli chat', cwd: '/w', session: 's',
+    prompt: '本題のプロンプト', sessionCommands: entries,
+  });
+  const chatAt = script.indexOf('docs を読んで');
+  const guardAt = script.lastIndexOf('if [ $__new -eq 1 ]; then', chatAt);
+  assert.ok(guardAt >= 0, 'ループでは chat 前準備を __new で囲う');
 });
 
 test('送るものが何も無ければ入力プロンプトを待たずに接続する', () => {
   const script = loopProvider.chatWindowScript({
     chatCommand: ['claude'], cwd: '/w', session: 's', prompt: null, sessionCommands: [],
   });
-  assert.ok(!script.includes('grep -qE'), '接続だけなら待たない');
+  assert.ok(!script.includes('grep -qiE'), '接続だけなら待たない');
   assert.ok(!script.includes('tmux set-buffer -b agentdash --'), '空プロンプトを送らない');
   assert.ok(script.includes('tmux attach -t "$__ses"'));
 });
@@ -244,8 +312,12 @@ test('CLIチャット起動ボタンの経路が開始コマンドを渡す', ()
   const src = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'features', 'agent-project', 'main', 'agent.js'), 'utf8'
   );
-  assert.ok(/sessionCommands:\s*planSessionCommands\(cfg, projectDir\)/.test(src),
+  assert.ok(/sessionCommands:\s*planSessionCommands\(cfg, projectDir[,)]/.test(src),
     'openInteractiveChat が計画を渡していない（新規セッションなのに前準備が走らなくなる）');
+  // 起動する CLI のスキル起動記号（codex は `$`）を計画へ渡す。渡さないと `/skill-name` が
+  // そのまま送られ、codex ではスキルが起動しない。
+  assert.ok(/skillCommandPrefix:\s*launch\.skillCommandPrefix/.test(src),
+    'CLIチャット・対話診断が解決済みのスキル起動記号を渡していない');
 });
 
 test('コマンドが無ければ起動スクリプトは従来と同じ形のままになる', () => {
@@ -277,6 +349,8 @@ test('設定カードは保存・追加・プレビューの動線を持つ', ()
   assert.ok(src.includes('orchestrationSessionCommandsPreview'));
   assert.ok(src.includes('使用するコマンド'), '利用者が設定内容を見出しだけで判断できる');
   assert.ok(src.includes('通常は設定しなくても使えます'), '設定が任意であることを明示する');
+  assert.ok(src.includes('orch-sess-bundle'), 'コマンドごとにまとめ依頼を選ぶチェックボックスが無い');
+  assert.ok(src.includes('まとめて依頼'), 'まとめ依頼の表示文言が無い');
   assert.ok(/id="btn-orch-sess-save" class="primary-inline"[^>]*>保存</.test(src),
     '保存操作は共通の色と短い文言にする');
 });
@@ -293,6 +367,41 @@ test('画面は反映状況と注意書き（引用・中止・反映点）を�
   assert.ok(src.includes('で囲んでください'), 'シェル引用は利用者の責任だと明示する');
   assert.ok(src.includes('起動しなくなります'), 'fail の副作用を明示する');
   assert.ok(src.includes('次に始まるセッションから'), '反映点を明示する');
+});
+
+// ---------------------------------------------------------------------------
+// スキル起動記号（agents/<name>.json の skill_command_prefix）
+// ---------------------------------------------------------------------------
+
+test('chat モードは CLI のスキル起動記号で行頭 / を差し替える（codex は $）', () => {
+  const data = { commands: [{ id: 'skill', mode: 'chat', run: '/graphify を実行して' }] };
+  const asCodex = sc.plan(data, { engine: 'dashboard', skill_command_prefix: '$' });
+  assert.strictEqual(asCodex[0].run, '$graphify を実行して');
+  // 既定 `/` の CLI では何も変えない（claude / kiro は `/skill-name` のまま）。
+  assert.strictEqual(sc.plan(data, { engine: 'dashboard' })[0].run, '/graphify を実行して');
+});
+
+test('パスの / は書き換えない（スキル起動だけを対象にする）', () => {
+  const entries = sc.plan(
+    { commands: [{ id: 'p', mode: 'chat', run: '/home/user/docs を読んで' }] },
+    { engine: 'dashboard', skill_command_prefix: '$' }
+  );
+  assert.strictEqual(entries[0].run, '/home/user/docs を読んで');
+});
+
+test('process モードは書き換えない（シェルコマンドは CLI の作法と無関係）', () => {
+  const entries = sc.plan(
+    { commands: [{ id: 'sh', mode: 'process', run: '/usr/bin/git fetch' }] },
+    { engine: 'dashboard', skill_command_prefix: '$' }
+  );
+  assert.strictEqual(entries[0].run, '/usr/bin/git fetch');
+});
+
+test('codex の定義が $ を宣言している', () => {
+  const agentCli = require('../src/features/agent-project/main/agentCli');
+  const repoRoot = path.join(__dirname, '..', '..', '..');
+  assert.strictEqual(agentCli.skillCommandPrefix(agentCli.loadCli('codex', repoRoot)), '$');
+  assert.strictEqual(agentCli.skillCommandPrefix(agentCli.loadCli('claude', repoRoot)), '/');
 });
 
 console.log(`\n${passed} session-commands tests passed`);

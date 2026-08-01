@@ -1,0 +1,43 @@
+{
+  "id": "prd-peer-rank",
+  "name": "PRD（ピアランク討議）",
+  "category": "verification-judging",
+  "tier": "medium",
+  "source": "PRD (Li et al., 2023)",
+  "when_to_use": "出場者が互いをペア評価し、ピアの信頼度で重み付けして上位を選ぶとき。",
+  "signals": [
+    "相互評価",
+    "ピアランキング"
+  ],
+  "team": {
+    "roles": [
+      {
+        "id": "contestant-a",
+        "role": "回答し、他者をペア評価する",
+        "required": true,
+        "approver": false
+      },
+      {
+        "id": "contestant-b",
+        "role": "回答し、他者をペア評価する",
+        "required": true,
+        "approver": false,
+        "collaborates_with": [
+          "contestant-a"
+        ]
+      },
+      {
+        "id": "arbiter",
+        "role": "ピア評価を重み付けし上位を裁定・承認する",
+        "required": true,
+        "approver": true
+      }
+    ],
+    "convergence": {
+      "done_when": "reviewer-approved",
+      "quiescence_turns": 2
+    }
+  },
+  "feasibility": "partial",
+  "feasibility_note": "ピア信頼度の重み付き集計は拡張（G2）。"
+}

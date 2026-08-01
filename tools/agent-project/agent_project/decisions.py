@@ -6,13 +6,30 @@ def decision_path(cfg: "Config", tid: str) -> Path:
 
 
 def next_dr_id(path: Path) -> str:
+    return f"DR-{_max_dr_num(path) + 1:04d}"
+
+
+def _max_dr_num(path: Path) -> int:
     n = 0
     if path.exists():
         for line in path.read_text(encoding="utf-8").splitlines():
             m = DR_HEADER_RE.match(line)
             if m:
                 n = max(n, int(m.group(1)))
-    return f"DR-{n + 1:04d}"
+    return n
+
+
+def dr_num(dr: "str | None") -> int:
+    """`DR-0007` → 7。空・読めない綴りは 0（「記録なし」と同じ扱い）。"""
+    m = re.search(r"(\d+)", str(dr or ""))
+    return int(m.group(1)) if m else 0
+
+
+def latest_dr_id(cfg: "Config", tid: str) -> str:
+    """このタスクの決定記録の最新 DR 番号（`DR-0007`）。1 件も無ければ空文字。
+    「いつの時点の記録より後か」を数えるための時計として使う（日付は日単位で足りない）。"""
+    n = _max_dr_num(decision_path(cfg, tid))
+    return f"DR-{n:04d}" if n else ""
 
 
 def append_decision(cfg: "Config", tid: str, actor: str, context: str,
@@ -41,6 +58,44 @@ def append_decision(cfg: "Config", tid: str, actor: str, context: str,
     return dr
 
 
+# DR ヘッダの actor がこれらなら機械の記録（人の判断ではない）。人の判断だけを
+# 「もう答えが出ている」の根拠にするため、ここで明示的に区別する。
+_MACHINE_ACTORS = {"auto", "system", "gitlab", "forge"}
+_DR_ACTOR_RE = re.compile(r"^##\s+DR-\d+\s+\S+\s+actor:\s*(?P<actor>.+?)\s*$")
+_DR_AFFECTS_RE = re.compile(r"^-\s*affects\s*:\s*\S+\s*→\s*(?P<status>[A-Za-z_-]+)", re.M)
+
+
+def last_human_decision(cfg: "Config", tid: str) -> "dict | None":
+    """このタスクについて**人**が下した最後の決定（DR）。無ければ None。
+
+    返すのは `{"dr", "actor", "action", "to"}`。`to` は `- affects : <id> → <status>` が
+    示す遷移先 status（読めなければ空）。
+
+    使い道は「同じ判断を人に二度させない」（コンセプト正典 C3）の判定材料。決定記録は
+    追記のみで衝突なく合流するため、**状態ファイルの同期が競合しても人の決定だけは全 PC へ
+    届く**——古い status を持つ PC が「まだ判断待ち」と誤解して票を作り直すのを、この記録で
+    止められる（判断待ちの復活ループ。総覧 G-2）。"""
+    path = decision_path(cfg, tid)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    found: "dict | None" = None
+    for block in re.split(r"(?=^## DR-)", text, flags=re.M):
+        head = block.splitlines()[0] if block.strip() else ""
+        m = _DR_ACTOR_RE.match(head)
+        if not m or m.group("actor").strip() in _MACHINE_ACTORS:
+            continue
+        dr = DR_HEADER_RE.match(head)
+        act = re.search(r"^-\s*action\s*:\s*(?P<action>.+?)\s*$", block, flags=re.M)
+        to = _DR_AFFECTS_RE.search(block)
+        found = {"dr": f"DR-{int(dr.group(1)):04d}" if dr else "",
+                 "actor": m.group("actor").strip(),
+                 "action": act.group("action").strip() if act else "",
+                 "to": to.group("status") if to else ""}
+    return found                      # 最後に現れた人の DR（追記順＝時系列）
+
+
 # ---------------------------------------------------------------------------
 # DR 学習（過去の人の判断から類似案件を自動解決して通知を減らす）
 # ---------------------------------------------------------------------------
@@ -52,11 +107,50 @@ def _title_overlap(a: str, b: str) -> float:
     return len(wa & wb) / len(wa | wb)
 
 
+def split_learn_scope(guide: str) -> "tuple[str, tuple[str, str]]":
+    """guide 末尾のスコープタグを (本文, (kind, name)) に分ける。タグ無しは kind=""（全体）。"""
+    m = LEARN_SCOPE_RE.search(guide)
+    if not m:
+        return guide.strip(), ("", "")
+    return guide[:m.start()].strip(), (m.group("kind"), m.group("name"))
+
+
+def _learn_scope_applies(task: Task, kind: str, name: str) -> bool:
+    """スコープ付き learn をこのタスクへ適用してよいか（W10）。全体（kind=""）は常に適用。"""
+    if not kind:
+        return True
+    if kind == "charter":
+        return task_charter_name(task) == name
+    return name in str(task.get("workspace") or "")     # repo: workspace 指定の部分一致
+
+
+def learn_suppressed(path: "Path", limit: int) -> bool:
+    """learn 出典（decisions/<src>.md）単位の失効判定（W10）。
+
+    人の無効化（`action  : learn-disable` の決定記録）か、連続不発（learn-misfire が
+    learn-worked を挟まず limit 回）で、その出典の learn は適用しない。記録は append-only の
+    決定記録だけで数える（新ファイルなし・ファイル内の追記順＝時系列）。"""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    streak, disabled = 0, False
+    for block in re.split(r"(?=^## DR)", text, flags=re.M):
+        if "action  : learn-disable" in block:
+            disabled = True
+        elif "action  : learn-misfire" in block:
+            streak += 1
+        elif "action  : learn-worked" in block:
+            streak = 0
+    return disabled or (limit > 0 and streak >= limit)
+
+
 def _best_learn_match(task: Task, threshold: float, files: "list[Path]",
                       label, skip_id: "str | None" = None,
                       pattern: "re.Pattern" = LEARN_RE) -> "tuple[str, str] | None":
     """与えた md 群の該当行（既定 `- learn:`／pattern で `- avoid:` 等に切替）を Jaccard で
-    タイトル照合し最良を返す（決定的・LLM 不要）。pattern は title/guide の名前付きグループを持つこと。"""
+    タイトル照合し最良を返す（決定的・LLM 不要）。pattern は title/guide の名前付きグループを持つこと。
+    guide 末尾のスコープタグ（W10）はここで解釈し、スコープ外の行は候補にしない。"""
     best, best_score = None, 0.0
     for f in sorted(files):
         if skip_id is not None and f.stem == skip_id:  # 自分の履歴は除く（自己ループ防止）
@@ -65,9 +159,12 @@ def _best_learn_match(task: Task, threshold: float, files: "list[Path]",
             m = pattern.match(line)
             if not m:
                 continue
+            guide, (kind, name) = split_learn_scope(m.group("guide"))
+            if not _learn_scope_applies(task, kind, name):
+                continue
             score = _title_overlap(task.title, m.group("title"))
             if score >= threshold and score > best_score:
-                best, best_score = (label(f), m.group("guide").strip()), score
+                best, best_score = (label(f), guide), score
     return best
 
 
@@ -106,8 +203,10 @@ def find_learned_resolution(cfg: "Config", task: Task) -> "tuple[str, str] | Non
     どちらも決定的なファイル走査＋Jaccard で、エージェント（LLM）を一切起動しない。"""
     local = []
     if cfg.decisions.exists():
-        local = _best_learn_match(task, cfg.learn_threshold,
-                                  list(cfg.decisions.glob("*.md")),
+        limit = int(getattr(cfg, "learn_misfire_limit", 3) or 0)
+        files = [f for f in cfg.decisions.glob("*.md")
+                 if not learn_suppressed(f, limit)]     # 失効した出典は適用しない（W10）
+        local = _best_learn_match(task, cfg.learn_threshold, files,
                                   label=lambda f: f.stem, skip_id=task.id)
     if local:
         return local
@@ -117,6 +216,23 @@ def find_learned_resolution(cfg: "Config", task: Task) -> "tuple[str, str] | Non
             return _best_learn_match(task, cfg.learn_threshold, list(mem_dir.glob("*.md")),
                                      label=lambda f: f"ltm:{f.stem}")
     return None
+
+
+def record_learn_outcome(cfg: "Config", task: Task, worked: bool, why: str = "") -> None:
+    """auto-resolve（learn 適用）の結末を**出典の決定記録**へ返す（W10・タスクごと 1 回）。
+
+    done なら learn-worked、再 blocked なら learn-misfire。出典ファイル内の追記順が時系列なので、
+    learn_suppressed が「worked を挟まない misfire の連続」をそのまま数えられる。ltm 出典は
+    ローカルに決定記録が無いので対象外。"""
+    src = str(task.get("autolearned") or "").strip()
+    if not src or src == "1" or src.startswith("ltm:") or task.get("learn_outcome"):
+        return
+    task.extra.append(("learn_outcome", "worked" if worked else "misfire"))
+    append_decision(cfg, src, "auto",
+                    context=f"{task.id}（{task.title}）への learn 適用の結果",
+                    action="learn-worked" if worked else "learn-misfire",
+                    reason=(("成功: " if worked else "不発: ") + f"{task.id} {why}").strip()[:160],
+                    affects=src)
 
 
 def find_avoidance(cfg: "Config", task: Task) -> "tuple[str, str] | None":

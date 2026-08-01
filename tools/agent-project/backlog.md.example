@@ -16,7 +16,8 @@ schemas/task.schema.json（本ファイルが Markdown 形の正典・未知キ�
   - source : human | triage | followup        # 出自の系。省略時 human
   - priority: 0                                 # 外部付与の優先度（整数・大ほど高。省略時 0）
   - verify : `終了コード0をPASSとみなすシェルコマンド`     # 書ければこれが最良（最も確実）
-  - accept : <自然言語の完了条件>                # 任意。verify が書けないとき。実行時にエージェントが verify を合成
+  - acceptance: <受入基準（自然文）>             # 任意・複数行可。検証エージェントが証跡付きで判定する
+  - accept : <自然言語の完了条件>                # 任意。acceptance 1 項目と同じ扱い（後方互換）
   - verify_template: file-contains :: <path> :: <文字列>   # 任意。決定的テンプレで verify を生成（エージェント不要）
   - retries: 0                                  # 失敗回数。agent-project が自動更新（初期 0）
   - review : human                              # 任意。verify PASS でも done 前に人の承認を要する（検収ゲート）
@@ -32,6 +33,9 @@ schemas/task.schema.json（本ファイルが Markdown 形の正典・未知キ�
   - constraints : <タスク固有の制約>             # 任意。守るべき規約・禁止事項（rules/charter に上乗せ）
   - hints  : <実装の手がかり>                    # 任意。関連ファイル・参考実装・調査済み情報
   - demo   : <人の確認観点>                      # 任意。検収で人が何をどう確かめるか（ワーカーにも伝わる）
+  - size   : S | M | L                          # 任意。規模感（分解の妥当性を人が判断する材料。実行には効かない）
+  - planned_title: <プランナーが付けた原題>      # system 管理。人が題を直しても重複照合が効き続ける指紋
+  - edited : human                              # system 管理。人が revise / レビュー票で確定した印（replan が作り直さない）
   - note   : 任意（保持される）
 
 フィールドの意味:
@@ -48,12 +52,32 @@ schemas/task.schema.json（本ファイルが Markdown 形の正典・未知キ�
            コミットにマッチして“やってないのに done”になる。**コードの結果**を assert する（例:
            `grep -q "def new_helper" util.py`）か、**差分**を見る（`git diff` / 環境変数
            `$KIRO_BASE_REV`＝act 前の HEAD を使い `git log $KIRO_BASE_REV..HEAD --grep ...`）。
-- accept / verify_template : **verify を人が書く負担を減らす入口**（最終的に concrete な verify に変換され、
-           done は verify のみが根拠の鉄則は不変）。`accept`=自然言語の完了条件をエージェントが決定的 verify に合成。
-           `verify_template`=決定的に展開（エージェント不要）。テンプレ名: file-contains :: path :: 文字列／
-           file-exists :: path／defines :: symbol :: path／diff-contains :: 文字列（$KIRO_BASE_REV 差分）／
-           cmd-succeeds :: コマンド。これらがあれば verify 空でも ready 扱い（rot/inbox 落ちにしない）。
-           合成/展開できなければ verify 空のまま＝従来どおり人へ。
+- acceptance : **受入基準チェックリスト**（S5。3〜7 項目・自然文。1 行 1 基準で複数行書ける）。
+           `verify` が書けない条件はこちらに書く。settle 時に**検証エージェント**が、基準ごとに
+           実際にコマンドを試行錯誤して充足を確かめ、**判定 + 証跡**（実行したコマンド・出力の要約・
+           参照したファイル）を返す。全基準 pass のみ機械 done 候補。
+           例:
+             - acceptance: CLIチャットの起動先に宣言済みリポジトリが並ぶ
+             - acceptance: 宣言が無いリポジトリは非活性で理由付きで表示される
+             - acceptance: 既存の tmux セッション名の付け方を壊していない
+           **なぜコマンドではなく基準なのか**: 自然文から 1 発でコマンドを合成する方式は、環境差で
+           大半が失敗して人へ倒れるうえ、合成されたコマンドが「たまたま通る劣化した検証」でも
+           **人にはそれを見抜く材料が無い**。人がレビューできるのは基準と証跡であって、コマンドの
+           良し悪しではない。検収票にはこの「基準 × 証跡」の表が載る。
+           機械的な護り: 明示の pass が無い基準は fail（フェイルクローズ）／証跡の無い pass は fail へ落とす／
+           「差分が基準の対象範囲に実在すること」が常設基準として必ず 1 項目入る（何も変えずに全 pass を
+           返す道を塞ぐ）／環境にツールが無い等の「検証不能」は**リトライを焼かずに**人へ回す。
+           `accept`（自然文 1 行）は 1 項目の acceptance として扱う（後方互換）。
+           **JSON 表現では配列**（`"acceptance": ["基準A", "基準B"]`）。文字列 1 本も 1 項目として
+           受け付ける。カンマや ⏎ で 1 行に畳んではいけない（基準にカンマは普通に出る）。
+           人が直す口: `agent-project revise <id> --acceptance A --acceptance B`（指定した分で全行を
+           置換。`--acceptance ''` 1 つで全削除）／dashboard のタスク編集の「受入基準」欄。
+           **誰が書くか**: バックログ生成時に `backlog-planner` スキルが書き、計画レビューで人が直す。
+           人が直したタスクには `- edited: human` が付き、以後の replan では作り直されない。
+- verify_template : **決定的に verify を展開する入口**（エージェント不要）。テンプレ名:
+           file-contains :: path :: 文字列／file-exists :: path／defines :: symbol :: path／
+           diff-contains :: 文字列（$KIRO_BASE_REV 差分）／cmd-succeeds :: コマンド。
+           acceptance / verify_template があれば verify 空でも ready 扱い（rot/inbox 落ちにしない）。
 - expect : `changes`=verify=PASS でも act が変更を生まねば done せず人へ（履歴一致 verify の偽 done 対策。
            リファクタ等「必ず差分が出る」作業に付ける）。`none`=無変更を許可（`--require-progress` 時の opt-out）。
 - review : `human` を指定すると verify PASS でも done 前に人の承認を要する（既定はゲート無し）。

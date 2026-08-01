@@ -5,32 +5,29 @@
 README.md「一貫性ゲート（codd-gate 連携・オプション）」節の規約どおり、有効化は
 `regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV" --repos <root>/repos.json'` を
 agent-project.yaml に書けば足りる。本モジュールはこの1行を人手のコピペではなく検出結果
-（codd_gate_status.detect_status、a4）駆動で組み立て、既存ファイルへ冪等に upsert する
+（codd_gate_status.detect_status）駆動で組み立て、既存ファイルへ冪等に upsert する
 （README が yaml 直書きと並べて案内する、もう一方の有効化経路）。
 
 責務は2つ:
-  - build_regression_cmd: CoddGateStatus と --repos（codd_gate_routing.resolve_repos_arg、b2）
-    を合成し regression_cmd の値そのものを組み立てる。status.usable が False（未検出・バージョン
-    不適合・schema 不適合のいずれか）なら None を返し、壊れたコマンドを書き込まない
-    （他 codd_gate_* モジュールと同じ no-op 縮退）。
-  - upsert_config_text / apply_to_file: 得た値を agent-project.yaml の生テキストへ冪等に
-    upsert する。PyYAML の load→dump を使わないのは、既存ファイルが人手のコメント
-    （「# 一貫性ゲート（codd-gate 連携）」ブロック等）を持ち、ラウンドトリップで失われると
-    ドキュメントとしての価値が失われるため——正規表現ベースの最小差分の行編集に留める。
+  - build_regression_cmd: CoddGateStatus と --repos を合成し、regression_cmd の値を組み立てる。
+  - upsert_config_text / apply_to_file: `regression_cmd` だけを既存 yaml へ冪等に書き込む。
+    codd-gate の実体を検出できなければ書き込まない。
 
 このモジュールが意図的に含めないもの（他タスクの責務）:
   - repos.json 自体の生成（agent-project.py 本体・charter からの自動生成）
-  - intake_cmd の生成・注入（対称の関数だが対象キーが異なる。intake/enqueue 結線の担当タスク）
+  - intake_cmd の注入（成功時 JSON に codd_gate_routing の推奨値は出すが、設定するのは利用者）
   - cfg.regression_cmd の実行時の組み立て（README.md の有効化手順どおり、静的な設定ファイルへの
     注入だけで完結させる）
 
 依存は標準ライブラリと同梱の codd_gate_status／codd_gate_routing のみ。
 
 CLI:
-    python3 codd_gate_regression.py --config .agent/agent-project.yaml [--repos <path>] [--dry-run]
+    python3 tools/agent-project/codd_gate_regression.py \
+      --config .agent/agent-project.yaml [--repos <path>] [--dry-run]
 
 `--config` は自動配線に頼らずこの3機能（検出・推奨文字列の生成・yaml 冪等注入）へ到達する
-唯一の入口。終了コードは `EXIT_*` 定数を参照（呼び出し側が「未導入だから飛ばす」と
+唯一の入口。成功時 JSON は regression_cmd と intake_cmd の推奨値を併記するが、書き込むのは
+regression_cmd の1行だけ。終了コードは `EXIT_*` 定数を参照（呼び出し側が「未導入だから飛ばす」と
 「パスを間違えている」を区別できるよう別の値にしてある）。
 """
 from __future__ import annotations
@@ -41,8 +38,7 @@ import re
 import sys
 from pathlib import Path
 
-from codd_gate_detect import BINARY_NAME
-from codd_gate_routing import resolve_repos_arg
+from codd_gate_routing import recommend_intake_cmd, recommend_regression_cmd
 from codd_gate_status import CoddGateStatus, detect_status
 
 KEY = "regression_cmd"
@@ -53,9 +49,7 @@ EXIT_CONFIG_MISSING = 1
 EXIT_UNUSABLE = 3
 DEFAULT_BASE_PLACEHOLDER = '"$KIRO_BASE_REV"'
 DEFAULT_REPOS_PATH = ".agent-project/repos.json"
-# 新規キー挿入位置の探索順（README.md 記載順=regression_cmd→intake_cmd に揃える）。
-# intake_cmd が既にあれば同じ「一貫性ゲート」ブロックの一員として直前に差し込み、
-# 無ければ「グローバル既定」ブロック（agent_cli:）の直前に新規ブロックとして立てる。
+# 新規キーは intake_cmd の直前、無ければ agent_cli の直前へ置く。
 _ANCHOR_KEYS = ("intake_cmd", "agent_cli")
 _HEADER_COMMENT = (
     "# 一貫性ゲート（codd-gate 連携）: done 確定前の差分ゲート（regression）と\n"
@@ -89,62 +83,7 @@ def build_regression_cmd(
     """
     if not status.usable:
         return None
-    return " ".join([BINARY_NAME, "verify", "--base", base, "--repos", resolve_repos_arg(repos_path)])
-
-
-def _yaml_single_quote(value: str) -> str:
-    """YAML single-quoted scalar へのエスケープ（`'` の二重化のみで仕様上足りる）。"""
-    return "'" + value.replace("'", "''") + "'"
-
-
-def render_line(cmd: str, key: str = KEY) -> str:
-    return f"{key}: {_yaml_single_quote(cmd)}"
-
-
-def _key_pattern(key: str) -> "re.Pattern[str]":
-    return re.compile(rf"^[ \t]*{re.escape(key)}:.*$", re.MULTILINE)
-
-
-def upsert_config_text(text: str, cmd: "str | None", key: str = KEY) -> "tuple[str, bool]":
-    """`text`（agent-project.yaml の生テキスト）へ `key: cmd` を冪等に upsert する。
-
-    cmd が None（codd-gate 未検出・非互換）のときは既存内容を一切変更しない——「わからない・
-    使えない」を「削除」に倒すと、人が意図して書いた regression_cmd（codd-gate 以外のコマンド
-    も含む）を壊してしまうため（他 codd_gate_* モジュールと同じ no-op 縮退の方針をファイル編集
-    にも適用する）。
-
-    戻り値の2要素目は実際に内容が変わったかどうか。変わらなければ呼び出し側は書き込みを省略
-    でき、mtime を無用に更新しない＝再実行しても diff が出ない冪等性が成り立つ。
-    """
-    if cmd is None:
-        return text, False
-    new_line = render_line(cmd, key)
-    pattern = _key_pattern(key)
-    m = pattern.search(text)
-    if m:
-        if m.group(0) == new_line:
-            return text, False
-        return pattern.sub(lambda _mo: new_line, text, count=1), True
-    return _insert_new_line(text, new_line), True
-
-
-def _insert_new_line(text: str, new_line: str) -> str:
-    """新規キーをスキーマ上の既定位置へ挿入する（挿入位置の担保）。
-
-    1. `intake_cmd:` が既にあれば、その直前（同じ「一貫性ゲート」ブロックの一員として）。
-    2. 無ければ `agent_cli:`（グローバル既定ブロックの先頭）の直前へ、見出しコメント付きの
-       新規ブロックとして。
-    3. どちらも無ければファイル末尾へ見出しコメント付きで追記する。
-    """
-    for anchor, with_header in ((_ANCHOR_KEYS[0], False), (_ANCHOR_KEYS[1], True)):
-        m = _key_pattern(anchor).search(text)
-        if not m:
-            continue
-        insert_at = text.rfind("\n", 0, m.start()) + 1
-        block = (_HEADER_COMMENT + new_line + "\n\n") if with_header else (new_line + "\n")
-        return text[:insert_at] + block + text[insert_at:]
-    sep = "" if (not text or text.endswith("\n")) else "\n"
-    return text + sep + "\n" + _HEADER_COMMENT + new_line + "\n"
+    return recommend_regression_cmd(repos_path, base=base)
 
 
 def infer_default_repos_path(text: str) -> str:
@@ -157,8 +96,46 @@ def infer_default_repos_path(text: str) -> str:
     return f"{root.rstrip('/')}/repos.json"
 
 
-def apply_to_file(yaml_path: "str | Path", cmd: "str | None", key: str = KEY) -> bool:
-    """ファイルへ実際に反映する。変更が無ければ書き込み自体を省略する（idempotent no-op）。"""
+def _yaml_single_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def render_line(cmd: str, key: str = KEY) -> str:
+    return f"{key}: {_yaml_single_quote(cmd)}"
+
+
+def _key_pattern(key: str) -> "re.Pattern[str]":
+    return re.compile(rf"^[ \t]*{re.escape(key)}:.*$", re.MULTILINE)
+
+
+def upsert_config_text(
+    text: str, cmd: "str | None", key: str = KEY,
+) -> "tuple[str, bool]":
+    """トップレベルの regression_cmd だけを YAML 生テキストへ冪等に upsert する。"""
+    if cmd is None:
+        return text, False
+    line = render_line(cmd, key)
+    pattern = _key_pattern(key)
+    match = pattern.search(text)
+    if match:
+        if match.group(0) == line:
+            return text, False
+        return pattern.sub(lambda _match: line, text, count=1), True
+    for anchor, with_header in ((_ANCHOR_KEYS[0], False), (_ANCHOR_KEYS[1], True)):
+        match = _key_pattern(anchor).search(text)
+        if not match:
+            continue
+        insert_at = text.rfind("\n", 0, match.start()) + 1
+        block = (_HEADER_COMMENT + line + "\n\n") if with_header else (line + "\n")
+        return text[:insert_at] + block + text[insert_at:], True
+    separator = "" if not text or text.endswith("\n") else "\n"
+    return text + separator + "\n" + _HEADER_COMMENT + line + "\n", True
+
+
+def apply_to_file(
+    yaml_path: "str | Path", cmd: "str | None", key: str = KEY,
+) -> bool:
+    """既存 YAML へ regression_cmd を反映し、差分がない再実行では書き込まない。"""
     path = Path(yaml_path)
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     new_text, changed = upsert_config_text(text, cmd, key)
@@ -176,15 +153,19 @@ _EPILOG = f"""\
   {EXIT_UNUSABLE}  codd-gate が使えず regression_cmd を組み立てられない（何も書いていない）
 
 例:
-  python3 codd_gate_regression.py --config .agent/agent-project.yaml --dry-run
-  python3 codd_gate_regression.py --config .agent/agent-project.yaml
+  python3 tools/agent-project/codd_gate_regression.py --config .agent/agent-project.yaml --dry-run
+  python3 tools/agent-project/codd_gate_regression.py --config .agent/agent-project.yaml
+
+成功時 JSON の regression_cmd がこの CLI の注入値。intake_cmd は案内のみで、設定ファイルへは
+書き込まないため、人か install 手順が同じ YAML または --intake-cmd へ設定する。
 """
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="codd_gate_regression.py",
-        description="codd-gate を実測し、regression_cmd の1行だけを agent-project.yaml へ冪等注入する",
+        description=("codd-gate を実測し、regression_cmd の1行だけを agent-project.yaml へ"
+                     "冪等注入する（intake_cmd は成功時 JSON で案内）"),
         epilog=_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", default=".agent/agent-project.yaml",
@@ -227,13 +208,15 @@ def main(argv: "list[str] | None" = None) -> int:
 
     status = detect_status(args.codd_gate)
     cmd = build_regression_cmd(status, repos_path, base=args.base)
-    new_text, changed = upsert_config_text(text, cmd)
+    intake_cmd = recommend_intake_cmd(repos_path) if status.usable else None
+    _, changed = upsert_config_text(text, cmd)
     if changed and not args.dry_run:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(new_text, encoding="utf-8")
+        apply_to_file(path, cmd)
 
     print(json.dumps({
-        "usable": status.usable, "reason": status.reason, "cmd": cmd,
+        "usable": status.usable, "reason": status.reason,
+        "cmd": cmd,  # 後方互換: regression_cmd の旧フィールド名
+        "regression_cmd": cmd, "intake_cmd": intake_cmd,
         "changed": changed, "config": str(path), "dry_run": bool(args.dry_run),
     }, ensure_ascii=False))
     if cmd is None:

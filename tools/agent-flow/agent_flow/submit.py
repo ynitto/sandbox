@@ -1,26 +1,6 @@
 from __future__ import annotations
-# submit.py — 元 agent-flow.py の 5100-5172 行目（機械分割・内容無改変）。
+# submit.py — 元 agent-flow.py の 5100-5172 行目（機械分割）。
 # 単体 import しない。agent_flow/__init__.py が共有名前空間へ順に exec 合成する。
-# --------------------------------------------------------------------------
-# submit — 要求を inbox に投入（デーモンが拾って orchestrator を起動する）
-# --------------------------------------------------------------------------
-def cmd_submit(args) -> int:
-    req_id = args.run_id or f"run-{datetime.now():%Y%m%d-%H%M%S}-{random.randint(1000,9999)}"
-    # ノード ID に pid を含め、並行 submit（agent-project の一括 offload 等）が同じ
-    # クローン作業ツリーを共有して index.lock を取り合う事故を避ける（クローンは
-    # 終了時に削除され、SIGKILL 残骸も daemon の cleanup が回収する）。
-    bus = make_bus(args, f"submitter-{os.getpid()}")
-    bus.sync_pull()
-    bus.submit_request(req_id, args.request, f"{socket.gethostname()}-{os.getpid()}",
-                       workspace=parse_workspace(getattr(args, "workspace", None)),
-                       references=parse_references(getattr(args, "references", None)),
-                       inherit_from=getattr(args, "inherit_from", None))
-    bus.sync_push(f"submit request {req_id}")
-    print(req_id)  # run-id を標準出力（スクリプトから拾える）
-    print(f">>> 要求を投入しました: {req_id}（デーモンが拾います）", file=sys.stderr)
-    return 0
-
-
 # --------------------------------------------------------------------------
 # cancel — run スコープの恒久停止（人の明示指示による緊急回避手段）
 # --------------------------------------------------------------------------
@@ -44,8 +24,8 @@ def _apply_on_cancel(bus: Bus, args, run_id: str) -> None:
 
 
 def cmd_cancel(args) -> int:
-    """run を canceled に終端化する（人の明示指示による唯一の hard-stop）。
-    cancel マーカーを inbox に置いて全 PC / daemon へ伝え、run が存在すれば即 status=canceled を
+    """run を cancelled に終端化する（人の明示指示による唯一の hard-stop）。
+    cancel マーカーを inbox に置いて全 PC / daemon へ伝え、run が存在すれば即 status=cancelled を
     確定する（監視主体が居なくても止まる）。park 済みノードの再ポーリングを止め、--close-issues なら
     起票済みイシューも後始末する。既に終端した run でも残 waits / 残マーカーは掃除する
     （dashboard cancelRun の alreadyTerminal と同契約）。"""
@@ -77,10 +57,10 @@ def cmd_cancel(args) -> int:
     if bus.run_exists(rid):
         bus.clear_cancel(rid)
     bus.sync_push(f"cancel run {rid}: {reason}")
-    tail = "・status=canceled 確定" if marked else "（daemon が受理して終端化します）"
+    tail = "・status=cancelled 確定" if marked else "（daemon が受理して終端化します）"
     print(f">>> run {rid} をキャンセルしました{tail}。park 解除 {cleared} 件、"
           f"理由: {reason}")
     if not marked and not bus.run_exists(rid):
-        print(f">>> 注: 要求 {rid} はまだ run 化されていません。daemon が受理時に canceled で終端します。")
+        print(f">>> 注: 要求 {rid} はまだ run 化されていません。daemon が受理時に cancelled で終端します。")
     return 0
 
