@@ -1605,8 +1605,8 @@ const GATE_INTAKE_RE = /\bcodd-gate\b[^\n]*\btasks\b[^\n]*--debt\b/;
 
 // 一貫性ゲート（codd-gate）の結線状態。設定 yaml の regression_cmd / intake_cmd を読むだけで、
 // コマンドは実行しない。読み取り専用: ここから設定を書き換える経路は作らない。有効化は
-// README の手順（設定編集 / codd_gate_regression.py）に人が従う。root 解決と違い、本体が
-// fallback する ~/.agents の実効設定もそのまま表示する。
+// README の手順（設定編集 / codd_gate_regression.py）に人が従う。本体が `--config`
+// で解決したパスは instance/status 契約に無いため、ここでは dashboard の自動探索結果だけを扱う。
 function consistencyGateStatus(cfg) {
   const values = (cfg && cfg.values) || {};
   const pick = (key) => String(values[key] || '').trim() || null;
@@ -1617,9 +1617,11 @@ function consistencyGateStatus(cfg) {
   const regressionWired = !!regressionCmd && GATE_REGRESSION_RE.test(regressionCmd);
   const intakeWired = !!intakeCmd && GATE_INTAKE_RE.test(intakeCmd);
   return {
-    // 有効化の導線で「どのファイルを編集するか」を示すための実パス。未検出なら null。
+    // 有効化の導線で「どのファイルを編集するか」を示す自動探索パス。未検出なら null。
     configFile: (cfg && cfg.file) || null,
     configError: (cfg && cfg.error) || null,
+    configSource: 'dashboard-auto-discovery',
+    explicitConfigUnknown: true,
     regressionConfigured,
     intakeConfigured,
     regressionWired,
