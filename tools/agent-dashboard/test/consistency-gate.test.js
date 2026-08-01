@@ -253,6 +253,37 @@ test('壊れたローカル JSON が global 設定へフォールバックしな
 
     const gate = project.readProject(ws, {}).consistencyGate;
     assert.strictEqual(gate.configFile, localFile);
+    assert.strictEqual(gate.configError, 'invalid-json');
+    assert.strictEqual(gate.regressionConfigured, false);
+    assert.strictEqual(gate.intakeConfigured, false);
+    assert.strictEqual(gate.wired, false);
+  } finally {
+    os.homedir = originalHomedir;
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test('object でないローカル JSON も global 設定へフォールバックしない', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-gate-home-'));
+  const ws = mkWorkspace(null);
+  const originalHomedir = os.homedir;
+  try {
+    os.homedir = () => home;
+    fs.mkdirSync(path.join(home, '.agents'), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, '.agents', 'agent-project.yaml'),
+      "regression_cmd: 'codd-gate verify --base \"$KIRO_BASE_REV\"'\n" +
+        "intake_cmd: 'codd-gate tasks --debt'\n",
+      'utf8'
+    );
+    fs.mkdirSync(path.join(ws, '.agents'), { recursive: true });
+    const localFile = path.join(ws, '.agents', 'agent-project.json');
+    fs.writeFileSync(localFile, 'null', 'utf8');
+
+    const gate = project.readProject(ws, {}).consistencyGate;
+    assert.strictEqual(gate.configFile, localFile);
+    assert.strictEqual(gate.configError, 'invalid-json');
     assert.strictEqual(gate.regressionConfigured, false);
     assert.strictEqual(gate.intakeConfigured, false);
     assert.strictEqual(gate.wired, false);

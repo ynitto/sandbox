@@ -1127,32 +1127,38 @@ function consistencyGateHtml(p) {
   //     シェルへそのまま貼れるとは限らない。README と同じプレースホルダを示し、実パスは
   //     画面に表示済みの設定ファイルを開いて人が実行環境に合わせて決める。
   const wiredAll = gate.wired;
+  const jsonConfig = gate.configFile && /\.json$/i.test(gate.configFile);
   const reposArg = '<root>/repos.json';
-  const lines = [
-    !gate.regressionWired && `regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV" --repos ${reposArg}'`,
-    !gate.intakeWired && `intake_cmd: 'codd-gate tasks --debt --repos ${reposArg}'`,
+  const settings = [
+    !gate.regressionWired && ['regression_cmd', `codd-gate verify --base "$KIRO_BASE_REV" --repos ${reposArg}`],
+    !gate.intakeWired && ['intake_cmd', `codd-gate tasks --debt --repos ${reposArg}`],
   ].filter(Boolean);
+  const lines = jsonConfig
+    ? JSON.stringify(Object.fromEntries(settings), null, 2)
+    : settings.map(([key, value]) => `${key}: '${value}'`).join('\n');
   // CLI は install.sh 導入版だと単体ファイルとして置かれない（install.sh:50-52 が zipapp ルートへ
   // 同梱するだけ）。どこで打てば動くかを書かないと、コピーして必ず No such file になる。
-  const cliHint = gate.configFile && !gate.regressionWired
+  const cliHint = gate.configFile && !jsonConfig && !gate.regressionWired
     ? `<p><code>regression_cmd</code> の行は手書きの代わりに CLI で入れてもよい（ソースを持っているなら
         <span class="mono">tools/agent-project/</span> で実行する）:
         <code>python3 codd_gate_regression.py --config /path/to/.agents/agent-project.yaml</code>
         （codd-gate を実測してこの 1 キーだけを冪等 upsert する。<code>--dry-run</code> なら書かずに結果だけ出す。
         codd-gate が未検出・バージョン/schema 非互換なら何も書かない）。</p>`
     : '';
-  const intakeHint = !gate.intakeWired
+  const intakeHint = !jsonConfig && !gate.intakeWired
     ? `<p><code>intake_cmd</code> に対応する注入 CLI は無いので、こちらは yaml を直接編集する。</p>`
     : '';
   const enable = wiredAll
     ? ''
     : `<div class="need-resolution">
         <span class="label-chip">有効化</span>
-        ${gate.configFile
+        ${gate.configError
+          ? `設定ファイル <span class="mono">${esc(gate.configFile)}</span> は JSON として読めません。修復してから次の設定を追加してください:`
+          : gate.configFile
           ? `設定ファイル <span class="mono">${esc(gate.configFile)}</span> へ次の行を書く:`
           : `agent-project の設定ファイルが見つかりません。ワークスペース直下に
              <span class="mono">.agents/agent-project.yaml</span> を作り、次の行を書く:`}
-        <pre class="mono">${esc(lines.join('\n'))}</pre>
+        <pre class="mono">${esc(lines)}</pre>
         ${cliHint}${intakeHint}
         ${gate.configFile
           ? `<div class="summary-actions">

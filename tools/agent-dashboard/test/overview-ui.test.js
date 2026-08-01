@@ -345,6 +345,17 @@ assert.match(renderer, /個別のrunを止める操作ではありません/);
   assert.match(configuredUnwired, /<pre[^>]*>[\s\S]*regression_cmd:[\s\S]*intake_cmd:/,
     '両方未結線なら README と同じ2設定行を提示する');
 
+  const brokenJson = gateHtml({ consistencyGate: {
+    configFile: '/ws/.agents/agent-project.json', configError: 'invalid-json',
+    regressionWired: false, intakeWired: false, wired: false,
+    regressionConfigured: false, intakeConfigured: false,
+    regressionCmd: null, intakeCmd: null } });
+  assert.ok(brokenJson.includes('JSON として読めません'), '壊れた JSON の修復が必要だと案内する');
+  assert.match(brokenJson, /&quot;regression_cmd&quot;:[\s\S]*&quot;intake_cmd&quot;:/,
+    'JSON 設定には JSON 形式の設定例を出す');
+  assert.ok(!brokenJson.includes('codd_gate_regression.py') && !brokenJson.includes('yaml を直接編集'),
+    'JSON 設定に YAML 専用の導線を出さない');
+
   // ペイロード無し（旧 main と組み合わせた場合）は概要へ何も足さない。
   assert.strictEqual(gateHtml({}), '');
 

@@ -1619,6 +1619,7 @@ function consistencyGateStatus(cfg) {
   return {
     // 有効化の導線で「どのファイルを編集するか」を示すための実パス。未検出なら null。
     configFile: (cfg && cfg.file) || null,
+    configError: (cfg && cfg.error) || null,
     regressionConfigured,
     intakeConfigured,
     regressionWired,
