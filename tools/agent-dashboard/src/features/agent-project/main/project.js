@@ -1422,6 +1422,12 @@ function hasProjectManifest(dir) {
 // ~/.agent のグローバル設定にある値は使わない: それを採るとすべてのワークスペースが同じ
 // 状態フォルダを指してしまう（本体は 1 プロセス 1 プロジェクトなので困らないが、ビュアーは
 // 複数プロジェクトを同時に扱う）。
+// readToolConfig は最後に ~/.agents を探すので、プロジェクトに設定が無いとグローバル設定が返る。
+// 「このワークスペースの設定か」を必ずこれで検査してから値を採る。
+function _configFromWorkspace(cfg, ws) {
+  return !!(cfg && cfg.file && path.resolve(cfg.file).startsWith(ws + path.sep));
+}
+
 function resolveProjectRoot(workspaceDir) {
   const ws = path.resolve(String(workspaceDir || ''));
   if (!ws) return ws;
@@ -1771,6 +1777,48 @@ function resolveBusDir(projectDir, workspaceDir, cfg) {
   return { busDir: first.dir, hasBus: false, source: first.source, candidates: ordered };
 }
 
+// 「一貫性ゲートに結線済みか」の判定。regression_cmd / intake_cmd は codd-gate 専用キーでは
+// なく外部ゲートを差し込む汎用フックで、agent-project.yaml.example:171 は
+// `regression_cmd: make -s smoke` を正当な例として載せている。よって「キーが空でない」では
+// 判定にならない（それだと make -s smoke のプロジェクトが「一貫性ゲート有効」になる）。
+// 正典は tools/agent-project/codd_gate_wiring.py:71-72 の 2 本で、doctor もこれを使う。
+// 語順だけを見て --repos 等の追加引数は問わない点まで含めて写す。
+const GATE_REGRESSION_RE = /\bcodd-gate\b[^\n]*\bverify\b[^\n]*--base\b/;
+const GATE_INTAKE_RE = /\bcodd-gate\b[^\n]*\btasks\b[^\n]*--debt\b/;
+
+// 一貫性ゲート（codd-gate）の結線状態。設定 yaml の regression_cmd / intake_cmd を読むだけで、
+// コマンドは実行しない。読み取り専用: ここから設定を書き換える経路は作らない。有効化は
+// README の手順（設定編集 / codd_gate_regression.py）に人が従う。本体が `--config`
+// で解決したパスは instance/status 契約に無いため、ここでは dashboard の自動探索結果だけを扱う。
+function consistencyGateStatus(cfg) {
+  const values = (cfg && cfg.values) || {};
+  const pick = (key) => String(values[key] || '').trim() || null;
+  const regressionCmd = pick('regression_cmd');
+  const intakeCmd = pick('intake_cmd');
+  const regressionConfigured = regressionCmd !== null;
+  const intakeConfigured = intakeCmd !== null;
+  const regressionWired = !!regressionCmd && GATE_REGRESSION_RE.test(regressionCmd);
+  const intakeWired = !!intakeCmd && GATE_INTAKE_RE.test(intakeCmd);
+  return {
+    // 有効化の導線で「どのファイルを編集するか」を示す自動探索パス。未検出なら null。
+    configFile: (cfg && cfg.file) || null,
+    configError: (cfg && cfg.error) || null,
+    configSource: 'dashboard-auto-discovery',
+    explicitConfigUnknown: true,
+    regressionConfigured,
+    intakeConfigured,
+    regressionWired,
+    intakeWired,
+    // 全結線かの派生述語。renderer の 2 箇所（概要セクションと needs）が各自で
+    // && を組み直すと将来食い違うので、結論は main が 1 度だけ出す。
+    wired: regressionWired && intakeWired,
+    // 表示用。未結線でも「別のコマンドが入っている」ことを人が見分けられるように、
+    // 値そのものは結線判定と無関係に渡す（判定にはフラグ側を使う）。
+    regressionCmd,
+    intakeCmd,
+  };
+}
+
 // バス候補の鮮度: runs/ とその直下エントリ（有界サンプル）の最新 mtime。
 // run の meta/イベントはファイル置換（rename）で書かれるため run ディレクトリの mtime が動く。
 function _busRecency(busDir) {
@@ -1898,6 +1946,7 @@ function readProject(workspaceDir, cfg) {
   }
 
   const bus = resolveBusDir(dir, workspace, cfg);
+  const projectCfg = readToolConfig('agent-project', [workspace, ...agentDirCandidates(workspace)]);
 
   // 複数 charter（charters/<name>.md = 1 バージョン）。無ければ単一 charter.md（従来）。
   // バージョンの identity は **ファイル名**（v2 など）。agent-project 側の `charter:` タグ・
@@ -1948,6 +1997,8 @@ function readProject(workspaceDir, cfg) {
     reposFile,
     repos: reposFile === 'repos.json' ? readJson(path.join(dir, 'repos.json')) : null,
     autonomy,
+    // 一貫性ゲート（codd-gate）が設定 yaml に結線されているか。読み取り専用の事実。
+    consistencyGate: consistencyGateStatus(projectCfg),
     liveness: projectLiveness(dir, undefined, cfg),
     nodes: readNodeStatuses(dir),   // 複数 PC 分散運用のノード別生存一覧（無ければ空）
     busDir: bus.busDir,

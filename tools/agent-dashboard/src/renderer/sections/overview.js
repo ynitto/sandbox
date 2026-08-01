@@ -338,6 +338,7 @@ function renderOverview() {
           <button class="summary-link secondary" data-summary-tab="history">成果を見る</button>
         </section>
       </div>
+      ${consistencyGateHtml(p)}
       ${overviewVersionsHtml(p)}
     </div>`;
 
@@ -354,6 +355,7 @@ function renderOverview() {
   for (const btn of el.querySelectorAll('button[data-version-delete]')) {
     btn.addEventListener('click', () => deleteOverviewVersion(btn.dataset.versionDelete));
   }
+  bindConsistencyGate(el);
   bindLifecycleButtons(el);
 }
 

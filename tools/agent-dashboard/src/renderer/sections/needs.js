@@ -1424,7 +1424,33 @@ function needListItemHtml(item, selected, slaHours) {
   </button>`;
 }
 
-function renderNeedFacts(n) {
+// この検証失敗が一貫性ゲート由来なら、どの経路で止まったかを返す（`regression` / `verify`）。
+// 由来を返り値で分けるのは、断定してよい文面が経路ごとに違うため:
+//   - `regression`: 回帰ゲート失敗には producer が `回帰検知: グローバル検査 \`<cmd>\` 失敗`
+//     を why に書く（tools/agent-project/agent_project/mr.py:582）。ただしこのプレフィックスは
+//     codd-gate 以外の regression_cmd（yaml example の `make -s smoke` など）にも同じく付くので、
+//     `回帰検知` だけでは一貫性ゲート由来と断定できない。記録中の codd-gate コマンドと
+//     併せて、実行時に「回帰検査が止めた」と判断する（現在の結線状態には依存させない）。
+//   - `verify`: タスク自身の verify が codd-gate のとき（README が charter acceptance に勧める形）。
+//     context.command は _diagnoseFailure が verify 行から取る値で regression_cmd ではないので、
+//     こちらを「回帰検査が止めた」と言うと概要タブの結線表示と矛盾する。
+// どちらにも当たらなければ何も足さない。ペイロード無し（旧 main）も同様——概要タブ側の
+// consistencyGateHtml も空を返すので、存在しないセクションへ誘導しない。
+function needGateSource(failure, n, gate) {
+  if (!failure || !gate) return null;
+  const regressionText = `${failure.summary || ''}\n${(n && n.why) || ''}`;
+  const command = String((failure.context && failure.context.command) || '');
+  const canonicalVerify = /\bcodd-gate\b[^\n]*\bverify\b/;
+  const recordedVerify = canonicalVerify.test(`${regressionText}\n${command}`);
+  if ((n && n.failurePhase === 'regression' && recordedVerify)
+      || (/回帰検知/.test(regressionText) && recordedVerify)) {
+    return 'regression';
+  }
+  if (canonicalVerify.test(command)) return 'verify';
+  return null;
+}
+
+function renderNeedFacts(p, n) {
   const facts = [];
   const failure = needFailureViewModel(n);
   if (failure) {
@@ -1446,6 +1472,24 @@ function renderNeedFacts(n) {
           `<div><dt>${esc(label)}</dt><dd>${label === 'コマンド' ? `<code>${esc(value)}</code>` : esc(value)}</dd></div>`
         ).join('')}</dl>`);
       }
+    }
+    // ゲート由来の失敗には、概要の「一貫性ゲート」節と同じ語彙で結線状態を添える。失敗の意味
+    // （＝一貫性ゲートが完了前に止めた）と、直した後にドリフトが自動起票されるか（intake_cmd の
+    // 結線）を、失敗を見ているその場で判断できるようにする。既存の検証失敗要約（見出し・要約行・
+    // context）はそのまま——このブロックは後ろに足すだけで、可読性を落とさない。
+    const gate = p && p.consistencyGate;
+    const gateSource = needGateSource(failure, n, gate);
+    if (gateSource) {
+      const originLine = gateSource === 'regression'
+        ? `この失敗は完了前の回帰検査（<span class="mono">regression_cmd</span>）が止めたものです。`
+        : `このタスクの検証コマンドが一貫性ゲートの検査です。完了前の回帰検査（<span class="mono">regression_cmd</span>）とは別の経路です。`;
+      const intakeLine = gate.intakeWired
+        ? `<span class="badge info">結線済み</span> の <span class="mono">intake_cmd</span> が正常に実行された場合、検出したドリフトを修復タスクへ起票します。`
+        : `ドリフトの取り込み（<span class="mono">intake_cmd</span>）は <span class="badge warn">未結線</span> です。直してもドリフトは自動起票されないため、概要タブの「一貫性ゲート」で有効化してください。`;
+      facts.push(`<div class="need-resolution need-gate">
+        <span class="label-chip">一貫性ゲート</span>
+        ${originLine}${intakeLine}
+      </div>`);
     }
   }
   if (n.why) facts.push(`<div><span class="label-chip">理由</span>${prosePreview(n.why, 240)}</div>`);
@@ -1748,7 +1792,7 @@ function renderNeedDetail(p, n) {
           ${needAssistActionsHtml(n, settled)}
         </div>
       </div>
-      ${renderNeedFacts(n) || '<p class="muted">追加の状況説明はありません。</p>'}
+      ${renderNeedFacts(p, n) || '<p class="muted">追加の状況説明はありません。</p>'}
       ${commandFailureHtml(n)}
     </section>
     <details class="need-evidence" data-ui-key="need-evidence:${esc(n.id)}">
@@ -1902,6 +1946,7 @@ function renderNeeds(options) {
     state.needsSelectedId,
     state.needsMobileDetail,
     filters.map((x) => x[2]),
+    p.consistencyGate || null,
     // 要約だけの署名では、同じ長さの本文・成果物・受理状態の更新を見逃して古い表示が残る。
     // needs は小さな判断待ち集合なので、表示に使うモデル全体を署名に含める。
     p.needs,

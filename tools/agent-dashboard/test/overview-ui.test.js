@@ -51,6 +51,8 @@ const summary = overviewSummary(project, [
   { status: 'failed' },
 ]);
 assert.strictEqual(summary.headline, '1 件の確認を待っています');
+assert.deepStrictEqual(summary.undecided.map((need) => need.id), ['N1'],
+  '既存の未判断 needs を概要の対応対象として保持する');
 assert.strictEqual(summary.working, 3);
 assert.strictEqual(summary.waiting, 5);
 assert.strictEqual(summary.done, 2);
@@ -300,6 +302,48 @@ assert.match(renderer, /orchInstructionsDirty/, '共通指示の未保存入力�
   assert.ok(!out.includes('一時停止</button>'), '停止と同じ動作の一時停止ボタンを出さない');
 }
 assert.match(renderer, /個別のrunを止める操作ではありません/);
+
+// --- 一貫性ゲート: 利用者が判断する状態・意味・対処だけを固定する ---
+{
+  const escStub = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  // eslint-disable-next-line no-new-func
+  const gateHtml = new Function('esc', `${grab('consistencyGateHtml')}; return consistencyGateHtml;`)(escStub);
+
+  const wired = gateHtml({ consistencyGate: {
+    configFile: '/ws/.agents/agent-project.yaml', regressionWired: true, intakeWired: true, wired: true,
+    regressionConfigured: true, intakeConfigured: true,
+    regressionCmd: 'codd-gate verify', intakeCmd: 'codd-gate tasks --debt' } });
+  assert.ok(wired.includes('regression_cmd') && wired.includes('intake_cmd'));
+  assert.strictEqual((wired.match(/設定: あり/g) || []).length, 2, '両コマンドの設定済み状態が出る');
+  assert.ok(wired.includes('失敗すると done の確定を止めます'), '回帰失敗で done にしない意味が出ない');
+  assert.ok(!wired.includes('有効化'), '全結線なら未結線導線を出さない');
+
+  const partial = gateHtml({ consistencyGate: {
+    configFile: '/ws/.agents/agent-project.yaml', regressionWired: true, intakeWired: false, wired: false,
+    regressionConfigured: true, intakeConfigured: false,
+    regressionCmd: 'codd-gate verify', intakeCmd: null } });
+  assert.ok(partial.includes('設定: あり') && partial.includes('設定: なし'),
+    'regression_cmd と intake_cmd の設定状態が区別できない');
+  assert.ok(partial.includes('有効化'), '未結線時の有効化導線が出ない');
+  assert.ok(partial.includes('/ws/.agents/agent-project.yaml') && partial.includes('設定ファイルを開く'),
+    '未結線時に設定編集へ進めない');
+
+  const regressionUnwired = gateHtml({ consistencyGate: {
+    configFile: '/ws/.agents/agent-project.yaml', regressionWired: false, intakeWired: true, wired: false,
+    regressionConfigured: false, intakeConfigured: true,
+    regressionCmd: null, intakeCmd: 'codd-gate tasks --debt' } });
+  assert.ok(regressionUnwired.includes('tools/agent-project/')
+    && regressionUnwired.includes('codd_gate_regression.py'), 'sibling CLI の導線が出ない');
+
+  const configuredUnwired = gateHtml({ consistencyGate: {
+    configFile: '/ws/.agents/agent-project.yaml', regressionWired: false, intakeWired: false, wired: false,
+    regressionConfigured: true, intakeConfigured: false,
+    regressionCmd: 'make smoke', intakeCmd: null } });
+  assert.ok(configuredUnwired.includes('make smoke'), '設定済みの別コマンドを隠さない');
+  assert.ok(configuredUnwired.includes('一貫性ゲートの検査ではありません'),
+    '設定済みでも未結線である理由を表示する');
+}
 
 // --- nodesSummaryHtml（案6・複数 PC ノード一覧） ---
 {
