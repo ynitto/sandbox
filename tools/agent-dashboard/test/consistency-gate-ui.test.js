@@ -133,6 +133,33 @@ assert.ok(otherCmd.includes('設定: あり'), '別コマンドが設定済み�
 assert.ok(otherCmd.includes('設定: なし'), '未設定であることを明示していない');
 assert.ok(otherCmd.includes('一貫性ゲートの検査ではありません'),
   '別コマンドが入っていることを説明していない');
+assert.ok(/<pre[^>]*>[^]*regression_cmd:/.test(otherCmd),
+  '設定済みでも未結線の regression_cmd に設定例を出していない');
+assert.ok(otherCmd.includes('現在の処理は失われます'),
+  '設定済みの regression_cmd を置換する危険を説明していない');
+
+// 両キーが設定済みでも、codd-gate に未結線なら手動の設定編集導線を出す。
+// sibling CLI は既存 regression_cmd を自動置換しうるため案内しない。
+const bothConfiguredUnwired = consistencyGateHtml({
+  consistencyGate: {
+    configFile: '/ws/.agents/agent-project.yaml',
+    regressionConfigured: true,
+    intakeConfigured: true,
+    regressionWired: false,
+    intakeWired: false,
+    wired: false,
+    regressionCmd: 'make smoke',
+    intakeCmd: 'agent-project intake',
+  },
+});
+assert.ok(bothConfiguredUnwired.includes('有効化'), '未結線なのに有効化導線を出していない');
+assert.ok(bothConfiguredUnwired.includes('data-gate-open'));
+assert.ok(/<pre[^>]*>[^]*regression_cmd:[^]*intake_cmd:/.test(bothConfiguredUnwired),
+  '未結線キーの README 準拠例が揃っていない');
+assert.ok(bothConfiguredUnwired.includes('現在の処理は失われます'),
+  '設定済みキーを置換する危険を説明していない');
+assert.ok(!bothConfiguredUnwired.includes('codd_gate_regression.py'),
+  '設定済み regression_cmd を sibling CLI で自動置換する導線を出している');
 
 // 設定ファイルはあるが両方未結線（ゲート未導入プロジェクトの初期表示）。
 // 見出しは「未結線」。貼る 2 行・注入 CLI・注意書き・開くボタンが同時に出る唯一の経路。

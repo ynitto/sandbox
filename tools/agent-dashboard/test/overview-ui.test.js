@@ -328,6 +328,9 @@ assert.match(renderer, /個別のrunを止める操作ではありません/);
   assert.ok(partial.includes('有効化'), '未結線時の有効化導線が出ない');
   assert.ok(partial.includes('/ws/.agents/agent-project.yaml') && partial.includes('設定ファイルを開く'),
     '未結線時に設定編集へ進めない');
+  assert.ok(partial.includes("intake_cmd: 'codd-gate tasks --debt --repos &lt;root&gt;/repos.json'"),
+    'intake_cmd の設定例が README と一致しない');
+  assert.ok(!/<pre[^>]*>[^]*regression_cmd:/.test(partial), '設定済みの regression_cmd を置換へ誘導している');
 
   const regressionUnwired = gateHtml({ consistencyGate: {
     configFile: '/ws/.agents/agent-project.yaml', regressionWired: false, intakeWired: true, wired: false,
@@ -335,14 +338,27 @@ assert.match(renderer, /個別のrunを止める操作ではありません/);
     regressionCmd: null, intakeCmd: 'codd-gate tasks --debt' } });
   assert.ok(regressionUnwired.includes('tools/agent-project/')
     && regressionUnwired.includes('codd_gate_regression.py'), 'sibling CLI の導線が出ない');
+  assert.ok(regressionUnwired.includes(
+    "regression_cmd: 'codd-gate verify --base &quot;$KIRO_BASE_REV&quot; --repos &lt;root&gt;/repos.json'"
+  ), 'regression_cmd の設定例が README と一致しない');
 
   const configuredUnwired = gateHtml({ consistencyGate: {
     configFile: '/ws/.agents/agent-project.yaml', regressionWired: false, intakeWired: false, wired: false,
-    regressionConfigured: true, intakeConfigured: false,
-    regressionCmd: 'make smoke', intakeCmd: null } });
+    regressionConfigured: true, intakeConfigured: true,
+    regressionCmd: 'make smoke', intakeCmd: 'make intake' } });
   assert.ok(configuredUnwired.includes('make smoke'), '設定済みの別コマンドを隠さない');
   assert.ok(configuredUnwired.includes('一貫性ゲートの検査ではありません'),
     '設定済みでも未結線である理由を表示する');
+  assert.ok(configuredUnwired.includes('有効化') && configuredUnwired.includes('設定ファイルを開く'),
+    '設定済みでも未結線なら設定編集の導線を出す');
+  assert.ok(configuredUnwired.includes(
+    "regression_cmd: 'codd-gate verify --base &quot;$KIRO_BASE_REV&quot; --repos &lt;root&gt;/repos.json'"
+  ) && configuredUnwired.includes("intake_cmd: 'codd-gate tasks --debt --repos &lt;root&gt;/repos.json'"),
+  '未結線キーの設定例が README と一致しない');
+  assert.ok(configuredUnwired.includes('現在の処理は失われます'),
+    '設定済みキーを置換する危険を説明していない');
+  assert.ok(!configuredUnwired.includes('codd_gate_regression.py'),
+    '設定済み regression_cmd を sibling CLI で自動置換する導線を出している');
 }
 
 // --- nodesSummaryHtml（案6・複数 PC ノード一覧） ---

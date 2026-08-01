@@ -174,13 +174,17 @@ test('差分リストは次のセクションで終わる（検証行を取り�
 });
 
 test('一貫性ゲートの回帰失敗は原因を読め、done にしない', () => {
+  const why = '回帰検知: 失敗した工程: `codd-gate verify --repos repos.json`（それより前の工程は成功） exit=2';
+  const detail = '- 検証: `codd-gate verify --repos repos.json` → FAIL';
   const n = project.parseNeeds(
-    card('回帰検知: 失敗した工程: `codd-gate verify --repos repos.json`（それより前の工程は成功） exit=2',
-      '- 検証: `codd-gate verify --repos repos.json` → FAIL'),
+    card(why, detail),
     'T-1'
   );
+  assert.match(n.failureContext.command, /codd-gate verify --repos repos\.json/);
   assert.match(n.failureSummary, /codd-gate verify --repos repos\.json/);
   assert.match(n.failureSummary, /それより前の工程は成功/);
+  assert.strictEqual(n.why, why);
+  assert.match(n.detail, /codd-gate verify --repos repos\.json/);
   assert.strictEqual(n.kind, 'blocked');
   assert.strictEqual(n.decided, false);
 });
