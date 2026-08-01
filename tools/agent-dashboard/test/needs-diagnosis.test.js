@@ -196,7 +196,7 @@ test('差分リストは次のセクションで終わる（検証行を取り�
 });
 
 // --- 一貫性ゲート由来の失敗: 診断要約とゲート分類フィールドの共存 ---
-// 概要の「一貫性ゲート」節と需要カードの結線表示（needGateFailure）は、parseNeeds が載せる
+// 概要の「一貫性ゲート」節と需要カードの結線表示（needGateSource）は、parseNeeds が載せる
 // failureSummary（人が読む一文）と failureContext.command（codd-gate を含むか）で駆動される。
 // どちらか一方が他方を潰さず共存することを、データ層で固定する。
 
@@ -219,6 +219,9 @@ test('ゲート由来の検証失敗は診断要約とゲート分類フィー�
   // 分類フィールドが要約と共存する
   assert.strictEqual(n.failurePhase, 'regression');
   assert.strictEqual(n.verifyVerdict, 'failed');
+  // 回帰 NG は done に倒さず、blocked の人判断待ちを維持する
+  assert.strictEqual(n.kind, 'blocked');
+  assert.strictEqual(n.decided, false);
 });
 
 test('回帰検知の散文からもゲート判定用の command と診断要約が両立する（フォールバック経路）', () => {
