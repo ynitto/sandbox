@@ -522,6 +522,10 @@ def _inherit_from_run(task: Task, new_run_id: str, cfg: "Config | None" = None) 
     `…-r{N-1}-v{newRev}` を指して inherit が空振りする。last_run が実際の先行。
     cancelled の last_run は引き継がない（人の停止・軌道修正を尊重。done を蘇らせない）。
     タイムアウト等の failed は引き継ぐ（agent-flow inherit_from と同じ契約）。"""
+    plan_changed = bool(task.get("revised")) or (
+        bool(task.get("feedback")) and not task.get("env_resume"))
+    if plan_changed:
+        return None
     last = str(task.get("last_run") or "").strip()
     if not last or last == str(new_run_id or "").strip():
         return None

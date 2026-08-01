@@ -375,6 +375,18 @@ class TestActRunMidRevise(unittest.TestCase):
             t.extra.append(("last_run", old))
             self.assertIsNone(km._inherit_from_run(t, "req-ab-T1-r1", cfg))
 
+    def test_inherit_skips_last_run_after_feedback(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), dry_run=False)
+            old = "req-ab-T1-r0"
+            (cfg.bus / "runs" / old).mkdir(parents=True)
+            (cfg.bus / "runs" / old / "meta.json").write_text(
+                json.dumps({"status": "failed", "request": "x"}), encoding="utf-8")
+            t = km.Task(id="T1", title="x", verify="true", retries=1)
+            t.set("last_run", old)
+            t.set("feedback", "計画を変更する")
+            self.assertIsNone(km._inherit_from_run(t, "req-ab-T1-r1-v1", cfg))
+
     def test_timeout_detach_marks_failed_and_inherits(self):
         # タイムアウトは cancelled ではなく failed。次 run は last_run を inherit できる。
         with tempfile.TemporaryDirectory() as d:

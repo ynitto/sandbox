@@ -359,7 +359,8 @@ def main(argv=None) -> int:
         "reprioritize": lambda: cmd_reprioritize(
             cfg, args.id, "pin" if args.pin else "defer", args.reason),
         "revise": lambda: cmd_revise(
-            cfg, args.id, {k: getattr(args, f"rv_{k}") for k in REVISE_FIELDS},
+            cfg, args.id, {k: getattr(args, "node" if k == "node" else f"rv_{k}", None)
+                           for k in REVISE_FIELDS},
             args.rv_feedback or "", args.reason or ""),
         "replan": lambda: cmd_replan(cfg, args.reason or "charter からのバックログ再分解",
                                      getattr(args, "charter", None) or "",

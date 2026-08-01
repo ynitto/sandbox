@@ -44,6 +44,17 @@ class TestCliEndToEnd(unittest.TestCase):
         cmd += list(extra)
         return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
+    def test_revise_feedback_cli_does_not_require_task_node_argument(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="blocked", verify="true")
+            p = subprocess.run(
+                [sys.executable, str(_MOD), "revise", "T1", "--root", str(d),
+                 "--feedback", "最新 target でやり直す"],
+                capture_output=True, text=True, timeout=30)
+            self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+            self.assertEqual(km.load_tasks(d / "backlog")[0].norm_status(), "ready")
+
     def test_drains_and_archives(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)

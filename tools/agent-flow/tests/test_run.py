@@ -792,3 +792,11 @@ class TransientRunBreakTests(unittest.TestCase):
                     "data": {"error_class": "transient", "attempts": 3}}})
         self.assertEqual(decision, "failed")
         self.assertIn("[agent-error:transient]", reason)
+
+    def test_integration_failure_breaks_run_before_replanning(self):
+        decision, new_tasks, reason = self._continue(
+            {"base-sync": {"status": "failed", "output": "競合解消に失敗",
+                           "data": {"error_class": "integration"}}})
+        self.assertEqual(decision, "failed")
+        self.assertEqual(new_tasks, [])
+        self.assertIn("[agent-error:integration]", reason)
