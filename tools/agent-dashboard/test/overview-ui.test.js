@@ -349,7 +349,16 @@ assert.match(renderer, /個別のrunを止める操作ではありません/);
   assert.ok(configuredUnwired.includes('make smoke'), '設定済みの別コマンドを隠さない');
   assert.ok(configuredUnwired.includes('一貫性ゲートの検査ではありません'),
     '設定済みでも未結線である理由を表示する');
-  assert.ok(!configuredUnwired.includes('有効化'), '両キー設定済みなのに置換を促している');
+  assert.ok(configuredUnwired.includes('有効化') && configuredUnwired.includes('設定ファイルを開く'),
+    '設定済みでも未結線なら設定編集の導線を出す');
+  assert.ok(configuredUnwired.includes(
+    "regression_cmd: 'codd-gate verify --base &quot;$KIRO_BASE_REV&quot; --repos &lt;root&gt;/repos.json'"
+  ) && configuredUnwired.includes("intake_cmd: 'codd-gate tasks --debt --repos &lt;root&gt;/repos.json'"),
+  '未結線キーの設定例が README と一致しない');
+  assert.ok(configuredUnwired.includes('現在の処理は失われます'),
+    '設定済みキーを置換する危険を説明していない');
+  assert.ok(!configuredUnwired.includes('codd_gate_regression.py'),
+    '設定済み regression_cmd を sibling CLI で自動置換する導線を出している');
 }
 
 // --- nodesSummaryHtml（案6・複数 PC ノード一覧） ---

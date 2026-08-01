@@ -1214,10 +1214,10 @@ function consistencyGateHtml(p) {
     </div>`;
   }).join('');
 
-  // 未設定のフックが 1 つでもあれば有効化導線を出す。書く行・CLI・注意書きは
+  // 未結線のフックが 1 つでもあれば有効化導線を出す。書く行・CLI・注意書きは
   // tools/agent-project/README.md「一貫性ゲート（codd-gate 連携・オプション）」の原文に合わせる
   // （画面と README で手順が食い違うと、どちらが正か人が判断できなくなる）。
-  //   - 有効化は設定ファイルへ未設定の行を書く。`<root>/repos.json` は README 同様プレースホルダのまま出す
+  //   - 有効化は設定ファイルへ未結線の行を書く。`<root>/repos.json` は README 同様プレースホルダのまま出す
   //     （このプロジェクトの root は結線判定に使っていないので、ここで勝手に埋めない）。
   //   - regression_cmd の行だけは sibling CLI codd_gate_regression.py で冪等 upsert できる。
   //     intake_cmd に対応する注入 CLI は無いので yaml を直接編集する。
@@ -1230,8 +1230,8 @@ function consistencyGateHtml(p) {
   const jsonConfig = gate.configFile && /\.json$/i.test(gate.configFile);
   const reposArg = '<root>/repos.json';
   const settings = [
-    !regressionConfigured && ['regression_cmd', `codd-gate verify --base "$KIRO_BASE_REV" --repos ${reposArg}`],
-    !intakeConfigured && ['intake_cmd', `codd-gate tasks --debt --repos ${reposArg}`],
+    !gate.regressionWired && ['regression_cmd', `codd-gate verify --base "$KIRO_BASE_REV" --repos ${reposArg}`],
+    !gate.intakeWired && ['intake_cmd', `codd-gate tasks --debt --repos ${reposArg}`],
   ].filter(Boolean);
   const lines = jsonConfig
     ? JSON.stringify(Object.fromEntries(settings), null, 2)
@@ -1248,6 +1248,11 @@ function consistencyGateHtml(p) {
   const intakeHint = !jsonConfig && !intakeConfigured
     ? `<p><code>intake_cmd</code> に対応する注入 CLI は無いので、こちらは yaml を直接編集する。</p>`
     : '';
+  const replacementWarning = settings.some(([key]) =>
+    key === 'regression_cmd' ? regressionConfigured : intakeConfigured)
+    ? `<p><strong>注意:</strong> 設定済みのキーをこの例へ置換すると、現在の処理は失われます。
+        既存処理も必要なら、置換せず両方を実行するコマンドへまとめてください。</p>`
+    : '';
   const enable = settings.length === 0
     ? ''
     : `<div class="need-resolution">
@@ -1257,11 +1262,12 @@ function consistencyGateHtml(p) {
           : jsonConfig
           ? `自動検出した設定候補 <span class="mono">${esc(gate.configFile)}</span> の既存トップレベル object で、次のプロパティを追加または置換する（ファイル全体は置き換えない）:`
           : gate.configFile
-          ? `設定ファイル <span class="mono">${esc(gate.configFile)}</span> へ次の行を書く:`
+          ? `設定ファイル <span class="mono">${esc(gate.configFile)}</span> で次の行を追加または置換する:`
           : `agent-project の設定ファイルが見つかりません。ワークスペース直下に
              <span class="mono">.agents/agent-project.yaml</span> を作り、次の行を書く:`}
         <pre class="mono">${esc(lines)}</pre>
         <p><code>&lt;root&gt;</code> は対象プロジェクトのルートパスへ置き換えてください。</p>
+        ${replacementWarning}
         ${cliHint}${intakeHint}
         ${gate.configFile
           ? `<div class="summary-actions">
