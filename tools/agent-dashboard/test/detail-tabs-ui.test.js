@@ -868,7 +868,7 @@ assert.match(
     id: 'T1', taskId: 'T1', kind: 'blocked', why: 'verify 未定義（工程は完了しています…）', file: '/p/needs/T1.md',
   });
   assert.ok(!pendingHtml.includes('data-act="approve"'), 'blocked に完了承認を出さない');
-  assert.match(pendingHtml, /data-act="feedback"[^>]*>指示を送って再開</, 'blocked の主操作は再開にする');
+  assert.match(pendingHtml, /data-act="feedback"[^>]*>指示して再開</, 'blocked の主操作は再開にする');
   assert.match(pendingHtml, /data-act="rerun"/, 'そのまま再実行も残す');
   const plainHtml = needActionsHtml({
     id: 'T2', taskId: 'T2', kind: 'blocked', why: '検証が失敗', file: '/p/needs/T2.md',

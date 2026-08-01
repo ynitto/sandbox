@@ -308,6 +308,24 @@ class TestDecisionRecords(unittest.TestCase):
             self.assertEqual(km.load_tasks(d / "backlog"), [])
             self.assertTrue((d / "archive" / "T1.md").exists())
 
+    def test_missing_delivery_branch_requires_confirmation_only_once(self):
+        """外部マージ後に成果ブランチが消えていても、再承認なら done にできる。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="review", verify="true")
+            c = cfg_for(d)
+            missing = "作業ブランチ ap/T1 を解決できないため、main へマージできません"
+            with mock.patch.object(km, "finalize_task_delivery", return_value=(False, missing)):
+                self.assertEqual(km.cmd_approve(c, "T1", "1回目", complete=True), 1)
+                task = km.load_tasks(d / "backlog")[0]
+                self.assertEqual(task.get("delivery_missing_branch_ack"), "ap/T1")
+                self.assertIn("もう一度承認", (d / "needs" / "T1.md").read_text())
+
+                self.assertEqual(km.cmd_approve(c, "T1", "2回目", complete=True), 0)
+
+            self.assertEqual(km.load_tasks(d / "backlog"), [])
+            self.assertTrue((d / "archive" / "T1.md").exists())
+
     def test_approve_from_legacy_dashboard_completion_button_is_done(self):
         """起動中の旧 dashboard が complete を送らなくても、完了ボタンの正規文言は done にする。
 

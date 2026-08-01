@@ -199,23 +199,23 @@ function needActionsHtml(n) {
   const kind = n.kind || 'blocked';
   const buttons = [];
   if (kind === 'plan-review') {
-    buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}">承認して実行</button>`);
+    buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}" title="この計画を承認してタスクの実行を開始します">実行する</button>`);
     buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}" data-require="1" title="修正指示を記入して計画を練り直させます">差し戻す</button>`);
     buttons.push(`<button class="danger" data-act="reject" data-id="${esc(n.id)}" data-require="1" title="このタスクを廃止します。似た内容のタスクは次の分解でも提案されなくなります">却下</button>`);
   } else if (kind === 'review') {
     const hasMr = Boolean((n.mrUrls && n.mrUrls.length) || n.mrUrl);
     if (!hasMr) {
-      buttons.push(`<button class="primary-inline" data-act="retry-mr" data-id="${esc(n.id)}" title="検収到達時に失敗した MR 作成を再試行します">MRを作成し直す</button>`);
+      buttons.push(`<button class="primary-inline" data-act="retry-mr" data-id="${esc(n.id)}" title="検収到達時に失敗した MR 作成を再試行します">MR再作成</button>`);
     }
-    buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}">承認して完了にする</button>`);
+    buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}" title="成果を承認してこのタスクを完了します">完了にする</button>`);
     buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}" data-require="1" title="修正方針を記入してやり直させます">差し戻す</button>`);
     buttons.push(`<button class="danger" data-act="reject" data-id="${esc(n.id)}" data-require="1" title="この成果を採用せず廃止します。似た内容のタスクは次の分解でも提案されなくなります">却下</button>`);
   } else if (kind === 'milestone') {
     const status = milestoneStatusFor(state.project, n.id);
     if (status === null || status === 'converged') {
       // 完了確認待ち（converged）: 承認して完了にできる
-      buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}">✓ プロジェクトを完了として承認</button>`);
-      buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}">↩ 指示を送る</button>`);
+      buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}" title="プロジェクト全体を承認して完了します">完了にする</button>`);
+      buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}">指示を送る</button>`);
     } else if (status === 'no-acceptance') {
       // 完了条件が無い＝承認できない。承認ではなく「完了条件を追加」へ誘導する
       // （承認を押しても失敗し、マイルストーンが消えず何度も出るのを防ぐ）。
@@ -224,27 +224,27 @@ function needActionsHtml(n) {
         `<span class="muted">このバージョンには完了条件がありません。完了を判定できないため、完了条件を追加してください。</span>`
       );
       if (ver) {
-        buttons.push(`<button class="primary-inline" data-open-version="${esc(ver)}">✎ 完了条件を追加</button>`);
+        buttons.push(`<button class="primary-inline" data-open-version="${esc(ver)}">完了条件を追加</button>`);
       }
-      buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}">↩ 指示を送る</button>`);
+      buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}">指示を送る</button>`);
     } else if (status === 'awaiting-plan') {
       // 分解待ち: 受入条件が未達で、実行できるタスクが無い。自動では分解しないので、
       // バックログタブの「バックログを分解」へ誘導する（勝手に作り直さないのが契約）。
       buttons.push(
         `<span class="muted">完了条件をまだ満たせておらず、実行できるタスクもありません。タスクは自動では作られないので、バックログタブの「バックログを分解」で作ってください。</span>`
       );
-      buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}">↩ 指示を送る</button>`);
+      buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}">指示を送る</button>`);
     } else {
       // blocked / 停滞 / 予算到達など: 承認前の段階。内容を確認して対応する
       buttons.push(
         `<span class="muted">まだ完了確認の段階ではありません（現在: ${esc(statusLabel(status) || '未実行')}）。内容を確認して、必要なら計画バージョンを編集してください。</span>`
       );
-      buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}">↩ 指示を送る</button>`);
+      buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}">指示を送る</button>`);
     }
   } else {
-    buttons.push(`<button class="primary-inline" data-act="feedback" data-id="${esc(n.id)}">指示を送って再開</button>`);
-    buttons.push(`<button data-act="rerun" data-id="${esc(n.id)}">そのまま再実行</button>`);
-    buttons.push(`<button data-act="hold" data-id="${esc(n.id)}" title="このタスクを止めて保留にします">保留にする</button>`);
+    buttons.push(`<button class="primary-inline" data-act="feedback" data-id="${esc(n.id)}">指示して再開</button>`);
+    buttons.push(`<button data-act="rerun" data-id="${esc(n.id)}" title="指示を追加せず同じ作業をもう一度実行します">再実行</button>`);
+    buttons.push(`<button data-act="hold" data-id="${esc(n.id)}" title="このタスクを止めて保留にします">保留</button>`);
   }
   const ph =
     kind === 'plan-review'
@@ -1822,7 +1822,6 @@ function renderNeedDetail(p, n) {
     ${needNextStepHtml(n, decision, settled)}
     ${commandReceiptHtml(n)}
     ${n.kind === 'plan-review' ? taskContext : ''}
-    ${settled ? '' : `<section class="need-response need-response-primary"><h3>${esc(decision.actionTitle)}</h3><p class="muted need-response-hint">${esc(decision.nextStep)}</p>${needActionsHtml(n)}${needVerifyRevisionHtml(p, n)}</section>`}
     ${finalVerificationFailureHtml(finalVerificationFailure)}
     <section class="need-facts">
       <div class="need-facts-heading">
@@ -1834,6 +1833,7 @@ function renderNeedDetail(p, n) {
       ${renderNeedFacts(p, n) || '<p class="muted">追加の状況説明はありません。</p>'}
       ${commandFailureHtml(n)}
     </section>
+    ${settled ? '' : `<section class="need-response need-response-primary"><h3>${esc(decision.actionTitle)}</h3><p class="muted need-response-hint">${esc(decision.nextStep)}</p>${needActionsHtml(n)}${needVerifyRevisionHtml(p, n)}</section>`}
     <details class="need-evidence" data-ui-key="need-evidence:${esc(n.id)}">
       <summary>関連する成果・詳細を確認</summary>
       ${specFilesHtml(p, n) || '<p class="muted">関連するSpecはありません。</p>'}

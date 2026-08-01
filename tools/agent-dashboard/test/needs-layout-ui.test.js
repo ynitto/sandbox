@@ -78,8 +78,8 @@ assert.ok(renderNeedsSource.includes('master-detail needs-layout'));
 assert.ok(renderer.includes('needNextStepHtml('), '詳細は「次にすること」から始めます');
 assert.ok(renderer.includes('decision.actionTitle'), '回答欄は種類別の操作名を出します');
 assert.ok(
-  renderer.indexOf('${needNextStepHtml(n, decision, settled)}') < renderer.indexOf('${needActionsHtml(n)}'),
-  '現在の状態の直後に推奨操作を出します'
+  renderer.indexOf('<section class="need-facts">') < renderer.indexOf('${needActionsHtml(n)}'),
+  '理由を含む状況を操作フォームより先に出します'
 );
 assert.ok(renderer.includes('詳しい判断材料を見る'), '長い判断材料は折りたたんで段階的に開示します');
 assert.ok(renderer.includes('関連する成果・詳細を確認'), '成果や原文ログは詳細セクションにまとめます');
@@ -104,6 +104,8 @@ assert.match(
 );
 assert.match(css, /\.need-next-step\s*\{[^}]*background:[^}]*linear-gradient/s);
 assert.match(css, /\.need-evidence\s*\{[^}]*border:[^}]*var\(--border\)/s);
+assert.match(css, /\.need-facts\s*\{[^}]*padding:\s*14px\s+16px[^}]*background:\s*var\(--bg3\)/s);
+assert.match(css, /\.need-response-primary\s*\{[^}]*border:\s*0[^}]*background:\s*transparent/s);
 
 assert.match(css, /@media \(max-width:\s*1180px\)[\s\S]*\.need-list-item\s*\{[^}]*grid-template-columns:\s*1fr\s+auto/s);
 

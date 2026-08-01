@@ -19,6 +19,17 @@ def approve_review_done(cfg: Config, t: Task, reason: str) -> "tuple[bool, str]"
                                   "phase": PHASE_VERIFY, "verdict": VERIFY_FAILED})
         return False, f"{tid}: {stale_msg}"
     mr_ok, mr_msg = finalize_task_delivery(cfg, t)
+    missing_branch = re.fullmatch(
+        r"作業ブランチ (.+) を解決できないため、.+ へマージできません", mr_msg
+    ) if not mr_ok else None
+    if missing_branch:
+        branch = missing_branch.group(1)
+        if t.get("delivery_missing_branch_ack") == branch:
+            mr_ok = True
+            mr_msg = f"作業ブランチ {branch} の消失を人が再承認（自動統合を省略）"
+        else:
+            t.set("delivery_missing_branch_ack", branch)
+            persist_task(cfg, t)
     if not mr_ok:
         mr_url = str(t.get("mr_url") or "")
         delivery = delivery_entries(cfg, t, mr_url=mr_url)
@@ -26,10 +37,12 @@ def approve_review_done(cfg: Config, t: Task, reason: str) -> "tuple[bool, str]"
             evidence = delivery_evidence(cfg, "", None, "local", task=t, mr_url=mr_url)
         except Exception:  # noqa: BLE001 — 統合失敗の票は必ず残す
             evidence = f"- MR: {mr_url}" if mr_url else ""
-        write_needs_file(cfg, t, f"承認されたが成果ブランチを統合できない: {mr_msg}", review=True,
+        guidance = ("。外部でマージ済みか確認してください。確認済みなら、もう一度承認すると"
+                    "自動統合を省略して完了します" if missing_branch else "")
+        write_needs_file(cfg, t, f"承認されたが成果ブランチを統合できない: {mr_msg}{guidance}", review=True,
                          evidence=evidence, mr_url=mr_url, delivery=delivery)
         return (False, f"{tid}: 成果ブランチをターゲットへ統合できないため done にできません"
-                       f"（{mr_msg}）。解消後に再度 approve してください。")
+                       f"（{mr_msg}）。{'確認後にもう一度 approve してください' if missing_branch else '解消後に再度 approve してください'}。")
     lines = [f"{tid}: {mr_msg}"] if mr_msg else []
     # 検収ゲートの承認 = done 確定（verify は実行済み。保持した成果参照で納品書を書く）
     ex = dict(t.extra)
@@ -39,7 +52,8 @@ def approve_review_done(cfg: Config, t: Task, reason: str) -> "tuple[bool, str]"
     gate_branch = ex.get("gate_branch", "")
     t.status = "done"
     autonomy_record(cfg, t, clean=True)          # 検収承認＝手戻りなし。track の信頼を上げる
-    t.drop("gate_ref", "gate_ts", "gate_vmsg", "gate_branch", "gate_target", "gate_target_rev")
+    t.drop("gate_ref", "gate_ts", "gate_vmsg", "gate_branch", "gate_target", "gate_target_rev",
+           "delivery_missing_branch_ack")
     # review 時に保持した所在（ref/ブランチ）を受領書へ引き継ぐ（どこに成果物があるかを残す）
     gate_ev = (f"- 成果物: {ref}\n- 所在: {cfg.workdir}"
                + (f" / ブランチ {gate_branch}" if gate_branch else "")) if ref else ""
