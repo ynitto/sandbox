@@ -1221,11 +1221,20 @@ function setNotesStatus(message, error = false) {
 async function openNotesDialog() {
   const p = state.project;
   if (!p) return toast('プロジェクトを選択してください');
-  fillCharterSelect($('notes-charter'), p, state.backlogCharter || '');
+  const select = $('notes-charter');
+  fillCharterSelect(select, p, state.backlogCharter || '');
+  updateCharterSelectContext('notes-charter', 'notes-charter-description');
   notesWorkspace.mode = 'edit';
   await renderNotesList(notesWorkspace.selectedName);
   $('dlg-notes').showModal();
   $('note-body').focus();
+}
+
+function updateCharterSelectContext(selectId, descriptionId) {
+  const select = $(selectId);
+  for (const option of select.options) option.textContent = option.value || '初版';
+  const context = charterAssistContext(state.project, select.value);
+  $(descriptionId).textContent = context.goal || 'このバージョンには説明がありません。';
 }
 
 async function renderNotesList(preferredName = '') {
@@ -1754,6 +1763,7 @@ function openEnqueueDialog(prefill = {}) {
   setEnq('enq-scope', prefill.scope);
   setEnq('enq-out_of_scope', prefill.out_of_scope);
   fillCharterSelect($('enq-charter'), state.project, prefill.charter || '');
+  updateCharterSelectContext('enq-charter', 'enq-charter-description');
   fillWorkspaceSelect($('enq-workspace'), state.project, prefill.workspace || '');
   // level / track と誘導・レビュー記述（why 等）・ルーティング/検収系（refs/paths/review/expect/
   // followup/verify_template）はフォームに出さないが、再投入・フォローアップ提案では

@@ -44,6 +44,7 @@ async function init() {
   $('btn-enq-cancel').addEventListener('click', () => $('dlg-enqueue').close());
   $('btn-enq-submit').addEventListener('click', submitEnqueue);
   $('btn-enq-ai').addEventListener('click', aiEnqueueAssist);
+  $('enq-charter').addEventListener('change', () => updateCharterSelectContext('enq-charter', 'enq-charter-description'));
   $('btn-replan-cancel').addEventListener('click', () => $('dlg-replan').close());
   $('btn-replan-submit').addEventListener('click', () => requestReplan($('replan-charter').value));
   $('btn-notes-close').addEventListener('click', closeNotesDialog);
@@ -53,6 +54,7 @@ async function init() {
   });
   $('btn-note-new').addEventListener('click', newNote);
   $('btn-note-save').addEventListener('click', saveNote);
+  $('notes-charter').addEventListener('change', () => updateCharterSelectContext('notes-charter', 'notes-charter-description'));
   $('notes-mode-edit').addEventListener('click', () => setNotesMode('edit'));
   $('notes-mode-task').addEventListener('click', () => setNotesMode('task'));
   $('btn-note-candidates').addEventListener('click', buildNoteCandidates);

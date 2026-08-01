@@ -1,0 +1,28 @@
+- generic [active] [ref=f1e1]:
+  - generic [ref=f1e2]:
+    - complementary [ref=f1e3]:
+      - generic [ref=f1e4]:
+        - heading "プロジェクト管理" [level=1] [ref=f1e5]
+        - generic [ref=f1e6]:
+          - button "相談する" [ref=f1e7] [cursor=pointer]
+          - button "表示を更新" [ref=f1e11] [cursor=pointer]
+          - button "アプリ設定" [ref=f1e15] [cursor=pointer]
+      - region [ref=f1e20]:
+        - generic [ref=f1e21]:
+          - heading "プロジェクト" [level=2] [ref=f1e22]
+          - button "プロジェクトを作成" [ref=f1e23] [cursor=pointer]
+    - main [ref=f1e27]:
+      - generic [ref=f1e29]:
+        - generic [ref=f1e30]: プロジェクトを選択してください
+        - generic [ref=f1e32]:
+          - combobox "相談する作業フォルダ" [ref=f1e33]
+          - button "この作業を相談" [disabled] [ref=f1e34]
+      - navigation [ref=f1e39]:
+        - button "概要" [ref=f1e40] [cursor=pointer]
+        - button "タスク" [ref=f1e41] [cursor=pointer]
+        - button "要対応" [ref=f1e42] [cursor=pointer]
+        - button "実行" [ref=f1e43] [cursor=pointer]
+        - button "成果" [ref=f1e44] [cursor=pointer]
+        - button "全体設定" [ref=f1e46] [cursor=pointer]
+  - text: 選択中
+  - status [ref=f1e49]: "設定読込: api is not defined"

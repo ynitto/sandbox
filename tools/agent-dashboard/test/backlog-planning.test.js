@@ -271,11 +271,34 @@ function dropped(dir) {
     assert.ok(renderer.includes('openNotesDialog'), 'メモダイアログがある');
     assert.ok(indexHtml.includes('id="notes-mode-edit"'), '編集モードがある');
     assert.ok(indexHtml.includes('id="notes-mode-task"'), 'タスク化モードがある');
+    assert.match(indexHtml, /notes-editor-actions[\s\S]*notes-charter[\s\S]*btn-note-save/,
+      'バージョン選択と保存はメモ編集欄にまとめる');
+    assert.ok(indexHtml.includes('id="notes-charter-description"'), '選択したバージョンの説明を近くに表示する');
+    assert.ok(renderer.includes("option.textContent = option.value || '初版'"),
+      'メモのバージョンプルダウンはバージョン名だけを表示する');
+    assert.ok(indexHtml.includes('id="enq-charter-description"'), 'タスク追加でもバージョンの説明を近くに表示する');
+    assert.ok(renderer.includes("updateCharterSelectContext('enq-charter', 'enq-charter-description')"),
+      'タスク追加でもバージョン名だけの選択肢と説明を同期する');
     assert.ok(indexHtml.includes('id="dlg-note-candidates"'), '候補確認ダイアログがある');
     assert.ok(renderer.includes("mode: 'note-task-candidates'"), '選択内容は読み取り専用AI補助へ渡す');
     assert.ok(renderer.includes('api.enqueueTask'), '確認後は既存のタスク追加経路を使う');
     assert.ok(!indexHtml.includes('btn-notes-distill'), '全メモ一括分解は主要導線から外す');
     assert.ok(/renderBacklog[\s\S]{0,4000}btn-notes/.test(renderer), 'バックログにメモボタンがある');
+  });
+
+  await test('バージョン選択は名前だけを表示し、目標を近くの説明欄へ出す', async () => {
+    const select = { value: '顧客検証', options: [{ value: '顧客検証', textContent: '顧客検証 — 長い目標' }] };
+    const description = { textContent: '' };
+    // eslint-disable-next-line no-new-func
+    const update = new Function('$', 'state', 'charterAssistContext',
+      `${grab('updateCharterSelectContext')}; return updateCharterSelectContext;`)(
+      (id) => id === 'version' ? select : description,
+      { project: {} },
+      () => ({ goal: '対象ユーザーへの検証を完了する' })
+    );
+    update('version', 'description');
+    assert.strictEqual(select.options[0].textContent, '顧客検証');
+    assert.strictEqual(description.textContent, '対象ユーザーへの検証を完了する');
   });
 
   console.log(`\n${passed} tests passed`);

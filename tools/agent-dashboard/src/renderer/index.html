@@ -321,7 +321,7 @@
     <div class="field" id="enq-charter-field">
       <label for="enq-charter">計画バージョン</label>
       <select id="enq-charter"></select>
-      <div class="muted">選択したバージョンの目標・制約・前提を、このタスクの実行に適用します。</div>
+      <p id="enq-charter-description" class="muted charter-description" aria-live="polite"></p>
     </div>
     <div class="field">
       <label>タスク名</label>
@@ -448,16 +448,19 @@
         </div>
         <div id="note-task-panel" class="hidden" aria-label="タスク化する段落"></div>
         <div id="notes-status" class="muted notes-status" aria-live="polite"></div>
+        <div class="notes-editor-actions">
+          <div class="field notes-charter-field">
+            <label for="notes-charter">計画バージョン</label>
+            <select id="notes-charter"></select>
+            <p id="notes-charter-description" class="muted charter-description" aria-live="polite"></p>
+          </div>
+          <button id="btn-note-save" class="primary-inline">保存</button>
+          <button id="btn-note-candidates" class="primary-inline hidden" disabled>選択した項目から候補を作る</button>
+        </div>
       </section>
     </div>
     <div class="dialog-actions">
       <button id="btn-notes-close">閉じる</button>
-      <div class="field notes-charter-field">
-        <label for="notes-charter">計画バージョン</label>
-        <select id="notes-charter"></select>
-      </div>
-      <button id="btn-note-save" class="primary-inline">保存</button>
-      <button id="btn-note-candidates" class="primary-inline hidden" disabled>選択した項目から候補を作る</button>
     </div>
   </dialog>
 
