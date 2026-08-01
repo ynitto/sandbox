@@ -247,9 +247,9 @@ if (fs.existsSync(README)) {
     'regression_cmd の行が README と一致しない');
   assert.ok(noConfig.includes(esc(quoted('intake_cmd'))),
     'intake_cmd の行が README と一致しない');
-  assert.ok(/python3[^\n]*codd_gate_regression\.py[\s\\]*--config\b/.test(readme),
-    'README の注入 CLI 名が変わった（画面側の文言も合わせること）');
-  assert.ok(regressionOnly.includes('&lt;状態 clone&gt;/agent-project.yaml'),
+  const cli = readme.match(/python3[^\n]*codd_gate_regression\.py[\s\\]*--config\s+([^\s`]+)/);
+  assert.ok(cli, 'README の注入 CLI または --config 引数が変わった（画面側の文言も合わせること）');
+  assert.ok(regressionOnly.includes(esc(cli[1])),
     'README と同じ設定ファイルのプレースホルダを表示していない');
 }
 

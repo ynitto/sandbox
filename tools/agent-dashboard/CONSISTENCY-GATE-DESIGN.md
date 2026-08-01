@@ -119,15 +119,12 @@ dashboard は設定例、既存 CLI、設定ファイルを開く操作だけを
 
 ## 検証記録
 
-t3 のデータ経路報告と t4 の CLI 契約報告を、現 HEAD の `project.js`、`toolconfig.js`、`renderer.js`、`sections/overview.js`、`sections/needs.js`、agent-project の `mr.py` と `model.py`、対象テストに突き合わせた。
+データ経路と CLI 契約を、現 HEAD の `project.js`、`toolconfig.js`、`renderer.js`、`sections/overview.js`、`sections/needs.js`、agent-project の `mr.py` と `model.py`、対象テストに突き合わせた。
 
-2026-08-01 に対象テスト 7 スクリプトを再実行し、すべて成功した。対象 7 ソースへの ESLint も成功した。設計書以外のファイルは変更していない。
+2026-08-01 に対象テストを再実行し、すべて成功した。対象ソースへの ESLint も成功した。実装、README、回帰テストを本設計に合わせて更新した。
 
 ## 未解決と範囲外
 
 - 実効 `--config` パスと dashboard の自動探索候補が一致するかは、現契約では分からない。
-- dashboard README/UI の CLI 例 `/path/to/.agents/agent-project.yaml` は、t4 が確認した正式な `<状態 clone>/agent-project.yaml` とずれている。本設計は正式な形を採用したが、実装と README の修正は対象外である。
 - codd-gate の実在、互換性、実行成功の監視は対象外。必要なら agent-project の status 契約として追加する。
 - 新規フック、設定注入 CLI、UI からの状態書換は行わない。
-
-@followup dashboard README/UI の sibling CLI プレースホルダを `<状態 clone>/agent-project.yaml` に揃える。
