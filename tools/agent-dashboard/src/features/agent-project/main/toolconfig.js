@@ -46,7 +46,9 @@ function parseFlatYaml(text) {
         i += 1;
         body.push(lines[i].replace(/^[ \t]+/, ''));
       }
-      const val = block[1] === '>' ? body.join(' ').trim() : body.join('\n').trim();
+      const val = block[1] === '>'
+        ? body.join('\n').replace(/\n+/g, (s) => (s.length === 1 ? ' ' : s.slice(1))).trim()
+        : body.join('\n').trim();
       if (val) out[m[1]] = val;
       continue;
     }
@@ -70,7 +72,8 @@ function readToolConfig(baseName, baseDirs) {
           const obj = JSON.parse(text);
           if (obj && typeof obj === 'object') return { file, values: obj };
         } catch {
-          continue;
+          // 最優先のローカル設定が壊れていても、別スコープの global 設定へは倒さない。
+          return { file, values: {} };
         }
       } else {
         return { file, values: parseFlatYaml(text) };

@@ -152,6 +152,28 @@ test('YAML の folded scalar と null を実効値として扱う', () => {
   }
 });
 
+test('folded scalar の段落境界を PyYAML と同じ改行として扱う', () => {
+  const ws = mkWorkspace(
+    'regression_cmd: >-\n' +
+      '  codd-gate verify\n' +
+      '\n' +
+      '  --base "$KIRO_BASE_REV"\n' +
+      'intake_cmd: >-\n' +
+      '  codd-gate tasks\n' +
+      '\n' +
+      '  --debt\n'
+  );
+  try {
+    const gate = project.readProject(ws, {}).consistencyGate;
+    assert.strictEqual(gate.regressionCmd, 'codd-gate verify\n--base "$KIRO_BASE_REV"');
+    assert.strictEqual(gate.intakeCmd, 'codd-gate tasks\n--debt');
+    assert.strictEqual(gate.regressionWired, false);
+    assert.strictEqual(gate.intakeWired, false);
+  } finally {
+    fs.rmSync(ws, { recursive: true, force: true });
+  }
+});
+
 test('引用された null は文字列のコマンドとして残す', () => {
   const ws = mkWorkspace("intake_cmd: 'null'\n");
   try {
@@ -205,6 +227,35 @@ test('~/.agents の実効設定を採り、ワークスペース設定を優先�
     assert.strictEqual(localGate.intakeConfigured, true);
     assert.strictEqual(localGate.regressionWired, false);
     assert.strictEqual(localGate.intakeWired, false);
+  } finally {
+    os.homedir = originalHomedir;
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test('壊れたローカル JSON が global 設定へフォールバックしない', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-gate-home-'));
+  const ws = mkWorkspace(null);
+  const originalHomedir = os.homedir;
+  try {
+    os.homedir = () => home;
+    fs.mkdirSync(path.join(home, '.agents'), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, '.agents', 'agent-project.yaml'),
+      "regression_cmd: 'codd-gate verify --base \\\"$KIRO_BASE_REV\\\"'\n" +
+        "intake_cmd: 'codd-gate tasks --debt'\n",
+      'utf8'
+    );
+    fs.mkdirSync(path.join(ws, '.agents'), { recursive: true });
+    const localFile = path.join(ws, '.agents', 'agent-project.json');
+    fs.writeFileSync(localFile, '{ broken', 'utf8');
+
+    const gate = project.readProject(ws, {}).consistencyGate;
+    assert.strictEqual(gate.configFile, localFile);
+    assert.strictEqual(gate.regressionConfigured, false);
+    assert.strictEqual(gate.intakeConfigured, false);
+    assert.strictEqual(gate.wired, false);
   } finally {
     os.homedir = originalHomedir;
     fs.rmSync(home, { recursive: true, force: true });
