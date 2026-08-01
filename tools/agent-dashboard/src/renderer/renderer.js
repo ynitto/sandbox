@@ -15,6 +15,7 @@ const state = {
   flowRun: null, // {run, events, nodeEvents}
   flowNodeId: null,
   flowRevisionId: null,
+  flowGraphMode: 'plan', // plan（計画の変遷）/ dependencies（依存関係）
   flowDetailView: 'overview', // 選択中 run の内部ビュー（overview / graph / history）
   flowMobileDetail: false,
   flowNodeIssue: null, // {token, issue|null}（実行中ノードのイシュー検索結果キャッシュ）

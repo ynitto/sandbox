@@ -57,7 +57,7 @@ agent-project は、バックログを優先順位付けして実行へ委譲し
 
 ### 1. done を確定できるのは機械検証の PASS だけにする
 
-**判断**: 利用者は自然文の受入基準を 1 行 1 項目で書く。固定検証コマンドと `verify_template` は、確認方法を既に知っている場合の fast path に限る。agent-project は両者を `verification_plan` に正規化して digest を付け、agent-flow が返す receipt の plan digest、成果 revision、判定、証跡を検算する。固定コマンドがすべて終了コード 0、全基準が証跡付き pass のときだけ done 候補にする。
+**判断**: 利用者は自然文の受入基準を 1 行 1 項目で書く。固定検証コマンドと `verify_template` は、確認方法を既に知っている場合の fast path に限る。agent-project は両者を `verification_plan` に正規化して digest を付け、agent-flow が返す receipt の plan digest、成果 revision、判定、証跡を検算する。書込 workspace では検証時の target revision と、その revision が成果へ統合済みという判定も照合する。固定コマンドがすべて終了コード 0、全基準が証跡付き pass で、最新 target を含むときだけ done 候補にする。
 
 **文脈**: 自然文から LLM にシェルコマンドを一度だけ作らせる旧方式は、実行ノードの環境差でよく失敗した。運よく通る弱いコマンドもあり、人にはその良し悪しを判別しにくい。利用者が決められるのは期待する結果で、成果環境に合う確認方法ではない。
 
@@ -192,6 +192,12 @@ settle は二段階です。まず archive、納品書、needs、verifications �
 
 S3 のゲート順と失敗時の行き先: verify（E1）→ 回帰（E2）→ パス保護 → 進捗。回帰 NG と進捗 NG は blocked（人の判断へ）、パス保護違反は review（人の検収へ）。verify の PASS はこの列の入場条件であって、通過しても done 確定ではありません。
 
+target の未統合は成果内容の失敗と分けます。receipt が検証時の target revision を成果の祖先として
+証明できない場合は、古い run の失敗工程だけを再開せず、`revise` で新 run を作って base 同期から
+全検証をやり直します。人の feedback や基準変更を伴う `revise` は先行 run の done node を継承しません。
+`resume-run` は接続断など、計画を変えず失敗工程だけを再実行する場合に限ります。検証後に target が
+進んだ場合の鮮度確認は、approve の直前に行います。
+
 E2 の回帰は verification_plan には畳みません。`regression_cmd` はグローバル検査で、パスも
 差分基準（`$KIRO_BASE_REV`）も git-bus ルート（workdir）を前提に書かれており、成果 repo の
 clone 上で走らせるとゲート自体が壊れるためです。重複実行の解消（同一コマンドの digest 畳み込み）は
@@ -204,6 +210,10 @@ plan の正規化段で plan 内にだけ効きます。
 `--watch` はパス終了後もプロセスを残しますが、idle 中にエージェントは起動しません。消化できるタスク、新しい inbox、人の指示、確定したフィードバックのいずれかを FS ポーリングで検知したときだけ次のパスを起こします。ここで「起こす条件」と「取り込む条件」を同じ述語にしてあるのが要点で、ずれていると何も処理しない空パスを無限に回します。
 
 review（人の検収）の正はフォージの MR/PR です。書込先を持つタスクは review 到達時に MR を冪等作成し、検収カードには MR リンクと検証レポートの要約が載ります。worker の作業ツリーは `/tmp` で push 後に消えるため、常に存在する差分のビューはリモートだけだからです。決着は決定的シグナルに限ります——マージは approve、未マージのクローズは reject、changes-requested のラベルまたはレビュー状態は未解決コメントを feedback に注入した revise、コメントのみは何もしない（差し戻しはラベルか dashboard ボタンを使い、コメント本文のキーワード推定は検収の決着に使いません）。フォージの照会と決着の書き込みは常駐体の sync 周期が担い、dashboard の承認・差し戻しボタンは同じ revise / approve 契約へ合流します。同時操作ではマージ・クローズ・changes-requested の決定的シグナルが勝ち、ボタンはそれが無い場合だけ有効である。フォージ実装は GitLab のみで、未対応リモートでは dashboard のボタン決着が正式な契約となる。MR を作る主体は常駐体です。worker に push 直後に作らせる案は、フォージの書込トークンを全ワーカーノードへ配ることになり、板経由で信頼境界の外のノードが請け負う構成で破綻します。dashboard に作らせる案は「dashboard は書かない」原則に反するうえ、dashboard を開かないノードでは MR が永遠にできません。常駐体なら、トークンは常駐ノード 1 台に留まり、検収カードが立つ瞬間に MR URL を確定できます。もうひとつの不変条件として、フォージへ到達できないとき（回線断・トークン失効）は決着しません。「見えない = 未マージ = reject」と読むと、回線が切れただけで成果が却下されるからです。fencing の `unknown` と同じ思想です。
+
+検収へ入った時点の target revision はタスクに保存します。approve の直前に target を取り直し、同じ
+revision の場合だけ統合へ進みます。進んでいれば review を維持し、未検証の target をその場で merge して
+done にすることはありません。
 
 ## プロジェクト層（charter からバックログを作る）
 

@@ -425,6 +425,11 @@ feedback 再開、revise（doing 中も。受入基準の項目編集を含む�
 - **GitLab は読み取り専用**。
 - **タスク状態ファイルは書き換えない**（`backlog/*.md` の status、`archive/`、`project.json`）。
 
+integration failure は通常の工程失敗と区別して、「最新 target との統合が必要」と表示します。検証時と
+現在の target revision、分かっている競合ファイルを示し、操作は既存の `revise` に「最新 target を統合して
+全検証をやり直す」という feedback を渡します。失敗工程だけを温存する `resume-run` は出しません。
+viewer 固有の状態遷移や新しい command は増やさず、agent-project の正準経路へ合流させます。
+
 通常画面で人に求めるのは確認方法ではありません。プロジェクト作成と計画バージョン編集では
 自然文の「達成条件」、タスク追加と編集では自然文の「受入基準」を 1 行 1 項目で入力します。
 固定検証コマンドと `verify_template` はタスクの「高度な設定」に置き、CI コマンドを既に知っている

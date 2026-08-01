@@ -481,6 +481,26 @@ test('taskAssistPrompt / normalize: 意図と境界（task-guide）の JSON 契�
   assert.strictEqual(g.rationale, '根拠');
 });
 
+test('taskAssistPrompt / normalize: 選択したメモを複数タスク候補へ分ける', () => {
+  const prompt = agent.taskAssistPrompt('note-task-candidates', {
+    charter: { goal: '検収を改善する', acceptance: '証跡を確認できる' },
+    backlog: [{ id: 'T1', title: '既存', status: 'ready', priority: 2 }],
+    blocks: [{ heading: '検収', text: '差分を見やすくする' }],
+  });
+  assert.ok(prompt.includes('差分を見やすくする'));
+  assert.ok(prompt.includes('複数のタスク候補'));
+  const result = agent.normalizeNoteTaskCandidates({
+    rationale: '二つに分ける',
+    tasks: [
+      { title: '差分表示', desc: '変更点を表示する', acceptance: ['追加行が見える'], priority: '3' },
+      { title: '証跡表示', acceptance: '実行ログが見える\n時刻が分かる', after: 'T1' },
+    ],
+  });
+  assert.strictEqual(result.tasks.length, 2);
+  assert.deepStrictEqual(result.tasks[1].acceptance, ['実行ログが見える', '時刻が分かる']);
+  assert.deepStrictEqual(result.tasks[1].after, ['T1']);
+});
+
 test('normalizeFollowupSuggestions: 誘導・レビュー記述（why 等）を提案に通す', () => {
   const sug = agent.normalizeFollowupSuggestions({
     suggestions: [{ title: 'docs', verify: 'true', why: '抜けの補完', out_of_scope: 'コード変更', hints: 'README 参照' }],

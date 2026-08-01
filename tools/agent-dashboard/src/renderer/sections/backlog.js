@@ -1192,74 +1192,321 @@ async function requestReplan(charter = '') {
 }
 
 // ---------------------------------------------------------------------------
-// 観点メモ（notes/）。書いても計画は動かない——分解は人が押したときだけ。
+// 観点メモ（notes/）。編集とタスク化を分け、選択したブロックだけを候補へ変換する。
 // ---------------------------------------------------------------------------
+const notesWorkspace = {
+  notes: [],
+  selectedName: '',
+  savedBody: '',
+  mode: 'edit',
+  selectedBlocks: [],
+  candidates: [],
+};
+
+function currentNote() {
+  return notesWorkspace.notes.find((note) => note.name === notesWorkspace.selectedName) || null;
+}
+
+function noteIsDirty() {
+  return $('note-body').value !== notesWorkspace.savedBody;
+}
+
+function setNotesStatus(message, error = false) {
+  const el = $('notes-status');
+  el.textContent = message || '';
+  if (error) el.setAttribute('role', 'alert');
+  else el.removeAttribute('role');
+}
+
 async function openNotesDialog() {
   const p = state.project;
   if (!p) return toast('プロジェクトを選択してください');
   fillCharterSelect($('notes-charter'), p, state.backlogCharter || '');
-  $('note-body').value = '';
-  await renderNotesList();
+  notesWorkspace.mode = 'edit';
+  await renderNotesList(notesWorkspace.selectedName);
   $('dlg-notes').showModal();
+  $('note-body').focus();
 }
 
-async function renderNotesList() {
+async function renderNotesList(preferredName = '') {
   const p = state.project;
   const el = $('notes-list');
   if (!p || !el) return;
-  let notes = [];
   try {
-    notes = await api.listNotes(p.dir);
+    notesWorkspace.notes = await api.listNotes(p.dir);
   } catch (err) {
-    el.innerHTML = `<div class="muted">メモを読めませんでした: ${esc(String(err.message || err))}</div>`;
+    el.innerHTML = `<div class="muted" role="alert">メモを読めませんでした: ${esc(String(err.message || err))}</div>`;
     return;
   }
-  el.innerHTML = notes.length
-    ? `<h3>書き溜めたメモ（${notes.length} 件）</h3>${notes
-        .map(
-          (n) => `<details class="note-item"><summary>${esc(n.name)}</summary>
-            <div class="task-prose">${proseHtml(String(n.body || ''))}</div></details>`
-        )
-        .join('')}`
-    : '<div class="muted">まだメモはありません。</div>';
+  const names = new Set(notesWorkspace.notes.map((note) => note.name));
+  notesWorkspace.selectedName = names.has(preferredName)
+    ? preferredName
+    : names.has(notesWorkspace.selectedName)
+      ? notesWorkspace.selectedName
+      : (notesWorkspace.notes[0] && notesWorkspace.notes[0].name) || '';
+  el.innerHTML = notesWorkspace.notes.length
+    ? notesWorkspace.notes.map((note) => {
+        const linked = Object.keys(note.links || {}).length;
+        return `<button type="button" class="note-list-item ${note.name === notesWorkspace.selectedName ? 'active' : ''}"
+          data-note-name="${esc(note.name)}" aria-pressed="${note.name === notesWorkspace.selectedName}">
+          <span>${esc(note.name)}</span>${linked ? `<small>${linked} 項目タスク化済み</small>` : ''}
+        </button>`;
+      }).join('')
+    : '<div class="muted notes-empty">まだメモはありません。</div>';
+  for (const button of el.querySelectorAll('[data-note-name]')) {
+    button.addEventListener('click', () => selectNote(button.dataset.noteName));
+  }
+  renderNoteWorkspace();
 }
 
-async function addNote() {
+function renderNoteWorkspace() {
+  const note = currentNote();
+  notesWorkspace.savedBody = note ? String(note.body || '').replace(/\n$/, '') : '';
+  $('note-body').value = notesWorkspace.savedBody;
+  $('note-current-name').textContent = note ? note.name : '新しいメモ';
+  setNotesMode(notesWorkspace.mode, true);
+  setNotesStatus(note ? '保存済み' : '内容を書いて保存するとメモが作成されます');
+}
+
+async function selectNote(name) {
+  if (name === notesWorkspace.selectedName) return;
+  if (noteIsDirty()) {
+    const discard = await confirmDialog('保存していない変更があります。破棄して別のメモを開きますか？');
+    if (!discard) return;
+  }
+  notesWorkspace.selectedName = name;
+  notesWorkspace.mode = 'edit';
+  await renderNotesList(name);
+}
+
+async function newNote() {
+  if (noteIsDirty()) {
+    const discard = await confirmDialog('保存していない変更があります。破棄して新しいメモを作りますか？');
+    if (!discard) return;
+  }
+  notesWorkspace.selectedName = '';
+  notesWorkspace.savedBody = '';
+  notesWorkspace.mode = 'edit';
+  $('note-body').value = '';
+  $('note-current-name').textContent = '新しいメモ';
+  setNotesMode('edit', true);
+  setNotesStatus('内容を書いて保存するとメモが作成されます');
+  $('note-body').focus();
+}
+
+async function closeNotesDialog() {
+  if (noteIsDirty()) {
+    const discard = await confirmDialog('保存していない変更があります。破棄して閉じますか？');
+    if (!discard) return;
+  }
+  $('dlg-notes').close();
+}
+
+async function saveNote() {
   const p = state.project;
-  if (!p) return toast('プロジェクトを選択してください');
+  if (!p) return;
   const body = $('note-body').value.trim();
-  if (!body) return toast('メモの内容を入力してください');
-  const ok = await guard('メモの保存', async () => {
-    const res = await api.writeNote(p.dir, '', body);
-    uiLog('writeNote', res);
-    toast(`メモを保存しました（${res.name}）`, true);
-    return true;
-  });
-  if (ok) {
-    $('note-body').value = '';
-    await renderNotesList();
+  if (!body) return setNotesStatus('メモの内容を入力してください', true);
+  const button = $('btn-note-save');
+  button.disabled = true;
+  setNotesStatus('保存しています…');
+  try {
+    const note = currentNote();
+    const result = note
+      ? await api.updateNote(p.dir, note.name, body, note.mtime)
+      : await api.writeNote(p.dir, '', body);
+    uiLog(note ? 'updateNote' : 'writeNote', result);
+    await renderNotesList(result.name);
+    toast(`メモを保存しました（${result.name}）`, true);
+  } catch (err) {
+    setNotesStatus(`保存できませんでした: ${String(err.message || err)}`, true);
+  } finally {
+    button.disabled = false;
   }
 }
 
-async function distillNotes(charter = '') {
-  const p = state.project;
-  if (!p) return toast('プロジェクトを選択してください');
-  const yes = await confirmDialog(
-    `${p.name}: 書き溜めたメモからタスク候補を起こします。\n` +
-      '既存タスクと重複するものは追加されません。追加されたタスクは承認するまで実行されません。\n' +
-      '取り込めたメモは notes/archive/ へ移ります。反映は次の実行サイクルです。よろしいですか？'
-  );
-  if (!yes) return;
-  const ok = await guard('メモの分解', async () => {
-    const res = await api.distillNotes(p.dir, charter);
-    uiLog('distillNotes', res);
-    toast('メモの分解を依頼しました（次の実行で反映されます）', true);
-    return true;
-  });
-  if (ok) {
-    $('dlg-notes').close();
-    await reloadProject();
+function setNotesMode(mode, force = false) {
+  if (mode === 'task' && !force && noteIsDirty()) {
+    setNotesStatus('タスク化する前に変更を保存してください', true);
+    return;
   }
+  notesWorkspace.mode = mode === 'task' ? 'task' : 'edit';
+  const taskMode = notesWorkspace.mode === 'task';
+  $('notes-mode-edit').setAttribute('aria-pressed', String(!taskMode));
+  $('notes-mode-task').setAttribute('aria-pressed', String(taskMode));
+  $('note-edit-panel').classList.toggle('hidden', taskMode);
+  $('note-task-panel').classList.toggle('hidden', !taskMode);
+  $('btn-note-save').classList.toggle('hidden', taskMode);
+  $('btn-note-candidates').classList.toggle('hidden', !taskMode);
+  if (taskMode) renderNoteBlocks();
+}
+
+function taskExists(id) {
+  const p = state.project;
+  return [...((p && p.backlog) || []), ...((p && p.archive) || [])].some((task) => task.id === id);
+}
+
+function renderNoteBlocks() {
+  const panel = $('note-task-panel');
+  const note = currentNote();
+  if (!note) {
+    panel.innerHTML = '<div class="empty">先にメモを保存してください</div>';
+    updateNoteSelectionCount();
+    return;
+  }
+  const blocks = noteBlocks.parseNoteBlocks(notesWorkspace.savedBody);
+  panel.innerHTML = blocks.length
+    ? `<div class="note-block-list">${blocks.map((block) => {
+        const linked = (note.links || {})[block.fingerprint];
+        const taskIds = linked && Array.isArray(linked.taskIds) ? linked.taskIds : [];
+        const ready = taskIds.length && taskIds.every(taskExists);
+        const links = taskIds.map((id) =>
+          `<button type="button" class="linklike mono" data-note-task-id="${esc(id)}">${esc(id)}</button>`
+        ).join(' ');
+        return `<label class="note-block ${taskIds.length ? 'linked' : ''}">
+          <input type="checkbox" class="note-block-check" data-note-fingerprint="${esc(block.fingerprint)}"
+            ${taskIds.length ? 'disabled' : ''} />
+          <span class="note-block-body">
+            ${block.heading ? `<small class="muted">${esc(block.heading)}</small>` : ''}
+            <span class="task-prose">${proseHtml(block.text)}</span>
+            ${taskIds.length ? `<span class="note-block-state">${ready ? 'タスク化済み' : '追加待ち'} ${links}</span>` : ''}
+          </span>
+        </label>`;
+      }).join('')}</div>`
+    : '<div class="empty">選択できる段落がありません</div>';
+  for (const checkbox of panel.querySelectorAll('.note-block-check')) {
+    checkbox.addEventListener('change', updateNoteSelectionCount);
+  }
+  for (const button of panel.querySelectorAll('[data-note-task-id]')) {
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      $('dlg-notes').close();
+      gotoTask(button.dataset.noteTaskId);
+    });
+  }
+  updateNoteSelectionCount();
+}
+
+function selectedNoteBlocks() {
+  const selected = new Set(
+    [...document.querySelectorAll('#note-task-panel .note-block-check:checked')]
+      .map((input) => input.dataset.noteFingerprint)
+  );
+  return noteBlocks.parseNoteBlocks(notesWorkspace.savedBody)
+    .filter((block) => selected.has(block.fingerprint));
+}
+
+function updateNoteSelectionCount() {
+  const count = selectedNoteBlocks().length;
+  const button = $('btn-note-candidates');
+  button.disabled = count === 0;
+  button.textContent = count ? `選択した ${count} 項目から候補を作る` : '選択した項目から候補を作る';
+}
+
+async function buildNoteCandidates() {
+  const p = state.project;
+  const blocks = selectedNoteBlocks();
+  if (!p || !blocks.length) return;
+  const button = $('btn-note-candidates');
+  button.disabled = true;
+  setNotesStatus('タスク候補を作っています…');
+  try {
+    const result = await api.agentTaskAssist({
+      dir: p.dir,
+      mode: 'note-task-candidates',
+      context: {
+        charter: charterAssistContext(p, $('notes-charter').value),
+        backlog: backlogAssistRows(p),
+        blocks: blocks.map(({ heading, text }) => ({ heading, text })),
+      },
+    });
+    const tasks = (result.fields && result.fields.tasks) || [];
+    if (!tasks.length) throw new Error('作成できる候補がありませんでした');
+    notesWorkspace.selectedBlocks = blocks;
+    notesWorkspace.candidates = tasks.map((task) => ({ ...task, addedId: '' }));
+    renderNoteCandidates(result.fields.rationale || '');
+    $('dlg-note-candidates').showModal();
+    setNotesStatus(`${tasks.length} 件の候補を作成しました`);
+  } catch (err) {
+    setNotesStatus(`候補を作成できませんでした: ${String(err.message || err)}。選択したまま再試行できます`, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function renderNoteCandidates(rationale = '') {
+  const list = $('note-candidates-list');
+  list.innerHTML = `${rationale ? `<p class="muted">${esc(rationale)}</p>` : ''}${notesWorkspace.candidates
+    .map((task, index) => `<section class="note-candidate" data-note-candidate="${index}">
+      <label class="note-candidate-select"><input type="checkbox" class="note-candidate-check" checked />追加する</label>
+      <div class="field"><label>タスク名</label><input class="note-candidate-title" value="${esc(task.title)}" /></div>
+      <div class="field"><label>変更してほしいこと</label><textarea class="note-candidate-desc" rows="3">${esc(String(task.desc || '').replace(/ ⏎ /g, '\n'))}</textarea></div>
+      <div class="field"><label>完了条件</label><textarea class="note-candidate-accept" rows="3">${esc((task.acceptance || []).join('\n'))}</textarea></div>
+    </section>`).join('')}`;
+  $('note-candidates-status').textContent = '';
+}
+
+async function submitNoteCandidates() {
+  const p = state.project;
+  const note = currentNote();
+  if (!p || !note) return;
+  const rows = [...document.querySelectorAll('#note-candidates-list [data-note-candidate]')]
+    .filter((row) => row.querySelector('.note-candidate-check').checked);
+  if (!rows.length) {
+    $('note-candidates-status').textContent = '追加する候補を選択してください';
+    return;
+  }
+  const button = $('btn-note-candidates-submit');
+  button.disabled = true;
+  const added = [];
+  const failed = [];
+  for (const [position, row] of rows.entries()) {
+    const index = Number(row.dataset.noteCandidate);
+    const candidate = notesWorkspace.candidates[index];
+    if (candidate.addedId) continue;
+    const title = row.querySelector('.note-candidate-title').value.trim();
+    if (!title) {
+      failed.push('タスク名が空の候補');
+      continue;
+    }
+    const id = `note-${Date.now().toString(36)}-${position + 1}`;
+    const description = row.querySelector('.note-candidate-desc').value.trim();
+    const acceptance = row.querySelector('.note-candidate-accept').value
+      .split('\n').map((value) => value.trim()).filter(Boolean);
+    try {
+      await api.enqueueTask(p.dir, {
+        id,
+        title,
+        desc: description.replace(/\r?\n/g, ' ⏎ '),
+        why: candidate.why || '',
+        task_acceptance_criteria: acceptance,
+        priority: candidate.priority,
+        after: (candidate.after || []).join(', '),
+        charter: $('notes-charter').value,
+      });
+      candidate.addedId = id;
+      added.push(id);
+      row.classList.add('added');
+      row.querySelector('.note-candidate-check').disabled = true;
+    } catch (err) {
+      failed.push(`${title}: ${String(err.message || err)}`);
+    }
+  }
+  const allTaskIds = notesWorkspace.candidates.map((candidate) => candidate.addedId).filter(Boolean);
+  if (added.length) {
+    await api.markNoteBlocks(p.dir, note.name, notesWorkspace.selectedBlocks.map((block) => ({
+      fingerprint: block.fingerprint,
+      taskIds: allTaskIds,
+    })));
+    await renderNotesList(note.name);
+    setNotesMode('task', true);
+    toast(`${added.length} 件のタスクを追加しました（承認するまで実行されません）`, true);
+  }
+  $('note-candidates-status').textContent = failed.length
+    ? `${added.length} 件を追加しました。失敗: ${failed.join(' / ')}`
+    : `${added.length} 件をタスク一覧へ追加しました`;
+  if (!failed.length) $('dlg-note-candidates').close();
+  button.disabled = false;
 }
 
 function backlogAssistRows(p) {

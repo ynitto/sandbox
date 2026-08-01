@@ -46,9 +46,18 @@ async function init() {
   $('btn-enq-ai').addEventListener('click', aiEnqueueAssist);
   $('btn-replan-cancel').addEventListener('click', () => $('dlg-replan').close());
   $('btn-replan-submit').addEventListener('click', () => requestReplan($('replan-charter').value));
-  $('btn-notes-close').addEventListener('click', () => $('dlg-notes').close());
-  $('btn-note-add').addEventListener('click', () => addNote());
-  $('btn-notes-distill').addEventListener('click', () => distillNotes($('notes-charter').value));
+  $('btn-notes-close').addEventListener('click', closeNotesDialog);
+  $('dlg-notes').addEventListener('cancel', (event) => {
+    event.preventDefault();
+    closeNotesDialog();
+  });
+  $('btn-note-new').addEventListener('click', newNote);
+  $('btn-note-save').addEventListener('click', saveNote);
+  $('notes-mode-edit').addEventListener('click', () => setNotesMode('edit'));
+  $('notes-mode-task').addEventListener('click', () => setNotesMode('task'));
+  $('btn-note-candidates').addEventListener('click', buildNoteCandidates);
+  $('btn-note-candidates-close').addEventListener('click', () => $('dlg-note-candidates').close());
+  $('btn-note-candidates-submit').addEventListener('click', submitNoteCandidates);
   // 新規プロジェクト作成
   $('btn-new-project').addEventListener('click', openNewProject);
   $('btn-np-cancel').addEventListener('click', () => $('dlg-new-project').close());
