@@ -161,6 +161,8 @@ def main(argv=None) -> int:
                      help="やらないこと（非目標。スコープ膨張を防ぐ）")
     enq.add_argument("--constraints", default=None, help="タスク固有の制約（守るべき規約・禁止事項）")
     enq.add_argument("--hints", default=None, help="実装の手がかり（関連ファイル・参考実装・調査済み情報）")
+    enq.add_argument("--risks", action="append", default=None,
+                     help="実装・運用上のリスクと対策（複数指定可。該当なしは「なし」）")
     enq.add_argument("--demo", default=None, help="人の確認観点（検収で何をどう確かめるか）")
     enq.add_argument("--id", default=None, help="タスク ID を明示（既定はタイトルから自動生成）")
     enq.add_argument("--json", action="store_true", help="stdin か --file の JSON（オブジェクト/配列）で投入")
@@ -212,6 +214,8 @@ def main(argv=None) -> int:
                     help="タスク固有の制約を置換（'' / none で削除）")
     rv.add_argument("--hints", dest="rv_hints", default=None,
                     help="実装の手がかりを置換（'' / none で削除）")
+    rv.add_argument("--risks", dest="rv_risks", action="append", default=None,
+                    help="リスクと対策を置換（複数指定可。1つだけ '' / none で全削除）")
     rv.add_argument("--demo", dest="rv_demo", default=None,
                     help="人の確認観点を置換（'' / none で削除）")
     rv.add_argument("--level", dest="rv_level", default=None,

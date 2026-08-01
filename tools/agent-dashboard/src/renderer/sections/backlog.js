@@ -695,8 +695,10 @@ function reviseAreaHtml(t) {
       </div>
       <div class="muted" id="guide-assist-status"></div>
       ${GUIDE_KEYS.map(
-        (k) =>
-          `<div class="field"><label for="rv-${k}">${esc(GUIDE_LABELS[k])}</label><input id="rv-${k}" value="${esc(t.extra[k] || '')}" /></div>`
+        (k) => k === 'risks'
+          ? `<div class="field"><label for="rv-risks">${esc(GUIDE_LABELS[k])}</label>
+              <textarea id="rv-risks" rows="3" placeholder="1 行 1 リスク。該当しない場合は「なし」">${esc(t.extra[k] || '')}</textarea></div>`
+          : `<div class="field"><label for="rv-${k}">${esc(GUIDE_LABELS[k])}</label><input id="rv-${k}" value="${esc(t.extra[k] || '')}" /></div>`
       ).join('')}
     </details>
     <div class="row need-buttons">
@@ -972,7 +974,8 @@ function showTaskDialog(id, scope) {
         ['track', $('rv-track').value.trim(), String(t.extra.track || '')],
         ['node', $('rv-node').value.trim(), String(t.extra.node || '')],
         ['note', $('rv-note').value.trim(), String(t.extra.note || '')],
-        ...GUIDE_KEYS.map((k) => [k, $(`rv-${k}`).value.trim(), String(t.extra[k] || '')]),
+        ...GUIDE_KEYS.filter((k) => k !== 'risks')
+          .map((k) => [k, $(`rv-${k}`).value.trim(), String(t.extra[k] || '')]),
       ];
       for (const [key, cur, orig] of cmp) {
         if (key === 'priority' && cur === '') continue; // 空欄は「変更なし」（priority に削除は無い）
@@ -997,6 +1000,11 @@ function showTaskDialog(id, scope) {
       if (acceptanceNow.join('\n') !== acceptanceWas.join('\n')) {
         fields.task_acceptance_criteria = acceptanceNow.length ? acceptanceNow : [''];
         if (String((t.extra || {}).acceptance || '').trim()) fields.acceptance = [''];
+      }
+      const risksNow = $('rv-risks').value.split('\n').map((s) => s.trim()).filter(Boolean);
+      const risksWas = String((t.extra || {}).risks || '').split('\n').map((s) => s.trim()).filter(Boolean);
+      if (risksNow.join('\n') !== risksWas.join('\n')) {
+        fields.risks = risksNow.length ? risksNow : [''];
       }
       const feedback = $('rv-feedback').value.trim();
       if (!Object.keys(fields).length && !feedback) {
@@ -1762,6 +1770,7 @@ function openEnqueueDialog(prefill = {}) {
   setEnq('enq-why', prefill.why);
   setEnq('enq-scope', prefill.scope);
   setEnq('enq-out_of_scope', prefill.out_of_scope);
+  setEnq('enq-risks', Array.isArray(prefill.risks) ? prefill.risks.join('\n') : prefill.risks);
   fillCharterSelect($('enq-charter'), state.project, prefill.charter || '');
   updateCharterSelectContext('enq-charter', 'enq-charter-description');
   fillWorkspaceSelect($('enq-workspace'), state.project, prefill.workspace || '');
@@ -1891,6 +1900,7 @@ async function submitEnqueue() {
   spec.why = enqField('enq-why') || spec.why || '';
   spec.scope = enqField('enq-scope') || spec.scope || '';
   spec.out_of_scope = enqField('enq-out_of_scope') || spec.out_of_scope || '';
+  spec.risks = enqField('enq-risks').split('\n').map((s) => s.trim()).filter(Boolean);
   // 作成時 lint（案5・非ブロック）: 情報不足・曖昧 accept を投入前に見せ、続行するか監視者が選ぶ。
   try {
     const warnings = await api.lintTask(spec);

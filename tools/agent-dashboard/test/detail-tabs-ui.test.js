@@ -896,8 +896,9 @@ assert.match(
   )(
     (v) => String(v == null ? '' : v),
     (v) => String(v == null ? '' : v),
-    ['why', 'desc', 'scope', 'out_of_scope', 'constraints', 'hints', 'demo'],
-    { desc: '作業内容の詳細', why: '背景・目的' },
+    ['why', 'desc', 'scope', 'out_of_scope', 'risks', 'constraints', 'hints', 'demo'],
+    { desc: '作業内容の詳細', why: '背景・目的', scope: '変更範囲',
+      out_of_scope: '対象外', risks: 'リスク', constraints: '制約', hints: '参考情報' },
     // 本物と同じ規則（複数行フィールドは \n 連結で届く。acceptance が無ければ accept へ）
     (t) => {
       const ex = (t && t.extra) || {};
@@ -914,6 +915,15 @@ assert.match(
   assert.ok(withGuide.includes('冒頭に手順を追加\n構成は変えない'), '⏎ を改行へ復元');
   assert.ok(withGuide.includes('導入が不明'), 'why を出す');
   assert.ok(withGuide.includes('npm test'), '完了条件も並べる');
+  const ordered = taskGuideHtml({ verify: '', extra: {
+    why: 'WHY', desc: 'DESC', scope: 'SCOPE', out_of_scope: 'OUT', risks: 'RISK',
+    acceptance: 'AC', size: 'M', after: 'T0', constraints: 'CONSTRAINTS', hints: 'HINTS',
+  } }, 'plan-review');
+  const positions = ['WHY', 'DESC', 'SCOPE', 'OUT', 'RISK', 'AC', 'M', 'T0', 'CONSTRAINTS', 'HINTS']
+    .map((text) => ordered.indexOf(text));
+  assert.ok(positions.every((pos) => pos >= 0), '固定順の全項目を表示する');
+  assert.deepStrictEqual([...positions].sort((a, b) => a - b), positions,
+    '計画レビュー票は判断しやすい固定順で表示する');
   // 受入基準（S5 で done の根拠になった一次表現）は、計画レビューで人が読んで直す対象。
   // ここに出ていなければ、後から直す機会は無い。
   const withCriteria = taskGuideHtml(
@@ -948,5 +958,20 @@ assert.match(
 // renderNeedDetail が taskGuideHtml を組み込むこと（呼び出しが消えると退行）
 assert.match(renderer, /const taskGuide = taskGuideHtml\(task, n\.kind\)/);
 assert.match(renderer, /作業内容と完了条件/);
+
+// 計画レビューは工程を増やさず、未対応の proposed だけを一度に承認できる。
+{
+  // eslint-disable-next-line no-new-func
+  const candidates = new Function(
+    `${grab('planReviewBatchCandidates')}; return planReviewBatchCandidates;`
+  )();
+  assert.deepStrictEqual(candidates([
+    { id: 'T1', kind: 'plan-review' },
+    { id: 'T2', kind: 'review' },
+    { id: 'T3', kind: 'plan-review', decided: true },
+    { id: 'T4', kind: 'plan-review' },
+  ], (need) => need.id === 'T4').map((need) => need.id), ['T1']);
+  assert.ok(renderer.includes('data-approve-plan-batch'), '計画レビューの一括承認入口を出す');
+}
 
 console.log('detail-tabs-ui: all tests passed');

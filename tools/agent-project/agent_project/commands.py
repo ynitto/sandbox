@@ -480,8 +480,9 @@ def cmd_replan(cfg: Config, reason: str, charter_name: str = "", revive: bool = 
 #   実行中（doing・新鮮なクレームあり）のタスクは `revised` マーカーを付けて予約し、
 #   現在の試行の結果は確定させず（done にせず）修正内容で積み直す＝早い軌道修正。
 # ---------------------------------------------------------------------------
-REVISE_FIELDS = ("title", "priority", "verify", "accept", "after",
-                 "note", "level", "track", "node", *MULTILINE_KEYS, *TASK_GUIDE_KEYS)
+REVISE_FIELDS = tuple(dict.fromkeys(("title", "priority", "verify", "accept", "after",
+                                    "note", "level", "track", "node",
+                                    *MULTILINE_KEYS, *TASK_GUIDE_KEYS)))
 _CLEAR_VALUES = ("", "-", "none")      # フィールド削除の明示値（revise の置換規約）
 
 

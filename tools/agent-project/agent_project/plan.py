@@ -123,7 +123,9 @@ def _plan_decompose_prompt(charter: "Charter", granularity: "str | None" = None,
         " 各タスクには次を**必ず**付けること（人が実行前にレビューする材料であり、欠けると"
         "そのタスクは draft に落ちて実行されない）:"
         " **\"why\": str（憲章のどの目標に効くか・1〜2 文）**、"
-        " **\"desc\": str（作業概要＝変更対象・作業ステップ 3〜7 行・影響範囲）**、"
+        " **\"desc\": [str, …]（作業概要＝変更対象・作業ステップ・影響範囲を1要素1項目）**、"
+        " **\"scope\": [str, …]（変更してよい範囲）**、"
+        " **\"risks\": [str, …]（実装・運用上のリスクと対策。該当なしも [\"なし\"]）**、"
         " **\"acceptance\": [str, …]（受入基準チェックリスト 3〜7 項目・自然文。"
         "検証エージェントが基準ごとに実行して証跡付きで判定し、全 pass のみが完了の根拠になる。"
         "シェルコマンドを 1 行合成して書かないこと——確かめ方は検証エージェントが決める）**、"
@@ -138,7 +140,7 @@ def _plan_decompose_prompt(charter: "Charter", granularity: "str | None" = None,
         " 同じ手順を多数の対象に繰り返すタスクは 1 件ずつ列挙せず、"
         " {\"title\": \"…{item}…\", \"acceptance\": [\"…{item}…\", …], \"cohort_items\": [\"対象1\", \"対象2\", …]} の"
         " 1 件にまとめること（{item} に各対象が差し込まれ、先頭を pilot として人が指示を固めてから残りが生成される）。"
-        " 有益なら任意で \"scope\": str（触ってよい範囲）・\"out_of_scope\": str（このタスクで"
+        " 有益なら任意で \"out_of_scope\": str（このタスクで"
         "やらないこと・隣のタスクとの境界）・\"hints\": str（実装の手がかり・関連ファイルや参考箇所）"
         "も付けること（これらは実行ワーカーへの指示と人の実行前レビューの判断材料になる）。"
         " 何を完了とするかを書けない曖昧なタスクは含めないでください。")
@@ -182,9 +184,10 @@ def assign_plan_workspace(charter: "Charter", spec: dict) -> dict:
 
 # 計画レビューに要る必須セクション（S6-2）。**欠落は機械で見る**——LLM に「ちゃんと書けたか」を
 # 自己申告させても意味がない。`workspace` は assign_plan_workspace が推定で補うのでここには入れない。
-PLAN_REQUIRED_KEYS = ("why", "desc", "acceptance", "size")
+PLAN_REQUIRED_KEYS = ("why", "desc", "scope", "risks", "acceptance", "size")
 
 _PLAN_KEY_LABELS = {"why": "why（なぜやるか）", "desc": "desc（作業概要）",
+                    "scope": "scope（変更範囲）", "risks": "risks（リスクと対策）",
                     "acceptance": "acceptance（受入基準）", "size": "size（規模感 S/M/L）"}
 
 
@@ -353,9 +356,10 @@ def _plan_spec_from_item(charter: "Charter", item: dict) -> dict:
           # 依存（先行タスクの title）。enqueue 後に id へ決定的に解決される（after_titles）
           "after_titles": _coerce_titles(item.get("after")),
           # 誘導・レビュー記述（実行前レビューの判断材料 兼 ワーカーへの指示）
-          **{k: str(item.get(k) or "").strip()
-             for k in ("why", "desc", "scope", "out_of_scope", "hints")
-             if str(item.get(k) or "").strip()},
+          **{k: (item.get(k) if isinstance(item.get(k), list)
+                 else str(item.get(k) or "").strip())
+             for k in ("why", "desc", "scope", "out_of_scope", "hints", "risks")
+             if item.get(k) not in (None, "", [])},
           "source": "charter"}
     size = str(item.get("size") or "").strip().upper()
     if size in ("S", "M", "L"):

@@ -578,7 +578,7 @@ const STRUCTURED_ASSIST_MODES = new Set([
 // 誘導・レビュー記述フィールド（agent-project の TASK_GUIDE_KEYS と同じ。
 // 意味論の正典は tools/agent-project/backlog.md.example）。task-guide 補完と
 // フォローアップ提案の受け渡しに使う。値は 1 行（改行は ⏎ 規約）。
-const TASK_GUIDE_KEYS = ['why', 'desc', 'scope', 'out_of_scope', 'constraints', 'hints', 'demo'];
+const TASK_GUIDE_KEYS = ['why', 'desc', 'scope', 'out_of_scope', 'risks', 'constraints', 'hints', 'demo'];
 
 function resolveDoctorMode(mode) {
   const key = String(mode || 'consultation');
@@ -841,8 +841,10 @@ function taskAssistPrompt(mode, context, userPrompt = '') {
       '出力は次の形の JSON オブジェクトのみ（説明文・コードフェンスなし）:\n' +
       '{"why":"背景・目的（なぜやるか・1文）","desc":"作業内容の詳細","scope":"変更してよい範囲",' +
       '"out_of_scope":"やらないこと","constraints":"タスク固有の制約","hints":"実装の手がかり",' +
+      '"risks":["実装・運用上のリスクと対策"],' +
       '"demo":"人の確認観点","rationale":"提案の根拠・1文"}\n' +
-      '- 各値は 1 行（改行は ⏎）。charter・既存 backlog・タスク定義から根拠をもって書ける項目だけ埋め、\n' +
+      '- risks は1要素1項目の配列（該当なしは ["なし"]）。他の各値は 1 行（改行は ⏎）。\n' +
+      '  charter・既存 backlog・タスク定義から根拠をもって書ける項目だけ埋め、\n' +
       '  推測になる項目は空文字にすること（憶測で境界や制約を発明しない）。\n' +
       '- 既に値がある項目は、明確な改善があるときだけ置換案を出し、なければ現在の値をそのまま返すこと。\n\n' +
       `charter:\n${charter}\n\n既存 backlog:\n${backlog || '(空)'}\n\n` +
@@ -929,7 +931,13 @@ function normalizeNoteTaskCandidates(obj) {
 function normalizeTaskGuide(obj) {
   const out = { rationale: String((obj && obj.rationale) || '').trim() };
   for (const key of TASK_GUIDE_KEYS) {
-    out[key] = normalizeGuideValue(obj && obj[key]);
+    if (key === 'risks') {
+      const raw = obj && obj[key];
+      out[key] = (Array.isArray(raw) ? raw : String(raw == null ? '' : raw).split(/\r?\n/))
+        .map((v) => String(v).trim()).filter(Boolean).slice(0, 12).join('\n');
+    } else {
+      out[key] = normalizeGuideValue(obj && obj[key]);
+    }
   }
   return out;
 }

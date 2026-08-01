@@ -71,6 +71,17 @@ class AcceptanceRoundTripTests(unittest.TestCase):
                     extra=[("acceptance", f"基準{i}") for i in range(9)])
         self.assertIn("目安は 3〜7 件", km._task_definition_block(t))
 
+    def test_risks_reach_reviewer_and_worker(self):
+        t = km.Task(id="T1", title="X", extra=[
+            ("risks", "誤操作を防ぐ"),
+            ("risks", "旧形式も維持する"),
+        ])
+        review = km._task_definition_block(t)
+        request = km.build_request(t)
+        for risk in ("誤操作を防ぐ", "旧形式も維持する"):
+            self.assertIn(risk, review)
+            self.assertIn(risk, request)
+
     def test_legacy_accept_shown_once(self):
         # accept は task_acceptance が箇条書きへ畳むので、`- accept:` 行として二重に出さない
         t = km.Task(id="T1", title="X", extra=[("accept", "昔の 1 行")])
@@ -96,6 +107,17 @@ class AcceptanceRoundTripTests(unittest.TestCase):
                                       "acceptance": ["旧A"]})
             km.cmd_revise(cfg, t.id, {"acceptance": [""]}, "", "削除")
             self.assertEqual(km.task_acceptance(km.load_tasks(cfg.backlog)[0]), [])
+
+    def test_revise_replaces_all_risks(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = km.enqueue_task(cfg, {"title": "X", "acceptance": ["基準"],
+                                      "risks": ["旧A", "旧B"]})
+            self.assertEqual(km.cmd_revise(
+                cfg, t.id, {"risks": ["新A", "新B"]}, "", "更新"), 0)
+            after = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual([v for k, v in after.extra if k == "risks"], ["新A", "新B"])
 
     def test_revise_marks_human_edited(self):
         # プランナーへ「人が確定済み・作り直すな」を伝える印
@@ -287,9 +309,14 @@ class PlannerSkillTests(unittest.TestCase):
 
     def _item(self, title="T", **kw):
         base = {"title": title, "why": "目標に効く", "desc": "変更対象と手順",
+                "scope": ["src/**"], "risks": ["なし"],
                 "acceptance": ["基準A", "基準B"], "size": "M", "workspace": "app"}
         base.update(kw)
         return base
+
+    def test_scope_and_risks_are_required_for_plan_review(self):
+        missing = km._validate_backlog_spec(self._item(scope=[], risks=[]))
+        self.assertEqual(missing, ["scope", "risks"])
 
     def _stub_skill(self, name: str, body: str) -> None:
         """cwd（テストは中立な一時 cwd で走る）に差し替えスキルを置く。
@@ -349,6 +376,22 @@ class PlannerSkillTests(unittest.TestCase):
             prompt = km.build_planner_prompt(cfg, km.build_planner_input(cfg, ch), ch)
             for key in km.PLAN_REQUIRED_KEYS:
                 self.assertIn(key, prompt, key)
+
+    def test_planner_review_lists_survive_task_round_trip(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            ch = _charter(cfg)
+            spec = km._plan_spec_from_item(ch, self._item(
+                desc=["変更対象: src", "手順: UIを更新"],
+                scope=["src/ui"],
+                risks=["誤操作を防ぐ", "旧形式も読めること"],
+            ))
+            task = km.enqueue_task(cfg, spec)
+            loaded = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(loaded.get("desc"), "変更対象: src ⏎ 手順: UIを更新")
+            self.assertEqual([v for k, v in loaded.extra if k == "risks"],
+                             ["誤操作を防ぐ", "旧形式も読めること"])
 
     def test_existing_and_tombstones_are_in_the_input(self):
         with tempfile.TemporaryDirectory() as d:
@@ -546,6 +589,7 @@ class ShippedPlannerSkillTests(unittest.TestCase):
 
     SCRIPT = (Path(__file__).resolve().parents[3]
               / ".github" / "skills" / "backlog-planner" / "scripts" / "prompt.py")
+    TASK_SCHEMA = Path(__file__).resolve().parents[3] / "schemas" / "task.schema.json"
 
     def _run(self, spec: dict) -> str:
         proc = subprocess.run([sys.executable, str(self.SCRIPT)],
@@ -557,11 +601,24 @@ class ShippedPlannerSkillTests(unittest.TestCase):
     def test_script_exists(self):
         self.assertTrue(self.SCRIPT.is_file(), self.SCRIPT)
 
+    def test_task_schema_defines_risks_as_review_guidance(self):
+        prop = json.loads(self.TASK_SCHEMA.read_text(encoding="utf-8"))["properties"]["risks"]
+        self.assertEqual(prop["type"], ["array", "string"])
+        self.assertEqual(prop["items"], {"type": "string"})
+        self.assertIn("完了条件にはしない", prop["description"])
+
     def test_required_fields_are_demanded(self):
         out = self._run({"charter": "目標", "granularity": "coarse"})
         for key in ("why", "desc", "acceptance", "size", "workspace"):
             self.assertIn(key, out, key)
         self.assertIn("受入基準の配列", out)
+
+    def test_review_description_fields_are_demanded(self):
+        out = self._run({"charter": "目標", "granularity": "coarse"})
+        self.assertIn('"scope"', out)
+        self.assertIn('"risks"', out)
+        self.assertIn('"なし"', out)
+        self.assertIn('"desc": [', out)
 
     def test_existing_and_tombstones_are_rendered(self):
         out = self._run({

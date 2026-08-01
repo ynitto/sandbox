@@ -142,17 +142,18 @@ def delete_task_file(cfg: "Config", task: Task) -> None:
 # ---------------------------------------------------------------------------
 # 人のレビューとエージェント誘導のための記述フィールド（意味論の正典は backlog.md.example）。
 #   why=背景・目的 / desc=作業内容の詳細 / scope=変更してよい範囲 / out_of_scope=やらないこと /
-#   constraints=タスク固有の制約 / hints=実装の手がかり / demo=人の検収観点。
+#   constraints=タスク固有の制約 / hints=実装の手がかり / risks=リスクと対策 /
+#   demo=人の検収観点。
 # build_request が act 要求文へ、needs の票がレビュー材料へ、それぞれ整形注入する。
 # 値は 1 行（改行は ⏎ 規約・feedback と同じ）。JSON のリスト指定は ⏎ 連結で 1 行化される。
-TASK_GUIDE_KEYS = ("why", "desc", "scope", "out_of_scope", "constraints", "hints", "demo")
+TASK_GUIDE_KEYS = ("why", "desc", "scope", "out_of_scope", "constraints", "hints", "risks", "demo")
 
 # 複数行フィールド（同じキーの `- k: v` 行を要素数だけ並べる）。単値フィールドの規約
 # （リストは ⏎ / カンマで 1 行に畳む）を適用してはいけないものをここに列挙する。
 #   task_acceptance_criteria … 受入基準（統一 verify の正規形。1 行 1 基準）
 #   verification_commands    … 任意の固定検証コマンド（正規形。1 行 1 コマンド）
 #   acceptance … 受入基準チェックリスト（旧形式。読み取り境界で正規形へ読み替える）
-MULTILINE_KEYS = ("task_acceptance_criteria", "verification_commands", "acceptance")
+MULTILINE_KEYS = ("task_acceptance_criteria", "verification_commands", "acceptance", "risks")
 
 ENQUEUE_KNOWN_KEYS = {"id", "title", "verify", "priority", "source", "status",
                       "after", "review", "note", "accept", "verify_template", "repos",
@@ -250,6 +251,9 @@ def task_from_spec(cfg: "Config", spec: dict) -> Task:
               *TASK_GUIDE_KEYS):                           # 誘導・レビュー記述（why/desc/scope/…）
         v = spec.get(k)
         if v in (None, "", []):
+            continue
+        if k == "risks":
+            t.extra += [(k, line) for line in coerce_multiline(v)]
             continue
         if k in TASK_GUIDE_KEYS:
             # md は 1 行 = 1 フィールドなので、リストと生の改行を ⏎ 規約へ畳む（feedback と同じ）

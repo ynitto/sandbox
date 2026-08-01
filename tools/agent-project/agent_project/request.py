@@ -172,6 +172,7 @@ _TASK_GUIDE_LABELS = (
     ("why", "背景・目的（実装の判断に迷ったらこの意図に沿うこと）"),
     ("scope", "スコープ（変更してよい範囲。この範囲の外は変更しない）"),
     ("out_of_scope", "やらないこと（スコープ外。必要に気づいても手を出さず @followup 行で提案する）"),
+    ("risks", "実装・運用上のリスクと対策（作業中も回避・軽減すること）"),
     ("constraints", "このタスク固有の制約（必ず守ること）"),
     ("hints", "実装の手がかり（参考情報。鵜呑みにせず現物のコードで確認すること）"),
     ("demo", "人の確認観点（完了後に人がこの観点で検収する。満たした状態にすること）"),
@@ -183,7 +184,8 @@ def task_guide_block(task: Task) -> str:
     無ければ空＝従来どおり。値の ⏎（1 行化規約）は改行へ戻して読ませる。"""
     parts = []
     for key, label in _TASK_GUIDE_LABELS:
-        v = str(task.get(key) or "").strip()
+        values = [v for k, v in task.extra if k == key]
+        v = "\n".join(values).strip() if key == "risks" else str(task.get(key) or "").strip()
         if v:
             parts.append(f"{label}:\n  " + re.sub(r"\s*⏎\s*", "\n  ", v))
     return "\n".join(parts)

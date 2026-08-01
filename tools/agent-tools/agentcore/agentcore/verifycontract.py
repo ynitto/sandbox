@@ -194,6 +194,40 @@ def run_plan_command(cmd: str, cwd: "str | None", timeout: float,
     return entry
 
 
+def run_plan_integration(plan: dict, cwd: "str | None", result_rev: str,
+                         timeout: float = 30) -> "dict | None":
+    """v2 plan の成果 revision が最新 target を含むか検査する。v1 plan は None。"""
+    spec = plan.get("integration")
+    if not isinstance(spec, dict):
+        return None
+    target = str(spec.get("target") or "")
+    result = {"target": target, "target_rev": "", "verdict": "inconclusive",
+              "conflict_files": []}
+    if not cwd or not os.path.isdir(cwd) or not result_rev:
+        return result
+
+    def git(*args):
+        try:
+            return subprocess.run(
+                ["git", "-C", cwd, *args], capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=timeout)
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+    fetched = git("fetch", "--quiet", "origin", target)
+    if fetched is None or fetched.returncode != 0:
+        return result
+    resolved = git("rev-parse", "FETCH_HEAD")
+    target_rev = resolved.stdout.strip() if resolved and resolved.returncode == 0 else ""
+    if not target_rev:
+        return result
+    ancestor = git("merge-base", "--is-ancestor", target_rev, result_rev)
+    result["target_rev"] = target_rev
+    if ancestor is not None and ancestor.returncode in (0, 1):
+        result["verdict"] = "pass" if ancestor.returncode == 0 else "fail"
+    return result
+
+
 def _evidence_ok(ev) -> bool:
     return isinstance(ev, dict) and str(ev.get("kind") or "") in EVIDENCE_KINDS
 

@@ -161,6 +161,12 @@ def _task_definition_block(task: Task) -> str:
               # accept は task_acceptance が上の箇条書きへ畳むので、ここでは出さない（二重表示を避ける）
               "size", "verify_template", "after", "note", "workspace", "charter",
               "assess", "route"):   # assess=投入時採点（c/r/a）・route=spec ルーティングの決定
+        if k == "risks":
+            risks = [v for key, v in task.extra if key == "risks"]
+            if risks:
+                lines.append("- risks（実装・運用上のリスクと対策）:")
+                lines += [f"    {i}. {risk}" for i, risk in enumerate(risks, 1)]
+            continue
         v = task.get(k)
         if v:
             lines.append(f"- {k}: {v}")
@@ -591,6 +597,7 @@ def _plan_rework_prompt(t: Task, feedback: str) -> str:
         "\"why\": str（背景・目的・任意）, \"desc\": str（作業内容の詳細・任意）, "
         "\"scope\": str（変更してよい範囲・任意）, \"out_of_scope\": str（やらないこと・任意）, "
         "\"constraints\": str（タスク固有の制約・任意）, \"hints\": str（実装の手がかり・任意）, "
+        "\"risks\": [str, …]（実装・運用上のリスクと対策。該当なしは [\"なし\"]）, "
         "\"demo\": str（人の確認観点・任意）}。"
         "指摘がスコープ・制約・意図に関わるなら該当フィールドへ反映し、"
         "空欄で内容を補える項目（why/scope 等）は妥当な範囲で補完してよい（各 1 行・改行は ⏎）。"

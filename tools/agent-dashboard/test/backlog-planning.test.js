@@ -100,6 +100,19 @@ function dropped(dir) {
     }
   });
 
+  await test('revise は risks を配列のまま送る', async () => {
+    const { root, dir } = mkProject();
+    try {
+      await actions.runAction({}, {
+        dir, action: 'revise', id: 'T1', reason: 'リスク更新',
+        fields: { risks: ['誤操作を防ぐ', '旧形式も維持する'] },
+      });
+      assert.deepStrictEqual(dropped(dir).rec.risks, ['誤操作を防ぐ', '旧形式も維持する']);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   // --- 観点メモ（notes/） ---------------------------------------------------
 
   await test('writeNote は notes/ にファイルを作る（名前は自動で安全化）', async () => {
@@ -265,6 +278,13 @@ function dropped(dir) {
     assert.match(renderer,
       /fields\.task_acceptance_criteria = acceptanceNow\.length \? acceptanceNow : \[''\]/,
       '書き込みは正規形のみ。空なら [\'\'] を送って削除（本体の置換規約）');
+  });
+
+  await test('タスク編集フォームは risks を複数行で置換する', async () => {
+    assert.ok(renderer.includes('id="rv-risks"'), 'リスクの入力欄がある');
+    assert.match(renderer,
+      /fields\.risks = risksNow\.length \? risksNow : \[''\]/,
+      '1行1リスクの配列として送る。空なら削除する');
   });
 
   await test('メモ UI は編集と選択タスク化を分け、候補確認まで自動追加しない', async () => {

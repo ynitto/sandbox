@@ -127,7 +127,7 @@ function enqueueToInbox(projectDir, spec) {
   if (charter) clean.charter = charter;
   // 統一 verify の正規形（複数行キー）: 配列のまま JSON に書く（joinすると 1 行に潰れて
   // 基準の区切りが失われる。agent-project の coerce_multiline が 1 要素 = 1 行で取り込む）。
-  for (const key of ['task_acceptance_criteria', 'verification_commands']) {
+  for (const key of ['task_acceptance_criteria', 'verification_commands', 'risks']) {
     const v = spec[key];
     if (v === undefined || v === null) continue;
     const items = (Array.isArray(v) ? v : String(v).split('\n'))
@@ -258,7 +258,7 @@ const REVISE_KEYS = ['title', 'priority', 'verify', 'accept', 'after', 'note', '
 // 単値キーと同じ String() を通すと ['a','b'] が "a,b" の 1 行に潰れるので経路を分ける。
 // task_acceptance_criteria / verification_commands が統一 verify の正規形。acceptance は
 // 旧形式の掃除（[''] で削除）にだけ使う。
-const REVISE_LIST_KEYS = ['task_acceptance_criteria', 'verification_commands', 'acceptance'];
+const REVISE_LIST_KEYS = ['task_acceptance_criteria', 'verification_commands', 'acceptance', 'risks'];
 
 // revise ペイロード（フィールド編集 + feedback）を commands/CLI 両経路の形へ正規化する。
 // undefined/null は「触らない」の意味なので落とす（'' は削除の明示指定として残す）

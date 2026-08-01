@@ -1,6 +1,6 @@
 # agent-flow 設計書
 
-> 最終更新: 2026-07-31（統一 verify runner を実装。移行順序は `docs/plans/2026-07-30-unified-task-verify-design.md`）
+> 最終更新: 2026-08-01（再計画イベントの差分契約を反映）
 > 実装: `tools/agent-flow/`（本体 29 断片・約 8,800 行）、テスト `tools/agent-flow/tests/`（662 件）
 > 関連: [agent-project 設計書](./agent-project-design.md) ／ [git worktree キャッシュ](./git-worktree-cache-pattern.md)
 >
@@ -147,6 +147,13 @@ Anthropic の *Building Effective Agents* は、経路が固定された Workflo
 
 orchestrator は最初にパターンと並列数を選んでタスクグラフを書き、あとは run が静止するのを待ちます。静止とは、実行中のノードも、park 中のノードも、いま claim できる pending もない状態です。静止したら評価役の LLM に「この結果で要求を満たすか」を尋ね、足りなければタスクを追加してもう一周します。反復は `max_iterations`（既定 3）で止まります。
 
+計画の履歴は最終形の `graph.json` から推測せず、イベントへ差分として残します。初期計画は
+`planned.tasks`、以後の `replan` と実行中の人の指摘を反映する `inflight_amend` は、理由と
+`changes`（`added` / `replaced` / `updated` / `removed`）を記録します。`graph.json` の `deps` は
+実行上の依存関係、イベントの差分は計画が変わった時系列の境界で、同じ意味ではありません。
+`added` / `updated` / `removed` はノード ID の列、`replaced` は `{old, next}` の列です。
+依存のない追加工程へ再計画を理由に依存線を足さず、利用側はこの二つの事実を分けて表示します。
+
 書込 workspace に作業ブランチと別の target がある場合は、planner の計画とは別に system node
 `base-sync` を先頭へ置き、すべての root node をその完了後に開始します。target がすでに作業ブランチの
 祖先なら no-op、進んでいれば agent-flow が通常 merge を行います。競合時だけ worker に競合ファイルの
@@ -168,7 +175,9 @@ exit 127 = コマンド不在）は inconclusive で、成果物の欠陥と環�
 実行せず receipt も書きません——receipt 欠落を採用側が done にしない fail-close に倒します。
 書込 workspace の plan は target も固定し、receipt には検証時の target revision と統合判定を載せます。
 target revision が成果 revision の祖先でない限り integration は pass になりません。ブランチ単体の
-検証が通っていても、最新 target を含まない成果を採用させないためです。
+検証が通っていても、最新 target を含まない成果を採用させないためです。この祖先性判定は
+`agentcore.verifycontract` に置き、receipt が無い場合の agent-project local runner も同じ実装を使います。
+検証経路が変わっても integration の有無や合否を変えません。
 plan は `--verification-plan`（グローバル引数）または inbox 要求の `verification_plan` キーで
 受け取ります。argv 未指定のときだけ inbox の値で充填する規則で、呼び出し側に argv への
 転記をさせない設計です。両方指定されていれば CLI 引数が勝ちます（env 渡しは不安定として

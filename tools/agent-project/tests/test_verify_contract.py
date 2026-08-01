@@ -194,6 +194,25 @@ class LocalReceiptTests(unittest.TestCase):
         rec = json.loads(dict(t.extra)["verification"])
         self.assertEqual(rec["plan_digest"], plan["digest"])
 
+    def test_v2_command_pass_checks_integration_without_flow_receipt(self):
+        remote = git_init(self.d / "remote")
+        (remote / "result.txt").write_text("ok\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(remote), "add", "result.txt"], check=True)
+        subprocess.run(["git", "-C", str(remote), "commit", "-qm", "result"], check=True)
+        clone = self.d / "clone"
+        subprocess.run(["git", "clone", "-q", str(remote), str(clone)], check=True)
+        rev = subprocess.run(
+            ["git", "-C", str(clone), "rev-parse", "HEAD"], check=True,
+            capture_output=True, text=True).stdout.strip()
+        t = _task(self.d, lines=["verification_commands: true"])
+        plan = vc.build_plan("T1", commands=["true"], integration={"target": "main"})
+
+        ok, _flaky, _vmsg, verification = km.settle_from_receipt(
+            self.cfg, t, plan, rev, clone, None)
+
+        self.assertTrue(ok)
+        self.assertEqual(verification["integration"]["verdict"], "pass")
+
     def test_command_fail_is_adopted_as_fail(self):
         t = _task(self.d, lines=["verification_commands: test -f no-such-file"])
         plan = km.build_task_verification_plan(self.cfg, t)

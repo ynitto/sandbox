@@ -1,6 +1,6 @@
 # agent-project 設計書
 
-> 最終更新: 2026-07-31（統一 verify の契約と P1-B の残実装——settle の 1 コミット、削除時の後続再審査、unknown 隔離の上限、no_diff、learn の失効、保持契約——を反映）
+> 最終更新: 2026-08-01（統一 verify の契約と P1-B の残実装、観点メモの部分タスク化を反映）
 > 実装: `tools/agent-project/`（本体 31 断片 + `resident/` 5 モジュール・約 20,700 行）、テスト 1,229 件
 > 関連: [agent-flow 設計書](./agent-flow-design.md) ／ [codd-gate 設計書](./codd-gate-design.md)
 >
@@ -155,7 +155,7 @@ settle は二段階です。まず archive、納品書、needs、verifications �
 
 **選択肢と却下理由**: 実行も自前で持つ案は、agent-flow が既に持っているタスクグラフと claim プロトコルを二重に実装することになる。逆に agent-project を薄いラッパにする案は、検証ゲートと決定記録の置き場がなくなる。境界を「1 run = 1 タスク = 1 書込先」に引くと、両者の語彙が噛み合います。
 
-**トレードオフ**: プロセス境界を越えるので、成果と検証結果は版付きの plan / receipt 契約で渡します。`agent_flow` は import しません。別 venv、別バージョンで動く前提です。digest と検算の規則だけは `agentcore.verifycontract` の 1 実装を両側が使います——2 実装に割れると「同じ plan なのに digest 不一致」が検算の偽 fail になるためです。plan は `--verification-plan`（または inbox 要求の `verification_plan` キー）で渡します。両ツールは同時に更新する前提で、旧 agent-flow との混在は想定しません（env 渡しは不安定として却下・2026-07-31）。旧 verify 経路（task.verify のローカル直実行と LLM verifier）は shadow 比較の一致を実測して撤去済みです。receipt を採用できないタスク（receipt 欠落・検算不一致・dry-run / stub 実行）は、agent-project 自身が local runner として plan の固定コマンドを同じ実行セマンティクス（`agentcore.verifycontract.run_plan_command` の 1 実装）で一度だけ実行し、同じ契約の receipt を検算して確定します。自然文基準の判定は agent-flow runner だけが行い、local runner では inconclusive（委譲・人送り）に倒します。
+**トレードオフ**: プロセス境界を越えるので、成果と検証結果は版付きの plan / receipt 契約で渡します。`agent_flow` は import しません。別 venv、別バージョンで動く前提です。digest、固定コマンドの実行規則、target revision の祖先性判定は `agentcore.verifycontract` の 1 実装を両側が使います——2 実装に割れると、同じ plan でも実行経路によって合否が変わるためです。plan は `--verification-plan`（または inbox 要求の `verification_plan` キー）で渡します。両ツールは同時に更新する前提で、旧 agent-flow との混在は想定しません（env 渡しは不安定として却下・2026-07-31）。旧 verify 経路（task.verify のローカル直実行と LLM verifier）は shadow 比較の一致を実測して撤去済みです。receipt を採用できないタスク（receipt 欠落・検算不一致・dry-run / stub 実行）は、agent-project 自身が local runner として plan の固定コマンドを一度だけ実行します。書込 workspace の plan では同じ target 統合判定も行い、両方を同じ契約の receipt にして検算します。target を取得できなければ pass を作らず inconclusive に倒します。自然文基準の判定は agent-flow runner だけが行い、local runner では inconclusive（委譲・人送り）に倒します。
 
 **確信度**: 高い。
 
@@ -227,7 +227,7 @@ done にすることはありません。
 
 重複照合の指紋は正規化タイトルだけで、書込先（workspace）は含めません。書込先は推定で決まるフィールドなので、推定が揺れただけで同じタスクが別物として通ってしまいます。正規化は区切り文字を落とし、語順は保ちます。日本語の分かち書きは書き手次第で揺れる一方、語順まで捨てて集合にすると「A を B にする」と「B を A にする」が同一指紋になるからです。charter の大改訂と人編集タスクが衝突しても、自動では解決しません。改訂の程度を測る決定的な指標が無く、LLM に測らせると人の編集を LLM の判断で捨てる設計になります。charter の編集はそれ自体では何も動かしません（分解は人が要求したときだけ）。放置が既定で、何もしなければ何も失われません。
 
-突発の要求は `inbox/` / `enqueue` / 外部 intake のどの経路でも、投入前に整合ステップを通ります。既存タスクと重複するなら新規を作らず、既存タスクへ追記する案を needs で人に提示し、charter タグの無いタスクには現行 charter への帰属を付けます。「気になること」の書き溜め口は `notes/` で、plan は自動では消費しません。人の `distill-notes` 操作でだけバックログ候補になり、消費済みメモは `notes/archive/` へ移ります。
+突発の要求は `inbox/` / `enqueue` / 外部 intake のどの経路でも、投入前に整合ステップを通ります。既存タスクと重複するなら新規を作らず、既存タスクへ追記する案を needs で人に提示し、charter タグの無いタスクには現行 charter への帰属を付けます。「気になること」の書き溜め口は `notes/` で、plan は自動では消費しません。一括処理する `distill-notes` は取り込めたメモを `notes/archive/` へ移します。dashboard ではメモを残したまま、選択した段落・箇条書き項目だけを候補化して enqueue し、作成したタスクとの対応を `notes/.task-links.json` に記録します。どちらも人が明示的に開始する経路で、自動タスク化はしません。
 
 重複防衛の一次は、同じバージョンの現役 backlog と却下済みタスクをプランナーへ見せ、意図が同じ提案を出さないよう求めることです。却下済みの一覧には理由を添え、保持件数には上限を置きます。コンテキストが重い場合も title と status の全件索引は残し、詳しい要約だけを doing / offloaded / review、人が編集したもの、直近の却下へ絞ります。機械が投入を止めるのは、現役タスクまたは墓標と正規化タイトルが完全一致した場合だけです。類似する候補は止めず、タスクの注記（「既存タスクに似ています」「却下済みのタスクに似ています」）へ回します。見送ったときは journal に残します——プランナーから見ると出したものが消えるので、記録が無いと「再分解しても何も起きない」としか見えません。現役タスク側にも Jaccard 0.5 の抑止が残っていた頃は、「board UI を作る」を出した後に「board 観測 UI を作る」が黙って消えていました。意図の同一性をスコアで決めない以上、差し替えた `planner_skill` が言い換えを出す余地は残ります。これは隠さない設計上の限界です。空白のない日本語で、ほぼ同じ表記のすり抜けが実害になった場合にだけ bigram 等の分割方法を改善しますが、それを意図の判定には使いません。これらの履歴を 1 本のイベント台帳に集める案（backlog-ledger）は却下しました。同じ事実が journal と `decisions/` と archive の 3 系統に重複し、壊れたとき真実が 2 つになります。事実は「誰に属するか」で分けます。人の編集はタスク本体に（`edited: human`）、墓標はもう存在しないタスクに属するので専用ファイルに置き、`tombstones.md` はイベントログではなく「現在の墓標一覧」です（畳み込み不要で、人が手で書けます）。
 
@@ -334,7 +334,8 @@ node_id は PC の身元で、板（agent-board）とプロトコル上の名義
   brief/<id>.md         系   run ブリーフ（タスク内で蓄積し、完了時に納品書へ退役）
   rules.md              人＋系 プロジェクトルール（全タスクへ常時注入）
   tombstones.md         人＋系 墓標（却下タスクの再生成抑止。1 行 1 墓標・revive で解除）
-  notes/*.md            人   観点メモ（distill-notes の指示があるまで plan は消費しない）
+  notes/*.md            人   観点メモ（明示操作があるまで plan は消費しない）
+  notes/.task-links.json 人＋系 dashboard でタスク化したメモ項目とタスク番号の対応
   archive/<id>.md       系   done の保全と納品書
   DELIVERY.md           系   納品一覧（受領書）
   specs/<id>/           系   spec 前段の成果（フル: spec/design/tasks・ライト: design.md のみ）

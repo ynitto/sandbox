@@ -553,12 +553,13 @@ function splitRequest(request) {
 // タスク extra のうち文章として読む項目（⏎ 畳み込み・Markdown が多い）
 // 誘導・レビュー記述フィールド（agent-project の TASK_GUIDE_KEYS と同じ。
 // 意味論の正典は tools/agent-project/backlog.md.example。値は 1 行・改行は ⏎）
-const GUIDE_KEYS = ['why', 'desc', 'scope', 'out_of_scope', 'constraints', 'hints', 'demo'];
+const GUIDE_KEYS = ['why', 'desc', 'scope', 'out_of_scope', 'risks', 'constraints', 'hints', 'demo'];
 const GUIDE_LABELS = {
   why: '目的・背景',
   desc: '作業内容の詳細',
   scope: '変更してよい範囲',
   out_of_scope: 'やらないこと',
+  risks: 'リスクと対策',
   constraints: 'タスク固有の制約',
   hints: '実装の手がかり',
   demo: '人の確認観点',
