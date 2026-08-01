@@ -312,7 +312,8 @@ class Bus:
         return read_json(self.result_path(node_id))
 
     def write_result(self, node_id: str, who: str, status: str, output: str,
-                     data=None, artifacts=None, node: "str | None" = None) -> None:
+                     data=None, artifacts=None, node: "str | None" = None,
+                     kind: "str | None" = None) -> None:
         """ノードの結果を確定する。
 
         `node` は**実行した PC**（node_id の正規形）。`who`（worker の名義）にも PC 名は
@@ -328,6 +329,8 @@ class Bus:
         }
         if node:
             rec["node"] = node
+        if kind:
+            rec["kind"] = kind
         if data is not None:  # 構造化成果（任意）。エージェント間を JSON で流す
             rec["data"] = data
         if artifacts:  # 生成した中間成果物（run_dir 相対パス）。後続が参照できる
@@ -937,4 +940,3 @@ class Bus:
         self.sync_pull()
         return self._try_claim_in(os.path.join(self.inbox_claims_dir, req_id),
                                   who, lease_sec, f"reclaim request {req_id} by {who}")
-

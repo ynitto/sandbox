@@ -173,8 +173,11 @@ def sync_workspace_base(ws: "dict | None") -> dict:
     clone, target = str(ws["clone"]), str(ws["target"])
     fetched = _ws_git(clone, "fetch", "--quiet", "origin", target)
     if fetched.returncode != 0:
-        raise RuntimeError(f"target {target} の fetch に失敗しました: "
-                           f"{(fetched.stderr or fetched.stdout).strip()[:300]}")
+        detail = (fetched.stderr or fetched.stdout).strip()[:300]
+        triage = classify_agent_failure(detail)
+        failure_class = triage[0] if triage else "transient"
+        raise RuntimeError(f"[agent-error:{failure_class}] target {target} の fetch に失敗しました: "
+                           f"{detail}")
     target_rev = _ws_git(clone, "rev-parse", "FETCH_HEAD").stdout.strip()
     if not target_rev:
         raise RuntimeError(f"target {target} の revision を解決できません")
@@ -229,6 +232,11 @@ def finalize_workspace(ws: "dict | None", run_id: str, node_id: str) -> "dict | 
         raise RuntimeError(f"未解決の競合があります: {unmerged[:300]}")
     staged = [p for p in _ws_git(clone, "diff", "--cached", "--name-only",
                                  "--diff-filter=ACMR").stdout.splitlines() if p]
+    if node_id != "base-sync":
+        checked = _ws_git(clone, "diff", "--cached", "--check")
+        if checked.returncode != 0:
+            raise RuntimeError(f"差分品質チェックに失敗しました: "
+                               f"{(checked.stdout or checked.stderr).strip()[:300]}")
     if staged:
         checked = _ws_git(clone, "grep", "--cached", "-n", "-E",
                           r"^(<<<<<<< |=======$|>>>>>>> )", "--", *staged)
@@ -249,9 +257,11 @@ def finalize_workspace(ws: "dict | None", run_id: str, node_id: str) -> "dict | 
     target_rev = str(ws.get("target_rev") or "")
     if target_rev and _ws_git(clone, "merge-base", "--is-ancestor", target_rev, "HEAD").returncode != 0:
         raise RuntimeError("merge commit に検証対象 target が含まれていません")
+    last_push = None
     for i in range(5):
         # detached HEAD のまま作業ブランチへ push（ローカルでブランチを checkout しない）。
-        if _ws_git(clone, "push", "origin", f"HEAD:refs/heads/{branch}").returncode == 0:
+        last_push = _ws_git(clone, "push", "origin", f"HEAD:refs/heads/{branch}")
+        if last_push.returncode == 0:
             head = _ws_git(clone, "rev-parse", "HEAD").stdout.strip()
             return {"url": ws.get("url"), "branch": branch, "commit": head,
                     "target": ws.get("target") or ws.get("base") or "", "path": ws.get("path") or ""}
@@ -266,7 +276,9 @@ def finalize_workspace(ws: "dict | None", run_id: str, node_id: str) -> "dict | 
             raise RuntimeError(
                 f"workspace rebase が競合しました（{branch}）: {(rb.stderr or rb.stdout).strip()[:300]}")
         backoff_sleep(2 ** i if i < 4 else 16)
-    raise RuntimeError(f"workspace push が {branch} へ反映できませんでした")
+    detail = ((last_push.stderr or last_push.stdout).strip()[:300]
+              if last_push is not None else "")
+    raise RuntimeError(f"workspace push が {branch} へ反映できませんでした: {detail}")
 
 
 def cleanup_workspace() -> None:

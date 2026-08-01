@@ -122,7 +122,7 @@ class Config:
     # verify の打ち切り時間（秒）。既定 120 秒では足りない: 「テストスイート全体を green にする」
     # 類の完了条件は数分かかる（実際 990 件で 130 秒）。短すぎると **完了しているのに時間切れで
     # NG** と判定し、リトライを積み上げた末に人へエスカレーションする（retries=6 まで無駄に
-    # 積み直して blocked になった）。act_timeout（既定 1800 秒）より十分短く、ハングの保護は保つ。
+    # 積み直して blocked になった）。verify 自体のハングを止める上限は保つ。
     verify_timeout: float = 600.0
     verify_confirm: int = 1         # verify を最大この回数まで再実行し PASS/FAIL が跨いだら flake として人へ隔離（1=従来）
     verify_cwd: "str | None" = None  # verify/acceptance を実行する作業ディレクトリ（既定 workdir）。git-bus 等で
@@ -134,7 +134,7 @@ class Config:
     level_promote_after: int = 5     # 昇格に要する連続 clean 完了数
     level_window: int = 10           # 手戻り率の評価窓（直近 N 件の完了）
     level_rework_max: float = 0.0    # 昇格を許す最大 rework_rate（既定 0＝手戻りゼロ）
-    act_timeout: float = 1800.0
+    act_timeout: float = 0.0       # agent-flow run 全体の壁時計上限。既定は無制限（生存は lease で判定）
     notify_cmd: "str | None" = None
     actor: str = "user"
     archive: "Path | None" = None   # done の退避先ディレクトリ（既定 archive/）

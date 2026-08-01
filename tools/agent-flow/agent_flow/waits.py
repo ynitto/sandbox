@@ -129,7 +129,8 @@ def park_node(bus: Bus, nid: str, who: str, rec: dict) -> None:
 def _finish_wait(v: Bus, rec: dict, status: str, text: str, data) -> None:
     """park の決着を終端 result として書き、wait 記録を消す（service_waits から）。"""
     nid = rec["id"]
-    v.write_result(nid, rec.get("who", "service_waits"), status, text, data)
+    v.write_result(nid, rec.get("who", "service_waits"), status, text, data,
+                   kind=rec.get("kind"))
     v.clear_wait(nid)
     v.event("service_waits", "result", node=nid, status=status)
     v.sync_push(f"result {nid} [{status}] by service_waits")
@@ -248,9 +249,14 @@ def service_waits(bus: Bus, args, only_runs: "list | None" = None,
 
 
 def _is_gate_result(r: dict) -> bool:
-    """verify gate の結果か（data が {"ok": ...} を持つ）。集約対象から除くのに使う。"""
+    """verify gate の結果か。work の完了 envelope（{"ok": ...}）とは区別する。"""
     dv = _dep_data(r)
-    return isinstance(dv, dict) and "ok" in dv
+    if not isinstance(dv, dict) or "ok" not in dv:
+        return False
+    kind = str(r.get("kind") or "")
+    if kind:
+        return kind == "verify"
+    return bool(re.search(r"\bverify\s*=\s*(?:pass|fail)\b", str(r.get("output") or ""), re.I))
 
 
 def _collect_dep_results(bus, node: dict, kind: str) -> dict:
@@ -295,4 +301,3 @@ def _reconcile_count(data):
     if len(lists) == 1 and isinstance(data.get("count"), int):
         data["count"] = len(lists[0])
     return data
-

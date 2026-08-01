@@ -149,8 +149,10 @@ verify は act 完了後に走る。
 `result.json` を1回だけポーリングして**終端した委譲だけ**を消化する。`executor: gitlab` のように
 MR 承認まで数日かかる委譲でループを塞がず、同じプロジェクトの他タスク・他プロジェクトを並行に
 進められる。委譲 id は決定的なので agent-project が再起動しても同じ委譲に再合流する。
-`act_timeout: 0`（＋ agent-flow `gitlab.timeout/approved_timeout: 0`）と併用すると、誤タイムアウト
-由来の retry ループが完全に消える。
+`act_timeout` は run 全体の壁時計上限なので既定は `0`（無制限）とし、進捗と失踪は run の
+orchestrator lease で判定する。lease が失効した run は失敗として止め、次回は done を温存して
+再開する。有限値が必要な運用だけ明示する。agent-flow の
+`gitlab.timeout/approved_timeout: 0` と併用すれば、レビュー待ちの誤タイムアウトも起きない。
 
 **並列消費（`--concurrency N`、既定 1）**: 依存解決済みの独立タスクを先頭から最大 N 件 板へ並行
 post し、実体の並列は請負側ノードの worker に委ねる。**実行の重い部分だけ並列化し、verify・done/archive・
@@ -158,7 +160,9 @@ post し、実体の並列は請負側ノードの worker に委ねる。**実�
 
 **原子的クレーム（二重実行防止）**: 各タスクは実行前に `claims/<id>.lock` を `O_CREAT|O_EXCL` で確保した者だけが
 回す。**同じ backlog を複数プロセス/ホストで回しても同一タスクは二度実行されない**。取得後に disk を再検証し、
-owner 失踪は TTL 超で奪取、終了で解放。
+owner 失踪は TTL 超で奪取、終了で解放。無制限 run の claim は 600 秒ごとに mtime を更新し、
+更新時に owner / pid / task が一致しなければ run を止める。JSON を書き直さないため、監視側が
+途中状態を読む窓も作らない。
 
 **分散移譲（board）**: `board: <委譲公示板>`＋`policy.md` の `offload: <パターン>` 一致タスクは
 `board` に解決され、板へ公示する。請負側ノードの常駐体が入札・実行し、結果は次パスで回収する。

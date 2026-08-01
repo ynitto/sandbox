@@ -670,7 +670,7 @@ class TestRevise(unittest.TestCase):
 
     def test_revise_dead_owner_doing_requeues_immediately(self):
         # 同一ホストの死んだ pid クレームは TTL を待たず「実行者不在」扱い → ready へ即積み直し。
-        # TTL 専用だと最大 ~41 分（act_timeout=0 なら永久）revised 予約だけして進まない。
+        # TTL 専用だと claim TTL が切れるまで revised 予約だけして進まない。
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             mkb(d, "T1", status="doing", verify="true")

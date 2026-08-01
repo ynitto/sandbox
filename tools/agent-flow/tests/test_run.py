@@ -776,6 +776,10 @@ class TransientRunBreakTests(unittest.TestCase):
                                      exemplar_first=False, max_retries=3)
         return kf._continue(args, "req", nodes, results, 0)
 
+    def test_base_sync_preserves_transient_failure_class(self):
+        self.assertEqual(kf._work_failure_class("base-sync", "connection timed out"), "transient")
+        self.assertEqual(kf._work_failure_class("base-sync", "merge conflict unresolved"), "integration")
+
     def test_transient_failure_breaks_run_not_retries(self):
         decision, new_tasks, reason = self._continue(
             {"t1": {"status": "failed",

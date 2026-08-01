@@ -451,6 +451,29 @@ class TestTaskBranchAndDeliveryReview(unittest.TestCase):
             self.assertFalse(ok)
             self.assertIn("再検証", msg)
 
+    def test_review_target_fresh_accepts_verified_result_already_merged(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, task_branch=True)
+            t = self._mr_task(cfg, d)
+            result_rev = "a" * 40
+            t.set("gate_target", "main")
+            t.set("gate_target_rev", "b" * 40)
+            t.set("verification", json.dumps({
+                "report": f"verifications/T1/{result_rev}.md",
+            }))
+
+            def run(cmd, **kwargs):
+                if "rev-parse" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0, stdout=f"{'c' * 40}\n", stderr="")
+                if "merge-base" in cmd and cmd[-2:] == [result_rev, "origin/main"]:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            with mock.patch.object(km.subprocess, "run", side_effect=run):
+                ok, msg = km.review_target_fresh(cfg, t)
+            self.assertTrue(ok, msg)
+
     def _review_task_with_mr(self, cfg, d):
         t = self._mr_task(cfg, d)
         t.status = "review"

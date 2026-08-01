@@ -221,6 +221,8 @@ def main(argv=None) -> int:
     rv.add_argument("--level", dest="rv_level", default=None,
                     help="自律度を置換（report/assisted/unattended）")
     rv.add_argument("--track", dest="rv_track", default=None, help="track を置換（'' / none で削除）")
+    rv.add_argument("--task-node", dest="rv_node", default=None,
+                    help="タスクの実行ノード割当を置換（'' / none で解除）")
     rv.add_argument("--feedback", dest="rv_feedback", default=None,
                     help="次の act に必ず反映させる指示（例: e2e はローカルでなく実サーバに配備して実施）")
     rv.add_argument("--reason", default=None, help="決定記録に残す理由（省略時は feedback を流用）")
@@ -363,7 +365,7 @@ def main(argv=None) -> int:
         "reprioritize": lambda: cmd_reprioritize(
             cfg, args.id, "pin" if args.pin else "defer", args.reason),
         "revise": lambda: cmd_revise(
-            cfg, args.id, {k: getattr(args, "node" if k == "node" else f"rv_{k}", None)
+            cfg, args.id, {k: getattr(args, f"rv_{k}", None)
                            for k in REVISE_FIELDS},
             args.rv_feedback or "", args.reason or ""),
         "replan": lambda: cmd_replan(cfg, args.reason or "charter からのバックログ再分解",

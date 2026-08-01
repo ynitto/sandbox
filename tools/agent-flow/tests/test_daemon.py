@@ -570,6 +570,17 @@ class DaemonPrimitiveTests(unittest.TestCase):
         finally:
             kf.cleanup_workspace()
 
+    def test_finalize_normal_work_rejects_new_whitespace_errors(self):
+        remote = self._make_remote(name="ws_whitespace")
+        try:
+            ws = kf.ensure_workspace_clone({"url": remote, "base": "main"}, "run-bad-ws")
+            with open(os.path.join(ws["clone"], "bad.txt"), "w", encoding="utf-8") as fh:
+                fh.write("new trailing whitespace  \n")
+            with self.assertRaisesRegex(RuntimeError, "差分品質"):
+                kf.finalize_workspace(ws, "run-bad-ws", "t1")
+        finally:
+            kf.cleanup_workspace()
+
     def test_sync_workspace_base_merges_clean_target_without_agent_git(self):
         remote = self._make_remote(name="base_sync_clean")
         subprocess.run(["git", "-C", remote, "checkout", "-qb", "ap/T1"], check=True)
@@ -594,6 +605,12 @@ class DaemonPrimitiveTests(unittest.TestCase):
             ).returncode, 0)
         finally:
             kf.cleanup_workspace()
+
+    def test_sync_workspace_base_marks_unclassified_fetch_failure_transient(self):
+        failed = types.SimpleNamespace(returncode=1, stdout="", stderr="remote unavailable")
+        with mock.patch.object(kf, "_ws_git", return_value=failed):
+            with self.assertRaisesRegex(RuntimeError, r"\[agent-error:transient\]"):
+                kf.sync_workspace_base({"clone": "/tmp/work", "target": "main"})
 
     def test_sync_workspace_base_exposes_conflicts_and_refuses_markers(self):
         remote = self._make_remote(name="base_sync_conflict")

@@ -260,16 +260,38 @@ def _select_batch(order: "list[Task]", cfg: "Config", policy, remaining: int) ->
 
 # --- 原子的クレーム: 同一 backlog を複数 worker/インスタンスが回しても二重実行しないための claim。---
 #   <root>/claims/<id>.lock を O_CREAT|O_EXCL で作れた者だけが実行権を持つ。owner 失踪時のため TTL で奪取可。
+_UNBOUNDED_ACT_CLAIM_WINDOW_SEC = 1800.0
+_CLAIM_HEARTBEAT_SEC = _UNBOUNDED_ACT_CLAIM_WINDOW_SEC / 3.0
+
+
 def _claims_dir(cfg: "Config") -> Path:
     return cfg.backlog.parent / "claims"
 
 
 def _claim_ttl(cfg: "Config") -> float:
-    # act_timeout=0（無制限待ち）なら claim も期限なし＝長時間委譲中に他インスタンスへ
-    # 奪われて二重実行するのを防ぐ（owner が生きている限り握り続ける）。
-    if cfg.act_timeout <= 0:
-        return float("inf")
-    return cfg.act_timeout + cfg.verify_timeout + 60.0   # act+verify を十分に上回る猶予（失踪検知用）
+    # run の壁時計上限を無効にしても claim は有限に保つ。実行中は heartbeat で更新し、
+    # owner が落ちたときだけ別ホストが回収できるようにする。
+    act_window = cfg.act_timeout if cfg.act_timeout > 0 else _UNBOUNDED_ACT_CLAIM_WINDOW_SEC
+    return act_window + cfg.verify_timeout + 60.0
+
+
+def _refresh_claim(cfg: "Config", task: "Task") -> bool:
+    """自分が保持する claim の失踪判定時計を更新する。"""
+    p = _claims_dir(cfg) / f"{task.id}.lock"
+
+    def ours(rec: dict) -> bool:
+        return (str(rec.get("host") or "") == socket.gethostname()
+                and int(rec.get("pid", -1) or -1) == os.getpid()
+                and str(rec.get("id") or "") == task.id)
+
+    try:
+        rec = json.loads(p.read_text(encoding="utf-8"))
+        if not ours(rec):
+            return False
+        os.utime(p, None)
+        return ours(json.loads(p.read_text(encoding="utf-8")))
+    except (OSError, ValueError, TypeError):
+        return False
 
 
 def claim_task(cfg: "Config", task: "Task") -> bool:
@@ -285,9 +307,8 @@ def claim_task(cfg: "Config", task: "Task") -> bool:
         fd = os.open(str(p), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     except FileExistsError:
         # 生死は _claim_alive に委ねる: 同一ホストなら pid の生死で即断する。TTL だけで見ると
-        # kill / クラッシュで死んだ owner のロックが act_timeout+verify_timeout+60 秒（既定 41 分）
-        # 居座り、その間そのタスクは「他者が実行中」と誤認されて誰にも拾われない。さらに
-        # act_timeout<=0（無制限）では TTL が inf になり **永久に** 奪取できなくなる。
+        # kill / クラッシュで死んだ owner のロックは TTL 後に回収する。同一ホストなら pid の
+        # 生死を見て即断できるため、TTL を待たない。
         if _claim_alive(cfg, task.id):
             return False                      # 実行者が生きている
         try:                                  # stale（owner 失踪）＝奪取を試みる
@@ -346,11 +367,13 @@ def _claim_alive(cfg: "Config", tid: str) -> bool:
     p = _claims_dir(cfg) / f"{tid}.lock"
     try:
         rec = json.loads(p.read_text(encoding="utf-8"))
+        touched = p.stat().st_mtime
     except (OSError, ValueError):
         return False                                    # 票が無い/壊れている＝実行者はいない
     if str(rec.get("host", "")) == socket.gethostname():
         return _pid_alive(int(rec.get("pid", -1) or -1))
-    return time.time() - float(rec.get("ts", 0) or 0) <= _claim_ttl(cfg)
+    heartbeat = max(float(rec.get("ts", 0) or 0), touched)
+    return time.time() - heartbeat <= _claim_ttl(cfg)
 
 
 def recover_stale_doing(cfg: "Config", tasks: "list[Task]") -> "list[str]":

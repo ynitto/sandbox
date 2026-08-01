@@ -389,6 +389,16 @@ def review_target_fresh(cfg: "Config", task: "Task") -> "tuple[bool, str]":
     if not current:
         return False, f"target {target} の revision を解決できないため承認できません"
     if current != verified:
+        try:
+            report = str(json.loads(str(task.get("verification") or "{}"))
+                         .get("report") or "")
+        except (TypeError, ValueError):
+            report = ""
+        result_rev = os.path.basename(report).removesuffix(".md")
+        if re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", result_rev) \
+                and run("merge-base", "--is-ancestor", result_rev,
+                        f"origin/{target}").returncode == 0:
+            return True, ""  # 検証済み成果を外部で統合済み
         return False, (f"検証後に target {target} が更新されました"
                        f"（{verified[:12]} → {current[:12]}）。最新 target を統合して再検証してください")
     return True, ""

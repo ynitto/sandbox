@@ -117,7 +117,7 @@ CONFIG_DEFAULTS = {
     "verify_timeout": 600.0,   # テストスイート全体を回す verify は数分かかる（120 秒だと完了しても時間切れ NG）
     "verify_confirm": 1,
     "verify_cwd": None,
-    "act_timeout": 1800.0,
+    "act_timeout": 0.0,
     # agent-flow バスの置き場（絶対パスで明示すると外部 daemon を検知できる）。None なら <root>/bus。
     # 設定ファイルの bus: をここに載せておかないと resolve_config が読まず黙って既定バスに落ちる
     # （daemon 非検知の原因になる）。CLI --bus と同義。

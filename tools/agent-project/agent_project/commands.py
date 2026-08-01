@@ -490,8 +490,7 @@ def _claim_fresh(cfg: "Config", tid: str) -> bool:
     """claims/<id>.lock が生きている（= 誰かが実行中）か。stale/欠損は False（実行者不在）。
 
     `_claim_alive` に寄せる: 同一ホストは pid の生死で即断し、別ホストだけ TTL に従う。
-    かつての TTL 専用判定は、クラッシュ直後でも最大 act_timeout+verify_timeout+60
-    （~41 分、さらに act_timeout=0 なら永久）「実行中」と誤認し、revise が
+    かつての TTL 専用判定は、クラッシュ直後でも claim TTL が切れるまで「実行中」と誤認し、revise が
     revised 予約だけして ready へ積み直せなかった（死んだ owner の claim 居座り修正の
     取りこぼし）。"""
     return _claim_alive(cfg, tid)
@@ -693,6 +692,7 @@ def cmd_revise(cfg: Config, tid: str, fields: dict, feedback: str, reason: str) 
         # rev は act 試行の世代番号（req_id に載る）。成果内容が変わる revise は
         # 実行中の古い run に合流させず、新しい run を強制する。
         t.set("rev", int(str(t.get("rev", "0") or "0")) + 1)
+        t.drop("last_run")
     if doing:
         t.set("revised", _now_ts())     # 実行側が settle 時に検知して積み直す（結果は確定しない）
         disp = "実行中のため現在の試行は確定せず、修正内容で積み直されます"

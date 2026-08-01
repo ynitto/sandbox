@@ -21,7 +21,9 @@ class VerifyGateTests(unittest.TestCase):
         self.assertTrue(kf._normalize_verify("verify=pass 問題なし", None)["ok"])
 
     def test_is_gate_result(self):
-        self.assertTrue(kf._is_gate_result({"data": {"ok": True}}))
+        self.assertTrue(kf._is_gate_result({"kind": "verify", "data": {"ok": True}}))
+        self.assertTrue(kf._is_gate_result({"output": "verify=pass", "data": {"ok": True}}))
+        self.assertFalse(kf._is_gate_result({"kind": "work", "data": {"ok": True}}))
         self.assertFalse(kf._is_gate_result({"data": [1, 2]}))
         self.assertFalse(kf._is_gate_result({"output": "x"}))
 

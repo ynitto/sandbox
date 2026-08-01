@@ -94,6 +94,7 @@ class TestAtomicClaim(unittest.TestCase):
             lock = d / "claims" / "T1.lock"
             lock.parent.mkdir(parents=True, exist_ok=True)
             lock.write_text('{"host":"old","pid":1,"ts":0,"id":"T1"}', encoding="utf-8")  # 大昔
+            os.utime(lock, (0, 0))
             self.assertTrue(km.claim_task(cfg, t))         # owner 失踪とみなし奪取
 
     def _dead_pid(self) -> int:
@@ -102,7 +103,7 @@ class TestAtomicClaim(unittest.TestCase):
         return p.pid                                   # 確実に死んでいる pid
 
     def test_dead_same_host_owner_is_stolen_without_waiting_ttl(self):
-        # kill/クラッシュで死んだ owner のロックは、TTL（既定 41 分）を待たず pid の生死で奪取する。
+        # kill/クラッシュで死んだ owner のロックは、TTL を待たず pid の生死で奪取する。
         # 待たされると、その間そのタスクは誰にも拾われず drained になる。
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
@@ -114,14 +115,13 @@ class TestAtomicClaim(unittest.TestCase):
                                         "ts": time.time(), "id": "T1"}), encoding="utf-8")  # ts は新鮮
             self.assertTrue(km.claim_task(cfg, t))
 
-    def test_dead_owner_is_stolen_even_when_ttl_is_infinite(self):
-        # act_timeout<=0（無制限待ち）は _claim_ttl を inf にする。TTL だけで判定していると
-        # 死んだ owner のロックが **永久に** 失効せず、そのタスクは二度と実行されない。
+    def test_dead_owner_is_stolen_when_act_timeout_is_unlimited(self):
+        # run の壁時計上限を無効にしても、死んだ owner の claim は回収できる。
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             cfg = cfg_for(d)
             cfg.act_timeout = 0
-            self.assertEqual(km._claim_ttl(cfg), float("inf"))
+            self.assertLess(km._claim_ttl(cfg), float("inf"))
             t = self._task(d)
             lock = d / "claims" / "T1.lock"
             lock.parent.mkdir(parents=True, exist_ok=True)
@@ -140,6 +140,20 @@ class TestAtomicClaim(unittest.TestCase):
             lock.write_text(json.dumps({"host": socket.gethostname(), "pid": os.getpid(),
                                         "ts": 0, "id": "T1"}), encoding="utf-8")   # ts は大昔
             self.assertFalse(km.claim_task(cfg, t))
+
+    def test_refresh_claim_renews_remote_staleness_clock(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = self._task(d)
+            self.assertTrue(km.claim_task(cfg, t))
+            lock = d / "claims" / "T1.lock"
+            before = json.loads(lock.read_text(encoding="utf-8"))
+            os.utime(lock, (0, 0))
+            self.assertTrue(km._refresh_claim(cfg, t))
+            self.assertEqual(json.loads(lock.read_text(encoding="utf-8")), before,
+                             "heartbeat は所有者レコードを書き換えない")
+            self.assertGreater(lock.stat().st_mtime, time.time() - 5)
 
     def test_claim_revalidates_against_disk(self):
         with tempfile.TemporaryDirectory() as d:
@@ -371,9 +385,12 @@ class RecoverStaleDoingTests(unittest.TestCase):
     def _claim(self, cfg, tid, pid, host=None, ts=None):
         d = km._claims_dir(cfg)
         d.mkdir(parents=True, exist_ok=True)
-        (d / f"{tid}.lock").write_text(json.dumps({
+        path = d / f"{tid}.lock"
+        path.write_text(json.dumps({
             "host": host or socket.gethostname(), "pid": pid,
             "ts": ts if ts is not None else time.time(), "id": tid}), encoding="utf-8")
+        if ts is not None:
+            os.utime(path, (ts, ts))
 
     def test_dead_owner_is_recovered(self):
         with tempfile.TemporaryDirectory() as d:

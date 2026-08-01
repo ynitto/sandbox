@@ -336,6 +336,61 @@ class TestActRunMidRevise(unittest.TestCase):
             self.assertIn("revise", msg)
             self.assertIsNone(t.get("flow_run"), "detach で flow_run を外す")
 
+    def test_claim_loss_stops_run(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), dry_run=False, act_timeout=0.0)
+            km.ensure_dirs(cfg)
+            t = km.Task(id="T1", title="x", verify="true", status="doing")
+            km.persist_task(cfg, t)
+
+            class Proc:
+                returncode = 0
+                stdout = io.StringIO("")
+                calls = 0
+                def poll(self):
+                    self.calls += 1
+                    return None if self.calls <= 2 else self.returncode
+                def terminate(self): self.returncode = -15
+                def kill(self): self.returncode = -9
+                def wait(self, timeout=None): return self.returncode
+
+            with mock.patch.object(km.subprocess, "Popen", return_value=Proc()), \
+                 mock.patch.object(km, "_wait_abort_reason", return_value=None), \
+                 mock.patch.object(km, "_CLAIM_HEARTBEAT_SEC", 0.0), \
+                 mock.patch.object(km, "_refresh_claim", return_value=False), \
+                 mock.patch.object(km.time, "sleep", lambda *_: None), \
+                 mock.patch.object(km, "reap_orphan_flow", return_value=0):
+                ok, msg = km._act_run(t, cfg)
+            self.assertFalse(ok)
+            self.assertIn("claim", msg)
+
+    def test_expired_orchestrator_lease_stops_run(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), dry_run=False, act_timeout=0.0)
+            km.ensure_dirs(cfg)
+            t = km.Task(id="T1", title="x", verify="true", status="doing")
+            km.persist_task(cfg, t)
+
+            class Proc:
+                returncode = 0
+                stdout = io.StringIO("")
+                calls = 0
+                def poll(self):
+                    self.calls += 1
+                    return None if self.calls <= 2 else self.returncode
+                def terminate(self): self.returncode = -15
+                def kill(self): self.returncode = -9
+                def wait(self, timeout=None): return self.returncode
+
+            with mock.patch.object(km.subprocess, "Popen", return_value=Proc()), \
+                 mock.patch.object(km, "_wait_abort_reason", return_value=None), \
+                 mock.patch.object(km, "_flow_run_lease_expired", side_effect=[False, True]), \
+                 mock.patch.object(km.time, "sleep", lambda *_: None), \
+                 mock.patch.object(km, "reap_orphan_flow", return_value=0):
+                ok, msg = km._act_run(t, cfg)
+            self.assertFalse(ok)
+            self.assertIn("lease", msg)
+
     def test_detach_keeps_cancel_marker_when_no_meta(self):
         """submit 前 detach: マーカーを残し daemon の run 化前 cancel へ渡す。"""
         with tempfile.TemporaryDirectory() as d:
@@ -387,6 +442,51 @@ class TestActRunMidRevise(unittest.TestCase):
             t.set("feedback", "計画を変更する")
             self.assertIsNone(km._inherit_from_run(t, "req-ab-T1-r1-v1", cfg))
 
+    def test_field_only_revise_starts_fresh_run_without_inheritance(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, dry_run=False)
+            old = "req-ab-T1-r0"
+            (cfg.bus / "runs" / old).mkdir(parents=True)
+            (cfg.bus / "runs" / old / "meta.json").write_text(
+                json.dumps({"status": "failed", "request": "x"}), encoding="utf-8")
+            mkb(d, "T1", status="blocked", verify="true")
+            task = km.load_tasks(cfg.backlog)[0]
+            task.set("last_run", old)
+            km.persist_task(cfg, task)
+
+            self.assertEqual(km.cmd_revise(cfg, "T1", {"title": "changed"}, "", "edit"), 0)
+            revised = km.load_tasks(cfg.backlog)[0]
+            new_run = km.run_id_for(cfg, revised)
+            self.assertNotEqual(new_run, old)
+            self.assertIsNone(km._inherit_from_run(revised, new_run, cfg))
+
+    def test_env_resume_feedback_keeps_current_revision_run(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), dry_run=False)
+            old = "req-ab-T1-r0-v2"
+            (cfg.bus / "runs" / old).mkdir(parents=True)
+            (cfg.bus / "runs" / old / "meta.json").write_text(
+                json.dumps({"status": "failed", "request": "x"}), encoding="utf-8")
+            task = km.Task(id="T1", title="x", verify="true")
+            task.set("rev", "2")
+            task.set("last_run", old)
+            task.set("feedback", "environment repaired")
+            task.set("env_resume", "1")
+            self.assertEqual(km.run_id_for(cfg, task), old)
+
+    def test_explicit_resume_keeps_legacy_run_id_after_prior_revision(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), dry_run=False)
+            old = "legacy-run-id"
+            (cfg.bus / "runs" / old).mkdir(parents=True)
+            (cfg.bus / "runs" / old / "meta.json").write_text(
+                json.dumps({"status": "failed", "request": "x"}), encoding="utf-8")
+            task = km.Task(id="T1", title="x", verify="true")
+            task.set("rev", "2")
+            task.set("last_run", old)
+            self.assertEqual(km.run_id_for(cfg, task), old)
+
     def test_timeout_detach_marks_failed_and_inherits(self):
         # タイムアウトは cancelled ではなく failed。次 run は last_run を inherit できる。
         with tempfile.TemporaryDirectory() as d:
@@ -429,15 +529,52 @@ class TestActRunMidRevise(unittest.TestCase):
 
 
 class TestActTimeoutZero(unittest.TestCase):
-    """act_timeout=0（無制限待ち）の claim 保持。gitlab 等の長時間委譲で
-    待っているあいだに claim を奪われないための配線。"""
+    """act_timeout=0 でも owner 失踪を回収できる claim 契約。"""
 
-    def test_claim_ttl_infinite_when_act_timeout_zero(self):
+    def test_claim_ttl_stays_finite_when_act_timeout_zero(self):
         with tempfile.TemporaryDirectory() as d:
             cfg0 = cfg_for(Path(d), dry_run=False, act_timeout=0.0)
-            self.assertEqual(km._claim_ttl(cfg0), float("inf"))   # 委譲中に claim を奪われない
+            self.assertTrue(km._claim_ttl(cfg0) < float("inf"))  # owner 失踪を回収できる
+            self.assertGreater(km._claim_ttl(cfg0), cfg0.verify_timeout)
             cfg30 = cfg_for(Path(d), dry_run=False, act_timeout=30.0)
             self.assertTrue(km._claim_ttl(cfg30) < float("inf"))
+
+    def test_claim_heartbeat_is_one_third_of_unbounded_window(self):
+        self.assertEqual(km._CLAIM_HEARTBEAT_SEC,
+                         km._UNBOUNDED_ACT_CLAIM_WINDOW_SEC / 3.0)
+
+    def test_flow_run_lease_expiry_uses_run_heartbeat(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), dry_run=False, act_timeout=0.0)
+            rid = "run-lease"
+            run = cfg.bus / "runs" / rid
+            run.mkdir(parents=True)
+            meta = run / "meta.json"
+            meta.write_text(json.dumps({"status": "running", "orch_lease_until": 100.0}),
+                            encoding="utf-8")
+            self.assertFalse(km._flow_run_lease_expired(cfg, rid, now=100.0))
+            self.assertTrue(km._flow_run_lease_expired(cfg, rid, now=100.1, use_git=True))
+            meta.write_text(json.dumps({"status": "done", "orch_lease_until": 0.0}),
+                            encoding="utf-8")
+            self.assertIsNone(km._flow_run_lease_expired(cfg, rid, now=100.1))
+
+    def test_flow_run_lease_expiry_reads_git_bus_run_clone(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), dry_run=False, act_timeout=0.0,
+                          git_bus="ssh://example.invalid/bus.git", git_subdir="team")
+            rid = "run-git-lease"
+            run = cfg.bus / "run" / "team" / "runs" / rid
+            run.mkdir(parents=True)
+            (run / "meta.json").write_text(
+                json.dumps({"status": "running", "orch_lease_until": 100.0}),
+                encoding="utf-8")
+            self.assertTrue(km._flow_run_lease_expired(cfg, rid, now=100.1, use_git=True))
+            local = cfg.bus / "runs" / rid
+            local.mkdir(parents=True)
+            (local / "meta.json").write_text(
+                json.dumps({"status": "running", "orch_lease_until": 200.0}),
+                encoding="utf-8")
+            self.assertFalse(km._flow_run_lease_expired(cfg, rid, now=100.1))
 
     def test_req_id_for_generation(self):
         with tempfile.TemporaryDirectory() as d:

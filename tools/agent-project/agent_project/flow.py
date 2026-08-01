@@ -43,6 +43,28 @@ def _run_age_sec(meta: dict) -> float:
     return (datetime.now(timezone.utc) - dt).total_seconds()
 
 
+def _flow_run_lease_expired(cfg: "Config", rid: str,
+                            now: "float | None" = None, *,
+                            use_git: bool = False) -> "bool | None":
+    """非終端 run の orchestrator lease 状態。記録なし/終端は None。"""
+    bus = cfg.bus
+    if use_git and cfg.git_bus:
+        # agent-flow run 自身の GitBus clone は --bus/run に固定され、監視ループが pull する。
+        bus = bus / "run"
+        if cfg.git_subdir:
+            bus /= cfg.git_subdir.strip("/")
+    try:
+        meta = json.loads((bus / "runs" / rid / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    if str(meta.get("status") or "") in _FLOW_TERMINAL:
+        return None
+    lease = meta.get("orch_lease_until")
+    if not isinstance(lease, (int, float)):
+        return None
+    return float(lease) < (time.time() if now is None else now)
+
+
 def _run_resumable(cfg: "Config", rid: str) -> bool:
     """その run は「続きから」やり直せるか。
 
@@ -83,8 +105,7 @@ def run_id_for(cfg: "Config", task: "Task") -> str:
     続きからではなく新しい run を作る。環境要因ブロック（env_resume）からの復帰は、人が
     needs にメモを書いても計画変更ではない——同じ run の続きを約束しているので feedback を無視する。"""
     rid = str(task.get("last_run") or "").strip()
-    plan_changed = bool(task.get("revised")) or (
-        bool(task.get("feedback")) and not task.get("env_resume"))
+    plan_changed = _plan_changed_since_last_run(task)
     if rid and not plan_changed and _run_resumable(cfg, rid):
         return rid                        # 失敗・停滞した所だけやり直す（done は温存）
     return _new_run_id(task, cfg)
@@ -376,11 +397,29 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
     drainer = threading.Thread(target=_drain, daemon=True)
     drainer.start()
     deadline = (time.time() + cfg.act_timeout) if cfg.act_timeout > 0 else None
+    lease_start_deadline = time.time() + _STALE_RUN_SEC
+    lease_monitor_armed = False
+
+    def _fail_run(why: str) -> "tuple[bool, str]":
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except Exception:  # noqa: BLE001
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        task.set("flow_run", rid)
+        detach_flow_run(cfg, task, why, failed=True)
+        reap_orphan_flow(cfg)
+        return False, why
+
     # 同期 run は agent-project のループを塞ぐため、従来は run 完了まで state_git が push
     # されず、別 PC の dashboard/engine が bus/runs の graph・claims・results を見られなかった。
     # 待機中も state_git_interval ごとに best-effort 同期して、同期 run のままでも分担/監視できる
     # 回避路を作る（force しないのでリモート負荷は既存 interval に従う）。
     next_progress_sync = 0.0
+    next_claim_heartbeat = time.time() + _CLAIM_HEARTBEAT_SEC
     try:
         while True:
             rc = proc.poll()
@@ -404,6 +443,17 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
                 reap_orphan_flow(cfg)
                 return (False, f"daemon run {rid} の結果待ちを中断（{why} を検知）")
             now = time.time()
+            lease_expired = _flow_run_lease_expired(cfg, rid, now, use_git=use_git)
+            if lease_expired is False:
+                lease_monitor_armed = True
+            elif lease_expired is True and (lease_monitor_armed or now >= lease_start_deadline):
+                return _fail_run("agent-flow run 応答なし（orchestrator lease 失効）")
+            elif lease_expired is None and now >= lease_start_deadline:
+                return _fail_run("agent-flow run 応答なし（orchestrator lease 未記録）")
+            if now >= next_claim_heartbeat:
+                if not _refresh_claim(cfg, task):
+                    return _fail_run("agent-project task claim 喪失")
+                next_claim_heartbeat = now + _CLAIM_HEARTBEAT_SEC
             if now >= next_progress_sync:
                 sync = globals().get("state_sync")
                 if sync is not None:
@@ -413,21 +463,8 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
                         pass
                 next_progress_sync = now + max(1.0, float(getattr(cfg, "state_git_interval", 300.0) or 300.0))
             if deadline is not None and now >= deadline:
-                try:
-                    proc.terminate()
-                    proc.wait(timeout=5)
-                except Exception:  # noqa: BLE001
-                    try:
-                        proc.kill()
-                    except OSError:
-                        pass
-                # submit タイムアウトと同じ: 対象 run を止めて外部 daemon 採用を防ぐ。
-                # failed（cancelled ではない）＝次リトライで done ノードを inherit できる。
-                task.set("flow_run", rid)
-                detach_flow_run(cfg, task, f"agent-flow run タイムアウト（{cfg.act_timeout}s）",
-                                failed=True)
-                reap_orphan_flow(cfg)
-                return (False, f"agent-flow run タイムアウト（{cfg.act_timeout}s）")
+                # submit タイムアウトと同じ: failed にして次回は done ノードを引き継ぐ。
+                return _fail_run(f"agent-flow run タイムアウト（{cfg.act_timeout}s）")
             time.sleep(1.0)
     finally:
         if proc.poll() is None:
@@ -515,6 +552,12 @@ def _req_id_for(task: Task, cfg: "Config", retries: int) -> str:
     return f"req-{h}-{tid}-r{retries}" + (f"-v{rev}" if rev else "")
 
 
+def _plan_changed_since_last_run(task: Task) -> bool:
+    """直前の run 以後に成果内容が変更されたか。環境復帰の feedback は変更に数えない。"""
+    return bool(task.get("revised")) or (
+        bool(task.get("feedback")) and not task.get("env_resume"))
+
+
 def _inherit_from_run(task: Task, new_run_id: str, cfg: "Config | None" = None) -> "str | None":
     """新 run へ引き継ぐ先行 run-id。`last_run` が新 id と違えばそれを使う。
 
@@ -522,9 +565,7 @@ def _inherit_from_run(task: Task, new_run_id: str, cfg: "Config | None" = None) 
     `…-r{N-1}-v{newRev}` を指して inherit が空振りする。last_run が実際の先行。
     cancelled の last_run は引き継がない（人の停止・軌道修正を尊重。done を蘇らせない）。
     タイムアウト等の failed は引き継ぐ（agent-flow inherit_from と同じ契約）。"""
-    plan_changed = bool(task.get("revised")) or (
-        bool(task.get("feedback")) and not task.get("env_resume"))
-    if plan_changed:
+    if _plan_changed_since_last_run(task):
         return None
     last = str(task.get("last_run") or "").strip()
     if not last or last == str(new_run_id or "").strip():

@@ -48,12 +48,28 @@ class TestCliEndToEnd(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             mkb(d, "T1", status="blocked", verify="true")
+            task = km.load_tasks(d / "backlog")[0]
+            task.set("node", "pc-assigned")
+            km.persist_task(cfg_for(d), task)
             p = subprocess.run(
                 [sys.executable, str(_MOD), "revise", "T1", "--root", str(d),
                  "--feedback", "最新 target でやり直す"],
                 capture_output=True, text=True, timeout=30)
             self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-            self.assertEqual(km.load_tasks(d / "backlog")[0].norm_status(), "ready")
+            revised = km.load_tasks(d / "backlog")[0]
+            self.assertEqual(revised.norm_status(), "ready")
+            self.assertEqual(revised.get("node"), "pc-assigned")
+
+    def test_revise_task_node_cli_reassigns_task(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="ready", verify="true")
+            p = subprocess.run(
+                [sys.executable, str(_MOD), "revise", "T1", "--root", str(d),
+                 "--task-node", "pc-new"],
+                capture_output=True, text=True, timeout=30)
+            self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+            self.assertEqual(km.load_tasks(d / "backlog")[0].get("node"), "pc-new")
 
     def test_drains_and_archives(self):
         with tempfile.TemporaryDirectory() as d:

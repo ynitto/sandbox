@@ -212,6 +212,8 @@ test('再計画があるrunだけ計画の変遷とタスクの流れを切り�
   assert.match(renderer, /data-flow-graph-mode="plan"/);
   assert.match(renderer, /data-flow-graph-mode="dependencies"/);
   assert.match(renderer, />タスクの流れ<\/button>/);
+  assert.match(renderer, /prevTaskGraphX[\s\S]*item\.scrollLeft = prevTaskGraphX\[index\]/,
+    'データ更新後も各フェーズの横スクロール位置を復元する');
 });
 
 // --- レビュー待ちイシュー ↔ run/ノードの token 対応付け ---

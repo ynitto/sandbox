@@ -11,6 +11,17 @@ def deps_satisfied(bus: Bus, node) -> bool:
     )
 
 
+def _work_failure_class(kind: str, blob: str = "", data=None) -> str:
+    """worker失敗の近因分類。base-syncでも観測済みの環境・一時障害を潰さない。"""
+    existing = str(data.get("error_class") or "") if isinstance(data, dict) else ""
+    if existing and not (kind == "base-sync" and existing == "content"):
+        return existing
+    triage = classify_agent_failure(blob)
+    if triage:
+        return triage[0]
+    return "integration" if kind == "base-sync" else "content"
+
+
 def _quiesced(bus: Bus, nodes: dict) -> bool:
     """run が静止したか: 実行中(claimed)も、park 待機中(waiting)も、今すぐ claim 可能な
     pending も無い状態。依存が失敗してブロックされた pending は静止扱い（継続判断で付け替えられる）。
@@ -168,8 +179,9 @@ def cmd_work(args) -> int:
                                               instructions=run_instructions)
             if isinstance(rdata, dict) and rdata.get("ok") is False:
                 if kind == "base-sync":
-                    output = f"[agent-error:integration] {output}"
-                    rdata["error_class"] = "integration"
+                    failure_class = _work_failure_class(kind, output, rdata)
+                    output = f"[agent-error:{failure_class}] {output}"
+                    rdata["error_class"] = failure_class
                 rstatus = "failed"
             else:
                 # エージェントが編集したらワークスペースの作業ブランチへ commit して push する
@@ -190,8 +202,6 @@ def cmd_work(args) -> int:
                     cleanup_workspace()   # park 中は clone を持たない（ディスク解放）
                 time.sleep(random.uniform(0, 0.3))
                 continue
-            tag = "[agent-error:integration] " if kind == "base-sync" else ""
-            output = f"{tag}実行エラー: {e}"
             rstatus = "failed"
             # executor が例外に載せた構造化データ（gitlab 却下の issue_iid / guidance 等）は
             # 承認と対称に failed result の data として残す（消費側の文字列マッチ依存を無くす）
@@ -201,11 +211,12 @@ def cmd_work(args) -> int:
             # 失敗トリアージの構造化: 評価役・viewer・agent-project が output 先頭の
             # 文字列タグに依存せず読めるよう、分類と in-place 試行数を data に載せる。
             # transient がここへ来た＝レイヤ1（run_agent 内の再試行）を使い切っている。
-            triage = classify_agent_failure(str(e))
+            failure_class = _work_failure_class(kind, str(e), rdata)
+            tag = f"[agent-error:{failure_class}] " if kind == "base-sync" else ""
+            output = f"{tag}実行エラー: {e}"
             chain = agent_error_chain(str(e))
             rdata = {**(rdata if isinstance(rdata, dict) else {}),
-                     "error_class": ("integration" if kind == "base-sync" else
-                                     triage[0] if triage else "content")}
+                     "error_class": failure_class}
             # 観測した分類を全部残す。error_class（先頭＝proximate cause）だけを保存すると、
             # 分類器が後で直っても保存済みの記録は誤ったままになる（実際そうなった）。
             if len(chain) > 1:
@@ -236,7 +247,7 @@ def cmd_work(args) -> int:
             rdata = {**(rdata if isinstance(rdata, dict) else {}), "delivery": delivery}
         # 実行した PC を結果に残す（読み手が who の綴りを割って推測しないで済むように）
         bus.write_result(nid, who, rstatus, output, rdata, artifacts=artifacts,
-                         node=this_pc(args))
+                         node=this_pc(args), kind=kind)
         bus.event(who, "result", node=nid, status=rstatus)
         bus.sync_push(f"result {nid} [{rstatus}] by {who}")
         log(who, f"完了: {nid} [{rstatus}]")

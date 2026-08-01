@@ -389,14 +389,18 @@ class TestConfigFile(unittest.TestCase):
         「テストスイート全体を green にする」類の verify は数分かかる（このリポジトリは 990 件で
         130 秒）。既定 120 秒では **完了しているのに時間切れで NG** と判定され、リトライを積み
         上げた末に人へエスカレーションしていた（retries=6 まで無駄に積み直して blocked）。
-        act_timeout より十分短く保ち、ハングの保護は残す。"""
+        verify 自体のハングを止める上限は残す。"""
         defaults = {f.name: f.default for f in dataclasses.fields(km.Config)}
         self.assertGreaterEqual(defaults["verify_timeout"], 600.0,
                                 "フルスイートを回せる長さがあること")
         self.assertGreaterEqual(km.CONFIG_DEFAULTS["verify_timeout"], 600.0,
                                 "設定ファイルの既定も揃っていること")
-        self.assertLess(defaults["verify_timeout"], defaults["act_timeout"],
-                        "act より短く（ハングの保護を残す）")
+
+    def test_act_timeout_default_has_no_wall_clock_limit(self):
+        """進捗中の agent-flow run を一律の壁時計上限で打ち切らない。"""
+        defaults = {f.name: f.default for f in dataclasses.fields(km.Config)}
+        self.assertEqual(defaults["act_timeout"], 0.0)
+        self.assertEqual(km.CONFIG_DEFAULTS["act_timeout"], 0.0)
 
     def test_json_config_fills_values(self):
         with tempfile.TemporaryDirectory() as d:

@@ -383,6 +383,8 @@ function renderFlow() {
   // 再描画（ポーリング・ノード選択）でスクロール位置を失わないよう、描画前の
   // 位置を控えて復元する。グラフは縦横どちらのスクロールも保つ。
   const prevGraph = $('graph-box');
+  const prevTaskGraphX = [...document.querySelectorAll('#graph-box .task-flow-graph')]
+    .map((item) => item.scrollLeft);
   const prevScroll = {
     runs: ($('flow-runs') || {}).scrollTop || 0,
     detail: ($('flow-view-body') || {}).scrollTop || 0,
@@ -401,6 +403,8 @@ function renderFlow() {
     graph.scrollLeft = prevScroll.graphX;
     graph.scrollTop = prevScroll.graphY;
   }
+  document.querySelectorAll('#graph-box .task-flow-graph')
+    .forEach((item, index) => { item.scrollLeft = prevTaskGraphX[index] || 0; });
 
   for (const chip of el.querySelectorAll('[data-flow-filter]')) {
     chip.addEventListener('click', async () => {
