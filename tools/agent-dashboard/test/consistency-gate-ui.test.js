@@ -105,7 +105,9 @@ const regressionOnly = consistencyGateHtml({
     intakeCmd: 'codd-gate tasks --debt',
   },
 });
-assert.ok(regressionOnly.includes('codd_gate_regression.py --config /path/to/.agents/agent-project.yaml'));
+assert.ok(regressionOnly.includes(
+  'tools/agent-project/codd_gate_regression.py --config &lt;状態 clone&gt;/agent-project.yaml'
+), 'sibling CLI の導線が README と一致しない');
 assert.ok(regressionOnly.includes('--dry-run'), '書かずに試す --dry-run を案内していない');
 // install.sh は codd_gate_*.py を zipapp 内へ同梱するだけなので、どこで打てば動くかを書かないと
 // コピーしても No such file になる。
@@ -229,7 +231,7 @@ const crossRuntimePath = consistencyGateHtml({
 assert.ok(!crossRuntimePath.includes('--repos \\\\wsl.localhost'));
 assert.ok(!crossRuntimePath.includes('--config \\\\wsl.localhost'));
 assert.ok(crossRuntimePath.includes('&lt;root&gt;/repos.json'));
-assert.ok(crossRuntimePath.includes('/path/to/.agents/agent-project.yaml'));
+assert.ok(crossRuntimePath.includes('&lt;状態 clone&gt;/agent-project.yaml'));
 
 // README との文言一致。ここがズレると画面と README でどちらが正か判断できなくなる。
 // 単体配布（agent-dashboard だけを取り出した場合）では README が無いのでスキップする。
@@ -245,8 +247,10 @@ if (fs.existsSync(README)) {
     'regression_cmd の行が README と一致しない');
   assert.ok(noConfig.includes(esc(quoted('intake_cmd'))),
     'intake_cmd の行が README と一致しない');
-  assert.ok(/python3[^\n]*codd_gate_regression\.py[\s\\]*--config\b/.test(readme),
-    'README の注入 CLI 名が変わった（画面側の文言も合わせること）');
+  const cli = readme.match(/python3[^\n]*codd_gate_regression\.py[\s\\]*--config\s+([^\s`]+)/);
+  assert.ok(cli, 'README の注入 CLI または --config 引数が変わった（画面側の文言も合わせること）');
+  assert.ok(regressionOnly.includes(esc(cli[1])),
+    'README と同じ設定ファイルのプレースホルダを表示していない');
 }
 
 // コマンド文字列は必ず esc を通す（値は yaml 由来の外部入力）。

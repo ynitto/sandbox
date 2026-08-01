@@ -587,7 +587,6 @@ function generateStateMachine(config, payload = {}) {
   }
   const gitRoot = gitInRepo(repo, ['rev-parse', '--show-toplevel'], 10000, config);
   if (!gitRoot.ok) throw new Error('選択中の作業フォルダは Git リポジトリではありません');
-  const cfg = config.cowork || {};
   const prompt = withGlobalInstructions(config, stateMachineCreationPrompt(name, machine, instruction));
   return runChatWindow({
     ...coworkChatLaunch(config, repo),

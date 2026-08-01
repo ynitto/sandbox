@@ -10,6 +10,7 @@
 // 見る。DOM ライブラリ（jsdom 等）は依存に無いので、タグをスタックで積む最小パーサを同梱する。
 
 const assert = require('assert');
+const project = require('../src/main/project');
 const renderer = require('./helpers/renderer-src').read();
 
 function grab(name) {
@@ -41,6 +42,12 @@ const mdToHtml = new Function(
 const deliveryReviewState = new Function(`${grab('deliveryReviewState')}; return deliveryReviewState;`)();
 const needFailureViewModel = new Function(`${grab('needFailureViewModel')}; return needFailureViewModel;`)();
 const needGateSource = new Function(`${grab('needGateSource')}; return needGateSource;`)();
+const consistencyGateHtml = new Function(
+  'esc', `${grab('consistencyGateHtml')}; return consistencyGateHtml;`
+)(esc);
+const bindConsistencyGate = new Function(
+  'api', 'guard', `${grab('bindConsistencyGate')}; return bindConsistencyGate;`
+);
 const renderNeedFacts = new Function(
   'needFailureViewModel', 'needGateSource', 'esc', 'inlineMd', 'prosePreview', 'deliveryReviewState',
   `${grab('renderNeedFacts')}; return renderNeedFacts;`
@@ -114,6 +121,49 @@ function dom(html) {
 let passed = 0;
 function test(name, fn) { fn(); passed += 1; console.log(`ok - ${name}`); }
 
+test('概要は公式 consistencyGate 契約の3状態を読むだけで、開く操作も状態を変えない', () => {
+  const states = [
+    [{ regressionConfigured: true, intakeConfigured: true,
+      regressionWired: true, intakeWired: true, wired: true,
+      regressionCmd: 'codd-gate verify --base rev', intakeCmd: 'codd-gate tasks --debt' },
+    '結線済み', 2],
+    [{ regressionConfigured: true, intakeConfigured: false,
+      regressionWired: true, intakeWired: false, wired: false,
+      regressionCmd: 'codd-gate verify --base rev', intakeCmd: null },
+    '一部結線', 1],
+    [{ regressionConfigured: false, intakeConfigured: false,
+      regressionWired: false, intakeWired: false, wired: false,
+      regressionCmd: null, intakeCmd: null },
+    '未結線', 0],
+  ];
+  for (const [gate, label, configured] of states) {
+    gate.configFile = '/ws/.agents/agent-project.yaml';
+    const payload = { consistencyGate: gate };
+    Object.defineProperty(payload, 'regression_cmd', {
+      get() { throw new Error('UI が公式 payload 外の設定を読んだ'); },
+    });
+    const before = JSON.stringify(gate);
+    const html = consistencyGateHtml(payload);
+    assert.ok(html.includes(`>${label}<`), `${label} が表示されない`);
+    assert.strictEqual((html.match(/設定: あり/g) || []).length, configured);
+    assert.strictEqual(JSON.stringify(gate), before, '描画が公式 payload を書き換えた');
+  }
+
+  let click;
+  const opened = [];
+  const gate = states[1][0];
+  bindConsistencyGate(
+    { openPath: (target) => opened.push(target) },
+    (_label, action) => action()
+  )({ querySelectorAll: (selector) => {
+    assert.strictEqual(selector, 'button[data-gate-open]');
+    return [{ dataset: { gateOpen: gate.configFile }, addEventListener: (_event, fn) => { click = fn; } }];
+  } });
+  click();
+  assert.deepStrictEqual(opened, [gate.configFile], '有効化導線は設定ファイルを開くだけ');
+  assert.strictEqual(gate.intakeConfigured, false, 'UI が未設定状態を楽観更新した');
+});
+
 // codd-gate 由来の回帰失敗（failureContext.command が codd-gate verify）。intake は未結線。
 const gateNeed = {
   id: 'T-GATE', taskId: 'T-GATE', kind: 'blocked', decided: false,
@@ -136,6 +186,38 @@ const projectIntakeUnwired = {
     intakeCmd: null,
   },
 };
+
+test('公式 needs failure 契約の codd-gate 回帰失敗を要約し、blocked のまま表示する', () => {
+  const need = project.parseNeeds(`---
+status: proposed
+task-id: T-CONTRACT
+kind: blocked
+failure-phase: regression
+verify-verdict: failed
+failure-summary: codd-gate の回帰検査が失敗しました（終了コード 2）。
+failure-resolution: ドキュメントとコードのズレを解消してください。
+failure-category: 検証工程
+failure-owner: 検査設定・実行環境
+failure-command: codd-gate verify --base abc123 --repos repos.json
+failure-exit: 2
+---
+
+# 要対応: T-CONTRACT — 一貫性ゲート失敗
+
+## Context and Problem Statement
+
+- なぜ: 回帰検知: グローバル検査 \`codd-gate verify --base abc123 --repos repos.json\` 失敗
+- 状態: blocked（agent-project の判断待ち）
+`, 'T-CONTRACT');
+  const d = dom(renderNeedFacts(projectIntakeUnwired, need));
+  const summary = d.byTag('strong').find((e) => hasAncestor(e, 'need-diag'));
+  assert.ok(summary && /codd-gate の回帰検査が失敗/.test(summary.text),
+    'needs の failure-summary 契約を回帰要約として表示していない');
+  assert.ok(d.one('need-gate'), '記録された codd-gate 回帰失敗を一貫性ゲートとして表示していない');
+  assert.strictEqual(need.failurePhase, 'regression');
+  assert.strictEqual(need.kind, 'blocked');
+  assert.strictEqual(need.decided, false, '表示側が done 相当へ確定している');
+});
 
 // 由来は経路ごとに分かれる（regression = 完了前の回帰検査 / verify = タスク自身の検証）。
 // `回帰検知` は codd-gate 以外の regression_cmd にも付くため、記録中の実コマンドと併せて
