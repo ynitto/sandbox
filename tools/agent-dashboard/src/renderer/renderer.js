@@ -1226,8 +1226,7 @@ function consistencyGateHtml(p) {
   //   - CLI の --config は**既存の**設定ファイルを指すこと（無ければエラーで止まる）。
   //     よって設定ファイル未検出のときは CLI を勧めず、作成手順だけを出す。
   //   - viewer の p.dir/configFile は Windows では WSL UNC になることがあるため、実行環境の
-  //     シェルへそのまま貼れるとは限らない。README と同じプレースホルダを示し、実パスは
-  //     画面に表示済みの設定ファイルを開いて人が実行環境に合わせて決める。
+  //     シェルへそのまま貼れるとは限らない。README と同じプレースホルダを示す。
   const wiredAll = gate.wired;
   const jsonConfig = gate.configFile && /\.json$/i.test(gate.configFile);
   const reposArg = '<root>/repos.json';
@@ -1241,9 +1240,8 @@ function consistencyGateHtml(p) {
   // CLI は install.sh 導入版だと単体ファイルとして置かれない（install.sh:50-52 が zipapp ルートへ
   // 同梱するだけ）。どこで打てば動くかを書かないと、コピーして必ず No such file になる。
   const cliHint = gate.configFile && !gate.configError && !jsonConfig && !regressionConfigured
-    ? `<p><code>regression_cmd</code> の行は手書きの代わりに CLI で入れてもよい（ソースを持っているなら
-        <span class="mono">tools/agent-project/</span> で実行する）:
-        <code>python3 codd_gate_regression.py --config /path/to/.agents/agent-project.yaml</code>
+    ? `<p><code>regression_cmd</code> の行は手書きの代わりに CLI で入れてもよい（リポジトリルートで実行する）:
+        <code>python3 tools/agent-project/codd_gate_regression.py --config &lt;状態 clone&gt;/agent-project.yaml</code>
         （codd-gate を実測してこの 1 キーだけを冪等 upsert する。<code>--dry-run</code> なら書かずに結果だけ出す。
         codd-gate が未検出・バージョン/schema 非互換なら何も書かない）。</p>`
     : '';

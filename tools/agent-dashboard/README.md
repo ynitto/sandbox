@@ -118,11 +118,12 @@ regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV" --repos <root>/repos.j
 intake_cmd: 'codd-gate tasks --debt --repos <root>/repos.json'
 ```
 
-`regression_cmd` は、画面に出す案内に従い、`tools/agent-project/` で sibling CLI を実行して既存の
+`regression_cmd` は、画面に出す案内に従い、リポジトリルートで sibling CLI を実行して既存の
 設定へ追加してもよい。dashboard 自身はこの CLI を実行しない。
 
 ```bash
-python3 codd_gate_regression.py --config /path/to/.agents/agent-project.yaml
+python3 tools/agent-project/codd_gate_regression.py \
+  --config <状態 clone>/agent-project.yaml
 ```
 
 この CLI は `regression_cmd` だけを扱う。`intake_cmd` は設定ファイルへ直接書く。
