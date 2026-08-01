@@ -1090,24 +1090,24 @@ function strategyDisplayLabel(strategy) {
 function consistencyGateHtml(p) {
   const gate = p && p.consistencyGate;
   if (!gate) return '';
+  const regressionConfigured = gate.regressionConfigured ?? Boolean(gate.regressionCmd && String(gate.regressionCmd).trim());
+  const intakeConfigured = gate.intakeConfigured ?? Boolean(gate.intakeCmd && String(gate.intakeCmd).trim());
   // 未結線でも値が入っていることはある（regression_cmd は codd-gate 専用キーではなく汎用フック）。
   // そのときバッジだけ出して値を隠すと「未結線＝何も設定されていない」と読めてしまうので、
   // 設定されているコマンドは必ず見せたうえで「一貫性ゲートの検査ではない」と添える。
   const rows = [
-    ['regression_cmd', '完了前の回帰検査', gate.regressionConfigured, gate.regressionWired, gate.regressionCmd,
+    ['regression_cmd', '完了前の回帰検査', regressionConfigured, gate.regressionWired, gate.regressionCmd,
       'このコマンドが失敗すると done の確定を止めます。原因は要対応の失敗要約を確認してください。'],
-    ['intake_cmd', 'ドリフトの取り込み', gate.intakeConfigured, gate.intakeWired, gate.intakeCmd,
+    ['intake_cmd', 'ドリフトの取り込み', intakeConfigured, gate.intakeWired, gate.intakeCmd,
       'このコマンドが正常に実行された場合、検出したズレを修復タスクとしてバックログへ積みます。'],
   ].map(([key, label, configuredFlag, wired, cmd, note]) => {
-    // 古い main と組み合わせた場合だけコマンド値へフォールバックする。
-    const configured = configuredFlag ?? Boolean(cmd && String(cmd).trim());
     return `<div>
       <dt>${esc(label)}<br><span class="mono">${key}</span></dt>
       <dd>
         <span class="badge ${wired ? 'info' : 'warn'}">${wired ? '結線済み' : '未結線'}</span>
-        <span class="muted">設定: ${configured ? 'あり' : 'なし'}</span>
+        <span class="muted">設定: ${configuredFlag ? 'あり' : 'なし'}</span>
         ${cmd ? `<code>${esc(cmd)}</code>` : ''}
-        <span class="muted">${!wired && configured
+        <span class="muted">${!wired && configuredFlag
           ? '別のコマンドが設定されています。一貫性ゲートの検査ではありません。'
           : esc(note)}</span>
       </dd>
@@ -1136,9 +1136,16 @@ function consistencyGateHtml(p) {
   const lines = jsonConfig
     ? JSON.stringify(Object.fromEntries(settings), null, 2)
     : settings.map(([key, value]) => `${key}: '${value}'`).join('\n');
+  const configuredUnwired = [
+    !gate.regressionWired && regressionConfigured && 'regression_cmd',
+    !gate.intakeWired && intakeConfigured && 'intake_cmd',
+  ].filter(Boolean);
+  const replaceWarning = configuredUnwired.length
+    ? `<p><strong>注意:</strong> <code>${configuredUnwired.join('</code>、<code>')}</code> には別のコマンドが設定済みです。例の行で置き換えると現在の処理は失われるため、残すか置き換えるかを決めてから編集してください。</p>`
+    : '';
   // CLI は install.sh 導入版だと単体ファイルとして置かれない（install.sh:50-52 が zipapp ルートへ
   // 同梱するだけ）。どこで打てば動くかを書かないと、コピーして必ず No such file になる。
-  const cliHint = gate.configFile && !jsonConfig && !gate.regressionWired
+  const cliHint = gate.configFile && !gate.configError && !jsonConfig && !gate.regressionWired && !regressionConfigured
     ? `<p><code>regression_cmd</code> の行は手書きの代わりに CLI で入れてもよい（ソースを持っているなら
         <span class="mono">tools/agent-project/</span> で実行する）:
         <code>python3 codd_gate_regression.py --config /path/to/.agents/agent-project.yaml</code>
@@ -1159,7 +1166,7 @@ function consistencyGateHtml(p) {
           : `agent-project の設定ファイルが見つかりません。ワークスペース直下に
              <span class="mono">.agents/agent-project.yaml</span> を作り、次の行を書く:`}
         <pre class="mono">${esc(lines)}</pre>
-        ${cliHint}${intakeHint}
+        ${replaceWarning}${cliHint}${intakeHint}
         ${gate.configFile
           ? `<div class="summary-actions">
               <button class="summary-link secondary" data-gate-open="${esc(gate.configFile)}">設定ファイルを開く</button>
