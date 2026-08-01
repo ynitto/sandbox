@@ -141,9 +141,9 @@ test('別の操作失敗が残っていても一覧は現在の停止理由を�
 
 test('詳細は現在の状況を直前の操作失敗より先に表示する', () => {
   const source = grab('renderNeedDetail');
-  assert.ok(source.indexOf('${renderNeedFacts(n)') >= 0);
+  assert.ok(source.indexOf('${renderNeedFacts(p, n)') >= 0);
   assert.ok(source.indexOf('${commandFailureHtml(n)}') >= 0);
-  assert.ok(source.indexOf('${renderNeedFacts(n)') < source.indexOf('${commandFailureHtml(n)}'));
+  assert.ok(source.indexOf('${renderNeedFacts(p, n)') < source.indexOf('${commandFailureHtml(n)}'));
 });
 
 test('renderNeedDetail は取り込み失敗時に操作を出し直す（送信済み扱いにしない）', () => {

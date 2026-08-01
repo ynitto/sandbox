@@ -87,6 +87,46 @@ agent-flow が一度だけ実行し、agent-project が receipt を検算して�
 | レビュー待ち | `repos.json` の GitLab リポジトリのオープンイシュー＋関連 MR（API 設定時）。プロジェクトが扱うリポジトリの「いまレビュー待ち・作業中」を横断一覧し gitlab-review-viewer へ引き継ぐ。既定では **agent-flow 由来のイシュー**（gitlab executor が起票 = 本文の `task-token` マーカー）だけに絞る（「agent-flow 由来のみ」チップで解除可）。各行の **「関連 run」列**は、イシュー本文の `task-token` をロード済み run 一覧の各ノードの決定的トークンと突き合わせて起票元の run/ノードを特定し、クリックでフロー画面のその run・ノードを直接開く（イシュー URL は承認/却下まで bus に現れないため、レビュー待ち中の対応付けはこのトークン一致で行う。追加の API/走査コストは無し）。run/ノード単位の委譲イシューの決着（承認/却下）はフロータブのノード詳細が担当 |
 | 履歴 | `run-log.jsonl`・`decisions/<id>.md`（DR）・`DELIVERY.md`・`journal.md` |
 
+### 一貫性ゲート
+
+結論: dashboard は公式の設定キーと needs 契約を読み取って結線状態と失敗の意味を表示する。有効化は人に案内し、
+設定、タスク状態、done は書き換えない。
+
+設定のデータ経路は `agent-project.yaml` の汎用フック `regression_cmd` / `intake_cmd` →
+`readToolConfig()` → `consistencyGateStatus()` → `readProject().consistencyGate` →
+`dashboard:project` IPC → `state.project` である。概要の `consistencyGateHtml()` はこの表示モデルを使い、
+「結線済み」「一部結線」「未結線」を出す。各フックでは設定の有無、codd-gate への結線、現在の
+コマンドを分けて表示するため、別の回帰コマンドは「設定あり、未結線」となる。dashboard は設定
+文字列だけを読み、codd-gate の実在、互換性、実行成功は確認しない。
+
+失敗のデータ経路は `needs/<id>.md` の `failure-*` → `parseNeeds()` → `readProject().needs` →
+`renderNeedFacts()` である。要対応では、失敗時に記録された phase、要約、コマンドから codd-gate
+由来と確認できた場合だけ、原因と不足している結線を示す。`regression_cmd` の失敗は agent-project
+が done の確定を止めたことを意味する。具体的な原因は同じカードの失敗要約で確認する。
+
+設定は dashboard がワークスペースを優先して自動探索し、無ければ `~/.agents` を候補にする。
+agent-project が `--config` で使う解決済みパスは instance/status 契約に無いため、その実効設定との
+一致は断定しない。dashboard 専用のフックや状態は増やさず、コマンドの実行、設定の書き換え、
+done の確定も行わない。「設定ファイルを開く」は自動探索した候補を OS のエディタで開くだけである。
+
+未結線なら、画面に出る設定ファイルへ次の 2 行を書く。
+`<root>` は対象プロジェクトのルートパスへ置き換える。JSON 設定では既存のトップレベル object に
+同名プロパティを追加または置換し、ファイル全体や他のプロパティを失わないようにする。
+
+```yaml
+regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV" --repos <root>/repos.json'
+intake_cmd: 'codd-gate tasks --debt --repos <root>/repos.json'
+```
+
+`regression_cmd` は、画面に出す案内に従い、`tools/agent-project/` で sibling CLI を実行して既存の
+設定へ追加してもよい。dashboard 自身はこの CLI を実行しない。
+
+```bash
+python3 codd_gate_regression.py --config /path/to/.agents/agent-project.yaml
+```
+
+この CLI は `regression_cmd` だけを扱う。`intake_cmd` は設定ファイルへ直接書く。
+
 ### 関係性のたどり（charter → backlog → run → issue）
 
 タブ構成はそのままに、**どのタスクがどの run（GitLab イシュー）につながっているか**を可視化し、

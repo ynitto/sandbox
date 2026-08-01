@@ -46,9 +46,12 @@ function readToolConfig(baseName, baseDirs) {
       if (ext === 'json') {
         try {
           const obj = JSON.parse(text);
-          if (obj && typeof obj === 'object') return { file, values: obj };
+          return obj && typeof obj === 'object' && !Array.isArray(obj)
+            ? { file, values: obj }
+            : { file, values: {}, error: 'invalid-json' };
         } catch {
-          continue;
+          // 最優先のローカル設定が壊れていても、別スコープの global 設定へは倒さない。
+          return { file, values: {}, error: 'invalid-json' };
         }
       } else {
         return { file, values: parseFlatYaml(text) };
