@@ -71,6 +71,8 @@ const partial = consistencyGateHtml({
   dir: '/ws/.agent-project',
   consistencyGate: {
     configFile: '/ws/.agents/agent-project.yaml',
+    configSource: 'dashboard-auto-discovery',
+    explicitConfigUnknown: true,
     regressionWired: true,
     intakeWired: false,
     wired: false,
@@ -138,6 +140,8 @@ const noneWired = consistencyGateHtml({
   dir: '/ws/.agent-project',
   consistencyGate: {
     configFile: '/ws/.agents/agent-project.yaml',
+    configSource: 'dashboard-auto-discovery',
+    explicitConfigUnknown: true,
     regressionConfigured: false,
     intakeConfigured: false,
     regressionWired: false,
@@ -155,6 +159,8 @@ assert.ok(/<pre[^>]*>[^]*regression_cmd:[^]*intake_cmd:/.test(noneWired), '貼�
 assert.ok(noneWired.includes('codd_gate_regression.py'));
 assert.ok(noneWired.includes('注入 CLI は無い'));
 assert.ok(noneWired.includes('data-gate-open="/ws/.agents/agent-project.yaml"'));
+assert.ok(noneWired.includes('dashboard が自動探索した設定候補'));
+assert.ok(noneWired.includes('--config') && noneWired.includes('確認できません'));
 
 // 設定ファイル自体が無い: 開くボタンも注入 CLI も出さず（--config は既存ファイル必須）、
 // 作成先は README と同じ .agents/agent-project.yaml を示す。
@@ -171,6 +177,18 @@ assert.ok(!noConfig.includes('codd_gate_regression.py'),
 assert.ok(noConfig.includes('.agents/agent-project.yaml'));
 // README と同じプレースホルダを使い、viewer 側パスを実行環境へ誤って持ち込まない。
 assert.ok(noConfig.includes('&lt;root&gt;/repos.json'));
+assert.ok(noConfig.includes('対象プロジェクトのルートパスへ置き換えてください'));
+
+const jsonConfig = consistencyGateHtml({
+  consistencyGate: {
+    configFile: '/ws/.agents/agent-project.json',
+    regressionWired: false, intakeWired: false, wired: false,
+    regressionCmd: null, intakeCmd: null,
+  },
+});
+assert.ok(jsonConfig.includes('既存トップレベル object'));
+assert.ok(jsonConfig.includes('ファイル全体は置き換えない'));
+assert.ok(!jsonConfig.includes('codd_gate_regression.py'), 'JSON に YAML 用 CLI を案内しない');
 
 // Windows 側で見える WSL UNC は WSL シェルのパスではないため、コマンドへ直挿ししない。
 const crossRuntimePath = consistencyGateHtml({

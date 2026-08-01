@@ -1308,12 +1308,13 @@ function needGateSource(failure, n, gate) {
   if (!failure || !gate) return null;
   const regressionText = `${failure.summary || ''}\n${(n && n.why) || ''}`;
   const command = String((failure.context && failure.context.command) || '');
-  const coddGate = /\bcodd-gate\b/.test(`${regressionText}\n${command}`);
-  if ((n && n.failurePhase === 'regression' && coddGate)
-      || (/回帰検知/.test(regressionText) && coddGate)) {
+  const canonicalVerify = /\bcodd-gate\b[^\n]*\bverify\b/;
+  const recordedVerify = canonicalVerify.test(`${regressionText}\n${command}`);
+  if ((n && n.failurePhase === 'regression' && recordedVerify)
+      || (/回帰検知/.test(regressionText) && recordedVerify)) {
     return 'regression';
   }
-  if (/\bcodd-gate\b/.test(command)) return 'verify';
+  if (canonicalVerify.test(command)) return 'verify';
   return null;
 }
 
@@ -1353,13 +1354,9 @@ function renderNeedFacts(p, n) {
       const intakeLine = gate.intakeWired
         ? `<span class="badge info">結線済み</span> の <span class="mono">intake_cmd</span> が正常に実行された場合、検出したドリフトを修復タスクへ起票します。`
         : `ドリフトの取り込み（<span class="mono">intake_cmd</span>）は <span class="badge warn">未結線</span> です。直してもドリフトは自動起票されないため、概要タブの「一貫性ゲート」で有効化してください。`;
-      const open = gate.configFile && !gate.wired
-        ? `<div class="summary-actions"><button class="summary-link secondary" data-open="${esc(gate.configFile)}">設定ファイルを開く</button></div>`
-        : '';
       facts.push(`<div class="need-resolution need-gate">
         <span class="label-chip">一貫性ゲート</span>
         ${originLine}${intakeLine}
-        ${open}
       </div>`);
     }
   }

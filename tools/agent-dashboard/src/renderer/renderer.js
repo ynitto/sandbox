@@ -1161,15 +1161,18 @@ function consistencyGateHtml(p) {
         <span class="label-chip">有効化</span>
         ${gate.configError
           ? `設定ファイル <span class="mono">${esc(gate.configFile)}</span> は JSON として読めません。修復してから次の設定を追加してください:`
+          : jsonConfig
+          ? `自動検出した設定候補 <span class="mono">${esc(gate.configFile)}</span> の既存トップレベル object で、次のプロパティを追加または置換する（ファイル全体は置き換えない）:`
           : gate.configFile
           ? `設定ファイル <span class="mono">${esc(gate.configFile)}</span> へ次の行を書く:`
           : `agent-project の設定ファイルが見つかりません。ワークスペース直下に
              <span class="mono">.agents/agent-project.yaml</span> を作り、次の行を書く:`}
         <pre class="mono">${esc(lines)}</pre>
+        <p><code>&lt;root&gt;</code> は対象プロジェクトのルートパスへ置き換えてください。</p>
         ${replaceWarning}${cliHint}${intakeHint}
         ${gate.configFile
           ? `<div class="summary-actions">
-              <button class="summary-link secondary" data-gate-open="${esc(gate.configFile)}">設定ファイルを開く</button>
+              <button class="summary-link secondary" data-gate-open="${esc(gate.configFile)}">自動検出した設定ファイルを開く</button>
             </div>`
           : ''}
       </div>`;
@@ -1183,6 +1186,9 @@ function consistencyGateHtml(p) {
     : wiredNone
       ? 'codd-gate は両方のフックに未結線です。これらのフックからは実行されません。'
       : 'codd-gate は一方のフックだけに結線済みです。実行可否や成功はこの画面では確認していません。';
+  const configScopeNote = gate.explicitConfigUnknown
+    ? '<p class="muted">この状態は dashboard が自動探索した設定候補です。agent-project が <code>--config</code> で別の設定を使っているかは確認できません。</p>'
+    : '';
   return `<section class="overview-version-section" aria-labelledby="consistency-gate-title">
     <div class="overview-version-heading">
       <div>
@@ -1191,6 +1197,7 @@ function consistencyGateHtml(p) {
       </div>
       <div class="summary-actions"><span class="badge ${wiredAll ? 'info' : 'warn'}">${headLabel}</span></div>
     </div>
+    ${configScopeNote}
     <dl class="need-failure-context">${rows}</dl>
     ${enable}
   </section>`;

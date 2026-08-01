@@ -81,7 +81,7 @@ agent-amigos ミッションとノード予算（`src/features/amigos/`）を同
 
 ### 一貫性ゲート
 
-結論: dashboard は公式契約を読み取って結線状態と失敗の意味を表示する。有効化は人に案内し、
+結論: dashboard は公式の設定キーと needs 契約を読み取って結線状態と失敗の意味を表示する。有効化は人に案内し、
 設定、タスク状態、done は書き換えない。
 
 設定のデータ経路は `agent-project.yaml` の汎用フック `regression_cmd` / `intake_cmd` →
@@ -96,11 +96,14 @@ agent-amigos ミッションとノード予算（`src/features/amigos/`）を同
 由来と確認できた場合だけ、原因と不足している結線を示す。`regression_cmd` の失敗は agent-project
 が done の確定を止めたことを意味する。具体的な原因は同じカードの失敗要約で確認する。
 
-設定は agent-project 本体と同じ探索順で、ワークスペースを優先し、無ければ `~/.agents` の実効値を
-使う。dashboard 専用のフックや状態は増やさない。コマンドの実行、設定の書き換え、done の確定も
-行わない。「設定ファイルを開く」は OS のエディタを開くだけである。
+設定は dashboard がワークスペースを優先して自動探索し、無ければ `~/.agents` を候補にする。
+agent-project が `--config` で使う解決済みパスは instance/status 契約に無いため、その実効設定との
+一致は断定しない。dashboard 専用のフックや状態は増やさず、コマンドの実行、設定の書き換え、
+done の確定も行わない。「設定ファイルを開く」は自動探索した候補を OS のエディタで開くだけである。
 
 未結線なら、画面に出る設定ファイルへ次の 2 行を書く。
+`<root>` は対象プロジェクトのルートパスへ置き換える。JSON 設定では既存のトップレベル object に
+同名プロパティを追加または置換し、ファイル全体や他のプロパティを失わないようにする。
 
 ```yaml
 regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV" --repos <root>/repos.json'

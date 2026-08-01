@@ -155,6 +155,12 @@ test('needGateSource は経路を分けて codd-gate 由来だけを拾う（断
     'regression', '失敗後に未結線となっても記録中の実コマンドを根拠に回帰経路を示す');
   assert.strictEqual(needGateSource({ context: { command: 'codd-gate verify' } }, {}, gateBoth), 'verify');
   assert.strictEqual(
+    needGateSource({ summary: '回帰検知: codd-gate doctor が失敗' }, {}, gateBoth),
+    null, 'verify 以外の codd-gate コマンドをゲート検査と断定しない');
+  assert.strictEqual(
+    needGateSource({ context: { command: 'echo codd-gate' } }, {}, gateBoth),
+    null, '単なる codd-gate 言及をゲート検査と断定しない');
+  assert.strictEqual(
     needGateSource({ summary: '回帰検知: グローバル検査 `make smoke` 失敗' }, {}, gateBoth),
     null, '現在は結線済みでも過去の別 regression_cmd 失敗を codd-gate と断定しない');
   assert.strictEqual(
@@ -183,9 +189,9 @@ test('統合表示: ゲート失敗の facts に「一貫性ゲート」節が�
   assert.ok(warn, 'intake 未結線を badge warn で示す');
   const monoKeys = d.byClass('mono').filter((e) => hasAncestor(e, 'need-gate')).map((e) => e.text);
   assert.ok(monoKeys.includes('intake_cmd'), 'intake_cmd を明示');
-  // 有効化導線: 既存の data-open 経路（bindNeedDetail 配線済み）で設定ファイルを開ける
+  // 有効化操作は概要へ集約し、needs に同じ設定ファイル導線を重複表示しない。
   const open = d.byTag('button').find((e) => hasAncestor(e, 'need-gate') && /data-open="[^"]+agent-project\.yaml"/.test(e.attrs));
-  assert.ok(open, '未結線＋configFile があれば設定ファイルを開くボタン（data-open）');
+  assert.ok(!open, 'needs に概要と重複する設定ファイル導線を出さない');
 });
 
 test('可読性: 既存の検証失敗 見出し・要約行・context は落ちない', () => {

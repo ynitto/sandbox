@@ -52,7 +52,31 @@ test('regression_cmd / intake_cmd が両方あれば結線済みとして載る'
     assert.strictEqual(gate.regressionCmd, 'codd-gate verify --base "$KIRO_BASE_REV" --repos repos.json');
     assert.strictEqual(gate.intakeCmd, 'codd-gate tasks --debt --repos repos.json');
     assert.strictEqual(gate.configFile, path.join(ws, '.agents', 'agent-project.yaml'));
+    assert.strictEqual(gate.configSource, 'dashboard-auto-discovery');
+    assert.strictEqual(gate.explicitConfigUnknown, true);
     assert.strictEqual(gate.wired, true);
+  } finally {
+    fs.rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test('引用符内の # はコメントにせずコマンドとして残す', () => {
+  const ws = mkWorkspace("regression_cmd: 'echo # keep; codd-gate verify --base rev'\n");
+  try {
+    const gate = project.readProject(ws, {}).consistencyGate;
+    assert.strictEqual(gate.regressionCmd, 'echo # keep; codd-gate verify --base rev');
+    assert.strictEqual(gate.regressionWired, true);
+  } finally {
+    fs.rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test('二重引用符の escaped newline を改行として解釈する', () => {
+  const ws = mkWorkspace('regression_cmd: "codd-gate verify\\n--base rev"\n');
+  try {
+    const gate = project.readProject(ws, {}).consistencyGate;
+    assert.strictEqual(gate.regressionCmd, 'codd-gate verify\n--base rev');
+    assert.strictEqual(gate.regressionWired, false);
   } finally {
     fs.rmSync(ws, { recursive: true, force: true });
   }

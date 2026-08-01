@@ -21,12 +21,13 @@ function readText(file) {
   }
 }
 
-function stripQuotes(s) {
+function parseScalar(s) {
   const t = String(s || '').trim();
-  if (t.length >= 2 && ((t[0] === '"' && t.endsWith('"')) || (t[0] === "'" && t.endsWith("'")))) {
-    return t.slice(1, -1);
+  if (t.startsWith("'") && t.endsWith("'")) return t.slice(1, -1).replace(/''/g, "'");
+  if (t.startsWith('"') && t.endsWith('"')) {
+    try { return JSON.parse(t); } catch { return t.slice(1, -1); }
   }
-  return t;
+  return t.replace(/\s+#.*$/, '').trim();
 }
 
 // トップレベルの `key: value` 行だけを拾う（インデント行＝ネストは無視）
@@ -38,7 +39,7 @@ function parseFlatYaml(text) {
     if (!line || line[0] === ' ' || line[0] === '\t' || line[0] === '#') continue;
     const m = line.match(/^([A-Za-z_][\w-]*):\s*(.*)$/);
     if (!m) continue;
-    const raw = m[2].replace(/\s+#.*$/, '');
+    const raw = m[2].trim();
     const block = raw.match(/^([>|])[-+]?$/);
     if (block) {
       const body = [];
@@ -52,7 +53,7 @@ function parseFlatYaml(text) {
       if (val) out[m[1]] = val;
       continue;
     }
-    const val = stripQuotes(raw);
+    const val = parseScalar(raw);
     if (val !== '' && !/^(?:null|~)$/i.test(raw.trim())) out[m[1]] = val;
   }
   return out;
