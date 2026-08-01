@@ -213,9 +213,10 @@ def _plugin_error_patterns() -> "tuple":
 #   auth     : 認証切れ — 人が環境を直すまで全タスク共倒れ（即座に人へ）
 #   env      : 実行環境の問題（CLI 不在・モデル不正 等）— 人が環境を直す
 #   transient: 一時的（タイムアウト・接続断）— 通常リトライで解ける
+#   integration: target 未統合・競合 — 最新 target を取り込む新しい試行が必要
 #   （どれにも当たらなければ「内容の問題」= 従来どおりタスク単位の retry / 裁定）
 AGENT_ERROR_ENV_CLASSES = ("control", "quota", "auth", "env")
-_AGENT_ERROR_TAG_RE = re.compile(r"\[agent-error:(control|quota|auth|env|transient)\]")
+_AGENT_ERROR_TAG_RE = re.compile(r"\[agent-error:(control|quota|auth|env|transient|integration)\]")
 _AGENT_ERROR_PATTERNS = (
     ("control", re.compile(r"\[agent-control\]", re.I),
      "管理設定で実行が停止されています（dashboard で実行を許可してください）"),

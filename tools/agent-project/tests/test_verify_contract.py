@@ -87,6 +87,14 @@ class PlanBuildTests(unittest.TestCase):
         self.assertEqual(plan["criteria"], [])       # LLM verifier を要求しない（fast path の費用不変）
         self.assertEqual(plan["commands"][0]["source"], "legacy")
 
+    def test_write_workspace_plan_requires_target_integration(self):
+        t = _task(self.d, lines=["verify: `pytest -q`"])
+        ws = {"url": "repo", "branch": "ap/T1", "target": "main"}
+        with mock.patch.object(km, "_workspace_spec_for", return_value=ws):
+            plan = km.build_task_verification_plan(self.cfg, t)
+        self.assertEqual(plan["version"], 2)
+        self.assertEqual(plan["integration"], {"target": "main"})
+
 
 class SettleFromReceiptTests(unittest.TestCase):
     def setUp(self):
@@ -237,6 +245,13 @@ class LocalReceiptTests(unittest.TestCase):
 
 
 class ReceiptToVerificationTests(unittest.TestCase):
+    def test_failed_integration_becomes_failed_verification_row(self):
+        v = km.receipt_to_verification({
+            "integration": {"target": "main", "target_rev": "def456", "verdict": "fail"},
+            "commands": [], "criteria": []})
+        self.assertEqual(v["fail"], 1)
+        self.assertFalse(v["ok"])
+
     def test_commands_become_rows(self):
         receipt = {"commands": [{"command": "pytest -q", "exit_code": 0},
                                 {"command": "make lint", "exit_code": 2, "output_tail": "x"},

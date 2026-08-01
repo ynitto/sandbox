@@ -36,7 +36,11 @@ async function init() {
   setupAmigosDialogs();
   $('btn-cw-save-cancel').addEventListener('click', () => $('dlg-cowork-save').close());
   $('btn-cw-save-ok').addEventListener('click', (ev) => { ev.preventDefault(); saveCoworkDraft(); });
-  $('btn-task-close').addEventListener('click', () => $('dlg-task').close());
+  $('btn-task-close').addEventListener('click', requestTaskDialogClose);
+  $('dlg-task').addEventListener('cancel', (event) => {
+    event.preventDefault();
+    requestTaskDialogClose();
+  });
   $('btn-enq-cancel').addEventListener('click', () => $('dlg-enqueue').close());
   $('btn-enq-submit').addEventListener('click', submitEnqueue);
   $('btn-enq-ai').addEventListener('click', aiEnqueueAssist);

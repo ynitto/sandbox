@@ -103,6 +103,13 @@ test('再実行は last_run がある票を resume-run へ送る', () => {
   });
 });
 
+test('target 統合失敗は done を温存せず revise で新しい試行へ送る', () => {
+  const project = { backlog: [{ id: 't-1', extra: { last_run: 'req-abc-t-1-r0' } }] };
+  assert.deepStrictEqual(needRerunPlan(project, { id: 't-1', failureClass: 'integration' }), {
+    via: 'revise', id: 't-1',
+  });
+});
+
 test('再実行は taskId 経由の票でも run を引ける', () => {
   const project = { backlog: [{ id: 't-1', extra: { last_run: 'req-abc-t-1-r0' } }] };
   assert.deepStrictEqual(needRerunPlan(project, { id: 'need-9', taskId: 't-1' }), {

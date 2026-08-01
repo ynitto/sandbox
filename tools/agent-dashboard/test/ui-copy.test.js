@@ -61,6 +61,15 @@ for (const label of ['作業内容を補足', '実行順と変更先', '確認�
 for (const label of ['内容と完了条件', '実行順と担当', '確認方法を固定', '目的と変更範囲']) {
   assert.ok(reviseMarkup.includes(`<summary>${label}</summary>`));
 }
+assert.ok(backlog.includes('role="tablist" aria-label="タスク詳細の表示内容"'));
+for (const tab of ['概要', '編集', '操作']) assert.ok(backlog.includes(`>${tab}</button>`));
+for (const id of ['rv-feedback', 'rv-title', 'rv-acceptance', 'rv-priority', 'rv-level', 'rv-after',
+  'rv-track', 'rv-node', 'rv-note', 'rv-verify']) {
+  assert.ok(reviseMarkup.includes(`for="${id}"`), `${id} に関連付けたラベルが必要です`);
+}
+assert.ok(backlog.includes('<summary>詳細情報</summary>'));
+assert.ok(backlog.includes('function requestTaskDialogClose('));
+assert.ok(backlog.includes('taskDialogInputSnapshot('));
 assert.ok(html.includes('<label>受入基準</label>'));
 assert.ok(html.includes('<label>達成条件</label>'));
 assert.ok(!html.includes('accept:'));

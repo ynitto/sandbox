@@ -11,7 +11,7 @@ def needs_path(cfg: "Config", tid: str) -> Path:
 # （書き手の文言が変わると読み手の正規表現が外れ、表示だけが静かに壊れるのを断つ）。
 # 値は 1 行・キーは frontmatter 互換。空の項目は書かない＝旧記録と同じ見た目を保つ。
 _FAILURE_FM_KEYS = (
-    ("failure-class", "cls"),            # proximate cause（control/quota/auth/env/transient）
+    ("failure-class", "cls"),            # proximate cause（control/quota/auth/env/transient/integration）
     ("failure-chain", "chain"),          # 観測した全分類（カンマ区切り。根拠として保持）
     ("failure-phase", "phase"),          # どの工程まで到達したか
     ("verify-verdict", "verdict"),       # 検証の結末（passed/failed/not_run/unknown）

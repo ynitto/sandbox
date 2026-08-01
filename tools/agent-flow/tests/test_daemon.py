@@ -570,6 +570,90 @@ class DaemonPrimitiveTests(unittest.TestCase):
         finally:
             kf.cleanup_workspace()
 
+    def test_sync_workspace_base_merges_clean_target_without_agent_git(self):
+        remote = self._make_remote(name="base_sync_clean")
+        subprocess.run(["git", "-C", remote, "checkout", "-qb", "ap/T1"], check=True)
+        with open(os.path.join(remote, "task.txt"), "w", encoding="utf-8") as fh:
+            fh.write("task\n")
+        subprocess.run(["git", "-C", remote, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", remote, "commit", "-qm", "task"], check=True)
+        subprocess.run(["git", "-C", remote, "checkout", "-q", "main"], check=True)
+        # target 側が tree 差分を持たないコミットでも、祖先関係を作る merge commit は必要。
+        subprocess.run(["git", "-C", remote, "commit", "--allow-empty", "-qm", "main"], check=True)
+        try:
+            ws = kf.ensure_workspace_clone(
+                {"url": remote, "base": "main", "target": "main", "branch": "ap/T1"}, "run-sync")
+            synced = kf.sync_workspace_base(ws)
+            self.assertEqual(synced["status"], "merged")
+            delivery = kf.finalize_workspace(ws, "run-sync", "base-sync")
+            self.assertIsNotNone(delivery)
+            target = subprocess.run(["git", "-C", remote, "rev-parse", "main"],
+                                    capture_output=True, text=True, check=True).stdout.strip()
+            self.assertEqual(subprocess.run(
+                ["git", "-C", remote, "merge-base", "--is-ancestor", target, "ap/T1"]
+            ).returncode, 0)
+        finally:
+            kf.cleanup_workspace()
+
+    def test_sync_workspace_base_exposes_conflicts_and_refuses_markers(self):
+        remote = self._make_remote(name="base_sync_conflict")
+        with open(os.path.join(remote, "f.txt"), "w", encoding="utf-8") as fh:
+            fh.write("base\n")
+        subprocess.run(["git", "-C", remote, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", remote, "commit", "-qm", "base"], check=True)
+        subprocess.run(["git", "-C", remote, "checkout", "-qb", "ap/T1"], check=True)
+        with open(os.path.join(remote, "f.txt"), "w", encoding="utf-8") as fh:
+            fh.write("task\n")
+        subprocess.run(["git", "-C", remote, "commit", "-qam", "task"], check=True)
+        subprocess.run(["git", "-C", remote, "checkout", "-q", "main"], check=True)
+        with open(os.path.join(remote, "f.txt"), "w", encoding="utf-8") as fh:
+            fh.write("main\n")
+        subprocess.run(["git", "-C", remote, "commit", "-qam", "main"], check=True)
+        try:
+            ws = kf.ensure_workspace_clone(
+                {"url": remote, "base": "main", "target": "main", "branch": "ap/T1"}, "run-conflict")
+            synced = kf.sync_workspace_base(ws)
+            self.assertEqual(synced["status"], "conflict")
+            self.assertEqual(synced["conflict_files"], ["f.txt"])
+            with self.assertRaisesRegex(RuntimeError, "競合マーカー"):
+                kf.finalize_workspace(ws, "run-conflict", "base-sync")
+        finally:
+            kf.cleanup_workspace()
+
+    def test_inject_base_sync_precedes_every_root_node(self):
+        nodes = {
+            "t1": {"goal": "a", "deps": [], "kind": "work"},
+            "t2": {"goal": "b", "deps": ["t1"], "kind": "verify"},
+        }
+        task = kf.inject_base_sync(nodes, {
+            "url": "https://example/repo.git", "branch": "ap/T1", "target": "main"})
+        self.assertEqual(task["id"], "base-sync")
+        self.assertEqual(nodes["t1"]["deps"], ["base-sync"])
+        self.assertEqual(nodes["t2"]["deps"], ["t1"])
+
+    def test_inject_base_sync_skips_read_only_and_same_branch(self):
+        self.assertIsNone(kf.inject_base_sync({}, None))
+        self.assertIsNone(kf.inject_base_sync({}, {
+            "url": "https://example/repo.git", "branch": "main", "target": "main"}))
+
+    def test_verifier_refreshes_branch_after_base_sync_push(self):
+        remote = self._make_remote(name="verify_refresh")
+        try:
+            ws = kf.ensure_workspace_clone(
+                {"url": remote, "base": "main", "target": "main", "branch": "ap/T1"},
+                "run-refresh")
+            clone = ws["clone"]
+            before = kf._vp_result_rev(clone)
+            subprocess.run(["git", "-C", remote, "checkout", "-qb", "ap/T1"], check=True)
+            subprocess.run(["git", "-C", remote, "commit", "--allow-empty", "-qm", "sync"], check=True)
+            after = subprocess.run(["git", "-C", remote, "rev-parse", "HEAD"],
+                                   capture_output=True, text=True, check=True).stdout.strip()
+            kf._vp_refresh_result(clone, "ap/T1")
+            self.assertNotEqual(before, after)
+            self.assertEqual(kf._vp_result_rev(clone), after)
+        finally:
+            kf.cleanup_workspace()
+
     def test_ensure_workspace_clone_checks_out_base_content(self):
         # base 指定があればそのブランチ内容から作業ブランチを作る（base の成果物が見える）
         remote = self._make_remote(name="branched_repo", base="main")

@@ -567,10 +567,14 @@ def build_task_verification_plan(cfg: "Config", task: "Task") -> "dict | None":
         nd = str(task.get("no_diff") or "").strip()
         criteria.append(no_diff_criterion(nd) if nd else DIFF_CRITERION)
     ws = _workspace_spec_for(cfg, task) or {}
+    integration = ({"target": str(ws.get("target"))}
+                   if ws.get("branch") and ws.get("target")
+                   and ws.get("branch") != ws.get("target") else None)
     return _verifycontract.build_plan(
         task.id, criteria=criteria, commands=commands,
         workspace=str(ws.get("url") or ""),
-        policy={"timeout_sec": cfg.verify_timeout, "confirm": cfg.verify_confirm})
+        policy={"timeout_sec": cfg.verify_timeout, "confirm": cfg.verify_confirm},
+        integration=integration)
 
 
 def read_flow_receipt(cfg: "Config", task: "Task") -> "dict | None":
@@ -593,6 +597,18 @@ def receipt_to_verification(receipt: dict) -> dict:
     表示・ルーティングの既存語彙が unverifiable のため）。固定コマンドの結果も criterion と同じ
     行として並べ、人が 1 つの表で読めるようにする。"""
     out: "list[dict]" = []
+    integration = receipt.get("integration")
+    if isinstance(integration, dict):
+        raw = str(integration.get("verdict") or "")
+        verdict = "unverifiable" if raw == "inconclusive" else raw if raw in ("pass", "fail") else "fail"
+        target = str(integration.get("target") or "target")
+        target_rev = str(integration.get("target_rev") or "")
+        out.append({"id": len(out) + 1, "text": f"最新 target `{target}` が成果 revision に統合済み",
+                    "verdict": verdict,
+                    "evidence": {"commands": [], "output": target_rev[:40], "files": []},
+                    "note": ("target revision を取得できませんでした" if verdict == "unverifiable"
+                             else "最新 target が成果 revision の祖先ではありません" if verdict == "fail"
+                             else "")})
     for c in receipt.get("commands") or []:
         cmd = str(c.get("command") or "")
         if c.get("inconclusive"):
@@ -631,7 +647,7 @@ def receipt_to_verification(receipt: dict) -> dict:
     return {"criteria": out, "pass": counts["pass"], "fail": counts["fail"],
             "unverifiable": counts["unverifiable"],
             "ok": bool(out) and counts["fail"] == 0 and counts["unverifiable"] == 0,
-            "receipt": True}
+            "receipt": True, "integration": receipt.get("integration")}
 
 
 # 固定コマンド実行の 1 実装（agent-flow runner と共有）。モジュール名を経由させるのは

@@ -144,14 +144,38 @@ def cmd_work(args) -> int:
         rdata = None
         delivery = None
         try:
-            output, rdata = call_executor(execute, kind, goal, dep_results, args.model,
-                                          art_dir, dep_arts, instruction, workspace=ws,
-                                          references=references, request=run_request,
-                                          instructions=run_instructions)
-            # エージェントが編集したらワークスペースの作業ブランチへ commit して push する
-            # （変更が無ければ何もしない＝調査タスク等ではブランチを作らない）。
-            delivery = finalize_workspace(ws, args.run_id, nid)
-            rstatus = "done"
+            if kind == "base-sync":
+                rdata = sync_workspace_base(ws)
+                if rdata.get("status") == "conflict":
+                    files = "\n".join(f"- {p}" for p in rdata.get("conflict_files", []))
+                    sync_goal = (f"{goal}\n\n競合ファイル:\n{files}\n\n"
+                                 "Git コマンドは実行せず、各ファイルの競合を内容に沿って解消してください。")
+                    output, agent_data = call_executor(
+                        execute, "work", sync_goal, dep_results, args.model,
+                        art_dir, dep_arts, instruction, workspace=ws,
+                        references=references, request=run_request,
+                        instructions=run_instructions)
+                    if isinstance(agent_data, dict):
+                        rdata.update(agent_data)
+                else:
+                    output = (f"target {rdata.get('target', '')} は統合済み"
+                              if rdata.get("status") == "noop" else
+                              f"target {rdata.get('target', '')} を競合なしで統合")
+            else:
+                output, rdata = call_executor(execute, kind, goal, dep_results, args.model,
+                                              art_dir, dep_arts, instruction, workspace=ws,
+                                              references=references, request=run_request,
+                                              instructions=run_instructions)
+            if isinstance(rdata, dict) and rdata.get("ok") is False:
+                if kind == "base-sync":
+                    output = f"[agent-error:integration] {output}"
+                    rdata["error_class"] = "integration"
+                rstatus = "failed"
+            else:
+                # エージェントが編集したらワークスペースの作業ブランチへ commit して push する
+                # （変更が無ければ何もしない＝調査タスク等ではブランチを作らない）。
+                delivery = finalize_workspace(ws, args.run_id, nid)
+                rstatus = "done"
         except Exception as e:  # noqa: BLE001 — 結果として記録する
             # park シグナル（DeferDecision.defer）: 承認待ち等で未決着＝終端 result を書かず、
             # 心拍を止めてから wait を書き claim を解放する（この順序で claim の書き戻し競合を防ぐ）。
@@ -166,7 +190,8 @@ def cmd_work(args) -> int:
                     cleanup_workspace()   # park 中は clone を持たない（ディスク解放）
                 time.sleep(random.uniform(0, 0.3))
                 continue
-            output = f"実行エラー: {e}"
+            tag = "[agent-error:integration] " if kind == "base-sync" else ""
+            output = f"{tag}実行エラー: {e}"
             rstatus = "failed"
             # executor が例外に載せた構造化データ（gitlab 却下の issue_iid / guidance 等）は
             # 承認と対称に failed result の data として残す（消費側の文字列マッチ依存を無くす）
@@ -179,7 +204,8 @@ def cmd_work(args) -> int:
             triage = classify_agent_failure(str(e))
             chain = agent_error_chain(str(e))
             rdata = {**(rdata if isinstance(rdata, dict) else {}),
-                     "error_class": triage[0] if triage else "content"}
+                     "error_class": ("integration" if kind == "base-sync" else
+                                     triage[0] if triage else "content")}
             # 観測した分類を全部残す。error_class（先頭＝proximate cause）だけを保存すると、
             # 分類器が後で直っても保存済みの記録は誤ったままになる（実際そうなった）。
             if len(chain) > 1:
@@ -217,4 +243,3 @@ def cmd_work(args) -> int:
         if getattr(args, "cleanup_per_node", False) and ws:
             cleanup_workspace()  # ノード完了/失敗ごとに clone を即削除（長命 worker のディスク抑制）
         time.sleep(random.uniform(0, 0.3))  # 負荷分散: 他ノードに claim の機会を渡す
-

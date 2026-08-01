@@ -315,6 +315,7 @@ function taskForNeed(project, need) {
 }
 
 // 「そのまま再実行」をどの口へ送るか。
+//   revise     … target 統合失敗。done ノードを温存すると同じ不整合を再利用するため、新しい試行へ送る。
 //   resume-run … 再開できる run がある。本体が last_run を固定して ready へ積み直す正規の口で、
 //                 失敗した工程だけやり直し done は温存される。指示ファイルが残るので
 //                 失敗すれば journal と .err に理由が残る。
@@ -323,6 +324,9 @@ function taskForNeed(project, need) {
 // 経路の選択をここに閉じ込める（呼び出し側で条件を書くと、片方だけ直して食い違う）。
 function needRerunPlan(project, need) {
   const task = taskForNeed(project, need);
+  if (task && String((need && need.failureClass) || '') === 'integration') {
+    return { via: 'revise', id: String(task.id) };
+  }
   const run = String(((task && task.extra) || {}).last_run || '').trim();
   if (task && run) return { via: 'resume-run', id: String(task.id), run };
   return { via: 'feedback' };
@@ -1993,7 +1997,16 @@ async function handleNeedAction(btn) {
       // コマンドも journal も残らないので、失敗しても画面には何も出ず、同じ状態に
       // 戻ったようにしか見えない。再開できる run が無い票だけ従来の口へ落とす。
       const plan = needRerunPlan(p, need);
-      if (plan.via === 'resume-run') {
+      if (plan.via === 'revise') {
+        const feedback = '最新 target ブランチを統合し、競合を解消してから全検証をやり直してください。';
+        const res = await api.runAction({
+          dir: p.dir, action: 'revise', id: plan.id,
+          reason: 'target 統合失敗のため新しい試行を作成', feedback,
+        });
+        markNeedSent(need);
+        uiLog('needAction integration rerun', id, res);
+        toast('最新 target から新しい試行を開始するよう依頼しました', true);
+      } else if (plan.via === 'resume-run') {
         const res = await api.runAction({
           dir: p.dir,
           action: 'resume-run',

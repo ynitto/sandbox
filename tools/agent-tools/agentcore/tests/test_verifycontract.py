@@ -32,6 +32,13 @@ def _ok_commands(plan):
 
 
 class PlanTests(unittest.TestCase):
+    def test_integration_plan_uses_v2_and_binds_target_into_digest(self):
+        p = _plan(integration={"target": "main"})
+        self.assertEqual(p["version"], 2)
+        self.assertEqual(p["integration"], {"target": "main"})
+        other = _plan(integration={"target": "develop"})
+        self.assertNotEqual(p["digest"], other["digest"])
+
     def test_digest_is_deterministic_and_key_order_independent(self):
         p1 = _plan()
         p2 = dict(reversed(list(p1.items())))          # キー順を変えても
@@ -73,6 +80,35 @@ class PlanTests(unittest.TestCase):
 
 
 class ReceiptTests(unittest.TestCase):
+    def test_v2_integration_receipt_requires_matching_pass(self):
+        p = _plan(integration={"target": "main"})
+        integration = {"target": "main", "target_rev": "def456",
+                       "verdict": "pass", "conflict_files": []}
+        r = vc.build_receipt(p, result_rev="abc123", commands=_ok_commands(p),
+                             criteria=_pass_criteria(p), integration=integration)
+        self.assertEqual(r["version"], 2)
+        self.assertEqual(r["verdict"], "pass")
+        self.assertEqual(vc.receipt_errors(r, plan=p, expected_rev="abc123"), [])
+
+    def test_v2_missing_or_failed_integration_is_fail_close(self):
+        p = _plan(integration={"target": "main"})
+        missing = vc.build_receipt(p, result_rev="abc123", commands=_ok_commands(p),
+                                   criteria=_pass_criteria(p))
+        self.assertEqual(missing["verdict"], "fail")
+        self.assertTrue(any("integration" in e for e in vc.receipt_errors(missing, plan=p)))
+        failed = vc.build_receipt(
+            p, result_rev="abc123", commands=_ok_commands(p), criteria=_pass_criteria(p),
+            integration={"target": "main", "target_rev": "def456", "verdict": "fail",
+                         "conflict_files": ["f.txt"]})
+        self.assertEqual(failed["verdict"], "fail")
+        self.assertEqual(vc.receipt_errors(failed, plan=p), [])
+        inconclusive = vc.build_receipt(
+            p, result_rev="abc123", commands=_ok_commands(p), criteria=_pass_criteria(p),
+            integration={"target": "main", "target_rev": "", "verdict": "inconclusive",
+                         "conflict_files": []})
+        self.assertEqual(inconclusive["verdict"], "inconclusive")
+        self.assertEqual(vc.receipt_errors(inconclusive, plan=p), [])
+
     def test_all_green_receipt_is_pass_and_accepted(self):
         p = _plan()
         r = vc.build_receipt(p, result_rev="abc123", commands=_ok_commands(p),

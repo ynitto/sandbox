@@ -22,6 +22,7 @@ import subprocess
 
 PLAN_VERSION = 1
 RECEIPT_VERSION = 1
+INTEGRATION_VERSION = 2
 CRITERION_VERDICTS = ("pass", "fail", "inconclusive")
 COMMAND_SOURCES = ("user", "legacy", "template", "policy")
 EVIDENCE_KINDS = ("command", "file", "diff", "log", "screen")
@@ -76,15 +77,21 @@ def plan_digest(plan: dict) -> str:
 
 
 def build_plan(task_id: str, *, criteria=None, commands=None, workspace: str = "",
-               policy: "dict | None" = None) -> dict:
+               policy: "dict | None" = None, integration: "dict | None" = None) -> dict:
     """verification_plan を正規化して digest 付きで返す。基準もコマンドも無ければ ValueError
     （plan は検証材料があるときだけ作る——空の plan は「verify 未定義」と区別が付かない）。"""
     crit = normalize_criteria(criteria)
     cmds = normalize_commands(commands)
     if not crit and not cmds:
         raise ValueError("verification_plan には基準か固定コマンドが最低 1 つ要る")
-    plan = {"version": PLAN_VERSION, "task_id": str(task_id or ""),
+    plan = {"version": INTEGRATION_VERSION if integration else PLAN_VERSION,
+            "task_id": str(task_id or ""),
             "workspace": str(workspace or ""), "commands": cmds, "criteria": crit}
+    if integration:
+        target = str(integration.get("target") or "").strip()
+        if not target:
+            raise ValueError("integration target が無い")
+        plan["integration"] = {"target": target}
     pol = {}
     if policy:
         if policy.get("confirm") is not None:
@@ -103,8 +110,14 @@ def plan_errors(plan) -> "list[str]":
     errs: "list[str]" = []
     if not isinstance(plan, dict):
         return ["plan が dict でない"]
-    if plan.get("version") != PLAN_VERSION:
+    if plan.get("version") not in (PLAN_VERSION, INTEGRATION_VERSION):
         errs.append(f"未対応の plan version: {plan.get('version')!r}")
+    integration = plan.get("integration")
+    if plan.get("version") == INTEGRATION_VERSION:
+        if not isinstance(integration, dict) or not str(integration.get("target") or "").strip():
+            errs.append("version 2 plan に integration target が無い")
+    elif integration is not None:
+        errs.append("version 1 plan に integration がある")
     if not str(plan.get("task_id") or ""):
         errs.append("task_id が無い")
     cmds = plan.get("commands")
@@ -206,9 +219,26 @@ def receipt_overall(receipt: dict) -> str:
     """
     cmds = receipt.get("commands") if isinstance(receipt.get("commands"), list) else []
     crit = receipt.get("criteria") if isinstance(receipt.get("criteria"), list) else []
+    integration = receipt.get("integration")
+    integration_inconclusive = False
+    if receipt.get("version") == INTEGRATION_VERSION:
+        if not isinstance(integration, dict):
+            return "fail"
+        integration_verdict = integration.get("verdict")
+        if integration_verdict == "fail":
+            if not str(integration.get("target_rev") or ""):
+                return "fail"
+            return "fail"
+        if integration_verdict == "inconclusive":
+            integration_inconclusive = True
+        elif integration_verdict == "pass":
+            if not str(integration.get("target_rev") or ""):
+                return "fail"
+        else:
+            return "fail"
     if not cmds and not crit:
         return "fail"
-    inconclusive = False
+    inconclusive = integration_inconclusive
     for c in cmds:
         if not isinstance(c, dict):
             return "fail"
@@ -232,11 +262,11 @@ def receipt_overall(receipt: dict) -> str:
 
 def build_receipt(plan: dict, *, result_rev: str, commands=None, criteria=None,
                   started_at: str = "", finished_at: str = "",
-                  verified_by: str = "") -> dict:
+                  verified_by: str = "", integration: "dict | None" = None) -> dict:
     """runner が返す receipt を組み立てる。verdict は receipt_overall で導出する
     （返す側と採用側が同じ規則で判定する——自称と検算がずれない）。"""
     receipt = {
-        "version": RECEIPT_VERSION,
+        "version": int(plan.get("version") or RECEIPT_VERSION),
         "task_id": str(plan.get("task_id") or ""),
         "plan_digest": str(plan.get("digest") or ""),
         "result_rev": str(result_rev or ""),
@@ -244,6 +274,8 @@ def build_receipt(plan: dict, *, result_rev: str, commands=None, criteria=None,
         "commands": list(commands or []),
         "criteria": list(criteria or []),
     }
+    if integration is not None:
+        receipt["integration"] = dict(integration)
     receipt["verdict"] = receipt_overall(receipt)
     if started_at:
         receipt["started_at"] = str(started_at)
@@ -269,8 +301,10 @@ def receipt_errors(receipt, *, plan: "dict | None" = None,
     errs: "list[str]" = []
     if not isinstance(receipt, dict):
         return ["receipt が dict でない"]
-    if receipt.get("version") != RECEIPT_VERSION:
+    if receipt.get("version") not in (RECEIPT_VERSION, INTEGRATION_VERSION):
         errs.append(f"未対応の receipt version: {receipt.get('version')!r}")
+    if plan and receipt.get("version") != plan.get("version"):
+        errs.append("receipt version が plan と一致しない")
     digest = expected_digest or (str(plan.get("digest") or "") if plan else "")
     if digest and str(receipt.get("plan_digest") or "") != digest:
         errs.append("plan_digest が投入時の正本と一致しない")
@@ -293,4 +327,17 @@ def receipt_errors(receipt, *, plan: "dict | None" = None,
         got_ids = [c.get("id") if isinstance(c, dict) else None for c in crit]
         if got_ids != want_ids:
             errs.append("criterion の id 列が plan と一致しない")
+        want_integration = plan.get("integration")
+        if want_integration:
+            got_integration = receipt.get("integration")
+            if not isinstance(got_integration, dict):
+                errs.append("integration 結果が無い")
+            else:
+                if got_integration.get("target") != want_integration.get("target"):
+                    errs.append("integration target が plan と一致しない")
+                verdict = got_integration.get("verdict")
+                if verdict not in CRITERION_VERDICTS:
+                    errs.append("integration verdict が不正")
+                if verdict in ("pass", "fail") and not str(got_integration.get("target_rev") or ""):
+                    errs.append("integration target_rev が無い")
     return errs

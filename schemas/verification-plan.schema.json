@@ -6,7 +6,7 @@
   "type": "object",
   "required": ["version", "task_id", "commands", "criteria", "digest"],
   "properties": {
-    "version": {"type": "integer", "description": "契約版。現行 1。解釈できない版の plan は実行しない（fail-close）", "minimum": 1},
+    "version": {"type": "integer", "enum": [1, 2], "description": "1=従来契約、2=target統合付き。解釈できない版の plan は実行しない（fail-close）"},
     "task_id": {"type": "string", "description": "対象タスク id。charter acceptance では project/charter を指す id（例 charter:<名前>）"},
     "workspace": {"type": "string", "description": "検証対象の書込先ワークスペース名（無ければ空）"},
     "commands": {
@@ -42,6 +42,13 @@
         "confirm": {"type": "integer", "description": "固定コマンドの確認実行回数（flaky 検知）", "minimum": 1},
         "timeout_sec": {"type": "number", "description": "固定コマンド 1 件あたりのタイムアウト秒", "exclusiveMinimum": 0}
       },
+      "additionalProperties": false
+    },
+    "integration": {
+      "type": "object",
+      "description": "version 2 の書込workspaceで検証対象へ含めるtarget",
+      "required": ["target"],
+      "properties": {"target": {"type": "string", "minLength": 1}},
       "additionalProperties": false
     },
     "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "digest フィールドを除いた canonical JSON の SHA-256"}

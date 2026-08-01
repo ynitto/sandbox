@@ -738,7 +738,7 @@ button:disabled { opacity: 0.4; cursor: default; }
 .kiro-loop-overview-heading h3 { margin: 3px 0 12px; font-size: 18px; overflow-wrap: anywhere; }
 .kiro-loop-overview-facts {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
   gap: 8px;
   margin-bottom: 12px;
 }
@@ -1686,13 +1686,53 @@ table.list tr.clickable:hover { background: var(--bg2); }
 .need-verify-revision .need-buttons { margin-top: 10px; }
 
 /* revise（人の即時フィードバック）フォーム — タスク詳細ダイアログ内 */
+#dlg-task {
+  width: min(960px, calc(100vw - 32px));
+  min-width: 0;
+  max-width: calc(100vw - 32px);
+}
+#dlg-task .dialog-scroll-body { padding-top: 0; }
+#dlg-task input, #dlg-task select, #dlg-task button { min-height: 44px; box-sizing: border-box; }
+#dlg-task textarea { min-height: 72px; box-sizing: border-box; }
+.task-dialog-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  margin: 0 0 14px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+}
+.task-dialog-tabs button { color: var(--muted); background: transparent; border-color: transparent; }
+.task-dialog-tabs button[aria-selected="true"] { color: var(--fg); background: var(--bg3); border-color: var(--accent); }
+.task-summary-table { margin-bottom: 12px; }
+.task-technical-details {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.task-technical-details summary { min-height: 44px; cursor: pointer; color: var(--accent); font-weight: 600; }
+.task-owner-editor { margin-bottom: 16px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+.task-owner-editor h3 { color: var(--fg); }
+.task-owner-editor .owner-edit { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 8px; }
+.task-owner-editor .owner-edit label { grid-column: 1 / -1; font-weight: 600; }
+.task-owner-editor .owner-edit input { width: 100%; max-width: none; }
+.need-actions > label { display: block; margin: 12px 0 5px; font-weight: 600; }
 .revise-area {
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px dashed var(--border);
+  margin-top: 0;
 }
 .revise-area summary { cursor: pointer; color: var(--accent); margin-bottom: 8px; }
 .revise-area textarea { width: 100%; resize: vertical; }
+
+@media (max-width: 768px) {
+  #dlg-task { width: calc(100vw - 16px); max-width: calc(100vw - 16px); }
+  .task-owner-editor .owner-edit { grid-template-columns: 1fr; }
+  .task-owner-editor .owner-edit label { grid-column: auto; }
+  #dlg-task .need-buttons button { width: 100%; }
+}
 
 /* ---------- フロー（agent-flow） ---------- */
 

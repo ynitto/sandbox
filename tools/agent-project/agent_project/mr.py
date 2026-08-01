@@ -370,6 +370,30 @@ def finalize_task_delivery(cfg: "Config", task: "Task") -> "tuple[bool, str]":
     return True, f"作業ブランチ {branch} を {target} へ {mode}"
 
 
+def review_target_fresh(cfg: "Config", task: "Task") -> "tuple[bool, str]":
+    """検証時 target が現在も同じかを確認する。証跡が無い旧タスクは従来互換で通す。"""
+    target = str(task.get("gate_target") or "").strip()
+    verified = str(task.get("gate_target_rev") or "").strip()
+    if not target or not verified:
+        return True, ""
+    repo = _source_repo(cfg, task)
+
+    def run(*args: str):
+        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True,
+                              text=True, timeout=180)
+
+    fetched = run("fetch", "-q", "origin", target)
+    if fetched.returncode != 0:
+        return False, f"target {target} の最新 revision を確認できないため承認できません"
+    current = run("rev-parse", f"origin/{target}").stdout.strip()
+    if not current:
+        return False, f"target {target} の revision を解決できないため承認できません"
+    if current != verified:
+        return False, (f"検証後に target {target} が更新されました"
+                       f"（{verified[:12]} → {current[:12]}）。最新 target を統合して再検証してください")
+    return True, ""
+
+
 # ---------------------------------------------------------------------------
 # フォージ側シグナルからの決着（S4-3・S4-4）
 # ---------------------------------------------------------------------------
@@ -599,11 +623,17 @@ def _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits,
     ts = _now_ts()
     ref = extract_delivery_ref(act_msg, cfg, git_base)
     task.status = "review"
-    task.drop("gate_ref", "gate_vmsg", "gate_ts", "gate_protect")
+    task.drop("gate_ref", "gate_vmsg", "gate_ts", "gate_protect",
+              "gate_target", "gate_target_rev")
     task.set("gate_ref", ref)
     task.set("gate_ts", ts)
     task.set("gate_branch", branch)             # approve 時の受領書に所在（ブランチ）を引き継ぐ
     task.set("gate_vmsg", vmsg.replace("\n", " ")[:200])
+    if isinstance(verification, dict):
+        integration = verification.get("integration")
+        if isinstance(integration, dict) and integration.get("verdict") == "pass":
+            task.set("gate_target", str(integration.get("target") or ""))
+            task.set("gate_target_rev", str(integration.get("target_rev") or ""))
     # 「なぜ人の番なのか」を、失敗の理由と読み違えられない書き方にする。ここは verify が通った
     # 成果を人が検収する場面であって、何かが失敗したわけではない（「verify=PASS だが 承認ゲート
     # 対象（review/policy.gate）」とだけ書かれていると、成功したのに失敗理由が並んでいるように

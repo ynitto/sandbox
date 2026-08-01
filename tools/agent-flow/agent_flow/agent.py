@@ -439,7 +439,7 @@ def _write_status(effective_cli: str = "", effective_model: str = "", lifecycle:
 #   control=管理設定による停止（明示的に run へ戻すまで継続）/ quota=利用上限（時間をおけば回復）/
 #   auth=認証切れ（人が直す）/ env=実行環境の問題（人が直す）/ transient=一時的。
 AGENT_ERROR_ENV_CLASSES = ("control", "quota", "auth", "env")
-_AGENT_ERROR_TAG_RE = re.compile(r"\[agent-error:(control|quota|auth|env|transient)\]")
+_AGENT_ERROR_TAG_RE = re.compile(r"\[agent-error:(control|quota|auth|env|transient|integration)\]")
 _AGENT_ERROR_PATTERNS = (
     ("control", re.compile(r"\[agent-control\]", re.I),
      "管理設定で実行が停止されています（dashboard で実行を許可してください）"),

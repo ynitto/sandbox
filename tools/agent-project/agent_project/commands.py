@@ -11,6 +11,13 @@ def approve_review_done(cfg: Config, t: Task, reason: str) -> "tuple[bool, str]"
     タスク MR があれば Stage 2 と同一規則で自動決着（クリーンならマージ・未クリーンなら
     差し戻しコメントを付けて review のまま needs 票を書き直す）。"""
     tid = t.id
+    fresh, stale_msg = review_target_fresh(cfg, t)
+    if not fresh:
+        delivery = delivery_entries(cfg, t, mr_url=str(t.get("mr_url") or ""))
+        write_needs_file(cfg, t, stale_msg, review=True, delivery=delivery,
+                         failure={"cls": "integration", "chain": ["integration"],
+                                  "phase": PHASE_VERIFY, "verdict": VERIFY_FAILED})
+        return False, f"{tid}: {stale_msg}"
     mr_ok, mr_msg = finalize_task_delivery(cfg, t)
     if not mr_ok:
         mr_url = str(t.get("mr_url") or "")
@@ -32,7 +39,7 @@ def approve_review_done(cfg: Config, t: Task, reason: str) -> "tuple[bool, str]"
     gate_branch = ex.get("gate_branch", "")
     t.status = "done"
     autonomy_record(cfg, t, clean=True)          # 検収承認＝手戻りなし。track の信頼を上げる
-    t.drop("gate_ref", "gate_ts", "gate_vmsg", "gate_branch")
+    t.drop("gate_ref", "gate_ts", "gate_vmsg", "gate_branch", "gate_target", "gate_target_rev")
     # review 時に保持した所在（ref/ブランチ）を受領書へ引き継ぐ（どこに成果物があるかを残す）
     gate_ev = (f"- 成果物: {ref}\n- 所在: {cfg.workdir}"
                + (f" / ブランチ {gate_branch}" if gate_branch else "")) if ref else ""

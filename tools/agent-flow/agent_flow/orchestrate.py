@@ -311,6 +311,9 @@ def cmd_orchestrate(args) -> int:
         graph = {"strategy": strategy,
                  "nodes": {t["id"]: _node_entry(t) for t in tasks},
                  "iteration": 0}
+        base_sync = inject_base_sync(graph["nodes"], bus.run_workspace())
+        if base_sync:
+            tasks.append(base_sync)
         _sanitize_graph(graph["nodes"])  # 未知依存・循環を弾く
         bus.write_graph(graph)
         for t in tasks:

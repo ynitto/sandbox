@@ -431,6 +431,26 @@ class TestTaskBranchAndDeliveryReview(unittest.TestCase):
             self.assertTrue(any(cmd[-2:] == ["merge-commit:refs/heads/release", "--porcelain"]
                                 for cmd in calls if "push" in cmd))
 
+    def test_review_target_fresh_rejects_target_advanced_after_verify(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, task_branch=True)
+            t = self._mr_task(cfg, d)
+            t.set("gate_target", "main")
+            t.set("gate_target_rev", "verified-main")
+
+            def run(cmd, **kwargs):
+                if cmd[-2:] == ["origin/main",]:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="current-main\n", stderr="")
+                if "rev-parse" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="current-main\n", stderr="")
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            with mock.patch.object(km.subprocess, "run", side_effect=run):
+                ok, msg = km.review_target_fresh(cfg, t)
+            self.assertFalse(ok)
+            self.assertIn("再検証", msg)
+
     def _review_task_with_mr(self, cfg, d):
         t = self._mr_task(cfg, d)
         t.status = "review"

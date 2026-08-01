@@ -6,7 +6,7 @@
   "type": "object",
   "required": ["version", "task_id", "plan_digest", "result_rev", "verdict", "commands", "criteria"],
   "properties": {
-    "version": {"type": "integer", "description": "契約版。現行 1。解釈できない版の receipt は採用しない（fail-close）", "minimum": 1},
+    "version": {"type": "integer", "enum": [1, 2], "description": "1=従来契約、2=target統合結果付き。解釈できない版は採用しない"},
     "task_id": {"type": "string"},
     "plan_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "実行した plan の digest。投入時の正本と一致しなければ採用しない"},
     "result_rev": {"type": "string", "description": "検証した成果 revision（コミット SHA）。採用対象の成果 revision と一致しなければ採用しない"},
@@ -60,6 +60,18 @@
         },
         "additionalProperties": false
       }
+    },
+    "integration": {
+      "type": "object",
+      "description": "version 2 のtarget統合結果",
+      "required": ["target", "target_rev", "verdict", "conflict_files"],
+      "properties": {
+        "target": {"type": "string", "minLength": 1},
+        "target_rev": {"type": "string", "description": "inconclusive のときだけ空を許す。採用側が verdict と組み合わせて検査する"},
+        "verdict": {"type": "string", "enum": ["pass", "fail", "inconclusive"]},
+        "conflict_files": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
     },
     "started_at": {"type": "string", "description": "ISO8601 UTC"},
     "finished_at": {"type": "string", "description": "ISO8601 UTC"},

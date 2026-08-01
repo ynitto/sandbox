@@ -140,6 +140,17 @@ def _vp_result_rev(clone: "str | None") -> str:
     return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
+def _vp_refresh_result(clone: "str | None", branch: str) -> None:
+    """別 worker が push した最新成果へ verifier 専用 clone を進める。"""
+    if not clone or not branch:
+        return
+    fetched = _ws_git(clone, "fetch", "--quiet", "origin", branch)
+    if fetched.returncode != 0:
+        raise RuntimeError(f"成果ブランチ {branch} を更新できません")
+    if _ws_git(clone, "reset", "--hard", "FETCH_HEAD").returncode != 0:
+        raise RuntimeError(f"検証 clone を成果ブランチ {branch} へ更新できません")
+
+
 def _vp_discard_local_changes(clone: "str | None") -> None:
     """verifier が残した作業ツリーの変更を破棄する（verifier は成果物を変更しない契約の後始末）。"""
     if not clone or not os.path.isdir(clone):
@@ -176,6 +187,7 @@ def run_verification_plan(bus: "Bus", args, who: str) -> "dict | None":
     if in_clone:
         spec = ensure_workspace_clone(ws, args.run_id)
         vcwd = str((spec or {}).get("clone") or "")
+        _vp_refresh_result(vcwd, str((spec or {}).get("branch") or ""))
     else:
         vcwd = os.getcwd()
     rev = _vp_result_rev(vcwd)
@@ -194,6 +206,21 @@ def run_verification_plan(bus: "Bus", args, who: str) -> "dict | None":
     commands = [_vp_run_command(c["command"], vcwd, timeout, env, confirm)
                 for c in plan.get("commands") or []]
     criteria = _vp_judge_criteria(args, plan, vcwd, rev)
+    integration = None
+    integration_plan = plan.get("integration")
+    if isinstance(integration_plan, dict):
+        target = str(integration_plan.get("target") or "")
+        fetched = _ws_git(vcwd, "fetch", "--quiet", "origin", target)
+        if fetched.returncode != 0:
+            integration = {"target": target, "target_rev": "", "verdict": "inconclusive",
+                           "conflict_files": []}
+        else:
+            target_rev = _ws_git(vcwd, "rev-parse", "FETCH_HEAD").stdout.strip()
+            integrated = bool(target_rev) and _ws_git(
+                vcwd, "merge-base", "--is-ancestor", target_rev, rev).returncode == 0
+            integration = {"target": target, "target_rev": target_rev,
+                           "verdict": "pass" if integrated else "fail",
+                           "conflict_files": []}
     if in_clone:
         # clone の成果は push 済みコミットなので verifier の残骸を破棄してよい。cwd（投入
         # ノードの作業ツリー）は未コミットの成果そのものを含みうるため破棄しない。
@@ -201,7 +228,7 @@ def run_verification_plan(bus: "Bus", args, who: str) -> "dict | None":
     receipt = _verifycontract.build_receipt(
         plan, result_rev=rev, commands=commands, criteria=criteria,
         started_at=started, finished_at=now_iso(),
-        verified_by=str(getattr(args, "node_id", "") or ""))
+        verified_by=str(getattr(args, "node_id", "") or ""), integration=integration)
     bus.write_receipt(args.run_id, receipt)
     bus.event(who, "verify", verdict=receipt["verdict"], rev=rev[:12],
               digest=str(plan.get("digest") or "")[:19])
@@ -213,6 +240,11 @@ def run_verification_plan(bus: "Bus", args, who: str) -> "dict | None":
 
 def verify_fix_task(receipt: dict, iteration: int) -> dict:
     """criterion fail を同じ run の修正ループへ戻すための work ノードを作る（決定的・LLM 不要）。"""
+    integration = receipt.get("integration")
+    if isinstance(integration, dict) and integration.get("verdict") == "fail":
+        target = str(integration.get("target") or "target")
+        return {"id": f"base-sync-{iteration + 1}", "kind": "base-sync",
+                "goal": f"最新 {target} を作業ブランチへ統合し、競合を解消する", "deps": []}
     lines = []
     for c in receipt.get("commands") or []:
         if not c.get("inconclusive") and c.get("exit_code") != 0:
