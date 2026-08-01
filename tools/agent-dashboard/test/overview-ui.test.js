@@ -51,6 +51,9 @@ const summary = overviewSummary(project, [
   { status: 'failed' },
 ]);
 assert.strictEqual(summary.headline, '1 件の確認を待っています');
+assert.strictEqual(summary.tone, 'action');
+assert.deepStrictEqual(summary.undecided.map((need) => need.id), ['N1'],
+  '既存の未判断 needs を概要の対応対象として保持する');
 assert.strictEqual(summary.working, 3);
 assert.strictEqual(summary.waiting, 5);
 assert.strictEqual(summary.done, 2);
@@ -284,6 +287,8 @@ assert.match(renderer, /個別のrunを止める操作ではありません/);
   const renderOverview = grab('renderOverview');
   assert.match(renderOverview, /\$\{consistencyGateHtml\(p\)\}/, '概要にゲート節を差し込んでいない');
   assert.match(renderOverview, /bindConsistencyGate\(el\)/, '概要の有効化ボタンを結線していない');
+  assert.match(renderOverview, /s\.undecided\.length[\s\S]*data-summary-tab="needs"/,
+    '一貫性ゲート追加後も既存 needs の件数と「対応する」導線を表示する');
   const escStub = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   // eslint-disable-next-line no-new-func
@@ -324,6 +329,21 @@ assert.match(renderer, /個別のrunを止める操作ではありません/);
   assert.ok(regressionUnwired.includes(
     'codd_gate_regression.py --config /path/to/.agents/agent-project.yaml'
   ), 'regression_cmd の sibling CLI 導線が出ない');
+
+  // 別コマンドが設定済みでも、codd-gate へは未結線と表示して現在値を隠さない。
+  const configuredUnwired = gateHtml({ consistencyGate: {
+    configFile: '/ws/.agents/agent-project.yaml', regressionWired: false, intakeWired: false, wired: false,
+    regressionConfigured: true, intakeConfigured: false,
+    regressionCmd: 'make smoke', intakeCmd: null } });
+  assert.strictEqual(headBadge(configuredUnwired, '未結線'), 3, '両フック未結線の見出し＋2行が出る');
+  assert.ok(!configuredUnwired.includes('一部結線'), '両方未結線を一部結線と表示しない');
+  assert.ok(configuredUnwired.includes('make smoke'), '設定済みの別コマンドを隠さない');
+  assert.ok(configuredUnwired.includes('設定: あり') && configuredUnwired.includes('設定: なし'),
+    '設定済みと未設定を区別する');
+  assert.ok(configuredUnwired.includes('一貫性ゲートの検査ではありません'),
+    '設定済みでも未結線である理由を表示する');
+  assert.match(configuredUnwired, /<pre[^>]*>[\s\S]*regression_cmd:[\s\S]*intake_cmd:/,
+    '両方未結線なら README と同じ2設定行を提示する');
 
   // ペイロード無し（旧 main と組み合わせた場合）は概要へ何も足さない。
   assert.strictEqual(gateHtml({}), '');
