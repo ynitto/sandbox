@@ -685,9 +685,7 @@ const viewTabs = [
     </div>
     ${runTaskOutcomeHtml(outcome)}
     ${finalVerificationFailureHtml(finalVerificationFailure)}
-    ${req.body ? `<div class="flow-request-body">${proseHtml(req.body)}</div>` : ''}
     ${adviceBanner}
-    ${relationshipStrip({ run })}
     ${
       run.tombstone
         ? '<p class="muted">新しい試行に引き継がれた記録です。成果は新しい試行で確認してください。</p>'
@@ -708,6 +706,11 @@ const viewTabs = [
     </div>
     ${runByPcHtml(run)}
     <div class="flow-primary-actions">${runArtifactsButtonHtml(run)} ${resubmit} ${reconcileBtn} ${cancelBtn} ${deleteBtn}</div>
+    ${relationshipStrip({ run })}
+    ${req.body ? `<details class="flow-request-details">
+      <summary>依頼内容を表示</summary>
+      <div class="flow-request-body">${proseHtml(req.body)}</div>
+    </details>` : ''}
   </section>`;
 
   const graphView = `<div class="flow-graph-workspace">

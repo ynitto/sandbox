@@ -137,7 +137,7 @@ html, body {
 .sync-error { color: #dc322f; font-weight: 600; }
 .sync-status { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; }
-.sync-action { padding: 2px 7px; color: var(--fg); font-weight: 500; }
+.sync-action { min-height: 44px; padding: 5px 9px; color: var(--fg); font-weight: 500; }
 .sync-checked { color: var(--muted); font-weight: 400; }
 
 /* フロー画面の advice（次に何が起きるか・あなたの出番はあるか）。
@@ -219,7 +219,7 @@ button:disabled { opacity: 0.4; cursor: default; }
   border-bottom: 1px solid var(--border);
 }
 .sidebar-header h1 { font-size: 15px; margin: 0; color: var(--fg); }
-.sidebar-actions button { width: 36px; height: 36px; padding: 0; }
+.sidebar-actions button { width: 44px; height: 44px; padding: 0; }
 .sidebar-actions .assistant-button { display: inline-grid; place-items: center; }
 .sidebar-actions button svg,
 .nav-group-header button svg {
@@ -247,7 +247,7 @@ button:disabled { opacity: 0.4; cursor: default; }
   font-weight: 600;
   letter-spacing: 0.04em;
 }
-.nav-group-header button { width: 36px; height: 36px; padding: 0; display: inline-grid; place-items: center; }
+.nav-group-header button { width: 44px; height: 44px; padding: 0; display: inline-grid; place-items: center; }
 
 .container-item { margin-bottom: 4px; }
 .container-label {
@@ -263,10 +263,18 @@ button:disabled { opacity: 0.4; cursor: default; }
 .project-item {
   display: flex;
   align-items: center;
+  width: 100%;
   gap: 6px;
   min-height: 42px;
   padding: 8px 10px 8px 18px;
   cursor: pointer;
+  color: inherit;
+  background: transparent;
+  border-top: 0;
+  border-right: 0;
+  border-bottom: 0;
+  border-radius: 0;
+  text-align: left;
   border-left: 3px solid transparent;
 }
 .project-item:hover { background: var(--bg3); }
@@ -407,9 +415,9 @@ button:disabled { opacity: 0.4; cursor: default; }
 #project-meta { font-size: 11px; margin-top: 3px; }
 .project-cli-chat-group { display: inline-flex; align-items: center; gap: 6px; }
 /* 起動先（cwd）の選択。長い URL 由来の名前でヘッダを押し広げないよう幅を締める。 */
-.project-cli-chat-cwd { max-width: 220px; min-height: 36px; }
+.project-cli-chat-cwd { max-width: 220px; min-height: 44px; }
 .project-cli-chat-cwd:disabled { opacity: .6; }
-.project-cli-chat { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 5px 10px; }
+.project-cli-chat { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 5px 10px; }
 .project-cli-chat svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
 @media (pointer: coarse) {
@@ -1121,6 +1129,8 @@ pre.mono {
 }
 .flow-request-body .md p:first-child { margin-top: 0; }
 .flow-request-body .md p:last-child { margin-bottom: 0; }
+.flow-request-details { margin-top: 14px; }
+.flow-request-details summary { color: var(--muted); cursor: pointer; }
 .flow-run-heading h2 { line-height: 1.35; }
 .node-goal .md { margin-top: 4px; }
 .node-goal .md p { margin: 2px 0; }
@@ -2985,3 +2995,9 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .cowork-root-badge { margin-left: 10px; display: inline-flex; align-items: center; gap: 6px; }
 .cowork-root-badge .linklike { background: none; border: 0; padding: 0; color: inherit;
   text-decoration: underline; cursor: pointer; font: inherit; min-height: 0; }
+
+@media (max-width: 900px) {
+  #tabs { flex-wrap: wrap; overflow-x: visible; }
+  .tab-utility-group { width: 100%; margin-left: 0; border-top: 1px solid var(--border); }
+  .tab-utility-group .tab { flex: 1; margin-left: 0; }
+}

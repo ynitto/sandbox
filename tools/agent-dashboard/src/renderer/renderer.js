@@ -804,10 +804,11 @@ function renderTree() {
           : p.offHours
             ? '<span class="badge" title="稼働時間外のため休止中です（時間になると自動で再開します）">休止中</span>'
             : '';
-        return `<div class="project-item ${state.selectedDir === p.dir ? 'selected' : ''}" data-dir="${esc(p.dir)}" title="${esc(p.dir)}">
+        return `<button type="button" class="project-item ${state.selectedDir === p.dir ? 'selected' : ''}" data-dir="${esc(p.dir)}"
+          aria-current="${state.selectedDir === p.dir ? 'true' : 'false'}" title="${esc(p.dir)}">
           <span class="dot ${p.running ? 'running' : ''} ${remoteGuess ? 'synced' : ''} ${p.paused ? 'paused' : ''}" title="${esc(dotTitle)}"></span>
           <span class="name">${esc(displayName)}</span>${badges.join('')}${held}
-        </div>`;
+        </button>`;
       })
       .join('') + unreachableRows(unreachable);
   }
@@ -947,8 +948,22 @@ function renderHeader() {
 // ---------------------------------------------------------------------------
 
 // 再描画（ポーリング・操作後のリロード）は各タブの innerHTML を作り直すため、素のままでは
-// スクロール位置と <details> の開閉が毎回初期化されてしまう。描画前に id 付きスクロール要素の
-// 位置と data-ui-key 付き <details> の開閉を控え、描画後に復元する（存在しなくなった要素は無視）。
+// スクロール位置と <details> の開閉が毎回初期化されてしまう。明示キーがない details も
+// 所属画面・見出し・同名内の位置から安定キーを作り、機能追加のたびに保存指定を足さなくてよいようにする。
+function detailsUiKey(d) {
+  if (d.dataset.uiKey) return `key:${d.dataset.uiKey}`;
+  if (d.id) return `id:${d.id}`;
+  const root = d.closest('.tabpane, dialog');
+  const summary = d.querySelector(':scope > summary');
+  if (!root || !root.id || !summary) return '';
+  const signature = `${d.className}|${summary.textContent.trim()}`;
+  const same = [...root.querySelectorAll('details')].filter((item) => {
+    const itemSummary = item.querySelector(':scope > summary');
+    return item.className === d.className && itemSummary && itemSummary.textContent.trim() === summary.textContent.trim();
+  });
+  return `auto:${root.id}:${signature}:${same.indexOf(d)}`;
+}
+
 function captureUiState() {
   const scroll = {};
   for (const el of document.querySelectorAll('.tabpane, [data-ui-scroll-key], #tree, #flow-runs, #flow-view-body, #graph-box')) {
@@ -956,9 +971,11 @@ function captureUiState() {
   }
   const open = [];
   const details = {};
-  for (const d of document.querySelectorAll('details[data-ui-key]')) {
-    details[d.dataset.uiKey] = d.open;
-    if (d.open) open.push(d.dataset.uiKey);
+  for (const d of document.querySelectorAll('details')) {
+    const key = detailsUiKey(d);
+    if (!key) continue;
+    details[key] = d.open;
+    if (d.open) open.push(key);
   }
   return { scroll, open: new Set(open), details };
 }
@@ -967,8 +984,9 @@ function restoreUiState(ui) {
   if (!ui) return;
   // details を先に開いてスクロール範囲を確定する。閉じたまま scrollTop を代入すると、
   // ブラウザが短いレイアウトの最大値へ丸め、その後 details を開いても元の位置へ戻らない。
-  for (const d of document.querySelectorAll('details[data-ui-key]')) {
-    const key = d.dataset.uiKey;
+  for (const d of document.querySelectorAll('details')) {
+    const key = detailsUiKey(d);
+    if (!key) continue;
     if (ui.details && Object.prototype.hasOwnProperty.call(ui.details, key)) {
       d.open = ui.details[key];
     } else if (ui.open.has(key)) {

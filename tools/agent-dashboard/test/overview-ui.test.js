@@ -194,6 +194,9 @@ for (const gone of ['api.gitHealth', 'api.gitHeal', 'api.gitPull', 'api.gitCommi
 for (const label of ['現在の状態', 'あなたの対応', '進捗', '成果', '対応する', 'タスクを見る', '実行を見る', '成果を見る']) {
   assert.ok(renderer.includes(label), `概要に「${label}」が必要です`);
 }
+assert.ok(renderer.includes('const staleNodes = (p.nodes || []).filter((node) => !node.running)'),
+  '応答のないPCを「あなたの対応」に反映します');
+assert.ok(renderer.includes('実行を確認する'), 'PCが応答しないときの次の操作を直接示します');
 assert.match(css, /button:focus-visible/);
 assert.match(css, /@media \(max-width: 680px\)/);
 assert.match(css, /\.sidebar-actions button,[\s\S]*?min-width: 44px; height: 44px;/);
@@ -261,7 +264,7 @@ assert.match(renderer, /api\.orchestrationInstructionsSave/);
   assert.match(render, /captureUiState\(\)/, '全体設定の再描画前に開閉・スクロール状態を保存する');
   assert.match(render, /restoreUiState\(/, '全体設定の再描画後に開閉・スクロール状態を復元する');
 }
-assert.match(renderer, /details\[d\.dataset\.uiKey\] = d\.open/,
+assert.match(renderer, /details\[key\] = d\.open/,
   '開いた状態だけでなく、利用者が閉じた状態も保存する');
 assert.match(renderer, /d\.open = ui\.details\[key\]/, '保存した開閉状態をそのまま復元する');
 assert.match(renderer, /data-ui-key="orch-agents-/, '担当設定の開閉状態に安定キーがある');

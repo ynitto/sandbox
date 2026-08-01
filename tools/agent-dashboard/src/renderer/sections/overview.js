@@ -271,6 +271,7 @@ function renderOverview() {
   }
 
   const s = overviewSummary(p, state.flowRuns);
+  const staleNodes = (p.nodes || []).filter((node) => !node.running);
   const goalText = overviewGoal(p);
   const deliveryRows = (p.delivery || [])
     .slice(-3)
@@ -308,8 +309,12 @@ function renderOverview() {
             ? `<div class="summary-number">${s.undecided.length}<span>件</span></div>
                <p>確認または判断が必要です。</p>
                <button class="summary-link" data-summary-tab="needs">対応する</button>`
-            : `<div class="summary-status-ok">対応はありません</div>
-               <p class="muted">このまま進行を見守れます。</p>`}
+            : staleNodes.length
+              ? `<div class="summary-number">${staleNodes.length}<span>台</span></div>
+                 <p>応答のない PC があります。実行中の作業と担当を確認してください。</p>
+                 <button class="summary-link" data-summary-tab="flow">実行を確認する</button>`
+              : `<div class="summary-status-ok">対応はありません</div>
+                 <p class="muted">このまま進行を見守れます。</p>`}
         </section>
 
         <section class="summary-card progress-card" aria-labelledby="summary-progress-title">

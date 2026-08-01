@@ -1,5 +1,4 @@
 <!DOCTYPE html>
-<!-- saved from url=(0071)file:///private/tmp/architecture-review-agent-flow-20260801-102533.html -->
 <html lang="ja"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
   
   <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -20,57 +19,53 @@
 <body><main>
   <header>
     <h1>agent-flow アーキテクチャレビュー</h1>
-    <div class="meta">2026-08-01 · 対象: 実行フロー、run状態、子プロセス起動 · 実装変更なし</div>
+    <div class="meta">2026-08-01 · 対象: 実行フロー、run状態、子プロセス起動 · 査読反映済み · 実装変更なし</div>
     <div class="legend"><span class="key"><span class="swatch"></span>モジュール</span><span class="key"><span class="swatch seam"></span>シーム</span><span class="key"><span class="swatch leak"></span>漏れ</span><span class="key"><span class="swatch deep"></span>深いモジュール</span></div>
   </header>
 
   <section id="candidates">
     <article id="candidate-1">
-      <h2>共有名前空間フラグメントを実モジュールへ深化</h2>
-      <div class="badges"><span class="badge">強く推奨</span><span class="badge slate">プロセス内</span></div>
+      <h2>共有名前空間フラグメントの独立モジュール化を再評価</h2>
+      <div class="badges"><span class="badge slate">仮説的</span><span class="badge slate">プロセス内</span></div>
       <div class="files">agent_flow/__init__.py:4–15, 33–71 · agent_flow/*.py · tests/*.py</div>
       <div class="diagrams">
-        <div class="diagram"><h3>現状 — 浅い</h3><svg viewBox="0 0 470 270" role="img" aria-label="29個のフラグメントが共有名前空間へ漏れる現状"><defs><marker id="a1" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#b91c1c"></path></marker></defs><rect x="15" y="20" width="105" height="42" rx="7" fill="#fff" stroke="#64748b"></rect><text x="68" y="46" text-anchor="middle">run.py</text><rect x="15" y="82" width="105" height="42" rx="7" fill="#fff" stroke="#64748b"></rect><text x="68" y="108" text-anchor="middle">work.py</text><rect x="15" y="144" width="105" height="42" rx="7" fill="#fff" stroke="#64748b"></rect><text x="68" y="170" text-anchor="middle">waits.py</text><rect x="15" y="206" width="105" height="42" rx="7" fill="#fff" stroke="#64748b"></rect><text x="68" y="232" text-anchor="middle">ほか26断片</text><rect x="205" y="56" width="245" height="150" rx="9" fill="#fff" stroke="#b91c1c" stroke-width="2"></rect><text x="328" y="88" text-anchor="middle">agent_flow globals</text><text x="328" y="116" text-anchor="middle" class="small">順序制約・global再束縛</text><text x="328" y="140" text-anchor="middle" class="small">privateシンボル直接参照</text><text x="328" y="164" text-anchor="middle" class="small">全テストからモンキーパッチ</text><line x1="120" y1="41" x2="205" y2="82" stroke="#b91c1c" marker-end="url(#a1)"></line><line x1="120" y1="103" x2="205" y2="115" stroke="#b91c1c" marker-end="url(#a1)"></line><line x1="120" y1="165" x2="205" y2="148" stroke="#b91c1c" marker-end="url(#a1)"></line><line x1="120" y1="227" x2="205" y2="181" stroke="#b91c1c" marker-end="url(#a1)"></line></svg></div>
+        <div class="diagram"><h3>現状 — 意図的な互換構造</h3><svg viewBox="0 0 470 270" role="img" aria-label="27個のフラグメントを共有名前空間へ合成する現状"><defs><marker id="a1" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#b91c1c"></path></marker></defs><rect x="15" y="20" width="105" height="42" rx="7" fill="#fff" stroke="#64748b"></rect><text x="68" y="46" text-anchor="middle">run.py</text><rect x="15" y="82" width="105" height="42" rx="7" fill="#fff" stroke="#64748b"></rect><text x="68" y="108" text-anchor="middle">work.py</text><rect x="15" y="144" width="105" height="42" rx="7" fill="#fff" stroke="#64748b"></rect><text x="68" y="170" text-anchor="middle">waits.py</text><rect x="15" y="206" width="105" height="42" rx="7" fill="#fff" stroke="#64748b"></rect><text x="68" y="232" text-anchor="middle">ほか24断片</text><rect x="205" y="56" width="245" height="150" rx="9" fill="#fff" stroke="#b91c1c" stroke-width="2"></rect><text x="328" y="88" text-anchor="middle">agent_flow globals</text><text x="328" y="116" text-anchor="middle" class="small">読み込み量を分割</text><text x="328" y="140" text-anchor="middle" class="small">既存テスト互換を維持</text><text x="328" y="164" text-anchor="middle" class="small">zipapp配布を維持</text><line x1="120" y1="41" x2="205" y2="82" stroke="#b91c1c" marker-end="url(#a1)"></line><line x1="120" y1="103" x2="205" y2="115" stroke="#b91c1c" marker-end="url(#a1)"></line><line x1="120" y1="165" x2="205" y2="148" stroke="#b91c1c" marker-end="url(#a1)"></line><line x1="120" y1="227" x2="205" y2="181" stroke="#b91c1c" marker-end="url(#a1)"></line></svg></div>
         <div class="diagram"><h3>深化後</h3><svg viewBox="0 0 470 270" role="img" aria-label="責務別の深いモジュールへ畳み込む"><rect x="38" y="28" width="394" height="214" rx="12" fill="#172033"></rect><text x="235" y="58" text-anchor="middle" class="white">agent-flow 実行モジュール群</text><rect x="65" y="82" width="105" height="92" rx="8" fill="#334155" stroke="#94a3b8"></rect><text x="118" y="112" text-anchor="middle" class="white">run状態</text><text x="118" y="136" text-anchor="middle" class="small">内部実装を隠す</text><rect x="183" y="82" width="105" height="92" rx="8" fill="#334155" stroke="#94a3b8"></rect><text x="236" y="112" text-anchor="middle" class="white">ノード実行</text><text x="236" y="136" text-anchor="middle" class="small">内部実装を隠す</text><rect x="301" y="82" width="105" height="92" rx="8" fill="#334155" stroke="#94a3b8"></rect><text x="354" y="112" text-anchor="middle" class="white">計画と継続</text><text x="354" y="136" text-anchor="middle" class="small">内部実装を隠す</text><line x1="70" y1="204" x2="400" y2="204" stroke="#cbd5e1" stroke-dasharray="5 5"></line><text x="235" y="225" text-anchor="middle" class="white">明示された小さいインターフェース</text></svg></div>
       </div>
-      <div class="facts"><div><h3>課題</h3><p>29個のファイルは独立したモジュールではなく、全シンボル・読み込み順・global再束縛がインターフェースになっており、実装と同じ幅の浅い構造です。</p></div><div><h3>解決案</h3><p>機械分割を責務単位の実モジュールへ畳み直し、共有名前空間と読み込み順を実装の内側へ閉じ込めます。</p></div></div>
+      <div class="facts"><div><h3>課題</h3><p>27フラグメントが一つの共有名前空間を持つため、独立import・シンボル所有・テスト面がファイル構造からは判別しにくい状態です。</p></div><div><h3>解決案</h3><p>実測でナビゲート摩擦が変更コストを上回る場合だけ、互換性とzipapp配布を保ちながら責務単位の実モジュール化を検討します。</p></div></div>
       <ul class="wins"><li>局所性: 変更先が一箇所</li><li>レバレッジ: 小さいインターフェース</li><li>テスト面: private参照を削減</li></ul>
-      <div class="evidence">根拠: <code>__init__.py</code> 自身が「単体 import しない」「1つの共有名前空間へ exec」「privateシンボル参照を維持」と明記。テストには <code>kf._*</code> / <code>patch.object(kf,...)</code> が377箇所あります。</div>
-      <div class="deletion"><b>削除テスト:</b> フラグメントの仕組みを削除してもドメイン複雑性は消えず、元の単一ファイルへ戻るだけです。現在のファイル分割は複雑性を隠していません。</div>
+      <div class="evidence">根拠: <code>__init__.py:4–15</code> と <code>README.md:441–462</code> は、LLMの読み込み量、既存のモンキーパッチとglobal再束縛、zipapp配布を保つための意図的な判断だと明記しています。privateシンボルを直接使うテストが広く存在するため、移行面は大きいままです。</div>
+      <div class="deletion"><b>削除テスト:</b> フラグメント合成を削除しても実行時の複雑性は消えません。一方、現方式は読み込み量と互換性を実際に隠しているため、単なる素通しとも判定できません。</div>
     </article>
 
     <article id="candidate-2">
-      <h2>ワークノード実行を一つの深いモジュールへ</h2>
-      <div class="badges"><span class="badge">強く推奨</span><span class="badge amber">ローカル差替可能</span></div>
-      <div class="files">agent_flow/work.py:40–218 · waits.py · workspace.py · plugins.py · bus.py</div>
-      <div class="diagrams">
-        <div class="diagram"><h3>現状 — 順序制約が漏れる</h3><svg viewBox="0 0 470 280" role="img" aria-label="ワークノード実行の長い呼び出し列"><defs><marker id="a2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#64748b"></path></marker></defs><g fill="#fff" stroke="#64748b"><rect x="20" y="20" width="115" height="42" rx="7"></rect><rect x="178" y="20" width="115" height="42" rx="7"></rect><rect x="335" y="20" width="115" height="42" rx="7"></rect><rect x="335" y="102" width="115" height="42" rx="7"></rect><rect x="178" y="102" width="115" height="42" rx="7"></rect><rect x="20" y="102" width="115" height="42" rx="7"></rect><rect x="20" y="184" width="115" height="42" rx="7"></rect><rect x="178" y="184" width="115" height="42" rx="7"></rect><rect x="335" y="184" width="115" height="42" rx="7"></rect></g><text x="77" y="46" text-anchor="middle">claim</text><text x="235" y="46" text-anchor="middle">文脈収集</text><text x="392" y="46" text-anchor="middle">clone</text><text x="392" y="128" text-anchor="middle">heartbeat</text><text x="235" y="128" text-anchor="middle">executor</text><text x="77" y="128" text-anchor="middle">commit</text><text x="77" y="210" text-anchor="middle">park / 失敗</text><text x="235" y="210" text-anchor="middle">claim喪失</text><text x="392" y="210" text-anchor="middle">result + sync</text><path d="M135 41H178M293 41H335M392 62V102M335 123H293M178 123H135M77 144V184M135 205H178M293 205H335" fill="none" stroke="#64748b" marker-end="url(#a2)"></path><text x="235" y="260" text-anchor="middle" fill="#b91c1c">順序を呼び出し側が知る</text></svg></div>
-        <div class="diagram"><h3>深化後</h3><svg viewBox="0 0 470 280" role="img" aria-label="ノード試行を一つの深いモジュールが所有"><rect x="62" y="35" width="346" height="190" rx="12" fill="#172033"></rect><text x="235" y="68" text-anchor="middle" class="white">ワークノード実行モジュール</text><text x="235" y="100" text-anchor="middle" class="white">claim → 実行 → park / result</text><text x="235" y="127" text-anchor="middle" class="small">heartbeat・workspace・証跡・後始末</text><rect x="92" y="157" width="110" height="42" rx="7" fill="#334155" stroke="#94a3b8"></rect><text x="147" y="183" text-anchor="middle" class="white">agent</text><rect x="260" y="157" width="110" height="42" rx="7" fill="#334155" stroke="#94a3b8"></rect><text x="315" y="183" text-anchor="middle" class="white">stub / plugin</text><line x1="235" y1="225" x2="235" y2="260" stroke="#64748b" stroke-dasharray="5 5"></line><text x="235" y="276" text-anchor="middle">executor シーム</text></svg></div>
-      </div>
-      <div class="facts"><div><h3>課題</h3><p><code>cmd_work</code> がclaim、待機、workspace、heartbeat、executor、失敗分類、claim喪失、結果確定の順序をすべて知り、バグの局所性がありません。</p></div><div><h3>解決案</h3><p>ワークノード1回の試行と確定を一つの深いモジュールへ畳み、executorだけを既存のシームとして残します。</p></div></div>
-      <ul class="wins"><li>局所性: 順序不変条件を集中</li><li>レバレッジ: 一試行で全処理</li><li>テスト面: 結果だけを検証</li></ul>
-      <div class="evidence">根拠: <code>work.py:98–215</code> に「claim後にheartbeat開始」「park時はheartbeat停止後にwait記録」「claim喪失後に結果上書きを抑止」という異なる失敗経路の順序制約が集中しています。agent / stub / plugin の複数アダプタがあるためexecutorシームは本物です。</div>
-      <div class="deletion"><b>削除テスト:</b> 現在の小関数群を削除すると複雑性は <code>cmd_work</code> に残るだけです。反対に、ノード試行を削除すると同じ順序制約が全worker経路へ再出現するため、ここには深いモジュールの価値があります。</div>
+      <h2>除外: ワークノード実行は既に深い</h2>
+      <div class="badges"><span class="badge slate">候補から除外</span><span class="badge amber">ローカル差替可能</span></div>
+      <div class="files">agent_flow/work.py:40–220 · plugins.py:21–63, 160–182 · tests/test_bus.py:843–892</div>
+      <div class="facts"><div><h3>判定</h3><p><code>cmd_work(args)</code> はclaim、workspace、heartbeat、executor、park、claim喪失、結果確定を一つのインターフェースの背後に所有しており、既に深いモジュールです。</p></div><div><h3>残る確認</h3><p>executorにはagent・stub・pluginの複数アダプタがあり、シームも成立しています。順序不変条件に再現可能なテスト欠落が見つかるまで構造変更はしません。</p></div></div>
+      <ul class="wins"><li>局所性: <code>cmd_work</code> に集中済み</li><li>レバレッジ: 一入口で全試行</li><li>テスト面: executorシームを利用済み</li></ul>
+      <div class="evidence">根拠: <code>work.py:40–220</code> と設計書 <code>agent-flow-design.md:260–272</code> が同じ責務を示し、<code>tests/test_bus.py:843–892</code> は <code>cmd_work</code> の入口から結果を検証しています。</div>
+      <div class="deletion"><b>削除テスト:</b> <code>cmd_work</code> を削除するとclaimから結果確定までの順序制約が呼び出し側へ再出現します。削除テストを通るため、深化候補ではなく保持対象です。</div>
     </article>
 
     <article id="candidate-3">
-      <h2>run起動契約をargv転記から深化</h2>
-      <div class="badges"><span class="badge amber">探索価値あり</span><span class="badge slate">プロセス内</span></div>
-      <div class="files">agent_flow/run.py:246–307, 352–395 · config.py:271–287 · cli.py</div>
+      <h2>初回／auto-healの子プロセス起動を一箇所へ深化</h2>
+      <div class="badges"><span class="badge">強く推奨</span><span class="badge slate">プロセス内</span></div>
+      <div class="files">agent_flow/run.py:12–29, 367–395, 458–478</div>
       <div class="diagrams">
-        <div class="diagram"><h3>現状 — 浅い転記</h3><svg viewBox="0 0 470 280" role="img" aria-label="設定から複数argv組み立てへ値が漏れる"><defs><marker id="a3" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#b91c1c"></path></marker></defs><rect x="20" y="102" width="105" height="64" rx="8" fill="#fff" stroke="#64748b"></rect><text x="73" y="130" text-anchor="middle">args</text><text x="73" y="150" text-anchor="middle" class="small">可変Namespace</text><g fill="#fff" stroke="#64748b"><rect x="190" y="20" width="245" height="54" rx="8"></rect><rect x="190" y="103" width="245" height="54" rx="8"></rect><rect x="190" y="186" width="245" height="54" rx="8"></rect></g><text x="312" y="52" text-anchor="middle">_child_base</text><text x="312" y="135" text-anchor="middle">cmd_run の argv</text><text x="312" y="218" text-anchor="middle">_spawn_orchestrator の argv</text><line x1="125" y1="125" x2="190" y2="50" stroke="#b91c1c" marker-end="url(#a3)"></line><line x1="125" y1="134" x2="190" y2="130" stroke="#b91c1c" marker-end="url(#a3)"></line><line x1="125" y1="143" x2="190" y2="211" stroke="#b91c1c" marker-end="url(#a3)"></line><text x="235" y="270" text-anchor="middle" fill="#b91c1c">項目追加ごとに複数箇所を同期</text></svg></div>
+        <div class="diagram"><h3>現状 — 固有argvが重複</h3><svg viewBox="0 0 470 280" role="img" aria-label="初回起動とauto-heal再起動が固有argvを重複して組み立てる"><defs><marker id="a3" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#b91c1c"></path></marker></defs><rect x="20" y="102" width="105" height="64" rx="8" fill="#fff" stroke="#64748b"></rect><text x="73" y="130" text-anchor="middle">_child_base</text><text x="73" y="150" text-anchor="middle" class="small">共通argvは集約済み</text><g fill="#fff" stroke="#64748b"><rect x="190" y="45" width="245" height="64" rx="8"></rect><rect x="190" y="166" width="245" height="64" rx="8"></rect></g><text x="312" y="73" text-anchor="middle">初回起動 argv</text><text x="312" y="94" text-anchor="middle" class="small">run.py:367–395</text><text x="312" y="194" text-anchor="middle">auto-heal argv</text><text x="312" y="215" text-anchor="middle" class="small">run.py:458–478</text><line x1="125" y1="125" x2="190" y2="80" stroke="#b91c1c" marker-end="url(#a3)"></line><line x1="125" y1="143" x2="190" y2="195" stroke="#b91c1c" marker-end="url(#a3)"></line><text x="235" y="270" text-anchor="middle" fill="#b91c1c">固有オプション追加時に同期が必要</text></svg></div>
         <div class="diagram"><h3>深化後</h3><svg viewBox="0 0 470 280" role="img" aria-label="run起動契約が子プロセス詳細を隠す"><rect x="52" y="42" width="366" height="172" rx="12" fill="#172033"></rect><text x="235" y="76" text-anchor="middle" class="white">run起動モジュール</text><text x="235" y="108" text-anchor="middle" class="white">要求・設定・実行役を受け取る</text><text x="235" y="136" text-anchor="middle" class="small">argv配置・JSON化・環境変数を内部化</text><rect x="93" y="160" width="124" height="34" rx="7" fill="#334155" stroke="#94a3b8"></rect><text x="155" y="182" text-anchor="middle" class="white">orchestrator</text><rect x="253" y="160" width="124" height="34" rx="7" fill="#334155" stroke="#94a3b8"></rect><text x="315" y="182" text-anchor="middle" class="white">worker</text><line x1="235" y1="214" x2="235" y2="250" stroke="#64748b" stroke-dasharray="5 5"></line><text x="235" y="269" text-anchor="middle">小さい起動インターフェース</text></svg></div>
       </div>
-      <div class="facts"><div><h3>課題</h3><p>同じrun要求を複数のargv組み立てが別々に転記し、引数の位置・JSON化・既定値まで呼び出し側のインターフェースへ漏れています。</p></div><div><h3>解決案</h3><p>子プロセス起動の構築と検証を一つの深いモジュールへ集め、run要求の追加が一箇所で完結する形にします。</p></div></div>
+      <div class="facts"><div><h3>課題</h3><p>共通argvは <code>_child_base</code> に集約済みですが、orchestratorとworkerの固有argvは初回起動とauto-heal再起動で重複し、設定伝搬の不変条件が二箇所へ漏れています。</p></div><div><h3>解決案</h3><p>初回とauto-healが同じ子プロセス起動構築を使う形へ畳み、固有オプションの追加を一箇所で完結させます。</p></div></div>
       <ul class="wins"><li>局所性: 転記規則を集中</li><li>レバレッジ: 一要求で全起動</li><li>テスト面: 起動契約を一面化</li></ul>
-      <div class="evidence">根拠: <code>run.py:246–273</code> と <code>352–395</code> が同種のargvを別々に構築し、コメント自身が引数位置の誤りで子が即死すると説明します。<code>config.py:271–287</code> は可変 <code>args</code> に設定を注入し、生設定を別口で保持しています。</div>
-      <div class="deletion"><b>削除テスト:</b> <code>_child_base</code> を削除すると共通引数の転記が二つの起動経路へ戻ります。既に価値はありますが、残る重複を吸収し切れていないため浅いままです。</div>
+      <div class="evidence">根拠: <code>run.py:367–395</code> と <code>458–478</code> が同じorchestrator／workerの固有argvを組み立てています。auto-heal側のコメントは、過去に <code>--review</code> の伝搬を落とすとheal後だけ挙動が変わることを不変条件として明記しています。</div>
+      <div class="deletion"><b>削除テスト:</b> <code>_child_base</code> は削除すると共通argvが二箇所へ再出現するため既に深い一方、固有argvの重複を削除しても同じ複雑性が二経路に残ります。深化対象は後者だけです。</div>
     </article>
   </section>
 
   <section id="top-recommendation" class="recommendation">
     <h2>最優先候補</h2>
-    <p><a href="file:///private/tmp/architecture-review-agent-flow-20260801-102533.html#candidate-1">共有名前空間フラグメントを実モジュールへ深化</a> — 他の二候補を安全に局所化する前提であり、現在の最大のAIナビゲート摩擦と広いテスト面を同時に縮めます。</p>
+    <p><a href="#candidate-3">初回／auto-healの子プロセス起動を一箇所へ深化</a> — 実際に重複する二つの実行経路へ限定でき、設定伝搬漏れを一度の修正と一つのテスト面へ局所化します。</p>
   </section>
 </main>
 </body></html>

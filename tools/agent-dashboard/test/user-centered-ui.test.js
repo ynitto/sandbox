@@ -32,7 +32,7 @@ assert.ok(renderer.includes('api.agentOpenChat({ dir, cwd })'),
 // コードを触りたくて CLI を開いてもそこには 1 行もコードが無い。成果物リポジトリを選べること。
 assert.ok(projectHeader.includes('id="cli-chat-cwd"'), 'CLIチャットの起動先を選べます');
 assert.ok(renderer.includes('function refreshCliChatCwdChoices('));
-assert.match(css, /\.project-cli-chat\s*\{[^}]*min-height:\s*36px/s);
+assert.match(css, /\.project-cli-chat\s*\{[^}]*min-height:\s*44px/s);
 assert.match(css, /@media \(pointer:\s*coarse\)[\s\S]*?\.project-cli-chat\s*\{[^}]*min-height:\s*44px/s);
 assert.ok(
   html.indexOf('data-tab="project-settings"') < html.indexOf('data-tab="orchestration"'),
@@ -203,6 +203,22 @@ assert.match(css, /\.developer-log\s*\{[^}]*overflow-wrap:\s*anywhere/s);
 assert.match(css, /\.developer-log\s*>\s*div\s*\{[^}]*word-break:\s*break-word/s);
 assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
 assert.match(css, /button:focus-visible/);
+assert.match(html, /id="toast"[^>]+role="status"[^>]+aria-live="polite"[^>]+aria-atomic="true"/,
+  '操作結果を支援技術にも通知します');
+assert.ok(renderer.includes('<button type="button" class="project-item'),
+  'プロジェクト選択はキーボード操作できるボタンにします');
+assert.ok(renderer.includes('aria-current="${state.selectedDir === p.dir'),
+  '選択中のプロジェクトを支援技術へ伝えます');
+const flowOverview = renderer.slice(renderer.indexOf('const overviewView ='), renderer.indexOf('const graphView ='));
+assert.ok(flowOverview.indexOf('${adviceBanner}') < flowOverview.indexOf('flow-progress-block'),
+  '次に必要な対応を進捗より先に表示します');
+assert.ok(flowOverview.indexOf('flow-progress-block') < flowOverview.indexOf('flow-request-details'),
+  '長い依頼内容は進捗と操作の後ろへ移します');
+assert.ok(flowOverview.includes('<details class="flow-request-details">'),
+  '依頼内容は必要なときだけ展開します');
+assert.match(css, /\.sync-action\s*\{[^}]*min-height:\s*44px/s);
+assert.match(css, /@media \(max-width: 900px\)[\s\S]*?#tabs\s*\{[^}]*flex-wrap:\s*wrap/s,
+  '狭い幅でも設定タブを横スクロールの外へ隠しません');
 assert.match(css, /\.amigos-mission-grid\s*\{/);
 assert.match(css, /\.amigos-mission-card\s*\{/);
 assert.match(css, /\.amigos-detail-dialog\s*\{/);
@@ -243,8 +259,12 @@ const restoreUiStateSource = renderer.slice(
   renderer.indexOf('function restoreUiState('),
   renderer.indexOf('\nfunction renderAllTabs(', renderer.indexOf('function restoreUiState('))
 );
+assert.ok(renderer.includes('function detailsUiKey('),
+  '明示キーのない折りたたみも再描画後に照合できる共通キーを持ちます');
+assert.match(renderer, /document\.querySelectorAll\('details'\)/,
+  '再描画される全折りたたみの開閉状態を保存します');
 assert.ok(
-  restoreUiStateSource.indexOf("document.querySelectorAll('details[data-ui-key]')")
+  restoreUiStateSource.indexOf("document.querySelectorAll('details')")
     < restoreUiStateSource.indexOf('Object.entries(ui.scroll)'),
   '詳細を開いてレイアウトを確定してからスクロール位置を復元します'
 );
