@@ -1,0 +1,33 @@
+{
+  "name": "sandbox",
+  "description": "ynitto/sandbox の Claude Code プラグイン",
+  "owner": {
+    "name": "ynitto"
+  },
+  "plugins": [
+    {
+      "name": "sandbox-skills",
+      "source": "./",
+      "description": "agent-project / agent-flow / winauto 等のスキル群"
+    },
+    {
+      "name": "sandbox-skills-core",
+      "source": "./",
+      "description": "core tier のスキルだけ（文脈コストを抑えたい場合）",
+      "skills": [
+        "./.github/skills/agentic-search/",
+        "./.github/skills/git-skill-manager/",
+        "./.github/skills/karpathy-guidelines/",
+        "./.github/skills/ltm-use/",
+        "./.github/skills/persona-use/",
+        "./.github/skills/scrum-master/",
+        "./.github/skills/skill-creator/",
+        "./.github/skills/skill-evaluator/",
+        "./.github/skills/skill-mentor/",
+        "./.github/skills/skill-selector/",
+        "./.github/skills/slop-police/"
+      ],
+      "agents": []
+    }
+  ]
+}
