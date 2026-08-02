@@ -505,6 +505,24 @@ class GitTransport:
             self._last_pull = now
         return True
 
+    def _scope_absent(self) -> bool:
+        """ステージ対象の名前空間が作業ツリーにも index にも無いか。
+
+        `git add -A -- <subdir>` は該当が皆無だと `pathspec ... did not match any files`
+        で失敗する。自分の subdir をまだ 1 度も書いていない起動直後がこれに当たり、
+        「押し出すものが無い」という正当な no-op でしかない——バスは毎パス `sync_push` を
+        呼ぶ（`state_git_subdir` 運用）ので、ここを失敗にすると初回パスで必ず止まる。
+
+        判定は文言ではなく実体で行う（git のメッセージは locale で変わりうる）。index を
+        見るのは、追跡ファイルを丸ごと消した「削除だけ」のパスを no-op と誤判定しないため。
+        """
+        if not self.subdir:
+            return False
+        if os.path.isdir(os.path.join(self.workdir, self.subdir)):
+            return False
+        tracked = self._git(["ls-files", "--", self.subdir], check=False)
+        return tracked.returncode == 0 and not tracked.stdout.strip()
+
     def _commit_pending(self, msg: str) -> None:
         """作業ツリーの未確定分を add + commit する（コミット対象が無ければ何もしない）。
         subdir 指定時はその名前空間だけをステージする（多重コミッタの下で他者のパスを
@@ -513,7 +531,8 @@ class GitTransport:
 
         「対象なし」は git の文言ではなく index の差分で判定する。subdir スコープ外に
         untracked があると `nothing added to commit but untracked files present` になり、
-        文言マッチだけだと正当な no-op を誤って例外にする。
+        文言マッチだけだと正当な no-op を誤って例外にする。subdir 自体がまだ無い初回パスは
+        add がそもそも通らないので、`_scope_absent` で同じく no-op に倒す。
         """
         args = ["add", "-A", "--", self.subdir] if self.subdir else ["add", "-A"]
         p = self._git(args, check=False)
@@ -521,6 +540,8 @@ class GitTransport:
             self._rebuild_clone()
             p = self._git(args, check=False)
         if p.returncode != 0:
+            if self._scope_absent():
+                return
             raise RuntimeError(
                 f"git add に失敗しました: {(p.stderr or p.stdout or '').strip()[:300]}")
         # diff --cached --quiet: 0=差分なし / 1=差分あり / それ以外=障害
@@ -531,6 +552,8 @@ class GitTransport:
             self._rebuild_clone()
             p = self._git(args, check=False)
             if p.returncode != 0:
+                if self._scope_absent():
+                    return
                 raise RuntimeError(
                     f"git add に失敗しました: {(p.stderr or p.stdout or '').strip()[:300]}")
             staged = self._git(["diff", "--cached", "--quiet"], check=False)
@@ -545,6 +568,8 @@ class GitTransport:
             self._rebuild_clone()
             p = self._git(args, check=False)
             if p.returncode != 0:
+                if self._scope_absent():
+                    return
                 raise RuntimeError(
                     f"git add に失敗しました: {(p.stderr or p.stdout or '').strip()[:300]}")
             staged = self._git(["diff", "--cached", "--quiet"], check=False)

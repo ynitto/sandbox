@@ -7,6 +7,7 @@ bare repo + 故意のロック残骸/中断 rebase/オブジェクト破損を�
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -338,6 +339,47 @@ class TestPushSkipsWhenNothingToSend(TransportTestBase):
         with open(os.path.join(wd, "noise.txt"), "w") as f:
             f.write("outside scope\n")
         t._commit_pending("noop")  # 例外にならないこと
+
+    def test_sync_push_is_noop_before_subdir_exists(self):
+        """自分の subdir をまだ 1 度も書いていない起動直後の push は no-op。
+
+        `git add -A -- <subdir>` は該当が皆無だと pathspec エラーで落ちる。バスは毎パス
+        sync_push を呼ぶ（state_git_subdir 運用）ので、ここを失敗にすると初回パスで必ず
+        止まる——「押し出すものが無い」は正常系。"""
+        wd = os.path.join(self.tmp.name, "fresh-node")
+        t = GitTransport(wd, self.remote, branch="main", subdir="agent-flow")
+        t.ensure_clone()
+        self.assertFalse(os.path.isdir(os.path.join(wd, "agent-flow")))
+        t.sync_push("first pass")  # 例外にならないこと
+
+        # 実際に書いたら、同じ経路がちゃんと push すること（no-op に倒しすぎない）。
+        os.makedirs(os.path.join(wd, "agent-flow"), exist_ok=True)
+        with open(os.path.join(wd, "agent-flow", "state.json"), "w") as f:
+            f.write("{}\n")
+        t.sync_push("second pass")
+        other = os.path.join(self.tmp.name, "reader")
+        r = GitTransport(other, self.remote, branch="main", subdir="agent-flow")
+        r.ensure_clone()
+        self.assertTrue(os.path.isfile(os.path.join(other, "agent-flow", "state.json")))
+
+    def test_scoped_delete_only_pass_still_commits(self):
+        """subdir 配下を丸ごと消したパスは no-op ではない（削除を push する必要がある）。
+
+        `_scope_absent` が作業ツリーの有無だけを見ていると、この削除が同期されず、
+        他 PC には消したはずのファイルが残り続ける。"""
+        wd = os.path.join(self.tmp.name, "deleter")
+        t = GitTransport(wd, self.remote, branch="main", subdir="agent-flow")
+        t.ensure_clone()
+        os.makedirs(os.path.join(wd, "agent-flow"), exist_ok=True)
+        with open(os.path.join(wd, "agent-flow", "gone.json"), "w") as f:
+            f.write("{}\n")
+        t.sync_push("add")
+        shutil.rmtree(os.path.join(wd, "agent-flow"))
+        t.sync_push("remove")
+        other = os.path.join(self.tmp.name, "reader2")
+        r = GitTransport(other, self.remote, branch="main", subdir="agent-flow")
+        r.ensure_clone()
+        self.assertFalse(os.path.exists(os.path.join(other, "agent-flow", "gone.json")))
 
 
 class TestHangGuards(unittest.TestCase):

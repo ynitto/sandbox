@@ -119,6 +119,22 @@ class EligibleTests(unittest.TestCase):
         self.assertFalse(board.eligible(
             post(requires={"contract_version": "not-a-number"}), repos=REGISTRY))
 
+    def test_non_finite_contract_version_fails_closed_without_raising(self):
+        """NaN / Inf は「拾わない」であって「落ちる」ではない。
+
+        `json` は既定で `NaN` / `Infinity` リテラルを受理するので、そういう公示が板に
+        1 件混ざると `int()` の ValueError / OverflowError が入札巡回ごと止めてしまう
+        （fail-close を入れた際の取りこぼし）。"""
+        for raw in ('{"contract_version": NaN}', '{"contract_version": Infinity}',
+                    '{"contract_version": -Infinity}'):
+            req = json.loads(raw)
+            with self.subTest(raw=raw):
+                self.assertFalse(board.eligible(post(requires=req), repos=REGISTRY))
+
+    def test_fractional_contract_version_fails_closed(self):
+        self.assertFalse(board.eligible(
+            post(requires={"contract_version": 1.5}), repos=REGISTRY))
+
 
 class WorkloadEligibilityTests(unittest.TestCase):
     """`workloads` は**ノードが「これしかやらない」と言う条件**なので fail-open（P2-3）。
