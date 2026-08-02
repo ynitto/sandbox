@@ -1051,13 +1051,24 @@ class StateGitSyncTests(unittest.TestCase):
         self.assertFalse((self.bus_root / ".state-git").exists())
 
     def test_tmp_and_dot_files_excluded(self):
+        """書きかけ / クラッシュ残骸の一時ファイルは共有状態リポジトリへ送らない。
+
+        実際に生成されるのは原子書き込みの `<name>.tmp.<pid>[.<unique>]`
+        （`agentcore.protocol.write_json_atomic` / `agent_flow.util.write_json_atomic`）。
+        素の `.tmp` だけを除外していた頃は、torn JSON の残骸が commit・push されて
+        全 PC のクローンへ配られていた。"""
         bus = self._bus()
-        with open(os.path.join(bus.run_dir, "meta.json.tmp"), "w", encoding="utf-8") as f:
-            f.write("{}")                                        # 書きかけの中間ファイル
+        names = ["meta.json.tmp",                       # `_save_manifest` 形式
+                 f"meta.json.tmp.{os.getpid()}",        # 旧・原子書き込み形式
+                 f"meta.json.tmp.{os.getpid()}.1234"]   # 現・原子書き込み形式
+        for name in names:
+            with open(os.path.join(bus.run_dir, name), "w", encoding="utf-8") as f:
+                f.write("{")                            # torn JSON（書きかけ）
         kf.state_sync(self._args(), force=True)
         got = self._other("check")
         self.assertTrue((got / "kf" / "runs" / "run1" / "meta.json").exists())
-        self.assertFalse((got / "kf" / "runs" / "run1" / "meta.json.tmp").exists())
+        for name in names:
+            self.assertFalse((got / "kf" / "runs" / "run1" / name).exists(), name)
         self.assertFalse((got / "kf" / ".state-git").exists())
 
     def test_dot_prefixed_subdir_works(self):

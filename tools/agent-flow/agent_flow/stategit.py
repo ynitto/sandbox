@@ -222,10 +222,19 @@ class StateGit:
             json.dump(manifest, f, ensure_ascii=False, sort_keys=True)
         os.replace(tmp, self._manifest_path)
 
-    @staticmethod
-    def _excluded(parts: "tuple[str, ...]") -> bool:
-        # "." 始まり（.state-git 自身・.gitkeep 等の管理領域）と書きかけの .tmp は同期しない
-        return any(s.startswith(".") for s in parts) or parts[-1].endswith(".tmp")
+    # 書きかけ / クラッシュ残骸の一時ファイル名。`_save_manifest` の `.tmp` に加えて、
+    # agentcore の原子書き込みが作る `<name>.tmp.<pid>` と `<name>.tmp.<pid>.<unique>` を
+    # 拾う（`agentcore.protocol.write_json_atomic` / `agent_flow.util.write_json_atomic`）。
+    # ここが `.tmp` 末尾だけを見ていた間、torn JSON の残骸が共有状態リポジトリへ commit・
+    # push され、全 PC のクローンへ配られていた。掃除側の正規表現（`cleanup._TMP_SUFFIX_RE`）
+    # と同じ形を見る。
+    _TMP_NAME_RE = re.compile(r"\.tmp(?:\.\d+(?:\.[^.]+)?)?$")
+
+    @classmethod
+    def _excluded(cls, parts: "tuple[str, ...]") -> bool:
+        # "." 始まり（.state-git 自身・.gitkeep 等の管理領域）と書きかけの一時ファイルは同期しない
+        return (any(s.startswith(".") for s in parts)
+                or bool(cls._TMP_NAME_RE.search(parts[-1])))
 
     @staticmethod
     def _remote_wins(rel: str) -> bool:

@@ -54,6 +54,32 @@ class TestClaimTieBreak(unittest.TestCase):
             "who": "alice", "ts": 1.0, "lease_until": time.time() + 60})
         self.assertEqual(protocol.winner(self.claim_dir), "alice")
 
+    def test_claim_without_ts_never_wins(self):
+        """`ts` 欠落を 0.0 と読むと、その claim が最小値として恒久的に勝ち続ける。
+
+        lease は生きているので期限切れでも消えず、正当な claimant は全員 try_claim が
+        False になる——「誰も取れない」ではなく「壊れた 1 件が独占する」失敗になる。"""
+        os.makedirs(self.claim_dir, exist_ok=True)
+        alice_ts = time.time()
+        protocol.write_json_atomic(os.path.join(self.claim_dir, "alice.json"), {
+            "who": "alice", "ts": alice_ts, "lease_until": time.time() + 60})
+        for name, rec in (("no-ts", {"who": "no-ts", "lease_until": time.time() + 60}),
+                          ("null-ts", {"who": "null-ts", "ts": None,
+                                       "lease_until": time.time() + 60})):
+            with self.subTest(name=name):
+                protocol.write_json_atomic(os.path.join(self.claim_dir, f"{name}.json"), rec)
+                self.assertEqual(protocol.winner(self.claim_dir), "alice")
+
+    def test_non_finite_ts_is_ignored(self):
+        """NaN は比較が常に False になるため、`min()` の結果が入力順で変わる。
+        決定性（同じ claim 集合なら全ノードが同じ勝者を選ぶ）を守るため無視する。"""
+        os.makedirs(self.claim_dir, exist_ok=True)
+        protocol.write_json_atomic(os.path.join(self.claim_dir, "nan.json"), {
+            "who": "nan", "ts": float("nan"), "lease_until": time.time() + 60})
+        protocol.write_json_atomic(os.path.join(self.claim_dir, "bob.json"), {
+            "who": "bob", "ts": time.time(), "lease_until": time.time() + 60})
+        self.assertEqual(protocol.winner(self.claim_dir), "bob")
+
     def test_claim_after_lease_expiry_can_be_won_by_new_claimant(self):
         os.makedirs(self.claim_dir, exist_ok=True)
         protocol.write_json_atomic(os.path.join(self.claim_dir, "alice.json"), {

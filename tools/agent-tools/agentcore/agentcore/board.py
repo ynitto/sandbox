@@ -35,6 +35,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 
 from . import vocab
@@ -74,12 +75,19 @@ def _parse_contract_version(value) -> "int | None":
     """requires.contract_version を整数へ。読めなければ None（呼び出し側が fail-close）。
 
     bool は int の下位型なので除外する（`True` を版 1 と読まない）。文字列の `"1"` は受ける。
+
+    NaN / Inf は `int()` が ValueError / OverflowError を投げる。`json` は既定で `NaN` /
+    `Infinity` リテラルを受理するので、そういう公示が板に 1 件あるだけで `eligible()` が
+    例外になり、そのノードの入札巡回ごと止まってしまう——fail-close は「拾わない」であって
+    「落ちる」ではないので、読めない値として None に倒す。
     """
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, int):
         return value
-    if isinstance(value, float) and value == int(value):
+    if isinstance(value, float):
+        if not math.isfinite(value) or value != int(value):
+            return None
         return int(value)
     if isinstance(value, str):
         try:

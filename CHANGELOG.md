@@ -38,6 +38,29 @@ fail-close 検証が壊れる経路）。仕様レベルの積み残し（分散
   誤例外を防ぐ
 - `agentcli.normalize` は `env: []` / `errors: {}` を `or {}` で握り潰さない
 
+### agent-tools / agentcore: 上記修正の取りこぼしと副作用の追修正
+
+前項の追試で見つかった、fail-close の入れ方が「拾わない」ではなく「落ちる / 止まる」に
+なっていた 2 件と、片側だけ直っていた 2 件を揃えた。
+
+- **transport**: subdir をまだ 1 度も書いていない起動直後の `sync_push` が
+  `pathspec ... did not match any files` で **RuntimeError になっていた**（前項で
+  `git add` の失敗を握り潰さなくしたときの取りこぼし——`state_git_subdir` 運用はバスが
+  毎パス `sync_push` を呼ぶため、初回パスで必ず止まる）。ステージ対象が作業ツリーにも
+  index にも無いときだけ no-op に倒す（`_scope_absent`）。文言ではなく実体で判定し、
+  「subdir 配下を丸ごと消した削除だけのパス」は従来どおり commit・push する
+- **board**: `requires.contract_version` が `NaN` / `Infinity` だと `int()` の
+  ValueError / OverflowError が `eligible()` を貫通し、**そのノードの入札巡回ごと止まって
+  いた**（`json` は既定でこれらのリテラルを受理する）。読めない値として不参加へ倒す
+- **protocol**: `ts` 欠落・`null` の claim を `_as_float` が 0.0 と読み、最小 ts として
+  **恒久的に勝ち続けていた**（前項で `renew_lease` 側だけ `_as_float` 化し、`winner` 側の
+  同じ性質が残っていた）。欠落は「読めない」として無視する。`NaN` も無視する——比較が常に
+  False になり `min()` の結果が入力順で変わるため、勝者判定の決定性が壊れる
+- **agent-flow stategit**: 同期除外が `.tmp` 末尾だけを見ており、実際に生成される
+  `<name>.tmp.<pid>[.<unique>]` を拾えず、**torn JSON の残骸が共有状態リポジトリへ
+  commit・push され全 PC へ配られていた**（前項では掃除側 `cleanup` だけが新接尾辞に
+  対応した）。除外側も同じ形を見る
+
 ### agent-flow / flow-planner: 列挙駆動の分解（対象単位のノードが生まれるようにする）・集約の木構造化
 
 「API のドキュメント化」のような粗いバックログに対し、対象単位のノードが生まれず

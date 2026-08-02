@@ -63,6 +63,27 @@ agentcli の型握り潰し）も同 PR で緩和済み。
 dashboard URL / agent-cli golden 緑。agent-project で当時 FAIL した 2 件は、査読で古い期待値と
 判明して訂正し、1158 件が緑（§5）。
 
+### 2b. 上記の追修正（追試で見つかった取りこぼし・副作用）
+
+F1〜F16 を追試したところ、**fail-close の入れ方が「拾わない」ではなく「落ちる / 止まる」に
+なっていた 2 件**と、**同じ性質を片側だけ直していた 2 件**が残っていた。テストはいずれも
+修正前に落ちることを確認済み。
+
+| ID | 領域 | 直したこと | 由来 |
+| --- | --- | --- | --- |
+| G1 | `transport` | subdir 未作成の初回 `sync_push` が pathspec エラーで RuntimeError。ステージ対象が作業ツリーにも index にも無いときだけ no-op（`_scope_absent`） | F12 の取りこぼし |
+| G2 | `board` | `contract_version` が `NaN` / `Infinity` だと `int()` の例外が `eligible()` を貫通し入札巡回ごと停止 | F6 の取りこぼし |
+| G3 | `protocol` | `winner()` 側の `_as_float` が `ts` 欠落・`null` を 0.0 と読み、壊れた claim が恒久的に勝つ。`NaN` も決定性を壊すため無視 | F2 が `renew_lease` 側のみだった |
+| G4 | `agent-flow` stategit | 同期除外が `.tmp` 末尾のみで、実生成名 `<name>.tmp.<pid>[.<unique>]` の残骸を共有状態リポジトリへ push していた | F16 が掃除側のみだった |
+
+G1 は `state_git_subdir` 運用（バスが毎パス `sync_push` を呼ぶ）で初回パスが必ず止まるため、
+影響が最も大きい。G2 は `json` が既定で `NaN` / `Infinity` リテラルを受理する点が前提。
+
+**教訓（次の監査へ）**: fail-open を塞ぐ変更は、「拾わない」に倒れているか「落ちる」に
+倒れていないかを必ず対にして確認する。また、同じ値を読む関数が複数経路にある場合
+（`_as_float` の `winner` / `renew_lease`、一時名の掃除側 / 除外側）は、片側だけ直すと
+症状が別経路へ移るだけになる。
+
 ---
 
 ## 3. 未修正（仕様・設計バグ / 意図的に触らなかったもの）

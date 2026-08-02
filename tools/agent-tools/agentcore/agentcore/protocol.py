@@ -20,6 +20,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import math
 import os
 import tempfile
 import threading
@@ -167,14 +168,20 @@ def list_claims(claim_dir: str) -> "dict[str, dict]":
     return out
 
 
-def _as_float(value, default: float = 0.0) -> "Optional[float]":
-    """claim レコードの数値フィールドを float へ。数値として読めなければ None。"""
-    if value is None:
-        return default
+def _as_float(value) -> "Optional[float]":
+    """claim レコードの数値フィールドを float へ。数値として読めなければ None。
+
+    欠落（キー無し・`null`）も「読めない」に含める。ここで 0.0 に倒すと、`ts` を持たない
+    壊れた claim が最小の ts として **恒久的に勝ち続け**、正当な claimant が全員弾かれる。
+
+    NaN / Inf も None に倒す。NaN は比較が常に False になるため、`min()` のタイブレークが
+    入力順で変わり、「同じ claim 集合なら全ノードが同じ勝者を選ぶ」決定性が壊れる。
+    """
     try:
-        return float(value)
+        f = float(value)
     except (TypeError, ValueError):
         return None
+    return f if math.isfinite(f) else None
 
 
 def winner(claim_dir: str, now: "Optional[float]" = None) -> "Optional[str]":
@@ -282,7 +289,7 @@ def renew_lease(claim_dir: str, who: str, lease_sec: float,
             return False
         if isinstance(cur, dict):
             # winner() と同じく壊れた数値は 0 扱い——float() 直呼びは ValueError で心拍全体を止める。
-            lease_until = _as_float(cur.get("lease_until"), 0.0) or 0.0
+            lease_until = _as_float(cur.get("lease_until")) or 0.0
             if lease_until - now > lease_sec / 2.0:
                 return False  # まだ十分残っている → 今回は延長不要
             ts = cur.get("ts", now)
