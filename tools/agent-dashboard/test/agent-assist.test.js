@@ -117,8 +117,8 @@ test('buildCommand: codex・cursor・ollamaでもcharter補完を実行できる
   assert.ok(cursor.args.includes('--mode') && cursor.args.includes('ask'));
   assert.strictEqual(cursor.stdin, 'PROMPT');
   const ollama = agent.buildCommand('ollama', 'qwen3', 'PROMPT');
-  assert.strictEqual(ollama.command, 'ollama');
-  assert.deepStrictEqual(ollama.args, ['run', 'qwen3']);
+  assert.strictEqual(ollama.command, 'agent-ollama', 'headless は usage 計測ラッパー経由');
+  assert.deepStrictEqual(ollama.args, ['qwen3']);
   assert.strictEqual(ollama.stdin, 'PROMPT');
 });
 
