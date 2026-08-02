@@ -126,7 +126,7 @@ def _load_jsonc_file(path: Path) -> dict[str, Any]:
     except json.JSONDecodeError:
         # VS Code settings.json は JSONC のため、コメントと trailing comma を許容する。
         stripped = _strip_jsonc_comments(text)
-        stripped = re.sub(r"(\s*[}\]]),", r"\1", stripped)
+        stripped = re.sub(r",(?=\s*[}\]])", "", stripped)
         data = json.loads(stripped)
         return data if isinstance(data, dict) else {}
 
@@ -263,5 +263,3 @@ def save_prompt_config(base_path: str, prompts: list[dict[str, Any]]) -> bool:
     except Exception as exc:
         log.error("定期プロンプト設定の保存に失敗しました: %s", exc)
         return False
-
-

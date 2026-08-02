@@ -340,5 +340,6 @@ def poll_board(daemon) -> "list[str]":
             "heartbeat": now_iso(), "lease_until": time.time() + lease})
         mirror.sync_push(f"won+dispatch {did} by {daemon.node_id}")
         handed.append(did)
+        inflight += 1
         log(daemon.node_id, f"board 落札→ミッション公示 {did}: {str(post.get('goal',''))[:50]}")
     return handed

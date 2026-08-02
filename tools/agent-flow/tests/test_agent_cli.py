@@ -305,13 +305,13 @@ class AgentCliTests(unittest.TestCase):
             kf._AGENT_CLI = orig
 
     def test_child_base_forwards_agent_cli_and_parses(self):
-        ns = types.SimpleNamespace(lease=1800.0, git=None, agent_cli="claude")
+        ns = types.SimpleNamespace(lease=1800.0, git=None, agent_cli="cursor")
         base = kf._child_base(ns, "/tmp/bus")
         i = base.index("--agent-cli")
-        self.assertEqual(base[i + 1], "claude")
+        self.assertEqual(base[i + 1], "cursor")
         # 子プロセスの argv として parser が受理する（usage エラーで即死しない）
         args = kf.build_parser().parse_args(base[2:] + ["status"])
-        self.assertEqual(args.agent_cli, "claude")
+        self.assertEqual(args.agent_cli, "cursor")
 
 
 class StructuredExtractionTests(unittest.TestCase):

@@ -46,6 +46,10 @@
           },
           "additionalProperties": true
         },
+        "verification_plan": {
+          "$ref": "verification-plan.schema.json",
+          "description": "flow へ検証を委譲する場合の統一検証計画。agent-project が確定し、請負側 agent-flow が同じ plan を実行する"
+        },
         "references": {
           "type": "array",
           "description": "参照リポジトリ（読むだけ）。flow: submit_request.references / amigos: design doc に「## 参照リポジトリ」節として描画",

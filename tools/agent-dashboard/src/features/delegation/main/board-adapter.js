@@ -98,14 +98,14 @@ function readBids(dir, awardNode, nowSec) {
   for (const rec of all) {
     if (rec.lease_until < nowSec) rec.state = 'expired';
     else if (rec.who === winner) rec.state = 'winner';
-    else rec.state = awardNode ? 'applied' : 'lost';
+    else rec.state = awardNode ? 'lost' : 'applied';
   }
   return { bids: all, winner };
 }
 
 function derivePhase(dir, winner, statuses, result, cancelled) {
   if (cancelled) return 'cancelled';
-  if (result) return result.status === 'failed' ? 'failed' : 'done';
+  if (result) return ['failed', 'cancelled'].includes(result.status) ? result.status : 'done';
   if (winner && statuses[winner]) {
     const st = String(statuses[winner].state || '');
     if (['waiting', 'reviewing'].includes(st)) return st;

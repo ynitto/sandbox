@@ -96,6 +96,20 @@ class BoardParticipationTests(AmigosTestCase):
         dm.node_declaration = host
         self.assertEqual(B.poll_board(dm), [])
 
+    def test_max_concurrent_applies_within_one_poll(self):
+        from agent_amigos import board as B
+        boarddir = os.path.join(self.tmp, "board")
+        os.makedirs(os.path.join(boarddir, "delegations"), exist_ok=True)
+        host = os.path.join(self.tmp, "host.json")
+        with open(host, "w", encoding="utf-8") as f:
+            json.dump({"budget": {"max_concurrent": 1}}, f)
+        self._board_post(boarddir, "dg-1", workspace={"url": "git@h:team/app.git"})
+        self._board_post(boarddir, "dg-2", workspace={"url": "git@h:team/app.git"})
+        dm = self.daemon(node="pc-a", commands_home=self.tmp, board=boarddir,
+                         repos={"app": {"url": "git@h:team/app.git", "owns": ["**"]}})
+        dm.node_declaration = host
+        self.assertEqual(B.poll_board(dm), ["dg-1"])
+
     def test_owner_picks_applies_without_dispatching(self):
         # owner-picks: award.json が無い間は応募（bid）を書くだけでミッション公示しない。
         from agent_amigos import board as B

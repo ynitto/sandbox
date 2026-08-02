@@ -328,7 +328,7 @@ def _auto_attach_tmux_if_needed(args: argparse.Namespace) -> None:
     target_path = Path.cwd()
     instance_id = args.instance_id or uuid.uuid4().hex[:8]
     session_name = _tmux_session_name(target_path, instance_id)
-    script_path = Path(__file__).resolve()
+    script_path = Path(sys.argv[0]).resolve()
     command_parts = [
         shlex.quote(sys.executable),
         shlex.quote(str(script_path)),
@@ -393,5 +393,3 @@ def _auto_attach_tmux_if_needed(args: argparse.Namespace) -> None:
         tmux_bin,
         [tmux_bin, "attach-session", "-t", session_name],
     )
-
-

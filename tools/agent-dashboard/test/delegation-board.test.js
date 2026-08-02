@@ -164,6 +164,25 @@ test('board: 失効した入札は expired・cancelled マーカーで cancelled
   assert.strictEqual(v.phase, 'cancelled');
 });
 
+test('board: award 前の非勝者は applied、award 後は lost', () => {
+  const dir = path.join(tmpdir('deleg-board-'), 'delegations', 'dg-bids');
+  writeJson(path.join(dir, 'post.json'), { id: 'dg-bids', workload: 'flow', goal: 'g' });
+  writeJson(path.join(dir, 'bids', 'pc-a.json'), { who: 'pc-a', ts: 1, lease_until: 9999 });
+  writeJson(path.join(dir, 'bids', 'pc-b.json'), { who: 'pc-b', ts: 2, lease_until: 9999 });
+  let v = boardAdapter.toView(dir, 1000);
+  assert.strictEqual(v.units[0].bids.find((b) => b.who === 'pc-b').state, 'applied');
+  writeJson(path.join(dir, 'award.json'), { node: 'pc-a' });
+  v = boardAdapter.toView(dir, 1000);
+  assert.strictEqual(v.units[0].bids.find((b) => b.who === 'pc-b').state, 'lost');
+});
+
+test('board: cancelled result はcancelled 終端のまま表示する', () => {
+  const dir = path.join(tmpdir('deleg-board-'), 'delegations', 'dg-cancelled');
+  writeJson(path.join(dir, 'post.json'), { id: 'dg-cancelled', workload: 'flow', goal: 'g' });
+  writeJson(path.join(dir, 'result.json'), { winner: 'pc-a', status: 'cancelled' });
+  assert.strictEqual(boardAdapter.toView(dir, 1000).phase, 'cancelled');
+});
+
 // --- IPC 配線 ---------------------------------------------------------------
 
 test('IPC: target=board の post は板リポジトリへ投函する', () => {

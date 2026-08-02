@@ -8,6 +8,8 @@ send_prompt 失敗時にセマフォスロットがリークしないこと、�
 import os
 import sys
 import unittest
+from unittest import mock
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import agent_loop as al  # noqa: E402
@@ -75,6 +77,21 @@ class InboxDispatchTests(unittest.TestCase):
         self.assertEqual(semaphore.acquired, ["%1"])
         self.assertEqual(semaphore.released, [])  # 解放は SlotMonitor 側の役目
         self.assertEqual(slot_monitor.tracked, ["%1"])
+
+
+class AutoAttachTests(unittest.TestCase):
+    def test_reexecutes_original_entrypoint(self):
+        args = SimpleNamespace(controller_mode=False, no_auto_attach=False,
+                               instance_id="test", log_level=None, split_direction=None)
+        with mock.patch.object(al.os, "environ", {}), \
+             mock.patch.object(al.sys, "argv", ["/opt/agent-loop"]), \
+             mock.patch.object(al.shutil, "which", return_value="/usr/bin/tmux"), \
+             mock.patch.object(al.subprocess, "run", return_value=SimpleNamespace(returncode=1)), \
+             mock.patch.object(al.os, "execvp") as execvp:
+            al._auto_attach_tmux_if_needed(args)
+        command = execvp.call_args_list[0].args[1][-1]
+        self.assertIn("/opt/agent-loop", command)
+        self.assertNotIn("agent_loop/__init__.py", command)
 
 
 if __name__ == "__main__":

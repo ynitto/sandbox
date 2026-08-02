@@ -90,7 +90,7 @@
       "properties": {
         "who": {"type": "string", "description": "実行ノード id"},
         "state": {
-          "enum": ["dispatched", "working", "waiting", "reviewing", "done", "failed", "away"],
+          "enum": ["dispatched", "working", "waiting", "reviewing", "done", "failed", "cancelled", "away"],
           "description": "正規化状態。dispatched = 引き渡し済み・エンジン未起動 / away = 計画停止中（amigos away）"
         },
         "native_id": {"type": "string", "description": "エンジン側 id（通常は委譲 id と同一 — D1）。突き合わせの正はこちら"},
