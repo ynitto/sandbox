@@ -24,46 +24,114 @@ def _load(name, path):
 hook = _load("gitlab_issue_hook_test", HERE.parent / "hooks" / "gitlab-issue-hook.py")
 
 
+def _scheduler(entries):
+    scheduler = al.PeriodicScheduler.__new__(al.PeriodicScheduler)
+    scheduler._session_mgr = types.SimpleNamespace(
+        ensure_session=mock.Mock(return_value=True),
+        get_pane_id=mock.Mock(return_value="%1"),
+    )
+    scheduler._semaphore = None
+    scheduler._slot_monitor = None
+    scheduler._entries = entries
+    scheduler._external_queues = {}
+    scheduler._lock = al.threading.Lock()
+    scheduler._stop_event = mock.Mock()
+    scheduler._stop_event.wait.side_effect = [False, True]
+    scheduler._node_budget_warned_at = 0.0
+    scheduler._drain_external_one = mock.Mock(return_value=False)
+    return scheduler
+
+
+def _run_once(scheduler):
+    with mock.patch.object(al, "_control_lifecycle", return_value="run"), \
+         mock.patch.object(al, "_node_budget_state", return_value=None), \
+         mock.patch.object(al, "_write_status"), \
+         mock.patch.object(al.time, "time", return_value=100):
+        scheduler._run_loop()
+
+
 class GitLabIssueHookTests(unittest.TestCase):
-    def test_simultaneous_updates_are_returned_over_successive_checks(self):
+    def test_update_advances_only_after_ack(self):
         issues = [
             {"iid": 1, "updated_at": "2026-08-02T00:00:01Z"},
             {"iid": 2, "updated_at": "2026-08-02T00:00:02Z"},
         ]
         with tempfile.TemporaryDirectory() as tmp, \
-             mock.patch.object(hook, "STATE_FILE", pathlib.Path(tmp, "state.json")), \
+            mock.patch.object(hook, "STATE_FILE", pathlib.Path(tmp, "state.json")), \
              mock.patch.object(hook, "_get_issues", return_value=issues):
             first = hook.check()
+            retried = hook.check()
+            hook.ack()
             second = hook.check()
         self.assertIn('"iid": 2', first)
+        self.assertIn('"iid": 2', retried)
         self.assertIn('"iid": 1', second)
 
 
-class EventQueueTests(unittest.TestCase):
-    def test_event_hook_result_enters_retryable_queue(self):
+class EventHookDispatchTests(unittest.TestCase):
+    def test_successful_event_dispatch_preserves_fresh_context_and_acks(self):
         entry = {"id": "p1", "name": "issues", "prompt": "", "event_hook": "hook.py",
                  "next_run_at": 0, "enabled": True, "exclude_from_concurrency": False,
-                 "fresh_context": False}
-        scheduler = al.PeriodicScheduler.__new__(al.PeriodicScheduler)
-        scheduler._session_mgr = types.SimpleNamespace(ensure_session=mock.Mock(return_value=False))
-        scheduler._semaphore = None
-        scheduler._slot_monitor = None
-        scheduler._entries = [entry]
-        scheduler._external_queues = {}
-        scheduler._lock = al.threading.Lock()
-        scheduler._stop_event = mock.Mock()
-        scheduler._stop_event.wait.side_effect = [False, True]
-        scheduler._node_budget_warned_at = 0.0
+                 "fresh_context": True, "fresh_context_interval_minutes": None,
+                 "interval_minutes": 1}
+        scheduler = _scheduler([entry])
         scheduler._call_hook_check = mock.Mock(return_value="prompt")
-        scheduler.enqueue_external = mock.Mock(return_value=True)
-        scheduler._drain_external_one = mock.Mock(side_effect=[False, True])
-        with mock.patch.object(al, "_control_lifecycle", return_value="run"), \
-             mock.patch.object(al, "_node_budget_state", return_value=None), \
-             mock.patch.object(al, "_write_status"), \
-             mock.patch.object(al.time, "time", return_value=100):
-            scheduler._run_loop()
-        scheduler.enqueue_external.assert_called_once_with("issues", "prompt")
-        self.assertEqual(scheduler._drain_external_one.call_count, 2)
+        scheduler._call_hook_ack = mock.Mock()
+        scheduler._dispatch_prompt = mock.Mock(return_value=True)
+        _run_once(scheduler)
+        dispatched = scheduler._dispatch_prompt.call_args.args[0]
+        self.assertEqual(dispatched["prompt"], "prompt")
+        self.assertTrue(dispatched["_should_clear"])
+        scheduler._call_hook_ack.assert_called_once()
+        self.assertEqual(scheduler._call_hook_ack.call_args.args[0]["id"], "p1")
+
+    def test_failed_event_dispatch_does_not_ack(self):
+        entry = {"id": "p1", "name": "issues", "prompt": "", "event_hook": "hook.py",
+                 "next_run_at": 0, "enabled": True, "exclude_from_concurrency": False,
+                 "fresh_context": False, "interval_minutes": 1}
+        scheduler = _scheduler([entry])
+        scheduler._call_hook_check = mock.Mock(return_value="prompt")
+        scheduler._call_hook_ack = mock.Mock()
+        scheduler._dispatch_prompt = mock.Mock(return_value=False)
+        _run_once(scheduler)
+        scheduler._call_hook_ack.assert_not_called()
+
+    def test_slot_rejection_does_not_ack(self):
+        entry = {"id": "p1", "name": "issues", "prompt": "", "event_hook": "hook.py",
+                 "next_run_at": 0, "enabled": True, "exclude_from_concurrency": False,
+                 "fresh_context": False, "interval_minutes": 1}
+        scheduler = _scheduler([entry])
+        scheduler._semaphore = object()
+        scheduler._call_hook_check = mock.Mock(return_value="prompt")
+        scheduler._call_hook_ack = mock.Mock()
+        scheduler._dispatch_prompt = mock.Mock(return_value=True)
+        scheduler._acquire_slot = mock.Mock(return_value=False)
+        _run_once(scheduler)
+        scheduler._dispatch_prompt.assert_not_called()
+        scheduler._call_hook_ack.assert_not_called()
+
+    def test_same_name_entries_keep_their_own_event_prompt(self):
+        entries = [
+            {"id": "p1", "name": "issues", "prompt": "", "event_hook": "one.py",
+             "next_run_at": 0, "enabled": True, "exclude_from_concurrency": False,
+             "fresh_context": False, "interval_minutes": 1},
+            {"id": "p2", "name": "issues", "prompt": "", "event_hook": "two.py",
+             "next_run_at": 0, "enabled": True, "exclude_from_concurrency": False,
+             "fresh_context": False, "interval_minutes": 1},
+        ]
+        scheduler = _scheduler(entries)
+        scheduler._call_hook_check = mock.Mock(side_effect=lambda entry: entry["id"] + "-prompt")
+        scheduler._call_hook_ack = mock.Mock()
+        scheduler._dispatch_prompt = mock.Mock(return_value=True)
+        _run_once(scheduler)
+        sent = [(call.args[0]["id"], call.args[0]["prompt"])
+                for call in scheduler._dispatch_prompt.call_args_list]
+        self.assertEqual(sent, [("p1", "p1-prompt"), ("p2", "p2-prompt")])
+
+    def test_event_hook_without_ack_remains_supported(self):
+        scheduler = al.PeriodicScheduler.__new__(al.PeriodicScheduler)
+        scheduler._load_hook_module = mock.Mock(return_value=types.SimpleNamespace(check=lambda: "x"))
+        scheduler._call_hook_ack({"event_hook": "hook.py", "name": "legacy"})
 
     def test_slot_or_send_failure_keeps_prompt_for_next_drain(self):
         entry = {"id": "p1", "name": "issues", "exclude_from_concurrency": False}

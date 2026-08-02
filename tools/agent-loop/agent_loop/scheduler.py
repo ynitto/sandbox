@@ -398,6 +398,19 @@ class PeriodicScheduler:
             return None
         return result
 
+    def _call_hook_ack(self, entry: dict[str, Any]) -> None:
+        """event_hook が ack() を提供していれば配送成功を通知する。"""
+        hook_path = Path(os.path.expanduser(entry["event_hook"])).resolve()
+        module = self._load_hook_module(hook_path)
+        ack_fn = getattr(module, "ack", None) if module is not None else None
+        if not callable(ack_fn):
+            return
+        try:
+            ack_fn()
+        except Exception as exc:
+            log.error("[%s] ack() でエラーが発生しました: %s",
+                      entry.get("name", ""), exc, exc_info=True)
+
     def _dispatch_prompt(self, entry: dict[str, Any], pane_id: str | None) -> bool:
         """プロンプトを送信し、失敗時は再起動する。"""
         name = str(entry.get("name", ""))
@@ -502,7 +515,7 @@ class PeriodicScheduler:
                 if not entry.get("enabled", True):
                     continue
 
-                # webhook / event_hook で積まれた外部キューを優先処理する（1 サイクル 1 件）。
+                # webhook で積まれた外部キューを優先処理する（1 サイクル 1 件）。
                 # 積まれていたサイクルはスケジュール発火より外部キューを優先する。
                 if self._drain_external_one(entry):
                     continue
@@ -535,10 +548,7 @@ class PeriodicScheduler:
                     if prompt_text is None:
                         self._update_entry(prompt_id, next_run_at=self._next_run_at_for_entry(entry))
                         continue
-                    self.enqueue_external(name, prompt_text)
-                    self._update_entry(prompt_id, next_run_at=self._next_run_at_for_entry(entry))
-                    self._drain_external_one(entry)
-                    continue
+                    entry["prompt"] = prompt_text
 
                 if not self._session_mgr.ensure_session(prompt_id, name):
                     log.warning("[%s] 対応セッションの準備に失敗したため今回の送信をスキップします。", name)
@@ -549,7 +559,9 @@ class PeriodicScheduler:
                         if pane_id and not self._acquire_slot(entry, pane_id):
                             continue
 
-                    self._dispatch_prompt(entry, pane_id)
+                    dispatched = self._dispatch_prompt(entry, pane_id)
+                    if dispatched and entry.get("event_hook"):
+                        self._call_hook_ack(entry)
 
                 self._update_entry(str(entry.get("id", "")), next_run_at=self._next_run_at_for_entry(entry))
 
@@ -567,4 +579,3 @@ class PeriodicScheduler:
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=5)
-

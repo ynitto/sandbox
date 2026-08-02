@@ -87,8 +87,8 @@
 | ID | 位置 | 内容 |
 | --- | --- | --- |
 | L1（修正済み） | `config.py:129` | JSONC の末尾カンマ除去 `re.sub(r"(\s*[}\]]),", r"\1", s)` が**逆**。`}, {` の区切りカンマを消して正常な JSON を壊し、末尾カンマは消せない。コメント付き settings.json に prompt が 2 件以上あると必ず `[]` へフォールバックする |
-| L2 | `config.py:195-197` / `config.py:8` | 保存先は `.agents/agent-loop.yml` 固定、読込は `.yaml` 優先。`.yaml` 運用のワークスペースでは `prompt-add` が再起動で消え、`prompt-remove` した prompt が復活する |
-| L3（修正済み） | `hooks/gitlab-issue-hook.py:144` / `scheduler.py:536-543` | hook がイベントを先に seen 化してから 1 件だけ返し、スロット不足時は破棄。設計（`agent-loop-event-hook-design.md:26`）の「次サイクルへ持ち越す」が守られず**イベントが恒久消失**。同時変更 N 件のうち N−1 件も同様 |
+| L2（修正済み） | `config.py:195-202` / `config.py:8` | 保存先は `.agents/agent-loop.yml` 固定、読込は `.yaml` 優先。`.yaml` 運用のワークスペースでは `prompt-add` が再起動で消え、`prompt-remove` した prompt が復活する |
+| L3（修正済み） | `hooks/gitlab-issue-hook.py` / `scheduler.py` | hook がイベントを先に seen 化してから 1 件だけ返し、スロット不足時は破棄。設計（`agent-loop-event-hook-design.md:26`）の「次サイクルへ持ち越す」が守られず**イベントが恒久消失**。同時変更 N 件のうち N−1 件も同様 |
 | L4 | `inbox.py:92-95` | メッセージごとに一意 `prompt_id` で tmux ペインを作るが破棄経路が無い。さらに `restart_if_dead`（`interactive.py:272`）が死んだ使い捨てペインを蘇生し続ける |
 | L5 | `session.py:33-35` | `startup_timeout` / `response_timeout` / `echo_output` は格納されるだけでどこからも読まれない **dead config**。実際の待ちは `_head.py:151` の `_SEND_STARTUP_TIMEOUT = 60` 固定。README:280-287 は「タイムアウトが起きたら `response_timeout: 600` に」と案内している |
 | L6 | README 全般 | `--config` / `--no-daemon` は argparse に存在せず（README:147 等の手順が exit 2）、対話コマンド `add/remove/default/attach/list/save` は未実装、設定探索の「cwd → HOME」は実際には `~/.agents` のみ、PID ロック `/tmp/agent-loop-<hash>.pid` は存在しない |
@@ -170,8 +170,8 @@
 | m3 | `agentcore/tests/` | `__init__.py` が無く、ルートからの `unittest discover` が 213 件中 87 件しか走らない（エラーは出ない）。内側テストの docstring が案内する `tools/agentcore/...` は存在しないパス |
 | m4 | `agentcore/tests/test_transport.py:415` | `unittest.main()` が `TestBackoffSeam` の定義より前にあり、直接実行だと回帰ガード 2 件が黙ってスキップされる |
 | m5 | `agent-flow/cleanup.py:15-16` | 掃除対象が旧 `$TMPDIR/agent-flow-locks`。実際の生成先は agentcore の `agentcore-claim-locks`（`protocol.py:110`）なので、`cleanup` は永遠に `locks=0` を報告し実ロックは溜まり続ける |
-| m6 | `agent-flow/workspace.py:257-277` | target ancestry 検査が push リトライ**前**にあり、競合時の `git rebase` が base-sync のマージコミットを潰しても再検査しないまま push する |
-| m7 | `agent-flow/work.py:160-170` | base-sync の競合解消を `executor` 任せにするため、`gitlab` executor だとリモート作業者が触れないローカル worktree の手順書が発行される。`defer_waits` 経路では worktree を消したうえで `_finish_wait` が step 7 の検査を飛ばして `done` を書く |
+| m6（修正済み、FL3） | `agent-flow/workspace.py:257-277` | target ancestry 検査が push リトライ**前**にあり、競合時の `git rebase` が base-sync のマージコミットを潰しても再検査しないまま push する |
+| m7（修正済み、FL3） | `agent-flow/work.py:160-170` | base-sync の競合解消を `executor` 任せにするため、`gitlab` executor だとリモート作業者が触れないローカル worktree の手順書が発行される。`defer_waits` 経路では worktree を消したうえで `_finish_wait` が step 7 の検査を飛ばして `done` を書く |
 | m8 | `agent-flow/patterns.py:346`, `doctor.py:243`, `executors/gitlab.py:202` | スキル探索先に現行ホーム `~/.agents/skills` が無い。新ホームのみの環境で planner が黙って劣化する |
 | m9 | `agent-flow/work.py:118`, `waits.py:182-193` | `max_open_issues` が run スコープ集計。8 run 並走で上限 × 8 まで発行され、`yaml.example:262` が謳うペーシングが成立しない |
 | m10 | `agent-amigos/agent-amigos.py:7-8` | 存在しない `tools/agentcore` を `sys.path` に挿入（コメントも誤り）。動いているのは `agent_amigos/__init__.py:17-21` が正しいパスを入れているため |
@@ -242,11 +242,12 @@
 | G3 | `agentcore/protocol.py` | `winner()` 側の `_as_float` が `ts` 欠落・`null` を 0.0 と読み、壊れた claim が恒久的に勝っていた。`NaN` も決定性を壊すため無視する |
 | G4 | `agent-flow/stategit.py` | 同期除外が `.tmp` 末尾のみで、実生成名 `<name>.tmp.<pid>[.<unique>]` の残骸を共有状態リポジトリへ push していた |
 | C1 / L1 | agent-loop 起動・設定読込 | 元 entrypoint の再実行と JSONC 末尾カンマ除去を修正した |
-| L3 | agent-loop event hook | 返却した更新だけを既読化し、既存の外部イベントキューで session / slot / 送信失敗を再試行するようにした |
+| L2 | agent-loop prompt 設定保存 | 読込に採用される既存 `.yaml` / `.yml` へ保存し、新規時だけ既定 `.yml` を作るよう統一した |
+| L3 | agent-loop event hook | `check()` は更新状態を保留し、通常の schedule 配送が成功した後だけ optional `ack()` で既読化するようにした。session / slot / `/clear` / prompt 送信失敗は ack せず次回再検出する |
 | FL1 / AM1 / AB1 | agent-flow / agent-amigos / agent-board | plugin CLI の子プロセス引継ぎ、同一 poll 内の同時実行上限、README の result 所有者を修正した |
 | D1 / S1〜S4 | 作業ゲート・schema・dashboard | 正典参照、cancelled 語彙、入札表示、verification plan 契約を一致させた |
 | FL2 | `agent-flow/work.py`, `continuation.py` | verify の実行完了と判定不合格を分離し、継続分岐を排他的にした |
-| FL3 | `agent-flow/workspace.py`, `work.py` | workspace 準備を fail-close し、base-sync の conflict 解消も制御層内へ限定した |
+| FL3 / m6 / m7 | `agent-flow/workspace.py`, `work.py` | workspace 準備を fail-close し、base-sync の conflict 解消を制御層内へ限定して、rebase 後の ancestry 再検査と defer 経路の偽 `done` を解消した |
 | AM2 | `agent-amigos/messages.py`, `runner.py` | ULID 大小カーソルを既読 ID 集合へ移行した |
 | D2 | `kiro-loop.py`, messaging 設計 | `reply_to` を返信元メッセージ ID または `null` に統一した |
 | D5 | agent-loop oneshot 設計 | controller は既定 tmux 内、oneshot は detached・自動画面切替なしに統一した |
@@ -261,14 +262,12 @@ G1 は `state_git_subdir` 運用（バスが毎パス `sync_push` を呼ぶ）�
 
 優先順に:
 
-1. **L2（設定保存先の `.yaml` / `.yml` 不一致）** — UI で追加・削除した prompt が再起動で
-   消失・復活するため、読込に採用したパスへ保存する
-2. **L4（inbox の使い捨て pane リーク）** — 長期運転で pane が増え続け、終了済み pane まで
+1. **L4（inbox の使い捨て pane リーク）** — 長期運転で pane が増え続け、終了済み pane まで
    自動再起動されるため、配送完了時の破棄と restart 対象外化を同じライフサイクルで直す
-3. **D3（dashboard が現行 loop-state を見ない）** — `~/.agents/loop-state` を探索対象へ加え、
+2. **D3（dashboard が現行 loop-state を見ない）** — `~/.agents/loop-state` を探索対象へ加え、
    標準インストールの定期実行を可視化する
-4. **L5（timeout / echo_output が dead config）** — 設定値を実処理へ配線し、README の案内を実効化する
-5. **D4 / L6（文書・CLI 契約の矛盾）** — 実装を正として正典の停止理由数と README の未実装
+3. **L5（timeout / echo_output が dead config）** — 設定値を実処理へ配線し、README の案内を実効化する
+4. **D4 / L6（文書・CLI 契約の矛盾）** — 実装を正として正典の停止理由数と README の未実装
    オプション・コマンドを整理する
 
-C1 / L1 / L3 / FL1〜FL3 / AM1〜AM2 / AB1 / D1〜D2 / D5 / S1〜S4 は修正済み。
+C1 / L1〜L3 / FL1〜FL3 / AM1〜AM2 / AB1 / D1〜D2 / D5 / S1〜S4 は修正済み。

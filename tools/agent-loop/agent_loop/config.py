@@ -194,7 +194,12 @@ def load_vscode_periodic_prompts(base_path: Path) -> list[dict[str, Any]]:
 
 def _prompt_file(base_path: str) -> Path:
     """起動ディレクトリ単位の定期プロンプト設定ファイルパスを返す。"""
-    return Path(base_path) / AGENT_HOME / "agent-loop.yml"
+    agent_dir = agent_home_dir(base_path)
+    for name in ("agent-loop.yaml", "agent-loop.yml"):
+        candidate = agent_dir / name
+        if candidate.is_file():
+            return candidate
+    return agent_dir / "agent-loop.yml"
 
 
 def _load_prompt_file_data(base_path: str) -> dict[str, Any]:
@@ -238,7 +243,7 @@ def load_prompt_config(base_path: str) -> list[dict[str, Any]]:
 
 
 def save_prompt_config(base_path: str, prompts: list[dict[str, Any]]) -> bool:
-    """起動ディレクトリ配下 .agent/agent-loop.yml に prompts を保存する。"""
+    """起動ディレクトリ配下の既存 YAML、または既定 .yml に prompts を保存する。"""
     path = _prompt_file(base_path)
 
     if yaml is None:

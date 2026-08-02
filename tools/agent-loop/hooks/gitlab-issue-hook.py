@@ -46,6 +46,9 @@ STATE_FILE = Path(
     or (Path.home() / ".agents" / "hooks" / "gitlab-issue-state.json")
 )
 
+# check() が返したイベントの状態。配送成功後に ack() が永続化する。
+_pending_state: dict[str, str] | None = None
+
 # --- プロンプトテンプレート --------------------------------------------
 # ラベルに応じて切り替える。先にマッチしたものを採用する。
 _LABEL_PROMPTS: dict[str, str] = {
@@ -127,6 +130,8 @@ def _format_prompt(issue: dict, *, fallback: bool) -> str:
 
 
 def check() -> str | None:
+    global _pending_state
+    _pending_state = None
     fallback_enabled = os.environ.get("AGENT_LOOP_EVENT_HOOK_FALLBACK") == "1"
 
     issues = _get_issues()
@@ -148,7 +153,7 @@ def check() -> str | None:
         # 返した 1 件だけを既読化する。未返却の同時更新は次回 check() に残す。
         next_state = {iid: prev[iid] for iid in curr if iid in prev}
         next_state[selected_id] = curr[selected_id]
-        _save_state(next_state)
+        _pending_state = next_state
         return _format_prompt(selected, fallback=False)
 
     _save_state(curr)
@@ -158,6 +163,14 @@ def check() -> str | None:
         return _format_prompt(random.choice(issues), fallback=True)
 
     return None
+
+
+def ack() -> None:
+    """直前の check() が返した更新を配送済みとして確定する。"""
+    global _pending_state
+    if _pending_state is not None:
+        _save_state(_pending_state)
+        _pending_state = None
 
 
 if __name__ == "__main__":

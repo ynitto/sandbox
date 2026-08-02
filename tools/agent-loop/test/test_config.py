@@ -26,5 +26,20 @@ class JsoncConfigTests(unittest.TestCase):
             )
 
 
+class PromptConfigTests(unittest.TestCase):
+    def test_save_updates_existing_yaml_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp, al.AGENT_HOME, "agent-loop.yaml")
+            config.parent.mkdir()
+            config.write_text("kiro_options:\n  model: test\nprompts: []\n", encoding="utf-8")
+
+            prompts = [{"name": "saved", "prompt": "hello", "interval_minutes": 5}]
+            self.assertTrue(al.save_prompt_config(tmp, prompts))
+
+            self.assertFalse(config.with_suffix(".yml").exists())
+            self.assertEqual(al.load_prompt_config(tmp), prompts)
+            self.assertEqual(al._load_prompt_file_data(tmp)["kiro_options"], {"model": "test"})
+
+
 if __name__ == "__main__":
     unittest.main()
