@@ -1701,6 +1701,7 @@ table.list tr.clickable:hover { background: var(--bg2); }
 }
 #dlg-task[open],
 #dlg-notes[open],
+#dlg-document-task[open],
 #dlg-note-candidates[open] { height: min(720px, calc(100vh - 32px)); }
 #dlg-task .dialog-scroll-body { padding-top: 0; }
 #dlg-task input, #dlg-task select, #dlg-task button { min-height: 44px; box-sizing: border-box; }
@@ -2669,8 +2670,10 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   border: 0;
 }
 #dlg-notes,
+#dlg-document-task,
 #dlg-note-candidates { width: min(960px, calc(100vw - 32px)); min-width: 0; max-width: calc(100vw - 32px); }
 #dlg-notes .dialog-actions > button,
+#dlg-document-task .dialog-actions > button,
 #dlg-note-candidates .dialog-actions > button { min-height: 44px; }
 .notes-workspace {
   display: grid;
@@ -2705,6 +2708,8 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .notes-mode-tabs button { min-height: 44px; border-color: transparent; background: transparent; }
 .notes-mode-tabs button[aria-pressed="true"] { border-color: var(--accent); background: var(--bg); }
 #note-body { width: 100%; height: 300px; min-height: 180px; box-sizing: border-box; resize: vertical; line-height: 1.55; }
+#document-task-body { width: 100%; height: 300px; min-height: 180px; box-sizing: border-box; resize: vertical; line-height: 1.55; }
+.document-task-editor { min-height: 420px; }
 #note-task-panel { height: 300px; min-height: 180px; overflow: auto; }
 .note-block-list { display: grid; gap: 8px; }
 .note-block {
@@ -2738,9 +2743,11 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 @media (max-width: 768px) {
   #dlg-task,
   #dlg-notes,
+  #dlg-document-task,
   #dlg-note-candidates { width: calc(100vw - 16px); max-width: calc(100vw - 16px); }
   #dlg-task[open],
   #dlg-notes[open],
+  #dlg-document-task[open],
   #dlg-note-candidates[open] { height: calc(100vh - 16px); }
 }
 
@@ -2749,10 +2756,10 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   .notes-sidebar { max-height: 150px; padding: 0 0 10px; border-right: 0; border-bottom: 1px solid var(--border); }
   .notes-editor-head { align-items: stretch; flex-direction: column; }
   .notes-mode-tabs { width: 100%; }
-  #note-body, #note-task-panel { height: 120px; min-height: 120px; }
+  #note-body, #note-task-panel, #document-task-body { height: 120px; min-height: 120px; }
   .notes-editor-actions { align-items: stretch; flex-wrap: wrap; }
   .notes-charter-field { flex: 1 0 100%; }
-  #btn-note-save, #btn-note-candidates { margin-left: auto; }
+  #btn-note-save, #btn-note-candidates, #btn-document-candidates { margin-left: auto; }
 }
 
 @media (max-width: 680px) {

@@ -537,14 +537,14 @@ class DaemonPrimitiveTests(unittest.TestCase):
         self.assertEqual(slept, [1])                      # 1 パス目失敗 → バックオフ → 2 パス目で成功
 
     def test_clone_repo_gives_up_after_retries(self):
-        # ずっと失敗するなら CLONE_RETRIES 回試して "" を返す（呼び出し側が clone 失敗を検知できる）。
+        # ずっと失敗するなら最後の git エラーを保って失敗する。
         def always_fail(cmd, *a, **kw):
             return subprocess.CompletedProcess(cmd, 128, "", "fatal: unable to access")
 
         with mock.patch.object(kf.subprocess, "run", side_effect=always_fail), \
              mock.patch.object(kf, "backoff_sleep", side_effect=lambda s: None):
-            out = kf._clone_repo("https://x/y.git", "main", os.path.join(tempfile.mkdtemp(), "d"))
-        self.assertEqual(out, "")
+            with self.assertRaisesRegex(RuntimeError, "fatal: unable to access"):
+                kf._clone_repo("https://x/y.git", "main", os.path.join(tempfile.mkdtemp(), "d"))
 
     def test_ensure_workspace_clone_creates_run_branch(self):
         # 作業ツリーが用意され、作業ブランチ名 af/<run-id> がエージェントへ渡る。

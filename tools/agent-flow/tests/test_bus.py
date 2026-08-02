@@ -895,6 +895,60 @@ class ArtifactProtocolTests(unittest.TestCase):
         self.assertEqual(r["data"]["issue_iid"], 9)
         self.assertEqual(r["data"]["guidance"], "命名を直す")
 
+    def test_worker_records_verify_rejection_as_completed_gate(self):
+        bus = self.bus
+        bus.write_graph({"nodes": {"v1": {"goal": "g", "deps": [], "kind": "verify"}},
+                         "iteration": 0})
+        bus.write_task({"id": "v1", "goal": "g", "deps": [], "kind": "verify"})
+        bus.set_status("running")
+        args = mock.Mock(bus=self.tmp, run_id="run1", git=None, node_id="w1",
+                         executor="stub", model=None, lease=60, poll=0,
+                         keep_alive=False, idle_exit=True)
+        with mock.patch.object(kf, "execute_stub", return_value=("verify=fail", {"ok": False})), \
+             mock.patch.object(kf, "make_bus", return_value=bus):
+            kf.cmd_work(args)
+        self.assertEqual(bus.read_result("v1")["status"], "done")
+
+    def test_worker_fails_before_executor_when_workspace_clone_fails(self):
+        root = tempfile.mkdtemp(prefix="kf-clone-fail-")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        bus = kf.Bus(root, "run-clone")
+        bus.ensure_run("req", workspace={"url": "https://invalid.example/repo.git"})
+        bus.write_graph({"nodes": {"t1": {"goal": "g", "deps": [], "kind": "work"}},
+                         "iteration": 0})
+        bus.write_task({"id": "t1", "goal": "g", "deps": [], "kind": "work"})
+        bus.set_status("running")
+        args = mock.Mock(bus=root, run_id="run-clone", git=None, node_id="w1",
+                         executor="stub", model=None, lease=60, poll=0,
+                         keep_alive=False, idle_exit=True)
+        execute = mock.Mock(return_value=("ok", None))
+        with mock.patch.object(kf, "provision_tree", return_value=None), \
+             mock.patch.object(kf, "execute_stub", execute), \
+             mock.patch.object(kf, "make_bus", return_value=bus):
+            kf.cmd_work(args)
+        self.assertEqual(bus.read_result("t1")["status"], "failed")
+        execute.assert_not_called()
+
+    def test_base_sync_conflict_uses_local_agent_executor(self):
+        bus = self.bus
+        bus.write_graph({"nodes": {"base-sync": {
+            "goal": "sync", "deps": [], "kind": "base-sync"}}, "iteration": 0})
+        bus.write_task({"id": "base-sync", "goal": "sync", "deps": [], "kind": "base-sync"})
+        bus.set_status("running")
+        args = mock.Mock(bus=self.tmp, run_id="run1", git=None, node_id="w1",
+                         executor="stub", model=None, lease=60, poll=0,
+                         keep_alive=False, idle_exit=True)
+        local_agent = mock.Mock(return_value=("resolved", {"ok": True}))
+        with mock.patch.object(kf, "sync_workspace_base", return_value={
+                 "status": "conflict", "conflict_files": ["f.txt"]}), \
+             mock.patch.object(kf, "execute_agent", local_agent), \
+             mock.patch.object(kf, "execute_stub") as stub, \
+             mock.patch.object(kf, "finalize_workspace", return_value=None), \
+             mock.patch.object(kf, "make_bus", return_value=bus):
+            kf.cmd_work(args)
+        local_agent.assert_called_once()
+        stub.assert_not_called()
+
 
 class StateGitSyncTests(unittest.TestCase):
     """状態の git 保存・共有（state_git）: ローカルバスのワーク内容（runs/・inbox/）を共有

@@ -374,6 +374,46 @@ class SeatsAggregationTests(AmigosTestCase):
         self.assertEqual(aggs["solver"]["votes"], 3)   # 3 席とも ANSWER.md を書いた
 
 
+class MessageDeliveryTests(AmigosTestCase):
+    def test_delayed_lower_id_is_still_new(self):
+        from agent_amigos.messages import message_path, new_messages
+        mid = self.post(mid="am-msg-order")
+        mp = self.bus.mission(mid)
+        high = {"id": "0002", "from": "impl", "to": "architect", "type": "info"}
+        write_json_atomic(message_path(mp, high), high)
+        fresh, seen = new_messages(mp, "architect", [])
+        self.assertEqual([m["id"] for m in fresh], ["0002"])
+
+        low = {"id": "0001", "from": "impl", "to": "architect", "type": "answer"}
+        write_json_atomic(message_path(mp, low), low)
+        fresh, seen = new_messages(mp, "architect", seen)
+        self.assertEqual([m["id"] for m in fresh], ["0001"])
+        self.assertEqual(seen, ["0001", "0002"])
+
+    def test_cursor_migration_replays_answer_to_open_question(self):
+        from agent_amigos.messages import message_path, new_messages
+        mid = self.post(mid="am-msg-migrate")
+        mp = self.bus.mission(mid)
+        answer = {"id": "0001", "from": "impl", "to": "architect", "type": "answer",
+                  "reply_to": "question-1"}
+        write_json_atomic(message_path(mp, answer), answer)
+        fresh, seen = new_messages(mp, "architect", None, legacy_cursor="0002",
+                                   open_questions={"question-1"})
+        self.assertEqual([m["id"] for m in fresh], ["0001"])
+        self.assertEqual(seen, ["0001"])
+
+    def test_inbox_and_all_duplicate_id_is_delivered_once(self):
+        from agent_amigos.messages import message_path, new_messages
+        mid = self.post(mid="am-msg-dedup")
+        mp = self.bus.mission(mid)
+        direct = {"id": "same", "from": "impl", "to": "architect", "type": "info"}
+        broadcast = {**direct, "to": "all"}
+        write_json_atomic(message_path(mp, direct), direct)
+        write_json_atomic(message_path(mp, broadcast), broadcast)
+        fresh, _ = new_messages(mp, "architect", [])
+        self.assertEqual([m["id"] for m in fresh], ["same"])
+
+
 class DebateRoundsTests(AmigosTestCase):
     """G3: 同期討論ラウンド（ラウンドバリア）。"""
 

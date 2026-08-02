@@ -182,7 +182,10 @@ def continue_stub(request: str, nodes: dict, results: dict, iteration: int,
                             "deps": [nid], "kind": "work"})
         # 2) verify が fail → 依存を作り直して再検証（loop-until-done / adversarial）
         #    replaces で依存元（gen/verify）を置き換え、後続の依存を付け替える
-        if kind == "verify" and "fail" in str(r.get("output", "")):
+        verify_failed = kind == "verify" and r.get("status") == "done" and (
+            (isinstance(_dep_data(r), dict) and _dep_data(r).get("ok") is False)
+            or "fail" in str(r.get("output", "")))
+        if verify_failed:
             if tries >= max_retries:
                 tripped.append(nid)  # サーキット開放: これ以上作り直さない（達成不可能とみなす）
             else:
@@ -199,7 +202,7 @@ def continue_stub(request: str, nodes: dict, results: dict, iteration: int,
                                 "deps": [f"{dep}-r{iteration+1}" for dep in node.get("deps", [])],
                                 "kind": "verify", "replaces": nid, "retries": tries + 1})
         # 3) 失敗タスクの retry（失敗ノードを置き換え、依存元を付け替える）
-        if r.get("status") == "failed":
+        elif r.get("status") == "failed":
             if tries >= max_retries:
                 tripped.append(nid)  # サーキット開放: 反復失敗するタスクは諦める
             else:

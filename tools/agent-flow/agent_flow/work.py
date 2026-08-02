@@ -142,19 +142,19 @@ def cmd_work(args) -> int:
         # ワークスペース（この run の唯一の書込先）を temp 領域へ clone し、作業ブランチ af/<run_id>
         # を base から作ってエージェントへ渡す（書込先が無ければ読み取り専用 run）。
         goal = node["goal"]
-        ws = ensure_workspace_clone(bus.run_workspace(), args.run_id)
-        # 作業指示は goal に結合せず別引数で渡す（goal を汚さない）。対応 executor は本来の goal を
-        # そのまま使い（gitlab はタイトル/目的に出す）、ワークスペース指示・spec は別枠で扱う。
-        # 参照リポジトリ（読むだけ）は run メタから取り、ワークスペース指示に続けてエージェントへ伝える。
+        ws = bus.run_workspace()
         references = bus.run_references()
         ref_note = reference_instruction(references)
-        instruction = "\n".join(s for s in (workspace_instruction(ws) if ws else "", ref_note) if s)
         # 実行中は心拍で lease を延長し続け、長時間タスクでも再 claim されないようにする
         hb = Heartbeat(bus, nid, who, args.lease)
         hb.start()
         rdata = None
         delivery = None
         try:
+            ws = ensure_workspace_clone(ws, args.run_id)
+            # 作業指示は goal に結合せず別引数で渡す（goal を汚さない）。
+            instruction = "\n".join(
+                s for s in (workspace_instruction(ws) if ws else "", ref_note) if s)
             if kind == "base-sync":
                 rdata = sync_workspace_base(ws)
                 if rdata.get("status") == "conflict":
@@ -162,7 +162,7 @@ def cmd_work(args) -> int:
                     sync_goal = (f"{goal}\n\n競合ファイル:\n{files}\n\n"
                                  "Git コマンドは実行せず、各ファイルの競合を内容に沿って解消してください。")
                     output, agent_data = call_executor(
-                        execute, "work", sync_goal, dep_results, args.model,
+                        execute_agent, "work", sync_goal, dep_results, args.model,
                         art_dir, dep_arts, instruction, workspace=ws,
                         references=references, request=run_request,
                         instructions=run_instructions)
@@ -177,7 +177,7 @@ def cmd_work(args) -> int:
                                               art_dir, dep_arts, instruction, workspace=ws,
                                               references=references, request=run_request,
                                               instructions=run_instructions)
-            if isinstance(rdata, dict) and rdata.get("ok") is False:
+            if kind != "verify" and isinstance(rdata, dict) and rdata.get("ok") is False:
                 if kind == "base-sync":
                     failure_class = _work_failure_class(kind, output, rdata)
                     output = f"[agent-error:{failure_class}] {output}"

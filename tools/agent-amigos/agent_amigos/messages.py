@@ -2,7 +2,7 @@
 
 - 送信者は自分名義のファイルだけを書く（inbox は `<ulid>-<from>.json`、
   all チャンネルは `channels/all/<who>/<ulid>.json`）→ git バスでも衝突しない。
-- 既読はバスに書かない。各 amigo がローカルカーソル（status 内の last_seen）を持つ。
+- 既読はバスに書かない。各 amigo が status 内に既読メッセージ ID を持つ。
 """
 from __future__ import annotations
 
@@ -66,12 +66,21 @@ def read_inbox(mp: MissionPaths, role_id: str) -> list:
     return sorted(_iter_dir(mp.inbox_dir(role_id)), key=lambda m: m["id"])
 
 
-def new_messages(mp: MissionPaths, role_id: str, cursor: str) -> "tuple[list, str]":
-    """自ロール宛 inbox + all チャンネルのカーソル以降。(新着列, 新カーソル) を返す。"""
-    merged = sorted(read_inbox(mp, role_id) + read_channel_all(mp), key=lambda m: m["id"])
-    fresh = [m for m in merged if m["id"] > (cursor or "")]
-    new_cursor = merged[-1]["id"] if merged else (cursor or "")
-    return fresh, new_cursor
+def new_messages(mp: MissionPaths, role_id: str, seen_ids: "list | None",
+                 *, legacy_cursor: str = "", open_questions: "set | None" = None
+                 ) -> "tuple[list, list]":
+    """自ロール宛 inbox + all から未読だけを返す。None は旧 cursor status の移行。"""
+    merged = {m["id"]: m for m in read_inbox(mp, role_id) + read_channel_all(mp)}
+    messages = sorted(merged.values(), key=lambda m: m["id"])
+    if seen_ids is None:
+        open_qs = open_questions or set()
+        seen = {m["id"] for m in messages if m["id"] <= legacy_cursor and not (
+            m.get("type") == "answer" and m.get("reply_to") in open_qs)}
+    else:
+        seen = set(seen_ids)
+    fresh = [m for m in messages if m["id"] not in seen]
+    seen.update(m["id"] for m in fresh)
+    return fresh, sorted(seen)
 
 
 def answered_ids(mp: MissionPaths, roles: "dict[str, dict]") -> set:

@@ -479,6 +479,31 @@
     </div>
   </dialog>
 
+  <dialog id="dlg-document-task">
+    <h2>文書からタスク候補を作る</h2>
+    <p class="muted">ローカルのMarkdownまたはテキスト文書を読み、内容を確認してからバックログ候補へ分解します。文書は保存されません。</p>
+    <section class="notes-editor document-task-editor">
+      <div class="notes-editor-head">
+        <strong id="document-task-name">文書が選択されていません</strong>
+        <button type="button" id="btn-document-pick">文書を選択</button>
+      </div>
+      <label class="sr-only" for="document-task-body">選択した文書の本文</label>
+      <textarea id="document-task-body" rows="16" readonly placeholder="選択した文書の内容をここで確認できます"></textarea>
+      <div id="document-task-status" class="muted notes-status" aria-live="polite"></div>
+      <div class="notes-editor-actions">
+        <div class="field notes-charter-field">
+          <label for="document-charter">計画バージョン</label>
+          <select id="document-charter"></select>
+          <div id="document-charter-description" class="muted charter-description" aria-live="polite"></div>
+        </div>
+        <button id="btn-document-candidates" class="primary-inline" disabled>候補を作る</button>
+      </div>
+    </section>
+    <div class="dialog-actions">
+      <button id="btn-document-close">閉じる</button>
+    </div>
+  </dialog>
+
   <dialog id="dlg-note-candidates">
     <h2>タスク候補を確認</h2>
     <p class="muted">追加する候補を選び、内容を直してからタスク一覧へ送ります。まだ実行は始まりません。</p>

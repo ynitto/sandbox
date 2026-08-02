@@ -15,6 +15,7 @@ const path = require('path');
 require('./note-tasking.test');
 
 const actions = require('../src/main/actions');
+const { pickBacklogDocument, MAX_BACKLOG_DOCUMENT_BYTES } = require('../src/features/agent-project/main/ipc');
 const renderer = require('./helpers/renderer-src').read();
 const indexHtml = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'index.html'), 'utf8');
 const bootstrap = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'bootstrap.js'), 'utf8');
@@ -349,10 +350,40 @@ function dropped(dir) {
     assert.ok(renderer.includes("updateCharterSelectContext('enq-charter', 'enq-charter-description')"),
       'タスク追加でもバージョン名だけの選択肢と説明を同期する');
     assert.ok(indexHtml.includes('id="dlg-note-candidates"'), '候補確認ダイアログがある');
-    assert.ok(renderer.includes("mode: 'note-task-candidates'"), '選択内容は読み取り専用AI補助へ渡す');
+    assert.ok(renderer.includes("kind: 'note'"), '短いメモも共通の候補生成へ渡す');
     assert.ok(renderer.includes('api.enqueueTask'), '確認後は既存のタスク追加経路を使う');
     assert.ok(!indexHtml.includes('btn-notes-distill'), '全メモ一括分解は主要導線から外す');
     assert.ok(/renderBacklog[\s\S]{0,4000}btn-notes/.test(renderer), 'バックログにメモボタンがある');
+  });
+
+  await test('ローカル文書は一度だけ読み、既存の候補確認経路へ渡す', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-document-'));
+    const file = path.join(root, 'plan.md');
+    try {
+      fs.writeFileSync(file, '# 計画\nAPIを置換する\n', 'utf8');
+      const picked = await pickBacklogDocument({
+        showOpenDialog: async () => ({ canceled: false, filePaths: [file] }),
+      });
+      assert.deepStrictEqual(picked, {
+        canceled: false,
+        name: 'plan.md',
+        content: '# 計画\nAPIを置換する\n',
+      });
+      const large = path.join(root, 'large.txt');
+      fs.writeFileSync(large, Buffer.alloc(MAX_BACKLOG_DOCUMENT_BYTES + 1, 65));
+      await assert.rejects(
+        () => pickBacklogDocument({ showOpenDialog: async () => ({ canceled: false, filePaths: [large] }) }),
+        /64 KiB/
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+    assert.ok(indexHtml.includes('id="dlg-document-task"'));
+    assert.ok(indexHtml.includes('id="document-task-body"'));
+    assert.ok(renderer.includes("mode: 'source-task-candidates'"));
+    assert.ok(renderer.includes('buildSourceCandidates'), 'メモと文書で候補生成を共通化する');
+    assert.ok(renderer.includes("source === 'document'"), '文書由来ではメモリンク処理を通さない');
+    assert.ok(bootstrap.includes('pickDocumentForTasks'));
   });
 
   await test('バージョン選択は名前だけを表示し、目標を近くの説明欄へ出す', async () => {

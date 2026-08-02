@@ -97,19 +97,21 @@ def _clone_repo(url: str, base: str, dest: str) -> str:
     if base:
         attempts.append(["git", "clone", "-b", base, url, dest])
     attempts.append(["git", "clone", url, dest])
+    detail = ""
     for i in range(CLONE_RETRIES):
         for cmd in attempts:
             try:
                 r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
                 if r.returncode == 0:
                     return dest
-            except (OSError, subprocess.SubprocessError):
-                pass
+                detail = (r.stderr or r.stdout).strip()[:300]
+            except (OSError, subprocess.SubprocessError) as exc:
+                detail = str(exc)[:300]
             if os.path.exists(dest):              # 失敗の残骸を消してからフォールバック／再試行
                 shutil.rmtree(dest, ignore_errors=True)
         if i < CLONE_RETRIES - 1:
             backoff_sleep(2 ** i if i < 4 else 16)   # バックオフして再試行
-    return ""
+    raise RuntimeError(f"workspace clone に失敗しました: {detail or url}")
 
 
 def _ws_git(clone: str, *args: str):
@@ -159,9 +161,8 @@ def ensure_workspace_clone(spec: "dict | None", run_id: str) -> "dict | None":
     # 依頼元（agent-project / 板）が載せてこない経路——板の公示・古い形の run——でも、
     # 手元にクローンがあるノードではそれを使えるようにする。
     local = str((_repolocal.merge_local(spec) or spec).get("local") or "")
-    path = provision_tree(spec["url"], [branch, base], dest, local=local) or ""
-    if path:
-        _prepare_run_branch(path, branch, base)
+    path = provision_tree(spec["url"], [branch, base], dest, local=local)
+    _prepare_run_branch(path, branch, base)
     _workspace_clone[key] = path
     return {**spec, "clone": path, "branch": branch}
 
@@ -255,10 +256,11 @@ def finalize_workspace(ws: "dict | None", run_id: str, node_id: str) -> "dict | 
         # delivery」で done になる（サイレントなデータ喪失）。ここで明示的に失敗させる。
         raise RuntimeError(f"workspace commit が失敗しました: {(c.stderr or c.stdout).strip()[:300]}")
     target_rev = str(ws.get("target_rev") or "")
-    if target_rev and _ws_git(clone, "merge-base", "--is-ancestor", target_rev, "HEAD").returncode != 0:
-        raise RuntimeError("merge commit に検証対象 target が含まれていません")
     last_push = None
     for i in range(5):
+        if target_rev and _ws_git(
+                clone, "merge-base", "--is-ancestor", target_rev, "HEAD").returncode != 0:
+            raise RuntimeError("merge commit に検証対象 target が含まれていません")
         # detached HEAD のまま作業ブランチへ push（ローカルでブランチを checkout しない）。
         last_push = _ws_git(clone, "push", "origin", f"HEAD:refs/heads/{branch}")
         if last_push.returncode == 0:

@@ -1061,7 +1061,7 @@ class InboxWatcher:
       created_at  (float) 作成日時 (Unix timestamp)
       subject     (str)   件名（省略可）
       body        (str)   本文
-      reply_to    (str)   返信先エージェント名（省略時は from と同じ）
+      reply_to    (str)   返信元メッセージ ID（省略可）
       correlation_id (str) 会話追跡用 ID（省略可）
       cwd         (str)   送信元の作業ディレクトリ（省略可）
     """
@@ -1150,7 +1150,6 @@ class InboxWatcher:
         from_agent = data.get("from", "unknown")
         subject = data.get("subject", "")
         body = data.get("body", "")
-        reply_to = data.get("reply_to") or from_agent
         msg_id = data.get("id", "")
 
         parts: list[str] = [f"[エージェント {from_agent} からのメッセージ]"]
@@ -3850,7 +3849,7 @@ def cmd_msg(args: argparse.Namespace) -> None:
         "created_at": float(ts),
         "subject": subject,
         "body": body,
-        "reply_to": reply_to_id or from_agent,
+        "reply_to": reply_to_id or None,
         "correlation_id": correlation_id,
         "cwd": str(Path.cwd()),
     }

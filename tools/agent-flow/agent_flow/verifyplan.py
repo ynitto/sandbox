@@ -191,7 +191,11 @@ def run_verification_plan(bus: "Bus", args, who: str, *, heartbeat=None,
     ws = bus.run_workspace()
     in_clone = ws is not None
     if in_clone:
-        spec = while_alive(lambda: ensure_workspace_clone(ws, args.run_id))
+        try:
+            spec = while_alive(lambda: ensure_workspace_clone(ws, args.run_id))
+        except RuntimeError as exc:
+            log(who, f"統一 verify の workspace を用意できません（inconclusive）: {exc}")
+            spec = None
         vcwd = str((spec or {}).get("clone") or "")
         while_alive(lambda: _vp_refresh_result(vcwd, str((spec or {}).get("branch") or "")))
     else:

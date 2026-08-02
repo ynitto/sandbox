@@ -162,6 +162,9 @@ class SchedulerStopTests(unittest.TestCase):
         self.dir = tempfile.mkdtemp(prefix="kl-stop-")
         os.environ["AGENT_BUDGET_DIR"] = self.dir
         os.environ["AGENT_CONTROL_DIR"] = self.dir
+        state_patch = mock.patch.object(kl, "_STATE_DIR", pathlib.Path(self.dir, "state"))
+        state_patch.start()
+        self.addCleanup(state_patch.stop)
         self.addCleanup(os.environ.pop, "AGENT_BUDGET_DIR", None)
         self.addCleanup(os.environ.pop, "AGENT_CONTROL_DIR", None)
         kl._CONTROL_CACHE["mtime"] = None

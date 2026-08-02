@@ -61,6 +61,14 @@ async function init() {
   $('btn-note-candidates').addEventListener('click', buildNoteCandidates);
   $('btn-note-candidates-close').addEventListener('click', () => $('dlg-note-candidates').close());
   $('btn-note-candidates-submit').addEventListener('click', submitNoteCandidates);
+  $('btn-document-pick').addEventListener('click', pickDocumentForTasks);
+  $('btn-document-candidates').addEventListener('click', buildDocumentCandidates);
+  $('document-charter').addEventListener('change', () => updateCharterSelectContext('document-charter', 'document-charter-description'));
+  $('btn-document-close').addEventListener('click', closeDocumentTaskDialog);
+  $('dlg-document-task').addEventListener('cancel', (event) => {
+    event.preventDefault();
+    closeDocumentTaskDialog();
+  });
   // 新規プロジェクト作成
   $('btn-new-project').addEventListener('click', openNewProject);
   $('btn-np-cancel').addEventListener('click', () => $('dlg-new-project').close());

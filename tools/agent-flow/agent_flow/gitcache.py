@@ -229,7 +229,7 @@ def provision_tree(url: str, refs: "list[str] | str", dest: str,
        1. local（手元の同じリポジトリのクローン）から detached worktree を切る — 取得ゼロで最速
        2. 共有 bare ミラーから detached worktree（INV-1/2）
        3. direct clone（INV-3 フォールバック）
-    返り値: 作業ツリーのパス、または None（最終的に失敗）。"""
+    返り値: 作業ツリーのパス。最終的に失敗したら RuntimeError。"""
     ref_list = [refs] if isinstance(refs, str) else list(refs)
     if local:
         wt = provision_from_local(local, url, ref_list, dest)
@@ -283,4 +283,3 @@ def sweep_cache_dirs(min_age_sec: float) -> int:
         shutil.rmtree(cache, ignore_errors=True)
         removed += 1
     return removed
-

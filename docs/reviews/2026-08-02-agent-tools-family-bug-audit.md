@@ -1,6 +1,6 @@
 # agent-tools ファミリー バグ調査レポート（2026-08-02）
 
-- 状態: 調査完了。うち 4 件を同 PR で修正済み（§7）。残りは未着手
+- 状態: 調査完了。うち 4 件を同 PR で、FL2 / FL3 / AM2 / D2 / D5 を追加修正済み（§7）
 - 対象: `tools/{agent-tools/agentcore, agent-loop, agent-flow, agent-project, agent-amigos, agent-board}`、
   `schemas/`、`docs/designs/agent-*.md`
   （`.github/instructions/agent-tools.instructions.md` の `applyTo` 範囲）
@@ -105,7 +105,7 @@
 - 再現確認済み。`tests/test_agent_cli.py:307` は `--agent-cli claude`（組み込み）しか
   通しておらず、この経路は未カバー。
 
-#### FL2. `data.ok is False → failed` が verify ゲートにも適用され、継続ルールが二重発火する
+#### FL2. `data.ok is False → failed` が verify ゲートにも適用され、継続ルールが二重発火する（修正済み）
 
 - 位置: `work.py:180-186`、`waits.py:277-291`、`continuation.py:185-211`
 - `_normalize_verify` は失敗した verify ゲートに必ず `{"ok": False}` を付けるため、
@@ -117,7 +117,7 @@
   `executor=agent` なら失敗ごとに無駄な LLM 呼び出し、`executor=gitlab` なら人が読む
   GitLab イシューが 1 件増える。
 
-#### FL3. workspace clone を作れないと base-sync が偽の `done` になる
+#### FL3. workspace clone を作れないと base-sync が偽の `done` になる（修正済み）
 
 - 位置: `workspace.py:171-173`、`work.py:158-174`、`workspace.py:226-228`
 - `provision_tree` 失敗 → `clone: ""` → `sync_workspace_base` が `{"status":"noop"}` を返し、
@@ -140,7 +140,7 @@
   （各反復が古い `inflight=0` で判定するため）。`board.schema.json` の
   「超過時は新規入札を控える」契約違反。
 
-#### AM2. メッセージカーソルが遅延 push / 時計ずれで回答を恒久的に取りこぼす
+#### AM2. メッセージカーソルが遅延 push / 時計ずれで回答を恒久的に取りこぼす（修正済み）
 
 - 位置: `agent_amigos/messages.py:69-74`、ULID 生成は `util.py:35-39`
 - カーソルを既読集合の**最大 ULID** へ進めるが、ULID はプロセスローカルの実時刻由来で
@@ -187,10 +187,10 @@
 | ID | 双方の位置 | 内容 |
 | --- | --- | --- |
 | D1 | `.github/instructions/agent-tools.instructions.md:8-13` ↔ `agent-tools-concept.md:223,289` | 作業ゲート文書が正典の「§7 このリポジトリでの強制」「原則 C1〜C7」を参照するが、実際は**強制が §8、原則は C8 まで**（§7 はモジュール別方針の表）。C8（知識共有クロージャ）がレビュー対象から抜ける。正典 §8 自身がこの文書へゲートを委譲しているだけに影響が大きい |
-| D2 | `kiro-loop-agent-messaging-design.md:101` ↔ `agent-loop-agent-messaging-design.md:108-112` | `reply_to` が「返信先エージェント名」と「メッセージ ID・フォールバックしない」で非互換。実装も `kiro-loop.py:3853`（`reply_to_id or from_agent`）と `sendcmd.py:501`（`reply_to_id or None`）で分裂。**同一の `~/.kiro/agents/<name>/inbox/` を共有**し、rename 設計が kiro-loop 残置を明言しているため現役の相互運用バグ。kiro-loop 設計は §4 と §5.2/§6 で自己矛盾もしている |
+| D2（修正済み） | `kiro-loop-agent-messaging-design.md:101` ↔ `agent-loop-agent-messaging-design.md:108-112` | `reply_to` が「返信先エージェント名」と「メッセージ ID・フォールバックしない」で非互換。実装も `kiro-loop.py:3853`（`reply_to_id or from_agent`）と `sendcmd.py:501`（`reply_to_id or None`）で分裂。**同一の `~/.kiro/agents/<name>/inbox/` を共有**し、rename 設計が kiro-loop 残置を明言しているため現役の相互運用バグ。kiro-loop 設計は §4 と §5.2/§6 で自己矛盾もしている |
 | D3 | `agent-dashboard-design.md:278` / `tmux.js:89` ↔ `agent-tools-rename-design.md:39` | dashboard が読む loop-state は `~/.kiro` と `~/.agent` のみで、agent-loop の現行ホーム `~/.agents/loop-state` を読まない。標準インストール環境では定期実行が dashboard から不可視 |
 | D4 | `agent-tools-concept.md:264` ↔ `agent-project-design.md:206` | agent-project の停止理由が正典で「5 つ」、設計書で「6 つ」。正典 §0 の「矛盾したら作業を止める」に該当し、しかも C7 の実例として引かれている |
-| D5 | `2026-05-11-agent-loop-oneshot-design.md:180` ↔ 同 `:530` | 「デーモンは tmux 外」と「デーモンは常に tmux 内」を両方規定。アタッチ機構（`switch-client` か `attach-session` か）が決まらず実装不能 |
+| D5（修正済み） | `2026-05-11-agent-loop-oneshot-design.md:180` ↔ 同 `:530` | 「デーモンは tmux 外」と「デーモンは常に tmux 内」を両方規定。アタッチ機構（`switch-client` か `attach-session` か）が決まらず実装不能 |
 | S1 | `board.schema.json:93` ↔ `agent_amigos/board.py:218`, `agent_flow/board.py:153` | `status.state` の enum に `cancelled` が無いのに両エンジンが書く（`vocab.TERMINAL` に含まれる） |
 | S2 | `board-adapter.js:108` ↔ `board.schema.json:111` | `result.status === 'cancelled'` を `done` に写像（`'failed'` 以外は全部 done）。中止した委譲が完了として計上される。agent-project 側（`flow.py:703-725`）は正しく ok=False |
 | S3 | `board-adapter.js:98-102` ↔ `delegation.schema.json:259` | 入札状態が**逆転**（award 確定前が `lost`、確定後の非落札が `applied`）。`amigos-adapter.js:117` は正しい。既存テストは winner/expired しか見ておらず未検出 |
@@ -242,6 +242,11 @@
 | G2 | `agentcore/board.py` | `contract_version` が `NaN` / `Infinity` だと `int()` の例外が `eligible()` を貫通し、入札巡回ごと停止していた。読めない値として不参加へ倒す |
 | G3 | `agentcore/protocol.py` | `winner()` 側の `_as_float` が `ts` 欠落・`null` を 0.0 と読み、壊れた claim が恒久的に勝っていた。`NaN` も決定性を壊すため無視する |
 | G4 | `agent-flow/stategit.py` | 同期除外が `.tmp` 末尾のみで、実生成名 `<name>.tmp.<pid>[.<unique>]` の残骸を共有状態リポジトリへ push していた |
+| FL2 | `agent-flow/work.py`, `continuation.py` | verify の実行完了と判定不合格を分離し、継続分岐を排他的にした |
+| FL3 | `agent-flow/workspace.py`, `work.py` | workspace 準備を fail-close し、base-sync の conflict 解消も制御層内へ限定した |
+| AM2 | `agent-amigos/messages.py`, `runner.py` | ULID 大小カーソルを既読 ID 集合へ移行した |
+| D2 | `kiro-loop.py`, messaging 設計 | `reply_to` を返信元メッセージ ID または `null` に統一した |
+| D5 | agent-loop oneshot 設計 | controller は既定 tmux 内、oneshot は detached・自動画面切替なしに統一した |
 
 G1 は `state_git_subdir` 運用（バスが毎パス `sync_push` を呼ぶ）で初回パスが必ず止まるため
 影響が最も大きい。詳細と教訓は
@@ -262,8 +267,6 @@ G1 は `state_git_subdir` 運用（バスが毎パス `sync_push` を呼ぶ）�
 4. **S2 / S3（dashboard の委譲表示が実態と食い違う）** — 中止を完了と表示し、入札状態が
    逆転している。どちらも `board-adapter.js` の局所修正で済む
 5. **AM1（`inflight` 加算漏れ）** — 1 行。兄弟実装に揃えるだけ
-6. **D2（`reply_to` の非互換）** — 相互運用に関わるので、どちらを正典にするかの判断が要る。
-   agent-loop 側（メッセージ ID）が新しく、設計書も明示的なのでそちらへ寄せるのが自然
-
-FL2 / FL3 / AM2 は影響が大きいが、修正に設計判断（継続ルールの適用範囲、noop の扱い、
-カーソル方式そのもの）を伴うため、着手前に正典 §8 の作業ゲートを通すこと。
+FL2 / FL3 / AM2 / D2 / D5 は設計判断を完了し、
+[`2026-08-02-agent-tools-family-remaining-bugs-design.md`](../plans/2026-08-02-agent-tools-family-remaining-bugs-design.md)
+に従って修正済み。

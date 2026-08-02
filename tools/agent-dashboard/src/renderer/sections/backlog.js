@@ -550,6 +550,7 @@ function renderBacklog() {
       </div>
       <div class="task-toolbar-actions">
         <button id="btn-notes" title="気になったことをメモに書き溜めます（計画は勝手に動きません）">メモ</button>
+        <button id="btn-document-tasks" title="ローカルのMarkdown・テキスト文書からタスク候補を作ります">文書から作る</button>
         <button id="btn-replan"${replanPending ? ' disabled' : ''} title="プロジェクト憲章からタスクを作ります。自動では作られないので、最初の分解もここから始めます">バックログを分解</button>
         <button id="btn-enqueue" class="primary-inline" title="タスクを1件追加します">タスクを追加</button>
       </div>
@@ -572,6 +573,8 @@ function renderBacklog() {
   if (replanBtn && !replanPending) replanBtn.addEventListener('click', openReplanDialog);
   const notesBtn = $('btn-notes');
   if (notesBtn) notesBtn.addEventListener('click', openNotesDialog);
+  const documentBtn = $('btn-document-tasks');
+  if (documentBtn) documentBtn.addEventListener('click', openDocumentTaskDialog);
 
   for (const chip of el.querySelectorAll('.chip[data-filter]')) {
     chip.addEventListener('click', () => {
@@ -1209,7 +1212,10 @@ const notesWorkspace = {
   mode: 'edit',
   selectedBlocks: [],
   candidates: [],
+  candidateSource: 'note',
 };
+
+const documentWorkspace = { name: '', content: '' };
 
 function currentNote() {
   return notesWorkspace.notes.find((note) => note.name === notesWorkspace.selectedName) || null;
@@ -1426,28 +1432,100 @@ async function buildNoteCandidates() {
   const p = state.project;
   const blocks = selectedNoteBlocks();
   if (!p || !blocks.length) return;
-  const button = $('btn-note-candidates');
+  const items = blocks.map(({ heading, text }) => ({ heading, text }));
+  return buildSourceCandidates({
+    source: { kind: 'note', name: currentNote().name, content: items, fallbackItems: items },
+    charter: $('notes-charter').value,
+    button: $('btn-note-candidates'),
+    setStatus: setNotesStatus,
+    selectedBlocks: blocks,
+  });
+}
+
+function setDocumentStatus(message, error = false) {
+  const el = $('document-task-status');
+  el.textContent = message || '';
+  if (error) el.setAttribute('role', 'alert');
+  else el.removeAttribute('role');
+}
+
+function openDocumentTaskDialog() {
+  const p = state.project;
+  if (!p) return toast('プロジェクトを選択してください');
+  documentWorkspace.name = '';
+  documentWorkspace.content = '';
+  $('document-task-name').textContent = '文書が選択されていません';
+  $('document-task-body').value = '';
+  $('btn-document-candidates').disabled = true;
+  setDocumentStatus('Markdown またはテキスト文書を選択してください');
+  fillCharterSelect($('document-charter'), p, state.backlogCharter || '');
+  updateCharterSelectContext('document-charter', 'document-charter-description');
+  $('dlg-document-task').showModal();
+  $('btn-document-pick').focus();
+}
+
+function closeDocumentTaskDialog() {
+  documentWorkspace.name = '';
+  documentWorkspace.content = '';
+  $('dlg-document-task').close();
+}
+
+async function pickDocumentForTasks() {
+  setDocumentStatus('文書を読み込んでいます…');
+  try {
+    const result = await api.pickBacklogDocument();
+    if (result.canceled) return setDocumentStatus('文書の選択をキャンセルしました');
+    documentWorkspace.name = result.name;
+    documentWorkspace.content = result.content;
+    $('document-task-name').textContent = result.name;
+    $('document-task-body').value = result.content;
+    $('btn-document-candidates').disabled = false;
+    setDocumentStatus('文書を読み込みました');
+  } catch (err) {
+    setDocumentStatus(`文書を読めませんでした: ${String(err.message || err)}`, true);
+  }
+}
+
+async function buildDocumentCandidates() {
+  const p = state.project;
+  if (!p || !documentWorkspace.content) return;
+  return buildSourceCandidates({
+    source: { kind: 'document', name: documentWorkspace.name, content: documentWorkspace.content },
+    charter: $('document-charter').value,
+    button: $('btn-document-candidates'),
+    setStatus: setDocumentStatus,
+  });
+}
+
+async function buildSourceCandidates({ source, charter, button, setStatus, selectedBlocks = [] }) {
+  const p = state.project;
   button.disabled = true;
-  setNotesStatus('タスク候補を作っています…');
+  setStatus('タスク候補を作っています…');
   try {
     const result = await api.agentTaskAssist({
       dir: p.dir,
-      mode: 'note-task-candidates',
+      mode: 'source-task-candidates',
       context: {
-        charter: charterAssistContext(p, $('notes-charter').value),
+        charter: charterAssistContext(p, charter),
         backlog: backlogAssistRows(p),
-        blocks: blocks.map(({ heading, text }) => ({ heading, text })),
+        source,
       },
     });
-    const tasks = (result.fields && result.fields.tasks) || [];
-    if (!tasks.length) throw new Error('作成できる候補がありませんでした');
-    notesWorkspace.selectedBlocks = blocks;
+    const fields = result.fields || {};
+    const tasks = fields.tasks || [];
+    if (!tasks.length) {
+      setStatus(fields.rationale || '実行可能な候補は見つかりませんでした');
+      return;
+    }
+    notesWorkspace.candidateSource = source.kind;
+    notesWorkspace.selectedBlocks = selectedBlocks;
     notesWorkspace.candidates = tasks.map((task) => ({ ...task, addedId: '' }));
-    renderNoteCandidates(result.fields.rationale || '');
+    renderNoteCandidates(fields.rationale || '');
     $('dlg-note-candidates').showModal();
-    setNotesStatus(`${tasks.length} 件の候補を作成しました`);
+    setStatus(`${tasks.length} 件の候補を作成しました`);
   } catch (err) {
-    setNotesStatus(`候補を作成できませんでした: ${String(err.message || err)}。選択したまま再試行できます`, true);
+    const retry = source.kind === 'note' ? '選択したまま' : '文書を保持したまま';
+    setStatus(`候補を作成できませんでした: ${String(err.message || err)}。${retry}再試行できます`, true);
   } finally {
     button.disabled = false;
   }
@@ -1467,8 +1545,9 @@ function renderNoteCandidates(rationale = '') {
 
 async function submitNoteCandidates() {
   const p = state.project;
-  const note = currentNote();
-  if (!p || !note) return;
+  const source = notesWorkspace.candidateSource;
+  const note = source === 'note' ? currentNote() : null;
+  if (!p || (source === 'note' && !note)) return;
   const rows = [...document.querySelectorAll('#note-candidates-list [data-note-candidate]')]
     .filter((row) => row.querySelector('.note-candidate-check').checked);
   if (!rows.length) {
@@ -1488,7 +1567,7 @@ async function submitNoteCandidates() {
       failed.push('タスク名が空の候補');
       continue;
     }
-    const id = `note-${Date.now().toString(36)}-${position + 1}`;
+    const id = `${source}-${Date.now().toString(36)}-${position + 1}`;
     const description = row.querySelector('.note-candidate-desc').value.trim();
     const acceptance = row.querySelector('.note-candidate-accept').value
       .split('\n').map((value) => value.trim()).filter(Boolean);
@@ -1501,7 +1580,7 @@ async function submitNoteCandidates() {
         task_acceptance_criteria: acceptance,
         priority: candidate.priority,
         after: (candidate.after || []).join(', '),
-        charter: $('notes-charter').value,
+        charter: $(source === 'note' ? 'notes-charter' : 'document-charter').value,
       });
       candidate.addedId = id;
       added.push(id);
@@ -1513,18 +1592,23 @@ async function submitNoteCandidates() {
   }
   const allTaskIds = notesWorkspace.candidates.map((candidate) => candidate.addedId).filter(Boolean);
   if (added.length) {
-    await api.markNoteBlocks(p.dir, note.name, notesWorkspace.selectedBlocks.map((block) => ({
-      fingerprint: block.fingerprint,
-      taskIds: allTaskIds,
-    })));
-    await renderNotesList(note.name);
-    setNotesMode('task', true);
+    if (note) {
+      await api.markNoteBlocks(p.dir, note.name, notesWorkspace.selectedBlocks.map((block) => ({
+        fingerprint: block.fingerprint,
+        taskIds: allTaskIds,
+      })));
+      await renderNotesList(note.name);
+      setNotesMode('task', true);
+    }
     toast(`${added.length} 件のタスクを追加しました（承認するまで実行されません）`, true);
   }
   $('note-candidates-status').textContent = failed.length
     ? `${added.length} 件を追加しました。失敗: ${failed.join(' / ')}`
     : `${added.length} 件をタスク一覧へ追加しました`;
-  if (!failed.length) $('dlg-note-candidates').close();
+  if (!failed.length) {
+    $('dlg-note-candidates').close();
+    if (source === 'document') closeDocumentTaskDialog();
+  }
   button.disabled = false;
 }
 

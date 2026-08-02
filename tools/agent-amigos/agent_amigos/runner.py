@@ -105,7 +105,7 @@ class AmigoRunner:
         st = read_json(self.mp.status(self.who))
         if not isinstance(st, dict):
             st = {"node": self.node_id, "role": self.role_id, "state": "working",
-                  "turn": 0, "cursor": "", "idle_turns": 0, "done_round": None,
+                  "turn": 0, "seen_message_ids": [], "idle_turns": 0, "done_round": None,
                   "approved_round": None, "asked": False, "open_questions": {},
                   "escalated": [], "note": "", "handover": ""}
         return st
@@ -155,7 +155,11 @@ class AmigoRunner:
         if self._is_rounds_seat(role):
             return self._rounds_turn(mission, roles, role, st, rnd)
 
-        fresh, cursor = new_messages(self.mp, self.role_id, st.get("cursor") or "")
+        fresh, seen_ids = new_messages(
+            self.mp, self.role_id,
+            st.get("seen_message_ids") if "seen_message_ids" in st else None,
+            legacy_cursor=str(st.get("cursor") or ""),
+            open_questions=set((st.get("open_questions") or {}).keys()))
         # 自分の open question への回答を観測したら閉じる
         answered = {m.get("reply_to") for m in fresh if m.get("type") == "answer"}
         open_qs = {k: v for k, v in (st.get("open_questions") or {}).items()
@@ -173,7 +177,7 @@ class AmigoRunner:
         if budget["hard"] or (per_role_turns and turns_spent >= per_role_turns):
             want_work = must_respond and not budget["hard"]
         if not want_work:
-            return self._idle_turn(st, cursor, fresh)
+            return self._idle_turn(st, seen_ids, fresh)
 
         # agent-control（管理面）: lifecycle=pause/stop 指定ならこのノードの amigo は働かない。
         # ミッションは殺さず paused に留める（他ノード・上限緩和で再開）。owner へ一度だけ通知。
@@ -226,7 +230,8 @@ class AmigoRunner:
 
         applied, rejected = self._apply_actions(txn, actions, roles, role, st, rnd)
         st["turn"] = turns_spent + 1
-        st["cursor"] = cursor
+        st["seen_message_ids"] = seen_ids
+        st.pop("cursor", None)
         st["idle_turns"] = 0 if (applied or fresh) else int(st.get("idle_turns") or 0) + 1
         st["state"] = "working"
         st["heartbeat"] = now_iso()
@@ -262,11 +267,12 @@ class AmigoRunner:
             return 1e9
         return max(0.0, time.time() - hb)
 
-    def _idle_turn(self, st: dict, cursor: str, fresh: list) -> str:
-        prev = (st.get("cursor") or "", int(st.get("idle_turns") or 0), st.get("state"))
-        st["cursor"] = cursor
+    def _idle_turn(self, st: dict, seen_ids: list, fresh: list) -> str:
+        prev = (st.get("seen_message_ids") or [], int(st.get("idle_turns") or 0), st.get("state"))
+        st["seen_message_ids"] = seen_ids
+        st.pop("cursor", None)
         st["idle_turns"] = 0 if fresh else int(st.get("idle_turns") or 0) + 1
-        changed = prev[0] != cursor or prev[2] != st.get("state") \
+        changed = prev[0] != seen_ids or prev[2] != st.get("state") \
             or (prev[1] != st["idle_turns"] and st["idle_turns"] <= self.IDLE_WRITE_CAP)
         if not changed and self._heartbeat_age(st) < self.HEARTBEAT_REFRESH:
             return "idle"
@@ -284,7 +290,7 @@ class AmigoRunner:
         # 完全版で統合し直す（partial → done への昇格）
         upgrade = current and manifest.get("partial") and cs["reason"] == "done"
         if not cs["converged"] or (current and not upgrade):
-            return self._idle_turn(st, st.get("cursor") or "", [])
+            return self._idle_turn(st, st.get("seen_message_ids") or [], [])
         files = {}
         deliv = self.mp.deliverable_dir()
         for role_id in sorted(roles):
@@ -490,7 +496,7 @@ class AmigoRunner:
             return self._finish_debate(roles, role, st, rnd, n_rounds - 1)
         r = my                                   # 次に出すラウンド（0 始まり）
         if r >= 1 and not all(self._read_round(p, r - 1) is not None for p in peers):
-            return self._idle_turn(st, st.get("cursor") or "", [])   # バリア: 他席待ち
+            return self._idle_turn(st, st.get("seen_message_ids") or [], [])   # バリア: 他席待ち
         if r >= 1 and conv.get("done_when") == "consensus" and self._peers_agree(peers, r - 1, conv):
             return self._finish_debate(roles, role, st, rnd, r - 1)  # 合意で早期確定
         # 通信トポロジ: 各席が読む相手を制限する（バリアは全席同期のまま）
@@ -524,7 +530,7 @@ class AmigoRunner:
         if st.get("done_round") != rnd:
             actions.append({"kind": "declare_done"})
         if not actions:
-            return self._idle_turn(st, st.get("cursor") or "", [])
+            return self._idle_turn(st, st.get("seen_message_ids") or [], [])
         return self._apply_debate(actions, roles, role, st, rnd, 0.0)
 
     def _stub_debate(self, role: dict, r: int) -> str:

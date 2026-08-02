@@ -414,6 +414,15 @@ class ContinuationTests(unittest.TestCase):
         self.assertIn("verify1-r1", ids)  # 再検証
         self.assertNotIn("FLAKY", next(t for t in new if t["id"] == "gen1-r1")["goal"])
 
+    def test_failed_verify_retries_only_the_verify_executor(self):
+        nodes = {"gen1": {"goal": "work", "deps": [], "kind": "generate"},
+                 "verify1": {"goal": "検証", "deps": ["gen1"], "kind": "verify"}}
+        results = {"gen1": {"status": "done"},
+                   "verify1": {"status": "failed", "output": "verify=fail",
+                               "data": {"ok": False}}}
+        _, new, _ = kf.continue_stub("req", nodes, results, 0)
+        self.assertEqual({t["id"] for t in new}, {"verify1r"})
+
 
 class PatternStrategyTests(unittest.TestCase):
     def test_pattern_detection(self):

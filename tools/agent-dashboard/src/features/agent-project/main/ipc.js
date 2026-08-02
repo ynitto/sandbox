@@ -15,6 +15,38 @@ const authoring = require('./authoring');
 const agent = require('./agent');
 const reset = require('./reset');
 
+const MAX_BACKLOG_DOCUMENT_BYTES = 64 * 1024;
+
+async function pickBacklogDocument(dialog) {
+  if (!dialog || typeof dialog.showOpenDialog !== 'function') {
+    throw new Error('ファイル選択を利用できません');
+  }
+  const selected = await dialog.showOpenDialog({
+    title: 'バックログ候補を作る文書を選択',
+    properties: ['openFile'],
+    filters: [{ name: 'Markdown / テキスト', extensions: ['md', 'txt'] }],
+  });
+  const file = selected && selected.filePaths && selected.filePaths[0];
+  if (selected.canceled || !file) return { canceled: true };
+  if (!['.md', '.txt'].includes(path.extname(file).toLowerCase())) {
+    throw new Error('選択できるのは .md または .txt ファイルです');
+  }
+  const size = fs.statSync(file).size;
+  if (size > MAX_BACKLOG_DOCUMENT_BYTES) {
+    throw new Error(`文書が64 KiBを超えています（${Math.ceil(size / 1024)} KiB）。小さく分けてください`);
+  }
+  const bytes = fs.readFileSync(file);
+  let content;
+  try {
+    content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error('文書をUTF-8テキストとして読めませんでした');
+  }
+  if (!content.trim()) throw new Error('文書が空です');
+  if (content.includes('\0')) throw new Error('テキスト文書ではない内容が含まれています');
+  return { canceled: false, name: path.basename(file), content };
+}
+
 // ゴミ箱へ移動（可能な環境ではリカバリできる）。ゴミ箱が無い環境では完全削除
 async function removeToTrash(shell, target) {
   try {
@@ -27,7 +59,7 @@ async function removeToTrash(shell, target) {
 }
 
 function registerIpc(ctx) {
-  const { handle, loadConfig, shell, client } = ctx;
+  const { handle, loadConfig, shell, client, dialog } = ctx;
   const trash = (target) => removeToTrash(shell, target);
 
   // 発見: 実行エンジンの状況ファイル（engine/status.json）に載っているプロジェクト
@@ -58,6 +90,8 @@ function registerIpc(ctx) {
     if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
     return project.readProject(dir, loadConfig());
   });
+
+  handle('dashboard:pickBacklogDocument', () => pickBacklogDocument(dialog));
 
   // agent-flow バス（per-project bus/ または共有バス）。run 一覧に加えて daemon の
   // 稼働もロックファイルから判定して返す（agent-flow CLI には一切聞かない）。
@@ -525,4 +559,4 @@ function registerIpc(ctx) {
 
 }
 
-module.exports = { registerIpc };
+module.exports = { registerIpc, pickBacklogDocument, MAX_BACKLOG_DOCUMENT_BYTES };

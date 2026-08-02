@@ -17,7 +17,7 @@
 ### 追加機能
 
 1. **`oneshot` オプション** — プロンプトエントリごとに指定する boolean フラグ（デフォルト `false`）
-2. **ウォームアップ起動** — `oneshot: true` のエントリでは、スケジュール時刻の `warm_up_minutes` 分前に専用の tmux/kiro セッションを起動してアタッチする
+2. **ウォームアップ起動** — `oneshot: true` のエントリでは、スケジュール時刻の `warm_up_minutes` 分前に専用の detached tmux/kiro セッションを起動する
 3. **実行後の自動セッション終了** — プロンプト送信後、kiro の処理完了を検知したらセッションを終了してデタッチする
 4. **オーバーラップ時の待機継続** — 前回のセッションが未完了のままスケジュール時刻が到来した場合、セッションを維持したまま完了を待ってプロンプトを送信する
 
@@ -32,7 +32,7 @@
 | # | 要件 | 現行動作 | 変更後動作 |
 |---|---|---|---|
 | R1 | `oneshot` フラグをプロンプトエントリに追加 | なし | `oneshot: true/false`（デフォルト `false`） |
-| R2 | `oneshot: true` 時のウォームアップ | なし | `next_run_at - warm_up_minutes * 60` でセッション起動・アタッチ |
+| R2 | `oneshot: true` 時のウォームアップ | なし | `next_run_at - warm_up_minutes * 60` で detached セッション起動 |
 | R3 | `oneshot: true` 時の完了後セッション終了 | セッション維持 | kiro 処理完了後に kiro セッション・tmux セッションを終了してデタッチ |
 | R4 | オーバーラップ時の動作 | スキップまたはキュー | 完了を待機してプロンプトを送信。セッションは終了しない |
 | R5 | 全モードの完了待機 | 上限到達時スキップ | kiro 処理完了まで `next_run_at` を更新せず毎秒リトライ |
@@ -176,9 +176,7 @@ warm_up_at = next_run_at - warm_up_minutes * 60
 1. `_tmux_session_name(prompt_id, cwd)` でセッション名を生成（既存ロジックを流用）
 2. `tmux new-session -d -s <name> -c <cwd>` で独立したデタッチドセッションを作成
 3. kiro-cli を起動（既存の `_create_worker_pane` に相当する処理を新セッション内で実行）
-4. `tmux attach-session -t <name>` で現在のターミナルにアタッチ
-   - agent-loop デーモン自体は tmux 外で動いているため、アタッチ可能なクライアントが存在する場合のみ実行
-   - `TMUX` 環境変数の有無で判定し、`switch-client` または `attach-session` を使い分ける
+4. セッション名を記録する。利用者が確認するときだけ明示的に接続し、agent-loop は client を自動切替しない
 
 #### セッション終了 (`_terminate_oneshot_session`)
 
@@ -187,9 +185,8 @@ kiro 処理完了後に呼び出す。
 1. `tmux send-keys -t <pane> '/exit' Enter` — kiro-cli へ終了コマンドを送信
 2. `startup_timeout` 秒（デフォルト 60 秒）待機して kiro-cli プロセスが終了するのを確認
    - 終了しない場合は `tmux kill-pane -t <pane>` で強制終了
-3. `tmux detach-client -s <session>` — セッションにアタッチしているクライアントをデタッチ
-4. `tmux kill-session -t <session>` — セッション自体を削除
-5. `SessionManager` の `_panes`, `_tmux_names` などから当該エントリを除去
+3. `tmux kill-session -t <session>` — セッション自体を削除
+4. `SessionManager` の `_panes`, `_tmux_names` などから当該エントリを除去
 
 ### 4.4 オーバーラップ検知
 
@@ -353,8 +350,7 @@ def _on_completion_detected(self, pane_id: str):
 | メソッド | 引数 | 説明 |
 |---|---|---|
 | `create_oneshot_session(prompt_id, name, cwd)` | prompt_id, セッション名, 作業ディレクトリ | oneshot 専用セッションを新規作成 |
-| `attach_to_session(session_name)` | セッション名 | クライアントをセッションにアタッチ |
-| `terminate_oneshot_session(prompt_id)` | prompt_id | kiro-cli 終了 → セッション削除 → クライアントデタッチ |
+| `terminate_oneshot_session(prompt_id)` | prompt_id | kiro-cli 終了 → セッション削除 |
 | `is_session_alive(session_name)` | セッション名 | tmux セッションの生存確認 |
 
 #### セッション名規則（oneshot）
@@ -514,7 +510,6 @@ slot_monitor.start()
 | kiro-cli の `/exit` コマンドが効かない（`startup_timeout` 秒以内に終了しない） | `kill-pane` で強制終了。ログに WARNING を記録 |
 | `completion_wait_timeout` 超過 | 処理中でもプロンプト送信を強制続行。ログに WARNING を記録。oneshot の場合はセッション終了処理へ進む |
 | セッション終了後の `session-monitor` による再起動検知 | oneshot セッションをホワイトリストで除外し再起動しない |
-| アタッチ中クライアントがいない場合の `detach-client` | `tmux detach-client` エラーを無視して `kill-session` に進む |
 | 3 回以上オーバーラップ | 古いスケジュールを破棄し最新 1 件のみ `pending_prompt` に保持。ログに WARNING を記録 |
 
 ---
@@ -523,11 +518,11 @@ slot_monitor.start()
 
 ### tmux 操作の冪等性
 
-`create_oneshot_session` を呼ぶ前に `is_session_alive` で既存セッションの存在確認を行う。既存セッションが残っている場合はアタッチのみ実行し、新規作成しない。
+`create_oneshot_session` を呼ぶ前に `is_session_alive` で既存セッションの存在確認を行う。既存セッションが残っている場合は再利用し、新規作成しない。
 
-### アタッチ先クライアントの判定
+### controller と oneshot の tmux 境界
 
-agent-loop デーモンは常に tmux セッション内で動作する（`_auto_attach_tmux_if_needed` により）。oneshot セッションへのアタッチは `tmux switch-client -t <session>` を使う（`attach-session` は新しいターミナルを必要とするため）。
+controller は既定で `_auto_attach_tmux_if_needed` により tmux 内で動作し、`--no-auto-attach` 指定時だけ tmux 外で動作する。oneshot はどちらの場合も detached session とし、`attach-session` / `switch-client` を自動実行しない。
 
 ### `warm_up_at` の再計算タイミング
 

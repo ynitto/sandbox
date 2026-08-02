@@ -46,6 +46,7 @@ module.exports = {
     invoke('dashboard:updateNote', { dir, name, body, mtime }),
   markNoteBlocks: (invoke) => (dir, name, links) =>
     invoke('dashboard:markNoteBlocks', { dir, name, links }),
+  pickBacklogDocument: (invoke) => () => invoke('dashboard:pickBacklogDocument'),
   distillNotes: (invoke) => (dir, charter) => invoke('dashboard:distillNotes', { dir, charter }),
   requestLifecycle: (invoke) => (dir, action, reason) =>
     invoke('dashboard:lifecycle', { dir, action, reason }),
