@@ -76,14 +76,16 @@ def write_json_atomic(path: str, data) -> None:
     `core.fsync=all`（`transport._DURABLE_GIT_CONFIG`）で塞いでいるのに、こちらの契約ファイル
     （`engine/status.json`・claim・lease・run の meta.json）は素通しだった——読み手はどれも
     「読めなければ存在しない」と解釈するので、空ファイルは黙って状態の欠損になる。
-    ディレクトリの fsync まで行い、rename そのものも永続化させる。"""
+    ディレクトリの fsync まで行い、rename そのものも永続化させる。
+
+    一時名は `<path>.tmp.<pid>.<unique>`。PID だけでは同一プロセス内の並行書き込みが衝突し、
+    一方 `mkstemp` の別名（`.name.XXXX.tmp`）だと agent-flow の残骸掃除（`.tmp.<pid>`）と
+    権限（0600 固定）がずれるので、従来の接頭辞を保ったまま一意接尾辞を足す。
+    """
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    # PID だけの一時名は同一プロセス内の並行書き込みで衝突する（同じ tmp を truncate /
-    # rename し合い、片方が FileNotFoundError になる）。ディレクトリ内に一意な一時ファイルを作る。
-    fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.",
-                               suffix=".tmp", dir=os.path.dirname(path) or ".")
+    tmp = f"{path}.tmp.{os.getpid()}.{time.time_ns()}"
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
             f.flush()
             os.fsync(f.fileno())

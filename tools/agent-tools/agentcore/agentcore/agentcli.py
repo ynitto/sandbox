@@ -136,12 +136,22 @@ def normalize(name: str, raw: dict, path) -> dict:
     prompt_via = str(raw.get("prompt_via", "stdin"))
     if prompt_via not in ("stdin", "argv"):
         raise AgentCliError(f"エージェント定義 {path}: prompt_via は stdin か argv です")
-    env_raw = raw.get("env") or {}
-    if not isinstance(env_raw, dict) or not all(isinstance(k, str) and isinstance(v, str)
-                                                 for k, v in env_raw.items()):
-        raise AgentCliError(f"エージェント定義 {path}: env は文字列→文字列のオブジェクトです")
+    # 省略と空は許すが、型が違うものは `or {}` で握り潰さない（[] / "" が通ってしまう）。
+    if "env" not in raw or raw.get("env") is None:
+        env_raw: dict = {}
+    else:
+        env_raw = raw.get("env")
+        if not isinstance(env_raw, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in env_raw.items()):
+            raise AgentCliError(f"エージェント定義 {path}: env は文字列→文字列のオブジェクトです")
+    if "errors" not in raw or raw.get("errors") is None:
+        errors_raw: list = []
+    else:
+        errors_raw = raw.get("errors")
+        if not isinstance(errors_raw, list):
+            raise AgentCliError(f"エージェント定義 {path}: errors はオブジェクト配列です")
     errors = []
-    for e in (raw.get("errors") or []):
+    for e in errors_raw:
         if not isinstance(e, dict):
             raise AgentCliError(f"エージェント定義 {path}: errors[] はオブジェクト配列です")
         try:
@@ -151,12 +161,18 @@ def normalize(name: str, raw: dict, path) -> dict:
         except re.error as ex:
             raise AgentCliError(
                 f"エージェント定義 {path}: errors.match が正規表現として不正です: {ex}") from ex
-    spill_raw = raw.get("spill") or {}
-    if spill_raw and not isinstance(spill_raw, dict):
-        raise AgentCliError(f"エージェント定義 {path}: spill はオブジェクトです")
-    inter_raw = raw.get("interactive") or {}
-    if inter_raw and not isinstance(inter_raw, dict):
-        raise AgentCliError(f"エージェント定義 {path}: interactive はオブジェクトです")
+    if "spill" not in raw or raw.get("spill") is None:
+        spill_raw: dict = {}
+    else:
+        spill_raw = raw.get("spill")
+        if not isinstance(spill_raw, dict):
+            raise AgentCliError(f"エージェント定義 {path}: spill はオブジェクトです")
+    if "interactive" not in raw or raw.get("interactive") is None:
+        inter_raw: dict = {}
+    else:
+        inter_raw = raw.get("interactive")
+        if not isinstance(inter_raw, dict):
+            raise AgentCliError(f"エージェント定義 {path}: interactive はオブジェクトです")
     readonly = str(raw.get("readonly", "best-effort"))
     if readonly not in ("enforced", "best-effort"):
         raise AgentCliError(f"エージェント定義 {path}: readonly は enforced か best-effort です")

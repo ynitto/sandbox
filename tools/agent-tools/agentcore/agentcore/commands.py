@@ -21,7 +21,6 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import tempfile
 import time
 
 RECEIPT_KEEP = 200                    # 受理レシートを直近この件数だけ残す
@@ -191,10 +190,11 @@ def write_receipt(dir_path, source_name: str, payload: dict, *, now: "str | None
         # 逆順だと呼び出し側が ok:false や偽の source を書けて受理証跡を偽装できる。
         body = {**(payload or {}), "ok": True, "source": source_name,
                 "processed_at": now or _now_iso()}
-        fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(dest)}.",
-                                   suffix=".tmp", dir=rdir)
+        # protocol.write_json_atomic と同じ命名（`<path>.tmp.<pid>.<unique>`）。
+        # 残骸掃除と umask 準拠の権限を保つ。
+        tmp = f"{dest}.tmp.{os.getpid()}.{time.time_ns()}"
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(body, f, ensure_ascii=False, indent=2)
             os.replace(tmp, dest)
         except Exception:

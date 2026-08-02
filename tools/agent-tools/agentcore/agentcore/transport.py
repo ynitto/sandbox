@@ -509,7 +509,12 @@ class GitTransport:
         """作業ツリーの未確定分を add + commit する（コミット対象が無ければ何もしない）。
         subdir 指定時はその名前空間だけをステージする（多重コミッタの下で他者のパスを
         巻き込まない）。add / commit の「対象なし」以外の失敗は握り潰さない——黙って
-        成功扱いにすると呼び出し側が未 push の書き込みを送ったつもりで進んでしまう。"""
+        成功扱いにすると呼び出し側が未 push の書き込みを送ったつもりで進んでしまう。
+
+        「対象なし」は git の文言ではなく index の差分で判定する。subdir スコープ外に
+        untracked があると `nothing added to commit but untracked files present` になり、
+        文言マッチだけだと正当な no-op を誤って例外にする。
+        """
         args = ["add", "-A", "--", self.subdir] if self.subdir else ["add", "-A"]
         p = self._git(args, check=False)
         if p.returncode != 0 and is_corrupt_error(p):
@@ -518,6 +523,23 @@ class GitTransport:
         if p.returncode != 0:
             raise RuntimeError(
                 f"git add に失敗しました: {(p.stderr or p.stdout or '').strip()[:300]}")
+        # diff --cached --quiet: 0=差分なし / 1=差分あり / それ以外=障害
+        staged = self._git(["diff", "--cached", "--quiet"], check=False)
+        if staged.returncode == 0:
+            return
+        if staged.returncode not in (0, 1) and is_corrupt_error(staged):
+            self._rebuild_clone()
+            p = self._git(args, check=False)
+            if p.returncode != 0:
+                raise RuntimeError(
+                    f"git add に失敗しました: {(p.stderr or p.stdout or '').strip()[:300]}")
+            staged = self._git(["diff", "--cached", "--quiet"], check=False)
+            if staged.returncode == 0:
+                return
+        if staged.returncode not in (0, 1):
+            raise RuntimeError(
+                f"git diff --cached に失敗しました: "
+                f"{(staged.stderr or staged.stdout or '').strip()[:300]}")
         c = self._git(["commit", "-m", msg], check=False)
         if c.returncode != 0 and is_corrupt_error(c):
             self._rebuild_clone()
@@ -525,6 +547,9 @@ class GitTransport:
             if p.returncode != 0:
                 raise RuntimeError(
                     f"git add に失敗しました: {(p.stderr or p.stdout or '').strip()[:300]}")
+            staged = self._git(["diff", "--cached", "--quiet"], check=False)
+            if staged.returncode == 0:
+                return
             c = self._git(["commit", "-m", msg], check=False)
         if c.returncode != 0:
             err = f"{c.stderr or ''}{c.stdout or ''}".lower()

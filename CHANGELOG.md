@@ -28,7 +28,15 @@ fail-close 検証が壊れる経路）。仕様レベルの積み残し（分散
   「対象なし」以外の失敗を握り潰さない
 - **agentcli / install.sh**: `~/.agents` 親の存在ではなく `agents/` サブディレクトリ単位で
   新旧ホームを判定（スキーマどおり）。`prompt_via` / `output` / `env` / `errors` の形を検査
-- **ollama_adapter**: `urlopen` に timeout、非 dict 応答を明示エラーへ
+- **ollama_adapter**: `urlopen` に timeout（既定 600s / `OLLAMA_TIMEOUT`）、非 dict 応答を明示エラーへ
+
+副作用の緩和（同 PR 内）:
+
+- `write_json_atomic` は `mkstemp`（0600・掃除非互換名）ではなく
+  `<path>.tmp.<pid>.<unique>` を使い、agent-flow の残骸掃除を新接尾辞に対応
+- `_commit_pending` は「ステージ差分の有無」で no-op 判定し、subdir 外 untracked による
+  誤例外を防ぐ
+- `agentcli.normalize` は `env: []` / `errors: {}` を `or {}` で握り潰さない
 
 ### agent-flow / flow-planner: 列挙駆動の分解（対象単位のノードが生まれるようにする）・集約の木構造化
 
