@@ -27,7 +27,8 @@ agentcli の型握り潰し）も同 PR で緩和済み。
 1. **仕様・設計レベルの未修正** — 局所パッチでは足りず、設計判断または複数モジュール
    の合意が要る（§3）
 2. **更なる調査が必要** — 症状やずれは見えているが、影響範囲・採るべき正典が未確定（§4）
-3. **本監査非起因の既存テスト失敗** — main でも再現。別件として切り出す（§5）
+3. **査読で訂正した既存テスト** — main での失敗は実装不具合ではなく、
+   先行する停止契約変更に期待値が追従していなかったもの（§5）
 
 柱への効き方: 未修正の大半は柱 1（チーム分担の正しさ: claim / 板 / transport）か、
 柱 2（人介在の前に機械が fail-close すること: verify / CLI 契約）に触る。
@@ -59,7 +60,8 @@ agentcli の型握り潰し）も同 PR で緩和済み。
 | F16 | `agent-flow` cleanup | 新一時名接尾辞を残骸掃除が拾うよう正規表現を拡張 |
 
 検証（PR 時点）: agentcore 両ルート緑、agent-flow 677 緑、agent-amigos 182 緑、
-dashboard URL / agent-cli golden 緑。agent-project は §5 の 2 件のみ FAIL（main でも同 FAIL）。
+dashboard URL / agent-cli golden 緑。agent-project で当時 FAIL した 2 件は、査読で古い期待値と
+判明して訂正し、1158 件が緑（§5）。
 
 ---
 
@@ -203,22 +205,25 @@ dashboard URL / agent-cli golden 緑。agent-project は §5 の 2 件のみ FAI
 | I9 | sparse-checkout 失敗の握り潰し | `sparse-checkout` 失敗でも checkout が成功しフル clone になりうる | 隔離破れの実害（秘密パス同梱等） | 失敗時に probe して managed flag を落とす案の影響 |
 | I10 | `sync_pull` の「試みたか」戻り値 | 成功/失敗を呼び出し側が区別しにくい | behind/health 表示に足りる情報 | dashboard / doctor が欲しい信号を先に決める |
 | I11 | heartbeat の未来時刻 | 未来の heartbeat はローカル時計が追いつくまで fresh | 時計ずれノードの影響 | 上位側で max-skew を見ているか確認 |
-| I12 | agent-project の sticky cancel 残存（§5） | 本 PR 非起因で main でも FAIL | 本番経路でも cancel が残るか、テストの期待が古いだけか | 失敗テストを単体で追い、cancel 削除の責務関数と git sync の順序を確認 |
+| I12 | agent-project の sticky cancel 残存（§5） | **査読済み**: テストの期待が古かった | `cancelled` の cancel は実行所有者が停止を確認するまで残す。終端 meta 書き込み直後に消すと、並行 heartbeat が古い meta を戻した場合に停止意図を失う | 実装の安全側の契約に合わせ、テストを sticky cancel の内容まで検査するよう訂正 |
 
 ---
 
-## 5. 本監査非起因の既存失敗
+## 5. 査読で訂正した既存テスト
 
 agent-project 全件実行時に次の 2 件が失敗した。PR #653 の agentcore を main の内容に
-戻しても**同じ失敗**を再現したため、本修正の回帰ではない。
+戻しても同じ失敗を再現したが、査読の結果、これは未修正の実装バグではない。
+`detach_flow_run` は、終端 meta の書き込みと実行所有者の停止確認の間に並行 heartbeat が
+古い meta を書き戻す競合でも停止意図を保つため、`cancelled` の cancel マーカーを残す。
+2026-08-02 の先行変更（`43fe377`）でこの契約になった一方、テストの古い期待値だけが残っていた。
 
 | テスト | 症状 |
 |---|---|
-| `tests.test_commands.TestRevise.test_revise_offloaded_detaches_and_requeues` | 適用後も sticky cancel（`inbox/cancels/run-old.json`）が残る |
+| `tests.test_commands.TestRevise.test_revise_offloaded_detaches_and_requeues` | 停止確認前の sticky cancel が残ることと、id / reason を検査するよう訂正 |
 | `tests.test_commands.TestRevise.test_approve_offloaded_detaches_and_requeues` | 同上 |
 
-扱いは I12。agent-tools 監査のブロッカーにはしないが、委譲の中止が板/バスに残ると
-柱 1 の分担に効くので、別 PR で切り出すのがよい。
+実装を cancel 即時削除に戻すと上記の競合を再導入する弊害があるため、実装は変えず、
+テストを現行契約へ合わせた。I12 はこれで決着とする。
 
 ---
 
@@ -255,9 +260,8 @@ agent-project 全件実行時に次の 2 件が失敗した。PR #653 の agentc
 
 ## 7. 推奨する次の一手（この文書の使い方）
 
-1. **すぐ別件で追うなら I12**（agent-project sticky cancel）。本監査の残りとは独立。
-2. **設計判断が要る本丸は U1 → U2/U3 → U4** の順。いずれも柱 1。詳細設計を書いてから
+1. **設計判断が要る本丸は U1 → U2/U3 → U4** の順。いずれも柱 1。詳細設計を書いてから
    触ること。局所パッチで「winner をもう一度見る」程度では U1 は閉じない。
-3. **安く閉じられる文書・契約ずれは U8 / U9 / U11**。実装より正典揃えが先。
-4. この文書の項目を消化したら、行を「決着（PR / 設計）」と記して
+2. **安く閉じられる文書・契約ずれは U8 / U9 / U11**。実装より正典揃えが先。
+3. この文書の項目を消化したら、行を「決着（PR / 設計）」と記して
    [積み残し総覧](2026-07-26-open-items-and-concerns.md) 側へ転記または参照を足す。
