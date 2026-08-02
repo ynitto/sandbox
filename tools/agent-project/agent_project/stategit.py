@@ -174,6 +174,83 @@ class DirectStateGit:
             return
         self._integrate(branch)
 
+    @staticmethod
+    def _shared_rel(path: Path, base: Path) -> "str | None":
+        try:
+            rel = path.relative_to(base)
+        except ValueError:
+            return None
+        parts = rel.parts
+        if (not parts or any(part.startswith(".") for part in parts)
+                or any(part in _STATE_EXCLUDE_DIRS for part in parts)):
+            return None
+        return str(rel)
+
+    def _assert_shared_tree_safe(self, base: Path) -> None:
+        """同期除外後の共有候補ツリーを検査する。読めないファイルも共有不可。"""
+        try:
+            for root, dirs, files in os.walk(base):
+                root_path = Path(root)
+                dirs[:] = [name for name in dirs
+                           if self._shared_rel(root_path / name, base) is not None]
+                for name in files:
+                    path = root_path / name
+                    rel = self._shared_rel(path, base)
+                    if rel is None:
+                        continue
+                    try:
+                        text = path.read_text(encoding="utf-8")
+                    except (OSError, UnicodeError):
+                        raise ShareSafetyError(rel, ("READ",)) from None
+                    assert_share_safe(text, rel)
+        except ShareSafetyError:
+            raise
+        except Exception:
+            raise ShareSafetyError("<tree>", ("INSPECTION",)) from None
+
+    def _assert_git_tree_safe(self, treeish: str) -> None:
+        """Git tree の全共有 blob を検査する（作業ツリーに依存しない）。"""
+        try:
+            listing = self._git("ls-tree", "-r", "--full-tree", treeish)
+            if listing.returncode != 0:
+                raise ShareSafetyError("<git-tree>", ("READ",))
+            sub = self._subdir()
+            for line in listing.stdout.splitlines():
+                meta, path = line.split("\t", 1)
+                _mode, kind, sha = meta.split()
+                if kind != "blob":
+                    continue
+                if sub:
+                    if not path.startswith(sub + "/"):
+                        continue
+                    rel = path[len(sub) + 1:]
+                else:
+                    rel = path
+                if self._shared_rel(Path(rel), Path(".")) is None:
+                    continue
+                data = self._cat_blob(sha)
+                if data is None:
+                    raise ShareSafetyError(rel, ("READ",))
+                text = data.decode("utf-8")
+                assert_share_safe(text, rel)
+        except ShareSafetyError:
+            raise
+        except (OSError, UnicodeError):
+            raise ShareSafetyError(locals().get("rel", "<git-tree>"), ("READ",)) from None
+        except Exception:
+            raise ShareSafetyError("<git-tree>", ("INSPECTION",)) from None
+
+    def _assert_outgoing_safe(self, branch: str) -> None:
+        """push 予定の全 commit の snapshot を検査し、削除済み中間 commit も見逃さない。"""
+        remote_ref = f"origin/{branch}"
+        has_remote_ref = self._git("rev-parse", "-q", "--verify", remote_ref).returncode == 0
+        revspec = f"{remote_ref}..HEAD" if has_remote_ref else "HEAD"
+        commits = self._git("rev-list", revspec)
+        if commits.returncode != 0:
+            raise ShareSafetyError("<git-history>", ("READ",))
+        for commit in commits.stdout.splitlines():
+            self._assert_git_tree_safe(commit)
+
     def transaction(self, branch: str, mutate, message: str,
                     retries: int = 3) -> bool:
         """remote HEAD を親に変更を作り、fast-forward push を CAS として確定する。"""
@@ -193,6 +270,11 @@ class DirectStateGit:
                         return False
                     if not mutate(worktree):
                         return False
+                    try:
+                        self._assert_shared_tree_safe(worktree)
+                    except ShareSafetyError as exc:
+                        self._last_sync_error = str(exc)
+                        return False
                     env = self._env()
 
                     def wgit(*args: str):
@@ -208,6 +290,11 @@ class DirectStateGit:
                     if commit.returncode != 0:
                         return False
                     new = wgit("rev-parse", "HEAD").stdout.strip()
+                    try:
+                        self._assert_git_tree_safe(new)
+                    except ShareSafetyError as exc:
+                        self._last_sync_error = str(exc)
+                        return False
                     if wgit("push", "-q", "origin",
                             f"HEAD:refs/heads/{branch}").returncode == 0:
                         self._transaction_materialize(branch, old, new)
@@ -330,6 +417,7 @@ class DirectStateGit:
             tree = _git_run(["git", "-C", str(self.root), "write-tree"], env).stdout.strip()
             if not tree:
                 return None
+            self._assert_git_tree_safe(tree)
             r = _git_run(["git", "-C", str(self.root), "commit-tree", tree,
                                 "-m", self._commit_msg()], env)
             new = r.stdout.strip()
@@ -426,6 +514,7 @@ class DirectStateGit:
                 _wgit("add", "-A", "--", *live)
             if _wgit("diff", "--cached", "--quiet").returncode == 0:
                 return None                  # 差分なし
+            self._assert_shared_tree_safe(base)
             # 連続する state sync は未 push の間 --amend で 1 コミットに束ねる
             # （同期のたびに 1 行差分のコミットが積もり、履歴を埋め尽くすのを防ぐ）
             args = (["commit", "-q", "--amend"] if amend else ["commit", "-q"])
@@ -965,6 +1054,11 @@ class DirectStateGit:
                 else:                     # リモートにブランチが無い（初回）→ コミットがあれば push
                     ahead = self._git("rev-parse", "-q", "--verify", "HEAD").returncode == 0
                 if ahead:
+                    try:
+                        self._assert_outgoing_safe(branch)
+                    except ShareSafetyError as exc:
+                        self._last_sync_error = str(exc)
+                        raise RuntimeError(f"state_git {exc}") from None
                     for i in range(_STATE_PUSH_RETRIES):
                         r = self._git("push", "-u", "origin", f"HEAD:{branch}")
                         if r.returncode == 0:
@@ -1088,5 +1182,3 @@ def state_git_for(cfg: "Config") -> "DirectStateGit | None":
     if key not in _STATE_GITS:
         _STATE_GITS[key] = DirectStateGit(root, cfg.state_git_interval)
     return _STATE_GITS[key]
-
-

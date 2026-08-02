@@ -130,6 +130,62 @@ FEEDBACK_MARKERS = (FEEDBACK_MARKER, DECISION_MARKER)
 CHECKBOX_RE = re.compile(r"^\s*-\s*\[[ xX]\]")        # 確定チェックボックス行（任意状態）
 CHECKED_RE = re.compile(r"^\s*-\s*\[[xX]\]")          # チェック済み（= 確定）
 
+# 共有ファイルへ出してよい本文の単一検査器。入力側は置換してから再検査し、state git は
+# commit/push 直前に同じ検査器を fail-closed で使う。
+_SHARE_REDACTIONS = (
+    ("TOKEN", re.compile(
+        r"(?i)(?:\bBearer\s+|\b(?:access[_-]?token|auth[_-]?token|token)\s*[:=]\s*)"
+        r"(?!\[REDACTED:)[^\s,;'\"<>]+|\b(?:gh[pousr]_|github_pat_|glpat-|sk-(?:proj-)?)"
+        r"[A-Za-z0-9_-]{8,}")),
+    ("HOME", re.compile(
+        r"(?i)(?:/[Uu]sers/|/home/)[^\s/\\:;,'\"<>]+(?:[/\\][^\s:;,'\"<>]+)*|"
+        r"[A-Za-z]:\\Users\\[^\s\\:;,'\"<>]+(?:\\[^\s:;,'\"<>]+)*")),
+    ("PROMPT", re.compile(
+        r"(?im)(?:\b(?:raw|system)[_-]?prompt\b|生プロンプト)\s*[:=]\s*"
+        r"(?!\[REDACTED:)(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\s,;]+)|"
+        r"\bRAW_PROMPT_[A-Z0-9_-]+\b")),
+    ("CREDENTIAL", re.compile(
+        r"(?i)\b(?:password|passwd|api[_-]?key|client[_-]?secret|private[_-]?key|credential)"
+        r"\s*[:=]\s*(?!\[REDACTED:)[^\s,;'\"<>]+|"
+        r"\bhttps?://[^\s/:@]+:[^\s/@]+@")),
+)
+
+
+class ShareSafetyError(RuntimeError):
+    """共有前検査の失敗。秘密値は保持せず、パスと検出区分だけを公開する。"""
+
+    def __init__(self, path: str, categories) -> None:
+        cats = ",".join(sorted(set(categories))) or "INSPECTION"
+        super().__init__(f"共有前検査に失敗: {path} [{cats}]")
+
+
+def _share_categories(text: str) -> "list[str]":
+    return [category for category, pattern in _SHARE_REDACTIONS if pattern.search(text)]
+
+
+def assert_share_safe(text: str, path: str = "<text>") -> None:
+    """禁止値が無いことを確認する。検査器自身の異常も安全側へ倒す。"""
+    try:
+        categories = _share_categories(text)
+    except Exception:
+        raise ShareSafetyError(path, ("INSPECTION",)) from None
+    if categories:
+        raise ShareSafetyError(path, categories)
+
+
+def redact_for_share(text, path: str = "<text>") -> str:
+    """共有本文の禁止値を置換し、同じ検査器で置換後を再検査する。"""
+    try:
+        redacted = str(text or "")
+        for category, pattern in _SHARE_REDACTIONS:
+            redacted = pattern.sub(f"[REDACTED:{category}]", redacted)
+        assert_share_safe(redacted, path)
+        return redacted
+    except ShareSafetyError:
+        raise
+    except Exception:
+        raise ShareSafetyError(path, ("INSPECTION",)) from None
+
 # 停止理由
 REASON_DRAINED = "drained"  # 消化可能タスクが尽きた（実質完了）
 REASON_BUDGET = "budget"    # 予算（サイクル数/実時間）が尽きた

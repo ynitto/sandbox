@@ -65,7 +65,7 @@ def append_brief_item(cfg: "Config", task: "Task", text, source: str = "") -> bo
     """ブリーフへ項目を 1 件追記する（正規化・重複排除・出典コメント付き・冪等）。追記したら True。
     差し戻し（feedback / revise / gitlab-reject / cohort）とノード発見の双方から呼ばれる。
     追記のみ＝過去の項目を上書きしないので、複数回のリトライでも最初の指摘が失われない。"""
-    body = _norm_brief_item(text)
+    body = redact_for_share(_norm_brief_item(text), f"brief/{task.id}.md")
     if not body:
         return False
     if body in _brief_items(cfg, task):             # 既出は冪等に無視（決定的）
