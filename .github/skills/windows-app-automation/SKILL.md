@@ -2,7 +2,7 @@
 name: windows-app-automation
 description: Windows デスクトップアプリ（Win32・WPF・WinForms・UWP・メモ帳・タスクマネージャーなど）の GUI 自動化・UIテストスキル。「Windows アプリを自動化して」「デスクトップアプリをテストして」「ファイルダイアログを操作して」「Excelを自動操作して」などで発動。pywinauto/winauto 使用。Copilot・Kiro・WSL 対応。
 metadata:
-  version: 1.1.0
+  version: 1.2.0
   tier: experimental
   category: implementation
   tags:
@@ -46,8 +46,8 @@ Windows ネイティブアプリを自動化するときは、Python + pywinauto
 # 依存ライブラリと winauto コマンドのインストール
 python tools/winauto/install.py
 
-# インストール確認
-winauto --version
+# インストール確認（doctor が pywinauto・デスクトップ到達性・ロック状態を確認する）
+winauto doctor
 winauto apps
 ```
 
@@ -57,10 +57,15 @@ winauto apps
 # Windows 側 Python を自動検出してインストール
 python tools/winauto/install.py
 
-# インストール確認（新しい端末で）
-winauto --version
+# インストール確認（新しい端末で）。doctor は WSL→Windows のブリッジを
+# 端から端まで確認する: interop → ラッパー → Windows Python → デスクトップ到達性
+winauto doctor
 winauto apps
 ```
+
+`winauto doctor` は **WSL 側でも Windows 側でも動く唯一のコマンド**で、WSL から実行すると
+ラッパー越しに Windows 側の doctor を呼び出して所見を合流させる。`--output json` で機械可読。
+問題があれば終了コード 1 を返すので、セットアップスクリプトからも判定に使える。
 
 インストーラーが Windows 側 Python を見つけられない場合：
 ```bash
@@ -126,8 +131,16 @@ cmd.exe /c python .github/skills/windows-app-automation/scripts/element_inspecto
 ```
 
 **WSL 固有の注意点:**
-- `winauto run` に渡すスクリプト内のファイルパスは Windows パス（`C:/...`）で書く
-- スクリーンショットの保存先は `C:/Users/<name>/` 配下か `/mnt/c/...` の WSL パスを使う
+- ラッパーは Windows の `python.exe` を**直接 exec** する（`cmd.exe` を挟まない）。
+  `cmd.exe` 経由だと WSL の cwd に対して「CMD does not support UNC paths as current
+  directories」を吐き、出力を読むエージェントを惑わせるため
+- **引数のパス変換はラッパーが行うが、変換対象は限定されている**。変換されるのは
+  `screenshot` / `codegen` の `--output` の値、`run` のスクリプト位置引数、
+  および `/` で始まる絶対パスだけ。セレクタ（`name:=OK`）や `type` に渡す入力テキストは
+  **変換しない**（同名のファイルが cwd にあるだけで壊れるのを避けるため）
+- `winauto run` に渡す**スクリプトの中身**のパスは Windows パス（`C:/...`）で書く
+  ——変換されるのはコマンドライン引数だけで、スクリプト本文は解釈しない
+- `WINAUTO_NO_PATH_CONV=1` で変換を完全に無効化できる
 - WSL ターミナルに出力は返ってくるが、GUI 操作の対象は Windows デスクトップ上のウィンドウ
 
 ### kiro-cli から呼び出す場合
@@ -157,6 +170,44 @@ kiro-cli --trust-all-tools
 - `--trust-all-tools` がないと winauto などの外部コマンド実行が承認待ちになる
 - GUI 操作は Windows デスクトップ側で発生するため stdout に状況は出ない。`winauto screenshot` で確認
 - kiro-cli が生成したスクリプト内の Windows パスは `C:/...` 形式にする
+
+---
+
+## 並列実行とデスクトップ排他
+
+**Windows デスクトップは 1 セッションに 1 つしかない共有排他資源**。フォーカスとマウスカーソルは
+1 組しかないため、複数プロセスが同時に `set_focus()` / `click_input()` を撃つと互いの操作を
+奪い合って壊れる。agent-flow を `--workers 3` のように並列で回すと即座にこれが起きる。
+
+winauto は**入力・フォーカスを奪うコマンドをファイルロックで直列化**する（既定で有効）。
+
+| | コマンド |
+|---|---|
+| ロックを取る | `launch` `click` `type` `keys` `screenshot` `run` `inspect` `codegen` |
+| ロックを取らない | `apps` `tree` `get-text` `wait` `doctor` |
+
+読み取り専用をロック対象から外してあるのは、長い `wait` がロックを占有して他の発行を
+止めてしまわないようにするため。
+
+WSL からの呼び出しもラッパー経由で Windows Python に収束するので、**ロック 1 本で
+「WSL 発」と「Windows ネイティブ発」の双方が直列化される**。分散実行（`agent-flow --git`）では
+PC ごとにデスクトップが別なので、PC 単位でロックが閉じるこの構造が意味論的にも正しい。
+
+```bash
+winauto --lock-timeout 600 click "name:=OK" --app myapp   # ロック待ちの上限（既定 300 秒・0 で無限）
+winauto --no-lock screenshot --app myapp                  # 排他を外す（並列 GUI 操作は壊れる）
+WINAUTO_LOCK_TIMEOUT=600 winauto click ...                # 環境変数でも指定可
+```
+
+ロック待ちの告知と待ちタイムアウトは **stderr** に出る（stdout はエージェントが読む結果なので汚さない）。
+誰が握っているかは `winauto doctor` の `lock` 行で分かる。
+
+**agent-flow から使うときの注意:**
+- GUI ノードは Windows デスクトップのある PC でしか実行できない。分散時は GUI 対応 PC だけが
+  `participate` するバス／ブランチに分ける
+- `agent_timeout`（既定 600 秒）は GUI タスクには短いことがある。ロック待ち時間も含まれる点に注意
+- 画面ロック中・RDP 切断中・未ログオンのセッションでは GUI 操作もスクリーンショットも失敗する。
+  `winauto doctor` の `desktop` 行が warn を出す
 
 ---
 
@@ -433,7 +484,10 @@ tab.select(1)            # インデックスで選択
 | 管理者権限アプリを操作できない | UAC 分離 | スクリプト自体を管理者権限で実行 |
 | **WSL**: `pywinauto` が import できない | Linux Python に入っている | Windows Python で実行する: `cmd.exe /c python script.py` |
 | **WSL**: `winauto` コマンドが見つからない | インストール未完 / PATH 未設定 | `python tools/winauto/install.py` を再実行; `source ~/.bashrc` |
-| **WSL**: `winauto apps` が空 | WSL から Windows デスクトップが見えない | Windows Python 経由で実行されているか確認: `winauto --version` |
+| **WSL**: `winauto apps` が空 | WSL から Windows デスクトップが見えない | `winauto doctor` で interop / ラッパー / デスクトップ到達性を切り分ける |
+| 操作が数分止まったまま | 別プロセスが GUI ロックを保持している | `winauto doctor` の `lock` 行で保持者を確認。並列度を下げるか `--lock-timeout` を延ばす |
+| `GUI ロックを … 秒以内に取得できませんでした` | 先行の GUI 操作が長い／異常終了 | `--lock-timeout 0`（無限待ち）か、保持者プロセスを終了させる |
+| スクリーンショットが真っ黒／ウィンドウが 0 個 | 画面ロック中・RDP 切断中・未ログオン | セッションをアンロックした状態を保つ。`winauto doctor` の `desktop` 行で検知できる |
 | **Copilot**: ターミナルで `python` が見つからない | PATH に Python が未登録 | VS Code の Python インタープリタ設定を確認; `where python` でパスを確認 |
 | **Kiro**: エージェントが winauto を実行できない | Kiro がシェルコマンドをブロック | Kiro の設定で `trustTools: true` を確認; 手動でターミナル実行 |
 

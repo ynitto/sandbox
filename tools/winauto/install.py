@@ -195,6 +195,21 @@ def wslpath_to_windows(unix_path: str) -> str:
     return result.stdout.strip()
 
 
+def windows_to_wsl_path(win_path: str) -> str:
+    """Windows パスを WSL パスに変換する（失敗時は空文字）。
+
+    ラッパーが python.exe を cmd.exe 抜きで直接 exec するために要る。
+    """
+    try:
+        result = subprocess.run(
+            ["wslpath", "-u", win_path],
+            capture_output=True, text=True, timeout=5
+        )
+        return result.stdout.strip() if result.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # 依存ライブラリのインストール
 # ---------------------------------------------------------------------------
@@ -264,14 +279,103 @@ def install_windows(src: Path, install_dir: Path, dry_run: bool) -> Path:
 # WSL インストール
 # ---------------------------------------------------------------------------
 
-WSL_WRAPPER_TEMPLATE = """\
-#!/bin/bash
-# winauto WSL wrapper — Windows 側の winauto.py を呼び出す
-# インストール先: {install_dir}/winauto
-# Windows Python: {win_python}
-# Windows スクリプト: {win_script}
-exec cmd.exe /c "{win_python}" "{win_script}" "$@"
+# ラッパーは str.format ではなくトークン置換で組み立てる。bash は `{}` を多用するため、
+# format だと全てのブレースを二重化する必要があり壊れやすい。
+WSL_WRAPPER_TEMPLATE = r"""#!/bin/bash
+# winauto WSL wrapper — Windows 側の winauto.py を Windows Python で実行する
+#
+#   インストール先:     @@INSTALL_DIR@@
+#   Windows Python:     @@WIN_PYTHON@@
+#   Windows スクリプト: @@WIN_SCRIPT@@
+#
+# Windows 側の Python は WSL の cwd も POSIX パスも解釈できない。そこで「パスとして
+# 意味を持つ引数」だけを wslpath -w で Windows パスへ変換してから渡す。変換するのは
+#
+#   * screenshot / codegen の --output の値（他コマンドの --output は text|json の
+#     書式指定なので触らない）
+#   * run サブコマンドの script 位置引数
+#   * '/' で始まり、実在する（か親ディレクトリが実在する）絶対パス
+#
+# だけ。セレクタ（name:=OK）や type に渡す入力テキストは変換しない——これらを
+# 素朴に変換すると、たまたま同名のファイルが cwd にあるときに壊れるため。
+# WINAUTO_NO_PATH_CONV=1 で変換を完全に無効化できる。
+
+WIN_PYTHON_UNIX='@@WIN_PYTHON_UNIX@@'
+WIN_PYTHON='@@WIN_PYTHON@@'
+WIN_SCRIPT='@@WIN_SCRIPT@@'
+
+_convert() {
+  local p="$1" d b
+  if [ "${WINAUTO_NO_PATH_CONV:-0}" = "1" ]; then printf '%s' "$p"; return; fi
+  d="$(dirname "$p")"
+  b="$(basename "$p")"
+  # 親ディレクトリが無いものはパスとして扱わない（まだ無いファイルの書き出し先は通す）。
+  [ -d "$d" ] || { printf '%s' "$p"; return; }
+  # 相対パスは WSL 側の cwd で絶対化してから変換する。Windows 側プロセスの cwd は
+  # WSL の cwd とは別物なので、相対パスのまま渡すと別の場所を指してしまう。
+  d="$(cd "$d" 2>/dev/null && pwd)" || { printf '%s' "$p"; return; }
+  d="$(wslpath -w "$d" 2>/dev/null)" || { printf '%s' "$p"; return; }
+  case "$d" in
+    *\\) printf '%s%s' "$d" "$b" ;;
+    *)   printf '%s\\%s' "$d" "$b" ;;
+  esac
+}
+
+ARGS=()
+CMD=""
+POS=0
+NEXT_IS_PATH=0
+
+for a in "$@"; do
+  if [ "$NEXT_IS_PATH" = "1" ]; then
+    ARGS+=("$(_convert "$a")"); NEXT_IS_PATH=0; continue
+  fi
+  case "$a" in
+    --output|-o)
+      ARGS+=("$a")
+      if [ "$CMD" = "screenshot" ] || [ "$CMD" = "codegen" ]; then NEXT_IS_PATH=1; fi
+      continue ;;
+    --output=*)
+      if [ "$CMD" = "screenshot" ] || [ "$CMD" = "codegen" ]; then
+        ARGS+=("--output=$(_convert "${a#--output=}")")
+      else
+        ARGS+=("$a")
+      fi
+      continue ;;
+    -*)
+      ARGS+=("$a"); continue ;;
+  esac
+
+  if [ -z "$CMD" ]; then CMD="$a"; ARGS+=("$a"); continue; fi
+
+  POS=$((POS + 1))
+  if [ "$CMD" = "run" ] && [ "$POS" = "1" ]; then
+    ARGS+=("$(_convert "$a")"); continue
+  fi
+
+  case "$a" in
+    /*) ARGS+=("$(_convert "$a")") ;;
+    *)  ARGS+=("$a") ;;
+  esac
+done
+
+# Windows の python.exe を直接 exec する。cmd.exe を挟むと WSL の cwd に対して
+# 「CMD does not support UNC paths as current directories」を stdout 側に吐き、
+# 出力を読むエージェントを惑わせるため。直接 exec できない環境だけ cmd.exe に倒す。
+if [ -n "$WIN_PYTHON_UNIX" ] && [ -x "$WIN_PYTHON_UNIX" ]; then
+  exec "$WIN_PYTHON_UNIX" "$WIN_SCRIPT" "${ARGS[@]}"
+fi
+exec cmd.exe /c "$WIN_PYTHON" "$WIN_SCRIPT" "${ARGS[@]}"
 """
+
+
+def render_wsl_wrapper(install_dir: str, win_python: str, win_python_unix: str,
+                       win_script: str) -> str:
+    return (WSL_WRAPPER_TEMPLATE
+            .replace("@@INSTALL_DIR@@", install_dir)
+            .replace("@@WIN_PYTHON_UNIX@@", win_python_unix)
+            .replace("@@WIN_PYTHON@@", win_python)
+            .replace("@@WIN_SCRIPT@@", win_script))
 
 
 def install_wsl(src: Path, prefix: Path, win_python: str, dry_run: bool) -> Path:
@@ -313,9 +417,15 @@ def install_wsl(src: Path, prefix: Path, win_python: str, dry_run: bool) -> Path
     # WSL 側の bash ラッパーを作成
     prefix.mkdir(parents=True, exist_ok=True)
     dst = prefix / TOOL_NAME
-    wrapper = WSL_WRAPPER_TEMPLATE.format(
+    win_python_unix = windows_to_wsl_path(win_python)
+    if win_python_unix:
+        info(f"Windows Python (WSL パス): {win_python_unix}")
+    else:
+        warn("Windows Python の WSL パスを解決できませんでした。ラッパーは cmd.exe 経由で実行します。")
+    wrapper = render_wsl_wrapper(
         install_dir=win_install_dir,
         win_python=win_python,
+        win_python_unix=win_python_unix,
         win_script=win_script_win,
     )
     info(f"ラッパー作成: {dst}")
@@ -395,6 +505,7 @@ def print_done_windows(install_dir: Path) -> None:
     print("=" * 60)
     print()
     print("  基本コマンド:")
+    print("    winauto doctor                       # 実行環境の診断")
     print("    winauto apps                         # 起動中アプリ一覧")
     print("    winauto tree --app notepad           # UIツリー表示")
     print("    winauto click \"name:=OK\" --app myapp # ボタンクリック")
@@ -414,6 +525,7 @@ def print_done_wsl(dst: Path) -> None:
     print("=" * 60)
     print()
     print("  基本コマンド（WSL 端末から実行）:")
+    print("    winauto doctor                       # WSL→Windows ブリッジの診断")
     print("    winauto apps                         # 起動中アプリ一覧")
     print("    winauto tree --app notepad           # UIツリー表示")
     print("    winauto click \"name:=OK\" --app myapp # ボタンクリック")
@@ -436,22 +548,41 @@ def verify_installation(dry_run: bool) -> None:
         info("[DRY-RUN] スキップ")
         return
 
-    if _is_windows():
+    if not (_is_windows() or _is_wsl()):
+        return
+
+    try:
         result = subprocess.run(
-            ["winauto", "--version"], capture_output=True, text=True
+            ["winauto", "--version"], capture_output=True, text=True, timeout=60
         )
-        if result.returncode == 0:
-            ok(f"winauto コマンド確認: {result.stdout.strip()}")
-        else:
-            warn("winauto コマンドが PATH 上で見つかりません。PATH を確認してください。")
-    elif _is_wsl():
-        result = subprocess.run(
-            ["winauto", "--version"], capture_output=True, text=True
-        )
-        if result.returncode == 0:
-            ok(f"winauto コマンド確認: {result.stdout.strip()}")
-        else:
-            warn("新しい端末を開いて winauto --version を実行して確認してください。")
+    except (OSError, subprocess.SubprocessError) as e:
+        warn(f"winauto コマンドを実行できませんでした（{e}）。")
+        warn("新しい端末を開いて winauto --version を実行して確認してください。")
+        return
+
+    if result.returncode != 0:
+        warn("winauto コマンドが PATH 上で見つかりません。")
+        warn("新しい端末を開いて（PATH 反映後に）winauto --version を実行してください。")
+        return
+    ok(f"winauto コマンド確認: {result.stdout.strip()}")
+
+    # doctor は WSL→Windows のブリッジを端から端まで確認する。失敗しても
+    # インストール自体は成功しているので、所見を見せるだけで止めない。
+    step("ブリッジ診断（winauto doctor）")
+    try:
+        doc = subprocess.run(["winauto", "doctor"], capture_output=True, text=True,
+                             timeout=240)
+    except (OSError, subprocess.SubprocessError) as e:
+        warn(f"winauto doctor を実行できませんでした: {e}")
+        return
+
+    print(doc.stdout.rstrip())
+    if doc.stderr.strip():
+        print(doc.stderr.rstrip(), file=sys.stderr)
+    if doc.returncode == 0:
+        ok("ブリッジ診断: 問題なし")
+    else:
+        warn("ブリッジ診断で問題が見つかりました。上の [ERROR] 行を確認してください。")
 
 
 # ---------------------------------------------------------------------------

@@ -39,6 +39,10 @@ jobs:
             suites: >-
               tools/agent-tools/agentcore/tests
               tools/agent-tools/agentcore/agentcore/tests
+          # winauto は Windows 専用ツールだが、ロック・doctor・WSL ラッパーの
+          # 引数変換は Windows 非依存なので Linux ランナーで回せる。
+          - package: winauto
+            suites: tools/winauto/tests
     env:
       # エージェント CLI のスタブが実時間 sleep しないようにする（README のテスト手順と同じ）。
       AGENT_FLOW_STUB_SLEEP_MAX: "0"
