@@ -14,7 +14,8 @@ Windows の agent-dashboard から、WSL 上の kiro-loop **tmux セッション
 
 `tmux ls` のセッション名だけに頼らない（頼れない）：
 
-1. **kiro-loop 状態ファイル**（`~/.kiro/loop-state/*.json`）— デーモンが記録した
+1. **状態ファイル**（kiro-loop は `~/.kiro/loop-state/*.json`、agent-loop は
+   `~/.agents/loop-state/*.json`。旧 `~/.agent/` はフォールバック）— デーモンが記録した
    ワーカーペインの pane_id を直接視聴する。kiro-loop を **tmux セッションの中で起動**
    した場合、ペインは人のセッション（名前は任意）内に分割で作られ、セッション名では
    見つけられないため、この経路が必須。pane_id は tmux サーバ全体で一意なので

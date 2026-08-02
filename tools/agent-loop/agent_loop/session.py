@@ -17,8 +17,6 @@ class SessionManager:
         kiro_args_base: list[str],
         split_direction: str,
         startup_timeout: int,
-        response_timeout: int,
-        echo_output: bool = False,
         uses_concurrency_agent: bool = False,
     ):
         resolved = Path(target_path).expanduser().resolve()
@@ -31,8 +29,6 @@ class SessionManager:
         self._kiro_args_base = kiro_args_base[:]
         self._split_direction = "vertical" if str(split_direction).lower() == "vertical" else "horizontal"
         self._startup_timeout = startup_timeout
-        self._response_timeout = response_timeout
-        self._echo_output = echo_output
         self._uses_concurrency_agent = uses_concurrency_agent
 
         # prompt_id → pane_id (str)
@@ -40,6 +36,7 @@ class SessionManager:
         self._prompt_names: dict[str, str] = {}
         self._tmux_names: dict[str, str] = {}
         self._prompt_cwds: dict[str, str | None] = {}
+        self._owners: dict[str, str] = {}
         self._restart_locks: dict[str, threading.Lock] = {}
         # グローバル指示: ペインごとに「最後に注入した instructions.revision」を覚え、
         # revision が変わったときだけ次の送信に前置する（長寿命チャットの文脈を汚さない）。
@@ -208,7 +205,13 @@ class SessionManager:
             log.warning("エントリの cwd '%s' が存在しないため target_path を使用します。", cwd)
         return self._target_path
 
-    def _start_pane(self, prompt_id: str, prompt_name: str, cwd: str | None = None) -> bool:
+    def _start_pane(
+        self,
+        prompt_id: str,
+        prompt_name: str,
+        cwd: str | None = None,
+        owner: str = "scheduled",
+    ) -> bool:
         """新しい kiro-cli ペインを起動して管理下に登録する。"""
         if shutil.which("tmux") is None:
             raise RuntimeError("tmux が PATH に見つかりません。`sudo apt install tmux` を実行してください。")
@@ -245,6 +248,7 @@ class SessionManager:
             self._prompt_names[prompt_id] = prompt_name
             self._tmux_names[prompt_id] = attach_session_name
             self._prompt_cwds[prompt_id] = cwd
+            self._owners[prompt_id] = owner
             if prompt_id not in self._restart_locks:
                 self._restart_locks[prompt_id] = threading.Lock()
 
@@ -271,7 +275,7 @@ class SessionManager:
     def _send_session_chat_commands(self, pane_target: str, session_cwd: str) -> None:
         """chat モードのセッション開始コマンドをペインへ送る（失敗しても起動は続ける）。"""
         try:
-            deadline = time.time() + _SEND_STARTUP_TIMEOUT
+            deadline = time.time() + self._startup_timeout
             while time.time() < deadline:
                 if _pane_has_prompt(_capture_pane(pane_target)):
                     break
@@ -291,6 +295,11 @@ class SessionManager:
         """ペインを終了する（_restart_locks は保持する）。"""
         with self._lock:
             pane_target = self._panes.pop(prompt_id, None)
+            self._prompt_names.pop(prompt_id, None)
+            self._tmux_names.pop(prompt_id, None)
+            self._prompt_cwds.pop(prompt_id, None)
+            self._owners.pop(prompt_id, None)
+            self._instr_rev.pop(prompt_id, None)
 
         if pane_target is not None and self._pane_exists(pane_target):
             log.info("kiro-cli ペインを終了します (pane=%s)。", pane_target)
@@ -307,19 +316,52 @@ class SessionManager:
     # 公開インタフェース
     # ------------------------------------------------------------------
 
-    def ensure_session(self, prompt_id: str, prompt_name: str) -> bool:
+    def ensure_session(
+        self,
+        prompt_id: str,
+        prompt_name: str,
+        owner: str = "scheduled",
+    ) -> bool:
         """セッションが存在しない場合は起動する。成功時 True を返す。"""
         with self._lock:
             existing = self._panes.get(prompt_id)
             cwd = self._prompt_cwds.get(prompt_id)
+            existing_owner = self._owners.get(prompt_id, "scheduled")
         if existing is not None:
-            return True
-        return self._start_pane(prompt_id, prompt_name, cwd)
+            return existing_owner == owner
+        return self._start_pane(prompt_id, prompt_name, cwd, owner)
 
     def get_pane_id(self, prompt_id: str) -> str | None:
         """prompt_id に対応するペイン ID を返す（なければ None）。"""
         with self._lock:
             return self._panes.get(prompt_id)
+
+    def remove_session(
+        self,
+        prompt_id: str,
+        *,
+        owner: str | None = None,
+        pane_id: str | None = None,
+    ) -> bool:
+        """所有者と pane が一致する session だけを管理対象から外して終了する。"""
+        with self._lock:
+            if owner is not None and self._owners.get(prompt_id) != owner:
+                return False
+            if pane_id is not None and self._panes.get(prompt_id) != pane_id:
+                return False
+            restart_lock = self._restart_locks.setdefault(prompt_id, threading.Lock())
+        with restart_lock:
+            with self._lock:
+                if owner is not None and self._owners.get(prompt_id) != owner:
+                    return False
+                if pane_id is not None and self._panes.get(prompt_id) != pane_id:
+                    return False
+            self._stop_pane(prompt_id)
+        with self._lock:
+            if self._restart_locks.get(prompt_id) is restart_lock:
+                self._restart_locks.pop(prompt_id, None)
+        self.write_state()
+        return True
 
     def send_prompt(self, prompt_id: str, prompt_text: str) -> bool:
         """tmux ペインにプロンプトを送信する（応答待ちはしない）。"""
@@ -390,6 +432,7 @@ class SessionManager:
             restart_lock = self._restart_locks[prompt_id]
             cwd = self._prompt_cwds.get(prompt_id)
             prompt_name = self._prompt_names.get(prompt_id, prompt_id)
+            owner = self._owners.get(prompt_id, "scheduled")
 
         if not restart_lock.acquire(blocking=False):
             log.info("kiro-cli ペイン再起動は既に進行中です (prompt_id=%s)。", prompt_id)
@@ -397,9 +440,12 @@ class SessionManager:
 
         log.info("kiro-cli ペインを再起動します (prompt_id=%s)。", prompt_id)
         try:
+            with self._lock:
+                if prompt_id not in self._panes:
+                    return
             self._stop_pane(prompt_id)
             time.sleep(2)
-            self._start_pane(prompt_id, prompt_name, cwd)
+            self._start_pane(prompt_id, prompt_name, cwd, owner)
         finally:
             restart_lock.release()
 
@@ -416,10 +462,14 @@ class SessionManager:
             desired_cwd[prompt_id] = str(entry.get("cwd", "")).strip() or None
 
         with self._lock:
-            current_ids = set(self._panes.keys())
+            all_current_ids = set(self._panes)
+            current_ids = {
+                prompt_id for prompt_id in self._panes
+                if self._owners.get(prompt_id, "scheduled") == "scheduled"
+            }
 
         remove_ids = current_ids - set(desired.keys())
-        add_ids = [pid for pid in desired.keys() if pid not in current_ids]
+        add_ids = [pid for pid in desired.keys() if pid not in all_current_ids]
         keep_ids = current_ids & set(desired.keys())
 
         for prompt_id in remove_ids:
@@ -486,8 +536,11 @@ class SessionManager:
         with self._lock:
             items = list(self._panes.items())
             names = dict(self._prompt_names)
+            owners = dict(self._owners)
 
         for prompt_id, pane_target in items:
+            if owners.get(prompt_id, "scheduled") != "scheduled":
+                continue
             if self.is_restarting(prompt_id):
                 continue
             if not self._pane_exists(pane_target):
@@ -542,9 +595,8 @@ class SessionManager:
             self._prompt_names.clear()
             self._tmux_names.clear()
             self._prompt_cwds.clear()
+            self._owners.clear()
 
         for prompt_id in prompt_ids:
             self._stop_pane(prompt_id)
         self.remove_state()
-
-

@@ -89,8 +89,8 @@
 | L1（修正済み） | `config.py:129` | JSONC の末尾カンマ除去 `re.sub(r"(\s*[}\]]),", r"\1", s)` が**逆**。`}, {` の区切りカンマを消して正常な JSON を壊し、末尾カンマは消せない。コメント付き settings.json に prompt が 2 件以上あると必ず `[]` へフォールバックする |
 | L2（修正済み） | `config.py:195-202` / `config.py:8` | 保存先は `.agents/agent-loop.yml` 固定、読込は `.yaml` 優先。`.yaml` 運用のワークスペースでは `prompt-add` が再起動で消え、`prompt-remove` した prompt が復活する |
 | L3（修正済み） | `hooks/gitlab-issue-hook.py` / `scheduler.py` | hook がイベントを先に seen 化してから 1 件だけ返し、スロット不足時は破棄。設計（`agent-loop-event-hook-design.md:26`）の「次サイクルへ持ち越す」が守られず**イベントが恒久消失**。同時変更 N 件のうち N−1 件も同様 |
-| L4 | `inbox.py:92-95` | メッセージごとに一意 `prompt_id` で tmux ペインを作るが破棄経路が無い。さらに `restart_if_dead`（`interactive.py:272`）が死んだ使い捨てペインを蘇生し続ける |
-| L5 | `session.py:33-35` | `startup_timeout` / `response_timeout` / `echo_output` は格納されるだけでどこからも読まれない **dead config**。実際の待ちは `_head.py:151` の `_SEND_STARTUP_TIMEOUT = 60` 固定。README:280-287 は「タイムアウトが起きたら `response_timeout: 600` に」と案内している |
+| L4（修正済み） | `inbox.py` / `semaphore.py` / `session.py` | メッセージごとに一意 `prompt_id` で tmux ペインを作るが破棄経路が無い。さらに `restart_if_dead` が死んだ使い捨てペインを蘇生し続ける |
+| L5（修正済み） | `session.py` / `cli.py` / README | `startup_timeout` / `response_timeout` / `echo_output` は格納されるだけでどこからも読まれない **dead config**。実際の待ちは `_head.py` の `_SEND_STARTUP_TIMEOUT = 60` 固定。README は「タイムアウトが起きたら `response_timeout: 600` に」と案内していた |
 | L6 | README 全般 | `--config` / `--no-daemon` は argparse に存在せず（README:147 等の手順が exit 2）、対話コマンド `add/remove/default/attach/list/save` は未実装、設定探索の「cwd → HOME」は実際には `~/.agents` のみ、PID ロック `/tmp/agent-loop-<hash>.pid` は存在しない |
 
 ### 4.3 Major — agent-flow
@@ -188,7 +188,7 @@
 | --- | --- | --- |
 | D1（修正済み） | `.github/instructions/agent-tools.instructions.md:8-13` ↔ `agent-tools-concept.md:223,289` | 作業ゲート文書が正典の「§7 このリポジトリでの強制」「原則 C1〜C7」を参照するが、実際は**強制が §8、原則は C8 まで**（§7 はモジュール別方針の表）。C8（知識共有クロージャ）がレビュー対象から抜ける。正典 §8 自身がこの文書へゲートを委譲しているだけに影響が大きい |
 | D2（修正済み） | `kiro-loop-agent-messaging-design.md:101` ↔ `agent-loop-agent-messaging-design.md:108-112` | `reply_to` が「返信先エージェント名」と「メッセージ ID・フォールバックしない」で非互換。実装も `kiro-loop.py:3853`（`reply_to_id or from_agent`）と `sendcmd.py:501`（`reply_to_id or None`）で分裂。**同一の `~/.kiro/agents/<name>/inbox/` を共有**し、rename 設計が kiro-loop 残置を明言しているため現役の相互運用バグ。kiro-loop 設計は §4 と §5.2/§6 で自己矛盾もしている |
-| D3 | `agent-dashboard-design.md:278` / `tmux.js:89` ↔ `agent-tools-rename-design.md:39` | dashboard が読む loop-state は `~/.kiro` と `~/.agent` のみで、agent-loop の現行ホーム `~/.agents/loop-state` を読まない。標準インストール環境では定期実行が dashboard から不可視 |
+| D3（修正済み） | `agent-dashboard-design.md:278` / `tmux.js:89` ↔ `agent-tools-rename-design.md:39` | dashboard が読む loop-state は `~/.kiro` と `~/.agent` のみで、agent-loop の現行ホーム `~/.agents/loop-state` を読まない。標準インストール環境では定期実行が dashboard から不可視 |
 | D4 | `agent-tools-concept.md:264` ↔ `agent-project-design.md:206` | agent-project の停止理由が正典で「5 つ」、設計書で「6 つ」。正典 §0 の「矛盾したら作業を止める」に該当し、しかも C7 の実例として引かれている |
 | D5（修正済み） | `2026-05-11-agent-loop-oneshot-design.md:180` ↔ 同 `:530` | 「デーモンは tmux 外」と「デーモンは常に tmux 内」を両方規定。アタッチ機構（`switch-client` か `attach-session` か）が決まらず実装不能 |
 | S1（修正済み） | `board.schema.json:93` ↔ `agent_amigos/board.py:218`, `agent_flow/board.py:153` | `status.state` の enum に `cancelled` が無いのに両エンジンが書く（`vocab.TERMINAL` に含まれる） |
@@ -244,12 +244,15 @@
 | C1 / L1 | agent-loop 起動・設定読込 | 元 entrypoint の再実行と JSONC 末尾カンマ除去を修正した |
 | L2 | agent-loop prompt 設定保存 | 読込に採用される既存 `.yaml` / `.yml` へ保存し、新規時だけ既定 `.yml` を作るよう統一した |
 | L3 | agent-loop event hook | `check()` は更新状態を保留し、通常の schedule 配送が成功した後だけ optional `ack()` で既読化するようにした。session / slot / `/clear` / prompt 送信失敗は ack せず次回再検出する |
+| L4 | agent-loop inbox | 既存の pane 完了監視へ再試行可能な破棄 callback を追加し、正常完了・pane 消失時に使い捨て session を除去する。処理タイムアウト時は実行中 pane を殺さず監視を継続し、owner / pane 一致で通常 schedule との誤削除を防ぐ |
+| L5 | agent-loop session 設定 | `startup_timeout` を実際のペイン起動待ちへ配線した。tmux 非同期化で意味を失った `response_timeout` / `echo_output` は引数・設定例・誤ったトラブルシュートから除去した |
 | FL1 / AM1 / AB1 | agent-flow / agent-amigos / agent-board | plugin CLI の子プロセス引継ぎ、同一 poll 内の同時実行上限、README の result 所有者を修正した |
 | D1 / S1〜S4 | 作業ゲート・schema・dashboard | 正典参照、cancelled 語彙、入札表示、verification plan 契約を一致させた |
 | FL2 | `agent-flow/work.py`, `continuation.py` | verify の実行完了と判定不合格を分離し、継続分岐を排他的にした |
 | FL3 / m6 / m7 | `agent-flow/workspace.py`, `work.py` | workspace 準備を fail-close し、base-sync の conflict 解消を制御層内へ限定して、rebase 後の ancestry 再検査と defer 経路の偽 `done` を解消した |
 | AM2 | `agent-amigos/messages.py`, `runner.py` | ULID 大小カーソルを既読 ID 集合へ移行した |
 | D2 | `kiro-loop.py`, messaging 設計 | `reply_to` を返信元メッセージ ID または `null` に統一した |
+| D3 | agent-dashboard 定期実行adapter | agent-loop の loop-state / slots は現行 `~/.agents/` を優先し、ディレクトリが無い場合だけ旧 `~/.agent/` へフォールバックするようにした |
 | D5 | agent-loop oneshot 設計 | controller は既定 tmux 内、oneshot は detached・自動画面切替なしに統一した |
 
 G1 は `state_git_subdir` 運用（バスが毎パス `sync_push` を呼ぶ）で初回パスが必ず止まるため
@@ -262,12 +265,7 @@ G1 は `state_git_subdir` 運用（バスが毎パス `sync_push` を呼ぶ）�
 
 優先順に:
 
-1. **L4（inbox の使い捨て pane リーク）** — 長期運転で pane が増え続け、終了済み pane まで
-   自動再起動されるため、配送完了時の破棄と restart 対象外化を同じライフサイクルで直す
-2. **D3（dashboard が現行 loop-state を見ない）** — `~/.agents/loop-state` を探索対象へ加え、
-   標準インストールの定期実行を可視化する
-3. **L5（timeout / echo_output が dead config）** — 設定値を実処理へ配線し、README の案内を実効化する
-4. **D4 / L6（文書・CLI 契約の矛盾）** — 実装を正として正典の停止理由数と README の未実装
+1. **D4 / L6（文書・CLI 契約の矛盾）** — 実装を正として正典の停止理由数と README の未実装
    オプション・コマンドを整理する
 
-C1 / L1〜L3 / FL1〜FL3 / AM1〜AM2 / AB1 / D1〜D2 / D5 / S1〜S4 は修正済み。
+C1 / L1〜L5 / FL1〜FL3 / AM1〜AM2 / AB1 / D1〜D3 / D5 / S1〜S4 は修正済み。

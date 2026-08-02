@@ -136,9 +136,8 @@ test('listSessions は Windows ドライブ上の repo と /mnt の cwd を突�
   }
 });
 
-test('readLoopStates は agent-loop クローン（~/.agent/loop-state）の状態も読む', () => {
-  // agent-loop は状態を ~/.agent/loop-state/ に書く（レコード形式は kiro-loop と同じ）。
-  // provider を agent-loop へ差し替えても端末視聴が付いてくるよう、両ディレクトリを読む。
+test('readLoopStates は agent-loop の現行・旧状態ディレクトリを読む', () => {
+  // agent-loop は状態を ~/.agents/loop-state/ に書く。旧 ~/.agent/ は後方互換で残す。
   const orig = exec.shInWsl;
   let seenScript = '';
   exec.shInWsl = (script) => {
@@ -148,7 +147,8 @@ test('readLoopStates は agent-loop クローン（~/.agent/loop-state）の状�
   try {
     tmux.readLoopStates();
     assert.ok(seenScript.includes('.kiro/loop-state'), 'kiro-loop の状態ディレクトリを読む');
-    assert.ok(seenScript.includes('.agent/loop-state'), 'agent-loop の状態ディレクトリも読む');
+    assert.ok(seenScript.includes('.agents/loop-state'), 'agent-loop の現行状態ディレクトリを読む');
+    assert.ok(seenScript.includes('.agent/loop-state'), 'agent-loop の旧状態ディレクトリへフォールバックする');
   } finally {
     exec.shInWsl = orig;
   }
@@ -163,6 +163,22 @@ test('readLoopStates は壊れた状態ファイルをスキップする', () =>
     const states = tmux.readLoopStates();
     assert.strictEqual(states.length, 1);
     assert.strictEqual(states[0].pid, 1);
+  } finally {
+    exec.shInWsl = orig;
+  }
+});
+
+test('readSlotPanes は agent-loop の現行・旧スロットディレクトリを読む', () => {
+  const orig = exec.shInWsl;
+  let seenScript = '';
+  exec.shInWsl = (script) => {
+    seenScript = String(script);
+    return okOut('');
+  };
+  try {
+    tmux.readSlotPanes();
+    assert.ok(seenScript.includes('.agents/slots'), 'agent-loop の現行スロットディレクトリを読む');
+    assert.ok(seenScript.includes('.agent/slots'), 'agent-loop の旧スロットディレクトリへフォールバックする');
   } finally {
     exec.shInWsl = orig;
   }

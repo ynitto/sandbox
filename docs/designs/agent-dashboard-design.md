@@ -275,7 +275,7 @@ IPC は全チャネルが `{ok, data|error}` に揃う（`base/main/handle.js` �
 | 実行（agent-flow） | `<bus>/runs/<run-id>/` の `graph.json` ＋ `results/` ＋ `claims/` ＋ `waits/` からノード状態を導出し、`events/*.jsonl` から計画変更の理由と差分を読む。ポーリングごとに `flow-archive/<run-id>.json` へ写し取り、bus から消えた run も追える |
 | 履歴 | `run-log.jsonl`・`decisions/<id>.md`・`DELIVERY.md`・`journal.md` |
 | ミッション | agent-amigos のバス（読み取り専用）とオーナーホームの納品棚 |
-| 定期実行 | WSL 上の `~/.kiro/loop-state/*.json`（`~/.agent/` も同形式なので両方読む）と tmux |
+| 定期実行 | WSL 上の `~/.kiro/loop-state/*.json` と agent-loop の `~/.agents/loop-state/*.json`（旧 `~/.agent/` はフォールバック）および tmux |
 | ノード予算・エージェント制御 | `~/.agents/budget/`・`~/.agents/control/`（ツール横断のデータ契約） |
 | レビュー待ち | `repos.json` の GitLab リポジトリのオープンイシュー（API 設定時） |
 

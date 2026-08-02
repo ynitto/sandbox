@@ -187,8 +187,6 @@ def main() -> None:
         kiro_args.append(str(extra))
 
     startup_timeout = int(config.get("startup_timeout", 60))
-    response_timeout = int(config.get("response_timeout", 300))
-    echo_output = bool(config.get("echo_output", False))
     split_direction = args.split_direction or str(config.get("split_direction", "horizontal"))
     if split_direction not in ("horizontal", "vertical"):
         log.warning("split_direction の値が不正なため horizontal を使用します: %s", split_direction)
@@ -238,15 +236,18 @@ def main() -> None:
         kiro_args_base=kiro_args,
         split_direction=split_direction,
         startup_timeout=startup_timeout,
-        response_timeout=response_timeout,
-        echo_output=echo_output,
         uses_concurrency_agent=uses_concurrency_agent,
     )
     _session_mgr_ref = session_mgr
 
     log.info("カレントディレクトリを起動対象に設定しました: %s", cwd)
 
-    slot_monitor: SlotMonitor | None = SlotMonitor(semaphore, slot_timeout_seconds) if semaphore is not None else None
+    agent_name = str(config.get("agent_name", "")).strip()
+    monitor_semaphore = semaphore or (GlobalSemaphore(0) if agent_name else None)
+    slot_monitor: SlotMonitor | None = (
+        SlotMonitor(monitor_semaphore, slot_timeout_seconds)
+        if monitor_semaphore is not None else None
+    )
     _slot_monitor_ref = slot_monitor
 
     scheduler = PeriodicScheduler(session_mgr, entries, semaphore=semaphore, slot_monitor=slot_monitor)
@@ -268,7 +269,6 @@ def main() -> None:
     scheduler.start()
 
     # InboxWatcher: agent_name が設定されている場合に受信ボックスを監視する
-    agent_name = str(config.get("agent_name", "")).strip()
     inbox_poll_seconds = int(config.get("inbox_poll_seconds", 5))
     inbox_watcher: InboxWatcher | None = None
     if agent_name:
@@ -305,7 +305,7 @@ def main() -> None:
         else:
             log.warning("webhook.enabled ですが port が未指定/不正のため webhook を起動しません。")
 
-    # スロット監視スレッド起動（同時実行数制御が有効な場合のみ）
+    # スロット／inbox 完了監視スレッド起動
     if slot_monitor is not None:
         slot_monitor.start()
 

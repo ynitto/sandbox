@@ -189,7 +189,6 @@ kiro_options:
 
 # タイムアウト（秒）
 startup_timeout: 60      # kiro-cli 起動待ち
-response_timeout: 300    # 1 プロンプトの応答待ち
 
 # 定期プロンプト（省略可）
 prompts:
@@ -277,13 +276,13 @@ which kiro-cli   # PATH に kiro-cli があるか確認
 kiro-cli chat    # 単体での動作確認
 ```
 
-### プロンプト検出のタイムアウトが頻発する
+### kiro-cli の起動待ちタイムアウトが頻発する
 
 kiro-cli のプロンプト表示形式が想定と異なる可能性があります。
 `attach` コマンドでセッションにアタッチして実際の表示を確認してください。
 
 ```yaml
-response_timeout: 600  # タイムアウトを延ばす（10 分）
+startup_timeout: 600  # 起動待ちを延ばす（10 分）
 ```
 
 ### PyYAML がない

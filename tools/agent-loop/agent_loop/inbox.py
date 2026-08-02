@@ -92,7 +92,7 @@ class InboxWatcher:
         prompt_id = f"inbox-{data.get('id', uuid.uuid4().hex[:8])}"
         name = f"inbox:{data.get('from', '?')}"
 
-        if not self._session_mgr.ensure_session(prompt_id, name):
+        if not self._session_mgr.ensure_session(prompt_id, name, owner="inbox"):
             log.warning("[InboxWatcher] セッション未準備のため保留")
             return False
 
@@ -106,7 +106,12 @@ class InboxWatcher:
         ok = self._session_mgr.send_prompt(prompt_id, prompt_text)
         if ok:
             if self._slot_monitor is not None and pane_id:
-                self._slot_monitor.track(pane_id)
+                self._slot_monitor.track(
+                    pane_id,
+                    on_complete=lambda: self._session_mgr.remove_session(
+                        prompt_id, owner="inbox", pane_id=pane_id
+                    ),
+                )
         else:
             if self._semaphore is not None and pane_id:
                 self._semaphore.release(pane_id)
@@ -131,5 +136,3 @@ class InboxWatcher:
         reply_cmd += ' "返答内容"'
         parts.append(f"返信する場合: {reply_cmd}")
         return "\n".join(parts)
-
-

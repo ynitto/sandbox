@@ -179,7 +179,7 @@ class GlobalSemaphore:
 
 
 class SlotMonitor:
-    """agent hook が発火しなかった場合のフォールバック: ペイン出力を監視してスロットを解放する。
+    """ペイン出力から処理完了を検知し、スロット解放と完了処理を行う。
 
     状態遷移:
       waiting_start → (プロンプト消失) → processing → (プロンプト再出現 or タイムアウト) → 解放
@@ -192,17 +192,18 @@ class SlotMonitor:
         self._semaphore = semaphore
         self._slot_timeout = slot_timeout_seconds
         self._lock = threading.Lock()
-        # pane_id → {"state": "waiting_start"|"processing", "acquired_at": float}
+        # pane_id → state / acquired_at / optional on_complete
         self._pending: dict[str, dict[str, Any]] = {}
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
 
-    def track(self, pane_id: str) -> None:
-        """スロットを取得済みのペインの監視を開始する。"""
+    def track(self, pane_id: str, on_complete: Any = None) -> None:
+        """ペインの処理完了監視を開始する。"""
         with self._lock:
             self._pending[pane_id] = {
                 "state": "waiting_start",
                 "acquired_at": time.time(),
+                "on_complete": on_complete,
             }
 
     def untrack(self, pane_id: str) -> None:
@@ -245,7 +246,7 @@ class SlotMonitor:
             capture_output=True, text=True, check=False,
         )
         if result.returncode != 0:
-            self._release(pane_id)
+            self._release(pane_id, notify_complete=True)
             return
 
         content = _capture_pane(pane_id)
@@ -260,19 +261,42 @@ class SlotMonitor:
             elif now - acquired_at > self._START_WAIT_TIMEOUT:
                 # kiro-cli が処理を開始しないままタイムアウト
                 log.warning("SlotMonitor: ペイン %s が処理を開始しないためスロットを解放します。", pane_id)
-                self._release(pane_id)
+                self._release(pane_id, notify_complete=True)
 
         elif state == "processing":
             if has_prompt:
                 log.info("SlotMonitor: ペイン %s の処理完了を検知。スロットを解放します。", pane_id)
-                self._release(pane_id)
+                self._release(pane_id, notify_complete=True)
             elif now - acquired_at > self._slot_timeout:
                 log.warning("SlotMonitor: ペイン %s がタイムアウト。スロットを強制解放します。", pane_id)
-                self._release(pane_id)
+                self._release(pane_id, keep_for_completion=True)
 
-    def _release(self, pane_id: str) -> None:
+    def _release(
+        self,
+        pane_id: str,
+        *,
+        notify_complete: bool = False,
+        keep_for_completion: bool = False,
+    ) -> None:
         with self._lock:
-            self._pending.pop(pane_id, None)
-        self._semaphore.release(pane_id)
-
-
+            entry = self._pending.get(pane_id)
+            release_slot = entry is None or not entry.get("slot_released", False)
+            if entry is not None and release_slot:
+                entry["slot_released"] = True
+            if entry and keep_for_completion and callable(entry.get("on_complete")):
+                entry["acquired_at"] = float("inf")
+            elif not notify_complete:
+                self._pending.pop(pane_id, None)
+        if release_slot:
+            self._semaphore.release(pane_id)
+        on_complete = entry.get("on_complete") if entry and notify_complete else None
+        if callable(on_complete):
+            try:
+                on_complete()
+            except Exception:
+                log.warning("SlotMonitor: 完了処理に失敗しました (pane=%s)。", pane_id, exc_info=True)
+                return
+        if notify_complete:
+            with self._lock:
+                if self._pending.get(pane_id) is entry:
+                    self._pending.pop(pane_id, None)

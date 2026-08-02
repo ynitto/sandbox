@@ -34,10 +34,10 @@ orchestrator                          worker1
 
 | 機能 | 現行 | 本拡張 |
 |------|------|--------|
-| プロンプト送信 | `agent-loop send` — tmux セッションへ同期送信 | `agent-loop msg` — inbox へ非同期投函 |
+| プロンプト送信 | `agent-loop send` — tmux セッションへ送信後すぐ返る | `agent-loop msg` — inbox へ非同期投函 |
 | 受信 | なし | InboxWatcher スレッドがポーリング |
 | ルーティング | tmux セッション名で指定 | エージェント名で指定 |
-| 応答待ち | あり（response_timeout） | なし（非同期） |
+| 応答待ち | なし（tmux 上で非同期実行） | なし（非同期） |
 | 追跡 | なし | `correlation_id` でスレッド追跡可能 |
 
 ---
