@@ -141,11 +141,17 @@ def check() -> str | None:
         i for i in issues
         if "iid" in i and prev.get(str(i["iid"])) != str(i.get("updated_at", ""))
     ]
-    _save_state(curr)
-
     if changed:
         changed.sort(key=lambda i: str(i.get("updated_at", "")), reverse=True)
-        return _format_prompt(changed[0], fallback=False)
+        selected = changed[0]
+        selected_id = str(selected["iid"])
+        # 返した 1 件だけを既読化する。未返却の同時更新は次回 check() に残す。
+        next_state = {iid: prev[iid] for iid in curr if iid in prev}
+        next_state[selected_id] = curr[selected_id]
+        _save_state(next_state)
+        return _format_prompt(selected, fallback=False)
+
+    _save_state(curr)
 
     # ここから先は「更新なし」。フォールバックが有効なら毎回ランダム送信する。
     if fallback_enabled:

@@ -1,6 +1,6 @@
 # agent-tools ファミリー バグ調査レポート（2026-08-02）
 
-- 状態: 調査完了。うち 4 件を同 PR で、FL2 / FL3 / AM2 / D2 / D5 を追加修正済み（§7）
+- 状態: 調査完了。修正済み項目と最新の残件優先順は §7 / §8 を参照
 - 対象: `tools/{agent-tools/agentcore, agent-loop, agent-flow, agent-project, agent-amigos, agent-board}`、
   `schemas/`、`docs/designs/agent-*.md`
   （`.github/instructions/agent-tools.instructions.md` の `applyTo` 範囲）
@@ -70,7 +70,7 @@
 
 ### 4.1 Critical
 
-#### C1. agent-loop は tmux 外から起動すると即クラッシュする
+#### C1. agent-loop は tmux 外から起動すると即クラッシュする（修正済み）
 
 - 位置: `tools/agent-loop/agent_loop/interactive.py:331`
 - `script_path = Path(__file__).resolve()` を再 exec 対象にするが、フラグメントは
@@ -86,16 +86,16 @@
 
 | ID | 位置 | 内容 |
 | --- | --- | --- |
-| L1 | `config.py:129` | JSONC の末尾カンマ除去 `re.sub(r"(\s*[}\]]),", r"\1", s)` が**逆**。`}, {` の区切りカンマを消して正常な JSON を壊し、末尾カンマは消せない。コメント付き settings.json に prompt が 2 件以上あると必ず `[]` へフォールバックする |
+| L1（修正済み） | `config.py:129` | JSONC の末尾カンマ除去 `re.sub(r"(\s*[}\]]),", r"\1", s)` が**逆**。`}, {` の区切りカンマを消して正常な JSON を壊し、末尾カンマは消せない。コメント付き settings.json に prompt が 2 件以上あると必ず `[]` へフォールバックする |
 | L2 | `config.py:195-197` / `config.py:8` | 保存先は `.agents/agent-loop.yml` 固定、読込は `.yaml` 優先。`.yaml` 運用のワークスペースでは `prompt-add` が再起動で消え、`prompt-remove` した prompt が復活する |
-| L3 | `hooks/gitlab-issue-hook.py:144` / `scheduler.py:536-543` | hook がイベントを先に seen 化してから 1 件だけ返し、スロット不足時は破棄。設計（`agent-loop-event-hook-design.md:26`）の「次サイクルへ持ち越す」が守られず**イベントが恒久消失**。同時変更 N 件のうち N−1 件も同様 |
+| L3（修正済み） | `hooks/gitlab-issue-hook.py:144` / `scheduler.py:536-543` | hook がイベントを先に seen 化してから 1 件だけ返し、スロット不足時は破棄。設計（`agent-loop-event-hook-design.md:26`）の「次サイクルへ持ち越す」が守られず**イベントが恒久消失**。同時変更 N 件のうち N−1 件も同様 |
 | L4 | `inbox.py:92-95` | メッセージごとに一意 `prompt_id` で tmux ペインを作るが破棄経路が無い。さらに `restart_if_dead`（`interactive.py:272`）が死んだ使い捨てペインを蘇生し続ける |
 | L5 | `session.py:33-35` | `startup_timeout` / `response_timeout` / `echo_output` は格納されるだけでどこからも読まれない **dead config**。実際の待ちは `_head.py:151` の `_SEND_STARTUP_TIMEOUT = 60` 固定。README:280-287 は「タイムアウトが起きたら `response_timeout: 600` に」と案内している |
 | L6 | README 全般 | `--config` / `--no-daemon` は argparse に存在せず（README:147 等の手順が exit 2）、対話コマンド `add/remove/default/attach/list/save` は未実装、設定探索の「cwd → HOME」は実際には `~/.agents` のみ、PID ロック `/tmp/agent-loop-<hash>.pid` は存在しない |
 
 ### 4.3 Major — agent-flow
 
-#### FL1. 非組み込みの `agent_cli` を設定すると子プロセスが全滅する
+#### FL1. 非組み込みの `agent_cli` を設定すると子プロセスが全滅する（修正済み）
 
 - 位置: `cli.py:57`（`choices=["kiro","claude","copilot","codex"]`）、`run.py:27-28`
 - `_child_base` が子へ `--agent-cli <name>` を渡すため、`agent-flow.yaml.example:73-74` が
@@ -130,7 +130,7 @@
 
 ### 4.4 Major — agent-amigos / agent-board
 
-#### AM1. `poll_board` が落札しても `inflight` を加算せず `max_concurrent` を超過する
+#### AM1. `poll_board` が落札しても `inflight` を加算せず `max_concurrent` を超過する（修正済み）
 
 - 位置: `agent_amigos/board.py:289-291`
 - コメントは「この 1 巡で落札するたびに +1 する」と契約を明記しているのに、ループ本体
@@ -150,7 +150,7 @@
   `m["id"] > cursor` が偽になり `fresh` に入らない → `open_questions` が閉じず、回答が板上に
   あるのに `question_timeout` でオーナーへ誤エスカレーションする。回復経路は無い。
 
-#### AB1. agent-board README が `result.json` の書き手について自己矛盾している
+#### AB1. agent-board README が `result.json` の書き手について自己矛盾している（修正済み）
 
 - 位置: `tools/agent-board/README.md:11`（「依頼側 — dashboard / CLI が書く」）と
   同 README:42-44（「落札ノード自身が直接書く」）
@@ -186,15 +186,15 @@
 
 | ID | 双方の位置 | 内容 |
 | --- | --- | --- |
-| D1 | `.github/instructions/agent-tools.instructions.md:8-13` ↔ `agent-tools-concept.md:223,289` | 作業ゲート文書が正典の「§7 このリポジトリでの強制」「原則 C1〜C7」を参照するが、実際は**強制が §8、原則は C8 まで**（§7 はモジュール別方針の表）。C8（知識共有クロージャ）がレビュー対象から抜ける。正典 §8 自身がこの文書へゲートを委譲しているだけに影響が大きい |
+| D1（修正済み） | `.github/instructions/agent-tools.instructions.md:8-13` ↔ `agent-tools-concept.md:223,289` | 作業ゲート文書が正典の「§7 このリポジトリでの強制」「原則 C1〜C7」を参照するが、実際は**強制が §8、原則は C8 まで**（§7 はモジュール別方針の表）。C8（知識共有クロージャ）がレビュー対象から抜ける。正典 §8 自身がこの文書へゲートを委譲しているだけに影響が大きい |
 | D2（修正済み） | `kiro-loop-agent-messaging-design.md:101` ↔ `agent-loop-agent-messaging-design.md:108-112` | `reply_to` が「返信先エージェント名」と「メッセージ ID・フォールバックしない」で非互換。実装も `kiro-loop.py:3853`（`reply_to_id or from_agent`）と `sendcmd.py:501`（`reply_to_id or None`）で分裂。**同一の `~/.kiro/agents/<name>/inbox/` を共有**し、rename 設計が kiro-loop 残置を明言しているため現役の相互運用バグ。kiro-loop 設計は §4 と §5.2/§6 で自己矛盾もしている |
 | D3 | `agent-dashboard-design.md:278` / `tmux.js:89` ↔ `agent-tools-rename-design.md:39` | dashboard が読む loop-state は `~/.kiro` と `~/.agent` のみで、agent-loop の現行ホーム `~/.agents/loop-state` を読まない。標準インストール環境では定期実行が dashboard から不可視 |
 | D4 | `agent-tools-concept.md:264` ↔ `agent-project-design.md:206` | agent-project の停止理由が正典で「5 つ」、設計書で「6 つ」。正典 §0 の「矛盾したら作業を止める」に該当し、しかも C7 の実例として引かれている |
 | D5（修正済み） | `2026-05-11-agent-loop-oneshot-design.md:180` ↔ 同 `:530` | 「デーモンは tmux 外」と「デーモンは常に tmux 内」を両方規定。アタッチ機構（`switch-client` か `attach-session` か）が決まらず実装不能 |
-| S1 | `board.schema.json:93` ↔ `agent_amigos/board.py:218`, `agent_flow/board.py:153` | `status.state` の enum に `cancelled` が無いのに両エンジンが書く（`vocab.TERMINAL` に含まれる） |
-| S2 | `board-adapter.js:108` ↔ `board.schema.json:111` | `result.status === 'cancelled'` を `done` に写像（`'failed'` 以外は全部 done）。中止した委譲が完了として計上される。agent-project 側（`flow.py:703-725`）は正しく ok=False |
-| S3 | `board-adapter.js:98-102` ↔ `delegation.schema.json:259` | 入札状態が**逆転**（award 確定前が `lost`、確定後の非落札が `applied`）。`amigos-adapter.js:117` は正しい。既存テストは winner/expired しか見ておらず未検出 |
-| S4 | `delegation.schema.json`（post 分岐） ↔ `flow.py:828` / `agent_flow/board.py:363` | 委譲 post に `verification_plan` が無い。コードは書いて読む必須フィールドで、スキーマ準拠の第三実装は receipt を返せず、タスクが永久に `done` にならない |
+| S1（修正済み） | `board.schema.json:93` ↔ `agent_amigos/board.py:218`, `agent_flow/board.py:153` | `status.state` の enum に `cancelled` が無いのに両エンジンが書く（`vocab.TERMINAL` に含まれる） |
+| S2（修正済み） | `board-adapter.js:108` ↔ `board.schema.json:111` | `result.status === 'cancelled'` を `done` に写像（`'failed'` 以外は全部 done）。中止した委譲が完了として計上される。agent-project 側（`flow.py:703-725`）は正しく ok=False |
+| S3（修正済み） | `board-adapter.js:98-102` ↔ `delegation.schema.json:259` | 入札状態が**逆転**（award 確定前が `lost`、確定後の非落札が `applied`）。`amigos-adapter.js:117` は正しい。既存テストは winner/expired しか見ておらず未検出 |
+| S4（修正済み） | `delegation.schema.json`（post 分岐） ↔ `flow.py:828` / `agent_flow/board.py:363` | 委譲 post に `verification_plan` が無い。コードは書いて読む必須フィールドで、スキーマ準拠の第三実装は receipt を返せず、タスクが永久に `done` にならない |
 
 ### 5.2 Minor（抜粋）
 
@@ -231,10 +231,9 @@
 
 ---
 
-## 7. 本 PR で修正した 4 件
+## 7. 修正状況
 
-いずれも「fail-close の入れ方が『拾わない』ではなく『落ちる / 止まる』になっていた」か、
-「同じ性質を片側だけ直していた」もの。追加した回帰テストが修正前に落ちることを確認済み。
+修正済み項目を実装・契約単位で集約する。実装変更には修正前に失敗する回帰テストを追加した。
 
 | ID | 位置 | 修正 |
 | --- | --- | --- |
@@ -242,6 +241,10 @@
 | G2 | `agentcore/board.py` | `contract_version` が `NaN` / `Infinity` だと `int()` の例外が `eligible()` を貫通し、入札巡回ごと停止していた。読めない値として不参加へ倒す |
 | G3 | `agentcore/protocol.py` | `winner()` 側の `_as_float` が `ts` 欠落・`null` を 0.0 と読み、壊れた claim が恒久的に勝っていた。`NaN` も決定性を壊すため無視する |
 | G4 | `agent-flow/stategit.py` | 同期除外が `.tmp` 末尾のみで、実生成名 `<name>.tmp.<pid>[.<unique>]` の残骸を共有状態リポジトリへ push していた |
+| C1 / L1 | agent-loop 起動・設定読込 | 元 entrypoint の再実行と JSONC 末尾カンマ除去を修正した |
+| L3 | agent-loop event hook | 返却した更新だけを既読化し、既存の外部イベントキューで session / slot / 送信失敗を再試行するようにした |
+| FL1 / AM1 / AB1 | agent-flow / agent-amigos / agent-board | plugin CLI の子プロセス引継ぎ、同一 poll 内の同時実行上限、README の result 所有者を修正した |
+| D1 / S1〜S4 | 作業ゲート・schema・dashboard | 正典参照、cancelled 語彙、入札表示、verification plan 契約を一致させた |
 | FL2 | `agent-flow/work.py`, `continuation.py` | verify の実行完了と判定不合格を分離し、継続分岐を排他的にした |
 | FL3 | `agent-flow/workspace.py`, `work.py` | workspace 準備を fail-close し、base-sync の conflict 解消も制御層内へ限定した |
 | AM2 | `agent-amigos/messages.py`, `runner.py` | ULID 大小カーソルを既読 ID 集合へ移行した |
@@ -258,15 +261,14 @@ G1 は `state_git_subdir` 運用（バスが毎パス `sync_push` を呼ぶ）�
 
 優先順に:
 
-1. **C1（agent-loop が標準手順で起動しない）** — 再 exec 対象を `agent-loop.py`
-   （実在するエントリポイント）に変えるか、`-m agent_loop` 形式にする。zipapp 経路も同時に確認する
-2. **D1（作業ゲート文書の誤参照）** — 以後のレビュー品質そのものに効くため、
-   §8 / C1〜C8 へ 1 行修正する。コスト最小・効果最大
-3. **FL1（非組み込み `agent_cli` で子が全滅）** — `choices` を外して
-   `agentcore.agentcli` の解決に委ねる。設定例が公式に案内している経路が動かない状態
-4. **S2 / S3（dashboard の委譲表示が実態と食い違う）** — 中止を完了と表示し、入札状態が
-   逆転している。どちらも `board-adapter.js` の局所修正で済む
-5. **AM1（`inflight` 加算漏れ）** — 1 行。兄弟実装に揃えるだけ
-FL2 / FL3 / AM2 / D2 / D5 は設計判断を完了し、
-[`2026-08-02-agent-tools-family-remaining-bugs-design.md`](../plans/2026-08-02-agent-tools-family-remaining-bugs-design.md)
-に従って修正済み。
+1. **L2（設定保存先の `.yaml` / `.yml` 不一致）** — UI で追加・削除した prompt が再起動で
+   消失・復活するため、読込に採用したパスへ保存する
+2. **L4（inbox の使い捨て pane リーク）** — 長期運転で pane が増え続け、終了済み pane まで
+   自動再起動されるため、配送完了時の破棄と restart 対象外化を同じライフサイクルで直す
+3. **D3（dashboard が現行 loop-state を見ない）** — `~/.agents/loop-state` を探索対象へ加え、
+   標準インストールの定期実行を可視化する
+4. **L5（timeout / echo_output が dead config）** — 設定値を実処理へ配線し、README の案内を実効化する
+5. **D4 / L6（文書・CLI 契約の矛盾）** — 実装を正として正典の停止理由数と README の未実装
+   オプション・コマンドを整理する
+
+C1 / L1 / L3 / FL1〜FL3 / AM1〜AM2 / AB1 / D1〜D2 / D5 / S1〜S4 は修正済み。

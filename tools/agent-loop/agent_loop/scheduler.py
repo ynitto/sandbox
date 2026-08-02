@@ -264,7 +264,7 @@ class PeriodicScheduler:
             q = self._external_queues.setdefault(
                 key, collections.deque(maxlen=_WEBHOOK_QUEUE_MAX))
             if len(q) >= _WEBHOOK_QUEUE_MAX:
-                log.warning("[%s] webhook キューが上限 (%d) に達したため最古を破棄します。",
+                log.warning("[%s] 外部イベントキューが上限 (%d) に達したため最古を破棄します。",
                             entry.get("name", key), _WEBHOOK_QUEUE_MAX)
             q.append(prompt_text)
             return True
@@ -317,7 +317,8 @@ class PeriodicScheduler:
         dispatch_entry = dict(entry)
         dispatch_entry["prompt"] = prompt_text
         dispatch_entry["_should_clear"] = False
-        self._dispatch_prompt(dispatch_entry, pane_id)
+        if not self._dispatch_prompt(dispatch_entry, pane_id):
+            requeue()
         return True
 
     def _load_hook_module(self, hook_path: Path) -> Any | None:
@@ -397,7 +398,7 @@ class PeriodicScheduler:
             return None
         return result
 
-    def _dispatch_prompt(self, entry: dict[str, Any], pane_id: str | None) -> None:
+    def _dispatch_prompt(self, entry: dict[str, Any], pane_id: str | None) -> bool:
         """プロンプトを送信し、失敗時は再起動する。"""
         name = str(entry.get("name", ""))
         prompt_id = str(entry.get("id", ""))
@@ -412,7 +413,7 @@ class PeriodicScheduler:
                 if not self._session_mgr.send_prompt(prompt_id, "/clear"):
                     log.warning("[%s] /clear の送信に失敗しました。スキップします。", name)
                     self._release_slot(pane_id)
-                    return
+                    return False
                 time.sleep(2)
                 if fresh_context_interval is not None:
                     new_next_clear_at = time.time() + (int(fresh_context_interval) * 60)
@@ -422,6 +423,7 @@ class PeriodicScheduler:
             if ok:
                 if self._slot_monitor is not None and pane_id:
                     self._slot_monitor.track(pane_id)
+                return True
             else:
                 self._release_slot(pane_id)
                 if not self._stop_event.is_set():
@@ -430,9 +432,11 @@ class PeriodicScheduler:
                         self._session_mgr.restart_pane(prompt_id)
                     except RuntimeError as exc:
                         log.error("[%s] 再起動失敗: %s", name, exc)
+                return False
         except Exception as exc:
             self._release_slot(pane_id)
             log.error("[%s] 予期しないエラー: %s", name, exc, exc_info=True)
+            return False
 
     def start(self) -> None:
         self._thread = threading.Thread(
@@ -498,9 +502,9 @@ class PeriodicScheduler:
                 if not entry.get("enabled", True):
                     continue
 
-                # webhook 等で積まれた外部キューを優先処理する（1 サイクル 1 件）。
+                # webhook / event_hook で積まれた外部キューを優先処理する（1 サイクル 1 件）。
                 # 積まれていたサイクルはスケジュール発火より外部キューを優先する。
-                if entry.get("webhook") and self._drain_external_one(entry):
+                if self._drain_external_one(entry):
                     continue
 
                 if now < float(entry.get("next_run_at", now)):
@@ -531,7 +535,10 @@ class PeriodicScheduler:
                     if prompt_text is None:
                         self._update_entry(prompt_id, next_run_at=self._next_run_at_for_entry(entry))
                         continue
-                    entry["prompt"] = prompt_text
+                    self.enqueue_external(name, prompt_text)
+                    self._update_entry(prompt_id, next_run_at=self._next_run_at_for_entry(entry))
+                    self._drain_external_one(entry)
+                    continue
 
                 if not self._session_mgr.ensure_session(prompt_id, name):
                     log.warning("[%s] 対応セッションの準備に失敗したため今回の送信をスキップします。", name)
@@ -560,5 +567,4 @@ class PeriodicScheduler:
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=5)
-
 

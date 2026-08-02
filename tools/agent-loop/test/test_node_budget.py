@@ -7,11 +7,13 @@ kiro-loop の同名テストのクローン（agent-loop は kiro-loop の後継
 """
 import json
 import os
+import pathlib
 import shutil
 import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import agent_loop as al  # noqa: E402
@@ -122,6 +124,9 @@ class ControlLifecycleTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
         os.environ["AGENT_CONTROL_DIR"] = self.dir
         self.addCleanup(os.environ.pop, "AGENT_CONTROL_DIR", None)
+        state_patch = mock.patch.object(al, "_STATE_DIR", pathlib.Path(self.dir, "state"))
+        state_patch.start()
+        self.addCleanup(state_patch.stop)
         al._CONTROL_CACHE["mtime"] = None
 
     def _control(self, obj):
