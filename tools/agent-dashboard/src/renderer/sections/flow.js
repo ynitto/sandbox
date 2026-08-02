@@ -444,10 +444,7 @@ function renderFlow() {
 
 async function selectFlowRun(runId) {
   state.flowRunId = runId;
-  state.flowNodeId = null;
-  state.flowRevisionId = null;
-  state.flowGraphMode = 'dependencies';
-  state.flowDetailView = 'overview';
+  resetFlowDrilldown();
   state.flowMobileDetail = true;
   state.flowRun = await guard('実行内容の読み込み', () => api.flowRun(state.project.dir, state.project.busDir, runId));
   renderFlow();

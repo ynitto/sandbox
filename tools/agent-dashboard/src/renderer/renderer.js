@@ -858,12 +858,25 @@ function engineEmptyMessage() {
 }
 
 async function selectProject(dir) {
+  if (state.selectedDir !== dir) {
+    state.flowRunId = null;
+    state.flowRun = null;
+    state.flowMobileDetail = false;
+    resetFlowDrilldown();
+  }
   state.selectedDir = dir;
   localStorage.setItem('kpv:selected', dir);
   // 起動先候補はプロジェクトごとに違う（レジストリとノード宣言の交差）。選択のたびに引き直す。
   state.cliChatCwdChoices = [];
   renderTree();
   await Promise.all([reloadProject(), refreshCliChatCwdChoices()]);
+}
+
+function resetFlowDrilldown() {
+  state.flowNodeId = null;
+  state.flowRevisionId = null;
+  state.flowGraphMode = 'dependencies';
+  state.flowDetailView = 'overview';
 }
 
 async function reloadProject() {
@@ -880,6 +893,7 @@ async function reloadProject() {
   if (state.flowRunId && !state.flowRuns.some((r) => r.runId === state.flowRunId)) {
     state.flowRunId = null;
     state.flowRun = null;
+    resetFlowDrilldown();
   }
   if (state.flowRunId) {
     state.flowRun = await guard('run 読込', () => api.flowRun(project.dir, project.busDir, state.flowRunId));

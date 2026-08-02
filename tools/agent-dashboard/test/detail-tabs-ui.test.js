@@ -23,6 +23,46 @@ function grab(name) {
   throw new Error(`function ${name} の閉じ括弧が見つかりません`);
 }
 
+// run が更新で入れ替わったときだけ、前のタスク詳細を右ペインから外す。
+// 同じ run の定期更新ではこの関数を呼ばず、閲覧中の工程・表示タブを維持する。
+{
+  const selection = {
+    flowNodeId: 'task-previous',
+    flowRevisionId: 2,
+    flowGraphMode: 'plan',
+    flowDetailView: 'graph',
+  };
+  // eslint-disable-next-line no-new-func
+  const resetFlowDrilldown = new Function(
+    'state', `${grab('resetFlowDrilldown')}; return resetFlowDrilldown;`
+  )(selection);
+  resetFlowDrilldown();
+  assert.deepStrictEqual(selection, {
+    flowNodeId: null,
+    flowRevisionId: null,
+    flowGraphMode: 'dependencies',
+    flowDetailView: 'overview',
+  });
+  const reloadProjectSource = grab('reloadProject');
+  const invalidation = reloadProjectSource.match(
+    /if \(state\.flowRunId && !state\.flowRuns\.some[\s\S]*?\n {2}\}/
+  );
+  assert.match(
+    invalidation && invalidation[0],
+    /flowRunId = null;[\s\S]*flowRun = null;[\s\S]*resetFlowDrilldown\(\)/,
+    '選択中 run が消えた更新でだけ、前のタスク詳細を破棄する'
+  );
+  assert.ok(
+    !reloadProjectSource.replace(invalidation[0], '').includes('resetFlowDrilldown()'),
+    '同じ run の定期更新では閲覧中の詳細を維持する'
+  );
+  assert.match(
+    grab('selectProject'),
+    /if \(state\.selectedDir !== dir\)[\s\S]*flowRunId = null;[\s\S]*flowRun = null;[\s\S]*resetFlowDrilldown\(\)/,
+    '別プロジェクトへ移ると、同じ run ID があっても前プロジェクトの詳細を破棄する'
+  );
+}
+
 // eslint-disable-next-line no-new-func
 const needsViewModel = new Function(
   `${grab('needBucket')}; ${grab('needsViewModel')}; return needsViewModel;`

@@ -178,10 +178,17 @@ function renderKiroLoopTerminal() {
   }
   const folder = selectedProjectFolder();
   const entries = coworkHasProjectConfig(state.cowork, folder) ? coworkVisibleEntries(coworkDraft(), folder) : [];
-  const selected = entries.find(({ item, index }) => coworkEntryId(item, index) === String(term.id))
-    || coworkSelectedEntry(entries, folder);
-  const selectedId = selected ? coworkEntryId(selected.item, selected.index) : String(term.id || '');
-  const selectedItem = selected ? selected.item : null;
+  const selected = entries.find(({ item, index }) => coworkEntryId(item, index) === String(term.id));
+  if (!selected) {
+    stopKiroLoopCapturePoll();
+    kiroLoopCancelWait();
+    state.kiroLoopTerm = null;
+    setKiroLoopDialogVisible(false);
+    el.innerHTML = '';
+    return;
+  }
+  const selectedId = coworkEntryId(selected.item, selected.index);
+  const selectedItem = selected.item;
   const selectedState = (selectedItem && selectedItem.state) || {};
   const selectedStatus = selectedState.running ? 'running' : (selectedState.status || 'unknown');
   el.innerHTML = `

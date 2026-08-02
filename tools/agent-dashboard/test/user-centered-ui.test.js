@@ -9,6 +9,41 @@ const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const renderer = require('./helpers/renderer-src').read();
 const css = fs.readFileSync(path.join(root, 'styles.css'), 'utf8');
 
+function grab(name) {
+  const at = renderer.indexOf(`function ${name}(`);
+  assert.ok(at >= 0, `renderer.js に function ${name} が見つかりません`);
+  let i = renderer.indexOf('{', at);
+  let depth = 0;
+  for (; i < renderer.length; i++) {
+    if (renderer[i] === '{') depth++;
+    else if (renderer[i] === '}') {
+      depth--;
+      if (depth === 0) return renderer.slice(at, i + 1);
+    }
+  }
+  throw new Error(`function ${name} の閉じ括弧が見つかりません`);
+}
+
+{
+  const state = { kiroLoopTerm: { id: 'removed', name: '前の業務', target: '%1' }, cowork: {} };
+  const body = { innerHTML: '前の情報' };
+  let visible = true;
+  // eslint-disable-next-line no-new-func
+  const renderKiroLoopTerminal = new Function(
+    'state', '$', 'captureUiState', 'selectedProjectFolder', 'coworkHasProjectConfig',
+    'coworkVisibleEntries', 'coworkDraft', 'coworkEntryId', 'setKiroLoopDialogVisible',
+    'stopKiroLoopCapturePoll', 'kiroLoopCancelWait',
+    `${grab('renderKiroLoopTerminal')}; return renderKiroLoopTerminal;`
+  )(
+    state, () => body, () => ({}), () => '/project', () => true,
+    () => [], () => [], () => '', (show) => { visible = show; }, () => {}, () => {}
+  );
+  renderKiroLoopTerminal();
+  assert.strictEqual(state.kiroLoopTerm, null, '選択した定常業務が消えたら旧端末情報を破棄する');
+  assert.strictEqual(body.innerHTML, '', '消えた定常業務の詳細を表示し続けない');
+  assert.strictEqual(visible, false, '対象の無い実行状況ダイアログを閉じる');
+}
+
 assert.match(html, /<meta name="viewport" content="width=device-width, initial-scale=1"/);
 assert.match(html, /data-tab="history"[^>]*>成果</);
 assert.match(html, /data-tab="cowork"[^>]*[^>]*>定常業務</);
