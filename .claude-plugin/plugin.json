@@ -1,0 +1,11 @@
+{
+  "name": "sandbox-skills",
+  "description": "agent-project / agent-flow / winauto 等のスキル群",
+  "version": "0.1.0",
+  "skills": "./.github/skills/",
+  "agents": [],
+  "author": {
+    "name": "ynitto"
+  },
+  "repository": "https://github.com/ynitto/sandbox"
+}
