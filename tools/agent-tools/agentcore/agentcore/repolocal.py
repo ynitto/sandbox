@@ -42,6 +42,20 @@ _AGENTS_HOME_ENV = "AGENT_PROJECT_AGENTS_HOME"
 _AGENTS_HOME_DIR = ".agents"
 
 
+def _looks_like_remote_url(s: str) -> bool:
+    """ネットワーク越しの git URL か（ローカルパスとして絶対化してはいけない形か）。
+
+    `scheme://…` と SCP 形式（`user@host:path` / `host:path`）を URL 扱いする。
+    Windows のドライブレター（`C:\\…` / `C:/…`）はローカルパスのまま残す。
+    """
+    if "://" in s:
+        return True
+    if re.match(r"^[A-Za-z]:(?:[/\\]|$)", s):
+        return False
+    # user@host:path または host:path（コロン後が空でない）
+    return bool(re.match(r"^(?:[^/\\]+@)?[^/\\]+:.+", s))
+
+
 def normalize_repo_url(url: str) -> str:
     """git URL/パスの正規形。同じリポジトリを指す表記の揺れを吸収する。
 
@@ -51,7 +65,7 @@ def normalize_repo_url(url: str) -> str:
       - ローカルパス表記の相対/`~`/シンボリックリンク（絶対化して比較する）
 
     ローカルパスだけ絶対化するのは、`/srv/repos/app` と `../repos/app` が同じ実体を指しうる
-    ため。URL（`://` か `user@host:` を含む）は文字列として比較する——ネットワーク越しの
+    ため。URL（`://` か SCP 形式）は文字列として比較する——ネットワーク越しの
     同一性はこちらでは判定できないし、パスとして絶対化すると壊れる。
     """
     s = str(url or "").strip().rstrip("/")
@@ -59,7 +73,7 @@ def normalize_repo_url(url: str) -> str:
         s = s[:-4]
     if not s:
         return ""
-    if "://" not in s and not re.match(r"^[^/\\]+@[^/\\]+:", s):
+    if not _looks_like_remote_url(s):
         try:
             return str(Path(s).expanduser().resolve()).lower()
         except (OSError, RuntimeError, ValueError):
@@ -105,13 +119,17 @@ def _read_config(path: str) -> dict:
         except ImportError:
             return {}
         try:
-            return yaml.safe_load(text) or {}
+            data = yaml.safe_load(text)
         except Exception:       # noqa: BLE001 — YAML の構文エラー種別は実装依存
             return {}
-    try:
-        return json.loads(text) or {}
-    except ValueError:
-        return {}
+    else:
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return {}
+    # トップが配列・スカラーだと呼び出し側の `.get()` が AttributeError になる。
+    # 「壊れていても例外にしない」契約どおり、オブジェクト以外は空 dict へ倒す。
+    return data if isinstance(data, dict) else {}
 
 
 def normalize_repos(raw) -> "list[dict]":

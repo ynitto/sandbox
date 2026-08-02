@@ -436,8 +436,10 @@ class GitTransport:
 
     def _setup_worktree(self, strict: bool = True) -> bool:
         """コミット用 ID・sparse-checkout（指定時）・対象ブランチへの checkout を整える。"""
+        # name / email は独立に埋める。email だけ既にある clone で name を飛ばすと commit が失敗する。
         if not self._git(["config", "user.email"], check=False).stdout.strip():
             self._git(["config", "user.email", self.commit_user_email], check=False)
+        if not self._git(["config", "user.name"], check=False).stdout.strip():
             self._git(["config", "user.name", self.commit_user_name], check=False)
         self._apply_durable_writes(self.workdir)
         if self.sparse_paths is not None:
@@ -506,17 +508,30 @@ class GitTransport:
     def _commit_pending(self, msg: str) -> None:
         """作業ツリーの未確定分を add + commit する（コミット対象が無ければ何もしない）。
         subdir 指定時はその名前空間だけをステージする（多重コミッタの下で他者のパスを
-        巻き込まない）。"""
+        巻き込まない）。add / commit の「対象なし」以外の失敗は握り潰さない——黙って
+        成功扱いにすると呼び出し側が未 push の書き込みを送ったつもりで進んでしまう。"""
         args = ["add", "-A", "--", self.subdir] if self.subdir else ["add", "-A"]
         p = self._git(args, check=False)
         if p.returncode != 0 and is_corrupt_error(p):
             self._rebuild_clone()
             p = self._git(args, check=False)
+        if p.returncode != 0:
+            raise RuntimeError(
+                f"git add に失敗しました: {(p.stderr or p.stdout or '').strip()[:300]}")
         c = self._git(["commit", "-m", msg], check=False)
         if c.returncode != 0 and is_corrupt_error(c):
             self._rebuild_clone()
-            self._git(args, check=False)
-            self._git(["commit", "-m", msg], check=False)
+            p = self._git(args, check=False)
+            if p.returncode != 0:
+                raise RuntimeError(
+                    f"git add に失敗しました: {(p.stderr or p.stdout or '').strip()[:300]}")
+            c = self._git(["commit", "-m", msg], check=False)
+        if c.returncode != 0:
+            err = f"{c.stderr or ''}{c.stdout or ''}".lower()
+            if "nothing to commit" in err or "no changes added to commit" in err:
+                return
+            raise RuntimeError(
+                f"git commit に失敗しました: {(c.stderr or c.stdout or '').strip()[:300]}")
 
     def _ahead(self) -> bool:
         """リモート追跡ブランチより先に進んだコミットがあるか（＝push するものがあるか）。

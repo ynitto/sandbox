@@ -254,10 +254,10 @@ installed() {
 AGENTS_SRC_DIR="$(cd "${TOOLS_DIR}/.." && pwd)/agents"
 if [[ -d "${AGENTS_SRC_DIR}" ]]; then
   # ~/.agents（新）と ~/.agent（旧）の使い分けは agentcore._agents_home と同じ規則:
-  # 新が無く旧だけあるときは旧を使う（既存インストールの置き場を割らない）。
+  # agents サブディレクトリ単位で判定し、新が無く旧だけあるときは旧を使う。
   AGENTS_HOME="${AGENT_PROJECT_AGENTS_HOME:-}"
   if [[ -z "${AGENTS_HOME}" ]]; then
-    if [[ ! -d "${HOME}/.agents" && -d "${HOME}/.agent" ]]; then
+    if [[ ! -d "${HOME}/.agents/agents" && -d "${HOME}/.agent/agents" ]]; then
       AGENTS_HOME="${HOME}/.agent"
     else
       AGENTS_HOME="${HOME}/.agents"

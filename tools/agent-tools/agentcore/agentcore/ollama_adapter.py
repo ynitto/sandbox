@@ -17,13 +17,18 @@ def generate(model: str, prompt: str) -> dict:
         f"{host}/api/generate", data=body,
         headers={"Content-Type": "application/json"}, method="POST")
     try:
-        with urllib.request.urlopen(req) as res:
-            return json.load(res)
+        with urllib.request.urlopen(req, timeout=120) as res:
+            data = json.load(res)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")
         raise RuntimeError(f"ollama API error ({exc.code}): {detail}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"ollama に接続できません: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise RuntimeError("ollama API がタイムアウトしました") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("ollama API がオブジェクト以外を返しました")
+    return data
 
 
 def main(argv=None) -> int:

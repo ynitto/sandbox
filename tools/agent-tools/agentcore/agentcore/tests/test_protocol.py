@@ -102,6 +102,14 @@ class TestClaimTieBreak(unittest.TestCase):
         protocol.try_claim(self.claim_dir, "alice", 60, extra={"workload": "amigos"})
         self.assertEqual(protocol.list_claims(self.claim_dir)["alice"]["workload"], "amigos")
 
+    def test_extra_cannot_overwrite_claim_invariants(self):
+        protocol.write_claim(self.claim_dir, "alice", 60,
+                             extra={"who": "bob", "lease_until": 0, "workload": "x"})
+        rec = protocol.list_claims(self.claim_dir)["alice"]
+        self.assertEqual(rec["who"], "alice")
+        self.assertGreater(rec["lease_until"], time.time())
+        self.assertEqual(rec["workload"], "x")
+
 
 class TestExtendAndRelease(unittest.TestCase):
     def setUp(self):
@@ -177,6 +185,16 @@ class TestRenewLease(unittest.TestCase):
         self.assertTrue(protocol.renew_lease(self.claim_dir, "alice", 900,
                                              create_if_missing=False))
         self.assertEqual(protocol.list_claims(self.claim_dir)["alice"]["ts"], 42.0)
+
+    def test_renew_tolerates_malformed_lease_until(self):
+        path = os.path.join(self.claim_dir, "alice.json")
+        protocol.write_json_atomic(path, {
+            "who": "alice", "ts": 42.0, "lease_until": "bad"})
+        self.assertTrue(protocol.renew_lease(self.claim_dir, "alice", 900,
+                                             create_if_missing=False))
+        rec = protocol.list_claims(self.claim_dir)["alice"]
+        self.assertEqual(rec["ts"], 42.0)
+        self.assertIsInstance(rec["lease_until"], float)
 
 
 class TestVocab(unittest.TestCase):

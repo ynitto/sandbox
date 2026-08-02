@@ -78,12 +78,20 @@ def write_json_atomic(path: str, data) -> None:
     「読めなければ存在しない」と解釈するので、空ファイルは黙って状態の欠損になる。
     ディレクトリの fsync まで行い、rename そのものも永続化させる。"""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    tmp = f"{path}.tmp.{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
+    # PID だけの一時名は同一プロセス内の並行書き込みで衝突する（同じ tmp を truncate /
+    # rename し合い、片方が FileNotFoundError になる）。ディレクトリ内に一意な一時ファイルを作る。
+    fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.",
+                               suffix=".tmp", dir=os.path.dirname(path) or ".")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
     # ディレクトリエントリ（rename）の永続化。Windows は O_RDONLY でディレクトリを開けず、
     # そもそも rename のジャーナリング挙動が異なるので失敗は黙って許容する。
     try:
@@ -183,15 +191,21 @@ def winner(claim_dir: str, now: "Optional[float]" = None) -> "Optional[str]":
     return min(live)[1] if live else None
 
 
+_CLAIM_RESERVED = frozenset({"who", "ts", "claimed_at", "lease_until"})
+
+
 def write_claim(claim_dir: str, who: str, lease_sec: float,
                  extra: "Optional[dict]" = None) -> None:
     """`<claim_dir>/<who>.json` を新規の ts で書く（既存を上書き。タイブレークの根拠が
     動くため、延長したいだけなら extend_claim / renew_lease を使うこと）。"""
     os.makedirs(claim_dir, exist_ok=True)
-    rec = {"who": who, "ts": unique_ts(), "claimed_at": now_iso(),
-           "lease_until": time.time() + lease_sec}
+    rec = {}
     if extra:
-        rec.update(extra)
+        # 予約キーは後段の正規フィールドが勝つ——extra で who/ts/lease を差し替えると
+        # ファイル名と中身の名義が食い違ったり、即失効の claim を書けてしまう。
+        rec.update({k: v for k, v in extra.items() if k not in _CLAIM_RESERVED})
+    rec.update({"who": who, "ts": unique_ts(), "claimed_at": now_iso(),
+                "lease_until": time.time() + lease_sec})
     write_json_atomic(os.path.join(claim_dir, f"{safe_name(who)}.json"), rec)
 
 
@@ -265,16 +279,20 @@ def renew_lease(claim_dir: str, who: str, lease_sec: float,
         if not isinstance(cur, dict) and not create_if_missing:
             return False
         if isinstance(cur, dict):
-            if float(cur.get("lease_until", 0) or 0) - now > lease_sec / 2.0:
+            # winner() と同じく壊れた数値は 0 扱い——float() 直呼びは ValueError で心拍全体を止める。
+            lease_until = _as_float(cur.get("lease_until"), 0.0) or 0.0
+            if lease_until - now > lease_sec / 2.0:
                 return False  # まだ十分残っている → 今回は延長不要
             ts = cur.get("ts", now)
             claimed_at = cur.get("claimed_at", now_iso())
         else:
             ts = now
             claimed_at = now_iso()
-        rec = {"who": who, "ts": ts, "claimed_at": claimed_at, "lease_until": now + lease_sec}
+        rec = {}
         if extra:
-            rec.update(extra)
+            rec.update({k: v for k, v in extra.items() if k not in _CLAIM_RESERVED})
+        rec.update({"who": who, "ts": ts, "claimed_at": claimed_at,
+                    "lease_until": now + lease_sec})
         write_json_atomic(path, rec)
     return True
 

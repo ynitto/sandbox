@@ -95,9 +95,15 @@ def build_plan(task_id: str, *, criteria=None, commands=None, workspace: str = "
     pol = {}
     if policy:
         if policy.get("confirm") is not None:
-            pol["confirm"] = int(policy["confirm"])
+            confirm = int(policy["confirm"])
+            if confirm < 1:
+                raise ValueError("policy.confirm は 1 以上が必要です")
+            pol["confirm"] = confirm
         if policy.get("timeout_sec") is not None:
-            pol["timeout_sec"] = float(policy["timeout_sec"])
+            timeout_sec = float(policy["timeout_sec"])
+            if timeout_sec <= 0:
+                raise ValueError("policy.timeout_sec は正の数が必要です")
+            pol["timeout_sec"] = timeout_sec
     if pol:
         plan["policy"] = pol
     plan["digest"] = plan_digest(plan)
@@ -136,6 +142,23 @@ def plan_errors(plan) -> "list[str]":
         if not isinstance(c, dict) or not str(c.get("command") or "").strip():
             errs.append(f"commands[{i}] に command が無い")
             break
+    policy = plan.get("policy")
+    if policy is not None:
+        if not isinstance(policy, dict):
+            errs.append("policy がオブジェクトでない")
+        else:
+            if "confirm" in policy:
+                try:
+                    if int(policy["confirm"]) < 1:
+                        errs.append("policy.confirm は 1 以上が必要です")
+                except (TypeError, ValueError):
+                    errs.append("policy.confirm が整数でない")
+            if "timeout_sec" in policy:
+                try:
+                    if float(policy["timeout_sec"]) <= 0:
+                        errs.append("policy.timeout_sec は正の数が必要です")
+                except (TypeError, ValueError):
+                    errs.append("policy.timeout_sec が数値でない")
     digest = str(plan.get("digest") or "")
     if not digest.startswith(_DIGEST_PREFIX):
         errs.append("digest が無い")
@@ -276,10 +299,15 @@ def receipt_overall(receipt: dict) -> str:
     for c in cmds:
         if not isinstance(c, dict):
             return "fail"
+        # 終了コード非 0 は成果物の欠陥（fail）。inconclusive フラグより先に見る——
+        # 両方立つ矛盾レコードを inconclusive に倒すと「失敗なのに再試行しない」になる。
+        exit_code = c.get("exit_code")
+        if exit_code is not None and exit_code != 0:
+            return "fail"
         if c.get("inconclusive"):
             inconclusive = True
             continue
-        if c.get("exit_code") != 0 or c.get("flaky"):
+        if exit_code != 0 or c.get("flaky"):
             return "fail"
     for c in crit:
         if not isinstance(c, dict):

@@ -70,6 +70,14 @@ class CommandsTests(unittest.TestCase):
         self.assertEqual(rec["source"], "f.json")
         self.assertEqual(rec["action"], "board-bid")
 
+    def test_write_receipt_keeps_authoritative_metadata(self):
+        commands.write_receipt(self.tmp, "f.json",
+                               {"ok": False, "source": "evil", "action": "board-bid"})
+        rec = json.loads(Path(commands.receipts_dir(self.tmp), "f.json").read_text(encoding="utf-8"))
+        self.assertTrue(rec["ok"])
+        self.assertEqual(rec["source"], "f.json")
+        self.assertEqual(rec["action"], "board-bid")
+
     def test_prune_receipts_by_count(self):
         for i in range(5):
             commands.write_receipt(self.tmp, f"r{i}.json", {"action": "board-bid"}, keep=1000)

@@ -28,6 +28,7 @@ NORMALIZE_GOLDEN = [
     ("https://Example.com/A/B.git", "https://example.com/a/b"),
     ("git@h:t/app.git", "git@h:t/app"),
     ("git@H:T/App", "git@h:t/app"),
+    ("h:t/app.git", "h:t/app"),
     ("ssh://git@h:22/t/app.git", "ssh://git@h:22/t/app"),
     ("", ""),
     ("   ", ""),
@@ -69,8 +70,15 @@ class NormalizeTests(unittest.TestCase):
                             "相対表記と絶対表記は同じ実体を指す")
 
     def test_scp_style_url_is_not_treated_as_a_path(self):
-        # user@host:path 形式をパスとして絶対化すると cwd 配下に化けて別物になる。
+        # user@host:path / host:path をパスとして絶対化すると cwd 配下に化けて別物になる。
         self.assertEqual(repolocal.normalize_repo_url("git@h:t/app.git"), "git@h:t/app")
+        self.assertEqual(repolocal.normalize_repo_url("host.example:team/repo.git"),
+                         "host.example:team/repo")
+
+    def test_windows_drive_is_not_treated_as_scp(self):
+        # C:\… を host:path と誤認して URL 扱いしない。
+        self.assertFalse(repolocal._looks_like_remote_url(r"C:\repos\app"))
+        self.assertFalse(repolocal._looks_like_remote_url("C:/repos/app"))
 
 
 class NormalizeReposTests(unittest.TestCase):
@@ -85,6 +93,13 @@ class NormalizeReposTests(unittest.TestCase):
         # 設定ミスでノードを落とさない（解決できなければミラー取得へ落ちるだけ）。
         self.assertEqual(repolocal.normalize_repos(None), [])
         self.assertEqual(repolocal.normalize_repos(["", 5, {"local": "/l"}]), [])
+
+    def test_non_object_host_config_is_empty_not_crash(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "host.yaml"
+            path.write_text("- just\n- a list\n", encoding="utf-8")
+            self.assertEqual(repolocal._read_config(str(path)), {})
+            self.assertEqual(repolocal.load_node_repos(str(path)), [])
 
 
 class ResolveLocalTests(unittest.TestCase):

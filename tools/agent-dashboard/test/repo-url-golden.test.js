@@ -31,6 +31,7 @@ const GOLDEN = [
   ['https://Example.com/A/B.git', 'https://example.com/a/b'],
   ['git@h:t/app.git', 'git@h:t/app'],
   ['git@H:T/App', 'git@h:t/app'],
+  ['h:t/app.git', 'h:t/app'],
   ['ssh://git@h:22/t/app.git', 'ssh://git@h:22/t/app'],
   ['', ''],
   ['   ', ''],

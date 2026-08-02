@@ -106,7 +106,18 @@ class EligibleTests(unittest.TestCase):
 
     def test_broken_post_is_not_eligible(self):
         self.assertFalse(board.eligible(None, repos=REGISTRY))
-        self.assertTrue(board.eligible(post(requires="こわれている"), repos=REGISTRY))
+        # 壊れた requires を「制限なし」に倒すと、本来拾えない公示を誤って拾う。
+        self.assertFalse(board.eligible(post(requires="こわれている"), repos=REGISTRY))
+
+    def test_string_contract_version_is_parsed(self):
+        p = post(requires={"contract_version": str(board.CONTRACT_VERSION)})
+        self.assertTrue(board.eligible(p, repos=REGISTRY))
+        self.assertFalse(board.eligible(
+            post(requires={"contract_version": "999"}), repos=REGISTRY))
+
+    def test_unparseable_contract_version_fails_closed(self):
+        self.assertFalse(board.eligible(
+            post(requires={"contract_version": "not-a-number"}), repos=REGISTRY))
 
 
 class WorkloadEligibilityTests(unittest.TestCase):
