@@ -16,7 +16,6 @@
 // 未登録環境向けに任意コマンド起動（mode: command）も従来どおり用意する。
 
 const fs = require('fs');
-const { shell } = require('electron');
 const { spawn } = require('child_process');
 const { GitLabClient } = require('../../../base/main/gitlab');
 const { tryHandoff } = require('./reviewHandoff');
@@ -84,6 +83,7 @@ async function openInReviewViewer(cfg, target) {
     child.unref();
     return { via: 'command', command: cmd };
   }
+  const { shell } = require('electron');
   await shell.openExternal(protocolUrl);
   return { via: 'protocol', url: protocolUrl };
 }
