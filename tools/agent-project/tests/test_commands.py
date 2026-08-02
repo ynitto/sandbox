@@ -716,7 +716,10 @@ class TestRevise(unittest.TestCase):
             self.assertIsNone(t.get("flow_run"))
             self.assertEqual(str(t.get("rev")), "1")
             cancel = c.bus / "inbox" / "cancels" / "run-old.json"
-            self.assertFalse(cancel.is_file(), "適用後 sticky cancel は残さない")
+            self.assertTrue(cancel.is_file(), "実行所有者の停止確認まで cancel を残す")
+            marker = json.loads(cancel.read_text(encoding="utf-8"))
+            self.assertEqual(marker["id"], "run-old")
+            self.assertIn("委譲中に修正", marker["reason"])
             meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
             self.assertEqual(meta["status"], "cancelled")
             self.assertFalse((run_dir / "waits" / "n1.json").exists())
@@ -770,7 +773,11 @@ class TestRevise(unittest.TestCase):
             self.assertEqual(t.status, "ready")
             self.assertIsNone(t.get("flow_run"))
             self.assertEqual(t.retries, 1)
-            self.assertFalse((c.bus / "inbox" / "cancels" / "run-old.json").is_file())
+            cancel = c.bus / "inbox" / "cancels" / "run-old.json"
+            self.assertTrue(cancel.is_file(), "実行所有者の停止確認まで cancel を残す")
+            marker = json.loads(cancel.read_text(encoding="utf-8"))
+            self.assertEqual(marker["id"], "run-old")
+            self.assertIn("委譲中だが進める", marker["reason"])
             meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
             self.assertEqual(meta["status"], "cancelled")
 
