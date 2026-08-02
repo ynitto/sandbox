@@ -7,9 +7,11 @@ from __future__ import annotations
 # バス内の run（gc が掃除する）とは別に、agent-flow は「バス外の一時ファイル」を
 # 残す。これらは削除処理が無く溜まり続けるため、daemon ループから定期掃除する。
 #   A) $TMPDIR/agent-flow-locks/*.lock        … claim/daemon の排他ロック
-#   B) <path>.tmp.<pid>                       … write_json_atomic の中間ファイル（crash 残骸）
+#   B) <path>.tmp.<pid>[.<unique>]            … write_json_atomic の中間ファイル（crash 残骸）
+#      agentcore は並行書き込み衝突を避けるため `<pid>.<unique>` 接尾辞を付ける。
+#      旧形（`<pid>` だけ）も残骸として残るので両方拾う。
 #   C) {bus}/<node>/                          … git モードのノード別クローン（run 終了後に孤立）
-_TMP_SUFFIX_RE = re.compile(r"\.tmp\.(\d+)$")
+_TMP_SUFFIX_RE = re.compile(r"\.tmp\.(\d+)(?:\.[^.]+)?$")
 
 
 def _locks_root() -> str:
@@ -82,7 +84,7 @@ def sweep_lock_files(min_age_sec: float = 3600.0) -> int:
 
 
 def sweep_tmp_files(root: str, min_age_sec: float = 300.0) -> int:
-    """write_json_atomic が残した <path>.tmp.<pid> の残骸を掃除し、削除数を返す。
+    """write_json_atomic が残した <path>.tmp.<pid>[.<unique>] の残骸を掃除し、削除数を返す。
     正常時は即 os.replace されるので、残存＝書き込み中かクラッシュ由来。書き込み元 pid が
     死んでいる、または min_age_sec 以上古いものを消す（.git 配下は触らない）。"""
     if not os.path.isdir(root):

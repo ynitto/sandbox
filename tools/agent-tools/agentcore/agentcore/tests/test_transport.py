@@ -326,6 +326,19 @@ class TestPushSkipsWhenNothingToSend(TransportTestBase):
         b.ensure_clone()
         self.assertTrue(os.path.isfile(os.path.join(wd_b, "a.txt")))
 
+    def test_scoped_noop_ignores_untracked_outside_subdir(self):
+        """subdir スコープ外の untracked があっても、スコープ内に変更が無ければ no-op。
+
+        git はこのとき `nothing added to commit but untracked files present` を返し、
+        文言マッチだけだと正当な空 commit を誤って例外にしていた。"""
+        wd = os.path.join(self.tmp.name, "node-a")
+        t = GitTransport(wd, self.remote, branch="main", subdir="board")
+        t.ensure_clone()
+        os.makedirs(os.path.join(wd, "board"), exist_ok=True)
+        with open(os.path.join(wd, "noise.txt"), "w") as f:
+            f.write("outside scope\n")
+        t._commit_pending("noop")  # 例外にならないこと
+
 
 class TestHangGuards(unittest.TestCase):
     """常駐体のハング防止（timeout・資格情報プロンプト抑止）。

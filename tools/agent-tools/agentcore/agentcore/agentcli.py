@@ -78,12 +78,22 @@ class UsageText(str):
 
 
 def _agents_home() -> Path:
+    """共通ホーム。スキーマどおり **agents サブディレクトリ単位**で新旧を判定する。
+
+    `~/.agents/agents/` が無く旧 `~/.agent/agents/` が実在するときだけ後者を使う。
+    親ディレクトリ（`~/.agents`）だけの存在では旧へ倒さない——無関係な `.agents`
+    ディレクトリがレガシー定義を隠すのを防ぐ。
+    """
     override = os.environ.get(_AGENTS_HOME_ENV)
     if override:
         return Path(override)
     home = Path.home()
     new, old = home / _AGENTS_HOME_DIR, home / _AGENTS_HOME_LEGACY
-    return old if (not new.exists() and old.exists()) else new
+    if (new / "agents").is_dir():
+        return new
+    if (old / "agents").is_dir():
+        return old
+    return new
 
 
 def plugin_dirs(project_dir=None) -> "list[Path]":
@@ -118,11 +128,32 @@ def normalize(name: str, raw: dict, path) -> dict:
     if not command:
         raise AgentCliError(f"エージェント定義 {path}: command は 1 要素以上の文字列配列が必須です")
     output = str(raw.get("output", "stdout"))
+    if output not in ("stdout", "file"):
+        raise AgentCliError(f"エージェント定義 {path}: output は stdout か file です")
     if output == "file" and not any("{output_file}" in c for c in command):
         raise AgentCliError(f"エージェント定義 {path}: output=file には command 中の "
                             "{output_file} プレースホルダが必要です")
+    prompt_via = str(raw.get("prompt_via", "stdin"))
+    if prompt_via not in ("stdin", "argv"):
+        raise AgentCliError(f"エージェント定義 {path}: prompt_via は stdin か argv です")
+    # 省略と空は許すが、型が違うものは `or {}` で握り潰さない（[] / "" が通ってしまう）。
+    if "env" not in raw or raw.get("env") is None:
+        env_raw: dict = {}
+    else:
+        env_raw = raw.get("env")
+        if not isinstance(env_raw, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in env_raw.items()):
+            raise AgentCliError(f"エージェント定義 {path}: env は文字列→文字列のオブジェクトです")
+    if "errors" not in raw or raw.get("errors") is None:
+        errors_raw: list = []
+    else:
+        errors_raw = raw.get("errors")
+        if not isinstance(errors_raw, list):
+            raise AgentCliError(f"エージェント定義 {path}: errors はオブジェクト配列です")
     errors = []
-    for e in (raw.get("errors") or []):
+    for e in errors_raw:
+        if not isinstance(e, dict):
+            raise AgentCliError(f"エージェント定義 {path}: errors[] はオブジェクト配列です")
         try:
             errors.append((str(e.get("class", "env")),
                            re.compile(str(e.get("match", "")), re.I),
@@ -130,8 +161,18 @@ def normalize(name: str, raw: dict, path) -> dict:
         except re.error as ex:
             raise AgentCliError(
                 f"エージェント定義 {path}: errors.match が正規表現として不正です: {ex}") from ex
-    spill_raw = raw.get("spill") or {}
-    inter_raw = raw.get("interactive") or {}
+    if "spill" not in raw or raw.get("spill") is None:
+        spill_raw: dict = {}
+    else:
+        spill_raw = raw.get("spill")
+        if not isinstance(spill_raw, dict):
+            raise AgentCliError(f"エージェント定義 {path}: spill はオブジェクトです")
+    if "interactive" not in raw or raw.get("interactive") is None:
+        inter_raw: dict = {}
+    else:
+        inter_raw = raw.get("interactive")
+        if not isinstance(inter_raw, dict):
+            raise AgentCliError(f"エージェント定義 {path}: interactive はオブジェクトです")
     readonly = str(raw.get("readonly", "best-effort"))
     if readonly not in ("enforced", "best-effort"):
         raise AgentCliError(f"エージェント定義 {path}: readonly は enforced か best-effort です")
@@ -143,12 +184,12 @@ def normalize(name: str, raw: dict, path) -> dict:
         # スキル起動の行頭記号（既定 `/`。codex は `$skill-name`）。対話セッションへ
         # テキストを送る経路が skill_command_prefix() 経由で参照する。
         "skill_command_prefix": str(raw.get("skill_command_prefix") or "/"),
-        "prompt_via": str(raw.get("prompt_via", "stdin")),
+        "prompt_via": prompt_via,
         "prompt_flag": raw.get("prompt_flag"),
         "model_flag": raw.get("model_flag"),
         "default_model": raw.get("default_model"),
         "output": output,
-        "env": dict(raw.get("env") or {}),
+        "env": dict(env_raw),
         "timeout": raw.get("timeout"),
         "empty_output_is_error": bool(raw.get("empty_output_is_error", True)),
         "write_args": _strs(raw.get("write_args"), "write_args", path),

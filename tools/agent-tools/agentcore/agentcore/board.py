@@ -70,6 +70,25 @@ def contract_compatible(required_by_post: "int | None", *,
     return declared == required_by_post
 
 
+def _parse_contract_version(value) -> "int | None":
+    """requires.contract_version を整数へ。読めなければ None（呼び出し側が fail-close）。
+
+    bool は int の下位型なので除外する（`True` を版 1 と読まない）。文字列の `"1"` は受ける。
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value == int(value):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
 def declared_repo_ids(node_repos) -> "set[str]":
     """ノードの担当リポジトリ宣言 → 照合用の識別子集合（名前と正規化 URL）。
 
@@ -192,6 +211,10 @@ def eligible(post: dict, *, repos=None, tags=None, agent_cli=None, workloads=Non
     """
     if not isinstance(post, dict):
         return False
+    # requires が壊れている公示は「制限なし」に倒さない——誤って拾う方が高くつく（fail-close）。
+    if "requires" in post and post.get("requires") is not None \
+            and not isinstance(post.get("requires"), dict):
+        return False
     req = post.get("requires") or {}
     if not isinstance(req, dict):
         req = {}
@@ -216,10 +239,10 @@ def eligible(post: dict, *, repos=None, tags=None, agent_cli=None, workloads=Non
         return False
 
     required_version = req.get("contract_version")
-    if not contract_compatible(
-            int(required_version) if isinstance(required_version, (int, float)) else None,
-            declared=contract_version):
-        return False
+    if required_version is not None:
+        parsed = _parse_contract_version(required_version)
+        if parsed is None or not contract_compatible(parsed, declared=contract_version):
+            return False
 
     have = declared_repo_ids(repos)
     ws = post.get("workspace") or {}

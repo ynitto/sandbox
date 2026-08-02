@@ -649,15 +649,19 @@ class CleanupTests(unittest.TestCase):
         d = os.path.join(self.tmp, "runs", "r1")
         os.makedirs(d)
         dead = os.path.join(d, "meta.json.tmp.999999")
+        dead_unique = os.path.join(d, "meta.json.tmp.999999.123456789")
         alive = os.path.join(d, "meta.json.tmp.%d" % os.getpid())
+        alive_unique = os.path.join(d, "meta.json.tmp.%d.123456789" % os.getpid())
         normal = os.path.join(d, "meta.json")
-        for p in (dead, alive, normal):
+        for p in (dead, dead_unique, alive, alive_unique, normal):
             with open(p, "w") as f:
                 f.write("{}")
         removed = kf.sweep_tmp_files(self.tmp, min_age_sec=300.0)
-        self.assertEqual(removed, 1)
+        self.assertEqual(removed, 2)
         self.assertFalse(os.path.exists(dead))
+        self.assertFalse(os.path.exists(dead_unique))
         self.assertTrue(os.path.exists(alive))   # 生存 pid かつ新しい → 残す
+        self.assertTrue(os.path.exists(alive_unique))
         self.assertTrue(os.path.exists(normal))  # 中間でない通常ファイルは対象外
 
     def test_sweep_tmp_old_alive_pid(self):

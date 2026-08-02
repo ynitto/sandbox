@@ -54,12 +54,19 @@ function findHostConfig(cfg) {
 
 // git URL/パスの正規形（`agentcore.repolocal.normalize_repo_url` と同じ規則）。
 // 末尾の .git とスラッシュ、大小文字を吸収し、ローカルパス表記だけ絶対化する。
-// scp 形式（user@host:path）をパスとして絶対化すると cwd 配下に化けるので URL 扱いにする。
+// scp 形式（user@host:path / host:path）をパスとして絶対化すると cwd 配下に化けるので URL 扱いにする。
+// Windows ドライブレター（C:\…）はローカルパスのまま残す。
+function looksLikeRemoteUrl(s) {
+  if (s.includes('://')) return true;
+  if (/^[A-Za-z]:(?:[/\\]|$)/.test(s)) return false;
+  return /^(?:[^/\\]+@)?[^/\\]+:.+/.test(s);
+}
+
 function normalizeRepoUrl(url) {
   let s = String(url || '').trim().replace(/\/+$/, '');
   if (s.endsWith('.git')) s = s.slice(0, -4);
   if (!s) return '';
-  if (!s.includes('://') && !/^[^/\\]+@[^/\\]+:/.test(s)) {
+  if (!looksLikeRemoteUrl(s)) {
     const expanded = s.replace(/^~(?=$|\/|\\)/, os.homedir());
     try {
       // Python 側は `Path.resolve()`＝**symlink も解決する**。ここが `path.resolve` だけだと、

@@ -8,6 +8,20 @@ import urllib.error
 import urllib.request
 
 
+def _request_timeout_sec() -> float:
+    """HTTP 待ち上限。呼び出し側（agent-project 既定 300s 等）より短くしない。
+
+    `OLLAMA_TIMEOUT` で上書きできる。未設定時は 600s——冷起動や大きめモデルで
+    120s 打ち切りになると、外側の timeout より先にアダプタが落ちて誤って env 扱いになる。
+    """
+    raw = os.environ.get("OLLAMA_TIMEOUT", "600")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 600.0
+    return value if value > 0 else 600.0
+
+
 def generate(model: str, prompt: str) -> dict:
     host = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
     if "://" not in host:
@@ -17,13 +31,18 @@ def generate(model: str, prompt: str) -> dict:
         f"{host}/api/generate", data=body,
         headers={"Content-Type": "application/json"}, method="POST")
     try:
-        with urllib.request.urlopen(req) as res:
-            return json.load(res)
+        with urllib.request.urlopen(req, timeout=_request_timeout_sec()) as res:
+            data = json.load(res)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")
         raise RuntimeError(f"ollama API error ({exc.code}): {detail}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"ollama に接続できません: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise RuntimeError("ollama API がタイムアウトしました") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("ollama API がオブジェクト以外を返しました")
+    return data
 
 
 def main(argv=None) -> int:

@@ -7,6 +7,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-tools / agentcore: 監査で見つかった実装バグの修正
+
+agentcore を横断監査し、再現できた高確度の実装バグを直した（柱 1 の分担契約と柱 2 の
+fail-close 検証が壊れる経路）。仕様レベルの積み残し（分散 claim の一過性二重勝者、
+再クローン時の未 push 更新ロス、workspace.path/base を見ない入札選別など）は本項では
+直さず、PR 説明に棚卸しする。
+
+- **protocol**: `extra` が `who` / `ts` / `lease_until` を上書きできた。予約キーは正規
+  フィールドが勝つ。壊れた `lease_until` で `renew_lease` が ValueError していたのを
+  `_as_float` へ。原子書き込みの一時名を PID 固定から `mkstemp` へ（同一プロセス並行衝突）
+- **commands**: 受理レシートで payload が `ok` / `source` を偽装できた。正規メタを後勝ちに
+- **board**: 壊れた `requires` を制限なし扱いにしていたのを fail-close へ。文字列の
+  `contract_version` をパースし、読めない要求も不参加へ倒す
+- **verifycontract**: `policy.confirm < 1` / `timeout_sec <= 0` を生成・検査の双方で拒否。
+  `exit_code != 0` と `inconclusive` が両立する矛盾レコードは fail
+- **repolocal**: ユーザ無し SCP（`host:path`）をローカルパスへ絶対化していた。非 object の
+  host 設定で `.get()` が落ちないよう空 dict へ倒す。dashboard の正規化も同規則へ
+- **transport**: `user.name` / `user.email` を独立に補完。`git add` / `commit` の
+  「対象なし」以外の失敗を握り潰さない
+- **agentcli / install.sh**: `~/.agents` 親の存在ではなく `agents/` サブディレクトリ単位で
+  新旧ホームを判定（スキーマどおり）。`prompt_via` / `output` / `env` / `errors` の形を検査
+- **ollama_adapter**: `urlopen` に timeout（既定 600s / `OLLAMA_TIMEOUT`）、非 dict 応答を明示エラーへ
+
+副作用の緩和（同 PR 内）:
+
+- `write_json_atomic` は `mkstemp`（0600・掃除非互換名）ではなく
+  `<path>.tmp.<pid>.<unique>` を使い、agent-flow の残骸掃除を新接尾辞に対応
+- `_commit_pending` は「ステージ差分の有無」で no-op 判定し、subdir 外 untracked による
+  誤例外を防ぐ
+- `agentcli.normalize` は `env: []` / `errors: {}` を `or {}` で握り潰さない
+
 ### agent-flow / flow-planner: 列挙駆動の分解（対象単位のノードが生まれるようにする）・集約の木構造化
 
 「API のドキュメント化」のような粗いバックログに対し、対象単位のノードが生まれず

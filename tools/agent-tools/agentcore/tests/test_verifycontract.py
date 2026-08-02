@@ -78,6 +78,18 @@ class PlanTests(unittest.TestCase):
         p["criteria"][1]["id"] = "C7"
         self.assertTrue(any("採番" in e for e in vc.plan_errors(p)))
 
+    def test_policy_bounds_are_enforced(self):
+        with self.assertRaises(ValueError):
+            vc.build_plan("T-1", criteria=["a"], policy={"confirm": 0})
+        with self.assertRaises(ValueError):
+            vc.build_plan("T-1", criteria=["a"], policy={"timeout_sec": -1})
+        p = _plan()
+        p["policy"] = {"confirm": 0, "timeout_sec": -1}
+        p["digest"] = vc.plan_digest(p)
+        errs = vc.plan_errors(p)
+        self.assertTrue(any("confirm" in e for e in errs))
+        self.assertTrue(any("timeout_sec" in e for e in errs))
+
 
 class ReceiptTests(unittest.TestCase):
     def test_v2_integration_receipt_requires_matching_pass(self):
@@ -175,6 +187,13 @@ class ReceiptTests(unittest.TestCase):
 
     def test_empty_receipt_is_fail(self):
         self.assertEqual(vc.receipt_overall({"commands": [], "criteria": []}), "fail")
+
+    def test_nonzero_exit_beats_inconclusive_flag(self):
+        # exit_code 非 0 と inconclusive が両立する矛盾レコードは fail（成果物の欠陥）。
+        self.assertEqual(vc.receipt_overall({
+            "commands": [{"command": "x", "exit_code": 7, "inconclusive": True}],
+            "criteria": [],
+        }), "fail")
 
     def test_digest_mismatch_is_rejected(self):
         p = _plan()
