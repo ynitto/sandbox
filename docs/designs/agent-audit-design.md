@@ -58,7 +58,7 @@ agent-audit はこの 4 点を「読むだけの独立 CLI + 限定された LLM
 ## 2. 全体像
 
 ```
-                （読み取りのみ・無改造）                        $AGENT_AUDIT_DIR（唯一の書き先）
+                （読み取りのみ・無改造）                        audit ディレクトリ（唯一の書き先）
   ┌─ 源泉 ──────────────────────────────┐   collect    ┌──────────────────────────────┐
   │ node-budget 台帳 ledger/*.jsonl     │ ──────────▶ │ records/<YYYYMMDD>.jsonl      │
   │ agent-flow バス runs/<id>/…         │  決定的      │   （正規化レコード・追記専用）  │
@@ -89,10 +89,13 @@ agent-audit はこの 4 点を「読むだけの独立 CLI + 限定された LLM
 
 ## 3. データモデルとストア
 
-書き先は `$AGENT_AUDIT_DIR`（既定 `~/.agents/audit/`。`agent_home_subdir` の
-サブディレクトリ単位レガシー判定に従う）。**agent-audit がここ以外へ書くことはない**
-（例外は §6.4 の `calibrate --write` だけ。C7: 他ツールのバス・状態リポジトリ・台帳の
-書き手にならない）。
+書き先は audit ディレクトリ。解決は **`--audit-dir` 引数 > 設定 `audit_dir` > 組み込み既定
+`~/.agents/audit/`** の 3 段だけで、**agent-audit 固有の環境変数は導入しないし、見ない**。
+理由: 本ツールは cron・agent-loop の定期プロンプト・手動と実行環境が変わりやすく、環境変数
+依存があると「同じ設定ファイルなのに置き場所が違う」事故を作る（他ツールの `$AGENT_*_DIR`
+契約はその契約の所有者のもの——agent-audit は**源泉の読み取り位置も含めて**引数と設定
+ファイルだけで決める。§4.1）。**agent-audit がここ以外へ書くことはない**（例外は §5.3 の
+`calibrate --write` だけ。C7: 他ツールのバス・状態リポジトリ・台帳の書き手にならない）。
 
 ```
 ~/.agents/audit/
@@ -147,7 +150,27 @@ agent-audit はこの 4 点を「読むだけの独立 CLI + 限定された LLM
 ```
 
 観測・洞察は**証跡への参照**を必ず持つ（C8: 昇格根拠を追跡できる）。単発の観測を
-そのまま洞察にしない——distill は同種観測のクラスタ単位でだけ走る（§7.3）。
+そのまま洞察にしない——distill は同種観測のクラスタ単位でだけ走る（§6.3）。
+
+### 3.3 保持と定期クリーンアップ
+
+audit ディレクトリは放置すると transcript を中心に際限なく育つ。掃除は 2 系統で、
+どちらも**種別ごとに保持日数を調整できる**:
+
+- **明示 gc**: `agent-audit gc [--dry-run]`。`gc_keep_days` の種別別日数
+  （records / transcripts / observations / reports）を超えたファイルを削除する。
+  **insights と state.json は gc 対象外**——洞察は蒸留の成果そのもので小さく、消すと
+  同じクラスタを再蒸留してトークンを二重に払う（削除は人が明示的にファイルを消す）。
+- **自動 gc（定期クリーンアップ）**: `gc_auto: true`（既定）のとき、`collect` の末尾で
+  前回 gc から `gc_interval_hours`（既定 24）以上経過していれば同じ掃除を 1 回走らせ、
+  実行時刻を state.json に記録する。daemon を持たない本ツールで「定期」を成立させる
+  方法は、定期に走る唯一のコマンド（collect）への相乗りだけ——agent-project の
+  enforce_retention が gc に相乗りするのと同じ構図で、新しい常駐や書き手を増やさない
+  （C7）。頻度は `gc_interval_hours` で、無効化は `gc_auto: false` でノードごとに選べる。
+
+処理済みカーソル（state.json）は records の削除より長く生き残る——records を消しても
+「収集済み」の事実は残るので、gc 後の collect が同じセッションを再収集して LLM 段へ
+再投入することはない。
 
 ## 4. 収集（collect・決定的）
 
@@ -156,10 +179,13 @@ agent-audit はこの 4 点を「読むだけの独立 CLI + 限定された LLM
 収集器は `sources:` 設定（省略時は全種を自動発見）で有効化する。すべて読み取り専用・
 増分・冪等（`state.json` のカーソル: mtime / ファイル末尾オフセット / セッション
 updated_at。`kiro-log-exporter` の `.kiro_export_state.json` と同じ規律）。
+源泉の場所も **引数 / 設定 > 契約上の既定パス** で解決し、環境変数は見ない（読む相手の
+契約が env 上書きを持っていても、agent-audit 側は設定ファイルへ明示させる——定期実行の
+環境差で読む場所が黙って変わることを避ける）。
 
 | source | 読む場所 | 取るもの |
 |---|---|---|
-| `budget-ledger` | `$AGENT_BUDGET_DIR/ledger/*.jsonl` | ledger 行 → `kind:ledger` レコード（消費の一次事実） |
+| `budget-ledger` | 設定 `budget_dir`（既定は契約の `~/.agents/budget/`）の `ledger/*.jsonl` | ledger 行 → `kind:ledger` レコード（消費の一次事実） |
 | `flow-bus` | 設定 `flow_buses:`（既定はプロジェクト root の `bus/`） | `runs/<id>/meta.json`・`events/*.jsonl`・`results/*.json`・`final.json` → `kind:run`。error_class・retries・verify 判定を抽出 |
 | `project-root` | 設定 `project_roots:` | `run-log.jsonl`・`run-log/<node>/*.json`・`archive/`（納品書の cost 行）・`needs/`・`decisions/` → `kind:run` |
 | `amigos-bus` | 設定 `amigos_buses:` ＋ `<home>/deliveries/` | `missions/<mid>/events/*.jsonl`（turn/cli_seconds）・`delivery.json` → `kind:run` |
@@ -232,7 +258,7 @@ records の run 系から決定的に導く: 完了率、`[agent-error:<class>]`
 node-budget 契約は「rates の較正（実測行の中央値）は管理面が行い書き戻す」と定めている。
 agent-audit はこの管理面の CLI 実装になる: 実測レコードから `<agent_cli>:<model>` 別の
 tokens/秒 中央値を計算し、既定では**提案として表示するだけ**。`--write` を明示したときに
-限り `$AGENT_BUDGET_DIR/config.json` の `rates` を更新する（唯一の外部書き込み。
+限り `budget_dir` の `config.json` の `rates` を更新する（唯一の外部書き込み。
 契約上の書き手が管理面と定義されているキーだけに触れ、`updated_by: "agent-audit"` を残す）。
 
 ## 6. LLM 蒸留パイプライン（extract → cluster → distill［→ review］）
@@ -287,11 +313,31 @@ agents:
   付ける第三の purpose。refuted は `exported` 対象から外す。既定は無効
   （LLM 消費を増やす段は opt-in）。
 
-### 6.4 有限性
+### 6.4 実行タイミングの調整（トークン削減）
 
-LLM 段には三重の停止条件を置く（C7）: `max_llm_calls`（1 実行あたり、既定 50）・
-node-budget 超過での停止・処理済みカーソルによる再実行の自然減。全段が単発サブコマンド
-なので「止まらない自動化」は構造的に作れない。
+LLM を「いつ・どれだけ」使うかは extract / distill で**独立に**調整できる。すべて
+決定的なゲートで、ゲートを通らない実行は LLM を 1 回も呼ばずに即終了する（cron や
+agent-loop に高頻度で `collect && extract && distill` を書いても、LLM 消費は設定した
+リズムを超えない——駆動の頻度と LLM の頻度を分離する）:
+
+- **間隔ゲート**: `extract_min_interval_hours`（既定 6）/ `distill_min_interval_hours`
+  （既定 24）。前回成功時刻（state.json）からの経過で判定。extract を細かく・distill を
+  粗くといった段別のリズムが作れる（distill はクラスタが育ってから 1 回呼ぶ方が
+  観測あたりのトークン効率が良い）。
+- **蓄積ゲート**: `extract_min_records`（既定 10。未抽出の候補レコードがこの数に満たなければ
+  走らない）/ `distill_min_new_observations`（既定 5。新規観測がこの数未満なら走らない）。
+  少量を細切れに処理する呼び出し回数の無駄を防ぐ。
+- **段別上限**: `extract_max_calls`（既定 40）/ `distill_max_calls`（既定 10）。
+  1 実行あたりの LLM 呼び出し上限を段ごとに持つ（弱いモデルの extract は多め、
+  強いモデルの distill は少なめ、が既定の意図）。
+- `--force` はゲート（間隔・蓄積）だけを飛ばす。上限と node-budget は `--force` でも
+  飛ばせない（人の手でも財布のガードは外れない・C1）。
+
+### 6.5 有限性
+
+LLM 段には停止条件を重ねる（C7): 段別上限（`extract_max_calls` / `distill_max_calls`）・
+間隔と蓄積のゲート・node-budget 超過での停止・処理済みカーソルによる再実行の自然減。
+全段が単発サブコマンドなので「止まらない自動化」は構造的に作れない。
 
 ## 7. 出力と学習ループへの接続
 
@@ -320,11 +366,11 @@ node-budget 超過での停止・処理済みカーソルによる再実行の�
 | `usage [--period P] [--by K] [--json]` | 不使用 | トークン・コスト集計（measured / estimated 別掲） |
 | `stats [--json]` | 不使用 | 実行品質集計 |
 | `calibrate [--write]` | 不使用 | rates 較正の提案（--write で budget config へ反映） |
-| `extract [--limit N]` | map | レコード → 観測 |
-| `distill [--limit N] [--review]` | reduce | 観測クラスタ → 洞察 |
+| `extract [--limit N] [--force]` | map | レコード → 観測。間隔・蓄積ゲート（§6.4）を通ったときだけ LLM を呼ぶ |
+| `distill [--limit N] [--review] [--force]` | reduce | 観測クラスタ → 洞察。同上 |
 | `report [--kind K] [--out F]` | 不使用 | Markdown レポート |
 | `tasks [--json]` | 不使用 | 洞察 → 改善タスク（task.schema.json） |
-| `gc [--keep-days N]` | 不使用 | records / transcripts / reports の保持期限掃除 |
+| `gc [--dry-run]` | 不使用 | 種別別保持日数での掃除（§3.3。`gc_auto` で collect へ相乗り） |
 | `doctor` | 不使用 | 源泉の到達性・session_log 宣言の有無・未収集 CLI の一覧 |
 | `update [--check]` | 不使用 | 自己更新（§9） |
 
@@ -352,7 +398,8 @@ agent-loop の定期プロンプトや cron に `collect && extract && distill` 
 
 ```yaml
 # agent-audit.yaml.example（抜粋）
-audit_dir: ""                 # 既定 $AGENT_AUDIT_DIR = ~/.agents/audit
+audit_dir: ""                 # 既定 ~/.agents/audit（--audit-dir > この値 > 既定。環境変数は見ない）
+budget_dir: ""                # node-budget の場所（既定 ~/.agents/budget）
 sources: []                   # 空 = 自動発見（budget-ledger / cli-native は常時、他は宣言時）
 flow_buses: []                # 追加で読む flow バスのパス
 project_roots: []             # agent-project の state clone ルート
@@ -366,10 +413,21 @@ agent_timeout: 300
 argv_limit: 100000
 extract_input_chars: 8000
 extract_filters: [failed, retried, verify-flip, needs, long-session]
+extract_min_interval_hours: 6   # LLM 実行タイミング（§6.4）。0 = ゲート無効
+extract_min_records: 10
+extract_max_calls: 40
 distill_min_occurrences: 2
-max_llm_calls: 50
+distill_min_interval_hours: 24
+distill_min_new_observations: 5
+distill_max_calls: 10
 join_slack_sec: 120
-gc_keep_days: 90
+gc_auto: true                   # collect 末尾の定期クリーンアップ（§3.3）
+gc_interval_hours: 24
+gc_keep_days:                   # 種別ごとに調整可（0 = その種別を消さない）
+  records: 90
+  transcripts: 30
+  observations: 90
+  reports: 30
 update_repo: ""               # 空 = skill-registry.json から解決
 update_branch: main
 update_check_interval: 21600
@@ -388,20 +446,23 @@ update_check_interval: 21600
 ## 10. 不変条件
 
 1. **読み手に徹する。** 他ツールのバス・状態リポジトリ・台帳・CLI ストアへ書かない。
-   書くのは `$AGENT_AUDIT_DIR` と、明示 `--write` 時の budget `rates`（契約上の管理面
+   書くのは audit ディレクトリと、明示 `--write` 時の budget `rates`（契約上の管理面
    キー）だけ。
 2. **決定的にできる処理に LLM を使わない。** 収集・正規化・相関・集計・クラスタリング・
    レポート描画は stdlib のみで再現可能。LLM は extract / distill / review の 3 purpose に
    閉じる。
 3. **偽の実測を作らない。** measured と estimated を混ぜない。相関が一意でなければ結合
    しない。読めない源泉は「未収集」と明示して exit 2（黙って部分集計を全体と偽らない）。
-4. **必ず止まる。** 全サブコマンド単発・有界。LLM 段は max_llm_calls × node-budget ×
-   処理済みカーソルの三重で停止。
-5. **生の会話・秘密・絶対パスをノード外へ出さない。** 共有可能な層（集計・観測・洞察・
+4. **必ず止まる。** 全サブコマンド単発・有界。LLM 段は段別上限 × 間隔・蓄積ゲート ×
+   node-budget × 処理済みカーソルで停止し、`--force` が外せるのはゲートだけで上限と
+   予算は外せない。
+5. **設定の解決は 引数 > 設定ファイル > 組み込み既定 のみ。** 書き先・源泉の場所を含め、
+   agent-audit 固有の環境変数を導入しない・見ない（実行環境の差で挙動が変わらない）。
+6. **生の会話・秘密・絶対パスをノード外へ出さない。** 共有可能な層（集計・観測・洞察・
    タスク）と不可の層（transcript）を物理的に分け、export は決定的スクラバを通す。
-6. **蒸留の根拠を追跡できる。** 洞察 → 観測 → レコード → 源泉の参照鎖を欠かさない。
+7. **蒸留の根拠を追跡できる。** 洞察 → 観測 → レコード → 源泉の参照鎖を欠かさない。
    根拠の無い洞察は生成しない（distill はクラスタ単位でだけ走る）。
-7. **CLI の作法の変更は `agents/<name>.json` 1 ファイルで完結する**（session_log にも
+8. **CLI の作法の変更は `agents/<name>.json` 1 ファイルで完結する**（session_log にも
    agent-cli プラグイン契約の受入条件を適用）。
 
 ## 11. 非目標
