@@ -43,6 +43,10 @@ jobs:
           # 引数変換は Windows 非依存なので Linux ランナーで回せる。
           - package: winauto
             suites: tools/winauto/tests
+          # gitlab-repo-sync は git さえあれば完結する（bare repo を「両側の GitLab」に
+          # 見立てた end-to-end テストを含む。ネットワークには出ない）。
+          - package: gitlab-repo-sync
+            suites: tools/gitlab-repo-sync/tests
     env:
       # エージェント CLI のスタブが実時間 sleep しないようにする（README のテスト手順と同じ）。
       AGENT_FLOW_STUB_SLEEP_MAX: "0"
