@@ -767,7 +767,7 @@ def _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location="local",
                                     f"リトライ・裁定は消費しない）")
         return
     task.retries += 1
-    if not task.verify:
+    if not task.verify and verdict != VERIFY_NOT_RUN:
         # 失敗ではなく「完了条件が無いので人が確認して完了にする」状態。理由文もそう読める形にする
         # （「verify 未定義」だけだと viewer で失敗理由のように見える）。
         _escalate(cfg, task, "verify 未定義（工程は完了しています。完了条件が無いため自動では "

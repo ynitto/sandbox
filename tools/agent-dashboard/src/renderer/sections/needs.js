@@ -1517,7 +1517,7 @@ function renderNeedFacts(p, n) {
       </div>`);
     }
   }
-  if (n.why) facts.push(`<div><span class="label-chip">理由</span>${prosePreview(n.why, 240)}</div>`);
+  if (n.why) facts.push(`<div><span class="label-chip">理由</span> ${prosePreview(n.why, 240)}</div>`);
   if (n.summary) facts.push(`<div><span class="label-chip">概況</span>${prosePreview(n.summary, 280)}</div>`);
   const d = n.diff;
   if (d && d.hasDiff && (d.artifacts.length || d.internal.length)) {

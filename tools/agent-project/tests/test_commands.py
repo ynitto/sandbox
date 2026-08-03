@@ -941,6 +941,23 @@ class TestFailureTriage(unittest.TestCase):
             self.assertEqual(t.norm_status(), "ready")         # 内容の問題 → 従来どおり積み直し
             self.assertEqual(t.retries, 1)
 
+    def test_act_failure_without_verify_retries_instead_of_requesting_artifact_review(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="doing", verify="")
+            cfg = cfg_for(d)
+            task = km.load_tasks(cfg.backlog)[0]
+
+            km._settle_failure(
+                cfg, task, "agent-flow run 応答なし", 1, "ev", {},
+                phase=km.PHASE_ACT, verdict=km.VERIFY_NOT_RUN,
+            )
+
+            t = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(t.norm_status(), "ready")
+            self.assertEqual(t.retries, 1)
+            self.assertFalse((d / "needs" / "T1.md").exists())
+
 
 class FeedbackReductionTests(unittest.TestCase):
     """ユーザーの決定・指摘を全体へ還元する仕組み（gitlab 却下コメントの learn 化・蒸留）と

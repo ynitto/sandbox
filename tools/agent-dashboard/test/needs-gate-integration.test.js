@@ -74,4 +74,7 @@ const verify = renderNeedFacts(
 assert.ok(!verify.includes('プロジェクト共通チェック'));
 assert.ok(verify.includes('pytest が失敗しました'));
 
+const reason = renderNeedFacts({}, { id: 'T-REASON', why: '確認待ちです。' });
+assert.ok(reason.includes('<span class="label-chip">理由</span> <span class="prose-inline">確認待ちです。</span>'));
+
 console.log('needs-gate-integration: ok');
