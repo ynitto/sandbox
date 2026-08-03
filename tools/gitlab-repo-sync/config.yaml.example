@@ -1,0 +1,157 @@
+# gitlab-repo-sync 設定ファイルサンプル
+#
+# このファイルを ~/gitlab-repo-sync.yaml にコピーして編集してください。
+# 探索順:
+#   1. --config で明示指定したパス
+#   2. カレントの gitlab-repo-sync.yaml / .yml / .json
+#   3. HOME の同名ファイル
+#
+# PAT を書き込むので、必ずパーミッションを絞ってください（install.sh は 600 で置きます）:
+#   chmod 600 ~/gitlab-repo-sync.yaml
+
+# ---------------------------------------------------------------------------
+# 資格情報（グローバル）
+# ---------------------------------------------------------------------------
+# PAT は**ここだけ**に書く。ペアごとには書かない（同じホストの資格情報が設定内に
+# 散ると、失効時の差し替えを漏らす）。URL のホスト名で引かれ、http(s) の URL にだけ
+# 埋め込まれる。ssh の URL とローカルパスは触らない（鍵で認証するため）。
+#
+# host は glob 可（"*.example.com"）。上から順に最初に一致したものを使う。
+# username は GitLab の Personal Access Token なら何でも通るので既定 oauth2 のままでよい。
+# Deploy Token を使う場合はそのトークン名を指定すること。
+credentials:
+  - host: "gitlab.local"
+    token: "${LOCAL_GITLAB_TOKEN}"      # $VAR / ${VAR} は環境変数から展開される
+  - host: "gitlab.example.com"
+    token: "${CLOUD_GITLAB_TOKEN}"
+    username: "oauth2"
+
+  # 直書きもできる（その場合はこのファイルの権限に注意）:
+  # - host: "gitlab.example.com"
+  #   token: "glpat-xxxxxxxxxxxxxxxxxxxx"
+
+# ---------------------------------------------------------------------------
+# 置き場所
+# ---------------------------------------------------------------------------
+# 共有オブジェクトストア。ペアで繋がったリポジトリごとに 1 つの bare リポジトリが作られ、
+# 同じリポジトリが複数のペアに出てきても clone は 1 つで済む。
+store_dir: "~/.gitlab-repo-sync/store"
+
+# 前回突き合わせた ref のスナップショットと実行結果の置き場。
+state_dir: "~/.gitlab-repo-sync/state"
+
+# ログの追記先（省略すると標準出力だけ）。cron からは --quiet と組み合わせると使いやすい。
+log_file: "~/.gitlab-repo-sync/sync.log"
+
+# git 1 コマンドあたりのタイムアウト（秒）。初回同期で大きなリポジトリを扱うなら伸ばす。
+git_timeout: 900
+
+# ロックが残ったまま異常終了したとみなすまでの時間（分）。
+lock_timeout_minutes: 180
+
+# 分岐や書き込み衝突が残っているときに終了コードを 2 にするか。
+# cron のメール通知や監視で拾いたいなら true。
+fail_on_diverged: false
+
+# ---------------------------------------------------------------------------
+# 既定のルール（rules の各項目はここを継承する）
+# ---------------------------------------------------------------------------
+defaults:
+  # bidirectional-ff … fast-forward できるときだけ双方向に同期。分岐は触らず報告する（既定）
+  # a-to-b           … a を正とし b にだけ書く
+  # b-to-a           … その逆
+  strategy: "bidirectional-ff"
+
+  # 同期する ref。exclude が include より優先。include が空なら何も同期しない。
+  include:
+    - "refs/heads/main"
+    - "refs/heads/master"
+    - "refs/heads/develop"
+    - "refs/heads/release/*"
+    - "refs/tags/*"
+  exclude:
+    - "refs/heads/tmp/*"
+
+  # 片側で消えた ref をもう片側からも消すか。既定 false（消えた側へ作り直す）。
+  propagate_deletes: false
+
+  # 一方向戦略のときだけ意味がある。true にすると、書かれる側が勝手に進んでいても
+  # 強制上書きする（＝ミラー運用）。**双方向では無視される**。
+  allow_force: false
+
+# ---------------------------------------------------------------------------
+# 名前つきルール（ペアから名前で参照する）
+# ---------------------------------------------------------------------------
+rules:
+  # 共有ブランチだけを慎重に双方向同期する（いちばん普通の設定）
+  shared-branches:
+    strategy: "bidirectional-ff"
+    include:
+      - "refs/heads/main"
+      - "refs/heads/release/*"
+      - "refs/tags/*"
+    exclude:
+      - "refs/heads/feature/*"        # 作業ブランチは相手側へ出さない
+      - "refs/heads/tmp/*"
+
+  # ブランチを丸ごと揃えたい（削除も伝播させる）
+  all-branches:
+    strategy: "bidirectional-ff"
+    include: ["refs/heads/*", "refs/tags/*"]
+    exclude: ["refs/heads/tmp/*"]
+    propagate_deletes: true
+
+  # 配布用。a を正としてクラウド側を完全な複製にする。
+  # allow_force + propagate_deletes = 相手側の独自の変更は消える。片側書き込みに
+  # 運用を寄せられる場合だけ選ぶこと。
+  publish:
+    strategy: "a-to-b"
+    include: ["refs/heads/*", "refs/tags/*"]
+    allow_force: true
+    propagate_deletes: true
+
+  # 取り込み専用。上流から落としてくるだけで、こちらからは何も書かない。
+  vendor-in:
+    strategy: "b-to-a"
+    include: ["refs/heads/main", "refs/tags/*"]
+
+# ---------------------------------------------------------------------------
+# 同期するリポジトリの組
+# ---------------------------------------------------------------------------
+# a / b はどちらが「正」かを決めない。方向はルールの strategy が決める
+# （a-to-b なら a が正）。name を省略すると URL から自動生成される。
+pairs:
+  - name: "app"
+    a: "http://gitlab.local/team/app.git"
+    b: "https://gitlab.example.com/team/app.git"
+    rule: "shared-branches"
+
+  - name: "infra"
+    a: "http://gitlab.local/team/infra.git"
+    b: "https://gitlab.example.com/team/infra.git"
+    rule: "all-branches"
+
+  # ルールを使いつつ一部だけ変えたいときは、ペアに直接書けば上書きできる
+  - name: "docs"
+    a: "http://gitlab.local/team/docs.git"
+    b: "https://gitlab.example.com/team/docs.git"
+    rule: "shared-branches"
+    include: ["refs/heads/main"]
+
+  # 同じリポジトリを 2 か所へ配る構成。a 側（gitlab.local の app）は上の "app" と
+  # 同じなので、clone も fetch も 1 回で済む（共有ストアに集約される）。
+  # - name: "app-backup"
+  #   a: "http://gitlab.local/team/app.git"
+  #   b: "https://backup.example.com/team/app.git"
+  #   rule: "publish"
+
+  # 一時的に止めたいペアは消さずに無効化する（ストアの単位は変わらない）
+  # - name: "legacy"
+  #   a: "http://gitlab.local/team/legacy.git"
+  #   b: "https://gitlab.example.com/team/legacy.git"
+  #   enabled: false
+
+  # ssh でも動く（PAT ではなく鍵で認証する。credentials は参照されない）
+  # - name: "via-ssh"
+  #   a: "git@gitlab.local:team/app.git"
+  #   b: "git@gitlab.example.com:team/app.git"
