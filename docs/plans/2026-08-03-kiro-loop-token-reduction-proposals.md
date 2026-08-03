@@ -1,262 +1,248 @@
-# kiro-loop トークン削減 提案（rtk / caveman 連携 + セッション横断キャッシュ）
+# kiro-loop トークン削減 — rtk / caveman 導入計画
 
-> 作成日: 2026-08-03（v2: エージェント定義 hooks を統合ポイントの主線に変更、
-> agent-dashboard 連携の Phase 分け、キャッシュ効果の構造説明を追記）
-> 対象: `tools/kiro-loop/kiro-loop.py`, `tools/kiro-loop/install.sh`, `install.py`, agent-dashboard
-> 前提: rtk / caveman は `install.py` で導入検討済み（`setup_rtk` / `setup_caveman`）
+> 作成日: 2026-08-03
+> v3: スコープを rtk / caveman に限定。Phase 1 は **kiro-loop 無改修** かつ
+> **agent-dashboard から設定可能** を成立条件とし、一発適用のパッチスクリプトを同梱。
+> 将来拡張（kiro-loop 改修あり・ツール非依存の汎用化）は後半にまとめる。
+> 対象: `tools/kiro-loop/`, `install.py`, agent-dashboard, `schemas/`
 
 ---
 
-## 1. 背景・目的
+## 1. 背景・方針
 
-kiro-loop は kiro-cli を長寿命 tmux ペインで常駐させ、定期プロンプトを送り続ける。
-定常業務エージェントは 24 時間走るため、1 サイクルあたりの消費が小さくても累積コストが大きい。
+kiro-loop は kiro-cli を長寿命 tmux ペインで常駐させ定期プロンプトを送り続けるため、
+累積トークンコストが大きい。導入検討済みの rtk / caveman はどちらも kiro-cli には
+効いていない（rtk: `rtk init` に kiro プロファイルなし / caveman: スキルは入るが
+有効化されず、`fresh_context` の `/clear` でも解除される）。
 
-rtk / caveman は導入検討が済んでいるが、**kiro-cli（kiro-loop 配下のエージェント）には
-どちらも効いていない**のが現状:
+本計画の方針:
 
-| ツール | 現状 | ギャップ |
+1. **スコープは rtk / caveman の 2 ツールに絞る**（キャッシュ等の他施策は別提案へ分離 → §6）
+2. **Phase 1: kiro-loop を改修しない**。既存の設定契約だけで動かし、
+   **agent-dashboard から ON/OFF・変更できる**ことを最初から成立させる
+3. 将来トークン削減ツールが入れ替わることを前提に、**設定経路は agent-flow 等と
+   同じ汎用契約**（ツール名を知らない経路）に乗せる
+4. 一発で適用できる**暫定パッチスクリプト**を用意する（rtk / caveman 特化で構わない）
+5. **将来拡張**は kiro-loop 改修を許容し、rtk / caveman にとらわれない汎用設計で計画する（§5）
+
+| 消費経路 | 対応 | 標榜削減率 |
 |---|---|---|
-| rtk (rtk-ai/rtk) | `install.py setup_rtk` は `RTK_AGENT_INIT_ARGS = {claude, copilot, codex}` のみ。`rtk init` に kiro プロファイルが存在しない | kiro-cli への連携経路がゼロ |
-| caveman (JuliusBrussee/caveman) | `npx skills add -g -a kiro-cli` で `~/.kiro/skills/caveman` に入る | スキルは入るが**有効化されない**。Claude Code のような hooks 自動有効化がなく、セッションごとに `/caveman` を送る必要がある。`fresh_context` の `/clear` でも解除される |
+| ツール実行の出力（git / pytest / ls …） | rtk | 出力の 60〜90% |
+| エージェントの応答出力 | caveman | 約 65% |
 
 ---
 
-## 2. トークン消費の現状分析（kiro-loop 経路）
+## 2. Phase 1 の構成（kiro-loop 無改修）
 
-| # | 消費経路 | 内容 | 対応する案 |
-|---|---|---|---|
-| 1 | **ツール実行の出力** | git / pytest / ls / grep 等の生出力がそのままコンテキストに載る。エージェントの最大消費源 | 案1 (rtk: 60〜90% 削減を標榜) |
-| 2 | **エージェントの応答出力** | 冗長な説明文・前置き・確認文 | 案2 (caveman: 約65% 削減を標榜) |
-| 3 | **セッション初期化コスト** | 会話開始時の steering / skills 読込。`fresh_context` の `/clear` のたびに全量再読込 | 案4-A |
-| 4 | **定期プロンプト本文** | 毎サイクル同じ長文手順（yaml の `prompt:`）を再送し、会話履歴に積まれ続ける | 案4-B |
+kiro-loop が**既に読んでいる** 2 つの設定面だけを使う。本体コードには一切触れない。
 
----
+```
+                    ┌────────────────────────────┐
+  agent-dashboard ──┤ ~/.agents/session/session.json      │ ← ON/OFF の正（編集 UI 既存）
+  （既存の編集UI）   │   (agent-session-commands 契約)      │
+                    └──────────────┬─────────────┘
+                                   │ pull（kiro-loop 実装済み）
+                                   ▼
+     ペイン起動時: chat コマンド送信（/caveman full, rtk 前置指示）
+                                   │
+                    ┌──────────────┴─────────────┐
+                    │ ~/.kiro/agents/kiro-loop-concurrency.json │ ← /clear 補強
+                    │   hooks.userPromptSubmit（パッチが追記）   │   （session.json に従属）
+                    └────────────────────────────┘
+```
 
-## 3. 統合ポイント: エージェント定義（hooks）の拡張
+### 2.1 設定経路: agent-session-commands 契約（ON/OFF の正）
 
-### 3.1 現状の仕組み
+`schemas/agent-session-commands.schema.json` は dashboard が編集し kiro-loop が
+セッション開始時に実行する既存契約（pull 型・原子書換・revision・status 相乗り）。
+ここに 2 エントリを追加する:
 
-kiro-loop は終了検知（セマフォ解放）のために既にエージェント定義 + hooks を使っている:
+```jsonc
+// ~/.agents/session/session.json
+{ "id": "tokred-caveman", "mode": "chat", "run": "/caveman full",
+  "when": { "engines": ["kiro-loop"], "agent_cli": ["kiro"] } },
+{ "id": "tokred-rtk", "mode": "chat",
+  "run": "今後シェルコマンドを実行するときは `rtk` を前置してください（例: rtk git status）。rtk 非対応・失敗時はそのまま実行して構いません。",
+  "when": { "engines": ["kiro-loop"], "agent_cli": ["kiro"] } }
+```
 
-- `install.sh` が `~/.kiro/agents/kiro-loop-concurrency.json` を**静的に生成**
-  （`stop` hook → `kiro-loop slot-release`、`resources` に skill:// glob、`tools: ["*"]`）
-- kiro-loop はペイン起動時にこのファイルの**存在チェックのみ**行い、
-  あれば `--agent kiro-loop-concurrency` を付けて起動する
-  （`max_concurrent > 0` かつユーザーが `kiro_options.agent` を指定していない場合のみ）
+- **dashboard の既存 session-commands 編集 UI がそのまま設定画面になる**
+  （エントリ削除 = 無効化、`run` 編集 = レベル変更、`when` 編集 = 適用範囲変更）
+- 契約自体はツール名を知らない。将来 rtk / caveman を別ツールへ替えるときも
+  **エントリを差し替えるだけ**で、エンジン側の変更はゼロ（方針 3 を満たす）
+- `when` で kiro-loop × kiro に絞ってあるため、agent-flow / claude 等には影響しない
 
-**この既存の統合ポイントを rtk / caveman の注入口として拡張する**のが本提案の主線。
-新しい仕組みを増やさず、既に kiro-loop が所有している「エージェント定義 + hooks」に相乗りする。
+### 2.2 /clear 補強: エージェント定義 hooks（session.json に従属）
 
-### 3.2 hooks で何がどこまでできるか
+session-commands はペイン起動時の 1 回だけなので、`fresh_context` の `/clear` で
+効果が消える。kiro-loop を改修せずにこれを塞ぐため、終了検知で実績のある
+エージェント定義 `~/.kiro/agents/kiro-loop-concurrency.json` の hooks に
+`userPromptSubmit`（毎プロンプト発火）で短い指示を再注入するエントリを足す。
 
-kiro-cli の agent hooks はトリガーごとに性質が異なる（`stop` は実績あり。他は要実機検証）:
+二重管理を避ける要点 — **hook コマンドは session.json を参照し、
+対応する tokred-* エントリが存在するときだけ発火する**:
 
-| トリガー | できること | rtk / caveman との関係 |
+```sh
+sh -c 'f="${AGENT_SESSION_DIR:-$HOME/.agents/session}/session.json" && [ -f "$f" ]
+       && grep -q tokred-caveman "$f" && ! grep -Eq "\"enabled\":[[:space:]]*false" "$f"
+       && cat "$HOME/.kiro/cache/token-reduction/caveman-preamble.md" || true'
+```
+
+- dashboard がエントリを消す／契約全体を `enabled: false` にする → hook も沈黙する。
+  **スイッチは session.json の 1 箇所のまま**
+- rtk 側の hook は `command -v rtk` も確認し、バイナリ不在なら指示を出さない
+- 注入ペイロードは `~/.kiro/cache/token-reduction/*.md`（数行の短文。
+  userPromptSubmit の毎回コストは数十トークンで、削減額に対し無視できる）
+- `stop` hook（`kiro-loop slot-release`）には触れない
+- `--inject agentSpawn` でセッション生成時 1 回だけの注入にも切替可
+  （`/clear` 後の再発火が実機で確認できればこちらが低コスト）
+
+### 2.3 パッチスクリプト（実装済み・暫定）
+
+`tools/kiro-loop/setup-token-reduction.py` — rtk / caveman 特化の一発適用口:
+
+```
+python tools/kiro-loop/setup-token-reduction.py            # 適用（冪等）
+python tools/kiro-loop/setup-token-reduction.py --status   # 適用状態の表示
+python tools/kiro-loop/setup-token-reduction.py --revert   # 全撤去
+python tools/kiro-loop/setup-token-reduction.py --dry-run  # 変更内容の確認のみ
+  --caveman-mode lite|full|ultra   --inject userPromptSubmit|agentSpawn
+  --skip-rtk   --skip-caveman
+```
+
+- やること: (1) ペイロード配置 (2) エージェント定義 hooks 追記 (3) session.json への
+  tokred-* エントリ追加（revision++、原子書換、初回のみ `.tokred-backup` 退避）
+- 冪等（再実行で差分なし）。`--revert` は自分が追加した分だけを正確に外す
+  （hooks は `token-reduction` を含むコマンドのみ削除、`stop` は保全）
+- rtk バイナリ / caveman スキルの導入自体は `install.py`（`setup_rtk` /
+  `setup_caveman`）の責務のまま。スクリプトは不在を警告しヒントを出すだけ
+- **暫定ゆえの特化**: tokred-* という ID 規約・rtk / caveman 決め打ちのペイロードは
+  恒久対応（§5）で汎用契約に置き換える前提
+
+### 2.4 Phase 1 の割り切り（既知の制約）
+
+| 制約 | 内容 | 恒久対応 |
 |---|---|---|
-| `agentSpawn` | セッション生成時にコマンド出力をコンテキストへ注入 | caveman プリアンブル / rtk 指示の注入（1 回きり・安い）。**`/clear` 後に再発火するかは要検証** |
-| `userPromptSubmit` | 毎プロンプト送信時に出力をコンテキストへ注入 | 短い指示（1〜2 行）なら毎回数十トークンで済み、**`/clear` 耐性が構造的に保証される**。caveman 有効化の確実な受け皿 |
-| `preToolUse` | ツール実行前の検証・ブロック | **コマンド書換（rewrite）に対応しているかは未確認**。書換不可なら rtk の決定的適用には使えない |
-| `stop` | 応答完了時にコマンド実行 | 既存の slot-release（変更なし） |
-
-整理すると:
-
-- **caveman は hooks 拡張だけで完結できる**（実体が「圧縮文体の指示」であり、注入で足りる）
-- **rtk は hooks だけでは「指示」まで**。削減の実体はコマンド置換（`git status` → `rtk git status`）
-  なので、決定性が欲しければ PATH shim（後述）の併用が要る。preToolUse で書換が可能と
-  実機検証で判明すれば shim を廃止して agent 定義に一本化できる
-
-### 3.3 所有権の移動: install.sh 静的生成 → kiro-loop 起動時再生成
-
-hooks を設定で増減させる以上、静的 heredoc のままでは管理できない。
-`kiro-loop-concurrency.json` の**所有を install.sh から kiro-loop に移し、
-ペイン起動時（または設定変更検知時）にテンプレート + 設定から決定的に再生成**する。
-
-なお agent-instructions の設計時に「kiro-cli --agent JSON への反映」が一度
-見送られた経緯がある（install.sh 所有のファイルをエンジンが書き換える副作用が理由 —
-`schemas/agent-instructions.schema.json` の tools 説明に明記）。所有権を kiro-loop へ
-正式に移すことでこの懸念自体を解消する（install.sh は初回生成のみ、以降は kiro-loop が正典）。
-
-- 生成物冒頭に「自動生成 — 編集は設定側で」マーカーを維持
-- **ユーザー独自 agent（`kiro_options.agent`）指定時**: 現状は concurrency agent が使われず
-  hooks が一切効かない。再生成方式なら「ユーザー agent を読み込み、hooks / resources を
-  マージした派生 agent（例: `<name>-kiro-loop.json`）を生成して使う」で対応できる
+| hook はファイルレベル設定 | hooks の追記自体は dashboard から編集できない（発火条件が session.json に従属するため実害は ON/OFF 不能ではなく「撤去にスクリプトが要る」こと） | §5.2 agent 定義の再生成 |
+| ユーザー独自 agent | `kiro_options.agent` 指定時は concurrency agent が使われず hooks 補強が効かない（session-commands 経路のみ有効） | §5.2 派生 agent 生成 |
+| rtk は指示ベース | モデル従順性依存で削減率が安定しない。決定的な PATH shim はペイン env 注入が必要で kiro-loop 改修になるため Phase 1 では見送り | §5.2 env 注入 |
+| grep ベースの従属判定 | hook の session.json 参照は `when` 条件までは評価しない簡易判定 | §5.1 契約の一本化 |
+| 反映タイミング | session.json の revision を上げても既存ペインには遡及しない（反映はペイン再起動から） | 現契約の仕様どおり |
+| hooks トリガーの実機検証 | `userPromptSubmit` / `agentSpawn` の発火仕様（`/clear` 後の挙動含む）は stub でなく実機で確認する。導入直後に `--status` とペインログで確認 | — |
 
 ---
 
-## 4. 各ツールの連携案
+## 3. Phase 1 の導入手順
 
-### 案1: rtk（ツール出力の圧縮）
+1. 前提導入（未済なら）: `python install.py --agent kiro`（rtk バイナリ / caveman スキル）
+2. `python tools/kiro-loop/setup-token-reduction.py --dry-run` で変更内容を確認
+3. `python tools/kiro-loop/setup-token-reduction.py` で適用 → `--status` で確認
+4. kiro-loop のペインを再起動（次のペイン生成から反映）
+5. 実機検証: ペインで `/caveman` の効き・`/clear` 後の hook 再注入・rtk 前置の実施率を確認
+6. 以後の ON/OFF・調整は dashboard のセッション開始コマンド編集（tokred-* エントリ）で行う
 
-- **1-A: agent 定義に rtk 指示を注入**（Phase 1）:
-  agentSpawn hook（`cat ~/.kiro/cache/rtk-instructions.md`）または `resources` に
-  RTK.md 相当（「コマンドには rtk を前置せよ」）を追加。導入は軽いが**モデル従順性依存**
-- **1-B: PATH shim（決定性の担保）**（Phase 2）:
-  `~/.kiro/rtk-shims/`（git → `RTK_SHIM=1 exec rtk git "$@"` 等のラッパー）を
-  ペイン起動時に `PATH` 先頭へ注入（`_start_pane` の起動コマンド組み立てで env 指定）。
-  モデルが指示に従うかに依存せず決定的に効く。`RTK_SHIM` ガードで rtk 内部の再帰を防止。
-  rtk バイナリが無ければ shim を作らない（素のコマンドへフォールバック）
-- **1-C: preToolUse でのコマンド書換**（検証待ち）:
-  kiro-cli hooks が tool input の書換に対応していれば shim 不要になり agent 定義に一本化
-- `install.py setup_rtk` に kiro 分岐を追加（バイナリ導入 / 指示ファイル配置 / shim 生成 /
-  `_rtk_agent_configured` の kiro 用マーカー）
-- 情報欠落リスクは rtk の `tee`（失敗時フル出力保存）と `exclude_commands` で緩和
-
-### 案2: caveman（応答出力の圧縮）
-
-- **2-A: agent 定義の hooks で有効化**（Phase 1・主線）:
-  - agentSpawn で圧縮プリアンブルを注入。`/clear` 後の再発火が確認できればこれで完結
-  - 再発火しない場合は userPromptSubmit に短い指示を出す（毎回数十トークンの固定費で
-    `/clear` 耐性を構造的に保証）。どちらが成立するかを最初の実機検証項目にする
-- **2-B: agent-session-commands（chat モード）での `/caveman full` 送信**（受け皿）:
-  既存経路（`_send_session_chat_commands`）で今日から設定のみで有効化できる。
-  ただし `/clear` 後に解除される穴があるため、`_dispatch_prompt` の `should_clear` 分岐で
-  **chat モード session-commands を再適用する**処理（+数行）を併せて入れる。
-  ユーザー独自 agent 指定時（hooks が効かない構成）の受け皿としても維持
-- **2-C: per-prompt の opt-out**:
-  MR コメント返答など**外部向け文章を書くタスクに caveman 文体は不適**。
-  yaml エントリに `output_style: caveman | normal` を追加し、送信前に
-  `/caveman <mode>` / `/caveman off` を 1 行前置する
+効果計測は導入前後 1 週間を `tools/kiro-log-exporter` 集計と `rtk gain` で比較する。
 
 ---
 
-## 5. agent-dashboard 連携（Phase 2）
+## 4. 外部向け出力の品質ガード（Phase 1 から必須）
 
-Phase 1 は設定ファイルの手動編集（agent JSON テンプレート / session.json / steering）で
-運用開始し、Phase 2 で dashboard から変更できるようにする。既存契約と同じ流儀
-（**pull 型・原子書換・revision 単調増加・agent-control status への applied 相乗り**）に乗せる:
+MR コメント・Issue 報告など**人が読む成果物に caveman 文体を混入させない**。
+Phase 1 ではペイロード内の指示で担保する（caveman-preamble.md に
+「人間へ提出する成果物は通常の文体で書く」を明記済み）。タスク単位で確実に
+外したい場合は該当プロンプトの文面に `/caveman off` を前置する運用とし、
+per-prompt オプション化は §5.2 で扱う。
 
-- **新契約 `agent-tuning`**（`$AGENT_TUNING_DIR`、既定 `~/.agents/tuning/tuning.json`）:
+---
 
-  ```jsonc
-  {
-    "revision": 3,
-    "rtk":     { "enabled": true, "mode": "shim",        // shim | instruct | off
-                 "exclude_commands": ["pytest"] },
-    "caveman": { "enabled": true, "mode": "full",        // lite | full | ultra
-                 "inject": "agentSpawn" },               // agentSpawn | userPromptSubmit | session-command
-    "cache":   { "enabled": false }                      // 案4-A（計測後に判断）
+## 5. 今後の拡張計画（kiro-loop 改修あり・ツール非依存）
+
+Phase 1 が「既存契約への相乗り + 特化パッチ」であるのに対し、恒久対応は
+**「トークン削減ツールを差し替え可能な部品として扱う汎用機構」**として設計する。
+
+### 5.1 汎用契約 `agent-tuning` の新設
+
+rtk / caveman という語彙を持たない、注入と環境の宣言だけからなる契約を
+`schemas/agent-tuning.schema.json` として追加する（agent-instructions /
+agent-session-commands と同じ流儀: pull 型・原子書換・revision 単調増加・
+agent-control status への applied 相乗り・**委譲先ノードへ伝播しない**）:
+
+```jsonc
+// $AGENT_TUNING_DIR（既定 ~/.agents/tuning/）の tuning.json
+{
+  "version": 1, "revision": 5, "enabled": true,
+  "injections": [        // コンテキスト注入の宣言（ツール名を知らない）
+    { "id": "style-compress", "trigger": "every_prompt",   // session_start | every_prompt
+      "source": { "type": "file", "path": "~/.agents/tuning/payloads/style.md" },
+      "when": { "engines": ["kiro-loop"], "workloads": ["routine"], "agent_cli": ["kiro"] } }
+  ],
+  "env": [               // ペイン環境の宣言（PATH shim 等を決定的に効かせる）
+    { "id": "cmd-wrapper", "path_prepend": ["~/.agents/tuning/shims"],
+      "vars": { "SOME_FLAG": "1" }, "when": { "engines": ["kiro-loop"] } }
+  ],
+  "profiles": {          // ワークロード／プロンプト単位の上書き
+    "default": { "injections": ["style-compress"], "env": ["cmd-wrapper"] },
+    "external-facing": { "injections": [] }        // 外部向け文章タスク用（品質ガード）
   }
-  ```
-
-- kiro-loop は起動時 + 定期ポーリングで tuning.json を読み、
-  **エージェント定義の再生成（§3.3）と shim 生成に反映**。適用済み revision を
-  agent-control status に相乗りさせ、dashboard 側で適用状況を確認できるようにする
-- caveman の on/off/level だけなら、dashboard が既に所有する
-  **agent-session-commands の編集 UI** でも管理可能（2-B 経路）。tuning 契約の実装前の
-  つなぎとして使える
-- session-commands と同様、**委譲先ノードへは伝播しない**（副作用のある設定は
-  ノードローカルに閉じる）。schema は `schemas/agent-tuning.schema.json` として追加
-
----
-
-## 6. 案4: プロンプト・スキルのセッション横断キャッシュ
-
-### 6.1 まず効果の構造を明確にする（v2 追記）
-
-このキャッシュは **API のプロンプトキャッシュ（KV キャッシュ / cache_read 割引）とは別物**。
-プロバイダ側の課金割引を作る仕組みではなく、セッションを跨いで LLM の推論状態を
-持ち越すこともできない。効果の源泉と、キャッシュの役割を分けて説明する:
-
-- **削減の源泉は「圧縮」**: steering / SKILL.md を caveman-compress で約46% 縮めれば、
-  モデルがそれを読むたびに 46% 分の入力トークンが減る。キャッシュ自体は 1 トークンも減らさない
-- **キャッシュの役割は「圧縮コストの償却」**: 圧縮自体が LLM 呼び出し（コスト）なので、
-  毎セッション圧縮したら本末転倒。content-hash キャッシュにより
-  **圧縮は元ファイル変更時の 1 回だけ**になり、成果物を全ペイン・全セッションが使い回す。
-  「セッションを跨いで流用」の意味はここ（圧縮済み成果物の共有）であって、
-  コンテキストそのものの持ち越しではない
-
-**効果が出る条件**（導入判断はここで決まる）:
-
-```
-削減量/日 ≈ (steering+skills の読込トークン × 圧縮率 46%) × 読込回数/日
-読込回数/日 = ペイン生成回数 + /clear（fresh_context）回数
+}
 ```
 
-例: 読込 8k トークン・3 ペイン・fresh_context 60 分 → 72 回/日 × 3.7k ≈ **265k トークン/日**。
-一方 `/clear` を使わない長寿命ペインなら読込は起動時の 1 回きりで、効果はほぼ出ない。
-つまり**効果は fresh_context の頻度と steering/skills のサイズに比例**する。
-現行運用の実測値（`tools/kiro-log-exporter` で読込サイズ × /clear 頻度を 1 週間計測）を
-見てから 4-A の導入可否を判断する。**計測が先、実装は後**。
+- caveman は `injections` の 1 エントリ、rtk は `env`（shim）+ `injections`（指示）の
+  エントリに**降格**する。ツール交替は payload / shim の差し替えだけで完結
+- dashboard には tuning 編集画面を追加（グローバル設定ページの並びに置く。
+  applied revision の突き合わせで各ノードの反映状況を可視化）
 
-### 案4-A: 圧縮済みコンテキストキャッシュ（計測後に判断）
+### 5.2 kiro-loop 改修項目（汎用機構の実装点）
 
-```
-~/.kiro/cache/compressed/
-  <sha256(元ファイル)>.md     # 圧縮済み steering / SKILL.md / prompt 本文
-  index.json                  # 元パス → hash, mtime, 圧縮日時
-```
-
-- kiro-loop 起動時／`install.py` 実行時に mtime + hash で差分検知し、変更分のみ再圧縮
-- 参照切替: steering は圧縮版を配置（原本は `.src/` に退避）、skills は agent 定義の
-  `resources` glob をキャッシュ側へ向ける（§3.3 の再生成に相乗り）
-- index 破損時は原本使用へフェイルセーフ（agent-session-commands と同じ流儀）
-
-### 案4-B: 定期プロンプトのスキル化 + 短縮呼び出し（キャッシュ不要・無条件で有効）
-
-毎サイクル同じ長文手順を送ると、会話履歴に毎回積まれ、**以降の全ターンで履歴として
-再送され続ける**（N サイクルで累積 O(N²) 的に効く）。yaml の手順をスキルへ移して
-定期プロンプトを 1 行にすれば、履歴の成長自体が抑えられる:
-
-```yaml
-prompts:
-  - name: "MR コメント返答"
-    prompt: "/mr-reply-worker を実行"        # Before: 毎サイクル約500字の手順書
-    fresh_context_interval_minutes: 480      # スキル本文の読込は 8 時間に 1 回
-```
-
-例: 500 字（≈300 トークン）× 60 分間隔・24 サイクル/clear なら、履歴再送分だけで
-約 90k トークン/日/ペインの抑制（プロバイダ側 prompt cache の割引が効いている場合は
-実効値はこれより小さい）。**キャッシュ機構なしで成立するため、案4 の中では最優先**。
-
-### 案4-C: `fresh_context_mode: clear | compact`（オプション）
-
-`/clear`（全破棄→全再読込）の代わりに `/compact`（会話要約）を選べる per-prompt
-オプション。`/compact` 自体にもコストがかかるため既定は `clear` のまま、
-「毎回ほぼ同じ作業をする長寿命ペイン」でだけ選ぶ。
-
-### 案4-D: ltm-use 連携（発展）
-
-stop hook でセッションの知見を ltm-use へ保存し、次セッションでは圧縮済みサマリのみを
-agentSpawn で注入する。ltm-use v5 (brain) 設計と接続する長期案。
-
----
-
-## 7. 効果試算（各ツールの標榜値ベース）
-
-| 施策 | 対象 | 標榜削減率 | 備考 |
+| # | 改修 | 内容 | 効果 |
 |---|---|---|---|
-| 案1 (rtk) | ツール出力 | 60〜90% | 出力削減であり請求額の削減率はこれより低い |
-| 案2 (caveman) | 応答出力 | 約65% | 外部向け文章タスクは opt-out 前提 |
-| 案4-A (compress cache) | 入力（steering/skills） | 約46% × 読込回数 | **fresh_context 頻度に比例。計測が先** |
-| 案4-B (プロンプトのスキル化) | 入力（履歴再送） | サイクル毎の累積分 | キャッシュ不要・無条件で有効 |
+| 1 | **`/clear` 後の再適用** | `_dispatch_prompt` の `should_clear` 分岐で、chat モードの session-commands と `session_start` injections を再適用 | hooks 補強（grep 従属判定）が不要になり、Phase 1 の暫定構造を解消 |
+| 2 | **エージェント定義の再生成** | `kiro-loop-concurrency.json` の所有を install.sh から kiro-loop へ移し、テンプレート + tuning 契約から起動時に決定的に再生成。ユーザー独自 agent 指定時は hooks / resources をマージした派生 agent（`<name>-kiro-loop.json`）を生成 | hooks が設定駆動になり dashboard から間接編集可能に。独自 agent の穴も塞がる（agent-instructions 設計時に見送られた「install 所有ファイルの書換」懸念は、所有権の正式移動で解消） |
+| 3 | **ペイン env 注入** | `_start_pane` の起動コマンドに tuning 契約の `env`（PATH 前置・変数）を反映 | PATH shim が決定的に効く。rtk に限らず任意のコマンドラッパーで再利用可能 |
+| 4 | **per-prompt profile** | kiro-loop.yaml エントリに `tuning_profile: external-facing` を追加し、送信時に profile の injections 差分を適用 | 外部向け文章タスクの品質ガードを設定で強制（§4 の運用対応を置換） |
+| 5 | **計測の組み込み** | `rtk gain` / ペイン別トークン集計を node-budget レコードへ相乗りし dashboard で可視化 | 削減効果と品質劣化の監視。ツール交替の判断材料 |
 
-実測は導入前後 1 週間の `tools/kiro-log-exporter` 集計と `rtk gain` で行い、
-node-budget レコードに載せて dashboard から見えるようにする。
+実装順は 1 → 2 → 3（それぞれ独立に価値が出る。4・5 は並行可）。
+
+### 5.3 堅牢性の設計原則（汎用機構に共通）
+
+- **フェイルセーフ**: tuning.json 不在／破損／`enabled: false` は「注入なし」で
+  エンジンを止めない（session-commands と同じ）。shim はラップ先バイナリ不在時に素通し
+- **品質ガード**: profile による外部向けタスクの注入除外を既定で用意。
+  圧縮ツール導入時は必ず opt-out 経路をセットで定義する
+- **可観測性**: applied revision + 計測値（削減量／エラー率）を status 相乗りで
+  dashboard へ。効果が出ていない・品質が落ちたことに気づける状態を保つ
+- **原本保全**: 生成物にはマーカー、書換前バックアップ、`--revert` 相当の撤去手段を常備
+
+### 5.4 パッチスクリプトからの移行
+
+1. §5.2-1〜3 の実装が入った時点で `setup-token-reduction.py --revert` を実行し
+   Phase 1 の追記分を撤去
+2. 同内容を tuning.json の `injections` / `env` エントリとして dashboard から登録
+3. スクリプトは 1〜2 リリース残して DEPRECATED 表示 → 削除
 
 ---
 
-## 8. 実装ステップ（推奨順）
+## 6. スコープ外（別提案へ分離）
 
-| Phase | 内容 | 変更方法 | 変更量 |
-|---|---|---|---|
-| **1（手動・即効）** | エージェント定義の hooks 拡張（caveman: agentSpawn or userPromptSubmit 注入 / rtk: 指示注入）+ `/clear` 後の session-commands 再適用（+数行）+ 案4-B のプロンプトスキル化。**先行して hooks の実機検証**（agentSpawn の `/clear` 後再発火・preToolUse の書換可否） | 設定ファイル手動編集（agent JSON / session.json / steering） | 極小〜小 |
-| **2（dashboard 連携）** | `agent-tuning` 契約の新設 + kiro-loop の agent 定義再生成（§3.3、所有権移動込み）+ rtk PATH shim + `install.py setup_rtk` kiro 分岐 + `rtk gain` 計測 | dashboard の設定 UI から revision 付きで配布 | 中 |
-| **3（計測後）** | 案4-A 圧縮キャッシュ（1 週間の実測で読込トークン × /clear 頻度が閾値を超えた場合のみ） | tuning 契約の `cache.enabled` | 中 |
-| **4（検証後）** | 案1-C preToolUse 書換への一本化 / 案4-C fresh_context_mode / 案4-D ltm-use 連携 | — | 中 |
+以下は v2 まで本書にあったが、rtk / caveman への集中のため分離した。
+効果が fresh_context 頻度・コンテキストサイズの実測に依存するため、
+**Phase 1 の計測結果（§3-6）を見てから別提案として起こす**:
+
+- 圧縮済みコンテキストのセッション横断キャッシュ（caveman-compress の成果物共有）
+- 定期プロンプトのスキル化による履歴成長の抑制
+- `fresh_context_mode: clear | compact`
+- ltm-use 連携（セッション知見の要約持ち越し）
 
 ---
 
-## 9. リスク・留意点
+## 7. リスク・留意点
 
-- **圧縮による情報欠落**: rtk 出力・caveman 圧縮で手順やエラー詳細が落ちるリスク。
-  rtk は `tee` + `exclude_commands`、caveman はレベル調整と per-prompt opt-out で緩和。原本は必ず残す
-- **外部向け出力の品質**: MR コメント・Issue 報告など人が読む文章には
-  `output_style: normal` を既定にする
-- **kiro-cli hooks の仕様差**: `stop` 以外のトリガー（agentSpawn / userPromptSubmit /
-  preToolUse）の挙動、`/clear` 後の再発火、tool input 書換可否は **Phase 1 冒頭で実機検証**する
-- **agent 定義の所有権**: install.sh → kiro-loop への移動を明示し、自動生成マーカーと
-  「編集は tuning 設定側で」の導線を残す（過去に agent-instructions で見送られた
-  懸念への回答として §3.3 に記載）
-- **キャッシュの stale 化**: content-hash + mtime の index、破損時は原本へフェイルセーフ
-- **ユーザー独自 agent との干渉**: 派生 agent 生成（§3.3）または session-commands 経路（2-B）で受ける
+- **圧縮による情報欠落**: rtk は `tee`（失敗時フル出力保存）と `exclude_commands`、
+  caveman はレベル調整と opt-out で緩和。原本・バックアップは必ず残す
+- **kiro-cli hooks の仕様**: `userPromptSubmit` / `agentSpawn` の発火仕様と `/clear` 後の
+  挙動は実機検証が前提（`stop` のみ実績あり）。検証結果次第で `--inject` の既定を見直す
+- **rtk 指示の従順性**: Phase 1 は指示ベースのため削減率が振れる。実測して
+  期待値を下回るなら §5.2-3（env 注入 shim）の優先度を上げる
+- **設定の一貫性**: Phase 1 の grep 従属判定は簡易（`when` 条件まで評価しない）。
+  違和感が出たら恒久対応を待たず hooks を `--revert` して session-commands 単独運用に戻せる
