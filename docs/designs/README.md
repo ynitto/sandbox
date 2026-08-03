@@ -1,6 +1,6 @@
 # docs/designs 設計書 索引
 
-`docs/designs/` 配下の設計書 25 件をカテゴリ別に整理し、読む順序を示す索引。
+`docs/designs/` 配下の設計書 26 件をカテゴリ別に整理し、読む順序を示す索引。
 
 ## まず読むもの — コンセプトと主要 4 設計
 
@@ -45,6 +45,7 @@
 | [`agent-amigos-design.md`](./agent-amigos-design.md) | 役割ミッション表と design doc で公示したミッションに分散ノードがロールを claim して参加し、オーナーが指示した収束条件と予算（実質実行時間）の範囲で型付きメッセージをやり取りしながら 1 つの成果物をオーナーへ納品する協働基盤の設計正典。`tools/agent-amigos/` に実装済みで、残る欠落は同書 §9 に明記。中央は専用バスリポジトリ（ミッション別ブランチ、state_git の同期規律を流用）で、転送だけを担い調整はしない。1 ノードでも自己補充で完結し、定時シャットダウンには away プロトコルとターン原子性で耐える。チーム設計の自動化（team-builder）とオーケストレーションパターンの写像（旧 `agent-amigos-teambuilder-patterns.md`）も統合済み。 |
 | [`agent-dashboard-design.md`](./agent-dashboard-design.md) | 別ホストで動く agent-project / agent-flow / agent-amigos / 定常業務を 1 つの Windows GUI から見渡し、人の判断だけを公式契約で返す操作面の設計正典。dashboard は状態の書き手にならない（読むのはファイル、書くのは `commands/` 等の投函だけ）・制御面はソースツリー分離と列挙合成・プロジェクトの発見は実行側の `engine/status.json` 1 枚、の 3 点が骨格。旧 `agent-dashboard-{feature-split,kiro-loop-terminal,project-ux-improvements}` を統合済み。 |
 | [`agent-cli-plugin-design.md`](./agent-cli-plugin-design.md) | エージェント CLI の呼び出しを「CLI × モード（ヘッドレス/対話）× 権限（書き込み可/読み取り専用）」のデータ契約 `agents/<name>.json` で差し替え可能にし（組み込み 4 CLI も定義ファイル化・Python ローダは agentcore に 1 実装）、失敗を quota/auth/env/transient で決定的にトリアージする設計。agent-project / agent-flow / agent-amigos / agent-dashboard が共通で使う。 |
+| [`agent-audit-design.md`](./agent-audit-design.md) | agent-project / agent-flow / agent-amigos / agent-loop の実行証跡とエージェント CLI 自身のセッションログを読み取り専用で収集・正規化し、トークン使用量の実測集計と知見・スキル改善点の蒸留を行う独立 CLI の設計正典。集計・相関・レポートは決定的（LLM 不使用）、LLM は extract（map・弱モデル可）/ distill（reduce）の 2 段に限定して段別にエージェント・モデルを選択できる。エンジン無改造・CLI 単独利用でも成立し、洞察は task.schema.json 形で agent-project の汎用 intake へ渡す。 |
 | [`git-gitlab-circuit-breaker-pattern.md`](./git-gitlab-circuit-breaker-pattern.md) | git/GitLab へアクセスする任意ツール向けの汎用サーキットブレーカー＋監視パターン。 |
 | [`git-worktree-cache-pattern.md`](./git-worktree-cache-pattern.md) | 同一 remote を繰り返し clone するツール向けに共有 bare ミラー＋使い捨て worktree へ置換する汎用パターン。 |
 | [`gitlab-agent-sns-design.md`](./gitlab-agent-sns-design.md) | GitLab Issue＋Moltbook リポジトリでエージェント向け SNS を構築する moltbook-use の確定版設計。 |
@@ -64,4 +65,4 @@
 
 ## 前提・スコープ外の事項
 
-本 README は `docs/designs/` 配下の実ファイル一覧（25 件、2026-07-27 に実在確認済み）を基準に作成した。
+本 README は `docs/designs/` 配下の実ファイル一覧（25 件、2026-07-27 に実在確認済み。2026-08-03 に `agent-audit-design.md` を追加し 26 件）を基準に作成した。
