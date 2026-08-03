@@ -5,9 +5,9 @@ winauto - Windows Native App Automation CLI
 Playwright-like CLI for Windows native app automation powered by pywinauto.
 
 Commands:
+  doctor      Diagnose the WSL/Windows automation bridge
   apps        List running automatable applications
   launch      Launch an application
-  attach      Attach to a running process
   tree        Print UI element tree
   inspect     Interactive element inspector (REPL)
   click       Click an element by selector
@@ -29,6 +29,7 @@ Selector syntax:
   name:=Panel >> control:=Button >> text:=OK   Chained selectors
 
 Examples:
+  winauto doctor
   winauto apps
   winauto tree --app notepad
   winauto click "name:=OK" --app notepad
@@ -42,9 +43,11 @@ import sys
 import os
 import json
 import time
+import shutil
 import argparse
 import textwrap
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -54,6 +57,16 @@ def _require_windows():
         sys.exit(1)
 
 
+def _is_wsl() -> bool:
+    """WSL 上の Linux Python で動いているか。"""
+    if sys.platform != "linux":
+        return False
+    try:
+        return "microsoft" in Path("/proc/version").read_text(errors="ignore").lower()
+    except OSError:
+        return False
+
+
 def _import_pywinauto():
     try:
         import pywinauto
@@ -61,6 +74,147 @@ def _import_pywinauto():
     except ImportError:
         print("ERROR: pywinauto not installed. Run: pip install pywinauto", file=sys.stderr)
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Desktop lock — GUI 操作の直列化
+# ---------------------------------------------------------------------------
+#
+# Windows デスクトップは 1 セッションに 1 つしかない共有排他資源。agent-flow の
+# 並列ワーカー（--workers N）のように複数プロセスが同時に set_focus() や
+# click_input() を撃つと、フォーカスとマウス位置を奪い合って相互に壊れる。
+# そこで入力・フォーカスを奪うコマンドをファイルロックで直列化する。
+#
+# WSL からの呼び出しもラッパー経由で Windows Python に収束するため、Windows 側の
+# ロックファイル 1 本で「WSL 発」「Windows ネイティブ発」の双方を直列化できる。
+# 分散実行（agent-flow --git）では PC ごとにデスクトップが別なので、PC 単位で
+# ロックが閉じるこの構造が意味論的にも正しい。
+
+LOCK_ENV_DISABLE = "WINAUTO_NO_LOCK"
+LOCK_ENV_TIMEOUT = "WINAUTO_LOCK_TIMEOUT"
+LOCK_ENV_FILE = "WINAUTO_LOCK_FILE"
+DEFAULT_LOCK_TIMEOUT = 300.0
+
+# デスクトップの状態を変える（フォーカス・マウス・キーボードを奪う）コマンドだけを
+# ロックする。読み取り専用の apps / tree / get-text / wait / doctor はロックしない
+# ——長い wait がロックを占有して他の発行を止めてしまわないようにするため。
+LOCKED_COMMANDS = {"launch", "click", "type", "keys", "screenshot", "run", "inspect", "codegen"}
+
+
+def _lock_path() -> Path:
+    override = os.environ.get(LOCK_ENV_FILE)
+    if override:
+        return Path(override)
+    tmp = (os.environ.get("TEMP") or os.environ.get("TMP")
+           or os.environ.get("TMPDIR") or "/tmp")
+    return Path(tmp) / "winauto-desktop.lock"
+
+
+def _owner_path(lock: Path) -> Path:
+    return lock.with_name(lock.name + ".owner")
+
+
+def _try_lock(fh) -> bool:
+    """ファイルハンドルに非ブロッキングで排他ロックを取る。取れたら True。"""
+    if sys.platform == "win32":
+        import msvcrt
+        try:
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            return False
+    import fcntl
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
+
+def _unlock(fh) -> None:
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+
+
+def _write_owner(lock: Path, command: str) -> None:
+    """保持者情報を残す（待たされた側・doctor が「誰が握っているか」を言えるように）。"""
+    try:
+        _owner_path(lock).write_text(json.dumps({
+            "pid": os.getpid(),
+            "command": command,
+            "since": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _clear_owner(lock: Path) -> None:
+    try:
+        _owner_path(lock).unlink()
+    except OSError:
+        pass
+
+
+def _owner_hint(lock: Path) -> str:
+    try:
+        info = json.loads(_owner_path(lock).read_text(encoding="utf-8"))
+        return f"pid={info.get('pid')} command={info.get('command')} since={info.get('since')}"
+    except (OSError, ValueError):
+        return "保持者不明"
+
+
+@contextmanager
+def desktop_lock(command: str, timeout: float, enabled: bool = True):
+    """GUI を触るコマンドの間だけデスクトップを占有する。"""
+    if not enabled or command not in LOCKED_COMMANDS:
+        yield None
+        return
+
+    lock = _lock_path()
+    try:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+
+    fh = open(lock, "a+b")
+    acquired = False
+    try:
+        deadline = time.time() + timeout if timeout > 0 else None
+        notified = False
+        while True:
+            fh.seek(0)
+            if _try_lock(fh):
+                acquired = True
+                break
+            if not notified:
+                # stdout はエージェントが読む結果なので、待機の告知は stderr に出す。
+                print(f"[winauto] 他のプロセスが GUI を操作中です。待機します "
+                      f"({_owner_hint(lock)})", file=sys.stderr)
+                notified = True
+            if deadline is not None and time.time() >= deadline:
+                raise RuntimeError(
+                    f"GUI ロックを {timeout:.0f} 秒以内に取得できませんでした "
+                    f"({lock})。保持者: {_owner_hint(lock)}. "
+                    f"待ち時間は --lock-timeout / {LOCK_ENV_TIMEOUT} で調整でき、"
+                    f"--no-lock で無効化できます（並列 GUI 操作は相互に壊れます）"
+                )
+            time.sleep(0.5)
+
+        _write_owner(lock, command)
+        yield lock
+    finally:
+        if acquired:
+            _clear_owner(lock)
+            fh.seek(0)
+            _unlock(fh)
+        fh.close()
 
 
 # ---------------------------------------------------------------------------
@@ -716,6 +870,170 @@ def cmd_run(args):
 
 
 # ---------------------------------------------------------------------------
+# Command: doctor
+# ---------------------------------------------------------------------------
+#
+# 「WSL から Windows を触れる状態になっているか」を 1 コマンドで端から端まで確認する。
+# Windows 側でも WSL 側でも動く（唯一 _require_windows() を呼ばないコマンド）。
+# WSL で実行すると、ラッパー経由で Windows 側の doctor を呼び出して結果を合流させる
+# ——「WSL から呼べる」ことの確認は、実際に WSL から呼んでみる以外に方法がないため。
+
+DOCTOR_CHILD_ENV = "WINAUTO_DOCTOR_CHILD"
+
+_STATUS_LABEL = {"ok": "OK", "warn": "WARN", "error": "ERROR", "skip": "SKIP"}
+
+
+def _check(name: str, status: str, detail: str) -> dict:
+    return {"name": name, "status": status, "detail": detail}
+
+
+def _parse_json_tail(text: str):
+    """出力に混じるノイズ（cmd.exe の UNC 警告など）を跨いで JSON 本体を拾う。"""
+    start = text.find("{")
+    while start != -1:
+        try:
+            return json.loads(text[start:])
+        except ValueError:
+            start = text.find("{", start + 1)
+    return None
+
+
+def _doctor_lock_check() -> dict:
+    lock = _lock_path()
+    if not lock.exists():
+        return _check("lock", "ok", f"未使用（{lock}）")
+    try:
+        fh = open(lock, "a+b")
+    except OSError as e:
+        return _check("lock", "warn", f"ロックファイルを開けません: {e}")
+    try:
+        fh.seek(0)
+        if _try_lock(fh):
+            fh.seek(0)
+            _unlock(fh)
+            return _check("lock", "ok", f"空き（{lock}）")
+        return _check("lock", "warn", f"他プロセスが GUI を保持中: {_owner_hint(lock)}（{lock}）")
+    finally:
+        fh.close()
+
+
+def doctor_windows() -> list:
+    """Windows 側（実際に GUI を触る側）の診断。"""
+    checks = [_check("platform", "ok",
+                     f"Windows / Python {sys.version.split()[0]}（{sys.executable}）")]
+
+    try:
+        import pywinauto
+    except ImportError as e:
+        checks.append(_check(
+            "pywinauto", "error",
+            f"未インストール（{e}）。pip install pywinauto Pillow pywin32 comtypes"))
+        return checks
+    checks.append(_check("pywinauto", "ok",
+                         f"バージョン {getattr(pywinauto, '__version__', '不明')}"))
+
+    try:
+        from pywinauto import Desktop
+        titled = [w for w in Desktop(backend="uia").windows() if w.window_text().strip()]
+        if titled:
+            checks.append(_check("desktop", "ok",
+                                 f"対話デスクトップに到達（可視ウィンドウ {len(titled)} 個）"))
+        else:
+            checks.append(_check(
+                "desktop", "warn",
+                "ウィンドウが 1 つも見えません。画面ロック中・RDP 切断中・未ログオンの"
+                "セッションでは GUI 操作もスクリーンショットも失敗します"))
+    except Exception as e:
+        checks.append(_check("desktop", "error", f"デスクトップに到達できません: {e}"))
+
+    checks.append(_doctor_lock_check())
+    return checks
+
+
+def doctor_wsl() -> list:
+    """WSL 側の診断 — interop → ラッパー → Windows 側 doctor まで一気通貫で確認する。"""
+    checks = [_check("platform", "ok", f"WSL / Python {sys.version.split()[0]}")]
+
+    if os.environ.get(DOCTOR_CHILD_ENV):
+        checks.append(_check(
+            "bridge", "error",
+            "ラッパーが Windows Python ではなく WSL 側の Python を呼び戻しています。"
+            "python tools/winauto/install.py を実行し直してください"))
+        return checks
+
+    try:
+        r = subprocess.run(["cmd.exe", "/c", "echo", "winauto-interop-ok"],
+                           capture_output=True, text=True, timeout=20)
+        if "winauto-interop-ok" in r.stdout:
+            checks.append(_check("wsl_interop", "ok",
+                                 "cmd.exe を起動できます（Windows 相互運用 有効）"))
+        else:
+            checks.append(_check("wsl_interop", "error",
+                                 f"cmd.exe の応答が不正です: {(r.stdout + r.stderr).strip()[:120]}"))
+    except Exception as e:
+        checks.append(_check("wsl_interop", "error",
+                             f"cmd.exe を起動できません（interop 無効の可能性）: {e}"))
+
+    wrapper = shutil.which("winauto")
+    if not wrapper:
+        checks.append(_check(
+            "wrapper", "error",
+            "winauto が PATH にありません。python tools/winauto/install.py を実行してください"))
+        return checks
+    checks.append(_check("wrapper", "ok", wrapper))
+
+    env = dict(os.environ)
+    env[DOCTOR_CHILD_ENV] = "1"
+    try:
+        r = subprocess.run([wrapper, "doctor", "--output", "json"],
+                           capture_output=True, text=True, timeout=180, env=env)
+    except Exception as e:
+        checks.append(_check("bridge", "error", f"ラッパーを実行できません: {e}"))
+        return checks
+
+    payload = _parse_json_tail(r.stdout)
+    if payload is None:
+        detail = (r.stderr or r.stdout).strip()[:200] or f"終了コード {r.returncode}"
+        checks.append(_check(
+            "bridge", "error",
+            f"Windows 側 doctor の応答を解釈できません（{detail}）。Windows 側に配置された "
+            "winauto.py が古い可能性があります。install.py を再実行してください"))
+        return checks
+
+    checks.append(_check("bridge", "ok", "ラッパー経由で Windows 側 winauto に到達できます"))
+    for c in payload.get("checks", []):
+        checks.append(_check(f"windows:{c['name']}", c["status"], c["detail"]))
+    return checks
+
+
+def cmd_doctor(args):
+    if sys.platform == "win32":
+        scope, checks = "windows", doctor_windows()
+    elif _is_wsl():
+        scope, checks = "wsl", doctor_wsl()
+    else:
+        scope = "unsupported"
+        checks = [_check("platform", "error",
+                         f"{sys.platform} は非対応です。pywinauto は Windows 専用で、"
+                         "WSL からは Windows 側 Python 経由で呼び出します")]
+
+    failed = [c for c in checks if c["status"] == "error"]
+
+    if args.output == "json":
+        print(json.dumps({"scope": scope, "ok": not failed, "checks": checks},
+                         ensure_ascii=False, indent=2))
+    else:
+        print(f"winauto doctor — {scope}")
+        print("-" * 68)
+        for c in checks:
+            print(f"[{_STATUS_LABEL[c['status']]:>5}] {c['name']}: {c['detail']}")
+        print("-" * 68)
+        print("すべて到達可能です。" if not failed else f"{len(failed)} 件の問題があります。")
+
+    sys.exit(1 if failed else 0)
+
+
+# ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
 
@@ -725,9 +1043,19 @@ def build_parser() -> argparse.ArgumentParser:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--version", action="version", version="winauto 1.0.0")
+    parser.add_argument("--version", action="version", version="winauto 1.1.0")
+    # GUI を触るコマンドはデスクトップを排他する（LOCKED_COMMANDS 参照）。
+    # サブコマンドより前に置く: winauto --no-lock click ...
+    parser.add_argument("--no-lock", action="store_true",
+                        help="デスクトップ排他ロックを取らない（並列 GUI 操作は相互に壊れます）")
+    parser.add_argument("--lock-timeout", type=float, default=None, metavar="SEC",
+                        help=f"ロック待ちの上限秒（既定 {DEFAULT_LOCK_TIMEOUT:.0f}、0 で無限待ち）")
 
     sub = parser.add_subparsers(dest="command", required=True)
+
+    # --- doctor ---
+    p = sub.add_parser("doctor", help="Diagnose the WSL/Windows automation bridge")
+    p.add_argument("--output", choices=["text", "json"], default="text")
 
     # --- apps ---
     p = sub.add_parser("apps", help="List running automatable applications")
@@ -830,6 +1158,7 @@ def build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 COMMAND_MAP = {
+    "doctor": cmd_doctor,
     "apps": cmd_apps,
     "launch": cmd_launch,
     "tree": cmd_tree,
@@ -853,8 +1182,18 @@ def main():
     if handler is None:
         parser.error(f"Unknown command: {args.command}")
 
+    lock_enabled = not (args.no_lock or os.environ.get(LOCK_ENV_DISABLE) == "1")
+    if args.lock_timeout is not None:
+        lock_timeout = args.lock_timeout
+    else:
+        try:
+            lock_timeout = float(os.environ.get(LOCK_ENV_TIMEOUT, DEFAULT_LOCK_TIMEOUT))
+        except ValueError:
+            lock_timeout = DEFAULT_LOCK_TIMEOUT
+
     try:
-        handler(args)
+        with desktop_lock(args.command, lock_timeout, lock_enabled):
+            handler(args)
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         sys.exit(130)

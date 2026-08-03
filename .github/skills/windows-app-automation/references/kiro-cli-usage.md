@@ -18,8 +18,8 @@ kiro-cli は WSL 上で動作する AI エージェント CLI。`--trust-all-too
 winauto の WSL インストールが完了していること。
 
 ```bash
-# 確認
-winauto --version   # → "winauto 1.0.0"
+# 確認（doctor は interop → ラッパー → Windows Python → デスクトップ到達性を一気通貫で見る）
+winauto doctor      # → 問題なしなら終了コード 0
 winauto apps        # → Windows 起動中ウィンドウ一覧
 ```
 
@@ -151,4 +151,5 @@ wait $PID1 && wait $PID2 && echo "両方完了"
 | スクリプトの Windows パスが通らない | WSL パスを使っている | スクリプト内は `C:/...` 形式にする |
 | GUI 操作の状況が stdout に出ない | 操作はデスクトップ側で発生 | `winauto screenshot` で画像確認 |
 | kiro-cli がタイムアウトする | 処理が長い | `--timeout` オプションで延長 |
-| `winauto apps` が空 | WSL から Windows Python を呼べていない | `winauto --version` でラッパー確認 |
+| `winauto apps` が空 | WSL から Windows Python を呼べていない | `winauto doctor` で切り分ける |
+| 複数の kiro-cli が同時に GUI を触って壊れる | デスクトップは 1 セッションに 1 つの排他資源 | winauto が自動で直列化する。待ち時間は `--lock-timeout` で調整 |
