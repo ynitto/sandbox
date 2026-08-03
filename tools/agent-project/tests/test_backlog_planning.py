@@ -607,6 +607,11 @@ class ShippedPlannerSkillTests(unittest.TestCase):
         self.assertEqual(prop["items"], {"type": "string"})
         self.assertIn("完了条件にはしない", prop["description"])
 
+    def test_task_schema_accepts_legacy_todo_status(self):
+        status = json.loads(self.TASK_SCHEMA.read_text(encoding="utf-8"))["properties"]["status"]
+        self.assertIn("todo", status["enum"])
+        self.assertIn("後方互換", status["description"])
+
     def test_required_fields_are_demanded(self):
         out = self._run({"charter": "目標", "granularity": "coarse"})
         for key in ("why", "desc", "acceptance", "size", "workspace"):

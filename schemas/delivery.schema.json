@@ -11,7 +11,7 @@
     "goal": {"type": "string", "description": "ミッションの目的（mission.json より）"},
     "accepted_at": {"type": "string", "description": "受入時刻（ISO8601 UTC）"},
     "accepted_by": {"type": "string", "description": "受入者。人/CLI は node_id、acceptance: agent の自動判定は agent:<node_id>"},
-    "acceptance": {"type": "string", "description": "受入方式（mission.json の acceptance: manual | agent | codd-gate）"},
+    "acceptance": {"type": "string", "enum": ["manual", "agent"], "description": "受入方式（mission.json の acceptance: manual | agent）"},
     "round": {"type": "integer", "description": "受入時のラウンド（差し戻し回数）"},
     "partial": {"type": "boolean", "description": "部分納品か（MANIFEST から引き継ぐ）"},
     "partial_reason": {"type": "string", "description": "partial の理由（静穏化・予算 wrap-up 等）"},

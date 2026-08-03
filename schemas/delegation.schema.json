@@ -202,9 +202,9 @@
       "description": "reject — 差し戻し。amigos: reject コマンド（owner-only）/ flow: v1 非対応",
       "properties": {
         "op": {"const": "reject"},
-        "feedback": {"type": "string", "description": "差し戻し理由"}
+        "feedback": {"type": "string", "pattern": "\\S", "description": "差し戻し理由"}
       },
-      "required": ["op"]
+      "required": ["op", "feedback"]
     },
     {
       "description": "cancel — 中止。amigos: cancel コマンド / flow: inbox/cancels/<run-id>.json マーカー + meta 終端 + waits 掃除（flow.js:cancelRun と同一の 3 手）",

@@ -91,7 +91,7 @@
 | L3（修正済み） | `hooks/gitlab-issue-hook.py` / `scheduler.py` | hook がイベントを先に seen 化してから 1 件だけ返し、スロット不足時は破棄。設計（`agent-loop-event-hook-design.md:26`）の「次サイクルへ持ち越す」が守られず**イベントが恒久消失**。同時変更 N 件のうち N−1 件も同様 |
 | L4（修正済み） | `inbox.py` / `semaphore.py` / `session.py` | メッセージごとに一意 `prompt_id` で tmux ペインを作るが破棄経路が無い。さらに `restart_if_dead` が死んだ使い捨てペインを蘇生し続ける |
 | L5（修正済み） | `session.py` / `cli.py` / README | `startup_timeout` / `response_timeout` / `echo_output` は格納されるだけでどこからも読まれない **dead config**。実際の待ちは `_head.py` の `_SEND_STARTUP_TIMEOUT = 60` 固定。README は「タイムアウトが起きたら `response_timeout: 600` に」と案内していた |
-| L6 | README 全般 | `--config` / `--no-daemon` は argparse に存在せず（README:147 等の手順が exit 2）、対話コマンド `add/remove/default/attach/list/save` は未実装、設定探索の「cwd → HOME」は実際には `~/.agents` のみ、PID ロック `/tmp/agent-loop-<hash>.pid` は存在しない |
+| L6（修正済み） | README 全般 | `--config` / `--no-daemon` は argparse に存在せず（README:147 等の手順が exit 2）、対話コマンド `add/remove/default/attach/list/save` は未実装、設定探索の「cwd → HOME」は実際の共通・プロジェクト設定規則と異なり、PID ロック `/tmp/agent-loop-<hash>.pid` は存在しない |
 
 ### 4.3 Major — agent-flow
 
@@ -189,7 +189,7 @@
 | D1（修正済み） | `.github/instructions/agent-tools.instructions.md:8-13` ↔ `agent-tools-concept.md:223,289` | 作業ゲート文書が正典の「§7 このリポジトリでの強制」「原則 C1〜C7」を参照するが、実際は**強制が §8、原則は C8 まで**（§7 はモジュール別方針の表）。C8（知識共有クロージャ）がレビュー対象から抜ける。正典 §8 自身がこの文書へゲートを委譲しているだけに影響が大きい |
 | D2（修正済み） | `kiro-loop-agent-messaging-design.md:101` ↔ `agent-loop-agent-messaging-design.md:108-112` | `reply_to` が「返信先エージェント名」と「メッセージ ID・フォールバックしない」で非互換。実装も `kiro-loop.py:3853`（`reply_to_id or from_agent`）と `sendcmd.py:501`（`reply_to_id or None`）で分裂。**同一の `~/.kiro/agents/<name>/inbox/` を共有**し、rename 設計が kiro-loop 残置を明言しているため現役の相互運用バグ。kiro-loop 設計は §4 と §5.2/§6 で自己矛盾もしている |
 | D3（修正済み） | `agent-dashboard-design.md:278` / `tmux.js:89` ↔ `agent-tools-rename-design.md:39` | dashboard が読む loop-state は `~/.kiro` と `~/.agent` のみで、agent-loop の現行ホーム `~/.agents/loop-state` を読まない。標準インストール環境では定期実行が dashboard から不可視 |
-| D4 | `agent-tools-concept.md:264` ↔ `agent-project-design.md:206` | agent-project の停止理由が正典で「5 つ」、設計書で「6 つ」。正典 §0 の「矛盾したら作業を止める」に該当し、しかも C7 の実例として引かれている |
+| D4（修正済み） | `agent-tools-concept.md` ↔ `agent-project-design.md` / 実装 | agent-project の停止理由が正典で「5 つ」、設計書で「6 つ」で、実装には後発の `infrastructure` も存在した。正典 §0 の「矛盾したら作業を止める」に該当し、しかも C7 の実例として引かれている |
 | D5（修正済み） | `2026-05-11-agent-loop-oneshot-design.md:180` ↔ 同 `:530` | 「デーモンは tmux 外」と「デーモンは常に tmux 内」を両方規定。アタッチ機構（`switch-client` か `attach-session` か）が決まらず実装不能 |
 | S1（修正済み） | `board.schema.json:93` ↔ `agent_amigos/board.py:218`, `agent_flow/board.py:153` | `status.state` の enum に `cancelled` が無いのに両エンジンが書く（`vocab.TERMINAL` に含まれる） |
 | S2（修正済み） | `board-adapter.js:108` ↔ `board.schema.json:111` | `result.status === 'cancelled'` を `done` に写像（`'failed'` 以外は全部 done）。中止した委譲が完了として計上される。agent-project 側（`flow.py:703-725`）は正しく ok=False |
@@ -199,12 +199,13 @@
 ### 5.2 Minor（抜粋）
 
 - `schemas/README.md` が `agent-cli.schema.json` を 1 行も記載していない（14 件表に非掲載）
-- `task.schema.json` の status enum に `todo` が無いが、`model.py:21` と `CONSUMABLE` は受理する
-- `delegation.schema.json` の reject は `feedback` 任意、`contract.js:118` は必須
+- `task.schema.json` の status enum に `todo` が無いが、`model.py:21` と `CONSUMABLE` は受理する（修正済み）
+- `delegation.schema.json` の reject は `feedback` 任意・内容制約なし、`contract.js:118` は
+  trim 後の非空文字列を必須とする（修正済み）
 - `mission.schema.json` の `budget` / `convergence` が `additionalProperties: false` だが、
-  正典バリデータ（`mission.py:256,261`）は未知キーを通す
+  正典バリデータ（`mission.py:256,261`）は未知キーを通す（修正済み）
 - `delivery.schema.json:14` が acceptance 値 `codd-gate` を文書化しているが、
-  `mission.py:253-255` は `manual` / `agent` 以外を拒否するので発生し得ない
+  `mission.py:253-255` は `manual` / `agent` 以外を拒否するので発生し得ない（修正済み）
 - `board.schema.json` / `delegation.schema.json` は repos 照合を `(url, path, base)` の
   同一性と説明するが、`agentcore/board.py:73-109` は名前と正規化 URL しか見ない
 - `agent-tools-rename-design.md` が「旧系統は削除する」（§1/§4）と「kiro-loop は残置」
@@ -246,6 +247,7 @@
 | L3 | agent-loop event hook | `check()` は更新状態を保留し、通常の schedule 配送が成功した後だけ optional `ack()` で既読化するようにした。session / slot / `/clear` / prompt 送信失敗は ack せず次回再検出する |
 | L4 | agent-loop inbox | 既存の pane 完了監視へ再試行可能な破棄 callback を追加し、正常完了・pane 消失時に使い捨て session を除去する。処理タイムアウト時は実行中 pane を殺さず監視を継続し、owner / pane 一致で通常 schedule との誤削除を防ぐ |
 | L5 | agent-loop session 設定 | `startup_timeout` を実際のペイン起動待ちへ配線した。tmux 非同期化で意味を失った `response_timeout` / `echo_output` は引数・設定例・誤ったトラブルシュートから除去した |
+| L6 | agent-loop README / 設定例 | 未実装のオプション・対話コマンド・PID ロック・旧 workspace 手順を削除し、現行 CLI、cwd 単位の起動、設定探索・保存規則、tmux 終了動作へ一致させた |
 | FL1 / AM1 / AB1 | agent-flow / agent-amigos / agent-board | plugin CLI の子プロセス引継ぎ、同一 poll 内の同時実行上限、README の result 所有者を修正した |
 | D1 / S1〜S4 | 作業ゲート・schema・dashboard | 正典参照、cancelled 語彙、入札表示、verification plan 契約を一致させた |
 | FL2 | `agent-flow/work.py`, `continuation.py` | verify の実行完了と判定不合格を分離し、継続分岐を排他的にした |
@@ -253,7 +255,12 @@
 | AM2 | `agent-amigos/messages.py`, `runner.py` | ULID 大小カーソルを既読 ID 集合へ移行した |
 | D2 | `kiro-loop.py`, messaging 設計 | `reply_to` を返信元メッセージ ID または `null` に統一した |
 | D3 | agent-dashboard 定期実行adapter | agent-loop の loop-state / slots は現行 `~/.agents/` を優先し、ディレクトリが無い場合だけ旧 `~/.agent/` へフォールバックするようにした |
+| D4 | agent-project 停止契約 | 自動実行の有限停止トリガー 7 種と、集約された結果 `reason`、実行モードによる終了を分離して正典・設計・READMEを実装へ一致させた |
 | D5 | agent-loop oneshot 設計 | controller は既定 tmux 内、oneshot は detached・自動画面切替なしに統一した |
+| delegation reject | `delegation.schema.json` / dashboard 契約 | reject の `feedback` をスキーマでも必須かつ空白のみ不可とし、設計書・実行時検証と一致させた |
+| task status | `task.schema.json` / agent-project | `ready` の後方互換エイリアス `todo` をスキーマ enum と説明へ追加し、実行時契約と一致させた |
+| mission 未知キー | `mission.py` / `mission.schema.json` | `convergence` / `budget` の未知キーを実行時も拒否し、設定タイポを黙って無効化せずスキーマと同じ fail-close にした |
+| delivery acceptance | `delivery.schema.json` / agent-amigos | 未実装の `codd-gate` を現行納品契約から除き、実装が生成できる `manual` / `agent` の enum に限定した |
 
 G1 は `state_git_subdir` 運用（バスが毎パス `sync_push` を呼ぶ）で初回パスが必ず止まるため
 影響が最も大きい。詳細と教訓は
@@ -263,9 +270,8 @@ G1 は `state_git_subdir` 運用（バスが毎パス `sync_push` を呼ぶ）�
 
 ## 8. 推奨する次の一手
 
-優先順に:
+この監査で優先指定した項目はすべて修正済み。次は §4.5 / §5.2 の未修正 Minor を
+実害と変更リスクで再評価してから着手する。
 
-1. **D4 / L6（文書・CLI 契約の矛盾）** — 実装を正として正典の停止理由数と README の未実装
-   オプション・コマンドを整理する
-
-C1 / L1〜L5 / FL1〜FL3 / AM1〜AM2 / AB1 / D1〜D3 / D5 / S1〜S4 は修正済み。
+C1 / L1〜L6 / FL1〜FL3 / AM1〜AM2 / AB1 / D1〜D5 / S1〜S4 は修正済み。その他の
+Minor 所見は §4.5 / §5.2 に残る。

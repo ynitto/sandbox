@@ -110,6 +110,13 @@ class DeliveryTests(AmigosTestCase):
         self.assertTrue(str(rec["accepted_by"]).startswith("agent:"))
         self.assertEqual(rec["acceptance"], "agent")
 
+    def test_delivery_schema_acceptance_matches_supported_modes(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "..", "..",
+                            "schemas", "delivery.schema.json")
+        with open(path, encoding="utf-8") as f:
+            schema = json.load(f)
+        self.assertEqual(schema["properties"]["acceptance"]["enum"], ["manual", "agent"])
+
     def test_accept_command_drop_exports_to_home(self):
         from agent_amigos.configfile import commands_dir
         spec = base_spec(staffing_timeout=0)

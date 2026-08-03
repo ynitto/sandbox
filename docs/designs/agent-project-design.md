@@ -203,7 +203,7 @@ E2 の回帰は verification_plan には畳みません。`regression_cmd` は�
 clone 上で走らせるとゲート自体が壊れるためです。重複実行の解消（同一コマンドの digest 畳み込み）は
 plan の正規化段で plan 内にだけ効きます。
 
-止まる理由は 6 つに限られます。消化しきった（drained）、サイクル数・実時間・トークン・コストのいずれかの上限、ソフト上限（throttle）です。throttle に当たった `--watch` は以降 report へ降格し、実行を止めて監視だけ続けます。
+自動実行を有限に保つ停止トリガーは 7 種です。消化しきった（drained）、サイクル数・実時間・トークン・コストのいずれかの上限、ソフト上限（throttle）、所有権などの基盤状態を確認できない場合（infrastructure）です。結果の `reason` ではサイクル数と実時間を `budget`、トークンとコストを `cost` に集約します。`report` / `once` は予算トリガーではなく実行モードによる終了です。throttle に当たった `--watch` は以降 report へ降格し、実行を止めて監視だけ続けます。
 
 予算は、支払い元と進行状況のどちらに属するかで単位を分けます。トークン、コスト、実時間、`budget.max_concurrent` はノードの財布に属するため、host.yaml の `budget` を正としてノード間では合算しません。同じ仕事が別 PC でも計上されるのは、別の財布を数えているためです。改善サイクル数、停滞の連続回数、acceptance の PASS 数はプロジェクトの進行に属するため、`project.json` で共有します。財布の上限に達したノードだけが既存の throttle → report へ降格し、他ノードは走り続けます。人が押した入札も `budget.max_concurrent` とノード契約版は越えられません。複数 charter でもこの単位は変えず、同じ repo への書き込み競合は agent-flow の claim に任せます。
 

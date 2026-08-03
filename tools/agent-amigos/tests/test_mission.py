@@ -41,6 +41,12 @@ class NormalizeTests(unittest.TestCase):
         normalize_mission(base_spec(assignment_policy="owner-picks"))
         normalize_mission(base_spec(acceptance="agent"))
 
+    def test_rejects_unknown_convergence_and_budget_keys(self):
+        with self.assertRaises(SystemExit):
+            normalize_mission(base_spec(convergence={"review_round": 2}))
+        with self.assertRaises(SystemExit):
+            normalize_mission(base_spec(budget={"execution_minute": 30}))
+
 
 class MatchesRoleTests(unittest.TestCase):
     """ロール要件 requires.{tags,cli,repos} とノード能力のマッチング。"""

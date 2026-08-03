@@ -388,13 +388,16 @@ route:   API -> app  # タスク（id/タイトル一致）の書込先ワーク
 | `budget` | サイクル数 / 実時間が尽きた | `--max-cycles`(20) / `--max-seconds`(0=無制限) |
 | `cost` | トークン / 金額が尽きた | `--max-tokens` / `--max-cost`（0=無制限） |
 | `throttle` | ソフト予算比率超過（watch は report 降格で spend を止め監視継続） | `--throttle`（例 0.8） |
+| `infrastructure` | 所有権など基盤状態を確認できず安全停止した | — |
+| `report` | report モードで計画だけを出した | `--level report` |
+| `once` | 1 タスク実行後に停止した | `--once` |
 
 - **コスト計上**は act 出力の `@cost tokens=… usd=…` 行を加算（決定的・吐かなければ 0）。done 時に納品書へ `- cost:`
   を残すので `stats` が累計を出す。検証 NG は `--max-retries`（既定 2）超で人へ。
 - **レーン減速** `--pace <秒>` で 1 サイクルの下限間隔。`--max-seconds` 併用で `max_seconds/max_cycles` に均す。
 
 **終了コード（非 watch 時）**: `0`＝drained かつ人の対応待ち無し ／ `1`＝人の対応待ち（blocked/review）あり ／
-`2`＝budget/cost 停止。
+`2`＝その他の停止（budget / cost / throttle / infrastructure / once）。
 
 ## 自律度（信頼を段階的に明け渡す）
 

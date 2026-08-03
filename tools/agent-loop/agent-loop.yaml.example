@@ -1,13 +1,8 @@
 # agent-loop の設定ファイルサンプル
 # ファイル名: agent-loop.yaml
 #
-# このファイルをどこかに置いて --config で指定するか、
-# agent-loop.py と同じ場所か HOME に置くと自動検出されます。
-#
-# 検索順序:
-#   1. --config オプションで明示指定したパス
-#   2. カレントディレクトリの agent-loop.yaml / .yml / .json
-#   3. HOME の agent-loop.yaml / .yml / .json
+# 共通設定として使う場合は ~/.agents/agent-loop.yaml、プロジェクト固有の prompts として
+# 使う場合は <project>/.agents/agent-loop.yml へ置きます（旧 ~/.agent / .agent は移行互換）。
 
 
 # ---------------------------------------------------------------------------

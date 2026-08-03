@@ -253,12 +253,20 @@ def normalize_mission(spec: dict) -> "tuple[dict, list]":
     if mission["acceptance"] not in ("manual", "agent"):
         raise SystemExit(f"[agent-amigos] acceptance={mission['acceptance']!r} は未対応です"
                          "（manual | agent。codd-gate は将来拡張 — 設計書 §5.8）")
-    mission["convergence"] = {**CONVERGENCE_DEFAULTS, **dict(m.get("convergence") or {})}
+    convergence = dict(m.get("convergence") or {})
+    unknown = sorted(set(convergence) - set(CONVERGENCE_DEFAULTS))
+    if unknown:
+        raise SystemExit(f"[agent-amigos] convergence に未知のキーがあります: {', '.join(unknown)}")
+    mission["convergence"] = {**CONVERGENCE_DEFAULTS, **convergence}
     if mission["convergence"]["done_when"] not in DONE_WHEN_MODES:
         raise SystemExit(f"[agent-amigos] convergence.done_when が不正です: "
                          f"{mission['convergence']['done_when']!r}"
                          f"（{' | '.join(DONE_WHEN_MODES)}）")
-    mission["budget"] = {**BUDGET_DEFAULTS, **dict(m.get("budget") or {})}
+    budget = dict(m.get("budget") or {})
+    unknown = sorted(set(budget) - set(BUDGET_DEFAULTS))
+    if unknown:
+        raise SystemExit(f"[agent-amigos] budget に未知のキーがあります: {', '.join(unknown)}")
+    mission["budget"] = {**BUDGET_DEFAULTS, **budget}
     mission["workspace"] = dict(m.get("workspace") or {})
     mission["conductor"] = {**CONDUCTOR_DEFAULTS, **dict(m.get("conductor") or {})}
     mission["conductor"]["enabled"] = bool(mission["conductor"]["enabled"])

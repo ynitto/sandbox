@@ -37,6 +37,12 @@ const AMIGOS_COMMANDS = new Set(
     )
   ).properties.command.enum
 );
+const DELEGATION_SCHEMA = JSON.parse(
+  fs.readFileSync(
+    path.join(__dirname, '..', '..', '..', 'schemas', 'delegation.schema.json'),
+    'utf8'
+  )
+);
 
 // --- 封筒の検証 -------------------------------------------------------------
 
@@ -93,6 +99,11 @@ test('封筒: amigos の post は roles 必須', () => {
 
 test('封筒: reject は feedback 必須', () => {
   assert.throws(() => contract.buildEnvelope('reject', { workload: 'amigos', id: 'x' }), /feedback/);
+  const reject = DELEGATION_SCHEMA.oneOf.find((branch) => branch.properties?.op?.const === 'reject');
+  assert.ok(reject.required.includes('feedback'), 'スキーマでも reject の feedback は必須');
+  const feedbackPattern = new RegExp(reject.properties.feedback.pattern);
+  assert.ok(!feedbackPattern.test(' \t\n'), 'スキーマでも空白だけの feedback は拒否');
+  assert.ok(feedbackPattern.test('修正してください'), '通常の feedback は受理');
 });
 
 // --- amigos アダプタ: 封筒 → コマンド -------------------------------------
