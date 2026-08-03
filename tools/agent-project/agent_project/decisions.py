@@ -53,6 +53,7 @@ def append_decision(cfg: "Config", tid: str, actor: str, context: str,
     if avoid:
         title, guide = avoid
         block += f"- avoid: {title.replace(chr(10), ' ')} :: {guide.replace(chr(10), ' ')}\n"
+    block = redact_for_share(block, f"decisions/{tid}.md")
     with path.open("a", encoding="utf-8") as f:
         f.write(block + "\n")
     return dr
