@@ -893,6 +893,7 @@ assert.match(
   const needActionsHtml = new Function(
     'esc', 'state', 'milestoneStatusFor', 'milestoneVersionName',
     'statusLabel', 'needCompleteHowHtml', 'needHasDeliverable', 'orchBlockedBannerHtml',
+    'isVerifyPendingNeed',
     `${grab('needActionsHtml')}; return needActionsHtml;`
   )(
     (value) => String(value == null ? '' : value),
@@ -902,13 +903,18 @@ assert.match(
     (status) => String(status || ''),
     () => '',
     needHasDeliverable,
-    () => ''            // 実行制御は稼働中＝警告なし（停止時の文言は orchestration-blocker で検証）
+    () => '',           // 実行制御は稼働中＝警告なし（停止時の文言は orchestration-blocker で検証）
+    isVerifyPendingNeed
   );
   const pendingHtml = needActionsHtml({
     id: 'T1', taskId: 'T1', kind: 'blocked', why: 'verify 未定義（工程は完了しています…）', file: '/p/needs/T1.md',
   });
-  assert.ok(!pendingHtml.includes('data-act="approve"'), 'blocked に完了承認を出さない');
-  assert.match(pendingHtml, /data-act="feedback"[^>]*>指示して再開</, 'blocked の主操作は再開にする');
+  assert.match(
+    pendingHtml,
+    /data-act="approve"[^>]*>承認して完了にする</,
+    'verify 未定義の確認待ちに完了承認を出す'
+  );
+  assert.match(pendingHtml, /data-act="feedback"[^>]*>指示して再開</, '修正して再開する操作も残す');
   assert.match(pendingHtml, /data-act="rerun"/, 'そのまま再実行も残す');
   const plainHtml = needActionsHtml({
     id: 'T2', taskId: 'T2', kind: 'blocked', why: '検証が失敗', file: '/p/needs/T2.md',

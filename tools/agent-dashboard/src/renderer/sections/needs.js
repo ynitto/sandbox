@@ -143,7 +143,9 @@ function needCompleteHowHtml(n) {
         ? '承認すると、プロジェクトは完了します。'
         : 'まだプロジェクト完了の段階ではありません。';
   } else if (n.kind === 'blocked') {
-    line = '指示を送るか再実行すると、停止した作業を再開します。';
+    line = isVerifyPendingNeed(p, n)
+      ? '承認すると、このタスクは完了します（検証コマンド未定義のため、人の確認が完了の根拠になります）。'
+      : '指示を送るか再実行すると、停止した作業を再開します。';
   }
   if (!line) return '';
   return `<div class="task-complete-banner need-complete-how">${esc(line)}</div>`;
@@ -242,7 +244,11 @@ function needActionsHtml(n) {
       buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}">指示を送る</button>`);
     }
   } else {
-    buttons.push(`<button class="primary-inline" data-act="feedback" data-id="${esc(n.id)}">指示して再開</button>`);
+    const verifyPending = isVerifyPendingNeed(state.project, n);
+    if (verifyPending) {
+      buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}" title="成果を確認済みとして、このタスクを完了します">承認して完了にする</button>`);
+    }
+    buttons.push(`<button class="${verifyPending ? '' : 'primary-inline'}" data-act="feedback" data-id="${esc(n.id)}">指示して再開</button>`);
     buttons.push(`<button data-act="rerun" data-id="${esc(n.id)}" title="指示を追加せず同じ作業をもう一度実行します">再実行</button>`);
     buttons.push(`<button data-act="hold" data-id="${esc(n.id)}" title="このタスクを止めて保留にします">保留</button>`);
   }
