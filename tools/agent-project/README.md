@@ -341,6 +341,35 @@ CLI からも付与・修正できる。
   agent-project は run 終了時に `agent-flow result --json` から回収し run ブリーフへ環流する（次 run 以降の全ノードへ伝播）。
 - **無効化**: `--no-task-branch`（ブリーフのライフサイクルは task_branch に連動）。ブリーフファイルは人が編集・削除してよい。
 
+### 共有前 redaction 契約
+
+**結論**: agent-project は、資格情報、認証 token、ホームディレクトリの実パス、生プロンプトを共有禁止とする。
+`brief/` と `decisions/` では追記前に置換し、状態リポジトリでは commit/push 対象のスナップショットを再検査する。
+どちらかを通過できなければ共有処理を止める。ログには元の値や該当行を残さず、ファイルパスと検出区分だけを出す。
+置換には `[REDACTED:TOKEN]`、`[REDACTED:HOME]`、`[REDACTED:PROMPT]`、`[REDACTED:CREDENTIAL]` を使う。
+
+| 検査境界 | 対象 | 失敗時 |
+|---|---|---|
+| `brief/<id>.md` / `decisions/<id>.md` の追記直前 | feedback、reason、learn、ノード発見制約など、外部入力を含む追記本文 | 追記しない。呼び出し元へ失敗を返す |
+| state git の commit/push 直前 | 同期除外を適用した後の共有スナップショット全体。`brief/` と `decisions/` も再検査する | commit/push しない。同期を失敗として終了する |
+
+置換後は同じ検査をもう一度行う。禁止値が残る、ファイルを読めない、検査器が例外で終了する、または安全に
+置換できない場合は fail-closed とする。既存履歴は自動で書き換えない。過去の漏出を検出した場合も同期を止め、
+履歴の除去は人が別作業で行う。
+
+プライバシー fixture には、実在しない token、POSIX/Windows のホームパス、生プロンプト、生の資格情報を
+区別できる sentinel として置く。契約テストは各 sentinel を `brief/` と `decisions/` の入口から流し、共有候補の
+全ファイルに元値が無く、無害な本文は残ることを確認する。さらに禁止値を共有スナップショットへ直接混入させ、
+state git が非ゼロで終了し commit/push しないことを固定する。実在の秘密は fixture、失敗メッセージ、テスト成果物に使わない。
+
+このテストは既存の `tools/agent-project/tests` に置く。GitHub Actions の agent-project unittest ジョブが pull request と
+`main` への push で同ディレクトリを全件実行するため、redaction の失敗は CI 失敗になる。保証範囲は fixture が通る
+書き込み経路と state git の共有境界までで、外部ツールが直接 push する経路、CI を迂回した push、既存 Git 履歴の
+消去までは保証しない。
+
+state git だけで検査する案は却下した。漏出した本文が commit 前でも次の run に注入されるためだ。CI だけで検査する案も、
+リモートへ送った後にしか失敗を検出できない。追記前の置換と共有直前の再検査を同じ契約にする。
+
 ### フレーク耐性 / 回帰 / 検収 / パス保護
 
 - **フレーク耐性** `--verify-confirm N`（既定 1）: verify を最大 N 回再実行し PASS/FAIL が跨いだら **flake** と判定して
