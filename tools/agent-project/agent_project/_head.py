@@ -135,14 +135,14 @@ CHECKED_RE = re.compile(r"^\s*-\s*\[[xX]\]")          # チェック済み（= �
 _SHARE_REDACTIONS = (
     ("TOKEN", re.compile(
         r"(?i)(?:\bBearer\s+|\b(?:access[_-]?token|auth[_-]?token|token)\s*[:=]\s*)"
-        r"(?!\[REDACTED:)[^\s,;'\"<>]+|\b(?:gh[pousr]_|github_pat_|glpat-|sk-(?:proj-)?)"
+        r"(?!\[REDACTED:)[^\s,;'\"<>]+|(?:gh[pousr]_|github_pat_|glpat-|sk-(?:proj-)?)"
         r"[A-Za-z0-9_-]{8,}")),
     ("HOME", re.compile(
         r"(?i)(?:/[Uu]sers/|/home/)[^\s/\\:;,'\"<>]+(?:[/\\][^\s:;,'\"<>]+)*|"
         r"[A-Za-z]:\\Users\\[^\s\\:;,'\"<>]+(?:\\[^\s:;,'\"<>]+)*")),
     ("PROMPT", re.compile(
         r"(?im)(?:\b(?:raw|system)[_-]?prompt\b|生プロンプト)\s*[:=]\s*"
-        r"(?!\[REDACTED:)(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\s,;]+)|"
+        r"(?!\[REDACTED:)(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\r\n]*)|"
         r"\bRAW_PROMPT_[A-Z0-9_-]+\b")),
     ("CREDENTIAL", re.compile(
         r"(?i)\b(?:password|passwd|api[_-]?key|client[_-]?secret|private[_-]?key|credential)"
