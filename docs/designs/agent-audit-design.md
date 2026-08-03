@@ -229,9 +229,12 @@ updated_at。`kiro-log-exporter` の `.kiro_export_state.json` と同じ規律�
    ledger 行の `[ts - seconds, ts]` と重なる（±`join_slack_sec`、既定 120）。一意に決まれば
    `links` を張り、セッション実測トークンを ledger 行由来レコードの `measured` 集計に使う。
 2. `kind:run` × `kind:ledger`: `ref`（`<mission>/<role>` / purpose）・`node`・時間窓。
-3. 複数候補・候補ゼロは**結合しない**（`links` 空のまま）。集計は未結合分を
+3. 複数候補・候補ゼロは**結合しない**。集計は未結合分を
    「実測不能（推定のみ）」の行として別掲する。偽の実測を作らない（no fake green と同じ
    フェイルクローズ）。
+4. 相関は**読み出し時に毎回同じ入力から導出する**（usage / calibrate が呼ぶ純関数）。
+   records は追記専用なので相関を書き戻さない——レコードの `links` は将来の収集時
+   相関（源泉がセッション ID を持つ場合）のための予約フィールド。
 
 将来エンジン側がセッション ID を記録するようになれば（additive な改善提案として別途）、
 この節のヒューリスティクスは自然に不要へ退化する。本設計はエンジン無改造を前提に置く。

@@ -1,0 +1,117 @@
+"""CLI — サブコマンドのディスパッチ（すべて単発・有界。設計 §8）。
+
+終了コード: 0=成功 / 1=検出あり・LLM 段の停止 / 2=源泉が読めない・使い方の誤り。
+"""
+from __future__ import annotations
+
+import argparse
+
+from .configfile import resolve_config
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="agent-audit",
+        description="実行証跡・エージェント CLI セッションログの収集と知見蒸留"
+                    "（設計: docs/designs/agent-audit-design.md）")
+    p.add_argument("--config", help="設定ファイル（既定は agent-audit.yaml を探索）")
+    p.add_argument("--audit-dir", dest="audit_dir",
+                   help="書き先（既定 ~/.agents/audit。引数 > 設定 > 既定）")
+    p.add_argument("--budget-dir", dest="budget_dir",
+                   help="node-budget の場所（既定 ~/.agents/budget）")
+    sub = p.add_subparsers(dest="command")
+
+    c = sub.add_parser("collect", help="源泉の増分収集・正規化（決定的）")
+    c.add_argument("--source", action="append",
+                   help="収集する源泉を絞る（budget-ledger / cli-native / flow-bus / "
+                        "project-root / amigos-bus / loop-log。複数可）")
+    c.add_argument("--since", help="この時刻（ISO8601）以降のセッションだけ収集")
+    c.add_argument("--with-transcripts", action="store_true", dest="with_transcripts",
+                   help="transcript 本文もローカル保存する（ノード外へは出さない）")
+
+    u = sub.add_parser("usage", help="トークン・コスト集計（measured / estimated 別掲）")
+    u.add_argument("--period", choices=["day", "month", "total"], default=None)
+    u.add_argument("--by", choices=["workload", "tool", "agent_cli", "model", "ref", "node"],
+                   default=None)
+    u.add_argument("--json", action="store_true")
+
+    s = sub.add_parser("stats", help="実行品質集計（status・失敗クラス・verify）")
+    s.add_argument("--period", choices=["day", "month", "total"], default=None)
+    s.add_argument("--json", action="store_true")
+
+    cal = sub.add_parser("calibrate", help="rates 較正の提案（--write で budget config へ反映）")
+    cal.add_argument("--write", action="store_true")
+
+    e = sub.add_parser("extract", help="レコード → 観測（LLM map。ゲートを通ったときだけ実行）")
+    e.add_argument("--limit", type=int, default=0)
+    e.add_argument("--force", action="store_true",
+                   help="間隔・蓄積ゲートを飛ばす（段別上限と予算は飛ばせない）")
+
+    d = sub.add_parser("distill", help="観測クラスタ → 洞察（LLM reduce）")
+    d.add_argument("--limit", type=int, default=0)
+    d.add_argument("--review", action="store_true", help="洞察を review purpose で検証する")
+    d.add_argument("--force", action="store_true",
+                   help="間隔・蓄積ゲートを飛ばす（段別上限と予算は飛ばせない）")
+
+    r = sub.add_parser("report", help="Markdown レポート")
+    r.add_argument("--kind", choices=["usage", "quality", "insights", "all"], default="all")
+    r.add_argument("--out", help="出力先（既定は <audit>/reports/）")
+
+    t = sub.add_parser("tasks", help="洞察 → 改善タスク（task.schema.json 形を stdout へ）")
+    t.add_argument("--mark-exported", action="store_true", dest="mark_exported",
+                   help="出力した洞察を exported=true にする")
+
+    g = sub.add_parser("gc", help="種別別保持日数での掃除（insights は対象外）")
+    g.add_argument("--dry-run", action="store_true", dest="dry_run")
+
+    sub.add_parser("doctor", help="源泉の到達性・session_log 宣言の棚卸し")
+
+    up = sub.add_parser("update", help="自己更新（スキルリポジトリから取り込み）")
+    up.add_argument("--check", action="store_true", help="確認だけ（取り込まない）")
+    up.add_argument("--now", action="store_true", help="今すぐ取り込む")
+
+    return p
+
+
+def main(argv=None) -> int:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    if not getattr(args, "command", None):
+        parser.print_help()
+        return 2
+    resolve_config(args)
+    if args.command == "collect":
+        from .collect import cmd_collect
+        return cmd_collect(args)
+    if args.command == "usage":
+        from .usage import cmd_usage
+        return cmd_usage(args)
+    if args.command == "stats":
+        from .stats import cmd_stats
+        return cmd_stats(args)
+    if args.command == "calibrate":
+        from .usage import cmd_calibrate
+        return cmd_calibrate(args)
+    if args.command == "extract":
+        from .extract import cmd_extract
+        return cmd_extract(args)
+    if args.command == "distill":
+        from .distill import cmd_distill
+        return cmd_distill(args)
+    if args.command == "report":
+        from .report import cmd_report
+        return cmd_report(args)
+    if args.command == "tasks":
+        from .tasksout import cmd_tasks
+        return cmd_tasks(args)
+    if args.command == "gc":
+        from .gccmd import cmd_gc
+        return cmd_gc(args)
+    if args.command == "doctor":
+        from .doctor import cmd_doctor
+        return cmd_doctor(args)
+    if args.command == "update":
+        from .update import cmd_update
+        return cmd_update(args)
+    parser.print_help()
+    return 2

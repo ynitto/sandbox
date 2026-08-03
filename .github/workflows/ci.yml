@@ -34,6 +34,8 @@ jobs:
             suites: tools/agent-flow/tests
           - package: agent-amigos
             suites: tools/agent-amigos/tests
+          - package: agent-audit
+            suites: tools/agent-audit/tests
           # テストルートが 2 つ（agentcore/tests と agentcore/agentcore/tests）。
           - package: agentcore
             suites: >-

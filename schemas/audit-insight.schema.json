@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "audit-insight.schema.json",
+  "title": "agent-audit 観測・洞察（データ契約）",
+  "description": "agent-audit の LLM 蒸留パイプラインの中間物と成果。observation（extract=map の出力・observations/<YYYYMMDD>.jsonl の 1 行）と insight（distill=reduce の出力・insights/<id>.json）。洞察 → 観測 → レコードの参照鎖を欠かさない（根拠の無い洞察は生成しない。設計: docs/designs/agent-audit-design.md §3.2）。書き手は agent-audit のみ",
+  "$defs": {
+    "observation": {
+      "type": "object",
+      "required": ["id", "record_id", "kind", "text"],
+      "properties": {
+        "id": {"type": "string", "description": "obs-<sha256(record_id, index) 先頭 16 桁>"},
+        "record_id": {"type": "string", "description": "元レコード（audit-record.schema.json）の id"},
+        "ts": {"type": "string", "description": "ISO8601 UTC"},
+        "kind": {"enum": ["learn", "avoid", "skill-gap", "prompt-issue", "config-issue"]},
+        "text": {"type": "string", "description": "一般化した観測文（1〜2 文）"},
+        "evidence": {"type": "array", "items": {"type": "string"}, "description": "証跡参照（レコード id）"},
+        "extract_agent": {"type": "string", "description": "抽出に使った agent_cli（P4: どのモデルの抽出かを追跡）"},
+        "extract_model": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "insight": {
+      "type": "object",
+      "required": ["id", "statement", "kind", "observation_ids"],
+      "properties": {
+        "id": {"type": "string", "description": "ins-<sha256(kind, 最小観測 id) 先頭 16 桁>。クラスタが育つと同じ id を改訂する"},
+        "ts": {"type": "string", "description": "ISO8601 UTC（最終改訂）"},
+        "statement": {"type": "string", "description": "一般化した知見（1〜2 文）"},
+        "kind": {"enum": ["rule-candidate", "skill-improvement", "config-fix", "usage-optimization"]},
+        "scope": {"type": "object", "description": "適用範囲（tool / repo 等。空 = 全体）", "additionalProperties": true},
+        "observation_ids": {"type": "array", "items": {"type": "string"}, "description": "根拠の観測 id（昇順）"},
+        "occurrences": {"type": "integer", "description": "根拠の観測数（distill_min_occurrences 以上）"},
+        "suggested_action": {"type": "string", "description": "rules.md 候補文 / skill の修正案 / 設定変更案"},
+        "confidence": {"enum": ["low", "medium", "high"]},
+        "review": {
+          "type": ["object", "null"],
+          "description": "review purpose の検証結果（任意）。refuted の洞察は tasks 出力から除外される",
+          "properties": {
+            "verdict": {"enum": ["supported", "weak", "refuted"]},
+            "reason": {"type": "string"}
+          },
+          "additionalProperties": true
+        },
+        "exported": {"type": "boolean", "description": "tasks --mark-exported で改善タスクとして出力済みか"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

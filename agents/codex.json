@@ -12,6 +12,11 @@
   "readonly_args": ["--sandbox", "read-only"],
   "readonly": "enforced",
   "no_session_args": ["--ephemeral"],
+  "session_log": {
+    "format": "jsonl-dir",
+    "paths": ["~/.codex/sessions"],
+    "usage": true
+  },
   "interactive": {
     "command": ["codex"],
     "readonly_args": ["--sandbox", "read-only"],
