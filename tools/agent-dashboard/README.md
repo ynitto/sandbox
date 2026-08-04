@@ -14,7 +14,8 @@
 **ソース構成（制御面分離）**: Electron シェル等の共通部は `src/base/`、
 agent-project / agent-flow の制御は `src/features/agent-project/` に置き、
 kiro-loop 制御（`src/features/kiro-loop/`）・定常業務（`src/features/cowork/`）・
-agent-amigos ミッションとノード予算（`src/features/amigos/`）を同じ形で差し込んでいる
+agent-amigos ミッションとノード予算（`src/features/amigos/`）・
+agent-audit の呼び出しと閲覧（`src/features/agent-audit/`）を同じ形で差し込んでいる
 （動的プラグインではない。列挙合成のみ。詳細は
 [`docs/designs/agent-dashboard-design.md`](../../docs/designs/agent-dashboard-design.md) §3.2・§4）。
 
@@ -41,6 +42,17 @@ agent-amigos ミッションとノード予算（`src/features/amigos/`）を同
 定常業務・プロジェクト・フロー・ミッションの実行時間合計に上限。0 = 無制限、
 依頼側・請負側どちらのノードでも同じ）は、アプリの「全体設定 → エージェント」で
 機能別の消費内訳を表示・編集する。ミッションも依頼先ホームも無いときはタブ自体を隠す。
+
+**監査タブ**（`src/features/agent-audit/`）: [agent-audit](../agent-audit/) CLI を
+このアプリから呼び、収集済みの実行証跡から**トークン利用量**（実測と推定を別掲）と
+**実行品質**を表示する。Windows では WSL 内の agent-audit を `wsl.exe` 経由で呼ぶ。
+呼ぶのは LLM を使わない段だけ（`collect` / `usage --json` / `stats --json` / `doctor`）で、
+知見蒸留（extract / distill）は agent-audit 側のゲート設定に任せる。収集データの
+保存先（`--audit-dir`）・agent-audit 設定ファイル（`--config`）・起動コマンド・
+WSL ディストロ・**定期収集の間隔（分）**は監査タブ内の設定で編集する。定期収集は
+アプリを開いている間だけ動き、collect の多重起動は main プロセスで直列化する
+（agent-audit 側にロックが無いため）。詳細は
+[`src/features/agent-audit/README.md`](./src/features/agent-audit/README.md)。
 
 **セッション開始コマンド**（[agent-session-commands 契約](../../schemas/agent-session-commands.schema.json)
 — 「全体設定 → エージェント → 共通設定」で編集）: エージェントのセッションが始まった直後に、

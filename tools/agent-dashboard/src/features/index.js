@@ -12,6 +12,8 @@
 // - delegation … agent-flow / agent-amigos 間の内部連携を共通封筒（delegation 契約）で扱う。
 //                 利用者の操作はミッション／要対応／実行へ集約し、独立画面は持たない
 // - participation … flow / amigos の募集中の仕事へ、この端末から参加するための小さい操作面
+// - agent-audit … agent-audit CLI（WSL 経由）の LLM 不使用段の呼び出しと、
+//                  収集済みトークン利用量・実行品質の表示
 //
 // 新しい制御面を足す手順:
 //   1. src/features/<id>/ を agent-project や kiro-loop を雛形に作る
@@ -30,6 +32,7 @@ function loadFeatures() {
     require('./orchestration'),
     require('./delegation'),
     require('./participation'),
+    require('./agent-audit'),
   ];
 }
 
