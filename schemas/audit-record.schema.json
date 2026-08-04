@@ -18,6 +18,7 @@
     "agent_cli": {"type": "string", "description": "エージェント CLI 名"},
     "model": {"type": "string", "description": "モデル名（判る範囲で）"},
     "session_id": {"type": "string", "description": "CLI ネイティブのセッション ID（kind=session）"},
+    "log_version": {"type": "string", "description": "セッションログから検出した CLI バージョン（session_log.clean.version_key。kind=session。未検出は空文字列）"},
     "started_at": {"type": "string", "description": "セッション開始（ISO8601 UTC・kind=session）"},
     "seconds": {"type": ["number", "null"], "description": "実行秒"},
     "turns": {"type": ["integer", "null"], "description": "メッセージ往復数（kind=session / run）"},

@@ -15,7 +15,13 @@
   "session_log": {
     "format": "jsonl-dir",
     "paths": ["~/.codex/sessions"],
-    "usage": true
+    "usage": true,
+    "clean": {
+      "version_key": "version",
+      "rules": [
+        {"rule": "truncate-message", "max_chars": 4000}
+      ]
+    }
   },
   "interactive": {
     "command": ["codex"],

@@ -250,7 +250,64 @@
           "type": "boolean",
           "default": false,
           "description": "実測トークン（usage）を含むか。true のセッションは台帳の実測裏取り（measured 集計）に使われる"
+        },
+        "clean": {
+          "type": "object",
+          "description": "セッションログ本文のノイズ除去規則（additive・任意）。何がノイズかは CLI の作法・バージョンで変わるので、宣言（この JSON）と実装（agent_audit/cleaning.py に閉じた enum で 1 つ）を session_log 本体と同じ分業にする。version_key でログ自身から CLI バージョンを検出し、versions を先勝ちで評価してルールセットを丸ごと選ぶ（未検出・不一致は既定 rules）。フェイルの向きは scrub と逆——確実にノイズと判ったものだけ消し、知らない構造は残す（設計: docs/designs/agent-audit-design.md §4.4）",
+          "additionalProperties": false,
+          "properties": {
+            "version_key": {
+              "type": "string",
+              "description": "ログ行（jsonl-dir）またはセッション行（kiro-sqlite）から CLI バージョンを読むフィールド名（dotted 可。例 \"version\"）。省略時はバージョン検出をせず、常に既定 rules を使う"
+            },
+            "rules": {
+              "type": "array",
+              "description": "既定ルールセット（versions のどのエントリにも当たらないときに使う）",
+              "items": {"$ref": "#/$defs/cleanRule"}
+            },
+            "versions": {
+              "type": "array",
+              "description": "バージョン別ルールセット。先勝ちで評価し、当たったエントリの rules が既定を丸ごと置き換える（部分マージはしない）",
+              "items": {
+                "type": "object",
+                "required": ["when", "rules"],
+                "additionalProperties": false,
+                "properties": {
+                  "when": {
+                    "type": "string",
+                    "description": "'>=2.0' / '<3.0' 等の空白区切り AND 条件（= / >= / <= / > / < と数値のドット区切り）"
+                  },
+                  "rules": {
+                    "type": "array",
+                    "items": {"$ref": "#/$defs/cleanRule"}
+                  }
+                }
+              }
+            }
+          }
         }
+      }
+    }
+  },
+  "$defs": {
+    "cleanRule": {
+      "type": "object",
+      "description": "clean ルール 1 件。rule が閉じた enum（実装は agent_audit/cleaning.py）で、それ以外のキーは rule の種類ごとに意味を持つ（例: drop-line は field/equals/in、strip-tag は tags）",
+      "required": ["rule"],
+      "additionalProperties": false,
+      "properties": {
+        "rule": {
+          "enum": ["drop-line", "drop-message", "strip-tag", "strip-regex", "truncate-message"],
+          "description": "drop-line=行（生ログエントリ）を丸ごと落とす / drop-message=本文（正規形メッセージ）を丸ごと落とす / strip-tag=<tag>…</tag> ブロックを除去 / strip-regex=正規表現に一致する部分を除去（enum で表せない新ノイズへの応急対応） / truncate-message=本文を先頭優先で切り詰める"
+        },
+        "field": {"type": "string", "description": "drop-line: 判定するフィールド名（dotted 可）"},
+        "equals": {"description": "drop-line: field の値がこれと等しければ落とす"},
+        "in": {"type": "array", "description": "drop-line: field の値がこの配列に含まれれば落とす"},
+        "prefixes": {"type": "array", "items": {"type": "string"}, "description": "drop-message: 本文がこのいずれかで始まれば落とす"},
+        "contains": {"type": "array", "items": {"type": "string"}, "description": "drop-message: 本文がこのいずれかを含めば落とす"},
+        "tags": {"type": "array", "items": {"type": "string"}, "description": "strip-tag: 除去するタグ名（閉じタグが無ければ消さない）"},
+        "pattern": {"type": "string", "description": "strip-regex: 除去する正規表現。コンパイルできなければこのルールだけスキップ"},
+        "max_chars": {"type": "integer", "description": "truncate-message: この文字数を超えたら先頭優先で切り詰める"}
       }
     }
   }
