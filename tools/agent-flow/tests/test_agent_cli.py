@@ -484,6 +484,40 @@ class AgentOverrideTests(unittest.TestCase):
         self.assertIn("global-model", cmd2)
 
 
+class ModelTierTests(unittest.TestCase):
+    """モデル階層（設定 model_tiers:・オプトイン）の展開と解決順（agentcore.modeltier）。"""
+
+    def setUp(self):
+        self._cli, self._ov = kf._AGENT_CLI, dict(kf._AGENT_OVERRIDES)
+
+    def tearDown(self):
+        kf._AGENT_CLI, kf._AGENT_OVERRIDES = self._cli, self._ov
+
+    def test_default_assignment_stays_within_flow_vocabulary(self):
+        """既定分類は agentcore に置いた語彙の**写し**なので、正典（AGENT_ROLES /
+        VALID_KINDS）と突き合わせて縛る（C7）。"""
+        valid = set(kf.AGENT_ROLES) | set(kf.VALID_KINDS)
+        self.assertLessEqual(set(kf._modeltier.DEFAULT_PURPOSE_TIERS["flow"]), valid)
+
+    def test_tiers_expand_under_explicit_agents(self):
+        kf._configure_thresholds(types.SimpleNamespace(
+            agent_cli="kiro",
+            agents={"classify": {"model": "manual"}},
+            model_tiers={"strong": {"model": "opus"}, "weak": {"model": "haiku"}}))
+        self.assertEqual(kf._agent_for("planner"), ("kiro", "opus"))     # strong
+        self.assertEqual(kf._agent_for("filter"), ("kiro", "haiku"))     # weak
+        self.assertEqual(kf._agent_for("classify"), ("kiro", "manual"))  # 明示 agents: が勝つ
+        # 成果物を直接作る kind は既定で触らない（グローバルのまま）
+        self.assertEqual(kf._agent_for("generate"), ("kiro", None))
+
+    def test_without_tiers_behavior_is_unchanged(self):
+        """オプトイン: model_tiers 無し（既定 {}）では従来の上書きだけが効く。"""
+        kf._configure_thresholds(types.SimpleNamespace(
+            agent_cli="kiro", agents={"planner": {"model": "opus"}}, model_tiers={}))
+        self.assertEqual(kf._agent_for("planner"), ("kiro", "opus"))
+        self.assertEqual(kf._agent_for("classify"), ("kiro", None))
+
+
 class TestAgentPluginAndTriage(unittest.TestCase):
     """エージェント CLI プラグイン（agents/<name>.json）と失敗トリアージ。
     環境要因（quota/auth/env）の失敗はどのノードをリトライしても同じ理由で落ちるため、

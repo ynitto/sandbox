@@ -51,6 +51,9 @@ from agentcore import verifycontract as _verifycontract  # noqa: E402
 # （kiro/claude/copilot/codex）を含む全 CLI がこの定義で動く。以前は同じ argv 知識が
 # agent-project / agent-flow / agent-amigos / dashboard に重複していた（repolocal と同型）。
 from agentcore import agentcli as _agentcli  # noqa: E402
+# モデル階層（strong/weak・オプトイン）の既定分類と展開規則（設定 model_tiers:）。
+# purpose → 階層の判断を 3 エンジンで再発明させない置き場（agentcli と同型の問題）。
+from agentcore import modeltier as _modeltier  # noqa: E402
 # リトライのバックオフ待ちの唯一の seam（agentcore.transport.backoff_sleep）。素の time.sleep を
 # 差し替えると stdlib の subprocess 内部（プロセス終了の 0.001s 倍々ポーリング）にも効いてしまい、
 # 高負荷時だけテストが壊れる。リトライ経路はこの名前を通す。

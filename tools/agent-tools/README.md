@@ -34,6 +34,8 @@ bash tools/agent-tools/install.sh --service             # 常駐化（systemd us
 ## agentcore
 
 転送（git の護り）・claim/lease・語彙・心拍を 1 実装に集約した共通ライブラリ（設計 P0）。
+モデル階層（`model_tiers:`・strong/weak のオプトイン使い分け）の既定分類と展開規則も
+ここ（`modeltier`）に置く（設計: docs/plans/2026-08-04-model-tier-routing-design.md）。
 
 **独立配布しない内部モジュール**（設計 R10）。3 本はそれぞれ別の実行ファイルなので、
 `install.sh` が**各 zipapp へ同梱する**——1 本だけ入れ直しても自己完結して動く。

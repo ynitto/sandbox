@@ -55,6 +55,9 @@ from agentcore import verifycontract as _verifycontract  # noqa: E402
 # agent-project / agent-flow / agent-amigos / dashboard の 4 か所に重複しており、
 # 同じ CLI でもツールによってフラグが違う状態になっていた（repolocal と同型の問題）。
 from agentcore import agentcli as _agentcli  # noqa: E402
+# モデル階層（strong/weak・オプトイン）の既定分類と展開規則（設定 model_tiers:）。
+# purpose → 階層の判断を 3 エンジンで再発明させない置き場（agentcli と同型の問題）。
+from agentcore import modeltier as _modeltier  # noqa: E402
 # 指示ドロップ（commands/<name>.json ＋ processed/ ＋ .err）の取り込み規約。プロジェクト配下と
 # ノードスコープ（~/.agents/commands/・板の操作）で同じ形を使う——2 実装にすると、利用者から
 # 見える挙動（送信済み → 受理済み → 失敗バナー）が 2 種類になる。

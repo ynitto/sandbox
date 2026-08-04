@@ -7,6 +7,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-tools: モデル階層（strong/weak）ルーティング — 利用枠逼迫への opt-in 対策
+
+利用枠（クレジット）の制限強化を受け、「判断が重い処理は強いモデル・大量に走る機械的な
+処理は安価なモデル」の使い分けを、設定 `model_tiers:`（strong/weak の 2 段宣言）だけで
+有効化できるようにした（柱1 / C1・C3・C7）。purpose → 階層の既定分類と展開規則は
+`agentcore.modeltier` の 1 実装に集約し、各エンジンは既存の `agents:` マップへ展開して
+から従来どおり解決する——解決経路は増やさず、未宣言なら挙動は従来と不変（完全オプトイン）。
+
+- **agentcore**: `modeltier` を追加（正規化・既定分類・`agents:` への展開。明示 `agents:`
+  が purpose 単位で常に勝つ。`purposes:` で分類の上書き・`off` で適用除外）
+- **agent-project**: `model_tiers:`（yaml 専用）。plan/review/adjudicate/verify → strong、
+  prioritize/route/distill/assess/repo_map/doctor → weak
+- **agent-flow**: `model_tiers:`（yaml 専用）。planner/evaluator/judge/verify → strong、
+  classify/filter/split → weak。成果物を直接作る worker 系は既定で触らない
+- **agent-audit**: `model_tiers:`。extract/distill → weak、review → strong
+- 既定分類は各エンジン語彙の写しとして、各エンジンのテストが正典（AGENT_PURPOSES /
+  VALID_KINDS 等）と突き合わせて縛る。agent-amigos はロールが自由語彙のため対象外
+  （`roles[].model` と agent-control で従来どおり表現できる）
+- 設計: docs/plans/2026-08-04-model-tier-routing-design.md
+
 ### agent-tools / agentcore: 監査で見つかった実装バグの修正
 
 agentcore を横断監査し、再現できた高確度の実装バグを直した（柱 1 の分担契約と柱 2 の

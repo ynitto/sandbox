@@ -123,7 +123,13 @@ def _configure_thresholds(args) -> None:
     ac = getattr(args, "agent_cli", None)
     if ac:
         _AGENT_CLI = str(ac).lower()
-    _AGENT_OVERRIDES = _normalize_agent_overrides(getattr(args, "agents", None))
+    # model_tiers（強い/弱いモデルの階層・オプトイン）は、正規化済みの明示 agents: の下位層と
+    # してここで展開する。解決経路（_agent_for）は増やさない——明示 agents: が常に勝ち、
+    # model_tiers 未設定なら従来と 1 バイトも変わらない。
+    _AGENT_OVERRIDES = _modeltier.expand(
+        "flow", getattr(args, "model_tiers", None),
+        _normalize_agent_overrides(getattr(args, "agents", None)),
+        valid=set(AGENT_ROLES) | set(VALID_KINDS))
     wsk = getattr(args, "worker_skill", None)
     if wsk is not None:
         _WORKER_SKILL = str(wsk).strip()

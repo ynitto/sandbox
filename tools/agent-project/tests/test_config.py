@@ -227,6 +227,43 @@ class TestAgentCliAndGranularity(unittest.TestCase):
             self.assertIn(".agent/agent-project.yaml", err.getvalue())
 
 
+class TestModelTiers(unittest.TestCase):
+    """モデル階層（設定 model_tiers:・オプトイン）の展開と優先順位（agentcore.modeltier）。"""
+
+    @staticmethod
+    def _resolve(cfg_path=None, **cli):
+        ns = types.SimpleNamespace(config=cfg_path, **cli)
+        km.resolve_config(ns)
+        return ns
+
+    def test_default_assignment_stays_within_purpose_vocabulary(self):
+        """既定分類は agentcore に置いた語彙の**写し**なので、正典 AGENT_PURPOSES と
+        突き合わせて縛る（C7）。"""
+        self.assertLessEqual(set(km._modeltier.DEFAULT_PURPOSE_TIERS["project"]),
+                             set(km.AGENT_PURPOSES))
+
+    def test_tiers_expand_under_explicit_agents(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "agent-project.json"
+            p.write_text(json.dumps({
+                "model_tiers": {"strong": {"model": "opus"}, "weak": {"model": "haiku"}},
+                "agents": {"assess": {"model": "manual"}}}), encoding="utf-8")
+            ns = self._resolve(str(p))
+            cfg = km.build_config(ns)
+        self.assertEqual(cfg.agents["plan"], {"model": "opus"})        # strong
+        self.assertEqual(cfg.agents["doctor"], {"model": "haiku"})     # weak
+        self.assertEqual(cfg.agents["assess"], {"model": "manual"})    # 明示 agents: が勝つ
+        with mock.patch.object(km, "_RUNTIME_CONFIG", cfg):
+            self.assertEqual(km._agent_for("plan"), (cfg.agent_cli, "opus"))
+            self.assertEqual(km._agent_for("assess"), (cfg.agent_cli, "manual"))
+
+    def test_without_tiers_behavior_is_unchanged(self):
+        """オプトイン: model_tiers 無し（既定 {}）では agents: は空のまま（挙動不変）。"""
+        cfg = km.build_config(self._resolve(None))
+        self.assertEqual(cfg.agents, {})
+        self.assertEqual(cfg.model_tiers, {})
+
+
 class TestInstances(unittest.TestCase):
     """稼働インスタンスのレジストリ（外部操作者がフォルダを発見する口）。"""
 
