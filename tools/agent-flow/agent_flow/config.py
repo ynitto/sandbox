@@ -84,11 +84,6 @@ CONFIG_DEFAULTS = {
     # 既定）/ 個別 kind（work/generate/classify/synthesize/verify/filter/judge/reduce/split/map）、
     # 値は {agent_cli, model}。未指定はグローバル agent_cli / model。
     "agents": {},
-    # モデル階層（オプトイン・yaml 専用）。strong/weak の 2 段を宣言すると agentcore.modeltier の
-    # 既定分類（planner/evaluator/judge/verify → strong・classify/filter/split → weak。成果物を
-    # 直接作る worker 系は触らない）が agents: の下位層として効く。明示の agents: が常に勝つ。
-    # 値は {strong: {agent_cli, model}, weak: {...}, purposes: {kind: strong|weak|off}}。
-    "model_tiers": {},
     "planner": "flow-planner",
     "executor": "agent",
     # executor=agent の実行系プロンプトを供給するスキル（worker/verify/evaluator）。

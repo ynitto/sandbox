@@ -13,11 +13,6 @@ import json
 import os
 import sys
 
-# モデル階層（strong/weak・オプトイン）の既定分類と展開規則（設定 model_tiers:）。
-# purpose → 階層の判断をエンジンごとに再発明させない置き場（agentcli と同型の問題）。
-# import 経路（sys.path への agentcore 追加）はパッケージ __init__ が確立済み。
-from agentcore import modeltier
-
 DEFAULT_CONFIG_NAMES = ["agent-audit.yaml", "agent-audit.yml", "agent-audit.json"]
 
 AGENT_HOME = ".agents"
@@ -42,10 +37,6 @@ CONFIG_DEFAULTS = {
     "agent_cli": "claude",
     "model": None,
     "agents": {},
-    # モデル階層（オプトイン）。strong/weak の 2 段を宣言すると agentcore.modeltier の既定分類
-    # （review → strong・extract/distill → weak）が agents: の下位層として効く。明示の
-    # agents: が常に勝つ。値は {strong: {agent_cli, model}, weak: {...}, purposes: {...}}。
-    "model_tiers": {},
     "agent_timeout": 300,
     "argv_limit": 100000,
     # extract（map）
@@ -142,18 +133,11 @@ def resolve_budget_dir(args) -> str:
     return os.path.join(agent_home_dir(), "budget")
 
 
-AUDIT_PURPOSES = ("extract", "distill", "review")
-
-
 def agent_for(args, purpose: str) -> "tuple[str, str | None]":
     """purpose（extract / distill / review）の (agent_cli, model)。
-    agents[purpose] > model_tiers（agentcore.modeltier の既定分類・オプトイン）>
-    グローバル agent_cli / model。不正値は黙って落とさず無視して既定へ。"""
+    agents[purpose] > グローバル agent_cli / model。不正値は黙って落とさず無視して既定へ。"""
     overrides = getattr(args, "agents", None) or {}
-    merged = modeltier.expand("audit", getattr(args, "model_tiers", None),
-                              overrides if isinstance(overrides, dict) else {},
-                              valid=AUDIT_PURPOSES)
-    o = merged.get(purpose)
+    o = overrides.get(purpose) if isinstance(overrides, dict) else None
     cli = getattr(args, "agent_cli", "claude")
     model = getattr(args, "model", None)
     if isinstance(o, dict):

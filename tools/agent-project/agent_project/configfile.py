@@ -195,11 +195,6 @@ CONFIG_DEFAULTS = {
     # 処理毎のエージェント上書き（yaml 専用）。キーは plan/review/prioritize/route/adjudicate/
     # verify/distill/assess/repo_map/doctor、値は {agent_cli, model}。
     "agents": {},
-    # モデル階層（オプトイン・yaml 専用）。strong/weak の 2 段を宣言すると agentcore.modeltier の
-    # 既定分類（plan/review/adjudicate/verify → strong・prioritize/route/distill/assess/
-    # repo_map/doctor → weak）が agents: の下位層として効く。明示の agents: が常に勝つ。
-    # 値は {strong: {agent_cli, model}, weak: {...}, purposes: {purpose: strong|weak|off}}。
-    "model_tiers": {},
     # タスク単位ターゲットブランチ: 成果物を ap/<task-id> に集約（agent-flow の workspace branch へ注入。
     # リトライ（r0/r1…）も同一ブランチに積み増す）。false で従来の run 毎 af/<run-id>。
     "task_branch": True,
@@ -771,13 +766,7 @@ def build_config(args) -> Config:
 
     agent_cli = str(getattr(args, "agent_cli", "kiro") or "kiro").lower()
     agent_timeout = float(getattr(args, "agent_timeout", 300.0) or 0.0)
-    # model_tiers（強い/弱いモデルの階層・オプトイン）は、正規化済みの明示 agents: の下位層と
-    # してここで展開する。解決経路（_agent_for）は増やさない——明示 agents: が常に勝ち、
-    # model_tiers 未設定なら従来と 1 バイトも変わらない。
-    agent_overrides = _modeltier.expand(
-        "project", getattr(args, "model_tiers", None),
-        _normalize_agent_overrides(getattr(args, "agents", None)),
-        valid=set(AGENT_PURPOSES))
+    agent_overrides = _normalize_agent_overrides(getattr(args, "agents", None))
     try:
         argv_limit = int(getattr(args, "argv_limit", None) or 0)
     except (TypeError, ValueError):
@@ -901,7 +890,6 @@ def build_config(args) -> Config:
         repo_map=bool(getattr(args, "repo_map", False)),
         rules_capture=bool(getattr(args, "rules_capture", True)),
         agents=agent_overrides,
-        model_tiers=dict(getattr(args, "model_tiers", {}) or {}),
         task_branch=bool(getattr(args, "task_branch", True)),
         task_branch_prefix=str(getattr(args, "task_branch_prefix", "ap/") or "ap/"),
         delivery_review=bool(getattr(args, "delivery_review", True)),

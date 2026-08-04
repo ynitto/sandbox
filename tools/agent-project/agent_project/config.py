@@ -208,9 +208,6 @@ class Config:
     # （plan/review/prioritize/route/adjudicate/verify/distill/assess/repo_map/doctor）、
     # 値は {agent_cli, model}。未指定の処理はグローバル agent_cli / model を使う。
     agents: dict = field(default_factory=dict)
-    # モデル階層の宣言（オプトイン）。実効値は build_config が agents へ展開済み（_agent_for は
-    # agents しか読まない——判断根拠を 2 か所にしない）。ここは宣言の記録（doctor / 診断用）。
-    model_tiers: dict = field(default_factory=dict)
     # タスク単位ターゲットブランチ（既定 on）: 成果を ap/<task-id> に集約する（リトライも同一ブランチ）。
     task_branch: bool = True
     task_branch_prefix: str = "ap/"

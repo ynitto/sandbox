@@ -44,20 +44,6 @@ class ConfigTests(AuditTestCase):
         self.assertEqual(configfile.agent_for(args, "distill"), ("claude", "opus"))
         self.assertEqual(configfile.agent_for(args, "review"), ("claude", None))
 
-    def test_agent_for_model_tiers_under_explicit(self):
-        """model_tiers（オプトイン）は agents: の下位層として効く。
-        既定分類: extract / distill → weak・review → strong。明示 agents: が常に勝つ。"""
-        args = self.make_args(agent_cli="claude", model=None,
-                              model_tiers={"strong": {"model": "opus"},
-                                           "weak": {"model": "haiku"}},
-                              agents={"distill": {"model": "manual"}})
-        self.assertEqual(configfile.agent_for(args, "extract"), ("claude", "haiku"))
-        self.assertEqual(configfile.agent_for(args, "review"), ("claude", "opus"))
-        self.assertEqual(configfile.agent_for(args, "distill"), ("claude", "manual"))
-        # 既定分類は audit の purpose 語彙の写し——正典と突き合わせて縛る（C7）
-        self.assertLessEqual(set(configfile.modeltier.DEFAULT_PURPOSE_TIERS["audit"]),
-                             set(configfile.AUDIT_PURPOSES))
-
 
 if __name__ == "__main__":
     unittest.main()

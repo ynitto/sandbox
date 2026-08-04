@@ -23,11 +23,6 @@ agents:
   extract: {agent_cli: ollama, model: qwen3}   # map: 局所要約。弱モデル・ローカルで十分
   distill: {}                                  # reduce: 一般化。既定 CLI を使う
   review: {}                                   # 任意の検証段（distill --review 時のみ）
-# model_tiers:                # モデル階層（オプトイン）。strong/weak の 2 段を宣言するだけで、
-#   strong: {model: opus}    #   extract/distill → weak・review → strong の既定分類
-#   weak: {model: haiku}     #   （agentcore.modeltier の 1 実装）が agents: の下位層として効く。
-                             #   明示の agents: が常に勝ち、未宣言なら挙動不変。
-                             #   設計: docs/plans/2026-08-04-model-tier-routing-design.md
 agent_timeout: 300
 argv_limit: 100000
 
