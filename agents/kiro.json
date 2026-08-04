@@ -17,6 +17,11 @@
   ],
   "readonly": "best-effort",
   "no_session_args": [],
+  "session_log": {
+    "format": "kiro-sqlite",
+    "paths": ["~/.kiro/store.db"],
+    "usage": false
+  },
   "spill": {
     "args": [
       "--trust-tools=fs_read"

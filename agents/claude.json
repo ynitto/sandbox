@@ -9,6 +9,11 @@
   "readonly_args": ["--permission-mode", "plan", "--tools", ""],
   "readonly": "enforced",
   "no_session_args": ["--no-session-persistence"],
+  "session_log": {
+    "format": "jsonl-dir",
+    "paths": ["~/.claude/projects"],
+    "usage": true
+  },
   "interactive": {
     "command": ["claude"],
     "readonly_args": ["--permission-mode", "plan"],

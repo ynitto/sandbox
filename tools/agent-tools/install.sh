@@ -7,10 +7,11 @@
 #   bash tools/agent-tools/install.sh --prefix /usr/local/bin
 #   bash tools/agent-tools/install.sh --service --host-config <path> # 常駐化（systemd）も構成
 #
-# **配布は 1 パッケージ・CLI エントリは 3 本**（設計 R9・R10）。agent-project /
-# agent-flow / agent-amigos は同じ agentcore（transport・protocol・vocab・heartbeat）を
-# 共有し、契約バージョンも揃っていなければならない——別々に入れると片方だけ古い
-# ノードができて板の入札や状態の読み書きが噛み合わなくなる。だから入口を 1 本にする。
+# **配布は 1 パッケージ・CLI エントリは 4 本**（設計 R9・R10）。agent-project /
+# agent-flow / agent-amigos / agent-audit は同じ agentcore（transport・protocol・vocab・
+# heartbeat・agentcli）を共有し、契約バージョンも揃っていなければならない——別々に
+# 入れると片方だけ古いノードができて板の入札や状態の読み書きが噛み合わなくなる。
+# だから入口を 1 本にする。
 #
 # 各エンジンの install.sh は本スクリプトへ委譲する薄いシムとして残してある
 # （既存の手順書・setup.sh・自己更新の呼び出しパスを壊さないため）。
@@ -30,7 +31,7 @@ warn()  { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
 error() { echo -e "${RED}[ERROR]${RESET} $*" >&2; }
 die()   { error "$*"; exit 1; }
 
-ALL_ENGINES=(agent-project agent-flow agent-amigos)
+ALL_ENGINES=(agent-project agent-flow agent-amigos agent-audit)
 
 INSTALL_PREFIX="${HOME}/.local/bin"
 ENGINES=("${ALL_ENGINES[@]}")
@@ -42,7 +43,8 @@ usage() {
 使い方: bash tools/agent-tools/install.sh [オプション]
 
   --prefix <dir>          インストール先（既定 ~/.local/bin）
-  --only <a>[,<b>]        入れるエンジンを絞る（agent-project / agent-flow / agent-amigos）
+  --only <a>[,<b>]        入れるエンジンを絞る（agent-project / agent-flow / agent-amigos /
+                          agent-audit）
   --service               systemd --user unit（agent-project.service）を生成・有効化する
                           （WSL/Linux のみ。設計 §7 の常駐化 2 案のうち systemd 案。
                           Windows タスクスケジューラ案は docs/guides/ 参照 — 二重構成しない）
@@ -218,6 +220,7 @@ pkg_of() {
     agent-project) echo agent_project ;;
     agent-flow)    echo agent_flow ;;
     agent-amigos)  echo agent_amigos ;;
+    agent-audit)   echo agent_audit ;;
     *) die "パッケージ名が未定義のエンジン: $1" ;;
   esac
 }
@@ -395,6 +398,13 @@ if installed agent-amigos; then
   echo "  agent-amigos（役割駆動の協働。常駐はしない — 単発実行）:"
   echo "    agent-amigos participate                # 参加だけ 1 巡"
   echo "    agent-amigos drive --mission-id <id>    # 終端まで回して戻る"
+  echo ""
+fi
+if installed agent-audit; then
+  echo "  agent-audit（実行証跡・セッションログの収集と知見蒸留。単発実行）:"
+  echo "    agent-audit collect                     # 源泉の増分収集（決定的）"
+  echo "    agent-audit usage --period month        # トークン・コスト集計"
+  echo "    agent-audit doctor                      # 源泉の到達性の点検"
   echo ""
 fi
 echo "  設定の雛形:"

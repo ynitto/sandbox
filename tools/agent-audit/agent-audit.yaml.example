@@ -1,0 +1,58 @@
+# agent-audit.yaml — 設定の雛形（設計: docs/designs/agent-audit-design.md §9）
+#
+# 優先順位は CLI 引数 > このファイル > 組み込み既定。
+# **agent-audit 固有の環境変数はありません**——書き先も源泉の場所もここで決めます
+# （cron・agent-loop・手動と実行環境が変わっても挙動が変わらないため）。
+# PyYAML 無し環境は JSON（agent-audit.json・同じキー）で書けます。
+
+# ---- 置き場 -----------------------------------------------------------------
+audit_dir: ""                 # 書き先（既定 ~/.agents/audit。--audit-dir > この値 > 既定）
+budget_dir: ""                # node-budget の場所（既定 ~/.agents/budget）
+
+# ---- 源泉（空 = budget-ledger / cli-native の自動発見のみ） -------------------
+sources: []                   # 絞るとき: [budget-ledger, cli-native, flow-bus, ...]
+flow_buses: []                # 追加で読む agent-flow バスのパス（例: [~/proj/bus]）
+project_roots: []             # agent-project の state clone ルート（bus/ も自動で読む）
+amigos_buses: []              # agent-amigos のバス
+loop_logs: []                 # agent-loop 本体ログ（例: [~/.agents/agent-loop.log]）
+
+# ---- LLM（agents/<name>.json 契約。段別にエージェント・モデルを選択） ----------
+agent_cli: claude             # 既定の CLI
+# model: sonnet               # 既定のモデル（省略時は CLI 定義の default_model）
+agents:
+  extract: {agent_cli: ollama, model: qwen3}   # map: 局所要約。弱モデル・ローカルで十分
+  distill: {}                                  # reduce: 一般化。既定 CLI を使う
+  review: {}                                   # 任意の検証段（distill --review 時のみ）
+agent_timeout: 300
+argv_limit: 100000
+
+# ---- extract（map）の対象・実行タイミング（設計 §6.2・§6.4） ------------------
+extract_input_chars: 8000     # 1 レコードのダイジェスト上限（弱モデル分担の前提）
+extract_filters: [failed, retried, verify-flip, needs, long-session]
+extract_min_interval_hours: 6 # 間隔ゲート（0 = 無効。--force で飛ばせる）
+extract_min_records: 10       # 蓄積ゲート: 未抽出候補がこの数未満なら走らない
+extract_max_calls: 40         # 段別上限（--force でも飛ばせない）
+
+# ---- distill（reduce）--------------------------------------------------------
+distill_min_occurrences: 2    # 洞察になる最小の同種観測数
+distill_min_interval_hours: 24
+distill_min_new_observations: 5
+distill_max_calls: 10
+
+# ---- 相関（台帳 × セッションの結合。設計 §4.3） -------------------------------
+join_slack_sec: 120
+
+# ---- 保持・定期クリーンアップ（設計 §3.3。collect 末尾へ相乗り） ---------------
+gc_auto: true
+gc_interval_hours: 24
+gc_keep_days:                 # 種別ごとに調整可（0 = その種別を消さない）
+  records: 90
+  transcripts: 30
+  observations: 90
+  reports: 30
+# insights と state.json は gc 対象外（洞察を消すと同じクラスタを再蒸留して二重に払う）
+
+# ---- 自己更新 -----------------------------------------------------------------
+update_repo: ""               # 空 = skill-registry.json から解決
+update_branch: main
+update_check_interval: 21600

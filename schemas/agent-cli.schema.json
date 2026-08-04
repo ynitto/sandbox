@@ -230,6 +230,28 @@
           }
         }
       }
+    },
+    "session_log": {
+      "type": "object",
+      "description": "この CLI 自身のセッションログ（ネイティブストア）の所在と形式の宣言（additive・任意）。読むのは agent-audit だけで、argv 組み立てのローダは無視する——既存ツールへの影響なし。宣言が無い CLI のセッションは「未収集」として明示される（黙ってスキップしない）。CLI がストアの場所・形式を変えたときの修正もこの JSON 1 ファイルで完結する（受入条件をログの所在にも適用。設計: docs/designs/agent-audit-design.md §4.2）",
+      "required": ["format", "paths"],
+      "additionalProperties": false,
+      "properties": {
+        "format": {
+          "enum": ["jsonl-dir", "kiro-sqlite"],
+          "description": "パーサの選択（実装は agent-audit に format ごと 1 つ）。jsonl-dir=1 セッション 1 *.jsonl のディレクトリ（claude / codex 系） / kiro-sqlite=kiro-cli の SQLite ストア"
+        },
+        "paths": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "ストアの場所（~ 展開・グロブ可・先勝ち）"
+        },
+        "usage": {
+          "type": "boolean",
+          "default": false,
+          "description": "実測トークン（usage）を含むか。true のセッションは台帳の実測裏取り（measured 集計）に使われる"
+        }
+      }
     }
   }
 }
