@@ -1,4 +1,5 @@
-"""doctor — 源泉の到達性・session_log 宣言の有無・未収集 CLI の一覧（設計 §8）。"""
+"""doctor — 源泉の到達性・session_log 宣言の有無・未収集 CLI・clean ルールの
+スキップと未対応ログバージョンの一覧（設計 §8）。"""
 from __future__ import annotations
 
 import os
@@ -6,6 +7,38 @@ import os
 from .collect import agent_defs_with_session_log
 from .configfile import resolve_audit_dir, resolve_budget_dir
 from .store import Store, home_relative
+
+_CLEAN_SAMPLE_LIMIT = 20
+
+
+def _print_clean_summary(name: str, slog: dict) -> None:
+    """clean 宣言の棚卸し（設計 §4.4）。直近セッションを間引いてサンプルし、
+    検出できたログバージョンの分布と、clean 適用中に出た警告（未知ルール名・
+    不正な正規表現など）をまとめて表示する。宣言が無ければその旨だけ出す。"""
+    clean = slog.get("clean")
+    if not isinstance(clean, dict):
+        print("      clean: 宣言なし（本文はそのまま収集されます）")
+        return
+    n_default = len(clean.get("rules") or [])
+    versions_cfg = clean.get("versions") or []
+    n_versions = len(versions_cfg) if isinstance(versions_cfg, list) else 0
+    print(f"      clean: 既定ルール {n_default} 件・バージョン別セット {n_versions} 段"
+          f"（version_key={clean.get('version_key') or '未設定（検出しない）'}）")
+    from . import readers
+    try:
+        sample = readers.read_sessions(slog, limit=_CLEAN_SAMPLE_LIMIT)
+    except OSError:
+        sample = []
+    if not sample:
+        return
+    seen_versions = sorted({s.get("log_version") or "（未検出）" for s in sample})
+    warnings = sorted({w for s in sample for w in (s.get("_clean_warnings") or [])})
+    print(f"      直近 {len(sample)} セッションのサンプル: 検出バージョン "
+          f"{', '.join(seen_versions)}")
+    if warnings:
+        print("      clean 警告（そのルールだけスキップ済み）:")
+        for w in warnings:
+            print(f"        - {w}")
 
 
 def cmd_doctor(args) -> int:
@@ -39,6 +72,8 @@ def cmd_doctor(args) -> int:
             found = any(_glob.glob(p) or os.path.exists(p) for p in paths)
             state = "到達可" if found else "パス未検出（この CLI を未使用なら正常）"
             print(f"  {name}: session_log あり（format={slog.get('format')}・{state}）")
+            if found:
+                _print_clean_summary(name, slog)
         else:
             print(f"  {name}: session_log なし — セッションは未収集になります"
                   "（agents/" + name + ".json への宣言で収集できます）")

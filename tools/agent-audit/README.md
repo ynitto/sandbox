@@ -37,7 +37,8 @@ agent-audit tasks                    # 洞察 → 改善タスク（JSON を std
 
 agent-audit calibrate [--write]      # rates 較正の提案（--write で budget config へ）
 agent-audit gc [--dry-run]           # 保持期限での掃除（通常は collect が定期実行）
-agent-audit doctor                   # 源泉の到達性の点検
+agent-audit reclean [--agent-cli N]  # clean ルール改訂後に既存 transcript を再生成
+agent-audit doctor                   # 源泉の到達性・clean 宣言の点検
 ```
 
 定期実行は agent-loop の定期プロンプトや cron に
@@ -64,7 +65,7 @@ agents:
 | 源泉 | 場所（既定） | 取るもの |
 |---|---|---|
 | node-budget 台帳 | `~/.agents/budget/ledger/*.jsonl` | 消費の一次事実（秒・トークン） |
-| CLI セッション | `agents/<name>.json` の `session_log` 宣言 | 実測トークン・turn 数・transcript |
+| CLI セッション | `agents/<name>.json` の `session_log` 宣言 | 実測トークン・turn 数・transcript（`session_log.clean` でノイズ除去。§4.4） |
 | agent-flow バス | 設定 `flow_buses` / `project_roots` | run の結果・失敗クラス・verify |
 | agent-project | 設定 `project_roots` の `run-log.jsonl` | run 単位の実績・コスト |
 | agent-amigos バス | 設定 `amigos_buses` | ターン数・実行秒 |
@@ -73,6 +74,17 @@ agents:
 書くのは audit ディレクトリ（既定 `~/.agents/audit/`）だけ。transcript 本文は
 ローカルに留まり、report / tasks の出力は資格情報の伏せ字化とパスのホーム相対化を
 必ず通る。
+
+## セッションログのクリーニング
+
+CLI ネイティブのセッションログにはシステムリマインダの注入・サイドチェーン・
+コマンドエコーなど会話の実体以外のノイズが混ざる。`agents/<name>.json` の
+`session_log.clean` で、CLI ごと・バージョンごとに閉じたルール（`drop-line` /
+`drop-message` / `strip-tag` / `strip-regex` / `truncate-message`）を宣言すると、
+collect が transcript・turns・extract ダイジェストから決定的に取り除く（LLM 不使用。
+設計 §4.4）。実装は `agent_audit/cleaning.py` に 1 つで、ルール改訂は JSON 追記だけで
+完結する。過去に保存済みの transcript へ改訂を反映するには `agent-audit reclean` を使う
+（records・処理済み管理には触れない）。
 
 ## テスト
 

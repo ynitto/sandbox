@@ -1,6 +1,6 @@
 # agent-audit — 設計書
 
-> 最終更新: 2026-08-03 ／ 関連: `tools/agent-tools/`（agentcore・共通インストーラ）,
+> 最終更新: 2026-08-04 ／ 関連: `tools/agent-tools/`（agentcore・共通インストーラ）,
 > `tools/kiro-log-exporter/`（収集の先例）, `schemas/node-budget.schema.json`,
 > `schemas/agent-cli.schema.json`, `docs/designs/agent-tools-concept.md`（上位文書）
 >
@@ -118,6 +118,7 @@ agent-audit はこの 4 点を「読むだけの独立 CLI + 限定された LLM
  "node":"pc-a","cwd":"~/repo",    // cwd はホーム相対へ正規化（絶対パスを残さない・C1）
  "tool":"agent-flow","workload":"flow","ref":"worker",         // ledger/run 系
  "agent_cli":"claude","model":"sonnet","session_id":"…",       // 判った範囲で
+ "log_version":"2.1.3",           // セッションログから検出した CLI バージョン（§4.4。未検出は ""）
  "seconds":42.3,"tokens_in":12000,"tokens_out":800,"usd":0.05,
  "measured":true,                 // 実測（セッションログ由来）か推定か
  "status":"done|failed|…","error_class":"quota|auth|env|transient|…",
@@ -219,6 +220,9 @@ updated_at。`kiro-log-exporter` の `.kiro_export_state.json` と同じ規律�
   として残し、agent-audit は CLI セッションの正規化・集計側を担う（重複コードは
   移植時に exporter 側から関数単位で借用し、二重管理になる共通化はしない——
   用途が「人が読むログ書き出し」と「機械集計」で違う）。
+- 本文のノイズ除去も同じ JSON の additive な `clean` ブロックで宣言する（§4.4）。
+  「何がノイズか・バージョンでどう変わるか」は format と同じく CLI の作法であり、
+  宣言（JSON）と実装（agent-audit に 1 つ）の分業も同型に揃える。
 
 ### 4.3 相関（join・決定的）
 
@@ -238,6 +242,98 @@ updated_at。`kiro-log-exporter` の `.kiro_export_state.json` と同じ規律�
 
 将来エンジン側がセッション ID を記録するようになれば（additive な改善提案として別途）、
 この節のヒューリスティクスは自然に不要へ退化する。本設計はエンジン無改造を前提に置く。
+
+### 4.4 セッションログのクリーニング（clean・決定的）
+
+CLI ネイティブのセッションログ本文は、会話の実体以外のノイズ——注入されるシステム
+リマインダ、スラッシュコマンドのエコー、コマンド標準出力のダンプ、サイドチェーンや
+進捗などのメタイベント——を大量に含む。ノイズは transcripts の可読性を下げ、extract の
+ダイジェスト（`extract_input_chars`、既定 8000 字）を信号の薄いテキストで埋め、turns を
+水増しする。クリーニングは collect がセッションを正規化する際にこれを**決定的に**
+取り除く段で、LLM は使わない（C3）。前提は 2 つ——**何がノイズかは CLI ごとの作法**で
+あり、**その作法は CLI のバージョンで変わる**。
+
+**分業（format と同型・§4.2）**: ルールの実装は閉じた enum として
+`agent_audit/cleaning.py` に 1 実装（C7）。どのルールをどの引数で使うかは
+`agents/<name>.json` の `session_log` に additive な `clean` ブロックで宣言する。
+CLI がログの書き方を変えたときの追随は、原則 JSON 1 ファイルの追記で完結する
+（不変条件 8 をクリーニングにも適用）:
+
+```jsonc
+// agents/claude.json への追記例
+"session_log": {
+  "format": "jsonl-dir",
+  "paths": ["~/.claude/projects"],
+  "usage": true,
+  "clean": {
+    "version_key": "version",        // ログ行から CLI バージョンを読むフィールド（dotted 可）
+    "rules": [                       // 既定ルールセット（どの versions にも当たらないとき）
+      {"rule": "drop-line", "field": "isSidechain", "equals": true},
+      {"rule": "drop-line", "field": "type", "in": ["progress", "file-history-snapshot"]},
+      {"rule": "strip-tag", "tags": ["system-reminder", "command-message", "command-args",
+                                     "local-command-stdout"]},
+      {"rule": "drop-message", "prefixes": ["Caveat: "]},
+      {"rule": "truncate-message", "max_chars": 4000}
+    ],
+    "versions": [                    // 先勝ち。当たったエントリの rules が既定を丸ごと置き換える
+      {"when": ">=2.0", "rules": [ /* 2.x 系の作法 */ ]}
+    ]
+  }
+}
+```
+
+**ルールは閉じた enum**（初期セット。行 = 生ログエントリ単位・本文 = 正規形メッセージ
+単位に働く）:
+
+| rule | 段 | 動作 |
+|---|---|---|
+| `drop-line` | 行 | フィールド一致（`field`（dotted 可）× `equals` / `in`）でエントリごと落とす。jsonl-dir は 1 行、kiro-sqlite は messages 配列の 1 要素が対象 |
+| `drop-message` | 本文 | `prefixes` / `contains` に一致するメッセージ全体を落とす（注入される定型文など） |
+| `strip-tag` | 本文 | `<tag>…</tag>` ブロックを除去。非貪欲・入れ子非対応の単純な規則で、**閉じタグが無ければ消さない** |
+| `strip-regex` | 本文 | 宣言した正規表現に一致する部分を除去。**最後の手段**——新バージョンのノイズへ agent-audit のリリースを待たず JSON 追記だけで応急対応する逃げ道。コンパイルできない式はそのルールだけスキップして警告 |
+| `truncate-message` | 本文 | `max_chars` を超えるメッセージを先頭優先で切り詰め、`…[truncated N chars]` を付す（ツール出力の丸ごと貼り付け対策） |
+
+共通の後処理として、クリーニング後に空白だけになったメッセージは落とす。
+**turns はクリーニング後のメッセージ数**——会話の実体だけを数え、ノイズで水増ししない。
+
+**フェイルの向きは scrub と逆。** scrub（§7）は「漏れは許容しない・伏せ過ぎは許容」
+だが、クリーニングは**確実にノイズと判ったものだけ消し、知らない構造は残す**。ノイズ
+除去は品質最適化であって正しさのゲートではなく、消し過ぎは蒸留の証跡（不変条件 7）を
+壊す。だから未知のルール名（新しい JSON × 古い agent-audit）・閉じタグ欠落・不正な
+正規表現はすべて「そのルールだけスキップ + collect が明示的に警告」で、収集は止めない。
+スキップの発生は doctor が一覧する（黙って部分適用を完全適用と偽らない）。
+
+**バージョン差への追随**は 3 層で吸収する:
+
+1. **検出**: セッションのログバージョンは `version_key` で**ログ自身から**決定的に読む
+   （先頭 50 行の固定プローブ。見つからなければ `""`）。CLI バイナリに今のバージョンを
+   聞く方法は採らない——ログを書いたバージョンと今入っているバージョンは別物でありうる
+   （古いログと新しいログは同じストアに同居する）。検出値は record の additive な
+   `log_version` に残す（`audit-record.schema.json` 改訂）。
+2. **選択**: `versions:` を先勝ちで評価し、`when`（`=X` / `>=X` / `<X` の空白区切り
+   AND。ドット区切りを数値列として比較）に当たったエントリの `rules` が既定を
+   **丸ごと置き換える**（マージはしない——部分マージの規則は宣言を読めなくする。
+   重複記述のコストより予測可能性を取る）。未検出・不一致は既定 `rules`。選択は
+   セッション単位なので、バージョン混在ストアでも各セッションは自分の書かれ方に
+   合ったルールで洗われる。
+3. **応急対応の逃げ道**: 既存 enum で表せない新ノイズは `strip-regex` の JSON 追記で
+   止血し、恒常化するなら enum への昇格（agent-audit 側 1 実装の追加）を後追いで行う。
+
+**適用点と来歴**: reader（正規形 §4.2）→ clean → turns 計上・transcript 書き出し、の
+1 箇所だけ。下流（records の turns・transcripts・extract ダイジェスト）は常に同じ
+クリーニング済みビューを見る。transcript ヘッダには適用ルール名の並びと検出バージョン
+を記録し、同じ入力と同じ宣言からは必ず同じ出力になる（再現性）。ノード設定
+（agent-audit.yaml）にはクリーニングのキーを**増やさない**——ルールの所有者は CLI 定義
+であり、ノードごとに洗い方が変わると効果測定の再現（P4）が壊れる。
+
+**再クリーニング（`agent-audit reclean`）**: ルール改訂を過去分へ波及させる導線。源泉は
+読み取り専用のまま CLI ネイティブストアに残っているから、再読して**既存 transcript
+だけ**を現行ルールで再生成する。records・state.json（カーソル・seen・extracted）には
+触れない——再クリーニングが LLM 段への再投入を引き起こすことはない。CLI 側の掃除で
+ストアから消えたセッションは対象外（best-effort であることを実行結果に明示する）。
+
+**scrub との関係**: クリーニング（ノイズ）と scrub（秘密）は別の関心で、クリーニングは
+セキュリティ層ではない。export 系出力が決定的スクラバを必ず通す規律（§7）は不変。
 
 ## 5. 決定的集計（usage / stats / calibrate）
 
@@ -291,7 +387,8 @@ agents:
 ### 6.2 extract（map・弱モデル可）
 
 - 入力は 1 レコードの**ダイジェスト**（status・error_class・retries・verify・
-  transcript 抜粋を `extract_input_chars`（既定 8000）に決定的に切り詰め）。長大
+  transcript 抜粋（§4.4 のクリーニング済み）を `extract_input_chars`（既定 8000）に
+  決定的に切り詰め）。長大
   transcript を丸ごと食わせない——弱いモデルに分担できるのはこの入力制限があるから。
 - **対象の選抜は決定的**: 既定では「失敗 run・リトライ ≥ 2・verify fail→pass・needs 化・
   異常に長いセッション」だけを抽出対象にする（`extract_filters`）。成功して何も起きなかった
@@ -374,7 +471,8 @@ LLM 段には停止条件を重ねる（C7): 段別上限（`extract_max_calls` 
 | `report [--kind K] [--out F]` | 不使用 | Markdown レポート |
 | `tasks [--json]` | 不使用 | 洞察 → 改善タスク（task.schema.json） |
 | `gc [--dry-run]` | 不使用 | 種別別保持日数での掃除（§3.3。`gc_auto` で collect へ相乗り） |
-| `doctor` | 不使用 | 源泉の到達性・session_log 宣言の有無・未収集 CLI の一覧 |
+| `reclean [--agent-cli N] [--dry-run]` | 不使用 | クリーニングルール改訂後の transcript 再生成（§4.4。records・処理済み管理は不変） |
+| `doctor` | 不使用 | 源泉の到達性・session_log 宣言の有無・未収集 CLI・clean ルールのスキップ（未知ルール名等）と未対応ログバージョンの一覧 |
 | `update [--check]` | 不使用 | 自己更新（§9） |
 
 `run`（collect → extract → distill → report の一括）は**設けない**。段を跨ぐ一括は
@@ -445,14 +543,16 @@ update_check_interval: 21600
   新設（所有者: agent-audit、正典は schemas/README.md の表へ追記）。
   `schemas/agent-cli.schema.json` へ `session_log` を additive 追加（所有者: 共有。
   ローダは agentcli が無視し、読むのは agent-audit だけ——既存ツールへの影響ゼロ）。
+  `session_log.clean` ブロック（§4.4）と audit-record の `log_version` も、同じ受入条件の
+  additive 改訂として続ける。
 
 ## 10. 不変条件
 
 1. **読み手に徹する。** 他ツールのバス・状態リポジトリ・台帳・CLI ストアへ書かない。
    書くのは audit ディレクトリと、明示 `--write` 時の budget `rates`（契約上の管理面
    キー）だけ。
-2. **決定的にできる処理に LLM を使わない。** 収集・正規化・相関・集計・クラスタリング・
-   レポート描画は stdlib のみで再現可能。LLM は extract / distill / review の 3 purpose に
+2. **決定的にできる処理に LLM を使わない。** 収集・正規化・クリーニング・相関・集計・
+   クラスタリング・レポート描画は stdlib のみで再現可能。LLM は extract / distill / review の 3 purpose に
    閉じる。
 3. **偽の実測を作らない。** measured と estimated を混ぜない。相関が一意でなければ結合
    しない。読めない源泉は「未収集」と明示して exit 2（黙って部分集計を全体と偽らない）。
@@ -465,8 +565,8 @@ update_check_interval: 21600
    タスク）と不可の層（transcript）を物理的に分け、export は決定的スクラバを通す。
 7. **蒸留の根拠を追跡できる。** 洞察 → 観測 → レコード → 源泉の参照鎖を欠かさない。
    根拠の無い洞察は生成しない（distill はクラスタ単位でだけ走る）。
-8. **CLI の作法の変更は `agents/<name>.json` 1 ファイルで完結する**（session_log にも
-   agent-cli プラグイン契約の受入条件を適用）。
+8. **CLI の作法の変更は `agents/<name>.json` 1 ファイルで完結する**（session_log と
+   その clean ルール宣言にも agent-cli プラグイン契約の受入条件を適用）。
 
 ## 11. 非目標
 
@@ -486,6 +586,7 @@ update_check_interval: 21600
 | M2 | collect の flow-bus / project-root / amigos-bus / loop-log + stats + 相関 + calibrate | 4 ツールの実行品質が 1 コマンドで見える。rates 較正が回る |
 | M3 | extract + cluster + distill + report | 弱モデル分担で観測→洞察が出る。消費は台帳で追える |
 | M4 | tasks + review + codex ほか session_log 宣言の拡充 | 洞察が agent-project の intake へ流れ、昇格まで追跡できる |
+| M5 | クリーニング（`session_log.clean` 契約 + `cleaning.py` + reclean + doctor 拡張。claude / codex / kiro のルール整備） | transcript と extract ダイジェストが会話の実体だけになり、turns がノイズで水増しされない。バージョン混在ストアでも各セッションが自分のバージョンのルールで洗われる |
 
 各段は独立にリリース可能で、M1 の時点から他ツール・CLI 単独利用の両方で価値が出る
 （usage 集計はエンジン利用の有無に依らない）。

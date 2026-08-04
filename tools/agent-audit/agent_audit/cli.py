@@ -64,6 +64,12 @@ def _build_parser() -> argparse.ArgumentParser:
     g = sub.add_parser("gc", help="種別別保持日数での掃除（insights は対象外）")
     g.add_argument("--dry-run", action="store_true", dest="dry_run")
 
+    rc = sub.add_parser("reclean", help="clean ルール改訂後に既存 transcript を再生成する"
+                                        "（records・処理済み管理は不変）")
+    rc.add_argument("--agent-cli", action="append", dest="only_agent_cli",
+                     help="対象を絞る CLI 名（複数可。省略時は transcript のある全 CLI）")
+    rc.add_argument("--dry-run", action="store_true", dest="dry_run")
+
     sub.add_parser("doctor", help="源泉の到達性・session_log 宣言の棚卸し")
 
     up = sub.add_parser("update", help="自己更新（スキルリポジトリから取り込み）")
@@ -107,6 +113,9 @@ def main(argv=None) -> int:
     if args.command == "gc":
         from .gccmd import cmd_gc
         return cmd_gc(args)
+    if args.command == "reclean":
+        from .reclean import cmd_reclean
+        return cmd_reclean(args)
     if args.command == "doctor":
         from .doctor import cmd_doctor
         return cmd_doctor(args)

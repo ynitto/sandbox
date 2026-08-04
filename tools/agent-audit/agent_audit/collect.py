@@ -189,6 +189,7 @@ def collect_cli_native(args, store: Store, *, with_transcripts: bool, since: flo
                 "cwd": home_relative(sess["cwd"]),
                 "agent_cli": name,
                 "model": sess["model"],
+                "log_version": sess.get("log_version") or "",
                 "session_id": sess["native_id"],
                 "started_at": _iso(sess["created_at"]),
                 "turns": sess["turns"],

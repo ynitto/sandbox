@@ -1,12 +1,13 @@
-"""CLI ネイティブセッションストアのリーダ — format ごとに 1 実装（設計 §4.2・C7）。
+"""CLI ネイティブセッションストアのリーダ — format ごとに 1 実装(設計 §4.2・C7)。
 
 どこに・どの形式であるかは `agents/<name>.json` の `session_log` ブロックが宣言する
-（契約: schemas/agent-cli.schema.json）。ここは format の閉じた enum だけを実装し、
-新 CLI が既存 format なら JSON 追記だけで収集できる。
+(契約: schemas/agent-cli.schema.json)。ここは format の閉じた enum だけを実装し、
+新 CLI が既存 format なら JSON 追記だけで収集できる。本文のノイズ除去(clean)も同じ
+`session_log` に additive に載る宣言で、実装は `cleaning.py` に 1 つ(設計 §4.4)。
 
-セッションの正規形（このモジュールの戻り値）:
+セッションの正規形(このモジュールの戻り値):
   {"native_id", "store", "cwd", "created_at", "updated_at",  # epoch 秒
-   "model", "turns", "tokens_in", "tokens_out", "usage_measured",
+   "model", "log_version", "turns", "tokens_in", "tokens_out", "usage_measured",
    "messages": [(role, text), ...]}   # want_messages=True のときだけ
 """
 from __future__ import annotations
@@ -16,45 +17,83 @@ import json
 import os
 import sqlite3
 
+from . import cleaning
+from .util import elog
+
 FORMATS = ("jsonl-dir", "kiro-sqlite")
 
 
-def read_sessions(session_log: dict, *, want_messages: bool = False) -> "list[dict]":
-    fmt = (session_log or {}).get("format")
-    paths = [os.path.expanduser(p) for p in (session_log or {}).get("paths") or []]
+def read_sessions(session_log: dict, *, want_messages: bool = False,
+                   limit: "int | None" = None) -> "list[dict]":
+    """limit を指定すると、更新が新しい順に最大 limit セッションだけ読む
+    （doctor の棚卸しなど、全件走査が高くつく場面向けの間引き。通常の collect は
+    limit なし = 全件・冪等）。"""
+    session_log = session_log or {}
+    fmt = session_log.get("format")
+    paths = [os.path.expanduser(p) for p in session_log.get("paths") or []]
+    clean = session_log.get("clean") if isinstance(session_log.get("clean"), dict) else None
     if fmt == "jsonl-dir":
         out = []
         for p in paths:
-            out.extend(_read_jsonl_dir(p, want_messages=want_messages))
-        return out
+            out.extend(_read_jsonl_dir(p, want_messages=want_messages, clean=clean, limit=limit))
+        return _cap(out, limit)
     if fmt == "kiro-sqlite":
         out = []
         for p in paths:
             for db in sorted(glob.glob(p)) or ([p] if os.path.exists(p) else []):
-                out.extend(_read_kiro_sqlite(db, want_messages=want_messages))
-        return out
+                out.extend(_read_kiro_sqlite(db, want_messages=want_messages, clean=clean))
+        return _cap(out, limit)
     return []          # 未知 format は「未収集」— 呼び出し側（doctor / collect）が明示する
+
+
+def _cap(sessions: "list[dict]", limit: "int | None") -> "list[dict]":
+    if limit is None or len(sessions) <= limit:
+        return sessions
+    return sorted(sessions, key=lambda s: s.get("updated_at") or 0.0, reverse=True)[:limit]
+
+
+def _make_warn(path: str, sink: "list[str] | None" = None):
+    """1 セッション内で同じ警告は 1 回だけ出す（同じノイズが大量行に散っていても
+    ログを埋めない）。sink を渡すと同じ文言をそこへも集める（doctor の棚卸し用）。"""
+    seen: "set[str]" = set()
+
+    def warn(msg: str) -> None:
+        if msg not in seen:
+            seen.add(msg)
+            elog(f"clean: {os.path.basename(path)}: {msg}")
+            if sink is not None:
+                sink.append(msg)
+    return warn
 
 
 # -- jsonl-dir（claude / codex 系: 1 セッション = 1 *.jsonl） -------------------
 
-def _read_jsonl_dir(root: str, *, want_messages: bool) -> "list[dict]":
+def _read_jsonl_dir(root: str, *, want_messages: bool, clean: "dict | None" = None,
+                     limit: "int | None" = None) -> "list[dict]":
     sessions = []
     pattern = os.path.join(glob.escape(root), "**", "*.jsonl")
-    for path in sorted(glob.glob(pattern, recursive=True)):
-        s = _parse_jsonl_session(path, want_messages=want_messages)
+    paths = sorted(glob.glob(pattern, recursive=True))
+    if limit is not None and len(paths) > limit:
+        # 全件は解析せずに済ませる粗い間引き: mtime が新しい順に limit 件だけ解析する
+        # （正確な updated_at はログ内容依存だが、doctor の棚卸しは近似で十分）。
+        paths = sorted(paths, key=lambda p: _safe_mtime(p), reverse=True)[:limit]
+    for path in paths:
+        s = _parse_jsonl_session(path, want_messages=want_messages, clean=clean)
         if s:
             sessions.append(s)
     return sessions
 
 
-def _parse_jsonl_session(path: str, *, want_messages: bool) -> "dict | None":
-    first_ts = last_ts = None
-    cwd = model = sid = None
-    sum_in = sum_out = 0
-    last_total = None
-    turns = 0
-    messages: "list[tuple[str, str]]" = []
+def _safe_mtime(path: str) -> float:
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
+
+
+def _parse_jsonl_session(path: str, *, want_messages: bool,
+                          clean: "dict | None" = None) -> "dict | None":
+    objs: "list[dict]" = []
     try:
         with open(path, encoding="utf-8") as f:
             for line in f:
@@ -65,43 +104,62 @@ def _parse_jsonl_session(path: str, *, want_messages: bool) -> "dict | None":
                     obj = json.loads(line)
                 except ValueError:
                     continue
-                if not isinstance(obj, dict):
-                    continue
-                ts = _ts_of(obj)
-                if ts is not None:
-                    first_ts = ts if first_ts is None else min(first_ts, ts)
-                    last_ts = ts if last_ts is None else max(last_ts, ts)
-                cwd = cwd or _str_of(obj, "cwd")
-                sid = sid or _str_of(obj, "sessionId") or _str_of(obj, "session_id") \
-                    or _str_of(obj, "conversation_id")
-                msg = obj.get("message") if isinstance(obj.get("message"), dict) else None
-                payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else None
-                for m in (msg, payload):
-                    if m and not model and isinstance(m.get("model"), str):
-                        model = m["model"]
-                if not model and isinstance(obj.get("model"), str):
-                    model = obj["model"]
-                # 使用量: メッセージ単位の usage は加算（API 呼び出しごとに課金される）、
-                # 累計形（total_token_usage）は最後の値を採る。両方あれば累計形が勝つ。
-                usage = None
-                for container in (msg, payload, obj):
-                    if container and isinstance(container.get("usage"), dict):
-                        usage = container["usage"]
-                        break
-                if usage is not None:
-                    i, o = _usage_of(usage)
-                    sum_in += i
-                    sum_out += o
-                total = _find_total_usage(obj)
-                if total is not None:
-                    last_total = total
-                role_text = _message_of(obj)
-                if role_text:
-                    turns += 1
-                    if want_messages:
-                        messages.append(role_text)
+                if isinstance(obj, dict):
+                    objs.append(obj)
     except OSError:
         return None
+
+    warnings: "list[str]" = []
+    warn = _make_warn(path, sink=warnings)
+    version = cleaning.probe_version(objs, (clean or {}).get("version_key")) if clean else ""
+    rules, _when = cleaning.select_rules(clean, version) if clean else ([], "")
+
+    first_ts = last_ts = None
+    cwd = model = sid = None
+    sum_in = sum_out = 0
+    last_total = None
+    turns = 0
+    messages: "list[tuple[str, str]]" = []
+    for obj in objs:
+        if rules and cleaning.should_drop_line(obj, rules, warn=warn):
+            continue
+        ts = _ts_of(obj)
+        if ts is not None:
+            first_ts = ts if first_ts is None else min(first_ts, ts)
+            last_ts = ts if last_ts is None else max(last_ts, ts)
+        cwd = cwd or _str_of(obj, "cwd")
+        sid = sid or _str_of(obj, "sessionId") or _str_of(obj, "session_id") \
+            or _str_of(obj, "conversation_id")
+        msg = obj.get("message") if isinstance(obj.get("message"), dict) else None
+        payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else None
+        for m in (msg, payload):
+            if m and not model and isinstance(m.get("model"), str):
+                model = m["model"]
+        if not model and isinstance(obj.get("model"), str):
+            model = obj["model"]
+        # 使用量: メッセージ単位の usage は加算（API 呼び出しごとに課金される）、
+        # 累計形（total_token_usage）は最後の値を採る。両方あれば累計形が勝つ。
+        usage = None
+        for container in (msg, payload, obj):
+            if container and isinstance(container.get("usage"), dict):
+                usage = container["usage"]
+                break
+        if usage is not None:
+            i, o = _usage_of(usage)
+            sum_in += i
+            sum_out += o
+        total = _find_total_usage(obj)
+        if total is not None:
+            last_total = total
+        role_text = _message_of(obj)
+        if role_text:
+            role, text = role_text
+            if rules:
+                text = cleaning.clean_message_text(text, rules, warn=warn)
+            if text:
+                turns += 1
+                if want_messages:
+                    messages.append((role, text))
     if first_ts is None and turns == 0:
         return None
     tokens_in, tokens_out = (last_total if last_total is not None else (sum_in, sum_out))
@@ -116,11 +174,13 @@ def _parse_jsonl_session(path: str, *, want_messages: bool) -> "dict | None":
         "created_at": first_ts or mtime,
         "updated_at": last_ts or mtime,
         "model": model or "",
+        "log_version": version,
         "turns": turns,
         "tokens_in": tokens_in or None,
         "tokens_out": tokens_out or None,
         "usage_measured": bool(tokens_in or tokens_out),
         "messages": messages,
+        "_clean_warnings": warnings,
     }
 
 
@@ -191,7 +251,8 @@ def _message_of(obj: dict) -> "tuple[str, str] | None":
 
 # -- kiro-sqlite（~/.kiro/store.db。tools/kiro-log-exporter の手順を移植） ------
 
-def _read_kiro_sqlite(db_path: str, *, want_messages: bool) -> "list[dict]":
+def _read_kiro_sqlite(db_path: str, *, want_messages: bool,
+                       clean: "dict | None" = None) -> "list[dict]":
     if not os.path.exists(db_path):
         return []
     sessions = []
@@ -209,7 +270,7 @@ def _read_kiro_sqlite(db_path: str, *, want_messages: bool) -> "list[dict]":
             cols = [d[0].lower() for d in cur.description]
             for row in cur.fetchall():
                 data = dict(zip(cols, row))
-                s = _parse_kiro_row(data, db_path, want_messages=want_messages)
+                s = _parse_kiro_row(data, db_path, want_messages=want_messages, clean=clean)
                 if s:
                     sessions.append(s)
         finally:
@@ -219,7 +280,8 @@ def _read_kiro_sqlite(db_path: str, *, want_messages: bool) -> "list[dict]":
     return sessions
 
 
-def _parse_kiro_row(data: dict, db_path: str, *, want_messages: bool) -> "dict | None":
+def _parse_kiro_row(data: dict, db_path: str, *, want_messages: bool,
+                     clean: "dict | None" = None) -> "dict | None":
     from .util import parse_iso
     sid = str(data.get("id") or "").strip()
     if not sid:
@@ -234,17 +296,30 @@ def _parse_kiro_row(data: dict, db_path: str, *, want_messages: bool) -> "dict |
             raw = json.loads(raw)
         except ValueError:
             raw = None
+
+    warnings: "list[str]" = []
+    warn = _make_warn(f"{db_path}::{sid}", sink=warnings)
+    version = cleaning.probe_version([data], (clean or {}).get("version_key")) if clean else ""
+    rules, _when = cleaning.select_rules(clean, version) if clean else ([], "")
+
     messages: "list[tuple[str, str]]" = []
     turns = 0
     if isinstance(raw, list):
         for item in raw:
             if not isinstance(item, dict):
                 continue
+            if rules and cleaning.should_drop_line(item, rules, warn=warn):
+                continue
             got = _message_of(item)
-            if got:
+            if not got:
+                continue
+            role, text = got
+            if rules:
+                text = cleaning.clean_message_text(text, rules, warn=warn)
+            if text:
                 turns += 1
                 if want_messages:
-                    messages.append(got)
+                    messages.append((role, text))
 
     def _sec(v):
         if isinstance(v, (int, float)):
@@ -259,9 +334,11 @@ def _parse_kiro_row(data: dict, db_path: str, *, want_messages: bool) -> "dict |
         "created_at": _sec(data.get("created_at", 0)),
         "updated_at": _sec(data.get("updated_at") or data.get("created_at", 0)),
         "model": "",
+        "log_version": version,
         "turns": turns,
         "tokens_in": None,
         "tokens_out": None,
         "usage_measured": False,
         "messages": messages,
+        "_clean_warnings": warnings,
     }
