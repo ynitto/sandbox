@@ -20,7 +20,8 @@ test('features に各制御面が並ぶ', () => {
   const features = loadFeatures();
   const ids = features.map((f) => f.id);
   assert.deepStrictEqual(ids,
-    ['agent-project', 'kiro-loop', 'cowork', 'amigos', 'orchestration', 'delegation', 'participation']);
+    ['agent-project', 'kiro-loop', 'cowork', 'amigos', 'orchestration', 'delegation', 'participation',
+     'agent-audit']);
 });
 
 test('各 feature が registerIpc / preloadApi / configDefaults を持つ', () => {
@@ -168,6 +169,12 @@ test('base / feature の入口ファイルが存在する', () => {
     'features/participation/preload.js',
     'features/participation/main/participation.js',
     'features/participation/main/ipc.js',
+    'features/agent-audit/index.js',
+    'features/agent-audit/config.js',
+    'features/agent-audit/preload.js',
+    'features/agent-audit/README.md',
+    'features/agent-audit/main/audit.js',
+    'features/agent-audit/main/ipc.js',
   ]) {
     assert.ok(fs.existsSync(path.join(root, rel)), rel);
   }
@@ -185,6 +192,8 @@ test('HTML に data-feature マーカーがある', () => {
   assert.ok(html.includes('tab-orchestration'));
   assert.ok(html.includes('data-feature="participation"'));
   assert.ok(html.includes('tab-participation'));
+  assert.ok(html.includes('data-feature="agent-audit"'));
+  assert.ok(html.includes('tab-agent-audit'));
 });
 
 test('orchestration はノード予算 v2 / 制御 / ドロップイン API を登録する', () => {
@@ -263,6 +272,31 @@ test('participation はrun限定ワーカーの参加 API を登録する', () =
   });
   assert.strictEqual(join({ runId: 'run-1' }), 'ok');
   assert.deepStrictEqual(calls, [['participation:flowJoin', { runId: 'run-1' }]]);
+});
+
+test('agent-audit は LLM 不使用段（収集・集計・点検）の API だけを登録する', () => {
+  const auditFeature = loadFeatures().find((f) => f.id === 'agent-audit');
+  assert.ok(auditFeature.configDefaults.agentAudit);
+  assert.strictEqual(auditFeature.configDefaults.agentAudit.collectIntervalMin, 0);
+  const registered = [];
+  auditFeature.registerIpc({
+    handle: (channel) => registered.push(channel),
+    loadConfig: () => ({}),
+    saveConfig: () => ({}),
+  });
+  assert.deepStrictEqual(registered.sort(),
+    ['agentAudit:collect', 'agentAudit:doctor', 'agentAudit:stats', 'agentAudit:usage'].sort());
+  const api = auditFeature.preloadApi();
+  const calls = [];
+  const usage = api.agentAuditUsage((channel, args) => {
+    calls.push([channel, args]);
+    return 'ok';
+  });
+  assert.strictEqual(usage({ period: 'month', by: 'agent_cli' }), 'ok');
+  assert.deepStrictEqual(calls, [['agentAudit:usage', { period: 'month', by: 'agent_cli' }]]);
+  for (const name of ['agentAuditCollect', 'agentAuditUsage', 'agentAuditStats', 'agentAuditDoctor']) {
+    assert.strictEqual(typeof api[name], 'function', name);
+  }
 });
 
 console.log(`\n${passed} tests passed`);
