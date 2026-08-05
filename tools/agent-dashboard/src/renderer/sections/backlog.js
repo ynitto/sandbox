@@ -67,6 +67,25 @@ function rejectConfirmMessage(p, id, what) {
   );
 }
 
+// 強制完了（打ち切り）の確認文。承認と違って verify を通さずに done にする不可逆な操作
+// なので、「何が起きないか」（検証・成果の統合）まで書き切ってから押させる。
+// t は backlog のタスク。要対応カードのように状態を持たない呼び出し（合成票）もあるため、
+// id 以外は欠けていてもよい形で受ける。
+function forceCompleteConfirmMessage(p, t) {
+  const downs = dependentsOf((p && p.backlog) || [], t.id);
+  const impact = downs.length
+    ? `\nこのタスクの完了を待っていたタスク（${downs.map((x) => x.id).join(', ')}）は実行に進みます。`
+    : '';
+  const now = t.status ? `（現在: ${statusLabel(t.status)}）` : '';
+  return (
+    `${t.id} を強制的に完了にします${now}。\n` +
+    '検証（verify）は実行しません。成果ブランチの自動統合も行いません。\n' +
+    '履歴には「FORCED（未検証）」として残り、完了として扱われます。' +
+    impact +
+    '\n進まないタスクを打ち切るための操作です。よろしいですか？'
+  );
+}
+
 function sanitizeTaskId(id) {
   return String(id == null ? '' : id)
     .replace(/[^\w.-]+/g, '_')
@@ -813,6 +832,8 @@ function showTaskDialog(id, scope) {
             <button data-taskact="pin" title="他より先に着手させます">最優先にする</button>
             <button data-taskact="defer" title="優先度を下げて後に回します">後回しにする</button>
             <button data-taskact="hold" title="実行を止めて保留にします（再開には承認が必要）">保留にする</button>
+            <button class="danger" data-taskact="force-complete" data-confirm-force="1"
+              title="どうにも進まないタスクを、検証せずに完了として打ち切ります（履歴には未検証として残ります）">強制的に完了にする</button>
             <span class="spacer"></span>
             <button class="danger" id="btn-task-delete" ${claimed ? 'disabled' : ''}
               title="${claimed ? '実行中のタスクは削除できません' : 'タスクをゴミ箱へ移動します（決定記録は残りません）'}">削除</button>
@@ -922,6 +943,7 @@ function showTaskDialog(id, scope) {
     pin: '最優先に設定しました',
     defer: '後回しに設定しました',
     hold: '保留にしました',
+    'force-complete': '強制完了を送信しました（検証は行われません）',
   };
   for (const btn of document.querySelectorAll('#dlg-task-body button[data-taskact]')) {
     btn.addEventListener('click', async () => {
@@ -929,6 +951,11 @@ function showTaskDialog(id, scope) {
       if (btn.dataset.confirmReject) {
         if (!reason) return toast('却下には理由の記入が必要です（決定記録に残ります）');
         const yes = await confirmDialog(rejectConfirmMessage(p, t.id, '廃止して記録に残す'));
+        if (!yes) return;
+      }
+      if (btn.dataset.confirmForce) {
+        if (!reason) return toast('強制完了には理由の記入が必要です（決定記録に残ります）');
+        const yes = await confirmDialog(forceCompleteConfirmMessage(p, t));
         if (!yes) return;
       }
       const ok = await guard('操作', async () => {

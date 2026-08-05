@@ -7,6 +7,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard / agent-project: 進まないタスクの強制完了（force-complete）
+
+どうにも進まないタスクを、人の判断で途中から打ち切って完了にできるようにした。承認
+（`approve --complete`）は検収待ち（`review` と成果のある `blocked`）にしか効かず、
+`doing`（実行中）・`offloaded`（委譲中）・`ready` で堂々巡りしているタスクは画面から
+完了にできなかった——承認しても `ready` へ積み直され、同じ工程がまた同じところで止まる。
+
+- **agent-project**: `force-complete <id> --reason …`（CLI・`commands/` ドロップの両方）。
+  verify は実行せず、成果ブランチの自動統合もせず、委譲中の run を切り離してから done を
+  確定する。理由は必須
+- 通常の完了と混ざらないよう **`FORCED`（未検証）として記録**する: 納品書
+  （`archive/<id>.md` の `- 検収 : FORCED`・`verify … → 未実施`）／受領書（`DELIVERY.md`
+  の検収欄）／決定記録（`action: force-complete`）。track の実績には手戻りとして記録
+- 実行中に打ち切ったとき、遅れて戻ってきた試行の結果で**タスクが backlog へ復活しない**
+  ようにした（settle の入口でタスクファイルの消失と `force_completed` マーカーを見る）
+- **agent-dashboard**: タスク詳細の「操作」タブに「強制的に完了にする」、要対応カード
+  （作業再開）に「打ち切って完了」。理由の記入必須＋確認ダイアログで「検証しない・統合
+  しない・未検証として残る」ことを押す前に提示する
+- 受領書の検収欄が明記されていない過去の `archive/` は従来どおり `PASS` として再生成する
+
+
 ### agent-tools / agentcore: 監査で見つかった実装バグの修正
 
 agentcore を横断監査し、再現できた高確度の実装バグを直した（柱 1 の分担契約と柱 2 の

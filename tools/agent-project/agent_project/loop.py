@@ -470,6 +470,17 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
                 continue
             cycle += 1
             cycle_start = time.time()
+            # act の最中に人がタスクを片付けた（強制完了・削除・却下）なら、この試行の結果は
+            # どの経路でも確定しない。以降の cancelled / act 失敗 / settle はいずれも
+            # persist_task でタスクを書き戻すため、ここで抜けないと完了させたタスクが復活する。
+            cleared = human_cleared_reason(cfg, task.id)
+            if cleared:
+                append_journal(cfg.journal,
+                               f"cycle {cycle}: {task.id} は実行中に人が片付けたため結果を確定しない"
+                               f"（{cleared}）")
+                release_claim(cfg, task)
+                unavailable.add(task.id)
+                continue
             dtok, dusd = parse_cost(act_msg)             # このサイクルのコストを計上（予算ゲート用）
             tokens_used += dtok
             cost_used += dusd

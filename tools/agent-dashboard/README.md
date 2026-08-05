@@ -323,6 +323,7 @@ agent-project の人間ループはこのアプリ内で完結できる。いず
 | 承認して done 確定 | 要対応カード（review / milestone） | `commands/<name>.json` ドロップ（`ingest_commands` が CLI と同一ロジック・同一 DR で実行） |
 | 差し戻す | 要対応カード（review） | 修正方針の記入必須 → feedback として確定（手戻り扱い） |
 | 保留（hold） | 要対応カード・タスク詳細 | 同上（`{"command":"hold"}` ドロップ → policy.deny 追加） |
+| ⛔ 強制的に完了にする（force-complete） | タスク詳細の「操作」タブ／要対応カード（blocked）の「打ち切って完了」 | **どうにも進まないタスクを人の判断で打ち切って done 確定する最後の口**（`{"command":"force-complete"}` ドロップ）。承認は検収待ち（review／成果のある blocked）にしか効かないため、実行中（doing）・委譲中（offloaded）・実行待ち（ready）で堂々巡りしているタスクは画面から完了にできず、承認しても ready へ積み直されて同じ工程がまた止まる往復になっていた。本体は **verify を実行せず**、**成果ブランチの自動統合もせず**（検証していない変更をターゲットへ入れない）、委譲中の run を切り離してから done を確定する。**理由は必須**（決定記録 `action: force-complete`）。通常の完了と混ざらないよう、納品書（`archive/<id>.md` の `- 検収 : FORCED`・`verify … → 未実施`）と受領書（`DELIVERY.md` の検収欄 `FORCED`）に**未検証として残る**。押す前に確認ダイアログで「検証しない・統合しない・未検証として残る」ことを提示する。**やめる（作り直させない）なら却下（reject）**、**終わりにするなら強制完了** |
 | 最優先へ / 後回し | タスク詳細 | 同上（`{"command":"pin"/"defer"}` ドロップ → policy 追記） |
 | ✎ 修正して指示（revise） | タスク詳細（backlog）／要対応詳細（blocked の verify 変更） | 同上（`{"command":"revise"}` ドロップ）。タイトル・優先度・依存 after・verify・accept の**置換**とフィードバック注入。**実行中（doing）のタスクにも送れ**、本体は現在の試行の結果を確定せず（verify も done もせず）修正内容で積み直す＝気づいた時点の早い軌道修正。変更した項目だけが送られ、DR（`action: revise`）に記録される |
 | ＋ バックログに追加 | バックログタブ | `inbox/<name>.json` ドロップ（E4 push 型取り込み口）で**バックログにタスクを 1 件追加**（本体が次サイクルで `backlog/<id>.md` にする）。verify / accept / priority / note / id / after 付き。ダイアログでは既存 backlog 一覧・先行タスク datalist に加え、「AIで依存・優先度を提案」で after/priority の下書きもできる（投入は人の「追加」） |
@@ -658,7 +659,11 @@ npm run dist             # Windows 向けビルド（portable + NSIS → release
   状態遷移を直接書き換える操作は意図的に持たない（done は verify のみが根拠、の
   不変条件をアプリから壊さないため。revise も状態を書かず、本体側の同一ロジックが遷移を決める）。
   例外は 🗑 削除（タスク / run）のみ —
-  削除の公式契約が無いため、確認ダイアログのうえゴミ箱への移動として行う
+  削除の公式契約が無いため、確認ダイアログのうえゴミ箱への移動として行う。
+  なお **⛔ 強制的に完了にする（force-complete）は例外ではない** — アプリは他の指示と同じく
+  `commands/` へ投函するだけで、done を確定するのは本体側の同一ロジックである。
+  「verify を通していない完了」という不変条件の例外そのものは本体が持ち、納品書・受領書・
+  決定記録に `FORCED`（未検証）として残す
 - **編集できるのは「人が書く上位入力」だけ**（charter.md / policy.md / repos.*）。これらは
   agent-project の入力ファイルなので、アプリから編集しても後段（backlog 生成・ルーティング）は
   本体の run が決定的に作り直す＝done の不変条件は保たれる。**タスク状態ファイル

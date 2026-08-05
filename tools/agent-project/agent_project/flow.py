@@ -608,6 +608,29 @@ def _load_task_file(cfg: "Config", tid: str) -> "Task | None":
         return None
 
 
+def human_cleared_reason(cfg: "Config", tid: str) -> "str | None":
+    """実行中に人がこのタスクを片付けたか（強制完了・削除・却下）。片付いていればその理由。
+
+    片付いた後に試行の結果を確定させると、settle が backlog へ書き戻してタスクが復活する
+    ——archive（完了）と backlog（実行中）に同じ id が並ぶ二重在庫になり、画面では
+    「完了したのにまだ実行中」に見える。強制完了は実行中（doing）・委譲中（offloaded）の
+    タスクにも効く口なので、この競合は例外ではなく通常経路として起きる。
+
+    ファイル消失（archive へ退避済み）と `force_completed` マーカーの両方を見る。状態
+    リポジトリ同期の遅れで片方しか見えないことがあるため（マーカーだけ届いてファイルは
+    まだ残っている／その逆）、どちらか一方でも片付いた証拠として扱う。読めないだけの
+    一過性エラーを片付け扱いにしないよう、消失はパスの非存在で判定する。"""
+    p = cfg.backlog / f"{tid}.md"
+    if not p.exists():
+        return "タスクファイルが無い（強制完了・削除・却下で片付け済み）"
+    fresh = _load_task_file(cfg, tid)
+    if fresh is None:
+        return None
+    if fresh.get("force_completed"):
+        return f"人が強制完了させた: {fresh.get('force_complete_reason') or '理由なし'}"
+    return None
+
+
 
 def _wait_abort_reason(cfg: "Config", task: Task, run_id: str) -> "str | None":
     """同期結果待ちを打ち切るべき人操作があればその理由、無ければ None。
@@ -617,6 +640,10 @@ def _wait_abort_reason(cfg: "Config", task: Task, run_id: str) -> "str | None":
     status だけで中断しない（ピン時点の status 揺れや ready 表記残りを false-positive にしない）。
     flow_run が残ったまま status だけ変わるのは、人が別操作で上書きしたケースとして
     flow_run 不一致・欠落と合わせて検知する。"""
+    # 強制完了・削除・却下で片付いたら待つ意味が無い（結果は採用しない）。待ち続けると、
+    # 人が画面で完了させたタスクの run が終わるまでループが塞がる。
+    if human_cleared_reason(cfg, task.id):
+        return "片付け済み"
     fresh = _load_task_file(cfg, task.id)
     if fresh is None:
         return None

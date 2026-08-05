@@ -247,7 +247,12 @@ async function deleteReviewComment(projectDir, taskId, commentId, trash) {
 // 3. 人の指示（approve / hold / pin / defer / revise）
 // ---------------------------------------------------------------------------
 
-const COMMAND_ACTIONS = new Set(['approve', 'retry-mr', 'hold', 'pin', 'defer', 'revise', 'reject', 'resume-run']);
+const COMMAND_ACTIONS = new Set(['approve', 'retry-mr', 'hold', 'pin', 'defer', 'revise', 'reject',
+  'resume-run', 'force-complete']);
+// 理由の記入を必須にするアクション。人が状態を確定させる不可逆な操作（廃止・打ち切り）は、
+// 何を根拠に決めたかが決定記録に残らないと後から追えない。本体側も同じ検査をするが、
+// 押した瞬間に画面で言えるようここでも見る（投函してから .err で気づくのは遅い）。
+const REASON_REQUIRED_ACTIONS = new Set(['force-complete']);
 // プロジェクト単位（id 不要）のライフサイクル指示。リモートの本体を git 越しに操作する口。
 const LIFECYCLE_ACTIONS = new Set(['pause', 'resume', 'stop']);
 
@@ -317,10 +322,14 @@ function dropCommand(projectDir, { action, id, reason, fields, feedback, run, ch
 // プロセスツリーの kill・設定ファイルの探索もその経路のためだけの道具だったので一緒に消す。
 // 人の操作は commands/ の投函だけで届き、実行エンジンの起動・再起動は OS の起動系が担う。
 
-// action: approve | retry-mr | hold | pin | defer | revise
+// action: approve | retry-mr | hold | pin | defer | revise | force-complete
 //   revise は fields（title/priority/verify/accept/after/note/level/track の置換）と
 //   feedback（次の act に必ず届く指示）を追加で受ける。実行中（doing）のタスクは
 //   本体側が現在の試行を確定せず修正内容で積み直す（早い軌道修正）。
+//   force-complete は「どうにも進まないタスクの打ち切り」。承認（approve + complete）は
+//   検収待ち（review / blocked）にしか効かないため、実行中・委譲中・実行待ちで
+//   堂々巡りしているタスクは画面から完了させられなかった。本体は verify を実行せず
+//   done 確定し、納品書・受領書に FORCED（未検証）として残す。理由は必須。
 // 経路は commands/ ドロップの一本（案2後半）。以前は actionMode(auto/file/cli) で CLI 直接実行と
 // サイレントフォールバックに分岐していたが、CLI パス誤り時に「押しても何も起きない」原因不明の
 // 停滞を生んでいた。稼働中の本体（同一 PC の WSL・別ホスト問わず）が git 同期越しに ingest し、
@@ -328,6 +337,9 @@ function dropCommand(projectDir, { action, id, reason, fields, feedback, run, ch
 // 残り、送信済み表示で「エンジン待ち」が見える（サイレントに失敗しない）。
 async function runAction(cfg, { dir, action, id, reason, fields, feedback, run, complete }) {
   if (!COMMAND_ACTIONS.has(action)) throw new Error(`不明なアクション: ${action}`);
+  if (REASON_REQUIRED_ACTIONS.has(action) && !String(reason || '').trim()) {
+    throw new Error('強制完了には理由の記入が必要です（決定記録に残ります）');
+  }
   const why = String(reason || '').trim() || 'agent-dashboard から操作';
   if (action === 'revise' && Object.keys(revisePayload({ fields, feedback })).length === 0) {
     throw new Error('revise には変更フィールドかフィードバックの指定が必要です');

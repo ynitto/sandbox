@@ -654,7 +654,15 @@ def parse_cost(act_msg: str) -> "tuple[int, float]":
     return tokens, usd
 
 
-def append_delivery(cfg: Config, task: Task, ref: str, ts: str, branch: str = "") -> None:
+# 受領書（DELIVERY.md）の検収欄。PASS は verify を通した通常の納品、FORCED は
+# 人が進まないタスクを打ち切って完了させたもの（検証していない）。値を分けるのは
+# 「done は verify のみが根拠」の例外を、納品記録の上で必ず見分けられるようにするため。
+DELIVERY_VERDICT_PASS = "PASS"
+DELIVERY_VERDICT_FORCED = "FORCED"
+
+
+def append_delivery(cfg: Config, task: Task, ref: str, ts: str, branch: str = "",
+                    verdict: str = DELIVERY_VERDICT_PASS) -> None:
     """納品一覧（受領書）DELIVERY.md に1行追記する。成果参照はブランチも併記して所在を明確にする。"""
     path = cfg.delivery
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -665,12 +673,12 @@ def append_delivery(cfg: Config, task: Task, ref: str, ts: str, branch: str = ""
     show_branch = branch and not ref.startswith("(")
     cell = (f"{ref} @ {branch}" if show_branch else ref).replace("|", "\\|").replace("\n", " ")
     with path.open("a", encoding="utf-8") as f:
-        f.write(f"{header}| {task.id} | {title} | PASS | {cell} | {ts} |\n")
+        f.write(f"{header}| {task.id} | {title} | {verdict} | {cell} | {ts} |\n")
 
 
 def rebuild_delivery(cfg: Config) -> None:
     """archive/ の集合から DELIVERY.md を決定的・原子的に再生成する。"""
-    rows: list[tuple[str, str, str, str]] = []
+    rows: list[tuple[str, str, str, str, str]] = []
     archive = cfg.archive_dir()
     if archive.is_dir():
         for path in sorted(archive.glob("*.md"), key=lambda p: p.name):
@@ -681,14 +689,18 @@ def rebuild_delivery(cfg: Config) -> None:
                 continue
             completed = re.search(r"(?m)^- 完了\s*:\s*(.+)$", body)
             result = re.search(r"(?m)^- 成果\s*:\s*(.+)$", body)
+            # 検収欄は納品書に明記があればそれを使う。行が無い archive は verify を通した
+            # 従来の納品なので PASS（強制完了より前に書かれた記録との後方互換）。
+            verdict = re.search(r"(?m)^- 検収\s*:\s*(.+)$", body)
             rows.append((task.id, task.title, result.group(1).strip() if result else "(参照なし)",
-                         completed.group(1).strip() if completed else ""))
+                         completed.group(1).strip() if completed else "",
+                         verdict.group(1).strip() if verdict else DELIVERY_VERDICT_PASS))
     lines = ["# 納品一覧（受領書）", "",
              "| id | タイトル | 検収 | 成果参照 | 完了 |", "|---|---|---|---|---|"]
-    for task_id, title, ref, completed in rows:
+    for task_id, title, ref, completed, verdict in rows:
         cells = [str(v).replace("|", "\\|").replace("\n", " ")
-                 for v in (task_id, title, ref, completed)]
-        lines.append(f"| {cells[0]} | {cells[1]} | PASS | {cells[2]} | {cells[3]} |")
+                 for v in (task_id, title, ref, completed, verdict)]
+        lines.append(f"| {cells[0]} | {cells[1]} | {cells[4]} | {cells[2]} | {cells[3]} |")
     path = cfg.delivery
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.parent / f".{path.name}.tmp.{os.getpid()}"
@@ -696,17 +708,22 @@ def rebuild_delivery(cfg: Config) -> None:
     os.replace(tmp, path)
 
 
-def archive_task(cfg: Config, task: Task, vmsg: str, ref: str, ts: str, evidence: str = "") -> None:
+def archive_task(cfg: Config, task: Task, vmsg: str, ref: str, ts: str, evidence: str = "",
+                 verdict: str = DELIVERY_VERDICT_PASS) -> None:
     """done タスクを archive/<id>.md へ退避し、検収用の『納品書』を付す（backlog と1:1）。
     evidence（成果物の所在・差分・検証）を載せ、後から「どこに何が入ったか」を辿れるようにする。
     run ブリーフ（差し戻しの意図・ノード発見制約の蓄積）は納品書へ転記して退役させる
-    （成果物として残しつつ、task-id 再利用時の古ブリーフ注入と brief/ の死蔵を防ぐ）。"""
+    （成果物として残しつつ、task-id 再利用時の古ブリーフ注入と brief/ の死蔵を防ぐ）。
+    verdict=FORCED（人の強制完了）では verify を通していないため、納品書の検収欄と
+    verify 行の両方に「未実施」を残す——検証していないものを PASS として記録しない。"""
     cfg.archive_dir().mkdir(parents=True, exist_ok=True)
     task.extra.append(("archived", ts))
+    verify_result = "PASS" if verdict == DELIVERY_VERDICT_PASS else "未実施"
     body = serialize_task(task) + (
         f"\n## 納品書\n"
         f"- 完了 : {ts}\n"
-        f"- verify: `{task.verify}` → PASS（{vmsg}）\n"
+        f"- 検収 : {verdict}\n"
+        f"- verify: `{task.verify}` → {verify_result}（{vmsg}）\n"
         f"- 成果 : {ref}\n"
     )
     if evidence:

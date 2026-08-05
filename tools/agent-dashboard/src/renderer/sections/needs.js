@@ -145,7 +145,8 @@ function needCompleteHowHtml(n) {
   } else if (n.kind === 'blocked') {
     line = isVerifyPendingNeed(p, n)
       ? '承認すると、このタスクは完了します（検証コマンド未定義のため、人の確認が完了の根拠になります）。'
-      : '指示を送るか再実行すると、停止した作業を再開します。';
+      : '指示を送るか再実行すると、停止した作業を再開します。'
+        + 'どうしても進まないときは「打ち切って完了」で完了にできます（検証は行われません）。';
   }
   if (!line) return '';
   return `<div class="task-complete-banner need-complete-how">${esc(line)}</div>`;
@@ -160,6 +161,7 @@ const COMMAND_ACTION_LABELS = {
   pin: '優先度変更',
   defer: '優先度変更',
   'resume-run': '再実行',
+  'force-complete': '強制完了',
 };
 
 // 直前の指示（承認・保留など）が本体で取り込みに失敗した（commands/*.err）ことを知らせる
@@ -251,6 +253,9 @@ function needActionsHtml(n) {
     buttons.push(`<button class="${verifyPending ? '' : 'primary-inline'}" data-act="feedback" data-id="${esc(n.id)}">指示して再開</button>`);
     buttons.push(`<button data-act="rerun" data-id="${esc(n.id)}" title="指示を追加せず同じ作業をもう一度実行します">再実行</button>`);
     buttons.push(`<button data-act="hold" data-id="${esc(n.id)}" title="このタスクを止めて保留にします">保留</button>`);
+    // 指示も再実行も効かず堂々巡りになったときの最後の口。承認（完了確定）は成果がある票に
+    // しか出ないので、これが無いと「完了にできないまま消せない」タスクがカードに残り続ける。
+    buttons.push(`<button class="danger" data-act="force-complete" data-id="${esc(n.id)}" data-require-force="1" title="どうにも進まないタスクを、検証せずに完了として打ち切ります（履歴には未検証として残ります）">打ち切って完了</button>`);
   }
   const ph =
     kind === 'plan-review'
@@ -2083,6 +2088,9 @@ async function handleNeedAction(btn) {
   if (btn.dataset.require && !text) {
     return toast('差し戻しには修正方針の記入が必要です');
   }
+  if (btn.dataset.requireForce && !text) {
+    return toast('強制完了には理由の記入が必要です（決定記録に残ります）');
+  }
   const ok = await guard('操作', async () => {
     const feedbackStub = need.synthesized
       ? { id: need.id, kind: need.kind, title: need.title, why: need.why }
@@ -2143,6 +2151,16 @@ async function handleNeedAction(btn) {
       markNeedSent(need);
       uiLog('needAction hold', id, res);
       toast('保留にしました', true);
+    } else if (act === 'force-complete') {
+      // 打ち切り（verify 未実施のまま done 確定）。却下と違ってタスクは「完了」として
+      // 履歴に残る——やめる（却下）のではなく、これ以上進まないものを終わりにする操作。
+      const task = taskForNeed(p, need);
+      const yes = await confirmDialog(forceCompleteConfirmMessage(p, task || { id, status: '' }));
+      if (!yes) return false;
+      const res = await api.runAction({ dir: p.dir, action: 'force-complete', id, reason: text });
+      markNeedSent(need);
+      uiLog('needAction force-complete', id, res);
+      toast('強制完了を送信しました（検証は行われず、履歴には未検証として残ります）', true);
     } else if (act === 'reject') {
       const yes = await confirmDialog(rejectConfirmMessage(p, id, '廃止して記録に残す'));
       if (!yes) return false;

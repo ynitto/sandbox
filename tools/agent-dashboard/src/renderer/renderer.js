@@ -261,10 +261,13 @@ function taskCompletionHint(task, { runs = [], archived = false } = {}) {
     };
   }
   if (['doing', 'offloaded'].includes(st)) {
+    // 実行中のまま何時間も動かないタスクは、承認でも再実行でも完了にできない
+    // （承認は検収待ちにしか効かない）。逃げ道がどこにあるかをここで言っておく。
     return {
       unsettledDone: false,
       statusNote: null,
-      completeHow: '実行の完了を待ってください',
+      completeHow:
+        '実行の完了を待ってください。進まないときは操作タブの「強制的に完了にする」で打ち切れます',
       needAsk: null,
     };
   }
