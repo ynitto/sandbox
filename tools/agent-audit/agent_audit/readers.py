@@ -20,7 +20,7 @@ import sqlite3
 from . import cleaning
 from .util import elog
 
-FORMATS = ("jsonl-dir", "kiro-sqlite")
+FORMATS = ("jsonl-dir", "kiro-sqlite", "opencode-sqlite")
 
 
 def read_sessions(session_log: dict, *, want_messages: bool = False,
@@ -40,10 +40,22 @@ def read_sessions(session_log: dict, *, want_messages: bool = False,
     if fmt == "kiro-sqlite":
         out = []
         for p in paths:
-            for db in sorted(glob.glob(p)) or ([p] if os.path.exists(p) else []):
+            for db in _dbs(p):
                 out.extend(_read_kiro_sqlite(db, want_messages=want_messages, clean=clean))
         return _cap(out, limit)
+    if fmt == "opencode-sqlite":
+        out = []
+        for p in paths:
+            for db in _dbs(p):
+                out.extend(_read_opencode_sqlite(db, want_messages=want_messages,
+                                                 clean=clean, limit=limit))
+        return _cap(out, limit)
     return []          # 未知 format は「未収集」— 呼び出し側（doctor / collect）が明示する
+
+
+def _dbs(pattern: str) -> "list[str]":
+    """パスをグロブとして解く（当たらなければ実在するときだけそのパス自身）。"""
+    return sorted(glob.glob(pattern)) or ([pattern] if os.path.exists(pattern) else [])
 
 
 def _cap(sessions: "list[dict]", limit: "int | None") -> "list[dict]":
@@ -249,6 +261,14 @@ def _message_of(obj: dict) -> "tuple[str, str] | None":
     return None
 
 
+def _epoch_sec(value) -> float:
+    """ストアの時刻を epoch 秒へ。ms（13 桁）でも ISO 文字列でも受ける。"""
+    from .util import parse_iso
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value) / 1000.0 if value > 4102444800 else float(value)   # ms なら秒へ
+    return parse_iso(value) or 0.0
+
+
 # -- kiro-sqlite（~/.kiro/store.db。tools/kiro-log-exporter の手順を移植） ------
 
 def _read_kiro_sqlite(db_path: str, *, want_messages: bool,
@@ -282,7 +302,6 @@ def _read_kiro_sqlite(db_path: str, *, want_messages: bool,
 
 def _parse_kiro_row(data: dict, db_path: str, *, want_messages: bool,
                      clean: "dict | None" = None) -> "dict | None":
-    from .util import parse_iso
     sid = str(data.get("id") or "").strip()
     if not sid:
         return None
@@ -322,9 +341,7 @@ def _parse_kiro_row(data: dict, db_path: str, *, want_messages: bool,
                     messages.append((role, text))
 
     def _sec(v):
-        if isinstance(v, (int, float)):
-            return float(v) / 1000.0 if v > 4102444800 else float(v)   # ms なら秒へ
-        return parse_iso(v) or 0.0
+        return _epoch_sec(v)
 
     return {
         "native_id": sid,
@@ -342,3 +359,195 @@ def _parse_kiro_row(data: dict, db_path: str, *, want_messages: bool,
         "messages": messages,
         "_clean_warnings": warnings,
     }
+
+
+# -- opencode-sqlite（~/.local/share/opencode/opencode.db） ---------------------
+#
+# kiro-sqlite と別 format にしたのは、行の形が違うから。kiro は 1 行に会話配列が丸ごと
+# 入る（列を舐めれば読める）が、opencode は session / message / part の 3 表に正規化されて
+# いて、本文は part 行の JSON、役割は親の message 行の JSON にある。同じパーサでは読めない。
+#
+# 実測トークンは session 行の列（tokens_input / tokens_output / tokens_cache_*）にあり、
+# opencode 自身が合算したものなので、こちらで part を足し直さない。
+
+_OPENCODE_TABLES = ("session", "message", "part")
+
+
+def _connect_ro(db_path: str) -> "sqlite3.Connection | None":
+    """読み取り専用で開く（収集が走っている裏で CLI が書いていても壊さない）。
+
+    ro で開けない環境（uri 非対応・WAL の -shm を読めない等）では通常接続へ落とす。
+    ここで諦めると「未収集」ではなく「黙って 0 件」になるので、落とす方を選ぶ。
+    """
+    for opener in (lambda: sqlite3.connect(f"file:{db_path}?mode=ro", uri=True),
+                   lambda: sqlite3.connect(db_path)):
+        try:
+            return opener()
+        except (sqlite3.Error, OSError):
+            continue
+    return None
+
+
+def _read_opencode_sqlite(db_path: str, *, want_messages: bool, clean: "dict | None" = None,
+                           limit: "int | None" = None) -> "list[dict]":
+    if not os.path.exists(db_path):
+        return []
+    conn = _connect_ro(db_path)
+    if conn is None:
+        return []
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = {r[0].lower() for r in cur.fetchall()}
+        if not set(_OPENCODE_TABLES) <= tables:
+            return []           # 想定と違うストア（版差）は「読めない」＝0 件で返す
+        cur.execute("PRAGMA table_info(session)")
+        cols = {str(r[1]).lower() for r in cur.fetchall()}
+        # 新しい順に間引けるのは doctor の棚卸し用（collect は limit なし＝全件・冪等）。
+        order = " ORDER BY time_updated DESC" if "time_updated" in cols else ""
+        cap = f" LIMIT {int(limit)}" if limit and limit > 0 else ""
+        cur.execute(f"SELECT * FROM session{order}{cap}")  # noqa: S608 定数のみ
+        names = [d[0].lower() for d in cur.description]
+        rows = [dict(zip(names, r)) for r in cur.fetchall()]
+        sessions = []
+        for row in rows:
+            s = _parse_opencode_session(conn, row, db_path,
+                                        want_messages=want_messages, clean=clean)
+            if s:
+                sessions.append(s)
+        return sessions
+    except (sqlite3.Error, OSError):
+        return []
+    finally:
+        conn.close()
+
+
+def _parse_opencode_session(conn, row: dict, db_path: str, *, want_messages: bool,
+                             clean: "dict | None" = None) -> "dict | None":
+    sid = str(row.get("id") or "").strip()
+    if not sid:
+        return None
+
+    warnings: "list[str]" = []
+    warn = _make_warn(f"{db_path}::{sid}", sink=warnings)
+    # バージョンは session 行の列（version="1.18.14"）から採る。jsonl-dir がログ行から
+    # 採るのと同じ役割で、clean のルールセット選択に使う。
+    version = cleaning.probe_version([row], (clean or {}).get("version_key")) if clean else ""
+    rules, _when = cleaning.select_rules(clean, version) if clean else ([], "")
+
+    turns = 0
+    messages: "list[tuple[str, str]]" = []
+    for role, text in _opencode_messages(conn, sid, rules=rules, warn=warn):
+        turns += 1
+        if want_messages:
+            messages.append((role, text))
+
+    tokens_in, tokens_out = _opencode_tokens(row)
+    return {
+        "native_id": sid,
+        "store": db_path,
+        "cwd": str(row.get("directory") or ""),
+        "created_at": _epoch_sec(row.get("time_created")),
+        "updated_at": _epoch_sec(row.get("time_updated") or row.get("time_created")),
+        "model": _opencode_model(row.get("model")),
+        "log_version": version,
+        "turns": turns,
+        "tokens_in": tokens_in or None,
+        "tokens_out": tokens_out or None,
+        "usage_measured": bool(tokens_in or tokens_out),
+        "messages": messages,
+        "_clean_warnings": warnings,
+    }
+
+
+def _opencode_messages(conn, session_id: str, *, rules, warn) -> "list[tuple[str, str]]":
+    """part 行（本文）を親の message 行（役割）と突き合わせて (role, text) に畳む。
+
+    1 メッセージが複数の text パートに割れることがあるので、message_id 単位で連結する。
+    text 以外のパート（step-start / tool / reasoning …）は本文ではないので落とす。
+    """
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT p.message_id, p.data, m.data FROM part p "
+            "JOIN message m ON m.id = p.message_id "
+            "WHERE p.session_id = ? ORDER BY p.time_created, p.id", (session_id,))
+        rows = cur.fetchall()
+    except sqlite3.Error:
+        return []
+
+    ordered: "list[str]" = []
+    buckets: "dict[str, list[str]]" = {}
+    roles: "dict[str, str]" = {}
+    for message_id, part_raw, message_raw in rows:
+        part = _json_obj(part_raw)
+        message = _json_obj(message_raw)
+        if part.get("type") != "text":
+            continue
+        role = message.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        # drop-line の対象は part 行（親の役割を載せた形）。jsonl-dir の「生ログ 1 行」に
+        # あたるのがここ——本文と一緒にメタ（type / role / synthetic 等）が乗っている。
+        line = {**message, **part, "role": role}
+        if rules and cleaning.should_drop_line(line, rules, warn=warn):
+            continue
+        text = part.get("text")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        key = str(message_id)
+        if key not in buckets:
+            buckets[key] = []
+            ordered.append(key)
+            roles[key] = "User" if role == "user" else "Assistant"
+        buckets[key].append(text)
+
+    out: "list[tuple[str, str]]" = []
+    for key in ordered:
+        text = "\n".join(buckets[key])
+        if rules:
+            text = cleaning.clean_message_text(text, rules, warn=warn)
+        if text.strip():
+            out.append((roles[key], text))
+    return out
+
+
+def _json_obj(raw) -> dict:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8", "replace")
+    if isinstance(raw, str):
+        try:
+            obj = json.loads(raw)
+        except ValueError:
+            return {}
+        if isinstance(obj, dict):
+            return obj
+    return {}
+
+
+def _opencode_tokens(row: dict) -> "tuple[int, int]":
+    """session 行の実測トークン。キャッシュ分は入力側へ寄せる（jsonl-dir の扱いと同じ）。"""
+    def num(*keys):
+        total = 0
+        for key in keys:
+            v = row.get(key)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                total += int(v)
+        return total
+    return (num("tokens_input", "tokens_cache_read", "tokens_cache_write"),
+            num("tokens_output"))
+
+
+def _opencode_model(raw) -> str:
+    """model 列は JSON（`{"id":"qwen3","providerID":"ollama"}`）。opencode の作法に
+    合わせて `provider/model` の 1 文字列へ畳む。素の文字列ならそのまま。"""
+    obj = _json_obj(raw)
+    if not obj:
+        return raw.strip() if isinstance(raw, str) else ""
+    model = obj.get("id") or obj.get("modelID") or ""
+    provider = obj.get("providerID") or obj.get("provider") or ""
+    if provider and model:
+        return f"{provider}/{model}"
+    return str(model or provider or "")

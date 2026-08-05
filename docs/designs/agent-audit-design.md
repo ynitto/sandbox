@@ -211,7 +211,9 @@ updated_at。`kiro-log-exporter` の `.kiro_export_state.json` と同じ規律�
 // codex.json: {"format": "jsonl-dir", "paths": ["~/.codex/sessions"], "usage": true}
 ```
 
-- **format は閉じた enum**（初期: `jsonl-dir` / `kiro-sqlite`）。パーサは
+- **format は閉じた enum**（初期: `jsonl-dir` / `kiro-sqlite`。のち `opencode-sqlite` を追加
+  ——opencode は session / message / part の 3 表に正規化されており、本文が part 行の JSON・
+  役割が親の message 行・実測トークンが session 行の列にあるので kiro 形では読めない）。パーサは
   `agent_audit/readers/` に format ごと 1 実装。新 CLI が既存 format なら JSON 追記だけで
   収集できる。未知の format・`session_log` 未宣言の CLI は「未収集」と明示して黙って
   スキップしない（fail-close の报告、codd-gate の「未スキャン repo」と同型）。

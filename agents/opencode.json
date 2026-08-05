@@ -12,6 +12,20 @@
     "command": ["opencode"],
     "prompt_inject": "send-keys"
   },
+  "session_log": {
+    "format": "opencode-sqlite",
+    "paths": [
+      "~/.local/share/opencode/opencode.db",
+      "~/Library/Application Support/opencode/opencode.db"
+    ],
+    "usage": true,
+    "clean": {
+      "version_key": "version",
+      "rules": [
+        {"rule": "truncate-message", "max_chars": 4000}
+      ]
+    }
+  },
   "errors": [
     { "match": "推論サーバに接続できません|could not connect|connection refused|ECONNREFUSED",
       "class": "env",

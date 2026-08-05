@@ -356,6 +356,12 @@ verdict の種類:
 | Claude Code | `~/.claude` | `$env:USERPROFILE\.claude` |
 | Kiro | `~/.kiro` | `$env:USERPROFILE\.kiro` |
 | OpenAI Codex | `~/.codex` | `$env:USERPROFILE\.codex` |
+| opencode | `~/.config/opencode` | `$env:USERPROFILE\.config\opencode` |
+
+opencode だけホーム直下ではなく `~/.config/opencode`（opencode 自身の設定・スキルの置き場）。
+MCP と指示ファイルは独立した設定ファイルではなく `opencode.json` の中（`mcp` / `instructions`）へ
+マージされる。導入と推論エンジン（別 PC の ollama）の設定は
+[`tools/opencode/README.md`](tools/opencode/README.md) を参照。
 
 ### ディレクトリ構成
 

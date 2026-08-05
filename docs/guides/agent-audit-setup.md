@@ -79,6 +79,7 @@ node-budget: ~/.agents/budget（台帳なし — エンジン未使用なら正�
   cursor: session_log なし — セッションは未収集になります（agents/cursor.json への宣言で収集できます）
   kiro: session_log あり（format=kiro-sqlite・パス未検出（この CLI を未使用なら正常））
   ollama: session_log なし — セッションは未収集になります（agents/ollama.json への宣言で収集できます）
+  opencode: session_log あり（format=opencode-sqlite・パス未検出（この CLI を未使用なら正常））
 
 ストア: records=0 / observations=0 / insights=0
 設定: なし（組み込み既定で動作。雛形: agent-audit.yaml.example）
@@ -276,14 +277,15 @@ agent-audit collect --since 2026-08-01T00:00:00Z    # この時刻以降のセ�
 }
 ```
 
-`format` は閉じた列挙で、現在は次の 2 つです。
+`format` は閉じた列挙で、現在は次の 3 つです。
 
 | format | 想定 | 同梱の例 |
 |---|---|---|
 | `jsonl-dir` | セッションごとに JSONL ファイルが並ぶディレクトリ | claude（`~/.claude/projects`）・codex（`~/.codex/sessions`） |
-| `kiro-sqlite` | Kiro の SQLite ストア | kiro（`~/.kiro/store.db`） |
+| `kiro-sqlite` | 1 行に会話配列が丸ごと入る SQLite ストア | kiro（`~/.kiro/store.db`） |
+| `opencode-sqlite` | session / message / part の 3 表に正規化された SQLite ストア | opencode（`~/.local/share/opencode/opencode.db`） |
 
-どちらにも当てはまらない形式の CLI は、パーサを足すまで収集できません
+どれにも当てはまらない形式の CLI は、パーサを足すまで収集できません
 （未対応 format は `collect` 時に「未収集です」と明示されます）。
 
 > **同梱定義（`~/.agents/agents/`）はインストーラの更新で上書きされます。**

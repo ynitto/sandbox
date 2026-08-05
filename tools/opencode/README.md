@@ -130,13 +130,39 @@ bash tools/opencode/install.sh --doctor --ollama-host http://192.168.1.20:11434
 opencode 本体 / `agent-opencode` / 設定 / CLI 定義 / ollama への到達性とモデル一覧を見る。
 何も書かない。
 
-## 既知の制約
+## セッションログ（agent-audit の収集）
 
-- **セッションログは agent-audit の収集対象外**。opencode はセッションを SQLite
-  (`~/.local/share/opencode/opencode.db`) に持つが、`schemas/agent-cli.schema.json` の
-  `session_log.format` は `jsonl-dir` / `kiro-sqlite` しか持たない。パーサを足すまでは
-  「未収集」として明示される（黙ってスキップはしない）。トークンの実測は
-  `@agent-usage` 経由で台帳に入るので、usage 集計には影響しない。
-- **スキル配布（`install.py --agent …`）は未対応**。opencode は Claude Code のスキルを
-  読むので `~/.claude/skills` に入れてあるものは効くが、opencode 専用の配布先は持たせて
-  いない。
+`agents/opencode.json` は `session_log` を宣言済みで、**agent-audit がそのまま収集する**
+（`format: opencode-sqlite`）。opencode のストアは kiro のような「1 行に会話が丸ごと」形では
+なく session / message / part の 3 表に正規化されているため、専用のパーサを足してある
+（本文は part 行の JSON、役割は親の message 行、実測トークンは session 行の列）。
+
+```bash
+agent-audit doctor     # opencode: session_log あり（format=opencode-sqlite・到達可）
+agent-audit collect    # セッション・turn 数・実測トークン・transcript を取り込む
+```
+
+読むのは `~/.local/share/opencode/opencode.db`（macOS は
+`~/Library/Application Support/opencode/opencode.db`）で、**読み取り専用で開く**ので
+opencode が動いている裏で collect しても壊さない。
+
+## スキル・指示ファイル・MCP の配布
+
+```bash
+python install.py --agent opencode --all-skills
+```
+
+| 何が | どこへ |
+|---|---|
+| スキル | `~/.config/opencode/skills/<name>/SKILL.md` |
+| 指示ファイル（`.github/instructions/*.md`） | `~/.config/opencode/instructions/` + `opencode.json` の `instructions` へ登録 |
+| MCP（`.github/mcp/mcp.json`） | `opencode.json` の `mcp`（`command` は文字列配列・`type` / `enabled` 必須の opencode 形式へ変換） |
+
+- opencode は `~/.claude/skills` と `~/.agents/skills` も自動で読む。**同名は
+  `~/.config/opencode/skills` が勝つ**ので、claude 向けに入れたものと二重に並ぶことはない。
+- **MCP と指示ファイルは本体設定（`opencode.json`）に同居する**。opencode は未知の
+  トップレベルキーを拒否して起動ごと落ちるため、install.py は既存設定を読めなかったときは
+  **上書きせずに見送る**（`.bak` を残してからマージする）。`.jsonc` を使っている場合、
+  書き戻しでコメントは落ちる（元は `.bak` に残る）。
+- 外部ツール連携（codegraph / graphify / caveman / rtk / ponytail / headroom）は opencode
+  未対応なので「スキップします」と明示して飛ばす。
