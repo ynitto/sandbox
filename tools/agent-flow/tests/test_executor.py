@@ -951,6 +951,65 @@ class CallExecutorDispatchTests(unittest.TestCase):
         kf.call_executor(legacy_exec, "work", "g", {}, None, None, None, prompt_table=True)
         self.assertTrue(seen["called"])  # 受け取れない executor には渡さず、壊れずに呼べる
 
+    def test_call_executor_forwards_repair_only_when_accepted(self):
+        """案 B-1: repair は受け取れる executor にだけ渡り、受け取れない旧 executor でも壊れない。"""
+        seen = {}
+
+        def new_exec(kind, goal, dep_results, model, art_dir, dep_arts, repair=None):
+            seen["repair"] = repair
+            return "ok", None
+
+        def legacy_exec(kind, goal, dep_results, model, art_dir, dep_arts):
+            seen["called"] = True
+            return "ok", None
+
+        repair = {"of": "t1", "output": "前回の成果", "issues": ["直せ"],
+                  "artifact_dir": None, "delivered": False}
+        kf.call_executor(new_exec, "work", "g", {}, None, None, None, repair=repair)
+        self.assertEqual(seen["repair"], repair)
+        seen.clear()
+        kf.call_executor(legacy_exec, "work", "g", {}, None, None, None, repair=repair)
+        self.assertTrue(seen["called"])
+
+    def test_execute_agent_renders_repair_brief_in_prompt(self):
+        """案 B-1: repair があれば、指摘・前回成果の抜粋・成果物パス・反映済みの一文が
+        プロンプトに載る。全体を作り直させない指示も含む。"""
+        captured = {}
+
+        def fake_run_agent(prompt, model, purpose=""):
+            captured["prompt"] = prompt
+            return "成果"
+
+        repair = {"of": "t1-work", "output": "前回はここまでできた",
+                  "issues": ["境界値の扱いが違う", "テストが1件失敗"],
+                  "artifact_dir": "/tmp/bus/artifacts/t1-work", "delivered": True}
+        with mock.patch.object(kf, "run_agent", side_effect=fake_run_agent):
+            kf.execute_agent("work", "修正して", {}, None, repair=repair)
+        prompt = captured["prompt"]
+        self.assertIn("前回 t1-work として実行され", prompt)
+        self.assertIn("境界値の扱いが違う", prompt)
+        self.assertIn("テストが1件失敗", prompt)
+        self.assertIn("前回の成果（抜粋）: 前回はここまでできた", prompt)
+        self.assertIn("/tmp/bus/artifacts/t1-work", prompt)
+        self.assertIn("作業ツリーの現状が前回の結果です", prompt)
+        self.assertIn("全体を作り直さず", prompt)
+
+    def test_execute_agent_without_repair_is_byte_identical(self):
+        """オプトイン既定（repair=None）ではプロンプトが従来と 1 バイトも変わらない。"""
+        captured = {}
+
+        def fake_run_agent(prompt, model, purpose=""):
+            captured["prompt"] = prompt
+            return "成果"
+
+        with mock.patch.object(kf, "run_agent", side_effect=fake_run_agent):
+            kf.execute_agent("work", "修正して", {}, None)
+        without_repair = captured["prompt"]
+        with mock.patch.object(kf, "run_agent", side_effect=fake_run_agent):
+            kf.execute_agent("work", "修正して", {}, None, repair=None)
+        self.assertEqual(without_repair, captured["prompt"])
+        self.assertNotIn("前回の試行", without_repair)
+
 
 class GitlabRepoInstructionTests(unittest.TestCase):
     """gitlab: clone 指示はイシュー本文の独立節に載せ、タイトル/目的は本来の goal を保つ。"""

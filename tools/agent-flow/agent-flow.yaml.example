@@ -115,6 +115,15 @@ max_resumes: 3             # 孤児 run（駆動プロセス消失 = PC シャ�
                            #   上限。「進捗なしの連続回数」で数え、進捗（新しい results/）があれば数え直す
                            #   ＝毎日シャットダウンされる PC でも長期 run を継続できる。0 以下で無効
 
+# repair_retry: false       # 差分修復リトライ（案 B-1・オプトイン）。verify=fail / 失敗ノードの
+                           #   作り直し（replaces で前ノードを差し替えるノード）に、前回の出力
+                           #   （有界抜粋）・成果物パス・verify の指摘・「前回の変更は作業ブランチへ
+                           #   反映済み」を伝え、全作り直しではなく指摘箇所の修復を促す。修復は
+                           #   同一系統 1 回だけ（2 回目以降は従来の全作り直しへ戻る。既存
+                           #   max_retries の内側）。既定 off ではプロンプトは 1 バイトも変わらない。
+                           #   設計: docs/plans/2026-08-05-phase1-token-efficiency-detailed-design.md §2
+# repair_excerpt_bytes: 4000  # ブリーフに載せる前回出力の抜粋上限（バイト）
+
 # --- 自己回復リトライ（docs/designs/agent-flow-design.md「失敗の 4 層」）---
 transient_retries: 2       # レイヤ1: transient 分類（接続断・5xx・timeout）の in-place 再試行回数。
                            #   run_agent 内で指数バックオフ再試行し、再計画 retry の予算を焼かない。0 で無効

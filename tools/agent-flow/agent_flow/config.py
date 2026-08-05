@@ -100,6 +100,15 @@ CONFIG_DEFAULTS = {
     # deps 構造化 data のうち、均質な dict 配列を表形式へ畳んでトークンを削る（案 K-2・内容は
     # 不変）。既定 off。設計: docs/plans/2026-08-05-json-prompt-compression-study.md
     "prompt_table": False,
+    # 差分修復リトライ（案 B-1・オプトイン）。verify=fail / 失敗ノードの作り直し（replaces で
+    # 前ノードを差し替えるノード）に、前回の出力（有界抜粋）・成果物パス・verify の指摘・
+    # 「前回の変更は作業ブランチへ反映済み」を伝え、全作り直しではなく指摘箇所の修復を促す。
+    # 修復は同一系統 1 回だけ（node["retries"] が 2 以上なら従来の全作り直しへ戻る——
+    # 壊れた前回に引きずられて収束しないケースを有界化する。既存 max_retries の内側）。
+    # 既定 off では worker プロンプトは 1 バイトも変わらない。
+    # 設計: docs/plans/2026-08-05-phase1-token-efficiency-detailed-design.md §2
+    "repair_retry": False,
+    "repair_excerpt_bytes": 4000,   # ブリーフに載せる前回出力の抜粋上限（バイト）
     # 1 ノードが同時に実行する run（orchestrator プロセス）の上限。バックログ一括投入
     # （板からの委譲の受理等）や再起動直後の孤児一斉再開で「run 数ぶんの orchestrator
     # ＋計画エージェント」が同時に立ち上がるのを防ぐ。全ノードが park（承認待ち等）の run は
