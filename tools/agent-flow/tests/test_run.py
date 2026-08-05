@@ -774,7 +774,10 @@ class TransientRunBreakTests(unittest.TestCase):
         nodes = {nid: {"goal": "g", "deps": [], "kind": "work"} for nid in results}
         args = types.SimpleNamespace(executor="stub", max_fanout=50, review=False,
                                      exemplar_first=False, max_retries=3)
-        return kf._continue(args, "req", nodes, results, 0)
+        # env/transient 失敗はこれらのテストが確認する早期 return（_env_failure_reason）で
+        # 決着するため bus は参照されない。ダミーの meta_path で十分。
+        bus = types.SimpleNamespace(meta_path="/nonexistent/meta.json")
+        return kf._continue(args, bus, "req", nodes, results, 0)
 
     def test_base_sync_preserves_transient_failure_class(self):
         self.assertEqual(kf._work_failure_class("base-sync", "connection timed out"), "transient")

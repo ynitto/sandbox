@@ -189,6 +189,15 @@ max_spawn: 20              # 1 run で生成できる派生タスク（followup�
 # prompt_table: false        # doctor が LLM へ渡す稼働シグナル（runlog_tail・blocked 等）のうち、
 #                            # 均質な dict 配列を表形式へ畳んでトークンを削る（既定 off・内容は不変。
 #                            # 設計: docs/plans/2026-08-05-json-prompt-compression-study.md 案 K-2）
+# stable_prefix: false       # 安定プレフィックス化（案 H・オプトイン）: build_request から
+#                            # charter / rules.md / リポジトリ理解を外し、agent-flow へ
+#                            # --context-file で別送する。プロジェクト内で不変な内容をプロンプトの
+#                            # 先頭（プロバイダのプロンプトキャッシュが乗る位置）へ揃え、実行時の
+#                            # 全プロンプト（planner・worker・evaluator）で同一バイト列にする。
+#                            # 既定 off では request の組み立てが従来と 1 バイトも変わらない。
+#                            # board 委譲（agent-board）経由の実行は請負側が別マシンのため対象外
+#                            # （常に本文へ埋め込む＝情報は落とさない）。
+#                            # 設計: docs/plans/2026-08-05-phase1-token-efficiency-detailed-design.md §3
 # regression_cmd: ./tools/check   # state repo が持つ共通チェック（失敗で done にせず人へ）
 # 安全ゲート（gate / protect / deny …）は <root>/policy.md に書く（人専管）
 

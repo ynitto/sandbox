@@ -152,6 +152,26 @@ def run_id_for(cfg: "Config", task: "Task") -> str:
     return _new_run_id(task, cfg)
 
 
+def _context_file_for(task: Task, cfg: "Config") -> "str | None":
+    """安定プレフィックス化（案 H・オプトイン）: project_context_block() を
+    agent-flow へ渡すファイルへ書く。既定 off なら None（呼び出し側は引数を足さない＝
+    request の組み立てと agent-flow への argv が従来と 1 バイトも変わらない）。
+
+    パスはタスク単位で決定的（OS 一時ディレクトリ配下）にし、実行のたびに上書きする。
+    状態リポジトリ（root）配下には置かない——charter/rules/repo_map が変わるたびに
+    差分が生まれる使い捨てファイルを git 同期対象へ混ぜない。クリーンアップは
+    要らない（同じタスクの次回実行が上書きするので、キー空間はバックログ規模に留まる）。"""
+    if not getattr(cfg, "stable_prefix", False):
+        return None
+    block = project_context_block(cfg, task)
+    if not block:
+        return None
+    path = os.path.join(tempfile.gettempdir(), f"agent-project-context-{task.id}.txt")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(block)
+    return path
+
+
 def build_agent_flow_cmd(task: Task, cfg: "Config", use_git: bool = False,
                         run_id: str = "", inherit_from: str = "") -> "list[str]":
     """agent-flow run（都度起動）のコマンド。planner/executor を制御できる（submit では不可）。
@@ -180,6 +200,9 @@ def build_agent_flow_cmd(task: Task, cfg: "Config", use_git: bool = False,
     _plan = build_task_verification_plan(cfg, task)
     if _plan:
         base += ["--verification-plan", json.dumps(_plan, ensure_ascii=False)]
+    ctx_file = _context_file_for(task, cfg)
+    if ctx_file:
+        base += ["--context-file", ctx_file]
     cmd = (base + _workspace_cmd_args(cfg, task)
            + _reference_cmd_args(cfg, task) + [
         "run", build_request(task, cfg), "--planner", cfg.flow_planner,
@@ -769,8 +792,11 @@ def _act_board(task: Task, cfg: "Config") -> "tuple":
     if not term:
         spec = _workspace_spec_for(cfg, task)
         refs = task_reference_specs(cfg, task)
+        # board 委譲は請負側が別マシン（--context-file のようなローカル参照を渡せない）ため、
+        # stable_prefix が有効でも charter/rules/repo_map は本文へ埋め込む。
         env = task_to_delegation(task, spec, workload=cfg.board_workload, delegation_id=did,
-                                 request=build_request(task, cfg), references=refs)
+                                 request=build_request(task, cfg, force_inline_context=True),
+                                 references=refs)
         if board.write_post(env):          # 新規のときだけ push（無駄な空 commit を作らない）
             board.sync_push(f"post {did}")
         term, ok, msg = _board_result_once(board, did)   # 直後にもう一度（同一 cycle 内解決対応）

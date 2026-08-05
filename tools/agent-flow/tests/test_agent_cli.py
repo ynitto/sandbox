@@ -543,7 +543,8 @@ class TestAgentPluginAndTriage(unittest.TestCase):
                           "output": "実行エラー: [agent-error:auth] kiro-cli 失敗 (rc=0): 認証切れ"}}
         args = types.SimpleNamespace(executor="stub", max_fanout=50, review=False,
                                      exemplar_first=False, max_retries=3)
-        decision, new_tasks, reason = kf._continue(args, "req", nodes, results, 0)
+        bus = types.SimpleNamespace(meta_path="/nonexistent/meta.json")
+        decision, new_tasks, reason = kf._continue(args, bus, "req", nodes, results, 0)
         self.assertEqual(decision, "failed")
         self.assertEqual(new_tasks, [])
         self.assertIn("[agent-error:auth]", reason)
@@ -563,7 +564,8 @@ class TestAgentPluginAndTriage(unittest.TestCase):
                                    "管理面により実行できません"),
                     },
                 }
-                decision, _, reason = kf._continue(args, "req", nodes, results, 0)
+                bus = types.SimpleNamespace(meta_path="/nonexistent/meta.json")
+                decision, _, reason = kf._continue(args, bus, "req", nodes, results, 0)
                 self.assertEqual(decision, "failed")
                 self.assertIn(f"[agent-error:{error_class}]", reason)
                 self.assertIn(f"[{source}]", reason)
@@ -575,7 +577,8 @@ class TestAgentPluginAndTriage(unittest.TestCase):
         results = {"t1": {"status": "failed", "output": "実行エラー: テストが落ちた"}}
         args = types.SimpleNamespace(executor="stub", max_fanout=50, review=False,
                                      exemplar_first=False, max_retries=3)
-        decision, new_tasks, _ = kf._continue(args, "req", nodes, results, 0)
+        bus = types.SimpleNamespace(meta_path="/nonexistent/meta.json")
+        decision, new_tasks, _ = kf._continue(args, bus, "req", nodes, results, 0)
         self.assertEqual(decision, "replan")
         self.assertEqual(len(new_tasks), 1)
 

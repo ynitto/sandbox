@@ -1010,6 +1010,56 @@ class CallExecutorDispatchTests(unittest.TestCase):
         self.assertEqual(without_repair, captured["prompt"])
         self.assertNotIn("前回の試行", without_repair)
 
+    def test_call_executor_forwards_context_only_when_accepted(self):
+        """案 H: context は受け取れる executor にだけ渡り、受け取れない旧 executor でも壊れない。"""
+        seen = {}
+
+        def new_exec(kind, goal, dep_results, model, art_dir, dep_arts, context=""):
+            seen["context"] = context
+            return "ok", None
+
+        def legacy_exec(kind, goal, dep_results, model, art_dir, dep_arts):
+            seen["called"] = True
+            return "ok", None
+
+        kf.call_executor(new_exec, "work", "g", {}, None, None, None, context="CTX")
+        self.assertEqual(seen["context"], "CTX")
+        seen.clear()
+        kf.call_executor(legacy_exec, "work", "g", {}, None, None, None, context="CTX")
+        self.assertTrue(seen["called"])
+
+    def test_execute_agent_prepends_context_ahead_of_instructions(self):
+        """案 H: [instructions][context][本体] の順で前置される。"""
+        captured = {}
+
+        def fake_run_agent(prompt, model, purpose=""):
+            captured["prompt"] = prompt
+            return "成果"
+
+        with mock.patch.object(kf, "run_agent", side_effect=fake_run_agent):
+            kf.execute_agent("work", "修正して", {}, None,
+                             instructions="INSTR-BLOCK", context="CTX-BLOCK")
+        prompt = captured["prompt"]
+        self.assertIn("INSTR-BLOCK", prompt)
+        self.assertIn("CTX-BLOCK", prompt)
+        self.assertLess(prompt.index("INSTR-BLOCK"), prompt.index("CTX-BLOCK"))
+        self.assertLess(prompt.index("CTX-BLOCK"), prompt.index("タスク(work): 修正して"))
+
+    def test_execute_agent_without_context_is_byte_identical(self):
+        """オプトイン既定（context=""）ではプロンプトが従来と 1 バイトも変わらない。"""
+        captured = {}
+
+        def fake_run_agent(prompt, model, purpose=""):
+            captured["prompt"] = prompt
+            return "成果"
+
+        with mock.patch.object(kf, "run_agent", side_effect=fake_run_agent):
+            kf.execute_agent("work", "修正して", {}, None)
+        without_context = captured["prompt"]
+        with mock.patch.object(kf, "run_agent", side_effect=fake_run_agent):
+            kf.execute_agent("work", "修正して", {}, None, context="")
+        self.assertEqual(without_context, captured["prompt"])
+
 
 class GitlabRepoInstructionTests(unittest.TestCase):
     """gitlab: clone 指示はイシュー本文の独立節に載せ、タイトル/目的は本来の goal を保つ。"""

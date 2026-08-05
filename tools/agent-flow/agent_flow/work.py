@@ -201,6 +201,10 @@ def cmd_work(args) -> int:
         _gi = _meta_now.get("instructions")
         run_instructions = str(_gi.get("text", "")) if isinstance(_gi, dict) else ""
         _note_instructions_applied(_gi.get("revision") if isinstance(_gi, dict) else None)
+        # プロジェクト文脈（案 H・オプトイン）: orchestrate が run 作成時に meta へ固定した
+        # スナップショット。ワーカーはこれだけを基準にし、agent-project 側のファイルは読まない。
+        _rc = _meta_now.get("context")
+        run_context = str(_rc.get("text", "")) if isinstance(_rc, dict) else ""
         # 中間成果物プロトコル: 自ノードの出力先を用意し、依存ノードの成果物パスを集める。
         # これにより大きな成果物は output/data に貼らずファイル参照で受け渡せる。
         art_dir = bus.ensure_artifact_dir(nid)
@@ -233,7 +237,7 @@ def cmd_work(args) -> int:
                         references=references, request=run_request,
                         instructions=run_instructions,
                         prompt_table=bool(getattr(args, "prompt_table", False)),
-                        repair=repair)
+                        repair=repair, context=run_context)
                     if isinstance(agent_data, dict):
                         rdata.update(agent_data)
                 else:
@@ -246,7 +250,7 @@ def cmd_work(args) -> int:
                                               references=references, request=run_request,
                                               instructions=run_instructions,
                                               prompt_table=bool(getattr(args, "prompt_table", False)),
-                                              repair=repair)
+                                              repair=repair, context=run_context)
             if kind != "verify" and isinstance(rdata, dict) and rdata.get("ok") is False:
                 if kind == "base-sync":
                     failure_class = _work_failure_class(kind, output, rdata)

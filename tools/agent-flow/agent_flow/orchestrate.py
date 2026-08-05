@@ -4,13 +4,16 @@ from __future__ import annotations
 # --------------------------------------------------------------------------
 # orchestrate
 # --------------------------------------------------------------------------
-def _plan_strategy(args):
+def _plan_strategy(args, bus):
     review = getattr(args, "review", "auto")  # 'auto'/True/False の三値
     gran = getattr(args, "granularity", "auto") or "auto"
+    # プロジェクト文脈（案 H・オプトイン）。run 作成時に snapshot_context() が meta へ固定済み
+    # なので、ここではその結果を読むだけ（描画・マーカー付与は snapshot 側の責務）。
+    ctx = run_context_text(bus)
     if args.planner == "flow-planner":
-        return plan_strategy_flow_planner(args.request, args.model, review, gran)
+        return plan_strategy_flow_planner(args.request, args.model, review, gran, ctx)
     if args.planner == "agent":
-        return plan_strategy_agent(args.request, args.model, review, gran)
+        return plan_strategy_agent(args.request, args.model, review, gran, ctx)
     return plan_strategy_stub(args.request, review, gran)
 
 
@@ -84,7 +87,7 @@ def _env_failure_reason(results: dict) -> "str | None":
     return None
 
 
-def _continue(args, request, nodes, results, iteration, strategy=None):
+def _continue(args, bus, request, nodes, results, iteration, strategy=None):
     # 失敗トリアージ: 実行制御・環境要因の失敗が 1 つでもあれば再計画せず打ち切る。
     # planner（stub/エージェント）に依らず先に判定する（LLM 評価も同じ環境で失敗するため）。
     env_fail = _env_failure_reason(results)
@@ -110,7 +113,11 @@ def _continue(args, request, nodes, results, iteration, strategy=None):
     # （プラグインはワーカータスクの実行のみを委譲し、メタ評価はローカルに残す）。
     if args.executor == "stub":
         return continue_stub(request, nodes, results, iteration, mf, review, ef, mr, rw)
-    return continue_agent(request, nodes, results, iteration, mf, review, ef, mr, rw)
+    # プロジェクト文脈（案 H・オプトイン）。全 replan 反復で同一バイト列を渡す
+    # （既存の実装は毎回 request 全文を再埋め込みしており、charter/rules を分離した今
+    # ここで補わないと反復のたびに分解質の材料が失われる）。
+    ctx = run_context_text(bus)
+    return continue_agent(request, nodes, results, iteration, mf, review, ef, mr, rw, context=ctx)
 
 
 def _node_entry(t):
@@ -282,6 +289,13 @@ def cmd_orchestrate(args) -> int:
             or os.environ.get("AGENT_FLOW_NO_GLOBAL_INSTRUCTIONS") == "1"):
         if bus.snapshot_instructions():
             bus.sync_push(f"snapshot global instructions {args.run_id}")
+    # プロジェクト文脈スナップショット（案 H・オプトイン）。--context-file が渡されたときだけ
+    # 固定する（agent-project が stable_prefix 有効時に渡す）。全ノード（planner・worker・
+    # evaluator）が同一バイト列を使い回せるよう、この run の生涯で 1 度だけ書く。
+    ctx_file = getattr(args, "context_file", None)
+    if ctx_file:
+        if bus.snapshot_context(ctx_file):
+            bus.sync_push(f"snapshot project context {args.run_id}")
     # 生存リース（heartbeat）は orchestrator 自身が張る。daemon 経由の run だけが lease を持つと、
     # agent-flow run で都度起動される run（agent-project の主経路）には lease が永久に書かれず、
     # 消費者側の「停滞 run か？」判定（run_is_orphaned / _run_resumable）が lease の不在を
@@ -317,7 +331,7 @@ def cmd_orchestrate(args) -> int:
     else:
         # 要求から 7 パターンの組み合わせと並列数を選び、初期グラフを形作る
         strategy, tasks = _with_run_heartbeat(
-            heartbeat, lease_window, lambda: _plan_strategy(args))
+            heartbeat, lease_window, lambda: _plan_strategy(args, bus))
         graph = {"strategy": strategy,
                  "nodes": {t["id"]: _node_entry(t) for t in tasks},
                  "iteration": 0}
@@ -365,7 +379,7 @@ def cmd_orchestrate(args) -> int:
         else:
             decision, new_tasks, reason = _with_run_heartbeat(
                 heartbeat, lease_window,
-                lambda: _continue(args, args.request, nodes, results, iteration,
+                lambda: _continue(args, bus, args.request, nodes, results, iteration,
                                   graph.get("strategy")))
         log(who, f"評価 #{iteration}: {decision} — {reason}")
 

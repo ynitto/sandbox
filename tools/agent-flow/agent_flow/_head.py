@@ -51,6 +51,9 @@ from agentcore import verifycontract as _verifycontract  # noqa: E402
 # （kiro/claude/copilot/codex）を含む全 CLI がこの定義で動く。以前は同じ argv 知識が
 # agent-project / agent-flow / agent-amigos / dashboard に重複していた（repolocal と同型）。
 from agentcore import agentcli as _agentcli  # noqa: E402
+# プロンプトキャッシュに適合する注入順の正規化（案 H）。安定部（プロジェクト文脈）→
+# 可変部（タスク固有）の順に決定的な区切りで連結する 1 実装（agent-project と共有）。
+from agentcore import promptcompose as _promptcompose  # noqa: E402
 # リトライのバックオフ待ちの唯一の seam（agentcore.transport.backoff_sleep）。素の time.sleep を
 # 差し替えると stdlib の subprocess 内部（プロセス終了の 0.001s 倍々ポーリング）にも効いてしまい、
 # 高負荷時だけテストが壊れる。リトライ経路はこの名前を通す。

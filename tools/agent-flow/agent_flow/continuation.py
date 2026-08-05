@@ -331,7 +331,8 @@ def _evaluator_fallback(results: dict, why: str):
 
 def continue_agent(request: str, nodes: dict, results: dict, iteration: int,
                   max_fanout: int = 50, review: bool = False, exemplar_first: bool = False,
-                  max_retries: int = 3, reduce_width: int = _DEFAULT_REDUCE_WIDTH):
+                  max_retries: int = 3, reduce_width: int = _DEFAULT_REDUCE_WIDTH,
+                  context: str = ""):
     # データ駆動 fan-out は機械的に展開（LLM 判断不要）。先に処理する。
     fanout_tasks = _expand_splits(nodes, results, max_fanout, review, request, exemplar_first,
                                   reduce_width)
@@ -378,6 +379,10 @@ def continue_agent(request: str, nodes: dict, results: dict, iteration: int,
         "既存 id と重複しない id を使うこと。done のとき new_tasks は空配列。\n\n"
         f"元の要求: {request}{hf_block}\n\n現在の結果:\n{summary}"
     )
+    # プロジェクト文脈（案 H・オプトイン）は、スキル/組み込みどちらが作った prompt にも
+    # ここで一律に前置する——スキルは context を知らないので二重注入の心配がなく、
+    # スキルを更新しなくても両経路が同じ規約（agentcore.promptcompose）を通る。
+    prompt = _promptcompose.compose([context], [prompt])
     try:
         text = run_agent(prompt, None, purpose="evaluator")
     except Exception as e:  # noqa: BLE001

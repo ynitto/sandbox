@@ -7,8 +7,10 @@ agent-flow の --planner flow-planner で呼び出される。
 Usage:
     python3 plan.py "<要求>" [--model <model>] [--review auto|true|false]
                     [--granularity auto|coarse|fine|finest] [--probe-root <dir>]
+                    [--context <text>]
     → JSON を stdout に出力: {"strategy": {...}, "tasks": [...]}
     granularity: auto=complexity から導出（既定）/ coarse|fine|finest=明示指定が優先。
+    context: プロジェクト文脈（案 H・オプトイン）。agent-flow から渡され Phase 1/3 へ前置される。
 """
 from __future__ import annotations
 
@@ -399,9 +401,17 @@ def normalize_estimated_steps(value) -> "int | None":
     return n if n > 0 else None
 
 
-def phase1_analyze(request: str, model: str | None) -> dict:
-    """Phase 1: 要求分析。"""
+def phase1_analyze(request: str, model: str | None, context: str = "") -> dict:
+    """Phase 1: 要求分析。
+
+    `context`（案 H・オプトイン）はプロジェクト文脈（charter/rules.md/リポジトリ理解）の
+    agent-flow 側スナップショット。プロジェクト内で不変なので、request 本体より前へ
+    プレフィックスとして置く（agent-flow / agent-project と同じ「安定部を先に」の規約を
+    ここでも手で踏襲する。標準ライブラリのみで動く独立スクリプトのため agentcore は
+    importせず、規約だけを揃える）。空なら従来どおり request 単体のプロンプト。"""
     prompt = ANALYZE_PROMPT.format(request=request)
+    if context:
+        prompt = f"{context}\n\n{prompt}"
     raw = run_agent(prompt, model)
     analysis = extract_json(raw)
     if not isinstance(analysis, dict):
@@ -758,7 +768,7 @@ def gate_tasks(tasks: list[dict], target: str, require_split: bool = False) -> l
 
 
 def phase3_build(request: str, analysis: dict, strategy: dict,
-                 model: str | None, granularity_target: str) -> list[dict]:
+                 model: str | None, granularity_target: str, context: str = "") -> list[dict]:
     """Phase 3: グラフ生成。ゲート不合格なら指示を強めて最大1回再生成。"""
     subtasks = "\n".join(
         f"- {s}" for s in analysis.get("subtasks", [])
@@ -785,8 +795,11 @@ def phase3_build(request: str, analysis: dict, strategy: dict,
             subtasks=subtasks or "(Phase 1 で特定されず)",
             request=request,
         )
+        # 安定部（context）→ 可変部（extra の再生成指示・本体）の順（案 H）。
         if extra:
             prompt = extra + "\n\n" + prompt
+        if context:
+            prompt = f"{context}\n\n{prompt}"
         raw = run_agent(prompt, model)
         tasks = extract_json(raw)
         if not isinstance(tasks, list):
@@ -856,19 +869,26 @@ def resolve_enumeration(analysis: dict, probe_root: str = ".") -> dict:
 
 
 def plan(request: str, model: str | None = None, review="auto",
-         granularity: str = "auto", probe_root: str = ".") -> tuple[dict, list[dict]]:
-    """3段パイプラインを実行し (strategy, tasks) を返す。"""
+         granularity: str = "auto", probe_root: str = ".",
+         context: str = "") -> tuple[dict, list[dict]]:
+    """3段パイプラインを実行し (strategy, tasks) を返す。
+
+    `context`（案 H・オプトイン）: agent-flow が run の meta へ固定したプロジェクト文脈
+    （charter/rules.md/リポジトリ理解）スナップショット。stable_prefix 有効時、agent-project
+    はこれらを request 本体から外して渡すため、分解の質を落とさないよう Phase 1（分析）と
+    Phase 3（グラフ生成）—— request を直接プロンプトへ埋め込む段——にだけ前置する
+    （Phase 2 は Phase 1 の構造化出力だけを使い request を埋め込まないため対象外）。"""
     catalog = load_catalog()
     if catalog is None:
         raise FileNotFoundError("patterns-catalog.yaml not found")
 
-    analysis = phase1_analyze(request, model)
+    analysis = phase1_analyze(request, model, context)
     target = resolve_granularity(granularity, analysis.get("complexity"))
     analysis["granularity_target"] = target
     decision = resolve_enumeration(analysis, probe_root)
 
     strategy = phase2_select(request, analysis, catalog, model, review)
-    tasks = phase3_build(request, analysis, strategy, model, target)
+    tasks = phase3_build(request, analysis, strategy, model, target, context)
     normalized = normalize_tasks(tasks)
 
     final_strategy = {
@@ -906,6 +926,10 @@ def main():
     parser.add_argument("--probe-root", dest="probe_root", default=".",
                         help="列挙 probe（LLM 無しの決定的走査で対象件数を数える）の起点ディレクトリ"
                              "（既定 cwd）。対象が見つからなければ件数は不明として扱う")
+    parser.add_argument("--context", default="",
+                        help="プロジェクト文脈（案 H・オプトイン）。agent-flow が run の meta から"
+                             "渡す charter/rules.md/リポジトリ理解のスナップショット。"
+                             "Phase 1 / Phase 3 のプロンプト先頭へ前置する")
     args = parser.parse_args()
 
     global AGENT_CLI
@@ -919,7 +943,7 @@ def main():
 
     try:
         strategy, tasks = plan(args.request, args.model, review, args.granularity,
-                               args.probe_root)
+                               args.probe_root, args.context)
         result = {"strategy": strategy, "tasks": tasks}
         print(json.dumps(result, ensure_ascii=False, indent=2))
     except Exception as e:

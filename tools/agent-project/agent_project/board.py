@@ -448,8 +448,10 @@ def cmd_board_offload(cfg: "Config", args) -> int:
         spec, routed = None, f"routing-error: {e}"
     did = _board_delegation_id(task, cfg)
     workload = getattr(args, "board_workload", None) or cfg.board_workload or "flow"
+    # board 委譲は請負側が別マシン（--context-file のようなローカル参照を渡せない）ため、
+    # stable_prefix が有効でも charter/rules/repo_map は本文へ埋め込む。
     env = task_to_delegation(task, spec, workload=workload, delegation_id=did,
-                             request=build_request(task, cfg),
+                             request=build_request(task, cfg, force_inline_context=True),
                              references=task_reference_specs(cfg, task))
     workdir = getattr(args, "board_workdir", None) or cfg.board_workdir
     path = write_board_post(board_repo, env, workdir=workdir)

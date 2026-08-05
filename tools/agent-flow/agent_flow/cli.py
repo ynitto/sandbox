@@ -81,6 +81,11 @@ def build_parser() -> argparse.ArgumentParser:
                    action="store_true", default=False,
                    help="グローバル指示（agent-instructions）の meta スナップショット / ワーカー注入を無効化する"
                         "（既定: ~/.agents/instructions/instructions.json があれば注入）")
+    p.add_argument("--context-file", dest="context_file", default=None,
+                   help="プロジェクト文脈（案 H・オプトイン）のスナップショットを書いたファイルへの"
+                        "パス。agent-project が stable_prefix 有効時に charter/rules.md/"
+                        "リポジトリ理解を request 本体から外して渡す。run の meta.json へ一度だけ"
+                        "固定され、planner・worker・evaluator の全プロンプト先頭へ前置される")
     p.add_argument("--no-session-commands", dest="no_session_commands",
                    action="store_true", default=False,
                    help="セッション開始コマンド（agent-session-commands）の実行を無効化する"

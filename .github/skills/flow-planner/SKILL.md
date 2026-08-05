@@ -54,8 +54,14 @@ agent-flow run "<要求>" --planner flow-planner
 ```bash
 # 全段パイプライン（agent-flow が内部で呼ぶ）
 python3 .github/skills/flow-planner/scripts/plan.py "<要求>" \
-  [--model <model>] [--review auto|true|false] [--granularity auto|coarse|fine|finest]
+  [--model <model>] [--review auto|true|false] [--granularity auto|coarse|fine|finest] \
+  [--context <text>]
 ```
+
+`--context`（案 H・オプトイン）: agent-flow が渡すプロジェクト文脈（charter/rules.md/
+リポジトリ理解のスナップショット）。agent-project の `stable_prefix` 設定が有効なとき、
+これらは要求本文から外されるため、分解の質を落とさないよう Phase 1（分析）・Phase 3
+（グラフ生成）のプロンプト先頭へこの内容を前置する。未指定なら従来どおり要求本文だけを見る。
 
 ## 3段階パイプライン
 

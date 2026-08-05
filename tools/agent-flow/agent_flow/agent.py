@@ -798,7 +798,7 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
                  repo_instruction: str = "", workspace: "dict | None" = None,
                  references: "list[dict] | None" = None, request: str = "",
                  instructions: str = "", prompt_table: bool = False,
-                 repair: "dict | None" = None):
+                 repair: "dict | None" = None, context: str = ""):
     role = {
         "classify": "分類役。入力を適切なカテゴリへ分類し『class=<ラベル>』形式で出力。",
         "synthesize": "統合役。依存タスクの成果を統合して 1 つの成果物にまとめる。",
@@ -860,8 +860,12 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
                 lines.append(line)
             prompt += "\n依存タスクの成果:\n" + "\n".join(lines) + "\n"
         prompt += "\n成果物を簡潔に直接出力してください。"
-    # グローバル指示を先頭へ前置する。flow-worker スキルが既に前置していれば（マーカー検出で）
-    # 二重注入しない＝新旧どちらのスキルでも 1 回だけ効く（組み込み fallback でも同様）。
+    # プロジェクト文脈（案 H・オプトイン）を先に前置してから、グローバル指示をさらにその前へ
+    # 前置する（最終順序: [instructions][context][goal/deps ...]）。context は毎回このプロンプト
+    # 文字列を新規に組み立ててから 1 回だけ付けるので二重注入の心配は無い（instructions と違い
+    # スキル側は context を知らない）。instructions 側は flow-worker スキルが既に前置していれば
+    # （マーカー検出で）二重注入しない＝新旧どちらのスキルでも 1 回だけ効く（組み込み fallback でも同様）。
+    prompt = _promptcompose.compose([context], [prompt])
     prompt = prepend_instructions(prompt, instructions)
     text = run_agent(prompt, model, purpose=kind)   # agents: の kind 別上書き（無ければ worker）
     # 構造化データを意図する kind のみ JSON を抽出（自由記述の本文から JSON 風断片を
