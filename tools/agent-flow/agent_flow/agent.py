@@ -403,6 +403,42 @@ def _control_degraded() -> "tuple[str | None, str | None]":
             str(d["model"]) if d.get("model") else None)
 
 
+def _control_concurrency() -> dict:
+    """同時実行数の上書き（`workloads.flow.concurrency`）。宣言された整数キーだけを返す。
+
+    この PC が同時にどれだけ走らせてよいかは**そのノードの資源の話**で、設定ファイル
+    （`max_runs` / `workers`）は各プロジェクトのルートに散っている。1 台の負荷を下げたい
+    人が全プロジェクトの yaml を直して回ることになっていたので、管理面（dashboard の
+    全体設定）から 1 か所で宣言できるようにする。**エンジンは control を読むだけ**で、
+    選択の知能は管理面に置く（agent-profiles と同じ分業）。
+
+    壊れた値（負数・数値でない・workers=0＝ワーカー無し）は宣言なしとして無視する
+    ——GUI の入力ミスで run が誰にも進められなくなる方が、上書きが効かないより高くつく。
+    """
+    raw = _control_workload().get("concurrency")
+    out: dict = {}
+    if not isinstance(raw, dict):
+        return out
+    for key, floor in (("max_runs", 0), ("workers", 1)):
+        value = raw.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        number = int(value)
+        if number >= floor:
+            out[key] = number
+    return out
+
+
+def control_max_runs(fallback: int) -> int:
+    """同時に実行する run の上限（control > CLI 引数 > 設定ファイル > 既定）。0 以下で無制限。"""
+    return int(_control_concurrency().get("max_runs", fallback) or 0)
+
+
+def control_workers(fallback: int) -> int:
+    """run 1 本あたりの worker 数（control > CLI 引数 > 設定ファイル > 既定）。"""
+    return int(_control_concurrency().get("workers", fallback))
+
+
 def _write_status(effective_cli: str = "", effective_model: str = "", lifecycle: str = "run",
                   budget: "dict | None" = None, fresh_after_sec: int = 120) -> None:
     """status/<tool>-<pid>.json へ適用状況ハートビートを原子書換する（best-effort）。"""

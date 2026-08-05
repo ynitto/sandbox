@@ -7,6 +7,59 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard / agent-tools: ollama の接続先をノード宣言で指定できるようにした
+
+ローカルモデルを別の PC（GPU を積んだ 1 台）で走らせる構成では接続先の指定が要るのに、
+口は環境変数 `OLLAMA_HOST` だけだった。agent-tools の実行はほとんどが常駐体・デーモン・
+GUI から起こされる子プロセスで、そこへ環境変数を届けるには systemd unit やシェル初期化を
+人が直すしかない。正典構成（Windows の画面 + WSL の実行エンジン）に至っては、画面側の
+環境変数がそもそも WSL 側へ渡らないので、画面から設定する手段が無かった。
+
+- `agentcore.ollama_adapter` の解決順を
+  `--host <url>` > `$OLLAMA_HOST` > host.yaml の `ollama.host` > `http://127.0.0.1:11434` に統一。
+  読み手が 1 実装なので、agent-project / agent-flow / agent-amigos / agent-dashboard の
+  どこから起動しても同じ宛先になる（タイムアウトも `$OLLAMA_TIMEOUT` > `ollama.timeout_sec` >
+  600 秒の同じ形）
+- 接続エラー・タイムアウトの文言に**宛先を必ず添える**——既定の localhost だと思っている人と、
+  別 PC を指しているノードとでは次にやることが違う（サーバ起動 / 宛先の確認）
+- dashboard の「全体設定 → エージェント → ollama の接続先」から、実行側のノード宣言
+  （`~/.agents/agent-project.host.yaml`）の `host:` 1 行だけを外科的に書き換える。コメント・
+  順序・他の宣言は保つ。宣言ファイルが無い端末では**作らずに断る**（空の host.yaml は
+  agent-project から「プロジェクトを持たないノード宣言」に見え、設定していないことが
+  設定したつもりの宣言に化ける）
+
+### agent-dashboard: 全体設定「利用状況」の数字を agent-audit の集計へ一本化した
+
+この節には集計が 2 つ並んでいた——画面がノード予算の台帳から自分で足した「利用量」と、
+agent-audit が集計した「実測のトークン利用量」である。台帳（`budget-ledger`）は agent-audit の
+源泉の 1 つで、そこへ CLI のセッションログを突き合わせた分だけ後者の方が確かなので、同じ話題の
+数字を 2 つ置く理由が無かった（コンセプト正典 C7: 同じ判断の根拠を 2 つ置かない）。
+
+- 合計・機能別・エージェント別を agent-audit の集計から描くようにした（新 IPC
+  `agentAudit:summary` が `usage --json` を 2 軸ぶん取り、**合計は main 側で畳む**——表ごとに
+  画面が足すと、片方の取得だけ失敗したときに食い違った数字が並ぶ）
+- 上限はノード予算が正のまま。ゲージの分母として読むだけで、**期間が予算の期間と一致する
+  ときだけ**残量を出す（別期間の集計に上限を重ねると嘘の残量になる）。期間の初期値も予算に合わせた
+- agent-audit を入れていない・まだ収集していない端末では台帳だけの集計へフォールバックし、
+  **どちらを見ているかを画面に明示する**（黙って別の数字に差し替えない）
+- 実測と推定は従来どおり合算せず、内訳を必ず添える（agent-audit の設計不変条件）
+
+### agent-dashboard / agent-flow: 自動実行の同時実行数を全体設定から宣言できるようにした
+
+「この PC で同時にどれだけ走らせてよいか」は端末の資源の話なのに、設定の置き場（各プロジェクトの
+`agent-flow.yaml` の `max_runs` / `workers`）はプロジェクトごとに散っていて、1 台の負荷を下げたい
+人が全プロジェクトの yaml を直して回ることになっていた。
+
+- [agent-control 契約](schemas/agent-control.schema.json) に `workloads.flow.concurrency`
+  （`max_runs` / `workers`）を additive に追加。優先順位は契約どおり
+  **control > CLI 引数 > 設定ファイル > 組み込み既定**で、キーを消せば元の解決へ戻る
+- agent-flow が `participate`（run の受理枠）と `run`（worker 数）でこれを読む。壊れた値
+  （負数・数値でない・`workers: 0`）は宣言なしとして無視する——GUI の入力ミスで run が
+  誰にも進められなくなる方が、上書きが効かないより高くつく
+- dashboard の「全体設定 → 実行制御 → 同時に動かす数（自動実行）」から宣言する。`max_runs: 0` は
+  **上限なし**（既定へ戻すのは空欄）で、agent-flow 設定と同じ語彙に揃えた
+
+
 ### 修正 — agent-dashboard: シェル初期化メッセージでプロジェクト一覧が消える
 
 WSL 側ホーム（`$HOME/.agents`）の解決が、`wsl.exe … sh -lc 'wslpath -w …'` の標準出力を

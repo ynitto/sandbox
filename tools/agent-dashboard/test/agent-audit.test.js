@@ -117,6 +117,114 @@ test('利用量テーブルは記録が無いとき収集への導線を示す',
   assert.match(ui.usageTableHtml(null), /今すぐ収集/);
 });
 
+test('summary は機能別とエージェント別を 1 回で取り、合計を畳む', async () => {
+  const scripts = [];
+  const data = await audit.summary({}, 'day', async (script) => {
+    scripts.push(script);
+    const rows = script.includes("'workload'")
+      ? [{ group: 'flow', runs: 2, seconds: 120, measured_in: 1000, measured_out: 500,
+           estimated_tokens: 300, unmeasured_runs: 1, usd: 0.25 },
+         { group: 'project', runs: 1, seconds: 60, measured_in: 200, measured_out: 100,
+           estimated_tokens: 0, unmeasured_runs: 0, usd: 0 }]
+      : [{ group: 'claude', runs: 3, seconds: 180, measured_in: 1200, measured_out: 600,
+           estimated_tokens: 300, unmeasured_runs: 1, usd: 0.25 }];
+    return okResult(JSON.stringify({ period: 'day', rows }));
+  });
+  assert.match(scripts[0], /'--period' 'day' '--by' 'workload'/);
+  assert.match(scripts[1], /'--period' 'day' '--by' 'agent_cli'/);
+  assert.equal(data.period, 'day');
+  assert.equal(data.workloads.length, 2);
+  assert.equal(data.agents.length, 1);
+  // 実測と推定は別々に畳み、合算値は total にだけ持つ（列の意味づけは agent-audit の契約）
+  assert.equal(data.totals.measured, 1800);
+  assert.equal(data.totals.estimated, 300);
+  assert.equal(data.totals.total, 2100);
+  assert.equal(data.totals.runs, 3);
+  assert.equal(data.totals.seconds, 180);
+  assert.equal(data.totals.unmeasuredRuns, 1);
+  assert.equal(data.totals.usd, 0.25);
+});
+
+const SUMMARY = {
+  period: 'month',
+  workloads: [{ group: 'flow', runs: 2, seconds: 120, measured_in: 2000, measured_out: 1000,
+                estimated_tokens: 300, unmeasured_runs: 0, usd: 0.25 }],
+  agents: [{ group: 'claude', runs: 2, seconds: 120, measured_in: 2000, measured_out: 1000,
+             estimated_tokens: 300, unmeasured_runs: 0, usd: 0.25 }],
+  totals: { runs: 2, seconds: 120, measuredIn: 2000, measuredOut: 1000, measured: 3000,
+            estimated: 300, total: 3300, unmeasuredRuns: 0, usd: 0.25 },
+};
+
+function withState(state, fn) {
+  globalThis.state = state;
+  try {
+    return fn();
+  } finally {
+    delete globalThis.state;
+  }
+}
+
+test('機能別テーブルは agent-audit の集計に予算の上限と状態を重ねる', () => {
+  const html = withState({
+    orchestration: {
+      budget: {
+        knownWorkloads: ['routine', 'project', 'flow', 'amigos'],
+        tokenLimit: 10000,
+        config: { period: 'month' },
+        workloads: { flow: { tokenCap: 5000, soft: true } },
+      },
+    },
+  }, () => ui.workloadTableHtml(SUMMARY));
+  assert.match(html, /実測 3k/);                  // 実測と推定は別々に示す（合算しない）
+  assert.match(html, /推定 300/);
+  assert.match(html, /上限 5k/);                  // 枠はノード予算が正
+  assert.match(html, /節約モード/);
+  assert.match(html, /記録なし/);                 // 記録の無い機能も枠が見えるよう並べる
+});
+
+test('ゲージは期間が予算の期間と一致するときだけ残量を出す', () => {
+  const budget = (period) => ({
+    orchestration: { budget: { tokenLimit: 10000, config: { period } } },
+  });
+  const same = withState(budget('month'), () => ui.gaugeHtml(SUMMARY.totals, 'month'));
+  assert.match(same, /33\.0% 使用/);
+  assert.match(same, /残り 7k/);
+  // 期間がずれたら残量は出さない（別期間の集計に上限を重ねると嘘の残量になる）
+  const other = withState(budget('day'), () => ui.gaugeHtml(SUMMARY.totals, 'month'));
+  assert.doesNotMatch(other, /使用/);
+  assert.match(other, /期間を合わせて/);
+  // 上限未設定でも集計は続く
+  assert.match(withState({}, () => ui.gaugeHtml(SUMMARY.totals, 'month')), /上限は設定されていません/);
+});
+
+test('エージェント別テーブルは実行数の多い順に並べ、概算費用を添える', () => {
+  const html = withState({}, () => ui.agentTableHtml({
+    totals: { total: 3300 },
+    agents: [{ group: 'ollama', runs: 1, seconds: 30, measured_in: 0, measured_out: 0,
+               estimated_tokens: 0, unmeasured_runs: 1, usd: 0 },
+             { group: 'claude', runs: 5, seconds: 300, measured_in: 1000, measured_out: 500,
+               estimated_tokens: 300, unmeasured_runs: 0, usd: 0.25 }],
+  }));
+  assert.ok(html.indexOf('claude') < html.indexOf('ollama'), '実行数の多い順');
+  assert.match(html, /取得できず/);               // トークン不明でも時間と件数は数える
+  assert.match(html, /\$0\.25/);
+});
+
+test('agent-audit の集計が取れない端末では台帳集計へフォールバックし、その旨を言う', () => {
+  const html = withState({ orchestration: { budget: { totalTokens: {} } } }, () => {
+    globalThis.orchBudgetPanelHtml = () => '<section id="ledger-panel"></section>';
+    try {
+      return ui.ledgerFallbackHtml();
+    } finally {
+      delete globalThis.orchBudgetPanelHtml;
+    }
+  });
+  assert.match(html, /実行記録（台帳）だけの集計/);
+  assert.match(html, /id="ledger-panel"/);
+  // 予算も読めなければ、数字を捏造せず設定の確認へ誘導する
+  assert.match(withState({}, () => ui.ledgerFallbackHtml()), /収集の設定/);
+});
+
 test('実行品質テーブルは結果・リトライ・検証を利用者向けの言葉で示す', () => {
   const html = ui.statsTableHtml({
     period: 'month',

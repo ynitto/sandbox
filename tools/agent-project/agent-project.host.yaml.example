@@ -120,6 +120,21 @@ amigos_config: null
 budget:
   max_concurrent: 4
 
+# ── ローカルモデル（ollama）の接続先 ──
+# `agent_cli: ollama`（`agents/ollama.json` → `agent-ollama`）で使う ollama サーバの宛先。
+# **このノードにしか無い接続先**なので共有する状態リポジトリ側（agent-project.yaml）には
+# 置けない（`repos[].local` と同じ理由）。GPU を積んだ 1 台で走らせている構成では、
+# 各ノードがここでその宛先を指す。
+#
+# 解決順: `agent-ollama --host <url>` > 環境変数 `OLLAMA_HOST` > ここ > `http://127.0.0.1:11434`
+# 読み手は `agentcore.ollama_adapter` の 1 実装なので、agent-project / agent-flow /
+# agent-amigos / agent-dashboard のどこから起動されても同じ宛先になる。
+# agent-dashboard の「全体設定 → エージェント → ollama の接続先」がこの行を書き換える。
+#
+# ollama:
+#   host: http://gpu-box.local:11434
+#   timeout_sec: 900        # HTTP 待ち上限（既定 600 秒。冷起動や大きめモデル向け）
+
 # ── ツールの自動アップデート（S1 でノード側へ移設）──
 # 「このノードのインストール管理」なのでプロジェクト共有設定には置かない（置くと更新の停止・
 # 更新元の差し替えが全 PC へ一斉に飛び、あるノードだけ版を固定する運用ができない）。

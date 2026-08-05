@@ -130,7 +130,9 @@ def _participate_once(args) -> "list[str]":
     base = _child_base(args, os.path.abspath(args.bus))
     running = {r for r in (str(getattr(args, "running", "") or "")).split(",") if r}
     lease_window = _run_lease_window(args)
-    max_runs = int(getattr(args, "max_runs", 0) or 0)
+    # 同時実行数は agent-control（管理面の宣言）が最優先。宣言が無ければ従来どおり
+    # CLI 引数 → 設定ファイル → 既定 8（agent-control 契約の優先順位そのまま）。
+    max_runs = control_max_runs(int(getattr(args, "max_runs", 0) or 0))
     # 受理枠: 呼び出し側が既に走らせている分を差し引いた残り。0 以下（無制限）は None。
     slots = max(0, max_runs - len(running)) if max_runs > 0 else None
 

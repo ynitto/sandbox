@@ -136,6 +136,41 @@ async function usage(cfg, period, by, runShell = defaultRunShell) {
   return { ...data, lastCollect };
 }
 
+// 全体設定「利用状況」の 1 枚を組み立てるための集計。機能別（workload）とエージェント別
+// （agent_cli）を 1 往復で取り、合計もここで畳む。
+//
+// **合計をここで足すのは「同じ行を 2 度数えない」ため**。usage --json の行は台帳行 +
+// 未結合セッション行で、どの粒度で切っても母集合は同じ——だから機能別の合計＝
+// エージェント別の合計になる。画面が 2 つの表から別々に合計を出すと、片方の取得だけが
+// 失敗したときに食い違った数字が並ぶ。集計ロジック自体は agent-audit が正で、ここは
+// 行の足し合わせしかしない（列の意味づけ——実測と推定を合算しない——も向こうの契約）。
+async function summary(cfg, period, runShell = defaultRunShell) {
+  const p = PERIODS.has(period) ? period : 'month';
+  const [byWorkload, byAgent] = [
+    await usage(cfg, p, 'workload', runShell),
+    await usage(cfg, p, 'agent_cli', runShell),
+  ];
+  const rows = (byWorkload && byWorkload.rows) || [];
+  const totals = rows.reduce((acc, row) => ({
+    runs: acc.runs + (Number(row.runs) || 0),
+    seconds: acc.seconds + (Number(row.seconds) || 0),
+    measuredIn: acc.measuredIn + (Number(row.measured_in) || 0),
+    measuredOut: acc.measuredOut + (Number(row.measured_out) || 0),
+    estimated: acc.estimated + (Number(row.estimated_tokens) || 0),
+    unmeasuredRuns: acc.unmeasuredRuns + (Number(row.unmeasured_runs) || 0),
+    usd: acc.usd + (Number(row.usd) || 0),
+  }), { runs: 0, seconds: 0, measuredIn: 0, measuredOut: 0, estimated: 0, unmeasuredRuns: 0, usd: 0 });
+  totals.measured = totals.measuredIn + totals.measuredOut;
+  totals.total = totals.measured + totals.estimated;
+  return {
+    period: p,
+    workloads: rows,
+    agents: (byAgent && byAgent.rows) || [],
+    totals,
+    lastCollect,
+  };
+}
+
 async function stats(cfg, period, runShell = defaultRunShell) {
   const p = PERIODS.has(period) ? period : 'month';
   const settings = auditSettings(cfg);
@@ -153,4 +188,4 @@ async function doctor(cfg, runShell = defaultRunShell) {
   return { ok: r.ok, status: r.status, detail: detailOf(r), error: r.ok ? '' : failureMessage(r, '点検を実行できませんでした') };
 }
 
-module.exports = { auditSettings, buildScript, parseJson, collect, usage, stats, doctor };
+module.exports = { auditSettings, buildScript, parseJson, collect, usage, summary, stats, doctor };

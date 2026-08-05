@@ -1,11 +1,18 @@
 'use strict';
 
-// 監査（agent-audit の呼び出しと閲覧）— 全体設定タブの「利用状況」へ差し込む面。
+// 監査（agent-audit の呼び出しと閲覧）— 全体設定タブの「利用状況」の面。
 //
 // 独立したタブではなく全体設定へ置くのは、扱う数字が**プロジェクトごとではない**ため。
-// この端末の実行証跡から集計した実測トークンと実行品質は、選択中プロジェクトと無関係
-// なのにプロジェクトのタブ列へ並んでいた。全体設定にはノード予算から集計した「利用状況」
-// が既にあり、同じ話題の数字が 2 か所へ分かれてもいた。同じ節に並べて 1 か所にする。
+//
+// **利用状況の数字はここが 1 か所で出す。** 以前はこの節に 2 つの集計が並んでいた——
+// ノード予算の台帳から画面が自分で足した「利用量」と、agent-audit が集計した「実測の
+// トークン利用量」である。同じ話題の数字が 2 つ並ぶうえ、実測の裏取り（CLI の
+// セッションログとの突き合わせ）がある分だけ後者が正しい。台帳は agent-audit の源泉の
+// 1 つ（`budget-ledger`）なので、agent-audit の集計は台帳集計の上位互換にあたる。
+// そこで**表示は agent-audit の集計に一本化**し、画面側の再集計をやめた（C7: 同じ判断の
+// 根拠を 2 つ置かない）。上限・配分の設定はノード予算が正のままで、この面はその上限を
+// ゲージの分母として読むだけ。agent-audit を入れていない・まだ収集していない端末では、
+// 従来の台帳集計へフォールバックし、どちらを見ているかを画面に明示する。
 //
 // agent-audit CLI（Windows では WSL 経由）の LLM を使わない段だけを扱う:
 // 収集（collect）・トークン利用量（usage --json）・実行品質（stats --json）・
@@ -40,8 +47,11 @@
   ];
   const STATUS_LABELS = { done: '完了', failed: '失敗', cancelled: '中止' };
 
-  let period = 'month';
-  let by = 'agent_cli';
+  // 期間の初期値はノード予算の期間に合わせる（上限は「その期間の消費」に対して掛かる
+  // ので、別期間の集計にゲージを重ねると分母と分子が食い違う）。
+  let period = '';
+  let by = 'tool';
+  let summaryData = null;
   let usageData = null;
   let statsData = null;
   let loadedOnce = false;
@@ -92,6 +102,152 @@
   function auditConfig() {
     const appState = root.state || {};
     return (appState.config && appState.config.agentAudit) || {};
+  }
+
+  // ノード予算（上限・機能ごとの枠・期間）。無ければ null——上限の表示だけを落とし、
+  // 集計そのものは agent-audit 側だけで成立する。
+  function budgetState() {
+    const orch = (root.state || {}).orchestration;
+    return (orch && !orch.error && orch.budget) || null;
+  }
+
+  // 期間は「まだ選ばれていない」あいだ予算の期間へ寄せるだけで、**確定はしない**。
+  // 予算の取得が 1 周期遅れた端末で 'month' を焼き付けると、見出しは予算どおり「今日」なのに
+  // 数字は今月ぶん、という食い違いが残る（確定するのは実際に集計を取った loadData）。
+  function currentPeriod() {
+    if (period) return period;
+    const declared = ((budgetState() || {}).config || {}).period;
+    return PERIODS.some(([value]) => value === declared) ? declared : 'month';
+  }
+
+  function periodLabel(value) {
+    const found = PERIODS.find(([key]) => key === value);
+    return found ? found[1] : value;
+  }
+
+  function workloadLabel(name) {
+    if (typeof root.amigosWorkloadLabel === 'function') return root.amigosWorkloadLabel(name);
+    return name;
+  }
+
+  // 実測と推定は**合算しない**（agent-audit の設計不変条件）。合計の表示でも内訳を必ず添える。
+  function tokenCellHtml(row) {
+    const measured = (Number(row.measured_in) || 0) + (Number(row.measured_out) || 0);
+    const estimated = Number(row.estimated_tokens) || 0;
+    const parts = [];
+    if (measured > 0) parts.push(`実測 ${fmtTokens(measured)}`);
+    if (estimated > 0) parts.push(`推定 ${fmtTokens(estimated)}`);
+    if (!parts.length) parts.push(Number(row.unmeasured_runs) > 0 ? '取得できず' : '0');
+    return escHtml(parts.join(' + '));
+  }
+
+  function shareCellHtml(row, total) {
+    const value = (Number(row.measured_in) || 0) + (Number(row.measured_out) || 0)
+      + (Number(row.estimated_tokens) || 0);
+    const share = total > 0 && value > 0 ? (value / total) * 100 : 0;
+    return `<div class="orch-share"><div class="orch-bar" title="全体の ${share.toFixed(1)}%">
+      <span class="orch-bar-measured" style="width:${share.toFixed(1)}%"></span>
+    </div><span class="num mono">${value > 0 ? `${share.toFixed(1)}%` : '—'}</span></div>`;
+  }
+
+  // 上限に対する消費のゲージ。**期間が一致するときだけ出す**——ノード予算の上限は
+  // その期間の消費に掛かるので、別期間の集計に重ねると嘘の残量になる。
+  function gaugeHtml(totals, selected) {
+    const shown = selected || currentPeriod();
+    const budget = budgetState();
+    const limit = Number((budget || {}).tokenLimit || 0);
+    if (!budget || !(limit > 0)) {
+      return '<p class="muted">トークンの上限は設定されていません。利用量は記録され続けます。</p>';
+    }
+    const budgetPeriod = (budget.config || {}).period;
+    if (budgetPeriod !== shown) {
+      return `<p class="muted">上限（${escHtml(fmtTokens(limit))} トークン）は「${escHtml(periodLabel(budgetPeriod))}」に対する設定です。残量を見るには期間を合わせてください。</p>`;
+    }
+    const measuredPct = Math.min(100, (totals.measured / limit) * 100);
+    const estimatedPct = Math.min(100 - measuredPct, (totals.estimated / limit) * 100);
+    const usedPct = (totals.total / limit) * 100;
+    const remaining = Math.max(0, limit - totals.total);
+    return `<div class="orch-gauge">
+      <div class="orch-gauge-head">
+        <strong>${usedPct.toFixed(1)}% 使用</strong>
+        <span class="muted">残り ${escHtml(fmtTokens(remaining))} / 上限 ${escHtml(fmtTokens(limit))} トークン</span>
+      </div>
+      <div class="orch-bar orch-bar-lg" role="img" aria-label="上限の ${usedPct.toFixed(1)}% を使用">
+        <span class="orch-bar-measured" style="width:${measuredPct.toFixed(1)}%"></span>
+        <span class="orch-bar-estimated" style="width:${estimatedPct.toFixed(1)}%"></span>
+      </div>
+    </div>`;
+  }
+
+  function badgeHtml(kind, text) {
+    return `<span class="orch-badge orch-badge-${escHtml(kind)}">${escHtml(text)}</span>`;
+  }
+
+  // 機能（ワークロード）別。行は agent-audit の集計、上限と状態はノード予算の設定から。
+  // 記録が 1 件も無い機能も、予算に枠があるなら 0 として並べる（枠の存在が見えなくならない）。
+  function workloadTableHtml(data) {
+    const budget = budgetState() || {};
+    const rows = (data && data.workloads) || [];
+    const total = ((data && data.totals) || {}).total || 0;
+    const byGroup = new Map(rows.map((row) => [String(row.group || ''), row]));
+    const names = [...new Set([
+      ...(budget.knownWorkloads || []),
+      ...rows.map((row) => String(row.group || '')),
+    ])].filter(Boolean);
+    const body = names.map((name) => {
+      const row = byGroup.get(name) || {};
+      const wl = (budget.workloads || {})[name] || {};
+      const cap = Number(wl.tokenCap || 0);
+      const runs = Number(row.runs || 0);
+      const badge = wl.tokenExceeded ? badgeHtml('over', '上限に到達')
+        : wl.soft ? badgeHtml('soft', '節約モード')
+          : wl.timeExceeded ? badgeHtml('over', '時間の上限に到達')
+            : runs === 0 ? badgeHtml('muted', '記録なし') : badgeHtml('ok', '上限内');
+      return `<tr>
+        <td>${escHtml(workloadLabel(name))}</td>
+        <td class="orch-bar-cell">${shareCellHtml(row, total)}</td>
+        <td class="num mono">${tokenCellHtml(row)}${cap > 0 ? ` <span class="muted">/ 上限 ${escHtml(fmtTokens(cap))}</span>` : ''}</td>
+        <td class="num mono">${escHtml(fmtSeconds(row.seconds))}</td>
+        <td class="num mono">${runs}件</td>
+        <td>${badge}</td>
+      </tr>`;
+    }).join('');
+    return `<div class="table-scroll"><table class="list audit-table">
+      <thead><tr><th>機能</th><th>全体に占める割合</th><th>トークン</th><th>実行時間</th><th>実行数</th><th>状態</th></tr></thead>
+      <tbody>${body || '<tr><td colspan="6" class="muted">この期間の記録はありません。</td></tr>'}</tbody>
+    </table></div>`;
+  }
+
+  function agentTableHtml(data) {
+    const rows = (data && data.agents) || [];
+    const total = ((data && data.totals) || {}).total || 0;
+    const body = rows.slice()
+      .sort((a, b) => (Number(b.runs) || 0) - (Number(a.runs) || 0))
+      .map((row) => `<tr>
+        <td><code>${escHtml(row.group || '未記録')}</code></td>
+        <td class="orch-bar-cell">${shareCellHtml(row, total)}</td>
+        <td class="num mono">${tokenCellHtml(row)}</td>
+        <td class="num mono">${escHtml(fmtSeconds(row.seconds))}</td>
+        <td class="num mono">${Number(row.runs || 0)}件</td>
+        <td class="num mono">${escHtml(fmtUsd(row.usd))}</td>
+      </tr>`).join('');
+    return `<div class="table-scroll"><table class="list audit-table">
+      <thead><tr><th>エージェント</th><th>全体に占める割合</th><th>トークン</th><th>実行時間</th><th>実行数</th><th>概算費用</th></tr></thead>
+      <tbody>${body || '<tr><td colspan="6" class="muted">エージェント別の記録はありません。</td></tr>'}</tbody>
+    </table></div>`;
+  }
+
+  // agent-audit の集計が取れないときの代替。台帳（ノード予算）だけの集計を、
+  // **どちらを見ているかを明示して**出す（黙って別の数字に差し替えない）。
+  function ledgerFallbackHtml() {
+    const budget = budgetState();
+    if (!budget || typeof root.orchBudgetPanelHtml !== 'function') {
+      return `<p class="muted">実行証跡の集計も、実行記録の集計も取得できていません。
+        下の「収集の設定」で agent-audit の起動コマンドを確認してください。</p>`;
+    }
+    return `<p class="muted">実行証跡の集計を取得できないため、実行記録（台帳）だけの集計を表示しています。
+      エージェント CLI が報告した実測トークンはこの数字に含まれません。</p>
+      ${root.orchBudgetPanelHtml(budget)}`;
   }
 
   function usageTableHtml(data) {
@@ -196,34 +352,64 @@
     </section>`;
   }
 
-  // 全体設定「利用状況」へ並べる面。既にある利用量（ノード予算の集計）と同じ
-  // orch-panel の見た目に揃える——同じ節に別デザインの塊が挟まると、別画面が
-  // 埋め込まれているように見えて 1 か所にまとめた意味が薄れる。
+  // 全体設定「利用状況」の面。上から「利用量（この端末の合計・機能別・エージェント別）」
+  // →「内訳（ツール／モデル／用途／ノード別）」→「実行品質」→「収集の設定」。
+  // 集計はすべて agent-audit の `usage --json` / `stats --json` が正で、この画面は
+  // 描画だけをする（集計ロジックを複製しない）。
   function panelHtml() {
     const optionsHtml = (list, current) => list
       .map(([value, label]) => `<option value="${value}"${value === current ? ' selected' : ''}>${label}</option>`)
       .join('');
+    const totals = (summaryData && summaryData.totals) || null;
+    const unmeasured = totals ? Number(totals.unmeasuredRuns || 0) : 0;
+    const body = totals ? `
+      <div class="orch-usage-summary">
+        <div><span>合計</span><strong>${escHtml(totals.total > 0 ? `${fmtTokens(totals.total)} トークン` : (unmeasured > 0 ? '取得できず' : '0 トークン'))}</strong></div>
+        <div><span>実行時間</span><strong>${escHtml(fmtSeconds(totals.seconds))}</strong></div>
+        <div><span>実行数</span><strong>${Number(totals.runs || 0)}件</strong></div>
+        <div><span>概算費用</span><strong>${escHtml(fmtUsd(totals.usd))}</strong></div>
+      </div>
+      <p class="orch-usage-breakdown">
+        <span class="orch-legend"><span class="orch-swatch orch-bar-measured"></span>実測 ${escHtml(fmtTokens(totals.measured))}（入力 ${escHtml(fmtTokens(totals.measuredIn))} / 出力 ${escHtml(fmtTokens(totals.measuredOut))}）</span>
+        <span class="orch-legend"><span class="orch-swatch orch-bar-estimated"></span>推定 ${escHtml(fmtTokens(totals.estimated))}</span>
+        ${unmeasured > 0 ? `<span class="muted">トークンを取得できなかった実行 ${unmeasured}件</span>` : ''}
+      </p>
+      <p class="muted">実測はエージェント CLI が報告した値、推定は実行時間からの換算です。性質が違うため合算していません。</p>
+      ${gaugeHtml(totals, currentPeriod())}
+      ${workloadTableHtml(summaryData)}
+      <h4 class="orch-usage-subheading">エージェント別</h4>
+      <p class="muted">エージェント（CLI）ごとの利用量です。トークンを取得できない実行も、時間と実行数には含まれます。</p>
+      ${agentTableHtml(summaryData)}` : (loading ? '' : ledgerFallbackHtml());
     return `<section class="orch-panel audit-usage" aria-labelledby="audit-usage-title">
       <header class="row">
         <div>
           <span class="summary-kicker">実行証跡から集計</span>
-          <h3 id="audit-usage-title">実測のトークン利用量</h3>
+          <h3 id="audit-usage-title">利用量（${escHtml(periodLabel(currentPeriod()))}）</h3>
         </div>
         <div class="audit-actions">
+          <label>期間 <select id="audit-period">${optionsHtml(PERIODS, currentPeriod())}</select></label>
           <button type="button" id="audit-collect" class="primary-inline"${collectBusy ? ' disabled' : ''}>${collectBusy ? '収集しています…' : '今すぐ収集'}</button>
           <button type="button" id="audit-reload"${loading ? ' disabled' : ''}>表示を更新</button>
           <button type="button" id="audit-doctor"${doctorBusy ? ' disabled' : ''}>設定を点検</button>
         </div>
       </header>
-      <p class="muted">エージェント CLI のセッションログと実行証跡を突き合わせた実績です。上の利用量が実行記録からの集計なのに対し、こちらは CLI が報告した実測値を含みます。ここから実行するのは収集と集計だけで、知見の蒸留は agent-audit 側の設定で動きます。</p>
+      <p class="muted">この端末の実行記録（台帳）と、エージェント CLI のセッションログを突き合わせた実績です。上限は全体設定の「実行制御」で変更できます。ここから実行するのは収集と集計だけで、知見の蒸留は agent-audit 側の設定で動きます。</p>
       ${collectStatusHtml(collectInfo, collectBusy)}
       ${doctorInfo ? `<details class="audit-detail" open><summary>点検結果${doctorInfo.ok ? '' : '（問題があります）'}</summary><pre>${escHtml(doctorInfo.detail || doctorInfo.error || '')}</pre></details>` : ''}
-      <div class="audit-controls">
-        <label>期間 <select id="audit-period">${optionsHtml(PERIODS, period)}</select></label>
-        <label>集計 <select id="audit-by">${optionsHtml(GROUPS, by)}</select></label>
-      </div>
       ${loadError ? `<p class="audit-error" role="alert">${escHtml(loadError)}</p>` : ''}
       ${loading ? '<p class="muted" role="status">集計しています…</p>' : ''}
+      ${body}
+    </section>
+    <section class="orch-panel audit-breakdown">
+      <header class="row">
+        <div>
+          <span class="summary-kicker">実行証跡から集計</span>
+          <h3>内訳</h3>
+        </div>
+        <div class="audit-controls">
+          <label>集計 <select id="audit-by">${optionsHtml(GROUPS, by)}</select></label>
+        </div>
+      </header>
       ${usageTableHtml(usageData)}
     </section>
     <section class="orch-panel audit-stats">
@@ -239,20 +425,27 @@
   }
 
   async function loadData() {
-    if (!root.api || !root.api.agentAuditUsage || loading) return;
+    if (!root.api || !root.api.agentAuditSummary || loading) return;
     loading = true;
     loadError = '';
     render();
+    const p = currentPeriod();
+    period = p;                 // 取りに行った期間で確定させる（表示と数字を必ず一致させる）
     try {
-      const [usage, stats] = await Promise.all([
-        root.api.agentAuditUsage({ period, by }),
-        root.api.agentAuditStats({ period }),
+      // 3 本を並べて呼ぶ（利用量・内訳・実行品質）。1 本でも失敗したらその理由を出し、
+      // 利用量は台帳集計へフォールバックする——数字が消えるより、どの集計かを言う。
+      const [summary, usage, stats] = await Promise.all([
+        root.api.agentAuditSummary({ period: p }),
+        root.api.agentAuditUsage({ period: p, by }),
+        root.api.agentAuditStats({ period: p }),
       ]);
+      summaryData = summary;
       usageData = usage;
       statsData = stats;
       loadedOnce = true;
-      if (!collectInfo && usage && usage.lastCollect) collectInfo = usage.lastCollect;
+      if (!collectInfo && summary && summary.lastCollect) collectInfo = summary.lastCollect;
     } catch (error) {
+      summaryData = null;
       loadError = error && error.message ? error.message : String(error);
     }
     loading = false;
@@ -409,6 +602,7 @@
   return {
     escHtml, fmtTokens, fmtSeconds, fmtUsd, pairsText,
     usageTableHtml, statsTableHtml, settingsHtml, collectStatusHtml, panelHtml,
+    workloadTableHtml, agentTableHtml, gaugeHtml, ledgerFallbackHtml,
     render, refresh, wire, reveal,
   };
 });

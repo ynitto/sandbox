@@ -214,7 +214,7 @@ test('orchestration はノード予算 v2 / 制御 / ドロップイン API を�
      'orchestration:lifecycle', 'orchestration:overview', 'orchestration:profilesApply',
      'orchestration:profilesEvaluate', 'orchestration:profilesSave', 'orchestration:rebalance',
      'orchestration:sessionCommandsPreview', 'orchestration:sessionCommandsSave',
-     'orchestration:skillsInventory'].sort());
+     'orchestration:skillsInventory', 'orchestration:ollamaSave'].sort());
   const api = orch.preloadApi();
   const calls = [];
   const overview = api.orchestrationOverview((channel, args) => {
@@ -225,7 +225,8 @@ test('orchestration はノード予算 v2 / 制御 / ドロップイン API を�
   assert.deepStrictEqual(calls, [['orchestration:overview', {}]]);
   for (const name of ['orchestrationBudgetSave', 'orchestrationRebalance', 'orchestrationCalibrate',
     'orchestrationControlSave', 'orchestrationLifecycle', 'orchestrationAgentSave', 'orchestrationAgentDelete',
-    'orchestrationProfilesSave', 'orchestrationProfilesEvaluate', 'orchestrationProfilesApply']) {
+    'orchestrationProfilesSave', 'orchestrationProfilesEvaluate', 'orchestrationProfilesApply',
+    'orchestrationOllamaSave']) {
     assert.strictEqual(typeof api[name], 'function', name);
   }
 });
@@ -289,7 +290,8 @@ test('agent-audit は LLM 不使用段（収集・集計・点検）の API だ�
     saveConfig: () => ({}),
   });
   assert.deepStrictEqual(registered.sort(),
-    ['agentAudit:collect', 'agentAudit:doctor', 'agentAudit:stats', 'agentAudit:usage'].sort());
+    ['agentAudit:collect', 'agentAudit:doctor', 'agentAudit:stats', 'agentAudit:usage',
+     'agentAudit:summary'].sort());
   const api = auditFeature.preloadApi();
   const calls = [];
   const usage = api.agentAuditUsage((channel, args) => {
@@ -298,7 +300,8 @@ test('agent-audit は LLM 不使用段（収集・集計・点検）の API だ�
   });
   assert.strictEqual(usage({ period: 'month', by: 'agent_cli' }), 'ok');
   assert.deepStrictEqual(calls, [['agentAudit:usage', { period: 'month', by: 'agent_cli' }]]);
-  for (const name of ['agentAuditCollect', 'agentAuditUsage', 'agentAuditStats', 'agentAuditDoctor']) {
+  for (const name of ['agentAuditCollect', 'agentAuditUsage', 'agentAuditSummary',
+    'agentAuditStats', 'agentAuditDoctor']) {
     assert.strictEqual(typeof api[name], 'function', name);
   }
 });

@@ -44,6 +44,23 @@ agent-flow で共有する（設計: docs/plans/2026-08-05-phase1-token-efficien
 足して解決する（`tools/<engine>/<package>/__init__.py` から見て `../../agent-tools/agentcore`）。
 zipapp では同梱物が先に解決されるので、その追加パスは存在しなくても無害に素通りする。
 
+### `agent-ollama`（ollama_adapter）
+
+`agent_cli: ollama` の実体。ollama の非ストリーミング API を CLI 契約（stdin にプロンプト・
+stdout に本文・stderr に `@agent-usage`）へ変換する薄いアダプターで、`install.sh` が
+`agent-ollama` として単体の zipapp を置く。**接続先はここが 1 実装で解決する**ので、
+agent-project / agent-flow / agent-amigos / agent-dashboard のどこから起動されても同じ宛先になる:
+
+```
+agent-ollama --host <url>  >  $OLLAMA_HOST  >  host.yaml の ollama.host  >  http://127.0.0.1:11434
+```
+
+`~/.agents/agent-project.host.yaml` の宣言を最後の口に足したのは、実行のほとんどが常駐体・
+デーモン・GUI から起こされる子プロセスで、そこへ環境変数を届けるには systemd unit や
+シェル初期化を人が直すしかなかったため（Windows の画面 + WSL の実行エンジンという構成では、
+画面側の環境変数はそもそも WSL へ渡らない）。タイムアウトも同じ順（`$OLLAMA_TIMEOUT` >
+`ollama.timeout_sec` > 600 秒）。
+
 テストは `agentcore/tests/`:
 
 ```bash

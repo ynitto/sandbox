@@ -18,4 +18,5 @@ module.exports = {
   orchestrationProfilesSave: (invoke) => (payload) => invoke('orchestration:profilesSave', payload || {}),
   orchestrationProfilesEvaluate: (invoke) => () => invoke('orchestration:profilesEvaluate', {}),
   orchestrationProfilesApply: (invoke) => () => invoke('orchestration:profilesApply', {}),
+  orchestrationOllamaSave: (invoke) => (payload) => invoke('orchestration:ollamaSave', payload || {}),
 };
