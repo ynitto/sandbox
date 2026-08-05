@@ -7,6 +7,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### 修正 — agent-dashboard: シェル初期化メッセージでプロジェクト一覧が消える
+
+WSL 側ホーム（`$HOME/.agents`）の解決が、`wsl.exe … sh -lc 'wslpath -w …'` の標準出力を
+**先頭 1 行で決め打ち**し、パス形式でなければ捨てていた。ログインシェルはプロファイルを
+読むので、標準出力にはコマンドの結果より前に初期化メッセージが混ざる（motd の転載・
+nvm / conda のバナー・`.profile` の echo・更新の案内）。そういう端末ではホームの解決が
+丸ごと失敗してローカルの `~/.agents` へ落ち、`engine/status.json` が読めなくなる。
+これはプロジェクト発見の唯一の根拠なので、**画面からプロジェクト一覧が消える**——
+しかも原因はバナーを出す設定を入れた日で、dashboard 側の変更とは無関係だった。
+
+- 出力は全行を走査し、Windows のドライブパス（`C:\…`）か UNC（`\\wsl$\…`）の行だけを
+  採るようにした。複数該当したら最後を採る（プロファイルの出力は先、`wslpath` の結果は後）
+- 読み取りは `base/main/wsl.js` の `extractWindowsPath` の 1 実装に集約し、同じ書き方だった
+  `~/.agent-project` の解決（instances 共有）も同じ経路へ寄せた
+- 先頭行の決め打ちに戻さないことをテストで固定した
+
+
 ### agent-dashboard: 監査を独立タブから全体設定の「利用状況」へ移した
 
 監査が扱う数字（実行証跡から集計した実測トークン・実行品質）は**この端末のもの**で、
