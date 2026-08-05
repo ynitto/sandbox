@@ -5,6 +5,7 @@ const control = require('./control');
 const agents = require('./agents');
 const instructions = require('./instructions');
 const sessionCommands = require('./sessionCommands');
+const profiles = require('./profiles');
 
 // 全体設定で選ばれている CLI のスキル起動記号（agents/<name>.json の skill_command_prefix）。
 // 解決できない名前・定義の破損はプレビューを止める理由にならないので既定 `/` へ倒す。
@@ -44,8 +45,18 @@ function registerIpc(ctx) {
       instructionsDir,
       budgetDir: budget.resolveBudgetDir(cfg),
       controlDir,
+      profiles: profiles.load(cfg),
     };
   });
+
+  // 実行プロファイル自動選択（agent-profiles 契約）。
+  // profilesSave: tiers / policy の宣言を保存（state は触らない）。
+  // profilesEvaluate: dry-run（書かずに決定と根拠だけを返す）。
+  // profilesApply: 決定を control.json（選択結果・差分があるときだけ）と
+  //   profiles.json（state=記録）へ書く。
+  handle('orchestration:profilesSave', (payload) => profiles.save(loadConfig(), payload || {}));
+  handle('orchestration:profilesEvaluate', () => profiles.evaluate(loadConfig()));
+  handle('orchestration:profilesApply', () => profiles.apply(loadConfig()));
 
   // 予算: 上限・期間・allocation（weight/min/max/on_exhausted/soft_ratio）
   handle('orchestration:budgetSave', (payload) => budget.save(loadConfig(), payload || {}));
