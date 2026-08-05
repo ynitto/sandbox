@@ -8,6 +8,7 @@ from __future__ import annotations
 # node_id（PC の身元）の正規化は 3 ツール共通の 1 実装を使う（実装計画 W1-10）。
 # doctor が独自に綴り替えると板のファイルを書く側と食い違い、切替前チェックが空振りする。
 from agentcore.nodeid import normalize_node_id  # noqa: E402
+from agentcore import promptrender  # noqa: E402
 
 
 def compute_audit(cfg: Config) -> dict:
@@ -877,9 +878,16 @@ def collect_doctor_signals(cfg: "Config") -> dict:
     }
 
 
-def _doctor_prompt(signals: dict, deterministic: "list[dict]") -> str:
-    sig = json.dumps(signals, ensure_ascii=False, indent=2)[:6000]
-    det = json.dumps(deterministic, ensure_ascii=False, indent=2)[:2000]
+def _doctor_prompt(signals: dict, deterministic: "list[dict]", table: bool = False) -> str:
+    # 案 K-1/K-2（docs/plans/2026-08-05-json-prompt-compression-study.md）: indent=2 の整形は
+    # トークンの純粋な無駄なので常に compact で注入する。table はオプトインで、runlog_tail /
+    # blocked のような均質配列だけをさらに表形式へ畳む（内容は不変・スキーマは変えない）。
+    if table:
+        sig = promptrender.render_table(signals)[:6000]
+        det = promptrender.render_table(deterministic, name="checks")[:2000]
+    else:
+        sig = promptrender.dumps_prompt(signals)[:6000]
+        det = promptrender.dumps_prompt(deterministic)[:2000]
     return (
         "あなたは自律バックログ・ループ（agent-project）の稼働診断医です。以下のログ・状態・"
         "決定的チェック結果から、稼働の問題を洗い出し、それぞれを次の3カテゴリに分類してください。\n"
@@ -931,7 +939,8 @@ def diagnose_with_agent(cfg: "Config", signals: dict, deterministic: "list[dict]
     エージェント CLI 不在・エラー・解析不能は None（＝決定的所見のみで続行）。"""
     run = agent_run or (lambda p, m: _run_agent_cli(p, m, purpose="doctor"))
     try:
-        out = run(_doctor_prompt(signals, deterministic), cfg.model)
+        table = bool(getattr(cfg, "prompt_table", False))
+        out = run(_doctor_prompt(signals, deterministic, table=table), cfg.model)
     except Exception:  # noqa: BLE001  エージェント CLI 不在・タイムアウト等
         return None
     return _parse_doctor_findings(out)

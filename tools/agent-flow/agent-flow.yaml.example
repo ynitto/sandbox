@@ -93,6 +93,10 @@ granularity: auto          # タスク分解の細かさ: auto(complexity導出�
                            # チャンクごとの中間集約を挟んで木構造にする（単段集約は件数に比例して
                            # 1 ノードへ成果が集中し規模で破綻する）。review 時の検証ゲートも同じ幅で
                            # 分割される。幅以下なら従来と同一構造。小さくするほど木が深くなる。
+# prompt_table: false       # doctor の稼働シグナル（recent/stuck/failed/errors）と worker への
+                           # deps 構造化 data のうち、均質な dict 配列を表形式へ畳んでトークンを削る
+                           # （既定 off・内容は不変）。設計:
+                           # docs/plans/2026-08-05-json-prompt-compression-study.md 案 K-2
 
 # ---------------------------------------------------------------------------
 # 並列・キャパシティ（マシン性能に合わせて調整）

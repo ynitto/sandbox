@@ -195,6 +195,9 @@ CONFIG_DEFAULTS = {
     # 処理毎のエージェント上書き（yaml 専用）。キーは plan/review/prioritize/route/adjudicate/
     # verify/distill/assess/repo_map/doctor、値は {agent_cli, model}。
     "agents": {},
+    # doctor が LLM へ渡す稼働シグナル・決定的チェックのうち、均質な dict 配列
+    # （runlog_tail・blocked 等）を表形式へ畳んでトークンを削る（案 K-2・内容は不変）。既定 off。
+    "prompt_table": False,
     # タスク単位ターゲットブランチ: 成果物を ap/<task-id> に集約（agent-flow の workspace branch へ注入。
     # リトライ（r0/r1…）も同一ブランチに積み増す）。false で従来の run 毎 af/<run-id>。
     "task_branch": True,
@@ -890,6 +893,7 @@ def build_config(args) -> Config:
         repo_map=bool(getattr(args, "repo_map", False)),
         rules_capture=bool(getattr(args, "rules_capture", True)),
         agents=agent_overrides,
+        prompt_table=bool(getattr(args, "prompt_table", False)),
         task_branch=bool(getattr(args, "task_branch", True)),
         task_branch_prefix=str(getattr(args, "task_branch_prefix", "ap/") or "ap/"),
         delivery_review=bool(getattr(args, "delivery_review", True)),

@@ -907,6 +907,50 @@ class CallExecutorDispatchTests(unittest.TestCase):
         self.assertIn("タスク(work): ログイン追加", captured["prompt"])
         self.assertIn(self.INSTR, captured["prompt"])
 
+    def test_deps_data_is_injected_as_compact_json_by_default(self):
+        """案 K-1（docs/plans/2026-08-05-json-prompt-compression-study.md）: deps の構造化 data
+        は既定でも indent 無し・区切り最小の compact JSON（内容は不変）。"""
+        captured = {}
+
+        def fake_run_agent(prompt, model, purpose=""):
+            captured["prompt"] = prompt
+            return "成果"
+
+        dep_results = {"t1": {"output": "ok", "data": {"items": [{"id": "a"}, {"id": "b"}]}}}
+        with mock.patch.object(kf, "run_agent", side_effect=fake_run_agent):
+            kf.execute_agent("synthesize", "統合", dep_results, None)
+        self.assertIn('data: {"items":[{"id":"a"},{"id":"b"}]}', captured["prompt"])
+
+    def test_deps_data_folds_to_table_when_prompt_table_is_on(self):
+        """案 K-2（オプトイン）: prompt_table=True のときだけ均質配列を表形式へ畳む。"""
+        captured = {}
+
+        def fake_run_agent(prompt, model, purpose=""):
+            captured["prompt"] = prompt
+            return "成果"
+
+        dep_results = {"t1": {"output": "ok", "data": {"items": [{"id": "a"}, {"id": "b"}]}}}
+        with mock.patch.object(kf, "run_agent", side_effect=fake_run_agent):
+            kf.execute_agent("synthesize", "統合", dep_results, None, prompt_table=True)
+        self.assertIn("items[2]{id}:", captured["prompt"])
+
+    def test_call_executor_forwards_prompt_table_only_when_accepted(self):
+        seen = {}
+
+        def new_exec(kind, goal, dep_results, model, art_dir, dep_arts, prompt_table=False):
+            seen["prompt_table"] = prompt_table
+            return "ok", None
+
+        def legacy_exec(kind, goal, dep_results, model, art_dir, dep_arts):
+            seen["called"] = True
+            return "ok", None
+
+        kf.call_executor(new_exec, "work", "g", {}, None, None, None, prompt_table=True)
+        self.assertTrue(seen["prompt_table"])
+        seen.clear()
+        kf.call_executor(legacy_exec, "work", "g", {}, None, None, None, prompt_table=True)
+        self.assertTrue(seen["called"])  # 受け取れない executor には渡さず、壊れずに呼べる
+
 
 class GitlabRepoInstructionTests(unittest.TestCase):
     """gitlab: clone 指示はイシュー本文の独立節に載せ、タイトル/目的は本来の goal を保つ。"""

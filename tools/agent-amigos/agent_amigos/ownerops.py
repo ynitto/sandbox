@@ -7,9 +7,10 @@
 """
 from __future__ import annotations
 
-import json
 import os
 import time
+
+from agentcore.promptrender import dumps_prompt
 
 from . import agentcli, nodebudget
 from .bus import Bus, MissionPaths
@@ -363,7 +364,7 @@ def acceptance_turn(bus: Bus, mp: MissionPaths, mission: dict, node_id: str,
 {design}
 
 # 納品 MANIFEST
-{json.dumps(manifest, ensure_ascii=False)}
+{dumps_prompt(manifest)}
 
 # 納品物の内容（有界抜粋）
 {_deliverable_digest(mp)}

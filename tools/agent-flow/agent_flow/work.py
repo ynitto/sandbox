@@ -165,7 +165,8 @@ def cmd_work(args) -> int:
                         execute_agent, "work", sync_goal, dep_results, args.model,
                         art_dir, dep_arts, instruction, workspace=ws,
                         references=references, request=run_request,
-                        instructions=run_instructions)
+                        instructions=run_instructions,
+                        prompt_table=bool(getattr(args, "prompt_table", False)))
                     if isinstance(agent_data, dict):
                         rdata.update(agent_data)
                 else:
@@ -176,7 +177,8 @@ def cmd_work(args) -> int:
                 output, rdata = call_executor(execute, kind, goal, dep_results, args.model,
                                               art_dir, dep_arts, instruction, workspace=ws,
                                               references=references, request=run_request,
-                                              instructions=run_instructions)
+                                              instructions=run_instructions,
+                                              prompt_table=bool(getattr(args, "prompt_table", False)))
             if kind != "verify" and isinstance(rdata, dict) and rdata.get("ok") is False:
                 if kind == "base-sync":
                     failure_class = _work_failure_class(kind, output, rdata)

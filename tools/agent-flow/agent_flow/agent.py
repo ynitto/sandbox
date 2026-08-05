@@ -4,6 +4,9 @@ from __future__ import annotations
 # --------------------------------------------------------------------------
 # Executor — タスク実行（エージェント CLI or stub）
 # --------------------------------------------------------------------------
+from agentcore import promptrender  # noqa: E402
+
+
 def _agent_timeout() -> float | None:
     """エージェント CLI 1 呼び出しのタイムアウト秒。設定ファイル `agent_timeout` で調整、0/負で無効化。
     設定が無ければ環境変数 AGENT_FLOW_TIMEOUT（旧名 AGENT_FLOW_KIRO_TIMEOUT も後方互換で受理）
@@ -794,7 +797,7 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
                  art_dir: "str | None" = None, dep_arts: "dict | None" = None,
                  repo_instruction: str = "", workspace: "dict | None" = None,
                  references: "list[dict] | None" = None, request: str = "",
-                 instructions: str = ""):
+                 instructions: str = "", prompt_table: bool = False):
     role = {
         "classify": "分類役。入力を適切なカテゴリへ分類し『class=<ラベル>』形式で出力。",
         "synthesize": "統合役。依存タスクの成果を統合して 1 つの成果物にまとめる。",
@@ -842,7 +845,12 @@ def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
                 line = f"[{d}] {_dep_text(r)}"
                 dv = _dep_data(r)
                 if dv is not None:
-                    line += f"\n  data: {json.dumps(dv, ensure_ascii=False)[:400]}"
+                    # 案 K-1/K-2（docs/plans/2026-08-05-json-prompt-compression-study.md）:
+                    # 常に compact で注入し、prompt_table（オプトイン）なら reduce/map の
+                    # 均質な dict 配列（items 等）をさらに表形式へ畳む（内容は不変）。
+                    rendered = (promptrender.render_table(dv) if prompt_table
+                               else promptrender.dumps_prompt(dv))
+                    line += f"\n  data: {rendered[:400]}"
                 lines.append(line)
             prompt += "\n依存タスクの成果:\n" + "\n".join(lines) + "\n"
         prompt += "\n成果物を簡潔に直接出力してください。"

@@ -208,6 +208,10 @@ class Config:
     # （plan/review/prioritize/route/adjudicate/verify/distill/assess/repo_map/doctor）、
     # 値は {agent_cli, model}。未指定の処理はグローバル agent_cli / model を使う。
     agents: dict = field(default_factory=dict)
+    # 案 K-2（docs/plans/2026-08-05-json-prompt-compression-study.md）: doctor が LLM へ渡す
+    # 稼働シグナル・決定的チェックのうち、均質な dict 配列（runlog_tail・blocked 等）を表形式へ
+    # 畳んでトークンを削る。既定 off＝従来どおり compact JSON（案 K-1 は常時適用・内容は不変）。
+    prompt_table: bool = False
     # タスク単位ターゲットブランチ（既定 on）: 成果を ap/<task-id> に集約する（リトライも同一ブランチ）。
     task_branch: bool = True
     task_branch_prefix: str = "ap/"

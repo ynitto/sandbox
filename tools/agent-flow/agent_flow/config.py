@@ -96,6 +96,10 @@ CONFIG_DEFAULTS = {
     "planner_skill": "flow-planner",
     "granularity": "auto",     # 分解の細かさ: auto(complexity導出・既定)/coarse/fine/finest(明示)
     "exemplar_first": False,   # map-reduce で「1件先行→検証ゲート→残り展開」の見本先行分解にする
+    # doctor が LLM へ渡す稼働シグナル（recent/stuck/failed/errors 等）と worker プロンプトの
+    # deps 構造化 data のうち、均質な dict 配列を表形式へ畳んでトークンを削る（案 K-2・内容は
+    # 不変）。既定 off。設計: docs/plans/2026-08-05-json-prompt-compression-study.md
+    "prompt_table": False,
     # 1 ノードが同時に実行する run（orchestrator プロセス）の上限。バックログ一括投入
     # （板からの委譲の受理等）や再起動直後の孤児一斉再開で「run 数ぶんの orchestrator
     # ＋計画エージェント」が同時に立ち上がるのを防ぐ。全ノードが park（承認待ち等）の run は
