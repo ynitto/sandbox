@@ -264,6 +264,177 @@ function orchAllocationPanelHtml(budget) {
   </section>`;
 }
 
+// 実行プロファイル自動選択（agent-profiles 契約）。対象は「用途ごとにエージェント/モデルを
+// 選べる」project / flow に絞る（routine は選ばない・amigos は役割単位の宣言が別にある）。
+const ORCH_PROFILE_WORKLOADS = ['project', 'flow'];
+
+function orchProfileTierLabel(tiers, key) {
+  const t = (tiers || {})[key];
+  if (t && t.label) return t.label;
+  return key || '（未選択）';
+}
+
+function orchProfileCandidateText(cand) {
+  if (!cand) return '—';
+  const text = [cand.agent_cli, cand.model].filter(Boolean).join(':');
+  return text || '—';
+}
+
+function orchProfileCandidatesToText(candidates) {
+  return (candidates || [])
+    .map((c) => [c.agent_cli, c.model].filter(Boolean).join(':'))
+    .filter(Boolean)
+    .join(', ');
+}
+
+// "claude:opus, copilot:gpt-5" のようなカンマ区切りを候補配列へ。": " 無しの単語は
+// agent_cli のみとみなす（model は CLI 既定へ委ねる運用を許す）。
+function orchParseProfileCandidates(text) {
+  return String(text || '')
+    .split(',')
+    .map((tok) => tok.trim())
+    .filter(Boolean)
+    .map((tok) => {
+      const idx = tok.indexOf(':');
+      if (idx < 0) return { agent_cli: tok };
+      const cli = tok.slice(0, idx).trim();
+      const model = tok.slice(idx + 1).trim();
+      const out = {};
+      if (cli) out.agent_cli = cli;
+      if (model) out.model = model;
+      return out;
+    })
+    .filter((c) => c.agent_cli || c.model);
+}
+
+// 5. 実行プロファイル（大・中・小）— ワークロードの予算残率と CLI ごとの枠から
+//    決定的に段と候補を選ぶ（profiles.js の decide() が実体・ここは表示と入力の組み立てだけ）。
+function orchProfilesPanelHtml(overview) {
+  const profiles = overview.profiles || { enabled: true, tiers: {}, policy: {}, state: {} };
+  const tiers = profiles.tiers || {};
+  const policy = profiles.policy || {};
+  const stateMap = profiles.state || {};
+  const tierNames = Object.keys(tiers);
+  const tierDatalist = `<datalist id="orch-profile-tier-names">${tierNames.map((n) => `<option value="${esc(n)}"></option>`).join('')}</datalist>`;
+
+  const tierRows = Object.entries(tiers)
+    .sort((a, b) => (Number(b[1].order) || 0) - (Number(a[1].order) || 0))
+    .map(([name, t]) => `<tr data-orch-tier-key="${esc(name)}">
+      <td><input type="text" class="mono orch-tier-name" value="${esc(name)}" placeholder="large" /></td>
+      <td><input type="number" step="1" class="mono orch-tier-order" value="${Number(t.order || 0)}" /></td>
+      <td><input type="text" class="orch-tier-label" value="${esc(t.label || '')}" placeholder="表示名" /></td>
+      <td><input type="text" class="mono orch-tier-candidates" value="${esc(orchProfileCandidatesToText(t.candidates))}" placeholder="claude:opus, copilot:gpt-5" /></td>
+      <td><label class="orch-agent-rm"><input type="checkbox" class="orch-tier-remove" /> 削除</label></td>
+    </tr>`).join('');
+  const addTierRow = `<tr class="orch-tier-add">
+      <td><input type="text" class="orch-tier-new-name" placeholder="large" /></td>
+      <td><input type="number" step="1" class="mono orch-tier-new-order" placeholder="3" /></td>
+      <td><input type="text" class="orch-tier-new-label" placeholder="大" /></td>
+      <td><input type="text" class="orch-tier-new-candidates" placeholder="claude:opus" /></td>
+      <td><small class="muted">保存で追加</small></td>
+    </tr>`;
+
+  const stepRows = (policy.steps || []).map((s, i) => `<tr data-orch-step-idx="${i}">
+      <td><input type="number" min="0" max="1" step="0.05" class="mono orch-step-ratio" value="${Number(s.min_remaining_ratio || 0)}" /></td>
+      <td><input type="text" class="mono orch-step-tier" value="${esc(s.tier || '')}" list="orch-profile-tier-names" /></td>
+      <td><label class="orch-agent-rm"><input type="checkbox" class="orch-step-remove" /> 削除</label></td>
+    </tr>`).join('');
+  const addStepRow = `<tr class="orch-step-add">
+      <td><input type="number" min="0" max="1" step="0.05" class="mono orch-step-new-ratio" placeholder="0.5" /></td>
+      <td><input type="text" class="mono orch-step-new-tier" placeholder="large" list="orch-profile-tier-names" /></td>
+      <td><small class="muted">保存で追加</small></td>
+    </tr>`;
+
+  const applyToRows = ORCH_PROFILE_WORKLOADS.map((wl) => `<label class="orch-profile-apply-to">
+      <input type="checkbox" class="orch-profile-apply-to-cb" value="${esc(wl)}" ${(policy.apply_to || []).includes(wl) ? 'checked' : ''} />
+      ${esc(amigosWorkloadLabel(wl))}
+    </label>`).join('');
+
+  const decisionRows = ORCH_PROFILE_WORKLOADS.map((wl) => {
+    const rec = stateMap[wl];
+    if (!rec) {
+      return `<tr><td>${esc(amigosWorkloadLabel(wl))}</td><td colspan="3" class="muted">まだ評価していません</td></tr>`;
+    }
+    return `<tr>
+      <td>${esc(amigosWorkloadLabel(wl))}</td>
+      <td>${esc(orchProfileTierLabel(tiers, rec.tier))}</td>
+      <td class="mono">${esc(orchProfileCandidateText(rec.candidate))}</td>
+      <td><small class="muted">${esc(rec.reason || '')}</small></td>
+    </tr>`;
+  }).join('');
+
+  const preview = state.orchProfilesPreview;
+  const previewRows = preview
+    ? Object.entries(preview.decisions || {}).map(([wl, d]) => `<tr>
+        <td>${esc(amigosWorkloadLabel(wl))}</td>
+        <td>${esc(orchProfileTierLabel((preview.profiles || {}).tiers, d.tier))}</td>
+        <td class="mono">${esc(orchProfileCandidateText(d.candidate))}</td>
+        <td><small class="muted">${esc(d.reason || '')}</small></td>
+      </tr>`).join('')
+    : '';
+  const previewHtml = preview
+    ? `<div class="orch-profile-preview">
+        <strong>評価結果（保存前のプレビュー。適用するとこの内容が反映されます）</strong>
+        <table class="amigos-table orch-table">
+          <thead><tr><th>機能</th><th>段</th><th>候補</th><th>理由</th></tr></thead>
+          <tbody>${previewRows || '<tr><td colspan="4" class="muted">対象が無いか、決定できる材料が足りません（対象・段・しきい値の設定を確認してください）</td></tr>'}</tbody>
+        </table>
+      </div>`
+    : '';
+
+  return `<section class="orch-panel">
+    <header class="row">
+      <div>
+        <span class="summary-kicker">利用枠に応じて自動切替（決定的）</span>
+        <h3>実行プロファイル（大・中・小）</h3>
+        <p class="muted">予算の残り具合と、各エージェント（CLI）の枠から、使うエージェント・モデルを自動で選びます。同じ状況なら常に同じ結果になります。エンジン側は agent-control（上の「割り当て」）を読むだけで、この設定を直接読みません。</p>
+      </div>
+    </header>
+    <div class="row">
+      <label><input type="checkbox" id="orch-profile-enabled" ${profiles.enabled !== false ? 'checked' : ''} /> 自動選択を有効にする</label>
+    </div>
+    <div class="row orch-profile-apply-to-row">
+      <strong>対象</strong>
+      ${applyToRows}
+    </div>
+    ${tierDatalist}
+    <h4>段の定義</h4>
+    <table class="amigos-table orch-table">
+      <thead><tr><th>キー</th><th>順序（大きいほど上位）</th><th>表示名</th><th>候補（エージェント:モデル、複数はカンマ区切り。先頭から枠が残っているものを採用）</th><th></th></tr></thead>
+      <tbody>${tierRows}${addTierRow}</tbody>
+    </table>
+    <h4>予算残率 → 段</h4>
+    <table class="amigos-table orch-table">
+      <thead><tr><th>この残り割合以上なら</th><th>この段にする</th><th></th></tr></thead>
+      <tbody>${stepRows}${addStepRow}</tbody>
+    </table>
+    <div class="row orch-alloc-controls">
+      <label>上限が無い（無制限）ときの段
+        <input type="text" id="orch-profile-no-cap-tier" class="mono" value="${esc(policy.no_cap_tier || '')}" list="orch-profile-tier-names" />
+      </label>
+      <label>上位へ戻すときの上乗せ
+        <input type="number" min="0" max="1" step="0.01" id="orch-profile-hysteresis" class="mono" value="${Number(policy.hysteresis !== undefined ? policy.hysteresis : 0.05)}" />
+      </label>
+      <label>段を変えたら維持する秒数
+        <input type="number" min="0" step="60" id="orch-profile-min-hold" class="mono" value="${Number(policy.min_hold_sec !== undefined ? policy.min_hold_sec : 900)}" />
+      </label>
+    </div>
+    <div class="settings-save-actions">
+      <div class="settings-secondary-actions">
+        <button type="button" id="btn-orch-profile-evaluate">評価する（保存しません）</button>
+        <button type="button" id="btn-orch-profile-apply">適用</button>
+      </div>
+      <button type="button" id="btn-orch-profile-save" class="primary-inline"${state.orchSaving ? ' disabled' : ''}>段の定義を保存</button>
+    </div>
+    ${previewHtml}
+    <h4>現在の選択</h4>
+    <table class="amigos-table orch-table">
+      <thead><tr><th>機能</th><th>段</th><th>候補</th><th>理由</th></tr></thead>
+      <tbody>${decisionRows}</tbody>
+    </table>
+  </section>`;
+}
+
 // ワークロード別の「用途 / ロール / ノード種別」候補（agents.<key> 上書きのキー補完）。
 // project: AGENT_PURPOSES / flow: 役割＋ノード kind / amigos: ロール id は動的（自由入力）/
 // routine（kiro-loop）: エージェント選択をしない（tmux 送信）ため用途別なし。
@@ -984,7 +1155,7 @@ function globalSettingsInstructionsHtml(overview) {
 function globalSettingsControlHtml(overview) {
   if (!overview) return '<div class="empty compact">実行制御を読み込んでいます。</div>';
   if (overview.error) return `<div class="empty compact"><strong>実行制御を読み込めませんでした</strong><span>${esc(overview.error)}</span></div>`;
-  return `${orchAllocationPanelHtml(overview.budget)}${orchStatusPanelHtml(overview)}`;
+  return `${orchAllocationPanelHtml(overview.budget)}${orchProfilesPanelHtml(overview)}${orchStatusPanelHtml(overview)}`;
 }
 
 function renderOrchestration() {
@@ -1215,6 +1386,88 @@ function setupOrchestration(root) {
       await api.orchestrationControlSave({ workloads });
       toast('割当を保存しました', true);
     } finally { state.orchSaving = false; }
+    await refreshOrchestration();
+    renderOrchestration();
+  }));
+
+  // 実行プロファイル（agent-profiles）: 段の定義・予算残率のしきい値の保存
+  const profileSave = root.querySelector('#btn-orch-profile-save');
+  if (profileSave) profileSave.addEventListener('click', () => guard('実行プロファイルの保存', async () => {
+    const tiers = {};
+    for (const tr of root.querySelectorAll('[data-orch-tier-key]')) {
+      if (tr.querySelector('.orch-tier-remove').checked) continue;
+      const name = tr.querySelector('.orch-tier-name').value.trim();
+      if (!name) continue;
+      tiers[name] = {
+        order: Number(tr.querySelector('.orch-tier-order').value || 0),
+        label: tr.querySelector('.orch-tier-label').value.trim(),
+        candidates: orchParseProfileCandidates(tr.querySelector('.orch-tier-candidates').value),
+      };
+    }
+    const newTierRow = root.querySelector('.orch-tier-add');
+    if (newTierRow) {
+      const name = newTierRow.querySelector('.orch-tier-new-name').value.trim();
+      if (name) {
+        tiers[name] = {
+          order: Number(newTierRow.querySelector('.orch-tier-new-order').value || 0),
+          label: newTierRow.querySelector('.orch-tier-new-label').value.trim(),
+          candidates: orchParseProfileCandidates(newTierRow.querySelector('.orch-tier-new-candidates').value),
+        };
+      }
+    }
+    const steps = [];
+    for (const tr of root.querySelectorAll('[data-orch-step-idx]')) {
+      if (tr.querySelector('.orch-step-remove').checked) continue;
+      const tier = tr.querySelector('.orch-step-tier').value.trim();
+      if (!tier) continue;
+      steps.push({
+        min_remaining_ratio: Number(tr.querySelector('.orch-step-ratio').value || 0),
+        tier,
+      });
+    }
+    const newStepRow = root.querySelector('.orch-step-add');
+    if (newStepRow) {
+      const tier = newStepRow.querySelector('.orch-step-new-tier').value.trim();
+      if (tier) {
+        steps.push({
+          min_remaining_ratio: Number(newStepRow.querySelector('.orch-step-new-ratio').value || 0),
+          tier,
+        });
+      }
+    }
+    const applyTo = [...root.querySelectorAll('.orch-profile-apply-to-cb')]
+      .filter((cb) => cb.checked).map((cb) => cb.value);
+    state.orchSaving = true;
+    try {
+      await api.orchestrationProfilesSave({
+        enabled: (root.querySelector('#orch-profile-enabled') || {}).checked !== false,
+        tiers,
+        policy: {
+          apply_to: applyTo,
+          steps,
+          no_cap_tier: (root.querySelector('#orch-profile-no-cap-tier') || {}).value.trim(),
+          hysteresis: Number((root.querySelector('#orch-profile-hysteresis') || {}).value || 0.05),
+          min_hold_sec: Number((root.querySelector('#orch-profile-min-hold') || {}).value || 900),
+        },
+      });
+      toast('実行プロファイルを保存しました', true);
+    } finally { state.orchSaving = false; }
+    state.orchProfilesPreview = null;
+    await refreshOrchestration();
+    renderOrchestration();
+  }));
+
+  const profileEvaluate = root.querySelector('#btn-orch-profile-evaluate');
+  if (profileEvaluate) profileEvaluate.addEventListener('click', () => guard('実行プロファイルの評価', async () => {
+    state.orchProfilesPreview = await api.orchestrationProfilesEvaluate();
+    renderOrchestration();
+  }));
+
+  const profileApply = root.querySelector('#btn-orch-profile-apply');
+  if (profileApply) profileApply.addEventListener('click', () => guard('実行プロファイルの適用', async () => {
+    const result = await api.orchestrationProfilesApply();
+    toast(result && (result.controlWritten || result.stateWritten) ? '実行プロファイルを適用しました' : '変更はありませんでした', true);
+    state.orchProfilesPreview = null;
     await refreshOrchestration();
     renderOrchestration();
   }));

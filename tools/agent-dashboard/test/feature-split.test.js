@@ -211,7 +211,8 @@ test('orchestration はノード予算 v2 / 制御 / ドロップイン API を�
   assert.deepStrictEqual(registered.sort(),
     ['orchestration:agentDelete', 'orchestration:agentSave', 'orchestration:budgetSave',
      'orchestration:calibrate', 'orchestration:controlSave', 'orchestration:instructionsSave',
-     'orchestration:lifecycle', 'orchestration:overview', 'orchestration:rebalance',
+     'orchestration:lifecycle', 'orchestration:overview', 'orchestration:profilesApply',
+     'orchestration:profilesEvaluate', 'orchestration:profilesSave', 'orchestration:rebalance',
      'orchestration:sessionCommandsPreview', 'orchestration:sessionCommandsSave',
      'orchestration:skillsInventory'].sort());
   const api = orch.preloadApi();
@@ -223,7 +224,8 @@ test('orchestration はノード予算 v2 / 制御 / ドロップイン API を�
   assert.strictEqual(overview(), 'ok');
   assert.deepStrictEqual(calls, [['orchestration:overview', {}]]);
   for (const name of ['orchestrationBudgetSave', 'orchestrationRebalance', 'orchestrationCalibrate',
-    'orchestrationControlSave', 'orchestrationLifecycle', 'orchestrationAgentSave', 'orchestrationAgentDelete']) {
+    'orchestrationControlSave', 'orchestrationLifecycle', 'orchestrationAgentSave', 'orchestrationAgentDelete',
+    'orchestrationProfilesSave', 'orchestrationProfilesEvaluate', 'orchestrationProfilesApply']) {
     assert.strictEqual(typeof api[name], 'function', name);
   }
 });

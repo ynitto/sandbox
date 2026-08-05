@@ -61,6 +61,17 @@
                 },
                 "additionalProperties": true
               }
+            },
+            "agents": {
+              "type": "object",
+              "description": "v2 追加: agent CLI（＝アカウント）ごとの枠。利用枠は CLI ごとに別々という現実（コンセプト正典 §2-1）に対応する独立の軸。dashboard の実行プロファイル自動選択（agent-profiles 契約）が候補の枠判定に読むだけで、エンジンはこのキーを読まない",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "max_tokens": {"type": "number", "minimum": 0, "default": 0, "description": "この CLI の期間内トークン上限。0 = 無制限"}
+                },
+                "additionalProperties": true
+              }
             }
           },
           "additionalProperties": true

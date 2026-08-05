@@ -15,4 +15,7 @@ module.exports = {
     invoke('orchestration:sessionCommandsSave', payload || {}),
   orchestrationSessionCommandsPreview: (invoke) => (payload) =>
     invoke('orchestration:sessionCommandsPreview', payload || {}),
+  orchestrationProfilesSave: (invoke) => (payload) => invoke('orchestration:profilesSave', payload || {}),
+  orchestrationProfilesEvaluate: (invoke) => () => invoke('orchestration:profilesEvaluate', {}),
+  orchestrationProfilesApply: (invoke) => () => invoke('orchestration:profilesApply', {}),
 };

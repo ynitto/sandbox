@@ -3225,6 +3225,12 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
 .orch-agent-add input { opacity: 0.95; }
 .orch-agents-none { margin-top: 8px; }
 
+/* 実行プロファイル自動選択 */
+.orch-profile-apply-to-row { align-items: center; gap: 16px; flex-wrap: wrap; }
+.orch-profile-apply-to { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.orch-profile-preview { margin-top: 10px; padding: 10px 12px; border: 1px dashed var(--border); border-radius: 8px; }
+.orch-profile-preview > strong { display: block; margin-bottom: 6px; font-size: 12px; color: var(--muted); }
+
 /* 状態バッジ: 色だけに頼らず状態語を併記する */
 .orch-badge {
   display: inline-block;
