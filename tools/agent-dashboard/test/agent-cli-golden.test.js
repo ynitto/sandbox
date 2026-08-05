@@ -55,6 +55,11 @@ const GOLDEN = {
     readonly: ['agent-ollama', 'M'],
     interactive: ['ollama', 'run', 'M'],
   },
+  opencode: {
+    write: ['agent-opencode', '--auto', '--model', 'M'],
+    readonly: ['agent-opencode', '--agent', 'plan', '--model', 'M'],
+    interactive: ['opencode', '--model', 'M'],
+  },
 };
 
 test('同梱定義から出る argv が Python ローダと一致する', () => {

@@ -82,6 +82,15 @@ chat モードのように、人が `/skill-name` と書いたテキストを送
 | `codex.json` | `codex exec` | enforced（`--sandbox read-only`）。スキル起動は `$name` |
 | `cursor.json` | `cursor-agent` | best-effort（`--mode ask`） |
 | `ollama.json` | `ollama run <model>` | enforced（ツールを持たない） |
+| `opencode.json` | `opencode run`（`agent-opencode` 経由） | best-effort（`--agent plan` は edit を拒むが bash は拒まない） |
+
+`opencode.json` だけは本体（`opencode`）を直接呼ばず `agent-opencode`（tools/opencode）を
+経由する。素の argv では表せないものが 2 つあるため——`--format json` のイベントから実測
+usage を取り出して stderr の `@agent-usage` に載せることと、推論サーバ（別 PC の ollama）が
+落ちているときに **opencode が内部リトライで待ち続ける**のを実行前の到達性チェックで
+即座に env 失敗へ倒すこと。導入は独立のインストーラ（`bash tools/opencode/install.sh`）で、
+推論エンジンの住所もそちらの設定（`~/.config/opencode/opencode.json`）に置く——この定義は
+どの PC でも同じで良いようにホスト依存の値を持たない。
 
 hermes（tools/hermes-kiro-acp）のような自作ブリッジも、stdin でプロンプトを受けて
 stdout に本文だけを返す薄い CLI を用意すれば同じ契約で差し込める。

@@ -291,6 +291,11 @@ class TestBundledGolden(_Isolated):
             "readonly": ["agent-ollama", "M"],
             "interactive": ["ollama", "run", "M"],
         },
+        "opencode": {
+            "write": ["agent-opencode", "--auto", "--model", "M"],
+            "readonly": ["agent-opencode", "--agent", "plan", "--model", "M"],
+            "interactive": ["opencode", "--model", "M"],
+        },
     }
 
     def test_golden(self):
