@@ -7,27 +7,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
-### agent-dashboard / agent-tools: ollama の接続先をノード宣言で指定できるようにした
-
-ローカルモデルを別の PC（GPU を積んだ 1 台）で走らせる構成では接続先の指定が要るのに、
-口は環境変数 `OLLAMA_HOST` だけだった。agent-tools の実行はほとんどが常駐体・デーモン・
-GUI から起こされる子プロセスで、そこへ環境変数を届けるには systemd unit やシェル初期化を
-人が直すしかない。正典構成（Windows の画面 + WSL の実行エンジン）に至っては、画面側の
-環境変数がそもそも WSL 側へ渡らないので、画面から設定する手段が無かった。
-
-- `agentcore.ollama_adapter` の解決順を
-  `--host <url>` > `$OLLAMA_HOST` > host.yaml の `ollama.host` > `http://127.0.0.1:11434` に統一。
-  読み手が 1 実装なので、agent-project / agent-flow / agent-amigos / agent-dashboard の
-  どこから起動しても同じ宛先になる（タイムアウトも `$OLLAMA_TIMEOUT` > `ollama.timeout_sec` >
-  600 秒の同じ形）
-- 接続エラー・タイムアウトの文言に**宛先を必ず添える**——既定の localhost だと思っている人と、
-  別 PC を指しているノードとでは次にやることが違う（サーバ起動 / 宛先の確認）
-- dashboard の「全体設定 → エージェント → ollama の接続先」から、実行側のノード宣言
-  （`~/.agents/agent-project.host.yaml`）の `host:` 1 行だけを外科的に書き換える。コメント・
-  順序・他の宣言は保つ。宣言ファイルが無い端末では**作らずに断る**（空の host.yaml は
-  agent-project から「プロジェクトを持たないノード宣言」に見え、設定していないことが
-  設定したつもりの宣言に化ける）
-
 ### agent-dashboard: 全体設定「利用状況」の数字を agent-audit の集計へ一本化した
 
 この節には集計が 2 つ並んでいた——画面がノード予算の台帳から自分で足した「利用量」と、

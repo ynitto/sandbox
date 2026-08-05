@@ -6,7 +6,6 @@ const agents = require('./agents');
 const instructions = require('./instructions');
 const sessionCommands = require('./sessionCommands');
 const profiles = require('./profiles');
-const ollama = require('./ollama');
 
 // 全体設定で選ばれている CLI のスキル起動記号（agents/<name>.json の skill_command_prefix）。
 // 解決できない名前・定義の破損はプレビューを止める理由にならないので既定 `/` へ倒す。
@@ -47,9 +46,6 @@ function registerIpc(ctx) {
       budgetDir: budget.resolveBudgetDir(cfg),
       controlDir,
       profiles: profiles.load(cfg),
-      // ローカルモデル（ollama）の接続先。実行側のノード宣言（host.yaml）が正で、
-      // この画面はその 1 か所を読み書きする（画面の環境変数は WSL 側へ渡らない）。
-      ollama: ollama.loadOllamaHost(cfg),
     };
   });
 
@@ -73,9 +69,6 @@ function registerIpc(ctx) {
   handle('orchestration:controlSave', (payload) => control.saveControl(loadConfig(), payload || {}));
   // lifecycle の近道（{workload, action: run|pause|stop}）
   handle('orchestration:lifecycle', (payload) => control.setLifecycle(loadConfig(), payload || {}));
-
-  // ローカルモデル（ollama）の接続先の保存（ノード宣言 host.yaml の ollama.host を外科的に書換）
-  handle('orchestration:ollamaSave', (payload) => ollama.saveOllamaHost(loadConfig(), payload || {}));
 
   // ドロップイン定義の作成・編集・削除
   handle('orchestration:agentSave', (payload) => agents.save(loadConfig(), payload || {}));

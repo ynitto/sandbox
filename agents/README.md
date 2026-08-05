@@ -83,11 +83,6 @@ chat モードのように、人が `/skill-name` と書いたテキストを送
 | `cursor.json` | `cursor-agent` | best-effort（`--mode ask`） |
 | `ollama.json` | `ollama run <model>` | enforced（ツールを持たない） |
 
-`ollama` の接続先は各ノードの宣言（`~/.agents/agent-project.host.yaml` の `ollama.host`）で
-指定する。解決順は `agent-ollama --host <url>` > `$OLLAMA_HOST` > その宣言 >
-`http://127.0.0.1:11434` で、読み手は `agentcore.ollama_adapter` の 1 実装
-（agent-dashboard の「全体設定 → エージェント」からも同じ 1 行を書き換えられる）。
-
 hermes（tools/hermes-kiro-acp）のような自作ブリッジも、stdin でプロンプトを受けて
 stdout に本文だけを返す薄い CLI を用意すれば同じ契約で差し込める。
 

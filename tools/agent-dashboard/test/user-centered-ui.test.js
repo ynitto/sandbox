@@ -209,8 +209,6 @@ assert.ok(controlSettingsSource.includes('orchAllocationPanelHtml(') && controlS
   '実行制御タブに上限と稼働制御を表示します');
 assert.ok(controlSettingsSource.includes('orchConcurrencyPanelHtml('),
   '実行制御タブで自動実行の同時実行数を設定します');
-assert.ok(agentSettingsSource.includes('orchOllamaPanelHtml('),
-  'エージェントタブでローカルモデルの接続先を設定します');
 assert.ok(renderer.includes('推定できない記録'), '推定不能を0トークンと区別します');
 assert.ok(renderer.includes('実測トークンが記録されず、推定レートもない実行'),
   '推定不可の理由を利用状況の近くで説明します');

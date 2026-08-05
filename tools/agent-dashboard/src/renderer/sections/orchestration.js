@@ -1035,36 +1035,6 @@ function globalSettingsAssistantHtml() {
   </section>`;
 }
 
-// ローカルモデル（ollama）の接続先。**実行側のノード宣言（host.yaml）が正**で、この画面は
-// その 1 か所を読み書きする——正典構成（Windows の画面 + WSL の実行エンジン）ではこの画面の
-// 環境変数が実行側へ渡らないので、`OLLAMA_HOST` を画面側に持っても効かない。
-function orchOllamaPanelHtml(overview) {
-  const info = (overview && overview.ollama) || { file: '', host: '', exists: false };
-  const editable = !!info.file && !!info.exists;
-  const where = editable
-    ? `<p class="field-help">保存先は実行エンジンのノード宣言 <span class="mono">${esc(info.file)}</span> です。</p>`
-    : '<p class="field-help">実行エンジンのノード宣言（agent-project.host.yaml）が見つからないため、この端末では変更できません。実行エンジンを設定してから開き直してください。</p>';
-  return `<section class="orch-panel">
-    <header class="row">
-      <div>
-        <span class="summary-kicker">ローカルモデル</span>
-        <h3>ollama の接続先</h3>
-        <p class="muted">エージェントに「ローカルモデル（ollama）」を選んだときの接続先です。空欄なら実行する PC 自身の ollama を使います。別の PC（GPU 機など）で動かしている場合はその宛先を入れてください。</p>
-      </div>
-      <div>${info.host ? orchBadge('ok', '別の宛先を使用中') : orchBadge('muted', 'この PC の ollama')}</div>
-    </header>
-    <div class="field">
-      <label for="orch-ollama-host">接続先</label>
-      <input id="orch-ollama-host" class="mono" type="text" value="${esc(info.host || '')}"
-        placeholder="例: http://gpu-box:11434"${editable ? '' : ' disabled'} />
-      ${where}
-    </div>
-    <div class="settings-save-actions">
-      <button type="button" id="btn-orch-ollama-save" class="primary-inline"${editable && !state.orchSaving ? '' : ' disabled'}>保存</button>
-    </div>
-  </section>`;
-}
-
 function globalSettingsSyncHtml() {
   return `<div class="global-settings-card">
     <header class="global-settings-card-heading">
@@ -1198,7 +1168,6 @@ function globalSettingsAgentsHtml(overview) {
   if (!overview) return `${globalSettingsAssistantHtml()}<div class="empty compact">エージェント情報を読み込んでいます。</div>`;
   if (overview.error) return `${globalSettingsAssistantHtml()}<div class="empty compact"><strong>エージェント情報を読み込めませんでした</strong><span>${esc(overview.error)}</span></div>`;
   return `${globalSettingsAssistantHtml()}
-    ${orchOllamaPanelHtml(overview)}
     ${orchMatrixPanelHtml(overview)}
     ${orchInventoryPanelHtml(overview)}`;
 }
@@ -1475,19 +1444,6 @@ function setupOrchestration(root) {
     try {
       await api.orchestrationControlSave({ workloads: { flow: { concurrency } } });
       toast('同時実行数を保存しました', true);
-    } finally { state.orchSaving = false; }
-    await refreshOrchestration();
-    renderOrchestration();
-  }));
-
-  // ローカルモデル（ollama）の接続先の保存（実行側のノード宣言を書き換える）
-  const ollamaSave = root.querySelector('#btn-orch-ollama-save');
-  if (ollamaSave) ollamaSave.addEventListener('click', () => guard('接続先の保存', async () => {
-    const input = root.querySelector('#orch-ollama-host');
-    state.orchSaving = true;
-    try {
-      await api.orchestrationOllamaSave({ host: input ? input.value.trim() : '' });
-      toast('ollama の接続先を保存しました', true);
     } finally { state.orchSaving = false; }
     await refreshOrchestration();
     renderOrchestration();
