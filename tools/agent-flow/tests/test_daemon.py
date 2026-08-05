@@ -1011,6 +1011,57 @@ class ParticipateE2ETests(unittest.TestCase):
         self.assertEqual(self._participate(running=[run_id]), [])
 
 
+class ParticipateConcurrencyControlTests(unittest.TestCase):
+    """同時実行数を agent-control（管理面の宣言）から律速する（dashboard の全体設定）。
+
+    優先順位は agent-control 契約どおり control > CLI 引数 > 設定ファイル > 既定。
+    宣言が無い巡回は従来の解決のまま（`--max-runs` / `max_runs:` が効き続ける）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-pconc-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.control = tempfile.mkdtemp(prefix="kf-pconc-control-")
+        self.addCleanup(shutil.rmtree, self.control, ignore_errors=True)
+        prev = os.environ["AGENT_CONTROL_DIR"]
+        os.environ["AGENT_CONTROL_DIR"] = self.control
+        self.addCleanup(os.environ.__setitem__, "AGENT_CONTROL_DIR", prev)
+        kf._CONTROL_CACHE["mtime"] = None
+        self.addCleanup(kf._CONTROL_CACHE.__setitem__, "mtime", None)
+
+    def _declare(self, concurrency):
+        with open(os.path.join(self.control, "control.json"), "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "revision": 1,
+                       "workloads": {"flow": {"concurrency": concurrency}}}, f)
+        kf._CONTROL_CACHE["mtime"] = None
+
+    def _args(self, **kw):
+        base = dict(bus=self.tmp, git=None, run_id=None, lease=60.0, poll=1.0,
+                    node_id="pc-a", running="", max_runs=0, max_resumes=3,
+                    executor="stub", board=None, state_git=None, auto_heal=False,
+                    json=False)
+        base.update(kw)
+        return types.SimpleNamespace(**base)
+
+    def _participate(self, **kw):
+        with mock.patch.object(kf, "maybe_self_update"):
+            return kf._participate_once(self._args(**kw))
+
+    def _submit(self, *run_ids):
+        bus = kf.Bus(self.tmp, "test-submitter")
+        for run_id in run_ids:
+            bus.submit_request(run_id, "a; b", "test")
+
+    def test_declared_max_runs_limits_acceptance(self):
+        self._submit("run-c-1", "run-c-2", "run-c-3")
+        self._declare({"max_runs": 1})
+        # CLI 引数は無制限（0）でも宣言が勝つ。超過分は inbox に残り、枠が空いた巡回で受理。
+        self.assertEqual(len(self._participate()), 1)
+
+    def test_without_declaration_caller_value_is_used(self):
+        self._submit("run-c-1", "run-c-2")
+        self.assertEqual(len(self._participate(max_runs=0)), 2)   # 従来どおり無制限
+
+
 class ParticipateSelfUpdateTests(unittest.TestCase):
     """自己更新の確認は「受理も引き継ぎも無い巡回」でだけ走る（常駐廃止で失われた配線の復帰）。
 

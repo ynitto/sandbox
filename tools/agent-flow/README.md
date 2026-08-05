@@ -485,7 +485,15 @@ orchestrator プロセス上限。既定 8。全ノードが park（承認待ち
 `workers` / `max_iterations` / `poll` / `lease` /
 `agent_timeout`（エージェント CLI タイムアウト秒）/ `stub_sleep_max`（stub スリープ上限秒）/
 `gitlab`（gitlab executor プラグイン用。`max_open_issues`・`watch_interval` を含む park & poll 設定もここ）/
-`state_git[-branch/-subdir/-interval]`（状態の git 保存・共有）。例は
+`state_git[-branch/-subdir/-interval]`（状態の git 保存・共有）。
+
+`max_runs` / `workers` は [agent-control 契約](../../schemas/agent-control.schema.json) の
+`workloads.flow.concurrency` でも宣言できる（`~/.agents/control/control.json`。
+agent-dashboard の「全体設定 → 実行制御」が書く口）。宣言があるとそちらが最優先で、
+優先順位は契約どおり **control > CLI 引数 > 設定ファイル > 組み込み既定**。キーを消せば
+元の解決へ戻る。「この PC で同時にどれだけ走らせてよいか」は端末の資源の話なので、
+複数プロジェクトを持つノードではプロジェクトごとの yaml を直して回らずに 1 か所で決められる。
+例は
 [`agent-flow.yaml.example`](agent-flow.yaml.example) を参照（実運用の組み方＝WSL 常駐＋gitlab executor 分散＋
 viewer 監視＋GitLab バックアップは [`agent-flow.state-git.yaml.example`](agent-flow.state-git.yaml.example)）。
 

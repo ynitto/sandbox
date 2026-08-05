@@ -718,6 +718,41 @@ class AgentControlTests(unittest.TestCase):
         self.assertEqual(rec["revision_applied"], 7)
         self.assertEqual(rec["lifecycle"], "run")
 
+    # -- 同時実行数（workloads.flow.concurrency） -------------------------------------
+    # 「この PC で同時にどれだけ走らせてよいか」を管理面（dashboard の全体設定）から
+    # 1 か所で宣言する。宣言が無ければ従来どおり CLI 引数 → 設定ファイル → 既定。
+
+    def test_concurrency_absent_keeps_caller_value(self):
+        self._control({"version": 1, "workloads": {"flow": {}}})
+        self.assertEqual(kf.control_max_runs(8), 8)
+        self.assertEqual(kf.control_workers(2), 2)
+
+    def test_concurrency_overrides_caller_value(self):
+        self._control({"version": 1, "workloads":
+                       {"flow": {"concurrency": {"max_runs": 2, "workers": 1}}}})
+        self.assertEqual(kf.control_max_runs(8), 2)
+        self.assertEqual(kf.control_workers(2), 1)
+
+    def test_concurrency_zero_max_runs_is_unlimited(self):
+        # 0 は「無制限」（agent-flow 設定と同じ語彙）。既定へ戻したいならキーごと消す。
+        self._control({"version": 1, "workloads": {"flow": {"concurrency": {"max_runs": 0}}}})
+        self.assertEqual(kf.control_max_runs(8), 0)
+
+    def test_broken_concurrency_is_ignored(self):
+        # 負数・数値でない・workers=0（ワーカー無し）は宣言なし扱い。GUI の入力ミスで
+        # run が誰にも進められなくなる方が、上書きが効かないより高くつく。
+        for bad in ({"max_runs": -1, "workers": 0}, {"max_runs": "2", "workers": True},
+                    ["max_runs"], None):
+            self._control({"version": 1, "workloads": {"flow": {"concurrency": bad}}})
+            self.assertEqual(kf.control_max_runs(8), 8)
+            self.assertEqual(kf.control_workers(2), 2)
+
+    def test_other_workload_concurrency_is_not_read(self):
+        self._control({"version": 1, "workloads":
+                       {"amigos": {"concurrency": {"max_runs": 1, "workers": 1}}}})
+        self.assertEqual(kf.control_max_runs(8), 8)
+        self.assertEqual(kf.control_workers(2), 2)
+
 
 class GlobalInstructionsTests(unittest.TestCase):
     """グローバル指示（agent-instructions 契約）: 描画・meta スナップショット・ワーカー注入・status。"""

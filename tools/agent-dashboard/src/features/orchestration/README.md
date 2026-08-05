@@ -18,6 +18,21 @@
 | [agent-session-commands](../../../../../schemas/agent-session-commands.schema.json) | その端末の設定ファイル | セッション開始時の前準備コマンド（**伝播しない**） |
 | [agent-profiles](../../../../../schemas/agent-profiles.schema.json) | `$AGENT_CONTROL_DIR`（既定 `~/.agents/control/`） | 実行プロファイル（大/中/小）の宣言と、ワークロードの予算残率・agent CLI ごとの枠からの決定的な段/候補の選択。**エンジンはこの契約を読まない**——選択結果は agent-control（上の行）へ投函するだけ |
 
+## 全体設定から宣言できるもの（この面が control.json へ書く）
+
+| 画面 | 契約のキー | 読む側 |
+|---|---|---|
+| エージェント → 機能ごとのエージェントとモデル | `workloads.<wl>.agent_cli` / `model` / `agents` / `degraded` | 各エンジン |
+| 実行制御 → 実行の許可・停止 | `workloads.<wl>.lifecycle` | 各エンジン |
+| 実行制御 → 同時に動かす数（自動実行） | `workloads.flow.concurrency`（`max_runs` / `workers`） | agent-flow |
+
+`concurrency` は「この PC で同時にどれだけ走らせてよいか」の宣言。**その端末の資源の話**なのに、
+設定の置き場（各プロジェクトの `agent-flow.yaml`）はプロジェクトごとに散っていて、1 台の負荷を
+下げたい人が全プロジェクトの yaml を直して回ることになっていた。優先順位は他のキーと同じ
+control > CLI 引数 > 設定ファイル > 既定で、画面で空欄にすればキーが消えて元の解決へ戻る。
+壊れた値（負数・`workers: 0`）は保存前に弾く——GUI の入力ミスで run が誰にも進められなくなる方が、
+上書きが効かないより高くつく。
+
 ## 不変条件
 
 書くのは上記の契約ファイルだけで、エンジンのプロセスにも状態リポジトリにも触れない。

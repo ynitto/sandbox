@@ -15,6 +15,12 @@ const { agentHomeSubdir } = require('../../../base/main/agent-home');
 
 const LIFECYCLES = ['run', 'pause', 'stop'];
 const DELEGATION_PREFER = ['local', 'remote'];
+// concurrency のキーと下限（max_runs の 0 は「無制限」で、既定へ戻すのはキーの削除）。
+// workers=0 はワーカー無し＝run が誰にも進められないので受け付けない。
+const CONCURRENCY_KEYS = [
+  ['max_runs', 0, '同時に実行する仕事の数'],
+  ['workers', 1, '1つの仕事に付ける担当の数'],
+];
 
 function expandHome(p) {
   if (!p) return p;
@@ -115,6 +121,32 @@ function mergeWorkloadControl(base, patch) {
       throw new Error(`lifecycle が不正です: ${patch.lifecycle}（run / pause / stop）`);
     }
     out.lifecycle = patch.lifecycle;
+  }
+  // 同時実行数（agent-control の concurrency）。「この PC で同時にどれだけ走らせてよいか」は
+  // ノードの資源の話なのに、設定ファイル（agent-flow.yaml の max_runs / workers）は各
+  // プロジェクトのルートへ散っていた。管理面から 1 か所で宣言できるようにする。
+  // null / 空文字はキーを消す＝元の解決（CLI 引数 → 設定ファイル → 既定）へ戻す。
+  if (patch.concurrency !== undefined) {
+    if (patch.concurrency === null) delete out.concurrency;
+    else {
+      if (!isPlainObject(patch.concurrency)) throw new Error('concurrency はオブジェクトで指定してください');
+      const concurrency = isPlainObject(out.concurrency) ? { ...out.concurrency } : {};
+      for (const [key, min, label] of CONCURRENCY_KEYS) {
+        const value = patch.concurrency[key];
+        if (value === undefined) continue;
+        if (value === null || value === '') {
+          delete concurrency[key];
+          continue;
+        }
+        const n = Number(value);
+        if (!Number.isFinite(n) || n < min || !Number.isInteger(n)) {
+          throw new Error(`${label}は ${min} 以上の整数で指定してください`);
+        }
+        concurrency[key] = n;
+      }
+      if (Object.keys(concurrency).length) out.concurrency = concurrency;
+      else delete out.concurrency;
+    }
   }
   if (patch.delegation !== undefined) {
     if (!isPlainObject(patch.delegation)) throw new Error('delegation はオブジェクトで指定してください');

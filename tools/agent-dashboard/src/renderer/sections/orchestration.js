@@ -519,6 +519,45 @@ function orchMatrixPanelHtml(overview) {
   </section>`;
 }
 
+// 3.5 同時実行数（agent-control の concurrency）。**この端末の資源の話**なので全体設定に置く。
+// 従来の置き場（各プロジェクトの agent-flow.yaml の max_runs / workers）は、1 台の負荷を
+// 下げたい人に全プロジェクトの yaml を直して回らせていた。ここで宣言すると、その端末の
+// agent-flow が次の巡回で読む（pull 型。dashboard はプロセスを起こさない）。
+function orchConcurrencyPanelHtml(overview) {
+  const control = overview.control || { workloads: {} };
+  const flow = (control.workloads || {}).flow || {};
+  const cc = (flow.concurrency && typeof flow.concurrency === 'object') ? flow.concurrency : {};
+  const maxRuns = cc.max_runs === undefined || cc.max_runs === null ? '' : Number(cc.max_runs);
+  const workers = cc.workers === undefined || cc.workers === null ? '' : Number(cc.workers);
+  const note = maxRuns === '' && workers === ''
+    ? '<span class="muted">いまは各プロジェクトの設定に従っています。</span>'
+    : orchBadge('ok', 'この端末の指定を使用中');
+  return `<section class="orch-panel">
+    <header class="row">
+      <div>
+        <span class="summary-kicker">実行のキャパシティ</span>
+        <h3>同時に動かす数（自動実行）</h3>
+        <p class="muted">この端末で自動実行（agent-flow）を何本まで同時に動かすかを決めます。空欄なら各プロジェクトの設定に従います。PC が重いときは小さくしてください。</p>
+      </div>
+      <div>${note}</div>
+    </header>
+    <div class="row orch-alloc-controls">
+      <label>同時に進める仕事の数
+        <input type="number" min="0" step="1" id="orch-conc-max-runs" class="mono"
+          value="${maxRuns}" placeholder="プロジェクト設定に従う" title="0 = 上限なし" />
+      </label>
+      <label>1つの仕事に付ける担当の数
+        <input type="number" min="1" step="1" id="orch-conc-workers" class="mono"
+          value="${workers}" placeholder="プロジェクト設定に従う" />
+      </label>
+    </div>
+    <p class="field-help">「同時に進める仕事の数」は 0 で上限なしです。承認待ちで止まっている仕事は数えません。上限を超えた依頼は捨てられず、空きができた時点で順に始まります。</p>
+    <div class="settings-save-actions">
+      <button type="button" id="btn-orch-conc-save" class="primary-inline"${state.orchSaving ? ' disabled' : ''}>保存</button>
+    </div>
+  </section>`;
+}
+
 // 4. 実行サービスの状態と操作
 function orchStatusPanelHtml(overview) {
   const status = overview.status || [];
@@ -1133,17 +1172,18 @@ function globalSettingsAgentsHtml(overview) {
     ${orchInventoryPanelHtml(overview)}`;
 }
 
-// 「利用状況」= この端末の利用量をまとめて見る場所。ノード予算の集計（実行記録から）に
-// 加えて、差し込まれた面（監査＝実行証跡からの実測トークンと実行品質）も同じ節に並べる。
-// 予算の取得に失敗しても差し込まれた面は出す——データ源が別なので、片方の不調で
-// もう片方まで見えなくなる理由がない。
+// 「利用状況」= この端末の利用量をまとめて見る場所。**数字は agent-audit の集計へ一本化**した。
+// 以前はここでノード予算の台帳を画面が自分で足した「利用量」を出し、その下に agent-audit が
+// 集計した「実測のトークン利用量」が並んでいた——同じ話題の数字が 2 つあり、しかも台帳は
+// agent-audit の源泉の 1 つ（budget-ledger）なので、実測の裏取りがある後者の方が正しい。
+// 面の中身は features/agent-audit.js が出し、agent-audit が使えない端末では台帳集計
+// （orchBudgetPanelHtml）へフォールバックする。上限・配分の設定は「実行制御」が持ち、
+// この節はその上限をゲージの分母として読むだけ。
 function globalSettingsUsageHtml(overview) {
-  const budget = !overview
-    ? '<div class="empty compact">利用状況を読み込んでいます。</div>'
-    : overview.error
-      ? `<div class="empty compact"><strong>利用状況を読み込めませんでした</strong><span>${esc(overview.error)}</span></div>`
-      : orchBudgetPanelHtml(overview.budget);
-  return `${budget}${globalSettingsPanelsHtml('usage')}`;
+  const notice = overview && overview.error
+    ? `<div class="empty compact"><strong>上限の情報を読み込めませんでした</strong><span>${esc(overview.error)}</span></div>`
+    : '';
+  return `${notice}${globalSettingsPanelsHtml('usage')}`;
 }
 
 function globalSettingsInstructionsHtml(overview) {
@@ -1155,7 +1195,7 @@ function globalSettingsInstructionsHtml(overview) {
 function globalSettingsControlHtml(overview) {
   if (!overview) return '<div class="empty compact">実行制御を読み込んでいます。</div>';
   if (overview.error) return `<div class="empty compact"><strong>実行制御を読み込めませんでした</strong><span>${esc(overview.error)}</span></div>`;
-  return `${orchAllocationPanelHtml(overview.budget)}${orchProfilesPanelHtml(overview)}${orchStatusPanelHtml(overview)}`;
+  return `${orchAllocationPanelHtml(overview.budget)}${orchConcurrencyPanelHtml(overview)}${orchProfilesPanelHtml(overview)}${orchStatusPanelHtml(overview)}`;
 }
 
 function renderOrchestration() {
@@ -1385,6 +1425,25 @@ function setupOrchestration(root) {
     try {
       await api.orchestrationControlSave({ workloads });
       toast('割当を保存しました', true);
+    } finally { state.orchSaving = false; }
+    await refreshOrchestration();
+    renderOrchestration();
+  }));
+
+  // 同時実行数（control の concurrency）の保存。空欄は「指定なし」＝キーを消して
+  // 各プロジェクトの設定へ戻す（null が消去の合図・main 側の契約）。
+  const concSave = root.querySelector('#btn-orch-conc-save');
+  if (concSave) concSave.addEventListener('click', () => guard('同時実行数の保存', async () => {
+    const read = (id) => {
+      const el = root.querySelector(id);
+      const raw = el ? el.value.trim() : '';
+      return raw === '' ? null : Number(raw);
+    };
+    const concurrency = { max_runs: read('#orch-conc-max-runs'), workers: read('#orch-conc-workers') };
+    state.orchSaving = true;
+    try {
+      await api.orchestrationControlSave({ workloads: { flow: { concurrency } } });
+      toast('同時実行数を保存しました', true);
     } finally { state.orchSaving = false; }
     await refreshOrchestration();
     renderOrchestration();

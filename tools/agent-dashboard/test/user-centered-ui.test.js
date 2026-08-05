@@ -191,13 +191,24 @@ const controlSettingsSource = renderer.slice(
   renderer.indexOf('function globalSettingsControlHtml('),
   renderer.indexOf('\nfunction renderOrchestration(')
 );
-assert.ok(usageSettingsSource.includes('orchBudgetPanelHtml('), '利用状況タブに利用量を表示します');
+// 利用状況の数字は agent-audit の集計へ一本化した（同じ話題の集計を画面が持たない）。
+// 節は差し込み面へ委ね、agent-audit が使えない端末向けの台帳集計フォールバックは面が持つ。
+assert.ok(usageSettingsSource.includes("globalSettingsPanelsHtml('usage')"),
+  '利用状況タブは監査の面へ委ねます');
+assert.ok(!usageSettingsSource.includes('orchBudgetPanelHtml('),
+  '利用状況タブで台帳の再集計を並べません');
+const auditFeatureSource = fs.readFileSync(
+  path.join(root, 'features', 'agent-audit.js'), 'utf8');
+assert.ok(auditFeatureSource.includes('orchBudgetPanelHtml('),
+  '監査の面は集計が取れないとき台帳集計へフォールバックします');
 assert.ok(agentSettingsSource.includes('orchMatrixPanelHtml(') && agentSettingsSource.includes('orchInventoryPanelHtml('),
   'エージェントタブに担当設定と一覧を表示します');
 assert.ok(instructionSettingsSource.includes('orchInstructionsPanelHtml(')
   && instructionSettingsSource.includes('orchSessionCommandsPanelHtml('), '共通指示タブに指示と開始コマンドを表示します');
 assert.ok(controlSettingsSource.includes('orchAllocationPanelHtml(') && controlSettingsSource.includes('orchStatusPanelHtml('),
   '実行制御タブに上限と稼働制御を表示します');
+assert.ok(controlSettingsSource.includes('orchConcurrencyPanelHtml('),
+  '実行制御タブで自動実行の同時実行数を設定します');
 assert.ok(renderer.includes('推定できない記録'), '推定不能を0トークンと区別します');
 assert.ok(renderer.includes('実測トークンが記録されず、推定レートもない実行'),
   '推定不可の理由を利用状況の近くで説明します');

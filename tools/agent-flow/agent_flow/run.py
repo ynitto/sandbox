@@ -386,7 +386,10 @@ def cmd_run(args) -> int:
         worker_env["AGENT_FLOW_DEFER_WAITS"] = "1"
     else:
         worker_env.pop("AGENT_FLOW_DEFER_WAITS", None)
-    for i in range(args.workers):
+    # 並列数は agent-control（管理面の宣言）が最優先。宣言が無ければ CLI 引数 → 設定 → 既定。
+    # heal 再起動でも同じ値を使う（この run の途中で並列数が揺れない）。
+    workers = control_workers(args.workers)
+    for i in range(workers):
         wid = worker_who(args, i + 1)
         w = subprocess.Popen(base + [
             "work", "--node-id", wid, "--executor", args.executor,
@@ -396,7 +399,7 @@ def cmd_run(args) -> int:
 
     print(f"\n>>> agent-flow run: run_id={run_id} bus={mode} ({'resume' if resuming else 'new'})")
     print(f">>> {state_git_status_line(args)}", flush=True)
-    print(f">>> orchestrator x1 + worker x{args.workers} を起動しました。Ctrl-C で全停止。\n", flush=True)
+    print(f">>> orchestrator x1 + worker x{workers} を起動しました。Ctrl-C で全停止。\n", flush=True)
 
     bus = make_bus(args, "run")
 
@@ -469,7 +472,7 @@ def cmd_run(args) -> int:
                                 "--poll", str(args.poll), "--node-id", "orchestrator",
                             ])
                             procs.append((f"orchestrator-heal{n}", orch))
-                            for i in range(args.workers):
+                            for i in range(workers):
                                 hid = worker_who(args, i + 1, heal=n)
                                 w = subprocess.Popen(base + [
                                     "work", "--node-id", hid,

@@ -305,6 +305,30 @@ test('制御: agents.<key> は null 指定でキー削除できる（UI の「�
   assert.strictEqual(c.revision, 2);
 });
 
+test('制御: concurrency は flow の同時実行数を宣言し、空指定でキーを消す', () => {
+  const dir = tmpdir('orch-ctrl-');
+  const c1 = control.saveControl(controlCfg(dir), {
+    workloads: { flow: { concurrency: { max_runs: 2, workers: 1 } } },
+  });
+  assert.strictEqual(c1.workloads.flow.concurrency.max_runs, 2);
+  assert.strictEqual(c1.workloads.flow.concurrency.workers, 1);
+  // max_runs の 0 は「上限なし」で有効な宣言（既定へ戻すのは空指定）
+  const c2 = control.saveControl(controlCfg(dir), {
+    workloads: { flow: { concurrency: { max_runs: 0 } } },
+  });
+  assert.strictEqual(c2.workloads.flow.concurrency.max_runs, 0);
+  assert.strictEqual(c2.workloads.flow.concurrency.workers, 1);
+  // UI の空欄（null）はキー削除 → 各プロジェクトの設定へ戻る
+  const c3 = control.saveControl(controlCfg(dir), {
+    workloads: { flow: { concurrency: { max_runs: null, workers: null } } },
+  });
+  assert.strictEqual(c3.workloads.flow.concurrency, undefined);
+  // 検証: 負数・小数・workers=0（ワーカー無し＝run が進まない）は弾く
+  for (const bad of [{ max_runs: -1 }, { workers: 0 }, { workers: 1.5 }, { max_runs: 'x' }]) {
+    assert.throws(() => control.saveControl(controlCfg(dir), { workloads: { flow: { concurrency: bad } } }));
+  }
+});
+
 test('制御: setLifecycle は lifecycle を設定し revision を +1 する', () => {
   const dir = tmpdir('orch-ctrl-');
   const c1 = control.setLifecycle(controlCfg(dir), { workload: 'routine', action: 'pause' });
