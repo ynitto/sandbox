@@ -175,7 +175,7 @@ def main(argv=None) -> int:
                     help="成果を受け入れて完了にする（検収待ちの blocked / review が対象）。"
                          "省略時は従来どおりブロックを解いて積み直す")
     fc = sub.add_parser("force-complete",
-                        help="どうにも進まないタスクを打ち切って done 確定（強制完了）。"
+                        help="どうにも進まないタスクを強制完了して done 確定。"
                              "verify は実行せず、成果ブランチの自動統合もしない。"
                              "納品書・受領書には FORCED（未検証）として残る。決定記録")
     _add_common(fc); fc.add_argument("id"); fc.add_argument("--reason", required=True)

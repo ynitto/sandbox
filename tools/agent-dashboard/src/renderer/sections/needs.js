@@ -146,7 +146,7 @@ function needCompleteHowHtml(n) {
     line = isVerifyPendingNeed(p, n)
       ? '承認すると、このタスクは完了します（検証コマンド未定義のため、人の確認が完了の根拠になります）。'
       : '指示を送るか再実行すると、停止した作業を再開します。'
-        + 'どうしても進まないときは「打ち切って完了」で完了にできます（検証は行われません）。';
+        + 'どうしても進まないときは「強制的に完了にする」で完了にできます（検証は行われません）。';
   }
   if (!line) return '';
   return `<div class="task-complete-banner need-complete-how">${esc(line)}</div>`;
@@ -255,7 +255,7 @@ function needActionsHtml(n) {
     buttons.push(`<button data-act="hold" data-id="${esc(n.id)}" title="このタスクを止めて保留にします">保留</button>`);
     // 指示も再実行も効かず堂々巡りになったときの最後の口。承認（完了確定）は成果がある票に
     // しか出ないので、これが無いと「完了にできないまま消せない」タスクがカードに残り続ける。
-    buttons.push(`<button class="danger" data-act="force-complete" data-id="${esc(n.id)}" data-require-force="1" title="どうにも進まないタスクを、検証せずに完了として打ち切ります（履歴には未検証として残ります）">打ち切って完了</button>`);
+    buttons.push(`<button class="danger" data-act="force-complete" data-id="${esc(n.id)}" data-require-force="1" title="どうにも進まないタスクを、検証せずに完了にします（履歴には未検証として残ります）">強制的に完了にする</button>`);
   }
   const ph =
     kind === 'plan-review'
@@ -2152,7 +2152,7 @@ async function handleNeedAction(btn) {
       uiLog('needAction hold', id, res);
       toast('保留にしました', true);
     } else if (act === 'force-complete') {
-      // 打ち切り（verify 未実施のまま done 確定）。却下と違ってタスクは「完了」として
+      // 強制完了（verify 未実施のまま done 確定）。却下と違ってタスクは「完了」として
       // 履歴に残る——やめる（却下）のではなく、これ以上進まないものを終わりにする操作。
       const task = taskForNeed(p, need);
       const yes = await confirmDialog(forceCompleteConfirmMessage(p, task || { id, status: '' }));

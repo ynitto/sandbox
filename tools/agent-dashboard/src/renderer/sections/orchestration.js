@@ -962,10 +962,17 @@ function globalSettingsAgentsHtml(overview) {
     ${orchInventoryPanelHtml(overview)}`;
 }
 
+// 「利用状況」= この端末の利用量をまとめて見る場所。ノード予算の集計（実行記録から）に
+// 加えて、差し込まれた面（監査＝実行証跡からの実測トークンと実行品質）も同じ節に並べる。
+// 予算の取得に失敗しても差し込まれた面は出す——データ源が別なので、片方の不調で
+// もう片方まで見えなくなる理由がない。
 function globalSettingsUsageHtml(overview) {
-  if (!overview) return '<div class="empty compact">利用状況を読み込んでいます。</div>';
-  if (overview.error) return `<div class="empty compact"><strong>利用状況を読み込めませんでした</strong><span>${esc(overview.error)}</span></div>`;
-  return orchBudgetPanelHtml(overview.budget);
+  const budget = !overview
+    ? '<div class="empty compact">利用状況を読み込んでいます。</div>'
+    : overview.error
+      ? `<div class="empty compact"><strong>利用状況を読み込めませんでした</strong><span>${esc(overview.error)}</span></div>`
+      : orchBudgetPanelHtml(overview.budget);
+  return `${budget}${globalSettingsPanelsHtml('usage')}`;
 }
 
 function globalSettingsInstructionsHtml(overview) {
@@ -1019,6 +1026,8 @@ function renderOrchestration() {
   populateSettingsFields();
   setupGlobalSettings(el);
   setupOrchestration(el);
+  wireGlobalSettingsPanels(el);
+  revealGlobalSettingsPanels(el, section);
   restoreUiState(ui);
 }
 
@@ -1039,6 +1048,9 @@ function selectGlobalSettingsSection(root, section, { focus = false } = {}) {
   if (select) select.value = section;
   const refresh = root.querySelector('.global-settings-agent-refresh');
   if (refresh) refresh.hidden = !ORCHESTRATION_SETTINGS_SECTIONS.has(section);
+  // 差し込まれた面へ「表示された」と伝える（初回のデータ取得はここで起きる）。
+  // 節の切り替えは hidden を付け替えるだけで描き直さないので、描画側の口では届かない。
+  revealGlobalSettingsPanels(root, section);
   root.closest('.tabpane').scrollTop = 0;
 }
 

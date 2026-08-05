@@ -1,6 +1,6 @@
 'use strict';
 
-// 強制完了（force-complete）— どうにも進まないタスクを人の判断で打ち切って完了にする口。
+// 強制完了（force-complete）— どうにも進まないタスクを人の判断で完了にする口。
 //
 // 承認（approve + complete）は検収待ち（review / blocked かつ成果あり）にしか効かない。
 // 実行中（doing）・委譲中（offloaded）・実行待ち（ready）で堂々巡りしているタスクは、
@@ -73,14 +73,14 @@ function grab(name) {
       dir,
       action: 'force-complete',
       id: 'T1',
-      reason: '外部要因で完了不能。ここで打ち切る',
+      reason: '外部要因で完了不能。ここで終わりにする',
     });
     assert.strictEqual(res.via, 'file');
     const { file, rec } = readDropped(dir);
     assert.ok(file.startsWith('viewer-force-complete-'), `ファイル名: ${file}`);
     assert.strictEqual(rec.command, 'force-complete');
     assert.strictEqual(rec.id, 'T1');                     // タスク単位（プロジェクト単位ではない）
-    assert.strictEqual(rec.reason, '外部要因で完了不能。ここで打ち切る');
+    assert.strictEqual(rec.reason, '外部要因で完了不能。ここで終わりにする');
     assert.strictEqual(rec.actor, 'agent-dashboard');
     assert.ok(rec.ts, '投函時刻が入る');
   });
@@ -110,9 +110,8 @@ function grab(name) {
     assert.match(renderer, /forceCompleteConfirmMessage\(p, t\)/);
   });
 
-  await test('要対応カード（作業再開）から打ち切って完了にできる', () => {
+  await test('要対応カード（作業再開）からも強制完了にできる', () => {
     assert.match(renderer, /data-act="force-complete"[^>]*data-require-force="1"/);
-    assert.match(renderer, /打ち切って完了/);
     assert.match(renderer, /btn\.dataset\.requireForce/);
     assert.match(renderer, /action: 'force-complete', id, reason: text/);
   });
@@ -132,13 +131,24 @@ function grab(name) {
     assert.match(build({}, { id: 'T9', status: '' }), /T9 を強制的に完了にします。/);
   });
 
-  await test('実行中タスクの「完了まで」に打ち切りの逃げ道が案内される', () => {
+  await test('実行中タスクの「完了まで」に強制完了の逃げ道が案内される', () => {
     // eslint-disable-next-line no-new-func
     const hint = new Function(
       `${grab('taskCompletionHint')}; return taskCompletionHint;`
     )();
     const h = hint({ status: 'doing', extra: {} }, { runs: [] });
     assert.match(h.completeHow, /強制的に完了にする/);
+  });
+
+  await test('呼び名が「強制完了」に揃っている（場所ごとに別名を出さない）', () => {
+    // 同じ操作が画面の場所ごとに別名で出ると、利用者は別々の操作だと読む。
+    // ボタン名はタスク詳細と要対応カードで同一、案内文もその名前で参照する。
+    const buttons = renderer.match(/>強制的に完了にする</g) || [];
+    assert.strictEqual(buttons.length, 2, `ボタン名が揃っていません（${buttons.length} 箇所）`);
+    assert.match(renderer, /「強制的に完了にする」で完了にできます/);       // 要対応の案内
+    assert.match(renderer, /操作タブの「強制的に完了にする」で完了にできます/); // 実行中の案内
+    // かつて要対応カードだけ別名だった。別名を戻さない。
+    assert.doesNotMatch(renderer, /打ち切って完了/);
   });
 
   console.log(`\n${passed} tests passed`);

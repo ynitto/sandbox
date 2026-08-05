@@ -249,7 +249,7 @@ async function deleteReviewComment(projectDir, taskId, commentId, trash) {
 
 const COMMAND_ACTIONS = new Set(['approve', 'retry-mr', 'hold', 'pin', 'defer', 'revise', 'reject',
   'resume-run', 'force-complete']);
-// 理由の記入を必須にするアクション。人が状態を確定させる不可逆な操作（廃止・打ち切り）は、
+// 理由の記入を必須にするアクション。人が状態を確定させる不可逆な操作（却下・強制完了）は、
 // 何を根拠に決めたかが決定記録に残らないと後から追えない。本体側も同じ検査をするが、
 // 押した瞬間に画面で言えるようここでも見る（投函してから .err で気づくのは遅い）。
 const REASON_REQUIRED_ACTIONS = new Set(['force-complete']);
@@ -326,7 +326,7 @@ function dropCommand(projectDir, { action, id, reason, fields, feedback, run, ch
 //   revise は fields（title/priority/verify/accept/after/note/level/track の置換）と
 //   feedback（次の act に必ず届く指示）を追加で受ける。実行中（doing）のタスクは
 //   本体側が現在の試行を確定せず修正内容で積み直す（早い軌道修正）。
-//   force-complete は「どうにも進まないタスクの打ち切り」。承認（approve + complete）は
+//   force-complete は「どうにも進まないタスクの強制完了」。承認（approve + complete）は
 //   検収待ち（review / blocked）にしか効かないため、実行中・委譲中・実行待ちで
 //   堂々巡りしているタスクは画面から完了させられなかった。本体は verify を実行せず
 //   done 確定し、納品書・受領書に FORCED（未検証）として残す。理由は必須。

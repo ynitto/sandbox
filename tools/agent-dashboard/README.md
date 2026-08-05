@@ -43,15 +43,17 @@ agent-audit の呼び出しと閲覧（`src/features/agent-audit/`）を同じ�
 依頼側・請負側どちらのノードでも同じ）は、アプリの「全体設定 → エージェント」で
 機能別の消費内訳を表示・編集する。ミッションも依頼先ホームも無いときはタブ自体を隠す。
 
-**監査タブ**（`src/features/agent-audit/`）: [agent-audit](../agent-audit/) CLI を
+**監査**（`src/features/agent-audit/`）: [agent-audit](../agent-audit/) CLI を
 このアプリから呼び、収集済みの実行証跡から**トークン利用量**（実測と推定を別掲）と
-**実行品質**を表示する。Windows では WSL 内の agent-audit を `wsl.exe` 経由で呼ぶ。
-呼ぶのは LLM を使わない段だけ（`collect` / `usage --json` / `stats --json` / `doctor`）で、
-知見蒸留（extract / distill）は agent-audit 側のゲート設定に任せる。収集データの
-保存先（`--audit-dir`）・agent-audit 設定ファイル（`--config`）・起動コマンド・
-WSL ディストロ・**定期収集の間隔（分）**は監査タブ内の設定で編集する。定期収集は
-アプリを開いている間だけ動き、collect の多重起動は main プロセスで直列化する
-（agent-audit 側にロックが無いため）。詳細は
+**実行品質**を表示する。扱う数字が**プロジェクトごとではない**ので独立タブは持たず、
+**全体設定 →「利用状況」**へ差し込む（ノード予算から集計した利用量と同じ節に並ぶ＝
+同じ話題の数字が 2 か所に分かれない）。Windows では WSL 内の agent-audit を
+`wsl.exe` 経由で呼ぶ。呼ぶのは LLM を使わない段だけ
+（`collect` / `usage --json` / `stats --json` / `doctor`）で、知見蒸留（extract / distill）は
+agent-audit 側のゲート設定に任せる。収集データの保存先（`--audit-dir`）・agent-audit
+設定ファイル（`--config`）・起動コマンド・WSL ディストロ・**定期収集の間隔（分）**は
+同じ節の「収集の設定」で編集する。定期収集はアプリを開いている間だけ動き、collect の
+多重起動は main プロセスで直列化する（agent-audit 側にロックが無いため）。詳細は
 [`src/features/agent-audit/README.md`](./src/features/agent-audit/README.md)。
 
 **セッション開始コマンド**（[agent-session-commands 契約](../../schemas/agent-session-commands.schema.json)
@@ -323,7 +325,7 @@ agent-project の人間ループはこのアプリ内で完結できる。いず
 | 承認して done 確定 | 要対応カード（review / milestone） | `commands/<name>.json` ドロップ（`ingest_commands` が CLI と同一ロジック・同一 DR で実行） |
 | 差し戻す | 要対応カード（review） | 修正方針の記入必須 → feedback として確定（手戻り扱い） |
 | 保留（hold） | 要対応カード・タスク詳細 | 同上（`{"command":"hold"}` ドロップ → policy.deny 追加） |
-| ⛔ 強制的に完了にする（force-complete） | タスク詳細の「操作」タブ／要対応カード（blocked）の「打ち切って完了」 | **どうにも進まないタスクを人の判断で打ち切って done 確定する最後の口**（`{"command":"force-complete"}` ドロップ）。承認は検収待ち（review／成果のある blocked）にしか効かないため、実行中（doing）・委譲中（offloaded）・実行待ち（ready）で堂々巡りしているタスクは画面から完了にできず、承認しても ready へ積み直されて同じ工程がまた止まる往復になっていた。本体は **verify を実行せず**、**成果ブランチの自動統合もせず**（検証していない変更をターゲットへ入れない）、委譲中の run を切り離してから done を確定する。**理由は必須**（決定記録 `action: force-complete`）。通常の完了と混ざらないよう、納品書（`archive/<id>.md` の `- 検収 : FORCED`・`verify … → 未実施`）と受領書（`DELIVERY.md` の検収欄 `FORCED`）に**未検証として残る**。押す前に確認ダイアログで「検証しない・統合しない・未検証として残る」ことを提示する。**やめる（作り直させない）なら却下（reject）**、**終わりにするなら強制完了** |
+| ⛔ 強制的に完了にする（force-complete） | タスク詳細の「操作」タブ／要対応カード（blocked） | **どうにも進まないタスクを人の判断で done 確定する最後の口**（`{"command":"force-complete"}` ドロップ）。承認は検収待ち（review／成果のある blocked）にしか効かないため、実行中（doing）・委譲中（offloaded）・実行待ち（ready）で堂々巡りしているタスクは画面から完了にできず、承認しても ready へ積み直されて同じ工程がまた止まる往復になっていた。本体は **verify を実行せず**、**成果ブランチの自動統合もせず**（検証していない変更をターゲットへ入れない）、委譲中の run を切り離してから done を確定する。**理由は必須**（決定記録 `action: force-complete`）。通常の完了と混ざらないよう、納品書（`archive/<id>.md` の `- 検収 : FORCED`・`verify … → 未実施`）と受領書（`DELIVERY.md` の検収欄 `FORCED`）に**未検証として残る**。押す前に確認ダイアログで「検証しない・統合しない・未検証として残る」ことを提示する。**やめる（作り直させない）なら却下（reject）**、**終わりにするなら強制完了** |
 | 最優先へ / 後回し | タスク詳細 | 同上（`{"command":"pin"/"defer"}` ドロップ → policy 追記） |
 | ✎ 修正して指示（revise） | タスク詳細（backlog）／要対応詳細（blocked の verify 変更） | 同上（`{"command":"revise"}` ドロップ）。タイトル・優先度・依存 after・verify・accept の**置換**とフィードバック注入。**実行中（doing）のタスクにも送れ**、本体は現在の試行の結果を確定せず（verify も done もせず）修正内容で積み直す＝気づいた時点の早い軌道修正。変更した項目だけが送られ、DR（`action: revise`）に記録される |
 | ＋ バックログに追加 | バックログタブ | `inbox/<name>.json` ドロップ（E4 push 型取り込み口）で**バックログにタスクを 1 件追加**（本体が次サイクルで `backlog/<id>.md` にする）。verify / accept / priority / note / id / after 付き。ダイアログでは既存 backlog 一覧・先行タスク datalist に加え、「AIで依存・優先度を提案」で after/priority の下書きもできる（投入は人の「追加」） |

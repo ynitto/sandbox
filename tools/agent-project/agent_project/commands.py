@@ -222,7 +222,7 @@ def cmd_approve(cfg: Config, tid: str, reason: str, complete: bool = False) -> i
 
 
 def cmd_force_complete(cfg: Config, tid: str, reason: str) -> int:
-    """どうにも進まないタスクを人の判断で打ち切り、その場で done 確定する（強制完了）。
+    """どうにも進まないタスクを人の判断で強制完了させ、その場で done 確定する。
 
     「done は verify のみが根拠」の**唯一の例外**。承認（approve --complete）は検収待ち
     （review / blocked）にしか効かず、実行中（doing）・委譲中（offloaded）・実行待ち
@@ -231,12 +231,12 @@ def cmd_force_complete(cfg: Config, tid: str, reason: str) -> int:
     その袋小路から人が抜けるための最後の口がこれ。
 
     通常の完了と決定的に違うのは次の 3 点で、記録の上で必ず見分けられるようにする:
-      - verify を実行しない（未実施のまま打ち切る）
+      - verify を実行しない（未実施のまま完了にする）
       - 成果ブランチの自動統合（タスク MR のマージ）をしない——検証していない変更を
         ターゲットへ入れない。統合が要るなら人が MR を見て決める。
       - 納品書・受領書の検収欄は FORCED、決定記録の action は force-complete
 
-    理由は必須（人が打ち切った事実と根拠が決定記録に残らないと後から追えない）。
+    理由は必須（人が強制完了させた事実と根拠が決定記録に残らないと後から追えない）。
     実行中・委譲中なら先に run を切り離してから確定する（放置すると成果の書き戻しで
     archive 済みのタスクが backlog へ復活する）。"""
     why = str(reason or "").strip()
@@ -273,7 +273,7 @@ def cmd_force_complete(cfg: Config, tid: str, reason: str) -> int:
     disp = "done（強制完了・納品書）"
     if cfg.do_archive:
         archive_task(cfg, t, vmsg, ref, ts,
-                     evidence=f"- 検証: 未実施（人の判断で打ち切り）\n- 理由: {why}",
+                     evidence=f"- 検証: 未実施（人の判断で強制完了）\n- 理由: {why}",
                      verdict=DELIVERY_VERDICT_FORCED)
     else:
         append_delivery(cfg, t, ref, ts, verdict=DELIVERY_VERDICT_FORCED)
@@ -893,7 +893,7 @@ def ingest_commands(cfg: "Config") -> "list[str]":
     pause|resume|stop", "id": ..., "reason": ...}）を読み、CLI と同一のロジック
     （cmd_approve / cmd_hold / cmd_reprioritize / cmd_revise / cmd_force_complete /
     cmd_replan）を実行する。
-    force-complete は進まないタスクの打ち切り（verify 未実施のまま done 確定）。
+    force-complete は進まないタスクの強制完了（verify 未実施のまま done 確定）。
     revise は加えて title/priority/verify/accept/after/note/level/track/feedback キーを受ける。
     replan / pause / resume / stop はプロジェクト単位（id 不要）: replan は charter からの
     バックログ再分解を次パスに要求、pause/resume は watch の消化を一時停止/再開（監視は継続）、
@@ -1053,7 +1053,7 @@ def ingest_commands(cfg: "Config") -> "list[str]":
                 elif action == "reject":
                     rc = cmd_reject(cfg, tid, reason)
                 elif action == "force-complete":
-                    # 進まないタスクの打ち切り（verify 未実施のまま done 確定）。
+                    # 進まないタスクの強制完了（verify 未実施のまま done 確定）。
                     # 理由は cmd 側で必須にしている（空なら exit 2 で .err へ退避）。
                     rc = cmd_force_complete(cfg, tid, reason)
                 elif action == "hold":

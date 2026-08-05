@@ -192,8 +192,10 @@ test('HTML に data-feature マーカーがある', () => {
   assert.ok(html.includes('tab-orchestration'));
   assert.ok(html.includes('data-feature="participation"'));
   assert.ok(html.includes('tab-participation'));
-  assert.ok(html.includes('data-feature="agent-audit"'));
-  assert.ok(html.includes('tab-agent-audit'));
+  // agent-audit は独立タブを持たない（全体設定「利用状況」へ差し込む面）。
+  // 画面側の配線はスクリプトの読み込みだけで、data-feature マーカーは持たない。
+  assert.ok(html.includes('features/agent-audit.js'));
+  assert.ok(!html.includes('tab-agent-audit'));
 });
 
 test('orchestration はノード予算 v2 / 制御 / ドロップイン API を登録する', () => {

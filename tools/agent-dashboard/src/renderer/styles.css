@@ -3337,18 +3337,14 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   .tab-utility-group .tab { flex: 1; margin-left: 0; }
 }
 
-/* 監査タブ: agent-audit の収集・集計の表示。 */
-.audit-page { max-width: 980px; }
-.audit-header { display: flex; gap: 16px; align-items: flex-start; justify-content: space-between;
-  flex-wrap: wrap; margin-bottom: 12px; }
-.audit-header p { max-width: 62em; }
+/* 監査（agent-audit の収集・集計）: 全体設定「利用状況」へ差し込まれる面。
+   枠と見出しは同じ節の他の面（orch-panel）から取るので、ここで持つのは中身の体裁だけ。 */
+.global-settings-slot { display: contents; }
 .audit-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .audit-controls { display: flex; gap: 16px; align-items: center; margin: 12px 0; flex-wrap: wrap; }
 .audit-controls select { min-width: 140px; margin-left: 6px; }
 .audit-table td.num { text-align: right; white-space: nowrap; }
-.audit-usage, .audit-stats { margin-bottom: 20px; }
-.audit-usage h3, .audit-stats h3, .audit-settings h3 { margin: 16px 0 8px; }
 .audit-error { color: var(--red); }
 .audit-detail pre { max-height: 260px; overflow: auto; background: var(--bg2); padding: 8px;
   border-radius: 6px; white-space: pre-wrap; }
-.audit-settings { border-top: 1px solid var(--border); padding-top: 12px; max-width: 640px; }
+.audit-settings .field { max-width: 640px; }
