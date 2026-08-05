@@ -1591,3 +1591,127 @@ class TestDetachAndOrphanGc(unittest.TestCase):
             self.assertEqual(sorted(ups), ["A", "B"])
             self.assertEqual(km.cmd_impact(cfg, "A"), 0)
             self.assertEqual(km.cmd_impact(cfg, "zzz"), 2)
+
+
+class TestForceComplete(unittest.TestCase):
+    """強制完了（force-complete）: どうにも進まないタスクを人の判断で打ち切って done 確定する。
+
+    承認（approve --complete）は検収待ち（review / blocked）にしか効かないので、実行中・
+    委譲中・実行待ちで堂々巡りしているタスクは画面から完了させられなかった。その袋小路の
+    最後の口。verify を通していないことが記録から必ず分かることが不変条件。"""
+
+    def test_forces_done_and_records_unverified(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, actor="alice")
+            km.ensure_dirs(cfg)
+            mkb(d, "T1", status="ready", verify="false")      # 通らない verify のまま打ち切る
+            km.write_needs_file(cfg, km.Task(id="T1", title="T1"), "何度やっても進まない")
+            rc = km.cmd_force_complete(cfg, "T1", "外部要因で完了不能。ここで打ち切る")
+            self.assertEqual(rc, 0)
+            self.assertFalse((cfg.backlog / "T1.md").exists())      # backlog から消える
+            self.assertFalse((cfg.needs / "T1.md").exists())        # 要対応票も片付く
+            arch = (d / "archive" / "T1.md").read_text(encoding="utf-8")
+            self.assertIn("- status: done", arch)
+            self.assertIn("- 検収 : FORCED", arch)                  # PASS と混ぜない
+            self.assertIn("→ 未実施", arch)                          # verify は実行していない
+            self.assertIn("外部要因で完了不能", arch)
+            deliv = (d / "DELIVERY.md").read_text(encoding="utf-8")
+            self.assertIn("| T1 |", deliv)
+            self.assertIn("| FORCED |", deliv)                      # 受領書でも見分けられる
+            self.assertNotIn("| PASS |", deliv)
+            dec = (cfg.decisions / "T1.md").read_text(encoding="utf-8")
+            self.assertIn("force-complete", dec)
+            self.assertIn("外部要因で完了不能", dec)
+            self.assertIn("force-complete: T1", (d / "journal.md").read_text(encoding="utf-8"))
+
+    def test_requires_reason(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            km.ensure_dirs(cfg)
+            mkb(d, "T1", status="ready", verify="true")
+            self.assertEqual(km.cmd_force_complete(cfg, "T1", "   "), 2)
+            self.assertTrue((cfg.backlog / "T1.md").exists())       # 何も起きない
+            self.assertEqual(km.cmd_force_complete(cfg, "zzz", "理由"), 2)
+
+    def test_completes_a_doing_task_that_approve_cannot(self):
+        # この機能の本題: 実行中で固まったタスク。approve は ready へ積み直すだけで、
+        # 同じ工程を再実行してまた止まる（完了にできない往復）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            km.ensure_dirs(cfg)
+            mkb(d, "T1", status="doing", verify="true")
+            self.assertEqual(km.cmd_approve(cfg, "T1", "終わらせたい", complete=True), 0)
+            self.assertEqual(km.load_tasks(cfg.backlog)[0].norm_status(), "ready")  # done にならない
+            self.assertEqual(km.cmd_force_complete(cfg, "T1", "何時間も進まないので打ち切る"), 0)
+            self.assertEqual(km.load_tasks(cfg.backlog), [])
+            self.assertIn("- status: done", (d / "archive" / "T1.md").read_text(encoding="utf-8"))
+
+    def test_detaches_offloaded_run_before_completing(self):
+        # 委譲中の run を止めずに完了させると、成果の書き戻しでタスクが backlog へ復活する
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            km.ensure_dirs(cfg)
+            mkb(d, "T1", status="offloaded", verify="true")
+            t = km.load_tasks(cfg.backlog)[0]
+            t.set("flow_run", "run-xyz")
+            km.persist_task(cfg, t)
+            self.assertEqual(km.cmd_force_complete(cfg, "T1", "委譲先が応答しない"), 0)
+            arch = (d / "archive" / "T1.md").read_text(encoding="utf-8")
+            self.assertNotIn("flow_run", arch)                       # 切り離してから確定
+            self.assertTrue((cfg.bus / "inbox" / "cancels" / "run-xyz.json").exists())
+
+    def test_settle_does_not_resurrect_a_force_completed_task(self):
+        # 実行中に強制完了した後、遅れて戻ってきた試行の結果を確定させない印
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            km.ensure_dirs(cfg)
+            mkb(d, "T1", status="doing", verify="true")
+            self.assertIsNone(km.human_cleared_reason(cfg, "T1"))
+            # ファイルが消えている（archive へ退避済み）
+            km.cmd_force_complete(cfg, "T1", "打ち切り")
+            self.assertIn("タスクファイルが無い", km.human_cleared_reason(cfg, "T1"))
+            # 同期遅延でファイルだけ残り、マーカーが先に届いた場合も片付け済みとして扱う
+            mkb(d, "T2", status="doing", verify="true")
+            t2 = km.load_tasks(cfg.backlog)[0]
+            t2.set("force_completed", "2026-01-01T00:00:00Z")
+            t2.set("force_complete_reason", "打ち切り済み")
+            km.persist_task(cfg, t2)
+            self.assertIn("強制完了", km.human_cleared_reason(cfg, "T2"))
+
+    def test_ingest_commands_force_complete(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            c = cfg_for(d, actor="bob")
+            km.ensure_dirs(c)
+            mkb(d, "T1", status="doing", verify="true")
+            (km.commands_dir(c) / "a.json").write_text(json.dumps(
+                {"command": "force-complete", "id": "T1", "reason": "止まったままなので打ち切る"},
+                ensure_ascii=False), encoding="utf-8")
+            self.assertEqual(km.ingest_commands(c), ["force-complete:T1"])
+            self.assertEqual(km.load_tasks(c.backlog), [])
+            self.assertIn("- 検収 : FORCED", (d / "archive" / "T1.md").read_text(encoding="utf-8"))
+
+    def test_rebuild_delivery_keeps_forced_and_defaults_pass(self):
+        # 受領書は archive から決定的に再生成される。検収欄の明記が無い旧 archive は
+        # verify を通した従来の納品なので PASS のまま（後方互換）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            km.ensure_dirs(cfg)
+            adir = cfg.archive_dir()
+            adir.mkdir(parents=True, exist_ok=True)
+            (adir / "OLD.md").write_text(
+                "## OLD: 旧納品\n- status: done\n- verify: `true`\n\n## 納品書\n"
+                "- 完了 : 2025-01-01\n- verify: `true` → PASS（ok）\n- 成果 : abc123\n",
+                encoding="utf-8")
+            mkb(d, "T1", status="ready", verify="false")
+            km.cmd_force_complete(cfg, "T1", "打ち切り")
+            km.rebuild_delivery(cfg)
+            deliv = (d / "DELIVERY.md").read_text(encoding="utf-8")
+            self.assertRegex(deliv, r"\| OLD \|[^|]*\| PASS \|")
+            self.assertRegex(deliv, r"\| T1 \|[^|]*\| FORCED \|")

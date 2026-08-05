@@ -117,7 +117,7 @@ agent-project run --planner none --flow-planner stub --executor stub
                        viewer の稼働判定に使う（[daemon の生存信号](#daemon-の生存信号statusjson--リモート-viewer-の稼働判定)）
   paused.json          一時停止マーカー（commands の pause で生成・resume で削除）
   inbox/  claims/  autonomy/  bus/   取り込み口 / 原子的クレーム / track 状態 / agent-flow 一時バス
-  commands/<name>.json 人の指示（approve/hold/pin/defer/revise/reject/replan/revive/
+  commands/<name>.json 人の指示（approve/hold/pin/defer/revise/reject/force-complete/replan/revive/
                        distill-notes/heal/pause/resume/stop）のドロップ口（CLI 不要。run/watch が
                        取り込む）
   .state-git/          状態 git 同期の管理クローン（ルートが git でなく state_git 設定時のみ）
@@ -473,6 +473,23 @@ agent-project audit --strict                     # 無人運用に値するか�
   同じ工程を再実行してまた要対応に戻る往復になっていた。**意図は呼び出し側が明示する**。
   agent-dashboard の「承認して完了にする」はこの `complete` を送る。
 
+- **強制完了（force-complete）— 進まないタスクを終わりにする**: `force-complete <id> --reason ...`
+  は「done は verify のみが根拠」の**唯一の例外**で、人がタスクを終わりにするための最後の口。
+  承認（`--complete`）は検収待ち（`review` / 成果のある `blocked`）にしか効かないため、
+  `doing`（実行中）・`offloaded`（委譲中）・`ready` で堂々巡りしているタスクはどの操作でも
+  done にできず、承認しても ready へ積み直されて同じ工程がまた止まる往復になっていた。
+  通常の完了と決定的に違うのは 3 点で、記録の上で必ず見分けられるようにしてある:
+  - **verify を実行しない**（未実施のまま完了にする）
+  - **成果ブランチの自動統合をしない**（検証していない変更をターゲットへ入れない。
+    統合が要るなら人が MR を見て決める）
+  - 納品書（`archive/<id>.md` の `- 検収 : FORCED` と `verify … → 未実施`）・受領書
+    （`DELIVERY.md` の検収欄）・決定記録（`action: force-complete`）に**未検証として残る**
+
+  理由は必須。実行中・委譲中なら先に run を切り離してから確定し、遅れて戻ってきた試行の
+  結果は採用しない（採用するとタスクが backlog へ復活し、archive と二重在庫になる）。
+  track の実績には**手戻りとして**記録する（検証を通していないので信頼を上げない）。
+  **やめる（作り直させない）なら `reject`、終わりにするなら `force-complete`**。
+
 - **フィードバック往復**: 「## Decision Outcome」欄（MADR 互換。旧「## フィードバック」も可）に方針を書き `- [ ] 確定` を `- [x]` にして保存すると、次パスで拾われ
   ブロック解除＋内容を次 act に反映し `decisions/<id>.md` に記録。**誤発火防止**は ①チェックボックス `[x]`（空でも「そのまま
   再実行」）②`status: draft`（消化対象外）③`--debounce`（既定 3 秒）。
@@ -501,7 +518,7 @@ agent-project audit --strict                     # 無人運用に値するか�
   `- learn:`（feedback がある場合）を残す。
 - **指示のファイルドロップ（commands/）**: CLI を実行できない環境（ビュアーが Windows・本体が WSL 内、など）
   向けに、同じ指示を `<root>/commands/<name>.json`
-  （`{"command": "approve|hold|pin|defer|revise", "id": "<task-id>", "reason": "..."}`。revise は加えて
+  （`{"command": "approve|hold|pin|defer|revise|reject|force-complete", "id": "<task-id>", "reason": "..."}`。revise は加えて
   `title/priority/verify/accept/after/note/level/track/why/desc/scope/out_of_scope/constraints/hints/demo/feedback`
   キーを受ける）のドロップでも渡せる。
   run/watch が拾って **CLI と同一のロジック・同一の DR** で実行し、処理したファイルは消す
@@ -1167,6 +1184,7 @@ update_installer: install.sh          # サブディレクトリ内で実行す�
 | `enqueue` [`--title --verify\|--acceptance\|--verify-template …`\|`--json`] | 取り込み口（整合パスを通る: 重複照合・charter 帰属・墓標） |
 | `approve <id>` / `hold <id>` / `reprioritize <id> --pin\|--defer` | 決定記録を残す人の操作 |
 | `reject <id> --reason` | 却下（廃止・依存先を再審査へ・**墓標を残す**。次の分解で意図の似た再提案を抑止） |
+| `force-complete <id> --reason` | 強制完了（**どうにも進まないタスクを人の判断で done 確定**）。verify は実行せず、成果ブランチの自動統合もしない。委譲中の run は切り離す。納品書・受領書に `FORCED`（未検証）として残る |
 | `revive <タイトル>` [`--charter`/`--all`] | 墓標を解除（却下したタスクを再び提案されうる状態へ戻す）。墓標は `(指紋, charter)` 単位なので、`--charter <名前>` はその charter とタグ無しだけ、`--all` は全部を消す。未指定で対象が複数 charter に割れているときは、消さずに一覧を出す |
 | `replan` [`--charter --revive`] | charter からバックログを分解（**分解はこの明示要求でしか走らない**。`--revive` は今回だけ墓標を無視） |
 | `distill-notes` [`--charter`] | 観点メモ（notes/*.md）をバックログ候補へ分解（plan は自動では消費しない） |

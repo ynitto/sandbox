@@ -877,6 +877,13 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
                            f"cycle {cycle}: {task.id} の claim をリモート不通で検証できず保留"
                            f"（成果は保持。人の判断へ）")
         return {"archived": 0, "followups": []}
+    # act 中に人がタスクを片付けていたら（強制完了・削除・却下）、この試行の結果は確定しない。
+    # 確定させると persist_task が backlog へ書き戻し、archive 済みのタスクが復活する。
+    cleared = human_cleared_reason(cfg, task.id)
+    if cleared:
+        append_journal(cfg.journal,
+                       f"cycle {cycle}: {task.id} は実行中に人が片付けたため結果を確定しない（{cleared}）")
+        return {"archived": 0, "followups": []}
     # act 中に人が revise（軌道修正）していたら、この試行の結果は確定せず修正内容で積み直す。
     # verify より先に判定する（方向の変わった成果に PASS/FAIL を付けない・verify コストも省く）。
     fresh = _load_task_file(cfg, task.id)

@@ -261,10 +261,13 @@ function taskCompletionHint(task, { runs = [], archived = false } = {}) {
     };
   }
   if (['doing', 'offloaded'].includes(st)) {
+    // 実行中のまま何時間も動かないタスクは、承認でも再実行でも完了にできない
+    // （承認は検収待ちにしか効かない）。逃げ道がどこにあるかをここで言っておく。
     return {
       unsettledDone: false,
       statusNote: null,
-      completeHow: '実行の完了を待ってください',
+      completeHow:
+        '実行の完了を待ってください。進まないときは操作タブの「強制的に完了にする」で完了にできます',
       needAsk: null,
     };
   }
@@ -1033,6 +1036,63 @@ function renderFeatureTab(name) {
   if (h && typeof h.render === 'function') h.render();
 }
 
+// 全体設定（タブ「全体設定」）のセクションへ、feature モジュールが自分の面を差し込む
+// ための登録簿。registerFeatureTab と同じ形で、コアを触らずに面を増やせる。
+//
+// タブを 1 本立てるほどではないが置き場所が決まっている面のための口。プロジェクトごとで
+// はない話題——この端末の利用量や外部連携——は独立タブにすると、選択中プロジェクトと
+// 無関係なのにプロジェクトのタブ列に並ぶ。同じ話題の数字が 2 か所へ分かれるのも避ける。
+//
+//   id                … 面の識別子（容れ物の id になる。面は自分だけを描き直せる）
+//   html()            … セクションへ追記する HTML
+//   wire(container)   … 描き直しのたびにイベントを結び直す
+//   reveal(container) … そのセクションが表示されたとき（初回の取得はここで起こす）
+//   refresh()         … 全体ポーリングから呼ばれる非同期の取得（任意）
+const globalSettingsPanels = new Map();
+function registerGlobalSettingsPanel(section, hooks) {
+  const key = String(section);
+  const list = globalSettingsPanels.get(key) || [];
+  list.push(hooks || {});
+  globalSettingsPanels.set(key, list);
+}
+globalThis.registerGlobalSettingsPanel = registerGlobalSettingsPanel;
+
+function globalSettingsSlotId(id) {
+  return `global-settings-slot-${id}`;
+}
+
+// セクションへ差し込まれた面の HTML。面ごとに固定 id の容れ物へ入れるのは、面が
+// 自分の部分だけを描き直せるようにするため（全体設定ごと描き直すと入力中の欄が飛ぶ）。
+function globalSettingsPanelsHtml(section) {
+  return (globalSettingsPanels.get(String(section)) || [])
+    .map((p) => `<div class="global-settings-slot" id="${globalSettingsSlotId(p.id)}">${
+      typeof p.html === 'function' ? p.html() : ''}</div>`)
+    .join('');
+}
+
+function eachGlobalSettingsPanel(root, section, fn) {
+  const lists = section == null ? [...globalSettingsPanels.values()]
+    : [globalSettingsPanels.get(String(section)) || []];
+  for (const list of lists) {
+    for (const p of list) {
+      const container = root.querySelector(`#${globalSettingsSlotId(p.id)}`);
+      if (container) fn(p, container);
+    }
+  }
+}
+
+function wireGlobalSettingsPanels(root) {
+  eachGlobalSettingsPanel(root, null, (p, container) => {
+    if (typeof p.wire === 'function') p.wire(container);
+  });
+}
+
+function revealGlobalSettingsPanels(root, section) {
+  eachGlobalSettingsPanel(root, section, (p, container) => {
+    if (typeof p.reveal === 'function') p.reveal(container);
+  });
+}
+
 function renderCliChatButton() {
   const button = $('btn-cli-chat');
   if (!button) return;
@@ -1723,6 +1783,17 @@ async function refreshAll() {
         }
       }
       if (activeTab() === name) renderFeatureTab(name);
+    }
+    // 全体設定へ差し込まれた面も同じ周期で取得させる（面が自分で描き直す）。
+    for (const [, list] of globalSettingsPanels) {
+      for (const panel of list) {
+        if (typeof panel.refresh !== 'function') continue;
+        try {
+          await panel.refresh();
+        } catch {
+          /* 取得失敗は面側で表示。ポーリングは止めない */
+        }
+      }
     }
   } finally {
     state.busy = false;

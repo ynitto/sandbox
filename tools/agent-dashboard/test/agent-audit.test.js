@@ -163,11 +163,53 @@ test('refresh は間隔が設定されているときだけ定期収集を起動
   }
 });
 
-test('監査タブは index.html に配線され、feature スクリプトを bootstrap より先に読む', () => {
+test('監査は独立タブを持たず、feature スクリプトを bootstrap より先に読む', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'index.html'), 'utf8');
-  assert.match(html, /data-tab="agent-audit"[^>]*hidden>監査<\/button>/);
-  assert.match(html, /id="tab-agent-audit"[^>]*hidden/);
+  // 扱う数字がプロジェクトごとではないので、プロジェクトのタブ列には並べない。
+  assert.doesNotMatch(html, /data-tab="agent-audit"/);
+  assert.doesNotMatch(html, /id="tab-agent-audit"/);
   const feature = html.indexOf('features/agent-audit.js');
   assert.ok(feature > 0);
   assert.ok(feature < html.indexOf('bootstrap.js'), 'bootstrap より先に読み込む');
+});
+
+test('監査は全体設定の「利用状況」へ差し込まれる', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'renderer', 'features', 'agent-audit.js'), 'utf8');
+  assert.match(src, /registerGlobalSettingsPanel\('usage', \{/);
+  assert.match(src, /id: 'agent-audit'/);
+  assert.doesNotMatch(src, /registerFeatureTab/);
+  // 受け側: 既存の利用量（ノード予算の集計）と同じ節に並べる
+  const orch = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'renderer', 'sections', 'orchestration.js'), 'utf8');
+  assert.match(orch, /function globalSettingsUsageHtml[\s\S]*globalSettingsPanelsHtml\('usage'\)/);
+});
+
+test('差し込まれた面は登録・描画・表示通知の一巡で動く', () => {
+  // renderer コアの登録簿を実際に動かし、面が自分の容れ物だけを描き直せることを確かめる。
+  const core = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'renderer.js'), 'utf8');
+  const at = core.indexOf('const globalSettingsPanels = new Map();');
+  assert.ok(at > 0, 'renderer.js に全体設定の登録簿がある');
+  const end = core.indexOf('function renderCliChatButton');
+  // eslint-disable-next-line no-new-func
+  const registry = new Function('globalThis', `${core.slice(at, end)}
+    return { registerGlobalSettingsPanel, globalSettingsPanelsHtml,
+             wireGlobalSettingsPanels, revealGlobalSettingsPanels };`)({});
+  const seen = { wired: 0, revealed: 0 };
+  registry.registerGlobalSettingsPanel('usage', {
+    id: 'demo',
+    html: () => '<p>面</p>',
+    wire: () => { seen.wired += 1; },
+    reveal: () => { seen.revealed += 1; },
+  });
+  const html = registry.globalSettingsPanelsHtml('usage');
+  assert.match(html, /id="global-settings-slot-demo"/);
+  assert.match(html, /<p>面<\/p>/);
+  assert.equal(registry.globalSettingsPanelsHtml('agents'), '', '他の節へは出さない');
+  const container = {};
+  const root = { querySelector: (sel) => (sel === '#global-settings-slot-demo' ? container : null) };
+  registry.wireGlobalSettingsPanels(root);
+  registry.revealGlobalSettingsPanels(root, 'usage');
+  registry.revealGlobalSettingsPanels(root, 'agents');
+  assert.deepEqual(seen, { wired: 1, revealed: 1 });
 });

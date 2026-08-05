@@ -40,6 +40,28 @@ function decodeWslOutput(buf) {
   return text.replace(NUL_RE, '').replace(/\uFEFF/g, '').trim();
 }
 
+// `wsl.exe … sh -lc 'wslpath -w …'` の標準出力から Windows パスを取り出す。
+//
+// **先頭 1 行で決め打ってはいけない**。ログインシェル（`-lc`）はプロファイルを読むので、
+// 標準出力にはコマンドの結果より前に初期化メッセージが混ざる（motd の転載、nvm や conda の
+// バナー、`.profile` の echo、更新の案内など）。先頭行だけを見てパス形式でなければ捨てる
+// 実装だと、そういう環境では**ホームの解決が丸ごと失敗**する。engine/status.json は
+// プロジェクト発見の唯一の根拠なので、失敗＝画面からプロジェクト一覧が消える——しかも
+// 原因はバナーを出す設定を入れた日で、変更点とは何の関係もない。
+//
+// そこで全行を見て、Windows のドライブパス（`C:\…`）か UNC（`\\wsl$\…`）の行だけを拾う。
+// 複数該当したら**最後**を採る: プロファイルの出力は先で、目当ての `wslpath` の結果は
+// 最後に来る（バナーがパスらしき文字列を含んでいても、それは先に出ている）。
+const WINDOWS_PATH_RE = /^(?:[A-Za-z]:\\|\\\\)/;
+
+function extractWindowsPath(stdout) {
+  const lines = String(stdout || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => WINDOWS_PATH_RE.test(line));
+  return lines.length ? lines[lines.length - 1] : '';
+}
+
 function defaultRunner(command, args) {
   const r = spawnSync(command, args, {
     encoding: 'buffer', timeout: 30000, windowsHide: true,
@@ -91,6 +113,7 @@ function explainFailure(r, distro, scriptPath, run) {
 module.exports = {
   SCRIPT_MISSING_EXIT,
   decodeWslOutput,
+  extractWindowsPath,
   launchArgs,
   verifyWslLaunch,
 };

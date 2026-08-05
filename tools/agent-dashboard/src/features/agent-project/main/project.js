@@ -13,6 +13,7 @@ const path = require('path');
 const { readToolConfig } = require('./toolconfig');
 const { reposFileName } = require('./authoring');
 const { agentDirCandidates } = require('../../../base/main/agent-home');
+const { extractWindowsPath } = require('../../../base/main/wsl');
 
 // agent-project.py と同じ正規表現
 const HEAD_RE = /^##\s+(\S+?):\s*(.*)$/;
@@ -1207,6 +1208,8 @@ function _defaultWslDistro() {
 
 let _wslHomeCache = { at: 0, dirs: [] };
 // WSL 既定ディストロの ~/.agent-project を Windows パスで返す（instances 共有用）。
+// 出力の読み方は engine.js のホーム解決と同じ extractWindowsPath（全行からパス行を拾う）。
+// ログインシェルの初期化メッセージが混ざる環境で解決が失敗するのを防ぐ。
 function wslAgentProjectDirs() {
   if (process.platform !== 'win32') return [];
   const now = Date.now();
@@ -1219,8 +1222,8 @@ function wslAgentProjectDirs() {
       ['-e', 'sh', '-lc', 'command -v wslpath >/dev/null && wslpath -w "$HOME/.agent-project"'],
       { encoding: 'utf8', timeout: 8000, windowsHide: true }
     );
-    const out = String(r.stdout || '').trim().split(/\r?\n/)[0] || '';
-    if (r.status === 0 && out && /^[A-Za-z]:\\|^\\\\/.test(out)) dirs.push(out);
+    const dir = r.status === 0 ? extractWindowsPath(r.stdout) : '';
+    if (dir) dirs.push(dir);
   } catch {
     /* WSL 無し */
   }

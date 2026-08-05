@@ -16,6 +16,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { extractWindowsPath } = require('../../../base/main/wsl');
 
 // project.js とは相互参照になる（あちらの discover がこのモジュールを入口にする）。
 // トップレベルで require すると読み込み順によって空の module.exports を掴むため、
@@ -37,6 +38,11 @@ let _homeCache = { at: 0, key: '', dir: '' };
 
 // WSL 側の `$HOME/.agents` を Windows パス（UNC）で引く。ディストロ指定が無ければ既定。
 // ホームの場所はディストロのユーザー設定次第なので、推測せず wslpath に聞く。
+//
+// 出力の読み方は extractWindowsPath に任せる（全行からパス行だけを拾う）。ログインシェルの
+// 初期化メッセージが混ざるとホームの解決が失敗し、この画面からプロジェクト一覧が丸ごと
+// 消えていた——status.json がプロジェクト発見の唯一の根拠なので、読めない＝何も無い、
+// と同じ見え方になる。
 function wslAgentsHome(distro) {
   const args = distro ? ['-d', distro] : [];
   try {
@@ -45,8 +51,7 @@ function wslAgentsHome(distro) {
       [...args, '-e', 'sh', '-lc', 'command -v wslpath >/dev/null && wslpath -w "$HOME/.agents"'],
       { encoding: 'utf8', timeout: 8000, windowsHide: true }
     );
-    const out = String(r.stdout || '').trim().split(/\r?\n/)[0] || '';
-    if (r.status === 0 && out && /^[A-Za-z]:\\|^\\\\/.test(out)) return out;
+    if (r.status === 0) return extractWindowsPath(r.stdout);
   } catch {
     /* WSL 無し */
   }

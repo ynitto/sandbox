@@ -1,9 +1,21 @@
-# feature: agent-audit — 監査タブ（収集の駆動とトークン利用量の表示）
+# feature: agent-audit — 監査（収集の駆動とトークン利用量の表示）
 
 [agent-audit](../../../../agent-audit/) CLI をダッシュボードから呼び、収集済みの
 実行証跡からトークン利用量と実行品質を表示する制御面。dashboard（Windows）から
 WSL 内の agent-audit を `wsl.exe -e bash -lc` 経由で呼ぶ（kiro-loop の exec と
 同じ流儀。Linux ネイティブではローカルの bash）。
+
+## 置き場所: 全体設定の「利用状況」（独立タブは持たない）
+
+扱う数字は**この端末のもの**で、選択中プロジェクトとは無関係だ。独立タブにすると
+プロジェクトのタブ列に無関係なものが並び、しかも全体設定には既にノード予算から
+集計した「利用状況」があるので、同じ話題の数字が 2 か所へ分かれる。そこで画面側は
+renderer コアの `registerGlobalSettingsPanel('usage', …)` で**節へ面を差し込む**
+（`registerFeatureTab` と同じ形の登録簿）。面は自分の容れ物（`global-settings-slot-agent-audit`）
+だけを描き直す——全体設定ごと描き直すと、他の節で入力中の欄が飛ぶ。
+
+集計の取得は節が表示されたとき（`reveal`）に初回だけ走る。利用状況を開いていない
+あいだは CLI を起こさない。
 
 ## 呼ぶのは LLM を使わない段だけ
 
@@ -17,7 +29,7 @@ WSL 内の agent-audit を `wsl.exe -e bash -lc` 経由で呼ぶ（kiro-loop の
 `extract` / `distill` などの LLM 段はこの画面からは呼ばない。LLM の消費リズムは
 agent-audit 側の間隔・蓄積ゲート設定が正で、GUI から不用意に駆動しない。
 
-## 設定（`config.agentAudit`・監査タブで編集）
+## 設定（`config.agentAudit`・全体設定「利用状況」の「収集の設定」で編集）
 
 - `command` … 起動コマンド。空なら PATH の `agent-audit`。未インストールなら
   `python3 ~/repo/tools/agent-audit/agent-audit.py` のようにインタープリタごと指定

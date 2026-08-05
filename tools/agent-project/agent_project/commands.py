@@ -221,6 +221,76 @@ def cmd_approve(cfg: Config, tid: str, reason: str, complete: bool = False) -> i
     return 0
 
 
+def cmd_force_complete(cfg: Config, tid: str, reason: str) -> int:
+    """どうにも進まないタスクを人の判断で強制完了させ、その場で done 確定する。
+
+    「done は verify のみが根拠」の**唯一の例外**。承認（approve --complete）は検収待ち
+    （review / blocked）にしか効かず、実行中（doing）・委譲中（offloaded）・実行待ち
+    （ready）で堂々巡りしているタスクは、どのボタンを押しても done にできなかった——
+    approve は ready へ積み直すだけなので、同じ工程を再実行してまた止まる往復になる。
+    その袋小路から人が抜けるための最後の口がこれ。
+
+    通常の完了と決定的に違うのは次の 3 点で、記録の上で必ず見分けられるようにする:
+      - verify を実行しない（未実施のまま完了にする）
+      - 成果ブランチの自動統合（タスク MR のマージ）をしない——検証していない変更を
+        ターゲットへ入れない。統合が要るなら人が MR を見て決める。
+      - 納品書・受領書の検収欄は FORCED、決定記録の action は force-complete
+
+    理由は必須（人が強制完了させた事実と根拠が決定記録に残らないと後から追えない）。
+    実行中・委譲中なら先に run を切り離してから確定する（放置すると成果の書き戻しで
+    archive 済みのタスクが backlog へ復活する）。"""
+    why = str(reason or "").strip()
+    if not why:
+        print("エラー: 強制完了には理由が必要です（決定記録に残ります）", file=sys.stderr)
+        return 2
+    tasks = load_tasks(cfg.backlog)
+    t = next((x for x in tasks if x.id == tid), None)
+    if t is None:
+        print(f"エラー: タスクが見つかりません: {tid}", file=sys.stderr)
+        return 2
+    status = t.norm_status()
+    if status == "done":
+        print(f"{tid} はすでに完了しています（何もしません）。")
+        return 0
+    # 委譲中・実行中の run は先に止める。止めないと settle が結果を書き戻し、
+    # archive したタスクが backlog へ戻る（archive と backlog の二重在庫）。
+    detached = None
+    if status == "offloaded" or t.get("flow_run"):
+        detached = detach_flow_run(cfg, t, f"強制完了により委譲から切り離し: {why[:100]}")
+    release_claim(cfg, t)
+    # 実行側（別プロセス・別ノード）が settle するときに結果を採用させない印。
+    # ファイル消失の検知と合わせて二重に効かせる（同期遅延で消失が見えない経路のため）。
+    t.set("force_completed", _now_ts())
+    t.set("force_complete_reason", why.replace("\n", " ⏎ ")[:300])
+    # hold の deny が残っていると、同じ id を後で入れ直したときに即 blocked へ引き戻される
+    unheld = remove_policy(cfg.policy, "deny", tid)
+    ts = _now_ts()
+    ref = "(強制完了・未検証)"
+    t.status = "done"
+    # 手戻りなしの完了ではない（verify を通していない）。track の信頼を上げない。
+    autonomy_record(cfg, t, clean=False)
+    vmsg = f"強制完了: {why}"
+    disp = "done（強制完了・納品書）"
+    if cfg.do_archive:
+        archive_task(cfg, t, vmsg, ref, ts,
+                     evidence=f"- 検証: 未実施（人の判断で強制完了）\n- 理由: {why}",
+                     verdict=DELIVERY_VERDICT_FORCED)
+    else:
+        append_delivery(cfg, t, ref, ts, verdict=DELIVERY_VERDICT_FORCED)
+        delete_task_file(cfg, t)
+        disp = "done（強制完了・削除）"
+    clear_needs_file(cfg, tid)
+    dr = append_decision(cfg, tid, cfg.actor,
+                         context=f"{tid}（{t.title}）を人の判断で強制完了（verify 未実施）",
+                         action="force-complete", reason=why,
+                         affects=f"{tid} → done（検収 {DELIVERY_VERDICT_FORCED}）"
+                                 + (f" ／ 委譲 run {detached} を切り離し" if detached else ""))
+    append_journal(cfg.journal, f"force-complete: {tid} を強制完了（{status} → done・理由: {why}）")
+    print(f"{dr}: {tid} を {disp} 確定しました（verify は実行していません）。"
+          + ("（policy の deny を解除）" if unheld else ""))
+    return 0
+
+
 def cmd_hold(cfg: Config, tid: str, reason: str) -> int:
     tasks = load_tasks(cfg.backlog)
     t = next((x for x in tasks if x.id == tid), None)
@@ -742,7 +812,8 @@ def cmd_revise(cfg: Config, tid: str, fields: dict, feedback: str, reason: str) 
 # watch がこの口を監視して起こす。実行は CLI と同一の関数へ委譲する
 # （ロジックの二重実装はしない＝効果・決定記録 DR も CLI と同一）。
 
-COMMAND_ACTIONS = ("approve", "retry-mr", "hold", "pin", "defer", "revise", "reject")
+COMMAND_ACTIONS = ("approve", "retry-mr", "hold", "pin", "defer", "revise", "reject",
+                   "force-complete")
 
 
 def commands_dir(cfg: "Config") -> Path:
@@ -818,9 +889,11 @@ def _read_command(f: Path) -> "tuple[dict | None, str]":
 
 
 def ingest_commands(cfg: "Config") -> "list[str]":
-    """commands/*.json（{"command": "approve|hold|pin|defer|revise|replan|pause|resume|stop",
-    "id": ..., "reason": ...}）を読み、CLI と同一のロジック（cmd_approve / cmd_hold /
-    cmd_reprioritize / cmd_revise / cmd_replan）を実行する。
+    """commands/*.json（{"command": "approve|hold|pin|defer|revise|force-complete|replan|
+    pause|resume|stop", "id": ..., "reason": ...}）を読み、CLI と同一のロジック
+    （cmd_approve / cmd_hold / cmd_reprioritize / cmd_revise / cmd_force_complete /
+    cmd_replan）を実行する。
+    force-complete は進まないタスクの強制完了（verify 未実施のまま done 確定）。
     revise は加えて title/priority/verify/accept/after/note/level/track/feedback キーを受ける。
     replan / pause / resume / stop はプロジェクト単位（id 不要）: replan は charter からの
     バックログ再分解を次パスに要求、pause/resume は watch の消化を一時停止/再開（監視は継続）、
@@ -979,6 +1052,10 @@ def ingest_commands(cfg: "Config") -> "list[str]":
                     rc = cmd_retry_mr(cfg, tid)
                 elif action == "reject":
                     rc = cmd_reject(cfg, tid, reason)
+                elif action == "force-complete":
+                    # 進まないタスクの強制完了（verify 未実施のまま done 確定）。
+                    # 理由は cmd 側で必須にしている（空なら exit 2 で .err へ退避）。
+                    rc = cmd_force_complete(cfg, tid, reason)
                 elif action == "hold":
                     rc = cmd_hold(cfg, tid, reason)
                 elif action == "revise":

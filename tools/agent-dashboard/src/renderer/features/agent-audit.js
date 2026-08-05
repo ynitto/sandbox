@@ -1,6 +1,11 @@
 'use strict';
 
-// 監査タブ（agent-audit の呼び出しと閲覧）。
+// 監査（agent-audit の呼び出しと閲覧）— 全体設定タブの「利用状況」へ差し込む面。
+//
+// 独立したタブではなく全体設定へ置くのは、扱う数字が**プロジェクトごとではない**ため。
+// この端末の実行証跡から集計した実測トークンと実行品質は、選択中プロジェクトと無関係
+// なのにプロジェクトのタブ列へ並んでいた。全体設定にはノード予算から集計した「利用状況」
+// が既にあり、同じ話題の数字が 2 か所へ分かれてもいた。同じ節に並べて 1 か所にする。
 //
 // agent-audit CLI（Windows では WSL 経由）の LLM を使わない段だけを扱う:
 // 収集（collect）・トークン利用量（usage --json）・実行品質（stats --json）・
@@ -14,8 +19,14 @@
 (function expose(root, factory) {
   const feature = factory(root);
   if (typeof module !== 'undefined' && module.exports) module.exports = feature;
-  if (typeof root.registerFeatureTab === 'function') {
-    root.registerFeatureTab('agent-audit', { render: feature.render, refresh: feature.refresh });
+  if (typeof root.registerGlobalSettingsPanel === 'function') {
+    root.registerGlobalSettingsPanel('usage', {
+      id: 'agent-audit',
+      html: feature.panelHtml,
+      wire: feature.wire,
+      reveal: feature.reveal,
+      refresh: feature.refresh,
+    });
   }
 })(typeof globalThis !== 'undefined' ? globalThis : this, (root) => {
   const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
@@ -143,8 +154,13 @@
 
   function settingsHtml(values) {
     const v = values || {};
-    return `<section class="audit-settings">
-      <h3>設定</h3>
+    return `<section class="orch-panel audit-settings">
+      <header class="row">
+        <div>
+          <span class="summary-kicker">実行証跡の収集</span>
+          <h3>収集の設定</h3>
+        </div>
+      </header>
       <div class="field">
         <label for="audit-set-command">起動コマンド</label>
         <input id="audit-set-command" type="text" value="${escHtml(v.command || '')}"
@@ -180,16 +196,18 @@
     </section>`;
   }
 
-  function pageHtml() {
+  // 全体設定「利用状況」へ並べる面。既にある利用量（ノード予算の集計）と同じ
+  // orch-panel の見た目に揃える——同じ節に別デザインの塊が挟まると、別画面が
+  // 埋め込まれているように見えて 1 か所にまとめた意味が薄れる。
+  function panelHtml() {
     const optionsHtml = (list, current) => list
       .map(([value, label]) => `<option value="${value}"${value === current ? ' selected' : ''}>${label}</option>`)
       .join('');
-    return `<section class="audit-page" aria-labelledby="audit-title">
-      <header class="audit-header">
+    return `<section class="orch-panel audit-usage" aria-labelledby="audit-usage-title">
+      <header class="row">
         <div>
-          <span class="summary-kicker">実行証跡とトークン利用量</span>
-          <h2 id="audit-title">監査</h2>
-          <p class="muted">agent-audit が収集した実行証跡から、トークン利用量と実行品質を表示します。ここから実行するのは収集と集計だけで、知見の蒸留は agent-audit 側の設定で動きます。</p>
+          <span class="summary-kicker">実行証跡から集計</span>
+          <h3 id="audit-usage-title">実測のトークン利用量</h3>
         </div>
         <div class="audit-actions">
           <button type="button" id="audit-collect" class="primary-inline"${collectBusy ? ' disabled' : ''}>${collectBusy ? '収集しています…' : '今すぐ収集'}</button>
@@ -197,6 +215,7 @@
           <button type="button" id="audit-doctor"${doctorBusy ? ' disabled' : ''}>設定を点検</button>
         </div>
       </header>
+      <p class="muted">エージェント CLI のセッションログと実行証跡を突き合わせた実績です。上の利用量が実行記録からの集計なのに対し、こちらは CLI が報告した実測値を含みます。ここから実行するのは収集と集計だけで、知見の蒸留は agent-audit 側の設定で動きます。</p>
       ${collectStatusHtml(collectInfo, collectBusy)}
       ${doctorInfo ? `<details class="audit-detail" open><summary>点検結果${doctorInfo.ok ? '' : '（問題があります）'}</summary><pre>${escHtml(doctorInfo.detail || doctorInfo.error || '')}</pre></details>` : ''}
       <div class="audit-controls">
@@ -205,23 +224,18 @@
       </div>
       ${loadError ? `<p class="audit-error" role="alert">${escHtml(loadError)}</p>` : ''}
       ${loading ? '<p class="muted" role="status">集計しています…</p>' : ''}
-      <section class="audit-usage">
-        <h3>トークン利用量</h3>
-        ${usageTableHtml(usageData)}
-      </section>
-      <section class="audit-stats">
-        <h3>実行品質</h3>
-        ${statsTableHtml(statsData)}
-      </section>
-      ${settingsHtml(settingsDraft || auditConfig())}
-    </section>`;
-  }
-
-  function setVisibility(button, pane, visible) {
-    for (const element of [button, pane]) {
-      element.hidden = !visible;
-      element.classList.toggle('hidden', !visible);
-    }
+      ${usageTableHtml(usageData)}
+    </section>
+    <section class="orch-panel audit-stats">
+      <header class="row">
+        <div>
+          <span class="summary-kicker">実行証跡から集計</span>
+          <h3>実行品質</h3>
+        </div>
+      </header>
+      ${statsTableHtml(statsData)}
+    </section>
+    ${settingsHtml(settingsDraft || auditConfig())}`;
   }
 
   async function loadData() {
@@ -309,6 +323,17 @@
     render();
   }
 
+  // 面が実際に見えているか（全体設定タブが前面 かつ 「利用状況」の節が開いている）。
+  // 見えていないあいだは CLI を起こさない——タブを開いていない端末で毎周期
+  // agent-audit を起動することになる。
+  function visible(container) {
+    if (!container || !root.document) return false;
+    const pane = container.closest ? container.closest('.global-settings-pane') : null;
+    if (pane && pane.hidden) return false;
+    const tab = root.document.getElementById('tab-orchestration');
+    return Boolean(tab && tab.classList.contains('active'));
+  }
+
   function wire(pane) {
     const on = (id, event, fn) => {
       const element = pane.querySelector(`#${id}`);
@@ -343,16 +368,21 @@
     render();
   }
 
+  // 自分の容れ物だけを描き直す。全体設定ごと描き直すと、他の節で入力中の欄が飛ぶ。
   function render() {
     if (!root.document) return;
-    const pane = root.document.getElementById('tab-agent-audit');
-    const button = root.document.getElementById('tab-btn-agent-audit');
-    if (!pane || !button) return;
-    setVisibility(button, pane, true);
-    pane.innerHTML = pageHtml();
-    wire(pane);
-    const active = button.classList.contains('active');
-    if (active && !loadedOnce && !loading && !loadError) loadData();
+    const container = root.document.getElementById('global-settings-slot-agent-audit');
+    if (!container) return;
+    container.innerHTML = panelHtml();
+    wire(container);
+    reveal(container);
+  }
+
+  // 節が表示されたとき（描画直後・節の切り替え）に呼ばれる。初回の集計取得はここで起こす
+  // ——利用状況を開いていない間は agent-audit を起動しない。
+  function reveal(container) {
+    if (!visible(container)) return;
+    if (!loadedOnce && !loading && !loadError) loadData();
   }
 
   // 全体ポーリングから毎回呼ばれる。定期収集の間隔だけをここで確認し、
@@ -378,7 +408,7 @@
 
   return {
     escHtml, fmtTokens, fmtSeconds, fmtUsd, pairsText,
-    usageTableHtml, statsTableHtml, settingsHtml, collectStatusHtml,
-    render, refresh,
+    usageTableHtml, statsTableHtml, settingsHtml, collectStatusHtml, panelHtml,
+    render, refresh, wire, reveal,
   };
 });
