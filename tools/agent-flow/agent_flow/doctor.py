@@ -9,6 +9,8 @@ from __future__ import annotations
 #   診断と分類は kiro-cli へ委譲する。`agent-flow doctor --json` は単独でも、
 #   agent-project の doctor からの連携呼び出しでも使える（同一スキーマの findings を返す）。
 # --------------------------------------------------------------------------
+from agentcore import promptrender  # noqa: E402
+
 _DOCTOR_CATEGORIES = ("env", "config", "program")
 _DOCTOR_SEVERITIES = ("critical", "warn", "info")
 _DOCTOR_STUCK_HOURS = 2.0     # 非終端のまま放置された run を「滞留」とみなす目安（時間）
@@ -154,9 +156,16 @@ def collect_doctor_signals(args) -> dict:
     }
 
 
-def _doctor_prompt(signals: dict, deterministic: "list[dict]") -> str:
-    sig = json.dumps(signals, ensure_ascii=False, indent=2)[:6000]
-    det = json.dumps(deterministic, ensure_ascii=False, indent=2)[:2000]
+def _doctor_prompt(signals: dict, deterministic: "list[dict]", table: bool = False) -> str:
+    # 案 K-1/K-2（docs/plans/2026-08-05-json-prompt-compression-study.md）: indent=2 の整形は
+    # トークンの純粋な無駄なので常に compact で注入する。table はオプトインで、recent / stuck /
+    # failed / errors のような均質配列だけをさらに表形式へ畳む（内容は不変・スキーマは変えない）。
+    if table:
+        sig = promptrender.render_table(signals)[:6000]
+        det = promptrender.render_table(deterministic, name="checks")[:2000]
+    else:
+        sig = promptrender.dumps_prompt(signals)[:6000]
+        det = promptrender.dumps_prompt(deterministic)[:2000]
     return (
         "あなたは分散 Dynamic Workflow エンジン（agent-flow）の稼働診断医です。以下の run 状態・"
         "イベント・失敗出力・決定的チェックから稼働の問題を洗い出し、3カテゴリに分類してください。\n"
@@ -207,7 +216,8 @@ def diagnose_with_agent(args, signals: dict, deterministic: "list[dict]",
     """kiro-cli に稼働を診断させ、分類済み finding を得る。kiro-cli 不在・解析不能は None。"""
     run = agent_run or run_agent
     try:
-        out = run(_doctor_prompt(signals, deterministic), getattr(args, "model", None))
+        table = bool(getattr(args, "prompt_table", False))
+        out = run(_doctor_prompt(signals, deterministic, table=table), getattr(args, "model", None))
     except Exception:  # noqa: BLE001  kiro-cli 不在・タイムアウト等
         return None
     return _parse_doctor_findings(out)

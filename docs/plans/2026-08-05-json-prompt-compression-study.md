@@ -1,7 +1,11 @@
 # JSON フォーマットのトークン冗長性 — 実測と、スキーマ不変の圧縮描画の比較検討
 
-> 作成 2026-08-05
-> 位置づけ: **実測つき提案・比較検討（実装前）**。採用案が決まってから詳細設計を起こす。
+> 作成 2026-08-05・案 K-1/K-2 実装済み（同日）
+> 位置づけ: **実測つき提案・比較検討**。案 K-1（プロンプト注入 JSON の compact 正規化）と
+> 案 K-2（均質配列の表形式描画・オプトイン）は `agentcore.promptrender` として実装し、
+> agent-project / agent-flow の doctor、agent-flow の deps 注入、agent-amigos の受入判定
+> プロンプトへ配線済み（§3 の受け入れ条件を満たすテスト付き）。案 K-3（出力契約は JSON 維持）は
+> 引き続き見送りの結論のまま。
 > 上位文書: [エンジン側のトークン効率化 — 比較検討](./2026-08-04-engine-token-efficiency-proposals.md)
 > （原資 (ii) 中間成果の再注入・(iv) 定常注入の派生。案 E・案 G・案 H と隣接し、いずれとも併用可）
 > 対象: `agent-project` / `agent-flow` / `agent-amigos` / `agentcore`

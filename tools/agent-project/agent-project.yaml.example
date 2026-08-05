@@ -186,6 +186,9 @@ max_spawn: 20              # 1 run で生成できる派生タスク（followup�
 #                            # （auto-resolve が promote_threshold 回以上）を rules.md へ出典付きで追記。
 #                            # rules.md は「フローで判明した恒常ルール（暗黙知）の明文化先」で、人が直接
 #                            # 書いてもよい（正は人）。全タスクの act / plan / verify 合成へ常時・有界注入
+# prompt_table: false        # doctor が LLM へ渡す稼働シグナル（runlog_tail・blocked 等）のうち、
+#                            # 均質な dict 配列を表形式へ畳んでトークンを削る（既定 off・内容は不変。
+#                            # 設計: docs/plans/2026-08-05-json-prompt-compression-study.md 案 K-2）
 # regression_cmd: ./tools/check   # state repo が持つ共通チェック（失敗で done にせず人へ）
 # 安全ゲート（gate / protect / deny …）は <root>/policy.md に書く（人専管）
 

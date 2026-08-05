@@ -338,6 +338,36 @@ class TestDoctor(unittest.TestCase):
             boom = lambda p, m: (_ for _ in ()).throw(RuntimeError("no kiro-cli"))
             self.assertIsNone(km.diagnose_with_agent(cfg, {}, [], agent_run=boom))
 
+    def test_doctor_prompt_default_is_compact_json_not_indented(self):
+        """案 K-1（docs/plans/2026-08-05-json-prompt-compression-study.md）:
+        indent=2 は使わない。内容（キー・値）は不変のまま区切りだけ最小化する。"""
+        signals = {"blocked": [{"id": "T-1", "status": "review"}]}
+        prompt = km._doctor_prompt(signals, [])
+        self.assertNotIn("  ", prompt.split("=== 稼働シグナル", 1)[1].split("\n\n", 1)[0])
+        self.assertIn('{"blocked":[{"id":"T-1","status":"review"}]}', prompt)
+
+    def test_doctor_prompt_table_opt_in_folds_homogeneous_arrays(self):
+        """案 K-2: table=True のときだけ均質配列を表形式へ畳む。既定は従来どおり。"""
+        signals = {"blocked": [{"id": "T-1", "status": "review"},
+                               {"id": "T-2", "status": "blocked"}]}
+        default_prompt = km._doctor_prompt(signals, [])
+        table_prompt = km._doctor_prompt(signals, [], table=True)
+        self.assertNotIn("blocked[2]{id,status}:", default_prompt)
+        self.assertIn("blocked[2]{id,status}:", table_prompt)
+
+    def test_diagnose_with_agent_honors_prompt_table_config(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d, prompt_table=True)
+            captured = {}
+
+            def capture(p, m):
+                captured["prompt"] = p
+                return "[]"
+            signals = {"blocked": [{"id": "T-1", "status": "review"},
+                                   {"id": "T-2", "status": "blocked"}]}
+            km.diagnose_with_agent(cfg, signals, [], agent_run=capture)
+            self.assertIn("blocked[2]{id,status}:", captured["prompt"])
+
     def test_apply_fix_create_dirs_and_policy_protect(self):
         with tempfile.TemporaryDirectory() as d:
             cfg = self._cfg(d)
