@@ -1,0 +1,23 @@
+io_contract:
+  input:
+    - name: topic
+      format: free-text
+      description: "詰めたい計画・設計・変更の概要。リポジトリ全体の文書化なら「このリポジトリのドメインを文書化して」でよい"
+      required: true
+    - name: repository_root
+      format: file-reference
+      description: "CONTEXT.md / CONTEXT-MAP.md / docs/adr/ を読み書きする対象リポジトリ。省略時はカレント作業ディレクトリ"
+      required: false
+  output:
+    - name: shared_understanding
+      format: conversation
+      schema: "ラウンド制の質問と回答の記録。フロンティアが空になった時点の合意内容"
+      required: true
+    - name: context_md
+      format: file
+      schema: "CONTEXT.md（グロッサリのみ。用語・定義・_使わない_ 語）。決着した用語がある場合に生成・更新"
+      required: false
+    - name: adr
+      format: file
+      schema: "docs/adr/NNNN-slug.md。戻しにくい・驚かれる・トレードオフの3条件を満たす決定のみ"
+      required: false
