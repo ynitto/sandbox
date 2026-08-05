@@ -34,6 +34,8 @@ bash tools/agent-tools/install.sh --service             # 常駐化（systemd us
 ## agentcore
 
 転送（git の護り）・claim/lease・語彙・心拍を 1 実装に集約した共通ライブラリ（設計 P0）。
+`promptcompose`（プロンプトキャッシュに適合する注入順の正規化・案 H）も agent-project /
+agent-flow で共有する（設計: docs/plans/2026-08-05-phase1-token-efficiency-detailed-design.md §3）。
 
 **独立配布しない内部モジュール**（設計 R10）。3 本はそれぞれ別の実行ファイルなので、
 `install.sh` が**各 zipapp へ同梱する**——1 本だけ入れ直しても自己完結して動く。

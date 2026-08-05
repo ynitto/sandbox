@@ -22,6 +22,69 @@ def _work_failure_class(kind: str, blob: str = "", data=None) -> str:
     return "integration" if kind == "base-sync" else "content"
 
 
+def _truncate_bytes(text: str, limit: int) -> str:
+    """UTF-8 のバイト境界で安全に切り詰める（マルチバイト文字の途中で壊さない）。"""
+    b = text.encode("utf-8")
+    if len(b) <= limit:
+        return text
+    return b[:max(0, limit)].decode("utf-8", errors="ignore") + "…"
+
+
+def repair_brief(bus: Bus, node: dict, args) -> "dict | None":
+    """差分修復リトライ（案 B-1・オプトイン）のブリーフを実行直前に決定的に組み立てる。
+
+    retry ノードは continuation.py の stub 経路（_continue_stub）と evaluator 経路
+    （continue_agent が返す new_tasks）の両方から生まれる。修復材料（前回の出力・
+    成果物・verify の指摘）はどちらもバス上の実状態なので、グラフへ持ち回さずここで
+    `replaces` から引く——2 経路が同じ 1 実装を通り、プランナーの出力契約は増えない。
+
+    修復は同一系統 1 回だけ（retries が 2 以上なら None＝従来の全作り直しへ戻す。
+    壊れた前回に引きずられて収束しないケースの有界化。既存 max_retries の内側）。
+    設計: docs/plans/2026-08-05-phase1-token-efficiency-detailed-design.md §2。"""
+    if not bool(getattr(args, "repair_retry", False)):
+        return None
+    prev_id = node.get("replaces")
+    if not prev_id:
+        return None
+    if _retry_depth(str(node.get("id") or ""), node) >= 2:
+        return None
+    prev = bus.read_result(prev_id)
+    if not isinstance(prev, dict):
+        return None
+    limit = int(getattr(args, "repair_excerpt_bytes", 4000) or 4000)
+    prev_output = str(prev.get("output") or "")
+    prev_data = prev.get("data") if isinstance(prev.get("data"), dict) else {}
+
+    # 指摘: prev_id を deps に含む verify ノードの issues（stub 経路では旧 verify ノードが
+    # そのまま該当する——新 verify ノードは新しい retry dep 群に replaces で差し替わるため）。
+    issues: "list[str]" = []
+    graph = bus.read_graph() or {}
+    gnodes = graph.get("nodes", {}) if isinstance(graph, dict) else {}
+    for vnid, vnode in gnodes.items():
+        if not isinstance(vnode, dict) or vnode.get("kind") != "verify":
+            continue
+        if prev_id not in (vnode.get("deps") or []):
+            continue
+        vres = bus.read_result(vnid)
+        vdata = vres.get("data") if isinstance(vres, dict) else None
+        if isinstance(vdata, dict) and isinstance(vdata.get("issues"), list):
+            issues.extend(str(x) for x in vdata["issues"])
+    m = re.search(r"\[agent-error:([a-z_]+)\]", prev_output)
+    if m:
+        issues.append(f"前回の失敗分類: {m.group(1)}")
+
+    artifacts = bus.list_artifacts(prev_id)
+    return {
+        "of": prev_id,
+        "output": _truncate_bytes(prev_output, limit),
+        "artifact_dir": bus.node_artifact_dir(prev_id) if artifacts else None,
+        "issues": issues,
+        # finalize_workspace は変更が有ったときだけ delivery を rdata に積む（work.py 本体）。
+        # 真なら「前回の変更はすでに作業ブランチへ反映済み＝作業ツリーの現状が前回の結果」と言える。
+        "delivered": bool(prev_data.get("delivery")),
+    }
+
+
 def _quiesced(bus: Bus, nodes: dict) -> bool:
     """run が静止したか: 実行中(claimed)も、park 待機中(waiting)も、今すぐ claim 可能な
     pending も無い状態。依存が失敗してブロックされた pending は静止扱い（継続判断で付け替えられる）。
@@ -127,6 +190,9 @@ def cmd_work(args) -> int:
 
         # 依存の成果は構造化データ込みの完全な result dict で渡す
         dep_results = _collect_dep_results(bus, node, kind)
+        # 差分修復リトライ（案 B-1・オプトイン）。node が retry ノード（replaces を持つ）
+        # かつ設定で有効なときだけブリーフを組み立てる（既定 off は None＝プロンプト不変）。
+        repair = repair_brief(bus, node, args)
         # run の元要求（全体文脈）。対応 executor（agent の flow-worker プロンプト等）へ渡す。
         _meta_now = read_json(bus.meta_path) or {}
         run_request = str(_meta_now.get("request", ""))
@@ -135,6 +201,10 @@ def cmd_work(args) -> int:
         _gi = _meta_now.get("instructions")
         run_instructions = str(_gi.get("text", "")) if isinstance(_gi, dict) else ""
         _note_instructions_applied(_gi.get("revision") if isinstance(_gi, dict) else None)
+        # プロジェクト文脈（案 H・オプトイン）: orchestrate が run 作成時に meta へ固定した
+        # スナップショット。ワーカーはこれだけを基準にし、agent-project 側のファイルは読まない。
+        _rc = _meta_now.get("context")
+        run_context = str(_rc.get("text", "")) if isinstance(_rc, dict) else ""
         # 中間成果物プロトコル: 自ノードの出力先を用意し、依存ノードの成果物パスを集める。
         # これにより大きな成果物は output/data に貼らずファイル参照で受け渡せる。
         art_dir = bus.ensure_artifact_dir(nid)
@@ -166,7 +236,8 @@ def cmd_work(args) -> int:
                         art_dir, dep_arts, instruction, workspace=ws,
                         references=references, request=run_request,
                         instructions=run_instructions,
-                        prompt_table=bool(getattr(args, "prompt_table", False)))
+                        prompt_table=bool(getattr(args, "prompt_table", False)),
+                        repair=repair, context=run_context)
                     if isinstance(agent_data, dict):
                         rdata.update(agent_data)
                 else:
@@ -178,7 +249,8 @@ def cmd_work(args) -> int:
                                               art_dir, dep_arts, instruction, workspace=ws,
                                               references=references, request=run_request,
                                               instructions=run_instructions,
-                                              prompt_table=bool(getattr(args, "prompt_table", False)))
+                                              prompt_table=bool(getattr(args, "prompt_table", False)),
+                                              repair=repair, context=run_context)
             if kind != "verify" and isinstance(rdata, dict) and rdata.get("ok") is False:
                 if kind == "base-sync":
                     failure_class = _work_failure_class(kind, output, rdata)

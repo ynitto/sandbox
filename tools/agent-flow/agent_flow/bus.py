@@ -96,6 +96,25 @@ class Bus:
         write_json_atomic(self.meta_path, meta)
         return True
 
+    def snapshot_context(self, path: "str | None") -> bool:
+        """プロジェクト文脈（案 H・`--context-file`）をこの run の meta.json へ固定する。
+        agent-project が stable_prefix 有効時に渡すテキストを、run 単位の一貫性基準として
+        全ワーカー・planner・evaluator へ配る（instructions と同型・冪等）。
+        既にスナップショット済み・終端・無効/空なら何もしない。"""
+        meta = read_json(self.meta_path) or {}
+        if meta.get("status") in TERMINAL:
+            return False
+        if isinstance(meta.get("context"), dict):
+            return False
+        if AGENT_CONTEXT_MARKER in str(meta.get("request", "")):
+            return False
+        snap = local_context_snapshot(path)
+        if not snap:
+            return False
+        meta["context"] = snap
+        write_json_atomic(self.meta_path, meta)
+        return True
+
     def run_workspace(self) -> "dict | None":
         """この run の唯一の書込先ワークスペース spec（meta に記録）。無ければ None（読み取り専用 run）。"""
         meta = read_json(self.meta_path) or {}

@@ -97,6 +97,11 @@ granularity: auto          # タスク分解の細かさ: auto(complexity導出�
                            # deps 構造化 data のうち、均質な dict 配列を表形式へ畳んでトークンを削る
                            # （既定 off・内容は不変）。設計:
                            # docs/plans/2026-08-05-json-prompt-compression-study.md 案 K-2
+# --context-file はグローバル引数（agent-project が stable_prefix 有効時に渡す。設定ファイル
+#   キーは無い＝agent-project 側だけが持つ判断。--context-file <path> で渡されたテキストは
+#   run の meta.json へ一度だけ固定され、planner・worker・evaluator の全プロンプト先頭へ
+#   （agent-instructions と同様マーカー付きで）前置される。案 H・設計:
+#   docs/plans/2026-08-05-phase1-token-efficiency-detailed-design.md §3
 
 # ---------------------------------------------------------------------------
 # 並列・キャパシティ（マシン性能に合わせて調整）
@@ -114,6 +119,15 @@ max_retries: 3             # サーキットブレーカー: 同一系統（veri
 max_resumes: 3             # 孤児 run（駆動プロセス消失 = PC シャットダウン/クラッシュ）の自動再開の
                            #   上限。「進捗なしの連続回数」で数え、進捗（新しい results/）があれば数え直す
                            #   ＝毎日シャットダウンされる PC でも長期 run を継続できる。0 以下で無効
+
+# repair_retry: false       # 差分修復リトライ（案 B-1・オプトイン）。verify=fail / 失敗ノードの
+                           #   作り直し（replaces で前ノードを差し替えるノード）に、前回の出力
+                           #   （有界抜粋）・成果物パス・verify の指摘・「前回の変更は作業ブランチへ
+                           #   反映済み」を伝え、全作り直しではなく指摘箇所の修復を促す。修復は
+                           #   同一系統 1 回だけ（2 回目以降は従来の全作り直しへ戻る。既存
+                           #   max_retries の内側）。既定 off ではプロンプトは 1 バイトも変わらない。
+                           #   設計: docs/plans/2026-08-05-phase1-token-efficiency-detailed-design.md §2
+# repair_excerpt_bytes: 4000  # ブリーフに載せる前回出力の抜粋上限（バイト）
 
 # --- 自己回復リトライ（docs/designs/agent-flow-design.md「失敗の 4 層」）---
 transient_retries: 2       # レイヤ1: transient 分類（接続断・5xx・timeout）の in-place 再試行回数。

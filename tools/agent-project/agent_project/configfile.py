@@ -198,6 +198,12 @@ CONFIG_DEFAULTS = {
     # doctor が LLM へ渡す稼働シグナル・決定的チェックのうち、均質な dict 配列
     # （runlog_tail・blocked 等）を表形式へ畳んでトークンを削る（案 K-2・内容は不変）。既定 off。
     "prompt_table": False,
+    # 安定プレフィックス化（案 H・オプトイン）。build_request から charter / rules.md /
+    # リポジトリ理解の 3 ブロックを外し、project_context_block() として別途 agent-flow へ
+    # --context-file で渡す（プロンプトキャッシュに適合する順序で全ノードへ前置される）。
+    # 既定 off では request の組み立てが従来と 1 バイトも変わらない。
+    # 設計: docs/plans/2026-08-05-phase1-token-efficiency-detailed-design.md §3
+    "stable_prefix": False,
     # タスク単位ターゲットブランチ: 成果物を ap/<task-id> に集約（agent-flow の workspace branch へ注入。
     # リトライ（r0/r1…）も同一ブランチに積み増す）。false で従来の run 毎 af/<run-id>。
     "task_branch": True,
@@ -894,6 +900,7 @@ def build_config(args) -> Config:
         rules_capture=bool(getattr(args, "rules_capture", True)),
         agents=agent_overrides,
         prompt_table=bool(getattr(args, "prompt_table", False)),
+        stable_prefix=bool(getattr(args, "stable_prefix", False)),
         task_branch=bool(getattr(args, "task_branch", True)),
         task_branch_prefix=str(getattr(args, "task_branch_prefix", "ap/") or "ap/"),
         delivery_review=bool(getattr(args, "delivery_review", True)),

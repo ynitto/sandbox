@@ -257,11 +257,17 @@ def plan_strategy_stub(request: str, review="auto", granularity="auto"):
     return strategy, tasks
 
 
-def plan_strategy_agent(request: str, model: str | None, review="auto", granularity="auto"):
+def plan_strategy_agent(request: str, model: str | None, review="auto", granularity="auto",
+                        context: str = ""):
     """kiro-cli にパターン選択・並列数・初期グラフを決めさせる。
     review は 'auto'（既定）/True/False の三値。auto は集約パターンで自動有効。
     granularity で分解の細かさを指示し、返ってきた並列数も粒度倍率でスケールする。
-    ワークスペース（唯一の書込先）は run 単位なので、ノードへの repo 割当はしない。"""
+    ワークスペース（唯一の書込先）は run 単位なので、ノードへの repo 割当はしない。
+
+    `context`（案 H・オプトイン）: agent-flow が run の meta へ固定したプロジェクト文脈
+    （charter/rules.md/リポジトリ理解）スナップショット。stable_prefix 有効時、
+    agent-project が request 本体から外した分をここで補い、分解の質を落とさない。
+    プロンプトの先頭（安定部）へ前置する——agentcore.promptcompose と同じ規約。"""
     catalog = "\n".join(f"- {k}: {v}" for k, v in PATTERNS.items())
     compose = ("必要なら複数パターンを多段に複合してよい（例: classify-and-act の各分岐を "
                "fan-out-and-synthesize にする / generate-and-filter の通過案で tournament を行う）。")
@@ -291,6 +297,7 @@ def plan_strategy_agent(request: str, model: str | None, review="auto", granular
         '"tasks": [{"id": "t1", "goal": "...", "deps": [], "kind": "work"}]}\n\n'
         f"要求: {request}"
     )
+    prompt = _promptcompose.compose([context], [prompt])
     def _interpret(data):
         # planner がオブジェクトでなくベア配列を返すことがある → tasks とみなす
         if isinstance(data, list):
@@ -371,15 +378,20 @@ def _find_flow_planner_script():
     return _find_skill_script(skill, "plan.py")
 
 
-def plan_strategy_flow_planner(request: str, model: str | None, review="auto", granularity="auto"):
+def plan_strategy_flow_planner(request: str, model: str | None, review="auto", granularity="auto",
+                               context: str = ""):
     """flow-planner スキルの3段パイプラインを呼び出す。
     スキルが見つからない / 失敗した場合は plan_strategy_agent にフォールバック。
     granularity はスキルへ `--granularity` で渡す（auto=complexity 導出 / 明示は優先）。
-    タスク数・スコープ契約はスキル側が決めるため、ここでの並列数倍率は掛けない。"""
+    タスク数・スコープ契約はスキル側が決めるため、ここでの並列数倍率は掛けない。
+
+    `context`（案 H・オプトイン）はスキルへ `--context` で渡す（スキルの Phase 1/3 が
+    プロンプト先頭へ前置する。独立プロセスのため agentcore は import させず、
+    「安定部を先に」の規約だけをスキル側に手で踏襲させている）。"""
     script = _find_flow_planner_script()
     if not script:
         # flow-planner スキル未インストール → エージェント planner にフォールバック
-        return plan_strategy_agent(request, model, review, fallback_granularity(granularity))
+        return plan_strategy_agent(request, model, review, fallback_granularity(granularity), context)
     # 計画に使う CLI/モデルは planner の設定（agents: planner: {agent_cli, model}）に従わせる。
     # スキル側の既定は kiro-cli だが、それを黙って使うと agent_cli を claude/codex にしていても
     # 計画だけ kiro-cli で走り、kiro-cli が使えない環境では毎回失敗して stub へ落ちていた。
@@ -393,6 +405,8 @@ def plan_strategy_flow_planner(request: str, model: str | None, review="auto", g
         cmd += ["--review", "true" if review else "false"]
     else:
         cmd += ["--review", str(review)]
+    if context:
+        cmd += ["--context", context]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
         if proc.returncode != 0:
@@ -415,5 +429,5 @@ def plan_strategy_flow_planner(request: str, model: str | None, review="auto", g
         }
         return final_strategy, tasks
     except Exception:  # noqa: BLE001 — flow-planner 失敗時はエージェント planner にフォールバック
-        return plan_strategy_agent(request, model, review, fallback_granularity(granularity))
+        return plan_strategy_agent(request, model, review, fallback_granularity(granularity), context)
 

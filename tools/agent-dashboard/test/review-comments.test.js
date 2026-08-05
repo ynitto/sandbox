@@ -152,11 +152,11 @@ async function main() {
   // --- renderer（描画ゲートと配線の存在） ---
 
   const renderer = require('./helpers/renderer-src').read();
-  test('renderer はレビューコメントを成果確認でだけ出し、CRUD を配線する', () => {
+  test('renderer はレビューコメントを要対応カードの kind によらず出し、CRUD を配線する', () => {
     assert.ok(renderer.includes('function reviewCommentsHtml('), 'コメント描画関数がありません');
     assert.ok(
-      /n\.kind !== 'review'/.test(renderer),
-      '成果確認（review）だけに出すゲートがありません'
+      !/reviewCommentsHtml\(n\)\s*\{\s*if \(n\.kind/.test(renderer),
+      'kind で出し分けるゲートが残っています（run の状態によらず書けるようにする）'
     );
     assert.ok(renderer.includes('reviewCommentsHtml(n)'), 'カードへの差し込みがありません');
     assert.ok(renderer.includes('bindReviewComments(root)'), 'コメント欄の配線呼び出しがありません');

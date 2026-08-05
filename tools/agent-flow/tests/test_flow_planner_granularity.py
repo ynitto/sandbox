@@ -194,5 +194,67 @@ class EstimatedStepsTests(unittest.TestCase):
         self.assertNotIn("最小ステップ見積り", seen["prompt"])
 
 
+class ContextPrefixTests(unittest.TestCase):
+    """プロジェクト文脈（案 H・オプトイン --context）の Phase 1/3 への前置。
+    Phase 2（phase2_select）は request を埋め込まないため対象外——ここでは検証しない。"""
+
+    def test_phase1_prepends_context_when_given(self):
+        seen = {}
+
+        def fake_agent(prompt, model=None):
+            seen["prompt"] = prompt
+            return json.dumps({"complexity": "moderate", "subtasks": ["a"]})
+
+        with mock.patch.object(plan, "run_agent", fake_agent):
+            plan.phase1_analyze("要求本文", None, context="CTX-STABLE-TEXT")
+        self.assertTrue(seen["prompt"].startswith("CTX-STABLE-TEXT"))
+        self.assertIn("要求本文", seen["prompt"])
+        self.assertLess(seen["prompt"].index("CTX-STABLE-TEXT"), seen["prompt"].index("要求本文"))
+
+    def test_phase1_without_context_is_byte_identical_to_before(self):
+        seen = {}
+
+        def fake_agent(prompt, model=None):
+            seen["prompt"] = prompt
+            return json.dumps({"complexity": "moderate", "subtasks": ["a"]})
+
+        with mock.patch.object(plan, "run_agent", fake_agent):
+            plan.phase1_analyze("要求本文", None)
+        without_context = seen["prompt"]
+        with mock.patch.object(plan, "run_agent", fake_agent):
+            plan.phase1_analyze("要求本文", None, context="")
+        self.assertEqual(without_context, seen["prompt"])
+        self.assertNotIn("CTX-STABLE-TEXT", without_context)
+
+    def test_phase3_prepends_context_ahead_of_retry_instruction(self):
+        """context（安定）→ extra（再生成時の指示・可変）→ 本体、の順（安定部を最優先で先頭に）。"""
+        seen = {}
+
+        def fake_agent(prompt, model=None):
+            seen["prompt"] = prompt
+            return json.dumps([{"id": "t1", "goal": "[scope] a.py\n実装", "deps": [], "kind": "work"}])
+
+        analysis = {"subtasks": ["a"], "complexity": "moderate"}
+        with mock.patch.object(plan, "run_agent", fake_agent):
+            plan.phase3_build("要求本文", analysis, {"patterns": []}, None, "coarse",
+                              context="CTX-STABLE-TEXT")
+        self.assertTrue(seen["prompt"].startswith("CTX-STABLE-TEXT"))
+
+    def test_phase3_without_context_is_byte_identical_to_before(self):
+        seen = {}
+
+        def fake_agent(prompt, model=None):
+            seen["prompt"] = prompt
+            return json.dumps([{"id": "t1", "goal": "[scope] a.py\n実装", "deps": [], "kind": "work"}])
+
+        analysis = {"subtasks": ["a"], "complexity": "moderate"}
+        with mock.patch.object(plan, "run_agent", fake_agent):
+            plan.phase3_build("要求本文", analysis, {"patterns": []}, None, "coarse")
+        without_context = seen["prompt"]
+        with mock.patch.object(plan, "run_agent", fake_agent):
+            plan.phase3_build("要求本文", analysis, {"patterns": []}, None, "coarse", context="")
+        self.assertEqual(without_context, seen["prompt"])
+
+
 if __name__ == "__main__":
     unittest.main()

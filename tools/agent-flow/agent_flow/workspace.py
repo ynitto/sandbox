@@ -347,6 +347,32 @@ def artifact_instruction(self_dir: "str | None", dep_arts: "dict[str, str] | Non
     return "\n".join(lines)
 
 
+def repair_instruction(repair: "dict | None") -> str:
+    """差分修復リトライ（案 B-1・オプトイン）のブリーフを worker への指示ブロックへ描画する。
+    `repair` は work.py の `repair_brief()` が実行直前にバスから決定的に組み立てた辞書
+    （オプトインでない・対象外・前回結果なしなら None）。全体を作り直させず、指摘箇所の
+    修復だけを促す——materials（前回出力・成果物・verify の指摘）はここでは決めない
+    （repair_brief の責務）、ここは描画だけを行う。"""
+    if not repair:
+        return ""
+    lines = [f"【前回の試行と差し戻し】このタスクは前回 {repair.get('of')} として実行され、"
+             "指摘を受けて差し戻されました。"]
+    issues = repair.get("issues") or []
+    if issues:
+        lines.append("  指摘:")
+        lines.extend(f"    - {i}" for i in issues)
+    output = repair.get("output")
+    if output:
+        lines.append(f"  前回の成果（抜粋）: {output}")
+    art_dir = repair.get("artifact_dir")
+    if art_dir:
+        lines.append(f"  前回の成果物: {art_dir} （このディレクトリのファイルを読むこと）")
+    if repair.get("delivered"):
+        lines.append("  前回の変更はすでに作業ブランチへ反映されています。作業ツリーの現状が前回の結果です。")
+    lines.append("  全体を作り直さず、指摘された箇所だけを直してください。前回正しかった部分は保持すること。")
+    return "\n".join(lines)
+
+
 # --------------------------------------------------------------------------
 # Heartbeat — 長時間タスク実行中に claim の lease を更新し続ける
 # --------------------------------------------------------------------------

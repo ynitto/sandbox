@@ -191,7 +191,35 @@ def task_guide_block(task: Task) -> str:
     return "\n".join(parts)
 
 
-def build_request(task: Task, cfg: "Config | None" = None) -> str:
+def project_context_block(cfg: "Config", task: "Task | None" = None) -> str:
+    """安定プレフィックス化（案 H・オプトイン）: charter / rules.md / リポジトリ理解を
+    request 本体から外して渡すためのブロック。build_request が今日埋め込んでいるのと
+    同じ 3 ブロック・同じ見出し文言を、プロジェクト内で不変な単位として切り出すだけ
+    （内容は 1 バイトも変えない）。cfg.stable_prefix が真のときだけ flow.py が呼ぶ。
+
+    charter / repo_map は task（charter タグ・workspace）で選ばれることがあるため、
+    厳密には「同じ charter / workspace を共有するタスク間で不変」——多くの運用では
+    単一 charter・単一 workspace なのでプロジェクト全体で不変になる。"""
+    parts = []
+    cc = charter_context(cfg, task=task)
+    if cc:
+        parts.append("プロジェクト定義（charter・常に踏まえること。成果物が目標/制約に反しないこと）:\n" + cc)
+    pr = project_rules_context(cfg)
+    if pr:
+        parts.append("プロジェクトルール（rules.md・全タスク共通。必ず従うこと）:\n" + pr)
+    rm = repo_map_context(cfg, [task.get("workspace")] if task and task.get("workspace") else None)
+    if rm:
+        parts.append("リポジトリ理解（構造・規約・ビルド/テストコマンド）:\n" + rm)
+    return "\n\n".join(parts)
+
+
+def build_request(task: Task, cfg: "Config | None" = None, *,
+                  force_inline_context: bool = False) -> str:
+    """`force_inline_context`（既定 False）: True なら cfg.stable_prefix に関わらず
+    charter/rules/repo_map を必ず本文へ埋め込む。委譲公示板（agent-board）経由の呼び出しが
+    使う——board 委譲は請負側が別マシンなので、agent-flow --context-file のようなローカル
+    ファイル参照で渡す手段が無い。stable_prefix が有効でも、この経路だけは常に従来どおり
+    本文へ埋め込んで情報を落とさない。"""
     base = f"{task.title}\n\n"
     guide = task_guide_block(task)
     if guide:
@@ -247,21 +275,25 @@ def build_request(task: Task, cfg: "Config | None" = None) -> str:
             base += "\n\n仕様（spec 前段の成果・必ず従うこと）:\n" + sc
         # 参照リポジトリは要求本文に畳まず、agent-flow へ `--reference` で構造化伝搬する
         # （分解後の各ノード／gitlab イシューにも確実に届くように）。
-        # 定義（charter）と判断結果（decisions）を、project でも通常 run でもワーカーへ渡す。
-        cc = charter_context(cfg, task=task)
-        if cc:
-            base += ("\n\nプロジェクト定義（charter・常に踏まえること。成果物が目標/制約に反しないこと）:\n"
-                     + cc)
-        # プロジェクトルール（rules.md・人が書く＋効いた learn の自動昇格）。learn の recall が
-        # 類似タスク限定なのに対し、これは全タスクへ常時注入される恒常ルール層。
-        pr = project_rules_context(cfg)
-        if pr:
-            base += "\n\nプロジェクトルール（rules.md・全タスク共通。必ず従うこと）:\n" + pr
-        # リポジトリ理解（context/*.md・生成は opt-in repo_map / 人の手書きも可）。workspace 指定
-        # タスクはその repo 分だけ、無指定はプロジェクトの全ファイル（有界）を注入する。
-        rm = repo_map_context(cfg, [task.get("workspace")] if task.get("workspace") else None)
-        if rm:
-            base += "\n\nリポジトリ理解（構造・規約・ビルド/テストコマンド）:\n" + rm
+        # 定義（charter）・プロジェクトルール（rules.md）・リポジトリ理解は、
+        # 安定プレフィックス化（案 H・stable_prefix）が無効なときだけここへ埋め込む。
+        # 有効時は project_context_block() が同じ内容を切り出し、flow.py が
+        # --context-file で別送する（agent-flow 側が全ノードへ前置で配る）。
+        if force_inline_context or not getattr(cfg, "stable_prefix", False):
+            cc = charter_context(cfg, task=task)
+            if cc:
+                base += ("\n\nプロジェクト定義（charter・常に踏まえること。成果物が目標/制約に反しないこと）:\n"
+                         + cc)
+            # プロジェクトルール（rules.md・人が書く＋効いた learn の自動昇格）。learn の recall が
+            # 類似タスク限定なのに対し、これは全タスクへ常時注入される恒常ルール層。
+            pr = project_rules_context(cfg)
+            if pr:
+                base += "\n\nプロジェクトルール（rules.md・全タスク共通。必ず従うこと）:\n" + pr
+            # リポジトリ理解（context/*.md・生成は opt-in repo_map / 人の手書きも可）。workspace 指定
+            # タスクはその repo 分だけ、無指定はプロジェクトの全ファイル（有界）を注入する。
+            rm = repo_map_context(cfg, [task.get("workspace")] if task.get("workspace") else None)
+            if rm:
+                base += "\n\nリポジトリ理解（構造・規約・ビルド/テストコマンド）:\n" + rm
         dc = decision_context(cfg, task)
         if dc:
             base += ("\n\nこのタスクに関する過去の判断記録（needs の判断結果・必ず踏まえること）:\n" + dc)

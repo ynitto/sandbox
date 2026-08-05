@@ -1602,9 +1602,9 @@ function reviewCommentItemHtml(c) {
   </li>`;
 }
 
-// 成果物への共同コメントは、成果を判断する review でだけ出す。
+// メンバーによるコメントは要対応カード全般（review / blocked / plan-review / milestone）で
+// 書けるようにする。run が完了して review になる前でも、進行中に指摘や経緯を残したい。
 function reviewCommentsHtml(n) {
-  if (n.kind !== 'review') return '';
   const comments = n.comments || [];
   const list = comments.length
     ? `<ul class="rc-list">${comments.map(reviewCommentItemHtml).join('')}</ul>`
