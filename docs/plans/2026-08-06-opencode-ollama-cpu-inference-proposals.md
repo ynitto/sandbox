@@ -397,27 +397,12 @@ TUI の要件（ステータス 1〜2 行の更新 + 行スクロール）は素
 済み、flow-worker / flow-planner（agent-flow 自身が描画するスキル）とも競合しない。
 
 **agent-loop / kiro-loop 連携 — 定期プロンプトの専用プロパティ `slash`**:
-定期プロンプトの設定エントリに、送信文の**冒頭スラッシュ行として何を送るか**を
-宣言する専用プロパティを足す。プロンプト本文へ手で `/name` を書き込む運用
-（本文とスキル指定が混ざり、変更もしづらい）を避けるため:
-
-```yaml
-# agent-loop.yaml — prompts エントリの拡張
-prompts:
-  - name: "ログ要約"
-    slash: summarize-logs            # 送信文の先頭へ「/summarize-logs」を 1 行付ける
-    prompt: "昨日のログを要約して"
-    interval_minutes: 60
-  - name: "定期点検"
-    slash: ["healthcheck", "report --lang ja"]   # 複数可・引数も書ける
-    prompt: "結果を3行で"
-    interval_minutes: 240
-```
-
-agent-loop 側の実装は「`slash` の各要素を `/` 前置きの行として本文の前に連結して
-send-keys する」だけ（検証は名前パターンのみ）。**この仕組みは agent-ollama 専用に
-しない**——送るのはただの先頭スラッシュ行なので、スラッシュコマンドを解する
-どの対話 CLI（kiro / claude 等）に対しても同じプロパティが使える。
+定期プロンプトの設定エントリに、送信文の前にスラッシュコマンドとして何を送るかを
+宣言する `slash: string | string[]` を足す（本文へ手で `/name` を書き込む運用を
+避ける）。agent-ollama 専用にはせず、スラッシュコマンドを解するどの対話 CLI にも
+効く共通口とする。**fork 先の kiro-loop 系プロジェクトへ単体で展開するため、
+仕様・送信順・移植ガイドは独立文書に切り出した**:
+[`docs/designs/agent-loop-slash-property-design.md`](../designs/agent-loop-slash-property-design.md)。
 
 #### F-2 補遺 3 — バックアップ運転の監視:「遅い」を異常にしない証拠
 
