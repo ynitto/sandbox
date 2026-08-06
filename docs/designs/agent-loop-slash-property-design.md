@@ -6,6 +6,10 @@
 >
 > **この文書は fork 先へ単体で展開できるよう自己完結で書く。** 親文書を読まなくても
 > 実装できることを意図している。
+>
+> **このリポジトリの agent-loop では実装済み**（2026-08-06）。実装は
+> `tools/agent-loop/agent_loop/scheduler.py`（`_normalize_slash` と `_dispatch_prompt`）、
+> テストは `tools/agent-loop/test/test_slash_property.py`。fork 先へは §3 の移植ガイドを使う。
 
 ---
 

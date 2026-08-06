@@ -1,19 +1,27 @@
 {
   "name": "ollama",
-  "command": ["agent-ollama", "{model}"],
+  "command": ["agent-ollama", "--think", "off", "{model}"],
   "prompt_via": "stdin",
   "default_model": "qwen3",
   "output": "stdout",
   "empty_output_is_error": true,
+  "write_args": ["--tools"],
+  "readonly_args": [],
   "readonly": "enforced",
   "interactive": {
-    "command": ["ollama", "run", "{model}"],
+    "command": ["agent-ollama", "--tui", "--think", "off", "{model}"],
     "prompt_inject": "send-keys"
   },
   "errors": [
-    { "match": "could not connect|connection refused",
+    { "match": "could not connect|connection refused|ollama に接続できません",
       "class": "env", "hint": "ollama サーバが起動していません（ollama serve を起動してください）" },
     { "match": "pull the model|model .{0,60}not found",
-      "class": "env", "hint": "モデルが未取得です（ollama pull <model> を実行してください）" }
+      "class": "env", "hint": "モデルが未取得です（ollama pull <model> を実行してください）" },
+    { "match": "スキルが見つかりません",
+      "class": "env",
+      "hint": "スキルが配布されていません（python install.py --agent claude --all-skills 等で配布してください）" },
+    { "match": "応答が停止しました|通信が切れました",
+      "class": "transient",
+      "hint": "無進捗で打ち切りました（生成が進まなくなった状態）。リトライで解けることが多いですが、続くなら ollama サーバの負荷とメモリを確認してください" }
   ]
 }

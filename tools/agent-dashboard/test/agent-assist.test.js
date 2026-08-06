@@ -79,8 +79,11 @@ test('buildInteractiveCommand: 全体設定のCLI・モデルを対話コマン�
   assert.deepStrictEqual(of('codex', 'gpt-5'), ['codex', '--model', 'gpt-5']);
   // {model} が必須の CLI は定義の default_model で埋まる（ヘッドレスと同じ規則）。
   // 移行前は対話だけがモデル必須で落ちていた＝同じ定義なのにモードで挙動が違った。
-  assert.deepStrictEqual(of('ollama', ''), ['ollama', 'run', 'qwen3']);
-  assert.deepStrictEqual(of('ollama', 'llama3'), ['ollama', 'run', 'llama3']);
+  // ollama の対話は素の `ollama run` ではなく agent-ollama のデバッグ TUI（進捗が見える）。
+  assert.deepStrictEqual(of('ollama', ''),
+                         ['agent-ollama', '--tui', '--think', 'off', 'qwen3']);
+  assert.deepStrictEqual(of('ollama', 'llama3'),
+                         ['agent-ollama', '--tui', '--think', 'off', 'llama3']);
 });
 
 test('buildDoctorCommand: kiro は本文を退避し、ツールは読み取りだけ信頼する', () => {
@@ -118,7 +121,8 @@ test('buildCommand: codex・cursor・ollamaでもcharter補完を実行できる
   assert.strictEqual(cursor.stdin, 'PROMPT');
   const ollama = agent.buildCommand('ollama', 'qwen3', 'PROMPT');
   assert.strictEqual(ollama.command, 'agent-ollama', 'headless は usage 計測ラッパー経由');
-  assert.deepStrictEqual(ollama.args, ['qwen3']);
+  // 読み取り専用なので --tools は付かない（ツールは write のときだけ生える）。
+  assert.deepStrictEqual(ollama.args, ['--think', 'off', 'qwen3']);
   assert.strictEqual(ollama.stdin, 'PROMPT');
 });
 

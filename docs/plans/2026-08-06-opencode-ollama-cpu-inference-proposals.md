@@ -424,6 +424,40 @@ TUI の要件（ステータス 1〜2 行の更新 + 行スクロール）は素
    これが「長時間の停止を異常と扱わない」を運用に落とした形——遅くても進んでいれば
    落とさず、進まなくなったときだけ transient で返してリトライ層に渡す。
 
+#### F-2 実装状況（2026-08-06・実装済み）
+
+上記のうち **F-2 の全体（置き場所・TUI・think・監視・スキル）と補遺 1〜3 を実装した**。
+案 A / C は設定・環境変数だけなので実装物は無い。案 B は実機検証待ち。F-1 / F-3 は未着手
+（F-2 で足りない場面が出たら再検討する）。
+
+| 置き場 | 役割 |
+|---|---|
+| `agentcore/ollama_loop.py` | ストリーミング呼び出し・watchdog・bash 1 ツールのループ |
+| `agentcore/ollama_events.py` | 進捗イベント（JSONL）・`read_status()`・`follow_events()` |
+| `agentcore/ollama_skills.py` | 明示・遅延のスキル解決（`--skill` / 先頭スラッシュ行） |
+| `agentcore/ollama_tui.py` | 行指向ビュー（`--tui` / `--follow`）。rich は任意 |
+| `agentcore/ollama_adapter.py` | 引数解釈とモード分岐。`generate()` は後方互換で残す |
+| `agents/ollama.json` | `write_args: ["--tools"]` / `--think off` / `interactive` → `--tui` |
+
+宣言と実装の対応は `test_ollama_adapter.py` の `TestContractDefinition` が固定する
+（`readonly` にツールが混ざらないこと・定義の argv がそのまま解釈できること）。
+
+実装で確定した細部（設計時に決めていなかったもの）:
+
+- 打ち切りの上限は 3 局面に分けた: `connect`（既定 30s）/ `prefill`（既定 **0 = 無制限**）/
+  `decode`（`--stall-timeout` 既定 180s）。**prefill を無制限にしたのが要点**——ここに
+  上限を置くと「CPU で 10 分」の正常な実行が死ぬ。検知の粒度は heartbeat 間隔（5s）。
+- 待ちの上限判断と打ち切りは呼び出し側スレッドが持ち、接続と行読みは別スレッドへ出した。
+  ソケットにタイムオーバーを掛けない代わりに、打ち切りたいときはソケットを直接 shutdown する。
+- **実装中に踏んだ事故を 1 つ記録する**: 打ち切りで `res.close()` を呼ぶと、`http.client` の
+  応答は `BufferedReader` のロックを取りに行き、そのロックは受信でブロックしている
+  リーダースレッドが握っているため**打ち切った側が固まる**。「無進捗を検知したのに
+  プロセスが終われない」という最悪の形になるので、`close()` ではなくソケットの
+  `shutdown(SHUT_RDWR)` で解く。実 HTTP サーバ相手の回帰テストで固定した
+  （`TestStallReturnsPromptly`）。
+- ループが規約から外れた応答を受けたときは 2 回まで言い直しを促し、それでも駄目なら
+  最後の本文を成果として返す（§0.1 R1「止めない」——曖昧な成果でも止まるより良い）。
+
 #### F-3 — 既製の軽量コーディング CLI（aider）
 
 aider はヘッドレス実行（`aider --message … --yes-always`）と ollama 接続を持ち、
