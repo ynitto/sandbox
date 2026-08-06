@@ -186,6 +186,19 @@ def main() -> None:
     for extra in kiro_opts.get("extra_args", []):
         kiro_args.append(str(extra))
 
+    # エージェント CLI の差し替え（agent_cli / agent_cli_options）。未指定なら従来の
+    # kiro-cli 組み込み経路（kiro_options）。未知・壊れた定義は fail fast — 黙って
+    # kiro へ倒すと設定ミスに気づけない（agents/<name>.json 契約の明示エラー原則）。
+    try:
+        cli_profile = _init_cli_profile_from_config(config, project_dir=cwd, strict=True)
+    except CliProfileError as exc:
+        log.error("agent_cli の解決に失敗しました: %s", exc)
+        sys.exit(1)
+    if cli_profile is not None:
+        log.info("エージェント CLI: %s (argv=%s)", cli_profile.name, cli_profile.argv)
+        if kiro_opts:
+            log.info("agent_cli 指定時は kiro_options を使いません（agent_cli_options を使ってください）。")
+
     startup_timeout = int(config.get("startup_timeout", 60))
     split_direction = args.split_direction or str(config.get("split_direction", "horizontal"))
     if split_direction not in ("horizontal", "vertical"):
@@ -205,8 +218,10 @@ def main() -> None:
     cooldown_seconds = int(config.get("cooldown_seconds", 0))
     uses_user_agent = bool(kiro_opts.get("agent"))
     # uses_concurrency_agent: agent-loop-concurrency agent を kiro-cli に注入するか
-    # ユーザーが独自 agent を設定した場合は注入しないが、セマフォ制御は適用する
-    uses_concurrency_agent = max_concurrent > 0 and not uses_user_agent
+    # ユーザーが独自 agent を設定した場合は注入しないが、セマフォ制御は適用する。
+    # agent_cli 指定時も注入しない（stop hook は kiro-cli の agents 機構。他 CLI では
+    # SlotMonitor のペイン監視だけで解放する）。
+    uses_concurrency_agent = max_concurrent > 0 and not uses_user_agent and cli_profile is None
 
     semaphore: GlobalSemaphore | None = GlobalSemaphore(max_concurrent, slot_timeout_seconds, cooldown_seconds) if max_concurrent > 0 else None
     if max_concurrent > 0:

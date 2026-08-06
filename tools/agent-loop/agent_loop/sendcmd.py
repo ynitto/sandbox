@@ -17,10 +17,13 @@ def _capture_pane(target: str) -> str:
 
 
 def _pane_has_prompt(content: str) -> bool:
-    lines = [line for line in content.splitlines() if line.strip()]
-    if not lines:
-        return False
-    return bool(_PROMPT_RE.search("\n".join(lines[-3:])))
+    """入力受付（送信してよい状態）か。判定方法は CLI ごとに違うため CliProfile へ委譲する。
+
+    agent_cli 未指定（legacy プロファイル）では従来どおり、空行を除いた末尾 3 行への
+    _PROMPT_RE 一致。busy_pattern を宣言する CLI では、入力欄が見えていても処理中
+    （例: claude の '(esc to interrupt)'）なら False になる。
+    """
+    return _CLI_PROFILE.is_ready(content)
 
 
 def _get_session_pane_cwd(session: str) -> str:
@@ -96,9 +99,9 @@ def _set_session_last_active(session: str) -> None:
     _tmux_cmd("set-environment", "-t", session, _ENV_LAST_ACTIVE, str(int(time.time())))
 
 
-def ensure_cli_session(session: str, work_dir: Path | None, kiro_bin: str) -> bool:
-    """kiro-cli が起動中の tmux セッションを確保する。"""
-    kiro_cmd = shlex.join([kiro_bin, "chat", "--trust-all-tools"])
+def ensure_cli_session(session: str, work_dir: Path | None, cli_argv: "list[str]") -> bool:
+    """エージェント CLI が起動中の tmux セッションを確保する。"""
+    kiro_cmd = shlex.join(cli_argv)
     cwd_str = str(work_dir) if work_dir else None
 
     if not _session_name_exists(session):
@@ -359,11 +362,25 @@ def cmd_slot_release() -> None:
 
 
 def cmd_send(args: argparse.Namespace, cwd: Path) -> None:
-    """プロンプトを tmux セッションの kiro-cli に送信する。"""
-    kiro_bin = shutil.which("kiro-cli")
-    if kiro_bin is None:
-        print("[agent-loop] ERROR: kiro-cli が PATH に見つかりません。", file=sys.stderr)
-        sys.exit(1)
+    """プロンプトを tmux セッションのエージェント CLI に送信する。"""
+    # agent_cli 指定の設定があれば待機判定と起動 argv をその CLI に合わせる。
+    # 補助コマンドなので解決失敗は WARNING + 従来判定で続行（デーモンと違い fail fast しない）。
+    try:
+        send_config, _, _ = load_config(cwd)
+    except Exception:
+        send_config = {}
+    profile = _init_cli_profile_from_config(send_config, project_dir=cwd, strict=False)
+    if profile is not None and profile.argv:
+        cli_argv = list(profile.argv)
+        if shutil.which(cli_argv[0]) is None:
+            print(f"[agent-loop] ERROR: エージェント CLI '{cli_argv[0]}' が PATH に見つかりません。", file=sys.stderr)
+            sys.exit(1)
+    else:
+        kiro_bin = shutil.which("kiro-cli")
+        if kiro_bin is None:
+            print("[agent-loop] ERROR: kiro-cli が PATH に見つかりません。", file=sys.stderr)
+            sys.exit(1)
+        cli_argv = [kiro_bin, "chat", "--trust-all-tools"]
 
     prompt_arg = " ".join(args.prompt).strip()
     if not prompt_arg:
@@ -426,7 +443,7 @@ def cmd_send(args: argparse.Namespace, cwd: Path) -> None:
             sys.exit(1)
     else:
         # セッションが存在しない場合のみ新規作成
-        if not ensure_cli_session(target, work_dir, kiro_bin):
+        if not ensure_cli_session(target, work_dir, cli_argv):
             sys.exit(1)
         resolved = _resolve_target_pane(target)
         if resolved is None:

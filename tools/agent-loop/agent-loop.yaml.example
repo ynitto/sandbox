@@ -33,7 +33,22 @@
 
 
 # ---------------------------------------------------------------------------
-# kiro-cli の起動オプション（全ワークスペース共通）
+# エージェント CLI の差し替え（agents/<name>.json 契約）
+# ---------------------------------------------------------------------------
+# 省略時は従来どおり kiro-cli（下の kiro_options）。指定すると agents/<name>.json の
+# interactive 定義から起動 argv と待機判定（ready_pattern / busy_pattern /
+# idle_quiet_sec / clear_command）を解決してペインを駆動する。
+# 未知・壊れた定義は起動エラー（黙って kiro へ倒さない）。
+# 注意: kiro 以外では slot-release stop hook（agent-loop-concurrency agent）は
+# 注入されず、スロット解放は SlotMonitor のペイン監視だけで行う。
+# agent_cli: claude
+# agent_cli_options:
+#   model: claude-sonnet-5   # 定義の {model} / model_flag に渡す（省略可）
+#   readonly: false          # 読み取り専用フラグで起動する（既定 false）
+#   extra_args: []           # 定義の argv 末尾に足す追加フラグ
+
+# ---------------------------------------------------------------------------
+# kiro-cli の起動オプション（全ワークスペース共通・agent_cli 未指定時のみ）
 # ---------------------------------------------------------------------------
 kiro_options:
   trust_all_tools: true    # ツール使用の確認をスキップ（推奨: true）

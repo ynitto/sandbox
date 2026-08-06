@@ -249,22 +249,24 @@ class SlotMonitor:
             self._release(pane_id, notify_complete=True)
             return
 
+        # 待機/処理中の判定は CLI ごとに方法が違うため CliProfile が行う（ready/busy
+        # パターン、パターンで判定できない CLI は静穏判定）。legacy は従来と同一。
         content = _capture_pane(pane_id)
-        has_prompt = _pane_has_prompt(content)
+        is_idle = _CLI_PROFILE.is_idle(pane_id, content)
         now = time.time()
 
         if state == "waiting_start":
-            if not has_prompt:
+            if not is_idle:
                 with self._lock:
                     if pane_id in self._pending:
                         self._pending[pane_id]["state"] = "processing"
             elif now - acquired_at > self._START_WAIT_TIMEOUT:
-                # kiro-cli が処理を開始しないままタイムアウト
+                # エージェント CLI が処理を開始しないままタイムアウト
                 log.warning("SlotMonitor: ペイン %s が処理を開始しないためスロットを解放します。", pane_id)
                 self._release(pane_id, notify_complete=True)
 
         elif state == "processing":
-            if has_prompt:
+            if is_idle:
                 log.info("SlotMonitor: ペイン %s の処理完了を検知。スロットを解放します。", pane_id)
                 self._release(pane_id, notify_complete=True)
             elif now - acquired_at > self._slot_timeout:
@@ -287,6 +289,7 @@ class SlotMonitor:
                 entry["acquired_at"] = float("inf")
             elif not notify_complete:
                 self._pending.pop(pane_id, None)
+        _CLI_PROFILE.forget_pane(pane_id)
         if release_slot:
             self._semaphore.release(pane_id)
         on_complete = entry.get("on_complete") if entry and notify_complete else None

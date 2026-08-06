@@ -469,19 +469,29 @@ class PeriodicScheduler:
         log.info("[%s] プロンプトを実行します。", name)
         try:
             if should_clear:
-                log.info("[%s] fresh_context: コンテキストをクリアします。", name)
-                if not self._session_mgr.send_prompt(prompt_id, "/clear"):
-                    log.warning("[%s] /clear の送信に失敗しました。スキップします。", name)
-                    self._release_slot(pane_id)
-                    return False
-                time.sleep(2)
+                # コンテキスト破棄コマンドは CLI ごとに違う（kiro/claude=/clear、codex=/new）。
+                # 空文字は「クリア手段なし」の宣言なので、警告してクリアだけ飛ばす。
+                clear_cmd = _CLI_PROFILE.clear_command
+                if not clear_cmd:
+                    log.warning("[%s] fresh_context: agent_cli '%s' はクリアコマンドを持たないためスキップします。",
+                                name, _CLI_PROFILE.name)
+                else:
+                    log.info("[%s] fresh_context: コンテキストをクリアします。", name)
+                    if not self._session_mgr.send_prompt(prompt_id, clear_cmd):
+                        log.warning("[%s] %s の送信に失敗しました。スキップします。", name, clear_cmd)
+                        self._release_slot(pane_id)
+                        return False
+                    time.sleep(2)
                 if fresh_context_interval is not None:
                     new_next_clear_at = time.time() + (int(fresh_context_interval) * 60)
                     self._update_entry(str(entry.get("id", "")), next_clear_at=new_next_clear_at)
 
             # slash は本文へ連結せず 1 行ずつ独立に送る。対話 CLI はスラッシュコマンドを
             # 「1 入力 = 1 コマンド」で解釈するので、連結すると本文の一部として扱われる。
-            for line in (entry.get("slash") or []):
+            for raw_line in (entry.get("slash") or []):
+                # スキル起動の行頭記号は CLI ごとに違う（codex は `$name`）。定義の
+                # skill_command_prefix に合わせて送信直前に差し替える（既定 `/` は素通し）。
+                line = _CLI_PROFILE.rewrite_slash(raw_line)
                 log.info("[%s] slash を送信します: %s", name, line)
                 if not self._session_mgr.send_prompt(prompt_id, line):
                     log.warning("[%s] slash（%s）の送信に失敗しました。スキップします。", name, line)

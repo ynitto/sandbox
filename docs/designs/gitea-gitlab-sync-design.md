@@ -172,7 +172,7 @@ for (repo, ref) in targets:                       # ref は必ず allowlist 内�
    - Gitea→GitLab の push は**差分が実在し、かつ ff 可能なときだけ**実行。空 push をしない。
 5. **デバウンス／バッチ**
    - 連続 push（例: まとめて数コミット）を**数秒デバウンス**して 1 回の同期にまとめ、GitLab への接続回数を削減。
-6. **アダプティブ間隔**（`docs/designs/kiro-loop-adaptive-interval-design.md` の考え方を援用）
+6. **アダプティブ間隔**（[`agent-loop-design.md`](./agent-loop-design.md) の「動的インターバル」の考え方を援用）
    - 変化が続く時間帯は間隔を詰め、静穏時は間隔を延ばす。夜間・休日は cron をさらに疎に。
 7. **Gitea→GitLab 方向は §3.6 で対象を絞る**ため、そもそも GitLab への push 対象が共有ブランチだけになる。
 8. **バックオフ**

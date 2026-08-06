@@ -212,12 +212,30 @@ class SessionManager:
         cwd: str | None = None,
         owner: str = "scheduled",
     ) -> bool:
-        """新しい kiro-cli ペインを起動して管理下に登録する。"""
+        """新しいエージェント CLI ペインを起動して管理下に登録する。"""
         if shutil.which("tmux") is None:
             raise RuntimeError("tmux が PATH に見つかりません。`sudo apt install tmux` を実行してください。")
-        kiro_bin = shutil.which("kiro-cli")
-        if kiro_bin is None:
-            raise RuntimeError("kiro-cli が PATH に見つかりません。インストールしてください。")
+
+        # agent_cli 指定時は定義（agents/<name>.json の interactive）から組み立てた argv、
+        # 未指定（legacy）は従来の kiro-cli 組み立て。
+        if not _CLI_PROFILE.is_legacy and _CLI_PROFILE.argv:
+            full_argv = list(_CLI_PROFILE.argv)
+            cli_bin = shutil.which(full_argv[0])
+            if cli_bin is None:
+                raise RuntimeError(
+                    f"エージェント CLI '{full_argv[0]}'（agent_cli: {_CLI_PROFILE.name}）が"
+                    " PATH に見つかりません。インストールしてください。")
+            full_argv[0] = cli_bin
+        else:
+            kiro_bin = shutil.which("kiro-cli")
+            if kiro_bin is None:
+                raise RuntimeError("kiro-cli が PATH に見つかりません。インストールしてください。")
+            cmd_args = ["chat"] + self._kiro_args_base[:]
+            if self._uses_concurrency_agent:
+                agent_file = Path.home() / ".kiro" / "agents" / f"{CONCURRENCY_AGENT_NAME}.json"
+                if agent_file.is_file():
+                    cmd_args += ["--agent", CONCURRENCY_AGENT_NAME]
+            full_argv = [kiro_bin, *cmd_args]
 
         session_cwd = self._resolve_cwd(cwd)
 
@@ -228,12 +246,7 @@ class SessionManager:
             log.error("プロンプト '%s' はセッション開始コマンドの失敗により起動しません。", prompt_name)
             return False
 
-        cmd_args = ["chat"] + self._kiro_args_base[:]
-        if self._uses_concurrency_agent:
-            agent_file = Path.home() / ".kiro" / "agents" / f"{CONCURRENCY_AGENT_NAME}.json"
-            if agent_file.is_file():
-                cmd_args += ["--agent", CONCURRENCY_AGENT_NAME]
-        cmd = " ".join(shlex.quote(arg) for arg in [kiro_bin, *cmd_args])
+        cmd = " ".join(shlex.quote(arg) for arg in full_argv)
 
         try:
             pane_target = self._create_worker_pane(cmd, session_cwd)
@@ -269,7 +282,7 @@ class SessionManager:
             "workload": "routine",
             "cwd": session_cwd,
             "workspace": self._target_path,
-            "agent_cli": "kiro",
+            "agent_cli": _CLI_PROFILE.name,
         }
 
     def _send_session_chat_commands(self, pane_target: str, session_cwd: str) -> None:
@@ -285,7 +298,9 @@ class SessionManager:
                 return
             run_session_commands(
                 self._session_command_context(session_cwd),
-                send_chat=lambda text: _send_to_pane(pane_target, text),
+                # 人が `/skill-name` と書いた chat コマンドを、その CLI のスキル起動記号へ
+                # 差し替えてから送る（codex は `$skill-name`。既定 `/` の CLI は素通し）。
+                send_chat=lambda text: _send_to_pane(pane_target, _CLI_PROFILE.rewrite_slash(text)),
                 modes=("chat",),
             )
         except Exception:  # noqa: BLE001 — 開始コマンドの送信失敗でペイン起動を無効にしない

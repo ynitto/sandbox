@@ -14,6 +14,7 @@ kiro-cli を **tmux セッション**上で起動し、設定ファイルに定�
 - **ディレクトリ単位**: 起動したカレントディレクトリを対象に、プロンプトごとのペインを管理
 - **設定ファイル自動生成**: `prompt-add` で定期プロンプトを追加すると `<project>/.agents/agent-loop.yml` に保存
 - **自動再起動**: kiro-cli が予期せず終了した場合に自動で再起動
+- **エージェント CLI の差し替え**: 設定 `agent_cli` で kiro-cli 以外（claude / codex 等）を `agents/<name>.json` 契約で駆動（待機判定・クリアコマンド・スキル起動記号も定義に従う）
 
 ## 依存
 
@@ -90,12 +91,20 @@ agent-loop agents
 # ~/.agents/agent-loop.yaml: 共通設定
 # <project>/.agents/agent-loop.yml: このプロジェクトの定期プロンプト
 
-# kiro-cli の起動オプション
+# kiro-cli の起動オプション（agent_cli 未指定時のみ）
 kiro_options:
   trust_all_tools: true  # ツール使用の確認をスキップ
   resume: false          # 直前のセッションを引き継ぐ
   # agent: my-agent
   # model: claude-sonnet
+
+# エージェント CLI の差し替え（省略時は kiro-cli）。
+# agents/<name>.json の interactive 定義から起動 argv と待機判定を解決する。
+# agent_cli: claude
+# agent_cli_options:
+#   model: claude-sonnet-5
+#   readonly: false
+#   extra_args: []
 
 # タイムアウト（秒）
 startup_timeout: 60      # kiro-cli 起動待ち
