@@ -1,6 +1,6 @@
 # agent-loop 設計書
 
-> 最終更新: 2026-08-06（ループ拡張 4 設計・8 文書を本書へ統合）
+> 最終更新: 2026-08-06（ループ拡張 4 設計・8 文書を本書へ統合。同日、エージェント CLI の差し替え〈機能 5〉を追加）
 > 実装: `tools/agent-loop/`（`agent_loop` パッケージ）。旧系統 `tools/kiro-loop/` は残置（付録 B）
 > 関連: [agent-tools 改称方針](./agent-tools-rename-design.md) ／
 > [slash プロパティ設計](./agent-loop-slash-property-design.md) ／
@@ -18,6 +18,7 @@ agent-loop は、tmux 上にエージェント CLI（kiro-cli / claude 等）の
 2. **汎用 inbound Webhook（push 型）** — 外部システムからの HTTP POST を受け、フックの `handle(ctx)` でパースしてプロンプトに変換する。GitLab は一具体例で、コアは provider 非依存。**実装済み**。
 3. **エージェント間メッセージング** — エージェントごとのファイルベース inbox に他エージェントがメッセージを投函し、受信側デーモンがプロンプトとして処理する。**実装済み**。
 4. **動的インターバル（adaptive interval）** — 無風時はポーリング間隔を幾何級数的に伸ばし、イベント到来で即座に最短へ戻す。**未実装の提案**。
+5. **エージェント CLI の差し替え** — 駆動する CLI（kiro-cli / claude / codex 等）を `agents/<name>.json` の共通契約で差し替える。待機状態の監視・判定方法が CLI ごとに違う点を契約側の宣言（`ready_pattern` / `busy_pattern` / `idle_quiet_sec`）で吸収する。**実装済み**。
 
 全体を貫く原則は 3 つです。第一に、拡張は既存ループへの**挿入だけ**で載せ、既存の送信・排他・死活監視の機構は変えません。第二に、送信元固有の知識（GitLab のヘッダ名や payload 構造）は**フックスクリプトに閉じ**、コアを汎用に保ちます。第三に、実際の tmux への送信は**既存スケジューラの背圧機構**（セッション準備・セマフォ）へ一本化し、HTTP スレッドや inbox 監視スレッドから直接送信しません。
 
@@ -478,6 +479,51 @@ def check() -> str | None | dict:
 
 ---
 
+## 機能 5: エージェント CLI の差し替え — 実装済み
+
+agent-loop が tmux ペインで駆動するエージェント CLI を、kiro-cli 固定からファミリー共通の [`agents/<name>.json` 契約](./agent-cli-plugin-design.md)による差し替え式にします。設定はグローバルの 2 キーです。
+
+```yaml
+agent_cli: claude            # 省略時は従来どおり kiro-cli（kiro_options）
+agent_cli_options:
+  model: claude-sonnet-5     # 定義の {model} / model_flag に渡す（省略可）
+  readonly: false            # 読み取り専用フラグで起動（既定 false）
+  extra_args: []             # argv 末尾への追加フラグ
+```
+
+### 設計判断
+
+- **定義の解決と argv 組み立ては agentcore.agentcli へ委譲**します。「ローダは言語ごとに 1 実装」の不変条件（agent-cli-plugin 設計 §4）を守るため、agent-loop に第二のローダを書きません。zipapp インストールでは `install.sh` が agentcore を同梱し、リポジトリ直接実行では相対探索で解決します。agentcore が見つからない環境でも従来の kiro-cli 固定経路は動きます（`agent_cli` 指定だけが使えない）。
+- **未知・壊れた定義は fail fast**。デーモン起動時に明示エラーで停止し、黙って kiro へ倒しません（同設計の明示エラー原則）。`send` などの補助コマンドだけは cowork の定常業務と同じ「黙らないフォールバック」（WARNING + 従来判定で続行）です。
+- **`agent_cli` 未指定の挙動は 1 ビットも変わりません**。定義ファイルが 1 つも配布されていない環境でも従来どおり動きます（後方互換）。
+
+### 待機状態の監視・判定 — CLI ごとに方法が違う
+
+agent-loop は「送信してよいか」「処理が終わったか」をペイン画面から判定します（送信前チェック・SlotMonitor のスロット解放・起動待ち）。従来はプロンプト記号の正規表現 1 本（`_PROMPT_RE`）でしたが、**この判定方法は CLI ごとに違います**。
+
+| CLI のタイプ | 例 | 有効な判定 |
+|---|---|---|
+| 処理中はプロンプトが消える | kiro-cli | ready の消失 = 処理中（従来ヒューリスティクス） |
+| 入力欄を出したまま処理する TUI | claude（`(esc to interrupt)`）/ codex | **ready が消えない**ため、処理中マーカーの検出（`busy_pattern`）が判定の正 |
+| 安定したマーカーを持たない | 素朴な REPL | 画面が N 秒変化しない = 待機（`idle_quiet_sec` の静穏判定） |
+
+そこで契約の `interactive` に `busy_pattern`（処理中の正の検出、可視画面全体・大文字小文字無視）と `idle_quiet_sec`（静穏判定）を追加し、agent-loop 側は 1 つの判定器（`CliProfile`）に畳みます。判定の優先順位は **busy_pattern マッチ → 処理中 ＞ ready_pattern マッチ（末尾 3 行） → 待機 ＞ 静穏 → 待機 ＞ それ以外 → 処理中**。ready/busy パターンは grep 方言の ERE が契約なので、POSIX 文字クラス（`[[:space:]]` 等）を Python 正規表現へ写像してからコンパイルし、壊れたパターンは WARNING の上で組み込み既定へフォールバックします。
+
+SlotMonitor の状態遷移は従来の「プロンプト消失 → processing → 再出現 → 解放」から「非待機 → processing → 待機 → 解放」へ一般化されます。legacy プロファイル（`agent_cli` 未指定）ではこの 2 つは同じ判定です。
+
+### 送信テキストの作法も定義に従う
+
+- **コンテキスト破棄**: fresh_context が送るコマンドは `interactive.clear_command`（既定 `/clear`、codex は `/new`）。空文字は「クリア手段なし」の宣言で、警告の上クリアだけスキップします。
+- **スラッシュコマンドの行頭記号**: `slash` プロパティとセッション開始コマンド（chat モード）の行頭 `/` は、送信直前に定義の `skill_command_prefix` へ差し替えます（codex は `$name`。既定 `/` の CLI は素通し）。
+
+### 制約（v1）
+
+- **CLI はデーモン単位**（グローバル設定）。エントリごとの差し替えは、ペインごとのプロファイル分離が要るため将来課題。
+- **kiro 以外では slot-release stop hook を注入しません**（stop hook は kiro-cli の agents 機構）。スロット解放は SlotMonitor のペイン監視だけで行います。CLI 側の完了フックを契約へ載せるのは将来課題。
+- `startup_timeout` は従来どおり agent-loop の設定を正とし、定義の `ready_timeout_sec` は他の消費者（対話診断等）向けのままです。
+
+---
+
 ## slash プロパティ — 実装済み・別文書
 
 定期プロンプトの本文より前にスラッシュコマンド（`/name` 形式）を独立送信として前置する `slash` プロパティは、fork 先へ単体で展開できるよう自己完結で書かれた [`agent-loop-slash-property-design.md`](./agent-loop-slash-property-design.md) を正とします。送信順は `/clear`（fresh_context）→ `slash` 要素を宣言順 → 本文で、実装は `agent_loop/scheduler.py`、テストは `test/test_slash_property.py` にあります。
@@ -493,6 +539,7 @@ def check() -> str | None | dict:
 | メッセージング | 実装済み。`test/test_inbox_dispatch.py` | 実装済み。`test/test_messaging.py` |
 | 動的インターバル | 未実装 | 未実装 |
 | slash | 実装済み。`test/test_slash_property.py` | 未実装（移植ガイドは別文書 §3） |
+| CLI 差し替え | 実装済み。`test/test_cli_profile.py`（+ agentcore 側 `test_agentcli.py`） | 未実装（kiro-cli 固定のまま） |
 
 ---
 

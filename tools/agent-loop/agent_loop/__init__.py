@@ -11,6 +11,7 @@ import pkgutil as _pkgutil
 
 _FRAGMENTS = (
     "_head",
+    "cliprofile",
     "semaphore",
     "inbox",
     "cron",
