@@ -212,6 +212,56 @@ mini-swe-agent が実証した形: ツールは **bash 1 個だけ**、システ
 契約に載せるか、`/api/chat` の tools で read_file / apply_edit / run_command の 3 つだけ
 持つ同型を自作する（スキーマ ~800 トークン）。位置づけは F-1 と opencode の中間。
 
+#### F-2 の実装形態 — ヘッドレス + デバッグ TUI の 2 面構成
+
+F-2 を自作する場合、「ラウンド毎の動きを見たい・ログに残したい・固まっていないことを
+確認したい」は、**ループ本体とビューを分離**すれば安く手に入る。
+
+```
+┌ ループ核（純関数的な 1 実装）
+│   ラウンド進行・/api/chat（stream=true）・コマンド実行
+│   → 構造化イベントを 1 行 JSON で発行するだけ。描画を知らない
+├ イベント: round_start / llm_progress / tool_exec / tool_result / round_end / stall
+├ シンク 1: JSONL ログ（常時。--log <file>、既定 ~/.agents/logs/…）
+├ シンク 2: ヘッドレス面 = stdout に最終本文・stderr に @agent-usage（既存 CLI 契約のまま）
+└ シンク 3: TUI 面 = イベントを画面に描くだけの薄いビュー
+```
+
+設計の要点は 4 つ。
+
+1. **「固まっていない」の判定はストリーミングで作る。** `stream=false` だと prefill 中と
+   ハングが外から区別できない——今回の問題がまさにそれ。`stream=true` で受け、
+   「最終トークンからの経過秒 / tok/s」を `llm_progress` イベント（1〜2 秒間隔に間引き）
+   として出す。これが TUI の生存表示にも、**watchdog**（`stall_timeout` 秒無進捗なら
+   transient 分類で自己中断——無人運転の agent-flow で人の代わりに「固まった」を検知する）
+   にもなる。
+2. **TUI は「ログの tail」として作る。** ループ核がどの面でも JSONL を書くので、
+   TUI は (a) 自分でループを抱えて描く対話実行と、(b) `--follow <logfile>` で
+   **agent-flow がヘッドレスで回している最中のノードへ後から覗きに行く**アタッチの
+   2 モードが同じ描画コードで済む。デバッグ目的なら (b) が本命になる。
+3. **描画はリッチにしない。** 標準ライブラリだけで足りる——ヘッダ 2 行（ラウンド番号・
+   経過・最終トークンからの秒数・tok/s）を ANSI カーソル移動で更新し、その下へ
+   イベント行を素直にスクロールさせる程度（curses も stdlib にあるが、ここまで要らない）。
+   tmux 内で崩れないことだけ確認する（次項の理由）。
+4. **対話面は CLI 定義の `interactive` に載せる。** `agents/<名前>.json` の
+   `interactive.command` を TUI 起動にしておけば、agent-dashboard の対話診断
+   （tmux send-keys 注入）からそのまま開ける。ヘッドレス契約とは別枠なので
+   agent-flow 側の挙動には影響しない。
+
+言語は Python（標準ライブラリのみ）を推す。agent-ollama / agent-opencode と同じ様式で
+zipapp 同梱にも乗り、JS だと Node ランタイムと TUI ライブラリの依存が増えるだけで
+得るものがない。
+
+```
+┌ t3 「README の誤字修正」 qwen3.5:9b   round 3/10   経過 4m12s
+│ 生成中… 最終トークン 0.8s 前 (7.2 tok/s)
+├────────────────────────────────────────
+│ 12:01:03 R1 llm 42s  in=1,832tk out=210tk
+│ 12:01:45 R1 $ grep -n "typo" README.md   → exit 0 (0.3s)
+│ 12:02:30 R2 llm 61s  in=+412tk out=188tk（接頭辞キャッシュ命中）
+│ 12:03:35 R2 $ sed -i …                   → exit 0 (0.1s)
+```
+
 #### F-3 — 既製の軽量コーディング CLI（aider）
 
 aider はヘッドレス実行（`aider --message … --yes-always`）と ollama 接続を持ち、
