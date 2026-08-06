@@ -186,7 +186,88 @@ opencode の設定でヘッドレス専用のエージェントを定義し、�
 6. opencode はそれまで agent-tools の書き込み系役割から外し、GPU 機（別 PC）が
    用意できた時点で README の本来の構成に戻す。
 
-## 4. 受け入れ基準（案）
+## 4. agent-flow の worker として使えるか
+
+結論: **kind による。テキスト系 kind は案 A の延長で行ける。ファイルを触る `work` は
+opencode 必須なので §0 の prefill 壁がそのまま掛かり、CPU 単体では成立しない。**
+
+### 4.1 「スキルを使う」ことはローカル推論の障害にならない
+
+agent-flow の worker が使う flow-worker「スキル」は、CLI 側のスキル機構ではない。
+agent-flow 自身が `worker_skill`（既定 `flow-worker`）の `scripts/prompt.py` を
+**ローカルで実行してプロンプトを組み立て、stdin で CLI に渡す**（`agent.py` の
+`run_agent`）。つまり CLI がスキルを読める必要はなく、`agent_cli: ollama` でも
+flow-worker の実行規律（三つの約束・出力契約）はそのまま届く。
+
+実測（`prompt.py` に work ペイロードを流した結果）: 骨格は **約 1,400 文字 ≒ 500
+トークン** + タスク文脈・依存成果。opencode 固有の 1〜2 万トークンとは 1〜2 桁違う。
+CPU の prefill でも数十秒の領域で、**worker プロンプトの重さは問題にならない**。
+
+逆に、opencode への**スキル配布**（`install.py --agent opencode --all-skills`）は
+ローカル運用では毒になる——スキル一覧がシステムプロンプトに載って prefill を増やし、
+SKILL.md の読み込みがツールラウンドを 1 つ足す。opencode を使う場合も配布は必要最小限に
+絞る。flow-worker / flow-planner は agent-flow 側が読むので配布不要。
+
+### 4.2 kind 別の可否
+
+`agent-flow.yaml` の `agents:` は planner / evaluator / worker（全 kind 既定）/ 個別 kind
+の粒度で `{agent_cli, model}` を上書きできる。これで割ると:
+
+| kind | 内容 | ローカル（`agent_cli: ollama`） |
+|---|---|---|
+| classify / filter / judge / reduce / split / map / synthesize / generate | text → text（+ JSON 出力契約） | **行ける**（下記 2 制約に注意） |
+| verify | 依存成果の独立検算 | 依存成果が本文に inline されていれば行ける。ワークスペースのファイルを読む検証は不可 |
+| planner / evaluator | JSON 契約の計画・継続判断 | 行ける（JSON 遵守は要観察） |
+| **work** | ワークスペースでのファイル編集 | **不可**。ツール実行が要るので opencode 必須 → §0 の壁 |
+
+制約が 2 つある:
+
+1. **artifacts のパス参照が読めない。** 大きな中間成果物は `artifacts/<id>/` への
+   パス参照で後続へ渡る設計だが、これは「後続の CLI がファイルを読める」前提。
+   agent-ollama にはツールが無いので、**ローカルに落とす kind へは依存成果が
+   `output`/`data` に inline で乗る経路だけ**が有効。グラフ設計時にここを跨がせない。
+2. **JSON 出力契約の遵守が 9B では揺れる。** filter/judge/reduce/split と
+   planner/evaluator は末尾 JSON が契約。`format_retries`（レイヤ 2）が 1 回は拾うが、
+   qwen3 系の `<think>` ブロックが混入すると崩れやすい——案 E（think 抑制）は
+   agent-flow 経路では品質要件でもある。
+
+### 4.3 設定例と運用条件
+
+```yaml
+# agent-flow.yaml — テキスト系 kind だけローカルへ。work はクラウド（or 別 PC GPU の opencode）
+agent_cli: <クラウド CLI>          # 既定は従来どおり
+agents:
+  classify:   {agent_cli: ollama, model: qwen3.5:9b}
+  filter:     {agent_cli: ollama, model: qwen3.5:9b}
+  judge:      {agent_cli: ollama, model: qwen3.5:9b}
+  reduce:     {agent_cli: ollama, model: qwen3.5:9b}
+  split:      {agent_cli: ollama, model: qwen3.5:9b}
+  map:        {agent_cli: ollama, model: qwen3.5:9b}
+  synthesize: {agent_cli: ollama, model: qwen3.5:9b}
+  # work / verify / planner / evaluator は当面クラウドに残す（様子を見て順次移す）
+workers: 1            # ローカル推論は直列に。並列 2 はプレフィックスキャッシュを潰し合う
+agent_timeout: 1200   # 既定 600s。ローカルの冷起動 + 生成で超えると transient 扱いで無駄リトライ
+```
+
+サーバ側は §2 案 C（`OLLAMA_KEEP_ALIVE` / `OLLAMA_NUM_PARALLEL=1` / KV 量子化）を
+そのまま適用する。map-reduce の fan-out はローカルでは**直列消化**になるので、
+列挙駆動の大きな run をローカル kind に向けるときは件数×1 ノード数分の壁時計を見込む。
+
+### 4.4 work もローカルでやりたい場合の成立条件
+
+全部そろって、ようやく「1 ノード数分〜十数分」の域:
+
+1. 案 B（iGPU prefill）が実機で効くこと——これが前提条件。効かなければ不成立
+2. 案 D の痩せた opencode エージェント（read/edit/bash のみ・MCP 無効・スキル配布最小）
+3. モデルは MoE（アクティブ 3B 級）か dense 4B 級
+4. `workers: 1` + `OLLAMA_NUM_PARALLEL=1` + `agent_timeout: 1800` 程度
+5. `granularity` のスコープ契約（変更 ≤30 行想定）でノードあたりのラウンド数を絞る
+
+再計画（`max_iterations`）とリトライ（`max_retries`）が掛け算で乗ることを忘れない——
+1 ノード 10 分は「run 1 本が半日」を意味しうる。**まず 4.3 のテキスト系だけで運用を始め、
+案 B の計測結果が出てから work の移行を判断する**のが安全な順序である。
+
+## 5. 受け入れ基準（案）
 
 - `agent-audit extract`（ローカル推論）の p50 が **90 秒以下**、p95 が呼び出し側
   タイムアウト（300s）以下。
