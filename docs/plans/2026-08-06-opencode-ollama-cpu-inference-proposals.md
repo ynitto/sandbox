@@ -262,6 +262,60 @@ zipapp 同梱にも乗り、JS だと Node ランタイムと TUI ライブラ�
 │ 12:03:35 R2 $ sed -i …                   → exit 0 (0.1s)
 ```
 
+#### F-2 の置き場所と契約 — agent-ollama へ統合する
+
+**結論: CLI の表面（コマンド名 `agent-ollama` と定義 `agents/ollama.json`）へ統合するのが
+筋。** 別コマンドを立てると「ollama の住所・タイムアウト・think の知識」が 2 か所に増え、
+利用者は用途で CLI 名を切り替えることになる。契約スキーマは最初から「同じ CLI でも用途で
+権限が違う」を `write_args` / `readonly_args` で 1 定義に収める設計なので、そこに載せる:
+
+```jsonc
+// agents/ollama.json（差分イメージ）
+{
+  "command": ["agent-ollama", "--think", "off", "{model}"],
+  "write_args": ["--tools"],          // 書き込みモードのときだけループ+ツールが生える
+  "readonly": "enforced",             // 既定/読み取り専用は従来どおり text→text（ツール無し）
+  "interactive": {
+    "command": ["agent-ollama", "--tui", "{model}"],
+    "prompt_inject": "send-keys"
+  },
+  "errors": [ /* 既存 + */ 
+    { "match": "応答が停止しました|stall detected", "class": "transient",
+      "hint": "stall_timeout 内にトークンもツール実行も進まず自己中断しました（リトライで解けることが多い）" }
+  ]
+}
+```
+
+- **readonly の真実性が保たれる**のがこの形の要点。ループとツールは `--tools`（write
+  モード）でだけ生え、既定・readonly は今の純 text→text のまま——`"enforced"` 宣言に
+  嘘が入らない。agent-flow の work ノードだけが write でループを得る。
+- **実装の置き場は agentcore 内の別モジュール**（`ollama_loop.py` / `ollama_tui.py`）。
+  `ollama_adapter.py`（純 text 経路）は育てず、そのまま残す。install.sh の zipapp は
+  agentcore ツリーを丸ごと同梱する作りなので、**ビルド経路は無改修**で新モジュールが乗る。
+- **TUI の共用は 2 経路が自動で付いてくる**: agent-dashboard の対話診断は
+  `interactive.command` を読むだけなので上記差し替えで TUI が開き、agent-loop は
+  tmux send-keys / capture-pane で任意の対話 CLI を回す作りなので同じセッションを
+  そのまま定期駆動できる。ここから**設計制約**が 1 つ出る——capture-pane が読める
+  ことが前提なので、**全画面（alternate screen）にしない**。行指向でイベントを
+  スクロールさせ、ステータス 1〜2 行だけをカーソル移動で更新する。プロンプト入力も
+  素朴な行読み（send-keys の「文字列 + Enter」がそのまま効く形）にする。
+- **外部ライブラリは「あれば使う」に留める**。rich（純 Python）を optional import で
+  使えば描画コードはほぼ消えるが、ハード依存にするとエンジン zipapp 側の
+  「標準ライブラリのみ」の不変条件を壊す。`import rich` 失敗時は ANSI 素書きへ
+  フォールバック（ステータス行の更新だけなので 30 行程度）。
+- **`--think on|off` は CLI オプションとして持つ**（API の `think` フィールドへ直結。
+  環境変数 `AGENT_OLLAMA_THINK` で既定を上書き）。プロンプトへ `/no_think` を混ぜる
+  方式はモデル依存で成果物にも漏れうるので採らない。定義ファイルの `command` 配列に
+  `"--think", "off"` を焼き込めば、エンジン側は何も知らずに済む——案 E の think 抑制は
+  この形で吸収する。qwen3 系の JSON 出力契約（§4.2 制約 2）の安定化を兼ねる。
+- **「固まっていない」ことの保証は 3 層**: (1) `stream=true` の `llm_progress`
+  イベント（最終トークンからの経過秒 / tok/s）を JSONL ログへ常時記録、(2) TUI /
+  `--follow` がそれを描画、(3) `--stall-timeout`（既定例 120s 無進捗）で自己中断し、
+  上記 errors の transient 分類に乗せてエンジンのリトライ層へ返す。遅いのは許容し、
+  無進捗だけを落とす——「遅い」と「死んだ」を区別する信号がストリーミングで初めて手に入る。
+- 任意: JSONL イベントログを `session_log`（format: 新設 `ollama-jsonl`）として宣言すれば
+  agent-audit collect にそのまま乗り、ローカル推論の transcript も台帳へ入る。
+
 #### F-3 — 既製の軽量コーディング CLI（aider）
 
 aider はヘッドレス実行（`aider --message … --yes-always`）と ollama 接続を持ち、
