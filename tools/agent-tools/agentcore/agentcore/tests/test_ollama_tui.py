@@ -80,6 +80,41 @@ class TestRenderer(unittest.TestCase):
         self.assertIn("42", text, "沈黙の長さが画面に出る（固まっていないことの提示）")
 
 
+class TestContextDisplay(unittest.TestCase):
+    def test_context_text_shortens_and_omits_unknown_limits(self):
+        self.assertEqual(ollama_tui.context_text(4200, 8192, 51.3), "ctx 4.2k/8.2k (51%)")
+        self.assertEqual(ollama_tui.context_text(120, 0), "ctx 120",
+                         "上限を知らないなら割合を騙らない")
+
+    def test_llm_end_line_shows_context(self):
+        line = ollama_tui.event_line({
+            "kind": "llm_end", "ts": 1.0, "round": 1, "duration_sec": 3,
+            "tokens_in": 4000, "tokens_out": 100, "tokens_per_sec": 7.2,
+            "context_used": 4100, "context_limit": 8192, "context_pct": 50.0})
+        self.assertIn("ctx 4.1k/8.2k (50%)", line)
+
+    def test_warn_and_exhausted_lines_are_readable(self):
+        warn = ollama_tui.event_line({
+            "kind": "context_warn", "ts": 1.0, "round": 2, "context_used": 7500,
+            "context_limit": 8192, "context_pct": 91.5, "context_source": "measured"})
+        self.assertIn("上限に近づいています", warn)
+        exhausted = ollama_tui.event_line({
+            "kind": "context_exhausted", "ts": 1.0, "round": 3, "context_used": 8100,
+            "context_limit": 8192, "context_pct": 98.9})
+        self.assertIn("打ち切りました", exhausted)
+
+    def test_status_line_carries_context(self):
+        out = _Tty()
+        renderer = ollama_tui.Renderer(out=out, use_rich=False)
+        renderer.event({"kind": "run_start", "ts": 1.0, "model": "m", "mode": "tools"})
+        renderer.event({"kind": "llm_end", "ts": 2.0, "round": 1, "duration_sec": 1,
+                        "tokens_in": 4000, "tokens_out": 100, "tokens_per_sec": 7.2,
+                        "context_used": 4100, "context_limit": 8192, "context_pct": 50.0})
+        renderer.event({"kind": "llm_heartbeat", "ts": 3.0, "round": 2, "phase": "prefill",
+                        "waiting_sec": 9.0})
+        self.assertIn("ctx 4.1k/8.2k", out.getvalue())
+
+
 class TestFollow(unittest.TestCase):
     def test_renders_an_existing_log_until_the_terminal_event(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -140,6 +175,19 @@ class TestRepl(unittest.TestCase):
         rc, text, _calls = self._run("やって\n/quit\n", runner=boom)
         self.assertEqual(rc, 0)
         self.assertIn("推論に失敗", text)
+
+    def test_ctx_command_is_local_and_reports_the_last_observation(self):
+        with mock.patch.object(ollama_tui.ollama_events, "read_status", return_value={
+                "context_used": 4100, "context_limit": 8192, "context_pct": 50.0,
+                "context_source": "measured"}):
+            _rc, text, calls = self._run("/ctx\n/quit\n")
+        self.assertEqual(calls, [], "文脈の確認で LLM を呼ばない")
+        self.assertIn("ctx 4.1k/8.2k (50%)", text)
+
+    def test_ctx_command_without_observation_says_so(self):
+        with mock.patch.object(ollama_tui.ollama_events, "read_status", return_value={}):
+            _rc, text, _calls = self._run("/ctx\n/quit\n")
+        self.assertIn("まだ", text)
 
     def test_skills_listing_is_local_only(self):
         _rc, text, calls = self._run("/skills\n/quit\n")

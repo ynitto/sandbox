@@ -35,7 +35,31 @@ _STYLES = {
     "stall": "bold red",
     "run_end": "bold",
     "error": "red",
+    "context_warn": "yellow",
+    "context_exhausted": "bold red",
 }
+
+
+def _tok(count) -> str:
+    """トークン数を短く（4200 → 4.2k）。ステータス行は 1 行に収めたい。"""
+    try:
+        value = int(count or 0)
+    except (TypeError, ValueError):
+        return "0"
+    if value < 1000:
+        return str(value)
+    return f"{value / 1000:.1f}k"
+
+
+def context_text(used, limit, pct=None) -> str:
+    """`ctx 4.2k/8k (52%)`。上限が分からないときは使用量だけを出す。"""
+    used_text = _tok(used)
+    if not limit:
+        return f"ctx {used_text}"
+    text = f"ctx {used_text}/{_tok(limit)}"
+    if pct is not None:
+        text += f" ({pct:.0f}%)"
+    return text
 
 
 def _dur(sec: float) -> str:
@@ -68,9 +92,20 @@ def event_line(event: dict) -> str:
     if kind == "round_start":
         return f"{ts} {tag} 開始（最大 {event.get('rounds_max', '?')}）"
     if kind == "llm_end":
-        return (f"{ts} {tag} llm {_dur(event.get('duration_sec', 0))} "
+        line = (f"{ts} {tag} llm {_dur(event.get('duration_sec', 0))} "
                 f"in={event.get('tokens_in', 0)}tk out={event.get('tokens_out', 0)}tk "
                 f"({event.get('tokens_per_sec', 0)} tok/s)")
+        if event.get("context_used"):
+            line += "  " + context_text(event.get("context_used"), event.get("context_limit"),
+                                        event.get("context_pct"))
+        return line
+    if kind == "context_warn":
+        return (f"{ts} {tag} ⚠ 文脈が上限に近づいています: "
+                f"{context_text(event.get('context_used'), event.get('context_limit'), event.get('context_pct'))}"
+                f"（{event.get('context_source', '')}）")
+    if kind == "context_exhausted":
+        return (f"{ts} {tag} ⚠ 文脈の残りが足りないため打ち切りました: "
+                f"{context_text(event.get('context_used'), event.get('context_limit'), event.get('context_pct'))}")
     if kind == "tool_exec":
         command = str(event.get("command") or "").replace("\n", " ⏎ ")
         return f"{ts} {tag} $ {command}"
@@ -110,6 +145,9 @@ class Renderer:
         self._waiting = 0.0
         self._started = time.time()
         self._running = False
+        self._ctx_used = 0
+        self._ctx_limit = 0
+        self._ctx_pct = None
 
     # -- 出力の最小単位 ---------------------------------------------------
     def _write(self, text: str) -> None:
@@ -137,6 +175,8 @@ class Renderer:
             parts.append(f"{self._tps} tok/s")
         if self._tokens_out:
             parts.append(f"out={self._tokens_out}tk")
+        if self._ctx_used:
+            parts.append(context_text(self._ctx_used, self._ctx_limit, self._ctx_pct))
         self._status = "  ".join(parts)
         return self._status
 
@@ -180,6 +220,14 @@ class Renderer:
             except (TypeError, ValueError):
                 pass
         self._waiting = float(event.get("waiting_sec") or 0.0)
+        if event.get("context_used") is not None:
+            try:
+                self._ctx_used = int(event["context_used"])
+                self._ctx_limit = int(event.get("context_limit") or 0)
+                self._ctx_pct = (float(event["context_pct"])
+                                 if event.get("context_pct") is not None else None)
+            except (TypeError, ValueError):
+                pass
 
         self.line(event_line(event), _STYLES.get(kind, ""))
         if kind in ("llm_heartbeat", "llm_progress"):
@@ -224,6 +272,7 @@ _HELP = """\
   /tools on|off    ツール実行ループの切り替え
   /think on|off    思考モードの切り替え
   /model <name>    モデルの切り替え
+  /ctx             直近の文脈使用量（使用トークン / 上限 / 割合）
   /status          いまの進捗（JSON）
   /help            この一覧
   /quit            終了
@@ -285,6 +334,14 @@ def repl(runner, *, model: str, tools: bool, think: "bool | None" = None,
             if arg:
                 model = arg
             print(f"model={model}", file=out)
+            continue
+        if lowered == "/ctx":
+            snap = ollama_events.read_status()
+            if not snap.get("context_used"):
+                print("まだ文脈使用量を観測していません（1 回実行すると出ます）。", file=out)
+            else:
+                print(f"  {context_text(snap.get('context_used'), snap.get('context_limit'), snap.get('context_pct'))}"
+                      f"  実測元={snap.get('context_source', '')}", file=out)
             continue
         if lowered == "/status":
             import json as _json

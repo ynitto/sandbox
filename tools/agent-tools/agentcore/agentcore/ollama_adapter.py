@@ -34,7 +34,7 @@ import time
 import urllib.error
 import urllib.request
 
-from agentcore import ollama_events, ollama_loop, ollama_skills
+from agentcore import ollama_context, ollama_events, ollama_loop, ollama_skills
 
 USAGE = """使い方: agent-ollama [オプション] <model>
 
@@ -45,6 +45,7 @@ USAGE = """使い方: agent-ollama [オプション] <model>
     --tui                 デバッグ用の対話ビュー（行指向・tmux から操作できる）
     --follow [LOG]        進捗ログを追尾表示する（省略時は最新のログ）
     --status [LOG]        いまの進捗を 1 行 JSON で返す（省略時は最新のログ）
+    --context <model>     文脈の上限だけを調べて出す（LLM は呼ばない）
 
   推論:
     --think on|off        思考モード（既定は AGENT_OLLAMA_THINK → モデル既定）
@@ -56,6 +57,10 @@ USAGE = """使い方: agent-ollama [オプション] <model>
     --first-token-timeout SEC  最初のトークンまでの上限（既定 0 = 無制限）
     --log PATH            進捗ログ（JSONL）の置き場   --no-log 書かない
 
+  文脈（黙った切り捨てを起こさせない）:
+    --context-limit N     文脈の上限を明示する（既定は num_ctx → /api/ps → /api/show）
+    --context-warn-pct P  この割合を超えたら 1 回警告する（既定 90・0 で無効）
+
   ループ（--tools のとき）:
     --max-rounds N        最大ラウンド（既定 12）
     --command-timeout SEC コマンド 1 つの上限（既定 300）
@@ -66,9 +71,10 @@ USAGE = """使い方: agent-ollama [オプション] <model>
     AGENT_OLLAMA_STALL_TIMEOUT / AGENT_OLLAMA_FIRST_TOKEN_TIMEOUT / OLLAMA_TIMEOUT
 """
 
-_FLAGS = {"--tools", "--tui", "--no-skills", "--no-log", "-h", "--help"}
+_FLAGS = {"--tools", "--tui", "--no-skills", "--no-log", "--context", "-h", "--help"}
 _VALUED = {"--think", "--skill", "--stall-timeout", "--first-token-timeout",
-           "--max-rounds", "--command-timeout", "--cwd", "--log", "--model"}
+           "--max-rounds", "--command-timeout", "--cwd", "--log", "--model",
+           "--context-limit", "--context-warn-pct"}
 _OPTIONAL_VALUED = {"--follow", "--status"}
 
 
@@ -107,6 +113,8 @@ def parse_args(tokens: "list[str]") -> dict:
         "command_timeout": ollama_loop.DEFAULT_COMMAND_TIMEOUT_SEC,
         "cwd": None, "log": None, "no_log": False,
         "follow": False, "status": False, "log_target": None,
+        "context_limit": 0, "context_warn_pct": ollama_context.DEFAULT_WARN_PCT,
+        "context_query": False,
     }
     index = 0
     while index < len(tokens):
@@ -122,6 +130,8 @@ def parse_args(tokens: "list[str]") -> dict:
             opts["skills_enabled"] = False
         elif token == "--no-log":
             opts["no_log"] = True
+        elif token == "--context":
+            opts["context_query"] = True
         elif token in _OPTIONAL_VALUED:
             opts["follow" if token == "--follow" else "status"] = True
             if index < len(tokens) and not tokens[index].startswith("-"):
@@ -152,6 +162,10 @@ def parse_args(tokens: "list[str]") -> dict:
                 opts["cwd"] = value
             elif name == "--log":
                 opts["log"] = value
+            elif name == "--context-limit":
+                opts["context_limit"] = max(0, int(_as_float(value, name)))
+            elif name == "--context-warn-pct":
+                opts["context_warn_pct"] = _as_float(value, name)
             elif name == "--model":
                 opts["model"] = value
         elif token.startswith("-") and token != "-":
@@ -220,11 +234,21 @@ def _limits(opts: dict) -> dict:
             "first_token_timeout": opts.get("first_token_timeout")}
 
 
+def make_tracker(model: str, opts: dict) -> "ollama_context.ContextTracker":
+    """文脈の上限を 1 回だけ解決してトラッカーを作る（失敗しても上限 0 で動く）。"""
+    limit, source = ollama_context.resolve_limit(
+        model, options=ollama_loop.load_options(), explicit=opts.get("context_limit") or 0,
+        host=ollama_loop.host_url())
+    return ollama_context.ContextTracker(
+        limit=limit, source=source, warn_pct=opts.get("context_warn_pct")
+        if opts.get("context_warn_pct") is not None else ollama_context.DEFAULT_WARN_PCT)
+
+
 def run_request(prompt: str, opts: dict, *, model: str = "", tools: "bool | None" = None,
                 think: "bool | None" = None, renderer=None, warn=None) -> dict:
     """1 回分の実行（スキル展開 → ログ開始 → 単発 or ループ）。
 
-    戻り値: {text, tokens_in, tokens_out, status, log}
+    戻り値: {text, tokens_in, tokens_out, status, log, context}
     """
     model = model or opts["model"]
     use_tools = opts["tools"] if tools is None else tools
@@ -236,11 +260,13 @@ def run_request(prompt: str, opts: dict, *, model: str = "", tools: "bool | None
 
     log_path = None if opts.get("no_log") else (opts.get("log") or ollama_events.new_log_path(model))
     sink = renderer.event if renderer is not None else None
+    tracker = make_tracker(model, opts)
     started = time.monotonic()
     with ollama_events.EventLog(log_path, sink=sink) as events:
         events.emit("run_start", model=model, mode="tools" if use_tools else "plain",
                     log=str(log_path or ""), prompt_chars=len(prompt),
-                    think=("既定" if think is None else bool(think)))
+                    think=("既定" if think is None else bool(think)),
+                    context_limit=tracker.limit, context_limit_source=tracker.limit_source)
         for item in loaded:
             events.emit("skill_load", **item)
         try:
@@ -248,11 +274,14 @@ def run_request(prompt: str, opts: dict, *, model: str = "", tools: "bool | None
                 result = ollama_loop.run_loop(
                     model, prompt, cwd=opts.get("cwd"), emit=events.emit, think=think,
                     max_rounds=opts["max_rounds"], command_timeout=opts["command_timeout"],
-                    **_limits(opts))
+                    tracker=tracker, **_limits(opts))
             else:
                 result = ollama_loop.run_plain(
-                    model, prompt, think=think, emit=events.emit, round_no=1, **_limits(opts))
+                    model, prompt, think=think, emit=events.emit, round_no=1,
+                    tracker=tracker, **_limits(opts))
                 result = dict(result, rounds=1, status="done")
+                if tracker.should_warn():
+                    events.emit("context_warn", round=1, **tracker.snapshot())
         except BaseException as exc:
             events.emit("error", message=str(exc), kind_of=type(exc).__name__)
             events.emit("run_end", status="failed", rounds=0, tokens_in=0, tokens_out=0,
@@ -262,8 +291,9 @@ def run_request(prompt: str, opts: dict, *, model: str = "", tools: "bool | None
                     rounds=result.get("rounds") or 1,
                     tokens_in=result.get("tokens_in") or 0,
                     tokens_out=result.get("tokens_out") or 0,
-                    duration_sec=round(time.monotonic() - started, 2))
-    return dict(result, log=str(log_path or ""))
+                    duration_sec=round(time.monotonic() - started, 2),
+                    **tracker.snapshot())
+    return dict(result, log=str(log_path or ""), context=tracker.snapshot())
 
 
 def _tui_runner(opts: dict):
@@ -297,6 +327,14 @@ def main(argv=None) -> int:
         print(f"モデルを指定してください。\n\n{USAGE}", file=sys.stderr)
         return 2
 
+    if opts["context_query"]:
+        limit, source = ollama_context.resolve_limit(
+            opts["model"], options=ollama_loop.load_options(),
+            explicit=opts.get("context_limit") or 0, host=ollama_loop.host_url())
+        print(json.dumps({"model": opts["model"], "context_limit": limit,
+                          "context_limit_source": source}, ensure_ascii=False))
+        return 0 if limit else 1
+
     if opts["tui"]:
         from agentcore import ollama_tui
         try:
@@ -323,6 +361,19 @@ def main(argv=None) -> int:
     sys.stdout.flush()
     print(f"@agent-usage tokens_in={int(result.get('tokens_in') or 0)} "
           f"tokens_out={int(result.get('tokens_out') or 0)}", file=sys.stderr)
+    context = result.get("context") or {}
+    if context.get("context_used"):
+        # 契約の `@agent-usage`（累計の仕事量）とは別の行にする。文脈使用量は
+        # 「いまどれだけ埋まっているか」で、意味が違う——同じ行に混ぜない。
+        print(f"@agent-context used={context['context_used']} "
+              f"limit={context.get('context_limit', 0)} "
+              f"pct={context.get('context_pct', '')} "
+              f"source={context.get('context_source', '')}", file=sys.stderr)
+    # 途中で止めたときは黙って成果だけ返さない。成果は返す（R1 止めない）が、
+    # **完走していない**ことは呼び出し側と人に見えるようにする。
+    if result.get("status") in ("context_exhausted", "max_rounds"):
+        print(f"@agent-note 途中で打ち切りました（{result['status']}）。"
+              "成果は最後の応答までの分です。", file=sys.stderr)
     if result.get("log"):
         print(f"@agent-log {result['log']}", file=sys.stderr)
     return 0

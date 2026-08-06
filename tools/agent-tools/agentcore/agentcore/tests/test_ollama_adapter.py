@@ -2,14 +2,28 @@ from __future__ import annotations
 
 import io
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
-from agentcore import agentcli, ollama_adapter, ollama_loop
+from agentcore import agentcli, ollama_adapter, ollama_context, ollama_loop
 
 
-class TestOllamaAdapter(unittest.TestCase):
+class _NoServerMixin:
+    """文脈上限の問い合わせを差し替える（テストを推論サーバから切り離す）。"""
+
+    limit = (8192, "server")
+
+    def setUp(self):
+        patcher = mock.patch.object(ollama_adapter.ollama_context, "resolve_limit",
+                                    return_value=self.limit)
+        self.addCleanup(patcher.stop)
+        self.resolve_limit = patcher.start()
+
+
+class TestOllamaAdapter(_NoServerMixin, unittest.TestCase):
     def test_generate_requests_non_streaming_and_returns_usage(self):
         response = io.BytesIO(json.dumps({
             "response": "ok", "prompt_eval_count": 12, "eval_count": 34,
@@ -79,7 +93,68 @@ class TestParseArgs(unittest.TestCase):
         self.assertEqual(opts["max_rounds"], ollama_loop.DEFAULT_MAX_ROUNDS)
 
 
-class TestMainModes(unittest.TestCase):
+class TestContextReporting(_NoServerMixin, unittest.TestCase):
+    def _run(self, argv, tokens=(4000, 100)):
+        out, err = io.StringIO(), io.StringIO()
+
+        def fake_plain(model, prompt, **kw):
+            # トラッカーが実際に渡っていることも、ここで一緒に確かめる。
+            kw["tracker"].observe(*tokens)
+            return {"text": "answer", "tokens_in": tokens[0], "tokens_out": tokens[1]}
+
+        with mock.patch.object(ollama_adapter.ollama_loop, "run_plain", fake_plain), \
+                mock.patch.object(ollama_adapter.sys, "stdin", io.StringIO("hi")), \
+                redirect_stdout(out), redirect_stderr(err):
+            rc = ollama_adapter.main(argv)
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_agent_context_line_is_separate_from_usage(self):
+        """`@agent-usage`（累計の仕事量）と文脈使用量は意味が違うので行を分ける。"""
+        rc, body, err = self._run(["qwen3", "--no-log"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(body, "answer")
+        self.assertEqual(agentcli.parse_usage(err), (4000, 100))
+        line = [l for l in err.splitlines() if l.startswith("@agent-context")][0]
+        self.assertIn("used=4100", line)
+        self.assertIn("limit=8192", line)
+        self.assertIn("source=measured", line)
+
+    def test_explicit_limit_is_passed_to_the_resolver(self):
+        self._run(["qwen3", "--no-log", "--context-limit", "4096"])
+        self.assertEqual(self.resolve_limit.call_args.kwargs["explicit"], 4096)
+
+    def test_warning_is_emitted_when_close_to_the_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = str(Path(tmp) / "run.jsonl")
+            self._run(["qwen3", "--log", log, "--context-warn-pct", "50"],
+                      tokens=(8000, 100))
+            kinds = [json.loads(l)["kind"] for l in Path(log).read_text().splitlines()]
+            status = ollama_adapter.ollama_events.read_status(log)
+        self.assertIn("context_warn", kinds)
+        self.assertEqual(status["context_used"], 8100)
+        self.assertEqual(status["context_limit"], 8192)
+        self.assertGreater(status["context_pct"], 98.0)
+
+    def test_context_query_mode_does_not_call_the_model(self):
+        out = io.StringIO()
+        with mock.patch.object(ollama_adapter.ollama_loop, "run_plain") as plain, \
+                redirect_stdout(out):
+            rc = ollama_adapter.main(["qwen3", "--context"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(plain.call_count, 0)
+        self.assertEqual(json.loads(out.getvalue()),
+                         {"model": "qwen3", "context_limit": 8192,
+                          "context_limit_source": "server"})
+
+    def test_context_query_returns_1_when_unknown(self):
+        out = io.StringIO()
+        with mock.patch.object(ollama_adapter.ollama_context, "resolve_limit",
+                               return_value=(0, "unknown")), redirect_stdout(out):
+            self.assertEqual(ollama_adapter.main(["qwen3", "--context"]), 1)
+        self.assertEqual(json.loads(out.getvalue())["context_limit"], 0)
+
+
+class TestMainModes(_NoServerMixin, unittest.TestCase):
     def test_help_and_missing_model(self):
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out):

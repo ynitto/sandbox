@@ -65,6 +65,7 @@ echo 'README の誤字を直して' | agent-ollama --think off qwen3 --tools # �
 agent-ollama --tui qwen3            # デバッグ用の対話ビュー（tmux から操作できる）
 agent-ollama --follow               # 走っている実行のログへ後からアタッチする
 agent-ollama --status               # いまの進捗を 1 行 JSON で返す（外部監視向け）
+agent-ollama --context qwen3        # 文脈の上限だけを調べる（LLM を呼ばない）
 ```
 
 | モード | 契約上の位置 | 何ができるか |
@@ -95,6 +96,36 @@ agent-ollama --status               # いまの進捗を 1 行 JSON で返す（
 エンジン側は壁時計の上限を大きく取り（例 `agent_timeout: 3600`）、実質の検知器を
 `--stall-timeout` に任せるとよい。壁時計は「無限ハング時の最後の砦」として残す。
 
+### 文脈使用量 — 黙った切り捨てを起こさせない
+
+ローカル推論の「たまに指示を無視する」の正体の 1 つが**文脈長の黙った切り捨て**である。
+会話が `num_ctx` を超えると ollama はエラーを返さず古い側を落とすので、システム
+プロンプトが消えた状態の答えが returns される。stall と同じで、**見えないから直せない**。
+
+そこで使用量を常に持ち、近づいたら警告し、足せるものを削り、それでも入らなければ
+**こちらから明示的に止める**（サーバに黙って捨てさせない）。
+
+```
+R2/12 decode 経過 4m12s  out=210tk  ctx 4.2k/8.2k (51%)      ← TUI のステータス行
+@agent-context used=4531 limit=8192 pct=55.3 source=measured  ← ヘッドレスの stderr
+```
+
+- **上限の解決**は「効く順」に見る: `--context-limit` → 送っている `num_ctx`
+  （`AGENT_OLLAMA_OPTIONS`）→ `/api/ps`（サーバが実際に確保した値）→ `/api/show`
+  （モデルの宣言）。どれも取れなければ上限不明として**使用量だけ**を出す
+  （知らない上限を根拠に警告も自衛もしない）。`--context <model>` で調べるだけもできる
+- **使用量の実測**は直前の応答の `prompt_eval_count` + 出力トークン。プレフィックス
+  キャッシュが効いて「新規評価分だけ」返す版でも、**会話は伸びる一方**という性質で
+  補正する（減って見えたら積み上げに切り替え、`context_source` が `estimated` になる）
+- **`--context-warn-pct`**（既定 90）を超えたら 1 回だけ警告する（毎ラウンド出さない）
+- **ツール出力は残り容量に合わせて詰める**。残りが足りなければ `context_exhausted` で
+  止め、`@agent-note` で「途中で打ち切った」ことを呼び出し側にも見せる（成果は返す）
+- 使用量は `llm_end` イベント・`--status` の JSON・`@agent-context` 行の 3 か所に出る。
+  TUI では `/ctx` でいつでも確認できる
+
+`@agent-usage`（その実行で使った累計トークン = 台帳向け）と `@agent-context`
+（いま文脈がどれだけ埋まっているか）は**意味が違う**ので行を分けてある。
+
 ### think・スキル・rich
 
 - **`--think on|off`** は CLI オプション（API の `think` フィールドへ直結）。既定は
@@ -110,7 +141,8 @@ agent-ollama --status               # いまの進捗を 1 行 JSON で返す（
 
 環境変数: `OLLAMA_HOST` / `AGENT_OLLAMA_THINK` / `AGENT_OLLAMA_OPTIONS`（JSON・`num_ctx` 等を
 リクエスト単位で足す）/ `AGENT_OLLAMA_KEEP_ALIVE` / `AGENT_OLLAMA_LOG_DIR` /
-`AGENT_OLLAMA_SKILLS_DIR` / `AGENT_OLLAMA_STALL_TIMEOUT` / `AGENT_OLLAMA_FIRST_TOKEN_TIMEOUT`。
+`AGENT_OLLAMA_SKILLS_DIR` / `AGENT_OLLAMA_STALL_TIMEOUT` / `AGENT_OLLAMA_FIRST_TOKEN_TIMEOUT` /
+`AGENT_OLLAMA_META_TIMEOUT`（文脈上限の問い合わせに許す秒数・既定 3）。
 
 TUI は**全画面（alternate screen）にしない**。agent-loop / kiro-loop は tmux の
 `send-keys` で入力を送り `capture-pane` で画面を読むので、全画面にすると向こうから
