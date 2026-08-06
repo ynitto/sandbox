@@ -9,6 +9,7 @@ git clone 後に実行してコアスキルをユーザー領域にセットア�
     python agent-skills/install.py --agent claude              # Claude Code 用
     python agent-skills/install.py --agent codex               # Codex 用
     python agent-skills/install.py --agent kiro                # Kiro 用
+    python agent-skills/install.py --agent opencode            # opencode 用
     python agent-skills/install.py --all-skills                # 全スキルをインストール
     python agent-skills/install.py --agent claude --all-skills # Claude Code + 全スキル
 
@@ -49,7 +50,13 @@ AGENT_DIRS: dict[str, str] = {
     "claude": ".claude",
     "codex": ".codex",
     "kiro": ".kiro",
+    # opencode だけホーム直下ではなく XDG 配下（~/.config/opencode）。opencode 自身が
+    # そこを設定・スキルの置き場としており、~/.opencode/ は見ない。
+    "opencode": os.path.join(".config", "opencode"),
 }
+
+# opencode の設定ファイル名（先に見つかった方を使う。無ければ opencode.json を作る）。
+OPENCODE_CONFIG_NAMES = ("opencode.json", "opencode.jsonc")
 
 # ---- このスクリプト自身の位置からリポジトリルートを特定 ----
 
@@ -180,18 +187,106 @@ def _get_vscode_user_mcp_path() -> str:
 def _mcp_target_path(agent_type: str, paths: dict[str, str]) -> str:
     """エージェント種別に応じた MCP 設定ファイルのパスを返す。
 
-    claude  → ~/.claude/.mcp.json          (Claude Code ユーザーレベル設定)
-    kiro    → ~/.kiro/settings/mcp.json    (Kiro 設定)
-    copilot → VS Code ユーザーデータ mcp.json  (GitHub Copilot 向け)
-    codex   → VS Code ユーザーデータ mcp.json  (Codex 向け)
+    claude   → ~/.claude/.mcp.json          (Claude Code ユーザーレベル設定)
+    kiro     → ~/.kiro/settings/mcp.json    (Kiro 設定)
+    copilot  → VS Code ユーザーデータ mcp.json  (GitHub Copilot 向け)
+    codex    → VS Code ユーザーデータ mcp.json  (Codex 向け)
+    opencode → ~/.config/opencode/opencode.json (本体設定と同じファイルの mcp キー)
     """
     agent_home = paths["agent_home"]
     if agent_type == "claude":
         return os.path.join(agent_home, ".mcp.json")
     elif agent_type == "kiro":
         return os.path.join(agent_home, "settings", "mcp.json")
+    elif agent_type == "opencode":
+        return _opencode_config_path(paths)
     else:  # copilot, codex
         return _get_vscode_user_mcp_path()
+
+
+# ---- opencode 固有の設定ハンドリング ----
+#
+# opencode は **MCP も指示ファイルも本体設定（opencode.json）の中**に書く。しかも
+# 未知のトップレベルキーを ConfigInvalidError で拒否して起動ごと落ちるので、他の
+# エージェントのように「設定ファイルへ雑に追記する」わけにいかない。読めない設定を
+# 上書きしない・書くキーは実機で通るものだけ、を守るための小さな層をここに置く。
+
+_JSONC_TOKEN_RE = re.compile(r'"(?:\\.|[^"\\])*"|//[^\n]*|/\*.*?\*/', re.DOTALL)
+
+
+def _strip_jsonc(text: str) -> str:
+    """コメントと末尾カンマを落とす（opencode.jsonc 対応）。文字列内の // は残す。"""
+    without_comments = _JSONC_TOKEN_RE.sub(
+        lambda m: m.group(0) if m.group(0).startswith('"') else "", text,
+    )
+    return re.sub(r",(\s*[}\]])", r"\1", without_comments)
+
+
+def _opencode_config_path(paths: dict[str, str]) -> str:
+    """既存の設定ファイル（.json / .jsonc）を優先し、無ければ opencode.json。"""
+    for name in OPENCODE_CONFIG_NAMES:
+        candidate = os.path.join(paths["agent_home"], name)
+        if os.path.isfile(candidate):
+            return candidate
+    return os.path.join(paths["agent_home"], OPENCODE_CONFIG_NAMES[0])
+
+
+def _load_opencode_config(path: str) -> dict | None:
+    """opencode 設定を読む。**壊れていたら None**（上書きせずに見送るため）。
+
+    他形式の `_load_mcp_config` は解析失敗時に空 dict を返して上書きするが、ここは
+    同じ挙動にしない——opencode ではこのファイルが本体設定そのもので、潰すと
+    プロバイダ定義もモデル選択も一緒に消える。
+    """
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.loads(_strip_jsonc(f.read()))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _save_opencode_config(path: str, data: dict) -> None:
+    """既存を .bak へ退避してから書く（コメント付き .jsonc はここで素の JSON になる）。"""
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    if os.path.isfile(path):
+        shutil.copy2(path, path + ".bak")
+        if path.endswith(".jsonc"):
+            print(f"   （{os.path.basename(path)} を素の JSON として書き直します。"
+                  f"コメントは落ちます — 元の内容は {os.path.basename(path)}.bak にあります）")
+    data.setdefault("$schema", "https://opencode.ai/config.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+
+def _to_opencode_mcp_entry(entry: dict) -> dict:
+    """VSCode 形式（command 文字列 + args）を opencode 形式へ畳む。
+
+    opencode の mcp エントリは `command` が**文字列配列**で、`type` と `enabled` が必須。
+    """
+    argv = [entry.get("command", ""), *entry.get("args", [])]
+    converted: dict = {
+        "type": "local",
+        "command": [a for a in argv if a],
+        "enabled": True,
+    }
+    env = entry.get("env") or entry.get("environment")
+    if isinstance(env, dict) and env:
+        converted["environment"] = dict(env)
+    return converted
+
+
+def _from_opencode_mcp_entry(entry: dict) -> dict | None:
+    """opencode 形式を VSCode 形式のビューへ戻す（既存の許可ディレクトリ読み出し用）。"""
+    if not isinstance(entry, dict):
+        return None
+    argv = entry.get("command")
+    if not isinstance(argv, list) or not argv:
+        return None
+    return {"command": argv[0], "args": [str(a) for a in argv[1:]]}
 
 
 def _wrap_npx_for_windows(entry: dict) -> dict:
@@ -215,7 +310,10 @@ def _mcp_servers_key(agent_type: str) -> str:
 
     claude / kiro   → mcpServers (Anthropic 形式)
     copilot / codex → servers    (VSCode 形式)
+    opencode        → mcp        (opencode 形式。本体設定の中に同居する)
     """
+    if agent_type == "opencode":
+        return "mcp"
     return "mcpServers" if agent_type in ("claude", "kiro") else "servers"
 
 
@@ -329,6 +427,8 @@ def setup_mcp_config(
 
     - claude / kiro   : Anthropic 形式の mcpServers キーに追記
     - copilot / codex : VSCode 形式の servers キーに追記
+    - opencode        : opencode 形式（command は文字列配列・type/enabled 必須）へ変換して
+                        本体設定の mcp キーに追記
     """
     if not os.path.isfile(MCP_CONFIG_SRC):
         return False
@@ -342,21 +442,46 @@ def setup_mcp_config(
 
     target_path = _mcp_target_path(agent_type, paths)
     servers_key = _mcp_servers_key(agent_type)
-    existing = _load_mcp_config(target_path)
+    is_opencode = agent_type == "opencode"
+
+    if is_opencode:
+        existing = _load_opencode_config(target_path)
+        if existing is None:
+            print(f"   ⚠ {target_path} を JSON として読めないため MCP 設定を見送ります")
+            print("     （本体設定と同じファイルなので、上書きせずそのままにしました）")
+            return False
+    else:
+        existing = _load_mcp_config(target_path)
     existing_servers = existing.get(servers_key, {})
+
+    # 既存エントリは「今どの許可ディレクトリで入っているか」を読むために渡す。opencode 形式は
+    # 形が違うので VSCode 形式のビューへ戻してから渡す（読む側を分岐させない）。
+    if is_opencode:
+        existing_view = {}
+        for name, entry in existing_servers.items():
+            view = _from_opencode_mcp_entry(entry)
+            if view:
+                existing_view[name] = view
+    else:
+        existing_view = existing_servers
 
     rendered: dict = {}
     for name, entry in src_servers.items():
         rendered[name] = _render_server_entry(
-            entry, existing_servers.get(name), paths, skip_config,
+            entry, existing_view.get(name), paths, skip_config,
         )
+    if is_opencode:
+        rendered = {name: _to_opencode_mcp_entry(entry) for name, entry in rendered.items()}
 
     existing.setdefault(servers_key, {}).update(rendered)
 
-    os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
-    with open(target_path, "w", encoding="utf-8") as f:
-        json.dump(existing, f, indent=2, ensure_ascii=False)
-        f.write("\n")
+    if is_opencode:
+        _save_opencode_config(target_path, existing)
+    else:
+        os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
+        with open(target_path, "w", encoding="utf-8") as f:
+            json.dump(existing, f, indent=2, ensure_ascii=False)
+            f.write("\n")
 
     print(f"   → {target_path}")
     return True
@@ -373,6 +498,7 @@ def parse_args() -> argparse.Namespace:
   claude   Claude Code     → ~/.claude/
   codex    Codex           → ~/.codex/
   kiro     Kiro            → ~/.kiro/
+  opencode opencode        → ~/.config/opencode/
 """,
     )
     parser.add_argument(
@@ -666,6 +792,9 @@ def copy_agent_instructions(paths: dict[str, str], agent_type: str = "copilot") 
     applyTo を Kiro 形式の inclusion に変換する。
     claude の場合は ~/.claude/rules/ にコピーし、フロントマターの
     applyTo を Claude rules 形式の paths に変換する。
+    opencode の場合は ~/.config/opencode/instructions/ にコピーし、**本体設定の
+    instructions 配列に登録する**（置くだけでは読まれない。opencode は指示ファイルの
+    自動探索を持たず、設定に列挙されたパスだけを読む）。
     """
     src_dir = os.path.join(REPO_ROOT, ".github", "instructions")
     if agent_type == "kiro":
@@ -706,7 +835,40 @@ def copy_agent_instructions(paths: dict[str, str], agent_type: str = "copilot") 
         print(f"   {dest}")
         copied = True
 
+    if copied and agent_type == "opencode":
+        _register_opencode_instructions(paths, dest_dir)
+
     return copied
+
+
+def _register_opencode_instructions(paths: dict[str, str], dest_dir: str) -> bool:
+    """コピーした指示ファイルを opencode 設定の instructions 配列へ登録する。
+
+    既存の値は残し、重複だけ避ける（人が足した AGENTS.md 等を落とさない）。設定を
+    読めないときは登録を見送る——本体設定なので、潰す方が害が大きい。
+    """
+    config_path = _opencode_config_path(paths)
+    config = _load_opencode_config(config_path)
+    if config is None:
+        print(f"   ⚠ {config_path} を JSON として読めないため instructions の登録を見送ります")
+        return False
+
+    current = config.get("instructions")
+    entries: list[str] = [str(v) for v in current] if isinstance(current, list) else []
+    added = 0
+    for name in sorted(os.listdir(dest_dir)):
+        if not name.endswith(".md"):
+            continue
+        path = os.path.join(dest_dir, name)
+        if path not in entries:
+            entries.append(path)
+            added += 1
+    if not added:
+        return True
+    config["instructions"] = entries
+    _save_opencode_config(config_path, config)
+    print(f"   → {config_path} の instructions に {added} 件を登録しました")
+    return True
 
 
 def _get_skill_config_script(skill_dir: str) -> str | None:

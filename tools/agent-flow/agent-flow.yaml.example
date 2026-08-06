@@ -70,8 +70,11 @@ executor: agent            # ワーカーバス: 組み込み agent（エージ�
                            #   copilot（GitHub Copilot CLI `copilot -p`）/
                            #   codex（OpenAI Codex CLI `codex exec`）。planner / executor /
                            #   verify 等、このツールの LLM 呼び出しすべてに効く。
-                           #   組み込み以外（cursor / ollama / hermes …）は agents/<名前>.json の
-                           #   プラグイン定義で追加できる（契約: schemas/agent-cli.schema.json）
+                           #   組み込み以外（cursor / ollama / opencode / hermes …）は
+                           #   agents/<名前>.json のプラグイン定義で追加できる
+                           #   （契約: schemas/agent-cli.schema.json）。opencode は別 PC の
+                           #   ollama を推論エンジンにできる（tools/opencode/install.sh。
+                           #   model は opencode の作法どおり <プロバイダ>/<モデル> 形式）
 # model: claude-sonnet     # エージェント CLI に渡すモデル（省略可）。
                            #   kiro: kiro-cli のモデル名 / claude: sonnet・opus 等 /
                            #   copilot: claude-sonnet-4.5・gpt-5 等（copilot /model の一覧に従う）

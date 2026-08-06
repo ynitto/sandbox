@@ -238,8 +238,8 @@
       "additionalProperties": false,
       "properties": {
         "format": {
-          "enum": ["jsonl-dir", "kiro-sqlite"],
-          "description": "パーサの選択（実装は agent-audit に format ごと 1 つ）。jsonl-dir=1 セッション 1 *.jsonl のディレクトリ（claude / codex 系） / kiro-sqlite=kiro-cli の SQLite ストア"
+          "enum": ["jsonl-dir", "kiro-sqlite", "opencode-sqlite"],
+          "description": "パーサの選択（実装は agent-audit に format ごと 1 つ）。jsonl-dir=1 セッション 1 *.jsonl のディレクトリ（claude / codex 系） / kiro-sqlite=kiro-cli の SQLite ストア（1 行に会話配列が丸ごと入る形） / opencode-sqlite=opencode の SQLite ストア（session / message / part の 3 表に正規化された形。本文は part 行の JSON、役割は親の message 行、実測トークンは session 行の列）"
         },
         "paths": {
           "type": "array",
@@ -258,7 +258,7 @@
           "properties": {
             "version_key": {
               "type": "string",
-              "description": "ログ行（jsonl-dir）またはセッション行（kiro-sqlite）から CLI バージョンを読むフィールド名（dotted 可。例 \"version\"）。省略時はバージョン検出をせず、常に既定 rules を使う"
+              "description": "ログ行（jsonl-dir）またはセッション行（kiro-sqlite / opencode-sqlite）から CLI バージョンを読むフィールド名（dotted 可。例 \"version\"）。省略時はバージョン検出をせず、常に既定 rules を使う"
             },
             "rules": {
               "type": "array",

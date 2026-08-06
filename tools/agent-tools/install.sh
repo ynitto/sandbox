@@ -134,7 +134,7 @@ fi
 
 info "エージェント CLI を確認しています..."
 FOUND_CLI=""
-for cli in kiro-cli claude copilot codex cursor-agent; do
+for cli in kiro-cli claude copilot codex cursor-agent opencode; do
   if command -v "$cli" &>/dev/null; then
     FOUND_CLI="$cli"
     ok "エージェント CLI を検出: $cli ($(command -v "$cli"))"
@@ -145,7 +145,9 @@ if [[ -z "$FOUND_CLI" ]]; then
   warn "エージェント CLI が見つかりません。stub モードでのみ動作します
   （agent-flow: --planner stub --executor stub / agent-amigos: --agent-cli stub）。
   実運用には kiro / claude / copilot / codex のいずれかが必要です。
-  それ以外は agents/<name>.json 定義で追加できます（契約: schemas/agent-cli.schema.json）。"
+  それ以外は agents/<name>.json 定義で追加できます（契約: schemas/agent-cli.schema.json）。
+  ローカル推論（別 PC の ollama）で回すなら opencode を独立インストーラで入れられます:
+    bash tools/opencode/install.sh --ollama-host http://<推論する PC>:11434"
 fi
 
 info "PyYAML を確認しています（任意）..."

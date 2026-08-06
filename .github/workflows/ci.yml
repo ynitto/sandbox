@@ -49,6 +49,10 @@ jobs:
           # 見立てた end-to-end テストを含む。ネットワークには出ない）。
           - package: gitlab-repo-sync
             suites: tools/gitlab-repo-sync/tests
+          # opencode アダプター（agent-opencode）。偽の opencode を相手にするので
+          # 本体も推論サーバも要らない（ネットワークには出ない）。
+          - package: opencode
+            suites: tools/opencode/tests
     env:
       # エージェント CLI のスタブが実時間 sleep しないようにする（README のテスト手順と同じ）。
       AGENT_FLOW_STUB_SLEEP_MAX: "0"
