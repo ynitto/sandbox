@@ -125,6 +125,18 @@ class TestStreamCall(unittest.TestCase):
                 ollama_loop.run_plain("qwen3", "hello", heartbeat=0.05)
         self.assertIn("model not found", str(caught.exception))
 
+    def test_llm_end_carries_context_when_a_tracker_is_given(self):
+        from agentcore import ollama_context
+        events = []
+        tracker = ollama_context.ContextTracker(limit=100)
+        with _patch_urlopen(_FakeResponse(_gen_lines("あい", tokens_in=11, tokens_out=3))):
+            ollama_loop.run_plain("qwen3", "hello", tracker=tracker, heartbeat=0.05,
+                                  emit=lambda kind, **f: events.append((kind, f)))
+        end = [f for k, f in events if k == "llm_end"][0]
+        self.assertEqual(end["context_used"], 14)
+        self.assertEqual(end["context_limit"], 100)
+        self.assertEqual(end["context_pct"], 14.0)
+
     def test_think_and_options_are_sent_only_when_declared(self):
         captured = {}
 
@@ -290,6 +302,72 @@ class TestRunLoop(unittest.TestCase):
         result, _calls = self._loop(["```bash\nls\n```"], max_rounds=3)
         self.assertEqual(result["status"], "max_rounds")
         self.assertEqual(result["rounds"], 3)
+
+    def test_context_is_tracked_and_warned(self):
+        from agentcore import ollama_context
+        events = []
+        tracker = ollama_context.ContextTracker(limit=1000, warn_pct=50)
+
+        def fake_chat(model, messages, **kw):
+            kw["tracker"].observe(600, 50)      # 使用量 650 / 1000 = 65%
+            return {"text": "終わりました\nTASK_COMPLETE", "tokens_in": 600, "tokens_out": 50}
+
+        with mock.patch.object(ollama_loop, "chat_once", fake_chat):
+            result = ollama_loop.run_loop(
+                "m", "タスク", tracker=tracker,
+                emit=lambda kind, **f: events.append((kind, f)))
+        warns = [f for k, f in events if k == "context_warn"]
+        self.assertEqual(len(warns), 1)
+        self.assertEqual(warns[0]["context_used"], 650)
+        self.assertEqual(warns[0]["context_pct"], 65.0)
+        self.assertEqual(result["context"]["context_used"], 650)
+
+    def test_tool_output_is_clipped_to_the_remaining_context(self):
+        """残り容量に合わせて詰める（サーバに黙って切り捨てさせない）。"""
+        from agentcore import ollama_context
+        seen = {}
+        tracker = ollama_context.ContextTracker(limit=1200)
+
+        def fake_chat(model, messages, **kw):
+            kw["tracker"].observe(600, 0)       # 残り 600 - reserve(512) = 88 トークン
+            return {"text": "```bash\nls\n```", "tokens_in": 600, "tokens_out": 0}
+
+        def fake_run(command, **kw):
+            seen["max_chars"] = kw["max_chars"]
+            return {"exit_code": 0, "output": "x", "duration_sec": 0.1}
+
+        with mock.patch.object(ollama_loop, "chat_once", fake_chat), \
+                mock.patch.object(ollama_loop, "run_command", fake_run):
+            ollama_loop.run_loop("m", "タスク", tracker=tracker, max_rounds=1,
+                                 max_output_chars=99999)
+        self.assertLess(seen["max_chars"], 99999, "残り容量まで絞る")
+        self.assertGreater(seen["max_chars"], 0)
+
+    def test_exhausted_context_stops_explicitly(self):
+        from agentcore import ollama_context
+        events = []
+        tracker = ollama_context.ContextTracker(limit=700)
+
+        def fake_chat(model, messages, **kw):
+            kw["tracker"].observe(690, 0)       # 残りは reserve にも足りない
+            return {"text": "```bash\nls\n```", "tokens_in": 690, "tokens_out": 0}
+
+        with mock.patch.object(ollama_loop, "chat_once", fake_chat), \
+                mock.patch.object(ollama_loop, "run_command") as run:
+            result = ollama_loop.run_loop(
+                "m", "タスク", tracker=tracker, max_rounds=5,
+                emit=lambda kind, **f: events.append((kind, f)))
+        self.assertEqual(result["status"], "context_exhausted")
+        self.assertEqual(run.call_count, 0, "入らないと分かっているなら実行しない")
+        kinds = [k for k, _f in events]
+        self.assertIn("context_exhausted", kinds)
+        self.assertNotIn("tool_exec", kinds,
+                         "実行していないコマンドを実行したようにログへ残さない")
+
+    def test_no_tracker_means_no_context_fields(self):
+        """トラッカーを渡さなければ従来どおり（上限も警告も関与しない）。"""
+        result, _calls = self._loop(["できました\nTASK_COMPLETE"])
+        self.assertEqual(result["context"], {})
 
     def test_system_prompt_states_the_workdir(self):
         self.assertIn("/tmp/work", ollama_loop.system_prompt("/tmp/work"))

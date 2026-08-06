@@ -45,6 +45,9 @@ DEFAULT_MAX_ROUNDS = 12
 DEFAULT_COMMAND_TIMEOUT_SEC = 300.0
 DEFAULT_MAX_OUTPUT_CHARS = 4000
 _MAX_NUDGES = 2                        # 規約を外した応答へ言い直しを促す回数の上限
+# これ以下しか文脈が残っていないなら、ツール結果を足しても意味を成さない。
+# ここで明示的に止める（サーバに黙って切り捨てさせるより、止まった理由が残る方がよい）。
+_MIN_TOOL_OUTPUT_CHARS = 200
 
 _FENCE_RE = re.compile(r"```(?:bash|sh|shell|console)?[ \t]*\r?\n(.*?)```", re.S)
 _DONE_MARKER = "TASK_COMPLETE"
@@ -182,6 +185,7 @@ def stream_call(endpoint: str, body: dict, *, delta_of, emit=None, round_no: int
                 stall_timeout: "float | None" = None,
                 first_token_timeout: "float | None" = None,
                 connect_timeout: "float | None" = None,
+                tracker=None,
                 heartbeat: float = HEARTBEAT_INTERVAL_SEC) -> dict:
     """ollama のストリーミング API を 1 回叩き、本文と実測トークンを集約して返す。
 
@@ -311,17 +315,21 @@ def stream_call(endpoint: str, body: dict, *, delta_of, emit=None, round_no: int
     tokens_in = int(final.get("prompt_eval_count") or 0)
     measured_out = int(final.get("eval_count") or 0) or tokens_out
     duration = time.monotonic() - started
+    # 文脈使用量は「この応答の実測」から導けるので、usage と同じ 1 か所（llm_end）へ載せる
+    # ——別イベントに分けると、見る側が 2 つを突き合わせないと現在地が分からなくなる。
+    context = tracker.observe(tokens_in, measured_out) if tracker is not None else {}
     if emit is not None:
         emit("llm_end", round=round_no, phase="done", tokens_in=tokens_in,
              tokens_out=measured_out, duration_sec=round(duration, 2),
              tokens_per_sec=round(measured_out / max(duration, 1e-6), 2),
-             thinking_chars=thinking_chars)
+             thinking_chars=thinking_chars, **context)
     return {
         "text": "".join(text_parts),
         "tokens_in": tokens_in,
         "tokens_out": measured_out,
         "duration_sec": duration,
         "done_reason": str(final.get("done_reason") or ""),
+        "context": context,
     }
 
 
@@ -415,19 +423,26 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
              think: "bool | None" = None, max_rounds: int = DEFAULT_MAX_ROUNDS,
              command_timeout: float = DEFAULT_COMMAND_TIMEOUT_SEC,
              max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
-             options: "dict | None" = None, **limits) -> dict:
+             options: "dict | None" = None, tracker=None, **limits) -> dict:
     """bash 1 ツールの最小エージェントループ。
 
     1 ラウンド = 「モデルに聞く → コードブロックがあれば実行して結果を返す」。
     ブロックが無ければ完了（`TASK_COMPLETE`）とみなす。規約から外れた応答には
     最大 `_MAX_NUDGES` 回だけ言い直しを促し、それでも駄目なら最後の本文を成果とする
     ——バックアップ実行系なので、**曖昧な成果でも返す方が止まるより良い**（§0.1 R1）。
+
+    `tracker`（ContextTracker）を渡すと文脈の面倒も見る: 使用量を各ラウンドの
+    `llm_end` へ載せ、上限へ近づいたら警告し、**ツール出力を残り容量に合わせて詰め**、
+    それでも入らなくなったら `context_exhausted` で明示的に止める。サーバに黙って
+    切り捨てさせない（切り捨てられると、指示を失ったまま尤もらしい答えが返る）。
     """
     workdir = str(cwd or os.getcwd())
     messages = [
         {"role": "system", "content": system_prompt(workdir)},
         {"role": "user", "content": task},
     ]
+    if tracker is not None:
+        tracker.add_text(messages[0]["content"] + task)
     tokens_in = tokens_out = 0
     nudges = 0
     last_text = ""
@@ -438,12 +453,14 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
         if emit is not None:
             emit("round_start", round=round_no, rounds_max=max_rounds)
         result = chat_once(model, messages, think=think, emit=emit, options=options,
-                           round_no=round_no, **limits)
+                           round_no=round_no, tracker=tracker, **limits)
         tokens_in += int(result.get("tokens_in") or 0)
         tokens_out += int(result.get("tokens_out") or 0)
         text = str(result.get("text") or "")
         last_text = text or last_text
         messages.append({"role": "assistant", "content": text})
+        if tracker is not None and emit is not None and tracker.should_warn():
+            emit("context_warn", round=round_no, **tracker.snapshot())
 
         command = extract_command(text)
         if not command:
@@ -460,17 +477,35 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
                 emit("round_end", round=round_no, reason="nudge")
             continue
 
+        # 残り容量に合わせてツール出力の上限を絞る。足りなければ、切り捨てられるのを
+        # 待たずにこちらで止める——サーバ側の切り捨ては黙って起きるので気づけない。
+        # 判定は tool_exec を出す**前**に行う（出してから止めると、実行していない
+        # コマンドが実行されたようにログへ残る）。
+        allowed = max_output_chars
+        if tracker is not None:
+            room = tracker.remaining_chars()
+            if room >= 0:
+                if room < _MIN_TOOL_OUTPUT_CHARS:
+                    if emit is not None:
+                        emit("context_exhausted", round=round_no,
+                             command=_clip(command, 400), **tracker.snapshot())
+                    status = "context_exhausted"
+                    break
+                allowed = min(allowed, room)
+
         if emit is not None:
             emit("tool_exec", round=round_no, command=_clip(command, 400))
         outcome = run_command(command, cwd=workdir, timeout=command_timeout,
-                              max_chars=max_output_chars)
+                              max_chars=allowed)
         if emit is not None:
             emit("tool_result", round=round_no, exit_code=outcome["exit_code"],
                  duration_sec=outcome["duration_sec"], output_chars=len(outcome["output"]))
-        messages.append({"role": "user", "content": (
-            f"実行結果（終了コード {outcome['exit_code']}）:\n"
-            f"```\n{outcome['output']}\n```\n"
-            "続けてください（完了なら報告と TASK_COMPLETE）。")})
+        feedback = (f"実行結果（終了コード {outcome['exit_code']}）:\n"
+                    f"```\n{outcome['output']}\n```\n"
+                    "続けてください（完了なら報告と TASK_COMPLETE）。")
+        messages.append({"role": "user", "content": feedback})
+        if tracker is not None:
+            tracker.add_text(text + feedback)
         if emit is not None:
             emit("round_end", round=round_no, reason="tool")
 
@@ -480,4 +515,5 @@ def run_loop(model: str, task: str, *, cwd: "str | None" = None, emit=None,
         "tokens_out": tokens_out,
         "rounds": round_no,
         "status": status,
+        "context": tracker.snapshot() if tracker is not None else {},
     }

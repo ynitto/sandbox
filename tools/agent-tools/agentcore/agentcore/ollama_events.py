@@ -157,6 +157,7 @@ def read_status(path: "str | Path | None" = None, now: "float | None" = None) ->
     status: dict = {
         "log": str(target), "state": "running", "phase": "", "round": 0,
         "model": "", "mode": "", "tokens_in": 0, "tokens_out": 0, "tokens_per_sec": 0.0,
+        "context_used": 0, "context_limit": 0, "context_source": "unknown",
     }
     last_progress_at = 0.0
     for event in events:
@@ -173,17 +174,20 @@ def read_status(path: "str | Path | None" = None, now: "float | None" = None) ->
                 pass
         if "phase" in event:
             status["phase"] = str(event.get("phase") or "")
-        for key in ("tokens_in", "tokens_out"):
+        for key in ("tokens_in", "tokens_out", "context_used", "context_limit"):
             if event.get(key) is not None:
                 try:
                     status[key] = int(event[key])
                 except (TypeError, ValueError):
                     pass
-        if event.get("tokens_per_sec") is not None:
-            try:
-                status["tokens_per_sec"] = float(event["tokens_per_sec"])
-            except (TypeError, ValueError):
-                pass
+        for key in ("tokens_per_sec", "context_pct"):
+            if event.get(key) is not None:
+                try:
+                    status[key] = float(event[key])
+                except (TypeError, ValueError):
+                    pass
+        if event.get("context_source"):
+            status["context_source"] = str(event["context_source"])
         # 「進捗」= トークンが出た / ツールが動いた。heartbeat は進捗ではない
         # （生存の証拠であって、前に進んだ証拠ではない——ここを混ぜると stall を見逃す）。
         if kind in ("llm_progress", "llm_end", "tool_exec", "tool_result", "round_start"):
