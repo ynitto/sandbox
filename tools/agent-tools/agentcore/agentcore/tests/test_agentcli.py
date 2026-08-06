@@ -408,5 +408,43 @@ class TestSpillPrompt(_Isolated):
         self.assertNotIn("--trust-tools=fs_read", argv)
 
 
+class TestIdleDetectionFields(_Isolated):
+    """待機判定フィールド（busy_pattern / idle_quiet_sec / clear_command）の正規化。
+
+    判定方法は CLI ごとに違う（入力欄を出したまま処理する TUI では ready の消失が
+    起きない）ため、定義側の宣言をローダが素通しで届けることを固定する。
+    """
+
+    def spec(self, **inter):
+        base = {"command": ["cli", "run"],
+                "interactive": {"command": ["cli", "chat"], **inter}}
+        self.write_def("proj/agents", "idle", base)
+        return agentcli.load_cli("idle", project_dir=str(self.tmp / "proj"), use_cache=False)
+
+    def test_defaults(self):
+        s = self.spec()
+        self.assertEqual(agentcli.busy_pattern(s), "")
+        self.assertEqual(agentcli.idle_quiet_sec(s), 0)
+        self.assertEqual(agentcli.clear_command(s), "/clear")
+
+    def test_declared_values_pass_through(self):
+        s = self.spec(busy_pattern="esc to interrupt", idle_quiet_sec=4,
+                      clear_command="/new")
+        self.assertEqual(agentcli.busy_pattern(s), "esc to interrupt")
+        self.assertEqual(agentcli.idle_quiet_sec(s), 4.0)
+        self.assertEqual(agentcli.clear_command(s), "/new")
+
+    def test_empty_clear_command_declares_no_clear(self):
+        """空文字は「クリア手段なし」の宣言。既定 /clear と区別して保持する。"""
+        s = self.spec(clear_command="")
+        self.assertEqual(agentcli.clear_command(s), "")
+
+    def test_clear_command_without_interactive_defaults(self):
+        base = {"command": ["cli", "run"]}
+        self.write_def("proj/agents", "noint", base)
+        s = agentcli.load_cli("noint", project_dir=str(self.tmp / "proj"), use_cache=False)
+        self.assertEqual(agentcli.clear_command(s), "/clear")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -147,12 +147,13 @@ fi
 info "kiro-cli を確認しています..."
 
 if ! command -v kiro-cli &>/dev/null; then
-  die "kiro-cli が見つかりません。先に手動でインストールしてください。
-  参考: https://kiro.dev/docs/installation"
+  warn "kiro-cli が見つかりません。既定のエージェント CLI として使う場合はインストールしてください。
+  参考: https://kiro.dev/docs/installation
+  （設定の agent_cli で別のエージェント CLI（claude / codex 等）を使う場合は不要です）"
+else
+  KIRO_VER="$(kiro-cli --version 2>&1 | head -1 || echo '(バージョン取得失敗)')"
+  ok "kiro-cli が見つかりました: $(command -v kiro-cli) ($KIRO_VER)"
 fi
-
-KIRO_VER="$(kiro-cli --version 2>&1 | head -1 || echo '(バージョン取得失敗)')"
-ok "kiro-cli が見つかりました: $(command -v kiro-cli) ($KIRO_VER)"
 
 # ---------------------------------------------------------------------------
 # 6. Python 依存ライブラリのインストール（PyYAML は任意）
@@ -196,6 +197,19 @@ mkdir -p "${BUILD_DIR}/agent_loop"
     mkdir -p "${BUILD_DIR}/agent_loop/$(dirname "$f")"
     cp "$f" "${BUILD_DIR}/agent_loop/$f"
   done )
+
+# agent_cli 差し替え（agents/<name>.json 契約）用に agentcore（定義ローダ）を同梱する。
+# 無くても従来の kiro-cli 固定経路は動くため任意（その場合 agent_cli 指定は使えない）。
+AGENTCORE_SRC="${SCRIPT_DIR}/../agent-tools/agentcore/agentcore"
+if [[ -d "$AGENTCORE_SRC" ]]; then
+  ( cd "$AGENTCORE_SRC" && find . -name '*.py' -not -path './tests/*' -print0 | while IFS= read -r -d '' f; do
+      mkdir -p "${BUILD_DIR}/agentcore/$(dirname "$f")"
+      cp "$f" "${BUILD_DIR}/agentcore/$f"
+    done )
+  ok "agentcore を同梱しました（agent_cli 差し替え用）。"
+else
+  warn "agentcore が見つからないため同梱しません（agent_cli 指定は使えません）: ${AGENTCORE_SRC}"
+fi
 cat > "${BUILD_DIR}/__main__.py" <<'EOF'
 from agent_loop import main
 

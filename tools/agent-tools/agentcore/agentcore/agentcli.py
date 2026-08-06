@@ -223,6 +223,15 @@ def normalize(name: str, raw: dict, path) -> dict:
                                 if "no_session_args" in inter_raw else spec["no_session_args"]),
             "ready_pattern": str(inter_raw.get("ready_pattern") or ""),
             "ready_timeout_sec": float(inter_raw.get("ready_timeout_sec") or 60),
+            # 待機/処理中の判定は CLI ごとに方法が違う（入力欄を出したまま処理する TUI では
+            # ready_pattern の消失が起きない）。busy_pattern は「処理中」の正のシグナル、
+            # idle_quiet_sec はパターンで判定できない CLI 向けの静穏判定。
+            "busy_pattern": str(inter_raw.get("busy_pattern") or ""),
+            "idle_quiet_sec": float(inter_raw.get("idle_quiet_sec") or 0),
+            # clear_command は「未指定 → 既定 /clear」と「空文字 → クリア手段なし」を区別する。
+            "clear_command": (str(inter_raw["clear_command"])
+                              if "clear_command" in inter_raw and inter_raw["clear_command"] is not None
+                              else "/clear"),
             "prompt_inject": inject,
         }
     else:
@@ -450,6 +459,26 @@ def ready_timeout_sec(spec: dict, default: float = 60) -> float:
 def prompt_inject(spec: dict) -> str:
     inter = spec.get("interactive") or {}
     return str(inter.get("prompt_inject") or "send-keys")
+
+
+def busy_pattern(spec: dict, default: str = "") -> str:
+    """「処理中」を正に検出する ERE（無ければ空 = ready_pattern 非マッチを処理中とみなす従来法）。"""
+    inter = spec.get("interactive") or {}
+    return inter.get("busy_pattern") or default
+
+
+def idle_quiet_sec(spec: dict, default: float = 0) -> float:
+    """パターン判定不能時の静穏判定秒数（0 = 無効）。"""
+    inter = spec.get("interactive") or {}
+    return float(inter.get("idle_quiet_sec") or default)
+
+
+def clear_command(spec: dict) -> str:
+    """コンテキスト破棄コマンド。既定 /clear、空文字はクリア手段なし。"""
+    inter = spec.get("interactive")
+    if not inter:
+        return "/clear"
+    return str(inter.get("clear_command", "/clear"))
 
 
 def classify_error(spec: dict, blob: str) -> "tuple[str, str] | None":

@@ -17,6 +17,13 @@ agent-loop は **tmux + kiro-cli** を組み合わせ、設定ファイルで定
 - 複数デーモン間で kiro-cli の同時実行数を制御（ファイルベースセマフォ）
 - `ls` / `send` サブコマンドによる外部操作
 
+エージェント CLI は既定で kiro-cli だが、設定 `agent_cli` により `agents/<name>.json`
+契約（agentcore.agentcli で解決）の別 CLI へ差し替えられる。担当は `agent_loop/cliprofile.py`
+の `CliProfile` で、起動 argv・待機/処理中の判定（ready_pattern / busy_pattern /
+idle_quiet_sec）・クリアコマンド・スキル起動記号を定義から解決する。`_pane_has_prompt` と
+`SlotMonitor` の判定はこのプロファイル経由（未指定時は従来の `_PROMPT_RE` 判定と同一）。
+詳細設計: `docs/designs/agent-loop-design.md`（機能 5）。
+
 ---
 
 ## 2. 起動フロー
@@ -166,7 +173,7 @@ cwd が変わらない限り同じセッション名が生成される。
 - hook のロードは event_hook と共通の `_load_hook_module`（HTTP/scheduler の複数スレッドから
   呼ばれるため `_hook_cache_lock` で保護）
 - 同梱例: `hooks/gitlab-mr-webhook.py`（GitLab MR）/ `hooks/generic-webhook.py`（非 GitLab 最小例）
-- 詳細設計: `docs/designs/agent-loop-gitlab-webhook-design.md`
+- 詳細設計: `docs/designs/agent-loop-design.md`（「機能 2: 汎用 inbound Webhook」）
 
 **`_run_loop` の処理フロー**（1 秒ごと）:
 ```

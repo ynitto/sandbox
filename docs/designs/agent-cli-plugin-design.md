@@ -94,9 +94,18 @@
   - **対話モード（`interactive`）**: 対話起動 argv・対話専用の `write_args` / `readonly_args`・
     入力受付を検出する正規表現（`ready_pattern` / `ready_timeout_sec`）・初回プロンプトの
     注入方法（`prompt_inject: send-keys | file`）。dashboard の CLI チャット・cowork の
-    tmux 実行・対話診断が対象。**kiro-loop / agent-loop の chat 起動はこの契約の対象外**
-    ——`kiro-loop.py:_start_pane` / `agent_loop/session.py:_start_pane` は kiro-cli 固定で
-    自前に argv（`["chat"] + kiro_args_base`）を組み立てており、agentcli 定義を経由しない。
+    tmux 実行・対話診断が対象。**agent-loop も 2026-08-06 からこの契約に載った**——設定の
+    `agent_cli` 指定時は `agent_loop/cliprofile.py` が agentcore.agentcli で定義を解決して
+    ペインを起動する（未指定は従来の kiro-cli 固定経路のまま。設計:
+    [`agent-loop-design.md`](./agent-loop-design.md) 機能 5）。旧 `kiro-loop.py:_start_pane`
+    だけが対象外として残る（kiro-cli 固定の残置系統）。
+  - **待機判定（`busy_pattern` / `idle_quiet_sec` / `clear_command`）**: tmux で CLI を自動
+    運転する側（agent-loop の送信可否・スロット解放）は「待機中か処理中か」をペイン画面から
+    判定するが、**その方法は CLI ごとに違う**。入力欄を出したまま処理する TUI（claude の
+    `(esc to interrupt)` 等）では ready の消失が起きないため `busy_pattern`（処理中の正の
+    検出）が判定の正になり、どちらのパターンも持てない CLI は `idle_quiet_sec`（画面が N 秒
+    変化しなければ待機）で判定する。`clear_command` はコンテキスト破棄コマンドの差
+    （kiro/claude=`/clear`、codex=`/new`、無い CLI は空文字宣言）を吸収する。
 - 未知の agent_cli で定義も無ければ**明示エラー**（黙るフォールバックは廃止）。
   例外は cowork の定常業務 tmux 実行（`cowork.js:coworkChatLaunch`）——定義解決に失敗しても
   `kiro-cli chat --trust-all-tools` へ落として定常業務を止めない。ただし黙ってはいない。
@@ -140,6 +149,15 @@
   `readonly_args` + `no_session_args` で開き、tmux セッション名も `agent-doctor-` 接頭辞の
   別系統に分ける。読み取り専用のつもりの窓が作業セッションへ合流すると、そこから書き込みが
   できてしまうからだ。
+- **`busy_pattern` を `ready_pattern` の拡張でなく別フィールドにした**（2026-08-06、agent-loop
+  対応時）。「ready にマッチしない = 処理中」という従来の推論は、入力欄を常時表示する TUI では
+  成立しない——ready は処理中もマッチし続ける。否定を 1 本の正規表現に押し込むより、
+  「処理中の正の検出」を独立に宣言させて優先順位（busy ＞ ready ＞ 静穏 ＞ 既定 busy）を
+  コード側で固定するほうが、定義の読み書きも判定の説明もまっすぐになる。
+- **agent-loop は第二のローダを書かず agentcore を同梱する**。「ローダは言語ごとに 1 実装」
+  （§4）を守るため、agent-loop の `install.sh` が zipapp へ agentcore を同梱し、リポジトリ
+  直接実行は相対探索で import する。agentcore を解決できない環境では `agent_cli` 指定だけが
+  使えず（明示エラー）、従来の kiro-cli 固定経路は影響を受けない。
 
 ## 3. 失敗トリアージ（決定的・LLM 不使用）
 

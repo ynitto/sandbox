@@ -97,9 +97,9 @@ class InboxDispatchTests(unittest.TestCase):
 
         monitor.track("%1", on_complete=on_complete)
         monitor._pending["%1"]["acquired_at"] = 0
+        # 待機判定は CliProfile 経由（legacy はプロンプト記号 "> " で待機と判定される）
         with mock.patch.object(al.subprocess, "run", return_value=SimpleNamespace(returncode=0)), \
-             mock.patch.object(al, "_capture_pane", return_value="prompt"), \
-             mock.patch.object(al, "_pane_has_prompt", return_value=True), \
+             mock.patch.object(al, "_capture_pane", return_value="> "), \
              mock.patch.object(al.time, "time", return_value=61):
             monitor._check_pane("%1")
         on_complete.assert_called_once_with()
@@ -126,17 +126,16 @@ class InboxDispatchTests(unittest.TestCase):
         monitor.track("%1", on_complete=on_complete)
         monitor._pending["%1"].update(state="processing", acquired_at=0)
 
+        # 待機判定は CliProfile 経由（legacy は "working" を処理中、"> " を待機と判定）
         with mock.patch.object(al.subprocess, "run", return_value=SimpleNamespace(returncode=0)), \
              mock.patch.object(al, "_capture_pane", return_value="working"), \
-             mock.patch.object(al, "_pane_has_prompt", return_value=False), \
              mock.patch.object(al.time, "time", return_value=11):
             monitor._check_pane("%1")
         on_complete.assert_not_called()
         self.assertIn("%1", monitor._pending)
 
         with mock.patch.object(al.subprocess, "run", return_value=SimpleNamespace(returncode=0)), \
-             mock.patch.object(al, "_capture_pane", return_value="prompt"), \
-             mock.patch.object(al, "_pane_has_prompt", return_value=True):
+             mock.patch.object(al, "_capture_pane", return_value="> "):
             monitor._check_pane("%1")
         on_complete.assert_called_once_with()
 

@@ -7,6 +7,46 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-loop: エージェント CLI を `agents/<name>.json` 契約で差し替えられるようにした（`agent_cli`）
+
+agent-loop は kiro-cli 固定で、ファミリー共通のエージェント CLI プラグイン契約
+（`agents/<name>.json`、設計 `docs/designs/agent-cli-plugin-design.md`）の対象外だった。
+設定に `agent_cli: claude` 等と書けば、定義の `interactive` から起動 argv と**待機状態の
+監視・判定**を解決してペインを駆動するようにした（`agent_loop/cliprofile.py`）。未指定の
+挙動は不変で、未知・壊れた定義は起動時に明示エラー（黙って kiro へ倒さない）。
+
+- **待機判定は CLI ごとに方法が違う**ことを契約側の宣言で吸収した。`interactive` に
+  `busy_pattern`（処理中の正の検出。入力欄を出したまま処理する claude 等の TUI では
+  ready の消失が起きないため、これが判定の正になる）と `idle_quiet_sec`（パターンを持たない
+  CLI 向けの「画面が N 秒不変なら待機」）を追加。判定の優先順位は
+  busy ＞ ready ＞ 静穏 ＞ 既定 busy で、`SlotMonitor` と送信前チェックが共通に使う
+- **送信テキストの作法も定義に従う**: fresh_context のクリアコマンドは
+  `interactive.clear_command`（kiro/claude=`/clear`、codex=`/new`、空文字=クリア手段なし）、
+  `slash` 行とセッション開始コマンド（chat）の行頭 `/` は `skill_command_prefix` で差し替え
+  （codex は `$name`）
+- ローダは新設せず **agentcore.agentcli を同梱**（「ローダは言語ごとに 1 実装」を維持）。
+  `install.sh` が zipapp へ同梱し、リポジトリ直接実行は相対探索。kiro 以外では
+  slot-release stop hook（kiro-cli の agents 機構）は注入せず、スロット解放はペイン監視のみ
+- 同梱定義に判定を追記: claude（`(esc to interrupt)` を busy、枠付き入力欄を ready）、
+  codex（busy + `/new`）、ollama（`経過 [0-9]` のステータス行を busy、`> ` を ready、
+  クリア手段なし）。スキーマ・`agents/README.md`・ゴールデンテスト互換（argv 不変）
+
+### docs(designs): ループ拡張の設計書 8 件を `agent-loop-design.md` へ統合した
+
+kiro-loop 系と agent-loop 系で同名の設計書が 4 対 8 件並存していた（クローン改称移行の途中状態）。
+他の設計正典（agent-flow / agent-project）と同じ構成 — TL;DR → 背景と課題 → 主要な設計判断 →
+機能別設計 → 付録 — の 1 冊 `docs/designs/agent-loop-design.md` に統合し、旧 8 件を削除した。
+
+- 名称は移行先の `agent-loop` に統一。kiro-loop 系統との差分（設定パス・環境変数・inbox 共有・
+  検証状況）は付録 B に集約。`tools/kiro-loop/` の実装自体は改称方針どおり残置のまま
+- 対のあいだで食い違っていた記述（フック例外は 200 で握る・`reply_to` はメッセージ ID 専用 等）は、
+  実装検証済みの agent-loop クローン版を正として採用。モジュール分割で陳腐化した行番号参照と
+  実装当時の変更量見積り表は落とした
+- `agent-loop-slash-property-design.md` は fork 先へ単体展開するための自己完結文書なので統合せず、
+  統合版からリンクする形で残置
+- `docs/designs/README.md` の索引と、`tools/{agent-loop,kiro-loop}/DESIGN.md` ほかの参照リンクを
+  統合版へ差し替え
+
 ### agent-ollama: クラウド CLI が使えないときのバックアップ実行系にした
 
 クラウドのエージェント CLI がガバナンスや予算の事情で使えなくなると、agent-tools の作業が
