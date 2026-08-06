@@ -166,7 +166,7 @@ cwd が変わらない限り同じセッション名が生成される。
 - hook のロードは event_hook と共通の `_load_hook_module`（HTTP/scheduler の複数スレッドから
   呼ばれるため `_hook_cache_lock` で保護）
 - 同梱例: `hooks/gitlab-mr-webhook.py`（GitLab MR）/ `hooks/generic-webhook.py`（非 GitLab 最小例）
-- 詳細設計: `docs/designs/agent-loop-gitlab-webhook-design.md`
+- 詳細設計: `docs/designs/agent-loop-design.md`（「機能 2: 汎用 inbound Webhook」）
 
 **`_run_loop` の処理フロー**（1 秒ごと）:
 ```

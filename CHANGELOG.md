@@ -7,6 +7,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### docs(designs): ループ拡張の設計書 8 件を `agent-loop-design.md` へ統合した
+
+kiro-loop 系と agent-loop 系で同名の設計書が 4 対 8 件並存していた（クローン改称移行の途中状態）。
+他の設計正典（agent-flow / agent-project）と同じ構成 — TL;DR → 背景と課題 → 主要な設計判断 →
+機能別設計 → 付録 — の 1 冊 `docs/designs/agent-loop-design.md` に統合し、旧 8 件を削除した。
+
+- 名称は移行先の `agent-loop` に統一。kiro-loop 系統との差分（設定パス・環境変数・inbox 共有・
+  検証状況）は付録 B に集約。`tools/kiro-loop/` の実装自体は改称方針どおり残置のまま
+- 対のあいだで食い違っていた記述（フック例外は 200 で握る・`reply_to` はメッセージ ID 専用 等）は、
+  実装検証済みの agent-loop クローン版を正として採用。モジュール分割で陳腐化した行番号参照と
+  実装当時の変更量見積り表は落とした
+- `agent-loop-slash-property-design.md` は fork 先へ単体展開するための自己完結文書なので統合せず、
+  統合版からリンクする形で残置
+- `docs/designs/README.md` の索引と、`tools/{agent-loop,kiro-loop}/DESIGN.md` ほかの参照リンクを
+  統合版へ差し替え
+
 ### agent-ollama: クラウド CLI が使えないときのバックアップ実行系にした
 
 クラウドのエージェント CLI がガバナンスや予算の事情で使えなくなると、agent-tools の作業が

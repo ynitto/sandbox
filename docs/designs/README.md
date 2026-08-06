@@ -1,6 +1,6 @@
 # docs/designs 設計書 索引
 
-`docs/designs/` 配下の設計書 26 件をカテゴリ別に整理し、読む順序を示す索引。
+`docs/designs/` 配下の設計書 21 件をカテゴリ別に整理し、読む順序を示す索引。
 
 ## まず読むもの — コンセプトと主要 4 設計
 
@@ -10,33 +10,26 @@
 1. [`agent-project-design.md`](./agent-project-design.md) — 単一プロジェクトのバックログを自律的に優先順位付け・実行・検証・収束させる制御層の設計正典。done を verify の終了コードだけで確定する不変条件、常駐体と子プロセスの分担、複数 PC を git の CAS で調停する方式を扱う（旧 multi-node daemon 設計を統合済み）。
 2. [`agent-flow-design.md`](./agent-flow-design.md) — git 共有バス上でタスクグラフを動的生成し複数ワーカーへ分散実行する Dynamic Workflow 基盤の設計書。自己回復リトライ（4 層）とリトライ時の世代交代（`inherit_from`）も統合済み。
 3. [`codd-gate-design.md`](./codd-gate-design.md) — ドキュメント・コード・テストの一貫性を「受け入れ前ゲート」と「負債棚卸し→タスク化」で維持する決定的ツールの設計正典。agent-project 本体は無改造のまま、`schemas/` の共通データ契約と agent-project 側の汎用フック契約（E1〜E3）の2点で連携する独立ツール。
-4. [`agent-tools-rename-design.md`](./agent-tools-rename-design.md) — 旧 `kiro-*` 系統を `agent-*` へクローン移行・改称する方針と新旧名称対応表。agent-project/agent-flow/agent-dashboard の移行は完了、`kiro-loop → agent-loop` の移行のみ未了で、現行の指針であり続けている（詳細は次節「ループ拡張」の注記）。
+4. [`agent-tools-rename-design.md`](./agent-tools-rename-design.md) — 旧 `kiro-*` 系統を `agent-*` へクローン移行・改称する方針と新旧名称対応表。agent-project/agent-flow/agent-dashboard の移行は完了。`kiro-loop → agent-loop` もクローン移行済みで（旧 `tools/kiro-loop/` は方針どおり残置）、ループ系の設計書は [`agent-loop-design.md`](./agent-loop-design.md) に統合済み。
 
 > **補足**: agent-dashboard の画面ごとの詳細設計は `docs/plans/2026-07-1x-agent-dashboard-*-design.md` に日付つきで分散している。本ディレクトリには骨格の正典 [`agent-dashboard-design.md`](./agent-dashboard-design.md) を置く。
 
 ---
 
-## カテゴリ別索引（全 25 件）
+## カテゴリ別索引（全 20 件）
 
 ### 1. コンセプトと主要 4 設計
 
 詳細な要旨は前掲「まず読むもの」を参照。[`agent-tools-concept.md`](./agent-tools-concept.md) ・ [`agent-project-design.md`](./agent-project-design.md) ・ [`agent-flow-design.md`](./agent-flow-design.md) ・ [`codd-gate-design.md`](./codd-gate-design.md) ・ [`agent-tools-rename-design.md`](./agent-tools-rename-design.md)
 
-### 2. ループ拡張（kiro-loop / agent-loop）
+### 2. ループ拡張（agent-loop / kiro-loop）
 
-> **kiro-loop 系 / agent-loop 系の重複について**
-> adaptive-interval・agent-messaging・event-hook・gitlab-webhook の 4 件は、kiro-loop 系と agent-loop 系で同名の設計が並存する。`agent-loop-*` は各ファイル冒頭で「`kiro-loop-*` をクローンし改称した」と自己申告しており、`kiro-loop → agent-loop` の移行が未完了であることは [`agent-tools-rename-design.md`](./agent-tools-rename-design.md) 本文でも明記されている。**現行は `kiro-loop-*-design.md`**、`agent-loop-*-design.md` は移行完了後に本統合される未統合クローンとして参考掲載する。
+> かつて adaptive-interval・agent-messaging・event-hook・gitlab-webhook の 4 件は kiro-loop 系と agent-loop 系で同名の設計が並存していたが、2026-08-06 に 8 文書すべてを [`agent-loop-design.md`](./agent-loop-design.md) へ統合し削除した。名称は移行先の `agent-loop` に統一、kiro-loop 系統との差分は同書の付録 B にある。
 
 | ファイル | 要旨 |
 |---|---|
-| [`kiro-loop-adaptive-interval-design.md`](./kiro-loop-adaptive-interval-design.md) | kiro-loop の固定インターバル方式が抱える「活発時の反応遅延」「無風時の API 浪費」を解消する動的インターバル方式の設計案。 |
-| [`agent-loop-adaptive-interval-design.md`](./agent-loop-adaptive-interval-design.md)（clone, 未統合） | 上記の複製。用語置換のみで本文は実質同一。 |
-| [`kiro-loop-agent-messaging-design.md`](./kiro-loop-agent-messaging-design.md) | kiro-loop を使ったエージェント間非同期メッセージング設計。エージェントごとの inbox に他エージェントがメッセージを投函し、kiro-cli へのプロンプトとして処理する仕組み。 |
-| [`agent-loop-agent-messaging-design.md`](./agent-loop-agent-messaging-design.md)（clone, 未統合） | 上記の複製。用語置換のみで本文は実質同一。 |
-| [`kiro-loop-event-hook-design.md`](./kiro-loop-event-hook-design.md) | kiro-loop のイベントフック拡張（`check()` フック）設計案。フォールバック機能・同梱フック例（GitLab issue/MR hook）を実装メモとして追記済み。 |
-| [`agent-loop-event-hook-design.md`](./agent-loop-event-hook-design.md)（clone, 未統合） | 上記の複製。環境変数名が `AGENT_LOOP_*` に置換されている以外は同一内容。 |
-| [`kiro-loop-gitlab-webhook-design.md`](./kiro-loop-gitlab-webhook-design.md) | kiro-loop 向け汎用 inbound Webhook 設計案（具体例 GitLab）。`WebhookServer` 追加や `PeriodicScheduler` 拡張など実装済み確定事項を記載。 |
-| [`agent-loop-gitlab-webhook-design.md`](./agent-loop-gitlab-webhook-design.md)（clone, 未統合） | 上記の複製。用語置換のみで本文は実質同一。 |
+| [`agent-loop-design.md`](./agent-loop-design.md) | agent-loop（旧 kiro-loop）のループ拡張 4 系統 — イベントフック（pull）・汎用 inbound Webhook（push）・エージェント間メッセージング・動的インターバル（未実装の提案）— を 1 冊にまとめた設計正典。旧 kiro-loop-\*/agent-loop-\* の同名 8 文書を統合済み。 |
+| [`agent-loop-slash-property-design.md`](./agent-loop-slash-property-design.md) | 定期プロンプトの本文より前にスラッシュコマンドを独立送信で前置する `slash` プロパティの設計。fork 先へ単体展開できるよう意図的に自己完結で書かれており、統合対象外として残置。 |
 
 ### 3. 実装・運用設計（外部連携・インフラ・実行基盤）
 
@@ -65,4 +58,4 @@
 
 ## 前提・スコープ外の事項
 
-本 README は `docs/designs/` 配下の実ファイル一覧（25 件、2026-07-27 に実在確認済み。2026-08-03 に `agent-audit-design.md` を追加し 26 件）を基準に作成した。
+本 README は `docs/designs/` 配下の実ファイル一覧（25 件、2026-07-27 に実在確認済み。2026-08-03 に `agent-audit-design.md` を追加し 26 件）を基準に作成した。2026-08-06 にループ拡張の 8 件を `agent-loop-design.md` へ統合・削除し、同日に追加された `agent-loop-slash-property-design.md` とあわせて実ファイル 21 件（索引掲載 20 件。索引外の 1 件は [`agent-tools-concept.md`](./agent-tools-concept.md) の補助資料 `agent-tools-business-improvement-prompt.md`）。

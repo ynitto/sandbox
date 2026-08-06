@@ -66,6 +66,8 @@
 
 旧設計書・旧計画は移行完了後に削除し、新設計書ヘッダには由来を履歴として残す。
 
+> 2026-08-06: ループ拡張の設計書 8 件（`kiro-loop-{event-hook,agent-messaging,gitlab-webhook,adaptive-interval}-design.md` とその agent-loop クローン 4 件）は [`agent-loop-design.md`](./agent-loop-design.md) へ統合し削除した。ツール実装の `tools/kiro-loop/` は §6 のとおり残置のまま。
+
 ## 5. インストール
 
 3 エンジン（agent-project / agent-flow / agent-amigos）は統合インストーラ 1 本でまとめて入る。
