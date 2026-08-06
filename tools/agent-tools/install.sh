@@ -37,6 +37,7 @@ INSTALL_PREFIX="${HOME}/.local/bin"
 ENGINES=("${ALL_ENGINES[@]}")
 WITH_SERVICE=0
 HOST_CONFIG=""
+WITH_RICH=0
 
 usage() {
   cat <<'USAGE'
@@ -49,6 +50,10 @@ usage() {
                           （WSL/Linux のみ。設計 §7 の常駐化 2 案のうち systemd 案。
                           Windows タスクスケジューラ案は docs/guides/ 参照 — 二重構成しない）
   --host-config <path>    --service と併用: unit の ExecStart へ渡す host.yaml
+  --with-rich             agent-ollama の zipapp へ rich を同梱する（TUI の色付けが有効に
+                          なる。**pip とネットワークが要る**——このインストーラは既定では
+                          標準ライブラリだけで完結するので、要るときだけ明示する。
+                          取得に失敗しても中断せず、素の ANSI 表示のまま続ける）
   -h, --help              このヘルプ
 USAGE
 }
@@ -67,6 +72,7 @@ while [[ $# -gt 0 ]]; do
       shift 2 ;;
     --service) WITH_SERVICE=1; shift ;;
     --host-config) HOST_CONFIG="$2"; shift 2 ;;
+    --with-rich) WITH_RICH=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "不明な引数: $1" ;;
   esac
@@ -232,17 +238,30 @@ for engine in "${ENGINES[@]}"; do
 done
 
 # Ollama は API 応答の token count を失わず台帳へ渡すため、共通の薄いアダプターを置く。
+# クラウド CLI が使えないときのバックアップ実行系でもあるので、ツールループ・進捗ログ・
+# デバッグ TUI も同じ 1 実行ファイルに入る（設計 2026-08-06 §0.1 / 案 F-2）。
 OLLAMA_BUILD="$(mktemp -d "${TMPDIR:-/tmp}/agent-ollama-build.XXXXXX")"
 copy_py_tree "${AGENTCORE_PKG}" "${OLLAMA_BUILD}/agentcore" -not -path './tests/*'
 cat > "${OLLAMA_BUILD}/__main__.py" <<'EOF'
 from agentcore.ollama_adapter import main
 raise SystemExit(main())
 EOF
+RICH_NOTE=""
+if [[ "${WITH_RICH}" -eq 1 ]]; then
+  # 任意依存。zipimport で動く純 Python なので zipapp へそのまま同梱できる。
+  # **失敗しても中断しない**——rich が無ければ TUI は素の ANSI 表示へ落ちるだけで、
+  # 実行系としては何も欠けない（色が付かないことと動かないことを同じ重さで扱わない）。
+  if "$PYTHON_CMD" -m pip install --quiet --target "${OLLAMA_BUILD}" rich >/dev/null 2>&1; then
+    RICH_NOTE="・rich 同梱"
+  else
+    warn "rich の取得に失敗しました。素の ANSI 表示のまま続けます（--with-rich は任意）"
+  fi
+fi
 "$PYTHON_CMD" -m zipapp "${OLLAMA_BUILD}" -o "${INSTALL_PREFIX}/agent-ollama" \
   -p "/usr/bin/env ${PYTHON_CMD}"
 chmod +x "${INSTALL_PREFIX}/agent-ollama"
 rm -rf "${OLLAMA_BUILD}"
-ok "インストールしました: ${INSTALL_PREFIX}/agent-ollama（Ollama usage 対応）"
+ok "インストールしました: ${INSTALL_PREFIX}/agent-ollama（Ollama usage 対応${RICH_NOTE}）"
 
 # ---------------------------------------------------------------------------
 # 3. エンジン固有の付帯物

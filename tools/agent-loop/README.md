@@ -112,6 +112,13 @@ prompts:
     interval_minutes: 60
     enabled: true
 
+  # slash: 本文の前にスラッシュコマンドを送る（下記）
+  - name: "ログ要約"
+    slash: summarize-logs
+    prompt: "昨日のログを要約して"
+    interval_minutes: 60
+    enabled: true
+
   # event_hook: 送信タイミング・内容を Python スクリプトで制御する
   - name: "GitLab Issue ワーカー"
     event_hook: ~/sandbox/tools/agent-loop/hooks/gitlab-issue-hook.py
@@ -119,6 +126,30 @@ prompts:
     interval_minutes: 5
     enabled: true
 ```
+
+### slash（本文の前にスラッシュコマンドを送る）
+
+スキル呼び出しやモード切替のような**スラッシュコマンド**を、本文とは別に宣言できます。
+本文へ `/name` を書き込む必要がなくなり、コマンドだけ差し替える・外すのが容易になります。
+
+```yaml
+prompts:
+  - name: "定期点検"
+    slash: ["healthcheck", "report --lang ja"]   # 文字列でも配列でも可
+    prompt: "結果を 3 行で"
+    interval_minutes: 240
+```
+
+- 各要素は `/<name> [引数]` という**独立した 1 送信**になります（本文へ連結しません。
+  対話 CLI はスラッシュコマンドを「1 入力 = 1 コマンド」で解釈するため）。
+- 送信順は `fresh_context` の `/clear` → `slash`（宣言順）→ `prompt` 本文。
+- 先頭の `/` は書きません（付いていても剥がして送ります）。名前は `[a-z0-9][a-z0-9._-]*`。
+  規約外の要素は**その要素だけ**捨てて警告します（タイポで定期駆動が止まらないように）。
+- `prompt` を省いて `slash` だけのエントリも有効です（コマンドだけ定期送信）。
+- スラッシュコマンドを解する対話 CLI なら何にでも使えます（特定の CLI 専用ではありません）。
+
+詳細な仕様と移植手順は
+[`docs/designs/agent-loop-slash-property-design.md`](../../docs/designs/agent-loop-slash-property-design.md)。
 
 ### event_hook（フックによる送信制御）
 

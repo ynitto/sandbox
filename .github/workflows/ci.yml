@@ -2,8 +2,9 @@ name: CI
 
 # このリポジトリ初の CI（修正計画 P3-1 / 実装計画 R4）。回すのは 3 系統:
 #
-#   1. python  … 4 パッケージの単体テスト（agent-project / agent-flow / agent-amigos /
-#                agentcore）。**agentcore はテストルートが 2 つある**ので両方を明示する
+#   1. python  … 各パッケージの単体テスト（agent-project / agent-flow / agent-amigos /
+#                agent-audit / agentcore / winauto / gitlab-repo-sync / opencode /
+#                agent-loop）。**agentcore はテストルートが 2 つある**ので両方を明示する
 #                （片方だけ discover すると残りが黙ってスキップされる）。
 #                設定キーの構造テスト（CONFIG_DEFAULTS → Config の到達性）は
 #                agent-project のスイートに含まれる。
@@ -53,6 +54,10 @@ jobs:
           # 本体も推論サーバも要らない（ネットワークには出ない）。
           - package: opencode
             suites: tools/opencode/tests
+          # agent-loop。tmux も kiro-cli も差し替えたうえで、設定解釈と送信順だけを見る
+          # （実プロセスは起こさない）。
+          - package: agent-loop
+            suites: tools/agent-loop/test
     env:
       # エージェント CLI のスタブが実時間 sleep しないようにする（README のテスト手順と同じ）。
       AGENT_FLOW_STUB_SLEEP_MAX: "0"

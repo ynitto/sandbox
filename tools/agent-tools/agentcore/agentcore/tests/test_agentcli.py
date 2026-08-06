@@ -287,9 +287,11 @@ class TestBundledGolden(_Isolated):
             "interactive": ["cursor-agent", "--model", "M"],
         },
         "ollama": {
-            "write": ["agent-ollama", "M"],
-            "readonly": ["agent-ollama", "M"],
-            "interactive": ["ollama", "run", "M"],
+            # --tools は write のときだけ生える（ループとツールを書き込みモードに閉じる）。
+            # readonly は素の text→text なので `readonly: enforced` の宣言が嘘にならない。
+            "write": ["agent-ollama", "--think", "off", "M", "--tools"],
+            "readonly": ["agent-ollama", "--think", "off", "M"],
+            "interactive": ["agent-ollama", "--tui", "--think", "off", "M"],
         },
         "opencode": {
             "write": ["agent-opencode", "--auto", "--model", "M"],

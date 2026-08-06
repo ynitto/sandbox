@@ -5,6 +5,49 @@ from __future__ import annotations
 # 定期実行スケジューラ
 # ---------------------------------------------------------------------------
 
+# `slash` の名前規約（スキル・スラッシュコマンドの命名に合わせる）。
+# 設計: docs/designs/agent-loop-slash-property-design.md
+_SLASH_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+
+# slash 行を送ってから次を送るまでの待ち。対話 CLI 側がコマンドを処理する間を空ける
+# （fresh_context の `/clear` 後に 2 秒待つのと同じ趣旨。こちらは軽いので 1 秒）。
+_SLASH_SEND_INTERVAL_SEC = 1.0
+
+
+def _normalize_slash(value: Any, ctx: str = "") -> list[str]:
+    """`slash` を送信行（`/<name> [args]`）のリストへ正規化する。
+
+    `string | string[]` を受ける。**規約外の要素はその要素だけ捨てる**——タイポ 1 個で
+    エントリごと無効化すると、定期駆動が黙って止まる（止まったことにも気づきにくい）。
+    """
+    if value is None:
+        return []
+    items = [value] if isinstance(value, str) else value
+    if not isinstance(items, (list, tuple)):
+        log.warning("[%s] slash は文字列か文字列配列です（無視します）: %r", ctx, value)
+        return []
+
+    lines: list[str] = []
+    for item in items:
+        if not isinstance(item, str):
+            log.warning("[%s] slash の要素が文字列ではありません（無視します）: %r", ctx, item)
+            continue
+        text = item.strip()
+        if text.startswith("/"):
+            # 規約では先頭の `/` は書かない。付いていても意図は明らかなので剥がして通す。
+            log.warning("[%s] slash の値に先頭の '/' は不要です（剥がして送ります）: %r", ctx, item)
+            text = text[1:].lstrip()
+        if not text:
+            continue
+        name, _, args = text.partition(" ")
+        if not _SLASH_NAME_RE.match(name):
+            log.warning("[%s] slash の名前が規約外のため無視します: %r", ctx, item)
+            continue
+        args = args.strip()
+        lines.append(f"/{name} {args}" if args else f"/{name}")
+    return lines
+
+
 class PeriodicScheduler:
     """定期プロンプトのスケジュール管理。"""
 
@@ -56,12 +99,15 @@ class PeriodicScheduler:
             event_hook = str(entry.get("event_hook", "")).strip() or None
             event_hook_fallback = bool(entry.get("event_hook_fallback", False))
             webhook = self._normalize_webhook(entry.get("webhook"))
+            slash = _normalize_slash(entry.get("slash"), str(entry.get("name", "")))
             # prompt は通常必須だが、event_hook がある場合は check() が
-            # 送信テキストを返すため空でも許容する。
-            if not prompt and not event_hook:
+            # 送信テキストを返すため空でも許容する。slash だけのエントリ
+            # （コマンドを定期的に送るだけ）も許す。
+            if not prompt and not event_hook and not slash:
                 continue
 
-            name = str(entry.get("name", prompt[:40] or (event_hook or "")[:40]))
+            name = str(entry.get("name", prompt[:40] or (event_hook or "")[:40]
+                                  or (slash[0] if slash else "")))
 
             # スケジュール: cron 式 または interval_minutes のどちらかが必要。
             # ただし webhook ブロックを持つエントリはスケジュール無し（push 駆動）を許容する。
@@ -119,6 +165,7 @@ class PeriodicScheduler:
                 "id": prompt_id,
                 "name": name,
                 "prompt": prompt,
+                "slash": slash,
                 "cron": cron_str if cron_expr else None,
                 "interval_minutes": interval,
                 "enabled": True,
@@ -432,7 +479,18 @@ class PeriodicScheduler:
                     new_next_clear_at = time.time() + (int(fresh_context_interval) * 60)
                     self._update_entry(str(entry.get("id", "")), next_clear_at=new_next_clear_at)
 
-            ok = self._session_mgr.send_prompt(prompt_id, prompt)
+            # slash は本文へ連結せず 1 行ずつ独立に送る。対話 CLI はスラッシュコマンドを
+            # 「1 入力 = 1 コマンド」で解釈するので、連結すると本文の一部として扱われる。
+            for line in (entry.get("slash") or []):
+                log.info("[%s] slash を送信します: %s", name, line)
+                if not self._session_mgr.send_prompt(prompt_id, line):
+                    log.warning("[%s] slash（%s）の送信に失敗しました。スキップします。", name, line)
+                    self._release_slot(pane_id)
+                    return False
+                time.sleep(_SLASH_SEND_INTERVAL_SEC)
+
+            # slash だけのエントリでは本文が無い。空文字を送ると余計な改行だけが入るので送らない。
+            ok = self._session_mgr.send_prompt(prompt_id, prompt) if prompt else True
             if ok:
                 if self._slot_monitor is not None and pane_id:
                     self._slot_monitor.track(pane_id)

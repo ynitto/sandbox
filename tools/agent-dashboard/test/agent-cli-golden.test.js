@@ -51,9 +51,10 @@ const GOLDEN = {
     interactive: ['cursor-agent', '--model', 'M'],
   },
   ollama: {
-    write: ['agent-ollama', 'M'],
-    readonly: ['agent-ollama', 'M'],
-    interactive: ['ollama', 'run', 'M'],
+    // --tools は write のときだけ生える（readonly は素の text→text のまま）。
+    write: ['agent-ollama', '--think', 'off', 'M', '--tools'],
+    readonly: ['agent-ollama', '--think', 'off', 'M'],
+    interactive: ['agent-ollama', '--tui', '--think', 'off', 'M'],
   },
   opencode: {
     write: ['agent-opencode', '--auto', '--model', 'M'],

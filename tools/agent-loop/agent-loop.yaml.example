@@ -88,6 +88,29 @@ prompts:
     cwd: /path/to/workspace  # ワークスペースを指定
     enabled: true
 
+  # ---- slash: 本文の前にスラッシュコマンドを送る ----
+  # 設計: docs/designs/agent-loop-slash-property-design.md
+  # 送信文の前に `/<name> [args]` を **1 行ずつ独立に**送る（連結しない。対話 CLI は
+  # スラッシュコマンドを「1 入力 = 1 コマンド」で解釈するため）。
+  # 送信順は fresh_context の /clear → slash（宣言順）→ prompt 本文。
+  # スキル呼び出しに限らず、対話 CLI が受けるコマンドなら何でも書ける。
+  - name: "ログ要約"
+    slash: summarize-logs        # 文字列 1 本（先頭の / は書かない）
+    prompt: "昨日のログを要約して"
+    interval_minutes: 60
+    enabled: false
+
+  - name: "定期点検"
+    slash: ["healthcheck", "report --lang ja"]   # 配列・引数付きも可
+    prompt: "結果を 3 行で"
+    interval_minutes: 240
+    enabled: false
+
+  - name: "コンテキスト整理だけ"
+    slash: compact               # prompt を省いた slash 単独も有効
+    interval_minutes: 120
+    enabled: false
+
   # ---- event_hook: 送信タイミングと内容を Python スクリプトで制御する ----
   # event_hook を指定すると、スケジュール発火のたびにフックの check() が呼ばれる:
   #   - str を返す  → そのテキストを prompt として送信（YAML の prompt を上書き）
