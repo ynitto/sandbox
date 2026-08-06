@@ -316,6 +316,56 @@ zipapp 同梱にも乗り、JS だと Node ランタイムと TUI ライブラ�
 - 任意: JSONL イベントログを `session_log`（format: 新設 `ollama-jsonl`）として宣言すれば
   agent-audit collect にそのまま乗り、ローカル推論の transcript も台帳へ入る。
 
+#### F-2 補遺 1 — rich の zipapp 同梱
+
+**技術的には可能。** rich とその依存（markdown-it-py / pygments）は純 Python で、
+データも .py モジュールとして持つため zipimport で普通に動く。やり方も単純で、
+install.sh のビルド一時ディレクトリへ `pip install --target "$BUILD" rich` してから
+`python -m zipapp` に畳むだけ——agent-ollama の zipapp はエンジンの zipapp とは別物なので、
+エンジン側の「標準ライブラリのみ」不変条件は壊さない。
+
+ただし install.sh は現在**意図的に pip 依存なし・オフライン完結**で書かれている
+（冒頭に明記あり）。同梱はこの不変条件と衝突し、代償は 3 つ:
+
+| 方式 | 代償 |
+|---|---|
+| ビルド時 `pip install --target` | インストールにネットワークと pip が要るようになる |
+| リポジトリへ wheel を vendoring | リポジトリが ~10MB 太る + ライセンス同梱の管理 |
+| 実行時 optional import（前述） | `pip install rich` した環境でだけリッチになる |
+
+TUI の要件（ステータス 1〜2 行の更新 + 行スクロール）は素の ANSI で 30〜50 行なので、
+**既定は同梱なしの素書きで出し、install.sh に `--with-rich`（ビルド時 pip・失敗したら
+素書きのまま続行）をオプトインとして足す**のが、オフライン不変条件を既定で守りつつ
+「入れたい人は zip に閉じ込められる」の両取りになる。
+
+#### F-2 補遺 2 — スキルの明示・遅延読み込み（自動選択なし）
+
+要件は「スラッシュコマンド呼び出し・スキル名の明示指定に反応して、所定のユーザー
+フォルダ以下の SKILL.md を遅延で読む。prefill による自動選択・自動使用はしない」。
+これは**アダプター側の決定的なプロンプト前処理**として実装でき、LLM には一切
+カタログを見せない——未使用時の prefill コストは正確にゼロになる。
+
+- **発動は 2 形態だけ**（どちらも決定的に検出できるもの。自然文からの推測はしない）:
+  1. `--skill <name>`（複数可）— エンジン設定・agent-loop の定期プロンプトなど
+     プログラム経路の明示指定
+  2. プロンプト**先頭ブロックのスラッシュ行** `^/([a-z0-9][a-z0-9-]*)( .*)?$` —
+     TUI・send-keys 注入など人手経路。走査は先頭の連続するスラッシュ行のみで、
+     本文中は見ない（貼り付けたコードやパスの `/usr/...` を誤爆させない）
+- **解決順**: `$AGENT_OLLAMA_SKILLS_DIR` → `~/.agents/skills/<name>/SKILL.md` →
+  `~/.claude/skills/<name>/SKILL.md`（install.py の配布先と同じ場所を読むので、
+  配布経路は既存のまま）。
+- **展開**: frontmatter（`---` 囲みの name/description/metadata）を剥いだ本文を
+  プロンプトの前置きに注入し、スラッシュ行は引数だけ残して置換。`{skill_dir}` を
+  実パスへ置換しておくと、ループモード（--tools）ではスキル同梱の scripts/ を
+  bash ツールから実行できる。
+- **見つからないとき**: `--skill` は env 分類で即失敗（hint: `python install.py --agent …`）。
+  スラッシュ行は stderr に警告してそのまま素通し（スキル名でない普通の行かもしれない
+  ——偽陽性でプロンプトを壊さない）。
+- TUI にはローカルコマンド `/skills`（一覧表示。LLM へは送らない）だけ足す。
+
+この形なら「スキル機構」はアダプター内の 50〜80 行の純関数（プロンプト → プロンプト）で
+済み、flow-worker / flow-planner（agent-flow 自身が描画するスキル）とも競合しない。
+
 #### F-3 — 既製の軽量コーディング CLI（aider）
 
 aider はヘッドレス実行（`aider --message … --yes-always`）と ollama 接続を持ち、
