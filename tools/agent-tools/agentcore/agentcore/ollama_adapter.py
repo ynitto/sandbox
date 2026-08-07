@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.error
@@ -68,7 +69,10 @@ USAGE = """使い方: agent-ollama [オプション] <model>
 
   環境変数: OLLAMA_HOST / AGENT_OLLAMA_THINK / AGENT_OLLAMA_OPTIONS(JSON) /
     AGENT_OLLAMA_KEEP_ALIVE / AGENT_OLLAMA_LOG_DIR / AGENT_OLLAMA_SKILLS_DIR /
-    AGENT_OLLAMA_STALL_TIMEOUT / AGENT_OLLAMA_FIRST_TOKEN_TIMEOUT / OLLAMA_TIMEOUT
+    AGENT_OLLAMA_STALL_TIMEOUT / AGENT_OLLAMA_FIRST_TOKEN_TIMEOUT /
+    AGENT_OLLAMA_CONNECT_TIMEOUT / OLLAMA_TIMEOUT
+    OLLAMA_HOST が未設定なら ~/.profile を読んで OLLAMA_* / AGENT_OLLAMA_* を補完する
+    （エンジンからの非ログインシェル起動で環境変数が届かない場合の救済）
 """
 
 _FLAGS = {"--tools", "--tui", "--no-skills", "--no-log", "--context", "-h", "--help"}
@@ -80,6 +84,55 @@ _OPTIONAL_VALUED = {"--follow", "--status"}
 
 class ArgError(ValueError):
     """引数の誤り（使い方を出して終わる）。"""
+
+
+# ---------------------------------------------------------------------------
+# 環境の補完（非ログインシェル対策）
+# ---------------------------------------------------------------------------
+_PROFILE_ENV_PREFIXES = ("OLLAMA_", "AGENT_OLLAMA_")
+
+
+def load_profile_env(path: str = "~/.profile") -> dict:
+    """`OLLAMA_HOST` 未設定なら ~/.profile を評価して OLLAMA_* / AGENT_OLLAMA_* を補完する。
+
+    エンジン（agent-project / agent-flow / agent-amigos）は agent-ollama を
+    **非ログインシェルの subprocess** として起動するため、~/.profile に書いた
+    `export OLLAMA_HOST=...` は届かない。届かないと既定の 127.0.0.1 へ向かって
+    「接続できません」で env 落ちする——設定はしてあるのに動かない、という
+    一番説明しづらい失敗になるので、CLI の入口で 1 回だけ自力で読む。
+
+    - 環境に既にある変数が常に勝つ（呼び出し側の明示指定を profile で潰さない）
+    - `OLLAMA_HOST` が設定済みなら何もしない（構成済みの環境へ余計な subprocess を足さない）
+    - profile の評価は sh の子プロセスに閉じ込め、失敗は黙って無視する
+      （profile が壊れていても推論を止める理由にはしない）
+
+    戻り値: 実際に取り込んだ変数（テストと診断のため）。
+    """
+    if os.environ.get("OLLAMA_HOST"):
+        return {}
+    profile = os.path.expanduser(path)
+    if not os.path.isfile(profile):
+        return {}
+    # profile を source した後の環境を JSON で受け取る。stdin は閉じる——
+    # このプロセスの stdin はプロンプト本文なので、profile に読ませてはいけない。
+    dump = "import json, os; print(json.dumps(dict(os.environ)))"
+    try:
+        proc = subprocess.run(
+            ["sh", "-c", '. "$1" >/dev/null 2>&1; exec "$2" -c "$3"',
+             "sh", profile, sys.executable, dump],
+            stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+        data = json.loads(proc.stdout.decode("utf-8", "replace"))
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    imported: dict = {}
+    for name, value in data.items():
+        if (name.startswith(_PROFILE_ENV_PREFIXES) and name not in os.environ
+                and isinstance(value, str)):
+            os.environ[name] = value
+            imported[name] = value
+    return imported
 
 
 def _as_bool(text: str, name: str) -> bool:
@@ -314,6 +367,10 @@ def main(argv=None) -> int:
     if opts["help"]:
         print(USAGE)
         return 0
+
+    # 非ログインシェルから起動されても ~/.profile の OLLAMA_HOST 等が効くようにする。
+    # 観測モードより前に呼ぶ（AGENT_OLLAMA_LOG_DIR も profile 由来でありうる）。
+    load_profile_env()
 
     # 観測モード（LLM を呼ばない）。
     if opts["status"]:
