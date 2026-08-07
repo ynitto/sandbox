@@ -21,6 +21,11 @@ class _NoServerMixin:
                                     return_value=self.limit)
         self.addCleanup(patcher.stop)
         self.resolve_limit = patcher.start()
+        # main() は入口で ~/.profile を読みにいく。テストは実行環境の profile に
+        # 依存させない（subprocess も起こさない）。
+        profile = mock.patch.object(ollama_adapter, "load_profile_env", return_value={})
+        self.addCleanup(profile.stop)
+        profile.start()
 
 
 class TestOllamaAdapter(_NoServerMixin, unittest.TestCase):
@@ -225,6 +230,63 @@ class TestMainModes(_NoServerMixin, unittest.TestCase):
             self.assertEqual(ollama_adapter.main(["--status", "/x.jsonl"]), 0)
         self.assertEqual(json.loads(out.getvalue()), {"state": "running", "alive": True})
         self.assertEqual(read.call_args.args[0], "/x.jsonl")
+
+
+class TestLoadProfileEnv(unittest.TestCase):
+    """エンジンの非ログインシェル起動でも ~/.profile の OLLAMA_HOST が効くこと。"""
+
+    def _write_profile(self, tmp, body):
+        path = Path(tmp) / "profile"
+        path.write_text(body, encoding="utf-8")
+        return str(path)
+
+    def test_imports_ollama_vars_when_host_is_unset(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = self._write_profile(tmp, (
+                "export OLLAMA_HOST=http://10.0.0.5:11434\n"
+                "export AGENT_OLLAMA_THINK=off\n"
+                "export UNRELATED_VAR=nope\n"))
+            with mock.patch.dict(ollama_adapter.os.environ):
+                for name in ("OLLAMA_HOST", "AGENT_OLLAMA_THINK", "UNRELATED_VAR"):
+                    ollama_adapter.os.environ.pop(name, None)
+                imported = ollama_adapter.load_profile_env(profile)
+                self.assertEqual(ollama_adapter.os.environ["OLLAMA_HOST"],
+                                 "http://10.0.0.5:11434")
+                self.assertEqual(ollama_adapter.os.environ["AGENT_OLLAMA_THINK"], "off")
+                self.assertNotIn("UNRELATED_VAR", ollama_adapter.os.environ,
+                                 "OLLAMA_*/AGENT_OLLAMA_* 以外は取り込まない")
+        self.assertEqual(set(imported), {"OLLAMA_HOST", "AGENT_OLLAMA_THINK"})
+
+    def test_existing_environment_always_wins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = self._write_profile(tmp, (
+                "export OLLAMA_HOST=http://profile:11434\n"
+                "export AGENT_OLLAMA_THINK=off\n"))
+            with mock.patch.dict(ollama_adapter.os.environ,
+                                 {"AGENT_OLLAMA_THINK": "on"}):
+                ollama_adapter.os.environ.pop("OLLAMA_HOST", None)
+                ollama_adapter.load_profile_env(profile)
+                self.assertEqual(ollama_adapter.os.environ["AGENT_OLLAMA_THINK"], "on",
+                                 "呼び出し側の明示指定を profile で潰さない")
+
+    def test_noop_when_host_is_already_set(self):
+        with mock.patch.dict(ollama_adapter.os.environ,
+                             {"OLLAMA_HOST": "http://set:11434"}), \
+                mock.patch.object(ollama_adapter.subprocess, "run") as run:
+            self.assertEqual(ollama_adapter.load_profile_env("/nonexistent"), {})
+        self.assertEqual(run.call_count, 0, "構成済みなら subprocess を起こさない")
+
+    def test_missing_or_broken_profile_is_silent(self):
+        with mock.patch.dict(ollama_adapter.os.environ):
+            ollama_adapter.os.environ.pop("OLLAMA_HOST", None)
+            self.assertEqual(ollama_adapter.load_profile_env("/no/such/profile"), {})
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = self._write_profile(tmp, "this-is-not-a-command --boom\n")
+            with mock.patch.dict(ollama_adapter.os.environ):
+                ollama_adapter.os.environ.pop("OLLAMA_HOST", None)
+                # 壊れた行があっても sh は続行し、環境の取得自体は成功する。
+                # 少なくとも例外で推論を止めないことだけを保証する。
+                ollama_adapter.load_profile_env(profile)
 
 
 class TestContractDefinition(unittest.TestCase):

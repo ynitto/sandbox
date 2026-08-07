@@ -142,7 +142,13 @@ R2/12 decode 経過 4m12s  out=210tk  ctx 4.2k/8.2k (51%)      ← TUI のステ
 環境変数: `OLLAMA_HOST` / `AGENT_OLLAMA_THINK` / `AGENT_OLLAMA_OPTIONS`（JSON・`num_ctx` 等を
 リクエスト単位で足す）/ `AGENT_OLLAMA_KEEP_ALIVE` / `AGENT_OLLAMA_LOG_DIR` /
 `AGENT_OLLAMA_SKILLS_DIR` / `AGENT_OLLAMA_STALL_TIMEOUT` / `AGENT_OLLAMA_FIRST_TOKEN_TIMEOUT` /
+`AGENT_OLLAMA_CONNECT_TIMEOUT`（接続の上限秒・既定 120）/
 `AGENT_OLLAMA_META_TIMEOUT`（文脈上限の問い合わせに許す秒数・既定 3）。
+
+`OLLAMA_HOST` が未設定のときは `~/.profile` を評価して `OLLAMA_*` / `AGENT_OLLAMA_*` を
+補完する。エンジンは agent-ollama を**非ログインシェル**の subprocess として起動するため、
+`~/.profile` の `export OLLAMA_HOST=...` はそのままでは届かない——設定はあるのに既定の
+127.0.0.1 へ向かって env 落ちする、を防ぐための救済で、環境に既にある変数が常に勝つ。
 
 TUI は**全画面（alternate screen）にしない**。agent-loop / kiro-loop は tmux の
 `send-keys` で入力を送り `capture-pane` で画面を読むので、全画面にすると向こうから

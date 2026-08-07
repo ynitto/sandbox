@@ -40,7 +40,7 @@ from agentcore.ollama_events import HEARTBEAT_INTERVAL_SEC, PROGRESS_INTERVAL_SE
 # 既定値。すべて環境変数で上書きできる（バックアップ運転の現場で調整する余地を残す）。
 DEFAULT_STALL_TIMEOUT_SEC = 180.0     # decode 中の無進捗の上限。これだけが失敗検知の主役
 DEFAULT_FIRST_TOKEN_TIMEOUT_SEC = 0.0  # prefill の上限。既定 0 = 無制限（遅さは異常ではない）
-DEFAULT_CONNECT_TIMEOUT_SEC = 30.0
+DEFAULT_CONNECT_TIMEOUT_SEC = 120.0   # 混雑時はモデルロード中に応答ヘッダすら遅れる
 DEFAULT_MAX_ROUNDS = 12
 DEFAULT_COMMAND_TIMEOUT_SEC = 300.0
 DEFAULT_MAX_OUTPUT_CHARS = 4000
@@ -194,7 +194,7 @@ def stream_call(endpoint: str, body: dict, *, delta_of, emit=None, round_no: int
 
     | 局面      | 上限                        | 既定           |
     |-----------|-----------------------------|----------------|
-    | connect   | connect_timeout             | 30s            |
+    | connect   | connect_timeout             | 120s           |
     | prefill   | first_token_timeout         | 0（無制限）    |
     | decode    | stall_timeout               | 180s           |
 
