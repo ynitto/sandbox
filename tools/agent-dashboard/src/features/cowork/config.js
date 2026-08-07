@@ -10,9 +10,16 @@ module.exports = {
     // Windows では実行を新しいウィンドウ（WSL tmux）で開始し、進行を見られるようにする。
     // false で従来の非表示実行（spawnSync）に戻す。
     runWindow: true,
-    // ウィンドウ実行時に tmux セッションで起動するインタラクティブ CLI。
-    // kiro-loop は介さず、このセッションへプロンプトを直接送る。
-    chatCommand: 'kiro-cli chat --trust-all-tools',
+    // ウィンドウ実行時に tmux セッションで起動するインタラクティブ CLI の**明示上書き**。
+    // 既定は空文字＝「上書きしない」——起動する CLI は全体設定（実行制御の
+    // workloads.routine.agent_cli / model）→ ⚙ アシスタント設定 → プロジェクト設定 の順で
+    // 解決する（cowork.js の coworkChatLaunch）。
+    //
+    // ここに 'kiro-cli chat --trust-all-tools' を**既定値として**置いていたのが、
+    // 「定常業務だけが全体設定を無視して常に kiro-cli で起動する」不具合の正体だった。
+    // saveConfig は既定値も config.json へ書き戻すので、誰も触っていなくても必ず
+    // 明示上書きが載っている状態になり、CLI 解決（S9-3）へ一度も到達しなかった。
+    chatCommand: '',
     // Flat work list. Each item references a repository already registered in
     // global settings: { id, type: 'loop'|'state-machine', name, repo, schedule, workflow }.
     items: [],

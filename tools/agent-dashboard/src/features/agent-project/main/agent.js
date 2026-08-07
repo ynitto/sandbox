@@ -6,9 +6,13 @@
 // 上位入力だけを書く」護りをエージェント経由で迂回しない。
 //
 // 使う CLI とモデルの解決順（resolveAgent）:
-//   ⚙ Viewer アシスタント設定（agent.cli / agent.model）
+//   全体設定 → 実行制御の機能別宣言（control.json の workloads.<機能>.agent_cli / model）
+//   > ⚙ Viewer アシスタント設定（agent.cli / agent.model）
 //   > プロジェクト設定（agent-project.yaml / agent-flow.yaml の agent_cli / model）
 //   > 既定 kiro
+// 機能別宣言は workload を渡した呼び出しにだけ効く（定常業務 = routine）。管理面
+// （agent-control 契約）が「この機能はこの CLI とこのモデルで」と宣言したら、それが最優先——
+// 空欄は「各機能の設定を使用」で下位へ委ねる、という設定画面の説明どおりの意味にする。
 // 組み込み以外の名前は agents/<name>.json プラグイン（schemas/agent-cli.schema.json）
 // として解決する — 本体（agent-project / agent-flow / agent-amigos）と同じデータ契約。
 
@@ -44,39 +48,77 @@ function readProjectAgent(projectDir) {
   return {};
 }
 
+// 全体設定 → 実行制御（agent-control 契約 / control.json）の機能別エージェント宣言を読む。
+// workloads.<機能> が優先、空欄は defaults（全機能共通）へ委ね、それも空なら {}。
+// 読めない・壊れているは {}（管理面の宣言が無い状態＝下位の解決へ委ねる）。
+function readControlAgent(cfg, workload) {
+  const wl = String(workload || '').trim();
+  if (!wl) return {};
+  let control;
+  try {
+    const ctl = require('../../orchestration/main/control');
+    control = ctl.loadControl(ctl.resolveControlDir(cfg));
+  } catch {
+    return {};       // フェイルセーフ: 管理面の読み取り失敗で起動を止めない
+  }
+  const defaults = (control && control.defaults) || {};
+  const wlc = ((control && control.workloads) || {})[wl] || {};
+  // null / 空文字は「この機能では指定しない」＝ defaults → 下位の解決へ委ねる印。
+  const pick = (key) => {
+    const raw = wlc[key] === null || wlc[key] === undefined || wlc[key] === ''
+      ? defaults[key] : wlc[key];
+    return raw === null || raw === undefined ? '' : String(raw).trim();
+  };
+  return { workload: wl, cli: pick('agent_cli').toLowerCase(), model: pick('model') };
+}
+
 // CLI・モデル・タイムアウトを確定する。解決順（ipc の agent:charter 契約と同じ）:
-//   ⚙ Viewer アシスタント設定（agent.cli / agent.model）が最優先
+//   全体設定 → 実行制御の機能別宣言（workload を渡したときだけ）が最優先
+//   > ⚙ Viewer アシスタント設定（agent.cli / agent.model）
 //   > プロジェクト設定（agent-project.yaml / agent-flow.yaml の agent_cli / model）
 //   > 既定 kiro
 // 組み込み（AGENT_CLIS）以外の名前は agents/<name>.json プラグイン
 // （schemas/agent-cli.schema.json）として解決を試みる。見つからない名前は既定へ倒す
 // （黙って別 CLI で走らせない — source で由来を返し、表示側が判断できる）。
-function resolveAgent(cfg, projectDir) {
+function resolveAgent(cfg, projectDir, { workload = '' } = {}) {
   const ac = (cfg && cfg.agent) || {};
   const timeoutMs = Math.max(30, Number(ac.timeoutSec) || 180) * 1000;
-  const candidates = [
-    { cli: String(ac.cli || '').toLowerCase(), model: String(ac.model || '').trim(),
-      source: 'settings', projectFile: null },
-  ];
+  const ctl = readControlAgent(cfg, workload);
+  const candidates = [];
+  if (ctl.cli) {
+    candidates.push({ cli: ctl.cli, model: ctl.model, source: 'control', projectFile: null });
+  }
+  candidates.push({ cli: String(ac.cli || '').toLowerCase(), model: String(ac.model || '').trim(),
+                    source: 'settings', projectFile: null });
   const proj = readProjectAgent(projectDir);
   if (proj.cli) {
     candidates.push({ cli: proj.cli, model: String(proj.model || '').trim(),
                       source: 'project', projectFile: proj.file || null });
   }
+  // 機能別宣言が**モデルだけ**のときは、CLI は下位の解決に任せてモデルだけを差し替える
+  // （「エージェントは各機能の設定のまま、モデルだけ全体で揃える」という設定を成立させる）。
+  const applyControlModel = (r) => (!ctl.cli && ctl.model ? { ...r, model: ctl.model } : r);
   for (const c of candidates) {
     if (!c.cli) continue;
     let spec;
     try {
       spec = agentCli.loadCli(c.cli, projectDir);
-    } catch {
-      continue;      // 定義が無い名前は既定へ倒す（source で由来を返し、表示側が判断できる）
+    } catch (e) {
+      // 定義が無い名前は既定へ倒す（source で由来を返し、表示側が判断できる）。
+      // ただし管理面の宣言だけは黙って落とさない——「全体設定で指定したのに別の CLI が
+      // 起動した」は、設定ミスに気付けないまま延々と続く種類の事故になる。
+      if (c.source === 'control') {
+        console.warn(`[agent] 全体設定（実行制御）の ${ctl.workload} に指定されたエージェント`
+          + `「${c.cli}」の定義が見つかりません: ${(e && e.message) || e}`);
+      }
+      continue;
     }
-    return { cli: c.cli, model: c.model, timeoutMs, source: c.source,
-             projectFile: c.projectFile, spec };
+    return applyControlModel({ cli: c.cli, model: c.model, timeoutMs, source: c.source,
+                               projectFile: c.projectFile, spec, workload: ctl.workload || '' });
   }
-  return { cli: 'kiro', model: String(ac.model || '').trim(), timeoutMs,
-           source: 'default', projectFile: null,
-           spec: agentCli.loadCli('kiro', projectDir) };
+  return applyControlModel({ cli: 'kiro', model: String(ac.model || '').trim(), timeoutMs,
+                             source: 'default', projectFile: null, workload: ctl.workload || '',
+                             spec: agentCli.loadCli('kiro', projectDir) });
 }
 
 // エージェント CLI のコマンドラインを組み立てる（定義ファイルが正典）。
@@ -199,14 +241,19 @@ function projectRepoUrls(projectDir) {
 // CLIチャット・定常業務（cowork）・S9-4 の対話診断がすべてここを通る＝tmux 経由の
 // エージェント起動は 1 か所に集約される（S9-3）。
 //
+// workload を渡すと、全体設定 → 実行制御の機能別宣言（control.json の
+// workloads.<機能>.agent_cli / model）を最優先で解決する。定常業務は 'routine' を渡す。
+//
 // promptInject='file' の CLI へ長大プロンプトを渡すときは、**呼び出し側**が本文を一時ファイルへ
 // 書き、`spillInstruction` の {file} を置換した 1 行を prompt として渡す（tmux へ送るのは
 // どちらの方式でも「1 行のテキスト」なので、送信スクリプト側に分岐は要らない）。
-function interactiveLaunchSpec(cfg, projectDir, { readonly = false, noSession = false } = {}) {
-  const resolved = resolveAgent(cfg, projectDir);
+function interactiveLaunchSpec(cfg, projectDir,
+                               { readonly = false, noSession = false, workload = '' } = {}) {
+  const resolved = resolveAgent(cfg, projectDir, { workload });
   return {
     cli: resolved.cli,
     model: resolved.model,
+    source: resolved.source,
     chatCommand: buildInteractiveCommand(resolved, { readonly, noSession }),
     readyPattern: agentCli.readyPattern(resolved.spec),
     readyTimeoutSec: agentCli.readyTimeoutSec(resolved.spec),
@@ -1156,6 +1203,7 @@ module.exports = {
   STRUCTURED_ASSIST_MODES,
   resolveAgent,
   readProjectAgent,
+  readControlAgent,
   buildCommand,
   buildInteractiveCommand,
   interactiveLaunchSpec,

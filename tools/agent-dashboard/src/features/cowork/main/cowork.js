@@ -331,7 +331,7 @@ function overview(config, opts = {}) {
   const cfg = config.cowork || {};
   const stateOpts = { probeProcess: opts.probeProcess === true };
   const discoverOpts = { forceDiscover: opts.forceDiscover === true, ...stateOpts };
-  const loop = makeLoopProvider(cfg);
+  const loop = makeLoopProvider(cfg, config);
   const configItems = itemsOf(cfg).map((item, i) => normalizeItem(item, i, cfg, stateOpts, config));
   const discovered = discoverNormalized(config, cfg, discoverOpts);
   const items = dedupeItems([...configItems, ...discovered]);
@@ -454,8 +454,9 @@ function withGlobalInstructions(config, prompt) {
 // セッション開始コマンド（agent-session-commands 契約）の実行計画。tmux セッションを新しく
 // 作るときだけ走るシェル片へ落とすため、ここで when 判定とプレースホルダ展開まで済ませる。
 // 不在・破損・無効はすべて空配列（＝何も差し込まない）。
-// agentCli は「どの CLI へ送るか」で決まる。定常業務ウィンドウは chatCommand（既定 kiro-cli）
-// で起動するので既定は kiro、CLIチャット・対話診断は解決済みの CLI を呼び出し側が渡す。
+// agentCli は「どの CLI へ送るか」で決まる。定常業務ウィンドウも CLIチャット・対話診断と
+// 同じく**解決済みの CLI**（coworkChatLaunch の cli）を呼び出し側が渡す——ここを 'kiro' に
+// 固定していると、ollama で起動したセッションへ kiro 向けの開始コマンドが送られる。
 function planSessionCommands(config, cwd, { agentCli = 'kiro', skillCommandPrefix = '/' } = {}) {
   try {
     const dir = sessionCommands.resolveSessionDir(config || {});
@@ -521,8 +522,10 @@ function runLoop(config, itemIdValue) {
       resolveLoopPromptText(item.repo || item.cwd, runId, config)
         || `.kiro/kiro-loop.yml（または kiro-loop.yaml / .json）の定期プロンプト「${runId}」の本文を読んで、その指示を実行して`
     ));
-  const res = makeLoopProvider(cfg).run({
-    ...item, cwd, id: runId, prompt, sessionCommands: planSessionCommands(config, cwd),
+  const plan = routineLaunchPlan(config, cwd);
+  const res = makeLoopProvider(cfg, config).run({
+    ...item, cwd, id: runId, prompt,
+    launch: plan.launch, sessionCommands: plan.sessionCommands,
   });
   recordRun(cfg, { ...item, type: 'loop' }, res);
   return res;
@@ -562,9 +565,10 @@ function runStateMachine(config, itemIdValue, input) {
       : `${smName} ステートマシンを実行して${input ? `。入力: ${String(input)}` : ''}`;
     args = ['send', legacy];
   }
-  const res = makeLoopProvider(cfg).run({
+  const plan = routineLaunchPlan(config, cwd);
+  const res = makeLoopProvider(cfg, config).run({
     ...item, cwd, args, prompt, timeoutMs: item.timeoutMs || 60000,
-    sessionCommands: planSessionCommands(config, cwd),
+    launch: plan.launch, sessionCommands: plan.sessionCommands,
   });
   recordRun(cfg, { ...item, type: 'state-machine' }, res);
   return res;
@@ -588,39 +592,75 @@ function generateStateMachine(config, payload = {}) {
   const gitRoot = gitInRepo(repo, ['rev-parse', '--show-toplevel'], 10000, config);
   if (!gitRoot.ok) throw new Error('選択中の作業フォルダは Git リポジトリではありません');
   const prompt = withGlobalInstructions(config, stateMachineCreationPrompt(name, machine, instruction));
+  const plan = routineLaunchPlan(config, repo);
   return runChatWindow({
-    ...coworkChatLaunch(config, repo),
+    ...plan.launch,
     prompt,
     cwd: repo,
-    sessionCommands: planSessionCommands(config, repo),
+    sessionCommands: plan.sessionCommands,
     sessionKey: 'statemachine-builder',
     title: '定型業務を作成',
     message: '外部ターミナルで定型業務の作成を開始しました',
   });
 }
 
+// 定常業務（agent-control 契約のワークロード名）。全体設定 → 実行制御の
+// 「機能ごとのエージェントとモデル」で routine に書いた宣言が、この画面の起動に効く。
+const ROUTINE_WORKLOAD = 'routine';
+
+// 旧 cowork.chatCommand の既定値。**既定値として**配っていたせいで saveConfig が
+// 全ユーザーの config.json へ書き戻し、明示上書きが常に載っている状態になっていた
+// （＝定常業務だけが全体設定を無視して常に kiro-cli で起動していた不具合）。
+// 既定は空文字へ改めたが、既存の config.json には値が残るので、この文字列に限っては
+// 「人が選んだ上書き」ではなく既定の残骸とみなして無視する。
+const LEGACY_CHAT_COMMAND = 'kiro-cli chat --trust-all-tools';
+
 // 定常業務の tmux 実行で使う対話 CLI の一式（S9-3）。
 //
-// 以前は `cowork.chatCommand` の**文字列固定**（既定 'kiro-cli chat --trust-all-tools'）で、
-// 定常業務だけが `agent_cli` 設定を無視して常に kiro を起動していた。CLI 定義から解決し、
-// `cowork.chatCommand` は明示上書き（空なら解決結果）に降格する。
+// 起動する CLI とモデルの解決順は CLIチャット・対話診断と同じ interactiveLaunchSpec に
+// 集約する（＝全体設定の workloads.routine.agent_cli / model が最優先）。ollama のように
+// 起動 argv にモデル名が要る CLI（`agent-ollama --tui --think off <model>`）でも、
+// 定義（agents/<name>.json の interactive）どおりの argv がそのまま組み上がる。
+// `cowork.chatCommand` は明示上書き（空なら解決結果）。
 // 解決できないとき（定義が見つからない等）は従来の文字列へ落として、定常業務を止めない。
 // ただし黙っては落とさず、フォールバックした事実を警告ログに残す。
 function coworkChatLaunch(config, repo) {
   const explicit = String(((config || {}).cowork || {}).chatCommand || '').trim();
-  if (explicit) return { chatCommand: explicit };
+  if (explicit && explicit !== LEGACY_CHAT_COMMAND) {
+    // 明示上書きでは CLI 名が分からない。開始コマンドの when.agent_cli 判定は
+    // 従来どおり kiro とみなす（この経路は人が自分でコマンドを決めた場合だけ）。
+    return { chatCommand: explicit, cli: 'kiro', model: '', skillCommandPrefix: '/' };
+  }
   try {
     const { interactiveLaunchSpec } = require('../../agent-project/main/agent');
-    const launch = interactiveLaunchSpec(config, repo);
+    const launch = interactiveLaunchSpec(config, repo, { workload: ROUTINE_WORKLOAD });
     return {
       chatCommand: launch.chatCommand,
       readyPattern: launch.readyPattern,
       readyTimeoutSec: launch.readyTimeoutSec,
+      cli: launch.cli,
+      model: launch.model,
+      source: launch.source,
+      skillCommandPrefix: launch.skillCommandPrefix,
     };
   } catch (e) {
-    console.warn(`[cowork] agent_cli 定義の解決に失敗したため既定の 'kiro-cli chat --trust-all-tools' へフォールバックしました: ${(e && e.message) || e}`);
-    return { chatCommand: 'kiro-cli chat --trust-all-tools' };
+    console.warn(`[cowork] agent_cli 定義の解決に失敗したため既定の '${LEGACY_CHAT_COMMAND}' へフォールバックしました: ${(e && e.message) || e}`);
+    return { chatCommand: LEGACY_CHAT_COMMAND, cli: 'kiro', model: '', skillCommandPrefix: '/' };
   }
+}
+
+// 定常業務ウィンドウ 1 回分の起動条件（対話 CLI の一式 + その CLI 向けの開始コマンド計画）。
+// 起動する CLI が決まらないと開始コマンドの when.agent_cli 判定もスキル起動記号も決まらない
+// ので、2 つを 1 か所で組む。
+function routineLaunchPlan(config, cwd) {
+  const launch = coworkChatLaunch(config, cwd);
+  return {
+    launch,
+    sessionCommands: planSessionCommands(config, cwd, {
+      agentCli: launch.cli || 'kiro',
+      skillCommandPrefix: launch.skillCommandPrefix || '/',
+    }),
+  };
 }
 
 function gitInRepo(repo, args, timeoutMs, config) {
@@ -927,7 +967,7 @@ module.exports = {
   invalidateDiscoverCache, decodeCliOutput, viewerRepo,
   itemLogs, readLog, appendHistory, readHistory, historyFile,
   resolveLoopPromptText, withInputAssist, withGlobalInstructions, planSessionCommands,
-  coworkChatLaunch,
+  coworkChatLaunch, routineLaunchPlan, ROUTINE_WORKLOAD, LEGACY_CHAT_COMMAND,
   applyManagedItems, stateMachineCreationPrompt,
   inspectCoworkRoot, setCoworkRoot,
   stateMachineInputSpec, stateMachineInputAssist, stateMachineFilePath,
