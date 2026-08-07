@@ -43,7 +43,8 @@ USAGE = """使い方: agent-ollama [オプション] <model>
 
   実行モード:
     --tools               bash 1 つを道具にした実行ループ（書き込みモード）
-    --tui                 デバッグ用の対話ビュー（行指向・tmux から操作できる）
+    --tui                 デバッグ用の対話ビュー（行指向・tmux から操作できる。
+                          矢印キー・履歴・Tab 補完が効く。一覧は TUI 内の /keys）
     --follow [LOG]        進捗ログを追尾表示する（省略時は最新のログ）
     --status [LOG]        いまの進捗を 1 行 JSON で返す（省略時は最新のログ）
     --context <model>     文脈の上限だけを調べて出す（LLM は呼ばない）
@@ -70,7 +71,8 @@ USAGE = """使い方: agent-ollama [オプション] <model>
   環境変数: OLLAMA_HOST / AGENT_OLLAMA_THINK / AGENT_OLLAMA_OPTIONS(JSON) /
     AGENT_OLLAMA_KEEP_ALIVE / AGENT_OLLAMA_LOG_DIR / AGENT_OLLAMA_SKILLS_DIR /
     AGENT_OLLAMA_STALL_TIMEOUT / AGENT_OLLAMA_FIRST_TOKEN_TIMEOUT /
-    AGENT_OLLAMA_CONNECT_TIMEOUT / OLLAMA_TIMEOUT
+    AGENT_OLLAMA_CONNECT_TIMEOUT / OLLAMA_TIMEOUT /
+    AGENT_OLLAMA_HISTORY / AGENT_OLLAMA_NO_READLINE（TUI の行編集を切る）
     OLLAMA_HOST が未設定なら ~/.profile を読んで OLLAMA_* / AGENT_OLLAMA_* を補完する
     （エンジンからの非ログインシェル起動で環境変数が届かない場合の救済）
 """

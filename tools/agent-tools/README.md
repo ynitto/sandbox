@@ -139,11 +139,33 @@ R2/12 decode 経過 4m12s  out=210tk  ctx 4.2k/8.2k (51%)      ← TUI のステ
 - **rich は任意**。`install.sh --with-rich` で zipapp へ同梱すると TUI に色が付く。
   無くても素の ANSI で同じ情報を出す（既定はネットワーク不要のまま）。
 
+### TUI の行編集（矢印キー・ショートカット）
+
+`--tui` の入力行には標準ライブラリの `readline` が噛んでいる。素の 1 行読みでは矢印キーが
+`^[[A` のまま本文へ混ざり、打ち間違いを Backspace でしか直せなかった。
+
+| キー | 動き | キー | 動き |
+|---|---|---|---|
+| `←` `→` | カーソル移動 | `Ctrl-A` / `Ctrl-E` | 行頭 / 行末へ |
+| `↑` `↓` | 履歴を辿る | `Ctrl-R` | 履歴を遡って検索 |
+| `Tab` | 補完（ローカルコマンド・スキル名・`on\|off`） | `Ctrl-W` | 直前の語を削除 |
+| `Ctrl-U` / `Ctrl-K` | カーソルより前 / 後ろを削除 | `Ctrl-L` | 画面をクリア |
+| `Ctrl-C` | 入力中の行を捨てる（**終了しない**） | `Ctrl-D` | 終了（空行のとき） |
+
+一覧は TUI 内の `/keys` でも出る。割り当ては `~/.inputrc` がそのまま効く。履歴は
+セッションをまたいで `~/.agents/ollama/tui-history` に残る（`AGENT_OLLAMA_HISTORY` で移せる）。
+
+効かせるのは**本物の端末で対話しているときだけ**で、パイプ入力・非 tty では素の 1 行読みへ
+落ちる——編集用のエスケープを非 tty へ吐くと、出力を読む側（`capture-pane`）が壊れるため。
+`AGENT_OLLAMA_NO_READLINE=1` で明示的に切れる。tmux の `send-keys` / `capture-pane` から見た
+画面は従来と同じ（`ready_pattern` の `> ` も含めて変わらない）。
+
 環境変数: `OLLAMA_HOST` / `AGENT_OLLAMA_THINK` / `AGENT_OLLAMA_OPTIONS`（JSON・`num_ctx` 等を
 リクエスト単位で足す）/ `AGENT_OLLAMA_KEEP_ALIVE` / `AGENT_OLLAMA_LOG_DIR` /
 `AGENT_OLLAMA_SKILLS_DIR` / `AGENT_OLLAMA_STALL_TIMEOUT` / `AGENT_OLLAMA_FIRST_TOKEN_TIMEOUT` /
 `AGENT_OLLAMA_CONNECT_TIMEOUT`（接続の上限秒・既定 120）/
-`AGENT_OLLAMA_META_TIMEOUT`（文脈上限の問い合わせに許す秒数・既定 3）。
+`AGENT_OLLAMA_META_TIMEOUT`（文脈上限の問い合わせに許す秒数・既定 3）/
+`AGENT_OLLAMA_HISTORY` / `AGENT_OLLAMA_NO_READLINE`（TUI の行編集を切る）。
 
 `OLLAMA_HOST` が未設定のときは `~/.profile` を評価して `OLLAMA_*` / `AGENT_OLLAMA_*` を
 補完する。エンジンは agent-ollama を**非ログインシェル**の subprocess として起動するため、
